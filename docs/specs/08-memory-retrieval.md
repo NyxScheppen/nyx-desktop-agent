@@ -43,10 +43,13 @@ from nyx.types import MemoryEdge
 
 
 class MemoryGraph:
-    """联想图：memory 为节点、memory_edge 为加权边。构建自 edges，沿边扩散找相关记忆。"""
+    """联想图：memory 为节点、memory_edge 为加权边。
+
+    构建自 edges，沿边扩散找相关记忆。
+    """
 
     def __init__(self, edges: list[MemoryEdge]) -> None:
-        self._g: nx.Graph = nx.Graph()
+        self._g: nx.Graph[str] = nx.Graph()
         for e in edges:
             self._g.add_node(e.from_id)
             self._g.add_node(e.to_id)
@@ -79,7 +82,8 @@ class MemoryGraph:
 ```python
 import asyncio
 import math
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
+from typing import cast
 
 from nyx.memory.graph import MemoryGraph
 from nyx.memory.store import MemoryStore
@@ -101,20 +105,29 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 
 def build_embed(model_name: str) -> EmbedFn:
-    """用本地 sentence-transformers 建 embed 函数；惰性 import 避免未启用向量层时加载重依赖。"""
+    """用本地 sentence-transformers 建 embed 函数。
+
+    惰性 import 避免未启用向量层时加载重依赖。
+    """
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(model_name)
+    encode = cast(Callable[[str], Iterable[float]], getattr(model, "encode"))
+
+    def _encode_sync(text: str) -> list[float]:
+        return [float(x) for x in encode(text)]
 
     async def embed(text: str) -> list[float]:
-        vec = await asyncio.to_thread(model.encode, text)
-        return [float(x) for x in vec]
+        return await asyncio.to_thread(_encode_sync, text)
 
     return embed
 
 
 class MemoryRetrieval:
-    """三层检索：keyword（store）→ vector（embedding 余弦）→ association（networkx 扩散），去重合并。"""
+    """三层检索：keyword → vector → association，去重合并。
+
+    keyword（store）→ vector（embedding 余弦）→ association（networkx 扩散）。
+    """
 
     def __init__(self, store: MemoryStore, embed: EmbedFn | None = None) -> None:
         self._store = store
@@ -140,7 +153,9 @@ class MemoryRetrieval:
                 merged.append(m)
         return merged[:limit]
 
-    async def _vector_search(self, query: str, candidates: list[Memory]) -> list[Memory]:
+    async def _vector_search(
+        self, query: str, candidates: list[Memory]
+    ) -> list[Memory]:
         if self._embed is None:
             return []
         qv = await self._embed(query)

@@ -148,3 +148,23 @@
 | `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |
 
 **功能阶段**：07-memory-store 实现时编写。
+
+## 08-memory-retrieval（三层检索 + 联想图）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_neighbors_empty_and_missing` | 边界鲁棒 | 空 edges → `neighbors([])=[]`；不存在节点 → `[]`（`has_node` 过滤防 `NetworkXError`） |
+| `test_neighbors_single_edge` | 功能正确 | 单边 a-b：`neighbors(["a"])=["b"]`；全 seed `["a","b"]` → `[]`（排除 seeds 本身） |
+| `test_neighbors_chain_depth` | 功能正确 | 链 a-b-c：depth=1 → `["b"]`、depth=2 → `["b","c"]` |
+| `test_neighbors_diamond_dedup` | 功能正确 | 菱形 a-b/a-c/b-d/c-d：depth=2 → `["b","c","d"]`（d 去重只一次） |
+| `test_weight_does_not_affect_spread` | 功能正确 | weight 不影响扩散（只按可达性） |
+| `test_cosine` | 功能正确 | 正交=0、相同=1、相反=-1、零向量=0（纯函数） |
+| `test_vector_search_skips_none_and_filters` | 边界鲁棒 | `embedding=None` 跳过、`s<=0` 过滤（cos=-1/0）、cos=1 命中 |
+| `test_vector_search_top_k_truncates` | 功能正确 | 7 候选只返回 `_VECTOR_TOP_K=5` |
+| `test_vector_search_disabled_when_embed_none` | 功能正确 | `embed=None` → `[]`（向量层禁用） |
+| `test_search_merge_order_and_limit` | 功能正确 | keyword→vector→association 编排：A（keyword+vector）、B（association 扩散）→ `[A,B]`；limit=1 → `[A]` |
+| `test_search_dedup` | 功能正确 | keyword 与 vector 命中同一记忆 → 去重只一次 |
+| `test_search_empty` | 功能正确 | 无命中 + embed=None + 无边 → `[]` |
+| `test_search_no_edge_no_crash` | 边界鲁棒 | keyword 命中无边记忆 → 不抛 `NetworkXError`（`neighbors` 过滤），返回命中本身 |
+
+**功能阶段**：08-memory-retrieval 实现时编写。

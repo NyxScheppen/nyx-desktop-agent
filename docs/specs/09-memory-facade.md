@@ -41,7 +41,7 @@
   1. `_build_scene_prompt(reply_context)` → `llm.complete(json_mode=True, output_type="scene_memory")` **一次**产出 `{content, tag, summary}`（回归三样，场景记忆调用不再承担矛盾判断）
   2. `_parse_scene` 纯函数解析校验（结构非法 `ValueError`，错误可溯源）
   3. `Memory(id=uuid4, created_at=now, freshness=1.0, type=SHORT_TERM, ...)`；`embed` 非空则算 `embedding` 存列（持久化，同 07/08 决策）
-  4. `store.add` → `_build_edges` → `_detect_contradiction`（门控，可能 +1 调用；best-effort，失败 log 后跳过 reflection 不反噬创建）→ 命中矛盾 publish `reflection` → `_decay_and_evict` → publish `memory_created`
+  4. `store.add` → 一次 `_similar` 全表余弦排序（建边 top-3 与矛盾召回 top-5 共用，避免重复扫描）→ `_build_edges` → `_detect_contradiction`（门控，可能 +1 调用；best-effort，失败 log 后跳过 reflection 不反噬创建）→ 命中矛盾 publish `reflection` → `_decay_and_evict` → publish `memory_created`
 - **矛盾检测 = 门控 + 独立单任务调用（决策：C 方案，准确率优先，已与用户确认）**：召回候选（embedding 余弦 top-K）做**门控**，判断交给**独立 LLM 调用**——单任务判矛盾，准确率最高，代价是**有条件地 +1 调用**。门控**无损**：矛盾 ⟹ 语义相近（"喜欢猫" vs "讨厌猫"同话题才矛盾），不同话题的旧记忆不可能与新记忆矛盾，所以「相似度过阈值才判断」不损失准确率，只省掉无谓调用。`embedding=None`（未启用向量层）→ 直接跳过
 - **三杠杆（决策：B 方案，不增调用，已与用户确认）**：
   1. **候选判据用全文截断**：`_content_preview` 给 `summary + content 前 60 字`（非只 summary），矛盾常藏细节，判据更实 → 漏报↓
@@ -269,8 +269,15 @@ class MemoryFacade:
             memory.embedding = await self._embed(content)
 
         await self._store.add(memory)
-        await self._build_edges(memory)
-        await self._detect_contradiction(memory, reply_context["correlation_id"])
+
+        # 一次全表余弦排序，建边（top-3）与矛盾召回（top-5）共用，避免重复扫描
+        scored: list[tuple[float, Memory]] | None = None
+        if memory.embedding is not None:
+            scored = await self._similar(memory.embedding, memory.id)
+        await self._build_edges(memory, scored)
+        await self._detect_contradiction(
+            memory, scored, reply_context["correlation_id"]
+        )
 
         await self._decay_and_evict(now)
 
@@ -318,12 +325,16 @@ class MemoryFacade:
             return "\n\n".join(_memory_to_markdown(m) for m in memories)
         raise ValueError(f"未知导出格式 {fmt!r}（应为 json/md）")
 
-    async def _detect_contradiction(self, memory: Memory, correlation_id: str) -> None:
+    async def _detect_contradiction(
+        self,
+        memory: Memory,
+        scored: list[tuple[float, Memory]] | None,
+        correlation_id: str,
+    ) -> None:
         """门控矛盾检测：召回 top-K 相似候选，相似度过阈值的才发独立 LLM 判断；
         无候选或全低于阈值 → 0 调用跳过。命中矛盾 → 发布 reflection。"""
-        if memory.embedding is None:
+        if scored is None:
             return
-        scored = await self._similar(memory.embedding, memory.id)
         candidates = [
             m for s, m in scored[:_RECALL_TOP_K] if s >= _CONTRADICTION_SIM_THRESHOLD
         ]
@@ -378,11 +389,13 @@ class MemoryFacade:
         ]
         return rank_by_cosine(query_vec, memories)
 
-    async def _build_edges(self, memory: Memory) -> None:
+    async def _build_edges(
+        self, memory: Memory, scored: list[tuple[float, Memory]] | None
+    ) -> None:
         """新记忆与已有记忆按 embedding 余弦相似度建边（top-K，weight=相似度）。"""
-        if self._embed is None or memory.embedding is None:
+        if scored is None:
             return
-        for s, m in (await self._similar(memory.embedding, memory.id))[:_EDGE_TOP_K]:
+        for s, m in scored[:_EDGE_TOP_K]:
             await self._store.upsert_edge(memory.id, m.id, s)
 
     async def _decay_and_evict(self, now: float) -> None:

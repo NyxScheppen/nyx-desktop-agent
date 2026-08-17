@@ -207,8 +207,15 @@ class MemoryFacade:
             memory.embedding = await self._embed(content)
 
         await self._store.add(memory)
-        await self._build_edges(memory)
-        await self._detect_contradiction(memory, reply_context["correlation_id"])
+
+        # 一次全表余弦排序，建边（top-3）与矛盾召回（top-5）共用，避免重复扫描
+        scored: list[tuple[float, Memory]] | None = None
+        if memory.embedding is not None:
+            scored = await self._similar(memory.embedding, memory.id)
+        await self._build_edges(memory, scored)
+        await self._detect_contradiction(
+            memory, scored, reply_context["correlation_id"]
+        )
 
         await self._decay_and_evict(now)
 
@@ -256,12 +263,16 @@ class MemoryFacade:
             return "\n\n".join(_memory_to_markdown(m) for m in memories)
         raise ValueError(f"未知导出格式 {fmt!r}（应为 json/md）")
 
-    async def _detect_contradiction(self, memory: Memory, correlation_id: str) -> None:
+    async def _detect_contradiction(
+        self,
+        memory: Memory,
+        scored: list[tuple[float, Memory]] | None,
+        correlation_id: str,
+    ) -> None:
         """门控矛盾检测：召回 top-K 相似候选，相似度过阈值的才发独立 LLM 判断；
         无候选或全低于阈值 → 0 调用跳过。命中矛盾 → 发布 reflection。"""
-        if memory.embedding is None:
+        if scored is None:
             return
-        scored = await self._similar(memory.embedding, memory.id)
         candidates = [
             m for s, m in scored[:_RECALL_TOP_K] if s >= _CONTRADICTION_SIM_THRESHOLD
         ]
@@ -316,11 +327,13 @@ class MemoryFacade:
         ]
         return rank_by_cosine(query_vec, memories)
 
-    async def _build_edges(self, memory: Memory) -> None:
+    async def _build_edges(
+        self, memory: Memory, scored: list[tuple[float, Memory]] | None
+    ) -> None:
         """新记忆与已有记忆按 embedding 余弦相似度建边（top-K，weight=相似度）。"""
-        if self._embed is None or memory.embedding is None:
+        if scored is None:
             return
-        for s, m in (await self._similar(memory.embedding, memory.id))[:_EDGE_TOP_K]:
+        for s, m in scored[:_EDGE_TOP_K]:
             await self._store.upsert_edge(memory.id, m.id, s)
 
     async def _decay_and_evict(self, now: float) -> None:

@@ -349,6 +349,7 @@
 | `test_build_schedule_skips_interaction` | 功能正确 | 互动欲被跳过（`continue`），不产块、不耗精力 |
 | `test_build_schedule_rest_nonpositive_no_loop` | 边界鲁棒 | `energy_delta.rest <= 0` → 不死循环，直接产出活动块 |
 | `test_format_time_label` | 功能正确 | 块序号 → `"HH:MM"`：`(0,60,9.0)→09:00`、`(1,60,9.0)→10:00`、`(2,60,9.5)→11:30`、`(0,30,0.0)→00:00` |
-| `test_rest_energy_threshold` | 边界鲁棒 | `0.0 <= _REST_ENERGY_THRESHOLD <= 100.0` |
+| `test_format_time_label_rounds_float_minutes` | 边界鲁棒 | 浮点小时 `4.1/8.2/16.4/16.9` → `"04:06"/"08:12"/"16:24"/"16:54"`（`round` 不截断少一分钟，回归保护） |
+| `test_rest_energy_threshold` | 边界鲁棒 | `0.0 <= ENERGY_REST_THRESHOLD <= 100.0`（共享常量，从 `nyx.inner_life.emotion` 导入） |
 
 **功能阶段**：13-activity-scheduler 实现时编写（纯函数，无 DB、无 mock、无 async；与 `ActivityFacade` 的编排归 14）。

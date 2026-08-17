@@ -83,6 +83,9 @@ _V_NEAR = 0.2          # |valence| < 0.2 视为"中性带"
 _A_LOW = 0.3           # arousal < 0.3 视为"低唤醒"
 _A_HIGH = 0.6          # arousal >= 0.6 视为"高唤醒"
 
+# —— 精力休息阈值：TIRED 档下界（energy_to_state 分界，单一来源）——
+ENERGY_REST_THRESHOLD = 40.0   # 跌破即 EXHAUSTED/DRAINED（力竭/枯竭）
+
 # —— 覆盖阈值 ——
 _SLEEPY_STATES = (EnergyState.EXHAUSTED, EnergyState.DRAINED)
 _THINKING_ACTIVITIES = (ActivityType.IDLE_REFLECTION, ActivityType.FREE_EXPLORATION)
@@ -589,6 +592,7 @@ from nyx.inner_life.emotion import (
     BASELINE_AROUSAL,
     BASELINE_VALENCE,
     EMOTION_DECAY_RATE,
+    ENERGY_REST_THRESHOLD,
     apply_offset,
     decay_emotion,
     event_offset,
@@ -606,7 +610,7 @@ _ENERGY_RECOVERY_PER_HOUR = 5.0   # 闲置每小时恢复（"夜间自动恢复"
 _ENERGY_TIERS = (
     (80.0, EnergyState.ENERGETIC),
     (60.0, EnergyState.OKAY),
-    (40.0, EnergyState.TIRED),
+    (ENERGY_REST_THRESHOLD, EnergyState.TIRED),
     (20.0, EnergyState.EXHAUSTED),
 )
 

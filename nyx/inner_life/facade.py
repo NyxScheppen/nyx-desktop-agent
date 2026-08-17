@@ -11,6 +11,7 @@ from nyx.inner_life.emotion import (
     BASELINE_AROUSAL,
     BASELINE_VALENCE,
     EMOTION_DECAY_RATE,
+    ENERGY_REST_THRESHOLD,
     apply_offset,
     decay_emotion,
     event_offset,
@@ -28,7 +29,7 @@ _ENERGY_RECOVERY_PER_HOUR = 5.0   # 闲置每小时恢复（"夜间自动恢复"
 _ENERGY_TIERS = (
     (80.0, EnergyState.ENERGETIC),
     (60.0, EnergyState.OKAY),
-    (40.0, EnergyState.TIRED),
+    (ENERGY_REST_THRESHOLD, EnergyState.TIRED),
     (20.0, EnergyState.EXHAUSTED),
 )
 

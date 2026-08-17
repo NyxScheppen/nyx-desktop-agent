@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`ActivityType` / `DesireType` / `ShortTermDesire` / `DesireValue`）、02-config（`ActivityEnergyDelta`——仅作 `build_schedule` 参数的类型注解，不 import 配置加载逻辑）
+- **前置依赖**：01-types（`ActivityType` / `DesireType` / `ShortTermDesire` / `DesireValue`）、02-config（`ActivityEnergyDelta`——仅作 `build_schedule` 参数的类型注解，不 import 配置加载逻辑）、12-inner-life（`emotion.ENERGY_REST_THRESHOLD`——精力休息阈值单一来源，不 import Facade）
 
 ## 用户故事
 
@@ -17,7 +17,7 @@
 - [ ] `scheduler.py` 含 4 个公开纯函数（`desire_to_activity` / `rank_desires` / `build_schedule` / `format_time_label`）+ 1 个私有 `_delta_of`，与「`activity/scheduler.py`（完整）」段代码逐字一致
 - [ ] `desire_to_activity`：`EXPLORATION→READING`、`CREATION→CREATION`、`REST→REST`、`INTERACTION→None`（互动欲不占日程块）
 - [ ] `rank_desires`：按类型级 `expression_weight` 降序、同权 `created_at` 升序（FIFO 稳定）；无 `DesireValue` 记录的类型按 0.0 兜底
-- [ ] `build_schedule`：欲望序列 → 活动序列；精力跌破 `_REST_ENERGY_THRESHOLD` 时在下一活动前插 `REST` 恢复；保持输入顺序；`energy_delta.rest <= 0` 时不进死循环
+- [ ] `build_schedule`：欲望序列 → 活动序列；精力跌破 `ENERGY_REST_THRESHOLD` 时在下一活动前插 `REST` 恢复；保持输入顺序；`energy_delta.rest <= 0` 时不进死循环
 - [ ] `format_time_label`：块序号 → `"HH:MM"` 时间标签
 - [ ] `pyright` strict 零报错
 
@@ -25,12 +25,12 @@
 
 - **新文件**：`nyx/activity/scheduler.py`（无 Facade、无 API、无数据变更、无 store）
 - **库**：无新库（纯标准库）
-- **公开面**：`from nyx.activity.scheduler import (desire_to_activity, rank_desires, build_schedule, format_time_label)`；`_delta_of` / `_REST_ENERGY_THRESHOLD` 私有
+- **公开面**：`from nyx.activity.scheduler import (desire_to_activity, rank_desires, build_schedule, format_time_label)`；`_delta_of` 私有（休息阈值 `ENERGY_REST_THRESHOLD` 从 `nyx.inner_life.emotion` 共享导入，非 scheduler 私有）
 - **为什么是纯函数、不建表**：design §8.1「日程块是 grid 派生的临时概念，不建表持久化」——13 只产「活动类型序列」的排期数学，`Activity` 记录（含 `schedule_block_id` 时间标签）由 14 构造后落 `activity` 表
 - **欲望→活动映射（`desire_to_activity`）**：六种日程块活动里，欲望驱动的只有 3 种（design §8.2）——探索欲→读书（自由探索是读书的**升级形态**，触发门槛「探索欲峰值 + 精力充足 + 频率上限」见 design §8.6，归 14 运行时判定后把 `READING` 覆盖成 `FREE_EXPLORATION`）；创造欲→创作；休息欲→休息。**互动欲不占日程块**（走搭话/对话，见 §5.5），返回 `None`。观察用户/发呆反思**不在本 spec**——非欲望驱动，是 14 的「空槽默认」行为，不进 `build_schedule` 输出
 - **消费排序（`rank_desires`）**：10-desire-value §33 约定「消费对象排序权重 = 类型级 `expression_weight`，消费端语义归 13/17」。输入 desires 已由 11 `get_pending()` 过滤为 `pending/active`（`created_at ASC` FIFO），本函数再按 `expression_weight` 降序重排（越愿表达越先消费）、同权 `created_at` 升序（FIFO 稳定）；`DesireValue` 缺失类型按 0.0 兜底（纯函数防御，正常 18-api 已 seed 四类型）
 - **精力符号约定（显式声明）**：`energy_delta` 字段符号——`reading=-20` / `creation=-25` 为负=消耗、`rest=+30` 为正=恢复、`idle_reflection=+10` 为正=微恢复（design §8.4；默认值见 02-config `ActivityEnergyDelta`）。`build_schedule` 只消费 `reading` / `creation` / `rest` 三字段；`observe_user` / `idle_reflection` / `free_exploration` 由 14 消费
-- **精力约束（`build_schedule`）**：阈值 `_REST_ENERGY_THRESHOLD = 40.0`（默认值，可推翻）——design §8.4「疲惫 20-39 / 有点累 40-59」，精力跌破 40 进入疲惫档，下一活动前先插 `REST`（+30 恢复）；精力极低（如 0）时连续多个 `REST` 直到恢复。**防死循环**：`energy_delta.rest <= 0` 时跳过休息插值（正常 config `rest=30>0`，02-config 只校验 int 不校验正负，纯函数自行防御）
+- **精力约束（`build_schedule`）**：阈值 `ENERGY_REST_THRESHOLD = 40.0`（单一来源，定义在 `inner_life/emotion.py`，即 `energy_to_state` 的 TIRED 档下界）——精力跌破此值进入力竭/枯竭档（EXHAUSTED/DRAINED），下一活动前先插 `REST`（+30 恢复）；精力极低（如 0）时连续多个 `REST` 直到恢复。**防死循环**：`energy_delta.rest <= 0` 时跳过休息插值（正常 config `rest=30>0`，02-config 只校验 int 不校验正负，纯函数自行防御）
 - **时间标签（`format_time_label`）**：`block_index` 块起点 = `start_hour + block_index * grid_minutes / 60`，格式 `"HH:MM"`；`start_hour` 是「排期起点的当日小时数（浮点，如 9.5 = 9:30）」，由 14 在运行时定（服务启动时刻/当前时刻/当天零点）
 - **不引入 `ScheduleBlock` 中间类型**：`build_schedule` 输出裸 `list[ActivityType]`，时间标签由 `format_time_label` 单独算，14 用 `enumerate` 组合成 `Activity`——中间结构只有 14 一个消费方，内联即可（反冗余）
 - **`ActivityEnergyDelta` 的 import**：仅作 `build_schedule` 参数类型注解（`from nyx.config import ActivityEnergyDelta`），不是「import 配置加载逻辑」——14 从 `config.activity.energy_delta` 取出来传参，13 不读配置文件、不碰 `load_config`
@@ -44,10 +44,8 @@
 """
 from nyx.config import ActivityEnergyDelta
 from nyx.enums import ActivityType, DesireType
+from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.types import DesireValue, ShortTermDesire
-
-# —— 精力恢复阈值：精力跌破此值（进入「疲惫」档）时，下一活动前先插休息块 ——
-_REST_ENERGY_THRESHOLD = 40.0   # 默认值，可推翻
 
 
 def desire_to_activity(desire_type: DesireType) -> ActivityType | None:
@@ -86,7 +84,7 @@ def build_schedule(
     """欲望序列 → 一天活动序列（含精力驱动的休息穿插）。
 
     契约：调用方先 rank_desires 排序（本函数保持输入顺序，不自行排序）。
-    精力模拟：逐块累加 energy_delta；精力跌破 _REST_ENERGY_THRESHOLD 时，
+    精力模拟：逐块累加 energy_delta；精力跌破 ENERGY_REST_THRESHOLD 时，
     在下一活动前插 REST 块恢复，直到回到阈值之上；energy_delta.rest <= 0 时
     跳过（防死循环）。
     """
@@ -96,7 +94,7 @@ def build_schedule(
         activity = desire_to_activity(desire.type)
         if activity is None:
             continue
-        while cur < _REST_ENERGY_THRESHOLD and energy_delta.rest > 0:
+        while cur < ENERGY_REST_THRESHOLD and energy_delta.rest > 0:
             result.append(ActivityType.REST)
             cur += energy_delta.rest
         result.append(activity)
@@ -125,7 +123,7 @@ def format_time_label(block_index: int, grid_minutes: int, start_hour: float) ->
 
     第 block_index 块起点 = start_hour + block_index * grid_minutes / 60。
     """
-    minutes = int(start_hour * 60 + block_index * grid_minutes)
+    minutes = round(start_hour * 60 + block_index * grid_minutes)
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 ```
 
@@ -142,8 +140,8 @@ def format_time_label(block_index: int, grid_minutes: int, start_hour: float) ->
     - [ ] 含互动欲 → 被跳过（`continue`），不产块、不耗精力
     - [ ] `energy_delta.rest <= 0`（用 0 代表；`> 0` 为 False 跳过同一条路径，`rest<0` 行为一致）→ 不死循环，直接产出活动块
     - [ ] 保持输入顺序：`[探索, 创造]` 且精力足 → `[READING, CREATION]`（不自行排序）
-  - [ ] `format_time_label`：`(0, 60, 9.0)→"09:00"`；`(1, 60, 9.0)→"10:00"`；`(2, 60, 9.5)→"11:30"`；`(0, 30, 0.0)→"00:00"`（半小时一块）
-  - [ ] 常量断言：`0.0 <= _REST_ENERGY_THRESHOLD <= 100.0`
+  - [ ] `format_time_label`：`(0, 60, 9.0)→"09:00"`；`(1, 60, 9.0)→"10:00"`；`(2, 60, 9.5)→"11:30"`；`(0, 30, 0.0)→"00:00"`（半小时一块）；浮点小时 `4.1/8.2/16.4/16.9` → `"04:06"/"08:12"/"16:24"/"16:54"`（`round` 不截断少一分钟）
+  - [ ] 常量断言：`0.0 <= ENERGY_REST_THRESHOLD <= 100.0`（从 `nyx.inner_life.emotion` 导入）
 - [ ] 集成测试：无（纯函数，无管道；与 `ActivityFacade` 的编排归 14）
 - [ ] E2E 测试：无
 

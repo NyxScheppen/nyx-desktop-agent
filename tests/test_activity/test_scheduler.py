@@ -1,6 +1,4 @@
-# pyright: reportPrivateUsage=false
 from nyx.activity.scheduler import (
-    _REST_ENERGY_THRESHOLD,
     build_schedule,
     desire_to_activity,
     format_time_label,
@@ -8,6 +6,7 @@ from nyx.activity.scheduler import (
 )
 from nyx.config import ActivityEnergyDelta
 from nyx.enums import ActivityType, DesireType
+from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.types import DesireValue, ShortTermDesire
 
 
@@ -126,7 +125,15 @@ def test_format_time_label() -> None:
     assert format_time_label(0, 30, 0.0) == "00:00"
 
 
+def test_format_time_label_rounds_float_minutes() -> None:
+    # start_hour 浮点乘法落在整数下方一点点，round 而非 int 截断（否则少一分钟）
+    assert format_time_label(0, 60, 4.1) == "04:06"
+    assert format_time_label(0, 60, 8.2) == "08:12"
+    assert format_time_label(0, 60, 16.4) == "16:24"
+    assert format_time_label(0, 60, 16.9) == "16:54"
+
+
 # ---- 常量 ----
 
 def test_rest_energy_threshold() -> None:
-    assert 0.0 <= _REST_ENERGY_THRESHOLD <= 100.0
+    assert 0.0 <= ENERGY_REST_THRESHOLD <= 100.0

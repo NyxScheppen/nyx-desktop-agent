@@ -4,10 +4,8 @@
 """
 from nyx.config import ActivityEnergyDelta
 from nyx.enums import ActivityType, DesireType
+from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.types import DesireValue, ShortTermDesire
-
-# —— 精力恢复阈值：精力跌破此值（进入「疲惫」档）时，下一活动前先插休息块 ——
-_REST_ENERGY_THRESHOLD = 40.0   # 默认值，可推翻
 
 
 def desire_to_activity(desire_type: DesireType) -> ActivityType | None:
@@ -46,7 +44,7 @@ def build_schedule(
     """欲望序列 → 一天活动序列（含精力驱动的休息穿插）。
 
     契约：调用方先 rank_desires 排序（本函数保持输入顺序，不自行排序）。
-    精力模拟：逐块累加 energy_delta；精力跌破 _REST_ENERGY_THRESHOLD 时，
+    精力模拟：逐块累加 energy_delta；精力跌破 ENERGY_REST_THRESHOLD 时，
     在下一活动前插 REST 块恢复，直到回到阈值之上；energy_delta.rest <= 0 时
     跳过（防死循环）。
     """
@@ -56,7 +54,7 @@ def build_schedule(
         activity = desire_to_activity(desire.type)
         if activity is None:
             continue
-        while cur < _REST_ENERGY_THRESHOLD and energy_delta.rest > 0:
+        while cur < ENERGY_REST_THRESHOLD and energy_delta.rest > 0:
             result.append(ActivityType.REST)
             cur += energy_delta.rest
         result.append(activity)
@@ -85,5 +83,5 @@ def format_time_label(block_index: int, grid_minutes: int, start_hour: float) ->
 
     第 block_index 块起点 = start_hour + block_index * grid_minutes / 60。
     """
-    minutes = int(start_hour * 60 + block_index * grid_minutes)
+    minutes = round(start_hour * 60 + block_index * grid_minutes)
     return f"{minutes // 60:02d}:{minutes % 60:02d}"

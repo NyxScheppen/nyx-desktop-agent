@@ -39,7 +39,7 @@
 - **枚举**：用 `Enum`，如 `ContextMode`, `TickType`, `EmotionCategory`
 - **docstring**：公开方法用 Google style。重点解释 "why" 而非 "what"
 - **LLM 客户端**：必须统一调用，不直接使用 httpx
-- **禁止**：`*` 导入、`except Exception` 裸捕获、模块级可变全局变量
+- **禁止**：`*` 导入、`except Exception` 吞异常（不重抛）、模块级可变全局变量。资源清理允许 `except Exception: cleanup; raise`（必须重抛，如 `connect()` 迁移失败关连接）
 
 ### TypeScript / React
 

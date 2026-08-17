@@ -82,6 +82,13 @@ def test_load_config_rejects_unknown_top_level_key(tmp_path: Path) -> None:
         load_config(path)
 
 
+def test_load_config_rejects_mixed_type_unknown_key(tmp_path: Path) -> None:
+    # YAML 把 1: 解析成 int 键，与 str 键混合时 sorted 默认排序会 TypeError
+    path = _write(tmp_path, "bogus: b\n1: a\n")
+    with pytest.raises(ConfigError):
+        load_config(path)
+
+
 def test_load_config_rejects_unknown_section_key(tmp_path: Path) -> None:
     path = _write(tmp_path, "llm:\n  bogus: 1\n")
     with pytest.raises(ConfigError):

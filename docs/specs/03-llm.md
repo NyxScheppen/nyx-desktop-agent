@@ -32,24 +32,27 @@
 - **只支持 Deepseek**：`provider != "deepseek"` 时 `from_config` 报 `ConfigError`
 - **不设超时/重试**：LangChain 默认，异常原样上抛由调用方处理
 - **json_mode = 减少 parse 失败重试**：欲望生成/分类器/judge 要结构化输出，靠 `response_format` 保证合法 JSON，少一次重调
-- **依赖 pin（实现时锁）**：`pyproject.toml` 里 `langchain-core`、`langchain-openai` 锁精确版本（非 `>=` 宽范围）；本 spec 的 `usage_metadata`（键 `input_tokens`/`output_tokens`）、`AIMessage.content`（文本为 `str`）、`response_format={"type":"json_object"}` 契约均以锁定版本为准，升级依赖须重跑本 spec 测试
+- **依赖 pin（实现时锁）**：`pyproject.toml` 里 `langchain-core`、`langchain-openai` 锁精确版本（非 `>=` 宽范围）；`pydantic` 用 `>=2.0` floor（`SecretStr` 自 v1 稳定，非 volatile API）。本 spec 的 `usage_metadata`（键 `input_tokens`/`output_tokens`）、`AIMessage.content`（文本为 `str`）、`response_format={"type":"json_object"}` 契约均以锁定版本为准，升级依赖须重跑本 spec 测试
+- **类型收窄（质量门驱动）**：`_extract_usage` 里 `isinstance(usage, dict)` 把 `getattr` 返回的 `Any` 收窄成 `dict[Unknown, Unknown]`，赋给 `dict[str, Any]` 报 partially unknown，故 `cast(dict[str, Any], usage)`（与 02-config `_build` 同模式）；`from_config` 里 `api_key` 用 `SecretStr(api_key)` 包装——langchain-openai 的 `api_key` 别名类型是 `SecretStr | Callable | None`，plain `str` 不满足 pyright strict，`SecretStr` 顺带让密钥不进 repr/日志
 
 ### `nyx/llm/client.py`（完整）
 
 ```python
 import os
 import uuid
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from nyx.config import ConfigError, LlmConfig
 from nyx.types import LLMOutput, TokenUsageDict
 
 
-class LlmMessage(TypedDict):          # 调 LLM 的消息；role 与 01-types 的 Message(user/nyx) 是两码事
+# role 与 01-types 的 Message(user/nyx) 是两码事
+class LlmMessage(TypedDict):
     role: Literal["system", "user", "assistant"]
     content: str
 
@@ -67,35 +70,45 @@ def _to_lc(m: LlmMessage) -> BaseMessage:
 
 
 def _extract_usage(response: BaseMessage) -> TokenUsageDict:
-    """从 LangChain 响应抽取 token 用量；兼容 dict 与 Pydantic 两种 usage_metadata 形状。"""
+    """从 LangChain 响应抽取 token 用量；兼容 dict 与 Pydantic 两种形状。"""
     usage = getattr(response, "usage_metadata", None)
     if usage is None:
         data: dict[str, Any] = {}
     elif hasattr(usage, "model_dump"):    # Pydantic v2（langchain-core 用 v2）
         data = usage.model_dump()
     elif isinstance(usage, dict):
-        data = usage
+        data = cast(dict[str, Any], usage)
     else:
         data = {}                          # 未知形状：不静默猜，计 0 待查
-    return {"input": int(data.get("input_tokens", 0)), "output": int(data.get("output_tokens", 0))}
+    return {
+        "input": int(data.get("input_tokens") or 0),   # 键缺失/值 None 均计 0
+        "output": int(data.get("output_tokens") or 0),
+    }
 
 
 class LlmClient:
-    """全项目唯一 LLM 出口。持有 LangChain model + model 名，负责调用 + 抽取 token 用量。"""
+    """全项目唯一 LLM 出口。持有 LangChain model 与 model 名，负责调用与 token 抽取。"""
 
     def __init__(self, model: BaseChatModel, model_name: str) -> None:
         self._model = model
-        self._model_name = model_name       # 显式传，不依赖 LangChain 的 model_name 属性（fake 未必有）
+        self._model_name = model_name
+        # 显式传，不依赖 LangChain 的 model_name 属性（fake 未必有）
 
     @classmethod
     def from_config(cls, config: LlmConfig) -> "LlmClient":
         if config.provider != "deepseek":
-            raise ConfigError(f"暂不支持 provider={config.provider!r}，当前只支持 deepseek")
+            raise ConfigError(
+                f"暂不支持 provider={config.provider!r}，当前只支持 deepseek"
+            )
         api_key = os.environ.get(config.api_key_env)
         if not api_key:
             raise ConfigError(f"环境变量 {config.api_key_env} 未设置")
         return cls(
-            ChatOpenAI(model=config.model, api_key=api_key, base_url="https://api.deepseek.com"),
+            ChatOpenAI(
+                model=config.model,
+                api_key=SecretStr(api_key),
+                base_url="https://api.deepseek.com",
+            ),
             model_name=config.model,
         )
 
@@ -114,7 +127,7 @@ class LlmClient:
         response = await self._model.ainvoke([_to_lc(m) for m in messages], **kwargs)
         content = response.content
         if not isinstance(content, str):
-            raise RuntimeError(f"期望文本 content，得到 {type(content).__name__}（当前只支持 deepseek 文本）")
+            raise RuntimeError(f"期望文本 content，得到 {type(content).__name__}")
         return LLMOutput(
             id=str(uuid.uuid4()),    # 每次调用唯一，供 EvalReport.output_id
             module=module,
@@ -130,7 +143,7 @@ class LlmClient:
 
 - [ ] 单元测试 `tests/test_llm/`：
   - [ ] `_to_lc` 纯函数：`system`→`SystemMessage`、`user`→`HumanMessage`、`assistant`→`AIMessage`，`content` 透传；非法 role → `ValueError`
-  - [ ] `_extract_usage` 纯函数：dict 形状 `{input_tokens: 12, output_tokens: 7}` → `{input: 12, output: 7}`；Pydantic v2 形状（`model_dump()` 返回同键 dict）→ 同上；`usage_metadata` 为 `None` → `{input: 0, output: 0}`；未知形状（无 `model_dump` 非 dict）→ `{input: 0, output: 0}`
+  - [ ] `_extract_usage` 纯函数：dict 形状 `{input_tokens: 12, output_tokens: 7}` → `{input: 12, output: 7}`；Pydantic v2 形状（`model_dump()` 返回同键 dict）→ 同上；`usage_metadata` 为 `None` → `{input: 0, output: 0}`；键存在但值为 `None` → `{input: 0, output: 0}`；未知形状（无 `model_dump` 非 dict）→ `{input: 0, output: 0}`
   - [ ] `complete`（注入 fake `BaseChatModel`：`ainvoke` 返回预设 `AIMessage`，记录消息与 kwargs）：
     - [ ] `id`（非空 uuid）/`module`/`type`/`correlation_id`/`content` 正确回填进 `LLMOutput`
     - [ ] `model` 回填：`LlmClient(fake, model_name="test-model")` → `LLMOutput.model == "test-model"`

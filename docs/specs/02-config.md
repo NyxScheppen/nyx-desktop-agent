@@ -171,7 +171,8 @@ def _build(dc: Any, raw: Any) -> Any:
     data = cast(dict[str, Any], raw)
     unknown = set(data) - {f.name for f in fields(dc)}
     if unknown:
-        raise ConfigError(f"未知配置键 {sorted(unknown)} in {dc.__name__}")
+        # key=str：YAML 键类型可混合（1:/true:/日期），默认排序会 TypeError
+        raise ConfigError(f"未知配置键 {sorted(unknown, key=str)} in {dc.__name__}")
     kwargs: dict[str, Any] = {}
     for f in fields(dc):
         if f.name not in data:

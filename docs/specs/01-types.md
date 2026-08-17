@@ -199,7 +199,7 @@ class Memory:
     freshness: float        # 0-1，随时间衰减
     type: MemoryType
     recall_count: int = 0   # "想起"次数（实际用进回复）
-    aspect: list[str] = field(default_factory=list)  # 仅 user 画像，可多值
+    aspect: list[str] = field(default_factory=list[str])  # 仅 user 画像，可多值
     embedding: list[float] | None = None   # 向量检索用，未嵌入为 None
 
 @dataclass
@@ -236,7 +236,7 @@ class LongTermDesire:
     strength: float         # 迫切度，消退不归零（范围由 10-desire-value 定义）
     progress: float         # 0-1
     subtopics: list[str]    # 子主题池
-    linked_values: list[str] = field(default_factory=list)
+    linked_values: list[str] = field(default_factory=list[str])
 
 @dataclass
 class DesireValue:          # 每类型一份（压力值）
@@ -346,6 +346,7 @@ class TokenUsage:           # 一次 LLM 调用记账（对应 token_usage 表�
 | `SelfNarrative.self_view` | `dict[str, str]`（普通 dict） | 键是开放的自画像维度，但值类型统一 str |
 
 - **明确不做**：不加 `frozen`；`vad_to_category`、Goal 完成判定等纯函数留在各自 spec；`ReplyState`/`ExplorationState`（LangGraph 内部 state）留在 17/14 spec。
+- **default_factory 约定**：`field(default_factory=list)` 在 pyright strict 下报 `list[Unknown]`（裸 `list` 被推断为 `type[list[Unknown]]`，与字段注解 `list[str]` 不匹配）。故用 `field(default_factory=list[str])`——`list[str]` 作为类型对象可调用、返回空 `list[str]`，运行时等价 `list`，但类型精确、pyright 零报错、无需 ignore 压制。
 
 ## 测试要点
 

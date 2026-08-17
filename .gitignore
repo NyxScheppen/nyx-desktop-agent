@@ -1,0 +1,16 @@
+# Python 缓存 / 构建产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# 工具缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 本地设置
+.claude/settings.local.json

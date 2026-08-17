@@ -1,0 +1,54 @@
+# 内在状态面板（`components/inner/`）
+
+> 核心面板之二：可视化 Nyx 的「内在状态」——情绪（valence-arousal）、精力、情绪 sprite、Big Five 性格、三观。
+> 范围：`components/inner/{InnerStatePanel,ValenceArousalPlot,EmotionSprite,EnergyBar,BigFiveChart,ValuesChart}.tsx`。
+> 数据源：`GET /api/state` 快照（`innerLifeStore.current`）+ SSE `emotion_update` 增量。
+
+## 1. 组件树
+
+```
+InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 innerLifeStore.current
+├─ EmotionSprite                # 当前情绪 sprite（大图，最显眼）
+├─ ValenceArousalPlot           # 二维散点图：x=valence, y=arousal
+├─ EnergyBar                    # 精力条 + energy_state 文案
+├─ BigFiveChart                 # 五维条形/雷达（openness..neuroticism）
+└─ ValuesChart                  # 三观四维（attitude_to_human..optimism）
+```
+
+- `InnerStatePanel`：`useInnerLifeStore(s => s.current)`；`current === null` 时显示「加载中/未连接」；`error` 非 null 时在面板顶部红字一行显示（同 03 ChatInput 的 sendError）。
+- 各子组件只收**它需要的字段**作 props（如 `ValenceArousalPlot` 收 `{valence, arousal}`），不传整个 `CurrentState`，减少重渲染（简单，非过度抽象——每子组件确实独立消费）。
+
+## 2. 情绪 sprite（`EmotionSprite`）
+
+- 8 张图放 `assets/sprites/`，文件名 = `EmotionCategory` 值（`neutral.png` / `happy.png` / … / `thinking.png`），1:1 映射，组件按 `current.emotion` 选图，无 switch 分支。
+- sprite 同时被聊天面板复用（03-chat-panel §3），是情绪的唯一视觉载体。
+- 占位期：先用 emoji 或纯色块占位（`NEUTRAL→😐` 等），真图后续补；文件名约定不变，替换即生效。
+
+## 3. Valence-Arousal 图（`ValenceArousalPlot`）
+
+- 二维散点：x 轴 `valence ∈ [-1, 1]`（左负右正），y 轴 `arousal ∈ [0, 1]`（下低上高）。单点 + 十字虚线标出当前值。
+- 用 `<canvas>` 或轻量 SVG 手绘（核心先行不引图表库——单点定位图，canvas 足够，避免新依赖）。**不引 recharts/d3**（未请求的复杂度）。
+- 语义对齐 design §4.2：`valence` 正负 = 情绪正负，`arousal` 高低 = 激活度；图上可轻标注象限（高兴/平静/愤怒/低落），纯视觉辅助。
+
+## 4. 精力条（`EnergyBar`）
+
+- 横向进度条：`energy ∈ [0, 100]`；文案显示 `energy_state` **枚举值原值**（`energetic`/`okay`/`tired`/`exhausted`/`drained`）——与 LLM prompt、日志一致，**不额外维护「数值→中文」映射**（反冗余，16-expression-prompt §「数值直接拼」）。
+- 颜色按 `energy_state` 分段（绿→黄→红），纯视觉。
+
+## 5. Big Five 与三观（`BigFiveChart` / `ValuesChart`）
+
+- **Big Five**：五维 `1-10`（`openness`/`conscientiousness`/`extraversion`/`agreeableness`/`neuroticism`），**条形图**（默认；五边雷达可选，手绘 SVG，不引库）。
+- **三观**：四维 `1-10`（`attitude_to_human`/`ai_identity_acceptance`/`altruism`/`optimism`），同款条形。
+- **标签用 snake_case 键名原值**（`openness` / `attitude_to_human`），**不转中文**——与 LLM prompt、日志一致，不额外维护「键→中文」映射（反冗余，16-expression-prompt §「数值直接拼」）。
+- 这些是慢变量（无高频事件），只在 `refreshState` 全量刷新时重绘（02-stores §2）。
+
+## 6. 边界
+
+- **纯展示**：本面板只读不写，无任何发往后端的动作；`emotion_update` 由 SSE 自动推，用户不改内在状态（MVP）。
+- **`current_activity` / `active_desires`**：核心先行不在本面板展示（活动/欲望面板后续），字段已在类型里占位，忽略即可。
+- **未连接**：`current === null` 时面板整体占位「等待核心服务连接…」，不渲染子组件（避免 `undefined` 字段崩）。
+
+## 7. 测试（`tests/stores.test.ts` 已覆盖数据层）
+
+- 组件层（React Testing Library）轻测：`EnergyBar` 按 `energy`/`energy_state` 渲染文案、`EmotionSprite` 按 `emotion` 选图文件名、`BigFiveChart`/`ValuesChart` 按 personality/values 渲染键名原值标签 + 数值、`InnerStatePanel` 在 `current=null` 时整体占位不崩（§6 守卫在面板层，不渲染子组件）。
+- 图表坐标/像素不做断言（README §6）。

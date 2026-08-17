@@ -48,7 +48,10 @@ from nyx.db import Database
 from nyx.enums import MemoryType
 from nyx.types import Memory, MemoryEdge
 
-_MEMORY_COLS = "id, created_at, content, tag, summary, freshness, type, recall_count, aspect, embedding"
+_MEMORY_COLS = (
+    "id, created_at, content, tag, summary, freshness, "
+    "type, recall_count, aspect, embedding"
+)
 
 
 class MemoryStore:
@@ -65,7 +68,8 @@ class MemoryStore:
     async def add(self, memory: Memory) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
-                f"INSERT INTO memory ({_MEMORY_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO memory ({_MEMORY_COLS}) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _memory_row(memory),
             )
             await self._db.conn.commit()
@@ -165,7 +169,9 @@ class MemoryStore:
             await self._db.conn.commit()
 
 
-def _memory_row(m: Memory) -> tuple[str, float, str, str, str, float, str, int, str, str | None]:
+def _memory_row(
+    m: Memory,
+) -> tuple[str, float, str, str, str, float, str, int, str, str | None]:
     return (
         m.id, m.created_at, m.content, m.tag, m.summary,
         m.freshness, m.type.value, m.recall_count, json.dumps(m.aspect),
@@ -174,7 +180,10 @@ def _memory_row(m: Memory) -> tuple[str, float, str, str, str, float, str, int, 
 
 
 def _embedding_json(v: list[float] | None) -> str | None:
-    """embedding 列可空：None → SQL NULL（非 "null" 字符串），list → JSON 数组字符串。"""
+    """embedding 列可空：None → SQL NULL（非 "null" 字符串）。
+
+    list → JSON 数组字符串。
+    """
     return json.dumps(v) if v is not None else None
 
 
@@ -189,7 +198,9 @@ def _row_to_memory(row: aiosqlite.Row) -> Memory:
         type=MemoryType(row["type"]),
         recall_count=row["recall_count"],
         aspect=json.loads(row["aspect"]),
-        embedding=json.loads(row["embedding"]) if row["embedding"] is not None else None,
+        embedding=(
+            json.loads(row["embedding"]) if row["embedding"] is not None else None
+        ),
     )
 ```
 

@@ -129,3 +129,21 @@
 | `test_unknown_action` | 边界鲁棒 | 未知 `action` → `ValueError` |
 
 **功能阶段**：06-tools 实现时编写。
+
+## 07-memory-store（记忆存取）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_add_get_roundtrip` | 功能正确 | `add` 多值 `aspect` + 非默认 `recall_count` + `embedding` → `get` 往返全等（`got == mem` 覆盖 aspect JSON / type 枚举 / freshness / embedding） |
+| `test_add_get_embedding_none` | 边界鲁棒 | `embedding=None` → `get` 返回 `embedding is None`（SQL NULL 非 `"null"` 字符串） |
+| `test_add_duplicate_id_raises` | 边界鲁棒 | 重复 `id` → `aiosqlite.IntegrityError` |
+| `test_get_miss_returns_none` | 功能正确 | `get` 未命中 → `None` |
+| `test_list_memories_filters_and_sorts` | 功能正确 | `tag` / `type` / 组合过滤 + `freshness DESC` 排序 |
+| `test_update_fields` | 功能正确 | `update` 改各字段 → `get` 验证；`id` / `created_at` 不可变 |
+| `test_delete_cascades_edges` | 功能正确 | `delete` 级联删 `memory_edge`（from/to 双向），其它记忆边保留 |
+| `test_increment_recall_twice` | 功能正确 | 连续两次 → `recall_count == 2` |
+| `test_search_keyword` | 功能正确 | `content` / `summary` 命中、无命中 `[]`、ASCII 大小写不敏感 |
+| `test_list_edges_and_upsert` | 功能正确 | `upsert_edge` 新建 + 同键重复 `ON CONFLICT` 改 `weight` 不重复建行 |
+| `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |
+
+**功能阶段**：07-memory-store 实现时编写。

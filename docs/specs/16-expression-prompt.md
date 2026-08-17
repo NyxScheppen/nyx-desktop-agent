@@ -161,6 +161,7 @@ def slow_score(
     length = min(1.0, len(message) / _LONG_MSG_LEN)
     question = 1.0 if any(m in message for m in _QUESTION_MARKS) else 0.0
     emotion = 1.0 if any(w in message for w in _EMOTION_WORDS) else 0.0
+    # 不夹：energy/arousal 已在上游 clamp 到 [0,100]/[0,1]
     vigor = 0.5 * (state.energy / 100.0) + 0.5 * (1.0 - state.arousal)
     # 上下限都夹：last_slow_at>now（时钟回拨）也不为负
     recency = max(0.0, min(1.0, (now - last_slow_at) / _RECENCY_WINDOW))

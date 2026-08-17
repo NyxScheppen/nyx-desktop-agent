@@ -201,19 +201,18 @@ class ExplorationState(TypedDict):
     focus: str                   # 当前聚焦对象
     findings: list[str]          # 已收集材料
     notes: list[str]             # 已写笔记
-    related: list[Memory]        # 联想到的旧记忆
     step: int
     done: bool
     correlation_id: str          # LLM 溯源（节点内 complete 透传，14-activity 补）
 ```
 
-**Nodes**：`plan_next` → `search_local` / `search_web`(opt-in) / `read` / `write_note` / `recall_memory` → `finalize`
+**Nodes**：`plan_next` → `search_local` / `search_web`(opt-in) / `read` / `write_note` → `finalize`
 
 **Edges**：
 
 ```
 start → plan_next
-  → search_local | search_web | read | write_note | recall_memory → plan_next   # 循环
+  → search_local | search_web | read | write_note → plan_next   # 循环
   → plan_next 判定 done=true → finalize → end
 ```
 

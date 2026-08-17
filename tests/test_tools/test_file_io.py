@@ -31,6 +31,25 @@ async def test_write_escape_absolute(tmp_path: Path) -> None:
         await file_io("write", str(outside), "x", write_root=root)
 
 
+async def test_write_empty_path(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        await file_io("write", "", "x", write_root=tmp_path)
+
+
+async def test_write_escape_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    link = root / "link.txt"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("当前环境不支持创建符号链接")
+    with pytest.raises(ValueError):
+        await file_io("write", "link.txt", "x", write_root=root)
+
+
 async def test_list(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("x", encoding="utf-8")
     (tmp_path / "b.txt").write_text("y", encoding="utf-8")

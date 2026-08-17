@@ -122,6 +122,8 @@
 | `test_write` | 功能正确 | `write` 建文件在 `write_root` 内、返回 `written` |
 | `test_write_escape_parent` | 边界鲁棒 | `../` 越界 → `ValueError` |
 | `test_write_escape_absolute` | 边界鲁棒 | 绝对路径逃逸 `write_root` → `ValueError` |
+| `test_write_empty_path` | 边界鲁棒 | 空路径解析到 `write_root` 本身 → `ValueError`（非 `IsADirectoryError` 裸崩） |
+| `test_write_escape_symlink` | 边界鲁棒 | `write_root` 内 symlink 指向外部 → `ValueError`（无 symlink 权限环境 skip） |
 | `test_list` | 功能正确 | `list` 返回目录条目名 |
 | `test_unknown_action` | 边界鲁棒 | 未知 `action` → `ValueError` |
 

@@ -152,7 +152,7 @@ from duckduckgo_search import DDGS
 from nyx.types import Tool
 
 
-def _search_web(query: str) -> list[dict[str, str]]:
+def _search_web_sync(query: str) -> list[dict[str, str]]:
     with DDGS() as ddgs:
         raw = ddgs.text(query, max_results=5)
     return [{"title": r["title"], "url": r["href"], "snippet": r["body"]} for r in raw]
@@ -160,7 +160,7 @@ def _search_web(query: str) -> list[dict[str, str]]:
 
 def build_web_search_tool() -> Tool:
     async def handler(query: str) -> list[dict[str, str]]:
-        return await asyncio.to_thread(_search_web, query)
+        return await asyncio.to_thread(_search_web_sync, query)
 
     return Tool(
         name="web_search",
@@ -187,12 +187,14 @@ DEFAULT_WRITE_ROOT = Path("workspace")
 
 
 def _resolve_write(root: Path, path: str) -> Path:
-    """把 write 的 path 解析到 root 内；越界（../ 或绝对路径逃逸）抛 ValueError。"""
+    """把 write 的 path 解析到 root 内；越界或指向 root 本身抛 ValueError。"""
     root_resolved = root.resolve()
     p = Path(path)
     resolved = p.resolve() if p.is_absolute() else (root_resolved / p).resolve()
     if not resolved.is_relative_to(root_resolved):
         raise ValueError(f"写入路径越界：{path!r}（仅允许 {root_resolved} 内）")
+    if resolved == root_resolved:
+        raise ValueError(f"写入路径无效：{path!r} 指向 write_root 本身")
     return resolved
 
 
@@ -204,7 +206,9 @@ async def file_io(
 ) -> dict[str, Any]:
     """read 全盘读 / write 写进 write_root / list 列目录（全盘）。"""
     if action == "read":
-        text = await asyncio.to_thread(Path(path).read_text, encoding="utf-8")
+        text = await asyncio.to_thread(
+            Path(path).read_text, encoding="utf-8", errors="ignore"
+        )
         return {"path": path, "content": text}
     if action == "write":
         target = _resolve_write(write_root, path)

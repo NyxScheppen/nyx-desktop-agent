@@ -5,7 +5,7 @@ from duckduckgo_search import DDGS
 from nyx.types import Tool
 
 
-def _search_web(query: str) -> list[dict[str, str]]:
+def _search_web_sync(query: str) -> list[dict[str, str]]:
     with DDGS() as ddgs:
         raw = ddgs.text(query, max_results=5)
     return [{"title": r["title"], "url": r["href"], "snippet": r["body"]} for r in raw]
@@ -13,7 +13,7 @@ def _search_web(query: str) -> list[dict[str, str]]:
 
 def build_web_search_tool() -> Tool:
     async def handler(query: str) -> list[dict[str, str]]:
-        return await asyncio.to_thread(_search_web, query)
+        return await asyncio.to_thread(_search_web_sync, query)
 
     return Tool(
         name="web_search",

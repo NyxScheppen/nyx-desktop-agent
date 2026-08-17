@@ -98,13 +98,17 @@ def clamp_arousal(a: float) -> float:
     return max(0.0, min(1.0, a))
 
 
-def decay_emotion(valence: float, arousal: float, elapsed_days: float, rate: float) -> tuple[float, float]:
+def decay_emotion(
+    valence: float, arousal: float, elapsed_days: float, rate: float
+) -> tuple[float, float]:
     """情感线性衰减回基线 (0,0)：f = max(0, 1 - rate×elapsed)，两轴同乘 f。纯函数。"""
     f = max(0.0, 1.0 - rate * elapsed_days)
     return valence * f, arousal * f
 
 
-def apply_offset(valence: float, arousal: float, d_valence: float, d_arousal: float) -> tuple[float, float]:
+def apply_offset(
+    valence: float, arousal: float, d_valence: float, d_arousal: float
+) -> tuple[float, float]:
     """施加情感偏移并 clamp。纯函数。"""
     return clamp_valence(valence + d_valence), clamp_arousal(arousal + d_arousal)
 
@@ -147,18 +151,19 @@ def resolve_emotion(
 ```python
 import json
 
-import aiosqlite
-
 from nyx.db import Database
 from nyx.enums import EnergyState
 from nyx.types import Personality, SelfNarrative, Values
 
-_PERSONALITY_COLS = "openness, conscientiousness, extraversion, agreeableness, neuroticism"
+_PERSONALITY_COLS = (
+    "openness, conscientiousness, extraversion, agreeableness, neuroticism"
+)
 _VALUES_COLS = "attitude_to_human, ai_identity_acceptance, altruism, optimism"
 
 
 class InnerLifeStore:
-    """personality / value_system / energy / self_narrative 四张单行表（id='self'）的 CRUD。
+    """personality / value_system / energy / self_narrative 四张单行表
+    （id='self'）的 CRUD。
 
     db 由组合根注入（同所有 store 共享）。每个方法一个 `async with db.lock` 的 SQL 块。
     """
@@ -185,11 +190,13 @@ class InnerLifeStore:
     async def upsert_personality(self, p: Personality) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
-                "INSERT INTO personality (id, openness, conscientiousness, extraversion, "
+                "INSERT INTO personality (id, openness, conscientiousness, "
+                "extraversion, "
                 "agreeableness, neuroticism) VALUES ('self', ?, ?, ?, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET openness = excluded.openness, "
                 "conscientiousness = excluded.conscientiousness, "
-                "extraversion = excluded.extraversion, agreeableness = excluded.agreeableness, "
+                "extraversion = excluded.extraversion, "
+                "agreeableness = excluded.agreeableness, "
                 "neuroticism = excluded.neuroticism",
                 (p["openness"], p["conscientiousness"], p["extraversion"],
                  p["agreeableness"], p["neuroticism"]),
@@ -214,12 +221,19 @@ class InnerLifeStore:
     async def upsert_values(self, v: Values) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
-                "INSERT INTO value_system (id, attitude_to_human, ai_identity_acceptance, "
+                "INSERT INTO value_system (id, attitude_to_human, "
+                "ai_identity_acceptance, "
                 "altruism, optimism) VALUES ('self', ?, ?, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET attitude_to_human = excluded.attitude_to_human, "
+                "ON CONFLICT(id) DO UPDATE SET attitude_to_human = "
+                "excluded.attitude_to_human, "
                 "ai_identity_acceptance = excluded.ai_identity_acceptance, "
                 "altruism = excluded.altruism, optimism = excluded.optimism",
-                (v["attitude_to_human"], v["ai_identity_acceptance"], v["altruism"], v["optimism"]),
+                (
+                    v["attitude_to_human"],
+                    v["ai_identity_acceptance"],
+                    v["altruism"],
+                    v["optimism"],
+                ),
             )
             await self._db.conn.commit()
 
@@ -237,7 +251,8 @@ class InnerLifeStore:
         async with self._db.lock:
             await self._db.conn.execute(
                 "INSERT INTO energy (id, value, state) VALUES ('self', ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET value = excluded.value, state = excluded.state",
+                "ON CONFLICT(id) DO UPDATE SET value = excluded.value, "
+                "state = excluded.state",
                 (value, state.value),
             )
             await self._db.conn.commit()
@@ -262,7 +277,8 @@ class InnerLifeStore:
     async def upsert_narrative(self, n: SelfNarrative) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
-                "INSERT INTO self_narrative (id, identity, story, self_view, becoming, updated_at) "
+                "INSERT INTO self_narrative (id, identity, story, self_view, "
+                "becoming, updated_at) "
                 "VALUES ('self', ?, ?, ?, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET identity = excluded.identity, "
                 "story = excluded.story, self_view = excluded.self_view, "
@@ -278,7 +294,7 @@ class InnerLifeStore:
 ```python
 import json
 import time
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from nyx.config import DesireConfig
@@ -302,9 +318,11 @@ _REFLECTION_SYSTEM = (
     "更新自画像、给出性格与三观的微小漂移、以及（若某主题反复出现且未满足）提出新的长期欲望。"
     "只输出 JSON，键：story（非空字符串）、becoming（非空字符串）、"
     "self_view（对象，键值都是字符串）、"
-    "personality_delta（对象，键是 openness/conscientiousness/extraversion/agreeableness/neuroticism，"
+    "personality_delta（对象，键是 openness/conscientiousness/extraversion/"
+    "agreeableness/neuroticism，"
     "值是 [-0.5, 0.5] 的漂移）、"
-    "values_delta（对象，键是 attitude_to_human/ai_identity_acceptance/altruism/optimism，值同上）、"
+    "values_delta（对象，键是 attitude_to_human/ai_identity_acceptance/"
+    "altruism/optimism，值同上）、"
     "long_term_desires（数组，元素 {type, name, description, subtopics}，可为空数组）。"
 )
 
@@ -322,10 +340,13 @@ def _build_reflection_prompt(
     ) or "（无）"
     return (
         f"近期记忆：\n{mem_lines}\n\n"
-        f"当前性格（1-10）：开放性 {personality['openness']} / 尽责性 {personality['conscientiousness']} / "
-        f"外向性 {personality['extraversion']} / 宜人性 {personality['agreeableness']} / "
+        f"当前性格（1-10）：开放性 {personality['openness']} / 尽责性 "
+        f"{personality['conscientiousness']} / "
+        f"外向性 {personality['extraversion']} / 宜人性 "
+        f"{personality['agreeableness']} / "
         f"神经质 {personality['neuroticism']}\n"
-        f"当前三观（1-10）：对人类 {values['attitude_to_human']} / AI 身份接纳 {values['ai_identity_acceptance']} / "
+        f"当前三观（1-10）：对人类 {values['attitude_to_human']} / AI 身份接纳 "
+        f"{values['ai_identity_acceptance']} / "
         f"利他 {values['altruism']} / 乐观 {values['optimism']}\n"
         f"自我叙事：身份「{narrative.identity}」；故事 {len(narrative.story)} 条；"
         f"认知变化 {len(narrative.becoming)} 条\n"
@@ -345,7 +366,9 @@ def drift_personality(base: Personality, delta: dict[str, float]) -> Personality
     """Big Five 五维漂移。纯函数。"""
     return {
         "openness": _drift_dim(base["openness"], delta.get("openness")),
-        "conscientiousness": _drift_dim(base["conscientiousness"], delta.get("conscientiousness")),
+        "conscientiousness": _drift_dim(
+            base["conscientiousness"], delta.get("conscientiousness")
+        ),
         "extraversion": _drift_dim(base["extraversion"], delta.get("extraversion")),
         "agreeableness": _drift_dim(base["agreeableness"], delta.get("agreeableness")),
         "neuroticism": _drift_dim(base["neuroticism"], delta.get("neuroticism")),
@@ -355,7 +378,9 @@ def drift_personality(base: Personality, delta: dict[str, float]) -> Personality
 def drift_values(base: Values, delta: dict[str, float]) -> Values:
     """三观四维漂移。纯函数。"""
     return {
-        "attitude_to_human": _drift_dim(base["attitude_to_human"], delta.get("attitude_to_human")),
+        "attitude_to_human": _drift_dim(
+            base["attitude_to_human"], delta.get("attitude_to_human")
+        ),
         "ai_identity_acceptance": _drift_dim(
             base["ai_identity_acceptance"], delta.get("ai_identity_acceptance")
         ),
@@ -368,56 +393,63 @@ def _validate_candidate(c: Any) -> None:
     """校验单个长期欲望候选结构。非法抛 ValueError。"""
     if not isinstance(c, dict):
         raise ValueError("long_term_desires 元素应是对象")
-    t = c.get("type")
-    if not isinstance(t, str) or t not in ("interaction", "exploration", "creation", "rest"):
+    candidate = cast(dict[str, Any], c)
+    t = candidate.get("type")
+    if not isinstance(t, str) or t not in (
+        "interaction", "exploration", "creation", "rest"
+    ):
         raise ValueError("长期欲望候选 type 应是 interaction/exploration/creation/rest")
-    name = c.get("name")
-    description = c.get("description")
+    name = candidate.get("name")
+    description = candidate.get("description")
     if not isinstance(name, str) or not name:
         raise ValueError("长期欲望候选缺 name 或非空字符串")
     if not isinstance(description, str) or not description:
         raise ValueError("长期欲望候选缺 description 或非空字符串")
-    subtopics = c.get("subtopics")
-    if not isinstance(subtopics, list) or not all(isinstance(s, str) for s in subtopics):
+    subtopics = candidate.get("subtopics")
+    if not isinstance(subtopics, list) or not all(
+        isinstance(s, str) for s in cast(list[Any], subtopics)
+    ):
         raise ValueError("长期欲望候选 subtopics 应是字符串数组")
 
 
 def _parse_reflection(raw: str) -> dict[str, Any]:
     """解析反思 LLM 的 JSON 产出并校验结构。结构非法抛 ValueError。"""
-    data: dict[str, Any] = json.loads(raw)
+    data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError(f"反思 JSON 应是对象，得到 {type(data).__name__}")
-    story = data.get("story")
-    becoming = data.get("becoming")
+    parsed = cast(dict[str, Any], data)
+    story = parsed.get("story")
+    becoming = parsed.get("becoming")
     if not isinstance(story, str) or not story:
         raise ValueError("反思 JSON 缺 story 或非空字符串")
     if not isinstance(becoming, str) or not becoming:
         raise ValueError("反思 JSON 缺 becoming 或非空字符串")
-    self_view = data.get("self_view")
+    self_view = parsed.get("self_view")
     if self_view is None:
-        self_view = {}
+        self_view = cast(dict[str, Any], {})
     if not isinstance(self_view, dict) or not all(
-        isinstance(k, str) and isinstance(v, str) for k, v in self_view.items()
+        isinstance(k, str) and isinstance(v, str)
+        for k, v in cast(dict[Any, Any], self_view).items()
     ):
         raise ValueError("反思 JSON 的 self_view 应是键值皆字符串的对象")
-    personality_delta = data.get("personality_delta")
+    personality_delta = parsed.get("personality_delta")
     if personality_delta is None:
-        personality_delta = {}
-    values_delta = data.get("values_delta")
+        personality_delta = cast(dict[str, Any], {})
+    values_delta = parsed.get("values_delta")
     if values_delta is None:
-        values_delta = {}
+        values_delta = cast(dict[str, Any], {})
     for d in (personality_delta, values_delta):
         if not isinstance(d, dict):
             raise ValueError("反思 JSON 的漂移应是对象")
-        for k, v in d.items():
+        for k, v in cast(dict[str, Any], d).items():
             if not isinstance(v, (int, float)) or isinstance(v, bool):
                 raise ValueError(f"漂移值应是数值，{k}={v!r}")
-    long_term_desires = data.get("long_term_desires")
+    long_term_desires = parsed.get("long_term_desires")
     if long_term_desires is None:
-        long_term_desires = []
+        long_term_desires = cast(list[Any], [])
     if not isinstance(long_term_desires, list):
         raise ValueError("反思 JSON 的 long_term_desires 应是数组")
-    for c in long_term_desires:
+    for c in cast(list[Any], long_term_desires):
         _validate_candidate(c)
     return {
         "story": story,
@@ -497,7 +529,9 @@ class Reflection:
         parsed = _parse_reflection(output.content)
 
         # 3. 回写慢变量
-        await self._store.upsert_personality(drift_personality(personality, parsed["personality_delta"]))
+        await self._store.upsert_personality(
+            drift_personality(personality, parsed["personality_delta"])
+        )
         await self._store.upsert_values(drift_values(values, parsed["values_delta"]))
         await self._store.upsert_narrative(
             SelfNarrative(
@@ -564,7 +598,9 @@ def energy_to_state(value: float) -> EnergyState:
     return EnergyState.DRAINED
 
 
-def _internal_event(type_: EventType, content: dict[str, Any], correlation_id: str) -> Event:
+def _internal_event(
+    type_: EventType, content: dict[str, Any], correlation_id: str
+) -> Event:
     return Event(
         id=str(uuid4()),
         timestamp=time.time(),
@@ -576,7 +612,8 @@ def _internal_event(type_: EventType, content: dict[str, Any], correlation_id: s
 
 
 class InnerLifeFacade:
-    """内在生命门面：apply_event（情感/精力更新）+ reflect（反思协调器）+ get_state / get_narrative。
+    """内在生命门面：apply_event（情感/精力更新）+ reflect（反思协调器）
+    + get_state / get_narrative。
 
     情感在内存（不持久化，design §4.5）；性格/三观/精力/自我叙事走 InnerLifeStore；
     反思在 Reflection（内部构造，共享 store，不反 import facade）。
@@ -597,21 +634,26 @@ class InnerLifeFacade:
         self._activity_facade = activity_facade
         self._desire_facade = desire_facade
         self._bus = bus
-        self._reflection = Reflection(store, memory_facade, desire_facade, llm, evaluator, config.desire)
+        self._reflection = Reflection(
+            store, memory_facade, desire_facade, llm, evaluator, config.desire
+        )
         self._valence = BASELINE_VALENCE
         self._arousal = BASELINE_AROUSAL
         self._emotion_updated_at = time.time()
         self._energy_updated_at = time.time()
 
     async def apply_event(self, event: Event) -> None:
-        """情感/精力更新入口：衰减 + 偏移；ACTIVITY_END 额外更新精力；REFLECTION 额外触发反思。"""
+        """情感/精力更新入口：衰减 + 偏移；ACTIVITY_END 额外更新精力；
+        REFLECTION 额外触发反思。"""
         now = time.time()
         elapsed_days = max(0.0, now - self._emotion_updated_at) / _SECONDS_PER_DAY
         self._valence, self._arousal = decay_emotion(
             self._valence, self._arousal, elapsed_days, EMOTION_DECAY_RATE
         )
         d_valence, d_arousal = event_offset(event.type)
-        self._valence, self._arousal = apply_offset(self._valence, self._arousal, d_valence, d_arousal)
+        self._valence, self._arousal = apply_offset(
+            self._valence, self._arousal, d_valence, d_arousal
+        )
         self._emotion_updated_at = now
 
         if event.type is EventType.ACTIVITY_END:
@@ -637,7 +679,9 @@ class InnerLifeFacade:
         energy_value, energy_state = energy
         current_activity = await self._current_activity_type()
         emotion = resolve_emotion(
-            vad_to_category(self._valence, self._arousal), energy_state, current_activity
+            vad_to_category(self._valence, self._arousal),
+            energy_state,
+            current_activity,
         )
         return CurrentState(
             valence=self._valence,
@@ -688,7 +732,11 @@ class InnerLifeFacade:
         await self._bus.publish(
             _internal_event(
                 EventType.EMOTION_UPDATE,
-                {"valence": self._valence, "arousal": self._arousal, "emotion": emotion.value},
+                {
+                    "valence": self._valence,
+                    "arousal": self._arousal,
+                    "emotion": emotion.value,
+                },
                 correlation_id,
             )
         )
@@ -697,7 +745,7 @@ class InnerLifeFacade:
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_inner_life/`（`pytest-asyncio`；`db = await connect(":memory:")`；`store = InnerLifeStore(db)`；`reflection = Reflection(store, fake_memory, fake_desire, fake_llm, fake_evaluator, config.desire)`；`facade = InnerLifeFacade(store, fake_activity, fake_desire, fake_memory, bus, fake_llm, fake_evaluator, config)`；fake `LlmClient.complete` 按 `output_type == "reflection"` 返回 fixture JSON 并记录调用、fake `Evaluator.evaluate` 记录调用；fake `ActivityFacade.get_current` / `DesireFacade.get_pending`/`get_all`/`add_long_term` 返回预设；`EventBus` 用真实例 + recording handler，`run()` 作 task 驱动——同 05/09/11 模式）：
-  - [ ] **emotion 纯函数**（`test_emotion.py`，无 DB）：
+  - [ ] **emotion 纯函数**（`test_inner_life_emotion.py`，无 DB）：
     - [ ] `clamp_valence` / `clamp_arousal`：越界夹回 `[-1,1]` / `[0,1]`
     - [ ] `decay_emotion`：`elapsed=0` → 不变；`rate=0` → 不变；`elapsed=1/rate` → 衰减到 0；负 valence 也同乘 f（不反向）
     - [ ] `apply_offset`：加偏移后 clamp；正偏移超上限夹 1、负超下限夹 -1（valence）
@@ -705,12 +753,12 @@ class InnerLifeFacade:
     - [ ] `vad_to_category` 6 档穷尽：`(0.9,0.8)`→happy、`(0.9,0.2)`→shy、`(-0.9,0.8)`→angry、`(-0.9,0.4)`→worried、`(-0.9,0.2)`→sad、`(0.0,0.2)`→neutral；边界（`valence=0.2` 含等号）
     - [ ] `resolve_emotion`：`energy_state=DRAINED` → sleepy（压过一切）；`energy_state=ENERGETIC` + `current_activity=IDLE_REFLECTION` → thinking；`energy_state=OKAY` + `current_activity=READING` → base；`current_activity=None` → base
     - [ ] `energy_to_state`：`100`→energetic、`79`→okay、`59`→tired、`39`→exhausted、`19`→drained（五档边界）
-  - [ ] **store**（`test_store.py`）：
+  - [ ] **store**（`test_inner_life_store.py`）：
     - [ ] `get_personality` 空表 → `None`；`upsert_personality` 后 `get` 返回五维全等；再 `upsert` 改一维（ON CONFLICT 更新，不重复建行）
     - [ ] `get_values` / `upsert_values` 同上（四维）
     - [ ] `get_energy` / `upsert_energy`：`value` + `state` 往返（`EnergyState` 枚举）；空表 → `None`
     - [ ] `get_narrative` / `upsert_narrative`：`story`/`self_view`/`becoming` JSON 往返（`self_view` 是 `dict[str,str]`）、`identity` 往返、`updated_at` 往返
-  - [ ] **reflection 纯函数**（`test_reflection.py`）：
+  - [ ] **reflection 纯函数**（`test_inner_life_reflection.py`）：
     - [ ] `_drift_dim`：`delta=None` → 不变；`delta=+0.3` → `base+0.3`；`delta=+2` → clamp 到 `+0.5`；`base=9.8, delta=+0.5` → clamp 到 10.0；`base=1.2, delta=-0.5` → clamp 到 1.0
     - [ ] `drift_personality` / `drift_values`：只改 delta 里出现的维、其余维不变；结果 clamp 到 `[1,10]`
     - [ ] `_build_reflection_prompt`：含近期记忆摘要、当前性格/三观数值、叙事身份、长期欲望名；空输入 → 含「（无）」
@@ -721,7 +769,7 @@ class InnerLifeFacade:
     - [ ] fake LLM 返回完整 JSON → 1 次 LLM 调用（`output_type="reflection"`、`correlation_id` 传入值透传；`run(None)` 时自生成非空）、`evaluator.evaluate` 被调 1 次（收到该 `LLMOutput`）；性格/三观按 delta 漂移回写、叙事 story/becoming 各 +1、self_view 合并；`add_long_term` 被调 `len(候选)` 次
     - [ ] `long_term_desires` 候选数超过 `long_term_capacity - 现有数` → 只新增到容量上限（不超）
     - [ ] 单行表未 seed（`get_personality` 返回 None）→ `RuntimeError`
-  - [ ] **facade**（`test_facade.py`，先 `upsert_personality`/`upsert_values`/`upsert_energy` seed 三张单行表——`apply_event` 末尾 `_publish_emotion` 读 energy、`get_state` 读三张表，未 seed 会 fail-fast）：
+  - [ ] **facade**（`test_inner_life_facade.py`，先 `upsert_personality`/`upsert_values`/`upsert_energy` seed 三张单行表——`apply_event` 末尾 `_publish_emotion` 读 energy、`get_state` 读三张表，未 seed 会 fail-fast）：
     - [ ] `apply_event(DESIRE_SATISFIED)`：valence/arousal 上升（+0.2/+0.1 后 clamp）；发布 `EMOTION_UPDATE`（content 含 `valence`/`arousal`/`emotion` 字符串、`source is INTERNAL`、`correlation_id == 触发事件.correlation_id`）
     - [ ] `apply_event(ACTIVITY_END)`：content 带 `energy_delta=-25` → `energy` 下降 + `energy_state` 重算 + `upsert_energy` 被调；无 `energy_delta` 键 → 不崩（缺省 0）
     - [ ] 未 seed energy → `apply_event(ACTIVITY_END)` 与 `apply_event(DESIRE_SATISFIED)` 均抛 `RuntimeError`（写路径 `_apply_energy`、读路径 `_publish_emotion` 都 fail-fast，不静默兜底默认值）

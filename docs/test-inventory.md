@@ -284,3 +284,46 @@
 | `test_add_long_term_delegates` | 功能正确 | `add_long_term(desire)` → `list_long_term` 多一条、字段全等 |
 
 **功能阶段**：11-desire 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；无集成/E2E，与 activity/expression 真实编排归 13/14/17）。
+
+## 12-inner-life（内在生命：情感/精力 + 反思 + 门面）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_clamp` | 功能正确 | `clamp_valence` 夹 `[-1,1]`、`clamp_arousal` 夹 `[0,1]`，越界夹回、界内不变 |
+| `test_decay_emotion` | 功能正确 | `elapsed=0`/`rate=0` 不变；`elapsed=1/rate` 衰减到 0；负 valence 同乘 f（不反向） |
+| `test_apply_offset` | 功能正确 | 加偏移后 clamp：正偏移超上限夹 1.0、负超下限夹 -1.0（valence）/0.0（arousal） |
+| `test_event_offset` | 功能正确 | `DESIRE_SATISFIED`→`(0.2,0.1)`；未登记事件→`(0.0,0.0)` |
+| `test_vad_to_category` | 功能正确 | 6 档穷尽：(0.9,0.8)→happy、(0.9,0.2)→shy、(-0.9,0.8)→angry、(-0.9,0.4)→worried、(-0.9,0.2)→sad、(0,0.2)→neutral |
+| `test_vad_boundary` | 边界鲁棒 | `valence=±0.2` 含等号归 neutral（中性带含边界） |
+| `test_resolve_emotion` | 功能正确 | `DRAINED`→sleepy（压过一切）；`ENERGETIC`+`IDLE_REFLECTION`→thinking；`OKAY`+`READING`→base；`current_activity=None`→base |
+| `test_energy_to_state` | 功能正确 | 五档：100→energetic、79→okay、59→tired、39→exhausted、19→drained |
+| `test_energy_to_state_boundary` | 边界鲁棒 | 分界 80/60/40/20 含等号归上一档 |
+| `test_personality_crud` | 功能正确 | 空表→`None`；upsert 后五维全等；改一维再 upsert（ON CONFLICT 更新不重复建行） |
+| `test_values_crud` | 功能正确 | 四维同上（空表→`None`、往返、改一维更新） |
+| `test_energy_crud` | 功能正确 | `value`+`state` 往返（`EnergyState` 枚举）；空表→`None` |
+| `test_narrative_crud` | 功能正确 | `story`/`self_view`/`becoming` JSON 往返 + `identity`/`updated_at`；空表→`None` |
+| `test_drift_dim` | 功能正确 | `delta=None` 不变；`+0.3`→base+0.3；`+2`→夹 `+0.5`；`9.8+0.5`→夹 10.0；`1.2-0.5`→夹 1.0 |
+| `test_drift_personality_and_values` | 功能正确 | 只改 delta 出现的维、其余维不变；结果夹 `[1,10]` |
+| `test_build_reflection_prompt` | 功能正确 | 含记忆摘要/性格/三观数值/叙事身份/长期欲望名；空输入含「（无）」 |
+| `test_parse_reflection_ok` | 功能正确 | 合法 JSON → 各字段（story/becoming/self_view/personality_delta/long_term_desires） |
+| `test_parse_reflection_missing_story` | 边界鲁棒 | 缺 `story`/`becoming` → `ValueError` |
+| `test_parse_reflection_bad_types` | 边界鲁棒 | `self_view` 值非 str、漂移值非数值、`long_term_desires` 非数组、顶层非对象 → `ValueError` |
+| `test_parse_reflection_defaults` | 边界鲁棒 | 缺省 `self_view`/`personality_delta`/`values_delta`/`long_term_desires` → `{}`/`[]`（不静默吞错类型） |
+| `test_validate_candidate` | 边界鲁棒 | `type` 非法、缺 `name`、`subtopics` 非字符串数组 → `ValueError`；合法不抛 |
+| `test_to_long_term` | 功能正确 | `type` 转 `DesireType`、`strength`=`_LONG_TERM_INIT_STRENGTH`、`progress`=0.0、`subtopics`/`created_at` 透传 |
+| `test_run_writes_back` | 功能正确 | 1 次 LLM（`output_type="reflection"`、`correlation_id` 透传）、evaluator 1 次；性格/三观按 delta 漂移回写、叙事 story/becoming 各 +1、self_view 合并；`add_long_term` 调 1 次 |
+| `test_run_generates_correlation_id` | 功能正确 | `run(None)` → correlation_id 自生成非空 |
+| `test_run_long_term_capacity` | 功能正确 | 候选 3 超过 `long_term_capacity=2` → 只新增 2（容量封顶不超） |
+| `test_run_unseeded_raises` | 边界鲁棒 | 单行表未 seed（personality/values/narrative 任一 `None`）→ `RuntimeError`、未发 LLM |
+| `test_apply_event_desire_satisfied` | 功能正确 | valence/arousal 上升（+0.2/+0.1）；发布 `EMOTION_UPDATE`（content 含 valence/arousal/emotion 字符串、source INTERNAL、correlation 透传） |
+| `test_apply_event_activity_end` | 功能正确 | content `energy_delta=-25` → energy 100→75、`energy_state` 重算 OKAY |
+| `test_apply_event_activity_end_no_delta` | 边界鲁棒 | 无 `energy_delta` 键 → 不崩、energy 不变（缺省 0） |
+| `test_apply_event_unseeded_energy` | 边界鲁棒 | 未 seed energy → `DESIRE_SATISFIED`（读 `_publish_emotion`）与 `ACTIVITY_END`（写 `_apply_energy`）均抛 `RuntimeError`（fail-fast 不静默） |
+| `test_apply_event_reflection` | 功能正确 | REFLECTION 触发 `reflect`（LLM 1 次、correlation 透传）；情感偏移 -0.1 arousal 生效（0.1→0.0） |
+| `test_decay_settlement` | 功能正确 | 两次 `apply_event` 间隔 1 天 → 第二次前情感先衰减（0.2→0.1） |
+| `test_get_state` | 功能正确 | 注入 fake `ActivityFacade.get_current` + `DesireFacade.get_pending` → `CurrentState` 各字段正确（current_activity/active_desires/personality/energy/energy_state） |
+| `test_get_state_unseeded` | 边界鲁棒 | 未 seed → `get_state` 抛 `RuntimeError` |
+| `test_get_narrative` | 功能正确 | store 有→返回；空→`RuntimeError` |
+| `test_reflect_delegation` | 功能正确 | `facade.reflect()` → reflection LLM 调 1 次、correlation 透传 |
+
+**功能阶段**：12-inner-life 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`ActivityFacade` 用向前引用 stub/fake、真实编排归 13/14/18）。

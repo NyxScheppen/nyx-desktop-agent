@@ -353,3 +353,46 @@
 | `test_rest_energy_threshold` | 边界鲁棒 | `0.0 <= ENERGY_REST_THRESHOLD <= 100.0`（共享常量，从 `nyx.inner_life.emotion` 导入） |
 
 **功能阶段**：13-activity-scheduler 实现时编写（纯函数，无 DB、无 mock、无 async；与 `ActivityFacade` 的编排归 14）。
+
+## 14-activity（行为系统：store + facade + 探索链 + 观察）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_insert_get_roundtrip` | 功能正确 | `insert`+`get` 往返全等（`progress` JSON 往返、枚举 `.value` 往返） |
+| `test_get_missing_returns_none` | 功能正确 | `get` 未命中 → `None` |
+| `test_get_current_only_running_paused` | 功能正确 | `get_current` 只取 running/paused 最新一条（completed 排除） |
+| `test_get_last_exploration_empty` | 边界鲁棒 | 无 free_exploration 记录 → `0.0` |
+| `test_get_last_exploration_max` | 功能正确 | 有 → `MAX(started_at)` |
+| `test_list_schedule_filters_and_orders` | 功能正确 | `started_at >= start` 过滤 + ASC |
+| `test_update` | 功能正确 | `update` 改 `status`/`progress`/`ended_at` → `get` 验证 |
+| `test_day_start` | 功能正确 | `now=86400*1.5 → 86400.0` |
+| `test_current_hour` | 功能正确 | `now=5400 → 1.5` |
+| `test_goal_met` | 功能正确 | goal None → None；goal 非 None + result 空 → False；result 非空 → True |
+| `test_parse_activity_result_valid` | 功能正确 | reading/creation 缺键结构合法 → 返回解析后 dict |
+| `test_parse_activity_result_missing_key_raises` | 边界鲁棒 | 缺必需键 → `ValueError`（fail-fast） |
+| `test_parse_activity_result_non_dict_raises` | 边界鲁棒 | JSON 顶层非 dict → `ValueError` |
+| `test_select_activity_empty` | 功能正确 | 无欲望 → `None` |
+| `test_select_activity_exploration` | 功能正确 | 探索欲 → READING，`desire_id`/`description`/`goal` 序列化正确 |
+| `test_select_activity_interaction_returns_none` | 功能正确 | 互动欲 → `None`（不可排程） |
+| `test_select_activity_rest_desire` | 功能正确 | 休息欲 → REST 且保留 `desire_id` |
+| `test_select_activity_low_energy_rest` | 功能正确 | energy=30 + 探索欲 → REST 且 `desire_id` 为 None |
+| `test_maybe_start_skips_when_running` | 功能正确 | 已有 running 活动 → 不新起（store 不增） |
+| `test_default_idle_reflection_when_tired` | 功能正确 | 空槽 + 低精力 → IDLE_REFLECTION、`desire_id` None |
+| `test_default_observe_user_when_energetic` | 功能正确 | 空槽 + 高精力 → OBSERVE_USER、`desire_id` None |
+| `test_maybe_start_creation_activity` | 功能正确 | 有欲望 → insert + 发布 activity_start/end（source INTERNAL、desire_id/energy_delta 透传）、evaluator 调 1 次 |
+| `test_upgrade_to_free_exploration` | 功能正确 | 探索欲 + 精力足 + 频率过 → FREE_EXPLORATION |
+| `test_no_upgrade_when_rate_limited` | 功能正确 | 频率未过 → 降级 READING |
+| `test_complete_activity` | 功能正确 | COMPLETED + `ended_at` 非空 + activity_end（energy_delta=-20） |
+| `test_interrupt_running` | 功能正确 | PAUSED + activity_interrupted（`by=user_message`） |
+| `test_interrupt_missing` | 边界鲁棒 | 不存在 → 不发布、不崩溃 |
+| `test_get_current_delegates` | 功能正确 | `get_current` 委托 store |
+| `test_get_schedule_delegates` | 功能正确 | `get_schedule` 委托 store（按 `_day_start` 过滤） |
+| `test_should_explore_energy_too_low` | 功能正确 | energy=59 → False |
+| `test_should_explore_rate_limited` | 功能正确 | energy=60 + `now-last < rate_limit_hours*3600` → False |
+| `test_should_explore_ok` | 功能正确 | energy=60 + 频率过 + last=0.0 → True |
+| `test_exploration_run_no_web` | 功能正确 | `run` 返回 `{findings, notes}`、步数 == `_MAX_STEPS`、`correlation_id` 传递、每次 complete 后 evaluate、图不含 web_search |
+| `test_classify_presence_online` | 功能正确 | 键盘/鼠标活跃 → online |
+| `test_classify_presence_busy` | 功能正确 | 无输入 + 有窗口标题 → busy |
+| `test_classify_presence_away` | 功能正确 | 无输入无标题 → away |
+
+**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools/memory 全 fake 注入，无集成/E2E）。

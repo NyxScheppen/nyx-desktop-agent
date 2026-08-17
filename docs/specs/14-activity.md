@@ -67,7 +67,10 @@ _COLS = "id, type, schedule_block_id, status, progress, started_at, ended_at"
 
 
 class ActivityStore:
-    """activity 表单表 CRUD。所有读写都 `async with self._db.lock:` 串行化（同 05/07/11）。"""
+    """activity 表单表 CRUD。
+
+    所有读写都 `async with self._db.lock:` 串行化（同 05/07/11）。
+    """
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -75,7 +78,8 @@ class ActivityStore:
     async def insert(self, activity: Activity) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
-                "INSERT INTO activity (id, type, schedule_block_id, status, progress, started_at, ended_at) "
+                "INSERT INTO activity (id, type, schedule_block_id, status, progress, "
+                "started_at, ended_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     activity.id,
@@ -111,7 +115,8 @@ class ActivityStore:
         """最近一次自由探索活动的 started_at；从未探索返回 0.0（供频率上限判定）。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                "SELECT MAX(started_at) AS t FROM activity WHERE type = 'free_exploration'"
+                "SELECT MAX(started_at) AS t FROM activity "
+                "WHERE type = 'free_exploration'"
             )
             row = await cursor.fetchone()
         return row["t"] if row is not None and row["t"] is not None else 0.0
@@ -120,7 +125,8 @@ class ActivityStore:
         """今日已产生记录（started_at >= start），按 started_at ASC。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                f"SELECT {_COLS} FROM activity WHERE started_at >= ? ORDER BY started_at ASC",
+                f"SELECT {_COLS} FROM activity WHERE started_at >= ? "
+                "ORDER BY started_at ASC",
                 (start,),
             )
             rows = await cursor.fetchall()
@@ -129,8 +135,8 @@ class ActivityStore:
     async def update(self, activity: Activity) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
-                "UPDATE activity SET type = ?, schedule_block_id = ?, status = ?, progress = ?, "
-                "started_at = ?, ended_at = ? WHERE id = ?",
+                "UPDATE activity SET type = ?, schedule_block_id = ?, status = ?, "
+                "progress = ?, started_at = ?, ended_at = ? WHERE id = ?",
                 (
                     activity.type.value,
                     activity.schedule_block_id,
@@ -164,10 +170,15 @@ import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from nyx.activity.exploration import Exploration, should_explore
-from nyx.activity.scheduler import build_schedule, desire_to_activity, format_time_label, rank_desires
+from nyx.activity.scheduler import (
+    build_schedule,
+    desire_to_activity,
+    format_time_label,
+    rank_desires,
+)
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.desire.facade import DesireFacade
@@ -180,7 +191,8 @@ from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, CurrentState, Event, ShortTermDesire
 
-_REFLECTION_ENERGY_THRESHOLD = 40.0   # 疲惫档下界（design §8.4），空槽默认发呆的精力分界，可推翻
+# 疲惫档下界（design §8.4），空槽默认发呆的精力分界，可推翻
+_REFLECTION_ENERGY_THRESHOLD = 40.0
 
 
 def _day_start(now: float) -> float:
@@ -194,7 +206,9 @@ def _current_hour(now: float) -> float:
 
 
 def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | None:
-    """Goal 完成判定（纯函数）。MVP：goal 非 None 且 result 非空 → True；goal None → None。
+    """Goal 完成判定（纯函数）。
+
+    MVP：goal 非 None 且 result 非空 → True；goal None → None。
     """
     if goal is None:
         return None
@@ -204,21 +218,24 @@ def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | Non
 def _parse_activity_result(raw: str, output_type: str) -> dict[str, Any]:
     """LLM 活动结果解析 + 结构校验（对齐 11/12 的 _parse_* fail-fast 风格）。
 
-    reading 需 {book, note}、creation 需 {title, content}；缺键 raise（非法结构不静默吞）。
+    reading 需 {book, note}、creation 需 {title, content}；
+    缺键 raise（非法结构不静默吞）。
     """
     data: Any = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError(f"活动结果 JSON 应是对象，得到 {type(data).__name__}")
+    parsed = cast(dict[str, Any], data)
     required = ("book", "note") if output_type == "reading" else ("title", "content")
-    if not all(k in data for k in required):
+    if not all(k in parsed for k in required):
         raise ValueError(f"活动结果 JSON 缺键：{required}")
-    return data
+    return parsed
 
 
 class ActivityFacade:
     """活动模块门面：消费欲望 → 选活动 → 后台执行 → 完成/打断 → 发布事件。
 
-    依赖注入解环：不持有 InnerLifeFacade，注入 get_state 回调（组合根绑 inner_life.get_state）。
+    依赖注入解环：不持有 InnerLifeFacade，注入 get_state 回调
+    （组合根绑 inner_life.get_state）。
     """
 
     def __init__(
@@ -241,7 +258,9 @@ class ActivityFacade:
         self._desire = desire
         self._get_state = get_state
         self._config = config
-        self._exploration = Exploration(llm, evaluator, tools, memory, exploration_config)
+        self._exploration = Exploration(
+            llm, evaluator, tools, memory, exploration_config
+        )
         self._exploration_config = exploration_config
         self._task: asyncio.Task[None] | None = None
 
@@ -258,21 +277,32 @@ class ActivityFacade:
 
     # ---- 决策 ----
 
-    def select_activity(self, desires: list[ShortTermDesire], state: CurrentState) -> Activity | None:
-        """选下一个活动（纯决策，无 I/O）。desires 已由 _maybe_start_activity 排序（rank_desires）。"""
+    def select_activity(
+        self, desires: list[ShortTermDesire], state: CurrentState
+    ) -> Activity | None:
+        """选下一个活动（纯决策，无 I/O）。
+
+        desires 已由 _maybe_start_activity 排序（rank_desires）。
+        """
         if not desires:
             return None
-        target = next((d for d in desires if desire_to_activity(d.type) is not None), None)
+        target = next(
+            (d for d in desires if desire_to_activity(d.type) is not None), None
+        )
         if target is None:
             return None
         schedule = build_schedule(desires, state.energy, self._config.energy_delta)
         if not schedule:
             return None
         activity_type = schedule[0]
-        if activity_type is ActivityType.REST and target is not None and target.type is not DesireType.REST:
-            target = None  # 精力恢复穿插的 REST（队首非休息欲却产出 REST = 精力不足），无关联 desire
+        if activity_type is ActivityType.REST and target.type is not DesireType.REST:
+            # 精力恢复穿插的 REST（队首非休息欲却产出 REST = 精力不足），
+            # 无关联 desire
+            target = None
         now = time.time()
-        progress: dict[str, Any] = {"desire_id": None, "goal": None, "correlation_id": None}
+        progress: dict[str, Any] = {
+            "desire_id": None, "goal": None, "correlation_id": None
+        }
         if target is not None:
             progress["desire_id"] = target.id
             progress["correlation_id"] = target.id
@@ -286,7 +316,9 @@ class ActivityFacade:
         return Activity(
             id=str(uuid.uuid4()),
             type=activity_type,
-            schedule_block_id=format_time_label(0, self._config.grid_minutes, _current_hour(now)),
+            schedule_block_id=format_time_label(
+                0, self._config.grid_minutes, _current_hour(now)
+            ),
             status=ActivityStatus.PENDING,
             progress=progress,
             started_at=now,
@@ -298,13 +330,17 @@ class ActivityFacade:
         纯决策，无 I/O。
         """
         activity_type = (
-            ActivityType.IDLE_REFLECTION if state.energy < _REFLECTION_ENERGY_THRESHOLD else ActivityType.OBSERVE_USER
+            ActivityType.IDLE_REFLECTION
+            if state.energy < _REFLECTION_ENERGY_THRESHOLD
+            else ActivityType.OBSERVE_USER
         )
         now = time.time()
         return Activity(
             id=str(uuid.uuid4()),
             type=activity_type,
-            schedule_block_id=format_time_label(0, self._config.grid_minutes, _current_hour(now)),
+            schedule_block_id=format_time_label(
+                0, self._config.grid_minutes, _current_hour(now)
+            ),
             status=ActivityStatus.PENDING,
             progress={"desire_id": None, "goal": None, "correlation_id": None},
             started_at=now,
@@ -326,7 +362,9 @@ class ActivityFacade:
                     "activity_id": activity.id,
                     "desire_id": activity.progress.get("desire_id"),
                     "goal_met": _goal_met(goal, result),
-                    "energy_delta": getattr(self._config.energy_delta, activity.type.value),
+                    "energy_delta": getattr(
+                        self._config.energy_delta, activity.type.value
+                    ),
                     "result": result,
                 },
                 str(activity.progress.get("correlation_id") or activity.id),
@@ -334,7 +372,9 @@ class ActivityFacade:
         )
 
     async def interrupt(self, activity_id: str, by: EventType) -> None:
-        """软中断：先校验目标 RUNNING，再 cancel 执行 task + 存进度（PAUSED）+ 发布 activity_interrupted。"""
+        """软中断：先校验目标 RUNNING，再 cancel 执行 task + 存进度（PAUSED）
+        + 发布 activity_interrupted。
+        """
         activity = await self._store.get(activity_id)
         if activity is None or activity.status is not ActivityStatus.RUNNING:
             return
@@ -373,7 +413,12 @@ class ActivityFacade:
             activity = self._default_activity(state)
         if activity.type is ActivityType.READING:
             last = await self._store.get_last_exploration()
-            if should_explore(state.energy, last, self._exploration_config.rate_limit_hours, time.time()):
+            if should_explore(
+                state.energy,
+                last,
+                self._exploration_config.rate_limit_hours,
+                time.time(),
+            ):
                 activity.type = ActivityType.FREE_EXPLORATION
         await self._store.insert(activity)
         self._task = asyncio.create_task(self._execute(activity))
@@ -384,7 +429,11 @@ class ActivityFacade:
         await self._bus.publish(
             internal_event(
                 EventType.ACTIVITY_START,
-                {"activity_id": activity.id, "type": activity.type.value, "schedule_block_id": activity.schedule_block_id},
+                {
+                    "activity_id": activity.id,
+                    "type": activity.type.value,
+                    "schedule_block_id": activity.schedule_block_id,
+                },
                 str(activity.progress.get("correlation_id") or activity.id),
             )
         )
@@ -410,13 +459,17 @@ class ActivityFacade:
         if t is ActivityType.FREE_EXPLORATION:
             return await self._exploration.run(
                 seed=str(activity.progress.get("description") or activity.id),
-                correlation_id=str(activity.progress.get("correlation_id") or activity.id),
+                correlation_id=str(
+                    activity.progress.get("correlation_id") or activity.id
+                ),
             )
         if t in (ActivityType.OBSERVE_USER, ActivityType.REST):
             return {}
         raise ValueError(f"未知活动类型 {t!r}")
 
-    async def _run_llm_activity(self, activity: Activity, output_type: str) -> dict[str, Any]:
+    async def _run_llm_activity(
+        self, activity: Activity, output_type: str
+    ) -> dict[str, Any]:
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _ACTIVITY_SYSTEM},
@@ -431,13 +484,19 @@ class ActivityFacade:
         return _parse_activity_result(output.content, output_type)
 
 
-_ACTIVITY_SYSTEM = "你是尼克斯。按 JSON 输出活动结果，键随活动类型：读书 {book, note}、创作 {title, content}。"
+_ACTIVITY_SYSTEM = (
+    "你是尼克斯。按 JSON 输出活动结果，键随活动类型："
+    "读书 {book, note}、创作 {title, content}。"
+)
 ```
 
 ### `activity/exploration.py`（完整）
 
 ```python
+# pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false
+# langgraph 类型标注松散：add_node/compile/ainvoke 返回部分未知、graph.state 缺 stub
 import json
+from collections.abc import Hashable
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -445,13 +504,14 @@ from langgraph.graph.state import CompiledStateGraph
 
 from nyx.config import ExplorationConfig
 from nyx.eval.evaluator import Evaluator
+from nyx.events.event import SECONDS_PER_HOUR
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Memory
 
 _MAX_STEPS = 8                    # 探索链最大步数（可推翻）
-_FREE_EXPLORATION_ENERGY = 60.0   # 探索需精力 >= 此值（可推翻，design §8.6「精力充足」）
+_FREE_EXPLORATION_ENERGY = 60.0   # 探索需精力 >= 此值（可推翻，design §8.6）
 
 
 class ExplorationState(TypedDict):
@@ -465,7 +525,9 @@ class ExplorationState(TypedDict):
     correlation_id: str
 
 
-def should_explore(energy: float, last_explored_at: float, rate_limit_hours: float, now: float) -> bool:
+def should_explore(
+    energy: float, last_explored_at: float, rate_limit_hours: float, now: float
+) -> bool:
     """自由探索升级门槛（纯函数）：精力充足 + 频率上限。
 
     「探索欲」条件由调用方结构保证：READING 活动仅由 DesireType.EXPLORATION 映射而来
@@ -510,7 +572,11 @@ class Exploration:
         actions = ["search_local", "read", "write_note", "recall_memory"]
         if self._web_enabled:
             actions.append("search_web")
-        g.add_conditional_edges("plan_next", self._route, {a: a for a in actions} | {"finalize": "finalize"})
+        path_map: dict[Hashable, str] = {}
+        for a in actions:
+            path_map[a] = a
+        path_map["finalize"] = "finalize"
+        g.add_conditional_edges("plan_next", self._route, path_map)
         for a in actions:
             g.add_edge(a, "plan_next")
         g.add_edge("finalize", END)
@@ -532,7 +598,13 @@ class Exploration:
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _EXPLORATION_PLAN_SYSTEM},
-                {"role": "user", "content": f"focus={state['focus']} findings={state['findings']} notes={state['notes']}"},
+                {
+                    "role": "user",
+                    "content": (
+                        f"focus={state['focus']} findings={state['findings']} "
+                        f"notes={state['notes']}"
+                    ),
+                },
             ],
             module="activity",
             output_type="exploration_plan",
@@ -557,13 +629,18 @@ class Exploration:
         return state
 
     async def _read(self, state: ExplorationState) -> ExplorationState:
-        res = await self._tools.call("file_io", {"action": "read", "path": state["focus"]})
+        res = await self._tools.call(
+            "file_io", {"action": "read", "path": state["focus"]}
+        )
         state["findings"].append(str(res))
         return state
 
     async def _write_note(self, state: ExplorationState) -> ExplorationState:
         note = "\n".join(state["findings"][-3:])
-        await self._tools.call("file_io", {"action": "write", "path": "exploration_note.md", "content": note})
+        await self._tools.call(
+            "file_io",
+            {"action": "write", "path": "exploration_note.md", "content": note},
+        )
         state["notes"].append(note)
         return state
 
@@ -578,22 +655,32 @@ class Exploration:
     def _route(self, state: ExplorationState) -> str:
         if state["done"]:
             return "finalize"
-        # MVP：确定性轮转（search_local → read → write_note → recall_memory），不靠 LLM 选具体动作
+        # MVP：确定性轮转（search_local → read → write_note → recall_memory），
+        # 不靠 LLM 选具体动作
         # step 在 _plan_next 里先 +1，故 -1 对齐到 actions[0]=search_local 起始
-        return ["search_local", "read", "write_note", "recall_memory"][(state["step"] - 1) % 4]
+        return ["search_local", "read", "write_note", "recall_memory"][
+            (state["step"] - 1) % 4
+        ]
 
 
-_EXPLORATION_PLAN_SYSTEM = "你是尼克斯的探索规划器。按 JSON 输出 {focus, done}，决定下一步聚焦对象与是否结束。"
+_EXPLORATION_PLAN_SYSTEM = (
+    "你是尼克斯的探索规划器。按 JSON 输出 {focus, done}，"
+    "决定下一步聚焦对象与是否结束。"
+)
 ```
 
 ### `activity/observe.py`（完整）
 
 ```python
-def classify_presence(keyboard_active: bool, mouse_active: bool, window_title: str) -> str:
-    """观察用户：键盘/鼠标活跃度 + 前台窗口标题 → 在线/离开/忙碌（纯函数，design §8.5）。
+def classify_presence(
+    keyboard_active: bool, mouse_active: bool, window_title: str
+) -> str:
+    """观察用户：键盘/鼠标活跃度 + 前台窗口标题 → 在线/离开/忙碌
+    （纯函数，design §8.5）。
 
-    MVP 简化规则：键盘或鼠标活跃 → "online"；否则窗口标题非空 → "busy"；否则 "away"。
-    运行时调用方是前端 ingress（Tauri 壳采集后判定的单一事实来源）；本 spec 保留为可展示/可测的规则定义。
+    MVP 简化规则：键盘或鼠标活跃 → "online"；否则窗口标题非空 → "busy"；
+    否则 "away"。运行时调用方是前端 ingress（Tauri 壳采集后判定的单一事实来源）；
+    本 spec 保留为可展示/可测的规则定义。
     """
     if keyboard_active or mouse_active:
         return "online"
@@ -605,8 +692,8 @@ def classify_presence(keyboard_active: bool, mouse_active: bool, window_title: s
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_activity/`（`pytest-asyncio`；`db = await connect(":memory:")`；fake `LlmClient.complete` 按 `output_type` 返回 fixture JSON；`EventBus` 真实例 + recording handler，`run()` 作 task；`get_state` 用 fake 回调返回预设 `CurrentState`——同 05/09/11/12 模式）：
-  - [ ] **store**（`test_store.py`）：`insert + get` 往返（`progress` JSON 往返、枚举 `.value` 往返）；`get_current` 只取 running/paused 最新一条；`get_last_exploration`（无 free_exploration 记录 → `0.0`，有 → `MAX(started_at)`）；`list_schedule(start)` 按 `started_at >= start` 过滤 + ASC；`update` 改 `status`/`progress`/`ended_at` → `get` 验证
-  - [ ] **纯函数**（`test_facade.py`）：`_day_start`（`now=86400*1.5 → 86400.0`）；`_current_hour`（`now=5400 → 1.5`）；`_goal_met`（goal None → None；goal 非 None + result 空 → False；goal 非 None + result 非空 → True）
+  - [ ] **store**（`test_activity_store.py`）：`insert + get` 往返（`progress` JSON 往返、枚举 `.value` 往返）；`get_current` 只取 running/paused 最新一条；`get_last_exploration`（无 free_exploration 记录 → `0.0`，有 → `MAX(started_at)`）；`list_schedule(start)` 按 `started_at >= start` 过滤 + ASC；`update` 改 `status`/`progress`/`ended_at` → `get` 验证
+  - [ ] **纯函数**（`test_activity_facade.py`）：`_day_start`（`now=86400*1.5 → 86400.0`）；`_current_hour`（`now=5400 → 1.5`）；`_goal_met`（goal None → None；goal 非 None + result 空 → False；goal 非 None + result 非空 → True）
   - [ ] **select_activity**（fake `get_state` 返回 `energy=80`）：无欲望 → `None`；`[探索欲]` → `type is READING`、`progress["desire_id"] == desire.id`、`goal` 序列化正确、`progress["description"] == desire.description`；`[互动欲]` → `None`（不占日程块）；`[休息欲]` → `type is REST`、`progress["desire_id"] == rest_desire.id`（欲望驱动的 REST 保留关联）；`energy=30` + 探索欲 → `type is REST`、`progress["desire_id"] is None`（精力恢复无关联）
   - [ ] **should_explore**（`test_exploration.py`）：`energy=59` → False；`energy=60` + `now-last < rate_limit_hours*3600` → False；`energy=60` + 频率过 + `last=0.0` → True
   - [ ] **facade 生命周期**：

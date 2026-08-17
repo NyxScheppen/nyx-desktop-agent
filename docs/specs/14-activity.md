@@ -36,6 +36,8 @@
 - **两个事件入口都归到 `_maybe_start_activity`**：`SCHEDULE_BLOCK_START` tick（每小时一块）与 `DESIRE_GENERATED`（欲望刚生成）都「有空闲就消费」。区别是触发时机，逻辑共用；有 running 活动则忽略（等它完成或下一个触发）
 - **`select_activity` 返回 `Activity | None`**：无欲望 / 全互动欲时无活动可排，返回 `None`（空槽）。tech-ref §5 原签名 `-> Activity` 需 ripple 为 `-> Activity | None`（见完成定义）
 - **活动执行 = 后台 task**：05-event「顺序分发、逐个 await handler」，若 on_tick 里 await 完整个活动（LLM 秒级、探索链分钟级）会阻塞事件总线、吞掉用户消息打断。故 `_maybe_start_activity` 用 `asyncio.create_task` 启动执行后立即返回；`interrupt` 靠 `self._task.cancel()` 软打断
+- **并发守卫（同一时刻仅一个活动）**：`_start_lock` 串行化「查 running → insert PENDING → 翻 RUNNING」决策；但 `_execute` 在锁外异步翻 RUNNING，仅靠 `get_current`（只匹配 running/paused，见 store）会留 TOCTOU 窗口（PENDING 已 insert 却查不到 running）。故锁内先同步查 `self._task` 未完成即 `return` 闭合窗口；`self._task` 在锁内赋值，天然串行
+- **执行失败 = INCOMPLETE + 上抛**：`_execute` 失败落 `INCOMPLETE`（`ended_at` 已记）后仍 `raise`（不吞异常）；`logger.exception` 记录详情，`add_done_callback(_harvest_task_exception)` 收割 fire-and-forget task 的异常，避免 asyncio「Task exception was never retrieved」警告静默漂着
 - **自由探索升级（design §8.6，13 已委托给 14）**：`select_activity` 保持基线映射（探索欲→`READING`），升级判定放 `_maybe_start_activity`（那里有 store/config/now，`select_activity` 保持纯决策）。「探索欲」条件由结构保证——`READING` 活动**仅**由 `DesireType.EXPLORATION` 映射而来（13 `desire_to_activity`），故调用方在 `activity.type is READING` 时才调 `should_explore`（只查精力 + 频率两项）
 - **六种活动执行分派（`_run_activity`）**：
   - `READING` / `CREATION`：1 次 LLM（`json_mode=True`、`module="activity"`、`output_type="reading"`/`"creation"`）→ result `{book, note}` / `{title, content}`
@@ -167,6 +169,7 @@ def _row_to_activity(row: aiosqlite.Row) -> Activity:
 ```python
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -192,6 +195,8 @@ from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, CurrentState, Event, ShortTermDesire
 
+_logger = logging.getLogger(__name__)
+
 
 def _day_start(now: float) -> float:
     """当日零点（UTC 日边界，MVP 可推翻为本地时区）。纯函数。"""
@@ -216,6 +221,21 @@ def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | Non
 def _empty_progress() -> dict[str, Any]:
     """活动 progress 初始模板（desire_id/goal/correlation_id 三键为空）。"""
     return {"desire_id": None, "goal": None, "correlation_id": None}
+
+
+def _correlation_id(activity: Activity) -> str:
+    """活动事件/LLM 溯源 id：优先欲望 correlation_id，退活动自身 id。"""
+    return str(activity.progress.get("correlation_id") or activity.id)
+
+
+def _harvest_task_exception(task: asyncio.Future[None]) -> None:
+    """收割后台 task 异常，避免 asyncio 'Task exception was never retrieved' 警告。
+
+    真正的失败详情已在 _execute 的 except 块里经 logger.exception 记录；
+    这里只负责把异常标记为「已检索」，不重复记录。
+    """
+    if not task.cancelled():
+        task.exception()
 
 
 def _parse_activity_result(raw: str, output_type: str) -> dict[str, Any]:
@@ -369,7 +389,7 @@ class ActivityFacade:
                     ),
                     "result": result,
                 },
-                str(activity.progress.get("correlation_id") or activity.id),
+                _correlation_id(activity),
             )
         )
 
@@ -406,6 +426,8 @@ class ActivityFacade:
 
     async def _maybe_start_activity(self) -> None:
         async with self._start_lock:
+            if self._task is not None and not self._task.done():
+                return
             current = await self._store.get_current()
             if current is not None and current.status is ActivityStatus.RUNNING:
                 return
@@ -427,6 +449,7 @@ class ActivityFacade:
                     activity.type = ActivityType.FREE_EXPLORATION
             await self._store.insert(activity)
             self._task = asyncio.create_task(self._execute(activity))
+            self._task.add_done_callback(_harvest_task_exception)
 
     async def _execute(self, activity: Activity) -> None:
         activity.status = ActivityStatus.RUNNING
@@ -439,7 +462,7 @@ class ActivityFacade:
                     "type": activity.type.value,
                     "schedule_block_id": activity.schedule_block_id,
                 },
-                str(activity.progress.get("correlation_id") or activity.id),
+                _correlation_id(activity),
             )
         )
         try:
@@ -449,6 +472,11 @@ class ActivityFacade:
             activity.status = ActivityStatus.INCOMPLETE
             activity.ended_at = time.time()
             await self._store.update(activity)
+            _logger.exception(
+                "活动执行失败 activity_id=%s type=%s",
+                activity.id,
+                activity.type.value,
+            )
             raise
         activity.progress["result"] = result
         await self.complete_activity(activity)
@@ -464,16 +492,14 @@ class ActivityFacade:
                 internal_event(
                     EventType.REFLECTION,
                     {"activity_id": activity.id},
-                    str(activity.progress.get("correlation_id") or activity.id),
+                    _correlation_id(activity),
                 )
             )
             return {}
         if t is ActivityType.FREE_EXPLORATION:
             return await self._exploration.run(
                 seed=str(activity.progress.get("description") or activity.id),
-                correlation_id=str(
-                    activity.progress.get("correlation_id") or activity.id
-                ),
+                correlation_id=_correlation_id(activity),
             )
         if t in (ActivityType.OBSERVE_USER, ActivityType.REST):
             return {}
@@ -489,7 +515,7 @@ class ActivityFacade:
             ],
             module="activity",
             output_type=output_type,
-            correlation_id=str(activity.progress.get("correlation_id") or activity.id),
+            correlation_id=_correlation_id(activity),
             json_mode=True,
         )
         await self._evaluator.evaluate(output)

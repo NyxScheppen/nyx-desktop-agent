@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -25,6 +26,8 @@ from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, CurrentState, Event, ShortTermDesire
 
+_logger = logging.getLogger(__name__)
+
 
 def _day_start(now: float) -> float:
     """当日零点（UTC 日边界，MVP 可推翻为本地时区）。纯函数。"""
@@ -49,6 +52,21 @@ def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | Non
 def _empty_progress() -> dict[str, Any]:
     """活动 progress 初始模板（desire_id/goal/correlation_id 三键为空）。"""
     return {"desire_id": None, "goal": None, "correlation_id": None}
+
+
+def _correlation_id(activity: Activity) -> str:
+    """活动事件/LLM 溯源 id：优先欲望 correlation_id，退活动自身 id。"""
+    return str(activity.progress.get("correlation_id") or activity.id)
+
+
+def _harvest_task_exception(task: asyncio.Future[None]) -> None:
+    """收割后台 task 异常，避免 asyncio 'Task exception was never retrieved' 警告。
+
+    真正的失败详情已在 _execute 的 except 块里经 logger.exception 记录；
+    这里只负责把异常标记为「已检索」，不重复记录。
+    """
+    if not task.cancelled():
+        task.exception()
 
 
 def _parse_activity_result(raw: str, output_type: str) -> dict[str, Any]:
@@ -202,7 +220,7 @@ class ActivityFacade:
                     ),
                     "result": result,
                 },
-                str(activity.progress.get("correlation_id") or activity.id),
+                _correlation_id(activity),
             )
         )
 
@@ -239,6 +257,8 @@ class ActivityFacade:
 
     async def _maybe_start_activity(self) -> None:
         async with self._start_lock:
+            if self._task is not None and not self._task.done():
+                return
             current = await self._store.get_current()
             if current is not None and current.status is ActivityStatus.RUNNING:
                 return
@@ -260,6 +280,7 @@ class ActivityFacade:
                     activity.type = ActivityType.FREE_EXPLORATION
             await self._store.insert(activity)
             self._task = asyncio.create_task(self._execute(activity))
+            self._task.add_done_callback(_harvest_task_exception)
 
     async def _execute(self, activity: Activity) -> None:
         activity.status = ActivityStatus.RUNNING
@@ -272,7 +293,7 @@ class ActivityFacade:
                     "type": activity.type.value,
                     "schedule_block_id": activity.schedule_block_id,
                 },
-                str(activity.progress.get("correlation_id") or activity.id),
+                _correlation_id(activity),
             )
         )
         try:
@@ -282,6 +303,11 @@ class ActivityFacade:
             activity.status = ActivityStatus.INCOMPLETE
             activity.ended_at = time.time()
             await self._store.update(activity)
+            _logger.exception(
+                "活动执行失败 activity_id=%s type=%s",
+                activity.id,
+                activity.type.value,
+            )
             raise
         activity.progress["result"] = result
         await self.complete_activity(activity)
@@ -297,16 +323,14 @@ class ActivityFacade:
                 internal_event(
                     EventType.REFLECTION,
                     {"activity_id": activity.id},
-                    str(activity.progress.get("correlation_id") or activity.id),
+                    _correlation_id(activity),
                 )
             )
             return {}
         if t is ActivityType.FREE_EXPLORATION:
             return await self._exploration.run(
                 seed=str(activity.progress.get("description") or activity.id),
-                correlation_id=str(
-                    activity.progress.get("correlation_id") or activity.id
-                ),
+                correlation_id=_correlation_id(activity),
             )
         if t in (ActivityType.OBSERVE_USER, ActivityType.REST):
             return {}
@@ -322,7 +346,7 @@ class ActivityFacade:
             ],
             module="activity",
             output_type=output_type,
-            correlation_id=str(activity.progress.get("correlation_id") or activity.id),
+            correlation_id=_correlation_id(activity),
             json_mode=True,
         )
         await self._evaluator.evaluate(output)

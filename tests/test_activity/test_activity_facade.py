@@ -375,6 +375,19 @@ async def test_maybe_start_skips_when_running() -> None:
         await database.conn.close()
 
 
+async def test_maybe_start_skips_when_task_in_flight() -> None:
+    facade, store, _bus, database = await _new_facade()
+    try:
+        await facade._maybe_start_activity()
+        assert facade._task is not None and not facade._task.done()
+        await facade._maybe_start_activity()
+        acts = await store.list_schedule(0.0)
+        assert len(acts) == 1
+        await facade._task
+    finally:
+        await database.conn.close()
+
+
 async def test_default_idle_reflection_when_tired() -> None:
     facade, store, bus, database = await _new_facade(energy=30.0)
     try:

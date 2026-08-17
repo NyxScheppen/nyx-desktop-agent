@@ -13,7 +13,9 @@ _VECTOR_TOP_K = 5
 
 
 def cosine(a: list[float], b: list[float]) -> float:
-    """余弦相似度；任一方零向量返回 0.0。纯函数。"""
+    """余弦相似度；任一方零向量或维度不一致返回 0.0。纯函数。"""
+    if len(a) != len(b):
+        return 0.0
     dot = sum(x * y for x, y in zip(a, b))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(x * x for x in b))
@@ -30,6 +32,9 @@ def build_embed(model_name: str) -> EmbedFn:
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(model_name)
+    # sentence-transformers 的 encode 返回类型含 Unknown（SingleInput 里
+    # PIL/torchcodec 可选导入兜底 None），getattr + cast 收窄为明确的
+    # Callable，避免 pyright 报 partially-unknown。
     encode = cast(Callable[[str], Iterable[float]], getattr(model, "encode"))
 
     def _encode_sync(text: str) -> list[float]:
@@ -52,6 +57,8 @@ class MemoryRetrieval:
         self._embed = embed          # None = 向量层禁用
 
     async def search(self, query: str, limit: int = 20) -> list[Memory]:
+        if not query:
+            return []
         keyword_hits = await self._store.search_keyword(query)
         all_memories = await self._store.list_memories()
         by_id = {m.id: m for m in all_memories}
@@ -59,9 +66,11 @@ class MemoryRetrieval:
         vector_hits = await self._vector_search(query, all_memories)
 
         seed_ids = [m.id for m in (*keyword_hits, *vector_hits)]
-        edges = await self._store.list_edges()
-        related_ids = MemoryGraph(edges).neighbors(seed_ids)
-        association_hits = [by_id[mid] for mid in related_ids if mid in by_id]
+        association_hits: list[Memory] = []
+        if seed_ids:
+            edges = await self._store.list_edges()
+            related_ids = MemoryGraph(edges).neighbors(seed_ids)
+            association_hits = [by_id[mid] for mid in related_ids if mid in by_id]
 
         merged: list[Memory] = []
         seen: set[str] = set()

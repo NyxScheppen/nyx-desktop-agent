@@ -16,8 +16,8 @@
 
 - [ ] `graph.py` 含 `MemoryGraph`（`neighbors(seeds, depth)`），与「`memory/graph.py`（完整）」段代码逐字一致
 - [ ] `retrieval.py` 含 `cosine` / `build_embed` / `EmbedFn` / `MemoryRetrieval`，与「`memory/retrieval.py`（完整）」段代码逐字一致
-- [ ] `cosine` 纯函数：正交=0、相同=1、相反=-1、零向量=0
-- [ ] `search()` 顺序执行 keyword → vector → association，按此序去重合并（`seen` set，后到重复丢弃），`limit` 截断
+- [ ] `cosine` 纯函数：正交=0、相同=1、相反=-1、零向量=0、维度不一致=0
+- [ ] `search()` 空查询（`""`）短路返回 `[]`；顺序执行 keyword → vector → association，按此序去重合并（`seen` set，后到重复丢弃），`limit` 截断
 - [ ] vector 层：`embed=None` → 跳过返回 `[]`；query 只 embed 一次；memory embedding 从 DB 读（不重算）；`embedding=None` 的记忆跳过；`s > 0` 过滤 + `_VECTOR_TOP_K` 截断
 - [ ] association 层：图从 `store.list_edges()` 构建，`neighbors` 无权重扩散、排除 seeds 本身、跳过不在图中的 seed（`nx.Graph.neighbors` 对不存在节点抛 `NetworkXError`）
 - [ ] `pyright` strict 零报错
@@ -95,7 +95,9 @@ _VECTOR_TOP_K = 5
 
 
 def cosine(a: list[float], b: list[float]) -> float:
-    """余弦相似度；任一方零向量返回 0.0。纯函数。"""
+    """余弦相似度；任一方零向量或维度不一致返回 0.0。纯函数。"""
+    if len(a) != len(b):
+        return 0.0
     dot = sum(x * y for x, y in zip(a, b))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(x * x for x in b))
@@ -112,6 +114,9 @@ def build_embed(model_name: str) -> EmbedFn:
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(model_name)
+    # sentence-transformers 的 encode 返回类型含 Unknown（SingleInput 里
+    # PIL/torchcodec 可选导入兜底 None），getattr + cast 收窄为明确的
+    # Callable，避免 pyright 报 partially-unknown。
     encode = cast(Callable[[str], Iterable[float]], getattr(model, "encode"))
 
     def _encode_sync(text: str) -> list[float]:
@@ -134,6 +139,8 @@ class MemoryRetrieval:
         self._embed = embed          # None = 向量层禁用
 
     async def search(self, query: str, limit: int = 20) -> list[Memory]:
+        if not query:
+            return []
         keyword_hits = await self._store.search_keyword(query)
         all_memories = await self._store.list_memories()
         by_id = {m.id: m for m in all_memories}
@@ -141,9 +148,11 @@ class MemoryRetrieval:
         vector_hits = await self._vector_search(query, all_memories)
 
         seed_ids = [m.id for m in (*keyword_hits, *vector_hits)]
-        edges = await self._store.list_edges()
-        related_ids = MemoryGraph(edges).neighbors(seed_ids)
-        association_hits = [by_id[mid] for mid in related_ids if mid in by_id]
+        association_hits: list[Memory] = []
+        if seed_ids:
+            edges = await self._store.list_edges()
+            related_ids = MemoryGraph(edges).neighbors(seed_ids)
+            association_hits = [by_id[mid] for mid in related_ids if mid in by_id]
 
         merged: list[Memory] = []
         seen: set[str] = set()
@@ -180,11 +189,12 @@ class MemoryRetrieval:
     - [ ] 菱形 a-b / a-c / b-d / c-d：`neighbors(["a"], depth=2)` = `["b", "c", "d"]`（d 去重只出现一次）
     - [ ] `weight` 不影响扩散（无权重，只可达性）
   - [ ] **retrieval**（`test_retrieval.py`）：
-    - [ ] `cosine` 纯函数：正交 `[1,0]`/`[0,1]` = 0、相同 = 1、相反 `[1,0]`/`[-1,0]` = -1、零向量 `[0,0]` = 0
+    - [ ] `cosine` 纯函数：正交 `[1,0]`/`[0,1]` = 0、相同 = 1、相反 `[1,0]`/`[-1,0]` = -1、零向量 `[0,0]` = 0、维度不一致 = 0
     - [ ] `_vector_search`（fake embed + 含 embedding 的 `Memory` 列表）：`_VECTOR_TOP_K` 截断、`embedding=None` 的记忆跳过、`s <= 0` 过滤、`embed=None` 时返回 `[]`
     - [ ] `search` 编排（真 `MemoryStore`（`connect(":memory:")`）+ fake embed）：造 A（content 含 query、embedding `[1,0]`）、B（embedding `[0,1]`）、C（无 embedding）+ 边 A-B → `search(query)` 按 keyword 命中 A、vector 命中 A、association 扩散到 B，合并去重 = `[A, B]`（顺序 keyword 先）；`limit=1` → `[A]`
     - [ ] `search` 去重：keyword 与 vector 命中同一记忆 → 只出现一次
     - [ ] `search` 全空：无 keyword 命中、embed=None、无边 → `[]`
+    - [ ] `search` 空查询：`search("")` → `[]`（短路，不触 store 查询）
     - [ ] `search` 无边命中不崩（回归）：keyword 命中一条**无边**记忆（图里无此节点）→ 不抛 `NetworkXError`，返回该命中本身（association 空，`neighbors` 过滤后产出 `[]`）
 - [ ] 集成测试：无（retrieval 是内部类，无 Facade 管道；与 09 的编排归 09）
 - [ ] E2E 测试：无

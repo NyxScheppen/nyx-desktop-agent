@@ -39,6 +39,7 @@ def test_cosine() -> None:
     assert cosine([1.0, 0.0], [1.0, 0.0]) == 1.0   # 相同
     assert cosine([1.0, 0.0], [-1.0, 0.0]) == -1.0  # 相反
     assert cosine([0.0, 0.0], [1.0, 0.0]) == 0.0   # 零向量
+    assert cosine([1.0, 0.0], [1.0, 0.0, 0.0]) == 0.0  # 维度不一致
 
 
 async def test_vector_search_skips_none_and_filters() -> None:
@@ -116,6 +117,17 @@ async def test_search_empty() -> None:
         await store.add(_mem("A", content="无关内容"))
         retrieval = MemoryRetrieval(store, embed=None)
         assert await retrieval.search("zzz") == []
+    finally:
+        await db.conn.close()
+
+
+async def test_search_empty_query_returns_empty() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("A", content="有关内容"))
+        retrieval = MemoryRetrieval(store, embed=None)
+        assert await retrieval.search("") == []
     finally:
         await db.conn.close()
 

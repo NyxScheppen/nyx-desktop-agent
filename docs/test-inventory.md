@@ -332,3 +332,23 @@
 | `test_reflect_delegation` | 功能正确 | `facade.reflect()` → reflection LLM 调 1 次、correlation 透传 |
 
 **功能阶段**：12-inner-life 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`ActivityFacade` 用向前引用 stub/fake、真实编排归 13/14/18）；`test_parse_reflection_unknown_drift_key` / `test_parse_reflection_drops_bad_candidate` / `test_run_survives_bad_candidate` 于 12 评审修复阶段编写（坏候选 best-effort 跳过 + 漂移 key 白名单校验），`internal_event`/时间常量抽到 events/event.py 后的共享测试见 05-event。
+
+## 13-activity-scheduler（日程排期纯函数）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_desire_to_activity` | 功能正确 | 四类欲望映射穷尽：`EXPLORATION→READING`、`CREATION→CREATION`、`REST→REST`、`INTERACTION→None` |
+| `test_rank_desires` | 功能正确 | 按类型级 `expression_weight` 降序（越愿表达越先消费） |
+| `test_rank_desires_stable_fifo` | 功能正确 | 同权两条按 `created_at` 升序（FIFO 稳定） |
+| `test_rank_desires_missing_value_defaults_zero` | 边界鲁棒 | 某类型无 `DesireValue` 记录 → 按 0.0 排最后（纯函数防御） |
+| `test_rank_desires_empty` | 边界鲁棒 | 空列表 → `[]` |
+| `test_build_schedule_empty` | 边界鲁棒 | 空 desires → `[]`（不排空块） |
+| `test_build_schedule_enough_energy_preserves_order` | 功能正确 | 精力充足（100）多条探索/创造/休息欲 → 按输入顺序产出、不插休息 |
+| `test_build_schedule_inserts_rest_when_low_energy` | 功能正确 | 精力 30 一条探索欲 → 前面先插 `REST`（`[REST, READING]`） |
+| `test_build_schedule_multiple_rest_when_exhausted` | 功能正确 | 精力 0 → 连续多个 `REST` 直到恢复（`[REST, REST, READING]`） |
+| `test_build_schedule_skips_interaction` | 功能正确 | 互动欲被跳过（`continue`），不产块、不耗精力 |
+| `test_build_schedule_rest_nonpositive_no_loop` | 边界鲁棒 | `energy_delta.rest <= 0` → 不死循环，直接产出活动块 |
+| `test_format_time_label` | 功能正确 | 块序号 → `"HH:MM"`：`(0,60,9.0)→09:00`、`(1,60,9.0)→10:00`、`(2,60,9.5)→11:30`、`(0,30,0.0)→00:00` |
+| `test_rest_energy_threshold` | 边界鲁棒 | `0.0 <= _REST_ENERGY_THRESHOLD <= 100.0` |
+
+**功能阶段**：13-activity-scheduler 实现时编写（纯函数，无 DB、无 mock、无 async；与 `ActivityFacade` 的编排归 14）。

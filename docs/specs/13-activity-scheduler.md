@@ -69,7 +69,8 @@ def rank_desires(
     desires: list[ShortTermDesire],
     values: list[DesireValue],
 ) -> list[ShortTermDesire]:
-    """消费排序：类型级表达权重降序（越愿表达越先消费），同权按 created_at 升序（FIFO 稳定）。
+    """消费排序：类型级表达权重降序（越愿表达越先消费），同权按 created_at 升序
+    （FIFO 稳定）。
 
     expression_weight 缺省（该类型无 DesireValue 记录）按 0.0 处理。
     """
@@ -86,7 +87,8 @@ def build_schedule(
 
     契约：调用方先 rank_desires 排序（本函数保持输入顺序，不自行排序）。
     精力模拟：逐块累加 energy_delta；精力跌破 _REST_ENERGY_THRESHOLD 时，
-    在下一活动前插 REST 块恢复，直到回到阈值之上；energy_delta.rest <= 0 时跳过（防死循环）。
+    在下一活动前插 REST 块恢复，直到回到阈值之上；energy_delta.rest <= 0 时
+    跳过（防死循环）。
     """
     result: list[ActivityType] = []
     cur = energy

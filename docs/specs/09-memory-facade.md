@@ -15,7 +15,7 @@
 
 ## 验收标准
 
-- [ ] `facade.py` 含 `MemoryFacade` + `decay_freshness` / `_parse_scene` / `_build_scene_prompt` / `_has_negation` / `_content_preview` / `_build_contradiction_prompt` / `_parse_contradiction` / `_memory_to_dict` / `_memory_to_markdown` / `_internal_event`，与「`memory/facade.py`（完整）」段代码逐字一致
+- [ ] `facade.py` 含 `MemoryFacade` + `decay_freshness` / `_parse_scene` / `_build_scene_prompt` / `_has_negation` / `_content_preview` / `_build_contradiction_prompt` / `_parse_contradiction` / `_memory_to_dict` / `_memory_to_markdown`，与「`memory/facade.py`（完整）」段代码逐字一致
 - [ ] 五个公开方法签名与 tech-ref §5 逐字一致：`create_scene_memory(reply_context: dict[str, str]) -> Memory` / `search(query) -> list[Memory]` / `record_recall(memory_id) -> None` / `list_memories(tag, type) -> list[Memory]` / `export(fmt) -> str`
 - [ ] `create_scene_memory`：LLM 调用 1（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）产出三样 → 入短期（`freshness=1.0`）→ 算 embedding → 建边 → 矛盾检测（门控，可能调用 2）→ 命中矛盾发布 `reflection` → 衰减+淘汰 → 发布 `memory_created` → 返回 `Memory`
 - [ ] 矛盾检测门控：`embedding=None` 或召回 top-K 候选相似度全低于 `_CONTRADICTION_SIM_THRESHOLD` → **0 次**矛盾 LLM 调用；有候选过阈值 → **1 次**矛盾 LLM 调用（`output_type="contradiction"`），单任务判 `conflicts_with`
@@ -51,7 +51,7 @@
 - **建边与矛盾候选复用 `_similar`（跨模块去重）**：`_similar(query_vec, exclude_id)` 是「排除某 id 后、query 向量 vs 全表记忆余弦排序（`s>0` 保留、降序）」的共享 helper；建边取 `[:_EDGE_TOP_K]`、矛盾门控取 `[:_RECALL_TOP_K]` 再 `s >= threshold` 过滤。两处各自调用（余弦 O(N)、本地 ≤ 几百条，代价可忽略，不值得为省这点把 scored 传参破坏两方法内聚）。核心「打分+过滤+排序」循环不在 facade 重写——复用 08 抽出的 `rank_by_cosine` 纯函数（`_similar` 只做 exclude + 委托，与 08 `_vector_search` 同一份实现，facade 不再直接 import `cosine`）
 - **`reply_context` 契约**：`dict[str, str]`，键 `correlation_id`（溯源）/ `user_message`（用户说了什么）/ `nyx_think`（尼克斯内心）/ `nyx_speak`（尼克斯说了什么）——由 17-expression 慢通道填充。缺键 `KeyError`（fail-fast，契约违反立即暴露，不静默降级）
 - **建边机制（决策，可推翻）**：新记忆与已有记忆按 `embedding` 余弦相似度建边，`_EDGE_TOP_K=3`、`weight=相似度`、`s > 0` 才建；`embed=None` 或新记忆无 embedding → 跳过。方向 `new → old`，`MemoryGraph` 无向所以方向无关
-- **新鲜度衰减（决策，可推翻）**：纯函数 `decay_freshness(freshness, created_at, now, rate) = max(0, freshness - rate × elapsed_days)`，`rate` 单位「/天」（`_SECONDS_PER_DAY=86400.0`；02-config 的 `freshness_decay=0.01` 未标单位，此处定为「0.01/天」，要改单位翻这里一处）。触发点 = `create_scene_memory` 的 `_decay_and_evict` 扫描：读全表 → 逐条衰减回写 → 短期满则挤掉最低新鲜度（平局按 `created_at` 早的优先）。**局限**：两次创建之间新鲜度不变；但衰减单调（越旧越衰减），相对顺序保持，「长期只新鲜度下降、检索排后」的语义不破坏。O(N) 写/次创建，本地单用户 ≤ 几百条记忆，可接受
+- **新鲜度衰减（决策，可推翻）**：纯函数 `decay_freshness(freshness, created_at, now, rate) = max(0, freshness - rate × elapsed_days)`，`rate` 单位「/天」（`SECONDS_PER_DAY=86400.0`，共享常量见 events/event.py；02-config 的 `freshness_decay=0.01` 未标单位，此处定为「0.01/天」，要改单位翻 events/event.py 一处）。触发点 = `create_scene_memory` 的 `_decay_and_evict` 扫描：读全表 → 逐条衰减回写 → 短期满则挤掉最低新鲜度（平局按 `created_at` 早的优先）。**局限**：两次创建之间新鲜度不变；但衰减单调（越旧越衰减），相对顺序保持，「长期只新鲜度下降、检索排后」的语义不破坏。O(N) 写/次创建，本地单用户 ≤ 几百条记忆，可接受
 - **事件 content（tech-ref §4 未定义这两者的 SSE payload，最小化）**：`memory_created` / `memory_promoted` = `{"memory_id": id}`；`reflection` = `{"summary": str}`（含冲突双方 id 的可溯源字符串）。SSE 完整 payload 形状归 18-api/frontend 细化
 - **`record_recall` 的 `correlation_id`（已知局限）**：tech-ref 签名只有 `record_recall(memory_id)`，无上游 correlation，故 `memory_promoted` 的 `correlation_id = memory_id`（溯源到记忆本身，与触发它的 reply 因果链在此断开）。`memory_created` / `reflection` 用 `reply_context["correlation_id"]` 接上 reply 链
 - **`search` / `list_memories` 纯委托**：不重写 SQL、不做二次过滤；衰减/淘汰已在写入侧处理
@@ -67,13 +67,14 @@ from typing import Any, cast
 from uuid import uuid4
 
 from nyx.config import MemoryConfig
-from nyx.enums import EventType, MemoryType, Source
+from nyx.enums import EventType, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, rank_by_cosine
 from nyx.memory.store import MemoryStore
-from nyx.types import Event, Memory
+from nyx.types import Memory
 
 _SCENE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -94,7 +95,6 @@ _EDGE_TOP_K = 3
 _RECALL_TOP_K = 5
 _CONTRADICTION_SIM_THRESHOLD = 0.6
 _CONTENT_PREVIEW_CHARS = 60
-_SECONDS_PER_DAY = 86400.0
 _NEGATION_WORDS = ("不", "没", "别", "讨厌", "恨", "拒绝", "否认", "放弃", "再也不")
 
 
@@ -102,7 +102,7 @@ def decay_freshness(
     freshness: float, created_at: float, now: float, rate: float
 ) -> float:
     """新鲜度线性衰减（rate/天），下限 0。纯函数。"""
-    elapsed_days = max(0.0, now - created_at) / _SECONDS_PER_DAY
+    elapsed_days = max(0.0, now - created_at) / SECONDS_PER_DAY
     return max(0.0, freshness - rate * elapsed_days)
 
 
@@ -196,19 +196,6 @@ def _memory_to_markdown(m: Memory) -> str:
     return f"## {m.summary}\n\n{m.content}\n\n标签：{m.tag}"
 
 
-def _internal_event(
-    type_: EventType, content: dict[str, Any], correlation_id: str
-) -> Event:
-    return Event(
-        id=str(uuid4()),
-        timestamp=time.time(),
-        source=Source.INTERNAL,
-        type=type_,
-        content=content,
-        correlation_id=correlation_id,
-    )
-
-
 class MemoryFacade:
     """记忆模块门面：场景化记忆创建 + 检索 + 想起升级 + 新鲜度衰减/淘汰 + 导出。
 
@@ -282,7 +269,7 @@ class MemoryFacade:
         await self._decay_and_evict(now)
 
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.MEMORY_CREATED,
                 {"memory_id": memory.id},
                 reply_context["correlation_id"],
@@ -301,7 +288,7 @@ class MemoryFacade:
         )
         if promoted:
             await self._bus.publish(
-                _internal_event(
+                internal_event(
                     EventType.MEMORY_PROMOTED, {"memory_id": memory_id}, memory_id
                 )
             )
@@ -367,7 +354,7 @@ class MemoryFacade:
             return
         if conflicts_with is not None:
             await self._bus.publish(
-                _internal_event(
+                internal_event(
                     EventType.REFLECTION,
                     {
                         "summary": (

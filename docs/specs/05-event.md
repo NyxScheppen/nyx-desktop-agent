@@ -1,6 +1,6 @@
 # 事件总线 + 路由
 
-> 范围：`events/bus.py`（`EventBus`：publish / subscribe / run / list_events + add_sse_sink / remove_sse_sink）、`events/routing.py`（`ROUTING` / `TICK_ROUTING` 纯数据）、`event_log` 持久化、`correlation_id` 溯源约定。
+> 范围：`events/bus.py`（`EventBus`：publish / subscribe / run / list_events + add_sse_sink / remove_sse_sink）、`events/routing.py`（`ROUTING` / `TICK_ROUTING` 纯数据）、`events/event.py`（`internal_event` 内部事件构造 + `SECONDS_PER_DAY`/`SECONDS_PER_HOUR` 时间单位常量，各 Facade 共享）、`event_log` 持久化、`correlation_id` 溯源约定。
 > 纯基础设施 spec：总线是通信管道，不含任何 Facade 业务逻辑、不含 API（SSE HTTP 端点归 18-api，本 spec 只提供 sink 机制）。
 > **本文件自包含**：`ROUTING` / `TICK_ROUTING` 与 `bus.py` 完整代码内联在下文，实现不依赖 tech-ref §5 之外的描述。
 
@@ -16,6 +16,7 @@
 
 - [ ] `bus.py` 含 `EventBus`（`__init__(db)` + `publish` / `subscribe` / `run` / `list_events` / `add_sse_sink` / `remove_sse_sink`），与「`events/bus.py`（完整）」段代码逐字一致
 - [ ] `routing.py` 含 `ROUTING`（17 键）+ `TICK_ROUTING`（4 键），与「`events/routing.py`（完整）」段代码逐字一致
+- [ ] `event.py` 含 `internal_event(type_, content, correlation_id) -> Event`（新 `uuid4` id + `time.time` 时间戳 + `Source.INTERNAL`）与 `SECONDS_PER_DAY`/`SECONDS_PER_HOUR` 常量，与「`events/event.py`（完整）」段代码逐字一致
 - [ ] `publish()` 只入队（无 I/O、不落库）；`run()` 按「persist → 内部分发 → SSE 广播」顺序处理
 - [ ] 多 handler 按订阅序调用；handler 收到完整 `Event`（含 `correlation_id`，供下游继承）
 - [ ] SSE sink 收到**全部**事件（含 `ROUTING` 为空的 `think`/`speak` 等）；`add`/`remove_sse_sink` 生效
@@ -40,6 +41,40 @@
 - **correlation_id 是发布者约定**：总线不生成、不修改 `id` / `timestamp` / `correlation_id`，只透传 + `list_events` 按它过滤。溯源链：根事件（用户消息/时钟/观察）`correlation_id = 自身 id`；下游事件 `correlation_id = 上游 Event.correlation_id`（恒定根——同一因果链的事件共享同一 correlation_id）；前端按 `correlation_id` 分组、沿 `timestamp` 排序溯源
 - **共享连接并发安全**：04-db 的 `connect()` 返回 `Database(conn, lock)`，组合根（18-api）把它注入所有 store；store 的 DB 读写都 `async with self._db.lock:` 串行化（同一 `aiosqlite.Connection` 不能并发 execute/commit）。`EventBus.__init__(db)` 即此约定首个落地处
 - **event_log 行↔Event 序列化归总线**：05-event 拥有 `event_log`（04-db 表归属表已定），`_row_to_event` / `_persist` 内联在本文件
+- **`internal_event` + 时间单位常量抽出共享**：desire/memory/inner_life/activity 四个 Facade 都发布内部事件、都算时间衰减/恢复，原 `_internal_event`（uuid4/time.time/Source.INTERNAL）与 `_SECONDS_PER_DAY` 三处复制。抽到 `events/event.py` 单一模块，Event 结构或时间戳语义一变只改这一处（反冗余）
+
+### `events/event.py`（完整）
+
+```python
+"""事件构造 + 时间单位常量（跨模块共享原语）。
+
+内部事件构造与时间单位常量在 desire/memory/inner_life/activity 四个 Facade
+重复，抽出到此统一维护——Event 结构或时间戳语义一变，只改这一处。
+"""
+import time
+from typing import Any
+from uuid import uuid4
+
+from nyx.enums import EventType, Source
+from nyx.types import Event
+
+SECONDS_PER_DAY = 86400.0
+SECONDS_PER_HOUR = 3600.0
+
+
+def internal_event(
+    type_: EventType, content: dict[str, Any], correlation_id: str
+) -> Event:
+    """构造内部事件：新 uuid4 + 当前时间戳 + Source.INTERNAL。"""
+    return Event(
+        id=str(uuid4()),
+        timestamp=time.time(),
+        source=Source.INTERNAL,
+        type=type_,
+        content=content,
+        correlation_id=correlation_id,
+    )
+```
 
 ### `events/routing.py`（完整）
 
@@ -204,6 +239,7 @@ def _row_to_event(row: aiosqlite.Row) -> Event:
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_event/`：
+  - [ ] **事件构造原语**（`test_event.py`，无 DB）：`internal_event(EventType.MUTTER, {}, "c")` → `Event` 的 `source is Source.INTERNAL`、`type`/`content`/`correlation_id` 原样、`id` 非空 str、`timestamp` 是 float；`SECONDS_PER_DAY == 86400.0`、`SECONDS_PER_HOUR == 3600.0`
   - [ ] **纯数据**（`test_routing.py`，不实例化总线）：`set(ROUTING.keys()) == set(EventType) - {EventType.CLOCK_TICK}`（17 键）；`set(TICK_ROUTING.keys()) == set(TickType)`（4 键）；所有值的模块名 ⊆ `{"expression", "inner_life", "desire", "activity"}`
   - [ ] **总线机制**（`test_bus.py`，`db = await connect(":memory:")`——内部已设 `row_factory=aiosqlite.Row` + 跑迁移，直接返回 `Database`；`list_events` 的 `_row_to_event` 按列名 `row["id"]` 取值，缺 row_factory 会 TypeError）+ fake async handler + 真 `asyncio.Queue` sink）：
     - [ ] `publish` 只入队：publish 后 handler 未调用、`list_events()` 无记录（未到 run）

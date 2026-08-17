@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from typing import Any, cast
 from uuid import uuid4
@@ -17,6 +18,15 @@ _MAX_DRIFT = 0.5               # 每轮性格/三观单维最大漂移
 _LONG_TERM_INIT_STRENGTH = 0.5  # 新长期欲望初始迫切度
 _SCALE_LO = 1.0                # 性格/三观范围下限
 _SCALE_HI = 10.0               # 性格/三观范围上限
+
+# 漂移 key 白名单（对齐 types.py 的 Personality/Values TypedDict 键名）
+_PERSONALITY_KEYS = frozenset(
+    {"openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"}
+)
+_VALUES_KEYS = frozenset(
+    {"attitude_to_human", "ai_identity_acceptance", "altruism", "optimism"}
+)
+_logger = logging.getLogger(__name__)
 
 _REFLECTION_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -144,9 +154,15 @@ def _parse_reflection(raw: str) -> dict[str, Any]:
     values_delta = parsed.get("values_delta")
     if values_delta is None:
         values_delta = cast(dict[str, Any], {})
-    for d in (personality_delta, values_delta):
+    for d, allowed in (
+        (personality_delta, _PERSONALITY_KEYS),
+        (values_delta, _VALUES_KEYS),
+    ):
         if not isinstance(d, dict):
             raise ValueError("反思 JSON 的漂移应是对象")
+        unknown = set(cast(dict[str, Any], d)) - allowed
+        if unknown:
+            raise ValueError(f"反思 JSON 漂移含未知维度 {sorted(unknown, key=str)!r}")
         for k, v in cast(dict[str, Any], d).items():
             if not isinstance(v, (int, float)) or isinstance(v, bool):
                 raise ValueError(f"漂移值应是数值，{k}={v!r}")
@@ -155,15 +171,23 @@ def _parse_reflection(raw: str) -> dict[str, Any]:
         long_term_desires = cast(list[Any], [])
     if not isinstance(long_term_desires, list):
         raise ValueError("反思 JSON 的 long_term_desires 应是数组")
+    valid_candidates: list[dict[str, Any]] = []
     for c in cast(list[Any], long_term_desires):
-        _validate_candidate(c)
+        try:
+            _validate_candidate(c)
+        except ValueError:
+            # best-effort：单个坏候选只跳过，不中断整次反思回写
+            # （长期欲望是增量，核心 story/becoming/性格/三观不受影响）。
+            _logger.warning("反思长期欲望候选非法，已跳过：%r", c)
+            continue
+        valid_candidates.append(cast(dict[str, Any], c))
     return {
         "story": story,
         "becoming": becoming,
         "self_view": self_view,
         "personality_delta": personality_delta,
         "values_delta": values_delta,
-        "long_term_desires": long_term_desires,
+        "long_term_desires": valid_candidates,
     }
 
 

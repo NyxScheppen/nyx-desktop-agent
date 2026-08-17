@@ -234,6 +234,7 @@ nyx/
   events/
     bus.py                # EventBus
     routing.py            # ROUTING 表
+    event.py              # internal_event 内部事件构造 + SECONDS_PER_DAY/PER_HOUR 时间常量
   memory/
     facade.py             # MemoryFacade
     store.py              # SQLite 存取

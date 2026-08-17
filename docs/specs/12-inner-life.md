@@ -19,7 +19,7 @@
 - [ ] `store.py` 含 `InnerLifeStore`（`get_personality` / `upsert_personality` / `get_values` / `upsert_values` / `get_energy` / `upsert_energy` / `get_narrative` / `upsert_narrative`），与「`inner_life/store.py`（完整）」段代码逐字一致
 - [ ] `emotion.py` 含 `clamp_valence` / `clamp_arousal` / `decay_emotion` / `apply_offset` / `event_offset` / `vad_to_category` / `resolve_emotion` + 常量，与「`inner_life/emotion.py`（完整）」段代码逐字一致
 - [ ] `reflection.py` 含 `Reflection` + `drift_personality` / `drift_values` / `_drift_dim` / `_build_reflection_prompt` / `_parse_reflection` / `_validate_candidate` / `_to_long_term`，与「`inner_life/reflection.py`（完整）」段代码逐字一致
-- [ ] `facade.py` 含 `InnerLifeFacade`（`apply_event` / `reflect` / `get_state` / `get_narrative`）+ `energy_to_state` / `_internal_event`，四个公开方法签名与 tech-ref §5 逐字一致
+- [ ] `facade.py` 含 `InnerLifeFacade`（`apply_event` / `reflect` / `get_state` / `get_narrative`）+ `energy_to_state`，四个公开方法签名与 tech-ref §5 逐字一致
 - [ ] `vad_to_category` 只落 6 档（neutral/happy/sad/angry/worried/shy），`resolve_emotion` 补 sleepy/thinking 两档覆盖；优先级 **困倦 > 思考 > 情绪**
 - [ ] `apply_event`：情感衰减（回基线 0,0）+ 事件偏移（`event_offset` 纯函数）；`ACTIVITY_END` 额外按 `energy_delta` 更新精力（含闲置恢复 + clamp + 重算档位）；`REFLECTION` 额外调 `reflect()`；每次情感变化发布 `EMOTION_UPDATE`（content 含 `valence`/`arousal`/`emotion`）
 - [ ] `reflect()`：读近期记忆 + 当前性格/三观/叙事/长期欲望 → **1 次 LLM**（`module="inner_life"`、`output_type="reflection"`、`json_mode=True`、`correlation_id` 透传自触发事件）→ 规则回写（性格/三观漂移 clamp 到 `[1,10]`、单维漂移 ≤ `_MAX_DRIFT`；叙事 story/becoming 追加、self_view 合并；长期欲望候选在 `long_term_capacity` 内逐个 `add_long_term`）
@@ -293,6 +293,7 @@ class InnerLifeStore:
 
 ```python
 import json
+import logging
 import time
 from typing import Any, cast
 from uuid import uuid4
@@ -311,6 +312,15 @@ _MAX_DRIFT = 0.5               # 每轮性格/三观单维最大漂移
 _LONG_TERM_INIT_STRENGTH = 0.5  # 新长期欲望初始迫切度
 _SCALE_LO = 1.0                # 性格/三观范围下限
 _SCALE_HI = 10.0               # 性格/三观范围上限
+
+# 漂移 key 白名单（对齐 types.py 的 Personality/Values TypedDict 键名）
+_PERSONALITY_KEYS = frozenset(
+    {"openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"}
+)
+_VALUES_KEYS = frozenset(
+    {"attitude_to_human", "ai_identity_acceptance", "altruism", "optimism"}
+)
+_logger = logging.getLogger(__name__)
 
 _REFLECTION_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -438,9 +448,15 @@ def _parse_reflection(raw: str) -> dict[str, Any]:
     values_delta = parsed.get("values_delta")
     if values_delta is None:
         values_delta = cast(dict[str, Any], {})
-    for d in (personality_delta, values_delta):
+    for d, allowed in (
+        (personality_delta, _PERSONALITY_KEYS),
+        (values_delta, _VALUES_KEYS),
+    ):
         if not isinstance(d, dict):
             raise ValueError("反思 JSON 的漂移应是对象")
+        unknown = set(cast(dict[str, Any], d)) - allowed
+        if unknown:
+            raise ValueError(f"反思 JSON 漂移含未知维度 {sorted(unknown, key=str)!r}")
         for k, v in cast(dict[str, Any], d).items():
             if not isinstance(v, (int, float)) or isinstance(v, bool):
                 raise ValueError(f"漂移值应是数值，{k}={v!r}")
@@ -449,15 +465,23 @@ def _parse_reflection(raw: str) -> dict[str, Any]:
         long_term_desires = cast(list[Any], [])
     if not isinstance(long_term_desires, list):
         raise ValueError("反思 JSON 的 long_term_desires 应是数组")
+    valid_candidates: list[dict[str, Any]] = []
     for c in cast(list[Any], long_term_desires):
-        _validate_candidate(c)
+        try:
+            _validate_candidate(c)
+        except ValueError:
+            # best-effort：单个坏候选只跳过，不中断整次反思回写
+            # （长期欲望是增量，核心 story/becoming/性格/三观不受影响）。
+            _logger.warning("反思长期欲望候选非法，已跳过：%r", c)
+            continue
+        valid_candidates.append(cast(dict[str, Any], c))
     return {
         "story": story,
         "becoming": becoming,
         "self_view": self_view,
         "personality_delta": personality_delta,
         "values_delta": values_delta,
-        "long_term_desires": long_term_desires,
+        "long_term_desires": valid_candidates,
     }
 
 
@@ -553,15 +577,14 @@ class Reflection:
 
 ```python
 import time
-from typing import Any
-from uuid import uuid4
 
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ActivityType, EnergyState, EventType, Source
+from nyx.enums import ActivityType, EnergyState, EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
 from nyx.inner_life.emotion import (
     BASELINE_AROUSAL,
     BASELINE_VALENCE,
@@ -578,8 +601,6 @@ from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.types import CurrentState, Event, SelfNarrative
 
-_SECONDS_PER_DAY = 86400.0
-_SECONDS_PER_HOUR = 3600.0
 _ENERGY_RECOVERY_PER_HOUR = 5.0   # 闲置每小时恢复（"夜间自动恢复"简化为恒定闲置恢复）
 
 _ENERGY_TIERS = (
@@ -596,19 +617,6 @@ def energy_to_state(value: float) -> EnergyState:
         if value >= threshold:
             return state
     return EnergyState.DRAINED
-
-
-def _internal_event(
-    type_: EventType, content: dict[str, Any], correlation_id: str
-) -> Event:
-    return Event(
-        id=str(uuid4()),
-        timestamp=time.time(),
-        source=Source.INTERNAL,
-        type=type_,
-        content=content,
-        correlation_id=correlation_id,
-    )
 
 
 class InnerLifeFacade:
@@ -646,7 +654,7 @@ class InnerLifeFacade:
         """情感/精力更新入口：衰减 + 偏移；ACTIVITY_END 额外更新精力；
         REFLECTION 额外触发反思。"""
         now = time.time()
-        elapsed_days = max(0.0, now - self._emotion_updated_at) / _SECONDS_PER_DAY
+        elapsed_days = max(0.0, now - self._emotion_updated_at) / SECONDS_PER_DAY
         self._valence, self._arousal = decay_emotion(
             self._valence, self._arousal, elapsed_days, EMOTION_DECAY_RATE
         )
@@ -706,7 +714,7 @@ class InnerLifeFacade:
         if energy is None:
             raise RuntimeError("energy 未初始化（18-api 组合根必须先 seed）")
         value, _ = energy
-        elapsed_hours = max(0.0, now - self._energy_updated_at) / _SECONDS_PER_HOUR
+        elapsed_hours = max(0.0, now - self._energy_updated_at) / SECONDS_PER_HOUR
         value += _ENERGY_RECOVERY_PER_HOUR * elapsed_hours
         delta = event.content.get("energy_delta")
         if isinstance(delta, (int, float)) and not isinstance(delta, bool):
@@ -730,7 +738,7 @@ class InnerLifeFacade:
             await self._current_activity_type(),
         )
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.EMOTION_UPDATE,
                 {
                     "valence": self._valence,
@@ -762,7 +770,7 @@ class InnerLifeFacade:
     - [ ] `_drift_dim`：`delta=None` → 不变；`delta=+0.3` → `base+0.3`；`delta=+2` → clamp 到 `+0.5`；`base=9.8, delta=+0.5` → clamp 到 10.0；`base=1.2, delta=-0.5` → clamp 到 1.0
     - [ ] `drift_personality` / `drift_values`：只改 delta 里出现的维、其余维不变；结果 clamp 到 `[1,10]`
     - [ ] `_build_reflection_prompt`：含近期记忆摘要、当前性格/三观数值、叙事身份、长期欲望名；空输入 → 含「（无）」
-    - [ ] `_parse_reflection`：合法 JSON → 各字段；缺 `story`/`becoming` → `ValueError`；`self_view` 值非 str → `ValueError`；漂移值非数值 → `ValueError`；`long_term_desires` 非数组 → `ValueError`；空 `long_term_desires`/`personality_delta`（缺省/`null`）→ 默认 `[]`/`{}`；`self_view`/`personality_delta`/`long_term_desires` 是 `[]`/`""` 等错类型 → `ValueError`（不静默吞）
+    - [ ] `_parse_reflection`：合法 JSON → 各字段；缺 `story`/`becoming` → `ValueError`；`self_view` 值非 str → `ValueError`；漂移值非数值 → `ValueError`；漂移 key 不在允许维度集（如 `openess` 拼错）→ `ValueError`（不静默停格）；`long_term_desires` 非数组 → `ValueError`；空 `long_term_desires`/`personality_delta`（缺省/`null`）→ 默认 `[]`/`{}`；`self_view`/`personality_delta`/`long_term_desires` 是 `[]`/`""` 等错类型 → `ValueError`（不静默吞）；单个坏候选 → best-effort 跳过（log），其余合法候选保留、不中断整次回写
     - [ ] `_validate_candidate`：`type` 非法 → `ValueError`；缺 `name` → `ValueError`；`subtopics` 非字符串数组 → `ValueError`
     - [ ] `_to_long_term`：`type` 转 `DesireType`、`strength == _LONG_TERM_INIT_STRENGTH`、`progress == 0.0`
   - [ ] **reflection.run**：

@@ -1,13 +1,12 @@
 import time
-from typing import Any
-from uuid import uuid4
 
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ActivityType, EnergyState, EventType, Source
+from nyx.enums import ActivityType, EnergyState, EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
 from nyx.inner_life.emotion import (
     BASELINE_AROUSAL,
     BASELINE_VALENCE,
@@ -24,8 +23,6 @@ from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.types import CurrentState, Event, SelfNarrative
 
-_SECONDS_PER_DAY = 86400.0
-_SECONDS_PER_HOUR = 3600.0
 _ENERGY_RECOVERY_PER_HOUR = 5.0   # 闲置每小时恢复（"夜间自动恢复"简化为恒定闲置恢复）
 
 _ENERGY_TIERS = (
@@ -42,19 +39,6 @@ def energy_to_state(value: float) -> EnergyState:
         if value >= threshold:
             return state
     return EnergyState.DRAINED
-
-
-def _internal_event(
-    type_: EventType, content: dict[str, Any], correlation_id: str
-) -> Event:
-    return Event(
-        id=str(uuid4()),
-        timestamp=time.time(),
-        source=Source.INTERNAL,
-        type=type_,
-        content=content,
-        correlation_id=correlation_id,
-    )
 
 
 class InnerLifeFacade:
@@ -92,7 +76,7 @@ class InnerLifeFacade:
         """情感/精力更新入口：衰减 + 偏移；ACTIVITY_END 额外更新精力；
         REFLECTION 额外触发反思。"""
         now = time.time()
-        elapsed_days = max(0.0, now - self._emotion_updated_at) / _SECONDS_PER_DAY
+        elapsed_days = max(0.0, now - self._emotion_updated_at) / SECONDS_PER_DAY
         self._valence, self._arousal = decay_emotion(
             self._valence, self._arousal, elapsed_days, EMOTION_DECAY_RATE
         )
@@ -152,7 +136,7 @@ class InnerLifeFacade:
         if energy is None:
             raise RuntimeError("energy 未初始化（18-api 组合根必须先 seed）")
         value, _ = energy
-        elapsed_hours = max(0.0, now - self._energy_updated_at) / _SECONDS_PER_HOUR
+        elapsed_hours = max(0.0, now - self._energy_updated_at) / SECONDS_PER_HOUR
         value += _ENERGY_RECOVERY_PER_HOUR * elapsed_hours
         delta = event.content.get("energy_delta")
         if isinstance(delta, (int, float)) and not isinstance(delta, bool):
@@ -176,7 +160,7 @@ class InnerLifeFacade:
             await self._current_activity_type(),
         )
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.EMOTION_UPDATE,
                 {
                     "valence": self._valence,

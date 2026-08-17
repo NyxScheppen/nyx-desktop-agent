@@ -5,13 +5,14 @@ from typing import Any, cast
 from uuid import uuid4
 
 from nyx.config import MemoryConfig
-from nyx.enums import EventType, MemoryType, Source
+from nyx.enums import EventType, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, rank_by_cosine
 from nyx.memory.store import MemoryStore
-from nyx.types import Event, Memory
+from nyx.types import Memory
 
 _SCENE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -32,7 +33,6 @@ _EDGE_TOP_K = 3
 _RECALL_TOP_K = 5
 _CONTRADICTION_SIM_THRESHOLD = 0.6
 _CONTENT_PREVIEW_CHARS = 60
-_SECONDS_PER_DAY = 86400.0
 _NEGATION_WORDS = ("不", "没", "别", "讨厌", "恨", "拒绝", "否认", "放弃", "再也不")
 
 
@@ -40,7 +40,7 @@ def decay_freshness(
     freshness: float, created_at: float, now: float, rate: float
 ) -> float:
     """新鲜度线性衰减（rate/天），下限 0。纯函数。"""
-    elapsed_days = max(0.0, now - created_at) / _SECONDS_PER_DAY
+    elapsed_days = max(0.0, now - created_at) / SECONDS_PER_DAY
     return max(0.0, freshness - rate * elapsed_days)
 
 
@@ -134,19 +134,6 @@ def _memory_to_markdown(m: Memory) -> str:
     return f"## {m.summary}\n\n{m.content}\n\n标签：{m.tag}"
 
 
-def _internal_event(
-    type_: EventType, content: dict[str, Any], correlation_id: str
-) -> Event:
-    return Event(
-        id=str(uuid4()),
-        timestamp=time.time(),
-        source=Source.INTERNAL,
-        type=type_,
-        content=content,
-        correlation_id=correlation_id,
-    )
-
-
 class MemoryFacade:
     """记忆模块门面：场景化记忆创建 + 检索 + 想起升级 + 新鲜度衰减/淘汰 + 导出。
 
@@ -220,7 +207,7 @@ class MemoryFacade:
         await self._decay_and_evict(now)
 
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.MEMORY_CREATED,
                 {"memory_id": memory.id},
                 reply_context["correlation_id"],
@@ -239,7 +226,7 @@ class MemoryFacade:
         )
         if promoted:
             await self._bus.publish(
-                _internal_event(
+                internal_event(
                     EventType.MEMORY_PROMOTED, {"memory_id": memory_id}, memory_id
                 )
             )
@@ -305,7 +292,7 @@ class MemoryFacade:
             return
         if conflicts_with is not None:
             await self._bus.publish(
-                _internal_event(
+                internal_event(
                     EventType.REFLECTION,
                     {
                         "summary": (

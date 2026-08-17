@@ -16,9 +16,10 @@ from nyx.desire.value import (
     raise_suppression,
     reinforce_weight,
 )
-from nyx.enums import DesireStatus, DesireType, EventType, GoalAction, Source
+from nyx.enums import DesireStatus, DesireType, EventType, GoalAction
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
 from nyx.types import DesireValue, Event, Goal, LongTermDesire, ShortTermDesire
 
@@ -26,7 +27,6 @@ _OBSERVATION_PRESSURE_DELTA = 0.15    # 观察状态 → 互动欲 +0.15
 _LONG_TERM_PRESSURE_DELTA = 0.2       # 每个长期欲望周期 → 对应类型 +0.2
 _LONG_TERM_PROGRESS_DELTA = 0.1       # 满足一次长期进度 +0.1
 _LONG_TERM_STRENGTH_DECAY = 0.02      # 满足一次长期迫切度 -0.02
-_SECONDS_PER_DAY = 86400.0
 
 _DESIRE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -76,19 +76,6 @@ def _topic_seed(type_: DesireType, long_term: list[LongTermDesire]) -> str | Non
         if lt.type is type_ and lt.subtopics:
             return lt.subtopics[0]
     return None
-
-
-def _internal_event(
-    type_: EventType, content: dict[str, Any], correlation_id: str
-) -> Event:
-    return Event(
-        id=str(uuid4()),
-        timestamp=time.time(),
-        source=Source.INTERNAL,
-        type=type_,
-        content=content,
-        correlation_id=correlation_id,
-    )
 
 
 class DesireLifecycle:
@@ -144,7 +131,7 @@ class DesireLifecycle:
         # 1. 四类型衰减（结算时间流逝）
         for t in DesireType:
             dv = values[t]
-            elapsed_days = max(0.0, now - dv.updated_at) / _SECONDS_PER_DAY
+            elapsed_days = max(0.0, now - dv.updated_at) / SECONDS_PER_DAY
             dv.value = decay_value(dv.value, elapsed_days, self._config.value_decay)
             dv.updated_at = now
 
@@ -222,7 +209,7 @@ class DesireLifecycle:
 
         # 9. 发布
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.DESIRE_GENERATED, {"desire_id": desire.id}, desire.id
             )
         )
@@ -258,7 +245,7 @@ class DesireLifecycle:
         await self._store.update_desire(desire)
         await self._reinforce(desire.type)
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.DESIRE_SATISFIED,
                 {"desire_id": desire.id},
                 desire.id,
@@ -270,7 +257,7 @@ class DesireLifecycle:
         await self._store.update_desire(desire)
         await self._suppress(desire.type)
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.DESIRE_EXPIRED,
                 {"desire_id": desire.id},
                 desire.id,

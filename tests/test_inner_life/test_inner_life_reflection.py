@@ -244,6 +244,48 @@ def test_parse_reflection_defaults() -> None:
     assert parsed["long_term_desires"] == []
 
 
+def test_parse_reflection_unknown_drift_key() -> None:
+    # 拼错的大五维度 key 不被静默丢弃，而是报错
+    with pytest.raises(ValueError):
+        _parse_reflection(
+            '{"story": "s", "becoming": "b", "personality_delta": {"openess": 0.4}}'
+        )
+    # 三观维度 key 拼错同样报错
+    with pytest.raises(ValueError):
+        _parse_reflection(
+            '{"story": "s", "becoming": "b", "values_delta": {"extroversion": 0.4}}'
+        )
+
+
+def test_parse_reflection_drops_bad_candidate() -> None:
+    raw = json.dumps(
+        {
+            "story": "s",
+            "becoming": "b",
+            "long_term_desires": [
+                {
+                    "type": "exploration",
+                    "name": "n",
+                    "description": "d",
+                    "subtopics": ["骑士团"],
+                },
+                # 坏候选：subtopics 是字符串而非数组
+                {
+                    "type": "exploration",
+                    "name": "bad",
+                    "description": "d",
+                    "subtopics": "骑士团",
+                },
+            ],
+        }
+    )
+    parsed = _parse_reflection(raw)
+    # 好候选保留，坏候选被跳过，核心字段照常解析
+    assert parsed["story"] == "s"
+    assert len(parsed["long_term_desires"]) == 1
+    assert parsed["long_term_desires"][0]["name"] == "n"
+
+
 def test_validate_candidate() -> None:
     with pytest.raises(ValueError):
         _validate_candidate(
@@ -364,6 +406,47 @@ async def test_run_long_term_capacity() -> None:
         await _seed(store)
         await reflection.run()
         assert len(desire.added) == 2
+    finally:
+        await database.conn.close()
+
+
+async def test_run_survives_bad_candidate() -> None:
+    response = json.dumps(
+        {
+            "story": "s",
+            "becoming": "b",
+            "self_view": {},
+            "personality_delta": {"openness": 0.1},
+            "values_delta": {},
+            "long_term_desires": [
+                {
+                    "type": "exploration",
+                    "name": "n",
+                    "description": "d",
+                    "subtopics": ["x"],
+                },
+                {"type": "fly", "name": "bad", "description": "d", "subtopics": []},
+            ],
+        }
+    )
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    llm = _FakeLlm(response)
+    desire = _FakeDesireFacade()
+    reflection = _make_reflection(
+        store, llm, _FakeEvaluator(), _FakeMemoryFacade(), desire
+    )
+    try:
+        await _seed(store)
+        await reflection.run()
+        # 核心慢变量不受坏候选影响，照常回写
+        n = await store.get_narrative()
+        assert n is not None and len(n.story) == 2
+        p = await store.get_personality()
+        assert p is not None and p["openness"] == pytest.approx(8.1)
+        # 只有好候选被新增
+        assert len(desire.added) == 1
+        assert desire.added[0].name == "n"
     finally:
         await database.conn.close()
 

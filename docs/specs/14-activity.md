@@ -171,26 +171,26 @@ from nyx.activity.scheduler import build_schedule, desire_to_activity, format_ti
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ActivityStatus, ActivityType, DesireType, EventType, Source, TickType
+from nyx.enums import ActivityStatus, ActivityType, DesireType, EventType, TickType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, CurrentState, Event, ShortTermDesire
 
-_SECONDS_PER_DAY = 86400.0
 _REFLECTION_ENERGY_THRESHOLD = 40.0   # 疲惫档下界（design §8.4），空槽默认发呆的精力分界，可推翻
 
 
 def _day_start(now: float) -> float:
     """当日零点（UTC 日边界，MVP 可推翻为本地时区）。纯函数。"""
-    return now - now % _SECONDS_PER_DAY
+    return now - now % SECONDS_PER_DAY
 
 
 def _current_hour(now: float) -> float:
     """当日已过小时数（浮点）。纯函数。"""
-    return (now % _SECONDS_PER_DAY) / 3600.0
+    return (now % SECONDS_PER_DAY) / SECONDS_PER_HOUR
 
 
 def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | None:
@@ -213,17 +213,6 @@ def _parse_activity_result(raw: str, output_type: str) -> dict[str, Any]:
     if not all(k in data for k in required):
         raise ValueError(f"活动结果 JSON 缺键：{required}")
     return data
-
-
-def _internal_event(type_: EventType, content: dict[str, Any], correlation_id: str) -> Event:
-    return Event(
-        id=str(uuid.uuid4()),
-        timestamp=time.time(),
-        source=Source.INTERNAL,
-        type=type_,
-        content=content,
-        correlation_id=correlation_id,
-    )
 
 
 class ActivityFacade:
@@ -331,7 +320,7 @@ class ActivityFacade:
         goal = activity.progress.get("goal")
         result = activity.progress.get("result", {})
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.ACTIVITY_END,
                 {
                     "activity_id": activity.id,
@@ -354,7 +343,7 @@ class ActivityFacade:
         activity.status = ActivityStatus.PAUSED
         await self._store.update(activity)
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.ACTIVITY_INTERRUPTED,
                 {"activity_id": activity_id, "by": by.value},
                 activity_id,
@@ -393,7 +382,7 @@ class ActivityFacade:
         activity.status = ActivityStatus.RUNNING
         await self._store.update(activity)
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.ACTIVITY_START,
                 {"activity_id": activity.id, "type": activity.type.value, "schedule_block_id": activity.schedule_block_id},
                 str(activity.progress.get("correlation_id") or activity.id),
@@ -411,7 +400,7 @@ class ActivityFacade:
             return await self._run_llm_activity(activity, "creation")
         if t is ActivityType.IDLE_REFLECTION:
             await self._bus.publish(
-                _internal_event(
+                internal_event(
                     EventType.REFLECTION,
                     {"activity_id": activity.id},
                     str(activity.progress.get("correlation_id") or activity.id),
@@ -484,7 +473,7 @@ def should_explore(energy: float, last_explored_at: float, rate_limit_hours: flo
     """
     if energy < _FREE_EXPLORATION_ENERGY:
         return False
-    if now - last_explored_at < rate_limit_hours * 3600.0:
+    if now - last_explored_at < rate_limit_hours * SECONDS_PER_HOUR:
         return False
     return True
 

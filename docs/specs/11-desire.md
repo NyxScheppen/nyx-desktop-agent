@@ -16,7 +16,7 @@
 ## 验收标准
 
 - [ ] `store.py` 含 `DesireStore`（`add_desire` / `get_desire` / `list_pending` / `list_short_term` / `update_desire` / `get_value` / `list_values` / `upsert_value` / `insert_long_term` / `list_long_term` / `update_long_term`）+ 序列化 helper，与「`desire/store.py`（完整）」段代码逐字一致
-- [ ] `lifecycle.py` 含 `DesireLifecycle`（`pressure_from_observation` / `satisfy_from_activity_end` / `run_eval` / `satisfy` / `expire`）+ `_parse_desire` / `_topic_seed` / `_build_desire_prompt` / `_internal_event`，与「`desire/lifecycle.py`（完整）」段代码逐字一致
+- [ ] `lifecycle.py` 含 `DesireLifecycle`（`pressure_from_observation` / `satisfy_from_activity_end` / `run_eval` / `satisfy` / `expire`）+ `_parse_desire` / `_topic_seed` / `_build_desire_prompt`，与「`desire/lifecycle.py`（完整）」段代码逐字一致
 - [ ] `facade.py` 含 `DesireFacade`，七个公开方法签名与 tech-ref §5 逐字一致：`add_value(source: Event) -> None` / `evaluate() -> list[ShortTermDesire]` / `get_pending() -> list[ShortTermDesire]` / `get_all() -> DesireState` / `satisfy(desire_id: str, goal_met: bool) -> None` / `expire(desire_id: str) -> None` / `add_long_term(desire: LongTermDesire) -> None`
 - [ ] `add_value` 是**事件入口**（对 tech-ref「加压」注释的精确化）：`OBSERVATION_STATE` → 互动欲加压，`ACTIVITY_END` → 解析满足信号回写；其余类型忽略
 - [ ] `run_eval`：先四类型衰减（`elapsed_days` 来自 `updated_at`）→ 长期欲望周期加压 → 达峰判定（`at_peak and is_expressible`）→ **只生成最迫切的 1 个**（value 最高）→ LLM 生成 → 重置该类型 value → 入队 → 发布 `desire_generated`；无达峰返回 `[]`，非选中类型**保留压力**（不重置）
@@ -293,9 +293,10 @@ from nyx.desire.value import (
     raise_suppression,
     reinforce_weight,
 )
-from nyx.enums import DesireStatus, DesireType, EventType, GoalAction, Source
+from nyx.enums import DesireStatus, DesireType, EventType, GoalAction
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
 from nyx.types import DesireValue, Event, Goal, LongTermDesire, ShortTermDesire
 
@@ -303,7 +304,6 @@ _OBSERVATION_PRESSURE_DELTA = 0.15    # 观察状态 → 互动欲 +0.15
 _LONG_TERM_PRESSURE_DELTA = 0.2       # 每个长期欲望周期 → 对应类型 +0.2
 _LONG_TERM_PROGRESS_DELTA = 0.1       # 满足一次长期进度 +0.1
 _LONG_TERM_STRENGTH_DECAY = 0.02      # 满足一次长期迫切度 -0.02
-_SECONDS_PER_DAY = 86400.0
 
 _DESIRE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -353,19 +353,6 @@ def _topic_seed(type_: DesireType, long_term: list[LongTermDesire]) -> str | Non
         if lt.type is type_ and lt.subtopics:
             return lt.subtopics[0]
     return None
-
-
-def _internal_event(
-    type_: EventType, content: dict[str, Any], correlation_id: str
-) -> Event:
-    return Event(
-        id=str(uuid4()),
-        timestamp=time.time(),
-        source=Source.INTERNAL,
-        type=type_,
-        content=content,
-        correlation_id=correlation_id,
-    )
 
 
 class DesireLifecycle:
@@ -421,7 +408,7 @@ class DesireLifecycle:
         # 1. 四类型衰减（结算时间流逝）
         for t in DesireType:
             dv = values[t]
-            elapsed_days = max(0.0, now - dv.updated_at) / _SECONDS_PER_DAY
+            elapsed_days = max(0.0, now - dv.updated_at) / SECONDS_PER_DAY
             dv.value = decay_value(dv.value, elapsed_days, self._config.value_decay)
             dv.updated_at = now
 
@@ -499,7 +486,7 @@ class DesireLifecycle:
 
         # 9. 发布
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.DESIRE_GENERATED, {"desire_id": desire.id}, desire.id
             )
         )
@@ -535,7 +522,7 @@ class DesireLifecycle:
         await self._store.update_desire(desire)
         await self._reinforce(desire.type)
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.DESIRE_SATISFIED,
                 {"desire_id": desire.id},
                 desire.id,
@@ -547,7 +534,7 @@ class DesireLifecycle:
         await self._store.update_desire(desire)
         await self._suppress(desire.type)
         await self._bus.publish(
-            _internal_event(
+            internal_event(
                 EventType.DESIRE_EXPIRED,
                 {"desire_id": desire.id},
                 desire.id,

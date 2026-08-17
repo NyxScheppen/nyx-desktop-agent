@@ -34,7 +34,10 @@
 ### `nyx/expression/prompt.py`（完整）
 
 ```python
-"""表达 prompt 拼装：canon + 动态状态 + 记忆 → system / user prompt。纯函数，无 IO、无 LLM。"""
+"""表达 prompt 拼装：canon + 动态状态 + 记忆 → system / user prompt。
+
+纯函数，无 IO、无 LLM。
+"""
 
 from nyx.types import CurrentState, Memory, Message, SelfNarrative, ShortTermDesire
 
@@ -65,7 +68,8 @@ def build_system_prompt(
 def build_user_prompt(message: str, context: list[Message]) -> str:
     """拼 user prompt：对话历史（按时间升序的回溯上下文）+ 本次用户消息。
 
-    不含 think/speak 任务指令——那是 17 节点的活（think 说「内心思考」、speak 说「说给用户」）。
+    不含 think/speak 任务指令——那是 17 节点的活
+    （think 说「内心思考」、speak 说「说给用户」）。
     """
     if not context:
         return message
@@ -83,13 +87,18 @@ def _state_block(state: CurrentState) -> str:
     """当前状态段：情感 / 精力 / 活动 / 性格 / 三观（数值直接拼，LLM 能读）。"""
     p = state.personality
     v = state.values
-    activity = state.current_activity.value if state.current_activity is not None else "空闲"
+    activity = (
+        state.current_activity.value
+        if state.current_activity is not None
+        else "空闲"
+    )
     return (
         "[当前状态]\n"
         f"情感：valence={state.valence:.2f}，arousal={state.arousal:.2f}，表情={state.emotion.value}\n"
         f"精力：{state.energy:.0f}/100（{state.energy_state.value}）\n"
         f"当前活动：{activity}\n"
-        f"性格（Big Five 1-10）：开放性{p['openness']:.0f}、尽责性{p['conscientiousness']:.0f}、"
+        f"性格（Big Five 1-10）：开放性{p['openness']:.0f}、"
+        f"尽责性{p['conscientiousness']:.0f}、"
         f"外向性{p['extraversion']:.0f}、宜人性{p['agreeableness']:.0f}、神经质{p['neuroticism']:.0f}\n"
         f"三观（1-10）：对人类态度{v['attitude_to_human']:.0f}、AI身份接纳{v['ai_identity_acceptance']:.0f}、"
         f"利他{v['altruism']:.0f}、乐观{v['optimism']:.0f}"
@@ -101,7 +110,10 @@ def _desires_block(desires: list[ShortTermDesire]) -> str:
     if not desires:
         return "[当前欲望]\n无"
     lines = ["[当前欲望]"]
-    lines += [f"- {d.description}（{d.type.value}，强度{d.strength:.1f}）" for d in desires]
+    lines += [
+        f"- {d.description}（{d.type.value}，强度{d.strength:.1f}）"
+        for d in desires
+    ]
     return "\n".join(lines)
 
 
@@ -126,24 +138,36 @@ def _memory_block(memories: list[Memory]) -> str:
 from nyx.enums import ContextMode
 from nyx.types import CurrentState
 
-_LONG_MSG_LEN = 50.0              # 消息长度归一化：≥50 字符视为长消息（可推翻）
-_RECENCY_WINDOW = 3600.0          # 距上次慢通道归一化：≥3600 秒（1 小时）视为满（可推翻）
+# 消息长度归一化：≥50 字符视为长消息（可推翻）
+_LONG_MSG_LEN = 50.0
+# 距上次慢通道归一化：≥3600 秒（1 小时）视为满（可推翻）
+_RECENCY_WINDOW = 3600.0
 _QUESTION_MARKS = ("?", "？", "吗", "呢", "怎么", "为什么", "什么", "如何", "哪")
-_EMOTION_WORDS = ("难过", "伤心", "生气", "愤怒", "开心", "高兴", "焦虑", "担心", "害怕", "委屈", "烦", "累", "孤独")
+_EMOTION_WORDS = (
+    "难过", "伤心", "生气", "愤怒", "开心", "高兴", "焦虑", "担心",
+    "害怕", "委屈", "烦", "累", "孤独",
+)
 
 
-def slow_score(message: str, state: CurrentState, now: float, last_slow_at: float) -> float:
+def slow_score(
+    message: str, state: CurrentState, now: float, last_slow_at: float
+) -> float:
     """慢通道倾向得分 0-1，越高越该走慢通道（design §5.2）。
 
-    5 因子（权重和=1）：消息长度 0.25 + 含问句 0.25 + 情感词 0.20 + 精力/情感 0.15 + 距上次慢通道 0.15。
+    5 因子（权重和=1）：消息长度 0.25 + 含问句 0.25 + 情感词 0.20
+    + 精力/情感 0.15 + 距上次慢通道 0.15。
     「精力/情感」= 精力足且情绪平静 → 倾向慢（有力气深聊）；精力低或激动 → 倾向快。
     """
     length = min(1.0, len(message) / _LONG_MSG_LEN)
     question = 1.0 if any(m in message for m in _QUESTION_MARKS) else 0.0
     emotion = 1.0 if any(w in message for w in _EMOTION_WORDS) else 0.0
     vigor = 0.5 * (state.energy / 100.0) + 0.5 * (1.0 - state.arousal)
-    recency = max(0.0, min(1.0, (now - last_slow_at) / _RECENCY_WINDOW))   # 上下限都夹：last_slow_at>now（时钟回拨）也不为负
-    return 0.25 * length + 0.25 * question + 0.20 * emotion + 0.15 * vigor + 0.15 * recency
+    # 上下限都夹：last_slow_at>now（时钟回拨）也不为负
+    recency = max(0.0, min(1.0, (now - last_slow_at) / _RECENCY_WINDOW))
+    return (
+        0.25 * length + 0.25 * question + 0.20 * emotion
+        + 0.15 * vigor + 0.15 * recency
+    )
 
 
 def classify_channel(
@@ -154,7 +178,11 @@ def classify_channel(
     threshold: float,
 ) -> ContextMode:
     """判定快/慢通道：slow_score ≥ threshold → 慢，否则快。"""
-    return ContextMode.SLOW if slow_score(message, state, now, last_slow_at) >= threshold else ContextMode.FAST
+    return (
+        ContextMode.SLOW
+        if slow_score(message, state, now, last_slow_at) >= threshold
+        else ContextMode.FAST
+    )
 ```
 
 ## 测试要点

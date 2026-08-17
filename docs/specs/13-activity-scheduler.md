@@ -14,7 +14,7 @@
 
 ## 验收标准
 
-- [ ] `scheduler.py` 含 4 个公开纯函数（`desire_to_activity` / `rank_desires` / `build_schedule` / `format_time_label`）+ 1 个私有 `_delta_of`，与「`activity/scheduler.py`（完整）」段代码逐字一致
+- [ ] `scheduler.py` 含 4 个公开纯函数（`desire_to_activity` / `rank_desires` / `build_schedule` / `format_time_label`），与「`activity/scheduler.py`（完整）」段代码逐字一致
 - [ ] `desire_to_activity`：`EXPLORATION→READING`、`CREATION→CREATION`、`REST→REST`、`INTERACTION→None`（互动欲不占日程块）
 - [ ] `rank_desires`：按类型级 `expression_weight` 降序、同权 `created_at` 升序（FIFO 稳定）；无 `DesireValue` 记录的类型按 0.0 兜底
 - [ ] `build_schedule`：欲望序列 → 活动序列；精力跌破 `ENERGY_REST_THRESHOLD` 时在下一活动前插 `REST` 恢复；保持输入顺序；`energy_delta.rest <= 0` 时不进死循环
@@ -25,7 +25,7 @@
 
 - **新文件**：`nyx/activity/scheduler.py`（无 Facade、无 API、无数据变更、无 store）
 - **库**：无新库（纯标准库）
-- **公开面**：`from nyx.activity.scheduler import (desire_to_activity, rank_desires, build_schedule, format_time_label)`；`_delta_of` 私有（休息阈值 `ENERGY_REST_THRESHOLD` 从 `nyx.inner_life.emotion` 共享导入，非 scheduler 私有）
+- **公开面**：`from nyx.activity.scheduler import (desire_to_activity, rank_desires, build_schedule, format_time_label)`（休息阈值 `ENERGY_REST_THRESHOLD` 从 `nyx.inner_life.emotion` 共享导入，非 scheduler 私有）
 - **为什么是纯函数、不建表**：design §8.1「日程块是 grid 派生的临时概念，不建表持久化」——13 只产「活动类型序列」的排期数学，`Activity` 记录（含 `schedule_block_id` 时间标签）由 14 构造后落 `activity` 表
 - **欲望→活动映射（`desire_to_activity`）**：六种日程块活动里，欲望驱动的只有 3 种（design §8.2）——探索欲→读书（自由探索是读书的**升级形态**，触发门槛「探索欲峰值 + 精力充足 + 频率上限」见 design §8.6，归 14 运行时判定后把 `READING` 覆盖成 `FREE_EXPLORATION`）；创造欲→创作；休息欲→休息。**互动欲不占日程块**（走搭话/对话，见 §5.5），返回 `None`。观察用户/发呆反思**不在本 spec**——非欲望驱动，是 14 的「空槽默认」行为，不进 `build_schedule` 输出
 - **消费排序（`rank_desires`）**：10-desire-value §33 约定「消费对象排序权重 = 类型级 `expression_weight`，消费端语义归 13/17」。输入 desires 已由 11 `get_pending()` 过滤为 `pending/active`（`created_at ASC` FIFO），本函数再按 `expression_weight` 降序重排（越愿表达越先消费）、同权 `created_at` 升序（FIFO 稳定）；`DesireValue` 缺失类型按 0.0 兜底（纯函数防御，正常 18-api 已 seed 四类型）
@@ -98,24 +98,8 @@ def build_schedule(
             result.append(ActivityType.REST)
             cur += energy_delta.rest
         result.append(activity)
-        cur += _delta_of(activity, energy_delta)
+        cur += getattr(energy_delta, activity.value)
     return result
-
-
-def _delta_of(activity: ActivityType, energy_delta: ActivityEnergyDelta) -> float:
-    """活动类型 → 精力消耗。只处理 build_schedule 产出的三种。
-
-    入参范围由 desire_to_activity 保证只有 READING/CREATION/REST；下方 raise 是二道保险
-    （正常不可达）——若未来映射新增活动类型而忘补 delta，这里 fail-fast，而非静默按
-    rest 处理（静默会掩盖「新活动没记精力」的 bug）。
-    """
-    if activity is ActivityType.READING:
-        return energy_delta.reading
-    if activity is ActivityType.CREATION:
-        return energy_delta.creation
-    if activity is ActivityType.REST:
-        return energy_delta.rest
-    raise ValueError(f"不在日程排期内的活动类型：{activity}")
 
 
 def format_time_label(block_index: int, grid_minutes: int, start_hour: float) -> str:

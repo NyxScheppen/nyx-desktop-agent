@@ -33,7 +33,6 @@ from nyx.enums import (
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient, LlmMessage
-from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
@@ -43,7 +42,6 @@ from nyx.types import (
     Event,
     Goal,
     LLMOutput,
-    Memory,
     Personality,
     ShortTermDesire,
     Values,
@@ -194,11 +192,6 @@ class _FakeTools:
         return "文件内容"
 
 
-class _FakeMemory:
-    async def search(self, query: str) -> list[Memory]:
-        return []
-
-
 async def _new_facade(
     pending: list[ShortTermDesire] | None = None,
     values: list[DesireValue] | None = None,
@@ -219,7 +212,6 @@ async def _new_facade(
         cast(LlmClient, llm if llm is not None else _FakeLlm()),
         cast(Evaluator, evaluator if evaluator is not None else _FakeEvaluator()),
         cast(ToolRegistry, _FakeTools()),
-        cast(MemoryFacade, _FakeMemory()),
         cast(DesireFacade, _FakeDesire(pending, values)),
         get_state,
         ActivityConfig(),

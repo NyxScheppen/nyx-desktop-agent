@@ -58,24 +58,8 @@ def build_schedule(
             result.append(ActivityType.REST)
             cur += energy_delta.rest
         result.append(activity)
-        cur += _delta_of(activity, energy_delta)
+        cur += getattr(energy_delta, activity.value)
     return result
-
-
-def _delta_of(activity: ActivityType, energy_delta: ActivityEnergyDelta) -> float:
-    """活动类型 → 精力消耗。只处理 build_schedule 产出的三种。
-
-    入参范围由 desire_to_activity 保证只有 READING/CREATION/REST；下方 raise 是二道保险
-    （正常不可达）——若未来映射新增活动类型而忘补 delta，这里 fail-fast，而非静默按
-    rest 处理（静默会掩盖「新活动没记精力」的 bug）。
-    """
-    if activity is ActivityType.READING:
-        return energy_delta.reading
-    if activity is ActivityType.CREATION:
-        return energy_delta.creation
-    if activity is ActivityType.REST:
-        return energy_delta.rest
-    raise ValueError(f"不在日程排期内的活动类型：{activity}")
 
 
 def format_time_label(block_index: int, grid_minutes: int, start_hour: float) -> str:

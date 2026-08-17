@@ -2,7 +2,7 @@
 # langgraph 类型标注松散：add_node/compile/ainvoke 返回部分未知、graph.state 缺 stub
 import json
 from collections.abc import Hashable
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -11,9 +11,7 @@ from nyx.config import ExplorationConfig
 from nyx.eval.evaluator import Evaluator
 from nyx.events.event import SECONDS_PER_HOUR
 from nyx.llm.client import LlmClient
-from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
-from nyx.types import Memory
 
 _MAX_STEPS = 8                    # 探索链最大步数（可推翻）
 _FREE_EXPLORATION_ENERGY = 60.0   # 探索需精力 >= 此值（可推翻，design §8.6）
@@ -24,7 +22,6 @@ class ExplorationState(TypedDict):
     focus: str
     findings: list[str]
     notes: list[str]
-    related: list[Memory]
     step: int
     done: bool
     correlation_id: str
@@ -46,22 +43,20 @@ def should_explore(
 
 
 class Exploration:
-    """跨域行为链（LangGraph）：好奇 → 搜索 → 读 → 写笔记 → 联想记忆（design §8.6）。"""
+    """跨域行为链（LangGraph）：好奇 → 搜索 → 读 → 写笔记（design §8.6）。"""
 
     def __init__(
         self,
         llm: LlmClient,
         evaluator: Evaluator,
         tools: ToolRegistry,
-        memory: MemoryFacade,
         exploration_config: ExplorationConfig,
     ) -> None:
         self._llm = llm
         self._evaluator = evaluator
         self._tools = tools
-        self._memory = memory
         self._web_enabled = exploration_config.web_enabled
-        self._actions = ["search_local", "read", "write_note", "recall_memory"]
+        self._actions = ["search_local", "read", "write_note"]
         if self._web_enabled:
             self._actions.append("search_web")
         self._graph = self._build_graph()
@@ -72,7 +67,6 @@ class Exploration:
         g.add_node("search_local", self._search_local)
         g.add_node("read", self._read)
         g.add_node("write_note", self._write_note)
-        g.add_node("recall_memory", self._recall_memory)
         g.add_node("finalize", self._finalize)
         if self._web_enabled:
             g.add_node("search_web", self._search_web)
@@ -89,7 +83,7 @@ class Exploration:
 
     async def run(self, seed: str, correlation_id: str) -> dict[str, Any]:
         initial: ExplorationState = {
-            "seed": seed, "focus": seed, "findings": [], "notes": [], "related": [],
+            "seed": seed, "focus": seed, "findings": [], "notes": [],
             "step": 0, "done": False, "correlation_id": correlation_id,
         }
         result = await self._graph.ainvoke(initial)
@@ -118,6 +112,9 @@ class Exploration:
         )
         await self._evaluator.evaluate(output)
         plan = json.loads(output.content)
+        if not isinstance(plan, dict):
+            raise ValueError(f"探索规划 JSON 应是对象，得到 {type(plan).__name__}")
+        plan = cast(dict[str, Any], plan)
         state["focus"] = plan.get("focus", state["focus"])
         state["done"] = bool(plan.get("done", False))
         state["step"] = state["step"] + 1
@@ -149,18 +146,13 @@ class Exploration:
         state["notes"].append(note)
         return state
 
-    async def _recall_memory(self, state: ExplorationState) -> ExplorationState:
-        memories = await self._memory.search(state["focus"])
-        state["related"].extend(memories)
-        return state
-
     async def _finalize(self, state: ExplorationState) -> ExplorationState:
         return state
 
     def _route(self, state: ExplorationState) -> str:
         if state["done"]:
             return "finalize"
-        # MVP：确定性轮转（与 self._actions 对齐，含 search_web 时 5 步一轮），
+        # MVP：确定性轮转（与 self._actions 对齐，含 search_web 时 4 步一轮），
         # 不靠 LLM 选具体动作
         # step 在 _plan_next 里先 +1，故 -1 对齐到 actions[0]=search_local 起始
         return self._actions[(state["step"] - 1) % len(self._actions)]

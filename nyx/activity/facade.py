@@ -22,7 +22,6 @@ from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
-from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, CurrentState, Event, ShortTermDesire
 
@@ -59,7 +58,7 @@ def _correlation_id(activity: Activity) -> str:
     return str(activity.progress.get("correlation_id") or activity.id)
 
 
-def _harvest_task_exception(task: asyncio.Future[None]) -> None:
+def _harvest_task_exception(task: asyncio.Task[None]) -> None:
     """收割后台 task 异常，避免 asyncio 'Task exception was never retrieved' 警告。
 
     真正的失败详情已在 _execute 的 except 块里经 logger.exception 记录；
@@ -99,7 +98,6 @@ class ActivityFacade:
         llm: LlmClient,
         evaluator: Evaluator,
         tools: ToolRegistry,
-        memory: MemoryFacade,
         desire: DesireFacade,
         get_state: Callable[[], Awaitable[CurrentState]],
         config: ActivityConfig,
@@ -113,7 +111,7 @@ class ActivityFacade:
         self._get_state = get_state
         self._config = config
         self._exploration = Exploration(
-            llm, evaluator, tools, memory, exploration_config
+            llm, evaluator, tools, exploration_config
         )
         self._exploration_config = exploration_config
         self._start_lock = asyncio.Lock()
@@ -224,7 +222,7 @@ class ActivityFacade:
             )
         )
 
-    async def interrupt(self, activity_id: str, by: EventType) -> None:
+    async def interrupt(self, activity_id: str, by_event: EventType) -> None:
         """软中断：校验目标 RUNNING，cancel 执行 task、置 PAUSED 落库
         + 发布 activity_interrupted。
 
@@ -240,7 +238,7 @@ class ActivityFacade:
         await self._bus.publish(
             internal_event(
                 EventType.ACTIVITY_INTERRUPTED,
-                {"activity_id": activity_id, "by": by.value},
+                {"activity_id": activity_id, "by": by_event.value},
                 activity_id,
             )
         )

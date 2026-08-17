@@ -395,8 +395,29 @@
 | `test_should_explore_ok` | 功能正确 | energy=60 + 频率过 + last=0.0 → True |
 | `test_exploration_run_no_web` | 功能正确 | `run` 返回 `{findings, notes}`、步数 == `_MAX_STEPS`、`correlation_id` 传递、每次 complete 后 evaluate、图不含 web_search |
 | `test_exploration_run_web` | 功能正确 | `web_enabled=True` → 图含 search_web、`web_search` 被调用（`_route` 可达） |
+| `test_exploration_plan_non_dict_raises` | 边界鲁棒 | 规划 JSON 顶层非 dict（数组）→ `ValueError`（fail-fast） |
 | `test_classify_presence_online` | 功能正确 | 键盘/鼠标活跃 → online |
 | `test_classify_presence_busy` | 功能正确 | 无输入 + 有窗口标题 → busy |
 | `test_classify_presence_away` | 功能正确 | 无输入无标题 → away |
 
-**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools/memory 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）。
+**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）；`test_exploration_plan_non_dict_raises` 于本轮评审修复编写（`_plan_next` 结构校验 fail-fast，配合删除 `recall_memory` 死节点）。
+
+## 16-expression-prompt（prompt 拼装 + 快慢通道判定）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_build_system_prompt_base` | 功能正确 | `canon in result`（基底透传）；`narrative=None` / `memories` 缺省 → 不含 `[自我认知]` / `[相关记忆]` |
+| `test_build_system_prompt_optional_blocks` | 功能正确 | `narrative` 非 None 含 `identity` 与「近期变化」；`memories` 非空含 `m.summary` |
+| `test_build_system_prompt_state_fields` | 功能正确 | 状态段含 `valence=0.50` / `arousal=0.40` / `表情=happy` / `精力：80/100（energetic）` / `当前活动：reading` |
+| `test_build_system_prompt_personality_values` | 功能正确 | 含 `性格（Big Five` / `三观（` 且数值渲染（`开放性5` / `对人类态度5`） |
+| `test_state_block_idle` | 边界鲁棒 | `current_activity=None` → `当前活动：空闲` |
+| `test_desires_block_empty` | 边界鲁棒 | 空欲望 → `[当前欲望]\n无` |
+| `test_desires_block_renders` | 功能正确 | 欲望行含 description / type.value / strength（`读骑士小说（exploration，强度0.8）`） |
+| `test_build_user_prompt_empty_context` | 功能正确 | `context=[]` → 原样返回 `message` |
+| `test_build_user_prompt_with_context` | 功能正确 | 含 `[对话历史]`、`用户：` / `Nyx：`（按 role）、`[本次消息]`+`message` |
+| `test_memory_block_fallback_to_content` | 边界鲁棒 | `summary=""` 回退 `content`（`m.summary or m.content`） |
+| `test_slow_score_in_range` | 边界鲁棒 | 极端输入 `low < 0.5` / `high ≥ 0.5` 均在 [0,1]；时钟回拨 `last_slow_at > now` → 仍 ≥ 0 |
+| `test_slow_score_factors` | 功能正确 | 五因子各生效：长>短、含「吗」>不含、含「难过」>不含、精力足平静>精力低激动、距上次大>小 |
+| `test_classify_channel` | 功能正确 | `threshold=0.5`：得分 ≥ 0.5（`在吗`+精力满+2h）→ SLOW；< 0.5（`哦`+精力20+arousal0.9+60s）→ FAST |
+
+**功能阶段**：16-expression-prompt 实现时编写（纯函数，无 DB、无 async、无 fake LLM；`CurrentState`/`Memory`/`Message`/`SelfNarrative`/`ShortTermDesire` 全手构，无集成/E2E）。

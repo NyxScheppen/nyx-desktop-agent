@@ -2,21 +2,23 @@
 import json
 from typing import Any, cast
 
+import pytest
+
 from nyx.activity.exploration import _MAX_STEPS, Exploration, should_explore
 from nyx.config import ExplorationConfig
 from nyx.eval.evaluator import Evaluator
 from nyx.llm.client import LlmClient, LlmMessage
-from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
-from nyx.types import LLMOutput, Memory
+from nyx.types import LLMOutput
 
 _PLAN_JSON = json.dumps({"focus": "骑士团", "done": False})
 
 
 class _FakeLlm:
-    def __init__(self) -> None:
+    def __init__(self, content: str = _PLAN_JSON) -> None:
         self.calls: list[str] = []
         self.correlation_ids: list[str] = []
+        self._content = content
 
     async def complete(
         self,
@@ -34,7 +36,7 @@ class _FakeLlm:
             module=module,
             type=output_type,
             model="fake",
-            content=_PLAN_JSON,
+            content=self._content,
             token_usage={"input": 1, "output": 1},
             correlation_id=correlation_id,
         )
@@ -59,27 +61,16 @@ class _FakeTools:
         return "文件内容"
 
 
-class _FakeMemory:
-    def __init__(self) -> None:
-        self.queries: list[str] = []
-
-    async def search(self, query: str) -> list[Memory]:
-        self.queries.append(query)
-        return []
-
-
 def _make_exploration(
     llm: _FakeLlm,
     evaluator: _FakeEvaluator,
     tools: _FakeTools,
-    memory: _FakeMemory,
     web_enabled: bool = False,
 ) -> Exploration:
     return Exploration(
         cast(LlmClient, llm),
         cast(Evaluator, evaluator),
         cast(ToolRegistry, tools),
-        cast(MemoryFacade, memory),
         ExplorationConfig(web_enabled=web_enabled),
     )
 
@@ -106,8 +97,7 @@ async def test_exploration_run_no_web() -> None:
     llm = _FakeLlm()
     evaluator = _FakeEvaluator()
     tools = _FakeTools()
-    memory = _FakeMemory()
-    expl = _make_exploration(llm, evaluator, tools, memory)
+    expl = _make_exploration(llm, evaluator, tools)
     result = await expl.run("骑士团", "corr-1")
     assert set(result) == {"findings", "notes"}
     assert llm.calls == ["exploration_plan"] * _MAX_STEPS
@@ -120,8 +110,14 @@ async def test_exploration_run_web() -> None:
     llm = _FakeLlm()
     evaluator = _FakeEvaluator()
     tools = _FakeTools()
-    memory = _FakeMemory()
-    expl = _make_exploration(llm, evaluator, tools, memory, web_enabled=True)
+    expl = _make_exploration(llm, evaluator, tools, web_enabled=True)
     result = await expl.run("骑士团", "corr-1")
     assert set(result) == {"findings", "notes"}
     assert any(c[0] == "web_search" for c in tools.calls)
+
+
+async def test_exploration_plan_non_dict_raises() -> None:
+    llm = _FakeLlm(content=json.dumps([1, 2, 3]))
+    expl = _make_exploration(llm, _FakeEvaluator(), _FakeTools())
+    with pytest.raises(ValueError):
+        await expl.run("骑士团", "corr-1")

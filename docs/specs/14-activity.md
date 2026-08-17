@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：05-event（`EventBus` / ROUTING）、06-tools（`ToolRegistry`）、09-memory-facade（`MemoryFacade.search`）、11-desire（`DesireFacade.get_pending`/`get_all`）、12-inner-life（`InnerLifeFacade.get_state` + `activity_end` 的 `energy_delta` 契约）、13-activity-scheduler（四个纯函数）、02-config（`ActivityConfig` / `ExplorationConfig`）、03-llm（`LlmClient.complete`）、04-db（`activity` 表）、15-eval（`Evaluator`）
+- **前置依赖**：05-event（`EventBus` / ROUTING）、06-tools（`ToolRegistry`）、11-desire（`DesireFacade.get_pending`/`get_all`）、12-inner-life（`InnerLifeFacade.get_state` + `activity_end` 的 `energy_delta` 契约）、13-activity-scheduler（四个纯函数）、02-config（`ActivityConfig` / `ExplorationConfig`）、03-llm（`LlmClient.complete`）、04-db（`activity` 表）、15-eval（`Evaluator`）
 
 ## 用户故事
 
@@ -15,7 +15,7 @@
 ## 验收标准
 
 - [ ] `store.py` 含 `ActivityStore`（`insert` / `get` / `get_current` / `get_last_exploration` / `list_schedule` / `update`），与「`activity/store.py`（完整）」段逐字一致
-- [ ] `facade.py` 含 `ActivityFacade`：`on_tick(tick_type) -> None` / `on_desire_generated(event) -> None` / `select_activity(desires, state) -> Activity | None` / `complete_activity(activity) -> None` / `interrupt(activity_id, by) -> None` / `get_current() -> Activity | None` / `get_schedule() -> list[Activity]`
+- [ ] `facade.py` 含 `ActivityFacade`：`on_tick(tick_type) -> None` / `on_desire_generated(event) -> None` / `select_activity(desires, state) -> Activity | None` / `complete_activity(activity) -> None` / `interrupt(activity_id, by_event) -> None` / `get_current() -> Activity | None` / `get_schedule() -> list[Activity]`
 - [ ] `select_activity` 纯决策：无欲望→`None`；精力不足→`REST`；否则第一个可排程欲望→映射活动，`progress` 存 `desire_id`/`goal`/`correlation_id`/`description`
 - [ ] `READING` 升级 `FREE_EXPLORATION`：探索欲映射的读书在 `_maybe_start_activity` 里经 `should_explore`（精力充足 + 频率上限）判定升级；频率上限内降级为普通读书
 - [ ] 空槽默认：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`（精力疲惫 `< ENERGY_REST_THRESHOLD`→`IDLE_REFLECTION`、否则→`OBSERVE_USER`），`progress["desire_id"] is None`
@@ -50,7 +50,7 @@
 - **goal 判定（MVP，可推翻）**：`_goal_met(goal, result)` = goal 非 None 且 `result` 非空 → `True`；goal None（观察/休息）→ `None`。
 - **精力门槛**：`select_activity` 用 13 的 `build_schedule(desires, state.energy, energy_delta)` 取 `[0]`（精力跌破阈值自动穿插 `REST`），不另写门槛逻辑；`schedule[0] is REST` → 无关联 desire
 - **`get_schedule()` 语义**：返回「今日已产生的 Activity 记录」（`started_at >= 今日零点`，`list_schedule`），按 `started_at ASC`。未来计划不持久化（design §8.1），前端按 grid 渲染空槽；`_day_start` 纯函数算当日零点（MVP 用 UTC 日边界，可推翻）
-- **`interrupt` 的 `by: EventType`**：打断原因（`USER_MESSAGE` / `INITIATE_CHAT`）。谁调 `interrupt` 归 17/18（用户消息/搭话打断活动）；14 只提供方法 + 发布 `activity_interrupted`。MVP 简化为 `interrupt` 存进度留 `PAUSED`
+- **`interrupt` 的 `by_event: EventType`**：打断原因（`USER_MESSAGE` / `INITIATE_CHAT`）。谁调 `interrupt` 归 17/18（用户消息/搭话打断活动）；14 只提供方法 + 发布 `activity_interrupted`。MVP 简化为 `interrupt` 存进度留 `PAUSED`
 - **`observe.py` 与观察状态的分工**：`classify_presence` 是「在线/离开/忙碌」三态判定的**单一事实来源**（纯函数、单测锁定）。采集（键盘/鼠标活跃度 + 前台窗口标题）在前端 Tauri 壳（design §2 进程边界），判定结果作为 `OBSERVATION_STATE` 事件推给 Python，ROUTING 到 inner_life + desire。**`classify_presence` 的运行时调用方是前端 ingress，不在本 spec 的 backend 范围内**（前端 spec 推迟）——保留它是为了让「判定规则」在 Python 侧可展示（原则 3）+ 可溯源（原则 5）。`OBSERVE_USER` 活动本身是 0-LLM 占位（result `{}`）
 - **明确不做**：不建「计划」表（design §8.1 临时概念）；`classify_presence` 只覆盖键盘/鼠标/窗口三输入
 
@@ -191,7 +191,6 @@ from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
-from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, CurrentState, Event, ShortTermDesire
 
@@ -228,7 +227,7 @@ def _correlation_id(activity: Activity) -> str:
     return str(activity.progress.get("correlation_id") or activity.id)
 
 
-def _harvest_task_exception(task: asyncio.Future[None]) -> None:
+def _harvest_task_exception(task: asyncio.Task[None]) -> None:
     """收割后台 task 异常，避免 asyncio 'Task exception was never retrieved' 警告。
 
     真正的失败详情已在 _execute 的 except 块里经 logger.exception 记录；
@@ -268,7 +267,6 @@ class ActivityFacade:
         llm: LlmClient,
         evaluator: Evaluator,
         tools: ToolRegistry,
-        memory: MemoryFacade,
         desire: DesireFacade,
         get_state: Callable[[], Awaitable[CurrentState]],
         config: ActivityConfig,
@@ -282,7 +280,7 @@ class ActivityFacade:
         self._get_state = get_state
         self._config = config
         self._exploration = Exploration(
-            llm, evaluator, tools, memory, exploration_config
+            llm, evaluator, tools, exploration_config
         )
         self._exploration_config = exploration_config
         self._start_lock = asyncio.Lock()
@@ -393,7 +391,7 @@ class ActivityFacade:
             )
         )
 
-    async def interrupt(self, activity_id: str, by: EventType) -> None:
+    async def interrupt(self, activity_id: str, by_event: EventType) -> None:
         """软中断：校验目标 RUNNING，cancel 执行 task、置 PAUSED 落库
         + 发布 activity_interrupted。
 
@@ -409,7 +407,7 @@ class ActivityFacade:
         await self._bus.publish(
             internal_event(
                 EventType.ACTIVITY_INTERRUPTED,
-                {"activity_id": activity_id, "by": by.value},
+                {"activity_id": activity_id, "by": by_event.value},
                 activity_id,
             )
         )
@@ -535,7 +533,7 @@ _ACTIVITY_SYSTEM = (
 # langgraph 类型标注松散：add_node/compile/ainvoke 返回部分未知、graph.state 缺 stub
 import json
 from collections.abc import Hashable
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -544,9 +542,7 @@ from nyx.config import ExplorationConfig
 from nyx.eval.evaluator import Evaluator
 from nyx.events.event import SECONDS_PER_HOUR
 from nyx.llm.client import LlmClient
-from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
-from nyx.types import Memory
 
 _MAX_STEPS = 8                    # 探索链最大步数（可推翻）
 _FREE_EXPLORATION_ENERGY = 60.0   # 探索需精力 >= 此值（可推翻，design §8.6）
@@ -557,7 +553,6 @@ class ExplorationState(TypedDict):
     focus: str
     findings: list[str]
     notes: list[str]
-    related: list[Memory]
     step: int
     done: bool
     correlation_id: str
@@ -579,22 +574,20 @@ def should_explore(
 
 
 class Exploration:
-    """跨域行为链（LangGraph）：好奇 → 搜索 → 读 → 写笔记 → 联想记忆（design §8.6）。"""
+    """跨域行为链（LangGraph）：好奇 → 搜索 → 读 → 写笔记（design §8.6）。"""
 
     def __init__(
         self,
         llm: LlmClient,
         evaluator: Evaluator,
         tools: ToolRegistry,
-        memory: MemoryFacade,
         exploration_config: ExplorationConfig,
     ) -> None:
         self._llm = llm
         self._evaluator = evaluator
         self._tools = tools
-        self._memory = memory
         self._web_enabled = exploration_config.web_enabled
-        self._actions = ["search_local", "read", "write_note", "recall_memory"]
+        self._actions = ["search_local", "read", "write_note"]
         if self._web_enabled:
             self._actions.append("search_web")
         self._graph = self._build_graph()
@@ -605,7 +598,6 @@ class Exploration:
         g.add_node("search_local", self._search_local)
         g.add_node("read", self._read)
         g.add_node("write_note", self._write_note)
-        g.add_node("recall_memory", self._recall_memory)
         g.add_node("finalize", self._finalize)
         if self._web_enabled:
             g.add_node("search_web", self._search_web)
@@ -622,7 +614,7 @@ class Exploration:
 
     async def run(self, seed: str, correlation_id: str) -> dict[str, Any]:
         initial: ExplorationState = {
-            "seed": seed, "focus": seed, "findings": [], "notes": [], "related": [],
+            "seed": seed, "focus": seed, "findings": [], "notes": [],
             "step": 0, "done": False, "correlation_id": correlation_id,
         }
         result = await self._graph.ainvoke(initial)
@@ -651,6 +643,9 @@ class Exploration:
         )
         await self._evaluator.evaluate(output)
         plan = json.loads(output.content)
+        if not isinstance(plan, dict):
+            raise ValueError(f"探索规划 JSON 应是对象，得到 {type(plan).__name__}")
+        plan = cast(dict[str, Any], plan)
         state["focus"] = plan.get("focus", state["focus"])
         state["done"] = bool(plan.get("done", False))
         state["step"] = state["step"] + 1
@@ -682,18 +677,13 @@ class Exploration:
         state["notes"].append(note)
         return state
 
-    async def _recall_memory(self, state: ExplorationState) -> ExplorationState:
-        memories = await self._memory.search(state["focus"])
-        state["related"].extend(memories)
-        return state
-
     async def _finalize(self, state: ExplorationState) -> ExplorationState:
         return state
 
     def _route(self, state: ExplorationState) -> str:
         if state["done"]:
             return "finalize"
-        # MVP：确定性轮转（与 self._actions 对齐，含 search_web 时 5 步一轮），
+        # MVP：确定性轮转（与 self._actions 对齐，含 search_web 时 4 步一轮），
         # 不靠 LLM 选具体动作
         # step 在 _plan_next 里先 +1，故 -1 对齐到 actions[0]=search_local 起始
         return self._actions[(state["step"] - 1) % len(self._actions)]
@@ -739,7 +729,7 @@ def classify_presence(
     - [ ] `complete_activity`：`status is COMPLETED`、`ended_at` 非 None、发布 `activity_end`（`energy_delta == config.energy_delta.reading` 等）
     - [ ] `interrupt`：RUNNING 活动 → cancel + `status is PAUSED` + 发布 `activity_interrupted`（`content["by"]` 正确）；`activity_id` 不存在 → 不 cancel、不发布
     - [ ] `get_current` / `get_schedule` 委托 store
-  - [ ] **exploration**（`test_exploration.py`）：`Exploration` 用 fake llm/fake_evaluator/tools/memory，`web_enabled=false` 时图不含 `search_web`、`run` 返回 `{findings, notes}` 且步数 ≤ `_MAX_STEPS`；`_plan_next` 的 `llm.complete` 收到 `correlation_id == 初始 correlation_id`，且每次 `complete` 后 `evaluator.evaluate` 被调（`output_type="exploration_plan"`）
+  - [ ] **exploration**（`test_exploration.py`）：`Exploration` 用 fake llm/fake_evaluator/tools，`web_enabled=false` 时图不含 `search_web`、`run` 返回 `{findings, notes}` 且步数 ≤ `_MAX_STEPS`；`_plan_next` 的 `llm.complete` 收到 `correlation_id == 初始 correlation_id`，且每次 `complete` 后 `evaluator.evaluate` 被调（`output_type="exploration_plan"`）；规划 JSON 非对象（如数组）→ `ValueError`
   - [ ] **observe**（`test_observe.py`）：`classify_presence` 三态判定（活跃→online、窗口标题→busy、无→away）
 - [ ] 集成测试：无（LLM 全 mock、DB 用 `:memory:`；与 desire/inner_life 的真实编排归 18-api）
 - [ ] E2E 测试：无
@@ -751,4 +741,4 @@ def classify_presence(
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
 - [ ] ripple 同步：tech-ref §7 `activity/` 补 `store.py`；§6.2 `ExplorationState` 补 `correlation_id` 字段；§5 `select_activity` 返回类型 `Activity` → `Activity | None` 且 `async def` → `def`（纯决策，与 `_default_activity` 一致）；`activity_end` content 契约（`desire_id`/`goal_met`/`energy_delta`）与 11 §49 + 12 §45 一致
-- [ ] 下游约定：17-expression 搭话/回复打断活动时调 `interrupt(activity_id, by)`；18-api 组合根注入 `get_state=inner_life.get_state`、`evaluator`（给 `ActivityFacade` 与 `Exploration` 的 LLM 产出评分）、订阅 `SCHEDULE_BLOCK_START`（on_tick）与 `DESIRE_GENERATED`（on_desire_generated）
+- [ ] 下游约定：17-expression 搭话/回复打断活动时调 `interrupt(activity_id, by_event)`；18-api 组合根注入 `get_state=inner_life.get_state`、`evaluator`（给 `ActivityFacade` 与 `Exploration` 的 LLM 产出评分）、订阅 `SCHEDULE_BLOCK_START`（on_tick）与 `DESIRE_GENERATED`（on_desire_generated）

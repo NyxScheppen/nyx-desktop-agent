@@ -584,7 +584,7 @@ import time
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ActivityType, EnergyState, EventType
+from nyx.enums import ActivityType, EmotionCategory, EnergyState, EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
@@ -690,11 +690,7 @@ class InnerLifeFacade:
             raise RuntimeError("inner_life 单行表未初始化（18-api 组合根必须先 seed）")
         energy_value, energy_state = energy
         current_activity = await self._current_activity_type()
-        emotion = resolve_emotion(
-            vad_to_category(self._valence, self._arousal),
-            energy_state,
-            current_activity,
-        )
+        emotion = self._resolve_emotion(energy_state, current_activity)
         return CurrentState(
             valence=self._valence,
             arousal=self._arousal,
@@ -731,16 +727,21 @@ class InnerLifeFacade:
         activity = await self._activity_facade.get_current()
         return activity.type if activity is not None else None
 
+    def _resolve_emotion(
+        self, energy_state: EnergyState, current_activity: ActivityType | None
+    ) -> EmotionCategory:
+        """valence/arousal + 精力档 + 当前活动 → 情绪类别（组合 resolve_emotion）。"""
+        return resolve_emotion(
+            vad_to_category(self._valence, self._arousal),
+            energy_state,
+            current_activity,
+        )
+
     async def _publish_emotion(self, correlation_id: str) -> None:
         energy = await self._store.get_energy()
         if energy is None:
             raise RuntimeError("energy 未初始化（18-api 组合根必须先 seed）")
-        energy_state = energy[1]
-        emotion = resolve_emotion(
-            vad_to_category(self._valence, self._arousal),
-            energy_state,
-            await self._current_activity_type(),
-        )
+        emotion = self._resolve_emotion(energy[1], await self._current_activity_type())
         await self._bus.publish(
             internal_event(
                 EventType.EMOTION_UPDATE,

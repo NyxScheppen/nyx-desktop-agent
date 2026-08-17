@@ -106,3 +106,18 @@ def test_load_config_env_override(
     monkeypatch.setenv("NYX_CONFIG", path)
     cfg = load_config()
     assert cfg.llm.provider == "from-env"
+
+
+def test_load_config_empty_file_defaults(tmp_path: Path) -> None:
+    path = _write(tmp_path, "")
+    cfg = load_config(path)
+    assert cfg.llm.provider == "deepseek"
+
+
+@pytest.mark.parametrize("yaml_text", ["0\n", '""\n', "[]\n"])
+def test_load_config_rejects_scalar_top_level(
+    tmp_path: Path, yaml_text: str
+) -> None:
+    path = _write(tmp_path, yaml_text)
+    with pytest.raises(ConfigError):
+        load_config(path)

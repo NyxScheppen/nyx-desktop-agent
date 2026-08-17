@@ -192,9 +192,12 @@ def load_config(path: str | None = None) -> Config:
     # 1) 解析路径：显式 path > NYX_CONFIG 环境变量 > 默认 "config.yaml"
     resolved = path or os.environ.get("NYX_CONFIG") or "config.yaml"
     try:
-        raw: Any = yaml.safe_load(Path(resolved).read_text(encoding="utf-8")) or {}
+        raw: Any = yaml.safe_load(Path(resolved).read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError, UnicodeDecodeError) as exc:
         raise ConfigError(f"配置加载失败 {resolved}: {exc}") from exc
+    if raw is None:
+        # 空文件/顶层 null → 空配置；falsy 标量（0/""/[]）仍交 _build 报「必须是映射」
+        raw = {}
     # 2) 递归构造（未知键/嵌套 dataclass 由 _build 处理）
     cfg = _build(Config, raw)
     # 3) 范围校验

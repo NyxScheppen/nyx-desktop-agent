@@ -12,6 +12,13 @@ async def test_read(tmp_path: Path) -> None:
     assert result == {"path": str(f), "content": "hello"}
 
 
+async def test_read_non_utf8_replaces(tmp_path: Path) -> None:
+    f = tmp_path / "gbk.txt"
+    f.write_bytes(b"\xffA")  # \xff 非合法 UTF-8 首字节
+    result = await file_io("read", str(f))
+    assert result["content"] == "�A"
+
+
 async def test_write(tmp_path: Path) -> None:
     result = await file_io("write", "note.txt", "hi", write_root=tmp_path)
     assert result["written"] == 2

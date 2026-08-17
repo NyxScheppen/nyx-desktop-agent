@@ -119,6 +119,7 @@
 | `test_full_disk_roots_nonempty_and_exists` | 功能正确 | 非空且每项 `.exists()`；POSIX 下 `== [Path("/")]` |
 | `test_web_search_maps_fields` | 功能正确 | fake `DDGS` 的 `title`/`href`/`body` 映射为 `title`/`url`/`snippet`，不触真实网络 |
 | `test_read` | 功能正确 | `read` 返回文件 content |
+| `test_read_non_utf8_replaces` | 边界鲁棒 | 非法 UTF-8 字节 → `�` 替换（不崩溃、不静默丢字节） |
 | `test_write` | 功能正确 | `write` 建文件在 `write_root` 内、返回 `written` |
 | `test_write_escape_parent` | 边界鲁棒 | `../` 越界 → `ValueError` |
 | `test_write_escape_absolute` | 边界鲁棒 | 绝对路径逃逸 `write_root` → `ValueError` |

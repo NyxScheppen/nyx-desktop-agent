@@ -207,7 +207,7 @@ async def file_io(
     """read 全盘读 / write 写进 write_root / list 列目录（全盘）。"""
     if action == "read":
         text = await asyncio.to_thread(
-            Path(path).read_text, encoding="utf-8", errors="ignore"
+            Path(path).read_text, encoding="utf-8", errors="replace"
         )
         return {"path": path, "content": text}
     if action == "write":

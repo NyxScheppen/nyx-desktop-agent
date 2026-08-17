@@ -27,7 +27,7 @@ def cosine(a: list[float], b: list[float]) -> float:
 def rank_by_cosine(
     query_vec: list[float], candidates: list[Memory]
 ) -> list[tuple[float, Memory]]:
-    """全表余弦打分 + s>0 过滤 + 降序（embedding 缺失跳过）。纯函数。"""
+    """候选余弦打分 + s>0 过滤 + 降序（embedding 缺失跳过）。纯函数。"""
     scored: list[tuple[float, Memory]] = []
     for m in candidates:
         if m.embedding is None:

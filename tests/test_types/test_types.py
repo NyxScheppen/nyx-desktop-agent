@@ -3,6 +3,7 @@ from typing import get_type_hints
 from nyx.enums import DesireStatus, DesireType, MemoryType
 from nyx.types import (
     EvalScores,
+    LongTermDesire,
     Memory,
     Personality,
     ShortTermDesire,
@@ -21,6 +22,13 @@ def test_memory_aspect_default_factory_isolated() -> None:
     second = Memory("", 0.0, "", "", "", 1.0, MemoryType.SHORT_TERM)
     first.aspect.append("x")
     assert second.aspect == []
+
+
+def test_long_term_desire_linked_values_default_factory_isolated() -> None:
+    first = LongTermDesire("", 0.0, DesireType.INTERACTION, "", "", 1.0, 0.0, [])
+    second = LongTermDesire("", 0.0, DesireType.INTERACTION, "", "", 1.0, 0.0, [])
+    first.linked_values.append("x")
+    assert second.linked_values == []
 
 
 def test_typed_dict_keys() -> None:

@@ -1,0 +1,40 @@
+llm:
+  provider: deepseek          # deepseek | claude | ...（LangChain 集成）
+  model: deepseek-chat
+  api_key_env: DEEPSEEK_API_KEY
+
+embedding:
+  model: all-MiniLM-L6-v2     # 本地 sentence-transformers
+
+memory:
+  short_term_capacity: 100    # 容量上限
+  promote_threshold: 3        # 想起 3 次升级长期
+  freshness_decay: 0.01       # 新鲜度衰减率
+
+desire:
+  peak_threshold: 0.8         # 值达峰阈值
+  retry_limit: 3              # 未达成重试上限
+  long_term_capacity: 5       # 长期欲望上限
+  value_decay: 0.02           # 值缓慢衰减率
+
+activity:
+  grid_minutes: 60            # 每小时一块
+  energy_delta:
+    reading: -20
+    creation: -25
+    free_exploration: -30
+    observe_user: -10
+    idle_reflection: 10
+    rest: 30
+
+expression:
+  slow_threshold: 0.5         # 快慢通道阈值：classifier 加权 5 因子→归一化得分(0-1)→比此值
+  max_context_len: 20         # 回溯上下文上限
+  slow_max_rounds: 3          # 慢通道最多轮数
+
+exploration:
+  web_enabled: false          # 联网搜索 opt-in
+  rate_limit_hours: 4         # 自由探索频率上限
+
+eval:
+  judge_sample_rate: 0.1      # LLM-judge 抽样比例

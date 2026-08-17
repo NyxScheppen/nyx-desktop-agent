@@ -152,7 +152,8 @@ async def judge_relevance(
             score = 0.0
         else:
             score = max(1.0, min(5.0, float(raw)))
-    except (TypeError, ValueError):   # JSONDecodeError 是 ValueError 子类，一并覆盖
+    except (TypeError, ValueError, OverflowError):
+        # JSONDecodeError 是 ValueError 子类；float(超大 int) 溢出，一并覆盖
         score = 0.0
     return score, judge_output
 ```
@@ -313,7 +314,7 @@ def _row_to_usage(row: aiosqlite.Row) -> TokenUsage:
   - [ ] **judge**（`test_judge.py`）：
     - [ ] `should_judge` 纯函数：`("judge", 1.0, 0.0)` → False（不递归）；`("reply", 0.1, 0.05)` → True；`("reply", 0.1, 0.5)` → False
     - [ ] `judge_relevance`（fake `llm.complete` 返回 `{"score": 4}`）：返回 `(4.0, judge_output)`，且 `judge_output.type == "judge"`、`judge_output.module == "eval"`、`correlation_id` 透传
-    - [ ] `judge_relevance` 容错不 raise（均 `(0.0, judge_output)`）：非法 JSON（`"["`）；合法非 dict（`"[]"`）；dict 但 score 非数字（`'{"score":"abc"}'`）
+    - [ ] `judge_relevance` 容错不 raise（均 `(0.0, judge_output)`）：非法 JSON（`"["`）；合法非 dict（`"[]"`）；dict 但 score 非数字（`'{"score":"abc"}'`）；超大 int 溢出（`float()` OverflowError）
     - [ ] `judge_relevance` 传输失败（fake `complete` raise）→ `(0.0, None)`，不 raise
     - [ ] `judge_relevance` score 为布尔（`{"score": true}`）→ `(0.0, judge_output)`（堵 `float(True)==1.0` 的坑）
     - [ ] `judge_relevance` clamp [1,5]：`{"score":100}` → `5.0`；`{"score":0.5}` → `1.0`；`{"score":4}` → `4.0`（界内不动）

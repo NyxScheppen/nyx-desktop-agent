@@ -1,3 +1,4 @@
+import json
 from typing import cast
 
 from nyx.eval.judge import judge_relevance, should_judge
@@ -104,3 +105,10 @@ async def test_judge_relevance_clamps() -> None:
         fake = _FakeLlm(raw)
         score, _ = await judge_relevance(cast(LlmClient, fake), _output())
         assert score == expected
+
+
+async def test_judge_relevance_overflow() -> None:
+    fake = _FakeLlm(json.dumps({"score": 10**400}))
+    score, judge_output = await judge_relevance(cast(LlmClient, fake), _output())
+    assert score == 0.0          # float(超大 int) 溢出：不漏出崩 evaluate，归 0.0
+    assert judge_output is not None   # 产出仍在，token 照记

@@ -185,6 +185,7 @@
 | `test_judge_relevance_clamps` | 边界鲁棒 | `{"score":100}`→5.0、`{"score":0.5}`→1.0、`{"score":4}`→4.0（clamp [1,5]） |
 | `test_judge_relevance_transport_failure` | 边界鲁棒 | fake `complete` 抛异常 → `(0.0, None)` 不 raise（judge 传输失败无产出不记账） |
 | `test_judge_relevance_rejects_bool_score` | 边界鲁棒 | `{"score": true}` → 0.0 且 judge_output 非 None（堵 `float(True)==1.0` 的坑） |
+| `test_judge_relevance_overflow` | 边界鲁棒 | `{"score": 10**400}`（超大 int）→ 0.0 且 judge_output 非 None（`float()` 溢出不漏出崩 evaluate） |
 | `test_evaluate_sampled` | 功能正确 | `judge_sample_rate=1.0` → `relevance==4.0`、1 条 eval_report、2 条 token_usage（judge + 原 output） |
 | `test_evaluate_not_sampled` | 功能正确 | `judge_sample_rate=0.0` → `relevance==0.0`、1 条 token_usage（仅原 output） |
 | `test_evaluate_judge_transport_failure` | 边界鲁棒 | `judge_sample_rate=1.0` 但 fake `complete` 抛异常 → `relevance==0.0`、仅 1 条 token_usage（judge 无产出不记账），evaluate 不 raise |
@@ -192,7 +193,7 @@
 | `test_list_reports_roundtrip` | 功能正确 | 两条 report；`token_usage` JSON 往返 `{input,output}`；`scores.format` 为 0.0/1.0 |
 | `test_list_token_usage_since` | 功能正确 | `since=最新 created_at` → 1 条；`since=+1` → 0 条（`>=` 边界） |
 
-**功能阶段**：15-eval 实现时编写（先于 09-facade，因 09 依赖 Evaluator）；`test_judge_relevance_transport_failure` / `test_judge_relevance_rejects_bool_score` / `test_evaluate_judge_transport_failure` 于 09 评审修复阶段编写（高2：judge LLM 调用移进 try；低5：布尔 score 拒收）。
+**功能阶段**：15-eval 实现时编写（先于 09-facade，因 09 依赖 Evaluator）；`test_judge_relevance_transport_failure` / `test_judge_relevance_rejects_bool_score` / `test_evaluate_judge_transport_failure` 于 09 评审修复阶段编写（高2：judge LLM 调用移进 try；低5：布尔 score 拒收）；`test_judge_relevance_overflow` 于 15 评审复核阶段编写（补 `float()` 溢出容错）。
 
 ## 09-memory-facade（记忆门面）
 

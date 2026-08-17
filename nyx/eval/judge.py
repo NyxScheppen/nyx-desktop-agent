@@ -60,6 +60,7 @@ async def judge_relevance(
             score = 0.0
         else:
             score = max(1.0, min(5.0, float(raw)))
-    except (TypeError, ValueError):   # JSONDecodeError 是 ValueError 子类，一并覆盖
+    except (TypeError, ValueError, OverflowError):
+        # JSONDecodeError 是 ValueError 子类；float(超大 int) 溢出，一并覆盖
         score = 0.0
     return score, judge_output

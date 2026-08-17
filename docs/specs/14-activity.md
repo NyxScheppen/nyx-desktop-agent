@@ -18,7 +18,7 @@
 - [ ] `facade.py` 含 `ActivityFacade`：`on_tick(tick_type) -> None` / `on_desire_generated(event) -> None` / `select_activity(desires, state) -> Activity | None` / `complete_activity(activity) -> None` / `interrupt(activity_id, by) -> None` / `get_current() -> Activity | None` / `get_schedule() -> list[Activity]`
 - [ ] `select_activity` 纯决策：无欲望→`None`；精力不足→`REST`；否则第一个可排程欲望→映射活动，`progress` 存 `desire_id`/`goal`/`correlation_id`/`description`
 - [ ] `READING` 升级 `FREE_EXPLORATION`：探索欲映射的读书在 `_maybe_start_activity` 里经 `should_explore`（精力充足 + 频率上限）判定升级；频率上限内降级为普通读书
-- [ ] 空槽默认：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`（精力疲惫 `< _REFLECTION_ENERGY_THRESHOLD`→`IDLE_REFLECTION`、否则→`OBSERVE_USER`），`progress["desire_id"] is None`
+- [ ] 空槽默认：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`（精力疲惫 `< ENERGY_REST_THRESHOLD`→`IDLE_REFLECTION`、否则→`OBSERVE_USER`），`progress["desire_id"] is None`
 - [ ] 活动执行在**后台 task**（不阻塞事件总线）；`activity_start`/`activity_end`/`activity_interrupted` 由 facade 自己 `publish`、`source=INTERNAL`
 - [ ] `complete_activity`：goal 判定（`_goal_met` 纯函数）→ `status=COMPLETED` → 发布 `activity_end`（content 含 `activity_id`/`desire_id`/`goal_met`/`energy_delta`/`result`）
 - [ ] `interrupt`：先校验目标 activity 存在且 RUNNING → cancel 执行 task → `status=PAUSED` + 发布 `activity_interrupted`（content `{activity_id, by}`）
@@ -42,7 +42,7 @@
   - `IDLE_REFLECTION`：**发布 `REFLECTION` 事件**（12 §51 消费后内部 `reflect()`，1 LLM 在 inner_life），activity 不直接调 `InnerLifeFacade.reflect`；result `{}`
   - `FREE_EXPLORATION`：调 `Exploration.run()`（LangGraph 多步，seed = 欲望描述）→ result `{findings, notes}`
   - `OBSERVE_USER` / `REST`：0 LLM，result `{}`
-- **空槽默认（design §8.2 观察/发呆，13 §30 委托 14）**：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`——精力疲惫（`< _REFLECTION_ENERGY_THRESHOLD = 40.0`，design §8.4 疲惫下界）→ `IDLE_REFLECTION`（+10 微恢复 + 发布 `REFLECTION` 触发 reflect），否则 → `OBSERVE_USER`（-10 消耗 + 情报收集）。这是 `IDLE_REFLECTION`/`OBSERVE_USER` 的唯一触发来源（非欲望驱动、不进 13 `build_schedule`），补上后两条分支可达，不再死代码
+- **空槽默认（design §8.2 观察/发呆，13 §30 委托 14）**：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`——精力疲惫（`< ENERGY_REST_THRESHOLD`，从 12 `inner_life.emotion` 共享导入）→ `IDLE_REFLECTION`（+10 微恢复 + 发布 `REFLECTION` 触发 reflect），否则 → `OBSERVE_USER`（-10 消耗 + 情报收集）。这是 `IDLE_REFLECTION`/`OBSERVE_USER` 的唯一触发来源（非欲望驱动、不进 13 `build_schedule`），补上后两条分支可达，不再死代码
 - **`activity_end` content 契约（11 §49 + 12 §45 引用，本 spec 定义完整形状）**：`{"activity_id": str, "desire_id": str | None, "goal_met": bool | None, "energy_delta": float, "result": dict}`。`desire_id`/`goal_met` 由 11 `satisfy_from_activity_end` 消费（缺键/错类型跳过）；`energy_delta` 由 12 `_apply_energy` 消费（缺省 0）；`result` 进 SSE payload（tech-ref §4）
 - **`energy_delta` 取值**：`getattr(config.energy_delta, activity.type.value)`（`ActivityType.value` 与 `ActivityEnergyDelta` 字段名 1:1，`reading→-20`、`creation→-25`、`free_exploration→-30`、`observe_user→-10`、`idle_reflection→+10`、`rest→+30`），不用 if-elif（六键自然对应）
 - **goal 判定（MVP，可推翻）**：`_goal_met(goal, result)` = goal 非 None 且 `result` 非空 → `True`；goal None（观察/休息）→ `None`。
@@ -186,13 +186,11 @@ from nyx.enums import ActivityStatus, ActivityType, DesireType, EventType, TickT
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
+from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, CurrentState, Event, ShortTermDesire
-
-# 疲惫档下界（design §8.4），空槽默认发呆的精力分界，可推翻
-_REFLECTION_ENERGY_THRESHOLD = 40.0
 
 
 def _day_start(now: float) -> float:
@@ -200,7 +198,7 @@ def _day_start(now: float) -> float:
     return now - now % SECONDS_PER_DAY
 
 
-def _current_hour(now: float) -> float:
+def _elapsed_hours(now: float) -> float:
     """当日已过小时数（浮点）。纯函数。"""
     return (now % SECONDS_PER_DAY) / SECONDS_PER_HOUR
 
@@ -213,6 +211,11 @@ def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | Non
     if goal is None:
         return None
     return bool(result)
+
+
+def _empty_progress() -> dict[str, Any]:
+    """活动 progress 初始模板（desire_id/goal/correlation_id 三键为空）。"""
+    return {"desire_id": None, "goal": None, "correlation_id": None}
 
 
 def _parse_activity_result(raw: str, output_type: str) -> dict[str, Any]:
@@ -262,6 +265,7 @@ class ActivityFacade:
             llm, evaluator, tools, memory, exploration_config
         )
         self._exploration_config = exploration_config
+        self._start_lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
 
     # ---- 事件入口 ----
@@ -300,9 +304,7 @@ class ActivityFacade:
             # 无关联 desire
             target = None
         now = time.time()
-        progress: dict[str, Any] = {
-            "desire_id": None, "goal": None, "correlation_id": None
-        }
+        progress = _empty_progress()
         if target is not None:
             progress["desire_id"] = target.id
             progress["correlation_id"] = target.id
@@ -317,7 +319,7 @@ class ActivityFacade:
             id=str(uuid.uuid4()),
             type=activity_type,
             schedule_block_id=format_time_label(
-                0, self._config.grid_minutes, _current_hour(now)
+                0, self._config.grid_minutes, _elapsed_hours(now)
             ),
             status=ActivityStatus.PENDING,
             progress=progress,
@@ -331,7 +333,7 @@ class ActivityFacade:
         """
         activity_type = (
             ActivityType.IDLE_REFLECTION
-            if state.energy < _REFLECTION_ENERGY_THRESHOLD
+            if state.energy < ENERGY_REST_THRESHOLD
             else ActivityType.OBSERVE_USER
         )
         now = time.time()
@@ -339,10 +341,10 @@ class ActivityFacade:
             id=str(uuid.uuid4()),
             type=activity_type,
             schedule_block_id=format_time_label(
-                0, self._config.grid_minutes, _current_hour(now)
+                0, self._config.grid_minutes, _elapsed_hours(now)
             ),
             status=ActivityStatus.PENDING,
-            progress={"desire_id": None, "goal": None, "correlation_id": None},
+            progress=_empty_progress(),
             started_at=now,
         )
 
@@ -372,8 +374,10 @@ class ActivityFacade:
         )
 
     async def interrupt(self, activity_id: str, by: EventType) -> None:
-        """软中断：先校验目标 RUNNING，再 cancel 执行 task + 存进度（PAUSED）
+        """软中断：校验目标 RUNNING，cancel 执行 task、置 PAUSED 落库
         + 发布 activity_interrupted。
+
+        执行中的 result 尚未写入，故仅落 PAUSED 状态（不持久化部分进度）。
         """
         activity = await self._store.get(activity_id)
         if activity is None or activity.status is not ActivityStatus.RUNNING:
@@ -401,27 +405,28 @@ class ActivityFacade:
     # ---- 内部 ----
 
     async def _maybe_start_activity(self) -> None:
-        current = await self._store.get_current()
-        if current is not None and current.status is ActivityStatus.RUNNING:
-            return
-        desires = await self._desire.get_pending()
-        values = (await self._desire.get_all()).values
-        ranked = rank_desires(desires, values)
-        state = await self._get_state()
-        activity = self.select_activity(ranked, state)
-        if activity is None:
-            activity = self._default_activity(state)
-        if activity.type is ActivityType.READING:
-            last = await self._store.get_last_exploration()
-            if should_explore(
-                state.energy,
-                last,
-                self._exploration_config.rate_limit_hours,
-                time.time(),
-            ):
-                activity.type = ActivityType.FREE_EXPLORATION
-        await self._store.insert(activity)
-        self._task = asyncio.create_task(self._execute(activity))
+        async with self._start_lock:
+            current = await self._store.get_current()
+            if current is not None and current.status is ActivityStatus.RUNNING:
+                return
+            desires = await self._desire.get_pending()
+            values = (await self._desire.get_all()).values
+            ranked = rank_desires(desires, values)
+            state = await self._get_state()
+            activity = self.select_activity(ranked, state)
+            if activity is None:
+                activity = self._default_activity(state)
+            if activity.type is ActivityType.READING:
+                last = await self._store.get_last_exploration()
+                if should_explore(
+                    state.energy,
+                    last,
+                    self._exploration_config.rate_limit_hours,
+                    time.time(),
+                ):
+                    activity.type = ActivityType.FREE_EXPLORATION
+            await self._store.insert(activity)
+            self._task = asyncio.create_task(self._execute(activity))
 
     async def _execute(self, activity: Activity) -> None:
         activity.status = ActivityStatus.RUNNING
@@ -437,7 +442,14 @@ class ActivityFacade:
                 str(activity.progress.get("correlation_id") or activity.id),
             )
         )
-        result = await self._run_activity(activity)
+        try:
+            result = await self._run_activity(activity)
+        except Exception:
+            # fail-fast：失败态落库后仍上抛（不吞异常），但活动不卡 RUNNING
+            activity.status = ActivityStatus.INCOMPLETE
+            activity.ended_at = time.time()
+            await self._store.update(activity)
+            raise
         activity.progress["result"] = result
         await self.complete_activity(activity)
 
@@ -526,7 +538,7 @@ class ExplorationState(TypedDict):
 
 
 def should_explore(
-    energy: float, last_explored_at: float, rate_limit_hours: float, now: float
+    energy: float, last_explored_at: float, rate_limit_hours: int, now: float
 ) -> bool:
     """自由探索升级门槛（纯函数）：精力充足 + 频率上限。
 
@@ -556,6 +568,9 @@ class Exploration:
         self._tools = tools
         self._memory = memory
         self._web_enabled = exploration_config.web_enabled
+        self._actions = ["search_local", "read", "write_note", "recall_memory"]
+        if self._web_enabled:
+            self._actions.append("search_web")
         self._graph = self._build_graph()
 
     def _build_graph(self) -> CompiledStateGraph[ExplorationState]:
@@ -569,15 +584,12 @@ class Exploration:
         if self._web_enabled:
             g.add_node("search_web", self._search_web)
         g.add_edge(START, "plan_next")
-        actions = ["search_local", "read", "write_note", "recall_memory"]
-        if self._web_enabled:
-            actions.append("search_web")
         path_map: dict[Hashable, str] = {}
-        for a in actions:
+        for a in self._actions:
             path_map[a] = a
         path_map["finalize"] = "finalize"
         g.add_conditional_edges("plan_next", self._route, path_map)
-        for a in actions:
+        for a in self._actions:
             g.add_edge(a, "plan_next")
         g.add_edge("finalize", END)
         return g.compile()
@@ -655,12 +667,10 @@ class Exploration:
     def _route(self, state: ExplorationState) -> str:
         if state["done"]:
             return "finalize"
-        # MVP：确定性轮转（search_local → read → write_note → recall_memory），
+        # MVP：确定性轮转（与 self._actions 对齐，含 search_web 时 5 步一轮），
         # 不靠 LLM 选具体动作
         # step 在 _plan_next 里先 +1，故 -1 对齐到 actions[0]=search_local 起始
-        return ["search_local", "read", "write_note", "recall_memory"][
-            (state["step"] - 1) % 4
-        ]
+        return self._actions[(state["step"] - 1) % len(self._actions)]
 
 
 _EXPLORATION_PLAN_SYSTEM = (
@@ -693,7 +703,7 @@ def classify_presence(
 
 - [ ] 单元测试 `tests/test_activity/`（`pytest-asyncio`；`db = await connect(":memory:")`；fake `LlmClient.complete` 按 `output_type` 返回 fixture JSON；`EventBus` 真实例 + recording handler，`run()` 作 task；`get_state` 用 fake 回调返回预设 `CurrentState`——同 05/09/11/12 模式）：
   - [ ] **store**（`test_activity_store.py`）：`insert + get` 往返（`progress` JSON 往返、枚举 `.value` 往返）；`get_current` 只取 running/paused 最新一条；`get_last_exploration`（无 free_exploration 记录 → `0.0`，有 → `MAX(started_at)`）；`list_schedule(start)` 按 `started_at >= start` 过滤 + ASC；`update` 改 `status`/`progress`/`ended_at` → `get` 验证
-  - [ ] **纯函数**（`test_activity_facade.py`）：`_day_start`（`now=86400*1.5 → 86400.0`）；`_current_hour`（`now=5400 → 1.5`）；`_goal_met`（goal None → None；goal 非 None + result 空 → False；goal 非 None + result 非空 → True）
+  - [ ] **纯函数**（`test_activity_facade.py`）：`_day_start`（`now=86400*1.5 → 86400.0`）；`_elapsed_hours`（`now=5400 → 1.5`）；`_goal_met`（goal None → None；goal 非 None + result 空 → False；goal 非 None + result 非空 → True）
   - [ ] **select_activity**（fake `get_state` 返回 `energy=80`）：无欲望 → `None`；`[探索欲]` → `type is READING`、`progress["desire_id"] == desire.id`、`goal` 序列化正确、`progress["description"] == desire.description`；`[互动欲]` → `None`（不占日程块）；`[休息欲]` → `type is REST`、`progress["desire_id"] == rest_desire.id`（欲望驱动的 REST 保留关联）；`energy=30` + 探索欲 → `type is REST`、`progress["desire_id"] is None`（精力恢复无关联）
   - [ ] **should_explore**（`test_exploration.py`）：`energy=59` → False；`energy=60` + `now-last < rate_limit_hours*3600` → False；`energy=60` + 频率过 + `last=0.0` → True
   - [ ] **facade 生命周期**：

@@ -366,7 +366,7 @@
 | `test_list_schedule_filters_and_orders` | 功能正确 | `started_at >= start` 过滤 + ASC |
 | `test_update` | 功能正确 | `update` 改 `status`/`progress`/`ended_at` → `get` 验证 |
 | `test_day_start` | 功能正确 | `now=86400*1.5 → 86400.0` |
-| `test_current_hour` | 功能正确 | `now=5400 → 1.5` |
+| `test_elapsed_hours` | 功能正确 | `now=5400 → 1.5` |
 | `test_goal_met` | 功能正确 | goal None → None；goal 非 None + result 空 → False；result 非空 → True |
 | `test_parse_activity_result_valid` | 功能正确 | reading/creation 缺键结构合法 → 返回解析后 dict |
 | `test_parse_activity_result_missing_key_raises` | 边界鲁棒 | 缺必需键 → `ValueError`（fail-fast） |
@@ -380,6 +380,7 @@
 | `test_default_idle_reflection_when_tired` | 功能正确 | 空槽 + 低精力 → IDLE_REFLECTION、`desire_id` None |
 | `test_default_observe_user_when_energetic` | 功能正确 | 空槽 + 高精力 → OBSERVE_USER、`desire_id` None |
 | `test_maybe_start_creation_activity` | 功能正确 | 有欲望 → insert + 发布 activity_start/end（source INTERNAL、desire_id/energy_delta 透传）、evaluator 调 1 次 |
+| `test_execute_failure_marks_incomplete` | 回归保护 | LLM 抛异常 → 活动标 INCOMPLETE + `ended_at` 非空（不卡 RUNNING） |
 | `test_upgrade_to_free_exploration` | 功能正确 | 探索欲 + 精力足 + 频率过 → FREE_EXPLORATION |
 | `test_no_upgrade_when_rate_limited` | 功能正确 | 频率未过 → 降级 READING |
 | `test_complete_activity` | 功能正确 | COMPLETED + `ended_at` 非空 + activity_end（energy_delta=-20） |
@@ -391,6 +392,7 @@
 | `test_should_explore_rate_limited` | 功能正确 | energy=60 + `now-last < rate_limit_hours*3600` → False |
 | `test_should_explore_ok` | 功能正确 | energy=60 + 频率过 + last=0.0 → True |
 | `test_exploration_run_no_web` | 功能正确 | `run` 返回 `{findings, notes}`、步数 == `_MAX_STEPS`、`correlation_id` 传递、每次 complete 后 evaluate、图不含 web_search |
+| `test_exploration_run_web` | 功能正确 | `web_enabled=True` → 图含 search_web、`web_search` 被调用（`_route` 可达） |
 | `test_classify_presence_online` | 功能正确 | 键盘/鼠标活跃 → online |
 | `test_classify_presence_busy` | 功能正确 | 无输入 + 有窗口标题 → busy |
 | `test_classify_presence_away` | 功能正确 | 无输入无标题 → away |

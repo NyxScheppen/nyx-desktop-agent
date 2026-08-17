@@ -31,7 +31,7 @@ class ExplorationState(TypedDict):
 
 
 def should_explore(
-    energy: float, last_explored_at: float, rate_limit_hours: float, now: float
+    energy: float, last_explored_at: float, rate_limit_hours: int, now: float
 ) -> bool:
     """自由探索升级门槛（纯函数）：精力充足 + 频率上限。
 
@@ -61,6 +61,9 @@ class Exploration:
         self._tools = tools
         self._memory = memory
         self._web_enabled = exploration_config.web_enabled
+        self._actions = ["search_local", "read", "write_note", "recall_memory"]
+        if self._web_enabled:
+            self._actions.append("search_web")
         self._graph = self._build_graph()
 
     def _build_graph(self) -> CompiledStateGraph[ExplorationState]:
@@ -74,15 +77,12 @@ class Exploration:
         if self._web_enabled:
             g.add_node("search_web", self._search_web)
         g.add_edge(START, "plan_next")
-        actions = ["search_local", "read", "write_note", "recall_memory"]
-        if self._web_enabled:
-            actions.append("search_web")
         path_map: dict[Hashable, str] = {}
-        for a in actions:
+        for a in self._actions:
             path_map[a] = a
         path_map["finalize"] = "finalize"
         g.add_conditional_edges("plan_next", self._route, path_map)
-        for a in actions:
+        for a in self._actions:
             g.add_edge(a, "plan_next")
         g.add_edge("finalize", END)
         return g.compile()
@@ -160,12 +160,10 @@ class Exploration:
     def _route(self, state: ExplorationState) -> str:
         if state["done"]:
             return "finalize"
-        # MVP：确定性轮转（search_local → read → write_note → recall_memory），
+        # MVP：确定性轮转（与 self._actions 对齐，含 search_web 时 5 步一轮），
         # 不靠 LLM 选具体动作
         # step 在 _plan_next 里先 +1，故 -1 对齐到 actions[0]=search_local 起始
-        return ["search_local", "read", "write_note", "recall_memory"][
-            (state["step"] - 1) % 4
-        ]
+        return self._actions[(state["step"] - 1) % len(self._actions)]
 
 
 _EXPLORATION_PLAN_SYSTEM = (

@@ -10,8 +10,8 @@ import pytest
 from nyx import db
 from nyx.activity.facade import (
     ActivityFacade,
-    _current_hour,
     _day_start,
+    _elapsed_hours,
     _goal_met,
     _parse_activity_result,
 )
@@ -148,6 +148,19 @@ class _FakeLlm:
         )
 
 
+class _RaisingLlm(_FakeLlm):
+    async def complete(
+        self,
+        messages: list[LlmMessage],
+        *,
+        module: str,
+        output_type: str,
+        correlation_id: str,
+        json_mode: bool = False,
+    ) -> LLMOutput:
+        raise RuntimeError("boom")
+
+
 class _FakeEvaluator:
     def __init__(self) -> None:
         self.evaluated: list[LLMOutput] = []
@@ -255,8 +268,8 @@ def test_day_start() -> None:
     assert _day_start(86400.0 * 1.5) == 86400.0
 
 
-def test_current_hour() -> None:
-    assert _current_hour(5400.0) == 1.5
+def test_elapsed_hours() -> None:
+    assert _elapsed_hours(5400.0) == 1.5
 
 
 def test_goal_met() -> None:
@@ -415,6 +428,23 @@ async def test_maybe_start_creation_activity(
         assert ends[0].content["desire_id"] == "d1"
         assert ends[0].content["energy_delta"] == -25
         assert len(evaluator.evaluated) == 1
+    finally:
+        await database.conn.close()
+
+
+async def test_execute_failure_marks_incomplete() -> None:
+    facade, store, bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.CREATION)], energy=80.0, llm=_RaisingLlm()
+    )
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            with pytest.raises(RuntimeError):
+                await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        assert len(acts) == 1
+        assert acts[0].status is ActivityStatus.INCOMPLETE
+        assert acts[0].ended_at is not None
     finally:
         await database.conn.close()
 

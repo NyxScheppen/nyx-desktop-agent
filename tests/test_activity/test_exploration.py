@@ -88,15 +88,15 @@ def _make_exploration(
 
 
 def test_should_explore_energy_too_low() -> None:
-    assert should_explore(59.0, 0.0, 4.0, 100_000.0) is False
+    assert should_explore(59.0, 0.0, 4, 100_000.0) is False
 
 
 def test_should_explore_rate_limited() -> None:
-    assert should_explore(60.0, 1_000.0, 4.0, 15_399.0) is False
+    assert should_explore(60.0, 1_000.0, 4, 15_399.0) is False
 
 
 def test_should_explore_ok() -> None:
-    assert should_explore(60.0, 0.0, 4.0, 20_000.0) is True
+    assert should_explore(60.0, 0.0, 4, 20_000.0) is True
 
 
 # ---- Exploration.run ----
@@ -114,3 +114,14 @@ async def test_exploration_run_no_web() -> None:
     assert llm.correlation_ids == ["corr-1"] * _MAX_STEPS
     assert len(evaluator.evaluated) == _MAX_STEPS
     assert all(c[0] != "web_search" for c in tools.calls)
+
+
+async def test_exploration_run_web() -> None:
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    tools = _FakeTools()
+    memory = _FakeMemory()
+    expl = _make_exploration(llm, evaluator, tools, memory, web_enabled=True)
+    result = await expl.run("骑士团", "corr-1")
+    assert set(result) == {"findings", "notes"}
+    assert any(c[0] == "web_search" for c in tools.calls)

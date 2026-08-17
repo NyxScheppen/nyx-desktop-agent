@@ -19,13 +19,11 @@ from nyx.enums import ActivityStatus, ActivityType, DesireType, EventType, TickT
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
+from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, CurrentState, Event, ShortTermDesire
-
-# 疲惫档下界（design §8.4），空槽默认发呆的精力分界，可推翻
-_REFLECTION_ENERGY_THRESHOLD = 40.0
 
 
 def _day_start(now: float) -> float:
@@ -33,7 +31,7 @@ def _day_start(now: float) -> float:
     return now - now % SECONDS_PER_DAY
 
 
-def _current_hour(now: float) -> float:
+def _elapsed_hours(now: float) -> float:
     """当日已过小时数（浮点）。纯函数。"""
     return (now % SECONDS_PER_DAY) / SECONDS_PER_HOUR
 
@@ -46,6 +44,11 @@ def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | Non
     if goal is None:
         return None
     return bool(result)
+
+
+def _empty_progress() -> dict[str, Any]:
+    """活动 progress 初始模板（desire_id/goal/correlation_id 三键为空）。"""
+    return {"desire_id": None, "goal": None, "correlation_id": None}
 
 
 def _parse_activity_result(raw: str, output_type: str) -> dict[str, Any]:
@@ -95,6 +98,7 @@ class ActivityFacade:
             llm, evaluator, tools, memory, exploration_config
         )
         self._exploration_config = exploration_config
+        self._start_lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
 
     # ---- 事件入口 ----
@@ -133,9 +137,7 @@ class ActivityFacade:
             # 无关联 desire
             target = None
         now = time.time()
-        progress: dict[str, Any] = {
-            "desire_id": None, "goal": None, "correlation_id": None
-        }
+        progress = _empty_progress()
         if target is not None:
             progress["desire_id"] = target.id
             progress["correlation_id"] = target.id
@@ -150,7 +152,7 @@ class ActivityFacade:
             id=str(uuid.uuid4()),
             type=activity_type,
             schedule_block_id=format_time_label(
-                0, self._config.grid_minutes, _current_hour(now)
+                0, self._config.grid_minutes, _elapsed_hours(now)
             ),
             status=ActivityStatus.PENDING,
             progress=progress,
@@ -164,7 +166,7 @@ class ActivityFacade:
         """
         activity_type = (
             ActivityType.IDLE_REFLECTION
-            if state.energy < _REFLECTION_ENERGY_THRESHOLD
+            if state.energy < ENERGY_REST_THRESHOLD
             else ActivityType.OBSERVE_USER
         )
         now = time.time()
@@ -172,10 +174,10 @@ class ActivityFacade:
             id=str(uuid.uuid4()),
             type=activity_type,
             schedule_block_id=format_time_label(
-                0, self._config.grid_minutes, _current_hour(now)
+                0, self._config.grid_minutes, _elapsed_hours(now)
             ),
             status=ActivityStatus.PENDING,
-            progress={"desire_id": None, "goal": None, "correlation_id": None},
+            progress=_empty_progress(),
             started_at=now,
         )
 
@@ -205,8 +207,10 @@ class ActivityFacade:
         )
 
     async def interrupt(self, activity_id: str, by: EventType) -> None:
-        """软中断：先校验目标 RUNNING，再 cancel 执行 task + 存进度（PAUSED）
+        """软中断：校验目标 RUNNING，cancel 执行 task、置 PAUSED 落库
         + 发布 activity_interrupted。
+
+        执行中的 result 尚未写入，故仅落 PAUSED 状态（不持久化部分进度）。
         """
         activity = await self._store.get(activity_id)
         if activity is None or activity.status is not ActivityStatus.RUNNING:
@@ -234,27 +238,28 @@ class ActivityFacade:
     # ---- 内部 ----
 
     async def _maybe_start_activity(self) -> None:
-        current = await self._store.get_current()
-        if current is not None and current.status is ActivityStatus.RUNNING:
-            return
-        desires = await self._desire.get_pending()
-        values = (await self._desire.get_all()).values
-        ranked = rank_desires(desires, values)
-        state = await self._get_state()
-        activity = self.select_activity(ranked, state)
-        if activity is None:
-            activity = self._default_activity(state)
-        if activity.type is ActivityType.READING:
-            last = await self._store.get_last_exploration()
-            if should_explore(
-                state.energy,
-                last,
-                self._exploration_config.rate_limit_hours,
-                time.time(),
-            ):
-                activity.type = ActivityType.FREE_EXPLORATION
-        await self._store.insert(activity)
-        self._task = asyncio.create_task(self._execute(activity))
+        async with self._start_lock:
+            current = await self._store.get_current()
+            if current is not None and current.status is ActivityStatus.RUNNING:
+                return
+            desires = await self._desire.get_pending()
+            values = (await self._desire.get_all()).values
+            ranked = rank_desires(desires, values)
+            state = await self._get_state()
+            activity = self.select_activity(ranked, state)
+            if activity is None:
+                activity = self._default_activity(state)
+            if activity.type is ActivityType.READING:
+                last = await self._store.get_last_exploration()
+                if should_explore(
+                    state.energy,
+                    last,
+                    self._exploration_config.rate_limit_hours,
+                    time.time(),
+                ):
+                    activity.type = ActivityType.FREE_EXPLORATION
+            await self._store.insert(activity)
+            self._task = asyncio.create_task(self._execute(activity))
 
     async def _execute(self, activity: Activity) -> None:
         activity.status = ActivityStatus.RUNNING
@@ -270,7 +275,14 @@ class ActivityFacade:
                 str(activity.progress.get("correlation_id") or activity.id),
             )
         )
-        result = await self._run_activity(activity)
+        try:
+            result = await self._run_activity(activity)
+        except Exception:
+            # fail-fast：失败态落库后仍上抛（不吞异常），但活动不卡 RUNNING
+            activity.status = ActivityStatus.INCOMPLETE
+            activity.ended_at = time.time()
+            await self._store.update(activity)
+            raise
         activity.progress["result"] = result
         await self.complete_activity(activity)
 

@@ -1,0 +1,24 @@
+from typing import Any
+
+from nyx.types import Tool
+
+
+class ToolRegistry:
+    """工具注册表：register 注册、call 执行、schema 出 LLM 工具定义。"""
+
+    def __init__(self) -> None:
+        self._tools: dict[str, Tool] = {}
+
+    def register(self, tool: Tool) -> None:
+        if tool.name in self._tools:
+            raise ValueError(f"工具名重复注册：{tool.name!r}")
+        self._tools[tool.name] = tool
+
+    async def call(self, name: str, args: dict[str, Any]) -> Any:
+        return await self._tools[name].handler(**args)
+
+    def schema(self) -> list[dict[str, Any]]:
+        return [
+            {"name": t.name, "description": t.description, "parameters": t.schema}
+            for t in self._tools.values()
+        ]

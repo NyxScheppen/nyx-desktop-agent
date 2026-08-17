@@ -102,3 +102,27 @@
 | `test_persist_exception_propagates` | 边界鲁棒 | `_persist` 抛异常 → 传播、run 任务终止、`task_done()` 照走 |
 
 **功能阶段**：05-event 实现时编写。
+
+## 06-tools（工具系统）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_register_and_schema_in_order` | 功能正确 | `register` 后 `schema()` 按注册序返回 `[{name, description, parameters}]` |
+| `test_register_duplicate_raises` | 边界鲁棒 | 重复注册同名工具 → `ValueError` |
+| `test_call_invokes_handler_with_kwargs` | 功能正确 | `call` 用 `handler(**args)` 调 handler（fake 记录 kwargs 与返回值） |
+| `test_call_unknown_name_raises` | 边界鲁棒 | `call` 未注册名 → `KeyError` |
+| `test_search_hits` | 功能正确 | 命中 → `[{path, snippet}]`，`path` 指向含关键词文件 |
+| `test_search_miss` | 功能正确 | 不命中 → `[]` |
+| `test_search_empty_roots` | 边界鲁棒 | `roots=[]` → `[]` |
+| `test_search_case_insensitive` | 功能正确 | `"DEEP"` 命中 `"deep sea"`（大小写不敏感） |
+| `test_search_skips_non_text` | 功能正确 | 非 `.txt`/`.md` 文件跳过 |
+| `test_full_disk_roots_nonempty_and_exists` | 功能正确 | 非空且每项 `.exists()`；POSIX 下 `== [Path("/")]` |
+| `test_web_search_maps_fields` | 功能正确 | fake `DDGS` 的 `title`/`href`/`body` 映射为 `title`/`url`/`snippet`，不触真实网络 |
+| `test_read` | 功能正确 | `read` 返回文件 content |
+| `test_write` | 功能正确 | `write` 建文件在 `write_root` 内、返回 `written` |
+| `test_write_escape_parent` | 边界鲁棒 | `../` 越界 → `ValueError` |
+| `test_write_escape_absolute` | 边界鲁棒 | 绝对路径逃逸 `write_root` → `ValueError` |
+| `test_list` | 功能正确 | `list` 返回目录条目名 |
+| `test_unknown_action` | 边界鲁棒 | 未知 `action` → `ValueError` |
+
+**功能阶段**：06-tools 实现时编写。

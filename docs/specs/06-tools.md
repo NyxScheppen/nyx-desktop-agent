@@ -86,7 +86,8 @@ _SEARCH_SUFFIXES = frozenset({".txt", ".md"})
 def full_disk_roots() -> list[Path]:
     """全盘搜索起点：Windows 枚举存在的盘符，POSIX 返回根目录。"""
     if os.name == "nt":
-        return [Path(f"{c}:\\") for c in string.ascii_uppercase if Path(f"{c}:\\").exists()]
+        letters = string.ascii_uppercase
+        return [Path(f"{c}:\\") for c in letters if Path(f"{c}:\\").exists()]
     return [Path("/")]
 
 
@@ -113,8 +114,13 @@ def _search_local_sync(query: str, roots: list[Path]) -> list[dict[str, str]]:
     return results
 
 
-async def search_local(query: str, roots: list[Path] | None = None) -> list[dict[str, str]]:
-    """在 roots（缺省 = 全盘）下文本文件中大小写不敏感搜索 query，返回 [{path, snippet}]。"""
+async def search_local(
+    query: str, roots: list[Path] | None = None
+) -> list[dict[str, str]]:
+    """在 roots（缺省 = 全盘）下文本文件中大小写不敏感搜索 query。
+
+    返回 [{path, snippet}]。
+    """
     if roots is None:
         roots = full_disk_roots()
     return await asyncio.to_thread(_search_local_sync, query, roots)
@@ -198,7 +204,8 @@ async def file_io(
 ) -> dict[str, Any]:
     """read 全盘读 / write 写进 write_root / list 列目录（全盘）。"""
     if action == "read":
-        return {"path": path, "content": await asyncio.to_thread(Path(path).read_text, encoding="utf-8")}
+        text = await asyncio.to_thread(Path(path).read_text, encoding="utf-8")
+        return {"path": path, "content": text}
     if action == "write":
         target = _resolve_write(write_root, path)
 
@@ -217,7 +224,9 @@ def _list_entries(path: str) -> list[str]:
 
 
 def build_file_io_tool(write_root: Path = DEFAULT_WRITE_ROOT) -> Tool:
-    async def handler(action: str, path: str, content: str | None = None) -> dict[str, Any]:
+    async def handler(
+        action: str, path: str, content: str | None = None
+    ) -> dict[str, Any]:
         return await file_io(action, path, content, write_root)
 
     return Tool(

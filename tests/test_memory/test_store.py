@@ -171,6 +171,20 @@ async def test_search_keyword() -> None:
         await db.conn.close()
 
 
+async def test_search_keyword_escapes_wildcards() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("m1", content="进度 100%"))
+        await store.add(_mem("m2", content="进度 100 元"))
+        await store.add(_mem("m3", content="a_b"))
+        await store.add(_mem("m4", content="aXb"))
+        assert [m.id for m in await store.search_keyword("100%")] == ["m1"]
+        assert [m.id for m in await store.search_keyword("a_b")] == ["m3"]
+    finally:
+        await db.conn.close()
+
+
 async def test_list_edges_and_upsert() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)

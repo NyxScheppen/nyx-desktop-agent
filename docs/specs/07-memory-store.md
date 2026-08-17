@@ -137,11 +137,11 @@ class MemoryStore:
             await self._db.conn.commit()
 
     async def search_keyword(self, query: str) -> list[Memory]:
-        pattern = f"%{query}%"
+        pattern = f"%{_escape_like(query)}%"
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 f"SELECT {_MEMORY_COLS} FROM memory "
-                "WHERE content LIKE ? OR summary LIKE ? "
+                "WHERE content LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' "
                 "ORDER BY freshness DESC, created_at DESC",
                 (pattern, pattern),
             )
@@ -185,6 +185,11 @@ def _embedding_json(v: list[float] | None) -> str | None:
     list → JSON 数组字符串。
     """
     return json.dumps(v) if v is not None else None
+
+
+def _escape_like(query: str) -> str:
+    """转义 LIKE 通配符（%/_/\\），让 query 按字面匹配。"""
+    return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _row_to_memory(row: aiosqlite.Row) -> Memory:

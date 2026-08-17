@@ -78,8 +78,7 @@ class Evaluator:
 
     # ---- 内部 ----
 
-    @staticmethod
-    def _to_token_usage(output: LLMOutput) -> TokenUsage:
+    def _to_token_usage(self, output: LLMOutput) -> TokenUsage:
         return TokenUsage(
             id=str(uuid.uuid4()),
             correlation_id=output.correlation_id,

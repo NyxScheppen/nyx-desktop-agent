@@ -24,6 +24,21 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
+def rank_by_cosine(
+    query_vec: list[float], candidates: list[Memory]
+) -> list[tuple[float, Memory]]:
+    """全表余弦打分 + s>0 过滤 + 降序（embedding 缺失跳过）。纯函数。"""
+    scored: list[tuple[float, Memory]] = []
+    for m in candidates:
+        if m.embedding is None:
+            continue
+        s = cosine(query_vec, m.embedding)
+        if s > 0.0:
+            scored.append((s, m))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return scored
+
+
 def build_embed(model_name: str) -> EmbedFn:
     """用本地 sentence-transformers 建 embed 函数。
 
@@ -86,12 +101,4 @@ class MemoryRetrieval:
         if self._embed is None:
             return []
         qv = await self._embed(query)
-        scored: list[tuple[float, Memory]] = []
-        for m in candidates:
-            if m.embedding is None:
-                continue
-            s = cosine(qv, m.embedding)
-            if s > 0.0:
-                scored.append((s, m))
-        scored.sort(key=lambda t: t[0], reverse=True)
-        return [m for _, m in scored[:_VECTOR_TOP_K]]
+        return [m for _, m in rank_by_cosine(qv, candidates)[:_VECTOR_TOP_K]]

@@ -9,7 +9,7 @@ from nyx.enums import EventType, MemoryType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient
-from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, cosine
+from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, rank_by_cosine
 from nyx.memory.store import MemoryStore
 from nyx.types import Event, Memory
 
@@ -311,15 +311,10 @@ class MemoryFacade:
     ) -> list[tuple[float, Memory]]:
         """query 向量与全表记忆的余弦排序
         （s>0 才保留，可排除某 id）；纯计算 + store 读。"""
-        scored: list[tuple[float, Memory]] = []
-        for m in await self._store.list_memories():
-            if m.id == exclude_id or m.embedding is None:
-                continue
-            s = cosine(query_vec, m.embedding)
-            if s > 0.0:
-                scored.append((s, m))
-        scored.sort(key=lambda t: t[0], reverse=True)
-        return scored
+        memories = [
+            m for m in await self._store.list_memories() if m.id != exclude_id
+        ]
+        return rank_by_cosine(query_vec, memories)
 
     async def _build_edges(self, memory: Memory) -> None:
         """新记忆与已有记忆按 embedding 余弦相似度建边（top-K，weight=相似度）。"""

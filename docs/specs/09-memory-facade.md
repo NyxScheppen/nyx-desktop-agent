@@ -7,7 +7,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `Event` / `EventType` / `MemoryType` / `Source`）、02-config（`MemoryConfig`：`short_term_capacity` / `promote_threshold` / `freshness_decay`）、03-llm（`LlmClient.complete`）、05-event（`EventBus.publish`）、07-memory-store（`MemoryStore`）、08-memory-retrieval（`MemoryRetrieval` / `EmbedFn` / `cosine`）、15-eval（`Evaluator`）
+- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `Event` / `EventType` / `MemoryType` / `Source`）、02-config（`MemoryConfig`：`short_term_capacity` / `promote_threshold` / `freshness_decay`）、03-llm（`LlmClient.complete`）、05-event（`EventBus.publish`）、07-memory-store（`MemoryStore`）、08-memory-retrieval（`MemoryRetrieval` / `EmbedFn` / `rank_by_cosine`）、15-eval（`Evaluator`）
 
 ## 用户故事
 
@@ -48,7 +48,7 @@
   2. **召回 `_RECALL_TOP_K=5`**：比建边的 `_EDGE_TOP_K=3` 大，减少漏召回；两者值不同，故分开常量
   3. **否定词规则预筛**：`_has_negation` 纯函数检测新记忆是否含否定/转折锚点（`不`/`没`/`别`/`讨厌`/`恨`/`拒绝`/`否认`/`放弃`/`再也不` 等），命中则在矛盾 prompt 附「重点核对是否推翻旧记忆」提示，把模型注意力引到最可疑方向。**软信号非判定**：`不`/`没` 高频、会误命中，但只增一句提示、不影响门控，模型自己看内容裁决——误报无害、漏报才有害
 - **门控阈值 `_CONTRADICTION_SIM_THRESHOLD=0.6`（决策，可推翻）**：sentence-transformers 余弦同话题中文约 0.6–0.9、不同话题约 0.1–0.4，0.6 作「同话题」分界合理；要调翻一处
-- **建边与矛盾候选复用 `_similar`**：`_similar(query_vec, exclude_id)` 是「query 向量 vs 全表记忆余弦排序（`s>0` 保留、降序）」的共享 helper；建边取 `[:_EDGE_TOP_K]`、矛盾门控取 `[:_RECALL_TOP_K]` 再 `s >= threshold` 过滤。两处各自调用（余弦 O(N)、本地 ≤ 几百条，代价可忽略，不值得为省这点把 scored 传参破坏两方法内聚）
+- **建边与矛盾候选复用 `_similar`（跨模块去重）**：`_similar(query_vec, exclude_id)` 是「排除某 id 后、query 向量 vs 全表记忆余弦排序（`s>0` 保留、降序）」的共享 helper；建边取 `[:_EDGE_TOP_K]`、矛盾门控取 `[:_RECALL_TOP_K]` 再 `s >= threshold` 过滤。两处各自调用（余弦 O(N)、本地 ≤ 几百条，代价可忽略，不值得为省这点把 scored 传参破坏两方法内聚）。核心「打分+过滤+排序」循环不在 facade 重写——复用 08 抽出的 `rank_by_cosine` 纯函数（`_similar` 只做 exclude + 委托，与 08 `_vector_search` 同一份实现，facade 不再直接 import `cosine`）
 - **`reply_context` 契约**：`dict[str, str]`，键 `correlation_id`（溯源）/ `user_message`（用户说了什么）/ `nyx_think`（尼克斯内心）/ `nyx_speak`（尼克斯说了什么）——由 17-expression 慢通道填充。缺键 `KeyError`（fail-fast，契约违反立即暴露，不静默降级）
 - **建边机制（决策，可推翻）**：新记忆与已有记忆按 `embedding` 余弦相似度建边，`_EDGE_TOP_K=3`、`weight=相似度`、`s > 0` 才建；`embed=None` 或新记忆无 embedding → 跳过。方向 `new → old`，`MemoryGraph` 无向所以方向无关
 - **新鲜度衰减（决策，可推翻）**：纯函数 `decay_freshness(freshness, created_at, now, rate) = max(0, freshness - rate × elapsed_days)`，`rate` 单位「/天」（`_SECONDS_PER_DAY=86400.0`；02-config 的 `freshness_decay=0.01` 未标单位，此处定为「0.01/天」，要改单位翻这里一处）。触发点 = `create_scene_memory` 的 `_decay_and_evict` 扫描：读全表 → 逐条衰减回写 → 短期满则挤掉最低新鲜度（平局按 `created_at` 早的优先）。**局限**：两次创建之间新鲜度不变；但衰减单调（越旧越衰减），相对顺序保持，「长期只新鲜度下降、检索排后」的语义不破坏。O(N) 写/次创建，本地单用户 ≤ 几百条记忆，可接受
@@ -71,7 +71,7 @@ from nyx.enums import EventType, MemoryType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient
-from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, cosine
+from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, rank_by_cosine
 from nyx.memory.store import MemoryStore
 from nyx.types import Event, Memory
 
@@ -373,15 +373,10 @@ class MemoryFacade:
     ) -> list[tuple[float, Memory]]:
         """query 向量与全表记忆的余弦排序
         （s>0 才保留，可排除某 id）；纯计算 + store 读。"""
-        scored: list[tuple[float, Memory]] = []
-        for m in await self._store.list_memories():
-            if m.id == exclude_id or m.embedding is None:
-                continue
-            s = cosine(query_vec, m.embedding)
-            if s > 0.0:
-                scored.append((s, m))
-        scored.sort(key=lambda t: t[0], reverse=True)
-        return scored
+        memories = [
+            m for m in await self._store.list_memories() if m.id != exclude_id
+        ]
+        return rank_by_cosine(query_vec, memories)
 
     async def _build_edges(self, memory: Memory) -> None:
         """新记忆与已有记忆按 embedding 余弦相似度建边（top-K，weight=相似度）。"""

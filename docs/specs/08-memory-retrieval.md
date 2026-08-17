@@ -15,7 +15,7 @@
 ## 验收标准
 
 - [ ] `graph.py` 含 `MemoryGraph`（`neighbors(seeds, depth)`），与「`memory/graph.py`（完整）」段代码逐字一致
-- [ ] `retrieval.py` 含 `cosine` / `build_embed` / `EmbedFn` / `MemoryRetrieval`，与「`memory/retrieval.py`（完整）」段代码逐字一致
+- [ ] `retrieval.py` 含 `cosine` / `rank_by_cosine` / `build_embed` / `EmbedFn` / `MemoryRetrieval`，与「`memory/retrieval.py`（完整）」段代码逐字一致
 - [ ] `cosine` 纯函数：正交=0、相同=1、相反=-1、零向量=0、维度不一致=0
 - [ ] `search()` 空/空白查询（`not query.strip()`）短路返回 `[]`；顺序执行 keyword → vector → association，按此序去重合并（`seen` set，后到重复丢弃），`limit` 截断
 - [ ] vector 层：`embed=None` → 跳过返回 `[]`；query 只 embed 一次；memory embedding 从 DB 读（不重算）；`embedding=None` 的记忆跳过；`s > 0` 过滤 + `_VECTOR_TOP_K` 截断
@@ -26,10 +26,11 @@
 
 - **新文件**：`nyx/memory/graph.py`、`nyx/memory/retrieval.py`（无 Facade、无 API、无数据变更）
 - **库**：`networkx`（新增，联想图；依赖 pin 同 03-llm 约定）、`sentence-transformers`（新增，`build_embed` 惰性 import；依赖 pin）；其余标准库（`math` / `asyncio` / `collections.abc`）
-- **公开面**：`from nyx.memory.retrieval import MemoryRetrieval, cosine, build_embed, EmbedFn`；`from nyx.memory.graph import MemoryGraph`（不加 `__all__`）
+- **公开面**：`from nyx.memory.retrieval import MemoryRetrieval, cosine, rank_by_cosine, build_embed, EmbedFn`；`from nyx.memory.graph import MemoryGraph`（不加 `__all__`）
 - **三层顺序 = design §6.3**：keyword → vector → association；合并按此序（keyword 命中排最前），`seen` set 去重，`limit` 截断（默认 20）。对外只返回一份 `list[Memory]`，不暴露层来源
 - **`SearchMode` 是内部层标签**（01-types 已定义「不在公开签名暴露」）：MVP 的 `search()` 返回去重 `list[Memory]` **不带** per-result 来源标记；三层是私有方法（`_vector_search` 等）可单独测试。`SearchMode` 本 spec 不强制使用
 - **vector 层（读持久化 embedding）**：`MemoryRetrieval(store, embed)` 构造注入 `embed`，`None` = 向量层禁用（返回 `[]`）。query 只 `embed` 一次；memory embedding 直接读 `m.embedding`（07 持久化的列），**不重算**——这正是「持久化 embedding 列」的价值。`cosine` 纯函数；MVP 常量 `_VECTOR_TOP_K=5` + `s > 0.0` 过滤（非 config，不引入检索阈值配置项）
+- **`rank_by_cosine` 共享纯函数（跨模块复用）**：`cosine` 之外，把「全表打分 + `s > 0` 过滤 + 降序」抽成纯函数 `rank_by_cosine(query_vec, candidates) -> list[tuple[float, Memory]]`（跳过 `embedding is None`）。`_vector_search` 用它做 vector 层打分；09-facade 的 `_similar` 也复用它（跨模块去重，见 09）。同一套余弦排序逻辑只此一处，改排序/过滤规则翻这里
 - **`build_embed` 惰性 import**：sentence-transformers 是重依赖（下载模型），`build_embed(model_name)` 内 `from sentence_transformers import ...`，未启用向量层（测试/无模型环境）不加载；`model.encode` 同步 → `asyncio.to_thread` 包成 async；返回 `list[float]`
 - **association 层（每次 search 现建图）**：`MemoryGraph(edges)` 从 `store.list_edges()` 构建——O(E) 小（≤ 几百条边），且图永远与 DB 一致（新建记忆后下次 search 自动包含）。`neighbors` 无权重扩散 `depth=1`（`weight` 存图待展示/加权扩散，当前不用）；seed 来自 keyword + vector 命中，扩散结果映射回 `by_id`（`list_memories()` 一次性建的 id→Memory 表，避免 N+1 查询）。**`neighbors` 先过滤不在图中的 seed**：图只从 edges 建节点，孤立记忆（无边的 keyword/vector 命中，属常态）不在图里，而 `nx.Graph.neighbors` 对不存在节点抛 `NetworkXError`——`frontier = [s for s in seeds if self._g.has_node(s)]` 过滤后孤立 seed 自然产出 `[]`，`search()` 不崩
 - **embedding 写归 09**：本 spec 只读 `memory.embedding`；记忆创建时算 embedding + 存列是 09-facade 的活（用同一个 `build_embed`）
@@ -107,6 +108,21 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
+def rank_by_cosine(
+    query_vec: list[float], candidates: list[Memory]
+) -> list[tuple[float, Memory]]:
+    """全表余弦打分 + s>0 过滤 + 降序（embedding 缺失跳过）。纯函数。"""
+    scored: list[tuple[float, Memory]] = []
+    for m in candidates:
+        if m.embedding is None:
+            continue
+        s = cosine(query_vec, m.embedding)
+        if s > 0.0:
+            scored.append((s, m))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return scored
+
+
 def build_embed(model_name: str) -> EmbedFn:
     """用本地 sentence-transformers 建 embed 函数。
 
@@ -169,15 +185,7 @@ class MemoryRetrieval:
         if self._embed is None:
             return []
         qv = await self._embed(query)
-        scored: list[tuple[float, Memory]] = []
-        for m in candidates:
-            if m.embedding is None:
-                continue
-            s = cosine(qv, m.embedding)
-            if s > 0.0:
-                scored.append((s, m))
-        scored.sort(key=lambda t: t[0], reverse=True)
-        return [m for _, m in scored[:_VECTOR_TOP_K]]
+        return [m for _, m in rank_by_cosine(qv, candidates)[:_VECTOR_TOP_K]]
 ```
 
 ## 测试要点
@@ -191,6 +199,7 @@ class MemoryRetrieval:
     - [ ] `weight` 不影响扩散（无权重，只可达性）
   - [ ] **retrieval**（`test_retrieval.py`）：
     - [ ] `cosine` 纯函数：正交 `[1,0]`/`[0,1]` = 0、相同 = 1、相反 `[1,0]`/`[-1,0]` = -1、零向量 `[0,0]` = 0、维度不一致 = 0
+    - [ ] `rank_by_cosine` 纯函数：`embedding=None` 跳过、`s <= 0` 过滤、按 `s` 降序（cos=1 与 cos≈0.707 的记忆 → 顺序 `[高, 低]`）
     - [ ] `_vector_search`（fake embed + 含 embedding 的 `Memory` 列表）：`_VECTOR_TOP_K` 截断、`embedding=None` 的记忆跳过、`s <= 0` 过滤、`embed=None` 时返回 `[]`
     - [ ] `search` 编排（真 `MemoryStore`（`connect(":memory:")`）+ fake embed）：造 A（content 含 query、embedding `[1,0]`）、B（embedding `[0,1]`）、C（无 embedding）+ 边 A-B → `search(query)` 按 keyword 命中 A、vector 命中 A、association 扩散到 B，合并去重 = `[A, B]`（顺序 keyword 先）；`limit=1` → `[A]`
     - [ ] `search` 去重：keyword 与 vector 命中同一记忆 → 只出现一次

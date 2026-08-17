@@ -159,6 +159,7 @@
 | `test_neighbors_diamond_dedup` | 功能正确 | 菱形 a-b/a-c/b-d/c-d：depth=2 → `["b","c","d"]`（d 去重只一次） |
 | `test_weight_does_not_affect_spread` | 功能正确 | weight 不影响扩散（只按可达性） |
 | `test_cosine` | 功能正确 | 正交=0、相同=1、相反=-1、零向量=0、维度不一致=0（纯函数） |
+| `test_rank_by_cosine` | 功能正确 | `embedding=None` 跳过、`s<=0` 过滤、按 `s` 降序（纯函数；`_vector_search` 与 09 `_similar` 共用） |
 | `test_vector_search_skips_none_and_filters` | 边界鲁棒 | `embedding=None` 跳过、`s<=0` 过滤（cos=-1/0）、cos=1 命中 |
 | `test_vector_search_top_k_truncates` | 功能正确 | 7 候选只返回 `_VECTOR_TOP_K=5` |
 | `test_vector_search_disabled_when_embed_none` | 功能正确 | `embed=None` → `[]`（向量层禁用） |
@@ -168,7 +169,7 @@
 | `test_search_blank_query_returns_empty` | 边界鲁棒 | `""`/`" "`/`"   "` 空/空白查询短路 → `[]`（`query.strip()`，不因 `LIKE '%%'`/`'% %'` 误返全量） |
 | `test_search_no_edge_no_crash` | 边界鲁棒 | keyword 命中无边记忆 → 不抛 `NetworkXError`（`neighbors` 过滤），返回命中本身 |
 
-**功能阶段**：08-memory-retrieval 实现时编写。
+**功能阶段**：08-memory-retrieval 实现时编写；`test_rank_by_cosine` 于 09 评审修复阶段新增（跨模块去重：抽 `rank_by_cosine` 供 facade 复用）。
 
 ## 15-eval（三层评分 + token 记账）
 

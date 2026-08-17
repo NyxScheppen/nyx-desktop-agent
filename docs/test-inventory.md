@@ -266,11 +266,15 @@
 | `test_run_eval_decay` | 功能正确 | `updated_at` 1 天前 → `value` 衰减 `value_decay × 1`（0.5→0.48） |
 | `test_run_eval_suppression_gate` | 功能正确 | 达峰但 `suppression_threshold > value` → 不生成、返回 `[]` |
 | `test_run_eval_topic_seed` | 功能正确 | 探索长期 `subtopics=["骑士团"]` → LLM prompt 含「骑士团」 |
+| `test_run_eval_llm_invalid_json_skips` | 边界鲁棒 | 非法 JSON → `_parse_desire` 抛 `ValueError` → 返回 `[]`、目标 `value` 不重置、无欲望入队 |
+| `test_run_eval_evaluator_error_propagates` | 回归保护 | evaluator 抛 `RuntimeError` → 不被 `except ValueError` 吞、上抛给 supervisor（不掩蔽真 bug） |
 | `test_satisfy_goal_met` | 功能正确 | `SATISFIED`、表达权重 `+0.05`、长期进度 `+0.1`、发布 `desire_satisfied` |
 | `test_satisfy_retry` | 功能正确 | `retry_count+1`、`status` 仍 `PENDING`、无事件 |
 | `test_satisfy_retry_exceeds_limit` | 功能正确 | `retry_count > retry_limit` → `EXPIRED`、值回增 `+REFUND_DELTA`、抑制阈值 `+0.1`、发布 `desire_expired` |
 | `test_expire` | 功能正确 | `EXPIRED` + 值回增 + 抑制阈值上浮 + 发布 `desire_expired` |
 | `test_satisfy_expire_missing` | 边界鲁棒 | `desire_id` 不存在 → 无事件、不抛 |
+| `test_satisfy_idempotent` | 回归保护 | 重复 `satisfy(True)` → 表达权重只 `+0.05` 一次、只发 1 条 `desire_satisfied` |
+| `test_expire_idempotent` | 回归保护 | 重复 `expire` → 值只回灌一次 `+REFUND_DELTA`、阈值只 `+0.1`、只发 1 条 `desire_expired` |
 | `test_add_value_observation` | 功能正确 | `add_value(OBSERVATION_STATE)` → 互动欲加压 |
 | `test_add_value_activity_end_satisfies` | 功能正确 | `add_value(ACTIVITY_END)`（content 含 `desire_id`+`goal_met`）→ 满足回写 + 发布 `desire_satisfied` |
 | `test_add_value_activity_end_ignores_invalid` | 边界鲁棒 | `ACTIVITY_END` 缺 `goal_met` / `goal_met` 类型错 → 无操作（状态不变） |

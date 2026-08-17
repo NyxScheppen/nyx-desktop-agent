@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from typing import Any, cast
 from uuid import uuid4
@@ -109,6 +110,7 @@ class DesireLifecycle:
         self._llm = llm
         self._evaluator = evaluator
         self._config = config
+        self._logger = logging.getLogger(__name__)
 
     async def pressure_from_observation(self, event: Event) -> None:
         """OBSERVATION_STATE → 互动欲加压（增量固定 +0.15，不解析 event.content）。"""
@@ -173,12 +175,16 @@ class DesireLifecycle:
             if t is not target.type:
                 await self._store.upsert_value(values[t])
 
-        # 6. LLM 生成
+        # 6. LLM 生成 + 解析（best-effort：LLM 返回非法 JSON → 漏报优于误报，跳过
+        #    本次 eval；传输异常 / evaluator 真 bug 不吞，上抛给 supervisor 处理）
         desire_id = str(uuid4())
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _DESIRE_SYSTEM},
-                {"role": "user", "content": _build_desire_prompt(target.type, seed)},
+                {
+                    "role": "user",
+                    "content": _build_desire_prompt(target.type, seed),
+                },
             ],
             module="desire",
             output_type="desire",
@@ -186,7 +192,15 @@ class DesireLifecycle:
             json_mode=True,
         )
         await self._evaluator.evaluate(output)
-        description, goal = _parse_desire(output.content)
+        try:
+            description, goal = _parse_desire(output.content)
+        except ValueError:
+            self._logger.exception(
+                "欲望 JSON 解析失败 type=%s correlation_id=%s",
+                target.type.value,
+                desire_id,
+            )
+            return []
 
         # 7. 重置选中类型 value（其余达峰类型保留压力）
         target.value = 0.0
@@ -215,9 +229,11 @@ class DesireLifecycle:
         return [desire]
 
     async def satisfy(self, desire_id: str, goal_met: bool) -> None:
-        """达成/未达成回写。"""
+        """达成/未达成回写。终态（SATISFIED/EXPIRED）幂等：重复投递 no-op。"""
         desire = await self._store.get_desire(desire_id)
         if desire is None:
+            return
+        if desire.status in (DesireStatus.SATISFIED, DesireStatus.EXPIRED):
             return
         if goal_met:
             await self._satisfy(desire)
@@ -229,9 +245,11 @@ class DesireLifecycle:
                 await self._store.update_desire(desire)  # 保持 PENDING，retry+1
 
     async def expire(self, desire_id: str) -> None:
-        """淘汰：出队 + 值回增 + 抑制阈值上浮。"""
+        """淘汰：出队 + 值回增 + 抑制阈值上浮。终态幂等：重复投递 no-op。"""
         desire = await self._store.get_desire(desire_id)
         if desire is None:
+            return
+        if desire.status in (DesireStatus.SATISFIED, DesireStatus.EXPIRED):
             return
         await self._expire(desire)
 

@@ -470,3 +470,98 @@ async def test_satisfy_expire_missing() -> None:
         assert events == []                       # 无事件、不抛
     finally:
         await database.conn.close()
+
+
+# ---- run_eval LLM 兜底 ----
+
+
+async def test_run_eval_llm_invalid_json_skips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm("not json")
+    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        async with _running(bus):
+            result = await lifecycle.run_eval()
+        assert result == []                       # 非法 JSON 不抛，跳过本次
+        dv = await store.get_value(DesireType.INTERACTION)
+        assert dv is not None and dv.value == pytest.approx(0.9)   # 目标不重置
+        assert await store.list_pending() == []    # 无欲望入队
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_evaluator_error_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+
+    class _BoomEvaluator:
+        async def evaluate(self, output: LLMOutput) -> None:
+            raise RuntimeError("boom")
+
+    lifecycle = DesireLifecycle(
+        store,
+        bus,
+        cast(LlmClient, llm),
+        cast(Evaluator, _BoomEvaluator()),
+        DesireConfig(),
+    )
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        with pytest.raises(RuntimeError):
+            async with _running(bus):
+                await lifecycle.run_eval()
+    finally:
+        await database.conn.close()
+
+
+# ---- satisfy/expire 幂等 ----
+
+
+async def test_satisfy_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    events = _subscribe(bus)
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.5, updated_at=t0))
+        await store.add_desire(_desire("d1"))
+        async with _running(bus):
+            await lifecycle.satisfy("d1", True)
+            await lifecycle.satisfy("d1", True)
+        dv = await store.get_value(DesireType.INTERACTION)
+        assert dv is not None
+        assert dv.expression_weight == pytest.approx(0.7 + WEIGHT_REINFORCE_DELTA)
+        assert len([e for e in events if e.type is EventType.DESIRE_SATISFIED]) == 1
+    finally:
+        await database.conn.close()
+
+
+async def test_expire_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    events = _subscribe(bus)
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.3, updated_at=t0))
+        await store.add_desire(_desire("d1"))
+        async with _running(bus):
+            await lifecycle.expire("d1")
+            await lifecycle.expire("d1")
+        dv = await store.get_value(DesireType.INTERACTION)
+        assert dv is not None
+        assert dv.value == pytest.approx(0.3 + REFUND_DELTA)       # 只回灌一次
+        assert dv.suppression_threshold == pytest.approx(0.5 + SUPPRESSION_RAISE_DELTA)
+        assert len([e for e in events if e.type is EventType.DESIRE_EXPIRED]) == 1
+    finally:
+        await database.conn.close()

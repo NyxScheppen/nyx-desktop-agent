@@ -227,3 +227,19 @@
 | `test_export_unknown` | 边界鲁棒 | `csv` → `ValueError` |
 
 **功能阶段**：09-memory-facade 实现时编写；`test_contradiction_parse_failure_no_crash` / `test_eviction_tie_break_oldest_first` / `test_record_recall_concurrent_single_promote` 于 09 评审修复阶段编写（高1：矛盾解析失败不再半提交；中4：淘汰平局按 created_at 升序；中3：并发 record_recall 只升一次）。
+
+## 10-desire-value（欲望值机制）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_decay_value` | 功能正确 | `elapsed_days=0` 不变；`=1` → `value-rate`；衰减到负夹 0；`rate=0` 不变（纯函数） |
+| `test_apply_pressure` | 功能正确 | 加正 `delta` 上升；超上限夹 1.0；负 `delta` 夹 0.0（回增与加压同一纯函数） |
+| `test_reinforce_weight` | 功能正确 | 默认 `delta`=`+WEIGHT_REINFORCE_DELTA`；显式覆盖；到上限夹 1.0（多次满足不越界） |
+| `test_raise_suppression` | 功能正确 | 默认 `delta`=`+SUPPRESSION_RAISE_DELTA`；显式覆盖；到上限夹 1.0 |
+| `test_at_peak` | 功能正确 | `value > threshold` → True、`<` → False、`==` → True（含等号） |
+| `test_is_expressible` | 功能正确 | 同 `at_peak` 边界（用 `suppression_threshold`） |
+| `test_gating_suppression` | 回归保护 | 初始 `suppression=0.5` 达峰即表达；失败 4 次 `suppression=0.9` 达峰但被压抑（越挫越压抑） |
+| `test_default_value` | 功能正确 | 四个 `DesireType` 各自 `value==0.0` / `expression_weight==0.7` / `suppression_threshold==0.5` / `updated_at==0.0`、`type` 正确 |
+| `test_step_constants` | 功能正确 | `0.0 <= WEIGHT_REINFORCE_DELTA <= SUPPRESSION_RAISE_DELTA`、`REFUND_DELTA > 0` |
+
+**功能阶段**：10-desire-value 实现时编写（纯函数，无 DB、无 mock、无集成/E2E；编排归 11-desire）。

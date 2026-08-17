@@ -32,7 +32,7 @@
 - **锁约定**：每个方法一个 `async with self._db.lock:` 的 SQL 块；`delete` 里删边 + 删记忆在**同一个锁块**内原子完成，不拆成两次锁；store 方法之间**不互相调用对方的持锁方法**（`asyncio.Lock` 不可重入，嵌套死锁）。这是 04-db `Database(conn, lock)` 共享连接约定的首个 store 落地
 - **`created_at` 不可变**：`update` 的 SET 子句不含 `created_at` / `id`——创建时刻是事实，不可改
 - **排序约定**：`list_memories` / `search_keyword` 按 `freshness DESC, created_at DESC`——检索要新鲜的在前（design §6「长期不消失，只新鲜度下降，检索时排后」）
-- **关键词用 `LIKE`**：04-db 只有 `idx_memory_tag` / `idx_memory_type` 两个索引，**没有 FTS 表**，所以「SQLite FTS/LIKE」（design §6.3）落为 `LIKE '%query%'`。`%` / `_` 会被当通配符（MVP 接受，不转义）；ASCII 大小写不敏感、中文按字节
+- **关键词用 `LIKE`**：04-db 只有 `idx_memory_tag` / `idx_memory_type` 两个索引，**没有 FTS 表**，所以「SQLite FTS/LIKE」（design §6.3）落为 `LIKE '%query%'`。`%` / `_` / `\` 会被当通配符，已转义（`_escape_like` + `ESCAPE '\'`，让 query 按字面匹配）；ASCII 大小写不敏感、中文按字节
 - **枚举列存 `.value`、`aspect` 存 JSON 数组**：与 04-db「枚举列存 `.value` 字符串、复杂字段存 JSON 字符串」一致；`aspect` 空集合存 `"[]"`（非 Optional → 列 `NOT NULL`，序列化不必判 None）
 - **`embedding` 可空列（None ↔ SQL NULL）**：`list[float] | None` ⟺ `embedding TEXT` 可空；`_embedding_json` 把 `None` 序列化为 SQL `NULL`（不是 `"null"` 字符串）、`list` 序列化为 JSON 数组字符串，读回时 `None` 保持 `None`。这是首个可空 JSON 列，后续 store（`goal` / `ended_at` / `token_usage.correlation_id` 等）照此 `None ↔ NULL` 模式
 - **边界划分（明确不做）**：新鲜度衰减、短期→长期升级（recall 满 3 次）、容量淘汰是 09-facade 的生命周期逻辑——store 只给 `add` / `update` / `delete` / `increment_recall` 原语；`graph.py`（networkx 联想图）归 08，从 `list_edges()` 建图。FK 完整性靠 04-db 的 `PRAGMA foreign_keys=ON`（`upsert_edge` 引用不存在的 id 抛 `aiosqlite.IntegrityError`）
@@ -221,6 +221,7 @@ def _row_to_memory(row: aiosqlite.Row) -> Memory:
   - [ ] **delete 级联删边**：`add` 两条 memory + 两条关联它的 `upsert_edge` → `delete` 后 `get=None`、`list_edges` 无残留（其它记忆的边不受影响）
   - [ ] **increment_recall**：连续两次 → `recall_count == 2`
   - [ ] **search_keyword**：`content` 命中 / `summary` 命中 / 无命中 → `[]` / ASCII 大小写不敏感（"FOO" 命中 "foo"）
+  - [ ] **search_keyword 转义通配符**：搜 `"100%"` 只命中含字面 `100%`、搜 `"a_b"` 只命中字面 `a_b`（`_escape_like` + `ESCAPE '\'`，不误命中通配符匹配）
   - [ ] **list_edges + upsert_edge**：`upsert_edge` 新建 → `list_edges` 返回 `MemoryEdge`；同 `(from_id, to_id)` 再 `upsert_edge` 改 `weight`（ON CONFLICT 更新不重复建行）
   - [ ] **upsert_edge 引用不存在的 id** → `aiosqlite.IntegrityError`（`PRAGMA foreign_keys=ON` 生效）
 - [ ] 集成测试：无（store 是基础设施，无 Facade 管道；与 08/09 的编排归各自 spec）

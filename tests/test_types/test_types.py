@@ -1,11 +1,9 @@
 from typing import get_type_hints
 
+from nyx.enums import DesireStatus, DesireType, MemoryType
 from nyx.types import (
-    DesireStatus,
-    DesireType,
     EvalScores,
     Memory,
-    MemoryType,
     Personality,
     ShortTermDesire,
     TokenUsageDict,

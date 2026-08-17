@@ -64,7 +64,8 @@ class Memory:
     freshness: float        # 0-1，随时间衰减
     type: MemoryType
     recall_count: int = 0   # "想起"次数（实际用进回复）
-    aspect: list[str] = field(default_factory=list[str])  # 仅 user 画像，可多值
+    # 仅 user 画像，可多值
+    aspect: list[str] = field(default_factory=list)  # pyright: ignore
     embedding: list[float] | None = None   # 向量检索用，未嵌入为 None
 
 
@@ -105,7 +106,7 @@ class LongTermDesire:
     strength: float         # 迫切度，消退不归零（范围由 10-desire-value 定义）
     progress: float         # 0-1
     subtopics: list[str]    # 子主题池
-    linked_values: list[str] = field(default_factory=list[str])
+    linked_values: list[str] = field(default_factory=list)  # pyright: ignore
 
 
 @dataclass

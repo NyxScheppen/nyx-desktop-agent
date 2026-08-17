@@ -86,13 +86,30 @@ class MemoryStore:
             await self._db.conn.execute("DELETE FROM memory WHERE id = ?", (memory_id,))
             await self._db.conn.commit()
 
-    async def increment_recall(self, memory_id: str) -> None:
+    async def record_recall(self, memory_id: str, promote_threshold: int) -> bool:
+        """原子：recall_count+1；短期且达阈值则升长期（单锁，避免跨方法竞态）。
+
+        返回是否升级（供 facade 发 memory_promoted）。阈值由 facade 传入——
+        策略仍在 facade，store 只提供「加一 + 条件升型」原语。
+        """
         async with self._db.lock:
             await self._db.conn.execute(
                 "UPDATE memory SET recall_count = recall_count + 1 WHERE id = ?",
                 (memory_id,),
             )
+            cursor = await self._db.conn.execute(
+                "UPDATE memory SET type = ? WHERE id = ? AND type = ? "
+                "AND recall_count >= ?",
+                (
+                    MemoryType.LONG_TERM.value,
+                    memory_id,
+                    MemoryType.SHORT_TERM.value,
+                    promote_threshold,
+                ),
+            )
+            promoted = cursor.rowcount == 1
             await self._db.conn.commit()
+        return promoted
 
     async def search_keyword(self, query: str) -> list[Memory]:
         pattern = f"%{_escape_like(query)}%"

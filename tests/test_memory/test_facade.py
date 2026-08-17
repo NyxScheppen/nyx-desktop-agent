@@ -1,0 +1,662 @@
+# pyright: reportPrivateUsage=false
+import asyncio
+import contextlib
+import json
+from collections.abc import AsyncGenerator
+from typing import cast
+
+import pytest
+
+from nyx import db
+from nyx.config import MemoryConfig
+from nyx.db import Database
+from nyx.enums import EventType, MemoryType, Source
+from nyx.eval.evaluator import Evaluator
+from nyx.events.bus import EventBus
+from nyx.llm.client import LlmClient, LlmMessage
+from nyx.memory.facade import (
+    MemoryFacade,
+    _build_contradiction_prompt,
+    _build_scene_prompt,
+    _content_preview,
+    _has_negation,
+    _memory_to_dict,
+    _memory_to_markdown,
+    _parse_contradiction,
+    _parse_scene,
+    decay_freshness,
+)
+from nyx.memory.retrieval import EmbedFn, MemoryRetrieval
+from nyx.memory.store import MemoryStore
+from nyx.types import Event, LLMOutput, Memory
+
+_SCENE_JSON = json.dumps(
+    {"content": "用户喜欢猫", "tag": "cat", "summary": "喜欢猫"}
+)
+_NEG_SCENE_JSON = json.dumps(
+    {"content": "我不喜欢猫", "tag": "cat", "summary": "不喜欢猫"}
+)
+
+
+def _mem(
+    id: str,
+    embedding: list[float] | None,
+    content: str = "旧记忆内容",
+) -> Memory:
+    return Memory(
+        id=id,
+        created_at=1000.0,
+        content=content,
+        tag="old",
+        summary="旧",
+        freshness=1.0,
+        type=MemoryType.SHORT_TERM,
+        recall_count=0,
+        aspect=[],
+        embedding=embedding,
+    )
+
+
+def _ctx(correlation_id: str = "corr-1") -> dict[str, str]:
+    return {
+        "correlation_id": correlation_id,
+        "user_message": "我喜欢猫",
+        "nyx_think": "用户喜欢猫",
+        "nyx_speak": "猫很可爱",
+    }
+
+
+def _embed(vec: list[float]) -> EmbedFn:
+    async def fn(text: str) -> list[float]:
+        return vec
+
+    return fn
+
+
+class _FakeLlm:
+    """complete 按 output_type 返回预设 JSON，记录 output_type 与 user content。"""
+
+    def __init__(self, responses: dict[str, str] | None = None) -> None:
+        self._responses = responses if responses is not None else {
+            "scene_memory": _SCENE_JSON
+        }
+        self.calls: list[str] = []          # output_type 序列
+        self.user_contents: list[str] = []  # 每次 complete 的 user content
+
+    async def complete(
+        self,
+        messages: list[LlmMessage],
+        *,
+        module: str,
+        output_type: str,
+        correlation_id: str,
+        json_mode: bool = False,
+    ) -> LLMOutput:
+        self.calls.append(output_type)
+        self.user_contents.append(messages[1]["content"])
+        return LLMOutput(
+            id=f"llm-{len(self.calls)}",
+            module=module,
+            type=output_type,
+            model="fake",
+            content=self._responses.get(output_type, "{}"),
+            token_usage={"input": 1, "output": 1},
+            correlation_id=correlation_id,
+        )
+
+
+class _FakeEvaluator:
+    """记录 evaluate 调用（facade 只调不返回值）。"""
+
+    def __init__(self) -> None:
+        self.evaluated: list[LLMOutput] = []
+
+    async def evaluate(self, output: LLMOutput) -> None:
+        self.evaluated.append(output)
+
+
+class _FakeRetrieval:
+    """记录 search 调用并返回预设结果。"""
+
+    def __init__(self, result: list[Memory]) -> None:
+        self._result = result
+        self.queries: list[str] = []
+
+    async def search(self, query: str) -> list[Memory]:
+        self.queries.append(query)
+        return self._result
+
+
+def _make_facade(
+    store: MemoryStore,
+    bus: EventBus,
+    llm: _FakeLlm,
+    evaluator: _FakeEvaluator,
+    *,
+    embed: EmbedFn | None = None,
+    config: MemoryConfig | None = None,
+    retrieval: MemoryRetrieval | None = None,
+) -> MemoryFacade:
+    ret = retrieval if retrieval is not None else MemoryRetrieval(store, embed)
+    return MemoryFacade(
+        store,
+        ret,
+        bus,
+        cast(LlmClient, llm),
+        cast(Evaluator, evaluator),
+        config if config is not None else MemoryConfig(),
+        embed,
+    )
+
+
+async def _new_stack() -> tuple[MemoryStore, EventBus, Database]:
+    database = await db.connect(":memory:")
+    return MemoryStore(database), EventBus(database), database
+
+
+def _subscribe(bus: EventBus) -> list[Event]:
+    events: list[Event] = []
+
+    async def record(event: Event) -> None:
+        events.append(event)
+
+    event_types = (
+        EventType.MEMORY_CREATED,
+        EventType.MEMORY_PROMOTED,
+        EventType.REFLECTION,
+    )
+    for t in event_types:
+        bus.subscribe(t, record)
+    return events
+
+
+@contextlib.asynccontextmanager
+async def _running(bus: EventBus) -> AsyncGenerator[None]:
+    """以 task 跑 run()，yield 后等待队列排空，退出时 cancel。"""
+    task = asyncio.create_task(bus.run())
+    try:
+        yield
+        await asyncio.wait_for(bus._queue.join(), timeout=1.0)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+# ---- 纯函数 ----
+
+
+def test_decay_freshness() -> None:
+    assert decay_freshness(1.0, 100.0, 100.0, 0.01) == 1.0        # 同刻不变
+    assert decay_freshness(1.0, 100.0, 100.0 + 86400.0, 0.01) == pytest.approx(0.99)
+    assert decay_freshness(1.0, 200.0, 100.0, 0.01) == 1.0        # 倒挂不变
+    assert decay_freshness(0.5, 0.0, 100.0 * 86400.0, 0.01) == 0.0  # 夹到 0
+
+
+def test_parse_scene() -> None:
+    assert _parse_scene(_SCENE_JSON) == ("用户喜欢猫", "cat", "喜欢猫")
+    with pytest.raises(ValueError):
+        _parse_scene('{"content": "x", "summary": "s"}')   # 缺 tag
+    with pytest.raises(ValueError):
+        _parse_scene('{"content": "", "tag": "t", "summary": "s"}')  # 空 content
+    with pytest.raises(ValueError):
+        _parse_scene("[]")                                 # 非对象
+
+
+def test_build_scene_prompt() -> None:
+    prompt = _build_scene_prompt(_ctx())
+    assert "我喜欢猫" in prompt      # user_message
+    assert "用户喜欢猫" in prompt    # nyx_think
+    assert "猫很可爱" in prompt      # nyx_speak
+    with pytest.raises(KeyError):
+        _build_scene_prompt({"user_message": "x"})
+
+
+def test_has_negation() -> None:
+    assert _has_negation("我不喜欢猫") is True
+    assert _has_negation("我喜欢猫") is False
+
+
+def test_content_preview() -> None:
+    assert _content_preview(_mem("m", None, content="短内容")) == "旧 | 短内容"
+    preview = _content_preview(_mem("m", None, content="x" * 100))
+    assert preview.startswith("旧 | ")
+    assert preview.endswith("…")
+    assert preview.count("x") == 60
+
+
+def test_build_contradiction_prompt() -> None:
+    new = _mem("new", None, content="我不喜欢猫")
+    candidates = [_mem("old-1", None, content="我喜欢猫")]
+    prompt = _build_contradiction_prompt(new, candidates)
+    assert "我不喜欢猫" in prompt   # 新记忆 content
+    assert "old-1" in prompt        # 候选 id
+    assert "我喜欢猫" in prompt     # 候选 content 预览（非只 summary）
+    assert "重点核对" in prompt     # 否定词 → 提示
+    # 无否定词 → 无提示
+    prompt2 = _build_contradiction_prompt(
+        _mem("new2", None, content="我喜欢猫"), candidates
+    )
+    assert "重点核对" not in prompt2
+
+
+def test_parse_contradiction() -> None:
+    assert _parse_contradiction('{"conflicts_with": "old-1"}') == "old-1"
+    assert _parse_contradiction('{"conflicts_with": null}') is None
+    with pytest.raises(ValueError):
+        _parse_contradiction('{"conflicts_with": 123}')
+    assert _parse_contradiction("{}") is None
+
+
+def test_memory_to_dict() -> None:
+    m = _mem("m1", [0.1, 0.2])
+    d = _memory_to_dict(m)
+    assert d["type"] == "short_term"   # .value 字符串
+    assert d["embedding"] == [0.1, 0.2]
+
+
+def test_memory_to_markdown() -> None:
+    md = _memory_to_markdown(_mem("m1", None, content="内容A"))
+    assert "旧" in md       # summary
+    assert "内容A" in md    # content
+
+
+# ---- create_scene_memory ----
+
+
+async def test_create_scene_memory_basic() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            memory = await facade.create_scene_memory(_ctx())
+        assert memory.content == "用户喜欢猫"
+        assert memory.tag == "cat"
+        assert memory.summary == "喜欢猫"
+        assert memory.freshness == 1.0
+        assert memory.type is MemoryType.SHORT_TERM
+        assert memory.embedding is None
+        assert llm.calls == ["scene_memory"]
+        assert [o.type for o in evaluator.evaluated] == ["scene_memory"]
+        [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
+        assert created.content["memory_id"] == memory.id
+        assert created.source is Source.INTERNAL
+        assert created.correlation_id == "corr-1"
+    finally:
+        await database.conn.close()
+
+
+async def test_contradiction_gating_under_threshold() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [1.0, 0.0]))   # 与新记忆正交
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator, embed=_embed([0.0, 1.0]))
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.create_scene_memory(_ctx())
+        assert llm.calls == ["scene_memory"]      # 无 contradiction 调用
+        assert [e for e in events if e.type is EventType.REFLECTION] == []
+    finally:
+        await database.conn.close()
+
+
+async def test_contradiction_detected() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [1.0, 0.0]))
+    llm = _FakeLlm({
+        "scene_memory": _SCENE_JSON,
+        "contradiction": json.dumps({"conflicts_with": "old-1"}),
+    })
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator, embed=_embed([1.0, 0.0]))
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            memory = await facade.create_scene_memory(_ctx())
+        assert llm.calls == ["scene_memory", "contradiction"]
+        assert [o.type for o in evaluator.evaluated] == [
+            "scene_memory", "contradiction",
+        ]
+        [reflection] = [e for e in events if e.type is EventType.REFLECTION]
+        assert memory.id in reflection.content["summary"]
+        assert "old-1" in reflection.content["summary"]
+    finally:
+        await database.conn.close()
+
+
+async def test_contradiction_null_no_reflection() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [1.0, 0.0]))
+    llm = _FakeLlm({
+        "scene_memory": _SCENE_JSON,
+        "contradiction": json.dumps({"conflicts_with": None}),
+    })
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator, embed=_embed([1.0, 0.0]))
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.create_scene_memory(_ctx())
+        assert llm.calls == ["scene_memory", "contradiction"]
+        assert [e for e in events if e.type is EventType.REFLECTION] == []
+    finally:
+        await database.conn.close()
+
+
+async def test_contradiction_recall_top_k() -> None:
+    store, bus, database = await _new_stack()
+    for i in range(6):
+        await store.add(_mem(f"old-{i}", [1.0, 0.0]))
+    llm = _FakeLlm({
+        "scene_memory": _SCENE_JSON,
+        "contradiction": json.dumps({"conflicts_with": None}),
+    })
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator, embed=_embed([1.0, 0.0]))
+    try:
+        async with _running(bus):
+            await facade.create_scene_memory(_ctx())
+        assert llm.user_contents[1].count("- [old-") == 5   # 召回 top-K=5
+    finally:
+        await database.conn.close()
+
+
+async def test_contradiction_prompt_negation_hint() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [1.0, 0.0]))
+    llm = _FakeLlm({
+        "scene_memory": _NEG_SCENE_JSON,   # content 含「不」
+        "contradiction": json.dumps({"conflicts_with": None}),
+    })
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator, embed=_embed([1.0, 0.0]))
+    try:
+        async with _running(bus):
+            await facade.create_scene_memory(_ctx())
+        assert "重点核对" in llm.user_contents[1]
+    finally:
+        await database.conn.close()
+
+
+async def test_contradiction_parse_failure_no_crash() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [1.0, 0.0]))
+    llm = _FakeLlm({
+        "scene_memory": _SCENE_JSON,
+        "contradiction": "not-json{{{",   # 解析失败
+    })
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator, embed=_embed([1.0, 0.0]))
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            memory = await facade.create_scene_memory(_ctx())
+        assert memory.content == "用户喜欢猫"   # 主流程不受影响（记忆已入库）
+        [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
+        assert created.content["memory_id"] == memory.id
+        assert [e for e in events if e.type is EventType.REFLECTION] == []
+        assert llm.calls == ["scene_memory", "contradiction"]
+    finally:
+        await database.conn.close()
+
+
+async def test_build_edges() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [1.0, 0.0]))
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator, embed=_embed([1.0, 0.0]))
+    try:
+        async with _running(bus):
+            memory = await facade.create_scene_memory(_ctx())
+        edges = await store.list_edges()
+        assert any(
+            e.from_id == memory.id and e.to_id == "old-1" and e.weight > 0
+            for e in edges
+        )
+    finally:
+        await database.conn.close()
+
+
+async def test_eviction(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    config = MemoryConfig(short_term_capacity=1)
+    facade = _make_facade(store, bus, llm, evaluator, config=config)
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0)
+        async with _running(bus):
+            mem1 = await facade.create_scene_memory(_ctx())
+        monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0 + 86400.0)
+        async with _running(bus):
+            mem2 = await facade.create_scene_memory(_ctx())
+        assert await store.get(mem1.id) is None     # 旧记忆被挤掉
+        assert await store.get(mem2.id) is not None
+        assert len(await facade.list_memories()) == 1
+    finally:
+        await database.conn.close()
+
+
+async def test_eviction_tie_break_oldest_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    config = MemoryConfig(short_term_capacity=2, freshness_decay=0.0)
+    facade = _make_facade(store, bus, llm, evaluator, config=config)
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0)
+        async with _running(bus):
+            oldest = await facade.create_scene_memory(_ctx())
+        monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0 + 86400.0)
+        async with _running(bus):
+            middle = await facade.create_scene_memory(_ctx())
+        monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0 + 2 * 86400.0)
+        async with _running(bus):
+            newest = await facade.create_scene_memory(_ctx())
+        # 新鲜度相等（decay=0.0）→ 平局按 created_at 升序，挤掉最旧的而非最新
+        assert await store.get(oldest.id) is None
+        assert await store.get(middle.id) is not None
+        assert await store.get(newest.id) is not None
+        assert len(await facade.list_memories()) == 2
+    finally:
+        await database.conn.close()
+
+
+async def test_decay_writeback(monkeypatch: pytest.MonkeyPatch) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0)
+        async with _running(bus):
+            mem1 = await facade.create_scene_memory(_ctx())
+        monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0 + 86400.0)
+        async with _running(bus):
+            await facade.create_scene_memory(_ctx())
+        decayed = await store.get(mem1.id)
+        assert decayed is not None
+        assert decayed.freshness < 1.0   # 衰减回写
+    finally:
+        await database.conn.close()
+
+
+# ---- search / list_memories ----
+
+
+async def test_search_delegates_to_retrieval() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    preset = [_mem("m1", None), _mem("m2", None)]
+    fake_retrieval = _FakeRetrieval(preset)
+    facade = _make_facade(
+        store, bus, llm, evaluator, retrieval=cast(MemoryRetrieval, fake_retrieval)
+    )
+    try:
+        assert await facade.search("猫") == preset
+        assert fake_retrieval.queries == ["猫"]
+    finally:
+        await database.conn.close()
+
+
+async def test_list_memories_delegates() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("m1", None, content="a"))
+    long = _mem("m2", None, content="b")
+    long.type = MemoryType.LONG_TERM
+    await store.add(long)
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    try:
+        result = await facade.list_memories(type=MemoryType.SHORT_TERM)
+        assert [m.id for m in result] == ["m1"]
+    finally:
+        await database.conn.close()
+
+
+# ---- record_recall ----
+
+
+async def test_record_recall_below_threshold() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("m1", None))
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.record_recall("m1")
+        memory = await store.get("m1")
+        assert memory is not None
+        assert memory.recall_count == 1
+        assert memory.type is MemoryType.SHORT_TERM
+        assert [e for e in events if e.type is EventType.MEMORY_PROMOTED] == []
+    finally:
+        await database.conn.close()
+
+
+async def test_record_recall_promotes() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("m1", None))
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(
+        store, bus, llm, evaluator, config=MemoryConfig(promote_threshold=1)
+    )
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.record_recall("m1")
+        memory = await store.get("m1")
+        assert memory is not None
+        assert memory.type is MemoryType.LONG_TERM
+        assert memory.recall_count == 1
+        [promoted] = [e for e in events if e.type is EventType.MEMORY_PROMOTED]
+        assert promoted.content["memory_id"] == "m1"
+        assert promoted.source is Source.INTERNAL
+    finally:
+        await database.conn.close()
+
+
+async def test_record_recall_long_term_no_repromote() -> None:
+    store, bus, database = await _new_stack()
+    long = _mem("m1", None)
+    long.type = MemoryType.LONG_TERM
+    long.recall_count = 5
+    await store.add(long)
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(
+        store, bus, llm, evaluator, config=MemoryConfig(promote_threshold=1)
+    )
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.record_recall("m1")
+        memory = await store.get("m1")
+        assert memory is not None
+        assert memory.type is MemoryType.LONG_TERM
+        assert memory.recall_count == 6
+        assert [e for e in events if e.type is EventType.MEMORY_PROMOTED] == []
+    finally:
+        await database.conn.close()
+
+
+async def test_record_recall_concurrent_single_promote() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("m1", None))
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(
+        store, bus, llm, evaluator, config=MemoryConfig(promote_threshold=1)
+    )
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await asyncio.gather(
+                facade.record_recall("m1"), facade.record_recall("m1")
+            )
+        memory = await store.get("m1")
+        assert memory is not None
+        assert memory.recall_count == 2          # 两次加一不丢计数
+        promoted = [e for e in events if e.type is EventType.MEMORY_PROMOTED]
+        assert len(promoted) == 1                # 只升一次、只发一条 promoted
+    finally:
+        await database.conn.close()
+
+
+# ---- export ----
+
+
+async def test_export_json() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("m1", None, content="内容A"))
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    try:
+        data = json.loads(await facade.export("json"))
+        assert len(data) == 1
+        assert data[0]["id"] == "m1"
+        assert data[0]["type"] == "short_term"
+        assert data[0]["embedding"] is None
+    finally:
+        await database.conn.close()
+
+
+async def test_export_md() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("m1", None, content="内容A"))
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    try:
+        text = await facade.export("md")
+        assert "旧" in text      # summary
+        assert "内容A" in text   # content
+    finally:
+        await database.conn.close()
+
+
+async def test_export_unknown() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    try:
+        with pytest.raises(ValueError):
+            await facade.export("csv")
+    finally:
+        await database.conn.close()

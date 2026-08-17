@@ -37,7 +37,7 @@
 
 - **结构校验（`validate_structure`）**：只做通用「非空 + 长度上限」检查。**不做字段级 JSON 校验**——那是各 Facade 的 `_parse_*` 的活（11/12/14 已 fail-fast），eval 重复实现是反冗余。design §9.1 的「字段/数值合法」由 Facade 层承担
 - **规则评分（`ooc_score`）**：design §9.2 第 1 档「关键词/语癖规则」。`_BLACKLIST`（崩人设的现代/AI 腔）+ `_WHITELIST`（Nyx 语癖）模块级常量（初始值可推翻，随 canon.md 校准）；**字段名 `ooc` 保留（01-types 锁定），语义 = 人设贴合度（越高越不 OOC，与 format/relevance 同向）**——黑名单命中扣分、白名单命中加分，`1.0 - (黑-白) * _OOC_STEP` 封顶 [0,1]，无命中默认满分
-- **judge（`judge_relevance` + `should_judge`）**：design §9.1 第三层 + §9.2 第 3 档。抽样率 `config.judge_sample_rate`（02-config 默认 0.1，生产 10% 抽样；可设 0 关闭 judge，配合原则 1「减少 LLM 调用」）。`output_type == "judge"` 不递归 judge（防 judge 的 judge 死循环）。judge 输出非法（JSON 解析失败 / 非 dict / score 非数字）→ 容错返回 0.0（「无有效分」，语义同「未抽样」），**不 raise**——eval 是「纯记录」性质，judge 环节失败不应崩整个 evaluate；score 合法但越界（如 `{"score":100}`）→ clamp 到 [1,5]（design §9.1 的 1-5 分，未评=0.0）
+- **judge（`judge_relevance` + `should_judge`）**：design §9.1 第三层 + §9.2 第 3 档。抽样率 `config.judge_sample_rate`（02-config 默认 0.1，生产 10% 抽样；可设 0 关闭 judge，配合原则 1「减少 LLM 调用」）。`output_type == "judge"` 不递归 judge（防 judge 的 judge 死循环）。judge 环节失败不应崩整个 evaluate——**不 raise**：传输失败（超时/5xx）→ 容错 0.0、无 judge_output（返回 `None`，token 不记）；输出非法（JSON 解析失败 / 非 dict / score 非数字或布尔）→ 容错 0.0 但仍返回 judge_output（token 照记，原则 2）；score 合法但越界（如 `{"score":100}`）→ clamp 到 [1,5]（design §9.1 的 1-5 分，未评=0.0）
 - **token 记账（`_to_token_usage`）**：`purpose = output.type`（03-llm line 119「type → TokenUsage.purpose」）、`model = output.model`、`input/output = output.token_usage`、`correlation_id = output.correlation_id`。被评产出必记；judge 产出（`module="eval"`、`purpose="judge"`）抽样触发才记——judge 的 token 也透明化（原则 2）
 - **`output_id` 语义**：`EvalReport.output_id = output.id`。`LLMOutput.id` 由 03-llm `complete` 每次调用生成 uuid4（ripple 01-types 加字段 + 03-llm 生成），保证「同一事件多次 complete」（如 reply 的 think→speak）也能区分「哪次产出」
 - **明确不做**：eval 结果自动反馈修正（design §9.3「纯记录 + 可视化，不自动反馈修正」）；`eval/store.py`（Evaluator 直接持 db）
@@ -48,7 +48,8 @@
 """eval 结构校验 + 规则评分：纯函数，无 IO、无 LLM、无 DB。"""
 
 _MAX_CONTENT_LEN = 10000          # 结构校验长度上限（可推翻）
-_OOC_STEP = 0.5                   # 人设贴合度步长：每命中一个黑名单扣 0.5、白名单加 0.5（可推翻）
+# 人设贴合度步长：每命中一个黑名单扣 0.5、白名单加 0.5（可推翻）
+_OOC_STEP = 0.5
 
 # OOC 关键词（MVP 初始值，可推翻，随 canon.md 校准）：
 # 黑名单 = 崩人设的现代/AI 腔；白名单 = Nyx 语癖。
@@ -75,7 +76,8 @@ def validate_structure(content: str) -> float:
 
 
 def ooc_score(content: str) -> float:
-    """人设贴合度（字段名 ooc 保留，01-types 锁定）：白名单命中加分、黑名单命中扣分，[0,1]。
+    """人设贴合度（字段名 ooc 保留，01-types 锁定）：白名单命中加分、
+    黑名单命中扣分，[0,1]。
 
     1.0 = 完全贴合（无 OOC），0.0 = 严重 OOC。越高越好（与 format/relevance 同向）。
     无命中默认满分（大部分正常输出无黑名单词 = 贴合）。
@@ -90,14 +92,19 @@ def ooc_score(content: str) -> float:
 ```python
 """LLM-judge：语义质量 1-5 分，抽样触发（design §9.1 第三层 + §9.2 第 3 档）。"""
 import json
+import logging
+from typing import Any, cast
 
 from nyx.llm.client import LlmClient
 from nyx.types import LLMOutput
 
 _JUDGE_SYSTEM = (
-    "你是尼克斯（Nyx）的人格评审。给下面这段 Nyx 的输出打分：语义质量 + 与语境的相关性，"
-    "按 JSON 输出 {score}，score 为 1-5 的整数（5=优秀，1=差）。"
+    "你是尼克斯（Nyx）的人格评审。给下面这段 Nyx 的输出打分："
+    "语义质量 + 与语境的相关性，按 JSON 输出 {score}，"
+    "score 为 1-5 的整数（5=优秀，1=差）。"
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def should_judge(output_type: str, sample_rate: float, roll: float) -> bool:
@@ -107,28 +114,44 @@ def should_judge(output_type: str, sample_rate: float, roll: float) -> bool:
     return roll < sample_rate
 
 
-async def judge_relevance(llm: LlmClient, output: LLMOutput) -> tuple[float, LLMOutput]:
+async def judge_relevance(
+    llm: LlmClient, output: LLMOutput
+) -> tuple[float, LLMOutput | None]:
     """调 LLM 打分，返回 (score, judge 调用的 LLMOutput 供记账)。
 
-    judge 输出非法（JSON 解析失败 / 非 dict / score 非数字）→ 容错返回 0.0
-    （「无有效分」，语义同未抽样），不 raise——
-    eval 是纯记录性质，judge 环节失败不应崩整个 evaluate。
+    judge 环节失败不应崩整个 evaluate（eval 是纯记录性质）：
+    - 传输失败（超时/5xx）→ 容错 0.0、无 judge_output（None，不记账）
+    - JSON 解析失败 / 非 dict / score 非数字（含布尔）→ 容错 0.0，但仍返回
+      judge_output（token 照记，原则 2）
     score 合法时 clamp 到 [1,5]（design §9.1 的 1-5 分），未评 = 0.0。
     """
-    judge_output = await llm.complete(
-        [
-            {"role": "system", "content": _JUDGE_SYSTEM},
-            {"role": "user", "content": output.content},
-        ],
-        module="eval",
-        output_type="judge",
-        correlation_id=output.correlation_id,
-        json_mode=True,
-    )
+    try:
+        judge_output = await llm.complete(
+            [
+                {"role": "system", "content": _JUDGE_SYSTEM},
+                {"role": "user", "content": output.content},
+            ],
+            module="eval",
+            output_type="judge",
+            correlation_id=output.correlation_id,
+            json_mode=True,
+        )
+    except Exception:
+        _logger.exception(
+            "judge LLM 调用失败 correlation_id=%s", output.correlation_id
+        )
+        return 0.0, None
     try:
         data = json.loads(judge_output.content)
-        raw = data.get("score") if isinstance(data, dict) else None
-        score = 0.0 if raw is None else max(1.0, min(5.0, float(raw)))   # clamp [1,5]，未评=0.0
+        if isinstance(data, dict):
+            raw = cast(dict[str, Any], data).get("score")
+        else:
+            raw = None
+        # clamp [1,5]；未评 / 布尔 = 0.0
+        if raw is None or isinstance(raw, bool):
+            score = 0.0
+        else:
+            score = max(1.0, min(5.0, float(raw)))
     except (TypeError, ValueError):   # JSONDecodeError 是 ValueError 子类，一并覆盖
         score = 0.0
     return score, judge_output
@@ -137,7 +160,9 @@ async def judge_relevance(llm: LlmClient, output: LLMOutput) -> tuple[float, LLM
 ### `eval/evaluator.py`（完整）
 
 ```python
-"""eval Evaluator：三层评分 + token 记账 + 报告落库。基础设施（非 Facade），直接持 db（对齐 EventBus）。"""
+"""eval Evaluator：三层评分 + token 记账 + 报告落库。基础设施（非 Facade），
+直接持 db（对齐 EventBus）。
+"""
 import json
 import random
 import time
@@ -162,7 +187,10 @@ class Evaluator:
         self._sample_rate = config.judge_sample_rate
 
     async def evaluate(self, output: LLMOutput) -> EvalReport:
-        """三层：结构 → 规则 → judge（抽样）。落 token_usage + eval_report，返回 EvalReport。"""
+        """三层：结构 → 规则 → judge（抽样）。
+
+        落 token_usage + eval_report，返回 EvalReport。
+        """
         scores: EvalScores = {
             "format": validate_structure(output.content),
             "ooc": ooc_score(output.content),
@@ -171,7 +199,8 @@ class Evaluator:
         judge_usage: TokenUsage | None = None
         if should_judge(output.type, self._sample_rate, random.random()):
             scores["relevance"], judge_output = await judge_relevance(self._llm, output)
-            judge_usage = self._to_token_usage(judge_output)
+            if judge_output is not None:
+                judge_usage = self._to_token_usage(judge_output)
         report = EvalReport(
             id=str(uuid.uuid4()),
             output_id=output.id,
@@ -202,7 +231,9 @@ class Evaluator:
     async def list_token_usage(self, since: float = 0) -> list[TokenUsage]:
         async with self._db.lock:
             cur = await self._db.conn.execute(
-                "SELECT * FROM token_usage WHERE created_at >= ? ORDER BY created_at DESC", (since,)
+                "SELECT * FROM token_usage WHERE created_at >= ? "
+                "ORDER BY created_at DESC",
+                (since,),
             )
             rows = await cur.fetchall()
         return [_row_to_usage(r) for r in rows]
@@ -225,7 +256,8 @@ class Evaluator:
     async def _insert_report(self, r: EvalReport) -> None:
         await self._db.conn.execute(
             "INSERT INTO eval_report "
-            "(id, output_id, module, type, scores, token_usage, correlation_id, created_at) "
+            "(id, output_id, module, type, scores, token_usage, "
+            "correlation_id, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 r.id, r.output_id, r.module, r.type,
@@ -237,7 +269,8 @@ class Evaluator:
     async def _insert_token_usage(self, u: TokenUsage) -> None:
         await self._db.conn.execute(
             "INSERT INTO token_usage "
-            "(id, correlation_id, module, purpose, model, input_tokens, output_tokens, created_at) "
+            "(id, correlation_id, module, purpose, model, "
+            "input_tokens, output_tokens, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 u.id, u.correlation_id, u.module, u.purpose, u.model,
@@ -282,10 +315,13 @@ def _row_to_usage(row: aiosqlite.Row) -> TokenUsage:
     - [ ] `should_judge` 纯函数：`("judge", 1.0, 0.0)` → False（不递归）；`("reply", 0.1, 0.05)` → True；`("reply", 0.1, 0.5)` → False
     - [ ] `judge_relevance`（fake `llm.complete` 返回 `{"score": 4}`）：返回 `(4.0, judge_output)`，且 `judge_output.type == "judge"`、`judge_output.module == "eval"`、`correlation_id` 透传
     - [ ] `judge_relevance` 容错不 raise（均 `(0.0, judge_output)`）：非法 JSON（`"["`）；合法非 dict（`"[]"`）；dict 但 score 非数字（`'{"score":"abc"}'`）
+    - [ ] `judge_relevance` 传输失败（fake `complete` raise）→ `(0.0, None)`，不 raise
+    - [ ] `judge_relevance` score 为布尔（`{"score": true}`）→ `(0.0, judge_output)`（堵 `float(True)==1.0` 的坑）
     - [ ] `judge_relevance` clamp [1,5]：`{"score":100}` → `5.0`；`{"score":0.5}` → `1.0`；`{"score":4}` → `4.0`（界内不动）
   - [ ] **evaluator**（`test_evaluator.py`，`db=:memory:` + fake llm；持久化测试用 `tmp_path` 临时文件库）：
     - [ ] `evaluate` 抽样路径（`EvalConfig(judge_sample_rate=1.0)`）：落 `eval_report` 1 条（`scores["relevance"] == judge 分`、`output_id == output.id`）+ `token_usage` 2 条（被评 `purpose == output.type` + judge `purpose == "judge"`）
     - [ ] `evaluate` 非抽样路径（`judge_sample_rate=0.0`）：`relevance == 0.0` + `token_usage` 仅 1 条（无 judge）
+    - [ ] `evaluate` judge 传输失败（fake `complete` raise）：仍返回 `EvalReport`（`relevance == 0.0`）+ `token_usage` 仅 1 条（judge 无产出不记账），不 raise
     - [ ] `evaluate` 落库持久化：`db = await connect(str(tmp_path/"e.db"))`，`evaluate` 后 `close`，重开新连接 `list_reports`/`list_token_usage` 能读到已提交行（抓「写后不 commit」回归——`:memory:` 同连接读己写抓不住）
     - [ ] `list_reports`：插 2 条 → 按 `created_at DESC` 返回、`scores`/`token_usage` JSON 往返正确
     - [ ] `list_token_usage(since)`：只返回 `created_at >= since` 的行

@@ -146,15 +146,25 @@ async def test_delete_cascades_edges() -> None:
         await db.conn.close()
 
 
-async def test_increment_recall_twice() -> None:
+async def test_record_recall_atomic() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
     try:
         await store.add(_mem("m1"))
-        await store.increment_recall("m1")
-        await store.increment_recall("m1")
+        # 未达阈值：加一 + 不升型，返回 False
+        assert await store.record_recall("m1", promote_threshold=3) is False
+        assert await store.record_recall("m1", promote_threshold=3) is False
         got = await store.get("m1")
-        assert got is not None and got.recall_count == 2
+        assert got is not None
+        assert got.recall_count == 2 and got.type is MemoryType.SHORT_TERM
+        # 达阈值：升长期，返回 True
+        assert await store.record_recall("m1", promote_threshold=3) is True
+        got = await store.get("m1")
+        assert got is not None and got.type is MemoryType.LONG_TERM
+        # 已长期：只递增、不再升型，返回 False
+        assert await store.record_recall("m1", promote_threshold=3) is False
+        got = await store.get("m1")
+        assert got is not None and got.recall_count == 4
     finally:
         await db.conn.close()
 

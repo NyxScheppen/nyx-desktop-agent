@@ -141,13 +141,13 @@
 | `test_list_memories_filters_and_sorts` | 功能正确 | `tag` / `type` / 组合过滤 + `freshness DESC` 排序 |
 | `test_update_fields` | 功能正确 | `update` 改各字段 → `get` 验证；`id` / `created_at` 不可变 |
 | `test_delete_cascades_edges` | 功能正确 | `delete` 级联删 `memory_edge`（from/to 双向），其它记忆边保留 |
-| `test_increment_recall_twice` | 功能正确 | 连续两次 → `recall_count == 2` |
+| `test_record_recall_atomic` | 功能正确 | 未达阈值连调两次 → `recall_count==2` 且 type `SHORT_TERM`、返回 False；达阈值 → `LONG_TERM`、返回 True；已 `LONG_TERM` → 只递增、返回 False（加一+条件升型在单锁内原子完成） |
 | `test_search_keyword` | 功能正确 | `content` / `summary` 命中、无命中 `[]`、ASCII 大小写不敏感 |
 | `test_search_keyword_escapes_wildcards` | 边界鲁棒 | `%` / `_` 作字面量匹配（`ESCAPE '\'` 转义），不误命中通配符匹配 |
 | `test_list_edges_and_upsert` | 功能正确 | `upsert_edge` 新建 + 同键重复 `ON CONFLICT` 改 `weight` 不重复建行 |
 | `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |
 
-**功能阶段**：07-memory-store 实现时编写。
+**功能阶段**：07-memory-store 实现时编写；`test_record_recall_atomic` 于 09 评审修复阶段重写（中3：加一+条件升型原子化进 store 单锁）。
 
 ## 08-memory-retrieval（三层检索 + 联想图）
 
@@ -169,3 +169,60 @@
 | `test_search_no_edge_no_crash` | 边界鲁棒 | keyword 命中无边记忆 → 不抛 `NetworkXError`（`neighbors` 过滤），返回命中本身 |
 
 **功能阶段**：08-memory-retrieval 实现时编写。
+
+## 15-eval（三层评分 + token 记账）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_validate_structure` | 功能正确 | 空 `""` / 纯空白 `"   "` / 超长（`_MAX_CONTENT_LEN+1`）→ 0.0；正常 → 1.0 |
+| `test_ooc_score` | 功能正确 | 无命中默认 1.0；黑 1 → 0.5；黑 2 → 0.0；黑 3 → 0.0（封顶）；黑 1 白 1 → 1.0（抵消）；白 2 → 1.0（封顶不越界） |
+| `test_should_judge` | 功能正确 | `judge` 输出不递归（False）；`roll < sample_rate` 命中/未命中各一例 |
+| `test_judge_relevance_returns_score` | 功能正确 | fake 返回 `{"score":4}` → `4.0`；judge 调用 `type=="judge"`、`module=="eval"`、`correlation_id` 透传 |
+| `test_judge_relevance_tolerates_bad_json` | 边界鲁棒 | `[`（解析失败）/ `[]`（非 dict）/ `{"score":"abc"}`（非数字）→ 容错 0.0 不 raise |
+| `test_judge_relevance_clamps` | 边界鲁棒 | `{"score":100}`→5.0、`{"score":0.5}`→1.0、`{"score":4}`→4.0（clamp [1,5]） |
+| `test_judge_relevance_transport_failure` | 边界鲁棒 | fake `complete` 抛异常 → `(0.0, None)` 不 raise（judge 传输失败无产出不记账） |
+| `test_judge_relevance_rejects_bool_score` | 边界鲁棒 | `{"score": true}` → 0.0 且 judge_output 非 None（堵 `float(True)==1.0` 的坑） |
+| `test_evaluate_sampled` | 功能正确 | `judge_sample_rate=1.0` → `relevance==4.0`、1 条 eval_report、2 条 token_usage（judge + 原 output） |
+| `test_evaluate_not_sampled` | 功能正确 | `judge_sample_rate=0.0` → `relevance==0.0`、1 条 token_usage（仅原 output） |
+| `test_evaluate_judge_transport_failure` | 边界鲁棒 | `judge_sample_rate=1.0` 但 fake `complete` 抛异常 → `relevance==0.0`、仅 1 条 token_usage（judge 无产出不记账），evaluate 不 raise |
+| `test_evaluate_persists` | 功能正确 | 落库后重开连接 → `list_reports`/`list_token_usage` 仍各 1 条（持久化往返） |
+| `test_list_reports_roundtrip` | 功能正确 | 两条 report；`token_usage` JSON 往返 `{input,output}`；`scores.format` 为 0.0/1.0 |
+| `test_list_token_usage_since` | 功能正确 | `since=最新 created_at` → 1 条；`since=+1` → 0 条（`>=` 边界） |
+
+**功能阶段**：15-eval 实现时编写（先于 09-facade，因 09 依赖 Evaluator）；`test_judge_relevance_transport_failure` / `test_judge_relevance_rejects_bool_score` / `test_evaluate_judge_transport_failure` 于 09 评审修复阶段编写（高2：judge LLM 调用移进 try；低5：布尔 score 拒收）。
+
+## 09-memory-facade（记忆门面）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_decay_freshness` | 功能正确 | 同刻/倒挂不变；1 天后 `freshness-rate`；负值夹 0（纯函数） |
+| `test_parse_scene` | 边界鲁棒 | 合法 → 3 元组；缺 tag / 空 content / JSON 数组 → `ValueError` |
+| `test_build_scene_prompt` | 功能正确 | 含 `user_message`/`nyx_think`/`nyx_speak`；缺键 → `KeyError` |
+| `test_has_negation` | 功能正确 | `"我不喜欢猫"`→True；`"我喜欢猫"`→False |
+| `test_content_preview` | 功能正确 | 短 content 不截断（含 summary）；长 content 截到 60 字 + `…` |
+| `test_build_contradiction_prompt` | 功能正确 | 含新记忆 content + 候选 id + 候选预览；否定词 → 含「重点核对」；无否定词 → 无该句 |
+| `test_parse_contradiction` | 边界鲁棒 | 字符串→该串；`null`→`None`；数字→`ValueError`；缺键→`None` |
+| `test_memory_to_dict` | 功能正确 | `type` 是 `.value` 字符串、`embedding` 透传 |
+| `test_memory_to_markdown` | 功能正确 | 含 summary 与 content |
+| `test_create_scene_memory_basic` | 功能正确 | 字段正确（content/tag/summary、freshness=1.0、type SHORT_TERM、embedding=None）；`evaluator.evaluate` 调 1 次（scene_memory）；发布 `memory_created`（memory_id/source/correlation 透传） |
+| `test_contradiction_gating_under_threshold` | 功能正确 | 正交 embedding → 仅 1 次 LLM 调用、无 contradiction、无 reflection（门控 0 调用） |
+| `test_contradiction_detected` | 功能正确 | 过阈值候选 → 第 2 次 `output_type="contradiction"`；`conflicts_with` 命中 → 发布 reflection（含双方 id）；evaluator 再调 1 次 |
+| `test_contradiction_null_no_reflection` | 功能正确 | contradiction 返回 null → 不发 reflection |
+| `test_contradiction_recall_top_k` | 边界鲁棒 | 6 条高相似旧记忆 → 矛盾 prompt 候选恰 5 条（`_RECALL_TOP_K=5`） |
+| `test_contradiction_prompt_negation_hint` | 功能正确 | 新记忆含否定词 → 矛盾 prompt 含「重点核对」句 |
+| `test_contradiction_parse_failure_no_crash` | 边界鲁棒 | 矛盾判断返回非法 JSON → 记忆主流程照常入库 + 发布 `memory_created`、无 reflection（矛盾检测 best-effort 不反噬创建） |
+| `test_build_edges` | 功能正确 | 新记忆有到旧记忆的 `memory_edge`（`weight>0`） |
+| `test_eviction` | 功能正确 | `short_term_capacity=1` → 旧记忆（freshness 更低）被挤掉，只剩新的一条 |
+| `test_eviction_tie_break_oldest_first` | 边界鲁棒 | 新鲜度相等（`freshness_decay=0.0`）时按 `created_at` 升序挤掉最旧而非最新，`short_term_capacity=2` 造 3 条 |
+| `test_decay_writeback` | 功能正确 | 1 天间隔两次创建 → 旧记忆 freshness 衰减（`<1.0`） |
+| `test_search_delegates_to_retrieval` | 功能正确 | `search` 委托 fake `MemoryRetrieval`（返回预设 + 记录 query） |
+| `test_list_memories_delegates` | 功能正确 | `list_memories(type=)` 委托真 store 过滤 |
+| `test_record_recall_below_threshold` | 功能正确 | 未达阈值 → recall_count+1、type 仍 SHORT_TERM、无 `memory_promoted` |
+| `test_record_recall_promotes` | 功能正确 | 达阈值 → type LONG_TERM + 发布 `memory_promoted` |
+| `test_record_recall_long_term_no_repromote` | 功能正确 | 已 LONG_TERM → 只 recall_count+1，不重复发布 |
+| `test_record_recall_concurrent_single_promote` | 回归保护 | `asyncio.gather` 并发两次 → `recall_count==2`、仅 1 条 `memory_promoted`（原子加一+条件升型不重复升级） |
+| `test_export_json` | 功能正确 | `json.loads` 还原列表，`type` 为字符串、`embedding` 透传 |
+| `test_export_md` | 功能正确 | 含某记忆的 summary 与 content |
+| `test_export_unknown` | 边界鲁棒 | `csv` → `ValueError` |
+
+**功能阶段**：09-memory-facade 实现时编写；`test_contradiction_parse_failure_no_crash` / `test_eviction_tie_break_oldest_first` / `test_record_recall_concurrent_single_promote` 于 09 评审修复阶段编写（高1：矛盾解析失败不再半提交；中4：淘汰平局按 created_at 升序；中3：并发 record_recall 只升一次）。

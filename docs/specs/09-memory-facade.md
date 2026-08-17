@@ -33,15 +33,15 @@
 - **库**：无新库（标准库 `json` / `time` / `uuid` / `typing`）
 - **公开面**：`from nyx.memory.facade import MemoryFacade`（不加 `__all__`；`decay_freshness` / `_parse_scene` 等 helper 私有或纯函数，纯函数优先测全）
 - **依赖注入**：7 个构造参数（`store` / `retrieval` / `bus` / `llm` / `evaluator` / `config` / `embed`）。这是 Facade 层的 DI 构造器（跨 5 个前置 spec 的注入点），不是「>3 参数就该拆解」的场景——每个都是单一职责的外部依赖。`embed` 与 `retrieval` 共享**同一实例**（组合根 18-api 注入），创建时算 embedding、检索时读 embedding 用同一模型
-- **生命周期归 09**：07 已划边界「新鲜度衰减、短期→长期升级、容量淘汰是 09-facade 的生命周期逻辑」。本 spec 落这三件事：
-  - **升级**：`record_recall` 里 `recall_count` 满 `promote_threshold` 且 `type is SHORT_TERM` → 改 `LONG_TERM` + 发布 `memory_promoted`
-  - **淘汰**：短期数量 > `short_term_capacity` → 挤掉 `freshness` 最低的短期
+- **生命周期归 09**：新鲜度衰减、容量淘汰是 09-facade 的生命周期逻辑；短期→长期升级的「何时升」（阈值）在 09、原子「加一 + 条件升型」在 07 的 `record_recall`（单锁，见 07 边界）。本 spec 落这三件事：
+  - **升级**：`record_recall` 委托 store 的原子 `record_recall(memory_id, promote_threshold)`（单锁「加一 + 条件升型」，避免跨方法竞态）→ 返回 `True` 则发布 `memory_promoted`
+  - **淘汰**：短期数量 > `short_term_capacity` → 挤掉 `freshness` 最低的短期（平局按 `created_at` 早的优先，避免稳定排序误删最新）
   - **衰减**：见下「新鲜度衰减」
 - **`create_scene_memory` 流程**（design §5.3）：
   1. `_build_scene_prompt(reply_context)` → `llm.complete(json_mode=True, output_type="scene_memory")` **一次**产出 `{content, tag, summary}`（回归三样，场景记忆调用不再承担矛盾判断）
   2. `_parse_scene` 纯函数解析校验（结构非法 `ValueError`，错误可溯源）
   3. `Memory(id=uuid4, created_at=now, freshness=1.0, type=SHORT_TERM, ...)`；`embed` 非空则算 `embedding` 存列（持久化，同 07/08 决策）
-  4. `store.add` → `_build_edges` → `_detect_contradiction`（门控，可能 +1 调用）→ 命中矛盾 publish `reflection` → `_decay_and_evict` → publish `memory_created`
+  4. `store.add` → `_build_edges` → `_detect_contradiction`（门控，可能 +1 调用；best-effort，失败 log 后跳过 reflection 不反噬创建）→ 命中矛盾 publish `reflection` → `_decay_and_evict` → publish `memory_created`
 - **矛盾检测 = 门控 + 独立单任务调用（决策：C 方案，准确率优先，已与用户确认）**：召回候选（embedding 余弦 top-K）做**门控**，判断交给**独立 LLM 调用**——单任务判矛盾，准确率最高，代价是**有条件地 +1 调用**。门控**无损**：矛盾 ⟹ 语义相近（"喜欢猫" vs "讨厌猫"同话题才矛盾），不同话题的旧记忆不可能与新记忆矛盾，所以「相似度过阈值才判断」不损失准确率，只省掉无谓调用。`embedding=None`（未启用向量层）→ 直接跳过
 - **三杠杆（决策：B 方案，不增调用，已与用户确认）**：
   1. **候选判据用全文截断**：`_content_preview` 给 `summary + content 前 60 字`（非只 summary），矛盾常藏细节，判据更实 → 漏报↓
@@ -51,7 +51,7 @@
 - **建边与矛盾候选复用 `_similar`**：`_similar(query_vec, exclude_id)` 是「query 向量 vs 全表记忆余弦排序（`s>0` 保留、降序）」的共享 helper；建边取 `[:_EDGE_TOP_K]`、矛盾门控取 `[:_RECALL_TOP_K]` 再 `s >= threshold` 过滤。两处各自调用（余弦 O(N)、本地 ≤ 几百条，代价可忽略，不值得为省这点把 scored 传参破坏两方法内聚）
 - **`reply_context` 契约**：`dict[str, str]`，键 `correlation_id`（溯源）/ `user_message`（用户说了什么）/ `nyx_think`（尼克斯内心）/ `nyx_speak`（尼克斯说了什么）——由 17-expression 慢通道填充。缺键 `KeyError`（fail-fast，契约违反立即暴露，不静默降级）
 - **建边机制（决策，可推翻）**：新记忆与已有记忆按 `embedding` 余弦相似度建边，`_EDGE_TOP_K=3`、`weight=相似度`、`s > 0` 才建；`embed=None` 或新记忆无 embedding → 跳过。方向 `new → old`，`MemoryGraph` 无向所以方向无关
-- **新鲜度衰减（决策，可推翻）**：纯函数 `decay_freshness(freshness, created_at, now, rate) = max(0, freshness - rate × elapsed_days)`，`rate` 单位「/天」（`_SECONDS_PER_DAY=86400.0`；02-config 的 `freshness_decay=0.01` 未标单位，此处定为「0.01/天」，要改单位翻这里一处）。触发点 = `create_scene_memory` 的 `_decay_and_evict` 扫描：读全表 → 逐条衰减回写 → 短期满则挤掉最低新鲜度。**局限**：两次创建之间新鲜度不变；但衰减单调（越旧越衰减），相对顺序保持，「长期只新鲜度下降、检索排后」的语义不破坏。O(N) 写/次创建，本地单用户 ≤ 几百条记忆，可接受
+- **新鲜度衰减（决策，可推翻）**：纯函数 `decay_freshness(freshness, created_at, now, rate) = max(0, freshness - rate × elapsed_days)`，`rate` 单位「/天」（`_SECONDS_PER_DAY=86400.0`；02-config 的 `freshness_decay=0.01` 未标单位，此处定为「0.01/天」，要改单位翻这里一处）。触发点 = `create_scene_memory` 的 `_decay_and_evict` 扫描：读全表 → 逐条衰减回写 → 短期满则挤掉最低新鲜度（平局按 `created_at` 早的优先）。**局限**：两次创建之间新鲜度不变；但衰减单调（越旧越衰减），相对顺序保持，「长期只新鲜度下降、检索排后」的语义不破坏。O(N) 写/次创建，本地单用户 ≤ 几百条记忆，可接受
 - **事件 content（tech-ref §4 未定义这两者的 SSE payload，最小化）**：`memory_created` / `memory_promoted` = `{"memory_id": id}`；`reflection` = `{"summary": str}`（含冲突双方 id 的可溯源字符串）。SSE 完整 payload 形状归 18-api/frontend 细化
 - **`record_recall` 的 `correlation_id`（已知局限）**：tech-ref 签名只有 `record_recall(memory_id)`，无上游 correlation，故 `memory_promoted` 的 `correlation_id = memory_id`（溯源到记忆本身，与触发它的 reply 因果链在此断开）。`memory_created` / `reflection` 用 `reply_context["correlation_id"]` 接上 reply 链
 - **`search` / `list_memories` 纯委托**：不重写 SQL、不做二次过滤；衰减/淘汰已在写入侧处理
@@ -61,8 +61,9 @@
 
 ```python
 import json
+import logging
 import time
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from nyx.config import MemoryConfig
@@ -77,13 +78,15 @@ from nyx.types import Event, Memory
 _SCENE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
     "把下面这段对话写成一条第一人称场景记忆（尼克斯视角）：用户说了什么、你内心怎么想、最后说了什么。"
-    "只输出 JSON，键：content（正文）、tag（标签）、summary（一句话总结），三者都是非空字符串。"
+    "只输出 JSON，键：content（正文）、tag（标签）、summary（一句话总结），"
+    "三者都是非空字符串。"
 )
 
 _CONTRADICTION_SYSTEM = (
     "你是记忆一致性检查员。给出一条新记忆和若干候选旧记忆，判断新记忆是否与其中某条"
     "在同一话题上结论明显矛盾（例如喜欢/讨厌、做过/没做过、相信/不相信）。"
-    "只输出 JSON，键：conflicts_with（若与某条候选矛盾，填那条记忆的 id；否则填 null）。"
+    "只输出 JSON，键：conflicts_with（若与某条候选矛盾，填那条记忆的 id；"
+    "否则填 null）。"
     "不要把「不同话题」误判为矛盾，也不要把「细节不同」误判为矛盾。"
 )
 
@@ -95,20 +98,24 @@ _SECONDS_PER_DAY = 86400.0
 _NEGATION_WORDS = ("不", "没", "别", "讨厌", "恨", "拒绝", "否认", "放弃", "再也不")
 
 
-def decay_freshness(freshness: float, created_at: float, now: float, rate: float) -> float:
+def decay_freshness(
+    freshness: float, created_at: float, now: float, rate: float
+) -> float:
     """新鲜度线性衰减（rate/天），下限 0。纯函数。"""
     elapsed_days = max(0.0, now - created_at) / _SECONDS_PER_DAY
     return max(0.0, freshness - rate * elapsed_days)
 
 
 def _parse_scene(raw: str) -> tuple[str, str, str]:
-    """解析场景记忆 LLM 的 JSON 产出 → (content, tag, summary)；结构非法抛 ValueError。"""
-    data: dict[str, Any] = json.loads(raw)
+    """解析场景记忆 LLM 的 JSON 产出 → (content, tag, summary)；
+    结构非法抛 ValueError。"""
+    data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError(f"场景记忆 JSON 应是对象，得到 {type(data).__name__}")
-    content = data.get("content")
-    tag = data.get("tag")
-    summary = data.get("summary")
+    parsed = cast(dict[str, Any], data)
+    content = parsed.get("content")
+    tag = parsed.get("tag")
+    summary = parsed.get("summary")
     if not isinstance(content, str) or not content:
         raise ValueError("场景记忆 JSON 缺 content 或非空字符串")
     if not isinstance(tag, str) or not tag:
@@ -128,13 +135,18 @@ def _build_scene_prompt(ctx: dict[str, str]) -> str:
 
 
 def _has_negation(text: str) -> bool:
-    """新记忆正文是否含否定/转折锚点（软信号，非判定：命中则矛盾 prompt 提示重点核对）。纯函数。"""
+    """新记忆正文是否含否定/转折锚点
+    （软信号，非判定：命中则矛盾 prompt 提示重点核对）。纯函数。"""
     return any(w in text for w in _NEGATION_WORDS)
 
 
 def _content_preview(m: Memory) -> str:
-    """候选旧记忆预览：summary + content 前 N 字（矛盾判断的判据，而非只给 summary）。"""
-    body = m.content if len(m.content) <= _CONTENT_PREVIEW_CHARS else m.content[:_CONTENT_PREVIEW_CHARS] + "…"
+    """候选旧记忆预览：summary + content 前 N 字
+    （矛盾判断的判据，而非只给 summary）。"""
+    if len(m.content) <= _CONTENT_PREVIEW_CHARS:
+        body = m.content
+    else:
+        body = m.content[:_CONTENT_PREVIEW_CHARS] + "…"
     return f"{m.summary} | {body}"
 
 
@@ -156,10 +168,10 @@ def _parse_contradiction(raw: str) -> str | None:
     conflicts_with 类型错（数字/对象）抛 ValueError；缺键视为 None（无矛盾，
     安全默认——漏报优于误报）。
     """
-    data: dict[str, Any] = json.loads(raw)
+    data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError(f"矛盾判断 JSON 应是对象，得到 {type(data).__name__}")
-    conflicts_with = data.get("conflicts_with")
+    conflicts_with = cast(dict[str, Any], data).get("conflicts_with")
     if conflicts_with is not None and not isinstance(conflicts_with, str):
         raise ValueError("矛盾判断 JSON 的 conflicts_with 应是字符串或 null")
     return conflicts_with
@@ -184,7 +196,9 @@ def _memory_to_markdown(m: Memory) -> str:
     return f"## {m.summary}\n\n{m.content}\n\n标签：{m.tag}"
 
 
-def _internal_event(type_: EventType, content: dict[str, Any], correlation_id: str) -> Event:
+def _internal_event(
+    type_: EventType, content: dict[str, Any], correlation_id: str
+) -> Event:
     return Event(
         id=str(uuid4()),
         timestamp=time.time(),
@@ -220,10 +234,11 @@ class MemoryFacade:
         self._evaluator = evaluator
         self._config = config
         self._embed = embed          # 与 retrieval 共享同一实例（组合根注入）
+        self._logger = logging.getLogger(__name__)
 
     async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
-        """慢通道场景化记忆：LLM 产出 content/tag/summary → 入短期 → 建边 → 门控矛盾检测 → 淘汰。"""
-        now = time.time()
+        """慢通道场景化记忆：LLM 产出 content/tag/summary
+        → 入短期 → 建边 → 门控矛盾检测 → 淘汰。"""
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _SCENE_SYSTEM},
@@ -236,6 +251,7 @@ class MemoryFacade:
         )
         await self._evaluator.evaluate(output)
         content, tag, summary = _parse_scene(output.content)
+        now = time.time()
 
         memory = Memory(
             id=str(uuid4()),
@@ -271,18 +287,16 @@ class MemoryFacade:
         return await self._retrieval.search(query)
 
     async def record_recall(self, memory_id: str) -> None:
-        """记录一次「想起」：recall_count+1；短期满 promote_threshold 次升级长期并发布 memory_promoted。"""
-        await self._store.increment_recall(memory_id)
-        memory = await self._store.get(memory_id)
-        if (
-            memory is not None
-            and memory.type is MemoryType.SHORT_TERM
-            and memory.recall_count >= self._config.promote_threshold
-        ):
-            memory.type = MemoryType.LONG_TERM
-            await self._store.update(memory)
+        """记录一次「想起」：recall_count+1；
+        短期满 promote_threshold 次升级长期并发布 memory_promoted。"""
+        promoted = await self._store.record_recall(
+            memory_id, self._config.promote_threshold
+        )
+        if promoted:
             await self._bus.publish(
-                _internal_event(EventType.MEMORY_PROMOTED, {"memory_id": memory.id}, memory.id)
+                _internal_event(
+                    EventType.MEMORY_PROMOTED, {"memory_id": memory_id}, memory_id
+                )
             )
 
     async def list_memories(
@@ -293,7 +307,8 @@ class MemoryFacade:
         return await self._store.list_memories(tag, type)
 
     async def export(self, fmt: str) -> str:
-        """记忆导出：json = JSON 数组字符串，md = 每记忆一个「## 总结 + 正文 + 标签」段。"""
+        """记忆导出：json = JSON 数组字符串，
+        md = 每记忆一个「## 总结 + 正文 + 标签」段。"""
         memories = await self._store.list_memories()
         if fmt == "json":
             return json.dumps(
@@ -314,23 +329,41 @@ class MemoryFacade:
         ]
         if not candidates:
             return
-        output = await self._llm.complete(
-            [
-                {"role": "system", "content": _CONTRADICTION_SYSTEM},
-                {"role": "user", "content": _build_contradiction_prompt(memory, candidates)},
-            ],
-            module="memory",
-            output_type="contradiction",
-            correlation_id=correlation_id,
-            json_mode=True,
-        )
-        await self._evaluator.evaluate(output)
-        conflicts_with = _parse_contradiction(output.content)
+        try:
+            output = await self._llm.complete(
+                [
+                    {"role": "system", "content": _CONTRADICTION_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": _build_contradiction_prompt(memory, candidates),
+                    },
+                ],
+                module="memory",
+                output_type="contradiction",
+                correlation_id=correlation_id,
+                json_mode=True,
+            )
+            await self._evaluator.evaluate(output)
+            conflicts_with = _parse_contradiction(output.content)
+        except Exception:
+            # 矛盾检测是 best-effort：记忆已合法入库，判矛盾失败
+            # （传输超时/5xx、JSON 结构非法）不反噬记忆创建主流程，
+            # 只跳过本次 reflection（漏报优于误报，同 _parse_contradiction 默认）。
+            self._logger.exception(
+                "矛盾检测失败 memory_id=%s correlation_id=%s",
+                memory.id, correlation_id,
+            )
+            return
         if conflicts_with is not None:
             await self._bus.publish(
                 _internal_event(
                     EventType.REFLECTION,
-                    {"summary": f"场景记忆 {memory.id} 与旧记忆 {conflicts_with} 矛盾，触发反思"},
+                    {
+                        "summary": (
+                            f"场景记忆 {memory.id} 与旧记忆 {conflicts_with} 矛盾，"
+                            "触发反思"
+                        )
+                    },
                     correlation_id,
                 )
             )
@@ -338,7 +371,8 @@ class MemoryFacade:
     async def _similar(
         self, query_vec: list[float], exclude_id: str | None = None
     ) -> list[tuple[float, Memory]]:
-        """query 向量与全表记忆的余弦排序（s>0 才保留，可排除某 id）；纯计算 + store 读。"""
+        """query 向量与全表记忆的余弦排序
+        （s>0 才保留，可排除某 id）；纯计算 + store 读。"""
         scored: list[tuple[float, Memory]] = []
         for m in await self._store.list_memories():
             if m.id == exclude_id or m.embedding is None:
@@ -368,7 +402,7 @@ class MemoryFacade:
                 await self._store.update(m)
         short_term = [m for m in memories if m.type is MemoryType.SHORT_TERM]
         if len(short_term) > self._config.short_term_capacity:
-            short_term.sort(key=lambda m: m.freshness)
+            short_term.sort(key=lambda m: (m.freshness, m.created_at))
             overflow = len(short_term) - self._config.short_term_capacity
             for m in short_term[:overflow]:
                 await self._store.delete(m.id)

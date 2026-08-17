@@ -14,7 +14,7 @@
 
 ## 验收标准
 
-- [ ] `store.py` 含 `MemoryStore`（`add` / `get` / `list_memories` / `update` / `delete` / `increment_recall` / `search_keyword` / `list_edges` / `upsert_edge`）+ `_memory_row` / `_row_to_memory`，与「`memory/store.py`（完整）」段代码逐字一致
+- [ ] `store.py` 含 `MemoryStore`（`add` / `get` / `list_memories` / `update` / `delete` / `record_recall` / `search_keyword` / `list_edges` / `upsert_edge`）+ `_memory_row` / `_row_to_memory`，与「`memory/store.py`（完整）」段代码逐字一致
 - [ ] 所有 DB 读写都在 `async with self._db.lock` 内；**锁作用域 = 单个 store 方法的 SQL 块，不跨 store 方法嵌套**（`asyncio.Lock` 不可重入，嵌套死锁）
 - [ ] 行↔`Memory` 往返：`aspect` JSON 数组（空 = `"[]"`）、`type` 枚举 `.value`、`recall_count` 整数、`embedding` `list[float] | None`（`None` ↔ SQL `NULL`）
 - [ ] `list_memories` 按 `tag` / `type` 过滤，`freshness DESC, created_at DESC` 排序
@@ -35,7 +35,7 @@
 - **关键词用 `LIKE`**：04-db 只有 `idx_memory_tag` / `idx_memory_type` 两个索引，**没有 FTS 表**，所以「SQLite FTS/LIKE」（design §6.3）落为 `LIKE '%query%'`。`%` / `_` / `\` 会被当通配符，已转义（`_escape_like` + `ESCAPE '\'`，让 query 按字面匹配）；ASCII 大小写不敏感、中文按字节
 - **枚举列存 `.value`、`aspect` 存 JSON 数组**：与 04-db「枚举列存 `.value` 字符串、复杂字段存 JSON 字符串」一致；`aspect` 空集合存 `"[]"`（非 Optional → 列 `NOT NULL`，序列化不必判 None）
 - **`embedding` 可空列（None ↔ SQL NULL）**：`list[float] | None` ⟺ `embedding TEXT` 可空；`_embedding_json` 把 `None` 序列化为 SQL `NULL`（不是 `"null"` 字符串）、`list` 序列化为 JSON 数组字符串，读回时 `None` 保持 `None`。这是首个可空 JSON 列，后续 store（`goal` / `ended_at` / `token_usage.correlation_id` 等）照此 `None ↔ NULL` 模式
-- **边界划分（明确不做）**：新鲜度衰减、短期→长期升级（recall 满 3 次）、容量淘汰是 09-facade 的生命周期逻辑——store 只给 `add` / `update` / `delete` / `increment_recall` 原语；`graph.py`（networkx 联想图）归 08，从 `list_edges()` 建图。FK 完整性靠 04-db 的 `PRAGMA foreign_keys=ON`（`upsert_edge` 引用不存在的 id 抛 `aiosqlite.IntegrityError`）
+- **边界划分（明确不做）**：新鲜度衰减、容量淘汰是 09-facade 的生命周期逻辑；短期→长期升级的「何时升」也由 facade 决定（阈值经 `record_recall(memory_id, promote_threshold)` 传入）。但「加一 + 条件升型」这个原子原语必须落在 store 单锁内——原子性要求单锁、锁在 store，拆到 facade 会产生跨方法竞态（09 轮审查发现重复升级/丢计数）。`graph.py`（networkx 联想图）归 08，从 `list_edges()` 建图。FK 完整性靠 04-db 的 `PRAGMA foreign_keys=ON`（`upsert_edge` 引用不存在的 id 抛 `aiosqlite.IntegrityError`）
 
 ### `memory/store.py`（完整）
 
@@ -128,13 +128,30 @@ class MemoryStore:
             await self._db.conn.execute("DELETE FROM memory WHERE id = ?", (memory_id,))
             await self._db.conn.commit()
 
-    async def increment_recall(self, memory_id: str) -> None:
+    async def record_recall(self, memory_id: str, promote_threshold: int) -> bool:
+        """原子：recall_count+1；短期且达阈值则升长期（单锁，避免跨方法竞态）。
+
+        返回是否升级（供 facade 发 memory_promoted）。阈值由 facade 传入——
+        策略仍在 facade，store 只提供「加一 + 条件升型」原语。
+        """
         async with self._db.lock:
             await self._db.conn.execute(
                 "UPDATE memory SET recall_count = recall_count + 1 WHERE id = ?",
                 (memory_id,),
             )
+            cursor = await self._db.conn.execute(
+                "UPDATE memory SET type = ? WHERE id = ? AND type = ? "
+                "AND recall_count >= ?",
+                (
+                    MemoryType.LONG_TERM.value,
+                    memory_id,
+                    MemoryType.SHORT_TERM.value,
+                    promote_threshold,
+                ),
+            )
+            promoted = cursor.rowcount == 1
             await self._db.conn.commit()
+        return promoted
 
     async def search_keyword(self, query: str) -> list[Memory]:
         pattern = f"%{_escape_like(query)}%"
@@ -219,7 +236,7 @@ def _row_to_memory(row: aiosqlite.Row) -> Memory:
   - [ ] **list_memories 过滤/排序**：造 3 条不同 `tag` / `type` / `freshness` → `tag=` 过滤、`type=` 过滤、`tag+type` 组合、默认全量；排序按 `freshness DESC`（freshness 高的在前）
   - [ ] **update**：改 `tag` / `summary` / `freshness` / `type` / `recall_count` / `aspect` / `embedding` → `get` 验证；`id` / `created_at` 不变
   - [ ] **delete 级联删边**：`add` 两条 memory + 两条关联它的 `upsert_edge` → `delete` 后 `get=None`、`list_edges` 无残留（其它记忆的边不受影响）
-  - [ ] **increment_recall**：连续两次 → `recall_count == 2`
+  - [ ] **record_recall**：未达阈值连调两次 → `recall_count == 2` 且 `type is SHORT_TERM`、返回 `False`；达阈值 → 升 `LONG_TERM`、返回 `True`；已是 `LONG_TERM` → 只递增、返回 `False`
   - [ ] **search_keyword**：`content` 命中 / `summary` 命中 / 无命中 → `[]` / ASCII 大小写不敏感（"FOO" 命中 "foo"）
   - [ ] **search_keyword 转义通配符**：搜 `"100%"` 只命中含字面 `100%`、搜 `"a_b"` 只命中字面 `a_b`（`_escape_like` + `ESCAPE '\'`，不误命中通配符匹配）
   - [ ] **list_edges + upsert_edge**：`upsert_edge` 新建 → `list_edges` 返回 `MemoryEdge`；同 `(from_id, to_id)` 再 `upsert_edge` 改 `weight`（ON CONFLICT 更新不重复建行）

@@ -164,6 +164,18 @@ async def test_list_events_sorts_desc_and_limits() -> None:
         await _close(bus)
 
 
+async def test_list_events_stable_order_same_timestamp() -> None:
+    bus = await _new_bus()
+    try:
+        async with _running(bus):
+            await bus.publish(_make_event(id="b", timestamp=1.0))
+            await bus.publish(_make_event(id="a", timestamp=1.0))
+
+        assert [e.id for e in await bus.list_events()] == ["a", "b"]  # id tiebreaker
+    finally:
+        await _close(bus)
+
+
 # ---- 行↔Event 往返 ----
 
 async def test_row_to_event_roundtrip() -> None:
@@ -197,6 +209,18 @@ async def test_add_and_remove_sse_sink() -> None:
 
         assert sink1.empty()  # 移除后不再收到
         assert sink2.get_nowait() is not None
+    finally:
+        await _close(bus)
+
+
+async def test_remove_sse_sink_is_idempotent() -> None:
+    bus = await _new_bus()
+    try:
+        sink: asyncio.Queue[Event] = asyncio.Queue()
+        bus.remove_sse_sink(sink)  # 从未加入：不抛
+        bus.add_sse_sink(sink)
+        bus.remove_sse_sink(sink)
+        bus.remove_sse_sink(sink)  # 二次移除：不抛
     finally:
         await _close(bus)
 

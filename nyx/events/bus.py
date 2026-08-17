@@ -33,7 +33,8 @@ class EventBus:
         self._sse_sinks.append(sink)
 
     def remove_sse_sink(self, sink: asyncio.Queue[Event]) -> None:
-        self._sse_sinks.remove(sink)
+        if sink in self._sse_sinks:  # 幂等：SSE 断连 cleanup 可能调两次
+            self._sse_sinks.remove(sink)
 
     async def publish(self, event: Event) -> None:
         """入队即返回，无 I/O。持久化/分发/广播由 run() 完成。"""
@@ -75,7 +76,7 @@ class EventBus:
         params.append(limit)
         sql = (
             "SELECT id, timestamp, source, type, content, correlation_id "
-            f"FROM event_log{where} ORDER BY timestamp DESC LIMIT ?"
+            f"FROM event_log{where} ORDER BY timestamp DESC, id LIMIT ?"
         )
         async with self._db.lock:
             cursor = await self._db.conn.execute(sql, params)

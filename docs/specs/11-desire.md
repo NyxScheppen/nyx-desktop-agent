@@ -63,11 +63,15 @@ from nyx.types import DesireValue, Goal, LongTermDesire, ShortTermDesire
 
 _STD_COLS = "id, created_at, type, strength, description, goal, retry_count, status"
 _VALUE_COLS = "type, value, expression_weight, suppression_threshold, updated_at"
-_LT_COLS = "id, created_at, type, name, description, strength, progress, subtopics, linked_values"
+_LT_COLS = (
+    "id, created_at, type, name, description, strength, progress, "
+    "subtopics, linked_values"
+)
 
 
 class DesireStore:
-    """short_term_desire / desire_value / long_term_desire 三表 CRUD + 行↔dataclass 序列化。
+    """short_term_desire / desire_value / long_term_desire 三表 CRUD
+    + 行↔dataclass 序列化。
 
     db 由组合根注入（同所有 store 共享一个 conn+lock）。每个方法一个
     `async with db.lock` 的 SQL 块，不跨方法嵌套（asyncio.Lock 不可重入）。
@@ -81,7 +85,8 @@ class DesireStore:
     async def add_desire(self, desire: ShortTermDesire) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
-                f"INSERT INTO short_term_desire ({_STD_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO short_term_desire ({_STD_COLS}) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 _std_row(desire),
             )
             await self._db.conn.commit()
@@ -105,7 +110,8 @@ class DesireStore:
         return [_row_to_std(r) for r in rows]
 
     async def list_short_term(self) -> list[ShortTermDesire]:
-        """全部短期欲望（含 satisfied/expired 历史），供 /api/desires 全量快照；最新在前。"""
+        """全部短期欲望（含 satisfied/expired 历史），供 /api/desires
+        全量快照；最新在前。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 f"SELECT {_STD_COLS} FROM short_term_desire ORDER BY created_at DESC"
@@ -131,14 +137,17 @@ class DesireStore:
     async def get_value(self, type_: DesireType) -> DesireValue | None:
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                f"SELECT {_VALUE_COLS} FROM desire_value WHERE type = ?", (type_.value,),
+                f"SELECT {_VALUE_COLS} FROM desire_value WHERE type = ?",
+                (type_.value,),
             )
             row = await cursor.fetchone()
         return _row_to_value(row) if row is not None else None
 
     async def list_values(self) -> list[DesireValue]:
         async with self._db.lock:
-            cursor = await self._db.conn.execute(f"SELECT {_VALUE_COLS} FROM desire_value")
+            cursor = await self._db.conn.execute(
+                f"SELECT {_VALUE_COLS} FROM desire_value"
+            )
             rows = await cursor.fetchall()
         return [_row_to_value(r) for r in rows]
 
@@ -162,14 +171,17 @@ class DesireStore:
     async def insert_long_term(self, desire: LongTermDesire) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
-                f"INSERT INTO long_term_desire ({_LT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO long_term_desire ({_LT_COLS}) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _lt_row(desire),
             )
             await self._db.conn.commit()
 
     async def list_long_term(self) -> list[LongTermDesire]:
         async with self._db.lock:
-            cursor = await self._db.conn.execute(f"SELECT {_LT_COLS} FROM long_term_desire")
+            cursor = await self._db.conn.execute(
+                f"SELECT {_LT_COLS} FROM long_term_desire"
+            )
             rows = await cursor.fetchall()
         return [_row_to_lt(r) for r in rows]
 
@@ -177,7 +189,8 @@ class DesireStore:
         async with self._db.lock:
             await self._db.conn.execute(
                 "UPDATE long_term_desire SET type = ?, name = ?, description = ?, "
-                "strength = ?, progress = ?, subtopics = ?, linked_values = ? WHERE id = ?",
+                "strength = ?, progress = ?, subtopics = ?, "
+                "linked_values = ? WHERE id = ?",
                 (
                     desire.type.value, desire.name, desire.description,
                     desire.strength, desire.progress, json.dumps(desire.subtopics),
@@ -187,7 +200,9 @@ class DesireStore:
             await self._db.conn.commit()
 
 
-def _std_row(d: ShortTermDesire) -> tuple[str, float, str, float, str, str | None, int, str]:
+def _std_row(
+    d: ShortTermDesire
+) -> tuple[str, float, str, float, str, str | None, int, str]:
     return (
         d.id, d.created_at, d.type.value, d.strength, d.description,
         _goal_json(d.goal), d.retry_count, d.status.value,
@@ -234,7 +249,9 @@ def _row_to_value(row: aiosqlite.Row) -> DesireValue:
     )
 
 
-def _lt_row(d: LongTermDesire) -> tuple[str, float, str, str, str, float, float, str, str]:
+def _lt_row(
+    d: LongTermDesire
+) -> tuple[str, float, str, str, str, float, float, str, str]:
     return (
         d.id, d.created_at, d.type.value, d.name, d.description,
         d.strength, d.progress, json.dumps(d.subtopics), json.dumps(d.linked_values),
@@ -260,7 +277,7 @@ def _row_to_lt(row: aiosqlite.Row) -> LongTermDesire:
 ```python
 import json
 import time
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from nyx.config import DesireConfig
@@ -289,9 +306,12 @@ _SECONDS_PER_DAY = 86400.0
 
 _DESIRE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
-    "基于当前最迫切的欲望类型和主题种子，生成一条具体的短期欲望（想做什么）+ 一个可量化的完成目标。"
-    "只输出 JSON，键：description（具体描述，非空字符串）、goal（对象 {action, count, topic} 或 null）。"
-    "goal.action 只能是 read / write / observe 之一，count 是正整数，topic 是可选字符串。"
+    "基于当前最迫切的欲望类型和主题种子，生成一条具体的短期欲望"
+    "（想做什么）+ 一个可量化的完成目标。"
+    "只输出 JSON，键：description（具体描述，非空字符串）、"
+    "goal（对象 {action, count, topic} 或 null）。"
+    "goal.action 只能是 read / write / observe 之一，"
+    "count 是正整数，topic 是可选字符串。"
 )
 
 
@@ -301,24 +321,26 @@ def _build_desire_prompt(type_: DesireType, seed: str | None) -> str:
 
 def _parse_desire(raw: str) -> tuple[str, Goal | None]:
     """解析欲望 LLM 的 JSON 产出 → (description, goal)；结构非法抛 ValueError。"""
-    data: dict[str, Any] = json.loads(raw)
+    data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError(f"欲望 JSON 应是对象，得到 {type(data).__name__}")
-    description = data.get("description")
+    parsed = cast(dict[str, Any], data)
+    description = parsed.get("description")
     if not isinstance(description, str) or not description:
         raise ValueError("欲望 JSON 缺 description 或非空字符串")
-    goal_raw = data.get("goal")
+    goal_raw = parsed.get("goal")
     if goal_raw is None:
         return description, None
     if not isinstance(goal_raw, dict):
         raise ValueError("欲望 JSON 的 goal 应是对象或 null")
-    action = goal_raw.get("action")
+    goal = cast(dict[str, Any], goal_raw)
+    action = goal.get("action")
     if not isinstance(action, str) or action not in ("read", "write", "observe"):
         raise ValueError("欲望 JSON 的 goal.action 应是 read/write/observe")
-    count = goal_raw.get("count")
+    count = goal.get("count")
     if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
         raise ValueError("欲望 JSON 的 goal.count 应是正整数")
-    topic = goal_raw.get("topic")
+    topic = goal.get("topic")
     if topic is not None and not isinstance(topic, str):
         raise ValueError("欲望 JSON 的 goal.topic 应是字符串或 null")
     return description, Goal(action=GoalAction(action), count=count, topic=topic)
@@ -332,7 +354,9 @@ def _topic_seed(type_: DesireType, long_term: list[LongTermDesire]) -> str | Non
     return None
 
 
-def _internal_event(type_: EventType, content: dict[str, Any], correlation_id: str) -> Event:
+def _internal_event(
+    type_: EventType, content: dict[str, Any], correlation_id: str
+) -> Event:
     return Event(
         id=str(uuid4()),
         timestamp=time.time(),
@@ -461,7 +485,9 @@ class DesireLifecycle:
 
         # 9. 发布
         await self._bus.publish(
-            _internal_event(EventType.DESIRE_GENERATED, {"desire_id": desire.id}, desire.id)
+            _internal_event(
+                EventType.DESIRE_GENERATED, {"desire_id": desire.id}, desire.id
+            )
         )
         return [desire]
 
@@ -598,7 +624,7 @@ class DesireFacade:
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_desire/`（`pytest-asyncio`；`db = await connect(":memory:")`；`store = DesireStore(db)`；`lifecycle = DesireLifecycle(store, bus, fake_llm, fake_evaluator, config)`；fake `LlmClient.complete` 按 `output_type == "desire"` 返回 fixture JSON 并记录调用、fake `Evaluator.evaluate` 记录调用；`EventBus` 用真实例 + 订阅 recording handler，`run()` 作 task 驱动——同 05/09 模式）：
-  - [ ] **store**（`test_store.py`）：
+  - [ ] **store**（`test_desire_store.py`）：
     - [ ] `add_desire + get_desire` 往返：含 `goal=Goal(READ, 3, "骑士团")`、非默认 `retry_count`/`status` → 各字段全等（`goal` JSON 往返、枚举往返）
     - [ ] `goal=None` 往返 → `get_desire().goal is None`（SQL NULL 非 `"null"` 字符串）
     - [ ] `list_pending`：造 pending/active/satisfied/expired 各一条 → 只返回 pending+active，按 `created_at ASC` 排序
@@ -625,7 +651,7 @@ class DesireFacade:
     - [ ] `goal_met=False` 且 `retry_count > retry_limit` → `status is EXPIRED`、值回增 `+REFUND_DELTA`、抑制阈值 +0.1、发布 `desire_expired`
   - [ ] **expire**：`status is EXPIRED` + 值回增 + 抑制阈值上浮 + 发布 `desire_expired`
   - [ ] **satisfy/expire 未命中**：`desire_id` 不存在 → 无事件、不抛
-  - [ ] **facade**（`test_facade.py`）：
+  - [ ] **facade**（`test_desire_facade.py`）：
     - [ ] `add_value(OBSERVATION_STATE)` → 互动欲加压；`add_value(ACTIVITY_END)`（content 含 `desire_id`+`goal_met`）→ 满足回写；`add_value(ACTIVITY_END)`（缺键/错类型）→ 无操作
     - [ ] `evaluate` / `get_pending` / `get_all` / `satisfy` / `expire` 委托（`get_all` 返回 `DesireState` 三字段非空；`short_term` 含 satisfied 历史、`long_term` 含 seed 的长期欲望）
     - [ ] `add_long_term(desire)` → `list_long_term` 多一条、字段全等（委托 `insert_long_term`）

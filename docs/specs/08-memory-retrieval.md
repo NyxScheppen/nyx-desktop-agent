@@ -17,7 +17,7 @@
 - [ ] `graph.py` 含 `MemoryGraph`（`neighbors(seeds, depth)`），与「`memory/graph.py`（完整）」段代码逐字一致
 - [ ] `retrieval.py` 含 `cosine` / `build_embed` / `EmbedFn` / `MemoryRetrieval`，与「`memory/retrieval.py`（完整）」段代码逐字一致
 - [ ] `cosine` 纯函数：正交=0、相同=1、相反=-1、零向量=0、维度不一致=0
-- [ ] `search()` 空查询（`""`）短路返回 `[]`；顺序执行 keyword → vector → association，按此序去重合并（`seen` set，后到重复丢弃），`limit` 截断
+- [ ] `search()` 空/空白查询（`not query.strip()`）短路返回 `[]`；顺序执行 keyword → vector → association，按此序去重合并（`seen` set，后到重复丢弃），`limit` 截断
 - [ ] vector 层：`embed=None` → 跳过返回 `[]`；query 只 embed 一次；memory embedding 从 DB 读（不重算）；`embedding=None` 的记忆跳过；`s > 0` 过滤 + `_VECTOR_TOP_K` 截断
 - [ ] association 层：图从 `store.list_edges()` 构建，`neighbors` 无权重扩散、排除 seeds 本身、跳过不在图中的 seed（`nx.Graph.neighbors` 对不存在节点抛 `NetworkXError`）
 - [ ] `pyright` strict 零报错
@@ -33,6 +33,7 @@
 - **`build_embed` 惰性 import**：sentence-transformers 是重依赖（下载模型），`build_embed(model_name)` 内 `from sentence_transformers import ...`，未启用向量层（测试/无模型环境）不加载；`model.encode` 同步 → `asyncio.to_thread` 包成 async；返回 `list[float]`
 - **association 层（每次 search 现建图）**：`MemoryGraph(edges)` 从 `store.list_edges()` 构建——O(E) 小（≤ 几百条边），且图永远与 DB 一致（新建记忆后下次 search 自动包含）。`neighbors` 无权重扩散 `depth=1`（`weight` 存图待展示/加权扩散，当前不用）；seed 来自 keyword + vector 命中，扩散结果映射回 `by_id`（`list_memories()` 一次性建的 id→Memory 表，避免 N+1 查询）。**`neighbors` 先过滤不在图中的 seed**：图只从 edges 建节点，孤立记忆（无边的 keyword/vector 命中，属常态）不在图里，而 `nx.Graph.neighbors` 对不存在节点抛 `NetworkXError`——`frontier = [s for s in seeds if self._g.has_node(s)]` 过滤后孤立 seed 自然产出 `[]`，`search()` 不崩
 - **embedding 写归 09**：本 spec 只读 `memory.embedding`；记忆创建时算 embedding + 存列是 09-facade 的活（用同一个 `build_embed`）
+- **空查询守卫在检索层（已知限制）**：`search()` 入口 `not query.strip()` 短路，因为 store 的 `search_keyword("")` / `search_keyword(" ")` 会构造 `LIKE '%%'` / `LIKE '% %'` 全表命中。守卫只在本层——绕过 `search()` 直接调 `search_keyword` 仍会全表返回，属 07 层语义，本 spec 不强求改
 
 ### `memory/graph.py`（完整）
 
@@ -139,7 +140,7 @@ class MemoryRetrieval:
         self._embed = embed          # None = 向量层禁用
 
     async def search(self, query: str, limit: int = 20) -> list[Memory]:
-        if not query:
+        if not query.strip():
             return []
         keyword_hits = await self._store.search_keyword(query)
         all_memories = await self._store.list_memories()
@@ -194,7 +195,7 @@ class MemoryRetrieval:
     - [ ] `search` 编排（真 `MemoryStore`（`connect(":memory:")`）+ fake embed）：造 A（content 含 query、embedding `[1,0]`）、B（embedding `[0,1]`）、C（无 embedding）+ 边 A-B → `search(query)` 按 keyword 命中 A、vector 命中 A、association 扩散到 B，合并去重 = `[A, B]`（顺序 keyword 先）；`limit=1` → `[A]`
     - [ ] `search` 去重：keyword 与 vector 命中同一记忆 → 只出现一次
     - [ ] `search` 全空：无 keyword 命中、embed=None、无边 → `[]`
-    - [ ] `search` 空查询：`search("")` → `[]`（短路，不触 store 查询）
+    - [ ] `search` 空/空白查询：`search("")` / `search(" ")` / `search("   ")` → `[]`（`query.strip()` 短路，不触 store 查询）
     - [ ] `search` 无边命中不崩（回归）：keyword 命中一条**无边**记忆（图里无此节点）→ 不抛 `NetworkXError`，返回该命中本身（association 空，`neighbors` 过滤后产出 `[]`）
 - [ ] 集成测试：无（retrieval 是内部类，无 Facade 管道；与 09 的编排归 09）
 - [ ] E2E 测试：无

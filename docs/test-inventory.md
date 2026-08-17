@@ -165,7 +165,7 @@
 | `test_search_merge_order_and_limit` | 功能正确 | keyword→vector→association 编排：A（keyword+vector）、B（association 扩散）→ `[A,B]`；limit=1 → `[A]` |
 | `test_search_dedup` | 功能正确 | keyword 与 vector 命中同一记忆 → 去重只一次 |
 | `test_search_empty` | 功能正确 | 无命中 + embed=None + 无边 → `[]` |
-| `test_search_empty_query_returns_empty` | 边界鲁棒 | `search("")` 空查询短路 → `[]`（不因 `LIKE '%%'` 误返全量） |
+| `test_search_blank_query_returns_empty` | 边界鲁棒 | `""`/`" "`/`"   "` 空/空白查询短路 → `[]`（`query.strip()`，不因 `LIKE '%%'`/`'% %'` 误返全量） |
 | `test_search_no_edge_no_crash` | 边界鲁棒 | keyword 命中无边记忆 → 不抛 `NetworkXError`（`neighbors` 过滤），返回命中本身 |
 
 **功能阶段**：08-memory-retrieval 实现时编写。

@@ -57,7 +57,7 @@ class MemoryRetrieval:
         self._embed = embed          # None = 向量层禁用
 
     async def search(self, query: str, limit: int = 20) -> list[Memory]:
-        if not query:
+        if not query.strip():
             return []
         keyword_hits = await self._store.search_keyword(query)
         all_memories = await self._store.list_memories()

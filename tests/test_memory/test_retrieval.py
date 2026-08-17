@@ -121,13 +121,16 @@ async def test_search_empty() -> None:
         await db.conn.close()
 
 
-async def test_search_empty_query_returns_empty() -> None:
+async def test_search_blank_query_returns_empty() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
     try:
-        await store.add(_mem("A", content="有关内容"))
+        # 含空格，复现 LIKE '% %' 全量命中
+        await store.add(_mem("A", content="有关 内容"))
         retrieval = MemoryRetrieval(store, embed=None)
         assert await retrieval.search("") == []
+        assert await retrieval.search(" ") == []
+        assert await retrieval.search("   ") == []
     finally:
         await db.conn.close()
 

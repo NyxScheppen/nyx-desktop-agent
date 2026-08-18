@@ -421,3 +421,57 @@
 | `test_classify_channel` | 功能正确 | `threshold=0.5`：得分 ≥ 0.5（`在吗`+精力满+2h）→ SLOW；< 0.5（`哦`+精力20+arousal0.9+60s）→ FAST |
 
 **功能阶段**：16-expression-prompt 实现时编写（纯函数，无 DB、无 async、无 fake LLM；`CurrentState`/`Memory`/`Message`/`SelfNarrative`/`ShortTermDesire` 全手构，无集成/E2E）。
+
+## 17-expression（回复流程 + 碎碎念 + 搭话）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_templates_len_50_and_unique` | 功能正确 | `len(_MUTTER_TEMPLATES) == 50` 且 `len(set(...)) == 50`（无重复） |
+| `test_pick_mutter_out_of_range` | 边界鲁棒 | `roll<0` / `roll>=1.0` → `None`（不触发） |
+| `test_pick_mutter_bounds` | 功能正确 | `roll=0.0` → 第 0 条；`roll=0.999` → 最后一条 |
+| `test_pick_mutter_membership` | 功能正确 | 返回值 ∈ `_MUTTER_TEMPLATES` |
+| `test_should_initiate_chat_all_true` | 功能正确 | 互动欲 + 在线 + 不忙 + 精力够 + 间隔够 → `True` |
+| `test_should_initiate_chat_each_condition` | 边界鲁棒 | 五条件逐项置反（无互动欲/离线/忙/精力 49/间隔 1000）→ `False` |
+| `test_is_question` | 功能正确 | `"你今天好吗？"`/`"你今天怎么样"` → True（含「怎么」）；`"我很好。"` → False |
+| `test_backtrack_short` | 功能正确 | history 短于 `max_len` → 全取 |
+| `test_backtrack_long` | 功能正确 | 长于 `max_len` → 只取最后 `max_len` 条 |
+| `test_backtrack_empty` | 边界鲁棒 | 空 history → `[]` |
+| `test_rounds_block_empty` | 边界鲁棒 | `([], [])` → `""` |
+| `test_rounds_block_single` | 功能正确 | 含「第1轮内心：t1」「第1轮对外：s1」 |
+| `test_rounds_block_two` | 功能正确 | 两轮顺序正确（t1 < s1 < t2 < s2） |
+| `test_reply_fast` | 功能正确 | 快通道：complete×2（think+speak）、evaluate×2、`search`/`create_scene_memory` 未调、publish `[THINK, SPEAK]` |
+| `test_reply_slow_non_question` | 功能正确 | 慢通道非问句：complete×6、publish `[THINK, SPEAK]×3`、`search=1`、`create_scene_memory=1`、`nyx_think`/`nyx_speak` 3 轮 `"\n"` 拼接 |
+| `test_reply_slow_question` | 功能正确 | 慢通道问句：publish `[THINK, ASK]`（非 SPEAK）、`create_scene_memory` 仍调、提前结束（think/speak 各 1） |
+| `test_cumulative_prompt` | 功能正确 | 第 2 轮 think user prompt 含第 1 轮 think/speak 文本；第 2 轮 speak 含第 2 轮 think 文本 |
+| `test_current_message_not_duplicated` | 回归保护 | `[对话历史]` 段不含当前消息、`[本次消息]` 含且仅一次 |
+| `test_history_order` | 功能正确 | 两次 reply 后 history 为 `[user, nyx, user, nyx]`；第二次 assemble 回溯含 user1/nyx1、不含 user2 |
+| `test_mutter_skips_when_busy` | 功能正确 | `current_activity` 非 None → 不发 |
+| `test_mutter_hit` | 功能正确 | `random.random()` 命中 → 发 `mutter`（content 来自模板、correlation 透传） |
+| `test_mutter_miss` | 功能正确 | `random.random()` 未命中 → 不发 |
+| `test_initiate_chat_empty` | 边界鲁棒 | 空 content → `False` 且不发 |
+| `test_initiate_chat_non_empty` | 功能正确 | 非空 → `True` 且发 `initiate_chat`（output_type/correlation 一致） |
+
+**功能阶段**：17-expression 实现时编写（mutter/pipeline 纯函数无 DB 无 async；facade 集成 fake LLM/memory/desire/inner_life/evaluator/bus 注入，`cast()` 注入不碰真实 db；无集成/E2E，与 18-api 组合根的编排归 18）。
+
+## 18-api（组合根 + REST + SSE）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_root_event_defaults_external` | 功能正确 | `id == correlation_id`、默认 `source is EXTERNAL`、`type`/`content` 原样透传、`timestamp` 非空 |
+| `test_root_event_explicit_internal` | 功能正确 | 显式 `source=Source.INTERNAL` → `source is INTERNAL` |
+| `test_load_canon_merges_three_files` | 功能正确 | 三份 canon 按序合并（`"\n\n"` 分隔） |
+| `test_load_canon_missing_file_fails` | 边界鲁棒 | 缺一份 → `FileNotFoundError`（fail-fast） |
+| `test_seed_inner_life_idempotent` | 功能正确 | 空表 seed 四表（personality/values/energy/narrative）值 = canon §2/§3 初始值；再跑一遍值不变、不重复行 |
+| `test_seed_desire_idempotent` | 功能正确 | `list_values()` 四类型、`list_long_term()` 3 条；再跑幂等（4 行 / 3 条不增） |
+| `test_build_tools_web_disabled` | 功能正确 | `web_enabled=False` → `{local_search, file_io}`（工厂构造无 I/O，`roots`/`DDGS` 惰性到 `.call()`） |
+| `test_build_tools_web_enabled` | 功能正确 | `web_enabled=True` → 多 `web_search` |
+| `test_state_endpoint` | 功能正确 | `GET /api/state` → `CurrentState` JSON，枚举字段为 `.value` 字符串（`emotion=neutral`、`energy_state=okay`） |
+| `test_chat_endpoint` | 功能正确 | `POST /api/chat` → `{event_id}`；bus 收一条 `USER_MESSAGE`（source EXTERNAL、`correlation_id == id`） |
+| `test_memories_endpoint` | 功能正确 | `GET /api/memories?tag=&type=` → `Memory[]`；`type` query 转 `MemoryType` 枚举传入 facade |
+| `test_observe_endpoint` | 功能正确 | `POST /api/observe` → `{event_id}`；bus 收 `OBSERVATION_STATE`（content `{presence}`）、`last_presence` 更新 |
+| `test_export_endpoint` | 功能正确 | `POST /api/export` `json`/`md` 透传 `memory.export` 结果 |
+| `test_export_bogus_raises` | 边界鲁棒 | `format=bogus` → Facade 抛 `ValueError`（端点不吞，透出为 500） |
+| `test_tick_loop_emits_four_clock_ticks` | 功能正确 | 跑一个循环 → 4 条 `CLOCK_TICK`，`tick_type` 覆盖四类、每条 `source is INTERNAL`（系统定时器非外部输入） |
+| `test_subscription_consistency` | 功能正确 | 对 `ROUTING` 每个非空消费者 publish → 对应 Facade 方法被调（inner_life×4 / desire×2 / activity×1 / expression×1） |
+
+**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）。

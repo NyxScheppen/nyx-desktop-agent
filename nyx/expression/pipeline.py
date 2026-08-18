@@ -5,7 +5,6 @@
 节点为闭包，依赖经 ReplyDeps 注入。
 """
 import time
-import uuid
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, TypedDict
@@ -14,15 +13,16 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from nyx.config import ExpressionConfig
-from nyx.enums import ContextMode, EventType, Source
+from nyx.enums import ContextMode, EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
-from nyx.expression.classifier import classify_channel
+from nyx.events.event import internal_text_event
+from nyx.expression.classifier import QUESTION_MARKS, classify_channel
 from nyx.expression.prompt import build_system_prompt, build_user_prompt
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
-from nyx.types import CurrentState, Event, Memory, Message, SelfNarrative
+from nyx.types import CurrentState, Memory, Message, SelfNarrative
 
 
 class ReplyState(TypedDict):
@@ -38,6 +38,7 @@ class ReplyState(TypedDict):
     round: int                   # 已完成 think/speak 的轮数（≤ slow_max_rounds）
     waiting_user: bool           # MVP 恒 False
     correlation_id: str          # 本次 reply 溯源（17 补，对齐 14-activity）
+    last_slow_at: float          # 上次慢通道时间（facade 维护，每 reply 入 state）
 
 
 @dataclass
@@ -50,35 +51,18 @@ class ReplyDeps:
     canon: str
     config: ExpressionConfig
     history: deque[Message]              # facade 持有的会话历史（跨 reply）
-    correlation_id: str                  # 本次 reply 溯源
-    last_slow_at: float                  # 上次慢通道时间（facade 维护）
 
 
-_QUESTION_MARKS = ("?", "？", "吗", "呢", "怎么", "为什么", "什么", "如何", "哪")
 _THINK_TASK = "（只输出你此刻的内心独白，不要输出给用户看。）"
 _SPEAK_TASK = "（只输出你要对用户说的一句话。）"
 
 
-def _make_event(type_: EventType, content: str, correlation_id: str) -> Event:
-    return Event(
-        id=str(uuid.uuid4()),
-        timestamp=time.time(),
-        source=Source.INTERNAL,
-        type=type_,
-        content={"content": content},
-        correlation_id=correlation_id,
-    )
-
-
 def _is_question(text: str) -> bool:
-    """speak 是否问句（纯函数）：末尾问号或含疑问词。
+    """speak 是否问句（纯函数）：含疑问词即视为问句。
 
-    词表与 16 classifier 的 _QUESTION_MARKS 一致。
+    词表单一来源 = 16 classifier 的 QUESTION_MARKS。
     """
-    return (
-        text.rstrip().endswith(("?", "？"))
-        or any(w in text for w in _QUESTION_MARKS)
-    )
+    return any(w in text for w in QUESTION_MARKS)
 
 
 def _backtrack(history: deque[Message], max_len: int) -> list[Message]:
@@ -106,14 +90,16 @@ def _rounds_block(think: list[str], speak: list[str]) -> str:
 
 
 def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
-    """构建回复流程图。节点闭包捕获 deps；deps.correlation_id 每次 reply 重建。"""
+    """构建回复流程图。节点闭包捕获稳定依赖 deps；每 reply 变化的
+    correlation_id/last_slow_at 走 state（图可复用，见 facade.__init__）。
+    """
 
     async def classify(state: ReplyState) -> dict[str, Any]:
         mode = classify_channel(
             state["message"],
             state["state"],
             time.time(),
-            deps.last_slow_at,
+            state["last_slow_at"],
             deps.config.slow_threshold,
         )
         return {"mode": mode}
@@ -139,7 +125,9 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         await deps.evaluator.evaluate(output)
         await deps.bus.publish(
-            _make_event(EventType.THINK, output.content, state["correlation_id"])
+            internal_text_event(
+                EventType.THINK, output.content, state["correlation_id"]
+            )
         )
         return {"think": state["think"] + [output.content]}
 
@@ -162,7 +150,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         speak = output.content
         if state["mode"] is ContextMode.FAST:
             await deps.bus.publish(
-                _make_event(EventType.SPEAK, speak, state["correlation_id"])
+                internal_text_event(EventType.SPEAK, speak, state["correlation_id"])
             )
         return {"speak": state["speak"] + [speak]}
 
@@ -170,11 +158,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         speak = state["speak"][-1]
         if _is_question(speak):
             await deps.bus.publish(
-                _make_event(EventType.ASK, speak, state["correlation_id"])
+                internal_text_event(EventType.ASK, speak, state["correlation_id"])
             )
             return {"ask": speak}
         await deps.bus.publish(
-            _make_event(EventType.SPEAK, speak, state["correlation_id"])
+            internal_text_event(EventType.SPEAK, speak, state["correlation_id"])
         )
         return {"ask": None, "round": state["round"] + 1}
 

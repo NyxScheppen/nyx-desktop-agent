@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -223,17 +224,26 @@ class ActivityFacade:
         )
 
     async def interrupt(self, activity_id: str, by_event: EventType) -> None:
-        """软中断：校验目标 RUNNING，cancel 执行 task、置 PAUSED 落库
+        """抢占即废弃：校验目标 RUNNING → cancel 执行 task 并 await 其彻底结束
+        → 重读守卫（窗口内已自行完成/失败则不覆盖）→ 置 ABANDONED 落库
         + 发布 activity_interrupted。
 
-        执行中的 result 尚未写入，故仅落 PAUSED 状态（不持久化部分进度）。
+        执行中的 result 尚未写入，故仅落终态（不持久化部分进度）。
         """
         activity = await self._store.get(activity_id)
         if activity is None or activity.status is not ActivityStatus.RUNNING:
             return
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-        activity.status = ActivityStatus.PAUSED
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                # 等 _execute 收尾，防其随后写 COMPLETED/INCOMPLETE 覆盖
+                await task
+        activity = await self._store.get(activity_id)   # 重读：已终态则不动
+        if activity is None or activity.status is not ActivityStatus.RUNNING:
+            return
+        activity.status = ActivityStatus.ABANDONED
+        activity.ended_at = time.time()
         await self._store.update(activity)
         await self._bus.publish(
             internal_event(

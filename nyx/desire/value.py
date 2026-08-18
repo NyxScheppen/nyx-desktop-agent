@@ -43,8 +43,7 @@ def reinforce_weight(weight: float, delta: float = WEIGHT_REINFORCE_DELTA) -> fl
 def raise_suppression(
     threshold: float, delta: float = SUPPRESSION_RAISE_DELTA
 ) -> float:
-    """失败/抑制后抑制阈值上浮（习得性抑制）：threshold + delta，夹到 """
-    """[0, 1]。纯函数。"""
+    """失败/抑制后抑制阈值上浮：threshold + delta，夹到 [0, 1]。纯函数。"""
     return _clamp(threshold + delta, _SUPPRESSION_MIN, _SUPPRESSION_MAX)
 
 
@@ -59,8 +58,8 @@ def is_expressible(value: float, suppression_threshold: float) -> bool:
 
 
 def default_value(type_: DesireType) -> DesireValue:
-    """某类型的初始 DesireValue：value=0、表达权重/抑制阈值用默认基线、"""
-    """updated_at 哨兵 0.0。纯函数。"""
+    """某类型的初始 DesireValue：value=0、表达权重/抑制阈值用默认基线、
+    updated_at 哨兵 0.0。纯函数。"""
     return DesireValue(
         type=type_,
         value=0.0,

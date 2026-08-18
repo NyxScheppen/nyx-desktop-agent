@@ -130,6 +130,13 @@ def test_extract_usage_unknown_shape() -> None:
     assert _extract_usage(response) == {"input": 0, "output": 0}
 
 
+def test_extract_usage_non_int_value() -> None:
+    # 键值为非数字字符串：_safe_int 兜底计 0，不 int("abc") 裸崩
+    response = AIMessage(content="x")
+    setattr(response, "usage_metadata", {"input_tokens": "abc", "output_tokens": 7})
+    assert _extract_usage(response) == {"input": 0, "output": 7}
+
+
 # ---- complete ----
 
 

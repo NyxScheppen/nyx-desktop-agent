@@ -56,5 +56,5 @@ async def test_call_invokes_handler_with_kwargs() -> None:
 
 async def test_call_unknown_name_raises() -> None:
     registry = ToolRegistry()
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match="nope"):
         await registry.call("nope", {})

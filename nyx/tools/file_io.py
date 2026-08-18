@@ -25,7 +25,12 @@ async def file_io(
     content: str | None = None,
     write_root: Path = DEFAULT_WRITE_ROOT,
 ) -> dict[str, Any]:
-    """read 全盘读 / write 写进 write_root / list 列目录（全盘）。"""
+    """read 全盘读 / write 写进 write_root / list 列目录（全盘）。
+
+    已知边界：read/list 全盘是有意设计（探索特性），本地单机 agent 以用户权限
+    运行、非沙箱；LLM 可经 exploration focus 指向任意路径，MVP 接受，不提供
+    对外服务隔离。write 仍受 write_root 越界校验约束。
+    """
     if action == "read":
         text = await asyncio.to_thread(
             Path(path).read_text, encoding="utf-8", errors="replace"

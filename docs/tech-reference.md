@@ -97,8 +97,8 @@ async def on_tick(tick_type: TickType) -> None                  # 排期/评估�
 async def on_desire_generated(event: Event) -> None             # DESIRE_GENERATED 触发消费欲望
 def select_activity(desires: list[ShortTermDesire], state: CurrentState) -> Activity | None  # desires 来自 DesireFacade.get_pending()；无欲望/全互动欲返回 None（纯决策，同步）
 async def complete_activity(activity: Activity) -> None         # 内部发布 activity_end（满足信号等）
-async def interrupt(activity_id: str, by: EventType) -> None    # 软中断，存进度
-async def get_current() -> Activity | None                      # 当前活动（running/paused），供快照/仪表盘
+async def interrupt(activity_id: str, by: EventType) -> None    # 抢占即废弃，置 ABANDONED
+async def get_current() -> Activity | None                      # 当前活动（running），供快照/仪表盘
 async def get_schedule() -> list[Activity]                      # 今日日程块（供 /api/activity）
 ```
 

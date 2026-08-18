@@ -10,7 +10,7 @@
 
 ## 用户故事
 
-> 作为 Nyx 系统的开发者，我想要活动系统的门面——`on_tick`/`on_desire_generated` 触发消费欲望、`select_activity` 选活动、后台 task 执行（读书/创作/发呆/自由探索/观察/休息）、`complete_activity` 判定 goal 并发布 `activity_end`、`interrupt` 软中断存进度、`get_current`/`get_schedule` 供仪表盘——以便欲望「达峰→生成→被消费→满足回写」闭环，前端能看到活动时间线、打断点、进度。
+> 作为 Nyx 系统的开发者，我想要活动系统的门面——`on_tick`/`on_desire_generated` 触发消费欲望、`select_activity` 选活动、后台 task 执行（读书/创作/发呆/自由探索/观察/休息）、`complete_activity` 判定 goal 并发布 `activity_end`、`interrupt` 抢占即废弃、`get_current`/`get_schedule` 供仪表盘——以便欲望「达峰→生成→被消费→满足回写」闭环，前端能看到活动时间线、打断点、进度。
 
 ## 验收标准
 
@@ -21,7 +21,7 @@
 - [ ] 空槽默认：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`（精力疲惫 `< ENERGY_REST_THRESHOLD`→`IDLE_REFLECTION`、否则→`OBSERVE_USER`），`progress["desire_id"] is None`
 - [ ] 活动执行在**后台 task**（不阻塞事件总线）；`activity_start`/`activity_end`/`activity_interrupted` 由 facade 自己 `publish`、`source=INTERNAL`
 - [ ] `complete_activity`：goal 判定（`_goal_met` 纯函数）→ `status=COMPLETED` → 发布 `activity_end`（content 含 `activity_id`/`desire_id`/`goal_met`/`energy_delta`/`result`）
-- [ ] `interrupt`：先校验目标 activity 存在且 RUNNING → cancel 执行 task → `status=PAUSED` + 发布 `activity_interrupted`（content `{activity_id, by}`）
+- [ ] `interrupt`：先校验目标 activity 存在且 RUNNING → cancel 执行 task 并 await 其结束 → 重读守卫 → `status=ABANDONED` + 发布 `activity_interrupted`（content `{activity_id, by}`）
 - [ ] `exploration.py` 含 `Exploration`（LangGraph 图）+ `should_explore` 纯函数；`web_enabled=false` 时不注册 `search_web` 节点；节点内 LLM 调用带 `correlation_id` 溯源
 - [ ] `observe.py` 含 `classify_presence` 纯函数（活跃度+窗口标题 → `"online"`/`"away"`/`"busy"`）
 - [ ] 两处 LLM 产出后紧跟 `await evaluator.evaluate(output)`：`_run_llm_activity`（`output_type` "reading"/"creation"）与 `Exploration._plan_next`（`output_type="exploration_plan"`）
@@ -36,7 +36,7 @@
 - **两个事件入口都归到 `_maybe_start_activity`**：`SCHEDULE_BLOCK_START` tick（每小时一块）与 `DESIRE_GENERATED`（欲望刚生成）都「有空闲就消费」。区别是触发时机，逻辑共用；有 running 活动则忽略（等它完成或下一个触发）
 - **`select_activity` 返回 `Activity | None`**：无欲望 / 全互动欲时无活动可排，返回 `None`（空槽）。tech-ref §5 原签名 `-> Activity` 需 ripple 为 `-> Activity | None`（见完成定义）
 - **活动执行 = 后台 task**：05-event「顺序分发、逐个 await handler」，若 on_tick 里 await 完整个活动（LLM 秒级、探索链分钟级）会阻塞事件总线、吞掉用户消息打断。故 `_maybe_start_activity` 用 `asyncio.create_task` 启动执行后立即返回；`interrupt` 靠 `self._task.cancel()` 软打断
-- **并发守卫（同一时刻仅一个活动）**：`_start_lock` 串行化「查 running → insert PENDING → 翻 RUNNING」决策；但 `_execute` 在锁外异步翻 RUNNING，仅靠 `get_current`（只匹配 running/paused，见 store）会留 TOCTOU 窗口（PENDING 已 insert 却查不到 running）。故锁内先同步查 `self._task` 未完成即 `return` 闭合窗口；`self._task` 在锁内赋值，天然串行
+- **并发守卫（同一时刻仅一个活动）**：`_start_lock` 串行化「查 running → insert PENDING → 翻 RUNNING」决策；但 `_execute` 在锁外异步翻 RUNNING，仅靠 `get_current`（只匹配 running，见 store）会留 TOCTOU 窗口（PENDING 已 insert 却查不到 running）。故锁内先同步查 `self._task` 未完成即 `return` 闭合窗口；`self._task` 在锁内赋值，天然串行
 - **执行失败 = INCOMPLETE + 上抛**：`_execute` 失败落 `INCOMPLETE`（`ended_at` 已记）后仍 `raise`（不吞异常）；`logger.exception` 记录详情，`add_done_callback(_harvest_task_exception)` 收割 fire-and-forget task 的异常，避免 asyncio「Task exception was never retrieved」警告静默漂着
 - **自由探索升级（design §8.6，13 已委托给 14）**：`select_activity` 保持基线映射（探索欲→`READING`），升级判定放 `_maybe_start_activity`（那里有 store/config/now，`select_activity` 保持纯决策）。「探索欲」条件由结构保证——`READING` 活动**仅**由 `DesireType.EXPLORATION` 映射而来（13 `desire_to_activity`），故调用方在 `activity.type is READING` 时才调 `should_explore`（只查精力 + 频率两项）
 - **六种活动执行分派（`_run_activity`）**：
@@ -50,7 +50,7 @@
 - **goal 判定（MVP，可推翻）**：`_goal_met(goal, result)` = goal 非 None 且 `result` 非空 → `True`；goal None（观察/休息）→ `None`。
 - **精力门槛**：`select_activity` 用 13 的 `build_schedule(desires, state.energy, energy_delta)` 取 `[0]`（精力跌破阈值自动穿插 `REST`），不另写门槛逻辑；`schedule[0] is REST` → 无关联 desire
 - **`get_schedule()` 语义**：返回「今日已产生的 Activity 记录」（`started_at >= 今日零点`，`list_schedule`），按 `started_at ASC`。未来计划不持久化（design §8.1），前端按 grid 渲染空槽；`_day_start` 纯函数算当日零点（MVP 用 UTC 日边界，可推翻）
-- **`interrupt` 的 `by_event: EventType`**：打断原因（`USER_MESSAGE` / `INITIATE_CHAT`）。谁调 `interrupt` 归 17/18（用户消息/搭话打断活动）；14 只提供方法 + 发布 `activity_interrupted`。MVP 简化为 `interrupt` 存进度留 `PAUSED`
+- **`interrupt` 的 `by_event: EventType`**：打断原因（`USER_MESSAGE` / `INITIATE_CHAT`）。谁调 `interrupt` 归 17/18（用户消息/搭话打断活动）；14 只提供方法 + 发布 `activity_interrupted`。MVP 简化为 `interrupt` 抢占即废弃、置 `ABANDONED` 终态（无恢复路径）
 - **`observe.py` 与观察状态的分工**：`classify_presence` 是「在线/离开/忙碌」三态判定的**单一事实来源**（纯函数、单测锁定）。采集（键盘/鼠标活跃度 + 前台窗口标题）在前端 Tauri 壳（design §2 进程边界），判定结果作为 `OBSERVATION_STATE` 事件推给 Python，ROUTING 到 inner_life + desire。**`classify_presence` 的运行时调用方是前端 ingress，不在本 spec 的 backend 范围内**（前端 spec 推迟）——保留它是为了让「判定规则」在 Python 侧可展示（原则 3）+ 可溯源（原则 5）。`OBSERVE_USER` 活动本身是 0-LLM 占位（result `{}`）
 - **明确不做**：不建「计划」表（design §8.1 临时概念）；`classify_presence` 只覆盖键盘/鼠标/窗口三输入
 
@@ -104,10 +104,10 @@ class ActivityStore:
         return _row_to_activity(row) if row is not None else None
 
     async def get_current(self) -> Activity | None:
-        """当前活动（running/paused），取最新一条。"""
+        """当前活动（running），取最新一条。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                f"SELECT {_COLS} FROM activity WHERE status IN ('running', 'paused') "
+                f"SELECT {_COLS} FROM activity WHERE status = 'running' "
                 "ORDER BY started_at DESC LIMIT 1",
             )
             row = await cursor.fetchone()
@@ -168,6 +168,7 @@ def _row_to_activity(row: aiosqlite.Row) -> Activity:
 
 ```python
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -392,17 +393,26 @@ class ActivityFacade:
         )
 
     async def interrupt(self, activity_id: str, by_event: EventType) -> None:
-        """软中断：校验目标 RUNNING，cancel 执行 task、置 PAUSED 落库
+        """抢占即废弃：校验目标 RUNNING → cancel 执行 task 并 await 其彻底结束
+        → 重读守卫（窗口内已自行完成/失败则不覆盖）→ 置 ABANDONED 落库
         + 发布 activity_interrupted。
 
-        执行中的 result 尚未写入，故仅落 PAUSED 状态（不持久化部分进度）。
+        执行中的 result 尚未写入，故仅落终态（不持久化部分进度）。
         """
         activity = await self._store.get(activity_id)
         if activity is None or activity.status is not ActivityStatus.RUNNING:
             return
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-        activity.status = ActivityStatus.PAUSED
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                # 等 _execute 收尾，防其随后写 COMPLETED/INCOMPLETE 覆盖
+                await task
+        activity = await self._store.get(activity_id)   # 重读：已终态则不动
+        if activity is None or activity.status is not ActivityStatus.RUNNING:
+            return
+        activity.status = ActivityStatus.ABANDONED
+        activity.ended_at = time.time()
         await self._store.update(activity)
         await self._bus.publish(
             internal_event(
@@ -718,7 +728,7 @@ def classify_presence(
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_activity/`（`pytest-asyncio`；`db = await connect(":memory:")`；fake `LlmClient.complete` 按 `output_type` 返回 fixture JSON；`EventBus` 真实例 + recording handler，`run()` 作 task；`get_state` 用 fake 回调返回预设 `CurrentState`——同 05/09/11/12 模式）：
-  - [ ] **store**（`test_activity_store.py`）：`insert + get` 往返（`progress` JSON 往返、枚举 `.value` 往返）；`get_current` 只取 running/paused 最新一条；`get_last_exploration`（无 free_exploration 记录 → `0.0`，有 → `MAX(started_at)`）；`list_schedule(start)` 按 `started_at >= start` 过滤 + ASC；`update` 改 `status`/`progress`/`ended_at` → `get` 验证
+  - [ ] **store**（`test_activity_store.py`）：`insert + get` 往返（`progress` JSON 往返、枚举 `.value` 往返）；`get_current` 只取 running 最新一条；`get_last_exploration`（无 free_exploration 记录 → `0.0`，有 → `MAX(started_at)`）；`list_schedule(start)` 按 `started_at >= start` 过滤 + ASC；`update` 改 `status`/`progress`/`ended_at` → `get` 验证
   - [ ] **纯函数**（`test_activity_facade.py`）：`_day_start`（`now=86400*1.5 → 86400.0`）；`_elapsed_hours`（`now=5400 → 1.5`）；`_goal_met`（goal None → None；goal 非 None + result 空 → False；goal 非 None + result 非空 → True）
   - [ ] **select_activity**（fake `get_state` 返回 `energy=80`）：无欲望 → `None`；`[探索欲]` → `type is READING`、`progress["desire_id"] == desire.id`、`goal` 序列化正确、`progress["description"] == desire.description`；`[互动欲]` → `None`（不占日程块）；`[休息欲]` → `type is REST`、`progress["desire_id"] == rest_desire.id`（欲望驱动的 REST 保留关联）；`energy=30` + 探索欲 → `type is REST`、`progress["desire_id"] is None`（精力恢复无关联）
   - [ ] **should_explore**（`test_exploration.py`）：`energy=59` → False；`energy=60` + `now-last < rate_limit_hours*3600` → False；`energy=60` + 频率过 + `last=0.0` → True
@@ -727,7 +737,7 @@ def classify_presence(
     - [ ] 升级路径：探索欲 + 精力足 + 频率过 → `activity.type is FREE_EXPLORATION`；频率未过 → 降级 `READING`
     - [ ] 空槽默认：无欲望 + `energy=30` → `type is IDLE_REFLECTION`、`progress["desire_id"] is None`；无欲望 + `energy=80` → `type is OBSERVE_USER`、`progress["desire_id"] is None`
     - [ ] `complete_activity`：`status is COMPLETED`、`ended_at` 非 None、发布 `activity_end`（`energy_delta == config.energy_delta.reading` 等）
-    - [ ] `interrupt`：RUNNING 活动 → cancel + `status is PAUSED` + 发布 `activity_interrupted`（`content["by"]` 正确）；`activity_id` 不存在 → 不 cancel、不发布
+    - [ ] `interrupt`：RUNNING 活动 → cancel + `status is ABANDONED` + 发布 `activity_interrupted`（`content["by"]` 正确）；`activity_id` 不存在 → 不 cancel、不发布；执行中活动挂起在可取消 await 上时 interrupt → 终态 `ABANDONED` 而非被 complete 覆盖
     - [ ] `get_current` / `get_schedule` 委托 store
   - [ ] **exploration**（`test_exploration.py`）：`Exploration` 用 fake llm/fake_evaluator/tools，`web_enabled=false` 时图不含 `search_web`、`run` 返回 `{findings, notes}` 且步数 ≤ `_MAX_STEPS`；`_plan_next` 的 `llm.complete` 收到 `correlation_id == 初始 correlation_id`，且每次 `complete` 后 `evaluator.evaluate` 被调（`output_type="exploration_plan"`）；规划 JSON 非对象（如数组）→ `ValueError`
   - [ ] **observe**（`test_observe.py`）：`classify_presence` 三态判定（活跃→online、窗口标题→busy、无→away）

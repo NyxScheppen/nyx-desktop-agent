@@ -26,3 +26,10 @@ def internal_event(
         content=content,
         correlation_id=correlation_id,
     )
+
+
+def internal_text_event(
+    type_: EventType, content: str, correlation_id: str
+) -> Event:
+    """构造内部事件，content 为纯文本：包装成 {"content": content} 载荷。"""
+    return internal_event(type_, {"content": content}, correlation_id)

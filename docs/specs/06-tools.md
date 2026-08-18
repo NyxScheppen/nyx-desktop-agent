@@ -36,9 +36,9 @@
 - **结果 JSON 可序列化**：工具返回 `dict` / `list` / `str`，不返回 domain dataclass——结果要进 14-activity 的 LLM 上下文
 - **全 async + 不阻塞事件循环**：fs / network 是阻塞 I/O，用 `asyncio.to_thread` 包一层（CLAUDE.md「I/O 操作用 async def」+ 不卡 SSE 广播）
 - **`web_search` opt-in 归组合根**：06-tools 只提供 `build_web_search_tool()`；`main.py`（18-api）读 `config.exploration.web_enabled`，true 才注册。未注册 → 不出现在 `schema()` 里，LLM 不可见、`call` 报 `KeyError`
-- **`file_io` 沙箱（只读 + 指定写目录）**：`read` / `list` 全盘（读安全，agent 需要读任意书/文件）；`write` 限定 `write_root`（默认 `Path("workspace")`，相对 cwd），越界抛 `ValueError`。路径校验用 `pathlib` 的 `.resolve()` + `.is_relative_to()`
+- **`file_io` 沙箱（只读 + 指定写目录）**：`read` / `list` 全盘（读安全，agent 需要读任意书/文件）；`write` 限定 `write_root`（默认 `Path("workspace")`，相对 cwd），越界抛 `ValueError`。路径校验用 `pathlib` 的 `.resolve()` + `.is_relative_to()`。已知边界：`read`/`list` 全盘是有意设计（探索特性），本地单机 agent 以用户权限运行、非沙箱，LLM 可经 exploration `focus` 指向任意路径——MVP 接受，不提供对外服务隔离（不为此加 read_root 配置）
 - **`local_search` 范围**：缺省搜**全盘**（`full_disk_roots()`：Windows 枚举存在的盘符、POSIX 根 `/`），与 `file_io.read` 的「读可全盘」一致；`.txt` / `.md` 文本，大小写不敏感子串匹配，返回 `[{path, snippet}]`。`roots` 参数可收窄（探索链传 `[workspace]`、测试传 `[tmp_path]`）。与记忆检索（08-memory-retrieval）是两码事——本工具搜**文件**，不搜记忆表
-- **全盘遍历用 `os.walk` + `onerror` 跳过无权限目录**：`rglob` 在无权限目录（Windows `System Volume Information` 等）会抛 `PermissionError`；`os.walk(root, onerror=...)` 跳过不可读目录继续走。注意全盘搜索慢（冷跑可能分钟级），探索链若要收窄用 `roots` 参数；本 spec 不加结果上限/超时（未请求）
+- **全盘遍历用 `os.walk` + `onerror` 跳过无权限目录**：`rglob` 在无权限目录（Windows `System Volume Information` 等）会抛 `PermissionError`；`os.walk(root, onerror=...)` 跳过不可读目录继续走。注意全盘搜索慢（冷跑可能分钟级），探索链若要收窄用 `roots` 参数；结果截断到 `_MAX_RESULTS`（50）、单文件超 `_MAX_FILE_BYTES`（1MiB）跳过（界内存/耗时兜底，不做超时——`to_thread` 无法干净中断 os.walk 线程）
 - **注入非全局**：`ToolRegistry` 是普通类，组合根实例化 + 注入活动 Facade（同 EventBus 约定），无模块级单例
 
 ### `tools/registry.py`（完整）
@@ -61,7 +61,10 @@ class ToolRegistry:
         self._tools[tool.name] = tool
 
     async def call(self, name: str, args: dict[str, Any]) -> Any:
-        return await self._tools[name].handler(**args)
+        tool = self._tools.get(name)
+        if tool is None:
+            raise KeyError(f"未注册工具：{name!r}")
+        return await tool.handler(**args)
 
     def schema(self) -> list[dict[str, Any]]:
         return [
@@ -81,6 +84,8 @@ from pathlib import Path
 from nyx.types import Tool
 
 _SEARCH_SUFFIXES = frozenset({".txt", ".md"})
+_MAX_RESULTS = 50
+_MAX_FILE_BYTES = 1 << 20
 
 
 def full_disk_roots() -> list[Path]:
@@ -92,16 +97,23 @@ def full_disk_roots() -> list[Path]:
 
 
 def _search_local_sync(query: str, roots: list[Path]) -> list[dict[str, str]]:
-    """同步核心：os.walk 遍历，onerror 跳过无权限目录，.txt/.md 大小写不敏感子串。"""
+    """同步核心：os.walk 遍历，onerror 跳过无权限目录，.txt/.md 大小写不敏感子串。
+
+    结果截断到 _MAX_RESULTS、单文件超 _MAX_FILE_BYTES 跳过（全盘扫描兜底）。
+    """
     results: list[dict[str, str]] = []
     needle = query.lower()
     for root in roots:
         for dirpath, _dirnames, filenames in os.walk(root, onerror=lambda _e: None):
             for name in filenames:
+                if len(results) >= _MAX_RESULTS:
+                    return results
                 if Path(name).suffix.lower() not in _SEARCH_SUFFIXES:
                     continue
                 full = os.path.join(dirpath, name)
                 try:
+                    if os.path.getsize(full) > _MAX_FILE_BYTES:
+                        continue
                     text = Path(full).read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     continue
@@ -204,7 +216,12 @@ async def file_io(
     content: str | None = None,
     write_root: Path = DEFAULT_WRITE_ROOT,
 ) -> dict[str, Any]:
-    """read 全盘读 / write 写进 write_root / list 列目录（全盘）。"""
+    """read 全盘读 / write 写进 write_root / list 列目录（全盘）。
+
+    已知边界：read/list 全盘是有意设计（探索特性），本地单机 agent 以用户权限
+    运行、非沙箱；LLM 可经 exploration focus 指向任意路径，MVP 接受，不提供
+    对外服务隔离。write 仍受 write_root 越界校验约束。
+    """
     if action == "read":
         text = await asyncio.to_thread(
             Path(path).read_text, encoding="utf-8", errors="replace"
@@ -262,6 +279,7 @@ def build_file_io_tool(write_root: Path = DEFAULT_WRITE_ROOT) -> Tool:
     - [ ] 不命中 → `[]`；`roots=[]` 或根不存在 → `[]`
     - [ ] 大小写不敏感（"DEEP" 命中 "deep sea"）
     - [ ] 非 `.txt`/`.md` 文件跳过
+    - [ ] 命中超 `_MAX_RESULTS` → 截断到 50；单文件超 `_MAX_FILE_BYTES` → 跳过
     - [ ] `full_disk_roots()`：非空且每项 `.exists()`；POSIX 下 `== [Path("/")]`
   - [ ] **web_search**（`test_web_search.py`，monkeypatch `DDGS` 为 fake，返回预设结果）：
     - [ ] `build_web_search_tool().handler("x")` → `[{title, url, snippet}]`（fake 的字段映射正确）

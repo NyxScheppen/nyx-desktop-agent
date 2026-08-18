@@ -59,8 +59,10 @@ def _parse_desire(raw: str) -> tuple[str, Goal | None]:
         raise ValueError("欲望 JSON 的 goal 应是对象或 null")
     goal = cast(dict[str, Any], goal_raw)
     action = goal.get("action")
-    if not isinstance(action, str) or action not in ("read", "write", "observe"):
-        raise ValueError("欲望 JSON 的 goal.action 应是 read/write/observe")
+    if not isinstance(action, str) or action not in {g.value for g in GoalAction}:
+        raise ValueError(
+            f"欲望 JSON 的 goal.action 应是 {'/'.join(g.value for g in GoalAction)}"
+        )
     count = goal.get("count")
     if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
         raise ValueError("欲望 JSON 的 goal.count 应是正整数")

@@ -48,6 +48,7 @@
 | `test_extract_usage_missing` | 边界鲁棒 | `usage_metadata` 缺失 → `{input: 0, output: 0}` |
 | `test_extract_usage_none_value` | 边界鲁棒 | 键存在但值为 `None` → `{input: 0, output: 0}`（宽松兜底，不 `int(None)` 裸崩） |
 | `test_extract_usage_unknown_shape` | 边界鲁棒 | 未知形状（非 dict、无 `model_dump`）→ `{input: 0, output: 0}` |
+| `test_extract_usage_non_int_value` | 边界鲁棒 | 键值为非数字字符串（`input_tokens="abc"`）→ `{input: 0, ...}` 不抛（`_safe_int` 兜底，不 `int("abc")` 裸崩） |
 | `test_complete_fields` | 功能正确 | `id`/`module`/`type`/`correlation_id`/`content`/`model` 正确回填进 `LLMOutput` |
 | `test_complete_token_usage` | 功能正确 | `token_usage` 从 `usage_metadata` 抽取为 `{input, output}` |
 | `test_complete_token_usage_missing` | 边界鲁棒 | `usage_metadata` 缺失 → `{input: 0, output: 0}` |
@@ -59,7 +60,7 @@
 | `test_from_config_rejects_missing_api_key` | 边界鲁棒 | `api_key_env` 未设（`delenv`）→ `ConfigError` |
 | `test_from_config_ok` | 功能正确 | 正常 → 返回 `LlmClient` 且 `_model_name == config.model` |
 
-**功能阶段**：03-llm 实现时编写。
+**功能阶段**：03-llm 实现时编写；`test_extract_usage_non_int_value` 于第五轮 review 追加（`_safe_int` 防御非数字 token 值）。
 
 ## 04-db（SQLite 连接 + 建表 + 迁移）
 
@@ -90,6 +91,7 @@
 | `test_routing_values_are_known_modules` | 功能正确 | 所有路由值 ⊆ `{expression, inner_life, desire, activity}` |
 | `test_time_constants` | 功能正确 | `SECONDS_PER_DAY == 86400.0`、`SECONDS_PER_HOUR == 3600.0`（共享常量，防四处 Facade 漂移） |
 | `test_internal_event_shape` | 功能正确 | `internal_event` 返回 `Event`：`source is Source.INTERNAL`、`type`/`content`/`correlation_id` 透传、`id` 非空 uuid4、`timestamp` 为 float |
+| `test_internal_text_event_wraps_content` | 功能正确 | `internal_text_event` 把纯文本 content 包装成 `{"content": ...}` 载荷 |
 | `test_publish_only_enqueues` | 功能正确 | publish 后 handler 未调、`list_events()` 空（未到 run，不落库） |
 | `test_run_persists_dispatches_and_broadcasts` | 功能正确 | run 后 handler 收到完整 `Event`、SSE sink 收到同一对象、落库往返相等（含 correlation_id 透传） |
 | `test_multiple_handlers_run_in_subscribe_order` | 功能正确 | 多 handler 按订阅序调用 |
@@ -119,12 +121,14 @@
 | `test_register_and_schema_in_order` | 功能正确 | `register` 后 `schema()` 按注册序返回 `[{name, description, parameters}]` |
 | `test_register_duplicate_raises` | 边界鲁棒 | 重复注册同名工具 → `ValueError` |
 | `test_call_invokes_handler_with_kwargs` | 功能正确 | `call` 用 `handler(**args)` 调 handler（fake 记录 kwargs 与返回值） |
-| `test_call_unknown_name_raises` | 边界鲁棒 | `call` 未注册名 → `KeyError` |
+| `test_call_unknown_name_raises` | 边界鲁棒 | `call` 未注册名 → `KeyError`（消息含名字） |
 | `test_search_hits` | 功能正确 | 命中 → `[{path, snippet}]`，`path` 指向含关键词文件 |
 | `test_search_miss` | 功能正确 | 不命中 → `[]` |
 | `test_search_empty_roots` | 边界鲁棒 | `roots=[]` → `[]` |
 | `test_search_case_insensitive` | 功能正确 | `"DEEP"` 命中 `"deep sea"`（大小写不敏感） |
 | `test_search_skips_non_text` | 功能正确 | 非 `.txt`/`.md` 文件跳过 |
+| `test_search_caps_results` | 边界鲁棒 | 命中超 `_MAX_RESULTS` → 截断到 50 |
+| `test_search_skips_oversized_file` | 边界鲁棒 | 单文件超 `_MAX_FILE_BYTES` → 跳过 |
 | `test_full_disk_roots_nonempty_and_exists` | 功能正确 | 非空且每项 `.exists()`；POSIX 下 `== [Path("/")]` |
 | `test_web_search_maps_fields` | 功能正确 | fake `DDGS` 的 `title`/`href`/`body` 映射为 `title`/`url`/`snippet`，不触真实网络 |
 | `test_read` | 功能正确 | `read` 返回文件 content |
@@ -149,14 +153,16 @@
 | `test_get_miss_returns_none` | 功能正确 | `get` 未命中 → `None` |
 | `test_list_memories_filters_and_sorts` | 功能正确 | `tag` / `type` / 组合过滤 + `freshness DESC` 排序 |
 | `test_update_fields` | 功能正确 | `update` 改各字段 → `get` 验证；`id` / `created_at` 不可变 |
+| `test_update_many` | 功能正确 | `update_many` 批量改多条（含 `embedding=None` 与 `embedding=[...]`）→ `get` 逐条验证；空列表 no-op |
 | `test_delete_cascades_edges` | 功能正确 | `delete` 级联删 `memory_edge`（from/to 双向），其它记忆边保留 |
+| `test_delete_many` | 功能正确 | `delete_many` 批量删多条（含关联边）→ `get` 全部 `None`、`list_edges` 无残留；空列表 no-op |
 | `test_record_recall_atomic` | 功能正确 | 未达阈值连调两次 → `recall_count==2` 且 type `SHORT_TERM`、返回 False；达阈值 → `LONG_TERM`、返回 True；已 `LONG_TERM` → 只递增、返回 False（加一+条件升型在单锁内原子完成） |
 | `test_search_keyword` | 功能正确 | `content` / `summary` 命中、无命中 `[]`、ASCII 大小写不敏感 |
 | `test_search_keyword_escapes_wildcards` | 边界鲁棒 | `%` / `_` 作字面量匹配（`ESCAPE '\'` 转义），不误命中通配符匹配 |
 | `test_list_edges_and_upsert` | 功能正确 | `upsert_edge` 新建 + 同键重复 `ON CONFLICT` 改 `weight` 不重复建行 |
 | `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |
 
-**功能阶段**：07-memory-store 实现时编写；`test_record_recall_atomic` 于 09 评审修复阶段重写（中3：加一+条件升型原子化进 store 单锁）。
+**功能阶段**：07-memory-store 实现时编写；`test_record_recall_atomic` 于 09 评审修复阶段重写（中3：加一+条件升型原子化进 store 单锁）；`test_update_many` / `test_delete_many` 于第五轮 review 追加（批量写原语，衰减/淘汰 N 次 commit → 2 次）。
 
 ## 08-memory-retrieval（三层检索 + 联想图）
 
@@ -368,7 +374,7 @@
 |---|---|---|
 | `test_insert_get_roundtrip` | 功能正确 | `insert`+`get` 往返全等（`progress` JSON 往返、枚举 `.value` 往返） |
 | `test_get_missing_returns_none` | 功能正确 | `get` 未命中 → `None` |
-| `test_get_current_only_running_paused` | 功能正确 | `get_current` 只取 running/paused 最新一条（completed 排除） |
+| `test_get_current_only_running` | 功能正确 | `get_current` 只取 running 最新一条（completed/abandoned 排除） |
 | `test_get_last_exploration_empty` | 边界鲁棒 | 无 free_exploration 记录 → `0.0` |
 | `test_get_last_exploration_max` | 功能正确 | 有 → `MAX(started_at)` |
 | `test_list_schedule_filters_and_orders` | 功能正确 | `started_at >= start` 过滤 + ASC |
@@ -393,7 +399,8 @@
 | `test_upgrade_to_free_exploration` | 功能正确 | 探索欲 + 精力足 + 频率过 → FREE_EXPLORATION |
 | `test_no_upgrade_when_rate_limited` | 功能正确 | 频率未过 → 降级 READING |
 | `test_complete_activity` | 功能正确 | COMPLETED + `ended_at` 非空 + activity_end（energy_delta=-20） |
-| `test_interrupt_running` | 功能正确 | PAUSED + activity_interrupted（`by=user_message`） |
+| `test_interrupt_running` | 功能正确 | ABANDONED + activity_interrupted（`by=user_message`） |
+| `test_interrupt_abandons_in_flight_activity` | 回归保护 | 执行中活动挂起可取消 await 时 interrupt → 终态 ABANDONED 而非被 complete 覆盖 |
 | `test_interrupt_missing` | 边界鲁棒 | 不存在 → 不发布、不崩溃 |
 | `test_get_current_delegates` | 功能正确 | `get_current` 委托 store |
 | `test_get_schedule_delegates` | 功能正确 | `get_schedule` 委托 store（按 `_day_start` 过滤） |

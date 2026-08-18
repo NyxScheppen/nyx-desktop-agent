@@ -6,6 +6,8 @@ from pathlib import Path
 from nyx.types import Tool
 
 _SEARCH_SUFFIXES = frozenset({".txt", ".md"})
+_MAX_RESULTS = 50
+_MAX_FILE_BYTES = 1 << 20
 
 
 def full_disk_roots() -> list[Path]:
@@ -17,16 +19,23 @@ def full_disk_roots() -> list[Path]:
 
 
 def _search_local_sync(query: str, roots: list[Path]) -> list[dict[str, str]]:
-    """同步核心：os.walk 遍历，onerror 跳过无权限目录，.txt/.md 大小写不敏感子串。"""
+    """同步核心：os.walk 遍历，onerror 跳过无权限目录，.txt/.md 大小写不敏感子串。
+
+    结果截断到 _MAX_RESULTS、单文件超 _MAX_FILE_BYTES 跳过（全盘扫描兜底）。
+    """
     results: list[dict[str, str]] = []
     needle = query.lower()
     for root in roots:
         for dirpath, _dirnames, filenames in os.walk(root, onerror=lambda _e: None):
             for name in filenames:
+                if len(results) >= _MAX_RESULTS:
+                    return results
                 if Path(name).suffix.lower() not in _SEARCH_SUFFIXES:
                     continue
                 full = os.path.join(dirpath, name)
                 try:
+                    if os.path.getsize(full) > _MAX_FILE_BYTES:
+                        continue
                     text = Path(full).read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     continue

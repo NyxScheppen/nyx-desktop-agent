@@ -69,6 +69,14 @@ def _to_lc(m: LlmMessage) -> BaseMessage:
     raise ValueError(f"未知消息角色 {role!r}")   # 静态 Literal 已挡，此为运行期防御
 
 
+def _safe_int(value: Any) -> int:
+    """防御性转 int：非法值（None/非数字字符串/对象）计 0，不抛。纯函数。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _extract_usage(response: BaseMessage) -> TokenUsageDict:
     """从 LangChain 响应抽取 token 用量；兼容 dict 与 Pydantic 两种形状。"""
     usage = getattr(response, "usage_metadata", None)
@@ -81,8 +89,8 @@ def _extract_usage(response: BaseMessage) -> TokenUsageDict:
     else:
         data = {}                          # 未知形状：不静默猜，计 0 待查
     return {
-        "input": int(data.get("input_tokens") or 0),   # 键缺失/值 None 均计 0
-        "output": int(data.get("output_tokens") or 0),
+        "input": _safe_int(data.get("input_tokens") or 0),   # 键缺失/值 None/非法 计 0
+        "output": _safe_int(data.get("output_tokens") or 0),
     }
 
 
@@ -143,7 +151,7 @@ class LlmClient:
 
 - [ ] 单元测试 `tests/test_llm/`：
   - [ ] `_to_lc` 纯函数：`system`→`SystemMessage`、`user`→`HumanMessage`、`assistant`→`AIMessage`，`content` 透传；非法 role → `ValueError`
-  - [ ] `_extract_usage` 纯函数：dict 形状 `{input_tokens: 12, output_tokens: 7}` → `{input: 12, output: 7}`；Pydantic v2 形状（`model_dump()` 返回同键 dict）→ 同上；`usage_metadata` 为 `None` → `{input: 0, output: 0}`；键存在但值为 `None` → `{input: 0, output: 0}`；未知形状（无 `model_dump` 非 dict）→ `{input: 0, output: 0}`
+  - [ ] `_extract_usage` 纯函数：dict 形状 `{input_tokens: 12, output_tokens: 7}` → `{input: 12, output: 7}`；Pydantic v2 形状（`model_dump()` 返回同键 dict）→ 同上；`usage_metadata` 为 `None` → `{input: 0, output: 0}`；键存在但值为 `None` → `{input: 0, output: 0}`；键值为非数字字符串（如 `input_tokens="abc"`）→ `{input: 0, ...}` 不抛；未知形状（无 `model_dump` 非 dict）→ `{input: 0, output: 0}`
   - [ ] `complete`（注入 fake `BaseChatModel`：`ainvoke` 返回预设 `AIMessage`，记录消息与 kwargs）：
     - [ ] `id`（非空 uuid）/`module`/`type`/`correlation_id`/`content` 正确回填进 `LLMOutput`
     - [ ] `model` 回填：`LlmClient(fake, model_name="test-model")` → `LLMOutput.model == "test-model"`

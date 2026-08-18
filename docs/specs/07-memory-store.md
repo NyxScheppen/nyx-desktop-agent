@@ -119,6 +119,23 @@ class MemoryStore:
             )
             await self._db.conn.commit()
 
+    async def update_many(self, memories: list[Memory]) -> None:
+        """批量更新：循环 UPDATE，单锁单 commit（衰减结算用，避免 N 次 commit）。"""
+        async with self._db.lock:
+            for m in memories:
+                await self._db.conn.execute(
+                    "UPDATE memory SET content = ?, tag = ?, summary = ?, "
+                    "freshness = ?, type = ?, recall_count = ?, aspect = ?, "
+                    "embedding = ? WHERE id = ?",
+                    (
+                        m.content, m.tag, m.summary, m.freshness,
+                        m.type.value, m.recall_count, json.dumps(m.aspect),
+                        _embedding_json(m.embedding),
+                        m.id,
+                    ),
+                )
+            await self._db.conn.commit()
+
     async def delete(self, memory_id: str) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
@@ -126,6 +143,19 @@ class MemoryStore:
                 (memory_id, memory_id),
             )
             await self._db.conn.execute("DELETE FROM memory WHERE id = ?", (memory_id,))
+            await self._db.conn.commit()
+
+    async def delete_many(self, ids: list[str]) -> None:
+        """批量删除：循环删 edge/row，单锁单 commit（淘汰溢出，避免 N 次 commit）。"""
+        async with self._db.lock:
+            for memory_id in ids:
+                await self._db.conn.execute(
+                    "DELETE FROM memory_edge WHERE from_id = ? OR to_id = ?",
+                    (memory_id, memory_id),
+                )
+                await self._db.conn.execute(
+                    "DELETE FROM memory WHERE id = ?", (memory_id,)
+                )
             await self._db.conn.commit()
 
     async def record_recall(self, memory_id: str, promote_threshold: int) -> bool:
@@ -235,7 +265,9 @@ def _row_to_memory(row: aiosqlite.Row) -> Memory:
   - [ ] **get 未命中** → `None`
   - [ ] **list_memories 过滤/排序**：造 3 条不同 `tag` / `type` / `freshness` → `tag=` 过滤、`type=` 过滤、`tag+type` 组合、默认全量；排序按 `freshness DESC`（freshness 高的在前）
   - [ ] **update**：改 `tag` / `summary` / `freshness` / `type` / `recall_count` / `aspect` / `embedding` → `get` 验证；`id` / `created_at` 不变
+  - [ ] **update_many**：改多条（含 `embedding=None` 与 `embedding=[...]`）→ `get` 逐条验证；空列表 → no-op
   - [ ] **delete 级联删边**：`add` 两条 memory + 两条关联它的 `upsert_edge` → `delete` 后 `get=None`、`list_edges` 无残留（其它记忆的边不受影响）
+  - [ ] **delete_many**：删多条（含关联边）→ `get` 全部 `None`、`list_edges` 无残留；空列表 → no-op
   - [ ] **record_recall**：未达阈值连调两次 → `recall_count == 2` 且 `type is SHORT_TERM`、返回 `False`；达阈值 → 升 `LONG_TERM`、返回 `True`；已是 `LONG_TERM` → 只递增、返回 `False`
   - [ ] **search_keyword**：`content` 命中 / `summary` 命中 / 无命中 → `[]` / ASCII 大小写不敏感（"FOO" 命中 "foo"）
   - [ ] **search_keyword 转义通配符**：搜 `"100%"` 只命中含字面 `100%`、搜 `"a_b"` 只命中字面 `a_b`（`_escape_like` + `ESCAPE '\'`，不误命中通配符匹配）

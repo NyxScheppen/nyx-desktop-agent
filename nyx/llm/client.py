@@ -29,6 +29,14 @@ def _to_lc(m: LlmMessage) -> BaseMessage:
     raise ValueError(f"未知消息角色 {role!r}")   # 静态 Literal 已挡，此为运行期防御
 
 
+def _safe_int(value: Any) -> int:
+    """防御性转 int：非法值（None/非数字字符串/对象）计 0，不抛。纯函数。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _extract_usage(response: BaseMessage) -> TokenUsageDict:
     """从 LangChain 响应抽取 token 用量；兼容 dict 与 Pydantic 两种形状。"""
     usage = getattr(response, "usage_metadata", None)
@@ -41,8 +49,8 @@ def _extract_usage(response: BaseMessage) -> TokenUsageDict:
     else:
         data = {}                          # 未知形状：不静默猜，计 0 待查
     return {
-        "input": int(data.get("input_tokens") or 0),   # 键缺失/值 None 均计 0
-        "output": int(data.get("output_tokens") or 0),
+        "input": _safe_int(data.get("input_tokens") or 0),   # 键缺失/值 None/非法 计 0
+        "output": _safe_int(data.get("output_tokens") or 0),
     }
 
 

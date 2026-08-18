@@ -39,7 +39,7 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
     },
     MemoryType: {"short_term", "long_term"},
     DesireStatus: {"pending", "active", "satisfied", "expired", "suppressed"},
-    ActivityStatus: {"pending", "running", "paused", "completed", "incomplete"},
+    ActivityStatus: {"pending", "running", "abandoned", "completed", "incomplete"},
     EnergyState: {"energetic", "okay", "tired", "exhausted", "drained"},
     SearchMode: {"keyword", "vector", "association"},
     GoalAction: {"read", "write", "observe"},

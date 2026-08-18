@@ -45,10 +45,10 @@ class ActivityStore:
         return _row_to_activity(row) if row is not None else None
 
     async def get_current(self) -> Activity | None:
-        """当前活动（running/paused），取最新一条。"""
+        """当前活动（running），取最新一条。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                f"SELECT {_COLS} FROM activity WHERE status IN ('running', 'paused') "
+                f"SELECT {_COLS} FROM activity WHERE status = 'running' "
                 "ORDER BY started_at DESC LIMIT 1",
             )
             row = await cursor.fetchone()

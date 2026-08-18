@@ -159,6 +159,32 @@ class _RaisingLlm(_FakeLlm):
         raise RuntimeError("boom")
 
 
+class _BlockingLlm(_FakeLlm):
+    """complete 挂起在永不 set 的 Event 上，模拟可取消的执行中 LLM 调用。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def complete(
+        self,
+        messages: list[LlmMessage],
+        *,
+        module: str,
+        output_type: str,
+        correlation_id: str,
+        json_mode: bool = False,
+    ) -> LLMOutput:
+        await self.release.wait()
+        return await super().complete(
+            messages,
+            module=module,
+            output_type=output_type,
+            correlation_id=correlation_id,
+            json_mode=json_mode,
+        )
+
+
 class _FakeEvaluator:
     def __init__(self) -> None:
         self.evaluated: list[LLMOutput] = []
@@ -526,7 +552,8 @@ async def test_interrupt_running() -> None:
             await facade.interrupt("a1", EventType.USER_MESSAGE)
         got = await store.get("a1")
         assert got is not None
-        assert got.status is ActivityStatus.PAUSED
+        assert got.status is ActivityStatus.ABANDONED
+        assert got.ended_at is not None
         ints = [e for e in events if e.type is EventType.ACTIVITY_INTERRUPTED]
         assert len(ints) == 1
         assert ints[0].content["by"] == "user_message"
@@ -543,6 +570,39 @@ async def test_interrupt_missing() -> None:
         assert events == []
     finally:
         await database.conn.close()
+
+
+async def test_interrupt_abandons_in_flight_activity() -> None:
+    """竞态回归：执行中活动挂起在可取消 await 上时 interrupt → 终态 ABANDONED，
+    不被随后 complete 覆盖。"""
+    facade, store, bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0,
+        llm=_BlockingLlm(),
+    )
+    try:
+        events = _subscribe_activity(bus)
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            cur = await _await_running(store)
+            await facade.interrupt(cur.id, EventType.USER_MESSAGE)
+        got = await store.get(cur.id)
+        assert got is not None
+        assert got.status is ActivityStatus.ABANDONED
+        assert got.ended_at is not None
+        ints = [e for e in events if e.type is EventType.ACTIVITY_INTERRUPTED]
+        assert len(ints) == 1
+    finally:
+        await database.conn.close()
+
+
+async def _await_running(store: ActivityStore) -> Activity:
+    """等后台执行 task 置 RUNNING 后返回当前活动（有界轮询，避免死等）。"""
+    for _ in range(100):
+        cur = await store.get_current()
+        if cur is not None and cur.status is ActivityStatus.RUNNING:
+            return cur
+        await asyncio.sleep(0)
+    raise AssertionError("活动未在预期内进入 RUNNING")
 
 
 async def test_get_current_delegates() -> None:

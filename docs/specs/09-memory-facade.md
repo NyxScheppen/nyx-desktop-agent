@@ -51,7 +51,7 @@
 - **建边与矛盾候选复用 `_similar`（跨模块去重）**：`_similar(query_vec, exclude_id)` 是「排除某 id 后、query 向量 vs 全表记忆余弦排序（`s>0` 保留、降序）」的共享 helper；建边取 `[:_EDGE_TOP_K]`、矛盾门控取 `[:_RECALL_TOP_K]` 再 `s >= threshold` 过滤。两处各自调用（余弦 O(N)、本地 ≤ 几百条，代价可忽略，不值得为省这点把 scored 传参破坏两方法内聚）。核心「打分+过滤+排序」循环不在 facade 重写——复用 08 抽出的 `rank_by_cosine` 纯函数（`_similar` 只做 exclude + 委托，与 08 `_vector_search` 同一份实现，facade 不再直接 import `cosine`）
 - **`reply_context` 契约**：`dict[str, str]`，键 `correlation_id`（溯源）/ `user_message`（用户说了什么）/ `nyx_think`（尼克斯内心）/ `nyx_speak`（尼克斯说了什么）——由 17-expression 慢通道填充。缺键 `KeyError`（fail-fast，契约违反立即暴露，不静默降级）
 - **建边机制（决策，可推翻）**：新记忆与已有记忆按 `embedding` 余弦相似度建边，`_EDGE_TOP_K=3`、`weight=相似度`、`s > 0` 才建；`embed=None` 或新记忆无 embedding → 跳过。方向 `new → old`，`MemoryGraph` 无向所以方向无关
-- **新鲜度衰减（决策，可推翻）**：纯函数 `decay_freshness(freshness, created_at, now, rate) = max(0, freshness - rate × elapsed_days)`，`rate` 单位「/天」（`SECONDS_PER_DAY=86400.0`，共享常量见 events/event.py；02-config 的 `freshness_decay=0.01` 未标单位，此处定为「0.01/天」，要改单位翻 events/event.py 一处）。触发点 = `create_scene_memory` 的 `_decay_and_evict` 扫描：读全表 → 逐条衰减回写 → 短期满则挤掉最低新鲜度（平局按 `created_at` 早的优先）。**局限**：两次创建之间新鲜度不变；但衰减单调（越旧越衰减），相对顺序保持，「长期只新鲜度下降、检索排后」的语义不破坏。O(N) 写/次创建，本地单用户 ≤ 几百条记忆，可接受
+- **新鲜度衰减（决策，可推翻）**：纯函数 `decay_freshness(freshness, created_at, now, rate) = max(0, freshness - rate × elapsed_days)`，`rate` 单位「/天」（`SECONDS_PER_DAY=86400.0`，共享常量见 events/event.py；02-config 的 `freshness_decay=0.01` 未标单位，此处定为「0.01/天」，要改单位翻 events/event.py 一处）。触发点 = `create_scene_memory` 的 `_decay_and_evict` 扫描：读全表 → 收集变化 → 一次 `store.update_many` 批量回写 → 短期满则一次 `store.delete_many` 批量挤掉最低新鲜度（平局按 `created_at` 早的优先）。**局限**：两次创建之间新鲜度不变；但衰减单调（越旧越衰减），相对顺序保持，「长期只新鲜度下降、检索排后」的语义不破坏。2 次 commit/次创建（N 条衰减不再 N 次 commit），本地单用户 ≤ 几百条记忆，可接受
 - **事件 content（tech-ref §4 未定义这两者的 SSE payload，最小化）**：`memory_created` / `memory_promoted` = `{"memory_id": id}`；`reflection` = `{"summary": str}`（含冲突双方 id 的可溯源字符串）。SSE 完整 payload 形状归 18-api/frontend 细化
 - **`record_recall` 的 `correlation_id`（已知局限）**：tech-ref 签名只有 `record_recall(memory_id)`，无上游 correlation，故 `memory_promoted` 的 `correlation_id = memory_id`（溯源到记忆本身，与触发它的 reply 因果链在此断开）。`memory_created` / `reflection` 用 `reply_context["correlation_id"]` 接上 reply 链
 - **`search` / `list_memories` 纯委托**：不重写 SQL、不做二次过滤；衰减/淘汰已在写入侧处理
@@ -388,19 +388,22 @@ class MemoryFacade:
     async def _decay_and_evict(self, now: float) -> None:
         """新鲜度统一衰减（回写）+ 短期容量淘汰（满则挤掉最新鲜度最低的）。"""
         memories = await self._store.list_memories()
+        changed: list[Memory] = []
         for m in memories:
             decayed = decay_freshness(
                 m.freshness, m.created_at, now, self._config.freshness_decay
             )
             if decayed != m.freshness:
                 m.freshness = decayed
-                await self._store.update(m)
+                changed.append(m)
+        if changed:
+            await self._store.update_many(changed)
         short_term = [m for m in memories if m.type is MemoryType.SHORT_TERM]
         if len(short_term) > self._config.short_term_capacity:
             short_term.sort(key=lambda m: (m.freshness, m.created_at))
             overflow = len(short_term) - self._config.short_term_capacity
-            for m in short_term[:overflow]:
-                await self._store.delete(m.id)
+            overflow_ids = [m.id for m in short_term[:overflow]]
+            await self._store.delete_many(overflow_ids)
 ```
 
 ## 测试要点

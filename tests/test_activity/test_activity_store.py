@@ -55,14 +55,14 @@ async def test_get_missing_returns_none() -> None:
         await database.conn.close()
 
 
-async def test_get_current_only_running_paused() -> None:
+async def test_get_current_only_running() -> None:
     store, database = await _new_store()
     try:
         await store.insert(
             _activity("a1", status=ActivityStatus.COMPLETED, started_at=1000.0)
         )
         await store.insert(
-            _activity("a2", status=ActivityStatus.PAUSED, started_at=2000.0)
+            _activity("a2", status=ActivityStatus.ABANDONED, started_at=2000.0)
         )
         await store.insert(
             _activity("a3", status=ActivityStatus.RUNNING, started_at=3000.0)

@@ -326,16 +326,19 @@ class MemoryFacade:
     async def _decay_and_evict(self, now: float) -> None:
         """新鲜度统一衰减（回写）+ 短期容量淘汰（满则挤掉最新鲜度最低的）。"""
         memories = await self._store.list_memories()
+        changed: list[Memory] = []
         for m in memories:
             decayed = decay_freshness(
                 m.freshness, m.created_at, now, self._config.freshness_decay
             )
             if decayed != m.freshness:
                 m.freshness = decayed
-                await self._store.update(m)
+                changed.append(m)
+        if changed:
+            await self._store.update_many(changed)
         short_term = [m for m in memories if m.type is MemoryType.SHORT_TERM]
         if len(short_term) > self._config.short_term_capacity:
             short_term.sort(key=lambda m: (m.freshness, m.created_at))
             overflow = len(short_term) - self._config.short_term_capacity
-            for m in short_term[:overflow]:
-                await self._store.delete(m.id)
+            overflow_ids = [m.id for m in short_term[:overflow]]
+            await self._store.delete_many(overflow_ids)

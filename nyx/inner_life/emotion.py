@@ -24,7 +24,7 @@ _A_LOW = 0.3           # arousal < 0.3 视为"低唤醒"
 _A_HIGH = 0.6          # arousal >= 0.6 视为"高唤醒"
 
 # —— 精力休息阈值：TIRED 档下界（energy_to_state 分界，单一来源）——
-ENERGY_REST_THRESHOLD = 40.0   # 跌破即 EXHAUSTED/DRAINED（力竭/枯竭）
+ENERGY_REST_THRESHOLD = 40.0   # TIRED 档下界：< 40 落 EXHAUSTED([20,40)) / DRAINED(<20)
 
 # —— 覆盖阈值 ——
 _SLEEPY_STATES = (EnergyState.EXHAUSTED, EnergyState.DRAINED)

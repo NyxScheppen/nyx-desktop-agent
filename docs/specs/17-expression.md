@@ -143,7 +143,6 @@ def should_initiate_chat(
 节点为闭包，依赖经 ReplyDeps 注入。
 """
 import time
-import uuid
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, TypedDict
@@ -152,15 +151,16 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from nyx.config import ExpressionConfig
-from nyx.enums import ContextMode, EventType, Source
+from nyx.enums import ContextMode, EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
-from nyx.expression.classifier import classify_channel
+from nyx.events.event import internal_text_event
+from nyx.expression.classifier import QUESTION_MARKS, classify_channel
 from nyx.expression.prompt import build_system_prompt, build_user_prompt
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
-from nyx.types import CurrentState, Event, Memory, Message, SelfNarrative
+from nyx.types import CurrentState, Memory, Message, SelfNarrative
 
 
 class ReplyState(TypedDict):
@@ -176,6 +176,7 @@ class ReplyState(TypedDict):
     round: int                   # 已完成 think/speak 的轮数（≤ slow_max_rounds）
     waiting_user: bool           # MVP 恒 False
     correlation_id: str          # 本次 reply 溯源（17 补，对齐 14-activity）
+    last_slow_at: float          # 上次慢通道时间（facade 维护，每 reply 入 state）
 
 
 @dataclass
@@ -188,35 +189,18 @@ class ReplyDeps:
     canon: str
     config: ExpressionConfig
     history: deque[Message]              # facade 持有的会话历史（跨 reply）
-    correlation_id: str                  # 本次 reply 溯源
-    last_slow_at: float                  # 上次慢通道时间（facade 维护）
 
 
-_QUESTION_MARKS = ("?", "？", "吗", "呢", "怎么", "为什么", "什么", "如何", "哪")
 _THINK_TASK = "（只输出你此刻的内心独白，不要输出给用户看。）"
 _SPEAK_TASK = "（只输出你要对用户说的一句话。）"
 
 
-def _make_event(type_: EventType, content: str, correlation_id: str) -> Event:
-    return Event(
-        id=str(uuid.uuid4()),
-        timestamp=time.time(),
-        source=Source.INTERNAL,
-        type=type_,
-        content={"content": content},
-        correlation_id=correlation_id,
-    )
-
-
 def _is_question(text: str) -> bool:
-    """speak 是否问句（纯函数）：末尾问号或含疑问词。
+    """speak 是否问句（纯函数）：含疑问词即视为问句。
 
-    词表与 16 classifier 的 _QUESTION_MARKS 一致。
+    词表单一来源 = 16 classifier 的 QUESTION_MARKS。
     """
-    return (
-        text.rstrip().endswith(("?", "？"))
-        or any(w in text for w in _QUESTION_MARKS)
-    )
+    return any(w in text for w in QUESTION_MARKS)
 
 
 def _backtrack(history: deque[Message], max_len: int) -> list[Message]:
@@ -244,14 +228,16 @@ def _rounds_block(think: list[str], speak: list[str]) -> str:
 
 
 def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
-    """构建回复流程图。节点闭包捕获 deps；deps.correlation_id 每次 reply 重建。"""
+    """构建回复流程图。节点闭包捕获稳定依赖 deps；每 reply 变化的
+    correlation_id/last_slow_at 走 state（图可复用，见 facade.__init__）。
+    """
 
     async def classify(state: ReplyState) -> dict[str, Any]:
         mode = classify_channel(
             state["message"],
             state["state"],
             time.time(),
-            deps.last_slow_at,
+            state["last_slow_at"],
             deps.config.slow_threshold,
         )
         return {"mode": mode}
@@ -277,7 +263,9 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         await deps.evaluator.evaluate(output)
         await deps.bus.publish(
-            _make_event(EventType.THINK, output.content, state["correlation_id"])
+            internal_text_event(
+                EventType.THINK, output.content, state["correlation_id"]
+            )
         )
         return {"think": state["think"] + [output.content]}
 
@@ -300,7 +288,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         speak = output.content
         if state["mode"] is ContextMode.FAST:
             await deps.bus.publish(
-                _make_event(EventType.SPEAK, speak, state["correlation_id"])
+                internal_text_event(EventType.SPEAK, speak, state["correlation_id"])
             )
         return {"speak": state["speak"] + [speak]}
 
@@ -308,11 +296,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         speak = state["speak"][-1]
         if _is_question(speak):
             await deps.bus.publish(
-                _make_event(EventType.ASK, speak, state["correlation_id"])
+                internal_text_event(EventType.ASK, speak, state["correlation_id"])
             )
             return {"ask": speak}
         await deps.bus.publish(
-            _make_event(EventType.SPEAK, speak, state["correlation_id"])
+            internal_text_event(EventType.SPEAK, speak, state["correlation_id"])
         )
         return {"ask": None, "round": state["round"] + 1}
 
@@ -393,21 +381,21 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
 """
 import random
 import time
-import uuid
 from collections import deque
 
 from nyx.config import ExpressionConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ContextMode, EventType, Source
+from nyx.enums import ContextMode, EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import internal_text_event
 from nyx.expression.mutter import _MUTTER_RATE, pick_mutter
 from nyx.expression.pipeline import ReplyDeps, ReplyState, build_reply_graph
 from nyx.expression.prompt import build_system_prompt
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
-from nyx.types import CurrentState, Event, Message, ShortTermDesire
+from nyx.types import CurrentState, Message, ShortTermDesire
 
 
 class ExpressionFacade:
@@ -434,17 +422,23 @@ class ExpressionFacade:
         self._config = config
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._last_slow_at = 0.0
+        # 图拓扑恒定（仅 history 跨 reply 变化），建一次复用（对齐 Exploration）
+        self._graph = build_reply_graph(
+            ReplyDeps(
+                llm=self._llm,
+                evaluator=self._evaluator,
+                memory=self._memory,
+                inner_life=self._inner_life,
+                bus=self._bus,
+                canon=self._canon,
+                config=self._config,
+                history=self._history,
+            )
+        )
 
     async def reply(self, msg: str, correlation_id: str) -> None:
         """完整回复流程：跑 LangGraph 图，内部发布 think/speak/ask。"""
         state = await self._inner_life.get_state()
-        deps = ReplyDeps(
-            llm=self._llm, memory=self._memory, inner_life=self._inner_life,
-            evaluator=self._evaluator, bus=self._bus,
-            canon=self._canon, config=self._config, history=self._history,
-            correlation_id=correlation_id, last_slow_at=self._last_slow_at,
-        )
-        graph = build_reply_graph(deps)
         initial: ReplyState = {
             "message": msg,
             "mode": ContextMode.FAST,
@@ -458,8 +452,9 @@ class ExpressionFacade:
             "round": 0,
             "waiting_user": False,
             "correlation_id": correlation_id,
+            "last_slow_at": self._last_slow_at,
         }
-        result = await graph.ainvoke(initial)
+        result = await self._graph.ainvoke(initial)
         if result["mode"] is ContextMode.SLOW:
             self._last_slow_at = time.time()
 
@@ -484,7 +479,7 @@ class ExpressionFacade:
         if not output.content.strip():
             return False  # 无话则不发
         await self._bus.publish(
-            _make_event(EventType.INITIATE_CHAT, output.content, correlation_id)
+            internal_text_event(EventType.INITIATE_CHAT, output.content, correlation_id)
         )
         return True
 
@@ -497,21 +492,12 @@ class ExpressionFacade:
         text = pick_mutter(random.random())
         if text is None:
             return
-        await self._bus.publish(_make_event(EventType.MUTTER, text, correlation_id))
-
-
-def _make_event(type_: EventType, content: str, correlation_id: str) -> Event:
-    return Event(
-        id=str(uuid.uuid4()),
-        timestamp=time.time(),
-        source=Source.INTERNAL,
-        type=type_,
-        content={"content": content},
-        correlation_id=correlation_id,
-    )
+        await self._bus.publish(
+            internal_text_event(EventType.MUTTER, text, correlation_id)
+        )
 ```
 
-> 注：`facade.py` 与 `pipeline.py` 各有一份 `_make_event`（构造 `Event` 纯函数，无 IO）。为避免跨模块私有函数耦合，MVP 各持一份；若后续觉得重复，可下沉到 `events/` 公共 helper（反冗余评估时再定，当前两处各 ≤ 8 行，不算过度）。
+> 注：`facade.py` 与 `pipeline.py` 曾各有一份 `_make_event`（构造 `Event` 纯函数）。第五轮 review 判定为重复，已下沉到 `events/event.py` 的 `internal_text_event`（`content` 纯文本 → 包装成 `{"content": content}`）；两模块改 import 单一来源，删各自副本。
 
 ## 测试要点
 

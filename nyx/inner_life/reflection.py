@@ -111,10 +111,10 @@ def _validate_candidate(c: Any) -> None:
         raise ValueError("long_term_desires 元素应是对象")
     candidate = cast(dict[str, Any], c)
     t = candidate.get("type")
-    if not isinstance(t, str) or t not in (
-        "interaction", "exploration", "creation", "rest"
-    ):
-        raise ValueError("长期欲望候选 type 应是 interaction/exploration/creation/rest")
+    if not isinstance(t, str) or t not in {d.value for d in DesireType}:
+        raise ValueError(
+            f"长期欲望候选 type 应是 {'/'.join(d.value for d in DesireType)}"
+        )
     name = candidate.get("name")
     description = candidate.get("description")
     if not isinstance(name, str) or not name:

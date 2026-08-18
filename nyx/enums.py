@@ -82,7 +82,7 @@ class DesireStatus(StrEnum):
 class ActivityStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
-    PAUSED = "paused"
+    ABANDONED = "abandoned"
     COMPLETED = "completed"
     INCOMPLETE = "incomplete"
 

@@ -113,7 +113,7 @@ class DesireStatus(StrEnum):
 class ActivityStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
-    PAUSED = "paused"
+    ABANDONED = "abandoned"
     COMPLETED = "completed"
     INCOMPLETE = "incomplete"
 
@@ -372,7 +372,7 @@ class TokenUsage:           # 一次 LLM 调用记账（对应 token_usage 表�
       ActivityType: {"reading", "free_exploration", "creation", "observe_user", "idle_reflection", "rest"},
       MemoryType: {"short_term", "long_term"},
       DesireStatus: {"pending", "active", "satisfied", "expired", "suppressed"},
-      ActivityStatus: {"pending", "running", "paused", "completed", "incomplete"},
+      ActivityStatus: {"pending", "running", "abandoned", "completed", "incomplete"},
       EnergyState: {"energetic", "okay", "tired", "exhausted", "drained"},
       SearchMode: {"keyword", "vector", "association"},
       GoalAction: {"read", "write", "observe"},

@@ -128,6 +128,28 @@ async def test_update_fields() -> None:
         await db.conn.close()
 
 
+async def test_update_many() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("m1", freshness=0.5, embedding=None))
+        await store.add(_mem("m2", freshness=0.6))
+        await store.update_many(
+            [
+                _mem("m1", freshness=0.1, tag="a", embedding=[0.5]),
+                _mem("m2", freshness=0.2, summary="s2"),
+            ]
+        )
+        m1 = await store.get("m1")
+        m2 = await store.get("m2")
+        assert m1 is not None and m1.freshness == 0.1 and m1.tag == "a"
+        assert m1.embedding == [0.5]
+        assert m2 is not None and m2.freshness == 0.2 and m2.summary == "s2"
+        await store.update_many([])  # 空列表 no-op
+    finally:
+        await db.conn.close()
+
+
 async def test_delete_cascades_edges() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
@@ -142,6 +164,25 @@ async def test_delete_cascades_edges() -> None:
         assert await store.get("a") is None
         edges = [(e.from_id, e.to_id) for e in await store.list_edges()]
         assert edges == [("b", "c")]
+    finally:
+        await db.conn.close()
+
+
+async def test_delete_many() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("a"))
+        await store.add(_mem("b"))
+        await store.add(_mem("c"))
+        await store.upsert_edge("a", "b", 1.0)
+        await store.upsert_edge("b", "c", 2.0)
+        await store.delete_many(["a", "b"])
+        assert await store.get("a") is None
+        assert await store.get("b") is None
+        assert await store.get("c") is not None
+        assert await store.list_edges() == []
+        await store.delete_many([])  # 空列表 no-op
     finally:
         await db.conn.close()
 

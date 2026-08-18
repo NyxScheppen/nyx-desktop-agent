@@ -15,7 +15,10 @@ class ToolRegistry:
         self._tools[tool.name] = tool
 
     async def call(self, name: str, args: dict[str, Any]) -> Any:
-        return await self._tools[name].handler(**args)
+        tool = self._tools.get(name)
+        if tool is None:
+            raise KeyError(f"未注册工具：{name!r}")
+        return await tool.handler(**args)
 
     def schema(self) -> list[dict[str, Any]]:
         return [

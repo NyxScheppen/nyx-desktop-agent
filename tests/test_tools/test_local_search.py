@@ -34,6 +34,20 @@ async def test_search_skips_non_text(tmp_path: Path) -> None:
     assert [Path(r["path"]).name for r in results] == ["a.txt"]
 
 
+async def test_search_caps_results(tmp_path: Path) -> None:
+    for i in range(60):
+        (tmp_path / f"f{i:02d}.md").write_text(f"needle {i}", encoding="utf-8")
+    results = await search_local("needle", [tmp_path])
+    assert len(results) == 50
+
+
+async def test_search_skips_oversized_file(tmp_path: Path) -> None:
+    (tmp_path / "small.md").write_text("needle here", encoding="utf-8")
+    (tmp_path / "big.md").write_text("needle " * 300_000, encoding="utf-8")
+    results = await search_local("needle", [tmp_path])
+    assert [Path(r["path"]).name for r in results] == ["small.md"]
+
+
 def test_full_disk_roots_nonempty_and_exists() -> None:
     roots = full_disk_roots()
     assert roots

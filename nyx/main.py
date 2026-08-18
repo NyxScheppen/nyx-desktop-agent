@@ -67,6 +67,7 @@ _INITIATE_CHAT_INTERVAL = 300.0 # 搭话检查周期（秒，5 分钟）
 _BUS_BACKOFF_BASE = 1.0        # 总线重启指数退避初值（秒）
 _BUS_BACKOFF_MAX = 30.0        # 退避上限（秒）
 _BUS_MAX_FAILURES = 8          # 连续失败熔断阈值（达到判定致命，终止进程）
+_BUS_RECOVERY_STREAK = 3       # 恢复信号：崩溃前连续成功落库达此数才重置失败计数
 _SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧背压）
 _CANON_FILES = ("character_lore.md", "nyx_identity_and_growth.md", "speaking_style.md")
 
@@ -455,7 +456,8 @@ async def build_app_context(config: Config) -> _App:
 
 async def _supervise_bus(app: _App) -> None:
     """监督 app.bus.run()：_persist 失败会终止 run()（事件已由 run() 放回队首），
-    指数退避重启；崩溃前有成功落库视为恢复并重置；连续失败到阈值熔断致命。"""
+    指数退避重启；崩溃前连续成功落库达阈值视为恢复并重置；
+    连续失败到阈值熔断致命。"""
     failures = 0
     delay = _BUS_BACKOFF_BASE
     last_persisted = app.bus.persisted_count
@@ -465,8 +467,8 @@ async def _supervise_bus(app: _App) -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            if app.bus.persisted_count > last_persisted:
-                failures = 0          # 崩溃前成功落库过 → 之前是健康期，重置
+            if app.bus.persisted_count - last_persisted >= _BUS_RECOVERY_STREAK:
+                failures = 0          # 崩溃前连续成功落库过 → 之前是健康期，重置
                 delay = _BUS_BACKOFF_BASE
             last_persisted = app.bus.persisted_count
             failures += 1
@@ -484,7 +486,7 @@ async def _supervise_bus(app: _App) -> None:
 
 
 async def main() -> None:
-    """入口：装配 → 启动 bus 监督器 + tick_loop + uvicorn；总线熔断则终止进程。"""
+    """入口：装配 → 启动 bus 监督器 + tick_loop + uvicorn；任一任务异常终止。"""
     config = load_config()
     app = await build_app_context(config)
     fast = build_app(app)
@@ -494,14 +496,15 @@ async def main() -> None:
     tick_task = asyncio.create_task(_tick_loop(app))
     try:
         done, _ = await asyncio.wait(
-            {serve_task, bus_task}, return_when=asyncio.FIRST_COMPLETED
+            {serve_task, bus_task, tick_task}, return_when=asyncio.FIRST_COMPLETED
         )
-        if bus_task in done:
-            bus_task.result()  # 重抛总线熔断致命异常，终止进程
+        for task in done:
+            task.result()  # 任一先完成者异常 → 重抛终止进程（非零退出）
     finally:
         for t in (serve_task, bus_task, tick_task):
             if not t.done():
                 t.cancel()
+        await asyncio.gather(serve_task, bus_task, tick_task, return_exceptions=True)
 
 
 if __name__ == "__main__":

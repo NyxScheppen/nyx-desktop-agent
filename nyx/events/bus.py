@@ -12,6 +12,8 @@ from nyx.types import Event
 
 Handler = Callable[[Event], Awaitable[None]]
 
+_PERSIST_MAX_ATTEMPTS = 3  # 同一事件 persist 连续失败上限，达则死信丢弃
+
 
 class _EventQueue(asyncio.Queue[Event]):
     """asyncio.Queue + 队首放回：persist 失败重试不丢事件、保序。"""
@@ -19,11 +21,14 @@ class _EventQueue(asyncio.Queue[Event]):
     def put_left(self, item: Event) -> None:
         """放回队首并计入未完成任务（配合 task_done/join）。
 
-        asyncio.Queue 无公开队首插入，这里触碰其内部 deque 与未完成计数；
-        typeshed 不声明这两个私有属性，用 getattr 绕过静态检查。
+        asyncio.Queue 无公开队首插入，这里触碰其内部 deque/未完成计数/
+        getter 等待队列/finished 事件；typeshed 不声明这些私有属性，
+        用 getattr 绕过静态检查。副作用对齐 put_nowait（append→appendleft）。
         """
         getattr(self, "_queue").appendleft(item)
+        getattr(self, "_wakeup_next")(getattr(self, "_getters"))
         setattr(self, "_unfinished_tasks", getattr(self, "_unfinished_tasks") + 1)
+        getattr(self, "_finished").clear()
 
 
 class EventBus:
@@ -38,6 +43,7 @@ class EventBus:
         self._queue: _EventQueue = _EventQueue()
         self._handlers: dict[EventType, list[Handler]] = defaultdict(list)
         self._sse_sinks: list[asyncio.Queue[Event]] = []
+        self._persist_attempts: dict[str, int] = {}  # event.id → 连续 persist 失败次数
         self.persisted_count = 0   # 成功落库计数（监督器据此判定「恢复」）
 
     def subscribe(self, event_type: EventType, handler: Handler) -> None:
@@ -61,12 +67,26 @@ class EventBus:
             try:
                 try:
                     await self._persist(event)      # 先落库：即使分发失败，溯源不丢
+                except asyncio.CancelledError:
+                    self._queue.put_left(event)     # 关停不丢已弹出事件
+                    raise
                 except Exception:
+                    attempts = self._persist_attempts.get(event.id, 0) + 1
+                    if attempts >= _PERSIST_MAX_ATTEMPTS:
+                        self._persist_attempts.pop(event.id, None)
+                        self._logger.critical(
+                            "事件持久化连续失败 %d 次，死信丢弃 event_id=%s content=%r",
+                            attempts, event.id, event.content,
+                        )
+                        continue                     # 毒丸：丢弃，跳过分发/广播
+                    self._persist_attempts[event.id] = attempts
                     self._logger.exception(
-                        "持久化失败，事件放回队首 event_id=%s", event.id
+                        "持久化失败，事件放回队首 event_id=%s（第 %d/%d 次）",
+                        event.id, attempts, _PERSIST_MAX_ATTEMPTS,
                     )
                     self._queue.put_left(event)     # 不丢：放回队首，监督器重启后重试
                     raise
+                self._persist_attempts.pop(event.id, None)
                 self.persisted_count += 1
                 for handler in self._handlers.get(event.type, []):
                     try:
@@ -107,19 +127,23 @@ class EventBus:
 
     async def _persist(self, event: Event) -> None:
         async with self._db.lock:
-            await self._db.conn.execute(
-                "INSERT INTO event_log (id, timestamp, source, type, content, "
-                "correlation_id) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    event.id,
-                    event.timestamp,
-                    event.source.value,
-                    event.type.value,
-                    json.dumps(event.content),
-                    event.correlation_id,
-                ),
-            )
-            await self._db.conn.commit()
+            try:
+                await self._db.conn.execute(
+                    "INSERT INTO event_log (id, timestamp, source, type, content, "
+                    "correlation_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        event.id,
+                        event.timestamp,
+                        event.source.value,
+                        event.type.value,
+                        json.dumps(event.content, default=str),
+                        event.correlation_id,
+                    ),
+                )
+                await self._db.conn.commit()
+            except Exception:
+                await self._db.conn.rollback()   # 失败回滚，不留坏事务给下次重试
+                raise
 
     def _broadcast(self, event: Event) -> None:
         for sink in self._sse_sinks:

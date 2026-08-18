@@ -13,7 +13,14 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
-from nyx.main import _BUS_MAX_FAILURES, _App, _supervise_bus, _tick_loop
+from nyx.main import (
+    _BUS_MAX_FAILURES,
+    _BUS_RECOVERY_STREAK,
+    _App,
+    _supervise_bus,
+    _tick_loop,
+    main,
+)
 from nyx.memory.facade import MemoryFacade
 from nyx.types import Event
 
@@ -94,7 +101,7 @@ async def test_supervise_bus_breaks_after_max_failures(
 
 
 class _RecoveringBus:
-    """run() 每次成功落库一次后 raise：崩溃前有成功落库 → 恢复信号，永不假熔断。"""
+    """run() 每轮落库 _BUS_RECOVERY_STREAK 次后 raise：达恢复阈值，永不假熔断。"""
 
     def __init__(self) -> None:
         self.calls = 0
@@ -102,7 +109,7 @@ class _RecoveringBus:
 
     async def run(self) -> None:
         self.calls += 1
-        self.persisted_count += 1
+        self.persisted_count += _BUS_RECOVERY_STREAK
         raise RuntimeError("transient")
 
 
@@ -120,11 +127,114 @@ async def test_supervise_bus_resets_on_recovery(
             if bus.calls > _BUS_MAX_FAILURES:
                 break
         assert bus.calls > _BUS_MAX_FAILURES  # 超过阈值仍未熔断
-        assert not task.done()  # 恢复信号 → 计数重置，永不假熔断
+        assert not task.done()  # 达恢复阈值 → 计数重置，永不假熔断
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+class _FlappingBus:
+    """run() 每次成功落库一次后 raise：单次成功不足恢复阈值 → 抖动也熔断。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.persisted_count = 0
+
+    async def run(self) -> None:
+        self.calls += 1
+        self.persisted_count += 1
+        raise RuntimeError("flap")
+
+
+async def test_supervise_bus_breaks_on_flapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nyx.main._BUS_BACKOFF_BASE", 0.0)
+    monkeypatch.setattr("nyx.main._BUS_BACKOFF_MAX", 0.0)
+    bus = _FlappingBus()
+    app = _app(bus)
+    with pytest.raises(RuntimeError):
+        await _supervise_bus(app)
+    assert bus.calls == _BUS_MAX_FAILURES  # 单次成功不足阈值 → 计数不重置 → 熔断
+
+
+# ---- main() 竞速：任一先完成者异常传播 ----
+
+class _BlockingBus:
+    """run()/serve 永阻塞（供 main() 竞速测试），publish 无操作。"""
+
+    def __init__(self) -> None:
+        self.persisted_count = 0
+        self.published: list[Event] = []
+
+    async def run(self) -> None:
+        await asyncio.Event().wait()  # 永不返回
+
+    async def publish(self, event: Event) -> None:
+        self.published.append(event)
+
+
+async def _fake_context(config: Config) -> _App:
+    return _app(_BlockingBus())
+
+
+class _BlockServer:
+    """serve() 永阻塞，供 main() 竞速测试（非 serve 先完成）。"""
+
+    def __init__(self, config: object) -> None:
+        pass
+
+    async def serve(self) -> None:
+        await asyncio.Event().wait()  # 永不返回
+
+
+def _fake_build_app(app: _App) -> object:
+    return object()
+
+
+def _fake_uvicorn_config(*args: object, **kwargs: object) -> object:
+    return object()
+
+
+async def test_main_propagates_serve_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailServer:
+        def __init__(self, config: object) -> None:
+            pass
+
+        async def serve(self) -> None:
+            # 用 RuntimeError 而非 SystemExit：后者是 BaseException，asyncio 会经
+            # Handle._run 直接重抛出事件循环，绕开 main() 的 task.result() 重抛路径
+            # 无法被 pytest.raises 干净断言。
+            raise RuntimeError("port in use")
+
+    monkeypatch.setattr("nyx.main.load_config", lambda: Config())
+    monkeypatch.setattr("nyx.main.build_app_context", _fake_context)
+    monkeypatch.setattr("nyx.main.build_app", _fake_build_app)
+    monkeypatch.setattr("nyx.main.uvicorn.Config", _fake_uvicorn_config)
+    monkeypatch.setattr("nyx.main.uvicorn.Server", _FailServer)
+
+    with pytest.raises(RuntimeError):
+        await main()
+
+
+async def test_main_propagates_tick_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def boom_tick(_app: _App) -> None:
+        raise RuntimeError("tick broken")
+
+    monkeypatch.setattr("nyx.main.load_config", lambda: Config())
+    monkeypatch.setattr("nyx.main.build_app_context", _fake_context)
+    monkeypatch.setattr("nyx.main.build_app", _fake_build_app)
+    monkeypatch.setattr("nyx.main.uvicorn.Config", _fake_uvicorn_config)
+    monkeypatch.setattr("nyx.main.uvicorn.Server", _BlockServer)
+    monkeypatch.setattr("nyx.main._tick_loop", boom_tick)
+
+    with pytest.raises(RuntimeError):
+        await main()
 
 
 async def test_first_tick_starts_activity_not_mutter_or_chat(

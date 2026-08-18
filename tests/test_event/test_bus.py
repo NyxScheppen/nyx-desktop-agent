@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false
 import asyncio
 import contextlib
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -9,7 +10,7 @@ import pytest
 
 from nyx import db
 from nyx.enums import EventType, Source
-from nyx.events.bus import EventBus
+from nyx.events.bus import _PERSIST_MAX_ATTEMPTS, EventBus
 from nyx.types import Event
 
 
@@ -339,5 +340,90 @@ async def test_persist_failure_requeues_and_retries(
         assert received == [event]
         [logged] = await bus.list_events()
         assert logged == event
+    finally:
+        await _close(bus)
+
+
+# ---- 毒丸死信 ----
+
+async def test_persist_poison_pill_dead_lettered(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bus = await _new_bus()
+    try:
+
+        async def boom(event: Event) -> None:
+            raise aiosqlite.Error("db down")
+
+        monkeypatch.setattr(bus, "_persist", boom)
+        event = _make_event()
+        await bus.publish(event)
+
+        # 前 _PERSIST_MAX_ATTEMPTS-1 轮：放回队首 + 传播（交监督器重启）
+        for _ in range(_PERSIST_MAX_ATTEMPTS - 1):
+            task = asyncio.create_task(bus.run())
+            with pytest.raises(aiosqlite.Error):
+                await asyncio.wait_for(task, timeout=1.0)
+            assert bus._queue.qsize() == 1  # 事件仍放回队首
+
+        # 第 _PERSIST_MAX_ATTEMPTS 轮：死信丢弃，run() 不死
+        task = asyncio.create_task(bus.run())
+        await asyncio.wait_for(bus._queue.join(), timeout=1.0)
+        assert bus._queue.qsize() == 0  # 事件被丢弃
+        assert not task.done()          # run() 继续阻塞等下一个事件
+        assert "死信丢弃" in caplog.text
+        assert event.id in caplog.text
+    finally:
+        await _close(bus)
+
+
+# ---- _persist 回滚 ----
+
+async def test_persist_rolls_back_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = await _new_bus()
+    try:
+        rolled_back = False
+
+        async def bad_commit() -> None:
+            raise aiosqlite.Error("disk full")
+
+        async def spy_rollback() -> None:
+            nonlocal rolled_back
+            rolled_back = True
+
+        monkeypatch.setattr(bus._db.conn, "commit", bad_commit)
+        monkeypatch.setattr(bus._db.conn, "rollback", spy_rollback)
+
+        with pytest.raises(aiosqlite.Error):
+            await bus._persist(_make_event())
+        assert rolled_back  # 失败回滚，不留坏事务给下次重试
+    finally:
+        await _close(bus)
+
+
+# ---- 序列化 default=str ----
+
+async def test_persist_serializes_non_json_types() -> None:
+    bus = await _new_bus()
+    try:
+        async with _running(bus):
+            await bus.publish(_make_event(content={"id": uuid.uuid4()}))
+        [logged] = await bus.list_events()
+        assert isinstance(logged.content["id"], str)  # UUID 经 default=str 序列化
+    finally:
+        await _close(bus)
+
+
+# ---- put_left 补齐 join 语义 ----
+
+async def test_put_left_resets_join() -> None:
+    bus = await _new_bus()
+    try:
+        bus._queue.put_left(_make_event())
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(bus._queue.join(), timeout=0.05)
     finally:
         await _close(bus)

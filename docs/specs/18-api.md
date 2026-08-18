@@ -25,7 +25,8 @@
 - [ ] **SSE**：`data` = `event.content` 展开 + `event_id` + `correlation_id`（统一结构，不按 type 特判）；`event:` = `EventType.value`
 - [ ] **SSE 背压**：每连接 `asyncio.Queue(maxsize=_SSE_QUEUE_SIZE=100)`；`_broadcast` 队列满时丢最旧保最新（`put_nowait` 捕获 `QueueFull`，慢客户端不拖垮总线）
 - [ ] **`_tick_loop`**：定时 publish 四种 `CLOCK_TICK`（`content={"tick_type": ...}`）；`INITIATE_CHAT_CHECK` 走 `should_initiate_chat` 判定 + `initiate_chat`（发话才更新 `last_chat_at`）；首个活动块启动即触发（`last_block=0.0`），碎碎念/搭话不立即触发（`last_mutter`/`last_chat` 初始为 now，抑制启动洪峰）
-- [ ] **总线监督器**：`main()` 启动 `_supervise_bus(app)` 而非裸 `bus.run()`；`run()` 异常终止 → `logger.exception` + 指数退避（`_BUS_BACKOFF_BASE`→`_BUS_BACKOFF_MAX`）重启；崩溃前有成功落库（`persisted_count` 递增）视为恢复、计数与退避重置；连续 `_BUS_MAX_FAILURES` 次失败 `logger.critical` + 重抛熔断致命（`main()` 竞速接住终止进程）；`CancelledError` 重抛（组合根关闭不重启）
+- [ ] **总线监督器**：`main()` 启动 `_supervise_bus(app)` 而非裸 `bus.run()`；`run()` 异常终止 → `logger.exception` + 指数退避（`_BUS_BACKOFF_BASE`→`_BUS_BACKOFF_MAX`）重启；崩溃前连续成功落库达 `_BUS_RECOVERY_STREAK` 视为恢复、计数与退避重置（单次成功不足阈值仍累积，DB 抖动不假自愈）；连续 `_BUS_MAX_FAILURES` 次失败 `logger.critical` + 重抛熔断致命；`CancelledError` 重抛（组合根关闭不重启）
+- [ ] **`main()` 竞速**：`asyncio.wait({serve_task, bus_task, tick_task}, FIRST_COMPLETED)` 后对**每个**先完成者 `task.result()`——serve 启动失败（`SystemExit`）/ tick 异常 / bus 熔断都重抛终止进程（非零退出，不静默吞）；`finally` cancel 后 `await asyncio.gather(..., return_exceptions=True)` 让 uvicorn 优雅关停跑完（非 fire-and-forget）
 - [ ] `pyright` strict 零报错；无模块级可变全局变量（运行期状态 `last_chat_at`/`last_presence` 放 `_App` 实例）
 
 ## 技术方案
@@ -42,7 +43,8 @@
 - **ROUTING 的 `ACTIVITY_END`**：只消费 `desire` + `inner_life`（05-event 已删 `memory`），组合根无 memory handler
 - **canon 读文件**：`_load_canon` 读三份 `character_lore.md` / `nyx_identity_and_growth.md` / `speaking_style.md` 合并为一段字符串注入 `ExpressionFacade`；路径 = `NYX_CANON_DIR` 环境变量 > `prompts/` 默认目录；任一缺失 `FileNotFoundError`（fail-fast，canon 是核心配置不兜底默认）
 - **`_App` 内部 dataclass**：组合根的装配产物（不是新增抽象层——不增 Facade→子系统→内部类之外的层），持有 7 个组件引用 + 2 个运行期状态（`last_chat_at`/`last_presence`），端点/handler 闭包捕获 `_App` 实例
-- **总线监督器（decision，可推翻）**：`main()` 用 `_supervise_bus(app)` 包一层 `bus.run()`。`_persist` 失败会终止 `run()`（05-event 有意让 DB 错误传播、事件放回队首不丢），监督器接住异常 `logger.exception` + 指数退避（`_BUS_BACKOFF_BASE=1.0`→`_BUS_BACKOFF_MAX=30.0`，×2 增长）后重启（重启而非降级：瞬时 `aiosqlite` 错误可自愈）；连续 `_BUS_MAX_FAILURES=8` 次失败 `logger.critical` + 重抛熔断致命（DB 永久挂时干净崩溃，不留「API 收事件但不处理」的僵尸态）；崩溃前有成功落库（读 `EventBus.persisted_count` 单调计数）视为恢复、失败计数与退避重置（避免分散瞬时故障累积假熔断）；`CancelledError` 重抛，组合根关闭不重启。`main()` 用 `asyncio.wait(..., FIRST_COMPLETED)` 竞速 serve 与 bus 监督器，bus 先完成（熔断）则 `bus_task.result()` 重抛终止进程
+- **总线监督器（decision，可推翻）**：`main()` 用 `_supervise_bus(app)` 包一层 `bus.run()`。`_persist` 失败会终止 `run()`（05-event 有意让 DB 错误传播、事件放回队首不丢），监督器接住异常 `logger.exception` + 指数退避（`_BUS_BACKOFF_BASE=1.0`→`_BUS_BACKOFF_MAX=30.0`，×2 增长）后重启（重启而非降级：瞬时 `aiosqlite` 错误可自愈）；连续 `_BUS_MAX_FAILURES=8` 次失败 `logger.critical` + 重抛熔断致命（DB 永久挂时干净崩溃，不留「API 收事件但不处理」的僵尸态）；崩溃前连续成功落库达 `_BUS_RECOVERY_STREAK=3`（读 `EventBus.persisted_count` 单调计数，差 ≥ 3）视为恢复、失败计数与退避重置（避免分散瞬时故障累积假熔断）；单次成功不足阈值不重置（DB 抖动「隔一个挂一次」持续累积 → 熔断，不留无限 1s crash-loop 僵尸态）；`CancelledError` 重抛，组合根关闭不重启
+- **`main()` 竞速（decision，可推翻）**：`asyncio.wait({serve_task, bus_task, tick_task}, FIRST_COMPLETED)` 把 `tick_task` 纳入监督——`_tick_loop` 异常不再静默丢弃（无 tick = 无活动调度/碎碎念/搭话，僵尸态）。对 `done` 里**每个**先完成者 `task.result()` 重抛（serve 启动失败 `SystemExit(1)` / tick 异常 / bus 熔断都非零退出），而非只取 `bus_task.result()`；`finally` cancel 后 `await asyncio.gather(..., return_exceptions=True)` 让 uvicorn 优雅关停跑完（fire-and-forget cancel 会留 uvicorn cleanup 不完整）
 - **SSE 背压（decision，可推翻）**：每连接 sink 是 `asyncio.Queue(maxsize=_SSE_QUEUE_SIZE=100)`，`_broadcast` 满时丢最旧保最新（`put_nowait` 捕获 `QueueFull`）。SSE 允许丢帧、最新事件含最新状态；无界队列 + `put_nowait` 会让慢客户端无界吃内存、队列一满 `QueueFull` 反杀 `run()`
 - **明确不做**：`apps/backend` 目录（项目是 `nyx/` 包结构，canon 文件放 `prompts/`）；定时器持久化（重启重置 `last_chat_at`/`last_presence`，同会话历史内存态）；`sse-starlette` / 额外中间件 / CORS（localhost 同源）
 
@@ -118,6 +120,7 @@ _INITIATE_CHAT_INTERVAL = 300.0 # 搭话检查周期（秒，5 分钟）
 _BUS_BACKOFF_BASE = 1.0        # 总线重启指数退避初值（秒）
 _BUS_BACKOFF_MAX = 30.0        # 退避上限（秒）
 _BUS_MAX_FAILURES = 8          # 连续失败熔断阈值（达到判定致命，终止进程）
+_BUS_RECOVERY_STREAK = 3       # 恢复信号：崩溃前连续成功落库达此数才重置失败计数
 _SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧背压）
 _CANON_FILES = ("character_lore.md", "nyx_identity_and_growth.md", "speaking_style.md")
 
@@ -506,7 +509,8 @@ async def build_app_context(config: Config) -> _App:
 
 async def _supervise_bus(app: _App) -> None:
     """监督 app.bus.run()：_persist 失败会终止 run()（事件已由 run() 放回队首），
-    指数退避重启；崩溃前有成功落库视为恢复并重置；连续失败到阈值熔断致命。"""
+    指数退避重启；崩溃前连续成功落库达阈值视为恢复并重置；
+    连续失败到阈值熔断致命。"""
     failures = 0
     delay = _BUS_BACKOFF_BASE
     last_persisted = app.bus.persisted_count
@@ -516,8 +520,8 @@ async def _supervise_bus(app: _App) -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            if app.bus.persisted_count > last_persisted:
-                failures = 0          # 崩溃前成功落库过 → 之前是健康期，重置
+            if app.bus.persisted_count - last_persisted >= _BUS_RECOVERY_STREAK:
+                failures = 0          # 崩溃前连续成功落库过 → 之前是健康期，重置
                 delay = _BUS_BACKOFF_BASE
             last_persisted = app.bus.persisted_count
             failures += 1
@@ -535,7 +539,7 @@ async def _supervise_bus(app: _App) -> None:
 
 
 async def main() -> None:
-    """入口：装配 → 启动 bus 监督器 + tick_loop + uvicorn；总线熔断则终止进程。"""
+    """入口：装配 → 启动 bus 监督器 + tick_loop + uvicorn；任一任务异常终止。"""
     config = load_config()
     app = await build_app_context(config)
     fast = build_app(app)
@@ -545,14 +549,15 @@ async def main() -> None:
     tick_task = asyncio.create_task(_tick_loop(app))
     try:
         done, _ = await asyncio.wait(
-            {serve_task, bus_task}, return_when=asyncio.FIRST_COMPLETED
+            {serve_task, bus_task, tick_task}, return_when=asyncio.FIRST_COMPLETED
         )
-        if bus_task in done:
-            bus_task.result()  # 重抛总线熔断致命异常，终止进程
+        for task in done:
+            task.result()  # 任一先完成者异常 → 重抛终止进程（非零退出）
     finally:
         for t in (serve_task, bus_task, tick_task):
             if not t.done():
                 t.cancel()
+        await asyncio.gather(serve_task, bus_task, tick_task, return_exceptions=True)
 
 
 if __name__ == "__main__":
@@ -577,7 +582,8 @@ if __name__ == "__main__":
     - [ ] 请求体校验：`POST /api/chat` 缺 `message` → 422；`POST /api/observe` `presence=Online`（大小写拼写错误）→ 422（`Literal` 校验，不 publish 事件、不改 `last_presence`）
   - [ ] **tick 循环**（fake `bus.publish` 记录 + `monkeypatch` 常量使间隔→0 + `asyncio.sleep` 立即返回）：跑一个循环 → 收到 `CLOCK_TICK` 且 `tick_type` 覆盖 `SCHEDULE_BLOCK_START`/`DESIRE_EVAL`/`MUTTER_CHECK`/`INITIATE_CHAT_CHECK` 四种、每条 `source is INTERNAL`（系统定时器，非外部输入）；`grid_minutes=60` 时首轮只发 `schedule_block_start`/`desire_eval`（首个活动块启动即触发，`last_block=0.0`），碎碎念/搭话不立即触发
   - [ ] **订阅一致性**（构建 `_App`（fake Facade 记录 handler 调用）+ `_subscribe` + 真 `EventBus`，`run()` 作 task）：对 `ROUTING` 每个**非空消费者**的 event_type publish 一个事件 → 对应 Facade 方法被调（`OBSERVATION_STATE` → `apply_event`+`add_value` 两 handler；`ACTIVITY_END` → `add_value`+`apply_event`；`USER_MESSAGE` → `reply`；`DESIRE_GENERATED` → `on_desire_generated` 等）
-  - [ ] **总线监督器**（fake `bus.run()` 每轮 raise + `monkeypatch _BUS_BACKOFF_BASE/_BUS_BACKOFF_MAX=0`）：`_supervise_bus` 连续 `_BUS_MAX_FAILURES` 次后 `RuntimeError` 重抛熔断（`run()` 调用次数 == `_BUS_MAX_FAILURES`）；崩溃前 `persisted_count` 递增（恢复信号）→ 计数重置、永不假熔断；`task.cancel()` → `CancelledError` 重抛、不再重启
+  - [ ] **总线监督器**（fake `bus.run()` 每轮 raise + `monkeypatch _BUS_BACKOFF_BASE/_BUS_BACKOFF_MAX=0`）：`_supervise_bus` 连续 `_BUS_MAX_FAILURES` 次后 `RuntimeError` 重抛熔断（`run()` 调用次数 == `_BUS_MAX_FAILURES`）；崩溃前 `persisted_count` 每次 +`_BUS_RECOVERY_STREAK`（达恢复阈值）→ 计数重置、永不假熔断；崩溃前 `persisted_count` 每次 +1（单次成功不足阈值，DB 抖动）→ 计数不重置、照样熔断（`calls == _BUS_MAX_FAILURES`）；`task.cancel()` → `CancelledError` 重抛、不再重启
+  - [ ] **`main()` 竞速**（monkeypatch `uvicorn.Server`/`Config` + `load_config`/`build_app_context`/`build_app`/`_tick_loop` 为 fake）：fake `server.serve()` 抛 `RuntimeError("port in use")`（端口被占；不用 `SystemExit`——它是 BaseException，asyncio 会经 `Handle._run` 直接重抛出事件循环、绕开 `task.result()` 重抛路径，无法被干净断言）→ `main()` 重抛 `RuntimeError`（非零退出，不静默吞）；fake `_tick_loop` 抛 `RuntimeError`（+ 阻塞 serve/bus）→ `main()` 重抛 `RuntimeError`（tick 异常传播）
 - [ ] 集成测试：无（真实编排不测 LLM；组合根装配正确性已由端点 + 订阅一致性覆盖）
 - [ ] E2E 测试：无
 

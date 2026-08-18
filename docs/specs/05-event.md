@@ -39,7 +39,7 @@
 - **handler 异常隔离**：Facade 各自兜底自己的错误（03-llm「异常原样上抛由调用方处理」）；总线是最后一道隔离——单个 handler 抛异常时 `logger.exception(...)` 记录完整 traceback 后继续下一个 handler（不波及其它 handler、不打断 SSE 广播）。`_persist` 失败仍传播（数据库是地基，坏了继续跑无意义）。这处 `except Exception` 是唯一合理的宽捕获边界（总线无法枚举 handler 会抛什么：LLM 错 / `aiosqlite.Error` / `JSONDecodeError` / `ValueError`），不是「裸捕获」（静默吞错）
 - **persist 失败队首放回**：`_persist` 抛异常时 `run()` 先 `put_left(event)` 把事件放回队首再重抛——监督器重启后重试不丢、保 publish 顺序（head-of-line blocking：DB 挂时后续事件排队等待，不乱序）。`persisted_count` 是公开单调计数，每次成功落库 +1，供监督器判定「崩溃前是否健康」（恢复信号）
 - **毒丸死信**：同一事件（`event.id` 记入 `_persist_attempts`）persist 连续失败 `_PERSIST_MAX_ATTEMPTS` 次 → `logger.critical` 记录后丢弃（`continue` 跳过分发/广播，不 re-raise、不再放回队首）。避免「一条永远落不了库的事件」无限放回队首 + 监督器重试 → 熔断杀进程——即便 DB 健康，毒丸（不可序列化 content / 重复 id / 中毒连接）也不再拖垮整队。瞬态 DB 故障靠「重试能成功」与毒丸区分，而非靠全局计数
-- **`_persist` 失败回滚 + `default=str`**：`INSERT + commit` 包 try，`except Exception` 先 `rollback()` 再 re-raise（对齐 `db.migrate` 的 BEGIN/COMMIT/ROLLBACK）——瞬态 `commit()` 失败不再把共享连接留在坏事务（否则下次 INSERT 报「transaction within transaction」→ 重试变永久失败）。`json.dumps(..., default=str)` 与 SSE 对齐：UUID/datetime/Decimal/Enum 序列化为字符串而非抛 TypeError（NaN/inf 仍抛 ValueError，被死信路径兜底）
+- **`_persist` 失败回滚 + 序列化**：`INSERT + commit` 包 try，`except BaseException` 先 `rollback()` 再 re-raise（对齐 `db.migrate` 的 BEGIN/COMMIT/ROLLBACK；`CancelledError` 是 `BaseException`，关停取消落在 INSERT 与 commit 之间也回滚、不留未提交事务）——瞬态 `commit()` 失败不再把共享连接留在坏事务（否则下次 INSERT 报「transaction within transaction」→ 重试变永久失败）。`json.dumps(..., default=str, allow_nan=False)` 与 SSE 对齐：UUID/datetime/Decimal/Enum 序列化为字符串而非抛 TypeError；NaN/inf 由 `allow_nan=False` 抛 ValueError（`default=str` 拦不住 float，原会写出非法 `NaN`/`Infinity` 字面量、严格 JSON 消费者拒收），被死信路径兜底
 - **关停不丢事件**：`run()` 的 persist 失败路径里 `except asyncio.CancelledError` 先 `put_left(event)` 再 re-raise（`CancelledError` 是 `BaseException`，不会进 `except Exception`）——关停时已弹出的事件回到队列，`_unfinished_tasks` 计数一致
 - **顺序分发**：`run()` 逐个 `await handler`，不 spawn 并发 task；事件按 publish 顺序处理，下游事件（handler 里再 publish）排在当前事件之后
 - **correlation_id 是发布者约定**：总线不生成、不修改 `id` / `timestamp` / `correlation_id`，只透传 + `list_events` 按它过滤。溯源链：根事件（用户消息/时钟/观察）`correlation_id = 自身 id`；下游事件 `correlation_id = 上游 Event.correlation_id`（恒定根——同一因果链的事件共享同一 correlation_id）；前端按 `correlation_id` 分组、沿 `timestamp` 排序溯源
@@ -146,12 +146,12 @@ class _EventQueue(asyncio.Queue[Event]):
     def put_left(self, item: Event) -> None:
         """放回队首并计入未完成任务（配合 task_done/join）。
 
-        asyncio.Queue 无公开队首插入，这里触碰其内部 deque/未完成计数/
-        getter 等待队列/finished 事件；typeshed 不声明这些私有属性，
-        用 getattr 绕过静态检查。副作用对齐 put_nowait（append→appendleft）。
+        单消费者（仅 run() 调用）无需唤醒 getter：调用时 run() 已 get 出
+        事件、不在 _getters 里。asyncio.Queue 无公开队首插入，这里只触碰
+        其内部 deque/未完成计数/finished 事件；typeshed 不声明这些私有属性，
+        用 getattr 绕过静态检查。副作用对齐 put_nowait 中与队首插入相关的部分。
         """
         getattr(self, "_queue").appendleft(item)
-        getattr(self, "_wakeup_next")(getattr(self, "_getters"))
         setattr(self, "_unfinished_tasks", getattr(self, "_unfinished_tasks") + 1)
         getattr(self, "_finished").clear()
 
@@ -203,7 +203,8 @@ class EventBus:
                             "事件持久化连续失败 %d 次，死信丢弃 event_id=%s content=%r",
                             attempts, event.id, event.content,
                         )
-                        continue                     # 毒丸：丢弃，跳过分发/广播
+                        # 毒丸死信：有意吞异常不重抛，丢弃不阻塞整队
+                        continue
                     self._persist_attempts[event.id] = attempts
                     self._logger.exception(
                         "持久化失败，事件放回队首 event_id=%s（第 %d/%d 次）",
@@ -261,13 +262,13 @@ class EventBus:
                         event.timestamp,
                         event.source.value,
                         event.type.value,
-                        json.dumps(event.content, default=str),
+                        json.dumps(event.content, default=str, allow_nan=False),
                         event.correlation_id,
                     ),
                 )
                 await self._db.conn.commit()
-            except Exception:
-                await self._db.conn.rollback()   # 失败回滚，不留坏事务给下次重试
+            except BaseException:
+                await self._db.conn.rollback()   # 失败/取消都回滚，不留未提交事务
                 raise
 
     def _broadcast(self, event: Event) -> None:
@@ -309,7 +310,7 @@ def _row_to_event(row: aiosqlite.Row) -> Event:
     - [ ] `_persist` 抛异常（monkeypatch `_persist` 为 raise）→ 传播、`run()` 任务终止、事件放回队首不丢（`_queue.qsize()` 仍为 1）；`_persist` 失败一次后成功 → 事件重试落库 + handler 收到（不丢）
     - [ ] 毒丸死信：`_persist` 恒 raise → 手动驱动 3 轮 run()，第 3 轮死信丢弃（`_queue.qsize()` 为 0、`run()` 任务不死）、`caplog` 含「死信丢弃」+ event.id
     - [ ] 回滚：monkeypatch `conn.commit` 抛 `aiosqlite.Error`、spy `conn.rollback` → `_persist` 抛 `aiosqlite.Error` 且 rollback 被调
-    - [ ] 序列化：content 含 `uuid.uuid4()` → 落库往返后该值为字符串（`default=str`，不抛 TypeError）
+    - [ ] 序列化：content 含 `uuid.uuid4()` → 落库往返后该值为字符串（`default=str`，不抛 TypeError）；content 含 `float("nan")` → `_persist` 抛 `ValueError`（`allow_nan=False`，不写出非法 `NaN` 字面量）
     - [ ] `put_left` 补齐副作用：`put_left` 后 `wait_for(join(), timeout=0.05)` 抛 `TimeoutError`（`_finished` 被 clear，`join()` 语义正确）
 - [ ] 集成测试：无（总线是基础设施，无 Facade 管道；handler 的真实绑定归 18-api 组合根）
 - [ ] E2E 测试：无

@@ -107,9 +107,10 @@
 | `test_persist_poison_pill_dead_lettered` | 边界鲁棒 | `_persist` 恒抛 → 前 `_PERSIST_MAX_ATTEMPTS-1` 轮放回队首、第 `_PERSIST_MAX_ATTEMPTS` 轮死信丢弃（`qsize()==0`、run 不死）、`caplog` 含「死信丢弃」+ event.id（毒丸不阻塞整队、不杀进程） |
 | `test_persist_rolls_back_on_failure` | 边界鲁棒 | monkeypatch `conn.commit` 抛 `aiosqlite.Error` + spy `conn.rollback` → rollback 被调（失败回滚，不留坏事务给下次重试） |
 | `test_persist_serializes_non_json_types` | 功能正确 | content 含 `uuid.uuid4()` → 落库往返为字符串（`json.dumps(..., default=str)`，序列化与 SSE 对称，不抛 `TypeError`） |
+| `test_persist_rejects_nan` | 功能正确 | content 含 `float("nan")` → `_persist` 抛 `ValueError`（`allow_nan=False` 拦 NaN/Infinity，`default=str` 不拦 float，不写出非法 `NaN` 字面量） |
 | `test_put_left_resets_join` | 边界鲁棒 | `put_left` 后 `wait_for(join(), timeout=0.05)` 抛 `TimeoutError`（`_finished` 被 clear、`_unfinished_tasks` 递增，`join()` 语义对齐 `put_nowait`） |
 
-**功能阶段**：05-event 实现时编写；`test_broadcast_drops_oldest_when_sink_full` 为 review 修复阶段追加（SSE 背压丢帧）；`test_persist_exception_propagates` 改写 + `test_persist_failure_requeues_and_retries` 追加于本轮 review（persist 失败队首放回不丢事件）；`test_persist_poison_pill_dead_lettered` / `test_persist_rolls_back_on_failure` / `test_persist_serializes_non_json_types` / `test_put_left_resets_join` 于第三轮 review 追加（毒丸死信 + 回滚 + `default=str` + `put_left` 补齐 join 语义）。
+**功能阶段**：05-event 实现时编写；`test_broadcast_drops_oldest_when_sink_full` 为 review 修复阶段追加（SSE 背压丢帧）；`test_persist_exception_propagates` 改写 + `test_persist_failure_requeues_and_retries` 追加于本轮 review（persist 失败队首放回不丢事件）；`test_persist_poison_pill_dead_lettered` / `test_persist_rolls_back_on_failure` / `test_persist_serializes_non_json_types` / `test_put_left_resets_join` 于第三轮 review 追加（毒丸死信 + 回滚 + `default=str` + `put_left` 补齐 join 语义）；`test_persist_rejects_nan` 于第四轮 review 追加（`allow_nan=False` 拒写非法 NaN 字面量）。
 
 ## 06-tools（工具系统）
 

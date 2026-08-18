@@ -374,6 +374,10 @@ async def test_persist_poison_pill_dead_lettered(
         assert not task.done()          # run() 继续阻塞等下一个事件
         assert "死信丢弃" in caplog.text
         assert event.id in caplog.text
+        # 收尾：cancel 阻塞在 get() 的 run()，不留 pending task
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
     finally:
         await _close(bus)
 
@@ -413,6 +417,17 @@ async def test_persist_serializes_non_json_types() -> None:
             await bus.publish(_make_event(content={"id": uuid.uuid4()}))
         [logged] = await bus.list_events()
         assert isinstance(logged.content["id"], str)  # UUID 经 default=str 序列化
+    finally:
+        await _close(bus)
+
+
+async def test_persist_rejects_nan() -> None:
+    bus = await _new_bus()
+    try:
+        # allow_nan=False：NaN/Infinity 抛 ValueError（default=str 不拦 float），
+        # 而非写出非法 JSON 字面量（严格消费者会拒收）
+        with pytest.raises(ValueError):
+            await bus._persist(_make_event(content={"n": float("nan")}))
     finally:
         await _close(bus)
 

@@ -21,12 +21,12 @@ class _EventQueue(asyncio.Queue[Event]):
     def put_left(self, item: Event) -> None:
         """放回队首并计入未完成任务（配合 task_done/join）。
 
-        asyncio.Queue 无公开队首插入，这里触碰其内部 deque/未完成计数/
-        getter 等待队列/finished 事件；typeshed 不声明这些私有属性，
-        用 getattr 绕过静态检查。副作用对齐 put_nowait（append→appendleft）。
+        单消费者（仅 run() 调用）无需唤醒 getter：调用时 run() 已 get 出
+        事件、不在 _getters 里。asyncio.Queue 无公开队首插入，这里只触碰
+        其内部 deque/未完成计数/finished 事件；typeshed 不声明这些私有属性，
+        用 getattr 绕过静态检查。副作用对齐 put_nowait 中与队首插入相关的部分。
         """
         getattr(self, "_queue").appendleft(item)
-        getattr(self, "_wakeup_next")(getattr(self, "_getters"))
         setattr(self, "_unfinished_tasks", getattr(self, "_unfinished_tasks") + 1)
         getattr(self, "_finished").clear()
 
@@ -78,7 +78,8 @@ class EventBus:
                             "事件持久化连续失败 %d 次，死信丢弃 event_id=%s content=%r",
                             attempts, event.id, event.content,
                         )
-                        continue                     # 毒丸：丢弃，跳过分发/广播
+                        # 毒丸死信：有意吞异常不重抛，丢弃不阻塞整队
+                        continue
                     self._persist_attempts[event.id] = attempts
                     self._logger.exception(
                         "持久化失败，事件放回队首 event_id=%s（第 %d/%d 次）",
@@ -136,13 +137,13 @@ class EventBus:
                         event.timestamp,
                         event.source.value,
                         event.type.value,
-                        json.dumps(event.content, default=str),
+                        json.dumps(event.content, default=str, allow_nan=False),
                         event.correlation_id,
                     ),
                 )
                 await self._db.conn.commit()
-            except Exception:
-                await self._db.conn.rollback()   # 失败回滚，不留坏事务给下次重试
+            except BaseException:
+                await self._db.conn.rollback()   # 失败/取消都回滚，不留未提交事务
                 raise
 
     def _broadcast(self, event: Event) -> None:

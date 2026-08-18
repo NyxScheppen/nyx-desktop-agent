@@ -13,6 +13,19 @@ from nyx.types import Event
 Handler = Callable[[Event], Awaitable[None]]
 
 
+class _EventQueue(asyncio.Queue[Event]):
+    """asyncio.Queue + 队首放回：persist 失败重试不丢事件、保序。"""
+
+    def put_left(self, item: Event) -> None:
+        """放回队首并计入未完成任务（配合 task_done/join）。
+
+        asyncio.Queue 无公开队首插入，这里触碰其内部 deque 与未完成计数；
+        typeshed 不声明这两个私有属性，用 getattr 绕过静态检查。
+        """
+        getattr(self, "_queue").appendleft(item)
+        setattr(self, "_unfinished_tasks", getattr(self, "_unfinished_tasks") + 1)
+
+
 class EventBus:
     """单一事件管道：publish 入队，run 串行「persist → 内部分发 → SSE 广播」。
 
@@ -22,9 +35,10 @@ class EventBus:
     def __init__(self, db: Database) -> None:
         self._db = db
         self._logger = logging.getLogger(__name__)
-        self._queue: asyncio.Queue[Event] = asyncio.Queue()
+        self._queue: _EventQueue = _EventQueue()
         self._handlers: dict[EventType, list[Handler]] = defaultdict(list)
         self._sse_sinks: list[asyncio.Queue[Event]] = []
+        self.persisted_count = 0   # 成功落库计数（监督器据此判定「恢复」）
 
     def subscribe(self, event_type: EventType, handler: Handler) -> None:
         self._handlers[event_type].append(handler)
@@ -45,7 +59,15 @@ class EventBus:
         while True:
             event = await self._queue.get()
             try:
-                await self._persist(event)          # 先落库：即使分发失败，溯源不丢
+                try:
+                    await self._persist(event)      # 先落库：即使分发失败，溯源不丢
+                except Exception:
+                    self._logger.exception(
+                        "持久化失败，事件放回队首 event_id=%s", event.id
+                    )
+                    self._queue.put_left(event)     # 不丢：放回队首，监督器重启后重试
+                    raise
+                self.persisted_count += 1
                 for handler in self._handlers.get(event.type, []):
                     try:
                         await handler(event)

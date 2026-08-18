@@ -296,6 +296,48 @@ async def test_persist_exception_propagates(
         with pytest.raises(aiosqlite.Error):
             await asyncio.wait_for(task, timeout=1.0)
 
-        await asyncio.wait_for(bus._queue.join(), timeout=1.0)  # task_done 照走
+        assert bus._queue.qsize() == 1  # 事件放回队首不丢（重排队列 join() 会挂）
+    finally:
+        await _close(bus)
+
+
+async def test_persist_failure_requeues_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = await _new_bus()
+    try:
+        real_persist = bus._persist
+        received: list[Event] = []
+        calls = 0
+
+        async def flaky(event: Event) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise aiosqlite.Error("db down")
+            await real_persist(event)
+
+        async def handler(event: Event) -> None:
+            received.append(event)
+
+        bus.subscribe(EventType.THINK, handler)
+        monkeypatch.setattr(bus, "_persist", flaky)
+
+        event = _make_event()
+
+        # 第一次 run()：_persist 失败，事件放回队首，run() 终止
+        task = asyncio.create_task(bus.run())
+        await bus.publish(event)
+        with pytest.raises(aiosqlite.Error):
+            await asyncio.wait_for(task, timeout=1.0)
+
+        # 第二次 run()：重试成功，事件落库 + handler 收到（不丢）
+        async with _running(bus):
+            pass
+
+        assert calls == 2
+        assert received == [event]
+        [logged] = await bus.list_events()
+        assert logged == event
     finally:
         await _close(bus)

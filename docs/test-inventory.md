@@ -101,10 +101,11 @@
 | `test_add_and_remove_sse_sink` | 功能正确 | add 后收到、remove 后不再收到 |
 | `test_remove_sse_sink_is_idempotent` | 边界鲁棒 | 从未加入 / 二次移除均不抛 `ValueError`（幂等） |
 | `test_handler_exception_isolated` | 边界鲁棒 | handler 抛异常 → `logger.exception` 记录完整 traceback、后续 handler 照跑、SSE 照广播、run 任务不死 |
-| `test_persist_exception_propagates` | 边界鲁棒 | `_persist` 抛异常 → 传播、run 任务终止、`task_done()` 照走 |
+| `test_persist_exception_propagates` | 边界鲁棒 | `_persist` 抛异常 → 传播、run 任务终止、事件放回队首不丢（`qsize()==1`） |
+| `test_persist_failure_requeues_and_retries` | 边界鲁棒 | `_persist` 首次抛、重试成功 → 事件最终落库 + handler 收到、`calls==2`（队首放回不丢） |
 | `test_broadcast_drops_oldest_when_sink_full` | 边界鲁棒 | sink 满（`Queue(maxsize=1)`）→ 丢最旧保最新（只剩最新事件，不抛 `QueueFull`、不杀 `run()`） |
 
-**功能阶段**：05-event 实现时编写；`test_broadcast_drops_oldest_when_sink_full` 为 review 修复阶段追加（SSE 背压丢帧）。
+**功能阶段**：05-event 实现时编写；`test_broadcast_drops_oldest_when_sink_full` 为 review 修复阶段追加（SSE 背压丢帧）；`test_persist_exception_propagates` 改写 + `test_persist_failure_requeues_and_retries` 追加于本轮 review（persist 失败队首放回不丢事件）。
 
 ## 06-tools（工具系统）
 
@@ -476,6 +477,8 @@
 | `test_subscription_consistency` | 功能正确 | 对 `ROUTING` 每个非空消费者 publish → 对应 Facade 方法被调（inner_life×4 / desire×2 / activity×1 / expression×1） |
 | `test_chat_missing_message_returns_422` | 边界鲁棒 | `POST /api/chat` 缺 `message` → 422（pydantic 请求模型校验，非 500） |
 | `test_observe_invalid_presence_returns_422` | 边界鲁棒 | `POST /api/observe` `presence=Online`（拼写错误）→ 422、不 publish、`last_presence` 不变 |
-| `test_supervise_bus_restarts` | 回归保护 | `_supervise_bus` 捕获 `run()` 异常后重启（`run()` 调用 ≥ 2）；`cancel` → `CancelledError` 重抛不再重启 |
+| `test_supervise_bus_breaks_after_max_failures` | 回归保护 | `_supervise_bus` 连续 `_BUS_MAX_FAILURES` 次失败 → `RuntimeError` 重抛熔断（`run()` 调用 == 阈值） |
+| `test_supervise_bus_resets_on_recovery` | 边界鲁棒 | 崩溃前 `persisted_count` 递增（恢复信号）→ 计数重置、超阈值仍不熔断（永不假熔断） |
+| `test_first_tick_starts_activity_not_mutter_or_chat` | 功能正确 | `grid_minutes=60` 首轮只发 `schedule_block_start`/`desire_eval`（首个活动块启动即触发），碎碎念/搭话不立即触发 |
 
-**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；末 3 条为 review 修复阶段追加（请求体 422 / 监督器重启回归保护）。
+**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）。

@@ -64,7 +64,9 @@ _PORT = 8000
 _TICK_INTERVAL = 60.0           # tick 循环检查间隔（秒）
 _MUTTER_CHECK_INTERVAL = 600.0  # 碎碎念检查周期（秒，10 分钟）
 _INITIATE_CHAT_INTERVAL = 300.0 # 搭话检查周期（秒，5 分钟）
-_BUS_RESTART_DELAY = 1.0        # 总线 run() 异常重启退避（秒）
+_BUS_BACKOFF_BASE = 1.0        # 总线重启指数退避初值（秒）
+_BUS_BACKOFF_MAX = 30.0        # 退避上限（秒）
+_BUS_MAX_FAILURES = 8          # 连续失败熔断阈值（达到判定致命，终止进程）
 _SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧背压）
 _CANON_FILES = ("character_lore.md", "nyx_identity_and_growth.md", "speaking_style.md")
 
@@ -241,7 +243,8 @@ async def _tick_loop(app: _App) -> None:
     """定时生成 clock_tick：grid 边界发 SCHEDULE_BLOCK_START + DESIRE_EVAL，
     周期发 MUTTER_CHECK + INITIATE_CHAT_CHECK。"""
     grid = app.config.activity.grid_minutes * 60.0
-    last_block = last_mutter = last_chat = time.time()
+    last_block = 0.0                       # 启动即触发首个活动块（不推迟一整个 grid）
+    last_mutter = last_chat = time.time()  # 抑制启动洪峰：碎碎念/搭话不立即触发
     while True:
         now = time.time()
         if now - last_block >= grid:
@@ -451,33 +454,54 @@ async def build_app_context(config: Config) -> _App:
 
 
 async def _supervise_bus(app: _App) -> None:
-    """监督 app.bus.run()：_persist 失败会终止 run()，这里接住异常并重启，
-    不假设 run() 永不退出（05-event 有意让 DB 错误传播）。"""
+    """监督 app.bus.run()：_persist 失败会终止 run()（事件已由 run() 放回队首），
+    指数退避重启；崩溃前有成功落库视为恢复并重置；连续失败到阈值熔断致命。"""
+    failures = 0
+    delay = _BUS_BACKOFF_BASE
+    last_persisted = app.bus.persisted_count
     while True:
         try:
             await app.bus.run()
         except asyncio.CancelledError:
             raise
         except Exception:
+            if app.bus.persisted_count > last_persisted:
+                failures = 0          # 崩溃前成功落库过 → 之前是健康期，重置
+                delay = _BUS_BACKOFF_BASE
+            last_persisted = app.bus.persisted_count
+            failures += 1
+            if failures >= _BUS_MAX_FAILURES:
+                logging.getLogger(__name__).critical(
+                    "总线连续 %d 次异常，判定致命，终止进程", failures
+                )
+                raise
             logging.getLogger(__name__).exception(
-                "总线 run() 异常终止，%.1fs 后重启", _BUS_RESTART_DELAY
+                "总线 run() 异常终止，%.1fs 后重启（第 %d/%d 次）",
+                delay, failures, _BUS_MAX_FAILURES,
             )
-            await asyncio.sleep(_BUS_RESTART_DELAY)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2.0, _BUS_BACKOFF_MAX)
 
 
 async def main() -> None:
-    """入口：装配 → 启动 bus 监督器 + tick_loop → uvicorn serve。"""
+    """入口：装配 → 启动 bus 监督器 + tick_loop + uvicorn；总线熔断则终止进程。"""
     config = load_config()
     app = await build_app_context(config)
     fast = build_app(app)
+    server = uvicorn.Server(uvicorn.Config(fast, host=_HOST, port=_PORT))
+    serve_task = asyncio.create_task(server.serve())
     bus_task = asyncio.create_task(_supervise_bus(app))
     tick_task = asyncio.create_task(_tick_loop(app))
-    server = uvicorn.Server(uvicorn.Config(fast, host=_HOST, port=_PORT))
     try:
-        await server.serve()
+        done, _ = await asyncio.wait(
+            {serve_task, bus_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if bus_task in done:
+            bus_task.result()  # 重抛总线熔断致命异常，终止进程
     finally:
-        bus_task.cancel()
-        tick_task.cancel()
+        for t in (serve_task, bus_task, tick_task):
+            if not t.done():
+                t.cancel()
 
 
 if __name__ == "__main__":

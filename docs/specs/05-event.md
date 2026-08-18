@@ -22,7 +22,7 @@
 - [ ] SSE sink 收到**全部**事件（含 `ROUTING` 为空的 `think`/`speak` 等）；`add`/`remove_sse_sink` 生效
 - [ ] `list_events()` 按 `event_type` / `correlation_id` 过滤、`limit` 截断；`event_log` 行↔`Event` 往返（`content` JSON、枚举列 `.value`）
 - [ ] `correlation_id` 由总线**透传不改写**
-- [ ] handler 抛异常：`logger.exception` 记录完整 traceback，继续下一个 handler、不打断 SSE 广播；`_persist` 失败仍传播
+- [ ] handler 抛异常：`logger.exception` 记录完整 traceback，继续下一个 handler、不打断 SSE 广播；`_persist` 失败：事件放回队首后仍传播（不丢、保序）
 - [ ] 共享连接并发安全：所有 `event_log` 读写都在 `async with self._db.lock` 内（同一连接不并发 execute/commit）
 - [ ] `pyright` strict 零报错
 
@@ -37,6 +37,7 @@
 - **clock_tick 二次路由**：总线对 `CLOCK_TICK` 不特殊处理——统一 fan-out，各 handler 自己按 `event.content["tick_type"]` 过滤（`TICK_ROUTING` 是文档 + 测试，非运行时源）
 - **persist 在 run() 而非 publish()**：`publish` 只入队（Facade 发布不被 DB 写阻塞）；`run()` 里「先 persist 再分发」——即使某 handler 抛异常，事件已落 `event_log`，溯源不丢
 - **handler 异常隔离**：Facade 各自兜底自己的错误（03-llm「异常原样上抛由调用方处理」）；总线是最后一道隔离——单个 handler 抛异常时 `logger.exception(...)` 记录完整 traceback 后继续下一个 handler（不波及其它 handler、不打断 SSE 广播）。`_persist` 失败仍传播（数据库是地基，坏了继续跑无意义）。这处 `except Exception` 是唯一合理的宽捕获边界（总线无法枚举 handler 会抛什么：LLM 错 / `aiosqlite.Error` / `JSONDecodeError` / `ValueError`），不是「裸捕获」（静默吞错）
+- **persist 失败队首放回**：`_persist` 抛异常时 `run()` 先 `put_left(event)` 把事件放回队首再重抛——监督器重启后重试不丢、保 publish 顺序（head-of-line blocking：DB 挂时后续事件排队等待，不乱序）。`persisted_count` 是公开单调计数，每次成功落库 +1，供监督器判定「崩溃前是否健康」（恢复信号）
 - **顺序分发**：`run()` 逐个 `await handler`，不 spawn 并发 task；事件按 publish 顺序处理，下游事件（handler 里再 publish）排在当前事件之后
 - **correlation_id 是发布者约定**：总线不生成、不修改 `id` / `timestamp` / `correlation_id`，只透传 + `list_events` 按它过滤。溯源链：根事件（用户消息/时钟/观察）`correlation_id = 自身 id`；下游事件 `correlation_id = 上游 Event.correlation_id`（恒定根——同一因果链的事件共享同一 correlation_id）；前端按 `correlation_id` 分组、沿 `timestamp` 排序溯源
 - **共享连接并发安全**：04-db 的 `connect()` 返回 `Database(conn, lock)`，组合根（18-api）把它注入所有 store；store 的 DB 读写都 `async with self._db.lock:` 串行化（同一 `aiosqlite.Connection` 不能并发 execute/commit）。`EventBus.__init__(db)` 即此约定首个落地处
@@ -134,6 +135,19 @@ from nyx.types import Event
 Handler = Callable[[Event], Awaitable[None]]
 
 
+class _EventQueue(asyncio.Queue[Event]):
+    """asyncio.Queue + 队首放回：persist 失败重试不丢事件、保序。"""
+
+    def put_left(self, item: Event) -> None:
+        """放回队首并计入未完成任务（配合 task_done/join）。
+
+        asyncio.Queue 无公开队首插入，这里触碰其内部 deque 与未完成计数；
+        typeshed 不声明这两个私有属性，用 getattr 绕过静态检查。
+        """
+        getattr(self, "_queue").appendleft(item)
+        setattr(self, "_unfinished_tasks", getattr(self, "_unfinished_tasks") + 1)
+
+
 class EventBus:
     """单一事件管道：publish 入队，run 串行「persist → 内部分发 → SSE 广播」。
 
@@ -143,9 +157,10 @@ class EventBus:
     def __init__(self, db: Database) -> None:
         self._db = db
         self._logger = logging.getLogger(__name__)
-        self._queue: asyncio.Queue[Event] = asyncio.Queue()
+        self._queue: _EventQueue = _EventQueue()
         self._handlers: dict[EventType, list[Handler]] = defaultdict(list)
         self._sse_sinks: list[asyncio.Queue[Event]] = []
+        self.persisted_count = 0   # 成功落库计数（监督器据此判定「恢复」）
 
     def subscribe(self, event_type: EventType, handler: Handler) -> None:
         self._handlers[event_type].append(handler)
@@ -166,7 +181,15 @@ class EventBus:
         while True:
             event = await self._queue.get()
             try:
-                await self._persist(event)          # 先落库：即使分发失败，溯源不丢
+                try:
+                    await self._persist(event)      # 先落库：即使分发失败，溯源不丢
+                except Exception:
+                    self._logger.exception(
+                        "持久化失败，事件放回队首 event_id=%s", event.id
+                    )
+                    self._queue.put_left(event)     # 不丢：放回队首，监督器重启后重试
+                    raise
+                self.persisted_count += 1
                 for handler in self._handlers.get(event.type, []):
                     try:
                         await handler(event)
@@ -256,7 +279,7 @@ def _row_to_event(row: aiosqlite.Row) -> Event:
     - [ ] sink 满（`Queue(maxsize=N)`）→ `_broadcast` 丢最旧保最新（不抛 `QueueFull`、`run()` 不死）
     - [ ] `correlation_id` 透传：publish 什么值，落库 + handler + sink 里就是什么值（总线不改写）
     - [ ] handler 抛异常 → `logger.exception` 记录（`caplog` 断言含 traceback）、后续 handler 照跑、SSE 照广播、`run()` 任务不死；`task_done()` 照走（`queue.join()` 不挂）
-    - [ ] `_persist` 抛异常（monkeypatch `_persist` 为 raise）→ 传播、`run()` 任务终止；`task_done()` 照走（`queue.join()` 不挂）
+    - [ ] `_persist` 抛异常（monkeypatch `_persist` 为 raise）→ 传播、`run()` 任务终止、事件放回队首不丢（`_queue.qsize()` 仍为 1）；`_persist` 失败一次后成功 → 事件重试落库 + handler 收到（不丢）
 - [ ] 集成测试：无（总线是基础设施，无 Facade 管道；handler 的真实绑定归 18-api 组合根）
 - [ ] E2E 测试：无
 

@@ -514,3 +514,34 @@
 | `isEmotionCategory > 枚举收窄` | 边界鲁棒 | 合法枚举（`happy`/`neutral`）→ true；非法字符串（`不存在`）/非字符串（`5`/`null`）→ false |
 
 **功能阶段**：frontend 01-sse 实现时编写（mock `EventSource` stub + 真实 store；验证管道正确——事件走对 store、字段零映射、坏帧跳过不崩，不验证视觉）；`dispatchEvent > user_message → chatStore` 于本轮 review 追加（Finding 1 回归：user_message 裸 `{message}` 曾致用户消息被 `typeof e.content` 拦截静默丢弃）；`isEmotionCategory > 枚举收窄` 于本轮 review 追加（emotion 枚举值运行时收窄）。
+
+## frontend-client（REST 客户端：api/client.ts）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `postChat > POST /api/chat` | 功能正确 | 请求 URL/method、body `{message}`、`Content-Type: application/json`、解析 `{event_id}` |
+| `getState > GET /api/state` | 功能正确 | 请求 URL、解析 `CurrentState` 直返 |
+| `postObserve > POST /api/observe` | 功能正确 | 请求 URL/method、body `{presence}`、解析 `{event_id}` |
+| `非 2xx 读 body.detail` | 边界鲁棒 | mock body `{"detail":"校验失败"}` → `throw Error`（message 含 detail） |
+| `非 2xx 无 detail 兜底` | 边界鲁棒 | mock body 无 detail/error → `JSON.stringify(body)` 非空 message |
+| `fetch 网络错误上抛` | 边界鲁棒 | reject `TypeError` → 上抛不吞（不返回 `{ok:false}`/null） |
+
+**功能阶段**：frontend 05-client 实现时编写（mock `fetch` 断言端点/方法/请求体键 + 错误契约；验证管道正确——键零映射、错误上抛，不验证视觉）。
+
+## frontend-stores（Zustand stores：chatStore + innerLifeStore + eventStore）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `chatStore.add* > 6 个 action 转 ChatMessage` | 功能正确 | `addSpeak`/`addAsk`/`addThink`/`addMutter`/`addInitiateChat`/`addUserMessage` 各断言 role/kind/content/correlation_id 且 append |
+| `chatStore.sendMessage > 成功` | 功能正确 | mock fetch 断言 `POST /api/chat`、置 `isReplying=true` + `sendError=null` |
+| `chatStore.sendMessage > 失败` | 功能正确 | postChat throw → `sendError=e.message`、`isReplying` 仍 false |
+| `chatStore > 60s 超时` | 功能正确 | fake timers：成功后 `advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false` |
+| `chatStore > addSpeak 取消超时` | 功能正确 | 成功后 `addSpeak` 再 advance 60s → 不触发超时（`clearTimeout` 取消 timer + `isReplying` 复位） |
+| `innerLifeStore.refreshState > 状态机` | 功能正确 | mock fetch 断言 `GET /api/state`、`current` 被设置、`loading` true→false、`error` 清空 |
+| `innerLifeStore.refreshState > 失败` | 功能正确 | getState throw → `error=e.message`、`loading=false` |
+| `innerLifeStore.updateEmotion > 三字段覆盖` | 功能正确 | 覆盖 `valence`/`arousal`/`emotion`，`personality`/`energy` 不变 |
+| `innerLifeStore.updateEmotion > null 安全` | 边界鲁棒 | `current=null` 时不崩（忽略） |
+| `eventStore.record > unshift + count` | 功能正确 | 最新在前 + `count++` |
+| `eventStore.record > 超 MAX_EVENTS` | 边界鲁棒 | 501 条 → `events` 长度 500、`count=501`、丢最旧 |
+
+**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）。

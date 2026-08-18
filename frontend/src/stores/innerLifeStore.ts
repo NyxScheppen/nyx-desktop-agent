@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { getState } from "../api/client";
 import { isEmotionCategory } from "../types/api";
 import type { CurrentState, EmotionUpdateEvent } from "../types/api";
 
@@ -14,8 +15,18 @@ export const useInnerLifeStore = create<InnerLifeState>((set) => ({
   current: null,
   loading: false,
   error: null,
-  // 占位：getState 快照在 02-stores + 05-client 实现
-  refreshState: async () => {},
+  refreshState: async () => {
+    set({ loading: true, error: null });
+    try {
+      const current = await getState();
+      set({ current, loading: false });
+    } catch (err) {
+      set({
+        error: err instanceof Error ? err.message : String(err),
+        loading: false,
+      });
+    }
+  },
   updateEmotion: (e) => {
     const { valence, arousal, emotion } = e;
     if (

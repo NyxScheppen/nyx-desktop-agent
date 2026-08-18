@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { postChat } from "../api/client";
 import type { TextEvent, TextEventType, UserMessageEvent } from "../types/api";
 
 export type ChatMessage = {
@@ -11,7 +12,7 @@ export type ChatMessage = {
 
 type ChatState = {
   messages: ChatMessage[];
-  isReplying: boolean; // 发消息后等待回复中（生命周期 02-stores 实现）
+  isReplying: boolean; // 发消息后等待回复中
   sendError: string | null;
   addUserMessage: (e: UserMessageEvent) => void;
   addSpeak: (e: TextEvent<"speak">) => void;
@@ -22,6 +23,18 @@ type ChatState = {
   sendMessage: (text: string) => Promise<void>;
   reset: () => void;
 };
+
+// 回复超时兜底（02-stores §1）：60s 未收到 speak/ask 视为超时。
+// timer 引用放 module-level，不进 store state（store 状态须可序列化）。
+const REPLY_TIMEOUT_MS = 60_000;
+let replyTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearReplyTimer(): void {
+  if (replyTimer !== null) {
+    clearTimeout(replyTimer);
+    replyTimer = null;
+  }
+}
 
 export const useChatStore = create<ChatState>((set) => {
   // 文本字段收窄校验后才入消息（01-sse §4.1：不用裸 as，类型错 → 丢弃不崩）。
@@ -51,13 +64,33 @@ export const useChatStore = create<ChatState>((set) => {
     isReplying: false,
     sendError: null,
     addUserMessage: (e) => append(e, "user", "message"),
-    addSpeak: (e) => append(e, "nyx", "speak"),
-    addAsk: (e) => append(e, "nyx", "ask"),
+    addSpeak: (e) => {
+      clearReplyTimer(); // 收到回复即取消 60s 超时（02-stores §1）
+      append(e, "nyx", "speak");
+      set({ isReplying: false });
+    },
+    addAsk: (e) => {
+      clearReplyTimer();
+      append(e, "nyx", "ask");
+      set({ isReplying: false });
+    },
     addThink: (e) => append(e, "nyx", "think"),
     addMutter: (e) => append(e, "nyx", "mutter"),
     addInitiateChat: (e) => append(e, "nyx", "initiate_chat"),
-    // 占位：发消息 + isReplying 生命周期在 02-stores + 05-client 实现
-    sendMessage: async () => {},
+    sendMessage: async (text) => {
+      try {
+        await postChat(text);
+        set({ isReplying: true, sendError: null });
+        clearReplyTimer();
+        replyTimer = setTimeout(() => {
+          replyTimer = null;
+          set({ isReplying: false, sendError: "回复超时" });
+        }, REPLY_TIMEOUT_MS);
+      } catch (err) {
+        // postChat throw：isReplying 未置，无需复位（02-stores §1）
+        set({ sendError: err instanceof Error ? err.message : String(err) });
+      }
+    },
     reset: () => set({ messages: [] }),
   };
 });

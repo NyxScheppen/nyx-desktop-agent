@@ -171,3 +171,17 @@ async def test_export_bogus_raises() -> None:
         resp = await client.post("/api/export", json={"format": "bogus"})
     assert resp.status_code == 500
     assert memory.export_calls == ["bogus"]
+
+
+async def test_chat_missing_message_returns_422() -> None:
+    async with _client(_app(_mk_state(), _FakeBus(), _FakeMemory())) as client:
+        resp = await client.post("/api/chat", json={})
+    assert resp.status_code == 422
+
+
+async def test_observe_invalid_presence_returns_422() -> None:
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    async with _client(app) as client:
+        resp = await client.post("/api/observe", json={"presence": "Online"})
+    assert resp.status_code == 422
+    assert app.last_presence == "away"  # 校验失败不更新状态

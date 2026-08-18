@@ -101,7 +101,12 @@ class EventBus:
 
     def _broadcast(self, event: Event) -> None:
         for sink in self._sse_sinks:
-            sink.put_nowait(event)
+            try:
+                sink.put_nowait(event)
+            except asyncio.QueueFull:
+                # 慢客户端背压：丢最旧保最新（SSE 允许丢帧，防无界内存）
+                sink.get_nowait()
+                sink.put_nowait(event)
 
 
 def _row_to_event(row: aiosqlite.Row) -> Event:

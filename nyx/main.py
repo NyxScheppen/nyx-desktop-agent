@@ -2,16 +2,18 @@
 # pyright: reportUnusedFunction=false
 import asyncio
 import json
+import logging
 import os
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.store import ActivityStore
@@ -62,6 +64,8 @@ _PORT = 8000
 _TICK_INTERVAL = 60.0           # tick 循环检查间隔（秒）
 _MUTTER_CHECK_INTERVAL = 600.0  # 碎碎念检查周期（秒，10 分钟）
 _INITIATE_CHAT_INTERVAL = 300.0 # 搭话检查周期（秒，5 分钟）
+_BUS_RESTART_DELAY = 1.0        # 总线 run() 异常重启退避（秒）
+_SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧背压）
 _CANON_FILES = ("character_lore.md", "nyx_identity_and_growth.md", "speaking_style.md")
 
 
@@ -141,11 +145,11 @@ async def _seed_desire(store: DesireStore) -> None:
             dv.updated_at = now
             await store.upsert_value(dv)
     if not await store.list_long_term():
-        for lt in _SEED_LONG_TERM(now):
+        for lt in _seed_long_term(now):
             await store.insert_long_term(lt)
 
 
-def _SEED_LONG_TERM(now: float) -> list[LongTermDesire]:
+def _seed_long_term(now: float) -> list[LongTermDesire]:
     """canon §4 长期欲望初始集（3）。"""
     return [
         LongTermDesire(
@@ -237,7 +241,7 @@ async def _tick_loop(app: _App) -> None:
     """定时生成 clock_tick：grid 边界发 SCHEDULE_BLOCK_START + DESIRE_EVAL，
     周期发 MUTTER_CHECK + INITIATE_CHAT_CHECK。"""
     grid = app.config.activity.grid_minutes * 60.0
-    last_block = last_mutter = last_chat = 0.0
+    last_block = last_mutter = last_chat = time.time()
     while True:
         now = time.time()
         if now - last_block >= grid:
@@ -283,6 +287,18 @@ def _subscribe(app: _App) -> None:
     bus.subscribe(EventType.CLOCK_TICK, lambda e: _on_clock_tick(app, e))
 
 
+class _ChatPayload(BaseModel):
+    message: str
+
+
+class _ExportPayload(BaseModel):
+    format: str
+
+
+class _ObservePayload(BaseModel):
+    presence: Literal["online", "away", "busy"]
+
+
 def build_app(app: _App) -> FastAPI:
     """构建 FastAPI 应用：12 个端点（11 个 tech-ref §4 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
@@ -292,8 +308,8 @@ def build_app(app: _App) -> FastAPI:
         return await app.inner_life.get_state()
 
     @fast.post("/api/chat")
-    async def api_chat(payload: dict[str, str]) -> dict[str, str]:
-        event = _root_event(EventType.USER_MESSAGE, {"message": payload["message"]})
+    async def api_chat(payload: _ChatPayload) -> dict[str, str]:
+        event = _root_event(EventType.USER_MESSAGE, {"message": payload.message})
         await app.bus.publish(event)
         return {"event_id": event.id}
 
@@ -335,12 +351,12 @@ def build_app(app: _App) -> FastAPI:
         return await app.inner_life.get_narrative()
 
     @fast.post("/api/export")
-    async def api_export(payload: dict[str, str]) -> str:
-        return await app.memory.export(payload["format"])
+    async def api_export(payload: _ExportPayload) -> str:
+        return await app.memory.export(payload.format)
 
     @fast.post("/api/observe")
-    async def api_observe(payload: dict[str, str]) -> dict[str, str]:
-        presence = payload["presence"]
+    async def api_observe(payload: _ObservePayload) -> dict[str, str]:
+        presence = payload.presence
         app.last_presence = presence
         event = _root_event(EventType.OBSERVATION_STATE, {"presence": presence})
         await app.bus.publish(event)
@@ -348,7 +364,7 @@ def build_app(app: _App) -> FastAPI:
 
     @fast.get("/api/events")
     async def api_events() -> StreamingResponse:
-        queue: asyncio.Queue[Event] = asyncio.Queue()
+        queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=_SSE_QUEUE_SIZE)
         app.bus.add_sse_sink(queue)
 
         async def gen():
@@ -434,12 +450,27 @@ async def build_app_context(config: Config) -> _App:
     return app
 
 
+async def _supervise_bus(app: _App) -> None:
+    """监督 app.bus.run()：_persist 失败会终止 run()，这里接住异常并重启，
+    不假设 run() 永不退出（05-event 有意让 DB 错误传播）。"""
+    while True:
+        try:
+            await app.bus.run()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "总线 run() 异常终止，%.1fs 后重启", _BUS_RESTART_DELAY
+            )
+            await asyncio.sleep(_BUS_RESTART_DELAY)
+
+
 async def main() -> None:
-    """入口：装配 → 启动 bus.run() + tick_loop → uvicorn serve。"""
+    """入口：装配 → 启动 bus 监督器 + tick_loop → uvicorn serve。"""
     config = load_config()
     app = await build_app_context(config)
     fast = build_app(app)
-    bus_task = asyncio.create_task(app.bus.run())
+    bus_task = asyncio.create_task(_supervise_bus(app))
     tick_task = asyncio.create_task(_tick_loop(app))
     server = uvicorn.Server(uvicorn.Config(fast, host=_HOST, port=_PORT))
     try:

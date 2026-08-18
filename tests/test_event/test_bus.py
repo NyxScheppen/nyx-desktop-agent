@@ -225,6 +225,19 @@ async def test_remove_sse_sink_is_idempotent() -> None:
         await _close(bus)
 
 
+async def test_broadcast_drops_oldest_when_sink_full() -> None:
+    bus = await _new_bus()
+    try:
+        sink: asyncio.Queue[Event] = asyncio.Queue(maxsize=1)
+        bus.add_sse_sink(sink)
+        bus._broadcast(_make_event(id="a"))
+        bus._broadcast(_make_event(id="b"))
+        assert sink.qsize() == 1
+        assert sink.get_nowait().id == "b"  # 满时丢最旧（a）保最新（b）
+    finally:
+        await _close(bus)
+
+
 # ---- handler 异常隔离 ----
 
 async def test_handler_exception_isolated(

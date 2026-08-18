@@ -222,7 +222,12 @@ class EventBus:
 
     def _broadcast(self, event: Event) -> None:
         for sink in self._sse_sinks:
-            sink.put_nowait(event)
+            try:
+                sink.put_nowait(event)
+            except asyncio.QueueFull:
+                # 慢客户端背压：丢最旧保最新（SSE 允许丢帧，防无界内存）
+                sink.get_nowait()
+                sink.put_nowait(event)
 
 
 def _row_to_event(row: aiosqlite.Row) -> Event:
@@ -248,6 +253,7 @@ def _row_to_event(row: aiosqlite.Row) -> Event:
     - [ ] `list_events` 过滤：`event_type=` / `correlation_id=` / `limit=` / 默认（按 `timestamp DESC`）
     - [ ] 行↔`Event` 往返：`content` 是 `json.loads` 后的 dict、`source`/`type` 从 `.value` 转回枚举成员
     - [ ] `add_sse_sink` 后收到、`remove_sse_sink` 后不再收到
+    - [ ] sink 满（`Queue(maxsize=N)`）→ `_broadcast` 丢最旧保最新（不抛 `QueueFull`、`run()` 不死）
     - [ ] `correlation_id` 透传：publish 什么值，落库 + handler + sink 里就是什么值（总线不改写）
     - [ ] handler 抛异常 → `logger.exception` 记录（`caplog` 断言含 traceback）、后续 handler 照跑、SSE 照广播、`run()` 任务不死；`task_done()` 照走（`queue.join()` 不挂）
     - [ ] `_persist` 抛异常（monkeypatch `_persist` 为 raise）→ 传播、`run()` 任务终止；`task_done()` 照走（`queue.join()` 不挂）

@@ -14,15 +14,18 @@
 
 ## 验收标准
 
-- [ ] `main.py` 含 `main()` + `build_app()` + `build_app_context()` + `_seed_inner_life` / `_seed_desire` / `_subscribe` / `_tick_loop` / `_root_event` / `_load_canon` / `_interrupt_running` / `_build_tools`，与「`main.py`（完整）」段代码逐字一致
+- [ ] `main.py` 含 `main()` + `build_app()` + `build_app_context()` + `_seed_inner_life` / `_seed_desire` / `_subscribe` / `_tick_loop` / `_supervise_bus` / `_root_event` / `_load_canon` / `_interrupt_running` / `_build_tools`，与「`main.py`（完整）」段代码逐字一致
 - [ ] **组合根按各 spec 完成定义装配**：`load_config` → `connect` → `LlmClient.from_config` → 各 store/facade 构造注入（循环依赖 `ActivityFacade↔InnerLifeFacade` 用 `_get_state` 延迟绑定解环；`evaluator` 注入 09/11/12/14/17 五个 Facade）
 - [ ] **注册内置工具**：`local_search` + `file_io` 恒注册，`web_search` 仅当 `config.exploration.web_enabled` 注册（06-tools 完成定义）；探索链无条件调 `local_search`/`file_io`，缺失会 `KeyError`
 - [ ] **seed 幂等**（表空才写）：inner_life 四张单行表（personality 8/8/2/6/7、values 8/6/9/5、energy 100/energetic、narrative 初始 identity）；desire 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）+ 3 个初始长期欲望（canon §4）
 - [ ] **订阅覆盖 ROUTING/TICK_ROUTING**：`USER_MESSAGE`→interrupt+reply、`OBSERVATION_STATE`→apply_event+add_value、`DESIRE_GENERATED`→on_desire_generated、`DESIRE_SATISFIED`→apply_event、`ACTIVITY_END`→add_value+apply_event、`REFLECTION`→apply_event、`CLOCK_TICK`→按 tick_type 分发四路
 - [ ] **12 个端点**：tech-ref §4 的 11 个 REST + `GET /api/events`（SSE）；每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
 - [ ] **`POST /api/chat`**：构造 `USER_MESSAGE` 事件（`source=EXTERNAL`、`correlation_id=自身 id`）→ `publish` → 返回 `{event_id}`（回复走 SSE）
+- [ ] **请求体校验**：`POST /api/chat`/`/api/export`/`/api/observe` 用 pydantic 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`），缺键/类型错 → 422（非 500）；`presence` 仅 `online`/`away`/`busy`（`Literal` 校验，拼写错误 422 而非静默禁用搭话）
 - [ ] **SSE**：`data` = `event.content` 展开 + `event_id` + `correlation_id`（统一结构，不按 type 特判）；`event:` = `EventType.value`
+- [ ] **SSE 背压**：每连接 `asyncio.Queue(maxsize=_SSE_QUEUE_SIZE=100)`；`_broadcast` 队列满时丢最旧保最新（`put_nowait` 捕获 `QueueFull`，慢客户端不拖垮总线）
 - [ ] **`_tick_loop`**：定时 publish 四种 `CLOCK_TICK`（`content={"tick_type": ...}`）；`INITIATE_CHAT_CHECK` 走 `should_initiate_chat` 判定 + `initiate_chat`（发话才更新 `last_chat_at`）
+- [ ] **总线监督器**：`main()` 启动 `_supervise_bus(app)` 而非裸 `bus.run()`；`run()` 异常终止 → `logger.exception` + `_BUS_RESTART_DELAY` 后退避重启；`CancelledError` 重抛（组合根关闭不重启）
 - [ ] `pyright` strict 零报错；无模块级可变全局变量（运行期状态 `last_chat_at`/`last_presence` 放 `_App` 实例）
 
 ## 技术方案
@@ -30,7 +33,7 @@
 - **新文件**：`nyx/main.py`（无 Facade、无数据变更；`ROUTING`/`TICK_ROUTING` 已由 05-event 定义）
 - **库**：`fastapi` + `uvicorn`（新增 web 栈；依赖 pin 同 03-llm 约定）；`httpx`（测试用 `AsyncClient` + `ASGITransport`，不触网）
 - **公开面**：`main.py` 是入口（`python -m nyx.main` 或 `uvicorn nyx.main:app`），不加 `__all__`；`build_app` 供测试构造
-- **web 框架选 FastAPI**：dataclass 返回值经 `jsonable_encoder` 直接序列化（`StrEnum`→`.value` 字符串），端点不声明 pydantic `response_model`（01-types「不用 pydantic」）；`GET /api/events` 用 `StreamingResponse`（手写 SSE 格式，不引 `sse-starlette`）
+- **web 框架选 FastAPI**：dataclass 返回值经 `jsonable_encoder` 直接序列化（`StrEnum`→`.value` 字符串），端点不声明 pydantic `response_model`（01-types「不用 pydantic」）；`GET /api/events` 用 `StreamingResponse`（手写 SSE 格式，不引 `sse-starlette`）。请求体用 pydantic `BaseModel` 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`）做缺键/取值校验 → 422——请求模型是 web 层校验，与 01-types 的 dataclass 领域类型、`response_model` 序列化互不相干
 - **循环依赖解环（decision，可推翻）**：`ActivityFacade` 要 `get_state` 回调、`InnerLifeFacade` 要 `activity_facade` 实例。用 `_get_state` 闭包引用 `state_holder` 可变列表，先构造 `ActivityFacade`（占位回调）→ 再构造 `InnerLifeFacade` → 回填 `state_holder`。运行时才求值，构造期不成环
 - **回复阻塞 vs 后台（decision，可推翻）**：`USER_MESSAGE` handler 里**同步 `await reply`**（阻塞事件总线到回复完成）。理由：回复是秒级、用户在等回复；活动是分钟级才后台（14-activity 已定 `create_task`）。用户连发消息顺序排队，符合 05-event「顺序分发」
 - **抢占归组合根**：`USER_MESSAGE`/`INITIATE_CHAT_CHECK` 前先 `interrupt` 当前 running 活动（design §3.3）。这是跨模块编排（expression 不依赖 activity，避免耦合成环），归 18-api 组合根
@@ -39,6 +42,8 @@
 - **ROUTING 的 `ACTIVITY_END`**：只消费 `desire` + `inner_life`（05-event 已删 `memory`），组合根无 memory handler
 - **canon 读文件**：`_load_canon` 读三份 `character_lore.md` / `nyx_identity_and_growth.md` / `speaking_style.md` 合并为一段字符串注入 `ExpressionFacade`；路径 = `NYX_CANON_DIR` 环境变量 > `prompts/` 默认目录；任一缺失 `FileNotFoundError`（fail-fast，canon 是核心配置不兜底默认）
 - **`_App` 内部 dataclass**：组合根的装配产物（不是新增抽象层——不增 Facade→子系统→内部类之外的层），持有 7 个组件引用 + 2 个运行期状态（`last_chat_at`/`last_presence`），端点/handler 闭包捕获 `_App` 实例
+- **总线监督器（decision，可推翻）**：`main()` 用 `_supervise_bus(app)` 包一层 `bus.run()`。`_persist` 失败会终止 `run()`（05-event 有意让 DB 错误传播），监督器接住异常 `logger.exception` + `_BUS_RESTART_DELAY=1.0` 固定退避后重启（重启而非降级：瞬时 `aiosqlite` 错误可自愈）；`CancelledError` 重抛，组合根关闭不重启
+- **SSE 背压（decision，可推翻）**：每连接 sink 是 `asyncio.Queue(maxsize=_SSE_QUEUE_SIZE=100)`，`_broadcast` 满时丢最旧保最新（`put_nowait` 捕获 `QueueFull`）。SSE 允许丢帧、最新事件含最新状态；无界队列 + `put_nowait` 会让慢客户端无界吃内存、队列一满 `QueueFull` 反杀 `run()`
 - **明确不做**：`apps/backend` 目录（项目是 `nyx/` 包结构，canon 文件放 `prompts/`）；定时器持久化（重启重置 `last_chat_at`/`last_presence`，同会话历史内存态）；`sse-starlette` / 额外中间件 / CORS（localhost 同源）
 
 ### `nyx/main.py`（完整）
@@ -48,16 +53,18 @@
 # pyright: reportUnusedFunction=false
 import asyncio
 import json
+import logging
 import os
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.store import ActivityStore
@@ -108,6 +115,8 @@ _PORT = 8000
 _TICK_INTERVAL = 60.0           # tick 循环检查间隔（秒）
 _MUTTER_CHECK_INTERVAL = 600.0  # 碎碎念检查周期（秒，10 分钟）
 _INITIATE_CHAT_INTERVAL = 300.0 # 搭话检查周期（秒，5 分钟）
+_BUS_RESTART_DELAY = 1.0        # 总线 run() 异常重启退避（秒）
+_SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧背压）
 _CANON_FILES = ("character_lore.md", "nyx_identity_and_growth.md", "speaking_style.md")
 
 
@@ -187,11 +196,11 @@ async def _seed_desire(store: DesireStore) -> None:
             dv.updated_at = now
             await store.upsert_value(dv)
     if not await store.list_long_term():
-        for lt in _SEED_LONG_TERM(now):
+        for lt in _seed_long_term(now):
             await store.insert_long_term(lt)
 
 
-def _SEED_LONG_TERM(now: float) -> list[LongTermDesire]:
+def _seed_long_term(now: float) -> list[LongTermDesire]:
     """canon §4 长期欲望初始集（3）。"""
     return [
         LongTermDesire(
@@ -283,7 +292,7 @@ async def _tick_loop(app: _App) -> None:
     """定时生成 clock_tick：grid 边界发 SCHEDULE_BLOCK_START + DESIRE_EVAL，
     周期发 MUTTER_CHECK + INITIATE_CHAT_CHECK。"""
     grid = app.config.activity.grid_minutes * 60.0
-    last_block = last_mutter = last_chat = 0.0
+    last_block = last_mutter = last_chat = time.time()
     while True:
         now = time.time()
         if now - last_block >= grid:
@@ -329,6 +338,18 @@ def _subscribe(app: _App) -> None:
     bus.subscribe(EventType.CLOCK_TICK, lambda e: _on_clock_tick(app, e))
 
 
+class _ChatPayload(BaseModel):
+    message: str
+
+
+class _ExportPayload(BaseModel):
+    format: str
+
+
+class _ObservePayload(BaseModel):
+    presence: Literal["online", "away", "busy"]
+
+
 def build_app(app: _App) -> FastAPI:
     """构建 FastAPI 应用：12 个端点（11 个 tech-ref §4 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
@@ -338,8 +359,8 @@ def build_app(app: _App) -> FastAPI:
         return await app.inner_life.get_state()
 
     @fast.post("/api/chat")
-    async def api_chat(payload: dict[str, str]) -> dict[str, str]:
-        event = _root_event(EventType.USER_MESSAGE, {"message": payload["message"]})
+    async def api_chat(payload: _ChatPayload) -> dict[str, str]:
+        event = _root_event(EventType.USER_MESSAGE, {"message": payload.message})
         await app.bus.publish(event)
         return {"event_id": event.id}
 
@@ -381,12 +402,12 @@ def build_app(app: _App) -> FastAPI:
         return await app.inner_life.get_narrative()
 
     @fast.post("/api/export")
-    async def api_export(payload: dict[str, str]) -> str:
-        return await app.memory.export(payload["format"])
+    async def api_export(payload: _ExportPayload) -> str:
+        return await app.memory.export(payload.format)
 
     @fast.post("/api/observe")
-    async def api_observe(payload: dict[str, str]) -> dict[str, str]:
-        presence = payload["presence"]
+    async def api_observe(payload: _ObservePayload) -> dict[str, str]:
+        presence = payload.presence
         app.last_presence = presence
         event = _root_event(EventType.OBSERVATION_STATE, {"presence": presence})
         await app.bus.publish(event)
@@ -394,7 +415,7 @@ def build_app(app: _App) -> FastAPI:
 
     @fast.get("/api/events")
     async def api_events() -> StreamingResponse:
-        queue: asyncio.Queue[Event] = asyncio.Queue()
+        queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=_SSE_QUEUE_SIZE)
         app.bus.add_sse_sink(queue)
 
         async def gen():
@@ -480,12 +501,27 @@ async def build_app_context(config: Config) -> _App:
     return app
 
 
+async def _supervise_bus(app: _App) -> None:
+    """监督 app.bus.run()：_persist 失败会终止 run()，这里接住异常并重启，
+    不假设 run() 永不退出（05-event 有意让 DB 错误传播）。"""
+    while True:
+        try:
+            await app.bus.run()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "总线 run() 异常终止，%.1fs 后重启", _BUS_RESTART_DELAY
+            )
+            await asyncio.sleep(_BUS_RESTART_DELAY)
+
+
 async def main() -> None:
-    """入口：装配 → 启动 bus.run() + tick_loop → uvicorn serve。"""
+    """入口：装配 → 启动 bus 监督器 + tick_loop → uvicorn serve。"""
     config = load_config()
     app = await build_app_context(config)
     fast = build_app(app)
-    bus_task = asyncio.create_task(app.bus.run())
+    bus_task = asyncio.create_task(_supervise_bus(app))
     tick_task = asyncio.create_task(_tick_loop(app))
     server = uvicorn.Server(uvicorn.Config(fast, host=_HOST, port=_PORT))
     try:
@@ -514,8 +550,10 @@ if __name__ == "__main__":
     - [ ] `GET /api/memories?tag=&type=` → `Memory[]`（`type` query 转 `MemoryType` 枚举）
     - [ ] `POST /api/observe` → 返回 `{event_id}`；`bus.list_events()` 含 `OBSERVATION_STATE`（content `{presence}`）
     - [ ] `POST /api/export` `format=json` / `md` 透传 `memory.export` 结果；`format=bogus` → `ValueError`（Facade 抛）
+    - [ ] 请求体校验：`POST /api/chat` 缺 `message` → 422；`POST /api/observe` `presence=Online`（大小写拼写错误）→ 422（`Literal` 校验，不 publish 事件、不改 `last_presence`）
   - [ ] **tick 循环**（fake `bus.publish` 记录 + `monkeypatch` 常量使间隔→0 + `asyncio.sleep` 立即返回）：跑一个循环 → 收到 `CLOCK_TICK` 且 `tick_type` 覆盖 `SCHEDULE_BLOCK_START`/`DESIRE_EVAL`/`MUTTER_CHECK`/`INITIATE_CHAT_CHECK` 四种、每条 `source is INTERNAL`（系统定时器，非外部输入）
   - [ ] **订阅一致性**（构建 `_App`（fake Facade 记录 handler 调用）+ `_subscribe` + 真 `EventBus`，`run()` 作 task）：对 `ROUTING` 每个**非空消费者**的 event_type publish 一个事件 → 对应 Facade 方法被调（`OBSERVATION_STATE` → `apply_event`+`add_value` 两 handler；`ACTIVITY_END` → `add_value`+`apply_event`；`USER_MESSAGE` → `reply`；`DESIRE_GENERATED` → `on_desire_generated` 等）
+  - [ ] **总线监督器**（fake `bus.run()` 每轮 raise + `monkeypatch _BUS_RESTART_DELAY=0`）：`_supervise_bus` 捕获异常后重启（`run()` 调用次数 ≥ 2）；`task.cancel()` → `CancelledError` 重抛、不再重启
 - [ ] 集成测试：无（真实编排不测 LLM；组合根装配正确性已由端点 + 订阅一致性覆盖）
 - [ ] E2E 测试：无
 

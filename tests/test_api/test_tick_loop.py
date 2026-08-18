@@ -1,4 +1,6 @@
 # pyright: reportPrivateUsage=false
+import asyncio
+import contextlib
 from typing import cast
 
 import pytest
@@ -11,7 +13,7 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
-from nyx.main import _App, _tick_loop
+from nyx.main import _App, _supervise_bus, _tick_loop
 from nyx.memory.facade import MemoryFacade
 from nyx.types import Event
 
@@ -32,7 +34,7 @@ async def _stop(*_args: object) -> None:
     raise _StopLoop()
 
 
-def _app(bus: _FakeBus) -> _App:
+def _app(bus: object) -> _App:
     config = Config()
     config.activity.grid_minutes = 0
     return _App(
@@ -65,3 +67,33 @@ async def test_tick_loop_emits_four_clock_ticks(
         "initiate_chat_check",
     }
     assert all(e.source is Source.INTERNAL for e in bus.published)
+
+
+class _FlakyBus:
+    """run() 每轮都 raise，供 _supervise_bus 重启测试。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run(self) -> None:
+        self.calls += 1
+        raise RuntimeError("db down")
+
+
+async def test_supervise_bus_restarts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nyx.main._BUS_RESTART_DELAY", 0.0)
+    bus = _FlakyBus()
+    app = _app(bus)
+    task = asyncio.create_task(_supervise_bus(app))
+    try:
+        for _ in range(100):
+            await asyncio.sleep(0)
+            if bus.calls >= 2:
+                break
+        assert bus.calls >= 2  # 异常后被重启，run() 至少被调两次
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task

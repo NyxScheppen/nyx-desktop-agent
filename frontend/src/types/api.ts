@@ -1,13 +1,25 @@
 // 后端契约 TS 镜像：字段名 = 后端 JSON 键（snake_case 零映射），见 frontend/README §4
-export type EmotionCategory =
-  | "neutral"
-  | "happy"
-  | "sad"
-  | "angry"
-  | "worried"
-  | "shy"
-  | "sleepy"
-  | "thinking";
+// 情绪枚举值（与后端 StrEnum 一致）：runtime 数组 + 派生类型（单一来源，避免两份清单漂移）
+export const EMOTION_CATEGORIES = [
+  "neutral",
+  "happy",
+  "sad",
+  "angry",
+  "worried",
+  "shy",
+  "sleepy",
+  "thinking",
+] as const;
+
+export type EmotionCategory = (typeof EMOTION_CATEGORIES)[number];
+
+/** 运行时收窄：wire JSON 可能发非法枚举值，用同一份清单校验后再当 EmotionCategory 用。 */
+export function isEmotionCategory(v: unknown): v is EmotionCategory {
+  return (
+    typeof v === "string" &&
+    (EMOTION_CATEGORIES as readonly string[]).includes(v)
+  );
+}
 
 export type EnergyState = "energetic" | "okay" | "tired" | "exhausted" | "drained";
 

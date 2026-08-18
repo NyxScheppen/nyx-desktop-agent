@@ -6,6 +6,7 @@ import { useSSE } from "../src/hooks/useSSE";
 import { useChatStore } from "../src/stores/chatStore";
 import { useEventStore } from "../src/stores/eventStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
+import { isEmotionCategory } from "../src/types/api";
 import type { CurrentState } from "../src/types/api";
 
 // —— fake EventSource（jsdom 无原生实现，需 stub）——
@@ -194,5 +195,15 @@ describe("dispatchEvent", () => {
 
     expect(useEventStore.getState().count).toBe(1);
     expect(useEventStore.getState().events[0].event).toBe("reflection");
+  });
+});
+
+describe("isEmotionCategory", () => {
+  it("合法枚举 true，非法字符串/非字符串 false", () => {
+    expect(isEmotionCategory("happy")).toBe(true);
+    expect(isEmotionCategory("neutral")).toBe(true);
+    expect(isEmotionCategory("不存在")).toBe(false);
+    expect(isEmotionCategory(5)).toBe(false);
+    expect(isEmotionCategory(null)).toBe(false);
   });
 });

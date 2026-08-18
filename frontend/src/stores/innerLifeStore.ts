@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { isEmotionCategory } from "../types/api";
 import type { CurrentState, EmotionUpdateEvent } from "../types/api";
 
 type InnerLifeState = {
@@ -20,7 +21,7 @@ export const useInnerLifeStore = create<InnerLifeState>((set) => ({
     if (
       typeof valence !== "number" ||
       typeof arousal !== "number" ||
-      typeof emotion !== "string"
+      !isEmotionCategory(emotion)
     ) {
       console.error("SSE emotion_update 帧字段类型错误，丢弃", e);
       return;

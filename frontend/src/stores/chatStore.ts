@@ -14,11 +14,11 @@ type ChatState = {
   isReplying: boolean; // 发消息后等待回复中（生命周期 02-stores 实现）
   sendError: string | null;
   addUserMessage: (e: UserMessageEvent) => void;
-  addSpeak: (e: TextEvent<TextEventType>) => void;
-  addAsk: (e: TextEvent<TextEventType>) => void;
-  addThink: (e: TextEvent<TextEventType>) => void;
-  addMutter: (e: TextEvent<TextEventType>) => void;
-  addInitiateChat: (e: TextEvent<TextEventType>) => void;
+  addSpeak: (e: TextEvent<"speak">) => void;
+  addAsk: (e: TextEvent<"ask">) => void;
+  addThink: (e: TextEvent<"think">) => void;
+  addMutter: (e: TextEvent<"mutter">) => void;
+  addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
   sendMessage: (text: string) => Promise<void>;
   reset: () => void;
 };

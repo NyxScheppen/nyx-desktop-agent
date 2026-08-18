@@ -56,12 +56,12 @@ type ChatState = {
 ### actions
 
 ```typescript
-addUserMessage(e: UserMessageEvent): void          // SSE user_message 回显（读 e.message）→ {role:"user", kind:"message"}
-addSpeak(e: TextEvent<TextEventType>): void        // {role:"nyx", kind:"speak"}；clearTimeout(replyTimer) + isReplying=false
-addAsk(e: TextEvent<TextEventType>): void          // {role:"nyx", kind:"ask"}；clearTimeout(replyTimer) + isReplying=false
-addThink(e: TextEvent<TextEventType>): void        // {role:"nyx", kind:"think"}
-addMutter(e: TextEvent<TextEventType>): void       // {role:"nyx", kind:"mutter"}
-addInitiateChat(e: TextEvent<TextEventType>): void // {role:"nyx", kind:"initiate_chat"}
+addUserMessage(e: UserMessageEvent): void            // SSE user_message 回显（读 e.message）→ {role:"user", kind:"message"}
+addSpeak(e: TextEvent<"speak">): void                // {role:"nyx", kind:"speak"}；clearTimeout(replyTimer) + isReplying=false
+addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}；clearTimeout(replyTimer) + isReplying=false
+addThink(e: TextEvent<"think">): void                // {role:"nyx", kind:"think"}
+addMutter(e: TextEvent<"mutter">): void              // {role:"nyx", kind:"mutter"}
+addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initiate_chat"}
 
 sendMessage(text: string): Promise<void>  // 内部调 client.postChat(text)（client 契约见 05-client）
                                           // 成功：isReplying=true + sendError=null + 起 60s 超时 timer
@@ -91,7 +91,7 @@ type InnerLifeState = {
 
 ```typescript
 refreshState(): Promise<void>   // 内部调 client.getState() → current；getState throw → catch → error（loading 复位）
-updateEmotion(e: EmotionUpdateEvent): void  // SSE emotion_update → 覆盖 current 的 valence/arousal/emotion
+updateEmotion(e: EmotionUpdateEvent): void  // SSE emotion_update → 覆盖 current 的 valence/arousal/emotion（emotion 走 isEmotionCategory 收窄）
 ```
 
 ### 关键决策

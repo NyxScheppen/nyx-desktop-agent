@@ -122,20 +122,20 @@ function dispatchEvent(e: SseEvent): void {
 }
 ```
 
-- **编译期 + 运行期双层收窄**：`SseEvent` 是判别联合（§2），键名错位编译期即拦（`addSpeak` 入参 `TextEvent<…>`，`e.content` 已是 `string`）；但 `useSSE` 对 wire JSON 做 `as unknown as SseEvent`（信任边界），故 store action 内仍保留运行时 `typeof` 校验（`addUserMessage` 验 `e.message`、`addSpeak` 验 `e.content`、`updateEmotion` 验三字段），类型错/缺字段 → `console.error` + 丢弃该帧（原则 5）。**不用裸 `as string`**。
+- **编译期 + 运行期双层收窄**：`SseEvent` 是判别联合（§2），键名错位与「事件类型 → kind 标签」错位都在编译期即拦（`addSpeak` 入参 pin 成 `TextEvent<"speak">`，`e.content` 已是 `string`）；但 `useSSE` 对 wire JSON 做 `as unknown as SseEvent`（信任边界），故 store action 内仍保留运行时 `typeof` 校验（`addUserMessage` 验 `e.message`、`addSpeak` 验 `e.content`、`updateEmotion` 验三字段且 emotion 走 `isEmotionCategory` 枚举收窄），类型错/缺字段 → `console.error` + 丢弃该帧（原则 5）。**不用裸 `as string`**。
 - **action 入参统一为整个 `SseEvent`**（非单独 `content`），因为消息还要取 `event_id`/`correlation_id` 溯源。
 
 ### 4.2 store 最小签名（完整 state 形状见 `02-stores.md`）
 
 ```typescript
-chatStore.addSpeak(e: TextEvent<TextEventType>): void          // e.content → ChatMessage{kind:"speak"}
-chatStore.addAsk(e: TextEvent<TextEventType>): void            // kind:"ask"
-chatStore.addThink(e: TextEvent<TextEventType>): void          // kind:"think"
-chatStore.addMutter(e: TextEvent<TextEventType>): void         // kind:"mutter"
-chatStore.addInitiateChat(e: TextEvent<TextEventType>): void   // kind:"initiate_chat"
-chatStore.addUserMessage(e: UserMessageEvent): void            // 读 e.message → {kind:"message", role:"user"}
-innerLifeStore.updateEmotion(e: EmotionUpdateEvent): void      // 覆盖 current 的 valence/arousal/emotion
-eventStore.record(e: SseEvent): void                           // unshift 头部（最新在前）+ count++
+chatStore.addSpeak(e: TextEvent<"speak">): void            // e.content → ChatMessage{kind:"speak"}
+chatStore.addAsk(e: TextEvent<"ask">): void                // kind:"ask"
+chatStore.addThink(e: TextEvent<"think">): void            // kind:"think"
+chatStore.addMutter(e: TextEvent<"mutter">): void          // kind:"mutter"
+chatStore.addInitiateChat(e: TextEvent<"initiate_chat">): void // kind:"initiate_chat"
+chatStore.addUserMessage(e: UserMessageEvent): void        // 读 e.message → {kind:"message", role:"user"}
+innerLifeStore.updateEmotion(e: EmotionUpdateEvent): void  // 覆盖 current 的 valence/arousal/emotion（emotion 走 isEmotionCategory 收窄）
+eventStore.record(e: SseEvent): void                       // unshift 头部（最新在前）+ count++
 ```
 
 > 每个 store 的 state 形状（`ChatMessage` 含 `id`/`role`/`kind`/`content`/`correlation_id`，不存 `timestamp`——见 02-stores；`InnerLifeState`、`EventState`）与 action 完整实现见 `02-stores.md`。本表只给签名，保证分发表能独立落地。

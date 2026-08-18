@@ -119,7 +119,10 @@ def should_initiate_chat(
     energy: float,
     since_last_chat: float,
 ) -> bool:
-    """搭话触发判定（design §5.5）：互动欲非空 + 在线 + 不忙 + 精力够 + 距上次 ≥ 间隔。"""
+    """搭话触发判定（design §5.5）。
+
+    互动欲非空 + 在线 + 不忙 + 精力够 + 距上次 ≥ 间隔。
+    """
     has_interaction = any(d.type is DesireType.INTERACTION for d in desires)
     return (
         has_interaction
@@ -133,7 +136,12 @@ def should_initiate_chat(
 ### `nyx/expression/pipeline.py`（完整）
 
 ```python
-"""回复流程 LangGraph 图：快慢通道 + 多轮 think/speak + 场景化记忆。节点为闭包，依赖经 ReplyDeps 注入。"""
+# pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false
+# langgraph 类型标注松散：add_node/compile/ainvoke 返回部分未知、graph.state 缺 stub
+"""回复流程 LangGraph 图：快慢通道 + 多轮 think/speak + 场景化记忆。
+
+节点为闭包，依赖经 ReplyDeps 注入。
+"""
 import time
 import uuid
 from collections import deque
@@ -167,7 +175,7 @@ class ReplyState(TypedDict):
     ask: str | None
     round: int                   # 已完成 think/speak 的轮数（≤ slow_max_rounds）
     waiting_user: bool           # MVP 恒 False
-    correlation_id: str          # 本次 reply 溯源（17 补，对齐 14-activity 给 ExplorationState 补 correlation_id）
+    correlation_id: str          # 本次 reply 溯源（17 补，对齐 14-activity）
 
 
 @dataclass
@@ -201,8 +209,14 @@ def _make_event(type_: EventType, content: str, correlation_id: str) -> Event:
 
 
 def _is_question(text: str) -> bool:
-    """speak 是否问句（纯函数）：末尾问号或含疑问词。词表与 16 classifier 的 _QUESTION_MARKS 一致。"""
-    return text.rstrip().endswith(("?", "？")) or any(w in text for w in _QUESTION_MARKS)
+    """speak 是否问句（纯函数）：末尾问号或含疑问词。
+
+    词表与 16 classifier 的 _QUESTION_MARKS 一致。
+    """
+    return (
+        text.rstrip().endswith(("?", "？"))
+        or any(w in text for w in _QUESTION_MARKS)
+    )
 
 
 def _backtrack(history: deque[Message], max_len: int) -> list[Message]:
@@ -217,7 +231,8 @@ def _backtrack(history: deque[Message], max_len: int) -> list[Message]:
 def _rounds_block(think: list[str], speak: list[str]) -> str:
     """把前面几轮的 think/speak 拼成 prompt 段（多轮累积式）。空则返回 ""。
 
-    调用点保证 think 与 speak 等长（think 节点传完整累积，speak 节点传 think[:-1] 与 speak）。
+    调用点保证 think 与 speak 等长（think 节点传完整累积，
+    speak 节点传 think[:-1] 与 speak）。
     """
     if not think:
         return ""
@@ -233,7 +248,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
 
     async def classify(state: ReplyState) -> dict[str, Any]:
         mode = classify_channel(
-            state["message"], state["state"], time.time(), deps.last_slow_at, deps.config.slow_threshold,
+            state["message"],
+            state["state"],
+            time.time(),
+            deps.last_slow_at,
+            deps.config.slow_threshold,
         )
         return {"mode": mode}
 
@@ -244,46 +263,66 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         return {"memories": memories, "context": context, "narrative": narrative}
 
     async def think(state: ReplyState) -> dict[str, Any]:
-        system = build_system_prompt(deps.canon, state["state"], state["narrative"], state["memories"])
+        system = build_system_prompt(
+            deps.canon, state["state"], state["narrative"], state["memories"]
+        )
         user = build_user_prompt(state["message"], state["context"])
         prior = _rounds_block(state["think"], state["speak"])      # 前几轮 think/speak
         user = "\n".join(p for p in (prior, user, _THINK_TASK) if p)
         output = await deps.llm.complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            module="expression", output_type="think", correlation_id=state["correlation_id"],
+            module="expression",
+            output_type="think",
+            correlation_id=state["correlation_id"],
         )
         await deps.evaluator.evaluate(output)
-        await deps.bus.publish(_make_event(EventType.THINK, output.content, state["correlation_id"]))
+        await deps.bus.publish(
+            _make_event(EventType.THINK, output.content, state["correlation_id"])
+        )
         return {"think": state["think"] + [output.content]}
 
     async def speak(state: ReplyState) -> dict[str, Any]:
-        system = build_system_prompt(deps.canon, state["state"], state["narrative"], state["memories"])
+        system = build_system_prompt(
+            deps.canon, state["state"], state["narrative"], state["memories"]
+        )
         user = build_user_prompt(state["message"], state["context"])
-        prior = _rounds_block(state["think"][:-1], state["speak"])   # 前几轮（不含本轮 think）
+        # 前几轮（不含本轮 think）
+        prior = _rounds_block(state["think"][:-1], state["speak"])
         inner = f"[我刚刚的内心想法]\n{state['think'][-1]}"           # 本轮 think
         user = "\n".join(p for p in (prior, inner, user, _SPEAK_TASK) if p)
         output = await deps.llm.complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            module="expression", output_type="speak", correlation_id=state["correlation_id"],
+            module="expression",
+            output_type="speak",
+            correlation_id=state["correlation_id"],
         )
         await deps.evaluator.evaluate(output)
         speak = output.content
         if state["mode"] is ContextMode.FAST:
-            await deps.bus.publish(_make_event(EventType.SPEAK, speak, state["correlation_id"]))
+            await deps.bus.publish(
+                _make_event(EventType.SPEAK, speak, state["correlation_id"])
+            )
         return {"speak": state["speak"] + [speak]}
 
     async def should_ask(state: ReplyState) -> dict[str, Any]:
         speak = state["speak"][-1]
         if _is_question(speak):
-            await deps.bus.publish(_make_event(EventType.ASK, speak, state["correlation_id"]))
+            await deps.bus.publish(
+                _make_event(EventType.ASK, speak, state["correlation_id"])
+            )
             return {"ask": speak}
-        await deps.bus.publish(_make_event(EventType.SPEAK, speak, state["correlation_id"]))
+        await deps.bus.publish(
+            _make_event(EventType.SPEAK, speak, state["correlation_id"])
+        )
         return {"ask": None, "round": state["round"] + 1}
 
     async def record_message(state: ReplyState) -> dict[str, Any]:
-        # 回合末按序落历史：先用户消息、后 Nyx 消息（多轮拼接）。下一轮 reply 的 assemble 从这里回溯。
+        # 回合末按序落历史：先用户消息、后 Nyx 消息（多轮拼接）。
+        # 下一轮 reply 的 assemble 从这里回溯。
         now = time.time()
-        deps.history.append(Message(role="user", content=state["message"], timestamp=now))
+        deps.history.append(
+            Message(role="user", content=state["message"], timestamp=now)
+        )
         nyx_text = "\n".join(state["speak"])
         if nyx_text:
             deps.history.append(Message(role="nyx", content=nyx_text, timestamp=now))
@@ -306,7 +345,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
 
     def route_after_should_ask(state: ReplyState) -> str:
         if state["ask"] is not None:
-            return "generate_scene_memory"                 # 问句：回合结束，也记场景化记忆
+            # 问句：回合结束，也记场景化记忆
+            return "generate_scene_memory"
         if state["round"] < deps.config.slow_max_rounds:
             return "think"                                 # 未到轮数上限，继续下一轮
         return "generate_scene_memory"                     # 轮满，回合结束
@@ -320,11 +360,23 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     graph.add_node("record_message", record_message)
     graph.add_node("generate_scene_memory", generate_scene_memory)
     graph.set_entry_point("classify_channel")
-    graph.add_conditional_edges("classify_channel", route_after_classify, {"assemble_context": "assemble_context", "think": "think"})
+    graph.add_conditional_edges(
+        "classify_channel",
+        route_after_classify,
+        {"assemble_context": "assemble_context", "think": "think"},
+    )
     graph.add_edge("assemble_context", "think")
     graph.add_edge("think", "speak")
-    graph.add_conditional_edges("speak", route_after_speak, {"record_message": "record_message", "should_ask": "should_ask"})
-    graph.add_conditional_edges("should_ask", route_after_should_ask, {"think": "think", "generate_scene_memory": "generate_scene_memory"})
+    graph.add_conditional_edges(
+        "speak",
+        route_after_speak,
+        {"record_message": "record_message", "should_ask": "should_ask"},
+    )
+    graph.add_conditional_edges(
+        "should_ask",
+        route_after_should_ask,
+        {"think": "think", "generate_scene_memory": "generate_scene_memory"},
+    )
     graph.add_edge("generate_scene_memory", "record_message")
     graph.add_edge("record_message", END)
     return graph.compile()
@@ -333,23 +385,28 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
 ### `nyx/expression/facade.py`（完整）
 
 ```python
-"""ExpressionFacade：回复流程 + 碎碎念 + 搭话。事件统一 publish，LLM 产出统一 evaluate。"""
+# pyright: reportPrivateUsage=false, reportUnknownMemberType=false
+# _MUTTER_RATE 跨模块私有 import（spec 明确）；ainvoke 返回部分未知（langgraph）
+"""ExpressionFacade：回复流程 + 碎碎念 + 搭话。
+
+事件统一 publish，LLM 产出统一 evaluate。
+"""
 import random
 import time
 import uuid
 from collections import deque
 
 from nyx.config import ExpressionConfig
+from nyx.desire.facade import DesireFacade
 from nyx.enums import ContextMode, EventType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.expression.mutter import _MUTTER_RATE, pick_mutter
 from nyx.expression.pipeline import ReplyDeps, ReplyState, build_reply_graph
 from nyx.expression.prompt import build_system_prompt
+from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
-from nyx.desire.facade import DesireFacade
-from nyx.inner_life.facade import InnerLifeFacade
 from nyx.types import CurrentState, Event, Message, ShortTermDesire
 
 
@@ -407,18 +464,28 @@ class ExpressionFacade:
             self._last_slow_at = time.time()
 
     async def initiate_chat(self, desire: ShortTermDesire, state: CurrentState) -> bool:
-        """搭话：快通道生成一句开场白；无话则发 False（18-api 据此不更新 last_chat_at）。"""
+        """搭话：快通道生成一句开场白。
+
+        无话则发 False（18-api 据此不更新 last_chat_at）。
+        """
         system = build_system_prompt(self._canon, state)
-        user = f"你想主动和用户说点什么。基于这个念头：{desire.description}。说一句自然的开场白。"
+        user = (
+            f"你想主动和用户说点什么。基于这个念头：{desire.description}。"
+            "说一句自然的开场白。"
+        )
         correlation_id = desire.id
         output = await self._llm.complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            module="expression", output_type="initiate_chat", correlation_id=correlation_id,
+            module="expression",
+            output_type="initiate_chat",
+            correlation_id=correlation_id,
         )
         await self._evaluator.evaluate(output)
         if not output.content.strip():
             return False  # 无话则不发
-        await self._bus.publish(_make_event(EventType.INITIATE_CHAT, output.content, correlation_id))
+        await self._bus.publish(
+            _make_event(EventType.INITIATE_CHAT, output.content, correlation_id)
+        )
         return True
 
     async def mutter(self, state: CurrentState, correlation_id: str) -> None:
@@ -457,7 +524,7 @@ def _make_event(type_: EventType, content: str, correlation_id: str) -> Event:
     - [ ] `_is_question`：`"你今天好吗？"` → True；`"你今天怎么样"` → True（含「怎么」）；`"我很好。"` → False
     - [ ] `_backtrack`：`history` 长于 `max_len` → 只取最后 `max_len` 条；短于 → 全取；空 → `[]`
     - [ ] `_rounds_block`：`([], [])` → `""`；`(["t1"], ["s1"])` → 含「第1轮内心：t1」「第1轮对外：s1」；`(["t1","t2"], ["s1","s2"])` → 含两轮且顺序正确
-  - [ ] **facade 集成**（`test_facade.py`，mock LLM 按 `output_type` 返回 fixture，mock bus 记录 `publish`，`db=:memory:`）：
+  - [ ] **facade 集成**（`test_expression_facade.py`，mock LLM 按 `output_type` 返回 fixture，mock bus 记录 `publish`、fake 注入不碰 db；文件名为避免与 `test_memory/test_facade.py` 同 basename 冲突而加前缀）：
     - [ ] `reply` 快通道（classify 因子令 score < threshold）：`llm.complete` 调 2 次（think + speak，各 1 次）、`memory.search` / `memory.create_scene_memory` 未被调、`evaluator.evaluate` 调 2 次、`bus.publish` 收到 `think` + `speak` 各 1 条
     - [ ] `reply` 慢通道非问句（score ≥ threshold，mock speak 恒非问句）：`memory.search` 被调、`create_scene_memory` 被调、`llm.complete` 调 `2 × slow_max_rounds` 次（think+speak 各 3 次）、`bus.publish` 收到 `think` 3 条 + `speak` 3 条（**每轮交付**）、`create_scene_memory` 的 `nyx_speak`/`nyx_think` 是 3 轮 `"\n"` 拼接
     - [ ] `reply` 慢通道问句（第 1 轮 speak 返回 `"你还好吗？"`）：`bus.publish` 收到 `ask`（非 `speak`）且仅 1 条、`create_scene_memory` 仍被调（问句也走场景化记忆）、提前结束（think/speak 各 1 次，不循环到满）

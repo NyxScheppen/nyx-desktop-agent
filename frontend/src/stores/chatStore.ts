@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { SseEvent } from "../types/api";
+import type { TextEvent, TextEventType, UserMessageEvent } from "../types/api";
 
 export type ChatMessage = {
   id: string; // event_id
@@ -13,32 +13,34 @@ type ChatState = {
   messages: ChatMessage[];
   isReplying: boolean; // 发消息后等待回复中（生命周期 02-stores 实现）
   sendError: string | null;
-  addUserMessage: (e: SseEvent) => void;
-  addSpeak: (e: SseEvent) => void;
-  addAsk: (e: SseEvent) => void;
-  addThink: (e: SseEvent) => void;
-  addMutter: (e: SseEvent) => void;
-  addInitiateChat: (e: SseEvent) => void;
+  addUserMessage: (e: UserMessageEvent) => void;
+  addSpeak: (e: TextEvent<TextEventType>) => void;
+  addAsk: (e: TextEvent<TextEventType>) => void;
+  addThink: (e: TextEvent<TextEventType>) => void;
+  addMutter: (e: TextEvent<TextEventType>) => void;
+  addInitiateChat: (e: TextEvent<TextEventType>) => void;
   sendMessage: (text: string) => Promise<void>;
   reset: () => void;
 };
 
 export const useChatStore = create<ChatState>((set) => {
-  // content 收窄校验后才入消息（01-sse §4.1：不用裸 as，类型错 → 丢弃不崩）
+  // 文本字段收窄校验后才入消息（01-sse §4.1：不用裸 as，类型错 → 丢弃不崩）。
+  // 用户消息读 message、文本事件读 content（键名不同，见 01-sse §1）。
   const append = (
-    e: SseEvent,
+    e: TextEvent<TextEventType> | UserMessageEvent,
     role: ChatMessage["role"],
     kind: ChatMessage["kind"],
   ) => {
-    if (typeof e.content !== "string") {
-      console.error(`SSE ${e.event} 帧 content 非 string，丢弃`, e);
+    const text = e.event === "user_message" ? e.message : e.content;
+    if (typeof text !== "string") {
+      console.error(`SSE ${e.event} 帧文本字段非 string，丢弃`, e);
       return;
     }
     const msg: ChatMessage = {
       id: e.event_id,
       role,
       kind,
-      content: e.content,
+      content: text,
       correlation_id: e.correlation_id,
     };
     set((s) => ({ messages: [...s.messages, msg] }));

@@ -1,12 +1,12 @@
 import { create } from "zustand";
-import type { CurrentState, EmotionCategory, SseEvent } from "../types/api";
+import type { CurrentState, EmotionUpdateEvent } from "../types/api";
 
 type InnerLifeState = {
   current: CurrentState | null; // GET /api/state 快照；null = 尚未加载
   loading: boolean;
   error: string | null;
   refreshState: () => Promise<void>;
-  updateEmotion: (e: SseEvent) => void;
+  updateEmotion: (e: EmotionUpdateEvent) => void;
 };
 
 export const useInnerLifeStore = create<InnerLifeState>((set) => ({
@@ -32,7 +32,7 @@ export const useInnerLifeStore = create<InnerLifeState>((set) => ({
           ...s.current,
           valence,
           arousal,
-          emotion: emotion as EmotionCategory,
+          emotion,
         },
       };
     });

@@ -27,8 +27,7 @@ type CurrentState = {
   active_desires: unknown[];      // 核心先行不消费，占位
 };
 
-// SSE 帧（完整契约见 01-sse §2）与活跃度三态（README §2）
-type SseEvent = { event: string; event_id: string; correlation_id: string } & Record<string, unknown>;
+// SSE 帧是判别联合（完整契约见 01-sse §2），各 action 的精确入参见下面 §1/§2
 type Presence = "online" | "away" | "busy";
 ```
 
@@ -57,12 +56,12 @@ type ChatState = {
 ### actions
 
 ```typescript
-addUserMessage(e: SseEvent): void    // SSE user_message 回显 → {role:"user", kind:"message"}
-addSpeak(e: SseEvent): void          // {role:"nyx", kind:"speak"}；clearTimeout(replyTimer) + isReplying=false
-addAsk(e: SseEvent): void            // {role:"nyx", kind:"ask"}；clearTimeout(replyTimer) + isReplying=false
-addThink(e: SseEvent): void          // {role:"nyx", kind:"think"}
-addMutter(e: SseEvent): void         // {role:"nyx", kind:"mutter"}
-addInitiateChat(e: SseEvent): void   // {role:"nyx", kind:"initiate_chat"}
+addUserMessage(e: UserMessageEvent): void          // SSE user_message 回显（读 e.message）→ {role:"user", kind:"message"}
+addSpeak(e: TextEvent<TextEventType>): void        // {role:"nyx", kind:"speak"}；clearTimeout(replyTimer) + isReplying=false
+addAsk(e: TextEvent<TextEventType>): void          // {role:"nyx", kind:"ask"}；clearTimeout(replyTimer) + isReplying=false
+addThink(e: TextEvent<TextEventType>): void        // {role:"nyx", kind:"think"}
+addMutter(e: TextEvent<TextEventType>): void       // {role:"nyx", kind:"mutter"}
+addInitiateChat(e: TextEvent<TextEventType>): void // {role:"nyx", kind:"initiate_chat"}
 
 sendMessage(text: string): Promise<void>  // 内部调 client.postChat(text)（client 契约见 05-client）
                                           // 成功：isReplying=true + sendError=null + 起 60s 超时 timer
@@ -92,7 +91,7 @@ type InnerLifeState = {
 
 ```typescript
 refreshState(): Promise<void>   // 内部调 client.getState() → current；getState throw → catch → error（loading 复位）
-updateEmotion(e: SseEvent): void  // SSE emotion_update → 覆盖 current 的 valence/arousal/emotion
+updateEmotion(e: EmotionUpdateEvent): void  // SSE emotion_update → 覆盖 current 的 valence/arousal/emotion
 ```
 
 ### 关键决策

@@ -133,6 +133,19 @@ describe("dispatchEvent", () => {
     expect(messages[0]).toMatchObject({ kind: "speak", role: "nyx", content: "hi" });
   });
 
+  it("user_message → chatStore（读 message 非 content，回归 Finding 1）", () => {
+    dispatchEvent({
+      event: "user_message",
+      event_id: "e4",
+      correlation_id: "c4",
+      message: "hi",
+    });
+
+    const { messages } = useChatStore.getState();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ kind: "message", role: "user", content: "hi" });
+  });
+
   it("emotion_update → innerLifeStore（覆盖三字段）", () => {
     const current: CurrentState = {
       valence: 0.1,

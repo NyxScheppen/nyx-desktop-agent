@@ -3,8 +3,9 @@ import { BASE_URL } from "../api/client";
 import type { ConnectionState, SseEvent } from "../types/api";
 
 // 后端 enums.py EventType 的 18 个 snake_case 值。
-// EventSource 的 onmessage 只收无 `event:` 行的默认消息；后端每条都带
-// `event: {type.value}` 行（main.py），命名事件必须按类型 addEventListener 才能收到。
+// 命名事件（带 event: 行）只能按类型 addEventListener 收到，onmessage 收不到。
+// 前向兼容边界：后端新增 EventType 必须同步此数组 + types/api.ts 判别联合 +
+// dispatchEvent 分发表，否则新类型帧被浏览器静默丢弃（01-sse §4）。
 const EVENT_TYPES = [
   "user_message",
   "clock_tick",
@@ -47,7 +48,9 @@ export function useSSE(dispatch: (e: SseEvent) => void): ConnectionState {
           console.error("SSE 帧缺 event_id/correlation_id，跳过", event.data);
           return;
         }
-        dispatch({ ...rec, event: type } as SseEvent);
+        // 信任边界：帧头已校验，其余键形状交给 store action 运行时收窄；
+        // 判别联合只兜编译期契约（键名错位在此放行，store 里拦）。
+        dispatch({ ...rec, event: type } as unknown as SseEvent);
       } catch (err) {
         console.error("SSE 帧解析失败，跳过", event.data, err);
       }

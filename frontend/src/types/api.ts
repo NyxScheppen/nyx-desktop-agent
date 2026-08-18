@@ -40,11 +40,64 @@ export type CurrentState = {
   active_desires: unknown[]; // 核心先行不消费，占位
 };
 
-/** SSE 帧：event: 行 + data: 行解析结果，其余键 = event.content 展开。 */
-export type SseEvent = {
-  event: string; // EventType 值（snake_case）
-  event_id: string;
-  correlation_id: string;
-} & Record<string, unknown>;
+/** SSE 帧公共头。 */
+type SseBase = {
+  event_id: string; // 事件唯一 id
+  correlation_id: string; // 溯源：上游 correlation_id（根事件 = 自身 id）
+};
+
+/** 文本事件类型：internal_text_event 包装成 {"content": string}。 */
+export type TextEventType =
+  | "speak"
+  | "ask"
+  | "think"
+  | "mutter"
+  | "initiate_chat";
+
+/** 文本事件帧：content 为纯文本。 */
+export type TextEvent<T extends TextEventType> = SseBase & {
+  event: T;
+  content: string;
+};
+
+/** 用户消息回显：后端 main.py 裸 {"message": string}（非 internal_text_event，键名不同）。 */
+export type UserMessageEvent = SseBase & {
+  event: "user_message";
+  message: string;
+};
+
+/** 情感更新帧（12-inner-life）：{valence, arousal, emotion}。 */
+export type EmotionUpdateEvent = SseBase & {
+  event: "emotion_update";
+  valence: number;
+  arousal: number;
+  emotion: EmotionCategory;
+};
+
+/** 未消费的 11 类：溯源面板落地前不读字段，payload 保持宽松。 */
+type OpaqueEventType =
+  | "clock_tick"
+  | "observation_state"
+  | "reflection"
+  | "memory_created"
+  | "memory_promoted"
+  | "desire_generated"
+  | "desire_satisfied"
+  | "desire_expired"
+  | "activity_start"
+  | "activity_end"
+  | "activity_interrupted";
+type OpaqueEvent = SseBase & { event: OpaqueEventType } & Record<string, unknown>;
+
+/** SSE 帧：按 event 值判别联合——键名错位在编译期即拦（曾放过 user_message 读 content 的 bug）。 */
+export type SseEvent =
+  | TextEvent<"speak">
+  | TextEvent<"ask">
+  | TextEvent<"think">
+  | TextEvent<"mutter">
+  | TextEvent<"initiate_chat">
+  | UserMessageEvent
+  | EmotionUpdateEvent
+  | OpaqueEvent;
 
 export type ConnectionState = "connecting" | "open" | "closed";

@@ -15,23 +15,47 @@ data: {"event_id":"…","correlation_id":"…","content":"…"}
 ```
 
 - `data` 的键 = `{event_id, correlation_id}` + `event.content` 的键。`content` 的键从不与 `event_id`/`correlation_id` 冲突（生产方不产这两个键，展开安全——tech-ref §4）。
-- 各事件 `content` 形状由生产方 spec 定义，核心先行只依赖三个：
+- 各事件 `content` 形状由生产方 spec 定义，核心先行只依赖四个：
   - `speak` / `ask` / `mutter` / `initiate_chat` → `{content: string}`
   - `think` → `{content: string}`（内心话，仅日志/聊天区灰色展示）
   - `emotion_update` → `{valence, arousal, emotion}`（12-inner-life 定义）
+  - `user_message` → `{message: string}`（main.py 裸载荷，非 internal_text_event，键名与文本事件不同）
 
 ## 2. TS 类型
 
 ```typescript
 // types/api.ts（片段）
 
-/** SSE 帧：event: 行 + data: 行解析结果。 */
-type SseEvent = {
-  event: string;           // EventType 值（snake_case）
+/** SSE 帧：按 event 值判别联合——键名错位在编译期即拦。 */
+type SseBase = {
   event_id: string;        // 事件唯一 id
   correlation_id: string;  // 溯源：上游 correlation_id（根事件 = 自身 id）
-  // 其余键 = event.content 展开（形状随 event 类型而异）
+};
+
+type TextEventType = "speak" | "ask" | "think" | "mutter" | "initiate_chat";
+type TextEvent<T extends TextEventType> = SseBase & { event: T; content: string };
+
+type UserMessageEvent = SseBase & { event: "user_message"; message: string };
+
+type EmotionUpdateEvent = SseBase & {
+  event: "emotion_update";
+  valence: number;
+  arousal: number;
+  emotion: EmotionCategory;
+};
+
+// 未消费的 11 类：溯源面板落地前不读字段，payload 保持宽松。
+type OpaqueEvent = SseBase & {
+  event: "clock_tick" | "observation_state" | "reflection"
+    | "memory_created" | "memory_promoted"
+    | "desire_generated" | "desire_satisfied" | "desire_expired"
+    | "activity_start" | "activity_end" | "activity_interrupted";
 } & Record<string, unknown>;
+
+type SseEvent =
+  | TextEvent<"speak"> | TextEvent<"ask"> | TextEvent<"think">
+  | TextEvent<"mutter"> | TextEvent<"initiate_chat">
+  | UserMessageEvent | EmotionUpdateEvent | OpaqueEvent;
 
 type ConnectionState = "connecting" | "open" | "closed";
 ```
@@ -49,7 +73,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 - **返回**：`ConnectionState`，供 App 显示连接状态（右上角「已连接/重连中」）。
 - **行为**：
   1. `useEffect` 里 `new EventSource(BASE_URL + "/api/events")`，`BASE_URL` 来自统一常量（默认 `http://localhost:8000`，与后端 uvicorn 启动参数一致）。
-  2. `onmessage`：解析 `event`（`e.event`）+ `JSON.parse(e.data)` → 拼成 `SseEvent` → `dispatch`。
+  2. 对 18 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` → 拼 `SseEvent` → `dispatch`。
   3. `onopen` / `onerror`：更新 `ConnectionState`。`EventSource` 浏览器原生自动重连（`onerror` 时置 `connecting`），后端重启后自动恢复，无需手写重连循环。
   4. cleanup：`source.close()`（防重复挂载泄漏）。
 - **解析失败**：`JSON.parse` 抛错 → `console.error` + 跳过该帧（不崩整个流）；`data` 缺 `event_id`/`correlation_id` 时同样跳过（防御，正常不触发）。
@@ -77,7 +101,8 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | 其余 11 类 | `eventStore` | `record` | 骨架：占位记录，溯源面板后续用 |
 
 > 完整 18 类见 `01-types.md` 的 `EventType`。核心先行只消费上表前 7 行；`clock_tick` / `observation_state` / `reflection` / `memory_*` / `desire_*` / `activity_*` 一律 `eventStore.record` 兜底（不丢事件，供溯源面板后续消费）。
-> `default` 分支保证**新事件类型不崩**：未来后端加类型，前端旧版先落 `eventStore`，不因未知 `event` 抛错（原则 5 错误可溯源 + 向后兼容）。
+> `default` 分支兜住 11 类未消费事件（不丢事件，供溯源面板后续消费）。
+> **前向兼容边界**：命名事件（带 `event:` 行）若没有匹配的 `addEventListener` 且无 `onmessage`，浏览器会静默丢弃——故后端**新增 EventType 必须同步前端** `EVENT_TYPES` 数组 + `types/api.ts` 判别联合 + 本分发表（monorepo 内本就在同一提交改）。不存在「旧前端自动接住新类型」的兜底。
 
 ### 4.1 分发函数（含类型收窄）
 
@@ -97,20 +122,20 @@ function dispatchEvent(e: SseEvent): void {
 }
 ```
 
-- **收窄发生在 store action 内部**：`SseEvent.content` 是 `unknown`，`addSpeak` 里做运行时 `typeof e.content === "string"` 校验后才入消息（`emotion_update` 同理校验 `valence`/`arousal` 是 number、`emotion` 是 string）。**不用裸 `as string`**——类型错/缺字段 → `console.error` + 丢弃该帧，后端字段变更时前端不静默崩（原则 5）。
+- **编译期 + 运行期双层收窄**：`SseEvent` 是判别联合（§2），键名错位编译期即拦（`addSpeak` 入参 `TextEvent<…>`，`e.content` 已是 `string`）；但 `useSSE` 对 wire JSON 做 `as unknown as SseEvent`（信任边界），故 store action 内仍保留运行时 `typeof` 校验（`addUserMessage` 验 `e.message`、`addSpeak` 验 `e.content`、`updateEmotion` 验三字段），类型错/缺字段 → `console.error` + 丢弃该帧（原则 5）。**不用裸 `as string`**。
 - **action 入参统一为整个 `SseEvent`**（非单独 `content`），因为消息还要取 `event_id`/`correlation_id` 溯源。
 
 ### 4.2 store 最小签名（完整 state 形状见 `02-stores.md`）
 
 ```typescript
-chatStore.addSpeak(e: SseEvent): void            // e.content 校验为 string → ChatMessage{kind:"speak"}
-chatStore.addAsk(e: SseEvent): void              // kind:"ask"
-chatStore.addThink(e: SseEvent): void            // kind:"think"
-chatStore.addMutter(e: SseEvent): void           // kind:"mutter"
-chatStore.addInitiateChat(e: SseEvent): void     // kind:"initiate_chat"
-chatStore.addUserMessage(e: SseEvent): void      // kind:"message", role:"user"
-innerLifeStore.updateEmotion(e: SseEvent): void  // 覆盖 current 的 valence/arousal/emotion
-eventStore.record(e: SseEvent): void             // unshift 头部（最新在前）+ count++
+chatStore.addSpeak(e: TextEvent<TextEventType>): void          // e.content → ChatMessage{kind:"speak"}
+chatStore.addAsk(e: TextEvent<TextEventType>): void            // kind:"ask"
+chatStore.addThink(e: TextEvent<TextEventType>): void          // kind:"think"
+chatStore.addMutter(e: TextEvent<TextEventType>): void         // kind:"mutter"
+chatStore.addInitiateChat(e: TextEvent<TextEventType>): void   // kind:"initiate_chat"
+chatStore.addUserMessage(e: UserMessageEvent): void            // 读 e.message → {kind:"message", role:"user"}
+innerLifeStore.updateEmotion(e: EmotionUpdateEvent): void      // 覆盖 current 的 valence/arousal/emotion
+eventStore.record(e: SseEvent): void                           // unshift 头部（最新在前）+ count++
 ```
 
 > 每个 store 的 state 形状（`ChatMessage` 含 `id`/`role`/`kind`/`content`/`correlation_id`，不存 `timestamp`——见 02-stores；`InnerLifeState`、`EventState`）与 action 完整实现见 `02-stores.md`。本表只给签名，保证分发表能独立落地。

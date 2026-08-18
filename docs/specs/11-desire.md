@@ -304,6 +304,7 @@ _OBSERVATION_PRESSURE_DELTA = 0.15    # 观察状态 → 互动欲 +0.15
 _LONG_TERM_PRESSURE_DELTA = 0.2       # 每个长期欲望周期 → 对应类型 +0.2
 _LONG_TERM_PROGRESS_DELTA = 0.1       # 满足一次长期进度 +0.1
 _LONG_TERM_STRENGTH_DECAY = 0.02      # 满足一次长期迫切度 -0.02
+_GOAL_ACTIONS = frozenset(g.value for g in GoalAction)
 
 _DESIRE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -336,7 +337,7 @@ def _parse_desire(raw: str) -> tuple[str, Goal | None]:
         raise ValueError("欲望 JSON 的 goal 应是对象或 null")
     goal = cast(dict[str, Any], goal_raw)
     action = goal.get("action")
-    if not isinstance(action, str) or action not in {g.value for g in GoalAction}:
+    if not isinstance(action, str) or action not in _GOAL_ACTIONS:
         raise ValueError(
             f"欲望 JSON 的 goal.action 应是 {'/'.join(g.value for g in GoalAction)}"
         )

@@ -26,6 +26,7 @@ _PERSONALITY_KEYS = frozenset(
 _VALUES_KEYS = frozenset(
     {"attitude_to_human", "ai_identity_acceptance", "altruism", "optimism"}
 )
+_DESIRE_TYPE_VALUES = frozenset(d.value for d in DesireType)
 _logger = logging.getLogger(__name__)
 
 _REFLECTION_SYSTEM = (
@@ -111,7 +112,7 @@ def _validate_candidate(c: Any) -> None:
         raise ValueError("long_term_desires 元素应是对象")
     candidate = cast(dict[str, Any], c)
     t = candidate.get("type")
-    if not isinstance(t, str) or t not in {d.value for d in DesireType}:
+    if not isinstance(t, str) or t not in _DESIRE_TYPE_VALUES:
         raise ValueError(
             f"长期欲望候选 type 应是 {'/'.join(d.value for d in DesireType)}"
         )

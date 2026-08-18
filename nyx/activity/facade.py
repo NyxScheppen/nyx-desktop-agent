@@ -236,8 +236,9 @@ class ActivityFacade:
         task = self._task
         if task is not None and not task.done():
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                # 等 _execute 收尾，防其随后写 COMPLETED/INCOMPLETE 覆盖
+            # 等 _execute 收尾即可，无论取消还是异常终；失败已由 _execute
+            # 记日志 + done_callback 收割，终态交给下方重读守卫，不跳过 ABANDONED
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         activity = await self._store.get(activity_id)   # 重读：已终态则不动
         if activity is None or activity.status is not ActivityStatus.RUNNING:

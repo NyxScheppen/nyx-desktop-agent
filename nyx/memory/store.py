@@ -64,18 +64,8 @@ class MemoryStore:
         return [_row_to_memory(r) for r in rows]
 
     async def update(self, memory: Memory) -> None:
-        async with self._db.lock:
-            await self._db.conn.execute(
-                "UPDATE memory SET content = ?, tag = ?, summary = ?, freshness = ?, "
-                "type = ?, recall_count = ?, aspect = ?, embedding = ? WHERE id = ?",
-                (
-                    memory.content, memory.tag, memory.summary, memory.freshness,
-                    memory.type.value, memory.recall_count, json.dumps(memory.aspect),
-                    _embedding_json(memory.embedding),
-                    memory.id,
-                ),
-            )
-            await self._db.conn.commit()
+        """单条更新：委托批量版（UPDATE SQL 单一来源，单锁单 commit）。"""
+        await self.update_many([memory])
 
     async def update_many(self, memories: list[Memory]) -> None:
         """批量更新：循环 UPDATE，单锁单 commit（衰减结算用，避免 N 次 commit）。"""
@@ -95,13 +85,8 @@ class MemoryStore:
             await self._db.conn.commit()
 
     async def delete(self, memory_id: str) -> None:
-        async with self._db.lock:
-            await self._db.conn.execute(
-                "DELETE FROM memory_edge WHERE from_id = ? OR to_id = ?",
-                (memory_id, memory_id),
-            )
-            await self._db.conn.execute("DELETE FROM memory WHERE id = ?", (memory_id,))
-            await self._db.conn.commit()
+        """单条删除：委托批量版（edge + row 删除单一来源，单锁单 commit）。"""
+        await self.delete_many([memory_id])
 
     async def delete_many(self, ids: list[str]) -> None:
         """批量删除：循环删 edge/row，单锁单 commit（淘汰溢出，避免 N 次 commit）。"""

@@ -40,7 +40,7 @@ describe("api/client", () => {
     const res = await postChat("你好");
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://localhost:8000/api/chat");
+    expect(url).toBe("/api/chat");
     expect(init).toMatchObject({
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -55,7 +55,7 @@ describe("api/client", () => {
 
     const res = await getState();
 
-    expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:8000/api/state");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/state");
     expect(res).toEqual(snapshot);
   });
 
@@ -66,7 +66,7 @@ describe("api/client", () => {
     const res = await postObserve("away");
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://localhost:8000/api/observe");
+    expect(url).toBe("/api/observe");
     expect(init).toMatchObject({
       method: "POST",
       body: JSON.stringify({ presence: "away" }),

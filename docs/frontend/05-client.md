@@ -7,7 +7,7 @@
 ## 1. 函数签名 + 端点映射
 
 ```typescript
-const BASE_URL = "http://localhost:8000";   // 与后端 uvicorn 启动参数一致
+const BASE_URL = "";   // 空 = 相对路径，走 Vite proxy 同源转发（18-api 不做 CORS，localhost 同源）
 
 async function postChat(message: string): Promise<{ event_id: string }>          // POST /api/chat
 async function getState(): Promise<CurrentState>                                 // GET /api/state

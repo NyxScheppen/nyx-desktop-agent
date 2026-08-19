@@ -143,7 +143,7 @@ describe("chatStore.sendMessage", () => {
     await useChatStore.getState().sendMessage("你好");
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://localhost:8000/api/chat");
+    expect(url).toBe("/api/chat");
     expect(init).toMatchObject({
       method: "POST",
       body: JSON.stringify({ message: "你好" }),
@@ -280,7 +280,7 @@ describe("innerLifeStore", () => {
 
     await p;
 
-    expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:8000/api/state");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/state");
     expect(useInnerLifeStore.getState().current).toEqual(currentFixture);
     expect(useInnerLifeStore.getState().loading).toBe(false);
     expect(useInnerLifeStore.getState().error).toBeNull();

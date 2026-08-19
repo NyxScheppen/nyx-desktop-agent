@@ -1,4 +1,24 @@
-// 占位：情绪立绘（frontend-design §4）——emotion 字段零映射换图
-export default function EmotionSprite() {
-  return <div className="emotion-sprite">立绘占位</div>;
+import { useInnerLifeStore } from "../../stores/innerLifeStore";
+
+// 8 情绪 sprite：文件名 = EmotionCategory 值，1:1 映射（04-inner-state-panel §2），无 switch 分支。
+// import.meta.glob 免 8 行静态 import；键 = 相对本文件的路径。
+const SPRITES = import.meta.glob("../../assets/sprites/*.png", {
+  eager: true,
+  import: "default",
+}) as Record<string, string>;
+
+type EmotionSpriteProps = {
+  size?: "small" | "large"; // 聊天气泡小图（03 §3）vs 内在面板大图（04 §1）
+};
+
+// 情绪的唯一视觉载体：读 current.emotion → assets/sprites/{emotion}.png。
+// current === null（快照未回）时返回 null，不崩（03 §3）。
+export default function EmotionSprite({ size = "large" }: EmotionSpriteProps) {
+  const emotion = useInnerLifeStore((s) => s.current?.emotion);
+  if (emotion === undefined) return null;
+  const src = SPRITES[`../../assets/sprites/${emotion}.png`];
+  if (src === undefined) return null;
+  return (
+    <img className={`emotion-sprite emotion-sprite--${size}`} src={src} alt={emotion} />
+  );
 }

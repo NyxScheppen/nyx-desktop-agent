@@ -1,0 +1,210 @@
+/* Nyx 前端样式：面板骨架 + 03-chat-panel。
+   核心先行，视觉从简——left/right 气泡、think 折叠、ask 高亮、sendError 红字为功能必需。 */
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: #14161a;
+  color: #e6e8ec;
+}
+
+/* App 布局（01-sse §6） */
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #2a2e35;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.connection-state {
+  font-size: 0.8rem;
+  color: #8a919c;
+}
+
+.app-main {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  flex: 1;
+}
+
+/* Panel 骨架（components/layout/Panel） */
+.panel {
+  border: 1px solid #2a2e35;
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #1c1f24;
+  border-bottom: 1px solid #2a2e35;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.panel-badge {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.25rem;
+  background: #2a2e35;
+  color: #8a919c;
+}
+
+.panel-body {
+  padding: 0.75rem;
+}
+
+/* 聊天面板：滚动列表 + 气泡（03 §3） */
+.message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  margin-bottom: 0.75rem;
+}
+
+.message-bubble {
+  max-width: 78%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.6rem;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+  word-break: break-word; /* 长文本 max-width + 换行（03 §4） */
+}
+
+.message-bubble--nyx {
+  align-self: flex-start;
+  background: #23272e;
+  border-top-left-radius: 0.2rem;
+}
+
+.message-bubble--user {
+  align-self: flex-end;
+  background: #2f4b7a;
+  border-top-right-radius: 0.2rem;
+}
+
+.message-bubble--ask {
+  border: 1px solid #5c7fbf; /* 高亮（03 §3） */
+}
+
+.message-bubble--think {
+  color: #8a919c;
+  font-size: 0.85rem; /* 灰色小字（03 §3） */
+}
+
+.message-bubble--mutter {
+  color: #8a919c;
+  font-style: italic;
+  font-size: 0.85rem; /* 斜体浅色（03 §3） */
+}
+
+.message-bubble__content {
+  white-space: pre-wrap;
+}
+
+.message-bubble__toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #8a919c;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.message-bubble__badge {
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+  margin-right: 0.4rem;
+  border-radius: 0.25rem;
+  background: #3a3540;
+  color: #c9b6d9;
+}
+
+/* 情绪 sprite：气泡小图 vs 内在面板大图（04 §1） */
+.emotion-sprite {
+  border-radius: 0.4rem;
+}
+
+.emotion-sprite--small {
+  display: inline-block;
+  width: 2rem;
+  height: 2rem;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+
+.emotion-sprite--large {
+  display: block;
+  width: 100%;
+  max-width: 16rem;
+}
+
+/* 输入框（03 §1/§2） */
+.chat-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.chat-input__field {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #2a2e35;
+  border-radius: 0.4rem;
+  background: #1c1f24;
+  color: #e6e8ec;
+}
+
+.chat-input__send {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 0.4rem;
+  background: #2f4b7a;
+  color: #e6e8ec;
+  cursor: pointer;
+}
+
+.chat-input__send:disabled {
+  background: #2a2e35;
+  color: #8a919c;
+  cursor: not-allowed;
+}
+
+.chat-input__error {
+  flex-basis: 100%;
+  margin: 0;
+  color: #e06c75; /* 红字（03 §2） */
+  font-size: 0.85rem;
+}

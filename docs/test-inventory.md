@@ -549,3 +549,21 @@
 | `chatStore.reset > 新会话全清` | 功能正确 | `reset()` 复位 `messages/isReplying/sendError` + 取消残留 timer（advance 60s 不触发超时） |
 
 **功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）。
+
+## frontend-chat-panel（聊天面板：ChatPanel + MessageList + MessageBubble + ChatInput + EmotionSprite）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `MessageBubble > speak → 左气泡 class + content 上屏` | 功能正确 | speak 气泡带 `message-bubble--speak` class、content 渲染为 `.message-bubble__content` |
+| `MessageBubble > ask → 高亮 class` | 功能正确 | ask 气泡带 `message-bubble--ask` class（高亮样式钩子） |
+| `MessageBubble > think → 默认折叠，点开才显示` | 功能正确 | think 默认不渲染 content、显示「内心话」开关；点击后 content 上屏 |
+| `MessageBubble > initiate_chat → 「搭话」标记` | 功能正确 | initiate_chat 气泡带「搭话」badge |
+| `MessageBubble > user message → 右气泡 class` | 功能正确 | 用户消息带 `message-bubble--user` class |
+| `MessageList > 渲染传入 messages，自动滚动不崩` | 功能正确 | 渲染传入的 messages 上屏；`scrollIntoView?.()` 兜底 jsdom 未实现不抛 |
+| `ChatPanel > 订阅 messages 透传给 MessageList` | 功能正确 | store 里 messages 经 ChatPanel 订阅透传 → MessageList 渲染上屏 |
+| `ChatInput > 点发送 → sendMessage(trimmed)` | 功能正确 | 点发送按钮触发 `sendMessage` 且传入 trim 后文本（mock store action） |
+| `ChatInput > 回车 → sendMessage` | 功能正确 | 输入框 Enter 触发 `sendMessage` |
+| `ChatInput > isReplying=true → 禁用 + 回车不触发` | 功能正确 | isReplying 时发送按钮 `disabled` + 文案「…」、回车不触发 sendMessage（串行锁） |
+| `ChatInput > sendError 非 null → 红字显示` | 功能正确 | `sendError` 非空时渲染 `.chat-input__error` 红字 |
+
+**功能阶段**：frontend 03-chat-panel 实现时编写（RTL + 真实 store；验证管道正确——按 role/kind 渲染、think 折叠、isReplying 锁输入、sendError 上屏，不验证视觉样式）。

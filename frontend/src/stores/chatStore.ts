@@ -67,12 +67,12 @@ export const useChatStore = create<ChatState>((set) => {
     addSpeak: (e) => {
       clearReplyTimer(); // 收到回复即取消 60s 超时（02-stores §1）
       append(e, "nyx", "speak");
-      set({ isReplying: false });
+      set({ isReplying: false, sendError: null }); // 回复到达即清「回复超时」残留错误
     },
     addAsk: (e) => {
       clearReplyTimer();
       append(e, "nyx", "ask");
-      set({ isReplying: false });
+      set({ isReplying: false, sendError: null });
     },
     addThink: (e) => append(e, "nyx", "think"),
     addMutter: (e) => append(e, "nyx", "mutter"),
@@ -91,6 +91,9 @@ export const useChatStore = create<ChatState>((set) => {
         set({ sendError: err instanceof Error ? err.message : String(err) });
       }
     },
-    reset: () => set({ messages: [] }),
+    reset: () => {
+      clearReplyTimer(); // 新会话：取消残留 timer + 复位 isReplying/sendError（防假超时）
+      set({ messages: [], isReplying: false, sendError: null });
+    },
   };
 });

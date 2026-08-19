@@ -543,5 +543,7 @@
 | `innerLifeStore.updateEmotion > null 安全` | 边界鲁棒 | `current=null` 时不崩（忽略） |
 | `eventStore.record > unshift + count` | 功能正确 | 最新在前 + `count++` |
 | `eventStore.record > 超 MAX_EVENTS` | 边界鲁棒 | 501 条 → `events` 长度 500、`count=501`、丢最旧 |
+| `chatStore > 迟到回复清 sendError` | 功能正确 | 超时后（`sendError="回复超时"`）`addSpeak` 到达 → `sendError=null`（回复清超时残留） |
+| `chatStore.reset > 新会话全清` | 功能正确 | `reset()` 复位 `messages/isReplying/sendError` + 取消残留 timer（advance 60s 不触发超时） |
 
-**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）。
+**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于本轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）。

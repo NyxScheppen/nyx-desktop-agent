@@ -192,6 +192,46 @@ describe("chatStore.sendMessage", () => {
 
     expect(useChatStore.getState().sendError).toBeNull();
   });
+
+  it("迟到回复：超时后 addSpeak 清 sendError", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ event_id: "e1" })));
+
+    await useChatStore.getState().sendMessage("hi");
+    vi.advanceTimersByTime(60_000);
+    expect(useChatStore.getState().sendError).toBe("回复超时");
+
+    useChatStore.getState().addSpeak({
+      event: "speak",
+      event_id: "e2",
+      correlation_id: "c2",
+      content: "迟到的回复",
+    });
+
+    expect(useChatStore.getState().sendError).toBeNull();
+  });
+});
+
+describe("chatStore.reset", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetChat();
+  });
+
+  it("新会话全清：复位 isReplying/sendError + 取消残留 timer", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ event_id: "e1" })));
+
+    await useChatStore.getState().sendMessage("hi");
+    expect(useChatStore.getState().isReplying).toBe(true);
+
+    useChatStore.getState().reset();
+
+    expect(useChatStore.getState().messages).toHaveLength(0);
+    expect(useChatStore.getState().isReplying).toBe(false);
+    expect(useChatStore.getState().sendError).toBeNull();
+
+    vi.advanceTimersByTime(60_000); // 残留 timer 已取消，不触发超时
+    expect(useChatStore.getState().sendError).toBeNull();
+  });
 });
 
 describe("innerLifeStore", () => {

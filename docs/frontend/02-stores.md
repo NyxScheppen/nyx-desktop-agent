@@ -57,8 +57,8 @@ type ChatState = {
 
 ```typescript
 addUserMessage(e: UserMessageEvent): void            // SSE user_message 回显（读 e.message）→ {role:"user", kind:"message"}
-addSpeak(e: TextEvent<"speak">): void                // {role:"nyx", kind:"speak"}；clearTimeout(replyTimer) + isReplying=false
-addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}；clearTimeout(replyTimer) + isReplying=false
+addSpeak(e: TextEvent<"speak">): void                // {role:"nyx", kind:"speak"}；clearTimeout(replyTimer) + isReplying=false + sendError=null
+addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}；clearTimeout(replyTimer) + isReplying=false + sendError=null
 addThink(e: TextEvent<"think">): void                // {role:"nyx", kind:"think"}
 addMutter(e: TextEvent<"mutter">): void              // {role:"nyx", kind:"mutter"}
 addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initiate_chat"}
@@ -66,13 +66,13 @@ addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initi
 sendMessage(text: string): Promise<void>  // 内部调 client.postChat(text)（client 契约见 05-client）
                                           // 成功：isReplying=true + sendError=null + 起 60s 超时 timer
                                           // postChat throw → catch → sendError = e.message（isReplying 未置，无需复位）
-reset(): void                            // 清空 messages（新会话/测试用）
+reset(): void                            // 新会话全清：clearTimeout(replyTimer) + messages/isReplying/sendError 复位
 ```
 
 ### 关键决策
 
 - **SSE 是聊天消息的唯一来源**：`sendMessage` 只 `POST`（拿 `{event_id}` 后 `isReplying=true`），**不本地 append**。用户消息靠 SSE `user_message` 回显上屏（localhost 往返 ~10ms，视觉无延迟）。好处：无「乐观消息 + SSE 回显」的**去重/替换**复杂度；`correlation_id` 沿事件一路一致，追溯无分歧（原则 5）。
-- **isReplying 生命周期 + 60s 超时（必须取消）**：`sendMessage` 成功置 true 并起 60s 超时 timer（`setTimeout`，回调置 `isReplying=false` + `sendError="回复超时"`）；`addSpeak`/`addAsk` 收到回复时**先 `clearTimeout` 取消 timer** 再置 false（`think`/`mutter` 不结束回复，因为后必跟 `speak`）。timer 引用放 module-level（`let replyTimer`，**不进 store state**——store 状态须可序列化）。缺取消机制 = 真 bug：10s 收到回复，60s 时 timer 照样触发假「回复超时」。
+- **isReplying 生命周期 + 60s 超时（必须取消）**：`sendMessage` 成功置 true 并起 60s 超时 timer（`setTimeout`，回调置 `isReplying=false` + `sendError="回复超时"`）；`addSpeak`/`addAsk` 收到回复时**先 `clearTimeout` 取消 timer** 再置 `isReplying=false` + `sendError=null`（回复到达即清「回复超时」残留错误；`think`/`mutter` 不结束回复，因为后必跟 `speak`）。timer 引用放 module-level（`let replyTimer`，**不进 store state**——store 状态须可序列化）。缺取消机制 = 真 bug：10s 收到回复，60s 时 timer 照样触发假「回复超时」。
 - **消息顺序与时间戳**：SSE 顺序到达，直接 `push`，不排序——故 `ChatMessage` **不存 `timestamp`**（SSE `data` 无后端 `Event.timestamp`，见 01-sse §1；排序靠到达顺序，前端 `Date.now()` 只是近似，核心先行不需要）。
 
 ## 2. `innerLifeStore`

@@ -208,3 +208,107 @@ body {
   color: #e06c75; /* 红字（03 §2） */
   font-size: 0.85rem;
 }
+
+/* 内在状态面板（04-inner-state-panel） */
+.inner-state-panel__error {
+  margin: 0 0 0.5rem;
+  color: #e06c75; /* 红字（同 ChatInput sendError） */
+  font-size: 0.85rem;
+}
+
+.inner-state-panel__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* valence-arousal 二维散点（04 §3）：SVG 手绘，无图表库 */
+.va-plot {
+  display: block;
+  width: 100%;
+  max-width: 16rem;
+}
+
+.va-plot__frame {
+  fill: none;
+  stroke: #2a2e35;
+}
+
+.va-plot__cross {
+  stroke: #5c7fbf;
+  stroke-dasharray: 4 4;
+}
+
+.va-plot__point {
+  fill: #5c7fbf;
+}
+
+.va-plot__label {
+  fill: #8a919c;
+  font-size: 10px;
+}
+
+/* 精力条（04 §4） */
+.energy-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.energy-bar__track {
+  flex: 1;
+  height: 0.75rem;
+  background: #2a2e35;
+  border-radius: 0.4rem;
+  overflow: hidden;
+}
+
+.energy-bar__fill {
+  height: 100%;
+  border-radius: 0.4rem;
+}
+
+.energy-bar__label {
+  min-width: 6rem;
+  font-size: 0.85rem;
+  color: #8a919c;
+}
+
+/* Big Five / 三观条形（04 §5，同款条形共享类） */
+.bar-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.bar-chart__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bar-chart__label {
+  flex: 0 0 11rem;
+  font-size: 0.8rem;
+  color: #8a919c;
+}
+
+.bar-chart__track {
+  flex: 1;
+  height: 0.6rem;
+  background: #2a2e35;
+  border-radius: 0.3rem;
+  overflow: hidden;
+}
+
+.bar-chart__fill {
+  height: 100%;
+  background: #5c7fbf;
+  border-radius: 0.3rem;
+}
+
+.bar-chart__value {
+  flex: 0 0 1.5rem;
+  text-align: right;
+  font-size: 0.8rem;
+}

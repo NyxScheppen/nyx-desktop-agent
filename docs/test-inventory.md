@@ -571,3 +571,18 @@
 | `ChatInput > sendError 非 null → 红字显示` | 功能正确 | `sendError` 非空时渲染 `.chat-input__error` 红字 |
 
 **功能阶段**：frontend 03-chat-panel 实现时编写（RTL + 真实 store；验证管道正确——按 role/kind 渲染、think 折叠、isReplying 锁输入、sendError 上屏，不验证视觉样式）；`ChatInput > 输入法组合态回车不触发`、`ChatInput > 发送失败保留文本` 于 03-chat-panel 后 review 追加（Finding 1/2：IME 回车误发送 + 清空太早致失败丢文本）；`makeMsg` 自增 id、`isReplying` 用例填非空值 于同轮修正（假绿：空输入提前 return / 同 kind 撞 key）；`ChatInput > 成功清空不误删预打文本` 于下一轮 review 追加（异步无条件清空会误删回复期间预打文本，改函数式更新比对 trimmed）。
+
+## frontend-inner-state-panel（内在状态面板：InnerStatePanel + ValenceArousalPlot + EmotionSprite + EnergyBar + BigFiveChart + ValuesChart）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `EnergyBar > 按 energy_state 渲染枚举原值文案` | 功能正确 | `energy_state="tired"` 渲染 `tired` 原值文案（不转中文，反冗余） |
+| `EmotionSprite > 按 emotion 选图文件名` | 功能正确 | `emotion="happy"` 时 `<img alt="happy">` 的 `src` 含 `happy`（1:1 文件名映射，无 switch） |
+| `BigFiveChart > 按 personality 渲染键名原值标签 + 数值` | 功能正确 | 渲染 `openness`/`neuroticism` 键名原值标签 + 数值（`2`/`7` 唯一值上屏） |
+| `ValuesChart > 按 values 渲染键名原值标签 + 数值` | 功能正确 | 渲染 `attitude_to_human`/`optimism` 标签 + 数值（`9`/`5` 唯一值上屏） |
+| `ValenceArousalPlot > 渲染不崩` | 功能正确 | SVG `.va-plot` 存在（坐标/像素不做断言，README §6） |
+| `InnerStatePanel > current=null → 整体占位不崩` | 边界鲁棒 | `current=null` 显示「等待核心服务连接…」且不渲染子组件（`openness` 不在） |
+| `InnerStatePanel > current 非 null → 渲染子组件字段` | 功能正确 | `energetic`/`openness`/`attitude_to_human` 分别经 EnergyBar/BigFiveChart/ValuesChart 上屏 |
+| `InnerStatePanel > error 非 null → 红字一行` | 功能正确 | `error` 非空渲染 `.inner-state-panel__error` 红字 |
+
+**功能阶段**：frontend 04-inner-state-panel 实现时编写（RTL + 真实 store；验证管道正确——子组件按需收字段、`energy_state`/键名枚举值原值不转中文、`current=null` 整体占位不崩，图表坐标/像素不断言）；`EmotionSprite` 已在 03-chat-panel 由 MessageBubble 复用，此处补其文件名映射的独立断言。

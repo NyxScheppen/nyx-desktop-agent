@@ -39,7 +39,7 @@ function clearReplyTimer(): void {
   }
 }
 
-export const useChatStore = create<ChatState>((set) => {
+export const useChatStore = create<ChatState>((set, get) => {
   // 文本字段收窄校验后才入消息（01-sse §4.1：不用裸 as，类型错 → 丢弃不崩）。
   // 用户消息读 message、文本事件读 content（键名不同，见 01-sse §1）。
   const append = (
@@ -84,9 +84,12 @@ export const useChatStore = create<ChatState>((set) => {
     addMutter: (e) => append(e, "nyx", "mutter"),
     addInitiateChat: (e) => append(e, "nyx", "initiate_chat"),
     sendMessage: async (text) => {
+      // 串行锁要同步上：get() 同步读 store（非 React 订阅），在 await postChat 之前置 isReplying=true。
+      // 否则网络往返窗口内 isReplying 仍 false，双击/连击可并发第二次发送、覆盖 pendingId。
+      if (get().isReplying) return;
+      set({ isReplying: true, sendError: null });
       try {
         const { event_id } = await postChat(text);
-        set({ isReplying: true, sendError: null });
         pendingId = event_id; // 回复帧 correlation_id 与此匹配（后端 user_message 沿它溯源）
         clearReplyTimer();
         replyTimer = setTimeout(() => {
@@ -95,8 +98,8 @@ export const useChatStore = create<ChatState>((set) => {
           set({ isReplying: false, sendError: "回复超时" });
         }, REPLY_TIMEOUT_MS);
       } catch (err) {
-        // postChat throw：isReplying 未置，无需复位（02-stores §1）
-        set({ sendError: err instanceof Error ? err.message : String(err) });
+        // 锁已提前上，失败须复位 isReplying（原先 isReplying 在 await 后才置、catch 无需复位）
+        set({ isReplying: false, sendError: err instanceof Error ? err.message : String(err) });
       }
     },
     reset: () => {

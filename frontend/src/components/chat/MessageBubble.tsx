@@ -7,7 +7,8 @@ type MessageBubbleProps = {
 };
 
 // 单条气泡按 role/kind 渲染（03-chat-panel §3）：
-// speak/ask/initiate_chat 挂当前情绪 sprite；think 默认折叠点开看；initiate_chat 带「搭话」标记。
+// speak/ask/initiate_chat 挂当前情绪 sprite；initiate_chat 带「搭话」标记；think 默认折叠点开看；
+// mutter（碎碎念）走默认弱化渲染：斜体浅色由 CSS .message-bubble--mutter 处理，无 sprite 无标记（安静旁白，不折叠）。
 export default function MessageBubble({ message }: MessageBubbleProps) {
   const [thinkExpanded, setThinkExpanded] = useState(false);
   const { role, kind, content } = message;

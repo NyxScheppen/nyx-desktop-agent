@@ -152,6 +152,18 @@ describe("chatStore.sendMessage", () => {
     expect(useChatStore.getState().sendError).toBeNull();
   });
 
+  it("重入守卫：锁在 await 前同步上，in-flight 第二次 sendMessage 不发起第二次 postChat", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ event_id: "e1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = useChatStore.getState().sendMessage("a"); // 同步置 isReplying=true 后进入 await
+    expect(useChatStore.getState().isReplying).toBe(true); // 锁已同步生效（非 React 异步订阅）
+    await useChatStore.getState().sendMessage("b"); // 被 get().isReplying 守卫拦下
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await first; // 第一次正常 settle，避免挂起
+  });
+
   it("失败：postChat throw → sendError=e.message，isReplying 仍 false", async () => {
     vi.stubGlobal(
       "fetch",

@@ -562,9 +562,11 @@
 | `MessageBubble > user message → 右气泡 class` | 功能正确 | 用户消息带 `message-bubble--user` class |
 | `MessageList > 渲染传入 messages，自动滚动不崩` | 功能正确 | 渲染传入的 messages 上屏；`scrollIntoView?.()` 兜底 jsdom 未实现不抛 |
 | `ChatPanel > 订阅 messages 透传给 MessageList` | 功能正确 | store 里 messages 经 ChatPanel 订阅透传 → MessageList 渲染上屏 |
-| `ChatInput > 点发送 → sendMessage(trimmed)` | 功能正确 | 点发送按钮触发 `sendMessage` 且传入 trim 后文本（mock store action） |
-| `ChatInput > 回车 → sendMessage` | 功能正确 | 输入框 Enter 触发 `sendMessage` |
-| `ChatInput > isReplying=true → 禁用 + 回车不触发` | 功能正确 | isReplying 时发送按钮 `disabled` + 文案「…」、回车不触发 sendMessage（串行锁） |
+| `ChatInput > 点发送 → sendMessage(trimmed) 且成功清空` | 功能正确 | 点发送按钮触发 `sendMessage` 且传入 trim 后文本；成功（返回 true）后 `waitFor` 断言输入框清空 |
+| `ChatInput > 回车 → sendMessage 且成功清空` | 功能正确 | 输入框 Enter 触发 `sendMessage`；成功后输入框清空 |
+| `ChatInput > 输入法组合态回车不触发` | 回归保护 | `isComposing=true` 的 Enter（拼音选字）不触发 `sendMessage`（防 IME 误发送） |
+| `ChatInput > 发送失败保留文本` | 功能正确 | `sendMessage` 返回 false（postChat 失败）→ 输入框保留原文可重试 |
+| `ChatInput > isReplying=true → 禁用 + 回车不触发` | 功能正确 | isReplying 时发送按钮 `disabled` + 文案「…」；填非空值后回车仍不触发 sendMessage（只有 isReplying 守卫能拦） |
 | `ChatInput > sendError 非 null → 红字显示` | 功能正确 | `sendError` 非空时渲染 `.chat-input__error` 红字 |
 
-**功能阶段**：frontend 03-chat-panel 实现时编写（RTL + 真实 store；验证管道正确——按 role/kind 渲染、think 折叠、isReplying 锁输入、sendError 上屏，不验证视觉样式）。
+**功能阶段**：frontend 03-chat-panel 实现时编写（RTL + 真实 store；验证管道正确——按 role/kind 渲染、think 折叠、isReplying 锁输入、sendError 上屏，不验证视觉样式）；`ChatInput > 输入法组合态回车不触发`、`ChatInput > 发送失败保留文本` 于 03-chat-panel 后 review 追加（Finding 1/2：IME 回车误发送 + 清空太早致失败丢文本）；`makeMsg` 自增 id、`isReplying` 用例填非空值 于同轮修正（假绿：空输入提前 return / 同 kind 撞 key）。

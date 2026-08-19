@@ -13,8 +13,10 @@ export default function ChatInput() {
     if (isReplying) return;
     const trimmed = text.trim();
     if (trimmed === "") return;
-    setText("");
-    void sendMessage(trimmed);
+    // 成功才清空（03 §2）：postChat 失败时 sendMessage 返回 false，保留输入框文本供重试
+    void sendMessage(trimmed).then((ok) => {
+      if (ok) setText("");
+    });
   };
 
   return (
@@ -24,7 +26,8 @@ export default function ChatInput() {
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") submit();
+          // 中文输入法回车确认候选字也会派发 keydown（isComposing=true），须跳过防误发送
+          if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
         }}
         placeholder="对 Nyx 说…"
       />

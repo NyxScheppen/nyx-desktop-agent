@@ -20,7 +20,7 @@ type ChatState = {
   addThink: (e: TextEvent<"think">) => void;
   addMutter: (e: TextEvent<"mutter">) => void;
   addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string) => Promise<boolean>; // 成功 true / 失败 false（ChatInput 据其决定是否清空输入框）
   reset: () => void;
 };
 
@@ -86,7 +86,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     sendMessage: async (text) => {
       // 串行锁要同步上：get() 同步读 store（非 React 订阅），在 await postChat 之前置 isReplying=true。
       // 否则网络往返窗口内 isReplying 仍 false，双击/连击可并发第二次发送、覆盖 pendingId。
-      if (get().isReplying) return;
+      if (get().isReplying) return false;
       set({ isReplying: true, sendError: null });
       try {
         const { event_id } = await postChat(text);
@@ -97,9 +97,11 @@ export const useChatStore = create<ChatState>((set, get) => {
           // 不清 pendingId：迟到回复仍需能匹配并清 sendError
           set({ isReplying: false, sendError: "回复超时" });
         }, REPLY_TIMEOUT_MS);
+        return true;
       } catch (err) {
         // 锁已提前上，失败须复位 isReplying（原先 isReplying 在 await 后才置、catch 无需复位）
         set({ isReplying: false, sendError: err instanceof Error ? err.message : String(err) });
+        return false;
       }
     },
     reset: () => {

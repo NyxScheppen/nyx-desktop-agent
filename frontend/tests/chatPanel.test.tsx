@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatInput from "../src/components/chat/ChatInput";
 import ChatPanel from "../src/components/chat/ChatPanel";
@@ -7,12 +7,15 @@ import MessageList from "../src/components/chat/MessageList";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 
+let msgSeq = 0; // 自增保证 id 唯一，避免同 kind 两条消息撞 React key
+
 function makeMsg(
   kind: ChatMessage["kind"],
   role: ChatMessage["role"],
   content: string,
 ): ChatMessage {
-  return { id: `id-${kind}`, role, kind, content, correlation_id: "c" };
+  msgSeq += 1;
+  return { id: `id-${kind}-${msgSeq}`, role, kind, content, correlation_id: "c" };
 }
 
 afterEach(() => {
@@ -96,39 +99,62 @@ describe("ChatInput", () => {
     useChatStore.getState().reset();
   });
 
-  it("点发送 → 触发 sendMessage(trimmed)", () => {
+  it("点发送 → 触发 sendMessage(trimmed) 且成功清空", async () => {
     const sendSpy = vi
       .spyOn(useChatStore.getState(), "sendMessage")
-      .mockResolvedValue(undefined);
+      .mockResolvedValue(true);
     render(<ChatInput />);
-    fireEvent.change(screen.getByPlaceholderText("对 Nyx 说…"), {
-      target: { value: "  你好  " },
-    });
+    const input = screen.getByPlaceholderText("对 Nyx 说…");
+    fireEvent.change(input, { target: { value: "  你好  " } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     expect(sendSpy).toHaveBeenCalledWith("你好");
+    await waitFor(() => expect(input).toHaveValue("")); // 成功才清空（flush .then 微任务）
   });
 
-  it("回车 → 触发 sendMessage", () => {
+  it("回车 → 触发 sendMessage 且成功清空", async () => {
     const sendSpy = vi
       .spyOn(useChatStore.getState(), "sendMessage")
-      .mockResolvedValue(undefined);
+      .mockResolvedValue(true);
     render(<ChatInput />);
     const input = screen.getByPlaceholderText("对 Nyx 说…");
     fireEvent.change(input, { target: { value: "hi" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(sendSpy).toHaveBeenCalledWith("hi");
+    await waitFor(() => expect(input).toHaveValue(""));
+  });
+
+  it("输入法组合态回车（isComposing）→ 不触发 sendMessage", () => {
+    const sendSpy = vi
+      .spyOn(useChatStore.getState(), "sendMessage")
+      .mockResolvedValue(true);
+    render(<ChatInput />);
+    const input = screen.getByPlaceholderText("对 Nyx 说…");
+    fireEvent.change(input, { target: { value: "nihao" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true }); // 拼音选字回车，非真实发送
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it("发送失败（sendMessage 返回 false）→ 输入框保留文本可重试", () => {
+    vi.spyOn(useChatStore.getState(), "sendMessage").mockResolvedValue(false);
+    render(<ChatInput />);
+    const input = screen.getByPlaceholderText("对 Nyx 说…");
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(input).toHaveValue("你好"); // 失败不清空，用户可重试
   });
 
   it("isReplying=true → 发送按钮禁用 + 回车不触发", () => {
     useChatStore.setState({ isReplying: true });
     const sendSpy = vi
       .spyOn(useChatStore.getState(), "sendMessage")
-      .mockResolvedValue(undefined);
+      .mockResolvedValue(true);
     render(<ChatInput />);
+    const input = screen.getByPlaceholderText("对 Nyx 说…");
+    fireEvent.change(input, { target: { value: "想发但被锁" } }); // 填非空，确保只有 isReplying 守卫能拦
     const btn = screen.getByRole("button");
     expect(btn).toBeDisabled();
     expect(btn).toHaveTextContent("…");
-    fireEvent.keyDown(screen.getByPlaceholderText("对 Nyx 说…"), { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter" });
     expect(sendSpy).not.toHaveBeenCalled();
   });
 

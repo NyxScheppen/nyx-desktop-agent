@@ -18,6 +18,15 @@ function makeMsg(
   return { id: `id-${kind}-${msgSeq}`, role, kind, content, correlation_id: "c" };
 }
 
+// nyx 文本消息走 useTypewriter 逐字，测试须推进 fake timers 打完再断言完整文案。
+// 串行推进依赖 useEffect（React commit 后才设下一个停顿 timer），
+// 故分多轮 advance，每轮边界让 React flush，覆盖「打字 → 停顿 → 下一条」全程。
+function typeDone() {
+  for (let i = 0; i < 20; i++) {
+    act(() => vi.advanceTimersByTime(500));
+  }
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -25,10 +34,15 @@ afterEach(() => {
 describe("MessageBubble", () => {
   beforeEach(() => {
     useInnerLifeStore.setState({ current: null, loading: false, error: null });
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("speak → 左气泡 class + content 上屏", () => {
     render(<MessageBubble message={makeMsg("speak", "nyx", "你好")} />);
+    typeDone();
     expect(screen.getByText("你好")).toHaveClass("message-bubble__content");
     expect(screen.getByText("你好").closest(".message-bubble")).toHaveClass(
       "message-bubble--speak",
@@ -37,24 +51,28 @@ describe("MessageBubble", () => {
 
   it("ask → 高亮 class", () => {
     render(<MessageBubble message={makeMsg("ask", "nyx", "想聊聊吗？")} />);
+    typeDone();
     expect(screen.getByText("想聊聊吗？").closest(".message-bubble")).toHaveClass(
       "message-bubble--ask",
     );
   });
 
-  it("think → 默认折叠，点开才显示内容", () => {
+  it("think → 逐字弱化显示（不再折叠）", () => {
     render(<MessageBubble message={makeMsg("think", "nyx", "内心独白")} />);
-    expect(screen.queryByText("内心独白")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("内心话"));
-    expect(screen.getByText("内心独白")).toBeInTheDocument();
+    typeDone();
+    const el = screen.getByText("内心独白");
+    expect(el).toBeInTheDocument();
+    expect(el.closest(".message-bubble")).toHaveClass("message-bubble--think");
   });
 
-  it("initiate_chat → 带「搭话」标记", () => {
+  it("initiate_chat → 带「搭话」标记 + 逐字 content", () => {
     render(<MessageBubble message={makeMsg("initiate_chat", "nyx", "在忙吗？")} />);
-    expect(screen.getByText("搭话")).toBeInTheDocument();
+    expect(screen.getByText("搭话")).toBeInTheDocument(); // 标记即时
+    typeDone();
+    expect(screen.getByText("在忙吗？")).toBeInTheDocument();
   });
 
-  it("user message → 右气泡 class", () => {
+  it("user message → 右气泡 class（即时，不打字）", () => {
     render(<MessageBubble message={makeMsg("message", "user", "你好")} />);
     expect(screen.getByText("你好").closest(".message-bubble")).toHaveClass(
       "message-bubble--user",
@@ -65,9 +83,13 @@ describe("MessageBubble", () => {
 describe("MessageList", () => {
   beforeEach(() => {
     useInnerLifeStore.setState({ current: null, loading: false, error: null });
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it("渲染传入的 messages，自动滚动不崩", () => {
+  it("只显示当前一条，更早的收进历史可展开", () => {
     render(
       <MessageList
         messages={[
@@ -76,8 +98,28 @@ describe("MessageList", () => {
         ]}
       />,
     );
-    expect(screen.getByText("第一条")).toBeInTheDocument();
+    typeDone();
+
+    // 当前显示最后一条（停留），第一条进历史折叠
     expect(screen.getByText("第二条")).toBeInTheDocument();
+    expect(screen.queryByText("第一条")).not.toBeInTheDocument();
+
+    // 点开历史看到第一条
+    fireEvent.click(screen.getByRole("button", { name: "历史（1）" }));
+    expect(screen.getByText("第一条")).toBeInTheDocument();
+  });
+
+  it("串行：第一条未打完时，后续不渲染", () => {
+    render(
+      <MessageList
+        messages={[
+          makeMsg("speak", "nyx", "第一句话"),
+          makeMsg("think", "nyx", "内心"),
+        ]}
+      />,
+    );
+    // 未推进 fake timers：只有第一条在打字，第二条不显示
+    expect(screen.queryByText("内心")).not.toBeInTheDocument();
   });
 });
 
@@ -85,11 +127,16 @@ describe("ChatPanel", () => {
   beforeEach(() => {
     useInnerLifeStore.setState({ current: null, loading: false, error: null });
     useChatStore.getState().reset();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("订阅 messages 并透传给 MessageList 渲染", () => {
     useChatStore.setState({ messages: [makeMsg("speak", "nyx", "订阅上屏")] });
     render(<ChatPanel />);
+    typeDone();
     expect(screen.getByText("订阅上屏")).toBeInTheDocument();
   });
 });

@@ -78,7 +78,7 @@ frontend/
   index.html
   src/
     main.tsx                 # React 入口，挂载 App
-    App.tsx                  # AppLayout（面板骨架）
+    App.tsx                  # 全屏装配：背景/樱花 + 半身像立绘 + 底部对话框 + 侧栏抽屉（01-sse §6）
     types/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     api/
@@ -87,6 +87,7 @@ frontend/
     hooks/
       useSSE.ts              # SSE 订阅 hook（CLAUDE.md 点名）
       usePresence.ts         # 活跃度采集 + classifyPresence 判定 + POST /api/observe
+      useTypewriter.ts       # 打字机：nyx 文本逐字显示（纯渲染层，03-chat-panel）
     stores/
       chatStore.ts           # 聊天：消息列表
       innerLifeStore.ts      # 内在状态：CurrentState 快照
@@ -106,6 +107,9 @@ frontend/
         ValuesChart.tsx
       layout/
         Panel.tsx            # 通用面板容器（占位面板复用）
+        SideDrawer.tsx       # 侧栏抽屉（收非对话面板，01-sse §6）
+      scene/
+        Sakura.tsx           # 樱花飘落装饰（纯视觉，01-sse §6）
     assets/
       sprites/               # 8 情绪 sprite（EmotionCategory 1:1）
   tests/
@@ -119,9 +123,9 @@ frontend/
 - 组件 `PascalCase`、文件 `camelCase.tsx`；store/hook/api 文件 `camelCase.ts`。
 - **TS 类型字段名 = 后端 JSON 键名（snake_case 原样，零映射）**：后端 dataclass 直接 `json.dumps`，字段是 `snake_case`（`valence` / `energy_state` / `current_activity` / `correlation_id`）。前端类型镜像时**不改名**，理由：零映射层 = 零映射 bug、字段名可沿 `correlation_id` 一路溯源到后端定义（原则 3/5）。前端内部 UI 变量名才用 camelCase，落类型时转 snake_case 键。
 
-## 5. 面板骨架（AppLayout）
+## 5. 面板骨架（SideDrawer 抽屉）
 
-design §11 列 7 个面板；核心先行实现 2 个，其余占位（`Panel` 容器 + 「后续」标记）。
+design §11 列 7 个面板；核心先行实现 2 个，其余占位（`Panel` 容器 + 「后续」标记）。视觉改造后，聊天区独立为底部对话框（`ChatPanel`），其余面板收进右上角「面板」按钮展开的 `SideDrawer` 抽屉。
 
 | 面板 | 核心先行状态 | 数据源 |
 |---|---|---|

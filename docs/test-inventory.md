@@ -551,16 +551,26 @@
 
 **功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）；`chatStore.sendMessage > 重入守卫` 于 03-chat-panel 后 review 追加（串行锁提前到 await 前 + get() 同步守卫，防 in-flight 重复发送覆盖 pendingId）。
 
+## frontend-typewriter（打字机 hook：useTypewriter）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `useTypewriter > 空文本 → displayed 空 + done 立即 true` | 边界鲁棒 | `useTypewriter("")` → `displayed === ""`、`done === true`（空文本短路，不起 timer） |
+| `useTypewriter > 逐字：每 tick 增一字，直至 done` | 功能正确 | fake timers：两次 `advanceTimersByTime(35)` → `"你"`→`"你好"`、`done` false→true |
+
+**功能阶段**：frontend 视觉改造（Galgame 打字机）时编写（`renderHook` + fake timers；验证渲染层逐字推进——`displayed` 按 tick 递增、空文本短路，纯渲染层不碰 store/数据流，不验证视觉）。
+
 ## frontend-chat-panel（聊天面板：ChatPanel + MessageList + MessageBubble + ChatInput + EmotionSprite）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
 | `MessageBubble > speak → 左气泡 class + content 上屏` | 功能正确 | speak 气泡带 `message-bubble--speak` class、content 渲染为 `.message-bubble__content` |
 | `MessageBubble > ask → 高亮 class` | 功能正确 | ask 气泡带 `message-bubble--ask` class（高亮样式钩子） |
-| `MessageBubble > think → 默认折叠，点开才显示` | 功能正确 | think 默认不渲染 content、显示「内心话」开关；点击后 content 上屏 |
+| `MessageBubble > think → 逐字弱化显示（不再折叠）` | 功能正确 | think 气泡带 `message-bubble--think` class、content 经 `typeDone()` 推进 fake timers 后完整上屏 |
 | `MessageBubble > initiate_chat → 「搭话」标记` | 功能正确 | initiate_chat 气泡带「搭话」badge |
 | `MessageBubble > user message → 右气泡 class` | 功能正确 | 用户消息带 `message-bubble--user` class |
-| `MessageList > 渲染传入 messages，自动滚动不崩` | 功能正确 | 渲染传入的 messages 上屏；`scrollIntoView?.()` 兜底 jsdom 未实现不抛 |
+| `MessageList > 只显示当前一条，更早的收进历史可展开` | 功能正确 | 两条消息 `typeDone()` 后：最后一条停留上屏、前一条折叠进「历史（1）」；点开历史见前一条 |
+| `MessageList > 串行：第一条未打完时后续不渲染` | 功能正确 | 未推进 fake timers 时只渲染当前第一条（打字中），后续消息不渲染 |
 | `ChatPanel > 订阅 messages 透传给 MessageList` | 功能正确 | store 里 messages 经 ChatPanel 订阅透传 → MessageList 渲染上屏 |
 | `ChatInput > 点发送 → sendMessage(trimmed) 且成功清空` | 功能正确 | 点发送按钮触发 `sendMessage` 且传入 trim 后文本；成功（返回 true）后 `waitFor` 断言输入框清空 |
 | `ChatInput > 回车 → sendMessage 且成功清空` | 功能正确 | 输入框 Enter 触发 `sendMessage`；成功后输入框清空 |
@@ -570,7 +580,7 @@
 | `ChatInput > isReplying=true → 禁用 + 回车不触发` | 功能正确 | isReplying 时发送按钮 `disabled` + 文案「…」；填非空值后回车仍不触发 sendMessage（只有 isReplying 守卫能拦） |
 | `ChatInput > sendError 非 null → 红字显示` | 功能正确 | `sendError` 非空时渲染 `.chat-input__error` 红字 |
 
-**功能阶段**：frontend 03-chat-panel 实现时编写（RTL + 真实 store；验证管道正确——按 role/kind 渲染、think 折叠、isReplying 锁输入、sendError 上屏，不验证视觉样式）；`ChatInput > 输入法组合态回车不触发`、`ChatInput > 发送失败保留文本` 于 03-chat-panel 后 review 追加（Finding 1/2：IME 回车误发送 + 清空太早致失败丢文本）；`makeMsg` 自增 id、`isReplying` 用例填非空值 于同轮修正（假绿：空输入提前 return / 同 kind 撞 key）；`ChatInput > 成功清空不误删预打文本` 于下一轮 review 追加（异步无条件清空会误删回复期间预打文本，改函数式更新比对 trimmed）。
+**功能阶段**：frontend 03-chat-panel 实现时编写（RTL + 真实 store；验证管道正确——按 role/kind 渲染、think 逐字弱化、nyx 文本消息走 useTypewriter 需 `typeDone()` 推进 fake timers、isReplying 锁输入、sendError 上屏，不验证视觉样式）；本表 MessageBubble/MessageList/ChatPanel 于视觉改造轮追加 fake timers（nyx 文本逐字，`typeDone()` 多轮推进覆盖串行）；`MessageList > 只显示当前一条` / `串行` 于视觉改造轮追加（单条显示 + 历史折叠 + 先内心后发言的串行推进）；`ChatInput > 输入法组合态回车不触发`、`ChatInput > 发送失败保留文本` 于 03-chat-panel 后 review 追加（Finding 1/2：IME 回车误发送 + 清空太早致失败丢文本）；`makeMsg` 自增 id、`isReplying` 用例填非空值 于同轮修正（假绿：空输入提前 return / 同 kind 撞 key）；`ChatInput > 成功清空不误删预打文本` 于下一轮 review 追加（异步无条件清空会误删回复期间预打文本，改函数式更新比对 trimmed）。
 
 ## frontend-inner-state-panel（内在状态面板：InnerStatePanel + ValenceArousalPlot + EmotionSprite + EnergyBar + BigFiveChart + ValuesChart）
 

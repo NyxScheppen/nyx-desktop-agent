@@ -1,8 +1,9 @@
 import { useEffect } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import ChatPanel from "./components/chat/ChatPanel";
-import InnerStatePanel from "./components/inner/InnerStatePanel";
-import Panel from "./components/layout/Panel";
+import EmotionSprite from "./components/inner/EmotionSprite";
+import SideDrawer from "./components/layout/SideDrawer";
+import Sakura from "./components/scene/Sakura";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
@@ -14,7 +15,9 @@ const CONNECTION_LABEL: Record<ConnectionState, string> = {
   closed: "已断开",
 };
 
-// App 组合装配（01-sse §6）：useSSE 只挂一次，子面板读 store
+// App 组合装配（01-sse §6 + 视觉改造布局 §1）：全屏三层——
+// 背景柔光 + 樱花 → 半身像立绘居中 → 底部对话框；侧栏抽屉收非对话面板。
+// useSSE 只挂一次，子组件读 store。
 export default function App() {
   const status = useSSE(dispatchEvent);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
@@ -27,19 +30,22 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="app-header">
-        <h1>Nyx</h1>
-        <span className="connection-state">{CONNECTION_LABEL[status]}</span>
+      <div className="app-bg" aria-hidden="true" />
+      <Sakura />
+
+      <header className="app-topbar">
+        <span className="scene-title">✦ Nyx ✦</span>
+        <div className="topbar-right">
+          <span className="connection-state">{CONNECTION_LABEL[status]}</span>
+          <SideDrawer />
+        </div>
       </header>
-      <main className="app-main">
-        <ChatPanel />
-        <InnerStatePanel />
-        <Panel title="欲望" placeholder />
-        <Panel title="活动" placeholder />
-        <Panel title="记忆" placeholder />
-        <Panel title="Eval" placeholder />
-        <Panel title="溯源" placeholder />
+
+      <main className="app-stage">
+        <EmotionSprite size="portrait" />
       </main>
+
+      <ChatPanel />
     </div>
   );
 }

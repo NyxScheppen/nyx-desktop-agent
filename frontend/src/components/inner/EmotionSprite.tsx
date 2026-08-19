@@ -8,7 +8,7 @@ const SPRITES = import.meta.glob("../../assets/sprites/*.png", {
 }) as Record<string, string>;
 
 type EmotionSpriteProps = {
-  size?: "small" | "large"; // 聊天气泡小图（03 §3）vs 内在面板大图（04 §1）
+  size?: "small" | "large" | "portrait"; // 气泡小图（03 §3）/ 内在面板大图（04 §1）/ 半身像立绘（视觉改造 §2）
 };
 
 // 情绪的唯一视觉载体：读 current.emotion → assets/sprites/{emotion}.png。

@@ -93,7 +93,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 |---|---|---|---|
 | `speak` | `chatStore` | `addSpeak` | 聊天区 Nyx 回复 |
 | `ask` | `chatStore` | `addAsk` | 聊天区 Nyx 问句 |
-| `think` | `chatStore` | `addThink` | 内心话（灰色/折叠展示） |
+| `think` | `chatStore` | `addThink` | 内心话（灰色斜体逐字展示） |
 | `mutter` | `chatStore` | `addMutter` | 碎碎念（独立气泡） |
 | `initiate_chat` | `chatStore` | `addInitiateChat` | 搭话 |
 | `emotion_update` | `innerLifeStore` | `updateEmotion` | 更新 valence/arousal/emotion |
@@ -155,7 +155,7 @@ eventStore.record(e: SseEvent): void                       // unshift 头部（�
 
 ## 6. App 组合装配（`App.tsx`）
 
-散落在 §3/§4 的胶水在此拼齐（核心先行的 App 最小骨架）：
+散落在 §3/§4 的胶水在此拼齐（核心先行的 App 最小骨架 + 视觉改造布局）：
 
 ```tsx
 // App.tsx
@@ -169,9 +169,26 @@ function App() {
     if (status === "open") refreshState();
   }, [status, refreshState]);
 
-  return <AppLayout connectionState={status} />;  // status 传给右上角「已连接/重连中」
+  return (
+    <div className="app">
+      <div className="app-bg" aria-hidden="true" />   {/* 背景柔光层 */}
+      <Sakura />                                       {/* 樱花飘落装饰（components/scene） */}
+      <header className="app-topbar">
+        <span className="scene-title">✦ Nyx ✦</span>
+        <div className="topbar-right">
+          <span className="connection-state">{CONNECTION_LABEL[status]}</span>
+          <SideDrawer />                               {/* 侧栏抽屉：收非对话面板 */}
+        </div>
+      </header>
+      <main className="app-stage">
+        <EmotionSprite size="portrait" />              {/* 半身像立绘居中（CSS 裁切全身像） */}
+      </main>
+      <ChatPanel />                                    {/* 底部对话框 */}
+    </div>
+  );
 }
 ```
 
 - `useSSE` 只挂一次（App 顶层），子面板**不重复订阅**，只读 store。
-- `connectionState` 由 App 传给 `ChatPanel`（03-chat-panel §1）显示。
+- **视觉改造布局（Galgame）**：全屏三层——背景柔光 + 樱花（`app-bg`/`Sakura`）→ 半身像立绘居中（`app-stage` + `EmotionSprite size="portrait"`）→ 底部对话框（`ChatPanel` 的 `dialog-box`）；内在状态/欲望/活动/记忆/Eval/溯源等非对话面板收进 `SideDrawer` 抽屉（`components/layout`，右上角「面板」按钮右滑展开）。
+- `connectionState` 由 App 层在顶栏 `connection-state` 直接显示，不再传 `ChatPanel`。

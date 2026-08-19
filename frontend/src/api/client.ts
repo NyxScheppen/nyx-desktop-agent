@@ -16,7 +16,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     } catch {
       detail = `HTTP ${res.status}`;
     }
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    const message = typeof detail === "string" ? detail : JSON.stringify(detail);
+    throw new Error(message || `HTTP ${res.status}`); // 空串兜底：防 UI if(sendError) 误判为无错误
   }
   return (await res.json()) as T;
 }

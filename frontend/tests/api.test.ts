@@ -92,6 +92,15 @@ describe("api/client", () => {
     await expect(getState()).rejects.toThrow('{"whatever":1}');
   });
 
+  it("非 2xx detail 空串：兜底 HTTP status（非空 message）", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ detail: "" }, false, 500)),
+    );
+
+    await expect(getState()).rejects.toThrow("HTTP 500");
+  });
+
   it("fetch 网络错误（TypeError）上抛不吞", async () => {
     vi.stubGlobal(
       "fetch",

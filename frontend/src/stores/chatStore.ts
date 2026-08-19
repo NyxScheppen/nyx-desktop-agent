@@ -28,6 +28,9 @@ type ChatState = {
 // timer 引用放 module-level，不进 store state（store 状态须可序列化）。
 const REPLY_TIMEOUT_MS = 60_000;
 let replyTimer: ReturnType<typeof setTimeout> | null = null;
+// 待回复消息的 event_id（= postChat 返回值 = user_message id = 回复帧 correlation_id）。
+// 与 replyTimer 一样放 module-level，不进 store state；addSpeak/addAsk 按 correlation_id 匹配后才清 timer。
+let pendingId: string | null = null;
 
 function clearReplyTimer(): void {
   if (replyTimer !== null) {
@@ -65,25 +68,34 @@ export const useChatStore = create<ChatState>((set) => {
     sendError: null,
     addUserMessage: (e) => append(e, "user", "message"),
     addSpeak: (e) => {
-      clearReplyTimer(); // 收到回复即取消 60s 超时（02-stores §1）
+      if (e.correlation_id === pendingId) {
+        // 匹配本次发送的回复才结束等待；非匹配（搭话/碎碎念）只 append 不动生命周期
+        clearReplyTimer();
+        pendingId = null;
+        set({ isReplying: false, sendError: null });
+      }
       append(e, "nyx", "speak");
-      set({ isReplying: false, sendError: null }); // 回复到达即清「回复超时」残留错误
     },
     addAsk: (e) => {
-      clearReplyTimer();
+      if (e.correlation_id === pendingId) {
+        clearReplyTimer();
+        pendingId = null;
+        set({ isReplying: false, sendError: null });
+      }
       append(e, "nyx", "ask");
-      set({ isReplying: false, sendError: null });
     },
     addThink: (e) => append(e, "nyx", "think"),
     addMutter: (e) => append(e, "nyx", "mutter"),
     addInitiateChat: (e) => append(e, "nyx", "initiate_chat"),
     sendMessage: async (text) => {
       try {
-        await postChat(text);
+        const { event_id } = await postChat(text);
         set({ isReplying: true, sendError: null });
+        pendingId = event_id; // 回复帧 correlation_id 与此匹配（后端 user_message 沿它溯源）
         clearReplyTimer();
         replyTimer = setTimeout(() => {
           replyTimer = null;
+          // 不清 pendingId：迟到回复仍需能匹配并清 sendError
           set({ isReplying: false, sendError: "回复超时" });
         }, REPLY_TIMEOUT_MS);
       } catch (err) {
@@ -93,6 +105,7 @@ export const useChatStore = create<ChatState>((set) => {
     },
     reset: () => {
       clearReplyTimer(); // 新会话：取消残留 timer + 复位 isReplying/sendError（防假超时）
+      pendingId = null;
       set({ messages: [], isReplying: false, sendError: null });
     },
   };

@@ -57,14 +57,14 @@ type ChatState = {
 
 ```typescript
 addUserMessage(e: UserMessageEvent): void            // SSE user_message 回显（读 e.message）→ {role:"user", kind:"message"}
-addSpeak(e: TextEvent<"speak">): void                // {role:"nyx", kind:"speak"}；clearTimeout(replyTimer) + isReplying=false + sendError=null
-addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}；clearTimeout(replyTimer) + isReplying=false + sendError=null
+addSpeak(e: TextEvent<"speak">): void                // {role:"nyx", kind:"speak"}；correlation_id === pendingId 时才 clearTimeout(replyTimer) + isReplying=false + sendError=null
+addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}；correlation_id === pendingId 时才 clearTimeout(replyTimer) + isReplying=false + sendError=null
 addThink(e: TextEvent<"think">): void                // {role:"nyx", kind:"think"}
 addMutter(e: TextEvent<"mutter">): void              // {role:"nyx", kind:"mutter"}
 addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initiate_chat"}
 
 sendMessage(text: string): Promise<void>  // 内部调 client.postChat(text)（client 契约见 05-client）
-                                          // 成功：isReplying=true + sendError=null + 起 60s 超时 timer
+                                          // 成功：pendingId = 返回的 event_id + isReplying=true + sendError=null + 起 60s 超时 timer
                                           // postChat throw → catch → sendError = e.message（isReplying 未置，无需复位）
 reset(): void                            // 新会话全清：clearTimeout(replyTimer) + messages/isReplying/sendError 复位
 ```
@@ -72,7 +72,7 @@ reset(): void                            // 新会话全清：clearTimeout(reply
 ### 关键决策
 
 - **SSE 是聊天消息的唯一来源**：`sendMessage` 只 `POST`（拿 `{event_id}` 后 `isReplying=true`），**不本地 append**。用户消息靠 SSE `user_message` 回显上屏（localhost 往返 ~10ms，视觉无延迟）。好处：无「乐观消息 + SSE 回显」的**去重/替换**复杂度；`correlation_id` 沿事件一路一致，追溯无分歧（原则 5）。
-- **isReplying 生命周期 + 60s 超时（必须取消）**：`sendMessage` 成功置 true 并起 60s 超时 timer（`setTimeout`，回调置 `isReplying=false` + `sendError="回复超时"`）；`addSpeak`/`addAsk` 收到回复时**先 `clearTimeout` 取消 timer** 再置 `isReplying=false` + `sendError=null`（回复到达即清「回复超时」残留错误；`think`/`mutter` 不结束回复，因为后必跟 `speak`）。timer 引用放 module-level（`let replyTimer`，**不进 store state**——store 状态须可序列化）。缺取消机制 = 真 bug：10s 收到回复，60s 时 timer 照样触发假「回复超时」。
+- **isReplying 生命周期 + 60s 超时（必须取消）+ correlation 匹配**：`sendMessage` 成功时**存 `postChat` 返回的 `event_id` 到 module-level `pendingId`**（该 id = 后端 `user_message` 事件 id = 回复帧的 `correlation_id`），置 `isReplying=true` + `sendError=null` 并起 60s 超时 timer（`setTimeout`，回调置 `isReplying=false` + `sendError="回复超时"`、**不清 pendingId**——迟到回复仍需能匹配清 sendError）；`addSpeak`/`addAsk` 收到回复时**先判 `e.correlation_id === pendingId`**——匹配才 `clearTimeout` 取消 timer + 置 `isReplying=false` + `sendError=null`，非匹配（搭话/碎碎念等别的发言）只 append 不动生命周期。`think`/`mutter` 不结束回复（后必跟 `speak`）。`timer`/`pendingId` 都放 module-level（`let replyTimer`/`let pendingId`，**不进 store state**——store 状态须可序列化）。缺取消机制 = 真 bug：10s 收到回复，60s 时 timer 照样触发假「回复超时」。
 - **消息顺序与时间戳**：SSE 顺序到达，直接 `push`，不排序——故 `ChatMessage` **不存 `timestamp`**（SSE `data` 无后端 `Event.timestamp`，见 01-sse §1；排序靠到达顺序，前端 `Date.now()` 只是近似，核心先行不需要）。
 
 ## 2. `innerLifeStore`
@@ -122,7 +122,7 @@ clear(): void               // 清空
 
 ## 4. 测试（`tests/stores.test.ts`）
 
-- **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addMutter`/`addInitiateChat`/`addUserMessage` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak` 再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。
+- **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addMutter`/`addInitiateChat`/`addUserMessage` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
 - **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置 + loading 状态机；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
 - **eventStore**：`record` 断言 unshift（最新在前）+ count++；超 `MAX_EVENTS` 丢尾部最旧但 count 累计。
 - 全部 mock fetch/无真实后端；验证管道正确（事件走对 store、字段零映射），不验证视觉。

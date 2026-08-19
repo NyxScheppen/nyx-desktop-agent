@@ -183,7 +183,7 @@ describe("chatStore.sendMessage", () => {
     useChatStore.getState().addSpeak({
       event: "speak",
       event_id: "e2",
-      correlation_id: "c2",
+      correlation_id: "e1",
       content: "回复",
     });
     expect(useChatStore.getState().isReplying).toBe(false);
@@ -203,11 +203,31 @@ describe("chatStore.sendMessage", () => {
     useChatStore.getState().addSpeak({
       event: "speak",
       event_id: "e2",
-      correlation_id: "c2",
+      correlation_id: "e1",
       content: "迟到的回复",
     });
 
     expect(useChatStore.getState().sendError).toBeNull();
+  });
+
+  it("非匹配 correlation 的 speak 不清 timer（isReplying 保持 true）", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ event_id: "e1" })));
+
+    await useChatStore.getState().sendMessage("hi");
+    expect(useChatStore.getState().isReplying).toBe(true);
+
+    useChatStore.getState().addSpeak({
+      event: "speak",
+      event_id: "eX",
+      correlation_id: "other", // 非本次发送的回复（如搭话）
+      content: "别的发言",
+    });
+
+    expect(useChatStore.getState().isReplying).toBe(true); // 未误清
+    expect(useChatStore.getState().messages).toHaveLength(1); // 但消息照常上屏
+
+    vi.advanceTimersByTime(60_000);
+    expect(useChatStore.getState().sendError).toBe("回复超时"); // timer 未被误清
   });
 });
 

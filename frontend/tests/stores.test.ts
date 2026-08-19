@@ -32,7 +32,7 @@ const currentFixture: CurrentState = {
 };
 
 function resetChat() {
-  useChatStore.setState({ messages: [], isReplying: false, sendError: null });
+  useChatStore.getState().reset(); // 复用 reset()：全清 messages/isReplying/sendError + 清 module 级 pendingId/replyTimer
 }
 
 afterEach(() => {

@@ -62,28 +62,24 @@ export const useChatStore = create<ChatState>((set) => {
     set((s) => ({ messages: [...s.messages, msg] }));
   };
 
+  // speak/ask 是「会结束回复等待」的产出：correlation_id 匹配本次发送（pendingId）才结束等待，
+  // 非匹配（搭话/碎碎念）只 append 不动生命周期。kind 取 e.event（"speak"/"ask"）。
+  const finishReply = (e: TextEvent<"speak"> | TextEvent<"ask">) => {
+    if (e.correlation_id === pendingId) {
+      clearReplyTimer();
+      pendingId = null;
+      set({ isReplying: false, sendError: null });
+    }
+    append(e, "nyx", e.event);
+  };
+
   return {
     messages: [],
     isReplying: false,
     sendError: null,
     addUserMessage: (e) => append(e, "user", "message"),
-    addSpeak: (e) => {
-      if (e.correlation_id === pendingId) {
-        // 匹配本次发送的回复才结束等待；非匹配（搭话/碎碎念）只 append 不动生命周期
-        clearReplyTimer();
-        pendingId = null;
-        set({ isReplying: false, sendError: null });
-      }
-      append(e, "nyx", "speak");
-    },
-    addAsk: (e) => {
-      if (e.correlation_id === pendingId) {
-        clearReplyTimer();
-        pendingId = null;
-        set({ isReplying: false, sendError: null });
-      }
-      append(e, "nyx", "ask");
-    },
+    addSpeak: (e) => finishReply(e),
+    addAsk: (e) => finishReply(e),
     addThink: (e) => append(e, "nyx", "think"),
     addMutter: (e) => append(e, "nyx", "mutter"),
     addInitiateChat: (e) => append(e, "nyx", "initiate_chat"),

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatInput from "../src/components/chat/ChatInput";
 import ChatPanel from "../src/components/chat/ChatPanel";
@@ -141,6 +141,26 @@ describe("ChatInput", () => {
     fireEvent.change(input, { target: { value: "你好" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
     expect(input).toHaveValue("你好"); // 失败不清空，用户可重试
+  });
+
+  it("成功清空不误删预打文本（回复期间输入已改 → 保留）", async () => {
+    let resolveSend!: (v: boolean) => void;
+    vi.spyOn(useChatStore.getState(), "sendMessage").mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        resolveSend = resolve;
+      }),
+    );
+    render(<ChatInput />);
+    const input = screen.getByPlaceholderText("对 Nyx 说…");
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    fireEvent.change(input, { target: { value: "再见" } }); // 发送在途时预打下一句
+
+    await act(async () => {
+      resolveSend(true); // 第一次发送成功 → 触发 .then
+    });
+
+    expect(input).toHaveValue("再见"); // 预打文本不被清
   });
 
   it("isReplying=true → 发送按钮禁用 + 回车不触发", () => {

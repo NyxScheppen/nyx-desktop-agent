@@ -13,9 +13,10 @@ export default function ChatInput() {
     if (isReplying) return;
     const trimmed = text.trim();
     if (trimmed === "") return;
-    // 成功才清空（03 §2）：postChat 失败时 sendMessage 返回 false，保留输入框文本供重试
+    // 成功才清空（03 §2）：失败返回 false 保留原文；且只清「仍是原文」的框，
+    // 否则回复期间预打的下一句会被无条件 setText("") 误删。比对 trim 后的值（框里可能还带原始空格）
     void sendMessage(trimmed).then((ok) => {
-      if (ok) setText("");
+      if (ok) setText((cur) => (cur.trim() === trimmed ? "" : cur));
     });
   };
 

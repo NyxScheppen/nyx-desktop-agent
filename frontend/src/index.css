@@ -202,18 +202,20 @@ body {
   cursor: not-allowed;
 }
 
+/* 红字错误文案（03 ChatInput sendError / 04 InnerStatePanel error 共用） */
+.error-text {
+  color: #e06c75;
+  font-size: 0.85rem;
+}
+
 .chat-input__error {
   flex-basis: 100%;
   margin: 0;
-  color: #e06c75; /* 红字（03 §2） */
-  font-size: 0.85rem;
 }
 
 /* 内在状态面板（04-inner-state-panel） */
 .inner-state-panel__error {
   margin: 0 0 0.5rem;
-  color: #e06c75; /* 红字（同 ChatInput sendError） */
-  font-size: 0.85rem;
 }
 
 .inner-state-panel__body {

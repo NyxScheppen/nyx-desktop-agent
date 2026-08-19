@@ -1,6 +1,7 @@
 import type { Personality } from "../../types/api";
+import BarChart from "./BarChart";
 
-// Big Five 五维条形（04 §5）：标签用 snake_case 键名原值（不转中文，反冗余），值 1-10 映射条宽。
+// Big Five 五维（04 §5）：标签 snake_case 键名原值（不转中文，反冗余），渲染委托共享 BarChart。
 // 慢变量，无高频事件，只在 refreshState 全量刷新时重绘（02-stores §2）。
 const BIG_FIVE_KEYS: readonly (keyof Personality)[] = [
   "openness",
@@ -15,20 +16,5 @@ type BigFiveChartProps = {
 };
 
 export default function BigFiveChart({ personality }: BigFiveChartProps) {
-  return (
-    <div className="bar-chart">
-      {BIG_FIVE_KEYS.map((key) => (
-        <div className="bar-chart__row" key={key}>
-          <span className="bar-chart__label">{key}</span>
-          <div className="bar-chart__track">
-            <div
-              className="bar-chart__fill"
-              style={{ width: `${Math.min(100, Math.max(0, personality[key] * 10))}%` }}
-            />
-          </div>
-          <span className="bar-chart__value">{personality[key]}</span>
-        </div>
-      ))}
-    </div>
-  );
+  return <BarChart keys={BIG_FIVE_KEYS} data={personality} />;
 }

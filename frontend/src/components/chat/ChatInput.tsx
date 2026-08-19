@@ -40,7 +40,7 @@ export default function ChatInput() {
       >
         {isReplying ? "…" : "发送"}
       </button>
-      {sendError !== null && <p className="chat-input__error">{sendError}</p>}
+      {sendError !== null && <p className="error-text chat-input__error">{sendError}</p>}
     </div>
   );
 }

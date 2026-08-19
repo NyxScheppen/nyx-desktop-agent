@@ -1,7 +1,7 @@
 # 内在状态面板（`components/inner/`）
 
 > 核心面板之二：可视化 Nyx 的「内在状态」——情绪（valence-arousal）、精力、情绪 sprite、Big Five 性格、三观。
-> 范围：`components/inner/{InnerStatePanel,ValenceArousalPlot,EmotionSprite,EnergyBar,BigFiveChart,ValuesChart}.tsx`。
+> 范围：`components/inner/{InnerStatePanel,ValenceArousalPlot,EmotionSprite,EnergyBar,BigFiveChart,ValuesChart,BarChart}.tsx`。
 > 数据源：`GET /api/state` 快照（`innerLifeStore.current`）+ SSE `emotion_update` 增量。
 
 ## 1. 组件树
@@ -39,6 +39,7 @@ InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 in
 
 - **Big Five**：五维 `1-10`（`openness`/`conscientiousness`/`extraversion`/`agreeableness`/`neuroticism`），**条形图**（默认；五边雷达可选，手绘 SVG，不引库）。
 - **三观**：四维 `1-10`（`attitude_to_human`/`ai_identity_acceptance`/`altruism`/`optimism`），同款条形。
+- 两者共享内部 `BarChart`（收 `keys: readonly string[]` + `data: Record<string, number>`，渲染逻辑与越界钳制收敛于此）；`BigFiveChart`/`ValuesChart` 只传各自的 keys 数组 + 数据对象，不重复渲染逻辑。
 - **标签用 snake_case 键名原值**（`openness` / `attitude_to_human`），**不转中文**——与 LLM prompt、日志一致，不额外维护「键→中文」映射（反冗余，16-expression-prompt §「数值直接拼」）。
 - 这些是慢变量（无高频事件），只在 `refreshState` 全量刷新时重绘（02-stores §2）。
 

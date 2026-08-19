@@ -14,7 +14,7 @@ export default function InnerStatePanel() {
 
   return (
     <Panel title="内在状态">
-      {error !== null && <p className="inner-state-panel__error">{error}</p>}
+      {error !== null && <p className="error-text inner-state-panel__error">{error}</p>}
       {current === null ? (
         "等待核心服务连接…"
       ) : (

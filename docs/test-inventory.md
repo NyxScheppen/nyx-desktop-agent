@@ -586,3 +586,16 @@
 | `InnerStatePanel > error 非 null → 红字一行` | 功能正确 | `error` 非空渲染 `.inner-state-panel__error` 红字 |
 
 **功能阶段**：frontend 04-inner-state-panel 实现时编写（RTL + 真实 store；验证管道正确——子组件按需收字段、`energy_state`/键名枚举值原值不转中文、`current=null` 整体占位不崩，图表坐标/像素不断言）；`EmotionSprite` 已在 03-chat-panel 由 MessageBubble 复用，此处补其文件名映射的独立断言。
+
+## frontend-presence（活跃度上报：usePresence + classifyPresence）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `classifyPresence > 键盘/鼠标任一活跃 → online` | 功能正确 | `(true,false)`/`(false,true)`/`(true,true)` 均 `online`；`(true,true,"编辑器")` 仍 `online`（活跃优先于窗口标题） |
+| `classifyPresence > 无输入+标题 → busy；全无 → away` | 功能正确 | `(false,false,"编辑器")` → `busy`；`(false,false,"")` → `away`（镜像后端 14-activity observe.py 规则） |
+| `usePresence > 首次挂载必报一次（away）` | 功能正确 | 挂载即 `postObserve("away")` 恰 1 次（`lastPresence=null` 首采样必报，对齐后端初始 `last_presence="away"`） |
+| `usePresence > 键盘活动 → 下次采样报 online` | 功能正确 | `keyDown` 后 30s 采样点 `postObserve("online")`（活动 20s 前，< 30s 活跃窗口） |
+| `usePresence > 鼠标活动 → 下次采样报 online` | 功能正确 | `mouseMove` 后 30s 采样点 `postObserve("online")` |
+| `usePresence > presence 不变 → 不再上报` | 边界鲁棒 | 无输入 30s 后 `postObserve` 仍 1 次（仅挂载那次 away，不重复上报） |
+
+**功能阶段**：frontend usePresence（README §2）实现时编写（mock `postObserve` + fake timers + `renderHook`；验证管道正确——采集→判定→上报的节奏与去重，fetch 细节归 frontend-client；窗口标题核心先行恒传 `""`，故 hook 不测 busy 分支，busy 由 `classifyPresence` 纯函数覆盖）。

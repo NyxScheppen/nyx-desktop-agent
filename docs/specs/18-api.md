@@ -6,7 +6,7 @@
 ## 元信息
 
 - **前置依赖**：02-config（`load_config`/`Config`）、03-llm（`LlmClient.from_config`）、04-db（`connect`/`Database`）、05-event（`EventBus`/`ROUTING`/`TICK_ROUTING`）、06-tools（`ToolRegistry`）、08-memory-retrieval（`MemoryRetrieval`/`build_embed`）、09-memory-facade、10-desire-value（`default_value`）、11-desire、12-inner-life、13-activity-scheduler、14-activity、15-eval（`Evaluator`）、17-expression（`should_initiate_chat`/`ExpressionFacade`）
-- **canon**：三份原始 prompt 文件由组合根读入合并（路径见「技术方案」）
+- **canon**：原始 prompt 文件由组合根读入（路径见「技术方案」）
 
 ## 用户故事
 
@@ -41,7 +41,7 @@
 - **工具注册归组合根**：`local_search` + `file_io` 恒注册（探索链 `_search_local`/`_read`/`_write_note` 无条件依赖），`web_search` 仅当 `config.exploration.web_enabled` 注册（与 14-activity `search_web` 节点同条件、06-tools 完成定义「opt-in 由组合根决定」）
 - **观察输入归前端**：`classify_presence` 运行时调用方是前端 Tauri（14-activity `observe.py` 注释已定）。后端只 `POST /api/observe` 接收 `{presence}` → 维护 `app.last_presence` + publish `observation_state`。`desire.pressure_from_observation` 固定 +0.15、`inner_life.apply_event` 固定偏移，均不解析 content，故 content 仅 `{presence}` 供溯源/前端展示
 - **ROUTING 的 `ACTIVITY_END`**：只消费 `desire` + `inner_life`（05-event 已删 `memory`），组合根无 memory handler
-- **canon 读文件**：`_load_canon` 读三份 `character_lore.md` / `nyx_identity_and_growth.md` / `speaking_style.md` 合并为一段字符串注入 `ExpressionFacade`；路径 = `NYX_CANON_DIR` 环境变量 > `prompts/` 默认目录；任一缺失 `FileNotFoundError`（fail-fast，canon 是核心配置不兜底默认）
+- **canon 读文件**：`_load_canon` 读 `prompts/canon.md` 为一段字符串注入 `ExpressionFacade`；路径 = `NYX_CANON_DIR` 环境变量 > `prompts/` 默认目录；缺失 `FileNotFoundError`（fail-fast，canon 是核心配置不兜底默认）
 - **`_App` 内部 dataclass**：组合根的装配产物（不是新增抽象层——不增 Facade→子系统→内部类之外的层），持有 7 个组件引用 + 2 个运行期状态（`last_chat_at`/`last_presence`），端点/handler 闭包捕获 `_App` 实例
 - **总线监督器（decision，可推翻）**：`main()` 用 `_supervise_bus(app)` 包一层 `bus.run()`。`_persist` 失败会终止 `run()`（05-event 有意让 DB 错误传播、事件放回队首不丢），监督器接住异常 `logger.exception` + 指数退避（`_BUS_BACKOFF_BASE=1.0`→`_BUS_BACKOFF_MAX=30.0`，×2 增长）后重启（重启而非降级：瞬时 `aiosqlite` 错误可自愈）；连续 `_BUS_MAX_FAILURES=8` 次失败 `logger.critical` + 重抛熔断致命（DB 永久挂时干净崩溃，不留「API 收事件但不处理」的僵尸态）；崩溃前连续成功落库达 `_BUS_RECOVERY_STREAK=3`（读 `EventBus.persisted_count` 单调计数，差 ≥ 3）视为恢复、失败计数与退避重置（避免分散瞬时故障累积假熔断）；单次成功不足阈值不重置（DB 抖动「隔一个挂一次」持续累积 → 熔断，不留无限 1s crash-loop 僵尸态）；`CancelledError` 重抛，组合根关闭不重启
 - **`main()` 竞速（decision，可推翻）**：`asyncio.wait({serve_task, bus_task, tick_task}, FIRST_COMPLETED)` 把 `tick_task` 纳入监督——`_tick_loop` 异常不再静默丢弃（无 tick = 无活动调度/碎碎念/搭话，僵尸态）。对 `done` 里**每个**先完成者 `task.result()` 重抛（serve 启动失败 `SystemExit(1)` / tick 异常 / bus 熔断都非零退出），而非只取 `bus_task.result()`；`finally` cancel 后 `await asyncio.gather(..., return_exceptions=True)` 让 uvicorn 优雅关停跑完（fire-and-forget cancel 会留 uvicorn cleanup 不完整）
@@ -122,7 +122,7 @@ _BUS_BACKOFF_MAX = 30.0        # 退避上限（秒）
 _BUS_MAX_FAILURES = 8          # 连续失败熔断阈值（达到判定致命，终止进程）
 _BUS_RECOVERY_STREAK = 3       # 恢复信号：崩溃前连续成功落库达此数才重置失败计数
 _SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧背压）
-_CANON_FILES = ("character_lore.md", "nyx_identity_and_growth.md", "speaking_style.md")
+_CANON_FILES = ("canon.md",)
 
 
 @dataclass
@@ -156,7 +156,7 @@ def _root_event(
 
 
 def _load_canon(canon_dir: Path) -> str:
-    """读三份 canon 文件合并为一段字符串注入。任一缺失 fail-fast。"""
+    """读 canon 文件合并为一段字符串注入。任一缺失 fail-fast。"""
     parts: list[str] = []
     for name in _CANON_FILES:
         p = canon_dir / name
@@ -561,7 +561,10 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass  # Ctrl+C 正常退出，不打印崩溃栈
 ```
 
 ## 测试要点
@@ -569,7 +572,7 @@ if __name__ == "__main__":
 - [ ] 单元测试 `tests/test_api/`（`pytest-asyncio`；`db = await connect(":memory:")`；fake `LlmClient` / fake 各 Facade 按需注入）：
   - [ ] **纯函数/装配**（`test_context.py`）：
     - [ ] `_root_event`：`id == correlation_id`、默认 `source is EXTERNAL`、`timestamp` 非空、`content` 原样；显式 `source=Source.INTERNAL` → `source is INTERNAL`
-    - [ ] `_load_canon`：tmp 目录放三份文件 → 合并返回（按顺序、含分隔）；缺一份 → `FileNotFoundError`（fail-fast）
+    - [ ] `_load_canon`：tmp 目录放 `canon.md` → 返回内容；缺失 → `FileNotFoundError`（fail-fast）
     - [ ] `_seed_inner_life`（真 `InnerLifeStore` + `:memory:`）：空表 seed 四表 → `get_*` 非 None 且值 = canon §2/§3 初始值；**再跑一次幂等**（值不变、不重复行）
     - [ ] `_seed_desire`（真 `DesireStore`）：空表 seed 后 `list_values()` 四类型、`list_long_term()` 3 条；再跑幂等
     - [ ] `_build_tools`（`Config` 的 `exploration.web_enabled=False` / `True`）：`{t["name"] for t in schema()}` `False` → `{local_search, file_io}`、`True` → 多 `web_search`（工厂构造无 I/O，`roots`/`DDGS` 惰性到 `.call()`）

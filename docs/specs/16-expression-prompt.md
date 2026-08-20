@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`CurrentState` / `Memory` / `Message` / `SelfNarrative` / `ShortTermDesire` / `ContextMode` / 各枚举）。输入数据由 09-memory-facade（`search`）、11-desire（`get_pending`，装配进 `CurrentState.active_desires`）、12-inner-life（`get_state` / `get_narrative`）生产，经 17-expression 编排传入本 spec 的纯函数；`canon` 文本来自 `docs/canon.md`（三份原始文件，见「技术方案」）
+- **前置依赖**：01-types（`CurrentState` / `Memory` / `Message` / `SelfNarrative` / `ShortTermDesire` / `ContextMode` / 各枚举）。输入数据由 09-memory-facade（`search`）、11-desire（`get_pending`，装配进 `CurrentState.active_desires`）、12-inner-life（`get_state` / `get_narrative`）生产，经 17-expression 编排传入本 spec 的纯函数；`canon` 文本来自 `prompts/canon.md`（见「技术方案」）
 
 ## 用户故事
 
@@ -26,10 +26,10 @@
 - **库**：无新库（标准库即可；类型从 `nyx.types` / `nyx.enums` 拿）
 - **公开面**：`from nyx.expression.prompt import build_system_prompt, build_user_prompt`；`from nyx.expression.classifier import slow_score, classify_channel`（不加 `__all__`）
 - **定位**：两个模块都是内部类（非 Facade），被 17 的 `classify_channel` / `think` / `speak` 节点调用
-- **canon 来源**：`build_system_prompt` 接收 `canon: str`（静态人格注入文本）。canon 的**三份原始文件**（`character_lore.md` / `nyx_identity_and_growth.md` / `speaking_style.md`，见 `docs/canon.md` 指针）由 17 facade 构造时读入合并为一段字符串传入——**本 spec 不读文件**（保持纯函数可单测、测试不碰文件系统）
+- **canon 来源**：`build_system_prompt` 接收 `canon: str`（静态人格注入文本）。canon 来自 `prompts/canon.md`（见 `docs/canon.md` 指针），由 18-api 组合根读入为一段字符串传入——**本 spec 不读文件**（保持纯函数可单测、测试不碰文件系统）
 - **think/speak 任务指令归 17**：`build_user_prompt` 只拼「对话历史 + 本次消息」，不含「内心思考 / 说给用户」指令；那是 17 节点的活（think 与 speak 各拼自己的指令后接在 user prompt 上）
 - **数值直接拼，不转中文标签**：情感 valence/arousal、精力、性格/三观 1-10、枚举 `.value`（`happy`/`energetic` 等）直接格式化进 prompt。LLM 能读；不额外维护「数值→中文描述」映射（反冗余）。前端展示仍用枚举值，与 prompt 一致
-- **明确不做**：回溯上下文**检测/截断**逻辑（design §5.1「命中隔太久/快通道信息/不相关即停」，是 `assemble_context` 节点的活，归 17）；`canon` 文件读取与合并（归 17）；think/speak 指令（归 17）；记忆检索（归 09）
+- **明确不做**：回溯上下文**检测/截断**逻辑（design §5.1「命中隔太久/快通道信息/不相关即停」，是 `assemble_context` 节点的活，归 17）；`canon` 文件读取（归 18-api）；think/speak 指令（归 17）；记忆检索（归 09）
 
 ### `nyx/expression/prompt.py`（完整）
 
@@ -50,7 +50,7 @@ def build_system_prompt(
 ) -> str:
     """拼 system prompt：角色设定 + 当前状态 + 当前欲望 + 自我认知 + 相关记忆。
 
-    canon 为静态人格注入文本（canon.md 三份原始文件合并，由 17 facade 读入传入）。
+    canon 为静态人格注入文本（prompts/canon.md，由 18-api 组合根读入传入）。
     narrative / memories 为 None（或空）时跳过对应段——快通道省略、慢通道补全。
     """
     parts: list[str] = [

@@ -1,8 +1,7 @@
 # Canon：尼克斯·夏本（写死设定）
 
 > 角色原型来自小说《诺斯艾兰》。本文件是"静态人格"的设计级摘要 + 由 canon 推导的动态数值**初始值**。
-> 原始 prompt 注入文件（三份，建后端时拷贝进 `apps/backend/app/prompts/character/`）：
-> `character_lore.md`（身世/性格/价值观）、`nyx_identity_and_growth.md`（身份认知与成长）、`speaking_style.md`（说话风格）。
+> 原始 prompt 注入文件（一份，放 `prompts/canon.md`）：身世/性格/价值观 + 身份认知与成长 + 说话风格。
 
 ## 1. 身份与身世（摘要）
 

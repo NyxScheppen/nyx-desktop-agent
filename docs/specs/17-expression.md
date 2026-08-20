@@ -28,7 +28,7 @@
 - **新文件**：`nyx/expression/facade.py`、`nyx/expression/pipeline.py`、`nyx/expression/mutter.py`（无 API、无数据变更——会话历史 `deque` 是内存态）
 - **库**：`langgraph`（`StateGraph` / `END` / `CompiledStateGraph`，与 14-activity 的 exploration 同源）
 - **公开面**：`from nyx.expression.facade import ExpressionFacade`；`from nyx.expression.mutter import pick_mutter, should_initiate_chat`（不加 `__all__`）
-- **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, desire, inner_life, canon, config)`——`canon: str` 由 18-api 组合根读三份文件合并传入（本 spec 不读文件，测试不碰文件系统）
+- **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, desire, inner_life, canon, config)`——`canon: str` 由 18-api 组合根读 `prompts/canon.md` 传入（本 spec 不读文件，测试不碰文件系统）
 - **会话历史（内存）**：`deque[Message]`（maxlen=`config.max_context_len`）由 facade 持有，跨 reply 持久。**用户消息 + Nyx 消息（多轮拼接）都在回合末的 `record_message` 节点按序 append**（先 user 后 nyx）——`reply` 入口回溯时当前消息还没进 history，天然不重复。重启丢失（同情感，内存易变态）
 - **多轮语义（慢通道）**：think → speak 循环，每轮 think 发 `THINK`、每轮 speak 发 `SPEAK`（**都交付**）；某轮 speak 是问句 → 发 `ASK` 后回合结束。`slow_max_rounds` 是「连续无 ask 的 think/speak 轮数上限」。**累积式 prompt**：后一轮的 think/speak 知道前几轮想了/说了什么（`_rounds_block` 拼前轮）
 - **场景化记忆记整个回合**：`nyx_think`/`nyx_speak` = 多轮 `"\n".join(...)` 拼接（`create_scene_memory` 的 `str` 契约不变，只是内容是多轮）
@@ -521,4 +521,4 @@ class ExpressionFacade:
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
 - [ ] ripple 同步：tech-ref §6.1 `ReplyState` 的 `think`/`speak` 从 `str | None` 改 `list[str]`（多轮累积）、补 `narrative: SelfNarrative | None` 与 `correlation_id: str` 两字段、edges 补「每轮 SPEAK 交付 + ask 后回合结束走 scene_memory」；tech-ref §5 `initiate_chat` 签名 `-> bool`（发话 True/无话 False）、`mutter` 签名补 `correlation_id: str`（MUTTER_CHECK tick 恒定根）
-- [ ] 下游约定：18-api 组合根 `canon` = 三份文件合并后注入 `ExpressionFacade`；`POST /api/chat` → `ExpressionFacade.reply(msg, correlation_id)`；`INITIATE_CHAT_CHECK` tick 由组合根调 `should_initiate_chat` 判定、从 `DesireFacade.get_pending()` 选 interaction 欲望后 `await initiate_chat(desire, state)`，返回 `True` 才更新 `last_chat_at`；`MUTTER_CHECK` tick → `mutter(state, event.correlation_id)`
+- [ ] 下游约定：18-api 组合根 `canon` = `prompts/canon.md` 读入后注入 `ExpressionFacade`；`POST /api/chat` → `ExpressionFacade.reply(msg, correlation_id)`；`INITIATE_CHAT_CHECK` tick 由组合根调 `should_initiate_chat` 判定、从 `DesireFacade.get_pending()` 选 interaction 欲望后 `await initiate_chat(desire, state)`，返回 `True` 才更新 `last_chat_at`；`MUTTER_CHECK` tick → `mutter(state, event.correlation_id)`

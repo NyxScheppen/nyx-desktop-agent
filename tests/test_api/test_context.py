@@ -36,15 +36,12 @@ def test_root_event_explicit_internal() -> None:
 # ---- _load_canon ----
 
 
-def test_load_canon_merges_three_files(tmp_path: Path) -> None:
-    (tmp_path / "character_lore.md").write_text("lore", encoding="utf-8")
-    (tmp_path / "nyx_identity_and_growth.md").write_text("identity", encoding="utf-8")
-    (tmp_path / "speaking_style.md").write_text("style", encoding="utf-8")
-    assert _load_canon(tmp_path) == "lore\n\nidentity\n\nstyle"
+def test_load_canon_reads_canon_file(tmp_path: Path) -> None:
+    (tmp_path / "canon.md").write_text("canon", encoding="utf-8")
+    assert _load_canon(tmp_path) == "canon"
 
 
 def test_load_canon_missing_file_fails(tmp_path: Path) -> None:
-    (tmp_path / "character_lore.md").write_text("lore", encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         _load_canon(tmp_path)
 

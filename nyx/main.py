@@ -69,7 +69,7 @@ _BUS_BACKOFF_MAX = 30.0        # 退避上限（秒）
 _BUS_MAX_FAILURES = 8          # 连续失败熔断阈值（达到判定致命，终止进程）
 _BUS_RECOVERY_STREAK = 3       # 恢复信号：崩溃前连续成功落库达此数才重置失败计数
 _SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧背压）
-_CANON_FILES = ("character_lore.md", "nyx_identity_and_growth.md", "speaking_style.md")
+_CANON_FILES = ("canon.md",)
 
 
 @dataclass
@@ -103,7 +103,7 @@ def _root_event(
 
 
 def _load_canon(canon_dir: Path) -> str:
-    """读三份 canon 文件合并为一段字符串注入。任一缺失 fail-fast。"""
+    """读 canon 文件合并为一段字符串注入。任一缺失 fail-fast。"""
     parts: list[str] = []
     for name in _CANON_FILES:
         p = canon_dir / name
@@ -508,4 +508,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass  # Ctrl+C 正常退出，不打印崩溃栈

@@ -471,8 +471,8 @@
 |---|---|---|
 | `test_root_event_defaults_external` | 功能正确 | `id == correlation_id`、默认 `source is EXTERNAL`、`type`/`content` 原样透传、`timestamp` 非空 |
 | `test_root_event_explicit_internal` | 功能正确 | 显式 `source=Source.INTERNAL` → `source is INTERNAL` |
-| `test_load_canon_merges_three_files` | 功能正确 | 三份 canon 按序合并（`"\n\n"` 分隔） |
-| `test_load_canon_missing_file_fails` | 边界鲁棒 | 缺一份 → `FileNotFoundError`（fail-fast） |
+| `test_load_canon_reads_canon_file` | 功能正确 | 读 `canon.md` 返回原文 |
+| `test_load_canon_missing_file_fails` | 边界鲁棒 | 缺失 → `FileNotFoundError`（fail-fast） |
 | `test_seed_inner_life_idempotent` | 功能正确 | 空表 seed 四表（personality/values/energy/narrative）值 = canon §2/§3 初始值；再跑一遍值不变、不重复行 |
 | `test_seed_desire_idempotent` | 功能正确 | `list_values()` 四类型、`list_long_term()` 3 条；再跑幂等（4 行 / 3 条不增） |
 | `test_build_tools_web_disabled` | 功能正确 | `web_enabled=False` → `{local_search, file_io}`（工厂构造无 I/O，`roots`/`DDGS` 惰性到 `.call()`） |

@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { useMemoryStore } from "../../stores/memoryStore";
+import { MEMORY_TYPE_LABELS } from "../../lib/labels";
 import Panel from "../layout/Panel";
 
 // 记忆浏览器面板（README §5）：REST 快照 + SSE memory_* 触发 refresh。
+// 枚举值经 MEMORY_TYPE_LABELS 转中文。
 export default function MemoryPanel() {
   const data = useMemoryStore((s) => s.data);
   const error = useMemoryStore((s) => s.error);
@@ -23,7 +25,7 @@ export default function MemoryPanel() {
             <li key={m.id} className="panel-item">
               <span className="panel-item__main">{m.summary || m.content}</span>
               <span className="panel-item__meta">
-                {m.tag} · {m.type} · freshness={m.freshness.toFixed(2)}
+                {m.tag} · {MEMORY_TYPE_LABELS[m.type]} · freshness={m.freshness.toFixed(2)}
               </span>
             </li>
           ))}

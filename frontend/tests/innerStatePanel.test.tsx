@@ -37,9 +37,9 @@ describe("inner 面板子组件", () => {
     useInnerLifeStore.setState({ current: null, loading: false, error: null });
   });
 
-  it("EnergyBar 按 energy_state 渲染枚举原值文案", () => {
+  it("EnergyBar 按 energy_state 渲染中文文案", () => {
     render(<EnergyBar energy={42} energy_state="tired" />);
-    expect(screen.getByText("tired")).toBeInTheDocument();
+    expect(screen.getByText("疲惫")).toBeInTheDocument();
   });
 
   it("EmotionSprite 按 emotion 选图文件名", () => {
@@ -49,18 +49,18 @@ describe("inner 面板子组件", () => {
     expect(img.src).toContain("happy");
   });
 
-  it("BigFiveChart 按 personality 渲染键名原值标签 + 数值", () => {
+  it("BigFiveChart 按 personality 渲染中文标签 + 数值", () => {
     render(<BigFiveChart personality={currentFixture.personality} />);
-    expect(screen.getByText("openness")).toBeInTheDocument();
-    expect(screen.getByText("neuroticism")).toBeInTheDocument();
+    expect(screen.getByText("开放性")).toBeInTheDocument();
+    expect(screen.getByText("神经质")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument(); // extraversion 唯一值
     expect(screen.getByText("7")).toBeInTheDocument(); // neuroticism 唯一值
   });
 
-  it("ValuesChart 按 values 渲染键名原值标签 + 数值", () => {
+  it("ValuesChart 按 values 渲染中文标签 + 数值", () => {
     render(<ValuesChart values={currentFixture.values} />);
-    expect(screen.getByText("attitude_to_human")).toBeInTheDocument();
-    expect(screen.getByText("optimism")).toBeInTheDocument();
+    expect(screen.getByText("对人类的态度")).toBeInTheDocument();
+    expect(screen.getByText("乐观")).toBeInTheDocument();
     expect(screen.getByText("9")).toBeInTheDocument(); // altruism 唯一值
     expect(screen.getByText("5")).toBeInTheDocument(); // optimism 唯一值
   });
@@ -73,15 +73,15 @@ describe("inner 面板子组件", () => {
   it("InnerStatePanel current=null → 整体占位，不渲染子组件", () => {
     render(<InnerStatePanel />);
     expect(screen.getByText("等待核心服务连接…")).toBeInTheDocument();
-    expect(screen.queryByText("openness")).not.toBeInTheDocument();
+    expect(screen.queryByText("开放性")).not.toBeInTheDocument();
   });
 
   it("InnerStatePanel current 非 null → 渲染各子组件字段", () => {
     useInnerLifeStore.setState({ current: currentFixture });
     render(<InnerStatePanel />);
-    expect(screen.getByText("energetic")).toBeInTheDocument(); // EnergyBar
-    expect(screen.getByText("openness")).toBeInTheDocument(); // BigFiveChart
-    expect(screen.getByText("attitude_to_human")).toBeInTheDocument(); // ValuesChart
+    expect(screen.getByText("精力充沛")).toBeInTheDocument(); // EnergyBar
+    expect(screen.getByText("开放性")).toBeInTheDocument(); // BigFiveChart
+    expect(screen.getByText("对人类的态度")).toBeInTheDocument(); // ValuesChart
   });
 
   it("InnerStatePanel error 非 null → 顶部红字一行", () => {

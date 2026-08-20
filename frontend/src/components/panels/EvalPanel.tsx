@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { useEvalStore } from "../../stores/evalStore";
+import { SCORE_LABELS } from "../../lib/labels";
 import Panel from "../layout/Panel";
 
 // eval + token 看板（README §5）：无 SSE 事件，挂载拉取 + 「刷新」按钮。
+// score 键名经 SCORE_LABELS 转中文。
 export default function EvalPanel() {
   const reports = useEvalStore((s) => s.reports);
   const tokens = useEvalStore((s) => s.tokens);
@@ -36,9 +38,9 @@ export default function EvalPanel() {
                     {r.module}/{r.type}
                   </span>
                   <span className="panel-item__meta">
-                    format={r.scores.format.toFixed(2)} ooc=
-                    {r.scores.ooc.toFixed(2)} relevance=
-                    {r.scores.relevance.toFixed(2)}
+                    {SCORE_LABELS.format}={r.scores.format.toFixed(2)}{" "}
+                    {SCORE_LABELS.ooc}={r.scores.ooc.toFixed(2)}{" "}
+                    {SCORE_LABELS.relevance}={r.scores.relevance.toFixed(2)}
                   </span>
                 </li>
               ))}

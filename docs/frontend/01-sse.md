@@ -175,6 +175,9 @@ function App() {
   const status = useSSE(dispatchEvent);          // dispatchEvent 来自 api/dispatch.ts（§4.1）
   const refreshState = useInnerLifeStore(s => s.refreshState);
   usePresence();                                 // 活跃度上报（README §2）
+  const [view, setView] = useState<"chat" | "settings">("chat");  // 双模式：对话框 / 设置
+  const tint = useSettingsStore(s => s.tint);    // 背景色调/背景图（settingsStore）
+  const image = useSettingsStore(s => s.image);
 
   // SSE 恢复连接后重拉快照（断线期间 emotion_update 可能丢失）
   useEffect(() => {
@@ -183,18 +186,24 @@ function App() {
 
   return (
     <div className="app">
-      <div className="app-bg" aria-hidden="true" />   {/* 背景柔光层 */}
+      <div className="app-bg" aria-hidden="true" style={bgStyle} />  {/* 背景：有图 cover 铺底，无图有色纯色，图+色叠 .app-bg-tint */}
+      {tint !== null && image !== null && (
+        <div className="app-bg-tint" aria-hidden="true" style={{ backgroundColor: tint }} />
+      )}
       <Sakura />                                       {/* 樱花飘落装饰（components/scene） */}
       <header className="app-topbar">
         <span className="scene-title">✦ Nyx ✦</span>
         <div className="topbar-right">
           <span className="connection-state">{CONNECTION_LABEL[status]}</span>
-          <SidePanel />                               {/* 右侧标签页面板：收非对话面板 */}
         </div>
       </header>
       <main className="app-stage">
         <EmotionSprite size="portrait" />              {/* 半身像立绘（左侧，CSS 裁切全身像） */}
-        <ChatPanel />                                  {/* 右侧微信式聊天窗 */}
+        {view === "chat" ? (
+          <ChatPanel onOpenSettings={() => setView("settings")} />  {/* 微信式聊天窗，头部「设置」按钮进入设置 */}
+        ) : (
+          <SidePanel onBack={() => setView("chat")} />              {/* 设置面板，「返回对话」退出 */}
+        )}
       </main>
     </div>
   );
@@ -202,5 +211,6 @@ function App() {
 ```
 
 - `useSSE` 只挂一次（App 顶层），子面板**不重复订阅**，只读 store。
-- **视觉改造布局（Galgame）**：全屏三层——背景柔光 + 樱花（`app-bg`/`Sakura`）→ 左侧半身像立绘（`app-stage` + `EmotionSprite size="portrait"`）+ 中间微信式聊天窗（`ChatPanel` 的 `dialog-box`）+ 右侧 `SidePanel` 标签页（`components/layout`，内在状态/欲望/活动/记忆/Eval/溯源 6 标签，一次显示一个，内容区可滚动）。
+- **视觉改造布局（Galgame）**：全屏三层——背景柔光 + 樱花（`app-bg`/`Sakura`）→ 左侧半身像立绘（`app-stage` + `EmotionSprite size="portrait"`，常驻）+ 右侧双模式区（对话框 ↔ 设置，互斥渲染）：默认微信式聊天窗（`ChatPanel` 的 `dialog-box`，头部「设置」按钮切走），点「设置」后换成 `SidePanel` 标签页（`components/layout`，背景/内在/欲望/活动/记忆/Eval/溯源 7 标签，一次显示一个，内容区可滚动，「返回对话」回聊天）。
 - `connectionState` 由 App 层在顶栏 `connection-state` 直接显示，不再传 `ChatPanel`。
+- 背景由 `settingsStore` 驱动：`image` 以 `cover` 铺底、`tint` 无图时作纯色替默认粉渐变、图+色并存时叠一层半透明 `.app-bg-tint`。

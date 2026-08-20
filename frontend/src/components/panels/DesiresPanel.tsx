@@ -1,9 +1,10 @@
 import { useEffect } from "react";
 import { useDesireStore } from "../../stores/desireStore";
+import { DESIRE_TYPE_LABELS, DESIRE_STATUS_LABELS } from "../../lib/labels";
 import Panel from "../layout/Panel";
 
 // 欲望面板（README §5）：REST 快照 + SSE desire_* 触发 refresh。
-// 枚举值显原值不转中文（04 §5 反冗余约定）。
+// 枚举值经 DESIRE_TYPE_LABELS / DESIRE_STATUS_LABELS 转中文。
 export default function DesiresPanel() {
   const data = useDesireStore((s) => s.data);
   const error = useDesireStore((s) => s.error);
@@ -27,7 +28,7 @@ export default function DesiresPanel() {
                 {data.long_term.map((d) => (
                   <li key={d.id} className="panel-item">
                     <span className="panel-item__main">
-                      [{d.type}] {d.name}
+                      [{DESIRE_TYPE_LABELS[d.type]}] {d.name}
                     </span>
                     <span className="panel-item__meta">
                       strength={d.strength.toFixed(2)} progress=
@@ -45,10 +46,10 @@ export default function DesiresPanel() {
                 {data.short_term.map((d) => (
                   <li key={d.id} className="panel-item">
                     <span className="panel-item__main">
-                      [{d.type}] {d.description}
+                      [{DESIRE_TYPE_LABELS[d.type]}] {d.description}
                     </span>
                     <span className="panel-item__meta">
-                      strength={d.strength.toFixed(2)} status={d.status}
+                      strength={d.strength.toFixed(2)} status={DESIRE_STATUS_LABELS[d.status]}
                     </span>
                   </li>
                 ))}
@@ -60,7 +61,7 @@ export default function DesiresPanel() {
             <ul className="panel-list">
               {data.values.map((v) => (
                 <li key={v.type} className="panel-item">
-                  <span className="panel-item__main">{v.type}</span>
+                  <span className="panel-item__main">{DESIRE_TYPE_LABELS[v.type]}</span>
                   <span className="panel-item__meta">value={v.value.toFixed(2)}</span>
                 </li>
               ))}

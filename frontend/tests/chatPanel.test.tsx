@@ -133,9 +133,20 @@ describe("ChatPanel", () => {
       vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
     );
     useChatStore.setState({ messages: [makeMsg("speak", "nyx", "订阅上屏")] });
-    render(<ChatPanel />);
+    render(<ChatPanel onOpenSettings={() => {}} />);
     typeDone();
     expect(screen.getByText("订阅上屏")).toBeInTheDocument();
+  });
+
+  it("头部「设置」按钮触发 onOpenSettings", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
+    );
+    const onOpenSettings = vi.fn();
+    render(<ChatPanel onOpenSettings={onOpenSettings} />);
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 });
 

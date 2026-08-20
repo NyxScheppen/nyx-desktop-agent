@@ -47,6 +47,15 @@ body {
   pointer-events: none;
 }
 
+/* 背景图 + 色调并存时的半透明滤镜：图铺底（.app-bg 内联），此层盖一层色调 */
+.app-bg-tint {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  opacity: 0.28;
+  pointer-events: none;
+}
+
 /* ===== 樱花飘落（视觉改造 §3）===== */
 .sakura-container {
   position: fixed;
@@ -173,6 +182,9 @@ body {
 }
 
 .dialog-box__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding-bottom: 6px;
   border-bottom: 1px solid rgba(180, 140, 120, 0.2);
   margin-bottom: 10px;
@@ -185,6 +197,22 @@ body {
   letter-spacing: 4px;
   color: #4d3425;
   text-shadow: 0 2px 8px rgba(255, 200, 180, 0.25);
+}
+
+.dialog-box__settings {
+  padding: 0.3rem 0.9rem;
+  border: 1px solid rgba(180, 140, 120, 0.3);
+  border-radius: 0.45rem;
+  background: rgba(255, 255, 255, 0.55);
+  color: #4d3425;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.85rem;
+  letter-spacing: 1px;
+}
+
+.dialog-box__settings:hover {
+  background: rgba(255, 255, 255, 0.9);
 }
 
 /* ===== 消息列表 + 气泡（03 §3）===== */
@@ -325,10 +353,10 @@ body {
   margin: 0;
 }
 
-/* ===== 右侧标签页面板（视觉改造 §1：抽屉 → 常驻标签列）===== */
+/* ===== 设置面板（视觉改造 §1：设置模式下替换对话框，占满剩余宽度）===== */
 .side-panel {
-  flex: 0 0 300px;
-  width: 300px;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -340,6 +368,38 @@ body {
   border-radius: 18px;
   box-shadow: 0 18px 50px rgba(60, 30, 20, 0.24);
   overflow: hidden;
+}
+
+.side-panel__header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1rem 0.5rem;
+}
+
+.side-panel__title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  color: #4d3425;
+  text-shadow: 0 2px 8px rgba(255, 200, 180, 0.25);
+}
+
+.side-panel__back {
+  padding: 0.3rem 0.9rem;
+  border: 1px solid rgba(180, 140, 120, 0.3);
+  border-radius: 0.45rem;
+  background: rgba(255, 255, 255, 0.55);
+  color: #4d3425;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.85rem;
+  letter-spacing: 1px;
+}
+
+.side-panel__back:hover {
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .side-panel__tabs {
@@ -491,6 +551,78 @@ body {
   background: rgba(255, 255, 255, 0.9);
 }
 
+/* ===== 背景外观面板（视觉改造 §5）===== */
+.bg-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.bg-panel__row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.bg-panel__label {
+  font-size: 0.75rem;
+  color: #a08070;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+
+.bg-panel__swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.bg-panel__swatch {
+  width: 1.8rem;
+  height: 1.8rem;
+  border: 2px solid rgba(255, 255, 255, 0.7);
+  border-radius: 0.4rem;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(60, 30, 20, 0.18);
+}
+
+.bg-panel__swatch--active {
+  border-color: #c07a7a;
+  box-shadow: 0 0 0 2px rgba(192, 122, 122, 0.35);
+}
+
+.bg-panel__color {
+  width: 2.2rem;
+  height: 1.8rem;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.7);
+  border-radius: 0.4rem;
+  background: none;
+  cursor: pointer;
+}
+
+.bg-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.bg-panel__btn {
+  padding: 0.3rem 0.9rem;
+  border: 1px solid rgba(180, 140, 120, 0.3);
+  border-radius: 0.4rem;
+  background: rgba(255, 255, 255, 0.6);
+  color: #4d3425;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.82rem;
+}
+
+.bg-panel__btn:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
 /* ===== 内在状态面板（04）===== */
 .inner-state-panel__error {
   margin: 0 0 0.5rem;
@@ -599,10 +731,6 @@ body {
   }
   .emotion-sprite--portrait {
     display: none;
-  }
-  .side-panel {
-    flex-basis: 220px;
-    width: 220px;
   }
   .dialog-box {
     padding: 12px 14px 14px;

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import ChatPanel from "./components/chat/ChatPanel";
 import EmotionSprite from "./components/inner/EmotionSprite";
@@ -7,6 +7,7 @@ import Sakura from "./components/scene/Sakura";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
+import { useSettingsStore } from "./stores/settingsStore";
 import type { ConnectionState } from "./types/api";
 
 const CONNECTION_LABEL: Record<ConnectionState, string> = {
@@ -15,22 +16,38 @@ const CONNECTION_LABEL: Record<ConnectionState, string> = {
   closed: "已断开",
 };
 
-// App 组合装配（01-sse §6 + 视觉改造布局 §1）：全屏三层——
-// 背景柔光 + 樱花 → 左侧半身像立绘 + 中间聊天窗 + 右侧标签页面板（SidePanel）。
-// useSSE 只挂一次，子组件读 store。
+// App 组合装配（01-sse §6 + 视觉改造布局 §1）：全屏三层——背景柔光 + 樱花 →
+// 左侧半身像立绘（常驻）+ 右侧「对话框 / 设置」双模式切换（对话框头部「设置」按钮进入，设置面板「返回对话」退出）。
+// useSSE 只挂一次，子组件读 store；背景色调/背景图由 settingsStore 驱动 .app-bg 内联样式。
 export default function App() {
   const status = useSSE(dispatchEvent);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
   usePresence();
+  const [view, setView] = useState<"chat" | "settings">("chat");
+  const tint = useSettingsStore((s) => s.tint);
+  const image = useSettingsStore((s) => s.image);
 
   // SSE 恢复连接后重拉快照（断线期间 emotion_update 可能丢失）
   useEffect(() => {
     if (status === "open") refreshState();
   }, [status, refreshState]);
 
+  // 背景：有图以图铺底（cover）；无图且有色调用纯色替默认粉渐变。图 + 色并存时叠一层半透明滤镜。
+  const bgStyle: CSSProperties = {};
+  if (image !== null) {
+    bgStyle.backgroundImage = `url(${image})`;
+    bgStyle.backgroundSize = "cover";
+    bgStyle.backgroundPosition = "center";
+  } else if (tint !== null) {
+    bgStyle.background = tint;
+  }
+
   return (
     <div className="app">
-      <div className="app-bg" aria-hidden="true" />
+      <div className="app-bg" aria-hidden="true" style={bgStyle} />
+      {tint !== null && image !== null && (
+        <div className="app-bg-tint" aria-hidden="true" style={{ backgroundColor: tint }} />
+      )}
       <Sakura />
 
       <header className="app-topbar">
@@ -42,8 +59,11 @@ export default function App() {
 
       <main className="app-stage">
         <EmotionSprite size="portrait" />
-        <ChatPanel />
-        <SidePanel />
+        {view === "chat" ? (
+          <ChatPanel onOpenSettings={() => setView("settings")} />
+        ) : (
+          <SidePanel onBack={() => setView("chat")} />
+        )}
       </main>
     </div>
   );

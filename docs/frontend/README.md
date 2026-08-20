@@ -78,9 +78,11 @@ frontend/
   index.html
   src/
     main.tsx                 # React 入口，挂载 App
-    App.tsx                  # 全屏装配：背景/樱花 + 左侧半身像立绘 + 中间聊天窗 + 右侧标签页面板（01-sse §6）
+    App.tsx                  # 全屏装配：背景(可调色/传图)/樱花 + 左侧半身像立绘 + 「对话框/设置」双模式切换（01-sse §6）
     types/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
+    lib/
+      labels.ts              # 枚举值→中文 UI 标签（label() 未知键回退原值）
     api/
       client.ts              # REST fetch 封装（postChat / getState / postObserve，见 05-client）
       dispatch.ts            # SseEvent → store 路由（01-sse §4.1）
@@ -96,6 +98,7 @@ frontend/
       activityStore.ts       # 活动：ActivitySnapshot 快照
       memoryStore.ts         # 记忆：Memory[] 快照
       evalStore.ts           # eval + token：reports/tokens 快照
+      settingsStore.ts       # 背景外观：tint/image（纯前端 UI 状态，无后端）
     components/
       chat/
         ChatPanel.tsx
@@ -110,6 +113,7 @@ frontend/
         BigFiveChart.tsx
         ValuesChart.tsx
       panels/
+        BackgroundPanel.tsx # 背景外观（预设色调/自定义取色/上传背景图/恢复默认）
         DesiresPanel.tsx     # 欲望面板（GET /api/desires + SSE desire_*）
         ActivityPanel.tsx    # 活动时间线（GET /api/activity + SSE activity_*）
         MemoryPanel.tsx      # 记忆浏览器（GET /api/memories + SSE memory_*）
@@ -117,7 +121,7 @@ frontend/
         TracePanel.tsx       # 事件溯源时间线（SSE 全部 + GET /api/events/log）
       layout/
         Panel.tsx            # 通用面板容器
-        SidePanel.tsx        # 右侧标签页面板（收非对话面板，标签切换，01-sse §6）
+        SidePanel.tsx        # 设置标签页面板（收非对话面板，标签切换，01-sse §6）
       scene/
         Sakura.tsx           # 樱花飘落装饰（纯视觉，01-sse §6）
     assets/
@@ -126,6 +130,7 @@ frontend/
     api.test.ts              # API 端点测试（CLAUDE.md 要求）
     sse.test.ts
     stores.test.ts
+    labels.test.ts           # 枚举中文化映射 + label() 回退
 ```
 
 ### 命名约定（对齐 CLAUDE.md 前端规范）
@@ -135,11 +140,12 @@ frontend/
 
 ## 5. 面板骨架（SidePanel 标签页）
 
-design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），其余 6 个面板收进右侧常驻的 `SidePanel` 标签页（内在/欲望/活动/记忆/Eval/溯源，一次显示一个，内容区可滚动）。
+design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），其头部「设置」按钮切到 `SidePanel` 标签页（背景/内在/欲望/活动/记忆/Eval/溯源 7 标签，一次显示一个，内容区可滚动，「返回对话」回到聊天）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|
 | 聊天区 | ✅ 实现（03-chat-panel） | `POST /api/chat` + SSE `speak`/`think`/`ask` | `components/chat/ChatPanel.tsx` |
+| 背景外观 | ✅ 实现 | 无（纯前端 `settingsStore`） | `components/panels/BackgroundPanel.tsx` |
 | 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | `components/inner/InnerStatePanel.tsx` |
 | 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | `components/panels/DesiresPanel.tsx` |
 | 活动时间线 | ✅ 实现 | `GET /api/activity` + SSE `activity_*` | `components/panels/ActivityPanel.tsx` |

@@ -543,7 +543,7 @@
 
 **功能阶段**：frontend 05-client 实现时编写（mock `fetch` 断言端点/方法/请求体键 + 错误契约；验证管道正确——键零映射、错误上抛，不验证视觉）；`非 2xx detail 空串兜底` 于本轮 review 追加（Finding B：空串 detail 致 `Error.message=""` 被 UI 误判为无错误）；六个新端点（`getDesires`/`getActivity`/`getMemories`/`getEval`/`getTokens`/`getEventsLog`）于前端面板落地轮追加（快照/溯源端点 query 拼装 + 解析）。
 
-## frontend-stores（Zustand stores：chatStore + innerLifeStore + eventStore + 四个快照 store）
+## frontend-stores（Zustand stores：chatStore + innerLifeStore + eventStore + 四个快照 store + settingsStore）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -575,8 +575,20 @@
 | `isReady > think 打完才放行 speak` | 功能正确 | think 未打完 → false；`typedIds` 含该 think → true；无前置 think → true（串行逐字门控核心） |
 | `isReady > preloaded / 非 speak·ask 恒就绪` | 功能正确 | `preloaded` speak、think 自身 → true（历史不逐字 / 不被门控） |
 | `isReady > 不同 correlation_id 不阻塞` | 功能正确 | 不同 `correlation_id` 的 think 不阻塞 speak → true |
+| `settingsStore > setTint/setImage 独立落 store` | 功能正确 | `setTint`/`setImage` 各落 `tint`/`image` 字段，可并存 |
+| `settingsStore > reset 恢复默认` | 功能正确 | `reset()` 后 `tint`/`image` 均回 null |
 
-**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）；`chatStore.sendMessage > 重入守卫` 于 03-chat-panel 后 review 追加（串行锁提前到 await 前 + get() 同步守卫，防 in-flight 重复发送覆盖 pendingId）；`chatStore.loadHistory` / `markTyped`+`reset` / `eventStore.loadHistory` / 四个快照 store `refresh` / `isReady` 于前端面板落地轮追加（聊天历史加载 + 快照 store + 串行逐字门控纯函数）。
+**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）；`chatStore.sendMessage > 重入守卫` 于 03-chat-panel 后 review 追加（串行锁提前到 await 前 + get() 同步守卫，防 in-flight 重复发送覆盖 pendingId）；`chatStore.loadHistory` / `markTyped`+`reset` / `eventStore.loadHistory` / 四个快照 store `refresh` / `isReady` 于前端面板落地轮追加（聊天历史加载 + 快照 store + 串行逐字门控纯函数）；`settingsStore` 于视觉改造轮追加（背景色调/背景图纯前端 UI 状态）。
+
+## frontend-labels（枚举中文化映射：lib/labels.ts）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `labels > 用户示例 exploration → 发现` | 功能正确 | `DESIRE_TYPE_LABELS.exploration === "发现"`（用户点名的翻译） |
+| `labels > 各枚举键均有中文映射` | 功能正确 | 8 个映射表的每个值均非空字符串（无 `undefined` 漏译） |
+| `labels > label() 命中键返回中文，未知键回退原值` | 边界鲁棒 | `label(map, "exploration")` → 中文；`label(map, "unknown_key")` → `"unknown_key"`（未知键回退原值不崩） |
+
+**功能阶段**：frontend 视觉改造轮编写（枚举值中文化映射 + `label()` 回退纯函数；验证 `lib/labels.ts` 单一真源——各枚举值都映射到非空中文、未知键回退原值，不验证视觉）。
 
 ## frontend-typewriter（打字机 hook：useTypewriter）
 
@@ -600,6 +612,7 @@
 | `MessageList > 全部消息按序渲染，无历史折叠` | 功能正确 | 两条消息 `typeDone()` 后都上屏（微信式：不再只显示一条 / 折叠历史）；`queryByRole("button")` 无历史按钮 |
 | `MessageList > 全部消息渲染即存在（不串行等前一条打完）` | 功能正确 | 两条 nyx 消息渲染即 `.message-bubble` 数量 = 2（打字中 content 渐显但气泡已挂载，不串行等前一条打完） |
 | `ChatPanel > 订阅 messages 透传给 MessageList` | 功能正确 | store 里 messages 经 ChatPanel 订阅透传 → MessageList 渲染上屏 |
+| `ChatPanel > 头部「设置」按钮触发 onOpenSettings` | 功能正确 | 点「设置」→ `onOpenSettings` 恰调 1 次（App 层 view 切到设置面板） |
 | `ChatInput > 点发送 → sendMessage(trimmed) 且成功清空` | 功能正确 | 点发送按钮触发 `sendMessage` 且传入 trim 后文本；成功（返回 true）后 `waitFor` 断言输入框清空 |
 | `ChatInput > 回车 → sendMessage 且成功清空` | 功能正确 | 输入框 Enter 触发 `sendMessage`；成功后输入框清空 |
 | `ChatInput > 输入法组合态回车不触发` | 回归保护 | `isComposing=true` 的 Enter（拼音选字）不触发 `sendMessage`（防 IME 误发送） |
@@ -614,16 +627,16 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `EnergyBar > 按 energy_state 渲染枚举原值文案` | 功能正确 | `energy_state="tired"` 渲染 `tired` 原值文案（不转中文，反冗余） |
+| `EnergyBar > 按 energy_state 渲染中文文案` | 功能正确 | `energy_state="tired"` 渲染中文 `疲惫`（经 `ENERGY_LABELS`，不再显原值） |
 | `EmotionSprite > 按 emotion 选图文件名` | 功能正确 | `emotion="happy"` 时 `<img alt="happy">` 的 `src` 含 `happy`（1:1 文件名映射，无 switch） |
-| `BigFiveChart > 按 personality 渲染键名原值标签 + 数值` | 功能正确 | 渲染 `openness`/`neuroticism` 键名原值标签 + 数值（`2`/`7` 唯一值上屏） |
-| `ValuesChart > 按 values 渲染键名原值标签 + 数值` | 功能正确 | 渲染 `attitude_to_human`/`optimism` 标签 + 数值（`9`/`5` 唯一值上屏） |
+| `BigFiveChart > 按 personality 渲染中文标签 + 数值` | 功能正确 | 渲染 `开放性`/`神经质` 中文标签 + 数值（`2`/`7` 唯一值上屏） |
+| `ValuesChart > 按 values 渲染中文标签 + 数值` | 功能正确 | 渲染 `对人类的态度`/`乐观` 标签 + 数值（`9`/`5` 唯一值上屏） |
 | `ValenceArousalPlot > 渲染不崩` | 功能正确 | SVG `.va-plot` 存在（坐标/像素不做断言，README §6） |
-| `InnerStatePanel > current=null → 整体占位不崩` | 边界鲁棒 | `current=null` 显示「等待核心服务连接…」且不渲染子组件（`openness` 不在） |
-| `InnerStatePanel > current 非 null → 渲染子组件字段` | 功能正确 | `energetic`/`openness`/`attitude_to_human` 分别经 EnergyBar/BigFiveChart/ValuesChart 上屏 |
+| `InnerStatePanel > current=null → 整体占位不崩` | 边界鲁棒 | `current=null` 显示「等待核心服务连接…」且不渲染子组件（`开放性` 不在） |
+| `InnerStatePanel > current 非 null → 渲染子组件字段` | 功能正确 | `精力充沛`/`开放性`/`对人类的态度` 分别经 EnergyBar/BigFiveChart/ValuesChart 上屏 |
 | `InnerStatePanel > error 非 null → 红字一行` | 功能正确 | `error` 非空渲染 `.inner-state-panel__error` 红字 |
 
-**功能阶段**：frontend 04-inner-state-panel 实现时编写（RTL + 真实 store；验证管道正确——子组件按需收字段、`energy_state`/键名枚举值原值不转中文、`current=null` 整体占位不崩，图表坐标/像素不断言）；`EmotionSprite` 已在 03-chat-panel 由 MessageBubble 复用，此处补其文件名映射的独立断言。
+**功能阶段**：frontend 04-inner-state-panel 实现时编写（RTL + 真实 store；验证管道正确——子组件按需收字段、`current=null` 整体占位不崩，图表坐标/像素不断言）；`EmotionSprite` 已在 03-chat-panel 由 MessageBubble 复用，此处补其文件名映射的独立断言。枚举值中文化（`lib/labels.ts`）于视觉改造轮追加——原「枚举值显原值不转中文」约定被用户要求推翻（`exploration → 发现`），EnergyBar/BigFiveChart/ValuesChart 断言由英文原值改为中文标签。
 
 ## frontend-presence（活跃度上报：usePresence + classifyPresence）
 
@@ -642,7 +655,8 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `SidePanel > 渲染 6 个标签，默认激活「内在」` | 功能正确 | 6 个 tab 按钮（内在/欲望/活动/记忆/Eval/溯源）都渲染；默认「内在」`aria-pressed=true` + 面板标题「内在状态」上屏 |
-| `SidePanel > 点击「欲望」切换面板，未激活面板卸载` | 功能正确 | 点「欲望」后 `aria-pressed` 移到「欲望」、面板标题「欲望」上屏、内在面板标题卸载（仅挂载当前 tab，规避旧抽屉 flex 子项被压缩裁掉无法滚动） |
+| `SidePanel > 渲染 7 个标签，默认激活「背景」` | 功能正确 | 7 个 tab 按钮（背景/内在/欲望/活动/记忆/Eval/溯源）都渲染；默认「背景」`aria-pressed=true` + 面板标题「背景」上屏 |
+| `SidePanel > 点击「欲望」切换面板，未激活面板卸载` | 功能正确 | 点「欲望」后 `aria-pressed` 移到「欲望」、面板标题「欲望」上屏、背景面板标题卸载（仅挂载当前 tab，规避旧抽屉 flex 子项被压缩裁掉无法滚动） |
+| `SidePanel > 「返回对话」按钮触发 onBack` | 功能正确 | 点「返回对话」→ `onBack` 恰调 1 次（设置面板退回聊天，App 层 view 切换） |
 
-**功能阶段**：frontend 视觉改造（右侧滑出抽屉 → 右侧常驻标签页）时编写（RTL + 真实 store；验证管道正确——标签切换当前面板、仅挂载 active tab，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）。
+**功能阶段**：frontend 视觉改造（右侧滑出抽屉 → 右侧常驻标签页）时编写（RTL + 真实 store；验证管道正确——标签切换当前面板、仅挂载 active tab，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）；本轮视觉改造把 SidePanel 从「常驻右侧标签页」改为「设置模式下替换对话框」，`SidePanel` 需 `onBack` prop + 首 tab 由「内在」改为「背景」——原 6 标签断言改为 7 标签、默认激活断言由「内在」改「背景」、补 `onBack` 用例。

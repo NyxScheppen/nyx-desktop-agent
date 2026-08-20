@@ -33,15 +33,15 @@ InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 in
 
 ## 4. 精力条（`EnergyBar`）
 
-- 横向进度条：`energy ∈ [0, 100]`；文案显示 `energy_state` **枚举值原值**（`energetic`/`okay`/`tired`/`exhausted`/`drained`）——与 LLM prompt、日志一致，**不额外维护「数值→中文」映射**（反冗余，16-expression-prompt §「数值直接拼」）。
+- 横向进度条：`energy ∈ [0, 100]`；文案经 `ENERGY_LABELS`（`lib/labels.ts`）把 `energy_state` 转中文（`energetic→精力充沛` / `tired→疲惫` …），未知键回退原值。
 - 颜色按 `energy_state` 分段（绿→黄→红），纯视觉。
 
 ## 5. Big Five 与三观（`BigFiveChart` / `ValuesChart`）
 
 - **Big Five**：五维 `1-10`（`openness`/`conscientiousness`/`extraversion`/`agreeableness`/`neuroticism`），**条形图**（默认；五边雷达可选，手绘 SVG，不引库）。
 - **三观**：四维 `1-10`（`attitude_to_human`/`ai_identity_acceptance`/`altruism`/`optimism`），同款条形。
-- 两者共享内部 `BarChart`（收 `keys: readonly string[]` + `data: Record<string, number>`，渲染逻辑与越界钳制收敛于此）；`BigFiveChart`/`ValuesChart` 只传各自的 keys 数组 + 数据对象，不重复渲染逻辑。
-- **标签用 snake_case 键名原值**（`openness` / `attitude_to_human`），**不转中文**——与 LLM prompt、日志一致，不额外维护「键→中文」映射（反冗余，16-expression-prompt §「数值直接拼」）。
+- 两者共享内部 `BarChart`（收 `keys: readonly string[]` + `data: Record<string, number>` + 可选 `labels?: Record<string, string>`，渲染逻辑与越界钳制收敛于此）；`BigFiveChart`/`ValuesChart` 只传各自的 keys 数组 + 数据对象 + `labels`，不重复渲染逻辑。
+- **标签经 `lib/labels.ts` 转中文**：`BigFiveChart` 传 `PERSONALITY_LABELS`（`openness→开放性` …）、`ValuesChart` 传 `VALUES_LABELS`（`attitude_to_human→对人类的态度` …）；`BarChart` 渲染 `labels?.[key] ?? key`，未知键回退原值。
 - 这些是慢变量（无高频事件），只在 `refreshState` 全量刷新时重绘（02-stores §2）。
 
 ## 6. 边界
@@ -52,5 +52,5 @@ InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 in
 
 ## 7. 测试（`tests/stores.test.ts` 已覆盖数据层）
 
-- 组件层（React Testing Library）轻测：`EnergyBar` 按 `energy`/`energy_state` 渲染文案、`EmotionSprite` 按 `emotion` 选图文件名、`BigFiveChart`/`ValuesChart` 按 personality/values 渲染键名原值标签 + 数值、`InnerStatePanel` 在 `current=null` 时整体占位不崩（§6 守卫在面板层，不渲染子组件）。
+- 组件层（React Testing Library）轻测：`EnergyBar` 按 `energy`/`energy_state` 渲染中文文案、`EmotionSprite` 按 `emotion` 选图文件名、`BigFiveChart`/`ValuesChart` 按 personality/values 渲染中文标签 + 数值、`InnerStatePanel` 在 `current=null` 时整体占位不崩（§6 守卫在面板层，不渲染子组件）。
 - 图表坐标/像素不做断言（README §6）。

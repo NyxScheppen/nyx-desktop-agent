@@ -1,6 +1,7 @@
 import type { EnergyState } from "../../types/api";
+import { ENERGY_LABELS } from "../../lib/labels";
 
-// 精力条（04 §4）：横向进度条 energy∈[0,100]；文案显示 energy_state 枚举值原值（不转中文，反冗余）。
+// 精力条（04 §4）：横向进度条 energy∈[0,100]；文案经 ENERGY_LABELS 转中文。
 // 颜色按 energy_state 分段（绿→黄→红），纯视觉，不做测试断言。
 const ENERGY_COLOR: Record<EnergyState, string> = {
   energetic: "#3fa34d",
@@ -25,7 +26,7 @@ export default function EnergyBar({ energy, energy_state }: EnergyBarProps) {
           style={{ width: `${pct}%`, backgroundColor: ENERGY_COLOR[energy_state] }}
         />
       </div>
-      <span className="energy-bar__label">{energy_state}</span>
+      <span className="energy-bar__label">{ENERGY_LABELS[energy_state]}</span>
     </div>
   );
 }

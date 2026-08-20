@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import { useActivityStore } from "../../stores/activityStore";
+import { ACTIVITY_TYPE_LABELS, ACTIVITY_STATUS_LABELS } from "../../lib/labels";
 import Panel from "../layout/Panel";
 
 // 活动时间线面板（README §5）：REST 快照 + SSE activity_* 触发 refresh。
+// 枚举值经 ACTIVITY_TYPE_LABELS / ACTIVITY_STATUS_LABELS 转中文。
 function timeLabel(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString();
 }
@@ -29,7 +31,8 @@ export default function ActivityPanel() {
               <p className="panel-item">空闲</p>
             ) : (
               <p className="panel-item">
-                [{data.current.type}] {data.current.status} ·{" "}
+                [{ACTIVITY_TYPE_LABELS[data.current.type]}]{" "}
+                {ACTIVITY_STATUS_LABELS[data.current.status]} ·{" "}
                 {timeLabel(data.current.started_at)}
               </p>
             )}
@@ -40,7 +43,7 @@ export default function ActivityPanel() {
               {data.schedule.map((a) => (
                 <li key={a.id} className="panel-item">
                   <span className="panel-item__main">
-                    [{a.type}] {a.status}
+                    [{ACTIVITY_TYPE_LABELS[a.type]}] {ACTIVITY_STATUS_LABELS[a.status]}
                   </span>
                   <span className="panel-item__meta">
                     {a.schedule_block_id} · {timeLabel(a.started_at)}

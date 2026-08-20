@@ -7,6 +7,7 @@ import { useEvalStore } from "../src/stores/evalStore";
 import { useEventStore } from "../src/stores/eventStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
+import { useSettingsStore } from "../src/stores/settingsStore";
 import type { BackendEvent, CurrentState } from "../src/types/api";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
@@ -556,6 +557,30 @@ describe("chatStore.loadHistory", () => {
 
     useChatStore.getState().reset();
     expect(useChatStore.getState().typedIds).toEqual({});
+  });
+});
+
+describe("settingsStore", () => {
+  beforeEach(() => {
+    useSettingsStore.getState().reset();
+  });
+
+  it("setTint / setImage 独立落 store，可并存", () => {
+    useSettingsStore.getState().setTint("#1f2740");
+    useSettingsStore.getState().setImage("data:image/png;base64,xxx");
+
+    expect(useSettingsStore.getState().tint).toBe("#1f2740");
+    expect(useSettingsStore.getState().image).toBe("data:image/png;base64,xxx");
+  });
+
+  it("reset 恢复默认（tint/image 均 null）", () => {
+    useSettingsStore.getState().setTint("#1f2740");
+    useSettingsStore.getState().setImage("data:image/png;base64,xxx");
+
+    useSettingsStore.getState().reset();
+
+    expect(useSettingsStore.getState().tint).toBeNull();
+    expect(useSettingsStore.getState().image).toBeNull();
   });
 });
 

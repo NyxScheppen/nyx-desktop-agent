@@ -16,7 +16,7 @@ const CONNECTION_LABEL: Record<ConnectionState, string> = {
 };
 
 // App 组合装配（01-sse §6 + 视觉改造布局 §1）：全屏三层——
-// 背景柔光 + 樱花 → 半身像立绘居中 → 底部对话框；侧栏抽屉收非对话面板。
+// 背景柔光 + 樱花 → 左侧半身像立绘 + 右侧微信式聊天窗；侧栏抽屉收非对话面板。
 // useSSE 只挂一次，子组件读 store。
 export default function App() {
   const status = useSSE(dispatchEvent);
@@ -43,9 +43,8 @@ export default function App() {
 
       <main className="app-stage">
         <EmotionSprite size="portrait" />
+        <ChatPanel />
       </main>
-
-      <ChatPanel />
     </div>
   );
 }

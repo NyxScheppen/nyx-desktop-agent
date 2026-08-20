@@ -78,7 +78,7 @@ frontend/
   index.html
   src/
     main.tsx                 # React 入口，挂载 App
-    App.tsx                  # 全屏装配：背景/樱花 + 半身像立绘 + 底部对话框 + 侧栏抽屉（01-sse §6）
+    App.tsx                  # 全屏装配：背景/樱花 + 左侧半身像立绘 + 右侧聊天窗 + 侧栏抽屉（01-sse §6）
     types/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     api/
@@ -125,7 +125,7 @@ frontend/
 
 ## 5. 面板骨架（SideDrawer 抽屉）
 
-design §11 列 7 个面板；核心先行实现 2 个，其余占位（`Panel` 容器 + 「后续」标记）。视觉改造后，聊天区独立为底部对话框（`ChatPanel`），其余面板收进右上角「面板」按钮展开的 `SideDrawer` 抽屉。
+design §11 列 7 个面板；核心先行实现 2 个，其余占位（`Panel` 容器 + 「后续」标记）。视觉改造后，聊天区独立为右侧微信式大窗（`ChatPanel`），其余面板收进右上角「面板」按钮展开的 `SideDrawer` 抽屉。
 
 | 面板 | 核心先行状态 | 数据源 |
 |---|---|---|

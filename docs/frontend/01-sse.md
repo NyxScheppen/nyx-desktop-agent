@@ -181,14 +181,14 @@ function App() {
         </div>
       </header>
       <main className="app-stage">
-        <EmotionSprite size="portrait" />              {/* 半身像立绘居中（CSS 裁切全身像） */}
+        <EmotionSprite size="portrait" />              {/* 半身像立绘（左侧，CSS 裁切全身像） */}
+        <ChatPanel />                                  {/* 右侧微信式聊天窗 */}
       </main>
-      <ChatPanel />                                    {/* 底部对话框 */}
     </div>
   );
 }
 ```
 
 - `useSSE` 只挂一次（App 顶层），子面板**不重复订阅**，只读 store。
-- **视觉改造布局（Galgame）**：全屏三层——背景柔光 + 樱花（`app-bg`/`Sakura`）→ 半身像立绘居中（`app-stage` + `EmotionSprite size="portrait"`）→ 底部对话框（`ChatPanel` 的 `dialog-box`）；内在状态/欲望/活动/记忆/Eval/溯源等非对话面板收进 `SideDrawer` 抽屉（`components/layout`，右上角「面板」按钮右滑展开）。
+- **视觉改造布局（Galgame）**：全屏三层——背景柔光 + 樱花（`app-bg`/`Sakura`）→ 左侧半身像立绘（`app-stage` + `EmotionSprite size="portrait"`）+ 右侧微信式聊天窗（`ChatPanel` 的 `dialog-box`）；内在状态/欲望/活动/记忆/Eval/溯源等非对话面板收进 `SideDrawer` 抽屉（`components/layout`，右上角「面板」按钮右滑展开）。
 - `connectionState` 由 App 层在顶栏 `connection-state` 直接显示，不再传 `ChatPanel`。

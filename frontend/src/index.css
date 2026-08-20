@@ -114,16 +114,15 @@ body {
   letter-spacing: 1px;
 }
 
-/* ===== 半身像立绘（视觉改造 §2：CSS 裁切全身像）===== */
+/* ===== 半身像立绘 + 聊天窗（视觉改造 §2：左右分栏）===== */
 .app-stage {
   position: fixed;
-  left: 50%;
-  bottom: 5vh;
-  transform: translateX(-50%);
+  inset: 0;
   z-index: 2;
   display: flex;
-  justify-content: center;
-  align-items: flex-end;
+  align-items: stretch;
+  gap: 12px;
+  padding: 56px 16px 16px;
 }
 
 .emotion-sprite {
@@ -132,8 +131,9 @@ body {
 
 .emotion-sprite--portrait {
   display: block;
-  width: min(72vh, 94vw);
-  height: 92vh;
+  flex: 0 0 34%;
+  width: 34%;
+  height: 100%;
   object-fit: cover;
   object-position: top center;
   filter: drop-shadow(0 18px 50px rgba(60, 30, 20, 0.28));
@@ -155,18 +155,14 @@ body {
   max-width: 16rem;
 }
 
-/* ===== 底部对话框（视觉改造 §1）===== */
+/* ===== 右侧聊天窗（视觉改造 §1）===== */
 .dialog-box {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(880px, 94vw);
-  z-index: 3;
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  max-height: 58vh;
-  padding: 16px 28px 18px;
+  height: 100%;
+  padding: 16px 20px 16px;
   background: linear-gradient(180deg,
       rgba(255, 248, 240, 0.92) 0%,
       rgba(250, 240, 235, 0.97) 100%);
@@ -193,33 +189,18 @@ body {
 
 /* ===== 消息列表 + 气泡（03 §3）===== */
 .message-list {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   margin-bottom: 0.75rem;
-}
-
-.history-toggle {
-  align-self: flex-start;
-  padding: 2px 12px;
-  border: 1px solid rgba(180, 140, 120, 0.3);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.5);
-  color: #a08070;
-  font-size: 0.8rem;
-  cursor: pointer;
-  font-family: inherit;
-  letter-spacing: 1px;
-}
-
-.message-list__history {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  max-height: 40vh;
   overflow-y: auto;
-  padding-right: 4px;
-  margin-bottom: 0.5rem;
+  scrollbar-width: none; /* Firefox 隐藏滚动条 */
+}
+
+.message-list::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/Edge 隐藏滚动条 */
 }
 
 .message-bubble {
@@ -528,15 +509,16 @@ body {
 
 /* ===== 响应式 ===== */
 @media (max-width: 768px) {
-  .emotion-sprite--portrait {
-    width: min(56vh, 88vw);
-    height: 72vh;
-  }
   .app-stage {
-    bottom: 12vh;
+    padding: 48px 8px 8px;
+    gap: 8px;
+  }
+  .emotion-sprite--portrait {
+    flex-basis: 28%;
+    width: 28%;
   }
   .dialog-box {
-    padding: 12px 16px 16px;
+    padding: 12px 14px 14px;
   }
   .dialog-box__name {
     font-size: 17px;

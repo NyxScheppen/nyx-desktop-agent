@@ -21,3 +21,6 @@ build/
 
 # SQLite 运行时数据库（后端启动生成，勿提交）
 nyx.db*
+
+# 前端依赖（勿提交）
+node_modules/

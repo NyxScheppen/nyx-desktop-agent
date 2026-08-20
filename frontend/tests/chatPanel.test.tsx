@@ -5,7 +5,6 @@ import ChatPanel from "../src/components/chat/ChatPanel";
 import MessageBubble from "../src/components/chat/MessageBubble";
 import MessageList from "../src/components/chat/MessageList";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
-import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 
 let msgSeq = 0; // 自增保证 id 唯一，避免同 kind 两条消息撞 React key
 
@@ -19,8 +18,7 @@ function makeMsg(
 }
 
 // nyx 文本消息走 useTypewriter 逐字，测试须推进 fake timers 打完再断言完整文案。
-// 串行推进依赖 useEffect（React commit 后才设下一个停顿 timer），
-// 故分多轮 advance，每轮边界让 React flush，覆盖「打字 → 停顿 → 下一条」全程。
+// 分多轮 advance，每轮边界让 React flush（打字机 useEffect 在 commit 后推进）。
 function typeDone() {
   for (let i = 0; i < 20; i++) {
     act(() => vi.advanceTimersByTime(500));
@@ -33,7 +31,6 @@ afterEach(() => {
 
 describe("MessageBubble", () => {
   beforeEach(() => {
-    useInnerLifeStore.setState({ current: null, loading: false, error: null });
     vi.useFakeTimers();
   });
   afterEach(() => {
@@ -82,14 +79,13 @@ describe("MessageBubble", () => {
 
 describe("MessageList", () => {
   beforeEach(() => {
-    useInnerLifeStore.setState({ current: null, loading: false, error: null });
     vi.useFakeTimers();
   });
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("只显示当前一条，更早的收进历史可展开", () => {
+  it("全部消息按序渲染，无历史折叠", () => {
     render(
       <MessageList
         messages={[
@@ -99,33 +95,29 @@ describe("MessageList", () => {
       />,
     );
     typeDone();
-
-    // 当前显示最后一条（停留），第一条进历史折叠
-    expect(screen.getByText("第二条")).toBeInTheDocument();
-    expect(screen.queryByText("第一条")).not.toBeInTheDocument();
-
-    // 点开历史看到第一条
-    fireEvent.click(screen.getByRole("button", { name: "历史（1）" }));
+    // 两条都上屏（微信式：不再只显示一条 / 折叠历史）
     expect(screen.getByText("第一条")).toBeInTheDocument();
+    expect(screen.getByText("第二条")).toBeInTheDocument();
+    // 无历史按钮
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
-  it("串行：第一条未打完时，后续不渲染", () => {
-    render(
+  it("全部消息渲染即存在（不串行等前一条打完）", () => {
+    const { container } = render(
       <MessageList
         messages={[
-          makeMsg("speak", "nyx", "第一句话"),
+          makeMsg("speak", "nyx", "第一句"),
           makeMsg("think", "nyx", "内心"),
         ]}
       />,
     );
-    // 未推进 fake timers：只有第一条在打字，第二条不显示
-    expect(screen.queryByText("内心")).not.toBeInTheDocument();
+    // 两条气泡都在 DOM（nyx 打字中 content 渐显，但气泡已挂载）
+    expect(container.querySelectorAll(".message-bubble").length).toBe(2);
   });
 });
 
 describe("ChatPanel", () => {
   beforeEach(() => {
-    useInnerLifeStore.setState({ current: null, loading: false, error: null });
     useChatStore.getState().reset();
     vi.useFakeTimers();
   });

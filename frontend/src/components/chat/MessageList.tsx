@@ -23,6 +23,23 @@ export function isReady(
   );
 }
 
+// nyx 文本消息种类（speak/ask/think/mutter/initiate_chat）：打字机的候选集合。
+const NYX_TEXT_KINDS: ReadonlySet<ChatMessage["kind"]> = new Set([
+  "speak",
+  "ask",
+  "think",
+  "mutter",
+  "initiate_chat",
+]);
+
+// 打字机只在「最开始」生效：仅第一条非 preloaded 的 nyx 文本消息逐字，
+// 之后的消息默认即时全量显示（视觉改造：开头打字机、后续即时）。纯函数导出供测试。
+export function isFirstTypewriter(index: number, messages: ChatMessage[]): boolean {
+  return (
+    messages.findIndex((m) => !m.preloaded && NYX_TEXT_KINDS.has(m.kind)) === index
+  );
+}
+
 // 微信式列表（视觉改造）：全部消息按序渲染，最新消息自动滚到底；
 // 历史往上滑看（滚动条隐藏，见 index.css）。每条消息独立逐字打字。
 export default function MessageList({ messages }: MessageListProps) {
@@ -41,6 +58,7 @@ export default function MessageList({ messages }: MessageListProps) {
           key={m.id}
           message={m}
           ready={isReady(m, i, messages, typedIds)}
+          typewriter={isFirstTypewriter(i, messages)}
           onThinkTyped={markTyped}
         />
       ))}

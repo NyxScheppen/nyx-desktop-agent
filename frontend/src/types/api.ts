@@ -52,6 +52,15 @@ export type CurrentState = {
   active_desires: unknown[]; // 核心先行不消费，占位
 };
 
+/** 自我叙事（GET /api/narrative，nyx/types.py SelfNarrative）。 */
+export type SelfNarrative = {
+  identity: string;
+  story: string[];
+  self_view: Record<string, string>;
+  becoming: string[];
+  updated_at: number;
+};
+
 /** SSE 帧公共头。 */
 type SseBase = {
   event_id: string; // 事件唯一 id
@@ -88,6 +97,7 @@ export type EmotionUpdateEvent = SseBase & {
 
 /** 未消费的 11 类：溯源面板落地前不读字段，payload 保持宽松。 */
 type OpaqueEventType =
+  | "user_material"
   | "clock_tick"
   | "observation_state"
   | "reflection"
@@ -249,4 +259,11 @@ export type BackendEvent = {
   type: string; // EventType 值
   content: Record<string, unknown>;
   correlation_id: string;
+};
+
+// ---- 资料上传（POST /api/upload 响应）----
+export type UploadResult = {
+  event_id: string;
+  filename: string;
+  path: string;
 };

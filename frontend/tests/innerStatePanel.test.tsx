@@ -49,20 +49,20 @@ describe("inner 面板子组件", () => {
     expect(img.src).toContain("happy");
   });
 
-  it("BigFiveChart 按 personality 渲染中文标签 + 数值", () => {
+  it("BigFiveChart 按 personality 渲染双端语义", () => {
     render(<BigFiveChart personality={currentFixture.personality} />);
-    expect(screen.getByText("开放性")).toBeInTheDocument();
-    expect(screen.getByText("神经质")).toBeInTheDocument();
-    expect(screen.getByText("2")).toBeInTheDocument(); // extraversion 唯一值
-    expect(screen.getByText("7")).toBeInTheDocument(); // neuroticism 唯一值
+    expect(screen.getByText("保守")).toBeInTheDocument(); // openness 低端
+    expect(screen.getByText("开放")).toBeInTheDocument(); // openness 高端
+    expect(screen.getByText("情绪稳定")).toBeInTheDocument(); // neuroticism 低端
+    expect(screen.getByText("敏感")).toBeInTheDocument(); // neuroticism 高端
   });
 
-  it("ValuesChart 按 values 渲染中文标签 + 数值", () => {
+  it("ValuesChart 按 values 渲染双端语义", () => {
     render(<ValuesChart values={currentFixture.values} />);
-    expect(screen.getByText("对人类的态度")).toBeInTheDocument();
-    expect(screen.getByText("乐观")).toBeInTheDocument();
-    expect(screen.getByText("9")).toBeInTheDocument(); // altruism 唯一值
-    expect(screen.getByText("5")).toBeInTheDocument(); // optimism 唯一值
+    expect(screen.getByText("疏离")).toBeInTheDocument(); // attitude_to_human 低端
+    expect(screen.getByText("亲近")).toBeInTheDocument(); // attitude_to_human 高端
+    expect(screen.getByText("悲观")).toBeInTheDocument(); // optimism 低端
+    expect(screen.getByText("乐观")).toBeInTheDocument(); // optimism 高端
   });
 
   it("ValenceArousalPlot 渲染不崩（坐标不做断言）", () => {
@@ -73,15 +73,15 @@ describe("inner 面板子组件", () => {
   it("InnerStatePanel current=null → 整体占位，不渲染子组件", () => {
     render(<InnerStatePanel />);
     expect(screen.getByText("等待核心服务连接…")).toBeInTheDocument();
-    expect(screen.queryByText("开放性")).not.toBeInTheDocument();
+    expect(screen.queryByText("开放")).not.toBeInTheDocument();
   });
 
   it("InnerStatePanel current 非 null → 渲染各子组件字段", () => {
     useInnerLifeStore.setState({ current: currentFixture });
     render(<InnerStatePanel />);
     expect(screen.getByText("精力充沛")).toBeInTheDocument(); // EnergyBar
-    expect(screen.getByText("开放性")).toBeInTheDocument(); // BigFiveChart
-    expect(screen.getByText("对人类的态度")).toBeInTheDocument(); // ValuesChart
+    expect(screen.getByText("开放")).toBeInTheDocument(); // BigFiveChart
+    expect(screen.getByText("亲近")).toBeInTheDocument(); // ValuesChart
   });
 
   it("InnerStatePanel error 非 null → 顶部红字一行", () => {

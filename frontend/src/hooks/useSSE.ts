@@ -8,6 +8,7 @@ import type { ConnectionState, SseEvent } from "../types/api";
 // dispatchEvent 分发表，否则新类型帧被浏览器静默丢弃（01-sse §4）。
 const EVENT_TYPES = [
   "user_message",
+  "user_material",
   "clock_tick",
   "observation_state",
   "speak",

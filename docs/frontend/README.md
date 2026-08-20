@@ -98,6 +98,8 @@ frontend/
       activityStore.ts       # 活动：ActivitySnapshot 快照
       memoryStore.ts         # 记忆：Memory[] 快照
       evalStore.ts           # eval + token：reports/tokens 快照
+      narrativeStore.ts      # 自我叙事：SelfNarrative 快照
+      materialsStore.ts      # 资料上传：文件清单 + 上传动作
       settingsStore.ts       # 背景外观：tint/image（纯前端 UI 状态，无后端）
     components/
       chat/
@@ -116,6 +118,8 @@ frontend/
         BackgroundPanel.tsx # 背景外观（预设色调/自定义取色/上传背景图/恢复默认）
         DesiresPanel.tsx     # 欲望面板（GET /api/desires + SSE desire_*）
         ActivityPanel.tsx    # 活动时间线（GET /api/activity + SSE activity_*）
+        NarrativePanel.tsx   # 自我叙事（GET /api/narrative）
+        MaterialsPanel.tsx   # 资料上传（POST /api/upload + GET /api/materials）
         MemoryPanel.tsx      # 记忆浏览器（GET /api/memories + SSE memory_*）
         EvalPanel.tsx        # eval + token 看板（GET /api/eval / GET /api/tokens）
         TracePanel.tsx       # 事件溯源时间线（SSE 全部 + GET /api/events/log）
@@ -140,7 +144,7 @@ frontend/
 
 ## 5. 面板骨架（SidePanel 标签页）
 
-design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），其头部「设置」按钮切到 `SidePanel` 标签页（背景/内在/欲望/活动/记忆/Eval/溯源 7 标签，一次显示一个，内容区可滚动，「返回对话」回到聊天）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
+design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），其头部「设置」按钮切到 `SidePanel` 标签页（背景/内在/欲望/活动/叙事/资料/记忆/Eval/溯源 9 标签，一次显示一个，内容区可滚动，「返回对话」回到聊天）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|
@@ -149,6 +153,8 @@ design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立�
 | 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | `components/inner/InnerStatePanel.tsx` |
 | 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | `components/panels/DesiresPanel.tsx` |
 | 活动时间线 | ✅ 实现 | `GET /api/activity` + SSE `activity_*` | `components/panels/ActivityPanel.tsx` |
+| 自我叙事 | ✅ 实现 | `GET /api/narrative` | `components/panels/NarrativePanel.tsx` |
+| 资料上传 | ✅ 实现 | `POST /api/upload` + `GET /api/materials` | `components/panels/MaterialsPanel.tsx` |
 | 记忆浏览器 | ✅ 实现 | `GET /api/memories` + SSE `memory_*` | `components/panels/MemoryPanel.tsx` |
 | eval + token 看板 | ✅ 实现 | `GET /api/eval` / `GET /api/tokens` | `components/panels/EvalPanel.tsx` |
 | 事件溯源时间线 | ✅ 实现 | SSE 全部 + `GET /api/events/log` | `components/panels/TracePanel.tsx` |

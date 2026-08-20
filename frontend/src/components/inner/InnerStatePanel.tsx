@@ -1,7 +1,6 @@
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import Panel from "../layout/Panel";
 import BigFiveChart from "./BigFiveChart";
-import EmotionSprite from "./EmotionSprite";
 import EnergyBar from "./EnergyBar";
 import ValenceArousalPlot from "./ValenceArousalPlot";
 import ValuesChart from "./ValuesChart";
@@ -19,7 +18,6 @@ export default function InnerStatePanel() {
         "等待核心服务连接…"
       ) : (
         <div className="inner-state-panel__body">
-          <EmotionSprite size="large" />
           <ValenceArousalPlot valence={current.valence} arousal={current.arousal} />
           <EnergyBar energy={current.energy} energy_state={current.energy_state} />
           <BigFiveChart personality={current.personality} />

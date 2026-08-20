@@ -1,18 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  exportMemories,
   getActivity,
   getDesires,
   getEval,
   getEventsLog,
+  getMaterials,
   getMemories,
+  getNarrative,
   getState,
   getTokens,
   postChat,
   postObserve,
+  uploadFile,
 } from "../src/api/client";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
+}
+
+function textResponse(body: string, ok = true, status = 200): Response {
+  return { ok, status, text: async () => body } as Response;
 }
 
 const snapshot = {
@@ -187,5 +195,73 @@ describe("api/client", () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       "/api/events/log?limit=20&event_type=speak&correlation_id=c1",
     );
+  });
+
+  it("getNarrative：GET /api/narrative、解析 SelfNarrative", async () => {
+    const fixture = {
+      identity: "我",
+      story: ["a"],
+      self_view: { k: "v" },
+      becoming: ["b"],
+      updated_at: 123,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getNarrative();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/narrative");
+    expect(res).toEqual(fixture);
+  });
+
+  it("exportMemories：POST /api/export、body {format}、返回 text", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(textResponse("# 记忆\n..."));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await exportMemories("md");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/export");
+    expect(init).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ format: "md" }),
+    });
+    expect(res).toBe("# 记忆\n...");
+  });
+
+  it("uploadFile：POST /api/upload、FormData 带 file、解析 UploadResult", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        event_id: "e1",
+        filename: "book.txt",
+        path: "workspace/uploads/book.txt",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await uploadFile(
+      new File(["内容"], "book.txt", { type: "text/plain" }),
+    );
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/upload");
+    expect(init).toMatchObject({ method: "POST" });
+    expect(init?.body).toBeInstanceOf(FormData);
+    expect(res).toEqual({
+      event_id: "e1",
+      filename: "book.txt",
+      path: "workspace/uploads/book.txt",
+    });
+  });
+
+  it("getMaterials：GET /api/materials、解析 {files}", async () => {
+    const fixture = { files: ["a.txt", "b.txt"] };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getMaterials();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/materials");
+    expect(res).toEqual(fixture);
   });
 });

@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isReady } from "../src/components/chat/MessageList";
+import { isFirstTypewriter, isReady } from "../src/components/chat/MessageList";
 import { useActivityStore } from "../src/stores/activityStore";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
 import { useEvalStore } from "../src/stores/evalStore";
 import { useEventStore } from "../src/stores/eventStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
+import { useMaterialsStore } from "../src/stores/materialsStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
+import { useNarrativeStore } from "../src/stores/narrativeStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
 import type { BackendEvent, CurrentState } from "../src/types/api";
 
@@ -478,6 +480,61 @@ describe("desireStore / activityStore / memoryStore / evalStore", () => {
   });
 });
 
+describe("narrativeStore / materialsStore", () => {
+  beforeEach(() => {
+    useNarrativeStore.setState({ data: null, loading: false, error: null });
+    useMaterialsStore.setState({ files: null, uploading: false, error: null });
+  });
+
+  it("narrativeStore.refresh：GET /api/narrative → data 落 store", async () => {
+    const fixture = {
+      identity: "我",
+      story: [],
+      self_view: {},
+      becoming: [],
+      updated_at: 123,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useNarrativeStore.getState().refresh();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/narrative");
+    expect(useNarrativeStore.getState().data).toEqual(fixture);
+    expect(useNarrativeStore.getState().loading).toBe(false);
+  });
+
+  it("materialsStore.refresh：GET /api/materials → files 落 store", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ files: ["a.txt"] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useMaterialsStore.getState().refresh();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/materials");
+    expect(useMaterialsStore.getState().files).toEqual(["a.txt"]);
+  });
+
+  it("materialsStore.upload：POST /api/upload 后重拉 files + uploading 复位", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ event_id: "e1", filename: "book.txt", path: "p" }),
+      ) // uploadFile
+      .mockResolvedValueOnce(jsonResponse({ files: ["book.txt"] })); // getMaterials
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useMaterialsStore.getState().upload(
+      new File(["内容"], "book.txt", { type: "text/plain" }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/upload");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/materials");
+    expect(useMaterialsStore.getState().files).toEqual(["book.txt"]);
+    expect(useMaterialsStore.getState().uploading).toBe(false);
+  });
+});
+
 describe("chatStore.loadHistory", () => {
   beforeEach(() => {
     useChatStore.getState().reset();
@@ -612,5 +669,32 @@ describe("isReady（串行逐字纯函数）", () => {
   it("不同 correlation_id 的 think 不阻塞 speak", () => {
     const other = { ...think, id: "t2", correlation_id: "other" };
     expect(isReady(speak, 1, [other, speak], {})).toBe(true);
+  });
+});
+
+describe("isFirstTypewriter（开头打字机纯函数）", () => {
+  const speak1: ChatMessage = { id: "s1", role: "nyx", kind: "speak", content: "你好", correlation_id: "c1" };
+  const speak2: ChatMessage = { id: "s2", role: "nyx", kind: "speak", content: "再见", correlation_id: "c2" };
+  const user: ChatMessage = { id: "u1", role: "user", kind: "message", content: "hi", correlation_id: "c3" };
+
+  it("第一条 nyx 文本 → true（开头打字机）", () => {
+    expect(isFirstTypewriter(0, [speak1, speak2])).toBe(true);
+  });
+
+  it("第二条 nyx 文本 → false（后续即时显示）", () => {
+    expect(isFirstTypewriter(1, [speak1, speak2])).toBe(false);
+  });
+
+  it("user 消息不是候选，跳过", () => {
+    expect(isFirstTypewriter(1, [user, speak1])).toBe(true);
+  });
+
+  it("preloaded 历史消息跳过，其后第一条实时消息才打字机", () => {
+    const hist = { ...speak1, id: "h1", preloaded: true };
+    expect(isFirstTypewriter(1, [hist, speak2])).toBe(true);
+  });
+
+  it("无 nyx 文本消息 → false", () => {
+    expect(isFirstTypewriter(0, [user])).toBe(false);
   });
 });

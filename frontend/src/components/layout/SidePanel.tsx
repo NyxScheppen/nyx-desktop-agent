@@ -4,7 +4,9 @@ import ActivityPanel from "../panels/ActivityPanel";
 import BackgroundPanel from "../panels/BackgroundPanel";
 import DesiresPanel from "../panels/DesiresPanel";
 import EvalPanel from "../panels/EvalPanel";
+import MaterialsPanel from "../panels/MaterialsPanel";
 import MemoryPanel from "../panels/MemoryPanel";
+import NarrativePanel from "../panels/NarrativePanel";
 import TracePanel from "../panels/TracePanel";
 
 // 设置标签页面板（视觉改造布局 §1）：非对话面板收成一列，标签切换一次显示一个。
@@ -18,6 +20,8 @@ const TABS: TabDef[] = [
   { label: "内在", Panel: InnerStatePanel },
   { label: "欲望", Panel: DesiresPanel },
   { label: "活动", Panel: ActivityPanel },
+  { label: "叙事", Panel: NarrativePanel },
+  { label: "资料", Panel: MaterialsPanel },
   { label: "记忆", Panel: MemoryPanel },
   { label: "Eval", Panel: EvalPanel },
   { label: "溯源", Panel: TracePanel },

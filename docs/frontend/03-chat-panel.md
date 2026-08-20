@@ -8,7 +8,7 @@
 ```
 ChatPanel                     # 右侧聊天窗容器（dialog-box，微信式大窗，非 layout/Panel）
 ├─ MessageList                # 微信式全量列表：全部消息按序渲染，最新滚到底，上滑看历史（滚动条隐藏）
-│   └─ MessageBubble          # 单条：按 role/kind 渲染，nyx 文本走 useTypewriter 逐字（见 §3）
+│   └─ MessageBubble          # 单条：按 role/kind 渲染，nyx 文本走 useTypewriter 逐字（仅第一条，见 §3）
 └─ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用发送按钮（输入框可预打下一句）
     └─ sendError              # 红字，挂在 ChatInput 下方，读 chatStore.sendError
 ```
@@ -44,8 +44,8 @@ ChatPanel                     # 右侧聊天窗容器（dialog-box，微信式�
 | `nyx` | `initiate_chat` | 左气泡，带「搭话」标记 | 主动搭话（与 mutter 区分来源） |
 
 - **打字机（`useTypewriter`）**：nyx 文本消息（`speak`/`ask`/`think`/`mutter`/`initiate_chat`）逐字显示，纯渲染层 hook（`hooks/useTypewriter.ts`），不改 store——消息仍完整 append，仅控制「显示到第几个字」；未打完时挂 `.cursor-blink` 光标。`useTypewriter(text, speed, ready)` 加第三参 `ready`：false 时不启动（`displayed=""`、`done=false`、无光标），转 true 才从 0 逐字。
-- **微信式全量 + 独立打字（视觉改造 §4）**：`MessageList` 全部消息按序渲染，每条 nyx 文本独立逐字（各自 `useTypewriter`），不打完也已在 DOM；后端 SSE 顺序 THINK 先于 SPEAK（17-expression），故「内心话气泡」天然排在「发言气泡」之上；最新消息自动滚到底，历史往上滑看（滚动条隐藏）。
-- **串行逐字（内心话 → 对话，不并发）**：`MessageList` 对每条消息算 `ready = isReady(message, index, messages, typedIds)`（纯函数，导出供测试）——`speak`/`ask` 需等「同 `correlation_id` 且在其之前的所有 `think`」都已入 `typedIds` 才就绪；think 逐字 `done` 时经 `onThinkTyped → markTyped` 写入 `typedIds`。故内心话气泡先完整逐字打完，对话气泡才开始逐字（等待期 `displayed=""`、无光标），而非两条并发一起显示。`preloaded` 历史消息与 think/mutter 等非 `speak`/`ask` 消息恒就绪。
+- **微信式全量 + 开头打字机（视觉改造 §4）**：`MessageList` 全部消息按序渲染，仅第一条非 `preloaded` 的 nyx 文本消息逐字（`isFirstTypewriter` 纯函数判定），其余 nyx 文本即时全量显示（`MessageBubble` 的 `typewriter` prop=false，不走 `useTypewriter`）；每条消息不打完也已在 DOM；后端 SSE 顺序 THINK 先于 SPEAK（17-expression），故「内心话气泡」天然排在「发言气泡」之上；最新消息自动滚到底，历史往上滑看（滚动条隐藏）。
+- **串行逐字（内心话 → 对话，不并发）**：`MessageList` 对每条消息算 `ready = isReady(message, index, messages, typedIds)`（纯函数，导出供测试）——`speak`/`ask` 需等「同 `correlation_id` 且在其之前的所有 `think`」都已入 `typedIds` 才就绪；think 逐字 `done` 时经 `onThinkTyped → markTyped` 写入 `typedIds`。故内心话气泡先完整逐字打完，对话气泡才开始逐字（等待期 `displayed=""`、无光标），而非两条并发一起显示。`preloaded` 历史消息与 think/mutter 等非 `speak`/`ask` 消息恒就绪。因打字机只在第一条消息生效，此串行门控只在开头真正逐字；后续消息即时上屏、`ready` 不再影响显示。
 
 ## 4. 边界
 
@@ -56,6 +56,6 @@ ChatPanel                     # 右侧聊天窗容器（dialog-box，微信式�
 ## 5. 测试（`tests/` 并入 stores/api 测试）
 
 - `MessageBubble`：按 `kind` 渲染正确（`speak` 正常 / `think` 灰色斜体逐字 / `ask` 高亮）；nyx 文本消息须先 `advanceTimersByTime`（fake timers）打完字再断言完整文案——React Testing Library 断言关键 class/文案。
-- `MessageList`：全部消息按序渲染、无历史折叠（`typeDone` 推进 fake timers 后两条都上屏，无历史按钮）；全部气泡渲染即存在（不串行等前一条打完）；`isReady` 串行逐字门控纯函数（think 未打完 → speak 等，打完 → 就绪）在 stores.test.ts 覆盖。
+- `MessageList`：全部消息按序渲染、无历史折叠（`typeDone` 推进 fake timers 后两条都上屏，无历史按钮）；全部气泡渲染即存在（不串行等前一条打完）；打字机只在第一条 nyx 文本消息生效、后续即时显示（第二条未推进 timer 即完整上屏）；`isReady` 串行逐字门控 + `isFirstTypewriter` 开头打字机纯函数在 stores.test.ts 覆盖。
 - `ChatInput`：`isReplying=true` 禁用发送；回车/点发送触发 `sendMessage`（mock store action）。
 - 视觉样式不做断言（README §6 测试约定）。

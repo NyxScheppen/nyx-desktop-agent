@@ -68,21 +68,21 @@ export const MEMORY_TYPE_LABELS: Record<MemoryType, string> = {
   long_term: "长期",
 };
 
-// Big Five 五维键名（Personality）与三观四维键名（Values）→ 中文。
-// 键是类型字段名（snake_case），非枚举，故用 string 键 + 可选回退。
-export const PERSONALITY_LABELS: Record<string, string> = {
-  openness: "开放性",
-  conscientiousness: "尽责性",
-  extraversion: "外向性",
-  agreeableness: "宜人性",
-  neuroticism: "神经质",
+// Big Five 五维与三观四维的双端语义：low = 低分端(1) 语义，high = 高分端(10) 语义。
+// 键是类型字段名（snake_case），非枚举，故用 string 键；滑块偏左=偏 low、偏右=偏 high，两端词自解释维度。
+export const PERSONALITY_POLES: Record<string, { low: string; high: string }> = {
+  openness: { low: "保守", high: "开放" },
+  conscientiousness: { low: "随性", high: "自律" },
+  extraversion: { low: "内向", high: "外向" },
+  agreeableness: { low: "较真", high: "随和" },
+  neuroticism: { low: "情绪稳定", high: "敏感" },
 };
 
-export const VALUES_LABELS: Record<string, string> = {
-  attitude_to_human: "对人类的态度",
-  ai_identity_acceptance: "AI 身份认同",
-  altruism: "利他",
-  optimism: "乐观",
+export const VALUES_POLES: Record<string, { low: string; high: string }> = {
+  attitude_to_human: { low: "疏离", high: "亲近" },
+  ai_identity_acceptance: { low: "抗拒", high: "认同" },
+  altruism: { low: "自利", high: "利他" },
+  optimism: { low: "悲观", high: "乐观" },
 };
 
 // eval 评分键名 → 中文（EvalScores 三字段）

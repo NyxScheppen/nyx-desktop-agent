@@ -115,6 +115,21 @@ describe("MessageList", () => {
     // 两条气泡都在 DOM（nyx 打字中 content 渐显，但气泡已挂载）
     expect(container.querySelectorAll(".message-bubble").length).toBe(2);
   });
+
+  it("打字机只在第一条 nyx 文本消息生效，后续即时显示", () => {
+    render(
+      <MessageList
+        messages={[
+          makeMsg("speak", "nyx", "第一条逐字"),
+          makeMsg("speak", "nyx", "第二条即时"),
+        ]}
+      />,
+    );
+    // 第二条不打字机：未推进 timer 就已完整上屏
+    expect(screen.getByText("第二条即时")).toBeInTheDocument();
+    // 第一条仍在逐字（未推进 timer 前为空）
+    expect(screen.queryByText("第一条逐字")).not.toBeInTheDocument();
+  });
 });
 
 describe("ChatPanel", () => {

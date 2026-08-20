@@ -296,6 +296,21 @@ async def test_history_order() -> None:
     assert "用户：在吗" not in first_think
 
 
+async def test_history_fast_channel() -> None:
+    # 两次都走快通道（精力低 + 激动）：第二次回复的 prompt 仍应带上一轮历史
+    facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=20.0, arousal=0.9
+    )
+    await facade.reply("哦", "corr-1")
+    llm.calls = []
+    await facade.reply("嗯", "corr-2")
+    first_think = _user_content(
+        [m for t, m, _c in llm.calls if t == "think"][0]
+    )
+    assert "用户：哦" in first_think
+    assert "Nyx：回答1" in first_think
+
+
 # ---- mutter ----
 
 

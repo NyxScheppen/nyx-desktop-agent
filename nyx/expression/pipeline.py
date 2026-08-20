@@ -28,7 +28,7 @@ from nyx.types import CurrentState, Memory, Message, SelfNarrative
 class ReplyState(TypedDict):
     message: str
     mode: ContextMode
-    context: list[Message]       # 回溯上下文（不含当前消息）
+    context: list[Message]       # 回溯上下文（facade 入口填，快慢一致；不含当前消息）
     memories: list[Memory]       # 检索到的记忆
     state: CurrentState          # 当前状态快照
     narrative: SelfNarrative | None   # 慢通道 assemble 填充，快通道恒 None
@@ -65,15 +65,6 @@ def _is_question(text: str) -> bool:
     return any(w in text for w in QUESTION_MARKS)
 
 
-def _backtrack(history: deque[Message], max_len: int) -> list[Message]:
-    """回溯上下文（纯函数）：取最近 max_len 条历史对话。
-
-    当前消息尚未进 history（在回合末 record_message 才 append），故这里不含当前消息，
-    build_user_prompt 里当前消息只作为「本次消息」出现一次。
-    """
-    return list(history)[-max_len:]
-
-
 def _rounds_block(think: list[str], speak: list[str]) -> str:
     """把前面几轮的 think/speak 拼成 prompt 段（多轮累积式）。空则返回 ""。
 
@@ -105,10 +96,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         return {"mode": mode}
 
     async def assemble(state: ReplyState) -> dict[str, Any]:
+        # 对话历史不再在此回溯：context 由 facade 入口统一填（快慢通道一致）。
+        # 这里只做慢通道专属的两件事——检索记忆 + 取 self-narrative。
         memories = await deps.memory.search(state["message"])
-        context = _backtrack(deps.history, deps.config.max_context_len)
         narrative = await deps.inner_life.get_narrative()
-        return {"memories": memories, "context": context, "narrative": narrative}
+        return {"memories": memories, "narrative": narrative}
 
     async def think(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(

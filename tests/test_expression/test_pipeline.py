@@ -1,37 +1,11 @@
 # pyright: reportPrivateUsage=false
-from collections import deque
-
-from nyx.expression.pipeline import _backtrack, _is_question, _rounds_block
-from nyx.types import Message
+from nyx.expression.pipeline import _is_question, _rounds_block
 
 
 def test_is_question() -> None:
     assert _is_question("你今天好吗？") is True
     assert _is_question("你今天怎么样") is True
     assert _is_question("我很好。") is False
-
-
-def test_backtrack_short() -> None:
-    history = deque(
-        [
-            Message(role="user", content="a", timestamp=1.0),
-            Message(role="nyx", content="b", timestamp=2.0),
-        ]
-    )
-    assert _backtrack(history, 5) == list(history)
-
-
-def test_backtrack_long() -> None:
-    history: deque[Message] = deque(
-        Message(role="user", content=f"m{i}", timestamp=float(i))
-        for i in range(5)
-    )
-    got = _backtrack(history, 2)
-    assert [m.content for m in got] == ["m3", "m4"]
-
-
-def test_backtrack_empty() -> None:
-    assert _backtrack(deque[Message](), 5) == []
 
 
 def test_rounds_block_empty() -> None:

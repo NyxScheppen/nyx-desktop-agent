@@ -67,7 +67,8 @@ class ExpressionFacade:
         initial: ReplyState = {
             "message": msg,
             "mode": ContextMode.FAST,
-            "context": [],
+            # 回溯最近 max_context_len 条历史（不含当前消息，见 build_user_prompt）。
+            "context": list(self._history)[-self._config.max_context_len:],
             "memories": [],
             "state": state,
             "narrative": None,

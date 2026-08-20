@@ -5,6 +5,7 @@ import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, cast
 
 from nyx.activity.exploration import Exploration, should_explore
@@ -27,6 +28,8 @@ from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, CurrentState, Event, ShortTermDesire
 
 _logger = logging.getLogger(__name__)
+
+_READ_CONTEXT_CHARS = 6000  # 读物喂 LLM 的字符预算（decision，可推翻）
 
 
 def _day_start(now: float) -> float:
@@ -262,6 +265,37 @@ class ActivityFacade:
     async def get_schedule(self) -> list[Activity]:
         return await self._store.list_schedule(_day_start(time.time()))
 
+    async def read_material(
+        self, path: str, filename: str, correlation_id: str
+    ) -> None:
+        """用户投喂资料：立即发起一次 READING 活动，读真实文件产出 {book, note}。
+
+        与 _maybe_start_activity 共用 _start_lock 串行守卫；忙时跳过（文件已落盘，
+        MVP 一次一个、不排队）。结果经 activity_start/activity_end SSE 可见。
+        """
+        async with self._start_lock:
+            if self._task is not None and not self._task.done():
+                return
+            now = time.time()
+            activity = Activity(
+                id=str(uuid.uuid4()),
+                type=ActivityType.READING,
+                schedule_block_id=format_time_label(
+                    0, self._config.grid_minutes, _elapsed_hours(now)
+                ),
+                status=ActivityStatus.PENDING,
+                progress={
+                    "source": path,
+                    "filename": filename,
+                    "description": filename,
+                    "correlation_id": correlation_id,
+                },
+                started_at=now,
+            )
+            await self._store.insert(activity)
+            self._task = asyncio.create_task(self._execute(activity))
+            self._task.add_done_callback(_harvest_task_exception)
+
     # ---- 内部 ----
 
     async def _maybe_start_activity(self) -> None:
@@ -324,6 +358,9 @@ class ActivityFacade:
     async def _run_activity(self, activity: Activity) -> dict[str, Any]:
         t = activity.type
         if t is ActivityType.READING:
+            source = activity.progress.get("source")
+            if source is not None:
+                return await self._run_reading_source(activity, str(source))
             return await self._run_llm_activity(activity, "reading")
         if t is ActivityType.CREATION:
             return await self._run_llm_activity(activity, "creation")
@@ -345,13 +382,31 @@ class ActivityFacade:
             return {}
         raise ValueError(f"未知活动类型 {t!r}")
 
-    async def _run_llm_activity(
-        self, activity: Activity, output_type: str
+    async def _run_reading_source(
+        self, activity: Activity, source: str
     ) -> dict[str, Any]:
+        """读真实文件并让 LLM 产出 {book, note}（喂内容，非凭空）。"""
+        content = await asyncio.to_thread(
+            Path(source).read_text, encoding="utf-8", errors="replace"
+        )
+        context = content[:_READ_CONTEXT_CHARS]
+        return await self._run_llm_activity(
+            activity, "reading", extra_context=context
+        )
+
+    async def _run_llm_activity(
+        self,
+        activity: Activity,
+        output_type: str,
+        extra_context: str | None = None,
+    ) -> dict[str, Any]:
+        user_msg = f"活动类型：{activity.type.value}"
+        if extra_context:
+            user_msg += f"\n读物内容：{extra_context}"
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _ACTIVITY_SYSTEM},
-                {"role": "user", "content": f"活动类型：{activity.type.value}"},
+                {"role": "user", "content": user_msg},
             ],
             module="activity",
             output_type=output_type,

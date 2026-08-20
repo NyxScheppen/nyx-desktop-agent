@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import json
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -624,5 +625,45 @@ async def test_get_schedule_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
         await store.insert(_activity("a1", started_at=t0))
         acts = await facade.get_schedule()
         assert [a.id for a in acts] == ["a1"]
+    finally:
+        await database.conn.close()
+
+
+async def test_read_material_reads_real_file(tmp_path: Path) -> None:
+    """用户投喂资料：READING 活动带 source，读真实文件产出 {book, note}。"""
+    source = tmp_path / "book.txt"
+    source.write_text("骑士团的历史", encoding="utf-8")
+    facade, store, bus, database = await _new_facade()
+    try:
+        events = _subscribe_activity(bus)
+        async with _running(bus):
+            await facade.read_material(str(source), "book.txt", "c1")
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        assert len(acts) == 1
+        assert acts[0].type is ActivityType.READING
+        assert acts[0].progress["source"] == str(source)
+        assert acts[0].progress["result"] == {
+            "book": "骑士团历史",
+            "note": "读到了第三章",
+        }
+        assert [e.type for e in events] == [
+            EventType.ACTIVITY_START,
+            EventType.ACTIVITY_END,
+        ]
+    finally:
+        await database.conn.close()
+
+
+async def test_read_material_skips_when_busy() -> None:
+    """忙时跳过：执行中任务未结束时投喂资料不新增活动（文件已落盘，不排队）。"""
+    facade, store, _bus, database = await _new_facade()
+    try:
+        await facade._maybe_start_activity()
+        assert facade._task is not None and not facade._task.done()
+        await facade.read_material("/no/such/file.txt", "book.txt", "c1")
+        acts = await store.list_schedule(0.0)
+        assert len(acts) == 1
+        await facade._task
     finally:
         await database.conn.close()

@@ -18,8 +18,9 @@
 - [ ] `reply` 走 LangGraph 图：快通道 `classify → think → speak → record → end`（不检索记忆、不生成场景化记忆）；慢通道 `classify → assemble → think → speak → should_ask`，非问句 round 循环（≤ `slow_max_rounds`，**每轮 publish 一条 SPEAK**），问句 publish ASK 后回合结束，最终都走 `scene_memory → record → end`
 - [ ] **当前消息在 prompt 里只出现一次**：`reply` 入口回溯的 `context` 不含当前消息（当前消息尚未进 history），`build_user_prompt` 里它只作为「本次消息」
 - [ ] **累积式 prompt**：第 N 轮 think 的 user prompt 含前 N-1 轮 think/speak；第 N 轮 speak 的 user prompt 含前 N-1 轮 think/speak + 本轮 think
+- [ ] **慢通道递进续写**：首轮 think/speak 是「第一次想 / 第一句话」，第 2 轮起的 think/speak 任务指令切换为「基于前面继续深入 / 接着上面往下说」，不重复、不重新回答
 - [ ] 每个 LLM 产出（think / speak / initiate_chat）后紧跟 `await evaluator.evaluate(output)`；`output_type` 分别 `think` / `speak` / `initiate_chat`、`module="expression"`、`correlation_id` 透传
-- [ ] `initiate_chat` 返回 `bool`（发话 True / 无话 False），供 18-api 维护 `last_chat_at`；`mutter` 返回 `None`（无状态依赖）
+- [ ] `initiate_chat` 返回 `bool`（发话 True / 无话 False），供 18-api 维护 `last_chat_at`；发话开场白 append 进 `_history`（`role="nyx"`），用户随后回复能回溯到这句搭话；`mutter` 返回 `None`（无状态依赖）
 - [ ] 事件发布：`think` / `speak` / `ask` / `mutter` / `initiate_chat` 全部 `content={"content": 文本}`、`source=INTERNAL`、`correlation_id` 接上游
 - [ ] 纯函数测全（`pick_mutter` / `should_initiate_chat` / `_is_question` / `_rounds_block`）；`pyright` strict 零报错
 
@@ -30,7 +31,7 @@
 - **公开面**：`from nyx.expression.facade import ExpressionFacade`；`from nyx.expression.mutter import pick_mutter, should_initiate_chat`（不加 `__all__`）
 - **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, desire, inner_life, canon, ask_guidance, config)`——`canon: str` 由 18-api 组合根读 `prompts/canon.md`、`ask_guidance: str` 读 `prompts/ask.md` 传入（本 spec 不读文件，测试不碰文件系统）；`ask_guidance` 仅慢通道 think/speak 与 `initiate_chat` 注入，快通道省略
 - **会话历史（内存）**：`deque[Message]`（maxlen=`config.max_context_len`）由 facade 持有，跨 reply 持久。**用户消息 + Nyx 消息（多轮拼接）都在回合末的 `record_message` 节点按序 append**（先 user 后 nyx）——`reply` 入口回溯时当前消息还没进 history，天然不重复。重启丢失（同情感，内存易变态）
-- **多轮语义（慢通道）**：think → speak 循环，每轮 think 发 `THINK`、每轮 speak 发 `SPEAK`（**都交付**）；某轮 speak 是问句 → 发 `ASK` 后回合结束。`slow_max_rounds` 是「连续无 ask 的 think/speak 轮数上限」。**累积式 prompt**：后一轮的 think/speak 知道前几轮想了/说了什么（`_rounds_block` 拼前轮）
+- **多轮语义（慢通道）**：think → speak 循环，每轮 think 发 `THINK`、每轮 speak 发 `SPEAK`（**都交付**）；某轮 speak 是问句 → 发 `ASK` 后回合结束。`slow_max_rounds` 是「连续无 ask 的 think/speak 轮数上限」。**累积式 prompt**：后一轮的 think/speak 知道前几轮想了/说了什么（`_rounds_block` 拼前轮）。**递进续写**：首轮任务指令是「第一句话 / 第一次内心独白」，续写轮切换为「接着上面往下说 / 基于前面继续深入」，避免三段生成三个并列回答
 - **场景化记忆记整个回合**：`nyx_think`/`nyx_speak` = 多轮 `"\n".join(...)` 拼接（`create_scene_memory` 的 `str` 契约不变，只是内容是多轮）
 - **MVP 语义**：ask 后回合结束（走 scene_memory + record）；用户回应作为下一条 `USER_MESSAGE` 触发新 reply，round 自然从 0 重算。`waiting_user` 字段保留在 `ReplyState`（对齐 tech-ref §6.1），MVP 恒 `False`
 - **think/speak 纯文本生成**：`ToolRegistry`（06-tools）当前主要服务 14-activity 的 exploration，本 spec 不依赖 06-tools
@@ -193,7 +194,14 @@ class ReplyDeps:
 
 
 _THINK_TASK = "（只输出你此刻的内心独白，不要输出给用户看。）"
-_SPEAK_TASK = "（只输出你要对用户说的一句话。）"
+_THINK_TASK_CONTINUE = (
+    "（基于你前面的思考继续深入想一层，不要重复之前的内心独白，推进你的理解。）"
+)
+_SPEAK_TASK = "（只输出你要对用户说的第一句话。）"
+_SPEAK_TASK_CONTINUE = (
+    "（接着你上面已经说过的内容，继续往下说下一句，"
+    "不要重复已说过的、自然地递进。）"
+)
 
 
 def _is_question(text: str) -> bool:
@@ -250,7 +258,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         user = build_user_prompt(state["message"], state["context"])
         prior = _rounds_block(state["think"], state["speak"])      # 前几轮 think/speak
-        user = "\n".join(p for p in (prior, user, _THINK_TASK) if p)
+        task = _THINK_TASK_CONTINUE if state["think"] else _THINK_TASK
+        user = "\n".join(p for p in (prior, user, task) if p)
         output = await deps.llm.complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             module="expression",
@@ -276,7 +285,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         # 前几轮（不含本轮 think）
         prior = _rounds_block(state["think"][:-1], state["speak"])
         inner = f"[我刚刚的内心想法]\n{state['think'][-1]}"           # 本轮 think
-        user = "\n".join(p for p in (prior, inner, user, _SPEAK_TASK) if p)
+        task = _SPEAK_TASK_CONTINUE if state["speak"] else _SPEAK_TASK
+        user = "\n".join(p for p in (prior, inner, user, task) if p)
         output = await deps.llm.complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             module="expression",
@@ -484,6 +494,10 @@ class ExpressionFacade:
         await self._bus.publish(
             internal_text_event(EventType.INITIATE_CHAT, output.content, correlation_id)
         )
+        # 开场白落历史：用户随后回复时能回溯到这句搭话（记忆互通）。
+        self._history.append(
+            Message(role="nyx", content=output.content, timestamp=time.time())
+        )
         return True
 
     async def mutter(self, state: CurrentState, correlation_id: str) -> None:
@@ -517,10 +531,12 @@ class ExpressionFacade:
     - [ ] `reply` 慢通道非问句（score ≥ threshold，mock speak 恒非问句）：`memory.search` 被调、`create_scene_memory` 被调、`llm.complete` 调 `2 × slow_max_rounds` 次（think+speak 各 3 次）、`bus.publish` 收到 `think` 3 条 + `speak` 3 条（**每轮交付**）、`create_scene_memory` 的 `nyx_speak`/`nyx_think` 是 3 轮 `"\n"` 拼接
     - [ ] `reply` 慢通道问句（第 1 轮 speak 返回 `"你还好吗？"`）：`bus.publish` 收到 `ask`（非 `speak`）且仅 1 条、`create_scene_memory` 仍被调（问句也走场景化记忆）、提前结束（think/speak 各 1 次，不循环到满）
     - [ ] **累积式 prompt**：慢通道非问句多轮下，fake llm 记录的第 2 轮 think 调用 user prompt 含第 1 轮的 think 文本与 speak 文本；第 2 轮 speak 调用 user prompt 含第 2 轮 think 文本
+    - [ ] **慢通道递进续写**：慢通道非问句多轮下，第 1 轮 speak 的 user prompt 含「第一句话」、不含「继续往下说」；第 2 轮 speak 的 user prompt 含「继续往下说」
     - [ ] **当前消息不重复**（回归）：慢通道下，fake llm 记录的 think/speak 调用里，`[对话历史]` 段不含当前消息文本、`[本次消息]` 段含且仅含一次
     - [ ] **history 落库顺序**：连续两次 `reply` 后，facade 内部 history 为 `[user1, nyx1, user2, nyx2]`（断言 role 序列）；第二次 reply 的入口回溯含 `user1`/`nyx1`、不含 `user2`；两次都走快通道时第二次 prompt 仍含上一轮历史（回归：历史不因快通道丢失）
     - [ ] `mutter`：`state.current_activity` 非 None → 不发；`random.random()` 命中（monkeypatch）→ 发 `mutter`（content 来自模板、`correlation_id == 传入值`）；未命中 → 不发
     - [ ] `initiate_chat`：mock `llm.complete` 返回空 content → 返回 `False` 且不发；返回非空 → 返回 `True` 且发 `initiate_chat`（`output_type="initiate_chat"`、correlation_id 一致）
+    - [ ] `initiate_chat` 落历史：非空发话后 facade 内部 history 含一条 `role="nyx"`、content 为开场白的消息（用户随后回复可回溯搭话内容）
 - [ ] 集成测试：无（真实 LLM 不测；Facade 间的编排归 18-api 组合根）
 - [ ] E2E 测试：无
 

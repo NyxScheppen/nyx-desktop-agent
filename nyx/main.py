@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -41,7 +41,7 @@ from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
-from nyx.tools.file_io import build_file_io_tool
+from nyx.tools.file_io import DEFAULT_WRITE_ROOT, build_file_io_tool, file_io
 from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_search import build_web_search_tool
@@ -71,6 +71,8 @@ _BUS_RECOVERY_STREAK = 3       # 恢复信号：崩溃前连续成功落库达�
 _SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧背压）
 _CANON_FILES = ("canon.md",)
 _ASK_FILES = ("ask.md",)
+_MAX_UPLOAD_BYTES = 500_000                  # 上传读物大小上限（decision，可推翻）
+_UPLOADS_DIR = DEFAULT_WRITE_ROOT / "uploads"  # 上传读物落盘目录（workspace/uploads）
 
 
 @dataclass
@@ -218,6 +220,13 @@ async def _on_user_message(app: _App, event: Event) -> None:
     await app.expression.reply(event.content["message"], event.correlation_id)
 
 
+async def _on_user_material(app: _App, event: Event) -> None:
+    """USER_MATERIAL：用户投喂资料 → 发起读书活动（读真实文件产出 {book, note}）。"""
+    await app.activity.read_material(
+        event.content["path"], event.content["filename"], event.correlation_id
+    )
+
+
 async def _on_clock_tick(app: _App, event: Event) -> None:
     """CLOCK_TICK：按 content.tick_type 分发（TICK_ROUTING 的运行时落点）。"""
     tick_type = TickType(event.content["tick_type"])
@@ -292,6 +301,7 @@ def _subscribe(app: _App) -> None:
     """按 ROUTING/TICK_ROUTING 挂订阅（05-event 的「组合根订阅一致」落点）。"""
     bus = app.bus
     bus.subscribe(EventType.USER_MESSAGE, lambda e: _on_user_message(app, e))
+    bus.subscribe(EventType.USER_MATERIAL, lambda e: _on_user_material(app, e))
     bus.subscribe(EventType.OBSERVATION_STATE, app.inner_life.apply_event)
     bus.subscribe(EventType.OBSERVATION_STATE, app.desire.add_value)
     bus.subscribe(EventType.DESIRE_GENERATED, app.activity.on_desire_generated)
@@ -315,7 +325,7 @@ class _ObservePayload(BaseModel):
 
 
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：12 个端点（11 个 tech-ref §4 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：14 个端点（13 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")
@@ -368,6 +378,27 @@ def build_app(app: _App) -> FastAPI:
     @fast.post("/api/export")
     async def api_export(payload: _ExportPayload) -> str:
         return await app.memory.export(payload.format)
+
+    @fast.post("/api/upload")
+    async def api_upload(file: UploadFile = File(...)) -> dict[str, str]:
+        name = Path(file.filename or "upload.txt").name
+        raw = await file.read()
+        if len(raw) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=400, detail="文件过大")
+        text = raw.decode("utf-8", errors="replace")
+        result = await file_io("write", f"uploads/{name}", text)
+        path = str(result["path"])
+        event = _root_event(EventType.USER_MATERIAL, {"path": path, "filename": name})
+        await app.bus.publish(event)
+        return {"event_id": event.id, "filename": name, "path": path}
+
+    @fast.get("/api/materials")
+    async def api_materials() -> dict[str, list[str]]:
+        try:
+            result = await file_io("list", str(_UPLOADS_DIR))
+            return {"files": [str(e) for e in result["entries"]]}
+        except FileNotFoundError:
+            return {"files": []}
 
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:

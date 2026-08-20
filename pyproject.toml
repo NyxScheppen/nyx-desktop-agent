@@ -15,6 +15,7 @@ dependencies = [
     "networkx==3.6.1",
     "pydantic>=2.0",
     "python-dotenv>=1.0",
+    "python-multipart>=0.0.20",
     "sentence-transformers==5.6.0",
     "uvicorn==0.34.0",
 ]

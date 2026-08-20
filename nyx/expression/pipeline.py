@@ -55,7 +55,14 @@ class ReplyDeps:
 
 
 _THINK_TASK = "（只输出你此刻的内心独白，不要输出给用户看。）"
-_SPEAK_TASK = "（只输出你要对用户说的一句话。）"
+_THINK_TASK_CONTINUE = (
+    "（基于你前面的思考继续深入想一层，不要重复之前的内心独白，推进你的理解。）"
+)
+_SPEAK_TASK = "（只输出你要对用户说的第一句话。）"
+_SPEAK_TASK_CONTINUE = (
+    "（接着你上面已经说过的内容，继续往下说下一句，"
+    "不要重复已说过的、自然地递进。）"
+)
 
 
 def _is_question(text: str) -> bool:
@@ -112,7 +119,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         user = build_user_prompt(state["message"], state["context"])
         prior = _rounds_block(state["think"], state["speak"])      # 前几轮 think/speak
-        user = "\n".join(p for p in (prior, user, _THINK_TASK) if p)
+        task = _THINK_TASK_CONTINUE if state["think"] else _THINK_TASK
+        user = "\n".join(p for p in (prior, user, task) if p)
         output = await deps.llm.complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             module="expression",
@@ -138,7 +146,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         # 前几轮（不含本轮 think）
         prior = _rounds_block(state["think"][:-1], state["speak"])
         inner = f"[我刚刚的内心想法]\n{state['think'][-1]}"           # 本轮 think
-        user = "\n".join(p for p in (prior, inner, user, _SPEAK_TASK) if p)
+        task = _SPEAK_TASK_CONTINUE if state["speak"] else _SPEAK_TASK
+        user = "\n".join(p for p in (prior, inner, user, task) if p)
         output = await deps.llm.complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             module="expression",

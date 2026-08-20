@@ -18,10 +18,12 @@
 - [ ] **组合根按各 spec 完成定义装配**：`load_config` → `connect` → `LlmClient.from_config` → 各 store/facade 构造注入（循环依赖 `ActivityFacade↔InnerLifeFacade` 用 `_get_state` 延迟绑定解环；`evaluator` 注入 09/11/12/14/17 五个 Facade）
 - [ ] **注册内置工具**：`local_search` + `file_io` 恒注册，`web_search` 仅当 `config.exploration.web_enabled` 注册（06-tools 完成定义）；探索链无条件调 `local_search`/`file_io`，缺失会 `KeyError`
 - [ ] **seed 幂等**（表空才写）：inner_life 四张单行表（personality 8/8/2/6/7、values 8/6/9/5、energy 100/energetic、narrative 初始 identity）；desire 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）+ 3 个初始长期欲望（canon §4）
-- [ ] **订阅覆盖 ROUTING/TICK_ROUTING**：`USER_MESSAGE`→interrupt+reply、`OBSERVATION_STATE`→apply_event+add_value、`DESIRE_GENERATED`→on_desire_generated、`DESIRE_SATISFIED`→apply_event、`ACTIVITY_END`→add_value+apply_event、`REFLECTION`→apply_event、`CLOCK_TICK`→按 tick_type 分发四路
-- [ ] **12 个端点**：tech-ref §4 的 11 个 REST + `GET /api/events`（SSE）；每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
+- [ ] **订阅覆盖 ROUTING/TICK_ROUTING**：`USER_MESSAGE`→interrupt+reply、`USER_MATERIAL`→read_material、`OBSERVATION_STATE`→apply_event+add_value、`DESIRE_GENERATED`→on_desire_generated、`DESIRE_SATISFIED`→apply_event、`ACTIVITY_END`→add_value+apply_event、`REFLECTION`→apply_event、`CLOCK_TICK`→按 tick_type 分发四路
+- [ ] **14 个端点**：tech-ref §4 的 11 个 REST + `GET /api/events`（SSE）+ 本次新增 `POST /api/upload`（上传资料→读书）与 `GET /api/materials`（已传清单）；除 upload/materials 外每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
 - [ ] **`POST /api/chat`**：构造 `USER_MESSAGE` 事件（`source=EXTERNAL`、`correlation_id=自身 id`）→ `publish` → 返回 `{event_id}`（回复走 SSE）
 - [ ] **请求体校验**：`POST /api/chat`/`/api/export`/`/api/observe` 用 pydantic 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`），缺键/类型错 → 422（非 500）；`presence` 仅 `online`/`away`/`busy`（`Literal` 校验，拼写错误 422 而非静默禁用搭话）
+- [ ] **`POST /api/upload`**：`UploadFile` + `File(...)`；文件名 `Path(file.filename or "upload.txt").name` 消毒（去路径穿越）、`raw` 超 `_MAX_UPLOAD_BYTES` 返 400；`file_io("write", f"uploads/{name}", text)` 落盘（复用 `_resolve_write` 越界守卫）→ publish `USER_MATERIAL`（content `{path, filename}`）→ 返回 `{event_id, filename, path}`
+- [ ] **`GET /api/materials`**：`file_io("list", str(_UPLOADS_DIR))` 返回 `{files: [...]}`；目录缺失容错返 `{files: []}`（不抛）
 - [ ] **SSE**：`data` = `event.content` 展开 + `event_id` + `correlation_id`（统一结构，不按 type 特判）；`event:` = `EventType.value`
 - [ ] **SSE 背压**：每连接 `asyncio.Queue(maxsize=_SSE_QUEUE_SIZE=100)`；`_broadcast` 队列满时丢最旧保最新（`put_nowait` 捕获 `QueueFull`，慢客户端不拖垮总线）
 - [ ] **`_tick_loop`**：定时 publish 四种 `CLOCK_TICK`（`content={"tick_type": ...}`）；`INITIATE_CHAT_CHECK` 走 `should_initiate_chat` 判定 + `initiate_chat`（发话才更新 `last_chat_at`）；首个活动块启动即触发（`last_block=0.0`），碎碎念/搭话不立即触发（`last_mutter`/`last_chat` 初始为 now，抑制启动洪峰）
@@ -32,7 +34,7 @@
 ## 技术方案
 
 - **新文件**：`nyx/main.py`（无 Facade、无数据变更；`ROUTING`/`TICK_ROUTING` 已由 05-event 定义）
-- **库**：`fastapi` + `uvicorn`（新增 web 栈；依赖 pin 同 03-llm 约定）；`httpx`（测试用 `AsyncClient` + `ASGITransport`，不触网）
+- **库**：`fastapi` + `uvicorn`（新增 web 栈；依赖 pin 同 03-llm 约定）；`python-multipart`（`POST /api/upload` 的 `UploadFile`/`File(...)` 解析）；`httpx`（测试用 `AsyncClient` + `ASGITransport`，不触网）
 - **公开面**：`main.py` 是入口（`python -m nyx.main` 或 `uvicorn nyx.main:app`），不加 `__all__`；`build_app` 供测试构造
 - **web 框架选 FastAPI**：dataclass 返回值经 `jsonable_encoder` 直接序列化（`StrEnum`→`.value` 字符串），端点不声明 pydantic `response_model`（01-types「不用 pydantic」）；`GET /api/events` 用 `StreamingResponse`（手写 SSE 格式，不引 `sse-starlette`）。请求体用 pydantic `BaseModel` 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`）做缺键/取值校验 → 422——请求模型是 web 层校验，与 01-types 的 dataclass 领域类型、`response_model` 序列化互不相干
 - **循环依赖解环（decision，可推翻）**：`ActivityFacade` 要 `get_state` 回调、`InnerLifeFacade` 要 `activity_facade` 实例。用 `_get_state` 闭包引用 `state_holder` 可变列表，先构造 `ActivityFacade`（占位回调）→ 再构造 `InnerLifeFacade` → 回填 `state_holder`。运行时才求值，构造期不成环
@@ -41,6 +43,7 @@
 - **工具注册归组合根**：`local_search` + `file_io` 恒注册（探索链 `_search_local`/`_read`/`_write_note` 无条件依赖），`web_search` 仅当 `config.exploration.web_enabled` 注册（与 14-activity `search_web` 节点同条件、06-tools 完成定义「opt-in 由组合根决定」）
 - **观察输入归前端**：`classify_presence` 运行时调用方是前端 Tauri（14-activity `observe.py` 注释已定）。后端只 `POST /api/observe` 接收 `{presence}` → 维护 `app.last_presence` + publish `observation_state`。`desire.pressure_from_observation` 固定 +0.15、`inner_life.apply_event` 固定偏移，均不解析 content，故 content 仅 `{presence}` 供溯源/前端展示
 - **ROUTING 的 `ACTIVITY_END`**：只消费 `desire` + `inner_life`（05-event 已删 `memory`），组合根无 memory handler
+- **上传落盘复用 file_io 守卫（decision，可推翻）**：`POST /api/upload` 不另写路径校验——文件名 `Path(name).name` 消毒后经 `file_io("write", f"uploads/{name}", text)` 落盘（`_resolve_write` 越界守卫已覆盖）；大小上限 `_MAX_UPLOAD_BYTES=500_000`（decision，可推翻），超限 400。`USER_MATERIAL` 事件 → `activity.read_material` 发起 READING 活动读真实文件产出 `{book, note}`（14-activity 已定义 `read_material` + `_run_reading_source`）
 - **canon 读文件**：`_load_canon` 读 `prompts/canon.md`、`_load_ask` 读 `prompts/ask.md` 各为一段字符串注入 `ExpressionFacade`（共享 `_load_prompt_files` helper）；路径 = `NYX_CANON_DIR` 环境变量 > `prompts/` 默认目录；缺失 `FileNotFoundError`（fail-fast，canon/ask 是核心配置不兜底默认）
 - **`_App` 内部 dataclass**：组合根的装配产物（不是新增抽象层——不增 Facade→子系统→内部类之外的层），持有 7 个组件引用 + 2 个运行期状态（`last_chat_at`/`last_presence`），端点/handler 闭包捕获 `_App` 实例
 - **总线监督器（decision，可推翻）**：`main()` 用 `_supervise_bus(app)` 包一层 `bus.run()`。`_persist` 失败会终止 `run()`（05-event 有意让 DB 错误传播、事件放回队首不丢），监督器接住异常 `logger.exception` + 指数退避（`_BUS_BACKOFF_BASE=1.0`→`_BUS_BACKOFF_MAX=30.0`，×2 增长）后重启（重启而非降级：瞬时 `aiosqlite` 错误可自愈）；连续 `_BUS_MAX_FAILURES=8` 次失败 `logger.critical` + 重抛熔断致命（DB 永久挂时干净崩溃，不留「API 收事件但不处理」的僵尸态）；崩溃前连续成功落库达 `_BUS_RECOVERY_STREAK=3`（读 `EventBus.persisted_count` 单调计数，差 ≥ 3）视为恢复、失败计数与退避重置（避免分散瞬时故障累积假熔断）；单次成功不足阈值不重置（DB 抖动「隔一个挂一次」持续累积 → 熔断，不留无限 1s crash-loop 僵尸态）；`CancelledError` 重抛，组合根关闭不重启
@@ -64,7 +67,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -94,7 +97,7 @@ from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
-from nyx.tools.file_io import build_file_io_tool
+from nyx.tools.file_io import DEFAULT_WRITE_ROOT, build_file_io_tool, file_io
 from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_search import build_web_search_tool
@@ -124,6 +127,8 @@ _BUS_RECOVERY_STREAK = 3       # 恢复信号：崩溃前连续成功落库达�
 _SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧背压）
 _CANON_FILES = ("canon.md",)
 _ASK_FILES = ("ask.md",)
+_MAX_UPLOAD_BYTES = 500_000                  # 上传读物大小上限（decision，可推翻）
+_UPLOADS_DIR = DEFAULT_WRITE_ROOT / "uploads"  # 上传读物落盘目录（workspace/uploads）
 
 
 @dataclass
@@ -271,6 +276,13 @@ async def _on_user_message(app: _App, event: Event) -> None:
     await app.expression.reply(event.content["message"], event.correlation_id)
 
 
+async def _on_user_material(app: _App, event: Event) -> None:
+    """USER_MATERIAL：用户投喂资料 → 发起读书活动（读真实文件产出 {book, note}）。"""
+    await app.activity.read_material(
+        event.content["path"], event.content["filename"], event.correlation_id
+    )
+
+
 async def _on_clock_tick(app: _App, event: Event) -> None:
     """CLOCK_TICK：按 content.tick_type 分发（TICK_ROUTING 的运行时落点）。"""
     tick_type = TickType(event.content["tick_type"])
@@ -345,6 +357,7 @@ def _subscribe(app: _App) -> None:
     """按 ROUTING/TICK_ROUTING 挂订阅（05-event 的「组合根订阅一致」落点）。"""
     bus = app.bus
     bus.subscribe(EventType.USER_MESSAGE, lambda e: _on_user_message(app, e))
+    bus.subscribe(EventType.USER_MATERIAL, lambda e: _on_user_material(app, e))
     bus.subscribe(EventType.OBSERVATION_STATE, app.inner_life.apply_event)
     bus.subscribe(EventType.OBSERVATION_STATE, app.desire.add_value)
     bus.subscribe(EventType.DESIRE_GENERATED, app.activity.on_desire_generated)
@@ -368,7 +381,7 @@ class _ObservePayload(BaseModel):
 
 
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：12 个端点（11 个 tech-ref §4 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：14 个端点（13 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")
@@ -421,6 +434,27 @@ def build_app(app: _App) -> FastAPI:
     @fast.post("/api/export")
     async def api_export(payload: _ExportPayload) -> str:
         return await app.memory.export(payload.format)
+
+    @fast.post("/api/upload")
+    async def api_upload(file: UploadFile = File(...)) -> dict[str, str]:
+        name = Path(file.filename or "upload.txt").name
+        raw = await file.read()
+        if len(raw) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=400, detail="文件过大")
+        text = raw.decode("utf-8", errors="replace")
+        result = await file_io("write", f"uploads/{name}", text)
+        path = str(result["path"])
+        event = _root_event(EventType.USER_MATERIAL, {"path": path, "filename": name})
+        await app.bus.publish(event)
+        return {"event_id": event.id, "filename": name, "path": path}
+
+    @fast.get("/api/materials")
+    async def api_materials() -> dict[str, list[str]]:
+        try:
+            result = await file_io("list", str(_UPLOADS_DIR))
+            return {"files": [str(e) for e in result["entries"]]}
+        except FileNotFoundError:
+            return {"files": []}
 
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:

@@ -280,6 +280,20 @@ async def test_cumulative_prompt() -> None:
     assert "[我刚刚的内心想法]\n想法2" in round2_speak
 
 
+async def test_slow_channel_progressive() -> None:
+    # 慢通道三段递进：第 1 段是「第一句话」，第 2 段起是「接着往下说」续写
+    facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=100.0, arousal=0.0
+    )
+    await facade.reply("在吗", "corr-prog")
+    speak_calls = [m for t, m, _c in llm.calls if t == "speak"]
+    first = _user_content(speak_calls[0])
+    second = _user_content(speak_calls[1])
+    assert "第一句话" in first
+    assert "继续往下说" not in first
+    assert "继续往下说" in second
+
+
 async def test_current_message_not_duplicated() -> None:
     facade, llm, _evaluator, _memory, inner_life, _bus = _new_facade(
         energy=20.0, arousal=0.9
@@ -381,3 +395,13 @@ async def test_initiate_chat_non_empty() -> None:
     assert bus.published[0].correlation_id == "d1"
     assert [t for t, _m, _c in llm.calls] == ["initiate_chat"]
     assert "[主动提问指导]" in llm.calls[0][1][0]["content"]
+
+
+async def test_initiate_chat_appends_history() -> None:
+    # 搭话开场白应落会话历史：用户随后回复能回溯到这句搭话（记忆互通）
+    facade, _llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        llm=_FakeLlm(chat_content="你在忙吗？")
+    )
+    await facade.initiate_chat(_desire(), _mk_state(80.0, 0.0))
+    assert [m.role for m in facade._history] == ["nyx"]
+    assert facade._history[0].content == "你在忙吗？"

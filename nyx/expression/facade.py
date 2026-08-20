@@ -112,6 +112,10 @@ class ExpressionFacade:
         await self._bus.publish(
             internal_text_event(EventType.INITIATE_CHAT, output.content, correlation_id)
         )
+        # 开场白落历史：用户随后回复时能回溯到这句搭话（记忆互通）。
+        self._history.append(
+            Message(role="nyx", content=output.content, timestamp=time.time())
+        )
         return True
 
     async def mutter(self, state: CurrentState, correlation_id: str) -> None:

@@ -14,6 +14,7 @@ from nyx.inner_life.reflection import (
     Reflection,
     _build_reflection_prompt,
     _drift_dim,
+    _is_duplicate_fragment,
     _parse_reflection,
     _to_long_term,
     _validate_candidate,
@@ -209,6 +210,13 @@ def test_build_reflection_prompt() -> None:
     assert "（无）" in empty
 
 
+def test_build_reflection_prompt_feeds_story() -> None:
+    prompt = _build_reflection_prompt([], _PERSONALITY, _VALUES, _NARRATIVE, [])
+    assert "初始故事" in prompt  # 已写故事内容被喂进去（而非只喂条数）
+    assert "初始认知" in prompt  # 认知变化内容同样喂进去
+    assert "新的、与之不同" in prompt  # 明确指示写不同的故事片段
+
+
 def test_parse_reflection_ok() -> None:
     parsed = _parse_reflection(_REFLECTION_JSON)
     assert parsed["story"] == "今天对用户了解更多"
@@ -321,6 +329,17 @@ def test_to_long_term() -> None:
     assert lt.created_at == 1234.5
 
 
+def test_is_duplicate_fragment() -> None:
+    # strip 后精确相等 → 重复（含前后空白）
+    assert _is_duplicate_fragment(" 初始故事 ", ["初始故事"]) is True
+    # 高相似度（差一个标点）→ 重复
+    assert _is_duplicate_fragment("我渴望被人类理解。", ["我渴望被人类理解"]) is True
+    # 明显不同 → 不重复
+    assert _is_duplicate_fragment("今天学了新东西", ["初始故事"]) is False
+    # 空列表 → 不重复
+    assert _is_duplicate_fragment("任意片段", []) is False
+
+
 # ---- reflection.run ----
 
 
@@ -355,6 +374,39 @@ async def test_run_writes_back() -> None:
         assert n.self_view == {"自信": "稍强"}
 
         assert len(desire.added) == 1
+    finally:
+        await database.conn.close()
+
+
+async def test_run_dedup_story() -> None:
+    # story 与已有片段实质重复 → 不追加；becoming 不同照常追加
+    response = json.dumps(
+        {
+            "story": "初始故事",
+            "becoming": "新认知",
+            "self_view": {"自信": "稍强"},
+            "personality_delta": {"openness": 0.1},
+            "values_delta": {},
+            "long_term_desires": [],
+        }
+    )
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    llm = _FakeLlm(response)
+    desire = _FakeDesireFacade()
+    reflection = _make_reflection(
+        store, llm, _FakeEvaluator(), _FakeMemoryFacade(), desire
+    )
+    try:
+        await _seed(store)
+        await reflection.run()
+        n = await store.get_narrative()
+        assert n is not None
+        assert len(n.story) == 1  # 重复 story 被去重，不追加
+        assert len(n.becoming) == 2  # becoming 不同，照常追加
+        p = await store.get_personality()
+        assert p is not None
+        assert p["openness"] == pytest.approx(8.1)  # 慢变量不受去重影响
     finally:
         await database.conn.close()
 

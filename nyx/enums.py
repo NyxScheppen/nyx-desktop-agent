@@ -3,6 +3,7 @@ from enum import StrEnum
 
 class EventType(StrEnum):
     USER_MESSAGE = "user_message"          # 用户消息
+    USER_MATERIAL = "user_material"        # 用户投喂资料（上传课本/文档供尼克斯读）
     CLOCK_TICK = "clock_tick"              # 时钟 tick
     OBSERVATION_STATE = "observation_state"  # 观察状态
     SPEAK = "speak"                        # 说出来

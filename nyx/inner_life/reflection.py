@@ -1,3 +1,4 @@
+import difflib
 import json
 import logging
 import time
@@ -18,6 +19,8 @@ _MAX_DRIFT = 0.5               # 每轮性格/三观单维最大漂移
 _LONG_TERM_INIT_STRENGTH = 0.5  # 新长期欲望初始迫切度
 _SCALE_LO = 1.0                # 性格/三观范围下限
 _SCALE_HI = 10.0               # 性格/三观范围上限
+_STORY_CONTEXT_LIMIT = 5        # 反思 prompt 喂最近 N 条故事/认知（封顶防 token 膨胀）
+_DUP_SIMILARITY_THRESHOLD = 0.9  # 片段去重相似度阈值（只拦逐字近似）
 
 # 漂移 key 白名单（对齐 types.py 的 Personality/Values TypedDict 键名）
 _PERSONALITY_KEYS = frozenset(
@@ -55,6 +58,12 @@ def _build_reflection_prompt(
     lt_lines = "\n".join(
         f"- [{lt.type.value}] {lt.name}（进度 {lt.progress:.2f}）" for lt in long_term
     ) or "（无）"
+    story_lines = "\n".join(
+        f"- {s}" for s in narrative.story[-_STORY_CONTEXT_LIMIT:]
+    ) or "（无）"
+    becoming_lines = "\n".join(
+        f"- {b}" for b in narrative.becoming[-_STORY_CONTEXT_LIMIT:]
+    ) or "（无）"
     return (
         f"近期记忆：\n{mem_lines}\n\n"
         f"当前性格（1-10）：开放性 {personality['openness']} / 尽责性 "
@@ -65,10 +74,26 @@ def _build_reflection_prompt(
         f"当前三观（1-10）：对人类 {values['attitude_to_human']} / AI 身份接纳 "
         f"{values['ai_identity_acceptance']} / "
         f"利他 {values['altruism']} / 乐观 {values['optimism']}\n"
-        f"自我叙事：身份「{narrative.identity}」；故事 {len(narrative.story)} 条；"
-        f"认知变化 {len(narrative.becoming)} 条\n"
+        f"自我叙事：身份「{narrative.identity}」\n"
+        f"已写过的故事（最近 {min(len(narrative.story), _STORY_CONTEXT_LIMIT)} 条，"
+        f"请写一条新的、与之不同的故事片段）：\n{story_lines}\n"
+        f"已有的认知变化：\n{becoming_lines}\n"
         f"现有长期欲望：\n{lt_lines}"
     )
+
+
+def _is_duplicate_fragment(text: str, existing: list[str]) -> bool:
+    """新片段是否与已有片段实质重复：strip 后精确相等，或字符相似度达阈值。纯函数。"""
+    t = text.strip()
+    for old in existing:
+        o = old.strip()
+        if not o:
+            continue
+        if t == o:
+            return True
+        if difflib.SequenceMatcher(None, t, o).ratio() >= _DUP_SIMILARITY_THRESHOLD:
+            return True
+    return False
 
 
 def _drift_dim(base: float, delta: float | None) -> float:
@@ -267,7 +292,9 @@ class Reflection:
             )
             return
 
-        # 3. 回写慢变量
+        # 3. 回写慢变量（story/becoming 去重：与已有片段实质重复则跳过，不重复追加）
+        new_story = parsed["story"]
+        new_becoming = parsed["becoming"]
         await self._store.upsert_personality(
             drift_personality(personality, parsed["personality_delta"])
         )
@@ -275,9 +302,17 @@ class Reflection:
         await self._store.upsert_narrative(
             SelfNarrative(
                 identity=narrative.identity,
-                story=[*narrative.story, parsed["story"]],
+                story=(
+                    narrative.story
+                    if _is_duplicate_fragment(new_story, narrative.story)
+                    else [*narrative.story, new_story]
+                ),
                 self_view={**narrative.self_view, **parsed["self_view"]},
-                becoming=[*narrative.becoming, parsed["becoming"]],
+                becoming=(
+                    narrative.becoming
+                    if _is_duplicate_fragment(new_becoming, narrative.becoming)
+                    else [*narrative.becoming, new_becoming]
+                ),
                 updated_at=now,
             )
         )

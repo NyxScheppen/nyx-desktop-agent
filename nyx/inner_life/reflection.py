@@ -257,7 +257,15 @@ class Reflection:
             json_mode=True,
         )
         await self._evaluator.evaluate(output)
-        parsed = _parse_reflection(output.content)
+        try:
+            parsed = _parse_reflection(output.content)
+        except ValueError:
+            # best-effort：LLM 产出非法 JSON → 本轮跳过回写（下个 tick 重试），
+            # 不把解析失败抛给事件总线（对齐 11-desire run_eval 的容错）。
+            _logger.exception(
+                "反思 JSON 解析失败 correlation_id=%s", correlation_id
+            )
+            return
 
         # 3. 回写慢变量
         await self._store.upsert_personality(

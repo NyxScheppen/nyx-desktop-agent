@@ -451,6 +451,27 @@ async def test_run_survives_bad_candidate() -> None:
         await database.conn.close()
 
 
+async def test_run_survives_invalid_json() -> None:
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    llm = _FakeLlm("[")  # 截断的非法 JSON
+    desire = _FakeDesireFacade()
+    reflection = _make_reflection(
+        store, llm, _FakeEvaluator(), _FakeMemoryFacade(), desire
+    )
+    try:
+        await _seed(store)
+        await reflection.run("cid")  # 不抛，非法 JSON 容错跳过回写
+        assert llm.calls == ["reflection"]
+        p = await store.get_personality()
+        assert p == _PERSONALITY
+        n = await store.get_narrative()
+        assert n is not None and len(n.story) == 1
+        assert desire.added == []
+    finally:
+        await database.conn.close()
+
+
 async def test_run_unseeded_raises() -> None:
     database = await db.connect(":memory:")
     store = InnerLifeStore(database)

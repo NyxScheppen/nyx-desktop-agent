@@ -113,3 +113,140 @@ export type SseEvent =
   | OpaqueEvent;
 
 export type ConnectionState = "connecting" | "open" | "closed";
+
+// ---- 欲望（10-desire / nyx/types.py DesireState）----
+export type DesireType = "interaction" | "exploration" | "creation" | "rest";
+export type DesireStatus =
+  | "pending"
+  | "active"
+  | "satisfied"
+  | "expired"
+  | "suppressed";
+
+export type Goal = {
+  action: "read" | "write" | "observe"; // GoalAction
+  count: number;
+  topic: string | null;
+};
+
+export type ShortTermDesire = {
+  id: string;
+  created_at: number;
+  type: DesireType;
+  strength: number;
+  description: string;
+  goal: Goal | null;
+  retry_count: number;
+  status: DesireStatus;
+};
+
+export type LongTermDesire = {
+  id: string;
+  created_at: number;
+  type: DesireType;
+  name: string;
+  description: string;
+  strength: number;
+  progress: number;
+  subtopics: string[];
+  linked_values: string[];
+};
+
+export type DesireValue = {
+  type: DesireType;
+  value: number;
+  expression_weight: number;
+  suppression_threshold: number;
+  updated_at: number;
+};
+
+export type DesireState = {
+  values: DesireValue[];
+  short_term: ShortTermDesire[];
+  long_term: LongTermDesire[];
+};
+
+// ---- 活动（14-activity / nyx/types.py Activity）----
+export type ActivityType =
+  | "reading"
+  | "free_exploration"
+  | "creation"
+  | "observe_user"
+  | "idle_reflection"
+  | "rest";
+export type ActivityStatus =
+  | "pending"
+  | "running"
+  | "abandoned"
+  | "completed"
+  | "incomplete";
+
+export type Activity = {
+  id: string;
+  type: ActivityType;
+  schedule_block_id: string;
+  status: ActivityStatus;
+  progress: Record<string, unknown>; // 形状随 type 而异
+  started_at: number;
+  ended_at: number | null;
+};
+
+export type ActivitySnapshot = {
+  current: Activity | null;
+  schedule: Activity[];
+};
+
+// ---- 记忆（06-memory / nyx/types.py Memory）----
+export type MemoryType = "short_term" | "long_term";
+
+export type Memory = {
+  id: string;
+  created_at: number;
+  content: string;
+  tag: string;
+  summary: string;
+  freshness: number;
+  type: MemoryType;
+  recall_count: number;
+  aspect: string[];
+  embedding: number[] | null;
+};
+
+// ---- eval / token（15-eval / nyx/types.py）----
+export type EvalScores = {
+  format: number;
+  ooc: number;
+  relevance: number;
+};
+
+export type EvalReport = {
+  id: string;
+  output_id: string;
+  module: string;
+  type: string;
+  scores: EvalScores;
+  token_usage: { input: number; output: number };
+  correlation_id: string;
+  created_at: number;
+};
+
+export type TokenUsage = {
+  id: string;
+  correlation_id: string | null;
+  module: string;
+  purpose: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  created_at: number;
+};
+
+// ---- 事件溯源（05-event / nyx/types.py Event，对应 GET /api/events/log）----
+export type BackendEvent = {
+  id: string;
+  timestamp: number;
+  source: "external" | "internal";
+  type: string; // EventType 值
+  content: Record<string, unknown>;
+  correlation_id: string;
+};

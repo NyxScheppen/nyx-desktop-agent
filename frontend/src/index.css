@@ -131,8 +131,8 @@ body {
 
 .emotion-sprite--portrait {
   display: block;
-  flex: 0 0 34%;
-  width: 34%;
+  flex: 0 0 24%;
+  width: 24%;
   height: 100%;
   object-fit: cover;
   object-position: top center;
@@ -325,51 +325,69 @@ body {
   margin: 0;
 }
 
-/* ===== 侧栏抽屉（视觉改造 §1）===== */
-.drawer-toggle {
-  padding: 7px 18px;
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  border-radius: 30px;
-  background: rgba(255, 255, 255, 0.5);
-  backdrop-filter: blur(8px);
-  color: #4d3425;
-  cursor: pointer;
-  font-family: inherit;
-  letter-spacing: 2px;
-  transition: all 0.3s ease;
-}
-
-.drawer-toggle:hover {
-  background: rgba(255, 255, 255, 0.8);
-}
-
-.drawer-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 9;
-  background: rgba(60, 30, 20, 0.2);
-}
-
-.drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  height: 100vh;
-  width: min(320px, 88vw);
-  z-index: 10;
+/* ===== 右侧标签页面板（视觉改造 §1：抽屉 → 常驻标签列）===== */
+.side-panel {
+  flex: 0 0 300px;
+  width: 300px;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: 16px;
-  overflow-y: auto;
-  background: rgba(250, 242, 236, 0.97);
-  box-shadow: -8px 0 40px rgba(60, 30, 20, 0.18);
-  transform: translateX(100%);
-  transition: transform 0.35s cubic-bezier(0.23, 1, 0.32, 1);
+  background: linear-gradient(180deg,
+      rgba(255, 248, 240, 0.92) 0%,
+      rgba(250, 240, 235, 0.97) 100%);
+  backdrop-filter: blur(18px) saturate(1.15);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  border-radius: 18px;
+  box-shadow: 0 18px 50px rgba(60, 30, 20, 0.24);
+  overflow: hidden;
 }
 
-.drawer--open {
-  transform: translateX(0);
+.side-panel__tabs {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid rgba(180, 140, 120, 0.2);
+}
+
+.side-panel__tab {
+  flex: 1 1 auto;
+  padding: 0.4rem 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 0.6rem;
+  background: rgba(255, 255, 255, 0.35);
+  color: #a08070;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.8rem;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  transition: all 0.25s ease;
+}
+
+.side-panel__tab:hover {
+  background: rgba(255, 255, 255, 0.6);
+  color: #4d3425;
+}
+
+.side-panel__tab--active {
+  background: rgba(192, 122, 122, 0.85);
+  border-color: rgba(192, 122, 122, 0.6);
+  color: #fff8f0;
+}
+
+/* 内容区：块级 + overflow-y，面板自然堆叠、超出滚动（规避旧抽屉 flex 子项被压缩裁掉的问题） */
+.side-panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.75rem;
+  scrollbar-width: none;
+}
+
+.side-panel__body::-webkit-scrollbar {
+  display: none;
 }
 
 /* ===== Panel 骨架（components/layout/Panel，抽屉内复用）===== */
@@ -405,6 +423,72 @@ body {
 
 .panel-body {
   padding: 0.75rem;
+}
+
+/* ===== 面板列表视图（欲望/活动/记忆/Eval/溯源）===== */
+.panel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.panel-section-title {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #a08070;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+
+.panel-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.3rem;
+  background: rgba(255, 255, 255, 0.4);
+  font-size: 0.82rem;
+}
+
+.panel-item__main {
+  color: #4d3425;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.panel-item__meta {
+  font-size: 0.72rem;
+  color: #a08070;
+}
+
+.panel-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.5rem;
+}
+
+.panel-refresh {
+  padding: 0.25rem 0.75rem;
+  border: 1px solid rgba(180, 140, 120, 0.3);
+  border-radius: 0.3rem;
+  background: rgba(255, 255, 255, 0.6);
+  color: #4d3425;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.8rem;
+}
+
+.panel-refresh:hover {
+  background: rgba(255, 255, 255, 0.9);
 }
 
 /* ===== 内在状态面板（04）===== */
@@ -514,8 +598,11 @@ body {
     gap: 8px;
   }
   .emotion-sprite--portrait {
-    flex-basis: 28%;
-    width: 28%;
+    display: none;
+  }
+  .side-panel {
+    flex-basis: 220px;
+    width: 220px;
   }
   .dialog-box {
     padding: 12px 14px 14px;

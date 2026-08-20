@@ -1,6 +1,11 @@
 import { create } from "zustand";
-import { postChat } from "../api/client";
-import type { TextEvent, TextEventType, UserMessageEvent } from "../types/api";
+import { getEventsLog, postChat } from "../api/client";
+import type {
+  BackendEvent,
+  TextEvent,
+  TextEventType,
+  UserMessageEvent,
+} from "../types/api";
 
 export type ChatMessage = {
   id: string; // event_id
@@ -8,21 +13,52 @@ export type ChatMessage = {
   kind: "message" | "speak" | "ask" | "think" | "mutter" | "initiate_chat";
   content: string;
   correlation_id: string;
+  preloaded?: boolean; // 历史回填消息：渲染时不逐字
 };
 
 type ChatState = {
   messages: ChatMessage[];
   isReplying: boolean; // 发消息后等待回复中
   sendError: string | null;
+  typedIds: Record<string, true>; // 已逐字打完的 think id（speak/ask 等其同 correlation_id 的 think 打完才开打）
   addUserMessage: (e: UserMessageEvent) => void;
   addSpeak: (e: TextEvent<"speak">) => void;
   addAsk: (e: TextEvent<"ask">) => void;
   addThink: (e: TextEvent<"think">) => void;
   addMutter: (e: TextEvent<"mutter">) => void;
   addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
+  markTyped: (id: string) => void;
+  loadHistory: () => Promise<void>; // 挂载时回填 GET /api/events/log 的历史消息（preloaded，不逐字）
   sendMessage: (text: string) => Promise<boolean>; // 成功 true / 失败 false（ChatInput 据其决定是否清空输入框）
   reset: () => void;
 };
+
+// 历史回填的事件类型（按 03-chat-panel §4）：只拉文本类，其余（emotion_update 等）不进对话。
+const HISTORY_TYPES = [
+  "user_message",
+  "speak",
+  "ask",
+  "think",
+  "mutter",
+  "initiate_chat",
+] as const;
+const HISTORY_LIMIT = 200; // 每类型拉取上限（够覆盖长会话，超出裁旧）
+
+// BackendEvent（event_log）→ ChatMessage：user_message 读 content.message、文本事件读 content.content。
+// 字段非 string 则丢弃（与 append 一致的收窄校验，01-sse §4.1）。
+function toChatMessage(e: BackendEvent): ChatMessage | null {
+  const isUser = e.type === "user_message";
+  const text = isUser ? e.content.message : e.content.content;
+  if (typeof text !== "string") return null;
+  return {
+    id: e.id,
+    role: isUser ? "user" : "nyx",
+    kind: isUser ? "message" : (e.type as ChatMessage["kind"]),
+    content: text,
+    correlation_id: e.correlation_id,
+    preloaded: true,
+  };
+}
 
 // 回复超时兜底（02-stores §1）：60s 未收到 speak/ask 视为超时。
 // timer 引用放 module-level，不进 store state（store 状态须可序列化）。
@@ -77,12 +113,45 @@ export const useChatStore = create<ChatState>((set, get) => {
     messages: [],
     isReplying: false,
     sendError: null,
+    typedIds: {},
     addUserMessage: (e) => append(e, "user", "message"),
     addSpeak: (e) => finishReply(e),
     addAsk: (e) => finishReply(e),
     addThink: (e) => append(e, "nyx", "think"),
     addMutter: (e) => append(e, "nyx", "mutter"),
     addInitiateChat: (e) => append(e, "nyx", "initiate_chat"),
+    markTyped: (id) => set((s) => ({ typedIds: { ...s.typedIds, [id]: true } })),
+    loadHistory: async () => {
+      // 每类型并行拉取，合并后按时间升序（旧→新，历史在前）。getEventsLog 失败即整组放弃
+      // （与 snapshot store 一致：loadHistory 是 best-effort，不阻塞实时 SSE）。
+      try {
+        const byType = await Promise.all(
+          HISTORY_TYPES.map((t) => getEventsLog({ event_type: t, limit: HISTORY_LIMIT })),
+        );
+        const merged = byType.flat().sort((a, b) => a.timestamp - b.timestamp);
+        set((s) => {
+          const existing = new Set(s.messages.map((m) => m.id));
+          const fresh: ChatMessage[] = [];
+          const thinkIds: Record<string, true> = {};
+          for (const e of merged) {
+            if (existing.has(e.id)) continue;
+            const msg = toChatMessage(e);
+            if (msg === null) continue;
+            existing.add(msg.id);
+            fresh.push(msg);
+            if (msg.kind === "think") thinkIds[msg.id] = true;
+          }
+          if (fresh.length === 0) return {};
+          // 前置到现有消息前；历史 think 视为已打完（不阻塞实时 speak/ask）
+          return {
+            messages: [...fresh, ...s.messages],
+            typedIds: { ...s.typedIds, ...thinkIds },
+          };
+        });
+      } catch (err) {
+        console.error("加载聊天历史失败", err);
+      }
+    },
     sendMessage: async (text) => {
       // 串行锁要同步上：get() 同步读 store（非 React 订阅），在 await postChat 之前置 isReplying=true。
       // 否则网络往返窗口内 isReplying 仍 false，双击/连击可并发第二次发送、覆盖 pendingId。
@@ -107,7 +176,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     reset: () => {
       clearReplyTimer(); // 新会话：取消残留 timer + 复位 isReplying/sendError（防假超时）
       pendingId = null;
-      set({ messages: [], isReplying: false, sendError: null });
+      set({ messages: [], isReplying: false, sendError: null, typedIds: {} });
     },
   };
 });

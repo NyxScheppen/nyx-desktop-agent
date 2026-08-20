@@ -2,7 +2,7 @@
 
 > React 前端，跑在 Tauri 薄壳里，通过 localhost HTTP/SSE 连接 Python 核心服务。
 > 本文档集是前端的**设计/规划**：技术栈、目录结构、store 划分、SSE 数据流、核心面板组件契约。实现细节在编码阶段补全（对齐后端「spec 定义契约 → 实现照抄」的分工）。
-> 范围：**核心先行**——聊天面板 + 内在状态面板 + SSE 数据流 + 面板骨架；其余面板（欲望/活动/记忆/eval/溯源）留后续，本 README 只标占位。
+> 范围：聊天面板 + 内在状态面板 + SSE 数据流 + 面板骨架，以及后续补齐的欲望/活动/记忆/eval/溯源五个面板（均已落地）。
 
 ## 1. 技术栈
 
@@ -78,7 +78,7 @@ frontend/
   index.html
   src/
     main.tsx                 # React 入口，挂载 App
-    App.tsx                  # 全屏装配：背景/樱花 + 左侧半身像立绘 + 右侧聊天窗 + 侧栏抽屉（01-sse §6）
+    App.tsx                  # 全屏装配：背景/樱花 + 左侧半身像立绘 + 中间聊天窗 + 右侧标签页面板（01-sse §6）
     types/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     api/
@@ -89,9 +89,13 @@ frontend/
       usePresence.ts         # 活跃度采集 + classifyPresence 判定 + POST /api/observe
       useTypewriter.ts       # 打字机：nyx 文本逐字显示（纯渲染层，03-chat-panel）
     stores/
-      chatStore.ts           # 聊天：消息列表
+      chatStore.ts           # 聊天：消息列表 + 历史加载
       innerLifeStore.ts      # 内在状态：CurrentState 快照
-      eventStore.ts          # 溯源时间线（骨架，占位）
+      eventStore.ts          # 溯源时间线（SSE 全量 + /api/events/log 历史）
+      desireStore.ts         # 欲望：DesireState 快照
+      activityStore.ts       # 活动：ActivitySnapshot 快照
+      memoryStore.ts         # 记忆：Memory[] 快照
+      evalStore.ts           # eval + token：reports/tokens 快照
     components/
       chat/
         ChatPanel.tsx
@@ -105,9 +109,15 @@ frontend/
         EnergyBar.tsx
         BigFiveChart.tsx
         ValuesChart.tsx
+      panels/
+        DesiresPanel.tsx     # 欲望面板（GET /api/desires + SSE desire_*）
+        ActivityPanel.tsx    # 活动时间线（GET /api/activity + SSE activity_*）
+        MemoryPanel.tsx      # 记忆浏览器（GET /api/memories + SSE memory_*）
+        EvalPanel.tsx        # eval + token 看板（GET /api/eval / GET /api/tokens）
+        TracePanel.tsx       # 事件溯源时间线（SSE 全部 + GET /api/events/log）
       layout/
-        Panel.tsx            # 通用面板容器（占位面板复用）
-        SideDrawer.tsx       # 侧栏抽屉（收非对话面板，01-sse §6）
+        Panel.tsx            # 通用面板容器
+        SidePanel.tsx        # 右侧标签页面板（收非对话面板，标签切换，01-sse §6）
       scene/
         Sakura.tsx           # 樱花飘落装饰（纯视觉，01-sse §6）
     assets/
@@ -123,19 +133,19 @@ frontend/
 - 组件 `PascalCase`、文件 `camelCase.tsx`；store/hook/api 文件 `camelCase.ts`。
 - **TS 类型字段名 = 后端 JSON 键名（snake_case 原样，零映射）**：后端 dataclass 直接 `json.dumps`，字段是 `snake_case`（`valence` / `energy_state` / `current_activity` / `correlation_id`）。前端类型镜像时**不改名**，理由：零映射层 = 零映射 bug、字段名可沿 `correlation_id` 一路溯源到后端定义（原则 3/5）。前端内部 UI 变量名才用 camelCase，落类型时转 snake_case 键。
 
-## 5. 面板骨架（SideDrawer 抽屉）
+## 5. 面板骨架（SidePanel 标签页）
 
-design §11 列 7 个面板；核心先行实现 2 个，其余占位（`Panel` 容器 + 「后续」标记）。视觉改造后，聊天区独立为右侧微信式大窗（`ChatPanel`），其余面板收进右上角「面板」按钮展开的 `SideDrawer` 抽屉。
+design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），其余 6 个面板收进右侧常驻的 `SidePanel` 标签页（内在/欲望/活动/记忆/Eval/溯源，一次显示一个，内容区可滚动）。
 
-| 面板 | 核心先行状态 | 数据源 |
-|---|---|---|
-| 聊天区 | ✅ 实现（03-chat-panel） | `POST /api/chat` + SSE `speak`/`think`/`ask` |
-| 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` |
-| 欲望面板 | 🔲 占位 | `GET /api/desires` + SSE `desire_*` |
-| 活动时间线 | 🔲 占位 | `GET /api/activity` + SSE `activity_*` |
-| 记忆浏览器 | 🔲 占位 | `GET /api/memories` + SSE `memory_*` |
-| eval + token 看板 | 🔲 占位 | `GET /api/eval` / `GET /api/tokens` |
-| 事件溯源时间线 | 🔲 占位（`eventStore` 已建骨架） | SSE 全部 + `GET /api/events/log` |
+| 面板 | 状态 | 数据源 | 组件落点 |
+|---|---|---|---|
+| 聊天区 | ✅ 实现（03-chat-panel） | `POST /api/chat` + SSE `speak`/`think`/`ask` | `components/chat/ChatPanel.tsx` |
+| 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | `components/inner/InnerStatePanel.tsx` |
+| 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | `components/panels/DesiresPanel.tsx` |
+| 活动时间线 | ✅ 实现 | `GET /api/activity` + SSE `activity_*` | `components/panels/ActivityPanel.tsx` |
+| 记忆浏览器 | ✅ 实现 | `GET /api/memories` + SSE `memory_*` | `components/panels/MemoryPanel.tsx` |
+| eval + token 看板 | ✅ 实现 | `GET /api/eval` / `GET /api/tokens` | `components/panels/EvalPanel.tsx` |
+| 事件溯源时间线 | ✅ 实现 | SSE 全部 + `GET /api/events/log` | `components/panels/TracePanel.tsx` |
 
 ## 6. 测试约定
 

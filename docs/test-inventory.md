@@ -513,10 +513,14 @@
 | `dispatchEvent > speak → chatStore` | 功能正确 | `kind=speak`/`role=nyx`/`content` 入 `messages` |
 | `dispatchEvent > user_message → chatStore` | 回归保护 | 读 `message` 非 `content` → `kind=message`/`role=user`/`content` 入 `messages`（Finding 1：user_message 裸 `{message}` 曾致用户消息被 `typeof e.content` 拦截静默丢弃） |
 | `dispatchEvent > emotion_update → innerLifeStore` | 功能正确 | 覆盖 `valence`/`arousal`/`emotion` 三字段（`current` 非 null 时） |
-| `dispatchEvent > 未消费类型 → eventStore` | 功能正确 | `default` 兜底 `record`（`reflection` → `count+1`） |
+| `dispatchEvent > 未消费类型 → eventStore` | 功能正确 | `reflection` 仅 `record`（无面板消费，`count+1`） |
+| `dispatchEvent > 全量 record` | 功能正确 | 已消费类型（`speak`）也进 `eventStore`（`count+1`、`events[0].event=="speak"`）——补「只记 11 类未消费」的漏 |
+| `dispatchEvent > desire_generated → desireStore.refresh()` | 功能正确 | `desire_generated` 触发 `desireStore.refresh()` 恰 1 次 + 全量 `record` |
+| `dispatchEvent > memory_created → memoryStore.refresh()` | 功能正确 | `memory_created` 触发 `memoryStore.refresh()` 恰 1 次 |
+| `dispatchEvent > activity_start → activityStore.refresh()` | 功能正确 | `activity_start` 触发 `activityStore.refresh()` 恰 1 次 |
 | `isEmotionCategory > 枚举收窄` | 边界鲁棒 | 合法枚举（`happy`/`neutral`）→ true；非法字符串（`不存在`）/非字符串（`5`/`null`）→ false |
 
-**功能阶段**：frontend 01-sse 实现时编写（mock `EventSource` stub + 真实 store；验证管道正确——事件走对 store、字段零映射、坏帧跳过不崩，不验证视觉）；`dispatchEvent > user_message → chatStore` 于本轮 review 追加（Finding 1 回归：user_message 裸 `{message}` 曾致用户消息被 `typeof e.content` 拦截静默丢弃）；`isEmotionCategory > 枚举收窄` 于本轮 review 追加（emotion 枚举值运行时收窄）。
+**功能阶段**：frontend 01-sse 实现时编写（mock `EventSource` stub + 真实 store；验证管道正确——事件走对 store、字段零映射、坏帧跳过不崩，不验证视觉）；`dispatchEvent > user_message → chatStore` 于本轮 review 追加（Finding 1 回归：user_message 裸 `{message}` 曾致用户消息被 `typeof e.content` 拦截静默丢弃）；`isEmotionCategory > 枚举收窄` 于本轮 review 追加（emotion 枚举值运行时收窄）；`dispatchEvent > 全量 record` / `desire_generated` / `memory_created` / `activity_start` → refresh 于前端面板落地轮追加（分发表全量 record + 快照 store 路由）。
 
 ## frontend-client（REST 客户端：api/client.ts）
 
@@ -529,10 +533,17 @@
 | `非 2xx 无 detail 兜底` | 边界鲁棒 | mock body 无 detail/error → `JSON.stringify(body)` 非空 message |
 | `非 2xx detail 空串兜底` | 边界鲁棒 | mock body `{"detail":""}` → 兜底 `HTTP status`（防空 message 被 UI `if(sendError)` 误判） |
 | `fetch 网络错误上抛` | 边界鲁棒 | reject `TypeError` → 上抛不吞（不返回 `{ok:false}`/null） |
+| `getDesires > GET /api/desires` | 功能正确 | 请求 URL、解析 `DesireState` 直返 |
+| `getActivity > GET /api/activity` | 功能正确 | 请求 URL、解析 `ActivitySnapshot` 直返 |
+| `getMemories > query 拼装` | 功能正确 | `tag`/`type` 拼进 query（`?tag=user&type=long_term`） |
+| `getMemories > 无参数不带 query` | 边界鲁棒 | 无参 → 请求 `/api/memories`（不带 `?`） |
+| `getEval > 可选 limit 拼进 query` | 功能正确 | `getEval(5)` → `/api/eval?limit=5` |
+| `getTokens > 可选 since 拼进 query` | 功能正确 | `getTokens(1000)` → `/api/tokens?since=1000` |
+| `getEventsLog > limit/event_type/correlation_id 拼进 query` | 功能正确 | 三参拼进 query（`?limit=20&event_type=speak&correlation_id=c1`） |
 
-**功能阶段**：frontend 05-client 实现时编写（mock `fetch` 断言端点/方法/请求体键 + 错误契约；验证管道正确——键零映射、错误上抛，不验证视觉）；`非 2xx detail 空串兜底` 于本轮 review 追加（Finding B：空串 detail 致 `Error.message=""` 被 UI 误判为无错误）。
+**功能阶段**：frontend 05-client 实现时编写（mock `fetch` 断言端点/方法/请求体键 + 错误契约；验证管道正确——键零映射、错误上抛，不验证视觉）；`非 2xx detail 空串兜底` 于本轮 review 追加（Finding B：空串 detail 致 `Error.message=""` 被 UI 误判为无错误）；六个新端点（`getDesires`/`getActivity`/`getMemories`/`getEval`/`getTokens`/`getEventsLog`）于前端面板落地轮追加（快照/溯源端点 query 拼装 + 解析）。
 
-## frontend-stores（Zustand stores：chatStore + innerLifeStore + eventStore）
+## frontend-stores（Zustand stores：chatStore + innerLifeStore + eventStore + 四个快照 store）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -550,9 +561,22 @@
 | `eventStore.record > 超 MAX_EVENTS` | 边界鲁棒 | 501 条 → `events` 长度 500、`count=501`、丢最旧 |
 | `chatStore > 迟到回复清 sendError` | 功能正确 | 超时后（`sendError="回复超时"`）`addSpeak` 到达 → `sendError=null`（回复清超时残留） |
 | `chatStore > 非匹配 correlation 不清 timer` | 回归保护 | `addSpeak` 的 `correlation_id` ≠ `pendingId` → isReplying 保持 true、消息照常上屏、advance 60s 仍触发超时（防并发误清） |
-| `chatStore.reset > 新会话全清` | 功能正确 | `reset()` 复位 `messages/isReplying/sendError` + 取消残留 timer（advance 60s 不触发超时） |
+| `chatStore.reset > 新会话全清` | 功能正确 | `reset()` 复位 `messages/isReplying/sendError/typedIds` + 取消残留 timer（advance 60s 不触发超时） |
+| `chatStore.loadHistory > 升序前置 + preloaded + typedIds` | 功能正确 | 六类历史事件合并按 `timestamp` 升序前置、每条 `preloaded=true`、历史 think 入 `typedIds` |
+| `chatStore.loadHistory > 已存在 id 去重` | 边界鲁棒 | 与现有 `messages` 撞 id 的历史消息不重复前置（`s1` 仅 1 条） |
+| `chatStore.loadHistory > getEventsLog 失败` | 边界鲁棒 | `getEventsLog` reject → best-effort 不抛、`messages` 不变 |
+| `chatStore > markTyped + reset 清 typedIds` | 功能正确 | `markTyped("x")` 写入 `typedIds["x"]`；`reset()` 清空 `typedIds={}` |
+| `eventStore.loadHistory > 回填 + 降序去重` | 功能正确 | 历史回填 `eventStore`，与现有按 `received_at` 降序、按 `event_id` 去重（`live-1` 不重复） |
+| `desireStore.refresh > GET /api/desires` | 功能正确 | mock fetch 断言端点 + `data` 落 store + `loading=false` |
+| `activityStore.refresh > GET /api/activity` | 功能正确 | 同上（`data` 落 store） |
+| `memoryStore.refresh > GET /api/memories` | 功能正确 | 同上（`data` 落 store） |
+| `evalStore.refresh > 并行 getEval+getTokens` | 功能正确 | `fetch` 恰 2 次 → `reports`/`tokens` 落 store |
+| `desireStore.refresh > 失败 → error` | 边界鲁棒 | `getDesires` reject → `error=e.message` + `loading=false` + `data` 保持 null |
+| `isReady > think 打完才放行 speak` | 功能正确 | think 未打完 → false；`typedIds` 含该 think → true；无前置 think → true（串行逐字门控核心） |
+| `isReady > preloaded / 非 speak·ask 恒就绪` | 功能正确 | `preloaded` speak、think 自身 → true（历史不逐字 / 不被门控） |
+| `isReady > 不同 correlation_id 不阻塞` | 功能正确 | 不同 `correlation_id` 的 think 不阻塞 speak → true |
 
-**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）；`chatStore.sendMessage > 重入守卫` 于 03-chat-panel 后 review 追加（串行锁提前到 await 前 + get() 同步守卫，防 in-flight 重复发送覆盖 pendingId）。
+**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）；`chatStore.sendMessage > 重入守卫` 于 03-chat-panel 后 review 追加（串行锁提前到 await 前 + get() 同步守卫，防 in-flight 重复发送覆盖 pendingId）；`chatStore.loadHistory` / `markTyped`+`reset` / `eventStore.loadHistory` / 四个快照 store `refresh` / `isReady` 于前端面板落地轮追加（聊天历史加载 + 快照 store + 串行逐字门控纯函数）。
 
 ## frontend-typewriter（打字机 hook：useTypewriter）
 
@@ -560,8 +584,9 @@
 |---|---|---|
 | `useTypewriter > 空文本 → displayed 空 + done 立即 true` | 边界鲁棒 | `useTypewriter("")` → `displayed === ""`、`done === true`（空文本短路，不起 timer） |
 | `useTypewriter > 逐字：每 tick 增一字，直至 done` | 功能正确 | fake timers：两次 `advanceTimersByTime(35)` → `"你"`→`"你好"`、`done` false→true |
+| `useTypewriter > ready=false 不启动` | 功能正确 | `ready=false` 时 `displayed=""`+`done=false` 且推进 timer 不打字；`rerender({ready:true})` 后才从 0 逐字（串行逐字门控） |
 
-**功能阶段**：frontend 视觉改造（Galgame 打字机）时编写（`renderHook` + fake timers；验证渲染层逐字推进——`displayed` 按 tick 递增、空文本短路，纯渲染层不碰 store/数据流，不验证视觉）。
+**功能阶段**：frontend 视觉改造（Galgame 打字机）时编写（`renderHook` + fake timers；验证渲染层逐字推进——`displayed` 按 tick 递增、空文本短路，纯渲染层不碰 store/数据流，不验证视觉）；`ready=false 不启动` 于前端面板落地轮追加（串行逐字：speak/ask 等前置 think 打完才开打）。
 
 ## frontend-chat-panel（聊天面板：ChatPanel + MessageList + MessageBubble + ChatInput）
 
@@ -612,3 +637,12 @@
 | `usePresence > presence 不变 → 不再上报` | 边界鲁棒 | 无输入 30s 后 `postObserve` 仍 1 次（仅挂载那次 away，不重复上报） |
 
 **功能阶段**：frontend usePresence（README §2）实现时编写（mock `postObserve` + fake timers + `renderHook`；验证管道正确——采集→判定→上报的节奏与去重，fetch 细节归 frontend-client；窗口标题核心先行恒传 `""`，故 hook 不测 busy 分支，busy 由 `classifyPresence` 纯函数覆盖）。
+
+## frontend-side-panel（布局：SidePanel 标签页）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `SidePanel > 渲染 6 个标签，默认激活「内在」` | 功能正确 | 6 个 tab 按钮（内在/欲望/活动/记忆/Eval/溯源）都渲染；默认「内在」`aria-pressed=true` + 面板标题「内在状态」上屏 |
+| `SidePanel > 点击「欲望」切换面板，未激活面板卸载` | 功能正确 | 点「欲望」后 `aria-pressed` 移到「欲望」、面板标题「欲望」上屏、内在面板标题卸载（仅挂载当前 tab，规避旧抽屉 flex 子项被压缩裁掉无法滚动） |
+
+**功能阶段**：frontend 视觉改造（右侧滑出抽屉 → 右侧常驻标签页）时编写（RTL + 真实 store；验证管道正确——标签切换当前面板、仅挂载 active tab，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）。

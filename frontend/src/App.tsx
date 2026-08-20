@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import ChatPanel from "./components/chat/ChatPanel";
 import EmotionSprite from "./components/inner/EmotionSprite";
-import SideDrawer from "./components/layout/SideDrawer";
+import SidePanel from "./components/layout/SidePanel";
 import Sakura from "./components/scene/Sakura";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
@@ -16,7 +16,7 @@ const CONNECTION_LABEL: Record<ConnectionState, string> = {
 };
 
 // App 组合装配（01-sse §6 + 视觉改造布局 §1）：全屏三层——
-// 背景柔光 + 樱花 → 左侧半身像立绘 + 右侧微信式聊天窗；侧栏抽屉收非对话面板。
+// 背景柔光 + 樱花 → 左侧半身像立绘 + 中间聊天窗 + 右侧标签页面板（SidePanel）。
 // useSSE 只挂一次，子组件读 store。
 export default function App() {
   const status = useSSE(dispatchEvent);
@@ -37,13 +37,13 @@ export default function App() {
         <span className="scene-title">✦ Nyx ✦</span>
         <div className="topbar-right">
           <span className="connection-state">{CONNECTION_LABEL[status]}</span>
-          <SideDrawer />
         </div>
       </header>
 
       <main className="app-stage">
         <EmotionSprite size="portrait" />
         <ChatPanel />
+        <SidePanel />
       </main>
     </div>
   );

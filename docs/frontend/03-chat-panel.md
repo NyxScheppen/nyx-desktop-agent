@@ -43,18 +43,19 @@ ChatPanel                     # 右侧聊天窗容器（dialog-box，微信式�
 | `nyx` | `mutter` | 左气泡，斜体/浅色 | 碎碎念（自发，无用户触发） |
 | `nyx` | `initiate_chat` | 左气泡，带「搭话」标记 | 主动搭话（与 mutter 区分来源） |
 
-- **打字机（`useTypewriter`）**：nyx 文本消息（`speak`/`ask`/`think`/`mutter`/`initiate_chat`）逐字显示，纯渲染层 hook（`hooks/useTypewriter.ts`），不改 store——消息仍完整 append，仅控制「显示到第几个字」；未打完时挂 `.cursor-blink` 光标。
+- **打字机（`useTypewriter`）**：nyx 文本消息（`speak`/`ask`/`think`/`mutter`/`initiate_chat`）逐字显示，纯渲染层 hook（`hooks/useTypewriter.ts`），不改 store——消息仍完整 append，仅控制「显示到第几个字」；未打完时挂 `.cursor-blink` 光标。`useTypewriter(text, speed, ready)` 加第三参 `ready`：false 时不启动（`displayed=""`、`done=false`、无光标），转 true 才从 0 逐字。
 - **微信式全量 + 独立打字（视觉改造 §4）**：`MessageList` 全部消息按序渲染，每条 nyx 文本独立逐字（各自 `useTypewriter`），不打完也已在 DOM；后端 SSE 顺序 THINK 先于 SPEAK（17-expression），故「内心话气泡」天然排在「发言气泡」之上；最新消息自动滚到底，历史往上滑看（滚动条隐藏）。
+- **串行逐字（内心话 → 对话，不并发）**：`MessageList` 对每条消息算 `ready = isReady(message, index, messages, typedIds)`（纯函数，导出供测试）——`speak`/`ask` 需等「同 `correlation_id` 且在其之前的所有 `think`」都已入 `typedIds` 才就绪；think 逐字 `done` 时经 `onThinkTyped → markTyped` 写入 `typedIds`。故内心话气泡先完整逐字打完，对话气泡才开始逐字（等待期 `displayed=""`、无光标），而非两条并发一起显示。`preloaded` 历史消息与 think/mutter 等非 `speak`/`ask` 消息恒就绪。
 
 ## 4. 边界
 
-- **上滑看历史（无历史加载 API）**：消息列表展示本次会话 SSE 实时到达的全部消息，往上滚即可回看（滚动条隐藏）；进页面补历史靠 `GET /api/events/log?event_type=speak` 是后续（README §5 溯源面板/历史查询）。
+- **历史加载（`ChatPanel` 挂载时 `loadHistory()`）**：进页面并行 `GET /api/events/log`（`user_message`/`speak`/`ask`/`think`/`mutter`/`initiate_chat` 六类，各 `limit=200`）回填历史消息，`preloaded:true`（渲染时不逐字、直接全量上屏），按 `timestamp` 升序前置到现有消息前、按 `id` 去重（跳过已存在的）；历史 think 一并入 `typedIds` 视为已打完，不阻塞实时 speak/ask。重启后消息列表不再空。
 - **`mutter`/`initiate_chat` 无用户消息对齐**：它们 `correlation_id` 指向 MUTTER_CHECK tick / desire，不在用户消息链上——渲染按到达顺序插在列表里，不强行对齐到某条用户消息。
 - **长文本**：气泡 `max-width` + 自动换行；`think` 逐字弱化展示（灰色斜体小字），不再折叠。
 
 ## 5. 测试（`tests/` 并入 stores/api 测试）
 
 - `MessageBubble`：按 `kind` 渲染正确（`speak` 正常 / `think` 灰色斜体逐字 / `ask` 高亮）；nyx 文本消息须先 `advanceTimersByTime`（fake timers）打完字再断言完整文案——React Testing Library 断言关键 class/文案。
-- `MessageList`：全部消息按序渲染、无历史折叠（`typeDone` 推进 fake timers 后两条都上屏，无历史按钮）；全部气泡渲染即存在（不串行等前一条打完）。
+- `MessageList`：全部消息按序渲染、无历史折叠（`typeDone` 推进 fake timers 后两条都上屏，无历史按钮）；全部气泡渲染即存在（不串行等前一条打完）；`isReady` 串行逐字门控纯函数（think 未打完 → speak 等，打完 → 就绪）在 stores.test.ts 覆盖。
 - `ChatInput`：`isReplying=true` 禁用发送；回车/点发送触发 `sendMessage`（mock store action）。
 - 视觉样式不做断言（README §6 测试约定）。

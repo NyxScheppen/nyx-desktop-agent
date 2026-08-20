@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BASE_URL } from "../src/api/client";
 import { dispatchEvent } from "../src/api/dispatch";
 import { useSSE } from "../src/hooks/useSSE";
+import { useActivityStore } from "../src/stores/activityStore";
 import { useChatStore } from "../src/stores/chatStore";
+import { useDesireStore } from "../src/stores/desireStore";
 import { useEventStore } from "../src/stores/eventStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
+import { useMemoryStore } from "../src/stores/memoryStore";
 import { isEmotionCategory } from "../src/types/api";
 import type { CurrentState } from "../src/types/api";
 
@@ -42,6 +45,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -119,6 +123,9 @@ describe("dispatchEvent", () => {
     useChatStore.getState().reset();
     useEventStore.getState().clear();
     useInnerLifeStore.setState({ current: null, loading: false, error: null });
+    useDesireStore.setState({ data: null, loading: false, error: null });
+    useActivityStore.setState({ data: null, loading: false, error: null });
+    useMemoryStore.setState({ data: null, loading: false, error: null });
   });
 
   it("speak → chatStore（kind=speak）", () => {
@@ -195,6 +202,64 @@ describe("dispatchEvent", () => {
 
     expect(useEventStore.getState().count).toBe(1);
     expect(useEventStore.getState().events[0].event).toBe("reflection");
+  });
+
+  it("全量 record：speak 也进 eventStore（不只未消费类型）", () => {
+    dispatchEvent({
+      event: "speak",
+      event_id: "e1",
+      correlation_id: "c1",
+      content: "hi",
+    });
+
+    expect(useEventStore.getState().count).toBe(1);
+    expect(useEventStore.getState().events[0].event).toBe("speak");
+  });
+
+  it("desire_generated → desireStore.refresh()", () => {
+    const spy = vi
+      .spyOn(useDesireStore.getState(), "refresh")
+      .mockResolvedValue(undefined);
+
+    dispatchEvent({
+      event: "desire_generated",
+      event_id: "d1",
+      correlation_id: "c1",
+      desire_id: "x",
+    });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useEventStore.getState().count).toBe(1); // 全量 record
+  });
+
+  it("memory_created → memoryStore.refresh()", () => {
+    const spy = vi
+      .spyOn(useMemoryStore.getState(), "refresh")
+      .mockResolvedValue(undefined);
+
+    dispatchEvent({
+      event: "memory_created",
+      event_id: "m1",
+      correlation_id: "c1",
+      memory_id: "y",
+    });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("activity_start → activityStore.refresh()", () => {
+    const spy = vi
+      .spyOn(useActivityStore.getState(), "refresh")
+      .mockResolvedValue(undefined);
+
+    dispatchEvent({
+      event: "activity_start",
+      event_id: "a1",
+      correlation_id: "c1",
+      activity_id: "z",
+    });
+
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 });
 

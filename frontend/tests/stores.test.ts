@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useChatStore } from "../src/stores/chatStore";
+import { isReady } from "../src/components/chat/MessageList";
+import { useActivityStore } from "../src/stores/activityStore";
+import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
+import { useDesireStore } from "../src/stores/desireStore";
+import { useEvalStore } from "../src/stores/evalStore";
 import { useEventStore } from "../src/stores/eventStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
-import type { CurrentState } from "../src/types/api";
+import { useMemoryStore } from "../src/stores/memoryStore";
+import type { BackendEvent, CurrentState } from "../src/types/api";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
@@ -373,5 +378,214 @@ describe("eventStore", () => {
     expect(count).toBe(501);
     expect(events[0].event_id).toBe("e500");
     expect(events[499].event_id).toBe("e1"); // e0 被丢
+  });
+
+  it("loadHistory：回填历史 + 与现有按 received_at 降序去重", () => {
+    useEventStore.getState().record({
+      event: "speak",
+      event_id: "live-1",
+      correlation_id: "c1",
+      content: "hi",
+    });
+    const history: BackendEvent[] = [
+      {
+        id: "h-1",
+        timestamp: 1000,
+        source: "internal",
+        type: "think",
+        content: { content: "…" },
+        correlation_id: "c1",
+      },
+      {
+        id: "live-1", // 与现有重复，应被去重
+        timestamp: 1001,
+        source: "internal",
+        type: "speak",
+        content: { content: "hi" },
+        correlation_id: "c1",
+      },
+    ];
+
+    useEventStore.getState().loadHistory(history);
+
+    const { events } = useEventStore.getState();
+    // 只新增 h-1（live-1 去重）；h-1 在 live-1 之前（timestamp 更小）
+    expect(events.map((e) => e.event_id)).toEqual(["live-1", "h-1"]);
+  });
+});
+
+describe("desireStore / activityStore / memoryStore / evalStore", () => {
+  beforeEach(() => {
+    useDesireStore.setState({ data: null, loading: false, error: null });
+    useActivityStore.setState({ data: null, loading: false, error: null });
+    useMemoryStore.setState({ data: null, loading: false, error: null });
+    useEvalStore.setState({ reports: null, tokens: null, loading: false, error: null });
+  });
+
+  it("desireStore.refresh：GET /api/desires → data 落 store", async () => {
+    const fixture = { values: [], short_term: [], long_term: [] };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useDesireStore.getState().refresh();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/desires");
+    expect(useDesireStore.getState().data).toEqual(fixture);
+    expect(useDesireStore.getState().loading).toBe(false);
+  });
+
+  it("activityStore.refresh：GET /api/activity → data 落 store", async () => {
+    const fixture = { current: null, schedule: [] };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useActivityStore.getState().refresh();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/activity");
+    expect(useActivityStore.getState().data).toEqual(fixture);
+  });
+
+  it("memoryStore.refresh：GET /api/memories → data 落 store", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useMemoryStore.getState().refresh();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories");
+    expect(useMemoryStore.getState().data).toEqual([]);
+  });
+
+  it("evalStore.refresh：并行 getEval + getTokens → reports/tokens 落 store", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useEvalStore.getState().refresh();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(useEvalStore.getState().reports).toEqual([]);
+    expect(useEvalStore.getState().tokens).toEqual([]);
+  });
+
+  it("desireStore.refresh：getDesires throw → error + loading=false", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+
+    await useDesireStore.getState().refresh();
+
+    expect(useDesireStore.getState().error).toBe("fetch failed");
+    expect(useDesireStore.getState().loading).toBe(false);
+    expect(useDesireStore.getState().data).toBeNull();
+  });
+});
+
+describe("chatStore.loadHistory", () => {
+  beforeEach(() => {
+    useChatStore.getState().reset();
+  });
+
+  function historyFetch(byType: Record<string, BackendEvent[]>) {
+    return vi.fn().mockImplementation((url: string) => {
+      const m = /event_type=([a-z_]+)/.exec(url);
+      return Promise.resolve(jsonResponse(byType[m?.[1] ?? ""] ?? []));
+    });
+  }
+
+  it("按 timestamp 升序前置 + preloaded + 历史 think 入 typedIds", async () => {
+    vi.stubGlobal(
+      "fetch",
+      historyFetch({
+        user_message: [
+          { id: "u1", timestamp: 1000, source: "external", type: "user_message", content: { message: "你好" }, correlation_id: "u1" },
+        ],
+        think: [
+          { id: "t1", timestamp: 1001, source: "internal", type: "think", content: { content: "我想想" }, correlation_id: "u1" },
+        ],
+        speak: [
+          { id: "s1", timestamp: 1002, source: "internal", type: "speak", content: { content: "你好呀" }, correlation_id: "u1" },
+        ],
+      }),
+    );
+
+    await useChatStore.getState().loadHistory();
+
+    const { messages, typedIds } = useChatStore.getState();
+    expect(messages.map((m) => m.id)).toEqual(["u1", "t1", "s1"]);
+    expect(messages.map((m) => m.kind)).toEqual(["message", "think", "speak"]);
+    expect(messages.every((m) => m.preloaded === true)).toBe(true);
+    expect(typedIds["t1"]).toBe(true);
+  });
+
+  it("已存在的 id 去重，不重复前置", async () => {
+    useChatStore.getState().addSpeak({
+      event: "speak",
+      event_id: "s1",
+      correlation_id: "u1",
+      content: "你好呀",
+    });
+    vi.stubGlobal(
+      "fetch",
+      historyFetch({
+        user_message: [
+          { id: "u1", timestamp: 1000, source: "external", type: "user_message", content: { message: "你好" }, correlation_id: "u1" },
+        ],
+        think: [
+          { id: "t1", timestamp: 1001, source: "internal", type: "think", content: { content: "我想想" }, correlation_id: "u1" },
+        ],
+        speak: [
+          { id: "s1", timestamp: 1002, source: "internal", type: "speak", content: { content: "你好呀" }, correlation_id: "u1" },
+        ],
+      }),
+    );
+
+    await useChatStore.getState().loadHistory();
+
+    const { messages } = useChatStore.getState();
+    expect(messages.map((m) => m.id)).toEqual(["u1", "t1", "s1"]); // s1 不重复
+    expect(messages.filter((m) => m.id === "s1")).toHaveLength(1);
+  });
+
+  it("getEventsLog 失败：best-effort 不抛、消息不变", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+
+    await expect(useChatStore.getState().loadHistory()).resolves.toBeUndefined();
+    expect(useChatStore.getState().messages).toHaveLength(0);
+  });
+
+  it("markTyped 标记 + reset 清 typedIds", () => {
+    useChatStore.getState().markTyped("x");
+    expect(useChatStore.getState().typedIds["x"]).toBe(true);
+
+    useChatStore.getState().reset();
+    expect(useChatStore.getState().typedIds).toEqual({});
+  });
+});
+
+describe("isReady（串行逐字纯函数）", () => {
+  const think: ChatMessage = { id: "t1", role: "nyx", kind: "think", content: "…", correlation_id: "c1" };
+  const speak: ChatMessage = { id: "s1", role: "nyx", kind: "speak", content: "你好", correlation_id: "c1" };
+
+  it("think 未打完 → speak 等（ready=false）", () => {
+    expect(isReady(speak, 1, [think, speak], {})).toBe(false);
+  });
+
+  it("think 打完 → speak 就绪（ready=true）", () => {
+    expect(isReady(speak, 1, [think, speak], { t1: true })).toBe(true);
+  });
+
+  it("无前置 think → speak 直接就绪", () => {
+    expect(isReady(speak, 0, [speak], {})).toBe(true);
+  });
+
+  it("preloaded speak 直接就绪（不逐字）", () => {
+    const pre = { ...speak, preloaded: true };
+    expect(isReady(pre, 1, [think, pre], {})).toBe(true);
+  });
+
+  it("think 等非 speak/ask 恒就绪", () => {
+    expect(isReady(think, 0, [think], {})).toBe(true);
+  });
+
+  it("不同 correlation_id 的 think 不阻塞 speak", () => {
+    const other = { ...think, id: "t2", correlation_id: "other" };
+    expect(isReady(speak, 1, [other, speak], {})).toBe(true);
   });
 });

@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getState, postChat, postObserve } from "../src/api/client";
+import {
+  getActivity,
+  getDesires,
+  getEval,
+  getEventsLog,
+  getMemories,
+  getState,
+  getTokens,
+  postChat,
+  postObserve,
+} from "../src/api/client";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
@@ -108,5 +118,74 @@ describe("api/client", () => {
     );
 
     await expect(getState()).rejects.toThrow(TypeError);
+  });
+
+  it("getDesires：GET /api/desires、解析 DesireState", async () => {
+    const fixture = { values: [], short_term: [], long_term: [] };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getDesires();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/desires");
+    expect(res).toEqual(fixture);
+  });
+
+  it("getActivity：GET /api/activity、解析 ActivitySnapshot", async () => {
+    const fixture = { current: null, schedule: [] };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getActivity();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/activity");
+    expect(res).toEqual(fixture);
+  });
+
+  it("getMemories：query 参数拼装（tag/type 可选）", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getMemories("user", "long_term");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories?tag=user&type=long_term");
+  });
+
+  it("getMemories：无参数时不带 query string", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getMemories();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories");
+  });
+
+  it("getEval：可选 limit 拼进 query", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getEval(5);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/eval?limit=5");
+  });
+
+  it("getTokens：可选 since 拼进 query", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getTokens(1000);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/tokens?since=1000");
+  });
+
+  it("getEventsLog：limit/event_type/correlation_id 拼进 query", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getEventsLog({ limit: 20, event_type: "speak", correlation_id: "c1" });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/events/log?limit=20&event_type=speak&correlation_id=c1",
+    );
   });
 });

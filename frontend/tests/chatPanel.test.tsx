@@ -27,6 +27,7 @@ function typeDone() {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("MessageBubble", () => {
@@ -38,7 +39,7 @@ describe("MessageBubble", () => {
   });
 
   it("speak → 左气泡 class + content 上屏", () => {
-    render(<MessageBubble message={makeMsg("speak", "nyx", "你好")} />);
+    render(<MessageBubble message={makeMsg("speak", "nyx", "你好")} ready onThinkTyped={() => {}} />);
     typeDone();
     expect(screen.getByText("你好")).toHaveClass("message-bubble__content");
     expect(screen.getByText("你好").closest(".message-bubble")).toHaveClass(
@@ -47,7 +48,7 @@ describe("MessageBubble", () => {
   });
 
   it("ask → 高亮 class", () => {
-    render(<MessageBubble message={makeMsg("ask", "nyx", "想聊聊吗？")} />);
+    render(<MessageBubble message={makeMsg("ask", "nyx", "想聊聊吗？")} ready onThinkTyped={() => {}} />);
     typeDone();
     expect(screen.getByText("想聊聊吗？").closest(".message-bubble")).toHaveClass(
       "message-bubble--ask",
@@ -55,7 +56,7 @@ describe("MessageBubble", () => {
   });
 
   it("think → 逐字弱化显示（不再折叠）", () => {
-    render(<MessageBubble message={makeMsg("think", "nyx", "内心独白")} />);
+    render(<MessageBubble message={makeMsg("think", "nyx", "内心独白")} ready onThinkTyped={() => {}} />);
     typeDone();
     const el = screen.getByText("内心独白");
     expect(el).toBeInTheDocument();
@@ -63,14 +64,14 @@ describe("MessageBubble", () => {
   });
 
   it("initiate_chat → 带「搭话」标记 + 逐字 content", () => {
-    render(<MessageBubble message={makeMsg("initiate_chat", "nyx", "在忙吗？")} />);
+    render(<MessageBubble message={makeMsg("initiate_chat", "nyx", "在忙吗？")} ready onThinkTyped={() => {}} />);
     expect(screen.getByText("搭话")).toBeInTheDocument(); // 标记即时
     typeDone();
     expect(screen.getByText("在忙吗？")).toBeInTheDocument();
   });
 
   it("user message → 右气泡 class（即时，不打字）", () => {
-    render(<MessageBubble message={makeMsg("message", "user", "你好")} />);
+    render(<MessageBubble message={makeMsg("message", "user", "你好")} ready onThinkTyped={() => {}} />);
     expect(screen.getByText("你好").closest(".message-bubble")).toHaveClass(
       "message-bubble--user",
     );
@@ -126,6 +127,11 @@ describe("ChatPanel", () => {
   });
 
   it("订阅 messages 并透传给 MessageList 渲染", () => {
+    // ChatPanel 挂载会 loadHistory（getEventsLog → fetch），stub 空返回避免真实网络噪声
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
+    );
     useChatStore.setState({ messages: [makeMsg("speak", "nyx", "订阅上屏")] });
     render(<ChatPanel />);
     typeDone();

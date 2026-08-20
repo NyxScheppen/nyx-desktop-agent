@@ -1,4 +1,14 @@
-import type { CurrentState, Presence } from "../types/api";
+import type {
+  ActivitySnapshot,
+  BackendEvent,
+  CurrentState,
+  DesireState,
+  EvalReport,
+  Memory,
+  MemoryType,
+  Presence,
+  TokenUsage,
+} from "../types/api";
 
 // 空 = 相对路径，走 Vite proxy 同源转发到后端 8000（18-api 不做 CORS，localhost 同源）
 export const BASE_URL = "";
@@ -40,4 +50,47 @@ export async function postObserve(presence: Presence): Promise<{ event_id: strin
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ presence }),
   });
+}
+
+export async function getDesires(): Promise<DesireState> {
+  return request<DesireState>(`${BASE_URL}/api/desires`);
+}
+
+export async function getActivity(): Promise<ActivitySnapshot> {
+  return request<ActivitySnapshot>(`${BASE_URL}/api/activity`);
+}
+
+export async function getMemories(
+  tag?: string,
+  type?: MemoryType,
+): Promise<Memory[]> {
+  const params = new URLSearchParams();
+  if (tag !== undefined) params.set("tag", tag);
+  if (type !== undefined) params.set("type", type);
+  const qs = params.toString();
+  return request<Memory[]>(`${BASE_URL}/api/memories${qs ? `?${qs}` : ""}`);
+}
+
+export async function getEval(limit?: number): Promise<EvalReport[]> {
+  const qs = limit !== undefined ? `?limit=${limit}` : "";
+  return request<EvalReport[]>(`${BASE_URL}/api/eval${qs}`);
+}
+
+export async function getTokens(since?: number): Promise<TokenUsage[]> {
+  const qs = since !== undefined ? `?since=${since}` : "";
+  return request<TokenUsage[]>(`${BASE_URL}/api/tokens${qs}`);
+}
+
+export async function getEventsLog(params?: {
+  limit?: number;
+  event_type?: string;
+  correlation_id?: string;
+}): Promise<BackendEvent[]> {
+  const sp = new URLSearchParams();
+  if (params?.limit !== undefined) sp.set("limit", String(params.limit));
+  if (params?.event_type !== undefined) sp.set("event_type", params.event_type);
+  if (params?.correlation_id !== undefined)
+    sp.set("correlation_id", params.correlation_id);
+  const qs = sp.toString();
+  return request<BackendEvent[]>(`${BASE_URL}/api/events/log${qs ? `?${qs}` : ""}`);
 }

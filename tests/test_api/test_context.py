@@ -10,6 +10,7 @@ from nyx.enums import DesireType, EnergyState, EventType, Source
 from nyx.inner_life.store import InnerLifeStore
 from nyx.main import (
     _build_tools,
+    _load_ask,
     _load_canon,
     _root_event,
     _seed_desire,
@@ -44,6 +45,19 @@ def test_load_canon_reads_canon_file(tmp_path: Path) -> None:
 def test_load_canon_missing_file_fails(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         _load_canon(tmp_path)
+
+
+# ---- _load_ask ----
+
+
+def test_load_ask_reads_ask_file(tmp_path: Path) -> None:
+    (tmp_path / "ask.md").write_text("主动提问", encoding="utf-8")
+    assert _load_ask(tmp_path) == "主动提问"
+
+
+def test_load_ask_missing_file_fails(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        _load_ask(tmp_path)
 
 
 # ---- _seed_inner_life ----

@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`CurrentState` / `Memory` / `Message` / `SelfNarrative` / `ShortTermDesire` / `ContextMode` / 各枚举）。输入数据由 09-memory-facade（`search`）、11-desire（`get_pending`，装配进 `CurrentState.active_desires`）、12-inner-life（`get_state` / `get_narrative`）生产，经 17-expression 编排传入本 spec 的纯函数；`canon` 文本来自 `prompts/canon.md`（见「技术方案」）
+- **前置依赖**：01-types（`CurrentState` / `Memory` / `Message` / `SelfNarrative` / `ShortTermDesire` / `ContextMode` / 各枚举）。输入数据由 09-memory-facade（`search`）、11-desire（`get_pending`，装配进 `CurrentState.active_desires`）、12-inner-life（`get_state` / `get_narrative`）生产，经 17-expression 编排传入本 spec 的纯函数；`canon` 文本来自 `prompts/canon.md`、`ask` 文本来自 `prompts/ask.md`（见「技术方案」）
 
 ## 用户故事
 
@@ -16,7 +16,7 @@
 
 - [ ] `prompt.py` 含 `build_system_prompt` + `build_user_prompt`；`classifier.py` 含 `slow_score` + `classify_channel`，与各自「（完整）」段代码逐字一致
 - [ ] 四个函数全是**同步纯函数**：无 `async`、无 I/O、无 LLM、无 db，仅字符串拼装 + 数值计算
-- [ ] `build_system_prompt` 分段：canon（基底）→ 当前状态 → 当前欲望 → 自我认知（可选）→ 相关记忆（可选）；`narrative` / `memories` 为空时跳过对应段
+- [ ] `build_system_prompt` 分段：canon（基底）→ 当前状态 → 当前欲望 → 主动提问指导（可选）→ 自我认知（可选）→ 相关记忆（可选）；`ask_guidance` / `narrative` / `memories` 为空（None）时跳过对应段
 - [ ] `classify_channel`：`slow_score(...) >= threshold` → `ContextMode.SLOW`，否则 `ContextMode.FAST`
 - [ ] `pyright` strict 零报错；无模块级可变全局变量（词表/常量均为不可变 `tuple` / `float`）
 
@@ -26,15 +26,15 @@
 - **库**：无新库（标准库即可；类型从 `nyx.types` / `nyx.enums` 拿）
 - **公开面**：`from nyx.expression.prompt import build_system_prompt, build_user_prompt`；`from nyx.expression.classifier import slow_score, classify_channel`（不加 `__all__`）
 - **定位**：两个模块都是内部类（非 Facade），被 17 的 `classify_channel` / `think` / `speak` 节点调用
-- **canon 来源**：`build_system_prompt` 接收 `canon: str`（静态人格注入文本）。canon 来自 `prompts/canon.md`（见 `docs/canon.md` 指针），由 18-api 组合根读入为一段字符串传入——**本 spec 不读文件**（保持纯函数可单测、测试不碰文件系统）
+- **canon / ask 来源**：`build_system_prompt` 接收 `canon: str`（静态人格注入文本）+ `ask_guidance: str | None`（主动提问指导）。canon 来自 `prompts/canon.md`、ask 来自 `prompts/ask.md`（见 `docs/canon.md` 指针），由 18-api 组合根读入为字符串传入——**本 spec 不读文件**（保持纯函数可单测、测试不碰文件系统）；`ask_guidance=None` 时跳过该段
 - **think/speak 任务指令归 17**：`build_user_prompt` 只拼「对话历史 + 本次消息」，不含「内心思考 / 说给用户」指令；那是 17 节点的活（think 与 speak 各拼自己的指令后接在 user prompt 上）
 - **数值直接拼，不转中文标签**：情感 valence/arousal、精力、性格/三观 1-10、枚举 `.value`（`happy`/`energetic` 等）直接格式化进 prompt。LLM 能读；不额外维护「数值→中文描述」映射（反冗余）。前端展示仍用枚举值，与 prompt 一致
-- **明确不做**：回溯上下文**检测/截断**逻辑（design §5.1「命中隔太久/快通道信息/不相关即停」，是 `assemble_context` 节点的活，归 17）；`canon` 文件读取（归 18-api）；think/speak 指令（归 17）；记忆检索（归 09）
+- **明确不做**：回溯上下文**检测/截断**逻辑（design §5.1「命中隔太久/快通道信息/不相关即停」，是 `assemble_context` 节点的活，归 17）；`canon` / `ask` 文件读取（归 18-api）；think/speak 指令（归 17）；记忆检索（归 09）
 
 ### `nyx/expression/prompt.py`（完整）
 
 ```python
-"""表达 prompt 拼装：canon + 动态状态 + 记忆 → system / user prompt。
+"""表达 prompt 拼装：canon + 主动提问指导 + 动态状态 + 记忆 → system / user prompt。
 
 纯函数，无 IO、无 LLM。
 """
@@ -47,10 +47,12 @@ def build_system_prompt(
     state: CurrentState,
     narrative: SelfNarrative | None = None,
     memories: list[Memory] | None = None,
+    ask_guidance: str | None = None,
 ) -> str:
     """拼 system prompt：角色设定 + 当前状态 + 当前欲望 + 自我认知 + 相关记忆。
 
     canon 为静态人格注入文本（prompts/canon.md，由 18-api 组合根读入传入）。
+    ask_guidance 为主动提问指导（prompts/ask.md），仅慢通道/搭话注入，None 跳过。
     narrative / memories 为 None（或空）时跳过对应段——快通道省略、慢通道补全。
     """
     parts: list[str] = [
@@ -58,6 +60,8 @@ def build_system_prompt(
         _state_block(state),
         _desires_block(state.active_desires),
     ]
+    if ask_guidance is not None:
+        parts.append(ask_guidance)
     if narrative is not None:
         parts.append(_narrative_block(narrative))
     if memories:
@@ -190,7 +194,7 @@ def classify_channel(
 
 - [ ] 单元测试 `tests/test_expression/`（纯函数，无 DB、无 async、无 fake LLM）：
   - [ ] **prompt**（`test_prompt.py`）：
-    - [ ] `build_system_prompt`：`canon in result`（基底透传）；`narrative=None`、`memories=[]` 时结果**不含** `[自我认知]` / `[相关记忆]`（段被跳过）；`narrative` 非 None 含 `identity` 与「近期变化」；`memories` 非空含 `m.summary`
+    - [ ] `build_system_prompt`：`canon in result`（基底透传）；`narrative=None`、`memories=[]` 时结果**不含** `[自我认知]` / `[相关记忆]`（段被跳过）；`narrative` 非 None 含 `identity` 与「近期变化」；`memories` 非空含 `m.summary`；`ask_guidance=None` 时结果**不含**该内容、非 None 时含其内容
     - [ ] `build_system_prompt` 状态段：`state` 构造含非默认值，断言结果含 `valence=`、`arousal=`、`表情=`、`精力：`、`当前活动：`、`性格（Big Five`、`三观（`、当前欲望描述
     - [ ] `_state_block`：`current_activity=None` → `当前活动：空闲`
     - [ ] `_desires_block`：空欲望 → `[当前欲望]\n无`
@@ -209,4 +213,4 @@ def classify_channel(
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
-- [ ] 下游约定：17-expression 的 `classify_channel` 节点调 `classifier.classify_channel(message, state, now, last_slow_at, config.expression.slow_threshold)`；`think`/`speak` 节点调 `prompt.build_system_prompt`（慢通道传 narrative+memories，快通道省略）+ `prompt.build_user_prompt`，再拼各自任务指令后 `await llm.complete(...)`（tech-ref §6.1 已锁节点名；无新文件，tech-ref §7 已列 `prompt.py` / `classifier.py`）
+- [ ] 下游约定：17-expression 的 `classify_channel` 节点调 `classifier.classify_channel(message, state, now, last_slow_at, config.expression.slow_threshold)`；`think`/`speak` 节点调 `prompt.build_system_prompt`（慢通道传 ask_guidance+narrative+memories，快通道省略）+ `prompt.build_user_prompt`，再拼各自任务指令后 `await llm.complete(...)`（tech-ref §6.1 已锁节点名；无新文件，tech-ref §7 已列 `prompt.py` / `classifier.py`）

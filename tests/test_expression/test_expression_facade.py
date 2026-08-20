@@ -193,6 +193,7 @@ def _new_facade(
         cast(DesireFacade, object()),
         cast(InnerLifeFacade, inner_life),
         canon="你是尼克斯，一个想成为人类的 AI。",
+        ask_guidance="[主动提问指导]\n在合适的时候向用户提问。",
         config=ExpressionConfig(),
     )
     return facade, fake_llm, evaluator, memory, inner_life, bus
@@ -248,6 +249,21 @@ async def test_reply_slow_question() -> None:
     assert [t for t, _m, _c in llm.calls] == ["think", "speak"]
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.ASK]
     assert len(memory.scene_memories) == 1
+
+
+async def test_reply_ask_guidance_slow_only() -> None:
+    # 慢通道（精力高+平静）注入主动提问指导，快通道（精力低+激动）不注入
+    slow, slow_llm, *_ = _new_facade(energy=100.0, arousal=0.0)
+    await slow.reply("在吗", "corr-slow")
+    slow_systems = [m[0]["content"] for _t, m, _c in slow_llm.calls]
+    assert slow_systems
+    assert all("[主动提问指导]" in s for s in slow_systems)
+
+    fast, fast_llm, *_ = _new_facade(energy=20.0, arousal=0.9)
+    await fast.reply("哦", "corr-fast")
+    fast_systems = [m[0]["content"] for _t, m, _c in fast_llm.calls]
+    assert fast_systems
+    assert all("[主动提问指导]" not in s for s in fast_systems)
 
 
 async def test_cumulative_prompt() -> None:
@@ -364,3 +380,4 @@ async def test_initiate_chat_non_empty() -> None:
     assert bus.published[0].type is EventType.INITIATE_CHAT
     assert bus.published[0].correlation_id == "d1"
     assert [t for t, _m, _c in llm.calls] == ["initiate_chat"]
+    assert "[主动提问指导]" in llm.calls[0][1][0]["content"]

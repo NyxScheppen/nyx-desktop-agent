@@ -35,6 +35,7 @@ class ExpressionFacade:
         desire: DesireFacade,
         inner_life: InnerLifeFacade,
         canon: str,
+        ask_guidance: str,
         config: ExpressionConfig,
     ) -> None:
         self._bus = bus
@@ -44,6 +45,7 @@ class ExpressionFacade:
         self._desire = desire
         self._inner_life = inner_life
         self._canon = canon
+        self._ask_guidance = ask_guidance
         self._config = config
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._last_slow_at = 0.0
@@ -56,6 +58,7 @@ class ExpressionFacade:
                 inner_life=self._inner_life,
                 bus=self._bus,
                 canon=self._canon,
+                ask_guidance=self._ask_guidance,
                 config=self._config,
                 history=self._history,
             )
@@ -89,7 +92,9 @@ class ExpressionFacade:
 
         无话则发 False（18-api 据此不更新 last_chat_at）。
         """
-        system = build_system_prompt(self._canon, state)
+        system = build_system_prompt(
+            self._canon, state, ask_guidance=self._ask_guidance
+        )
         user = (
             f"你想主动和用户说点什么。基于这个念头：{desire.description}。"
             "说一句自然的开场白。"

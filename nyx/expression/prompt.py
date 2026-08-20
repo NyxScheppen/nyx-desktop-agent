@@ -1,4 +1,4 @@
-"""表达 prompt 拼装：canon + 动态状态 + 记忆 → system / user prompt。
+"""表达 prompt 拼装：canon + 主动提问指导 + 动态状态 + 记忆 → system / user prompt。
 
 纯函数，无 IO、无 LLM。
 """
@@ -11,10 +11,12 @@ def build_system_prompt(
     state: CurrentState,
     narrative: SelfNarrative | None = None,
     memories: list[Memory] | None = None,
+    ask_guidance: str | None = None,
 ) -> str:
     """拼 system prompt：角色设定 + 当前状态 + 当前欲望 + 自我认知 + 相关记忆。
 
     canon 为静态人格注入文本（prompts/canon.md，由 18-api 组合根读入传入）。
+    ask_guidance 为主动提问指导（prompts/ask.md），仅慢通道/搭话注入，None 跳过。
     narrative / memories 为 None（或空）时跳过对应段——快通道省略、慢通道补全。
     """
     parts: list[str] = [
@@ -22,6 +24,8 @@ def build_system_prompt(
         _state_block(state),
         _desires_block(state.active_desires),
     ]
+    if ask_guidance is not None:
+        parts.append(ask_guidance)
     if narrative is not None:
         parts.append(_narrative_block(narrative))
     if memories:

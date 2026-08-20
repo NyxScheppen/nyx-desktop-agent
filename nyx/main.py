@@ -70,6 +70,7 @@ _BUS_MAX_FAILURES = 8          # 连续失败熔断阈值（达到判定致命�
 _BUS_RECOVERY_STREAK = 3       # 恢复信号：崩溃前连续成功落库达此数才重置失败计数
 _SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧背压）
 _CANON_FILES = ("canon.md",)
+_ASK_FILES = ("ask.md",)
 
 
 @dataclass
@@ -102,15 +103,25 @@ def _root_event(
     )
 
 
-def _load_canon(canon_dir: Path) -> str:
-    """读 canon 文件合并为一段字符串注入。任一缺失 fail-fast。"""
+def _load_prompt_files(canon_dir: Path, names: tuple[str, ...]) -> str:
+    """读若干 prompt 文件合并为一段字符串。任一缺失 fail-fast。"""
     parts: list[str] = []
-    for name in _CANON_FILES:
+    for name in names:
         p = canon_dir / name
         if not p.is_file():
-            raise FileNotFoundError(f"canon 文件缺失：{p}")
+            raise FileNotFoundError(f"prompt 文件缺失：{p}")
         parts.append(p.read_text(encoding="utf-8"))
     return "\n\n".join(parts)
+
+
+def _load_canon(canon_dir: Path) -> str:
+    """读 canon 文件合并为一段字符串注入。任一缺失 fail-fast。"""
+    return _load_prompt_files(canon_dir, _CANON_FILES)
+
+
+def _load_ask(canon_dir: Path) -> str:
+    """读主动提问指导（ask.md）为一段字符串。任一缺失 fail-fast。"""
+    return _load_prompt_files(canon_dir, _ASK_FILES)
 
 
 async def _seed_inner_life(store: InnerLifeStore) -> None:
@@ -441,9 +452,11 @@ async def build_app_context(config: Config) -> _App:
     await _seed_inner_life(inner_life_store)
     await _seed_desire(desire_store)
 
-    canon = _load_canon(Path(os.environ.get("NYX_CANON_DIR", "prompts")))
+    prompt_dir = Path(os.environ.get("NYX_CANON_DIR", "prompts"))
+    canon = _load_canon(prompt_dir)
+    ask = _load_ask(prompt_dir)
     expression = ExpressionFacade(
-        bus, llm, evaluator, memory, desire, inner_life, canon, config.expression,
+        bus, llm, evaluator, memory, desire, inner_life, canon, ask, config.expression,
     )
 
     app = _App(

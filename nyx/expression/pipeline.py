@@ -49,6 +49,7 @@ class ReplyDeps:
     inner_life: InnerLifeFacade          # 慢通道 assemble 时取 narrative
     bus: EventBus
     canon: str
+    ask_guidance: str
     config: ExpressionConfig
     history: deque[Message]              # facade 持有的会话历史（跨 reply）
 
@@ -104,7 +105,10 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
 
     async def think(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
-            deps.canon, state["state"], state["narrative"], state["memories"]
+            deps.canon, state["state"], state["narrative"], state["memories"],
+            ask_guidance=(
+                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
+            ),
         )
         user = build_user_prompt(state["message"], state["context"])
         prior = _rounds_block(state["think"], state["speak"])      # 前几轮 think/speak
@@ -125,7 +129,10 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
 
     async def speak(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
-            deps.canon, state["state"], state["narrative"], state["memories"]
+            deps.canon, state["state"], state["narrative"], state["memories"],
+            ask_guidance=(
+                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
+            ),
         )
         user = build_user_prompt(state["message"], state["context"])
         # 前几轮（不含本轮 think）

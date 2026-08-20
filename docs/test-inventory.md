@@ -430,11 +430,12 @@
 | `test_build_user_prompt_empty_context` | 功能正确 | `context=[]` → 原样返回 `message` |
 | `test_build_user_prompt_with_context` | 功能正确 | 含 `[对话历史]`、`用户：` / `Nyx：`（按 role）、`[本次消息]`+`message` |
 | `test_memory_block_fallback_to_content` | 边界鲁棒 | `summary=""` 回退 `content`（`m.summary or m.content`） |
+| `test_build_system_prompt_ask_guidance` | 功能正确 | `ask_guidance=None` 结果不含该内容；非 None 含 `主动提问：合适时问用户。` |
 | `test_slow_score_in_range` | 边界鲁棒 | 极端输入 `low < 0.5` / `high ≥ 0.5` 均在 [0,1]；时钟回拨 `last_slow_at > now` → 仍 ≥ 0 |
 | `test_slow_score_factors` | 功能正确 | 五因子各生效：长>短、含「吗」>不含、含「难过」>不含、精力足平静>精力低激动、距上次大>小 |
 | `test_classify_channel` | 功能正确 | `threshold=0.5`：得分 ≥ 0.5（`在吗`+精力满+2h）→ SLOW；< 0.5（`哦`+精力20+arousal0.9+60s）→ FAST |
 
-**功能阶段**：16-expression-prompt 实现时编写（纯函数，无 DB、无 async、无 fake LLM；`CurrentState`/`Memory`/`Message`/`SelfNarrative`/`ShortTermDesire` 全手构，无集成/E2E）。
+**功能阶段**：16-expression-prompt 实现时编写（纯函数，无 DB、无 async、无 fake LLM；`CurrentState`/`Memory`/`Message`/`SelfNarrative`/`ShortTermDesire` 全手构，无集成/E2E）；`test_build_system_prompt_ask_guidance` 于「主动提问段按需注入」阶段追加（ask_guidance 注入/省略）。
 
 ## 17-expression（回复流程 + 碎碎念 + 搭话）
 
@@ -461,9 +462,10 @@
 | `test_mutter_hit` | 功能正确 | `random.random()` 命中 → 发 `mutter`（content 来自模板、correlation 透传） |
 | `test_mutter_miss` | 功能正确 | `random.random()` 未命中 → 不发 |
 | `test_initiate_chat_empty` | 边界鲁棒 | 空 content → `False` 且不发 |
-| `test_initiate_chat_non_empty` | 功能正确 | 非空 → `True` 且发 `initiate_chat`（output_type/correlation 一致） |
+| `test_initiate_chat_non_empty` | 功能正确 | 非空 → `True` 且发 `initiate_chat`（output_type/correlation 一致）、system prompt 含 `[主动提问指导]` |
+| `test_reply_ask_guidance_slow_only` | 功能正确 | 慢通道（精力高+平静）system prompt 含 `[主动提问指导]`；快通道（精力低+激动）不含 |
 
-**功能阶段**：17-expression 实现时编写（mutter/pipeline 纯函数无 DB 无 async；facade 集成 fake LLM/memory/desire/inner_life/evaluator/bus 注入，`cast()` 注入不碰真实 db；无集成/E2E，与 18-api 组合根的编排归 18）。
+**功能阶段**：17-expression 实现时编写（mutter/pipeline 纯函数无 DB 无 async；facade 集成 fake LLM/memory/desire/inner_life/evaluator/bus 注入，`cast()` 注入不碰真实 db；无集成/E2E，与 18-api 组合根的编排归 18）；`test_reply_ask_guidance_slow_only` 于「主动提问段按需注入」阶段追加（慢通道注入 ask 指导、快通道省略），`test_initiate_chat_non_empty` 同轮补注入断言。
 
 ## 18-api（组合根 + REST + SSE）
 
@@ -473,6 +475,8 @@
 | `test_root_event_explicit_internal` | 功能正确 | 显式 `source=Source.INTERNAL` → `source is INTERNAL` |
 | `test_load_canon_reads_canon_file` | 功能正确 | 读 `canon.md` 返回原文 |
 | `test_load_canon_missing_file_fails` | 边界鲁棒 | 缺失 → `FileNotFoundError`（fail-fast） |
+| `test_load_ask_reads_ask_file` | 功能正确 | 读 `ask.md` 返回原文 |
+| `test_load_ask_missing_file_fails` | 边界鲁棒 | 缺失 → `FileNotFoundError`（fail-fast） |
 | `test_seed_inner_life_idempotent` | 功能正确 | 空表 seed 四表（personality/values/energy/narrative）值 = canon §2/§3 初始值；再跑一遍值不变、不重复行 |
 | `test_seed_desire_idempotent` | 功能正确 | `list_values()` 四类型、`list_long_term()` 3 条；再跑幂等（4 行 / 3 条不增） |
 | `test_build_tools_web_disabled` | 功能正确 | `web_enabled=False` → `{local_search, file_io}`（工厂构造无 I/O，`roots`/`DDGS` 惰性到 `.call()`） |
@@ -494,7 +498,7 @@
 | `test_main_propagates_serve_failure` | 功能正确 | fake `server.serve()` 抛 `RuntimeError`（端口被占）→ `main()` 重抛 `RuntimeError`（非零退出，不静默吞） |
 | `test_main_propagates_tick_failure` | 功能正确 | fake `_tick_loop` 抛 `RuntimeError` + 阻塞 serve/bus → `main()` 重抛 `RuntimeError`（tick 异常传播，不再静默丢周期事件） |
 
-**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）；`test_supervise_bus_breaks_on_flapping` / `test_main_propagates_serve_failure` / `test_main_propagates_tick_failure` 于第三轮 review 追加（恢复信号改连续成功阈值防抖动假自愈 + main 竞速传播所有先完成者）。
+**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）；`test_supervise_bus_breaks_on_flapping` / `test_main_propagates_serve_failure` / `test_main_propagates_tick_failure` 于第三轮 review 追加（恢复信号改连续成功阈值防抖动假自愈 + main 竞速传播所有先完成者）；`test_load_ask_reads_ask_file` / `test_load_ask_missing_file_fails` 于「主动提问段按需注入」阶段追加（`_load_ask` 读 ask.md / 缺失 fail-fast）。
 
 ## frontend-sse（SSE 数据流：useSSE + dispatchEvent 分发表）
 

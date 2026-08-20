@@ -28,7 +28,7 @@
 - **新文件**：`nyx/expression/facade.py`、`nyx/expression/pipeline.py`、`nyx/expression/mutter.py`（无 API、无数据变更——会话历史 `deque` 是内存态）
 - **库**：`langgraph`（`StateGraph` / `END` / `CompiledStateGraph`，与 14-activity 的 exploration 同源）
 - **公开面**：`from nyx.expression.facade import ExpressionFacade`；`from nyx.expression.mutter import pick_mutter, should_initiate_chat`（不加 `__all__`）
-- **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, desire, inner_life, canon, config)`——`canon: str` 由 18-api 组合根读 `prompts/canon.md` 传入（本 spec 不读文件，测试不碰文件系统）
+- **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, desire, inner_life, canon, ask_guidance, config)`——`canon: str` 由 18-api 组合根读 `prompts/canon.md`、`ask_guidance: str` 读 `prompts/ask.md` 传入（本 spec 不读文件，测试不碰文件系统）；`ask_guidance` 仅慢通道 think/speak 与 `initiate_chat` 注入，快通道省略
 - **会话历史（内存）**：`deque[Message]`（maxlen=`config.max_context_len`）由 facade 持有，跨 reply 持久。**用户消息 + Nyx 消息（多轮拼接）都在回合末的 `record_message` 节点按序 append**（先 user 后 nyx）——`reply` 入口回溯时当前消息还没进 history，天然不重复。重启丢失（同情感，内存易变态）
 - **多轮语义（慢通道）**：think → speak 循环，每轮 think 发 `THINK`、每轮 speak 发 `SPEAK`（**都交付**）；某轮 speak 是问句 → 发 `ASK` 后回合结束。`slow_max_rounds` 是「连续无 ask 的 think/speak 轮数上限」。**累积式 prompt**：后一轮的 think/speak 知道前几轮想了/说了什么（`_rounds_block` 拼前轮）
 - **场景化记忆记整个回合**：`nyx_think`/`nyx_speak` = 多轮 `"\n".join(...)` 拼接（`create_scene_memory` 的 `str` 契约不变，只是内容是多轮）
@@ -187,6 +187,7 @@ class ReplyDeps:
     inner_life: InnerLifeFacade          # 慢通道 assemble 时取 narrative
     bus: EventBus
     canon: str
+    ask_guidance: str
     config: ExpressionConfig
     history: deque[Message]              # facade 持有的会话历史（跨 reply）
 
@@ -242,7 +243,10 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
 
     async def think(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
-            deps.canon, state["state"], state["narrative"], state["memories"]
+            deps.canon, state["state"], state["narrative"], state["memories"],
+            ask_guidance=(
+                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
+            ),
         )
         user = build_user_prompt(state["message"], state["context"])
         prior = _rounds_block(state["think"], state["speak"])      # 前几轮 think/speak
@@ -263,7 +267,10 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
 
     async def speak(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
-            deps.canon, state["state"], state["narrative"], state["memories"]
+            deps.canon, state["state"], state["narrative"], state["memories"],
+            ask_guidance=(
+                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
+            ),
         )
         user = build_user_prompt(state["message"], state["context"])
         # 前几轮（不含本轮 think）
@@ -402,6 +409,7 @@ class ExpressionFacade:
         desire: DesireFacade,
         inner_life: InnerLifeFacade,
         canon: str,
+        ask_guidance: str,
         config: ExpressionConfig,
     ) -> None:
         self._bus = bus
@@ -411,6 +419,7 @@ class ExpressionFacade:
         self._desire = desire
         self._inner_life = inner_life
         self._canon = canon
+        self._ask_guidance = ask_guidance
         self._config = config
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._last_slow_at = 0.0
@@ -423,6 +432,7 @@ class ExpressionFacade:
                 inner_life=self._inner_life,
                 bus=self._bus,
                 canon=self._canon,
+                ask_guidance=self._ask_guidance,
                 config=self._config,
                 history=self._history,
             )
@@ -456,7 +466,7 @@ class ExpressionFacade:
 
         无话则发 False（18-api 据此不更新 last_chat_at）。
         """
-        system = build_system_prompt(self._canon, state)
+        system = build_system_prompt(self._canon, state, ask_guidance=self._ask_guidance)
         user = (
             f"你想主动和用户说点什么。基于这个念头：{desire.description}。"
             "说一句自然的开场白。"
@@ -521,4 +531,4 @@ class ExpressionFacade:
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
 - [ ] ripple 同步：tech-ref §6.1 `ReplyState` 的 `think`/`speak` 从 `str | None` 改 `list[str]`（多轮累积）、补 `narrative: SelfNarrative | None` 与 `correlation_id: str` 两字段、edges 补「每轮 SPEAK 交付 + ask 后回合结束走 scene_memory」；tech-ref §5 `initiate_chat` 签名 `-> bool`（发话 True/无话 False）、`mutter` 签名补 `correlation_id: str`（MUTTER_CHECK tick 恒定根）
-- [ ] 下游约定：18-api 组合根 `canon` = `prompts/canon.md` 读入后注入 `ExpressionFacade`；`POST /api/chat` → `ExpressionFacade.reply(msg, correlation_id)`；`INITIATE_CHAT_CHECK` tick 由组合根调 `should_initiate_chat` 判定、从 `DesireFacade.get_pending()` 选 interaction 欲望后 `await initiate_chat(desire, state)`，返回 `True` 才更新 `last_chat_at`；`MUTTER_CHECK` tick → `mutter(state, event.correlation_id)`
+- [ ] 下游约定：18-api 组合根 `canon` = `prompts/canon.md`、`ask_guidance` = `prompts/ask.md` 读入后注入 `ExpressionFacade`；`POST /api/chat` → `ExpressionFacade.reply(msg, correlation_id)`；`INITIATE_CHAT_CHECK` tick 由组合根调 `should_initiate_chat` 判定、从 `DesireFacade.get_pending()` 选 interaction 欲望后 `await initiate_chat(desire, state)`，返回 `True` 才更新 `last_chat_at`；`MUTTER_CHECK` tick → `mutter(state, event.correlation_id)`

@@ -105,6 +105,15 @@ def test_build_system_prompt_optional_blocks() -> None:
     assert "记得你" in result
 
 
+def test_build_system_prompt_ask_guidance() -> None:
+    base = build_system_prompt(_CANON, _state())
+    assert "主动提问" not in base
+    result = build_system_prompt(
+        _CANON, _state(), ask_guidance="主动提问：合适时问用户。"
+    )
+    assert "主动提问：合适时问用户。" in result
+
+
 def test_build_system_prompt_state_fields() -> None:
     result = build_system_prompt(
         _CANON,

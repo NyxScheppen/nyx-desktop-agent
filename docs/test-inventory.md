@@ -66,13 +66,13 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 13 张业务表 + `schema_version`，共 14 张 |
+| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 14 张业务表 + `schema_version`，共 15 张 |
 | `test_migrate_creates_three_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` 三个 |
 | `test_migrate_sets_version_to_max` | 功能正确 | `schema_version` 单行 = `_MIGRATIONS` 最高版本 |
 | `test_migrate_not_null_alignment` | 边界鲁棒 | 6 列 `notnull=1`（`memory.aspect` / `long_term_desire.linked_values` / `activity.progress` / `event_log.content` / `event_log.correlation_id` / `eval_report.correlation_id`） |
 | `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `token_usage.correlation_id` / `memory.embedding`） |
 | `test_migrate_idempotent` | 回归保护 | 连跑两次不报错，表数不变、版本不变 |
-| `test_migrate_version_gating` | 功能正确 | `monkeypatch` 追加 v2 后只套 v2，版本=2，v1 表不重复建 |
+| `test_migrate_version_gating` | 功能正确 | `monkeypatch` 追加 v3 后只套 v3，版本=3，v1/v2 表不重复建 |
 | `test_migrate_atomic_rollback` | 边界鲁棒 | 迁移含非法 SQL → 抛 `aiosqlite.Error`；`ok` 表回滚不存在；版本仍为 0 |
 | `test_connect_returns_database` | 功能正确 | 返回 `Database`；文件创建；`journal_mode=wal`；`foreign_keys=1`；`row_factory` 生效（`row["x"]==1`）；`lock` 是 `asyncio.Lock` |
 | `test_connect_explicit_path_priority` | 功能正确 | 显式 path 优先建该文件 |
@@ -80,7 +80,7 @@
 | `test_default_db_path_constant` | 功能正确 | `DEFAULT_DB_PATH == "nyx.db"` |
 | `test_connect_closes_conn_on_migrate_failure` | 边界鲁棒 | 迁移失败 → `connect` 抛异常且连接被 `close`（spy 记录），不泄漏 |
 
-**功能阶段**：04-db 实现时编写。
+**功能阶段**：04-db 实现时编写；`material` 表（v2 迁移）于「读书分块读」轮追加——`BUSINESS_TABLES` 补 `material`、表数 14→15、版本门控用例由 v2 改 v3（原 v2 被 `material` 占用）。
 
 ## 05-event（事件总线 + 路由）
 
@@ -417,10 +417,16 @@
 | `test_classify_presence_online` | 功能正确 | 键盘/鼠标活跃 → online |
 | `test_classify_presence_busy` | 功能正确 | 无输入 + 有窗口标题 → busy |
 | `test_classify_presence_away` | 功能正确 | 无输入无标题 → away |
-| `test_read_material_reads_real_file` | 功能正确 | 写真实文件 → `read_material` 起一条 `READING` 活动，`progress["source"]` 指向源文件、`progress["result"]` 为 `{book:"骑士团历史", note:"读到了第三章"}`（LLM mock 读真实内容而非凭空），事件序 `[ACTIVITY_START, ACTIVITY_END]` |
+| `test_read_material_reads_real_file` | 功能正确 | 写真实文件（6 字）→ `read_material(path, filename, total_chars, cid)` 起一条 `READING` 活动，`progress["source"]` 指向源文件、`progress["result"]` 为 `{book:"骑士团历史", note:"读到了第三章", read_chars:6, total_chars:6}`（LLM mock 读真实内容而非凭空），事件序 `[ACTIVITY_START, ACTIVITY_END]` |
 | `test_read_material_skips_when_busy` | 边界鲁棒 | 已有 in-flight 活动（`_task` 未 done）时 `read_material` 直接 return 不新建（`list_schedule` 仍 1 条）——并发守卫镜像 `_maybe_start_activity` |
+| `test_no_material_rate_limited_falls_back_to_default` | 功能正确 | 探索欲 + 无书可读 + 限速中（`prev` FREE_EXPLORATION 刚做）→ 退回默认活动 `OBSERVE_USER`（绝不编造读书内容） |
+| `test_desire_reading_reads_latest_material` | 功能正确 | 探索欲 + 已注册 7000 字书 → `READING` 读该书、`progress["result"]["read_chars"]==6000` / `["total_chars"]==7000`、书库 `next_readable().read_chars==6000`（分块推进、下次续读） |
+| `test_next_readable_picks_latest_unread` | 功能正确 | 两本未读 → `next_readable()` 取 `created_at` 最新的那本 |
+| `test_next_readable_skips_completed` | 功能正确 | b 已读完（`advance` 到 total）→ `next_readable()` 跳过 b 返回 a |
+| `test_next_readable_none_when_all_read` | 边界鲁棒 | 全部读完 → `next_readable()` 返回 None |
+| `test_upsert_resets_progress_on_reupload` | 功能正确 | 同路径重传 → `read_chars` 归零、`total_chars` 更新（`ON CONFLICT` 覆盖） |
 
-**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）；`test_exploration_plan_non_dict_raises` 于本轮评审修复编写（`_plan_next` 结构校验 fail-fast，配合删除 `recall_memory` 死节点）；`test_read_material_reads_real_file` / `test_read_material_skips_when_busy` 于「喂资料/上传课本」轮追加（上传 → `USER_MATERIAL` → `read_material` 读真实文件产 `{book,note}` + 忙时跳过）。
+**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）；`test_exploration_plan_non_dict_raises` 于本轮评审修复编写（`_plan_next` 结构校验 fail-fast，配合删除 `recall_memory` 死节点）；`test_read_material_reads_real_file` / `test_read_material_skips_when_busy` 于「喂资料/上传课本」轮追加（上传 → `USER_MATERIAL` → `read_material` 读真实文件产 `{book,note}` + 忙时跳过）；「读书分块读」轮追加 `MaterialStore` 单测（`test_material_store.py` 4 条：最近未读、跳过读完、全读完 None、重传归零）+ `test_desire_reading_reads_latest_material`（探索欲读最近那本、分块推进度）+ `test_no_material_rate_limited_falls_back_to_default`（无书可读限速退回默认，禁编造），并把 `test_read_material_reads_real_file` 断言补上 `read_chars`/`total_chars` 与 `total_chars` 入参。
 
 ## 16-expression-prompt（prompt 拼装 + 快慢通道判定）
 

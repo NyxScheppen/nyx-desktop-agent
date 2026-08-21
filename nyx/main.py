@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from nyx.activity.facade import ActivityFacade
+from nyx.activity.material_store import MaterialStore
 from nyx.activity.store import ActivityStore
 from nyx.config import Config, load_config
 from nyx.db import Database, connect
@@ -222,9 +223,12 @@ async def _on_user_message(app: _App, event: Event) -> None:
 
 
 async def _on_user_material(app: _App, event: Event) -> None:
-    """USER_MATERIAL：用户投喂资料 → 发起读书活动（读真实文件产出 {book, note}）。"""
+    """USER_MATERIAL：用户投喂资料 → 注册进书库 + 发起读书活动读第一块。"""
     await app.activity.read_material(
-        event.content["path"], event.content["filename"], event.correlation_id
+        event.content["path"],
+        event.content["filename"],
+        event.content["total_chars"],
+        event.correlation_id,
     )
 
 
@@ -389,7 +393,10 @@ def build_app(app: _App) -> FastAPI:
         text = raw.decode("utf-8", errors="replace")
         result = await file_io("write", f"uploads/{name}", text)
         path = str(result["path"])
-        event = _root_event(EventType.USER_MATERIAL, {"path": path, "filename": name})
+        event = _root_event(
+            EventType.USER_MATERIAL,
+            {"path": path, "filename": name, "total_chars": len(text)},
+        )
         await app.bus.publish(event)
         return {"event_id": event.id, "filename": name, "path": path}
 
@@ -465,6 +472,7 @@ async def build_app_context(config: Config) -> _App:
 
     inner_life_store = InnerLifeStore(db)
     activity_store = ActivityStore(db)
+    material_store = MaterialStore(db)
 
     # 循环依赖解环：_get_state 引用可变容器，运行时才求值
     state_holder: list[Callable[[], Awaitable[CurrentState]]] = []
@@ -473,7 +481,7 @@ async def build_app_context(config: Config) -> _App:
         return await state_holder[0]()
 
     activity = ActivityFacade(
-        activity_store, bus, llm, evaluator, tools, desire,
+        activity_store, material_store, bus, llm, evaluator, tools, desire,
         _get_state, config.activity, config.exploration,
     )
     inner_life = InnerLifeFacade(

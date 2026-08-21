@@ -22,7 +22,7 @@
 - [ ] **14 个端点**：tech-ref §4 的 11 个 REST + `GET /api/events`（SSE）+ 本次新增 `POST /api/upload`（上传资料→读书）与 `GET /api/materials`（已传清单）；除 upload/materials 外每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
 - [ ] **`POST /api/chat`**：构造 `USER_MESSAGE` 事件（`source=EXTERNAL`、`correlation_id=自身 id`）→ `publish` → 返回 `{event_id}`（回复走 SSE）
 - [ ] **请求体校验**：`POST /api/chat`/`/api/export`/`/api/observe` 用 pydantic 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`），缺键/类型错 → 422（非 500）；`presence` 仅 `online`/`away`/`busy`（`Literal` 校验，拼写错误 422 而非静默禁用搭话）
-- [ ] **`POST /api/upload`**：`UploadFile` + `File(...)`；文件名 `Path(file.filename or "upload.txt").name` 消毒（去路径穿越）、`raw` 超 `_MAX_UPLOAD_BYTES` 返 400；`file_io("write", f"uploads/{name}", text)` 落盘（复用 `_resolve_write` 越界守卫）→ publish `USER_MATERIAL`（content `{path, filename}`）→ 返回 `{event_id, filename, path}`
+- [ ] **`POST /api/upload`**：`UploadFile` + `File(...)`；文件名 `Path(file.filename or "upload.txt").name` 消毒（去路径穿越）、`raw` 超 `_MAX_UPLOAD_BYTES` 返 400；`file_io("write", f"uploads/{name}", text)` 落盘（复用 `_resolve_write` 越界守卫）→ publish `USER_MATERIAL`（content `{path, filename, total_chars}`，`total_chars=len(text)` 供书库注册）→ 返回 `{event_id, filename, path}`
 - [ ] **`GET /api/materials`**：`file_io("list", str(_UPLOADS_DIR))` 返回 `{files: [...]}`；目录缺失容错返 `{files: []}`（不抛）
 - [ ] **SSE**：`data` = `event.content` 展开 + `event_id` + `correlation_id`（统一结构，不按 type 特判）；`event:` = `EventType.value`
 - [ ] **SSE 背压**：每连接 `asyncio.Queue(maxsize=_SSE_QUEUE_SIZE=100)`；`_broadcast` 队列满时丢最旧保最新（`put_nowait` 捕获 `QueueFull`，慢客户端不拖垮总线）
@@ -279,9 +279,12 @@ async def _on_user_message(app: _App, event: Event) -> None:
 
 
 async def _on_user_material(app: _App, event: Event) -> None:
-    """USER_MATERIAL：用户投喂资料 → 发起读书活动（读真实文件产出 {book, note}）。"""
+    """USER_MATERIAL：用户投喂资料 → 注册进书库 + 发起读书活动读第一块。"""
     await app.activity.read_material(
-        event.content["path"], event.content["filename"], event.correlation_id
+        event.content["path"],
+        event.content["filename"],
+        event.content["total_chars"],
+        event.correlation_id,
     )
 
 
@@ -446,7 +449,10 @@ def build_app(app: _App) -> FastAPI:
         text = raw.decode("utf-8", errors="replace")
         result = await file_io("write", f"uploads/{name}", text)
         path = str(result["path"])
-        event = _root_event(EventType.USER_MATERIAL, {"path": path, "filename": name})
+        event = _root_event(
+            EventType.USER_MATERIAL,
+            {"path": path, "filename": name, "total_chars": len(text)},
+        )
         await app.bus.publish(event)
         return {"event_id": event.id, "filename": name, "path": path}
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from nyx.activity.exploration import Exploration, should_explore
+from nyx.activity.material_store import MaterialStore
 from nyx.activity.scheduler import (
     build_schedule,
     desire_to_activity,
@@ -98,6 +99,7 @@ class ActivityFacade:
     def __init__(
         self,
         store: ActivityStore,
+        material_store: MaterialStore,
         bus: EventBus,
         llm: LlmClient,
         evaluator: Evaluator,
@@ -108,6 +110,7 @@ class ActivityFacade:
         exploration_config: ExplorationConfig,
     ) -> None:
         self._store = store
+        self._material_store = material_store
         self._bus = bus
         self._llm = llm
         self._evaluator = evaluator
@@ -266,13 +269,15 @@ class ActivityFacade:
         return await self._store.list_schedule(_day_start(time.time()))
 
     async def read_material(
-        self, path: str, filename: str, correlation_id: str
+        self, path: str, filename: str, total_chars: int, correlation_id: str
     ) -> None:
-        """用户投喂资料：立即发起一次 READING 活动，读真实文件产出 {book, note}。
+        """用户投喂资料：注册进书库 → 立即发起一次 READING 活动读第一块。
 
-        与 _maybe_start_activity 共用 _start_lock 串行守卫；忙时跳过（文件已落盘，
-        MVP 一次一个、不排队）。结果经 activity_start/activity_end SSE 可见。
+        与 _maybe_start_activity 共用 _start_lock 串行守卫；忙时跳过（文件已落盘、
+        且已入书库，探索欲后续会自行续读，不排队）。结果经 activity_start/activity_end
+        SSE 可见。
         """
+        await self._material_store.upsert(path, filename, total_chars, time.time())
         async with self._start_lock:
             if self._task is not None and not self._task.done():
                 return
@@ -288,6 +293,8 @@ class ActivityFacade:
                     "source": path,
                     "filename": filename,
                     "description": filename,
+                    "read_chars": 0,
+                    "total_chars": total_chars,
                     "correlation_id": correlation_id,
                 },
                 started_at=now,
@@ -313,14 +320,27 @@ class ActivityFacade:
             if activity is None:
                 activity = self._default_activity(state)
             if activity.type is ActivityType.READING:
-                last = await self._store.get_last_exploration()
-                if should_explore(
-                    state.energy,
-                    last,
-                    self._exploration_config.rate_limit_hours,
-                    time.time(),
-                ):
-                    activity.type = ActivityType.FREE_EXPLORATION
+                material = await self._material_store.next_readable()
+                if material is not None:
+                    # 读最近未读完的那本，从它的进度续读（绝不编造）
+                    activity.progress["source"] = material.path
+                    activity.progress["filename"] = material.filename
+                    activity.progress["description"] = material.filename
+                    activity.progress["read_chars"] = material.read_chars
+                    activity.progress["total_chars"] = material.total_chars
+                else:
+                    # 无书可读：转自由探索（沿用限速）；限速中则退回默认活动，
+                    # 任何情况都不让 LLM 凭空编造读书内容
+                    last = await self._store.get_last_exploration()
+                    if should_explore(
+                        state.energy,
+                        last,
+                        self._exploration_config.rate_limit_hours,
+                        time.time(),
+                    ):
+                        activity.type = ActivityType.FREE_EXPLORATION
+                    else:
+                        activity = self._default_activity(state)
             await self._store.insert(activity)
             self._task = asyncio.create_task(self._execute(activity))
             self._task.add_done_callback(_harvest_task_exception)
@@ -359,9 +379,10 @@ class ActivityFacade:
         t = activity.type
         if t is ActivityType.READING:
             source = activity.progress.get("source")
-            if source is not None:
-                return await self._run_reading_source(activity, str(source))
-            return await self._run_llm_activity(activity, "reading")
+            if source is None:
+                # READING 必须有真实读物；缺 source 说明上游决策出错，fail-fast
+                raise ValueError("读书活动缺 source：已禁止凭空编造")
+            return await self._run_reading_source(activity, str(source))
         if t is ActivityType.CREATION:
             return await self._run_llm_activity(activity, "creation")
         if t is ActivityType.IDLE_REFLECTION:
@@ -385,14 +406,25 @@ class ActivityFacade:
     async def _run_reading_source(
         self, activity: Activity, source: str
     ) -> dict[str, Any]:
-        """读真实文件并让 LLM 产出 {book, note}（喂内容，非凭空）。"""
+        """分块读真实文件：切 [read_chars, read_chars+6000) 一块喂 LLM 产 {book, note}，
+        推进书库进度并带回 read_chars/total_chars（绝不凭空编造）。"""
         content = await asyncio.to_thread(
             Path(source).read_text, encoding="utf-8", errors="replace"
         )
-        context = content[:_READ_CONTEXT_CHARS]
-        return await self._run_llm_activity(
-            activity, "reading", extra_context=context
+        read_chars = int(activity.progress.get("read_chars", 0))
+        chunk = content[read_chars : read_chars + _READ_CONTEXT_CHARS]
+        if chunk == "":
+            # 已读到末尾（或文件比注册时短）：无新内容，不调用 LLM 编造
+            await self._material_store.advance(source, len(content), time.time())
+            return {"read_chars": len(content), "total_chars": len(content)}
+        result = await self._run_llm_activity(
+            activity, "reading", extra_context=chunk
         )
+        new_read_chars = read_chars + len(chunk)
+        await self._material_store.advance(source, new_read_chars, time.time())
+        result["read_chars"] = new_read_chars
+        result["total_chars"] = len(content)
+        return result
 
     async def _run_llm_activity(
         self,

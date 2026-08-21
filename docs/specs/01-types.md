@@ -170,7 +170,7 @@ class TokenUsageDict(TypedDict):           # 单次 LLM 记账 {input, output}
     output: int
 ```
 
-### dataclass（`nyx/types.py`，16 个）
+### dataclass（`nyx/types.py`，17 个）
 
 > `from nyx.enums import (Source, EventType, DesireType, ActivityType, MemoryType, DesireStatus, ActivityStatus, EnergyState, GoalAction, EmotionCategory)`
 
@@ -262,6 +262,15 @@ class Activity:
     progress: dict[str, Any]  # 进度状态，形状随 ActivityType 而异（读书读到第几段等）
     started_at: float
     ended_at: float | None = None
+
+@dataclass
+class Material:                    # 用户喂的读物（一本书），分块读进度
+    path: str                      # 绝对路径（workspace/uploads/<name>）
+    filename: str
+    total_chars: int               # 总字数（字符）
+    read_chars: int                # 已读字数（分块进度，>=total 视为读完）
+    created_at: float              # 上传时间（「最近那本」排序键）
+    updated_at: float              # 进度上次推进时间
 
 # ---- 内在生命 ----
 @dataclass

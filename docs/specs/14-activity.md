@@ -15,7 +15,7 @@
 ## 验收标准
 
 - [ ] `store.py` 含 `ActivityStore`（`insert` / `get` / `get_current` / `get_last_exploration` / `list_schedule` / `update`），与「`activity/store.py`（完整）」段逐字一致
-- [ ] `facade.py` 含 `ActivityFacade`：`on_tick(tick_type) -> None` / `on_desire_generated(event) -> None` / `select_activity(desires, state) -> Activity | None` / `complete_activity(activity) -> None` / `interrupt(activity_id, by_event) -> None` / `get_current() -> Activity | None` / `get_schedule() -> list[Activity]`
+- [ ] `facade.py` 含 `ActivityFacade`：`on_tick(tick_type) -> None` / `on_desire_generated(event) -> None` / `select_activity(desires, state) -> Activity | None` / `complete_activity(activity) -> None` / `interrupt(activity_id, by_event) -> None` / `get_current() -> Activity | None` / `get_schedule() -> list[Activity]` / `read_material(path, filename, total_chars, correlation_id) -> None`
 - [ ] `select_activity` 纯决策：无欲望→`None`；精力不足→`REST`；否则第一个可排程欲望→映射活动，`progress` 存 `desire_id`/`goal`/`correlation_id`/`description`
 - [ ] `READING` 升级 `FREE_EXPLORATION`：探索欲映射的读书在 `_maybe_start_activity` 里经 `should_explore`（精力充足 + 频率上限）判定升级；频率上限内降级为普通读书
 - [ ] 空槽默认：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`（精力疲惫 `< ENERGY_REST_THRESHOLD`→`IDLE_REFLECTION`、否则→`OBSERVE_USER`），`progress["desire_id"] is None`
@@ -29,7 +29,7 @@
 
 ## 技术方案
 
-- **新文件**：`nyx/activity/store.py`、`nyx/activity/facade.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`（`scheduler.py` 归 13）
+- **新文件**：`nyx/activity/store.py`、`nyx/activity/facade.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/material_store.py`（`scheduler.py` 归 13）
 - **库**：`langgraph`（仅 `StateGraph` / `START` / `END` / 条件边；版本敏感契约以锁定版本为准，同 03-llm 依赖 pin 约定）
 - **ActivityStore 归属**：memory/desire/inner_life 各有 `store.py`，activity 保持一致——facade 不直接写 SQL（三层：Facade → 子系统 → 内部类）。tech-ref §7 ripple：`activity/` 补一行 `store.py  # ActivityStore（activity 表单表 CRUD）`
 - **依赖解环（遵守 12 §54）**：`inner_life → {activity, desire}` 已锁，故 `ActivityFacade` **不持有 `InnerLifeFacade`**，注入 `get_state: Callable[[], Awaitable[CurrentState]]` 回调（组合根用 `inner_life.get_state` 绑定）。`select_activity(desires, state)` 以参数收 `CurrentState`（纯决策，无环）；`DesireFacade` 依赖单向（activity → desire，读队列/values），不成环
@@ -39,8 +39,10 @@
 - **并发守卫（同一时刻仅一个活动）**：`_start_lock` 串行化「查 running → insert PENDING → 翻 RUNNING」决策；但 `_execute` 在锁外异步翻 RUNNING，仅靠 `get_current`（只匹配 running，见 store）会留 TOCTOU 窗口（PENDING 已 insert 却查不到 running）。故锁内先同步查 `self._task` 未完成即 `return` 闭合窗口；`self._task` 在锁内赋值，天然串行
 - **执行失败 = INCOMPLETE + 上抛**：`_execute` 失败落 `INCOMPLETE`（`ended_at` 已记）后仍 `raise`（不吞异常）；`logger.exception` 记录详情，`add_done_callback(_harvest_task_exception)` 收割 fire-and-forget task 的异常，避免 asyncio「Task exception was never retrieved」警告静默漂着
 - **自由探索升级（design §8.6，13 已委托给 14）**：`select_activity` 保持基线映射（探索欲→`READING`），升级判定放 `_maybe_start_activity`（那里有 store/config/now，`select_activity` 保持纯决策）。「探索欲」条件由结构保证——`READING` 活动**仅**由 `DesireType.EXPLORATION` 映射而来（13 `desire_to_activity`），故调用方在 `activity.type is READING` 时才调 `should_explore`（只查精力 + 频率两项）
+- **读书 = 读本地书库（禁凭空编造，design §8.2 落地）**：`MaterialStore`（`material` 表）存用户喂的读物与分块进度。`read_material`（`USER_MATERIAL` 入口）先 `upsert` 注册再发起 READING 读第一块；探索欲触发的 `READING` 在 `_maybe_start_activity` 里 `next_readable()` 取**最近未读完的那本**续读，读完自动换下一本。**无书可读**（`next_readable()` 返回 None）→ 经 `should_explore` 转 `FREE_EXPLORATION`（限速中则退回默认活动）——任何路径都不让 LLM 凭空编造读书内容。三层兜底：`_maybe_start_activity` 不产无 source 的 READING、`_run_activity` 缺 source `raise`、`_run_reading_source` 空块不调 LLM
 - **六种活动执行分派（`_run_activity`）**：
-  - `READING` / `CREATION`：1 次 LLM（`json_mode=True`、`module="activity"`、`output_type="reading"`/`"creation"`）→ result `{book, note}` / `{title, content}`
+  - `READING`：`_run_reading_source` 分块读真实文件（切 `[read_chars, read_chars+6000)` 一块喂 LLM 产 `{book, note}`，`extra_context` 拼进 user 消息）→ result 附 `read_chars`/`total_chars` 推进进度；缺 `source` 直接 `raise ValueError`（**禁凭空编造**）；读到末尾（空块）不调 LLM
+  - `CREATION`：1 次 LLM（`json_mode=True`、`module="activity"`、`output_type="creation"`）→ result `{title, content}`
   - `IDLE_REFLECTION`：**发布 `REFLECTION` 事件**（12 §51 消费后内部 `reflect()`，1 LLM 在 inner_life），activity 不直接调 `InnerLifeFacade.reflect`；result `{}`
   - `FREE_EXPLORATION`：调 `Exploration.run()`（LangGraph 多步，seed = 欲望描述）→ result `{findings, notes}`
   - `OBSERVE_USER` / `REST`：0 LLM，result `{}`
@@ -161,6 +163,74 @@ def _row_to_activity(row: aiosqlite.Row) -> Activity:
         progress=json.loads(row["progress"]),
         started_at=row["started_at"],
         ended_at=row["ended_at"],
+    )
+```
+
+### `activity/material_store.py`（完整）
+
+```python
+import aiosqlite
+
+from nyx.db import Database
+from nyx.types import Material
+
+_COLS = "path, filename, total_chars, read_chars, created_at, updated_at"
+
+
+class MaterialStore:
+    """读物（书库）单表 CRUD：上传注册 + 分块进度 + 选最近未读完。
+
+    与 ActivityStore 同层（store 层）；所有读写 `async with self._db.lock:`
+    串行化（同 05/07/11）。
+    """
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def upsert(
+        self, path: str, filename: str, total_chars: int, now: float
+    ) -> None:
+        """注册（或重传覆盖）一本书：重传同路径重置进度为 0、更新时间戳。"""
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "INSERT INTO material (path, filename, total_chars, read_chars, "
+                "created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?) "
+                "ON CONFLICT(path) DO UPDATE SET filename = excluded.filename, "
+                "total_chars = excluded.total_chars, read_chars = 0, "
+                "created_at = excluded.created_at, updated_at = excluded.updated_at",
+                (path, filename, total_chars, now, now),
+            )
+            await self._db.conn.commit()
+
+    async def next_readable(self) -> Material | None:
+        """最近上传、且未读完的书（read_chars < total_chars，按 created_at 倒序）；
+        无则 None。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM material WHERE read_chars < total_chars "
+                "ORDER BY created_at DESC LIMIT 1"
+            )
+            row = await cursor.fetchone()
+        return _row_to_material(row) if row is not None else None
+
+    async def advance(self, path: str, read_chars: int, now: float) -> None:
+        """推进一本书的已读进度（updated_at 同步刷新）。"""
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "UPDATE material SET read_chars = ?, updated_at = ? WHERE path = ?",
+                (read_chars, now, path),
+            )
+            await self._db.conn.commit()
+
+
+def _row_to_material(row: aiosqlite.Row) -> Material:
+    return Material(
+        path=row["path"],
+        filename=row["filename"],
+        total_chars=row["total_chars"],
+        read_chars=row["read_chars"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 ```
 

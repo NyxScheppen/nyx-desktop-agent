@@ -138,6 +138,19 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        2,
+        [
+            """CREATE TABLE material (
+                path TEXT PRIMARY KEY,          -- 读物绝对路径
+                filename TEXT NOT NULL,
+                total_chars INTEGER NOT NULL,   -- 总字数（字符）
+                read_chars INTEGER NOT NULL DEFAULT 0,  -- 已读字数（分块进度）
+                created_at REAL NOT NULL,       -- 上传时间（「最近那本」排序键）
+                updated_at REAL NOT NULL        -- 进度上次推进时间
+            )""",
+        ],
+    ),
 ]
 
 

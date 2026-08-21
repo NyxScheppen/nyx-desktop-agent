@@ -33,7 +33,7 @@ expression:
   slow_max_rounds: 3          # 慢通道最多轮数
 
 exploration:
-  web_enabled: false          # 联网搜索 opt-in
+  web_enabled: true           # 联网搜索 opt-in（无书可读时自由上网探索依赖此项）
   rate_limit_hours: 4         # 自由探索频率上限
 
 eval:

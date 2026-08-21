@@ -7,7 +7,7 @@ import pytest
 
 from nyx import db
 
-# 13 张业务表（不含 schema_version）
+# 14 张业务表（不含 schema_version）
 BUSINESS_TABLES = {
     "personality",
     "value_system",
@@ -22,6 +22,7 @@ BUSINESS_TABLES = {
     "event_log",
     "eval_report",
     "token_usage",
+    "material",
 }
 
 # 6 个非 Optional 字段对应列必须 NOT NULL（01-types 契约）
@@ -80,7 +81,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 14
+    assert len(names) == 15
 
 
 async def test_migrate_creates_three_indexes() -> None:
@@ -134,7 +135,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 14
+    assert len(names) == 15
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 
@@ -144,7 +145,7 @@ async def test_migrate_version_gating(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             db,
             "_MIGRATIONS",
-            db._MIGRATIONS + [(2, ["CREATE TABLE foo (id TEXT PRIMARY KEY)"])],
+            db._MIGRATIONS + [(3, ["CREATE TABLE foo (id TEXT PRIMARY KEY)"])],
         )
         await db.migrate(conn)
         cursor = await conn.execute(
@@ -154,8 +155,8 @@ async def test_migrate_version_gating(monkeypatch: pytest.MonkeyPatch) -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert foo is not None  # v2 套用
-    assert version == 2
+    assert foo is not None  # v3 套用
+    assert version == 3
 
 
 async def test_migrate_atomic_rollback(monkeypatch: pytest.MonkeyPatch) -> None:

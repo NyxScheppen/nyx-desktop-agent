@@ -16,6 +16,7 @@ from nyx.activity.facade import (
     _goal_met,
     _parse_activity_result,
 )
+from nyx.activity.material_store import MaterialStore
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.db import Database
@@ -228,6 +229,7 @@ async def _new_facade(
 ) -> tuple[ActivityFacade, ActivityStore, EventBus, Database]:
     database = await db.connect(":memory:")
     store = ActivityStore(database)
+    material_store = MaterialStore(database)
     bus = EventBus(database)
 
     async def get_state() -> CurrentState:
@@ -235,6 +237,7 @@ async def _new_facade(
 
     facade = ActivityFacade(
         store,
+        material_store,
         bus,
         cast(LlmClient, llm if llm is not None else _FakeLlm()),
         cast(Evaluator, evaluator if evaluator is not None else _FakeEvaluator()),
@@ -500,7 +503,7 @@ async def test_upgrade_to_free_exploration(
         await database.conn.close()
 
 
-async def test_no_upgrade_when_rate_limited(
+async def test_no_material_rate_limited_falls_back_to_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     t0 = 1_000_000.0
@@ -518,7 +521,8 @@ async def test_no_upgrade_when_rate_limited(
         acts = await store.list_schedule(0.0)
         new = [a for a in acts if a.id != "prev"]
         assert len(new) == 1
-        assert new[0].type is ActivityType.READING
+        # 无书可读 + 限速中：退回默认活动（观察用户），绝不编造读书内容
+        assert new[0].type is ActivityType.OBSERVE_USER
     finally:
         await database.conn.close()
 
@@ -637,7 +641,7 @@ async def test_read_material_reads_real_file(tmp_path: Path) -> None:
     try:
         events = _subscribe_activity(bus)
         async with _running(bus):
-            await facade.read_material(str(source), "book.txt", "c1")
+            await facade.read_material(str(source), "book.txt", 6, "c1")
             await _await_task(facade)
         acts = await store.list_schedule(0.0)
         assert len(acts) == 1
@@ -646,6 +650,8 @@ async def test_read_material_reads_real_file(tmp_path: Path) -> None:
         assert acts[0].progress["result"] == {
             "book": "骑士团历史",
             "note": "读到了第三章",
+            "read_chars": 6,
+            "total_chars": 6,
         }
         assert [e.type for e in events] == [
             EventType.ACTIVITY_START,
@@ -661,9 +667,36 @@ async def test_read_material_skips_when_busy() -> None:
     try:
         await facade._maybe_start_activity()
         assert facade._task is not None and not facade._task.done()
-        await facade.read_material("/no/such/file.txt", "book.txt", "c1")
+        await facade.read_material("/no/such/file.txt", "book.txt", 100, "c1")
         acts = await store.list_schedule(0.0)
         assert len(acts) == 1
         await facade._task
+    finally:
+        await database.conn.close()
+
+
+async def test_desire_reading_reads_latest_material(tmp_path: Path) -> None:
+    """探索欲触发：读最近未读完的那本（分块 + 推进度），而非凭空编造。"""
+    source = tmp_path / "book.txt"
+    source.write_text("甲" * 7000, encoding="utf-8")
+    facade, store, bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0
+    )
+    try:
+        await facade._material_store.upsert(str(source), "book.txt", 7000, 1000.0)
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        assert len(acts) == 1
+        assert acts[0].type is ActivityType.READING
+        assert acts[0].progress["source"] == str(source)
+        assert acts[0].progress["read_chars"] == 0
+        assert acts[0].progress["total_chars"] == 7000
+        assert acts[0].progress["result"]["read_chars"] == 6000
+        assert acts[0].progress["result"]["total_chars"] == 7000
+        # 书库进度推进但未读完，下次探索欲会续读
+        mat = await facade._material_store.next_readable()
+        assert mat is not None and mat.read_chars == 6000
     finally:
         await database.conn.close()

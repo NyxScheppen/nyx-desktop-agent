@@ -128,14 +128,26 @@ class LlmClient:
         output_type: str,
         correlation_id: str,
         json_mode: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMOutput:
         kwargs: dict[str, Any] = {}
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        if tools:
+            kwargs["tools"] = tools  # bind_tools：function calling 工具定义
         response = await self._model.ainvoke([_to_lc(m) for m in messages], **kwargs)
         content = response.content
         if not isinstance(content, str):
             raise RuntimeError(f"期望文本 content，得到 {type(content).__name__}")
+        tool_calls: list[dict[str, Any]] = []
+        raw_calls = getattr(response, "tool_calls", None)
+        if raw_calls:
+            for tc in raw_calls:
+                # LangChain 返回 pydantic ToolCall（有 model_dump）；兼容裸 dict。
+                if hasattr(tc, "model_dump"):
+                    tool_calls.append(cast(dict[str, Any], tc.model_dump()))
+                else:
+                    tool_calls.append(cast(dict[str, Any], tc))
         return LLMOutput(
             id=str(uuid.uuid4()),    # 每次调用唯一，供 EvalReport.output_id
             module=module,
@@ -144,6 +156,7 @@ class LlmClient:
             content=content,
             token_usage=_extract_usage(response),
             correlation_id=correlation_id,
+            tool_calls=tool_calls,
         )
 ```
 
@@ -158,6 +171,8 @@ class LlmClient:
     - [ ] `token_usage` 抽取：`usage_metadata={input_tokens: 12, output_tokens: 7}` → `{input: 12, output: 7}`
     - [ ] `usage_metadata` 缺失 → `{input: 0, output: 0}`
     - [ ] `json_mode=True` → 传给模型的 kwargs 含 `response_format={"type": "json_object"}`；`False` → 不含
+    - [ ] `tools` 非空 → 传给模型的 kwargs 含 `tools`；空/None → 不含
+    - [ ] fake 返回带 `tool_calls` 的 `AIMessage`（pydantic ToolCall 有 `model_dump`）→ `LLMOutput.tool_calls` 正确解析出 name/args；无 `tool_calls` → `[]`
     - [ ] `messages` 顺序与内容按原序透传（fake 记录收到的 LangChain 消息）
     - [ ] 非文本 content（fake 返回 `content=list`）→ `RuntimeError`（不是 `str(list)` 的 repr 垃圾）
   - [ ] `from_config`（`monkeypatch` 环境变量）：`provider="claude"` → `ConfigError`；`api_key_env` 未设（`delenv`）→ `ConfigError`；正常 → 返回 `LlmClient` 且 `_model_name == config.model`（`setenv` 设 key）

@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Event`/`EventType`/`Source`/`ContextMode`/`Message`/`CurrentState`/`ShortTermDesire`/`SelfNarrative`）、02-config（`ExpressionConfig`）、03-llm（`LlmClient`）、05-event（`EventBus`）、09-memory-facade（`MemoryFacade`）、11-desire（`DesireFacade`）、12-inner-life（`InnerLifeFacade`）、15-eval（`Evaluator`）、16-expression-prompt（`build_system_prompt`/`build_user_prompt`/`classify_channel`）
+- **前置依赖**：01-types（`Event`/`EventType`/`Source`/`ContextMode`/`Message`/`CurrentState`/`ShortTermDesire`/`SelfNarrative`）、02-config（`ExpressionConfig`）、03-llm（`LlmClient`）、05-event（`EventBus`）、06-tools（`ToolRegistry`）、09-memory-facade（`MemoryFacade`）、11-desire（`DesireFacade`）、12-inner-life（`InnerLifeFacade`）、15-eval（`Evaluator`）、16-expression-prompt（`build_system_prompt`/`build_user_prompt`/`classify_channel`）
 
 ## 用户故事
 
@@ -15,11 +15,11 @@
 ## 验收标准
 
 - [ ] `facade.py` 含 `ExpressionFacade`（`reply` / `initiate_chat` / `mutter`）；`pipeline.py` 含 `ReplyState` + `build_reply_graph`；`mutter.py` 含 `_MUTTER_TEMPLATES`（**50 条，全量内联**）+ `pick_mutter` + `should_initiate_chat`
-- [ ] `reply` 走 LangGraph 图：快通道 `classify → think → speak → record → end`（不检索记忆、不生成场景化记忆）；慢通道 `classify → assemble → think → speak → should_ask`，非问句 round 循环（≤ `slow_max_rounds`，**每轮 publish 一条 SPEAK**），问句 publish ASK 后回合结束，最终都走 `scene_memory → record → end`
+- [ ] `reply` 走 LangGraph 图：快通道 `classify → think → speak → record → end`（不检索记忆、不生成场景化记忆）；慢通道 `classify → assemble → use_tools → think → speak → should_ask`，非问句 round 循环（≤ `slow_max_rounds`，**每轮 publish 一条 SPEAK**），问句 publish ASK 后回合结束，最终都走 `scene_memory → record → end`
 - [ ] **当前消息在 prompt 里只出现一次**：`reply` 入口回溯的 `context` 不含当前消息（当前消息尚未进 history），`build_user_prompt` 里它只作为「本次消息」
 - [ ] **累积式 prompt**：第 N 轮 think 的 user prompt 含前 N-1 轮 think/speak；第 N 轮 speak 的 user prompt 含前 N-1 轮 think/speak + 本轮 think
 - [ ] **慢通道递进续写**：首轮 think/speak 是「第一次想 / 第一句话」，第 2 轮起的 think/speak 任务指令切换为「基于前面继续深入 / 接着上面往下说」，不重复、不重新回答
-- [ ] 每个 LLM 产出（think / speak / initiate_chat）后紧跟 `await evaluator.evaluate(output)`；`output_type` 分别 `think` / `speak` / `initiate_chat`、`module="expression"`、`correlation_id` 透传
+- [ ] 每个 LLM 产出（tool / think / speak / initiate_chat）后紧跟 `await evaluator.evaluate(output)`；`output_type` 分别 `tool` / `think` / `speak` / `initiate_chat`、`module="expression"`、`correlation_id` 透传
 - [ ] `initiate_chat` 返回 `bool`（发话 True / 无话 False），供 18-api 维护 `last_chat_at`；发话开场白 append 进 `_history`（`role="nyx"`），用户随后回复能回溯到这句搭话；`mutter` 返回 `None`（无状态依赖）
 - [ ] 事件发布：`think` / `speak` / `ask` / `mutter` / `initiate_chat` 全部 `content={"content": 文本}`、`source=INTERNAL`、`correlation_id` 接上游
 - [ ] 纯函数测全（`pick_mutter` / `should_initiate_chat` / `_is_question` / `_rounds_block`）；`pyright` strict 零报错
@@ -30,13 +30,13 @@
 - **新文件**：`nyx/expression/facade.py`、`nyx/expression/pipeline.py`、`nyx/expression/mutter.py`（无 API、无数据变更——会话历史 `deque` 是内存态）
 - **库**：`langgraph`（`StateGraph` / `END` / `CompiledStateGraph`，与 14-activity 的 exploration 同源）
 - **公开面**：`from nyx.expression.facade import ExpressionFacade`；`from nyx.expression.mutter import pick_mutter, should_initiate_chat`（不加 `__all__`）
-- **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, desire, inner_life, canon, ask_guidance, config)`——`canon: str` 由 18-api 组合根读 `prompts/canon.md`、`ask_guidance: str` 读 `prompts/ask.md` 传入（本 spec 不读文件，测试不碰文件系统）；`ask_guidance` 仅慢通道 think/speak 与 `initiate_chat` 注入，快通道省略
+- **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, desire, inner_life, canon, ask_guidance, config, tools)`——`canon: str` 由 18-api 组合根读 `prompts/canon.md`、`ask_guidance: str` 读 `prompts/ask.md` 传入（本 spec 不读文件，测试不碰文件系统）；`tools: ToolRegistry` 由组合根 `_build_tools(config)` 传入，仅慢通道 use_tools 用；`ask_guidance` 仅慢通道 think/speak 与 `initiate_chat` 注入，快通道省略
 - **会话历史（内存）**：`deque[Message]`（maxlen=`config.max_context_len`）由 facade 持有，跨 reply 持久。**用户消息 + Nyx 消息（多轮拼接）都在回合末的 `record_message` 节点按序 append**（先 user 后 nyx）——`reply` 入口回溯时当前消息还没进 history，天然不重复。重启丢失（同情感，内存易变态）
 - **多轮语义（慢通道）**：think → speak 循环，每轮 think 发 `THINK`、每轮 speak 发 `SPEAK`（**都交付**）；某轮 speak 是问句 → 发 `ASK` 后回合结束。`slow_max_rounds` 是「连续无 ask 的 think/speak 轮数上限」。**累积式 prompt**：后一轮的 think/speak 知道前几轮想了/说了什么（`_rounds_block` 拼前轮）。**递进续写**：首轮任务指令是「第一句话 / 第一次内心独白」，续写轮切换为「接着上面往下说 / 基于前面继续深入」，避免三段生成三个并列回答
 - **场景化记忆记整个回合**：`nyx_think`/`nyx_speak` = 多轮 `"\n".join(...)` 拼接（`create_scene_memory` 的 `str` 契约不变，只是内容是多轮）
 - **MVP 语义**：ask 后回合结束（走 scene_memory + record）；用户回应作为下一条 `USER_MESSAGE` 触发新 reply，round 自然从 0 重算。`waiting_user` 字段保留在 `ReplyState`（对齐 tech-ref §6.1），图内恒 `False`
 - **V2 表达交互闭环**：facade 在 reply 后按 `result["ask"]` 置 `self._waiting_user`（问句已问出、等用户答）；`initiate_chat` 记 `self._pending_chat_desire_id`（搭话已发、等用户回）。tick 心跳（18-api 组合根）直呼 `check_timeouts(now)`：问句超时（`ask_timeout`）→ `memory.record_no_answer` 落一条「用户没回答」的 SHORT_TERM 记忆；搭话超时（`chat_ignore_timeout`）→ `desire.expire`（值立即 +0.3 回灌）。用户任一下条消息（`reply` 入口）即视为回应、清两者待回应态
-- **think/speak 纯文本生成**：`ToolRegistry`（06-tools）当前主要服务 14-activity 的 exploration，本 spec 不依赖 06-tools
+- **慢通道工具调用**：`use_tools` 节点（慢通道专属）在 assemble 后问 LLM 是否需查资料，有 `tool_calls` 就逐个执行（`ToolRegistry.call`）并把结果 `json.dumps` 拼进 `tool_outputs`，think/speak 的 system prompt 追加「[工具查询结果]」段；一轮，不做 agentic 循环；工具执行失败降级为失败文案（best-effort，不崩回复）
 - **回溯检测 MVP 简化**：`reply` 入口 `list(self._history)[-max_context_len:]` 只取最近 `max_context_len` 条
 - **搭话 `last_chat_at` 归 18-api**：`should_initiate_chat` 是纯函数（判定触发），`initiate_chat` 返回 `bool` 作为「是否真发话」的信号；18-api 组合根据此更新 `last_chat_at`（`since_last_chat` 的来源），facade 不持有搭话状态
 - **明确不做**：`POST /api/chat`（归 18-api）；观察用户在线/忙状态（归 14-activity 的 observe，本 spec 只接收 `online`/`busy` bool）
@@ -145,6 +145,7 @@ def should_initiate_chat(
 
 节点为闭包，依赖经 ReplyDeps 注入。
 """
+import json
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -163,6 +164,7 @@ from nyx.expression.prompt import build_system_prompt, build_user_prompt
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
+from nyx.tools.registry import ToolRegistry
 from nyx.types import CurrentState, Memory, Message, SelfNarrative
 
 
@@ -180,6 +182,7 @@ class ReplyState(TypedDict):
     waiting_user: bool           # MVP 恒 False
     correlation_id: str          # 本次 reply 溯源（17 补，对齐 14-activity）
     last_slow_at: float          # 上次慢通道时间（facade 维护，每 reply 入 state）
+    tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
 
 
 @dataclass
@@ -193,6 +196,7 @@ class ReplyDeps:
     ask_guidance: str
     config: ExpressionConfig
     history: deque[Message]              # facade 持有的会话历史（跨 reply）
+    tools: ToolRegistry                  # use_tools 节点查资料（慢通道）
 
 
 _THINK_TASK = "（只输出你此刻的内心独白，不要输出给用户看。）"
@@ -203,6 +207,11 @@ _SPEAK_TASK = "（只输出你要对用户说的第一句话。）"
 _SPEAK_TASK_CONTINUE = (
     "（接着你上面已经说过的内容，继续往下说下一句，"
     "不要重复已说过的、自然地递进。）"
+)
+_USE_TOOLS_TASK = (
+    "你可以调用工具查询信息（本地搜索、读写文件、联网搜索）。"
+    "本次回复若需要查询资料，就调用相应工具；"
+    "若不需要查询，直接回复「不需要」。"
 )
 
 
@@ -251,12 +260,47 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         narrative = await deps.inner_life.get_narrative()
         return {"memories": memories, "narrative": narrative}
 
+    async def use_tools(state: ReplyState) -> dict[str, Any]:
+        # 慢通道专属：问 LLM 是否需查资料（文件/搜索），查到的结果拼进 tool_outputs，
+        # think/speak 再据此回复。一轮，不做「查完再决定继续查」的循环。
+        system = build_system_prompt(
+            deps.canon, state["state"], state["narrative"], state["memories"],
+            ask_guidance=(
+                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
+            ),
+        )
+        user = (
+            build_user_prompt(state["message"], state["context"])
+            + "\n"
+            + _USE_TOOLS_TASK
+        )
+        output = await deps.llm.complete(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            module="expression",
+            output_type="tool",
+            correlation_id=state["correlation_id"],
+            tools=deps.tools.schema(),
+        )
+        await deps.evaluator.evaluate(output)
+        outputs: list[str] = []
+        for tc in output.tool_calls:
+            name = tc.get("name", "")
+            args = tc.get("args", {})
+            try:
+                result = await deps.tools.call(name, args)
+                text = json.dumps(result, ensure_ascii=False)
+            except Exception:  # 工具执行失败不崩回复（best-effort 豁免）
+                text = f"工具 {name} 执行失败"
+            outputs.append(f"{name}: {text}")
+        return {"tool_outputs": outputs}
+
     async def think(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], state["memories"],
             ask_guidance=(
                 deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
             ),
+            tool_outputs=state["tool_outputs"],
         )
         user = build_user_prompt(state["message"], state["context"])
         prior = _rounds_block(state["think"], state["speak"])      # 前几轮 think/speak
@@ -282,6 +326,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             ask_guidance=(
                 deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
             ),
+            tool_outputs=state["tool_outputs"],
         )
         user = build_user_prompt(state["message"], state["context"])
         # 前几轮（不含本轮 think）
@@ -353,6 +398,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     graph = StateGraph(ReplyState)
     graph.add_node("classify_channel", classify)
     graph.add_node("assemble_context", assemble)
+    graph.add_node("use_tools", use_tools)
     graph.add_node("think", think)
     graph.add_node("speak", speak)
     graph.add_node("should_ask", should_ask)
@@ -364,7 +410,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         route_after_classify,
         {"assemble_context": "assemble_context", "think": "think"},
     )
-    graph.add_edge("assemble_context", "think")
+    graph.add_edge("assemble_context", "use_tools")
+    graph.add_edge("use_tools", "think")
     graph.add_edge("think", "speak")
     graph.add_conditional_edges(
         "speak",
@@ -406,6 +453,7 @@ from nyx.expression.prompt import build_system_prompt
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
+from nyx.tools.registry import ToolRegistry
 from nyx.types import CurrentState, Message, ShortTermDesire
 
 
@@ -423,6 +471,7 @@ class ExpressionFacade:
         canon: str,
         ask_guidance: str,
         config: ExpressionConfig,
+        tools: ToolRegistry,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -454,6 +503,7 @@ class ExpressionFacade:
                 ask_guidance=self._ask_guidance,
                 config=self._config,
                 history=self._history,
+                tools=tools,
             )
         )
 
@@ -479,6 +529,7 @@ class ExpressionFacade:
             "waiting_user": False,
             "correlation_id": correlation_id,
             "last_slow_at": self._last_slow_at,
+            "tool_outputs": [],
         }
         result = await self._graph.ainvoke(initial)
         if result["mode"] is ContextMode.SLOW:
@@ -563,8 +614,9 @@ class ExpressionFacade:
     - [ ] `_rounds_block`：`([], [])` → `""`；`(["t1"], ["s1"])` → 含「第1轮内心：t1」「第1轮对外：s1」；`(["t1","t2"], ["s1","s2"])` → 含两轮且顺序正确
   - [ ] **facade 集成**（`test_expression_facade.py`，mock LLM 按 `output_type` 返回 fixture，mock bus 记录 `publish`、fake 注入不碰 db；文件名为避免与 `test_memory/test_facade.py` 同 basename 冲突而加前缀）：
     - [ ] `reply` 快通道（classify 因子令 score < threshold）：`llm.complete` 调 2 次（think + speak，各 1 次）、`memory.search` / `memory.create_scene_memory` 未被调、`evaluator.evaluate` 调 2 次、`bus.publish` 收到 `think` + `speak` 各 1 条
-    - [ ] `reply` 慢通道非问句（score ≥ threshold，mock speak 恒非问句）：`memory.search` 被调、`create_scene_memory` 被调、`llm.complete` 调 `2 × slow_max_rounds` 次（think+speak 各 3 次）、`bus.publish` 收到 `think` 3 条 + `speak` 3 条（**每轮交付**）、`create_scene_memory` 的 `nyx_speak`/`nyx_think` 是 3 轮 `"\n"` 拼接
-    - [ ] `reply` 慢通道问句（第 1 轮 speak 返回 `"你还好吗？"`）：`bus.publish` 收到 `ask`（非 `speak`）且仅 1 条、`create_scene_memory` 仍被调（问句也走场景化记忆）、提前结束（think/speak 各 1 次，不循环到满）
+    - [ ] `reply` 慢通道非问句（score ≥ threshold，mock speak 恒非问句）：`memory.search` 被调、`create_scene_memory` 被调、`llm.complete` 调 `2 × slow_max_rounds + 1` 次（tool 1 次 + think+speak 各 3 次）、`bus.publish` 收到 `think` 3 条 + `speak` 3 条（**每轮交付**）、`create_scene_memory` 的 `nyx_speak`/`nyx_think` 是 3 轮 `"\n"` 拼接
+    - [ ] `reply` 慢通道问句（第 1 轮 speak 返回 `"你还好吗？"`）：`bus.publish` 收到 `ask`（非 `speak`）且仅 1 条、`create_scene_memory` 仍被调（问句也走场景化记忆）、提前结束（tool 1 次 + think/speak 各 1 次，不循环到满）
+    - [ ] **慢通道工具调用**：fake llm 返回 `tool_calls=[{"name": "local_search", "args": {...}}]` → `tools.call` 被调、结果拼进 think 的 system prompt「[工具查询结果]」段；fake llm 返回空 `tool_calls` → 无该段；工具抛异常 → 降级「工具 X 执行失败」不崩回复
     - [ ] **累积式 prompt**：慢通道非问句多轮下，fake llm 记录的第 2 轮 think 调用 user prompt 含第 1 轮的 think 文本与 speak 文本；第 2 轮 speak 调用 user prompt 含第 2 轮 think 文本
     - [ ] **慢通道递进续写**：慢通道非问句多轮下，第 1 轮 speak 的 user prompt 含「第一句话」、不含「继续往下说」；第 2 轮 speak 的 user prompt 含「继续往下说」
     - [ ] **当前消息不重复**（回归）：慢通道下，fake llm 记录的 think/speak 调用里，`[对话历史]` 段不含当前消息文本、`[本次消息]` 段含且仅含一次

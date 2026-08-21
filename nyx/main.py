@@ -515,6 +515,7 @@ async def build_app_context(config: Config) -> _App:
     ask = _load_ask(prompt_dir)
     expression = ExpressionFacade(
         bus, llm, evaluator, memory, desire, inner_life, canon, ask, config.expression,
+        tools,
     )
 
     app = _App(

@@ -175,16 +175,17 @@ class ReplyState(TypedDict):
     round: int                   # 连续无 ask 的 think/speak 轮数（≤ slow_max_rounds）
     waiting_user: bool           # MVP 恒 False
     correlation_id: str          # 本次 reply 溯源
+    tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
 ```
 
-**Nodes**：`classify_channel` → `assemble_context` → `think` → `speak` → `should_ask` → `generate_scene_memory` → `record_message`
+**Nodes**：`classify_channel` → `assemble_context` → `use_tools` → `think` → `speak` → `should_ask` → `generate_scene_memory` → `record_message`
 
 **Edges**：
 
 ```
 start → classify_channel
   ├ fast → think → speak → record_message → end            # 跳过记忆检索+场景化记忆；think/speak 各 1 次
-  └ slow → assemble_context → think → speak → should_ask
+  └ slow → assemble_context → use_tools → think → speak → should_ask
              ├ 非问句：round+1，publish SPEAK（每轮交付；think 每轮 publish THINK）
              │     round < slow_max_rounds → 回到 think（连续无 ask 最多 slow_max_rounds 轮）
              │     round ≥ slow_max_rounds → generate_scene_memory → record_message → end

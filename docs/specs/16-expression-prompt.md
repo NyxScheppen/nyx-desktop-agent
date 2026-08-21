@@ -16,7 +16,7 @@
 
 - [ ] `prompt.py` 含 `build_system_prompt` + `build_user_prompt`；`classifier.py` 含 `slow_score` + `classify_channel`，与各自「（完整）」段代码逐字一致
 - [ ] 四个函数全是**同步纯函数**：无 `async`、无 I/O、无 LLM、无 db，仅字符串拼装 + 数值计算
-- [ ] `build_system_prompt` 分段：canon（基底）→ 当前状态 → 当前欲望 → 主动提问指导（可选）→ 自我认知（可选）→ 相关记忆（可选）；`ask_guidance` / `narrative` / `memories` 为空（None）时跳过对应段
+- [ ] `build_system_prompt` 分段：canon（基底）→ 当前状态 → 当前欲望 → 主动提问指导（可选）→ 自我认知（可选）→ 相关记忆（可选）→ 工具查询结果（可选）；`ask_guidance` / `narrative` / `memories` / `tool_outputs` 为空（None）时跳过对应段
 - [ ] `classify_channel`：`slow_score(...) >= threshold` → `ContextMode.SLOW`，否则 `ContextMode.FAST`
 - [ ] `pyright` strict 零报错；无模块级可变全局变量（词表/常量均为不可变 `tuple` / `float`）
 
@@ -48,12 +48,14 @@ def build_system_prompt(
     narrative: SelfNarrative | None = None,
     memories: list[Memory] | None = None,
     ask_guidance: str | None = None,
+    tool_outputs: list[str] | None = None,
 ) -> str:
-    """拼 system prompt：角色设定 + 当前状态 + 当前欲望 + 自我认知 + 相关记忆。
+    """拼 system prompt：角色设定 + 状态 + 欲望 + 自我认知 + 记忆 + 工具结果。
 
     canon 为静态人格注入文本（prompts/canon.md，由 18-api 组合根读入传入）。
     ask_guidance 为主动提问指导（prompts/ask.md），仅慢通道/搭话注入，None 跳过。
     narrative / memories 为 None（或空）时跳过对应段——快通道省略、慢通道补全。
+    tool_outputs 为 use_tools 节点查到的工具结果（慢通道专属），空则跳过。
     """
     parts: list[str] = [
         canon,
@@ -66,6 +68,8 @@ def build_system_prompt(
         parts.append(_narrative_block(narrative))
     if memories:
         parts.append(_memory_block(memories))
+    if tool_outputs:
+        parts.append(_tool_outputs_block(tool_outputs))
     return "\n\n".join(parts)
 
 
@@ -132,6 +136,13 @@ def _memory_block(memories: list[Memory]) -> str:
     lines = ["[相关记忆]"]
     lines += [f"- {m.summary or m.content}" for m in memories]
     return "\n".join(lines)
+
+
+def _tool_outputs_block(outputs: list[str]) -> str:
+    """工具查询结果段：use_tools 节点查到的结果（慢通道专属）。"""
+    lines = ["[工具查询结果]"]
+    lines += [f"- {o}" for o in outputs]
+    return "\n".join(lines)
 ```
 
 ### `nyx/expression/classifier.py`（完整）
@@ -194,7 +205,7 @@ def classify_channel(
 
 - [ ] 单元测试 `tests/test_expression/`（纯函数，无 DB、无 async、无 fake LLM）：
   - [ ] **prompt**（`test_prompt.py`）：
-    - [ ] `build_system_prompt`：`canon in result`（基底透传）；`narrative=None`、`memories=[]` 时结果**不含** `[自我认知]` / `[相关记忆]`（段被跳过）；`narrative` 非 None 含 `identity` 与「近期变化」；`memories` 非空含 `m.summary`；`ask_guidance=None` 时结果**不含**该内容、非 None 时含其内容
+    - [ ] `build_system_prompt`：`canon in result`（基底透传）；`narrative=None`、`memories=[]` 时结果**不含** `[自我认知]` / `[相关记忆]`（段被跳过）；`narrative` 非 None 含 `identity` 与「近期变化」；`memories` 非空含 `m.summary`；`ask_guidance=None` 时结果**不含**该内容、非 None 时含其内容；`tool_outputs` 非空含 `[工具查询结果]`、空则不拼
     - [ ] `build_system_prompt` 状态段：`state` 构造含非默认值，断言结果含 `valence=`、`arousal=`、`表情=`、`精力：`、`当前活动：`、`性格（Big Five`、`三观（`、当前欲望描述
     - [ ] `_state_block`：`current_activity=None` → `当前活动：空闲`
     - [ ] `_desires_block`：空欲望 → `[当前欲望]\n无`
@@ -213,4 +224,4 @@ def classify_channel(
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
-- [ ] 下游约定：17-expression 的 `classify_channel` 节点调 `classifier.classify_channel(message, state, now, last_slow_at, config.expression.slow_threshold)`；`think`/`speak` 节点调 `prompt.build_system_prompt`（慢通道传 ask_guidance+narrative+memories，快通道省略）+ `prompt.build_user_prompt`，再拼各自任务指令后 `await llm.complete(...)`（tech-ref §6.1 已锁节点名；无新文件，tech-ref §7 已列 `prompt.py` / `classifier.py`）
+- [ ] 下游约定：17-expression 的 `classify_channel` 节点调 `classifier.classify_channel(message, state, now, last_slow_at, config.expression.slow_threshold)`；`think`/`speak` 节点调 `prompt.build_system_prompt`（慢通道传 ask_guidance+narrative+memories+tool_outputs，快通道省略）+ `prompt.build_user_prompt`，再拼各自任务指令后 `await llm.complete(...)`（tech-ref §6.1 已锁节点名；无新文件，tech-ref §7 已列 `prompt.py` / `classifier.py`）

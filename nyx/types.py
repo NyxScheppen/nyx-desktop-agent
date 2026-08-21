@@ -198,6 +198,8 @@ class LLMOutput:
     content: str            # 原始文本
     token_usage: TokenUsageDict
     correlation_id: str
+    # bind_tools 时 LLM 请求的工具调用（无则空）
+    tool_calls: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
 
 
 @dataclass

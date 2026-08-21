@@ -1,5 +1,5 @@
 # pyright: reportPrivateUsage=false
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -20,6 +20,7 @@ from nyx.expression.mutter import _MUTTER_TEMPLATES
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
+from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     CurrentState,
     Event,
@@ -74,10 +75,12 @@ class _FakeLlm:
         self,
         speak_override: str | None = None,
         chat_content: str = "你好呀。",
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> None:
         self.calls: list[tuple[str, list[LlmMessage], str]] = []
         self._speak_override = speak_override
         self._chat_content = chat_content
+        self._tool_calls = list(tool_calls) if tool_calls is not None else []
         self._think_n = 0
         self._speak_n = 0
 
@@ -89,6 +92,7 @@ class _FakeLlm:
         output_type: str,
         correlation_id: str,
         json_mode: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMOutput:
         self.calls.append((output_type, messages, correlation_id))
         if output_type == "think":
@@ -110,6 +114,7 @@ class _FakeLlm:
             content=content,
             token_usage={"input": 1, "output": 1},
             correlation_id=correlation_id,
+            tool_calls=list(self._tool_calls),
         )
 
 
@@ -176,6 +181,19 @@ class _FakeDesire:
         self.expired.append(desire_id)
 
 
+class _FakeTools:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.results: dict[str, Any] = {}
+
+    def schema(self) -> list[dict[str, Any]]:
+        return [{"name": "local_search", "description": "search", "parameters": {}}]
+
+    async def call(self, name: str, args: dict[str, Any]) -> Any:
+        self.calls.append((name, args))
+        return self.results.get(name, [])
+
+
 def _user_content(messages: list[LlmMessage]) -> str:
     return messages[-1]["content"]
 
@@ -185,6 +203,7 @@ def _new_facade(
     arousal: float = 0.0,
     llm: _FakeLlm | None = None,
     desire: _FakeDesire | None = None,
+    tools: _FakeTools | None = None,
 ) -> tuple[
     ExpressionFacade,
     _FakeLlm,
@@ -203,6 +222,7 @@ def _new_facade(
         if desire is not None
         else cast(DesireFacade, object())
     )
+    tools_obj = cast(ToolRegistry, tools if tools is not None else _FakeTools())
     facade = ExpressionFacade(
         cast(EventBus, bus),
         cast(LlmClient, fake_llm),
@@ -213,6 +233,7 @@ def _new_facade(
         canon="你是尼克斯，一个想成为人类的 AI。",
         ask_guidance="[主动提问指导]\n在合适的时候向用户提问。",
         config=ExpressionConfig(),
+        tools=tools_obj,
     )
     return facade, fake_llm, evaluator, memory, inner_life, bus
 
@@ -248,7 +269,7 @@ async def test_reply_slow_non_question() -> None:
         energy=100.0, arousal=0.0
     )
     await facade.reply("在吗", "corr-slow")
-    assert [t for t, _m, _c in llm.calls] == ["think", "speak"] * 3
+    assert [t for t, _m, _c in llm.calls] == ["tool"] + ["think", "speak"] * 3
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.SPEAK] * 3
     assert memory.search_calls == 1
     assert len(memory.scene_memories) == 1
@@ -264,9 +285,52 @@ async def test_reply_slow_question() -> None:
         energy=100.0, arousal=0.0, llm=_FakeLlm(speak_override="你还好吗？")
     )
     await facade.reply("在吗", "corr-q")
-    assert [t for t, _m, _c in llm.calls] == ["think", "speak"]
+    assert [t for t, _m, _c in llm.calls] == ["tool", "think", "speak"]
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.ASK]
     assert len(memory.scene_memories) == 1
+
+
+async def test_reply_slow_tool_executes_and_flows_into_prompt() -> None:
+    tools = _FakeTools()
+    tools.results["local_search"] = [{"title": "骑士小说"}]
+    facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=100.0,
+        arousal=0.0,
+        llm=_FakeLlm(tool_calls=[{"name": "local_search", "args": {"q": "骑士"}}]),
+        tools=tools,
+    )
+    await facade.reply("在吗", "corr-tool")
+    assert [t for t, _m, _c in llm.calls][0] == "tool"
+    assert tools.calls == [("local_search", {"q": "骑士"})]
+    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "think"][0]
+    assert "[工具查询结果]" in think_system
+    assert "local_search" in think_system
+
+
+async def test_reply_slow_no_tool_calls() -> None:
+    facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=100.0, arousal=0.0
+    )
+    await facade.reply("在吗", "corr-empty")
+    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "think"][0]
+    assert "[工具查询结果]" not in think_system
+    assert [t for t, _m, _c in llm.calls][0] == "tool"
+
+
+async def test_reply_slow_tool_failure_fallback() -> None:
+    class _BoomTools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any]) -> Any:
+            raise RuntimeError("boom")
+
+    facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=100.0,
+        arousal=0.0,
+        llm=_FakeLlm(tool_calls=[{"name": "file_io", "args": {}}]),
+        tools=_BoomTools(),
+    )
+    await facade.reply("在吗", "corr-boom")
+    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "think"][0]
+    assert "工具 file_io 执行失败" in think_system
 
 
 async def test_reply_ask_guidance_slow_only() -> None:

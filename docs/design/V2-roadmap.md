@@ -10,7 +10,7 @@
 |---|---|---|
 | ~~`wait_user`（ask 后等用户回答）~~ ✅ 已落地 | design §5.2 | reply 后按 `result["ask"]` 置 `_waiting_user`；tick 心跳 `check_timeouts` 超时 → `memory.record_no_answer` 记「用户没回答」 |
 | ~~搭话被忽略的回增~~ ✅ 已落地 | design §5.2 | `initiate_chat` 记待回应 desire；`check_timeouts` 超时 → `desire.expire`（值立即 +0.3 回灌） |
-| 表达侧工具调用（`bind_tools`） | design §5.1 | think/speak 支持调用工具（需 03-llm `complete` 支持 `bind_tools`） |
+| ~~表达侧工具调用（`bind_tools`）~~ ✅ 已落地 | design §5.1 | 慢通道 `use_tools` 节点查资料（本地搜索/文件/联网搜索），结果拼进 think/speak prompt（03-llm `complete` 支持 `bind_tools`） |
 | 语义相关性回溯检测 | design §5.1 | 回溯时按「时间隔太久 / 十分不相关」检测并终止 |
 
 ## 活动（activity）

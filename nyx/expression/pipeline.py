@@ -4,6 +4,7 @@
 
 节点为闭包，依赖经 ReplyDeps 注入。
 """
+import json
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from nyx.expression.prompt import build_system_prompt, build_user_prompt
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
+from nyx.tools.registry import ToolRegistry
 from nyx.types import CurrentState, Memory, Message, SelfNarrative
 
 
@@ -39,6 +41,7 @@ class ReplyState(TypedDict):
     waiting_user: bool           # MVP 恒 False
     correlation_id: str          # 本次 reply 溯源（17 补，对齐 14-activity）
     last_slow_at: float          # 上次慢通道时间（facade 维护，每 reply 入 state）
+    tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
 
 
 @dataclass
@@ -52,6 +55,7 @@ class ReplyDeps:
     ask_guidance: str
     config: ExpressionConfig
     history: deque[Message]              # facade 持有的会话历史（跨 reply）
+    tools: ToolRegistry                  # use_tools 节点查资料（慢通道）
 
 
 _THINK_TASK = "（只输出你此刻的内心独白，不要输出给用户看。）"
@@ -62,6 +66,11 @@ _SPEAK_TASK = "（只输出你要对用户说的第一句话。）"
 _SPEAK_TASK_CONTINUE = (
     "（接着你上面已经说过的内容，继续往下说下一句，"
     "不要重复已说过的、自然地递进。）"
+)
+_USE_TOOLS_TASK = (
+    "你可以调用工具查询信息（本地搜索、读写文件、联网搜索）。"
+    "本次回复若需要查询资料，就调用相应工具；"
+    "若不需要查询，直接回复「不需要」。"
 )
 
 
@@ -110,12 +119,47 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         narrative = await deps.inner_life.get_narrative()
         return {"memories": memories, "narrative": narrative}
 
+    async def use_tools(state: ReplyState) -> dict[str, Any]:
+        # 慢通道专属：问 LLM 是否需查资料（文件/搜索），查到的结果拼进 tool_outputs，
+        # think/speak 再据此回复。一轮，不做「查完再决定继续查」的循环。
+        system = build_system_prompt(
+            deps.canon, state["state"], state["narrative"], state["memories"],
+            ask_guidance=(
+                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
+            ),
+        )
+        user = (
+            build_user_prompt(state["message"], state["context"])
+            + "\n"
+            + _USE_TOOLS_TASK
+        )
+        output = await deps.llm.complete(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            module="expression",
+            output_type="tool",
+            correlation_id=state["correlation_id"],
+            tools=deps.tools.schema(),
+        )
+        await deps.evaluator.evaluate(output)
+        outputs: list[str] = []
+        for tc in output.tool_calls:
+            name = tc.get("name", "")
+            args = tc.get("args", {})
+            try:
+                result = await deps.tools.call(name, args)
+                text = json.dumps(result, ensure_ascii=False)
+            except Exception:  # 工具执行失败不崩回复（best-effort 豁免）
+                text = f"工具 {name} 执行失败"
+            outputs.append(f"{name}: {text}")
+        return {"tool_outputs": outputs}
+
     async def think(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], state["memories"],
             ask_guidance=(
                 deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
             ),
+            tool_outputs=state["tool_outputs"],
         )
         user = build_user_prompt(state["message"], state["context"])
         prior = _rounds_block(state["think"], state["speak"])      # 前几轮 think/speak
@@ -141,6 +185,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             ask_guidance=(
                 deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
             ),
+            tool_outputs=state["tool_outputs"],
         )
         user = build_user_prompt(state["message"], state["context"])
         # 前几轮（不含本轮 think）
@@ -212,6 +257,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     graph = StateGraph(ReplyState)
     graph.add_node("classify_channel", classify)
     graph.add_node("assemble_context", assemble)
+    graph.add_node("use_tools", use_tools)
     graph.add_node("think", think)
     graph.add_node("speak", speak)
     graph.add_node("should_ask", should_ask)
@@ -223,7 +269,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         route_after_classify,
         {"assemble_context": "assemble_context", "think": "think"},
     )
-    graph.add_edge("assemble_context", "think")
+    graph.add_edge("assemble_context", "use_tools")
+    graph.add_edge("use_tools", "think")
     graph.add_edge("think", "speak")
     graph.add_conditional_edges(
         "speak",

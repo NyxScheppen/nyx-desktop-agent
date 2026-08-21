@@ -1,7 +1,7 @@
 # 工具系统
 
 > 范围：`tools/registry.py`（`ToolRegistry`：register / call / schema）、`tools/local_search.py`、`tools/web_search.py`、`tools/file_io.py`（三个内置工具）。
-> 纯基础设施 spec：只做「工具注册 + 工具执行 + 三个内置工具」，不含 Facade、不含 API、不含 LangGraph 工具绑定（那是 14-activity 的活）。
+> 纯基础设施 spec：只做「工具注册 + 工具执行 + 三个内置工具」，不含 Facade、不含 API、不含 LangGraph 工具绑定（那是 14-activity 与 17-expression 的活）。
 > **本文件自包含**：4 个文件的完整代码内联在下文。
 
 ## 元信息
@@ -33,13 +33,13 @@
 - **不校验 args 与 schema**：不引入 JSON schema validator（新依赖 + 复杂度）；schema 是给 LLM 的契约，handler 签名是给运行时的契约
 - **`Tool.schema` vs `schema()`**：`Tool.schema` 存**参数** JSON schema（`{"type":"object","properties":…,"required":[…]}`）；`ToolRegistry.schema()` 把它包成 LLM 函数定义格式 `[{name, description, parameters}]`（OpenAI/LangChain function calling 格式），按注册序输出
 - **重复注册 → `ValueError`**：fail-fast 抓组合根的布线 bug（重复注册同名工具）；`register` 不静默覆盖
-- **结果 JSON 可序列化**：工具返回 `dict` / `list` / `str`，不返回 domain dataclass——结果要进 14-activity 的 LLM 上下文
+- **结果 JSON 可序列化**：工具返回 `dict` / `list` / `str`，不返回 domain dataclass——结果要进 14-activity / 17-expression 的 LLM 上下文
 - **全 async + 不阻塞事件循环**：fs / network 是阻塞 I/O，用 `asyncio.to_thread` 包一层（CLAUDE.md「I/O 操作用 async def」+ 不卡 SSE 广播）
 - **`web_search` opt-in 归组合根**：06-tools 只提供 `build_web_search_tool()`；`main.py`（18-api）读 `config.exploration.web_enabled`，true 才注册。未注册 → 不出现在 `schema()` 里，LLM 不可见、`call` 报 `KeyError`
 - **`file_io` 沙箱（只读 + 指定写目录）**：`read` / `list` 全盘（读安全，agent 需要读任意书/文件）；`write` 限定 `write_root`（默认 `Path("workspace")`，相对 cwd），越界抛 `ValueError`。路径校验用 `pathlib` 的 `.resolve()` + `.is_relative_to()`。已知边界：`read`/`list` 全盘是有意设计（探索特性），本地单机 agent 以用户权限运行、非沙箱，LLM 可经 exploration `focus` 指向任意路径——MVP 接受，不提供对外服务隔离（不为此加 read_root 配置）
 - **`local_search` 范围**：缺省搜**全盘**（`full_disk_roots()`：Windows 枚举存在的盘符、POSIX 根 `/`），与 `file_io.read` 的「读可全盘」一致；`.txt` / `.md` 文本，大小写不敏感子串匹配，返回 `[{path, snippet}]`。`roots` 参数可收窄（探索链传 `[workspace]`、测试传 `[tmp_path]`）。与记忆检索（08-memory-retrieval）是两码事——本工具搜**文件**，不搜记忆表
 - **全盘遍历用 `os.walk` + `onerror` 跳过无权限目录**：`rglob` 在无权限目录（Windows `System Volume Information` 等）会抛 `PermissionError`；`os.walk(root, onerror=...)` 跳过不可读目录继续走。注意全盘搜索慢（冷跑可能分钟级），探索链若要收窄用 `roots` 参数；结果截断到 `_MAX_RESULTS`（50）、单文件超 `_MAX_FILE_BYTES`（1MiB）跳过（界内存/耗时兜底，不做超时——`to_thread` 无法干净中断 os.walk 线程）
-- **注入非全局**：`ToolRegistry` 是普通类，组合根实例化 + 注入活动 Facade（同 EventBus 约定），无模块级单例
+- **注入非全局**：`ToolRegistry` 是普通类，组合根实例化 + 注入活动 Facade 与表达 Facade（同 EventBus 约定），无模块级单例
 
 ### `tools/registry.py`（完整）
 

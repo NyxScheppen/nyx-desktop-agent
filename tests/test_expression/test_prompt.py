@@ -167,3 +167,16 @@ def test_build_user_prompt_with_context() -> None:
 
 def test_memory_block_fallback_to_content() -> None:
     assert "- 原始记忆" in _memory_block([_memory(summary="")])
+
+
+def test_build_system_prompt_tool_outputs() -> None:
+    result = build_system_prompt(
+        _CANON, _state(), tool_outputs=["local_search: [{\"title\": \"骑士小说\"}]"]
+    )
+    assert "[工具查询结果]" in result
+    assert "local_search: [{\"title\": \"骑士小说\"}]" in result
+
+
+def test_build_system_prompt_no_tool_outputs() -> None:
+    result = build_system_prompt(_CANON, _state())
+    assert "[工具查询结果]" not in result

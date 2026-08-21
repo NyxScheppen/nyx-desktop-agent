@@ -88,6 +88,7 @@ class LlmClient:
         output_type: str,
         correlation_id: str,
         json_mode: bool = False,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMOutput:
         if module == "expression":
             # 调试：终端打印每次组装好的完整 prompt（system + user 全文）
@@ -100,10 +101,21 @@ class LlmClient:
         kwargs: dict[str, Any] = {}
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        if tools:
+            kwargs["tools"] = tools  # bind_tools：function calling 工具定义
         response = await self._model.ainvoke([_to_lc(m) for m in messages], **kwargs)
         content = response.content
         if not isinstance(content, str):
             raise RuntimeError(f"期望文本 content，得到 {type(content).__name__}")
+        tool_calls: list[dict[str, Any]] = []
+        raw_calls = getattr(response, "tool_calls", None)
+        if raw_calls:
+            for tc in raw_calls:
+                # LangChain 返回 pydantic ToolCall（有 model_dump）；兼容裸 dict。
+                if hasattr(tc, "model_dump"):
+                    tool_calls.append(cast(dict[str, Any], tc.model_dump()))
+                else:
+                    tool_calls.append(cast(dict[str, Any], tc))
         return LLMOutput(
             id=str(uuid.uuid4()),    # 每次调用唯一，供 EvalReport.output_id
             module=module,
@@ -112,4 +124,5 @@ class LlmClient:
             content=content,
             token_usage=_extract_usage(response),
             correlation_id=correlation_id,
+            tool_calls=tool_calls,
         )

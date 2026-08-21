@@ -317,6 +317,8 @@ class LLMOutput:
     content: str            # 原始文本
     token_usage: TokenUsageDict
     correlation_id: str
+    # bind_tools 时 LLM 请求的工具调用（无则空）
+    tool_calls: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
 
 @dataclass
 class EvalReport:
@@ -349,6 +351,7 @@ class TokenUsage:           # 一次 LLM 调用记账（对应 token_usage 表�
 | `CurrentState.values` | `Values` | 固定 4 键（三观） |
 | `EvalReport.scores` | `EvalScores` | 固定 3 键（format/ooc/relevance） |
 | `LLMOutput.token_usage` / `EvalReport.token_usage` | `TokenUsageDict` | 固定 2 键（input/output） |
+| `LLMOutput.tool_calls` | `list[dict[str, Any]]` | bind_tools 的工具调用，异构载荷（name/args 等） |
 | `Event.content` | `dict[str, Any]` | 形状随 `EventType` 变 |
 | `Activity.progress` | `dict[str, Any]` | 形状随 `ActivityType` 变 |
 | `Tool.schema` | `dict[str, Any]` | 任意 JSON schema |

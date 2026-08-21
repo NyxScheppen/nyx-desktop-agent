@@ -20,6 +20,7 @@ from nyx.expression.prompt import build_system_prompt
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
+from nyx.tools.registry import ToolRegistry
 from nyx.types import CurrentState, Message, ShortTermDesire
 
 
@@ -37,6 +38,7 @@ class ExpressionFacade:
         canon: str,
         ask_guidance: str,
         config: ExpressionConfig,
+        tools: ToolRegistry,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -68,6 +70,7 @@ class ExpressionFacade:
                 ask_guidance=self._ask_guidance,
                 config=self._config,
                 history=self._history,
+                tools=tools,
             )
         )
 
@@ -93,6 +96,7 @@ class ExpressionFacade:
             "waiting_user": False,
             "correlation_id": correlation_id,
             "last_slow_at": self._last_slow_at,
+            "tool_outputs": [],
         }
         result = await self._graph.ainvoke(initial)
         if result["mode"] is ContextMode.SLOW:

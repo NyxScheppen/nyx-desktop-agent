@@ -175,6 +175,44 @@ def test_complete_json_mode_off() -> None:
     assert "response_format" not in fake._recorded_kwargs
 
 
+def test_complete_tools_passthrough() -> None:
+    client, fake = _client(AIMessage(content="hi"))
+    tools = [{"type": "function", "function": {"name": "local_search"}}]
+    _complete(client, tools=tools)
+    assert fake._recorded_kwargs["tools"] == tools
+
+
+def test_complete_tools_off() -> None:
+    client, fake = _client(AIMessage(content="hi"))
+    _complete(client)
+    assert "tools" not in fake._recorded_kwargs
+
+
+def test_complete_tool_calls_parsed() -> None:
+    response = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "local_search",
+                "args": {"q": "骑士"},
+                "id": "call-1",
+                "type": "tool_call",
+            }
+        ],
+    )
+    client, _ = _client(response)
+    out = _complete(client)
+    assert out.content == ""
+    assert len(out.tool_calls) == 1
+    assert out.tool_calls[0]["name"] == "local_search"
+    assert out.tool_calls[0]["args"] == {"q": "骑士"}
+
+
+def test_complete_no_tools_empty() -> None:
+    client, _ = _client(AIMessage(content="hi"))
+    assert _complete(client).tool_calls == []
+
+
 def test_complete_messages_passthrough() -> None:
     client, fake = _client(AIMessage(content="hi"))
     messages: list[LlmMessage] = [

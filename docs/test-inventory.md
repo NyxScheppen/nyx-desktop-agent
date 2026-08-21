@@ -59,8 +59,12 @@
 | `test_from_config_rejects_other_provider` | 边界鲁棒 | `provider="claude"` → `ConfigError` |
 | `test_from_config_rejects_missing_api_key` | 边界鲁棒 | `api_key_env` 未设（`delenv`）→ `ConfigError` |
 | `test_from_config_ok` | 功能正确 | 正常 → 返回 `LlmClient` 且 `_model_name == config.model` |
+| `test_complete_tools_passthrough` | 功能正确 | `complete(tools=[...])` → 传给 fake model 的 kwargs 含 `tools`（透传 schema） |
+| `test_complete_tools_off` | 功能正确 | `complete` 不传 `tools` → kwargs 不含 `tools` 键 |
+| `test_complete_tool_calls_parsed` | 功能正确 | fake 返回带 `tool_calls` 的 `AIMessage` → `LLMOutput.tool_calls` 正确解析为 `[{name, args}]` |
+| `test_complete_no_tools_empty` | 边界鲁棒 | 响应无 `tool_calls` → `LLMOutput.tool_calls == []` |
 
-**功能阶段**：03-llm 实现时编写；`test_extract_usage_non_int_value` 于第五轮 review 追加（`_safe_int` 防御非数字 token 值）。
+**功能阶段**：03-llm 实现时编写；`test_extract_usage_non_int_value` 于第五轮 review 追加（`_safe_int` 防御非数字 token 值）；`test_complete_tools_passthrough` / `test_complete_tools_off` / `test_complete_tool_calls_parsed` / `test_complete_no_tools_empty` 于「表达侧工具调用（bind_tools）」阶段追加（`complete` 支持 `tools` + `LLMOutput.tool_calls` 解析）。
 
 ## 04-db（SQLite 连接 + 建表 + 迁移）
 
@@ -471,8 +475,10 @@
 | `test_slow_score_in_range` | 边界鲁棒 | 极端输入 `low < 0.5` / `high ≥ 0.5` 均在 [0,1]；时钟回拨 `last_slow_at > now` → 仍 ≥ 0 |
 | `test_slow_score_factors` | 功能正确 | 五因子各生效：长>短、含「吗」>不含、含「难过」>不含、精力足平静>精力低激动、距上次大>小 |
 | `test_classify_channel` | 功能正确 | `threshold=0.5`：得分 ≥ 0.5（`在吗`+精力满+2h）→ SLOW；< 0.5（`哦`+精力20+arousal0.9+60s）→ FAST |
+| `test_build_system_prompt_tool_outputs` | 功能正确 | `tool_outputs` 非空 → 结果含 `[工具查询结果]` 段及各条 `- ` 前缀行 |
+| `test_build_system_prompt_no_tool_outputs` | 边界鲁棒 | `tool_outputs=None` / `[]` → 结果不含 `[工具查询结果]` |
 
-**功能阶段**：16-expression-prompt 实现时编写（纯函数，无 DB、无 async、无 fake LLM；`CurrentState`/`Memory`/`Message`/`SelfNarrative`/`ShortTermDesire` 全手构，无集成/E2E）；`test_build_system_prompt_ask_guidance` 于「主动提问段按需注入」阶段追加（ask_guidance 注入/省略）。
+**功能阶段**：16-expression-prompt 实现时编写（纯函数，无 DB、无 async、无 fake LLM；`CurrentState`/`Memory`/`Message`/`SelfNarrative`/`ShortTermDesire` 全手构，无集成/E2E）；`test_build_system_prompt_ask_guidance` 于「主动提问段按需注入」阶段追加（ask_guidance 注入/省略）；`test_build_system_prompt_tool_outputs` / `test_build_system_prompt_no_tool_outputs` 于「表达侧工具调用（bind_tools）」阶段追加（tool_outputs 段拼装/省略）。
 
 ## 17-expression（回复流程 + 碎碎念 + 搭话）
 
@@ -489,8 +495,11 @@
 | `test_rounds_block_single` | 功能正确 | 含「第1轮内心：t1」「第1轮对外：s1」 |
 | `test_rounds_block_two` | 功能正确 | 两轮顺序正确（t1 < s1 < t2 < s2） |
 | `test_reply_fast` | 功能正确 | 快通道：complete×2（think+speak）、evaluate×2、`search`/`create_scene_memory` 未调、publish `[THINK, SPEAK]` |
-| `test_reply_slow_non_question` | 功能正确 | 慢通道非问句：complete×6、publish `[THINK, SPEAK]×3`、`search=1`、`create_scene_memory=1`、`nyx_think`/`nyx_speak` 3 轮 `"\n"` 拼接 |
-| `test_reply_slow_question` | 功能正确 | 慢通道问句：publish `[THINK, ASK]`（非 SPEAK）、`create_scene_memory` 仍调、提前结束（think/speak 各 1） |
+| `test_reply_slow_non_question` | 功能正确 | 慢通道非问句：complete×7（`["tool"] + ["think","speak"]×3`）、publish `[THINK, SPEAK]×3`、`search=1`、`create_scene_memory=1`、`nyx_think`/`nyx_speak` 3 轮 `"\n"` 拼接 |
+| `test_reply_slow_question` | 功能正确 | 慢通道问句：complete `["tool", "think", "speak"]`、publish `[THINK, ASK]`（非 SPEAK）、`create_scene_memory` 仍调、提前结束（think/speak 各 1） |
+| `test_reply_slow_tool_executes_and_flows_into_prompt` | 功能正确 | 工具被调用（`tools.calls` 记录名+args）、结果拼进 think system prompt（含 `[工具查询结果]` 与工具名） |
+| `test_reply_slow_no_tool_calls` | 边界鲁棒 | LLM 无 `tool_calls` → `tool_outputs` 空、think system prompt 不含 `[工具查询结果]` |
+| `test_reply_slow_tool_failure_fallback` | 边界鲁棒 | 工具 `call` 抛异常 → 回复不崩、prompt 含「工具 {name} 执行失败」降级文案 |
 | `test_cumulative_prompt` | 功能正确 | 第 2 轮 think user prompt 含第 1 轮 think/speak 文本；第 2 轮 speak 含第 2 轮 think 文本 |
 | `test_slow_channel_progressive` | 功能正确 | 慢通道第 1 轮 speak prompt 含「第一句话」、不含「继续往下说」；第 2 轮 speak prompt 含「继续往下说」（递进续写） |
 | `test_current_message_not_duplicated` | 回归保护 | `[对话历史]` 段不含当前消息、`[本次消息]` 含且仅一次 |
@@ -510,7 +519,7 @@
 | `test_check_timeouts_before_timeout_noop` | 边界鲁棒 | 未到超时点 → 无动作（wait_user 与待回搭话都保持） |
 | `test_check_timeouts_expires_ignored_chat` | 功能正确 | 搭话超时未回 → `desire.expire` 调 1 次（值回灌）、清 `_pending_chat_desire_id` |
 
-**功能阶段**：17-expression 实现时编写（mutter/pipeline 纯函数无 DB 无 async；facade 集成 fake LLM/memory/desire/inner_life/evaluator/bus 注入，`cast()` 注入不碰真实 db；无集成/E2E，与 18-api 组合根的编排归 18）；`test_reply_ask_guidance_slow_only` 于「主动提问段按需注入」阶段追加（慢通道注入 ask 指导、快通道省略），`test_initiate_chat_non_empty` 同轮补注入断言；`test_slow_channel_progressive` 与 `test_initiate_chat_appends_history` 于「慢通道递进续写 + 搭话落历史」阶段追加（三段递进而非并列、主动搭话后用户回复能回溯开场白）；`test_reply_question_sets_waiting_user` / `test_reply_clears_pending_state` / `test_initiate_chat_sets_pending_desire` / `test_check_timeouts_records_no_answer` / `test_check_timeouts_before_timeout_noop` / `test_check_timeouts_expires_ignored_chat` 于「表达交互闭环」轮追加（V2 wait_user 等待 + 搭话被忽略回灌的待回应态与 tick 超时收尾）。
+**功能阶段**：17-expression 实现时编写（mutter/pipeline 纯函数无 DB 无 async；facade 集成 fake LLM/memory/desire/inner_life/evaluator/bus 注入，`cast()` 注入不碰真实 db；无集成/E2E，与 18-api 组合根的编排归 18）；`test_reply_ask_guidance_slow_only` 于「主动提问段按需注入」阶段追加（慢通道注入 ask 指导、快通道省略），`test_initiate_chat_non_empty` 同轮补注入断言；`test_slow_channel_progressive` 与 `test_initiate_chat_appends_history` 于「慢通道递进续写 + 搭话落历史」阶段追加（三段递进而非并列、主动搭话后用户回复能回溯开场白）；`test_reply_question_sets_waiting_user` / `test_reply_clears_pending_state` / `test_initiate_chat_sets_pending_desire` / `test_check_timeouts_records_no_answer` / `test_check_timeouts_before_timeout_noop` / `test_check_timeouts_expires_ignored_chat` 于「表达交互闭环」轮追加（V2 wait_user 等待 + 搭话被忽略回灌的待回应态与 tick 超时收尾）；`test_reply_slow_tool_executes_and_flows_into_prompt` / `test_reply_slow_no_tool_calls` / `test_reply_slow_tool_failure_fallback` 于「表达侧工具调用（bind_tools）」轮追加（use_tools 节点执行工具 + 结果进 prompt + 失败降级），`test_reply_slow_non_question` / `test_reply_slow_question` 同轮改断言（complete 序列前置 `tool`、complete 数 +1）。
 
 ## 18-api（组合根 + REST + SSE）
 

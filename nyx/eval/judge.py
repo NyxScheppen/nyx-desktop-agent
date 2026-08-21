@@ -16,8 +16,11 @@ _logger = logging.getLogger(__name__)
 
 
 def should_judge(output_type: str, sample_rate: float, roll: float) -> bool:
-    """是否触发 LLM-judge（纯函数）：judge 输出不递归 judge + 抽样命中。"""
-    if output_type == "judge":
+    """是否触发 LLM-judge（纯函数）：judge 输出不递归 judge + 抽样命中。
+
+    tool 输出（use_tools 的工具决策）无文本可评，跳过 judge（避免空 content 打分）。
+    """
+    if output_type in ("judge", "tool"):
         return False
     return roll < sample_rate
 

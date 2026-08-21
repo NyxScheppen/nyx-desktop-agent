@@ -60,7 +60,7 @@
 data = {"event_id": event.id, "correlation_id": event.correlation_id, **event.content}
 ```
 
-> 前端拿到该事件的完整 `content`（键结构由各生产方 spec 定义）再加两个溯源字段。`event.content` 的键从不与 `event_id`/`correlation_id` 冲突（生产方不产这两个键），展开安全。示例：`speak` → `{event_id, correlation_id, content}`；`activity_end` → `{event_id, correlation_id, activity_id, desire_id, goal_met, energy_delta, result}`，其中 `result` 形状随 `ActivityType` 变（读书→`{book, note}`、创作→`{title, content}`、探索→`{findings, notes}`、发呆/休息/观察→`{}`，见 14-activity）。
+> 前端拿到该事件的完整 `content`（键结构由各生产方 spec 定义）再加两个溯源字段。`event.content` 的键从不与 `event_id`/`correlation_id` 冲突（生产方不产这两个键），展开安全。示例：`speak` → `{event_id, correlation_id, content}`；`activity_end` → `{event_id, correlation_id, activity_id, desire_id, goal_met, energy_delta, result}`，其中 `result` 形状随 `ActivityType` 变（读书→`{book, note, read_chars, total_chars}`、创作→`{title, content, path}`、探索→`{findings, notes}`、发呆→`{summary}`、休息→`{}`、观察→`{presence, window_title, summary}`，见 14-activity）。
 
 > **SSE vs REST 切分**：SSE 实时推送**全部事件**（前端按 `event` 类型增量更新面板）；REST 只做**初始快照 + 历史查询 + 导出**（`GET /api/state` 初始快照，`/api/memories` `/api/eval` `/api/tokens` `/api/events/log` 列表查询）。
 
@@ -98,9 +98,10 @@ async def on_tick(tick_type: TickType) -> None                  # 排期/评估�
 async def on_desire_generated(event: Event) -> None             # DESIRE_GENERATED 触发消费欲望
 def select_activity(desires: list[ShortTermDesire], state: CurrentState) -> Activity | None  # desires 来自 DesireFacade.get_pending()；无欲望/全互动欲返回 None（纯决策，同步）
 async def complete_activity(activity: Activity) -> None         # 内部发布 activity_end（满足信号等）
-async def interrupt(activity_id: str, by: EventType) -> None    # 抢占即废弃，置 ABANDONED
+async def interrupt(activity_id: str, by: EventType) -> None    # 抢占即暂停：可续活动（读书/创作/探索）置 PAUSED、其余置 ABANDONED；同日程块内 _maybe_start_activity 恢复同一记录
 async def get_current() -> Activity | None                      # 当前活动（running），供快照/仪表盘
 async def get_schedule() -> list[Activity]                      # 今日日程块（供 /api/activity）
+async def read_material(path: str, filename: str, total_chars: int, correlation_id: str) -> None  # 喂资料：注册书库 + 发起 READING 读第一块
 ```
 
 ### DesireFacade
@@ -250,6 +251,7 @@ nyx/
   activity/
     facade.py             # ActivityFacade
     store.py              # ActivityStore（activity 表单表 CRUD）
+    material_store.py     # MaterialStore（书库分块进度 + 读书笔记片段）
     scheduler.py          # 日程块排期
     exploration.py        # 跨域行为链（LangGraph）
     observe.py            # 观察用户

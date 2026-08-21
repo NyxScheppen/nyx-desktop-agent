@@ -33,6 +33,14 @@ _logger = logging.getLogger(__name__)
 
 _READ_CONTEXT_CHARS = 6000  # 读物喂 LLM 的字符预算（decision，可推翻）
 
+# 可续活动：打断置 PAUSED、同日程块内恢复同一记录（读书续读，创作/探索重跑）。
+# 发呆/观察/休息瞬时无进度，仍抢占即废弃置 ABANDONED。
+_RESUMABLE_TYPES = (
+    ActivityType.READING,
+    ActivityType.CREATION,
+    ActivityType.FREE_EXPLORATION,
+)
+
 
 def _day_start(now: float) -> float:
     """当日零点（UTC 日边界，MVP 可推翻为本地时区）。纯函数。"""
@@ -256,11 +264,12 @@ class ActivityFacade:
         )
 
     async def interrupt(self, activity_id: str, by_event: EventType) -> None:
-        """抢占即废弃：校验目标 RUNNING → cancel 执行 task 并 await 其彻底结束
+        """抢占即暂停：校验目标 RUNNING → cancel 执行 task 并 await 其彻底结束
         → 重读守卫（窗口内已自行完成/失败则不覆盖）→ 置终态落库
-        （读书 PAUSED 可续读，其余 ABANDONED）+ 发布 activity_interrupted。
+        （可续活动 PAUSED，其余 ABANDONED）+ 发布 activity_interrupted。
 
-        执行中的 result 尚未写入，故仅落终态（不持久化部分进度）。
+        执行中的 result 尚未写入，故仅落终态（不持久化部分进度）；
+        读书的 read_chars 已 advance 进 material 层，恢复时从那里续读。
         """
         activity = await self._store.get(activity_id)
         if activity is None or activity.status is not ActivityStatus.RUNNING:
@@ -275,11 +284,11 @@ class ActivityFacade:
         activity = await self._store.get(activity_id)   # 重读：已终态则不动
         if activity is None or activity.status is not ActivityStatus.RUNNING:
             return
-        # 读书被打断置 PAUSED（material 层 read_chars 已 advance，next_readable
-        # 会从断点续读）；其余活动抢占即废弃，仍置 ABANDONED。
+        # 可续活动（读书/创作/探索）打断置 PAUSED 保留记录，同日程块内恢复；
+        # 其余（发呆/观察/休息瞬时无进度）抢占即废弃，仍置 ABANDONED。
         activity.status = (
             ActivityStatus.PAUSED
-            if activity.type is ActivityType.READING
+            if activity.type in _RESUMABLE_TYPES
             else ActivityStatus.ABANDONED
         )
         activity.ended_at = time.time()
@@ -343,6 +352,24 @@ class ActivityFacade:
                 return
             current = await self._store.get_current()
             if current is not None and current.status is ActivityStatus.RUNNING:
+                return
+            # 同日程块内恢复 PAUSED 记录（design §3.3）：读书从 material 层刷新
+            # read_chars 续读；创作/探索无中间态、重跑。恢复同一 id，不新建。
+            block_id = format_time_label(
+                0, self._config.grid_minutes, _elapsed_hours(time.time())
+            )
+            resumed = await self._store.get_paused_in_block(block_id)
+            if resumed is not None:
+                if resumed.type is ActivityType.READING:
+                    source = resumed.progress.get("source")
+                    if isinstance(source, str):
+                        material = await self._material_store.get_by_path(source)
+                        if material is not None:
+                            resumed.progress["read_chars"] = material.read_chars
+                            resumed.progress["total_chars"] = material.total_chars
+                resumed.ended_at = None
+                self._task = asyncio.create_task(self._execute(resumed))
+                self._task.add_done_callback(_harvest_task_exception)
                 return
             desires = await self._desire.get_pending()
             values = (await self._desire.get_all()).values

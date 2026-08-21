@@ -80,3 +80,23 @@ async def test_find_by_topic_no_match_returns_none() -> None:
         assert await store.find_by_topic("骑士团") is None
     finally:
         await database.conn.close()
+
+
+async def test_get_by_path_returns_latest_progress() -> None:
+    """get_by_path 按路径取书，含 advance 后的最新 read_chars。"""
+    store, database = await _new_store()
+    try:
+        await store.upsert("/a.txt", "a.txt", 100, 1000.0)
+        await store.advance("/a.txt", 60, 2000.0)
+        mat = await store.get_by_path("/a.txt")
+        assert mat is not None and mat.read_chars == 60
+    finally:
+        await database.conn.close()
+
+
+async def test_get_by_path_missing_returns_none() -> None:
+    store, database = await _new_store()
+    try:
+        assert await store.get_by_path("/nope.txt") is None
+    finally:
+        await database.conn.close()

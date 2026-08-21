@@ -54,6 +54,17 @@ class ActivityStore:
             row = await cursor.fetchone()
         return _row_to_activity(row) if row is not None else None
 
+    async def get_paused_in_block(self, schedule_block_id: str) -> Activity | None:
+        """当前日程块内最新一条 PAUSED 记录（供恢复）；无则 None。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM activity WHERE status = 'paused' "
+                "AND schedule_block_id = ? ORDER BY started_at DESC LIMIT 1",
+                (schedule_block_id,),
+            )
+            row = await cursor.fetchone()
+        return _row_to_activity(row) if row is not None else None
+
     async def get_last_exploration(self) -> float:
         """最近一次自由探索活动的 started_at；从未探索返回 0.0（供频率上限判定）。"""
         async with self._db.lock:

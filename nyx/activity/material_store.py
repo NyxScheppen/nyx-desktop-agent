@@ -58,6 +58,15 @@ class MaterialStore:
             row = await cursor.fetchone()
         return _row_to_material(row) if row is not None else None
 
+    async def get_by_path(self, path: str) -> Material | None:
+        """按路径取一本书（含最新 read_chars），供读书恢复续读；无则 None。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM material WHERE path = ?", (path,),
+            )
+            row = await cursor.fetchone()
+        return _row_to_material(row) if row is not None else None
+
     async def advance(self, path: str, read_chars: int, now: float) -> None:
         """推进一本书的已读进度（updated_at 同步刷新）。"""
         async with self._db.lock:

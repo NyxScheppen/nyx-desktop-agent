@@ -18,6 +18,7 @@ from nyx.activity.facade import (
     _sanitize_filename,
 )
 from nyx.activity.material_store import MaterialStore
+from nyx.activity.scheduler import format_time_label
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.db import Database
@@ -107,13 +108,17 @@ def _activity(
     type_: ActivityType = ActivityType.READING,
     status: ActivityStatus = ActivityStatus.PENDING,
     started_at: float = 1000.0,
+    schedule_block_id: str = "09:00",
+    progress: dict[str, Any] | None = None,
 ) -> Activity:
     return Activity(
         id=id,
         type=type_,
-        schedule_block_id="09:00",
+        schedule_block_id=schedule_block_id,
         status=status,
-        progress={"desire_id": None, "goal": None, "correlation_id": None},
+        progress=progress
+        if progress is not None
+        else {"desire_id": None, "goal": None, "correlation_id": None},
         started_at=started_at,
     )
 
@@ -687,7 +692,29 @@ async def test_complete_activity() -> None:
         await database.conn.close()
 
 
-async def test_interrupt_running() -> None:
+async def test_interrupt_non_resumable_abandons() -> None:
+    """瞬时活动（休息）打断仍置 ABANDONED（无进度可续）。"""
+    facade, store, bus, database = await _new_facade()
+    try:
+        events = _subscribe_activity(bus)
+        await store.insert(
+            _activity("a1", type_=ActivityType.REST, status=ActivityStatus.RUNNING)
+        )
+        async with _running(bus):
+            await facade.interrupt("a1", EventType.USER_MESSAGE)
+        got = await store.get("a1")
+        assert got is not None
+        assert got.status is ActivityStatus.ABANDONED
+        assert got.ended_at is not None
+        ints = [e for e in events if e.type is EventType.ACTIVITY_INTERRUPTED]
+        assert len(ints) == 1
+        assert ints[0].content["by"] == "user_message"
+    finally:
+        await database.conn.close()
+
+
+async def test_interrupt_creation_marks_paused() -> None:
+    """创作被打断置 PAUSED（保留记录可重跑），非 ABANDONED。"""
     facade, store, bus, database = await _new_facade()
     try:
         events = _subscribe_activity(bus)
@@ -698,7 +725,7 @@ async def test_interrupt_running() -> None:
             await facade.interrupt("a1", EventType.USER_MESSAGE)
         got = await store.get("a1")
         assert got is not None
-        assert got.status is ActivityStatus.ABANDONED
+        assert got.status is ActivityStatus.PAUSED
         assert got.ended_at is not None
         ints = [e for e in events if e.type is EventType.ACTIVITY_INTERRUPTED]
         assert len(ints) == 1
@@ -737,9 +764,9 @@ async def test_interrupt_missing() -> None:
         await database.conn.close()
 
 
-async def test_interrupt_abandons_in_flight_activity() -> None:
-    """竞态回归：执行中活动挂起在可取消 await 上时 interrupt → 终态 ABANDONED，
-    不被随后 complete 覆盖。"""
+async def test_interrupt_pauses_in_flight_activity() -> None:
+    """竞态回归：执行中可续活动（探索）挂起在可取消 await 上时 interrupt →
+    终态 PAUSED，不被随后 complete 覆盖。"""
     facade, store, bus, database = await _new_facade(
         pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0,
         llm=_BlockingLlm(),
@@ -752,7 +779,7 @@ async def test_interrupt_abandons_in_flight_activity() -> None:
             await facade.interrupt(cur.id, EventType.USER_MESSAGE)
         got = await store.get(cur.id)
         assert got is not None
-        assert got.status is ActivityStatus.ABANDONED
+        assert got.status is ActivityStatus.PAUSED
         assert got.ended_at is not None
         ints = [e for e in events if e.type is EventType.ACTIVITY_INTERRUPTED]
         assert len(ints) == 1
@@ -934,5 +961,103 @@ async def test_maybe_start_reading_uses_topic(
         assert len(acts) == 1
         assert acts[0].progress["source"] == str(target)
         assert acts[0].progress["filename"] == "骑士团历史.txt"
+    finally:
+        await database.conn.close()
+
+
+# ---- 恢复/续做 ----
+
+
+async def test_resume_paused_creation_reruns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同日程块内 PAUSED 创作被恢复：同一记录重跑完成，不新建。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    block_id = format_time_label(0, 60, _elapsed_hours(t0))
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade, store, bus, database = await _new_facade(llm=llm, evaluator=evaluator)
+    try:
+        await store.insert(
+            _activity(
+                "p1",
+                type_=ActivityType.CREATION,
+                status=ActivityStatus.PAUSED,
+                schedule_block_id=block_id,
+                progress={
+                    "desire_id": "d1", "goal": None, "correlation_id": "d1",
+                    "description": "写日记",
+                },
+            )
+        )
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        assert [a.id for a in acts] == ["p1"]      # 恢复同一记录，未新建
+        assert acts[0].status is ActivityStatus.COMPLETED
+        assert len(evaluator.evaluated) == 1
+    finally:
+        await database.conn.close()
+
+
+async def test_resume_paused_reading_refreshes_read_chars(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """读书恢复：read_chars 从 material 层刷新（而非 progress 里的旧值），续读。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    block_id = format_time_label(0, 60, _elapsed_hours(t0))
+    source = tmp_path / "book.txt"
+    source.write_text("甲" * 7000, encoding="utf-8")
+    facade, store, bus, database = await _new_facade()
+    try:
+        await facade._material_store.upsert(str(source), "book.txt", 7000, t0)
+        # 模拟已读 6000：material 层进度领先 progress 里的旧 read_chars=0
+        await facade._material_store.advance(str(source), 6000, t0)
+        await store.insert(
+            _activity(
+                "p1",
+                status=ActivityStatus.PAUSED,
+                schedule_block_id=block_id,
+                progress={
+                    "source": str(source), "filename": "book.txt",
+                    "read_chars": 0, "total_chars": 7000,
+                    "correlation_id": "c1",
+                },
+            )
+        )
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        assert [a.id for a in acts] == ["p1"]
+        assert acts[0].progress["read_chars"] == 6000   # 已刷新到 material 层进度
+        assert acts[0].progress["result"]["read_chars"] == 7000
+    finally:
+        await database.conn.close()
+
+
+async def test_resume_skips_different_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """不同日程块的 PAUSED 不恢复：保留旧记录，走正常新起。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    facade, store, bus, database = await _new_facade(energy=80.0)
+    try:
+        await store.insert(
+            _activity("p1", status=ActivityStatus.PAUSED, schedule_block_id="00:00")
+        )
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        ids = [a.id for a in acts]
+        assert "p1" in ids                         # 旧 PAUSED 保留
+        assert len(ids) == 2                       # 新起一个活动
+        new = next(a for a in acts if a.id != "p1")
+        assert new.type is ActivityType.OBSERVE_USER
     finally:
         await database.conn.close()

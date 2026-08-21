@@ -14,11 +14,12 @@ def _activity(
     progress: dict[str, Any] | None = None,
     started_at: float = 1000.0,
     ended_at: float | None = None,
+    schedule_block_id: str = "09:00",
 ) -> Activity:
     return Activity(
         id=id,
         type=type_,
-        schedule_block_id="09:00",
+        schedule_block_id=schedule_block_id,
         status=status,
         progress=progress if progress is not None else {"desire_id": None},
         started_at=started_at,
@@ -128,5 +129,37 @@ async def test_update() -> None:
         assert got.status is ActivityStatus.COMPLETED
         assert got.progress == {"result": {"book": "x"}}
         assert got.ended_at == 9999.0
+    finally:
+        await database.conn.close()
+
+
+async def test_get_paused_in_block_latest() -> None:
+    """get_paused_in_block 只取当前块最新一条 PAUSED。"""
+    store, database = await _new_store()
+    try:
+        await store.insert(
+            _activity("a1", status=ActivityStatus.PAUSED, started_at=1000.0)
+        )
+        await store.insert(
+            _activity("a2", status=ActivityStatus.PAUSED, started_at=2000.0)
+        )
+        await store.insert(
+            _activity("other", status=ActivityStatus.PAUSED, schedule_block_id="10:00")
+        )
+        got = await store.get_paused_in_block("09:00")
+        assert got is not None
+        assert got.id == "a2"     # 最新一条，且忽略其他块
+    finally:
+        await database.conn.close()
+
+
+async def test_get_paused_in_block_none() -> None:
+    """无当前块 PAUSED → None。"""
+    store, database = await _new_store()
+    try:
+        await store.insert(
+            _activity("a1", status=ActivityStatus.COMPLETED, started_at=1000.0)
+        )
+        assert await store.get_paused_in_block("09:00") is None
     finally:
         await database.conn.close()

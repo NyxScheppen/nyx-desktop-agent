@@ -10,18 +10,20 @@
 
 ## 用户故事
 
-> 作为 Nyx 系统的开发者，我想要活动系统的门面——`on_tick`/`on_desire_generated` 触发消费欲望、`select_activity` 选活动、后台 task 执行（读书/创作/发呆/自由探索/观察/休息）、`complete_activity` 判定 goal 并发布 `activity_end`、`interrupt` 抢占即废弃、`get_current`/`get_schedule` 供仪表盘——以便欲望「达峰→生成→被消费→满足回写」闭环，前端能看到活动时间线、打断点、进度。
+> 作为 Nyx 系统的开发者，我想要活动系统的门面——`on_tick`/`on_desire_generated` 触发消费欲望、`select_activity` 选活动、后台 task 执行（读书/创作/发呆/自由探索/观察/休息）、`complete_activity` 判定 goal 并发布 `activity_end`、`interrupt` 抢占即暂停（可续活动）或废弃、同日程块内恢复 PAUSED 记录、`get_current`/`get_schedule` 供仪表盘——以便欲望「达峰→生成→被消费→满足回写」闭环，前端能看到活动时间线、打断点、进度。
 
 ## 验收标准
 
-- [ ] `store.py` 含 `ActivityStore`（`insert` / `get` / `get_current` / `get_last_exploration` / `list_schedule` / `update`），与「`activity/store.py`（完整）」段逐字一致
+- [ ] `store.py` 含 `ActivityStore`（`insert` / `get` / `get_current` / `get_paused_in_block` / `get_last_exploration` / `list_schedule` / `update`），与「`activity/store.py`（完整）」段逐字一致
 - [ ] `facade.py` 含 `ActivityFacade`：`on_tick(tick_type) -> None` / `on_desire_generated(event) -> None` / `select_activity(desires, state) -> Activity | None` / `complete_activity(activity) -> None` / `interrupt(activity_id, by_event) -> None` / `get_current() -> Activity | None` / `get_schedule() -> list[Activity]` / `read_material(path, filename, total_chars, correlation_id) -> None`
 - [ ] `select_activity` 纯决策：无欲望→`None`；精力不足→`REST`；否则第一个可排程欲望→映射活动，`progress` 存 `desire_id`/`goal`/`correlation_id`/`description`
 - [ ] `READING` 升级 `FREE_EXPLORATION`：探索欲映射的读书在 `_maybe_start_activity` 里经 `should_explore`（精力充足 + 频率上限）判定升级；频率上限内降级为普通读书
 - [ ] 空槽默认：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`（精力疲惫 `< ENERGY_REST_THRESHOLD`→`IDLE_REFLECTION`、否则→`OBSERVE_USER`），`progress["desire_id"] is None`
 - [ ] 活动执行在**后台 task**（不阻塞事件总线）；`activity_start`/`activity_end`/`activity_interrupted` 由 facade 自己 `publish`、`source=INTERNAL`
 - [ ] `complete_activity`：goal 判定（`_goal_met` 纯函数）→ `status=COMPLETED` → 发布 `activity_end`（content 含 `activity_id`/`type`/`desire_id`/`goal_met`/`energy_delta`/`result`）
-- [ ] `interrupt`：先校验目标 activity 存在且 RUNNING → cancel 执行 task 并 await 其结束 → 重读守卫 → `status=ABANDONED` + 发布 `activity_interrupted`（content `{activity_id, by}`）
+- [ ] `interrupt`：先校验目标 activity 存在且 RUNNING → cancel 执行 task 并 await 其结束 → 重读守卫 → 可续活动（`_RESUMABLE_TYPES`：READING/CREATION/FREE_EXPLORATION）置 `PAUSED`、其余置 `ABANDONED` + 发布 `activity_interrupted`（content `{activity_id, by}`）
+- [ ] 同日程块内恢复：`_maybe_start_activity` 在查 running 后、欲望排序前查 `get_paused_in_block(当前块)`，命中则恢复同一记录（READING 从 `material_store.get_by_path` 刷新 `read_chars`/`total_chars` 续读；CREATION/FREE_EXPLORATION 无中间态重跑）；未命中再走欲望排序/空槽默认
+- [ ] `material_store.py` 含 `MaterialStore`（`upsert` / `next_readable` / `find_by_topic` / `get_by_path` / `advance` / `append_fragment` / `get_fragments`），`get_by_path` 供读书恢复续读
 - [ ] `exploration.py` 含 `Exploration`（LangGraph 图）+ `should_explore` 纯函数；`web_enabled=false` 时不注册 `search_web` 节点；节点内 LLM 调用带 `correlation_id` 溯源
 - [ ] `observe.py` 含 `classify_presence` 纯函数（活跃度+窗口标题 → `"online"`/`"away"`/`"busy"`）
 - [ ] 两处 LLM 产出后紧跟 `await evaluator.evaluate(output)`：`_run_llm_activity`（`output_type` "reading"/"creation"）与 `Exploration._plan_next`（`output_type="exploration_plan"`）
@@ -39,21 +41,22 @@
 - **并发守卫（同一时刻仅一个活动）**：`_start_lock` 串行化「查 running → insert PENDING → 翻 RUNNING」决策；但 `_execute` 在锁外异步翻 RUNNING，仅靠 `get_current`（只匹配 running，见 store）会留 TOCTOU 窗口（PENDING 已 insert 却查不到 running）。故锁内先同步查 `self._task` 未完成即 `return` 闭合窗口；`self._task` 在锁内赋值，天然串行
 - **执行失败 = INCOMPLETE + 上抛**：`_execute` 失败落 `INCOMPLETE`（`ended_at` 已记）后仍 `raise`（不吞异常）；`logger.exception` 记录详情，`add_done_callback(_harvest_task_exception)` 收割 fire-and-forget task 的异常，避免 asyncio「Task exception was never retrieved」警告静默漂着
 - **自由探索升级（design §8.6，13 已委托给 14）**：`select_activity` 保持基线映射（探索欲→`READING`），升级判定放 `_maybe_start_activity`（那里有 store/config/now，`select_activity` 保持纯决策）。「探索欲」条件由结构保证——`READING` 活动**仅**由 `DesireType.EXPLORATION` 映射而来（13 `desire_to_activity`），故调用方在 `activity.type is READING` 时才调 `should_explore`（只查精力 + 频率两项）
-- **读书 = 读本地书库（禁凭空编造，design §8.2 落地）**：`MaterialStore`（`material` 表）存用户喂的读物与分块进度。`read_material`（`USER_MATERIAL` 入口）先 `upsert` 注册再发起 READING 读第一块；探索欲触发的 `READING` 在 `_maybe_start_activity` 里 `next_readable()` 取**最近未读完的那本**续读，读完自动换下一本。**无书可读**（`next_readable()` 返回 None）→ 经 `should_explore` 转 `FREE_EXPLORATION`（限速中则退回默认活动）——任何路径都不让 LLM 凭空编造读书内容。三层兜底：`_maybe_start_activity` 不产无 source 的 READING、`_run_activity` 缺 source `raise`、`_run_reading_source` 空块不调 LLM
+- **读书 = 读本地书库（禁凭空编造，design §8.2 落地）**：`MaterialStore`（`material` 表）存用户喂的读物与分块进度。`read_material`（`USER_MATERIAL` 入口）先 `upsert` 注册再发起 READING 读第一块；探索欲触发的 `READING` 在 `_maybe_start_activity` 里**先按 `goal.topic` 走 `find_by_topic`**（命中读那本，C2）、否则 `next_readable()` 取**最近未读完的那本**续读，读完自动换下一本。**无书可读**（`next_readable()` 返回 None）→ 经 `should_explore` 转 `FREE_EXPLORATION`（限速中则退回默认活动）——任何路径都不让 LLM 凭空编造读书内容。三层兜底：`_maybe_start_activity` 不产无 source 的 READING、`_run_activity` 缺 source `raise`、`_run_reading_source` 只读真实文件块（空块聚合已有片段，不凭空编造）
 - **六种活动执行分派（`_run_activity`）**：
-  - `READING`：`_run_reading_source` 分块读真实文件（切 `[read_chars, read_chars+6000)` 一块喂 LLM 产 `{book, note}`，`extra_context` 拼进 user 消息）→ result 附 `read_chars`/`total_chars` 推进进度；缺 `source` 直接 `raise ValueError`（**禁凭空编造**）；读到末尾（空块）不调 LLM
-  - `CREATION`：1 次 LLM（`json_mode=True`、`module="activity"`、`output_type="creation"`）→ result `{title, content}`
-  - `IDLE_REFLECTION`：**发布 `REFLECTION` 事件**（12 §51 消费后内部 `reflect()`，1 LLM 在 inner_life），activity 不直接调 `InnerLifeFacade.reflect`；result `{}`
+  - `READING`：`_run_reading_source` 分块读真实文件（切 `[read_chars, read_chars+6000)` 一块喂 LLM 产 `{book, note}`，`extra_context` 拼进 user 消息）→ result 附 `read_chars`/`total_chars` 推进进度；缺 `source` 直接 `raise ValueError`（**禁凭空编造**）；读到最后一块/空块时聚合全部片段 → 完整笔记落盘（`_aggregate_note` 1 次 LLM）
+  - `CREATION`：1 次 LLM（`json_mode=True`、`module="activity"`、`output_type="creation"`）→ result `{title, content}`，再把标题 `_sanitize_filename` 清洗成安全文件名落盘 `workspace/creations/<safe>.md`（`file_io` write），result 附 `path`
+  - `IDLE_REFLECTION`：直接 `await self._reflect`（组合根注入的 reflect 回调，1 LLM 在 inner_life），不发 `REFLECTION` 事件；result 回带 `{summary}`
   - `FREE_EXPLORATION`：调 `Exploration.run()`（LangGraph 多步，seed = 欲望描述）→ result `{findings, notes}`
-  - `OBSERVE_USER` / `REST`：0 LLM，result `{}`
-- **空槽默认（design §8.2 观察/发呆，13 §30 委托 14）**：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`——精力疲惫（`< ENERGY_REST_THRESHOLD`，从 12 `inner_life.emotion` 共享导入）→ `IDLE_REFLECTION`（+10 微恢复 + 发布 `REFLECTION` 触发 reflect），否则 → `OBSERVE_USER`（-10 消耗 + 情报收集）。这是 `IDLE_REFLECTION`/`OBSERVE_USER` 的唯一触发来源（非欲望驱动、不进 13 `build_schedule`），补上后两条分支可达，不再死代码
+  - `OBSERVE_USER`：调组合根注入的 `get_observation`（0 LLM）产 `{presence, window_title, summary}`；`REST`：0 LLM，result `{}`
+- **空槽默认（design §8.2 观察/发呆，13 §30 委托 14）**：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`——精力疲惫（`< ENERGY_REST_THRESHOLD`，从 12 `inner_life.emotion` 共享导入）→ `IDLE_REFLECTION`（+10 微恢复 + 反思回带 summary），否则 → `OBSERVE_USER`（-10 消耗 + 情报收集）。这是 `IDLE_REFLECTION`/`OBSERVE_USER` 的唯一触发来源（非欲望驱动、不进 13 `build_schedule`），补上后两条分支可达，不再死代码
 - **`activity_end` content 契约（11 §49 + 12 §45 引用，本 spec 定义完整形状）**：`{"activity_id": str, "type": str, "desire_id": str | None, "goal_met": bool | None, "energy_delta": float, "result": dict}`。`desire_id`/`goal_met` 由 11 `satisfy_from_activity_end` 消费（缺键/错类型跳过）；`energy_delta` 由 12 `_apply_energy` 消费（缺省 0）；`type`/`result` 由 09 `remember_activity` 消费（活动记忆）；`result` 进 SSE payload（tech-ref §4）
 - **`energy_delta` 取值**：`getattr(config.energy_delta, activity.type.value)`（`ActivityType.value` 与 `ActivityEnergyDelta` 字段名 1:1，`reading→-20`、`creation→-25`、`free_exploration→-30`、`observe_user→-10`、`idle_reflection→+10`、`rest→+30`），不用 if-elif（六键自然对应）
-- **goal 判定（MVP，可推翻）**：`_goal_met(goal, result)` = goal 非 None 且 `result` 非空 → `True`；goal None（观察/休息）→ `None`。
+- **goal 判定（C3 精确版）**：`_goal_met(goal, result)` = goal None → `None`；否则按 `action` 判「本次是否完成一个单位」——`read` → `result.completed`（读完整本）、`write` → 有 `title`+`content`、`observe` → 有 `presence`；其余 → `False`。
 - **精力门槛**：`select_activity` 用 13 的 `build_schedule(desires, state.energy, energy_delta)` 取 `[0]`（精力跌破阈值自动穿插 `REST`），不另写门槛逻辑；`schedule[0] is REST` → 无关联 desire
 - **`get_schedule()` 语义**：返回「今日已产生的 Activity 记录」（`started_at >= 今日零点`，`list_schedule`），按 `started_at ASC`。未来计划不持久化（design §8.1），前端按 grid 渲染空槽；`_day_start` 纯函数算当日零点（MVP 用 UTC 日边界，可推翻）
-- **`interrupt` 的 `by_event: EventType`**：打断原因（`USER_MESSAGE` / `INITIATE_CHAT`）。谁调 `interrupt` 归 17/18（用户消息/搭话打断活动）；14 只提供方法 + 发布 `activity_interrupted`。MVP 简化为 `interrupt` 抢占即废弃、置 `ABANDONED` 终态（无恢复路径）
-- **`observe.py` 与观察状态的分工**：`classify_presence` 是「在线/离开/忙碌」三态判定的**单一事实来源**（纯函数、单测锁定）。采集（键盘/鼠标活跃度 + 前台窗口标题）在前端 Tauri 壳（design §2 进程边界），判定结果作为 `OBSERVATION_STATE` 事件推给 Python，ROUTING 到 inner_life + desire。**`classify_presence` 的运行时调用方是前端 ingress，不在本 spec 的 backend 范围内**（前端 spec 推迟）——保留它是为了让「判定规则」在 Python 侧可展示（原则 3）+ 可溯源（原则 5）。`OBSERVE_USER` 活动本身是 0-LLM 占位（result `{}`）
+- **`interrupt` 的 `by_event: EventType`**：打断原因（`USER_MESSAGE` / `INITIATE_CHAT`）。谁调 `interrupt` 归 17/18（用户消息/搭话打断活动）；14 只提供方法 + 发布 `activity_interrupted`。可续活动（`_RESUMABLE_TYPES`：READING/CREATION/FREE_EXPLORATION）打断置 `PAUSED`（保留记录 + 欲望关联），其余瞬时无进度的活动（发呆/观察/休息）仍置 `ABANDONED` 终态
+- **恢复/续做（design §3.3 抢占语义落地）**：`interrupt` 对 `_RESUMABLE_TYPES` 置 `PAUSED` 而非废弃，`progress` 里的 `desire_id`/`goal`/`correlation_id` 保留。`_maybe_start_activity` 在「查 running → 查当前块 PAUSED → 恢复」——命中则复用同一 id 重跑：READING 从 `material_store.get_by_path(source)` 刷新 `read_chars`/`total_chars` 续读（书库进度是唯一持久进度）；CREATION/FREE_EXPLORATION 无中间态、整段重跑（探索不 checkpoint 中间 findings/notes）。恢复不新建记录、不重新消耗欲望；跨日程块（`get_paused_in_block` 按 `schedule_block_id` 过滤）不恢复，旧 PAUSED 留档可查
+- **`observe.py` 与观察状态的分工**：`classify_presence` 是「在线/离开/忙碌」三态判定的**单一事实来源**（纯函数、单测锁定）。采集（键盘/鼠标活跃度 + 前台窗口标题）在前端 Tauri 壳（design §2 进程边界），判定结果作为 `OBSERVATION_STATE` 事件推给 Python，ROUTING 到 inner_life + desire。**`classify_presence` 的运行时调用方是前端 ingress，不在本 spec 的 backend 范围内**（前端 spec 推迟）——保留它是为了让「判定规则」在 Python 侧可展示（原则 3）+ 可溯源（原则 5）。`OBSERVE_USER` 活动本身是 0-LLM（调注入的 `get_observation` 产 `{presence, window_title, summary}`）
 - **明确不做**：不建「计划」表（design §8.1 临时概念）；`classify_presence` 只覆盖键盘/鼠标/窗口三输入
 
 ### `activity/store.py`（完整）
@@ -115,6 +118,17 @@ class ActivityStore:
             row = await cursor.fetchone()
         return _row_to_activity(row) if row is not None else None
 
+    async def get_paused_in_block(self, schedule_block_id: str) -> Activity | None:
+        """当前日程块内最新一条 PAUSED 记录（供恢复）；无则 None。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM activity WHERE status = 'paused' "
+                "AND schedule_block_id = ? ORDER BY started_at DESC LIMIT 1",
+                (schedule_block_id,),
+            )
+            row = await cursor.fetchone()
+        return _row_to_activity(row) if row is not None else None
+
     async def get_last_exploration(self) -> float:
         """最近一次自由探索活动的 started_at；从未探索返回 0.0（供频率上限判定）。"""
         async with self._db.lock:
@@ -169,6 +183,8 @@ def _row_to_activity(row: aiosqlite.Row) -> Activity:
 ### `activity/material_store.py`（完整）
 
 ```python
+import json
+
 import aiosqlite
 
 from nyx.db import Database
@@ -197,6 +213,7 @@ class MaterialStore:
                 "created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?) "
                 "ON CONFLICT(path) DO UPDATE SET filename = excluded.filename, "
                 "total_chars = excluded.total_chars, read_chars = 0, "
+                "note_fragments = '[]', "
                 "created_at = excluded.created_at, updated_at = excluded.updated_at",
                 (path, filename, total_chars, now, now),
             )
@@ -213,6 +230,28 @@ class MaterialStore:
             row = await cursor.fetchone()
         return _row_to_material(row) if row is not None else None
 
+    async def find_by_topic(self, topic: str) -> Material | None:
+        """按主题（filename 子串，SQLite LIKE 默认大小写不敏感）选一本未读完的书；
+        无则 None。goal.topic（如「骑士团」）与「最近上传」可能不同，读书按 topic
+        选料时优先走这里（C2）。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM material WHERE filename LIKE ? "
+                "AND read_chars < total_chars ORDER BY created_at DESC LIMIT 1",
+                (f"%{topic}%",),
+            )
+            row = await cursor.fetchone()
+        return _row_to_material(row) if row is not None else None
+
+    async def get_by_path(self, path: str) -> Material | None:
+        """按路径取一本书（含最新 read_chars），供读书恢复续读；无则 None。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM material WHERE path = ?", (path,),
+            )
+            row = await cursor.fetchone()
+        return _row_to_material(row) if row is not None else None
+
     async def advance(self, path: str, read_chars: int, now: float) -> None:
         """推进一本书的已读进度（updated_at 同步刷新）。"""
         async with self._db.lock:
@@ -221,6 +260,34 @@ class MaterialStore:
                 (read_chars, now, path),
             )
             await self._db.conn.commit()
+
+    async def append_fragment(self, path: str, note: str, now: float) -> None:
+        """追加一块片段笔记到 note_fragments（JSON 数组，updated_at 同步刷新）。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT note_fragments FROM material WHERE path = ?", (path,)
+            )
+            row = await cursor.fetchone()
+            fragments: list[str] = (
+                json.loads(row["note_fragments"]) if row is not None else []
+            )
+            fragments.append(note)
+            await self._db.conn.execute(
+                "UPDATE material SET note_fragments = ?, updated_at = ? WHERE path = ?",
+                (json.dumps(fragments, ensure_ascii=False), now, path),
+            )
+            await self._db.conn.commit()
+
+    async def get_fragments(self, path: str) -> list[str]:
+        """读一本书已累积的片段笔记（无则空列表）。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT note_fragments FROM material WHERE path = ?", (path,)
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return []
+        return json.loads(row["note_fragments"])
 
 
 def _row_to_material(row: aiosqlite.Row) -> Material:
@@ -244,9 +311,11 @@ import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, cast
 
 from nyx.activity.exploration import Exploration, should_explore
+from nyx.activity.material_store import MaterialStore
 from nyx.activity.scheduler import (
     build_schedule,
     desire_to_activity,
@@ -262,10 +331,21 @@ from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
+from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, CurrentState, Event, ShortTermDesire
 
 _logger = logging.getLogger(__name__)
+
+_READ_CONTEXT_CHARS = 6000  # 读物喂 LLM 的字符预算（decision，可推翻）
+
+# 可续活动：打断置 PAUSED、同日程块内恢复同一记录（读书续读，创作/探索重跑）。
+# 发呆/观察/休息瞬时无进度，仍抢占即废弃置 ABANDONED。
+_RESUMABLE_TYPES = (
+    ActivityType.READING,
+    ActivityType.CREATION,
+    ActivityType.FREE_EXPLORATION,
+)
 
 
 def _day_start(now: float) -> float:
@@ -279,13 +359,33 @@ def _elapsed_hours(now: float) -> float:
 
 
 def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | None:
-    """Goal 完成判定（纯函数）。
+    """Goal 完成判定（纯函数，C3 精确版）。
 
-    MVP：goal 非 None 且 result 非空 → True；goal None → None。
+    goal None → None；否则按 action 判「本次是否完成一个单位」：
+    read → result.completed（读完整本）；write → 有 title+content；
+    observe → 有 presence。goal None 的欲望由 desire 层按单次 goal_met 满足。
     """
     if goal is None:
         return None
-    return bool(result)
+    action = goal.get("action")
+    if action == "read":
+        return bool(result.get("completed"))
+    if action == "write":
+        return bool(result.get("title") and result.get("content"))
+    if action == "observe":
+        return bool(result.get("presence"))
+    return False
+
+
+def _sanitize_filename(name: str) -> str:
+    """把创作标题清洗成安全文件名（去路径分隔符/控制字符，空则回退 untitled）。
+
+    对称读书读 workspace：创作落盘进 workspace/creations/<safe>.md。
+    """
+    cleaned = "".join(
+        c for c in name if c not in '\\/:*?"<>|' and c.isprintable()
+    ).strip()
+    return cleaned or "untitled"
 
 
 def _empty_progress() -> dict[str, Any]:
@@ -334,21 +434,27 @@ class ActivityFacade:
     def __init__(
         self,
         store: ActivityStore,
+        material_store: MaterialStore,
         bus: EventBus,
         llm: LlmClient,
         evaluator: Evaluator,
         tools: ToolRegistry,
         desire: DesireFacade,
         get_state: Callable[[], Awaitable[CurrentState]],
+        reflect: Callable[[str | None], Awaitable[str | None]],
+        get_observation: Callable[[], Awaitable[dict[str, str]]],
         config: ActivityConfig,
         exploration_config: ExplorationConfig,
     ) -> None:
         self._store = store
+        self._material_store = material_store
         self._bus = bus
         self._llm = llm
         self._evaluator = evaluator
         self._desire = desire
         self._get_state = get_state
+        self._reflect = reflect
+        self._get_observation = get_observation
         self._config = config
         self._exploration = Exploration(
             llm, evaluator, tools, exploration_config
@@ -440,7 +546,7 @@ class ActivityFacade:
     # ---- 生命周期 ----
 
     async def complete_activity(self, activity: Activity) -> None:
-        """完成：goal 判定 + 收尾 + 发布 activity_end（desire/inner_life/memory 消费）。"""
+        """完成：goal 判定 + 收尾 + 发布 activity_end（desire/inner_life 消费）。"""
         activity.status = ActivityStatus.COMPLETED
         activity.ended_at = time.time()
         await self._store.update(activity)
@@ -464,11 +570,12 @@ class ActivityFacade:
         )
 
     async def interrupt(self, activity_id: str, by_event: EventType) -> None:
-        """抢占即废弃：校验目标 RUNNING → cancel 执行 task 并 await 其彻底结束
-        → 重读守卫（窗口内已自行完成/失败则不覆盖）→ 置 ABANDONED 落库
-        + 发布 activity_interrupted。
+        """抢占即暂停：校验目标 RUNNING → cancel 执行 task 并 await 其彻底结束
+        → 重读守卫（窗口内已自行完成/失败则不覆盖）→ 置终态落库
+        （可续活动 PAUSED，其余 ABANDONED）+ 发布 activity_interrupted。
 
-        执行中的 result 尚未写入，故仅落终态（不持久化部分进度）。
+        执行中的 result 尚未写入，故仅落终态（不持久化部分进度）；
+        读书的 read_chars 已 advance 进 material 层，恢复时从那里续读。
         """
         activity = await self._store.get(activity_id)
         if activity is None or activity.status is not ActivityStatus.RUNNING:
@@ -483,7 +590,13 @@ class ActivityFacade:
         activity = await self._store.get(activity_id)   # 重读：已终态则不动
         if activity is None or activity.status is not ActivityStatus.RUNNING:
             return
-        activity.status = ActivityStatus.ABANDONED
+        # 可续活动（读书/创作/探索）打断置 PAUSED 保留记录，同日程块内恢复；
+        # 其余（发呆/观察/休息瞬时无进度）抢占即废弃，仍置 ABANDONED。
+        activity.status = (
+            ActivityStatus.PAUSED
+            if activity.type in _RESUMABLE_TYPES
+            else ActivityStatus.ABANDONED
+        )
         activity.ended_at = time.time()
         await self._store.update(activity)
         await self._bus.publish(
@@ -502,6 +615,41 @@ class ActivityFacade:
     async def get_schedule(self) -> list[Activity]:
         return await self._store.list_schedule(_day_start(time.time()))
 
+    async def read_material(
+        self, path: str, filename: str, total_chars: int, correlation_id: str
+    ) -> None:
+        """用户投喂资料：注册进书库 → 立即发起一次 READING 活动读第一块。
+
+        与 _maybe_start_activity 共用 _start_lock 串行守卫；忙时跳过（文件已落盘、
+        且已入书库，探索欲后续会自行续读，不排队）。结果经 activity_start/activity_end
+        SSE 可见。
+        """
+        await self._material_store.upsert(path, filename, total_chars, time.time())
+        async with self._start_lock:
+            if self._task is not None and not self._task.done():
+                return
+            now = time.time()
+            activity = Activity(
+                id=str(uuid.uuid4()),
+                type=ActivityType.READING,
+                schedule_block_id=format_time_label(
+                    0, self._config.grid_minutes, _elapsed_hours(now)
+                ),
+                status=ActivityStatus.PENDING,
+                progress={
+                    "source": path,
+                    "filename": filename,
+                    "description": filename,
+                    "read_chars": 0,
+                    "total_chars": total_chars,
+                    "correlation_id": correlation_id,
+                },
+                started_at=now,
+            )
+            await self._store.insert(activity)
+            self._task = asyncio.create_task(self._execute(activity))
+            self._task.add_done_callback(_harvest_task_exception)
+
     # ---- 内部 ----
 
     async def _maybe_start_activity(self) -> None:
@@ -511,6 +659,24 @@ class ActivityFacade:
             current = await self._store.get_current()
             if current is not None and current.status is ActivityStatus.RUNNING:
                 return
+            # 同日程块内恢复 PAUSED 记录（design §3.3）：读书从 material 层刷新
+            # read_chars 续读；创作/探索无中间态、重跑。恢复同一 id，不新建。
+            block_id = format_time_label(
+                0, self._config.grid_minutes, _elapsed_hours(time.time())
+            )
+            resumed = await self._store.get_paused_in_block(block_id)
+            if resumed is not None:
+                if resumed.type is ActivityType.READING:
+                    source = resumed.progress.get("source")
+                    if isinstance(source, str):
+                        material = await self._material_store.get_by_path(source)
+                        if material is not None:
+                            resumed.progress["read_chars"] = material.read_chars
+                            resumed.progress["total_chars"] = material.total_chars
+                resumed.ended_at = None
+                self._task = asyncio.create_task(self._execute(resumed))
+                self._task.add_done_callback(_harvest_task_exception)
+                return
             desires = await self._desire.get_pending()
             values = (await self._desire.get_all()).values
             ranked = rank_desires(desires, values)
@@ -519,14 +685,35 @@ class ActivityFacade:
             if activity is None:
                 activity = self._default_activity(state)
             if activity.type is ActivityType.READING:
-                last = await self._store.get_last_exploration()
-                if should_explore(
-                    state.energy,
-                    last,
-                    self._exploration_config.rate_limit_hours,
-                    time.time(),
-                ):
-                    activity.type = ActivityType.FREE_EXPLORATION
+                # 先按 goal.topic 选料（C2），命中读那本；否则最近未读完；
+                # 再否则转自由探索（下方 else 分支）。绝不凭空编造。
+                goal = cast(dict[str, Any] | None, activity.progress.get("goal"))
+                topic = goal.get("topic") if goal is not None else None
+                material = None
+                if isinstance(topic, str) and topic:
+                    material = await self._material_store.find_by_topic(topic)
+                if material is None:
+                    material = await self._material_store.next_readable()
+                if material is not None:
+                    # 读最近未读完的那本，从它的进度续读（绝不编造）
+                    activity.progress["source"] = material.path
+                    activity.progress["filename"] = material.filename
+                    activity.progress["description"] = material.filename
+                    activity.progress["read_chars"] = material.read_chars
+                    activity.progress["total_chars"] = material.total_chars
+                else:
+                    # 无书可读：转自由探索（沿用限速）；限速中则退回默认活动，
+                    # 任何情况都不让 LLM 凭空编造读书内容
+                    last = await self._store.get_last_exploration()
+                    if should_explore(
+                        state.energy,
+                        last,
+                        self._exploration_config.rate_limit_hours,
+                        time.time(),
+                    ):
+                        activity.type = ActivityType.FREE_EXPLORATION
+                    else:
+                        activity = self._default_activity(state)
             await self._store.insert(activity)
             self._task = asyncio.create_task(self._execute(activity))
             self._task.add_done_callback(_harvest_task_exception)
@@ -564,34 +751,138 @@ class ActivityFacade:
     async def _run_activity(self, activity: Activity) -> dict[str, Any]:
         t = activity.type
         if t is ActivityType.READING:
-            return await self._run_llm_activity(activity, "reading")
+            source = activity.progress.get("source")
+            if source is None:
+                # READING 必须有真实读物；缺 source 说明上游决策出错，fail-fast
+                raise ValueError("读书活动缺 source：已禁止凭空编造")
+            return await self._run_reading_source(activity, str(source))
         if t is ActivityType.CREATION:
-            return await self._run_llm_activity(activity, "creation")
+            result = await self._run_llm_activity(activity, "creation")
+            title = str(result["title"])
+            path = f"creations/{_sanitize_filename(title)}.md"
+            written = await file_io("write", path, str(result["content"]))
+            result["path"] = written["path"]
+            return result
         if t is ActivityType.IDLE_REFLECTION:
-            await self._bus.publish(
-                internal_event(
-                    EventType.REFLECTION,
-                    {"activity_id": activity.id},
-                    _correlation_id(activity),
-                )
-            )
-            return {}
+            summary = await self._reflect(_correlation_id(activity))
+            return {"summary": summary}
         if t is ActivityType.FREE_EXPLORATION:
             return await self._exploration.run(
                 seed=str(activity.progress.get("description") or activity.id),
                 correlation_id=_correlation_id(activity),
             )
-        if t in (ActivityType.OBSERVE_USER, ActivityType.REST):
+        if t is ActivityType.OBSERVE_USER:
+            obs = await self._get_observation()
+            presence = obs.get("presence", "")
+            window_title = obs.get("window_title", "")
+            if window_title:
+                summary = f"用户（{presence}）正在浏览 {window_title}"
+            else:
+                summary = f"用户（{presence}）"
+            return {
+                "presence": presence,
+                "window_title": window_title,
+                "summary": summary,
+            }
+        if t is ActivityType.REST:
             return {}
         raise ValueError(f"未知活动类型 {t!r}")
 
-    async def _run_llm_activity(
-        self, activity: Activity, output_type: str
+    async def _run_reading_source(
+        self, activity: Activity, source: str
     ) -> dict[str, Any]:
+        """分块读真实文件：切 [read_chars, read_chars+6000) 一块喂 LLM 产 {book, note}，
+        推进书库进度并把 note 追加进片段；读到最后一块时聚合全部片段 → 完整笔记
+        落盘 + completed=True（一本=一次单位）。绝不凭空编造。"""
+        content = await asyncio.to_thread(
+            Path(source).read_text, encoding="utf-8", errors="replace"
+        )
+        read_chars = int(activity.progress.get("read_chars", 0))
+        chunk = content[read_chars : read_chars + _READ_CONTEXT_CHARS]
+        filename = str(activity.progress.get("filename") or Path(source).name)
+        if chunk == "":
+            # 已读到末尾（或文件比注册时短）：无新块可读，聚合已有片段（不编造）
+            return await self._finalize_reading(
+                activity, source, filename, len(content)
+            )
+        result = await self._run_llm_activity(
+            activity, "reading", extra_context=chunk
+        )
+        new_read_chars = read_chars + len(chunk)
+        await self._material_store.append_fragment(
+            source, str(result.get("note", "")), time.time()
+        )
+        await self._material_store.advance(source, new_read_chars, time.time())
+        result["read_chars"] = new_read_chars
+        result["total_chars"] = len(content)
+        if new_read_chars >= len(content):
+            # 读到最后一块：聚合全部片段（含本块）→ 完整笔记落盘 + completed
+            full = await self._finalize_reading(
+                activity, source, filename, len(content)
+            )
+            full["read_chars"] = new_read_chars
+            full["total_chars"] = len(content)
+            return full
+        return result
+
+    async def _finalize_reading(
+        self, activity: Activity, source: str, filename: str, content_len: int
+    ) -> dict[str, Any]:
+        """读完整本书：聚合 note_fragments → 完整笔记落盘 workspace/notes/<safe>.md。"""
+        fragments = await self._material_store.get_fragments(source)
+        full_note = await self._aggregate_note(activity, filename, fragments)
+        written = await file_io(
+            "write", f"notes/{_sanitize_filename(filename)}.md", full_note
+        )
+        return {
+            "book": filename,
+            "note": full_note,
+            "path": written["path"],
+            "completed": True,
+            "read_chars": content_len,
+            "total_chars": content_len,
+        }
+
+    async def _aggregate_note(
+        self, activity: Activity, filename: str, fragments: list[str]
+    ) -> str:
+        """把各块片段笔记聚合成一篇完整读书笔记（1 次 LLM，output_type=note）。"""
+        joined = "\n---\n".join(fragments) if fragments else "（无片段）"
+        output = await self._llm.complete(
+            [
+                {"role": "system", "content": _AGGREGATE_SYSTEM},
+                {
+                    "role": "user",
+                    "content": f"书名：{filename}\n各片段笔记：\n{joined}",
+                },
+            ],
+            module="activity",
+            output_type="note",
+            correlation_id=_correlation_id(activity),
+            json_mode=True,
+        )
+        await self._evaluator.evaluate(output)
+        data: Any = json.loads(output.content)
+        if not isinstance(data, dict):
+            raise ValueError(f"聚合笔记 JSON 应是对象，得到 {type(data).__name__}")
+        note = cast(dict[str, Any], data).get("note")
+        if not isinstance(note, str) or not note:
+            raise ValueError("聚合笔记 JSON 缺 note 或非空字符串")
+        return note
+
+    async def _run_llm_activity(
+        self,
+        activity: Activity,
+        output_type: str,
+        extra_context: str | None = None,
+    ) -> dict[str, Any]:
+        user_msg = f"活动类型：{activity.type.value}"
+        if extra_context:
+            user_msg += f"\n读物内容：{extra_context}"
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _ACTIVITY_SYSTEM},
-                {"role": "user", "content": f"活动类型：{activity.type.value}"},
+                {"role": "user", "content": user_msg},
             ],
             module="activity",
             output_type=output_type,
@@ -605,6 +896,12 @@ class ActivityFacade:
 _ACTIVITY_SYSTEM = (
     "你是尼克斯。按 JSON 输出活动结果，键随活动类型："
     "读书 {book, note}、创作 {title, content}。"
+)
+
+
+_AGGREGATE_SYSTEM = (
+    "你是尼克斯。把读书各片段笔记聚合成一篇完整读书笔记，"
+    "只输出 JSON，键：note（完整笔记，非空字符串）。"
 )
 ```
 
@@ -800,7 +1097,8 @@ def classify_presence(
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_activity/`（`pytest-asyncio`；`db = await connect(":memory:")`；fake `LlmClient.complete` 按 `output_type` 返回 fixture JSON；`EventBus` 真实例 + recording handler，`run()` 作 task；`get_state` 用 fake 回调返回预设 `CurrentState`——同 05/09/11/12 模式）：
-  - [ ] **store**（`test_activity_store.py`）：`insert + get` 往返（`progress` JSON 往返、枚举 `.value` 往返）；`get_current` 只取 running 最新一条；`get_last_exploration`（无 free_exploration 记录 → `0.0`，有 → `MAX(started_at)`）；`list_schedule(start)` 按 `started_at >= start` 过滤 + ASC；`update` 改 `status`/`progress`/`ended_at` → `get` 验证
+  - [ ] **store**（`test_activity_store.py`）：`insert + get` 往返（`progress` JSON 往返、枚举 `.value` 往返）；`get_current` 只取 running 最新一条；`get_paused_in_block`（当前块最新 PAUSED、忽略其他块；无则 None）；`get_last_exploration`（无 free_exploration 记录 → `0.0`，有 → `MAX(started_at)`）；`list_schedule(start)` 按 `started_at >= start` 过滤 + ASC；`update` 改 `status`/`progress`/`ended_at` → `get` 验证
+  - [ ] **material_store**（`test_material_store.py`）：`get_by_path`（upsert+advance 后取到最新 `read_chars`；缺路径 → None）
   - [ ] **纯函数**（`test_activity_facade.py`）：`_day_start`（`now=86400*1.5 → 86400.0`）；`_elapsed_hours`（`now=5400 → 1.5`）；`_goal_met`（goal None → None；goal 非 None + result 空 → False；goal 非 None + result 非空 → True）
   - [ ] **select_activity**（fake `get_state` 返回 `energy=80`）：无欲望 → `None`；`[探索欲]` → `type is READING`、`progress["desire_id"] == desire.id`、`goal` 序列化正确、`progress["description"] == desire.description`；`[互动欲]` → `None`（不占日程块）；`[休息欲]` → `type is REST`、`progress["desire_id"] == rest_desire.id`（欲望驱动的 REST 保留关联）；`energy=30` + 探索欲 → `type is REST`、`progress["desire_id"] is None`（精力恢复无关联）
   - [ ] **should_explore**（`test_exploration.py`）：`energy=59` → False；`energy=60` + `now-last < rate_limit_hours*3600` → False；`energy=60` + 频率过 + `last=0.0` → True
@@ -809,7 +1107,8 @@ def classify_presence(
     - [ ] 升级路径：探索欲 + 精力足 + 频率过 → `activity.type is FREE_EXPLORATION`；频率未过 → 降级 `READING`
     - [ ] 空槽默认：无欲望 + `energy=30` → `type is IDLE_REFLECTION`、`progress["desire_id"] is None`；无欲望 + `energy=80` → `type is OBSERVE_USER`、`progress["desire_id"] is None`
     - [ ] `complete_activity`：`status is COMPLETED`、`ended_at` 非 None、发布 `activity_end`（`energy_delta == config.energy_delta.reading` 等）
-    - [ ] `interrupt`：RUNNING 活动 → cancel + `status is ABANDONED` + 发布 `activity_interrupted`（`content["by"]` 正确）；`activity_id` 不存在 → 不 cancel、不发布；执行中活动挂起在可取消 await 上时 interrupt → 终态 `ABANDONED` 而非被 complete 覆盖
+    - [ ] `interrupt`：RUNNING 活动 → cancel + 可续活动 `status is PAUSED`、非可续 `status is ABANDONED` + 发布 `activity_interrupted`（`content["by"]` 正确）；`activity_id` 不存在 → 不 cancel、不发布；执行中活动挂起在可取消 await 上时 interrupt → 终态 `PAUSED`/`ABANDONED` 而非被 complete 覆盖
+    - [ ] 恢复：`_maybe_start_activity` 命中当前块 PAUSED 创作 → 复用同一 id 重跑（id 不变、COMPLETED、evaluator 再调 1 次）；命中 PAUSED 读书 → 从 material 层刷新 `read_chars` 续读；不同块旧 PAUSED → 不恢复、走新建默认活动
     - [ ] `get_current` / `get_schedule` 委托 store
   - [ ] **exploration**（`test_exploration.py`）：`Exploration` 用 fake llm/fake_evaluator/tools，`web_enabled=false` 时图不含 `search_web`、`run` 返回 `{findings, notes}` 且步数 ≤ `_MAX_STEPS`；`_plan_next` 的 `llm.complete` 收到 `correlation_id == 初始 correlation_id`，且每次 `complete` 后 `evaluator.evaluate` 被调（`output_type="exploration_plan"`）；规划 JSON 非对象（如数组）→ `ValueError`
   - [ ] **observe**（`test_observe.py`）：`classify_presence` 三态判定（活跃→online、窗口标题→busy、无→away）
@@ -823,4 +1122,5 @@ def classify_presence(
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
 - [ ] ripple 同步：tech-ref §7 `activity/` 补 `store.py`；§6.2 `ExplorationState` 补 `correlation_id` 字段；§5 `select_activity` 返回类型 `Activity` → `Activity | None` 且 `async def` → `def`（纯决策，与 `_default_activity` 一致）；`activity_end` content 契约（`desire_id`/`goal_met`/`energy_delta`）与 11 §49 + 12 §45 一致
+- [ ] ripple 同步：`interrupt` 语义「可续置 PAUSED、其余 ABANDONED」与 design §3.3 抢占语义一致；`ActivityStore.get_paused_in_block` / `MaterialStore.get_by_path` 补进 tech-ref §7；`_maybe_start_activity` 恢复路径与 17-expression 打断入口约定（搭话/回复打断活动调 `interrupt`）一致
 - [ ] 下游约定：17-expression 搭话/回复打断活动时调 `interrupt(activity_id, by_event)`；18-api 组合根注入 `get_state=inner_life.get_state`、`evaluator`（给 `ActivityFacade` 与 `Exploration` 的 LLM 产出评分）、订阅 `SCHEDULE_BLOCK_START`（on_tick）与 `DESIRE_GENERATED`（on_desire_generated）

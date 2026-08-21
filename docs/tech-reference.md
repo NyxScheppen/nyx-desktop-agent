@@ -78,6 +78,7 @@ data = {"event_id": event.id, "correlation_id": event.correlation_id, **event.co
 async def reply(msg: str, correlation_id: str) -> None          # 完整回复流程，内部发布 speak/ask/think
 async def initiate_chat(desire: ShortTermDesire, state: CurrentState) -> bool  # 内部发布 initiate_chat；发话 True/无话 False（18-api 据此维护 last_chat_at）
 async def mutter(state: CurrentState, correlation_id: str) -> None  # 内部发布 mutter（无则不发）；correlation_id 接 MUTTER_CHECK tick
+async def check_timeouts(now: float) -> None                    # tick 心跳收尾：问句超时记「没答」记忆、搭话超时 expire 回灌
 ```
 
 ### MemoryFacade
@@ -314,6 +315,8 @@ expression:
   slow_threshold: 0.5         # 快慢通道阈值：classifier 加权 5 因子→归一化得分(0-1)→比此值
   max_context_len: 20         # 回溯上下文上限
   slow_max_rounds: 3          # 慢通道最多轮数
+  ask_timeout: 600.0          # ask 后等用户回答超时（秒）
+  chat_ignore_timeout: 1800.0 # 搭话被忽略判定超时（秒）
 
 exploration:
   web_enabled: false          # 联网搜索 opt-in

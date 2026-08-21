@@ -67,6 +67,8 @@ expression:
   slow_threshold: 0.5         # 快慢通道阈值：classifier 加权 5 因子→归一化得分(0-1)→比此值
   max_context_len: 20         # 回溯上下文上限
   slow_max_rounds: 3          # 慢通道最多轮数
+  ask_timeout: 600.0          # ask 后等用户回答超时（秒）
+  chat_ignore_timeout: 1800.0 # 搭话被忽略判定超时（秒）
 
 exploration:
   web_enabled: false          # 联网搜索 opt-in
@@ -139,6 +141,8 @@ class ExpressionConfig:
     slow_threshold: float = 0.5
     max_context_len: int = 20
     slow_max_rounds: int = 3
+    ask_timeout: float = 600.0           # ask 后等用户回答超时（秒）
+    chat_ignore_timeout: float = 1800.0  # 搭话被忽略判定超时（秒）
 
 
 @dataclass
@@ -262,6 +266,8 @@ def validate_config(cfg: Config) -> None:
         _unit_interval(v, path)
 
     _pos_num(cfg.desire.value_decay, "desire.value_decay")          # 数 > 0
+    _pos_num(cfg.expression.ask_timeout, "expression.ask_timeout")
+    _pos_num(cfg.expression.chat_ignore_timeout, "expression.chat_ignore_timeout")
     _flag(cfg.exploration.web_enabled, "exploration.web_enabled")   # bool
 
     # energy_delta 6 键全为 int（可为负）
@@ -284,6 +290,7 @@ def validate_config(cfg: Config) -> None:
 | `activity.energy_delta.*` | 6 键全为 `int`（可为负） |
 | `expression.slow_threshold` | 数 ∈ `[0, 1]` |
 | `expression.max_context_len` / `expression.slow_max_rounds` | `int > 0` |
+| `expression.ask_timeout` / `expression.chat_ignore_timeout` | 数 `> 0` |
 | `exploration.web_enabled` | `bool` |
 | `exploration.rate_limit_hours` | `int > 0` |
 | `eval.judge_sample_rate` | 数 ∈ `[0, 1]` |
@@ -291,7 +298,7 @@ def validate_config(cfg: Config) -> None:
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_config/`：
-  - [ ] `validate_config` 纯函数：合法 `Config()` 通过；越界值（`slow_threshold=1.5`、`freshness_decay=-0.1`、`judge_sample_rate=2`）报错；非正（`short_term_capacity=0`、`grid_minutes=-1`）报错；错类型（改字段为 `"20"` / `True`）报错（直接构造 `Config` 后改字段再调 `validate_config`）
+  - [ ] `validate_config` 纯函数：合法 `Config()` 通过；越界值（`slow_threshold=1.5`、`freshness_decay=-0.1`、`judge_sample_rate=2`）报错；非正（`short_term_capacity=0`、`grid_minutes=-1`、`ask_timeout=-1`、`chat_ignore_timeout=0`）报错；错类型（改字段为 `"20"` / `True`）报错（直接构造 `Config` 后改字段再调 `validate_config`）
   - [ ] `load_config`（tmp yaml + `monkeypatch` 环境变量）：
     - [ ] 缺键填默认（只写 `llm.provider` → 其余字段=默认）
     - [ ] **energy_delta 递归构造**：写部分键 → `cfg.activity.energy_delta` 是 `ActivityEnergyDelta` 实例，`isinstance` 通过、未写键用默认

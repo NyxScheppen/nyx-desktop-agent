@@ -23,6 +23,7 @@
 - [ ] `initiate_chat` 返回 `bool`（发话 True / 无话 False），供 18-api 维护 `last_chat_at`；发话开场白 append 进 `_history`（`role="nyx"`），用户随后回复能回溯到这句搭话；`mutter` 返回 `None`（无状态依赖）
 - [ ] 事件发布：`think` / `speak` / `ask` / `mutter` / `initiate_chat` 全部 `content={"content": 文本}`、`source=INTERNAL`、`correlation_id` 接上游
 - [ ] 纯函数测全（`pick_mutter` / `should_initiate_chat` / `_is_question` / `_rounds_block`）；`pyright` strict 零报错
+- [ ] `reply` 后按 `result["ask"]` 置 `_waiting_user`/`_ask_text`/`_ask_cid`；`initiate_chat` 发话记 `_pending_chat_desire_id`；`check_timeouts(now)` 问句超时调 `memory.record_no_answer`、搭话超时调 `desire.expire`；`reply` 入口清两者待回应态
 
 ## 技术方案
 
@@ -33,7 +34,8 @@
 - **会话历史（内存）**：`deque[Message]`（maxlen=`config.max_context_len`）由 facade 持有，跨 reply 持久。**用户消息 + Nyx 消息（多轮拼接）都在回合末的 `record_message` 节点按序 append**（先 user 后 nyx）——`reply` 入口回溯时当前消息还没进 history，天然不重复。重启丢失（同情感，内存易变态）
 - **多轮语义（慢通道）**：think → speak 循环，每轮 think 发 `THINK`、每轮 speak 发 `SPEAK`（**都交付**）；某轮 speak 是问句 → 发 `ASK` 后回合结束。`slow_max_rounds` 是「连续无 ask 的 think/speak 轮数上限」。**累积式 prompt**：后一轮的 think/speak 知道前几轮想了/说了什么（`_rounds_block` 拼前轮）。**递进续写**：首轮任务指令是「第一句话 / 第一次内心独白」，续写轮切换为「接着上面往下说 / 基于前面继续深入」，避免三段生成三个并列回答
 - **场景化记忆记整个回合**：`nyx_think`/`nyx_speak` = 多轮 `"\n".join(...)` 拼接（`create_scene_memory` 的 `str` 契约不变，只是内容是多轮）
-- **MVP 语义**：ask 后回合结束（走 scene_memory + record）；用户回应作为下一条 `USER_MESSAGE` 触发新 reply，round 自然从 0 重算。`waiting_user` 字段保留在 `ReplyState`（对齐 tech-ref §6.1），MVP 恒 `False`
+- **MVP 语义**：ask 后回合结束（走 scene_memory + record）；用户回应作为下一条 `USER_MESSAGE` 触发新 reply，round 自然从 0 重算。`waiting_user` 字段保留在 `ReplyState`（对齐 tech-ref §6.1），图内恒 `False`
+- **V2 表达交互闭环**：facade 在 reply 后按 `result["ask"]` 置 `self._waiting_user`（问句已问出、等用户答）；`initiate_chat` 记 `self._pending_chat_desire_id`（搭话已发、等用户回）。tick 心跳（18-api 组合根）直呼 `check_timeouts(now)`：问句超时（`ask_timeout`）→ `memory.record_no_answer` 落一条「用户没回答」的 SHORT_TERM 记忆；搭话超时（`chat_ignore_timeout`）→ `desire.expire`（值立即 +0.3 回灌）。用户任一下条消息（`reply` 入口）即视为回应、清两者待回应态
 - **think/speak 纯文本生成**：`ToolRegistry`（06-tools）当前主要服务 14-activity 的 exploration，本 spec 不依赖 06-tools
 - **回溯检测 MVP 简化**：`reply` 入口 `list(self._history)[-max_context_len:]` 只取最近 `max_context_len` 条
 - **搭话 `last_chat_at` 归 18-api**：`should_initiate_chat` 是纯函数（判定触发），`initiate_chat` 返回 `bool` 作为「是否真发话」的信号；18-api 组合根据此更新 `last_chat_at`（`since_last_chat` 的来源），facade 不持有搭话状态
@@ -433,6 +435,13 @@ class ExpressionFacade:
         self._config = config
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._last_slow_at = 0.0
+        # 待用户回应状态：问句（wait_user）与搭话（被忽略回灌）各一组。
+        self._waiting_user = False
+        self._ask_text = ""
+        self._ask_at = 0.0
+        self._ask_cid: str | None = None
+        self._pending_chat_desire_id: str | None = None
+        self._chat_at = 0.0
         # 图拓扑恒定（仅 history 跨 reply 变化），建一次复用（对齐 Exploration）
         self._graph = build_reply_graph(
             ReplyDeps(
@@ -450,6 +459,10 @@ class ExpressionFacade:
 
     async def reply(self, msg: str, correlation_id: str) -> None:
         """完整回复流程：跑 LangGraph 图，内部发布 think/speak/ask。"""
+        # 用户说话 = 回应了之前的问句/搭话；清等待状态（不做「是否真在答」判断）。
+        self._waiting_user = False
+        self._ask_cid = None
+        self._pending_chat_desire_id = None
         state = await self._inner_life.get_state()
         initial: ReplyState = {
             "message": msg,
@@ -470,6 +483,11 @@ class ExpressionFacade:
         result = await self._graph.ainvoke(initial)
         if result["mode"] is ContextMode.SLOW:
             self._last_slow_at = time.time()
+        if result["ask"] is not None:
+            self._waiting_user = True
+            self._ask_text = result["ask"]
+            self._ask_at = time.time()
+            self._ask_cid = correlation_id
 
     async def initiate_chat(self, desire: ShortTermDesire, state: CurrentState) -> bool:
         """搭话：快通道生成一句开场白。
@@ -498,6 +516,9 @@ class ExpressionFacade:
         self._history.append(
             Message(role="nyx", content=output.content, timestamp=time.time())
         )
+        # 记「待回应」：用户没回 → check_timeouts 淘汰该互动欲（值回灌）。
+        self._pending_chat_desire_id = desire.id
+        self._chat_at = time.time()
         return True
 
     async def mutter(self, state: CurrentState, correlation_id: str) -> None:
@@ -512,6 +533,20 @@ class ExpressionFacade:
         await self._bus.publish(
             internal_text_event(EventType.MUTTER, text, correlation_id)
         )
+
+    async def check_timeouts(self, now: float) -> None:
+        """超时收尾（tick 心跳直呼）：问句无人答 → 记「用户未回答」；
+        搭话被忽略 → 淘汰该互动欲（expire 内值回灌 +0.3）。"""
+        if self._waiting_user and now - self._ask_at >= self._config.ask_timeout:
+            await self._memory.record_no_answer(self._ask_text, self._ask_cid or "")
+            self._waiting_user = False
+            self._ask_cid = None
+        if (
+            self._pending_chat_desire_id is not None
+            and now - self._chat_at >= self._config.chat_ignore_timeout
+        ):
+            await self._desire.expire(self._pending_chat_desire_id)
+            self._pending_chat_desire_id = None
 ```
 
 > 注：`facade.py` 与 `pipeline.py` 曾各有一份 `_make_event`（构造 `Event` 纯函数）。第五轮 review 判定为重复，已下沉到 `events/event.py` 的 `internal_text_event`（`content` 纯文本 → 包装成 `{"content": content}`）；两模块改 import 单一来源，删各自副本。
@@ -547,4 +582,5 @@ class ExpressionFacade:
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
 - [ ] ripple 同步：tech-ref §6.1 `ReplyState` 的 `think`/`speak` 从 `str | None` 改 `list[str]`（多轮累积）、补 `narrative: SelfNarrative | None` 与 `correlation_id: str` 两字段、edges 补「每轮 SPEAK 交付 + ask 后回合结束走 scene_memory」；tech-ref §5 `initiate_chat` 签名 `-> bool`（发话 True/无话 False）、`mutter` 签名补 `correlation_id: str`（MUTTER_CHECK tick 恒定根）
+- [ ] ripple 同步（V2 交互闭环）：tech-ref §5 `ExpressionFacade` 补 `check_timeouts(now)`；02-config `ExpressionConfig` 补 `ask_timeout`/`chat_ignore_timeout` 两字段；09-memory-facade 补 `record_no_answer`；18-api `_tick_loop` 每轮心跳 `await app.expression.check_timeouts(now)`
 - [ ] 下游约定：18-api 组合根 `canon` = `prompts/canon.md`、`ask_guidance` = `prompts/ask.md` 读入后注入 `ExpressionFacade`；`POST /api/chat` → `ExpressionFacade.reply(msg, correlation_id)`；`INITIATE_CHAT_CHECK` tick 由组合根调 `should_initiate_chat` 判定、从 `DesireFacade.get_pending()` 选 interaction 欲望后 `await initiate_chat(desire, state)`，返回 `True` 才更新 `last_chat_at`；`MUTTER_CHECK` tick → `mutter(state, event.correlation_id)`

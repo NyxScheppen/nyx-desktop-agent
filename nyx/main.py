@@ -300,6 +300,7 @@ async def _tick_loop(app: _App) -> None:
                 Source.INTERNAL,
             ))
             last_chat = now
+        await app.expression.check_timeouts(now)   # 问句/搭话 超时收尾（60s 心跳）
         await asyncio.sleep(_TICK_INTERVAL)
 
 

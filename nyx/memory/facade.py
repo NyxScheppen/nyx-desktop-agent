@@ -321,6 +321,26 @@ class MemoryFacade:
         )
         await self._persist_memory(memory, correlation_id)
 
+    async def record_no_answer(self, question: str, correlation_id: str) -> None:
+        """用户未回答尼克斯的提问：落一条确定性的 SHORT_TERM 记忆（无 LLM）。
+
+        问句本身已由慢通道场景化记忆记过，这里只补「没答」这半句；
+        复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。
+        """
+        memory = Memory(
+            id=str(uuid4()),
+            created_at=time.time(),
+            content=f"我问了「{question}」，用户没有回答。",
+            tag="interaction",
+            summary="用户没有回答我的提问",
+            freshness=1.0,
+            type=MemoryType.SHORT_TERM,
+            recall_count=0,
+            aspect=[],
+            embedding=None,
+        )
+        await self._persist_memory(memory, correlation_id)
+
     async def _persist_memory(self, memory: Memory, correlation_id: str) -> None:
         """已构建 Memory 的共用入库尾段：补 embed → add → 建边 → 门控矛盾检测
         → 新鲜度衰减/淘汰 → 发 MEMORY_CREATED。场景/活动/画像记忆三者复用。"""

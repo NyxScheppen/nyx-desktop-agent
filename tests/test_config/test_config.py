@@ -34,6 +34,8 @@ def test_validate_config_accepts_defaults() -> None:
         ("activity", "grid_minutes", -1),         # 非正
         ("memory", "short_term_capacity", "20"),  # 错类型 str
         ("exploration", "web_enabled", "yes"),    # 错类型 str 当 bool
+        ("expression", "ask_timeout", -1.0),          # 非正
+        ("expression", "chat_ignore_timeout", 0.0),   # 非正
     ],
 )
 def test_validate_config_rejects_invalid(

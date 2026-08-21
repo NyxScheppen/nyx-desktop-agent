@@ -125,6 +125,7 @@ class _FakeMemory:
     def __init__(self) -> None:
         self.search_calls = 0
         self.scene_memories: list[dict[str, str]] = []
+        self.no_answers: list[str] = []
 
     async def search(self, query: str) -> list[Memory]:
         self.search_calls += 1
@@ -141,6 +142,9 @@ class _FakeMemory:
             freshness=1.0,
             type=MemoryType.SHORT_TERM,
         )
+
+    async def record_no_answer(self, question: str, correlation_id: str) -> None:
+        self.no_answers.append(question)
 
 
 class _FakeInnerLife:
@@ -164,6 +168,14 @@ class _FakeBus:
         self.published.append(event)
 
 
+class _FakeDesire:
+    def __init__(self) -> None:
+        self.expired: list[str] = []
+
+    async def expire(self, desire_id: str) -> None:
+        self.expired.append(desire_id)
+
+
 def _user_content(messages: list[LlmMessage]) -> str:
     return messages[-1]["content"]
 
@@ -172,6 +184,7 @@ def _new_facade(
     energy: float = 80.0,
     arousal: float = 0.0,
     llm: _FakeLlm | None = None,
+    desire: _FakeDesire | None = None,
 ) -> tuple[
     ExpressionFacade,
     _FakeLlm,
@@ -185,12 +198,17 @@ def _new_facade(
     memory = _FakeMemory()
     inner_life = _FakeInnerLife(_mk_state(energy, arousal))
     bus = _FakeBus()
+    desire_obj = (
+        cast(DesireFacade, desire)
+        if desire is not None
+        else cast(DesireFacade, object())
+    )
     facade = ExpressionFacade(
         cast(EventBus, bus),
         cast(LlmClient, fake_llm),
         cast(Evaluator, evaluator),
         cast(MemoryFacade, memory),
-        cast(DesireFacade, object()),
+        desire_obj,
         cast(InnerLifeFacade, inner_life),
         canon="你是尼克斯，一个想成为人类的 AI。",
         ask_guidance="[主动提问指导]\n在合适的时候向用户提问。",
@@ -405,3 +423,79 @@ async def test_initiate_chat_appends_history() -> None:
     await facade.initiate_chat(_desire(), _mk_state(80.0, 0.0))
     assert [m.role for m in facade._history] == ["nyx"]
     assert facade._history[0].content == "你在忙吗？"
+
+
+# ---- wait_user / 搭话被忽略回灌（V2 表达交互闭环） ----
+
+
+async def test_reply_question_sets_waiting_user() -> None:
+    # 慢通道问句结尾 → reply 置 wait_user 状态（供 tick 超时收尾）
+    facade, _llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=100.0, arousal=0.0, llm=_FakeLlm(speak_override="你还好吗？")
+    )
+    await facade.reply("在吗", "corr-q")
+    assert facade._waiting_user is True
+    assert facade._ask_text == "你还好吗？"
+    assert facade._ask_cid == "corr-q"
+
+
+async def test_reply_clears_pending_state() -> None:
+    # 用户说话即视为回应：清 wait_user + 待回搭话（不做「是否真在答」判断）
+    facade, _llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=20.0, arousal=0.9
+    )
+    facade._waiting_user = True
+    facade._ask_cid = "corr-old"
+    facade._pending_chat_desire_id = "d1"
+    await facade.reply("哦", "corr-new")
+    assert facade._waiting_user is False
+    assert facade._ask_cid is None
+    assert facade._pending_chat_desire_id is None
+
+
+async def test_initiate_chat_sets_pending_desire() -> None:
+    # 搭话发出 → 记「待回应」互动欲，超时未回则 check_timeouts 回灌
+    facade, _llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        llm=_FakeLlm(chat_content="你在忙吗？")
+    )
+    await facade.initiate_chat(_desire(), _mk_state(80.0, 0.0))
+    assert facade._pending_chat_desire_id == "d1"
+
+
+async def test_check_timeouts_records_no_answer() -> None:
+    # wait_user 超时 → 落一条「用户没回答」记忆，清等待态
+    facade, _llm, _evaluator, memory, _inner_life, _bus = _new_facade()
+    facade._waiting_user = True
+    facade._ask_text = "你还好吗？"
+    facade._ask_cid = "corr-ask"
+    facade._ask_at = 100.0
+    await facade.check_timeouts(100.0 + ExpressionConfig().ask_timeout)
+    assert memory.no_answers == ["你还好吗？"]
+    assert facade._waiting_user is False
+    assert facade._ask_cid is None
+
+
+async def test_check_timeouts_before_timeout_noop() -> None:
+    # 未到超时点 → 不动作（wait_user 与待回搭话都保持）
+    facade, _llm, _evaluator, memory, _inner_life, _bus = _new_facade()
+    facade._waiting_user = True
+    facade._ask_text = "你还好吗？"
+    facade._ask_cid = "corr-ask"
+    facade._ask_at = 100.0
+    facade._pending_chat_desire_id = "d1"
+    facade._chat_at = 100.0
+    await facade.check_timeouts(100.0 + 1.0)
+    assert memory.no_answers == []
+    assert facade._waiting_user is True
+    assert facade._pending_chat_desire_id == "d1"
+
+
+async def test_check_timeouts_expires_ignored_chat() -> None:
+    # 搭话超时未回 → expire 该互动欲（内部值回灌 +0.3），清待回应
+    desire = _FakeDesire()
+    facade, _llm, _evaluator, _memory, _inner_life, _bus = _new_facade(desire=desire)
+    facade._pending_chat_desire_id = "d1"
+    facade._chat_at = 100.0
+    await facade.check_timeouts(100.0 + ExpressionConfig().chat_ignore_timeout)
+    assert desire.expired == ["d1"]
+    assert facade._pending_chat_desire_id is None

@@ -37,6 +37,13 @@ class _StopLoop(Exception):
     pass
 
 
+class _FakeExpression:
+    """expression 占位：tick 循环直呼 check_timeouts，无操作即可。"""
+
+    async def check_timeouts(self, now: float) -> None:
+        return None
+
+
 async def _stop(*_args: object) -> None:
     raise _StopLoop()
 
@@ -50,7 +57,7 @@ def _app(bus: object, *, grid_minutes: int = 0) -> _App:
         desire=cast(DesireFacade, object()),
         memory=cast(MemoryFacade, object()),
         activity=cast(ActivityFacade, object()),
-        expression=cast(ExpressionFacade, object()),
+        expression=cast(ExpressionFacade, _FakeExpression()),
         evaluator=cast(Evaluator, object()),
         config=config,
     )

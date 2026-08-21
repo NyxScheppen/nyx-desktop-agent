@@ -49,6 +49,13 @@ class ExpressionFacade:
         self._config = config
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._last_slow_at = 0.0
+        # 待用户回应状态：问句（wait_user）与搭话（被忽略回灌）各一组。
+        self._waiting_user = False
+        self._ask_text = ""
+        self._ask_at = 0.0
+        self._ask_cid: str | None = None
+        self._pending_chat_desire_id: str | None = None
+        self._chat_at = 0.0
         # 图拓扑恒定（仅 history 跨 reply 变化），建一次复用（对齐 Exploration）
         self._graph = build_reply_graph(
             ReplyDeps(
@@ -66,6 +73,10 @@ class ExpressionFacade:
 
     async def reply(self, msg: str, correlation_id: str) -> None:
         """完整回复流程：跑 LangGraph 图，内部发布 think/speak/ask。"""
+        # 用户说话 = 回应了之前的问句/搭话；清等待状态（不做「是否真在答」判断）。
+        self._waiting_user = False
+        self._ask_cid = None
+        self._pending_chat_desire_id = None
         state = await self._inner_life.get_state()
         initial: ReplyState = {
             "message": msg,
@@ -86,6 +97,11 @@ class ExpressionFacade:
         result = await self._graph.ainvoke(initial)
         if result["mode"] is ContextMode.SLOW:
             self._last_slow_at = time.time()
+        if result["ask"] is not None:
+            self._waiting_user = True
+            self._ask_text = result["ask"]
+            self._ask_at = time.time()
+            self._ask_cid = correlation_id
 
     async def initiate_chat(self, desire: ShortTermDesire, state: CurrentState) -> bool:
         """搭话：快通道生成一句开场白。
@@ -116,6 +132,9 @@ class ExpressionFacade:
         self._history.append(
             Message(role="nyx", content=output.content, timestamp=time.time())
         )
+        # 记「待回应」：用户没回 → check_timeouts 淘汰该互动欲（值回灌）。
+        self._pending_chat_desire_id = desire.id
+        self._chat_at = time.time()
         return True
 
     async def mutter(self, state: CurrentState, correlation_id: str) -> None:
@@ -130,3 +149,17 @@ class ExpressionFacade:
         await self._bus.publish(
             internal_text_event(EventType.MUTTER, text, correlation_id)
         )
+
+    async def check_timeouts(self, now: float) -> None:
+        """超时收尾（tick 心跳直呼）：问句无人答 → 记「用户未回答」；
+        搭话被忽略 → 淘汰该互动欲（expire 内值回灌 +0.3）。"""
+        if self._waiting_user and now - self._ask_at >= self._config.ask_timeout:
+            await self._memory.record_no_answer(self._ask_text, self._ask_cid or "")
+            self._waiting_user = False
+            self._ask_cid = None
+        if (
+            self._pending_chat_desire_id is not None
+            and now - self._chat_at >= self._config.chat_ignore_timeout
+        ):
+            await self._desire.expire(self._pending_chat_desire_id)
+            self._pending_chat_desire_id = None

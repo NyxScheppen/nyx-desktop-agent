@@ -280,6 +280,18 @@ describe("dispatchEvent", () => {
     });
   });
 
+  it("mutter 非 string content → addMutter 丢弃且不 announce", () => {
+    dispatchEvent({
+      event: "mutter",
+      event_id: "m1",
+      correlation_id: "c1",
+      content: 123 as unknown as string,
+    });
+
+    expect(useChatStore.getState().messages).toHaveLength(0);
+    expect(useAnnounceStore.getState().items).toHaveLength(0);
+  });
+
   it("activity_end → refresh 后按 activity_id 找到产出并 announce", async () => {
     const snap: ActivitySnapshot = {
       current: null,

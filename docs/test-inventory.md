@@ -696,6 +696,7 @@
 | `announceStore > dismiss 摘除指定 id，其余保留` | 功能正确 | `dismiss(id)` 后仅该 id 消失、其余保留 |
 | `announceStore > 到时自动 dismiss（按 kind 时长）` | 功能正确 | fake timers 推进 `ANNOUNCE_DURATION[kind]` 后 item 消失 |
 | `dispatch > mutter → chatStore + announceStore（头像旁气泡）` | 功能正确 | `mutter` 事件同时进 chatStore（历史气泡）+ announceStore（`kind="mutter"` 头像旁临时气泡） |
+| `dispatch > mutter 非 string content → addMutter 丢弃且不 announce` | 回归保护 | `content=123` 的 mutter 帧：chatStore 与 announceStore 均不 append（与 addMutter 收窄一致，announce 不崩） |
 | `dispatch > activity_end → refresh 后按 activity_id 找到产出并 announce` | 功能正确 | `activity_end` 触发 `refresh()` 后，从 `data.schedule` 按 `activity_id` 找 completed 活动，`activityAnnouncement` 产出以 `kind="activity"` 进 announceStore |
 
 **功能阶段**：frontend「增强交互性」轮编写（常驻状态条 + 头像旁气泡 + 活动产出三件套；验证管道正确——`activityResult` 纯函数拼装、`announceStore` 追加/到时摘除、dispatch 把 `mutter` 与 `activity_end` 额外路由到 announceStore，不验证视觉淡出样式）。`formatResult` 从 ActivityPanel 本地函数抽提为共享库（`lib/activityResult.ts`），供活动产出气泡与状态条复用。

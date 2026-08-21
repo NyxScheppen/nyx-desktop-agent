@@ -23,7 +23,10 @@ export function dispatchEvent(e: SseEvent): void {
       return useChatStore.getState().addThink(e);
     case "mutter":
       useChatStore.getState().addMutter(e);
-      useAnnounceStore.getState().announce("mutter", e.content);
+      // 与 addMutter 一致的收窄（01-sse §4.1）：content 非 string 则丢弃，不进 announce
+      if (typeof e.content === "string") {
+        useAnnounceStore.getState().announce("mutter", e.content);
+      }
       return;
     case "initiate_chat":
       return useChatStore.getState().addInitiateChat(e);

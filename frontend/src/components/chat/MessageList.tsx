@@ -43,18 +43,28 @@ export default function MessageList({ messages }: MessageListProps) {
   const typedIds = useChatStore((s) => s.typedIds);
   const markTyped = useChatStore((s) => s.markTyped);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottom = useRef(true);
 
   // 随内容增长滚到底：观察滚动容器自身 DOM 变化，新消息（childList）与
-  // 打字机逐字（characterData）都触发。纯渲染层，不依赖 store/打字机状态。
+  // 打字机逐字（characterData）都触发。但仅当用户已在底部才跟随——上滑看历史时
+  // 不被逐字拉回底（scroll 事件把 stickToBottom 置 false，回到底部再恢复）。
   useEffect(() => {
     const el = listRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
+    const onScroll = () => {
+      stickToBottom.current =
+        el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    };
+    el.addEventListener("scroll", onScroll);
     const observer = new MutationObserver(() => {
-      el.scrollTop = el.scrollHeight;
+      if (stickToBottom.current) el.scrollTop = el.scrollHeight;
     });
     observer.observe(el, { childList: true, subtree: true, characterData: true });
-    return () => observer.disconnect();
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      observer.disconnect();
+    };
   }, []);
 
   return (

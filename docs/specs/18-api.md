@@ -516,14 +516,17 @@ async def build_app_context(config: Config) -> _App:
     tools = _build_tools(config)
     evaluator = Evaluator(db, llm, config.eval)
 
-    desire_store = DesireStore(db)
-    desire = DesireFacade(desire_store, bus, llm, evaluator, config.desire)
-
     memory_store = MemoryStore(db)
     embed = build_embed(config.embedding.model)  # MVP 默认启用向量层；测试注入 None
     retrieval = MemoryRetrieval(memory_store, embed)
     memory = MemoryFacade(
         memory_store, retrieval, bus, llm, evaluator, config.memory, embed
+    )
+
+    desire_store = DesireStore(db)
+    desire = DesireFacade(
+        desire_store, bus, llm, evaluator, config.desire,
+        lambda: memory.list_memories(),
     )
 
     inner_life_store = InnerLifeStore(db)

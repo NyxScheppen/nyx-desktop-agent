@@ -1,5 +1,5 @@
 from nyx.config import DesireConfig
-from nyx.desire.lifecycle import DesireLifecycle
+from nyx.desire.lifecycle import DesireLifecycle, ListMemories
 from nyx.desire.store import DesireStore
 from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
@@ -21,9 +21,12 @@ class DesireFacade:
         llm: LlmClient,
         evaluator: Evaluator,
         config: DesireConfig,
+        list_memories: ListMemories,
     ) -> None:
         self._store = store
-        self._lifecycle = DesireLifecycle(store, bus, llm, evaluator, config)
+        self._lifecycle = DesireLifecycle(
+            store, bus, llm, evaluator, config, list_memories
+        )
 
     async def add_value(self, source: Event) -> None:
         """事件入口：OBSERVATION_STATE 加压互动欲，ACTIVITY_END 满足回写。"""

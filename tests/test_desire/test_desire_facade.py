@@ -21,6 +21,7 @@ from nyx.types import (
     Event,
     LLMOutput,
     LongTermDesire,
+    Memory,
     ShortTermDesire,
 )
 
@@ -112,12 +113,16 @@ def _make_facade(
     evaluator: _FakeEvaluator,
     config: DesireConfig | None = None,
 ) -> DesireFacade:
+    async def list_memories() -> list[Memory]:
+        return []
+
     return DesireFacade(
         store,
         bus,
         cast(LlmClient, llm),
         cast(Evaluator, evaluator),
         config if config is not None else DesireConfig(),
+        list_memories,
     )
 
 

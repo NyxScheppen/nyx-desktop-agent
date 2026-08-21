@@ -17,7 +17,7 @@
 
 | 功能 | 愿景出处 | 说明 |
 |---|---|---|
-| 活动恢复/续做（读书已落地） | design §3.3 | 读书打断置 `PAUSED` + `read_chars` 断点续读已落地（D）；「同日程块内恢复同一记录」「创作/探索 LLM 中途暂停」仍 V2 |
+| ~~活动恢复/续做~~ ✅ 已落地 | design §3.3 | 可续活动（读书/创作/探索）打断置 `PAUSED` 保留记录 + 欲望关联；同日程块内 `_maybe_start_activity` 恢复同一记录（读书从书库刷新 `read_chars` 续读，创作/探索重跑），跨块不恢复留档 |
 | 屏幕视觉（截屏+视觉模型） | design §8.5 | `classify_presence` 扩展视觉输入（现只覆盖键盘/鼠标/窗口三输入，窗口标题采 `document.title` 占位，真前台窗口标题等 src-tauri 落地换源） |
 | ~~`goal.count` 精确计数~~ ✅ 已落地 | design §7.4 | C3：`_goal_met` 按单位精确判（read→completed / write→title+content / observe→presence）+ desire `goal_progress` 累计 count 次 |
 | ~~发呆 `{summary}` 回读 reflect 产出~~ ✅ 已落地 | — | B2：`IDLE_REFLECTION` result 带回反思 summary（直接 await reflect，不再发 REFLECTION 事件） |
@@ -26,7 +26,7 @@
 
 | 功能 | 愿景出处 | 说明 |
 |---|---|---|
-| 主题种子轮转（按「没做过/新鲜度最低」取） | design §7.3 | 需查记忆，现只取 `subtopics[0]` |
+| ~~主题种子轮转（按「没做过/新鲜度最低」取）~~ ✅ 已落地 | design §7.3 | `_pick_topic_seed` 查记忆 substring：没做过优先、都做过取新鲜度最低；`DesireFacade`/`DesireLifecycle` 注入 `list_memories` 回调 |
 | 长期欲望「最相关」判定 | — | 满足时回写最匹配的长期欲望（现只回写第一个） |
 | 欲望 `ACTIVE` / `SUPPRESSED` 状态流转 | — | 活动系统用 `ACTIVE` 标记「消费中」，`SUPPRESSED` 纳入流转 |
 

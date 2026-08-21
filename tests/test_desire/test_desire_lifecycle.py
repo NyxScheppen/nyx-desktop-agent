@@ -14,7 +14,8 @@ from nyx.desire.lifecycle import (
     DesireLifecycle,
     _build_desire_prompt,
     _parse_desire,
-    _topic_seed,
+    _pick_topic_seed,
+    _subtopics_for,
 )
 from nyx.desire.store import DesireStore
 from nyx.desire.value import (
@@ -22,7 +23,14 @@ from nyx.desire.value import (
     SUPPRESSION_RAISE_DELTA,
     WEIGHT_REINFORCE_DELTA,
 )
-from nyx.enums import DesireStatus, DesireType, EventType, GoalAction, Source
+from nyx.enums import (
+    DesireStatus,
+    DesireType,
+    EventType,
+    GoalAction,
+    MemoryType,
+    Source,
+)
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient, LlmMessage
@@ -32,6 +40,7 @@ from nyx.types import (
     Goal,
     LLMOutput,
     LongTermDesire,
+    Memory,
     ShortTermDesire,
 )
 
@@ -84,6 +93,18 @@ def _lt(
     )
 
 
+def _mem(summary: str = "x", content: str = "y", freshness: float = 1.0) -> Memory:
+    return Memory(
+        id="m1",
+        created_at=1000.0,
+        content=content,
+        tag="reading",
+        summary=summary,
+        freshness=freshness,
+        type=MemoryType.SHORT_TERM,
+    )
+
+
 class _FakeLlm:
     """complete 按 output_type="desire" 返回 fixture JSON，记录调用。"""
 
@@ -128,13 +149,18 @@ def _make_lifecycle(
     llm: _FakeLlm,
     evaluator: _FakeEvaluator,
     config: DesireConfig | None = None,
+    memories: list[Memory] | None = None,
 ) -> DesireLifecycle:
+    async def list_memories() -> list[Memory]:
+        return memories if memories is not None else []
+
     return DesireLifecycle(
         store,
         bus,
         cast(LlmClient, llm),
         cast(Evaluator, evaluator),
         config if config is not None else DesireConfig(),
+        list_memories,
     )
 
 
@@ -196,11 +222,26 @@ def test_parse_desire() -> None:
         _parse_desire("[]")                                          # 非对象
 
 
-def test_topic_seed() -> None:
+def test_subtopics_for() -> None:
     lt = _lt(DesireType.EXPLORATION, ["骑士团"])
-    assert _topic_seed(DesireType.EXPLORATION, [lt]) == "骑士团"
-    assert _topic_seed(DesireType.INTERACTION, [lt]) is None
-    assert _topic_seed(DesireType.EXPLORATION, [_lt(DesireType.EXPLORATION)]) is None
+    assert _subtopics_for(DesireType.EXPLORATION, [lt]) == ["骑士团"]
+    assert _subtopics_for(DesireType.INTERACTION, [lt]) == []
+    assert _subtopics_for(DesireType.EXPLORATION, [_lt(DesireType.EXPLORATION)]) == []
+
+
+def test_pick_topic_seed() -> None:
+    assert _pick_topic_seed([], []) is None                       # 空池
+    assert _pick_topic_seed(["痛苦", "死亡"], []) == "痛苦"        # 全没做过 → 第一个
+    # 部分做过 → 取没做过的
+    assert _pick_topic_seed(
+        ["痛苦", "死亡"], [_mem(summary="关于痛苦", freshness=0.9)]
+    ) == "死亡"
+    # 都做过 → 取新鲜度最低（最久没碰）
+    assert _pick_topic_seed(
+        ["痛苦", "死亡"],
+        [_mem(summary="关于痛苦", freshness=0.9),
+         _mem(summary="关于死亡", freshness=0.2)],
+    ) == "死亡"
 
 
 def test_build_desire_prompt() -> None:
@@ -355,15 +396,21 @@ async def test_run_eval_suppression_gate(monkeypatch: pytest.MonkeyPatch) -> Non
 async def test_run_eval_topic_seed(monkeypatch: pytest.MonkeyPatch) -> None:
     store, bus, database = await _new_stack()
     llm = _FakeLlm()
-    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())
+    lifecycle = _make_lifecycle(
+        store, bus, llm, _FakeEvaluator(),
+        memories=[_mem(summary="关于骑士团", freshness=0.9)],
+    )
     try:
         t0 = 1_000_000.0
         monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
         await store.upsert_value(_dv(DesireType.EXPLORATION, 0.9, updated_at=t0))
-        await store.insert_long_term(_lt(DesireType.EXPLORATION, ["骑士团"]))
+        await store.insert_long_term(
+            _lt(DesireType.EXPLORATION, ["骑士团", "大学朋友"])
+        )
         async with _running(bus):
             await lifecycle.run_eval()
-        assert "骑士团" in llm.user_contents[0]
+        assert "大学朋友" in llm.user_contents[0]   # 骑士团有记忆（做过）→ 取没做过的
+        assert "骑士团" not in llm.user_contents[0]
     finally:
         await database.conn.close()
 
@@ -532,12 +579,16 @@ async def test_run_eval_evaluator_error_propagates(
         async def evaluate(self, output: LLMOutput) -> None:
             raise RuntimeError("boom")
 
+    async def list_memories() -> list[Memory]:
+        return []
+
     lifecycle = DesireLifecycle(
         store,
         bus,
         cast(LlmClient, llm),
         cast(Evaluator, _BoomEvaluator()),
         DesireConfig(),
+        list_memories,
     )
     try:
         t0 = 1_000_000.0

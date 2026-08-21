@@ -16,7 +16,7 @@
 ## 验收标准
 
 - [ ] `store.py` 含 `DesireStore`（`add_desire` / `get_desire` / `list_pending` / `list_short_term` / `update_desire` / `get_value` / `list_values` / `upsert_value` / `insert_long_term` / `list_long_term` / `update_long_term`）+ 序列化 helper，与「`desire/store.py`（完整）」段代码逐字一致
-- [ ] `lifecycle.py` 含 `DesireLifecycle`（`pressure_from_observation` / `satisfy_from_activity_end` / `run_eval` / `satisfy` / `expire`）+ `_parse_desire` / `_topic_seed` / `_build_desire_prompt`，与「`desire/lifecycle.py`（完整）」段代码逐字一致
+- [ ] `lifecycle.py` 含 `DesireLifecycle`（`pressure_from_observation` / `satisfy_from_activity_end` / `run_eval` / `satisfy` / `expire`）+ `_parse_desire` / `_subtopics_for` / `_subtopic_freshness` / `_pick_topic_seed` / `_build_desire_prompt`，与「`desire/lifecycle.py`（完整）」段代码逐字一致
 - [ ] `facade.py` 含 `DesireFacade`，七个公开方法签名与 tech-ref §5 逐字一致：`add_value(source: Event) -> None` / `evaluate() -> list[ShortTermDesire]` / `get_pending() -> list[ShortTermDesire]` / `get_all() -> DesireState` / `satisfy(desire_id: str, goal_met: bool) -> None` / `expire(desire_id: str) -> None` / `add_long_term(desire: LongTermDesire) -> None`
 - [ ] `add_value` 是**事件入口**（对 tech-ref「加压」注释的精确化）：`OBSERVATION_STATE` → 互动欲加压，`ACTIVITY_END` → 解析满足信号回写；其余类型忽略
 - [ ] `run_eval`：先四类型衰减（`elapsed_days` 来自 `updated_at`）→ 长期欲望周期加压 → 达峰判定（`at_peak and is_expressible`）→ **只生成最迫切的 1 个**（value 最高）→ LLM 生成 → 重置该类型 value → 入队 → 发布 `desire_generated`；无达峰返回 `[]`，非选中类型**保留压力**（不重置）
@@ -42,7 +42,7 @@
 - **加压增量（默认值，标注可推翻）**：`_OBSERVATION_PRESSURE_DELTA=0.15`（观察状态→互动欲 +0.15）、`_LONG_TERM_PRESSURE_DELTA=0.2`（每个长期欲望周期→对应类型 +0.2）。加压复用 10 的 `apply_pressure`
 - **衰减时机（决策：加 `updated_at` 列，已与用户确认）**：`elapsed_days = (now - updated_at) / 86400`，`decay_value(value, elapsed_days, config.value_decay)`。`updated_at` 记录"最后一次 value 变化"，每次 evaluate 先衰减结算再写回 `updated_at = now`；衰减是单调的，两次 evaluate 之间 value 不实时下降（同 09 的 `decay_freshness` 局限），相对顺序不破坏
 - **达峰生成（决策：只生成最迫切 1 个，已与用户确认）**：达峰判据 = `at_peak(value, peak) and is_expressible(value, suppression)`（10 的门控组合）；多个达峰类型时 `max(..., key=value)` 取最高者生成 1 个，**只重置选中类型**，其余达峰类型保留压力下次 evaluate 再生成——每次 evaluate 最多 1 次 LLM 调用（原则 1）
-- **主题种子（decision，可推翻）**：`_topic_seed` 从对应类型长期欲望的 `subtopics[0]` 取（MVP 取第一个）。种子拼进 `_build_desire_prompt` 给 LLM 作生成上下文
+- **主题种子（decision，可推翻）**：`_pick_topic_seed` 按「没做过 / 新鲜度最低」从对应类型长期欲望的子主题池取——先查记忆（注入的 `list_memories` 回调，组合根接 `memory.list_memories`）做 substring 匹配，无命中记忆（= 没做过）最优先，都做过取新鲜度最低者；空池返回 `None`。种子拼进 `_build_desire_prompt` 给 LLM 作生成上下文
 - **`strength` 语义**：`ShortTermDesire.strength` = 达峰时的 `value`（生成前保存，值重置后仍保留），供展示/排序
 - **长期进度回写（decision，可推翻）**：满足时回写**第一个** `type` 匹配的长期欲望 `progress += 0.1`（夹 `[0,1]`）、`strength -= 0.02`（夹 `[0,1]`）。MVP 回写第一个
 - **长期欲望初始化（seed）**：3 个初始集来自 canon §4（硬编码），归 **18-api 组合根**启动时 `insert_long_term`（表空才 seed）；四类型 `desire_value` 同样由 18-api 用 `default_value(t)` 初始化并覆盖 `updated_at=now`。11 只提供 store 原语，不提供 seed 方法；`long_term_capacity` 不被 11 消费——长期欲望运行时新增/淘汰的唯一入口是 12-inner-life 反思，容量淘汰编排归 12
@@ -278,6 +278,7 @@ def _row_to_lt(row: aiosqlite.Row) -> LongTermDesire:
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from uuid import uuid4
 
@@ -298,7 +299,14 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
-from nyx.types import DesireValue, Event, Goal, LongTermDesire, ShortTermDesire
+from nyx.types import (
+    DesireValue,
+    Event,
+    Goal,
+    LongTermDesire,
+    Memory,
+    ShortTermDesire,
+)
 
 _OBSERVATION_PRESSURE_DELTA = 0.15    # 观察状态 → 互动欲 +0.15
 _LONG_TERM_PRESSURE_DELTA = 0.2       # 每个长期欲望周期 → 对应类型 +0.2
@@ -350,12 +358,44 @@ def _parse_desire(raw: str) -> tuple[str, Goal | None]:
     return description, Goal(action=GoalAction(action), count=count, topic=topic)
 
 
-def _topic_seed(type_: DesireType, long_term: list[LongTermDesire]) -> str | None:
-    """从对应类型的长期欲望取主题种子（子主题池第一个）。纯函数。"""
+ListMemories = Callable[[], Awaitable[list[Memory]]]
+
+
+def _subtopics_for(type_: DesireType, long_term: list[LongTermDesire]) -> list[str]:
+    """对应类型长期欲望的子主题池；无匹配或空池返回 []。纯函数。"""
     for lt in long_term:
         if lt.type is type_ and lt.subtopics:
-            return lt.subtopics[0]
-    return None
+            return lt.subtopics
+    return []
+
+
+def _subtopic_freshness(subtopic: str, memories: list[Memory]) -> float | None:
+    """子主题最新新鲜度：命中摘要/正文的最新记忆 freshness；无命中为 None。纯函数。"""
+    hits = [
+        m.freshness
+        for m in memories
+        if subtopic in m.summary or subtopic in m.content
+    ]
+    return max(hits) if hits else None
+
+
+def _pick_topic_seed(subtopics: list[str], memories: list[Memory]) -> str | None:
+    """按「没做过 / 新鲜度最低」取种子：没做过最优先，都做过取新鲜度最低者。纯函数。"""
+    if not subtopics:
+        return None
+    best = subtopics[0]
+    best_freshness = _subtopic_freshness(best, memories)
+    for subtopic in subtopics[1:]:
+        freshness = _subtopic_freshness(subtopic, memories)
+        if freshness is None and best_freshness is not None:
+            best, best_freshness = subtopic, freshness
+        elif (
+            freshness is not None
+            and best_freshness is not None
+            and freshness < best_freshness
+        ):
+            best, best_freshness = subtopic, freshness
+    return best
 
 
 class DesireLifecycle:
@@ -371,12 +411,14 @@ class DesireLifecycle:
         llm: LlmClient,
         evaluator: Evaluator,
         config: DesireConfig,
+        list_memories: ListMemories,
     ) -> None:
         self._store = store
         self._bus = bus
         self._llm = llm
         self._evaluator = evaluator
         self._config = config
+        self._list_memories = list_memories
         self._logger = logging.getLogger(__name__)
 
     async def pressure_from_observation(self, event: Event) -> None:
@@ -435,7 +477,12 @@ class DesireLifecycle:
         # 4. 取最迫切的 1 个
         target = max(expressible, key=lambda dv: dv.value)
         peak_value = target.value
-        seed = _topic_seed(target.type, long_term)
+        subtopics = _subtopics_for(target.type, long_term)
+        seed = (
+            _pick_topic_seed(subtopics, await self._list_memories())
+            if subtopics
+            else None
+        )
 
         # 5. 写回非选中类型（保留压力）；选中类型生成后重置写 0（step 7）
         for t in DesireType:
@@ -572,7 +619,7 @@ class DesireLifecycle:
 
 ```python
 from nyx.config import DesireConfig
-from nyx.desire.lifecycle import DesireLifecycle
+from nyx.desire.lifecycle import DesireLifecycle, ListMemories
 from nyx.desire.store import DesireStore
 from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
@@ -594,9 +641,12 @@ class DesireFacade:
         llm: LlmClient,
         evaluator: Evaluator,
         config: DesireConfig,
+        list_memories: ListMemories,
     ) -> None:
         self._store = store
-        self._lifecycle = DesireLifecycle(store, bus, llm, evaluator, config)
+        self._lifecycle = DesireLifecycle(
+            store, bus, llm, evaluator, config, list_memories
+        )
 
     async def add_value(self, source: Event) -> None:
         """事件入口：OBSERVATION_STATE 加压互动欲，ACTIVITY_END 满足回写。"""
@@ -631,7 +681,7 @@ class DesireFacade:
 
 ## 测试要点
 
-- [ ] 单元测试 `tests/test_desire/`（`pytest-asyncio`；`db = await connect(":memory:")`；`store = DesireStore(db)`；`lifecycle = DesireLifecycle(store, bus, fake_llm, fake_evaluator, config)`；fake `LlmClient.complete` 按 `output_type == "desire"` 返回 fixture JSON 并记录调用、fake `Evaluator.evaluate` 记录调用；`EventBus` 用真实例 + 订阅 recording handler，`run()` 作 task 驱动——同 05/09 模式）：
+- [ ] 单元测试 `tests/test_desire/`（`pytest-asyncio`；`db = await connect(":memory:")`；`store = DesireStore(db)`；`lifecycle = DesireLifecycle(store, bus, fake_llm, fake_evaluator, config, fake_list_memories)`；fake `LlmClient.complete` 按 `output_type == "desire"` 返回 fixture JSON 并记录调用、fake `Evaluator.evaluate` 记录调用；`EventBus` 用真实例 + 订阅 recording handler，`run()` 作 task 驱动——同 05/09 模式）：
   - [ ] **store**（`test_desire_store.py`）：
     - [ ] `add_desire + get_desire` 往返：含 `goal=Goal(READ, 3, "骑士团")`、非默认 `retry_count`/`status` → 各字段全等（`goal` JSON 往返、枚举往返）
     - [ ] `goal=None` 往返 → `get_desire().goal is None`（SQL NULL 非 `"null"` 字符串）
@@ -642,7 +692,8 @@ class DesireFacade:
     - [ ] `insert_long_term + list_long_term + update_long_term`：`subtopics`/`linked_values` JSON 数组往返、`type` 枚举往返；`update_long_term` 改 `progress`/`strength`
   - [ ] **lifecycle 纯函数**：
     - [ ] `_parse_desire`：合法 JSON（含 goal）→ `(description, Goal)`；`goal: null` → `(description, None)`；缺 `description` / 空串 → `ValueError`；`goal.action` 非法 → `ValueError`；`count` 非正/非 int → `ValueError`；`topic` 非 str → `ValueError`；JSON 是数组 → `ValueError`
-    - [ ] `_topic_seed`：有 `type` 匹配且 `subtopics` 非空的长期欲望 → `subtopics[0]`；无匹配 → `None`
+    - [ ] `_subtopics_for`：有 `type` 匹配且 `subtopics` 非空的长期欲望 → 返回该 `subtopics`；无匹配/空池 → `[]`
+    - [ ] `_pick_topic_seed`：空池 → `None`；全没做过（无命中记忆）→ 第一个；部分做过 → 取没做过的；都做过 → 取新鲜度最低者
     - [ ] `_build_desire_prompt`：含类型 `.value` 与种子；`seed=None` → 含「（无）」
   - [ ] **pressure_from_observation**：互动欲 `value` 由 `x` → `min(1.0, x + 0.15)`；`updated_at` 更新
   - [ ] **run_eval**：
@@ -652,7 +703,7 @@ class DesireFacade:
     - [ ] **长期加压**：seed 一个 `type=EXPLORATION` 的长期欲望 → 探索欲 `value` 额外 +0.2
     - [ ] **衰减**：`updated_at` 设为 1 天前 → `value` 衰减 `value_decay × 1`
     - [ ] **抑制门控**：`suppression_threshold=0.9 > value=0.85`（达峰但被抑制）→ 不生成，返回 `[]`
-    - [ ] **主题种子**：seed 探索型长期欲望（`subtopics=["骑士团"]`）→ LLM 收到的 prompt 含「骑士团」
+    - [ ] **主题种子**：seed 探索型长期欲望（`subtopics=["骑士团", "大学朋友"]`）+ 记忆命中「骑士团」→ LLM 收到的 prompt 含「大学朋友」、不含「骑士团」（没做过优先）
   - [ ] **satisfy**：
     - [ ] `goal_met=True` → `status is SATISFIED`、表达权重 +0.05、长期进度 +0.1、发布 `desire_satisfied`
     - [ ] `goal_met=False` 且 `retry_count <= retry_limit` → `retry_count+1`、`status` 仍 `PENDING`、无事件
@@ -672,5 +723,5 @@ class DesireFacade:
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
-- [ ] 18-api 组合根：`DesireStore(db)` → `DesireFacade(store, bus, llm, evaluator, config.desire)`；启动时 seed 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）与 3 个初始长期欲望（canon §4，表空才 seed）；订阅 `OBSERVATION_STATE`/`ACTIVITY_END` 到 `facade.add_value`，CLOCK_TICK 的 `DESIRE_EVAL` 分发到 `facade.evaluate()`
+- [ ] 18-api 组合根：`DesireStore(db)` → `DesireFacade(store, bus, llm, evaluator, config.desire, lambda: memory.list_memories())`；启动时 seed 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）与 3 个初始长期欲望（canon §4，表空才 seed）；订阅 `OBSERVATION_STATE`/`ACTIVITY_END` 到 `facade.add_value`，CLOCK_TICK 的 `DESIRE_EVAL` 分发到 `facade.evaluate()`
 - [ ] 13-activity 消费欲望走 `get_pending()`；14-activity 的 `activity_end` content 契约（`desire_id`/`goal_met`）与本 spec §技术方案一致；17-expression 搭话：MVP 不调 `satisfy`（欲望保持 pending，靠搭话间隔缓解重复）

@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from uuid import uuid4
 
@@ -21,7 +22,14 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
-from nyx.types import DesireValue, Event, Goal, LongTermDesire, ShortTermDesire
+from nyx.types import (
+    DesireValue,
+    Event,
+    Goal,
+    LongTermDesire,
+    Memory,
+    ShortTermDesire,
+)
 
 _OBSERVATION_PRESSURE_DELTA = 0.15    # 观察状态 → 互动欲 +0.15
 _LONG_TERM_PRESSURE_DELTA = 0.2       # 每个长期欲望周期 → 对应类型 +0.2
@@ -73,12 +81,44 @@ def _parse_desire(raw: str) -> tuple[str, Goal | None]:
     return description, Goal(action=GoalAction(action), count=count, topic=topic)
 
 
-def _topic_seed(type_: DesireType, long_term: list[LongTermDesire]) -> str | None:
-    """从对应类型的长期欲望取主题种子（子主题池第一个）。纯函数。"""
+ListMemories = Callable[[], Awaitable[list[Memory]]]
+
+
+def _subtopics_for(type_: DesireType, long_term: list[LongTermDesire]) -> list[str]:
+    """对应类型长期欲望的子主题池；无匹配或空池返回 []。纯函数。"""
     for lt in long_term:
         if lt.type is type_ and lt.subtopics:
-            return lt.subtopics[0]
-    return None
+            return lt.subtopics
+    return []
+
+
+def _subtopic_freshness(subtopic: str, memories: list[Memory]) -> float | None:
+    """子主题最新新鲜度：命中摘要/正文的最新记忆 freshness；无命中为 None。纯函数。"""
+    hits = [
+        m.freshness
+        for m in memories
+        if subtopic in m.summary or subtopic in m.content
+    ]
+    return max(hits) if hits else None
+
+
+def _pick_topic_seed(subtopics: list[str], memories: list[Memory]) -> str | None:
+    """按「没做过 / 新鲜度最低」取种子：没做过最优先，都做过取新鲜度最低者。纯函数。"""
+    if not subtopics:
+        return None
+    best = subtopics[0]
+    best_freshness = _subtopic_freshness(best, memories)
+    for subtopic in subtopics[1:]:
+        freshness = _subtopic_freshness(subtopic, memories)
+        if freshness is None and best_freshness is not None:
+            best, best_freshness = subtopic, freshness
+        elif (
+            freshness is not None
+            and best_freshness is not None
+            and freshness < best_freshness
+        ):
+            best, best_freshness = subtopic, freshness
+    return best
 
 
 class DesireLifecycle:
@@ -94,12 +134,14 @@ class DesireLifecycle:
         llm: LlmClient,
         evaluator: Evaluator,
         config: DesireConfig,
+        list_memories: ListMemories,
     ) -> None:
         self._store = store
         self._bus = bus
         self._llm = llm
         self._evaluator = evaluator
         self._config = config
+        self._list_memories = list_memories
         self._logger = logging.getLogger(__name__)
 
     async def pressure_from_observation(self, event: Event) -> None:
@@ -158,7 +200,12 @@ class DesireLifecycle:
         # 4. 取最迫切的 1 个
         target = max(expressible, key=lambda dv: dv.value)
         peak_value = target.value
-        seed = _topic_seed(target.type, long_term)
+        subtopics = _subtopics_for(target.type, long_term)
+        seed = (
+            _pick_topic_seed(subtopics, await self._list_memories())
+            if subtopics
+            else None
+        )
 
         # 5. 写回非选中类型（保留压力）；选中类型生成后重置写 0（step 7）
         for t in DesireType:

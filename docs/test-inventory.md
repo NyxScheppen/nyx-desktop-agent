@@ -289,7 +289,8 @@
 | `test_upsert_value_new_and_update` | 功能正确 | `upsert_value` 新建 → `list_values` 1 行；同 type 再 upsert 改 `value`/`updated_at`（ON CONFLICT 不重复建行） |
 | `test_long_term_roundtrip_and_update` | 功能正确 | `subtopics`/`linked_values` JSON 数组往返、`type` 枚举往返；`update_long_term` 改 `progress`/`strength` |
 | `test_parse_desire` | 边界鲁棒 | 合法 JSON→`(description, Goal)`；`goal:null`→`None`；缺/空 description、`goal.action` 非法、`count` 非正/非 int、`topic` 非 str、JSON 数组 → `ValueError`（7 例） |
-| `test_topic_seed` | 功能正确 | `type` 匹配且 `subtopics` 非空 → `subtopics[0]`；无匹配 / 空 subtopics → `None` |
+| `test_subtopics_for` | 功能正确 | `type` 匹配且 `subtopics` 非空 → 返回该 `subtopics`；无匹配 / 空 subtopics → `[]` |
+| `test_pick_topic_seed` | 功能正确 | 空池 → `None`；全没做过（无命中记忆）→ 第一个；部分做过 → 取没做过的；都做过 → 取新鲜度最低者 |
 | `test_build_desire_prompt` | 功能正确 | 含类型 `.value` 与种子；`seed=None` → 含「（无）」 |
 | `test_pressure_from_observation` | 功能正确 | 互动欲 `value` 0 → `+0.15`；`updated_at` 更新 |
 | `test_run_eval_no_peak` | 功能正确 | 四类型都低于 `peak_threshold` → `[]`、无 LLM 调用 |
@@ -298,7 +299,7 @@
 | `test_run_eval_long_term_pressure` | 功能正确 | 探索长期欲望 → 探索 `value` 额外 `+0.2`（0.5→0.7） |
 | `test_run_eval_decay` | 功能正确 | `updated_at` 1 天前 → `value` 衰减 `value_decay × 1`（0.5→0.48） |
 | `test_run_eval_suppression_gate` | 功能正确 | 达峰但 `suppression_threshold > value` → 不生成、返回 `[]` |
-| `test_run_eval_topic_seed` | 功能正确 | 探索长期 `subtopics=["骑士团"]` → LLM prompt 含「骑士团」 |
+| `test_run_eval_topic_seed` | 功能正确 | 探索长期 `subtopics=["骑士团", "大学朋友"]` + 记忆命中「骑士团」→ LLM prompt 含「大学朋友」不含「骑士团」（没做过优先） |
 | `test_run_eval_llm_invalid_json_skips` | 边界鲁棒 | 非法 JSON → `_parse_desire` 抛 `ValueError` → 返回 `[]`、目标 `value` 不重置、无欲望入队 |
 | `test_run_eval_evaluator_error_propagates` | 回归保护 | evaluator 抛 `RuntimeError` → 不被 `except ValueError` 吞、上抛给 supervisor（不掩蔽真 bug） |
 | `test_satisfy_goal_met` | 功能正确 | `SATISFIED`、表达权重 `+0.05`、长期进度 `+0.1`、发布 `desire_satisfied` |
@@ -317,7 +318,7 @@
 | `test_satisfy_expire_delegate` | 功能正确 | `facade.satisfy`/`facade.expire` 委托改 `status`（SATISFIED / EXPIRED） |
 | `test_add_long_term_delegates` | 功能正确 | `add_long_term(desire)` → `list_long_term` 多一条、字段全等 |
 
-**功能阶段**：11-desire 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；无集成/E2E，与 activity/expression 真实编排归 13/14/17）；`test_goal_progress_roundtrip` / `test_satisfy_goal_progress` 于「活动填实（goal 精确计数）」轮追加（`goal_progress` 列读写往返 + `satisfy` 按 count 累计达标才满足）。
+**功能阶段**：11-desire 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；无集成/E2E，与 activity/expression 真实编排归 13/14/17）；`test_goal_progress_roundtrip` / `test_satisfy_goal_progress` 于「活动填实（goal 精确计数）」轮追加（`goal_progress` 列读写往返 + `satisfy` 按 count 累计达标才满足）；`test_topic_seed` 改 `test_subtopics_for` + `test_pick_topic_seed`、`test_run_eval_topic_seed` 改查记忆，于「主题种子轮转（没做过/新鲜度最低）」轮追加（`_pick_topic_seed` 查记忆 substring 取种子）。
 
 ## 12-inner-life（内在生命：情感/精力 + 反思 + 门面）
 
@@ -401,6 +402,8 @@
 | `test_get_last_exploration_max` | 功能正确 | 有 → `MAX(started_at)` |
 | `test_list_schedule_filters_and_orders` | 功能正确 | `started_at >= start` 过滤 + ASC |
 | `test_update` | 功能正确 | `update` 改 `status`/`progress`/`ended_at` → `get` 验证 |
+| `test_get_paused_in_block_latest` | 功能正确 | 当前块内最新一条 PAUSED（按 `started_at DESC`），忽略其他块 |
+| `test_get_paused_in_block_none` | 边界鲁棒 | 无当前块 PAUSED → `None` |
 | `test_day_start` | 功能正确 | `now=86400*1.5 → 86400.0` |
 | `test_elapsed_hours` | 功能正确 | `now=5400 → 1.5` |
 | `test_goal_met` | 功能正确 | goal None → None；`read` → `completed`；`write` → 有 `title`+`content`；`observe` → 有 `presence`；其余 → False（C3 精确版「一本/一篇/一次」） |
@@ -426,10 +429,14 @@
 | `test_upgrade_to_free_exploration` | 功能正确 | 探索欲 + 精力足 + 频率过 → FREE_EXPLORATION |
 | `test_no_upgrade_when_rate_limited` | 功能正确 | 频率未过 → 降级 READING |
 | `test_complete_activity` | 功能正确 | COMPLETED + `ended_at` 非空 + activity_end（energy_delta=-20） |
-| `test_interrupt_running` | 功能正确 | 非读书（creation）→ ABANDONED + activity_interrupted（`by=user_message`） |
+| `test_interrupt_non_resumable_abandons` | 功能正确 | 瞬时活动（休息）打断 → ABANDONED + activity_interrupted（`by=user_message`） |
+| `test_interrupt_creation_marks_paused` | 功能正确 | 创作被打断 → PAUSED（保留记录可重跑）+ activity_interrupted，非 ABANDONED |
 | `test_interrupt_reading_marks_paused` | 功能正确 | 读书被打断 → PAUSED（material 层 read_chars 已 advance 可续读）+ activity_interrupted，非 ABANDONED |
-| `test_interrupt_abandons_in_flight_activity` | 回归保护 | 执行中活动挂起可取消 await 时 interrupt → 终态 ABANDONED 而非被 complete 覆盖 |
+| `test_interrupt_pauses_in_flight_activity` | 回归保护 | 执行中可续活动（探索）挂起可取消 await 时 interrupt → 终态 PAUSED 而非被 complete 覆盖 |
 | `test_interrupt_missing` | 边界鲁棒 | 不存在 → 不发布、不崩溃 |
+| `test_resume_paused_creation_reruns` | 功能正确 | 同日程块内 PAUSED 创作恢复 → 复用同一 id 重跑至 COMPLETED（不新建）、evaluator 再调 1 次 |
+| `test_resume_paused_reading_refreshes_read_chars` | 功能正确 | 读书恢复 → `progress.read_chars` 从 material 层刷新（旧 0 → 6000）续读，读完 `result.read_chars==7000` |
+| `test_resume_skips_different_block` | 边界鲁棒 | 不同日程块 PAUSED 不恢复：旧 PAUSED 保留 + 新起 OBSERVE_USER（共 2 条） |
 | `test_get_current_delegates` | 功能正确 | `get_current` 委托 store |
 | `test_get_schedule_delegates` | 功能正确 | `get_schedule` 委托 store（按 `_day_start` 过滤） |
 | `test_should_explore_energy_too_low` | 功能正确 | energy=59 → False |
@@ -454,8 +461,10 @@
 | `test_find_by_topic_matches_unread` | 功能正确 | 书名子串命中主题 → 返回该书（优先于「最近一本」的按 topic 选料） |
 | `test_find_by_topic_skips_completed` | 功能正确 | 匹配书已读完（`read_chars >= total`）→ 返回 `None` |
 | `test_find_by_topic_no_match_returns_none` | 边界鲁棒 | 无书名含主题 → `None`（读书按 topic 选料无果） |
+| `test_get_by_path_returns_latest_progress` | 功能正确 | `get_by_path` 按路径取书：upsert+advance 后取到最新 `read_chars`（供读书恢复续读） |
+| `test_get_by_path_missing_returns_none` | 边界鲁棒 | 缺路径 → `None` |
 
-**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）；`test_exploration_plan_non_dict_raises` 于本轮评审修复编写（`_plan_next` 结构校验 fail-fast，配合删除 `recall_memory` 死节点）；`test_read_material_reads_real_file` / `test_read_material_skips_when_busy` 于「喂资料/上传课本」轮追加（上传 → `USER_MATERIAL` → `read_material` 读真实文件产 `{book,note}` + 忙时跳过）；「读书分块读」轮追加 `MaterialStore` 单测（`test_material_store.py` 4 条：最近未读、跳过读完、全读完 None、重传归零）+ `test_desire_reading_reads_latest_material`（探索欲读最近那本、分块推进度）+ `test_no_material_rate_limited_falls_back_to_default`（无书可读限速退回默认，禁编造），并把 `test_read_material_reads_real_file` 断言补上 `read_chars`/`total_chars` 与 `total_chars` 入参。；`test_find_by_topic_*` 于「活动填实（读书按 topic 选料）」轮追加（`MaterialStore.find_by_topic` 按书名子串选未读完的书）。`test_goal_met`（精确版）/ `test_sanitize_filename` / `test_creation_result_has_path` / `test_idle_reflection_result_has_summary` / `test_observe_user_result` / `test_observe_user_result_no_window_title` / `test_reading_completion_aggregates_note` / `test_maybe_start_reading_uses_topic` / `test_interrupt_reading_marks_paused` 同属「活动填实」轮（B3 创作落盘、B2 发呆回带 story、B1 观察 result 带 presence/window_title、C1 读书聚合完整笔记、C2 读书按 topic 选料、C3 `_goal_met` 精确计数、D 读书打断置 PAUSED）；`test_read_material_reads_real_file` 同轮由 6 字改 7000 字（一块读 6000 不读完，适配「读完整本才 completed」的完成判定）。
+**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）；`test_exploration_plan_non_dict_raises` 于本轮评审修复编写（`_plan_next` 结构校验 fail-fast，配合删除 `recall_memory` 死节点）；`test_read_material_reads_real_file` / `test_read_material_skips_when_busy` 于「喂资料/上传课本」轮追加（上传 → `USER_MATERIAL` → `read_material` 读真实文件产 `{book,note}` + 忙时跳过）；「读书分块读」轮追加 `MaterialStore` 单测（`test_material_store.py` 4 条：最近未读、跳过读完、全读完 None、重传归零）+ `test_desire_reading_reads_latest_material`（探索欲读最近那本、分块推进度）+ `test_no_material_rate_limited_falls_back_to_default`（无书可读限速退回默认，禁编造），并把 `test_read_material_reads_real_file` 断言补上 `read_chars`/`total_chars` 与 `total_chars` 入参。；`test_find_by_topic_*` 于「活动填实（读书按 topic 选料）」轮追加（`MaterialStore.find_by_topic` 按书名子串选未读完的书）。`test_goal_met`（精确版）/ `test_sanitize_filename` / `test_creation_result_has_path` / `test_idle_reflection_result_has_summary` / `test_observe_user_result` / `test_observe_user_result_no_window_title` / `test_reading_completion_aggregates_note` / `test_maybe_start_reading_uses_topic` / `test_interrupt_reading_marks_paused` 同属「活动填实」轮（B3 创作落盘、B2 发呆回带 story、B1 观察 result 带 presence/window_title、C1 读书聚合完整笔记、C2 读书按 topic 选料、C3 `_goal_met` 精确计数、D 读书打断置 PAUSED）；`test_read_material_reads_real_file` 同轮由 6 字改 7000 字（一块读 6000 不读完，适配「读完整本才 completed」的完成判定）；`test_interrupt_non_resumable_abandons`（原 `test_interrupt_running` 改名）+ `test_interrupt_creation_marks_paused` + `test_interrupt_pauses_in_flight_activity`（原 `test_interrupt_abandons_in_flight_activity` 改名）+ `test_resume_paused_creation_reruns` / `test_resume_paused_reading_refreshes_read_chars` / `test_resume_skips_different_block` + `test_get_paused_in_block_*` / `test_get_by_path_*` 于「活动恢复/续做」轮追加（可续活动打断置 PAUSED 保留记录 + 同日程块内恢复同一记录续读/重跑）。
 
 ## 16-expression-prompt（prompt 拼装 + 快慢通道判定）
 

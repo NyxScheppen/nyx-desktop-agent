@@ -22,5 +22,8 @@ build/
 # SQLite 运行时数据库（后端启动生成，勿提交）
 nyx.db*
 
+# 后端运行时工作区（上传/读写落盘，勿提交）
+workspace/
+
 # 前端依赖（勿提交）
 node_modules/

@@ -17,7 +17,7 @@
 - [ ] `bus.py` 含 `EventBus`（`__init__(db)` + `publish` / `subscribe` / `run` / `list_events` / `add_sse_sink` / `remove_sse_sink`），与「`events/bus.py`（完整）」段代码逐字一致
 - [ ] `routing.py` 含 `ROUTING`（18 键）+ `TICK_ROUTING`（4 键），与「`events/routing.py`（完整）」段代码逐字一致
 - [ ] `event.py` 含 `internal_event(type_, content, correlation_id) -> Event`（新 `uuid4` id + `time.time` 时间戳 + `Source.INTERNAL`）+ `internal_text_event(type_, content, correlation_id) -> Event`（纯文本 content 包成 `{"content": ...}` 载荷）与 `SECONDS_PER_DAY`/`SECONDS_PER_HOUR` 常量，与「`events/event.py`（完整）」段代码逐字一致
-- [ ] `publish()` 只入队（无 I/O、不落库）；`run()` 按「persist → 内部分发 → SSE 广播」顺序处理
+- [ ] `publish()` 只入队（无 I/O、不落库）；`run()` 按「persist → SSE 广播 → 内部分发」顺序处理（先广播：SSE 观察者立刻收到事件本身，不被阻塞 handler 拖慢）
 - [ ] 多 handler 按订阅序调用；handler 收到完整 `Event`（含 `correlation_id`，供下游继承）
 - [ ] SSE sink 收到**全部**事件（含 `ROUTING` 为空的 `think`/`speak` 等）；`add`/`remove_sse_sink` 生效
 - [ ] `list_events()` 按 `event_type` / `correlation_id` 过滤、`limit` 截断；`event_log` 行↔`Event` 往返（`content` JSON、枚举列 `.value`）
@@ -165,7 +165,7 @@ class _EventQueue(asyncio.Queue[Event]):
 
 
 class EventBus:
-    """单一事件管道：publish 入队，run 串行「persist → 内部分发 → SSE 广播」。
+    """单一事件管道：publish 入队，run 串行「persist → SSE 广播 → 内部分发」。
 
     db 由组合根注入（同所有 store 共享），db.lock 串行化同一连接的并发访问。
     """
@@ -222,6 +222,9 @@ class EventBus:
                     raise
                 self._persist_attempts.pop(event.id, None)
                 self.persisted_count += 1
+                # 先广播再分发：SSE 观察者立刻收到事件本身（用户消息不再被
+                # reply 这类阻塞 handler 拖到回复完成后才上屏）。
+                self._broadcast(event)
                 for handler in self._handlers.get(event.type, []):
                     try:
                         await handler(event)
@@ -230,7 +233,6 @@ class EventBus:
                             "handler 处理事件失败 event_id=%s type=%s",
                             event.id, event.type.value,
                         )
-                self._broadcast(event)
             finally:
                 self._queue.task_done()
 

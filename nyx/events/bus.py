@@ -32,7 +32,7 @@ class _EventQueue(asyncio.Queue[Event]):
 
 
 class EventBus:
-    """单一事件管道：publish 入队，run 串行「persist → 内部分发 → SSE 广播」。
+    """单一事件管道：publish 入队，run 串行「persist → SSE 广播 → 内部分发」。
 
     db 由组合根注入（同所有 store 共享），db.lock 串行化同一连接的并发访问。
     """
@@ -89,6 +89,9 @@ class EventBus:
                     raise
                 self._persist_attempts.pop(event.id, None)
                 self.persisted_count += 1
+                # 先广播再分发：SSE 观察者立刻收到事件本身（用户消息不再被
+                # reply 这类阻塞 handler 拖到回复完成后才上屏）。
+                self._broadcast(event)
                 for handler in self._handlers.get(event.type, []):
                     try:
                         await handler(event)
@@ -97,7 +100,6 @@ class EventBus:
                             "handler 处理事件失败 event_id=%s type=%s",
                             event.id, event.type.value,
                         )
-                self._broadcast(event)
             finally:
                 self._queue.task_done()
 

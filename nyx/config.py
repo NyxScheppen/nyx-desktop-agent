@@ -60,6 +60,7 @@ class ExpressionConfig:
     slow_max_rounds: int = 3
     ask_timeout: float = 600.0           # ask 后等用户回答超时（秒）
     chat_ignore_timeout: float = 1800.0  # 搭话被忽略判定超时（秒）
+    context_time_gap: float = 3600.0     # 回溯上下文相邻消息隔超此值即停（秒）
 
 
 @dataclass
@@ -185,6 +186,7 @@ def validate_config(cfg: Config) -> None:
     _pos_num(cfg.desire.value_decay, "desire.value_decay")          # 数 > 0
     _pos_num(cfg.expression.ask_timeout, "expression.ask_timeout")
     _pos_num(cfg.expression.chat_ignore_timeout, "expression.chat_ignore_timeout")
+    _pos_num(cfg.expression.context_time_gap, "expression.context_time_gap")
     _flag(cfg.exploration.web_enabled, "exploration.web_enabled")   # bool
 
     # energy_delta 6 键全为 int（可为负）

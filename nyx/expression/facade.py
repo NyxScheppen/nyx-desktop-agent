@@ -84,7 +84,8 @@ class ExpressionFacade:
         initial: ReplyState = {
             "message": msg,
             "mode": ContextMode.FAST,
-            # 回溯最近 max_context_len 条历史（不含当前消息，见 build_user_prompt）。
+            # 朴素回溯最近 max_context_len 条（快通道用，不含当前消息）；
+            # 慢通道在 assemble 重截断。
             "context": list(self._history)[-self._config.max_context_len:],
             "memories": [],
             "state": state,

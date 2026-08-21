@@ -3,7 +3,9 @@ from nyx.enums import ActivityType, DesireType, EmotionCategory, EnergyState, Me
 from nyx.expression.prompt import (
     _desires_block,
     _memory_block,
+    _no_char_overlap,
     _state_block,
+    build_backtrack_context,
     build_system_prompt,
     build_user_prompt,
 )
@@ -180,3 +182,66 @@ def test_build_system_prompt_tool_outputs() -> None:
 def test_build_system_prompt_no_tool_outputs() -> None:
     result = build_system_prompt(_CANON, _state())
     assert "[工具查询结果]" not in result
+
+
+# ---- 回溯上下文截断 ----
+
+
+def test_backtrack_empty_history() -> None:
+    assert build_backtrack_context("你好", [], 100.0, 3600.0, 20) == []
+
+
+def test_backtrack_max_len_and_order() -> None:
+    history = [
+        Message(role="user", content="第一句", timestamp=1.0),
+        Message(role="nyx", content="第二句", timestamp=2.0),
+        Message(role="user", content="第三句", timestamp=3.0),
+    ]
+    result = build_backtrack_context(
+        "句子", history, now=3.0, time_gap=3600.0, max_len=2
+    )
+    assert [m.content for m in result] == ["第二句", "第三句"]
+
+
+def test_backtrack_time_gap() -> None:
+    history = [
+        Message(role="user", content="很久以前说的", timestamp=0.0),
+        Message(role="user", content="刚刚说的", timestamp=100.0),
+    ]
+    result = build_backtrack_context(
+        "说的", history, now=100.0, time_gap=50.0, max_len=20
+    )
+    assert [m.content for m in result] == ["刚刚说的"]
+
+
+def test_backtrack_fast_nyx_skipped_continues() -> None:
+    history = [
+        Message(role="user", content="我爬山很开心", timestamp=1.0),
+        Message(role="nyx", content="嗯嗯", timestamp=2.0, fast=True),
+    ]
+    result = build_backtrack_context(
+        "爬山", history, now=2.0, time_gap=3600.0, max_len=20
+    )
+    assert [m.content for m in result] == ["我爬山很开心"]
+
+
+def test_backtrack_zero_overlap_stops() -> None:
+    history = [Message(role="user", content="天气不错", timestamp=1.0)]
+    result = build_backtrack_context(
+        "量子力学", history, now=1.0, time_gap=3600.0, max_len=20
+    )
+    assert result == []
+
+
+def test_backtrack_relevant_continues() -> None:
+    history = [Message(role="user", content="天气不错", timestamp=1.0)]
+    result = build_backtrack_context(
+        "今天天气如何", history, now=1.0, time_gap=3600.0, max_len=20
+    )
+    assert [m.content for m in result] == ["天气不错"]
+
+
+def test_no_char_overlap() -> None:
+    assert _no_char_overlap("量子", "天气") is True
+    assert _no_char_overlap("天气", "天气不错") is False
+    assert _no_char_overlap("你 好", "你好") is False  # 空白忽略

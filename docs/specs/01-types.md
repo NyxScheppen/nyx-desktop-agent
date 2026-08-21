@@ -299,6 +299,8 @@ class Message:
     role: Literal["user", "nyx"]
     content: str
     timestamp: float
+    # True = 快通道 Nyx 回复（回溯截断时跳过）；用户消息恒 False
+    fast: bool = False
 
 # ---- 工具 / eval ----
 @dataclass

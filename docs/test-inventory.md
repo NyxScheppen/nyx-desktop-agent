@@ -477,8 +477,15 @@
 | `test_classify_channel` | 功能正确 | `threshold=0.5`：得分 ≥ 0.5（`在吗`+精力满+2h）→ SLOW；< 0.5（`哦`+精力20+arousal0.9+60s）→ FAST |
 | `test_build_system_prompt_tool_outputs` | 功能正确 | `tool_outputs` 非空 → 结果含 `[工具查询结果]` 段及各条 `- ` 前缀行 |
 | `test_build_system_prompt_no_tool_outputs` | 边界鲁棒 | `tool_outputs=None` / `[]` → 结果不含 `[工具查询结果]` |
+| `test_backtrack_empty_history` | 边界鲁棒 | 空 history → `[]` |
+| `test_backtrack_max_len_and_order` | 功能正确 | 满 `max_len` 截断且返回按时间升序（oldest-first，取最近 2 条） |
+| `test_backtrack_time_gap` | 功能正确 | 相邻消息隔超 `time_gap` 即停（更早的不取） |
+| `test_backtrack_fast_nyx_skipped_continues` | 功能正确 | 快通道 Nyx（`fast=True`）跳过该条继续往前取更早的用户消息 |
+| `test_backtrack_zero_overlap_stops` | 功能正确 | 与当前消息零字符重叠 → `result == []`（「十分不相关」即停） |
+| `test_backtrack_relevant_continues` | 功能正确 | 有字符重叠则继续累积（不误停） |
+| `test_no_char_overlap` | 功能正确 | 无共同字符 `True`；有共同字符 `False`；空白忽略（`"你 好"` vs `"你好"` → `False`） |
 
-**功能阶段**：16-expression-prompt 实现时编写（纯函数，无 DB、无 async、无 fake LLM；`CurrentState`/`Memory`/`Message`/`SelfNarrative`/`ShortTermDesire` 全手构，无集成/E2E）；`test_build_system_prompt_ask_guidance` 于「主动提问段按需注入」阶段追加（ask_guidance 注入/省略）；`test_build_system_prompt_tool_outputs` / `test_build_system_prompt_no_tool_outputs` 于「表达侧工具调用（bind_tools）」阶段追加（tool_outputs 段拼装/省略）。
+**功能阶段**：16-expression-prompt 实现时编写（纯函数，无 DB、无 async、无 fake LLM；`CurrentState`/`Memory`/`Message`/`SelfNarrative`/`ShortTermDesire` 全手构，无集成/E2E）；`test_build_system_prompt_ask_guidance` 于「主动提问段按需注入」阶段追加（ask_guidance 注入/省略）；`test_build_system_prompt_tool_outputs` / `test_build_system_prompt_no_tool_outputs` 于「表达侧工具调用（bind_tools）」阶段追加（tool_outputs 段拼装/省略）；`test_backtrack_*` / `test_no_char_overlap` 于「语义相关性回溯检测」阶段追加（`build_backtrack_context` 三停条件纯函数 + `_no_char_overlap` 零字符重叠保守判定）。
 
 ## 17-expression（回复流程 + 碎碎念 + 搭话）
 
@@ -503,8 +510,10 @@
 | `test_cumulative_prompt` | 功能正确 | 第 2 轮 think user prompt 含第 1 轮 think/speak 文本；第 2 轮 speak 含第 2 轮 think 文本 |
 | `test_slow_channel_progressive` | 功能正确 | 慢通道第 1 轮 speak prompt 含「第一句话」、不含「继续往下说」；第 2 轮 speak prompt 含「继续往下说」（递进续写） |
 | `test_current_message_not_duplicated` | 回归保护 | `[对话历史]` 段不含当前消息、`[本次消息]` 含且仅一次 |
-| `test_history_order` | 功能正确 | 两次 reply 后 history 为 `[user, nyx, user, nyx]`；第二次入口回溯含 user1/nyx1、不含 user2 |
+| `test_history_order` | 功能正确 | 连续两次 reply 后 history 的 role 序列为 `[user, nyx, user, nyx]`（快慢通道都落历史、按序交替） |
 | `test_history_fast_channel` | 回归保护 | 两次都走快通道时，第二次回复 prompt 仍含上一轮 `用户：`/`Nyx：` 历史（历史不因快通道丢失） |
+| `test_record_message_marks_fast` | 功能正确 | 快通道 nyx 消息 `fast=True`、慢通道 nyx 消息 `fast=False`（回溯截断的依据） |
+| `test_reply_slow_backtrack_skips_fast_nyx` | 功能正确 | 慢通道回溯：跳过 `fast=True` 的快通道 nyx 消息（`Nyx：嗯嗯` 不进 prompt）、保留更早的相关用户消息（`用户：我上周去爬山了` 进 prompt） |
 | `test_mutter_skips_when_busy` | 功能正确 | `current_activity` 非 None → 不发 |
 | `test_mutter_hit` | 功能正确 | `random.random()` 命中 → 发 `mutter`（content 来自模板、correlation 透传） |
 | `test_mutter_miss` | 功能正确 | `random.random()` 未命中 → 不发 |
@@ -519,7 +528,7 @@
 | `test_check_timeouts_before_timeout_noop` | 边界鲁棒 | 未到超时点 → 无动作（wait_user 与待回搭话都保持） |
 | `test_check_timeouts_expires_ignored_chat` | 功能正确 | 搭话超时未回 → `desire.expire` 调 1 次（值回灌）、清 `_pending_chat_desire_id` |
 
-**功能阶段**：17-expression 实现时编写（mutter/pipeline 纯函数无 DB 无 async；facade 集成 fake LLM/memory/desire/inner_life/evaluator/bus 注入，`cast()` 注入不碰真实 db；无集成/E2E，与 18-api 组合根的编排归 18）；`test_reply_ask_guidance_slow_only` 于「主动提问段按需注入」阶段追加（慢通道注入 ask 指导、快通道省略），`test_initiate_chat_non_empty` 同轮补注入断言；`test_slow_channel_progressive` 与 `test_initiate_chat_appends_history` 于「慢通道递进续写 + 搭话落历史」阶段追加（三段递进而非并列、主动搭话后用户回复能回溯开场白）；`test_reply_question_sets_waiting_user` / `test_reply_clears_pending_state` / `test_initiate_chat_sets_pending_desire` / `test_check_timeouts_records_no_answer` / `test_check_timeouts_before_timeout_noop` / `test_check_timeouts_expires_ignored_chat` 于「表达交互闭环」轮追加（V2 wait_user 等待 + 搭话被忽略回灌的待回应态与 tick 超时收尾）；`test_reply_slow_tool_executes_and_flows_into_prompt` / `test_reply_slow_no_tool_calls` / `test_reply_slow_tool_failure_fallback` 于「表达侧工具调用（bind_tools）」轮追加（use_tools 节点执行工具 + 结果进 prompt + 失败降级），`test_reply_slow_non_question` / `test_reply_slow_question` 同轮改断言（complete 序列前置 `tool`、complete 数 +1）。
+**功能阶段**：17-expression 实现时编写（mutter/pipeline 纯函数无 DB 无 async；facade 集成 fake LLM/memory/desire/inner_life/evaluator/bus 注入，`cast()` 注入不碰真实 db；无集成/E2E，与 18-api 组合根的编排归 18）；`test_reply_ask_guidance_slow_only` 于「主动提问段按需注入」阶段追加（慢通道注入 ask 指导、快通道省略），`test_initiate_chat_non_empty` 同轮补注入断言；`test_slow_channel_progressive` 与 `test_initiate_chat_appends_history` 于「慢通道递进续写 + 搭话落历史」阶段追加（三段递进而非并列、主动搭话后用户回复能回溯开场白）；`test_reply_question_sets_waiting_user` / `test_reply_clears_pending_state` / `test_initiate_chat_sets_pending_desire` / `test_check_timeouts_records_no_answer` / `test_check_timeouts_before_timeout_noop` / `test_check_timeouts_expires_ignored_chat` 于「表达交互闭环」轮追加（V2 wait_user 等待 + 搭话被忽略回灌的待回应态与 tick 超时收尾）；`test_reply_slow_tool_executes_and_flows_into_prompt` / `test_reply_slow_no_tool_calls` / `test_reply_slow_tool_failure_fallback` 于「表达侧工具调用（bind_tools）」轮追加（use_tools 节点执行工具 + 结果进 prompt + 失败降级），`test_reply_slow_non_question` / `test_reply_slow_question` 同轮改断言（complete 序列前置 `tool`、complete 数 +1）；`test_record_message_marks_fast` / `test_reply_slow_backtrack_skips_fast_nyx` 于「语义相关性回溯检测」轮追加（快通道 nyx 落库标 fast + 慢通道回溯跳过快通道 nyx），`test_history_order` 同轮简化为只断言 role 序列、`test_current_message_not_duplicated` 同轮改为 seed 相关历史后断言当前消息只进 `[本次消息]`。
 
 ## 18-api（组合根 + REST + SSE）
 

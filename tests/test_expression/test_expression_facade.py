@@ -1,4 +1,5 @@
 # pyright: reportPrivateUsage=false
+import time
 from typing import Any, cast
 
 import pytest
@@ -26,6 +27,7 @@ from nyx.types import (
     Event,
     LLMOutput,
     Memory,
+    Message,
     Personality,
     SelfNarrative,
     ShortTermDesire,
@@ -377,35 +379,29 @@ async def test_slow_channel_progressive() -> None:
 
 
 async def test_current_message_not_duplicated() -> None:
-    facade, llm, _evaluator, _memory, inner_life, _bus = _new_facade(
-        energy=20.0, arousal=0.9
+    # 慢通道 + 相关历史：当前消息只在 [本次消息]，不混进 [对话历史]
+    facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=100.0, arousal=0.0
     )
-    await facade.reply("哦", "corr-1")
-    inner_life.state = _mk_state(100.0, 0.0)
-    llm.calls = []
-    await facade.reply("在吗", "corr-2")
+    facade._history.append(
+        Message(role="user", content="我上周去爬山了", timestamp=time.time())
+    )
+    await facade.reply("你喜欢爬山吗", "corr-2")
     first_think = _user_content(
         [m for t, m, _c in llm.calls if t == "think"][0]
     )
-    assert "在吗" not in first_think.split("[本次消息]")[0]
+    assert "你喜欢爬山吗" not in first_think.split("[本次消息]")[0]
     assert first_think.count("[本次消息]") == 1
 
 
 async def test_history_order() -> None:
-    facade, llm, _evaluator, _memory, inner_life, _bus = _new_facade(
+    # 会话历史按「用户 → Nyx」交替累积（快慢通道都落历史）
+    facade, _llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
         energy=20.0, arousal=0.9
     )
     await facade.reply("哦", "corr-1")
-    inner_life.state = _mk_state(100.0, 0.0)
-    llm.calls = []
     await facade.reply("在吗", "corr-2")
     assert [m.role for m in facade._history] == ["user", "nyx", "user", "nyx"]
-    first_think = _user_content(
-        [m for t, m, _c in llm.calls if t == "think"][0]
-    )
-    assert "用户：哦" in first_think
-    assert "Nyx：回答1" in first_think
-    assert "用户：在吗" not in first_think
 
 
 async def test_history_fast_channel() -> None:
@@ -421,6 +417,34 @@ async def test_history_fast_channel() -> None:
     )
     assert "用户：哦" in first_think
     assert "Nyx：回答1" in first_think
+
+
+async def test_record_message_marks_fast() -> None:
+    # 快通道 nyx 消息标 fast=True、慢通道标 False（回溯截断的依据）
+    fast, *_ = _new_facade(energy=20.0, arousal=0.9)
+    await fast.reply("哦", "corr-fast")
+    assert fast._history[-1].fast is True
+
+    slow, *_ = _new_facade(energy=100.0, arousal=0.0)
+    await slow.reply("在吗", "corr-slow")
+    assert slow._history[-1].fast is False
+
+
+async def test_reply_slow_backtrack_skips_fast_nyx() -> None:
+    # 慢通道回溯：跳过快通道 nyx 消息、保留相关用户消息（端到端接线）
+    facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=100.0, arousal=0.0
+    )
+    facade._history.append(
+        Message(role="user", content="我上周去爬山了", timestamp=time.time())
+    )
+    facade._history.append(
+        Message(role="nyx", content="嗯嗯", timestamp=time.time(), fast=True)
+    )
+    await facade.reply("你喜欢爬山吗", "corr-bt")
+    think_user = _user_content([m for t, m, _c in llm.calls if t == "think"][0])
+    assert "用户：我上周去爬山了" in think_user
+    assert "Nyx：嗯嗯" not in think_user
 
 
 # ---- mutter ----

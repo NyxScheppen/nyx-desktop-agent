@@ -14,7 +14,7 @@
 
 ## 验收标准
 
-- [ ] `prompt.py` 含 `build_system_prompt` + `build_user_prompt`；`classifier.py` 含 `slow_score` + `classify_channel`，与各自「（完整）」段代码逐字一致
+- [ ] `prompt.py` 含 `build_system_prompt` + `build_user_prompt` + `build_backtrack_context`；`classifier.py` 含 `slow_score` + `classify_channel`，与各自「（完整）」段代码逐字一致
 - [ ] 四个函数全是**同步纯函数**：无 `async`、无 I/O、无 LLM、无 db，仅字符串拼装 + 数值计算
 - [ ] `build_system_prompt` 分段：canon（基底）→ 当前状态 → 当前欲望 → 主动提问指导（可选）→ 自我认知（可选）→ 相关记忆（可选）→ 工具查询结果（可选）；`ask_guidance` / `narrative` / `memories` / `tool_outputs` 为空（None）时跳过对应段
 - [ ] `classify_channel`：`slow_score(...) >= threshold` → `ContextMode.SLOW`，否则 `ContextMode.FAST`
@@ -24,12 +24,13 @@
 
 - **新文件**：`nyx/expression/prompt.py`、`nyx/expression/classifier.py`（无 Facade、无 API、无数据变更）
 - **库**：无新库（标准库即可；类型从 `nyx.types` / `nyx.enums` 拿）
-- **公开面**：`from nyx.expression.prompt import build_system_prompt, build_user_prompt`；`from nyx.expression.classifier import slow_score, classify_channel`（不加 `__all__`）
+- **公开面**：`from nyx.expression.prompt import build_system_prompt, build_user_prompt, build_backtrack_context`；`from nyx.expression.classifier import slow_score, classify_channel`（不加 `__all__`）
 - **定位**：两个模块都是内部类（非 Facade），被 17 的 `classify_channel` / `think` / `speak` 节点调用
 - **canon / ask 来源**：`build_system_prompt` 接收 `canon: str`（静态人格注入文本）+ `ask_guidance: str | None`（主动提问指导）。canon 来自 `prompts/canon.md`、ask 来自 `prompts/ask.md`（见 `docs/canon.md` 指针），由 18-api 组合根读入为字符串传入——**本 spec 不读文件**（保持纯函数可单测、测试不碰文件系统）；`ask_guidance=None` 时跳过该段
 - **think/speak 任务指令归 17**：`build_user_prompt` 只拼「对话历史 + 本次消息」，不含「内心思考 / 说给用户」指令；那是 17 节点的活（think 与 speak 各拼自己的指令后接在 user prompt 上）
 - **数值直接拼，不转中文标签**：情感 valence/arousal、精力、性格/三观 1-10、枚举 `.value`（`happy`/`energetic` 等）直接格式化进 prompt。LLM 能读；不额外维护「数值→中文描述」映射（反冗余）。前端展示经 `lib/labels.ts` 转中文（`exploration → 发现`），但 prompt 仍用枚举原值——两处各自独立，不互相反噬
-- **明确不做**：回溯上下文**检测/截断**逻辑（design §5.1「命中隔太久/快通道信息/不相关即停」，是 `assemble_context` 节点的活，归 17）；`canon` / `ask` 文件读取（归 18-api）；think/speak 指令（归 17）；记忆检索（归 09）
+- **回溯截断（纯函数）**：`build_backtrack_context(message, history, now, time_gap, max_len)` 从新到旧累积，命中「满 max_len / 相邻隔超 time_gap / 与当前消息零字符重叠（`_no_char_overlap`，十分不相关的保守判定）」即停；快通道 Nyx 消息（`Message.fast`）跳过该条继续往前（浅层回复不占上下文，但不断深聊线程）；返回按时间升序。这是 design §5.1 回溯检测的纯函数落地，**编排**（何时调、context 重截断、state 装配）归 17 的 `assemble_context`
+- **明确不做**：回溯上下文**检测/截断的编排**（`assemble_context` 节点的活，归 17）；`canon` / `ask` 文件读取（归 18-api）；think/speak 指令（归 17）；记忆检索（归 09）
 
 ### `nyx/expression/prompt.py`（完整）
 
@@ -89,6 +90,36 @@ def build_user_prompt(message: str, context: list[Message]) -> str:
     return "\n".join(lines)
 
 
+def build_backtrack_context(
+    message: str,
+    history: list[Message],
+    now: float,
+    time_gap: float,
+    max_len: int,
+) -> list[Message]:
+    """回溯上下文截断（慢通道）：从新到旧累积，命中停条件即止。
+
+    停条件：满 max_len / 相邻消息隔超 time_gap / 与当前消息零字符重叠（十分不相关）。
+    快通道 Nyx 消息跳过该条继续往前（浅层回复不占用上下文，但不断深聊线程）。
+    返回按时间升序（oldest-first），对齐 build_user_prompt 的「按时间升序」。
+    """
+    out: list[Message] = []
+    prev_ts = now
+    for m in reversed(history):
+        if len(out) >= max_len:
+            break
+        if prev_ts - m.timestamp > time_gap:
+            break
+        prev_ts = m.timestamp
+        if m.role == "nyx" and m.fast:
+            continue
+        if _no_char_overlap(message, m.content):
+            break
+        out.append(m)
+    out.reverse()
+    return out
+
+
 # ---- 内部 ----
 
 def _state_block(state: CurrentState) -> str:
@@ -143,6 +174,13 @@ def _tool_outputs_block(outputs: list[str]) -> str:
     lines = ["[工具查询结果]"]
     lines += [f"- {o}" for o in outputs]
     return "\n".join(lines)
+
+
+def _no_char_overlap(a: str, b: str) -> bool:
+    """a 与 b 是否无共同非空白字符——「十分不相关」的保守判定。"""
+    ca = {c for c in a if not c.isspace()}
+    cb = {c for c in b if not c.isspace()}
+    return not (ca & cb)
 ```
 
 ### `nyx/expression/classifier.py`（完整）
@@ -211,6 +249,8 @@ def classify_channel(
     - [ ] `_desires_block`：空欲望 → `[当前欲望]\n无`
     - [ ] `build_user_prompt`：`context=[]` → 原样返回 `message`；`context` 非空 → 含 `[对话历史]`、`用户：` / `Nyx：`（按 role）、`[本次消息]` + `message`
     - [ ] `_memory_block`：`summary=""` 时回退 `content`（`m.summary or m.content`）
+    - [ ] `build_backtrack_context`：空 history → `[]`；满 `max_len` 截断且返回按时间升序（oldest-first）；相邻消息隔超 `time_gap` 即停（更早的不取）；快通道 Nyx 消息（`fast=True`）跳过该条继续往前取更早的用户消息；与当前消息零字符重叠的消息即停（`result == []`）；有字符重叠则继续累积
+    - [ ] `_no_char_overlap`：无共同字符 → `True`（`"量子"` vs `"天气"`）；有共同字符 → `False`；空白被忽略（`"你 好"` vs `"你好"` → `False`）
   - [ ] **classifier**（`test_classifier.py`）：
     - [ ] `slow_score` ∈ `[0, 1]`（构造极端输入：空消息 + 精力 0 + arousal 1 + 刚慢通道过 → 接近 0；长消息含问句含情感词 + 精力 100 + arousal 0 + 2 小时没慢通道 → 接近 1；`last_slow_at > now`（时钟回拨）→ 仍 ≥ 0）
     - [ ] `slow_score` 五因子各生效：长消息 > 短消息（其余同）；含「吗」> 不含；含「难过」> 不含；`energy=100, arousal=0` > `energy=0, arousal=1`；`now-last_slow_at` 大 > 小

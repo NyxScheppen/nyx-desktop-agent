@@ -17,6 +17,7 @@
 - [ ] `facade.py` 含 `ExpressionFacade`（`reply` / `initiate_chat` / `mutter`）；`pipeline.py` 含 `ReplyState` + `build_reply_graph`；`mutter.py` 含 `_MUTTER_TEMPLATES`（**50 条，全量内联**）+ `pick_mutter` + `should_initiate_chat`
 - [ ] `reply` 走 LangGraph 图：快通道 `classify → think → speak → record → end`（不检索记忆、不生成场景化记忆）；慢通道 `classify → assemble → use_tools → think → speak → should_ask`，非问句 round 循环（≤ `slow_max_rounds`，**每轮 publish 一条 SPEAK**），问句 publish ASK 后回合结束，最终都走 `scene_memory → record → end`
 - [ ] **当前消息在 prompt 里只出现一次**：`reply` 入口回溯的 `context` 不含当前消息（当前消息尚未进 history），`build_user_prompt` 里它只作为「本次消息」
+- [ ] **慢通道回溯截断**：慢通道 `assemble` 调 `build_backtrack_context` 重截断 context——命中「满 max_len / 相邻隔超 `context_time_gap` / 与当前消息零字符重叠」即停，快通道 Nyx 消息（`fast=True`）跳过继续往前；快通道保持入口朴素取最近 `max_context_len` 条
 - [ ] **累积式 prompt**：第 N 轮 think 的 user prompt 含前 N-1 轮 think/speak；第 N 轮 speak 的 user prompt 含前 N-1 轮 think/speak + 本轮 think
 - [ ] **慢通道递进续写**：首轮 think/speak 是「第一次想 / 第一句话」，第 2 轮起的 think/speak 任务指令切换为「基于前面继续深入 / 接着上面往下说」，不重复、不重新回答
 - [ ] 每个 LLM 产出（tool / think / speak / initiate_chat）后紧跟 `await evaluator.evaluate(output)`；`output_type` 分别 `tool` / `think` / `speak` / `initiate_chat`、`module="expression"`、`correlation_id` 透传
@@ -37,7 +38,7 @@
 - **MVP 语义**：ask 后回合结束（走 scene_memory + record）；用户回应作为下一条 `USER_MESSAGE` 触发新 reply，round 自然从 0 重算。`waiting_user` 字段保留在 `ReplyState`（对齐 tech-ref §6.1），图内恒 `False`
 - **V2 表达交互闭环**：facade 在 reply 后按 `result["ask"]` 置 `self._waiting_user`（问句已问出、等用户答）；`initiate_chat` 记 `self._pending_chat_desire_id`（搭话已发、等用户回）。tick 心跳（18-api 组合根）直呼 `check_timeouts(now)`：问句超时（`ask_timeout`）→ `memory.record_no_answer` 落一条「用户没回答」的 SHORT_TERM 记忆；搭话超时（`chat_ignore_timeout`）→ `desire.expire`（值立即 +0.3 回灌）。用户任一下条消息（`reply` 入口）即视为回应、清两者待回应态
 - **慢通道工具调用**：`use_tools` 节点（慢通道专属）在 assemble 后问 LLM 是否需查资料，有 `tool_calls` 就逐个执行（`ToolRegistry.call`）并把结果 `json.dumps` 拼进 `tool_outputs`，think/speak 的 system prompt 追加「[工具查询结果]」段；一轮，不做 agentic 循环；工具执行失败降级为失败文案（best-effort，不崩回复）
-- **回溯检测 MVP 简化**：`reply` 入口 `list(self._history)[-max_context_len:]` 只取最近 `max_context_len` 条
+- **回溯检测（V2）**：快通道入口朴素取最近 `max_context_len` 条；慢通道 `assemble` 调 `build_backtrack_context` 重截断——从新到旧累积，命中「满 max_len / 相邻隔超 `context_time_gap` / 与当前消息零字符重叠（十分不相关）」即停，快通道 Nyx 消息（`fast=True`）跳过继续往前（浅层回复不占上下文、不断深聊线程）
 - **搭话 `last_chat_at` 归 18-api**：`should_initiate_chat` 是纯函数（判定触发），`initiate_chat` 返回 `bool` 作为「是否真发话」的信号；18-api 组合根据此更新 `last_chat_at`（`since_last_chat` 的来源），facade 不持有搭话状态
 - **明确不做**：`POST /api/chat`（归 18-api）；观察用户在线/忙状态（归 14-activity 的 observe，本 spec 只接收 `online`/`busy` bool）
 
@@ -160,7 +161,11 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
 from nyx.expression.classifier import QUESTION_MARKS, classify_channel
-from nyx.expression.prompt import build_system_prompt, build_user_prompt
+from nyx.expression.prompt import (
+    build_backtrack_context,
+    build_system_prompt,
+    build_user_prompt,
+)
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
@@ -171,7 +176,7 @@ from nyx.types import CurrentState, Memory, Message, SelfNarrative
 class ReplyState(TypedDict):
     message: str
     mode: ContextMode
-    context: list[Message]       # 回溯上下文（facade 入口填，快慢一致；不含当前消息）
+    context: list[Message]       # 回溯上下文（facade 入口填朴素版；慢通道 assemble 重截断；不含当前消息）
     memories: list[Memory]       # 检索到的记忆
     state: CurrentState          # 当前状态快照
     narrative: SelfNarrative | None   # 慢通道 assemble 填充，快通道恒 None
@@ -254,11 +259,18 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         return {"mode": mode}
 
     async def assemble(state: ReplyState) -> dict[str, Any]:
-        # 对话历史不再在此回溯：context 由 facade 入口统一填（快慢通道一致）。
-        # 这里只做慢通道专属的两件事——检索记忆 + 取 self-narrative。
+        # 慢通道专属三件事——回溯上下文截断 + 检索记忆 + 取 self-narrative。
+        # context 由 facade 入口朴素填（快通道用），慢通道在此按停条件重截断。
+        context = build_backtrack_context(
+            state["message"],
+            list(deps.history),
+            time.time(),
+            deps.config.context_time_gap,
+            deps.config.max_context_len,
+        )
         memories = await deps.memory.search(state["message"])
         narrative = await deps.inner_life.get_narrative()
-        return {"memories": memories, "narrative": narrative}
+        return {"context": context, "memories": memories, "narrative": narrative}
 
     async def use_tools(state: ReplyState) -> dict[str, Any]:
         # 慢通道专属：问 LLM 是否需查资料（文件/搜索），查到的结果拼进 tool_outputs，
@@ -369,7 +381,14 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         nyx_text = "\n".join(state["speak"])
         if nyx_text:
-            deps.history.append(Message(role="nyx", content=nyx_text, timestamp=now))
+            deps.history.append(
+                Message(
+                    role="nyx",
+                    content=nyx_text,
+                    timestamp=now,
+                    fast=(state["mode"] is ContextMode.FAST),
+                )
+            )
         return {}
 
     async def generate_scene_memory(state: ReplyState) -> dict[str, Any]:
@@ -517,7 +536,8 @@ class ExpressionFacade:
         initial: ReplyState = {
             "message": msg,
             "mode": ContextMode.FAST,
-            # 回溯最近 max_context_len 条历史（不含当前消息，见 build_user_prompt）。
+            # 朴素回溯最近 max_context_len 条（快通道用，不含当前消息）；
+            # 慢通道在 assemble 重截断。
             "context": list(self._history)[-self._config.max_context_len:],
             "memories": [],
             "state": state,
@@ -620,7 +640,9 @@ class ExpressionFacade:
     - [ ] **累积式 prompt**：慢通道非问句多轮下，fake llm 记录的第 2 轮 think 调用 user prompt 含第 1 轮的 think 文本与 speak 文本；第 2 轮 speak 调用 user prompt 含第 2 轮 think 文本
     - [ ] **慢通道递进续写**：慢通道非问句多轮下，第 1 轮 speak 的 user prompt 含「第一句话」、不含「继续往下说」；第 2 轮 speak 的 user prompt 含「继续往下说」
     - [ ] **当前消息不重复**（回归）：慢通道下，fake llm 记录的 think/speak 调用里，`[对话历史]` 段不含当前消息文本、`[本次消息]` 段含且仅含一次
-    - [ ] **history 落库顺序**：连续两次 `reply` 后，facade 内部 history 为 `[user1, nyx1, user2, nyx2]`（断言 role 序列）；第二次 reply 的入口回溯含 `user1`/`nyx1`、不含 `user2`；两次都走快通道时第二次 prompt 仍含上一轮历史（回归：历史不因快通道丢失）
+    - [ ] **history 落库顺序**：连续两次 `reply` 后，facade 内部 history 的 role 序列为 `[user, nyx, user, nyx]`；两次都走快通道时第二次 prompt 仍含上一轮历史（回归：历史不因快通道丢失）
+    - [ ] **快通道 nyx 落库标记**：快通道 `reply` 后，history 里 `role="nyx"` 的消息 `fast=True`、`role="user"` 的消息 `fast=False`（回溯截断据此跳过浅层回复）
+    - [ ] **慢通道回溯跳过快通道 nyx**：先走一次快通道（产生 `fast=True` 的 nyx 消息）、再走慢通道 reply 相关话题，断言慢通道 think/speak 的 user prompt 含更早的相关用户消息、不含那条快通道 nyx 消息
     - [ ] `mutter`：`state.current_activity` 非 None → 不发；`random.random()` 命中（monkeypatch）→ 发 `mutter`（content 来自模板、`correlation_id == 传入值`）；未命中 → 不发
     - [ ] `initiate_chat`：mock `llm.complete` 返回空 content → 返回 `False` 且不发；返回非空 → 返回 `True` 且发 `initiate_chat`（`output_type="initiate_chat"`、correlation_id 一致）
     - [ ] `initiate_chat` 落历史：非空发话后 facade 内部 history 含一条 `role="nyx"`、content 为开场白的消息（用户随后回复可回溯搭话内容）

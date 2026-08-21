@@ -53,6 +53,36 @@ def build_user_prompt(message: str, context: list[Message]) -> str:
     return "\n".join(lines)
 
 
+def build_backtrack_context(
+    message: str,
+    history: list[Message],
+    now: float,
+    time_gap: float,
+    max_len: int,
+) -> list[Message]:
+    """回溯上下文截断（慢通道）：从新到旧累积，命中停条件即止。
+
+    停条件：满 max_len / 相邻消息隔超 time_gap / 与当前消息零字符重叠（十分不相关）。
+    快通道 Nyx 消息跳过该条继续往前（浅层回复不占用上下文，但不断深聊线程）。
+    返回按时间升序（oldest-first），对齐 build_user_prompt 的「按时间升序」。
+    """
+    out: list[Message] = []
+    prev_ts = now
+    for m in reversed(history):
+        if len(out) >= max_len:
+            break
+        if prev_ts - m.timestamp > time_gap:
+            break
+        prev_ts = m.timestamp
+        if m.role == "nyx" and m.fast:
+            continue
+        if _no_char_overlap(message, m.content):
+            break
+        out.append(m)
+    out.reverse()
+    return out
+
+
 # ---- 内部 ----
 
 def _state_block(state: CurrentState) -> str:
@@ -107,3 +137,10 @@ def _tool_outputs_block(outputs: list[str]) -> str:
     lines = ["[工具查询结果]"]
     lines += [f"- {o}" for o in outputs]
     return "\n".join(lines)
+
+
+def _no_char_overlap(a: str, b: str) -> bool:
+    """a 与 b 是否无共同非空白字符——「十分不相关」的保守判定。"""
+    ca = {c for c in a if not c.isspace()}
+    cb = {c for c in b if not c.isspace()}
+    return not (ca & cb)

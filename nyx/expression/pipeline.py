@@ -19,7 +19,11 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
 from nyx.expression.classifier import QUESTION_MARKS, classify_channel
-from nyx.expression.prompt import build_system_prompt, build_user_prompt
+from nyx.expression.prompt import (
+    build_backtrack_context,
+    build_system_prompt,
+    build_user_prompt,
+)
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
@@ -113,11 +117,18 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         return {"mode": mode}
 
     async def assemble(state: ReplyState) -> dict[str, Any]:
-        # 对话历史不再在此回溯：context 由 facade 入口统一填（快慢通道一致）。
-        # 这里只做慢通道专属的两件事——检索记忆 + 取 self-narrative。
+        # 慢通道专属三件事——回溯上下文截断 + 检索记忆 + 取 self-narrative。
+        # context 由 facade 入口朴素填（快通道用），慢通道在此按停条件重截断。
+        context = build_backtrack_context(
+            state["message"],
+            list(deps.history),
+            time.time(),
+            deps.config.context_time_gap,
+            deps.config.max_context_len,
+        )
         memories = await deps.memory.search(state["message"])
         narrative = await deps.inner_life.get_narrative()
-        return {"memories": memories, "narrative": narrative}
+        return {"context": context, "memories": memories, "narrative": narrative}
 
     async def use_tools(state: ReplyState) -> dict[str, Any]:
         # 慢通道专属：问 LLM 是否需查资料（文件/搜索），查到的结果拼进 tool_outputs，
@@ -228,7 +239,14 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         nyx_text = "\n".join(state["speak"])
         if nyx_text:
-            deps.history.append(Message(role="nyx", content=nyx_text, timestamp=now))
+            deps.history.append(
+                Message(
+                    role="nyx",
+                    content=nyx_text,
+                    timestamp=now,
+                    fast=(state["mode"] is ContextMode.FAST),
+                )
+            )
         return {}
 
     async def generate_scene_memory(state: ReplyState) -> dict[str, Any]:

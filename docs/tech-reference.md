@@ -318,6 +318,7 @@ expression:
   slow_max_rounds: 3          # 慢通道最多轮数
   ask_timeout: 600.0          # ask 后等用户回答超时（秒）
   chat_ignore_timeout: 1800.0 # 搭话被忽略判定超时（秒）
+  context_time_gap: 3600.0    # 回溯上下文相邻消息隔超此值即停（秒）
 
 exploration:
   web_enabled: false          # 联网搜索 opt-in

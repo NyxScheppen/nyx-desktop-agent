@@ -584,19 +584,16 @@
 | `evalStore.refresh > 并行 getEval+getTokens` | 功能正确 | `fetch` 恰 2 次 → `reports`/`tokens` 落 store |
 | `desireStore.refresh > 失败 → error` | 边界鲁棒 | `getDesires` reject → `error=e.message` + `loading=false` + `data` 保持 null |
 | `isReady > think 打完才放行 speak` | 功能正确 | think 未打完 → false；`typedIds` 含该 think → true；无前置 think → true（串行逐字门控核心） |
-| `isReady > preloaded / 非 speak·ask 恒就绪` | 功能正确 | `preloaded` speak、think 自身 → true（历史不逐字 / 不被门控） |
-| `isReady > 不同 correlation_id 不阻塞` | 功能正确 | 不同 `correlation_id` 的 think 不阻塞 speak → true |
+| `isReady > preloaded / user 恒就绪` | 功能正确 | `preloaded` nyx 文本、user 消息 → true（历史不逐字 / 用户消息不被门控） |
+| `isReady > 不同 correlation_id 不阻塞` | 功能正确 | 不同 `correlation_id` 的 nyx 文本不阻塞 speak → true |
 | `settingsStore > setTint/setImage 独立落 store` | 功能正确 | `setTint`/`setImage` 各落 `tint`/`image` 字段，可并存 |
 | `settingsStore > reset 恢复默认` | 功能正确 | `reset()` 后 `tint`/`image` 均回 null |
-| `isFirstTypewriter > 第一条 nyx 文本 true / 后续 false` | 功能正确 | 第一条非 preloaded nyx 文本 → true；第二条 → false（后续即时显示，开头打字机） |
-| `isFirstTypewriter > user 非候选跳过` | 功能正确 | user 消息非打字机候选，其后第一条 nyx 文本 → true |
-| `isFirstTypewriter > preloaded 历史跳过` | 功能正确 | preloaded 历史消息跳过，其后第一条实时 nyx 文本 → true |
-| `isFirstTypewriter > 无 nyx 文本 → false` | 边界鲁棒 | 纯 user 消息列表 → false（无打字机候选） |
+| `isReady > think 也受串行门控` | 功能正确 | think2 在 speak1 之后、speak1 未入 `typedIds` → false；speak1 入 → true（每条 nyx 文本等前一条同 correlation_id 打完） |
 | `narrativeStore.refresh > GET /api/narrative` | 功能正确 | mock fetch 断言端点 + `data` 落 store（`SelfNarrative`）+ `loading=false` |
 | `materialsStore.refresh > GET /api/materials` | 功能正确 | mock fetch 断言端点 + `files` 落 store |
 | `materialsStore.upload > 上传后重拉 files` | 功能正确 | `upload(file)` → `POST /api/upload`（fetch 恰 2 次：upload + 重拉 `getMaterials`）+ `files` 更新 + `uploading` 复位 |
 
-**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）；`chatStore.sendMessage > 重入守卫` 于 03-chat-panel 后 review 追加（串行锁提前到 await 前 + get() 同步守卫，防 in-flight 重复发送覆盖 pendingId）；`chatStore.loadHistory` / `markTyped`+`reset` / `eventStore.loadHistory` / 四个快照 store `refresh` / `isReady` 于前端面板落地轮追加（聊天历史加载 + 快照 store + 串行逐字门控纯函数）；`settingsStore` 于视觉改造轮追加（背景色调/背景图纯前端 UI 状态）；`isFirstTypewriter` 于「开头打字机」轮追加（打字机只在第一条 nyx 文本消息生效，纯函数，与 `isReady` 同处导出）；`narrativeStore.refresh` / `materialsStore.refresh` / `materialsStore.upload` 于「喂资料/上传课本」轮追加（自我叙事快照 + 资料清单 + 上传即重拉）。
+**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）；`chatStore.sendMessage > 重入守卫` 于 03-chat-panel 后 review 追加（串行锁提前到 await 前 + get() 同步守卫，防 in-flight 重复发送覆盖 pendingId）；`chatStore.loadHistory` / `markTyped`+`reset` / `eventStore.loadHistory` / 四个快照 store `refresh` / `isReady` 于前端面板落地轮追加（聊天历史加载 + 快照 store + 串行逐字门控纯函数）；`settingsStore` 于视觉改造轮追加（背景色调/背景图纯前端 UI 状态）；`isReady` 于「开头打字机」轮追加并随后改为**全串行门控**（每条 nyx 文本等前一条同 correlation_id 打完，删去 `isFirstTypewriter` 开头打字机）；`narrativeStore.refresh` / `materialsStore.refresh` / `materialsStore.upload` 于「喂资料/上传课本」轮追加（自我叙事快照 + 资料清单 + 上传即重拉）。
 
 ## frontend-labels（枚举中文化映射：lib/labels.ts）
 
@@ -629,8 +626,8 @@
 | `MessageBubble > initiate_chat → 「搭话」标记` | 功能正确 | initiate_chat 气泡带「搭话」badge |
 | `MessageBubble > user message → 右气泡 class` | 功能正确 | 用户消息带 `message-bubble--user` class |
 | `MessageList > 全部消息按序渲染，无历史折叠` | 功能正确 | 两条消息 `typeDone()` 后都上屏（微信式：不再只显示一条 / 折叠历史）；`queryByRole("button")` 无历史按钮 |
-| `MessageList > 全部消息渲染即存在（不串行等前一条打完）` | 功能正确 | 两条 nyx 消息渲染即 `.message-bubble` 数量 = 2（打字中 content 渐显但气泡已挂载，不串行等前一条打完） |
-| `MessageList > 打字机只在第一条 nyx 文本生效` | 功能正确 | 两条 nyx speak：第二条未推进 timer 即完整上屏（即时全量），第一条仍逐字（空）——开头打字机、后续即时 |
+| `MessageList > 全部气泡渲染即存在（串行门控只延迟内容，不延迟挂载）` | 功能正确 | 两条 nyx 消息渲染即 `.message-bubble` 数量 = 2（打字中 content 渐显但气泡已挂载，串行门控只延迟内容） |
+| `MessageList > 串行逐字：内心话先打完、对话才开打` | 功能正确 | think 在前、speak 在后：未推进 timer 两者皆空（think 刚开打、speak 等前置打完）；`typeDone()` 后 think→speak 串行完整上屏 |
 | `ChatPanel > 订阅 messages 透传给 MessageList` | 功能正确 | store 里 messages 经 ChatPanel 订阅透传 → MessageList 渲染上屏 |
 | `ChatPanel > 头部「设置」按钮触发 onOpenSettings` | 功能正确 | 点「设置」→ `onOpenSettings` 恰调 1 次（App 层 view 切到设置面板） |
 | `ChatInput > 点发送 → sendMessage(trimmed) 且成功清空` | 功能正确 | 点发送按钮触发 `sendMessage` 且传入 trim 后文本；成功（返回 true）后 `waitFor` 断言输入框清空 |
@@ -680,3 +677,25 @@
 | `SidePanel > 「返回对话」按钮触发 onBack` | 功能正确 | 点「返回对话」→ `onBack` 恰调 1 次（设置面板退回聊天，App 层 view 切换） |
 
 **功能阶段**：frontend 视觉改造（右侧滑出抽屉 → 右侧常驻标签页）时编写（RTL + 真实 store；验证管道正确——标签切换当前面板、仅挂载 active tab，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）；本轮视觉改造把 SidePanel 从「常驻右侧标签页」改为「设置模式下替换对话框」，`SidePanel` 需 `onBack` prop + 首 tab 由「内在」改为「背景」——原 6 标签断言改为 7 标签、默认激活断言由「内在」改「背景」、补 `onBack` 用例；`渲染 7 个标签` 于「喂资料/上传课本」轮改为 `渲染 9 个标签`（新增「叙事」「资料」两 tab，标签清单同步补入）。
+
+## frontend-interactivity（交互性：常驻状态条 + 头像旁气泡 + 活动产出）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `activitySubject > 取第一个非空字符串（filename/description/source）` | 功能正确 | progress 里 `filename`/`description`/`source` 任一非空字符串即返回 |
+| `activitySubject > 空 progress / 非字符串 / 空串 → null` | 边界鲁棒 | `progress={}`、`description=5`、`filename=""` 均返回 null |
+| `formatResult > reading → {book} — {note}` | 功能正确 | `reading` 活动 result 拼 `《小王子》 — 关于驯服` |
+| `formatResult > creation → {title} — {content}` | 功能正确 | `creation` 活动 result 拼 `诗 — 正文` |
+| `formatResult > free_exploration → findings/notes 用 / 连接` | 功能正确 | `findings`/`notes` 数组平铺 join ` / ` |
+| `formatResult > 未完成 / 无 result / 非 result 类型 → null` | 边界鲁棒 | `status="running"`、无 result、`type="rest"` 均返回 null |
+| `activityAnnouncement > reading → 读完啦：…` | 功能正确 | reading 产出前缀 `读完啦：` + formatResult |
+| `activityAnnouncement > creation → 创作完成：…` | 功能正确 | creation 产出前缀 `创作完成：` |
+| `activityAnnouncement > free_exploration → 探索收获：…` | 功能正确 | free_exploration 产出前缀 `探索收获：` |
+| `activityAnnouncement > 无产出 / 未完成 → null` | 边界鲁棒 | 无 result、未完成活动均 null |
+| `announceStore > announce 追加临时气泡（kind/text 落 store、id 唯一）` | 功能正确 | `announce("mutter", …)` append `{kind,text}` 且两次 id 不同 |
+| `announceStore > dismiss 摘除指定 id，其余保留` | 功能正确 | `dismiss(id)` 后仅该 id 消失、其余保留 |
+| `announceStore > 到时自动 dismiss（按 kind 时长）` | 功能正确 | fake timers 推进 `ANNOUNCE_DURATION[kind]` 后 item 消失 |
+| `dispatch > mutter → chatStore + announceStore（头像旁气泡）` | 功能正确 | `mutter` 事件同时进 chatStore（历史气泡）+ announceStore（`kind="mutter"` 头像旁临时气泡） |
+| `dispatch > activity_end → refresh 后按 activity_id 找到产出并 announce` | 功能正确 | `activity_end` 触发 `refresh()` 后，从 `data.schedule` 按 `activity_id` 找 completed 活动，`activityAnnouncement` 产出以 `kind="activity"` 进 announceStore |
+
+**功能阶段**：frontend「增强交互性」轮编写（常驻状态条 + 头像旁气泡 + 活动产出三件套；验证管道正确——`activityResult` 纯函数拼装、`announceStore` 追加/到时摘除、dispatch 把 `mutter` 与 `activity_end` 额外路由到 announceStore，不验证视觉淡出样式）。`formatResult` 从 ActivityPanel 本地函数抽提为共享库（`lib/activityResult.ts`），供活动产出气泡与状态条复用。

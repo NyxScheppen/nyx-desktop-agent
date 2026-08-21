@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isFirstTypewriter, isReady } from "../src/components/chat/MessageList";
+import { isReady } from "../src/components/chat/MessageList";
+import { ANNOUNCE_DURATION, useAnnounceStore } from "../src/stores/announceStore";
 import { useActivityStore } from "../src/stores/activityStore";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
@@ -644,57 +645,76 @@ describe("settingsStore", () => {
 describe("isReady（串行逐字纯函数）", () => {
   const think: ChatMessage = { id: "t1", role: "nyx", kind: "think", content: "…", correlation_id: "c1" };
   const speak: ChatMessage = { id: "s1", role: "nyx", kind: "speak", content: "你好", correlation_id: "c1" };
+  const user: ChatMessage = { id: "u1", role: "user", kind: "message", content: "hi", correlation_id: "c1" };
 
-  it("think 未打完 → speak 等（ready=false）", () => {
+  it("前置 think 未打完 → speak 等（ready=false）", () => {
     expect(isReady(speak, 1, [think, speak], {})).toBe(false);
   });
 
-  it("think 打完 → speak 就绪（ready=true）", () => {
+  it("前置 think 打完 → speak 就绪（ready=true）", () => {
     expect(isReady(speak, 1, [think, speak], { t1: true })).toBe(true);
   });
 
-  it("无前置 think → speak 直接就绪", () => {
+  it("无前置 nyx 文本 → 直接就绪", () => {
     expect(isReady(speak, 0, [speak], {})).toBe(true);
+    expect(isReady(think, 0, [think], {})).toBe(true);
   });
 
-  it("preloaded speak 直接就绪（不逐字）", () => {
+  it("preloaded nyx 文本直接就绪（不逐字）", () => {
     const pre = { ...speak, preloaded: true };
     expect(isReady(pre, 1, [think, pre], {})).toBe(true);
   });
 
-  it("think 等非 speak/ask 恒就绪", () => {
-    expect(isReady(think, 0, [think], {})).toBe(true);
+  it("user 消息恒就绪（不受前置 nyx 文本阻塞）", () => {
+    expect(isReady(user, 1, [think, user], {})).toBe(true);
   });
 
-  it("不同 correlation_id 的 think 不阻塞 speak", () => {
+  it("不同 correlation_id 的 nyx 文本不阻塞", () => {
     const other = { ...think, id: "t2", correlation_id: "other" };
     expect(isReady(speak, 1, [other, speak], {})).toBe(true);
   });
+
+  it("think 也受串行门控：等前置同 correlation_id 的 speak 打完", () => {
+    const think2 = { ...think, id: "t2" };
+    expect(isReady(think2, 1, [speak, think2], {})).toBe(false);
+    expect(isReady(think2, 1, [speak, think2], { s1: true })).toBe(true);
+  });
 });
 
-describe("isFirstTypewriter（开头打字机纯函数）", () => {
-  const speak1: ChatMessage = { id: "s1", role: "nyx", kind: "speak", content: "你好", correlation_id: "c1" };
-  const speak2: ChatMessage = { id: "s2", role: "nyx", kind: "speak", content: "再见", correlation_id: "c2" };
-  const user: ChatMessage = { id: "u1", role: "user", kind: "message", content: "hi", correlation_id: "c3" };
-
-  it("第一条 nyx 文本 → true（开头打字机）", () => {
-    expect(isFirstTypewriter(0, [speak1, speak2])).toBe(true);
+describe("announceStore", () => {
+  beforeEach(() => {
+    useAnnounceStore.setState({ items: [] });
   });
 
-  it("第二条 nyx 文本 → false（后续即时显示）", () => {
-    expect(isFirstTypewriter(1, [speak1, speak2])).toBe(false);
+  it("announce 追加临时气泡（kind/text 落 store、id 唯一）", () => {
+    useAnnounceStore.getState().announce("mutter", "在想你");
+    useAnnounceStore.getState().announce("activity", "读完啦");
+
+    const { items } = useAnnounceStore.getState();
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({ kind: "mutter", text: "在想你" });
+    expect(items[1]).toMatchObject({ kind: "activity", text: "读完啦" });
+    expect(items[0].id).not.toBe(items[1].id);
   });
 
-  it("user 消息不是候选，跳过", () => {
-    expect(isFirstTypewriter(1, [user, speak1])).toBe(true);
+  it("dismiss 摘除指定 id，其余保留", () => {
+    useAnnounceStore.getState().announce("mutter", "a");
+    useAnnounceStore.getState().announce("mutter", "b");
+    const [first] = useAnnounceStore.getState().items;
+
+    useAnnounceStore.getState().dismiss(first.id);
+
+    const { items } = useAnnounceStore.getState();
+    expect(items).toHaveLength(1);
+    expect(items[0].text).toBe("b");
   });
 
-  it("preloaded 历史消息跳过，其后第一条实时消息才打字机", () => {
-    const hist = { ...speak1, id: "h1", preloaded: true };
-    expect(isFirstTypewriter(1, [hist, speak2])).toBe(true);
-  });
+  it("到时自动 dismiss（按 kind 时长）", () => {
+    vi.useFakeTimers();
+    useAnnounceStore.getState().announce("mutter", "在想你");
 
-  it("无 nyx 文本消息 → false", () => {
-    expect(isFirstTypewriter(0, [user])).toBe(false);
+    vi.advanceTimersByTime(ANNOUNCE_DURATION.mutter);
+
+    expect(useAnnounceStore.getState().items).toHaveLength(0);
   });
 });

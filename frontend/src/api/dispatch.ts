@@ -1,4 +1,6 @@
+import { activityAnnouncement } from "../lib/activityResult";
 import { useActivityStore } from "../stores/activityStore";
+import { useAnnounceStore } from "../stores/announceStore";
 import { useChatStore } from "../stores/chatStore";
 import { useDesireStore } from "../stores/desireStore";
 import { useEventStore } from "../stores/eventStore";
@@ -20,7 +22,9 @@ export function dispatchEvent(e: SseEvent): void {
     case "think":
       return useChatStore.getState().addThink(e);
     case "mutter":
-      return useChatStore.getState().addMutter(e);
+      useChatStore.getState().addMutter(e);
+      useAnnounceStore.getState().announce("mutter", e.content);
+      return;
     case "initiate_chat":
       return useChatStore.getState().addInitiateChat(e);
     case "user_message":
@@ -37,9 +41,21 @@ export function dispatchEvent(e: SseEvent): void {
       useDesireStore.getState().refresh();
       return;
     case "activity_start":
-    case "activity_end":
     case "activity_interrupted":
       useActivityStore.getState().refresh();
       return;
+    case "activity_end": {
+      // 完成后主动冒一句：refresh 重拉快照后，按 activity_id 找到刚完成的活动，
+      // 有产出就 announce("activity", …)（activityAnnouncement 见 lib/activityResult）。
+      void useActivityStore.getState().refresh().then(() => {
+        const id = e.activity_id;
+        if (typeof id !== "string") return;
+        const a = useActivityStore.getState().data?.schedule.find((x) => x.id === id);
+        if (a === undefined) return;
+        const text = activityAnnouncement(a);
+        if (text !== null) useAnnounceStore.getState().announce("activity", text);
+      });
+      return;
+    }
   }
 }

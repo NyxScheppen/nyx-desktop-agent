@@ -1,16 +1,17 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BASE_URL } from "../src/api/client";
 import { dispatchEvent } from "../src/api/dispatch";
 import { useSSE } from "../src/hooks/useSSE";
 import { useActivityStore } from "../src/stores/activityStore";
+import { useAnnounceStore } from "../src/stores/announceStore";
 import { useChatStore } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
 import { useEventStore } from "../src/stores/eventStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
 import { isEmotionCategory } from "../src/types/api";
-import type { CurrentState } from "../src/types/api";
+import type { ActivitySnapshot, CurrentState } from "../src/types/api";
 
 // —— fake EventSource（jsdom 无原生实现，需 stub）——
 class FakeEventSource {
@@ -126,6 +127,7 @@ describe("dispatchEvent", () => {
     useDesireStore.setState({ data: null, loading: false, error: null });
     useActivityStore.setState({ data: null, loading: false, error: null });
     useMemoryStore.setState({ data: null, loading: false, error: null });
+    useAnnounceStore.setState({ items: [] });
   });
 
   it("speak → chatStore（kind=speak）", () => {
@@ -260,6 +262,58 @@ describe("dispatchEvent", () => {
     });
 
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("mutter → chatStore + announceStore（头像旁气泡）", () => {
+    dispatchEvent({
+      event: "mutter",
+      event_id: "m1",
+      correlation_id: "c1",
+      content: "在想你",
+    });
+
+    expect(useChatStore.getState().messages).toHaveLength(1);
+    expect(useAnnounceStore.getState().items).toHaveLength(1);
+    expect(useAnnounceStore.getState().items[0]).toMatchObject({
+      kind: "mutter",
+      text: "在想你",
+    });
+  });
+
+  it("activity_end → refresh 后按 activity_id 找到产出并 announce", async () => {
+    const snap: ActivitySnapshot = {
+      current: null,
+      schedule: [
+        {
+          id: "a1",
+          type: "reading",
+          schedule_block_id: "b1",
+          status: "completed",
+          progress: { result: { book: "《小王子》", note: "关于驯服" } },
+          started_at: 1,
+          ended_at: 2,
+        },
+      ],
+    };
+    useActivityStore.setState({ data: snap, loading: false, error: null });
+    vi.spyOn(useActivityStore.getState(), "refresh").mockImplementation(async () => {
+      useActivityStore.setState({ data: snap });
+    });
+
+    dispatchEvent({
+      event: "activity_end",
+      event_id: "a1",
+      correlation_id: "c1",
+      activity_id: "a1",
+    });
+
+    await waitFor(() => {
+      expect(useAnnounceStore.getState().items).toHaveLength(1);
+    });
+    expect(useAnnounceStore.getState().items[0]).toMatchObject({
+      kind: "activity",
+      text: "读完啦：《小王子》 — 关于驯服",
+    });
   });
 });
 

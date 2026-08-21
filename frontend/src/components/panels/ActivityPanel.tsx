@@ -1,7 +1,7 @@
 import { useEffect } from "react";
-import { useActivityStore } from "../../stores/activityStore";
 import { ACTIVITY_TYPE_LABELS, ACTIVITY_STATUS_LABELS } from "../../lib/labels";
-import type { Activity } from "../../types/api";
+import { formatResult } from "../../lib/activityResult";
+import { useActivityStore } from "../../stores/activityStore";
 import Panel from "../layout/Panel";
 
 // 活动时间线面板（README §5）：REST 快照 + SSE activity_* 触发 refresh。
@@ -9,32 +9,6 @@ import Panel from "../layout/Panel";
 // completed 活动额外展示 progress.result（读书 {book,note} / 创作 {title,content} / 探索 {findings,notes}）。
 function timeLabel(ts: number): string {
   return new Date(ts * 1000).toLocaleTimeString();
-}
-
-function formatResult(a: Activity): string | null {
-  if (a.status !== "completed") return null;
-  const result = a.progress.result;
-  if (typeof result !== "object" || result === null) return null;
-  const r = result as Record<string, unknown>;
-  if (a.type === "reading") {
-    const parts: string[] = [];
-    if (typeof r.book === "string") parts.push(r.book);
-    if (typeof r.note === "string") parts.push(r.note);
-    return parts.length > 0 ? parts.join(" — ") : null;
-  }
-  if (a.type === "creation") {
-    const parts: string[] = [];
-    if (typeof r.title === "string") parts.push(r.title);
-    if (typeof r.content === "string") parts.push(r.content);
-    return parts.length > 0 ? parts.join(" — ") : null;
-  }
-  if (a.type === "free_exploration") {
-    const parts: string[] = [];
-    if (Array.isArray(r.findings)) parts.push(...r.findings.map(String));
-    if (Array.isArray(r.notes)) parts.push(...r.notes.map(String));
-    return parts.length > 0 ? parts.join(" / ") : null;
-  }
-  return null;
 }
 
 export default function ActivityPanel() {

@@ -1,11 +1,14 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
+import AnnounceLayer from "./components/AnnounceLayer";
+import StatusBar from "./components/StatusBar";
 import ChatPanel from "./components/chat/ChatPanel";
 import EmotionSprite from "./components/inner/EmotionSprite";
 import SidePanel from "./components/layout/SidePanel";
 import Sakura from "./components/scene/Sakura";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
+import { useActivityStore } from "./stores/activityStore";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { ConnectionState } from "./types/api";
@@ -22,15 +25,20 @@ const CONNECTION_LABEL: Record<ConnectionState, string> = {
 export default function App() {
   const status = useSSE(dispatchEvent);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
+  const refreshActivity = useActivityStore((s) => s.refresh);
   usePresence();
   const [view, setView] = useState<"chat" | "settings">("chat");
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
 
-  // SSE 恢复连接后重拉快照（断线期间 emotion_update 可能丢失）
+  // SSE 恢复连接后重拉快照（断线期间 emotion_update / activity_* 可能丢失）。
+  // activity 也在此重拉，保证底部状态条开机即显示当前活动（不再依赖打开「活动」面板）。
   useEffect(() => {
-    if (status === "open") refreshState();
-  }, [status, refreshState]);
+    if (status === "open") {
+      refreshState();
+      void refreshActivity();
+    }
+  }, [status, refreshState, refreshActivity]);
 
   // 背景：有图以图铺底（cover）；无图且有色调用纯色替默认粉渐变。图 + 色并存时叠一层半透明滤镜。
   const bgStyle: CSSProperties = {};
@@ -65,6 +73,8 @@ export default function App() {
           <SidePanel onBack={() => setView("chat")} />
         )}
       </main>
+      <StatusBar />
+      <AnnounceLayer />
     </div>
   );
 }

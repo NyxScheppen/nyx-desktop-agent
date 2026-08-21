@@ -83,6 +83,7 @@ frontend/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     lib/
       labels.ts              # 枚举值→中文 UI 标签（label() 未知键回退原值）
+      activityResult.ts      # 活动产出纯函数（activitySubject / formatResult / activityAnnouncement）
     api/
       client.ts              # REST fetch 封装（postChat / getState / postObserve，见 05-client）
       dispatch.ts            # SseEvent → store 路由（01-sse §4.1）
@@ -101,7 +102,10 @@ frontend/
       narrativeStore.ts      # 自我叙事：SelfNarrative 快照
       materialsStore.ts      # 资料上传：文件清单 + 上传动作
       settingsStore.ts       # 背景外观：tint/image（纯前端 UI 状态，无后端）
+      announceStore.ts       # 头像旁临时气泡：items/announce/dismiss（纯前端呈现，无后端）
     components/
+      StatusBar.tsx          # 主界面常驻状态条（当前活动文字，App 层挂载）
+      AnnounceLayer.tsx      # 头像旁淡出气泡层（读 announceStore，App 层挂载）
       chat/
         ChatPanel.tsx
         MessageList.tsx
@@ -135,6 +139,7 @@ frontend/
     sse.test.ts
     stores.test.ts
     labels.test.ts           # 枚举中文化映射 + label() 回退
+    activityResult.test.ts   # activityResult 纯函数（activitySubject/formatResult/activityAnnouncement）
 ```
 
 ### 命名约定（对齐 CLAUDE.md 前端规范）

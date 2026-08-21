@@ -95,16 +95,17 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `speak` | `chatStore` | `addSpeak` | 聊天区 Nyx 回复 |
 | `ask` | `chatStore` | `addAsk` | 聊天区 Nyx 问句 |
 | `think` | `chatStore` | `addThink` | 内心话（灰色斜体逐字展示） |
-| `mutter` | `chatStore` | `addMutter` | 碎碎念（独立气泡） |
+| `mutter` | `chatStore` + `announceStore` | `addMutter` + `announce("mutter", …)` | 碎碎念（聊天记录气泡 + 头像旁淡出气泡） |
 | `initiate_chat` | `chatStore` | `addInitiateChat` | 搭话 |
 | `emotion_update` | `innerLifeStore` | `updateEmotion` | 更新 valence/arousal/emotion |
 | `user_message` | `chatStore` | `addUserMessage` | 用户消息回显（发消息后 SSE 回播） |
 | `desire_generated`/`desire_satisfied`/`desire_expired` | `desireStore` | `refresh()` | 欲望变化 → 重拉快照（事件只带 `desire_id`） |
-| `activity_start`/`activity_end`/`activity_interrupted` | `activityStore` | `refresh()` | 活动变化 → 重拉快照（事件只带 `activity_id`） |
+| `activity_start`/`activity_interrupted` | `activityStore` | `refresh()` | 活动开始/抢占 → 重拉快照（事件只带 `activity_id`） |
+| `activity_end` | `activityStore` + `announceStore` | `refresh()` 后按 `activity_id` 找产出并 `announce("activity", …)` | 活动完成 → 重拉快照 + 冒一句产出 |
 | `memory_created`/`memory_promoted` | `memoryStore` | `refresh()` | 记忆变化 → 重拉快照（事件只带 `memory_id`） |
 | `clock_tick`/`observation_state`/`reflection` | — | — | 仅 `eventStore.record`（无面板消费） |
 
-> 完整 18 类见 `01-types.md` 的 `EventType`。分发表开头**无条件 `eventStore.record(e)`**（溯源面板 spec 要「SSE 全部」，不再只记 11 类未消费），随后 `switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore（不变），`desire_*`/`activity_*`/`memory_*` 触发对应快照 store 的 `refresh()`（fire-and-forget），`clock_tick`/`observation_state`/`reflection` 仅 `record`（无面板消费，故无 `default` 分支）。
+> 完整 18 类见 `01-types.md` 的 `EventType`。分发表开头**无条件 `eventStore.record(e)`**（溯源面板 spec 要「SSE 全部」，不再只记 11 类未消费），随后 `switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore（不变），`desire_*`/`activity_*`/`memory_*` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`mutter` 额外进 `announceStore` 冒头像旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`），`clock_tick`/`observation_state`/`reflection` 仅 `record`（无面板消费，故无 `default` 分支）。
 > **前向兼容边界**：命名事件（带 `event:` 行）若没有匹配的 `addEventListener` 且无 `onmessage`，浏览器会静默丢弃——故后端**新增 EventType 必须同步前端** `EVENT_TYPES` 数组 + `types/api.ts` 判别联合 + 本分发表（monorepo 内本就在同一提交改）。不存在「旧前端自动接住新类型」的兜底。
 
 ### 4.1 分发函数（含类型收窄）
@@ -117,7 +118,10 @@ function dispatchEvent(e: SseEvent): void {
     case "speak": return chatStore.addSpeak(e);
     case "ask": return chatStore.addAsk(e);
     case "think": return chatStore.addThink(e);
-    case "mutter": return chatStore.addMutter(e);
+    case "mutter":
+      chatStore.addMutter(e);
+      announceStore.announce("mutter", e.content);
+      return;
     case "initiate_chat": return chatStore.addInitiateChat(e);
     case "user_message": return chatStore.addUserMessage(e);
     case "emotion_update": return innerLifeStore.updateEmotion(e);
@@ -125,8 +129,18 @@ function dispatchEvent(e: SseEvent): void {
       memoryStore.refresh(); return;
     case "desire_generated": case "desire_satisfied": case "desire_expired":
       desireStore.refresh(); return;
-    case "activity_start": case "activity_end": case "activity_interrupted":
+    case "activity_start": case "activity_interrupted":
       activityStore.refresh(); return;
+    case "activity_end":
+      void activityStore.refresh().then(() => {
+        const id = e.activity_id;
+        if (typeof id !== "string") return;
+        const a = activityStore.getState().data?.schedule.find((x) => x.id === id);
+        if (a === undefined) return;
+        const text = activityAnnouncement(a);
+        if (text !== null) announceStore.announce("activity", text);
+      });
+      return;
   }
 }
 ```
@@ -146,8 +160,9 @@ chatStore.addUserMessage(e: UserMessageEvent): void        // 读 e.message → 
 innerLifeStore.updateEmotion(e: EmotionUpdateEvent): void  // 覆盖 current 的 valence/arousal/emotion（emotion 走 isEmotionCategory 收窄）
 eventStore.record(e: SseEvent): void                       // unshift 头部（最新在前）+ count++
 desireStore.refresh(): Promise<void>                       // desire_* → 重拉快照（事件只带 desire_id，fire-and-forget）
-activityStore.refresh(): Promise<void>                     // activity_* → 重拉快照
+activityStore.refresh(): Promise<void>                     // activity_start/interrupted → 重拉快照；activity_end → refresh 后按 activity_id 找产出
 memoryStore.refresh(): Promise<void>                       // memory_* → 重拉快照
+announceStore.announce(kind: "mutter" | "activity", text: string): void  // 头像旁临时气泡（mutter 4s / activity 7s 后自动 dismiss）
 ```
 
 > 每个 store 的 state 形状（`ChatMessage` 含 `id`/`role`/`kind`/`content`/`correlation_id`/`preloaded?`，不存 `timestamp`——见 02-stores；`InnerLifeState`、`EventState`、四个快照 store）与 action 完整实现见 `02-stores.md`。本表只给签名，保证分发表能独立落地。

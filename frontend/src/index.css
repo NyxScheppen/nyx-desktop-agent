@@ -771,3 +771,86 @@ body {
     letter-spacing: 3px;
   }
 }
+
+/* ===== 底部常驻状态条 + 头像旁临时气泡（交互增强：当前活动 / 碎碎念 / 完成后冒一句）===== */
+.status-bar {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 3;
+  max-width: 38%;
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  background: rgba(255, 248, 240, 0.85);
+  backdrop-filter: blur(8px) saturate(1.1);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: 0 6px 20px rgba(60, 30, 20, 0.18);
+  font-size: 0.85rem;
+  color: #4d3425;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.announce-layer {
+  position: fixed;
+  left: 16px;
+  bottom: 64px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 34%;
+  pointer-events: none;
+}
+
+.announce {
+  max-width: 100%;
+  padding: 0.45rem 0.75rem;
+  border-radius: 0.6rem;
+  border-top-left-radius: 0.2rem;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(180, 140, 120, 0.25);
+  box-shadow: 0 6px 18px rgba(60, 30, 20, 0.16);
+  color: #4d3425;
+  font-size: 0.85rem;
+  opacity: 0;
+  animation-name: announce-pop;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+.announce--mutter {
+  color: #a08070;
+  font-style: italic;
+  font-size: 0.8rem;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.announce--activity {
+  border-left: 3px solid rgba(192, 122, 122, 0.7);
+}
+
+@keyframes announce-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  6% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}

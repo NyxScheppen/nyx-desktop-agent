@@ -1,6 +1,6 @@
 # Zustand Stores（`stores/*.ts`）
 
-> 每系统一个 store（CLAUDE.md）。共 10 个：`chatStore`（聊天）、`innerLifeStore`（内在状态快照）、`eventStore`（溯源时间线）、`desireStore` / `activityStore` / `memoryStore` / `evalStore`（四个快照 store）、`narrativeStore`（自我叙事快照）/ `materialsStore`（资料上传）、`settingsStore`（背景外观，纯前端 UI 状态）。
+> 每系统一个 store（CLAUDE.md）。共 11 个：`chatStore`（聊天）、`innerLifeStore`（内在状态快照）、`eventStore`（溯源时间线）、`desireStore` / `activityStore` / `memoryStore` / `evalStore`（四个快照 store）、`narrativeStore`（自我叙事快照）/ `materialsStore`（资料上传）、`settingsStore`（背景外观，纯前端 UI 状态）、`announceStore`（头像旁临时气泡，纯前端呈现）。
 > 范围：`stores/*.ts` 的 state 形状 + actions。
 > 约定：**SSE 是主通道**（01-sse 分发表），store 的增量 action 由 SSE 驱动；REST 只喂初始快照。TS 类型字段名 = 后端 JSON 键（snake_case，零映射）。
 
@@ -49,7 +49,7 @@ type ChatState = {
   messages: ChatMessage[];
   isReplying: boolean;        // 发消息后等待回复中
   sendError: string | null;
-  typedIds: Record<string, true>;  // 已逐字打完的 think id（speak/ask 等其同 correlation_id 的 think 打完才开打）
+  typedIds: Record<string, true>;  // 已逐字打完的 nyx 文本 id（后一条同 correlation_id 的 nyx 文本等其打完才开打）
 };
 ```
 
@@ -68,7 +68,7 @@ addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initi
 sendMessage(text: string): Promise<void>  // 内部调 client.postChat(text)（client 契约见 05-client）
                                           // 成功：pendingId = 返回的 event_id + isReplying=true + sendError=null + 起 60s 超时 timer
                                           // postChat throw → catch → sendError = e.message（isReplying 未置，无需复位）
-markTyped(id: string): void              // 把 think id 写入 typedIds（think 逐字 done 时调，解锁其后同 correlation_id 的 speak/ask）
+markTyped(id: string): void              // 把 nyx 文本 id 写入 typedIds（逐字 done 时调，解锁其后同 correlation_id 的下一条 nyx 文本）
 loadHistory(): Promise<void>             // 并行 GET /api/events/log（六类文本事件）→ 合并按 timestamp 升序 → 按 id 去重 → preloaded:true 前置到 messages；历史 think 一并入 typedIds；失败 best-effort 不抛（不阻塞实时 SSE）
 reset(): void                            // 新会话全清：clearTimeout(replyTimer) + messages/isReplying/sendError/typedIds 复位
 ```
@@ -202,7 +202,26 @@ type SettingsState = {
 - **无后端、无 SSE**：纯前端 UI 状态，读写只走内存，MVP 不持久化（重启回默认）。
 - **tint 与 image 独立并存**：图铺底（`cover`）、色调无图时作纯色、图+色并存时叠一层半透明滤镜（`.app-bg-tint`），互不覆盖。
 
-## 8. 测试（`tests/stores.test.ts`）
+## 8. `announceStore`（头像旁临时气泡，纯前端呈现）
+
+```typescript
+type AnnounceKind = "mutter" | "activity";
+type Announcement = { id: string; kind: AnnounceKind; text: string };
+
+type AnnounceState = {
+  items: Announcement[];
+  announce(kind: AnnounceKind, text: string): void; // 追加 + 按 kind 时长到时 dismiss
+  dismiss(id: string): void;                         // 摘除指定气泡
+};
+```
+
+### 关键决策
+
+- **纯呈现层、无后端/无 SSE 增量语义**：`announce` 由 SSE 分发表驱动（`mutter` → `announce("mutter", …)`、`activity_end` → `announce("activity", …)`），但 store 本身只管「临时气泡队列」：追加 → `setTimeout` 到时 `dismiss`。淡出视觉由 CSS `announce-pop` 动画承担（`AnnounceLayer` 读 `items` 渲染 + 按 `ANNOUNCE_DURATION[kind]` 设动画时长），store 到时摘除 DOM 节点。
+- **不落聊天历史**：碎碎念既进 `chatStore`（聊天记录）又进 `announceStore`（头像旁淡出气泡），两者互不替代——前者是历史时间线（`loadHistory` 回填），后者是 design §8 的瞬时气泡。
+- **时长按 kind**：`mutter` 4s、`activity` 7s（产出句子更长）。id 用模块级自增（`announce-N`），不依赖 `Date.now`（测试可预测）。
+
+## 9. 测试（`tests/stores.test.ts`）
 
 - **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addMutter`/`addInitiateChat`/`addUserMessage` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
 - **chatStore.loadHistory**：按 `timestamp` 升序前置 + `preloaded=true` + 历史 think 入 `typedIds`；已存在的 id 去重不重复前置；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
@@ -210,6 +229,7 @@ type SettingsState = {
 - **eventStore**：`record` 断言 unshift（最新在前）+ count++；超 `MAX_EVENTS` 丢尾部最旧但 count 累计；`loadHistory` 回填历史 + 与现有按 `received_at` 降序去重。
 - **四个快照 store**：`desireStore`/`activityStore`/`memoryStore` 各断言 `refresh()` 请求对端点 + `data` 落 store + `loading` 复位；`evalStore.refresh()` 并行 `getEval`+`getTokens`（fetch 恰 2 次）→ `reports`/`tokens` 落 store；`desireStore.refresh()` 失败 → `error` + `loading=false` + `data` 保持 null。
 - **narrativeStore / materialsStore**：`narrativeStore.refresh()` 请求 `/api/narrative` + `data` 落 store；`materialsStore.refresh()` 请求 `/api/materials` + `files` 落 store；`materialsStore.upload()` `POST /api/upload` 后重拉 files（fetch 恰 2 次）+ `uploading` 复位。
-- **`isReady`（串行逐字纯函数）**：think 未打完 → speak 等（false）；think 打完 → speak 就绪（true）；无前置 think → 直接就绪；`preloaded` speak → 直接就绪；think 自身 → 恒就绪；不同 `correlation_id` 的 think 不阻塞。
+- **`isReady`（串行逐字纯函数）**：每条 nyx 文本消息等「同 `correlation_id` 且在其之前」的 nyx 文本消息都打完（入 `typedIds`）才就绪；无前置 nyx 文本 → 直接就绪；`preloaded` nyx 文本与 user 消息 → 恒就绪；不同 `correlation_id` 的 nyx 文本不阻塞。
 - **`settingsStore`**：`setTint`/`setImage` 独立落 store 可并存；`reset()` 回 null。
+- **`announceStore`**：`announce` 追加临时气泡（kind/text 落 store、id 唯一）；`dismiss` 摘除指定 id 其余保留；`advanceTimersByTime(ANNOUNCE_DURATION[kind])` 到时自动 dismiss。
 - 全部 mock fetch/无真实后端；验证管道正确（事件走对 store、字段零映射），不验证视觉。

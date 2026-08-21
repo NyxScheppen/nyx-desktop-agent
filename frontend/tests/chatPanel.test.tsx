@@ -39,7 +39,7 @@ describe("MessageBubble", () => {
   });
 
   it("speak → 左气泡 class + content 上屏", () => {
-    render(<MessageBubble message={makeMsg("speak", "nyx", "你好")} ready onThinkTyped={() => {}} />);
+    render(<MessageBubble message={makeMsg("speak", "nyx", "你好")} ready onTyped={() => {}} />);
     typeDone();
     expect(screen.getByText("你好")).toHaveClass("message-bubble__content");
     expect(screen.getByText("你好").closest(".message-bubble")).toHaveClass(
@@ -48,7 +48,7 @@ describe("MessageBubble", () => {
   });
 
   it("ask → 高亮 class", () => {
-    render(<MessageBubble message={makeMsg("ask", "nyx", "想聊聊吗？")} ready onThinkTyped={() => {}} />);
+    render(<MessageBubble message={makeMsg("ask", "nyx", "想聊聊吗？")} ready onTyped={() => {}} />);
     typeDone();
     expect(screen.getByText("想聊聊吗？").closest(".message-bubble")).toHaveClass(
       "message-bubble--ask",
@@ -56,7 +56,7 @@ describe("MessageBubble", () => {
   });
 
   it("think → 逐字弱化显示（不再折叠）", () => {
-    render(<MessageBubble message={makeMsg("think", "nyx", "内心独白")} ready onThinkTyped={() => {}} />);
+    render(<MessageBubble message={makeMsg("think", "nyx", "内心独白")} ready onTyped={() => {}} />);
     typeDone();
     const el = screen.getByText("内心独白");
     expect(el).toBeInTheDocument();
@@ -64,14 +64,14 @@ describe("MessageBubble", () => {
   });
 
   it("initiate_chat → 带「搭话」标记 + 逐字 content", () => {
-    render(<MessageBubble message={makeMsg("initiate_chat", "nyx", "在忙吗？")} ready onThinkTyped={() => {}} />);
+    render(<MessageBubble message={makeMsg("initiate_chat", "nyx", "在忙吗？")} ready onTyped={() => {}} />);
     expect(screen.getByText("搭话")).toBeInTheDocument(); // 标记即时
     typeDone();
     expect(screen.getByText("在忙吗？")).toBeInTheDocument();
   });
 
   it("user message → 右气泡 class（即时，不打字）", () => {
-    render(<MessageBubble message={makeMsg("message", "user", "你好")} ready onThinkTyped={() => {}} />);
+    render(<MessageBubble message={makeMsg("message", "user", "你好")} ready onTyped={() => {}} />);
     expect(screen.getByText("你好").closest(".message-bubble")).toHaveClass(
       "message-bubble--user",
     );
@@ -80,6 +80,7 @@ describe("MessageBubble", () => {
 
 describe("MessageList", () => {
   beforeEach(() => {
+    useChatStore.getState().reset();
     vi.useFakeTimers();
   });
   afterEach(() => {
@@ -103,7 +104,7 @@ describe("MessageList", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
-  it("全部消息渲染即存在（不串行等前一条打完）", () => {
+  it("全部气泡渲染即存在（串行门控只延迟内容，不延迟挂载）", () => {
     const { container } = render(
       <MessageList
         messages={[
@@ -116,19 +117,22 @@ describe("MessageList", () => {
     expect(container.querySelectorAll(".message-bubble").length).toBe(2);
   });
 
-  it("打字机只在第一条 nyx 文本消息生效，后续即时显示", () => {
+  it("串行逐字：内心话先打完、对话才开打", () => {
     render(
       <MessageList
         messages={[
-          makeMsg("speak", "nyx", "第一条逐字"),
-          makeMsg("speak", "nyx", "第二条即时"),
+          makeMsg("think", "nyx", "内心话"),
+          makeMsg("speak", "nyx", "对话话"),
         ]}
       />,
     );
-    // 第二条不打字机：未推进 timer 就已完整上屏
-    expect(screen.getByText("第二条即时")).toBeInTheDocument();
-    // 第一条仍在逐字（未推进 timer 前为空）
-    expect(screen.queryByText("第一条逐字")).not.toBeInTheDocument();
+    // 未推进 timer：think 刚开打（空），speak 等前置 think 打完（空）
+    expect(screen.queryByText("内心话")).not.toBeInTheDocument();
+    expect(screen.queryByText("对话话")).not.toBeInTheDocument();
+    typeDone();
+    // think 打完 → markTyped → speak 就绪，两条都完整上屏
+    expect(screen.getByText("内心话")).toBeInTheDocument();
+    expect(screen.getByText("对话话")).toBeInTheDocument();
   });
 });
 

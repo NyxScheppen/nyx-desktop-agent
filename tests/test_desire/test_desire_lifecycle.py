@@ -396,6 +396,33 @@ async def test_satisfy_goal_met(monkeypatch: pytest.MonkeyPatch) -> None:
         await database.conn.close()
 
 
+async def test_satisfy_goal_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    """goal 精确计数：goal.count 次 goal_met 才满足，中间保持 PENDING 累计进度。"""
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        desire = _desire("d1")
+        desire.goal = Goal(GoalAction.READ, 3, "骑士团")
+        await store.add_desire(desire)
+        async with _running(bus):
+            await lifecycle.satisfy("d1", True)
+            await lifecycle.satisfy("d1", True)
+        d = await store.get_desire("d1")
+        assert d is not None
+        assert d.goal_progress == 2
+        assert d.status is DesireStatus.PENDING
+        async with _running(bus):
+            await lifecycle.satisfy("d1", True)
+        d = await store.get_desire("d1")
+        assert d is not None
+        assert d.status is DesireStatus.SATISFIED
+        assert d.goal_progress == 3
+    finally:
+        await database.conn.close()
+
+
 async def test_satisfy_retry() -> None:
     store, bus, database = await _new_stack()
     lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())

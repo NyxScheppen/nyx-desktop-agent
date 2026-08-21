@@ -94,12 +94,13 @@ class InnerLifeFacade:
 
         await self._publish_emotion(event.correlation_id)
 
-    async def reflect(self, correlation_id: str | None = None) -> None:
+    async def reflect(self, correlation_id: str | None = None) -> str | None:
         """反思协调器（慢变量唯一入口）：内部调 MemoryFacade/DesireFacade。
 
         correlation_id 来自触发 REFLECTION 事件（缺省自生成），串起反思 LLM 的溯源链。
+        返回本次反思产出的 story（发呆活动回带 summary 用；解析失败返回 None）。
         """
-        await self._reflection.run(correlation_id)
+        return await self._reflection.run(correlation_id)
 
     async def get_state(self) -> CurrentState:
         personality = await self._store.get_personality()

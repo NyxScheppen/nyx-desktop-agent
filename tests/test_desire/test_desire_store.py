@@ -174,3 +174,23 @@ async def test_long_term_roundtrip_and_update() -> None:
         assert rows[0].subtopics == ["骑士团", "城堡"]
     finally:
         await database.conn.close()
+
+
+async def test_goal_progress_roundtrip() -> None:
+    database = await db.connect(":memory:")
+    store = DesireStore(database)
+    try:
+        desire = _desire(
+            "d1", goal=Goal(action=GoalAction.READ, count=3, topic="骑士团")
+        )
+        desire.goal_progress = 2
+        await store.add_desire(desire)
+        got = await store.get_desire("d1")
+        assert got is not None and got.goal_progress == 2
+
+        got.goal_progress = 3
+        await store.update_desire(got)
+        again = await store.get_desire("d1")
+        assert again is not None and again.goal_progress == 3
+    finally:
+        await database.conn.close()

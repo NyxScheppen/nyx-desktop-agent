@@ -219,11 +219,19 @@ class DesireLifecycle:
         return [desire]
 
     async def satisfy(self, desire_id: str, goal_met: bool) -> None:
-        """达成/未达成回写。终态（SATISFIED/EXPIRED）幂等：重复投递 no-op。"""
+        """达成/未达成回写。goal 非 None 时按 count 累计 goal_progress，达标才满足；
+        goal None 沿用单次满足。终态（SATISFIED/EXPIRED）幂等：重复投递 no-op。"""
         desire = await self._store.get_desire(desire_id)
         if desire is None:
             return
         if desire.status in (DesireStatus.SATISFIED, DesireStatus.EXPIRED):
+            return
+        if goal_met and desire.goal is not None:
+            desire.goal_progress += 1
+            if desire.goal_progress >= desire.goal.count:
+                await self._satisfy(desire)
+            else:
+                await self._store.update_desire(desire)  # 保持 PENDING，累计进度
             return
         if goal_met:
             await self._satisfy(desire)

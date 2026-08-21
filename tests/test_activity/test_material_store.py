@@ -50,3 +50,33 @@ async def test_upsert_resets_progress_on_reupload() -> None:
         assert mat is not None and mat.read_chars == 0 and mat.total_chars == 200
     finally:
         await database.conn.close()
+
+
+async def test_find_by_topic_matches_unread() -> None:
+    store, database = await _new_store()
+    try:
+        await store.upsert("/a.txt", "a.txt", 100, 1000.0)
+        await store.upsert("/骑士团史.md", "骑士团史.md", 100, 2000.0)
+        mat = await store.find_by_topic("骑士团")
+        assert mat is not None and mat.path == "/骑士团史.md"
+    finally:
+        await database.conn.close()
+
+
+async def test_find_by_topic_skips_completed() -> None:
+    store, database = await _new_store()
+    try:
+        await store.upsert("/骑士团史.md", "骑士团史.md", 100, 1000.0)
+        await store.advance("/骑士团史.md", 100, 2000.0)  # 读完
+        assert await store.find_by_topic("骑士团") is None
+    finally:
+        await database.conn.close()
+
+
+async def test_find_by_topic_no_match_returns_none() -> None:
+    store, database = await _new_store()
+    try:
+        await store.upsert("/a.txt", "a.txt", 100, 1000.0)
+        assert await store.find_by_topic("骑士团") is None
+    finally:
+        await database.conn.close()

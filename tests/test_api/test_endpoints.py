@@ -141,14 +141,17 @@ async def test_observe_endpoint() -> None:
     bus = _FakeBus()
     app = _app(_mk_state(), bus, _FakeMemory())
     async with _client(app) as client:
-        resp = await client.post("/api/observe", json={"presence": "online"})
+        resp = await client.post(
+            "/api/observe", json={"presence": "online", "window_title": "编辑器"}
+        )
     assert resp.status_code == 200
     data = resp.json()
     assert set(data) == {"event_id"}
     [event] = bus.published
     assert event.type is EventType.OBSERVATION_STATE
-    assert event.content == {"presence": "online"}
+    assert event.content == {"presence": "online", "window_title": "编辑器"}
     assert app.last_presence == "online"
+    assert app.last_window_title == "编辑器"
 
 
 async def test_export_endpoint() -> None:

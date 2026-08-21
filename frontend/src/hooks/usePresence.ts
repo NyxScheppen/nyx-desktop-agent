@@ -22,6 +22,7 @@ export function usePresence(): void {
   const lastKeyTs = useRef(0); // 初始 0 = 「从未活跃」（now - 0 远大于活跃窗口）
   const lastMouseTs = useRef(0);
   const lastPresence = useRef<Presence | null>(null); // null → 首次采样必报
+  const lastWindowTitle = useRef<string | null>(null);
 
   useEffect(() => {
     const onKey = () => {
@@ -37,12 +38,15 @@ export function usePresence(): void {
       const now = Date.now();
       const keyboardActive = now - lastKeyTs.current < ACTIVE_WINDOW_SEC * 1000;
       const mouseActive = now - lastMouseTs.current < ACTIVE_WINDOW_SEC * 1000;
-      // 窗口标题：核心先行恒传 ""（无输入时恒走 away 分支）；Tauri getCurrentWindow().title() 后续补（README §2）
-      const presence = classifyPresence(keyboardActive, mouseActive, "");
-      if (presence !== lastPresence.current) {
+      // 窗口标题：本轮采 document.title（placeholder，Nyx 自己标题）；
+      // src-tauri 落地后换真实「前台应用窗口标题」（README §2）
+      const windowTitle = document.title;
+      const presence = classifyPresence(keyboardActive, mouseActive, windowTitle);
+      if (presence !== lastPresence.current || windowTitle !== lastWindowTitle.current) {
         lastPresence.current = presence;
+        lastWindowTitle.current = windowTitle;
         // 上报 best-effort：失败只记日志，下次采样重试，不上屏（05-client §2）
-        void postObserve(presence).catch((err) => {
+        void postObserve(presence, windowTitle).catch((err) => {
           console.error("presence 上报失败", err);
         });
       }

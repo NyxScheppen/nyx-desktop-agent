@@ -199,6 +199,7 @@ class MemoryFacade:
         self._config = config
         self._embed = embed          # 与 retrieval 共享同一实例（组合根注入）
         self._logger = logging.getLogger(__name__)
+        self._last_observation: tuple[str, str] | None = None  # 「变化才沉淀」快照
 
     async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
         """慢通道场景化记忆：LLM 产出 content/tag/summary
@@ -229,38 +230,20 @@ class MemoryFacade:
             aspect=[],
             embedding=None,
         )
-        if self._embed is not None:
-            memory.embedding = await self._embed(content)
-
-        await self._store.add(memory)
-
-        # 一次全表余弦排序，建边（top-3）与矛盾召回（top-5）共用，避免重复扫描
-        scored: list[tuple[float, Memory]] | None = None
-        if memory.embedding is not None:
-            scored = await self._similar(memory.embedding, memory.id)
-        await self._build_edges(memory, scored)
-        await self._detect_contradiction(
-            memory, scored, reply_context["correlation_id"]
-        )
-
-        await self._decay_and_evict(now)
-
-        await self._bus.publish(
-            internal_event(
-                EventType.MEMORY_CREATED,
-                {"memory_id": memory.id},
-                reply_context["correlation_id"],
-            )
-        )
+        await self._persist_memory(memory, reply_context["correlation_id"])
         return memory
 
     async def remember_activity(self, event: Event) -> None:
         """活动记忆：把 activity_end.result 落成一条短期记忆（无 LLM）。
 
-        只写读书/创作/探索三类有产出的活动；rest/observe_user/idle_reflection
-        （result 空或类型不匹配）跳过。入库管线与 create_scene_memory 相同
+        只写读书/创作/探索三类有产出的活动；rest/idle_reflection（result 空或
+        类型不匹配）跳过。observe_user 走「画像沉淀」分支（见 _sediment_observation）。
+        入库管线与 create_scene_memory 相同
         （embed → 建边 → 门控矛盾检测 → 淘汰），只缺开头的 LLM 场景构建。
         """
+        if event.content.get("type") == "observe_user":
+            await self._sediment_observation(event)
+            return
         mapped = _activity_memory_fields(
             event.content.get("type"), event.content.get("result")
         )
@@ -281,24 +264,78 @@ class MemoryFacade:
             aspect=[],
             embedding=None,
         )
-        if self._embed is not None:
-            memory.embedding = await self._embed(content)
+        await self._persist_memory(memory, event.correlation_id)
 
+    async def _sediment_observation(self, event: Event) -> None:
+        """观察活动 → 用户画像沉淀：「presence/window_title 相对上次变化」才写。
+
+        观察 result 非空 presence 视为有效观察（旧 shape 或缺 presence 跳过）；
+        同快照重复上报不沉淀（防膨胀）。产出一条 tag='user' 的长期记忆。
+        """
+        result = event.content.get("result")
+        if not isinstance(result, dict):
+            return
+        parsed = cast(dict[str, Any], result)
+        presence = parsed.get("presence")
+        if not isinstance(presence, str) or not presence:
+            return
+        window_title = parsed.get("window_title")
+        if not isinstance(window_title, str):
+            window_title = ""
+        snapshot = (presence, window_title)
+        if snapshot == self._last_observation:
+            return
+        self._last_observation = snapshot
+        content = f"用户状态：{presence}"
+        if window_title:
+            content += f"；正在浏览：{window_title}"
+        summary = str(parsed.get("summary") or f"用户（{presence}）")
+        await self.remember_user_profile(
+            content, summary, ["presence", "window_title"], event.correlation_id
+        )
+
+    async def remember_user_profile(
+        self,
+        content: str,
+        summary: str,
+        aspects: list[str],
+        correlation_id: str,
+    ) -> None:
+        """用户画像记忆：把观察到的用户状态落成一条长期、tag='user' 的记忆。
+
+        无开头 LLM（content/summary/aspects 由调用方确定性拼好，贴「禁编造」）；
+        复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM
+        使其豁免短期淘汰（_decay_and_evict 只淘汰短期），画像不随时间冲掉。
+        """
+        memory = Memory(
+            id=str(uuid4()),
+            created_at=time.time(),
+            content=content,
+            tag="user",
+            summary=summary,
+            freshness=1.0,
+            type=MemoryType.LONG_TERM,
+            recall_count=0,
+            aspect=aspects,
+            embedding=None,
+        )
+        await self._persist_memory(memory, correlation_id)
+
+    async def _persist_memory(self, memory: Memory, correlation_id: str) -> None:
+        """已构建 Memory 的共用入库尾段：补 embed → add → 建边 → 门控矛盾检测
+        → 新鲜度衰减/淘汰 → 发 MEMORY_CREATED。场景/活动/画像记忆三者复用。"""
+        if self._embed is not None and memory.embedding is None:
+            memory.embedding = await self._embed(memory.content)
         await self._store.add(memory)
-
         scored: list[tuple[float, Memory]] | None = None
         if memory.embedding is not None:
             scored = await self._similar(memory.embedding, memory.id)
         await self._build_edges(memory, scored)
-        await self._detect_contradiction(memory, scored, event.correlation_id)
-
-        await self._decay_and_evict(now)
-
+        await self._detect_contradiction(memory, scored, correlation_id)
+        await self._decay_and_evict(time.time())
         await self._bus.publish(
             internal_event(
-                EventType.MEMORY_CREATED,
-                {"memory_id": memory.id},
-                event.correlation_id,
+                EventType.MEMORY_CREATED, {"memory_id": memory.id}, correlation_id
             )
         )
 

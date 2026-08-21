@@ -58,6 +58,7 @@ export const ACTIVITY_TYPE_LABELS: Record<ActivityType, string> = {
 export const ACTIVITY_STATUS_LABELS: Record<ActivityStatus, string> = {
   pending: "待定",
   running: "进行中",
+  paused: "暂停",
   abandoned: "放弃",
   completed: "完成",
   incomplete: "未完成",

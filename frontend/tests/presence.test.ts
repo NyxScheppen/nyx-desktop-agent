@@ -37,7 +37,7 @@ describe("usePresence", () => {
   it("首次挂载必报一次（初始 away）", () => {
     renderHook(() => usePresence());
     expect(postObserve).toHaveBeenCalledTimes(1);
-    expect(postObserve).toHaveBeenCalledWith("away");
+    expect(postObserve).toHaveBeenCalledWith("away", ""); // jsdom document.title 默认 ""
   });
 
   it("键盘活动 → 下次采样报 online", () => {
@@ -45,7 +45,7 @@ describe("usePresence", () => {
     vi.advanceTimersByTime(10_000);
     fireEvent.keyDown(window);
     vi.advanceTimersByTime(20_000); // 距挂载 30s 采样；活动仅 20s 前，< 30s 窗口 → online
-    expect(postObserve).toHaveBeenCalledWith("online");
+    expect(postObserve).toHaveBeenCalledWith("online", "");
   });
 
   it("鼠标活动 → 下次采样报 online", () => {
@@ -53,7 +53,7 @@ describe("usePresence", () => {
     vi.advanceTimersByTime(10_000);
     fireEvent.mouseMove(window);
     vi.advanceTimersByTime(20_000);
-    expect(postObserve).toHaveBeenCalledWith("online");
+    expect(postObserve).toHaveBeenCalledWith("online", "");
   });
 
   it("presence 不变 → 30s 后不上报", () => {

@@ -49,11 +49,14 @@ export async function getState(): Promise<CurrentState> {
   return request<CurrentState>(`${BASE_URL}/api/state`);
 }
 
-export async function postObserve(presence: Presence): Promise<{ event_id: string }> {
+export async function postObserve(
+  presence: Presence,
+  windowTitle: string,
+): Promise<{ event_id: string }> {
   return request<{ event_id: string }>(`${BASE_URL}/api/observe`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ presence }),
+    body: JSON.stringify({ presence, window_title: windowTitle }),
   });
 }
 

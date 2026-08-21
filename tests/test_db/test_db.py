@@ -142,10 +142,12 @@ async def test_migrate_idempotent() -> None:
 async def test_migrate_version_gating(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = await _migrated_conn()
     try:
+        next_version = max(v for v, _ in db._MIGRATIONS) + 1
         monkeypatch.setattr(
             db,
             "_MIGRATIONS",
-            db._MIGRATIONS + [(3, ["CREATE TABLE foo (id TEXT PRIMARY KEY)"])],
+            db._MIGRATIONS
+            + [(next_version, ["CREATE TABLE foo (id TEXT PRIMARY KEY)"])],
         )
         await db.migrate(conn)
         cursor = await conn.execute(
@@ -155,8 +157,8 @@ async def test_migrate_version_gating(monkeypatch: pytest.MonkeyPatch) -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert foo is not None  # v3 套用
-    assert version == 3
+    assert foo is not None  # 下一版本套用
+    assert version == next_version
 
 
 async def test_migrate_atomic_rollback(monkeypatch: pytest.MonkeyPatch) -> None:

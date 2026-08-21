@@ -77,17 +77,17 @@ describe("api/client", () => {
     expect(res).toEqual(snapshot);
   });
 
-  it("postObserve：POST /api/observe、body {presence}、解析 {event_id}", async () => {
+  it("postObserve：POST /api/observe、body {presence, window_title}、解析 {event_id}", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ event_id: "e2" }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const res = await postObserve("away");
+    const res = await postObserve("away", "编辑器");
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/observe");
     expect(init).toMatchObject({
       method: "POST",
-      body: JSON.stringify({ presence: "away" }),
+      body: JSON.stringify({ presence: "away", window_title: "编辑器" }),
     });
     expect(res).toEqual({ event_id: "e2" });
   });

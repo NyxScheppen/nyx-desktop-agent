@@ -2,7 +2,7 @@
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,6 +15,7 @@ from nyx.activity.facade import (
     _elapsed_hours,
     _goal_met,
     _parse_activity_result,
+    _sanitize_filename,
 )
 from nyx.activity.material_store import MaterialStore
 from nyx.activity.store import ActivityStore
@@ -67,6 +68,7 @@ _VALUES: Values = {
 _READING_JSON = json.dumps({"book": "骑士团历史", "note": "读到了第三章"})
 _CREATION_JSON = json.dumps({"title": "小狐狸的日记", "content": "今天也努力了"})
 _PLAN_JSON = json.dumps({"focus": "骑士团", "done": False})
+_NOTE_JSON = json.dumps({"note": "完整读书笔记"})
 
 
 def _mk_state(energy: float) -> CurrentState:
@@ -136,6 +138,7 @@ class _FakeLlm:
             "reading": _READING_JSON,
             "creation": _CREATION_JSON,
             "exploration_plan": _PLAN_JSON,
+            "note": _NOTE_JSON,
         }.get(output_type, "{}")
         return LLMOutput(
             id=f"llm-{len(self.calls)}",
@@ -220,12 +223,22 @@ class _FakeTools:
         return "文件内容"
 
 
+async def _no_reflect(correlation_id: str | None) -> str | None:
+    return None
+
+
+async def _no_observation() -> dict[str, str]:
+    return {"presence": "away", "window_title": ""}
+
+
 async def _new_facade(
     pending: list[ShortTermDesire] | None = None,
     values: list[DesireValue] | None = None,
     energy: float = 80.0,
     llm: _FakeLlm | None = None,
     evaluator: _FakeEvaluator | None = None,
+    reflect: Callable[[str | None], Awaitable[str | None]] | None = None,
+    get_observation: Callable[[], Awaitable[dict[str, str]]] | None = None,
 ) -> tuple[ActivityFacade, ActivityStore, EventBus, Database]:
     database = await db.connect(":memory:")
     store = ActivityStore(database)
@@ -244,6 +257,8 @@ async def _new_facade(
         cast(ToolRegistry, _FakeTools()),
         cast(DesireFacade, _FakeDesire(pending, values)),
         get_state,
+        reflect if reflect is not None else _no_reflect,
+        get_observation if get_observation is not None else _no_observation,
         ActivityConfig(),
         ExplorationConfig(),
     )
@@ -297,7 +312,19 @@ def test_elapsed_hours() -> None:
 def test_goal_met() -> None:
     assert _goal_met(None, {}) is None
     assert _goal_met({"action": "read"}, {}) is False
-    assert _goal_met({"action": "read"}, {"book": "x"}) is True
+    assert _goal_met({"action": "read"}, {"book": "x"}) is False   # 读完整本才算
+    assert _goal_met({"action": "read"}, {"completed": True}) is True
+    assert _goal_met({"action": "write"}, {"title": "t", "content": "c"}) is True
+    assert _goal_met({"action": "write"}, {"title": "t"}) is False
+    assert _goal_met({"action": "observe"}, {"presence": "online"}) is True
+    assert _goal_met({"action": "observe"}, {}) is False
+
+
+def test_sanitize_filename() -> None:
+    assert _sanitize_filename("小狐狸的日记") == "小狐狸的日记"
+    assert _sanitize_filename("a/b:c") == "abc"      # 路径分隔符/非法字符剔除
+    assert _sanitize_filename("") == "untitled"       # 空回退
+    assert _sanitize_filename("///") == "untitled"
 
 
 def test_parse_activity_result_valid() -> None:
@@ -467,6 +494,118 @@ async def test_maybe_start_creation_activity(
         await database.conn.close()
 
 
+async def test_creation_result_has_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """创作落盘：LLM 产 {title, content} 后写进 workspace/creations，result 带 path。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    captured: dict[str, Any] = {}
+
+    async def fake_file_io(
+        action: str,
+        path: str,
+        content: str | None = None,
+        write_root: Path = Path("workspace"),
+    ) -> dict[str, Any]:
+        captured["path"] = path
+        captured["content"] = content
+        return {"path": f"workspace/{path}", "written": len(content or "")}
+
+    monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
+    facade, _store, bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.CREATION)], energy=80.0,
+        llm=_FakeLlm(), evaluator=_FakeEvaluator(),
+    )
+    try:
+        events = _subscribe_activity(bus)
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        ends = [e for e in events if e.type is EventType.ACTIVITY_END]
+        assert (
+            ends[0].content["result"]["path"]
+            == "workspace/creations/小狐狸的日记.md"
+        )
+        assert captured["path"] == "creations/小狐狸的日记.md"
+        assert captured["content"] == "今天也努力了"
+    finally:
+        await database.conn.close()
+
+
+async def test_idle_reflection_result_has_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """发呆反思：回带 story 作为 result.summary（不发 REFLECTION 事件）。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+
+    async def fake_reflect(correlation_id: str | None) -> str | None:
+        return "今天的故事"
+
+    facade, store, bus, database = await _new_facade(
+        energy=30.0, reflect=fake_reflect
+    )
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        assert acts[0].progress["result"] == {"summary": "今天的故事"}
+    finally:
+        await database.conn.close()
+
+
+async def test_observe_user_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """观察用户：result 带 presence/window_title + 确定性 summary。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+
+    async def fake_observation() -> dict[str, str]:
+        return {"presence": "online", "window_title": "编辑器"}
+
+    facade, store, bus, database = await _new_facade(
+        energy=80.0, get_observation=fake_observation
+    )
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        assert acts[0].progress["result"] == {
+            "presence": "online",
+            "window_title": "编辑器",
+            "summary": "用户（online）正在浏览 编辑器",
+        }
+    finally:
+        await database.conn.close()
+
+
+async def test_observe_user_result_no_window_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """观察用户：window_title 空则 summary 省略「正在浏览」。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+
+    async def fake_observation() -> dict[str, str]:
+        return {"presence": "away", "window_title": ""}
+
+    facade, store, bus, database = await _new_facade(
+        energy=80.0, get_observation=fake_observation
+    )
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        assert acts[0].progress["result"]["summary"] == "用户（away）"
+    finally:
+        await database.conn.close()
+
+
 async def test_execute_failure_marks_incomplete() -> None:
     facade, store, bus, database = await _new_facade(
         pending=[_desire("d1", DesireType.CREATION)], energy=80.0, llm=_RaisingLlm()
@@ -552,12 +691,33 @@ async def test_interrupt_running() -> None:
     facade, store, bus, database = await _new_facade()
     try:
         events = _subscribe_activity(bus)
-        await store.insert(_activity("a1", status=ActivityStatus.RUNNING))
+        await store.insert(
+            _activity("a1", type_=ActivityType.CREATION, status=ActivityStatus.RUNNING)
+        )
         async with _running(bus):
             await facade.interrupt("a1", EventType.USER_MESSAGE)
         got = await store.get("a1")
         assert got is not None
         assert got.status is ActivityStatus.ABANDONED
+        assert got.ended_at is not None
+        ints = [e for e in events if e.type is EventType.ACTIVITY_INTERRUPTED]
+        assert len(ints) == 1
+        assert ints[0].content["by"] == "user_message"
+    finally:
+        await database.conn.close()
+
+
+async def test_interrupt_reading_marks_paused() -> None:
+    """读书被打断置 PAUSED（read_chars 已 advance 可续读），非 ABANDONED。"""
+    facade, store, bus, database = await _new_facade()
+    try:
+        events = _subscribe_activity(bus)
+        await store.insert(_activity("a1", status=ActivityStatus.RUNNING))
+        async with _running(bus):
+            await facade.interrupt("a1", EventType.USER_MESSAGE)
+        got = await store.get("a1")
+        assert got is not None
+        assert got.status is ActivityStatus.PAUSED
         assert got.ended_at is not None
         ints = [e for e in events if e.type is EventType.ACTIVITY_INTERRUPTED]
         assert len(ints) == 1
@@ -634,14 +794,14 @@ async def test_get_schedule_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_read_material_reads_real_file(tmp_path: Path) -> None:
-    """用户投喂资料：READING 活动带 source，读真实文件产出 {book, note}。"""
+    """用户投喂资料：READING 活动带 source，读真实文件分块产出 {book, note}。"""
     source = tmp_path / "book.txt"
-    source.write_text("骑士团的历史", encoding="utf-8")
+    source.write_text("甲" * 7000, encoding="utf-8")  # 7000 字符，一块读不尽
     facade, store, bus, database = await _new_facade()
     try:
         events = _subscribe_activity(bus)
         async with _running(bus):
-            await facade.read_material(str(source), "book.txt", 6, "c1")
+            await facade.read_material(str(source), "book.txt", 7000, "c1")
             await _await_task(facade)
         acts = await store.list_schedule(0.0)
         assert len(acts) == 1
@@ -650,13 +810,53 @@ async def test_read_material_reads_real_file(tmp_path: Path) -> None:
         assert acts[0].progress["result"] == {
             "book": "骑士团历史",
             "note": "读到了第三章",
-            "read_chars": 6,
-            "total_chars": 6,
+            "read_chars": 6000,
+            "total_chars": 7000,
         }
         assert [e.type for e in events] == [
             EventType.ACTIVITY_START,
             EventType.ACTIVITY_END,
         ]
+    finally:
+        await database.conn.close()
+
+
+async def test_reading_completion_aggregates_note(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """读完整本书：最后一块后聚合片段 → 完整笔记落盘 + completed=True。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    captured: dict[str, Any] = {}
+
+    async def fake_file_io(
+        action: str,
+        path: str,
+        content: str | None = None,
+        write_root: Path = Path("workspace"),
+    ) -> dict[str, Any]:
+        captured["path"] = path
+        captured["content"] = content
+        return {"path": f"workspace/{path}", "written": len(content or "")}
+
+    monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
+    source = tmp_path / "book.txt"
+    source.write_text("骑士团的历史", encoding="utf-8")  # 6 字符，一块读尽
+    llm = _FakeLlm()
+    facade, store, bus, database = await _new_facade(
+        llm=llm, evaluator=_FakeEvaluator()
+    )
+    try:
+        async with _running(bus):
+            await facade.read_material(str(source), "book.txt", 6, "c1")
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        result = acts[0].progress["result"]
+        assert result["completed"] is True
+        assert result["note"] == "完整读书笔记"
+        assert result["path"] == "workspace/notes/book.txt.md"
+        assert captured["path"] == "notes/book.txt.md"
+        assert llm.calls == ["reading", "note"]
     finally:
         await database.conn.close()
 
@@ -698,5 +898,41 @@ async def test_desire_reading_reads_latest_material(tmp_path: Path) -> None:
         # 书库进度推进但未读完，下次探索欲会续读
         mat = await facade._material_store.next_readable()
         assert mat is not None and mat.read_chars == 6000
+    finally:
+        await database.conn.close()
+
+
+async def test_maybe_start_reading_uses_topic(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """读书按 topic 选料：goal.topic 命中 filename 时读那本，而非最近一本。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    target = tmp_path / "骑士团历史.txt"
+    target.write_text("甲" * 7000, encoding="utf-8")
+    newer = tmp_path / "other.txt"
+    newer.write_text("无关", encoding="utf-8")
+    facade, store, bus, database = await _new_facade(
+        pending=[
+            _desire(
+                "d1", DesireType.EXPLORATION,
+                goal=Goal(GoalAction.READ, 1, "骑士团"),
+            )
+        ],
+        energy=80.0,
+    )
+    try:
+        # target 更早入书库（created_at 更小）；newer 是「最近一本」
+        await facade._material_store.upsert(
+            str(target), "骑士团历史.txt", 7000, t0 - 10
+        )
+        await facade._material_store.upsert(str(newer), "other.txt", 2, t0)
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        assert len(acts) == 1
+        assert acts[0].progress["source"] == str(target)
+        assert acts[0].progress["filename"] == "骑士团历史.txt"
     finally:
         await database.conn.close()

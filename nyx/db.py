@@ -151,6 +151,16 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        3,
+        [
+            # 读书聚合：每块 note 片段（JSON 数组，读完一本后聚合用）
+            "ALTER TABLE material ADD COLUMN note_fragments TEXT NOT NULL DEFAULT '[]'",
+            # goal 精确计数：已完成单位数（count 次才满足）
+            "ALTER TABLE short_term_desire ADD COLUMN goal_progress INTEGER "
+            "NOT NULL DEFAULT 0",
+        ],
+    ),
 ]
 
 

@@ -1,3 +1,5 @@
+import json
+
 import aiosqlite
 
 from nyx.db import Database
@@ -26,6 +28,7 @@ class MaterialStore:
                 "created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?) "
                 "ON CONFLICT(path) DO UPDATE SET filename = excluded.filename, "
                 "total_chars = excluded.total_chars, read_chars = 0, "
+                "note_fragments = '[]', "
                 "created_at = excluded.created_at, updated_at = excluded.updated_at",
                 (path, filename, total_chars, now, now),
             )
@@ -42,6 +45,19 @@ class MaterialStore:
             row = await cursor.fetchone()
         return _row_to_material(row) if row is not None else None
 
+    async def find_by_topic(self, topic: str) -> Material | None:
+        """按主题（filename 子串，SQLite LIKE 默认大小写不敏感）选一本未读完的书；
+        无则 None。goal.topic（如「骑士团」）与「最近上传」可能不同，读书按 topic
+        选料时优先走这里（C2）。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM material WHERE filename LIKE ? "
+                "AND read_chars < total_chars ORDER BY created_at DESC LIMIT 1",
+                (f"%{topic}%",),
+            )
+            row = await cursor.fetchone()
+        return _row_to_material(row) if row is not None else None
+
     async def advance(self, path: str, read_chars: int, now: float) -> None:
         """推进一本书的已读进度（updated_at 同步刷新）。"""
         async with self._db.lock:
@@ -50,6 +66,34 @@ class MaterialStore:
                 (read_chars, now, path),
             )
             await self._db.conn.commit()
+
+    async def append_fragment(self, path: str, note: str, now: float) -> None:
+        """追加一块片段笔记到 note_fragments（JSON 数组，updated_at 同步刷新）。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT note_fragments FROM material WHERE path = ?", (path,)
+            )
+            row = await cursor.fetchone()
+            fragments: list[str] = (
+                json.loads(row["note_fragments"]) if row is not None else []
+            )
+            fragments.append(note)
+            await self._db.conn.execute(
+                "UPDATE material SET note_fragments = ?, updated_at = ? WHERE path = ?",
+                (json.dumps(fragments, ensure_ascii=False), now, path),
+            )
+            await self._db.conn.commit()
+
+    async def get_fragments(self, path: str) -> list[str]:
+        """读一本书已累积的片段笔记（无则空列表）。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT note_fragments FROM material WHERE path = ?", (path,)
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return []
+        return json.loads(row["note_fragments"])
 
 
 def _row_to_material(row: aiosqlite.Row) -> Material:

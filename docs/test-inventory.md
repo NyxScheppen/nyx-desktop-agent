@@ -72,7 +72,7 @@
 | `test_migrate_not_null_alignment` | 边界鲁棒 | 6 列 `notnull=1`（`memory.aspect` / `long_term_desire.linked_values` / `activity.progress` / `event_log.content` / `event_log.correlation_id` / `eval_report.correlation_id`） |
 | `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `token_usage.correlation_id` / `memory.embedding`） |
 | `test_migrate_idempotent` | 回归保护 | 连跑两次不报错，表数不变、版本不变 |
-| `test_migrate_version_gating` | 功能正确 | `monkeypatch` 追加 v3 后只套 v3，版本=3，v1/v2 表不重复建 |
+| `test_migrate_version_gating` | 功能正确 | `monkeypatch` 追加「下一版本」后只套该版本，版本=下一版本，旧版本不重复建（动态取 max+1，不再硬编码 v3） |
 | `test_migrate_atomic_rollback` | 边界鲁棒 | 迁移含非法 SQL → 抛 `aiosqlite.Error`；`ok` 表回滚不存在；版本仍为 0 |
 | `test_connect_returns_database` | 功能正确 | 返回 `Database`；文件创建；`journal_mode=wal`；`foreign_keys=1`；`row_factory` 生效（`row["x"]==1`）；`lock` 是 `asyncio.Lock` |
 | `test_connect_explicit_path_priority` | 功能正确 | 显式 path 优先建该文件 |
@@ -80,7 +80,7 @@
 | `test_default_db_path_constant` | 功能正确 | `DEFAULT_DB_PATH == "nyx.db"` |
 | `test_connect_closes_conn_on_migrate_failure` | 边界鲁棒 | 迁移失败 → `connect` 抛异常且连接被 `close`（spy 记录），不泄漏 |
 
-**功能阶段**：04-db 实现时编写；`material` 表（v2 迁移）于「读书分块读」轮追加——`BUSINESS_TABLES` 补 `material`、表数 14→15、版本门控用例由 v2 改 v3（原 v2 被 `material` 占用）。
+**功能阶段**：04-db 实现时编写；`material` 表（v2 迁移）于「读书分块读」轮追加——`BUSINESS_TABLES` 补 `material`、表数 14→15、版本门控用例由 v2 改 v3（原 v2 被 `material` 占用）；v3 迁移（`material.note_fragments` + `short_term_desire.goal_progress` 两列）于「活动填实」轮追加——`test_migrate_version_gating` 改为动态取 max+1 不再硬编码版本号。
 
 ## 05-event（事件总线 + 路由）
 
@@ -251,8 +251,9 @@
 | `test_remember_activity_creation_and_exploration` | 功能正确 | creation + free_exploration 各写一条（content/summary 正确、tag 为活动类型值）、无 LLM 调用 |
 | `test_remember_activity_skips_empty_or_other_type` | 边界鲁棒 | rest/空 result/observe_user → 不写、无 `memory_created` |
 | `test_remember_activity_contradiction` | 功能正确 | 有相似旧记忆 + embed → 门控触发 1 次 `contradiction`（参与矛盾判断，无 scene_memory）；命中 → 发布 reflection |
+| `test_remember_user_profile_fields` | 功能正确 | `remember_user_profile` → 写一条 `LONG_TERM`/`tag="user"`/`aspect` 全等的画像记忆、无 LLM 调用、发布 `memory_created`（correlation 透传） |
 
-**功能阶段**：09-memory-facade 实现时编写；`test_contradiction_parse_failure_no_crash` / `test_eviction_tie_break_oldest_first` / `test_record_recall_concurrent_single_promote` 于 09 评审修复阶段编写（高1：矛盾解析失败不再半提交；中4：淘汰平局按 created_at 升序；中3：并发 record_recall 只升一次）；`test_join_list` / `test_activity_memory_fields_*` / `test_remember_activity_*` 于「活动记忆」实现阶段编写（活动 result 确定性落记忆，含矛盾检测参与）。
+**功能阶段**：09-memory-facade 实现时编写；`test_contradiction_parse_failure_no_crash` / `test_eviction_tie_break_oldest_first` / `test_record_recall_concurrent_single_promote` 于 09 评审修复阶段编写（高1：矛盾解析失败不再半提交；中4：淘汰平局按 created_at 升序；中3：并发 record_recall 只升一次）；`test_join_list` / `test_activity_memory_fields_*` / `test_remember_activity_*` 于「活动记忆」实现阶段编写（活动 result 确定性落记忆，含矛盾检测参与）；`test_remember_user_profile_fields` 于「活动填实（画像记忆）」轮追加（`remember_user_profile` 复用入库尾段、type=LONG_TERM/tag=user）。
 
 ## 10-desire-value（欲望值机制）
 
@@ -279,6 +280,7 @@
 | `test_list_pending_filters_and_orders` | 功能正确 | 只返回 pending+active（不含 satisfied/expired），按 `created_at ASC` |
 | `test_list_short_term_all_desc` | 功能正确 | 全量（含 satisfied/expired），按 `created_at DESC`（区别于 `list_pending`） |
 | `test_update_desire` | 功能正确 | 改 `status`/`retry_count` → `get_desire` 验证 |
+| `test_goal_progress_roundtrip` | 功能正确 | `add_desire` 带 `goal_progress=2` → `get` 往返；`update_desire` 改 `goal_progress=3` → 再 `get` 验证（goal 精确计数存储层） |
 | `test_upsert_value_new_and_update` | 功能正确 | `upsert_value` 新建 → `list_values` 1 行；同 type 再 upsert 改 `value`/`updated_at`（ON CONFLICT 不重复建行） |
 | `test_long_term_roundtrip_and_update` | 功能正确 | `subtopics`/`linked_values` JSON 数组往返、`type` 枚举往返；`update_long_term` 改 `progress`/`strength` |
 | `test_parse_desire` | 边界鲁棒 | 合法 JSON→`(description, Goal)`；`goal:null`→`None`；缺/空 description、`goal.action` 非法、`count` 非正/非 int、`topic` 非 str、JSON 数组 → `ValueError`（7 例） |
@@ -295,6 +297,7 @@
 | `test_run_eval_llm_invalid_json_skips` | 边界鲁棒 | 非法 JSON → `_parse_desire` 抛 `ValueError` → 返回 `[]`、目标 `value` 不重置、无欲望入队 |
 | `test_run_eval_evaluator_error_propagates` | 回归保护 | evaluator 抛 `RuntimeError` → 不被 `except ValueError` 吞、上抛给 supervisor（不掩蔽真 bug） |
 | `test_satisfy_goal_met` | 功能正确 | `SATISFIED`、表达权重 `+0.05`、长期进度 `+0.1`、发布 `desire_satisfied` |
+| `test_satisfy_goal_progress` | 功能正确 | goal.count=3 时前两次 goal_met → `goal_progress=2` 保持 PENDING；第三次 → SATISFIED + `goal_progress=3`（C3 精确计数累计） |
 | `test_satisfy_retry` | 功能正确 | `retry_count+1`、`status` 仍 `PENDING`、无事件 |
 | `test_satisfy_retry_exceeds_limit` | 功能正确 | `retry_count > retry_limit` → `EXPIRED`、值回增 `+REFUND_DELTA`、抑制阈值 `+0.1`、发布 `desire_expired` |
 | `test_expire` | 功能正确 | `EXPIRED` + 值回增 + 抑制阈值上浮 + 发布 `desire_expired` |
@@ -309,7 +312,7 @@
 | `test_satisfy_expire_delegate` | 功能正确 | `facade.satisfy`/`facade.expire` 委托改 `status`（SATISFIED / EXPIRED） |
 | `test_add_long_term_delegates` | 功能正确 | `add_long_term(desire)` → `list_long_term` 多一条、字段全等 |
 
-**功能阶段**：11-desire 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；无集成/E2E，与 activity/expression 真实编排归 13/14/17）。
+**功能阶段**：11-desire 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；无集成/E2E，与 activity/expression 真实编排归 13/14/17）；`test_goal_progress_roundtrip` / `test_satisfy_goal_progress` 于「活动填实（goal 精确计数）」轮追加（`goal_progress` 列读写往返 + `satisfy` 按 count 累计达标才满足）。
 
 ## 12-inner-life（内在生命：情感/精力 + 反思 + 门面）
 
@@ -395,7 +398,8 @@
 | `test_update` | 功能正确 | `update` 改 `status`/`progress`/`ended_at` → `get` 验证 |
 | `test_day_start` | 功能正确 | `now=86400*1.5 → 86400.0` |
 | `test_elapsed_hours` | 功能正确 | `now=5400 → 1.5` |
-| `test_goal_met` | 功能正确 | goal None → None；goal 非 None + result 空 → False；result 非空 → True |
+| `test_goal_met` | 功能正确 | goal None → None；`read` → `completed`；`write` → 有 `title`+`content`；`observe` → 有 `presence`；其余 → False（C3 精确版「一本/一篇/一次」） |
+| `test_sanitize_filename` | 功能正确 | 中文标题原样保留；`a/b:c` → `abc`（剔路径分隔符/非法字符）；空串/纯分隔符 → `untitled`（纯函数） |
 | `test_parse_activity_result_valid` | 功能正确 | reading/creation 缺键结构合法 → 返回解析后 dict |
 | `test_parse_activity_result_missing_key_raises` | 边界鲁棒 | 缺必需键 → `ValueError`（fail-fast） |
 | `test_parse_activity_result_non_dict_raises` | 边界鲁棒 | JSON 顶层非 dict → `ValueError` |
@@ -409,11 +413,16 @@
 | `test_default_idle_reflection_when_tired` | 功能正确 | 空槽 + 低精力 → IDLE_REFLECTION、`desire_id` None |
 | `test_default_observe_user_when_energetic` | 功能正确 | 空槽 + 高精力 → OBSERVE_USER、`desire_id` None |
 | `test_maybe_start_creation_activity` | 功能正确 | 有欲望 → insert + 发布 activity_start/end（source INTERNAL、desire_id/energy_delta 透传）、evaluator 调 1 次 |
+| `test_creation_result_has_path` | 功能正确 | 创作落盘：result 带 `path="workspace/creations/小狐狸的日记.md"`、`file_io` 收到 `creations/小狐狸的日记.md` 与 content（B3 创作产出落盘） |
+| `test_idle_reflection_result_has_summary` | 功能正确 | 发呆反思：`reflect` 回带 story 写入 `result.summary`（不发 REFLECTION 事件，直接 await） |
+| `test_observe_user_result` | 功能正确 | 观察用户：result 带 `presence`/`window_title` + 确定性 summary `用户（online）正在浏览 编辑器`（0 LLM） |
+| `test_observe_user_result_no_window_title` | 边界鲁棒 | `window_title` 空 → summary 省略「正在浏览」仅 `用户（away）` |
 | `test_execute_failure_marks_incomplete` | 回归保护 | LLM 抛异常 → 活动标 INCOMPLETE + `ended_at` 非空（不卡 RUNNING） |
 | `test_upgrade_to_free_exploration` | 功能正确 | 探索欲 + 精力足 + 频率过 → FREE_EXPLORATION |
 | `test_no_upgrade_when_rate_limited` | 功能正确 | 频率未过 → 降级 READING |
 | `test_complete_activity` | 功能正确 | COMPLETED + `ended_at` 非空 + activity_end（energy_delta=-20） |
-| `test_interrupt_running` | 功能正确 | ABANDONED + activity_interrupted（`by=user_message`） |
+| `test_interrupt_running` | 功能正确 | 非读书（creation）→ ABANDONED + activity_interrupted（`by=user_message`） |
+| `test_interrupt_reading_marks_paused` | 功能正确 | 读书被打断 → PAUSED（material 层 read_chars 已 advance 可续读）+ activity_interrupted，非 ABANDONED |
 | `test_interrupt_abandons_in_flight_activity` | 回归保护 | 执行中活动挂起可取消 await 时 interrupt → 终态 ABANDONED 而非被 complete 覆盖 |
 | `test_interrupt_missing` | 边界鲁棒 | 不存在 → 不发布、不崩溃 |
 | `test_get_current_delegates` | 功能正确 | `get_current` 委托 store |
@@ -427,16 +436,21 @@
 | `test_classify_presence_online` | 功能正确 | 键盘/鼠标活跃 → online |
 | `test_classify_presence_busy` | 功能正确 | 无输入 + 有窗口标题 → busy |
 | `test_classify_presence_away` | 功能正确 | 无输入无标题 → away |
-| `test_read_material_reads_real_file` | 功能正确 | 写真实文件（6 字）→ `read_material(path, filename, total_chars, cid)` 起一条 `READING` 活动，`progress["source"]` 指向源文件、`progress["result"]` 为 `{book:"骑士团历史", note:"读到了第三章", read_chars:6, total_chars:6}`（LLM mock 读真实内容而非凭空），事件序 `[ACTIVITY_START, ACTIVITY_END]` |
+| `test_read_material_reads_real_file` | 功能正确 | 写真实文件（7000 字）→ `read_material(path, filename, total_chars, cid)` 起一条 `READING` 活动，`progress["source"]` 指向源文件、`result.read_chars==6000`/`total_chars==7000`（一块读 6000 字符不超本），事件序 `[ACTIVITY_START, ACTIVITY_END]` |
+| `test_reading_completion_aggregates_note` | 功能正确 | 6 字书一块读尽 → 聚合片段产完整笔记落盘：`completed=True`、`note="完整读书笔记"`、`path="workspace/notes/book.txt.md"`、LLM 调 `["reading","note"]`（C1 读完一本 = 一篇笔记） |
 | `test_read_material_skips_when_busy` | 边界鲁棒 | 已有 in-flight 活动（`_task` 未 done）时 `read_material` 直接 return 不新建（`list_schedule` 仍 1 条）——并发守卫镜像 `_maybe_start_activity` |
 | `test_no_material_rate_limited_falls_back_to_default` | 功能正确 | 探索欲 + 无书可读 + 限速中（`prev` FREE_EXPLORATION 刚做）→ 退回默认活动 `OBSERVE_USER`（绝不编造读书内容） |
 | `test_desire_reading_reads_latest_material` | 功能正确 | 探索欲 + 已注册 7000 字书 → `READING` 读该书、`progress["result"]["read_chars"]==6000` / `["total_chars"]==7000`、书库 `next_readable().read_chars==6000`（分块推进、下次续读） |
+| `test_maybe_start_reading_uses_topic` | 功能正确 | goal.topic「骑士团」命中 `骑士团历史.txt`（更早入库）→ 读该书而非更新的 `other.txt`（C2 读书按 topic 选料） |
 | `test_next_readable_picks_latest_unread` | 功能正确 | 两本未读 → `next_readable()` 取 `created_at` 最新的那本 |
 | `test_next_readable_skips_completed` | 功能正确 | b 已读完（`advance` 到 total）→ `next_readable()` 跳过 b 返回 a |
 | `test_next_readable_none_when_all_read` | 边界鲁棒 | 全部读完 → `next_readable()` 返回 None |
 | `test_upsert_resets_progress_on_reupload` | 功能正确 | 同路径重传 → `read_chars` 归零、`total_chars` 更新（`ON CONFLICT` 覆盖） |
+| `test_find_by_topic_matches_unread` | 功能正确 | 书名子串命中主题 → 返回该书（优先于「最近一本」的按 topic 选料） |
+| `test_find_by_topic_skips_completed` | 功能正确 | 匹配书已读完（`read_chars >= total`）→ 返回 `None` |
+| `test_find_by_topic_no_match_returns_none` | 边界鲁棒 | 无书名含主题 → `None`（读书按 topic 选料无果） |
 
-**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）；`test_exploration_plan_non_dict_raises` 于本轮评审修复编写（`_plan_next` 结构校验 fail-fast，配合删除 `recall_memory` 死节点）；`test_read_material_reads_real_file` / `test_read_material_skips_when_busy` 于「喂资料/上传课本」轮追加（上传 → `USER_MATERIAL` → `read_material` 读真实文件产 `{book,note}` + 忙时跳过）；「读书分块读」轮追加 `MaterialStore` 单测（`test_material_store.py` 4 条：最近未读、跳过读完、全读完 None、重传归零）+ `test_desire_reading_reads_latest_material`（探索欲读最近那本、分块推进度）+ `test_no_material_rate_limited_falls_back_to_default`（无书可读限速退回默认，禁编造），并把 `test_read_material_reads_real_file` 断言补上 `read_chars`/`total_chars` 与 `total_chars` 入参。
+**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）；`test_exploration_plan_non_dict_raises` 于本轮评审修复编写（`_plan_next` 结构校验 fail-fast，配合删除 `recall_memory` 死节点）；`test_read_material_reads_real_file` / `test_read_material_skips_when_busy` 于「喂资料/上传课本」轮追加（上传 → `USER_MATERIAL` → `read_material` 读真实文件产 `{book,note}` + 忙时跳过）；「读书分块读」轮追加 `MaterialStore` 单测（`test_material_store.py` 4 条：最近未读、跳过读完、全读完 None、重传归零）+ `test_desire_reading_reads_latest_material`（探索欲读最近那本、分块推进度）+ `test_no_material_rate_limited_falls_back_to_default`（无书可读限速退回默认，禁编造），并把 `test_read_material_reads_real_file` 断言补上 `read_chars`/`total_chars` 与 `total_chars` 入参。；`test_find_by_topic_*` 于「活动填实（读书按 topic 选料）」轮追加（`MaterialStore.find_by_topic` 按书名子串选未读完的书）。`test_goal_met`（精确版）/ `test_sanitize_filename` / `test_creation_result_has_path` / `test_idle_reflection_result_has_summary` / `test_observe_user_result` / `test_observe_user_result_no_window_title` / `test_reading_completion_aggregates_note` / `test_maybe_start_reading_uses_topic` / `test_interrupt_reading_marks_paused` 同属「活动填实」轮（B3 创作落盘、B2 发呆回带 story、B1 观察 result 带 presence/window_title、C1 读书聚合完整笔记、C2 读书按 topic 选料、C3 `_goal_met` 精确计数、D 读书打断置 PAUSED）；`test_read_material_reads_real_file` 同轮由 6 字改 7000 字（一块读 6000 不读完，适配「读完整本才 completed」的完成判定）。
 
 ## 16-expression-prompt（prompt 拼装 + 快慢通道判定）
 
@@ -508,7 +522,7 @@
 | `test_state_endpoint` | 功能正确 | `GET /api/state` → `CurrentState` JSON，枚举字段为 `.value` 字符串（`emotion=neutral`、`energy_state=okay`） |
 | `test_chat_endpoint` | 功能正确 | `POST /api/chat` → `{event_id}`；bus 收一条 `USER_MESSAGE`（source EXTERNAL、`correlation_id == id`） |
 | `test_memories_endpoint` | 功能正确 | `GET /api/memories?tag=&type=` → `Memory[]`；`type` query 转 `MemoryType` 枚举传入 facade |
-| `test_observe_endpoint` | 功能正确 | `POST /api/observe` → `{event_id}`；bus 收 `OBSERVATION_STATE`（content `{presence}`）、`last_presence` 更新 |
+| `test_observe_endpoint` | 功能正确 | `POST /api/observe`（`{presence, window_title}`）→ `{event_id}`；bus 收 `OBSERVATION_STATE`（content `{presence, window_title}`）、`last_presence`/`last_window_title` 更新 |
 | `test_export_endpoint` | 功能正确 | `POST /api/export` `json`/`md` 透传 `memory.export` 结果 |
 | `test_export_bogus_raises` | 边界鲁棒 | `format=bogus` → Facade 抛 `ValueError`（端点不吞，透出为 500） |
 | `test_tick_loop_emits_four_clock_ticks` | 功能正确 | 跑一个循环 → 4 条 `CLOCK_TICK`，`tick_type` 覆盖四类、每条 `source is INTERNAL`（系统定时器非外部输入） |
@@ -522,7 +536,7 @@
 | `test_main_propagates_serve_failure` | 功能正确 | fake `server.serve()` 抛 `RuntimeError`（端口被占）→ `main()` 重抛 `RuntimeError`（非零退出，不静默吞） |
 | `test_main_propagates_tick_failure` | 功能正确 | fake `_tick_loop` 抛 `RuntimeError` + 阻塞 serve/bus → `main()` 重抛 `RuntimeError`（tick 异常传播，不再静默丢周期事件） |
 
-**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）；`test_supervise_bus_breaks_on_flapping` / `test_main_propagates_serve_failure` / `test_main_propagates_tick_failure` 于第三轮 review 追加（恢复信号改连续成功阈值防抖动假自愈 + main 竞速传播所有先完成者）；`test_load_ask_reads_ask_file` / `test_load_ask_missing_file_fails` 于「主动提问段按需注入」阶段追加（`_load_ask` 读 ask.md / 缺失 fail-fast）。
+**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）；`test_supervise_bus_breaks_on_flapping` / `test_main_propagates_serve_failure` / `test_main_propagates_tick_failure` 于第三轮 review 追加（恢复信号改连续成功阈值防抖动假自愈 + main 竞速传播所有先完成者）；`test_load_ask_reads_ask_file` / `test_load_ask_missing_file_fails` 于「主动提问段按需注入」阶段追加（`_load_ask` 读 ask.md / 缺失 fail-fast）。`test_observe_endpoint` 于「活动填实（观察填实）」轮改为收可选 `window_title`（`_ObservePayload.window_title`、`OBSERVATION_STATE` content 加 `window_title`、`app.last_window_title` 落组合根）。
 
 ## frontend-sse（SSE 数据流：useSSE + dispatchEvent 分发表）
 
@@ -551,7 +565,7 @@
 |---|---|---|
 | `postChat > POST /api/chat` | 功能正确 | 请求 URL/method、body `{message}`、`Content-Type: application/json`、解析 `{event_id}` |
 | `getState > GET /api/state` | 功能正确 | 请求 URL、解析 `CurrentState` 直返 |
-| `postObserve > POST /api/observe` | 功能正确 | 请求 URL/method、body `{presence}`、解析 `{event_id}` |
+| `postObserve > POST /api/observe` | 功能正确 | 请求 URL/method、body `{presence, window_title}`、解析 `{event_id}` |
 | `非 2xx 读 body.detail` | 边界鲁棒 | mock body `{"detail":"校验失败"}` → `throw Error`（message 含 detail） |
 | `非 2xx 无 detail 兜底` | 边界鲁棒 | mock body 无 detail/error → `JSON.stringify(body)` 非空 message |
 | `非 2xx detail 空串兜底` | 边界鲁棒 | mock body `{"detail":""}` → 兜底 `HTTP status`（防空 message 被 UI `if(sendError)` 误判） |
@@ -568,7 +582,7 @@
 | `uploadFile > POST /api/upload FormData` | 功能正确 | `POST /api/upload` body 为 `FormData`（含 `file` 字段）、不设 `Content-Type`（浏览器自动 multipart 边界）、解析 `{event_id, filename, path}` |
 | `getMaterials > GET /api/materials` | 功能正确 | 请求 URL、解析 `string[]` 直返 |
 
-**功能阶段**：frontend 05-client 实现时编写（mock `fetch` 断言端点/方法/请求体键 + 错误契约；验证管道正确——键零映射、错误上抛，不验证视觉）；`非 2xx detail 空串兜底` 于本轮 review 追加（Finding B：空串 detail 致 `Error.message=""` 被 UI 误判为无错误）；六个新端点（`getDesires`/`getActivity`/`getMemories`/`getEval`/`getTokens`/`getEventsLog`）于前端面板落地轮追加（快照/溯源端点 query 拼装 + 解析）；`getNarrative` / `exportMemories` / `uploadFile` / `getMaterials` 于「喂资料/上传课本」轮追加（自我叙事快照 + 记忆导出裸文本 + 上传 FormData + 资料清单）。
+**功能阶段**：frontend 05-client 实现时编写（mock `fetch` 断言端点/方法/请求体键 + 错误契约；验证管道正确——键零映射、错误上抛，不验证视觉）；`非 2xx detail 空串兜底` 于本轮 review 追加（Finding B：空串 detail 致 `Error.message=""` 被 UI 误判为无错误）；六个新端点（`getDesires`/`getActivity`/`getMemories`/`getEval`/`getTokens`/`getEventsLog`）于前端面板落地轮追加（快照/溯源端点 query 拼装 + 解析）；`getNarrative` / `exportMemories` / `uploadFile` / `getMaterials` 于「喂资料/上传课本」轮追加（自我叙事快照 + 记忆导出裸文本 + 上传 FormData + 资料清单）。`postObserve` 于「活动填实（观察填实）」轮改为两参 `postObserve(presence, windowTitle)`（body 加 `window_title`）。
 
 ## frontend-stores（Zustand stores：chatStore + innerLifeStore + eventStore + 四个快照 store + settingsStore）
 
@@ -677,12 +691,12 @@
 |---|---|---|
 | `classifyPresence > 键盘/鼠标任一活跃 → online` | 功能正确 | `(true,false)`/`(false,true)`/`(true,true)` 均 `online`；`(true,true,"编辑器")` 仍 `online`（活跃优先于窗口标题） |
 | `classifyPresence > 无输入+标题 → busy；全无 → away` | 功能正确 | `(false,false,"编辑器")` → `busy`；`(false,false,"")` → `away`（镜像后端 14-activity observe.py 规则） |
-| `usePresence > 首次挂载必报一次（away）` | 功能正确 | 挂载即 `postObserve("away")` 恰 1 次（`lastPresence=null` 首采样必报，对齐后端初始 `last_presence="away"`） |
-| `usePresence > 键盘活动 → 下次采样报 online` | 功能正确 | `keyDown` 后 30s 采样点 `postObserve("online")`（活动 20s 前，< 30s 活跃窗口） |
-| `usePresence > 鼠标活动 → 下次采样报 online` | 功能正确 | `mouseMove` 后 30s 采样点 `postObserve("online")` |
+| `usePresence > 首次挂载必报一次（away）` | 功能正确 | 挂载即 `postObserve("away", "")` 恰 1 次（首采样必报，window_title 采 `document.title`，jsdom 默认 `""`） |
+| `usePresence > 键盘活动 → 下次采样报 online` | 功能正确 | `keyDown` 后 30s 采样点 `postObserve("online", "")`（活动 20s 前，< 30s 活跃窗口） |
+| `usePresence > 鼠标活动 → 下次采样报 online` | 功能正确 | `mouseMove` 后 30s 采样点 `postObserve("online", "")` |
 | `usePresence > presence 不变 → 不再上报` | 边界鲁棒 | 无输入 30s 后 `postObserve` 仍 1 次（仅挂载那次 away，不重复上报） |
 
-**功能阶段**：frontend usePresence（README §2）实现时编写（mock `postObserve` + fake timers + `renderHook`；验证管道正确——采集→判定→上报的节奏与去重，fetch 细节归 frontend-client；窗口标题核心先行恒传 `""`，故 hook 不测 busy 分支，busy 由 `classifyPresence` 纯函数覆盖）。
+**功能阶段**：frontend usePresence（README §2）实现时编写（mock `postObserve` + fake timers + `renderHook`；验证管道正确——采集→判定→上报的节奏与去重，fetch 细节归 frontend-client；窗口标题核心先行恒传 `""`，故 hook 不测 busy 分支，busy 由 `classifyPresence` 纯函数覆盖）。`usePresence` 于「活动填实（观察填实）」轮改为采样 `document.title` 并上报 `postObserve(presence, windowTitle)`（jsdom `document.title` 默认 `""`，故断言第二参为 `""`）；真正的「前台应用窗口标题」留到 src-tauri 落地换源。
 
 ## frontend-side-panel（布局：SidePanel 标签页）
 

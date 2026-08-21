@@ -91,6 +91,7 @@ class _App:
     # 上次搭话时间戳（18-api 维护，供 should_initiate_chat）
     last_chat_at: float = 0.0
     last_presence: str = "away"    # 最近观察状态（online/away/busy）
+    last_window_title: str = ""    # 最近窗口标题（document.title，观察活动回带）
 
 
 def _root_event(
@@ -328,6 +329,7 @@ class _ExportPayload(BaseModel):
 
 class _ObservePayload(BaseModel):
     presence: Literal["online", "away", "busy"]
+    window_title: str = ""
 
 
 def build_app(app: _App) -> FastAPI:
@@ -413,7 +415,11 @@ def build_app(app: _App) -> FastAPI:
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:
         presence = payload.presence
         app.last_presence = presence
-        event = _root_event(EventType.OBSERVATION_STATE, {"presence": presence})
+        app.last_window_title = payload.window_title
+        event = _root_event(
+            EventType.OBSERVATION_STATE,
+            {"presence": presence, "window_title": payload.window_title},
+        )
         await app.bus.publish(event)
         return {"event_id": event.id}
 
@@ -475,20 +481,30 @@ async def build_app_context(config: Config) -> _App:
     activity_store = ActivityStore(db)
     material_store = MaterialStore(db)
 
-    # 循环依赖解环：_get_state 引用可变容器，运行时才求值
+    # 循环依赖解环：_get_state/_reflect/_get_observation 引用可变容器，运行时才求值
     state_holder: list[Callable[[], Awaitable[CurrentState]]] = []
+    reflect_holder: list[Callable[[str | None], Awaitable[str | None]]] = []
+    observation_holder: list[Callable[[], Awaitable[dict[str, str]]]] = []
 
     async def _get_state() -> CurrentState:
         return await state_holder[0]()
 
+    async def _reflect(correlation_id: str | None) -> str | None:
+        return await reflect_holder[0](correlation_id)
+
+    async def _get_observation() -> dict[str, str]:
+        return await observation_holder[0]()
+
     activity = ActivityFacade(
         activity_store, material_store, bus, llm, evaluator, tools, desire,
-        _get_state, config.activity, config.exploration,
+        _get_state, _reflect, _get_observation, config.activity,
+        config.exploration,
     )
     inner_life = InnerLifeFacade(
         inner_life_store, activity, desire, memory, bus, llm, evaluator, config,
     )
     state_holder.append(inner_life.get_state)
+    reflect_holder.append(inner_life.reflect)
 
     await _seed_inner_life(inner_life_store)
     await _seed_desire(desire_store)
@@ -504,6 +520,14 @@ async def build_app_context(config: Config) -> _App:
         bus=bus, inner_life=inner_life, desire=desire, memory=memory,
         activity=activity, expression=expression, evaluator=evaluator, config=config,
     )
+
+    async def _read_observation() -> dict[str, str]:
+        return {
+            "presence": app.last_presence,
+            "window_title": app.last_window_title,
+        }
+
+    observation_holder.append(_read_observation)
     _subscribe(app)
     return app
 

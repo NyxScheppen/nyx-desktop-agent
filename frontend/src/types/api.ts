@@ -187,6 +187,7 @@ export type ActivityType =
 export type ActivityStatus =
   | "pending"
   | "running"
+  | "paused"
   | "abandoned"
   | "completed"
   | "incomplete";

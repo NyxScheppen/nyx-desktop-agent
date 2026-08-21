@@ -25,6 +25,7 @@ from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
+from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, CurrentState, Event, ShortTermDesire
 
@@ -44,13 +45,33 @@ def _elapsed_hours(now: float) -> float:
 
 
 def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | None:
-    """Goal 完成判定（纯函数）。
+    """Goal 完成判定（纯函数，C3 精确版）。
 
-    MVP：goal 非 None 且 result 非空 → True；goal None → None。
+    goal None → None；否则按 action 判「本次是否完成一个单位」：
+    read → result.completed（读完整本）；write → 有 title+content；
+    observe → 有 presence。goal None 的欲望由 desire 层按单次 goal_met 满足。
     """
     if goal is None:
         return None
-    return bool(result)
+    action = goal.get("action")
+    if action == "read":
+        return bool(result.get("completed"))
+    if action == "write":
+        return bool(result.get("title") and result.get("content"))
+    if action == "observe":
+        return bool(result.get("presence"))
+    return False
+
+
+def _sanitize_filename(name: str) -> str:
+    """把创作标题清洗成安全文件名（去路径分隔符/控制字符，空则回退 untitled）。
+
+    对称读书读 workspace：创作落盘进 workspace/creations/<safe>.md。
+    """
+    cleaned = "".join(
+        c for c in name if c not in '\\/:*?"<>|' and c.isprintable()
+    ).strip()
+    return cleaned or "untitled"
 
 
 def _empty_progress() -> dict[str, Any]:
@@ -106,6 +127,8 @@ class ActivityFacade:
         tools: ToolRegistry,
         desire: DesireFacade,
         get_state: Callable[[], Awaitable[CurrentState]],
+        reflect: Callable[[str | None], Awaitable[str | None]],
+        get_observation: Callable[[], Awaitable[dict[str, str]]],
         config: ActivityConfig,
         exploration_config: ExplorationConfig,
     ) -> None:
@@ -116,6 +139,8 @@ class ActivityFacade:
         self._evaluator = evaluator
         self._desire = desire
         self._get_state = get_state
+        self._reflect = reflect
+        self._get_observation = get_observation
         self._config = config
         self._exploration = Exploration(
             llm, evaluator, tools, exploration_config
@@ -232,8 +257,8 @@ class ActivityFacade:
 
     async def interrupt(self, activity_id: str, by_event: EventType) -> None:
         """抢占即废弃：校验目标 RUNNING → cancel 执行 task 并 await 其彻底结束
-        → 重读守卫（窗口内已自行完成/失败则不覆盖）→ 置 ABANDONED 落库
-        + 发布 activity_interrupted。
+        → 重读守卫（窗口内已自行完成/失败则不覆盖）→ 置终态落库
+        （读书 PAUSED 可续读，其余 ABANDONED）+ 发布 activity_interrupted。
 
         执行中的 result 尚未写入，故仅落终态（不持久化部分进度）。
         """
@@ -250,7 +275,13 @@ class ActivityFacade:
         activity = await self._store.get(activity_id)   # 重读：已终态则不动
         if activity is None or activity.status is not ActivityStatus.RUNNING:
             return
-        activity.status = ActivityStatus.ABANDONED
+        # 读书被打断置 PAUSED（material 层 read_chars 已 advance，next_readable
+        # 会从断点续读）；其余活动抢占即废弃，仍置 ABANDONED。
+        activity.status = (
+            ActivityStatus.PAUSED
+            if activity.type is ActivityType.READING
+            else ActivityStatus.ABANDONED
+        )
         activity.ended_at = time.time()
         await self._store.update(activity)
         await self._bus.publish(
@@ -321,7 +352,15 @@ class ActivityFacade:
             if activity is None:
                 activity = self._default_activity(state)
             if activity.type is ActivityType.READING:
-                material = await self._material_store.next_readable()
+                # 先按 goal.topic 选料（C2），命中读那本；否则最近未读完；
+                # 再否则转自由探索（下方 else 分支）。绝不凭空编造。
+                goal = cast(dict[str, Any] | None, activity.progress.get("goal"))
+                topic = goal.get("topic") if goal is not None else None
+                material = None
+                if isinstance(topic, str) and topic:
+                    material = await self._material_store.find_by_topic(topic)
+                if material is None:
+                    material = await self._material_store.next_readable()
                 if material is not None:
                     # 读最近未读完的那本，从它的进度续读（绝不编造）
                     activity.progress["source"] = material.path
@@ -385,22 +424,34 @@ class ActivityFacade:
                 raise ValueError("读书活动缺 source：已禁止凭空编造")
             return await self._run_reading_source(activity, str(source))
         if t is ActivityType.CREATION:
-            return await self._run_llm_activity(activity, "creation")
+            result = await self._run_llm_activity(activity, "creation")
+            title = str(result["title"])
+            path = f"creations/{_sanitize_filename(title)}.md"
+            written = await file_io("write", path, str(result["content"]))
+            result["path"] = written["path"]
+            return result
         if t is ActivityType.IDLE_REFLECTION:
-            await self._bus.publish(
-                internal_event(
-                    EventType.REFLECTION,
-                    {"activity_id": activity.id},
-                    _correlation_id(activity),
-                )
-            )
-            return {}
+            summary = await self._reflect(_correlation_id(activity))
+            return {"summary": summary}
         if t is ActivityType.FREE_EXPLORATION:
             return await self._exploration.run(
                 seed=str(activity.progress.get("description") or activity.id),
                 correlation_id=_correlation_id(activity),
             )
-        if t in (ActivityType.OBSERVE_USER, ActivityType.REST):
+        if t is ActivityType.OBSERVE_USER:
+            obs = await self._get_observation()
+            presence = obs.get("presence", "")
+            window_title = obs.get("window_title", "")
+            if window_title:
+                summary = f"用户（{presence}）正在浏览 {window_title}"
+            else:
+                summary = f"用户（{presence}）"
+            return {
+                "presence": presence,
+                "window_title": window_title,
+                "summary": summary,
+            }
+        if t is ActivityType.REST:
             return {}
         raise ValueError(f"未知活动类型 {t!r}")
 
@@ -408,24 +459,83 @@ class ActivityFacade:
         self, activity: Activity, source: str
     ) -> dict[str, Any]:
         """分块读真实文件：切 [read_chars, read_chars+6000) 一块喂 LLM 产 {book, note}，
-        推进书库进度并带回 read_chars/total_chars（绝不凭空编造）。"""
+        推进书库进度并把 note 追加进片段；读到最后一块时聚合全部片段 → 完整笔记
+        落盘 + completed=True（一本=一次单位）。绝不凭空编造。"""
         content = await asyncio.to_thread(
             Path(source).read_text, encoding="utf-8", errors="replace"
         )
         read_chars = int(activity.progress.get("read_chars", 0))
         chunk = content[read_chars : read_chars + _READ_CONTEXT_CHARS]
+        filename = str(activity.progress.get("filename") or Path(source).name)
         if chunk == "":
-            # 已读到末尾（或文件比注册时短）：无新内容，不调用 LLM 编造
-            await self._material_store.advance(source, len(content), time.time())
-            return {"read_chars": len(content), "total_chars": len(content)}
+            # 已读到末尾（或文件比注册时短）：无新块可读，聚合已有片段（不编造）
+            return await self._finalize_reading(
+                activity, source, filename, len(content)
+            )
         result = await self._run_llm_activity(
             activity, "reading", extra_context=chunk
         )
         new_read_chars = read_chars + len(chunk)
+        await self._material_store.append_fragment(
+            source, str(result.get("note", "")), time.time()
+        )
         await self._material_store.advance(source, new_read_chars, time.time())
         result["read_chars"] = new_read_chars
         result["total_chars"] = len(content)
+        if new_read_chars >= len(content):
+            # 读到最后一块：聚合全部片段（含本块）→ 完整笔记落盘 + completed
+            full = await self._finalize_reading(
+                activity, source, filename, len(content)
+            )
+            full["read_chars"] = new_read_chars
+            full["total_chars"] = len(content)
+            return full
         return result
+
+    async def _finalize_reading(
+        self, activity: Activity, source: str, filename: str, content_len: int
+    ) -> dict[str, Any]:
+        """读完整本书：聚合 note_fragments → 完整笔记落盘 workspace/notes/<safe>.md。"""
+        fragments = await self._material_store.get_fragments(source)
+        full_note = await self._aggregate_note(activity, filename, fragments)
+        written = await file_io(
+            "write", f"notes/{_sanitize_filename(filename)}.md", full_note
+        )
+        return {
+            "book": filename,
+            "note": full_note,
+            "path": written["path"],
+            "completed": True,
+            "read_chars": content_len,
+            "total_chars": content_len,
+        }
+
+    async def _aggregate_note(
+        self, activity: Activity, filename: str, fragments: list[str]
+    ) -> str:
+        """把各块片段笔记聚合成一篇完整读书笔记（1 次 LLM，output_type=note）。"""
+        joined = "\n---\n".join(fragments) if fragments else "（无片段）"
+        output = await self._llm.complete(
+            [
+                {"role": "system", "content": _AGGREGATE_SYSTEM},
+                {
+                    "role": "user",
+                    "content": f"书名：{filename}\n各片段笔记：\n{joined}",
+                },
+            ],
+            module="activity",
+            output_type="note",
+            correlation_id=_correlation_id(activity),
+            json_mode=True,
+        )
+        await self._evaluator.evaluate(output)
+        data: Any = json.loads(output.content)
+        if not isinstance(data, dict):
+            raise ValueError(f"聚合笔记 JSON 应是对象，得到 {type(data).__name__}")
+        note = cast(dict[str, Any], data).get("note")
+        if not isinstance(note, str) or not note:
+            raise ValueError("聚合笔记 JSON 缺 note 或非空字符串")
+        return note
 
     async def _run_llm_activity(
         self,
@@ -453,4 +563,10 @@ class ActivityFacade:
 _ACTIVITY_SYSTEM = (
     "你是尼克斯。按 JSON 输出活动结果，键随活动类型："
     "读书 {book, note}、创作 {title, content}。"
+)
+
+
+_AGGREGATE_SYSTEM = (
+    "你是尼克斯。把读书各片段笔记聚合成一篇完整读书笔记，"
+    "只输出 JSON，键：note（完整笔记，非空字符串）。"
 )

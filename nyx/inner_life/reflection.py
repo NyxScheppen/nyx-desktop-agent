@@ -254,7 +254,7 @@ class Reflection:
         self._evaluator = evaluator
         self._config = config
 
-    async def run(self, correlation_id: str | None = None) -> None:
+    async def run(self, correlation_id: str | None = None) -> str | None:
         now = time.time()
         # 1. 收集输入
         recent = (await self._memory_facade.list_memories())[:_RECENT_MEMORY_LIMIT]
@@ -290,7 +290,7 @@ class Reflection:
             _logger.exception(
                 "反思 JSON 解析失败 correlation_id=%s", correlation_id
             )
-            return
+            return None
 
         # 3. 回写慢变量（story/becoming 去重：与已有片段实质重复则跳过，不重复追加）
         new_story = parsed["story"]
@@ -321,3 +321,5 @@ class Reflection:
         remaining = self._config.long_term_capacity - len(desire_state.long_term)
         for candidate in parsed["long_term_desires"][:max(0, remaining)]:
             await self._desire_facade.add_long_term(_to_long_term(candidate, now))
+
+        return parsed["story"]

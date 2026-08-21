@@ -6,7 +6,10 @@ from nyx.db import Database
 from nyx.enums import DesireStatus, DesireType, GoalAction
 from nyx.types import DesireValue, Goal, LongTermDesire, ShortTermDesire
 
-_STD_COLS = "id, created_at, type, strength, description, goal, retry_count, status"
+_STD_COLS = (
+    "id, created_at, type, strength, description, goal, retry_count, "
+    "status, goal_progress"
+)
 _VALUE_COLS = "type, value, expression_weight, suppression_threshold, updated_at"
 _LT_COLS = (
     "id, created_at, type, name, description, strength, progress, "
@@ -31,7 +34,7 @@ class DesireStore:
         async with self._db.lock:
             await self._db.conn.execute(
                 f"INSERT INTO short_term_desire ({_STD_COLS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _std_row(desire),
             )
             await self._db.conn.commit()
@@ -68,11 +71,11 @@ class DesireStore:
         async with self._db.lock:
             await self._db.conn.execute(
                 "UPDATE short_term_desire SET type = ?, strength = ?, description = ?, "
-                "goal = ?, retry_count = ?, status = ? WHERE id = ?",
+                "goal = ?, retry_count = ?, status = ?, goal_progress = ? WHERE id = ?",
                 (
                     desire.type.value, desire.strength, desire.description,
                     _goal_json(desire.goal), desire.retry_count, desire.status.value,
-                    desire.id,
+                    desire.goal_progress, desire.id,
                 ),
             )
             await self._db.conn.commit()
@@ -147,10 +150,10 @@ class DesireStore:
 
 def _std_row(
     d: ShortTermDesire
-) -> tuple[str, float, str, float, str, str | None, int, str]:
+) -> tuple[str, float, str, float, str, str | None, int, str, int]:
     return (
         d.id, d.created_at, d.type.value, d.strength, d.description,
-        _goal_json(d.goal), d.retry_count, d.status.value,
+        _goal_json(d.goal), d.retry_count, d.status.value, d.goal_progress,
     )
 
 
@@ -170,6 +173,7 @@ def _row_to_std(row: aiosqlite.Row) -> ShortTermDesire:
         goal=_parse_goal(row["goal"]),
         retry_count=row["retry_count"],
         status=DesireStatus(row["status"]),
+        goal_progress=row["goal_progress"],
     )
 
 

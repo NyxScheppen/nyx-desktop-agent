@@ -807,3 +807,79 @@ async def test_remember_activity_contradiction() -> None:
         assert "old-1" in reflection.content["summary"]
     finally:
         await database.conn.close()
+
+
+async def test_remember_activity_observe_sediments_profile() -> None:
+    """观察活动 result 带 presence → 沉淀一条 tag='user' 的长期画像记忆（无 LLM）。"""
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    try:
+        async with _running(bus):
+            await facade.remember_activity(
+                _activity_event(
+                    "observe_user",
+                    {"presence": "online", "window_title": "编辑器",
+                     "summary": "用户（online）正在浏览 编辑器"},
+                )
+            )
+        memories = await facade.list_memories()
+        assert len(memories) == 1
+        m = memories[0]
+        assert m.type is MemoryType.LONG_TERM
+        assert m.tag == "user"
+        assert m.aspect == ["presence", "window_title"]
+        assert llm.calls == []
+    finally:
+        await database.conn.close()
+
+
+async def test_remember_activity_observe_skips_unchanged() -> None:
+    """观察「变化才沉淀」：同 presence/window_title 快照重复上报不新增画像记忆。"""
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    try:
+        obs = _activity_event(
+            "observe_user",
+            {"presence": "online", "window_title": "编辑器", "summary": "s"},
+        )
+        async with _running(bus):
+            await facade.remember_activity(obs)
+        async with _running(bus):
+            await facade.remember_activity(obs)
+        assert len(await facade.list_memories()) == 1
+    finally:
+        await database.conn.close()
+
+
+# ---- remember_user_profile ----
+
+async def test_remember_user_profile_fields() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.remember_user_profile(
+                "用户（online）正在浏览 骑士团史.md",
+                "浏览骑士团史",
+                ["presence", "window_title"],
+                "corr-1",
+            )
+        memories = await facade.list_memories()
+        assert len(memories) == 1
+        m = memories[0]
+        assert (m.type, m.tag, m.aspect, m.summary) == (
+            MemoryType.LONG_TERM, "user", ["presence", "window_title"], "浏览骑士团史",
+        )
+        assert llm.calls == []   # 无 LLM（确定性落库）
+        [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
+        assert created.content["memory_id"] == m.id
+        assert created.correlation_id == "corr-1"
+    finally:
+        await database.conn.close()

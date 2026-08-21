@@ -15,11 +15,14 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import (
+    _SUMMARY_MAX_CHARS,
     MemoryFacade,
+    _activity_memory_fields,
     _build_contradiction_prompt,
     _build_scene_prompt,
     _content_preview,
     _has_negation,
+    _join_list,
     _memory_to_dict,
     _memory_to_markdown,
     _parse_contradiction,
@@ -259,6 +262,49 @@ def test_memory_to_markdown() -> None:
     md = _memory_to_markdown(_mem("m1", None, content="内容A"))
     assert "旧" in md       # summary
     assert "内容A" in md    # content
+
+
+# ---- 活动记忆纯函数 ----
+
+
+def test_join_list() -> None:
+    assert _join_list("x") == "x"                     # str 原样
+    assert _join_list(["a", "b"]) == "a\nb"           # list 换行拼接
+    assert _join_list([]) == ""                       # 空 list
+    assert _join_list(None) == ""                     # None
+    assert _join_list(123) == ""                      # 非 str/list
+
+
+def test_activity_memory_fields_reading() -> None:
+    result = {"book": "某书", "note": "读后感", "read_chars": 100, "total_chars": 200}
+    assert _activity_memory_fields("reading", result) == ("读后感", "某书", "reading")
+
+
+def test_activity_memory_fields_creation() -> None:
+    result = {"title": "标题", "content": "正文"}
+    assert _activity_memory_fields("creation", result) == ("正文", "标题", "creation")
+
+
+def test_activity_memory_fields_exploration() -> None:
+    result = {"findings": ["f1", "f2"], "notes": ["n1", "n2"]}
+    assert _activity_memory_fields("free_exploration", result) == (
+        "n1\nn2", "f1\nf2", "free_exploration",
+    )
+
+
+def test_activity_memory_fields_skip() -> None:
+    assert _activity_memory_fields("rest", {}) is None
+    assert _activity_memory_fields("reading", {}) is None
+    assert _activity_memory_fields("reading", {"book": "", "note": ""}) is None
+    assert _activity_memory_fields(None, {"book": "x", "note": "y"}) is None
+    assert _activity_memory_fields("reading", "not-dict") is None
+
+
+def test_activity_memory_fields_summary_truncated() -> None:
+    result = {"book": "x" * 100, "note": "y"}
+    mapped = _activity_memory_fields("reading", result)
+    assert mapped is not None
+    assert mapped[1] == "x" * _SUMMARY_MAX_CHARS + "…"
 
 
 # ---- create_scene_memory ----
@@ -658,5 +704,106 @@ async def test_export_unknown() -> None:
     try:
         with pytest.raises(ValueError):
             await facade.export("csv")
+    finally:
+        await database.conn.close()
+
+
+# ---- remember_activity ----
+
+def _activity_event(type_: str, result: dict[str, object]) -> Event:
+    return Event(
+        id="evt-1",
+        timestamp=1000.0,
+        source=Source.INTERNAL,
+        type=EventType.ACTIVITY_END,
+        content={"type": type_, "result": result, "activity_id": "act-1"},
+        correlation_id="corr-1",
+    )
+
+
+async def test_remember_activity_reading() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.remember_activity(
+                _activity_event("reading", {"book": "某书", "note": "读后感"})
+            )
+        memories = await facade.list_memories()
+        assert len(memories) == 1
+        assert memories[0].content == "读后感"
+        assert memories[0].summary == "某书"
+        assert memories[0].tag == "reading"
+        assert memories[0].type is MemoryType.SHORT_TERM
+        assert llm.calls == []   # 无 LLM 调用（确定性落库）
+        [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
+        assert created.content["memory_id"] == memories[0].id
+    finally:
+        await database.conn.close()
+
+
+async def test_remember_activity_creation_and_exploration() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    try:
+        async with _running(bus):
+            await facade.remember_activity(
+                _activity_event("creation", {"title": "标题", "content": "正文"})
+            )
+            await facade.remember_activity(
+                _activity_event(
+                    "free_exploration",
+                    {"findings": ["f1", "f2"], "notes": ["n1", "n2"]},
+                )
+            )
+        by_tag = {m.tag: m for m in await facade.list_memories()}
+        assert by_tag["creation"].content == "正文"
+        assert by_tag["creation"].summary == "标题"
+        assert by_tag["free_exploration"].content == "n1\nn2"
+        assert by_tag["free_exploration"].summary == "f1\nf2"
+        assert llm.calls == []
+    finally:
+        await database.conn.close()
+
+
+async def test_remember_activity_skips_empty_or_other_type() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.remember_activity(_activity_event("rest", {}))
+            await facade.remember_activity(_activity_event("reading", {}))
+            await facade.remember_activity(
+                _activity_event("observe_user", {"note": "x"})
+            )
+        assert await facade.list_memories() == []
+        assert [e for e in events if e.type is EventType.MEMORY_CREATED] == []
+    finally:
+        await database.conn.close()
+
+
+async def test_remember_activity_contradiction() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [1.0, 0.0]))
+    llm = _FakeLlm({"contradiction": json.dumps({"conflicts_with": "old-1"})})
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator, embed=_embed([1.0, 0.0]))
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.remember_activity(
+                _activity_event("reading", {"book": "某书", "note": "读后感"})
+            )
+        assert llm.calls == ["contradiction"]   # 参与矛盾判断（无场景构建）
+        [reflection] = [e for e in events if e.type is EventType.REFLECTION]
+        assert "old-1" in reflection.content["summary"]
     finally:
         await database.conn.close()

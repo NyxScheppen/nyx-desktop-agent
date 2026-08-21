@@ -218,6 +218,7 @@ class ActivityFacade:
                 EventType.ACTIVITY_END,
                 {
                     "activity_id": activity.id,
+                    "type": activity.type.value,
                     "desire_id": activity.progress.get("desire_id"),
                     "goal_met": _goal_met(goal, result),
                     "energy_delta": getattr(

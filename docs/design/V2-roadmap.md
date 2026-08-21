@@ -20,7 +20,6 @@
 | 活动恢复/续做 | design §3.3 | 打断后同一日程块内恢复，否则未完成可续 |
 | 屏幕视觉（截屏+视觉模型） | design §8.5 | `classify_presence` 扩展视觉输入（现只覆盖键盘/鼠标/窗口三输入） |
 | `goal.count` 精确计数 | design §7.4 | goal 达成按产出单位数精确判定（现只判「有无产出」） |
-| 活动记忆（活动结果写 memory） | design §8.2 / §8.6 | 读书总结笔记 / 探索日记写入 memory 表，`ACTIVITY_END` 加回 `memory` 消费者 |
 | 发呆 `{summary}` 回读 reflect 产出 | — | `IDLE_REFLECTION` 的 result 带回反思 summary |
 
 ## 欲望（desire）

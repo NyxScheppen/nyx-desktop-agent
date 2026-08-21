@@ -15,9 +15,10 @@
 
 ## 验收标准
 
-- [ ] `facade.py` 含 `MemoryFacade` + `decay_freshness` / `_parse_scene` / `_build_scene_prompt` / `_has_negation` / `_content_preview` / `_build_contradiction_prompt` / `_parse_contradiction` / `_memory_to_dict` / `_memory_to_markdown`，与「`memory/facade.py`（完整）」段代码逐字一致
-- [ ] 五个公开方法签名与 tech-ref §5 逐字一致：`create_scene_memory(reply_context: dict[str, str]) -> Memory` / `search(query) -> list[Memory]` / `record_recall(memory_id) -> None` / `list_memories(tag, type) -> list[Memory]` / `export(fmt) -> str`
+- [ ] `facade.py` 含 `MemoryFacade` + `decay_freshness` / `_parse_scene` / `_build_scene_prompt` / `_has_negation` / `_content_preview` / `_build_contradiction_prompt` / `_parse_contradiction` / `_join_list` / `_activity_memory_fields` / `_memory_to_dict` / `_memory_to_markdown`，与「`memory/facade.py`（完整）」段代码逐字一致
+- [ ] 六个公开方法签名与 tech-ref §5 逐字一致：`create_scene_memory(reply_context: dict[str, str]) -> Memory` / `remember_activity(event: Event) -> None` / `search(query) -> list[Memory]` / `record_recall(memory_id) -> None` / `list_memories(tag, type) -> list[Memory]` / `export(fmt) -> str`
 - [ ] `create_scene_memory`：LLM 调用 1（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）产出三样 → 入短期（`freshness=1.0`）→ 算 embedding → 建边 → 矛盾检测（门控，可能调用 2）→ 命中矛盾发布 `reflection` → 衰减+淘汰 → 发布 `memory_created` → 返回 `Memory`
+- [ ] `remember_activity(event)`：读 `event.content["type"]`/`["result"]` 确定性映射（reading→note/book、creation→content/title、free_exploration→notes/findings，tag=活动类型值）；读书/创作/探索三类有产出才写，其余（rest/observe_user/idle_reflection、空 result）跳过；走 embed→入短期→建边→门控矛盾检测→淘汰→发布 `memory_created` 同一条管线，**无 LLM 调用**（除门控触发的矛盾判断）
 - [ ] 矛盾检测门控：`embedding=None` 或召回 top-K 候选相似度全低于 `_CONTRADICTION_SIM_THRESHOLD` → **0 次**矛盾 LLM 调用；有候选过阈值 → **1 次**矛盾 LLM 调用（`output_type="contradiction"`），单任务判 `conflicts_with`
 - [ ] 两处 LLM 产出后紧跟 `await evaluator.evaluate(output)`：`create_scene_memory`（`output_type="scene_memory"`）与 `_detect_contradiction`（`output_type="contradiction"`，仅门控触发时）
 - [ ] 三杠杆落地：候选判据用 `summary + content 前 N 字`（非只 summary）；召回 `_RECALL_TOP_K=5`；新记忆含否定/转折词时矛盾 prompt 附「重点核对」提示（`_has_negation` 纯函数）
@@ -42,6 +43,10 @@
   2. `_parse_scene` 纯函数解析校验（结构非法 `ValueError`，错误可溯源）
   3. `Memory(id=uuid4, created_at=now, freshness=1.0, type=SHORT_TERM, ...)`；`embed` 非空则算 `embedding` 存列（持久化，同 07/08 决策）
   4. `store.add` → 一次 `_similar` 全表余弦排序（建边 top-3 与矛盾召回 top-5 共用，避免重复扫描）→ `_build_edges` → `_detect_contradiction`（门控，可能 +1 调用；best-effort，失败 log 后跳过 reflection 不反噬创建）→ 命中矛盾 publish `reflection` → `_decay_and_evict` → publish `memory_created`
+- **`remember_activity` 流程**（design §8.2/§8.6 活动记忆，落地的确定性写入）：
+  1. `_activity_memory_fields(event.content["type"], event.content["result"])` 确定性映射，非读书/创作/探索类型或空 result → `None` 直接 return（不调 LLM、绝不编造）
+  2. `Memory(freshness=1.0, type=SHORT_TERM, tag=活动类型值)`；`embed` 非空则算 `embedding`
+  3. 复用 `store.add` → `_similar` → `_build_edges` → `_detect_contradiction`（门控，可能 +1 调用）→ `_decay_and_evict` → publish `memory_created`——与 `create_scene_memory` 同一条入库管线，只缺开头的 LLM 场景构建
 - **矛盾检测 = 门控 + 独立单任务调用（决策：C 方案，准确率优先，已与用户确认）**：召回候选（embedding 余弦 top-K）做**门控**，判断交给**独立 LLM 调用**——单任务判矛盾，准确率最高，代价是**有条件地 +1 调用**。门控**无损**：矛盾 ⟹ 语义相近（"喜欢猫" vs "讨厌猫"同话题才矛盾），不同话题的旧记忆不可能与新记忆矛盾，所以「相似度过阈值才判断」不损失准确率，只省掉无谓调用。`embedding=None`（未启用向量层）→ 直接跳过
 - **三杠杆（决策：B 方案，不增调用，已与用户确认）**：
   1. **候选判据用全文截断**：`_content_preview` 给 `summary + content 前 60 字`（非只 summary），矛盾常藏细节，判据更实 → 漏报↓
@@ -74,7 +79,7 @@ from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, rank_by_cosine
 from nyx.memory.store import MemoryStore
-from nyx.types import Memory
+from nyx.types import Event, Memory
 
 _SCENE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -177,6 +182,45 @@ def _parse_contradiction(raw: str) -> str | None:
     return conflicts_with
 
 
+def _join_list(value: Any) -> str:
+    """list[str] → 换行拼接；str → 原样；None/空 → 空串。纯函数。"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(str(x) for x in cast(list[object], value))
+    return ""
+
+
+_SUMMARY_MAX_CHARS = 80
+
+
+def _activity_memory_fields(
+    activity_type: object, result: object
+) -> tuple[str, str, str] | None:
+    """活动 result → (content, summary, tag)；非读书/创作/探索或空 result → None。
+
+    不调 LLM：直接取活动真实产出，绝不凭空编造。
+    """
+    if not isinstance(activity_type, str) or not isinstance(result, dict):
+        return None
+    parsed = cast(dict[str, Any], result)
+    if activity_type == "reading":
+        content_key, summary_key = "note", "book"
+    elif activity_type == "creation":
+        content_key, summary_key = "content", "title"
+    elif activity_type == "free_exploration":
+        content_key, summary_key = "notes", "findings"
+    else:
+        return None
+    content = _join_list(parsed.get(content_key))
+    summary = _join_list(parsed.get(summary_key))
+    if not content.strip() or not summary.strip():
+        return None
+    if len(summary) > _SUMMARY_MAX_CHARS:
+        summary = summary[:_SUMMARY_MAX_CHARS] + "…"
+    return content, summary, activity_type
+
+
 def _memory_to_dict(m: Memory) -> dict[str, Any]:
     return {
         "id": m.id,
@@ -276,6 +320,54 @@ class MemoryFacade:
             )
         )
         return memory
+
+    async def remember_activity(self, event: Event) -> None:
+        """活动记忆：把 activity_end.result 落成一条短期记忆（无 LLM）。
+
+        只写读书/创作/探索三类有产出的活动；rest/observe_user/idle_reflection
+        （result 空或类型不匹配）跳过。入库管线与 create_scene_memory 相同
+        （embed → 建边 → 门控矛盾检测 → 淘汰），只缺开头的 LLM 场景构建。
+        """
+        mapped = _activity_memory_fields(
+            event.content.get("type"), event.content.get("result")
+        )
+        if mapped is None:
+            return
+        content, summary, tag = mapped
+        now = time.time()
+
+        memory = Memory(
+            id=str(uuid4()),
+            created_at=now,
+            content=content,
+            tag=tag,
+            summary=summary,
+            freshness=1.0,
+            type=MemoryType.SHORT_TERM,
+            recall_count=0,
+            aspect=[],
+            embedding=None,
+        )
+        if self._embed is not None:
+            memory.embedding = await self._embed(content)
+
+        await self._store.add(memory)
+
+        scored: list[tuple[float, Memory]] | None = None
+        if memory.embedding is not None:
+            scored = await self._similar(memory.embedding, memory.id)
+        await self._build_edges(memory, scored)
+        await self._detect_contradiction(memory, scored, event.correlation_id)
+
+        await self._decay_and_evict(now)
+
+        await self._bus.publish(
+            internal_event(
+                EventType.MEMORY_CREATED,
+                {"memory_id": memory.id},
+                event.correlation_id,
+            )
+        )
 
     async def search(self, query: str) -> list[Memory]:
         return await self._retrieval.search(query)
@@ -419,6 +511,8 @@ class MemoryFacade:
     - [ ] `_parse_contradiction`：`conflicts_with` 字符串 → 该串；`null` → `None`；数字 → `ValueError`；缺 `conflicts_with` 键 → `None`
     - [ ] `_memory_to_dict`：`type` 是 `.value` 字符串、`embedding` 透传
     - [ ] `_memory_to_markdown`：含 `summary` 与 `content`
+    - [ ] `_join_list`：`str` 原样、`list` 换行拼接、空 `list`/`None`/非 str-list → `""`
+    - [ ] `_activity_memory_fields`：reading→`(note, book)`、creation→`(content, title)`、free_exploration→`(notes 拼接, findings 拼接)`；非目标类型/空 result/空内容/类型非 str → `None`；summary 超 80 字截断
   - [ ] **create_scene_memory**：
     - [ ] fake LLM 返回 `{"content","tag","summary"}` → 返回 `Memory` 各字段正确（`content`/`tag`/`summary`、`freshness==1.0`、`type is SHORT_TERM`、`embedding` 已算且 = fake embed(content)）；`evaluator.evaluate` 被调 1 次（收到 `output_type="scene_memory"` 的 `LLMOutput`）
     - [ ] 发布 `memory_created`：`content["memory_id"] == memory.id`、`source is INTERNAL`、`correlation_id == reply_context["correlation_id"]`
@@ -431,6 +525,10 @@ class MemoryFacade:
     - [ ] **建边**：先建一条含 embedding 的记忆，再 create 一条相似 embedding 的记忆 → 新记忆有到旧记忆的 `memory_edge`（`weight > 0`）
     - [ ] **淘汰**：`MemoryConfig(short_term_capacity=1, ...)`，create 第二条 → 旧的那条（freshness 更低）被删，`list_memories()` 只剩新的一条
     - [ ] **衰减回写**：monkeypatch `time.time` 使两条创建间隔 1 天 → 旧记忆的 `freshness` 被衰减（`< 1.0`）
+  - [ ] **remember_activity**：
+    - [ ] reading/creation/free_exploration 三类 mock `activity_end` 事件 → 各写一条 `Memory`（`content`/`summary`/`tag` 正确、`type is SHORT_TERM`）、发布 `memory_created`、**无 LLM 调用**（`llm.calls == []`）
+    - [ ] rest/observe_user/idle_reflection 或空 result → 不写、无 `memory_created`
+    - [ ] 有相似旧记忆 + embed（fake embed 造高相似向量）→ 门控触发 1 次 `contradiction` 调用（参与矛盾判断，无 `scene_memory`）
   - [ ] **search / list_memories**：`search` 委托 fake `MemoryRetrieval`（返回预设 list）；`list_memories(tag, type)` 委托真 store（过滤/排序同 07）
   - [ ] **record_recall**：
     - [ ] 未达 `promote_threshold` → `recall_count` 递增、`type` 仍 `SHORT_TERM`、无 `memory_promoted`

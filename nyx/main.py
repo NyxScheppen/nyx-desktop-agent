@@ -313,6 +313,7 @@ def _subscribe(app: _App) -> None:
     bus.subscribe(EventType.DESIRE_SATISFIED, app.inner_life.apply_event)
     bus.subscribe(EventType.ACTIVITY_END, app.desire.add_value)
     bus.subscribe(EventType.ACTIVITY_END, app.inner_life.apply_event)
+    bus.subscribe(EventType.ACTIVITY_END, app.memory.remember_activity)
     bus.subscribe(EventType.REFLECTION, app.inner_life.apply_event)
     bus.subscribe(EventType.CLOCK_TICK, lambda e: _on_clock_tick(app, e))
 

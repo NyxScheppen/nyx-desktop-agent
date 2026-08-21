@@ -101,7 +101,7 @@ ROUTING = {
     EventType.DESIRE_SATISFIED:    ["inner_life"],
     EventType.DESIRE_EXPIRED:      [],
     EventType.ACTIVITY_START:      [],
-    EventType.ACTIVITY_END:        ["desire", "inner_life"],  # 满足+情感（「记忆」=活动记忆，MVP 留后续，见 §8.2/§8.6）
+    EventType.ACTIVITY_END:        ["desire", "inner_life", "memory"],  # 满足+情感+活动记忆
     EventType.ACTIVITY_INTERRUPTED: [],
     EventType.SPEAK:               [],
     EventType.ASK:                 [],
@@ -367,7 +367,7 @@ goal: { action: read, count: 3, topic: 骑士团 }
 
 "好奇深海鱼 → 搜索 → 下载 → 打开 → 边读边写笔记 → 想到用户聊过 → 翻旧聊天 → 关联 → 日记记一笔"的完整闭环。触发门槛：探索欲峰值 + 精力充足 + 频率上限。
 
-> MVP 只实现「搜索 → 读 → 写笔记」；「翻旧聊天 → 关联 → 日记记一笔」（联想记忆及其写入）归 V2 活动记忆（见 V2-roadmap「活动记忆」）。
+> MVP 只实现「搜索 → 读 → 写笔记」+ 活动结果落记忆（不翻旧聊天）；「翻旧聊天 → 关联」（联想记忆）仍留 V2。
 
 ---
 

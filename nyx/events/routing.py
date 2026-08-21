@@ -1,7 +1,7 @@
 from nyx.enums import EventType, TickType
 
 # ROUTING：EventType → 内部消费者模块名（空 = 仅广播前端，无内部消费者）。
-# 值取 {"expression", "inner_life", "desire", "activity"}。
+# 值取 {"expression", "inner_life", "desire", "activity", "memory"}。
 # CLOCK_TICK 不在此表（走 TICK_ROUTING）。
 ROUTING: dict[EventType, list[str]] = {
     EventType.USER_MESSAGE:        ["expression"],
@@ -12,7 +12,7 @@ ROUTING: dict[EventType, list[str]] = {
     EventType.DESIRE_SATISFIED:    ["inner_life"],
     EventType.DESIRE_EXPIRED:      [],
     EventType.ACTIVITY_START:      [],
-    EventType.ACTIVITY_END:        ["desire", "inner_life"],  # 满足+情感
+    EventType.ACTIVITY_END:        ["desire", "inner_life", "memory"],  # 满足+情感+记忆
     EventType.ACTIVITY_INTERRUPTED: [],
     EventType.SPEAK:               [],
     EventType.ASK:                 [],

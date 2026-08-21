@@ -1,7 +1,7 @@
 from nyx.enums import EventType, TickType
 from nyx.events.routing import ROUTING, TICK_ROUTING
 
-_VALID_MODULES = {"expression", "inner_life", "desire", "activity"}
+_VALID_MODULES = {"expression", "inner_life", "desire", "activity", "memory"}
 
 
 def test_routing_keys_are_all_event_types_except_clock_tick() -> None:

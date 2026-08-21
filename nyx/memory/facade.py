@@ -12,7 +12,7 @@ from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, rank_by_cosine
 from nyx.memory.store import MemoryStore
-from nyx.types import Memory
+from nyx.types import Event, Memory
 
 _SCENE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -115,6 +115,45 @@ def _parse_contradiction(raw: str) -> str | None:
     return conflicts_with
 
 
+def _join_list(value: Any) -> str:
+    """list[str] → 换行拼接；str → 原样；None/空 → 空串。纯函数。"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(str(x) for x in cast(list[object], value))
+    return ""
+
+
+_SUMMARY_MAX_CHARS = 80
+
+
+def _activity_memory_fields(
+    activity_type: object, result: object
+) -> tuple[str, str, str] | None:
+    """活动 result → (content, summary, tag)；非读书/创作/探索或空 result → None。
+
+    不调 LLM：直接取活动真实产出，绝不凭空编造。
+    """
+    if not isinstance(activity_type, str) or not isinstance(result, dict):
+        return None
+    parsed = cast(dict[str, Any], result)
+    if activity_type == "reading":
+        content_key, summary_key = "note", "book"
+    elif activity_type == "creation":
+        content_key, summary_key = "content", "title"
+    elif activity_type == "free_exploration":
+        content_key, summary_key = "notes", "findings"
+    else:
+        return None
+    content = _join_list(parsed.get(content_key))
+    summary = _join_list(parsed.get(summary_key))
+    if not content.strip() or not summary.strip():
+        return None
+    if len(summary) > _SUMMARY_MAX_CHARS:
+        summary = summary[:_SUMMARY_MAX_CHARS] + "…"
+    return content, summary, activity_type
+
+
 def _memory_to_dict(m: Memory) -> dict[str, Any]:
     return {
         "id": m.id,
@@ -214,6 +253,54 @@ class MemoryFacade:
             )
         )
         return memory
+
+    async def remember_activity(self, event: Event) -> None:
+        """活动记忆：把 activity_end.result 落成一条短期记忆（无 LLM）。
+
+        只写读书/创作/探索三类有产出的活动；rest/observe_user/idle_reflection
+        （result 空或类型不匹配）跳过。入库管线与 create_scene_memory 相同
+        （embed → 建边 → 门控矛盾检测 → 淘汰），只缺开头的 LLM 场景构建。
+        """
+        mapped = _activity_memory_fields(
+            event.content.get("type"), event.content.get("result")
+        )
+        if mapped is None:
+            return
+        content, summary, tag = mapped
+        now = time.time()
+
+        memory = Memory(
+            id=str(uuid4()),
+            created_at=now,
+            content=content,
+            tag=tag,
+            summary=summary,
+            freshness=1.0,
+            type=MemoryType.SHORT_TERM,
+            recall_count=0,
+            aspect=[],
+            embedding=None,
+        )
+        if self._embed is not None:
+            memory.embedding = await self._embed(content)
+
+        await self._store.add(memory)
+
+        scored: list[tuple[float, Memory]] | None = None
+        if memory.embedding is not None:
+            scored = await self._similar(memory.embedding, memory.id)
+        await self._build_edges(memory, scored)
+        await self._detect_contradiction(memory, scored, event.correlation_id)
+
+        await self._decay_and_evict(now)
+
+        await self._bus.publish(
+            internal_event(
+                EventType.MEMORY_CREATED,
+                {"memory_id": memory.id},
+                event.correlation_id,
+            )
+        )
 
     async def search(self, query: str) -> list[Memory]:
         return await self._retrieval.search(query)

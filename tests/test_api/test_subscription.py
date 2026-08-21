@@ -53,6 +53,14 @@ class _FakeExpression:
         self.replied.append((msg, correlation_id))
 
 
+class _FakeMemory:
+    def __init__(self) -> None:
+        self.remembered: list[Event] = []
+
+    async def remember_activity(self, event: Event) -> None:
+        self.remembered.append(event)
+
+
 def _content(event_type: EventType) -> dict[str, str]:
     if event_type is EventType.USER_MESSAGE:
         return {"message": "hi"}
@@ -66,11 +74,12 @@ async def test_subscription_consistency() -> None:
     desire = _FakeDesire()
     activity = _FakeActivity()
     expression = _FakeExpression()
+    memory = _FakeMemory()
     app = _App(
         bus=bus,
         inner_life=cast(InnerLifeFacade, inner_life),
         desire=cast(DesireFacade, desire),
-        memory=cast(MemoryFacade, object()),
+        memory=cast(MemoryFacade, memory),
         activity=cast(ActivityFacade, activity),
         expression=cast(ExpressionFacade, expression),
         evaluator=cast(Evaluator, object()),
@@ -94,3 +103,4 @@ async def test_subscription_consistency() -> None:
     assert len(inner_life.applied) == 4
     assert len(desire.added) == 2
     assert len(activity.generated) == 1
+    assert len(memory.remembered) == 1

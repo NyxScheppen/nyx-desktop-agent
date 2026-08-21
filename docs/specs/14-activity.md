@@ -20,7 +20,7 @@
 - [ ] `READING` 升级 `FREE_EXPLORATION`：探索欲映射的读书在 `_maybe_start_activity` 里经 `should_explore`（精力充足 + 频率上限）判定升级；频率上限内降级为普通读书
 - [ ] 空槽默认：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`（精力疲惫 `< ENERGY_REST_THRESHOLD`→`IDLE_REFLECTION`、否则→`OBSERVE_USER`），`progress["desire_id"] is None`
 - [ ] 活动执行在**后台 task**（不阻塞事件总线）；`activity_start`/`activity_end`/`activity_interrupted` 由 facade 自己 `publish`、`source=INTERNAL`
-- [ ] `complete_activity`：goal 判定（`_goal_met` 纯函数）→ `status=COMPLETED` → 发布 `activity_end`（content 含 `activity_id`/`desire_id`/`goal_met`/`energy_delta`/`result`）
+- [ ] `complete_activity`：goal 判定（`_goal_met` 纯函数）→ `status=COMPLETED` → 发布 `activity_end`（content 含 `activity_id`/`type`/`desire_id`/`goal_met`/`energy_delta`/`result`）
 - [ ] `interrupt`：先校验目标 activity 存在且 RUNNING → cancel 执行 task 并 await 其结束 → 重读守卫 → `status=ABANDONED` + 发布 `activity_interrupted`（content `{activity_id, by}`）
 - [ ] `exploration.py` 含 `Exploration`（LangGraph 图）+ `should_explore` 纯函数；`web_enabled=false` 时不注册 `search_web` 节点；节点内 LLM 调用带 `correlation_id` 溯源
 - [ ] `observe.py` 含 `classify_presence` 纯函数（活跃度+窗口标题 → `"online"`/`"away"`/`"busy"`）
@@ -47,7 +47,7 @@
   - `FREE_EXPLORATION`：调 `Exploration.run()`（LangGraph 多步，seed = 欲望描述）→ result `{findings, notes}`
   - `OBSERVE_USER` / `REST`：0 LLM，result `{}`
 - **空槽默认（design §8.2 观察/发呆，13 §30 委托 14）**：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`——精力疲惫（`< ENERGY_REST_THRESHOLD`，从 12 `inner_life.emotion` 共享导入）→ `IDLE_REFLECTION`（+10 微恢复 + 发布 `REFLECTION` 触发 reflect），否则 → `OBSERVE_USER`（-10 消耗 + 情报收集）。这是 `IDLE_REFLECTION`/`OBSERVE_USER` 的唯一触发来源（非欲望驱动、不进 13 `build_schedule`），补上后两条分支可达，不再死代码
-- **`activity_end` content 契约（11 §49 + 12 §45 引用，本 spec 定义完整形状）**：`{"activity_id": str, "desire_id": str | None, "goal_met": bool | None, "energy_delta": float, "result": dict}`。`desire_id`/`goal_met` 由 11 `satisfy_from_activity_end` 消费（缺键/错类型跳过）；`energy_delta` 由 12 `_apply_energy` 消费（缺省 0）；`result` 进 SSE payload（tech-ref §4）
+- **`activity_end` content 契约（11 §49 + 12 §45 引用，本 spec 定义完整形状）**：`{"activity_id": str, "type": str, "desire_id": str | None, "goal_met": bool | None, "energy_delta": float, "result": dict}`。`desire_id`/`goal_met` 由 11 `satisfy_from_activity_end` 消费（缺键/错类型跳过）；`energy_delta` 由 12 `_apply_energy` 消费（缺省 0）；`type`/`result` 由 09 `remember_activity` 消费（活动记忆）；`result` 进 SSE payload（tech-ref §4）
 - **`energy_delta` 取值**：`getattr(config.energy_delta, activity.type.value)`（`ActivityType.value` 与 `ActivityEnergyDelta` 字段名 1:1，`reading→-20`、`creation→-25`、`free_exploration→-30`、`observe_user→-10`、`idle_reflection→+10`、`rest→+30`），不用 if-elif（六键自然对应）
 - **goal 判定（MVP，可推翻）**：`_goal_met(goal, result)` = goal 非 None 且 `result` 非空 → `True`；goal None（观察/休息）→ `None`。
 - **精力门槛**：`select_activity` 用 13 的 `build_schedule(desires, state.energy, energy_delta)` 取 `[0]`（精力跌破阈值自动穿插 `REST`），不另写门槛逻辑；`schedule[0] is REST` → 无关联 desire
@@ -440,7 +440,7 @@ class ActivityFacade:
     # ---- 生命周期 ----
 
     async def complete_activity(self, activity: Activity) -> None:
-        """完成：goal 判定 + 收尾 + 发布 activity_end（desire/inner_life 消费）。"""
+        """完成：goal 判定 + 收尾 + 发布 activity_end（desire/inner_life/memory 消费）。"""
         activity.status = ActivityStatus.COMPLETED
         activity.ended_at = time.time()
         await self._store.update(activity)
@@ -451,6 +451,7 @@ class ActivityFacade:
                 EventType.ACTIVITY_END,
                 {
                     "activity_id": activity.id,
+                    "type": activity.type.value,
                     "desire_id": activity.progress.get("desire_id"),
                     "goal_met": _goal_met(goal, result),
                     "energy_delta": getattr(
@@ -804,7 +805,7 @@ def classify_presence(
   - [ ] **select_activity**（fake `get_state` 返回 `energy=80`）：无欲望 → `None`；`[探索欲]` → `type is READING`、`progress["desire_id"] == desire.id`、`goal` 序列化正确、`progress["description"] == desire.description`；`[互动欲]` → `None`（不占日程块）；`[休息欲]` → `type is REST`、`progress["desire_id"] == rest_desire.id`（欲望驱动的 REST 保留关联）；`energy=30` + 探索欲 → `type is REST`、`progress["desire_id"] is None`（精力恢复无关联）
   - [ ] **should_explore**（`test_exploration.py`）：`energy=59` → False；`energy=60` + `now-last < rate_limit_hours*3600` → False；`energy=60` + 频率过 + `last=0.0` → True
   - [ ] **facade 生命周期**：
-    - [ ] `_maybe_start_activity`：有 running 活动 → 不新起；无欲望 → 产 `_default_activity`（见空槽默认 bullet）并 insert；有欲望 → insert + 发布 `activity_start` + `activity_end`（`content["desire_id"]`/`goal_met`/`energy_delta`/`result` 正确、`source is INTERNAL`）；READING/CREATION 时 `evaluator.evaluate` 被调 1 次（收到该 `LLMOutput`）
+    - [ ] `_maybe_start_activity`：有 running 活动 → 不新起；无欲望 → 产 `_default_activity`（见空槽默认 bullet）并 insert；有欲望 → insert + 发布 `activity_start` + `activity_end`（`content["type"]`/`desire_id`/`goal_met`/`energy_delta`/`result` 正确、`source is INTERNAL`）；READING/CREATION 时 `evaluator.evaluate` 被调 1 次（收到该 `LLMOutput`）
     - [ ] 升级路径：探索欲 + 精力足 + 频率过 → `activity.type is FREE_EXPLORATION`；频率未过 → 降级 `READING`
     - [ ] 空槽默认：无欲望 + `energy=30` → `type is IDLE_REFLECTION`、`progress["desire_id"] is None`；无欲望 + `energy=80` → `type is OBSERVE_USER`、`progress["desire_id"] is None`
     - [ ] `complete_activity`：`status is COMPLETED`、`ended_at` 非 None、发布 `activity_end`（`energy_delta == config.energy_delta.reading` 等）

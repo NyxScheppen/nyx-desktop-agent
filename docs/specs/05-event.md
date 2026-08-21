@@ -104,7 +104,7 @@ ROUTING: dict[EventType, list[str]] = {
     EventType.DESIRE_SATISFIED:    ["inner_life"],
     EventType.DESIRE_EXPIRED:      [],
     EventType.ACTIVITY_START:      [],
-    EventType.ACTIVITY_END:        ["desire", "inner_life"],  # 满足+情感
+    EventType.ACTIVITY_END:        ["desire", "inner_life", "memory"],  # 满足+情感+记忆
     EventType.ACTIVITY_INTERRUPTED: [],
     EventType.SPEAK:               [],
     EventType.ASK:                 [],

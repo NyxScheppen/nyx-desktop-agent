@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -551,8 +552,39 @@ async def main() -> None:
         await asyncio.gather(serve_task, bus_task, tick_task, return_exceptions=True)
 
 
-if __name__ == "__main__":
+def _run_with_reload() -> None:
+    """开发模式（--reload）：监听后端源码/prompt/配置变更，自动重启整个进程。
+
+    子进程跑 `python -m nyx.main`（无 --reload，与手动启动同路径，不递归）；父进程
+    复用 watchfiles 监听变更（DefaultFilter 忽略 __pycache__/.git），见变更即
+    terminate 旧进程并重启。硬杀对 SQLite 安全（WAL 可恢复）。仅 dev 便利。
+    """
+    import subprocess
+
+    from watchfiles import DefaultFilter, watch
+
+    paths: list[str] = ["nyx", "prompts"]
+    if Path("config.yaml").is_file():
+        paths.append("config.yaml")
+
+    proc = subprocess.Popen([sys.executable, "-m", "nyx.main"])
     try:
-        asyncio.run(main())
+        for _changes in watch(*paths, watch_filter=DefaultFilter()):
+            proc.terminate()
+            proc.wait()
+            proc = subprocess.Popen([sys.executable, "-m", "nyx.main"])
     except KeyboardInterrupt:
-        pass  # Ctrl+C 正常退出，不打印崩溃栈
+        pass
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+if __name__ == "__main__":
+    if "--reload" in sys.argv:
+        _run_with_reload()
+    else:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            pass  # Ctrl+C 正常退出，不打印崩溃栈

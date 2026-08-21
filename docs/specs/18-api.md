@@ -14,7 +14,7 @@
 
 ## 验收标准
 
-- [ ] `main.py` 含 `main()` + `build_app()` + `build_app_context()` + `_seed_inner_life` / `_seed_desire` / `_subscribe` / `_tick_loop` / `_supervise_bus` / `_root_event` / `_load_prompt_files` / `_load_canon` / `_load_ask` / `_interrupt_running` / `_build_tools`，与「`main.py`（完整）」段代码逐字一致
+- [ ] `main.py` 含 `main()` + `build_app()` + `build_app_context()` + `_seed_inner_life` / `_seed_desire` / `_subscribe` / `_tick_loop` / `_supervise_bus` / `_root_event` / `_load_prompt_files` / `_load_canon` / `_load_ask` / `_interrupt_running` / `_build_tools` / `_run_with_reload`，与「`main.py`（完整）」段代码逐字一致
 - [ ] **组合根按各 spec 完成定义装配**：`load_config` → `connect` → `LlmClient.from_config` → 各 store/facade 构造注入（循环依赖 `ActivityFacade↔InnerLifeFacade` 用 `_get_state` 延迟绑定解环；`evaluator` 注入 09/11/12/14/17 五个 Facade）
 - [ ] **注册内置工具**：`local_search` + `file_io` 恒注册，`web_search` 仅当 `config.exploration.web_enabled` 注册（06-tools 完成定义）；探索链无条件调 `local_search`/`file_io`，缺失会 `KeyError`
 - [ ] **seed 幂等**（表空才写）：inner_life 四张单行表（personality 8/8/2/6/7、values 8/6/9/5、energy 100/energetic、narrative 初始 identity）；desire 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）+ 3 个初始长期欲望（canon §4）
@@ -35,7 +35,8 @@
 
 - **新文件**：`nyx/main.py`（无 Facade、无数据变更；`ROUTING`/`TICK_ROUTING` 已由 05-event 定义）
 - **库**：`fastapi` + `uvicorn`（新增 web 栈；依赖 pin 同 03-llm 约定）；`python-multipart`（`POST /api/upload` 的 `UploadFile`/`File(...)` 解析）；`httpx`（测试用 `AsyncClient` + `ASGITransport`，不触网）
-- **公开面**：`main.py` 是入口（`python -m nyx.main` 或 `uvicorn nyx.main:app`），不加 `__all__`；`build_app` 供测试构造
+- **公开面**：`main.py` 是入口（`python -m nyx.main`；开发自动重载 `python -m nyx.main --reload`），不加 `__all__`；`build_app` 供测试构造
+- **开发自动重载（decision，可推翻）**：`--reload` 走 `_run_with_reload`——父进程 `watchfiles.watch` 监听 `nyx/` + `prompts/`（`config.yaml` 存在则一并监听）变更，见变更即 `terminate` + 重启子进程；子进程跑无 `--reload` 的 `python -m nyx.main`（与手动启动同路径，不递归）。复用 uvicorn 的 watchfiles 依赖（`DefaultFilter` 忽略 `__pycache__`/`.git`）；硬杀对 SQLite 安全（WAL 可恢复）。仅 dev 便利，生产仍 `python -m nyx.main`
 - **web 框架选 FastAPI**：dataclass 返回值经 `jsonable_encoder` 直接序列化（`StrEnum`→`.value` 字符串），端点不声明 pydantic `response_model`（01-types「不用 pydantic」）；`GET /api/events` 用 `StreamingResponse`（手写 SSE 格式，不引 `sse-starlette`）。请求体用 pydantic `BaseModel` 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`）做缺键/取值校验 → 422——请求模型是 web 层校验，与 01-types 的 dataclass 领域类型、`response_model` 序列化互不相干
 - **循环依赖解环（decision，可推翻）**：`ActivityFacade` 要 `get_state` 回调、`InnerLifeFacade` 要 `activity_facade` 实例。用 `_get_state` 闭包引用 `state_holder` 可变列表，先构造 `ActivityFacade`（占位回调）→ 再构造 `InnerLifeFacade` → 回填 `state_holder`。运行时才求值，构造期不成环
 - **回复阻塞 vs 后台（decision，可推翻）**：`USER_MESSAGE` handler 里**同步 `await reply`**（阻塞事件总线到回复完成）。理由：回复是秒级、用户在等回复；活动是分钟级才后台（14-activity 已定 `create_task`）。用户连发消息顺序排队，符合 05-event「顺序分发」
@@ -60,6 +61,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -607,11 +609,42 @@ async def main() -> None:
         await asyncio.gather(serve_task, bus_task, tick_task, return_exceptions=True)
 
 
-if __name__ == "__main__":
+def _run_with_reload() -> None:
+    """开发模式（--reload）：监听后端源码/prompt/配置变更，自动重启整个进程。
+
+    子进程跑 `python -m nyx.main`（无 --reload，与手动启动同路径，不递归）；父进程
+    复用 watchfiles 监听变更（DefaultFilter 忽略 __pycache__/.git），见变更即
+    terminate 旧进程并重启。硬杀对 SQLite 安全（WAL 可恢复）。仅 dev 便利。
+    """
+    import subprocess
+
+    from watchfiles import DefaultFilter, watch
+
+    paths: list[str] = ["nyx", "prompts"]
+    if Path("config.yaml").is_file():
+        paths.append("config.yaml")
+
+    proc = subprocess.Popen([sys.executable, "-m", "nyx.main"])
     try:
-        asyncio.run(main())
+        for _changes in watch(*paths, watch_filter=DefaultFilter()):
+            proc.terminate()
+            proc.wait()
+            proc = subprocess.Popen([sys.executable, "-m", "nyx.main"])
     except KeyboardInterrupt:
-        pass  # Ctrl+C 正常退出，不打印崩溃栈
+        pass
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+if __name__ == "__main__":
+    if "--reload" in sys.argv:
+        _run_with_reload()
+    else:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            pass  # Ctrl+C 正常退出，不打印崩溃栈
 ```
 
 ## 测试要点

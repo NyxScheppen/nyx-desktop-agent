@@ -1,6 +1,6 @@
 # ActivityFacade + 行为链 + 观察
 
-> 范围：`activity/store.py`（ActivityStore，新增）+ `activity/facade.py`（ActivityFacade）+ `activity/exploration.py`（跨域行为链 LangGraph）+ `activity/observe.py`（观察用户判定）。
+> 范围：`activity/store.py`（ActivityStore，新增）+ `activity/facade.py`（ActivityFacade）+ `activity/exploration.py`（跨域行为链 LangGraph）+ `activity/observe.py`（观察用户判定）+ `activity/screen.py`（屏幕视觉，opt-in）。
 > 活动系统是「欲望的消费端」（design §1.3）：把 `DesireFacade.get_pending()` 的欲望映射成日程块活动、执行、判定 goal、发布 `activity_end` 让 desire/inner_life 消费回写。13-activity-scheduler 的四个纯函数（`desire_to_activity` / `rank_desires` / `build_schedule` / `format_time_label`）是本 spec 的决策底座。
 > **本文件自包含**：四个文件的完整代码内联在下文。
 
@@ -25,13 +25,13 @@
 - [ ] 同日程块内恢复：`_maybe_start_activity` 在查 running 后、欲望排序前查 `get_paused_in_block(当前块)`，命中则恢复同一记录（READING 从 `material_store.get_by_path` 刷新 `read_chars`/`total_chars` 续读；CREATION/FREE_EXPLORATION 无中间态重跑）；未命中再走欲望排序/空槽默认
 - [ ] `material_store.py` 含 `MaterialStore`（`upsert` / `next_readable` / `find_by_topic` / `get_by_path` / `advance` / `append_fragment` / `get_fragments`），`get_by_path` 供读书恢复续读
 - [ ] `exploration.py` 含 `Exploration`（LangGraph 图）+ `should_explore` 纯函数；`web_enabled=false` 时不注册 `search_web` 节点；节点内 LLM 调用带 `correlation_id` 溯源
-- [ ] `observe.py` 含 `classify_presence` 纯函数（活跃度+窗口标题 → `"online"`/`"away"`/`"busy"`）
+- [ ] `observe.py` 含 `classify_presence` 纯函数（活跃度+窗口标题 → `"online"`/`"away"`/`"busy"`）与 `build_observation_summary` 纯函数（presence/窗口标题/屏幕摘要 → 观察 summary）；`screen.py` 含 `capture_screen` + `ScreenObserver`（周期抓屏 → 视觉描述 → 回调）
 - [ ] 两处 LLM 产出后紧跟 `await evaluator.evaluate(output)`：`_run_llm_activity`（`output_type` "reading"/"creation"）与 `Exploration._plan_next`（`output_type="exploration_plan"`）
 - [ ] `pyright` strict 零报错
 
 ## 技术方案
 
-- **新文件**：`nyx/activity/store.py`、`nyx/activity/facade.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/material_store.py`（`scheduler.py` 归 13）
+- **新文件**：`nyx/activity/store.py`、`nyx/activity/facade.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/screen.py`、`nyx/activity/material_store.py`（`scheduler.py` 归 13）
 - **库**：`langgraph`（仅 `StateGraph` / `START` / `END` / 条件边；版本敏感契约以锁定版本为准，同 03-llm 依赖 pin 约定）
 - **ActivityStore 归属**：memory/desire/inner_life 各有 `store.py`，activity 保持一致——facade 不直接写 SQL（三层：Facade → 子系统 → 内部类）。tech-ref §7 ripple：`activity/` 补一行 `store.py  # ActivityStore（activity 表单表 CRUD）`
 - **依赖解环（遵守 12 §54）**：`inner_life → {activity, desire}` 已锁，故 `ActivityFacade` **不持有 `InnerLifeFacade`**，注入 `get_state: Callable[[], Awaitable[CurrentState]]` 回调（组合根用 `inner_life.get_state` 绑定）。`select_activity(desires, state)` 以参数收 `CurrentState`（纯决策，无环）；`DesireFacade` 依赖单向（activity → desire，读队列/values），不成环
@@ -48,7 +48,7 @@
   - `CREATION`：1 次 LLM（`json_mode=True`、`module="activity"`、`output_type="creation"`）→ result `{title, content}`，再把标题 `_sanitize_filename` 清洗成安全文件名落盘 `workspace/creations/<safe>.md`（`file_io` write），result 附 `path`
   - `IDLE_REFLECTION`：直接 `await self._reflect`（组合根注入的 reflect 回调，1 LLM 在 inner_life），不发 `REFLECTION` 事件；result 回带 `{summary}`
   - `FREE_EXPLORATION`：调 `Exploration.run()`（LangGraph 多步，seed = 欲望描述）→ result `{findings, notes}`
-  - `OBSERVE_USER`：调组合根注入的 `get_observation`（0 LLM）产 `{presence, window_title, summary}`；`REST`：0 LLM，result `{}`
+  - `OBSERVE_USER`：调组合根注入的 `get_observation`（0 LLM）产 `{presence, window_title, screen_summary}`，`summary` 由 `build_observation_summary` 拼装（窗口优先、屏幕次之）；`REST`：0 LLM，result `{}`
 - **空槽默认（design §8.2 观察/发呆，13 §30 委托 14）**：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`——精力疲惫（`< ENERGY_REST_THRESHOLD`，从 12 `inner_life.emotion` 共享导入）→ `IDLE_REFLECTION`（+10 微恢复 + 反思回带 summary），否则 → `OBSERVE_USER`（-10 消耗 + 情报收集）。这是 `IDLE_REFLECTION`/`OBSERVE_USER` 的唯一触发来源（非欲望驱动、不进 13 `build_schedule`），补上后两条分支可达，不再死代码
 - **`activity_end` content 契约（11 §49 + 12 §45 引用，本 spec 定义完整形状）**：`{"activity_id": str, "type": str, "desire_id": str | None, "goal_met": bool | None, "energy_delta": float, "result": dict}`。`desire_id`/`goal_met` 由 11 `satisfy_from_activity_end` 消费（缺键/错类型跳过）；`energy_delta` 由 12 `_apply_energy` 消费（缺省 0）；`type`/`result` 由 09 `remember_activity` 消费（活动记忆）；`result` 进 SSE payload（tech-ref §4）
 - **`energy_delta` 取值**：`getattr(config.energy_delta, activity.type.value)`（`ActivityType.value` 与 `ActivityEnergyDelta` 字段名 1:1，`reading→-20`、`creation→-25`、`free_exploration→-30`、`observe_user→-10`、`idle_reflection→+10`、`rest→+30`），不用 if-elif（六键自然对应）
@@ -57,8 +57,9 @@
 - **`get_schedule()` 语义**：返回「今日已产生的 Activity 记录」（`started_at >= 今日零点`，`list_schedule`），按 `started_at ASC`。未来计划不持久化（design §8.1），前端按 grid 渲染空槽；`_day_start` 纯函数算当日零点（MVP 用 UTC 日边界，可推翻）
 - **`interrupt` 的 `by_event: EventType`**：打断原因（`USER_MESSAGE` / `INITIATE_CHAT`）。谁调 `interrupt` 归 17/18（用户消息/搭话打断活动）；14 只提供方法 + 发布 `activity_interrupted`。可续活动（`_RESUMABLE_TYPES`：READING/CREATION/FREE_EXPLORATION）打断置 `PAUSED`（保留记录 + 欲望关联），其余瞬时无进度的活动（发呆/观察/休息）仍置 `ABANDONED` 终态
 - **恢复/续做（design §3.3 抢占语义落地）**：`interrupt` 对 `_RESUMABLE_TYPES` 置 `PAUSED` 而非废弃，`progress` 里的 `desire_id`/`goal`/`correlation_id` 保留。`_maybe_start_activity` 在「查 running → 查当前块 PAUSED → 恢复」——命中则复用同一 id 重跑：READING 从 `material_store.get_by_path(source)` 刷新 `read_chars`/`total_chars` 续读（书库进度是唯一持久进度）；CREATION/FREE_EXPLORATION 无中间态、整段重跑（探索不 checkpoint 中间 findings/notes）。恢复不新建记录、不重新消耗欲望；跨日程块（`get_paused_in_block` 按 `schedule_block_id` 过滤）不恢复，旧 PAUSED 留档可查
-- **`observe.py` 与观察状态的分工**：`classify_presence` 是「在线/离开/忙碌」三态判定的**单一事实来源**（纯函数、单测锁定）。采集（键盘/鼠标活跃度 + 前台窗口标题）在前端 Tauri 壳（design §2 进程边界），判定结果作为 `OBSERVATION_STATE` 事件推给 Python，ROUTING 到 inner_life + desire。**`classify_presence` 的运行时调用方是前端 ingress，不在本 spec 的 backend 范围内**（前端 spec 推迟）——保留它是为了让「判定规则」在 Python 侧可展示（原则 3）+ 可溯源（原则 5）。`OBSERVE_USER` 活动本身是 0-LLM（调注入的 `get_observation` 产 `{presence, window_title, summary}`）
-- **明确不做**：不建「计划」表（design §8.1 临时概念）；`classify_presence` 只覆盖键盘/鼠标/窗口三输入
+- **`observe.py` 与观察状态的分工**：`classify_presence` 是「在线/离开/忙碌」三态判定的**单一事实来源**（纯函数、单测锁定）。采集（键盘/鼠标活跃度 + 前台窗口标题）在前端 Tauri 壳（design §2 进程边界），判定结果作为 `OBSERVATION_STATE` 事件推给 Python，ROUTING 到 inner_life + desire。**`classify_presence` 的运行时调用方是前端 ingress，不在本 spec 的 backend 范围内**（前端 spec 推迟）——保留它是为了让「判定规则」在 Python 侧可展示（原则 3）+ 可溯源（原则 5）。`OBSERVE_USER` 活动本身是 0-LLM（调注入的 `get_observation` 产 `{presence, window_title, screen_summary}`），`summary` 由 `build_observation_summary` 拼装
+- **明确不做**：不建「计划」表（design §8.1 临时概念）；`classify_presence` 只覆盖键盘/鼠标/窗口三输入（屏幕视觉不扩展它）
+- **屏幕视觉（design §8.5 落地，opt-in）**：`vision.enabled`（config）开启时，组合根注入的 `get_observation` 返回 `screen_summary`——`ScreenObserver` 周期抓屏（Pillow ImageGrab，`asyncio.to_thread`）→ `VisionClient` 视觉描述 → `app.last_screen_summary` 折入。`OBSERVE_USER` 的 `summary` 由 `build_observation_summary` 拼装（窗口标题优先、屏幕摘要次之）。视觉**丰富观察摘要**、不扩展 `classify_presence`（在线判定仍只靠键盘/鼠标/窗口三输入）；`ScreenObserver`/`VisionClient` 失败 best-effort 返 `None`，主流程正确性不依赖其产出。
 
 ### `activity/store.py`（完整）
 
@@ -317,6 +318,7 @@ from typing import Any, cast
 
 from nyx.activity.exploration import Exploration, should_explore
 from nyx.activity.material_store import MaterialStore
+from nyx.activity.observe import build_observation_summary
 from nyx.activity.scheduler import (
     build_schedule,
     desire_to_activity,
@@ -776,14 +778,14 @@ class ActivityFacade:
             obs = await self._get_observation()
             presence = obs.get("presence", "")
             window_title = obs.get("window_title", "")
-            if window_title:
-                summary = f"用户（{presence}）正在浏览 {window_title}"
-            else:
-                summary = f"用户（{presence}）"
+            screen_summary = obs.get("screen_summary", "")
             return {
                 "presence": presence,
                 "window_title": window_title,
-                "summary": summary,
+                "screen_summary": screen_summary,
+                "summary": build_observation_summary(
+                    presence, window_title, screen_summary
+                ),
             }
         if t is ActivityType.REST:
             return {}
@@ -1093,6 +1095,76 @@ def classify_presence(
     if window_title:
         return "busy"
     return "away"
+
+
+def build_observation_summary(
+    presence: str, window_title: str, screen_summary: str
+) -> str:
+    """观察摘要（纯函数，design §8.5 屏幕视觉扩展）：窗口标题优先，
+    视觉摘要次之逐段拼接；两者皆空则仅回 presence。"""
+    if window_title:
+        base = f"用户（{presence}）正在浏览 {window_title}"
+    else:
+        base = f"用户（{presence}）"
+    if screen_summary:
+        base += f"，屏幕：{screen_summary}"
+    return base
+```
+
+### `activity/screen.py`（完整）
+
+```python
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
+from io import BytesIO
+
+from PIL import ImageGrab
+
+_logger = logging.getLogger(__name__)
+
+
+def capture_screen() -> bytes:
+    """抓全屏 → PNG bytes。纯 I/O 薄封装；失败上抛由调用方 best-effort 处理。"""
+    img = ImageGrab.grab()
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class ScreenObserver:
+    """周期截屏 → 视觉描述 → 回调摘要。
+
+    best-effort：单次采样失败记日志返 None，循环不中断（design §8.5 手动开启，
+    主流程正确性不依赖其产出）。capture/describe 可注入（测试不碰真桌面/真模型）。
+    """
+
+    def __init__(
+        self,
+        capture: Callable[[], bytes],
+        describe: Callable[[bytes], Awaitable[str]],
+        interval_seconds: int,
+    ) -> None:
+        self._capture = capture
+        self._describe = describe
+        self._interval_seconds = interval_seconds
+
+    async def sample_once(self) -> str | None:
+        """一次采样：抓屏（to_thread）→ describe → 摘要；失败记日志返 None。"""
+        try:
+            image = await asyncio.to_thread(self._capture)
+            return await self._describe(image)
+        except Exception:
+            _logger.exception("屏幕视觉采样失败")
+            return None
+
+    async def run(self, on_summary: Callable[[str], None]) -> None:
+        """周期采样循环（永不抛；仅 CancelledError 上抛供取消）。"""
+        while True:
+            summary = await self.sample_once()
+            if summary:
+                on_summary(summary)
+            await asyncio.sleep(self._interval_seconds)
 ```
 
 ## 测试要点
@@ -1112,7 +1184,8 @@ def classify_presence(
     - [ ] 恢复：`_maybe_start_activity` 命中当前块 PAUSED 创作 → 复用同一 id 重跑（id 不变、COMPLETED、evaluator 再调 1 次）；命中 PAUSED 读书 → 从 material 层刷新 `read_chars` 续读；不同块旧 PAUSED → 不恢复、走新建默认活动
     - [ ] `get_current` / `get_schedule` 委托 store
   - [ ] **exploration**（`test_exploration.py`）：`Exploration` 用 fake llm/fake_evaluator/tools，`web_enabled=false` 时图不含 `search_web`、`run` 返回 `{findings, notes}` 且步数 ≤ `_MAX_STEPS`；`_plan_next` 的 `llm.complete` 收到 `correlation_id == 初始 correlation_id`，且每次 `complete` 后 `evaluator.evaluate` 被调（`output_type="exploration_plan"`）；规划 JSON 非对象（如数组）→ `ValueError`
-  - [ ] **observe**（`test_observe.py`）：`classify_presence` 三态判定（活跃→online、窗口标题→busy、无→away）
+  - [ ] **observe**（`test_observe.py`）：`classify_presence` 三态判定（活跃→online、窗口标题→busy、无→away）；`build_observation_summary` 四态拼接（有窗口无屏幕 / 无窗口无屏幕 / 窗口+屏幕 / 无窗口有屏幕）
+  - [ ] **screen**（`test_screen.py`）：`ScreenObserver.sample_once` 抓屏+describe 各 1 次返描述文本；capture 抛异常 → 返 `None` 不崩；describe 抛异常 → 返 `None` 不崩（best-effort）
 - [ ] 集成测试：无（LLM 全 mock、DB 用 `:memory:`；与 desire/inner_life 的真实编排归 18-api）
 - [ ] E2E 测试：无
 
@@ -1125,3 +1198,4 @@ def classify_presence(
 - [ ] ripple 同步：tech-ref §7 `activity/` 补 `store.py`；§6.2 `ExplorationState` 补 `correlation_id` 字段；§5 `select_activity` 返回类型 `Activity` → `Activity | None` 且 `async def` → `def`（纯决策，与 `_default_activity` 一致）；`activity_end` content 契约（`desire_id`/`goal_met`/`energy_delta`）与 11 §49 + 12 §45 一致
 - [ ] ripple 同步：`interrupt` 语义「可续置 PAUSED、其余 ABANDONED」与 design §3.3 抢占语义一致；`ActivityStore.get_paused_in_block` / `MaterialStore.get_by_path` 补进 tech-ref §7；`_maybe_start_activity` 恢复路径与 17-expression 打断入口约定（搭话/回复打断活动调 `interrupt`）一致
 - [ ] 下游约定：17-expression 搭话/回复打断活动时调 `interrupt(activity_id, by_event)`；18-api 组合根注入 `get_state=inner_life.get_state`、`evaluator`（给 `ActivityFacade` 与 `Exploration` 的 LLM 产出评分）、订阅 `SCHEDULE_BLOCK_START`（on_tick）与 `DESIRE_GENERATED`（on_desire_generated）
+- [ ] ripple 同步（屏幕视觉）：tech-ref §7 `activity/` 补 `screen.py`、§8 补 `vision:` 段；`OBSERVE_USER` 观察 result 契约由 `{presence, window_title, summary}` 扩展为 `{presence, window_title, screen_summary, summary}`（`result.summary` 仍由 `build_observation_summary` 拼装，09 `remember_activity` 消费不变）

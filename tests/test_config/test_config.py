@@ -36,6 +36,10 @@ def test_validate_config_accepts_defaults() -> None:
         ("exploration", "web_enabled", "yes"),    # 错类型 str 当 bool
         ("expression", "ask_timeout", -1.0),          # 非正
         ("expression", "chat_ignore_timeout", 0.0),   # 非正
+        ("vision", "interval_seconds", 0),            # 非正
+        ("vision", "interval_seconds", "60"),         # 错类型 str
+        ("vision", "enabled", "yes"),                 # 错类型 str 当 bool
+        ("vision", "provider", ""),                   # 空 str
     ],
 )
 def test_validate_config_rejects_invalid(

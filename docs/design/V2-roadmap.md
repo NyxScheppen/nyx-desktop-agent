@@ -19,7 +19,7 @@
 | 功能 | 愿景出处 | 说明 |
 |---|---|---|
 | ~~活动恢复/续做~~ ✅ 已落地 | design §3.3 | 可续活动（读书/创作/探索）打断置 `PAUSED` 保留记录 + 欲望关联；同日程块内 `_maybe_start_activity` 恢复同一记录（读书从书库刷新 `read_chars` 续读，创作/探索重跑），跨块不恢复留档 |
-| 屏幕视觉（截屏+视觉模型） | design §8.5 | `classify_presence` 扩展视觉输入（现只覆盖键盘/鼠标/窗口三输入，窗口标题采 `document.title` 占位，真前台窗口标题等 src-tauri 落地换源） |
+| ~~屏幕视觉（截屏+视觉模型）~~ ✅ 已落地 | design §8.5 | `VisionClient`（Ollama 视觉走 OpenAI 兼容）+ `ScreenObserver` 周期抓屏（Pillow ImageGrab）→ 一句话中文描述折入观察 summary（`build_observation_summary` 追加「，屏幕：…」）；opt-in `vision.enabled`，不扩展 `classify_presence`（偏离原措辞：视觉丰富观察摘要而非在线判定） |
 | ~~`goal.count` 精确计数~~ ✅ 已落地 | design §7.4 | C3：`_goal_met` 按单位精确判（read→completed / write→title+content / observe→presence）+ desire `goal_progress` 累计 count 次 |
 | ~~发呆 `{summary}` 回读 reflect 产出~~ ✅ 已落地 | — | B2：`IDLE_REFLECTION` result 带回反思 summary（直接 await reflect，不再发 REFLECTION 事件） |
 
@@ -47,7 +47,7 @@
 
 | 功能 | 愿景出处 | 说明 |
 |---|---|---|
-| ~~多 provider（OpenAI 兼容映射）~~ ✅ 已落地 | — | `from_config` 用 `_resolve_base_url`：内置 deepseek/openai/ollama 映射 + 可选 `llm.base_url` 覆盖；claude 等非 OpenAI 兼容留后续 |
+| ~~多 provider（OpenAI 兼容映射）~~ ✅ 已落地 | — | `from_config` 用 `resolve_base_url`：内置 deepseek/openai/ollama 映射 + 可选 `llm.base_url` 覆盖；claude 等非 OpenAI 兼容留后续 |
 
 ## 前端（frontend）
 

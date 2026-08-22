@@ -590,8 +590,40 @@ async def test_observe_user_result(
         assert acts[0].progress["result"] == {
             "presence": "online",
             "window_title": "编辑器",
+            "screen_summary": "",
             "summary": "用户（online）正在浏览 编辑器",
         }
+    finally:
+        await database.conn.close()
+
+
+async def test_observe_user_result_with_screen_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """观察用户：screen_summary 非空时折入 summary，且 result 带 screen_summary。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+
+    async def fake_observation() -> dict[str, str]:
+        return {
+            "presence": "busy",
+            "window_title": "编辑器",
+            "screen_summary": "写代码",
+        }
+
+    facade, store, bus, database = await _new_facade(
+        energy=80.0, get_observation=fake_observation
+    )
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        assert acts[0].progress["result"]["screen_summary"] == "写代码"
+        assert (
+            acts[0].progress["result"]["summary"]
+            == "用户（busy）正在浏览 编辑器，屏幕：写代码"
+        )
     finally:
         await database.conn.close()
 

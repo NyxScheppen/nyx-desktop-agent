@@ -18,8 +18,8 @@ from nyx.llm.client import (
     LlmClient,
     LlmMessage,
     _extract_usage,
-    _resolve_base_url,
     _to_lc,
+    resolve_base_url,
 )
 from nyx.types import LLMOutput
 
@@ -248,9 +248,9 @@ def test_complete_non_text_content() -> None:
 
 def test_resolve_base_url() -> None:
     # 显式覆盖优先 / 已知 provider 命中 / 未知 provider 返回 None
-    assert _resolve_base_url("deepseek", "http://localhost:1/v1") == "http://localhost:1/v1"
-    assert _resolve_base_url("openai", None) == "https://api.openai.com/v1"
-    assert _resolve_base_url("claude", None) is None
+    assert resolve_base_url("deepseek", "http://localhost:1/v1") == "http://localhost:1/v1"
+    assert resolve_base_url("openai", None) == "https://api.openai.com/v1"
+    assert resolve_base_url("claude", None) is None
 
 
 def test_from_config_unknown_provider_rejects() -> None:

@@ -62,7 +62,7 @@ _PROVIDER_BASE_URLS = {
 }
 
 
-def _resolve_base_url(provider: str, base_url: str | None) -> str | None:
+def resolve_base_url(provider: str, base_url: str | None) -> str | None:
     """provider → base_url：显式 base_url 优先，否则查内置映射；无命中 None。纯函数。"""
     if base_url:
         return base_url
@@ -79,7 +79,7 @@ class LlmClient:
 
     @classmethod
     def from_config(cls, config: LlmConfig) -> "LlmClient":
-        base_url = _resolve_base_url(config.provider, config.base_url)
+        base_url = resolve_base_url(config.provider, config.base_url)
         if base_url is None:
             raise ConfigError(
                 f"未知 provider={config.provider!r}：请设置 llm.base_url，"

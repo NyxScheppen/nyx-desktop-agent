@@ -10,6 +10,7 @@ from typing import Any, cast
 
 from nyx.activity.exploration import Exploration, should_explore
 from nyx.activity.material_store import MaterialStore
+from nyx.activity.observe import build_observation_summary
 from nyx.activity.scheduler import (
     build_schedule,
     desire_to_activity,
@@ -479,14 +480,14 @@ class ActivityFacade:
             obs = await self._get_observation()
             presence = obs.get("presence", "")
             window_title = obs.get("window_title", "")
-            if window_title:
-                summary = f"用户（{presence}）正在浏览 {window_title}"
-            else:
-                summary = f"用户（{presence}）"
+            screen_summary = obs.get("screen_summary", "")
             return {
                 "presence": presence,
                 "window_title": window_title,
-                "summary": summary,
+                "screen_summary": screen_summary,
+                "summary": build_observation_summary(
+                    presence, window_title, screen_summary
+                ),
             }
         if t is ActivityType.REST:
             return {}

@@ -71,6 +71,15 @@ class ExplorationConfig:
 
 
 @dataclass
+class VisionConfig:
+    enabled: bool = False               # 屏幕视觉 opt-in（design §8.5）
+    provider: str = "ollama"            # 复用 provider→base_url 映射
+    model: str = "llava"                # 本地视觉模型 tag（Ollama）
+    base_url: str | None = None         # 可选 endpoint 覆盖；缺省查 provider 映射
+    interval_seconds: int = 60          # 抓屏周期（秒）
+
+
+@dataclass
 class EvalConfig:
     judge_sample_rate: float = 0.1
 
@@ -84,6 +93,7 @@ class Config:
     activity: ActivityConfig = field(default_factory=ActivityConfig)
     expression: ExpressionConfig = field(default_factory=ExpressionConfig)
     exploration: ExplorationConfig = field(default_factory=ExplorationConfig)
+    vision: VisionConfig = field(default_factory=VisionConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
 
 
@@ -165,8 +175,12 @@ def validate_config(cfg: Config) -> None:
     _nonempty(cfg.llm.model, "llm.model")
     _nonempty(cfg.llm.api_key_env, "llm.api_key_env")
     _nonempty(cfg.embedding.model, "embedding.model")
+    _nonempty(cfg.vision.provider, "vision.provider")
+    _nonempty(cfg.vision.model, "vision.model")
     if cfg.llm.base_url is not None:
         _nonempty(cfg.llm.base_url, "llm.base_url")  # 非 None 必须非空，防 "" 静默回退
+    if cfg.vision.base_url is not None:
+        _nonempty(cfg.vision.base_url, "vision.base_url")
 
     # int > 0
     for path, v in (("memory.short_term_capacity", cfg.memory.short_term_capacity),
@@ -176,7 +190,8 @@ def validate_config(cfg: Config) -> None:
                     ("activity.grid_minutes", cfg.activity.grid_minutes),
                     ("expression.max_context_len", cfg.expression.max_context_len),
                     ("expression.slow_max_rounds", cfg.expression.slow_max_rounds),
-                    ("exploration.rate_limit_hours", cfg.exploration.rate_limit_hours)):
+                    ("exploration.rate_limit_hours", cfg.exploration.rate_limit_hours),
+                    ("vision.interval_seconds", cfg.vision.interval_seconds)):
         _pos_int(v, path)
 
     # 数 ∈ [0, 1]
@@ -191,6 +206,7 @@ def validate_config(cfg: Config) -> None:
     _pos_num(cfg.expression.chat_ignore_timeout, "expression.chat_ignore_timeout")
     _pos_num(cfg.expression.context_time_gap, "expression.context_time_gap")
     _flag(cfg.exploration.web_enabled, "exploration.web_enabled")   # bool
+    _flag(cfg.vision.enabled, "vision.enabled")
 
     # energy_delta 6 键全为 int（可为负）
     for name, v in vars(cfg.activity.energy_delta).items():

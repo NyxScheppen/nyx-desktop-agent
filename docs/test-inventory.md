@@ -21,7 +21,7 @@
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
 | `test_validate_config_accepts_defaults` | 功能正确 | `validate_config(Config())` 合法通过（不抛即通过） |
-| `test_validate_config_rejects_invalid`（9 例） | 边界鲁棒 | 越界/非正/错类型改字段后 `validate_config` 报 `ConfigError` |
+| `test_validate_config_rejects_invalid`（13 例） | 边界鲁棒 | 越界/非正/错类型改字段后 `validate_config` 报 `ConfigError` |
 | `test_load_config_fills_defaults` | 功能正确 | 只写 `llm.provider` → 其余字段填默认值 |
 | `test_load_config_builds_energy_delta_recursively` | 功能正确 | `energy_delta` 递归构造为 `ActivityEnergyDelta` 实例、未写键用默认 |
 | `test_load_config_rejects_unknown_energy_delta_key` | 边界鲁棒 | 嵌套 `energy_delta` 内未知键报 `ConfigError` |
@@ -35,7 +35,7 @@
 | `test_load_config_rejects_scalar_top_level`（3 例） | 边界鲁棒 | 顶层 falsy 标量（`0`/`""`/`[]`）报 `ConfigError`，不被 `or {}` 吞成全默认 |
 | `test_load_config_rejects_mixed_type_unknown_key` | 边界鲁棒 | 混合类型未知键（`1:` int 与 `bogus:` str）报 `ConfigError`，不因 `sorted` 跨类型比较裸崩 `TypeError` |
 
-**功能阶段**：02-config 实现时编写；`test_validate_config_rejects_invalid` 两例（`ask_timeout=-1`/`chat_ignore_timeout=0`）于「表达交互闭环」轮追加（V2 问句/搭话超时配置校验）。
+**功能阶段**：02-config 实现时编写；`test_validate_config_rejects_invalid` 两例（`ask_timeout=-1`/`chat_ignore_timeout=0`）于「表达交互闭环」轮追加（V2 问句/搭话超时配置校验）；vision 四例（`interval_seconds=0`/`interval_seconds="60"`/`enabled="yes"`/`provider=""`）于「屏幕视觉」轮追加（`vision` 段校验：非正/错类型/空 provider）。
 
 ## 03-llm（LLM 统一客户端）
 
@@ -56,7 +56,7 @@
 | `test_complete_json_mode_off` | 功能正确 | `json_mode=False` → kwargs 不含 `response_format` |
 | `test_complete_messages_passthrough` | 功能正确 | `messages` 顺序与内容按原序透传为 LangChain 消息（fake 记录收到的消息） |
 | `test_complete_non_text_content` | 边界鲁棒 | 非文本 content（`list`）→ `RuntimeError`（非 `str(list)` repr 垃圾） |
-| `test_resolve_base_url` | 功能正确 | `_resolve_base_url`：显式 `base_url` 优先 / 已知 provider（`openai`）命中映射 / 未知 provider（`claude`）返回 `None` |
+| `test_resolve_base_url` | 功能正确 | `resolve_base_url`：显式 `base_url` 优先 / 已知 provider（`openai`）命中映射 / 未知 provider（`claude`）返回 `None` |
 | `test_from_config_unknown_provider_rejects` | 边界鲁棒 | `provider="claude"`（无 base_url）→ `ConfigError` |
 | `test_from_config_rejects_missing_api_key` | 边界鲁棒 | `api_key_env` 未设（`delenv`）→ `ConfigError` |
 | `test_from_config_ok` | 功能正确 | 正常 → 返回 `LlmClient` 且 `_model_name == config.model` |
@@ -66,8 +66,12 @@
 | `test_complete_tools_off` | 功能正确 | `complete` 不传 `tools` → kwargs 不含 `tools` 键 |
 | `test_complete_tool_calls_parsed` | 功能正确 | fake 返回带 `tool_calls` 的 `AIMessage` → `LLMOutput.tool_calls` 正确解析为 `[{name, args}]` |
 | `test_complete_no_tools_empty` | 边界鲁棒 | 响应无 `tool_calls` → `LLMOutput.tool_calls == []` |
+| `test_describe_returns_text` | 功能正确 | `VisionClient.describe` 多模态：fake 模型收 `HumanMessage` 含 text+image_url 两块、返回文本描述 |
+| `test_describe_non_text_raises` | 边界鲁棒 | 非文本 content（`list`）→ `RuntimeError` |
+| `test_from_config_unknown_provider_rejects`（VisionClient） | 边界鲁棒 | `provider="claude"` 无 base_url → `ConfigError` |
+| `test_from_config_ok`（VisionClient） | 功能正确 | 默认 `VisionConfig` → `VisionClient` 且 `_model_name == "llava"` |
 
-**功能阶段**：03-llm 实现时编写；`test_extract_usage_non_int_value` 于第五轮 review 追加（`_safe_int` 防御非数字 token 值）；`test_complete_tools_passthrough` / `test_complete_tools_off` / `test_complete_tool_calls_parsed` / `test_complete_no_tools_empty` 于「表达侧工具调用（bind_tools）」阶段追加（`complete` 支持 `tools` + `LLMOutput.tool_calls` 解析）；`test_resolve_base_url` / `test_from_config_unknown_provider_rejects`（原 `test_from_config_rejects_other_provider` 改名）/ `test_from_config_known_provider` / `test_from_config_base_url_override` 于「多 provider（OpenAI 兼容映射）」阶段追加（`LlmConfig.base_url` + `_resolve_base_url` 映射）。
+**功能阶段**：03-llm 实现时编写；`test_extract_usage_non_int_value` 于第五轮 review 追加（`_safe_int` 防御非数字 token 值）；`test_complete_tools_passthrough` / `test_complete_tools_off` / `test_complete_tool_calls_parsed` / `test_complete_no_tools_empty` 于「表达侧工具调用（bind_tools）」阶段追加（`complete` 支持 `tools` + `LLMOutput.tool_calls` 解析）；`test_resolve_base_url` / `test_from_config_unknown_provider_rejects`（原 `test_from_config_rejects_other_provider` 改名）/ `test_from_config_known_provider` / `test_from_config_base_url_override` 于「多 provider（OpenAI 兼容映射）」阶段追加（`LlmConfig.base_url` + `resolve_base_url` 映射）；`test_describe_returns_text` / `test_describe_non_text_raises` / `test_from_config_unknown_provider_rejects`（VisionClient）/ `test_from_config_ok`（VisionClient）于「屏幕视觉」轮追加（`VisionClient` OpenAI 兼容多模态：image_url 块 + 非文本 raise + 复用 `resolve_base_url`）。
 
 ## 04-db（SQLite 连接 + 建表 + 迁移）
 
@@ -448,6 +452,7 @@
 | `test_idle_reflection_result_has_summary` | 功能正确 | 发呆反思：`reflect` 回带 story 写入 `result.summary`（不发 REFLECTION 事件，直接 await） |
 | `test_observe_user_result` | 功能正确 | 观察用户：result 带 `presence`/`window_title` + 确定性 summary `用户（online）正在浏览 编辑器`（0 LLM） |
 | `test_observe_user_result_no_window_title` | 边界鲁棒 | `window_title` 空 → summary 省略「正在浏览」仅 `用户（away）` |
+| `test_observe_user_result_with_screen_summary` | 功能正确 | `screen_summary` 非空 → result 带 `screen_summary` + summary 追加「，屏幕：写代码」（`用户（busy）正在浏览 编辑器，屏幕：写代码`） |
 | `test_execute_failure_marks_incomplete` | 回归保护 | LLM 抛异常 → 活动标 INCOMPLETE + `ended_at` 非空（不卡 RUNNING） |
 | `test_upgrade_to_free_exploration` | 功能正确 | 探索欲 + 精力足 + 频率过 → FREE_EXPLORATION |
 | `test_no_upgrade_when_rate_limited` | 功能正确 | 频率未过 → 降级 READING |
@@ -471,6 +476,13 @@
 | `test_classify_presence_online` | 功能正确 | 键盘/鼠标活跃 → online |
 | `test_classify_presence_busy` | 功能正确 | 无输入 + 有窗口标题 → busy |
 | `test_classify_presence_away` | 功能正确 | 无输入无标题 → away |
+| `test_build_observation_summary_window_title` | 功能正确 | 有窗口无屏幕 → `用户（online）正在浏览 编辑器` |
+| `test_build_observation_summary_no_window` | 边界鲁棒 | 无窗口无屏幕 → `用户（away）` |
+| `test_build_observation_summary_with_screen` | 功能正确 | 窗口+屏幕 → `用户（online）正在浏览 编辑器，屏幕：写代码` |
+| `test_build_observation_summary_screen_only` | 边界鲁棒 | 无窗口有屏幕 → `用户（busy），屏幕：看视频` |
+| `test_sample_once_ok` | 功能正确 | 抓屏+视觉模型各 1 次 → 返回描述文本 `写代码` |
+| `test_sample_once_capture_fails` | 边界鲁棒 | capture 抛异常 → 记日志返 `None` 不崩（best-effort） |
+| `test_sample_once_describe_fails` | 边界鲁棒 | describe 抛异常 → 记日志返 `None` 不崩（best-effort） |
 | `test_read_material_reads_real_file` | 功能正确 | 写真实文件（7000 字）→ `read_material(path, filename, total_chars, cid)` 起一条 `READING` 活动，`progress["source"]` 指向源文件、`result.read_chars==6000`/`total_chars==7000`（一块读 6000 字符不超本），事件序 `[ACTIVITY_START, ACTIVITY_END]` |
 | `test_reading_completion_aggregates_note` | 功能正确 | 6 字书一块读尽 → 聚合片段产完整笔记落盘：`completed=True`、`note="完整读书笔记"`、`path="workspace/notes/book.txt.md"`、LLM 调 `["reading","note"]`（C1 读完一本 = 一篇笔记） |
 | `test_read_material_skips_when_busy` | 边界鲁棒 | 已有 in-flight 活动（`_task` 未 done）时 `read_material` 直接 return 不新建（`list_schedule` 仍 1 条）——并发守卫镜像 `_maybe_start_activity` |
@@ -491,7 +503,7 @@
 | `test_execute_no_desire_no_mark` | 边界鲁棒 | 无关联 desire 的活动（默认观察）→ 不调 `mark_active`/`mark_suppressed` |
 | `test_interrupt_marks_suppressed` | 功能正确 | `interrupt` 落 PAUSED/ABANDONED 后 `mark_suppressed(desire_id)` 恰 1 次（`mark_active` 不调） |
 
-**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）；`test_exploration_plan_non_dict_raises` 于本轮评审修复编写（`_plan_next` 结构校验 fail-fast，配合删除 `recall_memory` 死节点）；`test_read_material_reads_real_file` / `test_read_material_skips_when_busy` 于「喂资料/上传课本」轮追加（上传 → `USER_MATERIAL` → `read_material` 读真实文件产 `{book,note}` + 忙时跳过）；「读书分块读」轮追加 `MaterialStore` 单测（`test_material_store.py` 4 条：最近未读、跳过读完、全读完 None、重传归零）+ `test_desire_reading_reads_latest_material`（探索欲读最近那本、分块推进度）+ `test_no_material_rate_limited_falls_back_to_default`（无书可读限速退回默认，禁编造），并把 `test_read_material_reads_real_file` 断言补上 `read_chars`/`total_chars` 与 `total_chars` 入参。；`test_find_by_topic_*` 于「活动填实（读书按 topic 选料）」轮追加（`MaterialStore.find_by_topic` 按书名子串选未读完的书）。`test_goal_met`（精确版）/ `test_sanitize_filename` / `test_creation_result_has_path` / `test_idle_reflection_result_has_summary` / `test_observe_user_result` / `test_observe_user_result_no_window_title` / `test_reading_completion_aggregates_note` / `test_maybe_start_reading_uses_topic` / `test_interrupt_reading_marks_paused` 同属「活动填实」轮（B3 创作落盘、B2 发呆回带 story、B1 观察 result 带 presence/window_title、C1 读书聚合完整笔记、C2 读书按 topic 选料、C3 `_goal_met` 精确计数、D 读书打断置 PAUSED）；`test_read_material_reads_real_file` 同轮由 6 字改 7000 字（一块读 6000 不读完，适配「读完整本才 completed」的完成判定）；`test_interrupt_non_resumable_abandons`（原 `test_interrupt_running` 改名）+ `test_interrupt_creation_marks_paused` + `test_interrupt_pauses_in_flight_activity`（原 `test_interrupt_abandons_in_flight_activity` 改名）+ `test_resume_paused_creation_reruns` / `test_resume_paused_reading_refreshes_read_chars` / `test_resume_skips_different_block` + `test_get_paused_in_block_*` / `test_get_by_path_*` 于「活动恢复/续做」轮追加（可续活动打断置 PAUSED 保留记录 + 同日程块内恢复同一记录续读/重跑）；`test_execute_marks_active_desire` / `test_execute_failure_marks_suppressed` / `test_execute_no_desire_no_mark` / `test_interrupt_marks_suppressed` 于「欲望 ACTIVE/SUPPRESSED 状态流转」轮追加（活动消费/中断/异常三处接线：消费标 ACTIVE、非满足释放 SUPPRESSED）。
+**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）；`test_exploration_plan_non_dict_raises` 于本轮评审修复编写（`_plan_next` 结构校验 fail-fast，配合删除 `recall_memory` 死节点）；`test_read_material_reads_real_file` / `test_read_material_skips_when_busy` 于「喂资料/上传课本」轮追加（上传 → `USER_MATERIAL` → `read_material` 读真实文件产 `{book,note}` + 忙时跳过）；「读书分块读」轮追加 `MaterialStore` 单测（`test_material_store.py` 4 条：最近未读、跳过读完、全读完 None、重传归零）+ `test_desire_reading_reads_latest_material`（探索欲读最近那本、分块推进度）+ `test_no_material_rate_limited_falls_back_to_default`（无书可读限速退回默认，禁编造），并把 `test_read_material_reads_real_file` 断言补上 `read_chars`/`total_chars` 与 `total_chars` 入参。；`test_find_by_topic_*` 于「活动填实（读书按 topic 选料）」轮追加（`MaterialStore.find_by_topic` 按书名子串选未读完的书）。`test_goal_met`（精确版）/ `test_sanitize_filename` / `test_creation_result_has_path` / `test_idle_reflection_result_has_summary` / `test_observe_user_result` / `test_observe_user_result_no_window_title` / `test_reading_completion_aggregates_note` / `test_maybe_start_reading_uses_topic` / `test_interrupt_reading_marks_paused` 同属「活动填实」轮（B3 创作落盘、B2 发呆回带 story、B1 观察 result 带 presence/window_title、C1 读书聚合完整笔记、C2 读书按 topic 选料、C3 `_goal_met` 精确计数、D 读书打断置 PAUSED）；`test_read_material_reads_real_file` 同轮由 6 字改 7000 字（一块读 6000 不读完，适配「读完整本才 completed」的完成判定）；`test_interrupt_non_resumable_abandons`（原 `test_interrupt_running` 改名）+ `test_interrupt_creation_marks_paused` + `test_interrupt_pauses_in_flight_activity`（原 `test_interrupt_abandons_in_flight_activity` 改名）+ `test_resume_paused_creation_reruns` / `test_resume_paused_reading_refreshes_read_chars` / `test_resume_skips_different_block` + `test_get_paused_in_block_*` / `test_get_by_path_*` 于「活动恢复/续做」轮追加（可续活动打断置 PAUSED 保留记录 + 同日程块内恢复同一记录续读/重跑）；`test_execute_marks_active_desire` / `test_execute_failure_marks_suppressed` / `test_execute_no_desire_no_mark` / `test_interrupt_marks_suppressed` 于「欲望 ACTIVE/SUPPRESSED 状态流转」轮追加（活动消费/中断/异常三处接线：消费标 ACTIVE、非满足释放 SUPPRESSED）；`test_observe_user_result_with_screen_summary` / `test_build_observation_summary_*` / `test_sample_once_*` 于「屏幕视觉」轮追加（观察 summary 折入屏幕描述 + `ScreenObserver` 抓屏→视觉→可选摘要，失败 best-effort 返 None）。
 
 ## 16-expression-prompt（prompt 拼装 + 快慢通道判定）
 

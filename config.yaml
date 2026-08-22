@@ -37,5 +37,12 @@ exploration:
   web_enabled: true           # 联网搜索 opt-in（无书可读时自由上网探索依赖此项）
   rate_limit_hours: 4         # 自由探索频率上限
 
+vision:
+  enabled: false              # 屏幕视觉 opt-in（design §8.5，手动开启）
+  provider: ollama            # 视觉模型 provider→base_url 映射（复用 llm 映射）
+  model: llava                # 本地视觉模型 tag（换成实际 pull 的，如 qwen2-vl）
+  # base_url: http://localhost:11434/v1   # 可选：覆盖视觉 endpoint
+  interval_seconds: 60        # 抓屏周期（秒）
+
 eval:
   judge_sample_rate: 0.1      # LLM-judge 抽样比例

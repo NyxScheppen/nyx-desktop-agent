@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.material_store import MaterialStore
+from nyx.activity.screen import ScreenObserver, capture_screen
 from nyx.activity.store import ActivityStore
 from nyx.config import Config, load_config
 from nyx.db import Database, connect
@@ -40,6 +41,7 @@ from nyx.expression.mutter import should_initiate_chat
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
+from nyx.llm.vision import VisionClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
@@ -92,6 +94,8 @@ class _App:
     last_chat_at: float = 0.0
     last_presence: str = "away"    # 最近观察状态（online/away/busy）
     last_window_title: str = ""    # 最近窗口标题（document.title，观察活动回带）
+    last_screen_summary: str = ""  # 最近屏幕视觉摘要（vision 采样循环写入）
+    screen_observer: ScreenObserver | None = None  # 视觉 opt-in 装配；None=关闭
 
 
 def _root_event(
@@ -530,9 +534,18 @@ async def build_app_context(config: Config) -> _App:
         return {
             "presence": app.last_presence,
             "window_title": app.last_window_title,
+            "screen_summary": app.last_screen_summary,
         }
 
     observation_holder.append(_read_observation)
+
+    # 屏幕视觉（opt-in）：装配 ScreenObserver；main 里起后台采样循环
+    if config.vision.enabled:
+        vision = VisionClient.from_config(config.vision)
+        app.screen_observer = ScreenObserver(
+            capture_screen, vision.describe, config.vision.interval_seconds
+        )
+
     _subscribe(app)
     return app
 
@@ -568,6 +581,17 @@ async def _supervise_bus(app: _App) -> None:
             delay = min(delay * 2.0, _BUS_BACKOFF_MAX)
 
 
+async def _vision_loop(app: _App) -> None:
+    """屏幕视觉后台采样循环：observer.run 永不抛，仅 CancelledError 上抛。"""
+
+    def _update(summary: str) -> None:
+        app.last_screen_summary = summary
+
+    observer = app.screen_observer
+    if observer is not None:
+        await observer.run(_update)
+
+
 async def main() -> None:
     """入口：装配 → 启动 bus 监督器 + tick_loop + uvicorn；任一任务异常终止。"""
     config = load_config()
@@ -577,17 +601,18 @@ async def main() -> None:
     serve_task = asyncio.create_task(server.serve())
     bus_task = asyncio.create_task(_supervise_bus(app))
     tick_task = asyncio.create_task(_tick_loop(app))
+    tasks: set[asyncio.Task[Any]] = {serve_task, bus_task, tick_task}
+    if app.screen_observer is not None:
+        tasks.add(asyncio.create_task(_vision_loop(app)))
     try:
-        done, _ = await asyncio.wait(
-            {serve_task, bus_task, tick_task}, return_when=asyncio.FIRST_COMPLETED
-        )
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             task.result()  # 任一先完成者异常 → 重抛终止进程（非零退出）
     finally:
-        for t in (serve_task, bus_task, tick_task):
+        for t in tasks:
             if not t.done():
                 t.cancel()
-        await asyncio.gather(serve_task, bus_task, tick_task, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _run_with_reload() -> None:

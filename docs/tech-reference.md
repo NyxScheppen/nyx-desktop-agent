@@ -257,6 +257,7 @@ nyx/
     scheduler.py          # 日程块排期
     exploration.py        # 跨域行为链（LangGraph）
     observe.py            # 观察用户
+    screen.py             # 屏幕视觉（截屏+ScreenObserver，opt-in）
   desire/
     facade.py             # DesireFacade
     store.py              # SQLite 存取（short_term_desire / desire_value / long_term_desire 三表）
@@ -278,6 +279,7 @@ nyx/
     judge.py              # LLM-judge（抽样）
   llm/
     client.py             # LangChain 统一客户端
+    vision.py             # VisionClient（多模态视觉，OpenAI 兼容）
 ```
 
 > 对应测试目录见 `how-testing.md`。
@@ -328,6 +330,13 @@ expression:
 exploration:
   web_enabled: false          # 联网搜索 opt-in
   rate_limit_hours: 4         # 自由探索频率上限
+
+vision:
+  enabled: false              # 屏幕视觉 opt-in（手动开启）
+  provider: ollama            # 视觉模型 provider→base_url 映射（复用 llm 映射）
+  model: llava                # 本地视觉模型 tag（Ollama）
+  # base_url: http://localhost:11434/v1   # 可选：覆盖视觉 endpoint
+  interval_seconds: 60        # 抓屏周期（秒）
 
 eval:
   judge_sample_rate: 0.1      # LLM-judge 抽样比例

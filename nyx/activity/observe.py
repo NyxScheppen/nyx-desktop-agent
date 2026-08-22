@@ -13,3 +13,17 @@ def classify_presence(
     if window_title:
         return "busy"
     return "away"
+
+
+def build_observation_summary(
+    presence: str, window_title: str, screen_summary: str
+) -> str:
+    """观察摘要（纯函数，design §8.5 屏幕视觉扩展）：窗口标题优先，
+    视觉摘要次之逐段拼接；两者皆空则仅回 presence。"""
+    if window_title:
+        base = f"用户（{presence}）正在浏览 {window_title}"
+    else:
+        base = f"用户（{presence}）"
+    if screen_summary:
+        base += f"，屏幕：{screen_summary}"
+    return base

@@ -28,7 +28,7 @@
 |---|---|---|
 | ~~主题种子轮转（按「没做过/新鲜度最低」取）~~ ✅ 已落地 | design §7.3 | `_pick_topic_seed` 查记忆 substring：没做过优先、都做过取新鲜度最低；`DesireFacade`/`DesireLifecycle` 注入 `list_memories` 回调 |
 | ~~长期欲望「最相关」判定~~ ✅ 已落地 | — | 满足时 `_most_relevant_long_term` 按 `goal.topic` 双向 substring 命中 `subtopics` 者回写，否则第一个 type 匹配 |
-| 欲望 `ACTIVE` / `SUPPRESSED` 状态流转 | — | 活动系统用 `ACTIVE` 标记「消费中」，`SUPPRESSED` 纳入流转 |
+| ~~欲望 `ACTIVE` / `SUPPRESSED` 状态流转~~ ✅ 已落地 | — | 活动系统用 `ACTIVE` 标记「消费中」，`SUPPRESSED` 纳入流转：`mark_active` 消费开始标 ACTIVE、`mark_suppressed` 中断/异常停车、`run_eval` 可表达即释放回队列 |
 
 ## eval
 

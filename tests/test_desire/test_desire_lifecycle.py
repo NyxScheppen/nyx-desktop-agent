@@ -601,6 +601,143 @@ async def test_satisfy_expire_missing() -> None:
         await database.conn.close()
 
 
+# ---- mark_active / mark_suppressed ----
+
+
+async def test_mark_active_pending_to_active() -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        await store.add_desire(_desire("d1"))
+        await lifecycle.mark_active("d1")
+        d = await store.get_desire("d1")
+        assert d is not None and d.status is DesireStatus.ACTIVE
+    finally:
+        await database.conn.close()
+
+
+async def test_mark_active_guard() -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        for status in (
+            DesireStatus.SUPPRESSED,
+            DesireStatus.SATISFIED,
+            DesireStatus.EXPIRED,
+        ):
+            d = _desire(f"d-{status.value}")
+            d.status = status
+            await store.add_desire(d)
+            await lifecycle.mark_active(d.id)
+            got = await store.get_desire(d.id)
+            assert got is not None and got.status is status   # 非 PENDING 不转
+        await lifecycle.mark_active("missing")               # 缺失 no-op 不抛
+    finally:
+        await database.conn.close()
+
+
+async def test_mark_suppressed_active_to_suppressed() -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        d = _desire("d1")
+        d.status = DesireStatus.ACTIVE
+        await store.add_desire(d)
+        await lifecycle.mark_suppressed("d1")
+        got = await store.get_desire("d1")
+        assert got is not None and got.status is DesireStatus.SUPPRESSED
+    finally:
+        await database.conn.close()
+
+
+async def test_mark_suppressed_guard() -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        for status in (
+            DesireStatus.PENDING,
+            DesireStatus.SATISFIED,
+            DesireStatus.EXPIRED,
+        ):
+            d = _desire(f"d-{status.value}")
+            d.status = status
+            await store.add_desire(d)
+            await lifecycle.mark_suppressed(d.id)
+            got = await store.get_desire(d.id)
+            assert got is not None and got.status is status   # 非 ACTIVE 不转
+        await lifecycle.mark_suppressed("missing")           # 缺失 no-op 不抛
+    finally:
+        await database.conn.close()
+
+
+async def test_satisfy_releases_active() -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        # 未达标：ACTIVE → PENDING（不卡 ACTIVE）
+        d = _desire("d1")
+        d.status = DesireStatus.ACTIVE
+        await store.add_desire(d)
+        await lifecycle.satisfy("d1", False)
+        got = await store.get_desire("d1")
+        assert got is not None and got.status is DesireStatus.PENDING
+        assert got.retry_count == 1
+        # 达标：ACTIVE → SATISFIED
+        d2 = _desire("d2")
+        d2.status = DesireStatus.ACTIVE
+        await store.add_desire(d2)
+        await lifecycle.satisfy("d2", True)
+        got2 = await store.get_desire("d2")
+        assert got2 is not None and got2.status is DesireStatus.SATISFIED
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_releases_suppressed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        # 可表达（0.6 >= 0.5 抑制阈值）但未达峰（< 0.8）→ 释放且不生成
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.6, updated_at=t0))
+        d = _desire("d1")
+        d.status = DesireStatus.SUPPRESSED
+        await store.add_desire(d)
+        async with _running(bus):
+            await lifecycle.run_eval()
+        got = await store.get_desire("d1")
+        assert got is not None and got.status is DesireStatus.PENDING
+        assert llm.calls == []                                  # 未达峰不生成
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_keeps_suppressed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        # 不可表达（0.4 < 0.5 抑制阈值）→ 保持 SUPPRESSED
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.4, updated_at=t0))
+        d = _desire("d1")
+        d.status = DesireStatus.SUPPRESSED
+        await store.add_desire(d)
+        async with _running(bus):
+            await lifecycle.run_eval()
+        got = await store.get_desire("d1")
+        assert got is not None and got.status is DesireStatus.SUPPRESSED
+    finally:
+        await database.conn.close()
+
+
 # ---- run_eval LLM 兜底 ----
 
 

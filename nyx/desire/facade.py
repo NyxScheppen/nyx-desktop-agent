@@ -54,6 +54,12 @@ class DesireFacade:
     async def expire(self, desire_id: str) -> None:
         await self._lifecycle.expire(desire_id)
 
+    async def mark_active(self, desire_id: str) -> None:
+        await self._lifecycle.mark_active(desire_id)
+
+    async def mark_suppressed(self, desire_id: str) -> None:
+        await self._lifecycle.mark_suppressed(desire_id)
+
     async def add_long_term(self, desire: LongTermDesire) -> None:
         """反思新增/强化长期欲望入口：直接插入（容量检查归 12 反思）。"""
         await self._store.insert_long_term(desire)

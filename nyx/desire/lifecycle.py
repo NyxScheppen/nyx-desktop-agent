@@ -203,6 +203,13 @@ class DesireLifecycle:
                 values[lt.type].value, _LONG_TERM_PRESSURE_DELTA
             )
 
+        # 2.5 SUPPRESSED 释放：类型仍可表达（值越过抑制阈值）→ 放回队列
+        for d in await self._store.list_suppressed():
+            dv = values.get(d.type)
+            if dv is not None and is_expressible(dv.value, dv.suppression_threshold):
+                d.status = DesireStatus.PENDING
+                await self._store.update_desire(d)
+
         # 3. 达峰判定（可表达 = 达峰且未被抑制压住）
         expressible = [
             dv for dv in values.values()
@@ -290,6 +297,8 @@ class DesireLifecycle:
             return
         if desire.status in (DesireStatus.SATISFIED, DesireStatus.EXPIRED):
             return
+        if desire.status is DesireStatus.ACTIVE:
+            desire.status = DesireStatus.PENDING  # 消费中先释放，未达标分支不卡 ACTIVE
         if goal_met and desire.goal is not None:
             desire.goal_progress += 1
             if desire.goal_progress >= desire.goal.count:
@@ -314,6 +323,22 @@ class DesireLifecycle:
         if desire.status in (DesireStatus.SATISFIED, DesireStatus.EXPIRED):
             return
         await self._expire(desire)
+
+    async def mark_active(self, desire_id: str) -> None:
+        """PENDING → ACTIVE：活动开始消费。仅 PENDING 可转，其余幂等 no-op。"""
+        desire = await self._store.get_desire(desire_id)
+        if desire is None or desire.status is not DesireStatus.PENDING:
+            return
+        desire.status = DesireStatus.ACTIVE
+        await self._store.update_desire(desire)
+
+    async def mark_suppressed(self, desire_id: str) -> None:
+        """ACTIVE → SUPPRESSED：活动中断/异常停车，不立即重试。仅 ACTIVE 可转。"""
+        desire = await self._store.get_desire(desire_id)
+        if desire is None or desire.status is not DesireStatus.ACTIVE:
+            return
+        desire.status = DesireStatus.SUPPRESSED
+        await self._store.update_desire(desire)
 
     async def _satisfy(self, desire: ShortTermDesire) -> None:
         desire.status = DesireStatus.SATISFIED

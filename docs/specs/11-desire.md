@@ -15,13 +15,17 @@
 
 ## 验收标准
 
-- [ ] `store.py` 含 `DesireStore`（`add_desire` / `get_desire` / `list_pending` / `list_short_term` / `update_desire` / `get_value` / `list_values` / `upsert_value` / `insert_long_term` / `list_long_term` / `update_long_term`）+ 序列化 helper，与「`desire/store.py`（完整）」段代码逐字一致
-- [ ] `lifecycle.py` 含 `DesireLifecycle`（`pressure_from_observation` / `satisfy_from_activity_end` / `run_eval` / `satisfy` / `expire`）+ `_parse_desire` / `_subtopics_for` / `_subtopic_freshness` / `_pick_topic_seed` / `_most_relevant_long_term` / `_build_desire_prompt`，与「`desire/lifecycle.py`（完整）」段代码逐字一致
-- [ ] `facade.py` 含 `DesireFacade`，七个公开方法签名与 tech-ref §5 逐字一致：`add_value(source: Event) -> None` / `evaluate() -> list[ShortTermDesire]` / `get_pending() -> list[ShortTermDesire]` / `get_all() -> DesireState` / `satisfy(desire_id: str, goal_met: bool) -> None` / `expire(desire_id: str) -> None` / `add_long_term(desire: LongTermDesire) -> None`
+- [ ] `store.py` 含 `DesireStore`（`add_desire` / `get_desire` / `list_pending` / `list_suppressed` / `list_short_term` / `update_desire` / `get_value` / `list_values` / `upsert_value` / `insert_long_term` / `list_long_term` / `update_long_term`）+ 序列化 helper，与「`desire/store.py`（完整）」段代码逐字一致
+- [ ] `lifecycle.py` 含 `DesireLifecycle`（`pressure_from_observation` / `satisfy_from_activity_end` / `run_eval` / `satisfy` / `expire` / `mark_active` / `mark_suppressed`）+ `_parse_desire` / `_subtopics_for` / `_subtopic_freshness` / `_pick_topic_seed` / `_most_relevant_long_term` / `_build_desire_prompt`，与「`desire/lifecycle.py`（完整）」段代码逐字一致
+- [ ] `facade.py` 含 `DesireFacade`，九个公开方法签名与 tech-ref §5 逐字一致：`add_value(source: Event) -> None` / `evaluate() -> list[ShortTermDesire]` / `get_pending() -> list[ShortTermDesire]` / `get_all() -> DesireState` / `satisfy(desire_id: str, goal_met: bool) -> None` / `expire(desire_id: str) -> None` / `mark_active(desire_id: str) -> None` / `mark_suppressed(desire_id: str) -> None` / `add_long_term(desire: LongTermDesire) -> None`
 - [ ] `add_value` 是**事件入口**（对 tech-ref「加压」注释的精确化）：`OBSERVATION_STATE` → 互动欲加压，`ACTIVITY_END` → 解析满足信号回写；其余类型忽略
 - [ ] `run_eval`：先四类型衰减（`elapsed_days` 来自 `updated_at`）→ 长期欲望周期加压 → 达峰判定（`at_peak and is_expressible`）→ **只生成最迫切的 1 个**（value 最高）→ LLM 生成 → 重置该类型 value → 入队 → 发布 `desire_generated`；无达峰返回 `[]`，非选中类型**保留压力**（不重置）
-- [ ] `satisfy(goal_met=True)`：出队（`SATISFIED`）+ 表达权重正强化 + 长期进度回写 + 发布 `desire_satisfied`
+- [ ] `satisfy(goal_met=True, goal=None)`：出队（`SATISFIED`）+ 表达权重正强化 + 长期进度回写 + 发布 `desire_satisfied`
+- [ ] `satisfy(goal_met=True, goal 非 None)`：`goal_progress+1` 累计；`>= goal.count` 才满足（出队 + 强化 + 回写 + 发布），否则保持 `PENDING`（累计进度，不重复满足）
 - [ ] `satisfy(goal_met=False)`：`retry_count+1`；`> retry_limit` → 放弃（`EXPIRED` + 值回增 + 抑制阈值上浮 + 发布 `desire_expired`）；否则保持 `PENDING`（`created_at` 不变，`list_pending` 的 `created_at ASC` FIFO 天然靠前，无显式插队动作）
+- [ ] `mark_active`：`PENDING → ACTIVE`（活动开始消费），仅 PENDING 可转、其余幂等 no-op
+- [ ] `mark_suppressed`：`ACTIVE → SUPPRESSED`（活动中断/异常停车，不立即重试），仅 ACTIVE 可转、其余幂等 no-op
+- [ ] `run_eval` 释放：`SUPPRESSED` 欲望其类型仍可表达（`is_expressible`）→ `PENDING` 放回队列；不可表达保持 `SUPPRESSED`
 - [ ] `expire`：`EXPIRED` + 值回增 + 抑制阈值上浮 + 发布 `desire_expired`
 - [ ] `add_long_term(desire)`：直接委托 `store.insert_long_term`（无容量逻辑；容量检查归 12 反思）
 - [ ] 事件发布遵守「Facade 自己 publish、绝不返回 Event」；事件 `source=INTERNAL`；`desire_satisfied` / `desire_expired` 的 `correlation_id` = `desire.id`
@@ -46,7 +50,7 @@
 - **`strength` 语义**：`ShortTermDesire.strength` = 达峰时的 `value`（生成前保存，值重置后仍保留），供展示/排序
 - **长期进度回写（decision，可推翻）**：满足时回写**最相关**的长期欲望 `progress += 0.1`（夹 `[0,1]`）、`strength -= 0.02`（夹 `[0,1]`）。`_most_relevant_long_term` 按 `goal.topic` 双向 substring 命中 `subtopics` 者优先，无 topic 或都不命中退回第一个 `type` 匹配；无 `type` 匹配返回 `None`（不回写）
 - **长期欲望初始化（seed）**：3 个初始集来自 canon §4（硬编码），归 **18-api 组合根**启动时 `insert_long_term`（表空才 seed）；四类型 `desire_value` 同样由 18-api 用 `default_value(t)` 初始化并覆盖 `updated_at=now`。11 只提供 store 原语，不提供 seed 方法；`long_term_capacity` 不被 11 消费——长期欲望运行时新增/淘汰的唯一入口是 12-inner-life 反思，容量淘汰编排归 12
-- **`SUPPRESSED` 状态 MVP 不用**：status 流转只用 `PENDING → SATISFIED | EXPIRED`。`list_pending` 过滤 `status IN ('pending','active')`
+- **五态流转（V2，`ACTIVE`/`SUPPRESSED` 纳入）**：`PENDING → ACTIVE`（`mark_active`，活动 `_execute` 置 RUNNING 时）；`ACTIVE → SATISFIED | EXPIRED`（满足/淘汰，`satisfy` 里先 `ACTIVE → PENDING` 释放再走原逻辑）；`ACTIVE → SUPPRESSED`（`mark_suppressed`，活动中断/异常停车，不立即重试）；`SUPPRESSED → PENDING`（`run_eval` 里类型仍可表达即释放回队列）。`SUPPRESSED` 可逆、非终态——`list_pending` 过滤 `status IN ('pending','active')` 天然排除 suppressed/终态，无需改过滤；续做路径（14 恢复同一记录）里 `mark_active` 对 SUPPRESSED 是 no-op，完成时 `satisfy` 从 SUPPRESSED 直达 SATISFIED 合法
 - **`activity_end` 的满足信号契约（14 引用）**：`event.content` 含 `desire_id`（`str | None`）与 `goal_met`（`bool | None`）。`satisfy_from_activity_end` 缺任一键或非预期类型即跳过（不抛），因为观察用户/发呆等活动无欲望可满足
 - **新增 `output_type="desire"`**：落 `TokenUsage.purpose`（01-types 该字段是自由字符串，design 注释已含 `desire`，无冲突）
 
@@ -61,7 +65,10 @@ from nyx.db import Database
 from nyx.enums import DesireStatus, DesireType, GoalAction
 from nyx.types import DesireValue, Goal, LongTermDesire, ShortTermDesire
 
-_STD_COLS = "id, created_at, type, strength, description, goal, retry_count, status"
+_STD_COLS = (
+    "id, created_at, type, strength, description, goal, retry_count, "
+    "status, goal_progress"
+)
 _VALUE_COLS = "type, value, expression_weight, suppression_threshold, updated_at"
 _LT_COLS = (
     "id, created_at, type, name, description, strength, progress, "
@@ -86,7 +93,7 @@ class DesireStore:
         async with self._db.lock:
             await self._db.conn.execute(
                 f"INSERT INTO short_term_desire ({_STD_COLS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _std_row(desire),
             )
             await self._db.conn.commit()
@@ -109,6 +116,16 @@ class DesireStore:
             rows = await cursor.fetchall()
         return [_row_to_std(r) for r in rows]
 
+    async def list_suppressed(self) -> list[ShortTermDesire]:
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_STD_COLS} FROM short_term_desire "
+                "WHERE status = ? ORDER BY created_at ASC",
+                (DesireStatus.SUPPRESSED.value,),
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_std(r) for r in rows]
+
     async def list_short_term(self) -> list[ShortTermDesire]:
         """全部短期欲望（含 satisfied/expired 历史），供 /api/desires
         全量快照；最新在前。"""
@@ -123,11 +140,11 @@ class DesireStore:
         async with self._db.lock:
             await self._db.conn.execute(
                 "UPDATE short_term_desire SET type = ?, strength = ?, description = ?, "
-                "goal = ?, retry_count = ?, status = ? WHERE id = ?",
+                "goal = ?, retry_count = ?, status = ?, goal_progress = ? WHERE id = ?",
                 (
                     desire.type.value, desire.strength, desire.description,
                     _goal_json(desire.goal), desire.retry_count, desire.status.value,
-                    desire.id,
+                    desire.goal_progress, desire.id,
                 ),
             )
             await self._db.conn.commit()
@@ -202,10 +219,10 @@ class DesireStore:
 
 def _std_row(
     d: ShortTermDesire
-) -> tuple[str, float, str, float, str, str | None, int, str]:
+) -> tuple[str, float, str, float, str, str | None, int, str, int]:
     return (
         d.id, d.created_at, d.type.value, d.strength, d.description,
-        _goal_json(d.goal), d.retry_count, d.status.value,
+        _goal_json(d.goal), d.retry_count, d.status.value, d.goal_progress,
     )
 
 
@@ -225,6 +242,7 @@ def _row_to_std(row: aiosqlite.Row) -> ShortTermDesire:
         goal=_parse_goal(row["goal"]),
         retry_count=row["retry_count"],
         status=DesireStatus(row["status"]),
+        goal_progress=row["goal_progress"],
     )
 
 
@@ -480,6 +498,13 @@ class DesireLifecycle:
                 values[lt.type].value, _LONG_TERM_PRESSURE_DELTA
             )
 
+        # 2.5 SUPPRESSED 释放：类型仍可表达（值越过抑制阈值）→ 放回队列
+        for d in await self._store.list_suppressed():
+            dv = values.get(d.type)
+            if dv is not None and is_expressible(dv.value, dv.suppression_threshold):
+                d.status = DesireStatus.PENDING
+                await self._store.update_desire(d)
+
         # 3. 达峰判定（可表达 = 达峰且未被抑制压住）
         expressible = [
             dv for dv in values.values()
@@ -560,11 +585,21 @@ class DesireLifecycle:
         return [desire]
 
     async def satisfy(self, desire_id: str, goal_met: bool) -> None:
-        """达成/未达成回写。终态（SATISFIED/EXPIRED）幂等：重复投递 no-op。"""
+        """达成/未达成回写。goal 非 None 时按 count 累计 goal_progress，达标才满足；
+        goal None 沿用单次满足。终态（SATISFIED/EXPIRED）幂等：重复投递 no-op。"""
         desire = await self._store.get_desire(desire_id)
         if desire is None:
             return
         if desire.status in (DesireStatus.SATISFIED, DesireStatus.EXPIRED):
+            return
+        if desire.status is DesireStatus.ACTIVE:
+            desire.status = DesireStatus.PENDING  # 消费中先释放，未达标分支不卡 ACTIVE
+        if goal_met and desire.goal is not None:
+            desire.goal_progress += 1
+            if desire.goal_progress >= desire.goal.count:
+                await self._satisfy(desire)
+            else:
+                await self._store.update_desire(desire)  # 保持 PENDING，累计进度
             return
         if goal_met:
             await self._satisfy(desire)
@@ -583,6 +618,22 @@ class DesireLifecycle:
         if desire.status in (DesireStatus.SATISFIED, DesireStatus.EXPIRED):
             return
         await self._expire(desire)
+
+    async def mark_active(self, desire_id: str) -> None:
+        """PENDING → ACTIVE：活动开始消费。仅 PENDING 可转，其余幂等 no-op。"""
+        desire = await self._store.get_desire(desire_id)
+        if desire is None or desire.status is not DesireStatus.PENDING:
+            return
+        desire.status = DesireStatus.ACTIVE
+        await self._store.update_desire(desire)
+
+    async def mark_suppressed(self, desire_id: str) -> None:
+        """ACTIVE → SUPPRESSED：活动中断/异常停车，不立即重试。仅 ACTIVE 可转。"""
+        desire = await self._store.get_desire(desire_id)
+        if desire is None or desire.status is not DesireStatus.ACTIVE:
+            return
+        desire.status = DesireStatus.SUPPRESSED
+        await self._store.update_desire(desire)
 
     async def _satisfy(self, desire: ShortTermDesire) -> None:
         desire.status = DesireStatus.SATISFIED
@@ -693,6 +744,12 @@ class DesireFacade:
     async def expire(self, desire_id: str) -> None:
         await self._lifecycle.expire(desire_id)
 
+    async def mark_active(self, desire_id: str) -> None:
+        await self._lifecycle.mark_active(desire_id)
+
+    async def mark_suppressed(self, desire_id: str) -> None:
+        await self._lifecycle.mark_suppressed(desire_id)
+
     async def add_long_term(self, desire: LongTermDesire) -> None:
         """反思新增/强化长期欲望入口：直接插入（容量检查归 12 反思）。"""
         await self._store.insert_long_term(desire)
@@ -705,8 +762,10 @@ class DesireFacade:
     - [ ] `add_desire + get_desire` 往返：含 `goal=Goal(READ, 3, "骑士团")`、非默认 `retry_count`/`status` → 各字段全等（`goal` JSON 往返、枚举往返）
     - [ ] `goal=None` 往返 → `get_desire().goal is None`（SQL NULL 非 `"null"` 字符串）
     - [ ] `list_pending`：造 pending/active/satisfied/expired 各一条 → 只返回 pending+active，按 `created_at ASC` 排序
+    - [ ] `list_suppressed`：造 suppressed 两条（`created_at` 乱序）+ pending/active 各一条 → 只返回 suppressed，按 `created_at ASC` 排序
     - [ ] `list_short_term`：同上四条 → 返回全部（含 satisfied/expired），按 `created_at DESC` 排序（区别于 `list_pending` 的过滤 + ASC）
     - [ ] `update_desire`：改 `status`/`retry_count` → `get_desire` 验证
+    - [ ] `goal_progress` 往返：`add_desire` 带 `goal_progress=2` → `get` 往返；`update_desire` 改 `goal_progress=3` → 再 `get` 验证（goal 精确计数存储层）
     - [ ] `list_values + upsert_value`：`upsert_value` 新建 → `list_values` 返回；同 `type` 再 `upsert_value` 改 `value`/`updated_at`（ON CONFLICT 更新不重复建行）
     - [ ] `insert_long_term + list_long_term + update_long_term`：`subtopics`/`linked_values` JSON 数组往返、`type` 枚举往返；`update_long_term` 改 `progress`/`strength`
   - [ ] **lifecycle 纯函数**：
@@ -723,18 +782,25 @@ class DesireFacade:
     - [ ] **长期加压**：seed 一个 `type=EXPLORATION` 的长期欲望 → 探索欲 `value` 额外 +0.2
     - [ ] **衰减**：`updated_at` 设为 1 天前 → `value` 衰减 `value_decay × 1`
     - [ ] **抑制门控**：`suppression_threshold=0.9 > value=0.85`（达峰但被抑制）→ 不生成，返回 `[]`
+    - [ ] **SUPPRESSED 释放**：SUPPRESSED 欲望其类型 `value=0.6 >= suppression=0.5` → `run_eval` 后该欲望 `status is PENDING`（不新生成）；`value=0.4 < 0.5` → 保持 SUPPRESSED
     - [ ] **主题种子**：seed 探索型长期欲望（`subtopics=["骑士团", "大学朋友"]`）+ 记忆命中「骑士团」→ LLM 收到的 prompt 含「大学朋友」、不含「骑士团」（没做过优先）
   - [ ] **satisfy**：
     - [ ] `goal_met=True` → `status is SATISFIED`、表达权重 +0.05、长期进度 +0.1、发布 `desire_satisfied`
+    - [ ] **goal 精确计数**：`goal.count=3` → 前两次 `goal_met=True` 累计 `goal_progress` 保持 PENDING、不发布；第三次 → SATISFIED + 发布 `desire_satisfied`
     - [ ] **最相关回写**：同类型两条长期欲望（subtopics 各不同）+ `goal.topic` 命中第二条 → 只回写第二条 progress、第一条不动
     - [ ] `goal_met=False` 且 `retry_count <= retry_limit` → `retry_count+1`、`status` 仍 `PENDING`、无事件
     - [ ] `goal_met=False` 且 `retry_count > retry_limit` → `status is EXPIRED`、值回增 `+REFUND_DELTA`、抑制阈值 +0.1、发布 `desire_expired`
   - [ ] **expire**：`status is EXPIRED` + 值回增 + 抑制阈值上浮 + 发布 `desire_expired`
   - [ ] **satisfy/expire 未命中**：`desire_id` 不存在 → 无事件、不抛
+  - [ ] **mark_active / mark_suppressed**：
+    - [ ] `mark_active`：PENDING → ACTIVE；SUPPRESSED/SATISFIED/EXPIRED/缺失 → 不变（no-op）
+    - [ ] `mark_suppressed`：ACTIVE → SUPPRESSED；PENDING/SATISFIED/EXPIRED/缺失 → 不变（no-op）
+    - [ ] `satisfy` 释放：ACTIVE 欲望 `satisfy` 未达标 → `status is PENDING`（不卡 ACTIVE）；达标 → SATISFIED
   - [ ] **facade**（`test_desire_facade.py`）：
     - [ ] `add_value(OBSERVATION_STATE)` → 互动欲加压；`add_value(ACTIVITY_END)`（content 含 `desire_id`+`goal_met`）→ 满足回写；`add_value(ACTIVITY_END)`（缺键/错类型）→ 无操作
     - [ ] `evaluate` / `get_pending` / `get_all` / `satisfy` / `expire` 委托（`get_all` 返回 `DesireState` 三字段非空；`short_term` 含 satisfied 历史、`long_term` 含 seed 的长期欲望）
     - [ ] `add_long_term(desire)` → `list_long_term` 多一条、字段全等（委托 `insert_long_term`）
+    - [ ] `mark_active` / `mark_suppressed` 委托 → `status` 依次 ACTIVE / SUPPRESSED
 - [ ] 集成测试：无（LLM 全 mock、DB 用 `:memory:`；与 activity/expression 的真实编排归 13/14/17）
 - [ ] E2E 测试：无
 

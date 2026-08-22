@@ -113,6 +113,8 @@ async def get_pending() -> list[ShortTermDesire]                # 读待消费�
 async def get_all() -> DesireState                              # 全量快照（values+短期+长期，供 /api/desires）
 async def satisfy(desire_id: str, goal_met: bool) -> None       # 达成/未达成回写；达成时发布 desire_satisfied（inner_life 消费更新情感）
 async def expire(desire_id: str) -> None                        # 淘汰→值回增
+async def mark_active(desire_id: str) -> None                   # PENDING → ACTIVE：活动开始消费（仅 PENDING 可转，幂等 no-op）
+async def mark_suppressed(desire_id: str) -> None               # ACTIVE → SUPPRESSED：中断/异常停车（仅 ACTIVE 可转，幂等 no-op）
 async def add_long_term(desire: LongTermDesire) -> None         # 反思新增/强化长期欲望入口（容量检查归 12 反思）
 ```
 

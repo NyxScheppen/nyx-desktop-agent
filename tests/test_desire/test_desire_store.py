@@ -101,6 +101,25 @@ async def test_list_pending_filters_and_orders() -> None:
         await database.conn.close()
 
 
+async def test_list_suppressed_filters_and_orders() -> None:
+    database = await db.connect(":memory:")
+    store = DesireStore(database)
+    try:
+        await store.add_desire(_desire("p1", created_at=100.0))
+        await store.add_desire(
+            _desire("sup1", created_at=200.0, status=DesireStatus.SUPPRESSED)
+        )
+        await store.add_desire(
+            _desire("sup2", created_at=50.0, status=DesireStatus.SUPPRESSED)
+        )
+        await store.add_desire(
+            _desire("a1", created_at=300.0, status=DesireStatus.ACTIVE)
+        )
+        assert [d.id for d in await store.list_suppressed()] == ["sup2", "sup1"]
+    finally:
+        await database.conn.close()
+
+
 async def test_list_short_term_all_desc() -> None:
     database = await db.connect(":memory:")
     store = DesireStore(database)

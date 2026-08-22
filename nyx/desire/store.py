@@ -57,6 +57,16 @@ class DesireStore:
             rows = await cursor.fetchall()
         return [_row_to_std(r) for r in rows]
 
+    async def list_suppressed(self) -> list[ShortTermDesire]:
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_STD_COLS} FROM short_term_desire "
+                "WHERE status = ? ORDER BY created_at ASC",
+                (DesireStatus.SUPPRESSED.value,),
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_std(r) for r in rows]
+
     async def list_short_term(self) -> list[ShortTermDesire]:
         """全部短期欲望（含 satisfied/expired 历史），供 /api/desires
         全量快照；最新在前。"""

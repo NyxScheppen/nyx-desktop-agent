@@ -296,6 +296,21 @@ async def test_satisfy_expire_delegate() -> None:
         await database.conn.close()
 
 
+async def test_mark_active_suppressed_delegate() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        await store.add_desire(_desire("d1"))
+        await facade.mark_active("d1")
+        d = await store.get_desire("d1")
+        assert d is not None and d.status is DesireStatus.ACTIVE
+        await facade.mark_suppressed("d1")
+        d = await store.get_desire("d1")
+        assert d is not None and d.status is DesireStatus.SUPPRESSED
+    finally:
+        await database.conn.close()
+
+
 async def test_add_long_term_delegates() -> None:
     store, bus, database = await _new_stack()
     facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())

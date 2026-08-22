@@ -211,6 +211,8 @@ class _FakeDesire:
     ) -> None:
         self._pending = pending if pending is not None else []
         self._values = values if values is not None else []
+        self.mark_active_calls: list[str] = []
+        self.mark_suppressed_calls: list[str] = []
 
     async def get_pending(self) -> list[ShortTermDesire]:
         return self._pending
@@ -219,6 +221,12 @@ class _FakeDesire:
         return DesireState(
             values=self._values, short_term=self._pending, long_term=[]
         )
+
+    async def mark_active(self, desire_id: str) -> None:
+        self.mark_active_calls.append(desire_id)
+
+    async def mark_suppressed(self, desire_id: str) -> None:
+        self.mark_suppressed_calls.append(desire_id)
 
 
 class _FakeTools:
@@ -624,6 +632,78 @@ async def test_execute_failure_marks_incomplete() -> None:
         assert len(acts) == 1
         assert acts[0].status is ActivityStatus.INCOMPLETE
         assert acts[0].ended_at is not None
+    finally:
+        await database.conn.close()
+
+
+async def test_execute_marks_active_desire() -> None:
+    """活动真正开始消费：_execute 置 RUNNING 后标 desire ACTIVE 恰一次。"""
+    facade, _store, bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.CREATION)], energy=80.0, llm=_FakeLlm()
+    )
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        desire = cast(_FakeDesire, facade._desire)
+        assert desire.mark_active_calls == ["d1"]
+        assert desire.mark_suppressed_calls == []
+    finally:
+        await database.conn.close()
+
+
+async def test_execute_failure_marks_suppressed() -> None:
+    """活动异常：标 ACTIVE 后非满足退出，desire 释放到 SUPPRESSED。"""
+    facade, store, bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.CREATION)], energy=80.0, llm=_RaisingLlm()
+    )
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            with pytest.raises(RuntimeError):
+                await _await_task(facade)
+        desire = cast(_FakeDesire, facade._desire)
+        assert desire.mark_active_calls == ["d1"]
+        assert desire.mark_suppressed_calls == ["d1"]
+        acts = await store.list_schedule(0.0)
+        assert acts[0].status is ActivityStatus.INCOMPLETE
+    finally:
+        await database.conn.close()
+
+
+async def test_execute_no_desire_no_mark() -> None:
+    """无关联 desire 的活动（默认观察）不调 mark_active/mark_suppressed。"""
+    facade, _store, bus, database = await _new_facade(energy=80.0)
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        desire = cast(_FakeDesire, facade._desire)
+        assert desire.mark_active_calls == []
+        assert desire.mark_suppressed_calls == []
+    finally:
+        await database.conn.close()
+
+
+async def test_interrupt_marks_suppressed() -> None:
+    """打断 RUNNING 活动：关联 desire 释放到 SUPPRESSED。"""
+    facade, store, bus, database = await _new_facade()
+    try:
+        async with _running(bus):
+            await store.insert(
+                _activity(
+                    "a1",
+                    type_=ActivityType.CREATION,
+                    status=ActivityStatus.RUNNING,
+                    progress={
+                        "desire_id": "d1", "goal": None, "correlation_id": "d1",
+                    },
+                )
+            )
+            await facade.interrupt("a1", EventType.USER_MESSAGE)
+        desire = cast(_FakeDesire, facade._desire)
+        assert desire.mark_suppressed_calls == ["d1"]
+        assert desire.mark_active_calls == []
     finally:
         await database.conn.close()
 

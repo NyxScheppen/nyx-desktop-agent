@@ -293,6 +293,9 @@ class ActivityFacade:
         )
         activity.ended_at = time.time()
         await self._store.update(activity)
+        desire_id = activity.progress.get("desire_id")
+        if isinstance(desire_id, str):
+            await self._desire.mark_suppressed(desire_id)  # 中断：ACTIVE → SUPPRESSED
         await self._bus.publish(
             internal_event(
                 EventType.ACTIVITY_INTERRUPTED,
@@ -415,6 +418,9 @@ class ActivityFacade:
     async def _execute(self, activity: Activity) -> None:
         activity.status = ActivityStatus.RUNNING
         await self._store.update(activity)
+        desire_id = activity.progress.get("desire_id")
+        if isinstance(desire_id, str):
+            await self._desire.mark_active(desire_id)  # 消费开始：PENDING → ACTIVE
         await self._bus.publish(
             internal_event(
                 EventType.ACTIVITY_START,
@@ -433,6 +439,10 @@ class ActivityFacade:
             activity.status = ActivityStatus.INCOMPLETE
             activity.ended_at = time.time()
             await self._store.update(activity)
+            desire_id = activity.progress.get("desire_id")
+            if isinstance(desire_id, str):
+                # 异常退出：ACTIVE → SUPPRESSED
+                await self._desire.mark_suppressed(desire_id)
             _logger.exception(
                 "活动执行失败 activity_id=%s type=%s",
                 activity.id,

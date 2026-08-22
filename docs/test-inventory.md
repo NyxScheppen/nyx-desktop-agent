@@ -214,8 +214,15 @@
 | `test_evaluate_persists` | 功能正确 | 落库后重开连接 → `list_reports`/`list_token_usage` 仍各 1 条（持久化往返） |
 | `test_list_reports_roundtrip` | 功能正确 | 两条 report；`token_usage` JSON 往返 `{input,output}`；`scores.format` 为 0.0/1.0 |
 | `test_list_token_usage_since` | 功能正确 | `since=最新 created_at` → 1 条；`since=+1` → 0 条（`>=` 边界） |
+| `test_is_voice_type` | 功能正确 | `speak`/`initiate_chat`/`think` → True；`tool`/`judge`/`scene_memory` → False |
+| `test_build_baseline_len` | 功能正确 | baseline 长度 == `len(NYX_CORPUS)`，逐条嵌入 |
+| `test_ooc_embed_score_identical` | 功能正确 | content 与语料同向量 → sim 1.0 越界 clamp 到 1.0 |
+| `test_ooc_embed_score_orthogonal` | 功能正确 | 正交向量 → sim 0.0 → 0.0 |
+| `test_ooc_embed_score_empty_baseline` | 边界鲁棒 | 空 baseline → 1.0（无语料无信息不惩罚） |
+| `test_evaluate_ooc_embed_combine` | 功能正确 | 注入 mock embed + voice 输出 `speak` → `ooc == min(关键词 1.0, embed 0.0) == 0.0` |
+| `test_evaluate_ooc_non_voice_skips_embed` | 边界鲁棒 | 非 voice 输出 `scene_memory` → embed 不触发（调用记录空）、`ooc` 仅关键词 `== 1.0` |
 
-**功能阶段**：15-eval 实现时编写（先于 09-facade，因 09 依赖 Evaluator）；`test_judge_relevance_transport_failure` / `test_judge_relevance_rejects_bool_score` / `test_evaluate_judge_transport_failure` 于 09 评审修复阶段编写（高2：judge LLM 调用移进 try；低5：布尔 score 拒收）；`test_judge_relevance_overflow` 于 15 评审复核阶段编写（补 `float()` 溢出容错）。
+**功能阶段**：15-eval 实现时编写（先于 09-facade，因 09 依赖 Evaluator）；`test_judge_relevance_transport_failure` / `test_judge_relevance_rejects_bool_score` / `test_evaluate_judge_transport_failure` 于 09 评审修复阶段编写（高2：judge LLM 调用移进 try；低5：布尔 score 拒收）；`test_judge_relevance_overflow` 于 15 评审复核阶段编写（补 `float()` 溢出容错）；`test_is_voice_type` / `test_build_baseline_len` / `test_ooc_embed_score_*` / `test_evaluate_ooc_*` 于 V2「embedding 相似度 OOC（第 2 档）」轮编写（ooc_embed.py 语料 + 两档合并：max 余弦 / 阈值映射、min 合并、voice 门控）。
 
 ## 09-memory-facade（记忆门面）
 

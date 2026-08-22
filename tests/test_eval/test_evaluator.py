@@ -64,6 +64,18 @@ def _output() -> LLMOutput:
     )
 
 
+def _voice_output() -> LLMOutput:
+    return LLMOutput(
+        id="out-2",
+        module="expression",
+        type="speak",
+        model="fake",
+        content="x",
+        token_usage={"input": 1, "output": 1},
+        correlation_id="corr-2",
+    )
+
+
 def _ev(database: Database, rate: float) -> Evaluator:
     return Evaluator(
         database, cast(LlmClient, _FakeLlm()), EvalConfig(judge_sample_rate=rate)
@@ -138,6 +150,44 @@ async def test_list_reports_roundtrip() -> None:
         assert len(reports) == 2
         assert reports[0].token_usage == {"input": 1, "output": 1}
         assert reports[0].scores["format"] in (0.0, 1.0)
+    finally:
+        await database.conn.close()
+
+
+async def test_evaluate_ooc_embed_combine() -> None:
+    database = await db.connect(":memory:")
+    try:
+        async def _orthogonal_embed(text: str) -> list[float]:
+            # content "x" → [1,0]；语料行 → [0,1]，二者正交（sim=0）
+            return [1.0, 0.0] if text == "x" else [0.0, 1.0]
+
+        ev = Evaluator(
+            database, cast(LlmClient, _FakeLlm()), EvalConfig(judge_sample_rate=0.0),
+            embed=_orthogonal_embed,
+        )
+        report = await ev.evaluate(_voice_output())
+        # voice 类型：min(keyword=1.0, embed=0.0) = 0.0
+        assert report.scores["ooc"] == 0.0
+    finally:
+        await database.conn.close()
+
+
+async def test_evaluate_ooc_non_voice_skips_embed() -> None:
+    database = await db.connect(":memory:")
+    try:
+        calls: list[str] = []
+
+        async def _embed(text: str) -> list[float]:
+            calls.append(text)
+            return [0.0, 1.0]
+
+        ev = Evaluator(
+            database, cast(LlmClient, _FakeLlm()), EvalConfig(judge_sample_rate=0.0),
+            embed=_embed,
+        )
+        report = await ev.evaluate(_output())   # type scene_memory，非 voice
+        assert report.scores["ooc"] == 1.0      # 仅关键词，embed 未触发
+        assert calls == []
     finally:
         await database.conn.close()
 

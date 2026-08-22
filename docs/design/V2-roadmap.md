@@ -35,7 +35,7 @@
 
 | 功能 | 愿景出处 | 说明 |
 |---|---|---|
-| embedding 相似度 OOC（第 2 档） | design §9.2 | 需 embedding 模型 + Nyx 基准语料 |
+| ~~embedding 相似度 OOC（第 2 档）~~ ✅ 已落地 | design §9.2 | `ooc = min(第 1 档关键词, 第 2 档 embedding)`；`ooc_embed.py` 硬编码 `NYX_CORPUS`（canon.md 例句）+ `build_baseline`/`ooc_embed_score`/`is_voice_type`；复用记忆检索同一 embed 实例注入 `Evaluator`；第 2 档只对 voice 输出（speak/initiate_chat/think）生效、`embed=None` 关闭 |
 
 ## 记忆（memory）
 

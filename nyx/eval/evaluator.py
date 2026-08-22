@@ -2,6 +2,7 @@
 直接持 db（对齐 EventBus）。
 """
 import json
+import logging
 import random
 import time
 import uuid
@@ -11,18 +12,27 @@ import aiosqlite
 from nyx.config import EvalConfig
 from nyx.db import Database
 from nyx.eval.judge import judge_relevance, should_judge
+from nyx.eval.ooc_embed import build_baseline, is_voice_type, ooc_embed_score
 from nyx.eval.rules import ooc_score, validate_structure
 from nyx.llm.client import LlmClient
+from nyx.memory.retrieval import EmbedFn
 from nyx.types import EvalReport, EvalScores, LLMOutput, TokenUsage
+
+_logger = logging.getLogger(__name__)
 
 
 class Evaluator:
     """对所有 LLM 产出做三层评分 + token 记账（原则 4 + 原则 2）。"""
 
-    def __init__(self, db: Database, llm: LlmClient, config: EvalConfig) -> None:
+    def __init__(
+        self, db: Database, llm: LlmClient, config: EvalConfig,
+        embed: EmbedFn | None = None,
+    ) -> None:
         self._db = db
         self._llm = llm
         self._sample_rate = config.judge_sample_rate
+        self._embed = embed          # None = OOC 第 2 档关闭（仅关键词）
+        self._baseline: list[list[float]] | None = None   # 语料向量惰性缓存
 
     async def evaluate(self, output: LLMOutput) -> EvalReport:
         """三层：结构 → 规则 → judge（抽样）。
@@ -31,7 +41,7 @@ class Evaluator:
         """
         scores: EvalScores = {
             "format": validate_structure(output.content),
-            "ooc": ooc_score(output.content),
+            "ooc": await self._ooc(output),
             "relevance": 0.0,
         }
         judge_usage: TokenUsage | None = None
@@ -57,6 +67,24 @@ class Evaluator:
                 await self._insert_token_usage(judge_usage)
             await self._db.conn.commit()   # 写后必 commit，三连 INSERT 原子提交
         return report
+
+    async def _ooc(self, output: LLMOutput) -> float:
+        """第 1 档关键词 + 第 2 档 embedding 相似度，取 min 合并。
+
+        - 非 voice 输出 / 未注入 embed：仅关键词（第 2 档跳过）。
+        - embedding 失败：best-effort 回退关键词，不崩 evaluate（对齐 judge）。
+        """
+        keyword = ooc_score(output.content)
+        if self._embed is None or not is_voice_type(output.type):
+            return keyword
+        try:
+            if self._baseline is None:
+                self._baseline = await build_baseline(self._embed)
+            embed_s = await ooc_embed_score(self._embed, output.content, self._baseline)
+        except Exception:
+            _logger.exception("embedding OOC 失败 output_id=%s", output.id)
+            return keyword
+        return min(keyword, embed_s)
 
     async def list_reports(self, limit: int = 100) -> list[EvalReport]:
         async with self._db.lock:

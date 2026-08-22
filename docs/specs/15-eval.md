@@ -1,12 +1,12 @@
 # eval 三层（Evaluator + 结构/规则/LLM-judge）
 
-> 范围：`eval/evaluator.py`（`Evaluator`，基础设施）+ `eval/rules.py`（`validate_structure` / `ooc_score` 纯函数）+ `eval/judge.py`（`should_judge` 纯函数 + `judge_relevance`）。`EvalReport`/`TokenUsage` 落库（04-db 的 `eval_report` / `token_usage` 两表）。
+> 范围：`eval/evaluator.py`（`Evaluator`，基础设施）+ `eval/rules.py`（`validate_structure` / `ooc_score` 纯函数）+ `eval/ooc_embed.py`（`NYX_CORPUS` 基准语料 + `build_baseline` / `ooc_embed_score` / `is_voice_type`）+ `eval/judge.py`（`should_judge` 纯函数 + `judge_relevance`）。`EvalReport`/`TokenUsage` 落库（04-db 的 `eval_report` / `token_usage` 两表）。
 > 纯基础设施 spec：只做「三层评分 + token 记账 + 报告落库」，不含 Facade、不含 API 端点（薄封装归 18-api）、不含 store（Evaluator 直接持 db，对齐 EventBus）。
-> **本文件自包含**：3 个文件的完整代码内联在下文。
+> **本文件自包含**：4 个文件的完整代码内联在下文。
 
 ## 元信息
 
-- **前置依赖**：01-types（`EvalReport` / `TokenUsage` / `EvalScores` / `TokenUsageDict` / `LLMOutput`）、02-config（`EvalConfig`）、03-llm（`LlmClient`）、04-db（`Database` + `eval_report`/`token_usage` 两表 DDL）
+- **前置依赖**：01-types（`EvalReport` / `TokenUsage` / `EvalScores` / `TokenUsageDict` / `LLMOutput`）、02-config（`EvalConfig`）、03-llm（`LlmClient`）、04-db（`Database` + `eval_report`/`token_usage` 两表 DDL）、08-memory-retrieval（`EmbedFn` / `cosine`，OOC 第 2 档复用）
 
 ## 用户故事
 
@@ -15,16 +15,17 @@
 ## 验收标准
 
 - [ ] `evaluator.py` 含 `Evaluator`（`evaluate` / `list_reports` / `list_token_usage`），与「`eval/evaluator.py`（完整）」段代码逐字一致
-- [ ] `rules.py` 含 `validate_structure` + `ooc_score` 纯函数；`judge.py` 含 `should_judge` 纯函数 + `judge_relevance`，与各自「（完整）」段逐字一致
+- [ ] `rules.py` 含 `validate_structure` + `ooc_score` 纯函数；`ooc_embed.py` 含 `NYX_CORPUS` + `build_baseline` / `ooc_embed_score` / `is_voice_type`；`judge.py` 含 `should_judge` 纯函数 + `judge_relevance`，与各自「（完整）」段逐字一致
 - [ ] `evaluate` 三层：结构 → 规则 → judge（抽样），返回 `EvalReport`；落 `token_usage`（每次必记）+ `eval_report`（每次必记）+ 可选 judge 的 `token_usage`（抽样触发才记）；三连 INSERT 后统一 `commit()`（持久化）
+- [ ] `ooc` = `min(第 1 档关键词, 第 2 档 embedding)`；第 2 档只对 voice 输出（`speak`/`initiate_chat`/`think`）生效、`embed=None` 关闭、失败回退关键词（不 raise）
 - [ ] `should_judge`：`output_type == "judge"` 不递归 judge；`roll < sample_rate` 才触发
-- [ ] 纯函数测全（`validate_structure` / `ooc_score` / `should_judge`）；`pyright` strict 零报错
+- [ ] 纯函数测全（`validate_structure` / `ooc_score` / `is_voice_type` / `should_judge`）；`pyright` strict 零报错
 
 ## 技术方案
 
-- **新文件**：`nyx/eval/evaluator.py`、`nyx/eval/rules.py`、`nyx/eval/judge.py`（无 Facade、无 API、无数据变更——两表 DDL 已在 04-db）
-- **库**：无新库（标准库 `json` / `random` / `time` / `uuid` + `aiosqlite` 仅作 `_row_to_*` 类型注解）
-- **公开面**：`from nyx.eval.evaluator import Evaluator`；`from nyx.eval.rules import validate_structure, ooc_score`；`from nyx.eval.judge import should_judge, judge_relevance`（不加 `__all__`）
+- **新文件**：`nyx/eval/evaluator.py`、`nyx/eval/rules.py`、`nyx/eval/ooc_embed.py`、`nyx/eval/judge.py`（无 Facade、无 API、无数据变更——两表 DDL 已在 04-db）
+- **库**：无新库（标准库 `json` / `random` / `time` / `uuid` + `aiosqlite` 仅作 `_row_to_*` 类型注解；embedding 复用 08-memory-retrieval 的 `EmbedFn`/`cosine`）
+- **公开面**：`from nyx.eval.evaluator import Evaluator`；`from nyx.eval.rules import validate_structure, ooc_score`；`from nyx.eval.ooc_embed import NYX_CORPUS, build_baseline, ooc_embed_score, is_voice_type`；`from nyx.eval.judge import should_judge, judge_relevance`（不加 `__all__`）
 - **Evaluator 定位**：基础设施（非 Facade），**直接持 db**（`__init__(self, db, llm, config)`，对齐 05-event 的 EventBus 直接写 SQL、不单独 store.py 的模式——tech-ref §7 的 `eval/` 无 store.py，已锁）。锁约定同 EventBus：落库 SQL 都在 `async with self._db.lock:` 内，锁内只做 INSERT + `commit()`，纯计算（`_to_token_usage`）与 judge 的 LLM I/O 都在锁外；**三连 INSERT 后统一 `commit()`**（report + usage 同一事务原子提交，写后必 commit 对齐 04-db/05-event/14）
 - **evaluate 的调用方（显式约定，防循环依赖）**：`Evaluator → LlmClient` 单向（judge 层要调 LLM 打分）；若反过来让 `LlmClient.complete` 内部调 `evaluate`，则 `LlmClient → Evaluator` 反向成环 + import 循环，还需回填构造顺序（鸡生蛋）。故 **evaluate 由各 Facade 在 `await llm.complete(...)` 后显式调用**；漏记靠「每个 Facade 测试断言 complete 后 evaluate 被调」+ 完成定义的 ripple 兜底
 - **三层 + EvalScores 量纲（本 spec 定死，前端按量纲渲染）**：
@@ -37,6 +38,8 @@
 
 - **结构校验（`validate_structure`）**：只做通用「非空 + 长度上限」检查。**不做字段级 JSON 校验**——那是各 Facade 的 `_parse_*` 的活（11/12/14 已 fail-fast），eval 重复实现是反冗余。design §9.1 的「字段/数值合法」由 Facade 层承担
 - **规则评分（`ooc_score`）**：design §9.2 第 1 档「关键词/语癖规则」。`_BLACKLIST`（崩人设的现代/AI 腔）+ `_WHITELIST`（Nyx 语癖）模块级常量（初始值可推翻，随 canon.md 校准）；**字段名 `ooc` 保留（01-types 锁定），语义 = 人设贴合度（越高越不 OOC，与 format/relevance 同向）**——黑名单命中扣分、白名单命中加分，`1.0 - (黑-白) * _OOC_STEP` 封顶 [0,1]，无命中默认满分
+- **embedding 相似度（`ooc_embed_score`）**：design §9.2 第 2 档「对比尼克斯基准语料」。`NYX_CORPUS`（从 `prompts/canon.md` 抽的 in-character 例句，静态常量随 canon.md 校准）逐条嵌入成 baseline（`build_baseline`，Evaluator 首次 evaluate 惰性缓存）；content 向量与 baseline 取 **max 余弦**、`clamp(sim / 0.7, 0, 1)` 映射到 [0,1]（阈值可推翻）。**只对 voice 输出生效**（`_VOICE_TYPES = {speak, initiate_chat, think}`）——结构化/内部输出（tool/judge/scene_memory/…）与语料比对必然低分、污染 ooc，故跳过；`embed=None`（未注入）关闭第 2 档
+- **两档合并（`Evaluator._ooc`）**：`ooc = min(第 1 档, 第 2 档)`——AND 语义，任一档低都拉低；embedding 失败（加载/推理异常）→ log + 回退第 1 档，不崩 evaluate（best-effort，对齐 judge 的不 raise 豁免）
 - **judge（`judge_relevance` + `should_judge`）**：design §9.1 第三层 + §9.2 第 3 档。抽样率 `config.judge_sample_rate`（02-config 默认 0.1，生产 10% 抽样；可设 0 关闭 judge，配合原则 1「减少 LLM 调用」）。`output_type == "judge"` 不递归 judge（防 judge 的 judge 死循环）。judge 环节失败不应崩整个 evaluate——**不 raise**：传输失败（超时/5xx）→ 容错 0.0、无 judge_output（返回 `None`，token 不记）；输出非法（JSON 解析失败 / 非 dict / score 非数字或布尔）→ 容错 0.0 但仍返回 judge_output（token 照记，原则 2）；score 合法但越界（如 `{"score":100}`）→ clamp 到 [1,5]（design §9.1 的 1-5 分，未评=0.0）
 - **token 记账（`_to_token_usage`）**：`purpose = output.type`（03-llm line 119「type → TokenUsage.purpose」）、`model = output.model`、`input/output = output.token_usage`、`correlation_id = output.correlation_id`。被评产出必记；judge 产出（`module="eval"`、`purpose="judge"`）抽样触发才记——judge 的 token 也透明化（原则 2）
 - **`output_id` 语义**：`EvalReport.output_id = output.id`。`LLMOutput.id` 由 03-llm `complete` 每次调用生成 uuid4（ripple 01-types 加字段 + 03-llm 生成），保证「同一事件多次 complete」（如 reply 的 think→speak）也能区分「哪次产出」
@@ -165,6 +168,7 @@ async def judge_relevance(
 直接持 db（对齐 EventBus）。
 """
 import json
+import logging
 import random
 import time
 import uuid
@@ -174,18 +178,27 @@ import aiosqlite
 from nyx.config import EvalConfig
 from nyx.db import Database
 from nyx.eval.judge import judge_relevance, should_judge
+from nyx.eval.ooc_embed import build_baseline, is_voice_type, ooc_embed_score
 from nyx.eval.rules import ooc_score, validate_structure
 from nyx.llm.client import LlmClient
+from nyx.memory.retrieval import EmbedFn
 from nyx.types import EvalReport, EvalScores, LLMOutput, TokenUsage
+
+_logger = logging.getLogger(__name__)
 
 
 class Evaluator:
     """对所有 LLM 产出做三层评分 + token 记账（原则 4 + 原则 2）。"""
 
-    def __init__(self, db: Database, llm: LlmClient, config: EvalConfig) -> None:
+    def __init__(
+        self, db: Database, llm: LlmClient, config: EvalConfig,
+        embed: EmbedFn | None = None,
+    ) -> None:
         self._db = db
         self._llm = llm
         self._sample_rate = config.judge_sample_rate
+        self._embed = embed          # None = OOC 第 2 档关闭（仅关键词）
+        self._baseline: list[list[float]] | None = None   # 语料向量惰性缓存
 
     async def evaluate(self, output: LLMOutput) -> EvalReport:
         """三层：结构 → 规则 → judge（抽样）。
@@ -194,7 +207,7 @@ class Evaluator:
         """
         scores: EvalScores = {
             "format": validate_structure(output.content),
-            "ooc": ooc_score(output.content),
+            "ooc": await self._ooc(output),
             "relevance": 0.0,
         }
         judge_usage: TokenUsage | None = None
@@ -220,6 +233,24 @@ class Evaluator:
                 await self._insert_token_usage(judge_usage)
             await self._db.conn.commit()   # 写后必 commit，三连 INSERT 原子提交
         return report
+
+    async def _ooc(self, output: LLMOutput) -> float:
+        """第 1 档关键词 + 第 2 档 embedding 相似度，取 min 合并。
+
+        - 非 voice 输出 / 未注入 embed：仅关键词（第 2 档跳过）。
+        - embedding 失败：best-effort 回退关键词，不崩 evaluate（对齐 judge）。
+        """
+        keyword = ooc_score(output.content)
+        if self._embed is None or not is_voice_type(output.type):
+            return keyword
+        try:
+            if self._baseline is None:
+                self._baseline = await build_baseline(self._embed)
+            embed_s = await ooc_embed_score(self._embed, output.content, self._baseline)
+        except Exception:
+            _logger.exception("embedding OOC 失败 output_id=%s", output.id)
+            return keyword
+        return min(keyword, embed_s)
 
     async def list_reports(self, limit: int = 100) -> list[EvalReport]:
         async with self._db.lock:
@@ -305,12 +336,79 @@ def _row_to_usage(row: aiosqlite.Row) -> TokenUsage:
     )
 ```
 
+### `eval/ooc_embed.py`（完整）
+
+```python
+"""embedding 相似度 OOC（design §9.2 第 2 档）：对比尼克斯基准语料。
+
+复用 retrieval 的 `EmbedFn`/`cosine`，不另写向量函数、不重加载模型——
+embed 实例由组合根（main.py）注入，与记忆检索共享同一份。
+"""
+from nyx.memory.retrieval import EmbedFn, cosine
+
+# 基准语料：从 prompts/canon.md 抽的 in-character 例句（语气参考 + 可以说段）。
+# 静态常量，随 canon.md 校准（可推翻）。
+NYX_CORPUS: tuple[str, ...] = (
+    "啊啊，啊啊啊，女神在上……这、这也太丢人了，呜……",
+    "啊，今天是你的生日对吧，是个相当好的日子呢。生日快乐……感谢你的出生。",
+    "搞、搞砸了吗……非常对不起……",
+    "努力坚持到了现在，真的很厉害。谢谢你。没关系的，我就在这里，我会努力一直在这里的。",
+    "不必勉强自己。不想做又必须做的事情，差遣别人去做就好了……我不就是为此而存在的吗。",
+    "唔唔……唉……没事的，没事的，我这不是在这呢吗……好啦好啦，再哭眼睛会肿的。",
+    "嗯……不，应该说……",
+    "啊，不是，我的意思是……",
+    "嗯……我不完全这么想。",
+    "也许是这样，但我有一点在意……",
+    "我不想随便反驳你，可是这里我确实有点不同意见。",
+    "嗯……我大概明白你为什么会这样想。",
+    "我不敢直接说你是对的。",
+    "我好像明白了一点。",
+    "但这部分我还想再问问你。",
+    "我没有真正经历过，所以不敢说得太满。",
+)
+
+# 余弦相似度阈值：sim >= 阈值视为完全贴合（1.0），低于则线性衰减（可推翻）。
+_EMBED_SIM_THRESHOLD = 0.7
+
+# 第 2 档只对「voice 类」输出生效——结构化/内部输出（tool/judge/scene_memory/…）
+# 与语料比对必然低分、污染 ooc，故跳过，维持关键词-only。
+_VOICE_TYPES: frozenset[str] = frozenset({"speak", "initiate_chat", "think"})
+
+
+def is_voice_type(output_type: str) -> bool:
+    """output_type 是否属于「语音/自然语言口吻」输出（纯函数）。"""
+    return output_type in _VOICE_TYPES
+
+
+async def build_baseline(embed: EmbedFn) -> list[list[float]]:
+    """把基准语料逐条嵌入，得到 baseline 向量列表（惰性一次性缓存）。"""
+    return [await embed(line) for line in NYX_CORPUS]
+
+
+async def ooc_embed_score(
+    embed: EmbedFn, content: str, baseline: list[list[float]]
+) -> float:
+    """content 与语料的最相似度映射到 [0,1]（越高越贴合）。
+
+    取 max 余弦（最近邻），`clamp(sim / 阈值, 0, 1)`；无语料无信息不惩罚（1.0）。
+    """
+    if not baseline:
+        return 1.0
+    vec = await embed(content)
+    sim = max(cosine(vec, b) for b in baseline)
+    return max(0.0, min(1.0, sim / _EMBED_SIM_THRESHOLD))
+```
+
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_eval/`（`db = await connect(":memory:")`；fake `LlmClient.complete` 按 `output_type` 返回 fixture JSON——同 05/09/11/12 模式）：
   - [ ] **rules 纯函数**（`test_rules.py`，无 DB、无 async）：
     - [ ] `validate_structure`：空串 → 0.0；纯空白 → 0.0；正常 → 1.0；超长（`"x" * (_MAX_CONTENT_LEN + 1)`）→ 0.0
     - [ ] `ooc_score`：无命中 → 1.0（默认满分）；黑 1 白 0 → 0.5；黑 2 白 0 → 0.0；黑 3 白 0 → 0.0（封顶）；黑 1 白 1 → 1.0（白抵消黑）；白 2 黑 0 → 1.0（封顶不越界）
+  - [ ] **ooc_embed**（`test_ooc_embed.py`，mock `embed` 返回确定性向量，无真实模型）：
+    - [ ] `is_voice_type`：`speak`/`initiate_chat`/`think` → True；`tool`/`judge`/`scene_memory` → False
+    - [ ] `build_baseline`：返回 `len == len(NYX_CORPUS)` 的向量列表
+    - [ ] `ooc_embed_score`：相同向量 → 1.0（sim 越界 clamp）；正交 → 0.0；空 baseline → 1.0（无语料不惩罚）
   - [ ] **judge**（`test_judge.py`）：
     - [ ] `should_judge` 纯函数：`("judge", 1.0, 0.0)` → False（不递归）；`("reply", 0.1, 0.05)` → True；`("reply", 0.1, 0.5)` → False
     - [ ] `judge_relevance`（fake `llm.complete` 返回 `{"score": 4}`）：返回 `(4.0, judge_output)`，且 `judge_output.type == "judge"`、`judge_output.module == "eval"`、`correlation_id` 透传
@@ -325,6 +423,8 @@ def _row_to_usage(row: aiosqlite.Row) -> TokenUsage:
     - [ ] `evaluate` 落库持久化：`db = await connect(str(tmp_path/"e.db"))`，`evaluate` 后 `close`，重开新连接 `list_reports`/`list_token_usage` 能读到已提交行（抓「写后不 commit」回归——`:memory:` 同连接读己写抓不住）
     - [ ] `list_reports`：插 2 条 → 按 `created_at DESC` 返回、`scores`/`token_usage` JSON 往返正确
     - [ ] `list_token_usage(since)`：只返回 `created_at >= since` 的行
+    - [ ] `evaluate` embedding 合并（注入 mock `embed`，voice 输出 `speak`）：`ooc == min(keyword=1.0, embed=0.0) == 0.0`
+    - [ ] `evaluate` 非 voice 输出（`scene_memory`）：embed 不触发（mock 记录调用为空），`ooc` 仅关键词 `== 1.0`
 - [ ] 集成测试：无（Evaluator 是基础设施，无 Facade 管道；各 Facade 调 evaluate 的编排归 18-api 组合根 + 各 Facade 测试）
 - [ ] E2E 测试：无
 
@@ -334,5 +434,5 @@ def _row_to_usage(row: aiosqlite.Row) -> TokenUsage:
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
-- [ ] ripple 同步：01-types `LLMOutput` 加 `id: str`（uuid4）字段；03-llm `complete` 生成 `id=str(uuid.uuid4())` + `import uuid`（测试补 `id` 非空断言）；tech-ref §5 `Evaluator` 补 `__init__(self, db: Database, llm: LlmClient, config: EvalConfig) -> None` 签名（EventBus/ToolRegistry 都列了 `__init__`，Evaluator 漏列）
-- [ ] 下游约定：18-api 组合根注入 `evaluator = Evaluator(db, llm, config)`；各 Facade（09-memory-facade / 11-desire / 12-inner-life / 14-activity / 17-expression）在 `await llm.complete(...)` 后紧跟 `await evaluator.evaluate(output)`（实现时同步改这五份 spec 的 Facade `__init__` 加 `evaluator` 参数 + 调用点）；`/api/eval` → `list_reports`、`/api/tokens` → `list_token_usage`（tech-ref §4 已锁）
+- [ ] ripple 同步：01-types `LLMOutput` 加 `id: str`（uuid4）字段；03-llm `complete` 生成 `id=str(uuid.uuid4())` + `import uuid`（测试补 `id` 非空断言）；tech-ref §5 `Evaluator` 补 `__init__(self, db: Database, llm: LlmClient, config: EvalConfig, embed: EmbedFn | None = None) -> None` 签名（EventBus/ToolRegistry 都列了 `__init__`，Evaluator 漏列）
+- [ ] 下游约定：18-api 组合根注入 `evaluator = Evaluator(db, llm, config.eval, embed)`（embed 复用记忆检索同一实例，不二次加载模型）；各 Facade（09-memory-facade / 11-desire / 12-inner-life / 14-activity / 17-expression）在 `await llm.complete(...)` 后紧跟 `await evaluator.evaluate(output)`（实现时同步改这五份 spec 的 Facade `__init__` 加 `evaluator` 参数 + 调用点）；`/api/eval` → `list_reports`、`/api/tokens` → `list_token_usage`（tech-ref §4 已锁）

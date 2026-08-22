@@ -150,7 +150,7 @@ def schema() -> list[dict]                                      # 给 LLM 的 to
 ### Evaluator（基础设施）
 
 ```python
-def __init__(self, db: Database, llm: LlmClient, config: EvalConfig) -> None  # 基础设施，直接持 db（对齐 EventBus）
+def __init__(self, db: Database, llm: LlmClient, config: EvalConfig, embed: EmbedFn | None = None) -> None  # 基础设施，直接持 db（对齐 EventBus）；embed 供 OOC 第 2 档复用
 async def evaluate(output: LLMOutput) -> EvalReport             # 三层：结构→规则→judge
 async def list_reports(limit: int = 100) -> list[EvalReport]    # eval 报告列表（供 /api/eval）
 async def list_token_usage(since: float = 0) -> list[TokenUsage]  # token 记账（供 /api/tokens）

@@ -40,6 +40,8 @@ asyncio_mode = "auto"
 [tool.pyright]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
+reportUnusedFunction = true
+reportUnusedClass = true
 
 [tool.setuptools.packages.find]
 include = ["nyx*"]

@@ -40,7 +40,7 @@
 
 | 功能 | 愿景出处 | 说明 |
 |---|---|---|
-| per-result 来源标记 | — | `search()` 按层标注来源（`SearchMode` 单层调试） |
+| ~~per-result 来源标记~~ ✅ 已落地 | — | `search()` 按层标注来源（`SearchMode` 单层调试） |
 
 ## LLM
 

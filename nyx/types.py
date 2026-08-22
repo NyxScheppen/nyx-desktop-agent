@@ -11,6 +11,7 @@ from nyx.enums import (
     EventType,
     GoalAction,
     MemoryType,
+    SearchMode,
     Source,
 )
 
@@ -66,6 +67,7 @@ class Memory:
     recall_count: int = 0   # "想起"次数（实际用进回复）
     aspect: list[str] = field(default_factory=list[str])  # 仅 user 画像，可多值
     embedding: list[float] | None = None   # 向量检索用，未嵌入为 None
+    sources: list[SearchMode] = field(default_factory=list[SearchMode])  # 检索来源层
 
 
 @dataclass

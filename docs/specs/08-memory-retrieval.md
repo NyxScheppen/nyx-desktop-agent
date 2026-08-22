@@ -17,7 +17,7 @@
 - [ ] `graph.py` 含 `MemoryGraph`（`neighbors(seeds, depth)`），与「`memory/graph.py`（完整）」段代码逐字一致
 - [ ] `retrieval.py` 含 `cosine` / `rank_by_cosine` / `build_embed` / `EmbedFn` / `MemoryRetrieval`，与「`memory/retrieval.py`（完整）」段代码逐字一致
 - [ ] `cosine` 纯函数：正交=0、相同=1、相反=-1、零向量=0、维度不一致=0
-- [ ] `search()` 空/空白查询（`not query.strip()`）短路返回 `[]`；顺序执行 keyword → vector → association，按此序去重合并（`seen` set，后到重复丢弃），`limit` 截断
+- [ ] `search()` 空/空白查询（`not query.strip()`）短路返回 `[]`；顺序执行 keyword → vector → association，按此序去重合并（`seen` set，后到重复丢弃），`limit` 截断；每条命中 `sources` 按层标注（keyword+vector 重叠 = `[KEYWORD, VECTOR]`）
 - [ ] vector 层：`embed=None` → 跳过返回 `[]`；query 只 embed 一次；memory embedding 从 DB 读（不重算）；`embedding=None` 的记忆跳过；`s > 0` 过滤 + `_VECTOR_TOP_K` 截断
 - [ ] association 层：图从 `store.list_edges()` 构建，`neighbors` 无权重扩散、排除 seeds 本身、跳过不在图中的 seed（`nx.Graph.neighbors` 对不存在节点抛 `NetworkXError`）
 - [ ] `pyright` strict 零报错
@@ -27,8 +27,8 @@
 - **新文件**：`nyx/memory/graph.py`、`nyx/memory/retrieval.py`（无 Facade、无 API、无数据变更）
 - **库**：`networkx`（新增，联想图；依赖 pin 同 03-llm 约定）、`sentence-transformers`（新增，`build_embed` 惰性 import；依赖 pin）；其余标准库（`math` / `asyncio` / `collections.abc`）
 - **公开面**：`from nyx.memory.retrieval import MemoryRetrieval, cosine, rank_by_cosine, build_embed, EmbedFn`；`from nyx.memory.graph import MemoryGraph`（不加 `__all__`）
-- **三层顺序 = design §6.3**：keyword → vector → association；合并按此序（keyword 命中排最前），`seen` set 去重，`limit` 截断（默认 20）。对外只返回一份 `list[Memory]`，不暴露层来源
-- **`SearchMode` 是内部层标签**（01-types 已定义「不在公开签名暴露」）：MVP 的 `search()` 返回去重 `list[Memory]` **不带** per-result 来源标记；三层是私有方法（`_vector_search` 等）可单独测试。`SearchMode` 本 spec 不强制使用
+- **三层顺序 = design §6.3**：keyword → vector → association；合并按此序（keyword 命中排最前），`seen` set 去重，`limit` 截断（默认 20）。对外返回一份去重 `list[Memory]`，每条 `sources` 标注命中来源层
+- **`SearchMode` 来源标记（V2，翻转 MVP「不带来源」）**：`search()` 去重合并时按层累计 `sources_by_id`，给每条命中赋 `sources: list[SearchMode]`——keyword/vector 可重叠（`[KEYWORD, VECTOR]`），association 与 seeds 互斥（只 `[ASSOCIATION]`）。`sources` 是 `Memory` 瞬态字段（01-types）：不持久化、不进 prompt、不进导出；三层仍是私有方法（`_vector_search` 等）可单独测试
 - **vector 层（读持久化 embedding）**：`MemoryRetrieval(store, embed)` 构造注入 `embed`，`None` = 向量层禁用（返回 `[]`）。query 只 `embed` 一次；memory embedding 直接读 `m.embedding`（07 持久化的列），**不重算**——这正是「持久化 embedding 列」的价值。`cosine` 纯函数；MVP 常量 `_VECTOR_TOP_K=5` + `s > 0.0` 过滤（非 config，不引入检索阈值配置项）
 - **`rank_by_cosine` 共享纯函数（跨模块复用）**：`cosine` 之外，把「候选打分 + `s > 0` 过滤 + 降序」抽成纯函数 `rank_by_cosine(query_vec, candidates) -> list[tuple[float, Memory]]`（跳过 `embedding is None`）。`_vector_search` 用它做 vector 层打分；09-facade 的 `_similar` 也复用它（跨模块去重，见 09）。同一套余弦排序逻辑只此一处，改排序/过滤规则翻这里
 - **`build_embed` 惰性 import**：sentence-transformers 是重依赖（下载模型），`build_embed(model_name)` 内 `from sentence_transformers import ...`，未启用向量层（测试/无模型环境）不加载；`model.encode` 同步 → `asyncio.to_thread` 包成 async；返回 `list[float]`
@@ -87,6 +87,7 @@ import math
 from collections.abc import Awaitable, Callable, Iterable
 from typing import cast
 
+from nyx.enums import SearchMode
 from nyx.memory.graph import MemoryGraph
 from nyx.memory.store import MemoryStore
 from nyx.types import Memory
@@ -171,11 +172,20 @@ class MemoryRetrieval:
             related_ids = MemoryGraph(edges).neighbors(seed_ids)
             association_hits = [by_id[mid] for mid in related_ids if mid in by_id]
 
+        sources_by_id: dict[str, list[SearchMode]] = {}
+        for m in keyword_hits:
+            sources_by_id.setdefault(m.id, []).append(SearchMode.KEYWORD)
+        for m in vector_hits:
+            sources_by_id.setdefault(m.id, []).append(SearchMode.VECTOR)
+        for m in association_hits:
+            sources_by_id.setdefault(m.id, []).append(SearchMode.ASSOCIATION)
+
         merged: list[Memory] = []
         seen: set[str] = set()
         for m in (*keyword_hits, *vector_hits, *association_hits):
             if m.id not in seen:
                 seen.add(m.id)
+                m.sources = sources_by_id[m.id]
                 merged.append(m)
         return merged[:limit]
 
@@ -203,6 +213,7 @@ class MemoryRetrieval:
     - [ ] `_vector_search`（fake embed + 含 embedding 的 `Memory` 列表）：`_VECTOR_TOP_K` 截断、`embedding=None` 的记忆跳过、`s <= 0` 过滤、`embed=None` 时返回 `[]`
     - [ ] `search` 编排（真 `MemoryStore`（`connect(":memory:")`）+ fake embed）：造 A（content 含 query、embedding `[1,0]`）、B（embedding `[0,1]`）、C（无 embedding）+ 边 A-B → `search(query)` 按 keyword 命中 A、vector 命中 A、association 扩散到 B，合并去重 = `[A, B]`（顺序 keyword 先）；`limit=1` → `[A]`
     - [ ] `search` 去重：keyword 与 vector 命中同一记忆 → 只出现一次
+    - [ ] `search` 来源标记：A（keyword+vector 重叠）→ `[KEYWORD, VECTOR]`；B（association 扩散）→ `[ASSOCIATION]`；keyword-only（embed=None）→ `[KEYWORD]`；vector-only（content 不含 query、embedding 命中）→ `[VECTOR]`
     - [ ] `search` 全空：无 keyword 命中、embed=None、无边 → `[]`
     - [ ] `search` 空/空白查询：`search("")` / `search(" ")` / `search("   ")` → `[]`（`query.strip()` 短路，不触 store 查询）
     - [ ] `search` 无边命中不崩（回归）：keyword 命中一条**无边**记忆（图里无此节点）→ 不抛 `NetworkXError`，返回该命中本身（association 空，`neighbors` 过滤后产出 `[]`）

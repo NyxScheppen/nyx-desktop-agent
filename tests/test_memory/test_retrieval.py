@@ -1,7 +1,7 @@
 # 测试需直接访问 _vector_search（spec 测试要点要求测私有方法）
 # pyright: reportPrivateUsage=false
 from nyx.db import connect
-from nyx.enums import MemoryType
+from nyx.enums import MemoryType, SearchMode
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, cosine, rank_by_cosine
 from nyx.memory.store import MemoryStore
 from nyx.types import Memory
@@ -107,6 +107,39 @@ async def test_search_merge_order_and_limit() -> None:
         retrieval = MemoryRetrieval(store, embed=_fake_embed([1.0, 0.0]))
         assert [m.id for m in await retrieval.search("alpha")] == ["A", "B"]
         assert [m.id for m in await retrieval.search("alpha", limit=1)] == ["A"]
+        # A 被 keyword+vector 两层命中，B 仅 association 扩散到
+        assert [m.sources for m in await retrieval.search("alpha")] == [
+            [SearchMode.KEYWORD, SearchMode.VECTOR],
+            [SearchMode.ASSOCIATION],
+        ]
+    finally:
+        await db.conn.close()
+
+
+async def test_search_sources_keyword_only() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        # embed=None：向量层禁用，仅 keyword 命中
+        await store.add(_mem("A", content="alpha 相关"))
+        retrieval = MemoryRetrieval(store, embed=None)
+        results = await retrieval.search("alpha")
+        assert [m.id for m in results] == ["A"]
+        assert [m.sources for m in results] == [[SearchMode.KEYWORD]]
+    finally:
+        await db.conn.close()
+
+
+async def test_search_sources_vector_only() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        # content 不含 query 词（keyword 不命中），仅 embedding 余弦命中
+        await store.add(_mem("A", content="香蕉", embedding=[1.0, 0.0]))
+        retrieval = MemoryRetrieval(store, embed=_fake_embed([1.0, 0.0]))
+        results = await retrieval.search("alpha")
+        assert [m.id for m in results] == ["A"]
+        assert [m.sources for m in results] == [[SearchMode.VECTOR]]
     finally:
         await db.conn.close()
 

@@ -3,6 +3,7 @@ import math
 from collections.abc import Awaitable, Callable, Iterable
 from typing import cast
 
+from nyx.enums import SearchMode
 from nyx.memory.graph import MemoryGraph
 from nyx.memory.store import MemoryStore
 from nyx.types import Memory
@@ -87,11 +88,20 @@ class MemoryRetrieval:
             related_ids = MemoryGraph(edges).neighbors(seed_ids)
             association_hits = [by_id[mid] for mid in related_ids if mid in by_id]
 
+        sources_by_id: dict[str, list[SearchMode]] = {}
+        for m in keyword_hits:
+            sources_by_id.setdefault(m.id, []).append(SearchMode.KEYWORD)
+        for m in vector_hits:
+            sources_by_id.setdefault(m.id, []).append(SearchMode.VECTOR)
+        for m in association_hits:
+            sources_by_id.setdefault(m.id, []).append(SearchMode.ASSOCIATION)
+
         merged: list[Memory] = []
         seen: set[str] = set()
         for m in (*keyword_hits, *vector_hits, *association_hits):
             if m.id not in seen:
                 seen.add(m.id)
+                m.sources = sources_by_id[m.id]
                 merged.append(m)
         return merged[:limit]
 

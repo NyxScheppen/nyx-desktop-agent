@@ -172,7 +172,7 @@ class TokenUsageDict(TypedDict):           # 单次 LLM 记账 {input, output}
 
 ### dataclass（`nyx/types.py`，17 个）
 
-> `from nyx.enums import (Source, EventType, DesireType, ActivityType, MemoryType, DesireStatus, ActivityStatus, EnergyState, GoalAction, EmotionCategory)`
+> `from nyx.enums import (Source, EventType, DesireType, ActivityType, MemoryType, SearchMode, DesireStatus, ActivityStatus, EnergyState, GoalAction, EmotionCategory)`
 
 ```python
 from dataclasses import dataclass, field
@@ -201,6 +201,7 @@ class Memory:
     recall_count: int = 0   # "想起"次数（实际用进回复）
     aspect: list[str] = field(default_factory=list[str])  # 仅 user 画像，可多值
     embedding: list[float] | None = None   # 向量检索用，未嵌入为 None
+    sources: list[SearchMode] = field(default_factory=list[SearchMode])  # 检索来源层
 
 @dataclass
 class MemoryEdge:

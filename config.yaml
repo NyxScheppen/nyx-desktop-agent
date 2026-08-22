@@ -1,7 +1,8 @@
 llm:
-  provider: deepseek          # deepseek | claude | ...（LangChain 集成）
+  provider: deepseek          # deepseek | openai | ollama；其它 OpenAI 兼容服务配 base_url
   model: deepseek-chat
   api_key_env: DEEPSEEK_API_KEY
+  # base_url: http://localhost:11434/v1   # 可选：覆盖/自定义 endpoint
 
 embedding:
   model: all-MiniLM-L6-v2     # 本地 sentence-transformers

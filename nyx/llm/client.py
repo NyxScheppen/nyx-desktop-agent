@@ -54,6 +54,21 @@ def _extract_usage(response: BaseMessage) -> TokenUsageDict:
     }
 
 
+# 内置 provider → OpenAI 兼容 base_url；不在表内者配 llm.base_url 覆盖
+_PROVIDER_BASE_URLS = {
+    "deepseek": "https://api.deepseek.com",
+    "openai": "https://api.openai.com/v1",
+    "ollama": "http://localhost:11434/v1",
+}
+
+
+def _resolve_base_url(provider: str, base_url: str | None) -> str | None:
+    """provider → base_url：显式 base_url 优先，否则查内置映射；无命中 None。纯函数。"""
+    if base_url:
+        return base_url
+    return _PROVIDER_BASE_URLS.get(provider)
+
+
 class LlmClient:
     """全项目唯一 LLM 出口。持有 LangChain model 与 model 名，负责调用与 token 抽取。"""
 
@@ -64,9 +79,11 @@ class LlmClient:
 
     @classmethod
     def from_config(cls, config: LlmConfig) -> "LlmClient":
-        if config.provider != "deepseek":
+        base_url = _resolve_base_url(config.provider, config.base_url)
+        if base_url is None:
             raise ConfigError(
-                f"暂不支持 provider={config.provider!r}，当前只支持 deepseek"
+                f"未知 provider={config.provider!r}：请设置 llm.base_url，"
+                f"或使用内置 provider：{sorted(_PROVIDER_BASE_URLS)}"
             )
         api_key = os.environ.get(config.api_key_env)
         if not api_key:
@@ -75,7 +92,7 @@ class LlmClient:
             ChatOpenAI(
                 model=config.model,
                 api_key=SecretStr(api_key),
-                base_url="https://api.deepseek.com",
+                base_url=base_url,
             ),
             model_name=config.model,
         )

@@ -46,7 +46,7 @@
 
 | 功能 | 愿景出处 | 说明 |
 |---|---|---|
-| 多 provider（claude 等） | — | `from_config` 支持非 deepseek |
+| ~~多 provider（OpenAI 兼容映射）~~ ✅ 已落地 | — | `from_config` 用 `_resolve_base_url`：内置 deepseek/openai/ollama 映射 + 可选 `llm.base_url` 覆盖；claude 等非 OpenAI 兼容留后续 |
 
 ## 前端（frontend）
 

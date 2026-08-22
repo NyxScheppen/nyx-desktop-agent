@@ -25,11 +25,11 @@
 ## 技术方案
 
 - **新文件**：`nyx/llm/client.py`（无 Facade、无 API、无数据变更）
-- **库**：`langchain_core`（`BaseChatModel` / 消息类）、`langchain_openai`（`ChatOpenAI`，Deepseek 走 OpenAI 兼容接口）
+- **库**：`langchain_core`（`BaseChatModel` / 消息类）、`langchain_openai`（`ChatOpenAI`，deepseek / openai / ollama 等走 OpenAI 兼容接口）
 - **公开面**：`from nyx.llm.client import LlmClient, LlmMessage`（不加 `__all__`）
 - **内部类（非 Facade）**：Facade / LangGraph 节点都通过它调 LLM，是透明化+可追溯的落点
 - **不落库**：`TokenUsage` 完整行的落库由 15-eval 的 `evaluate()` 统一做（每个 `LLMOutput` 必经 eval，不会漏记）；本 spec 只抽取并返回 `token_usage` + `model` + `id`（uuid4，供 `EvalReport.output_id`）
-- **只支持 Deepseek**：`provider != "deepseek"` 时 `from_config` 报 `ConfigError`
+- **多 provider（OpenAI 兼容）**：`from_config` 用 `_resolve_base_url(provider, base_url)` 解析 endpoint——显式 `llm.base_url` 优先，否则查内置映射（deepseek / openai / ollama）；无命中报 `ConfigError`（列出内置 provider + 提示配 `llm.base_url`）。统一走 `ChatOpenAI`，token 抽取不变
 - **不设超时/重试**：LangChain 默认，异常原样上抛由调用方处理
 - **json_mode = 减少 parse 失败重试**：欲望生成/分类器/judge 要结构化输出，靠 `response_format` 保证合法 JSON，少一次重调
 - **依赖 pin（实现时锁）**：`pyproject.toml` 里 `langchain-core`、`langchain-openai` 锁精确版本（非 `>=` 宽范围）；`pydantic` 用 `>=2.0` floor（`SecretStr` 自 v1 稳定，非 volatile API）。本 spec 的 `usage_metadata`（键 `input_tokens`/`output_tokens`）、`AIMessage.content`（文本为 `str`）、`response_format={"type":"json_object"}` 契约均以锁定版本为准，升级依赖须重跑本 spec 测试
@@ -94,6 +94,21 @@ def _extract_usage(response: BaseMessage) -> TokenUsageDict:
     }
 
 
+# 内置 provider → OpenAI 兼容 base_url；不在表内者配 llm.base_url 覆盖
+_PROVIDER_BASE_URLS = {
+    "deepseek": "https://api.deepseek.com",
+    "openai": "https://api.openai.com/v1",
+    "ollama": "http://localhost:11434/v1",
+}
+
+
+def _resolve_base_url(provider: str, base_url: str | None) -> str | None:
+    """provider → base_url：显式 base_url 优先，否则查内置映射；无命中 None。纯函数。"""
+    if base_url:
+        return base_url
+    return _PROVIDER_BASE_URLS.get(provider)
+
+
 class LlmClient:
     """全项目唯一 LLM 出口。持有 LangChain model 与 model 名，负责调用与 token 抽取。"""
 
@@ -104,9 +119,11 @@ class LlmClient:
 
     @classmethod
     def from_config(cls, config: LlmConfig) -> "LlmClient":
-        if config.provider != "deepseek":
+        base_url = _resolve_base_url(config.provider, config.base_url)
+        if base_url is None:
             raise ConfigError(
-                f"暂不支持 provider={config.provider!r}，当前只支持 deepseek"
+                f"未知 provider={config.provider!r}：请设置 llm.base_url，"
+                f"或使用内置 provider：{sorted(_PROVIDER_BASE_URLS)}"
             )
         api_key = os.environ.get(config.api_key_env)
         if not api_key:
@@ -115,7 +132,7 @@ class LlmClient:
             ChatOpenAI(
                 model=config.model,
                 api_key=SecretStr(api_key),
-                base_url="https://api.deepseek.com",
+                base_url=base_url,
             ),
             model_name=config.model,
         )
@@ -175,7 +192,8 @@ class LlmClient:
     - [ ] fake 返回带 `tool_calls` 的 `AIMessage`（pydantic ToolCall 有 `model_dump`）→ `LLMOutput.tool_calls` 正确解析出 name/args；无 `tool_calls` → `[]`
     - [ ] `messages` 顺序与内容按原序透传（fake 记录收到的 LangChain 消息）
     - [ ] 非文本 content（fake 返回 `content=list`）→ `RuntimeError`（不是 `str(list)` 的 repr 垃圾）
-  - [ ] `from_config`（`monkeypatch` 环境变量）：`provider="claude"` → `ConfigError`；`api_key_env` 未设（`delenv`）→ `ConfigError`；正常 → 返回 `LlmClient` 且 `_model_name == config.model`（`setenv` 设 key）
+  - [ ] `_resolve_base_url` 纯函数：显式 `base_url` 优先 / 已知 provider 命中 / 未知 provider 返回 `None`
+  - [ ] `from_config`（`monkeypatch` 环境变量）：`provider="claude"`（无 base_url）→ `ConfigError`；`api_key_env` 未设（`delenv`）→ `ConfigError`；正常 → 返回 `LlmClient` 且 `_model_name == config.model`（`setenv` 设 key）；`provider="openai"` → 正常返回；自定义 `base_url` → 正常返回
 - [ ] 集成测试：无（`LlmClient` 是内部类，无 Facade 管道；不测真实 LLM）
 - [ ] E2E 测试：无
 

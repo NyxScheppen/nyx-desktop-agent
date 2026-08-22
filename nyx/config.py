@@ -25,6 +25,7 @@ class LlmConfig:
     provider: str = "deepseek"
     model: str = "deepseek-chat"
     api_key_env: str = "DEEPSEEK_API_KEY"  # 存环境变量名，key 本体由 03-llm 读
+    base_url: str | None = None            # 可选 endpoint 覆盖；缺省查 provider 映射
 
 
 @dataclass
@@ -164,6 +165,8 @@ def validate_config(cfg: Config) -> None:
     _nonempty(cfg.llm.model, "llm.model")
     _nonempty(cfg.llm.api_key_env, "llm.api_key_env")
     _nonempty(cfg.embedding.model, "embedding.model")
+    if cfg.llm.base_url is not None:
+        _nonempty(cfg.llm.base_url, "llm.base_url")  # 非 None 必须非空，防 "" 静默回退
 
     # int > 0
     for path, v in (("memory.short_term_capacity", cfg.memory.short_term_capacity),

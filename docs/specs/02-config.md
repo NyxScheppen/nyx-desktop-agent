@@ -35,9 +35,10 @@
 
 ```yaml
 llm:
-  provider: deepseek          # deepseek | claude | ...（LangChain 集成）
+  provider: deepseek          # deepseek | openai | ollama；其它 OpenAI 兼容服务配 base_url
   model: deepseek-chat
   api_key_env: DEEPSEEK_API_KEY
+  # base_url: http://localhost:11434/v1   # 可选：覆盖/自定义 endpoint
 
 embedding:
   model: all-MiniLM-L6-v2     # 本地 sentence-transformers
@@ -108,6 +109,7 @@ class LlmConfig:
     provider: str = "deepseek"
     model: str = "deepseek-chat"
     api_key_env: str = "DEEPSEEK_API_KEY"  # 存环境变量名，key 本体由 03-llm 读
+    base_url: str | None = None            # 可选 endpoint 覆盖；缺省查 provider 映射
 
 
 @dataclass
@@ -280,6 +282,7 @@ def validate_config(cfg: Config) -> None:
 | 字段 | 约束 |
 |---|---|
 | `llm.provider` / `llm.model` / `llm.api_key_env` | 非空 `str` |
+| `llm.base_url` | 非 `None` 时非空 `str`（`""` 静默回退映射 → 报错） |
 | `embedding.model` | 非空 `str` |
 | `memory.short_term_capacity` / `memory.promote_threshold` | `int > 0` |
 | `memory.freshness_decay` | 数 ∈ `[0, 1]` |

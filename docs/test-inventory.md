@@ -56,15 +56,18 @@
 | `test_complete_json_mode_off` | 功能正确 | `json_mode=False` → kwargs 不含 `response_format` |
 | `test_complete_messages_passthrough` | 功能正确 | `messages` 顺序与内容按原序透传为 LangChain 消息（fake 记录收到的消息） |
 | `test_complete_non_text_content` | 边界鲁棒 | 非文本 content（`list`）→ `RuntimeError`（非 `str(list)` repr 垃圾） |
-| `test_from_config_rejects_other_provider` | 边界鲁棒 | `provider="claude"` → `ConfigError` |
+| `test_resolve_base_url` | 功能正确 | `_resolve_base_url`：显式 `base_url` 优先 / 已知 provider（`openai`）命中映射 / 未知 provider（`claude`）返回 `None` |
+| `test_from_config_unknown_provider_rejects` | 边界鲁棒 | `provider="claude"`（无 base_url）→ `ConfigError` |
 | `test_from_config_rejects_missing_api_key` | 边界鲁棒 | `api_key_env` 未设（`delenv`）→ `ConfigError` |
 | `test_from_config_ok` | 功能正确 | 正常 → 返回 `LlmClient` 且 `_model_name == config.model` |
+| `test_from_config_known_provider` | 功能正确 | `provider="openai"` → 返回 `LlmClient` 且 `_model_name == config.model` |
+| `test_from_config_base_url_override` | 功能正确 | 自定义 `base_url` → 正常返回 `LlmClient` 且 `_model_name == config.model` |
 | `test_complete_tools_passthrough` | 功能正确 | `complete(tools=[...])` → 传给 fake model 的 kwargs 含 `tools`（透传 schema） |
 | `test_complete_tools_off` | 功能正确 | `complete` 不传 `tools` → kwargs 不含 `tools` 键 |
 | `test_complete_tool_calls_parsed` | 功能正确 | fake 返回带 `tool_calls` 的 `AIMessage` → `LLMOutput.tool_calls` 正确解析为 `[{name, args}]` |
 | `test_complete_no_tools_empty` | 边界鲁棒 | 响应无 `tool_calls` → `LLMOutput.tool_calls == []` |
 
-**功能阶段**：03-llm 实现时编写；`test_extract_usage_non_int_value` 于第五轮 review 追加（`_safe_int` 防御非数字 token 值）；`test_complete_tools_passthrough` / `test_complete_tools_off` / `test_complete_tool_calls_parsed` / `test_complete_no_tools_empty` 于「表达侧工具调用（bind_tools）」阶段追加（`complete` 支持 `tools` + `LLMOutput.tool_calls` 解析）。
+**功能阶段**：03-llm 实现时编写；`test_extract_usage_non_int_value` 于第五轮 review 追加（`_safe_int` 防御非数字 token 值）；`test_complete_tools_passthrough` / `test_complete_tools_off` / `test_complete_tool_calls_parsed` / `test_complete_no_tools_empty` 于「表达侧工具调用（bind_tools）」阶段追加（`complete` 支持 `tools` + `LLMOutput.tool_calls` 解析）；`test_resolve_base_url` / `test_from_config_unknown_provider_rejects`（原 `test_from_config_rejects_other_provider` 改名）/ `test_from_config_known_provider` / `test_from_config_base_url_override` 于「多 provider（OpenAI 兼容映射）」阶段追加（`LlmConfig.base_url` + `_resolve_base_url` 映射）。
 
 ## 04-db（SQLite 连接 + 建表 + 迁移）
 

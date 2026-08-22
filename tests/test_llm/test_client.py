@@ -14,7 +14,13 @@ from langchain_core.messages import (
 from langchain_core.outputs import ChatResult
 
 from nyx.config import ConfigError, LlmConfig
-from nyx.llm.client import LlmClient, LlmMessage, _extract_usage, _to_lc
+from nyx.llm.client import (
+    LlmClient,
+    LlmMessage,
+    _extract_usage,
+    _resolve_base_url,
+    _to_lc,
+)
 from nyx.types import LLMOutput
 
 
@@ -240,7 +246,14 @@ def test_complete_non_text_content() -> None:
 # ---- from_config ----
 
 
-def test_from_config_rejects_other_provider() -> None:
+def test_resolve_base_url() -> None:
+    # 显式覆盖优先 / 已知 provider 命中 / 未知 provider 返回 None
+    assert _resolve_base_url("deepseek", "http://localhost:1/v1") == "http://localhost:1/v1"
+    assert _resolve_base_url("openai", None) == "https://api.openai.com/v1"
+    assert _resolve_base_url("claude", None) is None
+
+
+def test_from_config_unknown_provider_rejects() -> None:
     with pytest.raises(ConfigError):
         LlmClient.from_config(LlmConfig(provider="claude"))
 
@@ -256,4 +269,20 @@ def test_from_config_rejects_missing_api_key(
 def test_from_config_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     client = LlmClient.from_config(LlmConfig())
+    assert client._model_name == "deepseek-chat"
+
+
+def test_from_config_known_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    client = LlmClient.from_config(
+        LlmConfig(provider="openai", model="gpt-4o-mini", api_key_env="OPENAI_API_KEY")
+    )
+    assert client._model_name == "gpt-4o-mini"
+
+
+def test_from_config_base_url_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    client = LlmClient.from_config(
+        LlmConfig(base_url="http://localhost:11434/v1")
+    )
     assert client._model_name == "deepseek-chat"

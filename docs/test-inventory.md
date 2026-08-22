@@ -291,6 +291,7 @@
 | `test_parse_desire` | 边界鲁棒 | 合法 JSON→`(description, Goal)`；`goal:null`→`None`；缺/空 description、`goal.action` 非法、`count` 非正/非 int、`topic` 非 str、JSON 数组 → `ValueError`（7 例） |
 | `test_subtopics_for` | 功能正确 | `type` 匹配且 `subtopics` 非空 → 返回该 `subtopics`；无匹配 / 空 subtopics → `[]` |
 | `test_pick_topic_seed` | 功能正确 | 空池 → `None`；全没做过（无命中记忆）→ 第一个；部分做过 → 取没做过的；都做过 → 取新鲜度最低者 |
+| `test_most_relevant_long_term` | 功能正确 | 无 type 匹配 → `None`；`topic` 双向 substring 命中第二条 → 第二条；漂移仍命中；`topic=None` → 第一个；都不命中 → 第一个 |
 | `test_build_desire_prompt` | 功能正确 | 含类型 `.value` 与种子；`seed=None` → 含「（无）」 |
 | `test_pressure_from_observation` | 功能正确 | 互动欲 `value` 0 → `+0.15`；`updated_at` 更新 |
 | `test_run_eval_no_peak` | 功能正确 | 四类型都低于 `peak_threshold` → `[]`、无 LLM 调用 |
@@ -303,6 +304,7 @@
 | `test_run_eval_llm_invalid_json_skips` | 边界鲁棒 | 非法 JSON → `_parse_desire` 抛 `ValueError` → 返回 `[]`、目标 `value` 不重置、无欲望入队 |
 | `test_run_eval_evaluator_error_propagates` | 回归保护 | evaluator 抛 `RuntimeError` → 不被 `except ValueError` 吞、上抛给 supervisor（不掩蔽真 bug） |
 | `test_satisfy_goal_met` | 功能正确 | `SATISFIED`、表达权重 `+0.05`、长期进度 `+0.1`、发布 `desire_satisfied` |
+| `test_satisfy_reinforces_most_relevant_long_term` | 功能正确 | 同类型两条长期欲望 + `goal.topic` 命中第二条 → 只回写第二条 progress（0.1）、第一条不动（0.0） |
 | `test_satisfy_goal_progress` | 功能正确 | goal.count=3 时前两次 goal_met → `goal_progress=2` 保持 PENDING；第三次 → SATISFIED + `goal_progress=3`（C3 精确计数累计） |
 | `test_satisfy_retry` | 功能正确 | `retry_count+1`、`status` 仍 `PENDING`、无事件 |
 | `test_satisfy_retry_exceeds_limit` | 功能正确 | `retry_count > retry_limit` → `EXPIRED`、值回增 `+REFUND_DELTA`、抑制阈值 `+0.1`、发布 `desire_expired` |
@@ -318,7 +320,7 @@
 | `test_satisfy_expire_delegate` | 功能正确 | `facade.satisfy`/`facade.expire` 委托改 `status`（SATISFIED / EXPIRED） |
 | `test_add_long_term_delegates` | 功能正确 | `add_long_term(desire)` → `list_long_term` 多一条、字段全等 |
 
-**功能阶段**：11-desire 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；无集成/E2E，与 activity/expression 真实编排归 13/14/17）；`test_goal_progress_roundtrip` / `test_satisfy_goal_progress` 于「活动填实（goal 精确计数）」轮追加（`goal_progress` 列读写往返 + `satisfy` 按 count 累计达标才满足）；`test_topic_seed` 改 `test_subtopics_for` + `test_pick_topic_seed`、`test_run_eval_topic_seed` 改查记忆，于「主题种子轮转（没做过/新鲜度最低）」轮追加（`_pick_topic_seed` 查记忆 substring 取种子）。
+**功能阶段**：11-desire 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；无集成/E2E，与 activity/expression 真实编排归 13/14/17）；`test_goal_progress_roundtrip` / `test_satisfy_goal_progress` 于「活动填实（goal 精确计数）」轮追加（`goal_progress` 列读写往返 + `satisfy` 按 count 累计达标才满足）；`test_topic_seed` 改 `test_subtopics_for` + `test_pick_topic_seed`、`test_run_eval_topic_seed` 改查记忆，于「主题种子轮转（没做过/新鲜度最低）」轮追加（`_pick_topic_seed` 查记忆 substring 取种子）；`test_most_relevant_long_term` / `test_satisfy_reinforces_most_relevant_long_term` 于「长期欲望最相关判定」轮追加（`_most_relevant_long_term` 按 `goal.topic` 双向 substring 命中 `subtopics` 者回写，否则第一个 type 匹配）。
 
 ## 12-inner-life（内在生命：情感/精力 + 反思 + 门面）
 

@@ -13,6 +13,7 @@ from nyx.db import Database
 from nyx.desire.lifecycle import (
     DesireLifecycle,
     _build_desire_prompt,
+    _most_relevant_long_term,
     _parse_desire,
     _pick_topic_seed,
     _subtopics_for,
@@ -79,10 +80,12 @@ def _dv(
 
 
 def _lt(
-    type: DesireType, subtopics: list[str] | None = None
+    type: DesireType,
+    subtopics: list[str] | None = None,
+    id: str = "lt1",
 ) -> LongTermDesire:
     return LongTermDesire(
-        id="lt1",
+        id=id,
         created_at=1000.0,
         type=type,
         name="探索世界",
@@ -242,6 +245,31 @@ def test_pick_topic_seed() -> None:
         [_mem(summary="关于痛苦", freshness=0.9),
          _mem(summary="关于死亡", freshness=0.2)],
     ) == "死亡"
+
+
+def test_most_relevant_long_term() -> None:
+    a = _lt(DesireType.EXPLORATION, ["骑士团"])
+    b = _lt(DesireType.EXPLORATION, ["大学朋友"])
+    # 无 type 匹配 → None
+    assert _most_relevant_long_term(
+        DesireType.INTERACTION, None, [a, b]
+    ) is None
+    # topic 双向 substring 命中第二条 → 回写第二条
+    assert _most_relevant_long_term(
+        DesireType.EXPLORATION, "大学朋友", [a, b]
+    ) is b
+    # topic 轻微漂移仍命中（"写骑士团同人" 含 "骑士团"）
+    assert _most_relevant_long_term(
+        DesireType.EXPLORATION, "写骑士团同人", [a, b]
+    ) is a
+    # topic=None → 第一个 type 匹配
+    assert _most_relevant_long_term(
+        DesireType.EXPLORATION, None, [a, b]
+    ) is a
+    # 同类型都不命中 → 第一个
+    assert _most_relevant_long_term(
+        DesireType.EXPLORATION, "别的主题", [a, b]
+    ) is a
 
 
 def test_build_desire_prompt() -> None:
@@ -439,6 +467,33 @@ async def test_satisfy_goal_met(monkeypatch: pytest.MonkeyPatch) -> None:
         assert lt.progress == pytest.approx(0.1)
         [satisfied] = [e for e in events if e.type is EventType.DESIRE_SATISFIED]
         assert satisfied.content["desire_id"] == "d1"
+    finally:
+        await database.conn.close()
+
+
+async def test_satisfy_reinforces_most_relevant_long_term(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同类型两条长期欲望 + goal.topic 命中第二条 → 只回写第二条 progress。"""
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.EXPLORATION, 0.5, updated_at=t0))
+        await store.insert_long_term(_lt(DesireType.EXPLORATION, ["骑士团"], id="lt1"))
+        await store.insert_long_term(
+            _lt(DesireType.EXPLORATION, ["大学朋友"], id="lt2")
+        )
+        desire = _desire("d1")
+        desire.type = DesireType.EXPLORATION
+        desire.goal = Goal(GoalAction.READ, 1, "大学朋友")
+        await store.add_desire(desire)
+        async with _running(bus):
+            await lifecycle.satisfy("d1", True)
+        by_id = {lt.id: lt for lt in await store.list_long_term()}
+        assert by_id["lt1"].progress == pytest.approx(0.0)   # 未命中，不动
+        assert by_id["lt2"].progress == pytest.approx(0.1)   # 命中，回写
     finally:
         await database.conn.close()
 

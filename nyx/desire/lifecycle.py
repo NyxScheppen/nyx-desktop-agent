@@ -121,6 +121,23 @@ def _pick_topic_seed(subtopics: list[str], memories: list[Memory]) -> str | None
     return best
 
 
+def _most_relevant_long_term(
+    type_: DesireType,
+    topic: str | None,
+    long_term: list[LongTermDesire],
+) -> LongTermDesire | None:
+    """满足回写的长期欲望：goal.topic 双向 substring 命中 subtopics 者优先，
+    否则第一个 type 匹配；无 type 匹配返回 None。纯函数。"""
+    matching = [lt for lt in long_term if lt.type is type_]
+    if not matching:
+        return None
+    if topic:
+        for lt in matching:
+            if any(topic in s or s in topic for s in lt.subtopics):
+                return lt
+    return matching[0]
+
+
 class DesireLifecycle:
     """欲望全周期编排：观察加压、达峰生成、满足/淘汰回写。
 
@@ -301,7 +318,7 @@ class DesireLifecycle:
     async def _satisfy(self, desire: ShortTermDesire) -> None:
         desire.status = DesireStatus.SATISFIED
         await self._store.update_desire(desire)
-        await self._reinforce(desire.type)
+        await self._reinforce(desire)
         await self._bus.publish(
             internal_event(
                 EventType.DESIRE_SATISFIED,
@@ -322,18 +339,20 @@ class DesireLifecycle:
             )
         )
 
-    async def _reinforce(self, type_: DesireType) -> None:
-        """满足后：表达权重正强化 + 长期进度回写（第一个 type 匹配的长期欲望）。"""
-        dv = await self._store.get_value(type_)
+    async def _reinforce(self, desire: ShortTermDesire) -> None:
+        """满足后：表达权重正强化 + 长期进度回写（最相关长期欲望）。"""
+        dv = await self._store.get_value(desire.type)
         if dv is not None:
             dv.expression_weight = reinforce_weight(dv.expression_weight)
             await self._store.upsert_value(dv)
-        for lt in await self._store.list_long_term():
-            if lt.type is type_:
-                lt.progress = min(1.0, lt.progress + _LONG_TERM_PROGRESS_DELTA)
-                lt.strength = max(0.0, lt.strength - _LONG_TERM_STRENGTH_DECAY)
-                await self._store.update_long_term(lt)
-                break
+        topic = desire.goal.topic if desire.goal is not None else None
+        lt = _most_relevant_long_term(
+            desire.type, topic, await self._store.list_long_term()
+        )
+        if lt is not None:
+            lt.progress = min(1.0, lt.progress + _LONG_TERM_PROGRESS_DELTA)
+            lt.strength = max(0.0, lt.strength - _LONG_TERM_STRENGTH_DECAY)
+            await self._store.update_long_term(lt)
 
     async def _suppress(self, type_: DesireType) -> None:
         """失败/淘汰后：值回增（压力回灌）+ 抑制阈值上浮（习得性抑制）。"""

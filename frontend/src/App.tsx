@@ -4,6 +4,7 @@ import AnnounceLayer from "./components/AnnounceLayer";
 import StatusBar from "./components/StatusBar";
 import ChatPanel from "./components/chat/ChatPanel";
 import EmotionSprite from "./components/inner/EmotionSprite";
+import InnerWorld from "./components/layout/InnerWorld";
 import SidePanel from "./components/layout/SidePanel";
 import Sakura from "./components/scene/Sakura";
 import { usePresence } from "./hooks/usePresence";
@@ -28,6 +29,7 @@ export default function App() {
   const refreshActivity = useActivityStore((s) => s.refresh);
   usePresence();
   const [view, setView] = useState<"chat" | "settings">("chat");
+  const [innerOpen, setInnerOpen] = useState(false);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
 
@@ -68,11 +70,15 @@ export default function App() {
       <main className="app-stage">
         <EmotionSprite size="portrait" />
         {view === "chat" ? (
-          <ChatPanel onOpenSettings={() => setView("settings")} />
+          <ChatPanel
+            onOpenSettings={() => setView("settings")}
+            onToggleInner={() => setInnerOpen((v) => !v)}
+          />
         ) : (
           <SidePanel onBack={() => setView("chat")} />
         )}
       </main>
+      <InnerWorld open={innerOpen} onClose={() => setInnerOpen(false)} />
       <StatusBar />
       <AnnounceLayer />
     </div>

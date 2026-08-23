@@ -731,6 +731,7 @@
 | `MessageList > 串行逐字：内心话先打完、对话才开打` | 功能正确 | think 在前、speak 在后：未推进 timer 两者皆空（think 刚开打、speak 等前置打完）；`typeDone()` 后 think→speak 串行完整上屏 |
 | `ChatPanel > 订阅 messages 透传给 MessageList` | 功能正确 | store 里 messages 经 ChatPanel 订阅透传 → MessageList 渲染上屏 |
 | `ChatPanel > 头部「设置」按钮触发 onOpenSettings` | 功能正确 | 点「设置」→ `onOpenSettings` 恰调 1 次（App 层 view 切到设置面板） |
+| `ChatPanel > 头部「内心」按钮触发 onToggleInner` | 功能正确 | 点「内心」→ `onToggleInner` 恰调 1 次（App 层滑出/收起内心世界抽屉） |
 | `ChatInput > 点发送 → sendMessage(trimmed) 且成功清空` | 功能正确 | 点发送按钮触发 `sendMessage` 且传入 trim 后文本；成功（返回 true）后 `waitFor` 断言输入框清空 |
 | `ChatInput > 回车 → sendMessage 且成功清空` | 功能正确 | 输入框 Enter 触发 `sendMessage`；成功后输入框清空 |
 | `ChatInput > 输入法组合态回车不触发` | 回归保护 | `isComposing=true` 的 Enter（拼音选字）不触发 `sendMessage`（防 IME 误发送） |
@@ -739,7 +740,7 @@
 | `ChatInput > isReplying=true → 禁用 + 回车不触发` | 功能正确 | isReplying 时发送按钮 `disabled` + 文案「…」；填非空值后回车仍不触发 sendMessage（只有 isReplying 守卫能拦） |
 | `ChatInput > sendError 非 null → 红字显示` | 功能正确 | `sendError` 非空时渲染 `.chat-input__error` 红字 |
 
-**功能阶段**：frontend 03-chat-panel 实现时编写（RTL + 真实 store；验证管道正确——按 role/kind 渲染、think 逐字弱化、nyx 文本消息走 useTypewriter 需 `typeDone()` 推进 fake timers、isReplying 锁输入、sendError 上屏，不验证视觉样式）；本表 MessageBubble/MessageList/ChatPanel 于视觉改造轮追加 fake timers（nyx 文本逐字，`typeDone()` 多轮推进覆盖逐字）；`MessageList > 全部消息按序渲染，无历史折叠` / `全部消息渲染即存在（不串行）` 于视觉改造轮追加（微信式全量列表：全部消息按序渲染、上滑看历史、不串行等前一条打完）；`ChatInput > 输入法组合态回车不触发`、`ChatInput > 发送失败保留文本` 于 03-chat-panel 后 review 追加（Finding 1/2：IME 回车误发送 + 清空太早致失败丢文本）；`makeMsg` 自增 id、`isReplying` 用例填非空值 于同轮修正（假绿：空输入提前 return / 同 kind 撞 key）；`ChatInput > 成功清空不误删预打文本` 于下一轮 review 追加（异步无条件清空会误删回复期间预打文本，改函数式更新比对 trimmed）；`MessageList > 打字机只在第一条 nyx 文本生效` 于「开头打字机」轮追加（打字机只在第一条 nyx 文本消息生效，其余即时显示）。
+**功能阶段**：frontend 03-chat-panel 实现时编写（RTL + 真实 store；验证管道正确——按 role/kind 渲染、think 逐字弱化、nyx 文本消息走 useTypewriter 需 `typeDone()` 推进 fake timers、isReplying 锁输入、sendError 上屏，不验证视觉样式）；本表 MessageBubble/MessageList/ChatPanel 于视觉改造轮追加 fake timers（nyx 文本逐字，`typeDone()` 多轮推进覆盖逐字）；`MessageList > 全部消息按序渲染，无历史折叠` / `全部消息渲染即存在（不串行）` 于视觉改造轮追加（微信式全量列表：全部消息按序渲染、上滑看历史、不串行等前一条打完）；`ChatInput > 输入法组合态回车不触发`、`ChatInput > 发送失败保留文本` 于 03-chat-panel 后 review 追加（Finding 1/2：IME 回车误发送 + 清空太早致失败丢文本）；`makeMsg` 自增 id、`isReplying` 用例填非空值 于同轮修正（假绿：空输入提前 return / 同 kind 撞 key）；`ChatInput > 成功清空不误删预打文本` 于下一轮 review 追加（异步无条件清空会误删回复期间预打文本，改函数式更新比对 trimmed）；`MessageList > 打字机只在第一条 nyx 文本生效` 于「开头打字机」轮追加（打字机只在第一条 nyx 文本消息生效，其余即时显示）；`ChatPanel > 头部「内心」按钮触发 onToggleInner` 于「内心世界」轮追加（观测面板移入右侧抽屉，头部新增「内心」按钮）。
 
 ## frontend-inner-state-panel（内在状态面板：InnerStatePanel + ValenceArousalPlot + EmotionSprite + EnergyBar + BigFiveChart + ValuesChart）
 
@@ -773,11 +774,22 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `SidePanel > 渲染 9 个标签，默认激活「背景」` | 功能正确 | 9 个 tab 按钮（背景/内在/欲望/活动/产出/叙事/资料/记忆/Eval）都渲染；默认「背景」`aria-pressed=true` + 面板标题「背景」上屏 |
-| `SidePanel > 点击「欲望」切换面板，未激活面板卸载` | 功能正确 | 点「欲望」后 `aria-pressed` 移到「欲望」、面板标题「欲望」上屏、背景面板标题卸载（仅挂载当前 tab，规避旧抽屉 flex 子项被压缩裁掉无法滚动） |
+| `SidePanel > 渲染 3 个标签，默认激活「背景」` | 功能正确 | 3 个 tab 按钮（背景/记忆/Eval）都渲染；默认「背景」`aria-pressed=true` + 面板标题「背景」上屏 |
+| `SidePanel > 点击「记忆」切换面板，未激活面板卸载` | 功能正确 | 点「记忆」后 `aria-pressed` 移到「记忆」、面板标题「记忆」上屏、背景面板标题卸载（仅挂载当前 tab，规避旧抽屉 flex 子项被压缩裁掉无法滚动） |
 | `SidePanel > 「返回对话」按钮触发 onBack` | 功能正确 | 点「返回对话」→ `onBack` 恰调 1 次（设置面板退回聊天，App 层 view 切换） |
 
-**功能阶段**：frontend 视觉改造（右侧滑出抽屉 → 右侧常驻标签页）时编写（RTL + 真实 store；验证管道正确——标签切换当前面板、仅挂载 active tab，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）；本轮视觉改造把 SidePanel 从「常驻右侧标签页」改为「设置模式下替换对话框」，`SidePanel` 需 `onBack` prop + 首 tab 由「内在」改为「背景」——原 6 标签断言改为 7 标签、默认激活断言由「内在」改「背景」、补 `onBack` 用例；`渲染 7 个标签` 于「喂资料/上传课本」轮改为 `渲染 9 个标签`（新增「叙事」「资料」两 tab，标签清单同步补入）；本轮移除「溯源」tab（`渲染 8 个标签`）；`渲染 9 个标签` 于「产出面板」轮改为 9 标签（新增「产出」tab，标签清单同步补入）。
+**功能阶段**：frontend 视觉改造（右侧滑出抽屉 → 右侧常驻标签页）时编写（RTL + 真实 store；验证管道正确——标签切换当前面板、仅挂载 active tab，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）；本轮视觉改造把 SidePanel 从「常驻右侧标签页」改为「设置模式下替换对话框」，`SidePanel` 需 `onBack` prop + 首 tab 由「内在」改为「背景」——原 6 标签断言改为 7 标签、默认激活断言由「内在」改「背景」、补 `onBack` 用例；`渲染 7 个标签` 于「喂资料/上传课本」轮改为 `渲染 9 个标签`（新增「叙事」「资料」两 tab，标签清单同步补入）；本轮移除「溯源」tab（`渲染 8 个标签`）；`渲染 9 个标签` 于「产出面板」轮改为 9 标签（新增「产出」tab，标签清单同步补入）；`渲染 9 个标签` 于「内心世界」轮改为 `渲染 3 个标签`（内在/欲望/活动/产出/叙事/资料 6 个观测面板移入右侧 `InnerWorld` 抽屉，SidePanel 只留背景/记忆/Eval，切换用例由「欲望」改「记忆」）。
+
+## frontend-inner-world（布局：InnerWorld 内心世界抽屉）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `InnerWorld > 渲染 6 个标签，默认激活「内在」` | 功能正确 | 6 个 tab 按钮（内在/欲望/活动/产出/叙事/资料）都渲染；默认「内在」`aria-pressed=true` + 面板标题「内在状态」上屏 |
+| `InnerWorld > 点击「欲望」切换面板，未激活面板卸载` | 功能正确 | 点「欲望」后 `aria-pressed` 移到「欲望」、面板标题「欲望」上屏、内在面板标题「内在状态」卸载（仅挂载当前 tab） |
+| `InnerWorld > 「收起」按钮触发 onClose` | 功能正确 | 点「收起」→ `onClose` 恰调 1 次（App 层关闭抽屉） |
+| `InnerWorld > open=false 时容器不带 inner-world--open 修饰类` | 功能正确 | 收起态容器无 `.inner-world--open` 修饰类（CSS transform 滑出屏幕） |
+
+**功能阶段**：frontend「内心世界」轮编写（观测面板从「设置」移入右侧滑出抽屉；RTL + 真实 store，验证管道正确——6 标签切换、仅挂载 active tab、open/onClose 接线，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）。
 
 ## frontend-interactivity（交互性：常驻状态条 + 头像旁气泡 + 活动产出）
 

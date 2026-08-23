@@ -12,9 +12,9 @@ describe("SidePanel 标签页", () => {
     useInnerLifeStore.setState({ current: null, loading: false, error: null });
   });
 
-  it("渲染 9 个标签，默认激活「背景」并显示其面板", () => {
+  it("渲染 3 个标签，默认激活「背景」并显示其面板", () => {
     render(<SidePanel onBack={() => {}} />);
-    for (const label of ["背景", "内在", "欲望", "活动", "产出", "叙事", "资料", "记忆", "Eval"]) {
+    for (const label of ["背景", "记忆", "Eval"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
     expect(screen.getByRole("button", { name: "背景" })).toHaveAttribute(
@@ -25,17 +25,17 @@ describe("SidePanel 标签页", () => {
     expect(screen.getByRole("heading", { name: "背景" })).toBeInTheDocument();
   });
 
-  it("点击「欲望」切换面板，未激活面板卸载", () => {
-    // DesiresPanel 挂载时 refresh() → getDesires → fetch；stub 永不 resolve，
+  it("点击「记忆」切换面板，未激活面板卸载", () => {
+    // MemoryPanel 挂载时 refresh() → getMemories → fetch；stub 永不 resolve，
     // 避免 fetch 微任务在 act 外触发 setState 的重渲染告警（本测只验证标签切换，不验数据）
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     render(<SidePanel onBack={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "欲望" }));
-    expect(screen.getByRole("button", { name: "欲望" })).toHaveAttribute(
+    fireEvent.click(screen.getByRole("button", { name: "记忆" }));
+    expect(screen.getByRole("button", { name: "记忆" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("heading", { name: "欲望" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "记忆" })).toBeInTheDocument();
     // 背景面板已卸载
     expect(screen.queryByRole("heading", { name: "背景" })).not.toBeInTheDocument();
   });

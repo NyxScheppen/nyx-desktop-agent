@@ -152,7 +152,7 @@ describe("ChatPanel", () => {
       vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
     );
     useChatStore.setState({ messages: [makeMsg("speak", "nyx", "订阅上屏")] });
-    render(<ChatPanel onOpenSettings={() => {}} />);
+    render(<ChatPanel onOpenSettings={() => {}} onToggleInner={() => {}} />);
     typeDone();
     expect(screen.getByText("订阅上屏")).toBeInTheDocument();
   });
@@ -163,9 +163,20 @@ describe("ChatPanel", () => {
       vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
     );
     const onOpenSettings = vi.fn();
-    render(<ChatPanel onOpenSettings={onOpenSettings} />);
+    render(<ChatPanel onOpenSettings={onOpenSettings} onToggleInner={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("头部「内心」按钮触发 onToggleInner", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
+    );
+    const onToggleInner = vi.fn();
+    render(<ChatPanel onOpenSettings={() => {}} onToggleInner={onToggleInner} />);
+    fireEvent.click(screen.getByRole("button", { name: "内心" }));
+    expect(onToggleInner).toHaveBeenCalledTimes(1);
   });
 });
 

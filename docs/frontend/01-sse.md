@@ -191,6 +191,7 @@ function App() {
   const refreshState = useInnerLifeStore(s => s.refreshState);
   usePresence();                                 // 活跃度上报（README §2）
   const [view, setView] = useState<"chat" | "settings">("chat");  // 双模式：对话框 / 设置
+  const [innerOpen, setInnerOpen] = useState(false);              // 内心世界抽屉开合
   const tint = useSettingsStore(s => s.tint);    // 背景色调/背景图（settingsStore）
   const image = useSettingsStore(s => s.image);
 
@@ -215,17 +216,18 @@ function App() {
       <main className="app-stage">
         <EmotionSprite size="portrait" />              {/* 半身像立绘（左侧，CSS 裁切全身像） */}
         {view === "chat" ? (
-          <ChatPanel onOpenSettings={() => setView("settings")} />  {/* 微信式聊天窗，头部「设置」按钮进入设置 */}
+          <ChatPanel onOpenSettings={() => setView("settings")} onToggleInner={() => setInnerOpen(v => !v)} />  {/* 头部「内心」滑出抽屉 /「设置」进设置 */}
         ) : (
-          <SidePanel onBack={() => setView("chat")} />              {/* 设置面板，「返回对话」退出 */}
+          <SidePanel onBack={() => setView("chat")} />              {/* 设置面板（背景/记忆/Eval），「返回对话」退出 */}
         )}
       </main>
+      <InnerWorld open={innerOpen} onClose={() => setInnerOpen(false)} />  {/* 内心世界右侧滑出抽屉（默认收起） */}
     </div>
   );
 }
 ```
 
 - `useSSE` 只挂一次（App 顶层），子面板**不重复订阅**，只读 store。
-- **视觉改造布局（Galgame）**：全屏三层——背景柔光 + 樱花（`app-bg`/`Sakura`）→ 左侧半身像立绘（`app-stage` + `EmotionSprite size="portrait"`，常驻）+ 右侧双模式区（对话框 ↔ 设置，互斥渲染）：默认微信式聊天窗（`ChatPanel` 的 `dialog-box`，头部「设置」按钮切走），点「设置」后换成 `SidePanel` 标签页（`components/layout`，背景/内在/欲望/活动/记忆/Eval 6 标签，一次显示一个，内容区可滚动，「返回对话」回聊天）。
+- **视觉改造布局（Galgame）**：全屏三层——背景柔光 + 樱花（`app-bg`/`Sakura`）→ 左侧半身像立绘（`app-stage` + `EmotionSprite size="portrait"`，常驻）+ 右侧双模式区（对话框 ↔ 设置，互斥渲染）：默认微信式聊天窗（`ChatPanel` 的 `dialog-box`，头部「内心」按钮滑出右侧 `InnerWorld` 抽屉、「设置」按钮切走），点「设置」后换成 `SidePanel` 标签页（`components/layout`，背景/记忆/Eval 3 标签，一次显示一个，内容区可滚动，「返回对话」回聊天）。`InnerWorld` 抽屉收内在/欲望/活动/产出/叙事/资料 6 标签，默认收起。
 - `connectionState` 由 App 层在顶栏 `connection-state` 直接显示，不再传 `ChatPanel`。
 - 背景由 `settingsStore` 驱动：`image` 以 `cover` 铺底、`tint` 无图时作纯色替默认粉渐变、图+色并存时叠一层半透明 `.app-bg-tint`。

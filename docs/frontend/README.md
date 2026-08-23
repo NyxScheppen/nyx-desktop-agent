@@ -121,13 +121,15 @@ frontend/
         BackgroundPanel.tsx # 背景外观（预设色调/自定义取色/上传背景图/恢复默认）
         DesiresPanel.tsx     # 欲望面板（GET /api/desires + SSE desire_*）
         ActivityPanel.tsx    # 活动时间线（GET /api/activity + SSE activity_*）
+        OutputsPanel.tsx     # 产出面板（GET /api/activity/results 跨天历史产出）
         NarrativePanel.tsx   # 自我叙事（GET /api/narrative）
         MaterialsPanel.tsx   # 资料上传（POST /api/upload + GET /api/materials）
         MemoryPanel.tsx      # 记忆浏览器（GET /api/memories + SSE memory_*）
         EvalPanel.tsx        # eval + token 看板（GET /api/eval / GET /api/tokens）
       layout/
         Panel.tsx            # 通用面板容器
-        SidePanel.tsx        # 设置标签页面板（收非对话面板，标签切换，01-sse §6）
+        SidePanel.tsx        # 设置标签页面板（背景/记忆/Eval，标签切换，01-sse §6）
+        InnerWorld.tsx       # 内心世界右侧滑出抽屉（内在/欲望/活动/产出/叙事/资料，默认收起）
       scene/
         Sakura.tsx           # 樱花飘落装饰（纯视觉，01-sse §6）
     assets/
@@ -147,7 +149,7 @@ frontend/
 
 ## 5. 面板骨架（SidePanel 标签页）
 
-design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），其头部「设置」按钮切到 `SidePanel` 标签页（背景/内在/欲望/活动/产出/叙事/资料/记忆/Eval 9 标签，一次显示一个，内容区可滚动，「返回对话」回到聊天）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
+design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），头部「内心」按钮滑出右侧 `InnerWorld` 抽屉（内在/欲望/活动/产出/叙事/资料 6 标签，默认收起、点「收起」或再点「内心」收起），「设置」按钮切到 `SidePanel` 标签页（背景/记忆/Eval 3 标签，一次显示一个，内容区可滚动，「返回对话」回到聊天）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|

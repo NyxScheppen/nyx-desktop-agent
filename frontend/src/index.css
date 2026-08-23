@@ -205,7 +205,14 @@ body {
   text-shadow: 0 2px 8px rgba(255, 200, 180, 0.25);
 }
 
-.dialog-box__settings {
+.dialog-box__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.dialog-box__settings,
+.dialog-box__inner {
   padding: 0.3rem 0.9rem;
   border: 1px solid rgba(180, 140, 120, 0.3);
   border-radius: 0.45rem;
@@ -217,7 +224,8 @@ body {
   letter-spacing: 1px;
 }
 
-.dialog-box__settings:hover {
+.dialog-box__settings:hover,
+.dialog-box__inner:hover {
   background: rgba(255, 255, 255, 0.9);
 }
 
@@ -460,6 +468,34 @@ body {
 
 .side-panel__body::-webkit-scrollbar {
   display: none;
+}
+
+/* ===== 内心世界（右侧滑出抽屉：观测面板从「设置」移出）===== */
+/* 内部结构复用 .side-panel__header/__title/__back/__tabs/__tab/__body（同款暖色卡片标签），
+   本类只负责容器定位：固定右侧 + transform 滑入滑出（默认收起）。 */
+.inner-world {
+  position: fixed;
+  top: 56px;
+  bottom: 16px;
+  right: 16px;
+  width: 340px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg,
+      rgba(255, 248, 240, 0.92) 0%,
+      rgba(250, 240, 235, 0.97) 100%);
+  backdrop-filter: blur(18px) saturate(1.15);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  border-radius: 18px;
+  box-shadow: 0 18px 50px rgba(60, 30, 20, 0.24);
+  overflow: hidden;
+  transform: translateX(calc(100% + 24px));
+  transition: transform 0.3s ease;
+}
+
+.inner-world--open {
+  transform: translateX(0);
 }
 
 /* ===== Panel 骨架（components/layout/Panel，抽屉内复用）===== */

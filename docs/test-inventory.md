@@ -622,7 +622,7 @@
 | `useSSE > unmount 调 close()` | 功能正确 | 卸载 cleanup → `source.close()` 被调 |
 | `dispatchEvent > speak → chatStore` | 功能正确 | `kind=speak`/`role=nyx`/`content` 入 `messages` |
 | `dispatchEvent > user_message → chatStore` | 回归保护 | 读 `message` 非 `content` → `kind=message`/`role=user`/`content` 入 `messages`（Finding 1：user_message 裸 `{message}` 曾致用户消息被 `typeof e.content` 拦截静默丢弃） |
-| `dispatchEvent > emotion_update → innerLifeStore` | 功能正确 | 覆盖 `valence`/`arousal`/`emotion` 三字段（`current` 非 null 时） |
+| `dispatchEvent > emotion_update → innerLifeStore` | 功能正确 | 覆盖 `valence`/`arousal`/`emotion` 三字段 + 顺带 `refreshState()` 重拉全量快照（能量/性格/三观不随帧下发，补自动刷新） |
 | `dispatchEvent > 未消费类型 → eventStore` | 功能正确 | `reflection` 仅 `record`（无面板消费，`count+1`） |
 | `dispatchEvent > 全量 record` | 功能正确 | 已消费类型（`speak`）也进 `eventStore`（`count+1`、`events[0].event=="speak"`）——补「只记 11 类未消费」的漏 |
 | `dispatchEvent > desire_generated → desireStore.refresh()` | 功能正确 | `desire_generated` 触发 `desireStore.refresh()` 恰 1 次 + 全量 `record` |
@@ -630,7 +630,7 @@
 | `dispatchEvent > activity_start → activityStore.refresh()` | 功能正确 | `activity_start` 触发 `activityStore.refresh()` 恰 1 次 |
 | `isEmotionCategory > 枚举收窄` | 边界鲁棒 | 合法枚举（`happy`/`neutral`）→ true；非法字符串（`不存在`）/非字符串（`5`/`null`）→ false |
 
-**功能阶段**：frontend 01-sse 实现时编写（mock `EventSource` stub + 真实 store；验证管道正确——事件走对 store、字段零映射、坏帧跳过不崩，不验证视觉）；`dispatchEvent > user_message → chatStore` 于本轮 review 追加（Finding 1 回归：user_message 裸 `{message}` 曾致用户消息被 `typeof e.content` 拦截静默丢弃）；`isEmotionCategory > 枚举收窄` 于本轮 review 追加（emotion 枚举值运行时收窄）；`dispatchEvent > 全量 record` / `desire_generated` / `memory_created` / `activity_start` → refresh 于前端面板落地轮追加（分发表全量 record + 快照 store 路由）。
+**功能阶段**：frontend 01-sse 实现时编写（mock `EventSource` stub + 真实 store；验证管道正确——事件走对 store、字段零映射、坏帧跳过不崩，不验证视觉）；`dispatchEvent > user_message → chatStore` 于本轮 review 追加（Finding 1 回归：user_message 裸 `{message}` 曾致用户消息被 `typeof e.content` 拦截静默丢弃）；`isEmotionCategory > 枚举收窄` 于本轮 review 追加（emotion 枚举值运行时收窄）；`dispatchEvent > 全量 record` / `desire_generated` / `memory_created` / `activity_start` → refresh 于前端面板落地轮追加（分发表全量 record + 快照 store 路由）；`emotion_update → 顺带 refreshState` 于「前端不自动刷新」bug 修复轮改写（根因：emotion_update 载荷只带情绪，能量/性格/三观不随帧下发，EnergyBar/BigFiveChart/ValuesChart 停在初始快照；改为 dispatch 顺带重拉全量 state）。
 
 ## frontend-client（REST 客户端：api/client.ts）
 

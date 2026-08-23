@@ -129,7 +129,7 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_register_and_schema_in_order` | 功能正确 | `register` 后 `schema()` 按注册序返回 `[{name, description, parameters}]` |
+| `test_register_and_schema_in_order` | 功能正确 | `register` 后 `schema()` 按注册序返回 `[{"type":"function","function":{name, description, parameters}}]` |
 | `test_register_duplicate_raises` | 边界鲁棒 | 重复注册同名工具 → `ValueError` |
 | `test_call_invokes_handler_with_kwargs` | 功能正确 | `call` 用 `handler(**args)` 调 handler（fake 记录 kwargs 与返回值） |
 | `test_call_unknown_name_raises` | 边界鲁棒 | `call` 未注册名 → `KeyError`（消息含名字） |

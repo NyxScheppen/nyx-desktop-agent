@@ -119,7 +119,7 @@ class LlmClient:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         if tools:
-            kwargs["tools"] = tools  # bind_tools：function calling 工具定义
+            kwargs["tools"] = tools  # OpenAI 兼容 function calling 工具定义
         response = await self._model.ainvoke([_to_lc(m) for m in messages], **kwargs)
         content = response.content
         if not isinstance(content, str):

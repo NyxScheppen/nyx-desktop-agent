@@ -21,7 +21,16 @@ class ToolRegistry:
         return await tool.handler(**args)
 
     def schema(self) -> list[dict[str, Any]]:
+        # OpenAI 兼容 function calling 格式：{"type":"function","function":{…}}。
+        # complete() 把 tools 原样透传（不二次包装），故这里须带 type/function 外壳。
         return [
-            {"name": t.name, "description": t.description, "parameters": t.schema}
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.schema,
+                },
+            }
             for t in self._tools.values()
         ]

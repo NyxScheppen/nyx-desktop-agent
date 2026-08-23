@@ -28,8 +28,22 @@ def test_register_and_schema_in_order() -> None:
     registry.register(_make_tool("a"))
     registry.register(_make_tool("b"))
     assert registry.schema() == [
-        {"name": "a", "description": "a desc", "parameters": {"type": "object"}},
-        {"name": "b", "description": "b desc", "parameters": {"type": "object"}},
+        {
+            "type": "function",
+            "function": {
+                "name": "a",
+                "description": "a desc",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "b",
+                "description": "b desc",
+                "parameters": {"type": "object"},
+            },
+        },
     ]
 
 

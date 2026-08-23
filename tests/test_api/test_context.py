@@ -110,11 +110,11 @@ async def test_seed_desire_idempotent() -> None:
 
 
 def test_build_tools_web_disabled() -> None:
-    names = {t["name"] for t in _build_tools(Config()).schema()}
+    names = {t["function"]["name"] for t in _build_tools(Config()).schema()}
     assert names == {"local_search", "file_io"}
 
 
 def test_build_tools_web_enabled() -> None:
     cfg = Config(exploration=ExplorationConfig(web_enabled=True))
-    names = {t["name"] for t in _build_tools(cfg).schema()}
+    names = {t["function"]["name"] for t in _build_tools(cfg).schema()}
     assert names == {"local_search", "file_io", "web_search"}

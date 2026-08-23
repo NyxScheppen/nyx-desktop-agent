@@ -17,7 +17,7 @@
 - [ ] `registry.py` 含 `ToolRegistry`（`register` / `call` / `schema`），与「`tools/registry.py`（完整）」段代码逐字一致
 - [ ] 三个工具模块各含 `build_*_tool()` 工厂 + 对应 handler，与各自「（完整）」段代码逐字一致
 - [ ] `register` 重名 → `ValueError`；`call` 用 `handler(**args)` 调 handler；`call` 未注册名 → `KeyError`
-- [ ] `schema()` 返回 `[{name, description, parameters}]`，按注册序
+- [ ] `schema()` 返回 `[{"type":"function","function":{name, description, parameters}}]`，按注册序
 - [ ] `file_io` 的 `write` 越界（`../` 或绝对路径逃逸 `write_root`）→ `ValueError`；`read` / `list` 不受写目录限制
 - [ ] `local_search` 缺省搜全盘（`full_disk_roots()`），`roots` 参数可收窄；遍历跳过无权限目录不崩
 - [ ] 三个工具返回 JSON 可序列化数据（`dict` / `list` / `str`，不返回 domain dataclass）
@@ -31,7 +31,7 @@
 - **公开面**：`from nyx.tools.registry import ToolRegistry`；`from nyx.tools.local_search import build_local_search_tool, search_local`；`from nyx.tools.web_search import build_web_search_tool`；`from nyx.tools.file_io import build_file_io_tool, file_io`（不加 `__all__`）
 - **handler 调用约定**：`call(name, args)` 用 `await handler(**args)` 把 `args` dict 解包为关键字实参；`Tool.schema` 的键 = handler 形参名（如 `{query}` → `handler(query=...)`）。参数不匹配时 `TypeError` 上抛（handler 签名兜底，不额外校验 schema）
 - **不校验 args 与 schema**：不引入 JSON schema validator（新依赖 + 复杂度）；schema 是给 LLM 的契约，handler 签名是给运行时的契约
-- **`Tool.schema` vs `schema()`**：`Tool.schema` 存**参数** JSON schema（`{"type":"object","properties":…,"required":[…]}`）；`ToolRegistry.schema()` 把它包成 LLM 函数定义格式 `[{name, description, parameters}]`（OpenAI/LangChain function calling 格式），按注册序输出
+- **`Tool.schema` vs `schema()`**：`Tool.schema` 存**参数** JSON schema（`{"type":"object","properties":…,"required":[…]}`）；`ToolRegistry.schema()` 把它包成 OpenAI 兼容 function calling 格式 `[{"type":"function","function":{name, description, parameters}}]`，按注册序输出（`LlmClient.complete` 原样透传给 API，不二次包装）
 - **重复注册 → `ValueError`**：fail-fast 抓组合根的布线 bug（重复注册同名工具）；`register` 不静默覆盖
 - **结果 JSON 可序列化**：工具返回 `dict` / `list` / `str`，不返回 domain dataclass——结果要进 14-activity / 17-expression 的 LLM 上下文
 - **全 async + 不阻塞事件循环**：fs / network 是阻塞 I/O，用 `asyncio.to_thread` 包一层（CLAUDE.md「I/O 操作用 async def」+ 不卡 SSE 广播）
@@ -68,7 +68,14 @@ class ToolRegistry:
 
     def schema(self) -> list[dict[str, Any]]:
         return [
-            {"name": t.name, "description": t.description, "parameters": t.schema}
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.schema,
+                },
+            }
             for t in self._tools.values()
         ]
 ```
@@ -270,7 +277,7 @@ def build_file_io_tool(write_root: Path = DEFAULT_WRITE_ROOT) -> Tool:
 
 - [ ] 单元测试 `tests/test_tools/`：
   - [ ] **registry**（`test_registry.py`，fake `Tool`）：
-    - [ ] `register` + `schema()` 按注册序返回 `[{name, description, parameters}]`
+    - [ ] `register` + `schema()` 按注册序返回 `[{"type":"function","function":{name, description, parameters}}]`
     - [ ] 重复 `register` 同名 → `ValueError`
     - [ ] `call` 用 `handler(**args)` 调 handler（fake handler 记录收到的 kwargs 与返回值）
     - [ ] `call` 未注册名 → `KeyError`
@@ -300,4 +307,4 @@ def build_file_io_tool(write_root: Path = DEFAULT_WRITE_ROOT) -> Tool:
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
-- [ ] 活动 Facade 调工具都经 `ToolRegistry`（无绕过）；`schema()` 产物可供 LangGraph `bind_tools` 直接使用；`file_io.write` 永不越出 `write_root`
+- [ ] 活动 Facade 调工具都经 `ToolRegistry`（无绕过）；`schema()` 产物为 OpenAI 兼容 function calling 格式（`LlmClient.complete` 原样透传 `tools` 给 API）；`file_io.write` 永不越出 `write_root`

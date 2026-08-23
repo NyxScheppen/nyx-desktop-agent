@@ -36,7 +36,7 @@
 |---|---|---|---|
 | GET | `/api/state` | — | `CurrentState` JSON |
 | POST | `/api/chat` | `{message: str}` | `{event_id: str}`（回复走 SSE） |
-| POST | `/api/observe` | `{presence: str}` | `{event_id: str}`（观察状态入口，前端 Tauri 判定后上报） |
+| POST | `/api/observe` | `{presence: str, window_title: str}` | `{event_id: str}`（观察状态入口，前端 Tauri 判定后上报） |
 | GET | `/api/memories?tag=&type=` | query 过滤 | `Memory[]` |
 | GET | `/api/desires` | — | `{values, short_term[], long_term[]}` |
 | GET | `/api/activity` | — | `{current, schedule[]}` |
@@ -46,10 +46,12 @@
 | GET | `/api/events/log?limit=&event_type=&correlation_id=` | — | `Event[]` |
 | GET | `/api/narrative` | — | `SelfNarrative` |
 | POST | `/api/export` | `{format: json|md}` | 记忆导出文件 |
+| POST | `/api/upload` | `multipart/form-data`（`file`） | `{event_id, filename, path}`（落盘后 publish `USER_MATERIAL` → 读书） |
+| GET | `/api/materials` | — | `{materials: Material[]}`（书库进度） |
 
 > REST 端点分两类：
-> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/eval` → `Evaluator.list_reports(limit)`；`/api/tokens` → `Evaluator.list_token_usage(since)`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`
-> - **外部输入入口**：`/api/chat`、`/api/observe` 不调 Facade，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）。回复/后续产出走 SSE。
+> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/eval` → `Evaluator.list_reports(limit)`；`/api/tokens` → `Evaluator.list_token_usage(since)`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`
+> - **外部输入入口**：`/api/chat`、`/api/observe`、`/api/upload` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 publish `USER_MATERIAL`（bus 路由：注册书库 + 发起读书活动）。回复/后续产出走 SSE。
 
 ### SSE（`GET /api/events`）
 

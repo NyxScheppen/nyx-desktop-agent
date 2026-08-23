@@ -339,7 +339,7 @@ class _ObservePayload(BaseModel):
 
 
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：14 个端点（13 个 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：15 个端点（14 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")

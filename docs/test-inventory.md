@@ -77,8 +77,8 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 14 张业务表 + `schema_version`，共 15 张 |
-| `test_migrate_creates_three_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` 三个 |
+| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 16 张业务表 + `schema_version`，共 17 张 |
+| `test_migrate_creates_four_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_annotation_target` 四个 |
 | `test_migrate_sets_version_to_max` | 功能正确 | `schema_version` 单行 = `_MIGRATIONS` 最高版本 |
 | `test_migrate_not_null_alignment` | 边界鲁棒 | 6 列 `notnull=1`（`memory.aspect` / `long_term_desire.linked_values` / `activity.progress` / `event_log.content` / `event_log.correlation_id` / `eval_report.correlation_id`） |
 | `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `token_usage.correlation_id` / `memory.embedding`） |
@@ -91,7 +91,7 @@
 | `test_default_db_path_constant` | 功能正确 | `DEFAULT_DB_PATH == "nyx.db"` |
 | `test_connect_closes_conn_on_migrate_failure` | 边界鲁棒 | 迁移失败 → `connect` 抛异常且连接被 `close`（spy 记录），不泄漏 |
 
-**功能阶段**：04-db 实现时编写；`material` 表（v2 迁移）于「读书分块读」轮追加——`BUSINESS_TABLES` 补 `material`、表数 14→15、版本门控用例由 v2 改 v3（原 v2 被 `material` 占用）；v3 迁移（`material.note_fragments` + `short_term_desire.goal_progress` 两列）于「活动填实」轮追加——`test_migrate_version_gating` 改为动态取 max+1 不再硬编码版本号。
+**功能阶段**：04-db 实现时编写；`material` 表（v2 迁移）于「读书分块读」轮追加——`BUSINESS_TABLES` 补 `material`、表数 14→15、版本门控用例由 v2 改 v3（原 v2 被 `material` 占用）；v3 迁移（`material.note_fragments` + `short_term_desire.goal_progress` 两列）于「活动填实」轮追加——`test_migrate_version_gating` 改为动态取 max+1 不再硬编码版本号；v4 迁移（`reading_note` + `annotation` 两表 + `idx_annotation_target`）于「读书/创作借鉴」轮追加——`BUSINESS_TABLES` 补 `reading_note`/`annotation`、表数 15→16/总 17、`test_migrate_creates_three_indexes` 改名 `test_migrate_creates_four_indexes` 并补第 4 个索引。
 
 ## 05-event（事件总线 + 路由）
 
@@ -273,8 +273,9 @@
 | `test_remember_activity_contradiction` | 功能正确 | 有相似旧记忆 + embed → 门控触发 1 次 `contradiction`（参与矛盾判断，无 scene_memory）；命中 → 发布 reflection |
 | `test_remember_user_profile_fields` | 功能正确 | `remember_user_profile` → 写一条 `LONG_TERM`/`tag="user"`/`aspect` 全等的画像记忆、无 LLM 调用、发布 `memory_created`（correlation 透传） |
 | `test_record_no_answer` | 功能正确 | 问句未答 → 写一条 `SHORT_TERM`/`tag="interaction"`/summary「用户没有回答我的提问」、content 含问句、无 LLM 调用、发布 `memory_created`（correlation 透传） |
+| `test_remember_knowledge` | 功能正确 | 3 项入参 → 落 2 条 `LONG_TERM`/`tag="knowledge"` 记忆（空 content 项跳过）；summary 回退 content；无 LLM 调用；发布 2 条 `memory_created`（correlation 透传） |
 
-**功能阶段**：09-memory-facade 实现时编写；`test_contradiction_parse_failure_no_crash` / `test_eviction_tie_break_oldest_first` / `test_record_recall_concurrent_single_promote` 于 09 评审修复阶段编写（高1：矛盾解析失败不再半提交；中4：淘汰平局按 created_at 升序；中3：并发 record_recall 只升一次）；`test_join_list` / `test_activity_memory_fields_*` / `test_remember_activity_*` 于「活动记忆」实现阶段编写（活动 result 确定性落记忆，含矛盾检测参与）；`test_remember_user_profile_fields` 于「活动填实（画像记忆）」轮追加（`remember_user_profile` 复用入库尾段、type=LONG_TERM/tag=user）；`test_record_no_answer` 于「表达交互闭环」轮追加（`record_no_answer` 确定性落「用户没回答」SHORT_TERM 记忆、复用入库尾段、无 LLM）。
+**功能阶段**：09-memory-facade 实现时编写；`test_contradiction_parse_failure_no_crash` / `test_eviction_tie_break_oldest_first` / `test_record_recall_concurrent_single_promote` 于 09 评审修复阶段编写（高1：矛盾解析失败不再半提交；中4：淘汰平局按 created_at 升序；中3：并发 record_recall 只升一次）；`test_join_list` / `test_activity_memory_fields_*` / `test_remember_activity_*` 于「活动记忆」实现阶段编写（活动 result 确定性落记忆，含矛盾检测参与）；`test_remember_user_profile_fields` 于「活动填实（画像记忆）」轮追加（`remember_user_profile` 复用入库尾段、type=LONG_TERM/tag=user）；`test_record_no_answer` 于「表达交互闭环」轮追加（`record_no_answer` 确定性落「用户没回答」SHORT_TERM 记忆、复用入库尾段、无 LLM）；`test_remember_knowledge` 于「读书/创作借鉴」轮追加（`remember_knowledge` 确定性落 `tag="knowledge"` 长期记忆、空 content 跳过、无 LLM）。
 
 ## 10-desire-value（欲望值机制）
 
@@ -507,8 +508,19 @@
 | `test_list_all_returns_ordered_by_created_desc` | 功能正确 | `list_all()` 全量读物按 `created_at` 倒序（最近上传在前）、进度随 `advance` 刷新 |
 | `test_list_all_empty` | 边界鲁棒 | 空书库 → `list_all()` 返回 `[]` |
 | `test_reading_relays_prior_fragments` | 功能正确 | 续读第二块时把「上次读到第 6000 字 + 已读片段笔记」喂给 LLM（`上一块的笔记`/`第 6000 字`/`本次新读` 均在 user 消息里），只发一次 reading 调用（12000 < 13000 未读完不聚合） |
+| `test_insert_and_list_notes_ordered_desc` | 功能正确 | `ReadingNoteStore`：插入两条 → `list_notes` 按 `created_at` 倒序、`annotation_count` 初始 0 |
+| `test_list_notes_counts_annotations` | 功能正确 | 一条笔记挂两条批注 → `list_notes` 的 `annotation_count == 2`（LEFT JOIN 子查询算出） |
+| `test_delete_cascades_annotations` | 功能正确 | 删笔记 → `list_notes` 空、`list_annotations` 空（同一事务级联删批注） |
+| `test_list_annotations_ordered_asc` | 功能正确 | 批注按 `created_at` 升序（`a1` 在 `a2` 前） |
+| `test_delete_annotation` | 功能正确 | 删单条批注 `a1` → 剩 `a2`（其余保留） |
+| `test_pick_creation_style` | 功能正确 | 返回值 ∈ `_CREATION_STYLES`（6 风格随机池，纯函数） |
+| `test_build_creation_context_full` | 功能正确 | 上下文串含「风格：日记体」/「主题：骑士团」/「知识库参考」+ 知识点正文 /「当前屏幕灵感」（W1/W2/W3 三部分拼装） |
+| `test_build_creation_context_empty` | 边界鲁棒 | 无主题/知识/屏幕 → 只剩 `风格：日记体`（空段省略） |
+| `test_extract_knowledge_persists_items` | 功能正确 | mock LLM 返回 `{points:[…]}` → `_memory.remember_knowledge` 收到同批 items（2 条） |
+| `test_extract_knowledge_best_effort_no_raise` | 边界鲁棒 | mock LLM 抛异常 → 不冒泡（best-effort），`remember_knowledge` 未收到（空列表） |
+| `test_creation_activity_injects_context` | 功能正确 | 创作活动 → user prompt 含「创作参考」/「风格：」/「知识库参考」/「当前屏幕灵感」（W1/W2/W3 走 `_run_llm_activity` 的 `context_label` 通道） |
 
-**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）；`test_exploration_plan_non_dict_raises` 于本轮评审修复编写（`_plan_next` 结构校验 fail-fast，配合删除 `recall_memory` 死节点）；`test_read_material_reads_real_file` / `test_read_material_skips_when_busy` 于「喂资料/上传课本」轮追加（上传 → `USER_MATERIAL` → `read_material` 读真实文件产 `{book,note}` + 忙时跳过）；「读书分块读」轮追加 `MaterialStore` 单测（`test_material_store.py` 4 条：最近未读、跳过读完、全读完 None、重传归零）+ `test_desire_reading_reads_latest_material`（探索欲读最近那本、分块推进度）+ `test_no_material_rate_limited_falls_back_to_default`（无书可读限速退回默认，禁编造），并把 `test_read_material_reads_real_file` 断言补上 `read_chars`/`total_chars` 与 `total_chars` 入参。；`test_find_by_topic_*` 于「活动填实（读书按 topic 选料）」轮追加（`MaterialStore.find_by_topic` 按书名子串选未读完的书）。`test_goal_met`（精确版）/ `test_sanitize_filename` / `test_creation_result_has_path` / `test_idle_reflection_result_has_summary` / `test_observe_user_result` / `test_observe_user_result_no_window_title` / `test_reading_completion_aggregates_note` / `test_maybe_start_reading_uses_topic` / `test_interrupt_reading_marks_paused` 同属「活动填实」轮（B3 创作落盘、B2 发呆回带 story、B1 观察 result 带 presence/window_title、C1 读书聚合完整笔记、C2 读书按 topic 选料、C3 `_goal_met` 精确计数、D 读书打断置 PAUSED）；`test_read_material_reads_real_file` 同轮由 6 字改 7000 字（一块读 6000 不读完，适配「读完整本才 completed」的完成判定）；`test_interrupt_non_resumable_abandons`（原 `test_interrupt_running` 改名）+ `test_interrupt_creation_marks_paused` + `test_interrupt_pauses_in_flight_activity`（原 `test_interrupt_abandons_in_flight_activity` 改名）+ `test_resume_paused_creation_reruns` / `test_resume_paused_reading_refreshes_read_chars` / `test_resume_skips_different_block` + `test_get_paused_in_block_*` / `test_get_by_path_*` 于「活动恢复/续做」轮追加（可续活动打断置 PAUSED 保留记录 + 同日程块内恢复同一记录续读/重跑）；`test_execute_marks_active_desire` / `test_execute_failure_marks_suppressed` / `test_execute_no_desire_no_mark` / `test_interrupt_marks_suppressed` 于「欲望 ACTIVE/SUPPRESSED 状态流转」轮追加（活动消费/中断/异常三处接线：消费标 ACTIVE、非满足释放 SUPPRESSED）；`test_observe_user_result_with_screen_summary` / `test_build_observation_summary_*` / `test_sample_once_*` 于「屏幕视觉」轮追加（观察 summary 折入屏幕描述 + `ScreenObserver` 抓屏→视觉→可选摘要，失败 best-effort 返 None）；`test_list_results_filters_and_orders` / `test_get_results_delegates` 于「产出面板」轮追加（跨天历史产出端点：store 过滤 completed+三类按 `ended_at` 倒序、facade 委托）；`test_list_all_*` 于「读书连贯+进度」轮追加（资料面板进度：`MaterialStore.list_all` 全量读物倒序），`test_reading_relays_prior_fragments` 同轮追加（读书滚动摘要接力：续读时把「上次读到哪里 + 已读片段笔记」喂给 LLM，断言 user 消息含已读片段与位置、未读完只发一次 reading 调用）。
+**功能阶段**：14-activity 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`get_state`/desire/tools 全 fake 注入，无集成/E2E）；`test_execute_failure_marks_incomplete` / `test_exploration_run_web` / `test_maybe_start_skips_when_task_in_flight` 于 14 评审修复阶段编写（高1：执行失败落 INCOMPLETE + 收割异常；中：探索链 `_route` web 可达；高2：并发守卫闭合 TOCTOU）；`test_exploration_plan_non_dict_raises` 于本轮评审修复编写（`_plan_next` 结构校验 fail-fast，配合删除 `recall_memory` 死节点）；`test_read_material_reads_real_file` / `test_read_material_skips_when_busy` 于「喂资料/上传课本」轮追加（上传 → `USER_MATERIAL` → `read_material` 读真实文件产 `{book,note}` + 忙时跳过）；「读书分块读」轮追加 `MaterialStore` 单测（`test_material_store.py` 4 条：最近未读、跳过读完、全读完 None、重传归零）+ `test_desire_reading_reads_latest_material`（探索欲读最近那本、分块推进度）+ `test_no_material_rate_limited_falls_back_to_default`（无书可读限速退回默认，禁编造），并把 `test_read_material_reads_real_file` 断言补上 `read_chars`/`total_chars` 与 `total_chars` 入参。；`test_find_by_topic_*` 于「活动填实（读书按 topic 选料）」轮追加（`MaterialStore.find_by_topic` 按书名子串选未读完的书）。`test_goal_met`（精确版）/ `test_sanitize_filename` / `test_creation_result_has_path` / `test_idle_reflection_result_has_summary` / `test_observe_user_result` / `test_observe_user_result_no_window_title` / `test_reading_completion_aggregates_note` / `test_maybe_start_reading_uses_topic` / `test_interrupt_reading_marks_paused` 同属「活动填实」轮（B3 创作落盘、B2 发呆回带 story、B1 观察 result 带 presence/window_title、C1 读书聚合完整笔记、C2 读书按 topic 选料、C3 `_goal_met` 精确计数、D 读书打断置 PAUSED）；`test_read_material_reads_real_file` 同轮由 6 字改 7000 字（一块读 6000 不读完，适配「读完整本才 completed」的完成判定）；`test_interrupt_non_resumable_abandons`（原 `test_interrupt_running` 改名）+ `test_interrupt_creation_marks_paused` + `test_interrupt_pauses_in_flight_activity`（原 `test_interrupt_abandons_in_flight_activity` 改名）+ `test_resume_paused_creation_reruns` / `test_resume_paused_reading_refreshes_read_chars` / `test_resume_skips_different_block` + `test_get_paused_in_block_*` / `test_get_by_path_*` 于「活动恢复/续做」轮追加（可续活动打断置 PAUSED 保留记录 + 同日程块内恢复同一记录续读/重跑）；`test_execute_marks_active_desire` / `test_execute_failure_marks_suppressed` / `test_execute_no_desire_no_mark` / `test_interrupt_marks_suppressed` 于「欲望 ACTIVE/SUPPRESSED 状态流转」轮追加（活动消费/中断/异常三处接线：消费标 ACTIVE、非满足释放 SUPPRESSED）；`test_observe_user_result_with_screen_summary` / `test_build_observation_summary_*` / `test_sample_once_*` 于「屏幕视觉」轮追加（观察 summary 折入屏幕描述 + `ScreenObserver` 抓屏→视觉→可选摘要，失败 best-effort 返 None）；`test_list_results_filters_and_orders` / `test_get_results_delegates` 于「产出面板」轮追加（跨天历史产出端点：store 过滤 completed+三类按 `ended_at` 倒序、facade 委托）；`test_list_all_*` 于「读书连贯+进度」轮追加（资料面板进度：`MaterialStore.list_all` 全量读物倒序），`test_reading_relays_prior_fragments` 同轮追加（读书滚动摘要接力：续读时把「上次读到哪里 + 已读片段笔记」喂给 LLM，断言 user 消息含已读片段与位置、未读完只发一次 reading 调用）；`test_reading_note_store.py` 5 条（`test_insert_and_list_notes_ordered_desc` / `test_list_notes_counts_annotations` / `test_delete_cascades_annotations` / `test_list_annotations_ordered_asc` / `test_delete_annotation`）与 `test_pick_creation_style` / `test_build_creation_context_full` / `test_build_creation_context_empty` / `test_extract_knowledge_persists_items` / `test_extract_knowledge_best_effort_no_raise` / `test_creation_activity_injects_context` 于「读书/创作借鉴」轮追加（读书笔记 CRUD store + R1 知识点提取 + W1/W2/W3 创作上下文）。
 
 ## 16-expression-prompt（prompt 拼装 + 快慢通道判定）
 
@@ -614,8 +626,13 @@
 | `test_main_propagates_serve_failure` | 功能正确 | fake `server.serve()` 抛 `RuntimeError`（端口被占）→ `main()` 重抛 `RuntimeError`（非零退出，不静默吞） |
 | `test_main_propagates_tick_failure` | 功能正确 | fake `_tick_loop` 抛 `RuntimeError` + 阻塞 serve/bus → `main()` 重抛 `RuntimeError`（tick 异常传播，不再静默丢周期事件） |
 | `test_materials_endpoint_returns_progress` | 功能正确 | `GET /api/materials` → `{materials: [Material]}`（`read_chars`/`total_chars` 进度），不再是纯文件名；`list_materials` 委托恰 1 次 |
+| `test_reading_notes_endpoint` | 功能正确 | `GET /api/reading-notes` → `ReadingNote[]`（含 `annotation_count`） |
+| `test_delete_reading_note_endpoint` | 功能正确 | `DELETE /api/reading-notes/{note_id}` → `{deleted}` 且 `fake.deleted_notes` 记到该 id |
+| `test_annotations_endpoint` | 功能正确 | `GET /api/annotations?target_id=` → `Annotation[]`（`author` 透传） |
+| `test_add_annotation_endpoint` | 功能正确 | `POST /api/annotations` body `{target_id, content}` → 返回新批注 + `fake.added_annotations` 记 `(target_id, content)` |
+| `test_delete_annotation_endpoint` | 功能正确 | `DELETE /api/annotations/{annotation_id}` → `{deleted}` 且 `fake.deleted_annotations` 记到该 id |
 
-**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）；`test_supervise_bus_breaks_on_flapping` / `test_main_propagates_serve_failure` / `test_main_propagates_tick_failure` 于第三轮 review 追加（恢复信号改连续成功阈值防抖动假自愈 + main 竞速传播所有先完成者）；`test_load_ask_reads_ask_file` / `test_load_ask_missing_file_fails` 于「主动提问段按需注入」阶段追加（`_load_ask` 读 ask.md / 缺失 fail-fast）。`test_observe_endpoint` 于「活动填实（观察填实）」轮改为收可选 `window_title`（`_ObservePayload.window_title`、`OBSERVATION_STATE` content 加 `window_title`、`app.last_window_title` 落组合根）；`test_materials_endpoint_returns_progress` 于「读书连贯+进度」轮追加（`/api/materials` 由纯文件名改为书库进度：`list_materials` 委托 `MaterialStore.list_all`，响应 `{materials: [Material]}`）。
+**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）；`test_supervise_bus_breaks_on_flapping` / `test_main_propagates_serve_failure` / `test_main_propagates_tick_failure` 于第三轮 review 追加（恢复信号改连续成功阈值防抖动假自愈 + main 竞速传播所有先完成者）；`test_load_ask_reads_ask_file` / `test_load_ask_missing_file_fails` 于「主动提问段按需注入」阶段追加（`_load_ask` 读 ask.md / 缺失 fail-fast）。`test_observe_endpoint` 于「活动填实（观察填实）」轮改为收可选 `window_title`（`_ObservePayload.window_title`、`OBSERVATION_STATE` content 加 `window_title`、`app.last_window_title` 落组合根）；`test_materials_endpoint_returns_progress` 于「读书连贯+进度」轮追加（`/api/materials` 由纯文件名改为书库进度：`list_materials` 委托 `MaterialStore.list_all`，响应 `{materials: [Material]}`）；`test_reading_notes_endpoint` / `test_delete_reading_note_endpoint` / `test_annotations_endpoint` / `test_add_annotation_endpoint` / `test_delete_annotation_endpoint` 于「读书/创作借鉴」轮追加（读书笔记 5 端点：清单/删除/批注增删查）。
 
 ## frontend-sse（SSE 数据流：useSSE + dispatchEvent 分发表）
 
@@ -659,14 +676,22 @@
 | `exportMemories > POST /api/export 返回文本` | 功能正确 | `POST /api/export` body `{format}`；响应非 JSON 走 `text()` 返回裸字符串（不走 `request` 的 `.json()`） |
 | `uploadFile > POST /api/upload FormData` | 功能正确 | `POST /api/upload` body 为 `FormData`（含 `file` 字段）、不设 `Content-Type`（浏览器自动 multipart 边界）、解析 `{event_id, filename, path}` |
 | `getMaterials > GET /api/materials` | 功能正确 | 请求 URL、解析 `{materials: Material[]}` 直返 |
+| `getReadingNotes > 可选 limit 拼进 query` | 功能正确 | `getReadingNotes(50)` → `/api/reading-notes?limit=50`；解析 `ReadingNote[]` 直返 |
+| `getReadingNotes > 无参数不带 query` | 边界鲁棒 | 无参 → 请求 `/api/reading-notes`（不带 `?`） |
+| `deleteReadingNote > DELETE /api/reading-notes/{id}` | 功能正确 | 请求 URL/method、解析 `{deleted}` 直返 |
+| `getAnnotations > GET /api/annotations?target_id=` | 功能正确 | 请求 URL（`?target_id=n1`）、解析 `Annotation[]` 直返 |
+| `addAnnotation > POST /api/annotations` | 功能正确 | 请求 URL/method、body `{target_id, content}`、解析 `Annotation` 直返 |
+| `deleteAnnotation > DELETE /api/annotations/{id}` | 功能正确 | 请求 URL/method、解析 `{deleted}` 直返 |
 
-**功能阶段**：frontend 05-client 实现时编写（mock `fetch` 断言端点/方法/请求体键 + 错误契约；验证管道正确——键零映射、错误上抛，不验证视觉）；`非 2xx detail 空串兜底` 于本轮 review 追加（Finding B：空串 detail 致 `Error.message=""` 被 UI 误判为无错误）；六个新端点（`getDesires`/`getActivity`/`getMemories`/`getEval`/`getTokens`/`getEventsLog`）于前端面板落地轮追加（快照/事件日志端点 query 拼装 + 解析）；`getNarrative` / `exportMemories` / `uploadFile` / `getMaterials` 于「喂资料/上传课本」轮追加（自我叙事快照 + 记忆导出裸文本 + 上传 FormData + 资料清单）。`postObserve` 于「活动填实（观察填实）」轮改为两参 `postObserve(presence, windowTitle)`（body 加 `window_title`）；`getActivityResults` 于「产出面板」轮追加（跨天历史产出端点）；`getMaterials` 于「读书连贯+进度」轮改为解析 `{materials: Material[]}`（书库进度，不再 `string[]`）。
+**功能阶段**：frontend 05-client 实现时编写（mock `fetch` 断言端点/方法/请求体键 + 错误契约；验证管道正确——键零映射、错误上抛，不验证视觉）；`非 2xx detail 空串兜底` 于本轮 review 追加（Finding B：空串 detail 致 `Error.message=""` 被 UI 误判为无错误）；六个新端点（`getDesires`/`getActivity`/`getMemories`/`getEval`/`getTokens`/`getEventsLog`）于前端面板落地轮追加（快照/事件日志端点 query 拼装 + 解析）；`getNarrative` / `exportMemories` / `uploadFile` / `getMaterials` 于「喂资料/上传课本」轮追加（自我叙事快照 + 记忆导出裸文本 + 上传 FormData + 资料清单）。`postObserve` 于「活动填实（观察填实）」轮改为两参 `postObserve(presence, windowTitle)`（body 加 `window_title`）；`getActivityResults` 于「产出面板」轮追加（跨天历史产出端点）；`getMaterials` 于「读书连贯+进度」轮改为解析 `{materials: Material[]}`（书库进度，不再 `string[]`）。`getReadingNotes` / `deleteReadingNote` / `getAnnotations` / `addAnnotation` / `deleteAnnotation` 于「读书/创作借鉴」轮追加（读书笔记 CRUD + 批注 5 端点）。
 
 ## frontend-stores（Zustand stores：chatStore + innerLifeStore + 四个快照 store + settingsStore）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
 | `chatStore.add* > 6 个 action 转 ChatMessage` | 功能正确 | `addSpeak`/`addAsk`/`addThink`/`addMutter`/`addInitiateChat`/`addUserMessage` 各断言 role/kind/content/correlation_id 且 append |
+| `chatStore.addInitiateChat > unreadProactive=true + clearUnreadProactive 复位` | 功能正确 | 搭话入消息时置 `unreadProactive=true`（头像红点未读）；`clearUnreadProactive()` 复位 false |
+| `chatStore.reset > 复位 unreadProactive` | 功能正确 | 搭话置 true 后 `reset()` → `unreadProactive` 回 false（新会话清未读） |
 | `chatStore.sendMessage > 成功` | 功能正确 | mock fetch 断言 `POST /api/chat`、置 `isReplying=true` + `sendError=null` |
 | `chatStore.sendMessage > 失败` | 功能正确 | postChat throw → `sendError=e.message`、`isReplying` 复位 false |
 | `chatStore.sendMessage > 重入守卫` | 回归保护 | in-flight（第一次 `sendMessage` 同步置 `isReplying=true` 后挂起）时第二次 `sendMessage` 被 `get().isReplying` 同步守卫拦下，fetch 只调 1 次（串行锁提前到 await 前，防双击并发发送覆盖 pendingId） |
@@ -697,8 +722,10 @@
 | `narrativeStore.refresh > GET /api/narrative` | 功能正确 | mock fetch 断言端点 + `data` 落 store（`SelfNarrative`）+ `loading=false` |
 | `materialsStore.refresh > GET /api/materials` | 功能正确 | mock fetch 断言端点 + `materials` 落 store |
 | `materialsStore.upload > 上传后重拉 materials` | 功能正确 | `upload(file)` → `POST /api/upload`（fetch 恰 2 次：upload + 重拉 `getMaterials`）+ `materials` 更新 + `uploading` 复位 |
+| `readingNotesStore.refresh > GET /api/reading-notes?limit=50` | 功能正确 | mock fetch 断言端点 + `notes` 落 store（`ReadingNote[]`）+ `loading=false` |
+| `readingNotesStore.remove > DELETE 后本地摘除` | 功能正确 | `remove(id)` → `DELETE /api/reading-notes/{id}`（fetch 恰 1 次）+ 从 `notes` 本地摘除该条（不重拉） |
 
-**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）；`chatStore.sendMessage > 重入守卫` 于 03-chat-panel 后 review 追加（串行锁提前到 await 前 + get() 同步守卫，防 in-flight 重复发送覆盖 pendingId）；`chatStore.loadHistory` / `markTyped`+`reset` / 四个快照 store `refresh` / `isReady` 于前端面板落地轮追加（聊天历史加载 + 快照 store + 串行逐字门控纯函数）；`settingsStore` 于视觉改造轮追加（背景色调/背景图纯前端 UI 状态）；`isReady` 于「开头打字机」轮追加并随后改为**全串行门控**（每条 nyx 文本等前一条同 correlation_id 打完，删去 `isFirstTypewriter` 开头打字机）；`narrativeStore.refresh` / `materialsStore.refresh` / `materialsStore.upload` 于「喂资料/上传课本」轮追加（自我叙事快照 + 资料清单 + 上传即重拉）；`activityStore.refresh` 于「产出面板」轮改为双字段并发拉取（`data` + `results`）；`materialsStore.refresh` / `materialsStore.upload` 于「读书连贯+进度」轮改为落 `materials: Material[]`（书库进度，不再 `files`）。
+**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）；`chatStore.sendMessage > 重入守卫` 于 03-chat-panel 后 review 追加（串行锁提前到 await 前 + get() 同步守卫，防 in-flight 重复发送覆盖 pendingId）；`chatStore.loadHistory` / `markTyped`+`reset` / 四个快照 store `refresh` / `isReady` 于前端面板落地轮追加（聊天历史加载 + 快照 store + 串行逐字门控纯函数）；`settingsStore` 于视觉改造轮追加（背景色调/背景图纯前端 UI 状态）；`isReady` 于「开头打字机」轮追加并随后改为**全串行门控**（每条 nyx 文本等前一条同 correlation_id 打完，删去 `isFirstTypewriter` 开头打字机）；`narrativeStore.refresh` / `materialsStore.refresh` / `materialsStore.upload` 于「喂资料/上传课本」轮追加（自我叙事快照 + 资料清单 + 上传即重拉）；`activityStore.refresh` 于「产出面板」轮改为双字段并发拉取（`data` + `results`）；`materialsStore.refresh` / `materialsStore.upload` 于「读书连贯+进度」轮改为落 `materials: Material[]`（书库进度，不再 `files`）。`chatStore.addInitiateChat > unreadProactive` / `chatStore.reset > 复位 unreadProactive` 于「内心世界弹窗化 + 借鉴」轮追加（头像红点未读：搭话置未读、`clearUnreadProactive`/发消息/`reset` 清）。`readingNotesStore.refresh` / `readingNotesStore.remove` 于「读书/创作借鉴」轮追加（读书笔记清单快照 + 删除本地摘除）。
 
 ## frontend-labels（枚举中文化映射：lib/labels.ts）
 
@@ -735,7 +762,7 @@
 | `MessageList > 串行逐字：内心话先打完、对话才开打` | 功能正确 | think 在前、speak 在后：未推进 timer 两者皆空（think 刚开打、speak 等前置打完）；`typeDone()` 后 think→speak 串行完整上屏 |
 | `ChatPanel > 订阅 messages 透传给 MessageList` | 功能正确 | store 里 messages 经 ChatPanel 订阅透传 → MessageList 渲染上屏 |
 | `ChatPanel > 头部「设置」按钮触发 onOpenSettings` | 功能正确 | 点「设置」→ `onOpenSettings` 恰调 1 次（App 层 view 切到设置面板） |
-| `ChatPanel > 头部「内心」按钮触发 onToggleInner` | 功能正确 | 点「内心」→ `onToggleInner` 恰调 1 次（App 层滑出/收起内心世界抽屉） |
+| `ChatPanel > 头部「内在/空间/记录」三按钮触发 onOpenInner` | 功能正确 | 3 个分类按钮（内在/空间/记录）都渲染；点「空间」→ `onOpenInner` 恰调 1 次且传 `1`（App 层开对应分类卡片） |
 | `ChatInput > 点发送 → sendMessage(trimmed) 且成功清空` | 功能正确 | 点发送按钮触发 `sendMessage` 且传入 trim 后文本；成功（返回 true）后 `waitFor` 断言输入框清空 |
 | `ChatInput > 回车 → sendMessage 且成功清空` | 功能正确 | 输入框 Enter 触发 `sendMessage`；成功后输入框清空 |
 | `ChatInput > 输入法组合态回车不触发` | 回归保护 | `isComposing=true` 的 Enter（拼音选字）不触发 `sendMessage`（防 IME 误发送） |
@@ -744,7 +771,7 @@
 | `ChatInput > isReplying=true → 禁用 + 回车不触发` | 功能正确 | isReplying 时发送按钮 `disabled` + 文案「…」；填非空值后回车仍不触发 sendMessage（只有 isReplying 守卫能拦） |
 | `ChatInput > sendError 非 null → 红字显示` | 功能正确 | `sendError` 非空时渲染 `.chat-input__error` 红字 |
 
-**功能阶段**：frontend 03-chat-panel 实现时编写（RTL + 真实 store；验证管道正确——按 role/kind 渲染、think 逐字弱化、nyx 文本消息走 useTypewriter 需 `typeDone()` 推进 fake timers、isReplying 锁输入、sendError 上屏，不验证视觉样式）；本表 MessageBubble/MessageList/ChatPanel 于视觉改造轮追加 fake timers（nyx 文本逐字，`typeDone()` 多轮推进覆盖逐字）；`MessageList > 全部消息按序渲染，无历史折叠` / `全部消息渲染即存在（不串行）` 于视觉改造轮追加（微信式全量列表：全部消息按序渲染、上滑看历史、不串行等前一条打完）；`ChatInput > 输入法组合态回车不触发`、`ChatInput > 发送失败保留文本` 于 03-chat-panel 后 review 追加（Finding 1/2：IME 回车误发送 + 清空太早致失败丢文本）；`makeMsg` 自增 id、`isReplying` 用例填非空值 于同轮修正（假绿：空输入提前 return / 同 kind 撞 key）；`ChatInput > 成功清空不误删预打文本` 于下一轮 review 追加（异步无条件清空会误删回复期间预打文本，改函数式更新比对 trimmed）；`MessageList > 打字机只在第一条 nyx 文本生效` 于「开头打字机」轮追加（打字机只在第一条 nyx 文本消息生效，其余即时显示）；`ChatPanel > 头部「内心」按钮触发 onToggleInner` 于「内心世界」轮追加（观测面板移入右侧抽屉，头部新增「内心」按钮）。
+**功能阶段**：frontend 03-chat-panel 实现时编写（RTL + 真实 store；验证管道正确——按 role/kind 渲染、think 逐字弱化、nyx 文本消息走 useTypewriter 需 `typeDone()` 推进 fake timers、isReplying 锁输入、sendError 上屏，不验证视觉样式）；本表 MessageBubble/MessageList/ChatPanel 于视觉改造轮追加 fake timers（nyx 文本逐字，`typeDone()` 多轮推进覆盖逐字）；`MessageList > 全部消息按序渲染，无历史折叠` / `全部消息渲染即存在（不串行）` 于视觉改造轮追加（微信式全量列表：全部消息按序渲染、上滑看历史、不串行等前一条打完）；`ChatInput > 输入法组合态回车不触发`、`ChatInput > 发送失败保留文本` 于 03-chat-panel 后 review 追加（Finding 1/2：IME 回车误发送 + 清空太早致失败丢文本）；`makeMsg` 自增 id、`isReplying` 用例填非空值 于同轮修正（假绿：空输入提前 return / 同 kind 撞 key）；`ChatInput > 成功清空不误删预打文本` 于下一轮 review 追加（异步无条件清空会误删回复期间预打文本，改函数式更新比对 trimmed）；`MessageList > 打字机只在第一条 nyx 文本生效` 于「开头打字机」轮追加（打字机只在第一条 nyx 文本消息生效，其余即时显示）；`ChatPanel > 头部「内心」按钮触发 onToggleInner` 于「内心世界」轮追加（观测面板移入右侧抽屉，头部新增「内心」按钮）；本轮「读书/创作借鉴 + 三按钮」把它改为 `头部「内在/空间/记录」三按钮触发 onOpenInner`（「内心」单按钮换 3 个分类按钮，点哪个开哪个分类卡片，断言点「空间」传 index `1`）。
 
 ## frontend-inner-state-panel（内在状态面板：InnerStatePanel + ValenceArousalPlot + EmotionSprite + EnergyBar + BigFiveChart + ValuesChart）
 
@@ -755,11 +782,12 @@
 | `BigFiveChart > 按 personality 渲染双端语义` | 功能正确 | 渲染 `保守`/`开放`（openness 两端）+ `情绪稳定`/`敏感`（neuroticism 两端），不做数值断言 |
 | `ValuesChart > 按 values 渲染双端语义` | 功能正确 | 渲染 `疏离`/`亲近`（attitude_to_human 两端）+ `悲观`/`乐观`（optimism 两端），不做数值断言 |
 | `ValenceArousalPlot > 渲染不崩` | 功能正确 | SVG `.va-plot` 存在（坐标/像素不做断言，README §6） |
+| `ValenceArousalPlot > 区域标签对齐后端 6 档` | 功能正确 | 渲染 `开心`/`生气`/`担忧`/`悲伤`/`害羞`/`平静`（经 `EMOTION_LABELS`），旧错误标签 `低落` 不在（对齐 `vad_to_category`） |
 | `InnerStatePanel > current=null → 整体占位不崩` | 边界鲁棒 | `current=null` 显示「等待核心服务连接…」且不渲染子组件（`开放` 不在） |
 | `InnerStatePanel > current 非 null → 渲染子组件字段` | 功能正确 | `精力充沛`/`开放`/`亲近` 分别经 EnergyBar/BigFiveChart/ValuesChart 上屏 |
 | `InnerStatePanel > error 非 null → 红字一行` | 功能正确 | `error` 非空渲染 `.inner-state-panel__error` 红字 |
 
-**功能阶段**：frontend 04-inner-state-panel 实现时编写（RTL + 真实 store；验证管道正确——子组件按需收字段、`current=null` 整体占位不崩，图表坐标/像素不断言）；`EmotionSprite` 已在 03-chat-panel 由 MessageBubble 复用，此处补其文件名映射的独立断言。枚举值中文化（`lib/labels.ts`）于视觉改造轮追加——原「枚举值显原值不转中文」约定被用户要求推翻（`exploration → 发现`），EnergyBar/BigFiveChart/ValuesChart 断言由英文原值改为中文标签；BigFiveChart/ValuesChart 于「双端量表」轮由条形图+数值改为双端量表（去数值、两端语义 + 圆点位置表达，`PERSONALITY_LABELS`/`VALUES_LABELS` 改 `PERSONALITY_POLES`/`VALUES_POLES`，断言改为两端词）。
+**功能阶段**：frontend 04-inner-state-panel 实现时编写（RTL + 真实 store；验证管道正确——子组件按需收字段、`current=null` 整体占位不崩，图表坐标/像素不断言）；`EmotionSprite` 已在 03-chat-panel 由 MessageBubble 复用，此处补其文件名映射的独立断言。枚举值中文化（`lib/labels.ts`）于视觉改造轮追加——原「枚举值显原值不转中文」约定被用户要求推翻（`exploration → 发现`），EnergyBar/BigFiveChart/ValuesChart 断言由英文原值改为中文标签；BigFiveChart/ValuesChart 于「双端量表」轮由条形图+数值改为双端量表（去数值、两端语义 + 圆点位置表达，`PERSONALITY_LABELS`/`VALUES_LABELS` 改 `PERSONALITY_POLES`/`VALUES_POLES`，断言改为两端词）。`ValenceArousalPlot > 区域标签对齐后端 6 档` 于「读书/创作借鉴 + 三按钮」轮追加（象限硬编码「高兴/平静/愤怒/低落」改为对齐 `vad_to_category` 6 档经 `EMOTION_LABELS`，修右下角「平静」实为「害羞」的错位）。
 
 ## frontend-presence（活跃度上报：usePresence + classifyPresence）
 
@@ -784,16 +812,38 @@
 
 **功能阶段**：frontend 视觉改造（右侧滑出抽屉 → 右侧常驻标签页）时编写（RTL + 真实 store；验证管道正确——标签切换当前面板、仅挂载 active tab，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）；本轮视觉改造把 SidePanel 从「常驻右侧标签页」改为「设置模式下替换对话框」，`SidePanel` 需 `onBack` prop + 首 tab 由「内在」改为「背景」——原 6 标签断言改为 7 标签、默认激活断言由「内在」改「背景」、补 `onBack` 用例；`渲染 7 个标签` 于「喂资料/上传课本」轮改为 `渲染 9 个标签`（新增「叙事」「资料」两 tab，标签清单同步补入）；本轮移除「溯源」tab（`渲染 8 个标签`）；`渲染 9 个标签` 于「产出面板」轮改为 9 标签（新增「产出」tab，标签清单同步补入）；`渲染 9 个标签` 于「内心世界」轮改为 `渲染 3 个标签`（内在/欲望/活动/产出/叙事/资料 6 个观测面板移入右侧 `InnerWorld` 抽屉，SidePanel 只留背景/记忆/Eval，切换用例由「欲望」改「记忆」）。本轮「记忆」移入内心世界：`渲染 3 个标签` 改为 `渲染 2 个标签`（SidePanel 只留背景/Eval），切换用例由「记忆」改「Eval」。
 
-## frontend-inner-world（布局：InnerWorld 内心世界抽屉）
+## frontend-inner-world（布局：InnerWorld 内心世界弹窗）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `InnerWorld > 渲染 7 个标签，默认激活「内在」` | 功能正确 | 7 个 tab 按钮（内在/欲望/活动/产出/叙事/资料/记忆）都渲染；默认「内在」`aria-pressed=true` + 面板标题「内在状态」上屏 |
-| `InnerWorld > 点击「欲望」切换面板，未激活面板卸载` | 功能正确 | 点「欲望」后 `aria-pressed` 移到「欲望」、面板标题「欲望」上屏、内在面板标题「内在状态」卸载（仅挂载当前 tab） |
-| `InnerWorld > 「收起」按钮触发 onClose` | 功能正确 | 点「收起」→ `onClose` 恰调 1 次（App 层关闭抽屉） |
-| `InnerWorld > open=false 时容器不带 inner-world--open 修饰类` | 功能正确 | 收起态容器无 `.inner-world--open` 修饰类（CSS transform 滑出屏幕） |
+| `InnerWorld > categoryIndex 渲染对应子标签，默认第一项` | 功能正确 | 传 `categoryIndex=0` 渲染「内在」子标签（内在状态/欲望/叙事）、默认「内在状态」`aria-pressed=true` + 面板标题「内在状态」上屏 |
+| `InnerWorld > categoryIndex=1 渲染「空间」子标签` | 功能正确 | 传 `categoryIndex=1` 渲染空间三项（读书笔记/产出/资料）、默认「读书笔记」`aria-pressed=true` + 面板标题「读书笔记」上屏 |
+| `InnerWorld > 分类内切子标签：点「欲望」` | 功能正确 | 点「欲望」后 `aria-pressed` 移到「欲望」、面板标题「欲望」上屏、内在面板标题「内在状态」卸载（仅挂载当前子 tab） |
+| `InnerWorld > 「关闭」按钮触发 onClose` | 功能正确 | 点「关闭」（`×`，aria-label）→ `onClose` 恰调 1 次（App 层卸载弹窗） |
 
-**功能阶段**：frontend「内心世界」轮编写（观测面板从「设置」移入右侧滑出抽屉；RTL + 真实 store，验证管道正确——6 标签切换、仅挂载 active tab、open/onClose 接线，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）。本轮「记忆」从「设置」移入内心世界：`渲染 6 个标签` 改为 `渲染 7 个标签`（标签清单补入「记忆」）。
+**功能阶段**：frontend「内心世界」轮编写（观测面板从「设置」移入右侧滑出抽屉；RTL + 真实 store，验证管道正确——标签切换、仅挂载 active tab、open/onClose 接线，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）。本轮「记忆」从「设置」移入内心世界：`渲染 6 个标签` 改为 `渲染 7 个标签`。「内心世界弹窗化 + 借鉴」轮：InnerWorld 由右侧滑出抽屉（`<aside className="inner-world">` + `open` prop）改为可拖拽弹窗（DraggablePanel 包裹、App 层条件渲染 `{innerOpen && <InnerWorld/>}`），移除 `open` prop、`收起` 按钮改 `×`（aria-label「关闭」）、删 `open=false` 修饰类用例；标签/内容结构不变（仍复用 `.side-panel__tabs/__body`）。「读书/创作借鉴」轮：扁平 7 标签改为「内在/空间/记录」三大类两级导航（子标签：内在=内在状态/欲望/叙事、空间=读书笔记/产出/资料、记录=活动/记忆），用例由「渲染 7 标签」改为「渲染 3 大类 + 默认内在状态」+ 大类切换 + 子标签切换。「读书/创作借鉴 + 三按钮」轮：三大类导航从 InnerWorld 内部上移到对话框头部三按钮（ChatPanel），InnerWorld 改为**单分类卡片**——收 `categoryIndex` prop，去掉顶部大类导航只留子标签，标题=分类名；用例由「渲染 3 大类 + 大类切换」改为「按 categoryIndex 渲染对应子标签 + 分类内切子标签」。
+
+## frontend-reading-notes（读书笔记面板：ReadingNotesPanel）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `ReadingNotesPanel > 渲染清单：书名 + 预览 + 批注数徽标` | 功能正确 | mock fetch 返回笔记 → 请求 `/api/reading-notes?limit=50`；书名《三体》、内容预览、`💬3` 批注数徽标上屏 |
+| `ReadingNotesPanel > 点卡片展开详情 + 批注` | 功能正确 | 点卡片 → 正文 Markdown 上屏 + `← 返回` 按钮 + 批注（`getAnnotations` 结果）上屏 |
+| `ReadingNotesPanel > 新增批注` | 功能正确 | 输入 + 点「添加批注」→ `POST /api/annotations`（body `{target_id, content}`）后重拉批注上屏 |
+| `ReadingNotesPanel > 删除批注` | 功能正确 | 点批注「删除」→ `DELETE /api/annotations/{id}` 后该批注摘除 |
+| `ReadingNotesPanel > 删除笔记` | 功能正确 | `confirm` true + 点「🗑 删除」→ `DELETE /api/reading-notes/{id}` 后清单摘除 |
+
+**功能阶段**：frontend「读书/创作借鉴」轮编写（RTL + 真实 store；验证管道正确——清单/详情/批注增删，笔记清单走 `readingNotesStore`、选中笔记与批注走组件本地 `useState`，mock fetch 断言端点/方法/请求体，不验证视觉）。
+
+## frontend-avatar（头像立绘：Avatar 戳立绘 + 红点通知 + 昼夜节律）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `Avatar > isNight 昼夜节律纯函数` | 功能正确 | `isNight(22/0/5)` → true（夜间困倦）；`isNight(6/12/21)` → false（白天回落当前情绪） |
+| `Avatar > unreadProactive=true 显示徽标，点击清除` | 功能正确 | `unreadProactive=true` 渲染「小狐狸我有话对你说」徽标；点击 → `clearUnreadProactive` 置 false |
+| `Avatar > 戳立绘：戳一下害羞、连戳 5 次生气` | 功能正确 | 点击头像 → `announce("mutter", "呀！")`；连戳第 5 次 → `announce("mutter", "不要再戳了啦！")` |
+
+**功能阶段**：frontend「内心世界弹窗化 + 借鉴」轮编写（借鉴 nyx_desktop_agent 的 DockAvatar 三项：戳立绘/红点通知/昼夜节律；RTL + 真实 store，验证管道正确——`isNight` 纯函数、红点徽标点击清除、戳立绘经 announceStore 冒短语，不验证视觉）。
 
 ## frontend-interactivity（交互性：常驻状态条 + 头像旁气泡 + 活动产出）
 

@@ -6,48 +6,64 @@ import MaterialsPanel from "../panels/MaterialsPanel";
 import MemoryPanel from "../panels/MemoryPanel";
 import NarrativePanel from "../panels/NarrativePanel";
 import OutputsPanel from "../panels/OutputsPanel";
+import ReadingNotesPanel from "../panels/ReadingNotesPanel";
+import DraggablePanel from "./DraggablePanel";
 
-// 内心世界（右侧滑出抽屉）：7 个观测面板（内在/欲望/活动/产出/叙事/资料/记忆）从「设置」移出，
-// 收进对话框右侧的「内心世界」抽屉，默认收起、点对话框头部「内心」滑出。复用 side-panel 的
-// 标签/内容样式（同款暖色卡片），仅容器位置不同（固定右侧 + transform 滑入滑出）。
-// 仅挂载当前 tab（切换即重新 refresh；未激活面板不占 DOM），同 SidePanel。
-type TabDef = { label: string; Panel: ComponentType };
+// 内心世界（可拖拽弹窗）：8 个观测面板按「内在/空间/记录」三大类收进可拖拽弹窗。
+// 对话框头部有「内在/空间/记录」三个按钮（ChatPanel 读 CATEGORIES 渲染），点哪个开哪个
+// 分类的卡片；卡片内只保留该分类的子标签 + 内容，顶部大类导航移除（大类由头部按钮承担）。
+// 仅挂载当前子 tab（切换即重新 refresh；未激活面板不占 DOM），同 SidePanel。
+export type TabDef = { label: string; Panel: ComponentType };
+export type CategoryDef = { label: string; tabs: TabDef[] };
 
-const TABS: TabDef[] = [
-  { label: "内在", Panel: InnerStatePanel },
-  { label: "欲望", Panel: DesiresPanel },
-  { label: "活动", Panel: ActivityPanel },
-  { label: "产出", Panel: OutputsPanel },
-  { label: "叙事", Panel: NarrativePanel },
-  { label: "资料", Panel: MaterialsPanel },
-  { label: "记忆", Panel: MemoryPanel },
+export const CATEGORIES: CategoryDef[] = [
+  {
+    label: "内在",
+    tabs: [
+      { label: "内在状态", Panel: InnerStatePanel },
+      { label: "欲望", Panel: DesiresPanel },
+      { label: "叙事", Panel: NarrativePanel },
+    ],
+  },
+  {
+    label: "空间",
+    tabs: [
+      { label: "读书笔记", Panel: ReadingNotesPanel },
+      { label: "产出", Panel: OutputsPanel },
+      { label: "资料", Panel: MaterialsPanel },
+    ],
+  },
+  {
+    label: "记录",
+    tabs: [
+      { label: "活动", Panel: ActivityPanel },
+      { label: "记忆", Panel: MemoryPanel },
+    ],
+  },
 ];
 
 type InnerWorldProps = {
-  open: boolean;
+  categoryIndex: number;
   onClose: () => void;
 };
 
-export default function InnerWorld({ open, onClose }: InnerWorldProps) {
-  const [active, setActive] = useState(0);
-  const ActivePanel = TABS[active].Panel;
+export default function InnerWorld({ categoryIndex, onClose }: InnerWorldProps) {
+  const [activeTab, setActiveTab] = useState(0);
+  const category = CATEGORIES[categoryIndex];
+  const ActivePanel = category.tabs[activeTab].Panel;
 
   return (
-    <aside className={`inner-world${open ? " inner-world--open" : ""}`} aria-hidden={!open}>
-      <header className="side-panel__header">
-        <span className="side-panel__title">内心世界</span>
-        <button type="button" className="side-panel__back" onClick={onClose}>
-          收起
-        </button>
-      </header>
+    <DraggablePanel title={category.label} onClose={onClose}>
       <nav className="side-panel__tabs">
-        {TABS.map((t, i) => (
+        {category.tabs.map((t, i) => (
           <button
             key={t.label}
             type="button"
-            className={`side-panel__tab${active === i ? " side-panel__tab--active" : ""}`}
-            aria-pressed={active === i}
-            onClick={() => setActive(i)}
+            className={`side-panel__tab${
+              activeTab === i ? " side-panel__tab--active" : ""
+            }`}
+            aria-pressed={activeTab === i}
+            onClick={() => setActiveTab(i)}
           >
             {t.label}
           </button>
@@ -56,6 +72,6 @@ export default function InnerWorld({ open, onClose }: InnerWorldProps) {
       <div className="side-panel__body">
         <ActivePanel />
       </div>
-    </aside>
+    </DraggablePanel>
   );
 }

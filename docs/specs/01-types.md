@@ -1,6 +1,6 @@
 # 枚举 + 实体类型
 
-> 范围：`nyx/enums.py`（13 个 `StrEnum`）、`nyx/types.py`（4 个 TypedDict + 16 个 dataclass）。
+> 范围：`nyx/enums.py`（13 个 `StrEnum`）、`nyx/types.py`（4 个 TypedDict + 19 个 dataclass）。
 > 纯声明 spec：只定义类型，不含函数、不含序列化 helper、不含 DDL（DDL 在 04-db）。
 > **本文件自包含**：枚举与实体的完整定义都内联在下文，实现不依赖任何其它文档。
 
@@ -15,7 +15,7 @@
 ## 验收标准
 
 - [ ] `enums.py` 含 13 个 `StrEnum`，成员与「枚举」段代码逐字一致
-- [ ] `types.py` 含 4 个 TypedDict + 16 个 dataclass，字段与「TypedDict」「dataclass」段代码逐字一致
+- [ ] `types.py` 含 4 个 TypedDict + 19 个 dataclass，字段与「TypedDict」「dataclass」段代码逐字一致
 - [ ] 所有枚举 `.value` 为小写 snake_case 字符串，可直接 `json.dumps` / 存 SQLite
 - [ ] 固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`（边界见「嵌套 dict 字段的边界」表）、不加 `frozen`
 - [ ] `pyright` strict 下零报错：无 implicit Any、无 `str` 赋给枚举成员的默认值告警
@@ -170,7 +170,7 @@ class TokenUsageDict(TypedDict):           # 单次 LLM 记账 {input, output}
     output: int
 ```
 
-### dataclass（`nyx/types.py`，17 个）
+### dataclass（`nyx/types.py`，19 个）
 
 > `from nyx.enums import (Source, EventType, DesireType, ActivityType, MemoryType, SearchMode, DesireStatus, ActivityStatus, EnergyState, GoalAction, EmotionCategory)`
 
@@ -272,6 +272,22 @@ class Material:                    # 用户喂的读物（一本书），分块�
     read_chars: int                # 已读字数（分块进度，>=total 视为读完）
     created_at: float              # 上传时间（「最近那本」排序键）
     updated_at: float              # 进度上次推进时间
+
+@dataclass
+class ReadingNote:                 # 读完整本书后的完整笔记（可删除、可批注）
+    id: str
+    book: str                      # 书名（filename）
+    content: str                   # 完整笔记正文（Markdown）
+    created_at: float
+    annotation_count: int = 0      # 非 DB 列，list() 里 LEFT JOIN 算出
+
+@dataclass
+class Annotation:                  # 读书笔记的批注
+    id: str
+    target_id: str                 # reading_note.id
+    author: str                    # 'user' | 'nyx'
+    content: str
+    created_at: float
 
 # ---- 内在生命 ----
 @dataclass

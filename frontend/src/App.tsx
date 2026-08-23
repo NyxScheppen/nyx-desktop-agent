@@ -3,7 +3,7 @@ import { dispatchEvent } from "./api/dispatch";
 import AnnounceLayer from "./components/AnnounceLayer";
 import StatusBar from "./components/StatusBar";
 import ChatPanel from "./components/chat/ChatPanel";
-import EmotionSprite from "./components/inner/EmotionSprite";
+import Avatar from "./components/inner/Avatar";
 import InnerWorld from "./components/layout/InnerWorld";
 import SidePanel from "./components/layout/SidePanel";
 import Sakura from "./components/scene/Sakura";
@@ -29,7 +29,7 @@ export default function App() {
   const refreshActivity = useActivityStore((s) => s.refresh);
   usePresence();
   const [view, setView] = useState<"chat" | "settings">("chat");
-  const [innerOpen, setInnerOpen] = useState(false);
+  const [openCategory, setOpenCategory] = useState<number | null>(null);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
 
@@ -68,17 +68,23 @@ export default function App() {
       </header>
 
       <main className="app-stage">
-        <EmotionSprite size="portrait" />
+        <Avatar />
         {view === "chat" ? (
           <ChatPanel
             onOpenSettings={() => setView("settings")}
-            onToggleInner={() => setInnerOpen((v) => !v)}
+            onOpenInner={(i) => setOpenCategory((cur) => (cur === i ? null : i))}
           />
         ) : (
           <SidePanel onBack={() => setView("chat")} />
         )}
       </main>
-      <InnerWorld open={innerOpen} onClose={() => setInnerOpen(false)} />
+      {openCategory !== null && (
+        <InnerWorld
+          key={openCategory}
+          categoryIndex={openCategory}
+          onClose={() => setOpenCategory(null)}
+        />
+      )}
       <StatusBar />
       <AnnounceLayer />
     </div>

@@ -19,9 +19,10 @@
 - [ ] **注册内置工具**：`local_search` + `file_io` 恒注册，`web_search` 仅当 `config.exploration.web_enabled` 注册（06-tools 完成定义）；探索链无条件调 `local_search`/`file_io`，缺失会 `KeyError`
 - [ ] **seed 幂等**（表空才写）：inner_life 四张单行表（personality 8/8/2/6/7、values 8/6/9/5、energy 100/energetic、narrative 初始 identity）；desire 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）+ 3 个初始长期欲望（canon §4）
 - [ ] **订阅覆盖 ROUTING/TICK_ROUTING**：`USER_MESSAGE`→interrupt+reply、`USER_MATERIAL`→read_material、`OBSERVATION_STATE`→apply_event+add_value、`DESIRE_GENERATED`→on_desire_generated、`DESIRE_SATISFIED`→apply_event、`ACTIVITY_END`→add_value+apply_event+remember_activity、`REFLECTION`→apply_event、`CLOCK_TICK`→按 tick_type 分发四路
-- [ ] **15 个端点**：tech-ref §4 的 14 个 REST + `GET /api/events`（SSE）；除 upload/materials 外每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
+- [ ] **20 个端点**：tech-ref §4 的 19 个 REST + `GET /api/events`（SSE）；除 upload/materials 外每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
 - [ ] **`POST /api/chat`**：构造 `USER_MESSAGE` 事件（`source=EXTERNAL`、`correlation_id=自身 id`）→ `publish` → 返回 `{event_id}`（回复走 SSE）
-- [ ] **请求体校验**：`POST /api/chat`/`/api/export`/`/api/observe` 用 pydantic 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`），缺键/类型错 → 422（非 500）；`presence` 仅 `online`/`away`/`busy`（`Literal` 校验，拼写错误 422 而非静默禁用搭话）；`window_title` 可选（默认空串）
+- [ ] **请求体校验**：`POST /api/chat`/`/api/export`/`/api/observe`/`/api/annotations` 用 pydantic 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`/`_AnnotationPayload`），缺键/类型错 → 422（非 500）；`presence` 仅 `online`/`away`/`busy`（`Literal` 校验，拼写错误 422 而非静默禁用搭话）；`window_title` 可选（默认空串）
+- [ ] **读书笔记 5 个端点**：`GET /api/reading-notes`（`list_reading_notes(limit)`）、`DELETE /api/reading-notes/{note_id}`、`GET /api/annotations?target_id=`、`POST /api/annotations`（body `{target_id, content}` → `add_annotation`，author 固定 "user"）、`DELETE /api/annotations/{annotation_id}`——每个 = `ActivityFacade` 读书笔记 CRUD 方法的薄封装
 - [ ] **`POST /api/upload`**：`UploadFile` + `File(...)`；文件名 `Path(file.filename or "upload.txt").name` 消毒（去路径穿越）、`raw` 超 `_MAX_UPLOAD_BYTES` 返 400；`file_io("write", f"uploads/{name}", text)` 落盘（复用 `_resolve_write` 越界守卫）→ publish `USER_MATERIAL`（content `{path, filename, total_chars}`，`total_chars=len(text)` 供书库注册）→ 返回 `{event_id, filename, path}`
 - [ ] **`GET /api/materials`**：`app.activity.list_materials()` 返回 `{materials: [Material]}`（含 `read_chars`/`total_chars` 进度，供资料面板展示「读到哪了」）
 - [ ] **SSE**：`data` = `event.content` 展开 + `event_id` + `correlation_id`（统一结构，不按 type 特判）；`event:` = `EventType.value`
@@ -75,6 +76,7 @@ from pydantic import BaseModel
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.material_store import MaterialStore
+from nyx.activity.reading_note_store import ReadingNoteStore
 from nyx.activity.screen import ScreenObserver, capture_screen
 from nyx.activity.store import ActivityStore
 from nyx.config import Config, load_config
@@ -108,6 +110,7 @@ from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_search import build_web_search_tool
 from nyx.types import (
     Activity,
+    Annotation,
     CurrentState,
     DesireState,
     EvalReport,
@@ -116,6 +119,7 @@ from nyx.types import (
     Material,
     Memory,
     Personality,
+    ReadingNote,
     SelfNarrative,
     TokenUsage,
     Values,
@@ -395,8 +399,13 @@ class _ObservePayload(BaseModel):
     window_title: str = ""
 
 
+class _AnnotationPayload(BaseModel):
+    target_id: str
+    content: str
+
+
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：15 个端点（14 个 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：20 个端点（19 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")
@@ -474,6 +483,28 @@ def build_app(app: _App) -> FastAPI:
     async def api_materials() -> dict[str, list[Material]]:
         return {"materials": await app.activity.list_materials()}
 
+    @fast.get("/api/reading-notes")
+    async def api_reading_notes(limit: int = 50) -> list[ReadingNote]:
+        return await app.activity.list_reading_notes(limit)
+
+    @fast.delete("/api/reading-notes/{note_id}")
+    async def api_delete_reading_note(note_id: str) -> dict[str, str]:
+        await app.activity.delete_reading_note(note_id)
+        return {"deleted": note_id}
+
+    @fast.get("/api/annotations")
+    async def api_annotations(target_id: str) -> list[Annotation]:
+        return await app.activity.list_annotations(target_id)
+
+    @fast.post("/api/annotations")
+    async def api_add_annotation(payload: _AnnotationPayload) -> Annotation:
+        return await app.activity.add_annotation(payload.target_id, payload.content)
+
+    @fast.delete("/api/annotations/{annotation_id}")
+    async def api_delete_annotation(annotation_id: str) -> dict[str, str]:
+        await app.activity.delete_annotation(annotation_id)
+        return {"deleted": annotation_id}
+
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:
         presence = payload.presence
@@ -546,6 +577,7 @@ async def build_app_context(config: Config) -> _App:
     inner_life_store = InnerLifeStore(db)
     activity_store = ActivityStore(db)
     material_store = MaterialStore(db)
+    reading_notes = ReadingNoteStore(db)
 
     # 循环依赖解环：_get_state/_reflect/_get_observation 引用可变容器，运行时才求值
     state_holder: list[Callable[[], Awaitable[CurrentState]]] = []
@@ -563,8 +595,8 @@ async def build_app_context(config: Config) -> _App:
 
     activity = ActivityFacade(
         activity_store, material_store, bus, llm, evaluator, tools, desire,
-        _get_state, _reflect, _get_observation, config.activity,
-        config.exploration,
+        memory, reading_notes, _get_state, _reflect, _get_observation,
+        config.activity, config.exploration,
     )
     inner_life = InnerLifeFacade(
         inner_life_store, activity, desire, memory, bus, llm, evaluator, config,
@@ -728,6 +760,9 @@ if __name__ == "__main__":
     - [ ] `POST /api/observe` → 返回 `{event_id}`；`bus.list_events()` 含 `OBSERVATION_STATE`（content `{presence}`）
     - [ ] `POST /api/export` `format=json` / `md` 透传 `memory.export` 结果；`format=bogus` → `ValueError`（Facade 抛）
     - [ ] 请求体校验：`POST /api/chat` 缺 `message` → 422；`POST /api/observe` `presence=Online`（大小写拼写错误）→ 422（`Literal` 校验，不 publish 事件、不改 `last_presence`）
+    - [ ] **读书笔记 5 端点**（`_FakeActivity` 实现 5 个 CRUD 方法，`app.activity = cast(ActivityFacade, fake)`）：
+      - [ ] `GET /api/reading-notes` → `ReadingNote[]`（含 `annotation_count`）；`DELETE /api/reading-notes/{note_id}` → `{deleted}` 且 `fake.deleted_notes` 记到该 id
+      - [ ] `GET /api/annotations?target_id=` → `Annotation[]`（`author` 透传）；`POST /api/annotations` body `{target_id, content}` → 返回新批注 + `fake.added_annotations` 记 `(target_id, content)`；`DELETE /api/annotations/{annotation_id}` → `{deleted}` 且 `fake.deleted_annotations` 记到该 id
   - [ ] **tick 循环**（fake `bus.publish` 记录 + `monkeypatch` 常量使间隔→0 + `asyncio.sleep` 立即返回）：跑一个循环 → 收到 `CLOCK_TICK` 且 `tick_type` 覆盖 `SCHEDULE_BLOCK_START`/`DESIRE_EVAL`/`MUTTER_CHECK`/`INITIATE_CHAT_CHECK` 四种、每条 `source is INTERNAL`（系统定时器，非外部输入）；`grid_minutes=60` 时首轮只发 `schedule_block_start`/`desire_eval`（首个活动块启动即触发，`last_block=0.0`），碎碎念/搭话不立即触发
   - [ ] **订阅一致性**（构建 `_App`（fake Facade 记录 handler 调用）+ `_subscribe` + 真 `EventBus`，`run()` 作 task）：对 `ROUTING` 每个**非空消费者**的 event_type publish 一个事件 → 对应 Facade 方法被调（`OBSERVATION_STATE` → `apply_event`+`add_value` 两 handler；`ACTIVITY_END` → `add_value`+`apply_event`；`USER_MESSAGE` → `reply`；`DESIRE_GENERATED` → `on_desire_generated` 等）
   - [ ] **总线监督器**（fake `bus.run()` 每轮 raise + `monkeypatch _BUS_BACKOFF_BASE/_BUS_BACKOFF_MAX=0`）：`_supervise_bus` 连续 `_BUS_MAX_FAILURES` 次后 `RuntimeError` 重抛熔断（`run()` 调用次数 == `_BUS_MAX_FAILURES`）；崩溃前 `persisted_count` 每次 +`_BUS_RECOVERY_STREAK`（达恢复阈值）→ 计数重置、永不假熔断；崩溃前 `persisted_count` 每次 +1（单次成功不足阈值，DB 抖动）→ 计数不重置、照样熔断（`calls == _BUS_MAX_FAILURES`）；`task.cancel()` → `CancelledError` 重抛、不再重启

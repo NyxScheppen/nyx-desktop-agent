@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.material_store import MaterialStore
+from nyx.activity.reading_note_store import ReadingNoteStore
 from nyx.activity.screen import ScreenObserver, capture_screen
 from nyx.activity.store import ActivityStore
 from nyx.config import Config, load_config
@@ -51,6 +52,7 @@ from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_search import build_web_search_tool
 from nyx.types import (
     Activity,
+    Annotation,
     CurrentState,
     DesireState,
     EvalReport,
@@ -59,6 +61,7 @@ from nyx.types import (
     Material,
     Memory,
     Personality,
+    ReadingNote,
     SelfNarrative,
     TokenUsage,
     Values,
@@ -338,8 +341,13 @@ class _ObservePayload(BaseModel):
     window_title: str = ""
 
 
+class _AnnotationPayload(BaseModel):
+    target_id: str
+    content: str
+
+
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：15 个端点（14 个 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：20 个端点（19 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")
@@ -417,6 +425,28 @@ def build_app(app: _App) -> FastAPI:
     async def api_materials() -> dict[str, list[Material]]:
         return {"materials": await app.activity.list_materials()}
 
+    @fast.get("/api/reading-notes")
+    async def api_reading_notes(limit: int = 50) -> list[ReadingNote]:
+        return await app.activity.list_reading_notes(limit)
+
+    @fast.delete("/api/reading-notes/{note_id}")
+    async def api_delete_reading_note(note_id: str) -> dict[str, str]:
+        await app.activity.delete_reading_note(note_id)
+        return {"deleted": note_id}
+
+    @fast.get("/api/annotations")
+    async def api_annotations(target_id: str) -> list[Annotation]:
+        return await app.activity.list_annotations(target_id)
+
+    @fast.post("/api/annotations")
+    async def api_add_annotation(payload: _AnnotationPayload) -> Annotation:
+        return await app.activity.add_annotation(payload.target_id, payload.content)
+
+    @fast.delete("/api/annotations/{annotation_id}")
+    async def api_delete_annotation(annotation_id: str) -> dict[str, str]:
+        await app.activity.delete_annotation(annotation_id)
+        return {"deleted": annotation_id}
+
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:
         presence = payload.presence
@@ -489,6 +519,7 @@ async def build_app_context(config: Config) -> _App:
     inner_life_store = InnerLifeStore(db)
     activity_store = ActivityStore(db)
     material_store = MaterialStore(db)
+    reading_notes = ReadingNoteStore(db)
 
     # 循环依赖解环：_get_state/_reflect/_get_observation 引用可变容器，运行时才求值
     state_holder: list[Callable[[], Awaitable[CurrentState]]] = []
@@ -506,8 +537,8 @@ async def build_app_context(config: Config) -> _App:
 
     activity = ActivityFacade(
         activity_store, material_store, bus, llm, evaluator, tools, desire,
-        _get_state, _reflect, _get_observation, config.activity,
-        config.exploration,
+        memory, reading_notes, _get_state, _reflect, _get_observation,
+        config.activity, config.exploration,
     )
     inner_life = InnerLifeFacade(
         inner_life_store, activity, desire, memory, bus, llm, evaluator, config,

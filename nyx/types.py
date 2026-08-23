@@ -149,6 +149,24 @@ class Material:                    # 用户喂的读物（一本书），分块�
     updated_at: float              # 进度上次推进时间
 
 
+@dataclass
+class ReadingNote:                 # 读完整本书后的完整笔记（可删除、可批注）
+    id: str
+    book: str                      # 书名（filename）
+    content: str                   # 完整笔记正文（Markdown）
+    created_at: float
+    annotation_count: int = 0      # 非 DB 列，list() 里 LEFT JOIN 算出
+
+
+@dataclass
+class Annotation:                  # 读书笔记的批注
+    id: str
+    target_id: str                 # reading_note.id
+    author: str                    # 'user' | 'nyx'
+    content: str
+    created_at: float
+
+
 # ---- 内在生命 ----
 @dataclass
 class CurrentState:         # 只读快照

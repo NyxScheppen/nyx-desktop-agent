@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import random
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -11,6 +12,7 @@ from typing import Any, cast
 from nyx.activity.exploration import Exploration, should_explore
 from nyx.activity.material_store import MaterialStore
 from nyx.activity.observe import build_observation_summary
+from nyx.activity.reading_note_store import ReadingNoteStore
 from nyx.activity.scheduler import (
     build_schedule,
     desire_to_activity,
@@ -26,13 +28,24 @@ from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
+from nyx.memory.facade import MemoryFacade
 from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
-from nyx.types import Activity, CurrentState, Event, Material, ShortTermDesire
+from nyx.types import (
+    Activity,
+    Annotation,
+    CurrentState,
+    Event,
+    Material,
+    Memory,
+    ReadingNote,
+    ShortTermDesire,
+)
 
 _logger = logging.getLogger(__name__)
 
 _READ_CONTEXT_CHARS = 6000  # 读物喂 LLM 的字符预算（decision，可推翻）
+_KNOWLEDGE_REF_CHARS = 80   # 创作知识参考单条截断字符数（decision，可推翻）
 
 # 可续活动：打断置 PAUSED、同日程块内恢复同一记录（读书续读，创作/探索重跑）。
 # 发呆/观察/休息瞬时无进度，仍抢占即废弃置 ABANDONED。
@@ -119,6 +132,51 @@ def _parse_activity_result(raw: str, output_type: str) -> dict[str, Any]:
     return parsed
 
 
+_CREATION_STYLES = ("日记体", "随笔", "微型小说", "散文诗", "书信体", "观察笔记")
+
+
+def _pick_creation_style() -> str:
+    """创作风格随机池：6 种里随机抽一种（W1）。"""
+    return random.choice(_CREATION_STYLES)
+
+
+def _build_creation_context(
+    activity: Activity,
+    style: str,
+    knowledge: list[Memory],
+    observation: dict[str, str],
+) -> str:
+    """创作参考上下文：风格 + 主题 + 知识库参考 + 当前屏幕灵感（W1/W2/W3）。
+
+    各段有内容才拼、空则省略；纯确定性拼接，不调 LLM。
+    """
+    goal = activity.progress.get("goal")
+    topic = ""
+    if isinstance(goal, dict):
+        t = cast(dict[str, Any], goal).get("topic")
+        if isinstance(t, str):
+            topic = t
+    if not topic:
+        desc = activity.progress.get("description")
+        if isinstance(desc, str):
+            topic = desc
+    parts = [f"风格：{style}"]
+    if topic:
+        parts.append(f"主题：{topic}")
+    if knowledge:
+        refs = "\n".join(
+            f"- {m.summary}：{m.content[:_KNOWLEDGE_REF_CHARS]}"
+            for m in knowledge[:3]
+        )
+        parts.append(f"知识库参考（可引用，勿编造）：\n{refs}")
+    window = observation.get("window_title", "").strip()
+    screen = observation.get("screen_summary", "").strip()
+    if window or screen:
+        insp = "；".join(x for x in (window, screen) if x)
+        parts.append(f"当前屏幕灵感：{insp}")
+    return "\n\n".join(parts)
+
+
 class ActivityFacade:
     """活动模块门面：消费欲望 → 选活动 → 后台执行 → 完成/打断 → 发布事件。
 
@@ -135,6 +193,8 @@ class ActivityFacade:
         evaluator: Evaluator,
         tools: ToolRegistry,
         desire: DesireFacade,
+        memory: MemoryFacade,
+        reading_notes: ReadingNoteStore,
         get_state: Callable[[], Awaitable[CurrentState]],
         reflect: Callable[[str | None], Awaitable[str | None]],
         get_observation: Callable[[], Awaitable[dict[str, str]]],
@@ -147,6 +207,8 @@ class ActivityFacade:
         self._llm = llm
         self._evaluator = evaluator
         self._desire = desire
+        self._memory = memory
+        self._reading_notes = reading_notes
         self._get_state = get_state
         self._reflect = reflect
         self._get_observation = get_observation
@@ -321,6 +383,34 @@ class ActivityFacade:
         """书库全量（含已读进度），供资料面板展示「读到哪了」。"""
         return await self._material_store.list_all()
 
+    async def list_reading_notes(self, limit: int = 50) -> list[ReadingNote]:
+        """读书笔记清单（含批注数），供读书笔记面板 CRUD。"""
+        return await self._reading_notes.list_notes(limit)
+
+    async def delete_reading_note(self, note_id: str) -> None:
+        """删一条读书笔记（级联删其批注；已落盘 notes/*.md 文件不动）。"""
+        await self._reading_notes.delete(note_id)
+
+    async def list_annotations(self, target_id: str) -> list[Annotation]:
+        """某笔记的全部批注，按时间升序。"""
+        return await self._reading_notes.list_annotations(target_id)
+
+    async def add_annotation(self, target_id: str, content: str) -> Annotation:
+        """给笔记加一条用户批注（author 固定 'user'）。"""
+        annotation = Annotation(
+            id=str(uuid.uuid4()),
+            target_id=target_id,
+            author="user",
+            content=content,
+            created_at=time.time(),
+        )
+        await self._reading_notes.add_annotation(annotation)
+        return annotation
+
+    async def delete_annotation(self, annotation_id: str) -> None:
+        """删一条批注。"""
+        await self._reading_notes.delete_annotation(annotation_id)
+
     async def read_material(
         self, path: str, filename: str, total_chars: int, correlation_id: str
     ) -> None:
@@ -470,7 +560,13 @@ class ActivityFacade:
                 raise ValueError("读书活动缺 source：已禁止凭空编造")
             return await self._run_reading_source(activity, str(source))
         if t is ActivityType.CREATION:
-            result = await self._run_llm_activity(activity, "creation")
+            style = _pick_creation_style()
+            knowledge = await self._memory.list_memories(tag="knowledge")
+            obs = await self._get_observation()
+            context = _build_creation_context(activity, style, knowledge, obs)
+            result = await self._run_llm_activity(
+                activity, "creation", extra_context=context, context_label="创作参考"
+            )
             title = str(result["title"])
             path = f"creations/{_sanitize_filename(title)}.md"
             written = await file_io("write", path, str(result["content"]))
@@ -548,6 +644,7 @@ class ActivityFacade:
             full = await self._finalize_reading(
                 activity, source, filename, len(content)
             )
+            await self._extract_knowledge(activity, filename, content)
             full["read_chars"] = new_read_chars
             full["total_chars"] = len(content)
             return full
@@ -561,6 +658,14 @@ class ActivityFacade:
         full_note = await self._aggregate_note(activity, filename, fragments)
         written = await file_io(
             "write", f"notes/{_sanitize_filename(filename)}.md", full_note
+        )
+        await self._reading_notes.insert(
+            ReadingNote(
+                id=str(uuid.uuid4()),
+                book=filename,
+                content=full_note,
+                created_at=time.time(),
+            )
         )
         return {
             "book": filename,
@@ -598,15 +703,63 @@ class ActivityFacade:
             raise ValueError("聚合笔记 JSON 缺 note 或非空字符串")
         return note
 
+    async def _extract_knowledge(
+        self, activity: Activity, filename: str, content: str
+    ) -> None:
+        """读完一本书后提取 1-5 条知识点入长期记忆（R1）。
+
+        best-effort：LLM/解析失败只记日志、不冒泡——读书笔记已落盘，知识点是
+        增强旁路，主流程正确性不依赖它（CLAUDE.md 豁免：LLM/eval 失败吞异常）。
+        """
+        try:
+            output = await self._llm.complete(
+                [
+                    {"role": "system", "content": _KNOWLEDGE_SYSTEM},
+                    {"role": "user", "content": f"书名：{filename}\n正文：\n{content}"},
+                ],
+                module="activity",
+                output_type="knowledge",
+                correlation_id=_correlation_id(activity),
+                json_mode=True,
+            )
+            await self._evaluator.evaluate(output)
+            data: Any = json.loads(output.content)
+            if not isinstance(data, dict):
+                return
+            raw_points = cast(dict[str, Any], data).get("points")
+            if not isinstance(raw_points, list):
+                return
+            items: list[dict[str, str]] = []
+            for point in cast(list[Any], raw_points)[:5]:
+                if not isinstance(point, dict):
+                    continue
+                point_map = cast(dict[str, Any], point)
+                topic = point_map.get("topic")
+                content_pt = point_map.get("content")
+                if isinstance(content_pt, str) and content_pt.strip():
+                    items.append(
+                        {
+                            "topic": topic if isinstance(topic, str) else "",
+                            "content": content_pt.strip(),
+                        }
+                    )
+            if items:
+                await self._memory.remember_knowledge(
+                    items, _correlation_id(activity)
+                )
+        except Exception:
+            _logger.exception("知识点提取失败 activity_id=%s", activity.id)
+
     async def _run_llm_activity(
         self,
         activity: Activity,
         output_type: str,
         extra_context: str | None = None,
+        context_label: str = "读物信息",
     ) -> dict[str, Any]:
         user_msg = f"活动类型：{activity.type.value}"
         if extra_context:
-            user_msg += f"\n读物信息：\n{extra_context}"
+            user_msg += f"\n{context_label}：\n{extra_context}"
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _ACTIVITY_SYSTEM},
@@ -626,6 +779,16 @@ _ACTIVITY_SYSTEM = (
     "读书 {book, note}、创作 {title, content}。"
     "读书时：note 自然承接已读片段，不重复概括已读部分、只续写本次新读内容；"
     "note 正文里不要写「上次读到第 X 字」这类位置字样。"
+    "创作时：遵循给定风格，可引用知识库参考，但绝不编造不存在的知识；"
+    "当前屏幕灵感只作启发，勿照搬。"
+)
+
+
+_KNOWLEDGE_SYSTEM = (
+    "你是尼克斯，正在阅读一本书。从下面的文本中提取 1-5 个客观、可复用的知识点"
+    "（事实、概念、方法）。只输出 JSON，键：points（数组，每项 {topic, content}，"
+    "topic 是主题/概念名、content 是一句完整自洽的知识陈述）。"
+    "没有值得提取的知识就输出 {\"points\": []}。"
 )
 
 

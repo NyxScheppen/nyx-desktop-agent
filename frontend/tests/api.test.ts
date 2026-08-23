@@ -1,14 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  addAnnotation,
+  deleteAnnotation,
+  deleteReadingNote,
   exportMemories,
   getActivity,
   getActivityResults,
+  getAnnotations,
   getDesires,
   getEval,
   getEventsLog,
   getMaterials,
   getMemories,
   getNarrative,
+  getReadingNotes,
   getState,
   getTokens,
   postChat,
@@ -285,5 +290,94 @@ describe("api/client", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/materials");
     expect(res).toEqual(fixture);
+  });
+
+  it("getReadingNotes：GET /api/reading-notes?limit=50、解析 ReadingNote[]", async () => {
+    const note = {
+      id: "n1",
+      book: "三体",
+      content: "正文",
+      created_at: 1,
+      annotation_count: 2,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([note]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getReadingNotes(50);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/reading-notes?limit=50");
+    expect(res).toEqual([note]);
+  });
+
+  it("getReadingNotes：无 limit 时不带 query string", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getReadingNotes();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/reading-notes");
+  });
+
+  it("deleteReadingNote：DELETE /api/reading-notes/{id}、解析 {deleted}", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ deleted: "n1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await deleteReadingNote("n1");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/reading-notes/n1");
+    expect(init).toMatchObject({ method: "DELETE" });
+    expect(res).toEqual({ deleted: "n1" });
+  });
+
+  it("getAnnotations：GET /api/annotations?target_id=、解析 Annotation[]", async () => {
+    const anno = {
+      id: "a1",
+      target_id: "n1",
+      author: "user",
+      content: "批",
+      created_at: 1,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([anno]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getAnnotations("n1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/annotations?target_id=n1");
+    expect(res).toEqual([anno]);
+  });
+
+  it("addAnnotation：POST /api/annotations、body {target_id, content}、解析 Annotation", async () => {
+    const anno = {
+      id: "a1",
+      target_id: "n1",
+      author: "user",
+      content: "批",
+      created_at: 1,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(anno));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await addAnnotation("n1", "批");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/annotations");
+    expect(init).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ target_id: "n1", content: "批" }),
+    });
+    expect(res).toEqual(anno);
+  });
+
+  it("deleteAnnotation：DELETE /api/annotations/{id}、解析 {deleted}", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ deleted: "a1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await deleteAnnotation("a1");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/annotations/a1");
+    expect(init).toMatchObject({ method: "DELETE" });
+    expect(res).toEqual({ deleted: "a1" });
   });
 });

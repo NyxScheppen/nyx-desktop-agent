@@ -1,6 +1,6 @@
 # Zustand Stores（`stores/*.ts`）
 
-> 每系统一个 store（CLAUDE.md）。共 10 个：`chatStore`（聊天）、`innerLifeStore`（内在状态快照）、`desireStore` / `activityStore` / `memoryStore` / `evalStore`（四个快照 store）、`narrativeStore`（自我叙事快照）/ `materialsStore`（资料上传）、`settingsStore`（背景外观，纯前端 UI 状态）、`announceStore`（头像旁临时气泡，纯前端呈现）。
+> 每系统一个 store（CLAUDE.md）。共 11 个：`chatStore`（聊天）、`innerLifeStore`（内在状态快照）、`desireStore` / `activityStore` / `memoryStore` / `evalStore`（四个快照 store）、`narrativeStore`（自我叙事快照）/ `materialsStore`（资料上传）/ `readingNotesStore`（读书笔记快照）、`settingsStore`（背景外观，纯前端 UI 状态）、`announceStore`（头像旁临时气泡，纯前端呈现）。
 > 范围：`stores/*.ts` 的 state 形状 + actions。
 > 约定：**SSE 是主通道**（01-sse 分发表），store 的增量 action 由 SSE 驱动；REST 只喂初始快照。TS 类型字段名 = 后端 JSON 键（snake_case，零映射）。
 
@@ -163,7 +163,24 @@ type MaterialsStoreState = {
 - **上传即重拉**：`upload` 成功落盘后 `getMaterials()` 重拉清单（不本地拼装，与快照 store 一致）；`uploading` 贯穿上传全程，成功/失败都复位。
 - **读书结果不落本 store**：上传触发后端 `USER_MATERIAL` → READING 活动，结果经 `activity_start`/`activity_end` SSE 走 `activityStore`（活动面板可见），本 store 只负责文件清单 + 上传动作。
 
-## 6. `settingsStore`（背景外观，纯前端）
+## 6. `readingNotesStore`（读书笔记快照）
+
+```typescript
+type ReadingNotesStoreState = {
+  notes: ReadingNote[] | null;   // null = 尚未加载；[] = 加载过但为空
+  loading: boolean;
+  error: string | null;
+  refresh(): Promise<void>;      // 内部调 client.getReadingNotes(50) → notes；throw → error + loading=false
+  remove(noteId: string): Promise<void>;  // client.deleteReadingNote(id) 成功后本地摘除该条
+};
+```
+
+### 关键决策
+
+- **清单走 store、详情走组件本地 state**：读书笔记面板的「清单 + 删除」入 store；选中笔记与其批注（`getAnnotations`/`addAnnotation`/`deleteAnnotation`）是瞬态 UI，用 `ReadingNotesPanel` 组件本地 `useState` 承载，不落 store（反冗余——批注数据无跨组件共享需求）。
+- **`remove` 本地摘除**：删除成功后 `notes.filter(id)` 摘除，不重新 `refresh()`（与快照 store「重拉」策略不同——删除是确定性本地操作，重拉浪费一次请求）。
+
+## 7. `settingsStore`（背景外观，纯前端）
 
 ```typescript
 type SettingsState = {
@@ -180,7 +197,7 @@ type SettingsState = {
 - **无后端、无 SSE**：纯前端 UI 状态，读写只走内存，MVP 不持久化（重启回默认）。
 - **tint 与 image 独立并存**：图铺底（`cover`）、色调无图时作纯色、图+色并存时叠一层半透明滤镜（`.app-bg-tint`），互不覆盖。
 
-## 7. `announceStore`（头像旁临时气泡，纯前端呈现）
+## 8. `announceStore`（头像旁临时气泡，纯前端呈现）
 
 ```typescript
 type AnnounceKind = "mutter" | "activity";
@@ -199,13 +216,14 @@ type AnnounceState = {
 - **不落聊天历史**：碎碎念既进 `chatStore`（聊天记录）又进 `announceStore`（头像旁淡出气泡），两者互不替代——前者是历史时间线（`loadHistory` 回填），后者是 design §8 的瞬时气泡。
 - **时长按 kind**：`mutter` 4s、`activity` 7s（产出句子更长）。id 用模块级自增（`announce-N`），不依赖 `Date.now`（测试可预测）。
 
-## 8. 测试（`tests/stores.test.ts`）
+## 9. 测试（`tests/stores.test.ts`）
 
 - **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addMutter`/`addInitiateChat`/`addUserMessage` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
 - **chatStore.loadHistory**：按 `timestamp` 升序前置 + `preloaded=true` + 历史 think 入 `typedIds`；已存在的 id 去重不重复前置；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
 - **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置 + loading 状态机；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
 - **四个快照 store**：`desireStore`/`memoryStore` 各断言 `refresh()` 请求对端点 + `data` 落 store + `loading` 复位；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`（fetch 恰 2 次）→ `data`/`results` 落 store；`evalStore.refresh()` 并行 `getEval`+`getTokens`（fetch 恰 2 次）→ `reports`/`tokens` 落 store；`desireStore.refresh()` 失败 → `error` + `loading=false` + `data` 保持 null。
 - **narrativeStore / materialsStore**：`narrativeStore.refresh()` 请求 `/api/narrative` + `data` 落 store；`materialsStore.refresh()` 请求 `/api/materials` + `materials` 落 store；`materialsStore.upload()` `POST /api/upload` 后重拉 materials（fetch 恰 2 次）+ `uploading` 复位。
+- **readingNotesStore**：`refresh()` 请求 `/api/reading-notes?limit=50` + `notes` 落 store + `loading` 复位；`remove()` `DELETE /api/reading-notes/{id}` 后从 `notes` 本地摘除（不重拉）。
 - **`isReady`（串行逐字纯函数）**：每条 nyx 文本消息等「同 `correlation_id` 且在其之前」的 nyx 文本消息都打完（入 `typedIds`）才就绪；无前置 nyx 文本 → 直接就绪；`preloaded` nyx 文本与 user 消息 → 恒就绪；不同 `correlation_id` 的 nyx 文本不阻塞。
 - **`settingsStore`**：`setTint`/`setImage` 独立落 store 可并存；`reset()` 回 null。
 - **`announceStore`**：`announce` 追加临时气泡（kind/text 落 store、id 唯一）；`dismiss` 摘除指定 id 其余保留；`advanceTimersByTime(ANNOUNCE_DURATION[kind])` 到时自动 dismiss。

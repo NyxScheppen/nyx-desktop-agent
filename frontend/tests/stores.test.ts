@@ -9,6 +9,7 @@ import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMaterialsStore } from "../src/stores/materialsStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
 import { useNarrativeStore } from "../src/stores/narrativeStore";
+import { useReadingNotesStore } from "../src/stores/readingNotesStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
 import type { BackendEvent, CurrentState } from "../src/types/api";
 
@@ -121,6 +122,19 @@ describe("chatStore.add*", () => {
       role: "nyx",
       kind: "initiate_chat",
     });
+  });
+
+  it("addInitiateChat → unreadProactive=true，clearUnreadProactive 复位", () => {
+    useChatStore.getState().addInitiateChat({
+      event: "initiate_chat",
+      event_id: "e5b",
+      correlation_id: "c5b",
+      content: "在忙吗？",
+    });
+    expect(useChatStore.getState().unreadProactive).toBe(true);
+
+    useChatStore.getState().clearUnreadProactive();
+    expect(useChatStore.getState().unreadProactive).toBe(false);
   });
 
   it("addUserMessage → 读 message（非 content）→ role:user kind:message", () => {
@@ -271,6 +285,20 @@ describe("chatStore.reset", () => {
 
     vi.advanceTimersByTime(60_000); // 残留 timer 已取消，不触发超时
     expect(useChatStore.getState().sendError).toBeNull();
+  });
+
+  it("reset 复位 unreadProactive", () => {
+    useChatStore.getState().addInitiateChat({
+      event: "initiate_chat",
+      event_id: "e7",
+      correlation_id: "c7",
+      content: "在吗",
+    });
+    expect(useChatStore.getState().unreadProactive).toBe(true);
+
+    useChatStore.getState().reset();
+
+    expect(useChatStore.getState().unreadProactive).toBe(false);
   });
 });
 
@@ -479,6 +507,44 @@ describe("narrativeStore / materialsStore", () => {
     expect(fetchMock.mock.calls[1][0]).toBe("/api/materials");
     expect(useMaterialsStore.getState().materials).toEqual([mat]);
     expect(useMaterialsStore.getState().uploading).toBe(false);
+  });
+});
+
+describe("readingNotesStore", () => {
+  beforeEach(() => {
+    useReadingNotesStore.setState({ notes: null, loading: false, error: null });
+  });
+
+  it("refresh：GET /api/reading-notes?limit=50 → notes 落 store", async () => {
+    const note = {
+      id: "n1",
+      book: "三体",
+      content: "正文",
+      created_at: 1,
+      annotation_count: 0,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([note]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReadingNotesStore.getState().refresh();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/reading-notes?limit=50");
+    expect(useReadingNotesStore.getState().notes).toEqual([note]);
+    expect(useReadingNotesStore.getState().loading).toBe(false);
+  });
+
+  it("remove：DELETE /api/reading-notes/{id} 后从清单摘除", async () => {
+    const n1 = { id: "n1", book: "a", content: "x", created_at: 1, annotation_count: 0 };
+    const n2 = { id: "n2", book: "b", content: "y", created_at: 2, annotation_count: 0 };
+    useReadingNotesStore.setState({ notes: [n1, n2] });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ deleted: "n1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReadingNotesStore.getState().remove("n1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/reading-notes/n1");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "DELETE" });
+    expect(useReadingNotesStore.getState().notes).toEqual([n2]);
   });
 });
 

@@ -70,6 +70,14 @@ describe("inner 面板子组件", () => {
     expect(container.querySelector("svg.va-plot")).not.toBeNull();
   });
 
+  it("ValenceArousalPlot 区域标签对齐后端 6 档（含害羞/担忧，无旧「低落」）", () => {
+    render(<ValenceArousalPlot valence={0.1} arousal={0.2} />);
+    for (const label of ["开心", "生气", "担忧", "悲伤", "害羞", "平静"]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+    expect(screen.queryByText("低落")).not.toBeInTheDocument(); // 旧错误标签已移除
+  });
+
   it("InnerStatePanel current=null → 整体占位，不渲染子组件", () => {
     render(<InnerStatePanel />);
     expect(screen.getByText("等待核心服务连接…")).toBeInTheDocument();

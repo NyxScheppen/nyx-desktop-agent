@@ -161,6 +161,27 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "NOT NULL DEFAULT 0",
         ],
     ),
+    (
+        4,
+        [
+            # 读书笔记：读完整本书后落的一条完整笔记（一等产物，可删除/可批注）
+            """CREATE TABLE reading_note (
+                id TEXT PRIMARY KEY,
+                book TEXT NOT NULL,             -- 书名（filename）
+                content TEXT NOT NULL,          -- 完整笔记正文（Markdown）
+                created_at REAL NOT NULL
+            )""",
+            # 读书笔记的批注（用户对笔记的评论）
+            """CREATE TABLE annotation (
+                id TEXT PRIMARY KEY,
+                target_id TEXT NOT NULL,        -- reading_note.id
+                author TEXT NOT NULL,           -- 'user' | 'nyx'
+                content TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )""",
+            "CREATE INDEX idx_annotation_target ON annotation(target_id)",
+        ],
+    ),
 ]
 
 

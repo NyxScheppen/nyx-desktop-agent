@@ -28,7 +28,7 @@ InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 in
 
 - 二维散点：x 轴 `valence ∈ [-1, 1]`（左负右正），y 轴 `arousal ∈ [0, 1]`（下低上高）。单点 + 十字虚线标出当前值。
 - 用 `<canvas>` 或轻量 SVG 手绘（核心先行不引图表库——单点定位图，canvas 足够，避免新依赖）。**不引 recharts/d3**（未请求的复杂度）。
-- 语义对齐 design §4.2：`valence` 正负 = 情绪正负，`arousal` 高低 = 激活度；图上可轻标注象限（高兴/平静/愤怒/低落），纯视觉辅助。
+- 语义对齐 design §4.2：`valence` 正负 = 情绪正负，`arousal` 高低 = 激活度；图上轻标注 6 档象限区（开心/害羞/悲伤/生气/担忧/平静），经 `EMOTION_LABELS` 与后端 `vad_to_category` 的 6 分类一一对应（右上下=开心/害羞、左上中下=生气/担忧/悲伤、中央带=平静），纯视觉辅助。
 - 放大：`va-plot` `max-width: 24rem`（原 16rem），内在面板移除立绘后作为最显眼的可视化元素。
 
 ## 4. 精力条（`EnergyBar`）

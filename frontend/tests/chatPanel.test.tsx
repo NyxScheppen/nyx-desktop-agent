@@ -152,7 +152,7 @@ describe("ChatPanel", () => {
       vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
     );
     useChatStore.setState({ messages: [makeMsg("speak", "nyx", "订阅上屏")] });
-    render(<ChatPanel onOpenSettings={() => {}} onToggleInner={() => {}} />);
+    render(<ChatPanel onOpenSettings={() => {}} onOpenInner={() => {}} />);
     typeDone();
     expect(screen.getByText("订阅上屏")).toBeInTheDocument();
   });
@@ -163,20 +163,23 @@ describe("ChatPanel", () => {
       vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
     );
     const onOpenSettings = vi.fn();
-    render(<ChatPanel onOpenSettings={onOpenSettings} onToggleInner={() => {}} />);
+    render(<ChatPanel onOpenSettings={onOpenSettings} onOpenInner={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
-  it("头部「内心」按钮触发 onToggleInner", () => {
+  it("头部「内在/空间/记录」三按钮，点击传对应分类 index", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
     );
-    const onToggleInner = vi.fn();
-    render(<ChatPanel onOpenSettings={() => {}} onToggleInner={onToggleInner} />);
-    fireEvent.click(screen.getByRole("button", { name: "内心" }));
-    expect(onToggleInner).toHaveBeenCalledTimes(1);
+    const onOpenInner = vi.fn();
+    render(<ChatPanel onOpenSettings={() => {}} onOpenInner={onOpenInner} />);
+    for (const label of ["内在", "空间", "记录"]) {
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "空间" }));
+    expect(onOpenInner).toHaveBeenCalledWith(1);
   });
 });
 

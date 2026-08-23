@@ -1,6 +1,7 @@
 import type {
   Activity,
   ActivitySnapshot,
+  Annotation,
   BackendEvent,
   CurrentState,
   DesireState,
@@ -9,6 +10,7 @@ import type {
   Memory,
   MemoryType,
   Presence,
+  ReadingNote,
   SelfNarrative,
   TokenUsage,
   UploadResult,
@@ -133,4 +135,40 @@ export async function uploadFile(file: File): Promise<UploadResult> {
 
 export async function getMaterials(): Promise<{ materials: Material[] }> {
   return request<{ materials: Material[] }>(`${BASE_URL}/api/materials`);
+}
+
+export async function getReadingNotes(limit?: number): Promise<ReadingNote[]> {
+  const qs = limit !== undefined ? `?limit=${limit}` : "";
+  return request<ReadingNote[]>(`${BASE_URL}/api/reading-notes${qs}`);
+}
+
+export async function deleteReadingNote(noteId: string): Promise<{ deleted: string }> {
+  return request<{ deleted: string }>(`${BASE_URL}/api/reading-notes/${noteId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function getAnnotations(targetId: string): Promise<Annotation[]> {
+  return request<Annotation[]>(
+    `${BASE_URL}/api/annotations?target_id=${encodeURIComponent(targetId)}`,
+  );
+}
+
+export async function addAnnotation(
+  targetId: string,
+  content: string,
+): Promise<Annotation> {
+  return request<Annotation>(`${BASE_URL}/api/annotations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target_id: targetId, content }),
+  });
+}
+
+export async function deleteAnnotation(
+  annotationId: string,
+): Promise<{ deleted: string }> {
+  return request<{ deleted: string }>(`${BASE_URL}/api/annotations/${annotationId}`, {
+    method: "DELETE",
+  });
 }

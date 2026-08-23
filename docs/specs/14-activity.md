@@ -15,7 +15,7 @@
 ## 验收标准
 
 - [ ] `store.py` 含 `ActivityStore`（`insert` / `get` / `get_current` / `get_paused_in_block` / `get_last_exploration` / `list_schedule` / `list_results` / `update`），与「`activity/store.py`（完整）」段逐字一致
-- [ ] `facade.py` 含 `ActivityFacade`：`on_tick(tick_type) -> None` / `on_desire_generated(event) -> None` / `select_activity(desires, state) -> Activity | None` / `complete_activity(activity) -> None` / `interrupt(activity_id, by_event) -> None` / `get_current() -> Activity | None` / `get_schedule() -> list[Activity]` / `get_results() -> list[Activity]` / `list_materials() -> list[Material]` / `read_material(path, filename, total_chars, correlation_id) -> None`
+- [ ] `facade.py` 含 `ActivityFacade`：`on_tick(tick_type) -> None` / `on_desire_generated(event) -> None` / `select_activity(desires, state) -> Activity | None` / `complete_activity(activity) -> None` / `interrupt(activity_id, by_event) -> None` / `get_current() -> Activity | None` / `get_schedule() -> list[Activity]` / `get_results() -> list[Activity]` / `list_materials() -> list[Material]` / `read_material(path, filename, total_chars, correlation_id) -> None` / `list_reading_notes(limit) -> list[ReadingNote]` / `delete_reading_note(note_id) -> None` / `list_annotations(target_id) -> list[Annotation]` / `add_annotation(target_id, content) -> Annotation` / `delete_annotation(annotation_id) -> None`
 - [ ] `select_activity` 纯决策：无欲望→`None`；精力不足→`REST`；否则第一个可排程欲望→映射活动，`progress` 存 `desire_id`/`goal`/`correlation_id`/`description`
 - [ ] `READING` 升级 `FREE_EXPLORATION`：探索欲映射的读书在 `_maybe_start_activity` 里经 `should_explore`（精力充足 + 频率上限）判定升级；频率上限内降级为普通读书
 - [ ] 空槽默认：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`（精力疲惫 `< ENERGY_REST_THRESHOLD`→`IDLE_REFLECTION`、否则→`OBSERVE_USER`），`progress["desire_id"] is None`
@@ -31,7 +31,7 @@
 
 ## 技术方案
 
-- **新文件**：`nyx/activity/store.py`、`nyx/activity/facade.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/screen.py`、`nyx/activity/material_store.py`（`scheduler.py` 归 13）
+- **新文件**：`nyx/activity/store.py`、`nyx/activity/facade.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/screen.py`、`nyx/activity/material_store.py`、`nyx/activity/reading_note_store.py`（`scheduler.py` 归 13）
 - **库**：`langgraph`（仅 `StateGraph` / `START` / `END` / 条件边；版本敏感契约以锁定版本为准，同 03-llm 依赖 pin 约定）
 - **ActivityStore 归属**：memory/desire/inner_life 各有 `store.py`，activity 保持一致——facade 不直接写 SQL（三层：Facade → 子系统 → 内部类）。tech-ref §7 ripple：`activity/` 补一行 `store.py  # ActivityStore（activity 表单表 CRUD）`
 - **依赖解环（遵守 12 §54）**：`inner_life → {activity, desire}` 已锁，故 `ActivityFacade` **不持有 `InnerLifeFacade`**，注入 `get_state: Callable[[], Awaitable[CurrentState]]` 回调（组合根用 `inner_life.get_state` 绑定）。`select_activity(desires, state)` 以参数收 `CurrentState`（纯决策，无环）；`DesireFacade` 依赖单向（activity → desire，读队列/values），不成环
@@ -325,6 +325,117 @@ def _row_to_material(row: aiosqlite.Row) -> Material:
     )
 ```
 
+### `activity/reading_note_store.py`（完整）
+
+```python
+import aiosqlite
+
+from nyx.db import Database
+from nyx.types import Annotation, ReadingNote
+
+_NOTE_COLS = "id, book, content, created_at"
+_ANNOTATION_COLS = "id, target_id, author, content, created_at"
+
+
+class ReadingNoteStore:
+    """读书笔记 + 批注两张表 CRUD：读完一本落一条笔记，用户可删笔记、加批注。
+
+    与 MaterialStore 同层（store 层）；所有读写 `async with self._db.lock:`
+    串行化（同 05/07/11）。删除笔记级联删其批注（同一事务）。
+    """
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def insert(self, note: ReadingNote) -> None:
+        """落一条完整读书笔记。"""
+        async with self._db.lock:
+            await self._db.conn.execute(
+                f"INSERT INTO reading_note ({_NOTE_COLS}) VALUES (?, ?, ?, ?)",
+                (note.id, note.book, note.content, note.created_at),
+            )
+            await self._db.conn.commit()
+
+    async def list_notes(self, limit: int = 50) -> list[ReadingNote]:
+        """全量笔记（含 annotation_count 徽标用），按创建时间倒序。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_NOTE_COLS}, "
+                "(SELECT COUNT(*) FROM annotation a "
+                "WHERE a.target_id = reading_note.id) AS annotation_count "
+                "FROM reading_note ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_note(row) for row in rows]
+
+    async def delete(self, note_id: str) -> None:
+        """删一条笔记 + 其全部批注（同一事务；已落盘的 notes/*.md 文件不动）。"""
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "DELETE FROM annotation WHERE target_id = ?", (note_id,)
+            )
+            await self._db.conn.execute(
+                "DELETE FROM reading_note WHERE id = ?", (note_id,)
+            )
+            await self._db.conn.commit()
+
+    async def add_annotation(self, annotation: Annotation) -> None:
+        """给某条笔记加一条批注。"""
+        async with self._db.lock:
+            await self._db.conn.execute(
+                f"INSERT INTO annotation ({_ANNOTATION_COLS}) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    annotation.id,
+                    annotation.target_id,
+                    annotation.author,
+                    annotation.content,
+                    annotation.created_at,
+                ),
+            )
+            await self._db.conn.commit()
+
+    async def list_annotations(self, target_id: str) -> list[Annotation]:
+        """某笔记的全部批注，按创建时间升序（早的在前）。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_ANNOTATION_COLS} FROM annotation "
+                "WHERE target_id = ? ORDER BY created_at ASC",
+                (target_id,),
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_annotation(row) for row in rows]
+
+    async def delete_annotation(self, annotation_id: str) -> None:
+        """删一条批注。"""
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "DELETE FROM annotation WHERE id = ?", (annotation_id,)
+            )
+            await self._db.conn.commit()
+
+
+def _row_to_note(row: aiosqlite.Row) -> ReadingNote:
+    return ReadingNote(
+        id=row["id"],
+        book=row["book"],
+        content=row["content"],
+        created_at=row["created_at"],
+        annotation_count=int(row["annotation_count"]),
+    )
+
+
+def _row_to_annotation(row: aiosqlite.Row) -> Annotation:
+    return Annotation(
+        id=row["id"],
+        target_id=row["target_id"],
+        author=row["author"],
+        content=row["content"],
+        created_at=row["created_at"],
+    )
+```
+
 ### `activity/facade.py`（完整）
 
 ```python
@@ -332,6 +443,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import random
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -341,6 +453,7 @@ from typing import Any, cast
 from nyx.activity.exploration import Exploration, should_explore
 from nyx.activity.material_store import MaterialStore
 from nyx.activity.observe import build_observation_summary
+from nyx.activity.reading_note_store import ReadingNoteStore
 from nyx.activity.scheduler import (
     build_schedule,
     desire_to_activity,
@@ -356,13 +469,24 @@ from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
+from nyx.memory.facade import MemoryFacade
 from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
-from nyx.types import Activity, CurrentState, Event, Material, ShortTermDesire
+from nyx.types import (
+    Activity,
+    Annotation,
+    CurrentState,
+    Event,
+    Material,
+    Memory,
+    ReadingNote,
+    ShortTermDesire,
+)
 
 _logger = logging.getLogger(__name__)
 
 _READ_CONTEXT_CHARS = 6000  # 读物喂 LLM 的字符预算（decision，可推翻）
+_KNOWLEDGE_REF_CHARS = 80   # 创作知识参考单条截断字符数（decision，可推翻）
 
 # 可续活动：打断置 PAUSED、同日程块内恢复同一记录（读书续读，创作/探索重跑）。
 # 发呆/观察/休息瞬时无进度，仍抢占即废弃置 ABANDONED。
@@ -449,6 +573,51 @@ def _parse_activity_result(raw: str, output_type: str) -> dict[str, Any]:
     return parsed
 
 
+_CREATION_STYLES = ("日记体", "随笔", "微型小说", "散文诗", "书信体", "观察笔记")
+
+
+def _pick_creation_style() -> str:
+    """创作风格随机池：6 种里随机抽一种（W1）。"""
+    return random.choice(_CREATION_STYLES)
+
+
+def _build_creation_context(
+    activity: Activity,
+    style: str,
+    knowledge: list[Memory],
+    observation: dict[str, str],
+) -> str:
+    """创作参考上下文：风格 + 主题 + 知识库参考 + 当前屏幕灵感（W1/W2/W3）。
+
+    各段有内容才拼、空则省略；纯确定性拼接，不调 LLM。
+    """
+    goal = activity.progress.get("goal")
+    topic = ""
+    if isinstance(goal, dict):
+        t = cast(dict[str, Any], goal).get("topic")
+        if isinstance(t, str):
+            topic = t
+    if not topic:
+        desc = activity.progress.get("description")
+        if isinstance(desc, str):
+            topic = desc
+    parts = [f"风格：{style}"]
+    if topic:
+        parts.append(f"主题：{topic}")
+    if knowledge:
+        refs = "\n".join(
+            f"- {m.summary}：{m.content[:_KNOWLEDGE_REF_CHARS]}"
+            for m in knowledge[:3]
+        )
+        parts.append(f"知识库参考（可引用，勿编造）：\n{refs}")
+    window = observation.get("window_title", "").strip()
+    screen = observation.get("screen_summary", "").strip()
+    if window or screen:
+        insp = "；".join(x for x in (window, screen) if x)
+        parts.append(f"当前屏幕灵感：{insp}")
+    return "\n\n".join(parts)
+
+
 class ActivityFacade:
     """活动模块门面：消费欲望 → 选活动 → 后台执行 → 完成/打断 → 发布事件。
 
@@ -465,6 +634,8 @@ class ActivityFacade:
         evaluator: Evaluator,
         tools: ToolRegistry,
         desire: DesireFacade,
+        memory: MemoryFacade,
+        reading_notes: ReadingNoteStore,
         get_state: Callable[[], Awaitable[CurrentState]],
         reflect: Callable[[str | None], Awaitable[str | None]],
         get_observation: Callable[[], Awaitable[dict[str, str]]],
@@ -477,6 +648,8 @@ class ActivityFacade:
         self._llm = llm
         self._evaluator = evaluator
         self._desire = desire
+        self._memory = memory
+        self._reading_notes = reading_notes
         self._get_state = get_state
         self._reflect = reflect
         self._get_observation = get_observation
@@ -651,6 +824,34 @@ class ActivityFacade:
         """书库全量（含已读进度），供资料面板展示「读到哪了」。"""
         return await self._material_store.list_all()
 
+    async def list_reading_notes(self, limit: int = 50) -> list[ReadingNote]:
+        """读书笔记清单（含批注数），供读书笔记面板 CRUD。"""
+        return await self._reading_notes.list_notes(limit)
+
+    async def delete_reading_note(self, note_id: str) -> None:
+        """删一条读书笔记（级联删其批注；已落盘 notes/*.md 文件不动）。"""
+        await self._reading_notes.delete(note_id)
+
+    async def list_annotations(self, target_id: str) -> list[Annotation]:
+        """某笔记的全部批注，按时间升序。"""
+        return await self._reading_notes.list_annotations(target_id)
+
+    async def add_annotation(self, target_id: str, content: str) -> Annotation:
+        """给笔记加一条用户批注（author 固定 'user'）。"""
+        annotation = Annotation(
+            id=str(uuid.uuid4()),
+            target_id=target_id,
+            author="user",
+            content=content,
+            created_at=time.time(),
+        )
+        await self._reading_notes.add_annotation(annotation)
+        return annotation
+
+    async def delete_annotation(self, annotation_id: str) -> None:
+        """删一条批注。"""
+        await self._reading_notes.delete_annotation(annotation_id)
+
     async def read_material(
         self, path: str, filename: str, total_chars: int, correlation_id: str
     ) -> None:
@@ -800,7 +1001,13 @@ class ActivityFacade:
                 raise ValueError("读书活动缺 source：已禁止凭空编造")
             return await self._run_reading_source(activity, str(source))
         if t is ActivityType.CREATION:
-            result = await self._run_llm_activity(activity, "creation")
+            style = _pick_creation_style()
+            knowledge = await self._memory.list_memories(tag="knowledge")
+            obs = await self._get_observation()
+            context = _build_creation_context(activity, style, knowledge, obs)
+            result = await self._run_llm_activity(
+                activity, "creation", extra_context=context, context_label="创作参考"
+            )
             title = str(result["title"])
             path = f"creations/{_sanitize_filename(title)}.md"
             written = await file_io("write", path, str(result["content"]))
@@ -878,6 +1085,7 @@ class ActivityFacade:
             full = await self._finalize_reading(
                 activity, source, filename, len(content)
             )
+            await self._extract_knowledge(activity, filename, content)
             full["read_chars"] = new_read_chars
             full["total_chars"] = len(content)
             return full
@@ -891,6 +1099,14 @@ class ActivityFacade:
         full_note = await self._aggregate_note(activity, filename, fragments)
         written = await file_io(
             "write", f"notes/{_sanitize_filename(filename)}.md", full_note
+        )
+        await self._reading_notes.insert(
+            ReadingNote(
+                id=str(uuid.uuid4()),
+                book=filename,
+                content=full_note,
+                created_at=time.time(),
+            )
         )
         return {
             "book": filename,
@@ -928,15 +1144,63 @@ class ActivityFacade:
             raise ValueError("聚合笔记 JSON 缺 note 或非空字符串")
         return note
 
+    async def _extract_knowledge(
+        self, activity: Activity, filename: str, content: str
+    ) -> None:
+        """读完一本书后提取 1-5 条知识点入长期记忆（R1）。
+
+        best-effort：LLM/解析失败只记日志、不冒泡——读书笔记已落盘，知识点是
+        增强旁路，主流程正确性不依赖它（CLAUDE.md 豁免：LLM/eval 失败吞异常）。
+        """
+        try:
+            output = await self._llm.complete(
+                [
+                    {"role": "system", "content": _KNOWLEDGE_SYSTEM},
+                    {"role": "user", "content": f"书名：{filename}\n正文：\n{content}"},
+                ],
+                module="activity",
+                output_type="knowledge",
+                correlation_id=_correlation_id(activity),
+                json_mode=True,
+            )
+            await self._evaluator.evaluate(output)
+            data: Any = json.loads(output.content)
+            if not isinstance(data, dict):
+                return
+            raw_points = cast(dict[str, Any], data).get("points")
+            if not isinstance(raw_points, list):
+                return
+            items: list[dict[str, str]] = []
+            for point in cast(list[Any], raw_points)[:5]:
+                if not isinstance(point, dict):
+                    continue
+                point_map = cast(dict[str, Any], point)
+                topic = point_map.get("topic")
+                content_pt = point_map.get("content")
+                if isinstance(content_pt, str) and content_pt.strip():
+                    items.append(
+                        {
+                            "topic": topic if isinstance(topic, str) else "",
+                            "content": content_pt.strip(),
+                        }
+                    )
+            if items:
+                await self._memory.remember_knowledge(
+                    items, _correlation_id(activity)
+                )
+        except Exception:
+            _logger.exception("知识点提取失败 activity_id=%s", activity.id)
+
     async def _run_llm_activity(
         self,
         activity: Activity,
         output_type: str,
         extra_context: str | None = None,
+        context_label: str = "读物信息",
     ) -> dict[str, Any]:
         user_msg = f"活动类型：{activity.type.value}"
         if extra_context:
-            user_msg += f"\n读物信息：\n{extra_context}"
+            user_msg += f"\n{context_label}：\n{extra_context}"
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _ACTIVITY_SYSTEM},
@@ -956,6 +1220,16 @@ _ACTIVITY_SYSTEM = (
     "读书 {book, note}、创作 {title, content}。"
     "读书时：note 自然承接已读片段，不重复概括已读部分、只续写本次新读内容；"
     "note 正文里不要写「上次读到第 X 字」这类位置字样。"
+    "创作时：遵循给定风格，可引用知识库参考，但绝不编造不存在的知识；"
+    "当前屏幕灵感只作启发，勿照搬。"
+)
+
+
+_KNOWLEDGE_SYSTEM = (
+    "你是尼克斯，正在阅读一本书。从下面的文本中提取 1-5 个客观、可复用的知识点"
+    "（事实、概念、方法）。只输出 JSON，键：points（数组，每项 {topic, content}，"
+    "topic 是主题/概念名、content 是一句完整自洽的知识陈述）。"
+    "没有值得提取的知识就输出 {\"points\": []}。"
 )
 
 
@@ -1229,7 +1503,8 @@ class ScreenObserver:
 - [ ] 单元测试 `tests/test_activity/`（`pytest-asyncio`；`db = await connect(":memory:")`；fake `LlmClient.complete` 按 `output_type` 返回 fixture JSON；`EventBus` 真实例 + recording handler，`run()` 作 task；`get_state` 用 fake 回调返回预设 `CurrentState`——同 05/09/11/12 模式）：
   - [ ] **store**（`test_activity_store.py`）：`insert + get` 往返（`progress` JSON 往返、枚举 `.value` 往返）；`get_current` 只取 running 最新一条；`get_paused_in_block`（当前块最新 PAUSED、忽略其他块；无则 None）；`get_last_exploration`（无 free_exploration 记录 → `0.0`，有 → `MAX(started_at)`）；`list_schedule(start)` 按 `started_at >= start` 过滤 + ASC；`list_results` 只回 completed + 读书/探索/创作三类按 `ended_at DESC`；`update` 改 `status`/`progress`/`ended_at` → `get` 验证
   - [ ] **material_store**（`test_material_store.py`）：`get_by_path`（upsert+advance 后取到最新 `read_chars`；缺路径 → None）
-  - [ ] **纯函数**（`test_activity_facade.py`）：`_day_start`（`now=86400*1.5 → 86400.0`）；`_elapsed_hours`（`now=5400 → 1.5`）；`_goal_met`（goal None → None；goal 非 None + result 空 → False；goal 非 None + result 非空 → True）
+  - [ ] **reading_note_store**（`test_reading_note_store.py`）：`insert + list_notes`（created_at 倒序、`annotation_count=0`）；`list_notes` 数批注（加两条批注 → `annotation_count=2`）；`delete` 级联（删笔记 → 笔记与批注都空）；`list_annotations` 升序；`delete_annotation`（删一条留其余）
+  - [ ] **纯函数**（`test_activity_facade.py`）：`_day_start`（`now=86400*1.5 → 86400.0`）；`_elapsed_hours`（`now=5400 → 1.5`）；`_goal_met`（goal None → None；goal 非 None + result 空 → False；goal 非 None + result 非空 → True）；`_pick_creation_style`（返回 6 风格之一）；`_build_creation_context`（有风格/主题/知识/屏幕各段；无知识无屏幕 → 省略对应段）
   - [ ] **select_activity**（fake `get_state` 返回 `energy=80`）：无欲望 → `None`；`[探索欲]` → `type is READING`、`progress["desire_id"] == desire.id`、`goal` 序列化正确、`progress["description"] == desire.description`；`[互动欲]` → `None`（不占日程块）；`[休息欲]` → `type is REST`、`progress["desire_id"] == rest_desire.id`（欲望驱动的 REST 保留关联）；`energy=30` + 探索欲 → `type is REST`、`progress["desire_id"] is None`（精力恢复无关联）
   - [ ] **should_explore**（`test_exploration.py`）：`energy=59` → False；`energy=60` + `now-last < rate_limit_hours*3600` → False；`energy=60` + 频率过 + `last=0.0` → True
   - [ ] **facade 生命周期**：
@@ -1240,6 +1515,9 @@ class ScreenObserver:
     - [ ] `interrupt`：RUNNING 活动 → cancel + 可续活动 `status is PAUSED`、非可续 `status is ABANDONED` + 发布 `activity_interrupted`（`content["by"]` 正确）；`activity_id` 不存在 → 不 cancel、不发布；执行中活动挂起在可取消 await 上时 interrupt → 终态 `PAUSED`/`ABANDONED` 而非被 complete 覆盖
     - [ ] 恢复：`_maybe_start_activity` 命中当前块 PAUSED 创作 → 复用同一 id 重跑（id 不变、COMPLETED、evaluator 再调 1 次）；命中 PAUSED 读书 → 从 material 层刷新 `read_chars` 续读；不同块旧 PAUSED → 不恢复、走新建默认活动
     - [ ] `get_current` / `get_schedule` / `get_results` 委托 store
+    - [ ] **读书知识点提取（R1）**：mock LLM 返回 `{"points":[{"topic","content"}...]}` → `_memory.remember_knowledge` 收到同批 items（tag 由 memory 层写 "knowledge"）；mock LLM 抛异常 → 不冒泡、读书活动仍 COMPLETED（best-effort）；`points` 非 list / 超 5 条截断到 5
+    - [ ] **创作上下文（W1/W2/W3）**：创作活动执行时 `list_memories(tag="knowledge")` 被调、`_get_observation` 被调、`_run_llm_activity` 收到 `context_label="创作参考"` 且 `extra_context` 含风格/知识/屏幕（`_FakeMemory`/`_FakeObservation` 桩）
+    - [ ] **读书笔记 CRUD 委托**：`list_reading_notes`/`delete_reading_note`/`list_annotations`/`add_annotation`（author=="user"）/`delete_annotation` 委托 `ReadingNoteStore`；`_finalize_reading` 落一条 `ReadingNote`（book=filename、content=full_note）
   - [ ] **exploration**（`test_exploration.py`）：`Exploration` 用 fake llm/fake_evaluator/tools，`web_enabled=false` 时图不含 `search_web`、`run` 返回 `{findings, notes}` 且步数 ≤ `_MAX_STEPS`；`_plan_next` 的 `llm.complete` 收到 `correlation_id == 初始 correlation_id`，且每次 `complete` 后 `evaluator.evaluate` 被调（`output_type="exploration_plan"`）；规划 JSON 非对象（如数组）→ `ValueError`
   - [ ] **observe**（`test_observe.py`）：`classify_presence` 三态判定（活跃→online、窗口标题→busy、无→away）；`build_observation_summary` 四态拼接（有窗口无屏幕 / 无窗口无屏幕 / 窗口+屏幕 / 无窗口有屏幕）
   - [ ] **screen**（`test_screen.py`）：`ScreenObserver.sample_once` 抓屏+describe 各 1 次返描述文本；capture 抛异常 → 返 `None` 不崩；describe 抛异常 → 返 `None` 不崩（best-effort）
@@ -1252,7 +1530,7 @@ class ScreenObserver:
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
-- [ ] ripple 同步：tech-ref §7 `activity/` 补 `store.py`；§6.2 `ExplorationState` 补 `correlation_id` 字段；§5 `select_activity` 返回类型 `Activity` → `Activity | None` 且 `async def` → `def`（纯决策，与 `_default_activity` 一致）；`activity_end` content 契约（`desire_id`/`goal_met`/`energy_delta`）与 11 §49 + 12 §45 一致
+- [ ] ripple 同步：tech-ref §7 `activity/` 补 `store.py` + `reading_note_store.py`；§5 `ActivityFacade` 构造参数补 `memory` / `reading_notes`、方法补 5 个读书笔记 CRUD；§6.2 `ExplorationState` 补 `correlation_id` 字段；§5 `select_activity` 返回类型 `Activity` → `Activity | None` 且 `async def` → `def`（纯决策，与 `_default_activity` 一致）；`activity_end` content 契约（`desire_id`/`goal_met`/`energy_delta`）与 11 §49 + 12 §45 一致
 - [ ] ripple 同步：`interrupt` 语义「可续置 PAUSED、其余 ABANDONED」与 design §3.3 抢占语义一致；`ActivityStore.get_paused_in_block` / `MaterialStore.get_by_path` 补进 tech-ref §7；`_maybe_start_activity` 恢复路径与 17-expression 打断入口约定（搭话/回复打断活动调 `interrupt`）一致
 - [ ] 下游约定：17-expression 搭话/回复打断活动时调 `interrupt(activity_id, by_event)`；18-api 组合根注入 `get_state=inner_life.get_state`、`evaluator`（给 `ActivityFacade` 与 `Exploration` 的 LLM 产出评分）、订阅 `SCHEDULE_BLOCK_START`（on_tick）与 `DESIRE_GENERATED`（on_desire_generated）
 - [ ] ripple 同步（屏幕视觉）：tech-ref §7 `activity/` 补 `screen.py`、§8 补 `vision:` 段；`OBSERVE_USER` 观察 result 契约由 `{presence, window_title, summary}` 扩展为 `{presence, window_title, screen_summary, summary}`（`result.summary` 仍由 `build_observation_summary` 拼装，09 `remember_activity` 消费不变）

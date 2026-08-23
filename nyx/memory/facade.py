@@ -321,6 +321,34 @@ class MemoryFacade:
         )
         await self._persist_memory(memory, correlation_id)
 
+    async def remember_knowledge(
+        self, items: list[dict[str, str]], correlation_id: str
+    ) -> None:
+        """读书提取的客观知识点入长期记忆（tag='knowledge'，无 LLM，确定性拼好）。
+
+        items 每项 {topic, content}；content 空则跳过。复用 _persist_memory
+        入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM 使其
+        豁免短期淘汰，知识点不随时间冲掉，供创作时检索参考（list_memories）。
+        """
+        for item in items:
+            content = (item.get("content") or "").strip()
+            topic = (item.get("topic") or "").strip()
+            if not content:
+                continue
+            memory = Memory(
+                id=str(uuid4()),
+                created_at=time.time(),
+                content=content,
+                tag="knowledge",
+                summary=topic or content[:_SUMMARY_MAX_CHARS],
+                freshness=1.0,
+                type=MemoryType.LONG_TERM,
+                recall_count=0,
+                aspect=[],
+                embedding=None,
+            )
+            await self._persist_memory(memory, correlation_id)
+
     async def record_no_answer(self, question: str, correlation_id: str) -> None:
         """用户未回答尼克斯的提问：落一条确定性的 SHORT_TERM 记忆（无 LLM）。
 

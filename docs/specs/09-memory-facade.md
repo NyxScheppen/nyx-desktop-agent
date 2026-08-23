@@ -19,6 +19,7 @@
 - [ ] 六个公开方法签名与 tech-ref §5 逐字一致：`create_scene_memory(reply_context: dict[str, str]) -> Memory` / `remember_activity(event: Event) -> None` / `search(query) -> list[Memory]` / `record_recall(memory_id) -> None` / `list_memories(tag, type) -> list[Memory]` / `export(fmt) -> str`
 - [ ] `create_scene_memory`：LLM 调用 1（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）产出三样 → 入短期（`freshness=1.0`）→ 算 embedding → 建边 → 矛盾检测（门控，可能调用 2）→ 命中矛盾发布 `reflection` → 衰减+淘汰 → 发布 `memory_created` → 返回 `Memory`
 - [ ] `remember_activity(event)`：读 `event.content["type"]`/`["result"]` 确定性映射（reading→note/book、creation→content/title、free_exploration→notes/findings，tag=活动类型值）；读书/创作/探索三类有产出才写，其余（rest/observe_user/idle_reflection、空 result）跳过；走 embed→入短期→建边→门控矛盾检测→淘汰→发布 `memory_created` 同一条管线，**无 LLM 调用**（除门控触发的矛盾判断）
+- [ ] `remember_knowledge(items, correlation_id)`：读书提取的客观知识点入长期记忆（`tag="knowledge"`、`type=LONG_TERM`、无 LLM、确定性拼好）；items 每项 `{topic, content}`，content 空则跳过；复用 `_persist_memory` 入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰），`type=LONG_TERM` 豁免短期淘汰、知识点不随时间冲掉、供创作检索参考（`list_memories(tag="knowledge")`）
 - [ ] 矛盾检测门控：`embedding=None` 或召回 top-K 候选相似度全低于 `_CONTRADICTION_SIM_THRESHOLD` → **0 次**矛盾 LLM 调用；有候选过阈值 → **1 次**矛盾 LLM 调用（`output_type="contradiction"`），单任务判 `conflicts_with`
 - [ ] 两处 LLM 产出后紧跟 `await evaluator.evaluate(output)`：`create_scene_memory`（`output_type="scene_memory"`）与 `_detect_contradiction`（`output_type="contradiction"`，仅门控触发时）
 - [ ] 三杠杆落地：候选判据用 `summary + content 前 N 字`（非只 summary）；召回 `_RECALL_TOP_K=5`；新记忆含否定/转折词时矛盾 prompt 附「重点核对」提示（`_has_negation` 纯函数）
@@ -368,6 +369,34 @@ class MemoryFacade:
                 event.correlation_id,
             )
         )
+
+    async def remember_knowledge(
+        self, items: list[dict[str, str]], correlation_id: str
+    ) -> None:
+        """读书提取的客观知识点入长期记忆（tag='knowledge'，无 LLM，确定性拼好）。
+
+        items 每项 {topic, content}；content 空则跳过。复用 _persist_memory
+        入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM 使其
+        豁免短期淘汰，知识点不随时间冲掉，供创作时检索参考（list_memories）。
+        """
+        for item in items:
+            content = (item.get("content") or "").strip()
+            topic = (item.get("topic") or "").strip()
+            if not content:
+                continue
+            memory = Memory(
+                id=str(uuid4()),
+                created_at=time.time(),
+                content=content,
+                tag="knowledge",
+                summary=topic or content[:_SUMMARY_MAX_CHARS],
+                freshness=1.0,
+                type=MemoryType.LONG_TERM,
+                recall_count=0,
+                aspect=[],
+                embedding=None,
+            )
+            await self._persist_memory(memory, correlation_id)
 
     async def search(self, query: str) -> list[Memory]:
         return await self._retrieval.search(query)

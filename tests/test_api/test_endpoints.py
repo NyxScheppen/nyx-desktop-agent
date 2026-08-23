@@ -19,7 +19,7 @@ from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import _App, build_app
 from nyx.memory.facade import MemoryFacade
-from nyx.types import CurrentState, Event, Material, Memory
+from nyx.types import Annotation, CurrentState, Event, Material, Memory, ReadingNote
 
 
 def _mk_state() -> CurrentState:
@@ -86,6 +86,9 @@ class _FakeMemory:
 class _FakeActivity:
     def __init__(self) -> None:
         self.list_calls = 0
+        self.deleted_notes: list[str] = []
+        self.deleted_annotations: list[str] = []
+        self.added_annotations: list[tuple[str, str]] = []
 
     async def list_materials(self) -> list[Material]:
         self.list_calls += 1
@@ -96,6 +99,35 @@ class _FakeActivity:
                 created_at=1.0, updated_at=2.0,
             )
         ]
+
+    async def list_reading_notes(self, limit: int = 50) -> list[ReadingNote]:
+        return [
+            ReadingNote(
+                id="n1", book="骑士团史.md", content="完整笔记",
+                created_at=1.0, annotation_count=2,
+            )
+        ]
+
+    async def delete_reading_note(self, note_id: str) -> None:
+        self.deleted_notes.append(note_id)
+
+    async def list_annotations(self, target_id: str) -> list[Annotation]:
+        return [
+            Annotation(
+                id="a1", target_id=target_id, author="user",
+                content="批注", created_at=1.0,
+            )
+        ]
+
+    async def add_annotation(self, target_id: str, content: str) -> Annotation:
+        self.added_annotations.append((target_id, content))
+        return Annotation(
+            id="a1", target_id=target_id, author="user",
+            content=content, created_at=1.0,
+        )
+
+    async def delete_annotation(self, annotation_id: str) -> None:
+        self.deleted_annotations.append(annotation_id)
 
 
 def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
@@ -226,3 +258,66 @@ async def test_materials_endpoint_returns_progress() -> None:
         ]
     }
     assert fake_activity.list_calls == 1
+
+
+async def test_reading_notes_endpoint() -> None:
+    fake = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake)
+    async with _client(app) as client:
+        resp = await client.get("/api/reading-notes")
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {
+            "id": "n1", "book": "骑士团史.md", "content": "完整笔记",
+            "created_at": 1.0, "annotation_count": 2,
+        }
+    ]
+
+
+async def test_delete_reading_note_endpoint() -> None:
+    fake = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake)
+    async with _client(app) as client:
+        resp = await client.delete("/api/reading-notes/n1")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": "n1"}
+    assert fake.deleted_notes == ["n1"]
+
+
+async def test_annotations_endpoint() -> None:
+    fake = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake)
+    async with _client(app) as client:
+        resp = await client.get("/api/annotations", params={"target_id": "n1"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body[0]["id"] == "a1"
+    assert body[0]["author"] == "user"
+    assert body[0]["target_id"] == "n1"
+
+
+async def test_add_annotation_endpoint() -> None:
+    fake = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/annotations", json={"target_id": "n1", "content": "批注"}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["content"] == "批注"
+    assert fake.added_annotations == [("n1", "批注")]
+
+
+async def test_delete_annotation_endpoint() -> None:
+    fake = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake)
+    async with _client(app) as client:
+        resp = await client.delete("/api/annotations/a1")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": "a1"}
+    assert fake.deleted_annotations == ["a1"]

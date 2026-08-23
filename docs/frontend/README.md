@@ -91,6 +91,7 @@ frontend/
       useSSE.ts              # SSE 订阅 hook（CLAUDE.md 点名）
       usePresence.ts         # 活跃度采集 + classifyPresence 判定 + POST /api/observe
       useTypewriter.ts       # 打字机：nyx 文本逐字显示（纯渲染层，03-chat-panel）
+      useDraggable.ts        # 可拖拽弹窗 hook：pointer 事件 + .drag-handle 手柄 + 边界 clamp
     stores/
       chatStore.ts           # 聊天：消息列表 + 历史加载
       innerLifeStore.ts      # 内在状态：CurrentState 快照
@@ -100,6 +101,7 @@ frontend/
       evalStore.ts           # eval + token：reports/tokens 快照
       narrativeStore.ts      # 自我叙事：SelfNarrative 快照
       materialsStore.ts      # 资料上传：文件清单 + 上传动作
+      readingNotesStore.ts   # 读书笔记：笔记清单 + 删除动作（批注增删查走组件本地 state）
       settingsStore.ts       # 背景外观：tint/image（纯前端 UI 状态，无后端）
       announceStore.ts       # 头像旁临时气泡：items/announce/dismiss（纯前端呈现，无后端）
     components/
@@ -114,6 +116,7 @@ frontend/
         InnerStatePanel.tsx
         ValenceArousalPlot.tsx
         EmotionSprite.tsx
+        Avatar.tsx           # 头像立绘：戳立绘/红点通知/昼夜节律（包裹 EmotionSprite）
         EnergyBar.tsx
         BigFiveChart.tsx
         ValuesChart.tsx
@@ -125,11 +128,13 @@ frontend/
         NarrativePanel.tsx   # 自我叙事（GET /api/narrative）
         MaterialsPanel.tsx   # 资料上传（POST /api/upload + GET /api/materials）
         MemoryPanel.tsx      # 记忆浏览器（GET /api/memories + SSE memory_*）
+        ReadingNotesPanel.tsx # 读书笔记（清单/详情/批注增删，GET /api/reading-notes + /api/annotations）
         EvalPanel.tsx        # eval + token 看板（GET /api/eval / GET /api/tokens）
       layout/
         Panel.tsx            # 通用面板容器
+        DraggablePanel.tsx   # 可拖拽弹窗骨架（position:fixed + 拖拽手柄 + × 关闭）
         SidePanel.tsx        # 设置标签页面板（背景/Eval，标签切换，01-sse §6）
-        InnerWorld.tsx       # 内心世界右侧滑出抽屉（内在/欲望/活动/产出/叙事/资料/记忆，默认收起）
+        InnerWorld.tsx       # 内心世界可拖拽弹窗（单分类卡片，收 categoryIndex 渲染一类子标签，默认不挂载）
       scene/
         Sakura.tsx           # 樱花飘落装饰（纯视觉，01-sse §6）
     assets/
@@ -149,7 +154,7 @@ frontend/
 
 ## 5. 面板骨架（SidePanel 标签页）
 
-design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），头部「内心」按钮滑出右侧 `InnerWorld` 抽屉（内在/欲望/活动/产出/叙事/资料/记忆 7 标签，默认收起、点「收起」或再点「内心」收起），「设置」按钮切到 `SidePanel` 标签页（背景/Eval 2 标签，一次显示一个，内容区可滚动，「返回对话」回到聊天）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
+design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），头部「内在/空间/记录」三按钮分别弹出对应分类的可拖拽 `InnerWorld` 单分类卡片（内在 = 内在状态/欲望/叙事、空间 = 读书笔记/产出/资料、记录 = 活动/记忆；默认不挂载、点任一按钮弹出该分类、再点同一按钮或 × 关闭），「设置」按钮切到 `SidePanel` 标签页（背景/Eval 2 标签，一次显示一个，内容区可滚动，「返回对话」回到聊天）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|
@@ -161,6 +166,7 @@ design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立�
 | 产出面板 | ✅ 实现 | `GET /api/activity/results`（跨天历史产出） | `components/panels/OutputsPanel.tsx` |
 | 自我叙事 | ✅ 实现 | `GET /api/narrative` | `components/panels/NarrativePanel.tsx` |
 | 资料上传 | ✅ 实现 | `POST /api/upload` + `GET /api/materials` | `components/panels/MaterialsPanel.tsx` |
+| 读书笔记 | ✅ 实现 | `GET /api/reading-notes` + `GET/POST/DELETE /api/annotations` | `components/panels/ReadingNotesPanel.tsx` |
 | 记忆浏览器 | ✅ 实现 | `GET /api/memories` + SSE `memory_*` | `components/panels/MemoryPanel.tsx` |
 | eval + token 看板 | ✅ 实现 | `GET /api/eval` / `GET /api/tokens` | `components/panels/EvalPanel.tsx` |
 

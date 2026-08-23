@@ -10,14 +10,18 @@ import pytest
 
 from nyx import db
 from nyx.activity.facade import (
+    _CREATION_STYLES,
     ActivityFacade,
+    _build_creation_context,
     _day_start,
     _elapsed_hours,
     _goal_met,
     _parse_activity_result,
+    _pick_creation_style,
     _sanitize_filename,
 )
 from nyx.activity.material_store import MaterialStore
+from nyx.activity.reading_note_store import ReadingNoteStore
 from nyx.activity.scheduler import format_time_label
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
@@ -32,11 +36,13 @@ from nyx.enums import (
     EnergyState,
     EventType,
     GoalAction,
+    MemoryType,
     Source,
 )
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient, LlmMessage
+from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
@@ -46,6 +52,7 @@ from nyx.types import (
     Event,
     Goal,
     LLMOutput,
+    Memory,
     Personality,
     ShortTermDesire,
     Values,
@@ -70,6 +77,14 @@ _READING_JSON = json.dumps({"book": "骑士团历史", "note": "读到了第三�
 _CREATION_JSON = json.dumps({"title": "小狐狸的日记", "content": "今天也努力了"})
 _PLAN_JSON = json.dumps({"focus": "骑士团", "done": False})
 _NOTE_JSON = json.dumps({"note": "完整读书笔记"})
+_KNOWLEDGE_JSON = json.dumps(
+    {
+        "points": [
+            {"topic": "骑士团", "content": "成立于 1147 年"},
+            {"topic": "纪律", "content": "严守教规"},
+        ]
+    }
+)
 
 
 def _mk_state(energy: float) -> CurrentState:
@@ -156,6 +171,65 @@ class _FakeLlm:
         )
 
 
+class _KnowledgeLlm(_FakeLlm):
+    """output_type='knowledge' 返回知识点 JSON，其余走默认。"""
+
+    async def complete(
+        self,
+        messages: list[LlmMessage],
+        *,
+        module: str,
+        output_type: str,
+        correlation_id: str,
+        json_mode: bool = False,
+    ) -> LLMOutput:
+        if output_type == "knowledge":
+            self.calls.append(output_type)
+            self.correlation_ids.append(correlation_id)
+            return LLMOutput(
+                id=f"llm-{len(self.calls)}",
+                module=module,
+                type=output_type,
+                model="fake",
+                content=_KNOWLEDGE_JSON,
+                token_usage={"input": 1, "output": 1},
+                correlation_id=correlation_id,
+            )
+        return await super().complete(
+            messages,
+            module=module,
+            output_type=output_type,
+            correlation_id=correlation_id,
+            json_mode=json_mode,
+        )
+
+
+class _CapturingLlm(_FakeLlm):
+    """记录每次 complete 的 user content（用于断言创作上下文注入）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.user_contents: list[str] = []
+
+    async def complete(
+        self,
+        messages: list[LlmMessage],
+        *,
+        module: str,
+        output_type: str,
+        correlation_id: str,
+        json_mode: bool = False,
+    ) -> LLMOutput:
+        self.user_contents.append(str(messages[-1]["content"]))
+        return await super().complete(
+            messages,
+            module=module,
+            output_type=output_type,
+            correlation_id=correlation_id,
+            json_mode=json_mode,
+        )
+
+
 class _RaisingLlm(_FakeLlm):
     async def complete(
         self,
@@ -229,6 +303,22 @@ class _FakeDesire:
         self.mark_suppressed_calls.append(desire_id)
 
 
+class _FakeMemory:
+    def __init__(self) -> None:
+        self.remembered: list[list[dict[str, str]]] = []
+        self.knowledge: list[Memory] = []
+
+    async def list_memories(
+        self, tag: str | None = None, type: MemoryType | None = None
+    ) -> list[Memory]:
+        return self.knowledge
+
+    async def remember_knowledge(
+        self, items: list[dict[str, str]], correlation_id: str
+    ) -> None:
+        self.remembered.append(items)
+
+
 class _FakeTools:
     async def call(self, name: str, args: dict[str, Any]) -> Any:
         if name in ("local_search", "web_search"):
@@ -252,6 +342,7 @@ async def _new_facade(
     evaluator: _FakeEvaluator | None = None,
     reflect: Callable[[str | None], Awaitable[str | None]] | None = None,
     get_observation: Callable[[], Awaitable[dict[str, str]]] | None = None,
+    memory: _FakeMemory | None = None,
 ) -> tuple[ActivityFacade, ActivityStore, EventBus, Database]:
     database = await db.connect(":memory:")
     store = ActivityStore(database)
@@ -269,6 +360,8 @@ async def _new_facade(
         cast(Evaluator, evaluator if evaluator is not None else _FakeEvaluator()),
         cast(ToolRegistry, _FakeTools()),
         cast(DesireFacade, _FakeDesire(pending, values)),
+        cast(MemoryFacade, memory if memory is not None else _FakeMemory()),
+        ReadingNoteStore(database),
         get_state,
         reflect if reflect is not None else _no_reflect,
         get_observation if get_observation is not None else _no_observation,
@@ -1010,7 +1103,7 @@ async def test_reading_completion_aggregates_note(
         assert result["note"] == "完整读书笔记"
         assert result["path"] == "workspace/notes/book.txt.md"
         assert captured["path"] == "notes/book.txt.md"
-        assert llm.calls == ["reading", "note"]
+        assert llm.calls == ["reading", "note", "knowledge"]
     finally:
         await database.conn.close()
 
@@ -1235,5 +1328,117 @@ async def test_resume_skips_different_block(
         assert len(ids) == 2                       # 新起一个活动
         new = next(a for a in acts if a.id != "p1")
         assert new.type is ActivityType.OBSERVE_USER
+    finally:
+        await database.conn.close()
+
+
+# ---- 知识点提取 / 创作上下文 ----
+
+
+def test_pick_creation_style() -> None:
+    assert _pick_creation_style() in _CREATION_STYLES
+
+
+def _knowledge_mem(summary: str, content: str) -> Memory:
+    return Memory(
+        id=f"km-{summary}",
+        created_at=1.0,
+        content=content,
+        tag="knowledge",
+        summary=summary,
+        freshness=1.0,
+        type=MemoryType.LONG_TERM,
+    )
+
+
+def test_build_creation_context_full() -> None:
+    act = _activity(
+        "a1",
+        progress={
+            "goal": {"action": "write", "count": 1, "topic": "骑士团"},
+            "desire_id": "d1",
+            "correlation_id": "c1",
+        },
+    )
+    obs = {"presence": "online", "window_title": "编辑器", "screen_summary": "写代码"}
+    ctx = _build_creation_context(
+        act, "日记体", [_knowledge_mem("骑士团", "成立于 1147 年")], obs
+    )
+    assert "风格：日记体" in ctx
+    assert "主题：骑士团" in ctx
+    assert "知识库参考" in ctx
+    assert "成立于 1147 年" in ctx
+    assert "当前屏幕灵感" in ctx
+
+
+def test_build_creation_context_empty() -> None:
+    ctx = _build_creation_context(
+        _activity("a1"), "日记体", [], {"presence": "away", "window_title": ""}
+    )
+    assert ctx == "风格：日记体"   # 无主题/知识/屏幕 → 只剩风格
+
+
+async def test_extract_knowledge_persists_items() -> None:
+    memory = _FakeMemory()
+    facade, _store, _bus, database = await _new_facade(
+        llm=_KnowledgeLlm(), memory=memory
+    )
+    try:
+        await facade._extract_knowledge(_activity("a1"), "骑士团史.md", "正文")
+        assert memory.remembered == [
+            [
+                {"topic": "骑士团", "content": "成立于 1147 年"},
+                {"topic": "纪律", "content": "严守教规"},
+            ]
+        ]
+    finally:
+        await database.conn.close()
+
+
+async def test_extract_knowledge_best_effort_no_raise() -> None:
+    memory = _FakeMemory()
+    facade, _store, _bus, database = await _new_facade(
+        llm=_RaisingLlm(), memory=memory
+    )
+    try:
+        await facade._extract_knowledge(_activity("a1"), "骑士团史.md", "正文")
+        assert memory.remembered == []
+    finally:
+        await database.conn.close()
+
+
+async def test_creation_activity_injects_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    llm = _CapturingLlm()
+    memory = _FakeMemory()
+    memory.knowledge = [_knowledge_mem("骑士团", "成立于 1147 年")]
+
+    async def fake_observation() -> dict[str, str]:
+        return {
+            "presence": "online",
+            "window_title": "编辑器",
+            "screen_summary": "写代码",
+        }
+
+    facade, _store, bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.CREATION)],
+        energy=80.0,
+        llm=llm,
+        evaluator=_FakeEvaluator(),
+        memory=memory,
+        get_observation=fake_observation,
+    )
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        user = llm.user_contents[0]
+        assert "创作参考" in user
+        assert "风格：" in user
+        assert "知识库参考" in user
+        assert "当前屏幕灵感" in user
     finally:
         await database.conn.close()

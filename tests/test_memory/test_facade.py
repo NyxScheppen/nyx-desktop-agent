@@ -885,6 +885,42 @@ async def test_remember_user_profile_fields() -> None:
         await database.conn.close()
 
 
+# ---- remember_knowledge ----
+
+
+async def test_remember_knowledge() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.remember_knowledge(
+                [
+                    {"topic": "骑士团", "content": "骑士团成立于 1147 年"},
+                    {"topic": "", "content": "第二条知识点"},
+                    {"topic": "空内容", "content": "   "},   # content 空 → 跳过
+                ],
+                "corr-1",
+            )
+        memories = await facade.list_memories()
+        assert len(memories) == 2
+        assert {(m.type, m.tag) for m in memories} == {
+            (MemoryType.LONG_TERM, "knowledge")
+        }
+        by_summary = {m.summary: m.content for m in memories}
+        assert by_summary == {
+            "骑士团": "骑士团成立于 1147 年",
+            "第二条知识点": "第二条知识点",
+        }
+        assert llm.calls == []   # 无 LLM（确定性落库）
+        created = [e for e in events if e.type is EventType.MEMORY_CREATED]
+        assert len(created) == 2
+    finally:
+        await database.conn.close()
+
+
 # ---- record_no_answer ----
 
 async def test_record_no_answer() -> None:

@@ -138,14 +138,51 @@ body {
   border-radius: 0.4rem;
 }
 
-.emotion-sprite--portrait {
-  display: block;
+/* 头像容器：占左栏 34%（戳立绘/红点通知/昼夜节律挂这层，relative 给徽标做锚） */
+.avatar {
   flex: 0 0 34%;
   width: 34%;
+  height: 100%;
+  position: relative;
+  cursor: pointer;
+}
+
+.emotion-sprite--portrait {
+  display: block;
+  width: 100%;
   height: 100%;
   object-fit: cover;
   object-position: top center;
   filter: drop-shadow(0 18px 50px rgba(60, 30, 20, 0.28));
+}
+
+/* 红点通知徽标：搭话未读时挂在头像右上角，点击清除 */
+.avatar-notice {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid rgba(192, 122, 122, 0.6);
+  border-radius: 999px;
+  background: rgba(255, 248, 240, 0.94);
+  color: #c0392b;
+  font-family: inherit;
+  font-size: 0.78rem;
+  letter-spacing: 1px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(60, 30, 20, 0.22);
+}
+
+.avatar-notice::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #e74c3c;
+  flex-shrink: 0;
 }
 
 .emotion-sprite--small {
@@ -470,32 +507,79 @@ body {
   display: none;
 }
 
-/* ===== 内心世界（右侧滑出抽屉：观测面板从「设置」移出）===== */
-/* 内部结构复用 .side-panel__header/__title/__back/__tabs/__tab/__body（同款暖色卡片标签），
-   本类只负责容器定位：固定右侧 + transform 滑入滑出（默认收起）。 */
-.inner-world {
+/* ===== 内心世界（可拖拽弹窗：观测面板从「设置」移出，默认不挂载）===== */
+/* 内部结构复用 .side-panel__tabs/__tab/__body（同款暖色卡片标签），
+   本类只负责弹窗容器：position:fixed 浮层 + 头部拖拽手柄 + × 关闭。left/top 由 DraggablePanel 内联样式注入。 */
+.draggable-panel {
   position: fixed;
-  top: 56px;
-  bottom: 16px;
-  right: 16px;
-  width: 340px;
-  z-index: 3;
+  width: 960px;
+  height: 540px;
+  max-width: 92vw;
+  max-height: calc(100vh - 72px);
+  z-index: 20;
   display: flex;
   flex-direction: column;
   background: linear-gradient(180deg,
-      rgba(255, 248, 240, 0.92) 0%,
-      rgba(250, 240, 235, 0.97) 100%);
+      rgba(255, 248, 240, 0.94) 0%,
+      rgba(250, 240, 235, 0.98) 100%);
   backdrop-filter: blur(18px) saturate(1.15);
   border: 1px solid rgba(255, 255, 255, 0.65);
-  border-radius: 18px;
-  box-shadow: 0 18px 50px rgba(60, 30, 20, 0.24);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(60, 30, 20, 0.28);
   overflow: hidden;
-  transform: translateX(calc(100% + 24px));
-  transition: transform 0.3s ease;
+  resize: both;
 }
 
-.inner-world--open {
-  transform: translateX(0);
+.draggable-panel__header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid rgba(180, 140, 120, 0.2);
+  cursor: grab;
+  user-select: none;
+}
+
+.draggable-panel__header:active {
+  cursor: grabbing;
+}
+
+.draggable-panel__title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #4d3425;
+}
+
+.draggable-panel__hint {
+  flex: 1;
+  font-size: 0.72rem;
+  color: #a08070;
+  letter-spacing: 1px;
+}
+
+.draggable-panel__close {
+  padding: 0.1rem 0.55rem;
+  border: 1px solid rgba(180, 140, 120, 0.3);
+  border-radius: 0.4rem;
+  background: rgba(255, 255, 255, 0.55);
+  color: #4d3425;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.2;
+}
+
+.draggable-panel__close:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.draggable-panel__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ===== Panel 骨架（components/layout/Panel，抽屉内复用）===== */
@@ -671,6 +755,19 @@ body {
 
 .panel-refresh:hover {
   background: rgba(255, 255, 255, 0.9);
+}
+
+.panel-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid rgba(180, 140, 120, 0.3);
+  border-radius: 0.3rem;
+  background: rgba(255, 255, 255, 0.6);
+  color: #4d3425;
+  font-family: inherit;
+  font-size: 0.82rem;
+  resize: vertical;
 }
 
 /* ===== 背景外观面板（视觉改造 §5）===== */
@@ -858,7 +955,7 @@ body {
     padding: 48px 8px 8px;
     gap: 8px;
   }
-  .emotion-sprite--portrait {
+  .avatar {
     display: none;
   }
   .dialog-box {

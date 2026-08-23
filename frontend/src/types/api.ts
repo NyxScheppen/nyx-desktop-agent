@@ -278,3 +278,21 @@ export type Material = {
   created_at: number;
   updated_at: number;
 };
+
+// ---- 读书笔记（18-api / nyx/types.py ReadingNote）----
+export type ReadingNote = {
+  id: string;
+  book: string;
+  content: string;
+  created_at: number; // 秒（time.time()），展示时 ×1000
+  annotation_count: number; // 非 DB 列，list 时 LEFT JOIN 算出
+};
+
+// ---- 批注（18-api / nyx/types.py Annotation）----
+export type Annotation = {
+  id: string;
+  target_id: string;
+  author: string; // "user" | "nyx"
+  content: string;
+  created_at: number;
+};

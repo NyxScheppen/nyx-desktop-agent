@@ -21,12 +21,14 @@ type ChatState = {
   isReplying: boolean; // 发消息后等待回复中
   sendError: string | null;
   typedIds: Record<string, true>; // 已逐字打完的 think id（speak/ask 等其同 correlation_id 的 think 打完才开打）
+  unreadProactive: boolean; // 搭话（initiate_chat）未读：头像红点，用户点徽标/发消息即清
   addUserMessage: (e: UserMessageEvent) => void;
   addSpeak: (e: TextEvent<"speak">) => void;
   addAsk: (e: TextEvent<"ask">) => void;
   addThink: (e: TextEvent<"think">) => void;
   addMutter: (e: TextEvent<"mutter">) => void;
   addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
+  clearUnreadProactive: () => void;
   markTyped: (id: string) => void;
   loadHistory: () => Promise<void>; // 挂载时回填 GET /api/events/log 的历史消息（preloaded，不逐字）
   sendMessage: (text: string) => Promise<boolean>; // 成功 true / 失败 false（ChatInput 据其决定是否清空输入框）
@@ -114,12 +116,17 @@ export const useChatStore = create<ChatState>((set, get) => {
     isReplying: false,
     sendError: null,
     typedIds: {},
+    unreadProactive: false,
     addUserMessage: (e) => append(e, "user", "message"),
     addSpeak: (e) => finishReply(e),
     addAsk: (e) => finishReply(e),
     addThink: (e) => append(e, "nyx", "think"),
     addMutter: (e) => append(e, "nyx", "mutter"),
-    addInitiateChat: (e) => append(e, "nyx", "initiate_chat"),
+    addInitiateChat: (e) => {
+      append(e, "nyx", "initiate_chat");
+      set({ unreadProactive: true });
+    },
+    clearUnreadProactive: () => set({ unreadProactive: false }),
     markTyped: (id) => set((s) => ({ typedIds: { ...s.typedIds, [id]: true } })),
     loadHistory: async () => {
       // 每类型并行拉取，合并后按时间升序（旧→新，历史在前）。getEventsLog 失败即整组放弃
@@ -156,7 +163,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       // 串行锁要同步上：get() 同步读 store（非 React 订阅），在 await postChat 之前置 isReplying=true。
       // 否则网络往返窗口内 isReplying 仍 false，双击/连击可并发第二次发送、覆盖 pendingId。
       if (get().isReplying) return false;
-      set({ isReplying: true, sendError: null });
+      set({ isReplying: true, sendError: null, unreadProactive: false });
       try {
         const { event_id } = await postChat(text);
         pendingId = event_id; // 回复帧 correlation_id 与此匹配（后端 user_message 沿它溯源）
@@ -176,7 +183,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     reset: () => {
       clearReplyTimer(); // 新会话：取消残留 timer + 复位 isReplying/sendError（防假超时）
       pendingId = null;
-      set({ messages: [], isReplying: false, sendError: null, typedIds: {} });
+      set({ messages: [], isReplying: false, sendError: null, typedIds: {}, unreadProactive: false });
     },
   };
 });

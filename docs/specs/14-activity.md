@@ -153,7 +153,7 @@ class ActivityStore:
         return [_row_to_activity(r) for r in rows]
 
     async def list_results(self, limit: int) -> list[Activity]:
-        """已完成且带产出的三类活动（读书/探索/创作），按 ended_at DESC（供「产出」面板）。"""
+        """已完成且带产出的三类活动（读书/探索/创作），按结束时间倒序（供「产出」面板）。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 f"SELECT {_COLS} FROM activity "
@@ -358,7 +358,7 @@ from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
 from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
-from nyx.types import Activity, CurrentState, Event, ShortTermDesire
+from nyx.types import Activity, CurrentState, Event, Material, ShortTermDesire
 
 _logger = logging.getLogger(__name__)
 
@@ -624,6 +624,9 @@ class ActivityFacade:
         )
         activity.ended_at = time.time()
         await self._store.update(activity)
+        desire_id = activity.progress.get("desire_id")
+        if isinstance(desire_id, str):
+            await self._desire.mark_suppressed(desire_id)  # 中断：ACTIVE → SUPPRESSED
         await self._bus.publish(
             internal_event(
                 EventType.ACTIVITY_INTERRUPTED,
@@ -641,7 +644,7 @@ class ActivityFacade:
         return await self._store.list_schedule(_day_start(time.time()))
 
     async def get_results(self, limit: int = 100) -> list[Activity]:
-        """跨天历史产出（读书笔记/探索发现/创作内容），按结束时间倒序（供「产出」面板）。"""
+        """跨天历史产出（读书笔记/探索发现/创作内容），按结束时间倒序。"""
         return await self._store.list_results(limit)
 
     async def list_materials(self) -> list[Material]:
@@ -754,6 +757,9 @@ class ActivityFacade:
     async def _execute(self, activity: Activity) -> None:
         activity.status = ActivityStatus.RUNNING
         await self._store.update(activity)
+        desire_id = activity.progress.get("desire_id")
+        if isinstance(desire_id, str):
+            await self._desire.mark_active(desire_id)  # 消费开始：PENDING → ACTIVE
         await self._bus.publish(
             internal_event(
                 EventType.ACTIVITY_START,
@@ -772,6 +778,10 @@ class ActivityFacade:
             activity.status = ActivityStatus.INCOMPLETE
             activity.ended_at = time.time()
             await self._store.update(activity)
+            desire_id = activity.progress.get("desire_id")
+            if isinstance(desire_id, str):
+                # 异常退出：ACTIVE → SUPPRESSED
+                await self._desire.mark_suppressed(desire_id)
             _logger.exception(
                 "活动执行失败 activity_id=%s type=%s",
                 activity.id,
@@ -926,7 +936,7 @@ class ActivityFacade:
     ) -> dict[str, Any]:
         user_msg = f"活动类型：{activity.type.value}"
         if extra_context:
-            user_msg += f"\n读物内容：{extra_context}"
+            user_msg += f"\n读物信息：\n{extra_context}"
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _ACTIVITY_SYSTEM},

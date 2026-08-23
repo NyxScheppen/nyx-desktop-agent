@@ -14,22 +14,22 @@
 
 ## 验收标准
 
-- [ ] `main.py` 含 `main()` + `build_app()` + `build_app_context()` + `_seed_inner_life` / `_seed_desire` / `_subscribe` / `_tick_loop` / `_supervise_bus` / `_root_event` / `_load_prompt_files` / `_load_canon` / `_load_ask` / `_interrupt_running` / `_build_tools` / `_run_with_reload`，与「`main.py`（完整）」段代码逐字一致
+- [ ] `main.py` 含 `main()` + `build_app()` + `build_app_context()` + `_seed_inner_life` / `_seed_desire` / `_subscribe` / `_tick_loop` / `_supervise_bus` / `_vision_loop` / `_root_event` / `_load_prompt_files` / `_load_canon` / `_load_ask` / `_interrupt_running` / `_build_tools` / `_run_with_reload`，与「`main.py`（完整）」段代码逐字一致
 - [ ] **组合根按各 spec 完成定义装配**：`load_config` → `connect` → `LlmClient.from_config` → 各 store/facade 构造注入（循环依赖 `ActivityFacade↔InnerLifeFacade` 用 `_get_state` 延迟绑定解环；`evaluator` 注入 09/11/12/14/17 五个 Facade）
 - [ ] **注册内置工具**：`local_search` + `file_io` 恒注册，`web_search` 仅当 `config.exploration.web_enabled` 注册（06-tools 完成定义）；探索链无条件调 `local_search`/`file_io`，缺失会 `KeyError`
 - [ ] **seed 幂等**（表空才写）：inner_life 四张单行表（personality 8/8/2/6/7、values 8/6/9/5、energy 100/energetic、narrative 初始 identity）；desire 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）+ 3 个初始长期欲望（canon §4）
-- [ ] **订阅覆盖 ROUTING/TICK_ROUTING**：`USER_MESSAGE`→interrupt+reply、`USER_MATERIAL`→read_material、`OBSERVATION_STATE`→apply_event+add_value、`DESIRE_GENERATED`→on_desire_generated、`DESIRE_SATISFIED`→apply_event、`ACTIVITY_END`→add_value+apply_event、`REFLECTION`→apply_event、`CLOCK_TICK`→按 tick_type 分发四路
+- [ ] **订阅覆盖 ROUTING/TICK_ROUTING**：`USER_MESSAGE`→interrupt+reply、`USER_MATERIAL`→read_material、`OBSERVATION_STATE`→apply_event+add_value、`DESIRE_GENERATED`→on_desire_generated、`DESIRE_SATISFIED`→apply_event、`ACTIVITY_END`→add_value+apply_event+remember_activity、`REFLECTION`→apply_event、`CLOCK_TICK`→按 tick_type 分发四路
 - [ ] **14 个端点**：tech-ref §4 的 11 个 REST + `GET /api/events`（SSE）+ 本次新增 `POST /api/upload`（上传资料→读书）与 `GET /api/materials`（书库进度）；除 upload/materials 外每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
 - [ ] **`POST /api/chat`**：构造 `USER_MESSAGE` 事件（`source=EXTERNAL`、`correlation_id=自身 id`）→ `publish` → 返回 `{event_id}`（回复走 SSE）
-- [ ] **请求体校验**：`POST /api/chat`/`/api/export`/`/api/observe` 用 pydantic 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`），缺键/类型错 → 422（非 500）；`presence` 仅 `online`/`away`/`busy`（`Literal` 校验，拼写错误 422 而非静默禁用搭话）
+- [ ] **请求体校验**：`POST /api/chat`/`/api/export`/`/api/observe` 用 pydantic 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`），缺键/类型错 → 422（非 500）；`presence` 仅 `online`/`away`/`busy`（`Literal` 校验，拼写错误 422 而非静默禁用搭话）；`window_title` 可选（默认空串）
 - [ ] **`POST /api/upload`**：`UploadFile` + `File(...)`；文件名 `Path(file.filename or "upload.txt").name` 消毒（去路径穿越）、`raw` 超 `_MAX_UPLOAD_BYTES` 返 400；`file_io("write", f"uploads/{name}", text)` 落盘（复用 `_resolve_write` 越界守卫）→ publish `USER_MATERIAL`（content `{path, filename, total_chars}`，`total_chars=len(text)` 供书库注册）→ 返回 `{event_id, filename, path}`
 - [ ] **`GET /api/materials`**：`app.activity.list_materials()` 返回 `{materials: [Material]}`（含 `read_chars`/`total_chars` 进度，供资料面板展示「读到哪了」）
 - [ ] **SSE**：`data` = `event.content` 展开 + `event_id` + `correlation_id`（统一结构，不按 type 特判）；`event:` = `EventType.value`
 - [ ] **SSE 背压**：每连接 `asyncio.Queue(maxsize=_SSE_QUEUE_SIZE=100)`；`_broadcast` 队列满时丢最旧保最新（`put_nowait` 捕获 `QueueFull`，慢客户端不拖垮总线）
-- [ ] **`_tick_loop`**：定时 publish 四种 `CLOCK_TICK`（`content={"tick_type": ...}`）；`INITIATE_CHAT_CHECK` 走 `should_initiate_chat` 判定 + `initiate_chat`（发话才更新 `last_chat_at`）；首个活动块启动即触发（`last_block=0.0`），碎碎念/搭话不立即触发（`last_mutter`/`last_chat` 初始为 now，抑制启动洪峰）
+- [ ] **`_tick_loop`**：定时 publish 四种 `CLOCK_TICK`（`content={"tick_type": ...}`）；`INITIATE_CHAT_CHECK` 走 `should_initiate_chat` 判定 + `initiate_chat`（发话才更新 `last_chat_at`）；首个活动块启动即触发（`last_block=0.0`），碎碎念/搭话不立即触发（`last_mutter`/`last_chat` 初始为 now，抑制启动洪峰）；每轮结尾 `check_timeouts(now)` 收尾超时问句/搭话
 - [ ] **总线监督器**：`main()` 启动 `_supervise_bus(app)` 而非裸 `bus.run()`；`run()` 异常终止 → `logger.exception` + 指数退避（`_BUS_BACKOFF_BASE`→`_BUS_BACKOFF_MAX`）重启；崩溃前连续成功落库达 `_BUS_RECOVERY_STREAK` 视为恢复、计数与退避重置（单次成功不足阈值仍累积，DB 抖动不假自愈）；连续 `_BUS_MAX_FAILURES` 次失败 `logger.critical` + 重抛熔断致命；`CancelledError` 重抛（组合根关闭不重启）
 - [ ] **`main()` 竞速**：`asyncio.wait({serve_task, bus_task, tick_task}, FIRST_COMPLETED)` 后对**每个**先完成者 `task.result()`——serve 启动失败（`SystemExit`）/ tick 异常 / bus 熔断都重抛终止进程（非零退出，不静默吞）；`finally` cancel 后 `await asyncio.gather(..., return_exceptions=True)` 让 uvicorn 优雅关停跑完（非 fire-and-forget）
-- [ ] `pyright` strict 零报错；无模块级可变全局变量（运行期状态 `last_chat_at`/`last_presence` 放 `_App` 实例）
+- [ ] `pyright` strict 零报错；无模块级可变全局变量（运行期状态 `last_chat_at`/`last_presence`/`last_window_title`/`last_screen_summary`/`screen_observer` 放 `_App` 实例）
 
 ## 技术方案
 
@@ -42,11 +42,11 @@
 - **回复阻塞 vs 后台（decision，可推翻）**：`USER_MESSAGE` handler 里**同步 `await reply`**（阻塞事件总线到回复完成）。理由：回复是秒级、用户在等回复；活动是分钟级才后台（14-activity 已定 `create_task`）。用户连发消息顺序排队，符合 05-event「顺序分发」
 - **抢占归组合根**：`USER_MESSAGE`/`INITIATE_CHAT_CHECK` 前先 `interrupt` 当前 running 活动（design §3.3）。这是跨模块编排（expression 不依赖 activity，避免耦合成环），归 18-api 组合根
 - **工具注册归组合根**：`local_search` + `file_io` 恒注册（探索链 `_search_local`/`_read`/`_write_note` 无条件依赖），`web_search` 仅当 `config.exploration.web_enabled` 注册（与 14-activity `search_web` 节点同条件、06-tools 完成定义「opt-in 由组合根决定」）
-- **观察输入归前端**：`classify_presence` 运行时调用方是前端 Tauri（14-activity `observe.py` 注释已定）。后端只 `POST /api/observe` 接收 `{presence}` → 维护 `app.last_presence` + publish `observation_state`。`desire.pressure_from_observation` 固定 +0.15、`inner_life.apply_event` 固定偏移，均不解析 content，故 content 仅 `{presence}` 供溯源/前端展示
-- **ROUTING 的 `ACTIVITY_END`**：只消费 `desire` + `inner_life`（05-event 已删 `memory`），组合根无 memory handler
+- **观察输入归前端**：`classify_presence` 运行时调用方是前端 Tauri（14-activity `observe.py` 注释已定）。后端 `POST /api/observe` 接收 `{presence, window_title}` → 维护 `app.last_presence` + `app.last_window_title` + publish `observation_state`（content `{presence, window_title}`）。`desire.pressure_from_observation` 固定 +0.15、`inner_life.apply_event` 固定偏移，均不解析 content；`window_title` 经 `_read_observation` 折入观察活动结果（供 `build_observation_summary` 拼装）
+- **ROUTING 的 `ACTIVITY_END`**：消费 `desire.add_value` + `inner_life.apply_event` + `memory.remember_activity`（组合根 `_subscribe` 三处订阅，活动记忆归 09）
 - **上传落盘复用 file_io 守卫（decision，可推翻）**：`POST /api/upload` 不另写路径校验——文件名 `Path(name).name` 消毒后经 `file_io("write", f"uploads/{name}", text)` 落盘（`_resolve_write` 越界守卫已覆盖）；大小上限 `_MAX_UPLOAD_BYTES=500_000`（decision，可推翻），超限 400。`USER_MATERIAL` 事件 → `activity.read_material` 发起 READING 活动读真实文件产出 `{book, note}`（14-activity 已定义 `read_material` + `_run_reading_source`）
 - **canon 读文件**：`_load_canon` 读 `prompts/canon.md`、`_load_ask` 读 `prompts/ask.md` 各为一段字符串注入 `ExpressionFacade`（共享 `_load_prompt_files` helper）；路径 = `NYX_CANON_DIR` 环境变量 > `prompts/` 默认目录；缺失 `FileNotFoundError`（fail-fast，canon/ask 是核心配置不兜底默认）
-- **`_App` 内部 dataclass**：组合根的装配产物（不是新增抽象层——不增 Facade→子系统→内部类之外的层），持有 7 个组件引用 + 2 个运行期状态（`last_chat_at`/`last_presence`），端点/handler 闭包捕获 `_App` 实例
+- **`_App` 内部 dataclass**：组合根的装配产物（不是新增抽象层——不增 Facade→子系统→内部类之外的层），持有 7 个组件引用 + 4 个运行期状态（`last_chat_at`/`last_presence`/`last_window_title`/`last_screen_summary`）+ 视觉装配 `screen_observer`（`vision.enabled` 时），端点/handler 闭包捕获 `_App` 实例
 - **总线监督器（decision，可推翻）**：`main()` 用 `_supervise_bus(app)` 包一层 `bus.run()`。`_persist` 失败会终止 `run()`（05-event 有意让 DB 错误传播、事件放回队首不丢），监督器接住异常 `logger.exception` + 指数退避（`_BUS_BACKOFF_BASE=1.0`→`_BUS_BACKOFF_MAX=30.0`，×2 增长）后重启（重启而非降级：瞬时 `aiosqlite` 错误可自愈）；连续 `_BUS_MAX_FAILURES=8` 次失败 `logger.critical` + 重抛熔断致命（DB 永久挂时干净崩溃，不留「API 收事件但不处理」的僵尸态）；崩溃前连续成功落库达 `_BUS_RECOVERY_STREAK=3`（读 `EventBus.persisted_count` 单调计数，差 ≥ 3）视为恢复、失败计数与退避重置（避免分散瞬时故障累积假熔断）；单次成功不足阈值不重置（DB 抖动「隔一个挂一次」持续累积 → 熔断，不留无限 1s crash-loop 僵尸态）；`CancelledError` 重抛，组合根关闭不重启
 - **`main()` 竞速（decision，可推翻）**：`asyncio.wait({serve_task, bus_task, tick_task}, FIRST_COMPLETED)` 把 `tick_task` 纳入监督——`_tick_loop` 异常不再静默丢弃（无 tick = 无活动调度/碎碎念/搭话，僵尸态）。对 `done` 里**每个**先完成者 `task.result()` 重抛（serve 启动失败 `SystemExit(1)` / tick 异常 / bus 熔断都非零退出），而非只取 `bus_task.result()`；`finally` cancel 后 `await asyncio.gather(..., return_exceptions=True)` 让 uvicorn 优雅关停跑完（fire-and-forget cancel 会留 uvicorn cleanup 不完整）
 - **SSE 背压（decision，可推翻）**：每连接 sink 是 `asyncio.Queue(maxsize=_SSE_QUEUE_SIZE=100)`，`_broadcast` 满时丢最旧保最新（`put_nowait` 捕获 `QueueFull`）。SSE 允许丢帧、最新事件含最新状态；无界队列 + `put_nowait` 会让慢客户端无界吃内存、队列一满 `QueueFull` 反杀 `run()`
@@ -75,6 +75,7 @@ from pydantic import BaseModel
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.material_store import MaterialStore
+from nyx.activity.screen import ScreenObserver, capture_screen
 from nyx.activity.store import ActivityStore
 from nyx.config import Config, load_config
 from nyx.db import Database, connect
@@ -97,6 +98,7 @@ from nyx.expression.mutter import should_initiate_chat
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
+from nyx.llm.vision import VisionClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
@@ -105,6 +107,7 @@ from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_search import build_web_search_tool
 from nyx.types import (
+    Activity,
     CurrentState,
     DesireState,
     EvalReport,
@@ -148,6 +151,9 @@ class _App:
     # 上次搭话时间戳（18-api 维护，供 should_initiate_chat）
     last_chat_at: float = 0.0
     last_presence: str = "away"    # 最近观察状态（online/away/busy）
+    last_window_title: str = ""    # 最近窗口标题（document.title，观察活动回带）
+    last_screen_summary: str = ""  # 最近屏幕视觉摘要（vision 采样循环写入）
+    screen_observer: ScreenObserver | None = None  # 视觉 opt-in 装配；None=关闭
 
 
 def _root_event(
@@ -356,6 +362,7 @@ async def _tick_loop(app: _App) -> None:
                 Source.INTERNAL,
             ))
             last_chat = now
+        await app.expression.check_timeouts(now)   # 问句/搭话 超时收尾（60s 心跳）
         await asyncio.sleep(_TICK_INTERVAL)
 
 
@@ -370,6 +377,7 @@ def _subscribe(app: _App) -> None:
     bus.subscribe(EventType.DESIRE_SATISFIED, app.inner_life.apply_event)
     bus.subscribe(EventType.ACTIVITY_END, app.desire.add_value)
     bus.subscribe(EventType.ACTIVITY_END, app.inner_life.apply_event)
+    bus.subscribe(EventType.ACTIVITY_END, app.memory.remember_activity)
     bus.subscribe(EventType.REFLECTION, app.inner_life.apply_event)
     bus.subscribe(EventType.CLOCK_TICK, lambda e: _on_clock_tick(app, e))
 
@@ -384,6 +392,7 @@ class _ExportPayload(BaseModel):
 
 class _ObservePayload(BaseModel):
     presence: Literal["online", "away", "busy"]
+    window_title: str = ""
 
 
 def build_app(app: _App) -> FastAPI:
@@ -469,7 +478,11 @@ def build_app(app: _App) -> FastAPI:
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:
         presence = payload.presence
         app.last_presence = presence
-        event = _root_event(EventType.OBSERVATION_STATE, {"presence": presence})
+        app.last_window_title = payload.window_title
+        event = _root_event(
+            EventType.OBSERVATION_STATE,
+            {"presence": presence, "window_title": payload.window_title},
+        )
         await app.bus.publish(event)
         return {"event_id": event.id}
 
@@ -534,20 +547,30 @@ async def build_app_context(config: Config) -> _App:
     activity_store = ActivityStore(db)
     material_store = MaterialStore(db)
 
-    # 循环依赖解环：_get_state 引用可变容器，运行时才求值
+    # 循环依赖解环：_get_state/_reflect/_get_observation 引用可变容器，运行时才求值
     state_holder: list[Callable[[], Awaitable[CurrentState]]] = []
+    reflect_holder: list[Callable[[str | None], Awaitable[str | None]]] = []
+    observation_holder: list[Callable[[], Awaitable[dict[str, str]]]] = []
 
     async def _get_state() -> CurrentState:
         return await state_holder[0]()
 
+    async def _reflect(correlation_id: str | None) -> str | None:
+        return await reflect_holder[0](correlation_id)
+
+    async def _get_observation() -> dict[str, str]:
+        return await observation_holder[0]()
+
     activity = ActivityFacade(
         activity_store, material_store, bus, llm, evaluator, tools, desire,
-        _get_state, config.activity, config.exploration,
+        _get_state, _reflect, _get_observation, config.activity,
+        config.exploration,
     )
     inner_life = InnerLifeFacade(
         inner_life_store, activity, desire, memory, bus, llm, evaluator, config,
     )
     state_holder.append(inner_life.get_state)
+    reflect_holder.append(inner_life.reflect)
 
     await _seed_inner_life(inner_life_store)
     await _seed_desire(desire_store)
@@ -557,12 +580,30 @@ async def build_app_context(config: Config) -> _App:
     ask = _load_ask(prompt_dir)
     expression = ExpressionFacade(
         bus, llm, evaluator, memory, desire, inner_life, canon, ask, config.expression,
+        tools,
     )
 
     app = _App(
         bus=bus, inner_life=inner_life, desire=desire, memory=memory,
         activity=activity, expression=expression, evaluator=evaluator, config=config,
     )
+
+    async def _read_observation() -> dict[str, str]:
+        return {
+            "presence": app.last_presence,
+            "window_title": app.last_window_title,
+            "screen_summary": app.last_screen_summary,
+        }
+
+    observation_holder.append(_read_observation)
+
+    # 屏幕视觉（opt-in）：装配 ScreenObserver；main 里起后台采样循环
+    if config.vision.enabled:
+        vision = VisionClient.from_config(config.vision)
+        app.screen_observer = ScreenObserver(
+            capture_screen, vision.describe, config.vision.interval_seconds
+        )
+
     _subscribe(app)
     return app
 
@@ -598,6 +639,17 @@ async def _supervise_bus(app: _App) -> None:
             delay = min(delay * 2.0, _BUS_BACKOFF_MAX)
 
 
+async def _vision_loop(app: _App) -> None:
+    """屏幕视觉后台采样循环：observer.run 永不抛，仅 CancelledError 上抛。"""
+
+    def _update(summary: str) -> None:
+        app.last_screen_summary = summary
+
+    observer = app.screen_observer
+    if observer is not None:
+        await observer.run(_update)
+
+
 async def main() -> None:
     """入口：装配 → 启动 bus 监督器 + tick_loop + uvicorn；任一任务异常终止。"""
     config = load_config()
@@ -607,17 +659,18 @@ async def main() -> None:
     serve_task = asyncio.create_task(server.serve())
     bus_task = asyncio.create_task(_supervise_bus(app))
     tick_task = asyncio.create_task(_tick_loop(app))
+    tasks: set[asyncio.Task[Any]] = {serve_task, bus_task, tick_task}
+    if app.screen_observer is not None:
+        tasks.add(asyncio.create_task(_vision_loop(app)))
     try:
-        done, _ = await asyncio.wait(
-            {serve_task, bus_task, tick_task}, return_when=asyncio.FIRST_COMPLETED
-        )
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             task.result()  # 任一先完成者异常 → 重抛终止进程（非零退出）
     finally:
-        for t in (serve_task, bus_task, tick_task):
+        for t in tasks:
             if not t.done():
                 t.cancel()
-        await asyncio.gather(serve_task, bus_task, tick_task, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _run_with_reload() -> None:

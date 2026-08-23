@@ -416,6 +416,10 @@ def build_app(app: _App) -> FastAPI:
             "schedule": await app.activity.get_schedule(),
         }
 
+    @fast.get("/api/activity/results")
+    async def api_activity_results(limit: int = 100) -> list[Activity]:
+        return await app.activity.get_results(limit)
+
     @fast.get("/api/eval")
     async def api_eval(limit: int = 100) -> list[EvalReport]:
         return await app.evaluator.list_reports(limit)

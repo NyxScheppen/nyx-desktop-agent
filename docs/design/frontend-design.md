@@ -53,7 +53,6 @@
 | 欲望 | 短期 + 长期 + 值 | `get_pending` / `get_all` |
 | 活动 | 时间轴 + 当前活动 | `get_schedule` / `get_current` |
 | eval | 评分报告 + token 台账 | `list_reports` / `list_token_usage` |
-| 事件 | 事件流（correlation_id 溯源） | SSE 实时 + `GET /api/events/log` |
 
 ## 10. 语音（TTS）
 

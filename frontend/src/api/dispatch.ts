@@ -3,17 +3,14 @@ import { useActivityStore } from "../stores/activityStore";
 import { useAnnounceStore } from "../stores/announceStore";
 import { useChatStore } from "../stores/chatStore";
 import { useDesireStore } from "../stores/desireStore";
-import { useEventStore } from "../stores/eventStore";
 import { useInnerLifeStore } from "../stores/innerLifeStore";
 import { useMemoryStore } from "../stores/memoryStore";
 import type { SseEvent } from "../types/api";
 
 // 事件 → store 路由（01-sse §4.1）。
-// 溯源面板要「SSE 全部」，故先无条件 eventStore.record(e)（补齐现状只记 11 类未消费的漏）。
 // desire/activity/memory 事件只带 id（{"desire_id"}/{"memory_id"}/{"activity_id"}），
-// 面板收到就 refresh() 重拉快照；clock_tick/observation_state/reflection 仅 record 不路由。
+// 面板收到就 refresh() 重拉快照；clock_tick/observation_state/reflection 不路由。
 export function dispatchEvent(e: SseEvent): void {
-  useEventStore.getState().record(e);
   switch (e.event) {
     case "speak":
       return useChatStore.getState().addSpeak(e);

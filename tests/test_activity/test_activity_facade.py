@@ -932,6 +932,21 @@ async def test_get_schedule_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
         await database.conn.close()
 
 
+async def test_get_results_delegates() -> None:
+    """get_results 委托 store.list_results：跨天历史产出（已完成 + 产出类型）。"""
+    facade, store, _bus, database = await _new_facade()
+    try:
+        await store.insert(
+            _activity(
+                "a1", type_=ActivityType.CREATION, status=ActivityStatus.COMPLETED
+            )
+        )
+        acts = await facade.get_results()
+        assert [a.id for a in acts] == ["a1"]
+    finally:
+        await database.conn.close()
+
+
 async def test_read_material_reads_real_file(tmp_path: Path) -> None:
     """用户投喂资料：READING 活动带 source，读真实文件分块产出 {book, note}。"""
     source = tmp_path / "book.txt"

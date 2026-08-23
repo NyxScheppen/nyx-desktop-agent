@@ -50,6 +50,7 @@ from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_search import build_web_search_tool
 from nyx.types import (
+    Activity,
     CurrentState,
     DesireState,
     EvalReport,
@@ -367,6 +368,10 @@ def build_app(app: _App) -> FastAPI:
             "current": await app.activity.get_current(),
             "schedule": await app.activity.get_schedule(),
         }
+
+    @fast.get("/api/activity/results")
+    async def api_activity_results(limit: int = 100) -> list[Activity]:
+        return await app.activity.get_results(limit)
 
     @fast.get("/api/eval")
     async def api_eval(limit: int = 100) -> list[EvalReport]:

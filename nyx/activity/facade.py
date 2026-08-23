@@ -313,6 +313,10 @@ class ActivityFacade:
     async def get_schedule(self) -> list[Activity]:
         return await self._store.list_schedule(_day_start(time.time()))
 
+    async def get_results(self, limit: int = 100) -> list[Activity]:
+        """跨天历史产出（读书笔记/探索发现/创作内容），按结束时间倒序。"""
+        return await self._store.list_results(limit)
+
     async def read_material(
         self, path: str, filename: str, total_chars: int, correlation_id: str
     ) -> None:

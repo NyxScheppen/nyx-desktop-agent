@@ -1,6 +1,6 @@
 # REST 客户端（`api/client.ts`）
 
-> 薄 fetch 封装：9 个端点函数 + 统一错误契约。被 `chatStore`（`postChat`/`getEventsLog`）、`innerLifeStore`（`getState`）、`usePresence`（`postObserve`）、四个快照 store（`getDesires`/`getActivity`/`getMemories`/`getEval`/`getTokens`）共享。
+> 薄 fetch 封装：14 个端点函数 + 统一错误契约。被 `chatStore`（`postChat`/`getEventsLog`）、`innerLifeStore`（`getState`）、`usePresence`（`postObserve`）、四个快照 store（`getDesires`/`getActivity`/`getActivityResults`/`getMemories`/`getEval`/`getTokens`）、`narrativeStore`（`getNarrative`）、`memoryStore`（`exportMemories`）、`materialsStore`（`uploadFile`/`getMaterials`）共享。
 > 范围：`api/client.ts` 全部。`BASE_URL` 常量在此定义，SSE 与 REST 共用（01-sse §3）。
 > 对齐后端：前端的基础设施独立成 spec，同 `04-db` / `05-event` / `03-llm` 各自独立。
 
@@ -11,16 +11,21 @@ const BASE_URL = "";   // 空 = 相对路径，走 Vite proxy 同源转发（18-
 
 async function postChat(message: string): Promise<{ event_id: string }>          // POST /api/chat
 async function getState(): Promise<CurrentState>                                 // GET /api/state
-async function postObserve(presence: Presence): Promise<{ event_id: string }>    // POST /api/observe
+async function postObserve(presence: Presence, windowTitle: string): Promise<{ event_id: string }>  // POST /api/observe
 async function getDesires(): Promise<DesireState>                                // GET /api/desires
 async function getActivity(): Promise<ActivitySnapshot>                          // GET /api/activity
+async function getActivityResults(): Promise<Activity[]>                          // GET /api/activity/results
 async function getMemories(tag?, type?): Promise<Memory[]>                       // GET /api/memories?tag=&type=
 async function getEval(limit?): Promise<EvalReport[]>                            // GET /api/eval?limit=
 async function getTokens(since?): Promise<TokenUsage[]>                          // GET /api/tokens?since=
 async function getEventsLog(params?): Promise<BackendEvent[]>                    // GET /api/events/log?limit=&event_type=&correlation_id=
+async function getNarrative(): Promise<SelfNarrative>                        // GET /api/narrative
+async function exportMemories(format: "json" | "md"): Promise<string>        // POST /api/export（非 JSON 响应，走 text()）
+async function uploadFile(file: File): Promise<UploadResult>                 // POST /api/upload（FormData，不设 Content-Type）
+async function getMaterials(): Promise<{ files: string[] }>                  // GET /api/materials
 ```
 
-- 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message}`、`postObserve` 发 `{presence}`。
+- 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message}`、`postObserve` 发 `{presence, window_title}`。
 - **请求头**：`Content-Type: application/json`（FastAPI + Pydantic 体，错头会 422）。
 - 返回值直接 JSON 反序列化后上抛给调用方，**不包裹** `{ok, data}`。
 
@@ -43,12 +48,17 @@ async function getEventsLog(params?): Promise<BackendEvent[]>                   
 - 每个函数 mock `fetch`，断言请求 URL/method/请求体键 + 响应解析：
   - `postChat`：请求 `POST /api/chat`、body `{message}` → 返回 `{event_id}` 解析正确。
   - `getState`：`GET /api/state` → 返回 `CurrentState` 解析正确。
-  - `postObserve`：`POST /api/observe`、body `{presence}` → 返回 `{event_id}` 解析正确。
+  - `postObserve`：`POST /api/observe`、body `{presence, window_title}` → 返回 `{event_id}` 解析正确。
   - `getDesires`：`GET /api/desires` → `DesireState` 解析正确。
   - `getActivity`：`GET /api/activity` → `ActivitySnapshot` 解析正确。
+  - `getActivityResults`：`GET /api/activity/results` → `Activity[]` 解析正确。
   - `getMemories`：`tag`/`type` 拼进 query（`?tag=user&type=long_term`）；无参不带 query string。
   - `getEval(limit)`：`?limit=5` 拼进 query。
   - `getTokens(since)`：`?since=1000` 拼进 query。
   - `getEventsLog(params)`：`limit`/`event_type`/`correlation_id` 拼进 query。
+  - `getNarrative`：`GET /api/narrative` → `SelfNarrative` 解析正确。
+  - `exportMemories`：`POST /api/export`、body `{format}` → 返回裸文本（非 JSON，走 `text()` 不走 `request` 的 `.json()`）。
+  - `uploadFile`：`POST /api/upload`、body `FormData`（含 `file`，不设 `Content-Type`）→ `UploadResult` 解析正确。
+  - `getMaterials`：`GET /api/materials` → `{files}` 解析正确。
 - **错误契约**：非 2xx 响应（mock body `{"detail": "..."}`）→ throw（`Error`，message 含 `detail` 内容）；fetch 网络错误（reject `TypeError`）→ 上抛不吞；不返回 `{ok:false}`/null。
 - 不依赖真实后端；验证管道正确（端点走对、键零映射、错误上抛），不验证视觉。

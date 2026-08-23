@@ -2,7 +2,7 @@
 
 > React 前端，跑在 Tauri 薄壳里，通过 localhost HTTP/SSE 连接 Python 核心服务。
 > 本文档集是前端的**设计/规划**：技术栈、目录结构、store 划分、SSE 数据流、核心面板组件契约。实现细节在编码阶段补全（对齐后端「spec 定义契约 → 实现照抄」的分工）。
-> 范围：聊天面板 + 内在状态面板 + SSE 数据流 + 面板骨架，以及后续补齐的欲望/活动/记忆/eval/溯源五个面板（均已落地）。
+> 范围：聊天面板 + 内在状态面板 + SSE 数据流 + 面板骨架，以及后续补齐的欲望/活动/记忆/eval 四个面板（均已落地）。
 
 ## 1. 技术栈
 
@@ -83,7 +83,7 @@ frontend/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     lib/
       labels.ts              # 枚举值→中文 UI 标签（label() 未知键回退原值）
-      activityResult.ts      # 活动产出纯函数（activitySubject / formatResult / activityAnnouncement）
+      activityResult.ts      # 活动产出纯函数（activitySubject / formatResult / formatOutputBody / activityAnnouncement）
     api/
       client.ts              # REST fetch 封装（postChat / getState / postObserve，见 05-client）
       dispatch.ts            # SseEvent → store 路由（01-sse §4.1）
@@ -94,9 +94,8 @@ frontend/
     stores/
       chatStore.ts           # 聊天：消息列表 + 历史加载
       innerLifeStore.ts      # 内在状态：CurrentState 快照
-      eventStore.ts          # 溯源时间线（SSE 全量 + /api/events/log 历史）
       desireStore.ts         # 欲望：DesireState 快照
-      activityStore.ts       # 活动：ActivitySnapshot 快照
+      activityStore.ts       # 活动：ActivitySnapshot 快照 + 跨天产出 results
       memoryStore.ts         # 记忆：Memory[] 快照
       evalStore.ts           # eval + token：reports/tokens 快照
       narrativeStore.ts      # 自我叙事：SelfNarrative 快照
@@ -126,7 +125,6 @@ frontend/
         MaterialsPanel.tsx   # 资料上传（POST /api/upload + GET /api/materials）
         MemoryPanel.tsx      # 记忆浏览器（GET /api/memories + SSE memory_*）
         EvalPanel.tsx        # eval + token 看板（GET /api/eval / GET /api/tokens）
-        TracePanel.tsx       # 事件溯源时间线（SSE 全部 + GET /api/events/log）
       layout/
         Panel.tsx            # 通用面板容器
         SidePanel.tsx        # 设置标签页面板（收非对话面板，标签切换，01-sse §6）
@@ -149,7 +147,7 @@ frontend/
 
 ## 5. 面板骨架（SidePanel 标签页）
 
-design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），其头部「设置」按钮切到 `SidePanel` 标签页（背景/内在/欲望/活动/叙事/资料/记忆/Eval/溯源 9 标签，一次显示一个，内容区可滚动，「返回对话」回到聊天）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
+design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），其头部「设置」按钮切到 `SidePanel` 标签页（背景/内在/欲望/活动/产出/叙事/资料/记忆/Eval 9 标签，一次显示一个，内容区可滚动，「返回对话」回到聊天）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|
@@ -158,11 +156,11 @@ design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立�
 | 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | `components/inner/InnerStatePanel.tsx` |
 | 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | `components/panels/DesiresPanel.tsx` |
 | 活动时间线 | ✅ 实现 | `GET /api/activity` + SSE `activity_*` | `components/panels/ActivityPanel.tsx` |
+| 产出面板 | ✅ 实现 | `GET /api/activity/results`（跨天历史产出） | `components/panels/OutputsPanel.tsx` |
 | 自我叙事 | ✅ 实现 | `GET /api/narrative` | `components/panels/NarrativePanel.tsx` |
 | 资料上传 | ✅ 实现 | `POST /api/upload` + `GET /api/materials` | `components/panels/MaterialsPanel.tsx` |
 | 记忆浏览器 | ✅ 实现 | `GET /api/memories` + SSE `memory_*` | `components/panels/MemoryPanel.tsx` |
 | eval + token 看板 | ✅ 实现 | `GET /api/eval` / `GET /api/tokens` | `components/panels/EvalPanel.tsx` |
-| 事件溯源时间线 | ✅ 实现 | SSE 全部 + `GET /api/events/log` | `components/panels/TracePanel.tsx` |
 
 ## 6. 测试约定
 
@@ -177,7 +175,7 @@ design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立�
 |---|---|
 | `README.md` | 本文（总览） |
 | `01-sse.md` | `useSSE` hook、EventSource 对接、data 形状、EventType→store 分发表、重连容错 |
-| `02-stores.md` | `chatStore` / `innerLifeStore` / `eventStore` 的 state 形状 + actions |
+| `02-stores.md` | `chatStore` / `innerLifeStore` / 快照 store 的 state 形状 + actions |
 | `03-chat-panel.md` | 聊天面板组件树、发消息流程、speak/think/ask 渲染 |
 | `04-inner-state-panel.md` | 内在状态面板组件树、valence-arousal 图、精力条、情绪 sprite、Big Five/三观 |
 | `05-client.md` | `client.ts` 薄 fetch 封装（postChat/getState/postObserve）+ 错误契约 |

@@ -114,6 +114,47 @@ async def test_list_schedule_filters_and_orders() -> None:
         await database.conn.close()
 
 
+async def test_list_results_filters_and_orders() -> None:
+    """list_results 只回「已完成 + 读书/探索/创作」，按 ended_at 倒序。"""
+    store, database = await _new_store()
+    try:
+        await store.insert(
+            _activity(
+                "reading", type_=ActivityType.READING,
+                status=ActivityStatus.COMPLETED, ended_at=1000.0,
+            )
+        )
+        await store.insert(
+            _activity(
+                "creation", type_=ActivityType.CREATION,
+                status=ActivityStatus.COMPLETED, ended_at=3000.0,
+            )
+        )
+        await store.insert(
+            _activity(
+                "explore", type_=ActivityType.FREE_EXPLORATION,
+                status=ActivityStatus.COMPLETED, ended_at=2000.0,
+            )
+        )
+        # 非产出类型 / 非 completed 被过滤
+        await store.insert(
+            _activity(
+                "observe", type_=ActivityType.OBSERVE_USER,
+                status=ActivityStatus.COMPLETED, ended_at=4000.0,
+            )
+        )
+        await store.insert(
+            _activity(
+                "running", type_=ActivityType.READING,
+                status=ActivityStatus.RUNNING, ended_at=5000.0,
+            )
+        )
+        rows = await store.list_results(100)
+        assert [r.id for r in rows] == ["creation", "explore", "reading"]
+    finally:
+        await database.conn.close()
+
+
 async def test_update() -> None:
     store, database = await _new_store()
     try:

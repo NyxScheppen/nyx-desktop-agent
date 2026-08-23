@@ -86,6 +86,19 @@ class ActivityStore:
             rows = await cursor.fetchall()
         return [_row_to_activity(r) for r in rows]
 
+    async def list_results(self, limit: int) -> list[Activity]:
+        """已完成且带产出的三类活动（读书/探索/创作），按结束时间倒序（供「产出」面板）。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM activity "
+                "WHERE status = 'completed' AND type IN "
+                "('reading', 'free_exploration', 'creation') "
+                "ORDER BY ended_at DESC LIMIT ?",
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_activity(r) for r in rows]
+
     async def update(self, activity: Activity) -> None:
         async with self._db.lock:
             await self._db.conn.execute(

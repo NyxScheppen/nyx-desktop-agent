@@ -1,4 +1,5 @@
 import type {
+  Activity,
   ActivitySnapshot,
   BackendEvent,
   CurrentState,
@@ -66,6 +67,10 @@ export async function getDesires(): Promise<DesireState> {
 
 export async function getActivity(): Promise<ActivitySnapshot> {
   return request<ActivitySnapshot>(`${BASE_URL}/api/activity`);
+}
+
+export async function getActivityResults(): Promise<Activity[]> {
+  return request<Activity[]>(`${BASE_URL}/api/activity/results`);
 }
 
 export async function getMemories(

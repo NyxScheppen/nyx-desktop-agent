@@ -542,6 +542,13 @@ body {
   color: #a08070;
 }
 
+.panel-item__body {
+  color: #6b4a34;
+  white-space: pre-line;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
 .panel-toolbar {
   display: flex;
   justify-content: flex-end;

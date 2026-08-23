@@ -7,7 +7,6 @@ import { useActivityStore } from "../src/stores/activityStore";
 import { useAnnounceStore } from "../src/stores/announceStore";
 import { useChatStore } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
-import { useEventStore } from "../src/stores/eventStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
 import { isEmotionCategory } from "../src/types/api";
@@ -122,7 +121,6 @@ describe("useSSE", () => {
 describe("dispatchEvent", () => {
   beforeEach(() => {
     useChatStore.getState().reset();
-    useEventStore.getState().clear();
     useInnerLifeStore.setState({ current: null, loading: false, error: null });
     useDesireStore.setState({ data: null, loading: false, error: null });
     useActivityStore.setState({ data: null, loading: false, error: null });
@@ -200,30 +198,6 @@ describe("dispatchEvent", () => {
     expect(refreshSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("未消费类型（reflection）→ eventStore 兜底", () => {
-    dispatchEvent({
-      event: "reflection",
-      event_id: "e3",
-      correlation_id: "c3",
-      content: "…",
-    });
-
-    expect(useEventStore.getState().count).toBe(1);
-    expect(useEventStore.getState().events[0].event).toBe("reflection");
-  });
-
-  it("全量 record：speak 也进 eventStore（不只未消费类型）", () => {
-    dispatchEvent({
-      event: "speak",
-      event_id: "e1",
-      correlation_id: "c1",
-      content: "hi",
-    });
-
-    expect(useEventStore.getState().count).toBe(1);
-    expect(useEventStore.getState().events[0].event).toBe("speak");
-  });
-
   it("desire_generated → desireStore.refresh()", () => {
     const spy = vi
       .spyOn(useDesireStore.getState(), "refresh")
@@ -237,7 +211,6 @@ describe("dispatchEvent", () => {
     });
 
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(useEventStore.getState().count).toBe(1); // 全量 record
   });
 
   it("memory_created → memoryStore.refresh()", () => {

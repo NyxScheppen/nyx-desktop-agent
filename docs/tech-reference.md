@@ -40,6 +40,7 @@
 | GET | `/api/memories?tag=&type=` | query 过滤 | `Memory[]` |
 | GET | `/api/desires` | — | `{values, short_term[], long_term[]}` |
 | GET | `/api/activity` | — | `{current, schedule[]}` |
+| GET | `/api/activity/results` | — | `Activity[]`（跨天历史产出，倒序） |
 | GET | `/api/eval?limit=` | — | `EvalReport[]` |
 | GET | `/api/tokens?since=` | — | `TokenUsage[]` |
 | GET | `/api/events/log?limit=&event_type=&correlation_id=` | — | `Event[]` |
@@ -47,7 +48,7 @@
 | POST | `/api/export` | `{format: json|md}` | 记忆导出文件 |
 
 > REST 端点分两类：
-> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/eval` → `Evaluator.list_reports(limit)`；`/api/tokens` → `Evaluator.list_token_usage(since)`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`
+> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/eval` → `Evaluator.list_reports(limit)`；`/api/tokens` → `Evaluator.list_token_usage(since)`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`
 > - **外部输入入口**：`/api/chat`、`/api/observe` 不调 Facade，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）。回复/后续产出走 SSE。
 
 ### SSE（`GET /api/events`）
@@ -101,6 +102,7 @@ async def complete_activity(activity: Activity) -> None         # 内部发布 a
 async def interrupt(activity_id: str, by: EventType) -> None    # 抢占即暂停：可续活动（读书/创作/探索）置 PAUSED、其余置 ABANDONED；同日程块内 _maybe_start_activity 恢复同一记录
 async def get_current() -> Activity | None                      # 当前活动（running），供快照/仪表盘
 async def get_schedule() -> list[Activity]                      # 今日日程块（供 /api/activity）
+async def get_results(limit: int = 100) -> list[Activity]       # 跨天历史产出（供 /api/activity/results）
 async def read_material(path: str, filename: str, total_chars: int, correlation_id: str) -> None  # 喂资料：注册书库 + 发起 READING 读第一块
 ```
 

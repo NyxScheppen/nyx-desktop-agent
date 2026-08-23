@@ -41,6 +41,28 @@ export function formatResult(a: Activity): string | null {
   return null;
 }
 
+/** 产出面板正文：完整产出文本（多行），与 formatResult 的单行摘要互补。
+ *  读书→笔记、创作→内容、探索→发现+备注逐行；无产出返回 null。 */
+export function formatOutputBody(a: Activity): string | null {
+  if (a.status !== "completed") return null;
+  const result = a.progress.result;
+  if (typeof result !== "object" || result === null) return null;
+  const r = result as Record<string, unknown>;
+  if (a.type === "reading") {
+    return typeof r.note === "string" && r.note.length > 0 ? r.note : null;
+  }
+  if (a.type === "creation") {
+    return typeof r.content === "string" && r.content.length > 0 ? r.content : null;
+  }
+  if (a.type === "free_exploration") {
+    const lines: string[] = [];
+    if (Array.isArray(r.findings)) lines.push(...r.findings.map(String));
+    if (Array.isArray(r.notes)) lines.push(...r.notes.map(String));
+    return lines.length > 0 ? lines.join("\n") : null;
+  }
+  return null;
+}
+
 // 完成后「主动冒一句」的前缀：只有会产出 result 的三类活动。
 const ANNOUNCE_PREFIX: Partial<Record<ActivityType, string>> = {
   reading: "读完啦：",

@@ -14,7 +14,7 @@ describe("SidePanel 标签页", () => {
 
   it("渲染 9 个标签，默认激活「背景」并显示其面板", () => {
     render(<SidePanel onBack={() => {}} />);
-    for (const label of ["背景", "内在", "欲望", "活动", "叙事", "资料", "记忆", "Eval", "溯源"]) {
+    for (const label of ["背景", "内在", "欲望", "活动", "产出", "叙事", "资料", "记忆", "Eval"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
     expect(screen.getByRole("button", { name: "背景" })).toHaveAttribute(

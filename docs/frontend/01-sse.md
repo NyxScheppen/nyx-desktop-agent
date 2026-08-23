@@ -44,7 +44,7 @@ type EmotionUpdateEvent = SseBase & {
   emotion: EmotionCategory;
 };
 
-// 未消费的 11 类：溯源面板落地前不读字段，payload 保持宽松。
+// 未消费的 11 类：无消费者，payload 保持宽松。
 type OpaqueEvent = SseBase & {
   event: "clock_tick" | "observation_state" | "reflection"
     | "memory_created" | "memory_promoted"
@@ -91,7 +91,6 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 
 | EventType（`e.event`） | 路由到 | action | 说明 |
 |---|---|---|---|
-| （全部） | `eventStore` | `record` | **无条件先记**：每条 SSE 事件都进溯源时间线（含已消费类型，补齐溯源面板「SSE 全部」） |
 | `speak` | `chatStore` | `addSpeak` | 聊天区 Nyx 回复 |
 | `ask` | `chatStore` | `addAsk` | 聊天区 Nyx 问句 |
 | `think` | `chatStore` | `addThink` | 内心话（灰色斜体逐字展示） |
@@ -103,9 +102,9 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `activity_start`/`activity_interrupted` | `activityStore` | `refresh()` | 活动开始/抢占 → 重拉快照（事件只带 `activity_id`） |
 | `activity_end` | `activityStore` + `announceStore` | `refresh()` 后按 `activity_id` 找产出并 `announce("activity", …)` | 活动完成 → 重拉快照 + 冒一句产出 |
 | `memory_created`/`memory_promoted` | `memoryStore` | `refresh()` | 记忆变化 → 重拉快照（事件只带 `memory_id`） |
-| `clock_tick`/`observation_state`/`reflection` | — | — | 仅 `eventStore.record`（无面板消费） |
+| `clock_tick`/`observation_state`/`reflection` | — | — | 无消费者 |
 
-> 完整 18 类见 `01-types.md` 的 `EventType`。分发表开头**无条件 `eventStore.record(e)`**（溯源面板 spec 要「SSE 全部」，不再只记 11 类未消费），随后 `switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore（不变），`desire_*`/`activity_*`/`memory_*` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`mutter` 额外进 `announceStore` 冒头像旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`），`clock_tick`/`observation_state`/`reflection` 仅 `record`（无面板消费，故无 `default` 分支）。
+> 完整 18 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`memory_*` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`mutter` 额外进 `announceStore` 冒头像旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`），`clock_tick`/`observation_state`/`reflection` 无消费者（故无 `default` 分支）。
 > **前向兼容边界**：命名事件（带 `event:` 行）若没有匹配的 `addEventListener` 且无 `onmessage`，浏览器会静默丢弃——故后端**新增 EventType 必须同步前端** `EVENT_TYPES` 数组 + `types/api.ts` 判别联合 + 本分发表（monorepo 内本就在同一提交改）。不存在「旧前端自动接住新类型」的兜底。
 
 ### 4.1 分发函数（含类型收窄）
@@ -113,7 +112,6 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 ```typescript
 // api/dispatch.ts —— 事件 → store 路由
 function dispatchEvent(e: SseEvent): void {
-  eventStore.record(e); // 无条件先记：溯源面板要「SSE 全部」，含已消费类型
   switch (e.event) {
     case "speak": return chatStore.addSpeak(e);
     case "ask": return chatStore.addAsk(e);
@@ -161,14 +159,13 @@ chatStore.addMutter(e: TextEvent<"mutter">): void          // kind:"mutter"
 chatStore.addInitiateChat(e: TextEvent<"initiate_chat">): void // kind:"initiate_chat"
 chatStore.addUserMessage(e: UserMessageEvent): void        // 读 e.message → {kind:"message", role:"user"}
 innerLifeStore.updateEmotion(e: EmotionUpdateEvent): void  // 覆盖 current 的 valence/arousal/emotion（emotion 走 isEmotionCategory 收窄）
-eventStore.record(e: SseEvent): void                       // unshift 头部（最新在前）+ count++
 desireStore.refresh(): Promise<void>                       // desire_* → 重拉快照（事件只带 desire_id，fire-and-forget）
 activityStore.refresh(): Promise<void>                     // activity_start/interrupted → 重拉快照；activity_end → refresh 后按 activity_id 找产出
 memoryStore.refresh(): Promise<void>                       // memory_* → 重拉快照
 announceStore.announce(kind: "mutter" | "activity", text: string): void  // 头像旁临时气泡（mutter 4s / activity 7s 后自动 dismiss）
 ```
 
-> 每个 store 的 state 形状（`ChatMessage` 含 `id`/`role`/`kind`/`content`/`correlation_id`/`preloaded?`，不存 `timestamp`——见 02-stores；`InnerLifeState`、`EventState`、四个快照 store）与 action 完整实现见 `02-stores.md`。本表只给签名，保证分发表能独立落地。
+> 每个 store 的 state 形状（`ChatMessage` 含 `id`/`role`/`kind`/`content`/`correlation_id`/`preloaded?`，不存 `timestamp`——见 02-stores；`InnerLifeState`、四个快照 store）与 action 完整实现见 `02-stores.md`。本表只给签名，保证分发表能独立落地。
 
 ### 4.3 user_message 回显与发消息的关系
 
@@ -229,6 +226,6 @@ function App() {
 ```
 
 - `useSSE` 只挂一次（App 顶层），子面板**不重复订阅**，只读 store。
-- **视觉改造布局（Galgame）**：全屏三层——背景柔光 + 樱花（`app-bg`/`Sakura`）→ 左侧半身像立绘（`app-stage` + `EmotionSprite size="portrait"`，常驻）+ 右侧双模式区（对话框 ↔ 设置，互斥渲染）：默认微信式聊天窗（`ChatPanel` 的 `dialog-box`，头部「设置」按钮切走），点「设置」后换成 `SidePanel` 标签页（`components/layout`，背景/内在/欲望/活动/记忆/Eval/溯源 7 标签，一次显示一个，内容区可滚动，「返回对话」回聊天）。
+- **视觉改造布局（Galgame）**：全屏三层——背景柔光 + 樱花（`app-bg`/`Sakura`）→ 左侧半身像立绘（`app-stage` + `EmotionSprite size="portrait"`，常驻）+ 右侧双模式区（对话框 ↔ 设置，互斥渲染）：默认微信式聊天窗（`ChatPanel` 的 `dialog-box`，头部「设置」按钮切走），点「设置」后换成 `SidePanel` 标签页（`components/layout`，背景/内在/欲望/活动/记忆/Eval 6 标签，一次显示一个，内容区可滚动，「返回对话」回聊天）。
 - `connectionState` 由 App 层在顶栏 `connection-state` 直接显示，不再传 `ChatPanel`。
 - 背景由 `settingsStore` 驱动：`image` 以 `cover` 铺底、`tint` 无图时作纯色替默认粉渐变、图+色并存时叠一层半透明 `.app-bg-tint`。

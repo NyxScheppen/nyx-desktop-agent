@@ -5,7 +5,6 @@ import { useActivityStore } from "../src/stores/activityStore";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
 import { useEvalStore } from "../src/stores/evalStore";
-import { useEventStore } from "../src/stores/eventStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMaterialsStore } from "../src/stores/materialsStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
@@ -344,84 +343,10 @@ describe("innerLifeStore", () => {
   });
 });
 
-describe("eventStore", () => {
-  beforeEach(() => {
-    useEventStore.getState().clear();
-  });
-
-  it("record：unshift 最新在前 + count++", () => {
-    useEventStore.getState().record({
-      event: "clock_tick",
-      event_id: "e1",
-      correlation_id: "c1",
-    });
-    useEventStore.getState().record({
-      event: "reflection",
-      event_id: "e2",
-      correlation_id: "c2",
-    });
-
-    const { events, count } = useEventStore.getState();
-    expect(count).toBe(2);
-    expect(events).toHaveLength(2);
-    expect(events[0].event_id).toBe("e2"); // 最新在前
-    expect(events[1].event_id).toBe("e1");
-  });
-
-  it("超 MAX_EVENTS(500)：丢最旧，count 累计", () => {
-    for (let i = 0; i < 501; i++) {
-      useEventStore.getState().record({
-        event: "clock_tick",
-        event_id: `e${i}`,
-        correlation_id: "c",
-      });
-    }
-
-    const { events, count } = useEventStore.getState();
-    expect(events).toHaveLength(500);
-    expect(count).toBe(501);
-    expect(events[0].event_id).toBe("e500");
-    expect(events[499].event_id).toBe("e1"); // e0 被丢
-  });
-
-  it("loadHistory：回填历史 + 与现有按 received_at 降序去重", () => {
-    useEventStore.getState().record({
-      event: "speak",
-      event_id: "live-1",
-      correlation_id: "c1",
-      content: "hi",
-    });
-    const history: BackendEvent[] = [
-      {
-        id: "h-1",
-        timestamp: 1000,
-        source: "internal",
-        type: "think",
-        content: { content: "…" },
-        correlation_id: "c1",
-      },
-      {
-        id: "live-1", // 与现有重复，应被去重
-        timestamp: 1001,
-        source: "internal",
-        type: "speak",
-        content: { content: "hi" },
-        correlation_id: "c1",
-      },
-    ];
-
-    useEventStore.getState().loadHistory(history);
-
-    const { events } = useEventStore.getState();
-    // 只新增 h-1（live-1 去重）；h-1 在 live-1 之前（timestamp 更小）
-    expect(events.map((e) => e.event_id)).toEqual(["live-1", "h-1"]);
-  });
-});
-
 describe("desireStore / activityStore / memoryStore / evalStore", () => {
   beforeEach(() => {
     useDesireStore.setState({ data: null, loading: false, error: null });
-    useActivityStore.setState({ data: null, loading: false, error: null });
+    useActivityStore.setState({ data: null, results: null, loading: false, error: null });
     useMemoryStore.setState({ data: null, loading: false, error: null });
     useEvalStore.setState({ reports: null, tokens: null, loading: false, error: null });
   });
@@ -438,15 +363,20 @@ describe("desireStore / activityStore / memoryStore / evalStore", () => {
     expect(useDesireStore.getState().loading).toBe(false);
   });
 
-  it("activityStore.refresh：GET /api/activity → data 落 store", async () => {
-    const fixture = { current: null, schedule: [] };
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+  it("activityStore.refresh：并行 getActivity + getActivityResults → data/results 落 store", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ current: null, schedule: [] }))
+      .mockResolvedValueOnce(jsonResponse([]));
     vi.stubGlobal("fetch", fetchMock);
 
     await useActivityStore.getState().refresh();
 
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/activity");
-    expect(useActivityStore.getState().data).toEqual(fixture);
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/activity/results");
+    expect(useActivityStore.getState().data).toEqual({ current: null, schedule: [] });
+    expect(useActivityStore.getState().results).toEqual([]);
   });
 
   it("memoryStore.refresh：GET /api/memories → data 落 store", async () => {

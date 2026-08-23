@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   exportMemories,
   getActivity,
+  getActivityResults,
   getDesires,
   getEval,
   getEventsLog,
@@ -148,6 +149,16 @@ describe("api/client", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/activity");
     expect(res).toEqual(fixture);
+  });
+
+  it("getActivityResults：GET /api/activity/results、解析 Activity[]", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getActivityResults();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/activity/results");
+    expect(res).toEqual([]);
   });
 
   it("getMemories：query 参数拼装（tag/type 可选）", async () => {

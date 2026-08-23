@@ -7,7 +7,7 @@ import EvalPanel from "../panels/EvalPanel";
 import MaterialsPanel from "../panels/MaterialsPanel";
 import MemoryPanel from "../panels/MemoryPanel";
 import NarrativePanel from "../panels/NarrativePanel";
-import TracePanel from "../panels/TracePanel";
+import OutputsPanel from "../panels/OutputsPanel";
 
 // 设置标签页面板（视觉改造布局 §1）：非对话面板收成一列，标签切换一次显示一个。
 // 首个「背景」标签承载背景色调/背景图设置，其余为观测面板。
@@ -20,11 +20,11 @@ const TABS: TabDef[] = [
   { label: "内在", Panel: InnerStatePanel },
   { label: "欲望", Panel: DesiresPanel },
   { label: "活动", Panel: ActivityPanel },
+  { label: "产出", Panel: OutputsPanel },
   { label: "叙事", Panel: NarrativePanel },
   { label: "资料", Panel: MaterialsPanel },
   { label: "记忆", Panel: MemoryPanel },
   { label: "Eval", Panel: EvalPanel },
-  { label: "溯源", Panel: TracePanel },
 ];
 
 type SidePanelProps = {

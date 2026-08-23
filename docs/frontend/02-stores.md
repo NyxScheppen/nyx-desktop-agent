@@ -150,11 +150,11 @@ refresh(): Promise<void>          // 内部调 client.getNarrative() → data；
 
 ```typescript
 type MaterialsStoreState = {
-  files: string[] | null;   // null = 尚未加载；[] = 加载过但为空（区分「等待连接」vs「还没有资料」）
+  materials: Material[] | null;   // null = 尚未加载；[] = 加载过但为空（区分「等待连接」vs「还没有资料」）
   uploading: boolean;       // 上传中（面板据此禁用按钮）
   error: string | null;
-  refresh(): Promise<void>;  // 内部调 client.getMaterials() → files；throw → error
-  upload(file: File): Promise<void>;  // client.uploadFile(file) 成功后 getMaterials() 重拉 files
+  refresh(): Promise<void>;  // 内部调 client.getMaterials() → materials；throw → error
+  upload(file: File): Promise<void>;  // client.uploadFile(file) 成功后 getMaterials() 重拉 materials
 };
 ```
 
@@ -205,7 +205,7 @@ type AnnounceState = {
 - **chatStore.loadHistory**：按 `timestamp` 升序前置 + `preloaded=true` + 历史 think 入 `typedIds`；已存在的 id 去重不重复前置；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
 - **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置 + loading 状态机；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
 - **四个快照 store**：`desireStore`/`memoryStore` 各断言 `refresh()` 请求对端点 + `data` 落 store + `loading` 复位；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`（fetch 恰 2 次）→ `data`/`results` 落 store；`evalStore.refresh()` 并行 `getEval`+`getTokens`（fetch 恰 2 次）→ `reports`/`tokens` 落 store；`desireStore.refresh()` 失败 → `error` + `loading=false` + `data` 保持 null。
-- **narrativeStore / materialsStore**：`narrativeStore.refresh()` 请求 `/api/narrative` + `data` 落 store；`materialsStore.refresh()` 请求 `/api/materials` + `files` 落 store；`materialsStore.upload()` `POST /api/upload` 后重拉 files（fetch 恰 2 次）+ `uploading` 复位。
+- **narrativeStore / materialsStore**：`narrativeStore.refresh()` 请求 `/api/narrative` + `data` 落 store；`materialsStore.refresh()` 请求 `/api/materials` + `materials` 落 store；`materialsStore.upload()` `POST /api/upload` 后重拉 materials（fetch 恰 2 次）+ `uploading` 复位。
 - **`isReady`（串行逐字纯函数）**：每条 nyx 文本消息等「同 `correlation_id` 且在其之前」的 nyx 文本消息都打完（入 `typedIds`）才就绪；无前置 nyx 文本 → 直接就绪；`preloaded` nyx 文本与 user 消息 → 恒就绪；不同 `correlation_id` 的 nyx 文本不阻塞。
 - **`settingsStore`**：`setTint`/`setImage` 独立落 store 可并存；`reset()` 回 null。
 - **`announceStore`**：`announce` 追加临时气泡（kind/text 落 store、id 唯一）；`dismiss` 摘除指定 id 其余保留；`advanceTimersByTime(ANNOUNCE_DURATION[kind])` 到时自动 dismiss。

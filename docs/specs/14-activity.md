@@ -15,7 +15,7 @@
 ## 验收标准
 
 - [ ] `store.py` 含 `ActivityStore`（`insert` / `get` / `get_current` / `get_paused_in_block` / `get_last_exploration` / `list_schedule` / `list_results` / `update`），与「`activity/store.py`（完整）」段逐字一致
-- [ ] `facade.py` 含 `ActivityFacade`：`on_tick(tick_type) -> None` / `on_desire_generated(event) -> None` / `select_activity(desires, state) -> Activity | None` / `complete_activity(activity) -> None` / `interrupt(activity_id, by_event) -> None` / `get_current() -> Activity | None` / `get_schedule() -> list[Activity]` / `get_results() -> list[Activity]` / `read_material(path, filename, total_chars, correlation_id) -> None`
+- [ ] `facade.py` 含 `ActivityFacade`：`on_tick(tick_type) -> None` / `on_desire_generated(event) -> None` / `select_activity(desires, state) -> Activity | None` / `complete_activity(activity) -> None` / `interrupt(activity_id, by_event) -> None` / `get_current() -> Activity | None` / `get_schedule() -> list[Activity]` / `get_results() -> list[Activity]` / `list_materials() -> list[Material]` / `read_material(path, filename, total_chars, correlation_id) -> None`
 - [ ] `select_activity` 纯决策：无欲望→`None`；精力不足→`REST`；否则第一个可排程欲望→映射活动，`progress` 存 `desire_id`/`goal`/`correlation_id`/`description`
 - [ ] `READING` 升级 `FREE_EXPLORATION`：探索欲映射的读书在 `_maybe_start_activity` 里经 `should_explore`（精力充足 + 频率上限）判定升级；频率上限内降级为普通读书
 - [ ] 空槽默认：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`（精力疲惫 `< ENERGY_REST_THRESHOLD`→`IDLE_REFLECTION`、否则→`OBSERVE_USER`），`progress["desire_id"] is None`
@@ -23,7 +23,7 @@
 - [ ] `complete_activity`：goal 判定（`_goal_met` 纯函数）→ `status=COMPLETED` → 发布 `activity_end`（content 含 `activity_id`/`type`/`desire_id`/`goal_met`/`energy_delta`/`result`）
 - [ ] `interrupt`：先校验目标 activity 存在且 RUNNING → cancel 执行 task 并 await 其结束 → 重读守卫 → 可续活动（`_RESUMABLE_TYPES`：READING/CREATION/FREE_EXPLORATION）置 `PAUSED`、其余置 `ABANDONED` + 发布 `activity_interrupted`（content `{activity_id, by}`）
 - [ ] 同日程块内恢复：`_maybe_start_activity` 在查 running 后、欲望排序前查 `get_paused_in_block(当前块)`，命中则恢复同一记录（READING 从 `material_store.get_by_path` 刷新 `read_chars`/`total_chars` 续读；CREATION/FREE_EXPLORATION 无中间态重跑）；未命中再走欲望排序/空槽默认
-- [ ] `material_store.py` 含 `MaterialStore`（`upsert` / `next_readable` / `find_by_topic` / `get_by_path` / `advance` / `append_fragment` / `get_fragments`），`get_by_path` 供读书恢复续读
+- [ ] `material_store.py` 含 `MaterialStore`（`upsert` / `next_readable` / `find_by_topic` / `get_by_path` / `advance` / `append_fragment` / `get_fragments` / `list_all`），`get_by_path` 供读书恢复续读、`list_all` 供资料面板进度展示
 - [ ] `exploration.py` 含 `Exploration`（LangGraph 图）+ `should_explore` 纯函数；`web_enabled=false` 时不注册 `search_web` 节点；节点内 LLM 调用带 `correlation_id` 溯源
 - [ ] `observe.py` 含 `classify_presence` 纯函数（活跃度+窗口标题 → `"online"`/`"away"`/`"busy"`）与 `build_observation_summary` 纯函数（presence/窗口标题/屏幕摘要 → 观察 summary）；`screen.py` 含 `capture_screen` + `ScreenObserver`（周期抓屏 → 视觉描述 → 回调）
 - [ ] 两处 LLM 产出后紧跟 `await evaluator.evaluate(output)`：`_run_llm_activity`（`output_type` "reading"/"creation"）与 `Exploration._plan_next`（`output_type="exploration_plan"`）
@@ -44,7 +44,7 @@
 - **自由探索升级（design §8.6，13 已委托给 14）**：`select_activity` 保持基线映射（探索欲→`READING`），升级判定放 `_maybe_start_activity`（那里有 store/config/now，`select_activity` 保持纯决策）。「探索欲」条件由结构保证——`READING` 活动**仅**由 `DesireType.EXPLORATION` 映射而来（13 `desire_to_activity`），故调用方在 `activity.type is READING` 时才调 `should_explore`（只查精力 + 频率两项）
 - **读书 = 读本地书库（禁凭空编造，design §8.2 落地）**：`MaterialStore`（`material` 表）存用户喂的读物与分块进度。`read_material`（`USER_MATERIAL` 入口）先 `upsert` 注册再发起 READING 读第一块；探索欲触发的 `READING` 在 `_maybe_start_activity` 里**先按 `goal.topic` 走 `find_by_topic`**（命中读那本，C2）、否则 `next_readable()` 取**最近未读完的那本**续读，读完自动换下一本。**无书可读**（`next_readable()` 返回 None）→ 经 `should_explore` 转 `FREE_EXPLORATION`（限速中则退回默认活动）——任何路径都不让 LLM 凭空编造读书内容。三层兜底：`_maybe_start_activity` 不产无 source 的 READING、`_run_activity` 缺 source `raise`、`_run_reading_source` 只读真实文件块（空块聚合已有片段，不凭空编造）
 - **六种活动执行分派（`_run_activity`）**：
-  - `READING`：`_run_reading_source` 分块读真实文件（切 `[read_chars, read_chars+6000)` 一块喂 LLM 产 `{book, note}`，`extra_context` 拼进 user 消息）→ result 附 `read_chars`/`total_chars` 推进进度；缺 `source` 直接 `raise ValueError`（**禁凭空编造**）；读到最后一块/空块时聚合全部片段 → 完整笔记落盘（`_aggregate_note` 1 次 LLM）
+  - `READING`：`_run_reading_source` 分块读真实文件（切 `[read_chars, read_chars+6000)` 一块喂 LLM 产 `{book, note}`）→ result 附 `read_chars`/`total_chars` 推进进度；缺 `source` 直接 `raise ValueError`（**禁凭空编造**）；读到最后一块/空块时聚合全部片段 → 完整笔记落盘（`_aggregate_note` 1 次 LLM）。**滚动摘要接力**：续读时把「上次已读到第 N 字 + 此前片段笔记（`get_fragments`）」拼进 `extra_context`（`书名 + 上次已读 + 本次新读（第 N~M 字）`），让本次 note 自然承接已读部分、只续写本块新内容，避免几篇之间不连贯
   - `CREATION`：1 次 LLM（`json_mode=True`、`module="activity"`、`output_type="creation"`）→ result `{title, content}`，再把标题 `_sanitize_filename` 清洗成安全文件名落盘 `workspace/creations/<safe>.md`（`file_io` write），result 附 `path`
   - `IDLE_REFLECTION`：直接 `await self._reflect`（组合根注入的 reflect 回调，1 LLM 在 inner_life），不发 `REFLECTION` 事件；result 回带 `{summary}`
   - `FREE_EXPLORATION`：调 `Exploration.run()`（LangGraph 多步，seed = 欲望描述）→ result `{findings, notes}`
@@ -54,7 +54,7 @@
 - **`energy_delta` 取值**：`getattr(config.energy_delta, activity.type.value)`（`ActivityType.value` 与 `ActivityEnergyDelta` 字段名 1:1，`reading→-20`、`creation→-25`、`free_exploration→-30`、`observe_user→-10`、`idle_reflection→+10`、`rest→+30`），不用 if-elif（六键自然对应）
 - **goal 判定（C3 精确版）**：`_goal_met(goal, result)` = goal None → `None`；否则按 `action` 判「本次是否完成一个单位」——`read` → `result.completed`（读完整本）、`write` → 有 `title`+`content`、`observe` → 有 `presence`；其余 → `False`。
 - **精力门槛**：`select_activity` 用 13 的 `build_schedule(desires, state.energy, energy_delta)` 取 `[0]`（精力跌破阈值自动穿插 `REST`），不另写门槛逻辑；`schedule[0] is REST` → 无关联 desire
-- **`get_schedule()` 语义**：返回「今日已产生的 Activity 记录」（`started_at >= 今日零点`，`list_schedule`），按 `started_at ASC`。未来计划不持久化（design §8.1），前端按 grid 渲染空槽；`_day_start` 纯函数算当日零点（MVP 用 UTC 日边界，可推翻）
+- **`get_schedule()` 语义**：返回「今日已产生的 Activity 记录」（`started_at >= 今日零点`，`list_schedule`），按 `started_at ASC`；`current`（running）也在 schedule 内。未来计划不持久化（design §8.1），前端按单条时间线渲染已产生记录（running 加「◀ 现在」标记），**不画未来空槽**；`_day_start` 纯函数算当日零点（MVP 用 UTC 日边界，可推翻）
 - **`interrupt` 的 `by_event: EventType`**：打断原因（`USER_MESSAGE` / `INITIATE_CHAT`）。谁调 `interrupt` 归 17/18（用户消息/搭话打断活动）；14 只提供方法 + 发布 `activity_interrupted`。可续活动（`_RESUMABLE_TYPES`：READING/CREATION/FREE_EXPLORATION）打断置 `PAUSED`（保留记录 + 欲望关联），其余瞬时无进度的活动（发呆/观察/休息）仍置 `ABANDONED` 终态
 - **恢复/续做（design §3.3 抢占语义落地）**：`interrupt` 对 `_RESUMABLE_TYPES` 置 `PAUSED` 而非废弃，`progress` 里的 `desire_id`/`goal`/`correlation_id` 保留。`_maybe_start_activity` 在「查 running → 查当前块 PAUSED → 恢复」——命中则复用同一 id 重跑：READING 从 `material_store.get_by_path(source)` 刷新 `read_chars`/`total_chars` 续读（书库进度是唯一持久进度）；CREATION/FREE_EXPLORATION 无中间态、整段重跑（探索不 checkpoint 中间 findings/notes）。恢复不新建记录、不重新消耗欲望；跨日程块（`get_paused_in_block` 按 `schedule_block_id` 过滤）不恢复，旧 PAUSED 留档可查
 - **`observe.py` 与观察状态的分工**：`classify_presence` 是「在线/离开/忙碌」三态判定的**单一事实来源**（纯函数、单测锁定）。采集（键盘/鼠标活跃度 + 前台窗口标题）在前端 Tauri 壳（design §2 进程边界），判定结果作为 `OBSERVATION_STATE` 事件推给 Python，ROUTING 到 inner_life + desire。**`classify_presence` 的运行时调用方是前端 ingress，不在本 spec 的 backend 范围内**（前端 spec 推迟）——保留它是为了让「判定规则」在 Python 侧可展示（原则 3）+ 可溯源（原则 5）。`OBSERVE_USER` 活动本身是 0-LLM（调注入的 `get_observation` 产 `{presence, window_title, screen_summary}`），`summary` 由 `build_observation_summary` 拼装
@@ -233,6 +233,15 @@ class MaterialStore:
                 (path, filename, total_chars, now, now),
             )
             await self._db.conn.commit()
+
+    async def list_all(self) -> list[Material]:
+        """全量读物（按 created_at 倒序，最近上传在前），供资料面板进度展示。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM material ORDER BY created_at DESC"
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_material(row) for row in rows]
 
     async def next_readable(self) -> Material | None:
         """最近上传、且未读完的书（read_chars < total_chars，按 created_at 倒序）；
@@ -635,6 +644,10 @@ class ActivityFacade:
         """跨天历史产出（读书笔记/探索发现/创作内容），按结束时间倒序（供「产出」面板）。"""
         return await self._store.list_results(limit)
 
+    async def list_materials(self) -> list[Material]:
+        """书库全量（含已读进度），供资料面板展示「读到哪了」。"""
+        return await self._material_store.list_all()
+
     async def read_material(
         self, path: str, filename: str, total_chars: int, correlation_id: str
     ) -> None:
@@ -825,8 +838,23 @@ class ActivityFacade:
             return await self._finalize_reading(
                 activity, source, filename, len(content)
             )
+        # 滚动摘要接力：把「上次读到哪里 + 已读片段笔记」一起喂给 LLM，让本次 note
+        # 自然承接已读部分、只续写本块新内容（避免几篇之间不连贯）。
+        prior = await self._material_store.get_fragments(source)
+        prior_block = ""
+        if prior:
+            prior_block = (
+                f"上次已读到第 {read_chars} 字，此前片段笔记：\n"
+                + "\n---\n".join(prior)
+                + "\n"
+            )
+        context = (
+            f"书名：{filename}\n"
+            f"{prior_block}"
+            f"本次新读（第 {read_chars}～{read_chars + len(chunk)} 字）：\n{chunk}"
+        )
         result = await self._run_llm_activity(
-            activity, "reading", extra_context=chunk
+            activity, "reading", extra_context=context
         )
         new_read_chars = read_chars + len(chunk)
         await self._material_store.append_fragment(
@@ -916,6 +944,8 @@ class ActivityFacade:
 _ACTIVITY_SYSTEM = (
     "你是尼克斯。按 JSON 输出活动结果，键随活动类型："
     "读书 {book, note}、创作 {title, content}。"
+    "读书时：note 自然承接已读片段，不重复概括已读部分、只续写本次新读内容；"
+    "note 正文里不要写「上次读到第 X 字」这类位置字样。"
 )
 
 

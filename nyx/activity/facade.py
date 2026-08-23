@@ -28,7 +28,7 @@ from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
 from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
-from nyx.types import Activity, CurrentState, Event, ShortTermDesire
+from nyx.types import Activity, CurrentState, Event, Material, ShortTermDesire
 
 _logger = logging.getLogger(__name__)
 
@@ -317,6 +317,10 @@ class ActivityFacade:
         """跨天历史产出（读书笔记/探索发现/创作内容），按结束时间倒序。"""
         return await self._store.list_results(limit)
 
+    async def list_materials(self) -> list[Material]:
+        """书库全量（含已读进度），供资料面板展示「读到哪了」。"""
+        return await self._material_store.list_all()
+
     async def read_material(
         self, path: str, filename: str, total_chars: int, correlation_id: str
     ) -> None:
@@ -514,8 +518,23 @@ class ActivityFacade:
             return await self._finalize_reading(
                 activity, source, filename, len(content)
             )
+        # 滚动摘要接力：把「上次读到哪里 + 已读片段笔记」一起喂给 LLM，让本次 note
+        # 自然承接已读部分、只续写本块新内容（避免几篇之间不连贯）。
+        prior = await self._material_store.get_fragments(source)
+        prior_block = ""
+        if prior:
+            prior_block = (
+                f"上次已读到第 {read_chars} 字，此前片段笔记：\n"
+                + "\n---\n".join(prior)
+                + "\n"
+            )
+        context = (
+            f"书名：{filename}\n"
+            f"{prior_block}"
+            f"本次新读（第 {read_chars}～{read_chars + len(chunk)} 字）：\n{chunk}"
+        )
         result = await self._run_llm_activity(
-            activity, "reading", extra_context=chunk
+            activity, "reading", extra_context=context
         )
         new_read_chars = read_chars + len(chunk)
         await self._material_store.append_fragment(
@@ -587,7 +606,7 @@ class ActivityFacade:
     ) -> dict[str, Any]:
         user_msg = f"活动类型：{activity.type.value}"
         if extra_context:
-            user_msg += f"\n读物内容：{extra_context}"
+            user_msg += f"\n读物信息：\n{extra_context}"
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _ACTIVITY_SYSTEM},
@@ -605,6 +624,8 @@ class ActivityFacade:
 _ACTIVITY_SYSTEM = (
     "你是尼克斯。按 JSON 输出活动结果，键随活动类型："
     "读书 {book, note}、创作 {title, content}。"
+    "读书时：note 自然承接已读片段，不重复概括已读部分、只续写本次新读内容；"
+    "note 正文里不要写「上次读到第 X 字」这类位置字样。"
 )
 
 

@@ -103,6 +103,7 @@ async def interrupt(activity_id: str, by: EventType) -> None    # 抢占即暂�
 async def get_current() -> Activity | None                      # 当前活动（running），供快照/仪表盘
 async def get_schedule() -> list[Activity]                      # 今日日程块（供 /api/activity）
 async def get_results(limit: int = 100) -> list[Activity]       # 跨天历史产出（供 /api/activity/results）
+async def list_materials() -> list[Material]                    # 书库全量（含已读进度，供 /api/materials 资料面板）
 async def read_material(path: str, filename: str, total_chars: int, correlation_id: str) -> None  # 喂资料：注册书库 + 发起 READING 读第一块
 ```
 

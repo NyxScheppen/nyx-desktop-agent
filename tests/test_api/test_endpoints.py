@@ -19,7 +19,7 @@ from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import _App, build_app
 from nyx.memory.facade import MemoryFacade
-from nyx.types import CurrentState, Event, Memory
+from nyx.types import CurrentState, Event, Material, Memory
 
 
 def _mk_state() -> CurrentState:
@@ -81,6 +81,21 @@ class _FakeMemory:
         if fmt not in ("json", "md"):
             raise ValueError(f"不支持的导出格式：{fmt}")
         return f"exported:{fmt}"
+
+
+class _FakeActivity:
+    def __init__(self) -> None:
+        self.list_calls = 0
+
+    async def list_materials(self) -> list[Material]:
+        self.list_calls += 1
+        return [
+            Material(
+                path="workspace/uploads/a.txt", filename="a.txt",
+                total_chars=100, read_chars=40,
+                created_at=1.0, updated_at=2.0,
+            )
+        ]
 
 
 def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
@@ -188,3 +203,26 @@ async def test_observe_invalid_presence_returns_422() -> None:
         resp = await client.post("/api/observe", json={"presence": "Online"})
     assert resp.status_code == 422
     assert app.last_presence == "away"  # 校验失败不更新状态
+
+
+async def test_materials_endpoint_returns_progress() -> None:
+    """GET /api/materials：书库进度（read_chars/total_chars），不再是纯文件名。"""
+    fake_activity = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake_activity)
+    async with _client(app) as client:
+        resp = await client.get("/api/materials")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "materials": [
+            {
+                "path": "workspace/uploads/a.txt",
+                "filename": "a.txt",
+                "total_chars": 100,
+                "read_chars": 40,
+                "created_at": 1.0,
+                "updated_at": 2.0,
+            }
+        ]
+    }
+    assert fake_activity.list_calls == 1

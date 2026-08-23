@@ -1056,6 +1056,55 @@ async def test_desire_reading_reads_latest_material(tmp_path: Path) -> None:
         await database.conn.close()
 
 
+async def test_reading_relays_prior_fragments(tmp_path: Path) -> None:
+    """滚动摘要接力：续读第二块时把「上次读到哪里 + 已读片段笔记」喂给 LLM。"""
+
+    class RecordingLlm(_FakeLlm):
+        def __init__(self) -> None:
+            super().__init__()
+            self.user_contents: list[str] = []
+
+        async def complete(
+            self,
+            messages: list[LlmMessage],
+            *,
+            module: str,
+            output_type: str,
+            correlation_id: str,
+            json_mode: bool = False,
+        ) -> LLMOutput:
+            self.user_contents.append(str(messages[-1]["content"]))
+            return await super().complete(
+                messages, module=module, output_type=output_type,
+                correlation_id=correlation_id, json_mode=json_mode,
+            )
+
+    source = tmp_path / "book.txt"
+    source.write_text("甲" * 13000, encoding="utf-8")  # 两块以上，第二块读不尽
+    llm = RecordingLlm()
+    facade, _store, bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0, llm=llm
+    )
+    try:
+        await facade._material_store.upsert(str(source), "book.txt", 13000, 1000.0)
+        # 模拟已读完第一块：进度 6000 + 留下一篇片段笔记
+        await facade._material_store.append_fragment(
+            str(source), "上一块的笔记", 1000.0
+        )
+        await facade._material_store.advance(str(source), 6000, 1000.0)
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        # 只发生一次 reading 调用（12000 < 13000 未读完，不聚合）
+        assert llm.calls == ["reading"]
+        user = llm.user_contents[0]
+        assert "上一块的笔记" in user  # 已读片段被带上
+        assert "第 6000 字" in user      # 「上次读到哪里」位置被带上
+        assert "本次新读" in user        # 本次新读块
+    finally:
+        await database.conn.close()
+
+
 async def test_maybe_start_reading_uses_topic(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

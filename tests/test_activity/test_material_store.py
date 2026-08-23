@@ -100,3 +100,25 @@ async def test_get_by_path_missing_returns_none() -> None:
         assert await store.get_by_path("/nope.txt") is None
     finally:
         await database.conn.close()
+
+
+async def test_list_all_returns_ordered_by_created_desc() -> None:
+    """list_all：全量读物按 created_at 倒序（最近上传在前），进度随 advance。"""
+    store, database = await _new_store()
+    try:
+        await store.upsert("/a.txt", "a.txt", 100, 1000.0)
+        await store.upsert("/b.txt", "b.txt", 200, 2000.0)
+        await store.advance("/b.txt", 50, 3000.0)
+        mats = await store.list_all()
+        assert [m.path for m in mats] == ["/b.txt", "/a.txt"]
+        assert mats[0].read_chars == 50
+    finally:
+        await database.conn.close()
+
+
+async def test_list_all_empty() -> None:
+    store, database = await _new_store()
+    try:
+        assert await store.list_all() == []
+    finally:
+        await database.conn.close()

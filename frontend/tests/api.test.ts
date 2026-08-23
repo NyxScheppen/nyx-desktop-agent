@@ -265,8 +265,19 @@ describe("api/client", () => {
     });
   });
 
-  it("getMaterials：GET /api/materials、解析 {files}", async () => {
-    const fixture = { files: ["a.txt", "b.txt"] };
+  it("getMaterials：GET /api/materials、解析 {materials: Material[]}", async () => {
+    const fixture = {
+      materials: [
+        {
+          path: "workspace/uploads/a.txt",
+          filename: "a.txt",
+          total_chars: 100,
+          read_chars: 40,
+          created_at: 1,
+          updated_at: 2,
+        },
+      ],
+    };
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
     vi.stubGlobal("fetch", fetchMock);
 

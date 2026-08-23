@@ -268,3 +268,13 @@ export type UploadResult = {
   filename: string;
   path: string;
 };
+
+// ---- 资料进度（GET /api/materials，nyx/types.py Material）----
+export type Material = {
+  path: string;
+  filename: string;
+  total_chars: number;
+  read_chars: number;
+  created_at: number;
+  updated_at: number;
+};

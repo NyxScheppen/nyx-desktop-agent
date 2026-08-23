@@ -3,9 +3,9 @@ import { useMaterialsStore } from "../../stores/materialsStore";
 import Panel from "../layout/Panel";
 
 // 资料面板：上传课本/文档给尼克斯读。选文件即上传（落 workspace/uploads），
-// 读书结果经 activity_start/activity_end 走活动面板可见。
+// 每本显示已读进度（read_chars/total_chars）+ 在读/读完状态。
 export default function MaterialsPanel() {
-  const files = useMaterialsStore((s) => s.files);
+  const materials = useMaterialsStore((s) => s.materials);
   const uploading = useMaterialsStore((s) => s.uploading);
   const error = useMaterialsStore((s) => s.error);
   const refresh = useMaterialsStore((s) => s.refresh);
@@ -48,17 +48,38 @@ export default function MaterialsPanel() {
         </div>
       </div>
       {error !== null && <p className="error-text">{error}</p>}
-      {files === null ? (
+      {materials === null ? (
         "等待核心服务连接…"
-      ) : files.length === 0 ? (
+      ) : materials.length === 0 ? (
         <p className="panel-item">还没有上传过资料</p>
       ) : (
         <ul className="panel-list">
-          {files.map((f) => (
-            <li key={f} className="panel-item">
-              {f}
-            </li>
-          ))}
+          {materials.map((m) => {
+            const done = m.read_chars >= m.total_chars;
+            const pct =
+              m.total_chars > 0
+                ? Math.min(100, Math.round((m.read_chars / m.total_chars) * 100))
+                : 0;
+            return (
+              <li key={m.path} className="panel-item">
+                <span className="panel-item__main">
+                  {m.filename}{" "}
+                  <span className="panel-badge">{done ? "读完" : "在读"}</span>
+                </span>
+                <div className="material-progress">
+                  <div className="material-progress__track">
+                    <div
+                      className="material-progress__fill"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+                <span className="panel-item__meta">
+                  已读 {m.read_chars} / 共 {m.total_chars} 字（{pct}%）
+                </span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </Panel>

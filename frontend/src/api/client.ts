@@ -5,6 +5,7 @@ import type {
   CurrentState,
   DesireState,
   EvalReport,
+  Material,
   Memory,
   MemoryType,
   Presence,
@@ -130,6 +131,6 @@ export async function uploadFile(file: File): Promise<UploadResult> {
   return (await res.json()) as UploadResult;
 }
 
-export async function getMaterials(): Promise<{ files: string[] }> {
-  return request<{ files: string[] }>(`${BASE_URL}/api/materials`);
+export async function getMaterials(): Promise<{ materials: Material[] }> {
+  return request<{ materials: Material[] }>(`${BASE_URL}/api/materials`);
 }

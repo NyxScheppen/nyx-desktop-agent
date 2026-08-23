@@ -34,6 +34,15 @@ class MaterialStore:
             )
             await self._db.conn.commit()
 
+    async def list_all(self) -> list[Material]:
+        """全量读物（按 created_at 倒序，最近上传在前），供资料面板进度展示。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM material ORDER BY created_at DESC"
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_material(row) for row in rows]
+
     async def next_readable(self) -> Material | None:
         """最近上传、且未读完的书（read_chars < total_chars，按 created_at 倒序）；
         无则 None。"""

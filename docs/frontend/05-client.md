@@ -22,7 +22,7 @@ async function getEventsLog(params?): Promise<BackendEvent[]>                   
 async function getNarrative(): Promise<SelfNarrative>                        // GET /api/narrative
 async function exportMemories(format: "json" | "md"): Promise<string>        // POST /api/export（非 JSON 响应，走 text()）
 async function uploadFile(file: File): Promise<UploadResult>                 // POST /api/upload（FormData，不设 Content-Type）
-async function getMaterials(): Promise<{ files: string[] }>                  // GET /api/materials
+async function getMaterials(): Promise<{ materials: Material[] }>            // GET /api/materials
 ```
 
 - 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message}`、`postObserve` 发 `{presence, window_title}`。
@@ -59,6 +59,6 @@ async function getMaterials(): Promise<{ files: string[] }>                  // 
   - `getNarrative`：`GET /api/narrative` → `SelfNarrative` 解析正确。
   - `exportMemories`：`POST /api/export`、body `{format}` → 返回裸文本（非 JSON，走 `text()` 不走 `request` 的 `.json()`）。
   - `uploadFile`：`POST /api/upload`、body `FormData`（含 `file`，不设 `Content-Type`）→ `UploadResult` 解析正确。
-  - `getMaterials`：`GET /api/materials` → `{files}` 解析正确。
+  - `getMaterials`：`GET /api/materials` → `{materials: Material[]}` 解析正确。
 - **错误契约**：非 2xx 响应（mock body `{"detail": "..."}`）→ throw（`Error`，message 含 `detail` 内容）；fetch 网络错误（reject `TypeError`）→ 上抛不吞；不返回 `{ok:false}`/null。
 - 不依赖真实后端；验证管道正确（端点走对、键零映射、错误上抛），不验证视觉。

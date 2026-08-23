@@ -414,7 +414,7 @@ describe("desireStore / activityStore / memoryStore / evalStore", () => {
 describe("narrativeStore / materialsStore", () => {
   beforeEach(() => {
     useNarrativeStore.setState({ data: null, loading: false, error: null });
-    useMaterialsStore.setState({ files: null, uploading: false, error: null });
+    useMaterialsStore.setState({ materials: null, uploading: false, error: null });
   });
 
   it("narrativeStore.refresh：GET /api/narrative → data 落 store", async () => {
@@ -435,23 +435,39 @@ describe("narrativeStore / materialsStore", () => {
     expect(useNarrativeStore.getState().loading).toBe(false);
   });
 
-  it("materialsStore.refresh：GET /api/materials → files 落 store", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ files: ["a.txt"] }));
+  it("materialsStore.refresh：GET /api/materials → materials 落 store", async () => {
+    const mat = {
+      path: "workspace/uploads/a.txt",
+      filename: "a.txt",
+      total_chars: 100,
+      read_chars: 40,
+      created_at: 1,
+      updated_at: 2,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ materials: [mat] }));
     vi.stubGlobal("fetch", fetchMock);
 
     await useMaterialsStore.getState().refresh();
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/materials");
-    expect(useMaterialsStore.getState().files).toEqual(["a.txt"]);
+    expect(useMaterialsStore.getState().materials).toEqual([mat]);
   });
 
-  it("materialsStore.upload：POST /api/upload 后重拉 files + uploading 复位", async () => {
+  it("materialsStore.upload：POST /api/upload 后重拉 materials + uploading 复位", async () => {
+    const mat = {
+      path: "workspace/uploads/book.txt",
+      filename: "book.txt",
+      total_chars: 100,
+      read_chars: 0,
+      created_at: 1,
+      updated_at: 2,
+    };
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
         jsonResponse({ event_id: "e1", filename: "book.txt", path: "p" }),
       ) // uploadFile
-      .mockResolvedValueOnce(jsonResponse({ files: ["book.txt"] })); // getMaterials
+      .mockResolvedValueOnce(jsonResponse({ materials: [mat] })); // getMaterials
     vi.stubGlobal("fetch", fetchMock);
 
     await useMaterialsStore.getState().upload(
@@ -461,7 +477,7 @@ describe("narrativeStore / materialsStore", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/upload");
     expect(fetchMock.mock.calls[1][0]).toBe("/api/materials");
-    expect(useMaterialsStore.getState().files).toEqual(["book.txt"]);
+    expect(useMaterialsStore.getState().materials).toEqual([mat]);
     expect(useMaterialsStore.getState().uploading).toBe(false);
   });
 });

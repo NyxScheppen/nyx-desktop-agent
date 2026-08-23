@@ -45,7 +45,7 @@ from nyx.llm.vision import VisionClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
-from nyx.tools.file_io import DEFAULT_WRITE_ROOT, build_file_io_tool, file_io
+from nyx.tools.file_io import build_file_io_tool, file_io
 from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_search import build_web_search_tool
@@ -56,6 +56,7 @@ from nyx.types import (
     EvalReport,
     Event,
     LongTermDesire,
+    Material,
     Memory,
     Personality,
     SelfNarrative,
@@ -77,7 +78,6 @@ _SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧
 _CANON_FILES = ("canon.md",)
 _ASK_FILES = ("ask.md",)
 _MAX_UPLOAD_BYTES = 500_000                  # 上传读物大小上限（decision，可推翻）
-_UPLOADS_DIR = DEFAULT_WRITE_ROOT / "uploads"  # 上传读物落盘目录（workspace/uploads）
 
 
 @dataclass
@@ -414,12 +414,8 @@ def build_app(app: _App) -> FastAPI:
         return {"event_id": event.id, "filename": name, "path": path}
 
     @fast.get("/api/materials")
-    async def api_materials() -> dict[str, list[str]]:
-        try:
-            result = await file_io("list", str(_UPLOADS_DIR))
-            return {"files": [str(e) for e in result["entries"]]}
-        except FileNotFoundError:
-            return {"files": []}
+    async def api_materials() -> dict[str, list[Material]]:
+        return {"materials": await app.activity.list_materials()}
 
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:

@@ -19,11 +19,11 @@
 - [ ] **注册内置工具**：`local_search` + `file_io` 恒注册，`web_search` 仅当 `config.exploration.web_enabled` 注册（06-tools 完成定义）；探索链无条件调 `local_search`/`file_io`，缺失会 `KeyError`
 - [ ] **seed 幂等**（表空才写）：inner_life 四张单行表（personality 8/8/2/6/7、values 8/6/9/5、energy 100/energetic、narrative 初始 identity）；desire 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）+ 3 个初始长期欲望（canon §4）
 - [ ] **订阅覆盖 ROUTING/TICK_ROUTING**：`USER_MESSAGE`→interrupt+reply、`USER_MATERIAL`→read_material、`OBSERVATION_STATE`→apply_event+add_value、`DESIRE_GENERATED`→on_desire_generated、`DESIRE_SATISFIED`→apply_event、`ACTIVITY_END`→add_value+apply_event、`REFLECTION`→apply_event、`CLOCK_TICK`→按 tick_type 分发四路
-- [ ] **14 个端点**：tech-ref §4 的 11 个 REST + `GET /api/events`（SSE）+ 本次新增 `POST /api/upload`（上传资料→读书）与 `GET /api/materials`（已传清单）；除 upload/materials 外每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
+- [ ] **14 个端点**：tech-ref §4 的 11 个 REST + `GET /api/events`（SSE）+ 本次新增 `POST /api/upload`（上传资料→读书）与 `GET /api/materials`（书库进度）；除 upload/materials 外每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
 - [ ] **`POST /api/chat`**：构造 `USER_MESSAGE` 事件（`source=EXTERNAL`、`correlation_id=自身 id`）→ `publish` → 返回 `{event_id}`（回复走 SSE）
 - [ ] **请求体校验**：`POST /api/chat`/`/api/export`/`/api/observe` 用 pydantic 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`），缺键/类型错 → 422（非 500）；`presence` 仅 `online`/`away`/`busy`（`Literal` 校验，拼写错误 422 而非静默禁用搭话）
 - [ ] **`POST /api/upload`**：`UploadFile` + `File(...)`；文件名 `Path(file.filename or "upload.txt").name` 消毒（去路径穿越）、`raw` 超 `_MAX_UPLOAD_BYTES` 返 400；`file_io("write", f"uploads/{name}", text)` 落盘（复用 `_resolve_write` 越界守卫）→ publish `USER_MATERIAL`（content `{path, filename, total_chars}`，`total_chars=len(text)` 供书库注册）→ 返回 `{event_id, filename, path}`
-- [ ] **`GET /api/materials`**：`file_io("list", str(_UPLOADS_DIR))` 返回 `{files: [...]}`；目录缺失容错返 `{files: []}`（不抛）
+- [ ] **`GET /api/materials`**：`app.activity.list_materials()` 返回 `{materials: [Material]}`（含 `read_chars`/`total_chars` 进度，供资料面板展示「读到哪了」）
 - [ ] **SSE**：`data` = `event.content` 展开 + `event_id` + `correlation_id`（统一结构，不按 type 特判）；`event:` = `EventType.value`
 - [ ] **SSE 背压**：每连接 `asyncio.Queue(maxsize=_SSE_QUEUE_SIZE=100)`；`_broadcast` 队列满时丢最旧保最新（`put_nowait` 捕获 `QueueFull`，慢客户端不拖垮总线）
 - [ ] **`_tick_loop`**：定时 publish 四种 `CLOCK_TICK`（`content={"tick_type": ...}`）；`INITIATE_CHAT_CHECK` 走 `should_initiate_chat` 判定 + `initiate_chat`（发话才更新 `last_chat_at`）；首个活动块启动即触发（`last_block=0.0`），碎碎念/搭话不立即触发（`last_mutter`/`last_chat` 初始为 now，抑制启动洪峰）
@@ -74,6 +74,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from nyx.activity.facade import ActivityFacade
+from nyx.activity.material_store import MaterialStore
 from nyx.activity.store import ActivityStore
 from nyx.config import Config, load_config
 from nyx.db import Database, connect
@@ -99,7 +100,7 @@ from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
-from nyx.tools.file_io import DEFAULT_WRITE_ROOT, build_file_io_tool, file_io
+from nyx.tools.file_io import build_file_io_tool, file_io
 from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_search import build_web_search_tool
@@ -109,6 +110,7 @@ from nyx.types import (
     EvalReport,
     Event,
     LongTermDesire,
+    Material,
     Memory,
     Personality,
     SelfNarrative,
@@ -130,7 +132,6 @@ _SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧
 _CANON_FILES = ("canon.md",)
 _ASK_FILES = ("ask.md",)
 _MAX_UPLOAD_BYTES = 500_000                  # 上传读物大小上限（decision，可推翻）
-_UPLOADS_DIR = DEFAULT_WRITE_ROOT / "uploads"  # 上传读物落盘目录（workspace/uploads）
 
 
 @dataclass
@@ -461,12 +462,8 @@ def build_app(app: _App) -> FastAPI:
         return {"event_id": event.id, "filename": name, "path": path}
 
     @fast.get("/api/materials")
-    async def api_materials() -> dict[str, list[str]]:
-        try:
-            result = await file_io("list", str(_UPLOADS_DIR))
-            return {"files": [str(e) for e in result["entries"]]}
-        except FileNotFoundError:
-            return {"files": []}
+    async def api_materials() -> dict[str, list[Material]]:
+        return {"materials": await app.activity.list_materials()}
 
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:
@@ -535,6 +532,7 @@ async def build_app_context(config: Config) -> _App:
 
     inner_life_store = InnerLifeStore(db)
     activity_store = ActivityStore(db)
+    material_store = MaterialStore(db)
 
     # 循环依赖解环：_get_state 引用可变容器，运行时才求值
     state_holder: list[Callable[[], Awaitable[CurrentState]]] = []
@@ -543,7 +541,7 @@ async def build_app_context(config: Config) -> _App:
         return await state_holder[0]()
 
     activity = ActivityFacade(
-        activity_store, bus, llm, evaluator, tools, desire,
+        activity_store, material_store, bus, llm, evaluator, tools, desire,
         _get_state, config.activity, config.exploration,
     )
     inner_life = InnerLifeFacade(

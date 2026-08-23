@@ -13,9 +13,9 @@ describe("InnerWorld 内心世界抽屉", () => {
     useInnerLifeStore.setState({ current: null, loading: false, error: null });
   });
 
-  it("渲染 6 个标签，默认激活「内在」", () => {
+  it("渲染 7 个标签，默认激活「内在」", () => {
     render(<InnerWorld open onClose={() => {}} />);
-    for (const label of ["内在", "欲望", "活动", "产出", "叙事", "资料"]) {
+    for (const label of ["内在", "欲望", "活动", "产出", "叙事", "资料", "记忆"]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
     expect(screen.getByRole("button", { name: "内在" })).toHaveAttribute(

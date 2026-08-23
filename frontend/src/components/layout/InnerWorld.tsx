@@ -3,10 +3,11 @@ import InnerStatePanel from "../inner/InnerStatePanel";
 import ActivityPanel from "../panels/ActivityPanel";
 import DesiresPanel from "../panels/DesiresPanel";
 import MaterialsPanel from "../panels/MaterialsPanel";
+import MemoryPanel from "../panels/MemoryPanel";
 import NarrativePanel from "../panels/NarrativePanel";
 import OutputsPanel from "../panels/OutputsPanel";
 
-// 内心世界（右侧滑出抽屉）：6 个观测面板（内在/欲望/活动/产出/叙事/资料）从「设置」移出，
+// 内心世界（右侧滑出抽屉）：7 个观测面板（内在/欲望/活动/产出/叙事/资料/记忆）从「设置」移出，
 // 收进对话框右侧的「内心世界」抽屉，默认收起、点对话框头部「内心」滑出。复用 side-panel 的
 // 标签/内容样式（同款暖色卡片），仅容器位置不同（固定右侧 + transform 滑入滑出）。
 // 仅挂载当前 tab（切换即重新 refresh；未激活面板不占 DOM），同 SidePanel。
@@ -19,6 +20,7 @@ const TABS: TabDef[] = [
   { label: "产出", Panel: OutputsPanel },
   { label: "叙事", Panel: NarrativePanel },
   { label: "资料", Panel: MaterialsPanel },
+  { label: "记忆", Panel: MemoryPanel },
 ];
 
 type InnerWorldProps = {

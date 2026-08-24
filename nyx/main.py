@@ -348,7 +348,7 @@ class _AnnotationPayload(BaseModel):
 
 
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：20 个端点（19 个 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：21 个端点（20 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")
@@ -366,6 +366,10 @@ def build_app(app: _App) -> FastAPI:
         tag: str | None = None, type: MemoryType | None = None
     ) -> list[Memory]:
         return await app.memory.list_memories(tag, type)
+
+    @fast.get("/api/memories/search")
+    async def api_memory_search(q: str) -> list[Memory]:
+        return await app.memory.search(q)
 
     @fast.get("/api/desires")
     async def api_desires() -> DesireState:

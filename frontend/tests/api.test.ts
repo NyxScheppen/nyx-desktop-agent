@@ -18,6 +18,7 @@ import {
   getTokens,
   postChat,
   postObserve,
+  searchMemories,
   uploadFile,
 } from "../src/api/client";
 
@@ -182,6 +183,15 @@ describe("api/client", () => {
     await getMemories();
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/memories");
+  });
+
+  it("searchMemories：query 拼进 URL（encodeURIComponent）", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await searchMemories("猫");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories/search?q=%E7%8C%AB");
   });
 
   it("getEval：可选 limit 拼进 query", async () => {

@@ -19,7 +19,7 @@
 - [ ] **注册内置工具**：`local_search` + `file_io` 恒注册，`web_search` 仅当 `config.exploration.web_enabled` 注册（06-tools 完成定义）；探索链无条件调 `local_search`/`file_io`，缺失会 `KeyError`
 - [ ] **seed 幂等**（表空才写）：inner_life 四张单行表（personality 8/8/2/6/7、values 8/6/9/5、energy 100/energetic、narrative 初始 identity）；desire 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）+ 3 个初始长期欲望（canon §4）
 - [ ] **订阅覆盖 ROUTING/TICK_ROUTING**：`USER_MESSAGE`→interrupt+reply、`USER_MATERIAL`→read_material、`OBSERVATION_STATE`→apply_event+add_value、`DESIRE_GENERATED`→on_desire_generated、`DESIRE_SATISFIED`→apply_event、`ACTIVITY_END`→add_value+apply_event+remember_activity、`REFLECTION`→apply_event、`CLOCK_TICK`→按 tick_type 分发四路
-- [ ] **20 个端点**：tech-ref §4 的 19 个 REST + `GET /api/events`（SSE）；除 upload/materials 外每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
+- [ ] **21 个端点**：tech-ref §4 的 20 个 REST + `GET /api/events`（SSE）；除 upload/materials 外每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
 - [ ] **`POST /api/chat`**：构造 `USER_MESSAGE` 事件（`source=EXTERNAL`、`correlation_id=自身 id`）→ `publish` → 返回 `{event_id}`（回复走 SSE）
 - [ ] **请求体校验**：`POST /api/chat`/`/api/export`/`/api/observe`/`/api/annotations` 用 pydantic 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`/`_AnnotationPayload`），缺键/类型错 → 422（非 500）；`presence` 仅 `online`/`away`/`busy`（`Literal` 校验，拼写错误 422 而非静默禁用搭话）；`window_title` 可选（默认空串）
 - [ ] **读书笔记 5 个端点**：`GET /api/reading-notes`（`list_reading_notes(limit)`）、`DELETE /api/reading-notes/{note_id}`、`GET /api/annotations?target_id=`、`POST /api/annotations`（body `{target_id, content}` → `add_annotation`，author 固定 "user"）、`DELETE /api/annotations/{annotation_id}`——每个 = `ActivityFacade` 读书笔记 CRUD 方法的薄封装
@@ -405,7 +405,7 @@ class _AnnotationPayload(BaseModel):
 
 
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：20 个端点（19 个 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：21 个端点（20 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")
@@ -764,6 +764,7 @@ if __name__ == "__main__":
     - [ ] `GET /api/state` → `CurrentState` JSON（枚举字段为 `.value` 字符串）
     - [ ] `POST /api/chat` → 返回 `{event_id}`；`bus.list_events()` 含一条 `USER_MESSAGE`（`source=external`、`correlation_id == id`）
     - [ ] `GET /api/memories?tag=&type=` → `Memory[]`（`type` query 转 `MemoryType` 枚举）
+    - [ ] `GET /api/memories/search?q=` → `Memory[]`（委托 `memory.search(q)`，三层语义检索）
     - [ ] `POST /api/observe` → 返回 `{event_id}`；`bus.list_events()` 含 `OBSERVATION_STATE`（content `{presence}`）
     - [ ] `POST /api/export` `format=json` / `md` 透传 `memory.export` 结果，返回原始字符串（非 JSON 二次编码：json 以 `[` 开头、md 无外层引号包裹），`content-type` 分别 `application/json` / `text/markdown`；`format=bogus` → `ValueError`（Facade 抛）
     - [ ] 请求体校验：`POST /api/chat` 缺 `message` → 422；`POST /api/observe` `presence=Online`（大小写拼写错误）→ 422（`Literal` 校验，不 publish 事件、不改 `last_presence`）

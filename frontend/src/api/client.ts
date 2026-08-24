@@ -87,6 +87,12 @@ export async function getMemories(
   return request<Memory[]>(`${BASE_URL}/api/memories${qs ? `?${qs}` : ""}`);
 }
 
+export async function searchMemories(query: string): Promise<Memory[]> {
+  return request<Memory[]>(
+    `${BASE_URL}/api/memories/search?q=${encodeURIComponent(query)}`,
+  );
+}
+
 export async function getEval(limit?: number): Promise<EvalReport[]> {
   const qs = limit !== undefined ? `?limit=${limit}` : "";
   return request<EvalReport[]>(`${BASE_URL}/api/eval${qs}`);

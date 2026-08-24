@@ -638,6 +638,7 @@
 | `test_state_endpoint` | 功能正确 | `GET /api/state` → `CurrentState` JSON，枚举字段为 `.value` 字符串（`emotion=neutral`、`energy_state=okay`） |
 | `test_chat_endpoint` | 功能正确 | `POST /api/chat` → `{event_id}`；bus 收一条 `USER_MESSAGE`（source EXTERNAL、`correlation_id == id`） |
 | `test_memories_endpoint` | 功能正确 | `GET /api/memories?tag=&type=` → `Memory[]`；`type` query 转 `MemoryType` 枚举传入 facade |
+| `test_memory_search_endpoint` | 功能正确 | `GET /api/memories/search?q=` → `Memory[]`；`q` query 传入 `memory.search`（fake 记 `search_calls`） |
 | `test_observe_endpoint` | 功能正确 | `POST /api/observe`（`{presence, window_title}`）→ `{event_id}`；bus 收 `OBSERVATION_STATE`（content `{presence, window_title}`）、`last_presence`/`last_window_title` 更新 |
 | `test_export_endpoint` | 功能正确 | `POST /api/export` `json`/`md` 返回原始字符串（非 JSON 二次编码），`content-type` 分别 `application/json`/`text/markdown` |
 | `test_export_bogus_raises` | 边界鲁棒 | `format=bogus` → Facade 抛 `ValueError`（端点不吞，透出为 500） |
@@ -658,7 +659,7 @@
 | `test_add_annotation_endpoint` | 功能正确 | `POST /api/annotations` body `{target_id, content}` → 返回新批注 + `fake.added_annotations` 记 `(target_id, content)` |
 | `test_delete_annotation_endpoint` | 功能正确 | `DELETE /api/annotations/{annotation_id}` → `{deleted}` 且 `fake.deleted_annotations` 记到该 id |
 
-**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）；`test_supervise_bus_breaks_on_flapping` / `test_main_propagates_serve_failure` / `test_main_propagates_tick_failure` 于第三轮 review 追加（恢复信号改连续成功阈值防抖动假自愈 + main 竞速传播所有先完成者）；`test_load_ask_reads_ask_file` / `test_load_ask_missing_file_fails` 于「主动提问段按需注入」阶段追加（`_load_ask` 读 ask.md / 缺失 fail-fast）。`test_observe_endpoint` 于「活动填实（观察填实）」轮改为收可选 `window_title`（`_ObservePayload.window_title`、`OBSERVATION_STATE` content 加 `window_title`、`app.last_window_title` 落组合根）；`test_materials_endpoint_returns_progress` 于「读书连贯+进度」轮追加（`/api/materials` 由纯文件名改为书库进度：`list_materials` 委托 `MaterialStore.list_all`，响应 `{materials: [Material]}`）；`test_reading_notes_endpoint` / `test_delete_reading_note_endpoint` / `test_annotations_endpoint` / `test_add_annotation_endpoint` / `test_delete_annotation_endpoint` 于「读书/创作借鉴」轮追加（读书笔记 5 端点：清单/删除/批注增删查）。
+**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）；`test_supervise_bus_breaks_on_flapping` / `test_main_propagates_serve_failure` / `test_main_propagates_tick_failure` 于第三轮 review 追加（恢复信号改连续成功阈值防抖动假自愈 + main 竞速传播所有先完成者）；`test_load_ask_reads_ask_file` / `test_load_ask_missing_file_fails` 于「主动提问段按需注入」阶段追加（`_load_ask` 读 ask.md / 缺失 fail-fast）。`test_observe_endpoint` 于「活动填实（观察填实）」轮改为收可选 `window_title`（`_ObservePayload.window_title`、`OBSERVATION_STATE` content 加 `window_title`、`app.last_window_title` 落组合根）；`test_materials_endpoint_returns_progress` 于「读书连贯+进度」轮追加（`/api/materials` 由纯文件名改为书库进度：`list_materials` 委托 `MaterialStore.list_all`，响应 `{materials: [Material]}`）；`test_reading_notes_endpoint` / `test_delete_reading_note_endpoint` / `test_annotations_endpoint` / `test_add_annotation_endpoint` / `test_delete_annotation_endpoint` 于「读书/创作借鉴」轮追加（读书笔记 5 端点：清单/删除/批注增删查）；`test_memory_search_endpoint` 于「记忆前端搜索/显示优化」轮追加（`/api/memories/search` 委托 `memory.search` 三层检索）。
 
 ## frontend-sse（SSE 数据流：useSSE + dispatchEvent 分发表）
 
@@ -695,6 +696,7 @@
 | `getActivityResults > GET /api/activity/results` | 功能正确 | 请求 URL、解析 `Activity[]` 直返（跨天历史产出） |
 | `getMemories > query 拼装` | 功能正确 | `tag`/`type` 拼进 query（`?tag=user&type=long_term`） |
 | `getMemories > 无参数不带 query` | 边界鲁棒 | 无参 → 请求 `/api/memories`（不带 `?`） |
+| `searchMemories > query 拼进 URL` | 功能正确 | `searchMemories("猫")` → 请求 `/api/memories/search?q=%E7%8C%AB`（`encodeURIComponent`） |
 | `getEval > 可选 limit 拼进 query` | 功能正确 | `getEval(5)` → `/api/eval?limit=5` |
 | `getTokens > 可选 since 拼进 query` | 功能正确 | `getTokens(1000)` → `/api/tokens?since=1000` |
 | `getEventsLog > limit/event_type/correlation_id 拼进 query` | 功能正确 | 三参拼进 query（`?limit=20&event_type=speak&correlation_id=c1`） |
@@ -709,7 +711,7 @@
 | `addAnnotation > POST /api/annotations` | 功能正确 | 请求 URL/method、body `{target_id, content}`、解析 `Annotation` 直返 |
 | `deleteAnnotation > DELETE /api/annotations/{id}` | 功能正确 | 请求 URL/method、解析 `{deleted}` 直返 |
 
-**功能阶段**：frontend 05-client 实现时编写（mock `fetch` 断言端点/方法/请求体键 + 错误契约；验证管道正确——键零映射、错误上抛，不验证视觉）；`非 2xx detail 空串兜底` 于本轮 review 追加（Finding B：空串 detail 致 `Error.message=""` 被 UI 误判为无错误）；六个新端点（`getDesires`/`getActivity`/`getMemories`/`getEval`/`getTokens`/`getEventsLog`）于前端面板落地轮追加（快照/事件日志端点 query 拼装 + 解析）；`getNarrative` / `exportMemories` / `uploadFile` / `getMaterials` 于「喂资料/上传课本」轮追加（自我叙事快照 + 记忆导出裸文本 + 上传 FormData + 资料清单）。`postObserve` 于「活动填实（观察填实）」轮改为两参 `postObserve(presence, windowTitle)`（body 加 `window_title`）；`getActivityResults` 于「产出面板」轮追加（跨天历史产出端点）；`getMaterials` 于「读书连贯+进度」轮改为解析 `{materials: Material[]}`（书库进度，不再 `string[]`）。`getReadingNotes` / `deleteReadingNote` / `getAnnotations` / `addAnnotation` / `deleteAnnotation` 于「读书/创作借鉴」轮追加（读书笔记 CRUD + 批注 5 端点）。
+**功能阶段**：frontend 05-client 实现时编写（mock `fetch` 断言端点/方法/请求体键 + 错误契约；验证管道正确——键零映射、错误上抛，不验证视觉）；`非 2xx detail 空串兜底` 于本轮 review 追加（Finding B：空串 detail 致 `Error.message=""` 被 UI 误判为无错误）；六个新端点（`getDesires`/`getActivity`/`getMemories`/`getEval`/`getTokens`/`getEventsLog`）于前端面板落地轮追加（快照/事件日志端点 query 拼装 + 解析）；`getNarrative` / `exportMemories` / `uploadFile` / `getMaterials` 于「喂资料/上传课本」轮追加（自我叙事快照 + 记忆导出裸文本 + 上传 FormData + 资料清单）。`postObserve` 于「活动填实（观察填实）」轮改为两参 `postObserve(presence, windowTitle)`（body 加 `window_title`）；`getActivityResults` 于「产出面板」轮追加（跨天历史产出端点）；`getMaterials` 于「读书连贯+进度」轮改为解析 `{materials: Material[]}`（书库进度，不再 `string[]`）。`getReadingNotes` / `deleteReadingNote` / `getAnnotations` / `addAnnotation` / `deleteAnnotation` 于「读书/创作借鉴」轮追加（读书笔记 CRUD + 批注 5 端点）；`searchMemories > query 拼进 URL` 于「记忆前端搜索/显示优化」轮追加（`/api/memories/search` 端点函数 `encodeURIComponent` 拼装）。
 
 ## frontend-stores（Zustand stores：chatStore + innerLifeStore + 四个快照 store + settingsStore）
 
@@ -898,3 +900,16 @@
 | `dispatch > activity_end → refresh 后按 activity_id 找到产出并 announce` | 功能正确 | `activity_end` 触发 `refresh()` 后，从 `data.schedule` 按 `activity_id` 找 completed 活动，`activityAnnouncement` 产出以 `kind="activity"` 进 announceStore |
 
 **功能阶段**：frontend「增强交互性」轮编写（常驻状态条 + 头像旁气泡 + 活动产出三件套；验证管道正确——`activityResult` 纯函数拼装、`announceStore` 追加/到时摘除、dispatch 把 `mutter` 与 `activity_end` 额外路由到 announceStore，不验证视觉淡出样式）。`formatResult` 从 ActivityPanel 本地函数抽提为共享库（`lib/activityResult.ts`），供活动产出气泡与状态条复用；`formatOutputBody` 于「产出面板」轮追加（独立产出面板的完整正文，与单行摘要 `formatResult` 互补）。
+
+## frontend-memory-panel（记忆面板：MemoryPanel 搜索/筛选/排序/展开）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `渲染清单：摘要 + 召回次数 + 时间` | 功能正确 | mock fetch 返回记忆 → 请求 `/api/memories`；摘要上屏 + `召回×N` + `YYYY-MM-DD` 时间 |
+| `输入搜索词 → 调后端语义搜索并替换列表` | 功能正确 | 输入「猫」→ 300ms 防抖后请求 `/api/memories/search?q=%E7%8C%AB`，列表替换为搜索结果 |
+| `tag 筛选：只显示匹配标签` | 功能正确 | 选 `user` 标签 → 只显示 tag=user 的记忆（本地过滤） |
+| `类型筛选：只显示匹配类型` | 功能正确 | 选 `long_term` → 只显示 long_term 记忆（本地过滤） |
+| `排序：按召回次数降序` | 功能正确 | 选「按召回次数」→ 列表按 `recall_count` 降序（首项召回多者） |
+| `点击展开完整内容` | 功能正确 | 点摘要 → `content` 完整上屏；再点收起（`expandedId` 切换） |
+
+**功能阶段**：frontend「记忆前端搜索/显示优化」轮编写（RTL + 真实 store + mock fetch；验证管道正确——搜索走后端语义检索、tag/类型筛选与排序对已拉取列表本地处理、点击展开完整内容，不验证视觉）。`searchMemories` 端点函数本身由 frontend-client 覆盖（`searchMemories > query 拼进 URL`）。

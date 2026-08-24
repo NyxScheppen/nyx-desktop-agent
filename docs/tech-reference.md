@@ -38,6 +38,7 @@
 | POST | `/api/chat` | `{message: str}` | `{event_id: str}`（回复走 SSE） |
 | POST | `/api/observe` | `{presence: str, window_title: str}` | `{event_id: str}`（观察状态入口，前端 Tauri 判定后上报） |
 | GET | `/api/memories?tag=&type=` | query 过滤 | `Memory[]` |
+| GET | `/api/memories/search?q=` | query 语义检索 | `Memory[]`（三层检索：关键词/向量/联想） |
 | GET | `/api/desires` | — | `{values, short_term[], long_term[]}` |
 | GET | `/api/activity` | — | `{current, schedule[]}` |
 | GET | `/api/activity/results` | — | `Activity[]`（跨天历史产出，倒序） |
@@ -55,7 +56,7 @@
 | DELETE | `/api/annotations/{annotation_id}` | — | `{deleted: str}` |
 
 > REST 端点分两类：
-> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/eval` → `Evaluator.list_reports(limit)`；`/api/tokens` → `Evaluator.list_token_usage(since)`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`；`/api/reading-notes` → `ActivityFacade.list_reading_notes(limit)`；`DELETE /api/reading-notes/{note_id}` → `ActivityFacade.delete_reading_note(note_id)`；`/api/annotations` → `ActivityFacade.list_annotations(target_id)` / `add_annotation(target_id, content)`；`DELETE /api/annotations/{annotation_id}` → `ActivityFacade.delete_annotation(annotation_id)`
+> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/eval` → `Evaluator.list_reports(limit)`；`/api/tokens` → `Evaluator.list_token_usage(since)`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`；`/api/reading-notes` → `ActivityFacade.list_reading_notes(limit)`；`DELETE /api/reading-notes/{note_id}` → `ActivityFacade.delete_reading_note(note_id)`；`/api/annotations` → `ActivityFacade.list_annotations(target_id)` / `add_annotation(target_id, content)`；`DELETE /api/annotations/{annotation_id}` → `ActivityFacade.delete_annotation(annotation_id)`
 > - **外部输入入口**：`/api/chat`、`/api/observe`、`/api/upload` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 publish `USER_MATERIAL`（bus 路由：注册书库 + 发起读书活动）。回复/后续产出走 SSE。
 
 ### SSE（`GET /api/events`）

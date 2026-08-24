@@ -69,11 +69,16 @@ class _FakeMemory:
     def __init__(self) -> None:
         self.list_calls: list[tuple[str | None, MemoryType | None]] = []
         self.export_calls: list[str] = []
+        self.search_calls: list[str] = []
 
     async def list_memories(
         self, tag: str | None = None, type: MemoryType | None = None
     ) -> list[Memory]:
         self.list_calls.append((tag, type))
+        return [_mem()]
+
+    async def search(self, query: str) -> list[Memory]:
+        self.search_calls.append(query)
         return [_mem()]
 
     async def export(self, fmt: str) -> str:
@@ -182,6 +187,15 @@ async def test_memories_endpoint() -> None:
     assert resp.status_code == 200
     assert [m["type"] for m in resp.json()] == ["short_term"]
     assert memory.list_calls == [("user", MemoryType.LONG_TERM)]
+
+
+async def test_memory_search_endpoint() -> None:
+    memory = _FakeMemory()
+    async with _client(_app(_mk_state(), _FakeBus(), memory)) as client:
+        resp = await client.get("/api/memories/search", params={"q": "猫"})
+    assert resp.status_code == 200
+    assert [m["type"] for m in resp.json()] == ["short_term"]
+    assert memory.search_calls == ["猫"]
 
 
 async def test_observe_endpoint() -> None:

@@ -38,9 +38,7 @@ export default function EvalPanel() {
                     {r.module}/{r.type}
                   </span>
                   <span className="panel-item__meta">
-                    {SCORE_LABELS.format}={r.scores.format.toFixed(2)}{" "}
-                    {SCORE_LABELS.ooc}={r.scores.ooc.toFixed(2)}{" "}
-                    {SCORE_LABELS.relevance}={r.scores.relevance.toFixed(2)}
+                    {SCORE_LABELS.ooc}={r.scores.ooc.toFixed(2)}
                   </span>
                 </li>
               ))}

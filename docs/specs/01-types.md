@@ -159,10 +159,8 @@ class Values(TypedDict):                   # 三观，1-10
     optimism: float
 
 
-class EvalScores(TypedDict):               # eval 三层得分
-    format: float
+class EvalScores(TypedDict):               # eval OOC 得分
     ooc: float
-    relevance: float
 
 
 class TokenUsageDict(TypedDict):           # 单次 LLM 记账 {input, output}
@@ -369,7 +367,7 @@ class TokenUsage:           # 一次 LLM 调用记账（对应 token_usage 表�
 |---|---|---|
 | `CurrentState.personality` | `Personality` | 固定 5 键（Big Five） |
 | `CurrentState.values` | `Values` | 固定 4 键（三观） |
-| `EvalReport.scores` | `EvalScores` | 固定 3 键（format/ooc/relevance） |
+| `EvalReport.scores` | `EvalScores` | 固定 1 键（ooc） |
 | `LLMOutput.token_usage` / `EvalReport.token_usage` | `TokenUsageDict` | 固定 2 键（input/output） |
 | `LLMOutput.tool_calls` | `list[dict[str, Any]]` | bind_tools 的工具调用，异构载荷（name/args 等） |
 | `Event.content` | `dict[str, Any]` | 形状随 `EventType` 变 |

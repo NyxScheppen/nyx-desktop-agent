@@ -45,5 +45,5 @@ def test_typed_dict_keys() -> None:
         "altruism",
         "optimism",
     }
-    assert set(get_type_hints(EvalScores)) == {"format", "ooc", "relevance"}
+    assert set(get_type_hints(EvalScores)) == {"ooc"}
     assert set(get_type_hints(TokenUsageDict)) == {"input", "output"}

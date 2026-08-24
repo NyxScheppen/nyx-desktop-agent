@@ -1,20 +1,16 @@
-"""eval Evaluator：三层评分 + token 记账 + 报告落库。基础设施（非 Facade），
+"""eval Evaluator：OOC 评分 + token 记账 + 报告落库。基础设施（非 Facade），
 直接持 db（对齐 EventBus）。
 """
 import json
 import logging
-import random
 import time
 import uuid
 
 import aiosqlite
 
-from nyx.config import EvalConfig
 from nyx.db import Database
-from nyx.eval.judge import judge_relevance, should_judge
 from nyx.eval.ooc_embed import build_baseline, is_voice_type, ooc_embed_score
-from nyx.eval.rules import ooc_score, validate_structure
-from nyx.llm.client import LlmClient
+from nyx.eval.rules import ooc_score
 from nyx.memory.retrieval import EmbedFn
 from nyx.types import EvalReport, EvalScores, LLMOutput, TokenUsage
 
@@ -22,33 +18,18 @@ _logger = logging.getLogger(__name__)
 
 
 class Evaluator:
-    """对所有 LLM 产出做三层评分 + token 记账（原则 4 + 原则 2）。"""
+    """对所有 LLM 产出做 OOC 评分 + token 记账（原则 4 + 原则 2）。"""
 
-    def __init__(
-        self, db: Database, llm: LlmClient, config: EvalConfig,
-        embed: EmbedFn | None = None,
-    ) -> None:
+    def __init__(self, db: Database, embed: EmbedFn | None = None) -> None:
         self._db = db
-        self._llm = llm
-        self._sample_rate = config.judge_sample_rate
         self._embed = embed          # None = OOC 第 2 档关闭（仅关键词）
         self._baseline: list[list[float]] | None = None   # 语料向量惰性缓存
 
     async def evaluate(self, output: LLMOutput) -> EvalReport:
-        """三层：结构 → 规则 → judge（抽样）。
-
-        落 token_usage + eval_report，返回 EvalReport。
-        """
+        """OOC 评分 + 落 token_usage + eval_report，返回 EvalReport。"""
         scores: EvalScores = {
-            "format": validate_structure(output.content),
             "ooc": await self._ooc(output),
-            "relevance": 0.0,
         }
-        judge_usage: TokenUsage | None = None
-        if should_judge(output.type, self._sample_rate, random.random()):
-            scores["relevance"], judge_output = await judge_relevance(self._llm, output)
-            if judge_output is not None:
-                judge_usage = self._to_token_usage(judge_output)
         report = EvalReport(
             id=str(uuid.uuid4()),
             output_id=output.id,
@@ -63,16 +44,14 @@ class Evaluator:
         async with self._db.lock:
             await self._insert_report(report)
             await self._insert_token_usage(output_usage)
-            if judge_usage is not None:
-                await self._insert_token_usage(judge_usage)
-            await self._db.conn.commit()   # 写后必 commit，三连 INSERT 原子提交
+            await self._db.conn.commit()   # 写后必 commit，两连 INSERT 原子提交
         return report
 
     async def _ooc(self, output: LLMOutput) -> float:
         """第 1 档关键词 + 第 2 档 embedding 相似度，取 min 合并。
 
         - 非 voice 输出 / 未注入 embed：仅关键词（第 2 档跳过）。
-        - embedding 失败：best-effort 回退关键词，不崩 evaluate（对齐 judge）。
+        - embedding 失败：best-effort 回退关键词，不崩 evaluate。
         """
         keyword = ooc_score(output.content)
         if self._embed is None or not is_voice_type(output.type):

@@ -31,10 +31,8 @@ class Values(TypedDict):                   # 三观，1-10
     optimism: float
 
 
-class EvalScores(TypedDict):               # eval 三层得分
-    format: float
+class EvalScores(TypedDict):               # eval OOC 得分
     ooc: float
-    relevance: float
 
 
 class TokenUsageDict(TypedDict):           # 单次 LLM 记账 {input, output}

@@ -225,9 +225,7 @@ export type Memory = {
 
 // ---- eval / token（15-eval / nyx/types.py）----
 export type EvalScores = {
-  format: number;
   ooc: number;
-  relevance: number;
 };
 
 export type EvalReport = {

@@ -43,6 +43,3 @@ vision:
   model: llava                # 本地视觉模型 tag（换成实际 pull 的，如 qwen2-vl）
   # base_url: http://localhost:11434/v1   # 可选：覆盖视觉 endpoint
   interval_seconds: 60        # 抓屏周期（秒）
-
-eval:
-  judge_sample_rate: 0.1      # LLM-judge 抽样比例

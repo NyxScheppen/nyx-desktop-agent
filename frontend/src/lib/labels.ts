@@ -86,11 +86,9 @@ export const VALUES_POLES: Record<string, { low: string; high: string }> = {
   optimism: { low: "悲观", high: "乐观" },
 };
 
-// eval 评分键名 → 中文（EvalScores 三字段）
+// eval 评分键名 → 中文（EvalScores 单字段）
 export const SCORE_LABELS: Record<string, string> = {
-  format: "格式",
   ooc: "出戏",
-  relevance: "相关性",
 };
 
 /** 查中文标签，未收录回退原值（string 键，用于自由/宽松字段）。 */

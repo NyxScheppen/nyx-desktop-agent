@@ -1,13 +1,4 @@
-# 测试需访问 _MAX_CONTENT_LEN（spec 测试要点要求的边界用例）
-# pyright: reportPrivateUsage=false
-from nyx.eval.rules import _MAX_CONTENT_LEN, ooc_score, validate_structure
-
-
-def test_validate_structure() -> None:
-    assert validate_structure("") == 0.0
-    assert validate_structure("   ") == 0.0
-    assert validate_structure("hello") == 1.0
-    assert validate_structure("x" * (_MAX_CONTENT_LEN + 1)) == 0.0
+from nyx.eval.rules import ooc_score
 
 
 def test_ooc_score() -> None:

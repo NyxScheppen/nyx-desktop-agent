@@ -511,7 +511,7 @@ async def build_app_context(config: Config) -> _App:
 
     memory_store = MemoryStore(db)
     embed = build_embed(config.embedding.model)  # MVP 默认启用向量层；测试注入 None
-    evaluator = Evaluator(db, llm, config.eval, embed)  # embed 供 OOC 第 2 档复用
+    evaluator = Evaluator(db, embed)  # embed 供 OOC 第 2 档复用
     retrieval = MemoryRetrieval(memory_store, embed)
     memory = MemoryFacade(
         memory_store, retrieval, bus, llm, evaluator, config.memory, embed

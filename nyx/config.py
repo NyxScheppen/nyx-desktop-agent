@@ -83,11 +83,6 @@ class VisionConfig:
 
 
 @dataclass
-class EvalConfig:
-    judge_sample_rate: float = 0.1
-
-
-@dataclass
 class Config:
     llm: LlmConfig = field(default_factory=LlmConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
@@ -97,7 +92,6 @@ class Config:
     expression: ExpressionConfig = field(default_factory=ExpressionConfig)
     exploration: ExplorationConfig = field(default_factory=ExplorationConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
-    eval: EvalConfig = field(default_factory=EvalConfig)
 
 
 def _build(dc: Any, raw: Any) -> Any:
@@ -201,8 +195,7 @@ def validate_config(cfg: Config) -> None:
     # 数 ∈ [0, 1]
     for path, v in (("memory.freshness_decay", cfg.memory.freshness_decay),
                     ("desire.peak_threshold", cfg.desire.peak_threshold),
-                    ("expression.slow_threshold", cfg.expression.slow_threshold),
-                    ("eval.judge_sample_rate", cfg.eval.judge_sample_rate)):
+                    ("expression.slow_threshold", cfg.expression.slow_threshold)):
         _unit_interval(v, path)
 
     _pos_num(cfg.desire.value_decay, "desire.value_decay")          # 数 > 0

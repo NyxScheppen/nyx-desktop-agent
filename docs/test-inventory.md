@@ -204,25 +204,13 @@
 
 **功能阶段**：08-memory-retrieval 实现时编写；`test_rank_by_cosine` 于 09 评审修复阶段新增（跨模块去重：抽 `rank_by_cosine` 供 facade 复用）。`test_search_sources_*` 与 merge_order 的 sources 断言于 V2「per-result 来源标记」轮新增（`search()` 按层标注 `Memory.sources`，翻转 MVP「不带来源」）。
 
-## 15-eval（三层评分 + token 记账）
+## 15-eval（OOC 评分 + token 记账）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_validate_structure` | 功能正确 | 空 `""` / 纯空白 `"   "` / 超长（`_MAX_CONTENT_LEN+1`）→ 0.0；正常 → 1.0 |
 | `test_ooc_score` | 功能正确 | 无命中默认 1.0；黑 1 → 0.5；黑 2 → 0.0；黑 3 → 0.0（封顶）；黑 1 白 1 → 1.0（抵消）；白 2 → 1.0（封顶不越界） |
-| `test_should_judge` | 功能正确 | `judge`/`tool` 输出不递归（False）；`roll < sample_rate` 命中/未命中各一例 |
-| `test_judge_relevance_returns_score` | 功能正确 | fake 返回 `{"score":4}` → `4.0`；judge 调用 `type=="judge"`、`module=="eval"`、`correlation_id` 透传 |
-| `test_judge_relevance_tolerates_bad_json` | 边界鲁棒 | `[`（解析失败）/ `[]`（非 dict）/ `{"score":"abc"}`（非数字）→ 容错 0.0 不 raise |
-| `test_judge_relevance_clamps` | 边界鲁棒 | `{"score":100}`→5.0、`{"score":0.5}`→1.0、`{"score":4}`→4.0（clamp [1,5]） |
-| `test_judge_relevance_transport_failure` | 边界鲁棒 | fake `complete` 抛异常 → `(0.0, None)` 不 raise（judge 传输失败无产出不记账） |
-| `test_judge_relevance_rejects_bool_score` | 边界鲁棒 | `{"score": true}` → 0.0 且 judge_output 非 None（堵 `float(True)==1.0` 的坑） |
-| `test_judge_relevance_overflow` | 边界鲁棒 | `{"score": 10**400}`（超大 int）→ 0.0 且 judge_output 非 None（`float()` 溢出不漏出崩 evaluate） |
-| `test_judge_relevance_rejects_nan_inf` | 边界鲁棒 | `{"score": NaN}` / `Infinity` / `-Infinity` → 0.0 且 judge_output 非 None（`float()` 对它们不抛、`isfinite` 兜底） |
-| `test_evaluate_sampled` | 功能正确 | `judge_sample_rate=1.0` → `relevance==4.0`、1 条 eval_report、2 条 token_usage（judge + 原 output） |
-| `test_evaluate_not_sampled` | 功能正确 | `judge_sample_rate=0.0` → `relevance==0.0`、1 条 token_usage（仅原 output） |
-| `test_evaluate_judge_transport_failure` | 边界鲁棒 | `judge_sample_rate=1.0` 但 fake `complete` 抛异常 → `relevance==0.0`、仅 1 条 token_usage（judge 无产出不记账），evaluate 不 raise |
 | `test_evaluate_persists` | 功能正确 | 落库后重开连接 → `list_reports`/`list_token_usage` 仍各 1 条（持久化往返） |
-| `test_list_reports_roundtrip` | 功能正确 | 两条 report；`token_usage` JSON 往返 `{input,output}`；`scores.format` 为 0.0/1.0 |
+| `test_list_reports_roundtrip` | 功能正确 | 两条 report；`token_usage` JSON 往返 `{input,output}`；`scores == {"ooc": 1.0}` |
 | `test_list_token_usage_since` | 功能正确 | `since=最新 created_at` → 1 条；`since=+1` → 0 条（`>=` 边界） |
 | `test_is_voice_type` | 功能正确 | `speak`/`initiate_chat`/`think` → True；`tool`/`judge`/`scene_memory` → False |
 | `test_build_baseline_len` | 功能正确 | baseline 长度 == `len(NYX_CORPUS)`，逐条嵌入 |
@@ -232,7 +220,7 @@
 | `test_evaluate_ooc_embed_combine` | 功能正确 | 注入 mock embed + voice 输出 `speak` → `ooc == min(关键词 1.0, embed 0.0) == 0.0` |
 | `test_evaluate_ooc_non_voice_skips_embed` | 边界鲁棒 | 非 voice 输出 `scene_memory` → embed 不触发（调用记录空）、`ooc` 仅关键词 `== 1.0` |
 
-**功能阶段**：15-eval 实现时编写（先于 09-facade，因 09 依赖 Evaluator）；`test_judge_relevance_transport_failure` / `test_judge_relevance_rejects_bool_score` / `test_evaluate_judge_transport_failure` 于 09 评审修复阶段编写（高2：judge LLM 调用移进 try；低5：布尔 score 拒收）；`test_judge_relevance_overflow` 于 15 评审复核阶段编写（补 `float()` 溢出容错）；`test_judge_relevance_rejects_nan_inf` 于「medium 评审修复」轮追加（`math.isfinite` 兜底 NaN/Infinity 不被 clamp 漏成满分）；`test_is_voice_type` / `test_build_baseline_len` / `test_ooc_embed_score_*` / `test_evaluate_ooc_*` 于 V2「embedding 相似度 OOC（第 2 档）」轮编写（ooc_embed.py 语料 + 两档合并：max 余弦 / 阈值映射、min 合并、voice 门控）。
+**功能阶段**：15-eval 实现时编写（先于 09-facade，因 09 依赖 Evaluator）；`test_is_voice_type` / `test_build_baseline_len` / `test_ooc_embed_score_*` / `test_evaluate_ooc_*` 于 V2「embedding 相似度 OOC（第 2 档）」轮编写（ooc_embed.py 语料 + 两档合并：max 余弦 / 阈值映射、min 合并、voice 门控）。**「砍三层→单层」轮（接 LangSmith 规划）删除**：`test_validate_structure`（format 结构校验）、`test_should_judge` / `test_judge_relevance_*`（LLM-judge）、`test_evaluate_sampled` / `test_evaluate_not_sampled` / `test_evaluate_judge_transport_failure`（抽样 / judge 记账）。
 
 ## 09-memory-facade（记忆门面）
 

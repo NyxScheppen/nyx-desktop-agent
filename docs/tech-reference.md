@@ -166,8 +166,8 @@ def schema() -> list[dict]                                      # 给 LLM 的 to
 ### Evaluator（基础设施）
 
 ```python
-def __init__(self, db: Database, llm: LlmClient, config: EvalConfig, embed: EmbedFn | None = None) -> None  # 基础设施，直接持 db（对齐 EventBus）；embed 供 OOC 第 2 档复用
-async def evaluate(output: LLMOutput) -> EvalReport             # 三层：结构→规则→judge
+def __init__(self, db: Database, embed: EmbedFn | None = None) -> None  # 基础设施，直接持 db（对齐 EventBus）；embed 供 OOC 第 2 档复用
+async def evaluate(output: LLMOutput) -> EvalReport             # OOC：关键词→embedding 合并
 async def list_reports(limit: int = 100) -> list[EvalReport]    # eval 报告列表（供 /api/eval）
 async def list_token_usage(since: float = 0) -> list[TokenUsage]  # token 记账（供 /api/tokens）
 ```
@@ -291,8 +291,7 @@ nyx/
     file_io.py            # 读写本地文件
   eval/
     evaluator.py          # Evaluator
-    rules.py              # 结构/规则层（纯函数）
-    judge.py              # LLM-judge（抽样）
+    rules.py              # 规则层（纯函数）
   llm/
     client.py             # LangChain 统一客户端
     vision.py             # VisionClient（多模态视觉，OpenAI 兼容）
@@ -356,9 +355,6 @@ vision:
   api_key_env: DEEPSEEK_API_KEY  # 存环境变量名，key 本体由 03-llm 的 VisionClient 读（Ollama 免 key 占位）
   # base_url: http://localhost:11434/v1   # 可选：覆盖视觉 endpoint
   interval_seconds: 60        # 抓屏周期（秒）
-
-eval:
-  judge_sample_rate: 0.1      # LLM-judge 抽样比例
 ```
 
 ---

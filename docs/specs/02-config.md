@@ -1,6 +1,6 @@
 # 配置加载
 
-> 范围：`nyx/config.py`（`Config` + 8 个分段 dataclass + `load_config()` + `validate_config()` + `ConfigError`）+ `config.yaml`。
+> 范围：`nyx/config.py`（`Config` + 7 个分段 dataclass + `load_config()` + `validate_config()` + `ConfigError`）+ `config.yaml`。
 > 纯配置 spec：只做加载与校验，不含 Facade、不含 DDL、不含 API。
 > **本文件自包含**：`config.yaml` 与 `config.py` 的完整定义都内联在下文，实现不依赖任何其它文档。
 
@@ -14,7 +14,7 @@
 
 ## 验收标准
 
-- [ ] `config.py` 含 `Config` + 8 分段 dataclass + `ActivityEnergyDelta`，字段与「`nyx/config.py`（完整）」段代码逐字一致
+- [ ] `config.py` 含 `Config` + 7 分段 dataclass + `ActivityEnergyDelta`，字段与「`nyx/config.py`（完整）」段代码逐字一致
 - [ ] `load_config()` 同步返回 `Config`；缺键填默认值、未知键（含嵌套 `energy_delta` 内部）报 `ConfigError`
 - [ ] `config.activity.energy_delta` 是 `ActivityEnergyDelta` 实例（不是裸 dict），`config.activity.energy_delta.reading` 点号访问成立
 - [ ] `validate_config()` 是纯函数，逐字段校验，非法报 `ConfigError`
@@ -74,9 +74,6 @@ expression:
 exploration:
   web_enabled: false          # 联网搜索 opt-in
   rate_limit_hours: 4         # 自由探索频率上限
-
-eval:
-  judge_sample_rate: 0.1      # LLM-judge 抽样比例
 ```
 
 ### nyx/config.py（完整）
@@ -156,11 +153,6 @@ class ExplorationConfig:
 
 
 @dataclass
-class EvalConfig:
-    judge_sample_rate: float = 0.1
-
-
-@dataclass
 class Config:
     llm: LlmConfig = field(default_factory=LlmConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
@@ -169,7 +161,6 @@ class Config:
     activity: ActivityConfig = field(default_factory=ActivityConfig)
     expression: ExpressionConfig = field(default_factory=ExpressionConfig)
     exploration: ExplorationConfig = field(default_factory=ExplorationConfig)
-    eval: EvalConfig = field(default_factory=EvalConfig)
 
 
 def _build(dc: Any, raw: Any) -> Any:
@@ -265,8 +256,7 @@ def validate_config(cfg: Config) -> None:
     # 数 ∈ [0, 1]
     for path, v in (("memory.freshness_decay", cfg.memory.freshness_decay),
                     ("desire.peak_threshold", cfg.desire.peak_threshold),
-                    ("expression.slow_threshold", cfg.expression.slow_threshold),
-                    ("eval.judge_sample_rate", cfg.eval.judge_sample_rate)):
+                    ("expression.slow_threshold", cfg.expression.slow_threshold)):
         _unit_interval(v, path)
 
     _pos_num(cfg.desire.value_decay, "desire.value_decay")          # 数 > 0
@@ -302,12 +292,11 @@ def validate_config(cfg: Config) -> None:
 | `expression.ask_timeout` / `expression.chat_ignore_timeout` | 数 `> 0` |
 | `exploration.web_enabled` | `bool` |
 | `exploration.rate_limit_hours` | `int > 0` |
-| `eval.judge_sample_rate` | 数 ∈ `[0, 1]` |
 
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_config/`：
-  - [ ] `validate_config` 纯函数：合法 `Config()` 通过；越界值（`slow_threshold=1.5`、`freshness_decay=-0.1`、`judge_sample_rate=2`）报错；非正（`short_term_capacity=0`、`grid_minutes=-1`、`ask_timeout=-1`、`chat_ignore_timeout=0`、`timeout=-1`）报错；错类型（改字段为 `"20"` / `True` / `max_retries="2"`）报错（直接构造 `Config` 后改字段再调 `validate_config`）
+  - [ ] `validate_config` 纯函数：合法 `Config()` 通过；越界值（`slow_threshold=1.5`、`freshness_decay=-0.1`）报错；非正（`short_term_capacity=0`、`grid_minutes=-1`、`ask_timeout=-1`、`chat_ignore_timeout=0`、`timeout=-1`）报错；错类型（改字段为 `"20"` / `True` / `max_retries="2"`）报错（直接构造 `Config` 后改字段再调 `validate_config`）
   - [ ] `load_config`（tmp yaml + `monkeypatch` 环境变量）：
     - [ ] 缺键填默认（只写 `llm.provider` → 其余字段=默认）
     - [ ] **energy_delta 递归构造**：写部分键 → `cfg.activity.energy_delta` 是 `ActivityEnergyDelta` 实例，`isinstance` 通过、未写键用默认

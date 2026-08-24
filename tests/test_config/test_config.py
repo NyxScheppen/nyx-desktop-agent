@@ -29,7 +29,6 @@ def test_validate_config_accepts_defaults() -> None:
     [
         ("expression", "slow_threshold", 1.5),    # 越界 >1
         ("memory", "freshness_decay", -0.1),      # 越界 <0
-        ("eval", "judge_sample_rate", 2.0),       # 越界 >1
         ("memory", "short_term_capacity", 0),     # 非正
         ("activity", "grid_minutes", -1),         # 非正
         ("memory", "short_term_capacity", "20"),  # 错类型 str

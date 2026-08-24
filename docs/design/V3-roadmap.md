@@ -16,6 +16,16 @@
 - 脱敏：`LANGCHAIN_HIDE_INPUTS=true` / `LANGCHAIN_HIDE_OUTPUTS=true`（遮 prompt/回复原文）。
 - **隐私**：完整 prompt/回复会上传 LangSmith 云；个人陪伴数据需掂量——可自托管 LangSmith，或不用时置 `LANGCHAIN_TRACING_V2=false`。
 
+### eval 观察改造（三步走）
+
+> eval 现为「单层 OOC 评分 + token 记账」。随 LangSmith 落地分三步精简：
+
+| 步 | 动作 | 状态 |
+|---|---|---|
+| 1 | 砍 `relevance`（LLM-judge 抽样，每次多 10% LLM 调用）+ `format`（结构校验，与各 Facade `_parse_*` fail-fast 重复） | ✅ 已落地 |
+| 2 | `ooc` 从「打分」改「告警」：命中黑名单/低贴合时告警而非落分 | 待 LangSmith |
+| 3 | 砍 token 记账：`token_usage` 表 + `/api/tokens` + 前端 token 明细（LangSmith 已覆盖 token/model/cost 可观测） | 待 LangSmith |
+
 ## 读书/创作借鉴（参考 nyx_desktop_agent）
 
 > 参考项目 `nyx_desktop_agent` 的「读书 → 知识点入记忆」闭环与「创作 → 风格/知识库/屏幕灵感」增强，补齐 Nyx 已读真实文件、但缺知识点沉淀与创作上下文的短板。不借鉴：参考项目的 LLM 日历日程生成器（与「欲望驱动」正交）、分块读文件机制（当前已有）。

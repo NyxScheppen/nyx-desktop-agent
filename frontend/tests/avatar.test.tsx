@@ -6,7 +6,7 @@ import { useChatStore } from "../src/stores/chatStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 
 beforeEach(() => {
-  useInnerLifeStore.setState({ current: null, loading: false, error: null });
+  useInnerLifeStore.setState({ current: null, error: null });
   useChatStore.getState().reset();
   useAnnounceStore.setState({ items: [] });
 });

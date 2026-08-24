@@ -86,7 +86,6 @@ reset(): void                            // 新会话全清：clearTimeout(reply
 ```typescript
 type InnerLifeState = {
   current: CurrentState | null;   // GET /api/state 快照；null = 尚未加载
-  loading: boolean;
   error: string | null;
 };
 ```
@@ -94,7 +93,7 @@ type InnerLifeState = {
 ### actions
 
 ```typescript
-refreshState(): Promise<void>   // 内部调 client.getState() → current；getState throw → catch → error（loading 复位）
+refreshState(): Promise<void>   // 内部调 client.getState() → current；getState throw → catch → error
 updateEmotion(e: EmotionUpdateEvent): void  // SSE emotion_update → 覆盖 current 的 valence/arousal/emotion（emotion 走 isEmotionCategory 收窄）
 ```
 
@@ -106,23 +105,23 @@ updateEmotion(e: EmotionUpdateEvent): void  // SSE emotion_update → 覆盖 cur
 
 ## 3. 快照 store（`desireStore` / `activityStore` / `memoryStore` / `evalStore`）
 
-四个 store 对齐 `innerLifeStore` 的「REST 快照 + SSE 增量」模式：state = `{data|null, loading, error}` + `refresh()`。SSE 增量事件只带 id（不含完整对象），面板收到事件调 `refresh()` 重拉快照（01-sse §4 分发表）。
+四个 store 对齐 `innerLifeStore` 的「REST 快照 + SSE 增量」模式：state = `{data|null, error}` + `refresh()`。SSE 增量事件只带 id（不含完整对象），面板收到事件调 `refresh()` 重拉快照（01-sse §4 分发表）。
 
 ```typescript
 // desireStore —— GET /api/desires
-type DesireStoreState = { data: DesireState | null; loading: boolean; error: string | null };
-refresh(): Promise<void>          // 内部调 client.getDesires() → data；throw → error + loading=false
+type DesireStoreState = { data: DesireState | null; error: string | null };
+refresh(): Promise<void>          // 内部调 client.getDesires() → data；throw → error
 
 // activityStore —— GET /api/activity + GET /api/activity/results（并行）
-type ActivityStoreState = { data: ActivitySnapshot | null; results: Activity[] | null; loading: boolean; error: string | null };
+type ActivityStoreState = { data: ActivitySnapshot | null; results: Activity[] | null; error: string | null };
 refresh(): Promise<void>          // Promise.all([getActivity(), getActivityResults()]) → data/results
 
 // memoryStore —— GET /api/memories
-type MemoryStoreState = { data: Memory[] | null; loading: boolean; error: string | null };
+type MemoryStoreState = { data: Memory[] | null; error: string | null };
 refresh(): Promise<void>
 
 // evalStore —— GET /api/eval + GET /api/tokens（并行）
-type EvalStoreState = { reports: EvalReport[] | null; tokens: TokenUsage[] | null; loading: boolean; error: string | null };
+type EvalStoreState = { reports: EvalReport[] | null; tokens: TokenUsage[] | null; error: string | null };
 refresh(): Promise<void>          // Promise.all([getEval(), getTokens()]) → reports/tokens；任一 throw → error
 ```
 
@@ -136,10 +135,9 @@ refresh(): Promise<void>          // Promise.all([getEval(), getTokens()]) → r
 ```typescript
 type NarrativeStoreState = {
   data: SelfNarrative | null;   // GET /api/narrative 快照；null = 尚未加载
-  loading: boolean;
   error: string | null;
 };
-refresh(): Promise<void>          // 内部调 client.getNarrative() → data；throw → error + loading=false
+refresh(): Promise<void>          // 内部调 client.getNarrative() → data；throw → error
 ```
 
 ### 关键决策
@@ -220,8 +218,8 @@ type AnnounceState = {
 
 - **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addMutter`/`addInitiateChat`/`addUserMessage` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
 - **chatStore.loadHistory**：按 `timestamp` 升序前置 + `preloaded=true` + 历史 think 入 `typedIds`；已存在的 id 去重不重复前置；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
-- **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置 + loading 状态机；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
-- **四个快照 store**：`desireStore`/`memoryStore` 各断言 `refresh()` 请求对端点 + `data` 落 store + `loading` 复位；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`（fetch 恰 2 次）→ `data`/`results` 落 store；`evalStore.refresh()` 并行 `getEval`+`getTokens`（fetch 恰 2 次）→ `reports`/`tokens` 落 store；`desireStore.refresh()` 失败 → `error` + `loading=false` + `data` 保持 null。
+- **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
+- **四个快照 store**：`desireStore`/`memoryStore` 各断言 `refresh()` 请求对端点 + `data` 落 store；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`（fetch 恰 2 次）→ `data`/`results` 落 store；`evalStore.refresh()` 并行 `getEval`+`getTokens`（fetch 恰 2 次）→ `reports`/`tokens` 落 store；`desireStore.refresh()` 失败 → `error` + `data` 保持 null。
 - **narrativeStore / materialsStore**：`narrativeStore.refresh()` 请求 `/api/narrative` + `data` 落 store；`materialsStore.refresh()` 请求 `/api/materials` + `materials` 落 store；`materialsStore.upload()` `POST /api/upload` 后重拉 materials（fetch 恰 2 次）+ `uploading` 复位。
 - **readingNotesStore**：`refresh()` 请求 `/api/reading-notes?limit=50` + `notes` 落 store + `loading` 复位；`remove()` `DELETE /api/reading-notes/{id}` 后从 `notes` 本地摘除（不重拉）。
 - **`isReady`（串行逐字纯函数）**：每条 nyx 文本消息等「同 `correlation_id` 且在其之前」的 nyx 文本消息都打完（入 `typedIds`）才就绪；无前置 nyx 文本 → 直接就绪；`preloaded` nyx 文本与 user 消息 → 恒就绪；不同 `correlation_id` 的 nyx 文本不阻塞。

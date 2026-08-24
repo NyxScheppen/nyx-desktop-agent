@@ -31,6 +31,11 @@ from nyx.tools.registry import ToolRegistry
 from nyx.types import CurrentState, Memory, Message, SelfNarrative
 
 
+def _ask_guidance_for(mode: ContextMode, ask_guidance: str | None) -> str | None:
+    """仅慢通道注入 ask_guidance；快通道（speak 快速分支）不注入。"""
+    return ask_guidance if mode is ContextMode.SLOW else None
+
+
 class ReplyState(TypedDict):
     message: str
     mode: ContextMode
@@ -42,7 +47,6 @@ class ReplyState(TypedDict):
     speak: list[str]             # 累积：每轮 speak 追加（17 改，tech-ref §6.1 ripple）
     ask: str | None
     round: int                   # 已完成 think/speak 的轮数（≤ slow_max_rounds）
-    waiting_user: bool           # MVP 恒 False
     correlation_id: str          # 本次 reply 溯源（17 补，对齐 14-activity）
     last_slow_at: float          # 上次慢通道时间（facade 维护，每 reply 入 state）
     tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
@@ -138,9 +142,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         # think/speak 再据此回复。一轮，不做「查完再决定继续查」的循环。
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], state["memories"],
-            ask_guidance=(
-                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
-            ),
+            ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
         )
         user = (
             build_user_prompt(state["message"], state["context"])
@@ -172,9 +174,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     async def think(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], state["memories"],
-            ask_guidance=(
-                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
-            ),
+            ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             tool_outputs=state["tool_outputs"],
         )
         user = build_user_prompt(state["message"], state["context"])
@@ -198,9 +198,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     async def speak(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], state["memories"],
-            ask_guidance=(
-                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
-            ),
+            ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             tool_outputs=state["tool_outputs"],
         )
         user = build_user_prompt(state["message"], state["context"])

@@ -11,7 +11,7 @@ afterEach(() => {
 describe("InnerWorld 内心世界弹窗（单分类卡片）", () => {
   beforeEach(() => {
     // 默认「内在 → 内在状态」读 innerLifeStore.current；置 null 使其整体占位不渲染子组件
-    useInnerLifeStore.setState({ current: null, loading: false, error: null });
+    useInnerLifeStore.setState({ current: null, error: null });
     useReadingNotesStore.setState({ notes: null, loading: false, error: null });
   });
 

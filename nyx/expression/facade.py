@@ -94,7 +94,6 @@ class ExpressionFacade:
             "speak": [],
             "ask": None,
             "round": 0,
-            "waiting_user": False,
             "correlation_id": correlation_id,
             "last_slow_at": self._last_slow_at,
             "tool_outputs": [],

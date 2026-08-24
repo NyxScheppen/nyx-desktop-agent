@@ -121,10 +121,10 @@ describe("useSSE", () => {
 describe("dispatchEvent", () => {
   beforeEach(() => {
     useChatStore.getState().reset();
-    useInnerLifeStore.setState({ current: null, loading: false, error: null });
-    useDesireStore.setState({ data: null, loading: false, error: null });
-    useActivityStore.setState({ data: null, loading: false, error: null });
-    useMemoryStore.setState({ data: null, loading: false, error: null });
+    useInnerLifeStore.setState({ current: null, error: null });
+    useDesireStore.setState({ data: null, error: null });
+    useActivityStore.setState({ data: null, error: null });
+    useMemoryStore.setState({ data: null, error: null });
     useAnnounceStore.setState({ items: [] });
   });
 
@@ -286,7 +286,7 @@ describe("dispatchEvent", () => {
         },
       ],
     };
-    useActivityStore.setState({ data: snap, loading: false, error: null });
+    useActivityStore.setState({ data: snap, error: null });
     vi.spyOn(useActivityStore.getState(), "refresh").mockImplementation(async () => {
       useActivityStore.setState({ data: snap });
     });

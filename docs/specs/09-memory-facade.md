@@ -104,6 +104,31 @@ _CONTENT_PREVIEW_CHARS = 60
 _NEGATION_WORDS = ("不", "没", "别", "讨厌", "恨", "拒绝", "否认", "放弃", "再也不")
 
 
+def _new_memory(
+    content: str,
+    tag: str,
+    summary: str,
+    type: MemoryType,
+    aspect: list[str] | None = None,
+) -> Memory:
+    """构造一条新记忆：id/created_at/freshness/recall_count/embedding 固定尾段。
+
+    aspect 缺省空列表（多数记忆无 aspect），画像记忆显式传入。
+    """
+    return Memory(
+        id=str(uuid4()),
+        created_at=time.time(),
+        content=content,
+        tag=tag,
+        summary=summary,
+        freshness=1.0,
+        type=type,
+        recall_count=0,
+        aspect=aspect if aspect is not None else [],
+        embedding=None,
+    )
+
+
 def decay_freshness(
     freshness: float, created_at: float, now: float, rate: float
 ) -> float:
@@ -285,18 +310,7 @@ class MemoryFacade:
         content, tag, summary = _parse_scene(output.content)
         now = time.time()
 
-        memory = Memory(
-            id=str(uuid4()),
-            created_at=now,
-            content=content,
-            tag=tag,
-            summary=summary,
-            freshness=1.0,
-            type=MemoryType.SHORT_TERM,
-            recall_count=0,
-            aspect=[],
-            embedding=None,
-        )
+        memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
         if self._embed is not None:
             memory.embedding = await self._embed(content)
 
@@ -337,18 +351,7 @@ class MemoryFacade:
         content, summary, tag = mapped
         now = time.time()
 
-        memory = Memory(
-            id=str(uuid4()),
-            created_at=now,
-            content=content,
-            tag=tag,
-            summary=summary,
-            freshness=1.0,
-            type=MemoryType.SHORT_TERM,
-            recall_count=0,
-            aspect=[],
-            embedding=None,
-        )
+        memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
         if self._embed is not None:
             memory.embedding = await self._embed(content)
 
@@ -384,17 +387,9 @@ class MemoryFacade:
             topic = (item.get("topic") or "").strip()
             if not content:
                 continue
-            memory = Memory(
-                id=str(uuid4()),
-                created_at=time.time(),
-                content=content,
-                tag="knowledge",
-                summary=topic or content[:_SUMMARY_MAX_CHARS],
-                freshness=1.0,
-                type=MemoryType.LONG_TERM,
-                recall_count=0,
-                aspect=[],
-                embedding=None,
+            memory = _new_memory(
+                content, "knowledge", topic or content[:_SUMMARY_MAX_CHARS],
+                MemoryType.LONG_TERM,
             )
             await self._persist_memory(memory, correlation_id)
 

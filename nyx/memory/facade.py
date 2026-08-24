@@ -36,6 +36,31 @@ _CONTENT_PREVIEW_CHARS = 60
 _NEGATION_WORDS = ("不", "没", "别", "讨厌", "恨", "拒绝", "否认", "放弃", "再也不")
 
 
+def _new_memory(
+    content: str,
+    tag: str,
+    summary: str,
+    type: MemoryType,
+    aspect: list[str] | None = None,
+) -> Memory:
+    """构造一条新记忆：id/created_at/freshness/recall_count/embedding 固定尾段。
+
+    aspect 缺省空列表（多数记忆无 aspect），画像记忆显式传入。
+    """
+    return Memory(
+        id=str(uuid4()),
+        created_at=time.time(),
+        content=content,
+        tag=tag,
+        summary=summary,
+        freshness=1.0,
+        type=type,
+        recall_count=0,
+        aspect=aspect if aspect is not None else [],
+        embedding=None,
+    )
+
+
 def decay_freshness(
     freshness: float, created_at: float, now: float, rate: float
 ) -> float:
@@ -216,20 +241,7 @@ class MemoryFacade:
         )
         await self._evaluator.evaluate(output)
         content, tag, summary = _parse_scene(output.content)
-        now = time.time()
-
-        memory = Memory(
-            id=str(uuid4()),
-            created_at=now,
-            content=content,
-            tag=tag,
-            summary=summary,
-            freshness=1.0,
-            type=MemoryType.SHORT_TERM,
-            recall_count=0,
-            aspect=[],
-            embedding=None,
-        )
+        memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
         await self._persist_memory(memory, reply_context["correlation_id"])
         return memory
 
@@ -250,20 +262,7 @@ class MemoryFacade:
         if mapped is None:
             return
         content, summary, tag = mapped
-        now = time.time()
-
-        memory = Memory(
-            id=str(uuid4()),
-            created_at=now,
-            content=content,
-            tag=tag,
-            summary=summary,
-            freshness=1.0,
-            type=MemoryType.SHORT_TERM,
-            recall_count=0,
-            aspect=[],
-            embedding=None,
-        )
+        memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
         await self._persist_memory(memory, event.correlation_id)
 
     async def _sediment_observation(self, event: Event) -> None:
@@ -307,18 +306,7 @@ class MemoryFacade:
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM
         使其豁免短期淘汰（_decay_and_evict 只淘汰短期），画像不随时间冲掉。
         """
-        memory = Memory(
-            id=str(uuid4()),
-            created_at=time.time(),
-            content=content,
-            tag="user",
-            summary=summary,
-            freshness=1.0,
-            type=MemoryType.LONG_TERM,
-            recall_count=0,
-            aspect=aspects,
-            embedding=None,
-        )
+        memory = _new_memory(content, "user", summary, MemoryType.LONG_TERM, aspects)
         await self._persist_memory(memory, correlation_id)
 
     async def remember_knowledge(
@@ -335,17 +323,9 @@ class MemoryFacade:
             topic = (item.get("topic") or "").strip()
             if not content:
                 continue
-            memory = Memory(
-                id=str(uuid4()),
-                created_at=time.time(),
-                content=content,
-                tag="knowledge",
-                summary=topic or content[:_SUMMARY_MAX_CHARS],
-                freshness=1.0,
-                type=MemoryType.LONG_TERM,
-                recall_count=0,
-                aspect=[],
-                embedding=None,
+            memory = _new_memory(
+                content, "knowledge", topic or content[:_SUMMARY_MAX_CHARS],
+                MemoryType.LONG_TERM,
             )
             await self._persist_memory(memory, correlation_id)
 
@@ -355,17 +335,11 @@ class MemoryFacade:
         问句本身已由慢通道场景化记忆记过，这里只补「没答」这半句；
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。
         """
-        memory = Memory(
-            id=str(uuid4()),
-            created_at=time.time(),
-            content=f"我问了「{question}」，用户没有回答。",
-            tag="interaction",
-            summary="用户没有回答我的提问",
-            freshness=1.0,
-            type=MemoryType.SHORT_TERM,
-            recall_count=0,
-            aspect=[],
-            embedding=None,
+        memory = _new_memory(
+            f"我问了「{question}」，用户没有回答。",
+            "interaction",
+            "用户没有回答我的提问",
+            MemoryType.SHORT_TERM,
         )
         await self._persist_memory(memory, correlation_id)
 

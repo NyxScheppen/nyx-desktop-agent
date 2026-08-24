@@ -6,7 +6,6 @@ import type { EvalReport, TokenUsage } from "../types/api";
 type EvalStoreState = {
   reports: EvalReport[] | null;
   tokens: TokenUsage[] | null;
-  loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
 };
@@ -14,17 +13,15 @@ type EvalStoreState = {
 export const useEvalStore = create<EvalStoreState>((set) => ({
   reports: null,
   tokens: null,
-  loading: false,
   error: null,
   refresh: async () => {
-    set({ loading: true, error: null });
+    set({ error: null });
     try {
       const [reports, tokens] = await Promise.all([getEval(), getTokens()]);
-      set({ reports, tokens, loading: false });
+      set({ reports, tokens });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : String(err),
-        loading: false,
       });
     }
   },

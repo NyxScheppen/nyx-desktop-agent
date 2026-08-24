@@ -108,10 +108,6 @@ class MemoryStore:
             rows = await cursor.fetchall()
         return [_row_to_memory(r) for r in rows]
 
-    async def update(self, memory: Memory) -> None:
-        """单条更新：委托批量版（UPDATE SQL 单一来源，单锁单 commit）。"""
-        await self.update_many([memory])
-
     async def update_many(self, memories: list[Memory]) -> None:
         """批量更新：循环 UPDATE，单锁单 commit（衰减结算用，避免 N 次 commit）。"""
         async with self._db.lock:
@@ -128,10 +124,6 @@ class MemoryStore:
                     ),
                 )
             await self._db.conn.commit()
-
-    async def delete(self, memory_id: str) -> None:
-        """单条删除：委托批量版（edge + row 删除单一来源，单锁单 commit）。"""
-        await self.delete_many([memory_id])
 
     async def delete_many(self, ids: list[str]) -> None:
         """批量删除：循环删 edge/row，单锁单 commit（淘汰溢出，避免 N 次 commit）。"""
@@ -252,9 +244,9 @@ def _row_to_memory(row: aiosqlite.Row) -> Memory:
   - [ ] **add 重复 id** → `aiosqlite.IntegrityError`（主键冲突）
   - [ ] **get 未命中** → `None`
   - [ ] **list_memories 过滤/排序/limit**：造 3 条不同 `tag` / `type` / `freshness` → `tag=` 过滤、`type=` 过滤、`tag+type` 组合、默认全量；排序按 `freshness DESC`（freshness 高的在前）；`limit=2` 截断、`limit` 与 `tag` 组合截断
-  - [ ] **update**：改 `tag` / `summary` / `freshness` / `type` / `recall_count` / `aspect` / `embedding` → `get` 验证；`id` / `created_at` 不变
+  - [ ] **update_many（单条）**：改 `tag` / `summary` / `freshness` / `type` / `recall_count` / `aspect` / `embedding` → `get` 验证；`id` / `created_at` 不变
   - [ ] **update_many**：改多条（含 `embedding=None` 与 `embedding=[...]`）→ `get` 逐条验证；空列表 → no-op
-  - [ ] **delete 级联删边**：`add` 两条 memory + 两条关联它的 `upsert_edge` → `delete` 后 `get=None`、`list_edges` 无残留（其它记忆的边不受影响）
+  - [ ] **delete_many（单条）级联删边**：`add` 两条 memory + 两条关联它的 `upsert_edge` → `delete_many(["a"])` 后 `get=None`、`list_edges` 无残留（其它记忆的边不受影响）
   - [ ] **delete_many**：删多条（含关联边）→ `get` 全部 `None`、`list_edges` 无残留；空列表 → no-op
   - [ ] **record_recall**：未达阈值连调两次 → `recall_count == 2` 且 `type is SHORT_TERM`、返回 `False`；达阈值 → 升 `LONG_TERM`、返回 `True`；已是 `LONG_TERM` → 只递增、返回 `False`
   - [ ] **search_keyword**：`content` 命中 / `summary` 命中 / 无命中 → `[]` / ASCII 大小写不敏感（"FOO" 命中 "foo"）

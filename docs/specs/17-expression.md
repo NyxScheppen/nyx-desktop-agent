@@ -35,7 +35,7 @@
 - **会话历史（内存）**：`deque[Message]`（maxlen=`config.max_context_len`）由 facade 持有，跨 reply 持久。**用户消息 + Nyx 消息（多轮拼接）都在回合末的 `record_message` 节点按序 append**（先 user 后 nyx）——`reply` 入口回溯时当前消息还没进 history，天然不重复。重启丢失（同情感，内存易变态）
 - **多轮语义（慢通道）**：think → speak 循环，每轮 think 发 `THINK`、每轮 speak 发 `SPEAK`（**都交付**）；某轮 speak 是问句 → 发 `ASK` 后回合结束。`slow_max_rounds` 是「连续无 ask 的 think/speak 轮数上限」。**累积式 prompt**：后一轮的 think/speak 知道前几轮想了/说了什么（`_rounds_block` 拼前轮）。**递进续写**：首轮任务指令是「第一句话 / 第一次内心独白」，续写轮切换为「接着上面往下说 / 基于前面继续深入」，避免三段生成三个并列回答
 - **场景化记忆记整个回合**：`nyx_think`/`nyx_speak` = 多轮 `"\n".join(...)` 拼接（`create_scene_memory` 的 `str` 契约不变，只是内容是多轮）
-- **MVP 语义**：ask 后回合结束（走 scene_memory + record）；用户回应作为下一条 `USER_MESSAGE` 触发新 reply，round 自然从 0 重算。`waiting_user` 字段保留在 `ReplyState`（对齐 tech-ref §6.1），图内恒 `False`
+- **MVP 语义**：ask 后回合结束（走 scene_memory + record）；用户回应作为下一条 `USER_MESSAGE` 触发新 reply，round 自然从 0 重算
 - **V2 表达交互闭环**：facade 在 reply 后按 `result["ask"]` 置 `self._waiting_user`（问句已问出、等用户答）；`initiate_chat` 记 `self._pending_chat_desire_id`（搭话已发、等用户回）。tick 心跳（18-api 组合根）直呼 `check_timeouts(now)`：问句超时（`ask_timeout`）→ `memory.record_no_answer` 落一条「用户没回答」的 SHORT_TERM 记忆；搭话超时（`chat_ignore_timeout`）→ `desire.expire`（值立即 +0.3 回灌）。用户任一下条消息（`reply` 入口）即视为回应、清两者待回应态
 - **慢通道工具调用**：`use_tools` 节点（慢通道专属）在 assemble 后问 LLM 是否需查资料，有 `tool_calls` 就逐个执行（`ToolRegistry.call`）并把结果 `json.dumps` 拼进 `tool_outputs`，think/speak 的 system prompt 追加「[工具查询结果]」段；一轮，不做 agentic 循环；单条结果超 `_TOOL_OUTPUT_MAX_CHARS` 截断（尾加 `…`）；工具执行失败降级为失败文案（best-effort，不崩回复）
 - **回溯检测（V2）**：快通道入口朴素取最近 `max_context_len` 条；慢通道 `assemble` 调 `build_backtrack_context` 重截断——从新到旧累积，命中「满 max_len / 相邻隔超 `context_time_gap` / 与当前消息零字符重叠（十分不相关）」即停，快通道 Nyx 消息（`fast=True`）跳过继续往前（浅层回复不占上下文、不断深聊线程）
@@ -184,7 +184,6 @@ class ReplyState(TypedDict):
     speak: list[str]             # 累积：每轮 speak 追加（17 改，tech-ref §6.1 ripple）
     ask: str | None
     round: int                   # 已完成 think/speak 的轮数（≤ slow_max_rounds）
-    waiting_user: bool           # MVP 恒 False
     correlation_id: str          # 本次 reply 溯源（17 补，对齐 14-activity）
     last_slow_at: float          # 上次慢通道时间（facade 维护，每 reply 入 state）
     tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
@@ -219,6 +218,11 @@ _USE_TOOLS_TASK = (
     "若不需要查询，直接回复「不需要」。"
 )
 _TOOL_OUTPUT_MAX_CHARS = 4000  # 单条工具结果注入 prompt 的字符上限（decision，可推翻）
+
+
+def _ask_guidance_for(mode: ContextMode, ask_guidance: str | None) -> str | None:
+    """仅慢通道注入 ask_guidance；快通道（speak 快速分支）不注入。"""
+    return ask_guidance if mode is ContextMode.SLOW else None
 
 
 def _is_question(text: str) -> bool:
@@ -280,9 +284,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         # think/speak 再据此回复。一轮，不做「查完再决定继续查」的循环。
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], state["memories"],
-            ask_guidance=(
-                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
-            ),
+            ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
         )
         user = (
             build_user_prompt(state["message"], state["context"])
@@ -314,9 +316,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     async def think(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], state["memories"],
-            ask_guidance=(
-                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
-            ),
+            ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             tool_outputs=state["tool_outputs"],
         )
         user = build_user_prompt(state["message"], state["context"])
@@ -340,9 +340,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     async def speak(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], state["memories"],
-            ask_guidance=(
-                deps.ask_guidance if state["mode"] is ContextMode.SLOW else None
-            ),
+            ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             tool_outputs=state["tool_outputs"],
         )
         user = build_user_prompt(state["message"], state["context"])
@@ -557,7 +555,6 @@ class ExpressionFacade:
             "speak": [],
             "ask": None,
             "round": 0,
-            "waiting_user": False,
             "correlation_id": correlation_id,
             "last_slow_at": self._last_slow_at,
             "tool_outputs": [],

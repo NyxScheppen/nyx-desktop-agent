@@ -410,9 +410,14 @@ def build_app(app: _App) -> FastAPI:
     @fast.post("/api/upload")
     async def api_upload(file: UploadFile = File(...)) -> dict[str, str]:
         name = Path(file.filename or "upload.txt").name
-        raw = await file.read()
-        if len(raw) > _MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=400, detail="文件过大")
+        chunks: list[bytes] = []
+        total = 0
+        while chunk := await file.read(1 << 20):
+            total += len(chunk)
+            if total > _MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=400, detail="文件过大")
+            chunks.append(chunk)
+        raw = b"".join(chunks)
         text = raw.decode("utf-8", errors="replace")
         result = await file_io("write", f"uploads/{name}", text)
         path = str(result["path"])

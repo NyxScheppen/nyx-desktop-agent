@@ -185,16 +185,6 @@ body {
   flex-shrink: 0;
 }
 
-.emotion-sprite--small {
-  display: inline-block;
-  width: 2rem;
-  height: 2rem;
-  margin-right: 0.5rem;
-  vertical-align: middle;
-  object-fit: cover;
-  object-position: top center;
-}
-
 .emotion-sprite--large {
   display: block;
   width: 100%;

@@ -109,14 +109,6 @@ class LlmClient:
         json_mode: bool = False,
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMOutput:
-        if module == "expression":
-            # 调试：终端打印每次组装好的完整 prompt（system + user 全文）
-            print(f"\n{'=' * 72}", flush=True)
-            print(f"[prompt] {output_type} corr={correlation_id}", flush=True)
-            for m in messages:
-                print(f"\n--- {m['role']} ---", flush=True)
-                print(m["content"], flush=True)
-            print(f"{'=' * 72}\n", flush=True)
         kwargs: dict[str, Any] = {}
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}

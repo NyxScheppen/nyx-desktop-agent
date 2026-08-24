@@ -5,7 +5,6 @@ import type { CurrentState, EmotionUpdateEvent } from "../types/api";
 
 type InnerLifeState = {
   current: CurrentState | null; // GET /api/state 快照；null = 尚未加载
-  loading: boolean;
   error: string | null;
   refreshState: () => Promise<void>;
   updateEmotion: (e: EmotionUpdateEvent) => void;
@@ -13,17 +12,15 @@ type InnerLifeState = {
 
 export const useInnerLifeStore = create<InnerLifeState>((set) => ({
   current: null,
-  loading: false,
   error: null,
   refreshState: async () => {
-    set({ loading: true, error: null });
+    set({ error: null });
     try {
       const current = await getState();
-      set({ current, loading: false });
+      set({ current });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : String(err),
-        loading: false,
       });
     }
   },

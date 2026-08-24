@@ -34,7 +34,7 @@ const currentFixture: CurrentState = {
 
 describe("inner 面板子组件", () => {
   beforeEach(() => {
-    useInnerLifeStore.setState({ current: null, loading: false, error: null });
+    useInnerLifeStore.setState({ current: null, error: null });
   });
 
   it("EnergyBar 按 energy_state 渲染中文文案", () => {

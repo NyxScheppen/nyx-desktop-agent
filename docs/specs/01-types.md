@@ -237,7 +237,7 @@ class LongTermDesire:
     strength: float         # 迫切度，消退不归零（范围由 10-desire-value 定义）
     progress: float         # 0-1
     subtopics: list[str]    # 子主题池
-    linked_values: list[str] = field(default_factory=list[str])
+    linked_values: list[str] = field(default_factory=list[str])  # 关联价值观（MVP 未消费：reflection 恒 []，见 V3-roadmap）
 
 @dataclass
 class DesireValue:          # 每类型一份（压力值）

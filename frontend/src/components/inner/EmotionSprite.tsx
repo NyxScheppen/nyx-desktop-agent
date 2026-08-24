@@ -9,7 +9,7 @@ const SPRITES = import.meta.glob("../../assets/sprites/*.png", {
 }) as Record<string, string>;
 
 type EmotionSpriteProps = {
-  size?: "small" | "large" | "portrait"; // 气泡小图（03 §3）/ 内在面板大图（04 §1）/ 半身像立绘（视觉改造 §2）
+  size?: "large" | "portrait"; // 内在面板大图（04 §1）/ 半身像立绘（视觉改造 §2）
   emotion?: EmotionCategory; // 可选覆盖：Avatar 戳立绘/昼夜节律传临时情绪；缺省读 current.emotion
 };
 

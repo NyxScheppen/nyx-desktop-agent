@@ -117,18 +117,20 @@ async def test_update_fields() -> None:
     store = MemoryStore(db)
     try:
         await store.add(_mem("m1", created_at=111.0))
-        await store.update(
-            _mem(
-                "m1",
-                created_at=999.0,
-                tag="new",
-                summary="s2",
-                freshness=0.8,
-                type=MemoryType.LONG_TERM,
-                recall_count=5,
-                aspect=["x"],
-                embedding=[0.9],
-            )
+        await store.update_many(
+            [
+                _mem(
+                    "m1",
+                    created_at=999.0,
+                    tag="new",
+                    summary="s2",
+                    freshness=0.8,
+                    type=MemoryType.LONG_TERM,
+                    recall_count=5,
+                    aspect=["x"],
+                    embedding=[0.9],
+                )
+            ]
         )
         got = await store.get("m1")
         assert got is not None
@@ -173,7 +175,7 @@ async def test_delete_cascades_edges() -> None:
         await store.upsert_edge("a", "b", 1.0)
         await store.upsert_edge("b", "a", 2.0)
         await store.upsert_edge("b", "c", 3.0)
-        await store.delete("a")
+        await store.delete_many(["a"])
         assert await store.get("a") is None
         edges = [(e.from_id, e.to_id) for e in await store.list_edges()]
         assert edges == [("b", "c")]

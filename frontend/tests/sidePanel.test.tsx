@@ -9,7 +9,7 @@ afterEach(() => {
 
 describe("SidePanel 标签页", () => {
   beforeEach(() => {
-    useInnerLifeStore.setState({ current: null, loading: false, error: null });
+    useInnerLifeStore.setState({ current: null, error: null });
   });
 
   it("渲染 2 个标签，默认激活「背景」并显示其面板", () => {

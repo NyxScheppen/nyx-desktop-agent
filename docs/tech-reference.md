@@ -192,7 +192,6 @@ class ReplyState(TypedDict):
     speak: list[str]             # 累积：每轮 speak 追加
     ask: str | None
     round: int                   # 连续无 ask 的 think/speak 轮数（≤ slow_max_rounds）
-    waiting_user: bool           # MVP 恒 False
     correlation_id: str          # 本次 reply 溯源
     tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
 ```

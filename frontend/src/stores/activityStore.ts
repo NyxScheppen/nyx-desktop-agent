@@ -7,7 +7,6 @@ import type { Activity, ActivitySnapshot } from "../types/api";
 type ActivityStoreState = {
   data: ActivitySnapshot | null;
   results: Activity[] | null;
-  loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
 };
@@ -15,20 +14,18 @@ type ActivityStoreState = {
 export const useActivityStore = create<ActivityStoreState>((set) => ({
   data: null,
   results: null,
-  loading: false,
   error: null,
   refresh: async () => {
-    set({ loading: true, error: null });
+    set({ error: null });
     try {
       const [data, results] = await Promise.all([
         getActivity(),
         getActivityResults(),
       ]);
-      set({ data, results, loading: false });
+      set({ data, results });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : String(err),
-        loading: false,
       });
     }
   },

@@ -168,9 +168,9 @@
 | `test_get_miss_returns_none` | 功能正确 | `get` 未命中 → `None` |
 | `test_list_memories_filters_and_sorts` | 功能正确 | `tag` / `type` / 组合过滤 + `freshness DESC` 排序 |
 | `test_list_memories_limit` | 功能正确 | `limit=2` 截断（`freshness DESC` 前 2）；`limit` 与 `tag` 组合截断（`tag="a", limit=1` 取最高 freshness 那条） |
-| `test_update_fields` | 功能正确 | `update` 改各字段 → `get` 验证；`id` / `created_at` 不可变 |
+| `test_update_fields` | 功能正确 | `update_many`（单条）改各字段 → `get` 验证；`id` / `created_at` 不可变 |
 | `test_update_many` | 功能正确 | `update_many` 批量改多条（含 `embedding=None` 与 `embedding=[...]`）→ `get` 逐条验证；空列表 no-op |
-| `test_delete_cascades_edges` | 功能正确 | `delete` 级联删 `memory_edge`（from/to 双向），其它记忆边保留 |
+| `test_delete_cascades_edges` | 功能正确 | `delete_many`（单条）级联删 `memory_edge`（from/to 双向），其它记忆边保留 |
 | `test_delete_many` | 功能正确 | `delete_many` 批量删多条（含关联边）→ `get` 全部 `None`、`list_edges` 无残留；空列表 no-op |
 | `test_record_recall_atomic` | 功能正确 | 未达阈值连调两次 → `recall_count==2` 且 type `SHORT_TERM`、返回 False；达阈值 → `LONG_TERM`、返回 True；已 `LONG_TERM` → 只递增、返回 False（加一+条件升型在单锁内原子完成） |
 | `test_search_keyword` | 功能正确 | `content` / `summary` 命中、无命中 `[]`、ASCII 大小写不敏感 |
@@ -714,8 +714,8 @@
 | `chatStore.sendMessage > 重入守卫` | 回归保护 | in-flight（第一次 `sendMessage` 同步置 `isReplying=true` 后挂起）时第二次 `sendMessage` 被 `get().isReplying` 同步守卫拦下，fetch 只调 1 次（串行锁提前到 await 前，防双击并发发送覆盖 pendingId） |
 | `chatStore > 60s 超时` | 功能正确 | fake timers：成功后 `advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false` |
 | `chatStore > addSpeak 取消超时` | 功能正确 | 成功后 `addSpeak` 再 advance 60s → 不触发超时（`clearTimeout` 取消 timer + `isReplying` 复位） |
-| `innerLifeStore.refreshState > 状态机` | 功能正确 | mock fetch 断言 `GET /api/state`、`current` 被设置、`loading` true→false、`error` 清空 |
-| `innerLifeStore.refreshState > 失败` | 功能正确 | getState throw → `error=e.message`、`loading=false` |
+| `innerLifeStore.refreshState > current 被设置` | 功能正确 | mock fetch 断言 `GET /api/state`、`current` 被设置、`error` 清空 |
+| `innerLifeStore.refreshState > 失败` | 功能正确 | getState throw → `error=e.message` |
 | `innerLifeStore.updateEmotion > 三字段覆盖` | 功能正确 | 覆盖 `valence`/`arousal`/`emotion`，`personality`/`energy` 不变 |
 | `innerLifeStore.updateEmotion > null 安全` | 边界鲁棒 | `current=null` 时不崩（忽略） |
 | `chatStore > 迟到回复清 sendError` | 功能正确 | 超时后（`sendError="回复超时"`）`addSpeak` 到达 → `sendError=null`（回复清超时残留） |
@@ -725,18 +725,18 @@
 | `chatStore.loadHistory > 已存在 id 去重` | 边界鲁棒 | 与现有 `messages` 撞 id 的历史消息不重复前置（`s1` 仅 1 条） |
 | `chatStore.loadHistory > getEventsLog 失败` | 边界鲁棒 | `getEventsLog` reject → best-effort 不抛、`messages` 不变 |
 | `chatStore > markTyped + reset 清 typedIds` | 功能正确 | `markTyped("x")` 写入 `typedIds["x"]`；`reset()` 清空 `typedIds={}` |
-| `desireStore.refresh > GET /api/desires` | 功能正确 | mock fetch 断言端点 + `data` 落 store + `loading=false` |
+| `desireStore.refresh > GET /api/desires` | 功能正确 | mock fetch 断言端点 + `data` 落 store |
 | `activityStore.refresh > 并行 getActivity+getActivityResults` | 功能正确 | `fetch` 恰 2 次（`/api/activity` + `/api/activity/results`）→ `data`/`results` 双字段落 store |
 | `memoryStore.refresh > GET /api/memories` | 功能正确 | 同上（`data` 落 store） |
 | `evalStore.refresh > 并行 getEval+getTokens` | 功能正确 | `fetch` 恰 2 次 → `reports`/`tokens` 落 store |
-| `desireStore.refresh > 失败 → error` | 边界鲁棒 | `getDesires` reject → `error=e.message` + `loading=false` + `data` 保持 null |
+| `desireStore.refresh > 失败 → error` | 边界鲁棒 | `getDesires` reject → `error=e.message` + `data` 保持 null |
 | `isReady > think 打完才放行 speak` | 功能正确 | think 未打完 → false；`typedIds` 含该 think → true；无前置 think → true（串行逐字门控核心） |
 | `isReady > preloaded / user 恒就绪` | 功能正确 | `preloaded` nyx 文本、user 消息 → true（历史不逐字 / 用户消息不被门控） |
 | `isReady > 不同 correlation_id 不阻塞` | 功能正确 | 不同 `correlation_id` 的 nyx 文本不阻塞 speak → true |
 | `settingsStore > setTint/setImage 独立落 store` | 功能正确 | `setTint`/`setImage` 各落 `tint`/`image` 字段，可并存 |
 | `settingsStore > reset 恢复默认` | 功能正确 | `reset()` 后 `tint`/`image` 均回 null |
 | `isReady > think 也受串行门控` | 功能正确 | think2 在 speak1 之后、speak1 未入 `typedIds` → false；speak1 入 → true（每条 nyx 文本等前一条同 correlation_id 打完） |
-| `narrativeStore.refresh > GET /api/narrative` | 功能正确 | mock fetch 断言端点 + `data` 落 store（`SelfNarrative`）+ `loading=false` |
+| `narrativeStore.refresh > GET /api/narrative` | 功能正确 | mock fetch 断言端点 + `data` 落 store（`SelfNarrative`）|
 | `materialsStore.refresh > GET /api/materials` | 功能正确 | mock fetch 断言端点 + `materials` 落 store |
 | `materialsStore.upload > 上传后重拉 materials` | 功能正确 | `upload(file)` → `POST /api/upload`（fetch 恰 2 次：upload + 重拉 `getMaterials`）+ `materials` 更新 + `uploading` 复位 |
 | `readingNotesStore.refresh > GET /api/reading-notes?limit=50` | 功能正确 | mock fetch 断言端点 + `notes` 落 store（`ReadingNote[]`）+ `loading=false` |

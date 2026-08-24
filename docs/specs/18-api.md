@@ -23,7 +23,7 @@
 - [ ] **`POST /api/chat`**：构造 `USER_MESSAGE` 事件（`source=EXTERNAL`、`correlation_id=自身 id`）→ `publish` → 返回 `{event_id}`（回复走 SSE）
 - [ ] **请求体校验**：`POST /api/chat`/`/api/export`/`/api/observe`/`/api/annotations` 用 pydantic 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`/`_AnnotationPayload`），缺键/类型错 → 422（非 500）；`presence` 仅 `online`/`away`/`busy`（`Literal` 校验，拼写错误 422 而非静默禁用搭话）；`window_title` 可选（默认空串）
 - [ ] **读书笔记 5 个端点**：`GET /api/reading-notes`（`list_reading_notes(limit)`）、`DELETE /api/reading-notes/{note_id}`、`GET /api/annotations?target_id=`、`POST /api/annotations`（body `{target_id, content}` → `add_annotation`，author 固定 "user"）、`DELETE /api/annotations/{annotation_id}`——每个 = `ActivityFacade` 读书笔记 CRUD 方法的薄封装
-- [ ] **`POST /api/upload`**：`UploadFile` + `File(...)`；文件名 `Path(file.filename or "upload.txt").name` 消毒（去路径穿越）、`raw` 超 `_MAX_UPLOAD_BYTES` 返 400；`file_io("write", f"uploads/{name}", text)` 落盘（复用 `_resolve_write` 越界守卫）→ publish `USER_MATERIAL`（content `{path, filename, total_chars}`，`total_chars=len(text)` 供书库注册）→ 返回 `{event_id, filename, path}`
+- [ ] **`POST /api/upload`**：`UploadFile` + `File(...)`；文件名 `Path(file.filename or "upload.txt").name` 消毒（去路径穿越）、分块读累积（1MB/块）、超 `_MAX_UPLOAD_BYTES` 提前返 400（不整读进内存）；`file_io("write", f"uploads/{name}", text)` 落盘（复用 `_resolve_write` 越界守卫）→ publish `USER_MATERIAL`（content `{path, filename, total_chars}`，`total_chars=len(text)` 供书库注册）→ 返回 `{event_id, filename, path}`
 - [ ] **`GET /api/materials`**：`app.activity.list_materials()` 返回 `{materials: [Material]}`（含 `read_chars`/`total_chars` 进度，供资料面板展示「读到哪了」）
 - [ ] **SSE**：`data` = `event.content` 展开 + `event_id` + `correlation_id`（统一结构，不按 type 特判）；`event:` = `EventType.value`
 - [ ] **SSE 背压**：每连接 `asyncio.Queue(maxsize=_SSE_QUEUE_SIZE=100)`；`_broadcast` 队列满时丢最旧保最新（`put_nowait` 捕获 `QueueFull`，慢客户端不拖垮总线）
@@ -468,9 +468,14 @@ def build_app(app: _App) -> FastAPI:
     @fast.post("/api/upload")
     async def api_upload(file: UploadFile = File(...)) -> dict[str, str]:
         name = Path(file.filename or "upload.txt").name
-        raw = await file.read()
-        if len(raw) > _MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=400, detail="文件过大")
+        chunks: list[bytes] = []
+        total = 0
+        while chunk := await file.read(1 << 20):
+            total += len(chunk)
+            if total > _MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=400, detail="文件过大")
+            chunks.append(chunk)
+        raw = b"".join(chunks)
         text = raw.decode("utf-8", errors="replace")
         result = await file_io("write", f"uploads/{name}", text)
         path = str(result["path"])

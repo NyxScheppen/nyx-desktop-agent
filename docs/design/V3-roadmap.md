@@ -38,3 +38,13 @@
 | 缺口 | 说明 |
 |---|---|
 | 02-config 缺 `VisionConfig` 分段 | `config.py` 已有 `VisionConfig`（`enabled`/`provider`/`model`/`base_url`/`interval_seconds` + medium 评审修复轮加的 `api_key_env`），但 `02-config.md` 仍只写「8 分段 dataclass」、无 vision 段与校验规则。当前以 `tech-reference.md` §8 配置 surface + `03-llm.md` 屏幕视觉为准，待回补 02-config 内联代码 |
+| 09-memory-facade 内联代码漂移 | facade.py dump 的 `create_scene_memory`/`remember_activity` 仍显示 `_store.add` 内联管道（早于 `_persist_memory` 重构），且缺 `_persist_memory` 方法定义；本次仅同步 `_new_memory` 构造，未整体重同步 |
+
+## 欲望消费接线（deferred）
+
+> 字段与衰减已就位（design 有规划），但消费端 MVP 未接。不删字段（动 schema + 迁移，且 design 有规划），V3 再接线。
+
+| 项 | 现状 | V3 接入点 |
+|---|---|---|
+| `LongTermDesire.linked_values` | design 规划「关联价值观」（01-types:240），production 唯一写入点 reflection 恒 `[]`，全后端无消费逻辑 | reflection 回填关联价值观，或排序/prompt 参考 |
+| `LongTermDesire.strength` | design 规划衰减（11-desire:51 `strength -= 0.02`），lifecycle 也在递减，但递减结果不被任何排序/prompt/决策消费（prompt 读的是 `ShortTermDesire.strength`） | 长期欲望排序/取舍时考虑 `strength` |

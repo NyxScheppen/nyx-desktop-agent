@@ -304,25 +304,21 @@ describe("chatStore.reset", () => {
 
 describe("innerLifeStore", () => {
   beforeEach(() => {
-    useInnerLifeStore.setState({ current: null, loading: false, error: null });
+    useInnerLifeStore.setState({ current: null, error: null });
   });
 
-  it("refreshState：loading 状态机 + current 被设置", async () => {
+  it("refreshState：current 被设置", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(currentFixture));
     vi.stubGlobal("fetch", fetchMock);
 
-    const p = useInnerLifeStore.getState().refreshState();
-    expect(useInnerLifeStore.getState().loading).toBe(true); // 同步置 true
-
-    await p;
+    await useInnerLifeStore.getState().refreshState();
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/state");
     expect(useInnerLifeStore.getState().current).toEqual(currentFixture);
-    expect(useInnerLifeStore.getState().loading).toBe(false);
     expect(useInnerLifeStore.getState().error).toBeNull();
   });
 
-  it("refreshState：getState throw → error + loading=false", async () => {
+  it("refreshState：getState throw → error", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockRejectedValue(new TypeError("fetch failed")),
@@ -331,7 +327,6 @@ describe("innerLifeStore", () => {
     await useInnerLifeStore.getState().refreshState();
 
     expect(useInnerLifeStore.getState().error).toBe("fetch failed");
-    expect(useInnerLifeStore.getState().loading).toBe(false);
   });
 
   it("updateEmotion：只覆盖三字段，其余不变", () => {
@@ -373,10 +368,10 @@ describe("innerLifeStore", () => {
 
 describe("desireStore / activityStore / memoryStore / evalStore", () => {
   beforeEach(() => {
-    useDesireStore.setState({ data: null, loading: false, error: null });
-    useActivityStore.setState({ data: null, results: null, loading: false, error: null });
-    useMemoryStore.setState({ data: null, loading: false, error: null });
-    useEvalStore.setState({ reports: null, tokens: null, loading: false, error: null });
+    useDesireStore.setState({ data: null, error: null });
+    useActivityStore.setState({ data: null, results: null, error: null });
+    useMemoryStore.setState({ data: null, error: null });
+    useEvalStore.setState({ reports: null, tokens: null, error: null });
   });
 
   it("desireStore.refresh：GET /api/desires → data 落 store", async () => {
@@ -388,7 +383,6 @@ describe("desireStore / activityStore / memoryStore / evalStore", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/desires");
     expect(useDesireStore.getState().data).toEqual(fixture);
-    expect(useDesireStore.getState().loading).toBe(false);
   });
 
   it("activityStore.refresh：并行 getActivity + getActivityResults → data/results 落 store", async () => {
@@ -428,20 +422,19 @@ describe("desireStore / activityStore / memoryStore / evalStore", () => {
     expect(useEvalStore.getState().tokens).toEqual([]);
   });
 
-  it("desireStore.refresh：getDesires throw → error + loading=false", async () => {
+  it("desireStore.refresh：getDesires throw → error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
 
     await useDesireStore.getState().refresh();
 
     expect(useDesireStore.getState().error).toBe("fetch failed");
-    expect(useDesireStore.getState().loading).toBe(false);
     expect(useDesireStore.getState().data).toBeNull();
   });
 });
 
 describe("narrativeStore / materialsStore", () => {
   beforeEach(() => {
-    useNarrativeStore.setState({ data: null, loading: false, error: null });
+    useNarrativeStore.setState({ data: null, error: null });
     useMaterialsStore.setState({ materials: null, uploading: false, error: null });
   });
 
@@ -460,7 +453,6 @@ describe("narrativeStore / materialsStore", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/narrative");
     expect(useNarrativeStore.getState().data).toEqual(fixture);
-    expect(useNarrativeStore.getState().loading).toBe(false);
   });
 
   it("materialsStore.refresh：GET /api/materials → materials 落 store", async () => {

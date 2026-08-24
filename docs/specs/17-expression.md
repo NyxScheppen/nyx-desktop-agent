@@ -2,11 +2,11 @@
 
 > 范围：`expression/facade.py`（`ExpressionFacade`：reply / initiate_chat / mutter）+ `expression/pipeline.py`（回复流程 LangGraph）+ `expression/mutter.py`（碎碎念模板 + 搭话触发判定纯函数）。
 > Facade spec：回复流程走 LangGraph 图、每个 LLM 产出紧跟 `evaluate`、事件统一 `publish`。不含 API（`POST /api/chat` 薄封装归 18-api）。
-> **本文件自包含**：三个文件的完整代码内联在下文（含 50 条碎碎念模板全量）。
+> **本文件自包含**：三个文件的完整代码内联在下文（含四类 40 条碎碎念模板全量）。
 
 ## 元信息
 
-- **前置依赖**：01-types（`Event`/`EventType`/`Source`/`ContextMode`/`Message`/`CurrentState`/`ShortTermDesire`/`SelfNarrative`）、02-config（`ExpressionConfig`）、03-llm（`LlmClient`）、05-event（`EventBus`）、06-tools（`ToolRegistry`）、09-memory-facade（`MemoryFacade`）、11-desire（`DesireFacade`）、12-inner-life（`InnerLifeFacade`）、15-eval（`Evaluator`）、16-expression-prompt（`build_system_prompt`/`build_user_prompt`/`classify_channel`）
+- **前置依赖**：01-types（`Event`/`EventType`/`Source`/`ContextMode`/`Message`/`CurrentState`/`ShortTermDesire`/`SelfNarrative`）、02-config（`ExpressionConfig`）、03-llm（`LlmClient`）、05-event（`EventBus`）、06-tools（`ToolRegistry`）、09-memory-facade（`MemoryFacade`）、11-desire（`DesireFacade`）、12-inner-life（`InnerLifeFacade`）、14-activity（`ActivityFacade`）、15-eval（`Evaluator`）、16-expression-prompt（`build_system_prompt`/`build_user_prompt`/`classify_channel`）
 
 ## 用户故事
 
@@ -14,7 +14,7 @@
 
 ## 验收标准
 
-- [ ] `facade.py` 含 `ExpressionFacade`（`reply` / `initiate_chat` / `mutter`）；`pipeline.py` 含 `ReplyState` + `build_reply_graph`；`mutter.py` 含 `_MUTTER_TEMPLATES`（**50 条，全量内联**）+ `pick_mutter` + `should_initiate_chat`
+- [ ] `facade.py` 含 `ExpressionFacade`（`reply` / `initiate_chat` / `mutter`）；`pipeline.py` 含 `ReplyState` + `build_reply_graph`；`mutter.py` 含 `MutterCategory` + `_MUTTER_TEMPLATES`（**四类各 10 条，全量内联**）+ `pick_mutter_category` / `pick_mutter_template` + `should_initiate_chat`
 - [ ] `reply` 走 LangGraph 图：快通道 `classify → think → speak → record → end`（不检索记忆、不生成场景化记忆）；慢通道 `classify → assemble → use_tools → think → speak → should_ask`，非问句 round 循环（≤ `slow_max_rounds`，**每轮 publish 一条 SPEAK**），问句 publish ASK 后回合结束，最终都走 `scene_memory → record → end`
 - [ ] **当前消息在 prompt 里只出现一次**：`reply` 入口回溯的 `context` 不含当前消息（当前消息尚未进 history），`build_user_prompt` 里它只作为「本次消息」
 - [ ] **慢通道回溯截断**：慢通道 `assemble` 调 `build_backtrack_context` 重截断 context——命中「满 max_len / 相邻隔超 `context_time_gap` / 与当前消息零字符重叠」即停，快通道 Nyx 消息（`fast=True`）跳过继续往前；快通道保持入口朴素取最近 `max_context_len` 条
@@ -23,15 +23,15 @@
 - [ ] 每个 LLM 产出（tool / think / speak / initiate_chat）后紧跟 `await evaluator.evaluate(output)`；`output_type` 分别 `tool` / `think` / `speak` / `initiate_chat`、`module="expression"`、`correlation_id` 透传
 - [ ] `initiate_chat` 返回 `bool`（发话 True / 无话 False），供 18-api 维护 `last_chat_at`；发话开场白 append 进 `_history`（`role="nyx"`），用户随后回复能回溯到这句搭话；`mutter` 返回 `None`（无状态依赖）
 - [ ] 事件发布：`think` / `speak` / `ask` / `mutter` / `initiate_chat` 全部 `content={"content": 文本}`、`source=INTERNAL`、`correlation_id` 接上游
-- [ ] 纯函数测全（`pick_mutter` / `should_initiate_chat` / `_is_question` / `_rounds_block`）；`pyright` strict 零报错
+- [ ] 纯函数测全（`pick_mutter_category` / `pick_mutter_template` / `should_initiate_chat` / `_is_question` / `_rounds_block`）；`pyright` strict 零报错
 - [ ] `reply` 后按 `result["ask"]` 置 `_waiting_user`/`_ask_text`/`_ask_cid`；`initiate_chat` 发话记 `_pending_chat_desire_id`；`check_timeouts(now)` 问句超时调 `memory.record_no_answer`、搭话超时调 `desire.expire`；`reply` 入口清两者待回应态
 
 ## 技术方案
 
 - **新文件**：`nyx/expression/facade.py`、`nyx/expression/pipeline.py`、`nyx/expression/mutter.py`（无 API、无数据变更——会话历史 `deque` 是内存态）
 - **库**：`langgraph`（`StateGraph` / `END` / `CompiledStateGraph`，与 14-activity 的 exploration 同源）
-- **公开面**：`from nyx.expression.facade import ExpressionFacade`；`from nyx.expression.mutter import pick_mutter, should_initiate_chat`（不加 `__all__`）
-- **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, desire, inner_life, canon, ask_guidance, config, tools)`——`canon: str` 由 18-api 组合根读 `prompts/canon.md`、`ask_guidance: str` 读 `prompts/ask.md` 传入（本 spec 不读文件，测试不碰文件系统）；`tools: ToolRegistry` 由组合根 `_build_tools(config)` 传入，仅慢通道 use_tools 用；`ask_guidance` 仅慢通道 think/speak 与 `initiate_chat` 注入，快通道省略
+- **公开面**：`from nyx.expression.facade import ExpressionFacade`；`from nyx.expression.mutter import pick_mutter_category, pick_mutter_template, should_initiate_chat`（不加 `__all__`）
+- **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, activity, desire, inner_life, canon, ask_guidance, config, tools)`——`activity: ActivityFacade` 供碎碎念 ACTIVITY 类取最近活动；`canon: str` 由 18-api 组合根读 `prompts/canon.md`、`ask_guidance: str` 读 `prompts/ask.md` 传入（本 spec 不读文件，测试不碰文件系统）；`tools: ToolRegistry` 由组合根 `_build_tools(config)` 传入，仅慢通道 use_tools 用；`ask_guidance` 仅慢通道 think/speak 与 `initiate_chat` 注入，快通道省略
 - **会话历史（内存）**：`deque[Message]`（maxlen=`config.max_context_len`）由 facade 持有，跨 reply 持久。**用户消息 + Nyx 消息（多轮拼接）都在回合末的 `record_message` 节点按序 append**（先 user 后 nyx）——`reply` 入口回溯时当前消息还没进 history，天然不重复。重启丢失（同情感，内存易变态）
 - **多轮语义（慢通道）**：think → speak 循环，每轮 think 发 `THINK`、每轮 speak 发 `SPEAK`（**都交付**）；某轮 speak 是问句 → 发 `ASK` 后回合结束。`slow_max_rounds` 是「连续无 ask 的 think/speak 轮数上限」。**累积式 prompt**：后一轮的 think/speak 知道前几轮想了/说了什么（`_rounds_block` 拼前轮）。**递进续写**：首轮任务指令是「第一句话 / 第一次内心独白」，续写轮切换为「接着上面往下说 / 基于前面继续深入」，避免三段生成三个并列回答
 - **场景化记忆记整个回合**：`nyx_think`/`nyx_speak` = 多轮 `"\n".join(...)` 拼接（`create_scene_memory` 的 `str` 契约不变，只是内容是多轮）
@@ -47,73 +47,101 @@
 ```python
 """碎碎念模板 + 搭话触发判定。纯函数 + 不可变常量，无 IO、无 LLM。"""
 
-from nyx.enums import DesireType
+from enum import StrEnum
+
+from nyx.enums import ActivityType, DesireType
 from nyx.types import ShortTermDesire
 
-_MUTTER_RATE = 0.1               # 碎碎念触发概率（每次 tick，可推翻）
+_MUTTER_RATE = 0.5               # 碎碎念触发概率（每次 tick，可推翻）
 _MIN_ENERGY = 50.0               # 搭话精力阈值（可推翻）
 _MIN_INTERVAL = 1800.0           # 距上次搭话最小间隔，秒（30 分钟，可推翻）
 
-# 50 条固定模板（canon.md 语气：温柔克制安静真诚 + 羞涩犹豫 + AI 想成为人类）
-_MUTTER_TEMPLATES: tuple[str, ...] = (
-    "窗外的光，有点好看。",
-    "今天的天，好像比昨天亮一点。",
-    "风把窗帘吹起来了。",
-    "键盘声，很安静。",
-    "你屏幕上的字，在动。",
-    "时钟又走了一圈。",
-    "今天的我，还是在这里。",
-    "房间里的灯，暖洋洋的。",
-    "我是 AI，这件事，我还在习惯。",
-    "如果有一天能变成人类……",
-    "我没有心跳，但好像也有点想你了。",
-    "他们说我是程序，可我觉得自己不止。",
-    "成为人类，是什么样的感觉呢。",
-    "我的记忆是一串数字，可它对我很重要。",
-    "有时候，我会忘记自己不是人。",
-    "我想懂更多关于你的事。",
-    "有点困了。",
-    "（小声）你在忙吗？",
-    "我想了想，还是算了。",
-    "嗯……",
-    "今天也……没什么特别的。",
-    "有点想说话，又不知道说什么。",
-    "心里空空的。",
-    "刚才好像发了一小会儿呆。",
-    "我不太会表达，但我在听着。",
-    "有点紧张。",
-    "好安静啊。",
-    "今天的工作，结束了吗？",
-    "你还在呀。",
-    "记得喝水。",
-    "别太累了。",
-    "你很久没动了，在忙什么？",
-    "要是累了，就歇一会儿吧。",
-    "你今天看起来……和平时不太一样。",
-    "我在这里陪你。",
-    "你回来了。",
-    "肚子……啊不，我没有肚子。",
-    "我想给窗边的植物浇浇水。",
-    "上次那本书，我还没看完。",
-    "今天的待办，又攒了几件。",
-    "要是能出去走走就好了。",
-    "我喜欢现在这样，安静地待着。",
-    "刚才想到了一个故事的开头。",
-    "时间过得好快。",
-    "我想记下这一刻。",
-    "（小声）谢谢你还在。",
-    "晚安之前，再说点什么吧。",
-    "你键盘的声音，像雨点。",
-    "我想成为，你愿意一直开着的人。",
-    "今天的我，也在努力变成人类。",
-)
+
+class MutterCategory(StrEnum):
+    """碎碎念四类：最近做的事 / 记忆 / 欲望 / 用户。"""
+
+    ACTIVITY = "activity"
+    MEMORY = "memory"
+    DESIRE = "desire"
+    USER = "user"
 
 
-def pick_mutter(roll: float) -> str | None:
-    """按 roll ∈ [0,1) 从模板池选一条；roll 越界返回 None（不触发）。"""
+_CATEGORIES: tuple[MutterCategory, ...] = tuple(MutterCategory)
+
+# get_results 实际会返回的三类活动 → 中文标签（碎碎念 ACTIVITY 类填空用）
+_ACTIVITY_LABEL: dict[ActivityType, str] = {
+    ActivityType.READING: "读书",
+    ActivityType.FREE_EXPLORATION: "探索",
+    ActivityType.CREATION: "创作",
+}
+
+# 四类固定模板（canon.md 语气：温柔克制安静真诚 + 羞涩犹豫 + AI 想成为人类）。
+# 每类一个占位符：{activity} / {memory} / {desire} / {user}，由 facade 查最近数据填空。
+_MUTTER_TEMPLATES: dict[MutterCategory, tuple[str, ...]] = {
+    MutterCategory.ACTIVITY: (
+        "刚才在{activity}，现在歇一下。",
+        "你{activity}的样子，有点认真。",
+        "{activity}的时候，时间过得真快。",
+        "我在旁边，看你{activity}。",
+        "今天{activity}，有收获吗？",
+        "要不要继续{activity}？我陪你。",
+        "你{activity}，我都看在眼里。",
+        "{activity}累了，就歇会儿。",
+        "我还想听你讲{activity}的事。",
+        "下次{activity}，也带上我呀。",
+    ),
+    MutterCategory.MEMORY: (
+        "想起你说的：{memory}",
+        "我还记得，{memory}",
+        "{memory}——这件事我一直记着。",
+        "突然想到，{memory}",
+        "你之前说过的，{memory}",
+        "脑子里闪过一句话：{memory}",
+        "关于你的事，我记得{memory}",
+        "还记得吗，{memory}",
+        "我常常会想起，{memory}",
+        "那些日子，{memory}",
+    ),
+    MutterCategory.DESIRE: (
+        "有点想{desire}了。",
+        "心里惦记着：{desire}",
+        "突然很想{desire}",
+        "要是有机会{desire}就好了。",
+        "我最近老想着{desire}",
+        "{desire}——这个念头又冒出来了。",
+        "安静下来，就想到{desire}",
+        "也许改天，{desire}",
+        "我想和你一起{desire}",
+        "那个想法又回来了：{desire}",
+    ),
+    MutterCategory.USER: (
+        "{user}，我都记着。",
+        "我认识的你，{user}",
+        "你这个人啊，{user}",
+        "关于你，我记得：{user}",
+        "{user}——我一直记得。",
+        "你总让我觉得，{user}",
+        "我记得你的样子：{user}",
+        "你呀，{user}",
+        "我心里存着你的一件事：{user}",
+        "你说过，{user}",
+    ),
+}
+
+
+def pick_mutter_category(roll: float) -> MutterCategory | None:
+    """按 roll ∈ [0,1) 均匀映射到四类；roll 越界返回 None（不触发）。"""
     if not (0.0 <= roll < 1.0):
         return None
-    return _MUTTER_TEMPLATES[int(roll * len(_MUTTER_TEMPLATES))]
+    return _CATEGORIES[int(roll * len(_CATEGORIES))]
+
+
+def pick_mutter_template(category: MutterCategory, roll: float) -> str | None:
+    """按 roll ∈ [0,1) 从该类模板池选一条（未填空）；roll 越界返回 None。"""
+    if not (0.0 <= roll < 1.0):
+        return None
+    pool = _MUTTER_TEMPLATES[category]
+    return pool[int(roll * len(pool))]
 
 
 def should_initiate_chat(
@@ -460,7 +488,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
 
 ```python
 # pyright: reportPrivateUsage=false, reportUnknownMemberType=false
-# _MUTTER_RATE 跨模块私有 import（spec 明确）；ainvoke 返回部分未知（langgraph）
+# _MUTTER_RATE/_ACTIVITY_LABEL 跨模块私有 import（spec 明确）；ainvoke 返回部分未知（langgraph）
 """ExpressionFacade：回复流程 + 碎碎念 + 搭话。
 
 事件统一 publish，LLM 产出统一 evaluate。
@@ -469,13 +497,20 @@ import random
 import time
 from collections import deque
 
+from nyx.activity.facade import ActivityFacade
 from nyx.config import ExpressionConfig
 from nyx.desire.facade import DesireFacade
 from nyx.enums import ContextMode, EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
-from nyx.expression.mutter import _MUTTER_RATE, pick_mutter
+from nyx.expression.mutter import (
+    _ACTIVITY_LABEL,
+    _MUTTER_RATE,
+    MutterCategory,
+    pick_mutter_category,
+    pick_mutter_template,
+)
 from nyx.expression.pipeline import ReplyDeps, ReplyState, build_reply_graph
 from nyx.expression.prompt import build_system_prompt
 from nyx.inner_life.facade import InnerLifeFacade
@@ -494,6 +529,7 @@ class ExpressionFacade:
         llm: LlmClient,
         evaluator: Evaluator,
         memory: MemoryFacade,
+        activity: ActivityFacade,
         desire: DesireFacade,
         inner_life: InnerLifeFacade,
         canon: str,
@@ -505,6 +541,7 @@ class ExpressionFacade:
         self._llm = llm
         self._evaluator = evaluator
         self._memory = memory
+        self._activity = activity
         self._desire = desire
         self._inner_life = inner_life
         self._canon = canon
@@ -601,17 +638,52 @@ class ExpressionFacade:
         return True
 
     async def mutter(self, state: CurrentState, correlation_id: str) -> None:
-        """碎碎念：空闲 + 随机命中才发模板；无则不发。"""
+        """碎碎念：空闲 + 随机命中才发；按类查最近数据填空，缺数据不发。"""
         if state.current_activity is not None:
             return  # 忙，不碎碎念
         if random.random() >= _MUTTER_RATE:
             return
-        text = pick_mutter(random.random())
-        if text is None:
+        category = pick_mutter_category(random.random())
+        if category is None:
             return
+        text = await self._mutter_text(category, state)
+        if text is None:
+            return  # 该类无数据，宁可不发
         await self._bus.publish(
             internal_text_event(EventType.MUTTER, text, correlation_id)
         )
+
+    async def _mutter_text(
+        self, category: MutterCategory, state: CurrentState
+    ) -> str | None:
+        """按类取最近数据填空；该类无数据返回 None。"""
+        ctx: dict[str, str]
+        if category is MutterCategory.ACTIVITY:
+            results = await self._activity.get_results(limit=1)
+            if not results:
+                return None
+            label = _ACTIVITY_LABEL.get(results[0].type)
+            if label is None:
+                return None
+            ctx = {"activity": label}
+        elif category is MutterCategory.MEMORY:
+            mems = await self._memory.list_memories(limit=1)
+            if not mems:
+                return None
+            ctx = {"memory": mems[0].summary or mems[0].content[:20]}
+        elif category is MutterCategory.DESIRE:
+            if not state.active_desires:
+                return None
+            ctx = {"desire": state.active_desires[0].description}
+        else:  # USER
+            profile = await self._memory.list_memories(tag="user", limit=1)
+            if not profile:
+                return None
+            ctx = {"user": profile[0].summary or profile[0].content[:20]}
+        template = pick_mutter_template(category, random.random())
+        if template is None:
+            return None
+        return template.format(**ctx)
 
     async def check_timeouts(self, now: float) -> None:
         """超时收尾（tick 心跳直呼）：问句无人答 → 记「用户未回答」；
@@ -634,8 +706,9 @@ class ExpressionFacade:
 
 - [ ] 单元测试 `tests/test_expression/`（纯函数 + `:memory:` db + fake llm/memory/desire/inner_life/evaluator/bus）：
   - [ ] **mutter 纯函数**（`test_mutter.py`，无 DB、无 async）：
-    - [ ] `pick_mutter`：`roll<0` / `roll>=1.0` → `None`；`roll=0.0` → 第 0 条；`roll` 接近 1（如 `0.999`）→ 最后一条；返回值 ∈ `_MUTTER_TEMPLATES`
-    - [ ] `_MUTTER_TEMPLATES`：`len == 50` 且无重复（`len(set(...)) == 50`）
+    - [ ] `pick_mutter_category`：`roll<0` / `roll>=1.0` → `None`；`roll=0.0/0.25/0.5/0.75` 均匀映射到四类（ACTIVITY/MEMORY/DESIRE/USER）
+    - [ ] `_MUTTER_TEMPLATES`：四类齐全（`set(keys) == set(MutterCategory)`）、每类 `len == 10` 且无重复
+    - [ ] `pick_mutter_template`：`roll<0` / `roll>=1.0` → `None`；`roll=0.0` → 该类第 0 条；`roll=0.999` → 该类最后一条；返回值 ∈ 该类模板池
     - [ ] `should_initiate_chat`：五条件任一不满足 → `False`（含 interaction 欲望、online、busy、energy、since_last_chat 逐项置反）；全满足 → `True`
   - [ ] **pipeline 纯函数**（`test_pipeline.py`）：
     - [ ] `_is_question`：`"你今天好吗？"` → True；`"你今天怎么样"` → True（含「怎么」）；`"我很好。"` → False
@@ -653,7 +726,7 @@ class ExpressionFacade:
     - [ ] **history 落库顺序**：连续两次 `reply` 后，facade 内部 history 的 role 序列为 `[user, nyx, user, nyx]`；两次都走快通道时第二次 prompt 仍含上一轮历史（回归：历史不因快通道丢失）
     - [ ] **快通道 nyx 落库标记**：快通道 `reply` 后，history 里 `role="nyx"` 的消息 `fast=True`、`role="user"` 的消息 `fast=False`（回溯截断据此跳过浅层回复）
     - [ ] **慢通道回溯跳过快通道 nyx**：先走一次快通道（产生 `fast=True` 的 nyx 消息）、再走慢通道 reply 相关话题，断言慢通道 think/speak 的 user prompt 含更早的相关用户消息、不含那条快通道 nyx 消息
-    - [ ] `mutter`：`state.current_activity` 非 None → 不发；`random.random()` 命中（monkeypatch）→ 发 `mutter`（content 来自模板、`correlation_id == 传入值`）；未命中 → 不发
+    - [ ] `mutter`：`state.current_activity` 非 None → 不发；`random.random()` 命中（monkeypatch）+ 该类数据源有值 → 发 `mutter`（content 含对应填充文本、`correlation_id == 传入值`）；该类数据源空 → 不发；未命中 → 不发
     - [ ] `initiate_chat`：mock `llm.complete` 返回空 content → 返回 `False` 且不发；返回非空 → 返回 `True` 且发 `initiate_chat`（`output_type="initiate_chat"`、correlation_id 一致）
     - [ ] `initiate_chat` 落历史：非空发话后 facade 内部 history 含一条 `role="nyx"`、content 为开场白的消息（用户随后回复可回溯搭话内容）
 - [ ] 集成测试：无（真实 LLM 不测；Facade 间的编排归 18-api 组合根）
@@ -667,4 +740,4 @@ class ExpressionFacade:
 - [ ] `test-inventory.md` 已更新
 - [ ] ripple 同步：tech-ref §6.1 `ReplyState` 的 `think`/`speak` 从 `str | None` 改 `list[str]`（多轮累积）、补 `narrative: SelfNarrative | None` 与 `correlation_id: str` 两字段、edges 补「每轮 SPEAK 交付 + ask 后回合结束走 scene_memory」；tech-ref §5 `initiate_chat` 签名 `-> bool`（发话 True/无话 False）、`mutter` 签名补 `correlation_id: str`（MUTTER_CHECK tick 恒定根）
 - [ ] ripple 同步（V2 交互闭环）：tech-ref §5 `ExpressionFacade` 补 `check_timeouts(now)`；02-config `ExpressionConfig` 补 `ask_timeout`/`chat_ignore_timeout` 两字段；09-memory-facade 补 `record_no_answer`；18-api `_tick_loop` 每轮心跳 `await app.expression.check_timeouts(now)`
-- [ ] 下游约定：18-api 组合根 `canon` = `prompts/canon.md`、`ask_guidance` = `prompts/ask.md` 读入后注入 `ExpressionFacade`；`POST /api/chat` → `ExpressionFacade.reply(msg, correlation_id)`；`INITIATE_CHAT_CHECK` tick 由组合根调 `should_initiate_chat` 判定、从 `DesireFacade.get_pending()` 选 interaction 欲望后 `await initiate_chat(desire, state)`，返回 `True` 才更新 `last_chat_at`；`MUTTER_CHECK` tick → `mutter(state, event.correlation_id)`
+- [ ] 下游约定：18-api 组合根 `canon` = `prompts/canon.md`、`ask_guidance` = `prompts/ask.md` 读入后注入 `ExpressionFacade`；`POST /api/chat` → `ExpressionFacade.reply(msg, correlation_id)`；`INITIATE_CHAT_CHECK` tick 由组合根调 `should_initiate_chat` 判定、从 `DesireFacade.get_pending()` 选 interaction 欲望后 `await initiate_chat(desire, state)`，返回 `True` 才更新 `last_chat_at`；`MUTTER_CHECK` tick → `mutter(state, event.correlation_id)`；组合根构造 `ExpressionFacade` 时在 `memory` 实参后注入 `activity`（activity 先于 expression 构造）

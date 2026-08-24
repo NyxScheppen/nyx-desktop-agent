@@ -8,13 +8,20 @@ import random
 import time
 from collections import deque
 
+from nyx.activity.facade import ActivityFacade
 from nyx.config import ExpressionConfig
 from nyx.desire.facade import DesireFacade
 from nyx.enums import ContextMode, EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
-from nyx.expression.mutter import _MUTTER_RATE, pick_mutter
+from nyx.expression.mutter import (
+    _ACTIVITY_LABEL,
+    _MUTTER_RATE,
+    MutterCategory,
+    pick_mutter_category,
+    pick_mutter_template,
+)
 from nyx.expression.pipeline import ReplyDeps, ReplyState, build_reply_graph
 from nyx.expression.prompt import build_system_prompt
 from nyx.inner_life.facade import InnerLifeFacade
@@ -33,6 +40,7 @@ class ExpressionFacade:
         llm: LlmClient,
         evaluator: Evaluator,
         memory: MemoryFacade,
+        activity: ActivityFacade,
         desire: DesireFacade,
         inner_life: InnerLifeFacade,
         canon: str,
@@ -44,6 +52,7 @@ class ExpressionFacade:
         self._llm = llm
         self._evaluator = evaluator
         self._memory = memory
+        self._activity = activity
         self._desire = desire
         self._inner_life = inner_life
         self._canon = canon
@@ -142,17 +151,52 @@ class ExpressionFacade:
         return True
 
     async def mutter(self, state: CurrentState, correlation_id: str) -> None:
-        """碎碎念：空闲 + 随机命中才发模板；无则不发。"""
+        """碎碎念：空闲 + 随机命中才发；按类查最近数据填空，缺数据不发。"""
         if state.current_activity is not None:
             return  # 忙，不碎碎念
         if random.random() >= _MUTTER_RATE:
             return
-        text = pick_mutter(random.random())
-        if text is None:
+        category = pick_mutter_category(random.random())
+        if category is None:
             return
+        text = await self._mutter_text(category, state)
+        if text is None:
+            return  # 该类无数据，宁可不发
         await self._bus.publish(
             internal_text_event(EventType.MUTTER, text, correlation_id)
         )
+
+    async def _mutter_text(
+        self, category: MutterCategory, state: CurrentState
+    ) -> str | None:
+        """按类取最近数据填空；该类无数据返回 None。"""
+        ctx: dict[str, str]
+        if category is MutterCategory.ACTIVITY:
+            results = await self._activity.get_results(limit=1)
+            if not results:
+                return None
+            label = _ACTIVITY_LABEL.get(results[0].type)
+            if label is None:
+                return None
+            ctx = {"activity": label}
+        elif category is MutterCategory.MEMORY:
+            mems = await self._memory.list_memories(limit=1)
+            if not mems:
+                return None
+            ctx = {"memory": mems[0].summary or mems[0].content[:20]}
+        elif category is MutterCategory.DESIRE:
+            if not state.active_desires:
+                return None
+            ctx = {"desire": state.active_desires[0].description}
+        else:  # USER
+            profile = await self._memory.list_memories(tag="user", limit=1)
+            if not profile:
+                return None
+            ctx = {"user": profile[0].summary or profile[0].content[:20]}
+        template = pick_mutter_template(category, random.random())
+        if template is None:
+            return None
+        return template.format(**ctx)
 
     async def check_timeouts(self, now: float) -> None:
         """超时收尾（tick 心跳直呼）：问句无人答 → 记「用户未回答」；

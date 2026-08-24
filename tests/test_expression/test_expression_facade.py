@@ -4,9 +4,11 @@ from typing import Any, cast
 
 import pytest
 
+from nyx.activity.facade import ActivityFacade
 from nyx.config import ExpressionConfig
 from nyx.desire.facade import DesireFacade
 from nyx.enums import (
+    ActivityStatus,
     ActivityType,
     DesireType,
     EmotionCategory,
@@ -17,12 +19,13 @@ from nyx.enums import (
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
-from nyx.expression.mutter import _MUTTER_TEMPLATES
+from nyx.expression.mutter import _MUTTER_TEMPLATES, MutterCategory
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
+    Activity,
     CurrentState,
     Event,
     LLMOutput,
@@ -135,10 +138,21 @@ class _FakeMemory:
         self.no_answers: list[str] = []
         self.search_results: list[Memory] = []
         self.recalled: list[str] = []
+        self.recent_memories: list[Memory] = []
+        self.user_profile: list[Memory] = []
 
     async def search(self, query: str) -> list[Memory]:
         self.search_calls += 1
         return list(self.search_results)
+
+    async def list_memories(
+        self,
+        tag: str | None = None,
+        type: MemoryType | None = None,
+        limit: int | None = None,
+    ) -> list[Memory]:
+        source = self.user_profile if tag == "user" else self.recent_memories
+        return list(source[:limit]) if limit is not None else list(source)
 
     async def record_recall(self, memory_id: str) -> None:
         self.recalled.append(memory_id)
@@ -188,6 +202,14 @@ class _FakeDesire:
         self.expired.append(desire_id)
 
 
+class _FakeActivity:
+    def __init__(self) -> None:
+        self.results: list[Activity] = []
+
+    async def get_results(self, limit: int) -> list[Activity]:
+        return list(self.results)
+
+
 class _FakeTools:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -212,6 +234,7 @@ def _new_facade(
     desire: _FakeDesire | None = None,
     tools: _FakeTools | None = None,
     memory: _FakeMemory | None = None,
+    activity: _FakeActivity | None = None,
 ) -> tuple[
     ExpressionFacade,
     _FakeLlm,
@@ -225,6 +248,7 @@ def _new_facade(
     memory = memory if memory is not None else _FakeMemory()
     inner_life = _FakeInnerLife(_mk_state(energy, arousal))
     bus = _FakeBus()
+    activity_obj = activity if activity is not None else _FakeActivity()
     desire_obj = (
         cast(DesireFacade, desire)
         if desire is not None
@@ -236,6 +260,7 @@ def _new_facade(
         cast(LlmClient, fake_llm),
         cast(Evaluator, evaluator),
         cast(MemoryFacade, memory),
+        cast(ActivityFacade, activity_obj),
         desire_obj,
         cast(InnerLifeFacade, inner_life),
         canon="你是尼克斯，一个想成为人类的 AI。",
@@ -516,6 +541,29 @@ async def test_reply_slow_backtrack_skips_fast_nyx() -> None:
 # ---- mutter ----
 
 
+def _mk_memory(summary: str, tag: str = "") -> Memory:
+    return Memory(
+        id="m1",
+        created_at=0.0,
+        content="",
+        tag=tag,
+        summary=summary,
+        freshness=1.0,
+        type=MemoryType.SHORT_TERM,
+    )
+
+
+def _mk_activity(type_: ActivityType) -> Activity:
+    return Activity(
+        id="a1",
+        type=type_,
+        schedule_block_id="",
+        status=ActivityStatus.COMPLETED,
+        progress={},
+        started_at=0.0,
+    )
+
+
 async def test_mutter_skips_when_busy() -> None:
     facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade()
     busy = _mk_state(80.0, 0.0)
@@ -524,22 +572,85 @@ async def test_mutter_skips_when_busy() -> None:
     assert bus.published == []
 
 
-async def test_mutter_hit(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_mutter_miss(monkeypatch: pytest.MonkeyPatch) -> None:
+    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade()
+    monkeypatch.setattr("nyx.expression.facade.random.random", lambda: 0.5)
+    await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
+    assert bus.published == []
+
+
+async def test_mutter_activity_fills(monkeypatch: pytest.MonkeyPatch) -> None:
+    activity = _FakeActivity()
+    activity.results = [_mk_activity(ActivityType.READING)]
+    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade(activity=activity)
+    monkeypatch.setattr(
+        "nyx.expression.facade.random.random",
+        iter([0.05, 0.0, 0.0]).__next__,
+    )
+    await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
+    assert len(bus.published) == 1
+    assert bus.published[0].content["content"] == (
+        _MUTTER_TEMPLATES[MutterCategory.ACTIVITY][0].format(activity="读书")
+    )
+
+
+async def test_mutter_memory_fills(monkeypatch: pytest.MonkeyPatch) -> None:
+    memory = _FakeMemory()
+    memory.recent_memories = [_mk_memory("你上周去爬山了")]
+    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade(memory=memory)
+    monkeypatch.setattr(
+        "nyx.expression.facade.random.random",
+        iter([0.05, 0.25, 0.0]).__next__,
+    )
+    await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
+    assert bus.published[0].content["content"] == (
+        _MUTTER_TEMPLATES[MutterCategory.MEMORY][0].format(memory="你上周去爬山了")
+    )
+
+
+async def test_mutter_desire_fills(monkeypatch: pytest.MonkeyPatch) -> None:
+    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade()
+    state = _mk_state(80.0, 0.0)
+    state.active_desires = [
+        ShortTermDesire(
+            id="d1",
+            created_at=0.0,
+            type=DesireType.INTERACTION,
+            strength=1.0,
+            description="想聊聊天",
+            goal=None,
+        )
+    ]
+    monkeypatch.setattr(
+        "nyx.expression.facade.random.random",
+        iter([0.05, 0.5, 0.0]).__next__,
+    )
+    await facade.mutter(state, "corr-m")
+    assert bus.published[0].content["content"] == (
+        _MUTTER_TEMPLATES[MutterCategory.DESIRE][0].format(desire="想聊聊天")
+    )
+
+
+async def test_mutter_user_fills(monkeypatch: pytest.MonkeyPatch) -> None:
+    memory = _FakeMemory()
+    memory.user_profile = [_mk_memory("你喜欢安静", tag="user")]
+    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade(memory=memory)
+    monkeypatch.setattr(
+        "nyx.expression.facade.random.random",
+        iter([0.05, 0.75, 0.0]).__next__,
+    )
+    await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
+    assert bus.published[0].content["content"] == (
+        _MUTTER_TEMPLATES[MutterCategory.USER][0].format(user="你喜欢安静")
+    )
+
+
+async def test_mutter_no_data_skips(monkeypatch: pytest.MonkeyPatch) -> None:
     facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade()
     monkeypatch.setattr(
         "nyx.expression.facade.random.random",
         iter([0.05, 0.0]).__next__,
     )
-    await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
-    assert len(bus.published) == 1
-    assert bus.published[0].type is EventType.MUTTER
-    assert bus.published[0].content["content"] == _MUTTER_TEMPLATES[0]
-    assert bus.published[0].correlation_id == "corr-m"
-
-
-async def test_mutter_miss(monkeypatch: pytest.MonkeyPatch) -> None:
-    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade()
-    monkeypatch.setattr("nyx.expression.facade.random.random", lambda: 0.5)
     await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
     assert bus.published == []
 

@@ -558,10 +558,11 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_templates_len_50_and_unique` | 功能正确 | `len(_MUTTER_TEMPLATES) == 50` 且 `len(set(...)) == 50`（无重复） |
-| `test_pick_mutter_out_of_range` | 边界鲁棒 | `roll<0` / `roll>=1.0` → `None`（不触发） |
-| `test_pick_mutter_bounds` | 功能正确 | `roll=0.0` → 第 0 条；`roll=0.999` → 最后一条 |
-| `test_pick_mutter_membership` | 功能正确 | 返回值 ∈ `_MUTTER_TEMPLATES` |
+| `test_templates_four_categories_nonempty_and_unique` | 功能正确 | `set(_MUTTER_TEMPLATES) == set(MutterCategory)`；每类 `len == 10` 且 `len(set(...)) == 10`（无重复） |
+| `test_pick_mutter_category_out_of_range` | 边界鲁棒 | `roll<0` / `roll>=1.0` → `None`（不触发） |
+| `test_pick_mutter_category_maps_to_four` | 功能正确 | `roll=0.0/0.25/0.5/0.75` → ACTIVITY/MEMORY/DESIRE/USER |
+| `test_pick_mutter_template_out_of_range` | 边界鲁棒 | `roll<0` / `roll>=1.0` → `None`（不触发） |
+| `test_pick_mutter_template_bounds_and_membership` | 功能正确 | `roll=0.0` → 第 0 条；`roll=0.999` → 最后一条；`roll=0.37` ∈ 该类模板池 |
 | `test_should_initiate_chat_all_true` | 功能正确 | 互动欲 + 在线 + 不忙 + 精力够 + 间隔够 → `True` |
 | `test_should_initiate_chat_each_condition` | 边界鲁棒 | 五条件逐项置反（无互动欲/离线/忙/精力 49/间隔 1000）→ `False` |
 | `test_is_question` | 功能正确 | `"你今天好吗？"`/`"你今天怎么样"` → True（含「怎么」）；`"我很好。"` → False |
@@ -584,8 +585,12 @@
 | `test_record_message_marks_fast` | 功能正确 | 快通道 nyx 消息 `fast=True`、慢通道 nyx 消息 `fast=False`（回溯截断的依据） |
 | `test_reply_slow_backtrack_skips_fast_nyx` | 功能正确 | 慢通道回溯：跳过 `fast=True` 的快通道 nyx 消息（`Nyx：嗯嗯` 不进 prompt）、保留更早的相关用户消息（`用户：我上周去爬山了` 进 prompt） |
 | `test_mutter_skips_when_busy` | 功能正确 | `current_activity` 非 None → 不发 |
-| `test_mutter_hit` | 功能正确 | `random.random()` 命中 → 发 `mutter`（content 来自模板、correlation 透传） |
 | `test_mutter_miss` | 功能正确 | `random.random()` 未命中 → 不发 |
+| `test_mutter_activity_fills` | 功能正确 | 命中 + ACTIVITY 类有最近活动 → 发 `mutter`，content 含 `_ACTIVITY_LABEL` 标签（读书/探索/创作） |
+| `test_mutter_memory_fills` | 功能正确 | 命中 + MEMORY 类有最近记忆 → 发 `mutter`，content 含 `summary` |
+| `test_mutter_desire_fills` | 功能正确 | 命中 + DESIRE 类有 active_desires → 发 `mutter`，content 含 `description` |
+| `test_mutter_user_fills` | 功能正确 | 命中 + USER 类有 tag="user" 记忆 → 发 `mutter`，content 含用户画像文本 |
+| `test_mutter_no_data_skips` | 功能正确 | 命中但该类数据源空 → 不发 |
 | `test_initiate_chat_empty` | 边界鲁棒 | 空 content → `False` 且不发 |
 | `test_initiate_chat_non_empty` | 功能正确 | 非空 → `True` 且发 `initiate_chat`（output_type/correlation 一致）、system prompt 含 `[主动提问指导]` |
 | `test_initiate_chat_appends_history` | 功能正确 | 非空发话后 facade 内部 history 含一条 `role="nyx"`、content 为开场白的消息（搭话落历史，后续回复可回溯） |

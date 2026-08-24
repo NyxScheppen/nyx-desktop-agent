@@ -71,7 +71,7 @@ from nyx.types import (
 _HOST = "127.0.0.1"
 _PORT = 8000
 _TICK_INTERVAL = 60.0           # tick 循环检查间隔（秒）
-_MUTTER_CHECK_INTERVAL = 600.0  # 碎碎念检查周期（秒，10 分钟）
+_MUTTER_CHECK_INTERVAL = 150.0  # 碎碎念检查周期（秒，2.5 分钟）
 _INITIATE_CHAT_INTERVAL = 300.0 # 搭话检查周期（秒，5 分钟）
 _BUS_BACKOFF_BASE = 1.0        # 总线重启指数退避初值（秒）
 _BUS_BACKOFF_MAX = 30.0        # 退避上限（秒）
@@ -560,8 +560,8 @@ async def build_app_context(config: Config) -> _App:
     canon = _load_canon(prompt_dir)
     ask = _load_ask(prompt_dir)
     expression = ExpressionFacade(
-        bus, llm, evaluator, memory, desire, inner_life, canon, ask, config.expression,
-        tools,
+        bus, llm, evaluator, memory, activity, desire, inner_life, canon, ask,
+        config.expression, tools,
     )
 
     app = _App(

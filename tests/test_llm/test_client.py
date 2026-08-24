@@ -302,3 +302,18 @@ def test_from_config_passes_timeout_and_retries(
     LlmClient.from_config(LlmConfig(timeout=30.0, max_retries=5))
     assert captured["timeout"] == 30.0
     assert captured["max_retries"] == 5
+
+
+def test_from_config_passes_temperature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    captured: dict[str, Any] = {}
+
+    class _FakeChatOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("nyx.llm.client.ChatOpenAI", _FakeChatOpenAI)
+    LlmClient.from_config(LlmConfig(temperature=1.2))
+    assert captured["temperature"] == 1.2

@@ -28,6 +28,7 @@ class LlmConfig:
     base_url: str | None = None            # 可选 endpoint 覆盖；缺省查 provider 映射
     timeout: float = 60.0                  # 单次 LLM 请求超时（秒）
     max_retries: int = 2                   # 请求失败重试次数
+    temperature: float = 0.8               # 采样温度 0-2，比默认 1.0 略收紧
 
 
 @dataclass
@@ -156,6 +157,11 @@ def _unit_interval(v: Any, path: str) -> None:
         raise ConfigError(f"{path} 非法: {v!r}")
 
 
+def _temperature(v: Any, path: str) -> None:
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not (0.0 <= v <= 2.0):
+        raise ConfigError(f"{path} 非法: {v!r}")
+
+
 def _pos_num(v: Any, path: str) -> None:
     if not isinstance(v, (int, float)) or isinstance(v, bool) or not (v > 0.0):
         raise ConfigError(f"{path} 非法: {v!r}")
@@ -201,6 +207,7 @@ def validate_config(cfg: Config) -> None:
     _pos_num(cfg.desire.value_decay, "desire.value_decay")          # 数 > 0
     _pos_num(cfg.llm.timeout, "llm.timeout")
     _int(cfg.llm.max_retries, "llm.max_retries")
+    _temperature(cfg.llm.temperature, "llm.temperature")            # 数 ∈ [0, 2]
     _pos_num(cfg.expression.ask_timeout, "expression.ask_timeout")
     _pos_num(cfg.expression.chat_ignore_timeout, "expression.chat_ignore_timeout")
     _pos_num(cfg.expression.context_time_gap, "expression.context_time_gap")

@@ -95,6 +95,7 @@ class LlmClient:
                 base_url=base_url,
                 timeout=config.timeout,
                 max_retries=config.max_retries,
+                temperature=config.temperature,
             ),
             model_name=config.model,
         )

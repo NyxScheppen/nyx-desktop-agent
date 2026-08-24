@@ -58,3 +58,11 @@
 |---|---|---|
 | `LongTermDesire.linked_values` | design 规划「关联价值观」（01-types:240），production 唯一写入点 reflection 恒 `[]`，全后端无消费逻辑 | reflection 回填关联价值观，或排序/prompt 参考 |
 | `LongTermDesire.strength` | design 规划衰减（11-desire:51 `strength -= 0.02`），lifecycle 也在递减，但递减结果不被任何排序/prompt/决策消费（prompt 读的是 `ShortTermDesire.strength`） | 长期欲望排序/取舍时考虑 `strength` |
+
+## 电脑控制（computer use）
+
+> 给尼克斯「手」：眼睛已有（`screen.py` 抓屏 + `VisionClient` 视觉描述 + Tauri 窗口/活跃度观察），缺口是**输入模拟**与「看到 → 点哪 → 真点」的动作闭环。
+
+| 功能 | 愿景出处 | 说明 |
+|---|---|---|
+| 打游戏（卡牌策略） | — | 卡牌策略节奏慢、坐标可预测，作首个 computer use 目标。`input` 工具（`pyautogui`：click/type/key/hotkey/move）+ 视觉定位（vision 出坐标 / OCR / 模板匹配）。安全护栏内建：作用域限窗口、高危动作确认、急停热键、动作预算、审计日志。实时动作游戏（FPS/MOBA）不做（文本 LLM 循环延迟不达标） |

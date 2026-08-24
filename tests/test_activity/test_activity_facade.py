@@ -13,6 +13,7 @@ from nyx.activity.facade import (
     _CREATION_STYLES,
     ActivityFacade,
     _build_creation_context,
+    _build_creation_system,
     _day_start,
     _goal_met,
     _parse_activity_result,
@@ -205,11 +206,12 @@ class _KnowledgeLlm(_FakeLlm):
 
 
 class _CapturingLlm(_FakeLlm):
-    """记录每次 complete 的 user content（用于断言创作上下文注入）。"""
+    """记录每次 complete 的 user/system content（用于断言创作上下文与人格注入）。"""
 
     def __init__(self) -> None:
         super().__init__()
         self.user_contents: list[str] = []
+        self.system_contents: list[str] = []
 
     async def complete(
         self,
@@ -221,6 +223,7 @@ class _CapturingLlm(_FakeLlm):
         json_mode: bool = False,
     ) -> LLMOutput:
         self.user_contents.append(str(messages[-1]["content"]))
+        self.system_contents.append(str(messages[0]["content"]))
         return await super().complete(
             messages,
             module=module,
@@ -346,6 +349,7 @@ async def _new_facade(
     reflect: Callable[[str | None], Awaitable[str | None]] | None = None,
     get_observation: Callable[[], Awaitable[dict[str, str]]] | None = None,
     memory: _FakeMemory | None = None,
+    canon: str = "测试人格",
 ) -> tuple[ActivityFacade, ActivityStore, EventBus, Database]:
     database = await db.connect(":memory:")
     store = ActivityStore(database)
@@ -370,6 +374,7 @@ async def _new_facade(
         get_observation if get_observation is not None else _no_observation,
         ActivityConfig(),
         ExplorationConfig(),
+        canon,
     )
     return facade, store, bus, database
 
@@ -1388,6 +1393,20 @@ def test_build_creation_context_empty() -> None:
     assert ctx == "风格：日记体"   # 无主题/知识/屏幕 → 只剩风格
 
 
+def test_build_creation_system() -> None:
+    """创作 system prompt：canon 全文 + 此刻心境 + 创作声音指令都注入。"""
+    state = _mk_state(70.0)
+    state.active_desires = [_desire("d1", DesireType.CREATION, description="写点东西")]
+    sys = _build_creation_system("测试人格", state)
+    assert "测试人格" in sys
+    assert "[此刻心境]" in sys
+    assert state.emotion.value in sys
+    assert "精力：70/100" in sys
+    assert "写点东西" in sys
+    assert "[创作要求]" in sys
+    assert "按 JSON 输出" in sys
+
+
 async def test_extract_knowledge_persists_items() -> None:
     memory = _FakeMemory()
     facade, _store, _bus, database = await _new_facade(
@@ -1565,5 +1584,29 @@ async def test_creation_activity_injects_context(
         assert "风格：" in user
         assert "知识库参考" in user
         assert "当前屏幕灵感" in user
+    finally:
+        await database.conn.close()
+
+
+async def test_creation_activity_injects_canon_system(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """创作 system prompt 注入 canon 人格全文（不再只是「你是尼克斯」）。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    llm = _CapturingLlm()
+    facade, _store, bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.CREATION)],
+        energy=80.0,
+        llm=llm,
+        evaluator=_FakeEvaluator(),
+        canon="测试人格全文",
+    )
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        assert "测试人格全文" in llm.system_contents[0]
+        assert "[此刻心境]" in llm.system_contents[0]
     finally:
         await database.conn.close()

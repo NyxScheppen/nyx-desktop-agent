@@ -24,6 +24,13 @@ def test_validate_config_accepts_defaults() -> None:
     validate_config(Config())
 
 
+def test_validate_config_accepts_temperature_bounds() -> None:
+    for t in (0.0, 2.0):
+        cfg = Config()
+        cfg.llm.temperature = t
+        validate_config(cfg)
+
+
 @pytest.mark.parametrize(
     ("section", "field", "value"),
     [
@@ -44,6 +51,9 @@ def test_validate_config_accepts_defaults() -> None:
         ("llm", "timeout", "60"),                     # 错类型 str
         ("llm", "max_retries", "2"),                  # 错类型 str
         ("llm", "max_retries", True),                 # 错类型 bool
+        ("llm", "temperature", -0.1),                 # 越界 <0
+        ("llm", "temperature", 2.1),                  # 越界 >2
+        ("llm", "temperature", True),                 # 错类型 bool
     ],
 )
 def test_validate_config_rejects_invalid(

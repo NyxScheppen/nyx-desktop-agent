@@ -32,6 +32,7 @@
 - **多 provider（OpenAI 兼容）**：`from_config` 用 `resolve_base_url(provider, base_url)` 解析 endpoint——显式 `llm.base_url` 优先，否则查内置映射（deepseek / openai / ollama）；无命中报 `ConfigError`（列出内置 provider + 提示配 `llm.base_url`）。统一走 `ChatOpenAI`，token 抽取不变
 - **屏幕视觉（`vision.py`，V2）**：`VisionClient` 是独立多模态客户端（Ollama 视觉模型同走 OpenAI 兼容 `ChatOpenAI`），消息带 `image_url` 块、不混入纯文本 `complete`；复用 `resolve_base_url`（故该函数公开，供 `vision.py` 跨模块导入）。`from_config` 与 `LlmClient` 同规则读 key：`os.environ.get(config.api_key_env)`，未设且非 Ollama 报 `ConfigError`、Ollama 免 key 占位。
 - **超时/重试**：`from_config` 把 `config.timeout` / `config.max_retries`（02-config 的 `LlmConfig`）透传给 `ChatOpenAI`；重试仍由 LangChain 兜底，异常原样上抛由调用方处理
+- **采样温度**：`from_config` 把 `config.temperature`（02-config 的 `LlmConfig`，0-2，默认 0.8）透传给 `ChatOpenAI`；`complete()` 不加 per-call 温度——单一全局旋钮，让人格声音更一致（比 DeepSeek 默认 1.0 略收紧）
 - **json_mode = 减少 parse 失败重试**：欲望生成/分类器/judge 要结构化输出，靠 `response_format` 保证合法 JSON，少一次重调
 - **依赖 pin（实现时锁）**：`pyproject.toml` 里 `langchain-core`、`langchain-openai` 锁精确版本（非 `>=` 宽范围）；`pydantic` 用 `>=2.0` floor（`SecretStr` 自 v1 稳定，非 volatile API）。本 spec 的 `usage_metadata`（键 `input_tokens`/`output_tokens`）、`AIMessage.content`（文本为 `str`）、`response_format={"type":"json_object"}` 契约均以锁定版本为准，升级依赖须重跑本 spec 测试
 - **类型收窄（质量门驱动）**：`_extract_usage` 里 `isinstance(usage, dict)` 把 `getattr` 返回的 `Any` 收窄成 `dict[Unknown, Unknown]`，赋给 `dict[str, Any]` 报 partially unknown，故 `cast(dict[str, Any], usage)`（与 02-config `_build` 同模式）；`from_config` 里 `api_key` 用 `SecretStr(api_key)` 包装——langchain-openai 的 `api_key` 别名类型是 `SecretStr | Callable | None`，plain `str` 不满足 pyright strict，`SecretStr` 顺带让密钥不进 repr/日志
@@ -136,6 +137,7 @@ class LlmClient:
                 base_url=base_url,
                 timeout=config.timeout,
                 max_retries=config.max_retries,
+                temperature=config.temperature,
             ),
             model_name=config.model,
         )
@@ -196,7 +198,7 @@ class LlmClient:
     - [ ] `messages` 顺序与内容按原序透传（fake 记录收到的 LangChain 消息）
     - [ ] 非文本 content（fake 返回 `content=list`）→ `RuntimeError`（不是 `str(list)` 的 repr 垃圾）
   - [ ] `resolve_base_url` 纯函数：显式 `base_url` 优先 / 已知 provider 命中 / 未知 provider 返回 `None`
-  - [ ] `from_config`（`monkeypatch` 环境变量）：`provider="claude"`（无 base_url）→ `ConfigError`；`api_key_env` 未设（`delenv`）→ `ConfigError`；正常 → 返回 `LlmClient` 且 `_model_name == config.model`（`setenv` 设 key）；`provider="openai"` → 正常返回；自定义 `base_url` → 正常返回
+  - [ ] `from_config`（`monkeypatch` 环境变量）：`provider="claude"`（无 base_url）→ `ConfigError`；`api_key_env` 未设（`delenv`）→ `ConfigError`；正常 → 返回 `LlmClient` 且 `_model_name == config.model`（`setenv` 设 key）；`provider="openai"` → 正常返回；自定义 `base_url` → 正常返回；`temperature` 透传（monkeypatch `ChatOpenAI` 捕获 kwargs，断言 `temperature` 值）
 - [ ] 集成测试：无（`LlmClient` 是内部类，无 Facade 管道；不测真实 LLM）
 - [ ] E2E 测试：无
 

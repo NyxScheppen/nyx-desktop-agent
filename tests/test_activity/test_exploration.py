@@ -4,7 +4,12 @@ from typing import Any, cast
 
 import pytest
 
-from nyx.activity.exploration import _MAX_STEPS, Exploration, should_explore
+from nyx.activity.exploration import (
+    _MAX_STEPS,
+    Exploration,
+    ExplorationState,
+    should_explore,
+)
 from nyx.config import ExplorationConfig
 from nyx.eval.evaluator import Evaluator
 from nyx.llm.client import LlmClient, LlmMessage
@@ -59,6 +64,24 @@ class _FakeTools:
         if name in ("local_search", "web_search"):
             return ["一条检索结果"]
         return "文件内容"
+
+
+class _WebTools:
+    """web_search 返回带 url 的结果，web_fetch 记录调用（可配置抛错）。"""
+
+    def __init__(self, fetch_raises: bool = False) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self._fetch_raises = fetch_raises
+
+    async def call(self, name: str, args: dict[str, Any]) -> Any:
+        self.calls.append((name, args))
+        if name == "web_search":
+            return [{"url": "https://example.com/a"}]
+        if name == "web_fetch":
+            if self._fetch_raises:
+                raise RuntimeError("download fail")
+            return {"path": "/x", "filename": "a.txt", "total_chars": 3}
+        return "其他"
 
 
 def _make_exploration(
@@ -121,3 +144,39 @@ async def test_exploration_plan_non_dict_raises() -> None:
     expl = _make_exploration(llm, _FakeEvaluator(), _FakeTools())
     with pytest.raises(ValueError):
         await expl.run("骑士团", "corr-1")
+
+
+# ---- _search_web：主动下载资料 ----
+
+
+def _web_exploration(tools: _WebTools) -> Exploration:
+    return Exploration(
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        cast(ToolRegistry, tools),
+        ExplorationConfig(web_enabled=True),
+    )
+
+
+def _web_state() -> ExplorationState:
+    return {
+        "seed": "x", "focus": "骑士", "findings": [], "notes": [],
+        "step": 0, "done": False, "correlation_id": "c",
+    }
+
+
+async def test_search_web_downloads_first_result() -> None:
+    tools = _WebTools()
+    expl = _web_exploration(tools)
+    state = _web_state()
+    await expl._search_web(state)
+    assert ("web_fetch", {"url": "https://example.com/a"}) in tools.calls
+    assert any("已下载资料" in f for f in state["findings"])
+
+
+async def test_search_web_no_crash_when_download_fails() -> None:
+    tools = _WebTools(fetch_raises=True)
+    expl = _web_exploration(tools)
+    state = _web_state()
+    await expl._search_web(state)  # 下载失败静默吞掉，不崩
+    assert len(state["findings"]) == 1  # 只剩 web_search 结果串，无「已下载资料」

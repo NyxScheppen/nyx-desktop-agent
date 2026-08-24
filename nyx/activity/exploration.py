@@ -128,6 +128,13 @@ class Exploration:
     async def _search_web(self, state: ExplorationState) -> ExplorationState:
         res = await self._tools.call("web_search", {"query": state["focus"]})
         state["findings"].extend(str(r) for r in res)
+        if res:
+            # 搜到结果就顺手下第一条正文入书库（主动下载资料）；失败静默不崩探索
+            try:
+                fetched = await self._tools.call("web_fetch", {"url": res[0]["url"]})
+                state["findings"].append(f"已下载资料：{fetched}")
+            except Exception:
+                pass
         return state
 
     async def _read(self, state: ExplorationState) -> ExplorationState:

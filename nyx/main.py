@@ -49,6 +49,7 @@ from nyx.memory.store import MemoryStore
 from nyx.tools.file_io import build_file_io_tool, file_io
 from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
+from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
 from nyx.types import (
     Activity,
@@ -490,14 +491,15 @@ def build_app(app: _App) -> FastAPI:
     return fast
 
 
-def _build_tools(config: Config) -> ToolRegistry:
+def _build_tools(config: Config, bus: EventBus) -> ToolRegistry:
     """装配工具：local_search + file_io 恒注册，
-    web_search 按 web_enabled opt-in（06-tools 完成定义）。"""
+    web_search/web_fetch 按 web_enabled opt-in（06-tools 完成定义）。"""
     tools = ToolRegistry()
     tools.register(build_local_search_tool())
     tools.register(build_file_io_tool())
     if config.exploration.web_enabled:
         tools.register(build_web_search_tool())
+        tools.register(build_web_fetch_tool(bus))
     return tools
 
 
@@ -507,7 +509,7 @@ async def build_app_context(config: Config) -> _App:
     db: Database = await connect()
     llm = LlmClient.from_config(config.llm)
     bus = EventBus(db)
-    tools = _build_tools(config)
+    tools = _build_tools(config, bus)
 
     memory_store = MemoryStore(db)
     embed = build_embed(config.embedding.model)  # MVP 默认启用向量层；测试注入 None
@@ -542,10 +544,14 @@ async def build_app_context(config: Config) -> _App:
     async def _get_observation() -> dict[str, str]:
         return await observation_holder[0]()
 
+    prompt_dir = Path(os.environ.get("NYX_CANON_DIR", "prompts"))
+    canon = _load_canon(prompt_dir)
+    ask = _load_ask(prompt_dir)
+
     activity = ActivityFacade(
         activity_store, material_store, bus, llm, evaluator, tools, desire,
         memory, reading_notes, _get_state, _reflect, _get_observation,
-        config.activity, config.exploration,
+        config.activity, config.exploration, canon,
     )
     inner_life = InnerLifeFacade(
         inner_life_store, activity, desire, memory, bus, llm, evaluator, config,
@@ -556,9 +562,6 @@ async def build_app_context(config: Config) -> _App:
     await _seed_inner_life(inner_life_store)
     await _seed_desire(desire_store)
 
-    prompt_dir = Path(os.environ.get("NYX_CANON_DIR", "prompts"))
-    canon = _load_canon(prompt_dir)
-    ask = _load_ask(prompt_dir)
     expression = ExpressionFacade(
         bus, llm, evaluator, memory, activity, desire, inner_life, canon, ask,
         config.expression, tools,

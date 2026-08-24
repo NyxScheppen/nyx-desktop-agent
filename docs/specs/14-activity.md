@@ -45,7 +45,7 @@
 - **读书 = 读本地书库（禁凭空编造，design §8.2 落地）**：`MaterialStore`（`material` 表）存用户喂的读物与分块进度。`read_material`（`USER_MATERIAL` 入口）先 `upsert` 注册再发起 READING 读第一块；探索欲触发的 `READING` 在 `_maybe_start_activity` 里**先按 `goal.topic` 走 `find_by_topic`**（命中读那本，C2）、否则 `next_readable()` 取**最近未读完的那本**续读，读完自动换下一本。**无书可读**（`next_readable()` 返回 None）→ 经 `should_explore` 转 `FREE_EXPLORATION`（限速中则退回默认活动）——任何路径都不让 LLM 凭空编造读书内容。三层兜底：`_maybe_start_activity` 不产无 source 的 READING、`_run_activity` 缺 source `raise`、`_run_reading_source` 只读真实文件块（空块聚合已有片段，不凭空编造）
 - **六种活动执行分派（`_run_activity`）**：
   - `READING`：`_run_reading_source` 分块读真实文件（切 `[read_chars, read_chars+6000)` 一块喂 LLM 产 `{book, note}`）→ result 附 `read_chars`/`total_chars` 推进进度；缺 `source` 直接 `raise ValueError`（**禁凭空编造**）；读到最后一块/空块时聚合全部片段 → 完整笔记落盘（`_aggregate_note` 1 次 LLM）。**滚动摘要接力**：续读时把「上次已读到第 N 字 + 此前片段笔记（`get_fragments`）」拼进 `extra_context`（`书名 + 上次已读 + 本次新读（第 N~M 字）`），让本次 note 自然承接已读部分、只续写本块新内容，避免几篇之间不连贯
-  - `CREATION`：1 次 LLM（`json_mode=True`、`module="activity"`、`output_type="creation"`）→ result `{title, content}`，再把标题 `_sanitize_filename` 清洗成安全文件名落盘 `workspace/creations/<safe>.md`（`file_io` write），result 附 `path`
+  - `CREATION`：1 次 LLM（`json_mode=True`、`module="activity"`、`output_type="creation"`）→ result `{title, content}`，再把标题 `_sanitize_filename` 清洗成安全文件名落盘 `workspace/creations/<safe>.md`（`file_io` write），result 附 `path`。**创作注入人格声音 + 此刻心境**：system prompt 用 `_build_creation_system(canon, state)` 拼「canon 全文（含 §说话风格）+ 此刻心境（emotion/valence/arousal/energy/active_desires）+ 正向创作指令 + JSON 约束」，补上创作路径此前缺失的 canon（canon 只进对话、不进 `_ACTIVITY_SYSTEM`）——读书仍走 `_ACTIVITY_SYSTEM` 不动
   - `IDLE_REFLECTION`：直接 `await self._reflect`（组合根注入的 reflect 回调，1 LLM 在 inner_life），不发 `REFLECTION` 事件；result 回带 `{summary}`
   - `FREE_EXPLORATION`：调 `Exploration.run()`（LangGraph 多步，seed = 欲望描述）→ result `{findings, notes}`
   - `OBSERVE_USER`：调组合根注入的 `get_observation`（0 LLM）产 `{presence, window_title, screen_summary}`，`summary` 由 `build_observation_summary` 拼装（窗口优先、屏幕次之）；`REST`：0 LLM，result `{}`
@@ -646,6 +646,30 @@ def _build_creation_context(
     return "\n\n".join(parts)
 
 
+def _build_creation_system(canon: str, state: CurrentState) -> str:
+    """创作 system prompt：canon 人格全文 + 此刻心境 + 创作声音指令 + JSON 约束。
+
+    补上创作路径此前缺失的人格声音（canon 只进对话，不进 _ACTIVITY_SYSTEM）；
+    「此刻心境」让文字有情绪底色，而非任意模型平铺直叙的套话。纯函数。
+    """
+    desires = "、".join(d.description for d in state.active_desires) or "无"
+    mood = (
+        "[此刻心境]\n"
+        f"情感：{state.emotion.value}"
+        f"（valence={state.valence:.2f}，arousal={state.arousal:.2f}）\n"
+        f"精力：{state.energy:.0f}/100\n"
+        f"惦记：{desires}"
+    )
+    voice = (
+        "[创作要求]\n"
+        "以尼克斯的说话风格写：温柔克制安静真诚、带一点羞涩犹豫停顿、偶尔轻微自我修正，"
+        "不要客服腔、不要堆砌华丽词藻，让文字有你的情绪底色。"
+        "遵循给定风格，可引用知识库参考，但绝不编造不存在的知识；"
+        "当前屏幕灵感只作启发，勿照搬。按 JSON 输出 {title, content}。"
+    )
+    return f"{canon}\n\n{mood}\n\n{voice}"
+
+
 class ActivityFacade:
     """活动模块门面：消费欲望 → 选活动 → 后台执行 → 完成/打断 → 发布事件。
 
@@ -669,6 +693,7 @@ class ActivityFacade:
         get_observation: Callable[[], Awaitable[dict[str, str]]],
         config: ActivityConfig,
         exploration_config: ExplorationConfig,
+        canon: str,
     ) -> None:
         self._store = store
         self._material_store = material_store
@@ -682,6 +707,7 @@ class ActivityFacade:
         self._reflect = reflect
         self._get_observation = get_observation
         self._config = config
+        self._canon = canon
         self._exploration = Exploration(
             llm, evaluator, tools, exploration_config
         )
@@ -1024,9 +1050,12 @@ class ActivityFacade:
             style = _pick_creation_style()
             knowledge = await self._memory.list_memories(tag="knowledge")
             obs = await self._get_observation()
+            state = await self._get_state()
             context = _build_creation_context(activity, style, knowledge, obs)
+            system = _build_creation_system(self._canon, state)
             result = await self._run_llm_activity(
-                activity, "creation", extra_context=context, context_label="创作参考"
+                activity, "creation", extra_context=context,
+                context_label="创作参考", system=system,
             )
             title = str(result["title"])
             path = f"creations/{_sanitize_filename(title)}.md"
@@ -1258,13 +1287,14 @@ class ActivityFacade:
         output_type: str,
         extra_context: str | None = None,
         context_label: str = "读物信息",
+        system: str | None = None,
     ) -> dict[str, Any]:
         user_msg = f"活动类型：{activity.type.value}"
         if extra_context:
             user_msg += f"\n{context_label}：\n{extra_context}"
         output = await self._llm.complete(
             [
-                {"role": "system", "content": _ACTIVITY_SYSTEM},
+                {"role": "system", "content": system or _ACTIVITY_SYSTEM},
                 {"role": "user", "content": user_msg},
             ],
             module="activity",

@@ -87,6 +87,7 @@ export default function ReadingNotesPanel() {
       await addAnnotation(selected.id, content);
       setNewAnnotation("");
       await loadAnnotations(selected.id);
+      await refresh();   // 列表 annotation_count 徽标跟随刷新
     } catch (err) {
       setAnnoError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -98,6 +99,7 @@ export default function ReadingNotesPanel() {
     try {
       await deleteAnnotation(annotationId);
       setAnnotations((prev) => prev.filter((a) => a.id !== annotationId));
+      await refresh();   // 列表 annotation_count 徽标跟随刷新
     } catch {
       /* 删除失败不打断阅读 */
     }

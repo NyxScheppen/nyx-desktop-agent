@@ -272,6 +272,19 @@ async def test_reply_fast() -> None:
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.SPEAK]
 
 
+async def test_reply_fast_question_sets_ask() -> None:
+    # 快通道问句结尾也置 ask/_waiting_user（快通道绕过 should_ask，问句无人答信号不丢）
+    facade, llm, _evaluator, _memory, _inner_life, bus = _new_facade(
+        energy=20.0, arousal=0.9, llm=_FakeLlm(speak_override="你还好吗？")
+    )
+    await facade.reply("哦", "corr-fast-q")
+    assert [t for t, _m, _c in llm.calls] == ["think", "speak"]
+    assert [e.type for e in bus.published] == [EventType.THINK, EventType.ASK]
+    assert facade._waiting_user is True
+    assert facade._ask_text == "你还好吗？"
+    assert facade._ask_cid == "corr-fast-q"
+
+
 async def test_reply_slow_non_question() -> None:
     facade, llm, _evaluator, memory, _inner_life, bus = _new_facade(
         energy=100.0, arousal=0.0

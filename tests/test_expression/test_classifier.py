@@ -64,3 +64,14 @@ def test_classify_channel() -> None:
     fast_state = _state(energy=20.0, arousal=0.9)
     assert classify_channel("在吗", slow_state, 7200.0, 0.0, 0.5) == ContextMode.SLOW
     assert classify_channel("哦", fast_state, 60.0, 0.0, 0.5) == ContextMode.FAST
+
+
+def test_emotion_words_no_single_char_false_positive() -> None:
+    # 单字「累」「烦」曾是子串误判源：同长度中性词对比，「积累」「麻烦」不触发情感
+    mid = _state(energy=50.0, arousal=0.5)
+    neutral = slow_score("项目", mid, 0.0, 0.0)
+    assert slow_score("积累", mid, 0.0, 0.0) == neutral   # 含「累」但不该命中
+    assert slow_score("麻烦", mid, 0.0, 0.0) == neutral   # 含「烦」但不该命中
+    # 双字情感词正常命中
+    assert slow_score("烦躁", mid, 0.0, 0.0) > neutral
+    assert slow_score("疲惫", mid, 0.0, 0.0) > neutral

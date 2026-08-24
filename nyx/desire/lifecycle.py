@@ -85,15 +85,20 @@ ListMemories = Callable[[], Awaitable[list[Memory]]]
 
 
 def _subtopics_for(type_: DesireType, long_term: list[LongTermDesire]) -> list[str]:
-    """对应类型长期欲望的子主题池；无匹配或空池返回 []。纯函数。"""
+    """对应类型长期欲望的子主题池；无匹配或空池返回 []。纯函数。
+
+    过滤空白子主题：空串在 _subtopic_freshness 的 substring 匹配里是通配符。
+    """
     for lt in long_term:
         if lt.type is type_ and lt.subtopics:
-            return lt.subtopics
+            return [s for s in lt.subtopics if s.strip()]
     return []
 
 
 def _subtopic_freshness(subtopic: str, memories: list[Memory]) -> float | None:
     """子主题最新新鲜度：命中摘要/正文的最新记忆 freshness；无命中为 None。纯函数。"""
+    if not subtopic.strip():
+        return None   # 空串是 substring 通配符，不做匹配
     hits = [
         m.freshness
         for m in memories

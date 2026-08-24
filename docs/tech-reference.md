@@ -354,6 +354,7 @@ vision:
   enabled: false              # 屏幕视觉 opt-in（手动开启）
   provider: ollama            # 视觉模型 provider→base_url 映射（复用 llm 映射）
   model: llava                # 本地视觉模型 tag（Ollama）
+  api_key_env: DEEPSEEK_API_KEY  # 存环境变量名，key 本体由 03-llm 的 VisionClient 读（Ollama 免 key 占位）
   # base_url: http://localhost:11434/v1   # 可选：覆盖视觉 endpoint
   interval_seconds: 60        # 抓屏周期（秒）
 

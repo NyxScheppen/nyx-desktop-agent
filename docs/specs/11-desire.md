@@ -380,15 +380,20 @@ ListMemories = Callable[[], Awaitable[list[Memory]]]
 
 
 def _subtopics_for(type_: DesireType, long_term: list[LongTermDesire]) -> list[str]:
-    """对应类型长期欲望的子主题池；无匹配或空池返回 []。纯函数。"""
+    """对应类型长期欲望的子主题池；无匹配或空池返回 []。纯函数。
+
+    过滤空白子主题：空串在 _subtopic_freshness 的 substring 匹配里是通配符。
+    """
     for lt in long_term:
         if lt.type is type_ and lt.subtopics:
-            return lt.subtopics
+            return [s for s in lt.subtopics if s.strip()]
     return []
 
 
 def _subtopic_freshness(subtopic: str, memories: list[Memory]) -> float | None:
     """子主题最新新鲜度：命中摘要/正文的最新记忆 freshness；无命中为 None。纯函数。"""
+    if not subtopic.strip():
+        return None   # 空串是 substring 通配符，不做匹配
     hits = [
         m.freshness
         for m in memories
@@ -770,7 +775,8 @@ class DesireFacade:
     - [ ] `insert_long_term + list_long_term + update_long_term`：`subtopics`/`linked_values` JSON 数组往返、`type` 枚举往返；`update_long_term` 改 `progress`/`strength`
   - [ ] **lifecycle 纯函数**：
     - [ ] `_parse_desire`：合法 JSON（含 goal）→ `(description, Goal)`；`goal: null` → `(description, None)`；缺 `description` / 空串 → `ValueError`；`goal.action` 非法 → `ValueError`；`count` 非正/非 int → `ValueError`；`topic` 非 str → `ValueError`；JSON 是数组 → `ValueError`
-    - [ ] `_subtopics_for`：有 `type` 匹配且 `subtopics` 非空的长期欲望 → 返回该 `subtopics`；无匹配/空池 → `[]`
+    - [ ] `_subtopics_for`：有 `type` 匹配且 `subtopics` 非空的长期欲望 → 返回该 `subtopics`（过滤 `""`/空白子主题）；无匹配/空池 → `[]`
+    - [ ] `_subtopic_freshness`：空串/纯空白 → `None`（通配符不做匹配）；非空命中 → 最新 freshness
     - [ ] `_pick_topic_seed`：空池 → `None`；全没做过（无命中记忆）→ 第一个；部分做过 → 取没做过的；都做过 → 取新鲜度最低者
     - [ ] `_most_relevant_long_term`：无 `type` 匹配 → `None`；`topic` 双向 substring 命中第二条 → 返回第二条；`topic` 轻微漂移仍命中；`topic=None` → 第一个；同类型都不命中 → 第一个
     - [ ] `_build_desire_prompt`：含类型 `.value` 与种子；`seed=None` → 含「（无）」

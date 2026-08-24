@@ -177,7 +177,7 @@ type ReadingNotesStoreState = {
 
 ### 关键决策
 
-- **清单走 store、详情走组件本地 state**：读书笔记面板的「清单 + 删除」入 store；选中笔记与其批注（`getAnnotations`/`addAnnotation`/`deleteAnnotation`）是瞬态 UI，用 `ReadingNotesPanel` 组件本地 `useState` 承载，不落 store（反冗余——批注数据无跨组件共享需求）。
+- **清单走 store、详情走组件本地 state**：读书笔记面板的「清单 + 删除」入 store；选中笔记与其批注（`getAnnotations`/`addAnnotation`/`deleteAnnotation`）是瞬态 UI，用 `ReadingNotesPanel` 组件本地 `useState` 承载，不落 store（反冗余——批注数据无跨组件共享需求）。批注增/删后组件补一次 `refresh()` 重拉清单——`annotation_count` 徽标随批注变化，不走本地 patch。
 - **`remove` 本地摘除**：删除成功后 `notes.filter(id)` 摘除，不重新 `refresh()`（与快照 store「重拉」策略不同——删除是确定性本地操作，重拉浪费一次请求）。
 
 ## 7. `settingsStore`（背景外观，纯前端）

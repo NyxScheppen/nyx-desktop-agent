@@ -21,7 +21,7 @@
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
 | `test_validate_config_accepts_defaults` | 功能正确 | `validate_config(Config())` 合法通过（不抛即通过） |
-| `test_validate_config_rejects_invalid`（17 例） | 边界鲁棒 | 越界/非正/错类型改字段后 `validate_config` 报 `ConfigError` |
+| `test_validate_config_rejects_invalid`（18 例） | 边界鲁棒 | 越界/非正/错类型改字段后 `validate_config` 报 `ConfigError` |
 | `test_load_config_fills_defaults` | 功能正确 | 只写 `llm.provider` → 其余字段填默认值 |
 | `test_load_config_builds_energy_delta_recursively` | 功能正确 | `energy_delta` 递归构造为 `ActivityEnergyDelta` 实例、未写键用默认 |
 | `test_load_config_rejects_unknown_energy_delta_key` | 边界鲁棒 | 嵌套 `energy_delta` 内未知键报 `ConfigError` |
@@ -35,7 +35,7 @@
 | `test_load_config_rejects_scalar_top_level`（3 例） | 边界鲁棒 | 顶层 falsy 标量（`0`/`""`/`[]`）报 `ConfigError`，不被 `or {}` 吞成全默认 |
 | `test_load_config_rejects_mixed_type_unknown_key` | 边界鲁棒 | 混合类型未知键（`1:` int 与 `bogus:` str）报 `ConfigError`，不因 `sorted` 跨类型比较裸崩 `TypeError` |
 
-**功能阶段**：02-config 实现时编写；`test_validate_config_rejects_invalid` 两例（`ask_timeout=-1`/`chat_ignore_timeout=0`）于「表达交互闭环」轮追加（V2 问句/搭话超时配置校验）；vision 四例（`interval_seconds=0`/`interval_seconds="60"`/`enabled="yes"`/`provider=""`）于「屏幕视觉」轮追加（`vision` 段校验：非正/错类型/空 provider）；`llm.timeout`/`llm.max_retries` 四例（`timeout=-1.0`/`timeout="60"`/`max_retries="2"`/`max_retries=True`）于「核心 8 项评审修复」轮追加（`LlmConfig` 超时/重试配置校验）。
+**功能阶段**：02-config 实现时编写；`test_validate_config_rejects_invalid` 两例（`ask_timeout=-1`/`chat_ignore_timeout=0`）于「表达交互闭环」轮追加（V2 问句/搭话超时配置校验）；vision 四例（`interval_seconds=0`/`interval_seconds="60"`/`enabled="yes"`/`provider=""`）于「屏幕视觉」轮追加（`vision` 段校验：非正/错类型/空 provider）；`llm.timeout`/`llm.max_retries` 四例（`timeout=-1.0`/`timeout="60"`/`max_retries="2"`/`max_retries=True`）于「核心 8 项评审修复」轮追加（`LlmConfig` 超时/重试配置校验）；`vision.api_key_env=""` 一例于「medium 评审修复」轮追加（`VisionConfig.api_key_env` 空串校验）。
 
 ## 03-llm（LLM 统一客户端）
 
@@ -71,8 +71,10 @@
 | `test_describe_non_text_raises` | 边界鲁棒 | 非文本 content（`list`）→ `RuntimeError` |
 | `test_from_config_unknown_provider_rejects`（VisionClient） | 边界鲁棒 | `provider="claude"` 无 base_url → `ConfigError` |
 | `test_from_config_ok`（VisionClient） | 功能正确 | 默认 `VisionConfig` → `VisionClient` 且 `_model_name == "llava"` |
+| `test_from_config_requires_key_for_non_ollama`（VisionClient） | 边界鲁棒 | `provider="openai"` 且 `api_key_env` 未设 → `ConfigError`（不再硬编码 "ollama" 静默 401） |
+| `test_from_config_reads_api_key`（VisionClient） | 功能正确 | `provider="openai"` 且 `api_key_env` 已设 → 正常返回 `VisionClient`（key 从 env 读） |
 
-**功能阶段**：03-llm 实现时编写；`test_extract_usage_non_int_value` 于第五轮 review 追加（`_safe_int` 防御非数字 token 值）；`test_complete_tools_passthrough` / `test_complete_tools_off` / `test_complete_tool_calls_parsed` / `test_complete_no_tools_empty` 于「表达侧工具调用（bind_tools）」阶段追加（`complete` 支持 `tools` + `LLMOutput.tool_calls` 解析）；`test_resolve_base_url` / `test_from_config_unknown_provider_rejects`（原 `test_from_config_rejects_other_provider` 改名）/ `test_from_config_known_provider` / `test_from_config_base_url_override` 于「多 provider（OpenAI 兼容映射）」阶段追加（`LlmConfig.base_url` + `resolve_base_url` 映射）；`test_describe_returns_text` / `test_describe_non_text_raises` / `test_from_config_unknown_provider_rejects`（VisionClient）/ `test_from_config_ok`（VisionClient）于「屏幕视觉」轮追加（`VisionClient` OpenAI 兼容多模态：image_url 块 + 非文本 raise + 复用 `resolve_base_url`）；`test_from_config_passes_timeout_and_retries` 于「核心 8 项评审修复」轮追加（`ChatOpenAI` 超时/重试透传）。
+**功能阶段**：03-llm 实现时编写；`test_extract_usage_non_int_value` 于第五轮 review 追加（`_safe_int` 防御非数字 token 值）；`test_complete_tools_passthrough` / `test_complete_tools_off` / `test_complete_tool_calls_parsed` / `test_complete_no_tools_empty` 于「表达侧工具调用（bind_tools）」阶段追加（`complete` 支持 `tools` + `LLMOutput.tool_calls` 解析）；`test_resolve_base_url` / `test_from_config_unknown_provider_rejects`（原 `test_from_config_rejects_other_provider` 改名）/ `test_from_config_known_provider` / `test_from_config_base_url_override` 于「多 provider（OpenAI 兼容映射）」阶段追加（`LlmConfig.base_url` + `resolve_base_url` 映射）；`test_describe_returns_text` / `test_describe_non_text_raises` / `test_from_config_unknown_provider_rejects`（VisionClient）/ `test_from_config_ok`（VisionClient）于「屏幕视觉」轮追加（`VisionClient` OpenAI 兼容多模态：image_url 块 + 非文本 raise + 复用 `resolve_base_url`）；`test_from_config_passes_timeout_and_retries` 于「核心 8 项评审修复」轮追加（`ChatOpenAI` 超时/重试透传）；`test_from_config_requires_key_for_non_ollama` / `test_from_config_reads_api_key`（VisionClient）于「medium 评审修复」轮追加（`VisionConfig.api_key_env` + `VisionClient.from_config` 从 env 读 key，Ollama 免 key 占位）。
 
 ## 04-db（SQLite 连接 + 建表 + 迁移）
 
@@ -208,13 +210,14 @@
 |---|---|---|
 | `test_validate_structure` | 功能正确 | 空 `""` / 纯空白 `"   "` / 超长（`_MAX_CONTENT_LEN+1`）→ 0.0；正常 → 1.0 |
 | `test_ooc_score` | 功能正确 | 无命中默认 1.0；黑 1 → 0.5；黑 2 → 0.0；黑 3 → 0.0（封顶）；黑 1 白 1 → 1.0（抵消）；白 2 → 1.0（封顶不越界） |
-| `test_should_judge` | 功能正确 | `judge` 输出不递归（False）；`roll < sample_rate` 命中/未命中各一例 |
+| `test_should_judge` | 功能正确 | `judge`/`tool` 输出不递归（False）；`roll < sample_rate` 命中/未命中各一例 |
 | `test_judge_relevance_returns_score` | 功能正确 | fake 返回 `{"score":4}` → `4.0`；judge 调用 `type=="judge"`、`module=="eval"`、`correlation_id` 透传 |
 | `test_judge_relevance_tolerates_bad_json` | 边界鲁棒 | `[`（解析失败）/ `[]`（非 dict）/ `{"score":"abc"}`（非数字）→ 容错 0.0 不 raise |
 | `test_judge_relevance_clamps` | 边界鲁棒 | `{"score":100}`→5.0、`{"score":0.5}`→1.0、`{"score":4}`→4.0（clamp [1,5]） |
 | `test_judge_relevance_transport_failure` | 边界鲁棒 | fake `complete` 抛异常 → `(0.0, None)` 不 raise（judge 传输失败无产出不记账） |
 | `test_judge_relevance_rejects_bool_score` | 边界鲁棒 | `{"score": true}` → 0.0 且 judge_output 非 None（堵 `float(True)==1.0` 的坑） |
 | `test_judge_relevance_overflow` | 边界鲁棒 | `{"score": 10**400}`（超大 int）→ 0.0 且 judge_output 非 None（`float()` 溢出不漏出崩 evaluate） |
+| `test_judge_relevance_rejects_nan_inf` | 边界鲁棒 | `{"score": NaN}` / `Infinity` / `-Infinity` → 0.0 且 judge_output 非 None（`float()` 对它们不抛、`isfinite` 兜底） |
 | `test_evaluate_sampled` | 功能正确 | `judge_sample_rate=1.0` → `relevance==4.0`、1 条 eval_report、2 条 token_usage（judge + 原 output） |
 | `test_evaluate_not_sampled` | 功能正确 | `judge_sample_rate=0.0` → `relevance==0.0`、1 条 token_usage（仅原 output） |
 | `test_evaluate_judge_transport_failure` | 边界鲁棒 | `judge_sample_rate=1.0` 但 fake `complete` 抛异常 → `relevance==0.0`、仅 1 条 token_usage（judge 无产出不记账），evaluate 不 raise |
@@ -229,7 +232,7 @@
 | `test_evaluate_ooc_embed_combine` | 功能正确 | 注入 mock embed + voice 输出 `speak` → `ooc == min(关键词 1.0, embed 0.0) == 0.0` |
 | `test_evaluate_ooc_non_voice_skips_embed` | 边界鲁棒 | 非 voice 输出 `scene_memory` → embed 不触发（调用记录空）、`ooc` 仅关键词 `== 1.0` |
 
-**功能阶段**：15-eval 实现时编写（先于 09-facade，因 09 依赖 Evaluator）；`test_judge_relevance_transport_failure` / `test_judge_relevance_rejects_bool_score` / `test_evaluate_judge_transport_failure` 于 09 评审修复阶段编写（高2：judge LLM 调用移进 try；低5：布尔 score 拒收）；`test_judge_relevance_overflow` 于 15 评审复核阶段编写（补 `float()` 溢出容错）；`test_is_voice_type` / `test_build_baseline_len` / `test_ooc_embed_score_*` / `test_evaluate_ooc_*` 于 V2「embedding 相似度 OOC（第 2 档）」轮编写（ooc_embed.py 语料 + 两档合并：max 余弦 / 阈值映射、min 合并、voice 门控）。
+**功能阶段**：15-eval 实现时编写（先于 09-facade，因 09 依赖 Evaluator）；`test_judge_relevance_transport_failure` / `test_judge_relevance_rejects_bool_score` / `test_evaluate_judge_transport_failure` 于 09 评审修复阶段编写（高2：judge LLM 调用移进 try；低5：布尔 score 拒收）；`test_judge_relevance_overflow` 于 15 评审复核阶段编写（补 `float()` 溢出容错）；`test_judge_relevance_rejects_nan_inf` 于「medium 评审修复」轮追加（`math.isfinite` 兜底 NaN/Infinity 不被 clamp 漏成满分）；`test_is_voice_type` / `test_build_baseline_len` / `test_ooc_embed_score_*` / `test_evaluate_ooc_*` 于 V2「embedding 相似度 OOC（第 2 档）」轮编写（ooc_embed.py 语料 + 两档合并：max 余弦 / 阈值映射、min 合并、voice 门控）。
 
 ## 09-memory-facade（记忆门面）
 
@@ -311,6 +314,8 @@
 | `test_parse_desire` | 边界鲁棒 | 合法 JSON→`(description, Goal)`；`goal:null`→`None`；缺/空 description、`goal.action` 非法、`count` 非正/非 int、`topic` 非 str、JSON 数组 → `ValueError`（7 例） |
 | `test_subtopics_for` | 功能正确 | `type` 匹配且 `subtopics` 非空 → 返回该 `subtopics`；无匹配 / 空 subtopics → `[]` |
 | `test_pick_topic_seed` | 功能正确 | 空池 → `None`；全没做过（无命中记忆）→ 第一个；部分做过 → 取没做过的；都做过 → 取新鲜度最低者 |
+| `test_subtopics_for_filters_blank` | 边界鲁棒 | 含 `""`/`"  "` 空白的 subtopics → 过滤掉，只留非空子主题（空串通配符不进池） |
+| `test_subtopic_freshness_blank_not_wildcard` | 边界鲁棒 | 空串/纯空白子主题 → `None` 不匹配（`"" in s` 恒 True 通配符兜底）；非空命中 → freshness |
 | `test_most_relevant_long_term` | 功能正确 | 无 type 匹配 → `None`；`topic` 双向 substring 命中第二条 → 第二条；漂移仍命中；`topic=None` → 第一个；都不命中 → 第一个 |
 | `test_build_desire_prompt` | 功能正确 | 含类型 `.value` 与种子；`seed=None` → 含「（无）」 |
 | `test_pressure_from_observation` | 功能正确 | 互动欲 `value` 0 → `+0.15`；`updated_at` 更新 |
@@ -349,7 +354,7 @@
 | `test_run_eval_keeps_suppressed` | 边界鲁棒 | SUPPRESSED 欲望其类型 `value < suppression` → 保持 SUPPRESSED |
 | `test_mark_active_suppressed_delegate` | 功能正确 | `facade.mark_active`/`mark_suppressed` 委托后 `status` 依次 ACTIVE / SUPPRESSED |
 
-**功能阶段**：11-desire 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；无集成/E2E，与 activity/expression 真实编排归 13/14/17）；`test_goal_progress_roundtrip` / `test_satisfy_goal_progress` 于「活动填实（goal 精确计数）」轮追加（`goal_progress` 列读写往返 + `satisfy` 按 count 累计达标才满足）；`test_topic_seed` 改 `test_subtopics_for` + `test_pick_topic_seed`、`test_run_eval_topic_seed` 改查记忆，于「主题种子轮转（没做过/新鲜度最低）」轮追加（`_pick_topic_seed` 查记忆 substring 取种子）；`test_most_relevant_long_term` / `test_satisfy_reinforces_most_relevant_long_term` 于「长期欲望最相关判定」轮追加（`_most_relevant_long_term` 按 `goal.topic` 双向 substring 命中 `subtopics` 者回写，否则第一个 type 匹配）；`test_list_suppressed_filters_and_orders` / `test_mark_active_pending_to_active` / `test_mark_active_guard` / `test_mark_suppressed_active_to_suppressed` / `test_mark_suppressed_guard` / `test_satisfy_releases_active` / `test_run_eval_releases_suppressed` / `test_run_eval_keeps_suppressed` / `test_mark_active_suppressed_delegate` 于「欲望 ACTIVE/SUPPRESSED 状态流转」轮追加（五态流转：消费标 ACTIVE、非满足停车 SUPPRESSED、run_eval 可表达即释放回 PENDING）。
+**功能阶段**：11-desire 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；无集成/E2E，与 activity/expression 真实编排归 13/14/17）；`test_goal_progress_roundtrip` / `test_satisfy_goal_progress` 于「活动填实（goal 精确计数）」轮追加（`goal_progress` 列读写往返 + `satisfy` 按 count 累计达标才满足）；`test_topic_seed` 改 `test_subtopics_for` + `test_pick_topic_seed`、`test_run_eval_topic_seed` 改查记忆，于「主题种子轮转（没做过/新鲜度最低）」轮追加（`_pick_topic_seed` 查记忆 substring 取种子）；`test_most_relevant_long_term` / `test_satisfy_reinforces_most_relevant_long_term` 于「长期欲望最相关判定」轮追加（`_most_relevant_long_term` 按 `goal.topic` 双向 substring 命中 `subtopics` 者回写，否则第一个 type 匹配）；`test_list_suppressed_filters_and_orders` / `test_mark_active_pending_to_active` / `test_mark_active_guard` / `test_mark_suppressed_active_to_suppressed` / `test_mark_suppressed_guard` / `test_satisfy_releases_active` / `test_run_eval_releases_suppressed` / `test_run_eval_keeps_suppressed` / `test_mark_active_suppressed_delegate` 于「欲望 ACTIVE/SUPPRESSED 状态流转」轮追加（五态流转：消费标 ACTIVE、非满足停车 SUPPRESSED、run_eval 可表达即释放回 PENDING）；`test_subtopics_for_filters_blank` / `test_subtopic_freshness_blank_not_wildcard` 于「medium 评审修复」轮追加（空串子主题通配符：`_subtopics_for` 过滤空白 + `_subtopic_freshness` 空串返回 None）。
 
 ## 12-inner-life（内在生命：情感/精力 + 反思 + 门面）
 
@@ -547,6 +552,7 @@
 | `test_slow_score_in_range` | 边界鲁棒 | 极端输入 `low < 0.5` / `high ≥ 0.5` 均在 [0,1]；时钟回拨 `last_slow_at > now` → 仍 ≥ 0 |
 | `test_slow_score_factors` | 功能正确 | 五因子各生效：长>短、含「吗」>不含、含「难过」>不含、精力足平静>精力低激动、距上次大>小 |
 | `test_classify_channel` | 功能正确 | `threshold=0.5`：得分 ≥ 0.5（`在吗`+精力满+2h）→ SLOW；< 0.5（`哦`+精力20+arousal0.9+60s）→ FAST |
+| `test_emotion_words_no_single_char_false_positive` | 边界鲁棒 | 同长度中性词对比：「积累」（含「累」）/「麻烦」（含「烦」）不触发情感（`slow_score` 相等）；「烦躁」/「疲惫」正常命中（更高） |
 | `test_build_system_prompt_tool_outputs` | 功能正确 | `tool_outputs` 非空 → 结果含 `[工具查询结果]` 段及各条 `- ` 前缀行 |
 | `test_build_system_prompt_no_tool_outputs` | 边界鲁棒 | `tool_outputs=None` / `[]` → 结果不含 `[工具查询结果]` |
 | `test_backtrack_empty_history` | 边界鲁棒 | 空 history → `[]` |
@@ -558,7 +564,7 @@
 | `test_backtrack_relevant_continues` | 功能正确 | 有字符重叠则继续累积（不误停） |
 | `test_no_char_overlap` | 功能正确 | 无共同字符 `True`；有共同字符 `False`；空白忽略（`"你 好"` vs `"你好"` → `False`） |
 
-**功能阶段**：16-expression-prompt 实现时编写（纯函数，无 DB、无 async、无 fake LLM；`CurrentState`/`Memory`/`Message`/`SelfNarrative`/`ShortTermDesire` 全手构，无集成/E2E）；`test_build_system_prompt_ask_guidance` 于「主动提问段按需注入」阶段追加（ask_guidance 注入/省略）；`test_build_system_prompt_tool_outputs` / `test_build_system_prompt_no_tool_outputs` 于「表达侧工具调用（bind_tools）」阶段追加（tool_outputs 段拼装/省略）；`test_backtrack_*` / `test_no_char_overlap` 于「语义相关性回溯检测」阶段追加（`build_backtrack_context` 三停条件纯函数 + `_no_char_overlap` 零字符重叠保守判定）。
+**功能阶段**：16-expression-prompt 实现时编写（纯函数，无 DB、无 async、无 fake LLM；`CurrentState`/`Memory`/`Message`/`SelfNarrative`/`ShortTermDesire` 全手构，无集成/E2E）；`test_build_system_prompt_ask_guidance` 于「主动提问段按需注入」阶段追加（ask_guidance 注入/省略）；`test_build_system_prompt_tool_outputs` / `test_build_system_prompt_no_tool_outputs` 于「表达侧工具调用（bind_tools）」阶段追加（tool_outputs 段拼装/省略）；`test_backtrack_*` / `test_no_char_overlap` 于「语义相关性回溯检测」阶段追加（`build_backtrack_context` 三停条件纯函数 + `_no_char_overlap` 零字符重叠保守判定）；`test_emotion_words_no_single_char_false_positive` 于「medium 评审修复」轮追加（`_EMOTION_WORDS` 去单字「累」「烦」改「疲惫」「烦躁」，防子串误判）。
 
 ## 17-expression（回复流程 + 碎碎念 + 搭话）
 
@@ -597,13 +603,14 @@
 | `test_initiate_chat_appends_history` | 功能正确 | 非空发话后 facade 内部 history 含一条 `role="nyx"`、content 为开场白的消息（搭话落历史，后续回复可回溯） |
 | `test_reply_ask_guidance_slow_only` | 功能正确 | 慢通道（精力高+平静）system prompt 含 `[主动提问指导]`；快通道（精力低+激动）不含 |
 | `test_reply_question_sets_waiting_user` | 功能正确 | 慢通道问句结尾 → `_waiting_user=True`、`_ask_text`/`_ask_cid` 落值（供 tick 超时收尾） |
+| `test_reply_fast_question_sets_ask` | 功能正确 | 快通道问句结尾也置 `ask`/`_waiting_user`（快通道绕过 should_ask，问句无人答信号不丢），publish `[THINK, ASK]` |
 | `test_reply_clears_pending_state` | 功能正确 | 用户说话即清 `_waiting_user`/`_ask_cid`/`_pending_chat_desire_id`（不做「是否真在答」判断） |
 | `test_initiate_chat_sets_pending_desire` | 功能正确 | 搭话发出 → `_pending_chat_desire_id == desire.id`（超时未回则回灌） |
 | `test_check_timeouts_records_no_answer` | 功能正确 | wait_user 超时 → `memory.record_no_answer` 调 1 次、清 `_waiting_user`/`_ask_cid` |
 | `test_check_timeouts_before_timeout_noop` | 边界鲁棒 | 未到超时点 → 无动作（wait_user 与待回搭话都保持） |
 | `test_check_timeouts_expires_ignored_chat` | 功能正确 | 搭话超时未回 → `desire.expire` 调 1 次（值回灌）、清 `_pending_chat_desire_id` |
 
-**功能阶段**：17-expression 实现时编写（mutter/pipeline 纯函数无 DB 无 async；facade 集成 fake LLM/memory/desire/inner_life/evaluator/bus 注入，`cast()` 注入不碰真实 db；无集成/E2E，与 18-api 组合根的编排归 18）；`test_reply_ask_guidance_slow_only` 于「主动提问段按需注入」阶段追加（慢通道注入 ask 指导、快通道省略），`test_initiate_chat_non_empty` 同轮补注入断言；`test_slow_channel_progressive` 与 `test_initiate_chat_appends_history` 于「慢通道递进续写 + 搭话落历史」阶段追加（三段递进而非并列、主动搭话后用户回复能回溯开场白）；`test_reply_question_sets_waiting_user` / `test_reply_clears_pending_state` / `test_initiate_chat_sets_pending_desire` / `test_check_timeouts_records_no_answer` / `test_check_timeouts_before_timeout_noop` / `test_check_timeouts_expires_ignored_chat` 于「表达交互闭环」轮追加（V2 wait_user 等待 + 搭话被忽略回灌的待回应态与 tick 超时收尾）；`test_reply_slow_tool_executes_and_flows_into_prompt` / `test_reply_slow_no_tool_calls` / `test_reply_slow_tool_failure_fallback` 于「表达侧工具调用（bind_tools）」轮追加（use_tools 节点执行工具 + 结果进 prompt + 失败降级），`test_reply_slow_non_question` / `test_reply_slow_question` 同轮改断言（complete 序列前置 `tool`、complete 数 +1）；`test_record_message_marks_fast` / `test_reply_slow_backtrack_skips_fast_nyx` 于「语义相关性回溯检测」轮追加（快通道 nyx 落库标 fast + 慢通道回溯跳过快通道 nyx），`test_history_order` 同轮简化为只断言 role 序列、`test_current_message_not_duplicated` 同轮改为 seed 相关历史后断言当前消息只进 `[本次消息]`；`test_reply_slow_tool_output_truncated` / `test_reply_slow_records_recall` 于「核心 8 项评审修复」轮追加（工具结果截断 + `record_recall` 接线）。
+**功能阶段**：17-expression 实现时编写（mutter/pipeline 纯函数无 DB 无 async；facade 集成 fake LLM/memory/desire/inner_life/evaluator/bus 注入，`cast()` 注入不碰真实 db；无集成/E2E，与 18-api 组合根的编排归 18）；`test_reply_ask_guidance_slow_only` 于「主动提问段按需注入」阶段追加（慢通道注入 ask 指导、快通道省略），`test_initiate_chat_non_empty` 同轮补注入断言；`test_slow_channel_progressive` 与 `test_initiate_chat_appends_history` 于「慢通道递进续写 + 搭话落历史」阶段追加（三段递进而非并列、主动搭话后用户回复能回溯开场白）；`test_reply_question_sets_waiting_user` / `test_reply_clears_pending_state` / `test_initiate_chat_sets_pending_desire` / `test_check_timeouts_records_no_answer` / `test_check_timeouts_before_timeout_noop` / `test_check_timeouts_expires_ignored_chat` 于「表达交互闭环」轮追加（V2 wait_user 等待 + 搭话被忽略回灌的待回应态与 tick 超时收尾）；`test_reply_slow_tool_executes_and_flows_into_prompt` / `test_reply_slow_no_tool_calls` / `test_reply_slow_tool_failure_fallback` 于「表达侧工具调用（bind_tools）」轮追加（use_tools 节点执行工具 + 结果进 prompt + 失败降级），`test_reply_slow_non_question` / `test_reply_slow_question` 同轮改断言（complete 序列前置 `tool`、complete 数 +1）；`test_record_message_marks_fast` / `test_reply_slow_backtrack_skips_fast_nyx` 于「语义相关性回溯检测」轮追加（快通道 nyx 落库标 fast + 慢通道回溯跳过快通道 nyx），`test_history_order` 同轮简化为只断言 role 序列、`test_current_message_not_duplicated` 同轮改为 seed 相关历史后断言当前消息只进 `[本次消息]`；`test_reply_slow_tool_output_truncated` / `test_reply_slow_records_recall` 于「核心 8 项评审修复」轮追加（工具结果截断 + `record_recall` 接线）；`test_reply_fast_question_sets_ask` 于「medium 评审修复」轮追加（快通道 `speak` 节点检测问句置 `ask`）。
 
 ## 18-api（组合根 + REST + SSE）
 
@@ -839,12 +846,12 @@
 |---|---|---|
 | `ReadingNotesPanel > 渲染清单：书名 + 预览 + 批注数徽标` | 功能正确 | mock fetch 返回笔记 → 请求 `/api/reading-notes?limit=50`；书名《三体》、内容预览、`💬3` 批注数徽标上屏 |
 | `ReadingNotesPanel > 点卡片展开详情 + 批注` | 功能正确 | 点卡片 → 正文 Markdown 上屏 + `← 返回` 按钮 + 批注（`getAnnotations` 结果）上屏 |
-| `ReadingNotesPanel > 新增批注` | 功能正确 | 输入 + 点「添加批注」→ `POST /api/annotations`（body `{target_id, content}`）后重拉批注上屏 |
-| `ReadingNotesPanel > 删除批注` | 功能正确 | 点批注「删除」→ `DELETE /api/annotations/{id}` 后该批注摘除 |
+| `ReadingNotesPanel > 新增批注` | 功能正确 | 输入 + 点「添加批注」→ `POST /api/annotations`（body `{target_id, content}`）后重拉批注上屏 + 再拉清单（`refresh`，`annotation_count` 徽标跟随） |
+| `ReadingNotesPanel > 删除批注` | 功能正确 | 点批注「删除」→ `DELETE /api/annotations/{id}` 后该批注摘除 + 再拉清单（`refresh`，徽标跟随） |
 | `ReadingNotesPanel > 删除笔记` | 功能正确 | `confirm` true + 点「🗑 删除」→ `DELETE /api/reading-notes/{id}` 后清单摘除 |
 | `ReadingNotesPanel > 切换笔记 A→B 丢弃 A 的陈旧批注响应` | 边界鲁棒 | A 的 `getAnnotations` 手动延迟 resolve、晚于 B 返回 → 序号守卫丢弃 A，界面仍显示 B 的批注（修复：陈旧响应竞态） |
 
-**功能阶段**：frontend「读书/创作借鉴」轮编写（RTL + 真实 store；验证管道正确——清单/详情/批注增删，笔记清单走 `readingNotesStore`、选中笔记与批注走组件本地 `useState`，mock fetch 断言端点/方法/请求体，不验证视觉）；「切换笔记 A→B 丢弃陈旧批注响应」于「代码评审修复（5 findings）」轮追加（`useRef` 序号守卫防陈旧响应竞态）。
+**功能阶段**：frontend「读书/创作借鉴」轮编写（RTL + 真实 store；验证管道正确——清单/详情/批注增删，笔记清单走 `readingNotesStore`、选中笔记与批注走组件本地 `useState`，mock fetch 断言端点/方法/请求体，不验证视觉）；「切换笔记 A→B 丢弃陈旧批注响应」于「代码评审修复（5 findings）」轮追加（`useRef` 序号守卫防陈旧响应竞态）；`新增批注`/`删除批注` 于「medium 评审修复」轮补断言（增/删批注后 `refresh()` 再拉清单，`annotation_count` 徽标不再陈旧）。
 
 ## frontend-avatar（头像立绘：Avatar 戳立绘 + 红点通知 + 昼夜节律）
 

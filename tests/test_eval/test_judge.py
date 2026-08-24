@@ -61,6 +61,7 @@ def _output() -> LLMOutput:
 
 def test_should_judge() -> None:
     assert should_judge("judge", 1.0, 0.0) is False   # judge 输出不递归 judge
+    assert should_judge("tool", 1.0, 0.0) is False    # tool 决策无文本可评，跳过
     assert should_judge("reply", 0.1, 0.05) is True
     assert should_judge("reply", 0.1, 0.5) is False
 
@@ -112,3 +113,12 @@ async def test_judge_relevance_overflow() -> None:
     score, judge_output = await judge_relevance(cast(LlmClient, fake), _output())
     assert score == 0.0          # float(超大 int) 溢出：不漏出崩 evaluate，归 0.0
     assert judge_output is not None   # 产出仍在，token 照记
+
+
+async def test_judge_relevance_rejects_nan_inf() -> None:
+    # float("nan")/float("inf") 不抛异常，clamp 会把 NaN 漏成满分；isfinite 兜底归 0.0
+    for bad in ('{"score": NaN}', '{"score": Infinity}', '{"score": -Infinity}'):
+        fake = _FakeLlm(bad)
+        score, judge_output = await judge_relevance(cast(LlmClient, fake), _output())
+        assert score == 0.0
+        assert judge_output is not None   # 产出仍在，token 照记

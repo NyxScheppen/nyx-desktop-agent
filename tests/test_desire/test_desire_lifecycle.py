@@ -16,6 +16,7 @@ from nyx.desire.lifecycle import (
     _most_relevant_long_term,
     _parse_desire,
     _pick_topic_seed,
+    _subtopic_freshness,
     _subtopics_for,
 )
 from nyx.desire.store import DesireStore
@@ -230,6 +231,19 @@ def test_subtopics_for() -> None:
     assert _subtopics_for(DesireType.EXPLORATION, [lt]) == ["骑士团"]
     assert _subtopics_for(DesireType.INTERACTION, [lt]) == []
     assert _subtopics_for(DesireType.EXPLORATION, [_lt(DesireType.EXPLORATION)]) == []
+
+
+def test_subtopics_for_filters_blank() -> None:
+    lt = _lt(DesireType.EXPLORATION, ["骑士团", "", "  ", "大学朋友"])
+    assert _subtopics_for(DesireType.EXPLORATION, [lt]) == ["骑士团", "大学朋友"]
+
+
+def test_subtopic_freshness_blank_not_wildcard() -> None:
+    # 空串子主题曾是 substring 通配符（"" in s 恒 True）→ 应返回 None 不匹配
+    memories = [_mem(summary="关于痛苦", freshness=0.9)]
+    assert _subtopic_freshness("", memories) is None
+    assert _subtopic_freshness("   ", memories) is None
+    assert _subtopic_freshness("痛苦", memories) == pytest.approx(0.9)
 
 
 def test_pick_topic_seed() -> None:

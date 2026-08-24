@@ -32,3 +32,9 @@
 **关键点**：
 - ~~已落地~~：R1/W1/W2/W3/读书笔记 CRUD + 个人空间编排全部完成——后端（`db.py` v4、`types.py` ReadingNote/Annotation、`memory/facade.py` remember_knowledge、`activity/facade.py` 接线 + `reading_note_store.py`、`main.py` 组合根 + 5 端点）+ 前端（`types/api.ts` ReadingNote/Annotation、`client.ts` 5 端点、`readingNotesStore`、`ReadingNotesPanel`、`InnerWorld` 两级大类导航）。✅
 - 反冗余：R1 复用 `memory` 表 + `_persist_memory` 入库尾段，不另写写路径；创作上下文复用 `_run_llm_activity` 的 `extra_context` 通道（加 `context_label` 参数），不新增注入回调；读书笔记 CRUD 不新建 Facade 层。
+
+## 文档债（设计文档缺口）
+
+| 缺口 | 说明 |
+|---|---|
+| 02-config 缺 `VisionConfig` 分段 | `config.py` 已有 `VisionConfig`（`enabled`/`provider`/`model`/`base_url`/`interval_seconds` + medium 评审修复轮加的 `api_key_env`），但 `02-config.md` 仍只写「8 分段 dataclass」、无 vision 段与校验规则。当前以 `tech-reference.md` §8 配置 surface + `03-llm.md` 屏幕视觉为准，待回补 02-config 内联代码 |

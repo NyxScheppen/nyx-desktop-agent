@@ -66,10 +66,13 @@ describe("ReadingNotesPanel 读书笔记面板", () => {
   it("新增批注：POST /api/annotations 后重新拉取并显示", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse([note])) // refresh
+      .mockResolvedValueOnce(jsonResponse([note])) // refresh 清单
       .mockResolvedValueOnce(jsonResponse([])) // openNote → 空批注
       .mockResolvedValueOnce(jsonResponse(anno)) // addAnnotation POST
-      .mockResolvedValueOnce(jsonResponse([anno])); // 重拉批注
+      .mockResolvedValueOnce(jsonResponse([anno])) // 重拉批注
+      .mockResolvedValueOnce(
+        jsonResponse([{ ...note, annotation_count: 1 }]),
+      ); // 增批注后 refresh 清单（徽标 +1）
     vi.stubGlobal("fetch", fetchMock);
 
     render(<ReadingNotesPanel />);
@@ -90,6 +93,11 @@ describe("ReadingNotesPanel 读书笔记面板", () => {
       target_id: "n1",
       content: "我的批注",
     });
+    // 增批注后又拉了一次清单（refresh）→ annotation_count 徽标不再陈旧
+    const listCalls = fetchMock.mock.calls.filter(
+      ([url]) => url === "/api/reading-notes?limit=50",
+    );
+    expect(listCalls).toHaveLength(2);
   });
 
   it("删除批注：DELETE /api/annotations/{id} 后从列表摘除", async () => {
@@ -97,7 +105,8 @@ describe("ReadingNotesPanel 读书笔记面板", () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse([note]))
       .mockResolvedValueOnce(jsonResponse([anno]))
-      .mockResolvedValueOnce(jsonResponse({ deleted: "a1" }));
+      .mockResolvedValueOnce(jsonResponse({ deleted: "a1" }))
+      .mockResolvedValueOnce(jsonResponse([note])); // 删批注后 refresh 清单
     vi.stubGlobal("fetch", fetchMock);
 
     render(<ReadingNotesPanel />);
@@ -111,6 +120,11 @@ describe("ReadingNotesPanel 读书笔记面板", () => {
       ([url, init]) => url === "/api/annotations/a1" && init?.method === "DELETE",
     );
     expect(delCall).toBeTruthy();
+    // 删批注后又拉了一次清单（refresh）→ annotation_count 徽标不再陈旧
+    const listCalls = fetchMock.mock.calls.filter(
+      ([url]) => url === "/api/reading-notes?limit=50",
+    );
+    expect(listCalls).toHaveLength(2);
   });
 
   it("删除笔记：confirm 后 DELETE /api/reading-notes/{id}，清单摘除", async () => {

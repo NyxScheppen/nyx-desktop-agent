@@ -1,6 +1,7 @@
 """LLM-judge：语义质量 1-5 分，抽样触发（design §9.1 第三层 + §9.2 第 3 档）。"""
 import json
 import logging
+import math
 from typing import Any, cast
 
 from nyx.llm.client import LlmClient
@@ -62,7 +63,11 @@ async def judge_relevance(
         if raw is None or isinstance(raw, bool):
             score = 0.0
         else:
-            score = max(1.0, min(5.0, float(raw)))
+            value = float(raw)
+            if not math.isfinite(value):
+                score = 0.0   # NaN/Infinity 不计分（float 对它们不抛异常，clamp 会漏）
+            else:
+                score = max(1.0, min(5.0, value))
     except (TypeError, ValueError, OverflowError):
         # JSONDecodeError 是 ValueError 子类；float(超大 int) 溢出，一并覆盖
         score = 0.0

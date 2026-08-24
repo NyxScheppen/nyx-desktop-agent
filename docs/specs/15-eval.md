@@ -18,7 +18,7 @@
 - [ ] `rules.py` 含 `validate_structure` + `ooc_score` 纯函数；`ooc_embed.py` 含 `NYX_CORPUS` + `build_baseline` / `ooc_embed_score` / `is_voice_type`；`judge.py` 含 `should_judge` 纯函数 + `judge_relevance`，与各自「（完整）」段逐字一致
 - [ ] `evaluate` 三层：结构 → 规则 → judge（抽样），返回 `EvalReport`；落 `token_usage`（每次必记）+ `eval_report`（每次必记）+ 可选 judge 的 `token_usage`（抽样触发才记）；三连 INSERT 后统一 `commit()`（持久化）
 - [ ] `ooc` = `min(第 1 档关键词, 第 2 档 embedding)`；第 2 档只对 voice 输出（`speak`/`initiate_chat`/`think`）生效、`embed=None` 关闭、失败回退关键词（不 raise）
-- [ ] `should_judge`：`output_type == "judge"` 不递归 judge；`roll < sample_rate` 才触发
+- [ ] `should_judge`：`output_type in ("judge", "tool")` 不递归 judge；`roll < sample_rate` 才触发
 - [ ] 纯函数测全（`validate_structure` / `ooc_score` / `is_voice_type` / `should_judge`）；`pyright` strict 零报错
 
 ## 技术方案
@@ -40,7 +40,7 @@
 - **规则评分（`ooc_score`）**：design §9.2 第 1 档「关键词/语癖规则」。`_BLACKLIST`（崩人设的现代/AI 腔）+ `_WHITELIST`（Nyx 语癖）模块级常量（初始值可推翻，随 canon.md 校准）；**字段名 `ooc` 保留（01-types 锁定），语义 = 人设贴合度（越高越不 OOC，与 format/relevance 同向）**——黑名单命中扣分、白名单命中加分，`1.0 - (黑-白) * _OOC_STEP` 封顶 [0,1]，无命中默认满分
 - **embedding 相似度（`ooc_embed_score`）**：design §9.2 第 2 档「对比尼克斯基准语料」。`NYX_CORPUS`（从 `prompts/canon.md` 抽的 in-character 例句，静态常量随 canon.md 校准）逐条嵌入成 baseline（`build_baseline`，Evaluator 首次 evaluate 惰性缓存）；content 向量与 baseline 取 **max 余弦**、`clamp(sim / 0.7, 0, 1)` 映射到 [0,1]（阈值可推翻）。**只对 voice 输出生效**（`_VOICE_TYPES = {speak, initiate_chat, think}`）——结构化/内部输出（tool/judge/scene_memory/…）与语料比对必然低分、污染 ooc，故跳过；`embed=None`（未注入）关闭第 2 档
 - **两档合并（`Evaluator._ooc`）**：`ooc = min(第 1 档, 第 2 档)`——AND 语义，任一档低都拉低；embedding 失败（加载/推理异常）→ log + 回退第 1 档，不崩 evaluate（best-effort，对齐 judge 的不 raise 豁免）
-- **judge（`judge_relevance` + `should_judge`）**：design §9.1 第三层 + §9.2 第 3 档。抽样率 `config.judge_sample_rate`（02-config 默认 0.1，生产 10% 抽样；可设 0 关闭 judge，配合原则 1「减少 LLM 调用」）。`output_type == "judge"` 不递归 judge（防 judge 的 judge 死循环）。judge 环节失败不应崩整个 evaluate——**不 raise**：传输失败（超时/5xx）→ 容错 0.0、无 judge_output（返回 `None`，token 不记）；输出非法（JSON 解析失败 / 非 dict / score 非数字或布尔）→ 容错 0.0 但仍返回 judge_output（token 照记，原则 2）；score 合法但越界（如 `{"score":100}`）→ clamp 到 [1,5]（design §9.1 的 1-5 分，未评=0.0）
+- **judge（`judge_relevance` + `should_judge`）**：design §9.1 第三层 + §9.2 第 3 档。抽样率 `config.judge_sample_rate`（02-config 默认 0.1，生产 10% 抽样；可设 0 关闭 judge，配合原则 1「减少 LLM 调用」）。`output_type in ("judge", "tool")` 不递归 judge（防 judge 的 judge 死循环；tool 决策无文本可评，跳过避免空 content 打分）。judge 环节失败不应崩整个 evaluate——**不 raise**：传输失败（超时/5xx）→ 容错 0.0、无 judge_output（返回 `None`，token 不记）；输出非法（JSON 解析失败 / 非 dict / score 非数字或布尔）→ 容错 0.0 但仍返回 judge_output（token 照记，原则 2）；score 合法但越界（如 `{"score":100}`）→ clamp 到 [1,5]（design §9.1 的 1-5 分，未评=0.0）
 - **token 记账（`_to_token_usage`）**：`purpose = output.type`（03-llm line 119「type → TokenUsage.purpose」）、`model = output.model`、`input/output = output.token_usage`、`correlation_id = output.correlation_id`。被评产出必记；judge 产出（`module="eval"`、`purpose="judge"`）抽样触发才记——judge 的 token 也透明化（原则 2）
 - **`output_id` 语义**：`EvalReport.output_id = output.id`。`LLMOutput.id` 由 03-llm `complete` 每次调用生成 uuid4（ripple 01-types 加字段 + 03-llm 生成），保证「同一事件多次 complete」（如 reply 的 think→speak）也能区分「哪次产出」
 - **明确不做**：eval 结果自动反馈修正（design §9.3「纯记录 + 可视化，不自动反馈修正」）；`eval/store.py`（Evaluator 直接持 db）
@@ -96,6 +96,7 @@ def ooc_score(content: str) -> float:
 """LLM-judge：语义质量 1-5 分，抽样触发（design §9.1 第三层 + §9.2 第 3 档）。"""
 import json
 import logging
+import math
 from typing import Any, cast
 
 from nyx.llm.client import LlmClient
@@ -111,8 +112,11 @@ _logger = logging.getLogger(__name__)
 
 
 def should_judge(output_type: str, sample_rate: float, roll: float) -> bool:
-    """是否触发 LLM-judge（纯函数）：judge 输出不递归 judge + 抽样命中。"""
-    if output_type == "judge":
+    """是否触发 LLM-judge（纯函数）：judge 输出不递归 judge + 抽样命中。
+
+    tool 输出（use_tools 的工具决策）无文本可评，跳过 judge（避免空 content 打分）。
+    """
+    if output_type in ("judge", "tool"):
         return False
     return roll < sample_rate
 
@@ -154,7 +158,11 @@ async def judge_relevance(
         if raw is None or isinstance(raw, bool):
             score = 0.0
         else:
-            score = max(1.0, min(5.0, float(raw)))
+            value = float(raw)
+            if not math.isfinite(value):
+                score = 0.0   # NaN/Infinity 不计分（float 对它们不抛异常，clamp 会漏）
+            else:
+                score = max(1.0, min(5.0, value))
     except (TypeError, ValueError, OverflowError):
         # JSONDecodeError 是 ValueError 子类；float(超大 int) 溢出，一并覆盖
         score = 0.0
@@ -410,11 +418,12 @@ async def ooc_embed_score(
     - [ ] `build_baseline`：返回 `len == len(NYX_CORPUS)` 的向量列表
     - [ ] `ooc_embed_score`：相同向量 → 1.0（sim 越界 clamp）；正交 → 0.0；空 baseline → 1.0（无语料不惩罚）
   - [ ] **judge**（`test_judge.py`）：
-    - [ ] `should_judge` 纯函数：`("judge", 1.0, 0.0)` → False（不递归）；`("reply", 0.1, 0.05)` → True；`("reply", 0.1, 0.5)` → False
+    - [ ] `should_judge` 纯函数：`("judge", 1.0, 0.0)` → False（不递归）；`("tool", 1.0, 0.0)` → False（工具决策跳过）；`("reply", 0.1, 0.05)` → True；`("reply", 0.1, 0.5)` → False
     - [ ] `judge_relevance`（fake `llm.complete` 返回 `{"score": 4}`）：返回 `(4.0, judge_output)`，且 `judge_output.type == "judge"`、`judge_output.module == "eval"`、`correlation_id` 透传
     - [ ] `judge_relevance` 容错不 raise（均 `(0.0, judge_output)`）：非法 JSON（`"["`）；合法非 dict（`"[]"`）；dict 但 score 非数字（`'{"score":"abc"}'`）；超大 int 溢出（`float()` OverflowError）
     - [ ] `judge_relevance` 传输失败（fake `complete` raise）→ `(0.0, None)`，不 raise
     - [ ] `judge_relevance` score 为布尔（`{"score": true}`）→ `(0.0, judge_output)`（堵 `float(True)==1.0` 的坑）
+    - [ ] `judge_relevance` score 为 NaN/Infinity（`{"score": NaN}` / `Infinity` / `-Infinity`）→ `(0.0, judge_output)`（`math.isfinite` 兜底，不被 clamp 漏成满分）
     - [ ] `judge_relevance` clamp [1,5]：`{"score":100}` → `5.0`；`{"score":0.5}` → `1.0`；`{"score":4}` → `4.0`（界内不动）
   - [ ] **evaluator**（`test_evaluator.py`，`db=:memory:` + fake llm；持久化测试用 `tmp_path` 临时文件库）：
     - [ ] `evaluate` 抽样路径（`EvalConfig(judge_sample_rate=1.0)`）：落 `eval_report` 1 条（`scores["relevance"] == judge 分`、`output_id == output.id`）+ `token_usage` 2 条（被评 `purpose == output.type` + judge `purpose == "judge"`）

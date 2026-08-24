@@ -218,6 +218,12 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         await deps.evaluator.evaluate(output)
         speak = output.content
         if state["mode"] is ContextMode.FAST:
+            if _is_question(speak):
+                # 快通道绕过 should_ask，问句结尾也落 ask（信号不丢）
+                await deps.bus.publish(
+                    internal_text_event(EventType.ASK, speak, state["correlation_id"])
+                )
+                return {"speak": state["speak"] + [speak], "ask": speak}
             await deps.bus.publish(
                 internal_text_event(EventType.SPEAK, speak, state["correlation_id"])
             )

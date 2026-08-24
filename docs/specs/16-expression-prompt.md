@@ -204,7 +204,7 @@ _RECENCY_WINDOW = 3600.0
 QUESTION_MARKS = ("?", "？", "吗", "呢", "怎么", "为什么", "什么", "如何", "哪")
 _EMOTION_WORDS = (
     "难过", "伤心", "生气", "愤怒", "开心", "高兴", "焦虑", "担心",
-    "害怕", "委屈", "烦", "累", "孤独",
+    "害怕", "委屈", "烦躁", "疲惫", "孤独",
 )
 
 
@@ -261,6 +261,7 @@ def classify_channel(
     - [ ] `slow_score` ∈ `[0, 1]`（构造极端输入：空消息 + 精力 0 + arousal 1 + 刚慢通道过 → 接近 0；长消息含问句含情感词 + 精力 100 + arousal 0 + 2 小时没慢通道 → 接近 1；`last_slow_at > now`（时钟回拨）→ 仍 ≥ 0）
     - [ ] `slow_score` 五因子各生效：长消息 > 短消息（其余同）；含「吗」> 不含；含「难过」> 不含；`energy=100, arousal=0` > `energy=0, arousal=1`；`now-last_slow_at` 大 > 小
     - [ ] `classify_channel`：`threshold=0.5`，得分 ≥ 0.5 的输入 → `ContextMode.SLOW`；得分 < 0.5 → `ContextMode.FAST`（用两个可心算的例子，如「在吗」+ 精力满 + 2h → 慢，「哦」+ 精力 20 + arousal 0.9 + 60s → 快）
+    - [ ] `_EMOTION_WORDS` 无单字子串误判：「积累」（含「累」）/「麻烦」（含「烦」）不触发情感；「烦躁」/「疲惫」正常命中
 - [ ] 集成测试：无（纯函数，无 Facade 管道；编排在 17）
 - [ ] E2E 测试：无
 

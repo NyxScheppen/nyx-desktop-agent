@@ -80,3 +80,18 @@ def test_from_config_unknown_provider_rejects() -> None:
 def test_from_config_ok() -> None:
     client = VisionClient.from_config(VisionConfig())
     assert client._model_name == "llava"
+
+
+def test_from_config_requires_key_for_non_ollama(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 非 Ollama 后端缺 key → ConfigError（不再硬编码 "ollama" 静默 401）
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    with pytest.raises(ConfigError):
+        VisionClient.from_config(VisionConfig(provider="openai"))
+
+
+def test_from_config_reads_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    client = VisionClient.from_config(VisionConfig(provider="openai"))
+    assert client._model_name == "llava"

@@ -1,4 +1,5 @@
 import base64
+import os
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -33,11 +34,15 @@ class VisionClient:
             raise ConfigError(
                 f"未知 provider={config.provider!r}：请设置 vision.base_url"
             )
-        # Ollama 免 key，但 ChatOpenAI 要求非空 api_key，传占位值（服务端忽略）
+        api_key = os.environ.get(config.api_key_env)
+        if not api_key:
+            if config.provider != "ollama":
+                raise ConfigError(f"环境变量 {config.api_key_env} 未设置")
+            api_key = "ollama"  # Ollama 免 key，ChatOpenAI 要求非空，占位（服务端忽略）
         return cls(
             ChatOpenAI(
                 model=config.model,
-                api_key=SecretStr("ollama"),
+                api_key=SecretStr(api_key),
                 base_url=base_url,
             ),
             model_name=config.model,

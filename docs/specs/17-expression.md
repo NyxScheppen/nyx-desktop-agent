@@ -360,6 +360,12 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         await deps.evaluator.evaluate(output)
         speak = output.content
         if state["mode"] is ContextMode.FAST:
+            if _is_question(speak):
+                # 快通道绕过 should_ask，问句结尾也落 ask（信号不丢）
+                await deps.bus.publish(
+                    internal_text_event(EventType.ASK, speak, state["correlation_id"])
+                )
+                return {"speak": state["speak"] + [speak], "ask": speak}
             await deps.bus.publish(
                 internal_text_event(EventType.SPEAK, speak, state["correlation_id"])
             )
@@ -639,6 +645,7 @@ class ExpressionFacade:
     - [ ] `_rounds_block`：`([], [])` → `""`；`(["t1"], ["s1"])` → 含「第1轮内心：t1」「第1轮对外：s1」；`(["t1","t2"], ["s1","s2"])` → 含两轮且顺序正确
   - [ ] **facade 集成**（`test_expression_facade.py`，mock LLM 按 `output_type` 返回 fixture，mock bus 记录 `publish`、fake 注入不碰 db；文件名为避免与 `test_memory/test_facade.py` 同 basename 冲突而加前缀）：
     - [ ] `reply` 快通道（classify 因子令 score < threshold）：`llm.complete` 调 2 次（think + speak，各 1 次）、`memory.search` / `memory.create_scene_memory` 未被调、`evaluator.evaluate` 调 2 次、`bus.publish` 收到 `think` + `speak` 各 1 条
+    - [ ] `reply` 快通道问句（classify 令 score < threshold，mock speak 返回问句）：`bus.publish` 收到 `ask`（非 `speak`）、`result["ask"]` 置 `_waiting_user`（快通道绕过 should_ask，问句信号不丢）
     - [ ] `reply` 慢通道非问句（score ≥ threshold，mock speak 恒非问句）：`memory.search` 被调、`create_scene_memory` 被调、`llm.complete` 调 `2 × slow_max_rounds + 1` 次（tool 1 次 + think+speak 各 3 次）、`bus.publish` 收到 `think` 3 条 + `speak` 3 条（**每轮交付**）、`create_scene_memory` 的 `nyx_speak`/`nyx_think` 是 3 轮 `"\n"` 拼接
     - [ ] **慢通道检索命中记 recall**：fake `memory.search` 返回 2 条命中 → `record_recall` 对每条记忆 id 各调 1 次（`recalled == ["m1", "m2"]`）；返回空 → 不调
     - [ ] `reply` 慢通道问句（第 1 轮 speak 返回 `"你还好吗？"`）：`bus.publish` 收到 `ask`（非 `speak`）且仅 1 条、`create_scene_memory` 仍被调（问句也走场景化记忆）、提前结束（tool 1 次 + think/speak 各 1 次，不循环到满）

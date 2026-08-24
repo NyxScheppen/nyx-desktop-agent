@@ -77,6 +77,7 @@ class VisionConfig:
     enabled: bool = False               # 屏幕视觉 opt-in（design §8.5）
     provider: str = "ollama"            # 复用 provider→base_url 映射
     model: str = "llava"                # 本地视觉模型 tag（Ollama）
+    api_key_env: str = "DEEPSEEK_API_KEY"  # 存环境变量名，key 本体由 03-llm 读
     base_url: str | None = None         # 可选 endpoint 覆盖；缺省查 provider 映射
     interval_seconds: int = 60          # 抓屏周期（秒）
 
@@ -179,6 +180,7 @@ def validate_config(cfg: Config) -> None:
     _nonempty(cfg.embedding.model, "embedding.model")
     _nonempty(cfg.vision.provider, "vision.provider")
     _nonempty(cfg.vision.model, "vision.model")
+    _nonempty(cfg.vision.api_key_env, "vision.api_key_env")
     if cfg.llm.base_url is not None:
         _nonempty(cfg.llm.base_url, "llm.base_url")  # 非 None 必须非空，防 "" 静默回退
     if cfg.vision.base_url is not None:

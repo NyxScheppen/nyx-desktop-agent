@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import random
@@ -25,7 +26,7 @@ from nyx.desire.facade import DesireFacade
 from nyx.enums import ActivityStatus, ActivityType, DesireType, EventType, TickType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
-from nyx.events.event import SECONDS_PER_DAY, SECONDS_PER_HOUR, internal_event
+from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
@@ -46,6 +47,8 @@ _logger = logging.getLogger(__name__)
 
 _READ_CONTEXT_CHARS = 6000  # 读物喂 LLM 的字符预算（decision，可推翻）
 _KNOWLEDGE_REF_CHARS = 80   # 创作知识参考单条截断字符数（decision，可推翻）
+_KNOWLEDGE_MAX_POINTS = 5   # 每本书知识点入记忆上限（decision，可推翻）
+_KNOWLEDGE_MAX_CHUNKS = 16  # 知识点提取分块上限，防一次打满全书（decision，可推翻）
 
 # 可续活动：打断置 PAUSED、同日程块内恢复同一记录（读书续读，创作/探索重跑）。
 # 发呆/观察/休息瞬时无进度，仍抢占即废弃置 ABANDONED。
@@ -61,9 +64,15 @@ def _day_start(now: float) -> float:
     return now - now % SECONDS_PER_DAY
 
 
-def _elapsed_hours(now: float) -> float:
-    """当日已过小时数（浮点）。纯函数。"""
-    return (now % SECONDS_PER_DAY) / SECONDS_PER_HOUR
+def _schedule_block_id(now: float, grid_minutes: int) -> str:
+    """当前日程块 id（网格标签）：块序号 = 当日已过分钟 // grid_minutes。
+
+    复用 scheduler.format_time_label(block_index, grid_minutes, 0.0) 产出
+    design §3.3 约定的网格标签（如 14:00），与 main._tick_loop 的 grid 边界一致。
+    纯函数。
+    """
+    block_index = int(now % SECONDS_PER_DAY) // 60 // grid_minutes
+    return format_time_label(block_index, grid_minutes, 0.0)
 
 
 def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | None:
@@ -94,6 +103,11 @@ def _sanitize_filename(name: str) -> str:
         c for c in name if c not in '\\/:*?"<>|' and c.isprintable()
     ).strip()
     return cleaned or "untitled"
+
+
+def _path_hash_suffix(path: str) -> str:
+    """读物绝对路径 → 8 位短哈希，作落盘文件名后缀（跨路径同名书不互相覆盖）。"""
+    return hashlib.md5(path.encode("utf-8")).hexdigest()[:8]
 
 
 def _empty_progress() -> dict[str, Any]:
@@ -270,9 +284,7 @@ class ActivityFacade:
         return Activity(
             id=str(uuid.uuid4()),
             type=activity_type,
-            schedule_block_id=format_time_label(
-                0, self._config.grid_minutes, _elapsed_hours(now)
-            ),
+            schedule_block_id=_schedule_block_id(now, self._config.grid_minutes),
             status=ActivityStatus.PENDING,
             progress=progress,
             started_at=now,
@@ -292,9 +304,7 @@ class ActivityFacade:
         return Activity(
             id=str(uuid.uuid4()),
             type=activity_type,
-            schedule_block_id=format_time_label(
-                0, self._config.grid_minutes, _elapsed_hours(now)
-            ),
+            schedule_block_id=_schedule_block_id(now, self._config.grid_minutes),
             status=ActivityStatus.PENDING,
             progress=_empty_progress(),
             started_at=now,
@@ -428,9 +438,7 @@ class ActivityFacade:
             activity = Activity(
                 id=str(uuid.uuid4()),
                 type=ActivityType.READING,
-                schedule_block_id=format_time_label(
-                    0, self._config.grid_minutes, _elapsed_hours(now)
-                ),
+                schedule_block_id=_schedule_block_id(now, self._config.grid_minutes),
                 status=ActivityStatus.PENDING,
                 progress={
                     "source": path,
@@ -457,9 +465,7 @@ class ActivityFacade:
                 return
             # 同日程块内恢复 PAUSED 记录（design §3.3）：读书从 material 层刷新
             # read_chars 续读；创作/探索无中间态、重跑。恢复同一 id，不新建。
-            block_id = format_time_label(
-                0, self._config.grid_minutes, _elapsed_hours(time.time())
-            )
+            block_id = _schedule_block_id(time.time(), self._config.grid_minutes)
             resumed = await self._store.get_paused_in_block(block_id)
             if resumed is not None:
                 if resumed.type is ActivityType.READING:
@@ -561,7 +567,7 @@ class ActivityFacade:
             return await self._run_reading_source(activity, str(source))
         if t is ActivityType.CREATION:
             style = _pick_creation_style()
-            knowledge = await self._memory.list_memories(tag="knowledge")
+            knowledge = await self._memory.list_memories(tag="knowledge", limit=3)
             obs = await self._get_observation()
             context = _build_creation_context(activity, style, knowledge, obs)
             result = await self._run_llm_activity(
@@ -611,9 +617,11 @@ class ActivityFacade:
         filename = str(activity.progress.get("filename") or Path(source).name)
         if chunk == "":
             # 已读到末尾（或文件比注册时短）：无新块可读，聚合已有片段（不编造）
-            return await self._finalize_reading(
+            full = await self._finalize_reading(
                 activity, source, filename, len(content)
             )
+            await self._extract_knowledge(activity, filename, content)
+            return full
         # 滚动摘要接力：把「上次读到哪里 + 已读片段笔记」一起喂给 LLM，让本次 note
         # 自然承接已读部分、只续写本块新内容（避免几篇之间不连贯）。
         prior = await self._material_store.get_fragments(source)
@@ -656,15 +664,20 @@ class ActivityFacade:
         """读完整本书：聚合 note_fragments → 完整笔记落盘 workspace/notes/<safe>.md。"""
         fragments = await self._material_store.get_fragments(source)
         full_note = await self._aggregate_note(activity, filename, fragments)
-        written = await file_io(
-            "write", f"notes/{_sanitize_filename(filename)}.md", full_note
+        note_path = (
+            f"notes/{_sanitize_filename(filename)}"
+            f"-{_path_hash_suffix(source)}.md"
         )
-        await self._reading_notes.insert(
+        written = await file_io("write", note_path, full_note)
+        # 同路径重读（read_material 重传会重置进度）原地更新保留批注，不累积重复
+        # 笔记；不同路径同名书互不误删（path 是去重键，book 仅 filename 展示）。
+        await self._reading_notes.upsert_by_path(
             ReadingNote(
                 id=str(uuid.uuid4()),
                 book=filename,
                 content=full_note,
                 created_at=time.time(),
+                path=source,
             )
         )
         return {
@@ -706,16 +719,52 @@ class ActivityFacade:
     async def _extract_knowledge(
         self, activity: Activity, filename: str, content: str
     ) -> None:
-        """读完一本书后提取 1-5 条知识点入长期记忆（R1）。
+        """读完一本书后分块提取知识点入长期记忆（R1）。
 
-        best-effort：LLM/解析失败只记日志、不冒泡——读书笔记已落盘，知识点是
-        增强旁路，主流程正确性不依赖它（CLAUDE.md 豁免：LLM/eval 失败吞异常）。
+        正文按 _READ_CONTEXT_CHARS 分块逐个喂 LLM（对齐阅读循环的字符预算，
+        避免整本书超上下文被静默截断）；跨块累积去重，最多 _KNOWLEDGE_MAX_POINTS
+        条、块数上限 _KNOWLEDGE_MAX_CHUNKS。best-effort：任一失败只记日志、
+        不冒泡——读书笔记已落盘，知识点是增强旁路，主流程正确性不依赖它
+        （CLAUDE.md 豁免：LLM/eval 失败吞异常）。
+        """
+        items: list[dict[str, str]] = []
+        seen: set[str] = set()
+        budget_chars = _KNOWLEDGE_MAX_CHUNKS * _READ_CONTEXT_CHARS
+        for start in range(0, min(len(content), budget_chars), _READ_CONTEXT_CHARS):
+            chunk = content[start : start + _READ_CONTEXT_CHARS]
+            if not chunk.strip():
+                continue
+            for point in await self._extract_knowledge_points(
+                activity, filename, chunk
+            ):
+                if len(items) >= _KNOWLEDGE_MAX_POINTS:
+                    break
+                content_pt = point.get("content", "")
+                if content_pt and content_pt not in seen:
+                    seen.add(content_pt)
+                    items.append(point)
+            if len(items) >= _KNOWLEDGE_MAX_POINTS:
+                break
+        if items:
+            try:
+                await self._memory.remember_knowledge(
+                    items, _correlation_id(activity)
+                )
+            except Exception:
+                _logger.exception("知识点入库失败 activity_id=%s", activity.id)
+
+    async def _extract_knowledge_points(
+        self, activity: Activity, filename: str, chunk: str
+    ) -> list[dict[str, str]]:
+        """对单个正文分块（≤_READ_CONTEXT_CHARS）提取知识点，返回 [{topic, content}]。
+
+        best-effort：LLM/解析失败返回空列表不冒泡，调用方继续下一块。
         """
         try:
             output = await self._llm.complete(
                 [
                     {"role": "system", "content": _KNOWLEDGE_SYSTEM},
-                    {"role": "user", "content": f"书名：{filename}\n正文：\n{content}"},
+                    {"role": "user", "content": f"书名：{filename}\n正文：\n{chunk}"},
                 ],
                 module="activity",
                 output_type="knowledge",
@@ -725,12 +774,12 @@ class ActivityFacade:
             await self._evaluator.evaluate(output)
             data: Any = json.loads(output.content)
             if not isinstance(data, dict):
-                return
+                return []
             raw_points = cast(dict[str, Any], data).get("points")
             if not isinstance(raw_points, list):
-                return
+                return []
             items: list[dict[str, str]] = []
-            for point in cast(list[Any], raw_points)[:5]:
+            for point in cast(list[Any], raw_points)[:_KNOWLEDGE_MAX_POINTS]:
                 if not isinstance(point, dict):
                     continue
                 point_map = cast(dict[str, Any], point)
@@ -743,12 +792,10 @@ class ActivityFacade:
                             "content": content_pt.strip(),
                         }
                     )
-            if items:
-                await self._memory.remember_knowledge(
-                    items, _correlation_id(activity)
-                )
+            return items
         except Exception:
             _logger.exception("知识点提取失败 activity_id=%s", activity.id)
+            return []
 
     async def _run_llm_activity(
         self,

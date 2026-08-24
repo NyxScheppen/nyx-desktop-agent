@@ -16,7 +16,7 @@
 ## 验收标准
 
 - [ ] `facade.py` 含 `MemoryFacade` + `decay_freshness` / `_parse_scene` / `_build_scene_prompt` / `_has_negation` / `_content_preview` / `_build_contradiction_prompt` / `_parse_contradiction` / `_join_list` / `_activity_memory_fields` / `_memory_to_dict` / `_memory_to_markdown`，与「`memory/facade.py`（完整）」段代码逐字一致
-- [ ] 六个公开方法签名与 tech-ref §5 逐字一致：`create_scene_memory(reply_context: dict[str, str]) -> Memory` / `remember_activity(event: Event) -> None` / `search(query) -> list[Memory]` / `record_recall(memory_id) -> None` / `list_memories(tag, type) -> list[Memory]` / `export(fmt) -> str`
+- [ ] 六个公开方法签名与 tech-ref §5 逐字一致：`create_scene_memory(reply_context: dict[str, str]) -> Memory` / `remember_activity(event: Event) -> None` / `search(query) -> list[Memory]` / `record_recall(memory_id) -> None` / `list_memories(tag, type, limit) -> list[Memory]` / `export(fmt) -> str`
 - [ ] `create_scene_memory`：LLM 调用 1（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）产出三样 → 入短期（`freshness=1.0`）→ 算 embedding → 建边 → 矛盾检测（门控，可能调用 2）→ 命中矛盾发布 `reflection` → 衰减+淘汰 → 发布 `memory_created` → 返回 `Memory`
 - [ ] `remember_activity(event)`：读 `event.content["type"]`/`["result"]` 确定性映射（reading→note/book、creation→content/title、free_exploration→notes/findings，tag=活动类型值）；读书/创作/探索三类有产出才写，其余（rest/observe_user/idle_reflection、空 result）跳过；走 embed→入短期→建边→门控矛盾检测→淘汰→发布 `memory_created` 同一条管线，**无 LLM 调用**（除门控触发的矛盾判断）
 - [ ] `remember_knowledge(items, correlation_id)`：读书提取的客观知识点入长期记忆（`tag="knowledge"`、`type=LONG_TERM`、无 LLM、确定性拼好）；items 每项 `{topic, content}`，content 空则跳过；复用 `_persist_memory` 入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰），`type=LONG_TERM` 豁免短期淘汰、知识点不随时间冲掉、供创作检索参考（`list_memories(tag="knowledge")`）
@@ -418,8 +418,9 @@ class MemoryFacade:
         self,
         tag: str | None = None,
         type: MemoryType | None = None,
+        limit: int | None = None,
     ) -> list[Memory]:
-        return await self._store.list_memories(tag, type)
+        return await self._store.list_memories(tag, type, limit)
 
     async def export(self, fmt: str) -> str:
         """记忆导出：json = JSON 数组字符串，

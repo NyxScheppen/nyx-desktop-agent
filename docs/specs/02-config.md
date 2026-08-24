@@ -110,6 +110,8 @@ class LlmConfig:
     model: str = "deepseek-chat"
     api_key_env: str = "DEEPSEEK_API_KEY"  # 存环境变量名，key 本体由 03-llm 读
     base_url: str | None = None            # 可选 endpoint 覆盖；缺省查 provider 映射
+    timeout: float = 60.0                  # 单次 LLM 请求超时（秒）
+    max_retries: int = 2                   # 请求失败重试次数
 
 
 @dataclass
@@ -268,6 +270,8 @@ def validate_config(cfg: Config) -> None:
         _unit_interval(v, path)
 
     _pos_num(cfg.desire.value_decay, "desire.value_decay")          # 数 > 0
+    _pos_num(cfg.llm.timeout, "llm.timeout")
+    _int(cfg.llm.max_retries, "llm.max_retries")
     _pos_num(cfg.expression.ask_timeout, "expression.ask_timeout")
     _pos_num(cfg.expression.chat_ignore_timeout, "expression.chat_ignore_timeout")
     _flag(cfg.exploration.web_enabled, "exploration.web_enabled")   # bool
@@ -283,6 +287,8 @@ def validate_config(cfg: Config) -> None:
 |---|---|
 | `llm.provider` / `llm.model` / `llm.api_key_env` | 非空 `str` |
 | `llm.base_url` | 非 `None` 时非空 `str`（`""` 静默回退映射 → 报错） |
+| `llm.timeout` | 数 `> 0` |
+| `llm.max_retries` | `int`（非 bool） |
 | `embedding.model` | 非空 `str` |
 | `memory.short_term_capacity` / `memory.promote_threshold` | `int > 0` |
 | `memory.freshness_decay` | 数 ∈ `[0, 1]` |
@@ -301,7 +307,7 @@ def validate_config(cfg: Config) -> None:
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_config/`：
-  - [ ] `validate_config` 纯函数：合法 `Config()` 通过；越界值（`slow_threshold=1.5`、`freshness_decay=-0.1`、`judge_sample_rate=2`）报错；非正（`short_term_capacity=0`、`grid_minutes=-1`、`ask_timeout=-1`、`chat_ignore_timeout=0`）报错；错类型（改字段为 `"20"` / `True`）报错（直接构造 `Config` 后改字段再调 `validate_config`）
+  - [ ] `validate_config` 纯函数：合法 `Config()` 通过；越界值（`slow_threshold=1.5`、`freshness_decay=-0.1`、`judge_sample_rate=2`）报错；非正（`short_term_capacity=0`、`grid_minutes=-1`、`ask_timeout=-1`、`chat_ignore_timeout=0`、`timeout=-1`）报错；错类型（改字段为 `"20"` / `True` / `max_retries="2"`）报错（直接构造 `Config` 后改字段再调 `validate_config`）
   - [ ] `load_config`（tmp yaml + `monkeypatch` 环境变量）：
     - [ ] 缺键填默认（只写 `llm.provider` → 其余字段=默认）
     - [ ] **energy_delta 递归构造**：写部分键 → `cfg.activity.energy_delta` 是 `ActivityEnergyDelta` 实例，`isinstance` 通过、未写键用默认

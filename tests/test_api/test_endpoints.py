@@ -206,8 +206,10 @@ async def test_export_endpoint() -> None:
     async with _client(_app(_mk_state(), _FakeBus(), memory)) as client:
         j = await client.post("/api/export", json={"format": "json"})
         m = await client.post("/api/export", json={"format": "md"})
-    assert j.json() == "exported:json"
-    assert m.json() == "exported:md"
+    assert j.text == "exported:json"      # 原始字符串，不二次 json.dumps
+    assert m.text == "exported:md"
+    assert j.headers["content-type"].startswith("application/json")
+    assert m.headers["content-type"].startswith("text/markdown")
     assert memory.export_calls == ["json", "md"]
 
 
@@ -270,7 +272,7 @@ async def test_reading_notes_endpoint() -> None:
     assert resp.json() == [
         {
             "id": "n1", "book": "骑士团史.md", "content": "完整笔记",
-            "created_at": 1.0, "annotation_count": 2,
+            "created_at": 1.0, "path": "", "annotation_count": 2,
         }
     ]
 

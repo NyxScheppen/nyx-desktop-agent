@@ -286,6 +286,7 @@ export type ReadingNote = {
   content: string;
   created_at: number; // 秒（time.time()），展示时 ×1000
   annotation_count: number; // 非 DB 列，list 时 LEFT JOIN 算出
+  path: string; // 读物绝对路径（去重键；book 仅展示）
 };
 
 // ---- 批注（18-api / nyx/types.py Annotation）----

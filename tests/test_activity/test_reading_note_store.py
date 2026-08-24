@@ -4,10 +4,14 @@ from nyx.types import Annotation, ReadingNote
 
 
 def _note(
-    id: str, book: str = "骑士团史.md", created_at: float = 1000.0
+    id: str,
+    book: str = "骑士团史.md",
+    created_at: float = 1000.0,
+    path: str = "",
 ) -> ReadingNote:
     return ReadingNote(
-        id=id, book=book, content=f"{id} 的完整笔记", created_at=created_at
+        id=id, book=book, content=f"{id} 的完整笔记", created_at=created_at,
+        path=path,
     )
 
 
@@ -28,22 +32,10 @@ async def _new_store() -> tuple[ReadingNoteStore, db.Database]:
     return ReadingNoteStore(database), database
 
 
-async def test_insert_and_list_notes_ordered_desc() -> None:
-    store, database = await _new_store()
-    try:
-        await store.insert(_note("n1", created_at=1000.0))
-        await store.insert(_note("n2", created_at=2000.0))
-        notes = await store.list_notes()
-        assert [n.id for n in notes] == ["n2", "n1"]   # created_at 倒序
-        assert notes[0].annotation_count == 0
-    finally:
-        await database.conn.close()
-
-
 async def test_list_notes_counts_annotations() -> None:
     store, database = await _new_store()
     try:
-        await store.insert(_note("n1"))
+        await store.upsert_by_path(_note("n1"))
         await store.add_annotation(_annotation("a1", "n1"))
         await store.add_annotation(_annotation("a2", "n1"))
         notes = await store.list_notes()
@@ -56,7 +48,7 @@ async def test_list_notes_counts_annotations() -> None:
 async def test_delete_cascades_annotations() -> None:
     store, database = await _new_store()
     try:
-        await store.insert(_note("n1"))
+        await store.upsert_by_path(_note("n1"))
         await store.add_annotation(_annotation("a1", "n1"))
         await store.delete("n1")
         assert await store.list_notes() == []
@@ -65,10 +57,41 @@ async def test_delete_cascades_annotations() -> None:
         await database.conn.close()
 
 
+async def test_upsert_by_path_insert_then_update() -> None:
+    store, database = await _new_store()
+    try:
+        await store.upsert_by_path(_note("n1", path="/books/a.md"))
+        await store.upsert_by_path(
+            _note("n2", book="a.md", created_at=2000.0, path="/books/a.md")
+        )
+        notes = await store.list_notes()
+        assert len(notes) == 1                        # 同 path 不重复
+        assert notes[0].id == "n1"                    # 原地更新，id 不变
+        assert notes[0].content == "n2 的完整笔记"
+        assert notes[0].path == "/books/a.md"
+    finally:
+        await database.conn.close()
+
+
+async def test_upsert_by_path_distinct_paths_same_filename() -> None:
+    store, database = await _new_store()
+    try:
+        await store.upsert_by_path(
+            _note("n1", book="a.md", created_at=1000.0, path="/x/a.md")
+        )
+        await store.upsert_by_path(
+            _note("n2", book="a.md", created_at=2000.0, path="/y/a.md")
+        )
+        notes = await store.list_notes()
+        assert [n.id for n in notes] == ["n2", "n1"]   # 不同 path 同名书互不删
+    finally:
+        await database.conn.close()
+
+
 async def test_list_annotations_ordered_asc() -> None:
     store, database = await _new_store()
     try:
-        await store.insert(_note("n1"))
+        await store.upsert_by_path(_note("n1"))
         await store.add_annotation(_annotation("a1", "n1", created_at=1000.0))
         await store.add_annotation(_annotation("a2", "n1", created_at=2000.0))
         anns = await store.list_annotations("n1")
@@ -80,7 +103,7 @@ async def test_list_annotations_ordered_asc() -> None:
 async def test_delete_annotation() -> None:
     store, database = await _new_store()
     try:
-        await store.insert(_note("n1"))
+        await store.upsert_by_path(_note("n1"))
         await store.add_annotation(_annotation("a1", "n1"))
         await store.add_annotation(_annotation("a2", "n1"))
         await store.delete_annotation("a1")

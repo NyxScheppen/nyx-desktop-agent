@@ -6,8 +6,12 @@ from nyx.types import Tool
 
 
 def _search_web_sync(query: str) -> list[dict[str, str]]:
-    with DDGS() as ddgs:
-        raw = ddgs.text(query, max_results=5)
+    try:
+        with DDGS(timeout=10) as ddgs:
+            raw = ddgs.text(query, max_results=5)
+    except Exception:
+        # best-effort：联网失败/超时返回空，不崩回复（use_tools 层另有兜底）
+        return []
     return [{"title": r["title"], "url": r["href"], "snippet": r["body"]} for r in raw]
 
 

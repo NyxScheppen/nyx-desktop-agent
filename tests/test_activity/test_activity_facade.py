@@ -14,15 +14,15 @@ from nyx.activity.facade import (
     ActivityFacade,
     _build_creation_context,
     _day_start,
-    _elapsed_hours,
     _goal_met,
     _parse_activity_result,
+    _path_hash_suffix,
     _pick_creation_style,
     _sanitize_filename,
+    _schedule_block_id,
 )
 from nyx.activity.material_store import MaterialStore
 from nyx.activity.reading_note_store import ReadingNoteStore
-from nyx.activity.scheduler import format_time_label
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.db import Database
@@ -309,7 +309,10 @@ class _FakeMemory:
         self.knowledge: list[Memory] = []
 
     async def list_memories(
-        self, tag: str | None = None, type: MemoryType | None = None
+        self,
+        tag: str | None = None,
+        type: MemoryType | None = None,
+        limit: int | None = None,
     ) -> list[Memory]:
         return self.knowledge
 
@@ -411,8 +414,14 @@ def test_day_start() -> None:
     assert _day_start(86400.0 * 1.5) == 86400.0
 
 
-def test_elapsed_hours() -> None:
-    assert _elapsed_hours(5400.0) == 1.5
+def test_schedule_block_id_aligns_to_grid() -> None:
+    """日程块网格对齐：同网格块内多个 now 返回同标签、跨块/跨小时边界正确进位。"""
+    base = 14 * 3600.0
+    assert _schedule_block_id(base, 60) == "14:00"
+    assert _schedule_block_id(base + 59 * 60, 60) == "14:00"   # 同块内不漂移
+    assert _schedule_block_id(base + 60 * 60, 60) == "15:00"   # 跨小时进位
+    assert _schedule_block_id(base + 25 * 60, 30) == "14:00"   # 半小时网格 14:00~14:29
+    assert _schedule_block_id(base + 30 * 60, 30) == "14:30"
 
 
 def test_goal_met() -> None:
@@ -1101,8 +1110,9 @@ async def test_reading_completion_aggregates_note(
         result = acts[0].progress["result"]
         assert result["completed"] is True
         assert result["note"] == "完整读书笔记"
-        assert result["path"] == "workspace/notes/book.txt.md"
-        assert captured["path"] == "notes/book.txt.md"
+        suffix = _path_hash_suffix(str(source))
+        assert result["path"] == f"workspace/notes/book.txt-{suffix}.md"
+        assert captured["path"] == f"notes/book.txt-{suffix}.md"
         assert llm.calls == ["reading", "note", "knowledge"]
     finally:
         await database.conn.close()
@@ -1243,7 +1253,7 @@ async def test_resume_paused_creation_reruns(
     """同日程块内 PAUSED 创作被恢复：同一记录重跑完成，不新建。"""
     t0 = 1_000_000.0
     monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
-    block_id = format_time_label(0, 60, _elapsed_hours(t0))
+    block_id = _schedule_block_id(t0, 60)
     llm = _FakeLlm()
     evaluator = _FakeEvaluator()
     facade, store, bus, database = await _new_facade(llm=llm, evaluator=evaluator)
@@ -1277,7 +1287,7 @@ async def test_resume_paused_reading_refreshes_read_chars(
     """读书恢复：read_chars 从 material 层刷新（而非 progress 里的旧值），续读。"""
     t0 = 1_000_000.0
     monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
-    block_id = format_time_label(0, 60, _elapsed_hours(t0))
+    block_id = _schedule_block_id(t0, 60)
     source = tmp_path / "book.txt"
     source.write_text("甲" * 7000, encoding="utf-8")
     facade, store, bus, database = await _new_facade()
@@ -1403,6 +1413,121 @@ async def test_extract_knowledge_best_effort_no_raise() -> None:
     try:
         await facade._extract_knowledge(_activity("a1"), "骑士团史.md", "正文")
         assert memory.remembered == []
+    finally:
+        await database.conn.close()
+
+
+async def test_extract_knowledge_chunks_long_content() -> None:
+    """长正文分块提取：7000 字切成两块，每块喂 LLM 的正文 ≤ 6000 字，跨块去重。"""
+
+    class RecordingKnowledgeLlm(_KnowledgeLlm):
+        def __init__(self) -> None:
+            super().__init__()
+            self.knowledge_bodies: list[str] = []
+
+        async def complete(
+            self,
+            messages: list[LlmMessage],
+            *,
+            module: str,
+            output_type: str,
+            correlation_id: str,
+            json_mode: bool = False,
+        ) -> LLMOutput:
+            if output_type == "knowledge":
+                self.knowledge_bodies.append(str(messages[-1]["content"]))
+            return await super().complete(
+                messages,
+                module=module,
+                output_type=output_type,
+                correlation_id=correlation_id,
+                json_mode=json_mode,
+            )
+
+    memory = _FakeMemory()
+    llm = RecordingKnowledgeLlm()
+    facade, _store, _bus, database = await _new_facade(llm=llm, memory=memory)
+    try:
+        await facade._extract_knowledge(_activity("a1"), "长书.md", "甲" * 7000)
+        assert len(llm.knowledge_bodies) == 2  # 7000 字 → 两块
+        for body in llm.knowledge_bodies:
+            assert len(body.split("正文：\n", 1)[1]) <= 6000  # 每块正文不超预算
+        # 两块返回同两点 → 去重后只入一次记忆（2 条）
+        assert memory.remembered == [
+            [
+                {"topic": "骑士团", "content": "成立于 1147 年"},
+                {"topic": "纪律", "content": "严守教规"},
+            ]
+        ]
+    finally:
+        await database.conn.close()
+
+
+async def test_read_finalizes_and_extracts_on_empty_chunk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """读到末尾（文件比注册时短）走 chunk=="" 分支：既聚合笔记也提取知识点。"""
+
+    async def fake_file_io(
+        action: str, path: str, content: str | None = None
+    ) -> dict[str, Any]:
+        return {"path": f"workspace/{path}", "written": len(content or "")}
+
+    monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
+    source = tmp_path / "book.txt"
+    source.write_text("甲" * 100, encoding="utf-8")
+    llm = _KnowledgeLlm()
+    memory = _FakeMemory()
+    facade, _store, _bus, database = await _new_facade(llm=llm, memory=memory)
+    try:
+        activity = _activity(
+            "a1",
+            progress={
+                "source": str(source),
+                "filename": "book.txt",
+                "read_chars": 100,
+                "total_chars": 100,
+            },
+        )
+        result = await facade._run_reading_source(activity, str(source))
+        assert result["completed"] is True
+        assert "note" in llm.calls       # 聚合笔记
+        assert "knowledge" in llm.calls  # 提取知识点（修复点：此前漏调）
+        assert memory.remembered != []
+    finally:
+        await database.conn.close()
+
+
+async def test_finalize_reading_replaces_duplicate_note(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """同路径重读不累积重复笔记：第二次 finalize 原地更新，只剩一条且批注保留。"""
+
+    async def fake_file_io(
+        action: str, path: str, content: str | None = None
+    ) -> dict[str, Any]:
+        return {"path": f"workspace/{path}", "written": len(content or "")}
+
+    monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
+    source = tmp_path / "book.txt"
+    source.write_text("骑士团的历史", encoding="utf-8")
+    facade, _store, _bus, database = await _new_facade()
+    try:
+        activity = _activity(
+            "a1",
+            progress={"source": str(source), "filename": "book.txt"},
+        )
+        await facade._finalize_reading(activity, str(source), "book.txt", 6)
+        notes = await facade.list_reading_notes()
+        note_id = notes[0].id
+        annotation = await facade.add_annotation(note_id, "用户批注")
+        await facade._finalize_reading(activity, str(source), "book.txt", 6)
+        notes = await facade.list_reading_notes()
+        assert len(notes) == 1
+        assert notes[0].id == note_id      # 原地更新，id 不变
+        assert [a.id for a in await facade.list_annotations(note_id)] == [
+            annotation.id
+        ]                                 # 批注保留
     finally:
         await database.conn.close()
 

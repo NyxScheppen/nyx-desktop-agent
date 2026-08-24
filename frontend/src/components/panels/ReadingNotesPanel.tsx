@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   addAnnotation,
   deleteAnnotation,
@@ -59,14 +59,22 @@ export default function ReadingNotesPanel() {
     void loadAnnotations(note.id);
   };
 
+  // 请求序号：快速切笔记 A→B 时，A 的批注若晚于 B 返回会被序号守卫丢弃，
+  // 避免详情视图显示 B 的标题/正文 + A 的批注（陈旧响应竞态）。
+  const annoRequest = useRef(0);
+
   const loadAnnotations = async (noteId: string) => {
+    const req = ++annoRequest.current;
     setAnnoLoading(true);
     try {
-      setAnnotations(await getAnnotations(noteId));
+      const result = await getAnnotations(noteId);
+      if (req !== annoRequest.current) return;
+      setAnnotations(result);
     } catch {
+      if (req !== annoRequest.current) return;
       setAnnotations([]);
     } finally {
-      setAnnoLoading(false);
+      if (req === annoRequest.current) setAnnoLoading(false);
     }
   };
 
@@ -99,6 +107,7 @@ export default function ReadingNotesPanel() {
     if (!window.confirm("确定要删除这篇读书笔记吗？关联批注也会一并删除。")) return;
     await remove(noteId);
     if (selected?.id === noteId) {
+      annoRequest.current++;
       setSelected(null);
       setAnnotations([]);
     }
@@ -113,6 +122,7 @@ export default function ReadingNotesPanel() {
             type="button"
             className="panel-refresh"
             onClick={() => {
+              annoRequest.current++;
               setSelected(null);
               setAnnotations([]);
             }}

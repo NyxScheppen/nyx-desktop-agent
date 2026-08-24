@@ -95,7 +95,7 @@ async def check_timeouts(now: float) -> None                    # tick 心跳收
 async def create_scene_memory(reply_context: dict[str, str]) -> Memory    # 场景化记忆（慢通道）
 async def search(query: str) -> list[Memory]                    # 内部跑三层+去重合并
 async def record_recall(memory_id: str) -> None                 # 记录"想起"
-async def list_memories(tag: str | None = None, type: MemoryType | None = None) -> list[Memory]  # 仪表盘过滤
+async def list_memories(tag: str | None = None, type: MemoryType | None = None, limit: int | None = None) -> list[Memory]  # 仪表盘过滤 + 可选截断
 async def export(fmt: str) -> str                              # 记忆导出（json|md）
 async def remember_knowledge(items: list[dict[str, str]], correlation_id: str) -> None  # 读书知识点入长期记忆（tag='knowledge'，无 LLM）
 ```
@@ -311,6 +311,8 @@ llm:
   model: deepseek-chat
   api_key_env: DEEPSEEK_API_KEY
   # base_url: http://localhost:11434/v1   # 可选：覆盖/自定义 endpoint
+  timeout: 60.0               # 单次 LLM 请求超时（秒）
+  max_retries: 2              # 请求失败重试次数
 
 embedding:
   model: all-MiniLM-L6-v2     # 本地 sentence-transformers

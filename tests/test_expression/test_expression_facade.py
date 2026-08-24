@@ -133,10 +133,15 @@ class _FakeMemory:
         self.search_calls = 0
         self.scene_memories: list[dict[str, str]] = []
         self.no_answers: list[str] = []
+        self.search_results: list[Memory] = []
+        self.recalled: list[str] = []
 
     async def search(self, query: str) -> list[Memory]:
         self.search_calls += 1
-        return []
+        return list(self.search_results)
+
+    async def record_recall(self, memory_id: str) -> None:
+        self.recalled.append(memory_id)
 
     async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
         self.scene_memories.append(reply_context)
@@ -206,6 +211,7 @@ def _new_facade(
     llm: _FakeLlm | None = None,
     desire: _FakeDesire | None = None,
     tools: _FakeTools | None = None,
+    memory: _FakeMemory | None = None,
 ) -> tuple[
     ExpressionFacade,
     _FakeLlm,
@@ -216,7 +222,7 @@ def _new_facade(
 ]:
     fake_llm = llm if llm is not None else _FakeLlm()
     evaluator = _FakeEvaluator()
-    memory = _FakeMemory()
+    memory = memory if memory is not None else _FakeMemory()
     inner_life = _FakeInnerLife(_mk_state(energy, arousal))
     bus = _FakeBus()
     desire_obj = (
@@ -333,6 +339,53 @@ async def test_reply_slow_tool_failure_fallback() -> None:
     await facade.reply("在吗", "corr-boom")
     think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "think"][0]
     assert "工具 file_io 执行失败" in think_system
+
+
+async def test_reply_slow_tool_output_truncated() -> None:
+    # 大工具结果注入 prompt 时被截断：尾部 sentinel 被裁掉、带「…」省略号
+    tools = _FakeTools()
+    tools.results["file_io"] = "x" * 5000 + "TAIL_SENTINEL"
+    facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=100.0,
+        arousal=0.0,
+        llm=_FakeLlm(tool_calls=[{"name": "file_io", "args": {}}]),
+        tools=tools,
+    )
+    await facade.reply("在吗", "corr-trunc")
+    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "think"][0]
+    assert "file_io" in think_system
+    assert "…" in think_system
+    assert "TAIL_SENTINEL" not in think_system
+
+
+async def test_reply_slow_records_recall() -> None:
+    # 慢通道检索命中记忆 → 逐条 record_recall（短期→长期升级触发源）
+    memory = _FakeMemory()
+    memory.search_results = [
+        Memory(
+            id="m1",
+            created_at=0.0,
+            content="c1",
+            tag="user",
+            summary="",
+            freshness=1.0,
+            type=MemoryType.SHORT_TERM,
+        ),
+        Memory(
+            id="m2",
+            created_at=0.0,
+            content="c2",
+            tag="user",
+            summary="",
+            freshness=1.0,
+            type=MemoryType.SHORT_TERM,
+        ),
+    ]
+    facade, _llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=100.0, arousal=0.0, memory=memory
+    )
+    await facade.reply("在吗", "corr-recall")
+    assert memory.recalled == ["m1", "m2"]
 
 
 async def test_reply_ask_guidance_slow_only() -> None:

@@ -99,6 +99,19 @@ async def test_list_memories_filters_and_sorts() -> None:
         await db.conn.close()
 
 
+async def test_list_memories_limit() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("m1", tag="a", freshness=0.3))
+        await store.add(_mem("m2", tag="b", freshness=0.9))
+        await store.add(_mem("m3", tag="a", freshness=0.6))
+        assert [m.id for m in await store.list_memories(limit=2)] == ["m2", "m3"]
+        assert [m.id for m in await store.list_memories(tag="a", limit=1)] == ["m3"]
+    finally:
+        await db.conn.close()
+
+
 async def test_update_fields() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)

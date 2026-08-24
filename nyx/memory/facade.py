@@ -407,8 +407,9 @@ class MemoryFacade:
         self,
         tag: str | None = None,
         type: MemoryType | None = None,
+        limit: int | None = None,
     ) -> list[Memory]:
-        return await self._store.list_memories(tag, type)
+        return await self._store.list_memories(tag, type, limit)
 
     async def export(self, fmt: str) -> str:
         """记忆导出：json = JSON 数组字符串，

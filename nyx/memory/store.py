@@ -44,6 +44,7 @@ class MemoryStore:
         self,
         tag: str | None = None,
         type: MemoryType | None = None,
+        limit: int | None = None,
     ) -> list[Memory]:
         clauses: list[str] = []
         params: list[str] = []
@@ -58,6 +59,8 @@ class MemoryStore:
             f"SELECT {_MEMORY_COLS} FROM memory{where} "
             "ORDER BY freshness DESC, created_at DESC"
         )
+        if limit is not None:
+            sql += f" LIMIT {limit}"
         async with self._db.lock:
             cursor = await self._db.conn.execute(sql, params)
             rows = await cursor.fetchall()

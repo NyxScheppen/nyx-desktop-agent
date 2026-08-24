@@ -276,9 +276,10 @@ class Material:                    # 用户喂的读物（一本书），分块�
 @dataclass
 class ReadingNote:                 # 读完整本书后的完整笔记（可删除、可批注）
     id: str
-    book: str                      # 书名（filename）
+    book: str                      # 书名（filename，仅供展示）
     content: str                   # 完整笔记正文（Markdown）
     created_at: float
+    path: str = ""                 # 读物绝对路径（去重键；book 仅展示）
     annotation_count: int = 0      # 非 DB 列，list() 里 LEFT JOIN 算出
 
 @dataclass

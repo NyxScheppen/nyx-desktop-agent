@@ -233,6 +233,15 @@ def test_backtrack_zero_overlap_stops() -> None:
     assert result == []
 
 
+def test_backtrack_short_message_skips_overlap_stop() -> None:
+    # 短确认语（< _MIN_OVERLAP_LEN）零重叠不误清历史，仍累积前文
+    history = [Message(role="user", content="天气不错", timestamp=1.0)]
+    result = build_backtrack_context(
+        "好的", history, now=1.0, time_gap=3600.0, max_len=20
+    )
+    assert [m.content for m in result] == ["天气不错"]
+
+
 def test_backtrack_relevant_continues() -> None:
     history = [Message(role="user", content="天气不错", timestamp=1.0)]
     result = build_backtrack_context(

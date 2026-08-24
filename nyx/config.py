@@ -26,6 +26,8 @@ class LlmConfig:
     model: str = "deepseek-chat"
     api_key_env: str = "DEEPSEEK_API_KEY"  # 存环境变量名，key 本体由 03-llm 读
     base_url: str | None = None            # 可选 endpoint 覆盖；缺省查 provider 映射
+    timeout: float = 60.0                  # 单次 LLM 请求超时（秒）
+    max_retries: int = 2                   # 请求失败重试次数
 
 
 @dataclass
@@ -202,6 +204,8 @@ def validate_config(cfg: Config) -> None:
         _unit_interval(v, path)
 
     _pos_num(cfg.desire.value_decay, "desire.value_decay")          # 数 > 0
+    _pos_num(cfg.llm.timeout, "llm.timeout")
+    _int(cfg.llm.max_retries, "llm.max_retries")
     _pos_num(cfg.expression.ask_timeout, "expression.ask_timeout")
     _pos_num(cfg.expression.chat_ignore_timeout, "expression.chat_ignore_timeout")
     _pos_num(cfg.expression.context_time_gap, "expression.context_time_gap")

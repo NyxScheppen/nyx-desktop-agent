@@ -3,7 +3,7 @@ import aiosqlite
 from nyx.db import Database
 from nyx.types import Annotation, ReadingNote
 
-_NOTE_COLS = "id, book, content, created_at"
+_NOTE_COLS = "id, book, content, created_at, path"
 _ANNOTATION_COLS = "id, target_id, author, content, created_at"
 
 
@@ -17,13 +17,26 @@ class ReadingNoteStore:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def insert(self, note: ReadingNote) -> None:
-        """落一条完整读书笔记。"""
+    async def upsert_by_path(self, note: ReadingNote) -> None:
+        """按 path 去重落笔记：命中则原地更新（保留 note id → 批注仍挂旧 id），
+        未命中则插入。单锁内 SELECT + UPDATE/INSERT 原子完成，避免跨路径同名
+        误删、也避免重读静默删用户批注。"""
         async with self._db.lock:
-            await self._db.conn.execute(
-                f"INSERT INTO reading_note ({_NOTE_COLS}) VALUES (?, ?, ?, ?)",
-                (note.id, note.book, note.content, note.created_at),
+            cursor = await self._db.conn.execute(
+                "SELECT id FROM reading_note WHERE path = ?", (note.path,)
             )
+            row = await cursor.fetchone()
+            if row is not None:
+                await self._db.conn.execute(
+                    "UPDATE reading_note SET book = ?, content = ?, created_at = ? "
+                    "WHERE id = ?",
+                    (note.book, note.content, note.created_at, row["id"]),
+                )
+            else:
+                await self._db.conn.execute(
+                    f"INSERT INTO reading_note ({_NOTE_COLS}) VALUES (?, ?, ?, ?, ?)",
+                    (note.id, note.book, note.content, note.created_at, note.path),
+                )
             await self._db.conn.commit()
 
     async def list_notes(self, limit: int = 50) -> list[ReadingNote]:
@@ -92,6 +105,7 @@ def _row_to_note(row: aiosqlite.Row) -> ReadingNote:
         book=row["book"],
         content=row["content"],
         created_at=row["created_at"],
+        path=row["path"],
         annotation_count=int(row["annotation_count"]),
     )
 

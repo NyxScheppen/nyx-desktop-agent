@@ -42,6 +42,8 @@
 
 from nyx.types import CurrentState, Memory, Message, SelfNarrative, ShortTermDesire
 
+_MIN_OVERLAP_LEN = 4  # 短于此（去空白）的消息禁用零重叠停条件（短确认语不误清历史）
+
 
 def build_system_prompt(
     canon: str,
@@ -99,7 +101,8 @@ def build_backtrack_context(
 ) -> list[Message]:
     """回溯上下文截断（慢通道）：从新到旧累积，命中停条件即止。
 
-    停条件：满 max_len / 相邻消息隔超 time_gap / 与当前消息零字符重叠（十分不相关）。
+    停条件：满 max_len / 相邻消息隔超 time_gap / 与当前消息零字符重叠（十分不相关，
+    短于 _MIN_OVERLAP_LEN 的当前消息禁用该停条件，避免短确认语误清历史）。
     快通道 Nyx 消息跳过该条继续往前（浅层回复不占用上下文，但不断深聊线程）。
     返回按时间升序（oldest-first），对齐 build_user_prompt 的「按时间升序」。
     """
@@ -113,7 +116,10 @@ def build_backtrack_context(
         prev_ts = m.timestamp
         if m.role == "nyx" and m.fast:
             continue
-        if _no_char_overlap(message, m.content):
+        if (
+            len(message.strip()) >= _MIN_OVERLAP_LEN
+            and _no_char_overlap(message, m.content)
+        ):
             break
         out.append(m)
     out.reverse()
@@ -249,7 +255,7 @@ def classify_channel(
     - [ ] `_desires_block`：空欲望 → `[当前欲望]\n无`
     - [ ] `build_user_prompt`：`context=[]` → 原样返回 `message`；`context` 非空 → 含 `[对话历史]`、`用户：` / `Nyx：`（按 role）、`[本次消息]` + `message`
     - [ ] `_memory_block`：`summary=""` 时回退 `content`（`m.summary or m.content`）
-    - [ ] `build_backtrack_context`：空 history → `[]`；满 `max_len` 截断且返回按时间升序（oldest-first）；相邻消息隔超 `time_gap` 即停（更早的不取）；快通道 Nyx 消息（`fast=True`）跳过该条继续往前取更早的用户消息；与当前消息零字符重叠的消息即停（`result == []`）；有字符重叠则继续累积
+    - [ ] `build_backtrack_context`：空 history → `[]`；满 `max_len` 截断且返回按时间升序（oldest-first）；相邻消息隔超 `time_gap` 即停（更早的不取）；快通道 Nyx 消息（`fast=True`）跳过该条继续往前取更早的用户消息；与当前消息零字符重叠的消息即停（`result == []`，但当前消息去空白 < `_MIN_OVERLAP_LEN` 时禁用该停条件、仍累积）；有字符重叠则继续累积
     - [ ] `_no_char_overlap`：无共同字符 → `True`（`"量子"` vs `"天气"`）；有共同字符 → `False`；空白被忽略（`"你 好"` vs `"你好"` → `False`）
   - [ ] **classifier**（`test_classifier.py`）：
     - [ ] `slow_score` ∈ `[0, 1]`（构造极端输入：空消息 + 精力 0 + arousal 1 + 刚慢通道过 → 接近 0；长消息含问句含情感词 + 精力 100 + arousal 0 + 2 小时没慢通道 → 接近 1；`last_slow_at > now`（时钟回拨）→ 仍 ≥ 0）

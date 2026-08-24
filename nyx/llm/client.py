@@ -93,6 +93,8 @@ class LlmClient:
                 model=config.model,
                 api_key=SecretStr(api_key),
                 base_url=base_url,
+                timeout=config.timeout,
+                max_retries=config.max_retries,
             ),
             model_name=config.model,
         )

@@ -37,7 +37,7 @@
 - **场景化记忆记整个回合**：`nyx_think`/`nyx_speak` = 多轮 `"\n".join(...)` 拼接（`create_scene_memory` 的 `str` 契约不变，只是内容是多轮）
 - **MVP 语义**：ask 后回合结束（走 scene_memory + record）；用户回应作为下一条 `USER_MESSAGE` 触发新 reply，round 自然从 0 重算。`waiting_user` 字段保留在 `ReplyState`（对齐 tech-ref §6.1），图内恒 `False`
 - **V2 表达交互闭环**：facade 在 reply 后按 `result["ask"]` 置 `self._waiting_user`（问句已问出、等用户答）；`initiate_chat` 记 `self._pending_chat_desire_id`（搭话已发、等用户回）。tick 心跳（18-api 组合根）直呼 `check_timeouts(now)`：问句超时（`ask_timeout`）→ `memory.record_no_answer` 落一条「用户没回答」的 SHORT_TERM 记忆；搭话超时（`chat_ignore_timeout`）→ `desire.expire`（值立即 +0.3 回灌）。用户任一下条消息（`reply` 入口）即视为回应、清两者待回应态
-- **慢通道工具调用**：`use_tools` 节点（慢通道专属）在 assemble 后问 LLM 是否需查资料，有 `tool_calls` 就逐个执行（`ToolRegistry.call`）并把结果 `json.dumps` 拼进 `tool_outputs`，think/speak 的 system prompt 追加「[工具查询结果]」段；一轮，不做 agentic 循环；工具执行失败降级为失败文案（best-effort，不崩回复）
+- **慢通道工具调用**：`use_tools` 节点（慢通道专属）在 assemble 后问 LLM 是否需查资料，有 `tool_calls` 就逐个执行（`ToolRegistry.call`）并把结果 `json.dumps` 拼进 `tool_outputs`，think/speak 的 system prompt 追加「[工具查询结果]」段；一轮，不做 agentic 循环；单条结果超 `_TOOL_OUTPUT_MAX_CHARS` 截断（尾加 `…`）；工具执行失败降级为失败文案（best-effort，不崩回复）
 - **回溯检测（V2）**：快通道入口朴素取最近 `max_context_len` 条；慢通道 `assemble` 调 `build_backtrack_context` 重截断——从新到旧累积，命中「满 max_len / 相邻隔超 `context_time_gap` / 与当前消息零字符重叠（十分不相关）」即停，快通道 Nyx 消息（`fast=True`）跳过继续往前（浅层回复不占上下文、不断深聊线程）
 - **搭话 `last_chat_at` 归 18-api**：`should_initiate_chat` 是纯函数（判定触发），`initiate_chat` 返回 `bool` 作为「是否真发话」的信号；18-api 组合根据此更新 `last_chat_at`（`since_last_chat` 的来源），facade 不持有搭话状态
 - **明确不做**：`POST /api/chat`（归 18-api）；观察用户在线/忙状态（归 14-activity 的 observe，本 spec 只接收 `online`/`busy` bool）
@@ -218,6 +218,7 @@ _USE_TOOLS_TASK = (
     "本次回复若需要查询资料，就调用相应工具；"
     "若不需要查询，直接回复「不需要」。"
 )
+_TOOL_OUTPUT_MAX_CHARS = 4000  # 单条工具结果注入 prompt 的字符上限（decision，可推翻）
 
 
 def _is_question(text: str) -> bool:
@@ -269,6 +270,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             deps.config.max_context_len,
         )
         memories = await deps.memory.search(state["message"])
+        for m in memories:
+            await deps.memory.record_recall(m.id)   # 慢通道检索命中即记「想起」
         narrative = await deps.inner_life.get_narrative()
         return {"context": context, "memories": memories, "narrative": narrative}
 
@@ -301,6 +304,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             try:
                 result = await deps.tools.call(name, args)
                 text = json.dumps(result, ensure_ascii=False)
+                if len(text) > _TOOL_OUTPUT_MAX_CHARS:
+                    text = text[:_TOOL_OUTPUT_MAX_CHARS] + "…"
             except Exception:  # 工具执行失败不崩回复（best-effort 豁免）
                 text = f"工具 {name} 执行失败"
             outputs.append(f"{name}: {text}")
@@ -635,8 +640,9 @@ class ExpressionFacade:
   - [ ] **facade 集成**（`test_expression_facade.py`，mock LLM 按 `output_type` 返回 fixture，mock bus 记录 `publish`、fake 注入不碰 db；文件名为避免与 `test_memory/test_facade.py` 同 basename 冲突而加前缀）：
     - [ ] `reply` 快通道（classify 因子令 score < threshold）：`llm.complete` 调 2 次（think + speak，各 1 次）、`memory.search` / `memory.create_scene_memory` 未被调、`evaluator.evaluate` 调 2 次、`bus.publish` 收到 `think` + `speak` 各 1 条
     - [ ] `reply` 慢通道非问句（score ≥ threshold，mock speak 恒非问句）：`memory.search` 被调、`create_scene_memory` 被调、`llm.complete` 调 `2 × slow_max_rounds + 1` 次（tool 1 次 + think+speak 各 3 次）、`bus.publish` 收到 `think` 3 条 + `speak` 3 条（**每轮交付**）、`create_scene_memory` 的 `nyx_speak`/`nyx_think` 是 3 轮 `"\n"` 拼接
+    - [ ] **慢通道检索命中记 recall**：fake `memory.search` 返回 2 条命中 → `record_recall` 对每条记忆 id 各调 1 次（`recalled == ["m1", "m2"]`）；返回空 → 不调
     - [ ] `reply` 慢通道问句（第 1 轮 speak 返回 `"你还好吗？"`）：`bus.publish` 收到 `ask`（非 `speak`）且仅 1 条、`create_scene_memory` 仍被调（问句也走场景化记忆）、提前结束（tool 1 次 + think/speak 各 1 次，不循环到满）
-    - [ ] **慢通道工具调用**：fake llm 返回 `tool_calls=[{"name": "local_search", "args": {...}}]` → `tools.call` 被调、结果拼进 think 的 system prompt「[工具查询结果]」段；fake llm 返回空 `tool_calls` → 无该段；工具抛异常 → 降级「工具 X 执行失败」不崩回复
+    - [ ] **慢通道工具调用**：fake llm 返回 `tool_calls=[{"name": "local_search", "args": {...}}]` → `tools.call` 被调、结果拼进 think 的 system prompt「[工具查询结果]」段；大结果（超 `_TOOL_OUTPUT_MAX_CHARS`）→ 注入段被截断（尾带 `…`、越界 sentinel 不出现）；fake llm 返回空 `tool_calls` → 无该段；工具抛异常 → 降级「工具 X 执行失败」不崩回复
     - [ ] **累积式 prompt**：慢通道非问句多轮下，fake llm 记录的第 2 轮 think 调用 user prompt 含第 1 轮的 think 文本与 speak 文本；第 2 轮 speak 调用 user prompt 含第 2 轮 think 文本
     - [ ] **慢通道递进续写**：慢通道非问句多轮下，第 1 轮 speak 的 user prompt 含「第一句话」、不含「继续往下说」；第 2 轮 speak 的 user prompt 含「继续往下说」
     - [ ] **当前消息不重复**（回归）：慢通道下，fake llm 记录的 think/speak 调用里，`[对话历史]` 段不含当前消息文本、`[本次消息]` 段含且仅含一次

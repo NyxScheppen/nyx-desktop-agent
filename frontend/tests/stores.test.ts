@@ -534,8 +534,8 @@ describe("readingNotesStore", () => {
   });
 
   it("remove：DELETE /api/reading-notes/{id} 后从清单摘除", async () => {
-    const n1 = { id: "n1", book: "a", content: "x", created_at: 1, annotation_count: 0 };
-    const n2 = { id: "n2", book: "b", content: "y", created_at: 2, annotation_count: 0 };
+    const n1 = { id: "n1", book: "a", content: "x", created_at: 1, annotation_count: 0, path: "" };
+    const n2 = { id: "n2", book: "b", content: "y", created_at: 2, annotation_count: 0, path: "" };
     useReadingNotesStore.setState({ notes: [n1, n2] });
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ deleted: "n1" }));
     vi.stubGlobal("fetch", fetchMock);

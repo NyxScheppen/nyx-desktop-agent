@@ -14,6 +14,7 @@ const note: ReadingNote = {
   content: "这是笔记正文",
   created_at: 1,
   annotation_count: 0,
+  path: "",
 };
 
 const anno: Annotation = {
@@ -131,5 +132,59 @@ describe("ReadingNotesPanel 读书笔记面板", () => {
         url === "/api/reading-notes/n1" && init?.method === "DELETE",
     );
     expect(delCall).toBeTruthy();
+  });
+
+  it("切换笔记 A→B 丢弃 A 的陈旧批注响应（竞态守卫）", async () => {
+    const noteB: ReadingNote = {
+      id: "n2",
+      book: "红楼梦",
+      content: "B 的正文",
+      created_at: 3,
+      annotation_count: 0,
+      path: "",
+    };
+    const annoA: Annotation = {
+      id: "aA",
+      target_id: "n1",
+      author: "user",
+      content: "A 的批注",
+      created_at: 4,
+    };
+    const annoB: Annotation = {
+      id: "aB",
+      target_id: "n2",
+      author: "user",
+      content: "B 的批注",
+      created_at: 5,
+    };
+
+    // A 的批注手动延迟 resolve，模拟「A 请求晚于 B 返回」的竞态
+    let resolveA!: (v: Response) => void;
+    const deferredA = new Promise<Response>((r) => {
+      resolveA = r;
+    });
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([note, noteB])) // refresh 清单
+      .mockImplementationOnce(() => deferredA) // openNote(A) → getAnnotations(A)，慢
+      .mockResolvedValueOnce(jsonResponse([annoB])); // openNote(B) → getAnnotations(B)，快
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ReadingNotesPanel />);
+    fireEvent.click(await screen.findByText("《三体》")); // 打开 A
+    fireEvent.click(await screen.findByRole("button", { name: "← 返回" })); // 回列表
+    fireEvent.click(await screen.findByText("《红楼梦》")); // 打开 B
+
+    // B 的批注先到并显示
+    expect(await screen.findByText("B 的批注")).toBeInTheDocument();
+    expect(screen.getByText("B 的正文")).toBeInTheDocument();
+
+    // A 的陈旧响应后到，被序号守卫丢弃，界面仍是 B 的批注
+    resolveA(jsonResponse([annoA]));
+    await waitFor(() =>
+      expect(screen.queryByText("A 的批注")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("B 的批注")).toBeInTheDocument();
   });
 });

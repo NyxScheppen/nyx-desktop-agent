@@ -76,6 +76,7 @@ _USE_TOOLS_TASK = (
     "本次回复若需要查询资料，就调用相应工具；"
     "若不需要查询，直接回复「不需要」。"
 )
+_TOOL_OUTPUT_MAX_CHARS = 4000  # 单条工具结果注入 prompt 的字符上限（decision，可推翻）
 
 
 def _is_question(text: str) -> bool:
@@ -127,6 +128,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             deps.config.max_context_len,
         )
         memories = await deps.memory.search(state["message"])
+        for m in memories:
+            await deps.memory.record_recall(m.id)   # 慢通道检索命中即记「想起」
         narrative = await deps.inner_life.get_narrative()
         return {"context": context, "memories": memories, "narrative": narrative}
 
@@ -159,6 +162,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             try:
                 result = await deps.tools.call(name, args)
                 text = json.dumps(result, ensure_ascii=False)
+                if len(text) > _TOOL_OUTPUT_MAX_CHARS:
+                    text = text[:_TOOL_OUTPUT_MAX_CHARS] + "…"
             except Exception:  # 工具执行失败不崩回复（best-effort 豁免）
                 text = f"工具 {name} 执行失败"
             outputs.append(f"{name}: {text}")

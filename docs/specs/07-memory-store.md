@@ -17,7 +17,7 @@
 - [ ] `store.py` 含 `MemoryStore`（`add` / `get` / `list_memories` / `update` / `delete` / `record_recall` / `search_keyword` / `list_edges` / `upsert_edge`）+ `_memory_row` / `_row_to_memory`，与「`memory/store.py`（完整）」段代码逐字一致
 - [ ] 所有 DB 读写都在 `async with self._db.lock` 内；**锁作用域 = 单个 store 方法的 SQL 块，不跨 store 方法嵌套**（`asyncio.Lock` 不可重入，嵌套死锁）
 - [ ] 行↔`Memory` 往返：`aspect` JSON 数组（空 = `"[]"`）、`type` 枚举 `.value`、`recall_count` 整数、`embedding` `list[float] | None`（`None` ↔ SQL `NULL`）
-- [ ] `list_memories` 按 `tag` / `type` 过滤，`freshness DESC, created_at DESC` 排序
+- [ ] `list_memories` 按 `tag` / `type` 过滤，`freshness DESC, created_at DESC` 排序；`limit` 截断（拼 `LIMIT {limit}`，避免无界拉取）
 - [ ] `search_keyword` 用 `LIKE` 匹配 `content` 或 `summary`
 - [ ] `delete` 级联删 `memory_edge`（删边 + 删记忆在**同一锁块**内原子完成）
 - [ ] `upsert_edge` 用 `ON CONFLICT` 更新 `weight`
@@ -86,6 +86,7 @@ class MemoryStore:
         self,
         tag: str | None = None,
         type: MemoryType | None = None,
+        limit: int | None = None,
     ) -> list[Memory]:
         clauses: list[str] = []
         params: list[str] = []
@@ -100,6 +101,8 @@ class MemoryStore:
             f"SELECT {_MEMORY_COLS} FROM memory{where} "
             "ORDER BY freshness DESC, created_at DESC"
         )
+        if limit is not None:
+            sql += f" LIMIT {limit}"
         async with self._db.lock:
             cursor = await self._db.conn.execute(sql, params)
             rows = await cursor.fetchall()
@@ -248,7 +251,7 @@ def _row_to_memory(row: aiosqlite.Row) -> Memory:
   - [ ] **embedding 可空往返**：`add` 一个 `embedding=None` 的 `Memory` → `get` 返回 `embedding is None`（SQL NULL 不是 `"null"` 字符串）
   - [ ] **add 重复 id** → `aiosqlite.IntegrityError`（主键冲突）
   - [ ] **get 未命中** → `None`
-  - [ ] **list_memories 过滤/排序**：造 3 条不同 `tag` / `type` / `freshness` → `tag=` 过滤、`type=` 过滤、`tag+type` 组合、默认全量；排序按 `freshness DESC`（freshness 高的在前）
+  - [ ] **list_memories 过滤/排序/limit**：造 3 条不同 `tag` / `type` / `freshness` → `tag=` 过滤、`type=` 过滤、`tag+type` 组合、默认全量；排序按 `freshness DESC`（freshness 高的在前）；`limit=2` 截断、`limit` 与 `tag` 组合截断
   - [ ] **update**：改 `tag` / `summary` / `freshness` / `type` / `recall_count` / `aspect` / `embedding` → `get` 验证；`id` / `created_at` 不变
   - [ ] **update_many**：改多条（含 `embedding=None` 与 `embedding=[...]`）→ `get` 逐条验证；空列表 → no-op
   - [ ] **delete 级联删边**：`add` 两条 memory + 两条关联它的 `upsert_edge` → `delete` 后 `get=None`、`list_edges` 无残留（其它记忆的边不受影响）

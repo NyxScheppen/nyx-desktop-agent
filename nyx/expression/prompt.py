@@ -5,6 +5,8 @@
 
 from nyx.types import CurrentState, Memory, Message, SelfNarrative, ShortTermDesire
 
+_MIN_OVERLAP_LEN = 4  # 短于此（去空白）的消息禁用零重叠停条件（短确认语不误清历史）
+
 
 def build_system_prompt(
     canon: str,
@@ -76,7 +78,10 @@ def build_backtrack_context(
         prev_ts = m.timestamp
         if m.role == "nyx" and m.fast:
             continue
-        if _no_char_overlap(message, m.content):
+        if (
+            len(message.strip()) >= _MIN_OVERLAP_LEN
+            and _no_char_overlap(message, m.content)
+        ):
             break
         out.append(m)
     out.reverse()

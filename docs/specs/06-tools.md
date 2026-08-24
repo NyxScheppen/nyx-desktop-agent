@@ -27,7 +27,7 @@
 ## 技术方案
 
 - **新文件**：`nyx/tools/registry.py`、`nyx/tools/local_search.py`、`nyx/tools/web_search.py`、`nyx/tools/file_io.py`（无 Facade、无 API、无数据变更）
-- **库**：`duckduckgo_search`（新增，`DDGS` 无 key 搜索）。**版本敏感契约以锁定版本为准**：`DDGS` 支持 `with` 上下文管理器、`text(query, max_results=5)` 的参数名 `max_results`、返回字段 `title` / `href` / `body`——升级依赖须重跑本 spec 测试（同 03-llm 的 usage_metadata 锁定约定）；其余为标准库（`asyncio` / `pathlib` / `os` / `string`）
+- **库**：`duckduckgo_search`（新增，`DDGS` 无 key 搜索）。**版本敏感契约以锁定版本为准**：`DDGS` 支持 `with` 上下文管理器、构造参数 `timeout`（超时，秒）、`text(query, max_results=5)` 的参数名 `max_results`、返回字段 `title` / `href` / `body`——升级依赖须重跑本 spec 测试（同 03-llm 的 usage_metadata 锁定约定）；其余为标准库（`asyncio` / `pathlib` / `os` / `string`）
 - **公开面**：`from nyx.tools.registry import ToolRegistry`；`from nyx.tools.local_search import build_local_search_tool, search_local`；`from nyx.tools.web_search import build_web_search_tool`；`from nyx.tools.file_io import build_file_io_tool, file_io`（不加 `__all__`）
 - **handler 调用约定**：`call(name, args)` 用 `await handler(**args)` 把 `args` dict 解包为关键字实参；`Tool.schema` 的键 = handler 形参名（如 `{query}` → `handler(query=...)`）。参数不匹配时 `TypeError` 上抛（handler 签名兜底，不额外校验 schema）
 - **不校验 args 与 schema**：不引入 JSON schema validator（新依赖 + 复杂度）；schema 是给 LLM 的契约，handler 签名是给运行时的契约
@@ -172,8 +172,12 @@ from nyx.types import Tool
 
 
 def _search_web_sync(query: str) -> list[dict[str, str]]:
-    with DDGS() as ddgs:
-        raw = ddgs.text(query, max_results=5)
+    try:
+        with DDGS(timeout=10) as ddgs:
+            raw = ddgs.text(query, max_results=5)
+    except Exception:
+        # best-effort：联网失败/超时返回空，不崩回复（use_tools 层另有兜底）
+        return []
     return [{"title": r["title"], "url": r["href"], "snippet": r["body"]} for r in raw]
 
 
@@ -290,6 +294,7 @@ def build_file_io_tool(write_root: Path = DEFAULT_WRITE_ROOT) -> Tool:
     - [ ] `full_disk_roots()`：非空且每项 `.exists()`；POSIX 下 `== [Path("/")]`
   - [ ] **web_search**（`test_web_search.py`，monkeypatch `DDGS` 为 fake，返回预设结果）：
     - [ ] `build_web_search_tool().handler("x")` → `[{title, url, snippet}]`（fake 的字段映射正确）
+    - [ ] fake 抛异常 → 返回 `[]`（best-effort 不冒泡）
     - [ ] 不触真实网络
   - [ ] **file_io**（`test_file_io.py`，`tmp_path` 作 `write_root`）：
     - [ ] `read`：写一个 tmp 文件 → `file_io("read", path)` 返回 `content`

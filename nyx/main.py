@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from nyx.activity.facade import ActivityFacade
@@ -402,8 +402,10 @@ def build_app(app: _App) -> FastAPI:
         return await app.inner_life.get_narrative()
 
     @fast.post("/api/export")
-    async def api_export(payload: _ExportPayload) -> str:
-        return await app.memory.export(payload.format)
+    async def api_export(payload: _ExportPayload) -> Response:
+        content = await app.memory.export(payload.format)
+        media_type = "application/json" if payload.format == "json" else "text/markdown"
+        return Response(content=content, media_type=media_type)
 
     @fast.post("/api/upload")
     async def api_upload(file: UploadFile = File(...)) -> dict[str, str]:

@@ -182,6 +182,14 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX idx_annotation_target ON annotation(target_id)",
         ],
     ),
+    (
+        5,
+        [
+            # 读书笔记去重键：读物绝对路径（book 仅 filename 展示；同路径重读原地
+            # 更新保留批注，跨路径同名书互不误删）
+            "ALTER TABLE reading_note ADD COLUMN path TEXT NOT NULL DEFAULT ''",
+        ],
+    ),
 ]
 
 

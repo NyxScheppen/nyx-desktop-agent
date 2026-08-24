@@ -40,6 +40,10 @@ def test_validate_config_accepts_defaults() -> None:
         ("vision", "interval_seconds", "60"),         # 错类型 str
         ("vision", "enabled", "yes"),                 # 错类型 str 当 bool
         ("vision", "provider", ""),                   # 空 str
+        ("llm", "timeout", -1.0),                     # 非正
+        ("llm", "timeout", "60"),                     # 错类型 str
+        ("llm", "max_retries", "2"),                  # 错类型 str
+        ("llm", "max_retries", True),                 # 错类型 bool
     ],
 )
 def test_validate_config_rejects_invalid(

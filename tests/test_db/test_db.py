@@ -43,6 +43,7 @@ NULLABLE_COLUMNS = {
     ("activity", "ended_at"),
     ("token_usage", "correlation_id"),
     ("memory", "embedding"),
+    ("memory", "content_hash"),   # v6 迁移，旧行 NULL（不去重）
 }
 
 
@@ -86,7 +87,7 @@ async def test_migrate_creates_all_tables() -> None:
     assert len(names) == 17
 
 
-async def test_migrate_creates_four_indexes() -> None:
+async def test_migrate_creates_five_indexes() -> None:
     conn = await _migrated_conn()
     try:
         cursor = await conn.execute(
@@ -100,6 +101,7 @@ async def test_migrate_creates_four_indexes() -> None:
         "idx_memory_type",
         "idx_event_log_corr",
         "idx_annotation_target",
+        "idx_memory_content_hash",
     }
 
 

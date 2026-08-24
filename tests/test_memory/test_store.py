@@ -3,7 +3,7 @@ import pytest
 
 from nyx.db import connect
 from nyx.enums import MemoryType
-from nyx.memory.store import MemoryStore
+from nyx.memory.store import MemoryStore, hash_content
 from nyx.types import Memory, MemoryEdge
 
 
@@ -273,5 +273,37 @@ async def test_upsert_edge_unknown_id_raises() -> None:
     try:
         with pytest.raises(aiosqlite.IntegrityError):
             await store.upsert_edge("ghost", "also_ghost", 1.0)
+    finally:
+        await db.conn.close()
+
+
+def test_hash_content_deterministic() -> None:
+    assert hash_content("同一句话") == hash_content("同一句话")
+    assert hash_content("同一句话") != hash_content("另一句")
+    assert len(hash_content("x")) == 64   # SHA-256 hex
+
+
+async def test_find_by_content_hit_and_miss() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("m1", content="同一句话"))
+        found = await store.find_by_content("同一句话")
+        assert found is not None and found.id == "m1"
+        assert await store.find_by_content("别的内容") is None
+    finally:
+        await db.conn.close()
+
+
+async def test_strengthen() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("m1", recall_count=0, freshness=0.3))
+        await store.strengthen("m1")
+        got = await store.get("m1")
+        assert got is not None
+        assert got.recall_count == 1
+        assert got.freshness == 1.0
     finally:
         await db.conn.close()

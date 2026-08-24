@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import aiosqlite
@@ -10,6 +11,13 @@ _MEMORY_COLS = (
     "id, created_at, content, tag, summary, freshness, "
     "type, recall_count, aspect, embedding"
 )
+# INSERT 用：比 SELECT 多 content_hash（store 派生，Memory 不承载）
+_MEMORY_INSERT_COLS = _MEMORY_COLS + ", content_hash"
+
+
+def hash_content(content: str) -> str:
+    """content → SHA-256 hex 精确哈希（去重键）。纯函数。"""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 class MemoryStore:
@@ -26,9 +34,9 @@ class MemoryStore:
     async def add(self, memory: Memory) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
-                f"INSERT INTO memory ({_MEMORY_COLS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                _memory_row(memory),
+                f"INSERT INTO memory ({_MEMORY_INSERT_COLS}) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*_memory_row(memory), hash_content(memory.content)),
             )
             await self._db.conn.commit()
 
@@ -36,6 +44,16 @@ class MemoryStore:
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 f"SELECT {_MEMORY_COLS} FROM memory WHERE id = ?", (memory_id,),
+            )
+            row = await cursor.fetchone()
+        return _row_to_memory(row) if row is not None else None
+
+    async def find_by_content(self, content: str) -> Memory | None:
+        """按 content 精确哈希查重：命中返回已有记忆，未命中 None。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_MEMORY_COLS} FROM memory WHERE content_hash = ?",
+                (hash_content(content),),
             )
             row = await cursor.fetchone()
         return _row_to_memory(row) if row is not None else None
@@ -120,6 +138,16 @@ class MemoryStore:
             promoted = cursor.rowcount == 1
             await self._db.conn.commit()
         return promoted
+
+    async def strengthen(self, memory_id: str) -> None:
+        """重复写入合并强化：recall_count+1 且 freshness 重置为最新（不升型）。"""
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "UPDATE memory SET recall_count = recall_count + 1, "
+                "freshness = 1.0 WHERE id = ?",
+                (memory_id,),
+            )
+            await self._db.conn.commit()
 
     async def search_keyword(self, query: str) -> list[Memory]:
         pattern = f"%{_escape_like(query)}%"

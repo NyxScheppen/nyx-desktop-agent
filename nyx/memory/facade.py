@@ -32,6 +32,7 @@ _CONTRADICTION_SYSTEM = (
 _EDGE_TOP_K = 3
 _RECALL_TOP_K = 5
 _CONTRADICTION_SIM_THRESHOLD = 0.6
+_DEDUP_SIM_THRESHOLD = 0.95
 _CONTENT_PREVIEW_CHARS = 60
 _NEGATION_WORDS = ("不", "没", "别", "讨厌", "恨", "拒绝", "否认", "放弃", "再也不")
 
@@ -228,7 +229,8 @@ class MemoryFacade:
 
     async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
         """慢通道场景化记忆：LLM 产出 content/tag/summary
-        → 入短期 → 建边 → 门控矛盾检测 → 淘汰。"""
+        → 两层去重（命中合并强化，不新建）→ 入短期 → 建边 → 门控矛盾检测 → 淘汰。
+        去重命中时仍返回未入库的 memory（调用方丢弃返回值，无害）。"""
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _SCENE_SYSTEM},
@@ -343,15 +345,32 @@ class MemoryFacade:
         )
         await self._persist_memory(memory, correlation_id)
 
-    async def _persist_memory(self, memory: Memory, correlation_id: str) -> None:
-        """已构建 Memory 的共用入库尾段：补 embed → add → 建边 → 门控矛盾检测
-        → 新鲜度衰减/淘汰 → 发 MEMORY_CREATED。场景/活动/画像记忆三者复用。"""
+    async def _persist_memory(
+        self, memory: Memory, correlation_id: str
+    ) -> Memory | None:
+        """已构建 Memory 的共用入库尾段，带两层去重：
+
+        1) 精确去重：content 完全相同（哈希命中）→ 合并强化旧记忆，不新建；
+        2) 语义去重：embedding 余弦 top-1 ≥ 阈值 → 合并强化最相似旧记忆，不新建。
+
+        命中返回 None（无新记忆），否则补 embed → add → 建边 → 门控矛盾检测
+        → 新鲜度衰减/淘汰 → 发 MEMORY_CREATED，返回新记忆。场景/活动/画像/
+        知识记忆复用。"""
+        existing = await self._store.find_by_content(memory.content)
+        if existing is not None:
+            await self._store.strengthen(existing.id)
+            return None
         if self._embed is not None and memory.embedding is None:
             memory.embedding = await self._embed(memory.content)
-        await self._store.add(memory)
         scored: list[tuple[float, Memory]] | None = None
         if memory.embedding is not None:
-            scored = await self._similar(memory.embedding, memory.id)
+            # add 前全表余弦排序（新记忆尚未入库，天然 exclude 自己），
+            # 语义查重与建边/矛盾共用同一份 scored，不多扫一次全表。
+            scored = await self._similar(memory.embedding, None)
+            if scored and scored[0][0] >= _DEDUP_SIM_THRESHOLD:
+                await self._store.strengthen(scored[0][1].id)
+                return None
+        await self._store.add(memory)
         await self._build_edges(memory, scored)
         await self._detect_contradiction(memory, scored, correlation_id)
         await self._decay_and_evict(time.time())
@@ -360,6 +379,7 @@ class MemoryFacade:
                 EventType.MEMORY_CREATED, {"memory_id": memory.id}, correlation_id
             )
         )
+        return memory
 
     async def search(self, query: str) -> list[Memory]:
         return await self._retrieval.search(query)

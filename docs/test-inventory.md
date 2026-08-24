@@ -83,10 +83,10 @@
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
 | `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 16 张业务表 + `schema_version`，共 17 张 |
-| `test_migrate_creates_four_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_annotation_target` 四个 |
+| `test_migrate_creates_five_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_annotation_target` / `idx_memory_content_hash` 五个 |
 | `test_migrate_sets_version_to_max` | 功能正确 | `schema_version` 单行 = `_MIGRATIONS` 最高版本 |
 | `test_migrate_not_null_alignment` | 边界鲁棒 | 6 列 `notnull=1`（`memory.aspect` / `long_term_desire.linked_values` / `activity.progress` / `event_log.content` / `event_log.correlation_id` / `eval_report.correlation_id`） |
-| `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `token_usage.correlation_id` / `memory.embedding`） |
+| `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `token_usage.correlation_id` / `memory.embedding` / `memory.content_hash`） |
 | `test_migrate_idempotent` | 回归保护 | 连跑两次不报错，表数不变、版本不变 |
 | `test_migrate_version_gating` | 功能正确 | `monkeypatch` 追加「下一版本」后只套该版本，版本=下一版本，旧版本不重复建（动态取 max+1，不再硬编码 v3） |
 | `test_migrate_atomic_rollback` | 边界鲁棒 | 迁移含非法 SQL → 抛 `aiosqlite.Error`；`ok` 表回滚不存在；版本仍为 0 |
@@ -96,7 +96,7 @@
 | `test_default_db_path_constant` | 功能正确 | `DEFAULT_DB_PATH == "nyx.db"` |
 | `test_connect_closes_conn_on_migrate_failure` | 边界鲁棒 | 迁移失败 → `connect` 抛异常且连接被 `close`（spy 记录），不泄漏 |
 
-**功能阶段**：04-db 实现时编写；`material` 表（v2 迁移）于「读书分块读」轮追加——`BUSINESS_TABLES` 补 `material`、表数 14→15、版本门控用例由 v2 改 v3（原 v2 被 `material` 占用）；v3 迁移（`material.note_fragments` + `short_term_desire.goal_progress` 两列）于「活动填实」轮追加——`test_migrate_version_gating` 改为动态取 max+1 不再硬编码版本号；v4 迁移（`reading_note` + `annotation` 两表 + `idx_annotation_target`）于「读书/创作借鉴」轮追加——`BUSINESS_TABLES` 补 `reading_note`/`annotation`、表数 15→16/总 17、`test_migrate_creates_three_indexes` 改名 `test_migrate_creates_four_indexes` 并补第 4 个索引。
+**功能阶段**：04-db 实现时编写；`material` 表（v2 迁移）于「读书分块读」轮追加——`BUSINESS_TABLES` 补 `material`、表数 14→15、版本门控用例由 v2 改 v3（原 v2 被 `material` 占用）；v3 迁移（`material.note_fragments` + `short_term_desire.goal_progress` 两列）于「活动填实」轮追加——`test_migrate_version_gating` 改为动态取 max+1 不再硬编码版本号；v4 迁移（`reading_note` + `annotation` 两表 + `idx_annotation_target`）于「读书/创作借鉴」轮追加——`BUSINESS_TABLES` 补 `reading_note`/`annotation`、表数 15→16/总 17、`test_migrate_creates_three_indexes` 改名 `test_migrate_creates_four_indexes` 并补第 4 个索引；v6 迁移（`memory.content_hash` + `idx_memory_content_hash`）于「记忆去重」轮追加——`test_migrate_creates_four_indexes` 改名 `test_migrate_creates_five_indexes` 并补第 5 个索引、`NULLABLE_COLUMNS` 补 `memory.content_hash`。
 
 ## 05-event（事件总线 + 路由）
 
@@ -182,8 +182,11 @@
 | `test_search_keyword_escapes_wildcards` | 边界鲁棒 | `%` / `_` 作字面量匹配（`ESCAPE '\'` 转义），不误命中通配符匹配 |
 | `test_list_edges_and_upsert` | 功能正确 | `upsert_edge` 新建 + 同键重复 `ON CONFLICT` 改 `weight` 不重复建行 |
 | `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |
+| `test_hash_content_deterministic` | 功能正确 | `hash_content` 同 content 同 hash、不同 content 不同 hash、SHA-256 hex 长度 64（纯函数） |
+| `test_find_by_content_hit_and_miss` | 功能正确 | `add` 后按原 content `find_by_content` 命中返回 `Memory`（id 一致）、不同 content 返回 `None` |
+| `test_strengthen` | 功能正确 | `add`（`recall_count=0, freshness=0.3`）→ `strengthen` → `recall_count==1` 且 `freshness==1.0` |
 
-**功能阶段**：07-memory-store 实现时编写；`test_record_recall_atomic` 于 09 评审修复阶段重写（中3：加一+条件升型原子化进 store 单锁）；`test_update_many` / `test_delete_many` 于第五轮 review 追加（批量写原语，衰减/淘汰 N 次 commit → 2 次）；`test_list_memories_limit` 于「代码评审修复（5 findings）」轮追加（`list_memories` 加 `limit` 截断，防无界拉取）。
+**功能阶段**：07-memory-store 实现时编写；`test_record_recall_atomic` 于 09 评审修复阶段重写（中3：加一+条件升型原子化进 store 单锁）；`test_update_many` / `test_delete_many` 于第五轮 review 追加（批量写原语，衰减/淘汰 N 次 commit → 2 次）；`test_list_memories_limit` 于「代码评审修复（5 findings）」轮追加（`list_memories` 加 `limit` 截断，防无界拉取）；`test_hash_content_deterministic` / `test_find_by_content_hit_and_miss` / `test_strengthen` 于「记忆去重」轮追加（精确去重：content 哈希纯函数 + 按哈希查重 + 合并强化原语）。
 
 ## 08-memory-retrieval（三层检索 + 联想图）
 
@@ -251,6 +254,10 @@
 | `test_eviction` | 功能正确 | `short_term_capacity=1` → 旧记忆（freshness 更低）被挤掉，只剩新的一条 |
 | `test_eviction_tie_break_oldest_first` | 边界鲁棒 | 新鲜度相等（`freshness_decay=0.0`）时按 `created_at` 升序挤掉最旧而非最新，`short_term_capacity=2` 造 3 条 |
 | `test_decay_writeback` | 功能正确 | 1 天间隔两次创建 → 旧记忆 freshness 衰减（`<1.0`） |
+| `test_dedup_exact_same_content` | 功能正确 | 同 content 二次 `create_scene_memory` → 库内 1 条、`recall_count==1`、仅 1 个 `memory_created`（精确去重合并强化） |
+| `test_dedup_semantic_merge` | 功能正确 | 新记忆与旧记忆 embedding 余弦=1.0 → 合并到旧记忆（`recall_count+1`）、不新增、无 `memory_created` |
+| `test_dedup_semantic_below_threshold` | 功能正确 | 余弦 < 0.95 → 正常新建入库（`list_memories` 2 条、发 1 个 `memory_created`） |
+| `test_dedup_embed_none_skips_semantic` | 边界鲁棒 | `embed=None` 时语义去重跳过（旧记忆带 embedding 也不比较），仅精确去重生效 |
 | `test_search_delegates_to_retrieval` | 功能正确 | `search` 委托 fake `MemoryRetrieval`（返回预设 + 记录 query） |
 | `test_list_memories_delegates` | 功能正确 | `list_memories(type=)` 委托真 store 过滤 |
 | `test_record_recall_below_threshold` | 功能正确 | 未达阈值 → recall_count+1、type 仍 SHORT_TERM、无 `memory_promoted` |
@@ -274,7 +281,7 @@
 | `test_record_no_answer` | 功能正确 | 问句未答 → 写一条 `SHORT_TERM`/`tag="interaction"`/summary「用户没有回答我的提问」、content 含问句、无 LLM 调用、发布 `memory_created`（correlation 透传） |
 | `test_remember_knowledge` | 功能正确 | 3 项入参 → 落 2 条 `LONG_TERM`/`tag="knowledge"` 记忆（空 content 项跳过）；summary 回退 content；无 LLM 调用；发布 2 条 `memory_created`（correlation 透传） |
 
-**功能阶段**：09-memory-facade 实现时编写；`test_contradiction_parse_failure_no_crash` / `test_eviction_tie_break_oldest_first` / `test_record_recall_concurrent_single_promote` 于 09 评审修复阶段编写（高1：矛盾解析失败不再半提交；中4：淘汰平局按 created_at 升序；中3：并发 record_recall 只升一次）；`test_join_list` / `test_activity_memory_fields_*` / `test_remember_activity_*` 于「活动记忆」实现阶段编写（活动 result 确定性落记忆，含矛盾检测参与）；`test_remember_user_profile_fields` 于「活动填实（画像记忆）」轮追加（`remember_user_profile` 复用入库尾段、type=LONG_TERM/tag=user）；`test_record_no_answer` 于「表达交互闭环」轮追加（`record_no_answer` 确定性落「用户没回答」SHORT_TERM 记忆、复用入库尾段、无 LLM）；`test_remember_knowledge` 于「读书/创作借鉴」轮追加（`remember_knowledge` 确定性落 `tag="knowledge"` 长期记忆、空 content 跳过、无 LLM）。
+**功能阶段**：09-memory-facade 实现时编写；`test_contradiction_parse_failure_no_crash` / `test_eviction_tie_break_oldest_first` / `test_record_recall_concurrent_single_promote` 于 09 评审修复阶段编写（高1：矛盾解析失败不再半提交；中4：淘汰平局按 created_at 升序；中3：并发 record_recall 只升一次）；`test_join_list` / `test_activity_memory_fields_*` / `test_remember_activity_*` 于「活动记忆」实现阶段编写（活动 result 确定性落记忆，含矛盾检测参与）；`test_remember_user_profile_fields` 于「活动填实（画像记忆）」轮追加（`remember_user_profile` 复用入库尾段、type=LONG_TERM/tag=user）；`test_record_no_answer` 于「表达交互闭环」轮追加（`record_no_answer` 确定性落「用户没回答」SHORT_TERM 记忆、复用入库尾段、无 LLM）；`test_remember_knowledge` 于「读书/创作借鉴」轮追加（`remember_knowledge` 确定性落 `tag="knowledge"` 长期记忆、空 content 跳过、无 LLM）；`test_dedup_exact_same_content` / `test_dedup_semantic_merge` / `test_dedup_semantic_below_threshold` / `test_dedup_embed_none_skips_semantic` 于「记忆去重」轮追加（`_persist_memory` 两层去重）；同轮把受影响的现有测试改到去重阈值外——`test_eviction` / `test_eviction_tie_break_oldest_first` / `test_decay_writeback` 改每次写不同 content（避开精确去重）、`test_contradiction_*` / `test_build_edges` / `test_remember_activity_contradiction` 把旧记忆 embedding `[1.0,0.0]` 改 `[0.8,0.6]`（余弦 0.8 ∈ [0.6,0.95)，仍触发矛盾/建边但不触发语义去重）。
 
 ## 10-desire-value（欲望值机制）
 

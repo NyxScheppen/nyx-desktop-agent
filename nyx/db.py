@@ -190,6 +190,14 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE reading_note ADD COLUMN path TEXT NOT NULL DEFAULT ''",
         ],
     ),
+    (
+        6,
+        [
+            # 记忆去重：content 精确哈希（store 派生，非 Memory 字段；旧行 NULL 不去重）
+            "ALTER TABLE memory ADD COLUMN content_hash TEXT",
+            "CREATE INDEX idx_memory_content_hash ON memory(content_hash)",
+        ],
+    ),
 ]
 
 

@@ -33,9 +33,12 @@ from nyx.memory.retrieval import EmbedFn, MemoryRetrieval
 from nyx.memory.store import MemoryStore
 from nyx.types import Event, LLMOutput, Memory
 
-_SCENE_JSON = json.dumps(
-    {"content": "用户喜欢猫", "tag": "cat", "summary": "喜欢猫"}
-)
+
+def _scene(content: str) -> str:
+    return json.dumps({"content": content, "tag": "cat", "summary": "喜欢猫"})
+
+
+_SCENE_JSON = _scene("用户喜欢猫")
 _NEG_SCENE_JSON = json.dumps(
     {"content": "我不喜欢猫", "tag": "cat", "summary": "不喜欢猫"}
 )
@@ -353,7 +356,7 @@ async def test_contradiction_gating_under_threshold() -> None:
 
 async def test_contradiction_detected() -> None:
     store, bus, database = await _new_stack()
-    await store.add(_mem("old-1", [1.0, 0.0]))
+    await store.add(_mem("old-1", [0.8, 0.6]))
     llm = _FakeLlm({
         "scene_memory": _SCENE_JSON,
         "contradiction": json.dumps({"conflicts_with": "old-1"}),
@@ -377,7 +380,7 @@ async def test_contradiction_detected() -> None:
 
 async def test_contradiction_null_no_reflection() -> None:
     store, bus, database = await _new_stack()
-    await store.add(_mem("old-1", [1.0, 0.0]))
+    await store.add(_mem("old-1", [0.8, 0.6]))
     llm = _FakeLlm({
         "scene_memory": _SCENE_JSON,
         "contradiction": json.dumps({"conflicts_with": None}),
@@ -397,7 +400,7 @@ async def test_contradiction_null_no_reflection() -> None:
 async def test_contradiction_recall_top_k() -> None:
     store, bus, database = await _new_stack()
     for i in range(6):
-        await store.add(_mem(f"old-{i}", [1.0, 0.0]))
+        await store.add(_mem(f"old-{i}", [0.8, 0.6]))
     llm = _FakeLlm({
         "scene_memory": _SCENE_JSON,
         "contradiction": json.dumps({"conflicts_with": None}),
@@ -414,7 +417,7 @@ async def test_contradiction_recall_top_k() -> None:
 
 async def test_contradiction_prompt_negation_hint() -> None:
     store, bus, database = await _new_stack()
-    await store.add(_mem("old-1", [1.0, 0.0]))
+    await store.add(_mem("old-1", [0.8, 0.6]))
     llm = _FakeLlm({
         "scene_memory": _NEG_SCENE_JSON,   # content 含「不」
         "contradiction": json.dumps({"conflicts_with": None}),
@@ -431,7 +434,7 @@ async def test_contradiction_prompt_negation_hint() -> None:
 
 async def test_contradiction_parse_failure_no_crash() -> None:
     store, bus, database = await _new_stack()
-    await store.add(_mem("old-1", [1.0, 0.0]))
+    await store.add(_mem("old-1", [0.8, 0.6]))
     llm = _FakeLlm({
         "scene_memory": _SCENE_JSON,
         "contradiction": "not-json{{{",   # 解析失败
@@ -453,7 +456,7 @@ async def test_contradiction_parse_failure_no_crash() -> None:
 
 async def test_build_edges() -> None:
     store, bus, database = await _new_stack()
-    await store.add(_mem("old-1", [1.0, 0.0]))
+    await store.add(_mem("old-1", [0.8, 0.6]))
     llm = _FakeLlm()
     evaluator = _FakeEvaluator()
     facade = _make_facade(store, bus, llm, evaluator, embed=_embed([1.0, 0.0]))
@@ -478,9 +481,11 @@ async def test_eviction(monkeypatch: pytest.MonkeyPatch) -> None:
     try:
         t0 = 1_000_000.0
         monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0)
+        llm._responses["scene_memory"] = _scene("用户喜欢猫1")
         async with _running(bus):
             mem1 = await facade.create_scene_memory(_ctx())
         monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0 + 86400.0)
+        llm._responses["scene_memory"] = _scene("用户喜欢猫2")
         async with _running(bus):
             mem2 = await facade.create_scene_memory(_ctx())
         assert await store.get(mem1.id) is None     # 旧记忆被挤掉
@@ -499,12 +504,15 @@ async def test_eviction_tie_break_oldest_first(monkeypatch: pytest.MonkeyPatch) 
     try:
         t0 = 1_000_000.0
         monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0)
+        llm._responses["scene_memory"] = _scene("用户喜欢猫1")
         async with _running(bus):
             oldest = await facade.create_scene_memory(_ctx())
         monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0 + 86400.0)
+        llm._responses["scene_memory"] = _scene("用户喜欢猫2")
         async with _running(bus):
             middle = await facade.create_scene_memory(_ctx())
         monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0 + 2 * 86400.0)
+        llm._responses["scene_memory"] = _scene("用户喜欢猫3")
         async with _running(bus):
             newest = await facade.create_scene_memory(_ctx())
         # 新鲜度相等（decay=0.0）→ 平局按 created_at 升序，挤掉最旧的而非最新
@@ -524,14 +532,93 @@ async def test_decay_writeback(monkeypatch: pytest.MonkeyPatch) -> None:
     try:
         t0 = 1_000_000.0
         monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0)
+        llm._responses["scene_memory"] = _scene("用户喜欢猫1")
         async with _running(bus):
             mem1 = await facade.create_scene_memory(_ctx())
         monkeypatch.setattr("nyx.memory.facade.time.time", lambda: t0 + 86400.0)
+        llm._responses["scene_memory"] = _scene("用户喜欢猫2")
         async with _running(bus):
             await facade.create_scene_memory(_ctx())
         decayed = await store.get(mem1.id)
         assert decayed is not None
         assert decayed.freshness < 1.0   # 衰减回写
+    finally:
+        await database.conn.close()
+
+
+# ---- 去重 ----
+# _persist_memory 两层去重：精确（content 哈希）→ 语义（embedding 余弦 ≥ 0.95）。
+# 命中合并强化（recall_count+1、freshness 重置），不新建行、不发 MEMORY_CREATED。
+
+
+async def test_dedup_exact_same_content() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)   # embed=None，仅精确去重
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.create_scene_memory(_ctx())
+            await facade.create_scene_memory(_ctx())     # 同 content 二次写入
+        memories = await facade.list_memories()
+        assert len(memories) == 1
+        assert memories[0].recall_count == 1             # 合并强化
+        assert memories[0].content == "用户喜欢猫"
+        [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
+        assert created.content["memory_id"] == memories[0].id
+    finally:
+        await database.conn.close()
+
+
+async def test_dedup_semantic_merge() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [1.0, 0.0]))
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator, embed=_embed([1.0, 0.0]))
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.create_scene_memory(_ctx())   # 与 old-1 cos=1.0 → 语义命中
+        memories = await facade.list_memories()
+        assert len(memories) == 1
+        assert memories[0].id == "old-1"
+        assert memories[0].recall_count == 1
+        assert [e for e in events if e.type is EventType.MEMORY_CREATED] == []
+    finally:
+        await database.conn.close()
+
+
+async def test_dedup_semantic_below_threshold() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [1.0, 0.0]))
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator, embed=_embed([0.0, 1.0]))
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            memory = await facade.create_scene_memory(_ctx())   # cos=0.0 < 0.95
+        memories = await facade.list_memories()
+        assert len(memories) == 2                     # 不合并，正常新建
+        assert memory.content == "用户喜欢猫"
+        assert len([e for e in events if e.type is EventType.MEMORY_CREATED]) == 1
+    finally:
+        await database.conn.close()
+
+
+async def test_dedup_embed_none_skips_semantic() -> None:
+    """embed 禁用：即使库里旧记忆带 embedding，也跳过语义去重（只精确去重）。"""
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [1.0, 0.0]))
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)   # embed=None
+    try:
+        async with _running(bus):
+            await facade.create_scene_memory(_ctx())   # 新记忆无 embedding → 无语义比较
+        assert len(await facade.list_memories()) == 2
     finally:
         await database.conn.close()
 
@@ -792,7 +879,7 @@ async def test_remember_activity_skips_empty_or_other_type() -> None:
 
 async def test_remember_activity_contradiction() -> None:
     store, bus, database = await _new_stack()
-    await store.add(_mem("old-1", [1.0, 0.0]))
+    await store.add(_mem("old-1", [0.8, 0.6]))
     llm = _FakeLlm({"contradiction": json.dumps({"conflicts_with": "old-1"})})
     evaluator = _FakeEvaluator()
     facade = _make_facade(store, bus, llm, evaluator, embed=_embed([1.0, 0.0]))

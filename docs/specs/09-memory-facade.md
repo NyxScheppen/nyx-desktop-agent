@@ -18,8 +18,9 @@
 - [ ] `facade.py` 含 `MemoryFacade` + `decay_freshness` / `_parse_scene` / `_build_scene_prompt` / `_has_negation` / `_content_preview` / `_build_contradiction_prompt` / `_parse_contradiction` / `_join_list` / `_activity_memory_fields` / `_memory_to_dict` / `_memory_to_markdown`，与「`memory/facade.py`（完整）」段代码逐字一致
 - [ ] 六个公开方法签名与 tech-ref §5 逐字一致：`create_scene_memory(reply_context: dict[str, str]) -> Memory` / `remember_activity(event: Event) -> None` / `search(query) -> list[Memory]` / `record_recall(memory_id) -> None` / `list_memories(tag, type, limit) -> list[Memory]` / `export(fmt) -> str`
 - [ ] `create_scene_memory`：LLM 调用 1（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）产出三样 → 入短期（`freshness=1.0`）→ 算 embedding → 建边 → 矛盾检测（门控，可能调用 2）→ 命中矛盾发布 `reflection` → 衰减+淘汰 → 发布 `memory_created` → 返回 `Memory`
-- [ ] `remember_activity(event)`：读 `event.content["type"]`/`["result"]` 确定性映射（reading→note/book、creation→content/title、free_exploration→notes/findings，tag=活动类型值）；读书/创作/探索三类有产出才写，其余（rest/observe_user/idle_reflection、空 result）跳过；走 embed→入短期→建边→门控矛盾检测→淘汰→发布 `memory_created` 同一条管线，**无 LLM 调用**（除门控触发的矛盾判断）
+- [ ] `remember_activity(event)`：读 `event.content["type"]`/`["result"]` 确定性映射（reading→note/book、creation→content/title、free_exploration→notes/findings，tag=活动类型值）；读书/创作/探索三类有产出才写，rest/idle_reflection 或空 result 跳过；`observe_user` 走 `_sediment_observation` 画像沉淀分支（presence/window_title 相对上次变化才写 tag='user' 长期记忆）；复用 `_persist_memory` 入库尾段，**无 LLM 调用**（除门控触发的矛盾判断）
 - [ ] `remember_knowledge(items, correlation_id)`：读书提取的客观知识点入长期记忆（`tag="knowledge"`、`type=LONG_TERM`、无 LLM、确定性拼好）；items 每项 `{topic, content}`，content 空则跳过；复用 `_persist_memory` 入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰），`type=LONG_TERM` 豁免短期淘汰、知识点不随时间冲掉、供创作检索参考（`list_memories(tag="knowledge")`）
+- [ ] 两层去重（`_persist_memory`）：精确（content 哈希命中）→ 语义（embedding 余弦 top-1 ≥ `_DEDUP_SIM_THRESHOLD`）；命中合并强化旧记忆（`strengthen`：`recall_count+1`、`freshness=1.0`），不新建、不发 `memory_created`；未命中才 `add` → 建边 → 门控矛盾检测 → 淘汰 → 发 `memory_created`。embedding 禁用（`embed is None`）时语义去重自动跳过，仅精确去重生效
 - [ ] 矛盾检测门控：`embedding=None` 或召回 top-K 候选相似度全低于 `_CONTRADICTION_SIM_THRESHOLD` → **0 次**矛盾 LLM 调用；有候选过阈值 → **1 次**矛盾 LLM 调用（`output_type="contradiction"`），单任务判 `conflicts_with`
 - [ ] 两处 LLM 产出后紧跟 `await evaluator.evaluate(output)`：`create_scene_memory`（`output_type="scene_memory"`）与 `_detect_contradiction`（`output_type="contradiction"`，仅门控触发时）
 - [ ] 三杠杆落地：候选判据用 `summary + content 前 N 字`（非只 summary）；召回 `_RECALL_TOP_K=5`；新记忆含否定/转折词时矛盾 prompt 附「重点核对」提示（`_has_negation` 纯函数）
@@ -54,6 +55,7 @@
   2. **召回 `_RECALL_TOP_K=5`**：比建边的 `_EDGE_TOP_K=3` 大，减少漏召回；两者值不同，故分开常量
   3. **否定词规则预筛**：`_has_negation` 纯函数检测新记忆是否含否定/转折锚点（`不`/`没`/`别`/`讨厌`/`恨`/`拒绝`/`否认`/`放弃`/`再也不` 等），命中则在矛盾 prompt 附「重点核对是否推翻旧记忆」提示，把模型注意力引到最可疑方向。**软信号非判定**：`不`/`没` 高频、会误命中，但只增一句提示、不影响门控，模型自己看内容裁决——误报无害、漏报才有害
 - **门控阈值 `_CONTRADICTION_SIM_THRESHOLD=0.6`（决策，可推翻）**：sentence-transformers 余弦同话题中文约 0.6–0.9、不同话题约 0.1–0.4，0.6 作「同话题」分界合理；要调翻一处
+- **去重阈值 `_DEDUP_SIM_THRESHOLD=0.95`（决策，可推翻）**：语义去重把「几乎同一句话」合并，取 0.95 严于矛盾阈值 0.6，避免把「同话题不同事实」误合并（矛盾仍靠 0.6 门控单独判断）；精确去重（content 哈希）无条件先跑，语义去重只在 `embed` 可用时补一层
 - **建边与矛盾候选复用 `_similar`（跨模块去重）**：`_similar(query_vec, exclude_id)` 是「排除某 id 后、query 向量 vs 全表记忆余弦排序（`s>0` 保留、降序）」的共享 helper；建边取 `[:_EDGE_TOP_K]`、矛盾门控取 `[:_RECALL_TOP_K]` 再 `s >= threshold` 过滤。两处各自调用（余弦 O(N)、本地 ≤ 几百条，代价可忽略，不值得为省这点把 scored 传参破坏两方法内聚）。核心「打分+过滤+排序」循环不在 facade 重写——复用 08 抽出的 `rank_by_cosine` 纯函数（`_similar` 只做 exclude + 委托，与 08 `_vector_search` 同一份实现，facade 不再直接 import `cosine`）
 - **`reply_context` 契约**：`dict[str, str]`，键 `correlation_id`（溯源）/ `user_message`（用户说了什么）/ `nyx_think`（尼克斯内心）/ `nyx_speak`（尼克斯说了什么）——由 17-expression 慢通道填充。缺键 `KeyError`（fail-fast，契约违反立即暴露，不静默降级）
 - **建边机制（决策，可推翻）**：新记忆与已有记忆按 `embedding` 余弦相似度建边，`_EDGE_TOP_K=3`、`weight=相似度`、`s > 0` 才建；`embed=None` 或新记忆无 embedding → 跳过。方向 `new → old`，`MemoryGraph` 无向所以方向无关
@@ -100,6 +102,7 @@ _CONTRADICTION_SYSTEM = (
 _EDGE_TOP_K = 3
 _RECALL_TOP_K = 5
 _CONTRADICTION_SIM_THRESHOLD = 0.6
+_DEDUP_SIM_THRESHOLD = 0.95
 _CONTENT_PREVIEW_CHARS = 60
 _NEGATION_WORDS = ("不", "没", "别", "讨厌", "恨", "拒绝", "否认", "放弃", "再也不")
 
@@ -292,6 +295,7 @@ class MemoryFacade:
         self._config = config
         self._embed = embed          # 与 retrieval 共享同一实例（组合根注入）
         self._logger = logging.getLogger(__name__)
+        self._last_observation: tuple[str, str] | None = None  # 「变化才沉淀」快照
 
     async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
         """慢通道场景化记忆：LLM 产出 content/tag/summary
@@ -308,70 +312,73 @@ class MemoryFacade:
         )
         await self._evaluator.evaluate(output)
         content, tag, summary = _parse_scene(output.content)
-        now = time.time()
-
         memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
-        if self._embed is not None:
-            memory.embedding = await self._embed(content)
-
-        await self._store.add(memory)
-
-        # 一次全表余弦排序，建边（top-3）与矛盾召回（top-5）共用，避免重复扫描
-        scored: list[tuple[float, Memory]] | None = None
-        if memory.embedding is not None:
-            scored = await self._similar(memory.embedding, memory.id)
-        await self._build_edges(memory, scored)
-        await self._detect_contradiction(
-            memory, scored, reply_context["correlation_id"]
-        )
-
-        await self._decay_and_evict(now)
-
-        await self._bus.publish(
-            internal_event(
-                EventType.MEMORY_CREATED,
-                {"memory_id": memory.id},
-                reply_context["correlation_id"],
-            )
-        )
+        await self._persist_memory(memory, reply_context["correlation_id"])
         return memory
 
     async def remember_activity(self, event: Event) -> None:
         """活动记忆：把 activity_end.result 落成一条短期记忆（无 LLM）。
 
-        只写读书/创作/探索三类有产出的活动；rest/observe_user/idle_reflection
-        （result 空或类型不匹配）跳过。入库管线与 create_scene_memory 相同
+        只写读书/创作/探索三类有产出的活动；rest/idle_reflection（result 空或
+        类型不匹配）跳过。observe_user 走「画像沉淀」分支（见 _sediment_observation）。
+        入库管线与 create_scene_memory 相同
         （embed → 建边 → 门控矛盾检测 → 淘汰），只缺开头的 LLM 场景构建。
         """
+        if event.content.get("type") == "observe_user":
+            await self._sediment_observation(event)
+            return
         mapped = _activity_memory_fields(
             event.content.get("type"), event.content.get("result")
         )
         if mapped is None:
             return
         content, summary, tag = mapped
-        now = time.time()
-
         memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
-        if self._embed is not None:
-            memory.embedding = await self._embed(content)
+        await self._persist_memory(memory, event.correlation_id)
 
-        await self._store.add(memory)
+    async def _sediment_observation(self, event: Event) -> None:
+        """观察活动 → 用户画像沉淀：「presence/window_title 相对上次变化」才写。
 
-        scored: list[tuple[float, Memory]] | None = None
-        if memory.embedding is not None:
-            scored = await self._similar(memory.embedding, memory.id)
-        await self._build_edges(memory, scored)
-        await self._detect_contradiction(memory, scored, event.correlation_id)
-
-        await self._decay_and_evict(now)
-
-        await self._bus.publish(
-            internal_event(
-                EventType.MEMORY_CREATED,
-                {"memory_id": memory.id},
-                event.correlation_id,
-            )
+        观察 result 非空 presence 视为有效观察（旧 shape 或缺 presence 跳过）；
+        同快照重复上报不沉淀（防膨胀）。产出一条 tag='user' 的长期记忆。
+        """
+        result = event.content.get("result")
+        if not isinstance(result, dict):
+            return
+        parsed = cast(dict[str, Any], result)
+        presence = parsed.get("presence")
+        if not isinstance(presence, str) or not presence:
+            return
+        window_title = parsed.get("window_title")
+        if not isinstance(window_title, str):
+            window_title = ""
+        snapshot = (presence, window_title)
+        if snapshot == self._last_observation:
+            return
+        self._last_observation = snapshot
+        content = f"用户状态：{presence}"
+        if window_title:
+            content += f"；正在浏览：{window_title}"
+        summary = str(parsed.get("summary") or f"用户（{presence}）")
+        await self.remember_user_profile(
+            content, summary, ["presence", "window_title"], event.correlation_id
         )
+
+    async def remember_user_profile(
+        self,
+        content: str,
+        summary: str,
+        aspects: list[str],
+        correlation_id: str,
+    ) -> None:
+        """用户画像记忆：把观察到的用户状态落成一条长期、tag='user' 的记忆。
+
+        无开头 LLM（content/summary/aspects 由调用方确定性拼好，贴「禁编造」）；
+        复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM
+        使其豁免短期淘汰（_decay_and_evict 只淘汰短期），画像不随时间冲掉。
+        """
+        memory = _new_memory(content, "user", summary, MemoryType.LONG_TERM, aspects)
+        await self._persist_memory(memory, correlation_id)
 
     async def remember_knowledge(
         self, items: list[dict[str, str]], correlation_id: str
@@ -392,6 +399,56 @@ class MemoryFacade:
                 MemoryType.LONG_TERM,
             )
             await self._persist_memory(memory, correlation_id)
+
+    async def record_no_answer(self, question: str, correlation_id: str) -> None:
+        """用户未回答尼克斯的提问：落一条确定性的 SHORT_TERM 记忆（无 LLM）。
+
+        问句本身已由慢通道场景化记忆记过，这里只补「没答」这半句；
+        复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。
+        """
+        memory = _new_memory(
+            f"我问了「{question}」，用户没有回答。",
+            "interaction",
+            "用户没有回答我的提问",
+            MemoryType.SHORT_TERM,
+        )
+        await self._persist_memory(memory, correlation_id)
+
+    async def _persist_memory(
+        self, memory: Memory, correlation_id: str
+    ) -> Memory | None:
+        """已构建 Memory 的共用入库尾段，带两层去重：
+
+        1) 精确去重：content 完全相同（哈希命中）→ 合并强化旧记忆，不新建；
+        2) 语义去重：embedding 余弦 top-1 ≥ 阈值 → 合并强化最相似旧记忆，不新建。
+
+        命中返回 None（无新记忆），否则补 embed → add → 建边 → 门控矛盾检测
+        → 新鲜度衰减/淘汰 → 发 MEMORY_CREATED，返回新记忆。场景/活动/画像/
+        知识记忆复用。"""
+        existing = await self._store.find_by_content(memory.content)
+        if existing is not None:
+            await self._store.strengthen(existing.id)
+            return None
+        if self._embed is not None and memory.embedding is None:
+            memory.embedding = await self._embed(memory.content)
+        scored: list[tuple[float, Memory]] | None = None
+        if memory.embedding is not None:
+            # add 前全表余弦排序（新记忆尚未入库，天然 exclude 自己），
+            # 语义查重与建边/矛盾共用同一份 scored，不多扫一次全表。
+            scored = await self._similar(memory.embedding, None)
+            if scored and scored[0][0] >= _DEDUP_SIM_THRESHOLD:
+                await self._store.strengthen(scored[0][1].id)
+                return None
+        await self._store.add(memory)
+        await self._build_edges(memory, scored)
+        await self._detect_contradiction(memory, scored, correlation_id)
+        await self._decay_and_evict(time.time())
+        await self._bus.publish(
+            internal_event(
+                EventType.MEMORY_CREATED, {"memory_id": memory.id}, correlation_id
+            )
+        )
+        return memory
 
     async def search(self, query: str) -> list[Memory]:
         return await self._retrieval.search(query)
@@ -550,9 +607,15 @@ class MemoryFacade:
     - [ ] **建边**：先建一条含 embedding 的记忆，再 create 一条相似 embedding 的记忆 → 新记忆有到旧记忆的 `memory_edge`（`weight > 0`）
     - [ ] **淘汰**：`MemoryConfig(short_term_capacity=1, ...)`，create 第二条 → 旧的那条（freshness 更低）被删，`list_memories()` 只剩新的一条
     - [ ] **衰减回写**：monkeypatch `time.time` 使两条创建间隔 1 天 → 旧记忆的 `freshness` 被衰减（`< 1.0`）
+  - [ ] **去重（`_persist_memory`）**：
+    - [ ] 精确去重：同 content 二次 `create_scene_memory` → 库内 1 条、`recall_count==1`、仅 1 个 `memory_created`
+    - [ ] 语义去重：新记忆与旧记忆 embedding 余弦 = 1.0（≥ 0.95）→ 合并到旧记忆（`recall_count+1`）、不新增、无 `memory_created`
+    - [ ] 阈值以下：余弦 < 0.95 → 正常新建入库（`list_memories` 2 条、发 1 个 `memory_created`）
+    - [ ] `embed=None`：语义去重跳过（即使库里旧记忆带 embedding，新记忆无 embedding 也不做语义比较），仅精确去重生效
   - [ ] **remember_activity**：
     - [ ] reading/creation/free_exploration 三类 mock `activity_end` 事件 → 各写一条 `Memory`（`content`/`summary`/`tag` 正确、`type is SHORT_TERM`）、发布 `memory_created`、**无 LLM 调用**（`llm.calls == []`）
-    - [ ] rest/observe_user/idle_reflection 或空 result → 不写、无 `memory_created`
+    - [ ] rest/idle_reflection 或空 result → 不写、无 `memory_created`；observe_user 无 presence → 不写
+    - [ ] observe_user 带 presence → 沉淀一条 tag='user' 的长期画像记忆（`type is LONG_TERM`）；同快照重复上报 → 不重复写
     - [ ] 有相似旧记忆 + embed（fake embed 造高相似向量）→ 门控触发 1 次 `contradiction` 调用（参与矛盾判断，无 `scene_memory`）
   - [ ] **search / list_memories**：`search` 委托 fake `MemoryRetrieval`（返回预设 list）；`list_memories(tag, type)` 委托真 store（过滤/排序同 07）
   - [ ] **record_recall**：

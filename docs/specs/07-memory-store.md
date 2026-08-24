@@ -14,7 +14,7 @@
 
 ## 验收标准
 
-- [ ] `store.py` 含 `MemoryStore`（`add` / `get` / `list_memories` / `update` / `delete` / `record_recall` / `search_keyword` / `list_edges` / `upsert_edge`）+ `_memory_row` / `_row_to_memory`，与「`memory/store.py`（完整）」段代码逐字一致
+- [ ] `store.py` 含 `MemoryStore`（`add` / `get` / `find_by_content` / `list_memories` / `update` / `delete` / `record_recall` / `strengthen` / `search_keyword` / `list_edges` / `upsert_edge`）+ 模块级 `hash_content` + `_memory_row` / `_row_to_memory`，与「`memory/store.py`（完整）」段代码逐字一致
 - [ ] 所有 DB 读写都在 `async with self._db.lock` 内；**锁作用域 = 单个 store 方法的 SQL 块，不跨 store 方法嵌套**（`asyncio.Lock` 不可重入，嵌套死锁）
 - [ ] 行↔`Memory` 往返：`aspect` JSON 数组（空 = `"[]"`）、`type` 枚举 `.value`、`recall_count` 整数、`embedding` `list[float] | None`（`None` ↔ SQL `NULL`）
 - [ ] `list_memories` 按 `tag` / `type` 过滤，`freshness DESC, created_at DESC` 排序；`limit` 截断（拼 `LIMIT {limit}`，避免无界拉取）
@@ -28,18 +28,20 @@
 
 - **新文件**：`nyx/memory/store.py`（无 Facade、无 API、无业务逻辑）
 - **库**：无新库（标准库 `json`；`aiosqlite` 已由 04-db 引入）
-- **公开面**：`from nyx.memory.store import MemoryStore`（不加 `__all__`；`_memory_row` / `_row_to_memory` 私有）
+- **公开面**：`from nyx.memory.store import MemoryStore, hash_content`（不加 `__all__`；`_memory_row` / `_row_to_memory` / `_MEMORY_INSERT_COLS` 私有）
 - **锁约定**：每个方法一个 `async with self._db.lock:` 的 SQL 块；`delete` 里删边 + 删记忆在**同一个锁块**内原子完成，不拆成两次锁；store 方法之间**不互相调用对方的持锁方法**（`asyncio.Lock` 不可重入，嵌套死锁）。这是 04-db `Database(conn, lock)` 共享连接约定的首个 store 落地
 - **`created_at` 不可变**：`update` 的 SET 子句不含 `created_at` / `id`——创建时刻是事实，不可改
 - **排序约定**：`list_memories` / `search_keyword` 按 `freshness DESC, created_at DESC`——检索要新鲜的在前（design §6「长期不消失，只新鲜度下降，检索时排后」）
 - **关键词用 `LIKE`**：04-db 只有 `idx_memory_tag` / `idx_memory_type` 两个索引，**没有 FTS 表**，所以「SQLite FTS/LIKE」（design §6.3）落为 `LIKE '%query%'`。`%` / `_` / `\` 会被当通配符，已转义（`_escape_like` + `ESCAPE '\'`，让 query 按字面匹配）；ASCII 大小写不敏感、中文按字节
 - **枚举列存 `.value`、`aspect` 存 JSON 数组**：与 04-db「枚举列存 `.value` 字符串、复杂字段存 JSON 字符串」一致；`aspect` 空集合存 `"[]"`（非 Optional → 列 `NOT NULL`，序列化不必判 None）
 - **`embedding` 可空列（None ↔ SQL NULL）**：`list[float] | None` ⟺ `embedding TEXT` 可空；`_embedding_json` 把 `None` 序列化为 SQL `NULL`（不是 `"null"` 字符串）、`list` 序列化为 JSON 数组字符串，读回时 `None` 保持 `None`。这是首个可空 JSON 列，后续 store（`goal` / `ended_at` / `token_usage.correlation_id` 等）照此 `None ↔ NULL` 模式
+- **`content_hash` 是 store 派生列（不进 `Memory`）**：`memory` 表加 `content_hash TEXT`（04-db 迁移 v6），由 `add` 写入 `hash_content(content)`、`find_by_content` 查重用；`Memory` dataclass 不承载它（不改 01-types、不改 `_mem` 构造器），`_row_to_memory` 读回也不填充——`_MEMORY_COLS`（SELECT）不含它，`_MEMORY_INSERT_COLS`（INSERT）才追加。旧行 `content_hash` 为 NULL（不去重），新写入行有值
 - **边界划分（明确不做）**：新鲜度衰减、容量淘汰是 09-facade 的生命周期逻辑；短期→长期升级的「何时升」也由 facade 决定（阈值经 `record_recall(memory_id, promote_threshold)` 传入）。但「加一 + 条件升型」这个原子原语必须落在 store 单锁内——原子性要求单锁、锁在 store，拆到 facade 会产生跨方法竞态（09 轮审查发现重复升级/丢计数）。`graph.py`（networkx 联想图）归 08，从 `list_edges()` 建图。FK 完整性靠 04-db 的 `PRAGMA foreign_keys=ON`（`upsert_edge` 引用不存在的 id 抛 `aiosqlite.IntegrityError`）
 
 ### `memory/store.py`（完整）
 
 ```python
+import hashlib
 import json
 
 import aiosqlite
@@ -52,6 +54,13 @@ _MEMORY_COLS = (
     "id, created_at, content, tag, summary, freshness, "
     "type, recall_count, aspect, embedding"
 )
+# INSERT 用：比 SELECT 多 content_hash（store 派生，Memory 不承载）
+_MEMORY_INSERT_COLS = _MEMORY_COLS + ", content_hash"
+
+
+def hash_content(content: str) -> str:
+    """content → SHA-256 hex 精确哈希（去重键）。纯函数。"""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 class MemoryStore:
@@ -68,9 +77,9 @@ class MemoryStore:
     async def add(self, memory: Memory) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
-                f"INSERT INTO memory ({_MEMORY_COLS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                _memory_row(memory),
+                f"INSERT INTO memory ({_MEMORY_INSERT_COLS}) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*_memory_row(memory), hash_content(memory.content)),
             )
             await self._db.conn.commit()
 
@@ -78,6 +87,16 @@ class MemoryStore:
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 f"SELECT {_MEMORY_COLS} FROM memory WHERE id = ?", (memory_id,),
+            )
+            row = await cursor.fetchone()
+        return _row_to_memory(row) if row is not None else None
+
+    async def find_by_content(self, content: str) -> Memory | None:
+        """按 content 精确哈希查重：命中返回已有记忆，未命中 None。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_MEMORY_COLS} FROM memory WHERE content_hash = ?",
+                (hash_content(content),),
             )
             row = await cursor.fetchone()
         return _row_to_memory(row) if row is not None else None
@@ -162,6 +181,16 @@ class MemoryStore:
             promoted = cursor.rowcount == 1
             await self._db.conn.commit()
         return promoted
+
+    async def strengthen(self, memory_id: str) -> None:
+        """重复写入合并强化：recall_count+1 且 freshness 重置为最新（不升型）。"""
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "UPDATE memory SET recall_count = recall_count + 1, "
+                "freshness = 1.0 WHERE id = ?",
+                (memory_id,),
+            )
+            await self._db.conn.commit()
 
     async def search_keyword(self, query: str) -> list[Memory]:
         pattern = f"%{_escape_like(query)}%"
@@ -253,6 +282,9 @@ def _row_to_memory(row: aiosqlite.Row) -> Memory:
   - [ ] **search_keyword 转义通配符**：搜 `"100%"` 只命中含字面 `100%`、搜 `"a_b"` 只命中字面 `a_b`（`_escape_like` + `ESCAPE '\'`，不误命中通配符匹配）
   - [ ] **list_edges + upsert_edge**：`upsert_edge` 新建 → `list_edges` 返回 `MemoryEdge`；同 `(from_id, to_id)` 再 `upsert_edge` 改 `weight`（ON CONFLICT 更新不重复建行）
   - [ ] **upsert_edge 引用不存在的 id** → `aiosqlite.IntegrityError`（`PRAGMA foreign_keys=ON` 生效）
+  - [ ] **hash_content 确定性**：同 content 同 hash、不同 content 不同 hash、SHA-256 hex 长度 64（`hash_content("x")` 长度 `== 64`）
+  - [ ] **find_by_content 命中/未命中**：`add` 后按原 content 命中返回 `Memory`（`id` 一致）、不同 content 返回 `None`
+  - [ ] **strengthen**：`add`（`recall_count=0, freshness=0.3`）→ `strengthen` → `get` 验证 `recall_count == 1` 且 `freshness == 1.0`
 - [ ] 集成测试：无（store 是基础设施，无 Facade 管道；与 08/09 的编排归各自 spec）
 - [ ] E2E 测试：无
 

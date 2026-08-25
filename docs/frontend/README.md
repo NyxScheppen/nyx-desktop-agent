@@ -102,16 +102,18 @@ frontend/
       narrativeStore.ts      # 自我叙事：SelfNarrative 快照
       materialsStore.ts      # 资料上传：文件清单 + 上传动作
       readingNotesStore.ts   # 读书笔记：笔记清单 + 删除动作（批注增删查走组件本地 state）
+      encounterStore.ts      # 遭遇：未决遭遇 + 选择/结局（19-encounter）
       settingsStore.ts       # 背景外观：tint/image（纯前端 UI 状态，无后端）
       announceStore.ts       # 头像旁临时气泡：items/announce/dismiss（纯前端呈现，无后端）
     components/
       StatusBar.tsx          # 主界面常驻状态条（当前活动文字，App 层挂载）
       AnnounceLayer.tsx      # 头像旁淡出气泡层（读 announceStore，App 层挂载）
       chat/
-        ChatPanel.tsx
         MessageList.tsx
         MessageBubble.tsx
         ChatInput.tsx
+      encounter/
+        EncounterCard.tsx    # 遭遇卡片（encounter_start 文本 + 可点选项，读 encounterStore）
       inner/
         InnerStatePanel.tsx
         ValenceArousalPlot.tsx
@@ -135,8 +137,9 @@ frontend/
         DraggablePanel.tsx   # 可拖拽弹窗骨架（position:fixed + 拖拽手柄 + × 关闭）
         SidePanel.tsx        # 设置标签页面板（背景/Eval，标签切换，01-sse §6）
         InnerWorld.tsx       # 内心世界可拖拽弹窗（单分类卡片，收 categoryIndex 渲染一类子标签，默认不挂载）
-      scene/
-        Sakura.tsx           # 樱花飘落装饰（纯视觉，01-sse §6）
+      shell/
+        LeftPanel.tsx        # 左面板（属性摘要 + 欲望一句话 + 活动一条 + 游戏设置）
+        ScrollArea.tsx       # 书卷区域（对话/记忆/笔记三模式切换 + 遭遇卡片）
     assets/
       sprites/               # 8 情绪 sprite（EmotionCategory 1:1）
   tests/
@@ -152,23 +155,24 @@ frontend/
 - 组件 `PascalCase`、文件 `camelCase.tsx`；store/hook/api 文件 `camelCase.ts`。
 - **TS 类型字段名 = 后端 JSON 键名（snake_case 原样，零映射）**：后端 dataclass 直接 `json.dumps`，字段是 `snake_case`（`valence` / `energy_state` / `current_activity` / `correlation_id`）。前端类型镜像时**不改名**，理由：零映射层 = 零映射 bug、字段名可沿 `correlation_id` 一路溯源到后端定义（原则 3/5）。前端内部 UI 变量名才用 camelCase，落类型时转 snake_case 键。
 
-## 5. 面板骨架（SidePanel 标签页）
+## 5. 面板去向（三区布局，06-game-shell）
 
-design §11 列 7 个面板，全部落地。视觉改造后，聊天区独立为中间微信式大窗（`ChatPanel`），头部「内在/空间/记录」三按钮分别弹出对应分类的可拖拽 `InnerWorld` 单分类卡片（内在 = 内在状态/欲望/叙事、空间 = 读书笔记/产出/资料、记录 = 活动/记忆；默认不挂载、点任一按钮弹出该分类、再点同一按钮或 × 关闭），「设置」按钮切到 `SidePanel` 标签页（背景/Eval 2 标签，一次显示一个，内容区可滚动，「返回对话」回到聊天）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
+design §11 列 7 个面板，全部落地。书卷风改造后，三区布局（06-game-shell）：左面板（属性摘要 + 欲望一句话 + 活动一条 + 游戏设置）｜书卷区域（对话/记忆/笔记三模式）｜Galgame 对话框（输入 + 发送）。点左面板摘要弹对应分类的可拖拽 `InnerWorld` 单分类卡片（内在 = 内在状态/欲望/叙事、空间 = 读书笔记/产出/资料、记录 = 活动/记忆）；eval + token 走独立调试页（`Ctrl+Shift+D` 切换）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|
-| 聊天区 | ✅ 实现（03-chat-panel） | `POST /api/chat` + SSE `speak`/`think`/`ask` | `components/chat/ChatPanel.tsx` |
-| 背景外观 | ✅ 实现 | 无（纯前端 `settingsStore`） | `components/panels/BackgroundPanel.tsx` |
-| 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | `components/inner/InnerStatePanel.tsx` |
-| 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | `components/panels/DesiresPanel.tsx` |
-| 活动时间线 | ✅ 实现 | `GET /api/activity` + SSE `activity_*` | `components/panels/ActivityPanel.tsx` |
-| 产出面板 | ✅ 实现 | `GET /api/activity/results`（跨天历史产出） | `components/panels/OutputsPanel.tsx` |
-| 自我叙事 | ✅ 实现 | `GET /api/narrative` | `components/panels/NarrativePanel.tsx` |
-| 资料上传 | ✅ 实现 | `POST /api/upload` + `GET /api/materials` | `components/panels/MaterialsPanel.tsx` |
-| 读书笔记 | ✅ 实现 | `GET /api/reading-notes` + `GET/POST/DELETE /api/annotations` | `components/panels/ReadingNotesPanel.tsx` |
-| 记忆浏览器 | ✅ 实现 | `GET /api/memories` + SSE `memory_*` | `components/panels/MemoryPanel.tsx` |
-| eval + token 看板 | ✅ 实现 | `GET /api/eval` / `GET /api/tokens` | `components/panels/EvalPanel.tsx` |
+| 聊天区 | ✅ 实现（03-chat-panel） | `POST /api/chat` + SSE `speak`/`think`/`ask` | 书卷区「对话」模式（`components/shell/ScrollArea.tsx`） |
+| 遭遇 | ✅ 实现（06-game-shell） | SSE `encounter_start`/`choice`/`end` + `POST /api/encounter/choose` | 书卷区「对话」模式（`components/encounter/EncounterCard.tsx`） |
+| 背景外观 | ✅ 实现 | 无（纯前端 `settingsStore`） | 左面板「游戏设置」内（复用 `components/panels/BackgroundPanel.tsx`） |
+| 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | 左面板摘要 + `components/layout/InnerWorld.tsx`（内在分类） |
+| 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | 左面板「她现在的念头」+ `InnerWorld`（内在分类） |
+| 活动时间线 | ✅ 实现 | `GET /api/activity` + SSE `activity_*` | 左面板「正在做什么」+ `InnerWorld`（记录分类） |
+| 产出面板 | ✅ 实现 | `GET /api/activity/results`（跨天历史产出） | `InnerWorld`（空间分类） |
+| 自我叙事 | ✅ 实现 | `GET /api/narrative` | `InnerWorld`（内在分类） |
+| 资料上传 | ✅ 实现 | `POST /api/upload` + `GET /api/materials` | `InnerWorld`（空间分类） |
+| 读书笔记 | ✅ 实现 | `GET /api/reading-notes` + `GET/POST/DELETE /api/annotations` | 书卷区「笔记」模式（`ScrollArea` 复用 `ReadingNotesPanel`） |
+| 记忆浏览器 | ✅ 实现 | `GET /api/memories` + SSE `memory_*` | 书卷区「记忆」模式（`ScrollArea` 复用 `MemoryPanel`） |
+| eval + token 看板 | ✅ 实现 | `GET /api/eval` / `GET /api/tokens` | 独立调试页（`components/panels/EvalPanel.tsx`，`Ctrl+Shift+D`） |
 
 ## 6. 测试约定
 

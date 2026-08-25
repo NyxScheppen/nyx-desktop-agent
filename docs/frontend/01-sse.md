@@ -68,11 +68,39 @@ type OpaqueEvent = SseBase & {
     | "activity_start" | "activity_end" | "activity_interrupted";
 } & Record<string, unknown>;
 
+// 遭遇（19-encounter）：start 文本 + 选项、choice 选择、end 结局（choice 无消费者）。
+type EncounterKind = "desire_chat" | "random_event" | "growth_moment";
+type EncounterOption = { index: number; text: string };
+type EncounterStartEvent = SseBase & {
+  event: "encounter_start";
+  encounter_id: string;
+  kind: EncounterKind;
+  text: string;
+  options: EncounterOption[];
+};
+type EncounterChoiceEvent = SseBase & {
+  event: "encounter_choice";
+  encounter_id: string;
+  option_index: number;
+  option_text: string;
+};
+type EncounterEndEvent = SseBase & {
+  event: "encounter_end";
+  encounter_id: string;
+  kind: EncounterKind;
+  option_index: number;
+  option_text: string;
+  ending: string;
+  consequences: Record<string, unknown>; // 前端不读后果细节，只触发快照 refresh
+};
+
 type SseEvent =
   | TextEvent<"speak"> | TextEvent<"ask"> | TextEvent<"think">
   | TextEvent<"mutter"> | TextEvent<"initiate_chat">
   | UserMessageEvent | EmotionUpdateEvent | ReflectionDoneEvent
-  | ExplorationStepEvent | OpaqueEvent;
+  | ExplorationStepEvent
+  | EncounterStartEvent | EncounterChoiceEvent | EncounterEndEvent
+  | OpaqueEvent;
 
 type ConnectionState = "connecting" | "open" | "closed";
 ```
@@ -90,7 +118,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 - **返回**：`ConnectionState`，供 App 显示连接状态（右上角「已连接/重连中」）。
 - **行为**：
   1. `useEffect` 里 `new EventSource(BASE_URL + "/api/events")`，`BASE_URL` 来自统一常量（空 = 相对路径，走 Vite proxy 同源转发到后端 8000）。
-  2. 对 21 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` → 拼 `SseEvent` → `dispatch`。
+  2. 对 24 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` → 拼 `SseEvent` → `dispatch`。
   3. `onopen` / `onerror`：更新 `ConnectionState`。`EventSource` 浏览器原生自动重连（`onerror` 时置 `connecting`），后端重启后自动恢复，无需手写重连循环。
   4. cleanup：`source.close()`（防重复挂载泄漏）。
 - **解析失败**：`JSON.parse` 抛错 → `console.error` + 跳过该帧（不崩整个流）；`data` 缺 `event_id`/`correlation_id` 时同样跳过（防御，正常不触发）。
@@ -119,6 +147,9 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `activity_start`/`activity_interrupted` | `activityStore` | `refresh()` | 活动开始/抢占 → 重拉快照（事件只带 `activity_id`） |
 | `activity_end` | `activityStore` + `announceStore` | `refresh()` 后按 `activity_id` 找产出并 `announce("activity", …)` | 活动完成 → 重拉快照 + 冒一句产出 |
 | `exploration_step` | `explorationStore` | `onStep` | 点亮地图实时节点：`liveNodes` 追加帧 `node`、`activityId` 置为帧 `activity_id` |
+| `encounter_start` | `encounterStore` | `onStart` | 遭遇开始 → 置 `current`（`EncounterCard` 渲染文本 + 可点选项） |
+| `encounter_choice` | — | — | 无消费者（`encounter_end` 紧跟，由其清 `current` + 上屏 ending） |
+| `encounter_end` | `encounterStore` | `onEnd` | 遭遇结束 → 清 `current` + ending 上聊天时间线 + 重拉内在/欲望/记忆快照 |
 | `memory_created`/`memory_promoted` | `memoryStore` | `refresh()` | 记忆变化 → 重拉快照（事件只带 `memory_id`） |
 | `reflection_done` | `desireStore` + `narrativeStore` + `announceStore` | `refresh()` +（`story_is_new` 时）`setHighlightedStory` / `announce("mutter", …)` + `refresh()` | 反思完成 → 欲望/叙事重拉快照 + 新故事高亮（叙事面板定位闪烁）+ 头像旁冒一句 |
 | `clock_tick`/`observation_state`/`reflection` | — | — | 无消费者 |
@@ -163,6 +194,15 @@ function dispatchEvent(e: SseEvent): void {
       return;
     case "exploration_step":
       explorationStore.onStep(e);
+      return;
+    case "encounter_start":
+      encounterStore.onStart(e);
+      return;
+    case "encounter_choice":
+      // 无消费者：encounter_end 紧跟其后，由它清 current + 上屏 ending
+      return;
+    case "encounter_end":
+      encounterStore.onEnd(e);
       return;
     case "reflection_done":
       void desireStore.refresh();

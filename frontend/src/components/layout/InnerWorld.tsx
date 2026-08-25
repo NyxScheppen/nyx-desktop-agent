@@ -10,8 +10,8 @@ import ReadingNotesPanel from "../panels/ReadingNotesPanel";
 import DraggablePanel from "./DraggablePanel";
 
 // 内心世界（可拖拽弹窗）：8 个观测面板按「内在/空间/记录」三大类收进可拖拽弹窗。
-// 对话框头部有「内在/空间/记录」三个按钮（ChatPanel 读 CATEGORIES 渲染），点哪个开哪个
-// 分类的卡片；卡片内只保留该分类的子标签 + 内容，顶部大类导航移除（大类由头部按钮承担）。
+// 左面板摘要按钮（LeftPanel 调 onOpenInner 传分类 index）触发，点哪个开哪个
+// 分类的卡片；卡片内只保留该分类的子标签 + 内容，顶部大类导航移除（大类由左面板摘要按钮承担）。
 // 仅挂载当前子 tab（切换即重新 refresh；未激活面板不占 DOM），同 SidePanel。
 export type TabDef = { label: string; Panel: ComponentType };
 export type CategoryDef = { label: string; tabs: TabDef[] };

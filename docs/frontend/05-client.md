@@ -1,6 +1,6 @@
 # REST 客户端（`api/client.ts`）
 
-> 薄 fetch 封装：20 个端点函数 + 统一错误契约。被 `chatStore`（`postChat`/`getEventsLog`）、`innerLifeStore`（`getState`）、`usePresence`（`postObserve`）、四个快照 store（`getDesires`/`getActivity`/`getActivityResults`/`getMemories`/`getEval`/`getTokens`）、`narrativeStore`（`getNarrative`）、`memoryStore`（`exportMemories`）、`materialsStore`（`uploadFile`/`getMaterials`）、`readingNotesStore`（`getReadingNotes`/`deleteReadingNote`）共享。
+> 薄 fetch 封装：22 个端点函数 + 统一错误契约。被 `chatStore`（`postChat`/`getEventsLog`）、`innerLifeStore`（`getState`）、`usePresence`（`postObserve`）、四个快照 store（`getDesires`/`getActivity`/`getActivityResults`/`getMemories`/`getEval`/`getTokens`）、`narrativeStore`（`getNarrative`）、`memoryStore`（`exportMemories`）、`materialsStore`（`uploadFile`/`getMaterials`）、`readingNotesStore`（`getReadingNotes`/`deleteReadingNote`）、`encounterStore`（`chooseEncounter`/`getCurrentEncounter`）共享。
 > 范围：`api/client.ts` 全部。`BASE_URL` 常量在此定义，SSE 与 REST 共用（01-sse §3）。
 > 对齐后端：前端的基础设施独立成 spec，同 `04-db` / `05-event` / `03-llm` 各自独立。
 
@@ -29,6 +29,8 @@ async function deleteReadingNote(noteId: string): Promise<{ deleted: string }>  
 async function getAnnotations(targetId: string): Promise<Annotation[]>       // GET /api/annotations?target_id=
 async function addAnnotation(targetId: string, content: string): Promise<Annotation>  // POST /api/annotations
 async function deleteAnnotation(annotationId: string): Promise<{ deleted: string }>    // DELETE /api/annotations/{annotation_id}
+async function chooseEncounter(encounterId: string, optionIndex: number): Promise<{ encounter_id: string; chosen: number }>  // POST /api/encounter/choose
+async function getCurrentEncounter(): Promise<EncounterCurrent | null>               // GET /api/encounter/current
 ```
 
 - 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message}`、`postObserve` 发 `{presence, window_title}`。
@@ -72,5 +74,7 @@ async function deleteAnnotation(annotationId: string): Promise<{ deleted: string
   - `getAnnotations`：`GET /api/annotations?target_id=` → `Annotation[]` 解析正确。
   - `addAnnotation`：`POST /api/annotations`、body `{target_id, content}` → `Annotation` 解析正确。
   - `deleteAnnotation`：`DELETE /api/annotations/{id}` → `{deleted}` 解析正确。
+  - `chooseEncounter`：`POST /api/encounter/choose`、body `{encounter_id, option_index}` → `{encounter_id, chosen}` 解析正确。
+  - `getCurrentEncounter`：`GET /api/encounter/current` → `EncounterCurrent | null` 解析正确（含 `null`）。
 - **错误契约**：非 2xx 响应（mock body `{"detail": "..."}`）→ throw（`Error`，message 含 `detail` 内容）；fetch 网络错误（reject `TypeError`）→ 上抛不吞；不返回 `{ok:false}`/null。
 - 不依赖真实后端；验证管道正确（端点走对、键零映射、错误上抛），不验证视觉。

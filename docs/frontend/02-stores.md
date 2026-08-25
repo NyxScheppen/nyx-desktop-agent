@@ -1,6 +1,6 @@
 # Zustand Stores（`stores/*.ts`）
 
-> 每系统一个 store（CLAUDE.md）。共 11 个：`chatStore`（聊天）、`innerLifeStore`（内在状态快照）、`desireStore` / `activityStore` / `memoryStore` / `evalStore`（四个快照 store）、`narrativeStore`（自我叙事快照）/ `materialsStore`（资料上传）/ `readingNotesStore`（读书笔记快照）、`settingsStore`（背景外观，纯前端 UI 状态）、`announceStore`（头像旁临时气泡，纯前端呈现）。
+> 每系统一个 store（CLAUDE.md）。共 12 个：`chatStore`（聊天）、`innerLifeStore`（内在状态快照）、`desireStore` / `activityStore` / `memoryStore` / `evalStore`（四个快照 store）、`narrativeStore`（自我叙事快照）/ `materialsStore`（资料上传）/ `readingNotesStore`（读书笔记快照）、`encounterStore`（遭遇，19-encounter）、`settingsStore`（背景外观，纯前端 UI 状态）、`announceStore`（头像旁临时气泡，纯前端呈现）。
 > 范围：`stores/*.ts` 的 state 形状 + actions。
 > 约定：**SSE 是主通道**（01-sse 分发表），store 的增量 action 由 SSE 驱动；REST 只喂初始快照。TS 类型字段名 = 后端 JSON 键（snake_case，零映射）。
 
@@ -39,7 +39,7 @@ type Presence = "online" | "away" | "busy";
 type ChatMessage = {
   id: string;                 // event_id
   role: "user" | "nyx";
-  kind: "message" | "speak" | "ask" | "think" | "mutter" | "initiate_chat";
+  kind: "message" | "speak" | "ask" | "think" | "mutter" | "initiate_chat" | "encounter";
   content: string;
   correlation_id: string;
   preloaded?: boolean;        // 历史回填消息：渲染时不逐字（loadHistory 写入）
@@ -64,6 +64,7 @@ addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}
 addThink(e: TextEvent<"think">): void                // {role:"nyx", kind:"think"}
 addMutter(e: TextEvent<"mutter">): void              // {role:"nyx", kind:"mutter"}
 addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initiate_chat"}
+addEncounterEnding(e: EncounterEndEvent): void       // {role:"nyx", kind:"encounter"}；ending 即时全量 append（不逐字、不改 isReplying/pendingId）
 
 sendMessage(text: string): Promise<void>  // 内部调 client.postChat(text)（client 契约见 05-client）
                                           // 成功：pendingId = 返回的 event_id + isReplying=true + sendError=null + 起 60s 超时 timer
@@ -181,15 +182,51 @@ type ReadingNotesStoreState = {
 - **清单走 store、详情走组件本地 state**：读书笔记面板的「清单 + 删除」入 store；选中笔记与其批注（`getAnnotations`/`addAnnotation`/`deleteAnnotation`）是瞬态 UI，用 `ReadingNotesPanel` 组件本地 `useState` 承载，不落 store（反冗余——批注数据无跨组件共享需求）。批注增/删后组件补一次 `refresh()` 重拉清单——`annotation_count` 徽标随批注变化，不走本地 patch。
 - **`remove` 本地摘除**：删除成功后 `notes.filter(id)` 摘除，不重新 `refresh()`（与快照 store「重拉」策略不同——删除是确定性本地操作，重拉浪费一次请求）。
 
-## 7. `settingsStore`（背景外观，纯前端）
+## 7. `encounterStore`（遭遇，19-encounter）
+
+### state
 
 ```typescript
+type EncounterState = {
+  current: EncounterCurrent | null; // GET /api/encounter/current 或 encounter_start 置位；null = 无未决遭遇
+  choosing: boolean;                // 选项点击后 POST 往返期间禁用（防连击）
+  error: string | null;
+  onStart: (e: EncounterStartEvent) => void;
+  onEnd: (e: EncounterEndEvent) => void;
+  choose: (encounterId: string, optionIndex: number) => Promise<void>;
+  refresh: () => Promise<void>;     // 进页面恢复未决遭遇
+  reset: () => void;
+};
+```
+
+### actions
+
+```typescript
+onStart(e: EncounterStartEvent): void   // encounter_start → current 置位（EncounterCard 渲染文本 + 可点选项）
+onEnd(e: EncounterEndEvent): void       // encounter_end → current 清空 + chatStore.addEncounterEnding + 重拉内在/欲望/记忆快照
+choose(encounterId, optionIndex): Promise<void>  // POST /api/encounter/choose（choosing 期间禁用；失败置 error）
+refresh(): Promise<void>                // GET /api/encounter/current 恢复未决遭遇（含 null 分支）
+reset(): void
+```
+
+### 关键决策
+
+- **SSE 主通道**：`choose` 只 POST、不本地清 `current`（信任 `encounter_end` 随后到达清位）；`choosing` 防连击。
+- **`onEnd` 后果改属性**：ending 经 `chatStore.addEncounterEnding` 上聊天时间线（`kind:"encounter"`），并 `void` 重拉内在/欲望/记忆快照（后果改精力/情感/欲望值/成长记忆）。
+
+## 8. `settingsStore`（背景外观 + 字体大小，纯前端）
+
+```typescript
+type FontScale = "small" | "medium" | "large";
+
 type SettingsState = {
-  tint: string | null;   // 背景色调（十六进制色，null = 默认粉渐变）
-  image: string | null;  // 背景图 data URL（null = 无图）
+  tint: string | null;      // 背景色调（十六进制色，null = 默认粉渐变）
+  image: string | null;     // 背景图 data URL（null = 无图）
+  fontScale: FontScale;     // 字体大小档位（"small" | "medium" | "large"，默认 "medium"）
   setTint(tint: string | null): void;
   setImage(image: string | null): void;
-  reset(): void;         // tint/image 均回 null
+  setFontScale(fontScale: FontScale): void;
+  reset(): void;            // tint/image 回 null、fontScale 回 "medium"
 };
 ```
 
@@ -197,8 +234,9 @@ type SettingsState = {
 
 - **无后端、无 SSE**：纯前端 UI 状态，读写只走内存，MVP 不持久化（重启回默认）。
 - **tint 与 image 独立并存**：图铺底（`cover`）、色调无图时作纯色、图+色并存时叠一层半透明滤镜（`.app-bg-tint`），互不覆盖。
+- **fontScale 驱动 `--text-scale`**：App 在 `.game-shell` 上注入 `--text-scale`（0.9/1.0/1.12），`body`/`.game-shell` 用 `font-size: calc(1rem * var(--text-scale))` 统一缩放（06-game-shell §4）。
 
-## 8. `announceStore`（头像旁临时气泡，纯前端呈现）
+## 9. `announceStore`（头像旁临时气泡，纯前端呈现）
 
 ```typescript
 type AnnounceKind = "mutter" | "activity";
@@ -217,7 +255,7 @@ type AnnounceState = {
 - **不落聊天历史**：碎碎念既进 `chatStore`（聊天记录）又进 `announceStore`（头像旁淡出气泡），两者互不替代——前者是历史时间线（`loadHistory` 回填），后者是 design §8 的瞬时气泡。
 - **时长按 kind**：`mutter` 4s、`activity` 7s（产出句子更长）。id 用模块级自增（`announce-N`），不依赖 `Date.now`（测试可预测）。
 
-## 9. 测试（`tests/stores.test.ts`）
+## 10. 测试（`tests/stores.test.ts`）
 
 - **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addMutter`/`addInitiateChat`/`addUserMessage` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
 - **chatStore.loadHistory**：按 `timestamp` 升序前置 + `preloaded=true` + 历史 think 入 `typedIds`；已存在的 id 去重不重复前置；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。

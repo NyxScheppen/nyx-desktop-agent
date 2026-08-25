@@ -400,7 +400,7 @@ class _EncounterChoosePayload(BaseModel):
 
 
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：22 个端点（21 个 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：24 个端点（23 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")

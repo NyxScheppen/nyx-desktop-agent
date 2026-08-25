@@ -26,6 +26,7 @@ from nyx.db import Database, connect
 from nyx.desire.facade import DesireFacade
 from nyx.desire.store import DesireStore
 from nyx.desire.value import default_value
+from nyx.encounter.facade import EncounterFacade
 from nyx.enums import (
     ActivityStatus,
     DesireType,
@@ -97,6 +98,7 @@ class _App:
     memory: MemoryFacade
     activity: ActivityFacade
     expression: ExpressionFacade
+    encounter: EncounterFacade
     evaluator: Evaluator
     config: Config
     # 上次搭话时间戳（18-api 维护，供 should_initiate_chat）
@@ -251,6 +253,7 @@ async def _on_clock_tick(app: _App, event: Event) -> None:
     tick_type = TickType(event.content["tick_type"])
     if tick_type is TickType.SCHEDULE_BLOCK_START:
         await app.activity.on_tick(tick_type)
+        await _check_encounter(app)          # 活动启动后掷骰（包装）
     elif tick_type is TickType.DESIRE_EVAL:
         await app.desire.evaluate()
     elif tick_type is TickType.MUTTER_CHECK:
@@ -279,6 +282,13 @@ async def _check_initiate_chat(app: _App) -> None:
         await _interrupt_running(app, EventType.INITIATE_CHAT)
         if await app.expression.initiate_chat(interaction, state):
             app.last_chat_at = time.time()
+
+
+async def _check_encounter(app: _App) -> None:
+    """块边界随机事件：活动启动后掷骰，命中则生成遭遇（包装，不打断活动）。"""
+    online = app.last_presence in ("online", "busy")
+    busy = app.last_presence == "busy"
+    await app.encounter.try_block_boundary(online, busy)
 
 
 async def _check_reflect(app: _App, correlation_id: str) -> None:
@@ -354,6 +364,10 @@ def _subscribe(app: _App) -> None:
     bus.subscribe(EventType.ACTIVITY_END, app.desire.add_value)
     bus.subscribe(EventType.ACTIVITY_END, app.inner_life.apply_event)
     bus.subscribe(EventType.ACTIVITY_END, app.memory.remember_activity)
+    bus.subscribe(EventType.ENCOUNTER_END, app.inner_life.apply_event)
+    bus.subscribe(EventType.ENCOUNTER_END, app.desire.add_value)
+    bus.subscribe(EventType.ENCOUNTER_END, app.memory.remember_encounter)
+    bus.subscribe(EventType.ACTIVITY_END, app.encounter.on_activity_end)
     bus.subscribe(EventType.REFLECTION, app.inner_life.apply_event)
     bus.subscribe(EventType.CLOCK_TICK, lambda e: _on_clock_tick(app, e))
 
@@ -378,6 +392,11 @@ class _AnnotationPayload(BaseModel):
 
 class _ExplorePayload(BaseModel):
     topic: str | None = None
+
+
+class _EncounterChoosePayload(BaseModel):
+    encounter_id: str
+    option_index: int
 
 
 def build_app(app: _App) -> FastAPI:
@@ -512,6 +531,19 @@ def build_app(app: _App) -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc))
         return {"activity_id": activity_id}
 
+    @fast.post("/api/encounter/choose")
+    async def api_encounter_choose(
+        payload: _EncounterChoosePayload,
+    ) -> dict[str, Any]:
+        result = await app.encounter.choose(payload.encounter_id, payload.option_index)
+        if result is None:
+            raise HTTPException(status_code=409, detail="遭遇不存在或已结束")
+        return {"encounter_id": result.id, "chosen": result.chosen_index}
+
+    @fast.get("/api/encounter/current")
+    async def api_encounter_current() -> dict[str, Any] | None:
+        return app.encounter.get_current()
+
     @fast.get("/api/events")
     async def api_events() -> StreamingResponse:
         queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=_SSE_QUEUE_SIZE)
@@ -606,6 +638,8 @@ async def build_app_context(config: Config) -> _App:
     state_holder.append(inner_life.get_state)
     reflect_holder.append(inner_life.reflect)
 
+    encounter = EncounterFacade(bus, llm, evaluator, _get_state, canon)
+
     await _seed_inner_life(inner_life_store)
     await _seed_desire(desire_store)
 
@@ -616,7 +650,8 @@ async def build_app_context(config: Config) -> _App:
 
     app = _App(
         bus=bus, inner_life=inner_life, desire=desire, memory=memory,
-        activity=activity, expression=expression, evaluator=evaluator, config=config,
+        activity=activity, expression=expression, encounter=encounter,
+        evaluator=evaluator, config=config,
     )
 
     async def _read_observation() -> dict[str, str]:

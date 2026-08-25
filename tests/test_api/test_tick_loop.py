@@ -8,6 +8,7 @@ import pytest
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
+from nyx.encounter.facade import EncounterFacade
 from nyx.enums import EventType, MemoryType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
@@ -61,6 +62,7 @@ def _app(bus: object, *, grid_minutes: int = 0) -> _App:
         memory=cast(MemoryFacade, object()),
         activity=cast(ActivityFacade, object()),
         expression=cast(ExpressionFacade, _FakeExpression()),
+        encounter=cast(EncounterFacade, object()),
         evaluator=cast(Evaluator, object()),
         config=config,
     )
@@ -303,6 +305,7 @@ def _reflect_app(
         memory=cast(MemoryFacade, memory),
         activity=cast(ActivityFacade, object()),
         expression=cast(ExpressionFacade, _FakeExpression()),
+        encounter=cast(EncounterFacade, object()),
         evaluator=cast(Evaluator, object()),
         config=Config(),
     )

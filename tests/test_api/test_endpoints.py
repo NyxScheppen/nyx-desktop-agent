@@ -1,16 +1,19 @@
 # pyright: reportPrivateUsage=false
-from typing import cast
+from typing import Any, cast
 
 from httpx import ASGITransport, AsyncClient
 
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
+from nyx.encounter.facade import EncounterFacade
 from nyx.enums import (
     EmotionCategory,
+    EncounterKind,
     EnergyState,
     EventType,
     MemoryType,
+    OptionTone,
     Source,
 )
 from nyx.eval.evaluator import Evaluator
@@ -19,7 +22,16 @@ from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import _App, build_app
 from nyx.memory.facade import MemoryFacade
-from nyx.types import Annotation, CurrentState, Event, Material, Memory, ReadingNote
+from nyx.types import (
+    Annotation,
+    CurrentState,
+    Encounter,
+    EncounterOption,
+    Event,
+    Material,
+    Memory,
+    ReadingNote,
+)
 
 
 def _mk_state() -> CurrentState:
@@ -151,6 +163,7 @@ def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
         memory=cast(MemoryFacade, memory),
         activity=cast(ActivityFacade, object()),
         expression=cast(ExpressionFacade, object()),
+        encounter=cast(EncounterFacade, object()),
         evaluator=cast(Evaluator, object()),
         config=Config(),
     )
@@ -376,3 +389,74 @@ async def test_explore_endpoint_busy_returns_409() -> None:
     async with _client(app) as client:
         resp = await client.post("/api/explore", json={"topic": "深海鱼"})
     assert resp.status_code == 409
+
+
+class _FakeEncounter:
+    def __init__(self) -> None:
+        self.choose_calls: list[tuple[str, int]] = []
+        self.choose_result: Encounter | None = None
+        self.current: dict[str, Any] | None = None
+
+    async def choose(self, encounter_id: str, option_index: int) -> Encounter | None:
+        self.choose_calls.append((encounter_id, option_index))
+        return self.choose_result
+
+    def get_current(self) -> dict[str, Any] | None:
+        return self.current
+
+
+def _enc_result() -> Encounter:
+    return Encounter(
+        id="enc1", kind=EncounterKind.RANDOM_EVENT, text="开场",
+        options=[EncounterOption(text="走", tone=OptionTone.BOLD)],
+        correlation_id="c1", started_at=0.0, chosen_index=0,
+    )
+
+
+async def test_encounter_choose_endpoint() -> None:
+    fake = _FakeEncounter()
+    fake.choose_result = _enc_result()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.encounter = cast(EncounterFacade, fake)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/encounter/choose", json={"encounter_id": "enc1", "option_index": 0}
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"encounter_id": "enc1", "chosen": 0}
+    assert fake.choose_calls == [("enc1", 0)]
+
+
+async def test_encounter_choose_none_returns_409() -> None:
+    fake = _FakeEncounter()  # choose_result None
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.encounter = cast(EncounterFacade, fake)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/encounter/choose", json={"encounter_id": "x", "option_index": 0}
+        )
+    assert resp.status_code == 409
+
+
+async def test_encounter_current_endpoint() -> None:
+    fake = _FakeEncounter()
+    fake.current = {
+        "encounter_id": "enc1", "kind": "random_event", "text": "开场",
+        "options": [{"index": 0, "text": "走"}],
+    }
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.encounter = cast(EncounterFacade, fake)
+    async with _client(app) as client:
+        resp = await client.get("/api/encounter/current")
+    assert resp.status_code == 200
+    assert resp.json()["encounter_id"] == "enc1"
+
+
+async def test_encounter_current_null() -> None:
+    fake = _FakeEncounter()  # current None
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.encounter = cast(EncounterFacade, fake)
+    async with _client(app) as client:
+        resp = await client.get("/api/encounter/current")
+    assert resp.status_code == 200
+    assert resp.json() is None

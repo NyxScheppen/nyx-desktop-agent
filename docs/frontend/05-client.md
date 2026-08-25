@@ -1,6 +1,6 @@
 # REST 客户端（`api/client.ts`）
 
-> 薄 fetch 封装：22 个端点函数 + 统一错误契约。被 `chatStore`（`postChat`/`getEventsLog`）、`innerLifeStore`（`getState`）、`usePresence`（`postObserve`）、四个快照 store（`getDesires`/`getActivity`/`getActivityResults`/`getMemories`/`getEval`/`getTokens`）、`narrativeStore`（`getNarrative`）、`memoryStore`（`exportMemories`）、`materialsStore`（`uploadFile`/`getMaterials`）、`readingNotesStore`（`getReadingNotes`/`deleteReadingNote`）、`encounterStore`（`chooseEncounter`/`getCurrentEncounter`）共享。
+> 薄 fetch 封装：23 个端点函数 + 统一错误契约。被 `chatStore`（`postChat`/`getEventsLog`）、`innerLifeStore`（`getState`）、`usePresence`（`postObserve`）、四个快照 store（`getDesires`/`getActivity`/`getActivityResults`/`getMemories`/`getEval`/`getTokens`）、`narrativeStore`（`getNarrative`）、`memoryStore`（`exportMemories`）、`materialsStore`（`uploadFile`/`getMaterials`）、`readingNotesStore`（`getReadingNotes`/`deleteReadingNote`）、`encounterStore`（`chooseEncounter`/`getCurrentEncounter`）共享。
 > 范围：`api/client.ts` 全部。`BASE_URL` 常量在此定义，SSE 与 REST 共用（01-sse §3）。
 > 对齐后端：前端的基础设施独立成 spec，同 `04-db` / `05-event` / `03-llm` 各自独立。
 
@@ -15,6 +15,7 @@ async function postObserve(presence: Presence, windowTitle: string): Promise<{ e
 async function getDesires(): Promise<DesireState>                                // GET /api/desires
 async function getActivity(): Promise<ActivitySnapshot>                          // GET /api/activity
 async function getActivityResults(): Promise<Activity[]>                          // GET /api/activity/results
+async function postExplore(topic?): Promise<{ activity_id: string }>              // POST /api/explore
 async function getMemories(tag?, type?): Promise<Memory[]>                       // GET /api/memories?tag=&type=
 async function searchMemories(query: string): Promise<Memory[]>                 // GET /api/memories/search?q=
 async function getEval(limit?): Promise<EvalReport[]>                            // GET /api/eval?limit=
@@ -60,6 +61,7 @@ async function getCurrentEncounter(): Promise<EncounterCurrent | null>          
   - `getDesires`：`GET /api/desires` → `DesireState` 解析正确。
   - `getActivity`：`GET /api/activity` → `ActivitySnapshot` 解析正确。
   - `getActivityResults`：`GET /api/activity/results` → `Activity[]` 解析正确。
+  - `postExplore`：`POST /api/explore`、无 topic 发空 body `{}`、有 topic 发 `{topic}` → `{activity_id}` 解析正确。
   - `getMemories`：`tag`/`type` 拼进 query（`?tag=user&type=long_term`）；无参不带 query string。
   - `searchMemories`：`query` 拼进 URL（`?q=` 经 `encodeURIComponent`）。
   - `getEval(limit)`：`?limit=5` 拼进 query。

@@ -1,16 +1,15 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import AnnounceLayer from "./components/AnnounceLayer";
-import ExplorationMap from "./components/exploration/ExplorationMap";
-import StatusBar from "./components/StatusBar";
-import ChatPanel from "./components/chat/ChatPanel";
-import Avatar from "./components/inner/Avatar";
+import ChatInput from "./components/chat/ChatInput";
 import InnerWorld from "./components/layout/InnerWorld";
-import SidePanel from "./components/layout/SidePanel";
-import Sakura from "./components/scene/Sakura";
+import LeftPanel from "./components/shell/LeftPanel";
+import ScrollArea from "./components/shell/ScrollArea";
+import EvalPanel from "./components/panels/EvalPanel";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
 import { useActivityStore } from "./stores/activityStore";
+import { useEncounterStore } from "./stores/encounterStore";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { ConnectionState } from "./types/api";
@@ -21,30 +20,48 @@ const CONNECTION_LABEL: Record<ConnectionState, string> = {
   closed: "已断开",
 };
 
-// App 组合装配（01-sse §6 + 视觉改造布局 §1）：全屏三层——背景柔光 + 樱花 →
-// 左侧半身像立绘（常驻）+ 右侧「对话框 / 设置」双模式切换（对话框头部「设置」按钮进入，设置面板「返回对话」退出）。
-// useSSE 只挂一次，子组件读 store；背景色调/背景图由 settingsStore 驱动 .app-bg 内联样式。
+// 字体大小档 → --text-scale 数值（04 书卷风 §4）。
+const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
+  small: 0.9,
+  medium: 1,
+  large: 1.12,
+};
+
+// 游戏壳装配（06-game-shell）：三区布局——左面板 + 书卷区域 + Galgame 对话框。
+// useSSE 只挂一次；点左面板摘要弹 InnerWorld 详情；Ctrl+Shift+D 切调试页（eval+token）。
 export default function App() {
   const status = useSSE(dispatchEvent);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
   const refreshActivity = useActivityStore((s) => s.refresh);
+  const refreshEncounter = useEncounterStore((s) => s.refresh);
   usePresence();
-  const [view, setView] = useState<"chat" | "settings">("chat");
-  const [openCategory, setOpenCategory] = useState<number | null>(null);
-  const [mapOpen, setMapOpen] = useState(false);
+  const [innerOpen, setInnerOpen] = useState<number | null>(null);
+  const [debugOpen, setDebugOpen] = useState(false);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
+  const fontScale = useSettingsStore((s) => s.fontScale);
 
-  // SSE 恢复连接后重拉快照（断线期间 emotion_update / activity_* 可能丢失）。
-  // activity 也在此重拉，保证底部状态条开机即显示当前活动（不再依赖打开「活动」面板）。
+  // SSE 恢复连接后重拉快照 + 未决遭遇（断线期间 encounter_start/emotion_update 可能丢失）
   useEffect(() => {
     if (status === "open") {
       refreshState();
       void refreshActivity();
+      void refreshEncounter();
     }
-  }, [status, refreshState, refreshActivity]);
+  }, [status, refreshState, refreshActivity, refreshEncounter]);
 
-  // 背景：有图以图铺底（cover）；无图且有色调用纯色替默认粉渐变。图 + 色并存时叠一层半透明滤镜。
+  // 调试页快捷键（隐藏入口）：Ctrl+Shift+D
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "D" && e.ctrlKey && e.shiftKey) {
+        setDebugOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // 背景：有图以图铺底（cover）；无图有色调作纯色；默认羊皮纸（--parchment）。
   const bgStyle: CSSProperties = {};
   if (image !== null) {
     bgStyle.backgroundImage = `url(${image})`;
@@ -54,44 +71,50 @@ export default function App() {
     bgStyle.background = tint;
   }
 
+  const shellStyle = {
+    "--text-scale": FONT_SCALE_VALUE[fontScale],
+  } as CSSProperties;
+
   return (
     <div className="app">
       <div className="app-bg" aria-hidden="true" style={bgStyle} />
       {tint !== null && image !== null && (
         <div className="app-bg-tint" aria-hidden="true" style={{ backgroundColor: tint }} />
       )}
-      <Sakura />
 
       <header className="app-topbar">
         <span className="scene-title">✦ Nyx ✦</span>
         <div className="topbar-right">
-          <button className="explore-toggle" onClick={() => setMapOpen((v) => !v)}>
-            探索
-          </button>
           <span className="connection-state">{CONNECTION_LABEL[status]}</span>
         </div>
       </header>
 
-      <main className="app-stage">
-        <Avatar />
-        {view === "chat" ? (
-          <ChatPanel
-            onOpenSettings={() => setView("settings")}
-            onOpenInner={(i) => setOpenCategory((cur) => (cur === i ? null : i))}
-          />
-        ) : (
-          <SidePanel onBack={() => setView("chat")} />
-        )}
+      <main className="game-shell" style={shellStyle}>
+        <LeftPanel onOpenInner={setInnerOpen} />
+        <div className="game-main">
+          <ScrollArea />
+          <ChatInput />
+        </div>
       </main>
-      {openCategory !== null && (
+
+      {innerOpen !== null && (
         <InnerWorld
-          key={openCategory}
-          categoryIndex={openCategory}
-          onClose={() => setOpenCategory(null)}
+          key={innerOpen}
+          categoryIndex={innerOpen}
+          onClose={() => setInnerOpen(null)}
         />
       )}
-      {mapOpen && <ExplorationMap onClose={() => setMapOpen(false)} />}
-      <StatusBar />
+      {debugOpen && (
+        <div className="debug-overlay">
+          <div className="debug-overlay__bar">
+            <span>调试</span>
+            <button type="button" onClick={() => setDebugOpen(false)}>
+              关闭
+            </button>
+          </div>
+          <EvalPanel />
+        </div>
+      )}
       <AnnounceLayer />
     </div>
   );

@@ -1,7 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatInput from "../src/components/chat/ChatInput";
-import ChatPanel from "../src/components/chat/ChatPanel";
 import MessageBubble from "../src/components/chat/MessageBubble";
 import MessageList from "../src/components/chat/MessageList";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
@@ -63,11 +62,17 @@ describe("MessageBubble", () => {
     expect(el.closest(".message-bubble")).toHaveClass("message-bubble--think");
   });
 
-  it("initiate_chat → 带「搭话」标记 + 逐字 content", () => {
+  it("initiate_chat → 带「欲望搭话」标记 + 逐字 content", () => {
     render(<MessageBubble message={makeMsg("initiate_chat", "nyx", "在忙吗？")} ready onTyped={() => {}} />);
-    expect(screen.getByText("搭话")).toBeInTheDocument(); // 标记即时
+    expect(screen.getByText("欲望搭话")).toBeInTheDocument(); // 标记即时
     typeDone();
     expect(screen.getByText("在忙吗？")).toBeInTheDocument();
+  });
+
+  it("encounter → 带「遭遇」标记 + 即时 content", () => {
+    render(<MessageBubble message={makeMsg("encounter", "nyx", "结局叙事")} ready onTyped={() => {}} />);
+    expect(screen.getByText("遭遇")).toBeInTheDocument(); // 徽标即时
+    expect(screen.getByText("结局叙事")).toBeInTheDocument(); // 不逐字，即时全量
   });
 
   it("user message → 右气泡 class（即时，不打字）", () => {
@@ -133,53 +138,6 @@ describe("MessageList", () => {
     // think 打完 → markTyped → speak 就绪，两条都完整上屏
     expect(screen.getByText("内心话")).toBeInTheDocument();
     expect(screen.getByText("对话话")).toBeInTheDocument();
-  });
-});
-
-describe("ChatPanel", () => {
-  beforeEach(() => {
-    useChatStore.getState().reset();
-    vi.useFakeTimers();
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("订阅 messages 并透传给 MessageList 渲染", () => {
-    // ChatPanel 挂载会 loadHistory（getEventsLog → fetch），stub 空返回避免真实网络噪声
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
-    );
-    useChatStore.setState({ messages: [makeMsg("speak", "nyx", "订阅上屏")] });
-    render(<ChatPanel onOpenSettings={() => {}} onOpenInner={() => {}} />);
-    typeDone();
-    expect(screen.getByText("订阅上屏")).toBeInTheDocument();
-  });
-
-  it("头部「设置」按钮触发 onOpenSettings", () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
-    );
-    const onOpenSettings = vi.fn();
-    render(<ChatPanel onOpenSettings={onOpenSettings} onOpenInner={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    expect(onOpenSettings).toHaveBeenCalledTimes(1);
-  });
-
-  it("头部「内在/空间/记录」三按钮，点击传对应分类 index", () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => [] } as Response),
-    );
-    const onOpenInner = vi.fn();
-    render(<ChatPanel onOpenSettings={() => {}} onOpenInner={onOpenInner} />);
-    for (const label of ["内在", "空间", "记录"]) {
-      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
-    }
-    fireEvent.click(screen.getByRole("button", { name: "空间" }));
-    expect(onOpenInner).toHaveBeenCalledWith(1);
   });
 });
 

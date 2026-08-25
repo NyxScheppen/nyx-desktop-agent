@@ -73,7 +73,7 @@ expression:
 
 exploration:
   web_enabled: false          # 联网搜索 opt-in
-  rate_limit_hours: 4         # 自由探索频率上限
+  rate_limit_hours: 1         # 自由探索频率上限
 ```
 
 ### nyx/config.py（完整）
@@ -150,7 +150,7 @@ class ExpressionConfig:
 @dataclass
 class ExplorationConfig:
     web_enabled: bool = False
-    rate_limit_hours: int = 4
+    rate_limit_hours: int = 1
 
 
 @dataclass

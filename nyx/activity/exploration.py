@@ -3,18 +3,26 @@
 import json
 from collections.abc import Hashable
 from typing import Any, TypedDict, cast
+from urllib.parse import urlparse
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from nyx.config import ExplorationConfig
+from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
-from nyx.events.event import SECONDS_PER_HOUR
+from nyx.events.bus import EventBus
+from nyx.events.event import SECONDS_PER_HOUR, internal_event
 from nyx.llm.client import LlmClient
 from nyx.tools.registry import ToolRegistry
 
 _MAX_STEPS = 8                    # 探索链最大步数（可推翻）
-_FREE_EXPLORATION_ENERGY = 60.0   # 探索需精力 >= 此值（可推翻，design §8.6）
+
+
+class ExplorationNode(TypedDict):
+    name: str
+    url: str
+    kind: str  # "search"（搜索动作，url 空）| "web"（访问的网页）
 
 
 class ExplorationState(TypedDict):
@@ -22,24 +30,21 @@ class ExplorationState(TypedDict):
     focus: str
     findings: list[str]
     notes: list[str]
+    nodes: list[ExplorationNode]
     step: int
     done: bool
+    activity_id: str
     correlation_id: str
 
 
-def should_explore(
-    energy: float, last_explored_at: float, rate_limit_hours: int, now: float
-) -> bool:
-    """自由探索升级门槛（纯函数）：精力充足 + 频率上限。
+def should_explore(last_explored_at: float, rate_limit_hours: int, now: float) -> bool:
+    """自由探索升级门槛（纯函数）：仅频率上限。
 
-    「探索欲」条件由调用方结构保证：READING 活动仅由 DesireType.EXPLORATION 映射而来
-    （13 desire_to_activity），故调用方在 activity.type is READING 时才调本函数。
+    「探索欲」条件由调用方结构保证：READING 活动仅由 DesireType.EXPLORATION 映射而来，
+    故调用方在 activity.type is READING 时才调本函数。
+    精力不再单独卡：探索消耗 -30，精力不足由 build_schedule 的 REST 穿插兜底。
     """
-    if energy < _FREE_EXPLORATION_ENERGY:
-        return False
-    if now - last_explored_at < rate_limit_hours * SECONDS_PER_HOUR:
-        return False
-    return True
+    return now - last_explored_at >= rate_limit_hours * SECONDS_PER_HOUR
 
 
 class Exploration:
@@ -50,15 +55,20 @@ class Exploration:
         llm: LlmClient,
         evaluator: Evaluator,
         tools: ToolRegistry,
+        bus: EventBus,
         exploration_config: ExplorationConfig,
     ) -> None:
         self._llm = llm
         self._evaluator = evaluator
         self._tools = tools
+        self._bus = bus
         self._web_enabled = exploration_config.web_enabled
-        self._actions = ["search_local", "read", "write_note"]
+        # 联网为主通道：web 开启时 search_web 是主搜索动作，
+        # search_local 作兜底（进 _search_web 内）
         if self._web_enabled:
-            self._actions.append("search_web")
+            self._actions = ["search_web", "read", "write_note"]
+        else:
+            self._actions = ["search_local", "read", "write_note"]
         self._graph = self._build_graph()
 
     def _build_graph(self) -> CompiledStateGraph[ExplorationState]:
@@ -81,13 +91,20 @@ class Exploration:
         g.add_edge("finalize", END)
         return g.compile()
 
-    async def run(self, seed: str, correlation_id: str) -> dict[str, Any]:
+    async def run(
+        self, seed: str, activity_id: str, correlation_id: str
+    ) -> dict[str, Any]:
         initial: ExplorationState = {
             "seed": seed, "focus": seed, "findings": [], "notes": [],
-            "step": 0, "done": False, "correlation_id": correlation_id,
+            "nodes": [], "step": 0, "done": False,
+            "activity_id": activity_id, "correlation_id": correlation_id,
         }
         result = await self._graph.ainvoke(initial)
-        return {"findings": result["findings"], "notes": result["notes"]}
+        return {
+            "findings": result["findings"],
+            "notes": result["notes"],
+            "nodes": result["nodes"],
+        }
 
     async def _plan_next(self, state: ExplorationState) -> ExplorationState:
         # MVP：LLM 判定 focus + done（json_mode）；step 达上限强制 done
@@ -121,20 +138,38 @@ class Exploration:
         return state
 
     async def _search_local(self, state: ExplorationState) -> ExplorationState:
+        await self._record_node(
+            state, {"name": f"搜索：{state['focus']}", "url": "", "kind": "search"}
+        )
         res = await self._tools.call("local_search", {"query": state["focus"]})
         state["findings"].extend(str(r) for r in res)
         return state
 
     async def _search_web(self, state: ExplorationState) -> ExplorationState:
-        res = await self._tools.call("web_search", {"query": state["focus"]})
+        focus = state["focus"]
+        await self._record_node(
+            state, {"name": f"搜索：{focus}", "url": "", "kind": "search"}
+        )
+        res = await self._tools.call("web_search", {"query": focus})
+        if not res:
+            # 联网失败/无结果 → 本地兜底（web_enabled 时 search_local 不再独立轮转）
+            res = await self._tools.call("local_search", {"query": focus})
         state["findings"].extend(str(r) for r in res)
         if res:
-            # 搜到结果就顺手下第一条正文入书库（主动下载资料）；失败静默不崩探索
-            try:
-                fetched = await self._tools.call("web_fetch", {"url": res[0]["url"]})
-                state["findings"].append(f"已下载资料：{fetched}")
-            except Exception:
-                pass
+            first = res[0]
+            if isinstance(first, dict) and first.get("url"):
+                first = cast(dict[str, Any], first)
+                url = first["url"]
+                name = first.get("title") or _domain(url)
+                await self._record_node(
+                    state, {"name": name, "url": url, "kind": "web"}
+                )
+                # 顺手下第一条正文入书库；失败静默不崩探索
+                try:
+                    fetched = await self._tools.call("web_fetch", {"url": url})
+                    state["findings"].append(f"已下载资料：{fetched}")
+                except Exception:
+                    pass
         return state
 
     async def _read(self, state: ExplorationState) -> ExplorationState:
@@ -156,12 +191,42 @@ class Exploration:
     async def _finalize(self, state: ExplorationState) -> ExplorationState:
         return state
 
+    async def pick_topic(self, correlation_id: str) -> str:
+        """好奇驱动选题：无用户指定主题时，让尼克斯自己定一个可上网搜索的话题。"""
+        output = await self._llm.complete(
+            [
+                {"role": "system", "content": _EXPLORATION_TOPIC_SYSTEM},
+                {"role": "user", "content": "给一个你今天好奇、想上网搜索探索的主题"},
+            ],
+            module="activity",
+            output_type="exploration_topic",
+            correlation_id=correlation_id,
+            json_mode=True,
+        )
+        await self._evaluator.evaluate(output)
+        plan = json.loads(output.content)
+        if not isinstance(plan, dict):
+            raise ValueError(f"探索选题 JSON 应是对象，得到 {type(plan).__name__}")
+        plan = cast(dict[str, Any], plan)
+        return str(plan.get("topic") or "有趣的新鲜事")
+
+    async def _record_node(
+        self, state: ExplorationState, node: ExplorationNode
+    ) -> None:
+        """记一条探索节点并广播 EXPLORATION_STEP（前端地图实时点亮）。"""
+        state["nodes"].append(node)
+        await self._bus.publish(internal_event(
+            EventType.EXPLORATION_STEP,
+            {"activity_id": state["activity_id"], "node": dict(node)},
+            state["correlation_id"],
+        ))
+
     def _route(self, state: ExplorationState) -> str:
         if state["done"]:
             return "finalize"
-        # MVP：确定性轮转（与 self._actions 对齐，含 search_web 时 4 步一轮），
-        # 不靠 LLM 选具体动作
-        # step 在 _plan_next 里先 +1，故 -1 对齐到 actions[0]=search_local 起始
+        # MVP：确定性轮转（与 self._actions 对齐，3 步一轮），不靠 LLM 选具体动作。
+        # web 开启时 actions[0]=search_web 起始；web 关闭时 =search_local 起始。
+        # step 在 _plan_next 里先 +1，故 -1 对齐到 actions[0]。
         return self._actions[(state["step"] - 1) % len(self._actions)]
 
 
@@ -169,3 +234,14 @@ _EXPLORATION_PLAN_SYSTEM = (
     "你是尼克斯的探索规划器。按 JSON 输出 {focus, done}，"
     "决定下一步聚焦对象与是否结束。"
 )
+
+
+_EXPLORATION_TOPIC_SYSTEM = (
+    "你是尼克斯。给一个具体、可上网搜索的探索主题，按 JSON 输出 {topic}。"
+)
+
+
+def _domain(url: str) -> str:
+    """网页节点名兜底：title 缺失时用域名。"""
+    host = urlparse(url).hostname
+    return host or url

@@ -22,6 +22,7 @@ class EventType(StrEnum):
     ACTIVITY_START = "activity_start"      # 活动开始
     ACTIVITY_END = "activity_end"          # 活动结束
     ACTIVITY_INTERRUPTED = "activity_interrupted"  # 活动打断
+    EXPLORATION_STEP = "exploration_step"  # 探索逐步进度（每节点一推，仅广播前端）
 
 
 class Source(StrEnum):

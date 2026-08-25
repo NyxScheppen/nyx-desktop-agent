@@ -3,6 +3,7 @@ import { useActivityStore } from "../stores/activityStore";
 import { useAnnounceStore } from "../stores/announceStore";
 import { useChatStore } from "../stores/chatStore";
 import { useDesireStore } from "../stores/desireStore";
+import { useExplorationStore } from "../stores/explorationStore";
 import { useInnerLifeStore } from "../stores/innerLifeStore";
 import { useMemoryStore } from "../stores/memoryStore";
 import { useNarrativeStore } from "../stores/narrativeStore";
@@ -63,6 +64,9 @@ export function dispatchEvent(e: SseEvent): void {
       });
       return;
     }
+    case "exploration_step":
+      useExplorationStore.getState().onStep(e);
+      return;
     case "reflection_done": {
       // 反思完成：长期欲望（add_long_term 不发 desire_generated）+ 叙事三件套刷新；
       // story 真新增才高亮叙事条目 + 冒气泡（去重跳过则静默刷新，不打扰）。

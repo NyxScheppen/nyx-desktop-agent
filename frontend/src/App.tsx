@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import AnnounceLayer from "./components/AnnounceLayer";
+import ExplorationMap from "./components/exploration/ExplorationMap";
 import StatusBar from "./components/StatusBar";
 import ChatPanel from "./components/chat/ChatPanel";
 import Avatar from "./components/inner/Avatar";
@@ -30,6 +31,7 @@ export default function App() {
   usePresence();
   const [view, setView] = useState<"chat" | "settings">("chat");
   const [openCategory, setOpenCategory] = useState<number | null>(null);
+  const [mapOpen, setMapOpen] = useState(false);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
 
@@ -63,6 +65,9 @@ export default function App() {
       <header className="app-topbar">
         <span className="scene-title">✦ Nyx ✦</span>
         <div className="topbar-right">
+          <button className="explore-toggle" onClick={() => setMapOpen((v) => !v)}>
+            探索
+          </button>
           <span className="connection-state">{CONNECTION_LABEL[status]}</span>
         </div>
       </header>
@@ -85,6 +90,7 @@ export default function App() {
           onClose={() => setOpenCategory(null)}
         />
       )}
+      {mapOpen && <ExplorationMap onClose={() => setMapOpen(false)} />}
       <StatusBar />
       <AnnounceLayer />
     </div>

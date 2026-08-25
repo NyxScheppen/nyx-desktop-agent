@@ -50,7 +50,17 @@ type ReflectionDoneEvent = SseBase & {
   story_is_new: boolean; // true = 故事真新增（去重通过）；false = 与已有片段重复、未追加
 };
 
-// 未消费的 11 类：无消费者，payload 保持宽松。
+/** 探索地图节点：search = 搜索动作（url 空），web = 访问的网页。 */
+type ExplorationNode = { name: string; url: string; kind: "search" | "web" };
+
+/** 探索实时进度帧（exploration_step）：探索链每访问一个节点推一次。 */
+type ExplorationStepEvent = SseBase & {
+  event: "exploration_step";
+  activity_id: string;
+  node: ExplorationNode;
+};
+
+// 未消费的 12 类：无消费者，payload 保持宽松。
 type OpaqueEvent = SseBase & {
   event: "clock_tick" | "observation_state" | "reflection"
     | "memory_created" | "memory_promoted"
@@ -61,7 +71,8 @@ type OpaqueEvent = SseBase & {
 type SseEvent =
   | TextEvent<"speak"> | TextEvent<"ask"> | TextEvent<"think">
   | TextEvent<"mutter"> | TextEvent<"initiate_chat">
-  | UserMessageEvent | EmotionUpdateEvent | ReflectionDoneEvent | OpaqueEvent;
+  | UserMessageEvent | EmotionUpdateEvent | ReflectionDoneEvent
+  | ExplorationStepEvent | OpaqueEvent;
 
 type ConnectionState = "connecting" | "open" | "closed";
 ```
@@ -79,7 +90,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 - **返回**：`ConnectionState`，供 App 显示连接状态（右上角「已连接/重连中」）。
 - **行为**：
   1. `useEffect` 里 `new EventSource(BASE_URL + "/api/events")`，`BASE_URL` 来自统一常量（空 = 相对路径，走 Vite proxy 同源转发到后端 8000）。
-  2. 对 19 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` → 拼 `SseEvent` → `dispatch`。
+  2. 对 21 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` → 拼 `SseEvent` → `dispatch`。
   3. `onopen` / `onerror`：更新 `ConnectionState`。`EventSource` 浏览器原生自动重连（`onerror` 时置 `connecting`），后端重启后自动恢复，无需手写重连循环。
   4. cleanup：`source.close()`（防重复挂载泄漏）。
 - **解析失败**：`JSON.parse` 抛错 → `console.error` + 跳过该帧（不崩整个流）；`data` 缺 `event_id`/`correlation_id` 时同样跳过（防御，正常不触发）。
@@ -107,6 +118,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `desire_generated`/`desire_satisfied`/`desire_expired` | `desireStore` | `refresh()` | 欲望变化 → 重拉快照（事件只带 `desire_id`） |
 | `activity_start`/`activity_interrupted` | `activityStore` | `refresh()` | 活动开始/抢占 → 重拉快照（事件只带 `activity_id`） |
 | `activity_end` | `activityStore` + `announceStore` | `refresh()` 后按 `activity_id` 找产出并 `announce("activity", …)` | 活动完成 → 重拉快照 + 冒一句产出 |
+| `exploration_step` | `explorationStore` | `onStep` | 点亮地图实时节点：`liveNodes` 追加帧 `node`、`activityId` 置为帧 `activity_id` |
 | `memory_created`/`memory_promoted` | `memoryStore` | `refresh()` | 记忆变化 → 重拉快照（事件只带 `memory_id`） |
 | `reflection_done` | `desireStore` + `narrativeStore` + `announceStore` | `refresh()` +（`story_is_new` 时）`setHighlightedStory` / `announce("mutter", …)` + `refresh()` | 反思完成 → 欲望/叙事重拉快照 + 新故事高亮（叙事面板定位闪烁）+ 头像旁冒一句 |
 | `clock_tick`/`observation_state`/`reflection` | — | — | 无消费者 |
@@ -148,6 +160,9 @@ function dispatchEvent(e: SseEvent): void {
         const text = activityAnnouncement(a);
         if (text !== null) announceStore.announce("activity", text);
       });
+      return;
+    case "exploration_step":
+      explorationStore.onStep(e);
       return;
     case "reflection_done":
       void desireStore.refresh();

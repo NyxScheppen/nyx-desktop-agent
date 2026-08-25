@@ -1250,6 +1250,62 @@ async def test_maybe_start_reading_uses_topic(
         await database.conn.close()
 
 
+async def test_start_exploration_returns_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    facade, store, bus, database = await _new_facade()
+    try:
+        async with _running(bus):
+            activity_id = await facade.start_exploration("深海鱼")
+            await _await_task(facade)
+        assert isinstance(activity_id, str)
+        acts = await store.list_schedule(0.0)
+        assert [a.id for a in acts] == [activity_id]
+        assert acts[0].type is ActivityType.FREE_EXPLORATION
+        assert acts[0].progress["description"] == "深海鱼"
+    finally:
+        await database.conn.close()
+
+
+async def test_start_exploration_busy_raises() -> None:
+    facade, _store, _bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0
+    )
+    try:
+        await facade._maybe_start_activity()
+        assert facade._task is not None and not facade._task.done()
+        with pytest.raises(RuntimeError):
+            await facade.start_exploration("深海鱼")
+        await facade._task
+    finally:
+        await database.conn.close()
+
+
+async def test_start_exploration_none_topic_picks_topic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+
+    async def fake_pick_topic(correlation_id: str) -> str:
+        return "深海鱼"
+
+    facade, store, bus, database = await _new_facade()
+    try:
+        monkeypatch.setattr(facade._exploration, "pick_topic", fake_pick_topic)
+        async with _running(bus):
+            activity_id = await facade.start_exploration(None)
+            await _await_task(facade)
+        assert isinstance(activity_id, str)
+        acts = await store.list_schedule(0.0)
+        assert [a.id for a in acts] == [activity_id]
+        assert acts[0].progress["description"] == "深海鱼"
+    finally:
+        await database.conn.close()
+
+
 # ---- 恢复/续做 ----
 
 

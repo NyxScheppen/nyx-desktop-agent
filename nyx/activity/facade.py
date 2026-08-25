@@ -255,7 +255,7 @@ class ActivityFacade:
         self._config = config
         self._canon = canon
         self._exploration = Exploration(
-            llm, evaluator, tools, exploration_config
+            llm, evaluator, tools, bus, exploration_config
         )
         self._exploration_config = exploration_config
         self._start_lock = asyncio.Lock()
@@ -448,6 +448,36 @@ class ActivityFacade:
         """删一条批注。"""
         await self._reading_notes.delete_annotation(annotation_id)
 
+    async def start_exploration(self, topic: str | None) -> str:
+        """手动触发一次自由探索（无视欲望/频率门槛），返回 activity_id。
+
+        复用 _execute 执行管线；不恢复 PAUSED（手动是全新出发）。
+        已有活动在跑时 raise RuntimeError（端点转 409）。
+        """
+        async with self._start_lock:
+            if self._task is not None and not self._task.done():
+                raise RuntimeError("已有活动进行中")
+            current = await self._store.get_current()
+            if current is not None and current.status is ActivityStatus.RUNNING:
+                raise RuntimeError("已有活动进行中")
+            now = time.time()
+            activity = Activity(
+                id=str(uuid.uuid4()),
+                type=ActivityType.FREE_EXPLORATION,
+                schedule_block_id=_schedule_block_id(now, self._config.grid_minutes),
+                status=ActivityStatus.PENDING,
+                progress={"description": topic},
+                started_at=now,
+            )
+            if topic is None:
+                activity.progress["description"] = await self._exploration.pick_topic(
+                    activity.id
+                )
+            await self._store.insert(activity)
+            self._task = asyncio.create_task(self._execute(activity))
+            self._task.add_done_callback(_harvest_task_exception)
+            return activity.id
+
     async def read_material(
         self, path: str, filename: str, total_chars: int, correlation_id: str
     ) -> None:
@@ -535,7 +565,6 @@ class ActivityFacade:
                     # 任何情况都不让 LLM 凭空编造读书内容
                     last = await self._store.get_last_exploration()
                     if should_explore(
-                        state.energy,
                         last,
                         self._exploration_config.rate_limit_hours,
                         time.time(),
@@ -614,6 +643,7 @@ class ActivityFacade:
         if t is ActivityType.FREE_EXPLORATION:
             return await self._exploration.run(
                 seed=str(activity.progress.get("description") or activity.id),
+                activity_id=activity.id,
                 correlation_id=_correlation_id(activity),
             )
         if t is ActivityType.OBSERVE_USER:

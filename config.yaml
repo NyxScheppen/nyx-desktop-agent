@@ -36,7 +36,7 @@ expression:
 
 exploration:
   web_enabled: true           # 联网搜索 opt-in（无书可读时自由上网探索依赖此项）
-  rate_limit_hours: 4         # 自由探索频率上限
+  rate_limit_hours: 1         # 自由探索频率上限
 
 vision:
   enabled: false              # 屏幕视觉 opt-in（design §8.5，手动开启）

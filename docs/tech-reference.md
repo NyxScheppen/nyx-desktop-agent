@@ -347,7 +347,7 @@ expression:
 
 exploration:
   web_enabled: false          # 联网搜索 opt-in
-  rate_limit_hours: 4         # 自由探索频率上限
+  rate_limit_hours: 1         # 自由探索频率上限
 
 vision:
   enabled: false              # 屏幕视觉 opt-in（手动开启）

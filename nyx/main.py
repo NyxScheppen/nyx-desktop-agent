@@ -376,8 +376,12 @@ class _AnnotationPayload(BaseModel):
     content: str
 
 
+class _ExplorePayload(BaseModel):
+    topic: str | None = None
+
+
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：21 个端点（20 个 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：22 个端点（21 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")
@@ -499,6 +503,14 @@ def build_app(app: _App) -> FastAPI:
         )
         await app.bus.publish(event)
         return {"event_id": event.id}
+
+    @fast.post("/api/explore")
+    async def api_explore(payload: _ExplorePayload) -> dict[str, str]:
+        try:
+            activity_id = await app.activity.start_exploration(payload.topic)
+        except RuntimeError as exc:  # 已有活动在跑
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"activity_id": activity_id}
 
     @fast.get("/api/events")
     async def api_events() -> StreamingResponse:

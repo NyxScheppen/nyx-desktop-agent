@@ -94,6 +94,8 @@ class _FakeActivity:
         self.deleted_notes: list[str] = []
         self.deleted_annotations: list[str] = []
         self.added_annotations: list[tuple[str, str]] = []
+        self.explore_topics: list[str | None] = []
+        self.explore_busy = False
 
     async def list_materials(self) -> list[Material]:
         self.list_calls += 1
@@ -133,6 +135,12 @@ class _FakeActivity:
 
     async def delete_annotation(self, annotation_id: str) -> None:
         self.deleted_annotations.append(annotation_id)
+
+    async def start_exploration(self, topic: str | None) -> str:
+        if self.explore_busy:
+            raise RuntimeError("已有活动进行中")
+        self.explore_topics.append(topic)
+        return "exp-1"
 
 
 def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
@@ -337,3 +345,34 @@ async def test_delete_annotation_endpoint() -> None:
     assert resp.status_code == 200
     assert resp.json() == {"deleted": "a1"}
     assert fake.deleted_annotations == ["a1"]
+
+
+async def test_explore_endpoint_no_topic() -> None:
+    fake = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake)
+    async with _client(app) as client:
+        resp = await client.post("/api/explore", json={})
+    assert resp.status_code == 200
+    assert resp.json() == {"activity_id": "exp-1"}
+    assert fake.explore_topics == [None]
+
+
+async def test_explore_endpoint_with_topic() -> None:
+    fake = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake)
+    async with _client(app) as client:
+        resp = await client.post("/api/explore", json={"topic": "深海鱼"})
+    assert resp.status_code == 200
+    assert fake.explore_topics == ["深海鱼"]
+
+
+async def test_explore_endpoint_busy_returns_409() -> None:
+    fake = _FakeActivity()
+    fake.explore_busy = True
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake)
+    async with _client(app) as client:
+        resp = await client.post("/api/explore", json={"topic": "深海鱼"})
+    assert resp.status_code == 409

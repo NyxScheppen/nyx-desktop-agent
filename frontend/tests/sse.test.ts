@@ -7,6 +7,7 @@ import { useActivityStore } from "../src/stores/activityStore";
 import { useAnnounceStore } from "../src/stores/announceStore";
 import { useChatStore } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
+import { useExplorationStore } from "../src/stores/explorationStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
 import { useNarrativeStore } from "../src/stores/narrativeStore";
@@ -128,6 +129,7 @@ describe("dispatchEvent", () => {
     useMemoryStore.setState({ data: null, error: null });
     useNarrativeStore.setState({ data: null, error: null, highlightedStory: null });
     useAnnounceStore.setState({ items: [] });
+    useExplorationStore.setState({ wishlist: [], liveNodes: [], activityId: null });
   });
 
   it("speak → chatStore（kind=speak）", () => {
@@ -307,6 +309,21 @@ describe("dispatchEvent", () => {
       kind: "activity",
       text: "读完啦：《小王子》 — 关于驯服",
     });
+  });
+
+  it("exploration_step → explorationStore.onStep（点亮地图节点）", () => {
+    dispatchEvent({
+      event: "exploration_step",
+      event_id: "s1",
+      correlation_id: "a1",
+      activity_id: "a1",
+      node: { name: "新闻", url: "https://example.com", kind: "web" },
+    });
+
+    expect(useExplorationStore.getState().liveNodes).toEqual([
+      { name: "新闻", url: "https://example.com", kind: "web" },
+    ]);
+    expect(useExplorationStore.getState().activityId).toBe("a1");
   });
 
   it("reflection_done（story_is_new）→ 欲望/叙事 refresh + 高亮 + 气泡", () => {

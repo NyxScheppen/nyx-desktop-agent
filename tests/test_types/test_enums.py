@@ -23,7 +23,7 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
         "ask", "think", "mutter", "initiate_chat", "emotion_update", "reflection",
         "reflection_done", "memory_created", "memory_promoted", "desire_generated",
         "desire_satisfied", "desire_expired", "activity_start", "activity_end",
-        "activity_interrupted",
+        "activity_interrupted", "exploration_step",
     },
     Source: {"external", "internal"},
     TickType: {

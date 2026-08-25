@@ -76,6 +76,16 @@ export async function getActivityResults(): Promise<Activity[]> {
   return request<Activity[]>(`${BASE_URL}/api/activity/results`);
 }
 
+export async function postExplore(
+  topic?: string,
+): Promise<{ activity_id: string }> {
+  return request<{ activity_id: string }>(`${BASE_URL}/api/explore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(topic !== undefined ? { topic } : {}),
+  });
+}
+
 export async function getMemories(
   tag?: string,
   type?: MemoryType,

@@ -70,7 +70,7 @@ class ExpressionConfig:
 @dataclass
 class ExplorationConfig:
     web_enabled: bool = False
-    rate_limit_hours: int = 4
+    rate_limit_hours: int = 1
 
 
 @dataclass

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { BASE_URL } from "../api/client";
 import type { ConnectionState, SseEvent } from "../types/api";
 
-// 后端 enums.py EventType 的 20 个 snake_case 值。
+// 后端 enums.py EventType 的 21 个 snake_case 值。
 // 命名事件（带 event: 行）只能按类型 addEventListener 收到，onmessage 收不到。
 // 前向兼容边界：后端新增 EventType 必须同步此数组 + types/api.ts 判别联合 +
 // dispatchEvent 分发表，否则新类型帧被浏览器静默丢弃（01-sse §4）。
@@ -27,6 +27,7 @@ const EVENT_TYPES = [
   "activity_start",
   "activity_end",
   "activity_interrupted",
+  "exploration_step",
 ];
 
 export function useSSE(dispatch: (e: SseEvent) => void): ConnectionState {

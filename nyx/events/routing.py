@@ -26,6 +26,7 @@ ROUTING: dict[EventType, list[str]] = {
     EventType.REFLECTION_DONE:     [],
     EventType.MEMORY_CREATED:      [],
     EventType.MEMORY_PROMOTED:     [],
+    EventType.EXPLORATION_STEP:    [],   # 探索进度：仅广播前端地图，无后端消费者
 }
 
 # TICK_ROUTING：clock_tick 按 content.tick_type 二次路由

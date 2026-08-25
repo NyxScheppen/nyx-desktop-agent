@@ -17,7 +17,7 @@
 - [ ] `store.py` 含 `ActivityStore`（`insert` / `get` / `get_current` / `get_paused_in_block` / `get_last_exploration` / `list_schedule` / `list_results` / `update`），与「`activity/store.py`（完整）」段逐字一致
 - [ ] `facade.py` 含 `ActivityFacade`：`on_tick(tick_type) -> None` / `on_desire_generated(event) -> None` / `select_activity(desires, state) -> Activity | None` / `complete_activity(activity) -> None` / `interrupt(activity_id, by_event) -> None` / `get_current() -> Activity | None` / `get_schedule() -> list[Activity]` / `get_results() -> list[Activity]` / `list_materials() -> list[Material]` / `read_material(path, filename, total_chars, correlation_id) -> None` / `list_reading_notes(limit) -> list[ReadingNote]` / `delete_reading_note(note_id) -> None` / `list_annotations(target_id) -> list[Annotation]` / `add_annotation(target_id, content) -> Annotation` / `delete_annotation(annotation_id) -> None`
 - [ ] `select_activity` 纯决策：无欲望→`None`；精力不足→`REST`；否则第一个可排程欲望→映射活动，`progress` 存 `desire_id`/`goal`/`correlation_id`/`description`
-- [ ] `READING` 升级 `FREE_EXPLORATION`：探索欲映射的读书在 `_maybe_start_activity` 里经 `should_explore`（精力充足 + 频率上限）判定升级；频率上限内降级为普通读书
+- [ ] `READING` 升级 `FREE_EXPLORATION`：探索欲映射的读书在 `_maybe_start_activity` 里经 `should_explore`（频率上限）判定升级；频率上限内降级为普通读书
 - [ ] 空槽默认：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`（精力疲惫 `< ENERGY_REST_THRESHOLD`→`IDLE_REFLECTION`、否则→`OBSERVE_USER`），`progress["desire_id"] is None`
 - [ ] 活动执行在**后台 task**（不阻塞事件总线）；`activity_start`/`activity_end`/`activity_interrupted` 由 facade 自己 `publish`、`source=INTERNAL`
 - [ ] `complete_activity`：goal 判定（`_goal_met` 纯函数）→ `status=COMPLETED` → 发布 `activity_end`（content 含 `activity_id`/`type`/`desire_id`/`goal_met`/`energy_delta`/`result`）
@@ -41,13 +41,13 @@
 - **并发守卫（同一时刻仅一个活动）**：`_start_lock` 串行化「查 running → insert PENDING → 翻 RUNNING」决策；但 `_execute` 在锁外异步翻 RUNNING，仅靠 `get_current`（只匹配 running，见 store）会留 TOCTOU 窗口（PENDING 已 insert 却查不到 running）。故锁内先同步查 `self._task` 未完成即 `return` 闭合窗口；`self._task` 在锁内赋值，天然串行
 - **执行失败 = INCOMPLETE + 上抛**：`_execute` 失败落 `INCOMPLETE`（`ended_at` 已记）后仍 `raise`（不吞异常）；`logger.exception` 记录详情，`add_done_callback(_harvest_task_exception)` 收割 fire-and-forget task 的异常，避免 asyncio「Task exception was never retrieved」警告静默漂着
 - **欲望状态接线（11 的 `mark_active`/`mark_suppressed`，V2）**：活动真正开始消费欲望时标 ACTIVE、非满足路径退出时释放 SUPPRESSED。三处均守卫 `isinstance(desire_id, str)`：`_execute` 置 RUNNING 后 `await self._desire.mark_active(desire_id)`（PENDING → ACTIVE）；`interrupt` 置 PAUSED/ABANDONED 落库后 `await self._desire.mark_suppressed(desire_id)`（ACTIVE → SUPPRESSED）；`_execute` 异常分支落 INCOMPLETE 后 `await self._desire.mark_suppressed(desire_id)`（ACTIVE → SUPPRESSED）。满足路径走既有 `complete_activity → ACTIVITY_END → satisfy`，由 11 的 `satisfy` 里「ACTIVE → PENDING」先行释放；续做路径（`_execute(resumed)`）`mark_active` 对 SUPPRESSED 是 no-op（守卫只 PENDING→ACTIVE），完成时 `satisfy` 从 SUPPRESSED 直达 SATISFIED 合法
-- **自由探索升级（design §8.6，13 已委托给 14）**：`select_activity` 保持基线映射（探索欲→`READING`），升级判定放 `_maybe_start_activity`（那里有 store/config/now，`select_activity` 保持纯决策）。「探索欲」条件由结构保证——`READING` 活动**仅**由 `DesireType.EXPLORATION` 映射而来（13 `desire_to_activity`），故调用方在 `activity.type is READING` 时才调 `should_explore`（只查精力 + 频率两项）
+- **自由探索升级（design §8.6，13 已委托给 14）**：`select_activity` 保持基线映射（探索欲→`READING`），升级判定放 `_maybe_start_activity`（那里有 store/config/now，`select_activity` 保持纯决策）。「探索欲」条件由结构保证——`READING` 活动**仅**由 `DesireType.EXPLORATION` 映射而来（13 `desire_to_activity`），故调用方在 `activity.type is READING` 时才调 `should_explore`（只查频率一项）
 - **读书 = 读本地书库（禁凭空编造，design §8.2 落地）**：`MaterialStore`（`material` 表）存用户喂的读物与分块进度。`read_material`（`USER_MATERIAL` 入口）先 `upsert` 注册再发起 READING 读第一块；探索欲触发的 `READING` 在 `_maybe_start_activity` 里**先按 `goal.topic` 走 `find_by_topic`**（命中读那本，C2）、否则 `next_readable()` 取**最近未读完的那本**续读，读完自动换下一本。**无书可读**（`next_readable()` 返回 None）→ 经 `should_explore` 转 `FREE_EXPLORATION`（限速中则退回默认活动）——任何路径都不让 LLM 凭空编造读书内容。三层兜底：`_maybe_start_activity` 不产无 source 的 READING、`_run_activity` 缺 source `raise`、`_run_reading_source` 只读真实文件块（空块聚合已有片段，不凭空编造）
 - **六种活动执行分派（`_run_activity`）**：
   - `READING`：`_run_reading_source` 分块读真实文件（切 `[read_chars, read_chars+6000)` 一块喂 LLM 产 `{book, note}`）→ result 附 `read_chars`/`total_chars` 推进进度；缺 `source` 直接 `raise ValueError`（**禁凭空编造**）；读到最后一块/空块时聚合全部片段 → 完整笔记落盘（`_aggregate_note` 1 次 LLM）。**滚动摘要接力**：续读时把「上次已读到第 N 字 + 此前片段笔记（`get_fragments`）」拼进 `extra_context`（`书名 + 上次已读 + 本次新读（第 N~M 字）`），让本次 note 自然承接已读部分、只续写本块新内容，避免几篇之间不连贯
   - `CREATION`：1 次 LLM（`json_mode=True`、`module="activity"`、`output_type="creation"`）→ result `{title, content}`，再把标题 `_sanitize_filename` 清洗成安全文件名落盘 `workspace/creations/<safe>.md`（`file_io` write），result 附 `path`。**创作注入人格声音 + 此刻心境**：system prompt 用 `_build_creation_system(canon, state)` 拼「canon 全文（含 §说话风格）+ 此刻心境（emotion/valence/arousal/energy/active_desires）+ 正向创作指令 + JSON 约束」，补上创作路径此前缺失的 canon（canon 只进对话、不进 `_ACTIVITY_SYSTEM`）——读书仍走 `_ACTIVITY_SYSTEM` 不动
   - `IDLE_REFLECTION`：直接 `await self._reflect`（组合根注入的 reflect 回调，1 LLM 在 inner_life），不发 `REFLECTION` 事件；result 回带 `{summary}`
-  - `FREE_EXPLORATION`：调 `Exploration.run()`（LangGraph 多步，seed = 欲望描述）→ result `{findings, notes}`
+  - `FREE_EXPLORATION`：调 `Exploration.run()`（LangGraph 多步，seed = 欲望描述）→ result `{findings, notes, nodes}`
   - `OBSERVE_USER`：调组合根注入的 `get_observation`（0 LLM）产 `{presence, window_title, screen_summary}`，`summary` 由 `build_observation_summary` 拼装（窗口优先、屏幕次之）；`REST`：0 LLM，result `{}`
 - **空槽默认（design §8.2 观察/发呆，13 §30 委托 14）**：`select_activity` 返回 `None`（无欲望/全互动欲）时 `_maybe_start_activity` 产 `_default_activity`——精力疲惫（`< ENERGY_REST_THRESHOLD`，从 12 `inner_life.emotion` 共享导入）→ `IDLE_REFLECTION`（+10 微恢复 + 反思回带 summary），否则 → `OBSERVE_USER`（-10 消耗 + 情报收集）。这是 `IDLE_REFLECTION`/`OBSERVE_USER` 的唯一触发来源（非欲望驱动、不进 13 `build_schedule`），补上后两条分支可达，不再死代码
 - **`activity_end` content 契约（11 §49 + 12 §45 引用，本 spec 定义完整形状）**：`{"activity_id": str, "type": str, "desire_id": str | None, "goal_met": bool | None, "energy_delta": float, "result": dict}`。`desire_id`/`goal_met` 由 11 `satisfy_from_activity_end` 消费（缺键/错类型跳过）；`energy_delta` 由 12 `_apply_energy` 消费（缺省 0）；`type`/`result` 由 09 `remember_activity` 消费（活动记忆）；`result` 进 SSE payload（tech-ref §4）
@@ -709,7 +709,7 @@ class ActivityFacade:
         self._config = config
         self._canon = canon
         self._exploration = Exploration(
-            llm, evaluator, tools, exploration_config
+            llm, evaluator, tools, bus, exploration_config
         )
         self._exploration_config = exploration_config
         self._start_lock = asyncio.Lock()
@@ -989,7 +989,6 @@ class ActivityFacade:
                     # 任何情况都不让 LLM 凭空编造读书内容
                     last = await self._store.get_last_exploration()
                     if should_explore(
-                        state.energy,
                         last,
                         self._exploration_config.rate_limit_hours,
                         time.time(),
@@ -1068,6 +1067,7 @@ class ActivityFacade:
         if t is ActivityType.FREE_EXPLORATION:
             return await self._exploration.run(
                 seed=str(activity.progress.get("description") or activity.id),
+                activity_id=activity.id,
                 correlation_id=_correlation_id(activity),
             )
         if t is ActivityType.OBSERVE_USER:
@@ -1338,18 +1338,26 @@ _AGGREGATE_SYSTEM = (
 import json
 from collections.abc import Hashable
 from typing import Any, TypedDict, cast
+from urllib.parse import urlparse
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from nyx.config import ExplorationConfig
+from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
-from nyx.events.event import SECONDS_PER_HOUR
+from nyx.events.bus import EventBus
+from nyx.events.event import SECONDS_PER_HOUR, internal_event
 from nyx.llm.client import LlmClient
 from nyx.tools.registry import ToolRegistry
 
 _MAX_STEPS = 8                    # 探索链最大步数（可推翻）
-_FREE_EXPLORATION_ENERGY = 60.0   # 探索需精力 >= 此值（可推翻，design §8.6）
+
+
+class ExplorationNode(TypedDict):
+    name: str
+    url: str
+    kind: str  # "search"（搜索动作，url 空）| "web"（访问的网页）
 
 
 class ExplorationState(TypedDict):
@@ -1357,24 +1365,21 @@ class ExplorationState(TypedDict):
     focus: str
     findings: list[str]
     notes: list[str]
+    nodes: list[ExplorationNode]
     step: int
     done: bool
+    activity_id: str
     correlation_id: str
 
 
-def should_explore(
-    energy: float, last_explored_at: float, rate_limit_hours: int, now: float
-) -> bool:
-    """自由探索升级门槛（纯函数）：精力充足 + 频率上限。
+def should_explore(last_explored_at: float, rate_limit_hours: int, now: float) -> bool:
+    """自由探索升级门槛（纯函数）：仅频率上限。
 
-    「探索欲」条件由调用方结构保证：READING 活动仅由 DesireType.EXPLORATION 映射而来
-    （13 desire_to_activity），故调用方在 activity.type is READING 时才调本函数。
+    「探索欲」条件由调用方结构保证：READING 活动仅由 DesireType.EXPLORATION 映射而来，
+    故调用方在 activity.type is READING 时才调本函数。
+    精力不再单独卡：探索消耗 -30，精力不足由 build_schedule 的 REST 穿插兜底。
     """
-    if energy < _FREE_EXPLORATION_ENERGY:
-        return False
-    if now - last_explored_at < rate_limit_hours * SECONDS_PER_HOUR:
-        return False
-    return True
+    return now - last_explored_at >= rate_limit_hours * SECONDS_PER_HOUR
 
 
 class Exploration:
@@ -1385,15 +1390,20 @@ class Exploration:
         llm: LlmClient,
         evaluator: Evaluator,
         tools: ToolRegistry,
+        bus: EventBus,
         exploration_config: ExplorationConfig,
     ) -> None:
         self._llm = llm
         self._evaluator = evaluator
         self._tools = tools
+        self._bus = bus
         self._web_enabled = exploration_config.web_enabled
-        self._actions = ["search_local", "read", "write_note"]
+        # 联网为主通道：web 开启时 search_web 是主搜索动作，
+        # search_local 作兜底（进 _search_web 内）
         if self._web_enabled:
-            self._actions.append("search_web")
+            self._actions = ["search_web", "read", "write_note"]
+        else:
+            self._actions = ["search_local", "read", "write_note"]
         self._graph = self._build_graph()
 
     def _build_graph(self) -> CompiledStateGraph[ExplorationState]:
@@ -1416,13 +1426,20 @@ class Exploration:
         g.add_edge("finalize", END)
         return g.compile()
 
-    async def run(self, seed: str, correlation_id: str) -> dict[str, Any]:
+    async def run(
+        self, seed: str, activity_id: str, correlation_id: str
+    ) -> dict[str, Any]:
         initial: ExplorationState = {
             "seed": seed, "focus": seed, "findings": [], "notes": [],
-            "step": 0, "done": False, "correlation_id": correlation_id,
+            "nodes": [], "step": 0, "done": False,
+            "activity_id": activity_id, "correlation_id": correlation_id,
         }
         result = await self._graph.ainvoke(initial)
-        return {"findings": result["findings"], "notes": result["notes"]}
+        return {
+            "findings": result["findings"],
+            "notes": result["notes"],
+            "nodes": result["nodes"],
+        }
 
     async def _plan_next(self, state: ExplorationState) -> ExplorationState:
         # MVP：LLM 判定 focus + done（json_mode）；step 达上限强制 done
@@ -1456,13 +1473,38 @@ class Exploration:
         return state
 
     async def _search_local(self, state: ExplorationState) -> ExplorationState:
+        await self._record_node(
+            state, {"name": f"搜索：{state['focus']}", "url": "", "kind": "search"}
+        )
         res = await self._tools.call("local_search", {"query": state["focus"]})
         state["findings"].extend(str(r) for r in res)
         return state
 
     async def _search_web(self, state: ExplorationState) -> ExplorationState:
-        res = await self._tools.call("web_search", {"query": state["focus"]})
+        focus = state["focus"]
+        await self._record_node(
+            state, {"name": f"搜索：{focus}", "url": "", "kind": "search"}
+        )
+        res = await self._tools.call("web_search", {"query": focus})
+        if not res:
+            # 联网失败/无结果 → 本地兜底（web_enabled 时 search_local 不再独立轮转）
+            res = await self._tools.call("local_search", {"query": focus})
         state["findings"].extend(str(r) for r in res)
+        if res:
+            first = res[0]
+            if isinstance(first, dict) and first.get("url"):
+                first = cast(dict[str, Any], first)
+                url = first["url"]
+                name = first.get("title") or _domain(url)
+                await self._record_node(
+                    state, {"name": name, "url": url, "kind": "web"}
+                )
+                # 顺手下第一条正文入书库；失败静默不崩探索
+                try:
+                    fetched = await self._tools.call("web_fetch", {"url": url})
+                    state["findings"].append(f"已下载资料：{fetched}")
+                except Exception:
+                    pass
         return state
 
     async def _read(self, state: ExplorationState) -> ExplorationState:
@@ -1484,12 +1526,23 @@ class Exploration:
     async def _finalize(self, state: ExplorationState) -> ExplorationState:
         return state
 
+    async def _record_node(
+        self, state: ExplorationState, node: ExplorationNode
+    ) -> None:
+        """记一条探索节点并广播 EXPLORATION_STEP（前端地图实时点亮）。"""
+        state["nodes"].append(node)
+        await self._bus.publish(internal_event(
+            EventType.EXPLORATION_STEP,
+            {"activity_id": state["activity_id"], "node": dict(node)},
+            state["correlation_id"],
+        ))
+
     def _route(self, state: ExplorationState) -> str:
         if state["done"]:
             return "finalize"
-        # MVP：确定性轮转（与 self._actions 对齐，含 search_web 时 4 步一轮），
-        # 不靠 LLM 选具体动作
-        # step 在 _plan_next 里先 +1，故 -1 对齐到 actions[0]=search_local 起始
+        # MVP：确定性轮转（与 self._actions 对齐，3 步一轮），不靠 LLM 选具体动作。
+        # web 开启时 actions[0]=search_web 起始；web 关闭时 =search_local 起始。
+        # step 在 _plan_next 里先 +1，故 -1 对齐到 actions[0]。
         return self._actions[(state["step"] - 1) % len(self._actions)]
 
 
@@ -1497,6 +1550,12 @@ _EXPLORATION_PLAN_SYSTEM = (
     "你是尼克斯的探索规划器。按 JSON 输出 {focus, done}，"
     "决定下一步聚焦对象与是否结束。"
 )
+
+
+def _domain(url: str) -> str:
+    """网页节点名兜底：title 缺失时用域名。"""
+    host = urlparse(url).hostname
+    return host or url
 ```
 
 ### `activity/observe.py`（完整）
@@ -1597,14 +1656,15 @@ class ScreenObserver:
   - [ ] **reading_note_store**（`test_reading_note_store.py`）：`upsert_by_path`（同 path 二次 upsert → 1 条、content 更新、id 不变；不同 path 同名 → 2 条互不删、`list_notes` 按 `created_at` 倒序）；`list_notes` 数批注（加两条批注 → `annotation_count=2`）；`delete` 级联（删笔记 → 笔记与批注都空）；`list_annotations` 升序；`delete_annotation`（删一条留其余）
   - [ ] **纯函数**（`test_activity_facade.py`）：`_day_start`（`now=86400*1.5 → 86400.0`）；`_schedule_block_id`（同网格块内多个 now 返回同标签、跨块返回不同标签、跨小时边界正确进位）；`_goal_met`（goal None → None；goal 非 None + result 空 → False；goal 非 None + result 非空 → True）；`_pick_creation_style`（返回 6 风格之一）；`_build_creation_context`（有风格/主题/知识/屏幕各段；无知识无屏幕 → 省略对应段）
   - [ ] **select_activity**（fake `get_state` 返回 `energy=80`）：无欲望 → `None`；`[探索欲]` → `type is READING`、`progress["desire_id"] == desire.id`、`goal` 序列化正确、`progress["description"] == desire.description`；`[互动欲]` → `None`（不占日程块）；`[休息欲]` → `type is REST`、`progress["desire_id"] == rest_desire.id`（欲望驱动的 REST 保留关联）；`energy=30` + 探索欲 → `type is REST`、`progress["desire_id"] is None`（精力恢复无关联）
-  - [ ] **should_explore**（`test_exploration.py`）：`energy=59` → False；`energy=60` + `now-last < rate_limit_hours*3600` → False；`energy=60` + 频率过 + `last=0.0` → True
+  - [ ] **should_explore**（`test_exploration.py`）：`last=1000` + `now-last < 1h*3600` → False；`last=0.0` + 频率过 → True
   - [ ] **facade 生命周期**：
     - [ ] `_maybe_start_activity`：有 running 活动 → 不新起；无欲望 → 产 `_default_activity`（见空槽默认 bullet）并 insert；有欲望 → insert + 发布 `activity_start` + `activity_end`（`content["type"]`/`desire_id`/`goal_met`/`energy_delta`/`result` 正确、`source is INTERNAL`）；READING/CREATION 时 `evaluator.evaluate` 被调 1 次（收到该 `LLMOutput`）
-    - [ ] 升级路径：探索欲 + 精力足 + 频率过 → `activity.type is FREE_EXPLORATION`；频率未过 → 降级 `READING`
+    - [ ] 升级路径：探索欲 + 频率过 → `activity.type is FREE_EXPLORATION`；频率未过 → 降级 `READING`
     - [ ] 空槽默认：无欲望 + `energy=30` → `type is IDLE_REFLECTION`、`progress["desire_id"] is None`；无欲望 + `energy=80` → `type is OBSERVE_USER`、`progress["desire_id"] is None`
     - [ ] `complete_activity`：`status is COMPLETED`、`ended_at` 非 None、发布 `activity_end`（`energy_delta == config.energy_delta.reading` 等）
     - [ ] `interrupt`：RUNNING 活动 → cancel + 可续活动 `status is PAUSED`、非可续 `status is ABANDONED` + 发布 `activity_interrupted`（`content["by"]` 正确）；`activity_id` 不存在 → 不 cancel、不发布；执行中活动挂起在可取消 await 上时 interrupt → 终态 `PAUSED`/`ABANDONED` 而非被 complete 覆盖
     - [ ] 恢复：`_maybe_start_activity` 命中当前块 PAUSED 创作 → 复用同一 id 重跑（id 不变、COMPLETED、evaluator 再调 1 次）；命中 PAUSED 读书 → 从 material 层刷新 `read_chars` 续读；不同块旧 PAUSED → 不恢复、走新建默认活动
+    - [ ] `start_exploration(topic | None)`：手动触发 FREE_EXPLORATION（返回 `activity_id`、落一条 `FREE_EXPLORATION`、`progress["description"]` 记录 topic）；`topic is None` → 调 `Exploration.pick_topic(activity.id)` 覆盖 description；已有活动在跑 → `RuntimeError`
     - [ ] `get_current` / `get_schedule` / `get_results` 委托 store
     - [ ] **读书知识点提取（R1）**：mock LLM 返回 `{"points":[{"topic","content"}...]}` → `_memory.remember_knowledge` 收到同批 items（tag 由 memory 层写 "knowledge"）；mock LLM 抛异常 → 不冒泡、读书活动仍 COMPLETED（best-effort）；`points` 非 list / 超 5 条截断到 5
     - [ ] **分块提取**：长正文（> `_READ_CONTEXT_CHARS`）切成多块逐个喂 LLM，每块 `正文` ≤ 6000 字、块数 ≤ `_KNOWLEDGE_MAX_CHUNKS`；跨块重复知识点按 content 去重，总量 ≤ `_KNOWLEDGE_MAX_POINTS`
@@ -1612,7 +1672,7 @@ class ScreenObserver:
     - [ ] **重读同书去重**：`_finalize_reading` 二次调用同 path → `upsert_by_path` 原地更新（保留 note id → 批注仍挂原 id 下），`list_reading_notes()` 只剩一条；不同 path 同名书 → 两条互不删
     - [ ] **创作上下文（W1/W2/W3）**：创作活动执行时 `list_memories(tag="knowledge")` 被调、`_get_observation` 被调、`_run_llm_activity` 收到 `context_label="创作参考"` 且 `extra_context` 含风格/知识/屏幕（`_FakeMemory`/`_FakeObservation` 桩）
     - [ ] **读书笔记 CRUD 委托**：`list_reading_notes`/`delete_reading_note`/`list_annotations`/`add_annotation`（author=="user"）/`delete_annotation` 委托 `ReadingNoteStore`；`_finalize_reading` 落一条 `ReadingNote`（book=filename、content=full_note、path=source）
-  - [ ] **exploration**（`test_exploration.py`）：`Exploration` 用 fake llm/fake_evaluator/tools，`web_enabled=false` 时图不含 `search_web`、`run` 返回 `{findings, notes}` 且步数 ≤ `_MAX_STEPS`；`_plan_next` 的 `llm.complete` 收到 `correlation_id == 初始 correlation_id`，且每次 `complete` 后 `evaluator.evaluate` 被调（`output_type="exploration_plan"`）；规划 JSON 非对象（如数组）→ `ValueError`
+  - [ ] **exploration**（`test_exploration.py`）：`Exploration` 用 fake llm/fake_evaluator/tools/bus，`web_enabled=false` 时图不含 `search_web`、`run(seed, activity_id, correlation_id)` 返回 `{findings, notes, nodes}` 且步数 ≤ `_MAX_STEPS`；`_plan_next` 的 `llm.complete` 收到 `correlation_id == 初始 correlation_id`，且每次 `complete` 后 `evaluator.evaluate` 被调（`output_type="exploration_plan"`）；规划 JSON 非对象（如数组）→ `ValueError`；`_search_web` 搜到结果记 search+web 两节点并下第一条正文、`web_search` 空则兜底 `local_search`（str 结果不崩）、每节点发布一条 `EXPLORATION_STEP`（content `{activity_id, node}`）；`pick_topic(correlation_id)`（`output_type="exploration_topic"`）返回 JSON `{topic}` 的 topic、无 `topic` 键 → 兜底「有趣的新鲜事」、JSON 非对象 → `ValueError`
   - [ ] **observe**（`test_observe.py`）：`classify_presence` 三态判定（活跃→online、窗口标题→busy、无→away）；`build_observation_summary` 四态拼接（有窗口无屏幕 / 无窗口无屏幕 / 窗口+屏幕 / 无窗口有屏幕）
   - [ ] **screen**（`test_screen.py`）：`ScreenObserver.sample_once` 抓屏+describe 各 1 次返描述文本；capture 抛异常 → 返 `None` 不崩；describe 抛异常 → 返 `None` 不崩（best-effort）
 - [ ] 集成测试：无（LLM 全 mock、DB 用 `:memory:`；与 desire/inner_life 的真实编排归 18-api）

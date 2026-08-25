@@ -102,7 +102,21 @@ export type ReflectionDoneEvent = SseBase & {
   story_is_new: boolean;
 };
 
-/** 未消费的 11 类：溯源面板落地前不读字段，payload 保持宽松。 */
+/** 探索地图节点：search = 搜索动作（url 空），web = 访问的网页。 */
+export type ExplorationNode = {
+  name: string;
+  url: string;
+  kind: "search" | "web";
+};
+
+/** 探索实时进度帧（exploration_step）：探索链每访问一个节点推一次。 */
+export type ExplorationStepEvent = SseBase & {
+  event: "exploration_step";
+  activity_id: string;
+  node: ExplorationNode;
+};
+
+/** 未消费的 12 类：溯源面板落地前不读字段，payload 保持宽松。 */
 type OpaqueEventType =
   | "user_material"
   | "clock_tick"
@@ -128,6 +142,7 @@ export type SseEvent =
   | UserMessageEvent
   | EmotionUpdateEvent
   | ReflectionDoneEvent
+  | ExplorationStepEvent
   | OpaqueEvent;
 
 export type ConnectionState = "connecting" | "open" | "closed";

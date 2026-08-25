@@ -11,7 +11,9 @@ from nyx.activity.exploration import (
     should_explore,
 )
 from nyx.config import ExplorationConfig
+from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
+from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.tools.registry import ToolRegistry
 from nyx.types import LLMOutput
@@ -84,16 +86,38 @@ class _WebTools:
         return "其他"
 
 
+class _EmptyWebTools(_WebTools):
+    """web_search 返回空 → 触发本地兜底（local_search 返回非 dict 的 str 结果）。"""
+
+    async def call(self, name: str, args: dict[str, Any]) -> Any:
+        self.calls.append((name, args))
+        if name == "web_search":
+            return []
+        if name == "local_search":
+            return ["本地兜底结果"]
+        return "其他"
+
+
+class _FakeBus:
+    def __init__(self) -> None:
+        self.published: list[Any] = []
+
+    async def publish(self, event: Any) -> None:
+        self.published.append(event)
+
+
 def _make_exploration(
     llm: _FakeLlm,
     evaluator: _FakeEvaluator,
     tools: _FakeTools,
+    bus: _FakeBus | None = None,
     web_enabled: bool = False,
 ) -> Exploration:
     return Exploration(
         cast(LlmClient, llm),
         cast(Evaluator, evaluator),
         cast(ToolRegistry, tools),
+        cast(EventBus, bus if bus is not None else _FakeBus()),
         ExplorationConfig(web_enabled=web_enabled),
     )
 
@@ -101,16 +125,14 @@ def _make_exploration(
 # ---- should_explore ----
 
 
-def test_should_explore_energy_too_low() -> None:
-    assert should_explore(59.0, 0.0, 4, 100_000.0) is False
-
-
 def test_should_explore_rate_limited() -> None:
-    assert should_explore(60.0, 1_000.0, 4, 15_399.0) is False
+    # 频率未过（now - last < 1h*3600）→ False，与精力无关
+    assert should_explore(1_000.0, 1, 1_000.0 + 3_599.0) is False
 
 
 def test_should_explore_ok() -> None:
-    assert should_explore(60.0, 0.0, 4, 20_000.0) is True
+    # last=0（从未探索）+ 频率已过 → True；无 energy 入参（精力交 build_schedule 兜底）
+    assert should_explore(0.0, 1, 20_000.0) is True
 
 
 # ---- Exploration.run ----
@@ -121,8 +143,8 @@ async def test_exploration_run_no_web() -> None:
     evaluator = _FakeEvaluator()
     tools = _FakeTools()
     expl = _make_exploration(llm, evaluator, tools)
-    result = await expl.run("骑士团", "corr-1")
-    assert set(result) == {"findings", "notes"}
+    result = await expl.run("骑士团", "a1", "corr-1")
+    assert set(result) == {"findings", "notes", "nodes"}
     assert llm.calls == ["exploration_plan"] * _MAX_STEPS
     assert llm.correlation_ids == ["corr-1"] * _MAX_STEPS
     assert len(evaluator.evaluated) == _MAX_STEPS
@@ -134,8 +156,8 @@ async def test_exploration_run_web() -> None:
     evaluator = _FakeEvaluator()
     tools = _FakeTools()
     expl = _make_exploration(llm, evaluator, tools, web_enabled=True)
-    result = await expl.run("骑士团", "corr-1")
-    assert set(result) == {"findings", "notes"}
+    result = await expl.run("骑士团", "a1", "corr-1")
+    assert set(result) == {"findings", "notes", "nodes"}
     assert any(c[0] == "web_search" for c in tools.calls)
 
 
@@ -143,7 +165,46 @@ async def test_exploration_plan_non_dict_raises() -> None:
     llm = _FakeLlm(content=json.dumps([1, 2, 3]))
     expl = _make_exploration(llm, _FakeEvaluator(), _FakeTools())
     with pytest.raises(ValueError):
-        await expl.run("骑士团", "corr-1")
+        await expl.run("骑士团", "a1", "corr-1")
+
+
+async def test_exploration_run_returns_nodes_and_publishes_steps() -> None:
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    tools = _FakeTools()
+    bus = _FakeBus()
+    expl = _make_exploration(llm, evaluator, tools, bus=bus)
+    result = await expl.run("骑士团", "a1", "corr-1")
+    # nodes 非空；search 节点在前；每节点对应一条 EXPLORATION_STEP
+    assert result["nodes"]
+    assert all(n["kind"] in ("search", "web") for n in result["nodes"])
+    steps = [e for e in bus.published if e.type is EventType.EXPLORATION_STEP]
+    assert len(steps) == len(result["nodes"])
+    assert steps[0].content["activity_id"] == "a1"
+    assert steps[0].content["node"] == result["nodes"][0]
+
+
+# ---- Exploration.pick_topic ----
+
+
+async def test_pick_topic_returns_topic() -> None:
+    llm = _FakeLlm(content=json.dumps({"topic": "深海鱼"}))
+    expl = _make_exploration(llm, _FakeEvaluator(), _FakeTools())
+    assert await expl.pick_topic("corr-1") == "深海鱼"
+    assert llm.calls == ["exploration_topic"]
+
+
+async def test_pick_topic_non_dict_raises() -> None:
+    llm = _FakeLlm(content=json.dumps([1, 2, 3]))
+    expl = _make_exploration(llm, _FakeEvaluator(), _FakeTools())
+    with pytest.raises(ValueError):
+        await expl.pick_topic("corr-1")
+
+
+async def test_pick_topic_fallback() -> None:
+    llm = _FakeLlm(content=json.dumps({"other": "x"}))
+    expl = _make_exploration(llm, _FakeEvaluator(), _FakeTools())
+    assert await expl.pick_topic("corr-1") == "有趣的新鲜事"
 
 
 # ---- _search_web：主动下载资料 ----
@@ -154,6 +215,7 @@ def _web_exploration(tools: _WebTools) -> Exploration:
         cast(LlmClient, _FakeLlm()),
         cast(Evaluator, _FakeEvaluator()),
         cast(ToolRegistry, tools),
+        cast(EventBus, _FakeBus()),
         ExplorationConfig(web_enabled=True),
     )
 
@@ -161,7 +223,8 @@ def _web_exploration(tools: _WebTools) -> Exploration:
 def _web_state() -> ExplorationState:
     return {
         "seed": "x", "focus": "骑士", "findings": [], "notes": [],
-        "step": 0, "done": False, "correlation_id": "c",
+        "nodes": [], "step": 0, "done": False,
+        "activity_id": "a1", "correlation_id": "c",
     }
 
 
@@ -180,3 +243,12 @@ async def test_search_web_no_crash_when_download_fails() -> None:
     state = _web_state()
     await expl._search_web(state)  # 下载失败静默吞掉，不崩
     assert len(state["findings"]) == 1  # 只剩 web_search 结果串，无「已下载资料」
+
+
+async def test_search_web_falls_back_to_local() -> None:
+    tools = _EmptyWebTools()
+    expl = _web_exploration(tools)
+    state = _web_state()
+    await expl._search_web(state)
+    assert ("local_search", {"query": "骑士"}) in tools.calls
+    assert any("本地兜底结果" in f for f in state["findings"])

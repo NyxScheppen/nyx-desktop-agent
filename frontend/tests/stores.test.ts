@@ -5,13 +5,14 @@ import { useActivityStore } from "../src/stores/activityStore";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
 import { useEvalStore } from "../src/stores/evalStore";
+import { useExplorationStore } from "../src/stores/explorationStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMaterialsStore } from "../src/stores/materialsStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
 import { useNarrativeStore } from "../src/stores/narrativeStore";
 import { useReadingNotesStore } from "../src/stores/readingNotesStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
-import type { BackendEvent, CurrentState } from "../src/types/api";
+import type { BackendEvent, CurrentState, ExplorationNode } from "../src/types/api";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
@@ -725,5 +726,44 @@ describe("announceStore", () => {
     vi.advanceTimersByTime(ANNOUNCE_DURATION.mutter);
 
     expect(useAnnounceStore.getState().items).toHaveLength(0);
+  });
+});
+
+describe("explorationStore", () => {
+  beforeEach(() => {
+    useExplorationStore.setState({ wishlist: [], liveNodes: [], activityId: null });
+  });
+
+  it("addWish / removeWish 心愿单增删", () => {
+    useExplorationStore.getState().addWish("深海鱼");
+    useExplorationStore.getState().addWish("发光生物");
+    expect(useExplorationStore.getState().wishlist).toEqual(["深海鱼", "发光生物"]);
+
+    useExplorationStore.getState().removeWish("深海鱼");
+    expect(useExplorationStore.getState().wishlist).toEqual(["发光生物"]);
+  });
+
+  it("onStep：同 activity 追加，异 activity 重置", () => {
+    const n1: ExplorationNode = { name: "搜索：深海鱼", url: "", kind: "search" };
+    const n2: ExplorationNode = { name: "新闻", url: "https://e.com", kind: "web" };
+    useExplorationStore.getState().onStep({ event: "exploration_step", event_id: "s1", correlation_id: "a1", activity_id: "a1", node: n1 });
+    useExplorationStore.getState().onStep({ event: "exploration_step", event_id: "s2", correlation_id: "a1", activity_id: "a1", node: n2 });
+    expect(useExplorationStore.getState().liveNodes).toEqual([n1, n2]);
+
+    useExplorationStore.getState().onStep({ event: "exploration_step", event_id: "s3", correlation_id: "a2", activity_id: "a2", node: n1 });
+    expect(useExplorationStore.getState().liveNodes).toEqual([n1]);
+    expect(useExplorationStore.getState().activityId).toBe("a2");
+  });
+
+  it("start：POST /api/explore 后清空 liveNodes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ activity_id: "exp-9" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useExplorationStore.getState().start();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/explore");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+    expect(useExplorationStore.getState().activityId).toBe("exp-9");
+    expect(useExplorationStore.getState().liveNodes).toEqual([]);
   });
 });

@@ -17,6 +17,7 @@ import {
   getState,
   getTokens,
   postChat,
+  postExplore,
   postObserve,
   searchMemories,
   uploadFile,
@@ -72,6 +73,18 @@ describe("api/client", () => {
       body: JSON.stringify({ message: "你好" }),
     });
     expect(res).toEqual({ event_id: "e1" });
+  });
+
+  it("postExplore：无 topic 发空 body，有 topic 发 {topic}", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ activity_id: "e1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postExplore();
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/explore");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({});
+
+    await postExplore("深海鱼");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ topic: "深海鱼" });
   });
 
   it("getState：GET /api/state、解析 CurrentState", async () => {

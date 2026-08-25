@@ -1,4 +1,5 @@
 import time
+from typing import Any, cast
 from uuid import uuid4
 
 from nyx.activity.facade import ActivityFacade
@@ -90,6 +91,8 @@ class InnerLifeFacade:
 
         if event.type is EventType.ACTIVITY_END:
             await self._apply_energy(event, now)
+        if event.type is EventType.ENCOUNTER_END:
+            await self._apply_encounter_consequence(event, now)
         if event.type is EventType.REFLECTION:
             await self.reflect(event.correlation_id)
 
@@ -156,6 +159,39 @@ class InnerLifeFacade:
         value = max(0.0, min(100.0, value))
         await self._store.upsert_energy(value, energy_to_state(value))
         self._energy_updated_at = now
+
+    async def _apply_encounter_consequence(self, event: Event, now: float) -> None:
+        """ENCOUNTER_END → 可变情感偏移 + 精力增量（后果由 rules 纯函数给）。
+
+        缺键/错类型跳过（同 _apply_energy 的 energy_delta 守卫）。
+        """
+        consequences = event.content.get("consequences")
+        if not isinstance(consequences, dict):
+            return
+        parsed = cast(dict[str, Any], consequences)
+        shift = parsed.get("emotion_shift")
+        if isinstance(shift, dict):
+            shift = cast(dict[str, Any], shift)
+            d_valence = shift.get("d_valence")
+            d_arousal = shift.get("d_arousal")
+            if (
+                isinstance(d_valence, (int, float))
+                and not isinstance(d_valence, bool)
+                and isinstance(d_arousal, (int, float))
+                and not isinstance(d_arousal, bool)
+            ):
+                self._valence, self._arousal = apply_offset(
+                    self._valence, self._arousal, float(d_valence), float(d_arousal)
+                )
+        delta = parsed.get("energy_delta")
+        if isinstance(delta, (int, float)) and not isinstance(delta, bool):
+            energy = await self._store.get_energy()
+            if energy is None:
+                raise RuntimeError("energy 未初始化（18-api 组合根必须先 seed）")
+            value, _ = energy
+            value = max(0.0, min(100.0, value + float(delta)))
+            await self._store.upsert_energy(value, energy_to_state(value))
+            self._energy_updated_at = now
 
     async def _current_activity_type(self) -> ActivityType | None:
         activity = await self._activity_facade.get_current()

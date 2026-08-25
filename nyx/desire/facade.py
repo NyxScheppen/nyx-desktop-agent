@@ -29,11 +29,14 @@ class DesireFacade:
         )
 
     async def add_value(self, source: Event) -> None:
-        """事件入口：OBSERVATION_STATE 加压互动欲，ACTIVITY_END 满足回写。"""
+        """事件入口：OBSERVATION_STATE 加压互动欲，ACTIVITY_END 满足回写，
+        ENCOUNTER_END 欲望值加压。"""
         if source.type is EventType.OBSERVATION_STATE:
             await self._lifecycle.pressure_from_observation(source)
         elif source.type is EventType.ACTIVITY_END:
             await self._lifecycle.satisfy_from_activity_end(source)
+        elif source.type is EventType.ENCOUNTER_END:
+            await self._lifecycle.add_value_from_encounter(source)
 
     async def evaluate(self) -> list[ShortTermDesire]:
         return await self._lifecycle.run_eval()

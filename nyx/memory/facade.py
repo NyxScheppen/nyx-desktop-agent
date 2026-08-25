@@ -267,6 +267,30 @@ class MemoryFacade:
         memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
         await self._persist_memory(memory, event.correlation_id)
 
+    async def remember_encounter(self, event: Event) -> None:
+        """遭遇记忆：成长时刻的后果 memory（{content, summary}，确定性、无 LLM）。
+
+        随机事件不落记忆（快变量可见即可）；只有成长时刻的后果带 memory 键，
+        这里判存在才写。复用 _persist_memory 入库尾段（两层去重）。
+        """
+        consequences = event.content.get("consequences")
+        if not isinstance(consequences, dict):
+            return
+        memory_dict = cast(dict[str, Any], consequences).get("memory")
+        if not isinstance(memory_dict, dict):
+            return
+        memory_dict = cast(dict[str, Any], memory_dict)
+        content = memory_dict.get("content")
+        summary = memory_dict.get("summary")
+        if not isinstance(content, str) or not content.strip():
+            return
+        if not isinstance(summary, str) or not summary.strip():
+            summary = content[:_SUMMARY_MAX_CHARS]
+        memory = _new_memory(
+            content.strip(), "encounter", summary.strip(), MemoryType.SHORT_TERM
+        )
+        await self._persist_memory(memory, event.correlation_id)
+
     async def _sediment_observation(self, event: Event) -> None:
         """观察活动 → 用户画像沉淀：「presence/window_title 相对上次变化」才写。
 

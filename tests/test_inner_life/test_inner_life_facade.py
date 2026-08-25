@@ -406,3 +406,45 @@ async def test_reflect_publishes_reflection_done() -> None:
         }
     finally:
         await database.conn.close()
+
+
+async def test_apply_event_encounter_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: t0)
+    facade, store, bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
+    try:
+        await _seed(store)
+        async with _running(bus):
+            await facade.apply_event(_event(EventType.ENCOUNTER_END, content={
+                "consequences": {
+                    "energy_delta": -5.0,
+                    "emotion_shift": {"d_valence": 0.15, "d_arousal": 0.10},
+                },
+            }))
+        energy = await store.get_energy()
+        assert energy is not None
+        assert energy[0] == pytest.approx(95.0)   # 100 - 5
+        assert facade._valence == pytest.approx(0.15)
+        assert facade._arousal == pytest.approx(0.10)
+    finally:
+        await database.conn.close()
+
+
+async def test_apply_event_encounter_end_no_consequences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: t0)
+    facade, store, _bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
+    try:
+        await _seed(store)
+        await facade.apply_event(
+            _event(EventType.ENCOUNTER_END, content={})  # 缺 consequences 跳过
+        )
+        energy = await store.get_energy()
+        assert energy is not None
+        assert energy[0] == pytest.approx(100.0)  # 不变
+    finally:
+        await database.conn.close()

@@ -320,3 +320,39 @@ async def test_add_long_term_delegates() -> None:
         assert await store.list_long_term() == [lt]
     finally:
         await database.conn.close()
+
+
+async def test_add_value_encounter_pressures() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        await facade.add_value(Event(
+            id="e1", timestamp=0.0, source=Source.INTERNAL,
+            type=EventType.ENCOUNTER_END,
+            content={"consequences": {
+                "desire_value_add": {"type": "exploration", "amount": 0.10},
+            }},
+            correlation_id="c1",
+        ))
+        dv = await store.get_value(DesireType.EXPLORATION)
+        assert dv is not None
+        assert dv.value == pytest.approx(0.10)   # default 0.0 + 0.10
+    finally:
+        await database.conn.close()
+
+
+async def test_add_value_encounter_bad_type_skips() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        await facade.add_value(Event(
+            id="e1", timestamp=0.0, source=Source.INTERNAL,
+            type=EventType.ENCOUNTER_END,
+            content={"consequences": {
+                "desire_value_add": {"type": "不存在的类型", "amount": 0.10},
+            }},
+            correlation_id="c1",
+        ))
+        assert await store.get_value(DesireType.EXPLORATION) is None
+    finally:
+        await database.conn.close()

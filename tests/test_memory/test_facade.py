@@ -1031,3 +1031,41 @@ async def test_record_no_answer() -> None:
         assert created.content["memory_id"] == m.id
     finally:
         await database.conn.close()
+
+
+async def test_remember_encounter_writes_growth_memory() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.remember_encounter(Event(
+                id="e1", timestamp=0.0, source=Source.INTERNAL,
+                type=EventType.ENCOUNTER_END,
+                content={"consequences": {
+                    "memory": {"content": "我读完了一本书", "summary": "读完一本书"},
+                }},
+                correlation_id="c1",
+            ))
+        memories = await facade.list_memories()
+        assert len(memories) == 1
+        assert memories[0].tag == "encounter"
+        assert memories[0].content == "我读完了一本书"
+        assert any(e.type is EventType.MEMORY_CREATED for e in events)
+    finally:
+        await database.conn.close()
+
+
+async def test_remember_encounter_no_memory_key_skips() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        await facade.remember_encounter(Event(
+            id="e1", timestamp=0.0, source=Source.INTERNAL,
+            type=EventType.ENCOUNTER_END,
+            content={"consequences": {"energy_delta": -5.0}},  # 无 memory 键
+            correlation_id="c1",
+        ))
+        assert await facade.list_memories() == []
+    finally:
+        await database.conn.close()

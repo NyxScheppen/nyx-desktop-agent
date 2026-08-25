@@ -14,6 +14,26 @@ export function activitySubject(a: Activity): string | null {
   return null;
 }
 
+/** 活动状态一句话（读当前活动）：「在读《X》/在探索/在创作/在观察你/在静默反思/在休息/空闲」。 */
+export function activityStatusText(a: Activity | null): string {
+  if (a === null) return "空闲";
+  const subject = activitySubject(a);
+  switch (a.type) {
+    case "reading":
+      return subject !== null ? `在读《${subject}》` : "在读书";
+    case "free_exploration":
+      return subject !== null ? `在探索「${subject}」` : "在探索";
+    case "creation":
+      return subject !== null ? `在创作：${subject}` : "在创作";
+    case "observe_user":
+      return "在观察你";
+    case "idle_reflection":
+      return "在静默反思";
+    case "rest":
+      return "在休息";
+  }
+}
+
 /** 已完成活动的产出文案（读书 {book,note} / 创作 {title,content} / 探索 {findings,notes}）；无产出返回 null。 */
 export function formatResult(a: Activity): string | null {
   if (a.status !== "completed") return null;

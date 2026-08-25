@@ -3,6 +3,7 @@ import { useActivityStore } from "../stores/activityStore";
 import { useAnnounceStore } from "../stores/announceStore";
 import { useChatStore } from "../stores/chatStore";
 import { useDesireStore } from "../stores/desireStore";
+import { useEncounterStore } from "../stores/encounterStore";
 import { useExplorationStore } from "../stores/explorationStore";
 import { useInnerLifeStore } from "../stores/innerLifeStore";
 import { useMemoryStore } from "../stores/memoryStore";
@@ -83,5 +84,14 @@ export function dispatchEvent(e: SseEvent): void {
       void useNarrativeStore.getState().refresh();
       return;
     }
+    case "encounter_start":
+      useEncounterStore.getState().onStart(e);
+      return;
+    case "encounter_choice":
+      // 无消费者：encounter_end 紧跟其后，由它清 current + 上屏 ending（6.4）。
+      return;
+    case "encounter_end":
+      useEncounterStore.getState().onEnd(e);
+      return;
   }
 }

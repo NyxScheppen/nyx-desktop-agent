@@ -28,6 +28,9 @@ const EVENT_TYPES = [
   "activity_end",
   "activity_interrupted",
   "exploration_step",
+  "encounter_start",
+  "encounter_choice",
+  "encounter_end",
 ];
 
 export function useSSE(dispatch: (e: SseEvent) => void): ConnectionState {

@@ -7,6 +7,7 @@ import { useActivityStore } from "../src/stores/activityStore";
 import { useAnnounceStore } from "../src/stores/announceStore";
 import { useChatStore } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
+import { useEncounterStore } from "../src/stores/encounterStore";
 import { useExplorationStore } from "../src/stores/explorationStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
@@ -130,6 +131,7 @@ describe("dispatchEvent", () => {
     useNarrativeStore.setState({ data: null, error: null, highlightedStory: null });
     useAnnounceStore.setState({ items: [] });
     useExplorationStore.setState({ wishlist: [], liveNodes: [], activityId: null });
+    useEncounterStore.setState({ current: null, choosing: false, error: null });
   });
 
   it("speak → chatStore（kind=speak）", () => {
@@ -372,6 +374,49 @@ describe("dispatchEvent", () => {
     expect(narrativeSpy).toHaveBeenCalledTimes(1);
     expect(useNarrativeStore.getState().highlightedStory).toBeNull();
     expect(useAnnounceStore.getState().items).toHaveLength(0);
+  });
+
+  it("encounter_start → encounterStore.onStart", () => {
+    const spy = vi.spyOn(useEncounterStore.getState(), "onStart");
+    dispatchEvent({
+      event: "encounter_start",
+      event_id: "e1",
+      correlation_id: "c1",
+      encounter_id: "enc1",
+      kind: "random_event",
+      text: "开场",
+      options: [{ index: 0, text: "走" }],
+    });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("encounter_end → encounterStore.onEnd", () => {
+    const spy = vi.spyOn(useEncounterStore.getState(), "onEnd");
+    dispatchEvent({
+      event: "encounter_end",
+      event_id: "e1",
+      correlation_id: "c1",
+      encounter_id: "enc1",
+      kind: "random_event",
+      option_index: 0,
+      option_text: "走",
+      ending: "结局",
+      consequences: {},
+    });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("encounter_choice 无消费者不崩", () => {
+    expect(() =>
+      dispatchEvent({
+        event: "encounter_choice",
+        event_id: "e1",
+        correlation_id: "c1",
+        encounter_id: "enc1",
+        option_index: 0,
+        option_text: "走",
+      }),
+    ).not.toThrow();
   });
 });
 

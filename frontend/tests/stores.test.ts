@@ -831,7 +831,7 @@ describe("encounterStore", () => {
     expect(url).toBe("/api/encounter/choose");
     expect(JSON.parse(init.body)).toEqual({ encounter_id: "enc1", option_index: 0 });
     expect(useEncounterStore.getState().current).not.toBeNull(); // 不本地清
-    expect(useEncounterStore.getState().choosing).toBe(false);
+    expect(useEncounterStore.getState().choosing).toBe(true); // 成功路径不清 choosing，等 encounter_end 的 onEnd 才清（防 SSE 间隙连击）
   });
 
   it("refresh GET /api/encounter/current → current 落 store", async () => {

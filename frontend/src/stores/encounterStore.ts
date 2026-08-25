@@ -55,7 +55,6 @@ export const useEncounterStore = create<EncounterState>((set, get) => ({
     set({ choosing: true, error: null });
     try {
       await chooseEncounter(encounterId, optionIndex);
-      set({ choosing: false });
       // encounter_end SSE 随后清 current + 上屏 ending；此处不提前清（SSE 主通道）
     } catch (err) {
       set({

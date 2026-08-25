@@ -8,10 +8,12 @@ from nyx.enums import (
     DesireStatus,
     DesireType,
     EmotionCategory,
+    EncounterKind,
     EnergyState,
     EventType,
     GoalAction,
     MemoryType,
+    OptionTone,
     SearchMode,
     Source,
     TickType,
@@ -23,7 +25,8 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
         "ask", "think", "mutter", "initiate_chat", "emotion_update", "reflection",
         "reflection_done", "memory_created", "memory_promoted", "desire_generated",
         "desire_satisfied", "desire_expired", "activity_start", "activity_end",
-        "activity_interrupted", "exploration_step",
+        "activity_interrupted", "exploration_step", "encounter_start",
+        "encounter_choice", "encounter_end",
     },
     Source: {"external", "internal"},
     TickType: {
@@ -47,6 +50,8 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
     EnergyState: {"energetic", "okay", "tired", "exhausted", "drained"},
     SearchMode: {"keyword", "vector", "association"},
     GoalAction: {"read", "write", "observe"},
+    EncounterKind: {"desire_chat", "random_event", "growth_moment"},
+    OptionTone: {"bold", "cautious", "gentle", "reckless"},
 }
 
 

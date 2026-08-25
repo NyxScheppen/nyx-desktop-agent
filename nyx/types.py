@@ -7,10 +7,12 @@ from nyx.enums import (
     DesireStatus,
     DesireType,
     EmotionCategory,
+    EncounterKind,
     EnergyState,
     EventType,
     GoalAction,
     MemoryType,
+    OptionTone,
     SearchMode,
     Source,
 )
@@ -255,3 +257,22 @@ class TokenUsage:           # 一次 LLM 调用记账（对应 token_usage 表�
     input_tokens: int
     output_tokens: int
     created_at: float
+
+
+# ---- 遭遇 ----
+@dataclass
+class EncounterOption:
+    text: str               # 选项文案（前端展示）
+    tone: OptionTone        # 倾向（LLM 标注，后果由纯函数派生）
+
+
+@dataclass
+class Encounter:            # 当前遭遇（内存态，MVP 不建表）
+    id: str
+    kind: EncounterKind
+    text: str               # 开场白
+    options: list[EncounterOption]
+    correlation_id: str
+    started_at: float
+    activity_id: str | None = None
+    chosen_index: int | None = None

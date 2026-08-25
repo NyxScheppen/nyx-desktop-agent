@@ -132,6 +132,45 @@ type OpaqueEventType =
   | "activity_interrupted";
 type OpaqueEvent = SseBase & { event: OpaqueEventType } & Record<string, unknown>;
 
+// ---- 遭遇（19-encounter）----
+export type EncounterKind = "desire_chat" | "random_event" | "growth_moment";
+
+/** 遭遇选项（前端只收 {index, text}；tone 被后端 _start_content 剥掉，前端不消费）。 */
+export type EncounterOption = { index: number; text: string };
+
+/** 未决遭遇（GET /api/encounter/current 与 encounter_start 同形状）。 */
+export type EncounterCurrent = {
+  encounter_id: string;
+  kind: EncounterKind;
+  text: string;
+  options: EncounterOption[];
+};
+
+export type EncounterStartEvent = SseBase & {
+  event: "encounter_start";
+  encounter_id: string;
+  kind: EncounterKind;
+  text: string;
+  options: EncounterOption[];
+};
+
+export type EncounterChoiceEvent = SseBase & {
+  event: "encounter_choice";
+  encounter_id: string;
+  option_index: number;
+  option_text: string;
+};
+
+export type EncounterEndEvent = SseBase & {
+  event: "encounter_end";
+  encounter_id: string;
+  kind: EncounterKind;
+  option_index: number;
+  option_text: string;
+  ending: string;
+  consequences: Record<string, unknown>; // 前端不读后果细节，只触发快照 refresh
+};
+
 /** SSE 帧：按 event 值判别联合——键名错位在编译期即拦（曾放过 user_message 读 content 的 bug）。 */
 export type SseEvent =
   | TextEvent<"speak">
@@ -143,6 +182,9 @@ export type SseEvent =
   | EmotionUpdateEvent
   | ReflectionDoneEvent
   | ExplorationStepEvent
+  | EncounterStartEvent
+  | EncounterChoiceEvent
+  | EncounterEndEvent
   | OpaqueEvent;
 
 export type ConnectionState = "connecting" | "open" | "closed";

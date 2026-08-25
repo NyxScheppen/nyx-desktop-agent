@@ -8,6 +8,7 @@ import type {
   DesireStatus,
   DesireType,
   EmotionCategory,
+  EncounterKind,
   EnergyState,
   MemoryType,
 } from "../types/api";
@@ -95,3 +96,9 @@ export const SCORE_LABELS: Record<string, string> = {
 export function label(map: Record<string, string>, key: string): string {
   return map[key] ?? key;
 }
+
+export const ENCOUNTER_KIND_LABELS: Record<EncounterKind, string> = {
+  desire_chat: "欲望搭话",
+  random_event: "随机事件",
+  growth_moment: "成长时刻",
+};

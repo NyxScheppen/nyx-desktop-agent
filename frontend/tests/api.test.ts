@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addAnnotation,
+  chooseEncounter,
   deleteAnnotation,
   deleteReadingNote,
   exportMemories,
   getActivity,
   getActivityResults,
   getAnnotations,
+  getCurrentEncounter,
   getDesires,
   getEval,
   getEventsLog,
@@ -402,5 +404,31 @@ describe("api/client", () => {
     expect(url).toBe("/api/annotations/a1");
     expect(init).toMatchObject({ method: "DELETE" });
     expect(res).toEqual({ deleted: "a1" });
+  });
+
+  it("chooseEncounter：POST /api/encounter/choose body {encounter_id, option_index}", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ encounter_id: "enc1", chosen: 0 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await chooseEncounter("enc1", 0);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/encounter/choose");
+    expect(init).toMatchObject({ method: "POST" });
+    expect(JSON.parse(init.body)).toEqual({ encounter_id: "enc1", option_index: 0 });
+    expect(res).toEqual({ encounter_id: "enc1", chosen: 0 });
+  });
+
+  it("getCurrentEncounter：GET /api/encounter/current → 对象解析", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      encounter_id: "enc1", kind: "random_event", text: "开场", options: [{ index: 0, text: "走" }],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getCurrentEncounter();
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/encounter/current");
+    expect(res?.encounter_id).toBe("enc1");
   });
 });

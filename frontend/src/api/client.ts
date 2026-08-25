@@ -5,6 +5,7 @@ import type {
   BackendEvent,
   CurrentState,
   DesireState,
+  EncounterCurrent,
   EvalReport,
   Material,
   Memory,
@@ -187,4 +188,22 @@ export async function deleteAnnotation(
   return request<{ deleted: string }>(`${BASE_URL}/api/annotations/${annotationId}`, {
     method: "DELETE",
   });
+}
+
+export async function chooseEncounter(
+  encounterId: string,
+  optionIndex: number,
+): Promise<{ encounter_id: string; chosen: number }> {
+  return request<{ encounter_id: string; chosen: number }>(
+    `${BASE_URL}/api/encounter/choose`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ encounter_id: encounterId, option_index: optionIndex }),
+    },
+  );
+}
+
+export async function getCurrentEncounter(): Promise<EncounterCurrent | null> {
+  return request<EncounterCurrent | null>(`${BASE_URL}/api/encounter/current`);
 }

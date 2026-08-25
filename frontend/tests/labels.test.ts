@@ -4,6 +4,7 @@ import {
   ACTIVITY_TYPE_LABELS,
   DESIRE_STATUS_LABELS,
   DESIRE_TYPE_LABELS,
+  ENCOUNTER_KIND_LABELS,
   ENERGY_LABELS,
   MEMORY_TYPE_LABELS,
   PERSONALITY_POLES,
@@ -47,5 +48,13 @@ describe("labels 枚举中文化映射", () => {
   it("label() 命中键返回中文，未知键回退原值", () => {
     expect(label(DESIRE_TYPE_LABELS, "exploration")).toBe("发现");
     expect(label(DESIRE_TYPE_LABELS, "unknown_key")).toBe("unknown_key");
+  });
+});
+
+describe("ENCOUNTER_KIND_LABELS", () => {
+  it("三键中文映射", () => {
+    expect(ENCOUNTER_KIND_LABELS.desire_chat).toBe("欲望搭话");
+    expect(ENCOUNTER_KIND_LABELS.random_event).toBe("随机事件");
+    expect(ENCOUNTER_KIND_LABELS.growth_moment).toBe("成长时刻");
   });
 });

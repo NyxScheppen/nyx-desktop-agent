@@ -40,6 +40,7 @@ from nyx.types import (
     Material,
     Memory,
     ReadingNote,
+    ReflectionOutcome,
     ShortTermDesire,
 )
 
@@ -234,7 +235,7 @@ class ActivityFacade:
         memory: MemoryFacade,
         reading_notes: ReadingNoteStore,
         get_state: Callable[[], Awaitable[CurrentState]],
-        reflect: Callable[[str | None], Awaitable[str | None]],
+        reflect: Callable[[str | None], Awaitable[ReflectionOutcome | None]],
         get_observation: Callable[[], Awaitable[dict[str, str]]],
         config: ActivityConfig,
         exploration_config: ExplorationConfig,
@@ -608,8 +609,8 @@ class ActivityFacade:
             result["path"] = written["path"]
             return result
         if t is ActivityType.IDLE_REFLECTION:
-            summary = await self._reflect(_correlation_id(activity))
-            return {"summary": summary}
+            outcome = await self._reflect(_correlation_id(activity))
+            return {"summary": outcome.story if outcome is not None else None}
         if t is ActivityType.FREE_EXPLORATION:
             return await self._exploration.run(
                 seed=str(activity.progress.get("description") or activity.id),

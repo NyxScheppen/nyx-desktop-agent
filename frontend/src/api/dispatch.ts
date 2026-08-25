@@ -5,6 +5,7 @@ import { useChatStore } from "../stores/chatStore";
 import { useDesireStore } from "../stores/desireStore";
 import { useInnerLifeStore } from "../stores/innerLifeStore";
 import { useMemoryStore } from "../stores/memoryStore";
+import { useNarrativeStore } from "../stores/narrativeStore";
 import type { SseEvent } from "../types/api";
 
 // 事件 → store 路由（01-sse §4.1）。
@@ -60,6 +61,22 @@ export function dispatchEvent(e: SseEvent): void {
         const text = activityAnnouncement(a);
         if (text !== null) useAnnounceStore.getState().announce("activity", text);
       });
+      return;
+    }
+    case "reflection_done": {
+      // 反思完成：长期欲望（add_long_term 不发 desire_generated）+ 叙事三件套刷新；
+      // story 真新增才高亮叙事条目 + 冒气泡（去重跳过则静默刷新，不打扰）。
+      void useDesireStore.getState().refresh();
+      if (e.story_is_new) {
+        useNarrativeStore.getState().setHighlightedStory(e.story);
+        const preview =
+          e.story.length > 30 ? `${e.story.slice(0, 30)}…` : e.story;
+        useAnnounceStore.getState().announce(
+          "mutter",
+          `小狐狸我呀，反思了一下：${preview}`,
+        );
+      }
+      void useNarrativeStore.getState().refresh();
       return;
     }
   }

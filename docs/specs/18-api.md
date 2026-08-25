@@ -18,7 +18,7 @@
 - [ ] **组合根按各 spec 完成定义装配**：`load_config` → `connect` → `LlmClient.from_config` → 各 store/facade 构造注入（循环依赖 `ActivityFacade↔InnerLifeFacade` 用 `_get_state` 延迟绑定解环；`evaluator` 注入 09/11/12/14/17 五个 Facade）
 - [ ] **注册内置工具**：`local_search` + `file_io` 恒注册，`web_search` 仅当 `config.exploration.web_enabled` 注册（06-tools 完成定义）；探索链无条件调 `local_search`/`file_io`，缺失会 `KeyError`
 - [ ] **seed 幂等**（表空才写）：inner_life 四张单行表（personality 8/8/2/6/7、values 8/6/9/5、energy 100/energetic、narrative 初始 identity）；desire 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）+ 3 个初始长期欲望（canon §4）
-- [ ] **订阅覆盖 ROUTING/TICK_ROUTING**：`USER_MESSAGE`→interrupt+reply、`USER_MATERIAL`→read_material、`OBSERVATION_STATE`→apply_event+add_value、`DESIRE_GENERATED`→on_desire_generated、`DESIRE_SATISFIED`→apply_event、`ACTIVITY_END`→add_value+apply_event+remember_activity、`REFLECTION`→apply_event、`CLOCK_TICK`→按 tick_type 分发四路
+- [ ] **订阅覆盖 ROUTING/TICK_ROUTING**：`USER_MESSAGE`→interrupt+reply、`USER_MATERIAL`→read_material、`OBSERVATION_STATE`→apply_event+add_value、`DESIRE_GENERATED`→on_desire_generated、`DESIRE_SATISFIED`→apply_event、`ACTIVITY_END`→add_value+apply_event+remember_activity、`REFLECTION`→apply_event、`CLOCK_TICK`→按 tick_type 分发五路
 - [ ] **21 个端点**：tech-ref §4 的 20 个 REST + `GET /api/events`（SSE）；除 upload/materials 外每个 REST 端点 = 对应 Facade 读方法的薄封装（无额外业务逻辑）
 - [ ] **`POST /api/chat`**：构造 `USER_MESSAGE` 事件（`source=EXTERNAL`、`correlation_id=自身 id`）→ `publish` → 返回 `{event_id}`（回复走 SSE）
 - [ ] **请求体校验**：`POST /api/chat`/`/api/export`/`/api/observe`/`/api/annotations` 用 pydantic 请求模型（`_ChatPayload`/`_ExportPayload`/`_ObservePayload`/`_AnnotationPayload`），缺键/类型错 → 422（非 500）；`presence` 仅 `online`/`away`/`busy`（`Literal` 校验，拼写错误 422 而非静默禁用搭话）；`window_title` 可选（默认空串）
@@ -27,7 +27,7 @@
 - [ ] **`GET /api/materials`**：`app.activity.list_materials()` 返回 `{materials: [Material]}`（含 `read_chars`/`total_chars` 进度，供资料面板展示「读到哪了」）
 - [ ] **SSE**：`data` = `event.content` 展开 + `event_id` + `correlation_id`（统一结构，不按 type 特判）；`event:` = `EventType.value`
 - [ ] **SSE 背压**：每连接 `asyncio.Queue(maxsize=_SSE_QUEUE_SIZE=100)`；`_broadcast` 队列满时丢最旧保最新（`put_nowait` 捕获 `QueueFull`，慢客户端不拖垮总线）
-- [ ] **`_tick_loop`**：定时 publish 四种 `CLOCK_TICK`（`content={"tick_type": ...}`）；`INITIATE_CHAT_CHECK` 走 `should_initiate_chat` 判定 + `initiate_chat`（发话才更新 `last_chat_at`）；首个活动块启动即触发（`last_block=0.0`），碎碎念/搭话不立即触发（`last_mutter`/`last_chat` 初始为 now，抑制启动洪峰）；每轮结尾 `check_timeouts(now)` 收尾超时问句/搭话
+- [ ] **`_tick_loop`**：定时 publish 五种 `CLOCK_TICK`（`content={"tick_type": ...}`）；`INITIATE_CHAT_CHECK` 走 `should_initiate_chat` 判定 + `initiate_chat`（发话才更新 `last_chat_at`）；`REFLECTION_CHECK` 走 `_check_reflect`（过冷却 + 新记忆达标才 `reflect`）；首个活动块启动即触发（`last_block=0.0`），碎碎念/搭话/反思不立即触发（`last_mutter`/`last_chat`/`last_reflect` 初始为 now，抑制启动洪峰）；每轮结尾 `check_timeouts(now)` 收尾超时问句/搭话
 - [ ] **总线监督器**：`main()` 启动 `_supervise_bus(app)` 而非裸 `bus.run()`；`run()` 异常终止 → `logger.exception` + 指数退避（`_BUS_BACKOFF_BASE`→`_BUS_BACKOFF_MAX`）重启；崩溃前连续成功落库达 `_BUS_RECOVERY_STREAK` 视为恢复、计数与退避重置（单次成功不足阈值仍累积，DB 抖动不假自愈）；连续 `_BUS_MAX_FAILURES` 次失败 `logger.critical` + 重抛熔断致命；`CancelledError` 重抛（组合根关闭不重启）
 - [ ] **`main()` 竞速**：`asyncio.wait({serve_task, bus_task, tick_task}, FIRST_COMPLETED)` 后对**每个**先完成者 `task.result()`——serve 启动失败（`SystemExit`）/ tick 异常 / bus 熔断都重抛终止进程（非零退出，不静默吞）；`finally` cancel 后 `await asyncio.gather(..., return_exceptions=True)` 让 uvicorn 优雅关停跑完（非 fire-and-forget）
 - [ ] `pyright` strict 零报错；无模块级可变全局变量（运行期状态 `last_chat_at`/`last_presence`/`last_window_title`/`last_screen_summary`/`screen_observer` 放 `_App` 实例）
@@ -131,6 +131,9 @@ _PORT = 8000
 _TICK_INTERVAL = 60.0           # tick 循环检查间隔（秒）
 _MUTTER_CHECK_INTERVAL = 600.0  # 碎碎念检查周期（秒，10 分钟）
 _INITIATE_CHAT_INTERVAL = 300.0 # 搭话检查周期（秒，5 分钟）
+_REFLECT_CHECK_INTERVAL = 3600.0   # 反思检查周期（秒，1 小时）
+_REFLECT_MIN_INTERVAL = 21600.0    # 距上次反思最小冷却（秒，6 小时）
+_REFLECT_MIN_NEW_MEMORIES = 3      # 新记忆积累到几条才反思
 _BUS_BACKOFF_BASE = 1.0        # 总线重启指数退避初值（秒）
 _BUS_BACKOFF_MAX = 30.0        # 退避上限（秒）
 _BUS_MAX_FAILURES = 8          # 连续失败熔断阈值（达到判定致命，终止进程）
@@ -312,6 +315,8 @@ async def _on_clock_tick(app: _App, event: Event) -> None:
         )
     elif tick_type is TickType.INITIATE_CHAT_CHECK:
         await _check_initiate_chat(app)
+    elif tick_type is TickType.REFLECTION_CHECK:
+        await _check_reflect(app, event.correlation_id)
 
 
 async def _check_initiate_chat(app: _App) -> None:
@@ -332,12 +337,27 @@ async def _check_initiate_chat(app: _App) -> None:
             app.last_chat_at = time.time()
 
 
+async def _check_reflect(app: _App, correlation_id: str) -> None:
+    """反思检查：距上次反思够久 + 新记忆积累达标才触发。
+
+    以 narrative.updated_at 为「上次反思」基准。
+    """
+    narrative = await app.inner_life.get_narrative()
+    if time.time() - narrative.updated_at < _REFLECT_MIN_INTERVAL:
+        return
+    memories = await app.memory.list_memories()
+    new_count = sum(1 for m in memories if m.created_at > narrative.updated_at)
+    if new_count < _REFLECT_MIN_NEW_MEMORIES:
+        return
+    await app.inner_life.reflect(correlation_id)
+
+
 async def _tick_loop(app: _App) -> None:
     """定时生成 clock_tick：grid 边界发 SCHEDULE_BLOCK_START + DESIRE_EVAL，
-    周期发 MUTTER_CHECK + INITIATE_CHAT_CHECK。"""
+    周期发 MUTTER_CHECK + INITIATE_CHAT_CHECK + REFLECTION_CHECK。"""
     grid = app.config.activity.grid_minutes * 60.0
     last_block = 0.0                       # 启动即触发首个活动块（不推迟一整个 grid）
-    last_mutter = last_chat = time.time()  # 抑制启动洪峰：碎碎念/搭话不立即触发
+    last_mutter = last_chat = last_reflect = time.time()  # 抑制启动洪峰：碎碎念/搭话/反思不立即触发
     while True:
         now = time.time()
         if now - last_block >= grid:
@@ -366,6 +386,13 @@ async def _tick_loop(app: _App) -> None:
                 Source.INTERNAL,
             ))
             last_chat = now
+        if now - last_reflect >= _REFLECT_CHECK_INTERVAL:
+            await app.bus.publish(_root_event(
+                EventType.CLOCK_TICK,
+                {"tick_type": TickType.REFLECTION_CHECK.value},
+                Source.INTERNAL,
+            ))
+            last_reflect = now
         await app.expression.check_timeouts(now)   # 问句/搭话 超时收尾（60s 心跳）
         await asyncio.sleep(_TICK_INTERVAL)
 
@@ -771,7 +798,8 @@ if __name__ == "__main__":
     - [ ] **读书笔记 5 端点**（`_FakeActivity` 实现 5 个 CRUD 方法，`app.activity = cast(ActivityFacade, fake)`）：
       - [ ] `GET /api/reading-notes` → `ReadingNote[]`（含 `annotation_count`）；`DELETE /api/reading-notes/{note_id}` → `{deleted}` 且 `fake.deleted_notes` 记到该 id
       - [ ] `GET /api/annotations?target_id=` → `Annotation[]`（`author` 透传）；`POST /api/annotations` body `{target_id, content}` → 返回新批注 + `fake.added_annotations` 记 `(target_id, content)`；`DELETE /api/annotations/{annotation_id}` → `{deleted}` 且 `fake.deleted_annotations` 记到该 id
-  - [ ] **tick 循环**（fake `bus.publish` 记录 + `monkeypatch` 常量使间隔→0 + `asyncio.sleep` 立即返回）：跑一个循环 → 收到 `CLOCK_TICK` 且 `tick_type` 覆盖 `SCHEDULE_BLOCK_START`/`DESIRE_EVAL`/`MUTTER_CHECK`/`INITIATE_CHAT_CHECK` 四种、每条 `source is INTERNAL`（系统定时器，非外部输入）；`grid_minutes=60` 时首轮只发 `schedule_block_start`/`desire_eval`（首个活动块启动即触发，`last_block=0.0`），碎碎念/搭话不立即触发
+  - [ ] **tick 循环**（fake `bus.publish` 记录 + `monkeypatch` 常量使间隔→0 + `asyncio.sleep` 立即返回）：跑一个循环 → 收到 `CLOCK_TICK` 且 `tick_type` 覆盖 `SCHEDULE_BLOCK_START`/`DESIRE_EVAL`/`MUTTER_CHECK`/`INITIATE_CHAT_CHECK` 四种（`REFLECTION_CHECK` 间隔 3600s 不 monkeypatch 为 0，故不触发）、每条 `source is INTERNAL`（系统定时器，非外部输入）；`grid_minutes=60` 时首轮只发 `schedule_block_start`/`desire_eval`（首个活动块启动即触发，`last_block=0.0`），碎碎念/搭话/反思不立即触发
+  - [ ] **`_check_reflect` 三分支**（`_FakeInnerLife` 记 `reflect_calls`、`_FakeMemory` 记 `list_memories`、monkeypatch `time.time`）：`narrative.updated_at` 距 now < `_REFLECT_MIN_INTERVAL`（冷却内）→ 不触发；已过冷却但新记忆数 < `_REFLECT_MIN_NEW_MEMORIES` → 不触发；过冷却 + 新记忆达标 → `reflect` 调 1 次（correlation 透传）
   - [ ] **订阅一致性**（构建 `_App`（fake Facade 记录 handler 调用）+ `_subscribe` + 真 `EventBus`，`run()` 作 task）：对 `ROUTING` 每个**非空消费者**的 event_type publish 一个事件 → 对应 Facade 方法被调（`OBSERVATION_STATE` → `apply_event`+`add_value` 两 handler；`ACTIVITY_END` → `add_value`+`apply_event`；`USER_MESSAGE` → `reply`；`DESIRE_GENERATED` → `on_desire_generated` 等）
   - [ ] **总线监督器**（fake `bus.run()` 每轮 raise + `monkeypatch _BUS_BACKOFF_BASE/_BUS_BACKOFF_MAX=0`）：`_supervise_bus` 连续 `_BUS_MAX_FAILURES` 次后 `RuntimeError` 重抛熔断（`run()` 调用次数 == `_BUS_MAX_FAILURES`）；崩溃前 `persisted_count` 每次 +`_BUS_RECOVERY_STREAK`（达恢复阈值）→ 计数重置、永不假熔断；崩溃前 `persisted_count` 每次 +1（单次成功不足阈值，DB 抖动）→ 计数不重置、照样熔断（`calls == _BUS_MAX_FAILURES`）；`task.cancel()` → `CancelledError` 重抛、不再重启
   - [ ] **`main()` 竞速**（monkeypatch `uvicorn.Server`/`Config` + `load_config`/`build_app_context`/`build_app`/`_tick_loop` 为 fake）：fake `server.serve()` 抛 `RuntimeError("port in use")`（端口被占；不用 `SystemExit`——它是 BaseException，asyncio 会经 `Handle._run` 直接重抛出事件循环、绕开 `task.result()` 重抛路径，无法被干净断言）→ `main()` 重抛 `RuntimeError`（非零退出，不静默吞）；fake `_tick_loop` 抛 `RuntimeError`（+ 阻塞 serve/bus）→ `main()` 重抛 `RuntimeError`（tick 异常传播）

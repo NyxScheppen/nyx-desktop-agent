@@ -380,3 +380,29 @@ async def test_reflect_delegation() -> None:
         assert llm.correlation_ids == ["cid"]
     finally:
         await database.conn.close()
+
+
+async def test_reflect_publishes_reflection_done() -> None:
+    llm = _FakeLlm()
+    facade, store, bus, database = await _new_facade(llm, _FakeEvaluator())
+    try:
+        await _seed(store)
+        await store.upsert_narrative(_NARRATIVE)
+        events: list[Event] = []
+
+        async def record(event: Event) -> None:
+            events.append(event)
+
+        bus.subscribe(EventType.REFLECTION_DONE, record)
+        async with _running(bus):
+            outcome = await facade.reflect("cid")
+        assert outcome is not None
+        assert outcome.story_is_new is True
+        assert len(events) == 1
+        assert events[0].type is EventType.REFLECTION_DONE
+        assert events[0].content == {
+            "story": "今天对用户了解更多",
+            "story_is_new": True,
+        }
+    finally:
+        await database.conn.close()

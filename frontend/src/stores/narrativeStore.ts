@@ -2,16 +2,20 @@ import { create } from "zustand";
 import { getNarrative } from "../api/client";
 import type { SelfNarrative } from "../types/api";
 
-// 自我叙事面板：REST 快照（无 SSE 事件，挂载拉取）。对齐 innerLifeStore 的 {data,error,refresh} 形状。
+// 自我叙事面板：REST 快照。反思完成（reflection_done）时刷新 + 高亮新故事（highlightedStory）。
 type NarrativeStoreState = {
   data: SelfNarrative | null;
   error: string | null;
+  highlightedStory: string | null;
+  setHighlightedStory: (story: string) => void;
   refresh: () => Promise<void>;
 };
 
 export const useNarrativeStore = create<NarrativeStoreState>((set) => ({
   data: null,
   error: null,
+  highlightedStory: null,
+  setHighlightedStory: (story) => set({ highlightedStory: story }),
   refresh: async () => {
     set({ error: null });
     try {

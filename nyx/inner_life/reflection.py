@@ -12,7 +12,14 @@ from nyx.eval.evaluator import Evaluator
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
-from nyx.types import LongTermDesire, Memory, Personality, SelfNarrative, Values
+from nyx.types import (
+    LongTermDesire,
+    Memory,
+    Personality,
+    ReflectionOutcome,
+    SelfNarrative,
+    Values,
+)
 
 _RECENT_MEMORY_LIMIT = 20
 _MAX_DRIFT = 0.5               # 每轮性格/三观单维最大漂移
@@ -254,7 +261,7 @@ class Reflection:
         self._evaluator = evaluator
         self._config = config
 
-    async def run(self, correlation_id: str | None = None) -> str | None:
+    async def run(self, correlation_id: str | None = None) -> ReflectionOutcome | None:
         now = time.time()
         # 1. 收集输入
         recent = (await self._memory_facade.list_memories())[:_RECENT_MEMORY_LIMIT]
@@ -295,6 +302,7 @@ class Reflection:
         # 3. 回写慢变量（story/becoming 去重：与已有片段实质重复则跳过，不重复追加）
         new_story = parsed["story"]
         new_becoming = parsed["becoming"]
+        story_is_new = not _is_duplicate_fragment(new_story, narrative.story)
         await self._store.upsert_personality(
             drift_personality(personality, parsed["personality_delta"])
         )
@@ -304,7 +312,7 @@ class Reflection:
                 identity=narrative.identity,
                 story=(
                     narrative.story
-                    if _is_duplicate_fragment(new_story, narrative.story)
+                    if not story_is_new
                     else [*narrative.story, new_story]
                 ),
                 self_view={**narrative.self_view, **parsed["self_view"]},
@@ -322,4 +330,4 @@ class Reflection:
         for candidate in parsed["long_term_desires"][:max(0, remaining)]:
             await self._desire_facade.add_long_term(_to_long_term(candidate, now))
 
-        return parsed["story"]
+        return ReflectionOutcome(story=new_story, story_is_new=story_is_new)

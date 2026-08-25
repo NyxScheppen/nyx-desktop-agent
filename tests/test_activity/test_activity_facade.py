@@ -55,6 +55,7 @@ from nyx.types import (
     LLMOutput,
     Memory,
     Personality,
+    ReflectionOutcome,
     ShortTermDesire,
     Values,
 )
@@ -332,7 +333,7 @@ class _FakeTools:
         return "文件内容"
 
 
-async def _no_reflect(correlation_id: str | None) -> str | None:
+async def _no_reflect(correlation_id: str | None) -> ReflectionOutcome | None:
     return None
 
 
@@ -346,7 +347,7 @@ async def _new_facade(
     energy: float = 80.0,
     llm: _FakeLlm | None = None,
     evaluator: _FakeEvaluator | None = None,
-    reflect: Callable[[str | None], Awaitable[str | None]] | None = None,
+    reflect: Callable[[str | None], Awaitable[ReflectionOutcome | None]] | None = None,
     get_observation: Callable[[], Awaitable[dict[str, str]]] | None = None,
     memory: _FakeMemory | None = None,
     canon: str = "测试人格",
@@ -660,8 +661,8 @@ async def test_idle_reflection_result_has_summary(
     t0 = 1_000_000.0
     monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
 
-    async def fake_reflect(correlation_id: str | None) -> str | None:
-        return "今天的故事"
+    async def fake_reflect(correlation_id: str | None) -> ReflectionOutcome | None:
+        return ReflectionOutcome(story="今天的故事", story_is_new=True)
 
     facade, store, bus, database = await _new_facade(
         energy=30.0, reflect=fake_reflect

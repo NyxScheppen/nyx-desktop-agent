@@ -1,4 +1,5 @@
 import time
+from uuid import uuid4
 
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
@@ -22,7 +23,7 @@ from nyx.inner_life.reflection import Reflection
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
-from nyx.types import CurrentState, Event, SelfNarrative
+from nyx.types import CurrentState, Event, ReflectionOutcome, SelfNarrative
 
 _ENERGY_RECOVERY_PER_HOUR = 5.0   # 闲置每小时恢复（"夜间自动恢复"简化为恒定闲置恢复）
 
@@ -94,13 +95,26 @@ class InnerLifeFacade:
 
         await self._publish_emotion(event.correlation_id)
 
-    async def reflect(self, correlation_id: str | None = None) -> str | None:
+    async def reflect(
+        self, correlation_id: str | None = None
+    ) -> ReflectionOutcome | None:
         """反思协调器（慢变量唯一入口）：内部调 MemoryFacade/DesireFacade。
 
         correlation_id 来自触发 REFLECTION 事件（缺省自生成），串起反思 LLM 的溯源链。
-        返回本次反思产出的 story（发呆活动回带 summary 用；解析失败返回 None）。
+        成功后 publish REFLECTION_DONE（仅广播前端：叙事/欲望刷新 + 高亮气泡），
+        返回产物摘要（发呆活动回带 summary 用；解析失败返回 None 且不广播）。
         """
-        return await self._reflection.run(correlation_id)
+        cid = correlation_id or str(uuid4())
+        outcome = await self._reflection.run(cid)
+        if outcome is not None:
+            await self._bus.publish(
+                internal_event(
+                    EventType.REFLECTION_DONE,
+                    {"story": outcome.story, "story_is_new": outcome.story_is_new},
+                    cid,
+                )
+            )
+        return outcome
 
     async def get_state(self) -> CurrentState:
         personality = await self._store.get_personality()

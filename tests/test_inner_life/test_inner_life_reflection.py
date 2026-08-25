@@ -411,6 +411,52 @@ async def test_run_dedup_story() -> None:
         await database.conn.close()
 
 
+async def test_run_returns_outcome_new_story() -> None:
+    # story 真新增 → ReflectionOutcome(story_is_new=True)
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    llm = _FakeLlm()  # story="今天对用户了解更多" ≠ "初始故事"
+    reflection = _make_reflection(
+        store, llm, _FakeEvaluator(), _FakeMemoryFacade(), _FakeDesireFacade()
+    )
+    try:
+        await _seed(store)
+        outcome = await reflection.run("cid")
+        assert outcome is not None
+        assert outcome.story == "今天对用户了解更多"
+        assert outcome.story_is_new is True
+    finally:
+        await database.conn.close()
+
+
+async def test_run_returns_outcome_dedup_story() -> None:
+    # story 与已有片段重复 → 去重跳过，ReflectionOutcome(story_is_new=False)
+    response = json.dumps(
+        {
+            "story": "初始故事",
+            "becoming": "新认知",
+            "self_view": {},
+            "personality_delta": {},
+            "values_delta": {},
+            "long_term_desires": [],
+        }
+    )
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    llm = _FakeLlm(response)
+    reflection = _make_reflection(
+        store, llm, _FakeEvaluator(), _FakeMemoryFacade(), _FakeDesireFacade()
+    )
+    try:
+        await _seed(store)
+        outcome = await reflection.run()
+        assert outcome is not None
+        assert outcome.story == "初始故事"
+        assert outcome.story_is_new is False
+    finally:
+        await database.conn.close()
+
+
 async def test_run_generates_correlation_id() -> None:
     database = await db.connect(":memory:")
     store = InnerLifeStore(database)

@@ -9,6 +9,7 @@ import { useChatStore } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
+import { useNarrativeStore } from "../src/stores/narrativeStore";
 import { isEmotionCategory } from "../src/types/api";
 import type { ActivitySnapshot, CurrentState } from "../src/types/api";
 
@@ -125,6 +126,7 @@ describe("dispatchEvent", () => {
     useDesireStore.setState({ data: null, error: null });
     useActivityStore.setState({ data: null, error: null });
     useMemoryStore.setState({ data: null, error: null });
+    useNarrativeStore.setState({ data: null, error: null, highlightedStory: null });
     useAnnounceStore.setState({ items: [] });
   });
 
@@ -305,6 +307,54 @@ describe("dispatchEvent", () => {
       kind: "activity",
       text: "读完啦：《小王子》 — 关于驯服",
     });
+  });
+
+  it("reflection_done（story_is_new）→ 欲望/叙事 refresh + 高亮 + 气泡", () => {
+    const desireSpy = vi
+      .spyOn(useDesireStore.getState(), "refresh")
+      .mockResolvedValue(undefined);
+    const narrativeSpy = vi
+      .spyOn(useNarrativeStore.getState(), "refresh")
+      .mockResolvedValue(undefined);
+
+    dispatchEvent({
+      event: "reflection_done",
+      event_id: "e1",
+      correlation_id: "c1",
+      story: "今天对用户了解更多",
+      story_is_new: true,
+    });
+
+    expect(desireSpy).toHaveBeenCalledTimes(1);
+    expect(narrativeSpy).toHaveBeenCalledTimes(1);
+    expect(useNarrativeStore.getState().highlightedStory).toBe("今天对用户了解更多");
+    expect(useAnnounceStore.getState().items).toHaveLength(1);
+    expect(useAnnounceStore.getState().items[0]).toMatchObject({
+      kind: "mutter",
+      text: "小狐狸我呀，反思了一下：今天对用户了解更多",
+    });
+  });
+
+  it("reflection_done（story_is_new=false）→ 静默 refresh 不高亮不气泡", () => {
+    const desireSpy = vi
+      .spyOn(useDesireStore.getState(), "refresh")
+      .mockResolvedValue(undefined);
+    const narrativeSpy = vi
+      .spyOn(useNarrativeStore.getState(), "refresh")
+      .mockResolvedValue(undefined);
+
+    dispatchEvent({
+      event: "reflection_done",
+      event_id: "e2",
+      correlation_id: "c2",
+      story: "初始故事",
+      story_is_new: false,
+    });
+
+    expect(desireSpy).toHaveBeenCalledTimes(1);
+    expect(narrativeSpy).toHaveBeenCalledTimes(1);
+    expect(useNarrativeStore.getState().highlightedStory).toBeNull();
+    expect(useAnnounceStore.getState().items).toHaveLength(0);
   });
 });
 

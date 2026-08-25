@@ -136,13 +136,16 @@ refresh(): Promise<void>          // Promise.all([getEval(), getTokens()]) → r
 type NarrativeStoreState = {
   data: SelfNarrative | null;   // GET /api/narrative 快照；null = 尚未加载
   error: string | null;
+  highlightedStory: string | null; // reflection_done(story_is_new) 高亮的新故事片段（叙事面板定位+闪烁后清除）
 };
 refresh(): Promise<void>          // 内部调 client.getNarrative() → data；throw → error
+setHighlightedStory(story: string): void  // 置 highlightedStory（叙事面板据此滚动定位 + 高亮闪烁）
 ```
 
 ### 关键决策
 
-- **纯快照、无 SSE**：自我叙事无对应事件，仅挂载时 `refresh()` 拉一次（无增量 action）。
+- **快照 + 高亮增量**：自我叙事原先无对应事件、仅挂载 `refresh()` 拉一次；反思优化后 `reflection_done`（`story_is_new=true`）会 `setHighlightedStory` 高亮新故事片段（叙事面板定位 + 闪烁提示），随后 `refresh()` 重拉快照把新故事落 `data`。`highlightedStory` 是纯前端瞬态高亮态（不进后端、不随 `refresh()` 持久），面板渲染后清除。
+- **`story_is_new=false`（去重跳过）不触发**：仅 `refresh()` 重拉（`data` 不变），无高亮、无气泡。
 
 ## 5. `materialsStore`（资料上传）
 
@@ -220,7 +223,7 @@ type AnnounceState = {
 - **chatStore.loadHistory**：按 `timestamp` 升序前置 + `preloaded=true` + 历史 think 入 `typedIds`；已存在的 id 去重不重复前置；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
 - **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
 - **四个快照 store**：`desireStore`/`memoryStore` 各断言 `refresh()` 请求对端点 + `data` 落 store；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`（fetch 恰 2 次）→ `data`/`results` 落 store；`evalStore.refresh()` 并行 `getEval`+`getTokens`（fetch 恰 2 次）→ `reports`/`tokens` 落 store；`desireStore.refresh()` 失败 → `error` + `data` 保持 null。
-- **narrativeStore / materialsStore**：`narrativeStore.refresh()` 请求 `/api/narrative` + `data` 落 store；`materialsStore.refresh()` 请求 `/api/materials` + `materials` 落 store；`materialsStore.upload()` `POST /api/upload` 后重拉 materials（fetch 恰 2 次）+ `uploading` 复位。
+- **narrativeStore / materialsStore**：`narrativeStore.refresh()` 请求 `/api/narrative` + `data` 落 store；`narrativeStore.setHighlightedStory(story)` 置 `highlightedStory`；`materialsStore.refresh()` 请求 `/api/materials` + `materials` 落 store；`materialsStore.upload()` `POST /api/upload` 后重拉 materials（fetch 恰 2 次）+ `uploading` 复位。
 - **readingNotesStore**：`refresh()` 请求 `/api/reading-notes?limit=50` + `notes` 落 store + `loading` 复位；`remove()` `DELETE /api/reading-notes/{id}` 后从 `notes` 本地摘除（不重拉）。
 - **`isReady`（串行逐字纯函数）**：每条 nyx 文本消息等「同 `correlation_id` 且在其之前」的 nyx 文本消息都打完（入 `typedIds`）才就绪；无前置 nyx 文本 → 直接就绪；`preloaded` nyx 文本与 user 消息 → 恒就绪；不同 `correlation_id` 的 nyx 文本不阻塞。
 - **`settingsStore`**：`setTint`/`setImage` 独立落 store 可并存；`reset()` 回 null。

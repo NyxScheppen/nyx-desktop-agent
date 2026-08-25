@@ -434,7 +434,7 @@ describe("desireStore / activityStore / memoryStore / evalStore", () => {
 
 describe("narrativeStore / materialsStore", () => {
   beforeEach(() => {
-    useNarrativeStore.setState({ data: null, error: null });
+    useNarrativeStore.setState({ data: null, error: null, highlightedStory: null });
     useMaterialsStore.setState({ materials: null, uploading: false, error: null });
   });
 
@@ -453,6 +453,11 @@ describe("narrativeStore / materialsStore", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/narrative");
     expect(useNarrativeStore.getState().data).toEqual(fixture);
+  });
+
+  it("setHighlightedStory 记录待高亮故事（reflection_done 高亮用）", () => {
+    useNarrativeStore.getState().setHighlightedStory("今天对用户了解更多");
+    expect(useNarrativeStore.getState().highlightedStory).toBe("今天对用户了解更多");
   });
 
   it("materialsStore.refresh：GET /api/materials → materials 落 store", async () => {

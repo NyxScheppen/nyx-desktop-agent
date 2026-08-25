@@ -190,6 +190,16 @@ class SelfNarrative:
     updated_at: float
 
 
+@dataclass
+class ReflectionOutcome:
+    """一轮反思的产物摘要（Reflection.run 返回值）。
+
+    story 是否真新增（未被去重跳过）决定前端是否高亮叙事条目 + 冒气泡。
+    """
+    story: str
+    story_is_new: bool
+
+
 # ---- 表达 ----
 @dataclass
 class Message:

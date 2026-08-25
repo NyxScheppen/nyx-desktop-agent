@@ -63,6 +63,7 @@ from nyx.types import (
     Memory,
     Personality,
     ReadingNote,
+    ReflectionOutcome,
     SelfNarrative,
     TokenUsage,
     Values,
@@ -74,6 +75,9 @@ _PORT = 8000
 _TICK_INTERVAL = 60.0           # tick 循环检查间隔（秒）
 _MUTTER_CHECK_INTERVAL = 150.0  # 碎碎念检查周期（秒，2.5 分钟）
 _INITIATE_CHAT_INTERVAL = 300.0 # 搭话检查周期（秒，5 分钟）
+_REFLECT_CHECK_INTERVAL = 3600.0   # 反思检查周期（秒，1 小时）
+_REFLECT_MIN_INTERVAL = 21600.0    # 距上次反思最小冷却（秒，6 小时）
+_REFLECT_MIN_NEW_MEMORIES = 3      # 新记忆积累到几条才反思
 _BUS_BACKOFF_BASE = 1.0        # 总线重启指数退避初值（秒）
 _BUS_BACKOFF_MAX = 30.0        # 退避上限（秒）
 _BUS_MAX_FAILURES = 8          # 连续失败熔断阈值（达到判定致命，终止进程）
@@ -255,6 +259,8 @@ async def _on_clock_tick(app: _App, event: Event) -> None:
         )
     elif tick_type is TickType.INITIATE_CHAT_CHECK:
         await _check_initiate_chat(app)
+    elif tick_type is TickType.REFLECTION_CHECK:
+        await _check_reflect(app, event.correlation_id)
 
 
 async def _check_initiate_chat(app: _App) -> None:
@@ -275,12 +281,28 @@ async def _check_initiate_chat(app: _App) -> None:
             app.last_chat_at = time.time()
 
 
+async def _check_reflect(app: _App, correlation_id: str) -> None:
+    """反思检查：距上次反思够久 + 新记忆积累达标才触发。
+
+    以 narrative.updated_at 为「上次反思」基准。
+    """
+    narrative = await app.inner_life.get_narrative()
+    if time.time() - narrative.updated_at < _REFLECT_MIN_INTERVAL:
+        return
+    memories = await app.memory.list_memories()
+    new_count = sum(1 for m in memories if m.created_at > narrative.updated_at)
+    if new_count < _REFLECT_MIN_NEW_MEMORIES:
+        return
+    await app.inner_life.reflect(correlation_id)
+
+
 async def _tick_loop(app: _App) -> None:
     """定时生成 clock_tick：grid 边界发 SCHEDULE_BLOCK_START + DESIRE_EVAL，
     周期发 MUTTER_CHECK + INITIATE_CHAT_CHECK。"""
     grid = app.config.activity.grid_minutes * 60.0
     last_block = 0.0                       # 启动即触发首个活动块（不推迟一整个 grid）
-    last_mutter = last_chat = time.time()  # 抑制启动洪峰：碎碎念/搭话不立即触发
+    # 抑制启动洪峰：碎碎念/搭话/反思不立即触发（初始化为当前时间）
+    last_mutter = last_chat = last_reflect = time.time()
     while True:
         now = time.time()
         if now - last_block >= grid:
@@ -309,6 +331,13 @@ async def _tick_loop(app: _App) -> None:
                 Source.INTERNAL,
             ))
             last_chat = now
+        if now - last_reflect >= _REFLECT_CHECK_INTERVAL:
+            await app.bus.publish(_root_event(
+                EventType.CLOCK_TICK,
+                {"tick_type": TickType.REFLECTION_CHECK.value},
+                Source.INTERNAL,
+            ))
+            last_reflect = now
         await app.expression.check_timeouts(now)   # 问句/搭话 超时收尾（60s 心跳）
         await asyncio.sleep(_TICK_INTERVAL)
 
@@ -536,13 +565,15 @@ async def build_app_context(config: Config) -> _App:
 
     # 循环依赖解环：_get_state/_reflect/_get_observation 引用可变容器，运行时才求值
     state_holder: list[Callable[[], Awaitable[CurrentState]]] = []
-    reflect_holder: list[Callable[[str | None], Awaitable[str | None]]] = []
+    reflect_holder: list[
+        Callable[[str | None], Awaitable[ReflectionOutcome | None]]
+    ] = []
     observation_holder: list[Callable[[], Awaitable[dict[str, str]]]] = []
 
     async def _get_state() -> CurrentState:
         return await state_holder[0]()
 
-    async def _reflect(correlation_id: str | None) -> str | None:
+    async def _reflect(correlation_id: str | None) -> ReflectionOutcome | None:
         return await reflect_holder[0](correlation_id)
 
     async def _get_observation() -> dict[str, str]:

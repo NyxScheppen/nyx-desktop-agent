@@ -95,6 +95,13 @@ export type EmotionUpdateEvent = SseBase & {
   emotion: EmotionCategory;
 };
 
+/** 反思完成帧（12-inner-life）：{story, story_is_new}。story_is_new 决定前端是否高亮+气泡。 */
+export type ReflectionDoneEvent = SseBase & {
+  event: "reflection_done";
+  story: string;
+  story_is_new: boolean;
+};
+
 /** 未消费的 11 类：溯源面板落地前不读字段，payload 保持宽松。 */
 type OpaqueEventType =
   | "user_material"
@@ -120,6 +127,7 @@ export type SseEvent =
   | TextEvent<"initiate_chat">
   | UserMessageEvent
   | EmotionUpdateEvent
+  | ReflectionDoneEvent
   | OpaqueEvent;
 
 export type ConnectionState = "connecting" | "open" | "closed";

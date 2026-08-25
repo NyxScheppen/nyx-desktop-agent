@@ -13,6 +13,7 @@ class EventType(StrEnum):
     INITIATE_CHAT = "initiate_chat"        # 搭话
     EMOTION_UPDATE = "emotion_update"      # 情感更新
     REFLECTION = "reflection"              # 反思
+    REFLECTION_DONE = "reflection_done"    # 反思完成（仅广播前端：叙事/欲望刷新+气泡）
     MEMORY_CREATED = "memory_created"      # 记忆生成
     MEMORY_PROMOTED = "memory_promoted"    # 记忆升级（短期→长期）
     DESIRE_GENERATED = "desire_generated"  # 欲望产生
@@ -33,6 +34,7 @@ class TickType(StrEnum):
     DESIRE_EVAL = "desire_eval"            # 欲望评估
     MUTTER_CHECK = "mutter_check"          # 碎碎念检查
     INITIATE_CHAT_CHECK = "initiate_chat_check"  # 搭话检查
+    REFLECTION_CHECK = "reflection_check"        # 反思检查（定时+积累门槛）
 
 
 class ContextMode(StrEnum):

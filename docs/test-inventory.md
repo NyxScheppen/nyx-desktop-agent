@@ -14,7 +14,7 @@
 | `test_long_term_desire_linked_values_default_factory_isolated` | 边界鲁棒 | `default_factory` 保证两个实例的 `linked_values` 互不共享 |
 | `test_typed_dict_keys` | 功能正确 | 4 个 TypedDict 键集合经 `get_type_hints` 完整 |
 
-**功能阶段**：01-types 实现时编写。
+**功能阶段**：01-types 实现时编写；`test_all_enums_exhaustive` 的 `EXPECTED` 于「反思优化」轮追加 `reflection_done`（EventType）/`reflection_check`（TickType）两个成员。
 
 ## 02-config（配置加载）
 
@@ -403,8 +403,11 @@
 | `test_build_reflection_prompt_feeds_story` | 功能正确 | 已写故事/认知内容被喂进反思 prompt（而非只喂条数）+ 含「新的、与之不同」指示 |
 | `test_is_duplicate_fragment` | 功能正确 | 片段去重纯函数：strip 后精确相等/高相似度 → True；明显不同/空列表 → False |
 | `test_run_dedup_story` | 功能正确 | LLM story 与已有片段重复 → 不追加（`len(story)==1`）；becoming 不同照常追加、慢变量照常回写 |
+| `test_run_returns_outcome_new_story` | 功能正确 | story 真新增 → `run` 返回 `ReflectionOutcome(story_is_new=True)`（`story` 字段透传） |
+| `test_run_returns_outcome_dedup_story` | 功能正确 | story 与已有片段重复 → `ReflectionOutcome(story_is_new=False)`（返回值结构化，非 `str | None`） |
+| `test_reflect_publishes_reflection_done` | 功能正确 | `facade.reflect()` → 发布 `REFLECTION_DONE`（content `{story, story_is_new}`、correlation 透传） |
 
-**功能阶段**：12-inner-life 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`ActivityFacade` 用向前引用 stub/fake、真实编排归 13/14/18）；`test_parse_reflection_unknown_drift_key` / `test_parse_reflection_drops_bad_candidate` / `test_run_survives_bad_candidate` 于 12 评审修复阶段编写（坏候选 best-effort 跳过 + 漂移 key 白名单校验），`internal_event`/时间常量抽到 events/event.py 后的共享测试见 05-event；`test_run_survives_invalid_json` 于反思 JSON 解析容错修复阶段追加（非法 JSON 跳过回写、不抛给事件总线，对齐 11-desire run_eval）；`test_build_reflection_prompt_feeds_story` / `test_is_duplicate_fragment` / `test_run_dedup_story` 于「叙事去重」修复追加（story/becoming 重复：prompt 喂旧内容治本 + 回写前相似度去重兜底）。
+**功能阶段**：12-inner-life 实现时编写（LLM 全 mock、DB `:memory:`、事件经真实 `EventBus` + recording handler；`ActivityFacade` 用向前引用 stub/fake、真实编排归 13/14/18）；`test_parse_reflection_unknown_drift_key` / `test_parse_reflection_drops_bad_candidate` / `test_run_survives_bad_candidate` 于 12 评审修复阶段编写（坏候选 best-effort 跳过 + 漂移 key 白名单校验），`internal_event`/时间常量抽到 events/event.py 后的共享测试见 05-event；`test_run_survives_invalid_json` 于反思 JSON 解析容错修复阶段追加（非法 JSON 跳过回写、不抛给事件总线，对齐 11-desire run_eval）；`test_build_reflection_prompt_feeds_story` / `test_is_duplicate_fragment` / `test_run_dedup_story` 于「叙事去重」修复追加（story/becoming 重复：prompt 喂旧内容治本 + 回写前相似度去重兜底）；`test_run_returns_outcome_new_story` / `test_run_returns_outcome_dedup_story` / `test_reflect_publishes_reflection_done` 于「反思优化」轮追加（`run` 返回值由 `str | None` 改结构化 `ReflectionOutcome(story, story_is_new)`、`reflect` 发布 `REFLECTION_DONE` 供前端叙事高亮/欲望刷新）。
 
 ## 13-activity-scheduler（日程排期纯函数）
 
@@ -658,8 +661,11 @@
 | `test_annotations_endpoint` | 功能正确 | `GET /api/annotations?target_id=` → `Annotation[]`（`author` 透传） |
 | `test_add_annotation_endpoint` | 功能正确 | `POST /api/annotations` body `{target_id, content}` → 返回新批注 + `fake.added_annotations` 记 `(target_id, content)` |
 | `test_delete_annotation_endpoint` | 功能正确 | `DELETE /api/annotations/{annotation_id}` → `{deleted}` 且 `fake.deleted_annotations` 记到该 id |
+| `test_check_reflect_skips_within_cooldown` | 边界鲁棒 | `updated_at` 距 now < `_REFLECT_MIN_INTERVAL` → 不触发（`reflect` 不调） |
+| `test_check_reflect_skips_below_new_memory_threshold` | 边界鲁棒 | 已过冷却但新记忆 < `_REFLECT_MIN_NEW_MEMORIES` → 不触发（`reflect` 不调） |
+| `test_check_reflect_triggers` | 功能正确 | 过冷却 + 新记忆达标 → `reflect` 调 1 次（correlation 透传） |
 
-**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）；`test_supervise_bus_breaks_on_flapping` / `test_main_propagates_serve_failure` / `test_main_propagates_tick_failure` 于第三轮 review 追加（恢复信号改连续成功阈值防抖动假自愈 + main 竞速传播所有先完成者）；`test_load_ask_reads_ask_file` / `test_load_ask_missing_file_fails` 于「主动提问段按需注入」阶段追加（`_load_ask` 读 ask.md / 缺失 fail-fast）。`test_observe_endpoint` 于「活动填实（观察填实）」轮改为收可选 `window_title`（`_ObservePayload.window_title`、`OBSERVATION_STATE` content 加 `window_title`、`app.last_window_title` 落组合根）；`test_materials_endpoint_returns_progress` 于「读书连贯+进度」轮追加（`/api/materials` 由纯文件名改为书库进度：`list_materials` 委托 `MaterialStore.list_all`，响应 `{materials: [Material]}`）；`test_reading_notes_endpoint` / `test_delete_reading_note_endpoint` / `test_annotations_endpoint` / `test_add_annotation_endpoint` / `test_delete_annotation_endpoint` 于「读书/创作借鉴」轮追加（读书笔记 5 端点：清单/删除/批注增删查）；`test_memory_search_endpoint` 于「记忆前端搜索/显示优化」轮追加（`/api/memories/search` 委托 `memory.search` 三层检索）。
+**功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）；`test_supervise_bus_breaks_on_flapping` / `test_main_propagates_serve_failure` / `test_main_propagates_tick_failure` 于第三轮 review 追加（恢复信号改连续成功阈值防抖动假自愈 + main 竞速传播所有先完成者）；`test_load_ask_reads_ask_file` / `test_load_ask_missing_file_fails` 于「主动提问段按需注入」阶段追加（`_load_ask` 读 ask.md / 缺失 fail-fast）。`test_observe_endpoint` 于「活动填实（观察填实）」轮改为收可选 `window_title`（`_ObservePayload.window_title`、`OBSERVATION_STATE` content 加 `window_title`、`app.last_window_title` 落组合根）；`test_materials_endpoint_returns_progress` 于「读书连贯+进度」轮追加（`/api/materials` 由纯文件名改为书库进度：`list_materials` 委托 `MaterialStore.list_all`，响应 `{materials: [Material]}`）；`test_reading_notes_endpoint` / `test_delete_reading_note_endpoint` / `test_annotations_endpoint` / `test_add_annotation_endpoint` / `test_delete_annotation_endpoint` 于「读书/创作借鉴」轮追加（读书笔记 5 端点：清单/删除/批注增删查）；`test_memory_search_endpoint` 于「记忆前端搜索/显示优化」轮追加（`/api/memories/search` 委托 `memory.search` 三层检索）；`test_check_reflect_skips_within_cooldown` / `test_check_reflect_skips_below_new_memory_threshold` / `test_check_reflect_triggers` 于「反思优化」轮追加（tick 循环新增 `REFLECTION_CHECK` 类型，`_check_reflect` 三分支：冷却/新记忆门槛/触发）。
 
 ## frontend-sse（SSE 数据流：useSSE + dispatchEvent 分发表）
 
@@ -677,8 +683,10 @@
 | `dispatchEvent > memory_created → memoryStore.refresh()` | 功能正确 | `memory_created` 触发 `memoryStore.refresh()` 恰 1 次 |
 | `dispatchEvent > activity_start → activityStore.refresh()` | 功能正确 | `activity_start` 触发 `activityStore.refresh()` 恰 1 次 |
 | `isEmotionCategory > 枚举收窄` | 边界鲁棒 | 合法枚举（`happy`/`neutral`）→ true；非法字符串（`不存在`）/非字符串（`5`/`null`）→ false |
+| `dispatchEvent > reflection_done（story_is_new）→ 欲望/叙事 refresh + 高亮 + 气泡` | 功能正确 | `story_is_new=true` → `desireStore.refresh`/`narrativeStore.refresh` 各 1 次 + `highlightedStory` 置为 story + `announceStore` 追加气泡「小狐狸我呀，反思了一下：…」 |
+| `dispatchEvent > reflection_done（story_is_new=false）→ 静默 refresh 不高亮不气泡` | 功能正确 | `story_is_new=false` → 仍双 refresh 但 `highlightedStory` 为 null、`announceStore` 空（静默刷新） |
 
-**功能阶段**：frontend 01-sse 实现时编写（mock `EventSource` stub + 真实 store；验证管道正确——事件走对 store、字段零映射、坏帧跳过不崩，不验证视觉）；`dispatchEvent > user_message → chatStore` 于本轮 review 追加（Finding 1 回归：user_message 裸 `{message}` 曾致用户消息被 `typeof e.content` 拦截静默丢弃）；`isEmotionCategory > 枚举收窄` 于本轮 review 追加（emotion 枚举值运行时收窄）；`desire_generated` / `memory_created` / `activity_start` → refresh 于前端面板落地轮追加（快照 store 路由）；`emotion_update → 顺带 refreshState` 于「前端不自动刷新」bug 修复轮改写（根因：emotion_update 载荷只带情绪，能量/性格/三观不随帧下发，EnergyBar/BigFiveChart/ValuesChart 停在初始快照；改为 dispatch 顺带重拉全量 state）。
+**功能阶段**：frontend 01-sse 实现时编写（mock `EventSource` stub + 真实 store；验证管道正确——事件走对 store、字段零映射、坏帧跳过不崩，不验证视觉）；`dispatchEvent > user_message → chatStore` 于本轮 review 追加（Finding 1 回归：user_message 裸 `{message}` 曾致用户消息被 `typeof e.content` 拦截静默丢弃）；`isEmotionCategory > 枚举收窄` 于本轮 review 追加（emotion 枚举值运行时收窄）；`desire_generated` / `memory_created` / `activity_start` → refresh 于前端面板落地轮追加（快照 store 路由）；`emotion_update → 顺带 refreshState` 于「前端不自动刷新」bug 修复轮改写（根因：emotion_update 载荷只带情绪，能量/性格/三观不随帧下发，EnergyBar/BigFiveChart/ValuesChart 停在初始快照；改为 dispatch 顺带重拉全量 state）；`dispatchEvent > reflection_done` → 欲望/叙事 refresh + 高亮 + 气泡于「反思优化」轮追加（`reflection_done` 事件路由：双快照刷新 + 新故事高亮 + 头像旁气泡）。
 
 ## frontend-client（REST 客户端：api/client.ts）
 
@@ -752,8 +760,9 @@
 | `materialsStore.upload > 上传后重拉 materials` | 功能正确 | `upload(file)` → `POST /api/upload`（fetch 恰 2 次：upload + 重拉 `getMaterials`）+ `materials` 更新 + `uploading` 复位 |
 | `readingNotesStore.refresh > GET /api/reading-notes?limit=50` | 功能正确 | mock fetch 断言端点 + `notes` 落 store（`ReadingNote[]`）+ `loading=false` |
 | `readingNotesStore.remove > DELETE 后本地摘除` | 功能正确 | `remove(id)` → `DELETE /api/reading-notes/{id}`（fetch 恰 1 次）+ 从 `notes` 本地摘除该条（不重拉） |
+| `narrativeStore.setHighlightedStory > 记录待高亮故事（reflection_done 高亮用）` | 功能正确 | `setHighlightedStory("x")` → `highlightedStory` 落 store（叙事面板据此标「新」徽标） |
 
-**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）；`chatStore.sendMessage > 重入守卫` 于 03-chat-panel 后 review 追加（串行锁提前到 await 前 + get() 同步守卫，防 in-flight 重复发送覆盖 pendingId）；`chatStore.loadHistory` / `markTyped`+`reset` / 四个快照 store `refresh` / `isReady` 于前端面板落地轮追加（聊天历史加载 + 快照 store + 串行逐字门控纯函数）；`settingsStore` 于视觉改造轮追加（背景色调/背景图纯前端 UI 状态）；`isReady` 于「开头打字机」轮追加并随后改为**全串行门控**（每条 nyx 文本等前一条同 correlation_id 打完，删去 `isFirstTypewriter` 开头打字机）；`narrativeStore.refresh` / `materialsStore.refresh` / `materialsStore.upload` 于「喂资料/上传课本」轮追加（自我叙事快照 + 资料清单 + 上传即重拉）；`activityStore.refresh` 于「产出面板」轮改为双字段并发拉取（`data` + `results`）；`materialsStore.refresh` / `materialsStore.upload` 于「读书连贯+进度」轮改为落 `materials: Material[]`（书库进度，不再 `files`）。`chatStore.addInitiateChat > unreadProactive` / `chatStore.reset > 复位 unreadProactive` 于「内心世界弹窗化 + 借鉴」轮追加（头像红点未读：搭话置未读、`clearUnreadProactive`/发消息/`reset` 清）。`readingNotesStore.refresh` / `readingNotesStore.remove` 于「读书/创作借鉴」轮追加（读书笔记清单快照 + 删除本地摘除）。
+**功能阶段**：frontend 02-stores 实现时编写（mock `fetch`/fake timers + 真实 store；验证管道正确——action 转消息正确、isReplying 生命周期 + 60s 超时兜底、快照+增量、内存上限，不验证视觉）；`chatStore > 迟到回复清 sendError`、`chatStore.reset > 新会话全清` 于上轮 review 追加（Finding 2/3：回复到达清「回复超时」残留 + reset 全清）；`chatStore > 非匹配 correlation 不清 timer` 于本轮 review 追加（Finding A：存 postChat 返回 event_id 到 pendingId，addSpeak/addAsk 按 correlation_id 匹配后才清 timer）；`chatStore.sendMessage > 重入守卫` 于 03-chat-panel 后 review 追加（串行锁提前到 await 前 + get() 同步守卫，防 in-flight 重复发送覆盖 pendingId）；`chatStore.loadHistory` / `markTyped`+`reset` / 四个快照 store `refresh` / `isReady` 于前端面板落地轮追加（聊天历史加载 + 快照 store + 串行逐字门控纯函数）；`settingsStore` 于视觉改造轮追加（背景色调/背景图纯前端 UI 状态）；`isReady` 于「开头打字机」轮追加并随后改为**全串行门控**（每条 nyx 文本等前一条同 correlation_id 打完，删去 `isFirstTypewriter` 开头打字机）；`narrativeStore.refresh` / `materialsStore.refresh` / `materialsStore.upload` 于「喂资料/上传课本」轮追加（自我叙事快照 + 资料清单 + 上传即重拉）；`activityStore.refresh` 于「产出面板」轮改为双字段并发拉取（`data` + `results`）；`materialsStore.refresh` / `materialsStore.upload` 于「读书连贯+进度」轮改为落 `materials: Material[]`（书库进度，不再 `files`）。`chatStore.addInitiateChat > unreadProactive` / `chatStore.reset > 复位 unreadProactive` 于「内心世界弹窗化 + 借鉴」轮追加（头像红点未读：搭话置未读、`clearUnreadProactive`/发消息/`reset` 清）。`readingNotesStore.refresh` / `readingNotesStore.remove` 于「读书/创作借鉴」轮追加（读书笔记清单快照 + 删除本地摘除）；`narrativeStore.setHighlightedStory` 于「反思优化」轮追加（`highlightedStory` 字段 + `setHighlightedStory` action，供 `reflection_done` 新故事高亮）。
 
 ## frontend-labels（枚举中文化映射：lib/labels.ts）
 
@@ -913,3 +922,12 @@
 | `点击展开完整内容` | 功能正确 | 点摘要 → `content` 完整上屏；再点收起（`expandedId` 切换） |
 
 **功能阶段**：frontend「记忆前端搜索/显示优化」轮编写（RTL + 真实 store + mock fetch；验证管道正确——搜索走后端语义检索、tag/类型筛选与排序对已拉取列表本地处理、点击展开完整内容，不验证视觉）。`searchMemories` 端点函数本身由 frontend-client 覆盖（`searchMemories > query 拼进 URL`）。
+
+## frontend-narrative-panel（叙事面板：NarrativePanel 新故事高亮）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `NarrativePanel > highlightedStory 命中 → 该故事条目标「新」徽标` | 功能正确 | `highlightedStory` 命中某条 story → 该 `<li>` 内渲染「新」徽标 |
+| `NarrativePanel > highlightedStory 未命中 → 不渲染徽标` | 边界鲁棒 | `highlightedStory` 为空 → 不渲染「新」徽标（`queryByText` 空） |
+
+**功能阶段**：frontend「反思优化」轮编写（RTL + 真实 store；验证管道正确——`highlightedStory` 命中则标「新」徽标、未命中不标，不验证视觉）。

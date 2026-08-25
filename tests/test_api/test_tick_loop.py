@@ -8,7 +8,7 @@ import pytest
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
-from nyx.enums import EventType, Source
+from nyx.enums import EventType, MemoryType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
@@ -16,13 +16,16 @@ from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import (
     _BUS_MAX_FAILURES,
     _BUS_RECOVERY_STREAK,
+    _REFLECT_MIN_INTERVAL,
+    _REFLECT_MIN_NEW_MEMORIES,
     _App,
+    _check_reflect,
     _supervise_bus,
     _tick_loop,
     main,
 )
 from nyx.memory.facade import MemoryFacade
-from nyx.types import Event
+from nyx.types import Event, Memory, SelfNarrative
 
 
 class _FakeBus:
@@ -257,3 +260,96 @@ async def test_first_tick_starts_activity_not_mutter_or_chat(
     assert [e.content["tick_type"] for e in bus.published] == [
         "schedule_block_start", "desire_eval",
     ]
+
+
+# ---- _check_reflect：反思检查三分支 ----
+
+class _FakeInnerLife:
+    def __init__(self, narrative: SelfNarrative) -> None:
+        self._narrative = narrative
+        self.reflect_calls: list[str] = []
+
+    async def get_narrative(self) -> SelfNarrative:
+        return self._narrative
+
+    async def reflect(self, correlation_id: str) -> None:
+        self.reflect_calls.append(correlation_id)
+
+
+class _FakeMemory:
+    def __init__(self, memories: list[Memory]) -> None:
+        self._memories = memories
+
+    async def list_memories(self) -> list[Memory]:
+        return self._memories
+
+
+def _memory(created_at: float) -> Memory:
+    return Memory(
+        id=f"m{created_at}", created_at=created_at, content="c", tag="user",
+        summary="s", freshness=1.0, type=MemoryType.SHORT_TERM,
+    )
+
+
+def _reflect_app(
+    narrative: SelfNarrative, memories: list[Memory]
+) -> tuple[_App, _FakeInnerLife]:
+    inner_life = _FakeInnerLife(narrative)
+    memory = _FakeMemory(memories)
+    app = _App(
+        bus=cast(EventBus, object()),
+        inner_life=cast(InnerLifeFacade, inner_life),
+        desire=cast(DesireFacade, object()),
+        memory=cast(MemoryFacade, memory),
+        activity=cast(ActivityFacade, object()),
+        expression=cast(ExpressionFacade, _FakeExpression()),
+        evaluator=cast(Evaluator, object()),
+        config=Config(),
+    )
+    return app, inner_life
+
+
+async def test_check_reflect_skips_within_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 1_000_000.0
+    monkeypatch.setattr("nyx.main.time.time", lambda: now)
+    narrative = SelfNarrative(
+        identity="尼克斯", story=[], self_view={}, becoming=[],
+        updated_at=now - 100.0,  # 距上次反思仅 100s < 冷却
+    )
+    memories = [_memory(now - 50.0) for _ in range(_REFLECT_MIN_NEW_MEMORIES)]
+    app, inner_life = _reflect_app(narrative, memories)
+    await _check_reflect(app, "cid")
+    assert inner_life.reflect_calls == []
+
+
+async def test_check_reflect_skips_below_new_memory_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 1_000_000.0
+    monkeypatch.setattr("nyx.main.time.time", lambda: now)
+    narrative = SelfNarrative(
+        identity="尼克斯", story=[], self_view={}, becoming=[],
+        updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,  # 已过冷却
+    )
+    memories = [_memory(narrative.updated_at + 100.0) for _ in range(2)]
+    app, inner_life = _reflect_app(narrative, memories)
+    await _check_reflect(app, "cid")
+    assert inner_life.reflect_calls == []
+
+
+async def test_check_reflect_triggers(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = 1_000_000.0
+    monkeypatch.setattr("nyx.main.time.time", lambda: now)
+    narrative = SelfNarrative(
+        identity="尼克斯", story=[], self_view={}, becoming=[],
+        updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,  # 已过冷却
+    )
+    memories = [
+        _memory(narrative.updated_at + 100.0)
+        for _ in range(_REFLECT_MIN_NEW_MEMORIES)
+    ]
+    app, inner_life = _reflect_app(narrative, memories)
+    await _check_reflect(app, "cid")
+    assert inner_life.reflect_calls == ["cid"]

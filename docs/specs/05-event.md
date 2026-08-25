@@ -15,7 +15,7 @@
 ## 验收标准
 
 - [ ] `bus.py` 含 `EventBus`（`__init__(db)` + `publish` / `subscribe` / `run` / `list_events` / `add_sse_sink` / `remove_sse_sink`），与「`events/bus.py`（完整）」段代码逐字一致
-- [ ] `routing.py` 含 `ROUTING`（18 键）+ `TICK_ROUTING`（4 键），与「`events/routing.py`（完整）」段代码逐字一致
+- [ ] `routing.py` 含 `ROUTING`（19 键）+ `TICK_ROUTING`（5 键），与「`events/routing.py`（完整）」段代码逐字一致
 - [ ] `event.py` 含 `internal_event(type_, content, correlation_id) -> Event`（新 `uuid4` id + `time.time` 时间戳 + `Source.INTERNAL`）+ `internal_text_event(type_, content, correlation_id) -> Event`（纯文本 content 包成 `{"content": ...}` 载荷）与 `SECONDS_PER_DAY`/`SECONDS_PER_HOUR` 常量，与「`events/event.py`（完整）」段代码逐字一致
 - [ ] `publish()` 只入队（无 I/O、不落库）；`run()` 按「persist → SSE 广播 → 内部分发」顺序处理（先广播：SSE 观察者立刻收到事件本身，不被阻塞 handler 拖慢）
 - [ ] 多 handler 按订阅序调用；handler 收到完整 `Event`（含 `correlation_id`，供下游继承）
@@ -114,6 +114,8 @@ ROUTING: dict[EventType, list[str]] = {
     EventType.EMOTION_UPDATE:      [],
     # 协调器，内部调 memory/desire
     EventType.REFLECTION:          ["inner_life"],
+    # 反思完成：仅广播前端（叙事/欲望刷新 + 高亮），无内部消费者
+    EventType.REFLECTION_DONE:     [],
     EventType.MEMORY_CREATED:      [],
     EventType.MEMORY_PROMOTED:     [],
 }
@@ -125,6 +127,7 @@ TICK_ROUTING: dict[TickType, list[str]] = {
     TickType.DESIRE_EVAL:          ["desire"],
     TickType.MUTTER_CHECK:         ["expression"],
     TickType.INITIATE_CHAT_CHECK:  ["expression"],
+    TickType.REFLECTION_CHECK:     ["inner_life"],
 }
 ```
 
@@ -306,7 +309,7 @@ def _row_to_event(row: aiosqlite.Row) -> Event:
 
 - [ ] 单元测试 `tests/test_event/`：
   - [ ] **事件构造原语**（`test_event.py`，无 DB）：`internal_event(EventType.MUTTER, {}, "c")` → `Event` 的 `source is Source.INTERNAL`、`type`/`content`/`correlation_id` 原样、`id` 非空 str、`timestamp` 是 float；`internal_text_event(EventType.THINK, "hi", "c")` → `content == {"content": "hi"}`；`SECONDS_PER_DAY == 86400.0`、`SECONDS_PER_HOUR == 3600.0`
-  - [ ] **纯数据**（`test_routing.py`，不实例化总线）：`set(ROUTING.keys()) == set(EventType) - {EventType.CLOCK_TICK}`（18 键）；`set(TICK_ROUTING.keys()) == set(TickType)`（4 键）；所有值的模块名 ⊆ `{"expression", "inner_life", "desire", "activity"}`
+  - [ ] **纯数据**（`test_routing.py`，不实例化总线）：`set(ROUTING.keys()) == set(EventType) - {EventType.CLOCK_TICK}`（19 键）；`set(TICK_ROUTING.keys()) == set(TickType)`（5 键）；所有值的模块名 ⊆ `{"expression", "inner_life", "desire", "activity"}`
   - [ ] **总线机制**（`test_bus.py`，`db = await connect(":memory:")`——内部已设 `row_factory=aiosqlite.Row` + 跑迁移，直接返回 `Database`；`list_events` 的 `_row_to_event` 按列名 `row["id"]` 取值，缺 row_factory 会 TypeError）+ fake async handler + 真 `asyncio.Queue` sink）：
     - [ ] `publish` 只入队：publish 后 handler 未调用、`list_events()` 无记录（未到 run）
     - [ ] `run()` 作 task 跑：publish 事件 → `event_log` 落库 + handler 收到完整 `Event`（`id`/`timestamp`/`source`/`type`/`content`/`correlation_id` 全原样）+ SSE sink 收到同一 `Event`

@@ -6,6 +6,7 @@ import Panel from "../layout/Panel";
 export default function NarrativePanel() {
   const data = useNarrativeStore((s) => s.data);
   const error = useNarrativeStore((s) => s.error);
+  const highlightedStory = useNarrativeStore((s) => s.highlightedStory);
   const refresh = useNarrativeStore((s) => s.refresh);
 
   useEffect(() => {
@@ -26,6 +27,9 @@ export default function NarrativePanel() {
               {data.story.map((s, i) => (
                 <li key={i} className="panel-item">
                   {s}
+                  {s === highlightedStory && (
+                    <span className="panel-badge">新</span>
+                  )}
                 </li>
               ))}
             </ul>

@@ -22,6 +22,8 @@ ROUTING: dict[EventType, list[str]] = {
     EventType.EMOTION_UPDATE:      [],
     # 协调器，内部调 memory/desire
     EventType.REFLECTION:          ["inner_life"],
+    # 反思完成：仅广播前端（叙事/欲望刷新 + 高亮），无内部消费者
+    EventType.REFLECTION_DONE:     [],
     EventType.MEMORY_CREATED:      [],
     EventType.MEMORY_PROMOTED:     [],
 }
@@ -33,4 +35,5 @@ TICK_ROUTING: dict[TickType, list[str]] = {
     TickType.DESIRE_EVAL:          ["desire"],
     TickType.MUTTER_CHECK:         ["expression"],
     TickType.INITIATE_CHAT_CHECK:  ["expression"],
+    TickType.REFLECTION_CHECK:     ["inner_life"],
 }

@@ -21,12 +21,14 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
     EventType: {
         "user_message", "user_material", "clock_tick", "observation_state", "speak",
         "ask", "think", "mutter", "initiate_chat", "emotion_update", "reflection",
-        "memory_created", "memory_promoted", "desire_generated", "desire_satisfied",
-        "desire_expired", "activity_start", "activity_end", "activity_interrupted",
+        "reflection_done", "memory_created", "memory_promoted", "desire_generated",
+        "desire_satisfied", "desire_expired", "activity_start", "activity_end",
+        "activity_interrupted",
     },
     Source: {"external", "internal"},
     TickType: {
         "schedule_block_start", "desire_eval", "mutter_check", "initiate_chat_check",
+        "reflection_check",
     },
     ContextMode: {"fast", "slow"},
     EmotionCategory: {

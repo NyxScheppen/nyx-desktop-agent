@@ -22,7 +22,7 @@
 - [ ] `facade.py` 含 `InnerLifeFacade`（`apply_event` / `reflect` / `get_state` / `get_narrative`）+ `energy_to_state`，四个公开方法签名与 tech-ref §5 逐字一致
 - [ ] `vad_to_category` 只落 6 档（neutral/happy/sad/angry/worried/shy），`resolve_emotion` 补 sleepy/thinking 两档覆盖；优先级 **困倦 > 思考 > 情绪**
 - [ ] `apply_event`：情感衰减（回基线 0,0）+ 事件偏移（`event_offset` 纯函数）；`ACTIVITY_END` 额外按 `energy_delta` 更新精力（含闲置恢复 + clamp + 重算档位）；`REFLECTION` 额外调 `reflect()`；每次情感变化发布 `EMOTION_UPDATE`（content 含 `valence`/`arousal`/`emotion`）
-- [ ] `reflect()`：读近期记忆 + 当前性格/三观/叙事/长期欲望 → **1 次 LLM**（`module="inner_life"`、`output_type="reflection"`、`json_mode=True`、`correlation_id` 透传自触发事件）→ 规则回写（性格/三观漂移 clamp 到 `[1,10]`、单维漂移 ≤ `_MAX_DRIFT`；叙事 story/becoming 追加、self_view 合并；长期欲望候选在 `long_term_capacity` 内逐个 `add_long_term`）
+- [ ] `reflect()`：读近期记忆 + 当前性格/三观/叙事/长期欲望 → **1 次 LLM**（`module="inner_life"`、`output_type="reflection"`、`json_mode=True`、`correlation_id` 透传自触发事件）→ 规则回写（性格/三观漂移 clamp 到 `[1,10]`、单维漂移 ≤ `_MAX_DRIFT`；叙事 story/becoming 追加（重复片段跳过）、self_view 合并；长期欲望候选在 `long_term_capacity` 内逐个 `add_long_term`）→ 返回 `ReflectionOutcome | None`（`story`/`story_is_new`）；成功后发布 `REFLECTION_DONE`（content `{story, story_is_new}`，仅广播前端）
 - [ ] `get_state()`：组装 `CurrentState`（情感内存 + 性格/三观/精力 store + `current_activity`（`ActivityFacade.get_current()`）+ `active_desires`（`DesireFacade.get_pending()`））；单行表未 seed → `RuntimeError`（fail-fast）
 - [ ] 情感在内存不持久化（design §4.5）；性格/三观/精力/自我叙事走 store；无 `VADCalibrator` / `AffinityMatrix`
 - [ ] 事件发布遵守「Facade 自己 publish、绝不返回 Event」；事件 `source=INTERNAL`
@@ -49,7 +49,7 @@
 - **自我叙事回写**：`story`/`becoming` 是追加（`[..., 新条目]`）、`self_view` 是合并（`{**旧, **新}`）、`updated_at=now`；`identity` 不变
 - **长期欲望候选**：`_parse_reflection` 校验每个候选 `{type, name, description, subtopics}`；`_to_long_term` 构造（`strength=_LONG_TERM_INIT_STRENGTH=0.5`、`progress=0.0`）；逐个 `desire_facade.add_long_term`，超出 `config.desire.long_term_capacity` 则停（容量检查在反思侧，11 的 `add_long_term` 只插入）
 - **`add_long_term` 归 11（ripple）**：`DesireFacade.add_long_term(desire: LongTermDesire) -> None` 直接委托 `store.insert_long_term`（无容量逻辑）。design §3.2「reflect 内部调 MemoryFacade/DesireFacade」→ 反思走 Facade 而非 DesireStore
-- **`reflect(correlation_id: str | None = None)`（tech-ref §5 签名）**：`apply_event` 收到 `REFLECTION` 事件时内部调 `self.reflect(event.correlation_id)`，把触发事件的 correlation_id 串进反思 LLM（溯源链不断）；缺省（14-activity 发呆活动直接调用、测试）自生成 `uuid4`。`reflect()` 也是公开方法
+- **`reflect(correlation_id: str | None = None) -> ReflectionOutcome | None`（tech-ref §5 签名）**：`apply_event` 收到 `REFLECTION` 事件时内部调 `self.reflect(event.correlation_id)`，把触发事件的 correlation_id 串进反思 LLM（溯源链不断）；缺省（14-activity 发呆活动直接调用、测试）自生成 `uuid4`。`reflect()` 也是公开方法；成功后 `publish REFLECTION_DONE`（仅广播前端：叙事/欲望刷新 + 高亮气泡），返回产物摘要（发呆活动回带 summary 用；解析失败返回 None 且不广播）
 - **`apply_event` 是统一事件入口**：`bus.subscribe(OBSERVATION_STATE/DESIRE_SATISFIED/ACTIVITY_END/REFLECTION, facade.apply_event)`（18-api 组合根绑定）。`apply_event` 对 4 类事件都做「衰减+偏移」，另按类型分派 `ACTIVITY_END→精力`、`REFLECTION→反思`
 - **`EMOTION_UPDATE` 发布**：每次 `apply_event` 末尾发布（content `{valence, arousal, emotion}`，`emotion` 是 8 档 `.value` 字符串，经 `resolve_emotion` 求得），供前端 SSE；`correlation_id = 触发事件.correlation_id`
 - **`get_state` 依赖注入（决策：已与用户确认）**：构造注入 `ActivityFacade` + `DesireFacade`，`get_state` 调 `get_current()` / `get_pending()` 组装快照。只读、无环——`ActivityFacade.select_activity(desires, state)` 以参数收 `CurrentState`、`DesireFacade` 不反向调 inner_life，故 inner_life → {activity, desire} 不构成环
@@ -295,6 +295,7 @@ class InnerLifeStore:
 ### `inner_life/reflection.py`（完整）
 
 ```python
+import difflib
 import json
 import logging
 import time
@@ -308,13 +309,21 @@ from nyx.eval.evaluator import Evaluator
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
-from nyx.types import LongTermDesire, Memory, Personality, SelfNarrative, Values
+from nyx.types import (
+    LongTermDesire,
+    Memory,
+    Personality,
+    ReflectionOutcome,
+    SelfNarrative,
+    Values,
+)
 
 _RECENT_MEMORY_LIMIT = 20
 _MAX_DRIFT = 0.5               # 每轮性格/三观单维最大漂移
 _LONG_TERM_INIT_STRENGTH = 0.5  # 新长期欲望初始迫切度
 _SCALE_LO = 1.0                # 性格/三观范围下限
 _SCALE_HI = 10.0               # 性格/三观范围上限
+_DUP_SIMILARITY_THRESHOLD = 0.9  # 片段去重相似度阈值（只拦逐字近似）
 
 # 漂移 key 白名单（对齐 types.py 的 Personality/Values TypedDict 键名）
 _PERSONALITY_KEYS = frozenset(
@@ -366,6 +375,20 @@ def _build_reflection_prompt(
         f"认知变化 {len(narrative.becoming)} 条\n"
         f"现有长期欲望：\n{lt_lines}"
     )
+
+
+def _is_duplicate_fragment(text: str, existing: list[str]) -> bool:
+    """新片段是否与已有片段实质重复：strip 后精确相等，或字符相似度达阈值。纯函数。"""
+    t = text.strip()
+    for old in existing:
+        o = old.strip()
+        if not o:
+            continue
+        if t == o:
+            return True
+        if difflib.SequenceMatcher(None, t, o).ratio() >= _DUP_SIMILARITY_THRESHOLD:
+            return True
+    return False
 
 
 def _drift_dim(base: float, delta: float | None) -> float:
@@ -526,7 +549,7 @@ class Reflection:
         self._evaluator = evaluator
         self._config = config
 
-    async def run(self, correlation_id: str | None = None) -> None:
+    async def run(self, correlation_id: str | None = None) -> ReflectionOutcome | None:
         now = time.time()
         # 1. 收集输入
         recent = (await self._memory_facade.list_memories())[:_RECENT_MEMORY_LIMIT]
@@ -554,9 +577,18 @@ class Reflection:
             json_mode=True,
         )
         await self._evaluator.evaluate(output)
-        parsed = _parse_reflection(output.content)
+        try:
+            parsed = _parse_reflection(output.content)
+        except ValueError:
+            # best-effort：LLM 产出非法 JSON → 本轮跳过回写（下个 tick 重试），
+            # 不把解析失败抛给事件总线（对齐 11-desire run_eval 的容错）。
+            _logger.exception("反思 JSON 解析失败 correlation_id=%s", correlation_id)
+            return None
 
-        # 3. 回写慢变量
+        # 3. 回写慢变量（story/becoming 去重：与已有片段实质重复则跳过，不重复追加）
+        new_story = parsed["story"]
+        new_becoming = parsed["becoming"]
+        story_is_new = not _is_duplicate_fragment(new_story, narrative.story)
         await self._store.upsert_personality(
             drift_personality(personality, parsed["personality_delta"])
         )
@@ -564,9 +596,17 @@ class Reflection:
         await self._store.upsert_narrative(
             SelfNarrative(
                 identity=narrative.identity,
-                story=[*narrative.story, parsed["story"]],
+                story=(
+                    narrative.story
+                    if not story_is_new
+                    else [*narrative.story, new_story]
+                ),
                 self_view={**narrative.self_view, **parsed["self_view"]},
-                becoming=[*narrative.becoming, parsed["becoming"]],
+                becoming=(
+                    narrative.becoming
+                    if _is_duplicate_fragment(new_becoming, narrative.becoming)
+                    else [*narrative.becoming, new_becoming]
+                ),
                 updated_at=now,
             )
         )
@@ -575,12 +615,15 @@ class Reflection:
         remaining = self._config.long_term_capacity - len(desire_state.long_term)
         for candidate in parsed["long_term_desires"][:max(0, remaining)]:
             await self._desire_facade.add_long_term(_to_long_term(candidate, now))
+
+        return ReflectionOutcome(story=new_story, story_is_new=story_is_new)
 ```
 
 ### `inner_life/facade.py`（完整）
 
 ```python
 import time
+from uuid import uuid4
 
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
@@ -604,7 +647,7 @@ from nyx.inner_life.reflection import Reflection
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
-from nyx.types import CurrentState, Event, SelfNarrative
+from nyx.types import CurrentState, Event, ReflectionOutcome, SelfNarrative
 
 _ENERGY_RECOVERY_PER_HOUR = 5.0   # 闲置每小时恢复（"夜间自动恢复"简化为恒定闲置恢复）
 
@@ -676,12 +719,26 @@ class InnerLifeFacade:
 
         await self._publish_emotion(event.correlation_id)
 
-    async def reflect(self, correlation_id: str | None = None) -> None:
+    async def reflect(
+        self, correlation_id: str | None = None
+    ) -> ReflectionOutcome | None:
         """反思协调器（慢变量唯一入口）：内部调 MemoryFacade/DesireFacade。
 
         correlation_id 来自触发 REFLECTION 事件（缺省自生成），串起反思 LLM 的溯源链。
+        成功后 publish REFLECTION_DONE（仅广播前端：叙事/欲望刷新 + 高亮气泡），
+        返回产物摘要（发呆活动回带 summary 用；解析失败返回 None 且不广播）。
         """
-        await self._reflection.run(correlation_id)
+        cid = correlation_id or str(uuid4())
+        outcome = await self._reflection.run(cid)
+        if outcome is not None:
+            await self._bus.publish(
+                internal_event(
+                    EventType.REFLECTION_DONE,
+                    {"story": outcome.story, "story_is_new": outcome.story_is_new},
+                    cid,
+                )
+            )
+        return outcome
 
     async def get_state(self) -> CurrentState:
         personality = await self._store.get_personality()
@@ -783,6 +840,7 @@ class InnerLifeFacade:
     - [ ] fake LLM 返回完整 JSON → 1 次 LLM 调用（`output_type="reflection"`、`correlation_id` 传入值透传；`run(None)` 时自生成非空）、`evaluator.evaluate` 被调 1 次（收到该 `LLMOutput`）；性格/三观按 delta 漂移回写、叙事 story/becoming 各 +1、self_view 合并；`add_long_term` 被调 `len(候选)` 次
     - [ ] `long_term_desires` 候选数超过 `long_term_capacity - 现有数` → 只新增到容量上限（不超）
     - [ ] 单行表未 seed（`get_personality` 返回 None）→ `RuntimeError`
+    - [ ] story 真新增 → `run` 返回 `ReflectionOutcome(story_is_new=True)`；story 与已有片段重复 → `story_is_new=False`（返回值结构化，非 `str | None`）
   - [ ] **facade**（`test_inner_life_facade.py`，先 `upsert_personality`/`upsert_values`/`upsert_energy` seed 三张单行表——`apply_event` 末尾 `_publish_emotion` 读 energy、`get_state` 读三张表，未 seed 会 fail-fast）：
     - [ ] `apply_event(DESIRE_SATISFIED)`：valence/arousal 上升（+0.2/+0.1 后 clamp）；发布 `EMOTION_UPDATE`（content 含 `valence`/`arousal`/`emotion` 字符串、`source is INTERNAL`、`correlation_id == 触发事件.correlation_id`）
     - [ ] `apply_event(ACTIVITY_END)`：content 带 `energy_delta=-25` → `energy` 下降 + `energy_state` 重算 + `upsert_energy` 被调；无 `energy_delta` 键 → 不崩（缺省 0）
@@ -792,6 +850,7 @@ class InnerLifeFacade:
     - [ ] `get_state`：注入 fake `ActivityFacade.get_current`（返回 activity，`current_activity` = `.type`）与 fake `DesireFacade.get_pending`（返回 list）→ `CurrentState` 各字段正确；未 seed → `RuntimeError`
     - [ ] `get_narrative`：store 有 → 返回；空 → `RuntimeError`
     - [ ] `reflect` 委托：`facade.reflect()` → reflection 的 LLM 被调 1 次
+    - [ ] `facade.reflect()` 成功 → 发布 `REFLECTION_DONE`（content `{story, story_is_new}`、correlation 透传）
 - [ ] 集成测试：无（LLM 全 mock、DB 用 `:memory:`；ActivityFacade 向前引用用 fake，真实编排归 13/14/18）
 - [ ] E2E 测试：无
 

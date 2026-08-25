@@ -43,6 +43,7 @@ class EventType(StrEnum):
     INITIATE_CHAT = "initiate_chat"        # 搭话
     EMOTION_UPDATE = "emotion_update"      # 情感更新
     REFLECTION = "reflection"              # 反思
+    REFLECTION_DONE = "reflection_done"    # 反思完成（仅广播前端）
     MEMORY_CREATED = "memory_created"      # 记忆生成
     MEMORY_PROMOTED = "memory_promoted"    # 记忆升级（短期→长期）
     DESIRE_GENERATED = "desire_generated"  # 欲望产生
@@ -63,6 +64,7 @@ class TickType(StrEnum):
     DESIRE_EVAL = "desire_eval"            # 欲望评估
     MUTTER_CHECK = "mutter_check"          # 碎碎念检查
     INITIATE_CHAT_CHECK = "initiate_chat_check"  # 搭话检查
+    REFLECTION_CHECK = "reflection_check"  # 反思检查
 
 
 class ContextMode(StrEnum):
@@ -168,7 +170,7 @@ class TokenUsageDict(TypedDict):           # 单次 LLM 记账 {input, output}
     output: int
 ```
 
-### dataclass（`nyx/types.py`，19 个）
+### dataclass（`nyx/types.py`，20 个）
 
 > `from nyx.enums import (Source, EventType, DesireType, ActivityType, MemoryType, SearchMode, DesireStatus, ActivityStatus, EnergyState, GoalAction, EmotionCategory)`
 
@@ -309,6 +311,11 @@ class SelfNarrative:
     becoming: list[str]
     updated_at: float
 
+@dataclass
+class ReflectionOutcome:
+    story: str
+    story_is_new: bool        # story 是否真新增（未被去重跳过），前端据此高亮 + 气泡
+
 # ---- 表达 ----
 @dataclass
 class Message:
@@ -392,10 +399,11 @@ class TokenUsage:           # 一次 LLM 调用记账（对应 token_usage 表�
   EXPECTED = {
       EventType: {"user_message", "clock_tick", "observation_state", "speak", "ask",
                   "think", "mutter", "initiate_chat", "emotion_update", "reflection",
+                  "reflection_done",
                   "memory_created", "memory_promoted", "desire_generated", "desire_satisfied",
                   "desire_expired", "activity_start", "activity_end", "activity_interrupted"},
       Source: {"external", "internal"},
-      TickType: {"schedule_block_start", "desire_eval", "mutter_check", "initiate_chat_check"},
+      TickType: {"schedule_block_start", "desire_eval", "mutter_check", "initiate_chat_check", "reflection_check"},
       ContextMode: {"fast", "slow"},
       EmotionCategory: {"neutral", "happy", "sad", "angry", "worried", "shy", "sleepy", "thinking"},
       DesireType: {"interaction", "exploration", "creation", "rest"},

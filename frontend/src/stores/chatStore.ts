@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { getEventsLog, postChat } from "../api/client";
 import type {
   BackendEvent,
+  EncounterEndEvent,
   TextEvent,
   TextEventType,
   UserMessageEvent,
@@ -10,7 +11,7 @@ import type {
 export type ChatMessage = {
   id: string; // event_id
   role: "user" | "nyx";
-  kind: "message" | "speak" | "ask" | "think" | "mutter" | "initiate_chat";
+  kind: "message" | "speak" | "ask" | "think" | "mutter" | "initiate_chat" | "encounter";
   content: string;
   correlation_id: string;
   preloaded?: boolean; // 历史回填消息：渲染时不逐字
@@ -28,6 +29,7 @@ type ChatState = {
   addThink: (e: TextEvent<"think">) => void;
   addMutter: (e: TextEvent<"mutter">) => void;
   addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
+  addEncounterEnding: (e: EncounterEndEvent) => void;
   clearUnreadProactive: () => void;
   markTyped: (id: string) => void;
   loadHistory: () => Promise<void>; // 挂载时回填 GET /api/events/log 的历史消息（preloaded，不逐字）
@@ -125,6 +127,17 @@ export const useChatStore = create<ChatState>((set, get) => {
     addInitiateChat: (e) => {
       append(e, "nyx", "initiate_chat");
       set({ unreadProactive: true });
+    },
+    // 遭遇结局叙事（19-encounter）：ending 作为 nyx 文本上时间线，即时全量（不逐字）。
+    addEncounterEnding: (e) => {
+      const msg: ChatMessage = {
+        id: e.event_id,
+        role: "nyx",
+        kind: "encounter",
+        content: e.ending,
+        correlation_id: e.correlation_id,
+      };
+      set((s) => ({ messages: [...s.messages, msg] }));
     },
     clearUnreadProactive: () => set({ unreadProactive: false }),
     markTyped: (id) => set((s) => ({ typedIds: { ...s.typedIds, [id]: true } })),

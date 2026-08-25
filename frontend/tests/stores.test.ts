@@ -4,6 +4,7 @@ import { ANNOUNCE_DURATION, useAnnounceStore } from "../src/stores/announceStore
 import { useActivityStore } from "../src/stores/activityStore";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
+import { useEncounterStore } from "../src/stores/encounterStore";
 import { useEvalStore } from "../src/stores/evalStore";
 import { useExplorationStore } from "../src/stores/explorationStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
@@ -765,5 +766,110 @@ describe("explorationStore", () => {
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
     expect(useExplorationStore.getState().activityId).toBe("exp-9");
     expect(useExplorationStore.getState().liveNodes).toEqual([]);
+  });
+});
+
+describe("encounterStore", () => {
+  beforeEach(() => {
+    useEncounterStore.getState().reset();
+    useChatStore.getState().reset();
+  });
+
+  it("onStart 置 current（零映射）", () => {
+    useEncounterStore.getState().onStart({
+      event: "encounter_start",
+      event_id: "e1",
+      correlation_id: "c1",
+      encounter_id: "enc1",
+      kind: "random_event",
+      text: "开场",
+      options: [{ index: 0, text: "走" }],
+    });
+    expect(useEncounterStore.getState().current).toEqual({
+      encounter_id: "enc1",
+      kind: "random_event",
+      text: "开场",
+      options: [{ index: 0, text: "走" }],
+    });
+  });
+
+  it("onEnd 清 current + 上屏 ending + 重拉三个快照", () => {
+    const chatSpy = vi.spyOn(useChatStore.getState(), "addEncounterEnding");
+    const innerSpy = vi.spyOn(useInnerLifeStore.getState(), "refreshState").mockResolvedValue(undefined);
+    const desireSpy = vi.spyOn(useDesireStore.getState(), "refresh").mockResolvedValue(undefined);
+    const memorySpy = vi.spyOn(useMemoryStore.getState(), "refresh").mockResolvedValue(undefined);
+
+    useEncounterStore.getState().onEnd({
+      event: "encounter_end",
+      event_id: "e2",
+      correlation_id: "c2",
+      encounter_id: "enc1",
+      kind: "random_event",
+      option_index: 0,
+      option_text: "走",
+      ending: "结局",
+      consequences: {},
+    });
+
+    expect(useEncounterStore.getState().current).toBeNull();
+    expect(chatSpy).toHaveBeenCalledTimes(1);
+    expect(innerSpy).toHaveBeenCalledTimes(1);
+    expect(desireSpy).toHaveBeenCalledTimes(1);
+    expect(memorySpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("choose POST /api/encounter/choose，成功不本地清 current", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ encounter_id: "enc1", chosen: 0 }));
+    vi.stubGlobal("fetch", fetchMock);
+    useEncounterStore.setState({
+      current: { encounter_id: "enc1", kind: "random_event", text: "开场", options: [{ index: 0, text: "走" }] },
+    });
+
+    await useEncounterStore.getState().choose("enc1", 0);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/encounter/choose");
+    expect(JSON.parse(init.body)).toEqual({ encounter_id: "enc1", option_index: 0 });
+    expect(useEncounterStore.getState().current).not.toBeNull(); // 不本地清
+    expect(useEncounterStore.getState().choosing).toBe(false);
+  });
+
+  it("refresh GET /api/encounter/current → current 落 store", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      encounter_id: "enc9", kind: "growth_moment", text: "开场", options: [],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useEncounterStore.getState().refresh();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/encounter/current");
+    expect(useEncounterStore.getState().current?.encounter_id).toBe("enc9");
+  });
+});
+
+describe("chatStore.addEncounterEnding", () => {
+  it("ending 转 ChatMessage{role:nyx, kind:encounter} 并 append", () => {
+    useChatStore.getState().reset();
+    useChatStore.getState().addEncounterEnding({
+      event: "encounter_end",
+      event_id: "e1",
+      correlation_id: "c1",
+      encounter_id: "enc1",
+      kind: "growth_moment",
+      option_index: 0,
+      option_text: "走",
+      ending: "温柔，总能走到更远的地方。",
+      consequences: {},
+    });
+
+    const { messages } = useChatStore.getState();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      id: "e1",
+      role: "nyx",
+      kind: "encounter",
+      content: "温柔，总能走到更远的地方。",
+      correlation_id: "c1",
+    });
   });
 });

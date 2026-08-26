@@ -14,7 +14,7 @@ WEIGHT_REINFORCE_DELTA = 0.05    # 满足一次 +0.05（正强化）
 # —— 抑制阈值 suppression_threshold ——
 _SUPPRESSION_MIN = 0.0
 _SUPPRESSION_MAX = 1.0
-_SUPPRESSION_INIT = 0.5          # 初始抑制阈值（< peak=0.8，初始不压抑）
+_SUPPRESSION_INIT = 0.5          # 初始抑制阈值（< peak=0.9，初始不压抑）
 SUPPRESSION_RAISE_DELTA = 0.1    # 失败/抑制一次 +0.1（习得性抑制）
 
 # —— 回增（放弃/淘汰压力回灌）——

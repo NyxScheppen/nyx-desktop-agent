@@ -369,13 +369,13 @@ async def test_run_eval_only_most_urgent(monkeypatch: pytest.MonkeyPatch) -> Non
     try:
         t0 = 1_000_000.0
         monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
-        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
-        await store.upsert_value(_dv(DesireType.EXPLORATION, 0.85, updated_at=t0))
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.95, updated_at=t0))
+        await store.upsert_value(_dv(DesireType.EXPLORATION, 0.92, updated_at=t0))
         async with _running(bus):
             result = await lifecycle.run_eval()
         assert [d.type for d in result] == [DesireType.INTERACTION]
         dv = await store.get_value(DesireType.EXPLORATION)
-        assert dv is not None and dv.value == pytest.approx(0.85)   # 保留不重置
+        assert dv is not None and dv.value == pytest.approx(0.92)   # 保留不重置
     finally:
         await database.conn.close()
 
@@ -391,9 +391,9 @@ async def test_run_eval_long_term_pressure(monkeypatch: pytest.MonkeyPatch) -> N
         await store.insert_long_term(_lt(DesireType.EXPLORATION))
         async with _running(bus):
             result = await lifecycle.run_eval()
-        assert result == []                       # 0.5 + 0.2 = 0.7 < 0.8 未达峰
+        assert result == []                       # 0.5 + 0.1 = 0.6 < 0.9 未达峰
         dv = await store.get_value(DesireType.EXPLORATION)
-        assert dv is not None and dv.value == pytest.approx(0.7)
+        assert dv is not None and dv.value == pytest.approx(0.6)
     finally:
         await database.conn.close()
 
@@ -412,7 +412,7 @@ async def test_run_eval_decay(monkeypatch: pytest.MonkeyPatch) -> None:
             result = await lifecycle.run_eval()
         assert result == []
         dv = await store.get_value(DesireType.INTERACTION)
-        assert dv is not None and dv.value == pytest.approx(0.5 - 0.02)
+        assert dv is not None and dv.value == pytest.approx(0.5 - 0.05)
     finally:
         await database.conn.close()
 
@@ -425,7 +425,7 @@ async def test_run_eval_suppression_gate(monkeypatch: pytest.MonkeyPatch) -> Non
         t0 = 1_000_000.0
         monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
         await store.upsert_value(
-            _dv(DesireType.INTERACTION, 0.85, suppression=0.9, updated_at=t0)
+            _dv(DesireType.INTERACTION, 0.92, suppression=0.95, updated_at=t0)
         )
         async with _running(bus):
             result = await lifecycle.run_eval()
@@ -716,7 +716,7 @@ async def test_run_eval_releases_suppressed(
     try:
         t0 = 1_000_000.0
         monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
-        # 可表达（0.6 >= 0.5 抑制阈值）但未达峰（< 0.8）→ 释放且不生成
+        # 可表达（0.6 >= 0.5 抑制阈值）但未达峰（< 0.9）→ 释放且不生成
         await store.upsert_value(_dv(DesireType.INTERACTION, 0.6, updated_at=t0))
         d = _desire("d1")
         d.status = DesireStatus.SUPPRESSED

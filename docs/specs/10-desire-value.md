@@ -29,7 +29,7 @@
 - **库**：无新库（纯标准库）
 - **公开面**：`from nyx.desire.value import (decay_value, apply_pressure, reinforce_weight, raise_suppression, at_peak, is_expressible, default_value)` + 3 个步长常量（`WEIGHT_REINFORCE_DELTA` / `SUPPRESSION_RAISE_DELTA` / `REFUND_DELTA`）；`_clamp` / 范围常量 / 初始值常量私有
 - **三字段语义（design §7.2 的数值化）**：
-  - `value`（压力值）∈ `[0, 1]`：活动/对话/长期欲望加压，缓慢衰减；达峰（`>= peak_threshold`，config 0.8）触发 LLM 生成短期欲望后重置为 0
+  - `value`（压力值）∈ `[0, 1]`：活动/对话/长期欲望加压，缓慢衰减；达峰（`>= peak_threshold`，config 0.9）触发 LLM 生成短期欲望后重置为 0
   - `expression_weight`（表达权重）∈ `[0, 1]`：满足后正强化上浮（越被满足越愿表达），活动系统选消费对象时的排序权重（消费端语义归 13/17）
   - `suppression_threshold`（抑制阈值）∈ `[0, 1]`：失败/放弃/抑制后习得性抑制上浮（越挫越压抑）
 - **抑制门控（决策：正强化 + 习得性抑制，已与用户确认）**：表达条件 = `at_peak(value, peak) and is_expressible(value, suppression)` = `value >= max(peak, suppression)`。初始 `suppression=0.5 < peak=0.8`，故初始表达门槛 = 0.8（peak 主导，达峰即表达）；失败每次 `+0.1`，4 次后 `suppression=0.9 > peak`，表达门槛 = 0.9（压抑主导，达峰也不表达，继续憋）。这塑造「越挫越压抑」的弧线——契合 canon 的「自卑、先怀疑自己、想太多」
@@ -59,7 +59,7 @@ WEIGHT_REINFORCE_DELTA = 0.05    # 满足一次 +0.05（正强化）
 # —— 抑制阈值 suppression_threshold ——
 _SUPPRESSION_MIN = 0.0
 _SUPPRESSION_MAX = 1.0
-_SUPPRESSION_INIT = 0.5          # 初始抑制阈值（< peak=0.8，初始不压抑）
+_SUPPRESSION_INIT = 0.5          # 初始抑制阈值（< peak=0.9，初始不压抑）
 SUPPRESSION_RAISE_DELTA = 0.1    # 失败/抑制一次 +0.1（习得性抑制）
 
 # —— 回增（放弃/淘汰压力回灌）——

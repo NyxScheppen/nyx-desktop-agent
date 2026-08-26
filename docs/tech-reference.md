@@ -322,10 +322,10 @@ memory:
   freshness_decay: 0.01       # 新鲜度衰减率
 
 desire:
-  peak_threshold: 0.8         # 值达峰阈值
+  peak_threshold: 0.9         # 值达峰阈值
   retry_limit: 3              # 未达成重试上限
   long_term_capacity: 5       # 长期欲望上限
-  value_decay: 0.02           # 值缓慢衰减率
+  value_decay: 0.05           # 值缓慢衰减率
 
 activity:
   grid_minutes: 60            # 每小时一块

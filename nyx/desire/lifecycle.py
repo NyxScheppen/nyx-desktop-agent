@@ -32,7 +32,7 @@ from nyx.types import (
 )
 
 _OBSERVATION_PRESSURE_DELTA = 0.15    # 观察状态 → 互动欲 +0.15
-_LONG_TERM_PRESSURE_DELTA = 0.2       # 每个长期欲望周期 → 对应类型 +0.2
+_LONG_TERM_PRESSURE_DELTA = 0.1       # 每个长期欲望周期 → 对应类型 +0.1
 _LONG_TERM_PROGRESS_DELTA = 0.1       # 满足一次长期进度 +0.1
 _LONG_TERM_STRENGTH_DECAY = 0.02      # 满足一次长期迫切度 -0.02
 _GOAL_ACTIONS = frozenset(g.value for g in GoalAction)

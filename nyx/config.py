@@ -45,10 +45,10 @@ class MemoryConfig:
 
 @dataclass
 class DesireConfig:
-    peak_threshold: float = 0.8
+    peak_threshold: float = 0.9
     retry_limit: int = 3
     long_term_capacity: int = 5
-    value_decay: float = 0.02
+    value_decay: float = 0.05
 
 
 @dataclass

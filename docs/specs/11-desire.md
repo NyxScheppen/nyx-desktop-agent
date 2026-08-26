@@ -43,7 +43,7 @@
 - **可空 JSON 列（同 07 的 `embedding`）**：`short_term_desire.goal` 是 `Goal | None` ⟺ `goal TEXT` 可空，`None ↔ SQL NULL`（非 `"null"` 字符串）
 - **`add_value` 是事件入口（决策，对 tech-ref 注释的精确化）**：tech-ref 写「活动/对话/长期欲望 加压」，但 ROUTING 里 desire 订阅了 `OBSERVATION_STATE` 和 `ACTIVITY_END` 两个事件——`OBSERVATION_STATE` 是加压、`ACTIVITY_END` 是满足回写（design §3.2「满足信号」、ROUTING 注释「满足」）。故 `add_value` 按 `source.type` 派发；18-api 组合根用 `bus.subscribe(EventType.OBSERVATION_STATE, facade.add_value)` + `bus.subscribe(EventType.ACTIVITY_END, facade.add_value)` 绑定
 - **`evaluate()` 由 tick 触发**：TICK_ROUTING 的 `DESIRE_EVAL → desire`。`evaluate()` 不接受 Event（tech-ref 签名），由 18-api 的 CLOCK_TICK 分发器按 `tick_type == DESIRE_EVAL` 调 `facade.evaluate()`。`desire_generated` 因此无上游 tick 溯源——`desire_generated` 的 `correlation_id = desire.id`（溯源到欲望自身，断链局限，同 09 的 `record_recall`）
-- **加压增量（默认值，标注可推翻）**：`_OBSERVATION_PRESSURE_DELTA=0.15`（观察状态→互动欲 +0.15）、`_LONG_TERM_PRESSURE_DELTA=0.2`（每个长期欲望周期→对应类型 +0.2）。加压复用 10 的 `apply_pressure`
+- **加压增量（默认值，标注可推翻）**：`_OBSERVATION_PRESSURE_DELTA=0.15`（观察状态→互动欲 +0.15）、`_LONG_TERM_PRESSURE_DELTA=0.1`（每个长期欲望周期→对应类型 +0.1）。加压复用 10 的 `apply_pressure`
 - **衰减时机（决策：加 `updated_at` 列，已与用户确认）**：`elapsed_days = (now - updated_at) / 86400`，`decay_value(value, elapsed_days, config.value_decay)`。`updated_at` 记录"最后一次 value 变化"，每次 evaluate 先衰减结算再写回 `updated_at = now`；衰减是单调的，两次 evaluate 之间 value 不实时下降（同 09 的 `decay_freshness` 局限），相对顺序不破坏
 - **达峰生成（决策：只生成最迫切 1 个，已与用户确认）**：达峰判据 = `at_peak(value, peak) and is_expressible(value, suppression)`（10 的门控组合）；多个达峰类型时 `max(..., key=value)` 取最高者生成 1 个，**只重置选中类型**，其余达峰类型保留压力下次 evaluate 再生成——每次 evaluate 最多 1 次 LLM 调用（原则 1）
 - **主题种子（decision，可推翻）**：`_pick_topic_seed` 按「没做过 / 新鲜度最低」从对应类型长期欲望的子主题池取——先查记忆（注入的 `list_memories` 回调，组合根接 `memory.list_memories`）做 substring 匹配，无命中记忆（= 没做过）最优先，都做过取新鲜度最低者；空池返回 `None`。种子拼进 `_build_desire_prompt` 给 LLM 作生成上下文
@@ -327,7 +327,7 @@ from nyx.types import (
 )
 
 _OBSERVATION_PRESSURE_DELTA = 0.15    # 观察状态 → 互动欲 +0.15
-_LONG_TERM_PRESSURE_DELTA = 0.2       # 每个长期欲望周期 → 对应类型 +0.2
+_LONG_TERM_PRESSURE_DELTA = 0.1       # 每个长期欲望周期 → 对应类型 +0.1
 _LONG_TERM_PROGRESS_DELTA = 0.1       # 满足一次长期进度 +0.1
 _LONG_TERM_STRENGTH_DECAY = 0.02      # 满足一次长期迫切度 -0.02
 _GOAL_ACTIONS = frozenset(g.value for g in GoalAction)
@@ -784,10 +784,10 @@ class DesireFacade:
   - [ ] **run_eval**：
     - [ ] 四类型都低于 `peak_threshold` → `[]`，无 LLM 调用
     - [ ] 互动欲达峰（造 `value=0.9`）→ 1 次 LLM 调用（`output_type="desire"`）、`evaluator.evaluate` 被调 1 次（收到该 `LLMOutput`）、返回 1 个 `ShortTermDesire`（`type` 正确、`status is PENDING`、`strength == 0.9`、`description`/`goal` 来自 fixture）、该类型 `value` 重置为 0、发布 `desire_generated`（`content["desire_id"] == desire.id`）
-    - [ ] **只生成最迫切的 1 个**：互动欲 0.9 + 探索欲 0.85 都达峰 → 只生成互动欲；探索欲 `value` 保留 0.85 不重置
-    - [ ] **长期加压**：seed 一个 `type=EXPLORATION` 的长期欲望 → 探索欲 `value` 额外 +0.2
+    - [ ] **只生成最迫切的 1 个**：互动欲 0.95 + 探索欲 0.92 都达峰 → 只生成互动欲；探索欲 `value` 保留 0.92 不重置
+    - [ ] **长期加压**：seed 一个 `type=EXPLORATION` 的长期欲望 → 探索欲 `value` 额外 +0.1
     - [ ] **衰减**：`updated_at` 设为 1 天前 → `value` 衰减 `value_decay × 1`
-    - [ ] **抑制门控**：`suppression_threshold=0.9 > value=0.85`（达峰但被抑制）→ 不生成，返回 `[]`
+    - [ ] **抑制门控**：`suppression_threshold=0.95 > value=0.92`（达峰但被抑制）→ 不生成，返回 `[]`
     - [ ] **SUPPRESSED 释放**：SUPPRESSED 欲望其类型 `value=0.6 >= suppression=0.5` → `run_eval` 后该欲望 `status is PENDING`（不新生成）；`value=0.4 < 0.5` → 保持 SUPPRESSED
     - [ ] **主题种子**：seed 探索型长期欲望（`subtopics=["骑士团", "大学朋友"]`）+ 记忆命中「骑士团」→ LLM 收到的 prompt 含「大学朋友」、不含「骑士团」（没做过优先）
   - [ ] **satisfy**：

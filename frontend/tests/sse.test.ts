@@ -316,6 +316,26 @@ describe("dispatchEvent", () => {
     });
   });
 
+  it("activity_end → 清空匹配 activity 的探索状态", () => {
+    useExplorationStore.setState({
+      decision: { kind: "choose", floor: 2, energy: 50, focus: "量子", nodes: [] },
+      activityId: "a1",
+      autopilot: true,
+    });
+    vi.spyOn(useActivityStore.getState(), "refresh").mockResolvedValue(undefined);
+
+    dispatchEvent({
+      event: "activity_end",
+      event_id: "e2",
+      correlation_id: "a1",
+      activity_id: "a1",
+    });
+
+    expect(useExplorationStore.getState().decision).toBeNull();
+    expect(useExplorationStore.getState().activityId).toBeNull();
+    expect(useExplorationStore.getState().autopilot).toBe(false);
+  });
+
   it("exploration_step → explorationStore.onStep（推送决策载荷）", () => {
     const decision: ExplorationDecision = {
       kind: "choose",

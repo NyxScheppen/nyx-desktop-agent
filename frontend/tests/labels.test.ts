@@ -52,7 +52,7 @@ describe("labels 枚举中文化映射", () => {
 });
 
 describe("ENCOUNTER_KIND_LABELS", () => {
-  it("三键中文映射", () => {
+  it("三基础键中文映射", () => {
     expect(ENCOUNTER_KIND_LABELS.desire_chat).toBe("欲望搭话");
     expect(ENCOUNTER_KIND_LABELS.random_event).toBe("随机事件");
     expect(ENCOUNTER_KIND_LABELS.growth_moment).toBe("成长时刻");

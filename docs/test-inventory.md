@@ -723,6 +723,7 @@
 | `dispatchEvent > reflection_done（story_is_new）→ 欲望/叙事 refresh + 高亮 + 气泡` | 功能正确 | `story_is_new=true` → `desireStore.refresh`/`narrativeStore.refresh` 各 1 次 + `highlightedStory` 置为 story + `announceStore` 追加气泡「小狐狸我呀，反思了一下：…」 |
 | `dispatchEvent > reflection_done（story_is_new=false）→ 静默 refresh 不高亮不气泡` | 功能正确 | `story_is_new=false` → 仍双 refresh 但 `highlightedStory` 为 null、`announceStore` 空（静默刷新） |
 | `dispatchEvent > exploration_step → explorationStore.onStep` | 功能正确 | 推送决策载荷：`decision` 落 store、`activityId` 置为帧 `activity_id` |
+| `dispatchEvent > activity_end → 清空匹配 activity 的探索状态` | 功能正确 | 路由集成：`activity_end` 帧 `activity_id` 匹配探索中活动 → `decision`/`activityId` 置 null、`autopilot` 关 false |
 
 **功能阶段**：frontend 01-sse 实现时编写（mock `EventSource` stub + 真实 store；验证管道正确——事件走对 store、字段零映射、坏帧跳过不崩，不验证视觉）；`dispatchEvent > user_message → chatStore` 于本轮 review 追加（Finding 1 回归：user_message 裸 `{message}` 曾致用户消息被 `typeof e.content` 拦截静默丢弃）；`isEmotionCategory > 枚举收窄` 于本轮 review 追加（emotion 枚举值运行时收窄）；`desire_generated` / `memory_created` / `activity_start` → refresh 于前端面板落地轮追加（快照 store 路由）；`emotion_update → 顺带 refreshState` 于「前端不自动刷新」bug 修复轮改写（根因：emotion_update 载荷只带情绪，能量/性格/三观不随帧下发，EnergyBar/BigFiveChart/ValuesChart 停在初始快照；改为 dispatch 顺带重拉全量 state）；`dispatchEvent > reflection_done` → 欲望/叙事 refresh + 高亮 + 气泡于「反思优化」轮追加（`reflection_done` 事件路由：双快照刷新 + 新故事高亮 + 头像旁气泡）；`dispatchEvent > exploration_step` 于「探索升级：联网探索 + 探索地图」轮追加（`exploration_step` 事件路由：点亮探索地图实时节点）；「探索 Roguelike 前端」轮改为推送决策载荷（`decision` 落 store，弃 `node`/`liveNodes`）。
 

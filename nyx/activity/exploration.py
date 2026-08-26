@@ -370,9 +370,47 @@ class Exploration:
         return state
 
     async def _finalize(self, state: ExplorationState) -> ExplorationState:
-        # Task 4 补终局 LLM 判定；本 Task 先用空实现占位（outcome 走兜底撤退）
-        state["summary"] = state["seed_topic"]
-        state["core_discovery"] = ""
+        """终局判定：一次 LLM 调用产出 summary/核心发现/知识/新话题（可 mock）。
+
+        best-effort：LLM/parse 失败记日志、按空结果走兜底，不重抛。
+        """
+        try:
+            output = await self._llm.complete(
+                [
+                    {"role": "system", "content": _EXPLORATION_FINALIZE_SYSTEM},
+                    {"role": "user", "content": json.dumps({
+                        "seed_topic": state["seed_topic"],
+                        "floor": state["floor"],
+                        "findings": state["findings"],
+                    }, ensure_ascii=False)},
+                ],
+                module="activity",
+                output_type="exploration_finalize",
+                correlation_id=state["correlation_id"],
+                json_mode=True,
+            )
+            await self._evaluator.evaluate(output)
+            judged = json.loads(output.content)
+            if not isinstance(judged, dict):
+                judged = {}
+        except Exception:
+            judged = {}
+        judged = cast(dict[str, Any], judged)
+        state["summary"] = str(judged.get("summary") or state["seed_topic"])
+        state["core_discovery"] = str(judged.get("core_discovery") or "")
+        knowledge = judged.get("knowledge")
+        state["knowledge"] = knowledge if isinstance(knowledge, list) else []
+        strong = judged.get("strong_new_topics")
+        state["strong_new_topics"] = strong if isinstance(strong, list) else []
+        casual = judged.get("casual_new_topics")
+        state["new_topics"] = casual if isinstance(casual, list) else []
+        # 深度上限兜底：触底仍未判出核心发现时，用最后一条真实发现兜底
+        if (
+            not state["core_discovery"]
+            and state["floor"] >= _MAX_DEPTH
+            and state["findings"]
+        ):
+            state["core_discovery"] = state["findings"][-1]
         state["outcome"] = determine_outcome(
             state["energy"], state["core_discovery"], state["retreated"]
         )
@@ -441,6 +479,15 @@ class Exploration:
 
 _EXPLORATION_TOPIC_SYSTEM = (
     "你是尼克斯。给一个具体、可上网搜索的探索主题，按 JSON 输出 {topic}。"
+)
+
+_EXPLORATION_FINALIZE_SYSTEM = (
+    "你是尼克斯的探索结算器。基于这场探索的种子话题与发现，判断是否挖到了核心发现。"
+    "按 JSON 输出：summary（一句话总结）、"
+    "core_discovery（若真相已明则非空字符串，否则空串）、"
+    "knowledge（数组，每项 {topic, content}，客观知识点）、"
+    "strong_new_topics（数组，值得长期追的强烈新兴趣）、"
+    "casual_new_topics（数组，一般好奇，不值得立长期欲望）。"
 )
 
 

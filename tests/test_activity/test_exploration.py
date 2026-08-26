@@ -252,3 +252,31 @@ async def test_resume_retreat_finalizes() -> None:
     assert p["pending"] is False
     assert p["result"]["type"] == "free_exploration"
     assert p["result"]["outcome"] == "retreated"
+
+
+# ---- 终局 LLM 判定（Task 4） ----
+
+
+_FINALIZE_JSON = json.dumps({
+    "summary": "弄懂了量子退相干的机制",
+    "core_discovery": "退相干是量子系统与环境纠缠导致的表观坍缩",
+    "knowledge": [{"topic": "退相干", "content": "环境纠缠抹去相干性"}],
+    "strong_new_topics": ["量子纠错"],
+    "casual_new_topics": ["退火算法"],
+})
+
+
+async def test_finalize_judges_won() -> None:
+    expl = Exploration(
+        cast(LlmClient, _FakeLlm(_FINALIZE_JSON)),
+        cast(Evaluator, _FakeEvaluator()),
+        cast(ToolRegistry, _WebTools()),
+        cast(EventBus, _FakeBus()),
+        ExplorationConfig(web_enabled=True),
+    )
+    await expl.start(None, "量子", 100.0, "a1", "c1")
+    p = await expl.resume("a1", "retreat")
+    # retreat 触发终局判定，但核心发现命中 → won 覆盖 retreat
+    assert p["result"]["outcome"] == "won"
+    assert p["result"]["core_discovery"] != ""
+    assert p["result"]["knowledge"][0]["topic"] == "退相干"

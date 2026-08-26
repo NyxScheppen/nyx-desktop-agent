@@ -152,7 +152,7 @@
 
 | 文件 | 改动 |
 |---|---|
-| `nyx/activity/exploration.py` | 固定 8 步 LangGraph 链 → 决策驱动的逐层 run 循环（楼层/节点/死路/安全房/下楼/终点）。run 状态由 facade 持有，可暂停等决策输入（托管/手动）。 |
+| `nyx/activity/exploration.py` | **保留 LangGraph**：固定 8 步链改成逐层 run 的 StateGraph（楼层/节点/死路/安全房/下楼/终点），决策点用 `interrupt` + checkpointer 暂停等输入（托管/手动）。 |
 | `nyx/activity/facade.py` | run 结果形状（4.1）、托管开关、loot/npc hook、记忆/欲望接线（4.2/4.3）。 |
 | `nyx/encounter/rules.py` | 删块边界随机遭遇（`_BLOCK_PROBABILITY` / cooldown / `should_encounter` 等），保留成长时刻。 |
 | `nyx/encounter/facade.py` | 新增「有根遭遇生成」入口（从节点真实内容生成），保留成长时刻入口，删随机入口。 |
@@ -194,9 +194,8 @@
 
 **未决项（转实现计划时定）**：
 
-1. 探索链是继续用 LangGraph（带 interrupt 的 StateGraph）还是改成 facade 内的异步可恢复状态机——倾向后者（决策暂停等输入更自然），实现计划时定。
-2. `new_topics` 判定「强烈新兴趣 vs 一般好奇」的阈值（一次 LLM 判断还是规则）。
-3. 核心发现「挖到」的判据：达到目标深度？还是 LLM 判定「这条线到头了、真相已明」？倾向后者 + 深度上限兜底。
+1. `new_topics` 判定「强烈新兴趣 vs 一般好奇」的阈值（一次 LLM 判断还是规则）。
+2. 核心发现「挖到」的判据：达到目标深度？还是 LLM 判定「这条线到头了、真相已明」？倾向后者 + 深度上限兜底。
 
 ## 11. 验证
 

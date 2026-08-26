@@ -686,6 +686,15 @@
 
 **功能阶段**：18-api 实现时编写（fake 各 Facade 注入 + 真 `EventBus` + `:memory:`；`cast()` 注入不碰真实 db/LLM；无集成/E2E，与真实编排的边界即「订阅一致性」）；`test_chat_missing_message_returns_422` / `test_observe_invalid_presence_returns_422` 为首轮 review 追加（请求体 422）；`test_supervise_bus_breaks_after_max_failures` / `test_supervise_bus_resets_on_recovery` / `test_first_tick_starts_activity_not_mutter_or_chat` 为本轮 review 追加（监督器熔断 + 恢复重置 + 首个活动块启动即触发）；`test_supervise_bus_breaks_on_flapping` / `test_main_propagates_serve_failure` / `test_main_propagates_tick_failure` 于第三轮 review 追加（恢复信号改连续成功阈值防抖动假自愈 + main 竞速传播所有先完成者）；`test_load_ask_reads_ask_file` / `test_load_ask_missing_file_fails` 于「主动提问段按需注入」阶段追加（`_load_ask` 读 ask.md / 缺失 fail-fast）。`test_observe_endpoint` 于「活动填实（观察填实）」轮改为收可选 `window_title`（`_ObservePayload.window_title`、`OBSERVATION_STATE` content 加 `window_title`、`app.last_window_title` 落组合根）；`test_materials_endpoint_returns_progress` 于「读书连贯+进度」轮追加（`/api/materials` 由纯文件名改为书库进度：`list_materials` 委托 `MaterialStore.list_all`，响应 `{materials: [Material]}`）；`test_reading_notes_endpoint` / `test_delete_reading_note_endpoint` / `test_annotations_endpoint` / `test_add_annotation_endpoint` / `test_delete_annotation_endpoint` 于「读书/创作借鉴」轮追加（读书笔记 5 端点：清单/删除/批注增删查）；`test_memory_search_endpoint` 于「记忆前端搜索/显示优化」轮追加（`/api/memories/search` 委托 `memory.search` 三层检索）；`test_check_reflect_skips_within_cooldown` / `test_check_reflect_skips_below_new_memory_threshold` / `test_check_reflect_triggers` 于「反思优化」轮追加（tick 循环新增 `REFLECTION_CHECK` 类型，`_check_reflect` 三分支：冷却/新记忆门槛/触发）；`test_explore_endpoint_no_topic` / `test_explore_endpoint_with_topic` / `test_explore_endpoint_busy_returns_409` 于「探索升级：联网探索 + 探索地图」轮追加（`POST /api/explore` 手动触发端点：空 body / 带 topic / busy 409）。
 
+## 19-encounter（遭遇：规则纯函数 + 门面）
+
+| 测试 | 检查方向 | 说明 |
+|---|---|---|
+| `test_start_rooted_broadcasts_start` | 功能正确 | `start_rooted(snippet, theme, activity_id)` 生成 `kind=="rooted"` 遭遇并广播一条 `ENCOUNTER_START`（有根遭遇入口） |
+| `test_should_encounter_removed` | 回归保护 | 块边界随机入口已删：`rules` 模块不再导出 `should_encounter` |
+
+**功能阶段**：本段于 Task 9 新增（有根遭遇 `start_rooted` + 删块边界随机入口）。同轮删除 `test_should_encounter_*`（7 条）、`test_constants_sane`、`test_try_block_boundary_*`（3 条）共 11 条旧测试（随机入口已删）；其余 encounter 测试（`_parse_encounter` / `choose` / `on_activity_end` / `consequence_for` / `ending_for` / `growth_milestone_key` / `growth_memory`）此前未单列于清单，属既有缺口，不在本 Task 补齐。
+
 ## frontend-sse（SSE 数据流：useSSE + dispatchEvent 分发表）
 
 | 测试 | 检查方向 | 断言内容 |

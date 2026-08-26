@@ -50,7 +50,7 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
     EnergyState: {"energetic", "okay", "tired", "exhausted", "drained"},
     SearchMode: {"keyword", "vector", "association"},
     GoalAction: {"read", "write", "observe"},
-    EncounterKind: {"desire_chat", "random_event", "growth_moment"},
+    EncounterKind: {"desire_chat", "random_event", "growth_moment", "rooted"},
     OptionTone: {"bold", "cautious", "gentle", "reckless"},
 }
 

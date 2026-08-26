@@ -2,15 +2,11 @@
 from typing import Any
 
 from nyx.encounter.rules import (
-    _BLOCK_PROBABILITY,
     _CONSEQUENCES,
-    _COOLDOWN_SECONDS,
-    _MIN_ENERGY,
     consequence_for,
     ending_for,
     growth_memory,
     growth_milestone_key,
-    should_encounter,
 )
 from nyx.enums import EncounterKind, EventType, OptionTone, Source
 from nyx.types import Encounter, EncounterOption, Event
@@ -21,36 +17,6 @@ def _event(content: dict[str, Any]) -> Event:
         id="e1", timestamp=0.0, source=Source.INTERNAL,
         type=EventType.ACTIVITY_END, content=content, correlation_id="c1",
     )
-
-
-def test_constants_sane() -> None:
-    assert 0.0 < _BLOCK_PROBABILITY < 1.0
-    assert _COOLDOWN_SECONDS > 0.0
-    assert _MIN_ENERGY >= 0.0
-
-
-def test_should_encounter_true() -> None:
-    assert should_encounter(True, False, 50.0, 1000.0) is True
-
-
-def test_should_encounter_boundary_true() -> None:
-    assert should_encounter(True, False, 30.0, 900.0) is True  # 恰好达标
-
-
-def test_should_encounter_offline() -> None:
-    assert should_encounter(False, False, 50.0, 1000.0) is False
-
-
-def test_should_encounter_busy() -> None:
-    assert should_encounter(True, True, 50.0, 1000.0) is False
-
-
-def test_should_encounter_low_energy() -> None:
-    assert should_encounter(True, False, 29.9, 1000.0) is False
-
-
-def test_should_encounter_cooldown() -> None:
-    assert should_encounter(True, False, 50.0, 899.0) is False
 
 
 def test_consequence_for_each_tone_has_keys() -> None:
@@ -107,3 +73,9 @@ def test_growth_memory_contains_choice() -> None:
     m = growth_memory(enc, enc.options[0])
     assert "勇敢向前" in m["content"]
     assert m["summary"] != ""
+
+
+def test_should_encounter_removed() -> None:
+    # 块边界随机入口已删：规则模块不再导出 should_encounter
+    import nyx.encounter.rules as rules
+    assert not hasattr(rules, "should_encounter")

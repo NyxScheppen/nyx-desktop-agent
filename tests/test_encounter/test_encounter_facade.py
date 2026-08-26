@@ -2,7 +2,6 @@
 import asyncio
 import contextlib
 import json
-import random
 from collections.abc import AsyncGenerator
 from typing import cast
 
@@ -166,53 +165,6 @@ def test_parse_encounter_option_not_dict() -> None:
         _parse_encounter(json.dumps({"text": "t", "options": ["a", "b"]}))
 
 
-# ---- try_block_boundary ----
-
-async def test_try_block_boundary_rolls_and_starts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database = await db.connect(":memory:")
-    bus = EventBus(database)
-    facade = _make_facade(bus)
-    started = _subscribe(bus, EventType.ENCOUNTER_START)
-    monkeypatch.setattr(random, "random", lambda: 0.0)  # 命中
-    try:
-        async with _running(bus):
-            await facade.try_block_boundary(True, False)
-        assert facade._current is not None
-        assert facade._current.kind is EncounterKind.RANDOM_EVENT
-        assert len(started) == 1
-        assert started[0].type is EventType.ENCOUNTER_START
-        assert "tone" not in started[0].content["options"][0]  # 不暴露 tone
-    finally:
-        await database.conn.close()
-
-
-async def test_try_block_boundary_no_roll_when_high(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database = await db.connect(":memory:")
-    bus = EventBus(database)
-    facade = _make_facade(bus)
-    monkeypatch.setattr(random, "random", lambda: 0.9)  # 未命中
-    await facade.try_block_boundary(True, False)
-    assert facade._current is None
-    await database.conn.close()
-
-
-async def test_try_block_boundary_skips_when_current(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database = await db.connect(":memory:")
-    bus = EventBus(database)
-    facade = _make_facade(bus)
-    facade._current = _enc()
-    monkeypatch.setattr(random, "random", lambda: 0.0)
-    await facade.try_block_boundary(True, False)
-    assert facade._current.kind is EncounterKind.RANDOM_EVENT  # 未覆盖
-    await database.conn.close()
-
-
 # ---- choose ----
 
 async def test_choose_applies_and_ends() -> None:
@@ -307,3 +259,21 @@ async def test_start_llm_failure_no_crash() -> None:
     await facade.on_activity_end(_activity_end(completed=True))  # 不抛
     assert facade._current is None
     await database.conn.close()
+
+
+async def test_start_rooted_broadcasts_start() -> None:
+    database = await db.connect(":memory:")
+    bus = EventBus(database)
+    facade = _make_facade(bus)
+    started = _subscribe(bus, EventType.ENCOUNTER_START)
+    try:
+        async with _running(bus):
+            await facade.start_rooted("争议观点", "量子退相干", "a1")
+        current = facade.get_current()
+        assert current is not None
+        assert current["kind"] == "rooted"
+        assert len(started) == 1
+        assert facade._current is not None
+        assert facade._current.kind is EncounterKind.ROOTED
+    finally:
+        await database.conn.close()

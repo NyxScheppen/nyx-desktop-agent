@@ -253,7 +253,6 @@ async def _on_clock_tick(app: _App, event: Event) -> None:
     tick_type = TickType(event.content["tick_type"])
     if tick_type is TickType.SCHEDULE_BLOCK_START:
         await app.activity.on_tick(tick_type)
-        await _check_encounter(app)          # 活动启动后掷骰（包装）
     elif tick_type is TickType.DESIRE_EVAL:
         await app.desire.evaluate()
     elif tick_type is TickType.MUTTER_CHECK:
@@ -282,13 +281,6 @@ async def _check_initiate_chat(app: _App) -> None:
         await _interrupt_running(app, EventType.INITIATE_CHAT)
         if await app.expression.initiate_chat(interaction, state):
             app.last_chat_at = time.time()
-
-
-async def _check_encounter(app: _App) -> None:
-    """块边界随机事件：活动启动后掷骰，命中则生成遭遇（包装，不打断活动）。"""
-    online = app.last_presence in ("online", "busy")
-    busy = app.last_presence == "busy"
-    await app.encounter.try_block_boundary(online, busy)
 
 
 async def _check_reflect(app: _App, correlation_id: str) -> None:

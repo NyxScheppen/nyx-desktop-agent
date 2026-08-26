@@ -1,7 +1,7 @@
 # pyright: reportPrivateUsage=false
 """EncounterFacade：遭遇子系统的门面（横切叙事层，不是第七种活动）。
 
-触发：块边界随机事件（包装）+ 成长时刻（里程碑，抢占式独占）。
+触发：成长时刻（里程碑，抢占式独占）+ 有根遭遇（探索节点触发）。
 事件：ENCOUNTER_START / ENCOUNTER_CHOICE / ENCOUNTER_END。
 后果：纯函数（rules.consequence_for），经 ENCOUNTER_END 路由到
 inner_life / desire / memory 回写，本 facade 不直接改状态。
@@ -9,19 +9,16 @@ inner_life / desire / memory 回写，本 facade 不直接改状态。
 
 import json
 import logging
-import random
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from uuid import uuid4
 
 from nyx.encounter.rules import (
-    _BLOCK_PROBABILITY,
     consequence_for,
     ending_for,
     growth_memory,
     growth_milestone_key,
-    should_encounter,
 )
 from nyx.enums import EncounterKind, EventType, OptionTone
 from nyx.eval.evaluator import Evaluator
@@ -41,11 +38,14 @@ _ENCOUNTER_SYSTEM = (
     "tone 只能是 bold / cautious / gentle / reckless 之一，"
     "对应选项的倾向：勇敢主动 / 谨慎稳妥 / 温柔共情 / 鲁莽冒险。"
     "选项要真实地反映此刻的处境，不要客服腔、不要堆砌词藻。"
+    "有根遭遇时，选项应是真实可做的动作（深挖这条链接 / 换个话题 / "
+    "记下来 / 放弃这条线）。"
 )
 
 _KIND_LABEL: dict[EncounterKind, str] = {
     EncounterKind.RANDOM_EVENT: "随机事件",
     EncounterKind.GROWTH_MOMENT: "成长时刻",
+    EncounterKind.ROOTED: "有根遭遇",
 }
 
 
@@ -135,25 +135,20 @@ class EncounterFacade:
         self._get_state = get_state
         self._canon = canon
         self._current: Encounter | None = None
-        self._last_encounter_at = 0.0
         self._celebrated: set[str] = set()   # 已庆祝的里程碑 key（MVP 内存态）
 
     # ---- 触发 ----
 
-    async def try_block_boundary(self, online: bool, busy: bool) -> None:
-        """块边界随机事件（包装）：前提满足 + 掷骰命中才生成。
+    async def start_rooted(self, snippet: str, theme: str, activity_id: str) -> None:
+        """有根遭遇：从探索真实节点内容生成（轻 LLM）。best-effort：失败不崩 run。
 
-        已有未决遭遇则跳过；活动照跑不打断（遭遇叠加在书卷区）。
+        复用 _start 的生成/广播管线；context 塞真实 snippet+theme。
         """
-        if self._current is not None:
-            return
         state = await self._get_state()
-        since_last = time.time() - self._last_encounter_at
-        if not should_encounter(online, busy, state.energy, since_last):
-            return
-        if random.random() >= _BLOCK_PROBABILITY:
-            return
-        await self._start(EncounterKind.RANDOM_EVENT, state, activity_id=None)
+        context = f"探索主题「{theme}」，刚读到一段真实内容：{snippet[:300]}"
+        await self._start(
+            EncounterKind.ROOTED, state, activity_id=activity_id, context=context
+        )
 
     async def on_activity_end(self, event: Event) -> None:
         """成长时刻（抢占）：ACTIVITY_END 里程碑判定，命中且未庆祝过才生成。"""
@@ -188,7 +183,7 @@ class EncounterFacade:
         context: str = "",
     ) -> None:
         """生成遭遇并广播 ENCOUNTER_START。best-effort：LLM/parse 失败记日志
-        返（不设 _current、不吞冷却），主流程正确性不依赖遭遇产出。"""
+        返（不设 _current），主流程正确性不依赖遭遇产出。"""
         try:
             output = await self._llm.complete(
                 [
@@ -222,7 +217,6 @@ class EncounterFacade:
             activity_id=activity_id,
         )
         self._current = encounter
-        self._last_encounter_at = now
         await self._bus.publish(
             internal_event(
                 EventType.ENCOUNTER_START,

@@ -29,10 +29,11 @@ class EventType(StrEnum):
 
 
 class EncounterKind(StrEnum):
-    """遭遇三类：欲望搭话（重分类 initiate_chat）/ 随机事件 / 成长时刻。"""
+    """遭遇四类：欲望搭话 / 随机事件（入口已删）/ 成长时刻 / 有根遭遇。"""
     DESIRE_CHAT = "desire_chat"      # 欲望搭话（本 spec 只前端重分类，后端不动）
-    RANDOM_EVENT = "random_event"    # 随机事件（块边界掷骰）
+    RANDOM_EVENT = "random_event"    # 随机事件（保留枚举值，入口已删，防存量数据报错）
     GROWTH_MOMENT = "growth_moment"  # 成长时刻（里程碑，可抢占）
+    ROOTED = "rooted"                # 有根遭遇（从探索真实节点内容长出）
 
 
 class OptionTone(StrEnum):

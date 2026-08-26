@@ -5,10 +5,6 @@ from typing import Any, cast
 from nyx.enums import OptionTone
 from nyx.types import Encounter, EncounterOption, Event
 
-_BLOCK_PROBABILITY = 0.3    # 块边界遭遇触发概率（decision，可推翻）
-_COOLDOWN_SECONDS = 900.0   # 两次遭遇最小间隔，秒（15 分钟，decision，可推翻）
-_MIN_ENERGY = 30.0          # 触发所需最低精力（decision，可推翻）
-
 # 选项倾向 → 后果（纯函数表；数值可推翻）。energy_delta 单位与 activity 的
 # energy_delta 一致（±5~15）；emotion_shift 是 (d_valence, d_arousal) 偏移；
 # desire_value_add 是 {type: 欲望类型值, amount: 加压值}。memory 不在此表——
@@ -44,22 +40,6 @@ _ENDINGS: dict[OptionTone, str] = {
     OptionTone.GENTLE: "温柔，总能走到更远的地方。",
     OptionTone.RECKLESS: "冒险之后，心跳还没平复。",
 }
-
-
-def should_encounter(
-    online: bool, busy: bool, energy: float, since_last: float
-) -> bool:
-    """块边界遭遇触发判定（同 should_initiate_chat 风格）。
-
-    只判「前提是否满足」（在线 + 不忙 + 精力够 + 冷却够），把随机性留给调用方
-    （random.random() < _BLOCK_PROBABILITY），以便本函数可确定性单测。
-    """
-    return (
-        online
-        and not busy
-        and energy >= _MIN_ENERGY
-        and since_last >= _COOLDOWN_SECONDS
-    )
 
 
 def consequence_for(tone: OptionTone) -> dict[str, Any]:

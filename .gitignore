@@ -15,6 +15,9 @@ build/
 # 本地设置
 .claude/settings.local.json
 
+# 隔离 worktree（勿提交）
+.claude/worktrees/
+
 # 可视化 brainstorming 临时 mockup（勿提交）
 .superpowers/
 

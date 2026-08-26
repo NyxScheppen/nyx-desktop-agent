@@ -168,7 +168,7 @@ def _activity_memory_fields(
     elif activity_type == "creation":
         content_key, summary_key = "content", "title"
     elif activity_type == "free_exploration":
-        content_key, summary_key = "notes", "findings"
+        content_key, summary_key = "summary", "core_discovery"
     else:
         return None
     content = _join_list(parsed.get(content_key))

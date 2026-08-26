@@ -289,9 +289,9 @@ def test_activity_memory_fields_creation() -> None:
 
 
 def test_activity_memory_fields_exploration() -> None:
-    result = {"findings": ["f1", "f2"], "notes": ["n1", "n2"]}
+    result = {"summary": "s1", "core_discovery": "cd1"}
     assert _activity_memory_fields("free_exploration", result) == (
-        "n1\nn2", "f1\nf2", "free_exploration",
+        "s1", "cd1", "free_exploration",
     )
 
 
@@ -845,14 +845,14 @@ async def test_remember_activity_creation_and_exploration() -> None:
             await facade.remember_activity(
                 _activity_event(
                     "free_exploration",
-                    {"findings": ["f1", "f2"], "notes": ["n1", "n2"]},
+                    {"summary": "s1", "core_discovery": "cd1"},
                 )
             )
         by_tag = {m.tag: m for m in await facade.list_memories()}
         assert by_tag["creation"].content == "正文"
         assert by_tag["creation"].summary == "标题"
-        assert by_tag["free_exploration"].content == "n1\nn2"
-        assert by_tag["free_exploration"].summary == "f1\nf2"
+        assert by_tag["free_exploration"].content == "s1"
+        assert by_tag["free_exploration"].summary == "cd1"
         assert llm.calls == []
     finally:
         await database.conn.close()
@@ -1069,3 +1069,13 @@ async def test_remember_encounter_no_memory_key_skips() -> None:
         assert await facade.list_memories() == []
     finally:
         await database.conn.close()
+
+
+def test_activity_memory_fields_free_exploration_new_shape() -> None:
+    result = {"summary": "弄懂了退相干", "core_discovery": "环境纠缠抹去相干性"}
+    mapped = _activity_memory_fields("free_exploration", result)
+    assert mapped is not None
+    content, summary, tag = mapped
+    assert tag == "free_exploration"
+    assert "退相干" in content
+    assert "抹去相干性" in summary

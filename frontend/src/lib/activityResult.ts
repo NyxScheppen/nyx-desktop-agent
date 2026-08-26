@@ -34,7 +34,7 @@ export function activityStatusText(a: Activity | null): string {
   }
 }
 
-/** 已完成活动的产出文案（读书 {book,note} / 创作 {title,content} / 探索 {findings,notes}）；无产出返回 null。 */
+/** 已完成活动的产出文案（读书 {book,note} / 创作 {title,content} / 探索 {summary,core_discovery}）；无产出返回 null。 */
 export function formatResult(a: Activity): string | null {
   if (a.status !== "completed") return null;
   const result = a.progress.result;
@@ -54,15 +54,16 @@ export function formatResult(a: Activity): string | null {
   }
   if (a.type === "free_exploration") {
     const parts: string[] = [];
-    if (Array.isArray(r.findings)) parts.push(...r.findings.map(String));
-    if (Array.isArray(r.notes)) parts.push(...r.notes.map(String));
-    return parts.length > 0 ? parts.join(" / ") : null;
+    if (typeof r.summary === "string" && r.summary.length > 0) parts.push(r.summary);
+    if (typeof r.core_discovery === "string" && r.core_discovery.length > 0)
+      parts.push(r.core_discovery);
+    return parts.length > 0 ? parts.join(" — ") : null;
   }
   return null;
 }
 
 /** 产出面板正文：完整产出文本（多行），与 formatResult 的单行摘要互补。
- *  读书→笔记、创作→内容、探索→发现+备注逐行；无产出返回 null。 */
+ *  读书→笔记、创作→内容、探索→核心发现+知识逐条；无产出返回 null。 */
 export function formatOutputBody(a: Activity): string | null {
   if (a.status !== "completed") return null;
   const result = a.progress.result;
@@ -76,8 +77,20 @@ export function formatOutputBody(a: Activity): string | null {
   }
   if (a.type === "free_exploration") {
     const lines: string[] = [];
-    if (Array.isArray(r.findings)) lines.push(...r.findings.map(String));
-    if (Array.isArray(r.notes)) lines.push(...r.notes.map(String));
+    if (typeof r.core_discovery === "string" && r.core_discovery.length > 0)
+      lines.push(`核心发现：${r.core_discovery}`);
+    if (Array.isArray(r.knowledge)) {
+      for (const k of r.knowledge) {
+        if (typeof k !== "object" || k === null) continue;
+        const kk = k as Record<string, unknown>;
+        const topic = typeof kk.topic === "string" ? kk.topic : "";
+        const content = typeof kk.content === "string" ? kk.content : "";
+        if (content.length === 0) continue;
+        lines.push(topic.length > 0 ? `【${topic}】${content}` : content);
+      }
+    }
+    if (lines.length === 0 && typeof r.summary === "string" && r.summary.length > 0)
+      lines.push(r.summary);
     return lines.length > 0 ? lines.join("\n") : null;
   }
   return null;

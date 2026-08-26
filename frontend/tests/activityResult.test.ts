@@ -52,15 +52,23 @@ describe("formatResult", () => {
     ).toBe("诗 — 正文");
   });
 
-  it("free_exploration → findings/notes 用 / 连接", () => {
+  it("free_exploration → summary 与 core_discovery 用 — 连接", () => {
     expect(
       formatResult(
         activity({
           type: "free_exploration",
-          progress: { result: { findings: ["a", "b"], notes: ["n"] } },
+          progress: { result: { summary: "弄懂了退相干", core_discovery: "环境纠缠抹去相干性" } },
         }),
       ),
-    ).toBe("a / b / n");
+    ).toBe("弄懂了退相干 — 环境纠缠抹去相干性");
+  });
+
+  it("free_exploration → 无 core_discovery 只留 summary", () => {
+    expect(
+      formatResult(
+        activity({ type: "free_exploration", progress: { result: { summary: "翻了翻量子资料" } } }),
+      ),
+    ).toBe("翻了翻量子资料");
   });
 
   it("未完成 / 无 result / 非 result 类型 → null", () => {
@@ -87,15 +95,31 @@ describe("formatOutputBody", () => {
     ).toBe("正文");
   });
 
-  it("free_exploration → findings/notes 用换行连接", () => {
+  it("free_exploration → core_discovery + knowledge 逐条", () => {
     expect(
       formatOutputBody(
         activity({
           type: "free_exploration",
-          progress: { result: { findings: ["a", "b"], notes: ["n"] } },
+          progress: {
+            result: {
+              core_discovery: "环境纠缠抹去相干性",
+              knowledge: [
+                { topic: "退相干", content: "环境纠缠" },
+                { topic: "纠错", content: "拓扑保护" },
+              ],
+            },
+          },
         }),
       ),
-    ).toBe("a\nb\nn");
+    ).toBe("核心发现：环境纠缠抹去相干性\n【退相干】环境纠缠\n【纠错】拓扑保护");
+  });
+
+  it("free_exploration → 无 knowledge 只留 summary", () => {
+    expect(
+      formatOutputBody(
+        activity({ type: "free_exploration", progress: { result: { summary: "翻了翻" } } }),
+      ),
+    ).toBe("翻了翻");
   });
 
   it("未完成 / 无对应字段 / 非 result 类型 → null", () => {
@@ -125,9 +149,9 @@ describe("activityAnnouncement", () => {
   it("free_exploration → 探索收获：…", () => {
     expect(
       activityAnnouncement(
-        activity({ type: "free_exploration", progress: { result: { findings: ["a"] } } }),
+        activity({ type: "free_exploration", progress: { result: { summary: "弄懂了退相干" } } }),
       ),
-    ).toBe("探索收获：a");
+    ).toBe("探索收获：弄懂了退相干");
   });
 
   it("无产出 / 未完成 → null", () => {

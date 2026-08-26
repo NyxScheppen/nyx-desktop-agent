@@ -935,15 +935,17 @@
 | `activitySubject > 空 progress / 非字符串 / 空串 → null` | 边界鲁棒 | `progress={}`、`description=5`、`filename=""` 均返回 null |
 | `formatResult > reading → {book} — {note}` | 功能正确 | `reading` 活动 result 拼 `《小王子》 — 关于驯服` |
 | `formatResult > creation → {title} — {content}` | 功能正确 | `creation` 活动 result 拼 `诗 — 正文` |
-| `formatResult > free_exploration → findings/notes 用 / 连接` | 功能正确 | `findings`/`notes` 数组平铺 join ` / ` |
+| `formatResult > free_exploration → summary 与 core_discovery 用 — 连接` | 功能正确 | `summary`/`core_discovery` 拼接 join ` — ` |
+| `formatResult > free_exploration → 无 core_discovery 只留 summary` | 功能正确 | 只有 `summary` 无 `core_discovery` 时只返回 summary |
 | `formatResult > 未完成 / 无 result / 非 result 类型 → null` | 边界鲁棒 | `status="running"`、无 result、`type="rest"` 均返回 null |
 | `formatOutputBody > reading → note` | 功能正确 | reading 产出正文取 `result.note`（与 formatResult 单行摘要互补，正文多行） |
 | `formatOutputBody > creation → content` | 功能正确 | creation 产出正文取 `result.content` |
-| `formatOutputBody > free_exploration → findings/notes 用换行连接` | 功能正确 | `findings`/`notes` 数组平铺 join `\n` |
+| `formatOutputBody > free_exploration → core_discovery + knowledge 逐条` | 功能正确 | `core_discovery` 加「核心发现：」前缀 + `knowledge` 逐条拼 `【topic】content`，join `\n` |
+| `formatOutputBody > free_exploration → 无 knowledge 只留 summary` | 功能正确 | 无 `core_discovery`/`knowledge` 时回退只返回 `summary` |
 | `formatOutputBody > 未完成 / 无对应字段 / 非 result 类型 → null` | 边界鲁棒 | `status="running"`、`result={}`（无 note/content）、`type="rest"` 均返回 null |
 | `activityAnnouncement > reading → 读完啦：…` | 功能正确 | reading 产出前缀 `读完啦：` + formatResult |
 | `activityAnnouncement > creation → 创作完成：…` | 功能正确 | creation 产出前缀 `创作完成：` |
-| `activityAnnouncement > free_exploration → 探索收获：…` | 功能正确 | free_exploration 产出前缀 `探索收获：` |
+| `activityAnnouncement > free_exploration → 探索收获：…` | 功能正确 | free_exploration 产出前缀 `探索收获：` + formatResult（读 `summary`） |
 | `activityAnnouncement > 无产出 / 未完成 → null` | 边界鲁棒 | 无 result、未完成活动均 null |
 | `announceStore > announce 追加临时气泡（kind/text 落 store、id 唯一）` | 功能正确 | `announce("mutter", …)` append `{kind,text}` 且两次 id 不同 |
 | `announceStore > dismiss 摘除指定 id，其余保留` | 功能正确 | `dismiss(id)` 后仅该 id 消失、其余保留 |
@@ -952,7 +954,7 @@
 | `dispatch > mutter 非 string content → addMutter 丢弃且不 announce` | 回归保护 | `content=123` 的 mutter 帧：chatStore 与 announceStore 均不 append（与 addMutter 收窄一致，announce 不崩） |
 | `dispatch > activity_end → refresh 后按 activity_id 找到产出并 announce` | 功能正确 | `activity_end` 触发 `refresh()` 后，从 `data.schedule` 按 `activity_id` 找 completed 活动，`activityAnnouncement` 产出以 `kind="activity"` 进 announceStore |
 
-**功能阶段**：frontend「增强交互性」轮编写（常驻状态条 + 头像旁气泡 + 活动产出三件套；验证管道正确——`activityResult` 纯函数拼装、`announceStore` 追加/到时摘除、dispatch 把 `mutter` 与 `activity_end` 额外路由到 announceStore，不验证视觉淡出样式）。`formatResult` 从 ActivityPanel 本地函数抽提为共享库（`lib/activityResult.ts`），供活动产出气泡与状态条复用；`formatOutputBody` 于「产出面板」轮追加（独立产出面板的完整正文，与单行摘要 `formatResult` 互补）。
+**功能阶段**：frontend「增强交互性」轮编写（常驻状态条 + 头像旁气泡 + 活动产出三件套；验证管道正确——`activityResult` 纯函数拼装、`announceStore` 追加/到时摘除、dispatch 把 `mutter` 与 `activity_end` 额外路由到 announceStore，不验证视觉淡出样式）。`formatResult` 从 ActivityPanel 本地函数抽提为共享库（`lib/activityResult.ts`），供活动产出气泡与状态条复用；`formatOutputBody` 于「产出面板」轮追加（独立产出面板的完整正文，与单行摘要 `formatResult` 互补）。「探索 Roguelike 前端」轮：free_exploration 五个结果文案用例改读新结果键 `summary`/`core_discovery`/`knowledge`（弃 `findings`/`notes`），与后端 §4.1 结果形状对齐。
 
 ## frontend-memory-panel（记忆面板：MemoryPanel 搜索/筛选/排序/展开）
 

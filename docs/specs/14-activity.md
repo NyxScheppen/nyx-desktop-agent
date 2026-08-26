@@ -1383,7 +1383,12 @@ def should_explore(last_explored_at: float, rate_limit_hours: int, now: float) -
 
 
 class Exploration:
-    """跨域行为链（LangGraph）：好奇 → 搜索 → 读 → 写笔记（design §8.6）。"""
+    """跨域行为链（LangGraph）：好奇 → 搜索 → 写笔记（design §8.6）。
+
+    「读」不单列节点：联网时 _search_web 内已用 web_fetch 下载正文入书库并触发读书
+    （design §8.6 主动下载），本地时 local_search 直接返回片段。
+    故链上只有搜索 + 写笔记。
+    """
 
     def __init__(
         self,
@@ -1401,16 +1406,15 @@ class Exploration:
         # 联网为主通道：web 开启时 search_web 是主搜索动作，
         # search_local 作兜底（进 _search_web 内）
         if self._web_enabled:
-            self._actions = ["search_web", "read", "write_note"]
+            self._actions = ["search_web", "write_note"]
         else:
-            self._actions = ["search_local", "read", "write_note"]
+            self._actions = ["search_local", "write_note"]
         self._graph = self._build_graph()
 
     def _build_graph(self) -> CompiledStateGraph[ExplorationState]:
         g = StateGraph(ExplorationState)
         g.add_node("plan_next", self._plan_next)
         g.add_node("search_local", self._search_local)
-        g.add_node("read", self._read)
         g.add_node("write_note", self._write_note)
         g.add_node("finalize", self._finalize)
         if self._web_enabled:
@@ -1507,13 +1511,6 @@ class Exploration:
                     pass
         return state
 
-    async def _read(self, state: ExplorationState) -> ExplorationState:
-        res = await self._tools.call(
-            "file_io", {"action": "read", "path": state["focus"]}
-        )
-        state["findings"].append(str(res))
-        return state
-
     async def _write_note(self, state: ExplorationState) -> ExplorationState:
         note = "\n".join(state["findings"][-3:])
         await self._tools.call(
@@ -1540,7 +1537,7 @@ class Exploration:
     def _route(self, state: ExplorationState) -> str:
         if state["done"]:
             return "finalize"
-        # MVP：确定性轮转（与 self._actions 对齐，3 步一轮），不靠 LLM 选具体动作。
+        # MVP：确定性轮转（与 self._actions 对齐，2 步一轮），不靠 LLM 选具体动作。
         # web 开启时 actions[0]=search_web 起始；web 关闭时 =search_local 起始。
         # step 在 _plan_next 里先 +1，故 -1 对齐到 actions[0]。
         return self._actions[(state["step"] - 1) % len(self._actions)]

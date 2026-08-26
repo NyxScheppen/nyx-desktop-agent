@@ -227,13 +227,13 @@ class ExplorationState(TypedDict):
     correlation_id: str          # LLM 溯源（节点内 complete 透传，14-activity 补）
 ```
 
-**Nodes**：`plan_next` → `search_local` / `search_web`(opt-in) / `read` / `write_note` → `finalize`
+**Nodes**：`plan_next` → `search_local` / `search_web`(opt-in) / `write_note` → `finalize`
 
 **Edges**：
 
 ```
 start → plan_next
-  → search_local | search_web | read | write_note → plan_next   # 循环
+  → search_local | search_web | write_note → plan_next   # 循环
   → plan_next 判定 done=true → finalize → end
 ```
 

@@ -41,7 +41,7 @@
 
 ### 3.2 联网主通道 + 节点结构化（`activity/exploration.py`）
 
-- 动作顺序改为 `plan_next → search_web（主）→ read → write_note`；`search_local` 作为联网失败或 `web_enabled=false` 时的兜底。
+- 动作顺序改为 `plan_next → search_web（主）→ write_note`；`search_local` 作为联网失败或 `web_enabled=false` 时的兜底。
 - 产出从纯 `{findings, notes}` 升级为**带节点序列**。每访问一个网页 / 发一次搜索，记一条节点：
   - `search` 节点：name = `"搜索：<focus>"`，url 为空。
   - `web` 节点：name = 网页标题（或域名），url = 该页地址。

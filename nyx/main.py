@@ -386,13 +386,23 @@ class _ExplorePayload(BaseModel):
     topic: str | None = None
 
 
+class _ExploreChoosePayload(BaseModel):
+    activity_id: str
+    choice: str
+
+
+class _ExploreAutopilotPayload(BaseModel):
+    activity_id: str
+    on: bool
+
+
 class _EncounterChoosePayload(BaseModel):
     encounter_id: str
     option_index: int
 
 
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：24 个端点（23 个 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：26 个端点（25 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")
@@ -522,6 +532,24 @@ def build_app(app: _App) -> FastAPI:
         except RuntimeError as exc:  # 已有活动在跑
             raise HTTPException(status_code=409, detail=str(exc))
         return {"activity_id": activity_id}
+
+    @fast.post("/api/explore/choose")
+    async def api_explore_choose(payload: _ExploreChoosePayload) -> dict[str, Any]:
+        try:
+            return await app.activity.choose_exploration(
+                payload.activity_id, payload.choice
+            )
+        except RuntimeError as exc:  # 无进行中的探索
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @fast.post("/api/explore/autopilot")
+    async def api_explore_autopilot(
+        payload: _ExploreAutopilotPayload,
+    ) -> dict[str, Any]:
+        await app.activity.set_exploration_autopilot(
+            payload.activity_id, payload.on
+        )
+        return {"activity_id": payload.activity_id, "autopilot": payload.on}
 
     @fast.post("/api/encounter/choose")
     async def api_encounter_choose(

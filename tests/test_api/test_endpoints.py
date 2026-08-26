@@ -108,6 +108,9 @@ class _FakeActivity:
         self.added_annotations: list[tuple[str, str]] = []
         self.explore_topics: list[str | None] = []
         self.explore_busy = False
+        self.explore_choices: list[tuple[str, str]] = []
+        self.explore_choose_busy = False
+        self.autopilot_calls: list[tuple[str, bool]] = []
 
     async def list_materials(self) -> list[Material]:
         self.list_calls += 1
@@ -153,6 +156,15 @@ class _FakeActivity:
             raise RuntimeError("已有活动进行中")
         self.explore_topics.append(topic)
         return "exp-1"
+
+    async def choose_exploration(self, activity_id: str, choice: str) -> dict[str, Any]:
+        if self.explore_choose_busy:
+            raise RuntimeError("无进行中的探索")
+        self.explore_choices.append((activity_id, choice))
+        return {"kind": "choose", "nodes": []}
+
+    async def set_exploration_autopilot(self, activity_id: str, on: bool) -> None:
+        self.autopilot_calls.append((activity_id, on))
 
 
 def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
@@ -460,3 +472,40 @@ async def test_encounter_current_null() -> None:
         resp = await client.get("/api/encounter/current")
     assert resp.status_code == 200
     assert resp.json() is None
+
+
+async def test_explore_choose_endpoint() -> None:
+    fake = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/explore/choose", json={"activity_id": "exp-1", "choice": "node:0"}
+        )
+    assert resp.status_code == 200
+    assert fake.explore_choices == [("exp-1", "node:0")]
+
+
+async def test_explore_choose_busy_returns_409() -> None:
+    fake = _FakeActivity()
+    fake.explore_choose_busy = True
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/explore/choose", json={"activity_id": "x", "choice": "retreat"}
+        )
+    assert resp.status_code == 409
+
+
+async def test_explore_autopilot_endpoint() -> None:
+    fake = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/explore/autopilot", json={"activity_id": "exp-1", "on": True}
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"activity_id": "exp-1", "autopilot": True}
+    assert fake.autopilot_calls == [("exp-1", True)]

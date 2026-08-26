@@ -993,16 +993,17 @@
 
 **功能阶段**：frontend「欲望终态过滤」轮编写（RTL + 真实 store，`vi.spyOn(refresh)` 阻断 fetch；验证展示层过滤——`expired`/`satisfied` 终态不出现在队列列表，全终态时连「短期欲望」标题都不渲染；后端 /api/desires 全量快照不动、只前端过滤）。
 
-## frontend-exploration-map（探索地图组件：ExplorationMap 页内视图）
+## frontend-exploration-map（探索地牢组件：ExplorationMap 暗黑地牢视图）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `ExplorationMap > 渲染历史节点 + 心愿单` | 功能正确 | store 里 free_exploration 的 `progress.result.nodes` 渲染为已探索节点（「搜索：深海鱼」上屏）+ 心愿单「发光生物」上屏 |
-| `ExplorationMap > 「出门探索」点击调 start（POST /api/explore）` | 功能正确 | mock fetch 断言 `POST /api/explore`（`method: "POST"`），`start` 触发 `postExplore` |
-| `ExplorationMap > 「出门探索」忙碌(409) → 显示错误` | 功能正确 | mock fetch 返回 `{status:409, detail:"已有活动进行中"}` → 错误文案「已有活动进行中」上屏（`findByText` 等待） |
-| `ExplorationMap > 「＋」加心愿调用 addWish` | 功能正确 | 输入「深海鱼」点「＋」→ `useExplorationStore.getState().wishlist` 含「深海鱼」 |
+| `ExplorationMap > 渲染 HUD（目标/深度）+ 节点 + 安全房` | 功能正确 | decision 载荷渲染：focus「量子退相干」/深度「第 2 层」/节点「维基·量子退相干」/安全房「休息整理」上屏 |
+| `ExplorationMap > 点节点 → choose('node:0')` | 功能正确 + 交互 | 点节点「维基·量子退相干」→ `choose('node:0')`（第 0 个节点） |
+| `ExplorationMap > 无 decision → 渲染「出门探索」+ 点击调 start` | 功能正确 + 交互 | `decision=null` 时渲染「出门探索」，点击调 `start` |
+| `ExplorationMap > 展开地图显示已走过楼层 + 进过节点` | 功能正确 + 交互 | 点「展开地图」→ 第 1 层足迹「维基·量子计算」上屏（`history` 按 floor 过滤） |
+| `ExplorationMap > 点「下楼」→ choose('descend')` | 功能正确 + 交互 | 点「下楼」→ `choose('descend')` |
 
-**功能阶段**：「探索升级：联网探索 + 探索地图」轮编写（RTL + 真实 store + mock fetch；验证管道正确——历史足迹节点/心愿单渲染、出门探索调 `POST /api/explore`、加心愿调 `addWish`，不验证视觉）。「词条收敛·出门挂载」轮：`ExplorationMap` 从 orphan（无挂载点、无 CSS）改为**页内视图**——去掉 `onClose` prop 与 ✕ 关闭按钮，外壳 `aside.exploration-map` 改 `section.side-panel`（复用页内面板骨架），由右底工具条「出门」入口挂载；用例删 `onClose={() => {}}` prop（`render(<ExplorationMap />)`），补 409 忙碌错误一例。
+**功能阶段**：「探索 Roguelike 前端」轮全重写（暗黑地牢视图：HUD 精力/欲望/深度/托管 + 本层 4 槽节点 + 下楼/撤退 + 展开地图 + 道具栏占位，全部由 `exploration_step` 的 `decision` 载荷驱动；RTL + 真实 store，`vi.spyOn(choose/start)` 验证交互管道，不验证视觉）。旧「历史足迹 + 实时节点 + 心愿单」视图 4 用例（渲染历史节点/出门探索 POST/409 忙碌/加心愿）随组件重写删除。
 
 ## frontend-scroll-area（书卷区域：ScrollArea 对话主舞台）
 

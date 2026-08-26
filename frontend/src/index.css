@@ -230,9 +230,7 @@ body {
   display: block;
   width: 100%;
   height: auto;
-  aspect-ratio: 3 / 4;
-  object-fit: cover;
-  object-position: top center;
+  aspect-ratio: 1 / 1;
   filter: drop-shadow(0 12px 30px rgba(91, 70, 54, 0.25));
 }
 

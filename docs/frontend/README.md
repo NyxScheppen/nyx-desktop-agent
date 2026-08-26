@@ -78,7 +78,7 @@ frontend/
   index.html
   src/
     main.tsx                 # React 入口，挂载 App
-    App.tsx                  # 全屏装配：背景(可调色/传图)/樱花 + 左侧半身像立绘 + 「对话框/设置」双模式切换（01-sse §6）
+    App.tsx                  # 全屏装配：背景(可调色/传图)/樱花 + 左侧头像 + 「对话框/设置」双模式切换（01-sse §6）
     types/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     lib/
@@ -141,7 +141,7 @@ frontend/
         LeftPanel.tsx        # 左面板（属性摘要 + 欲望一句话 + 活动一条 + 游戏设置）
         ScrollArea.tsx       # 书卷区域（对话/记忆/笔记三模式切换 + 遭遇卡片）
     assets/
-      sprites/               # 8 情绪 sprite（EmotionCategory 1:1）
+      expressions/           # 8 情绪方形头像（EmotionCategory 1:1）
   tests/
     api.test.ts              # API 端点测试（CLAUDE.md 要求）
     sse.test.ts

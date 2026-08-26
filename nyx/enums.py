@@ -61,7 +61,7 @@ class ContextMode(StrEnum):
     SLOW = "slow"                          # 慢通道
 
 
-class EmotionCategory(StrEnum):            # 8 档，1:1 对应前端 sprites/ 与 expressions/
+class EmotionCategory(StrEnum):            # 8 档，1:1 对应前端 assets/expressions/（方形头像）
     NEUTRAL = "neutral"                    # 平静：valence≈0、arousal 低
     HAPPY = "happy"                        # 开心：valence+、arousal+
     SAD = "sad"                            # 难过：valence-、arousal 低

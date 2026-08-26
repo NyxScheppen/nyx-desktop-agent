@@ -21,7 +21,7 @@
 
 ## 4. 表情（8 档）
 
-- `assets/sprites/`（立绘）与 `assets/expressions/`（头像）各 8 张，同键。
+- `assets/expressions/`（方形头像）8 张，头像与左栏立绘位共用此套；`assets/sprites/`（全身像立绘）不再被前端引用。
 - 键 = `EmotionCategory` 8 个成员：`neutral / happy / sad / angry / worried / shy / sleepy / thinking`。
 - 选择优先级：**困倦 > 思考 > 情绪**。
 - SSE `emotion_update` 的 `emotion` 字段直接 = sprite 文件名，前端零映射换图。

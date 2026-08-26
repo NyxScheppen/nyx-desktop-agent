@@ -53,6 +53,7 @@ from nyx.types import (
     Event,
     Goal,
     LLMOutput,
+    LongTermDesire,
     Memory,
     Personality,
     ReflectionOutcome,
@@ -291,6 +292,7 @@ class _FakeDesire:
         self._values = values if values is not None else []
         self.mark_active_calls: list[str] = []
         self.mark_suppressed_calls: list[str] = []
+        self.added_long_term: list[LongTermDesire] = []
 
     async def get_pending(self) -> list[ShortTermDesire]:
         return self._pending
@@ -305,6 +307,9 @@ class _FakeDesire:
 
     async def mark_suppressed(self, desire_id: str) -> None:
         self.mark_suppressed_calls.append(desire_id)
+
+    async def add_long_term(self, desire: LongTermDesire) -> None:
+        self.added_long_term.append(desire)
 
 
 class _FakeMemory:
@@ -349,6 +354,7 @@ async def _new_facade(
     evaluator: _FakeEvaluator | None = None,
     reflect: Callable[[str | None], Awaitable[ReflectionOutcome | None]] | None = None,
     get_observation: Callable[[], Awaitable[dict[str, str]]] | None = None,
+    desire: _FakeDesire | None = None,
     memory: _FakeMemory | None = None,
     canon: str = "测试人格",
 ) -> tuple[ActivityFacade, ActivityStore, EventBus, Database]:
@@ -367,7 +373,10 @@ async def _new_facade(
         cast(LlmClient, llm if llm is not None else _FakeLlm()),
         cast(Evaluator, evaluator if evaluator is not None else _FakeEvaluator()),
         cast(ToolRegistry, _FakeTools()),
-        cast(DesireFacade, _FakeDesire(pending, values)),
+        cast(
+            DesireFacade,
+            desire if desire is not None else _FakeDesire(pending, values),
+        ),
         cast(MemoryFacade, memory if memory is not None else _FakeMemory()),
         ReadingNoteStore(database),
         get_state,
@@ -1684,5 +1693,26 @@ async def test_choose_exploration_retreat_completes(
         current = await _store.get(activity_id)
         assert current is not None
         assert current.status is ActivityStatus.COMPLETED
+    finally:
+        await database.conn.close()
+
+
+async def test_exploration_finalize_writes_long_term_and_knowledge() -> None:
+    fake_desire = _FakeDesire()
+    fake_memory = _FakeMemory()
+    facade, _store, _bus, database = await _new_facade(
+        desire=fake_desire, memory=fake_memory
+    )
+    try:
+        await facade._finalize_exploration_sink(
+            {
+                "strong_new_topics": ["量子纠错"],
+                "knowledge": [{"topic": "退相干", "content": "环境纠缠"}],
+                "seed": {"desire_id": "d1", "topic": "量子"},
+            },
+            "c1",
+        )
+        assert fake_desire.added_long_term[0].name == "量子纠错"
+        assert fake_memory.remembered[-1][0]["topic"] == "退相干"
     finally:
         await database.conn.close()

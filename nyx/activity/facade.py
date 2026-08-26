@@ -37,6 +37,7 @@ from nyx.types import (
     Annotation,
     CurrentState,
     Event,
+    LongTermDesire,
     Material,
     Memory,
     ReadingNote,
@@ -495,6 +496,9 @@ class ActivityFacade:
         if not progress["pending"]:
             current.progress["result"] = progress["result"]
             await self.complete_activity(current)
+            await self._finalize_exploration_sink(
+                progress["result"], _correlation_id(current)
+            )
             return progress["result"]
         last = progress["state"].get("_last_node")
         if (
@@ -507,6 +511,47 @@ class ActivityFacade:
             focus = str(progress["state"].get("focus") or "")
             await self._on_rooted_encounter(snippet, focus, activity_id)
         return progress["decision"]
+
+    async def _finalize_exploration_sink(
+        self, result: dict[str, Any], correlation_id: str
+    ) -> None:
+        """探索终局回写（best-effort）：强烈新兴趣→长期欲望，知识→长期记忆。
+
+        「满足探索欲」由 ACTIVITY_END → satisfy_from_activity_end 走 goal_met 驱动，
+        这里只管新增长期欲望与知识。
+        """
+        strong = result.get("strong_new_topics")
+        if isinstance(strong, list):
+            for topic in cast(list[Any], strong):
+                if not isinstance(topic, str) or not topic.strip():
+                    continue
+                await self._desire.add_long_term(LongTermDesire(
+                    id=str(uuid.uuid4()),
+                    created_at=time.time(),
+                    type=DesireType.EXPLORATION,
+                    name=topic,
+                    description=f"想弄懂「{topic}」",
+                    strength=0.5,
+                    progress=0.0,
+                    subtopics=[],
+                ))
+        knowledge = result.get("knowledge")
+        if isinstance(knowledge, list):
+            items: list[dict[str, str]] = []
+            for k in cast(list[Any], knowledge):
+                if not isinstance(k, dict):
+                    continue
+                item_map = cast(dict[str, Any], k)
+                if not str(item_map.get("content", "")).strip():
+                    continue
+                items.append(
+                    {
+                        "topic": str(item_map.get("topic", "")),
+                        "content": str(item_map.get("content", "")),
+                    }
+                )
+            if items:
+                await self._memory.remember_knowledge(items, correlation_id)
 
     async def set_exploration_autopilot(self, activity_id: str, on: bool) -> None:
         raise NotImplementedError  # Task 8 实现

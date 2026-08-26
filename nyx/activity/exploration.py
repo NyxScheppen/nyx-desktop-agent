@@ -18,6 +18,100 @@ from nyx.tools.registry import ToolRegistry
 
 _MAX_STEPS = 8                    # 探索链最大步数（可推翻）
 
+# ---- 逐层地牢常量（decision：先常量，不建配置项；调参需推翻 _MAX_STEPS 同例） ----
+_NODE_SLOTS = 3            # 每层真实/死路节点槽数（安全房另算，不占槽）
+_ENTER_NODE_COST = 6.0     # 进真实节点耗精力
+_DEAD_END_COST = 4.0       # 进死路耗精力
+_SAFE_ROOM_RESTORE = 30.0  # 安全房回精力
+_MAX_ENERGY = 100.0        # 精力上限
+_DESCENT_BASE_COST = 8.0   # 下楼基础消耗
+_DESCENT_STEP_COST = 2.0   # 下楼每层递增消耗
+_MAX_DEPTH = 5             # 深度上限（触底兜底判定核心发现）
+
+_KIND_REAL = "real"
+_KIND_DEAD_END = "dead_end"
+_KIND_SAFE_ROOM = "safe_room"
+
+
+class FloorNode(TypedDict):
+    """一层的一个节点槽：真实结果 / 死路 / 安全房。"""
+    name: str
+    url: str
+    kind: str          # _KIND_REAL | _KIND_DEAD_END | _KIND_SAFE_ROOM
+    snippet: str
+    may_encounter: bool  # 险节点：深楼层判定（floor >= 3），进后触发有根遭遇
+
+
+def fill_dead_ends(
+    nodes: list[FloorNode], target: int = _NODE_SLOTS
+) -> list[FloorNode]:
+    """槽位不足补死路：搜到几个真实结果填几个，不足 target 用死路槽补。纯函数。"""
+    filled = list(nodes)
+    while len(filled) < target:
+        filled.append({
+            "name": "本地搜索 · 无结果",
+            "url": "",
+            "kind": _KIND_DEAD_END,
+            "snippet": "",
+            "may_encounter": False,
+        })
+    return filled
+
+
+def enter_cost(node: FloorNode) -> float:
+    """进节点精力消耗：真实 6 / 死路 4 / 安全房 0。纯函数。"""
+    if node["kind"] == _KIND_SAFE_ROOM:
+        return 0.0
+    if node["kind"] == _KIND_DEAD_END:
+        return _DEAD_END_COST
+    return _ENTER_NODE_COST
+
+
+def descent_cost(floor: int) -> float:
+    """从第 floor 层下楼到 floor+1 层的消耗，越深越贵。纯函数。"""
+    return _DESCENT_BASE_COST + _DESCENT_STEP_COST * (floor - 1)
+
+
+def restore_energy(energy: float) -> float:
+    """安全房回精力，封顶 _MAX_ENERGY。纯函数。"""
+    return min(_MAX_ENERGY, energy + _SAFE_ROOM_RESTORE)
+
+
+def determine_outcome(energy: float, core_discovery: str, retreated: bool) -> str:
+    """run 结局：won（挖到核心发现）/ exhausted（精力耗尽）/ retreated（主动撤退）。
+
+    纯函数。
+    """
+    if core_discovery:
+        return "won"
+    if retreated:
+        return "retreated"
+    if energy <= 0.0:
+        return "exhausted"
+    return "retreated"  # 未赢未耗尽未主动退，兜底按撤退正常结算
+
+
+def parse_choice(choice: str, state: dict[str, Any]) -> tuple[str, int | None]:
+    """决策字符串 → (路由, 选中节点索引)；非法输入安全撤退。纯函数。
+
+    路由取值：visit / safe_room / descend / retreat。
+    """
+    if choice == "safe_room":
+        return "safe_room", None
+    if choice == "descend":
+        return "descend", None
+    if choice == "retreat":
+        return "retreat", None
+    if choice.startswith("node:"):
+        try:
+            idx = int(choice.split(":", 1)[1])
+        except ValueError:
+            return "retreat", None
+        nodes = state.get("current_nodes")
+        if isinstance(nodes, list) and 0 <= idx < len(cast(list[Any], nodes)):
+            return "visit", idx
+    return "retreat", None
+
 
 class ExplorationNode(TypedDict):
     name: str

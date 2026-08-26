@@ -5,9 +5,19 @@ from typing import Any, cast
 import pytest
 
 from nyx.activity.exploration import (
+    _KIND_DEAD_END,
+    _KIND_REAL,
+    _KIND_SAFE_ROOM,
     _MAX_STEPS,
     Exploration,
     ExplorationState,
+    FloorNode,
+    descent_cost,
+    determine_outcome,
+    enter_cost,
+    fill_dead_ends,
+    parse_choice,
+    restore_energy,
     should_explore,
 )
 from nyx.config import ExplorationConfig
@@ -276,3 +286,51 @@ async def test_search_web_falls_back_to_local() -> None:
     await expl._search_web(state)
     assert ("local_search", {"query": "骑士"}) in tools.calls
     assert any("本地兜底结果" in f for f in state["findings"])
+
+
+# ---- 逐层地牢：纯函数 ----
+
+def _node(kind: str, name: str = "节点") -> FloorNode:
+    return {
+        "name": name,
+        "url": "",
+        "kind": kind,
+        "snippet": "",
+        "may_encounter": False,
+    }
+
+
+def test_fill_dead_ends_pads_to_target():
+    filled = fill_dead_ends([_node(_KIND_REAL)])
+    assert len(filled) == 3
+    assert filled[0]["kind"] == _KIND_REAL
+    assert filled[1]["kind"] == _KIND_DEAD_END
+
+
+def test_enter_cost_by_kind():
+    assert enter_cost(_node(_KIND_REAL)) == 6.0
+    assert enter_cost(_node(_KIND_DEAD_END)) == 4.0
+    assert enter_cost(_node(_KIND_SAFE_ROOM)) == 0.0
+
+
+def test_descent_cost_increases_with_floor():
+    assert descent_cost(1) < descent_cost(3)
+
+
+def test_restore_energy_caps_at_max():
+    assert restore_energy(80.0) == 100.0
+    assert restore_energy(40.0) == 70.0
+
+
+def test_determine_outcome_three_ways():
+    assert determine_outcome(50.0, "真相", False) == "won"
+    assert determine_outcome(0.0, "", False) == "exhausted"
+    assert determine_outcome(50.0, "", True) == "retreated"
+
+
+def test_parse_choice_routes():
+    state = {"current_nodes": [_node(_KIND_REAL)]}
+    assert parse_choice("node:0", state) == ("visit", 0)
+    assert parse_choice("safe_room", state) == ("safe_room", None)
+    assert parse_choice("retreat", state) == ("retreat", None)
+    assert parse_choice("node:9", state) == ("retreat", None)

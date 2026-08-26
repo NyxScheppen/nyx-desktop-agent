@@ -240,6 +240,7 @@ class ActivityFacade:
         config: ActivityConfig,
         exploration_config: ExplorationConfig,
         canon: str,
+        on_rooted_encounter: Callable[[str, str, str], Awaitable[None]] | None = None,
     ) -> None:
         self._store = store
         self._material_store = material_store
@@ -258,6 +259,7 @@ class ActivityFacade:
             llm, evaluator, tools, bus, exploration_config
         )
         self._exploration_config = exploration_config
+        self._on_rooted_encounter = on_rooted_encounter
         self._start_lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
 
@@ -449,10 +451,9 @@ class ActivityFacade:
         await self._reading_notes.delete_annotation(annotation_id)
 
     async def start_exploration(self, topic: str | None) -> str:
-        """手动触发一次自由探索（无视欲望/频率门槛），返回 activity_id。
+        """手动触发一次自由探索，返回 activity_id。
 
-        复用 _execute 执行管线；不恢复 PAUSED（手动是全新出发）。
-        已有活动在跑时 raise RuntimeError（端点转 409）。
+        跑到首个决策点即返回（RUNNING 状态保留）；后续由 choose_exploration 驱动。
         """
         async with self._start_lock:
             if self._task is not None and not self._task.done():
@@ -466,17 +467,49 @@ class ActivityFacade:
                 type=ActivityType.FREE_EXPLORATION,
                 schedule_block_id=_schedule_block_id(now, self._config.grid_minutes),
                 status=ActivityStatus.PENDING,
-                progress={"description": topic},
+                progress=_empty_progress(),
                 started_at=now,
             )
             if topic is None:
-                activity.progress["description"] = await self._exploration.pick_topic(
-                    activity.id
-                )
+                topic = await self._exploration.pick_topic(activity.id)
+            activity.progress["description"] = topic
             await self._store.insert(activity)
             self._task = asyncio.create_task(self._execute(activity))
             self._task.add_done_callback(_harvest_task_exception)
             return activity.id
+
+    async def choose_exploration(self, activity_id: str, choice: str) -> dict[str, Any]:
+        """用户在决策点选择：续跑探索图一步；险节点触发有根遭遇；终点则结算。
+
+        返回 decision 载荷（pending）或 run 结果（终点）。无活动/非探索/id 不符 raise。
+        """
+        current = await self._store.get_current()
+        if (
+            current is None
+            or current.id != activity_id
+            or current.type is not ActivityType.FREE_EXPLORATION
+            or current.status is not ActivityStatus.RUNNING
+        ):
+            raise RuntimeError("无进行中的探索")
+        progress = await self._exploration.resume(activity_id, choice)
+        if not progress["pending"]:
+            current.progress["result"] = progress["result"]
+            await self.complete_activity(current)
+            return progress["result"]
+        last = progress["state"].get("_last_node")
+        if (
+            isinstance(last, dict)
+            and cast(dict[str, Any], last).get("may_encounter")
+            and self._on_rooted_encounter
+        ):
+            node = cast(dict[str, Any], last)
+            snippet = str(node.get("snippet") or node.get("name") or "")
+            focus = str(progress["state"].get("focus") or "")
+            await self._on_rooted_encounter(snippet, focus, activity_id)
+        return progress["decision"]
+
+    async def set_exploration_autopilot(self, activity_id: str, on: bool) -> None:
+        raise NotImplementedError  # Task 8 实现
 
     async def read_material(
         self, path: str, filename: str, total_chars: int, correlation_id: str
@@ -593,6 +626,9 @@ class ActivityFacade:
                 _correlation_id(activity),
             )
         )
+        if activity.type is ActivityType.FREE_EXPLORATION:
+            await self._start_exploration_run(activity)
+            return
         try:
             result = await self._run_activity(activity)
         except Exception:
@@ -612,6 +648,32 @@ class ActivityFacade:
             raise
         activity.progress["result"] = result
         await self.complete_activity(activity)
+
+    async def _start_exploration_run(self, activity: Activity) -> None:
+        """探索启动：从 desire goal.topic 抽种子（优先，绝不编造），跑图到首决策点。"""
+        seed_desire_id = activity.progress.get("desire_id")
+        seed_topic = self._exploration_seed(activity)
+        state = await self._get_state()
+        await self._exploration.start(
+            seed_desire_id if isinstance(seed_desire_id, str) else None,
+            seed_topic,
+            state.energy,
+            activity.id,
+            _correlation_id(activity),
+        )
+
+    def _exploration_seed(self, activity: Activity) -> str:
+        """种子话题：优先 goal.topic（探索欲的真实方向），退 description，
+        退 activity.id。"""
+        goal = activity.progress.get("goal")
+        if isinstance(goal, dict):
+            topic = cast(dict[str, Any], goal).get("topic")
+            if isinstance(topic, str) and topic:
+                return topic
+        desc = activity.progress.get("description")
+        if isinstance(desc, str) and desc:
+            return desc
+        return activity.id
 
     async def _run_activity(self, activity: Activity) -> dict[str, Any]:
         t = activity.type
@@ -641,11 +703,7 @@ class ActivityFacade:
             outcome = await self._reflect(_correlation_id(activity))
             return {"summary": outcome.story if outcome is not None else None}
         if t is ActivityType.FREE_EXPLORATION:
-            return await self._exploration.run(
-                seed=str(activity.progress.get("description") or activity.id),
-                activity_id=activity.id,
-                correlation_id=_correlation_id(activity),
-            )
+            raise ValueError("自由探索改走 _execute 的 _start_exploration_run 分叉")
         if t is ActivityType.OBSERVE_USER:
             obs = await self._get_observation()
             presence = obs.get("presence", "")

@@ -1667,3 +1667,22 @@ async def test_creation_activity_injects_canon_system(
         assert "[此刻心境]" in llm.system_contents[0]
     finally:
         await database.conn.close()
+
+
+async def test_choose_exploration_retreat_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    facade, _store, bus, database = await _new_facade()
+    try:
+        async with _running(bus):
+            activity_id = await facade.start_exploration("深海鱼")
+            await _await_task(facade)
+            result = await facade.choose_exploration(activity_id, "retreat")
+        assert result["outcome"] == "retreated"
+        current = await _store.get(activity_id)
+        assert current is not None
+        assert current.status is ActivityStatus.COMPLETED
+    finally:
+        await database.conn.close()

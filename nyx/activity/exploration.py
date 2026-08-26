@@ -301,6 +301,47 @@ class Exploration:
         plan = cast(dict[str, Any], plan)
         return str(plan.get("topic") or "有趣的新鲜事")
 
+    async def _search_nodes(self, topic: str, floor: int) -> list[FloorNode]:
+        """本层真实搜索 → FloorNode 列表；搜不到返回空（交给 fill_dead_ends 补死路）。
+
+        险节点 = 深楼层（floor >= 3），进后由 facade 触发有根遭遇。
+        """
+        if self._web_enabled:
+            res = await self._tools.call("web_search", {"query": topic})
+            if not res:
+                res = await self._tools.call("local_search", {"query": topic})
+        else:
+            res = await self._tools.call("local_search", {"query": topic})
+        nodes: list[FloorNode] = []
+        for r in res[:_NODE_SLOTS]:
+            node = self._node_from_result(r, floor)
+            if node is not None:
+                nodes.append(node)
+        return nodes
+
+    def _node_from_result(self, result: Any, floor: int) -> FloorNode | None:
+        """把一条检索结果转成 FloorNode；无法解析出名称则返回 None。"""
+        if isinstance(result, dict):
+            title = cast(str | None, result.get("title"))
+            name_key = cast(str | None, result.get("name"))
+            url = str(cast(str | None, result.get("url")) or "")
+            snippet = str(
+                cast(str | None, result.get("snippet"))
+                or cast(str | None, result.get("content"))
+                or ""
+            )
+            name = title or name_key or (_domain(url) if url else "")
+        elif isinstance(result, str):
+            name, url, snippet = result, "", ""
+        else:
+            return None
+        if not name:
+            return None
+        return {
+            "name": name, "url": url, "kind": _KIND_REAL,
+            "snippet": snippet, "may_encounter": floor >= 3,
+        }
+
     async def _record_node(
         self, state: ExplorationState, node: ExplorationNode
     ) -> None:

@@ -334,3 +334,18 @@ def test_parse_choice_routes():
     assert parse_choice("safe_room", state) == ("safe_room", None)
     assert parse_choice("retreat", state) == ("retreat", None)
     assert parse_choice("node:9", state) == ("retreat", None)
+
+
+# ---- 逐层地牢：_search_nodes 本层真实搜索 ----
+
+async def test_search_nodes_fills_real_results() -> None:
+    expl = _web_exploration(_WebTools())
+    nodes = await expl._search_nodes("量子", 1)
+    assert nodes[0]["kind"] == _KIND_REAL
+    assert nodes[0]["may_encounter"] is False
+
+
+async def test_search_nodes_deep_floor_marks_encounter() -> None:
+    expl = _web_exploration(_WebTools())
+    nodes = await expl._search_nodes("量子", 3)
+    assert nodes[0]["may_encounter"] is True

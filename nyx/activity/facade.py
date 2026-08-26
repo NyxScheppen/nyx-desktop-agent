@@ -263,6 +263,8 @@ class ActivityFacade:
         self._on_rooted_encounter = on_rooted_encounter
         self._start_lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
+        self._autopilot_task: asyncio.Task[None] | None = None
+        self._autopilot_on = False
 
     # ---- 事件入口 ----
 
@@ -554,7 +556,58 @@ class ActivityFacade:
                 await self._memory.remember_knowledge(items, correlation_id)
 
     async def set_exploration_autopilot(self, activity_id: str, on: bool) -> None:
-        raise NotImplementedError  # Task 8 实现
+        """托管开关：on=True 起后台循环自动决策，on=False 停循环
+        （下次决策点暂停等用户）。"""
+        if on:
+            if self._autopilot_task is None or self._autopilot_task.done():
+                self._autopilot_task = asyncio.create_task(
+                    self._autopilot_loop(activity_id)
+                )
+            return
+        self._autopilot_on = False
+        if self._autopilot_task is not None and not self._autopilot_task.done():
+            self._autopilot_task.cancel()
+
+    async def _autopilot_loop(self, activity_id: str) -> None:
+        self._autopilot_on = True
+        try:
+            while self._autopilot_on:
+                current = await self._store.get_current()
+                if (
+                    current is None
+                    or current.id != activity_id
+                    or current.status is not ActivityStatus.RUNNING
+                ):
+                    return
+                # 取最近一次决策载荷：从 exploration 的 checkpoint 状态拿
+                decision = await self._exploration.current_decision(activity_id)
+                if decision is None:
+                    return
+                choice = await self._exploration.pick_choice(
+                    decision, _correlation_id(current)
+                )
+                progress = await self._exploration.resume(activity_id, choice)
+                if not progress["pending"]:
+                    current.progress["result"] = progress["result"]
+                    await self.complete_activity(current)
+                    await self._finalize_exploration_sink(
+                        progress["result"], _correlation_id(current)
+                    )
+                    return
+                # 险节点同样触发有根遭遇
+                last = progress["state"].get("_last_node")
+                if (
+                    isinstance(last, dict)
+                    and cast(dict[str, Any], last).get("may_encounter")
+                    and self._on_rooted_encounter
+                ):
+                    node = cast(dict[str, Any], last)
+                    snippet = str(node.get("snippet") or node.get("name") or "")
+                    focus = str(progress["state"].get("focus") or "")
+                    await self._on_rooted_encounter(snippet, focus, activity_id)
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            raise
 
     async def read_material(
         self, path: str, filename: str, total_chars: int, correlation_id: str

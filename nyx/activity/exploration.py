@@ -435,6 +435,41 @@ class Exploration:
         plan = cast(dict[str, Any], plan)
         return str(plan.get("topic") or "有趣的新鲜事")
 
+    async def pick_choice(self, decision: dict[str, Any], correlation_id: str) -> str:
+        """托管决策：轻 LLM 从决策载荷选一个动作（可 mock）。非法动作兜底 retreat。"""
+        try:
+            output = await self._llm.complete(
+                [
+                    {"role": "system", "content": _EXPLORATION_AUTOPILOT_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": json.dumps(decision, ensure_ascii=False),
+                    },
+                ],
+                module="activity",
+                output_type="exploration_choice",
+                correlation_id=correlation_id,
+                json_mode=True,
+            )
+            await self._evaluator.evaluate(output)
+            data = json.loads(output.content)
+            if not isinstance(data, dict):
+                return "retreat"
+            choice = str(cast(dict[str, Any], data).get("choice") or "retreat")
+        except Exception:
+            return "retreat"
+        if choice in ("safe_room", "descend", "retreat") or choice.startswith("node:"):
+            return choice
+        return "retreat"
+
+    async def current_decision(self, activity_id: str) -> dict[str, Any] | None:
+        """读当前 checkpointer 里未决 interrupt 的决策载荷；无则 None。"""
+        config: RunnableConfig = {"configurable": {"thread_id": activity_id}}
+        snapshot = await self._graph.aget_state(config)
+        if not snapshot.interrupts:
+            return None
+        return cast(dict[str, Any], snapshot.interrupts[0].value)
+
     async def _search_nodes(self, topic: str, floor: int) -> list[FloorNode]:
         """本层真实搜索 → FloorNode 列表；搜不到返回空（交给 fill_dead_ends 补死路）。
 
@@ -488,6 +523,13 @@ _EXPLORATION_FINALIZE_SYSTEM = (
     "knowledge（数组，每项 {topic, content}，客观知识点）、"
     "strong_new_topics（数组，值得长期追的强烈新兴趣）、"
     "casual_new_topics（数组，一般好奇，不值得立长期欲望）。"
+)
+
+_EXPLORATION_AUTOPILOT_SYSTEM = (
+    "你是尼克斯的托管决策器。基于决策载荷（本层节点/精力/深度/种子话题），"
+    "选一个动作，按 JSON 输出 {choice}。"
+    "choice 只能是 node:0/node:1/node:2/safe_room/descend/retreat 之一。"
+    "精力低优先 safe_room，线索充分优先 descend，没头绪优先 retreat。"
 )
 
 

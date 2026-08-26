@@ -280,3 +280,20 @@ async def test_finalize_judges_won() -> None:
     assert p["result"]["outcome"] == "won"
     assert p["result"]["core_discovery"] != ""
     assert p["result"]["knowledge"][0]["topic"] == "退相干"
+
+
+# ---- 托管决策 pick_choice（Task 8） ----
+
+_CHOICE_JSON = json.dumps({"choice": "retreat"})
+
+
+async def test_pick_choice_returns_valid_action() -> None:
+    exploration = Exploration(
+        cast(LlmClient, _FakeLlm(_CHOICE_JSON)),
+        cast(Evaluator, _FakeEvaluator()),
+        cast(ToolRegistry, _WebTools()),
+        cast(EventBus, _FakeBus()),
+        ExplorationConfig(web_enabled=True),
+    )
+    choice = await exploration.pick_choice({"kind": "choose", "nodes": []}, "c1")
+    assert choice == "retreat"

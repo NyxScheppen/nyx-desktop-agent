@@ -13,7 +13,7 @@ import { useMemoryStore } from "../src/stores/memoryStore";
 import { useNarrativeStore } from "../src/stores/narrativeStore";
 import { useReadingNotesStore } from "../src/stores/readingNotesStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
-import type { BackendEvent, CurrentState, ExplorationNode } from "../src/types/api";
+import type { BackendEvent, CurrentState, ExplorationDecision } from "../src/types/api";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
@@ -732,40 +732,92 @@ describe("announceStore", () => {
 
 describe("explorationStore", () => {
   beforeEach(() => {
-    useExplorationStore.setState({ wishlist: [], liveNodes: [], activityId: null });
+    useExplorationStore.setState({
+      decision: null, activityId: null, autopilot: false,
+      choosing: false, error: null, history: [],
+    });
   });
 
-  it("addWish / removeWish 心愿单增删", () => {
-    useExplorationStore.getState().addWish("深海鱼");
-    useExplorationStore.getState().addWish("发光生物");
-    expect(useExplorationStore.getState().wishlist).toEqual(["深海鱼", "发光生物"]);
+  const decision: ExplorationDecision = {
+    kind: "choose",
+    floor: 1,
+    energy: 94,
+    focus: "量子",
+    nodes: [
+      { name: "维基·退相干", url: "", kind: "real", snippet: "…", may_encounter: false },
+      { name: "本地·无结果", url: "", kind: "dead_end", snippet: "", may_encounter: false },
+    ],
+  };
 
-    useExplorationStore.getState().removeWish("深海鱼");
-    expect(useExplorationStore.getState().wishlist).toEqual(["发光生物"]);
-  });
+  it("onStep：同 activity 更新 decision，异 activity 清 history", () => {
+    useExplorationStore.getState().onStep({
+      event: "exploration_step", event_id: "s1", correlation_id: "a1",
+      activity_id: "a1", decision,
+    });
+    expect(useExplorationStore.getState().decision).toEqual(decision);
 
-  it("onStep：同 activity 追加，异 activity 重置", () => {
-    const n1: ExplorationNode = { name: "搜索：深海鱼", url: "", kind: "search" };
-    const n2: ExplorationNode = { name: "新闻", url: "https://e.com", kind: "web" };
-    useExplorationStore.getState().onStep({ event: "exploration_step", event_id: "s1", correlation_id: "a1", activity_id: "a1", node: n1 });
-    useExplorationStore.getState().onStep({ event: "exploration_step", event_id: "s2", correlation_id: "a1", activity_id: "a1", node: n2 });
-    expect(useExplorationStore.getState().liveNodes).toEqual([n1, n2]);
-
-    useExplorationStore.getState().onStep({ event: "exploration_step", event_id: "s3", correlation_id: "a2", activity_id: "a2", node: n1 });
-    expect(useExplorationStore.getState().liveNodes).toEqual([n1]);
+    useExplorationStore.getState().onStep({
+      event: "exploration_step", event_id: "s2", correlation_id: "a2",
+      activity_id: "a2", decision,
+    });
     expect(useExplorationStore.getState().activityId).toBe("a2");
   });
 
-  it("start：POST /api/explore 后清空 liveNodes", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ activity_id: "exp-9" }));
+  it("choose：node:0 记录足迹 + POST /api/explore/choose", async () => {
+    useExplorationStore.setState({ decision, activityId: "a1" });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ kind: "choose" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useExplorationStore.getState().choose("node:0");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/explore/choose");
+    expect(JSON.parse(init.body)).toEqual({ activity_id: "a1", choice: "node:0" });
+    expect(useExplorationStore.getState().history[0]).toMatchObject({ floor: 1, name: "维基·退相干" });
+  });
+
+  it("choose：无 decision 不发起 POST", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useExplorationStore.getState().choose("node:0");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("start：POST /api/explore 后复位 decision/history/autopilot", async () => {
+    useExplorationStore.setState({
+      decision, activityId: "a1",
+      history: [{ floor: 1, name: "x", kind: "real" }],
+    });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ activity_id: "e1" }));
     vi.stubGlobal("fetch", fetchMock);
 
     await useExplorationStore.getState().start();
 
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/explore");
-    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
-    expect(useExplorationStore.getState().activityId).toBe("exp-9");
-    expect(useExplorationStore.getState().liveNodes).toEqual([]);
+    expect(useExplorationStore.getState().activityId).toBe("e1");
+    expect(useExplorationStore.getState().decision).toBeNull();
+    expect(useExplorationStore.getState().history).toEqual([]);
+  });
+
+  it("toggleAutopilot：POST /api/explore/autopilot + 本地镜像", async () => {
+    useExplorationStore.setState({ activityId: "a1" });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ activity_id: "a1", autopilot: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useExplorationStore.getState().toggleAutopilot(true);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/explore/autopilot");
+    expect(JSON.parse(init.body)).toEqual({ activity_id: "a1", on: true });
+    expect(useExplorationStore.getState().autopilot).toBe(true);
+  });
+
+  it("onActivityEnd：匹配 id 清 decision/autopilot", () => {
+    useExplorationStore.setState({ decision, activityId: "a1", autopilot: true });
+    useExplorationStore.getState().onActivityEnd("a1");
+    expect(useExplorationStore.getState().decision).toBeNull();
+    expect(useExplorationStore.getState().autopilot).toBe(false);
   });
 });
 

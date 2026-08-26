@@ -101,4 +101,5 @@ export const ENCOUNTER_KIND_LABELS: Record<EncounterKind, string> = {
   desire_chat: "欲望搭话",
   random_event: "随机事件",
   growth_moment: "成长时刻",
+  rooted: "有根遭遇",
 };

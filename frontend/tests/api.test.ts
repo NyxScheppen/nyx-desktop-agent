@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addAnnotation,
   chooseEncounter,
+  chooseExploration,
   deleteAnnotation,
   deleteReadingNote,
   exportMemories,
@@ -22,6 +23,7 @@ import {
   postExplore,
   postObserve,
   searchMemories,
+  setExplorationAutopilot,
   uploadFile,
 } from "../src/api/client";
 
@@ -430,5 +432,29 @@ describe("api/client", () => {
     const [url] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/encounter/current");
     expect(res?.encounter_id).toBe("enc1");
+  });
+
+  it("chooseExploration：POST /api/explore/choose body {activity_id, choice}", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ kind: "choose", floor: 1 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await chooseExploration("a1", "node:0");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/explore/choose");
+    expect(init).toMatchObject({ method: "POST" });
+    expect(JSON.parse(init.body)).toEqual({ activity_id: "a1", choice: "node:0" });
+  });
+
+  it("setExplorationAutopilot：POST /api/explore/autopilot body {activity_id, on}", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ activity_id: "a1", autopilot: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await setExplorationAutopilot("a1", true);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/explore/autopilot");
+    expect(JSON.parse(init.body)).toEqual({ activity_id: "a1", on: true });
+    expect(res).toEqual({ activity_id: "a1", autopilot: true });
   });
 });

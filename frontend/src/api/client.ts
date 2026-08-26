@@ -87,6 +87,31 @@ export async function postExplore(
   });
 }
 
+export async function chooseExploration(
+  activityId: string,
+  choice: string,
+): Promise<unknown> {
+  return request<unknown>(`${BASE_URL}/api/explore/choose`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ activity_id: activityId, choice }),
+  });
+}
+
+export async function setExplorationAutopilot(
+  activityId: string,
+  on: boolean,
+): Promise<{ activity_id: string; autopilot: boolean }> {
+  return request<{ activity_id: string; autopilot: boolean }>(
+    `${BASE_URL}/api/explore/autopilot`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ activity_id: activityId, on }),
+    },
+  );
+}
+
 export async function getMemories(
   tag?: string,
   type?: MemoryType,

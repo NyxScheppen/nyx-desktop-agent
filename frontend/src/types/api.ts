@@ -102,18 +102,29 @@ export type ReflectionDoneEvent = SseBase & {
   story_is_new: boolean;
 };
 
-/** 探索地图节点：search = 搜索动作（url 空），web = 访问的网页。 */
-export type ExplorationNode = {
+/** 探索楼层节点（逐层地牢）：真实节点 / 死路 / 安全房。 */
+export type FloorNode = {
   name: string;
   url: string;
-  kind: "search" | "web";
+  kind: "real" | "dead_end" | "safe_room";
+  snippet: string;
+  may_encounter: boolean;
 };
 
-/** 探索实时进度帧（exploration_step）：探索链每访问一个节点推一次。 */
+/** 逐层地牢决策载荷（exploration_step 推送）：本层节点 + 精力 + 深度 + 目标。 */
+export type ExplorationDecision = {
+  kind: "choose";
+  floor: number;
+  energy: number;
+  focus: string;
+  nodes: FloorNode[];
+};
+
+/** 探索实时进度帧（exploration_step）：每个决策点推一次决策载荷。 */
 export type ExplorationStepEvent = SseBase & {
   event: "exploration_step";
   activity_id: string;
-  node: ExplorationNode;
+  decision: ExplorationDecision;
 };
 
 /** 未消费的 12 类：溯源面板落地前不读字段，payload 保持宽松。 */
@@ -133,7 +144,7 @@ type OpaqueEventType =
 type OpaqueEvent = SseBase & { event: OpaqueEventType } & Record<string, unknown>;
 
 // ---- 遭遇（19-encounter）----
-export type EncounterKind = "desire_chat" | "random_event" | "growth_moment";
+export type EncounterKind = "desire_chat" | "random_event" | "growth_moment" | "rooted";
 
 /** 遭遇选项（前端只收 {index, text}；tone 被后端 _start_content 剥掉，前端不消费）。 */
 export type EncounterOption = { index: number; text: string };

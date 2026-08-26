@@ -57,4 +57,8 @@ describe("ENCOUNTER_KIND_LABELS", () => {
     expect(ENCOUNTER_KIND_LABELS.random_event).toBe("随机事件");
     expect(ENCOUNTER_KIND_LABELS.growth_moment).toBe("成长时刻");
   });
+
+  it("rooted 有根遭遇", () => {
+    expect(ENCOUNTER_KIND_LABELS.rooted).toBe("有根遭遇");
+  });
 });

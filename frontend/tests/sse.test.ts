@@ -13,7 +13,7 @@ import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
 import { useNarrativeStore } from "../src/stores/narrativeStore";
 import { isEmotionCategory } from "../src/types/api";
-import type { ActivitySnapshot, CurrentState } from "../src/types/api";
+import type { ActivitySnapshot, CurrentState, ExplorationDecision } from "../src/types/api";
 
 // —— fake EventSource（jsdom 无原生实现，需 stub）——
 class FakeEventSource {
@@ -130,7 +130,10 @@ describe("dispatchEvent", () => {
     useMemoryStore.setState({ data: null, error: null });
     useNarrativeStore.setState({ data: null, error: null, highlightedStory: null });
     useAnnounceStore.setState({ items: [] });
-    useExplorationStore.setState({ wishlist: [], liveNodes: [], activityId: null });
+    useExplorationStore.setState({
+      decision: null, activityId: null, autopilot: false,
+      choosing: false, error: null, history: [],
+    });
     useEncounterStore.setState({ current: null, choosing: false, error: null });
   });
 
@@ -313,18 +316,25 @@ describe("dispatchEvent", () => {
     });
   });
 
-  it("exploration_step → explorationStore.onStep（点亮地图节点）", () => {
+  it("exploration_step → explorationStore.onStep（推送决策载荷）", () => {
+    const decision: ExplorationDecision = {
+      kind: "choose",
+      floor: 1,
+      energy: 94,
+      focus: "量子",
+      nodes: [
+        { name: "新闻", url: "https://example.com", kind: "real", snippet: "", may_encounter: false },
+      ],
+    };
     dispatchEvent({
       event: "exploration_step",
       event_id: "s1",
       correlation_id: "a1",
       activity_id: "a1",
-      node: { name: "新闻", url: "https://example.com", kind: "web" },
+      decision,
     });
 
-    expect(useExplorationStore.getState().liveNodes).toEqual([
-      { name: "新闻", url: "https://example.com", kind: "web" },
-    ]);
+    expect(useExplorationStore.getState().decision).toEqual(decision);
     expect(useExplorationStore.getState().activityId).toBe("a1");
   });
 

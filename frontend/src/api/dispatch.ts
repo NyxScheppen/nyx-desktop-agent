@@ -53,6 +53,9 @@ export function dispatchEvent(e: SseEvent): void {
       useActivityStore.getState().refresh();
       return;
     case "activity_end": {
+      if (typeof e.activity_id === "string") {
+        useExplorationStore.getState().onActivityEnd(e.activity_id);
+      }
       // 完成后主动冒一句：refresh 重拉快照后，按 activity_id 找到刚完成的活动，
       // 有产出就 announce("activity", …)（activityAnnouncement 见 lib/activityResult）。
       void useActivityStore.getState().refresh().then(() => {

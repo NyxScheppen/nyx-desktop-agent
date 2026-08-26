@@ -487,6 +487,7 @@
 | `test_exploration_run_web` | 功能正确 | `web_enabled=True` → 图含 search_web、`web_search` 被调用（`_route` 可达） |
 | `test_exploration_plan_non_dict_raises` | 边界鲁棒 | 规划 JSON 顶层非 dict（数组）→ `ValueError`（fail-fast） |
 | `test_exploration_run_returns_nodes_and_publishes_steps` | 功能正确 | `run` 返回 `nodes` 非空、每节点对应一条 `EXPLORATION_STEP`（`content.activity_id`/`node` 与首节点一致） |
+| `test_exploration_never_reads_focus_as_file` | 回归保护 | read 死节点曾把探索主题当文件路径 read → `FileNotFoundError` 崩整个活动；移除后链上仅「搜索 + 写笔记」，`file_io` 只 write 不 read |
 | `test_search_web_falls_back_to_local` | 功能正确 | `web_search` 空 → 兜底 `local_search`，`findings` 含「本地兜底结果」 |
 | `test_classify_presence_online` | 功能正确 | 键盘/鼠标活跃 → online |
 | `test_classify_presence_busy` | 功能正确 | 无输入 + 有窗口标题 → busy |

@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "PyYAML>=6.0",
     "aiosqlite>=0.20.0",
-    "duckduckgo_search==8.1.1",
+    "ddgs==9.15.0",
     "fastapi==0.115.6",
     "httpx==0.28.1",
     "langchain-core==1.5.5",

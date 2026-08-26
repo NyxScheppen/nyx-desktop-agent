@@ -184,6 +184,30 @@ async def test_exploration_run_returns_nodes_and_publishes_steps() -> None:
     assert steps[0].content["node"] == result["nodes"][0]
 
 
+class _CrashOnReadTools(_FakeTools):
+    """file_io 的 read 动作抛 FileNotFoundError，复现旧 bug（主题被当文件路径读）。"""
+
+    async def call(self, name: str, args: dict[str, Any]) -> Any:
+        self.calls.append((name, args))
+        if name == "file_io" and args.get("action") == "read":
+            raise FileNotFoundError(str(args.get("path")))
+        if name in ("local_search", "web_search"):
+            return ["一条检索结果"]
+        return "文件内容"
+
+
+async def test_exploration_never_reads_focus_as_file() -> None:
+    # 回归：read 死节点曾把探索主题当文件路径 read → FileNotFoundError 崩整个活动。
+    # 移除后链上只剩搜索 + 写笔记，file_io 仅 write 不 read。
+    tools = _CrashOnReadTools()
+    expl = _make_exploration(_FakeLlm(), _FakeEvaluator(), tools, web_enabled=True)
+    result = await expl.run("纽约尼克斯队2024-2025赛季的战术变化", "a1", "corr-1")
+    assert set(result) == {"findings", "notes", "nodes"}
+    assert all(
+        c[0] != "file_io" or c[1].get("action") != "read" for c in tools.calls
+    )
+
+
 # ---- Exploration.pick_topic ----
 
 

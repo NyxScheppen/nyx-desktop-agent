@@ -1,6 +1,9 @@
+# pyright: reportUnknownVariableType=false
+# ddgs 的 DDGS 是懒加载代理（_DDGSProxy），pyright 只能推到 type[Unknown]，
+# 与本项目对无类型第三方库的处理一致（探索模块同款豁免）。
 import asyncio
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 from nyx.types import Tool
 

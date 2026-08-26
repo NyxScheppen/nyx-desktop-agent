@@ -619,18 +619,19 @@ async def build_app_context(config: Config) -> _App:
     canon = _load_canon(prompt_dir)
     ask = _load_ask(prompt_dir)
 
+    encounter = EncounterFacade(bus, llm, evaluator, _get_state, canon)
+
     activity = ActivityFacade(
         activity_store, material_store, bus, llm, evaluator, tools, desire,
         memory, reading_notes, _get_state, _reflect, _get_observation,
         config.activity, config.exploration, canon,
+        on_rooted_encounter=encounter.start_rooted,
     )
     inner_life = InnerLifeFacade(
         inner_life_store, activity, desire, memory, bus, llm, evaluator, config,
     )
     state_holder.append(inner_life.get_state)
     reflect_holder.append(inner_life.reflect)
-
-    encounter = EncounterFacade(bus, llm, evaluator, _get_state, canon)
 
     await _seed_inner_life(inner_life_store)
     await _seed_desire(desire_store)

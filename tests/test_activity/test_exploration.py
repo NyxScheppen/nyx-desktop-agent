@@ -8,9 +8,7 @@ from nyx.activity.exploration import (
     _KIND_DEAD_END,
     _KIND_REAL,
     _KIND_SAFE_ROOM,
-    _MAX_STEPS,
     Exploration,
-    ExplorationState,
     FloorNode,
     descent_cost,
     determine_outcome,
@@ -21,7 +19,6 @@ from nyx.activity.exploration import (
     should_explore,
 )
 from nyx.config import ExplorationConfig
-from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient, LlmMessage
@@ -96,18 +93,6 @@ class _WebTools:
         return "其他"
 
 
-class _EmptyWebTools(_WebTools):
-    """web_search 返回空 → 触发本地兜底（local_search 返回非 dict 的 str 结果）。"""
-
-    async def call(self, name: str, args: dict[str, Any]) -> Any:
-        self.calls.append((name, args))
-        if name == "web_search":
-            return []
-        if name == "local_search":
-            return ["本地兜底结果"]
-        return "其他"
-
-
 class _FakeBus:
     def __init__(self) -> None:
         self.published: list[Any] = []
@@ -145,79 +130,6 @@ def test_should_explore_ok() -> None:
     assert should_explore(0.0, 1, 20_000.0) is True
 
 
-# ---- Exploration.run ----
-
-
-async def test_exploration_run_no_web() -> None:
-    llm = _FakeLlm()
-    evaluator = _FakeEvaluator()
-    tools = _FakeTools()
-    expl = _make_exploration(llm, evaluator, tools)
-    result = await expl.run("骑士团", "a1", "corr-1")
-    assert set(result) == {"findings", "notes", "nodes"}
-    assert llm.calls == ["exploration_plan"] * _MAX_STEPS
-    assert llm.correlation_ids == ["corr-1"] * _MAX_STEPS
-    assert len(evaluator.evaluated) == _MAX_STEPS
-    assert all(c[0] != "web_search" for c in tools.calls)
-
-
-async def test_exploration_run_web() -> None:
-    llm = _FakeLlm()
-    evaluator = _FakeEvaluator()
-    tools = _FakeTools()
-    expl = _make_exploration(llm, evaluator, tools, web_enabled=True)
-    result = await expl.run("骑士团", "a1", "corr-1")
-    assert set(result) == {"findings", "notes", "nodes"}
-    assert any(c[0] == "web_search" for c in tools.calls)
-
-
-async def test_exploration_plan_non_dict_raises() -> None:
-    llm = _FakeLlm(content=json.dumps([1, 2, 3]))
-    expl = _make_exploration(llm, _FakeEvaluator(), _FakeTools())
-    with pytest.raises(ValueError):
-        await expl.run("骑士团", "a1", "corr-1")
-
-
-async def test_exploration_run_returns_nodes_and_publishes_steps() -> None:
-    llm = _FakeLlm()
-    evaluator = _FakeEvaluator()
-    tools = _FakeTools()
-    bus = _FakeBus()
-    expl = _make_exploration(llm, evaluator, tools, bus=bus)
-    result = await expl.run("骑士团", "a1", "corr-1")
-    # nodes 非空；search 节点在前；每节点对应一条 EXPLORATION_STEP
-    assert result["nodes"]
-    assert all(n["kind"] in ("search", "web") for n in result["nodes"])
-    steps = [e for e in bus.published if e.type is EventType.EXPLORATION_STEP]
-    assert len(steps) == len(result["nodes"])
-    assert steps[0].content["activity_id"] == "a1"
-    assert steps[0].content["node"] == result["nodes"][0]
-
-
-class _CrashOnReadTools(_FakeTools):
-    """file_io 的 read 动作抛 FileNotFoundError，复现旧 bug（主题被当文件路径读）。"""
-
-    async def call(self, name: str, args: dict[str, Any]) -> Any:
-        self.calls.append((name, args))
-        if name == "file_io" and args.get("action") == "read":
-            raise FileNotFoundError(str(args.get("path")))
-        if name in ("local_search", "web_search"):
-            return ["一条检索结果"]
-        return "文件内容"
-
-
-async def test_exploration_never_reads_focus_as_file() -> None:
-    # 回归：read 死节点曾把探索主题当文件路径 read → FileNotFoundError 崩整个活动。
-    # 移除后链上只剩搜索 + 写笔记，file_io 仅 write 不 read。
-    tools = _CrashOnReadTools()
-    expl = _make_exploration(_FakeLlm(), _FakeEvaluator(), tools, web_enabled=True)
-    result = await expl.run("纽约尼克斯队2024-2025赛季的战术变化", "a1", "corr-1")
-    assert set(result) == {"findings", "notes", "nodes"}
-    assert all(
-        c[0] != "file_io" or c[1].get("action") != "read" for c in tools.calls
-    )
-
-
 # ---- Exploration.pick_topic ----
 
 
@@ -241,9 +153,6 @@ async def test_pick_topic_fallback() -> None:
     assert await expl.pick_topic("corr-1") == "有趣的新鲜事"
 
 
-# ---- _search_web：主动下载资料 ----
-
-
 def _web_exploration(tools: _WebTools) -> Exploration:
     return Exploration(
         cast(LlmClient, _FakeLlm()),
@@ -252,40 +161,6 @@ def _web_exploration(tools: _WebTools) -> Exploration:
         cast(EventBus, _FakeBus()),
         ExplorationConfig(web_enabled=True),
     )
-
-
-def _web_state() -> ExplorationState:
-    return {
-        "seed": "x", "focus": "骑士", "findings": [], "notes": [],
-        "nodes": [], "step": 0, "done": False,
-        "activity_id": "a1", "correlation_id": "c",
-    }
-
-
-async def test_search_web_downloads_first_result() -> None:
-    tools = _WebTools()
-    expl = _web_exploration(tools)
-    state = _web_state()
-    await expl._search_web(state)
-    assert ("web_fetch", {"url": "https://example.com/a"}) in tools.calls
-    assert any("已下载资料" in f for f in state["findings"])
-
-
-async def test_search_web_no_crash_when_download_fails() -> None:
-    tools = _WebTools(fetch_raises=True)
-    expl = _web_exploration(tools)
-    state = _web_state()
-    await expl._search_web(state)  # 下载失败静默吞掉，不崩
-    assert len(state["findings"]) == 1  # 只剩 web_search 结果串，无「已下载资料」
-
-
-async def test_search_web_falls_back_to_local() -> None:
-    tools = _EmptyWebTools()
-    expl = _web_exploration(tools)
-    state = _web_state()
-    await expl._search_web(state)
-    assert ("local_search", {"query": "骑士"}) in tools.calls
-    assert any("本地兜底结果" in f for f in state["findings"])
 
 
 # ---- 逐层地牢：纯函数 ----
@@ -349,3 +224,31 @@ async def test_search_nodes_deep_floor_marks_encounter() -> None:
     expl = _web_exploration(_WebTools())
     nodes = await expl._search_nodes("量子", 3)
     assert nodes[0]["may_encounter"] is True
+
+
+# ---- 逐层 run 机制：interrupt / resume ----
+
+async def test_start_interrupts_at_first_decision() -> None:
+    expl = _web_exploration(_WebTools())
+    p = await expl.start(None, "量子", 100.0, "a1", "c1")
+    assert p["pending"] is True
+    assert p["decision"]["kind"] == "choose"
+    assert len(p["decision"]["nodes"]) == 3
+
+
+async def test_resume_choice_visits_node_and_interrupts_again() -> None:
+    expl = _web_exploration(_WebTools())
+    await expl.start(None, "量子", 100.0, "a1", "c1")
+    p = await expl.resume("a1", "node:0")
+    assert p["pending"] is True
+    # 进了一个真实节点后精力下降（100 - 6 = 94）
+    assert p["state"]["energy"] == pytest.approx(94.0)
+
+
+async def test_resume_retreat_finalizes() -> None:
+    expl = _web_exploration(_WebTools())
+    await expl.start(None, "量子", 100.0, "a1", "c1")
+    p = await expl.resume("a1", "retreat")
+    assert p["pending"] is False
+    assert p["result"]["type"] == "free_exploration"
+    assert p["result"]["outcome"] == "retreated"

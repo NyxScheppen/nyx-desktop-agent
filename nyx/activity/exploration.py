@@ -1,12 +1,14 @@
 # pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false
 # langgraph 类型标注松散：add_node/compile/ainvoke 返回部分未知、graph.state 缺 stub
 import json
-from collections.abc import Hashable
 from typing import Any, TypedDict, cast
 from urllib.parse import urlparse
 
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command, interrupt
 
 from nyx.config import ExplorationConfig
 from nyx.enums import EventType
@@ -15,8 +17,6 @@ from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_HOUR, internal_event
 from nyx.llm.client import LlmClient
 from nyx.tools.registry import ToolRegistry
-
-_MAX_STEPS = 8                    # 探索链最大步数（可推翻）
 
 # ---- 逐层地牢常量（decision：先常量，不建配置项；调参需推翻 _MAX_STEPS 同例） ----
 _NODE_SLOTS = 3            # 每层真实/死路节点槽数（安全房另算，不占槽）
@@ -113,22 +113,55 @@ def parse_choice(choice: str, state: dict[str, Any]) -> tuple[str, int | None]:
     return "retreat", None
 
 
-class ExplorationNode(TypedDict):
-    name: str
-    url: str
-    kind: str  # "search"（搜索动作，url 空）| "web"（访问的网页）
-
-
 class ExplorationState(TypedDict):
-    seed: str
-    focus: str
+    seed_desire_id: str | None
+    seed_topic: str
+    focus: str                       # 本层主题（初始=seed_topic，下楼时更新为线索）
+    floor: int
+    energy: float                    # run 内燃料（0-100）
+    autopilot: bool
+    current_nodes: list[FloorNode]   # 本层 3 槽（真实/死路；安全房另算）
+    visited: list[dict[str, Any]]    # 已走过楼层/节点（前端地图）
     findings: list[str]
-    notes: list[str]
-    nodes: list[ExplorationNode]
-    step: int
-    done: bool
+    knowledge: list[dict[str, str]]
+    new_topics: list[str]            # 一般好奇（只留 run 记忆）
+    strong_new_topics: list[str]     # 强烈新兴趣（→ add_long_term）
+    encounters: list[dict[str, Any]]
+    loot: list[dict[str, str]]
+    npcs: list[dict[str, str]]
+    summary: str
+    core_discovery: str
+    outcome: str
+    retreated: bool
+    _route: str                      # decide 解析出的路由（内部）
+    _choice: int | None              # 选中节点索引（内部）
+    _last_node: FloorNode | None     # 最近进入的节点（内部，facade 读险节点）
     activity_id: str
     correlation_id: str
+
+
+class ExplorationProgress(TypedDict):
+    pending: bool                  # True=还有决策点，False=已到终点
+    decision: dict[str, Any]       # pending 时的决策载荷
+    result: dict[str, Any]         # 非 pending 时的 run 结果（4.1 形状）
+    state: dict[str, Any]          # 当前状态快照（facade 读 _last_node）
+
+
+def assemble_result(state: ExplorationState) -> dict[str, Any]:
+    """run 状态 → 4.1 结果形状（纯函数）。"""
+    return {
+        "type": "free_exploration",
+        "seed": {"desire_id": state["seed_desire_id"], "topic": state["seed_topic"]},
+        "outcome": state["outcome"],
+        "floors_cleared": state["floor"] - 1,
+        "summary": state["summary"],
+        "core_discovery": state["core_discovery"],
+        "knowledge": state["knowledge"],
+        "new_topics": state["new_topics"],
+        "encounters": state["encounters"],
+        "loot": state["loot"],
+        "npcs": state["npcs"],
+    }
 
 
 def should_explore(last_explored_at: float, rate_limit_hours: int, now: float) -> bool:
@@ -142,11 +175,9 @@ def should_explore(last_explored_at: float, rate_limit_hours: int, now: float) -
 
 
 class Exploration:
-    """跨域行为链（LangGraph）：好奇 → 搜索 → 写笔记（design §8.6）。
+    """自由探索：LangGraph 逐层地牢决策循环（interrupt/resume + checkpointer）。
 
-    「读」不单列节点：联网时 _search_web 内已用 web_fetch 下载正文入书库并触发读书
-    （design §8.6 主动下载），本地时 local_search 直接返回片段。
-    故链上只有搜索 + 写笔记。
+    每层搜节点 → 决策 → 进节点/下楼，循环至撤退或触底。
     """
 
     def __init__(
@@ -162,124 +193,189 @@ class Exploration:
         self._tools = tools
         self._bus = bus
         self._web_enabled = exploration_config.web_enabled
-        # 联网为主通道：web 开启时 search_web 是主搜索动作，
-        # search_local 作兜底（进 _search_web 内）
-        if self._web_enabled:
-            self._actions = ["search_web", "write_note"]
-        else:
-            self._actions = ["search_local", "write_note"]
+        self._checkpointer = InMemorySaver()
         self._graph = self._build_graph()
 
     def _build_graph(self) -> CompiledStateGraph[ExplorationState]:
         g = StateGraph(ExplorationState)
-        g.add_node("plan_next", self._plan_next)
-        g.add_node("search_local", self._search_local)
-        g.add_node("write_note", self._write_note)
+        g.add_node("enter_floor", self._enter_floor)
+        g.add_node("decide", self._decide)
+        g.add_node("visit_node", self._visit_node)
+        g.add_node("safe_room", self._safe_room)
+        g.add_node("descend", self._descend)
         g.add_node("finalize", self._finalize)
-        if self._web_enabled:
-            g.add_node("search_web", self._search_web)
-        g.add_edge(START, "plan_next")
-        path_map: dict[Hashable, str] = {}
-        for a in self._actions:
-            path_map[a] = a
-        path_map["finalize"] = "finalize"
-        g.add_conditional_edges("plan_next", self._route, path_map)
-        for a in self._actions:
-            g.add_edge(a, "plan_next")
+        g.add_edge(START, "enter_floor")
+        g.add_edge("enter_floor", "decide")
+        g.add_conditional_edges(
+            "decide",
+            self._route_from_decide,
+            {"visit_node": "visit_node", "safe_room": "safe_room",
+             "descend": "descend", "finalize": "finalize"},
+        )
+        g.add_edge("visit_node", "decide")
+        g.add_edge("safe_room", "decide")
+        g.add_edge("descend", "enter_floor")
         g.add_edge("finalize", END)
-        return g.compile()
+        return g.compile(checkpointer=self._checkpointer)
 
-    async def run(
-        self, seed: str, activity_id: str, correlation_id: str
-    ) -> dict[str, Any]:
+    # ---- 逐层 run 驱动 ----
+
+    async def start(
+        self,
+        seed_desire_id: str | None,
+        seed_topic: str,
+        energy: float,
+        activity_id: str,
+        correlation_id: str,
+    ) -> ExplorationProgress:
         initial: ExplorationState = {
-            "seed": seed, "focus": seed, "findings": [], "notes": [],
-            "nodes": [], "step": 0, "done": False,
-            "activity_id": activity_id, "correlation_id": correlation_id,
+            "seed_desire_id": seed_desire_id,
+            "seed_topic": seed_topic,
+            "focus": seed_topic,
+            "floor": 1,
+            "energy": min(_MAX_ENERGY, max(0.0, energy)),
+            "autopilot": False,
+            "current_nodes": [],
+            "visited": [],
+            "findings": [],
+            "knowledge": [],
+            "new_topics": [],
+            "strong_new_topics": [],
+            "encounters": [],
+            "loot": [],
+            "npcs": [],
+            "summary": "",
+            "core_discovery": "",
+            "outcome": "",
+            "retreated": False,
+            "_route": "",
+            "_choice": None,
+            "_last_node": None,
+            "activity_id": activity_id,
+            "correlation_id": correlation_id,
         }
-        result = await self._graph.ainvoke(initial)
+        config: RunnableConfig = {"configurable": {"thread_id": activity_id}}
+        out = await self._graph.ainvoke(initial, config)
+        progress = self._to_progress(out)
+        await self._broadcast(progress)
+        return progress
+
+    async def resume(self, activity_id: str, choice: str) -> ExplorationProgress:
+        config: RunnableConfig = {"configurable": {"thread_id": activity_id}}
+        out = await self._graph.ainvoke(Command(resume=choice), config)
+        progress = self._to_progress(out)
+        await self._broadcast(progress)
+        return progress
+
+    def _to_progress(self, out: dict[str, Any]) -> ExplorationProgress:
+        if "__interrupt__" in out:
+            interrupts = out["__interrupt__"]
+            payload = cast(dict[str, Any], interrupts[0].value)
+            state = {k: v for k, v in out.items() if k != "__interrupt__"}
+            return {"pending": True, "decision": payload, "result": {}, "state": state}
+        state = cast(ExplorationState, out)
         return {
-            "findings": result["findings"],
-            "notes": result["notes"],
-            "nodes": result["nodes"],
+            "pending": False,
+            "decision": {},
+            "result": assemble_result(state),
+            "state": cast(dict[str, Any], state),
         }
 
-    async def _plan_next(self, state: ExplorationState) -> ExplorationState:
-        # MVP：LLM 判定 focus + done（json_mode）；step 达上限强制 done
-        if state["step"] >= _MAX_STEPS:
-            state["done"] = True
+    async def _broadcast(self, progress: ExplorationProgress) -> None:
+        if not progress["pending"]:
+            return
+        await self._bus.publish(internal_event(
+            EventType.EXPLORATION_STEP,
+            {
+                "activity_id": progress["state"]["activity_id"],
+                "decision": progress["decision"],
+            },
+            str(progress["state"]["correlation_id"]),
+        ))
+
+    # ---- 图节点 ----
+
+    async def _enter_floor(self, state: ExplorationState) -> ExplorationState:
+        nodes = await self._search_nodes(state["focus"], state["floor"])
+        state["current_nodes"] = fill_dead_ends(nodes)
+        return state
+
+    async def _decide(self, state: ExplorationState) -> ExplorationState:
+        if state["retreated"] or state["energy"] <= 0.0:
             return state
-        output = await self._llm.complete(
-            [
-                {"role": "system", "content": _EXPLORATION_PLAN_SYSTEM},
-                {
-                    "role": "user",
-                    "content": (
-                        f"focus={state['focus']} findings={state['findings']} "
-                        f"notes={state['notes']}"
-                    ),
-                },
-            ],
-            module="activity",
-            output_type="exploration_plan",
-            correlation_id=state["correlation_id"],
-            json_mode=True,
-        )
-        await self._evaluator.evaluate(output)
-        plan = json.loads(output.content)
-        if not isinstance(plan, dict):
-            raise ValueError(f"探索规划 JSON 应是对象，得到 {type(plan).__name__}")
-        plan = cast(dict[str, Any], plan)
-        state["focus"] = plan.get("focus", state["focus"])
-        state["done"] = bool(plan.get("done", False))
-        state["step"] = state["step"] + 1
+        payload = {
+            "kind": "choose",
+            "floor": state["floor"],
+            "energy": state["energy"],
+            "focus": state["focus"],
+            "nodes": state["current_nodes"],
+        }
+        choice = cast(str, interrupt(payload))
+        route, idx = parse_choice(choice, cast(dict[str, Any], state))
+        if route == "retreat":
+            state["retreated"] = True
+        state["_route"] = route
+        state["_choice"] = idx
         return state
 
-    async def _search_local(self, state: ExplorationState) -> ExplorationState:
-        await self._record_node(
-            state, {"name": f"搜索：{state['focus']}", "url": "", "kind": "search"}
-        )
-        res = await self._tools.call("local_search", {"query": state["focus"]})
-        state["findings"].extend(str(r) for r in res)
-        return state
+    def _route_from_decide(self, state: ExplorationState) -> str:
+        if state["retreated"] or state["energy"] <= 0.0:
+            return "finalize"
+        if state["_route"] == "descend" and state["floor"] >= _MAX_DEPTH:
+            return "finalize"  # 触底：不再下楼，交给 finalize 兜底判定
+        return {"visit": "visit_node", "safe_room": "safe_room",
+                "descend": "descend"}[state["_route"]]
 
-    async def _search_web(self, state: ExplorationState) -> ExplorationState:
-        focus = state["focus"]
-        await self._record_node(
-            state, {"name": f"搜索：{focus}", "url": "", "kind": "search"}
+    async def _visit_node(self, state: ExplorationState) -> ExplorationState:
+        idx = state["_choice"]
+        node = state["current_nodes"][idx] if idx is not None else None
+        if node is None:
+            return state
+        state["energy"] -= enter_cost(node)
+        state["visited"].append(
+            {"floor": state["floor"], "name": node["name"], "kind": node["kind"]}
         )
-        res = await self._tools.call("web_search", {"query": focus})
-        if not res:
-            # 联网失败/无结果 → 本地兜底（web_enabled 时 search_local 不再独立轮转）
-            res = await self._tools.call("local_search", {"query": focus})
-        state["findings"].extend(str(r) for r in res)
-        if res:
-            first = res[0]
-            if isinstance(first, dict) and first.get("url"):
-                first = cast(dict[str, Any], first)
-                url = first["url"]
-                name = first.get("title") or _domain(url)
-                await self._record_node(
-                    state, {"name": name, "url": url, "kind": "web"}
-                )
-                # 顺手下第一条正文入书库；失败静默不崩探索
+        if node["kind"] == _KIND_DEAD_END:
+            state["findings"].append(f"死路：{node['name']}（无收获）")
+        else:
+            content = node["snippet"]
+            if node["url"]:
                 try:
-                    fetched = await self._tools.call("web_fetch", {"url": url})
-                    state["findings"].append(f"已下载资料：{fetched}")
+                    content = str(
+                        await self._tools.call("web_fetch", {"url": node["url"]})
+                    )
                 except Exception:
-                    pass
+                    pass  # best-effort：下载正文失败不崩 run，snippet 兜底
+            state["findings"].append(f"{node['name']}：{content}")
+        state["_last_node"] = node
         return state
 
-    async def _write_note(self, state: ExplorationState) -> ExplorationState:
-        note = "\n".join(state["findings"][-3:])
-        await self._tools.call(
-            "file_io",
-            {"action": "write", "path": "exploration_note.md", "content": note},
+    async def _safe_room(self, state: ExplorationState) -> ExplorationState:
+        state["energy"] = restore_energy(state["energy"])
+        state["visited"].append(
+            {"floor": state["floor"], "name": "安全房", "kind": _KIND_SAFE_ROOM}
         )
-        state["notes"].append(note)
+        return state
+
+    async def _descend(self, state: ExplorationState) -> ExplorationState:
+        state["energy"] -= descent_cost(state["floor"])
+        # 追真实线索：取最近一条真实发现作下一层主题；无则沿用 focus 深挖
+        clue = next(
+            (f for f in reversed(state["findings"]) if not f.startswith("死路：")),
+            None,
+        )
+        if clue is not None:
+            state["focus"] = clue[-80:]
+        state["floor"] += 1
         return state
 
     async def _finalize(self, state: ExplorationState) -> ExplorationState:
+        # Task 4 补终局 LLM 判定；本 Task 先用空实现占位（outcome 走兜底撤退）
+        state["summary"] = state["seed_topic"]
+        state["core_discovery"] = ""
+        state["outcome"] = determine_outcome(
+            state["energy"], state["core_discovery"], state["retreated"]
+        )
         return state
 
     async def pick_topic(self, correlation_id: str) -> str:
@@ -341,31 +437,6 @@ class Exploration:
             "name": name, "url": url, "kind": _KIND_REAL,
             "snippet": snippet, "may_encounter": floor >= 3,
         }
-
-    async def _record_node(
-        self, state: ExplorationState, node: ExplorationNode
-    ) -> None:
-        """记一条探索节点并广播 EXPLORATION_STEP（前端地图实时点亮）。"""
-        state["nodes"].append(node)
-        await self._bus.publish(internal_event(
-            EventType.EXPLORATION_STEP,
-            {"activity_id": state["activity_id"], "node": dict(node)},
-            state["correlation_id"],
-        ))
-
-    def _route(self, state: ExplorationState) -> str:
-        if state["done"]:
-            return "finalize"
-        # MVP：确定性轮转（与 self._actions 对齐，2 步一轮），不靠 LLM 选具体动作。
-        # web 开启时 actions[0]=search_web 起始；web 关闭时 =search_local 起始。
-        # step 在 _plan_next 里先 +1，故 -1 对齐到 actions[0]。
-        return self._actions[(state["step"] - 1) % len(self._actions)]
-
-
-_EXPLORATION_PLAN_SYSTEM = (
-    "你是尼克斯的探索规划器。按 JSON 输出 {focus, done}，"
-    "决定下一步聚焦对象与是否结束。"
-)
 
 
 _EXPLORATION_TOPIC_SYSTEM = (

@@ -277,3 +277,20 @@ async def test_start_rooted_broadcasts_start() -> None:
         assert facade._current.kind is EncounterKind.ROOTED
     finally:
         await database.conn.close()
+
+
+async def test_start_rooted_guarded_when_encounter_in_progress() -> None:
+    """进行中的遭遇不被有根遭遇撞掉：_current 非空时 start_rooted 直接返回。"""
+    database = await db.connect(":memory:")
+    bus = EventBus(database)
+    facade = _make_facade(bus)
+    facade._current = _enc()  # 进行中的随机遭遇
+    started = _subscribe(bus, EventType.ENCOUNTER_START)
+    try:
+        async with _running(bus):
+            await facade.start_rooted("争议观点", "量子退相干", "a1")
+        assert facade._current is not None
+        assert facade._current.kind is EncounterKind.RANDOM_EVENT  # 未被替换
+        assert len(started) == 0  # 未新增 ENCOUNTER_START
+    finally:
+        await database.conn.close()

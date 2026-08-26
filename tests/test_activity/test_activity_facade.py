@@ -448,6 +448,12 @@ def test_goal_met() -> None:
     assert _goal_met({"action": "write"}, {"title": "t"}) is False
     assert _goal_met({"action": "observe"}, {"presence": "online"}) is True
     assert _goal_met({"action": "observe"}, {}) is False
+    assert _goal_met(
+        {"action": "read"}, {"type": "free_exploration", "outcome": "won"}
+    ) is True
+    assert _goal_met(
+        {"action": "read"}, {"type": "free_exploration", "outcome": "retreated"}
+    ) is False
 
 
 def test_sanitize_filename() -> None:
@@ -816,6 +822,35 @@ async def test_execute_failure_marks_suppressed() -> None:
         assert desire.mark_suppressed_calls == ["d1"]
         acts = await store.list_schedule(0.0)
         assert acts[0].status is ActivityStatus.INCOMPLETE
+    finally:
+        await database.conn.close()
+
+
+async def test_execute_free_exploration_failure_marks_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """探索启动失败并入 fail-fast：启动异常也标 INCOMPLETE + 释放欲望。"""
+    facade, store, bus, database = await _new_facade()
+    try:
+        async def boom(activity: Activity) -> None:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(facade, "_start_exploration_run", boom)
+        a = _activity(
+            "a1",
+            type_=ActivityType.FREE_EXPLORATION,
+            progress={"desire_id": "d1", "goal": None, "correlation_id": "d1"},
+        )
+        await store.insert(a)
+        async with _running(bus):
+            with pytest.raises(RuntimeError):
+                await facade._execute(a)
+        got = await store.get("a1")
+        assert got is not None
+        assert got.status is ActivityStatus.INCOMPLETE
+        assert got.ended_at is not None
+        desire = cast(_FakeDesire, facade._desire)
+        assert desire.mark_suppressed_calls == ["d1"]
     finally:
         await database.conn.close()
 
@@ -1693,6 +1728,41 @@ async def test_choose_exploration_retreat_completes(
         current = await _store.get(activity_id)
         assert current is not None
         assert current.status is ActivityStatus.COMPLETED
+    finally:
+        await database.conn.close()
+
+
+async def test_choose_exploration_disables_autopilot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """手动选 = 接管：choose_exploration 先以 (activity_id, False) 关托管再 resume。"""
+    facade, store, bus, database = await _new_facade()
+    try:
+        calls: list[tuple[str, bool]] = []
+
+        async def fake_autopilot(activity_id: str, on: bool) -> None:
+            calls.append((activity_id, on))
+
+        async def fake_resume(activity_id: str, choice: str) -> dict[str, Any]:
+            return {
+                "pending": True,
+                "decision": {"kind": "choose"},
+                "result": {},
+                "state": {"_last_node": None, "focus": "", "activity_id": activity_id},
+            }
+
+        monkeypatch.setattr(facade, "set_exploration_autopilot", fake_autopilot)
+        monkeypatch.setattr(facade._exploration, "resume", fake_resume)
+        await store.insert(
+            _activity(
+                "a1",
+                type_=ActivityType.FREE_EXPLORATION,
+                status=ActivityStatus.RUNNING,
+            )
+        )
+        async with _running(bus):
+            await facade.choose_exploration("a1", "node:0")
+        assert calls == [("a1", False)]
     finally:
         await database.conn.close()
 

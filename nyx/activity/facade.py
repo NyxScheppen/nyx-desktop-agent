@@ -86,6 +86,8 @@ def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | Non
     """
     if goal is None:
         return None
+    if result.get("type") == "free_exploration":
+        return result.get("outcome") == "won"
     action = goal.get("action")
     if action == "read":
         return bool(result.get("completed"))
@@ -494,6 +496,7 @@ class ActivityFacade:
             or current.status is not ActivityStatus.RUNNING
         ):
             raise RuntimeError("无进行中的探索")
+        await self.set_exploration_autopilot(activity_id, False)
         progress = await self._exploration.resume(activity_id, choice)
         if not progress["pending"]:
             current.progress["result"] = progress["result"]
@@ -724,10 +727,10 @@ class ActivityFacade:
                 _correlation_id(activity),
             )
         )
-        if activity.type is ActivityType.FREE_EXPLORATION:
-            await self._start_exploration_run(activity)
-            return
         try:
+            if activity.type is ActivityType.FREE_EXPLORATION:
+                await self._start_exploration_run(activity)
+                return
             result = await self._run_activity(activity)
         except Exception:
             # fail-fast：失败态落库后仍上抛（不吞异常），但活动不卡 RUNNING

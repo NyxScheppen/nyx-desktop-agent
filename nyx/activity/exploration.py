@@ -158,6 +158,7 @@ def assemble_result(state: ExplorationState) -> dict[str, Any]:
         "core_discovery": state["core_discovery"],
         "knowledge": state["knowledge"],
         "new_topics": state["new_topics"],
+        "strong_new_topics": state["strong_new_topics"],
         "encounters": state["encounters"],
         "loot": state["loot"],
         "npcs": state["npcs"],
@@ -351,6 +352,7 @@ class Exploration:
         return state
 
     async def _safe_room(self, state: ExplorationState) -> ExplorationState:
+        state["_last_node"] = None
         state["energy"] = restore_energy(state["energy"])
         state["visited"].append(
             {"floor": state["floor"], "name": "安全房", "kind": _KIND_SAFE_ROOM}
@@ -358,6 +360,7 @@ class Exploration:
         return state
 
     async def _descend(self, state: ExplorationState) -> ExplorationState:
+        state["_last_node"] = None
         state["energy"] -= descent_cost(state["floor"])
         # 追真实线索：取最近一条真实发现作下一层主题；无则沿用 focus 深挖
         clue = next(

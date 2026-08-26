@@ -144,6 +144,8 @@ class EncounterFacade:
 
         复用 _start 的生成/广播管线；context 塞真实 snippet+theme。
         """
+        if self._current is not None:
+            return
         state = await self._get_state()
         context = f"探索主题「{theme}」，刚读到一段真实内容：{snippet[:300]}"
         await self._start(

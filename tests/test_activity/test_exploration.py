@@ -9,7 +9,9 @@ from nyx.activity.exploration import (
     _KIND_REAL,
     _KIND_SAFE_ROOM,
     Exploration,
+    ExplorationState,
     FloorNode,
+    assemble_result,
     descent_cost,
     determine_outcome,
     enter_cost,
@@ -209,6 +211,62 @@ def test_parse_choice_routes():
     assert parse_choice("safe_room", state) == ("safe_room", None)
     assert parse_choice("retreat", state) == ("retreat", None)
     assert parse_choice("node:9", state) == ("retreat", None)
+
+
+def _exploration_state() -> ExplorationState:
+    """字段齐全的 ExplorationState 底稿（_last_node 默认 None，供单键覆盖测试）。"""
+    return {
+        "seed_desire_id": None,
+        "seed_topic": "量子",
+        "focus": "量子",
+        "floor": 1,
+        "energy": 50.0,
+        "autopilot": False,
+        "current_nodes": [],
+        "visited": [],
+        "findings": [],
+        "knowledge": [],
+        "new_topics": [],
+        "strong_new_topics": [],
+        "encounters": [],
+        "loot": [],
+        "npcs": [],
+        "summary": "",
+        "core_discovery": "",
+        "outcome": "",
+        "retreated": False,
+        "_route": "",
+        "_choice": None,
+        "_last_node": None,
+        "activity_id": "a1",
+        "correlation_id": "c1",
+    }
+
+
+def test_assemble_result_includes_strong_new_topics() -> None:
+    state = _exploration_state()
+    state["strong_new_topics"] = ["量子纠错"]
+    state["new_topics"] = ["退火算法"]
+    assert assemble_result(state)["strong_new_topics"] == ["量子纠错"]
+
+
+# ---- 逐层地牢：_safe_room/_descend 复位 _last_node（I1） ----
+
+
+async def test_safe_room_resets_last_node() -> None:
+    expl = _make_exploration(_FakeLlm(), _FakeEvaluator(), _FakeTools())
+    state = _exploration_state()
+    state["_last_node"] = _node(_KIND_REAL)
+    await expl._safe_room(state)
+    assert state["_last_node"] is None
+
+
+async def test_descend_resets_last_node() -> None:
+    expl = _make_exploration(_FakeLlm(), _FakeEvaluator(), _FakeTools())
+    state = _exploration_state()
+    state["_last_node"] = _node(_KIND_REAL)
+    await expl._descend(state)
+    assert state["_last_node"] is None
 
 
 # ---- 逐层地牢：_search_nodes 本层真实搜索 ----

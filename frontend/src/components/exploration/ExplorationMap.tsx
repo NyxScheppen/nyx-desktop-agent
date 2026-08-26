@@ -19,7 +19,8 @@ function history(): { node: ExplorationNode; findings: string[] }[] {
     });
 }
 
-export default function ExplorationMap({ onClose }: { onClose: () => void }) {
+// 探索地图（页内面板，替换书卷区）：历史足迹节点 + 实时节点 + 心愿单 + 「出门探索」发起。
+export default function ExplorationMap() {
   const liveNodes = useExplorationStore((s) => s.liveNodes);
   const wishlist = useExplorationStore((s) => s.wishlist);
   const addWish = useExplorationStore((s) => s.addWish);
@@ -36,13 +37,12 @@ export default function ExplorationMap({ onClose }: { onClose: () => void }) {
   const live = exploring ? liveNodes : [];
 
   return (
-    <aside className="exploration-map">
-      <header className="exploration-map-head">
-        <span>🗺️ 探索地图</span>
-        <button className="map-close" onClick={onClose}>✕</button>
+    <section className="side-panel">
+      <header className="side-panel__header">
+        <span className="side-panel__title">探索地图</span>
       </header>
 
-      <div className="exploration-map-body">
+      <div className="side-panel__body">
         <button
           className="map-go"
           onClick={() => {
@@ -99,6 +99,6 @@ export default function ExplorationMap({ onClose }: { onClose: () => void }) {
           ))}
         </div>
       )}
-    </aside>
+    </section>
   );
 }

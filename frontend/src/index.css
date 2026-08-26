@@ -1,6 +1,6 @@
 /* Nyx 前端样式：羊皮纸书卷风主题（06-game-shell §4）。
    摒弃粉渐变默认背景、樱花飘落、现代玻璃面板；换用暖棕羊皮纸 + 衬线字 +
-   中世纪描金装饰边框。三区布局——左面板（25%）+ 书卷区域 + Galgame 对话框。 */
+   中世纪描金装饰边框。三区布局——左面板（30%）+ 书卷区域 + Galgame 对话框。 */
 
 :root {
   --parchment: #f3e6c4;
@@ -15,6 +15,11 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-width: none; /* Firefox 隐藏滚动条 */
+}
+
+*::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/Edge 隐藏滚动条 */
 }
 
 body {
@@ -89,7 +94,7 @@ body {
   letter-spacing: 1px;
 }
 
-/* ===== 三区布局（06-game-shell §5.1）：左面板 25% + 书卷区域/对话框 75% ===== */
+/* ===== 三区布局（06-game-shell §5.1）：左面板 30% + 书卷区域/对话框 70% ===== */
 .game-shell {
   position: relative;
   z-index: 2;
@@ -110,7 +115,7 @@ body {
 
 /* ===== 左面板 ===== */
 .left-panel {
-  flex: 0 0 25%;
+  flex: 0 0 30%;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -146,6 +151,16 @@ body {
   font-family: inherit;
 }
 
+.left-panel__summary--static {
+  cursor: default;
+}
+
+.left-panel__summary-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
 .left-panel__summary-label {
   font-size: 0.72rem;
   color: var(--ink-soft);
@@ -157,62 +172,6 @@ body {
   line-height: 1.5;
   overflow-wrap: break-word;
   word-break: break-word;
-}
-
-.left-panel__settings {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.left-panel__settings-toggle {
-  padding: 0.35rem 0.6rem;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--accent);
-  cursor: pointer;
-  font-family: inherit;
-  letter-spacing: 1px;
-}
-
-.left-panel__settings-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  padding: 0.5rem;
-  border: 1px solid var(--parchment-deep);
-  border-radius: 4px;
-  background: var(--parchment-deep);
-}
-
-.left-panel__settings-label {
-  font-size: 0.72rem;
-  color: var(--ink-soft);
-  letter-spacing: 1px;
-}
-
-.left-panel__font {
-  display: flex;
-  gap: 0.35rem;
-}
-
-.left-panel__font-opt {
-  flex: 1;
-  padding: 0.3rem 0;
-  border: 1px solid var(--ink-soft);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ink-soft);
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.left-panel__font-opt--active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--parchment);
 }
 
 /* ===== 头像立绘（左面板内） ===== */
@@ -231,6 +190,8 @@ body {
   width: 100%;
   height: auto;
   aspect-ratio: 1 / 1;
+  object-fit: cover;
+  object-position: top center;
   filter: drop-shadow(0 12px 30px rgba(91, 70, 54, 0.25));
 }
 
@@ -288,31 +249,6 @@ body {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-}
-
-.scroll-area__modes {
-  flex-shrink: 0;
-  display: flex;
-  gap: 0.4rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--parchment-deep);
-}
-
-.scroll-area__mode {
-  padding: 0.2rem 0.8rem;
-  border: 1px solid var(--ink-soft);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ink-soft);
-  cursor: pointer;
-  font-family: inherit;
-  letter-spacing: 1px;
-}
-
-.scroll-area__mode--active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--parchment);
 }
 
 /* ===== 遭遇卡片 ===== */
@@ -379,11 +315,6 @@ body {
   gap: 0.5rem;
   margin-bottom: 0.75rem;
   overflow-y: auto;
-  scrollbar-width: none; /* Firefox 隐藏滚动条 */
-}
-
-.message-list::-webkit-scrollbar {
-  display: none; /* Chrome/Safari/Edge 隐藏滚动条 */
 }
 
 .message-bubble {
@@ -515,129 +446,256 @@ body {
   margin: 0;
 }
 
-/* ===== 内心世界（可拖拽弹窗）===== */
-/* 内部结构复用 .side-panel__tabs/__tab/__body（同款标签），
-   本类只负责弹窗容器：position:fixed 浮层 + 头部拖拽手柄 + × 关闭。left/top 由 DraggablePanel 内联样式注入。 */
-.draggable-panel {
-  position: fixed;
-  width: 960px;
-  height: 540px;
-  max-width: 92vw;
-  max-height: calc(100vh - 72px);
-  z-index: 20;
+/* ===== 右侧底部工具条（空间 + 内心世界 + 游戏设置） ===== */
+.right-dock {
+  flex-shrink: 0;
   display: flex;
-  flex-direction: column;
-  background: var(--parchment);
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
   border: 2px double var(--gold);
   box-shadow: inset 0 0 0 1px var(--parchment-deep);
   border-radius: 4px;
-  overflow: hidden;
-  resize: both;
+  background: var(--parchment);
 }
 
-.draggable-panel__header {
+.right-dock__entry {
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+}
+
+.right-dock__entry:hover {
+  background: var(--parchment-deep);
+}
+
+.right-dock__entry--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--parchment);
+}
+
+/* 字体大小档（SettingsView 内，替换原 RightDock 折叠字体设置） */
+.font-scale {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.font-scale__opt {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--ink-soft);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.font-scale__opt--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--parchment);
+}
+
+/* ===== 页内面板（InnerWorld / SettingsView 复用，替换书卷区显示） ===== */
+.side-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 2px double var(--gold);
+  box-shadow: inset 0 0 0 1px var(--parchment-deep);
+  border-radius: 4px;
+  background: var(--parchment);
+  overflow: hidden;
+}
+
+.side-panel__header {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 0.5rem;
   padding: 0.6rem 0.75rem;
   border-bottom: 1px solid var(--parchment-deep);
-  cursor: grab;
-  user-select: none;
 }
 
-.draggable-panel__header:active {
-  cursor: grabbing;
-}
-
-.draggable-panel__title {
+.side-panel__title {
+  flex: 1;
   font-size: 15px;
   font-weight: 700;
   letter-spacing: 3px;
   color: var(--accent);
 }
 
-.draggable-panel__hint {
-  flex: 1;
-  font-size: 0.72rem;
-  color: var(--ink-soft);
-  letter-spacing: 1px;
-}
-
-.draggable-panel__close {
-  padding: 0.1rem 0.55rem;
-  border: 1px solid var(--ink-soft);
-  border-radius: 0.4rem;
-  background: var(--parchment);
-  color: var(--ink);
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 0.95rem;
-  line-height: 1.2;
-}
-
-.draggable-panel__close:hover {
-  background: var(--parchment-deep);
-}
-
-.draggable-panel__body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-/* ===== 标签页（InnerWorld 复用） ===== */
-.side-panel__tabs {
-  flex-shrink: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--parchment-deep);
-}
-
-.side-panel__tab {
-  flex: 1 1 auto;
-  padding: 0.4rem 0.3rem;
-  border: 1px solid transparent;
-  border-radius: 0.6rem;
-  background: transparent;
-  color: var(--ink-soft);
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 0.8rem;
-  letter-spacing: 1px;
-  white-space: nowrap;
-  transition: all 0.25s ease;
-}
-
-.side-panel__tab:hover {
-  background: var(--parchment-deep);
-  color: var(--ink);
-}
-
-.side-panel__tab--active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--parchment);
-}
-
-/* 内容区：块级 + overflow-y，面板自然堆叠、超出滚动 */
+/* 内容区：overflow-y 滚动（InnerWorld 单活动面板 / ExplorationMap 多元素竖排） */
 .side-panel__body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 0.75rem;
-  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
 }
 
-.side-panel__body::-webkit-scrollbar {
-  display: none;
+/* 横向子标签条（网页 tab 感）：点标签切换活动面板 */
+.side-panel__tabs {
+  flex-shrink: 0;
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--parchment-deep);
+  overflow-x: auto;
+}
+
+.side-panel__tab {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--parchment-deep);
+  border-radius: 4px;
+  background: var(--parchment);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.9rem;
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+
+.side-panel__tab:hover {
+  color: var(--ink);
+  border-color: var(--ink-soft);
+}
+
+.side-panel__tab--active {
+  background: var(--accent);
+  color: var(--parchment);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+/* ===== 探索地图（ExplorationMap，页内视图） ===== */
+.map-go {
+  align-self: flex-start;
+  padding: 0.5rem 1rem;
+  border: 2px double var(--gold);
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--parchment);
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 2px;
+}
+
+.map-go:hover {
+  filter: brightness(1.1);
+}
+
+.map-error {
+  color: #a33;
+  font-size: 0.85rem;
+}
+
+.map-nodes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.map-node {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--parchment-deep);
+  border-radius: 4px;
+  background: var(--parchment);
+  cursor: pointer;
+}
+
+.map-node .node-glyph {
+  color: var(--gold);
+}
+
+.map-node .node-name {
+  color: var(--ink);
+}
+
+.map-node.live .node-name {
+  color: var(--accent);
+}
+
+.map-node.pending .node-name {
+  color: var(--ink-soft);
+}
+
+.map-remove {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.map-add {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.map-add input {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--parchment-deep);
+  border-radius: 4px;
+  background: var(--parchment);
+  color: var(--ink);
+  font-family: inherit;
+}
+
+.map-add button {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.map-detail {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+.map-detail strong {
+  font-size: 1.1rem;
+  color: var(--parchment);
+}
+
+.map-detail p {
+  max-width: 60%;
+  padding: 0.5rem 0.8rem;
+  background: var(--parchment);
+  color: var(--ink);
+  border-radius: 4px;
 }
 
 /* ===== Panel 骨架（components/layout/Panel） ===== */
 .panel {
+  flex-shrink: 0; /* 不被 side-panel__body 的 flex 挤压裁剪，长内容交给外层 body 滚动 */
   border: 1px solid var(--gold);
   border-radius: 4px;
   overflow: hidden;
@@ -938,10 +996,18 @@ body {
   gap: 0.5rem;
 }
 
+.energy-bar__title {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  letter-spacing: 1px;
+}
+
 .energy-bar__track {
   flex: 1;
   height: 0.75rem;
-  background: var(--parchment-deep);
+  background: var(--parchment);
+  border: 1px solid var(--ink-soft);
   border-radius: 0.4rem;
   overflow: hidden;
 }
@@ -987,7 +1053,8 @@ body {
   flex: 1;
   position: relative;
   height: 0.5rem;
-  background: var(--parchment-deep);
+  background: var(--parchment);
+  border: 1px solid var(--ink-soft);
   border-radius: 0.25rem;
 }
 

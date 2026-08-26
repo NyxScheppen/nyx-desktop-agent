@@ -20,6 +20,7 @@ export default function EnergyBar({ energy, energy_state }: EnergyBarProps) {
   const pct = Math.min(100, Math.max(0, energy));
   return (
     <div className="energy-bar">
+      <span className="energy-bar__title">精力条</span>
       <div className="energy-bar__track">
         <div
           className="energy-bar__fill"

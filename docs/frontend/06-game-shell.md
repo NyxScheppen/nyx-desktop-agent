@@ -1,6 +1,6 @@
 # 游戏壳（三区书卷风布局 + 遭遇渲染）
 
-> 范围：把现有「仪表盘 / 抽屉」形态改造成「养成游戏」形态——**三区布局**（左侧面板 25% + 书卷区域 + Galgame 对话框）+ **书卷风**（羊皮纸 + 衬线 + 暖棕，摒弃粉渐变 / 樱花）+ **遭遇渲染**（`ENCOUNTER_START` 选项卡片 → `POST /api/encounter/choose` → `ENCOUNTER_END` 结局上屏）。
+> 范围：把现有「仪表盘 / 抽屉」形态改造成「养成游戏」形态——**三区布局**（左侧面板 30% + 书卷区域 + Galgame 对话框）+ **书卷风**（羊皮纸 + 衬线 + 暖棕，摒弃粉渐变 / 樱花）+ **遭遇渲染**（`ENCOUNTER_START` 选项卡片 → `POST /api/encounter/choose` → `ENCOUNTER_END` 结局上屏）。
 > 后端契约见 `docs/specs/19-encounter.md`（本 spec 只消费其事件 + 端点，不改后端）。设计决策见 `docs/design/raising-sim.md` §5。
 > 本文件自包含：新文件内联完整代码，改动文件给增量。
 
@@ -8,7 +8,7 @@
 
 三块（design §5.1 / §5.2）：
 
-1. **三区布局**：左面板（主人公信息 + 属性摘要 + 欲望一句话 + 活动一条 + 游戏设置）｜书卷区域（多模式：对话 / 记忆 / 笔记）｜Galgame 对话框（输入 + 发送）。
+1. **三区布局**：左面板（主人公信息 + 心情/精力 + 欲望一句话 + 活动一条）｜书卷区域（对话主舞台）｜Galgame 对话框（输入 + 发送）。空间 / 记录 / 出门 / 游戏设置移到右侧底部工具条（输入框上方，六词条）。
 2. **书卷风重构**：`index.css` 全量重写为羊皮纸暖棕 + 衬线字 + 中世纪装饰边框；`Sakura` 移除；沿用现有 8 档 sprite（不重绘）。
 3. **遭遇渲染**：新增 `encounterStore` + `EncounterCard`，接 `encounter_start/choice/end` 三个新 SSE 事件 + 两个新 REST 端点。
 
@@ -22,18 +22,21 @@ App.tsx（重写装配）
 ├─ usePresence()                    # 不变：活跃度上报
 ├─ <header>                         # 标题 + 连接状态 + 调试快捷键（隐藏入口）
 ├─ <div class="game-shell">
-│   ├─ <LeftPanel onOpenInner={…}/> # 左面板 25%（新）
-│   └─ <div class="game-main">      # 右主区 75%
-│       ├─ <ScrollArea />           # 书卷区域（新：模式切换 + 对话/记忆/笔记）
-│       └─ <ChatInput />            # Galgame 对话框（复用，底框样式）
-├─ {innerOpen 时 <InnerWorld …/>}   # 复用：点左面板摘要 → 弹可拖拽详情
+│   ├─ <LeftPanel onOpenInner={…}/> # 左面板 30%（新）
+│   └─ <div class="game-main">      # 右主区 70%（内容按 view 四向渲染，底两条常驻）
+│       ├─ view=null：<ScrollArea />        # 对话主舞台
+│       ├─ view="settings"：<SettingsView/> # 游戏设置页内面板（字体大小 + 背景外观）
+│       ├─ view="explore"：<ExplorationMap/># 探索地图页内视图（工具条「出门」）
+│       ├─ view=number：<InnerWorld/>       # 内心世界页内面板（横向子标签单分类 0/1/2）
+│       ├─ <RightDock/>             # 底部工具条（常驻：聊天/内在/空间/记录/出门/游戏设置）
+│       └─ <ChatInput/>             # Galgame 对话框（常驻）
 ├─ {debugOpen 时 <div class="debug-overlay"><EvalPanel/></div>}  # eval+token 独立调试页
 └─ <AnnounceLayer />                # 复用：头像旁淡出气泡
 ```
 
-- **现有面板去向（design §5.2）**：聊天 / 遭遇 / 成长时刻 → 书卷区「对话」模式（默认）；记忆 / 读书笔记 → 书卷区「记忆 / 笔记」模式；精力 / 情绪 / 性格 / 三观 → 左面板属性摘要 + 点开详情；欲望 → 左面板「她现在的念头」一句话 + 点开队列；活动 → 左面板「正在做什么」一条 + 点开时间线；材料 / 上传 → 左面板「游戏设置」内（复用 `BackgroundPanel`，含背景切换）；eval + token → 独立调试页（快捷键 `Ctrl+Shift+D` 切换，复用 `EvalPanel`）。
-- **`ChatPanel` 移除**：其职责拆散——头部「内在/空间/记录」按钮 → 左面板「点开详情」；「设置」→ 左面板游戏设置；`MessageList` → 书卷区对话模式；`ChatInput` → Galgame 对话框。
-- **`InnerWorld` 复用不变**：仍是「内在 / 空间 / 记录」三分类可拖拽详情弹窗，只是触发入口从对话框头部按钮改为左面板摘要点击（`onOpenInner(categoryIndex)` 同签名）。
+- **现有面板去向（design §5.2）**：聊天 / 遭遇 / 成长时刻 → 书卷区对话主舞台（默认）；精力 / 情绪 / 性格 / 三观 → 左面板「心情」纯展示 + 「她现在的念头」点开内在详情；欲望 → 左面板「她现在的念头」一句话 + 点开队列；读书笔记 / 产出 / 资料 → 右底工具条「空间」点开空间详情；记忆 / 活动 → 左面板「正在做什么」一条 + 点开记录详情；字体大小 / 背景 → 右底工具条「游戏设置」；eval + token → 独立调试页（快捷键 `Ctrl+Shift+D` 切换，复用 `EvalPanel`）。
+- **`ChatPanel` 移除**：其职责拆散——头部「内在/空间/记录」按钮 → 左面板/右底工具条「点开详情」；「设置」→ 右底工具条游戏设置；`MessageList` → 书卷区对话模式；`ChatInput` → Galgame 对话框。
+- **`InnerWorld` 去弹窗 + 横向子标签单分类**：从可拖拽弹窗改为页内面板（替换书卷区显示），仍是「内在 / 空间 / 记录」三分类，触发入口为左面板摘要点击 + 右底工具条（`onOpenInner(categoryIndex)` 同签名）。传 `categoryIndex`（0 内在 / 1 空间 / 2 记录）顶部渲染横向子标签条（网页 tab 感），点标签切活动面板（默认激活第一项，无全分类总览）。左面板摘要与工具条同源分类：她现在的念头→内在(0)、正在做什么→记录(2)；工具条另有「空间(1)」入口。切回聊天统一走底部工具条「聊天」入口（不再有视图内「返回对话」按钮），底工具条 + 输入框在切视图时保持常驻。
 
 ## 3. 遭遇数据流
 
@@ -209,54 +212,21 @@ export default function EncounterCard() {
 ### 5.3 `src/components/shell/ScrollArea.tsx`
 
 ```tsx
-import { useState } from "react";
 import { useChatStore } from "../../stores/chatStore";
-import { useEncounterStore } from "../../stores/encounterStore";
 import MessageList from "../chat/MessageList";
 import EncounterCard from "../encounter/EncounterCard";
-import MemoryPanel from "../panels/MemoryPanel";
-import ReadingNotesPanel from "../panels/ReadingNotesPanel";
 
-type ScrollMode = "chat" | "memory" | "notes";
-
-// 书卷区域（design §5.1）：多模式（对话/记忆/笔记）滚动区，左下角模式切换按钮。
-// 对话模式 = MessageList + EncounterCard（遭遇卡片钉在消息列表之后）。
-// 记忆/笔记复用现有 MemoryPanel / ReadingNotesPanel（原侧边抽屉内容，此处平铺）。
+// 书卷区域（design §5.1）：对话主舞台（MessageList + EncounterCard 遭遇卡片）。
+// 记忆/笔记/资料等观测面板统一走左面板摘要入口（InnerWorld），此处不再多模式切换。
 export default function ScrollArea() {
-  const [mode, setMode] = useState<ScrollMode>("chat");
   const messages = useChatStore((s) => s.messages);
 
   return (
     <section className="scroll-area">
       <div className="scroll-area__body">
-        {mode === "chat" && (
-          <>
-            <MessageList messages={messages} />
-            <EncounterCard />
-          </>
-        )}
-        {mode === "memory" && <MemoryPanel />}
-        {mode === "notes" && <ReadingNotesPanel />}
+        <MessageList messages={messages} />
+        <EncounterCard />
       </div>
-      <nav className="scroll-area__modes">
-        {(
-          [
-            ["chat", "对话"],
-            ["memory", "记忆"],
-            ["notes", "笔记"],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            className={`scroll-area__mode${mode === key ? " scroll-area__mode--active" : ""}`}
-            aria-pressed={mode === key}
-            onClick={() => setMode(key)}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
     </section>
   );
 }
@@ -267,13 +237,11 @@ export default function ScrollArea() {
 ### 5.4 `src/components/shell/LeftPanel.tsx`
 
 ```tsx
-import { useState } from "react";
-import { EMOTION_LABELS, ENERGY_LABELS, DESIRE_TYPE_LABELS } from "../../lib/labels";
+import { EMOTION_LABELS, DESIRE_TYPE_LABELS } from "../../lib/labels";
 import { activityStatusText } from "../../lib/activityResult";
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import { useDesireStore } from "../../stores/desireStore";
 import { useActivityStore } from "../../stores/activityStore";
-import { useSettingsStore } from "../../stores/settingsStore";
 import Avatar from "../inner/Avatar";
 import EnergyBar from "../inner/EnergyBar";
 
@@ -281,15 +249,13 @@ type LeftPanelProps = {
   onOpenInner: (categoryIndex: number) => void; // 点摘要 → 弹对应分类详情（复用 InnerWorld）
 };
 
-// 左面板（design §5.1，25%）：大头照 + 姓名 + 属性摘要（情绪/精力）+ 欲望一句话
-// + 活动一条 + 游戏设置（背景/字体大小）。点摘要 → onOpenInner 弹详情。
+// 左面板（design §5.1，30%）：大头照 + 姓名 + 心情/精力（纯展示）+ 欲望一句话 + 活动一条。
+// 内心世界入口一一对应：她现在的念头→内在(0)、正在做什么→记录(2)。
+// 空间(1)/记录(2)/出门/游戏设置入口在右底工具条（RightDock），左面板只留内在(0)/记录(2)两条摘要直达。
 export default function LeftPanel({ onOpenInner }: LeftPanelProps) {
   const current = useInnerLifeStore((s) => s.current);
   const desires = useDesireStore((s) => s.data);
   const activity = useActivityStore((s) => s.data?.current ?? null);
-  const fontScale = useSettingsStore((s) => s.fontScale);
-  const setFontScale = useSettingsStore((s) => s.setFontScale);
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // 「她现在的念头」：取最活跃的一条短期欲望（active 优先，否则按 strength 降序第一条）
   const activeDesire =
@@ -301,24 +267,22 @@ export default function LeftPanel({ onOpenInner }: LeftPanelProps) {
       <Avatar />
       <h2 className="left-panel__name">Nyx</h2>
 
-      <button
-        type="button"
-        className="left-panel__summary"
-        onClick={() => onOpenInner(0)} // 内在分类（内在状态/欲望/叙事）
-      >
-        <span className="left-panel__summary-label">心情</span>
-        <span className="left-panel__summary-value">
-          {current !== null ? EMOTION_LABELS[current.emotion] : "……"}
-        </span>
+      <div className="left-panel__summary left-panel__summary--static">
+        <div className="left-panel__summary-line">
+          <span className="left-panel__summary-label">心情</span>
+          <span className="left-panel__summary-value">
+            {current !== null ? EMOTION_LABELS[current.emotion] : "……"}
+          </span>
+        </div>
         {current !== null && (
           <EnergyBar energy={current.energy} energy_state={current.energy_state} />
         )}
-      </button>
+      </div>
 
       <button
         type="button"
         className="left-panel__summary"
-        onClick={() => onOpenInner(0)}
+        onClick={() => onOpenInner(0)} // 内在分类（内在状态/欲望/叙事）
       >
         <span className="left-panel__summary-label">她现在的念头</span>
         <span className="left-panel__summary-value">
@@ -338,57 +302,123 @@ export default function LeftPanel({ onOpenInner }: LeftPanelProps) {
           {activityStatusText(activity)}
         </span>
       </button>
-
-      <div className="left-panel__settings">
-        <button
-          type="button"
-          className="left-panel__settings-toggle"
-          aria-expanded={settingsOpen}
-          onClick={() => setSettingsOpen((v) => !v)}
-        >
-          游戏设置
-        </button>
-        {settingsOpen && (
-          <div className="left-panel__settings-body">
-            <span className="left-panel__settings-label">字体大小</span>
-            <div className="left-panel__font">
-              {(
-                [
-                  ["small", "小"],
-                  ["medium", "中"],
-                  ["large", "大"],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={`left-panel__font-opt${fontScale === key ? " left-panel__font-opt--active" : ""}`}
-                  aria-pressed={fontScale === key}
-                  onClick={() => setFontScale(key)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
     </aside>
   );
 }
 ```
 
-> `activityStatusText` 是新增的纯函数（见 6.7），原 `StatusBar` 内的 `statusText` 上移到 `lib/activityResult.ts` 共享（`StatusBar` 与 `LeftPanel` 同源）。`ENERGY_LABELS` 已在 EnergyBar 内使用，LeftPanel 不重复引（上列 import 中 ENERGY_LABELS 可省，实际按需）。
+> `activityStatusText` 是新增的纯函数（见 6.7），原 `StatusBar` 内的 `statusText` 上移到 `lib/activityResult.ts` 共享（`StatusBar` 与 `LeftPanel` 同源）。`ENERGY_LABELS` 已在 EnergyBar 内使用，LeftPanel 不重复引。空间(1)/记录(2)/出门/游戏设置迁到 `RightDock`（见 5.5），`useSettingsStore` 引用随之从本组件移除。
 
-### 5.5 `src/App.tsx`（重写装配）
+### 5.5 `src/components/shell/RightDock.tsx`（新）
+
+```tsx
+// 书卷区当前视图：null = 对话主舞台；number = InnerWorld 分类（0 内在 / 1 空间 / 2 记录）；
+// "settings" = 游戏设置页；"explore" = 出门探索地图。
+export type View = number | "settings" | "explore" | null;
+
+type RightDockProps = {
+  view: View; // 当前视图，用于高亮激活入口
+  onSwitch: (view: View) => void;
+};
+
+// 右侧底部工具条（输入框上方，常驻不随切视图消失）：聊天 / 内在 / 空间 / 记录 / 出门 / 游戏设置。
+// 六个入口替换书卷区内容（切视图），当前入口高亮；字体大小/背景设置已迁至 SettingsView。
+// 动作类词条（出门，将来的一起读书）与观测面板同一条，未来加词条只需往 ENTRIES 追加一项。
+const ENTRIES: readonly { label: string; view: View }[] = [
+  { label: "聊天", view: null },
+  { label: "内在", view: 0 },
+  { label: "空间", view: 1 },
+  { label: "记录", view: 2 },
+  { label: "出门", view: "explore" },
+  { label: "游戏设置", view: "settings" },
+];
+
+export default function RightDock({ view, onSwitch }: RightDockProps) {
+  return (
+    <div className="right-dock">
+      {ENTRIES.map((e) => (
+        <button
+          key={e.label}
+          type="button"
+          className={`right-dock__entry${
+            view === e.view ? " right-dock__entry--active" : ""
+          }`}
+          aria-pressed={view === e.view}
+          onClick={() => onSwitch(e.view)}
+        >
+          {e.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+```
+
+> `View` 由 `RightDock` 导出（`number | "settings" | "explore" | null`），`App` 复用之；`RightDock` 统一 `onSwitch(view)` 切视图，按 `view` 高亮当前入口（`aria-pressed` + `.right-dock__entry--active`）。底工具条常驻；「内在(0)」「记录(2)」与 `LeftPanel` 的 `onOpenInner` 同源分类（左面板摘要直达 + 工具条同词条）。「出门("explore")」挂载 `ExplorationMap` 页内视图。
+
+### 5.6 `src/components/layout/SettingsView.tsx`（新）
+
+```tsx
+import { useSettingsStore } from "../../stores/settingsStore";
+import BackgroundPanel from "../panels/BackgroundPanel";
+import Panel from "./Panel";
+
+// 游戏设置页内面板（替换书卷区）：字体大小 + 背景外观（色调/背景图）。
+// 复用 BackgroundPanel（纯前端 settingsStore）；字体大小原在 RightDock 折叠条，随「切视图」迁入。
+const FONT_OPTIONS = [
+  ["small", "小"],
+  ["medium", "中"],
+  ["large", "大"],
+] as const;
+
+export default function SettingsView() {
+  const fontScale = useSettingsStore((s) => s.fontScale);
+  const setFontScale = useSettingsStore((s) => s.setFontScale);
+
+  return (
+    <section className="side-panel">
+      <header className="side-panel__header">
+        <span className="side-panel__title">游戏设置</span>
+      </header>
+      <div className="side-panel__body">
+        <Panel title="字体大小">
+          <div className="font-scale">
+            {FONT_OPTIONS.map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`font-scale__opt${
+                  fontScale === key ? " font-scale__opt--active" : ""
+                }`}
+                aria-pressed={fontScale === key}
+                onClick={() => setFontScale(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </Panel>
+        <BackgroundPanel />
+      </div>
+    </section>
+  );
+}
+```
+
+> `SettingsView` 复用 `BackgroundPanel`（背景色调/背景图）与 `Panel`（通用面板容器）；`.side-panel` 容器样式与 `InnerWorld` 共用。
+
+### 5.7 `src/App.tsx`（重写装配）
 
 ```tsx
 import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import AnnounceLayer from "./components/AnnounceLayer";
 import ChatInput from "./components/chat/ChatInput";
+import ExplorationMap from "./components/exploration/ExplorationMap";
 import InnerWorld from "./components/layout/InnerWorld";
+import SettingsView from "./components/layout/SettingsView";
 import LeftPanel from "./components/shell/LeftPanel";
+import RightDock, { type View } from "./components/shell/RightDock";
 import ScrollArea from "./components/shell/ScrollArea";
 import EvalPanel from "./components/panels/EvalPanel";
 import { usePresence } from "./hooks/usePresence";
@@ -413,14 +443,15 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
 };
 
 // 游戏壳装配（06-game-shell）：三区布局——左面板 + 书卷区域 + Galgame 对话框。
-// useSSE 只挂一次；点左面板摘要弹 InnerWorld 详情；Ctrl+Shift+D 切调试页（eval+token）。
+// useSSE 只挂一次；点左面板摘要/右底工具条替换书卷区显示；Ctrl+Shift+D 切调试页（eval+token）。
 export default function App() {
   const status = useSSE(dispatchEvent);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
   const refreshActivity = useActivityStore((s) => s.refresh);
   const refreshEncounter = useEncounterStore((s) => s.refresh);
   usePresence();
-  const [innerOpen, setInnerOpen] = useState<number | null>(null);
+  // 书卷区当前视图：null = 对话主舞台；number = InnerWorld 分类（0 内在 / 1 空间 / 2 记录）；"settings" = 游戏设置页；"explore" = 出门探索
+  const [view, setView] = useState<View>(null);
   const [debugOpen, setDebugOpen] = useState(false);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
@@ -475,20 +506,21 @@ export default function App() {
       </header>
 
       <main className="game-shell" style={shellStyle}>
-        <LeftPanel onOpenInner={setInnerOpen} />
+        <LeftPanel onOpenInner={(i) => setView(i)} />
         <div className="game-main">
-          <ScrollArea />
+          {view === null ? (
+            <ScrollArea />
+          ) : view === "settings" ? (
+            <SettingsView />
+          ) : view === "explore" ? (
+            <ExplorationMap />
+          ) : (
+            <InnerWorld categoryIndex={view} />
+          )}
+          <RightDock view={view} onSwitch={(v) => setView(v)} />
           <ChatInput />
         </div>
       </main>
-
-      {innerOpen !== null && (
-        <InnerWorld
-          key={innerOpen}
-          categoryIndex={innerOpen}
-          onClose={() => setInnerOpen(null)}
-        />
-      )}
       {debugOpen && (
         <div className="debug-overlay">
           <div className="debug-overlay__bar">
@@ -506,7 +538,7 @@ export default function App() {
 }
 ```
 
-> `InnerWorld` 的 `onOpenInner` 直接传 `setInnerOpen`（其入参是 `categoryIndex: number`，与 `InnerWorld` 的 `categoryIndex` prop 对齐）；`key={innerOpen}` 保持「切换分类重建」既有行为。`ChatPanel`/`Sakura` 不再引用。
+> `view` 单值四向：`null` 对话主舞台（ScrollArea）、`"settings"` 游戏设置页（SettingsView）、`"explore"` 探索地图（ExplorationMap）、`number` 内心世界页内面板（InnerWorld，0/1/2 竖排单分类）。`RightDock` 常驻并统一 `onSwitch={(v) => setView(v)}` 切视图（六词条：聊天/内在/空间/记录/出门/游戏设置，高亮当前）；`ChatInput` 也常驻，故切视图时底工具条 + 输入框都不消失。`LeftPanel` 仍传 `(i) => setView(i)` 打开内在(0)/记录(2)（与工具条同源分类）。`InnerWorld`/`SettingsView`/`ExplorationMap` 均无 `onBack`（切回聊天走工具条「聊天」）。`ChatPanel`/`Sakura` 不再引用。
 
 ## 6. 修改文件（增量）
 
@@ -727,14 +759,18 @@ export const ENCOUNTER_KIND_LABELS: Record<EncounterKind, string> = {
 ### 6.10 删除文件
 
 - `src/components/scene/Sakura.tsx`（樱花装饰，design §5.3 摒弃）
-- `src/components/chat/ChatPanel.tsx`（职责拆散到 ScrollArea / LeftPanel / ChatInput）
+- `src/components/chat/ChatPanel.tsx`（职责拆散到 ScrollArea / LeftPanel / RightDock / ChatInput）
+- `src/components/layout/DraggablePanel.tsx`（可拖拽弹窗骨架，InnerWorld 去弹窗后无调用方）
+- `src/components/layout/SidePanel.tsx`（设置标签页面板，职责被 SettingsView 接管）
+- `src/hooks/useDraggable.ts`（可拖拽 hook，DraggablePanel 删除后无调用方）
 
 ## 7. 验收标准
 
-- [ ] 三区布局落地：`.game-shell` 左 25% + 右 75%，右区上「书卷区域」下「Galgame 对话框」；`App.tsx` 装配，`useSSE`/`usePresence` 只挂一次
-- [ ] 书卷区三模式：对话（默认，时间线滚动 + 遭遇卡片）/ 记忆 / 笔记，左下角切换按钮
-- [ ] 左面板：大头照 + 姓名 + 心情摘要（情绪 + 精力条）+ 她现在的念头（一句话）+ 正在做什么（一条）+ 游戏设置（字体大小 + 背景）
-- [ ] 点左面板摘要弹对应分类 `InnerWorld` 详情；`Ctrl+Shift+D` 切调试页（eval+token，复用 `EvalPanel`）
+- [ ] 三区布局落地：`.game-shell` 左 30% + 右 70%，右区上「书卷区域」下「Galgame 对话框」；`App.tsx` 装配，`useSSE`/`usePresence` 只挂一次
+- [ ] 书卷区对话主舞台：时间线滚动 + 遭遇卡片（单一视图，无模式切换按钮）
+- [ ] 左面板：大头照 + 姓名 + 心情（情绪 + 精力条，纯展示）+ 她现在的念头（一句话，点开内在）+ 正在做什么（一条，点开记录）
+- [ ] 右侧底部工具条（输入框上方，常驻）六词条：聊天（切回对话）+ 内在(0) + 空间(1) + 记录(2) + 出门（探索地图）+ 游戏设置（页内面板：字体大小 + 背景色调/背景图）
+- [ ] 点左面板摘要 / 右底工具条替换书卷区显示，每个词条打开只切一次页面：`InnerWorld` 竖排单分类（0 内在 / 1 空间 / 2 记录，整类面板竖排滚动，无子标签、无全分类总览）；「出门」显示 `ExplorationMap`；「游戏设置」显示字体大小 + 背景外观；底部工具条 + 输入框在切视图时保持常驻，切回聊天走工具条「聊天」入口（当前入口高亮）；`Ctrl+Shift+D` 切调试页（eval+token，复用 `EvalPanel`）
 - [ ] 书卷风：羊皮纸暖棕 + 衬线字 + 描金装饰边框；粉渐变默认背景 → 羊皮纸；`Sakura` 移除；沿用 8 档 sprite
 - [ ] `encounter_start` → `EncounterCard` 渲染 `{text, options}`；点选项 → `POST /api/encounter/choose`；`encounter_end` → 卡片消失 + `ending` 上聊天时间线 + 重拉内在/欲望/记忆快照
 - [ ] `encounter_choice` 无消费者（end 紧跟）；三个事件都进 `EVENT_TYPES` + `types/api.ts` 判别联合（漏加会被浏览器静默丢弃）
@@ -750,7 +786,7 @@ export const ENCOUNTER_KIND_LABELS: Record<EncounterKind, string> = {
 - **`client`**（`tests/api.test.ts` 追加）：`chooseEncounter` 请求 `POST /api/encounter/choose` body `{encounter_id, option_index}` → `{encounter_id, chosen}` 解析正确；`getCurrentEncounter` `GET /api/encounter/current` → `EncounterCurrent | null` 解析正确（含 `null`）。
 - **`activityStatusText`**（`tests/activityResult.test.ts` 追加）：`null` → 空闲；reading 带 subject → `在读《X》`；creation/exploration/observe_user/idle_reflection/rest 各分支文案正确。
 - **`labels`**（`tests/labels.test.ts` 追加）：`ENCOUNTER_KIND_LABELS` 三键中文映射正确；`label()` 未知键回退。
-- 组件级：`EncounterCard` 渲染文本 + 选项按钮、点击调 `choose`、`choosing` 禁用（React Testing Library，mock store）；`ScrollArea` 三模式切换（对话默认、记忆/笔记切到对应面板）。视觉样式不做断言（README §6）。
+- 组件级：`EncounterCard` 渲染文本 + 选项按钮、点击调 `choose`、`choosing` 禁用（React Testing Library，mock store）；`ScrollArea` 渲染 `MessageList` + `EncounterCard`（不再模式切换）；`InnerWorld` 页内面板横向子标签单分类（`categoryIndex` 0/1/2 各渲染该类子标签条，点标签切活动面板、默认激活第一项，无全分类总览）；`RightDock` 渲染六入口（聊天/内在/空间/记录/出门/游戏设置）+ 按 `view` 高亮当前（`aria-pressed`）+ 点入口触发 `onSwitch(null/0/1/2/"explore"/"settings")`；`ExplorationMap` 渲染历史节点/心愿单 + 「出门探索」调 `POST /api/explore` + 409 忙碌错误上屏 + 加心愿；`SettingsView` 渲染字体大小三档 + 背景外观，点档位写 `fontScale`、点色块写 `tint`。视觉样式不做断言（README §6）。
 
 ## 9. 文档同步
 

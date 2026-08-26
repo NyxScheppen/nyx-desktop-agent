@@ -26,7 +26,7 @@ beforeEach(() => {
 
 describe("ExplorationMap", () => {
   it("渲染历史节点 + 心愿单", () => {
-    render(<ExplorationMap onClose={() => {}} />);
+    render(<ExplorationMap />);
     expect(screen.getByText("搜索：深海鱼")).toBeTruthy();
     expect(screen.getByText("发光生物")).toBeTruthy();
   });
@@ -34,7 +34,7 @@ describe("ExplorationMap", () => {
   it("「出门探索」点击调 start（POST /api/explore）", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ activity_id: "e1" }) });
     vi.stubGlobal("fetch", fetchMock);
-    render(<ExplorationMap onClose={() => {}} />);
+    render(<ExplorationMap />);
     fireEvent.click(screen.getByText("出门探索"));
     expect(fetchMock).toHaveBeenCalledWith("/api/explore", expect.objectContaining({ method: "POST" }));
     await waitFor(() => expect(useExplorationStore.getState().activityId).toBe("e1"));
@@ -48,14 +48,14 @@ describe("ExplorationMap", () => {
       json: async () => ({ detail: "已有活动进行中" }),
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<ExplorationMap onClose={() => {}} />);
+    render(<ExplorationMap />);
     fireEvent.click(screen.getByText("出门探索"));
     expect(await screen.findByText("已有活动进行中")).toBeTruthy();
     vi.unstubAllGlobals();
   });
 
   it("「＋」加心愿调用 addWish", () => {
-    render(<ExplorationMap onClose={() => {}} />);
+    render(<ExplorationMap />);
     fireEvent.change(screen.getByPlaceholderText("加一个想探索的主题"), {
       target: { value: "深海鱼" },
     });

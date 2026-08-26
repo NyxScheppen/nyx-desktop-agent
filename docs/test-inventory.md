@@ -855,7 +855,9 @@
 
 **功能阶段**：frontend usePresence（README §2）实现时编写（mock `postObserve` + fake timers + `renderHook`；验证管道正确——采集→判定→上报的节奏与去重，fetch 细节归 frontend-client；窗口标题核心先行恒传 `""`，故 hook 不测 busy 分支，busy 由 `classifyPresence` 纯函数覆盖）。`usePresence` 于「活动填实（观察填实）」轮改为采样 `document.title` 并上报 `postObserve(presence, windowTitle)`（jsdom `document.title` 默认 `""`，故断言第二参为 `""`）；真正的「前台应用窗口标题」留到 src-tauri 落地换源。
 
-## frontend-side-panel（布局：SidePanel 标签页）
+## frontend-side-panel（布局：SidePanel 标签页）— 已删除
+
+> **已删除**：`SidePanel` 组件及其测试于「替换式切视图」轮移除（设置职责由 `SettingsView` 接管，Eval 走独立调试页），`tests/sidePanel.test.tsx` 一并删除。以下为历史记录。
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -865,16 +867,16 @@
 
 **功能阶段**：frontend 视觉改造（右侧滑出抽屉 → 右侧常驻标签页）时编写（RTL + 真实 store；验证管道正确——标签切换当前面板、仅挂载 active tab，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）；本轮视觉改造把 SidePanel 从「常驻右侧标签页」改为「设置模式下替换对话框」，`SidePanel` 需 `onBack` prop + 首 tab 由「内在」改为「背景」——原 6 标签断言改为 7 标签、默认激活断言由「内在」改「背景」、补 `onBack` 用例；`渲染 7 个标签` 于「喂资料/上传课本」轮改为 `渲染 9 个标签`（新增「叙事」「资料」两 tab，标签清单同步补入）；本轮移除「溯源」tab（`渲染 8 个标签`）；`渲染 9 个标签` 于「产出面板」轮改为 9 标签（新增「产出」tab，标签清单同步补入）；`渲染 9 个标签` 于「内心世界」轮改为 `渲染 3 个标签`（内在/欲望/活动/产出/叙事/资料 6 个观测面板移入右侧 `InnerWorld` 抽屉，SidePanel 只留背景/记忆/Eval，切换用例由「欲望」改「记忆」）。本轮「记忆」移入内心世界：`渲染 3 个标签` 改为 `渲染 2 个标签`（SidePanel 只留背景/Eval），切换用例由「记忆」改「Eval」。
 
-## frontend-inner-world（布局：InnerWorld 内心世界弹窗）
+## frontend-inner-world（布局：InnerWorld 内心世界页内面板）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `InnerWorld > categoryIndex 渲染对应子标签，默认第一项` | 功能正确 | 传 `categoryIndex=0` 渲染「内在」子标签（内在状态/欲望/叙事）、默认「内在状态」`aria-pressed=true` + 面板标题「内在状态」上屏 |
-| `InnerWorld > categoryIndex=1 渲染「空间」子标签` | 功能正确 | 传 `categoryIndex=1` 渲染空间三项（读书笔记/产出/资料）、默认「读书笔记」`aria-pressed=true` + 面板标题「读书笔记」上屏 |
-| `InnerWorld > 分类内切子标签：点「欲望」` | 功能正确 | 点「欲望」后 `aria-pressed` 移到「欲望」、面板标题「欲望」上屏、内在面板标题「内在状态」卸载（仅挂载当前子 tab） |
-| `InnerWorld > 「关闭」按钮触发 onClose` | 功能正确 | 点「关闭」（`×`，aria-label）→ `onClose` 恰调 1 次（App 层卸载弹窗） |
+| `InnerWorld > categoryIndex=0 渲染「内在」子标签，默认激活「内在状态」` | 功能正确 | 传 `categoryIndex=0` 上屏分类标题「内在」+ 三个子标签按钮（内在状态/欲望/叙事），默认「内在状态」`aria-pressed=true` + heading 上屏（点标签切面板，不再竖排堆叠） |
+| `InnerWorld > categoryIndex=1 渲染「空间」子标签，默认激活「读书笔记」` | 功能正确 | 传 `categoryIndex=1` 上屏「空间」标题 + 读书笔记/产出/资料三标签，默认「读书笔记」`aria-pressed=true` + heading 上屏 |
+| `InnerWorld > categoryIndex=2 渲染「记录」子标签，默认激活「活动」` | 功能正确 | 传 `categoryIndex=2` 上屏「记录」标题 + 活动/记忆两标签，默认「活动」`aria-pressed=true` + heading 上屏 |
+| `InnerWorld > 点子标签「欲望」切到欲望面板，内在状态面板卸载` | 功能正确 | 点「欲望」→ `aria-pressed` 移到「欲望」、heading「欲望」上屏、「内在状态」heading 卸载（仅挂载活动 tab） |
 
-**功能阶段**：frontend「内心世界」轮编写（观测面板从「设置」移入右侧滑出抽屉；RTL + 真实 store，验证管道正确——标签切换、仅挂载 active tab、open/onClose 接线，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）。本轮「记忆」从「设置」移入内心世界：`渲染 6 个标签` 改为 `渲染 7 个标签`。「内心世界弹窗化 + 借鉴」轮：InnerWorld 由右侧滑出抽屉（`<aside className="inner-world">` + `open` prop）改为可拖拽弹窗（DraggablePanel 包裹、App 层条件渲染 `{innerOpen && <InnerWorld/>}`），移除 `open` prop、`收起` 按钮改 `×`（aria-label「关闭」）、删 `open=false` 修饰类用例；标签/内容结构不变（仍复用 `.side-panel__tabs/__body`）。「读书/创作借鉴」轮：扁平 7 标签改为「内在/空间/记录」三大类两级导航（子标签：内在=内在状态/欲望/叙事、空间=读书笔记/产出/资料、记录=活动/记忆），用例由「渲染 7 标签」改为「渲染 3 大类 + 默认内在状态」+ 大类切换 + 子标签切换。「读书/创作借鉴 + 三按钮」轮：三大类导航从 InnerWorld 内部上移到对话框头部三按钮（ChatPanel），InnerWorld 改为**单分类卡片**——收 `categoryIndex` prop，去掉顶部大类导航只留子标签，标题=分类名；用例由「渲染 3 大类 + 大类切换」改为「按 categoryIndex 渲染对应子标签 + 分类内切子标签」。
+**功能阶段**：frontend「内心世界」轮编写（观测面板从「设置」移入右侧滑出抽屉；RTL + 真实 store，验证管道正确——标签切换、仅挂载 active tab、open/onClose 接线，fetch stub 永不 resolve 以隔离数据加载，不验证视觉样式）。本轮「记忆」从「设置」移入内心世界：`渲染 6 个标签` 改为 `渲染 7 个标签`。「内心世界弹窗化 + 借鉴」轮：InnerWorld 由右侧滑出抽屉（`<aside className="inner-world">` + `open` prop）改为可拖拽弹窗（DraggablePanel 包裹、App 层条件渲染 `{innerOpen && <InnerWorld/>}`），移除 `open` prop、`收起` 按钮改 `×`（aria-label「关闭」）、删 `open=false` 修饰类用例；标签/内容结构不变（仍复用 `.side-panel__tabs/__body`）。「读书/创作借鉴」轮：扁平 7 标签改为「内在/空间/记录」三大类两级导航（子标签：内在=内在状态/欲望/叙事、空间=读书笔记/产出/资料、记录=活动/记忆），用例由「渲染 7 标签」改为「渲染 3 大类 + 默认内在状态」+ 大类切换 + 子标签切换。「读书/创作借鉴 + 三按钮」轮：三大类导航从 InnerWorld 内部上移到对话框头部三按钮（ChatPanel），InnerWorld 改为**单分类卡片**——收 `categoryIndex` prop，去掉顶部大类导航只留子标签，标题=分类名；用例由「渲染 3 大类 + 大类切换」改为「按 categoryIndex 渲染对应子标签 + 分类内切子标签」。「替换式切视图」轮：InnerWorld 从可拖拽弹窗（DraggablePanel 包裹）改为页内面板（`.side-panel` 容器），`onClose`/`×` 关闭按钮改 `onBack`/「返回对话」按钮（对应用例由「关闭按钮触发 onClose」改为「返回对话按钮触发 onBack」），App 层由「条件渲染弹窗」改为「替换书卷区三向视图」；标签/内容结构不变。「底两条常驻」轮：`InnerWorld` 移除 `onBack` prop 与「返回对话」按钮（切回聊天统一走底部工具条「聊天」入口），对应「返回对话按钮触发 onBack」用例删除，标题栏只留分类名。「词条收敛·竖排单分类」轮：`InnerWorld` 由「单分类子标签」改为**竖排单分类**——`categoryIndex` 直接渲染该类全部面板（滚动查看），删除 `OVERVIEW_INDEX` 全分类总览 + 内部 `activeCategory`/`activeTab` 状态（修「空间点开是内在」的跨视图状态残留）；用例由「按 categoryIndex 渲染子标签 + 分类内切子标签 + 全分类总览」改为「按 categoryIndex 竖排渲染该类全部面板 heading」（0/1/2 三分类各一例），fetch stub 上移到 `beforeEach` 统一隔离（竖排渲染多面板、多面板挂载即 refresh）。「横板点网页」轮：`InnerWorld` 竖排堆叠改回**横向子标签条**（网页 tab 感，点标签切活动面板、默认激活第一项），重新引入 `activeTab` 本地 state（跨分类切换由 App 层 `key={view}` 强制重挂载归零，修状态残留），补 `.side-panel__tabs/__tab` 横向样式；用例由「三分类竖排渲染全部面板」改为「三分类各渲染子标签 + 默认激活第一项 + 点子标签切面板」（4 例），fetch stub 保留 `beforeEach` 统一隔离。
 
 ## frontend-reading-notes（读书笔记面板：ReadingNotesPanel）
 
@@ -948,12 +950,50 @@
 
 **功能阶段**：frontend「反思优化」轮编写（RTL + 真实 store；验证管道正确——`highlightedStory` 命中则标「新」徽标、未命中不标，不验证视觉）。
 
-## frontend-exploration-map（探索地图组件：ExplorationMap 浮窗）
+## frontend-desires-panel（欲望面板：DesiresPanel 短期欲望过滤终态）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `DesiresPanel > 渲染活队列（pending/active/suppressed），过滤 expired/satisfied` | 功能正确 | 短期欲望里 pending/active/suppressed 三条描述上屏，satisfied/expired 两条描述不上屏 |
+| `DesiresPanel > 短期欲望全是终态 → 不渲染「短期欲望」空区块` | 边界鲁棒 | 短期欲望全为 satisfied/expired → `liveShortTerm.length===0`，「短期欲望」区块整体不渲染 |
+
+**功能阶段**：frontend「欲望终态过滤」轮编写（RTL + 真实 store，`vi.spyOn(refresh)` 阻断 fetch；验证展示层过滤——`expired`/`satisfied` 终态不出现在队列列表，全终态时连「短期欲望」标题都不渲染；后端 /api/desires 全量快照不动、只前端过滤）。
+
+## frontend-exploration-map（探索地图组件：ExplorationMap 页内视图）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
 | `ExplorationMap > 渲染历史节点 + 心愿单` | 功能正确 | store 里 free_exploration 的 `progress.result.nodes` 渲染为已探索节点（「搜索：深海鱼」上屏）+ 心愿单「发光生物」上屏 |
 | `ExplorationMap > 「出门探索」点击调 start（POST /api/explore）` | 功能正确 | mock fetch 断言 `POST /api/explore`（`method: "POST"`），`start` 触发 `postExplore` |
+| `ExplorationMap > 「出门探索」忙碌(409) → 显示错误` | 功能正确 | mock fetch 返回 `{status:409, detail:"已有活动进行中"}` → 错误文案「已有活动进行中」上屏（`findByText` 等待） |
 | `ExplorationMap > 「＋」加心愿调用 addWish` | 功能正确 | 输入「深海鱼」点「＋」→ `useExplorationStore.getState().wishlist` 含「深海鱼」 |
 
-**功能阶段**：「探索升级：联网探索 + 探索地图」轮编写（RTL + 真实 store + mock fetch；验证管道正确——历史足迹节点/心愿单渲染、出门探索调 `POST /api/explore`、加心愿调 `addWish`，不验证视觉）。
+**功能阶段**：「探索升级：联网探索 + 探索地图」轮编写（RTL + 真实 store + mock fetch；验证管道正确——历史足迹节点/心愿单渲染、出门探索调 `POST /api/explore`、加心愿调 `addWish`，不验证视觉）。「词条收敛·出门挂载」轮：`ExplorationMap` 从 orphan（无挂载点、无 CSS）改为**页内视图**——去掉 `onClose` prop 与 ✕ 关闭按钮，外壳 `aside.exploration-map` 改 `section.side-panel`（复用页内面板骨架），由右底工具条「出门」入口挂载；用例删 `onClose={() => {}}` prop（`render(<ExplorationMap />)`），补 409 忙碌错误一例。
+
+## frontend-scroll-area（书卷区域：ScrollArea 对话主舞台）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `ScrollArea > 渲染对话主舞台：消息列表 + 遭遇卡片，无模式切换按钮` | 功能正确 | 渲染 `.message-list` 容器；无未决遭遇时 `.encounter-card` 为 null；「记忆/笔记/对话」按钮已移除（`queryByText` 均 null） |
+
+**功能阶段**：「多入口收敛」轮编写（原「三模式切换」测试随 ScrollArea 从 对话/记忆/笔记 三模式收敛为单一对话主舞台而重写：记忆/笔记移入左面板 InnerWorld 入口，ScrollArea 不再有模式切换按钮；RTL + 真实 store，验证渲染不崩 + 无模式按钮，不验证视觉）。
+
+## frontend-right-dock（右侧底部工具条：聊天 / 内在 / 空间 / 记录 / 出门 / 游戏设置）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `RightDock > 渲染聊天 / 内在 / 空间 / 记录 / 出门 / 游戏设置六个入口` | 功能正确 | 六个按钮「聊天/内在/空间/记录/出门/游戏设置」均上屏 |
+| `RightDock > 当前视图对应入口高亮（aria-pressed）` | 功能正确 | `view=null` 时「聊天」`aria-pressed=true`；`view=0/1/2/"explore"/"settings"` 时「内在/空间/记录/出门/游戏设置」各自 `true` 且「聊天」false |
+| `RightDock > 点入口触发 onSwitch 对应视图` | 功能正确 | `onSwitch` 依次被调 `null`、`0`、`1`、`2`、`"explore"`、`"settings"` |
+
+**功能阶段**：「三区布局再收敛」轮编写（左面板瘦身为 心情/精力 + 她现在的念头 + 正在做什么；空间/内心世界总览/游戏设置迁到右侧底部工具条 `RightDock`；`InnerWorld` 加 `OVERVIEW_INDEX(-1)` 全分类总览模式——面板顶部三大类导航 + 点大类切子标签。RTL + 真实 store，验证入口传参正确 + 总览导航切换管道，不验证视觉）。「替换式切视图」轮：`RightDock` 的「游戏设置」从折叠字体条改为切视图入口（`onOpenSettings`），字体大小迁至 `SettingsView`，第三条用例随之由「展开点大写 fontScale」改为「点游戏设置触发 onOpenSettings」。「底两条常驻」轮：`RightDock` 从三入口（`onOpenInner`/`onOpenSettings`）改为四入口导航条（统一 `onSwitch(view)` + `view` 高亮当前），新增「聊天」入口切回对话；用例由「三入口 + 传参」改为「四入口 + 高亮 + onSwitch 传参」。「词条收敛·六词条」轮：`RightDock` 词条由「聊天/空间/内心世界总览/游戏设置」改为**六词条**「聊天/内在/空间/记录/出门/游戏设置」——去掉 `OVERVIEW_INDEX`（内心世界总览删除），新增「内在(0)」「记录(2)」直达（左面板摘要与工具条同源分类）、「出门("explore")」挂载探索地图页内视图；用例由「四入口 + OVERVIEW_INDEX」改为「六入口 + onSwitch(null/0/1/2/"explore"/"settings")」，全分类总览两例随 `OVERVIEW_INDEX` 删除。
+
+## frontend-settings-view（游戏设置页内面板：SettingsView 字体大小 + 背景外观）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `SettingsView > 渲染标题 / 字体大小三档 / 背景外观` | 功能正确 | 「游戏设置」标题、「字体大小」「背景」两个面板标题（heading）、「小/中/大」三按钮均上屏 |
+| `SettingsView > 默认「中」激活，点「大」写 settingsStore.fontScale` | 功能正确 | 默认「中」`aria-pressed=true`；点「大」→ `fontScale==="large"` 且「大」`aria-pressed=true` |
+| `SettingsView > 点预设色块「樱粉」写 settingsStore.tint` | 功能正确 | 点「樱粉」色块（aria-label）→ `settingsStore.tint === "#f7e8e0"` |
+
+**功能阶段**：「替换式切视图」轮编写（把 `RightDock` 折叠字体条 + orphan `BackgroundPanel` 收进页内设置面板 `SettingsView`；复用 `Panel` + `BackgroundPanel` + `settingsStore`。RTL + 真实 store，验证字体档位/背景色调写 store + 返回对话接线，不验证视觉）。「底两条常驻」轮：`SettingsView` 移除 `onBack` prop 与「返回对话」按钮（切回聊天走工具条「聊天」），对应「返回对话」用例与首条中的「返回对话」断言删除。

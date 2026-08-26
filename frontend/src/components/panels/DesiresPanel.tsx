@@ -14,6 +14,12 @@ export default function DesiresPanel() {
     void refresh();
   }, [refresh]);
 
+  // 短期欲望只显示「活队列」（pending/active/suppressed）；expired/satisfied 是终态历史，
+  // 留在列表里是噪音。后端 /api/desires 仍返回全量供溯源，这里只做展示层过滤，不碰契约。
+  const liveShortTerm = (data?.short_term ?? []).filter(
+    (d) => d.status !== "expired" && d.status !== "satisfied",
+  );
+
   return (
     <Panel title="欲望">
       {error !== null && <p className="error-text">{error}</p>}
@@ -39,11 +45,11 @@ export default function DesiresPanel() {
               </ul>
             </div>
           )}
-          {data.short_term.length > 0 && (
+          {liveShortTerm.length > 0 && (
             <div className="panel-section">
               <h3 className="panel-section-title">短期欲望</h3>
               <ul className="panel-list">
-                {data.short_term.map((d) => (
+                {liveShortTerm.map((d) => (
                   <li key={d.id} className="panel-item">
                     <span className="panel-item__main">
                       [{DESIRE_TYPE_LABELS[d.type]}] {d.description}

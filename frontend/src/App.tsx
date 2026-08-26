@@ -2,8 +2,11 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import AnnounceLayer from "./components/AnnounceLayer";
 import ChatInput from "./components/chat/ChatInput";
+import ExplorationMap from "./components/exploration/ExplorationMap";
 import InnerWorld from "./components/layout/InnerWorld";
+import SettingsView from "./components/layout/SettingsView";
 import LeftPanel from "./components/shell/LeftPanel";
+import RightDock, { type View } from "./components/shell/RightDock";
 import ScrollArea from "./components/shell/ScrollArea";
 import EvalPanel from "./components/panels/EvalPanel";
 import { usePresence } from "./hooks/usePresence";
@@ -28,14 +31,15 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
 };
 
 // 游戏壳装配（06-game-shell）：三区布局——左面板 + 书卷区域 + Galgame 对话框。
-// useSSE 只挂一次；点左面板摘要弹 InnerWorld 详情；Ctrl+Shift+D 切调试页（eval+token）。
+// useSSE 只挂一次；点左面板摘要 / 底部工具条替换书卷区视图；Ctrl+Shift+D 切调试页（eval+token）。
 export default function App() {
   const status = useSSE(dispatchEvent);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
   const refreshActivity = useActivityStore((s) => s.refresh);
   const refreshEncounter = useEncounterStore((s) => s.refresh);
   usePresence();
-  const [innerOpen, setInnerOpen] = useState<number | null>(null);
+  // 书卷区当前视图：null = 对话主舞台；number = InnerWorld 分类（0 内在 / 1 空间 / 2 记录）；"settings" = 游戏设置页；"explore" = 出门探索
+  const [view, setView] = useState<View>(null);
   const [debugOpen, setDebugOpen] = useState(false);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
@@ -90,20 +94,21 @@ export default function App() {
       </header>
 
       <main className="game-shell" style={shellStyle}>
-        <LeftPanel onOpenInner={setInnerOpen} />
+        <LeftPanel onOpenInner={(i) => setView(i)} />
         <div className="game-main">
-          <ScrollArea />
+          {view === null ? (
+            <ScrollArea />
+          ) : view === "settings" ? (
+            <SettingsView />
+          ) : view === "explore" ? (
+            <ExplorationMap />
+          ) : (
+            <InnerWorld key={view} categoryIndex={view} />
+          )}
+          <RightDock view={view} onSwitch={(v) => setView(v)} />
           <ChatInput />
         </div>
       </main>
-
-      {innerOpen !== null && (
-        <InnerWorld
-          key={innerOpen}
-          categoryIndex={innerOpen}
-          onClose={() => setInnerOpen(null)}
-        />
-      )}
       {debugOpen && (
         <div className="debug-overlay">
           <div className="debug-overlay__bar">

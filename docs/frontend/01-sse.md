@@ -53,11 +53,14 @@ type ReflectionDoneEvent = SseBase & {
 /** 探索地牢楼层节点：real = 真实页面，dead_end = 死路，safe_room = 安全房。 */
 type FloorNode = { name: string; url: string; kind: "real" | "dead_end" | "safe_room"; snippet: string; may_encounter: boolean };
 
-/** 探索实时进度帧（exploration_step）：探索链每访问一个节点推一次。 */
+/** 逐层地牢决策载荷（exploration_step 推送）：本层节点 + 精力 + 深度 + 目标。 */
+type ExplorationDecision = { kind: "choose"; floor: number; energy: number; focus: string; nodes: FloorNode[] };
+
+/** 探索实时进度帧（exploration_step）：每个决策点推一次决策载荷。 */
 type ExplorationStepEvent = SseBase & {
   event: "exploration_step";
   activity_id: string;
-  node: FloorNode;
+  decision: ExplorationDecision;
 };
 
 // 未消费的 12 类：无消费者，payload 保持宽松。
@@ -69,7 +72,7 @@ type OpaqueEvent = SseBase & {
 } & Record<string, unknown>;
 
 // 遭遇（19-encounter）：start 文本 + 选项、choice 选择、end 结局（choice 无消费者）。
-type EncounterKind = "desire_chat" | "random_event" | "growth_moment";
+type EncounterKind = "desire_chat" | "random_event" | "growth_moment" | "rooted";
 type EncounterOption = { index: number; text: string };
 type EncounterStartEvent = SseBase & {
   event: "encounter_start";

@@ -50,14 +50,14 @@ type ReflectionDoneEvent = SseBase & {
   story_is_new: boolean; // true = 故事真新增（去重通过）；false = 与已有片段重复、未追加
 };
 
-/** 探索地图节点：search = 搜索动作（url 空），web = 访问的网页。 */
-type ExplorationNode = { name: string; url: string; kind: "search" | "web" };
+/** 探索地牢楼层节点：real = 真实页面，dead_end = 死路，safe_room = 安全房。 */
+type FloorNode = { name: string; url: string; kind: "real" | "dead_end" | "safe_room"; snippet: string; may_encounter: boolean };
 
 /** 探索实时进度帧（exploration_step）：探索链每访问一个节点推一次。 */
 type ExplorationStepEvent = SseBase & {
   event: "exploration_step";
   activity_id: string;
-  node: ExplorationNode;
+  node: FloorNode;
 };
 
 // 未消费的 12 类：无消费者，payload 保持宽松。
@@ -146,7 +146,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `desire_generated`/`desire_satisfied`/`desire_expired` | `desireStore` | `refresh()` | 欲望变化 → 重拉快照（事件只带 `desire_id`） |
 | `activity_start`/`activity_interrupted` | `activityStore` | `refresh()` | 活动开始/抢占 → 重拉快照（事件只带 `activity_id`） |
 | `activity_end` | `activityStore` + `announceStore` | `refresh()` 后按 `activity_id` 找产出并 `announce("activity", …)` | 活动完成 → 重拉快照 + 冒一句产出 |
-| `exploration_step` | `explorationStore` | `onStep` | 点亮地图实时节点：`liveNodes` 追加帧 `node`、`activityId` 置为帧 `activity_id` |
+| `exploration_step` | `explorationStore` | `onStep` | 持有决策载荷：decision 置帧 decision、activityId 置帧 activity_id（异 activity 清 history） |
 | `encounter_start` | `encounterStore` | `onStart` | 遭遇开始 → 置 `current`（`EncounterCard` 渲染文本 + 可点选项） |
 | `encounter_choice` | — | — | 无消费者（`encounter_end` 紧跟，由其清 `current` + 上屏 ending） |
 | `encounter_end` | `encounterStore` | `onEnd` | 遭遇结束 → 清 `current` + ending 上聊天时间线 + 重拉内在/欲望/记忆快照 |

@@ -786,7 +786,7 @@ export const ENCOUNTER_KIND_LABELS: Record<EncounterKind, string> = {
 - **`client`**（`tests/api.test.ts` 追加）：`chooseEncounter` 请求 `POST /api/encounter/choose` body `{encounter_id, option_index}` → `{encounter_id, chosen}` 解析正确；`getCurrentEncounter` `GET /api/encounter/current` → `EncounterCurrent | null` 解析正确（含 `null`）。
 - **`activityStatusText`**（`tests/activityResult.test.ts` 追加）：`null` → 空闲；reading 带 subject → `在读《X》`；creation/exploration/observe_user/idle_reflection/rest 各分支文案正确。
 - **`labels`**（`tests/labels.test.ts` 追加）：`ENCOUNTER_KIND_LABELS` 三键中文映射正确；`label()` 未知键回退。
-- 组件级：`EncounterCard` 渲染文本 + 选项按钮、点击调 `choose`、`choosing` 禁用（React Testing Library，mock store）；`ScrollArea` 渲染 `MessageList` + `EncounterCard`（不再模式切换）；`InnerWorld` 页内面板横向子标签单分类（`categoryIndex` 0/1/2 各渲染该类子标签条，点标签切活动面板、默认激活第一项，无全分类总览）；`RightDock` 渲染六入口（聊天/内在/空间/记录/出门/游戏设置）+ 按 `view` 高亮当前（`aria-pressed`）+ 点入口触发 `onSwitch(null/0/1/2/"explore"/"settings")`；`ExplorationMap` 渲染历史节点/心愿单 + 「出门探索」调 `POST /api/explore` + 409 忙碌错误上屏 + 加心愿；`SettingsView` 渲染字体大小三档 + 背景外观，点档位写 `fontScale`、点色块写 `tint`。视觉样式不做断言（README §6）。
+- 组件级：`EncounterCard` 渲染文本 + 选项按钮、点击调 `choose`、`choosing` 禁用（React Testing Library，mock store）；`ScrollArea` 渲染 `MessageList` + `EncounterCard`（不再模式切换）；`InnerWorld` 页内面板横向子标签单分类（`categoryIndex` 0/1/2 各渲染该类子标签条，点标签切活动面板、默认激活第一项，无全分类总览）；`RightDock` 渲染六入口（聊天/内在/空间/记录/出门/游戏设置）+ 按 `view` 高亮当前（`aria-pressed`）+ 点入口触发 `onSwitch(null/0/1/2/"explore"/"settings")`；`ExplorationMap` 渲染 HUD + 节点 + 安全房，点节点/下楼/撤退调 choose，无 decision 显示出门探索，展开地图显示足迹；`SettingsView` 渲染字体大小三档 + 背景外观，点档位写 `fontScale`、点色块写 `tint`。视觉样式不做断言（README §6）。
 
 ## 9. 文档同步
 

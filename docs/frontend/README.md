@@ -102,7 +102,7 @@ frontend/
       materialsStore.ts      # 资料上传：文件清单 + 上传动作
       readingNotesStore.ts   # 读书笔记：笔记清单 + 删除动作（批注增删查走组件本地 state）
       encounterStore.ts      # 遭遇：未决遭遇 + 选择/结局（19-encounter）
-      explorationStore.ts    # 探索：心愿单 wishlist + 实时节点 liveNodes + start（出门探索，POST /api/explore）
+      explorationStore.ts    # 探索：decision 决策载荷 + history 足迹 + autopilot 托管 + start/choose（逐层地牢，POST /api/explore + /api/explore/choose + /api/explore/autopilot）
       settingsStore.ts       # 背景外观：tint/image（纯前端 UI 状态，无后端）
       announceStore.ts       # 头像旁临时气泡：items/announce/dismiss（纯前端呈现，无后端）
     components/
@@ -115,7 +115,7 @@ frontend/
       encounter/
         EncounterCard.tsx    # 遭遇卡片（encounter_start 文本 + 可点选项，读 encounterStore）
       exploration/
-        ExplorationMap.tsx   # 探索地图（历史足迹节点 + 实时节点 + 心愿单 + 「出门探索」，页内视图，读 explorationStore）
+        ExplorationMap.tsx   # 探索地牢（HUD + 本层 4 槽 + 下楼/撤退 + 展开地图 + 道具栏占位，读 explorationStore）
       inner/
         InnerStatePanel.tsx
         ValenceArousalPlot.tsx
@@ -174,7 +174,7 @@ design §11 列 7 个面板，全部落地。书卷风改造后，三区布局�
 | 资料上传 | ✅ 实现 | `POST /api/upload` + `GET /api/materials` | `InnerWorld`（空间分类） |
 | 读书笔记 | ✅ 实现 | `GET /api/reading-notes` + `GET/POST/DELETE /api/annotations` | `InnerWorld`（空间分类） |
 | 记忆浏览器 | ✅ 实现 | `GET /api/memories` + SSE `memory_*` | `InnerWorld`（记录分类） |
-| 探索地图 | ✅ 实现 | `POST /api/explore` + `activityStore.results`（free_exploration 足迹） | `components/exploration/ExplorationMap.tsx`（工具条「出门」） |
+| 探索地图 | ✅ 实现：逐层地牢（HUD/节点/托管/地图/道具占位） | `POST /api/explore` + `activityStore.results`（free_exploration 足迹） | `components/exploration/ExplorationMap.tsx`（工具条「出门」） |
 | eval + token 看板 | ✅ 实现 | `GET /api/eval` / `GET /api/tokens` | 独立调试页（`components/panels/EvalPanel.tsx`，`Ctrl+Shift+D`） |
 
 ## 6. 测试约定

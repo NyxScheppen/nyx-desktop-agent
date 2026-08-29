@@ -2,17 +2,13 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import AnnounceLayer from "./components/AnnounceLayer";
 import ChatInput from "./components/chat/ChatInput";
-import ExplorationMap from "./components/exploration/ExplorationMap";
-import InnerWorld from "./components/layout/InnerWorld";
+import InnerDetail from "./components/layout/InnerDetail";
 import SettingsView from "./components/layout/SettingsView";
-import LeftPanel from "./components/shell/LeftPanel";
-import RightDock, { type View } from "./components/shell/RightDock";
 import ScrollArea from "./components/shell/ScrollArea";
-import EvalPanel from "./components/panels/EvalPanel";
+import StatusBar from "./components/shell/StatusBar";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
 import { useActivityStore } from "./stores/activityStore";
-import { useEncounterStore } from "./stores/encounterStore";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { ConnectionState } from "./types/api";
@@ -30,40 +26,26 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
   large: 1.12,
 };
 
-// 游戏壳装配（06-game-shell）：三区布局——左面板 + 书卷区域 + Galgame 对话框。
-// useSSE 只挂一次；点左面板摘要 / 底部工具条替换书卷区视图；Ctrl+Shift+D 切调试页（eval+token）。
+// 精简装配：顶栏（标题+设置按钮+连接状态）+ 左状态条 + 对话主区 + 两个弹层（内在详情/设置）+ 气泡层。
+// useSSE 只挂一次；点状态条信息区开内在详情；顶栏「设置」开设置弹层。
 export default function App() {
   const status = useSSE(dispatchEvent);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
   const refreshActivity = useActivityStore((s) => s.refresh);
-  const refreshEncounter = useEncounterStore((s) => s.refresh);
   usePresence();
-  // 书卷区当前视图：null = 对话主舞台；number = InnerWorld 分类（0 内在 / 1 空间 / 2 记录）；"settings" = 游戏设置页；"explore" = 出门探索
-  const [view, setView] = useState<View>(null);
-  const [debugOpen, setDebugOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
   const fontScale = useSettingsStore((s) => s.fontScale);
 
-  // SSE 恢复连接后重拉快照 + 未决遭遇（断线期间 encounter_start/emotion_update 可能丢失）
+  // SSE 恢复连接后重拉快照（断线期间 emotion_update 可能丢失）
   useEffect(() => {
     if (status === "open") {
       refreshState();
       void refreshActivity();
-      void refreshEncounter();
     }
-  }, [status, refreshState, refreshActivity, refreshEncounter]);
-
-  // 调试页快捷键（隐藏入口）：Ctrl+Shift+D
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "D" && e.ctrlKey && e.shiftKey) {
-        setDebugOpen((v) => !v);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [status, refreshState, refreshActivity]);
 
   // 背景：有图以图铺底（cover）；无图有色调作纯色；默认羊皮纸（--parchment）。
   const bgStyle: CSSProperties = {};
@@ -90,36 +72,26 @@ export default function App() {
         <span className="scene-title">✦ Nyx ✦</span>
         <div className="topbar-right">
           <span className="connection-state">{CONNECTION_LABEL[status]}</span>
+          <button
+            type="button"
+            className="topbar-settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            设置
+          </button>
         </div>
       </header>
 
       <main className="game-shell" style={shellStyle}>
-        <LeftPanel onOpenInner={(i) => setView(i)} />
+        <StatusBar onOpenDetail={() => setDetailOpen(true)} />
         <div className="game-main">
-          {view === null ? (
-            <ScrollArea />
-          ) : view === "settings" ? (
-            <SettingsView />
-          ) : view === "explore" ? (
-            <ExplorationMap />
-          ) : (
-            <InnerWorld key={view} categoryIndex={view} />
-          )}
-          <RightDock view={view} onSwitch={(v) => setView(v)} />
+          <ScrollArea />
           <ChatInput />
         </div>
       </main>
-      {debugOpen && (
-        <div className="debug-overlay">
-          <div className="debug-overlay__bar">
-            <span>调试</span>
-            <button type="button" onClick={() => setDebugOpen(false)}>
-              关闭
-            </button>
-          </div>
-          <EvalPanel />
-        </div>
-      )}
+
+      {detailOpen && <InnerDetail onClose={() => setDetailOpen(false)} />}
+      {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
       <AnnounceLayer />
     </div>
   );

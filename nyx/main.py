@@ -18,7 +18,6 @@ from pydantic import BaseModel
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.material_store import MaterialStore
-from nyx.activity.reading_note_store import ReadingNoteStore
 from nyx.activity.screen import ScreenObserver, capture_screen
 from nyx.activity.store import ActivityStore
 from nyx.config import Config, load_config
@@ -26,7 +25,6 @@ from nyx.db import Database, connect
 from nyx.desire.facade import DesireFacade
 from nyx.desire.store import DesireStore
 from nyx.desire.value import default_value
-from nyx.encounter.facade import EncounterFacade
 from nyx.enums import (
     ActivityStatus,
     DesireType,
@@ -54,19 +52,15 @@ from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
 from nyx.types import (
     Activity,
-    Annotation,
     CurrentState,
     DesireState,
-    EvalReport,
     Event,
     LongTermDesire,
     Material,
     Memory,
     Personality,
-    ReadingNote,
     ReflectionOutcome,
     SelfNarrative,
-    TokenUsage,
     Values,
 )
 
@@ -98,7 +92,6 @@ class _App:
     memory: MemoryFacade
     activity: ActivityFacade
     expression: ExpressionFacade
-    encounter: EncounterFacade
     evaluator: Evaluator
     config: Config
     # 上次搭话时间戳（18-api 维护，供 should_initiate_chat）
@@ -356,10 +349,6 @@ def _subscribe(app: _App) -> None:
     bus.subscribe(EventType.ACTIVITY_END, app.desire.add_value)
     bus.subscribe(EventType.ACTIVITY_END, app.inner_life.apply_event)
     bus.subscribe(EventType.ACTIVITY_END, app.memory.remember_activity)
-    bus.subscribe(EventType.ENCOUNTER_END, app.inner_life.apply_event)
-    bus.subscribe(EventType.ENCOUNTER_END, app.desire.add_value)
-    bus.subscribe(EventType.ENCOUNTER_END, app.memory.remember_encounter)
-    bus.subscribe(EventType.ACTIVITY_END, app.encounter.on_activity_end)
     bus.subscribe(EventType.REFLECTION, app.inner_life.apply_event)
     bus.subscribe(EventType.CLOCK_TICK, lambda e: _on_clock_tick(app, e))
 
@@ -375,30 +364,6 @@ class _ExportPayload(BaseModel):
 class _ObservePayload(BaseModel):
     presence: Literal["online", "away", "busy"]
     window_title: str = ""
-
-
-class _AnnotationPayload(BaseModel):
-    target_id: str
-    content: str
-
-
-class _ExplorePayload(BaseModel):
-    topic: str | None = None
-
-
-class _ExploreChoosePayload(BaseModel):
-    activity_id: str
-    choice: str
-
-
-class _ExploreAutopilotPayload(BaseModel):
-    activity_id: str
-    on: bool
-
-
-class _EncounterChoosePayload(BaseModel):
-    encounter_id: str
-    option_index: int
 
 
 def build_app(app: _App) -> FastAPI:
@@ -439,14 +404,6 @@ def build_app(app: _App) -> FastAPI:
     @fast.get("/api/activity/results")
     async def api_activity_results(limit: int = 100) -> list[Activity]:
         return await app.activity.get_results(limit)
-
-    @fast.get("/api/eval")
-    async def api_eval(limit: int = 100) -> list[EvalReport]:
-        return await app.evaluator.list_reports(limit)
-
-    @fast.get("/api/tokens")
-    async def api_tokens(since: float = 0) -> list[TokenUsage]:
-        return await app.evaluator.list_token_usage(since)
 
     @fast.get("/api/events/log")
     async def api_events_log(
@@ -491,28 +448,6 @@ def build_app(app: _App) -> FastAPI:
     async def api_materials() -> dict[str, list[Material]]:
         return {"materials": await app.activity.list_materials()}
 
-    @fast.get("/api/reading-notes")
-    async def api_reading_notes(limit: int = 50) -> list[ReadingNote]:
-        return await app.activity.list_reading_notes(limit)
-
-    @fast.delete("/api/reading-notes/{note_id}")
-    async def api_delete_reading_note(note_id: str) -> dict[str, str]:
-        await app.activity.delete_reading_note(note_id)
-        return {"deleted": note_id}
-
-    @fast.get("/api/annotations")
-    async def api_annotations(target_id: str) -> list[Annotation]:
-        return await app.activity.list_annotations(target_id)
-
-    @fast.post("/api/annotations")
-    async def api_add_annotation(payload: _AnnotationPayload) -> Annotation:
-        return await app.activity.add_annotation(payload.target_id, payload.content)
-
-    @fast.delete("/api/annotations/{annotation_id}")
-    async def api_delete_annotation(annotation_id: str) -> dict[str, str]:
-        await app.activity.delete_annotation(annotation_id)
-        return {"deleted": annotation_id}
-
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:
         presence = payload.presence
@@ -524,45 +459,6 @@ def build_app(app: _App) -> FastAPI:
         )
         await app.bus.publish(event)
         return {"event_id": event.id}
-
-    @fast.post("/api/explore")
-    async def api_explore(payload: _ExplorePayload) -> dict[str, str]:
-        try:
-            activity_id = await app.activity.start_exploration(payload.topic)
-        except RuntimeError as exc:  # 已有活动在跑
-            raise HTTPException(status_code=409, detail=str(exc))
-        return {"activity_id": activity_id}
-
-    @fast.post("/api/explore/choose")
-    async def api_explore_choose(payload: _ExploreChoosePayload) -> dict[str, Any]:
-        try:
-            return await app.activity.choose_exploration(
-                payload.activity_id, payload.choice
-            )
-        except RuntimeError as exc:  # 无进行中的探索
-            raise HTTPException(status_code=409, detail=str(exc))
-
-    @fast.post("/api/explore/autopilot")
-    async def api_explore_autopilot(
-        payload: _ExploreAutopilotPayload,
-    ) -> dict[str, Any]:
-        await app.activity.set_exploration_autopilot(
-            payload.activity_id, payload.on
-        )
-        return {"activity_id": payload.activity_id, "autopilot": payload.on}
-
-    @fast.post("/api/encounter/choose")
-    async def api_encounter_choose(
-        payload: _EncounterChoosePayload,
-    ) -> dict[str, Any]:
-        result = await app.encounter.choose(payload.encounter_id, payload.option_index)
-        if result is None:
-            raise HTTPException(status_code=409, detail="遭遇不存在或已结束")
-        return {"encounter_id": result.id, "chosen": result.chosen_index}
-
-    @fast.get("/api/encounter/current")
-    async def api_encounter_current() -> dict[str, Any] | None:
-        return app.encounter.get_current()
 
     @fast.get("/api/events")
     async def api_events() -> StreamingResponse:
@@ -610,7 +506,7 @@ async def build_app_context(config: Config) -> _App:
 
     memory_store = MemoryStore(db)
     embed = build_embed(config.embedding.model)  # MVP 默认启用向量层；测试注入 None
-    evaluator = Evaluator(db, embed)  # embed 供 OOC 第 2 档复用
+    evaluator = Evaluator(embed)  # embed 供 OOC 第 2 档复用
     retrieval = MemoryRetrieval(memory_store, embed)
     memory = MemoryFacade(
         memory_store, retrieval, bus, llm, evaluator, config.memory, embed
@@ -625,7 +521,6 @@ async def build_app_context(config: Config) -> _App:
     inner_life_store = InnerLifeStore(db)
     activity_store = ActivityStore(db)
     material_store = MaterialStore(db)
-    reading_notes = ReadingNoteStore(db)
 
     # 循环依赖解环：_get_state/_reflect/_get_observation 引用可变容器，运行时才求值
     state_holder: list[Callable[[], Awaitable[CurrentState]]] = []
@@ -647,13 +542,10 @@ async def build_app_context(config: Config) -> _App:
     canon = _load_canon(prompt_dir)
     ask = _load_ask(prompt_dir)
 
-    encounter = EncounterFacade(bus, llm, evaluator, _get_state, canon)
-
     activity = ActivityFacade(
         activity_store, material_store, bus, llm, evaluator, tools, desire,
-        memory, reading_notes, _get_state, _reflect, _get_observation,
+        memory, _get_state, _reflect, _get_observation,
         config.activity, config.exploration, canon,
-        on_rooted_encounter=encounter.start_rooted,
     )
     inner_life = InnerLifeFacade(
         inner_life_store, activity, desire, memory, bus, llm, evaluator, config,
@@ -671,7 +563,7 @@ async def build_app_context(config: Config) -> _App:
 
     app = _App(
         bus=bus, inner_life=inner_life, desire=desire, memory=memory,
-        activity=activity, expression=expression, encounter=encounter,
+        activity=activity, expression=expression,
         evaluator=evaluator, config=config,
     )
 

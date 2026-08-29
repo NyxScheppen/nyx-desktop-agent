@@ -1,19 +1,16 @@
 # pyright: reportPrivateUsage=false
-from typing import Any, cast
+from typing import cast
 
 from httpx import ASGITransport, AsyncClient
 
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
-from nyx.encounter.facade import EncounterFacade
 from nyx.enums import (
     EmotionCategory,
-    EncounterKind,
     EnergyState,
     EventType,
     MemoryType,
-    OptionTone,
     Source,
 )
 from nyx.eval.evaluator import Evaluator
@@ -23,14 +20,10 @@ from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import _App, build_app
 from nyx.memory.facade import MemoryFacade
 from nyx.types import (
-    Annotation,
     CurrentState,
-    Encounter,
-    EncounterOption,
     Event,
     Material,
     Memory,
-    ReadingNote,
 )
 
 
@@ -103,14 +96,6 @@ class _FakeMemory:
 class _FakeActivity:
     def __init__(self) -> None:
         self.list_calls = 0
-        self.deleted_notes: list[str] = []
-        self.deleted_annotations: list[str] = []
-        self.added_annotations: list[tuple[str, str]] = []
-        self.explore_topics: list[str | None] = []
-        self.explore_busy = False
-        self.explore_choices: list[tuple[str, str]] = []
-        self.explore_choose_busy = False
-        self.autopilot_calls: list[tuple[str, bool]] = []
 
     async def list_materials(self) -> list[Material]:
         self.list_calls += 1
@@ -122,50 +107,6 @@ class _FakeActivity:
             )
         ]
 
-    async def list_reading_notes(self, limit: int = 50) -> list[ReadingNote]:
-        return [
-            ReadingNote(
-                id="n1", book="骑士团史.md", content="完整笔记",
-                created_at=1.0, annotation_count=2,
-            )
-        ]
-
-    async def delete_reading_note(self, note_id: str) -> None:
-        self.deleted_notes.append(note_id)
-
-    async def list_annotations(self, target_id: str) -> list[Annotation]:
-        return [
-            Annotation(
-                id="a1", target_id=target_id, author="user",
-                content="批注", created_at=1.0,
-            )
-        ]
-
-    async def add_annotation(self, target_id: str, content: str) -> Annotation:
-        self.added_annotations.append((target_id, content))
-        return Annotation(
-            id="a1", target_id=target_id, author="user",
-            content=content, created_at=1.0,
-        )
-
-    async def delete_annotation(self, annotation_id: str) -> None:
-        self.deleted_annotations.append(annotation_id)
-
-    async def start_exploration(self, topic: str | None) -> str:
-        if self.explore_busy:
-            raise RuntimeError("已有活动进行中")
-        self.explore_topics.append(topic)
-        return "exp-1"
-
-    async def choose_exploration(self, activity_id: str, choice: str) -> dict[str, Any]:
-        if self.explore_choose_busy:
-            raise RuntimeError("无进行中的探索")
-        self.explore_choices.append((activity_id, choice))
-        return {"kind": "choose", "nodes": []}
-
-    async def set_exploration_autopilot(self, activity_id: str, on: bool) -> None:
-        self.autopilot_calls.append((activity_id, on))
-
 
 def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
     return _App(
@@ -175,7 +116,6 @@ def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
         memory=cast(MemoryFacade, memory),
         activity=cast(ActivityFacade, object()),
         expression=cast(ExpressionFacade, object()),
-        encounter=cast(EncounterFacade, object()),
         evaluator=cast(Evaluator, object()),
         config=Config(),
     )
@@ -307,205 +247,3 @@ async def test_materials_endpoint_returns_progress() -> None:
         ]
     }
     assert fake_activity.list_calls == 1
-
-
-async def test_reading_notes_endpoint() -> None:
-    fake = _FakeActivity()
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake)
-    async with _client(app) as client:
-        resp = await client.get("/api/reading-notes")
-    assert resp.status_code == 200
-    assert resp.json() == [
-        {
-            "id": "n1", "book": "骑士团史.md", "content": "完整笔记",
-            "created_at": 1.0, "path": "", "annotation_count": 2,
-        }
-    ]
-
-
-async def test_delete_reading_note_endpoint() -> None:
-    fake = _FakeActivity()
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake)
-    async with _client(app) as client:
-        resp = await client.delete("/api/reading-notes/n1")
-    assert resp.status_code == 200
-    assert resp.json() == {"deleted": "n1"}
-    assert fake.deleted_notes == ["n1"]
-
-
-async def test_annotations_endpoint() -> None:
-    fake = _FakeActivity()
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake)
-    async with _client(app) as client:
-        resp = await client.get("/api/annotations", params={"target_id": "n1"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body[0]["id"] == "a1"
-    assert body[0]["author"] == "user"
-    assert body[0]["target_id"] == "n1"
-
-
-async def test_add_annotation_endpoint() -> None:
-    fake = _FakeActivity()
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake)
-    async with _client(app) as client:
-        resp = await client.post(
-            "/api/annotations", json={"target_id": "n1", "content": "批注"}
-        )
-    assert resp.status_code == 200
-    assert resp.json()["content"] == "批注"
-    assert fake.added_annotations == [("n1", "批注")]
-
-
-async def test_delete_annotation_endpoint() -> None:
-    fake = _FakeActivity()
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake)
-    async with _client(app) as client:
-        resp = await client.delete("/api/annotations/a1")
-    assert resp.status_code == 200
-    assert resp.json() == {"deleted": "a1"}
-    assert fake.deleted_annotations == ["a1"]
-
-
-async def test_explore_endpoint_no_topic() -> None:
-    fake = _FakeActivity()
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake)
-    async with _client(app) as client:
-        resp = await client.post("/api/explore", json={})
-    assert resp.status_code == 200
-    assert resp.json() == {"activity_id": "exp-1"}
-    assert fake.explore_topics == [None]
-
-
-async def test_explore_endpoint_with_topic() -> None:
-    fake = _FakeActivity()
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake)
-    async with _client(app) as client:
-        resp = await client.post("/api/explore", json={"topic": "深海鱼"})
-    assert resp.status_code == 200
-    assert fake.explore_topics == ["深海鱼"]
-
-
-async def test_explore_endpoint_busy_returns_409() -> None:
-    fake = _FakeActivity()
-    fake.explore_busy = True
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake)
-    async with _client(app) as client:
-        resp = await client.post("/api/explore", json={"topic": "深海鱼"})
-    assert resp.status_code == 409
-
-
-class _FakeEncounter:
-    def __init__(self) -> None:
-        self.choose_calls: list[tuple[str, int]] = []
-        self.choose_result: Encounter | None = None
-        self.current: dict[str, Any] | None = None
-
-    async def choose(self, encounter_id: str, option_index: int) -> Encounter | None:
-        self.choose_calls.append((encounter_id, option_index))
-        return self.choose_result
-
-    def get_current(self) -> dict[str, Any] | None:
-        return self.current
-
-
-def _enc_result() -> Encounter:
-    return Encounter(
-        id="enc1", kind=EncounterKind.RANDOM_EVENT, text="开场",
-        options=[EncounterOption(text="走", tone=OptionTone.BOLD)],
-        correlation_id="c1", started_at=0.0, chosen_index=0,
-    )
-
-
-async def test_encounter_choose_endpoint() -> None:
-    fake = _FakeEncounter()
-    fake.choose_result = _enc_result()
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.encounter = cast(EncounterFacade, fake)
-    async with _client(app) as client:
-        resp = await client.post(
-            "/api/encounter/choose", json={"encounter_id": "enc1", "option_index": 0}
-        )
-    assert resp.status_code == 200
-    assert resp.json() == {"encounter_id": "enc1", "chosen": 0}
-    assert fake.choose_calls == [("enc1", 0)]
-
-
-async def test_encounter_choose_none_returns_409() -> None:
-    fake = _FakeEncounter()  # choose_result None
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.encounter = cast(EncounterFacade, fake)
-    async with _client(app) as client:
-        resp = await client.post(
-            "/api/encounter/choose", json={"encounter_id": "x", "option_index": 0}
-        )
-    assert resp.status_code == 409
-
-
-async def test_encounter_current_endpoint() -> None:
-    fake = _FakeEncounter()
-    fake.current = {
-        "encounter_id": "enc1", "kind": "random_event", "text": "开场",
-        "options": [{"index": 0, "text": "走"}],
-    }
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.encounter = cast(EncounterFacade, fake)
-    async with _client(app) as client:
-        resp = await client.get("/api/encounter/current")
-    assert resp.status_code == 200
-    assert resp.json()["encounter_id"] == "enc1"
-
-
-async def test_encounter_current_null() -> None:
-    fake = _FakeEncounter()  # current None
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.encounter = cast(EncounterFacade, fake)
-    async with _client(app) as client:
-        resp = await client.get("/api/encounter/current")
-    assert resp.status_code == 200
-    assert resp.json() is None
-
-
-async def test_explore_choose_endpoint() -> None:
-    fake = _FakeActivity()
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake)
-    async with _client(app) as client:
-        resp = await client.post(
-            "/api/explore/choose", json={"activity_id": "exp-1", "choice": "node:0"}
-        )
-    assert resp.status_code == 200
-    assert fake.explore_choices == [("exp-1", "node:0")]
-
-
-async def test_explore_choose_busy_returns_409() -> None:
-    fake = _FakeActivity()
-    fake.explore_choose_busy = True
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake)
-    async with _client(app) as client:
-        resp = await client.post(
-            "/api/explore/choose", json={"activity_id": "x", "choice": "retreat"}
-        )
-    assert resp.status_code == 409
-
-
-async def test_explore_autopilot_endpoint() -> None:
-    fake = _FakeActivity()
-    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake)
-    async with _client(app) as client:
-        resp = await client.post(
-            "/api/explore/autopilot", json={"activity_id": "exp-1", "on": True}
-        )
-    assert resp.status_code == 200
-    assert resp.json() == {"activity_id": "exp-1", "autopilot": True}
-    assert fake.autopilot_calls == [("exp-1", True)]

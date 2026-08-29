@@ -2,8 +2,8 @@ import { create } from "zustand";
 import { getActivity, getActivityResults } from "../api/client";
 import type { Activity, ActivitySnapshot } from "../types/api";
 
-// 活动时间线面板（README §5）：REST 快照 + SSE activity_* 事件触发 refresh。
-// 「产出」面板数据同源：results 与 data 一起并发拉取（evalStore 双字段先例）。
+// 活动时间线面板：REST 快照 + SSE activity_* 事件触发 refresh。
+// 「产出」面板数据同源：results 与 data 一起并发拉取。
 type ActivityStoreState = {
   data: ActivitySnapshot | null;
   results: Activity[] | null;

@@ -94,12 +94,10 @@ class _FakeLlm:
         self.calls.append(output_type)
         self.correlation_ids.append(correlation_id)
         return LLMOutput(
-            id=f"llm-{len(self.calls)}",
             module=module,
             type=output_type,
             model="fake",
             content=self._response,
-            token_usage={"input": 1, "output": 1},
             correlation_id=correlation_id,
         )
 

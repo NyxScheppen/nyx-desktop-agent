@@ -7,12 +7,10 @@ from nyx.enums import (
     DesireStatus,
     DesireType,
     EmotionCategory,
-    EncounterKind,
     EnergyState,
     EventType,
     GoalAction,
     MemoryType,
-    OptionTone,
     SearchMode,
     Source,
 )
@@ -31,15 +29,6 @@ class Values(TypedDict):                   # 三观，1-10
     ai_identity_acceptance: float
     altruism: float
     optimism: float
-
-
-class EvalScores(TypedDict):               # eval OOC 得分
-    ooc: float
-
-
-class TokenUsageDict(TypedDict):           # 单次 LLM 记账 {input, output}
-    input: int
-    output: int
 
 
 # ---- 事件 ----
@@ -149,25 +138,6 @@ class Material:                    # 用户喂的读物（一本书），分块�
     updated_at: float              # 进度上次推进时间
 
 
-@dataclass
-class ReadingNote:                 # 读完整本书后的完整笔记（可删除、可批注）
-    id: str
-    book: str                      # 书名（filename，仅供展示）
-    content: str                   # 完整笔记正文（Markdown）
-    created_at: float
-    path: str = ""                 # 读物绝对路径（去重键；book 仅展示）
-    annotation_count: int = 0      # 非 DB 列，list() 里 LEFT JOIN 算出
-
-
-@dataclass
-class Annotation:                  # 读书笔记的批注
-    id: str
-    target_id: str                 # reading_note.id
-    author: str                    # 'user' | 'nyx'
-    content: str
-    created_at: float
-
-
 # ---- 内在生命 ----
 @dataclass
 class CurrentState:         # 只读快照
@@ -224,55 +194,10 @@ class Tool:
 
 @dataclass
 class LLMOutput:
-    id: str                 # uuid4（15-eval 补：EvalReport.output_id 引用）
     module: str             # 产出模块
     type: str               # 产出类型
-    model: str              # 本次调用所用模型（供 15-eval 填 TokenUsage.model）
+    model: str              # 本次调用所用模型
     content: str            # 原始文本
-    token_usage: TokenUsageDict
     correlation_id: str
     # bind_tools 时 LLM 请求的工具调用（无则空）
     tool_calls: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
-
-
-@dataclass
-class EvalReport:
-    id: str
-    output_id: str
-    module: str
-    type: str
-    scores: EvalScores
-    token_usage: TokenUsageDict
-    correlation_id: str
-    created_at: float
-
-
-@dataclass
-class TokenUsage:           # 一次 LLM 调用记账（对应 token_usage 表）
-    id: str
-    correlation_id: str | None
-    module: str
-    purpose: str            # reply / scene_memory / desire / reflection / ...
-    model: str
-    input_tokens: int
-    output_tokens: int
-    created_at: float
-
-
-# ---- 遭遇 ----
-@dataclass
-class EncounterOption:
-    text: str               # 选项文案（前端展示）
-    tone: OptionTone        # 倾向（LLM 标注，后果由纯函数派生）
-
-
-@dataclass
-class Encounter:            # 当前遭遇（内存态，MVP 不建表）
-    id: str
-    kind: EncounterKind
-    text: str               # 开场白
-    options: list[EncounterOption]
-    correlation_id: str
-    started_at: float
-    activity_id: str | None = None
-    chosen_index: int | None = None

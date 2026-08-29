@@ -112,12 +112,10 @@ class _FakeLlm:
         else:
             content = self._chat_content
         return LLMOutput(
-            id=f"llm-{len(self.calls)}",
             module=module,
             type=output_type,
             model="fake",
             content=content,
-            token_usage={"input": 1, "output": 1},
             correlation_id=correlation_id,
             tool_calls=list(self._tool_calls),
         )

@@ -7,7 +7,6 @@ from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.db import connect
 from nyx.desire.facade import DesireFacade
-from nyx.encounter.facade import EncounterFacade
 from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
@@ -61,17 +60,6 @@ class _FakeMemory:
     async def remember_activity(self, event: Event) -> None:
         self.remembered.append(event)
 
-    async def remember_encounter(self, event: Event) -> None:
-        self.remembered.append(event)
-
-
-class _FakeEncounter:
-    def __init__(self) -> None:
-        self.ended: list[Event] = []
-
-    async def on_activity_end(self, event: Event) -> None:
-        self.ended.append(event)
-
 
 def _content(event_type: EventType) -> dict[str, str]:
     if event_type is EventType.USER_MESSAGE:
@@ -87,7 +75,6 @@ async def test_subscription_consistency() -> None:
     activity = _FakeActivity()
     expression = _FakeExpression()
     memory = _FakeMemory()
-    encounter = _FakeEncounter()
     app = _App(
         bus=bus,
         inner_life=cast(InnerLifeFacade, inner_life),
@@ -95,7 +82,6 @@ async def test_subscription_consistency() -> None:
         memory=cast(MemoryFacade, memory),
         activity=cast(ActivityFacade, activity),
         expression=cast(ExpressionFacade, expression),
-        encounter=cast(EncounterFacade, encounter),
         evaluator=cast(Evaluator, object()),
         config=Config(),
     )
@@ -114,8 +100,7 @@ async def test_subscription_consistency() -> None:
         await database.conn.close()
 
     assert len(expression.replied) == 1
-    assert len(inner_life.applied) == 5      # +1（ENCOUNTER_END）
-    assert len(desire.added) == 3            # +1（ENCOUNTER_END）
+    assert len(inner_life.applied) == 4
+    assert len(desire.added) == 2
     assert len(activity.generated) == 1
-    assert len(memory.remembered) == 2       # +1（remember_encounter）
-    assert len(encounter.ended) == 1         # ACTIVITY_END → on_activity_end（新增）
+    assert len(memory.remembered) == 1

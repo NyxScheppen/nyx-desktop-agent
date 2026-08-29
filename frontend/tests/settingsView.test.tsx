@@ -1,16 +1,16 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsView from "../src/components/layout/SettingsView";
 import { useSettingsStore } from "../src/stores/settingsStore";
 
-describe("SettingsView 游戏设置页内面板", () => {
+describe("SettingsView 设置弹层", () => {
   beforeEach(() => {
     useSettingsStore.getState().reset();
   });
 
   it("渲染标题 / 字体大小三档 / 背景外观", () => {
-    render(<SettingsView />);
-    expect(screen.getByText("游戏设置")).toBeInTheDocument();
+    render(<SettingsView onClose={() => {}} />);
+    expect(screen.getByRole("dialog", { name: "设置" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "字体大小" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "背景" })).toBeInTheDocument();
     for (const label of ["小", "中", "大"]) {
@@ -19,7 +19,7 @@ describe("SettingsView 游戏设置页内面板", () => {
   });
 
   it("默认「中」激活，点「大」写 settingsStore.fontScale", () => {
-    render(<SettingsView />);
+    render(<SettingsView onClose={() => {}} />);
     expect(screen.getByRole("button", { name: "中" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -33,8 +33,15 @@ describe("SettingsView 游戏设置页内面板", () => {
   });
 
   it("点预设色块「樱粉」写 settingsStore.tint", () => {
-    render(<SettingsView />);
+    render(<SettingsView onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "樱粉" }));
     expect(useSettingsStore.getState().tint).toBe("#f7e8e0");
+  });
+
+  it("点关闭按钮触发 onClose", () => {
+    const onClose = vi.fn();
+    render(<SettingsView onClose={onClose} />);
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

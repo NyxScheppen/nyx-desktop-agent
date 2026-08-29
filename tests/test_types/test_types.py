@@ -1,15 +1,11 @@
 from typing import get_type_hints
 
-from nyx.enums import DesireStatus, DesireType, EncounterKind, MemoryType, OptionTone
+from nyx.enums import DesireStatus, DesireType, MemoryType
 from nyx.types import (
-    Encounter,
-    EncounterOption,
-    EvalScores,
     LongTermDesire,
     Memory,
     Personality,
     ShortTermDesire,
-    TokenUsageDict,
     Values,
 )
 
@@ -47,20 +43,3 @@ def test_typed_dict_keys() -> None:
         "altruism",
         "optimism",
     }
-    assert set(get_type_hints(EvalScores)) == {"ooc"}
-    assert set(get_type_hints(TokenUsageDict)) == {"input", "output"}
-
-
-def test_encounter_option_fields() -> None:
-    opt = EncounterOption(text="走", tone=OptionTone.BOLD)
-    assert opt.text == "走"
-    assert opt.tone is OptionTone.BOLD
-
-
-def test_encounter_defaults() -> None:
-    enc = Encounter(
-        id="e1", kind=EncounterKind.RANDOM_EVENT, text="开场",
-        options=[], correlation_id="c1", started_at=0.0,
-    )
-    assert enc.activity_id is None
-    assert enc.chosen_index is None

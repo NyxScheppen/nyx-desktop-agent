@@ -13,7 +13,6 @@ from typing import Any, cast
 from nyx.activity.exploration import Exploration, should_explore
 from nyx.activity.material_store import MaterialStore
 from nyx.activity.observe import build_observation_summary
-from nyx.activity.reading_note_store import ReadingNoteStore
 from nyx.activity.scheduler import (
     build_schedule,
     desire_to_activity,
@@ -34,13 +33,11 @@ from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
-    Annotation,
     CurrentState,
     Event,
     LongTermDesire,
     Material,
     Memory,
-    ReadingNote,
     ReflectionOutcome,
     ShortTermDesire,
 )
@@ -77,15 +74,16 @@ def _schedule_block_id(now: float, grid_minutes: int) -> str:
     return format_time_label(block_index, grid_minutes, 0.0)
 
 
-def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool | None:
-    """Goal 完成判定（纯函数，C3 精确版）。
+def _goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool:
+    """Goal 完成判定（纯函数）。
 
-    goal None → None；否则按 action 判「本次是否完成一个单位」：
+    goal None → True（无目标欲望由 desire 层按单次 goal_met 满足）；
+    否则按 action 判「本次是否完成一个单位」：
     read → result.completed（读完整本）；write → 有 title+content；
-    observe → 有 presence。goal None 的欲望由 desire 层按单次 goal_met 满足。
+    observe → 有 presence。
     """
     if goal is None:
-        return None
+        return True
     if result.get("type") == "free_exploration":
         return result.get("outcome") == "won"
     action = goal.get("action")
@@ -236,14 +234,12 @@ class ActivityFacade:
         tools: ToolRegistry,
         desire: DesireFacade,
         memory: MemoryFacade,
-        reading_notes: ReadingNoteStore,
         get_state: Callable[[], Awaitable[CurrentState]],
         reflect: Callable[[str | None], Awaitable[ReflectionOutcome | None]],
         get_observation: Callable[[], Awaitable[dict[str, str]]],
         config: ActivityConfig,
         exploration_config: ExplorationConfig,
         canon: str,
-        on_rooted_encounter: Callable[[str, str, str], Awaitable[None]] | None = None,
     ) -> None:
         self._store = store
         self._material_store = material_store
@@ -252,21 +248,17 @@ class ActivityFacade:
         self._evaluator = evaluator
         self._desire = desire
         self._memory = memory
-        self._reading_notes = reading_notes
         self._get_state = get_state
         self._reflect = reflect
         self._get_observation = get_observation
         self._config = config
         self._canon = canon
         self._exploration = Exploration(
-            llm, evaluator, tools, bus, exploration_config
+            llm, evaluator, tools, exploration_config
         )
         self._exploration_config = exploration_config
-        self._on_rooted_encounter = on_rooted_encounter
         self._start_lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
-        self._autopilot_task: asyncio.Task[None] | None = None
-        self._autopilot_on = False
 
     # ---- 事件入口 ----
 
@@ -427,191 +419,6 @@ class ActivityFacade:
         """书库全量（含已读进度），供资料面板展示「读到哪了」。"""
         return await self._material_store.list_all()
 
-    async def list_reading_notes(self, limit: int = 50) -> list[ReadingNote]:
-        """读书笔记清单（含批注数），供读书笔记面板 CRUD。"""
-        return await self._reading_notes.list_notes(limit)
-
-    async def delete_reading_note(self, note_id: str) -> None:
-        """删一条读书笔记（级联删其批注；已落盘 notes/*.md 文件不动）。"""
-        await self._reading_notes.delete(note_id)
-
-    async def list_annotations(self, target_id: str) -> list[Annotation]:
-        """某笔记的全部批注，按时间升序。"""
-        return await self._reading_notes.list_annotations(target_id)
-
-    async def add_annotation(self, target_id: str, content: str) -> Annotation:
-        """给笔记加一条用户批注（author 固定 'user'）。"""
-        annotation = Annotation(
-            id=str(uuid.uuid4()),
-            target_id=target_id,
-            author="user",
-            content=content,
-            created_at=time.time(),
-        )
-        await self._reading_notes.add_annotation(annotation)
-        return annotation
-
-    async def delete_annotation(self, annotation_id: str) -> None:
-        """删一条批注。"""
-        await self._reading_notes.delete_annotation(annotation_id)
-
-    async def start_exploration(self, topic: str | None) -> str:
-        """手动触发一次自由探索，返回 activity_id。
-
-        跑到首个决策点即返回（RUNNING 状态保留）；后续由 choose_exploration 驱动。
-        """
-        async with self._start_lock:
-            if self._task is not None and not self._task.done():
-                raise RuntimeError("已有活动进行中")
-            current = await self._store.get_current()
-            if current is not None and current.status is ActivityStatus.RUNNING:
-                raise RuntimeError("已有活动进行中")
-            now = time.time()
-            activity = Activity(
-                id=str(uuid.uuid4()),
-                type=ActivityType.FREE_EXPLORATION,
-                schedule_block_id=_schedule_block_id(now, self._config.grid_minutes),
-                status=ActivityStatus.PENDING,
-                progress=_empty_progress(),
-                started_at=now,
-            )
-            if topic is None:
-                topic = await self._exploration.pick_topic(activity.id)
-            activity.progress["description"] = topic
-            await self._store.insert(activity)
-            self._task = asyncio.create_task(self._execute(activity))
-            self._task.add_done_callback(_harvest_task_exception)
-            return activity.id
-
-    async def choose_exploration(self, activity_id: str, choice: str) -> dict[str, Any]:
-        """用户在决策点选择：续跑探索图一步；险节点触发有根遭遇；终点则结算。
-
-        返回 decision 载荷（pending）或 run 结果（终点）。无活动/非探索/id 不符 raise。
-        """
-        current = await self._store.get_current()
-        if (
-            current is None
-            or current.id != activity_id
-            or current.type is not ActivityType.FREE_EXPLORATION
-            or current.status is not ActivityStatus.RUNNING
-        ):
-            raise RuntimeError("无进行中的探索")
-        await self.set_exploration_autopilot(activity_id, False)
-        progress = await self._exploration.resume(activity_id, choice)
-        if not progress["pending"]:
-            current.progress["result"] = progress["result"]
-            await self.complete_activity(current)
-            await self._finalize_exploration_sink(
-                progress["result"], _correlation_id(current)
-            )
-            return progress["result"]
-        last = progress["state"].get("_last_node")
-        if (
-            isinstance(last, dict)
-            and cast(dict[str, Any], last).get("may_encounter")
-            and self._on_rooted_encounter
-        ):
-            node = cast(dict[str, Any], last)
-            snippet = str(node.get("snippet") or node.get("name") or "")
-            focus = str(progress["state"].get("focus") or "")
-            await self._on_rooted_encounter(snippet, focus, activity_id)
-        return progress["decision"]
-
-    async def _finalize_exploration_sink(
-        self, result: dict[str, Any], correlation_id: str
-    ) -> None:
-        """探索终局回写（best-effort）：强烈新兴趣→长期欲望，知识→长期记忆。
-
-        「满足探索欲」由 ACTIVITY_END → satisfy_from_activity_end 走 goal_met 驱动，
-        这里只管新增长期欲望与知识。
-        """
-        strong = result.get("strong_new_topics")
-        if isinstance(strong, list):
-            for topic in cast(list[Any], strong):
-                if not isinstance(topic, str) or not topic.strip():
-                    continue
-                await self._desire.add_long_term(LongTermDesire(
-                    id=str(uuid.uuid4()),
-                    created_at=time.time(),
-                    type=DesireType.EXPLORATION,
-                    name=topic,
-                    description=f"想弄懂「{topic}」",
-                    strength=0.5,
-                    progress=0.0,
-                    subtopics=[],
-                ))
-        knowledge = result.get("knowledge")
-        if isinstance(knowledge, list):
-            items: list[dict[str, str]] = []
-            for k in cast(list[Any], knowledge):
-                if not isinstance(k, dict):
-                    continue
-                item_map = cast(dict[str, Any], k)
-                if not str(item_map.get("content", "")).strip():
-                    continue
-                items.append(
-                    {
-                        "topic": str(item_map.get("topic", "")),
-                        "content": str(item_map.get("content", "")),
-                    }
-                )
-            if items:
-                await self._memory.remember_knowledge(items, correlation_id)
-
-    async def set_exploration_autopilot(self, activity_id: str, on: bool) -> None:
-        """托管开关：on=True 起后台循环自动决策，on=False 停循环
-        （下次决策点暂停等用户）。"""
-        if on:
-            if self._autopilot_task is None or self._autopilot_task.done():
-                self._autopilot_task = asyncio.create_task(
-                    self._autopilot_loop(activity_id)
-                )
-            return
-        self._autopilot_on = False
-        if self._autopilot_task is not None and not self._autopilot_task.done():
-            self._autopilot_task.cancel()
-
-    async def _autopilot_loop(self, activity_id: str) -> None:
-        self._autopilot_on = True
-        try:
-            while self._autopilot_on:
-                current = await self._store.get_current()
-                if (
-                    current is None
-                    or current.id != activity_id
-                    or current.status is not ActivityStatus.RUNNING
-                ):
-                    return
-                # 取最近一次决策载荷：从 exploration 的 checkpoint 状态拿
-                decision = await self._exploration.current_decision(activity_id)
-                if decision is None:
-                    return
-                choice = await self._exploration.pick_choice(
-                    decision, _correlation_id(current)
-                )
-                progress = await self._exploration.resume(activity_id, choice)
-                if not progress["pending"]:
-                    current.progress["result"] = progress["result"]
-                    await self.complete_activity(current)
-                    await self._finalize_exploration_sink(
-                        progress["result"], _correlation_id(current)
-                    )
-                    return
-                # 险节点同样触发有根遭遇
-                last = progress["state"].get("_last_node")
-                if (
-                    isinstance(last, dict)
-                    and cast(dict[str, Any], last).get("may_encounter")
-                    and self._on_rooted_encounter
-                ):
-                    node = cast(dict[str, Any], last)
-                    snippet = str(node.get("snippet") or node.get("name") or "")
-                    focus = str(progress["state"].get("focus") or "")
-                    await self._on_rooted_encounter(snippet, focus, activity_id)
-                await asyncio.sleep(1.0)
-        except asyncio.CancelledError:
-            raise
-
     async def read_material(
         self, path: str, filename: str, total_chars: int, correlation_id: str
     ) -> None:
@@ -751,17 +558,13 @@ class ActivityFacade:
         await self.complete_activity(activity)
 
     async def _start_exploration_run(self, activity: Activity) -> None:
-        """探索启动：从 desire goal.topic 抽种子（优先，绝不编造），跑图到首决策点。"""
-        seed_desire_id = activity.progress.get("desire_id")
+        """探索启动：线性「搜 → 抓正文 → 总结」跑完即结算（无决策点/托管/广播）。"""
         seed_topic = self._exploration_seed(activity)
-        state = await self._get_state()
-        await self._exploration.start(
-            seed_desire_id if isinstance(seed_desire_id, str) else None,
-            seed_topic,
-            state.energy,
-            activity.id,
-            _correlation_id(activity),
-        )
+        correlation_id = _correlation_id(activity)
+        result = await self._exploration.run(seed_topic, correlation_id)
+        activity.progress["result"] = result
+        await self.complete_activity(activity)
+        await self._finalize_exploration_sink(result, correlation_id)
 
     def _exploration_seed(self, activity: Activity) -> str:
         """种子话题：优先 goal.topic（探索欲的真实方向），退 description，
@@ -775,6 +578,49 @@ class ActivityFacade:
         if isinstance(desc, str) and desc:
             return desc
         return activity.id
+
+    async def _finalize_exploration_sink(
+        self, result: dict[str, Any], correlation_id: str
+    ) -> None:
+        """探索终局回写（best-effort）：强烈新兴趣→长期欲望，知识→长期记忆。
+
+        「满足探索欲」由 ACTIVITY_END → satisfy_from_activity_end 走 goal_met 驱动，
+        这里只管新增长期欲望与知识。
+        """
+        strong = result.get("strong_new_topics")
+        if isinstance(strong, list):
+            for topic in cast(list[Any], strong):
+                if not isinstance(topic, str) or not topic.strip():
+                    continue
+                await self._desire.add_long_term(
+                    LongTermDesire(
+                        id=str(uuid.uuid4()),
+                        created_at=time.time(),
+                        type=DesireType.EXPLORATION,
+                        name=topic,
+                        description=f"想弄懂「{topic}」",
+                        strength=0.5,
+                        progress=0.0,
+                        subtopics=[],
+                    )
+                )
+        knowledge = result.get("knowledge")
+        if isinstance(knowledge, list):
+            items: list[dict[str, str]] = []
+            for k in cast(list[Any], knowledge):
+                if not isinstance(k, dict):
+                    continue
+                item_map = cast(dict[str, Any], k)
+                if not str(item_map.get("content", "")).strip():
+                    continue
+                items.append(
+                    {
+                        "topic": str(item_map.get("topic", "")),
+                        "content": str(item_map.get("content", "")),
+                    }
+                )
+            if items:
+                await self._memory.remember_knowledge(items, correlation_id)
 
     async def _run_activity(self, activity: Activity) -> dict[str, Any]:
         t = activity.type
@@ -888,17 +734,6 @@ class ActivityFacade:
             f"-{_path_hash_suffix(source)}.md"
         )
         written = await file_io("write", note_path, full_note)
-        # 同路径重读（read_material 重传会重置进度）原地更新保留批注，不累积重复
-        # 笔记；不同路径同名书互不误删（path 是去重键，book 仅 filename 展示）。
-        await self._reading_notes.upsert_by_path(
-            ReadingNote(
-                id=str(uuid.uuid4()),
-                book=filename,
-                content=full_note,
-                created_at=time.time(),
-                path=source,
-            )
-        )
         return {
             "book": filename,
             "note": full_note,

@@ -13,10 +13,8 @@
 ### 1.2 设计原则（贯穿全部设计）
 
 1. 减少 LLM 调用
-2. LLM 调用透明化，token 消耗可查可追溯
-3. 所有设计可展示给前端
-4. 对所有 LLM 产出和行动有 eval 评分
-5. 错误可溯源
+2. 核心状态可展示给前端（内在/欲望/活动）
+3. 错误可溯源
 
 ### 1.3 模块总览
 
@@ -31,10 +29,9 @@
 | 欲望 | 动机：短期冲动 + 长期野心 |
 | 内在生命 | 数值：情感/性格/三观/精力 + 自我叙事 |
 
-**两个横切层**（非模块，被模块共用）：
+**一个横切层**（非模块，被模块共用）：
 
 - **工具系统**：工具注册/执行（被表达、活动共用）
-- **eval 体系**：对所有 LLM 产出的评分与记账
 
 ### 1.4 心智模型（两条对称规律）
 
@@ -91,42 +88,11 @@ Event:
 
 ### 3.2 路由表（纯数据，可单测）
 
-ROUTING 的 key 即 `Event.type`（EventType 枚举成员，snake_case），值是**内部模块消费者**列表（空 = 仅广播到前端，无内部消费者）。SSE 广播全部事件给前端，REST 只做初始快照/历史查询/导出。
-
-```python
-ROUTING = {
-    EventType.USER_MESSAGE:        ["expression"],
-    EventType.OBSERVATION_STATE:   ["inner_life", "desire"],   # 情感 + 互动欲加压
-    EventType.DESIRE_GENERATED:    ["activity"],
-    EventType.DESIRE_SATISFIED:    ["inner_life"],
-    EventType.DESIRE_EXPIRED:      [],
-    EventType.ACTIVITY_START:      [],
-    EventType.ACTIVITY_END:        ["desire", "inner_life", "memory"],  # 满足+情感+活动记忆
-    EventType.ACTIVITY_INTERRUPTED: [],
-    EventType.SPEAK:               [],
-    EventType.ASK:                 [],
-    EventType.THINK:               [],
-    EventType.MUTTER:              [],
-    EventType.INITIATE_CHAT:       [],
-    EventType.EMOTION_UPDATE:      [],
-    EventType.REFLECTION:          ["inner_life"],   # 协调器，内部调 memory/desire
-    EventType.MEMORY_CREATED:      [],
-    EventType.MEMORY_PROMOTED:     [],
-}
-```
+ROUTING 的 key 即 `Event.type`（EventType 枚举成员，snake_case），值是**内部模块消费者**列表（空 = 仅广播到前端，无内部消费者）。SSE 广播全部事件给前端，REST 只做初始快照/历史查询/导出。路由表是实现细节，以 `nyx/events/routing.py` 的 `ROUTING` / `TICK_ROUTING` 为准（本文档不内联，防漂移）。
 
 **自消费澄清**：`memory_created` / `memory_promoted` / `desire_expired` 是模块**自己已同步完成动作后**发出的通知——路由为空（无内部消费者），仅用于溯源 + 广播前端，不触发二次处理。`desire_satisfied` 例外：除通知外还路由到 `inner_life` 做满足情感回写——这是欲望→内在生命的**唯一耦合点**（走事件而非 Facade 直接互调，避免成环）。
 
-`clock_tick` 特殊：按 `content.tick_type` 走 TICK_ROUTING 二次路由（1 个 tick_type → 1 个消费者，非广播）：
-
-```python
-TICK_ROUTING = {
-    TickType.SCHEDULE_BLOCK_START: ["activity"],
-    TickType.DESIRE_EVAL:          ["desire"],
-    TickType.MUTTER_CHECK:         ["expression"],
-    TickType.INITIATE_CHAT_CHECK:  ["expression"],
-}
-```
+`clock_tick` 特殊：按 `content.tick_type` 走 TICK_ROUTING 二次路由（1 个 tick_type → 1 个消费者，非广播）。
 
 **外部输入只有三种**：用户消息、时钟 tick、观察状态。其余均为模块间内部事件。
 
@@ -372,36 +338,6 @@ goal: { action: read, count: 3, topic: 骑士团 }
 
 ---
 
-## 9. eval 体系
-
-### 9.1 三层（成本分层）
-
-| 层 | 手段 | 覆盖 |
-|---|---|---|
-| 结构校验 | 纯函数：格式解析/字段/数值合法 | 100% 全量 |
-| 规则评分 | 纯函数/启发式：OOC 规则/重复度/长度/一致性 | 100% 全量 |
-| LLM-judge | 语义质量 1-5 分 | 抽样（每 N 条或可疑时） |
-
-### 9.2 OOC 三档
-
-1. 关键词/语癖规则（白名单+黑名单）
-2. embedding 相似度（对比尼克斯基准语料）
-3. LLM-judge（喂人格设定卡）
-
-### 9.3 报告（可展示 + 溯源）
-
-```yaml
-eval_report:
-  output_id, module, type
-  scores: { format: 1.0, ooc: 0.8, relevance: 4.0 }
-  token_usage: { input, output }
-  correlation_id
-```
-
-eval 结果**纯记录 + 可视化**，不自动反馈修正。
-
----
-
 ## 10. 数据模型总览
 
 | 数据 | 存储 | 说明 |
@@ -417,8 +353,6 @@ eval 结果**纯记录 + 可视化**，不自动反馈修正。
 | 长期欲望 | SQLite `long_term_desire` | ≤5 |
 | 活动 | SQLite `activity` | 进度/状态 |
 | 事件日志 | SQLite | correlation_id 溯源 |
-| eval 报告 | SQLite `eval_report` | 评分 + token |
-| token 记账 | SQLite `token_usage` | 每次调用 |
 
 ---
 
@@ -430,8 +364,6 @@ eval 结果**纯记录 + 可视化**，不自动反馈修正。
 | 内在状态面板 | 内在生命（valence/arousal 图、Big Five、三观、精力条） |
 | 欲望面板 | 欲望（值/队列/长期欲望） |
 | 活动时间线 | 活动（日程块/当前活动/打断点） |
-| 记忆浏览器 | 记忆（标签/新鲜度/关联网络图） |
-| eval + token 看板 | eval 体系 |
 
 ---
 

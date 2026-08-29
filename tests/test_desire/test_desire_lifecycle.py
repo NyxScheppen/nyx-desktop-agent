@@ -129,12 +129,10 @@ class _FakeLlm:
         self.calls.append(output_type)
         self.user_contents.append(messages[1]["content"])
         return LLMOutput(
-            id=f"llm-{len(self.calls)}",
             module=module,
             type=output_type,
             model="fake",
             content=self._response,
-            token_usage={"input": 1, "output": 1},
             correlation_id=correlation_id,
         )
 
@@ -284,6 +282,13 @@ def test_most_relevant_long_term() -> None:
     assert _most_relevant_long_term(
         DesireType.EXPLORATION, "别的主题", [a, b]
     ) is a
+
+
+def test_most_relevant_long_term_blank_not_wildcard() -> None:
+    # 空串子主题曾是 substring 通配符（"" in topic 恒 True）→ 应跳过，命中真实子主题
+    a = _lt(DesireType.EXPLORATION, [""])
+    b = _lt(DesireType.EXPLORATION, ["骑士团"])
+    assert _most_relevant_long_term(DesireType.EXPLORATION, "骑士团", [a, b]) is b
 
 
 def test_build_desire_prompt() -> None:

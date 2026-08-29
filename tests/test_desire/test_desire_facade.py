@@ -88,12 +88,10 @@ class _FakeLlm:
         self.calls.append(output_type)
         self.user_contents.append(messages[1]["content"])
         return LLMOutput(
-            id=f"llm-{len(self.calls)}",
             module=module,
             type=output_type,
             model="fake",
             content=self._response,
-            token_usage={"input": 1, "output": 1},
             correlation_id=correlation_id,
         )
 
@@ -318,41 +316,5 @@ async def test_add_long_term_delegates() -> None:
         lt = _lt(DesireType.EXPLORATION)
         await facade.add_long_term(lt)
         assert await store.list_long_term() == [lt]
-    finally:
-        await database.conn.close()
-
-
-async def test_add_value_encounter_pressures() -> None:
-    store, bus, database = await _new_stack()
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
-    try:
-        await facade.add_value(Event(
-            id="e1", timestamp=0.0, source=Source.INTERNAL,
-            type=EventType.ENCOUNTER_END,
-            content={"consequences": {
-                "desire_value_add": {"type": "exploration", "amount": 0.10},
-            }},
-            correlation_id="c1",
-        ))
-        dv = await store.get_value(DesireType.EXPLORATION)
-        assert dv is not None
-        assert dv.value == pytest.approx(0.10)   # default 0.0 + 0.10
-    finally:
-        await database.conn.close()
-
-
-async def test_add_value_encounter_bad_type_skips() -> None:
-    store, bus, database = await _new_stack()
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
-    try:
-        await facade.add_value(Event(
-            id="e1", timestamp=0.0, source=Source.INTERNAL,
-            type=EventType.ENCOUNTER_END,
-            content={"consequences": {
-                "desire_value_add": {"type": "不存在的类型", "amount": 0.10},
-            }},
-            correlation_id="c1",
-        ))
-        assert await store.get_value(DesireType.EXPLORATION) is None
     finally:
         await database.conn.close()

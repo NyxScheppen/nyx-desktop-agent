@@ -2,7 +2,7 @@
 
 > 范围：`desire/value.py`（值机制的纯函数 + 范围/初始/步长常量 + `default_value()`）。
 > 纯基础设施 spec：只做「压力值 + 表达权重 + 抑制阈值」的数学语义，不含 store（desire_value 三表的 CRUD 归 11）、不含 Facade、不含 LLM 生成、不含生命周期编排（11-desire）。
-> **本文件自包含**：`desire/value.py` 完整代码内联在下文。
+> spec 只定义契约（纯函数签名 + 数学语义 + 阈值常量）；实现以 `nyx/desire/value.py` 源文件为准。
 
 ## 元信息
 
@@ -14,7 +14,7 @@
 
 ## 验收标准
 
-- [ ] `value.py` 含 7 个纯函数（`decay_value` / `apply_pressure` / `reinforce_weight` / `raise_suppression` / `at_peak` / `is_expressible` / `default_value`）+ 3 个公开步长常量（`WEIGHT_REINFORCE_DELTA` / `SUPPRESSION_RAISE_DELTA` / `REFUND_DELTA`），与「`desire/value.py`（完整）」段代码逐字一致
+- [ ] `value.py` 含 7 个纯函数（`decay_value` / `apply_pressure` / `reinforce_weight` / `raise_suppression` / `at_peak` / `is_expressible` / `default_value`）+ 3 个公开步长常量（`WEIGHT_REINFORCE_DELTA` / `SUPPRESSION_RAISE_DELTA` / `REFUND_DELTA`）（实现见 `nyx/desire/value.py`）
 - [ ] `decay_value` 纯函数：线性衰减（`rate`/天）、下限 0
 - [ ] `apply_pressure` / `reinforce_weight` / `raise_suppression`：各自夹到 `[0, 1]`，单调不减
 - [ ] **正强化**：`reinforce_weight` 满足后表达权重**上浮**（`weight + delta`），到上限 1.0 封顶
@@ -39,80 +39,6 @@
 - **`default_value(type_)`**：11-desire 初始化 `desire_value` 表四行时的唯一构造入口，避免初始值散落；四类型循环 `for t in DesireType: default_value(t)`
 - **为什么 `at_peak` / `is_expressible` 是两个薄函数**：`peak_threshold`（config，固定）与 `suppression_threshold`（记录，动态漂移）是两个独立量，`value >= X` 的合并式 `value >= max(a,b)` 会掩盖「达峰」与「表达门槛」是两个设计概念；显式命名让抑制门控可单测、可展示（求职作品集原则 3）。两者各只有 11-evaluate 一个调用方，但语义是「值机制」对外的边界，故保留为纯函数而非内联
 - **不在本 spec**：加压增量 `delta` 的具体取值（观察状态给互动欲加多少、长期欲望给对应类型加多少）由 11 按事件源编排；`value_decay` / `peak_threshold` 的实际值从 config 注入
-
-### `desire/value.py`（完整）
-
-```python
-from nyx.enums import DesireType
-from nyx.types import DesireValue
-
-# —— 压力值 value 范围 ——
-_VALUE_MIN = 0.0
-_VALUE_MAX = 1.0
-
-# —— 表达权重 expression_weight ——
-_WEIGHT_MIN = 0.0
-_WEIGHT_MAX = 1.0
-_WEIGHT_INIT = 0.7               # 初始表达权重（四类型统一，中性偏高）
-WEIGHT_REINFORCE_DELTA = 0.05    # 满足一次 +0.05（正强化）
-
-# —— 抑制阈值 suppression_threshold ——
-_SUPPRESSION_MIN = 0.0
-_SUPPRESSION_MAX = 1.0
-_SUPPRESSION_INIT = 0.5          # 初始抑制阈值（< peak=0.9，初始不压抑）
-SUPPRESSION_RAISE_DELTA = 0.1    # 失败/抑制一次 +0.1（习得性抑制）
-
-# —— 回增（放弃/淘汰压力回灌）——
-REFUND_DELTA = 0.3
-
-
-def _clamp(v: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, v))
-
-
-def decay_value(value: float, elapsed_days: float, rate: float) -> float:
-    """压力值线性衰减（rate/天），下限 0。纯函数。"""
-    return max(0.0, value - rate * elapsed_days)
-
-
-def apply_pressure(value: float, delta: float) -> float:
-    """加压/回增：value + delta，夹到 [0, 1]。纯函数。"""
-    return _clamp(value + delta, _VALUE_MIN, _VALUE_MAX)
-
-
-def reinforce_weight(weight: float, delta: float = WEIGHT_REINFORCE_DELTA) -> float:
-    """满足后表达权重正强化：weight + delta，夹到 [0, 1]。纯函数。"""
-    return _clamp(weight + delta, _WEIGHT_MIN, _WEIGHT_MAX)
-
-
-def raise_suppression(
-    threshold: float, delta: float = SUPPRESSION_RAISE_DELTA
-) -> float:
-    """失败/抑制后抑制阈值上浮：threshold + delta，夹到 [0, 1]。纯函数。"""
-    return _clamp(threshold + delta, _SUPPRESSION_MIN, _SUPPRESSION_MAX)
-
-
-def at_peak(value: float, peak_threshold: float) -> bool:
-    """压力是否达峰：value >= peak_threshold。纯函数。"""
-    return value >= peak_threshold
-
-
-def is_expressible(value: float, suppression_threshold: float) -> bool:
-    """达峰后是否可表达：value 越过抑制阈值（未被习得性抑制压住）。纯函数。"""
-    return value >= suppression_threshold
-
-
-def default_value(type_: DesireType) -> DesireValue:
-    """某类型的初始 DesireValue：value=0、表达权重/抑制阈值用默认基线、
-    updated_at 哨兵 0.0。纯函数。"""
-    return DesireValue(
-        type=type_,
-        value=0.0,
-        expression_weight=_WEIGHT_INIT,
-        suppression_threshold=_SUPPRESSION_INIT,
-        updated_at=0.0,     # 哨兵：由 11 初始化时覆盖为 now
-    )
-```
 
 ## 测试要点
 

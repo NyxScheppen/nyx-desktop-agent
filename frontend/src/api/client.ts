@@ -1,20 +1,10 @@
 import type {
   Activity,
   ActivitySnapshot,
-  Annotation,
   BackendEvent,
   CurrentState,
   DesireState,
-  EncounterCurrent,
-  EvalReport,
-  Material,
-  Memory,
-  MemoryType,
   Presence,
-  ReadingNote,
-  SelfNarrative,
-  TokenUsage,
-  UploadResult,
 } from "../types/api";
 
 // 空 = 相对路径，走 Vite proxy 同源转发到后端 8000（18-api 不做 CORS，localhost 同源）
@@ -77,68 +67,6 @@ export async function getActivityResults(): Promise<Activity[]> {
   return request<Activity[]>(`${BASE_URL}/api/activity/results`);
 }
 
-export async function postExplore(
-  topic?: string,
-): Promise<{ activity_id: string }> {
-  return request<{ activity_id: string }>(`${BASE_URL}/api/explore`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(topic !== undefined ? { topic } : {}),
-  });
-}
-
-export async function chooseExploration(
-  activityId: string,
-  choice: string,
-): Promise<unknown> {
-  return request<unknown>(`${BASE_URL}/api/explore/choose`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ activity_id: activityId, choice }),
-  });
-}
-
-export async function setExplorationAutopilot(
-  activityId: string,
-  on: boolean,
-): Promise<{ activity_id: string; autopilot: boolean }> {
-  return request<{ activity_id: string; autopilot: boolean }>(
-    `${BASE_URL}/api/explore/autopilot`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ activity_id: activityId, on }),
-    },
-  );
-}
-
-export async function getMemories(
-  tag?: string,
-  type?: MemoryType,
-): Promise<Memory[]> {
-  const params = new URLSearchParams();
-  if (tag !== undefined) params.set("tag", tag);
-  if (type !== undefined) params.set("type", type);
-  const qs = params.toString();
-  return request<Memory[]>(`${BASE_URL}/api/memories${qs ? `?${qs}` : ""}`);
-}
-
-export async function searchMemories(query: string): Promise<Memory[]> {
-  return request<Memory[]>(
-    `${BASE_URL}/api/memories/search?q=${encodeURIComponent(query)}`,
-  );
-}
-
-export async function getEval(limit?: number): Promise<EvalReport[]> {
-  const qs = limit !== undefined ? `?limit=${limit}` : "";
-  return request<EvalReport[]>(`${BASE_URL}/api/eval${qs}`);
-}
-
-export async function getTokens(since?: number): Promise<TokenUsage[]> {
-  const qs = since !== undefined ? `?since=${since}` : "";
-  return request<TokenUsage[]>(`${BASE_URL}/api/tokens${qs}`);
-}
-
 export async function getEventsLog(params?: {
   limit?: number;
   event_type?: string;
@@ -151,84 +79,4 @@ export async function getEventsLog(params?: {
     sp.set("correlation_id", params.correlation_id);
   const qs = sp.toString();
   return request<BackendEvent[]>(`${BASE_URL}/api/events/log${qs ? `?${qs}` : ""}`);
-}
-
-export async function getNarrative(): Promise<SelfNarrative> {
-  return request<SelfNarrative>(`${BASE_URL}/api/narrative`);
-}
-
-export async function exportMemories(format: "json" | "md"): Promise<string> {
-  const res = await fetch(`${BASE_URL}/api/export`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ format }),
-  });
-  await assertOk(res);
-  return await res.text();
-}
-
-export async function uploadFile(file: File): Promise<UploadResult> {
-  const form = new FormData();
-  form.append("file", file);
-  const res = await fetch(`${BASE_URL}/api/upload`, { method: "POST", body: form });
-  await assertOk(res);
-  return (await res.json()) as UploadResult;
-}
-
-export async function getMaterials(): Promise<{ materials: Material[] }> {
-  return request<{ materials: Material[] }>(`${BASE_URL}/api/materials`);
-}
-
-export async function getReadingNotes(limit?: number): Promise<ReadingNote[]> {
-  const qs = limit !== undefined ? `?limit=${limit}` : "";
-  return request<ReadingNote[]>(`${BASE_URL}/api/reading-notes${qs}`);
-}
-
-export async function deleteReadingNote(noteId: string): Promise<{ deleted: string }> {
-  return request<{ deleted: string }>(`${BASE_URL}/api/reading-notes/${noteId}`, {
-    method: "DELETE",
-  });
-}
-
-export async function getAnnotations(targetId: string): Promise<Annotation[]> {
-  return request<Annotation[]>(
-    `${BASE_URL}/api/annotations?target_id=${encodeURIComponent(targetId)}`,
-  );
-}
-
-export async function addAnnotation(
-  targetId: string,
-  content: string,
-): Promise<Annotation> {
-  return request<Annotation>(`${BASE_URL}/api/annotations`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target_id: targetId, content }),
-  });
-}
-
-export async function deleteAnnotation(
-  annotationId: string,
-): Promise<{ deleted: string }> {
-  return request<{ deleted: string }>(`${BASE_URL}/api/annotations/${annotationId}`, {
-    method: "DELETE",
-  });
-}
-
-export async function chooseEncounter(
-  encounterId: string,
-  optionIndex: number,
-): Promise<{ encounter_id: string; chosen: number }> {
-  return request<{ encounter_id: string; chosen: number }>(
-    `${BASE_URL}/api/encounter/choose`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ encounter_id: encounterId, option_index: optionIndex }),
-    },
-  );
-}
-
-export async function getCurrentEncounter(): Promise<EncounterCurrent | null> {
-  return request<EncounterCurrent | null>(`${BASE_URL}/api/encounter/current`);
 }

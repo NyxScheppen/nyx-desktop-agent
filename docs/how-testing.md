@@ -30,4 +30,4 @@
 tests/{test_event,test_memory,test_expression,test_activity,test_desire,test_inner_life,test_eval,test_tools}/
 ```
 
-每次编写测试后更新 `test-inventory.md`：新增了什么、检查方向、所属系统、在哪个功能阶段编写。
+每次改动测试后同步 `test-inventory.md`（当前测试套件的快照）：新增 / 删除 / 改断言对应增删改行，只记现状不记变更历史。

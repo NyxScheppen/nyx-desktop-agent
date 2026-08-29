@@ -23,7 +23,6 @@ from nyx.activity.facade import (
     _schedule_block_id,
 )
 from nyx.activity.material_store import MaterialStore
-from nyx.activity.reading_note_store import ReadingNoteStore
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.db import Database
@@ -164,12 +163,10 @@ class _FakeLlm:
             "note": _NOTE_JSON,
         }.get(output_type, "{}")
         return LLMOutput(
-            id=f"llm-{len(self.calls)}",
             module=module,
             type=output_type,
             model="fake",
             content=content,
-            token_usage={"input": 1, "output": 1},
             correlation_id=correlation_id,
         )
 
@@ -190,12 +187,10 @@ class _KnowledgeLlm(_FakeLlm):
             self.calls.append(output_type)
             self.correlation_ids.append(correlation_id)
             return LLMOutput(
-                id=f"llm-{len(self.calls)}",
                 module=module,
                 type=output_type,
                 model="fake",
                 content=_KNOWLEDGE_JSON,
-                token_usage={"input": 1, "output": 1},
                 correlation_id=correlation_id,
             )
         return await super().complete(
@@ -378,7 +373,6 @@ async def _new_facade(
             desire if desire is not None else _FakeDesire(pending, values),
         ),
         cast(MemoryFacade, memory if memory is not None else _FakeMemory()),
-        ReadingNoteStore(database),
         get_state,
         reflect if reflect is not None else _no_reflect,
         get_observation if get_observation is not None else _no_observation,
@@ -440,7 +434,7 @@ def test_schedule_block_id_aligns_to_grid() -> None:
 
 
 def test_goal_met() -> None:
-    assert _goal_met(None, {}) is None
+    assert _goal_met(None, {}) is True
     assert _goal_met({"action": "read"}, {}) is False
     assert _goal_met({"action": "read"}, {"book": "x"}) is False   # 读完整本才算
     assert _goal_met({"action": "read"}, {"completed": True}) is True
@@ -1294,62 +1288,6 @@ async def test_maybe_start_reading_uses_topic(
         await database.conn.close()
 
 
-async def test_start_exploration_returns_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    t0 = 1_000_000.0
-    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
-    facade, store, bus, database = await _new_facade()
-    try:
-        async with _running(bus):
-            activity_id = await facade.start_exploration("深海鱼")
-            await _await_task(facade)
-        assert isinstance(activity_id, str)
-        acts = await store.list_schedule(0.0)
-        assert [a.id for a in acts] == [activity_id]
-        assert acts[0].type is ActivityType.FREE_EXPLORATION
-        assert acts[0].progress["description"] == "深海鱼"
-    finally:
-        await database.conn.close()
-
-
-async def test_start_exploration_busy_raises() -> None:
-    facade, _store, _bus, database = await _new_facade(
-        pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0
-    )
-    try:
-        await facade._maybe_start_activity()
-        assert facade._task is not None and not facade._task.done()
-        with pytest.raises(RuntimeError):
-            await facade.start_exploration("深海鱼")
-        await facade._task
-    finally:
-        await database.conn.close()
-
-
-async def test_start_exploration_none_topic_picks_topic(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    t0 = 1_000_000.0
-    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
-
-    async def fake_pick_topic(correlation_id: str) -> str:
-        return "深海鱼"
-
-    facade, store, bus, database = await _new_facade()
-    try:
-        monkeypatch.setattr(facade._exploration, "pick_topic", fake_pick_topic)
-        async with _running(bus):
-            activity_id = await facade.start_exploration(None)
-            await _await_task(facade)
-        assert isinstance(activity_id, str)
-        acts = await store.list_schedule(0.0)
-        assert [a.id for a in acts] == [activity_id]
-        assert acts[0].progress["description"] == "深海鱼"
-    finally:
-        await database.conn.close()
-
-
 # ---- 恢复/续做 ----
 
 
@@ -1618,40 +1556,6 @@ async def test_read_finalizes_and_extracts_on_empty_chunk(
         await database.conn.close()
 
 
-async def test_finalize_reading_replaces_duplicate_note(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """同路径重读不累积重复笔记：第二次 finalize 原地更新，只剩一条且批注保留。"""
-
-    async def fake_file_io(
-        action: str, path: str, content: str | None = None
-    ) -> dict[str, Any]:
-        return {"path": f"workspace/{path}", "written": len(content or "")}
-
-    monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
-    source = tmp_path / "book.txt"
-    source.write_text("骑士团的历史", encoding="utf-8")
-    facade, _store, _bus, database = await _new_facade()
-    try:
-        activity = _activity(
-            "a1",
-            progress={"source": str(source), "filename": "book.txt"},
-        )
-        await facade._finalize_reading(activity, str(source), "book.txt", 6)
-        notes = await facade.list_reading_notes()
-        note_id = notes[0].id
-        annotation = await facade.add_annotation(note_id, "用户批注")
-        await facade._finalize_reading(activity, str(source), "book.txt", 6)
-        notes = await facade.list_reading_notes()
-        assert len(notes) == 1
-        assert notes[0].id == note_id      # 原地更新，id 不变
-        assert [a.id for a in await facade.list_annotations(note_id)] == [
-            annotation.id
-        ]                                 # 批注保留
-    finally:
-        await database.conn.close()
-
-
 async def test_creation_activity_injects_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1709,60 +1613,6 @@ async def test_creation_activity_injects_canon_system(
             await _await_task(facade)
         assert "测试人格全文" in llm.system_contents[0]
         assert "[此刻心境]" in llm.system_contents[0]
-    finally:
-        await database.conn.close()
-
-
-async def test_choose_exploration_retreat_completes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    t0 = 1_000_000.0
-    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
-    facade, _store, bus, database = await _new_facade()
-    try:
-        async with _running(bus):
-            activity_id = await facade.start_exploration("深海鱼")
-            await _await_task(facade)
-            result = await facade.choose_exploration(activity_id, "retreat")
-        assert result["outcome"] == "retreated"
-        current = await _store.get(activity_id)
-        assert current is not None
-        assert current.status is ActivityStatus.COMPLETED
-    finally:
-        await database.conn.close()
-
-
-async def test_choose_exploration_disables_autopilot(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """手动选 = 接管：choose_exploration 先以 (activity_id, False) 关托管再 resume。"""
-    facade, store, bus, database = await _new_facade()
-    try:
-        calls: list[tuple[str, bool]] = []
-
-        async def fake_autopilot(activity_id: str, on: bool) -> None:
-            calls.append((activity_id, on))
-
-        async def fake_resume(activity_id: str, choice: str) -> dict[str, Any]:
-            return {
-                "pending": True,
-                "decision": {"kind": "choose"},
-                "result": {},
-                "state": {"_last_node": None, "focus": "", "activity_id": activity_id},
-            }
-
-        monkeypatch.setattr(facade, "set_exploration_autopilot", fake_autopilot)
-        monkeypatch.setattr(facade._exploration, "resume", fake_resume)
-        await store.insert(
-            _activity(
-                "a1",
-                type_=ActivityType.FREE_EXPLORATION,
-                status=ActivityStatus.RUNNING,
-            )
-        )
-        async with _running(bus):
-            await facade.choose_exploration("a1", "node:0")
-        assert calls == [("a1", False)]
     finally:
         await database.conn.close()
 

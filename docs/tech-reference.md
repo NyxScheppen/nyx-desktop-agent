@@ -6,7 +6,7 @@
 
 ## 1. 枚举（13 个 StrEnum）
 
-> 已内联到 `docs/specs/01-types.md` 的「枚举」段，此处不再重复。§3 起的 DDL / API / Facade 签名直接引用这些枚举。
+> 枚举成员与实现以 `nyx/enums.py` 为准（spec 01-types 只给契约），此处不再重复。§3 起的 DDL / API / Facade 签名直接引用这些枚举。
 
 约定速记：
 - 统一 `enum.StrEnum`：成员 `UPPER_SNAKE`、值 = `成员名.lower()` 的 snake_case。
@@ -15,16 +15,16 @@
 
 ---
 
-## 2. 实体 dataclass（19 个 + 4 个 TypedDict）
+## 2. 实体 dataclass（16 个 + 2 个 TypedDict）
 
-> 已内联到 `docs/specs/01-types.md` 的「TypedDict」「dataclass」段（最终收紧版：固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`）。此处不再重复。
+> dataclass 字段与实现以 `nyx/types.py` 为准（spec 01-types 只给契约；固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`）。此处不再重复。
 
 ---
 
 ## 3. DB DDL（SQLite）
 
-> 已内联到 `docs/specs/04-db.md` 的「`nyx/db.py`（完整）」段（16 张业务表 + 4 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
-> 约定速记：复杂字段（story / becoming / subtopics / scores / progress / aspect / goal / linked_values / self_view / content / token_usage / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；16 张业务表 + `schema_version` 迁移簿记表 = 共 17 张。
+> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；12 张业务表 + 4 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
+> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；12 张业务表 + `schema_version` 迁移簿记表 = 共 13 张。
 
 ---
 
@@ -42,22 +42,13 @@
 | GET | `/api/desires` | — | `{values, short_term[], long_term[]}` |
 | GET | `/api/activity` | — | `{current, schedule[]}` |
 | GET | `/api/activity/results` | — | `Activity[]`（跨天历史产出，倒序） |
-| GET | `/api/eval?limit=` | — | `EvalReport[]` |
-| GET | `/api/tokens?since=` | — | `TokenUsage[]` |
 | GET | `/api/events/log?limit=&event_type=&correlation_id=` | — | `Event[]` |
 | GET | `/api/narrative` | — | `SelfNarrative` |
 | POST | `/api/export` | `{format: json|md}` | 记忆导出文件 |
 | POST | `/api/upload` | `multipart/form-data`（`file`） | `{event_id, filename, path}`（落盘后 publish `USER_MATERIAL` → 读书） |
 | GET | `/api/materials` | — | `{materials: Material[]}`（书库进度） |
-| GET | `/api/reading-notes?limit=` | — | `ReadingNote[]`（含 `annotation_count`） |
-| DELETE | `/api/reading-notes/{note_id}` | — | `{deleted: str}` |
-| GET | `/api/annotations?target_id=` | query | `Annotation[]` |
-| POST | `/api/annotations` | `{target_id: str, content: str}` | `Annotation`（author 固定 "user"） |
-| DELETE | `/api/annotations/{annotation_id}` | — | `{deleted: str}` |
-
 > REST 端点分两类：
-> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/eval` → `Evaluator.list_reports(limit)`；`/api/tokens` → `Evaluator.list_token_usage(since)`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`；`/api/reading-notes` → `ActivityFacade.list_reading_notes(limit)`；`DELETE /api/reading-notes/{note_id}` → `ActivityFacade.delete_reading_note(note_id)`；`/api/annotations` → `ActivityFacade.list_annotations(target_id)` / `add_annotation(target_id, content)`；`DELETE /api/annotations/{annotation_id}` → `ActivityFacade.delete_annotation(annotation_id)`
-> - **外部输入入口**：`/api/chat`、`/api/observe`、`/api/upload` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 publish `USER_MATERIAL`（bus 路由：注册书库 + 发起读书活动）。回复/后续产出走 SSE。
+> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`> - **外部输入入口**：`/api/chat`、`/api/observe`、`/api/upload` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 publish `USER_MATERIAL`（bus 路由：注册书库 + 发起读书活动）。回复/后续产出走 SSE。
 
 ### SSE（`GET /api/events`）
 
@@ -69,9 +60,9 @@
 data = {"event_id": event.id, "correlation_id": event.correlation_id, **event.content}
 ```
 
-> 前端拿到该事件的完整 `content`（键结构由各生产方 spec 定义）再加两个溯源字段。`event.content` 的键从不与 `event_id`/`correlation_id` 冲突（生产方不产这两个键），展开安全。示例：`speak` → `{event_id, correlation_id, content}`；`activity_end` → `{event_id, correlation_id, activity_id, desire_id, goal_met, energy_delta, result}`，其中 `result` 形状随 `ActivityType` 变（读书→`{book, note, read_chars, total_chars}`、创作→`{title, content, path}`、探索→`{findings, notes}`、发呆→`{summary}`、休息→`{}`、观察→`{presence, window_title, summary}`，见 14-activity）。
+> 前端拿到该事件的完整 `content`（键结构由各生产方 spec 定义）再加两个溯源字段。`event.content` 的键从不与 `event_id`/`correlation_id` 冲突（生产方不产这两个键），展开安全。示例：`speak` → `{event_id, correlation_id, content}`；`activity_end` → `{event_id, correlation_id, activity_id, desire_id, goal_met, energy_delta, result}`，其中 `result` 形状随 `ActivityType` 变（读书→`{book, note, read_chars, total_chars}`、创作→`{title, content, path}`、探索→`{summary, core_discovery, knowledge, findings}`、发呆→`{summary}`、休息→`{}`、观察→`{presence, window_title, summary}`，见 14-activity）。
 
-> **SSE vs REST 切分**：SSE 实时推送**全部事件**（前端按 `event` 类型增量更新面板）；REST 只做**初始快照 + 历史查询 + 导出**（`GET /api/state` 初始快照，`/api/memories` `/api/eval` `/api/tokens` `/api/events/log` 列表查询）。
+> **SSE vs REST 切分**：SSE 实时推送**全部事件**（前端按 `event` 类型增量更新面板）；REST 只做**初始快照 + 历史查询 + 导出**（`GET /api/state` 初始快照，`/api/memories` `/api/events/log` 列表查询）。
 
 ---
 
@@ -114,11 +105,6 @@ async def get_schedule() -> list[Activity]                      # 今日日程�
 async def get_results(limit: int = 100) -> list[Activity]       # 跨天历史产出（供 /api/activity/results）
 async def list_materials() -> list[Material]                    # 书库全量（含已读进度，供 /api/materials 资料面板）
 async def read_material(path: str, filename: str, total_chars: int, correlation_id: str) -> None  # 喂资料：注册书库 + 发起 READING 读第一块
-async def list_reading_notes(limit: int = 50) -> list[ReadingNote]   # 读书笔记清单（含 annotation_count，供 /api/reading-notes）
-async def delete_reading_note(note_id: str) -> None             # 删笔记 + 级联删其批注（供 DELETE /api/reading-notes/{note_id}）
-async def list_annotations(target_id: str) -> list[Annotation]  # 笔记批注列表（供 /api/annotations）
-async def add_annotation(target_id: str, content: str) -> Annotation  # 新增用户批注（author="user"，供 POST /api/annotations）
-async def delete_annotation(annotation_id: str) -> None         # 删单条批注（供 DELETE /api/annotations/{annotation_id}）
 ```
 
 ### DesireFacade
@@ -167,10 +153,8 @@ def schema() -> list[dict]                                      # 给 LLM 的 to
 ### Evaluator（基础设施）
 
 ```python
-def __init__(self, db: Database, embed: EmbedFn | None = None) -> None  # 基础设施，直接持 db（对齐 EventBus）；embed 供 OOC 第 2 档复用
-async def evaluate(output: LLMOutput) -> EvalReport             # OOC：关键词→embedding 合并
-async def list_reports(limit: int = 100) -> list[EvalReport]    # eval 报告列表（供 /api/eval）
-async def list_token_usage(since: float = 0) -> list[TokenUsage]  # token 记账（供 /api/tokens）
+def __init__(self, embed: EmbedFn | None = None) -> None         # OOC 轻量告警：embed 供 OOC embedding 档复用；不持 db、不落库不落分
+async def evaluate(output: LLMOutput) -> None                    # 算 ooc_score +（voice 且有 embed）ooc_embed_score，低于阈值 logger.warning
 ```
 
 ---
@@ -212,33 +196,6 @@ start → classify_channel
                      # MVP 问句即回合结束（用户回应作为下一条 USER_MESSAGE 触发新 reply，round 自然重算）
 ```
 
-### 6.2 跨域行为链（`activity/exploration.py`）
-
-**State**：
-
-```python
-class ExplorationState(TypedDict):
-    seed: str                    # 主题种子
-    focus: str                   # 当前聚焦对象
-    findings: list[str]          # 已收集材料
-    notes: list[str]             # 已写笔记
-    step: int
-    done: bool
-    correlation_id: str          # LLM 溯源（节点内 complete 透传，14-activity 补）
-```
-
-**Nodes**：`plan_next` → `search_local` / `search_web`(opt-in) / `write_note` → `finalize`
-
-**Edges**：
-
-```
-start → plan_next
-  → search_local | search_web | write_note → plan_next   # 循环
-  → plan_next 判定 done=true → finalize → end
-```
-
-> `search_web` 节点仅当 `config.exploration.web_enabled=true` 时注册。
-
 ---
 
 ## 7. 包结构（`nyx/`）
@@ -250,7 +207,7 @@ nyx/
   config.py               # 配置加载（§8）
   enums.py                # §1 所有枚举
   types.py                # §2 实体 dataclass
-  db.py                   # SQLite 连接 + 16 表 DDL + 版本化迁移 + Database(conn, lock)（04-db）
+  db.py                   # SQLite 连接 + 12 表 DDL + 版本化迁移 + Database(conn, lock)（04-db）
   events/
     bus.py                # EventBus
     routing.py            # ROUTING 表
@@ -270,9 +227,8 @@ nyx/
     facade.py             # ActivityFacade
     store.py              # ActivityStore（activity 表单表 CRUD）
     material_store.py     # MaterialStore（书库分块进度 + 读书笔记片段）
-    reading_note_store.py # ReadingNoteStore（reading_note + annotation 两表 CRUD）
     scheduler.py          # 日程块排期
-    exploration.py        # 跨域行为链（LangGraph）
+    exploration.py        # 联网探索（线性）
     observe.py            # 观察用户
     screen.py             # 屏幕视觉（截屏+ScreenObserver，opt-in）
   desire/

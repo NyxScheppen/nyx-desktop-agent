@@ -22,26 +22,6 @@ class EventType(StrEnum):
     ACTIVITY_START = "activity_start"      # 活动开始
     ACTIVITY_END = "activity_end"          # 活动结束
     ACTIVITY_INTERRUPTED = "activity_interrupted"  # 活动打断
-    EXPLORATION_STEP = "exploration_step"  # 探索逐步进度（每节点一推，仅广播前端）
-    ENCOUNTER_START = "encounter_start"    # 遭遇开始（广播前端：文本 + 可点选项）
-    ENCOUNTER_CHOICE = "encounter_choice"  # 用户选选项（广播）
-    ENCOUNTER_END = "encounter_end"        # 遭遇结束（结局叙事 + 后果，路由回写）
-
-
-class EncounterKind(StrEnum):
-    """遭遇四类：欲望搭话 / 随机事件（入口已删）/ 成长时刻 / 有根遭遇。"""
-    DESIRE_CHAT = "desire_chat"      # 欲望搭话（本 spec 只前端重分类，后端不动）
-    RANDOM_EVENT = "random_event"    # 随机事件（保留枚举值，入口已删，防存量数据报错）
-    GROWTH_MOMENT = "growth_moment"  # 成长时刻（里程碑，可抢占）
-    ROOTED = "rooted"                # 有根遭遇（从探索真实节点内容长出）
-
-
-class OptionTone(StrEnum):
-    """遭遇选项倾向（4 档），后果由纯函数按 tone 派生。"""
-    BOLD = "bold"                    # 勇敢主动
-    CAUTIOUS = "cautious"            # 谨慎稳妥
-    GENTLE = "gentle"                # 温柔共情
-    RECKLESS = "reckless"            # 鲁莽冒险
 
 
 class Source(StrEnum):

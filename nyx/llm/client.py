@@ -1,5 +1,4 @@
 import os
-import uuid
 from typing import Any, Literal, TypedDict, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -8,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from nyx.config import ConfigError, LlmConfig
-from nyx.types import LLMOutput, TokenUsageDict
+from nyx.types import LLMOutput
 
 
 # role 与 01-types 的 Message(user/nyx) 是两码事
@@ -29,31 +28,6 @@ def _to_lc(m: LlmMessage) -> BaseMessage:
     raise ValueError(f"未知消息角色 {role!r}")   # 静态 Literal 已挡，此为运行期防御
 
 
-def _safe_int(value: Any) -> int:
-    """防御性转 int：非法值（None/非数字字符串/对象）计 0，不抛。纯函数。"""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _extract_usage(response: BaseMessage) -> TokenUsageDict:
-    """从 LangChain 响应抽取 token 用量；兼容 dict 与 Pydantic 两种形状。"""
-    usage = getattr(response, "usage_metadata", None)
-    if usage is None:
-        data: dict[str, Any] = {}
-    elif hasattr(usage, "model_dump"):    # Pydantic v2（langchain-core 用 v2）
-        data = usage.model_dump()
-    elif isinstance(usage, dict):
-        data = cast(dict[str, Any], usage)
-    else:
-        data = {}                          # 未知形状：不静默猜，计 0 待查
-    return {
-        "input": _safe_int(data.get("input_tokens") or 0),   # 键缺失/值 None/非法 计 0
-        "output": _safe_int(data.get("output_tokens") or 0),
-    }
-
-
 # 内置 provider → OpenAI 兼容 base_url；不在表内者配 llm.base_url 覆盖
 _PROVIDER_BASE_URLS = {
     "deepseek": "https://api.deepseek.com",
@@ -70,7 +44,7 @@ def resolve_base_url(provider: str, base_url: str | None) -> str | None:
 
 
 class LlmClient:
-    """全项目唯一 LLM 出口。持有 LangChain model 与 model 名，负责调用与 token 抽取。"""
+    """全项目唯一 LLM 出口。持有 LangChain model 与 model 名，负责调用。"""
 
     def __init__(self, model: BaseChatModel, model_name: str) -> None:
         self._model = model
@@ -129,12 +103,10 @@ class LlmClient:
                 else:
                     tool_calls.append(cast(dict[str, Any], tc))
         return LLMOutput(
-            id=str(uuid.uuid4()),    # 每次调用唯一，供 EvalReport.output_id
             module=module,
-            type=output_type,        # 15-eval 里对应 TokenUsage.purpose
-            model=self._model_name,  # 模型名随每次调用记录，供 TokenUsage.model
+            type=output_type,
+            model=self._model_name,
             content=content,
-            token_usage=_extract_usage(response),
             correlation_id=correlation_id,
             tool_calls=tool_calls,
         )

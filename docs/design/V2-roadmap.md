@@ -2,7 +2,7 @@
 
 > 本文档汇总 **MVP 未实现、留待 V2** 的功能。
 > MVP 文档（`../specs/` + `../tech-reference.md`）已删除这些功能的实现旁注，只保留 MVP 现状；`design.md` 保留完整愿景（含 §3.3 / §5.1 / §5.2 / §7.3 / §7.4 / §8.2 / §8.5 / §8.6 / §9.2 等未实现设计）。
-> 每项标「愿景出处」（design.md 章节，前端项标 frontend-design.md 章节）——无设计章节的标「—」；~~删除线~~ = 已落地（移出 V2）。
+> 每项标「愿景出处」（design.md 章节）——无设计章节的标「—」；~~删除线~~ = 已落地（移出 V2）。
 > **V2 之后的功能**见 [`V3-roadmap.md`](./V3-roadmap.md)。
 
 ## 表达（expression）
@@ -31,12 +31,6 @@
 | ~~长期欲望「最相关」判定~~ ✅ 已落地 | — | 满足时 `_most_relevant_long_term` 按 `goal.topic` 双向 substring 命中 `subtopics` 者回写，否则第一个 type 匹配 |
 | ~~欲望 `ACTIVE` / `SUPPRESSED` 状态流转~~ ✅ 已落地 | — | 活动系统用 `ACTIVE` 标记「消费中」，`SUPPRESSED` 纳入流转：`mark_active` 消费开始标 ACTIVE、`mark_suppressed` 中断/异常停车、`run_eval` 可表达即释放回队列 |
 
-## eval
-
-| 功能 | 愿景出处 | 说明 |
-|---|---|---|
-| ~~embedding 相似度 OOC（第 2 档）~~ ✅ 已落地 | design §9.2 | `ooc = min(第 1 档关键词, 第 2 档 embedding)`；`ooc_embed.py` 硬编码 `NYX_CORPUS`（canon.md 例句）+ `build_baseline`/`ooc_embed_score`/`is_voice_type`；复用记忆检索同一 embed 实例注入 `Evaluator`；第 2 档只对 voice 输出（speak/initiate_chat/think）生效、`embed=None` 关闭 |
-
 ## 记忆（memory）
 
 | 功能 | 愿景出处 | 说明 |
@@ -48,12 +42,6 @@
 | 功能 | 愿景出处 | 说明 |
 |---|---|---|
 | ~~多 provider（OpenAI 兼容映射）~~ ✅ 已落地 | — | `from_config` 用 `resolve_base_url`：内置 deepseek/openai/ollama 映射 + 可选 `llm.base_url` 覆盖；claude 等非 OpenAI 兼容留后续 |
-
-## 前端（frontend）
-
-| 功能 | 愿景出处 | 说明 |
-|---|---|---|
-| 语音（TTS） | frontend-design §10 | 订阅 `SPEAK`/`ASK`/`MUTTER`/`INITIATE_CHAT` → GPT-SoVITS 本地推理服务朗读（`THINK` 内心独白不念）；纯消费端语音层，不进核心管道、不反向影响内在生命/记忆/欲望 |
 
 ---
 

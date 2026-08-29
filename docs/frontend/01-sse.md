@@ -50,19 +50,6 @@ type ReflectionDoneEvent = SseBase & {
   story_is_new: boolean; // true = 故事真新增（去重通过）；false = 与已有片段重复、未追加
 };
 
-/** 探索地牢楼层节点：real = 真实页面，dead_end = 死路，safe_room = 安全房。 */
-type FloorNode = { name: string; url: string; kind: "real" | "dead_end" | "safe_room"; snippet: string; may_encounter: boolean };
-
-/** 逐层地牢决策载荷（exploration_step 推送）：本层节点 + 精力 + 深度 + 目标。 */
-type ExplorationDecision = { kind: "choose"; floor: number; energy: number; focus: string; nodes: FloorNode[] };
-
-/** 探索实时进度帧（exploration_step）：每个决策点推一次决策载荷。 */
-type ExplorationStepEvent = SseBase & {
-  event: "exploration_step";
-  activity_id: string;
-  decision: ExplorationDecision;
-};
-
 // 未消费的 12 类：无消费者，payload 保持宽松。
 type OpaqueEvent = SseBase & {
   event: "clock_tick" | "observation_state" | "reflection"
@@ -71,38 +58,10 @@ type OpaqueEvent = SseBase & {
     | "activity_start" | "activity_end" | "activity_interrupted";
 } & Record<string, unknown>;
 
-// 遭遇（19-encounter）：start 文本 + 选项、choice 选择、end 结局（choice 无消费者）。
-type EncounterKind = "desire_chat" | "random_event" | "growth_moment" | "rooted";
-type EncounterOption = { index: number; text: string };
-type EncounterStartEvent = SseBase & {
-  event: "encounter_start";
-  encounter_id: string;
-  kind: EncounterKind;
-  text: string;
-  options: EncounterOption[];
-};
-type EncounterChoiceEvent = SseBase & {
-  event: "encounter_choice";
-  encounter_id: string;
-  option_index: number;
-  option_text: string;
-};
-type EncounterEndEvent = SseBase & {
-  event: "encounter_end";
-  encounter_id: string;
-  kind: EncounterKind;
-  option_index: number;
-  option_text: string;
-  ending: string;
-  consequences: Record<string, unknown>; // 前端不读后果细节，只触发快照 refresh
-};
-
 type SseEvent =
   | TextEvent<"speak"> | TextEvent<"ask"> | TextEvent<"think">
   | TextEvent<"mutter"> | TextEvent<"initiate_chat">
   | UserMessageEvent | EmotionUpdateEvent | ReflectionDoneEvent
-  | ExplorationStepEvent
-  | EncounterStartEvent | EncounterChoiceEvent | EncounterEndEvent
   | OpaqueEvent;
 
 type ConnectionState = "connecting" | "open" | "closed";
@@ -121,7 +80,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 - **返回**：`ConnectionState`，供 App 显示连接状态（右上角「已连接/重连中」）。
 - **行为**：
   1. `useEffect` 里 `new EventSource(BASE_URL + "/api/events")`，`BASE_URL` 来自统一常量（空 = 相对路径，走 Vite proxy 同源转发到后端 8000）。
-  2. 对 24 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` → 拼 `SseEvent` → `dispatch`。
+  2. 对 20 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` → 拼 `SseEvent` → `dispatch`。
   3. `onopen` / `onerror`：更新 `ConnectionState`。`EventSource` 浏览器原生自动重连（`onerror` 时置 `connecting`），后端重启后自动恢复，无需手写重连循环。
   4. cleanup：`source.close()`（防重复挂载泄漏）。
 - **解析失败**：`JSON.parse` 抛错 → `console.error` + 跳过该帧（不崩整个流）；`data` 缺 `event_id`/`correlation_id` 时同样跳过（防御，正常不触发）。
@@ -149,15 +108,11 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `desire_generated`/`desire_satisfied`/`desire_expired` | `desireStore` | `refresh()` | 欲望变化 → 重拉快照（事件只带 `desire_id`） |
 | `activity_start`/`activity_interrupted` | `activityStore` | `refresh()` | 活动开始/抢占 → 重拉快照（事件只带 `activity_id`） |
 | `activity_end` | `activityStore` + `announceStore` | `refresh()` 后按 `activity_id` 找产出并 `announce("activity", …)` | 活动完成 → 重拉快照 + 冒一句产出 |
-| `exploration_step` | `explorationStore` | `onStep` | 持有决策载荷：decision 置帧 decision、activityId 置帧 activity_id（异 activity 清 history） |
-| `encounter_start` | `encounterStore` | `onStart` | 遭遇开始 → 置 `current`（`EncounterCard` 渲染文本 + 可点选项） |
-| `encounter_choice` | — | — | 无消费者（`encounter_end` 紧跟，由其清 `current` + 上屏 ending） |
-| `encounter_end` | `encounterStore` | `onEnd` | 遭遇结束 → 清 `current` + ending 上聊天时间线 + 重拉内在/欲望/记忆快照 |
-| `memory_created`/`memory_promoted` | `memoryStore` | `refresh()` | 记忆变化 → 重拉快照（事件只带 `memory_id`） |
-| `reflection_done` | `desireStore` + `narrativeStore` + `announceStore` | `refresh()` +（`story_is_new` 时）`setHighlightedStory` / `announce("mutter", …)` + `refresh()` | 反思完成 → 欲望/叙事重拉快照 + 新故事高亮（叙事面板定位闪烁）+ 头像旁冒一句 |
+| `memory_created`/`memory_promoted` | — | — | 无消费者（记忆面板已砍，事件静默丢弃） |
+| `reflection_done` | `desireStore` + `announceStore` | `refresh()` +（`story_is_new` 时）`announce("mutter", …)` | 反思完成 → 欲望重拉快照 +（新故事时）头像旁冒一句 |
 | `clock_tick`/`observation_state`/`reflection` | — | — | 无消费者 |
 
-> 完整 19 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`memory_*`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`mutter` 额外进 `announceStore` 冒头像旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `setHighlightedStory` + `announce("mutter", …)` 高亮新故事，`clock_tick`/`observation_state`/`reflection` 无消费者（故无 `default` 分支）。
+> 完整 20 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`mutter` 额外进 `announceStore` 冒头像旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection`/`memory_*` 无消费者（故无 `default` 分支）。
 > **前向兼容边界**：命名事件（带 `event:` 行）若没有匹配的 `addEventListener` 且无 `onmessage`，浏览器会静默丢弃——故后端**新增 EventType 必须同步前端** `EVENT_TYPES` 数组 + `types/api.ts` 判别联合 + 本分发表（monorepo 内本就在同一提交改）。不存在「旧前端自动接住新类型」的兜底。
 
 ### 4.1 分发函数（含类型收窄）
@@ -179,8 +134,6 @@ function dispatchEvent(e: SseEvent): void {
       innerLifeStore.updateEmotion(e);
       void innerLifeStore.refreshState(); // 能量/性格/三观不随帧下发，重拉全量
       return;
-    case "memory_created": case "memory_promoted":
-      memoryStore.refresh(); return;
     case "desire_generated": case "desire_satisfied": case "desire_expired":
       desireStore.refresh(); return;
     case "activity_start": case "activity_interrupted":
@@ -195,26 +148,12 @@ function dispatchEvent(e: SseEvent): void {
         if (text !== null) announceStore.announce("activity", text);
       });
       return;
-    case "exploration_step":
-      explorationStore.onStep(e);
-      return;
-    case "encounter_start":
-      encounterStore.onStart(e);
-      return;
-    case "encounter_choice":
-      // 无消费者：encounter_end 紧跟其后，由它清 current + 上屏 ending
-      return;
-    case "encounter_end":
-      encounterStore.onEnd(e);
-      return;
     case "reflection_done":
       void desireStore.refresh();
       if (e.story_is_new) {
-        narrativeStore.setHighlightedStory(e.story);
         const preview = e.story.length > 30 ? `${e.story.slice(0, 30)}…` : e.story;
         announceStore.announce("mutter", `小狐狸我呀，反思了一下：${preview}`);
       }
-      void narrativeStore.refresh();
       return;
   }
 }
@@ -235,13 +174,10 @@ chatStore.addUserMessage(e: UserMessageEvent): void        // 读 e.message → 
 innerLifeStore.updateEmotion(e: EmotionUpdateEvent): void  // 覆盖 current 的 valence/arousal/emotion（emotion 走 isEmotionCategory 收窄）
 desireStore.refresh(): Promise<void>                       // desire_* → 重拉快照（事件只带 desire_id，fire-and-forget）
 activityStore.refresh(): Promise<void>                     // activity_start/interrupted → 重拉快照；activity_end → refresh 后按 activity_id 找产出
-memoryStore.refresh(): Promise<void>                       // memory_* → 重拉快照
-narrativeStore.setHighlightedStory(story: string): void    // reflection_done 且 story_is_new → 高亮新故事（叙事面板定位+闪烁）
-narrativeStore.refresh(): Promise<void>                    // reflection_done → 重拉快照
 announceStore.announce(kind: "mutter" | "activity", text: string): void  // 头像旁临时气泡（mutter 4s / activity 7s 后自动 dismiss）
 ```
 
-> 每个 store 的 state 形状（`ChatMessage` 含 `id`/`role`/`kind`/`content`/`correlation_id`/`preloaded?`，不存 `timestamp`——见 02-stores；`InnerLifeState`、四个快照 store）与 action 完整实现见 `02-stores.md`。本表只给签名，保证分发表能独立落地。
+> 每个 store 的 state 形状（`ChatMessage` 含 `id`/`role`/`kind`/`content`/`correlation_id`/`preloaded?`，不存 `timestamp`——见 02-stores；`InnerLifeState`、两个快照 store）与 action 完整实现见 `02-stores.md`。本表只给签名，保证分发表能独立落地。
 
 ### 4.3 user_message 回显与发消息的关系
 
@@ -258,7 +194,7 @@ announceStore.announce(kind: "mutter" | "activity", text: string): void  // 头�
 
 ## 6. App 组合装配（`App.tsx`）
 
-App 的装配（`useSSE` 只挂一次 + `usePresence` 上报 + 书卷区视图切换）已随「书卷风 / 游戏壳」改造迁入 `06-game-shell.md` §5.7，以该处内联代码为准（下方旧代码块随 `Sakura`/`ChatPanel`/`SidePanel`/抽屉式 `InnerWorld` 一并移除）。要点不变：
-
 - `useSSE` 只挂一次（App 顶层），子面板**不重复订阅**，只读 store。
-- 背景由 `settingsStore` 驱动：`image` 以 `cover` 铺底、`tint` 无图时作纯色替默认粉渐变、图+色并存时叠一层半透明 `.app-bg-tint`。
+- 精简装配：顶栏（标题 `✦ Nyx ✦` + 连接状态 + 设置按钮）+ 左状态条 `StatusBar`（点信息区开内在详情）+ 主区 `ScrollArea` + `ChatInput` + 两个弹层（`InnerDetail` 内在详情 / `SettingsView` 设置）+ `AnnounceLayer` 气泡层。
+- 重连（`status === "open"`）时 `refreshState()` + `void refreshActivity()` 重拉快照对齐（断线期间 `emotion_update` 可能丢失）。
+- 背景由 `settingsStore` 驱动：`image` 以 `cover` 铺底、`tint` 无图时作纯色替默认羊皮纸（`--parchment`）、图+色并存时叠一层半透明 `.app-bg-tint`。

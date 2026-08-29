@@ -7,13 +7,9 @@ import { useActivityStore } from "../src/stores/activityStore";
 import { useAnnounceStore } from "../src/stores/announceStore";
 import { useChatStore } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
-import { useEncounterStore } from "../src/stores/encounterStore";
-import { useExplorationStore } from "../src/stores/explorationStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
-import { useMemoryStore } from "../src/stores/memoryStore";
-import { useNarrativeStore } from "../src/stores/narrativeStore";
 import { isEmotionCategory } from "../src/types/api";
-import type { ActivitySnapshot, CurrentState, ExplorationDecision } from "../src/types/api";
+import type { ActivitySnapshot, CurrentState } from "../src/types/api";
 
 // —— fake EventSource（jsdom 无原生实现，需 stub）——
 class FakeEventSource {
@@ -127,14 +123,7 @@ describe("dispatchEvent", () => {
     useInnerLifeStore.setState({ current: null, error: null });
     useDesireStore.setState({ data: null, error: null });
     useActivityStore.setState({ data: null, error: null });
-    useMemoryStore.setState({ data: null, error: null });
-    useNarrativeStore.setState({ data: null, error: null, highlightedStory: null });
     useAnnounceStore.setState({ items: [] });
-    useExplorationStore.setState({
-      decision: null, activityId: null, autopilot: false,
-      choosing: false, error: null, history: [],
-    });
-    useEncounterStore.setState({ current: null, choosing: false, error: null });
   });
 
   it("speak → chatStore（kind=speak）", () => {
@@ -222,21 +211,6 @@ describe("dispatchEvent", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it("memory_created → memoryStore.refresh()", () => {
-    const spy = vi
-      .spyOn(useMemoryStore.getState(), "refresh")
-      .mockResolvedValue(undefined);
-
-    dispatchEvent({
-      event: "memory_created",
-      event_id: "m1",
-      correlation_id: "c1",
-      memory_id: "y",
-    });
-
-    expect(spy).toHaveBeenCalledTimes(1);
-  });
-
   it("activity_start → activityStore.refresh()", () => {
     const spy = vi
       .spyOn(useActivityStore.getState(), "refresh")
@@ -316,54 +290,9 @@ describe("dispatchEvent", () => {
     });
   });
 
-  it("activity_end → 清空匹配 activity 的探索状态", () => {
-    useExplorationStore.setState({
-      decision: { kind: "choose", floor: 2, energy: 50, focus: "量子", nodes: [] },
-      activityId: "a1",
-      autopilot: true,
-    });
-    vi.spyOn(useActivityStore.getState(), "refresh").mockResolvedValue(undefined);
-
-    dispatchEvent({
-      event: "activity_end",
-      event_id: "e2",
-      correlation_id: "a1",
-      activity_id: "a1",
-    });
-
-    expect(useExplorationStore.getState().decision).toBeNull();
-    expect(useExplorationStore.getState().activityId).toBeNull();
-    expect(useExplorationStore.getState().autopilot).toBe(false);
-  });
-
-  it("exploration_step → explorationStore.onStep（推送决策载荷）", () => {
-    const decision: ExplorationDecision = {
-      kind: "choose",
-      floor: 1,
-      energy: 94,
-      focus: "量子",
-      nodes: [
-        { name: "新闻", url: "https://example.com", kind: "real", snippet: "", may_encounter: false },
-      ],
-    };
-    dispatchEvent({
-      event: "exploration_step",
-      event_id: "s1",
-      correlation_id: "a1",
-      activity_id: "a1",
-      decision,
-    });
-
-    expect(useExplorationStore.getState().decision).toEqual(decision);
-    expect(useExplorationStore.getState().activityId).toBe("a1");
-  });
-
-  it("reflection_done（story_is_new）→ 欲望/叙事 refresh + 高亮 + 气泡", () => {
+  it("reflection_done（story_is_new）→ 欲望 refresh + 气泡", () => {
     const desireSpy = vi
       .spyOn(useDesireStore.getState(), "refresh")
-      .mockResolvedValue(undefined);
-    const narrativeSpy = vi
-      .spyOn(useNarrativeStore.getState(), "refresh")
       .mockResolvedValue(undefined);
 
     dispatchEvent({
@@ -375,8 +304,6 @@ describe("dispatchEvent", () => {
     });
 
     expect(desireSpy).toHaveBeenCalledTimes(1);
-    expect(narrativeSpy).toHaveBeenCalledTimes(1);
-    expect(useNarrativeStore.getState().highlightedStory).toBe("今天对用户了解更多");
     expect(useAnnounceStore.getState().items).toHaveLength(1);
     expect(useAnnounceStore.getState().items[0]).toMatchObject({
       kind: "mutter",
@@ -384,12 +311,9 @@ describe("dispatchEvent", () => {
     });
   });
 
-  it("reflection_done（story_is_new=false）→ 静默 refresh 不高亮不气泡", () => {
+  it("reflection_done（story_is_new=false）→ 静默 refresh 不气泡", () => {
     const desireSpy = vi
       .spyOn(useDesireStore.getState(), "refresh")
-      .mockResolvedValue(undefined);
-    const narrativeSpy = vi
-      .spyOn(useNarrativeStore.getState(), "refresh")
       .mockResolvedValue(undefined);
 
     dispatchEvent({
@@ -401,52 +325,7 @@ describe("dispatchEvent", () => {
     });
 
     expect(desireSpy).toHaveBeenCalledTimes(1);
-    expect(narrativeSpy).toHaveBeenCalledTimes(1);
-    expect(useNarrativeStore.getState().highlightedStory).toBeNull();
     expect(useAnnounceStore.getState().items).toHaveLength(0);
-  });
-
-  it("encounter_start → encounterStore.onStart", () => {
-    const spy = vi.spyOn(useEncounterStore.getState(), "onStart");
-    dispatchEvent({
-      event: "encounter_start",
-      event_id: "e1",
-      correlation_id: "c1",
-      encounter_id: "enc1",
-      kind: "random_event",
-      text: "开场",
-      options: [{ index: 0, text: "走" }],
-    });
-    expect(spy).toHaveBeenCalledTimes(1);
-  });
-
-  it("encounter_end → encounterStore.onEnd", () => {
-    const spy = vi.spyOn(useEncounterStore.getState(), "onEnd");
-    dispatchEvent({
-      event: "encounter_end",
-      event_id: "e1",
-      correlation_id: "c1",
-      encounter_id: "enc1",
-      kind: "random_event",
-      option_index: 0,
-      option_text: "走",
-      ending: "结局",
-      consequences: {},
-    });
-    expect(spy).toHaveBeenCalledTimes(1);
-  });
-
-  it("encounter_choice 无消费者不崩", () => {
-    expect(() =>
-      dispatchEvent({
-        event: "encounter_choice",
-        event_id: "e1",
-        correlation_id: "c1",
-        encounter_id: "enc1",
-        option_index: 0,
-        option_text: "走",
-      }),
-    ).not.toThrow();
   });
 });
 

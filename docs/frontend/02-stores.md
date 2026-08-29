@@ -1,6 +1,6 @@
 # Zustand Stores（`stores/*.ts`）
 
-> 每系统一个 store（CLAUDE.md）。共 12 个：`chatStore`（聊天）、`innerLifeStore`（内在状态快照）、`desireStore` / `activityStore` / `memoryStore` / `evalStore`（四个快照 store）、`narrativeStore`（自我叙事快照）/ `materialsStore`（资料上传）/ `readingNotesStore`（读书笔记快照）、`encounterStore`（遭遇，19-encounter）、`settingsStore`（背景外观，纯前端 UI 状态）、`announceStore`（头像旁临时气泡，纯前端呈现）。
+> 每系统一个 store（CLAUDE.md）。共 6 个：`chatStore`（聊天）、`innerLifeStore`（内在状态快照）、`desireStore` / `activityStore`（两个快照 store）、`settingsStore`（背景外观，纯前端 UI 状态）、`announceStore`（头像旁临时气泡，纯前端呈现）。
 > 范围：`stores/*.ts` 的 state 形状 + actions。
 > 约定：**SSE 是主通道**（01-sse 分发表），store 的增量 action 由 SSE 驱动；REST 只喂初始快照。TS 类型字段名 = 后端 JSON 键（snake_case，零映射）。
 
@@ -39,7 +39,7 @@ type Presence = "online" | "away" | "busy";
 type ChatMessage = {
   id: string;                 // event_id
   role: "user" | "nyx";
-  kind: "message" | "speak" | "ask" | "think" | "mutter" | "initiate_chat" | "encounter";
+  kind: "message" | "speak" | "ask" | "think" | "mutter" | "initiate_chat";
   content: string;
   correlation_id: string;
   preloaded?: boolean;        // 历史回填消息：渲染时不逐字（loadHistory 写入）
@@ -64,7 +64,6 @@ addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}
 addThink(e: TextEvent<"think">): void                // {role:"nyx", kind:"think"}
 addMutter(e: TextEvent<"mutter">): void              // {role:"nyx", kind:"mutter"}
 addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initiate_chat"}
-addEncounterEnding(e: EncounterEndEvent): void       // {role:"nyx", kind:"encounter"}；ending 即时全量 append（不逐字、不改 isReplying/pendingId）
 
 sendMessage(text: string): Promise<void>  // 内部调 client.postChat(text)（client 契约见 05-client）
                                           // 成功：pendingId = 返回的 event_id + isReplying=true + sendError=null + 起 60s 超时 timer
@@ -104,9 +103,9 @@ updateEmotion(e: EmotionUpdateEvent): void  // SSE emotion_update → 覆盖 cur
 - **`emotion_update` 到达时 `current` 可能为 null**（快照未回）：不崩——`updateEmotion` 对 null 直接忽略（等 `refreshState` 回来覆盖）；App 层在 SSE `status === "open"` 时补一次 `refreshState`（01-sse §5）。
 - `personality`/`values`/`energy*` 不变时不动，只在 `refreshState` 全量刷新（这些是慢变量，无对应高频事件）。
 
-## 3. 快照 store（`desireStore` / `activityStore` / `memoryStore` / `evalStore`）
+## 3. 快照 store（`desireStore` / `activityStore`）
 
-四个 store 对齐 `innerLifeStore` 的「REST 快照 + SSE 增量」模式：state = `{data|null, error}` + `refresh()`。SSE 增量事件只带 id（不含完整对象），面板收到事件调 `refresh()` 重拉快照（01-sse §4 分发表）。
+两个 store 对齐 `innerLifeStore` 的「REST 快照 + SSE 增量」模式：state = `{data|null, error}` + `refresh()`。SSE 增量事件只带 id（不含完整对象），面板收到事件调 `refresh()` 重拉快照（01-sse §4 分发表）。
 
 ```typescript
 // desireStore —— GET /api/desires
@@ -116,105 +115,14 @@ refresh(): Promise<void>          // 内部调 client.getDesires() → data；th
 // activityStore —— GET /api/activity + GET /api/activity/results（并行）
 type ActivityStoreState = { data: ActivitySnapshot | null; results: Activity[] | null; error: string | null };
 refresh(): Promise<void>          // Promise.all([getActivity(), getActivityResults()]) → data/results
-
-// memoryStore —— GET /api/memories
-type MemoryStoreState = { data: Memory[] | null; error: string | null };
-refresh(): Promise<void>
-
-// evalStore —— GET /api/eval + GET /api/tokens（并行）
-type EvalStoreState = { reports: EvalReport[] | null; tokens: TokenUsage[] | null; error: string | null };
-refresh(): Promise<void>          // Promise.all([getEval(), getTokens()]) → reports/tokens；任一 throw → error
 ```
 
 ### 关键决策
 
-- **双字段快照 store**：`evalStore`（`reports`+`tokens`）与 `activityStore`（`data`+`results`）都并行拉两个端点（`Promise.all`）。evalStore 无对应 SSE 事件，仅挂载时拉取 + 面板内「刷新」按钮重拉；activityStore 的 `results` 供「产出」面板跨天历史（README §5）。
-- **SSE 增量只触发 `refresh()`**：`desire_*` → `desireStore.refresh()`、`activity_*` → `activityStore.refresh()`、`memory_*` → `memoryStore.refresh()`。事件 content 只带 `{desire_id}`/`{activity_id}`/`{memory_id}`，不含完整对象，故重拉快照而非本地拼装。
+- **双字段快照 store**：`activityStore`（`data`+`results`）并行拉两个端点（`Promise.all`）。
+- **SSE 增量只触发 `refresh()`**：`desire_*` → `desireStore.refresh()`、`activity_*` → `activityStore.refresh()`。事件 content 只带 `{desire_id}`/`{activity_id}`，不含完整对象，故重拉快照而非本地拼装。
 
-## 4. `narrativeStore`（自我叙事快照）
-
-```typescript
-type NarrativeStoreState = {
-  data: SelfNarrative | null;   // GET /api/narrative 快照；null = 尚未加载
-  error: string | null;
-  highlightedStory: string | null; // reflection_done(story_is_new) 高亮的新故事片段（叙事面板定位+闪烁后清除）
-};
-refresh(): Promise<void>          // 内部调 client.getNarrative() → data；throw → error
-setHighlightedStory(story: string): void  // 置 highlightedStory（叙事面板据此滚动定位 + 高亮闪烁）
-```
-
-### 关键决策
-
-- **快照 + 高亮增量**：自我叙事原先无对应事件、仅挂载 `refresh()` 拉一次；反思优化后 `reflection_done`（`story_is_new=true`）会 `setHighlightedStory` 高亮新故事片段（叙事面板定位 + 闪烁提示），随后 `refresh()` 重拉快照把新故事落 `data`。`highlightedStory` 是纯前端瞬态高亮态（不进后端、不随 `refresh()` 持久），面板渲染后清除。
-- **`story_is_new=false`（去重跳过）不触发**：仅 `refresh()` 重拉（`data` 不变），无高亮、无气泡。
-
-## 5. `materialsStore`（资料上传）
-
-```typescript
-type MaterialsStoreState = {
-  materials: Material[] | null;   // null = 尚未加载；[] = 加载过但为空（区分「等待连接」vs「还没有资料」）
-  uploading: boolean;       // 上传中（面板据此禁用按钮）
-  error: string | null;
-  refresh(): Promise<void>;  // 内部调 client.getMaterials() → materials；throw → error
-  upload(file: File): Promise<void>;  // client.uploadFile(file) 成功后 getMaterials() 重拉 materials
-};
-```
-
-### 关键决策
-
-- **上传即重拉**：`upload` 成功落盘后 `getMaterials()` 重拉清单（不本地拼装，与快照 store 一致）；`uploading` 贯穿上传全程，成功/失败都复位。
-- **读书结果不落本 store**：上传触发后端 `USER_MATERIAL` → READING 活动，结果经 `activity_start`/`activity_end` SSE 走 `activityStore`（活动面板可见），本 store 只负责文件清单 + 上传动作。
-
-## 6. `readingNotesStore`（读书笔记快照）
-
-```typescript
-type ReadingNotesStoreState = {
-  notes: ReadingNote[] | null;   // null = 尚未加载；[] = 加载过但为空
-  loading: boolean;
-  error: string | null;
-  refresh(): Promise<void>;      // 内部调 client.getReadingNotes(50) → notes；throw → error + loading=false
-  remove(noteId: string): Promise<void>;  // client.deleteReadingNote(id) 成功后本地摘除该条
-};
-```
-
-### 关键决策
-
-- **清单走 store、详情走组件本地 state**：读书笔记面板的「清单 + 删除」入 store；选中笔记与其批注（`getAnnotations`/`addAnnotation`/`deleteAnnotation`）是瞬态 UI，用 `ReadingNotesPanel` 组件本地 `useState` 承载，不落 store（反冗余——批注数据无跨组件共享需求）。批注增/删后组件补一次 `refresh()` 重拉清单——`annotation_count` 徽标随批注变化，不走本地 patch。
-- **`remove` 本地摘除**：删除成功后 `notes.filter(id)` 摘除，不重新 `refresh()`（与快照 store「重拉」策略不同——删除是确定性本地操作，重拉浪费一次请求）。
-
-## 7. `encounterStore`（遭遇，19-encounter）
-
-### state
-
-```typescript
-type EncounterState = {
-  current: EncounterCurrent | null; // GET /api/encounter/current 或 encounter_start 置位；null = 无未决遭遇
-  choosing: boolean;                // 选项点击后 POST 往返期间禁用（防连击）
-  error: string | null;
-  onStart: (e: EncounterStartEvent) => void;
-  onEnd: (e: EncounterEndEvent) => void;
-  choose: (encounterId: string, optionIndex: number) => Promise<void>;
-  refresh: () => Promise<void>;     // 进页面恢复未决遭遇
-  reset: () => void;
-};
-```
-
-### actions
-
-```typescript
-onStart(e: EncounterStartEvent): void   // encounter_start → current 置位（EncounterCard 渲染文本 + 可点选项）
-onEnd(e: EncounterEndEvent): void       // encounter_end → current 清空 + chatStore.addEncounterEnding + 重拉内在/欲望/记忆快照
-choose(encounterId, optionIndex): Promise<void>  // POST /api/encounter/choose（choosing 期间禁用；失败置 error）
-refresh(): Promise<void>                // GET /api/encounter/current 恢复未决遭遇（含 null 分支）
-reset(): void
-```
-
-### 关键决策
-
-- **SSE 主通道**：`choose` 只 POST、不本地清 `current`（信任 `encounter_end` 随后到达清位）；`choosing` 防连击。
-- **`onEnd` 后果改属性**：ending 经 `chatStore.addEncounterEnding` 上聊天时间线（`kind:"encounter"`），并 `void` 重拉内在/欲望/记忆快照（后果改精力/情感/欲望值/成长记忆）。
-
-## 8. `settingsStore`（背景外观 + 字体大小，纯前端）
+## 4. `settingsStore`（背景外观 + 字体大小，纯前端）
 
 ```typescript
 type FontScale = "small" | "medium" | "large";
@@ -234,9 +142,9 @@ type SettingsState = {
 
 - **无后端、无 SSE**：纯前端 UI 状态，读写只走内存，MVP 不持久化（重启回默认）。
 - **tint 与 image 独立并存**：图铺底（`cover`）、色调无图时作纯色、图+色并存时叠一层半透明滤镜（`.app-bg-tint`），互不覆盖。
-- **fontScale 驱动 `--text-scale`**：App 在 `.game-shell` 上注入 `--text-scale`（0.9/1.0/1.12），`body`/`.game-shell` 用 `font-size: calc(1rem * var(--text-scale))` 统一缩放（06-game-shell §4）。
+- **fontScale 驱动 `--text-scale`**：App 在 `.game-shell` 上注入 `--text-scale`（0.9/1.0/1.12），`body`/`.game-shell` 用 `font-size: calc(1rem * var(--text-scale))` 统一缩放。
 
-## 9. `announceStore`（头像旁临时气泡，纯前端呈现）
+## 5. `announceStore`（头像旁临时气泡，纯前端呈现）
 
 ```typescript
 type AnnounceKind = "mutter" | "activity";
@@ -255,14 +163,12 @@ type AnnounceState = {
 - **不落聊天历史**：碎碎念既进 `chatStore`（聊天记录）又进 `announceStore`（头像旁淡出气泡），两者互不替代——前者是历史时间线（`loadHistory` 回填），后者是 design §8 的瞬时气泡。
 - **时长按 kind**：`mutter` 4s、`activity` 7s（产出句子更长）。id 用模块级自增（`announce-N`），不依赖 `Date.now`（测试可预测）。
 
-## 10. 测试（`tests/stores.test.ts`）
+## 6. 测试（`tests/stores.test.ts`）
 
 - **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addMutter`/`addInitiateChat`/`addUserMessage` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
 - **chatStore.loadHistory**：按 `timestamp` 升序前置 + `preloaded=true` + 历史 think 入 `typedIds`；已存在的 id 去重不重复前置；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
 - **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
-- **四个快照 store**：`desireStore`/`memoryStore` 各断言 `refresh()` 请求对端点 + `data` 落 store；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`（fetch 恰 2 次）→ `data`/`results` 落 store；`evalStore.refresh()` 并行 `getEval`+`getTokens`（fetch 恰 2 次）→ `reports`/`tokens` 落 store；`desireStore.refresh()` 失败 → `error` + `data` 保持 null。
-- **narrativeStore / materialsStore**：`narrativeStore.refresh()` 请求 `/api/narrative` + `data` 落 store；`narrativeStore.setHighlightedStory(story)` 置 `highlightedStory`；`materialsStore.refresh()` 请求 `/api/materials` + `materials` 落 store；`materialsStore.upload()` `POST /api/upload` 后重拉 materials（fetch 恰 2 次）+ `uploading` 复位。
-- **readingNotesStore**：`refresh()` 请求 `/api/reading-notes?limit=50` + `notes` 落 store + `loading` 复位；`remove()` `DELETE /api/reading-notes/{id}` 后从 `notes` 本地摘除（不重拉）。
+- **两个快照 store**：`desireStore` 断言 `refresh()` 请求对端点 + `data` 落 store；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`（fetch 恰 2 次）→ `data`/`results` 落 store；`desireStore.refresh()` 失败 → `error` + `data` 保持 null。
 - **`isReady`（串行逐字纯函数）**：每条 nyx 文本消息等「同 `correlation_id` 且在其之前」的 nyx 文本消息都打完（入 `typedIds`）才就绪；无前置 nyx 文本 → 直接就绪；`preloaded` nyx 文本与 user 消息 → 恒就绪；不同 `correlation_id` 的 nyx 文本不阻塞。
 - **`settingsStore`**：`setTint`/`setImage` 独立落 store 可并存；`reset()` 回 null。
 - **`announceStore`**：`announce` 追加临时气泡（kind/text 落 store、id 唯一）；`dismiss` 摘除指定 id 其余保留；`advanceTimersByTime(ANNOUNCE_DURATION[kind])` 到时自动 dismiss。

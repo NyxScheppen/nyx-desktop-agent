@@ -1,4 +1,4 @@
-# 测试需访问 _to_lc/_extract_usage 与 _model_name（spec 测试要点要求）
+# 测试需访问 _to_lc 与 _model_name（spec 测试要点要求）
 # pyright: reportPrivateUsage=false
 import asyncio
 from typing import Any, cast
@@ -17,7 +17,6 @@ from nyx.config import ConfigError, LlmConfig
 from nyx.llm.client import (
     LlmClient,
     LlmMessage,
-    _extract_usage,
     _to_lc,
     resolve_base_url,
 )
@@ -100,73 +99,17 @@ def test_to_lc_invalid_role() -> None:
         _to_lc(cast(LlmMessage, {"role": "invalid", "content": "x"}))
 
 
-# ---- _extract_usage ----
-
-
-def test_extract_usage_dict() -> None:
-    response = AIMessage(content="x")
-    setattr(response, "usage_metadata", {"input_tokens": 12, "output_tokens": 7})
-    assert _extract_usage(response) == {"input": 12, "output": 7}
-
-
-def test_extract_usage_pydantic() -> None:
-    class _Usage:
-        def model_dump(self) -> dict[str, int]:
-            return {"input_tokens": 12, "output_tokens": 7}
-
-    response = AIMessage(content="x")
-    setattr(response, "usage_metadata", _Usage())
-    assert _extract_usage(response) == {"input": 12, "output": 7}
-
-
-def test_extract_usage_missing() -> None:
-    assert _extract_usage(AIMessage(content="x")) == {"input": 0, "output": 0}
-
-
-def test_extract_usage_none_value() -> None:
-    # 键存在但值为 None：宽松兜底计 0，不 int(None) 裸崩
-    response = AIMessage(content="x")
-    setattr(response, "usage_metadata", {"input_tokens": None, "output_tokens": None})
-    assert _extract_usage(response) == {"input": 0, "output": 0}
-
-
-def test_extract_usage_unknown_shape() -> None:
-    response = AIMessage(content="x")
-    setattr(response, "usage_metadata", 42)
-    assert _extract_usage(response) == {"input": 0, "output": 0}
-
-
-def test_extract_usage_non_int_value() -> None:
-    # 键值为非数字字符串：_safe_int 兜底计 0，不 int("abc") 裸崩
-    response = AIMessage(content="x")
-    setattr(response, "usage_metadata", {"input_tokens": "abc", "output_tokens": 7})
-    assert _extract_usage(response) == {"input": 0, "output": 7}
-
-
 # ---- complete ----
 
 
 def test_complete_fields() -> None:
     client, _ = _client(AIMessage(content="hi"))
     out = _complete(client)
-    assert out.id
     assert out.module == "test"
     assert out.type == "reply"
     assert out.correlation_id == "corr-1"
     assert out.content == "hi"
     assert out.model == "test-model"
-
-
-def test_complete_token_usage() -> None:
-    response = AIMessage(content="hi")
-    setattr(response, "usage_metadata", {"input_tokens": 12, "output_tokens": 7})
-    client, _ = _client(response)
-    assert _complete(client).token_usage == {"input": 12, "output": 7}
-
-
-def test_complete_token_usage_missing() -> None:
-    client, _ = _client(AIMessage(content="hi"))
-    assert _complete(client).token_usage == {"input": 0, "output": 0}
 
 
 def test_complete_json_mode_on() -> None:

@@ -139,13 +139,17 @@ class MemoryStore:
             await self._db.conn.commit()
         return promoted
 
-    async def strengthen(self, memory_id: str) -> None:
-        """重复写入合并强化：recall_count+1 且 freshness 重置为最新（不升型）。"""
+    async def strengthen(self, memory_id: str, now: float) -> None:
+        """重复写入合并强化：freshness 重置、created_at 锚点刷新。
+
+        不升型、不涨 recall_count——recall_count 只留给真实 recall（record_recall）
+        累计，重复写入不算「想起」；created_at 同步刷新，否则 decay_freshness 以旧
+        created_at 键控会把刚重置的 freshness 立刻再衰减回去。
+        """
         async with self._db.lock:
             await self._db.conn.execute(
-                "UPDATE memory SET recall_count = recall_count + 1, "
-                "freshness = 1.0 WHERE id = ?",
-                (memory_id,),
+                "UPDATE memory SET freshness = 1.0, created_at = ? WHERE id = ?",
+                (now, memory_id),
             )
             await self._db.conn.commit()
 

@@ -138,7 +138,7 @@ def _most_relevant_long_term(
         return None
     if topic:
         for lt in matching:
-            if any(topic in s or s in topic for s in lt.subtopics):
+            if any(topic in s or s in topic for s in lt.subtopics if s.strip()):
                 return lt
     return matching[0]
 
@@ -181,35 +181,6 @@ class DesireLifecycle:
         goal_met = event.content.get("goal_met")
         if isinstance(desire_id, str) and isinstance(goal_met, bool):
             await self.satisfy(desire_id, goal_met)
-
-    async def add_value_from_encounter(self, event: Event) -> None:
-        """ENCOUNTER_END → 指定欲望类型加压（后果 desire_value_add {type, amount}）。
-
-        缺键/错类型/非法欲望类型跳过（漏报优于误报）。
-        """
-        consequences = event.content.get("consequences")
-        if not isinstance(consequences, dict):
-            return
-        add = cast(dict[str, Any], consequences).get("desire_value_add")
-        if not isinstance(add, dict):
-            return
-        add = cast(dict[str, Any], add)
-        type_raw = add.get("type")
-        amount = add.get("amount")
-        if not isinstance(type_raw, str):
-            return
-        try:
-            type_ = DesireType(type_raw)
-        except ValueError:
-            return
-        if not isinstance(amount, (int, float)) or isinstance(amount, bool):
-            return
-        dv = await self._store.get_value(type_)
-        if dv is None:
-            dv = default_value(type_)
-        dv.value = apply_pressure(dv.value, float(amount))
-        dv.updated_at = time.time()
-        await self._store.upsert_value(dv)
 
     async def run_eval(self) -> list[ShortTermDesire]:
         """DESIRE_EVAL：衰减 → 长期加压 → 达峰判定 → 只生成最迫切的 1 个。"""

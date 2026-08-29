@@ -2,7 +2,7 @@ from nyx.enums import EventType, TickType
 from nyx.events.routing import ROUTING, TICK_ROUTING
 
 _VALID_MODULES = {
-    "expression", "inner_life", "desire", "activity", "memory", "encounter"
+    "expression", "inner_life", "desire", "activity", "memory"
 }
 
 

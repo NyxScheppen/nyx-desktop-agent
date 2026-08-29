@@ -2,7 +2,7 @@
 
 > 范围：`activity/scheduler.py`（时间格 grid → 活动排期）。纯函数：无 IO、无 DB、无 LLM、无 Facade。
 > 纯基础设施 spec：只做「欲望→活动映射 + 消费排序 + 精力约束排期 + 时间标签格式化」四件事，不含 store、不含 Facade、不含 LLM、不含活动生命周期编排（归 14-activity）。
-> **本文件自包含**：`activity/scheduler.py` 完整代码内联在下文。
+> spec 只定义契约（纯函数签名 + 映射/排序/排期语义）；实现以 `nyx/activity/scheduler.py` 源文件为准。
 
 ## 元信息
 
@@ -14,7 +14,7 @@
 
 ## 验收标准
 
-- [ ] `scheduler.py` 含 4 个公开纯函数（`desire_to_activity` / `rank_desires` / `build_schedule` / `format_time_label`），与「`activity/scheduler.py`（完整）」段代码逐字一致
+- [ ] `scheduler.py` 含 4 个公开纯函数（`desire_to_activity` / `rank_desires` / `build_schedule` / `format_time_label`）（实现见 `nyx/activity/scheduler.py`）
 - [ ] `desire_to_activity`：`EXPLORATION→READING`、`CREATION→CREATION`、`REST→REST`、`INTERACTION→None`（互动欲不占日程块）
 - [ ] `rank_desires`：按类型级 `expression_weight` 降序、同权 `created_at` 升序（FIFO 稳定）；无 `DesireValue` 记录的类型按 0.0 兜底
 - [ ] `build_schedule`：欲望序列 → 活动序列；精力跌破 `ENERGY_REST_THRESHOLD` 时在下一活动前插 `REST` 恢复；保持输入顺序；`energy_delta.rest <= 0` 时不进死循环
@@ -34,82 +34,6 @@
 - **时间标签（`format_time_label`）**：`block_index` 块起点 = `start_hour + block_index * grid_minutes / 60`，格式 `"HH:MM"`；`start_hour` 是「排期起点的当日小时数（浮点，如 9.5 = 9:30）」，由 14 在运行时定（服务启动时刻/当前时刻/当天零点）
 - **不引入 `ScheduleBlock` 中间类型**：`build_schedule` 输出裸 `list[ActivityType]`，时间标签由 `format_time_label` 单独算，14 用 `enumerate` 组合成 `Activity`——中间结构只有 14 一个消费方，内联即可（反冗余）
 - **`ActivityEnergyDelta` 的 import**：仅作 `build_schedule` 参数类型注解（`from nyx.config import ActivityEnergyDelta`），不是「import 配置加载逻辑」——14 从 `config.activity.energy_delta` 取出来传参，13 不读配置文件、不碰 `load_config`
-
-### `activity/scheduler.py`（完整）
-
-```python
-"""日程排期纯函数：欲望队列 + 精力 → 一天活动序列。
-
-无 IO、无 DB、无 LLM、无 Facade。14-activity 的 ActivityFacade 消费这些纯函数。
-"""
-from nyx.config import ActivityEnergyDelta
-from nyx.enums import ActivityType, DesireType
-from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
-from nyx.types import DesireValue, ShortTermDesire
-
-
-def desire_to_activity(desire_type: DesireType) -> ActivityType | None:
-    """欲望类型 → 日程块活动类型。
-
-    探索欲→读书（自由探索是读书的升级形态，由 14 运行时判定）；创造欲→创作；
-    休息欲→休息；互动欲不占日程块（走搭话/对话），返回 None。
-    """
-    if desire_type is DesireType.EXPLORATION:
-        return ActivityType.READING
-    if desire_type is DesireType.CREATION:
-        return ActivityType.CREATION
-    if desire_type is DesireType.REST:
-        return ActivityType.REST
-    return None
-
-
-def rank_desires(
-    desires: list[ShortTermDesire],
-    values: list[DesireValue],
-) -> list[ShortTermDesire]:
-    """消费排序：类型级表达权重降序（越愿表达越先消费），同权按 created_at 升序
-    （FIFO 稳定）。
-
-    expression_weight 缺省（该类型无 DesireValue 记录）按 0.0 处理。
-    """
-    weight = {v.type: v.expression_weight for v in values}
-    return sorted(desires, key=lambda d: (-weight.get(d.type, 0.0), d.created_at))
-
-
-def build_schedule(
-    desires: list[ShortTermDesire],
-    energy: float,
-    energy_delta: ActivityEnergyDelta,
-) -> list[ActivityType]:
-    """欲望序列 → 一天活动序列（含精力驱动的休息穿插）。
-
-    契约：调用方先 rank_desires 排序（本函数保持输入顺序，不自行排序）。
-    精力模拟：逐块累加 energy_delta；精力跌破 ENERGY_REST_THRESHOLD 时，
-    在下一活动前插 REST 块恢复，直到回到阈值之上；energy_delta.rest <= 0 时
-    跳过（防死循环）。
-    """
-    result: list[ActivityType] = []
-    cur = energy
-    for desire in desires:
-        activity = desire_to_activity(desire.type)
-        if activity is None:
-            continue
-        while cur < ENERGY_REST_THRESHOLD and energy_delta.rest > 0:
-            result.append(ActivityType.REST)
-            cur += energy_delta.rest
-        result.append(activity)
-        cur += getattr(energy_delta, activity.value)
-    return result
-
-
-def format_time_label(block_index: int, grid_minutes: int, start_hour: float) -> str:
-    """块序号 → "HH:MM" 时间标签（14 构造 Activity.schedule_block_id 用）。
-
-    第 block_index 块起点 = start_hour + block_index * grid_minutes / 60。
-    """
-    minutes = round(start_hour * 60 + block_index * grid_minutes)
-    return f"{minutes // 60:02d}:{minutes % 60:02d}"
-```
 
 ## 测试要点
 

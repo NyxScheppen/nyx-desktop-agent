@@ -3,16 +3,12 @@ import { useActivityStore } from "../stores/activityStore";
 import { useAnnounceStore } from "../stores/announceStore";
 import { useChatStore } from "../stores/chatStore";
 import { useDesireStore } from "../stores/desireStore";
-import { useEncounterStore } from "../stores/encounterStore";
-import { useExplorationStore } from "../stores/explorationStore";
 import { useInnerLifeStore } from "../stores/innerLifeStore";
-import { useMemoryStore } from "../stores/memoryStore";
-import { useNarrativeStore } from "../stores/narrativeStore";
 import type { SseEvent } from "../types/api";
 
 // 事件 → store 路由（01-sse §4.1）。
-// desire/activity/memory 事件只带 id（{"desire_id"}/{"memory_id"}/{"activity_id"}），
-// 面板收到就 refresh() 重拉快照；clock_tick/observation_state/reflection 不路由。
+// desire/activity 事件只带 id（{"desire_id"}/{"activity_id"}），
+// 面板收到就 refresh() 重拉快照；clock_tick/observation_state/reflection/memory_* 不路由。
 export function dispatchEvent(e: SseEvent): void {
   switch (e.event) {
     case "speak":
@@ -39,10 +35,6 @@ export function dispatchEvent(e: SseEvent): void {
       useInnerLifeStore.getState().updateEmotion(e);
       void useInnerLifeStore.getState().refreshState();
       return;
-    case "memory_created":
-    case "memory_promoted":
-      useMemoryStore.getState().refresh();
-      return;
     case "desire_generated":
     case "desire_satisfied":
     case "desire_expired":
@@ -53,9 +45,6 @@ export function dispatchEvent(e: SseEvent): void {
       useActivityStore.getState().refresh();
       return;
     case "activity_end": {
-      if (typeof e.activity_id === "string") {
-        useExplorationStore.getState().onActivityEnd(e.activity_id);
-      }
       // 完成后主动冒一句：refresh 重拉快照后，按 activity_id 找到刚完成的活动，
       // 有产出就 announce("activity", …)（activityAnnouncement 见 lib/activityResult）。
       void useActivityStore.getState().refresh().then(() => {
@@ -68,15 +57,11 @@ export function dispatchEvent(e: SseEvent): void {
       });
       return;
     }
-    case "exploration_step":
-      useExplorationStore.getState().onStep(e);
-      return;
     case "reflection_done": {
-      // 反思完成：长期欲望（add_long_term 不发 desire_generated）+ 叙事三件套刷新；
-      // story 真新增才高亮叙事条目 + 冒气泡（去重跳过则静默刷新，不打扰）。
+      // 反思完成：长期欲望（add_long_term 不发 desire_generated）刷新；
+      // story 真新增才冒气泡（去重跳过则静默刷新，不打扰）。
       void useDesireStore.getState().refresh();
       if (e.story_is_new) {
-        useNarrativeStore.getState().setHighlightedStory(e.story);
         const preview =
           e.story.length > 30 ? `${e.story.slice(0, 30)}…` : e.story;
         useAnnounceStore.getState().announce(
@@ -84,17 +69,7 @@ export function dispatchEvent(e: SseEvent): void {
           `小狐狸我呀，反思了一下：${preview}`,
         );
       }
-      void useNarrativeStore.getState().refresh();
       return;
     }
-    case "encounter_start":
-      useEncounterStore.getState().onStart(e);
-      return;
-    case "encounter_choice":
-      // 无消费者：encounter_end 紧跟其后，由它清 current + 上屏 ending（6.4）。
-      return;
-    case "encounter_end":
-      useEncounterStore.getState().onEnd(e);
-      return;
   }
 }

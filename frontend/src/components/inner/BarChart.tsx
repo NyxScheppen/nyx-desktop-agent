@@ -12,7 +12,7 @@ export default function BarChart({ keys, data, poles }: BarChartProps) {
     <div className="bar-chart">
       {keys.map((key) => {
         const pole = poles[key] ?? { low: key, high: key };
-        const pct = Math.min(100, Math.max(0, ((data[key] - 1) / 9) * 100));
+        const pct = Math.min(100, Math.max(0, (((data[key] ?? 0) - 1) / 9) * 100));
         return (
           <div className="bar-chart__row" key={key}>
             <span className="bar-chart__pole bar-chart__pole--low">{pole.low}</span>

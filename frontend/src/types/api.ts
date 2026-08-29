@@ -52,15 +52,6 @@ export type CurrentState = {
   active_desires: unknown[]; // 核心先行不消费，占位
 };
 
-/** 自我叙事（GET /api/narrative，nyx/types.py SelfNarrative）。 */
-export type SelfNarrative = {
-  identity: string;
-  story: string[];
-  self_view: Record<string, string>;
-  becoming: string[];
-  updated_at: number;
-};
-
 /** SSE 帧公共头。 */
 type SseBase = {
   event_id: string; // 事件唯一 id
@@ -102,32 +93,7 @@ export type ReflectionDoneEvent = SseBase & {
   story_is_new: boolean;
 };
 
-/** 探索楼层节点（逐层地牢）：真实节点 / 死路 / 安全房。 */
-export type FloorNode = {
-  name: string;
-  url: string;
-  kind: "real" | "dead_end" | "safe_room";
-  snippet: string;
-  may_encounter: boolean;
-};
-
-/** 逐层地牢决策载荷（exploration_step 推送）：本层节点 + 精力 + 深度 + 目标。 */
-export type ExplorationDecision = {
-  kind: "choose";
-  floor: number;
-  energy: number;
-  focus: string;
-  nodes: FloorNode[];
-};
-
-/** 探索实时进度帧（exploration_step）：每个决策点推一次决策载荷。 */
-export type ExplorationStepEvent = SseBase & {
-  event: "exploration_step";
-  activity_id: string;
-  decision: ExplorationDecision;
-};
-
-/** 未消费的 12 类：溯源面板落地前不读字段，payload 保持宽松。 */
+/** 未消费的事件：前端不读字段，payload 保持宽松。 */
 type OpaqueEventType =
   | "user_material"
   | "clock_tick"
@@ -143,45 +109,6 @@ type OpaqueEventType =
   | "activity_interrupted";
 type OpaqueEvent = SseBase & { event: OpaqueEventType } & Record<string, unknown>;
 
-// ---- 遭遇（19-encounter）----
-export type EncounterKind = "desire_chat" | "random_event" | "growth_moment" | "rooted";
-
-/** 遭遇选项（前端只收 {index, text}；tone 被后端 _start_content 剥掉，前端不消费）。 */
-export type EncounterOption = { index: number; text: string };
-
-/** 未决遭遇（GET /api/encounter/current 与 encounter_start 同形状）。 */
-export type EncounterCurrent = {
-  encounter_id: string;
-  kind: EncounterKind;
-  text: string;
-  options: EncounterOption[];
-};
-
-export type EncounterStartEvent = SseBase & {
-  event: "encounter_start";
-  encounter_id: string;
-  kind: EncounterKind;
-  text: string;
-  options: EncounterOption[];
-};
-
-export type EncounterChoiceEvent = SseBase & {
-  event: "encounter_choice";
-  encounter_id: string;
-  option_index: number;
-  option_text: string;
-};
-
-export type EncounterEndEvent = SseBase & {
-  event: "encounter_end";
-  encounter_id: string;
-  kind: EncounterKind;
-  option_index: number;
-  option_text: string;
-  ending: string;
-  consequences: Record<string, unknown>; // 前端不读后果细节，只触发快照 refresh
-};
-
 /** SSE 帧：按 event 值判别联合——键名错位在编译期即拦（曾放过 user_message 读 content 的 bug）。 */
 export type SseEvent =
   | TextEvent<"speak">
@@ -192,10 +119,6 @@ export type SseEvent =
   | UserMessageEvent
   | EmotionUpdateEvent
   | ReflectionDoneEvent
-  | ExplorationStepEvent
-  | EncounterStartEvent
-  | EncounterChoiceEvent
-  | EncounterEndEvent
   | OpaqueEvent;
 
 export type ConnectionState = "connecting" | "open" | "closed";
@@ -283,49 +206,6 @@ export type ActivitySnapshot = {
   schedule: Activity[];
 };
 
-// ---- 记忆（06-memory / nyx/types.py Memory）----
-export type MemoryType = "short_term" | "long_term";
-
-export type Memory = {
-  id: string;
-  created_at: number;
-  content: string;
-  tag: string;
-  summary: string;
-  freshness: number;
-  type: MemoryType;
-  recall_count: number;
-  aspect: string[];
-  embedding: number[] | null;
-};
-
-// ---- eval / token（15-eval / nyx/types.py）----
-export type EvalScores = {
-  ooc: number;
-};
-
-export type EvalReport = {
-  id: string;
-  output_id: string;
-  module: string;
-  type: string;
-  scores: EvalScores;
-  token_usage: { input: number; output: number };
-  correlation_id: string;
-  created_at: number;
-};
-
-export type TokenUsage = {
-  id: string;
-  correlation_id: string | null;
-  module: string;
-  purpose: string;
-  model: string;
-  input_tokens: number;
-  output_tokens: number;
-  created_at: number;
-};
-
 // ---- 事件溯源（05-event / nyx/types.py Event，对应 GET /api/events/log）----
 export type BackendEvent = {
   id: string;
@@ -334,40 +214,4 @@ export type BackendEvent = {
   type: string; // EventType 值
   content: Record<string, unknown>;
   correlation_id: string;
-};
-
-// ---- 资料上传（POST /api/upload 响应）----
-export type UploadResult = {
-  event_id: string;
-  filename: string;
-  path: string;
-};
-
-// ---- 资料进度（GET /api/materials，nyx/types.py Material）----
-export type Material = {
-  path: string;
-  filename: string;
-  total_chars: number;
-  read_chars: number;
-  created_at: number;
-  updated_at: number;
-};
-
-// ---- 读书笔记（18-api / nyx/types.py ReadingNote）----
-export type ReadingNote = {
-  id: string;
-  book: string;
-  content: string;
-  created_at: number; // 秒（time.time()），展示时 ×1000
-  annotation_count: number; // 非 DB 列，list 时 LEFT JOIN 算出
-  path: string; // 读物绝对路径（去重键；book 仅展示）
-};
-
-// ---- 批注（18-api / nyx/types.py Annotation）----
-export type Annotation = {
-  id: string;
-  target_id: string;
-  author: string; // "user" | "nyx"
-  content: string;
-  created_at: number;
 };

@@ -267,30 +267,6 @@ class MemoryFacade:
         memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
         await self._persist_memory(memory, event.correlation_id)
 
-    async def remember_encounter(self, event: Event) -> None:
-        """遭遇记忆：成长时刻的后果 memory（{content, summary}，确定性、无 LLM）。
-
-        随机事件不落记忆（快变量可见即可）；只有成长时刻的后果带 memory 键，
-        这里判存在才写。复用 _persist_memory 入库尾段（两层去重）。
-        """
-        consequences = event.content.get("consequences")
-        if not isinstance(consequences, dict):
-            return
-        memory_dict = cast(dict[str, Any], consequences).get("memory")
-        if not isinstance(memory_dict, dict):
-            return
-        memory_dict = cast(dict[str, Any], memory_dict)
-        content = memory_dict.get("content")
-        summary = memory_dict.get("summary")
-        if not isinstance(content, str) or not content.strip():
-            return
-        if not isinstance(summary, str) or not summary.strip():
-            summary = content[:_SUMMARY_MAX_CHARS]
-        memory = _new_memory(
-            content.strip(), "encounter", summary.strip(), MemoryType.SHORT_TERM
-        )
-        await self._persist_memory(memory, event.correlation_id)
-
     async def _sediment_observation(self, event: Event) -> None:
         """观察活动 → 用户画像沉淀：「presence/window_title 相对上次变化」才写。
 
@@ -380,9 +356,10 @@ class MemoryFacade:
         命中返回 None（无新记忆），否则补 embed → add → 建边 → 门控矛盾检测
         → 新鲜度衰减/淘汰 → 发 MEMORY_CREATED，返回新记忆。场景/活动/画像/
         知识记忆复用。"""
+        now = time.time()
         existing = await self._store.find_by_content(memory.content)
         if existing is not None:
-            await self._store.strengthen(existing.id)
+            await self._store.strengthen(existing.id, now)
             return None
         if self._embed is not None and memory.embedding is None:
             memory.embedding = await self._embed(memory.content)
@@ -390,14 +367,14 @@ class MemoryFacade:
         if memory.embedding is not None:
             # add 前全表余弦排序（新记忆尚未入库，天然 exclude 自己），
             # 语义查重与建边/矛盾共用同一份 scored，不多扫一次全表。
-            scored = await self._similar(memory.embedding, None)
+            scored = await self._similar(memory.embedding)
             if scored and scored[0][0] >= _DEDUP_SIM_THRESHOLD:
-                await self._store.strengthen(scored[0][1].id)
+                await self._store.strengthen(scored[0][1].id, now)
                 return None
         await self._store.add(memory)
         await self._build_edges(memory, scored)
         await self._detect_contradiction(memory, scored, correlation_id)
-        await self._decay_and_evict(time.time())
+        await self._decay_and_evict(now)
         await self._bus.publish(
             internal_event(
                 EventType.MEMORY_CREATED, {"memory_id": memory.id}, correlation_id
@@ -496,13 +473,10 @@ class MemoryFacade:
             )
 
     async def _similar(
-        self, query_vec: list[float], exclude_id: str | None = None
+        self, query_vec: list[float]
     ) -> list[tuple[float, Memory]]:
-        """query 向量与全表记忆的余弦排序
-        （s>0 才保留，可排除某 id）；纯计算 + store 读。"""
-        memories = [
-            m for m in await self._store.list_memories() if m.id != exclude_id
-        ]
+        """query 向量与全表记忆的余弦排序（s>0 才保留）；纯计算 + store 读。"""
+        memories = await self._store.list_memories()
         return rank_by_cosine(query_vec, memories)
 
     async def _build_edges(

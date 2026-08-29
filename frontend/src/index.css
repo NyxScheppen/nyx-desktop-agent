@@ -1,6 +1,6 @@
-/* Nyx 前端样式：羊皮纸书卷风主题（06-game-shell §4）。
+/* Nyx 前端样式：羊皮纸书卷风主题。
    摒弃粉渐变默认背景、樱花飘落、现代玻璃面板；换用暖棕羊皮纸 + 衬线字 +
-   中世纪描金装饰边框。三区布局——左面板（30%）+ 书卷区域 + Galgame 对话框。 */
+   中世纪描金装饰边框。布局——左侧状态条 + 对话主区（书卷区域 + 输入框）。 */
 
 :root {
   --parchment: #f3e6c4;
@@ -94,7 +94,7 @@ body {
   letter-spacing: 1px;
 }
 
-/* ===== 三区布局（06-game-shell §5.1）：左面板 30% + 书卷区域/对话框 70% ===== */
+/* ===== 主布局：左侧状态条 + 对话主区 ===== */
 .game-shell {
   position: relative;
   z-index: 2;
@@ -113,9 +113,9 @@ body {
   gap: 0.75rem;
 }
 
-/* ===== 左面板 ===== */
-.left-panel {
-  flex: 0 0 30%;
+/* ===== 状态条（左栏） ===== */
+.status-bar {
+  flex: 0 0 260px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -128,19 +128,10 @@ body {
   overflow-y: auto;
 }
 
-.left-panel__name {
-  margin: 0;
-  font-size: 1.3rem;
-  color: var(--accent);
-  letter-spacing: 2px;
-  border-bottom: 1px solid var(--gold);
-  padding-bottom: 0.4rem;
-}
-
-.left-panel__summary {
+.status-bar__info {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 0.25rem;
   padding: 0.5rem 0.6rem;
   border: 1px solid var(--parchment-deep);
   border-radius: 4px;
@@ -151,30 +142,32 @@ body {
   font-family: inherit;
 }
 
-.left-panel__summary--static {
-  cursor: default;
+.status-bar__name {
+  font-size: 1.3rem;
+  color: var(--accent);
+  letter-spacing: 2px;
+  border-bottom: 1px solid var(--gold);
+  padding-bottom: 0.4rem;
 }
 
-.left-panel__summary-line {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-}
-
-.left-panel__summary-label {
-  font-size: 0.72rem;
-  color: var(--ink-soft);
-  letter-spacing: 1px;
-}
-
-.left-panel__summary-value {
+.status-bar__mood {
   font-size: 0.92rem;
   line-height: 1.5;
+}
+
+.status-bar__activity {
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.status-bar__desire {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
   overflow-wrap: break-word;
   word-break: break-word;
 }
 
-/* ===== 头像立绘（左面板内） ===== */
+/* ===== 头像立绘（状态条内） ===== */
 .emotion-sprite {
   border-radius: 0.4rem;
 }
@@ -249,61 +242,6 @@ body {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-}
-
-/* ===== 遭遇卡片 ===== */
-.encounter-card {
-  flex-shrink: 0;
-  margin-top: 0.5rem;
-  padding: 0.6rem 0.75rem;
-  border: 2px double var(--gold);
-  box-shadow: inset 0 0 0 1px var(--parchment-deep);
-  border-radius: 4px;
-  background: var(--parchment);
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.encounter-card__badge {
-  align-self: flex-start;
-  font-size: 0.72rem;
-  padding: 0.05rem 0.45rem;
-  border-radius: 4px;
-  background: var(--gold);
-  color: var(--parchment);
-  letter-spacing: 1px;
-}
-
-.encounter-card__text {
-  margin: 0;
-  line-height: 1.7;
-  color: var(--ink);
-  overflow-wrap: break-word;
-  word-break: break-word;
-}
-
-.encounter-card__options {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.encounter-card__option {
-  padding: 0.4rem 0.6rem;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--accent);
-  cursor: pointer;
-  font-family: inherit;
-  text-align: left;
-  line-height: 1.5;
-}
-
-.encounter-card__option:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 /* ===== 消息列表 + 气泡 ===== */
@@ -446,42 +384,7 @@ body {
   margin: 0;
 }
 
-/* ===== 右侧底部工具条（空间 + 内心世界 + 游戏设置） ===== */
-.right-dock {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  border: 2px double var(--gold);
-  box-shadow: inset 0 0 0 1px var(--parchment-deep);
-  border-radius: 4px;
-  background: var(--parchment);
-}
-
-.right-dock__entry {
-  padding: 0.35rem 0.7rem;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--accent);
-  cursor: pointer;
-  font-family: inherit;
-  letter-spacing: 1px;
-}
-
-.right-dock__entry:hover {
-  background: var(--parchment-deep);
-}
-
-.right-dock__entry--active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--parchment);
-}
-
-/* 字体大小档（SettingsView 内，替换原 RightDock 折叠字体设置） */
+/* 字体大小档（SettingsView 内） */
 .font-scale {
   display: flex;
   gap: 0.3rem;
@@ -501,390 +404,6 @@ body {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--parchment);
-}
-
-/* ===== 页内面板（InnerWorld / SettingsView 复用，替换书卷区显示） ===== */
-.side-panel {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border: 2px double var(--gold);
-  box-shadow: inset 0 0 0 1px var(--parchment-deep);
-  border-radius: 4px;
-  background: var(--parchment);
-  overflow: hidden;
-}
-
-.side-panel__header {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.6rem 0.75rem;
-  border-bottom: 1px solid var(--parchment-deep);
-}
-
-.side-panel__title {
-  flex: 1;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 3px;
-  color: var(--accent);
-}
-
-/* 内容区：overflow-y 滚动（InnerWorld 单活动面板 / ExplorationMap 多元素竖排） */
-.side-panel__body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 0.75rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-/* 横向子标签条（网页 tab 感）：点标签切换活动面板 */
-.side-panel__tabs {
-  flex-shrink: 0;
-  display: flex;
-  gap: 0.4rem;
-  padding: 0.6rem 0.75rem;
-  border-bottom: 1px solid var(--parchment-deep);
-  overflow-x: auto;
-}
-
-.side-panel__tab {
-  padding: 0.4rem 0.9rem;
-  border: 1px solid var(--parchment-deep);
-  border-radius: 4px;
-  background: var(--parchment);
-  color: var(--ink-soft);
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 0.9rem;
-  letter-spacing: 1px;
-  white-space: nowrap;
-}
-
-.side-panel__tab:hover {
-  color: var(--ink);
-  border-color: var(--ink-soft);
-}
-
-.side-panel__tab--active {
-  background: var(--accent);
-  color: var(--parchment);
-  border-color: var(--accent);
-  font-weight: 700;
-}
-
-/* ===== 探索地牢（ExplorationMap 暗黑地牢风，design §7） ===== */
-.dungeon {
-  background: #0e0b08;
-  color: #d8c9a8;
-  border-color: #4a3a28;
-  font-family: Georgia, "Times New Roman", serif;
-}
-
-.dungeon__header {
-  border-bottom-color: #4a3a28;
-}
-
-.dungeon__header .side-panel__title {
-  color: #c9a24a;
-}
-
-.dungeon-autopilot {
-  padding: 0.35rem 0.8rem;
-  border: 1px solid #5a4632;
-  border-radius: 2px;
-  background: #2a1f14;
-  color: #c9a24a;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 0.85rem;
-  letter-spacing: 1px;
-}
-
-.dungeon-autopilot--on {
-  background: #3a2a12;
-  color: #e0b84a;
-  border-color: #8a5a1a;
-}
-
-.dungeon-go {
-  align-self: flex-start;
-  padding: 0.55rem 1.1rem;
-  border: 2px double #8a5a1a;
-  border-radius: 3px;
-  background: #1a1512;
-  color: #e0b84a;
-  cursor: pointer;
-  font-family: inherit;
-  letter-spacing: 2px;
-}
-
-.dungeon-go:hover {
-  background: #241c12;
-}
-
-.dungeon-error {
-  color: #c04a4a;
-  font-size: 0.85rem;
-}
-
-.dungeon-hud {
-  display: flex;
-  align-items: stretch;
-  gap: 0.9rem;
-  border-bottom: 2px solid #4a3a28;
-  padding-bottom: 0.8rem;
-  flex-wrap: wrap;
-}
-
-.dungeon-hud__label {
-  font-size: 10px;
-  letter-spacing: 2px;
-  color: #8a7a5f;
-  text-transform: uppercase;
-}
-
-.dungeon-hud__value {
-  font-size: 0.95rem;
-  font-weight: 700;
-  margin-top: 0.2rem;
-}
-
-.dungeon-hud__hint {
-  font-size: 11px;
-  color: #8a2f2f;
-  margin-top: 0.15rem;
-}
-
-.dungeon-hud__energy {
-  flex: 1;
-  min-width: 190px;
-}
-
-.dungeon-hud__energy-track {
-  height: 16px;
-  background: #241c12;
-  border: 1px solid #5a4632;
-  border-radius: 2px;
-  overflow: hidden;
-  margin-top: 0.3rem;
-}
-
-.dungeon-hud__energy-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #8a5a1a, #c9a24a, #e0b84a);
-}
-
-.dungeon-hud__energy-num {
-  font-size: 0.85rem;
-  font-weight: 700;
-  color: #e0b84a;
-}
-
-.dungeon-hud__energy-num .dim {
-  color: #8a7a5f;
-}
-
-.dungeon-hud__goal {
-  flex: 1;
-  min-width: 190px;
-}
-
-.dungeon-hud__floor {
-  text-align: center;
-  min-width: 80px;
-}
-
-.dungeon-floor {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.6rem;
-}
-
-.dungeon-node {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  text-align: left;
-  padding: 0.7rem;
-  border: 2px solid #5a4632;
-  border-radius: 3px;
-  background: #1a1512;
-  cursor: pointer;
-  font-family: inherit;
-  color: inherit;
-}
-
-.dungeon-node:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.dungeon-node--dead_end {
-  border-style: dashed;
-  border-color: #3a3024;
-  background: #141008;
-}
-
-.dungeon-node--safe_room {
-  border-color: #4a5a3a;
-  background: #141a10;
-}
-
-.dungeon-node__badge {
-  align-self: flex-start;
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 2px;
-  letter-spacing: 1px;
-}
-
-.dungeon-node__badge--real {
-  background: #3a4a5a;
-  color: #c9d4de;
-}
-
-.dungeon-node__badge--dead_end {
-  background: #3a3024;
-  color: #8a7a5f;
-}
-
-.dungeon-node__badge--safe_room {
-  background: #4a5a3a;
-  color: #d8cfa8;
-}
-
-.dungeon-node__name {
-  font-weight: 700;
-  font-size: 0.9rem;
-  color: #e8dcc0;
-}
-
-.dungeon-node--dead_end .dungeon-node__name {
-  color: #7a6a50;
-}
-
-.dungeon-node--safe_room .dungeon-node__name {
-  color: #c9d4a8;
-}
-
-.dungeon-node__snippet {
-  font-size: 0.78rem;
-  color: #9c8c6a;
-  line-height: 1.45;
-  min-height: 2.2em;
-}
-
-.dungeon-node__cost {
-  font-size: 0.75rem;
-  color: #8a5a1a;
-  margin-top: auto;
-}
-
-.dungeon-node__risk {
-  color: #8a2f2f;
-}
-
-.dungeon-actions {
-  display: flex;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-}
-
-.dungeon-descend,
-.dungeon-retreat,
-.dungeon-map-toggle {
-  padding: 0.5rem 0.9rem;
-  border: 2px solid #5a4632;
-  border-radius: 3px;
-  background: #1a1512;
-  color: #c9a24a;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 0.85rem;
-  letter-spacing: 1px;
-}
-
-.dungeon-retreat {
-  color: #c98a6a;
-}
-
-.dungeon-descend:disabled,
-.dungeon-retreat:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.dungeon-map {
-  padding: 0.7rem;
-  border: 2px solid #3a3024;
-  border-radius: 3px;
-  background: #120e08;
-}
-
-.dungeon-map__label {
-  font-size: 11px;
-  letter-spacing: 2px;
-  color: #8a7a5f;
-  text-transform: uppercase;
-  margin-bottom: 0.4rem;
-}
-
-.dungeon-map__floor {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.82rem;
-  margin-top: 0.2rem;
-}
-
-.dungeon-map__glyph {
-  color: #5a4632;
-}
-
-.dungeon-map__glyph--cur {
-  color: #c9a24a;
-}
-
-.dungeon-map__floor-name {
-  color: #8a7a5f;
-}
-
-.dungeon-map__nodes {
-  color: #6b5a3f;
-}
-
-.dungeon-inventory {
-  padding: 0.7rem;
-  border: 2px solid #3a3024;
-  border-radius: 3px;
-  background: #120e08;
-}
-
-.dungeon-inventory__label {
-  font-size: 11px;
-  letter-spacing: 2px;
-  color: #8a7a5f;
-  text-transform: uppercase;
-  margin-bottom: 0.5rem;
-}
-
-.dungeon-inventory__slots {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.dungeon-inventory__slot {
-  width: 46px;
-  height: 46px;
-  border: 1px dashed #4a3a28;
-  border-radius: 3px;
 }
 
 /* ===== Panel 骨架（components/layout/Panel） ===== */
@@ -1264,33 +783,118 @@ body {
   box-shadow: 0 0 0 2px rgba(140, 90, 59, 0.35);
 }
 
-/* ===== 调试页（Ctrl+Shift+D） ===== */
-.debug-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  padding: 1rem;
-  background: var(--parchment);
-  overflow-y: auto;
-}
-
-.debug-overlay__bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.75rem;
-  color: var(--ink);
+/* ===== 顶栏「设置」按钮 ===== */
+.topbar-settings {
+  padding: 0.25rem 0.9rem;
+  border: 1px solid var(--gold);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--gold);
+  cursor: pointer;
+  font-family: inherit;
   letter-spacing: 2px;
 }
 
-.debug-overlay__bar button {
-  padding: 0.25rem 0.75rem;
+.topbar-settings:hover {
+  background: var(--parchment-deep);
+  color: var(--ink);
+}
+
+/* ===== 模态框（内在详情 / 设置弹层） ===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(59, 45, 31, 0.45);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  max-width: 46rem;
+  width: 100%;
+  max-height: 82vh;
+  border: 2px double var(--gold);
+  box-shadow: 0 18px 48px rgba(59, 45, 31, 0.35);
+  border-radius: 4px;
+  background: var(--parchment);
+  overflow: hidden;
+}
+
+.modal__header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--parchment-deep);
+}
+
+.modal__title {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--accent);
+}
+
+.modal__close {
+  padding: 0.15rem 0.6rem;
   border: 1px solid var(--accent);
   border-radius: 4px;
   background: transparent;
   color: var(--accent);
   cursor: pointer;
   font-family: inherit;
+  font-size: 0.95rem;
+}
+
+.modal__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.modal__tabs {
+  flex-shrink: 0;
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--parchment-deep);
+  overflow-x: auto;
+}
+
+.modal__tab {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--parchment-deep);
+  border-radius: 4px;
+  background: var(--parchment);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.9rem;
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+
+.modal__tab:hover {
+  color: var(--ink);
+  border-color: var(--ink-soft);
+}
+
+.modal__tab--active {
+  background: var(--accent);
+  color: var(--parchment);
+  border-color: var(--accent);
+  font-weight: 700;
 }
 
 /* ===== 头像旁临时气泡 ===== */

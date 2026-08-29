@@ -36,7 +36,6 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
   return (
     <div className={`message-bubble message-bubble--${role} message-bubble--${kind}`}>
       {kind === "initiate_chat" && <span className="message-bubble__badge">欲望搭话</span>}
-      {kind === "encounter" && <span className="message-bubble__badge">遭遇</span>}
       <span className="message-bubble__content">
         {text}
         {showCursor && <span className="cursor-blink" />}

@@ -4,9 +4,7 @@ import {
   ACTIVITY_TYPE_LABELS,
   DESIRE_STATUS_LABELS,
   DESIRE_TYPE_LABELS,
-  ENCOUNTER_KIND_LABELS,
   ENERGY_LABELS,
-  MEMORY_TYPE_LABELS,
   PERSONALITY_POLES,
   VALUES_POLES,
   label,
@@ -24,7 +22,6 @@ describe("labels 枚举中文化映射", () => {
       DESIRE_STATUS_LABELS,
       ACTIVITY_TYPE_LABELS,
       ACTIVITY_STATUS_LABELS,
-      MEMORY_TYPE_LABELS,
     ];
     for (const map of maps) {
       for (const value of Object.values(map)) {
@@ -51,14 +48,3 @@ describe("labels 枚举中文化映射", () => {
   });
 });
 
-describe("ENCOUNTER_KIND_LABELS", () => {
-  it("三基础键中文映射", () => {
-    expect(ENCOUNTER_KIND_LABELS.desire_chat).toBe("欲望搭话");
-    expect(ENCOUNTER_KIND_LABELS.random_event).toBe("随机事件");
-    expect(ENCOUNTER_KIND_LABELS.growth_moment).toBe("成长时刻");
-  });
-
-  it("rooted 有根遭遇", () => {
-    expect(ENCOUNTER_KIND_LABELS.rooted).toBe("有根遭遇");
-  });
-});

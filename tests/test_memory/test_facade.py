@@ -101,12 +101,10 @@ class _FakeLlm:
         self.calls.append(output_type)
         self.user_contents.append(messages[1]["content"])
         return LLMOutput(
-            id=f"llm-{len(self.calls)}",
             module=module,
             type=output_type,
             model="fake",
             content=self._responses.get(output_type, "{}"),
-            token_usage={"input": 1, "output": 1},
             correlation_id=correlation_id,
         )
 
@@ -548,7 +546,8 @@ async def test_decay_writeback(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # ---- 去重 ----
 # _persist_memory 两层去重：精确（content 哈希）→ 语义（embedding 余弦 ≥ 0.95）。
-# 命中合并强化（recall_count+1、freshness 重置），不新建行、不发 MEMORY_CREATED。
+# 命中合并强化（freshness 重置 + created_at 刷新，不涨 recall_count），
+# 不新建行、不发 MEMORY_CREATED。
 
 
 async def test_dedup_exact_same_content() -> None:
@@ -563,7 +562,7 @@ async def test_dedup_exact_same_content() -> None:
             await facade.create_scene_memory(_ctx())     # 同 content 二次写入
         memories = await facade.list_memories()
         assert len(memories) == 1
-        assert memories[0].recall_count == 1             # 合并强化
+        assert memories[0].recall_count == 0             # 合并强化不涨 recall_count
         assert memories[0].content == "用户喜欢猫"
         [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
         assert created.content["memory_id"] == memories[0].id
@@ -584,7 +583,7 @@ async def test_dedup_semantic_merge() -> None:
         memories = await facade.list_memories()
         assert len(memories) == 1
         assert memories[0].id == "old-1"
-        assert memories[0].recall_count == 1
+        assert memories[0].recall_count == 0
         assert [e for e in events if e.type is EventType.MEMORY_CREATED] == []
     finally:
         await database.conn.close()
@@ -1029,44 +1028,6 @@ async def test_record_no_answer() -> None:
         assert llm.calls == []   # 无 LLM（确定性落库）
         [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
         assert created.content["memory_id"] == m.id
-    finally:
-        await database.conn.close()
-
-
-async def test_remember_encounter_writes_growth_memory() -> None:
-    store, bus, database = await _new_stack()
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
-    events = _subscribe(bus)
-    try:
-        async with _running(bus):
-            await facade.remember_encounter(Event(
-                id="e1", timestamp=0.0, source=Source.INTERNAL,
-                type=EventType.ENCOUNTER_END,
-                content={"consequences": {
-                    "memory": {"content": "我读完了一本书", "summary": "读完一本书"},
-                }},
-                correlation_id="c1",
-            ))
-        memories = await facade.list_memories()
-        assert len(memories) == 1
-        assert memories[0].tag == "encounter"
-        assert memories[0].content == "我读完了一本书"
-        assert any(e.type is EventType.MEMORY_CREATED for e in events)
-    finally:
-        await database.conn.close()
-
-
-async def test_remember_encounter_no_memory_key_skips() -> None:
-    store, bus, database = await _new_stack()
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
-    try:
-        await facade.remember_encounter(Event(
-            id="e1", timestamp=0.0, source=Source.INTERNAL,
-            type=EventType.ENCOUNTER_END,
-            content={"consequences": {"energy_delta": -5.0}},  # 无 memory 键
-            correlation_id="c1",
-        ))
-        assert await facade.list_memories() == []
     finally:
         await database.conn.close()
 

@@ -300,10 +300,11 @@ async def test_strengthen() -> None:
     store = MemoryStore(db)
     try:
         await store.add(_mem("m1", recall_count=0, freshness=0.3))
-        await store.strengthen("m1")
+        await store.strengthen("m1", 100.0)
         got = await store.get("m1")
         assert got is not None
-        assert got.recall_count == 1
+        assert got.recall_count == 0      # 重复写入不涨 recall_count
         assert got.freshness == 1.0
+        assert got.created_at == 100.0    # created_at 锚点刷新，decay 不会被旧锚点回滚
     finally:
         await db.conn.close()

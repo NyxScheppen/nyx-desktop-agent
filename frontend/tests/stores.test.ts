@@ -4,16 +4,9 @@ import { ANNOUNCE_DURATION, useAnnounceStore } from "../src/stores/announceStore
 import { useActivityStore } from "../src/stores/activityStore";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
-import { useEncounterStore } from "../src/stores/encounterStore";
-import { useEvalStore } from "../src/stores/evalStore";
-import { useExplorationStore } from "../src/stores/explorationStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
-import { useMaterialsStore } from "../src/stores/materialsStore";
-import { useMemoryStore } from "../src/stores/memoryStore";
-import { useNarrativeStore } from "../src/stores/narrativeStore";
-import { useReadingNotesStore } from "../src/stores/readingNotesStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
-import type { BackendEvent, CurrentState, ExplorationDecision } from "../src/types/api";
+import type { BackendEvent, CurrentState } from "../src/types/api";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
@@ -368,12 +361,10 @@ describe("innerLifeStore", () => {
   });
 });
 
-describe("desireStore / activityStore / memoryStore / evalStore", () => {
+describe("desireStore / activityStore", () => {
   beforeEach(() => {
     useDesireStore.setState({ data: null, error: null });
     useActivityStore.setState({ data: null, results: null, error: null });
-    useMemoryStore.setState({ data: null, error: null });
-    useEvalStore.setState({ reports: null, tokens: null, error: null });
   });
 
   it("desireStore.refresh：GET /api/desires → data 落 store", async () => {
@@ -403,27 +394,6 @@ describe("desireStore / activityStore / memoryStore / evalStore", () => {
     expect(useActivityStore.getState().results).toEqual([]);
   });
 
-  it("memoryStore.refresh：GET /api/memories → data 落 store", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useMemoryStore.getState().refresh();
-
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories");
-    expect(useMemoryStore.getState().data).toEqual([]);
-  });
-
-  it("evalStore.refresh：并行 getEval + getTokens → reports/tokens 落 store", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useEvalStore.getState().refresh();
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(useEvalStore.getState().reports).toEqual([]);
-    expect(useEvalStore.getState().tokens).toEqual([]);
-  });
-
   it("desireStore.refresh：getDesires throw → error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
 
@@ -431,119 +401,6 @@ describe("desireStore / activityStore / memoryStore / evalStore", () => {
 
     expect(useDesireStore.getState().error).toBe("fetch failed");
     expect(useDesireStore.getState().data).toBeNull();
-  });
-});
-
-describe("narrativeStore / materialsStore", () => {
-  beforeEach(() => {
-    useNarrativeStore.setState({ data: null, error: null, highlightedStory: null });
-    useMaterialsStore.setState({ materials: null, uploading: false, error: null });
-  });
-
-  it("narrativeStore.refresh：GET /api/narrative → data 落 store", async () => {
-    const fixture = {
-      identity: "我",
-      story: [],
-      self_view: {},
-      becoming: [],
-      updated_at: 123,
-    };
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useNarrativeStore.getState().refresh();
-
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/narrative");
-    expect(useNarrativeStore.getState().data).toEqual(fixture);
-  });
-
-  it("setHighlightedStory 记录待高亮故事（reflection_done 高亮用）", () => {
-    useNarrativeStore.getState().setHighlightedStory("今天对用户了解更多");
-    expect(useNarrativeStore.getState().highlightedStory).toBe("今天对用户了解更多");
-  });
-
-  it("materialsStore.refresh：GET /api/materials → materials 落 store", async () => {
-    const mat = {
-      path: "workspace/uploads/a.txt",
-      filename: "a.txt",
-      total_chars: 100,
-      read_chars: 40,
-      created_at: 1,
-      updated_at: 2,
-    };
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ materials: [mat] }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useMaterialsStore.getState().refresh();
-
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/materials");
-    expect(useMaterialsStore.getState().materials).toEqual([mat]);
-  });
-
-  it("materialsStore.upload：POST /api/upload 后重拉 materials + uploading 复位", async () => {
-    const mat = {
-      path: "workspace/uploads/book.txt",
-      filename: "book.txt",
-      total_chars: 100,
-      read_chars: 0,
-      created_at: 1,
-      updated_at: 2,
-    };
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse({ event_id: "e1", filename: "book.txt", path: "p" }),
-      ) // uploadFile
-      .mockResolvedValueOnce(jsonResponse({ materials: [mat] })); // getMaterials
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useMaterialsStore.getState().upload(
-      new File(["内容"], "book.txt", { type: "text/plain" }),
-    );
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/upload");
-    expect(fetchMock.mock.calls[1][0]).toBe("/api/materials");
-    expect(useMaterialsStore.getState().materials).toEqual([mat]);
-    expect(useMaterialsStore.getState().uploading).toBe(false);
-  });
-});
-
-describe("readingNotesStore", () => {
-  beforeEach(() => {
-    useReadingNotesStore.setState({ notes: null, loading: false, error: null });
-  });
-
-  it("refresh：GET /api/reading-notes?limit=50 → notes 落 store", async () => {
-    const note = {
-      id: "n1",
-      book: "三体",
-      content: "正文",
-      created_at: 1,
-      annotation_count: 0,
-    };
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([note]));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useReadingNotesStore.getState().refresh();
-
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/reading-notes?limit=50");
-    expect(useReadingNotesStore.getState().notes).toEqual([note]);
-    expect(useReadingNotesStore.getState().loading).toBe(false);
-  });
-
-  it("remove：DELETE /api/reading-notes/{id} 后从清单摘除", async () => {
-    const n1 = { id: "n1", book: "a", content: "x", created_at: 1, annotation_count: 0, path: "" };
-    const n2 = { id: "n2", book: "b", content: "y", created_at: 2, annotation_count: 0, path: "" };
-    useReadingNotesStore.setState({ notes: [n1, n2] });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ deleted: "n1" }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useReadingNotesStore.getState().remove("n1");
-
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/reading-notes/n1");
-    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "DELETE" });
-    expect(useReadingNotesStore.getState().notes).toEqual([n2]);
   });
 });
 
@@ -730,198 +587,3 @@ describe("announceStore", () => {
   });
 });
 
-describe("explorationStore", () => {
-  beforeEach(() => {
-    useExplorationStore.setState({
-      decision: null, activityId: null, autopilot: false,
-      choosing: false, error: null, history: [],
-    });
-  });
-
-  const decision: ExplorationDecision = {
-    kind: "choose",
-    floor: 1,
-    energy: 94,
-    focus: "量子",
-    nodes: [
-      { name: "维基·退相干", url: "", kind: "real", snippet: "…", may_encounter: false },
-      { name: "本地·无结果", url: "", kind: "dead_end", snippet: "", may_encounter: false },
-    ],
-  };
-
-  it("onStep：同 activity 更新 decision，异 activity 清 history", () => {
-    useExplorationStore.getState().onStep({
-      event: "exploration_step", event_id: "s1", correlation_id: "a1",
-      activity_id: "a1", decision,
-    });
-    expect(useExplorationStore.getState().decision).toEqual(decision);
-
-    useExplorationStore.getState().onStep({
-      event: "exploration_step", event_id: "s2", correlation_id: "a2",
-      activity_id: "a2", decision,
-    });
-    expect(useExplorationStore.getState().activityId).toBe("a2");
-  });
-
-  it("choose：node:0 记录足迹 + POST /api/explore/choose", async () => {
-    useExplorationStore.setState({ decision, activityId: "a1" });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ kind: "choose" }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useExplorationStore.getState().choose("node:0");
-
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/explore/choose");
-    expect(JSON.parse(init.body)).toEqual({ activity_id: "a1", choice: "node:0" });
-    expect(useExplorationStore.getState().history[0]).toMatchObject({ floor: 1, name: "维基·退相干" });
-  });
-
-  it("choose：无 decision 不发起 POST", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useExplorationStore.getState().choose("node:0");
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("start：POST /api/explore 后复位 decision/history/autopilot", async () => {
-    useExplorationStore.setState({
-      decision, activityId: "a1",
-      history: [{ floor: 1, name: "x", kind: "real" }],
-    });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ activity_id: "e1" }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useExplorationStore.getState().start();
-
-    expect(useExplorationStore.getState().activityId).toBe("e1");
-    expect(useExplorationStore.getState().decision).toBeNull();
-    expect(useExplorationStore.getState().history).toEqual([]);
-  });
-
-  it("toggleAutopilot：POST /api/explore/autopilot + 本地镜像", async () => {
-    useExplorationStore.setState({ activityId: "a1" });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ activity_id: "a1", autopilot: true }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useExplorationStore.getState().toggleAutopilot(true);
-
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/explore/autopilot");
-    expect(JSON.parse(init.body)).toEqual({ activity_id: "a1", on: true });
-    expect(useExplorationStore.getState().autopilot).toBe(true);
-  });
-
-  it("onActivityEnd：匹配 id 清 decision/autopilot", () => {
-    useExplorationStore.setState({ decision, activityId: "a1", autopilot: true });
-    useExplorationStore.getState().onActivityEnd("a1");
-    expect(useExplorationStore.getState().decision).toBeNull();
-    expect(useExplorationStore.getState().autopilot).toBe(false);
-  });
-});
-
-describe("encounterStore", () => {
-  beforeEach(() => {
-    useEncounterStore.getState().reset();
-    useChatStore.getState().reset();
-  });
-
-  it("onStart 置 current（零映射）", () => {
-    useEncounterStore.getState().onStart({
-      event: "encounter_start",
-      event_id: "e1",
-      correlation_id: "c1",
-      encounter_id: "enc1",
-      kind: "random_event",
-      text: "开场",
-      options: [{ index: 0, text: "走" }],
-    });
-    expect(useEncounterStore.getState().current).toEqual({
-      encounter_id: "enc1",
-      kind: "random_event",
-      text: "开场",
-      options: [{ index: 0, text: "走" }],
-    });
-  });
-
-  it("onEnd 清 current + 上屏 ending + 重拉三个快照", () => {
-    const chatSpy = vi.spyOn(useChatStore.getState(), "addEncounterEnding");
-    const innerSpy = vi.spyOn(useInnerLifeStore.getState(), "refreshState").mockResolvedValue(undefined);
-    const desireSpy = vi.spyOn(useDesireStore.getState(), "refresh").mockResolvedValue(undefined);
-    const memorySpy = vi.spyOn(useMemoryStore.getState(), "refresh").mockResolvedValue(undefined);
-
-    useEncounterStore.getState().onEnd({
-      event: "encounter_end",
-      event_id: "e2",
-      correlation_id: "c2",
-      encounter_id: "enc1",
-      kind: "random_event",
-      option_index: 0,
-      option_text: "走",
-      ending: "结局",
-      consequences: {},
-    });
-
-    expect(useEncounterStore.getState().current).toBeNull();
-    expect(chatSpy).toHaveBeenCalledTimes(1);
-    expect(innerSpy).toHaveBeenCalledTimes(1);
-    expect(desireSpy).toHaveBeenCalledTimes(1);
-    expect(memorySpy).toHaveBeenCalledTimes(1);
-  });
-
-  it("choose POST /api/encounter/choose，成功不本地清 current", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ encounter_id: "enc1", chosen: 0 }));
-    vi.stubGlobal("fetch", fetchMock);
-    useEncounterStore.setState({
-      current: { encounter_id: "enc1", kind: "random_event", text: "开场", options: [{ index: 0, text: "走" }] },
-    });
-
-    await useEncounterStore.getState().choose("enc1", 0);
-
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/encounter/choose");
-    expect(JSON.parse(init.body)).toEqual({ encounter_id: "enc1", option_index: 0 });
-    expect(useEncounterStore.getState().current).not.toBeNull(); // 不本地清
-    expect(useEncounterStore.getState().choosing).toBe(true); // 成功路径不清 choosing，等 encounter_end 的 onEnd 才清（防 SSE 间隙连击）
-  });
-
-  it("refresh GET /api/encounter/current → current 落 store", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
-      encounter_id: "enc9", kind: "growth_moment", text: "开场", options: [],
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useEncounterStore.getState().refresh();
-
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/encounter/current");
-    expect(useEncounterStore.getState().current?.encounter_id).toBe("enc9");
-  });
-});
-
-describe("chatStore.addEncounterEnding", () => {
-  it("ending 转 ChatMessage{role:nyx, kind:encounter} 并 append", () => {
-    useChatStore.getState().reset();
-    useChatStore.getState().addEncounterEnding({
-      event: "encounter_end",
-      event_id: "e1",
-      correlation_id: "c1",
-      encounter_id: "enc1",
-      kind: "growth_moment",
-      option_index: 0,
-      option_text: "走",
-      ending: "温柔，总能走到更远的地方。",
-      consequences: {},
-    });
-
-    const { messages } = useChatStore.getState();
-    expect(messages).toHaveLength(1);
-    expect(messages[0]).toMatchObject({
-      id: "e1",
-      role: "nyx",
-      kind: "encounter",
-      content: "温柔，总能走到更远的地方。",
-      correlation_id: "c1",
-    });
-  });
-});

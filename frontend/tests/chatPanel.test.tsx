@@ -69,12 +69,6 @@ describe("MessageBubble", () => {
     expect(screen.getByText("在忙吗？")).toBeInTheDocument();
   });
 
-  it("encounter → 带「遭遇」标记 + 即时 content", () => {
-    render(<MessageBubble message={makeMsg("encounter", "nyx", "结局叙事")} ready onTyped={() => {}} />);
-    expect(screen.getByText("遭遇")).toBeInTheDocument(); // 徽标即时
-    expect(screen.getByText("结局叙事")).toBeInTheDocument(); // 不逐字，即时全量
-  });
-
   it("user message → 右气泡 class（即时，不打字）", () => {
     render(<MessageBubble message={makeMsg("message", "user", "你好")} ready onTyped={() => {}} />);
     expect(screen.getByText("你好").closest(".message-bubble")).toHaveClass(

@@ -116,26 +116,6 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
                 correlation_id TEXT NOT NULL
             )""",
             "CREATE INDEX idx_event_log_corr ON event_log(correlation_id)",
-            """CREATE TABLE eval_report (
-                id TEXT PRIMARY KEY,
-                output_id TEXT NOT NULL,
-                module TEXT NOT NULL,
-                type TEXT NOT NULL,
-                scores TEXT NOT NULL,           -- JSON
-                token_usage TEXT NOT NULL,      -- JSON {input, output}
-                correlation_id TEXT NOT NULL,
-                created_at REAL NOT NULL
-            )""",
-            """CREATE TABLE token_usage (
-                id TEXT PRIMARY KEY,
-                correlation_id TEXT,            -- str | None，可空
-                module TEXT NOT NULL,
-                purpose TEXT NOT NULL,         -- reply / scene_memory / desire / ...
-                model TEXT NOT NULL,
-                input_tokens INTEGER NOT NULL,
-                output_tokens INTEGER NOT NULL,
-                created_at REAL NOT NULL
-            )""",
         ],
     ),
     (
@@ -159,35 +139,6 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             # goal 精确计数：已完成单位数（count 次才满足）
             "ALTER TABLE short_term_desire ADD COLUMN goal_progress INTEGER "
             "NOT NULL DEFAULT 0",
-        ],
-    ),
-    (
-        4,
-        [
-            # 读书笔记：读完整本书后落的一条完整笔记（一等产物，可删除/可批注）
-            """CREATE TABLE reading_note (
-                id TEXT PRIMARY KEY,
-                book TEXT NOT NULL,             -- 书名（filename）
-                content TEXT NOT NULL,          -- 完整笔记正文（Markdown）
-                created_at REAL NOT NULL
-            )""",
-            # 读书笔记的批注（用户对笔记的评论）
-            """CREATE TABLE annotation (
-                id TEXT PRIMARY KEY,
-                target_id TEXT NOT NULL,        -- reading_note.id
-                author TEXT NOT NULL,           -- 'user' | 'nyx'
-                content TEXT NOT NULL,
-                created_at REAL NOT NULL
-            )""",
-            "CREATE INDEX idx_annotation_target ON annotation(target_id)",
-        ],
-    ),
-    (
-        5,
-        [
-            # 读书笔记去重键：读物绝对路径（book 仅 filename 展示；同路径重读原地
-            # 更新保留批注，跨路径同名书互不误删）
-            "ALTER TABLE reading_note ADD COLUMN path TEXT NOT NULL DEFAULT ''",
         ],
     ),
     (

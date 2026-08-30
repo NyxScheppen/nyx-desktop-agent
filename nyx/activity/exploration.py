@@ -52,9 +52,11 @@ class Exploration:
         """跑完一次探索：搜 → 抓前 _FETCH_COUNT 条正文 → 一次 LLM 总结。
 
         返回 {type, outcome, summary, core_discovery, knowledge,
-        new_topics, strong_new_topics, findings}。
+        new_topics, strong_new_topics, findings, tools}；tools 记录本次
+        探索实际调用的工具（name/args/ok），供前端展示「做了什么」。
         """
-        results = await self._search(topic)
+        tool_calls: list[dict[str, Any]] = []
+        results = await self._search(topic, tool_calls)
         findings: list[str] = []
         for result in results[:_FETCH_COUNT]:
             name, url, snippet = _result_parts(result)
@@ -63,7 +65,13 @@ class Exploration:
             content = snippet
             if url:
                 try:
-                    content = str(await self._tools.call("web_fetch", {"url": url}))
+                    fetched = await self._call_tool(
+                        "web_fetch", {"url": url}, tool_calls
+                    )
+                    if isinstance(fetched, dict):
+                        text = cast(dict[str, Any], fetched).get("text")
+                        if isinstance(text, str) and text.strip():
+                            content = text
                 except Exception:
                     pass  # best-effort：抓正文失败不崩 run，snippet 兜底
             findings.append(f"{name}：{content}")
@@ -90,16 +98,33 @@ class Exploration:
                 else []
             ),
             "findings": findings,
+            "tools": tool_calls,
         }
 
-    async def _search(self, topic: str) -> list[Any]:
+    async def _call_tool(
+        self, name: str, args: dict[str, Any], tool_calls: list[dict[str, Any]]
+    ) -> Any:
+        """调用工具并就地记录 {name, args, ok}；失败记 ok=False 后上抛。"""
+        try:
+            result = await self._tools.call(name, args)
+            tool_calls.append({"name": name, "args": args, "ok": True})
+            return result
+        except Exception:
+            tool_calls.append({"name": name, "args": args, "ok": False})
+            raise
+
+    async def _search(
+        self, topic: str, tool_calls: list[dict[str, Any]]
+    ) -> list[Any]:
         """联网搜索 → 本地搜索兜底；禁用联网时直落本地。"""
         if self._web_enabled:
-            res = await self._tools.call("web_search", {"query": topic})
+            res = await self._call_tool("web_search", {"query": topic}, tool_calls)
             if not res:
-                res = await self._tools.call("local_search", {"query": topic})
+                res = await self._call_tool(
+                    "local_search", {"query": topic}, tool_calls
+                )
         else:
-            res = await self._tools.call("local_search", {"query": topic})
+            res = await self._call_tool("local_search", {"query": topic}, tool_calls)
         if not isinstance(res, list):
             return []
         return cast(list[Any], res)

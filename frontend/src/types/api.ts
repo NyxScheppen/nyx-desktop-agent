@@ -95,7 +95,6 @@ export type ReflectionDoneEvent = SseBase & {
 
 /** 未消费的事件：前端不读字段，payload 保持宽松。 */
 type OpaqueEventType =
-  | "user_material"
   | "clock_tick"
   | "observation_state"
   | "reflection"

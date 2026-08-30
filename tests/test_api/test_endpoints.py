@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false
 from typing import cast
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 from nyx.activity.facade import ActivityFacade
@@ -96,6 +97,7 @@ class _FakeMemory:
 class _FakeActivity:
     def __init__(self) -> None:
         self.list_calls = 0
+        self.registered: list[tuple[str, str, int]] = []
 
     async def list_materials(self) -> list[Material]:
         self.list_calls += 1
@@ -106,6 +108,11 @@ class _FakeActivity:
                 created_at=1.0, updated_at=2.0,
             )
         ]
+
+    async def register_material(
+        self, path: str, filename: str, total_chars: int
+    ) -> None:
+        self.registered.append((path, filename, total_chars))
 
 
 def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
@@ -247,3 +254,33 @@ async def test_materials_endpoint_returns_progress() -> None:
         ]
     }
     assert fake_activity.list_calls == 1
+
+
+async def test_upload_endpoint_registers_material(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST /api/upload：只写文件 + 注册书库，不触发读书（无 ACTIVITY_START）。"""
+    async def _fake_file_io(
+        action: str, path: str, content: str | None = None
+    ) -> dict[str, object]:
+        return {"path": f"workspace/{path}", "written": len(content or "")}
+
+    monkeypatch.setattr("nyx.main.file_io", _fake_file_io)
+    fake_activity = _FakeActivity()
+    bus = _FakeBus()
+    app = _app(_mk_state(), bus, _FakeMemory())
+    app.activity = cast(ActivityFacade, fake_activity)
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/upload",
+            files={"file": ("book.txt", "骑士团的历史".encode("utf-8"), "text/plain")},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "filename": "book.txt",
+        "path": "workspace/uploads/book.txt",
+    }
+    assert fake_activity.registered == [
+        ("workspace/uploads/book.txt", "book.txt", 6)
+    ]
+    assert bus.published == []

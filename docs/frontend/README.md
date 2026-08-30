@@ -59,7 +59,7 @@
 | REST | 初始快照 + 发消息 + 历史查询 + 导出 | 13 个端点（tech-ref §4） |
 | SSE | 实时**全部事件** | `GET /api/events` |
 
-- **SSE 是主通道**：后端广播全部 20 类事件（design §3.2），前端按 `event` 类型增量更新面板；REST 只做进页面时的初始快照 + 用户主动动作（发消息/导出）。
+- **SSE 是主通道**：后端广播全部 19 类事件（design §3.2），前端按 `event` 类型增量更新面板；REST 只做进页面时的初始快照 + 用户主动动作（发消息/导出）。
 - SSE `data` 统一形状（tech-ref §4）：
 
 ```json
@@ -83,7 +83,7 @@ frontend/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     lib/
       labels.ts              # 枚举值→中文 UI 标签（label() 未知键回退原值）
-      activityResult.ts      # 活动产出纯函数（activitySubject / formatResult / formatOutputBody / activityAnnouncement）
+      activityResult.ts      # 活动产出纯函数（activitySubject / formatResult / formatOutputBody / formatTools / activityAnnouncement）
     api/
       client.ts              # REST fetch 封装（postChat / getState / postObserve / getDesires / getActivity / getActivityResults / getEventsLog，见 05-client）
       dispatch.ts            # SseEvent → store 路由（01-sse §4.1）
@@ -116,7 +116,7 @@ frontend/
       panels/
         BackgroundPanel.tsx  # 背景外观（预设色调/自定义取色/上传背景图/恢复默认）
         DesiresPanel.tsx     # 欲望面板（GET /api/desires + SSE desire_*）
-        ActivityPanel.tsx    # 活动时间线（GET /api/activity + SSE activity_*）
+        ActivityPanel.tsx    # 活动时间线 + 产出面板（GET /api/activity + results + SSE activity_*；产出区列完整产出 + 工具轨迹）
       layout/
         Panel.tsx            # 通用面板容器
         Modal.tsx            # 通用弹层容器（内在详情 / 设置复用）
@@ -132,7 +132,7 @@ frontend/
     sse.test.ts
     stores.test.ts
     labels.test.ts           # 枚举中文化映射 + label() 回退
-    activityResult.test.ts   # activityResult 纯函数（activitySubject/formatResult/activityAnnouncement）
+    activityResult.test.ts   # activityResult 纯函数（activitySubject/formatResult/formatOutputBody/formatTools/activityAnnouncement）
 ```
 
 ### 命名约定（对齐 CLAUDE.md 前端规范）

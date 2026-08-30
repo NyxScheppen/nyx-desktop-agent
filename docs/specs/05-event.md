@@ -51,7 +51,6 @@
   | 事件 | 内部消费者 |
   |---|---|
   | `USER_MESSAGE` | `expression` |
-  | `USER_MATERIAL` | `activity` |
   | `OBSERVATION_STATE` | `inner_life`, `desire` |
   | `DESIRE_GENERATED` | `activity` |
   | `DESIRE_SATISFIED` | `inner_life` |

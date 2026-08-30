@@ -5,6 +5,7 @@ import {
   activitySubject,
   formatOutputBody,
   formatResult,
+  formatTools,
 } from "../src/lib/activityResult";
 import type { Activity } from "../src/types/api";
 
@@ -126,6 +127,35 @@ describe("formatOutputBody", () => {
     expect(formatOutputBody(activity({ status: "running", progress: { result: { note: "x" } } }))).toBeNull();
     expect(formatOutputBody(activity({ progress: { result: {} } }))).toBeNull();
     expect(formatOutputBody(activity({ type: "rest", progress: { result: { note: "x" } } }))).toBeNull();
+  });
+});
+
+describe("formatTools", () => {
+  it("多工具链 → 用 → 连接；ok=false 标记（失败）", () => {
+    expect(
+      formatTools(
+        activity({
+          type: "free_exploration",
+          progress: {
+            result: {
+              tools: [
+                { name: "web_search", args: { query: "骑士团" }, ok: true },
+                { name: "web_fetch", args: { url: "https://e.com" }, ok: true },
+                { name: "file_io", args: { action: "write", path: "a.md" }, ok: false },
+              ],
+            },
+          },
+        }),
+      ),
+    ).toBe("联网搜索「骑士团」 → 抓取网页 https://e.com → 写文件 a.md（失败）");
+  });
+
+  it("无 tools / 非数组 / 未完成 → null", () => {
+    expect(formatTools(activity({ progress: { result: {} } }))).toBeNull();
+    expect(formatTools(activity({ progress: { result: { tools: "x" } } }))).toBeNull();
+    expect(
+      formatTools(activity({ status: "running", progress: { result: { tools: [] } } })),
+    ).toBeNull();
   });
 });
 

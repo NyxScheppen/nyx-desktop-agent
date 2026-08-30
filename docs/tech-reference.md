@@ -45,10 +45,10 @@
 | GET | `/api/events/log?limit=&event_type=&correlation_id=` | — | `Event[]` |
 | GET | `/api/narrative` | — | `SelfNarrative` |
 | POST | `/api/export` | `{format: json|md}` | 记忆导出文件 |
-| POST | `/api/upload` | `multipart/form-data`（`file`） | `{event_id, filename, path}`（落盘后 publish `USER_MATERIAL` → 读书） |
+| POST | `/api/upload` | `multipart/form-data`（`file`） | `{filename, path}`（落盘后 `register_material` 只注册书库，不立即读书） |
 | GET | `/api/materials` | — | `{materials: Material[]}`（书库进度） |
 > REST 端点分两类：
-> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`> - **外部输入入口**：`/api/chat`、`/api/observe`、`/api/upload` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 publish `USER_MATERIAL`（bus 路由：注册书库 + 发起读书活动）。回复/后续产出走 SSE。
+> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`> - **外部输入入口**：`/api/chat`、`/api/observe` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 `ActivityFacade.register_material()` 只注册书库（不发事件、不立即读书），返回 `{filename, path}`。回复/后续产出走 SSE。
 
 ### SSE（`GET /api/events`）
 
@@ -104,7 +104,7 @@ async def get_current() -> Activity | None                      # 当前活动�
 async def get_schedule() -> list[Activity]                      # 今日日程块（供 /api/activity）
 async def get_results(limit: int = 100) -> list[Activity]       # 跨天历史产出（供 /api/activity/results）
 async def list_materials() -> list[Material]                    # 书库全量（含已读进度，供 /api/materials 资料面板）
-async def read_material(path: str, filename: str, total_chars: int, correlation_id: str) -> None  # 喂资料：注册书库 + 发起 READING 读第一块
+async def register_material(path: str, filename: str, total_chars: int) -> None  # 注册读物进书库（只登记不立即读；读书由欲望驱动选书）
 ```
 
 ### DesireFacade

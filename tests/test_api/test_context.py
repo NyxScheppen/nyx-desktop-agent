@@ -1,6 +1,5 @@
 # pyright: reportPrivateUsage=false
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -8,7 +7,6 @@ from nyx.config import Config, ExplorationConfig
 from nyx.db import connect
 from nyx.desire.store import DesireStore
 from nyx.enums import DesireType, EnergyState, EventType, Source
-from nyx.events.bus import EventBus
 from nyx.inner_life.store import InnerLifeStore
 from nyx.main import (
     _build_tools,
@@ -114,7 +112,7 @@ async def test_seed_desire_idempotent() -> None:
 def test_build_tools_web_disabled() -> None:
     names = {
         t["function"]["name"]
-        for t in _build_tools(Config(), cast(EventBus, None)).schema()
+        for t in _build_tools(Config()).schema()
     }
     assert names == {"local_search", "file_io"}
 
@@ -123,6 +121,6 @@ def test_build_tools_web_enabled() -> None:
     cfg = Config(exploration=ExplorationConfig(web_enabled=True))
     names = {
         t["function"]["name"]
-        for t in _build_tools(cfg, cast(EventBus, None)).schema()
+        for t in _build_tools(cfg).schema()
     }
     assert names == {"local_search", "file_io", "web_search", "web_fetch"}

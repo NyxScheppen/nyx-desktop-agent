@@ -96,6 +96,45 @@ export function formatOutputBody(a: Activity): string | null {
   return null;
 }
 
+/** 单次工具调用的文案（{name, args} → 「联网搜索「X」」）；无法识别返回 null。 */
+function formatToolCall(name: string, args: Record<string, unknown>): string | null {
+  switch (name) {
+    case "web_search":
+      return `联网搜索「${typeof args.query === "string" ? args.query : ""}」`;
+    case "local_search":
+      return `本地搜索「${typeof args.query === "string" ? args.query : ""}」`;
+    case "web_fetch":
+      return `抓取网页 ${typeof args.url === "string" ? args.url : ""}`;
+    case "file_io":
+      return `写文件 ${typeof args.path === "string" ? args.path : ""}`;
+    default:
+      return name.length > 0 ? name : null;
+  }
+}
+
+/** 产出面板工具轨迹：result.tools（数组）→ 「联网搜索「X」 → 抓取网页 Y」；无 tools 返回 null。 */
+export function formatTools(a: Activity): string | null {
+  if (a.status !== "completed") return null;
+  const result = a.progress.result;
+  if (typeof result !== "object" || result === null) return null;
+  const r = result as Record<string, unknown>;
+  if (!Array.isArray(r.tools)) return null;
+  const parts: string[] = [];
+  for (const t of r.tools) {
+    if (typeof t !== "object" || t === null) continue;
+    const tc = t as Record<string, unknown>;
+    const name = typeof tc.name === "string" ? tc.name : "";
+    const args =
+      typeof tc.args === "object" && tc.args !== null
+        ? (tc.args as Record<string, unknown>)
+        : {};
+    const label = formatToolCall(name, args);
+    if (label === null) continue;
+    parts.push(tc.ok === false ? `${label}（失败）` : label);
+  }
+  return parts.length > 0 ? parts.join(" → ") : null;
+}
+
 // 完成后「主动冒一句」的前缀：只有会产出 result 的三类活动。
 const ANNOUNCE_PREFIX: Partial<Record<ActivityType, string>> = {
   reading: "读完啦：",

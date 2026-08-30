@@ -140,8 +140,8 @@
 | `test_list` | 功能正确 | `list` 返回目录条目名 |
 | `test_unknown_action` | 边界鲁棒 | 未知 `action` → `ValueError` |
 | `test_fetch_url_sync_returns_empty_on_http_error` | 边界鲁棒 | `httpx.get` 抛异常 → `fetch_url` 返回 `""`（best-effort 不冒泡） |
-| `test_build_web_fetch_tool_writes_and_publishes` | 功能正确 | `web_fetch` handler 抓正文 → `file_io` 写 `uploads/{name}.txt` → `bus.publish(USER_MATERIAL)`（`source=INTERNAL`、content 含 `path`/`filename`/`total_chars`）；返回 `{path, filename, total_chars}` |
-| `test_build_web_fetch_tool_returns_error_when_empty` | 边界鲁棒 | 正文抓取失败/为空 → 返回 `{"error": ...}`（不写盘不 publish） |
+| `test_build_web_fetch_tool_returns_text` | 功能正确 | `web_fetch` handler 抓正文 → 返回 `{text, url}` 纯正文（不写盘、不发事件）；`text == "正文内容"`、`url` 原样回传 |
+| `test_build_web_fetch_tool_returns_error_when_empty` | 边界鲁棒 | 正文抓取失败/为空 → 返回 `{"error": ...}`（纯抓取不写盘不 publish） |
 | `test_is_public_ip_rejects_internal_ranges` | SSRF 护栏 | 回环/内网/链路本地/组播/未指定 IP（`127.0.0.1`/`10.0.0.1`/`192.168.1.1`/`169.254.1.1`/`::1`）→ `_is_public_ip` 为 `False` |
 | `test_is_public_ip_accepts_public` | SSRF 护栏 | 公网 IP（`8.8.8.8`/`1.1.1.1`）→ `_is_public_ip` 为 `True` |
 | `test_is_safe_url_rejects_non_http_scheme` | SSRF 护栏 | `file://`/`ftp://`/`javascript:` → `_is_safe_url` 为 `False` |
@@ -299,7 +299,9 @@
 | `test_run_eval_long_term_pressure` | 功能正确 | 探索长期欲望 → 探索 `value` 额外 `+0.1`（0.5→0.6） |
 | `test_run_eval_decay` | 功能正确 | `updated_at` 1 天前 → `value` 衰减 `value_decay × 1`（0.5→0.45） |
 | `test_run_eval_suppression_gate` | 功能正确 | 达峰但 `suppression_threshold > value` → 不生成、返回 `[]` |
-| `test_run_eval_topic_seed` | 功能正确 | 探索长期 `subtopics=["骑士团", "大学朋友"]` + 记忆命中「骑士团」→ LLM prompt 含「大学朋友」不含「骑士团」（没做过优先） |
+| `test_run_eval_topic_seed` | 功能正确 | 探索长期 `subtopics=["骑士团", "大学朋友"]` + 记忆命中「骑士团」→ LLM prompt 含「大学朋友」不含「骑士团」（没做过优先）；seed 钉死 goal.topic：LLM 返回「骑士团」被覆盖为「大学朋友」 |
+| `test_run_eval_topic_cleared_without_seed` | 功能正确 | 探索欲无长期欲望（无 subtopics）→ seed=None，goal.topic 被清空为 None（杜绝 LLM 漂移主题） |
+| `test_run_eval_topic_no_synthesis_goal_none` | 功能正确 | 探索欲有 seed 但 LLM 返回 goal=null → 不合成 goal（goal 保持 None，单次满足语义） |
 | `test_run_eval_llm_invalid_json_skips` | 边界鲁棒 | 非法 JSON → `_parse_desire` 抛 `ValueError` → 返回 `[]`、目标 `value` 不重置、无欲望入队 |
 | `test_run_eval_evaluator_error_propagates` | 回归保护 | evaluator 抛 `RuntimeError` → 不被 `except ValueError` 吞、上抛给 supervisor（不掩蔽真 bug） |
 | `test_run_eval_dedup_discards_similar` | 功能正确 | 已有 PENDING 欲望与新生成 description 向量余弦 ≥ 0.9 → 不入队（`list_pending` 仍 1 条）、不发布 `desire_generated`、value 已归零 |
@@ -439,7 +441,7 @@
 | `test_observe_user_result_no_window_title` | 边界鲁棒 | `window_title` 空 → summary 省略「正在浏览」仅 `用户（away）` |
 | `test_observe_user_result_with_screen_summary` | 功能正确 | `screen_summary` 非空 → result 带 `screen_summary` + summary 追加「，屏幕：写代码」（`用户（busy）正在浏览 编辑器，屏幕：写代码`） |
 | `test_execute_failure_marks_incomplete` | 回归保护 | LLM 抛异常 → 活动标 INCOMPLETE + `ended_at` 非空（不卡 RUNNING） |
-| `test_upgrade_to_free_exploration` | 功能正确 | 探索欲 + 精力足 + 频率过 → FREE_EXPLORATION |
+| `test_upgrade_to_free_exploration` | 功能正确 | 探索欲（goal.topic「骑士团」钉死）+ 精力足 + 频率过 → FREE_EXPLORATION |
 | `test_no_upgrade_when_rate_limited` | 功能正确 | 频率未过 → 降级 READING |
 | `test_complete_activity` | 功能正确 | COMPLETED + `ended_at` 非空 + activity_end（energy_delta=-20） |
 | `test_interrupt_non_resumable_abandons` | 功能正确 | 瞬时活动（休息）打断 → ABANDONED + activity_interrupted（`by=user_message`） |
@@ -465,10 +467,9 @@
 | `test_sample_once_ok` | 功能正确 | 抓屏+视觉模型各 1 次 → 返回描述文本 `写代码` |
 | `test_sample_once_capture_fails` | 边界鲁棒 | capture 抛异常 → 记日志返 `None` 不崩（best-effort） |
 | `test_sample_once_describe_fails` | 边界鲁棒 | describe 抛异常 → 记日志返 `None` 不崩（best-effort） |
-| `test_read_material_reads_real_file` | 功能正确 | 写真实文件（7000 字）→ `read_material(path, filename, total_chars, cid)` 起一条 `READING` 活动，`progress["source"]` 指向源文件、`result.read_chars==6000`/`total_chars==7000`（一块读 6000 字符不超本），事件序 `[ACTIVITY_START, ACTIVITY_END]` |
-| `test_reading_completion_aggregates_note` | 功能正确 | 6 字书一块读尽 → 聚合片段产完整笔记落盘：`completed=True`、`note="完整读书笔记"`、`path="workspace/notes/book.txt.md"`、LLM 调 `["reading","note"]`（C1 读完一本 = 一篇笔记） |
-| `test_read_material_skips_when_busy` | 边界鲁棒 | 已有 in-flight 活动（`_task` 未 done）时 `read_material` 直接 return 不新建（`list_schedule` 仍 1 条）——并发守卫镜像 `_maybe_start_activity` |
-| `test_no_material_rate_limited_falls_back_to_default` | 功能正确 | 探索欲 + 无书可读 + 限速中（`prev` FREE_EXPLORATION 刚做）→ 退回默认活动 `OBSERVE_USER`（绝不编造读书内容） |
+| `test_reading_completion_aggregates_note` | 功能正确 | `register_material` 存 6 字书 → 探索欲（`GoalAction.READ`）触发 `_maybe_start_activity` 读完一块 → 聚合片段产完整笔记落盘：`completed=True`、`note="完整读书笔记"`、`path="workspace/notes/book.txt-<suffix>.md"`、`file_io` 收到 `notes/book.txt-<suffix>.md`、LLM 调 `["reading","note","knowledge"]` |
+| `test_no_material_rate_limited_falls_back_to_default` | 功能正确 | 探索欲（有 topic）+ 无书可读 + 限速中（`prev` FREE_EXPLORATION 刚做）→ 退回默认活动 `OBSERVE_USER`（绝不编造读书内容） |
+| `test_no_material_no_topic_falls_back_to_default` | 功能正确 | 探索欲无 goal（无 topic）+ 无书可读 → 不转自由探索，退回默认活动 `OBSERVE_USER`（无 seed 不联网搜主题） |
 | `test_desire_reading_reads_latest_material` | 功能正确 | 探索欲 + 已注册 7000 字书 → `READING` 读该书、`progress["result"]["read_chars"]==6000` / `["total_chars"]==7000`、书库 `next_readable().read_chars==6000`（分块推进、下次续读） |
 | `test_maybe_start_reading_uses_topic` | 功能正确 | goal.topic「骑士团」命中 `骑士团历史.txt`（更早入库）→ 读该书而非更新的 `other.txt`（C2 读书按 topic 选料） |
 | `test_next_readable_picks_latest_unread` | 功能正确 | 两本未读 → `next_readable()` 取 `created_at` 最新的那本 |
@@ -609,6 +610,7 @@
 | `test_main_propagates_serve_failure` | 功能正确 | fake `server.serve()` 抛 `RuntimeError`（端口被占）→ `main()` 重抛 `RuntimeError`（非零退出，不静默吞） |
 | `test_main_propagates_tick_failure` | 功能正确 | fake `_tick_loop` 抛 `RuntimeError` + 阻塞 serve/bus → `main()` 重抛 `RuntimeError`（tick 异常传播，不再静默丢周期事件） |
 | `test_materials_endpoint_returns_progress` | 功能正确 | `GET /api/materials` → `{materials: [Material]}`（`read_chars`/`total_chars` 进度），不再是纯文件名；`list_materials` 委托恰 1 次 |
+| `test_upload_endpoint_registers_material` | 功能正确 | `POST /api/upload`（multipart 6 字书）→ `file_io` 写 `uploads/book.txt` 后 `register_material(path, name, 6)` 入库，返回 `{filename:"book.txt", path:"workspace/uploads/book.txt"}`；`registered == [("workspace/uploads/book.txt","book.txt",6)]`、`bus.published == []`（只注册不触发读书） |
 | `test_check_reflect_skips_within_cooldown` | 边界鲁棒 | `updated_at` 距 now < `_REFLECT_MIN_INTERVAL` → 不触发（`reflect` 不调） |
 | `test_check_reflect_skips_below_new_memory_threshold` | 边界鲁棒 | 已过冷却但新记忆 < `_REFLECT_MIN_NEW_MEMORIES` → 不触发（`reflect` 不调） |
 | `test_check_reflect_triggers` | 功能正确 | 过冷却 + 新记忆达标 → `reflect` 调 1 次（correlation 透传） |
@@ -777,6 +779,9 @@
 | `formatOutputBody > free_exploration → core_discovery + knowledge 逐条` | 功能正确 | `core_discovery` 加「核心发现：」前缀 + `knowledge` 逐条拼 `【topic】content`，join `\n` |
 | `formatOutputBody > free_exploration → 无 knowledge 只留 summary` | 功能正确 | 无 `core_discovery`/`knowledge` 时回退只返回 `summary` |
 | `formatOutputBody > 未完成 / 无对应字段 / 非 result 类型 → null` | 边界鲁棒 | `status="running"`、`result={}`（无 note/content）、`type="rest"` 均返回 null |
+| `formatTools > 多工具链 → 箭头拼接` | 功能正确 | `[{name:"web_search",args:{query:"骑士团"}},{name:"web_fetch",args:{url:"…"}}]` → `联网搜索「骑士团」 → 抓取网页 …`（`→` 连接） |
+| `formatTools > 失败工具 → 标注（失败）` | 功能正确 | `ok:false` 的工具项标注 `（失败）` |
+| `formatTools > 空/无 tools → null` | 边界鲁棒 | `tools: []` / 无 `tools` 字段 → 返回 null |
 | `activityAnnouncement > reading → 读完啦：…` | 功能正确 | reading 产出前缀 `读完啦：` + formatResult |
 | `activityAnnouncement > creation → 创作完成：…` | 功能正确 | creation 产出前缀 `创作完成：` |
 | `activityAnnouncement > free_exploration → 探索收获：…` | 功能正确 | free_exploration 产出前缀 `探索收获：` + formatResult（读 `summary`） |

@@ -419,38 +419,15 @@ class ActivityFacade:
         """书库全量（含已读进度），供资料面板展示「读到哪了」。"""
         return await self._material_store.list_all()
 
-    async def read_material(
-        self, path: str, filename: str, total_chars: int, correlation_id: str
+    async def register_material(
+        self, path: str, filename: str, total_chars: int
     ) -> None:
-        """用户投喂资料：注册进书库 → 立即发起一次 READING 活动读第一块。
+        """注册一本读物进书库（只登记，不立即读）。
 
-        与 _maybe_start_activity 共用 _start_lock 串行守卫；忙时跳过（文件已落盘、
-        且已入书库，探索欲后续会自行续读，不排队）。结果经 activity_start/activity_end
-        SSE 可见。
+        读书由欲望驱动的 _maybe_start_activity 在活动时按 find_by_topic /
+        next_readable 选书决定读不读；本方法不建活动、不发事件。
         """
         await self._material_store.upsert(path, filename, total_chars, time.time())
-        async with self._start_lock:
-            if self._task is not None and not self._task.done():
-                return
-            now = time.time()
-            activity = Activity(
-                id=str(uuid.uuid4()),
-                type=ActivityType.READING,
-                schedule_block_id=_schedule_block_id(now, self._config.grid_minutes),
-                status=ActivityStatus.PENDING,
-                progress={
-                    "source": path,
-                    "filename": filename,
-                    "description": filename,
-                    "read_chars": 0,
-                    "total_chars": total_chars,
-                    "correlation_id": correlation_id,
-                },
-                started_at=now,
-            )
-            await self._store.insert(activity)
-            self._task = asyncio.create_task(self._execute(activity))
-            self._task.add_done_callback(_harvest_task_exception)
 
     # ---- 内部 ----
 
@@ -502,13 +479,18 @@ class ActivityFacade:
                     activity.progress["read_chars"] = material.read_chars
                     activity.progress["total_chars"] = material.total_chars
                 else:
-                    # 无书可读：转自由探索（沿用限速）；限速中则退回默认活动，
-                    # 任何情况都不让 LLM 凭空编造读书内容
+                    # 无书可读：仅当有确定性选题（goal.topic 由 seed 钉死，非 LLM 漂移）
+                    # 才转自由探索（沿用限速）；无种子/限速中则退回默认活动——
+                    # 绝不联网搜索 LLM 凭空编造的主题（如「尼克斯」名字撞车成篮球队）
                     last = await self._store.get_last_exploration()
-                    if should_explore(
-                        last,
-                        self._exploration_config.rate_limit_hours,
-                        time.time(),
+                    if (
+                        isinstance(topic, str)
+                        and topic
+                        and should_explore(
+                            last,
+                            self._exploration_config.rate_limit_hours,
+                            time.time(),
+                        )
                     ):
                         activity.type = ActivityType.FREE_EXPLORATION
                     else:
@@ -645,6 +627,13 @@ class ActivityFacade:
             path = f"creations/{_sanitize_filename(title)}.md"
             written = await file_io("write", path, str(result["content"]))
             result["path"] = written["path"]
+            result["tools"] = [
+                {
+                    "name": "file_io",
+                    "args": {"action": "write", "path": path},
+                    "ok": True,
+                }
+            ]
             return result
         if t is ActivityType.IDLE_REFLECTION:
             outcome = await self._reflect(_correlation_id(activity))

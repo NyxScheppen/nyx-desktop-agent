@@ -1,33 +1,16 @@
 import asyncio
 import ipaddress
-import re
 import socket
-import time
 from typing import Any
 from urllib.parse import urljoin, urlparse
-from uuid import uuid4
 
 import httpx
 import trafilatura
 
-from nyx.enums import EventType, Source
-from nyx.events.bus import EventBus
-from nyx.tools.file_io import file_io
-from nyx.types import Event, Tool
+from nyx.types import Tool
 
 _MAX_DOWNLOAD_CHARS = 200_000  # 单篇下载正文字符上限（decision，可推翻）
-_FILENAME_MAX_LEN = 80         # 派生文件名截断长度
 _MAX_REDIRECTS = 5             # 重定向跳数上限（逐跳做 SSRF 校验，防无限循环）
-
-
-def _filename_from_url(url: str) -> str:
-    """从 URL 派生安全文件名（去 scheme、非词符换 _）。
-
-    不复刻 activity/facade._sanitize_filename（避免 tools→activity 反向依赖）。
-    """
-    stripped = url.split("://", 1)[-1] if "://" in url else url
-    name = re.sub(r"[^\w\-.]", "_", stripped)
-    return name[:_FILENAME_MAX_LEN] or "downloaded"
 
 
 def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -93,9 +76,8 @@ async def fetch_url(url: str) -> str:
     return await asyncio.to_thread(_fetch_url_sync, url)
 
 
-def build_web_fetch_tool(bus: EventBus) -> Tool:
-    """抓取网页正文 → 写进 uploads/ → 发布 USER_MATERIAL 入书库（复用 _on_user_material
-    的「注册 + 触发读书」链路）。"""
+def build_web_fetch_tool() -> Tool:
+    """抓取网页正文为纯文本，供探索消化（不落盘、不触发读书）。"""
 
     async def handler(url: str) -> dict[str, Any]:
         text = await fetch_url(url)
@@ -103,30 +85,11 @@ def build_web_fetch_tool(bus: EventBus) -> Tool:
             return {"error": "正文抓取失败或为空"}
         if len(text) > _MAX_DOWNLOAD_CHARS:
             text = text[:_MAX_DOWNLOAD_CHARS]
-        name = _filename_from_url(url)
-        filename = f"{name}.txt"
-        written = await file_io("write", f"uploads/{filename}", text)
-        path = str(written["path"])
-        cid = str(uuid4())
-        await bus.publish(
-            Event(
-                id=cid,
-                timestamp=time.time(),
-                source=Source.INTERNAL,
-                type=EventType.USER_MATERIAL,
-                content={
-                    "path": path,
-                    "filename": filename,
-                    "total_chars": len(text),
-                },
-                correlation_id=cid,
-            )
-        )
-        return {"path": path, "filename": filename, "total_chars": len(text)}
+        return {"text": text, "url": url}
 
     return Tool(
         name="web_fetch",
-        description="抓取网页正文为纯文本，写进书库供后续阅读（下载资料来读）。",
+        description="抓取网页正文为纯文本（供探索阅读消化）。",
         schema={
             "type": "object",
             "properties": {"url": {"type": "string", "description": "网页 URL"}},

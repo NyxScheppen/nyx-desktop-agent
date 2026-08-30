@@ -5,7 +5,6 @@ from nyx.enums import EventType, TickType
 # CLOCK_TICK 不在此表（走 TICK_ROUTING）。
 ROUTING: dict[EventType, list[str]] = {
     EventType.USER_MESSAGE:        ["expression"],
-    EventType.USER_MATERIAL:       ["activity"],               # 上传资料 → 触发读书活动
     EventType.OBSERVATION_STATE:   ["inner_life", "desire"],   # 情感 + 互动欲加压
     EventType.DESIRE_GENERATED:    ["activity"],
     # 欲望→内在生命唯一耦合点（走事件防成环）

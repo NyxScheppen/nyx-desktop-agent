@@ -892,7 +892,13 @@ async def test_upgrade_to_free_exploration(
     t0 = 1_000_000.0
     monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
     facade, store, bus, database = await _new_facade(
-        pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0
+        pending=[
+            _desire(
+                "d1", DesireType.EXPLORATION,
+                goal=Goal(GoalAction.READ, 1, "骑士团"),
+            )
+        ],
+        energy=80.0,
     )
     try:
         async with _running(bus):
@@ -911,7 +917,13 @@ async def test_no_material_rate_limited_falls_back_to_default(
     t0 = 1_000_000.0
     monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
     facade, store, bus, database = await _new_facade(
-        pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0
+        pending=[
+            _desire(
+                "d1", DesireType.EXPLORATION,
+                goal=Goal(GoalAction.READ, 1, "骑士团"),
+            )
+        ],
+        energy=80.0,
     )
     try:
         await store.insert(
@@ -925,6 +937,26 @@ async def test_no_material_rate_limited_falls_back_to_default(
         assert len(new) == 1
         # 无书可读 + 限速中：退回默认活动（观察用户），绝不编造读书内容
         assert new[0].type is ActivityType.OBSERVE_USER
+    finally:
+        await database.conn.close()
+
+
+async def test_no_material_no_topic_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无书可读 + 欲望无 topic（无 seed 钉死）→ 不转自由探索，退回默认活动。"""
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    facade, store, bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0
+    )
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        acts = await store.list_schedule(0.0)
+        assert len(acts) == 1
+        assert acts[0].type is ActivityType.OBSERVE_USER
     finally:
         await database.conn.close()
 
@@ -1026,7 +1058,13 @@ async def test_interrupt_pauses_in_flight_activity() -> None:
     """竞态回归：执行中可续活动（探索）挂起在可取消 await 上时 interrupt →
     终态 PAUSED，不被随后 complete 覆盖。"""
     facade, store, bus, database = await _new_facade(
-        pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0,
+        pending=[
+            _desire(
+                "d1", DesireType.EXPLORATION,
+                goal=Goal(GoalAction.READ, 1, "骑士团"),
+            )
+        ],
+        energy=80.0,
         llm=_BlockingLlm(),
     )
     try:
@@ -1093,34 +1131,6 @@ async def test_get_results_delegates() -> None:
         await database.conn.close()
 
 
-async def test_read_material_reads_real_file(tmp_path: Path) -> None:
-    """用户投喂资料：READING 活动带 source，读真实文件分块产出 {book, note}。"""
-    source = tmp_path / "book.txt"
-    source.write_text("甲" * 7000, encoding="utf-8")  # 7000 字符，一块读不尽
-    facade, store, bus, database = await _new_facade()
-    try:
-        events = _subscribe_activity(bus)
-        async with _running(bus):
-            await facade.read_material(str(source), "book.txt", 7000, "c1")
-            await _await_task(facade)
-        acts = await store.list_schedule(0.0)
-        assert len(acts) == 1
-        assert acts[0].type is ActivityType.READING
-        assert acts[0].progress["source"] == str(source)
-        assert acts[0].progress["result"] == {
-            "book": "骑士团历史",
-            "note": "读到了第三章",
-            "read_chars": 6000,
-            "total_chars": 7000,
-        }
-        assert [e.type for e in events] == [
-            EventType.ACTIVITY_START,
-            EventType.ACTIVITY_END,
-        ]
-    finally:
-        await database.conn.close()
-
-
 async def test_reading_completion_aggregates_note(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1144,11 +1154,20 @@ async def test_reading_completion_aggregates_note(
     source.write_text("骑士团的历史", encoding="utf-8")  # 6 字符，一块读尽
     llm = _FakeLlm()
     facade, store, bus, database = await _new_facade(
-        llm=llm, evaluator=_FakeEvaluator()
+        pending=[
+            _desire(
+                "d1", DesireType.EXPLORATION,
+                goal=Goal(GoalAction.READ, 1, "骑士团"),
+            )
+        ],
+        energy=80.0,
+        llm=llm,
+        evaluator=_FakeEvaluator(),
     )
     try:
+        await facade.register_material(str(source), "book.txt", 6)
         async with _running(bus):
-            await facade.read_material(str(source), "book.txt", 6, "c1")
+            await facade._maybe_start_activity()
             await _await_task(facade)
         acts = await store.list_schedule(0.0)
         result = acts[0].progress["result"]
@@ -1162,26 +1181,18 @@ async def test_reading_completion_aggregates_note(
         await database.conn.close()
 
 
-async def test_read_material_skips_when_busy() -> None:
-    """忙时跳过：执行中任务未结束时投喂资料不新增活动（文件已落盘，不排队）。"""
-    facade, store, _bus, database = await _new_facade()
-    try:
-        await facade._maybe_start_activity()
-        assert facade._task is not None and not facade._task.done()
-        await facade.read_material("/no/such/file.txt", "book.txt", 100, "c1")
-        acts = await store.list_schedule(0.0)
-        assert len(acts) == 1
-        await facade._task
-    finally:
-        await database.conn.close()
-
-
 async def test_desire_reading_reads_latest_material(tmp_path: Path) -> None:
     """探索欲触发：读最近未读完的那本（分块 + 推进度），而非凭空编造。"""
     source = tmp_path / "book.txt"
     source.write_text("甲" * 7000, encoding="utf-8")
     facade, store, bus, database = await _new_facade(
-        pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0
+        pending=[
+            _desire(
+                "d1", DesireType.EXPLORATION,
+                goal=Goal(GoalAction.READ, 1, "骑士团"),
+            )
+        ],
+        energy=80.0,
     )
     try:
         await facade._material_store.upsert(str(source), "book.txt", 7000, 1000.0)
@@ -1230,7 +1241,14 @@ async def test_reading_relays_prior_fragments(tmp_path: Path) -> None:
     source.write_text("甲" * 13000, encoding="utf-8")  # 两块以上，第二块读不尽
     llm = RecordingLlm()
     facade, _store, bus, database = await _new_facade(
-        pending=[_desire("d1", DesireType.EXPLORATION)], energy=80.0, llm=llm
+        pending=[
+            _desire(
+                "d1", DesireType.EXPLORATION,
+                goal=Goal(GoalAction.READ, 1, "骑士团"),
+            )
+        ],
+        energy=80.0,
+        llm=llm,
     )
     try:
         await facade._material_store.upsert(str(source), "book.txt", 13000, 1000.0)

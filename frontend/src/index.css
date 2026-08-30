@@ -600,6 +600,26 @@ body {
   word-break: break-word;
 }
 
+/* ===== 活动产出 ===== */
+.outputs {
+  margin-top: 0.75rem;
+}
+
+.outputs__title {
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  margin: 0 0 0.4rem;
+}
+
+.outputs__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
 /* 资料面板：每本读物进度条（已读/共读字数 + 在读/读完） */
 .material-progress {
   width: 100%;

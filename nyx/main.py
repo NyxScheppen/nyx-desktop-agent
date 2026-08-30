@@ -231,16 +231,6 @@ async def _on_user_message(app: _App, event: Event) -> None:
     await app.expression.reply(event.content["message"], event.correlation_id)
 
 
-async def _on_user_material(app: _App, event: Event) -> None:
-    """USER_MATERIAL：用户投喂资料 → 注册进书库 + 发起读书活动读第一块。"""
-    await app.activity.read_material(
-        event.content["path"],
-        event.content["filename"],
-        event.content["total_chars"],
-        event.correlation_id,
-    )
-
-
 async def _on_clock_tick(app: _App, event: Event) -> None:
     """CLOCK_TICK：按 content.tick_type 分发（TICK_ROUTING 的运行时落点）。"""
     tick_type = TickType(event.content["tick_type"])
@@ -341,7 +331,6 @@ def _subscribe(app: _App) -> None:
     """按 ROUTING/TICK_ROUTING 挂订阅（05-event 的「组合根订阅一致」落点）。"""
     bus = app.bus
     bus.subscribe(EventType.USER_MESSAGE, lambda e: _on_user_message(app, e))
-    bus.subscribe(EventType.USER_MATERIAL, lambda e: _on_user_material(app, e))
     bus.subscribe(EventType.OBSERVATION_STATE, app.inner_life.apply_event)
     bus.subscribe(EventType.OBSERVATION_STATE, app.desire.add_value)
     bus.subscribe(EventType.DESIRE_GENERATED, app.activity.on_desire_generated)
@@ -437,12 +426,8 @@ def build_app(app: _App) -> FastAPI:
         text = raw.decode("utf-8", errors="replace")
         result = await file_io("write", f"uploads/{name}", text)
         path = str(result["path"])
-        event = _root_event(
-            EventType.USER_MATERIAL,
-            {"path": path, "filename": name, "total_chars": len(text)},
-        )
-        await app.bus.publish(event)
-        return {"event_id": event.id, "filename": name, "path": path}
+        await app.activity.register_material(path, name, len(text))
+        return {"filename": name, "path": path}
 
     @fast.get("/api/materials")
     async def api_materials() -> dict[str, list[Material]]:
@@ -484,7 +469,7 @@ def build_app(app: _App) -> FastAPI:
     return fast
 
 
-def _build_tools(config: Config, bus: EventBus) -> ToolRegistry:
+def _build_tools(config: Config) -> ToolRegistry:
     """装配工具：local_search + file_io 恒注册，
     web_search/web_fetch 按 web_enabled opt-in（06-tools 完成定义）。"""
     tools = ToolRegistry()
@@ -492,7 +477,7 @@ def _build_tools(config: Config, bus: EventBus) -> ToolRegistry:
     tools.register(build_file_io_tool())
     if config.exploration.web_enabled:
         tools.register(build_web_search_tool())
-        tools.register(build_web_fetch_tool(bus))
+        tools.register(build_web_fetch_tool())
     return tools
 
 
@@ -502,7 +487,7 @@ async def build_app_context(config: Config) -> _App:
     db: Database = await connect()
     llm = LlmClient.from_config(config.llm)
     bus = EventBus(db)
-    tools = _build_tools(config, bus)
+    tools = _build_tools(config)
 
     memory_store = MemoryStore(db)
     embed = build_embed(config.embedding.model)  # MVP 默认启用向量层；测试注入 None

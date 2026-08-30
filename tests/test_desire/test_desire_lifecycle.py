@@ -458,9 +458,50 @@ async def test_run_eval_topic_seed(monkeypatch: pytest.MonkeyPatch) -> None:
             _lt(DesireType.EXPLORATION, ["骑士团", "大学朋友"])
         )
         async with _running(bus):
-            await lifecycle.run_eval()
+            result = await lifecycle.run_eval()
         assert "大学朋友" in llm.user_contents[0]   # 骑士团有记忆（做过）→ 取没做过的
         assert "骑士团" not in llm.user_contents[0]
+        # seed 钉死 goal.topic：LLM 返回的「骑士团」被覆盖为 seed「大学朋友」
+        assert result[0].goal is not None and result[0].goal.topic == "大学朋友"
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_topic_cleared_without_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()   # 返回 goal.topic="骑士团"
+    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.EXPLORATION, 0.9, updated_at=t0))
+        # 无长期欲望 → 无 subtopics → seed=None
+        async with _running(bus):
+            result = await lifecycle.run_eval()
+        assert len(result) == 1
+        assert result[0].goal is not None
+        assert result[0].goal.topic is None   # 无 seed 清空 LLM 漂移 topic
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_topic_no_synthesis_goal_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm('{"description": "读骑士小说", "goal": null}')
+    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.EXPLORATION, 0.9, updated_at=t0))
+        await store.insert_long_term(_lt(DesireType.EXPLORATION, ["骑士团"]))
+        async with _running(bus):
+            result = await lifecycle.run_eval()
+        assert len(result) == 1
+        assert result[0].goal is None   # 不合成 goal，保持单次满足语义
     finally:
         await database.conn.close()
 

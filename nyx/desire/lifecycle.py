@@ -272,6 +272,12 @@ class DesireLifecycle:
             )
             return []
 
+        # 6.5 探索欲选题钉死：goal.topic 由 seed 决定（确定性），无 seed 则清空
+        # LLM 漂移 topic——杜绝把「尼克斯」名字撞车成篮球队、或搜无关主题。
+        # goal=None 时不合成 goal（保持单次满足语义），自由探索由 C 兜底。
+        if target.type is DesireType.EXPLORATION and goal is not None:
+            goal.topic = seed
+
         # 7. 重置选中类型 value（其余达峰类型保留压力）
         target.value = 0.0
         target.updated_at = now

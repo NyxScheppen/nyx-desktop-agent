@@ -1,7 +1,7 @@
 # Nyx Agent 技术参考
 
 > 落地细节层：DDL、Facade 签名、API/SSE 契约、LangGraph 图、包结构、配置。（枚举/实体类型见 specs/01-types.md）
-> `spec-template.md` 里"涉及的 Facade / 数据变更 / API 端点 / 新增文件"直接抄这里，不现编。
+> `CLAUDE.md`「写 spec」模板里"涉及的 Facade / 数据变更 / API 端点 / 新增文件"直接抄这里，不现编。
 > 约定：主键/ID 用 **uuid4 字符串**，时间戳用 **epoch 秒（浮点）**。
 
 ## 1. 枚举（13 个 StrEnum）
@@ -254,7 +254,7 @@ nyx/
     vision.py             # VisionClient（多模态视觉，OpenAI 兼容）
 ```
 
-> 对应测试目录见 `how-testing.md`。
+> 对应测试目录见 `CLAUDE.md`「测试规范」。
 
 ---
 

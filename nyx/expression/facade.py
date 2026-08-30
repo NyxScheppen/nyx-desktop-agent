@@ -16,9 +16,11 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
 from nyx.expression.mutter import (
-    _ACTIVITY_LABEL,
+    _LLM_MUTTER_RATE,
     _MUTTER_RATE,
     MutterCategory,
+    activity_subject,
+    clean_fragment,
     pick_mutter_category,
     pick_mutter_template,
 )
@@ -67,6 +69,8 @@ class ExpressionFacade:
         self._ask_cid: str | None = None
         self._pending_chat_desire_id: str | None = None
         self._chat_at = 0.0
+        # 近期说过的碎碎念（去重：同一句不连发）
+        self._mutter_seen: deque[str] = deque(maxlen=8)
         # 图拓扑恒定（仅 history 跨 reply 变化），建一次复用（对齐 Exploration）
         self._graph = build_reply_graph(
             ReplyDeps(
@@ -153,52 +157,78 @@ class ExpressionFacade:
         return True
 
     async def mutter(self, state: CurrentState, correlation_id: str) -> None:
-        """碎碎念：空闲 + 随机命中才发；按类查最近数据填空，缺数据不发。"""
+        """碎碎念：空闲 + 随机命中才发；低频走 LLM 即兴（走神），否则模板填空。
+        无话可说 / 近期说过同一句则不发。"""
         if state.current_activity is not None:
             return  # 忙，不碎碎念
         if random.random() >= _MUTTER_RATE:
             return
-        category = pick_mutter_category(random.random())
-        if category is None:
-            return
-        text = await self._mutter_text(category, state)
-        if text is None:
-            return  # 该类无数据，宁可不发
+        if random.random() < _LLM_MUTTER_RATE:
+            text = await self._mutter_wander(state, correlation_id)
+        else:
+            text = None
+        if text is None:  # 没走 LLM，或 LLM 即兴空 → 回退模板
+            category = pick_mutter_category(random.random())
+            if category is None:
+                return
+            text = await self._mutter_text(category, state)
+        if text is None or text in self._mutter_seen:
+            return  # 无话可说 / 近期说过，宁可不发
+        self._mutter_seen.append(text)
         await self._bus.publish(
             internal_text_event(EventType.MUTTER, text, correlation_id)
         )
 
+    async def _mutter_wander(
+        self, state: CurrentState, correlation_id: str
+    ) -> str | None:
+        """LLM 即兴碎碎念（低频走神）：一句自然口语，可停顿/离题；空则回退模板。"""
+        system = build_system_prompt(self._canon, state)
+        user = (
+            "你闲下来了，心里冒出一句碎碎念。说一句自然、口语的话，"
+            "可以有点走神或停顿，一两句就好，别太正式。"
+        )
+        output = await self._llm.complete(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            module="expression",
+            output_type="mutter_wander",
+            correlation_id=correlation_id,
+        )
+        await self._evaluator.evaluate(output)
+        return output.content.strip() or None
+
     async def _mutter_text(
         self, category: MutterCategory, state: CurrentState
     ) -> str | None:
-        """按类取最近数据填空；该类无数据返回 None。"""
-        ctx: dict[str, str]
+        """按类取最近「具体内容」填空；该类无数据返回 None。"""
+        subject: str | None
         if category is MutterCategory.ACTIVITY:
             results = await self._activity.get_results(limit=1)
             if not results:
                 return None
-            label = _ACTIVITY_LABEL.get(results[0].type)
-            if label is None:
-                return None
-            ctx = {"activity": label}
+            subject = activity_subject(
+                results[0].type, results[0].progress.get("result", {})
+            )
         elif category is MutterCategory.MEMORY:
             mems = await self._memory.list_memories(limit=1)
             if not mems:
                 return None
-            ctx = {"memory": mems[0].summary or mems[0].content[:20]}
+            subject = clean_fragment(mems[0].content or mems[0].summary or "")
         elif category is MutterCategory.DESIRE:
             if not state.active_desires:
                 return None
-            ctx = {"desire": state.active_desires[0].description}
+            subject = state.active_desires[0].description.strip()
         else:  # USER
             profile = await self._memory.list_memories(tag="user", limit=1)
             if not profile:
                 return None
-            ctx = {"user": profile[0].summary or profile[0].content[:20]}
+            subject = clean_fragment(profile[0].content or profile[0].summary or "")
+        if not subject:
+            return None
         template = pick_mutter_template(category, random.random())
         if template is None:
             return None
-        return template.format(**ctx)
+        return template.format(subject=subject)
 
     async def check_timeouts(self, now: float) -> None:
         """超时收尾（tick 心跳直呼）：问句无人答 → 记「用户未回答」；

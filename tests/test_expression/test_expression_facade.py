@@ -19,7 +19,7 @@ from nyx.enums import (
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
-from nyx.expression.mutter import _MUTTER_TEMPLATES, MutterCategory
+from nyx.expression.mutter import _MUTTER_SKELETONS, MutterCategory
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
@@ -555,13 +555,15 @@ def _mk_memory(summary: str, tag: str = "") -> Memory:
     )
 
 
-def _mk_activity(type_: ActivityType) -> Activity:
+def _mk_activity(
+    type_: ActivityType, result: dict[str, Any] | None = None
+) -> Activity:
     return Activity(
         id="a1",
         type=type_,
         schedule_block_id="",
         status=ActivityStatus.COMPLETED,
-        progress={},
+        progress={"result": result or {}},
         started_at=0.0,
     )
 
@@ -583,16 +585,16 @@ async def test_mutter_miss(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def test_mutter_activity_fills(monkeypatch: pytest.MonkeyPatch) -> None:
     activity = _FakeActivity()
-    activity.results = [_mk_activity(ActivityType.READING)]
+    activity.results = [_mk_activity(ActivityType.READING, {"book": "挪威的森林"})]
     facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade(activity=activity)
     monkeypatch.setattr(
         "nyx.expression.facade.random.random",
-        iter([0.05, 0.0, 0.0]).__next__,
+        iter([0.05, 0.9, 0.0, 0.0]).__next__,
     )
     await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
     assert len(bus.published) == 1
     assert bus.published[0].content["content"] == (
-        _MUTTER_TEMPLATES[MutterCategory.ACTIVITY][0].format(activity="读书")
+        _MUTTER_SKELETONS[MutterCategory.ACTIVITY][0].format(subject="读了《挪威的森林》")
     )
 
 
@@ -602,11 +604,11 @@ async def test_mutter_memory_fills(monkeypatch: pytest.MonkeyPatch) -> None:
     facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade(memory=memory)
     monkeypatch.setattr(
         "nyx.expression.facade.random.random",
-        iter([0.05, 0.25, 0.0]).__next__,
+        iter([0.05, 0.9, 0.25, 0.0]).__next__,
     )
     await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
     assert bus.published[0].content["content"] == (
-        _MUTTER_TEMPLATES[MutterCategory.MEMORY][0].format(memory="你上周去爬山了")
+        _MUTTER_SKELETONS[MutterCategory.MEMORY][0].format(subject="你上周去爬山了")
     )
 
 
@@ -625,11 +627,11 @@ async def test_mutter_desire_fills(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     monkeypatch.setattr(
         "nyx.expression.facade.random.random",
-        iter([0.05, 0.5, 0.0]).__next__,
+        iter([0.05, 0.9, 0.5, 0.0]).__next__,
     )
     await facade.mutter(state, "corr-m")
     assert bus.published[0].content["content"] == (
-        _MUTTER_TEMPLATES[MutterCategory.DESIRE][0].format(desire="想聊聊天")
+        _MUTTER_SKELETONS[MutterCategory.DESIRE][0].format(subject="想聊聊天")
     )
 
 
@@ -639,19 +641,86 @@ async def test_mutter_user_fills(monkeypatch: pytest.MonkeyPatch) -> None:
     facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade(memory=memory)
     monkeypatch.setattr(
         "nyx.expression.facade.random.random",
-        iter([0.05, 0.75, 0.0]).__next__,
+        iter([0.05, 0.9, 0.75, 0.0]).__next__,
     )
     await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
     assert bus.published[0].content["content"] == (
-        _MUTTER_TEMPLATES[MutterCategory.USER][0].format(user="你喜欢安静")
+        _MUTTER_SKELETONS[MutterCategory.USER][0].format(subject="你喜欢安静")
     )
+
+
+async def test_mutter_user_naturalizes_presence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 用户画像 summary 是观察串「用户（away）」→ 润色成「你走开了」，raw 枚举不泄漏
+    memory = _FakeMemory()
+    memory.user_profile = [_mk_memory("用户（away）", tag="user")]
+    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade(memory=memory)
+    monkeypatch.setattr(
+        "nyx.expression.facade.random.random",
+        iter([0.05, 0.9, 0.75, 0.0]).__next__,
+    )
+    await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
+    content = bus.published[0].content["content"]
+    assert "你走开了" in content
+    assert "away" not in content
+
+
+async def test_mutter_llm_wander(monkeypatch: pytest.MonkeyPatch) -> None:
+    facade, llm, _evaluator, _memory, _inner_life, bus = _new_facade(
+        llm=_FakeLlm(chat_content="嗯……有点走神了。")
+    )
+    monkeypatch.setattr(
+        "nyx.expression.facade.random.random",
+        iter([0.05, 0.0]).__next__,
+    )
+    await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
+    assert [t for t, _m, _c in llm.calls] == ["mutter_wander"]
+    assert len(bus.published) == 1
+    assert bus.published[0].content["content"] == "嗯……有点走神了。"
+
+
+async def test_mutter_llm_wander_empty_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # LLM 即兴空 → 回退模板填空
+    activity = _FakeActivity()
+    activity.results = [_mk_activity(ActivityType.READING, {"book": "挪威的森林"})]
+    facade, llm, _evaluator, _memory, _inner_life, bus = _new_facade(
+        activity=activity, llm=_FakeLlm(chat_content="   ")
+    )
+    monkeypatch.setattr(
+        "nyx.expression.facade.random.random",
+        iter([0.05, 0.0, 0.0, 0.0]).__next__,
+    )
+    await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
+    assert [t for t, _m, _c in llm.calls] == ["mutter_wander"]
+    assert len(bus.published) == 1
+    assert bus.published[0].content["content"] == (
+        _MUTTER_SKELETONS[MutterCategory.ACTIVITY][0].format(subject="读了《挪威的森林》")
+    )
+
+
+async def test_mutter_dedup(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 连续两次同样文本 → 第二次被去重抑制
+    activity = _FakeActivity()
+    activity.results = [_mk_activity(ActivityType.READING, {"book": "挪威的森林"})]
+    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade(activity=activity)
+    monkeypatch.setattr(
+        "nyx.expression.facade.random.random",
+        iter([0.05, 0.9, 0.0, 0.0, 0.05, 0.9, 0.0, 0.0]).__next__,
+    )
+    await facade.mutter(_mk_state(80.0, 0.0), "corr-m1")
+    await facade.mutter(_mk_state(80.0, 0.0), "corr-m2")
+    assert len(bus.published) == 1
+    assert bus.published[0].correlation_id == "corr-m1"
 
 
 async def test_mutter_no_data_skips(monkeypatch: pytest.MonkeyPatch) -> None:
     facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade()
     monkeypatch.setattr(
         "nyx.expression.facade.random.random",
-        iter([0.05, 0.0]).__next__,
+        iter([0.05, 0.9, 0.0]).__next__,
     )
     await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
     assert bus.published == []

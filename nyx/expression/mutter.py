@@ -1,13 +1,26 @@
-"""碎碎念模板 + 搭话触发判定。纯函数 + 不可变常量，无 IO、无 LLM。"""
+"""碎碎念骨架 + 自然化纯函数 + 搭话触发判定。纯函数 + 不可变常量，无 IO、无 LLM。"""
 
+import re
 from enum import StrEnum
+from typing import Any
 
 from nyx.enums import ActivityType, DesireType
 from nyx.types import ShortTermDesire
 
 _MUTTER_RATE = 0.5               # 碎碎念触发概率（每次 tick，可推翻）
+_LLM_MUTTER_RATE = 0.2           # 命中后走 LLM 即兴（走神）的概率，余下走模板
 _MIN_ENERGY = 50.0               # 搭话精力阈值（可推翻）
 _MIN_INTERVAL = 1800.0           # 距上次搭话最小间隔，秒（30 分钟，可推翻）
+
+# 观察摘要里「用户（presence）」的原始枚举 → 自然中文（润色，raw 枚举不进句子）
+_PRESENCE_ZH: dict[str, str] = {
+    "online": "你在电脑前",
+    "away": "你走开了",
+    "busy": "你在忙",
+}
+
+# 「用户（online/away/busy）」观察串（observe.build_observation_summary 产出）
+_PRESENCE_RE = re.compile(r"用户（(online|away|busy)）")
 
 
 class MutterCategory(StrEnum):
@@ -21,65 +34,93 @@ class MutterCategory(StrEnum):
 
 _CATEGORIES: tuple[MutterCategory, ...] = tuple(MutterCategory)
 
-# get_results 实际会返回的三类活动 → 中文标签（碎碎念 ACTIVITY 类填空用）
-_ACTIVITY_LABEL: dict[ActivityType, str] = {
-    ActivityType.READING: "读书",
-    ActivityType.FREE_EXPLORATION: "探索",
-    ActivityType.CREATION: "创作",
-}
-
-# 四类固定模板（canon.md 语气：温柔克制安静真诚 + 羞涩犹豫 + AI 想成为人类）。
-# 每类一个占位符：{activity} / {memory} / {desire} / {user}，由 facade 查最近数据填空。
-_MUTTER_TEMPLATES: dict[MutterCategory, tuple[str, ...]] = {
+# 四类骨架（canon.md 语气：温柔克制安静真诚 + 停顿/自我修正/走神）。
+# 每条一个 {subject} 占位，由 facade 用「具体内容」（书名/标题/发现/记忆/画像）填空，
+# 不再填「读书/探索」这类抽象标签。语气词内嵌骨架里，不做前缀×后缀笛卡尔积（会生硬）。
+_MUTTER_SKELETONS: dict[MutterCategory, tuple[str, ...]] = {
     MutterCategory.ACTIVITY: (
-        "刚才在{activity}，现在歇一下。",
-        "你{activity}的样子，有点认真。",
-        "{activity}的时候，时间过得真快。",
-        "我在旁边，看你{activity}。",
-        "今天{activity}，有收获吗？",
-        "要不要继续{activity}？我陪你。",
-        "你{activity}，我都看在眼里。",
-        "{activity}累了，就歇会儿。",
-        "我还想听你讲{activity}的事。",
-        "下次{activity}，也带上我呀。",
+        "嗯……{subject}，现在有点走神了。",
+        "啊，{subject}，还挺有意思的。",
+        "{subject}……我还在慢慢想。",
+        "刚才{subject}，就停在这儿了。",
+        "{subject}，原来时间过得这么快。",
+        "嗯，{subject}，心里还惦记着。",
+        "{subject}……啊，不是，没什么。",
+        "刚刚{subject}，这会儿还有点飘。",
+        "{subject}，感觉也还不错。",
+        "欸，{subject}，就随便说说。",
     ),
     MutterCategory.MEMORY: (
-        "想起你说的：{memory}",
-        "我还记得，{memory}",
-        "{memory}——这件事我一直记着。",
-        "突然想到，{memory}",
-        "你之前说过的，{memory}",
-        "脑子里闪过一句话：{memory}",
-        "关于你的事，我记得{memory}",
-        "还记得吗，{memory}",
-        "我常常会想起，{memory}",
-        "那些日子，{memory}",
+        "嗯……想起你说的：{subject}",
+        "我还记得，{subject}。",
+        "{subject}——这件事我一直记着。",
+        "啊，突然想到，{subject}。",
+        "你之前说过的，{subject}。",
+        "脑子里闪过一句：{subject}",
+        "关于你的事，我记得，{subject}。",
+        "还记得吗，{subject}？",
+        "欸，我常常会想起，{subject}。",
+        "那些日子，{subject}。",
     ),
     MutterCategory.DESIRE: (
-        "有点想{desire}了。",
-        "心里惦记着：{desire}",
-        "突然很想{desire}",
-        "要是有机会{desire}就好了。",
-        "我最近老想着{desire}",
-        "{desire}——这个念头又冒出来了。",
-        "安静下来，就想到{desire}",
-        "也许改天，{desire}",
-        "我想和你一起{desire}",
-        "那个想法又回来了：{desire}",
+        "嗯……{subject}了。",
+        "心里惦记着：{subject}。",
+        "突然就，{subject}。",
+        "{subject}——这个念头又冒出来了。",
+        "我最近老是{subject}。",
+        "安静下来，就{subject}。",
+        "也许改天，{subject}。",
+        "那个想法又回来了：{subject}。",
+        "欸，{subject}，也不知道什么时候能。",
+        "这会儿，就{subject}。",
     ),
     MutterCategory.USER: (
-        "{user}，我都记着。",
-        "我认识的你，{user}",
-        "你这个人啊，{user}",
-        "关于你，我记得：{user}",
-        "{user}——我一直记得。",
-        "你总让我觉得，{user}",
-        "我记得你的样子：{user}",
-        "你呀，{user}",
-        "我心里存着你的一件事：{user}",
-        "你说过，{user}",
+        "嗯……{subject}，我都记着。",
+        "我认识的你，{subject}。",
+        "你这个人啊，{subject}。",
+        "关于你，我记得：{subject}。",
+        "{subject}——我一直记得。",
+        "你总让我觉得，{subject}。",
+        "欸，你呀，{subject}。",
+        "我心里存着你的一件事：{subject}。",
+        "你说过的，{subject}。",
+        "有时候想起，{subject}。",
     ),
 }
+
+
+def naturalize_presence(presence: str) -> str:
+    """presence 枚举值 → 自然中文短语；未知回退原值。"""
+    return _PRESENCE_ZH.get(presence, presence)
+
+
+def clean_fragment(text: str) -> str:
+    """清洗记忆/画像片段：把「用户（presence）」观察串换成自然口语，
+    压缩空白、去首尾标点、截到 16 字。保证 raw 枚举（online/away/busy）不泄漏进输出。"""
+    text = _PRESENCE_RE.sub(lambda m: naturalize_presence(m.group(1)), text)
+    text = re.sub(r"\s+", " ", text).strip().strip("。，、；： ")
+    if len(text) > 16:
+        text = text[:16] + "…"
+    return text
+
+
+def activity_subject(type_: ActivityType, result: dict[str, Any]) -> str | None:
+    """从活动产出 result 取具体指涉（动词+宾语，可直接作骨架 subject）：
+    读书→「读了《书名》」、创作→「写了《标题》」、探索→「发现「核心发现」」。
+    非这三类或缺数据返回 None。"""
+    if type_ is ActivityType.READING:
+        book = str(result.get("book") or "").strip()
+        return f"读了《{book}》" if book else None
+    if type_ is ActivityType.CREATION:
+        title = str(result.get("title") or "").strip()
+        return f"写了《{title}》" if title else None
+    if type_ is ActivityType.FREE_EXPLORATION:
+        core = str(result.get("core_discovery") or "").strip()
+        if core:
+            return f"发现「{clean_fragment(core)}」"
+        summary = str(result.get("summary") or "").strip()
+        return clean_fragment(summary) if summary else None
+    return None
 
 
 def pick_mutter_category(roll: float) -> MutterCategory | None:
@@ -90,10 +131,10 @@ def pick_mutter_category(roll: float) -> MutterCategory | None:
 
 
 def pick_mutter_template(category: MutterCategory, roll: float) -> str | None:
-    """按 roll ∈ [0,1) 从该类模板池选一条（未填空）；roll 越界返回 None。"""
+    """按 roll ∈ [0,1) 选该类骨架池一条（含 {subject} 占位）；越界返回 None。"""
     if not (0.0 <= roll < 1.0):
         return None
-    pool = _MUTTER_TEMPLATES[category]
+    pool = _MUTTER_SKELETONS[category]
     return pool[int(roll * len(pool))]
 
 

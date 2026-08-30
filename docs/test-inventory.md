@@ -302,6 +302,10 @@
 | `test_run_eval_topic_seed` | 功能正确 | 探索长期 `subtopics=["骑士团", "大学朋友"]` + 记忆命中「骑士团」→ LLM prompt 含「大学朋友」不含「骑士团」（没做过优先） |
 | `test_run_eval_llm_invalid_json_skips` | 边界鲁棒 | 非法 JSON → `_parse_desire` 抛 `ValueError` → 返回 `[]`、目标 `value` 不重置、无欲望入队 |
 | `test_run_eval_evaluator_error_propagates` | 回归保护 | evaluator 抛 `RuntimeError` → 不被 `except ValueError` 吞、上抛给 supervisor（不掩蔽真 bug） |
+| `test_run_eval_dedup_discards_similar` | 功能正确 | 已有 PENDING 欲望与新生成 description 向量余弦 ≥ 0.9 → 不入队（`list_pending` 仍 1 条）、不发布 `desire_generated`、value 已归零 |
+| `test_run_eval_dedup_keeps_distinct` | 功能正确 | 向量余弦 < 0.9 → 正常入队（`list_pending` 变 2 条）+ 发布 1 条 `desire_generated` |
+| `test_run_eval_dedup_disabled_without_embed` | 边界鲁棒 | `embed=None` → 不去重、正常入队（返回 1 个） |
+| `test_run_eval_dedup_embed_error_skips` | 边界鲁棒 | embed 抛 `RuntimeError` → 降级不去重、正常入队（返回 1 个）、不崩 |
 | `test_satisfy_goal_met` | 功能正确 | `SATISFIED`、表达权重 `+0.05`、长期进度 `+0.1`、发布 `desire_satisfied` |
 | `test_satisfy_reinforces_most_relevant_long_term` | 功能正确 | 同类型两条长期欲望 + `goal.topic` 命中第二条 → 只回写第二条 progress（0.1）、第一条不动（0.0） |
 | `test_satisfy_goal_progress` | 功能正确 | goal.count=3 时前两次 goal_met → `goal_progress=2` 保持 PENDING；第三次 → SATISFIED + `goal_progress=3`（C3 精确计数累计） |
@@ -567,7 +571,7 @@
 | `test_reply_ask_guidance_slow_only` | 功能正确 | 慢通道（精力高+平静）system prompt 含 `[主动提问指导]`；快通道（精力低+激动）不含 |
 | `test_reply_question_sets_waiting_user` | 功能正确 | 慢通道问句结尾 → `_waiting_user=True`、`_ask_text`/`_ask_cid` 落值（供 tick 超时收尾） |
 | `test_reply_fast_question_sets_ask` | 功能正确 | 快通道问句结尾也置 `ask`/`_waiting_user`（快通道绕过 should_ask，问句无人答信号不丢），publish `[THINK, ASK]` |
-| `test_reply_clears_pending_state` | 功能正确 | 用户说话即清 `_waiting_user`/`_ask_cid`/`_pending_chat_desire_id`（不做「是否真在答」判断） |
+| `test_reply_clears_pending_state` | 功能正确 | 用户说话即清 `_waiting_user`/`_ask_cid`/`_pending_chat_desire_id`，且回复搭话时 `desire.satisfy("d1", True)` 闭环消费（不做「是否真在答」判断） |
 | `test_initiate_chat_sets_pending_desire` | 功能正确 | 搭话发出 → `_pending_chat_desire_id == desire.id`（超时未回则回灌） |
 | `test_check_timeouts_records_no_answer` | 功能正确 | wait_user 超时 → `memory.record_no_answer` 调 1 次、清 `_waiting_user`/`_ask_cid` |
 | `test_check_timeouts_before_timeout_noop` | 边界鲁棒 | 未到超时点 → 无动作（wait_user 与待回搭话都保持） |

@@ -5,6 +5,7 @@ from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient
+from nyx.memory.retrieval import EmbedFn
 from nyx.types import DesireState, Event, LongTermDesire, ShortTermDesire
 
 
@@ -22,10 +23,11 @@ class DesireFacade:
         evaluator: Evaluator,
         config: DesireConfig,
         list_memories: ListMemories,
+        embed: EmbedFn | None = None,
     ) -> None:
         self._store = store
         self._lifecycle = DesireLifecycle(
-            store, bus, llm, evaluator, config, list_memories
+            store, bus, llm, evaluator, config, list_memories, embed
         )
 
     async def add_value(self, source: Event) -> None:

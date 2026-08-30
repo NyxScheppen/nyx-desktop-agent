@@ -22,6 +22,7 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
+from nyx.memory.retrieval import EmbedFn, cosine
 from nyx.types import (
     DesireValue,
     Event,
@@ -35,6 +36,7 @@ _OBSERVATION_PRESSURE_DELTA = 0.15    # 观察状态 → 互动欲 +0.15
 _LONG_TERM_PRESSURE_DELTA = 0.1       # 每个长期欲望周期 → 对应类型 +0.1
 _LONG_TERM_PROGRESS_DELTA = 0.1       # 满足一次长期进度 +0.1
 _LONG_TERM_STRENGTH_DECAY = 0.02      # 满足一次长期迫切度 -0.02
+_DEDUP_SIM_THRESHOLD = 0.9            # 欲望语义重复判定阈值（embedding 余弦）
 _GOAL_ACTIONS = frozenset(g.value for g in GoalAction)
 
 _DESIRE_SYSTEM = (
@@ -157,6 +159,7 @@ class DesireLifecycle:
         evaluator: Evaluator,
         config: DesireConfig,
         list_memories: ListMemories,
+        embed: EmbedFn | None = None,
     ) -> None:
         self._store = store
         self._bus = bus
@@ -164,6 +167,7 @@ class DesireLifecycle:
         self._evaluator = evaluator
         self._config = config
         self._list_memories = list_memories
+        self._embed = embed
         self._logger = logging.getLogger(__name__)
 
     async def pressure_from_observation(self, event: Event) -> None:
@@ -272,6 +276,18 @@ class DesireLifecycle:
         target.value = 0.0
         target.updated_at = now
         await self._store.upsert_value(target)
+
+        # 7.5 去重：与已有待消费欲望语义重复（embedding 余弦 ≥ 阈值）→ 丢弃不入队
+        if self._embed is not None:
+            try:
+                vec = await self._embed(description)
+                for d in await self._store.list_pending():
+                    other = await self._embed(d.description)
+                    if cosine(vec, other) >= _DEDUP_SIM_THRESHOLD:
+                        self._logger.info("欲望重复丢弃 type=%s", target.type.value)
+                        return []
+            except Exception:
+                self._logger.exception("欲望去重 embedding 失败，跳过去重")
 
         # 8. 入队
         desire = ShortTermDesire(

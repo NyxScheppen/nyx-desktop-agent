@@ -515,7 +515,7 @@ async def build_app_context(config: Config) -> _App:
     desire_store = DesireStore(db)
     desire = DesireFacade(
         desire_store, bus, llm, evaluator, config.desire,
-        lambda: memory.list_memories(),
+        lambda: memory.list_memories(), embed,
     )
 
     inner_life_store = InnerLifeStore(db)

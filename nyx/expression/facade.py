@@ -88,6 +88,8 @@ class ExpressionFacade:
         # 用户说话 = 回应了之前的问句/搭话；清等待状态（不做「是否真在答」判断）。
         self._waiting_user = False
         self._ask_cid = None
+        if self._pending_chat_desire_id is not None:
+            await self._desire.satisfy(self._pending_chat_desire_id, True)
         self._pending_chat_desire_id = None
         state = await self._inner_life.get_state()
         initial: ReplyState = {

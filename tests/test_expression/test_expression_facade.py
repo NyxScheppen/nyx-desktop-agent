@@ -195,9 +195,13 @@ class _FakeBus:
 class _FakeDesire:
     def __init__(self) -> None:
         self.expired: list[str] = []
+        self.satisfied: list[tuple[str, bool]] = []
 
     async def expire(self, desire_id: str) -> None:
         self.expired.append(desire_id)
+
+    async def satisfy(self, desire_id: str, goal_met: bool) -> None:
+        self.satisfied.append((desire_id, goal_met))
 
 
 class _FakeActivity:
@@ -703,9 +707,10 @@ async def test_reply_question_sets_waiting_user() -> None:
 
 
 async def test_reply_clears_pending_state() -> None:
-    # 用户说话即视为回应：清 wait_user + 待回搭话（不做「是否真在答」判断）
+    # 用户说话即视为回应：清 wait_user + 待回搭话，并 satisfy 该互动欲
+    desire = _FakeDesire()
     facade, _llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
-        energy=20.0, arousal=0.9
+        energy=20.0, arousal=0.9, desire=desire
     )
     facade._waiting_user = True
     facade._ask_cid = "corr-old"
@@ -714,6 +719,7 @@ async def test_reply_clears_pending_state() -> None:
     assert facade._waiting_user is False
     assert facade._ask_cid is None
     assert facade._pending_chat_desire_id is None
+    assert desire.satisfied == [("d1", True)]
 
 
 async def test_initiate_chat_sets_pending_desire() -> None:

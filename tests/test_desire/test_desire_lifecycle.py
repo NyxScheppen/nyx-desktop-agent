@@ -36,6 +36,7 @@ from nyx.enums import (
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient, LlmMessage
+from nyx.memory.retrieval import EmbedFn
 from nyx.types import (
     DesireValue,
     Event,
@@ -152,6 +153,7 @@ def _make_lifecycle(
     evaluator: _FakeEvaluator,
     config: DesireConfig | None = None,
     memories: list[Memory] | None = None,
+    embed: EmbedFn | None = None,
 ) -> DesireLifecycle:
     async def list_memories() -> list[Memory]:
         return memories if memories is not None else []
@@ -163,6 +165,7 @@ def _make_lifecycle(
         cast(Evaluator, evaluator),
         config if config is not None else DesireConfig(),
         list_memories,
+        embed,
     )
 
 
@@ -808,6 +811,105 @@ async def test_run_eval_evaluator_error_propagates(
         with pytest.raises(RuntimeError):
             async with _running(bus):
                 await lifecycle.run_eval()
+    finally:
+        await database.conn.close()
+
+
+# ---- run_eval 去重 ----
+
+
+async def test_run_eval_dedup_discards_similar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+
+    async def embed(_text: str) -> list[float]:
+        # 已有「读骑士小说」与新生成「读一段骑士团的历史」同向量 → 余弦 1.0 ≥ 0.9
+        return [1.0, 0.0]
+
+    lifecycle = _make_lifecycle(store, bus, llm, evaluator, embed=embed)
+    events = _subscribe(bus)
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        await store.add_desire(_desire("existing"))
+        async with _running(bus):
+            result = await lifecycle.run_eval()
+        assert result == []                                   # 重复 → 丢弃
+        assert [d.id for d in await store.list_pending()] == ["existing"]
+        assert [e for e in events if e.type is EventType.DESIRE_GENERATED] == []
+        dv = await store.get_value(DesireType.INTERACTION)
+        assert dv is not None and dv.value == pytest.approx(0.0)   # 目标已重置
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_dedup_keeps_distinct(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+
+    async def embed(text: str) -> list[float]:
+        # 两条 description 正交向量 → 余弦 0 < 0.9，不判重复
+        return {"读骑士小说": [1.0, 0.0], "读一段骑士团的历史": [0.0, 1.0]}[text]
+
+    lifecycle = _make_lifecycle(store, bus, llm, evaluator, embed=embed)
+    events = _subscribe(bus)
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        await store.add_desire(_desire("existing"))
+        async with _running(bus):
+            result = await lifecycle.run_eval()
+        assert len(result) == 1                               # 不重复 → 入队
+        assert [d.id for d in await store.list_pending()] == ["existing", result[0].id]
+        assert len([e for e in events if e.type is EventType.DESIRE_GENERATED]) == 1
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_dedup_disabled_without_embed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())  # embed=None
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        await store.add_desire(_desire("existing"))
+        async with _running(bus):
+            result = await lifecycle.run_eval()
+        assert len(result) == 1                               # 向量层禁用 → 不去重
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_dedup_embed_error_skips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+
+    async def embed(_text: str) -> list[float]:
+        raise RuntimeError("embed down")
+
+    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator(), embed=embed)
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        await store.add_desire(_desire("existing"))
+        async with _running(bus):
+            result = await lifecycle.run_eval()
+        assert len(result) == 1                               # embed 失败降级不去重
     finally:
         await database.conn.close()
 

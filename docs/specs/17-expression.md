@@ -24,7 +24,7 @@
 - [ ] `initiate_chat` 返回 `bool`（发话 True / 无话 False），供 18-api 维护 `last_chat_at`；发话开场白 append 进 `_history`（`role="nyx"`），用户随后回复能回溯到这句搭话；`mutter` 返回 `None`（无状态依赖）
 - [ ] 事件发布：`think` / `speak` / `ask` / `mutter` / `initiate_chat` 全部 `content={"content": 文本}`、`source=INTERNAL`、`correlation_id` 接上游
 - [ ] 纯函数测全（`pick_mutter_category` / `pick_mutter_template` / `should_initiate_chat` / `_is_question` / `_rounds_block`）；`pyright` strict 零报错
-- [ ] `reply` 后按 `result["ask"]` 置 `_waiting_user`/`_ask_text`/`_ask_cid`；`initiate_chat` 发话记 `_pending_chat_desire_id`；`check_timeouts(now)` 问句超时调 `memory.record_no_answer`、搭话超时调 `desire.expire`；`reply` 入口清两者待回应态
+- [ ] `reply` 后按 `result["ask"]` 置 `_waiting_user`/`_ask_text`/`_ask_cid`；`initiate_chat` 发话记 `_pending_chat_desire_id`；`check_timeouts(now)` 问句超时调 `memory.record_no_answer`、搭话超时调 `desire.expire`；`reply` 入口清两者待回应态，且用户回复搭话时调 `desire.satisfy(desire_id, True)` 闭环消费
 
 ## 技术方案
 

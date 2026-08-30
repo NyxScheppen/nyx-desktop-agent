@@ -5,6 +5,8 @@ import { useActivityStore } from "../src/stores/activityStore";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
+import { useMemoryStore } from "../src/stores/memoryStore";
+import { useMutterStore } from "../src/stores/mutterStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
 import type { BackendEvent, CurrentState } from "../src/types/api";
 
@@ -93,19 +95,6 @@ describe("chatStore.add*", () => {
     });
   });
 
-  it("addMutter → kind=mutter", () => {
-    useChatStore.getState().addMutter({
-      event: "mutter",
-      event_id: "e4",
-      correlation_id: "c4",
-      content: "碎碎念",
-    });
-    expect(useChatStore.getState().messages[0]).toMatchObject({
-      role: "nyx",
-      kind: "mutter",
-    });
-  });
-
   it("addInitiateChat → kind=initiate_chat", () => {
     useChatStore.getState().addInitiateChat({
       event: "initiate_chat",
@@ -144,6 +133,25 @@ describe("chatStore.add*", () => {
       kind: "message",
       content: "你好",
     });
+  });
+});
+
+describe("mutterStore", () => {
+  beforeEach(() => {
+    useMutterStore.setState({ mutters: [] });
+  });
+
+  it("addMutter 追加 {id,text}，reset 清空", () => {
+    useMutterStore.getState().addMutter("e1", "在想你");
+    useMutterStore.getState().addMutter("e2", "又想你");
+
+    expect(useMutterStore.getState().mutters).toEqual([
+      { id: "e1", text: "在想你" },
+      { id: "e2", text: "又想你" },
+    ]);
+
+    useMutterStore.getState().reset();
+    expect(useMutterStore.getState().mutters).toHaveLength(0);
   });
 });
 
@@ -365,6 +373,7 @@ describe("desireStore / activityStore", () => {
   beforeEach(() => {
     useDesireStore.setState({ data: null, error: null });
     useActivityStore.setState({ data: null, results: null, error: null });
+    useMemoryStore.setState({ data: null, error: null });
   });
 
   it("desireStore.refresh：GET /api/desires → data 落 store", async () => {
@@ -401,6 +410,37 @@ describe("desireStore / activityStore", () => {
 
     expect(useDesireStore.getState().error).toBe("fetch failed");
     expect(useDesireStore.getState().data).toBeNull();
+  });
+
+  it("memoryStore.refresh：GET /api/memories → data 落 store", async () => {
+    const fixture = [
+      {
+        id: "m1",
+        created_at: 1,
+        content: "用户喜欢咖啡",
+        tag: "user",
+        summary: "喜欢咖啡",
+        freshness: 1,
+        type: "long_term",
+        recall_count: 0,
+      },
+    ];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useMemoryStore.getState().refresh();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories");
+    expect(useMemoryStore.getState().data).toEqual(fixture);
+  });
+
+  it("memoryStore.refresh：getMemories throw → error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+
+    await useMemoryStore.getState().refresh();
+
+    expect(useMemoryStore.getState().error).toBe("fetch failed");
+    expect(useMemoryStore.getState().data).toBeNull();
   });
 });
 

@@ -10,7 +10,7 @@ import type {
 export type ChatMessage = {
   id: string; // event_id
   role: "user" | "nyx";
-  kind: "message" | "speak" | "ask" | "think" | "mutter" | "initiate_chat";
+  kind: "message" | "speak" | "ask" | "think" | "initiate_chat";
   content: string;
   correlation_id: string;
   preloaded?: boolean; // 历史回填消息：渲染时不逐字
@@ -26,7 +26,6 @@ type ChatState = {
   addSpeak: (e: TextEvent<"speak">) => void;
   addAsk: (e: TextEvent<"ask">) => void;
   addThink: (e: TextEvent<"think">) => void;
-  addMutter: (e: TextEvent<"mutter">) => void;
   addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
   clearUnreadProactive: () => void;
   markTyped: (id: string) => void;
@@ -41,7 +40,6 @@ const HISTORY_TYPES = [
   "speak",
   "ask",
   "think",
-  "mutter",
   "initiate_chat",
 ] as const;
 const HISTORY_LIMIT = 200; // 每类型拉取上限（够覆盖长会话，超出裁旧）
@@ -121,7 +119,6 @@ export const useChatStore = create<ChatState>((set, get) => {
     addSpeak: (e) => finishReply(e),
     addAsk: (e) => finishReply(e),
     addThink: (e) => append(e, "nyx", "think"),
-    addMutter: (e) => append(e, "nyx", "mutter"),
     addInitiateChat: (e) => {
       append(e, "nyx", "initiate_chat");
       set({ unreadProactive: true });

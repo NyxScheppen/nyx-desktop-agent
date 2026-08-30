@@ -9,6 +9,7 @@ import type {
   DesireType,
   EmotionCategory,
   EnergyState,
+  MemoryType,
 } from "../types/api";
 
 export const EMOTION_LABELS: Record<EmotionCategory, string> = {
@@ -43,6 +44,11 @@ export const DESIRE_STATUS_LABELS: Record<DesireStatus, string> = {
   satisfied: "已满足",
   expired: "已过期",
   suppressed: "被抑制",
+};
+
+export const MEMORY_TYPE_LABELS: Record<MemoryType, string> = {
+  short_term: "短期",
+  long_term: "长期",
 };
 
 export const ACTIVITY_TYPE_LABELS: Record<ActivityType, string> = {

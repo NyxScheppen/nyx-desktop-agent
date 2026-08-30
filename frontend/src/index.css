@@ -98,24 +98,27 @@ body {
 .game-shell {
   position: relative;
   z-index: 2;
-  display: flex;
-  height: 100vh;
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto auto;
   gap: 12px;
+  height: 100vh;
   padding: 56px 16px 16px;
   font-size: calc(1rem * var(--text-scale));
 }
 
 .game-main {
-  flex: 1;
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
 }
 
 /* ===== 状态条（左栏） ===== */
 .status-bar {
-  flex: 0 0 260px;
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -129,6 +132,8 @@ body {
 }
 
 .status-bar__info {
+  flex-shrink: 0;
+  margin-top: auto;
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
@@ -138,8 +143,6 @@ body {
   background: var(--parchment-deep);
   color: var(--ink);
   text-align: left;
-  cursor: pointer;
-  font-family: inherit;
 }
 
 .status-bar__name {
@@ -173,6 +176,7 @@ body {
 }
 
 .avatar {
+  flex-shrink: 0;
   width: 100%;
   position: relative;
   cursor: pointer;
@@ -182,7 +186,7 @@ body {
   display: block;
   width: 100%;
   height: auto;
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 3 / 4;
   object-fit: cover;
   object-position: top center;
   filter: drop-shadow(0 12px 30px rgba(91, 70, 54, 0.25));
@@ -221,6 +225,54 @@ body {
   display: block;
   width: 100%;
   max-width: 16rem;
+}
+
+/* ===== 碎碎念卡片（左栏下方，常驻显示最近碎碎念） ===== */
+.mutter-card {
+  grid-column: 1;
+  grid-row: 2 / span 2;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  border: 2px double var(--gold);
+  box-shadow: inset 0 0 0 1px var(--parchment-deep);
+  border-radius: 4px;
+  background: var(--parchment);
+  overflow: hidden;
+}
+
+.mutter-card__title {
+  font-size: 0.78rem;
+  color: var(--accent);
+  letter-spacing: 2px;
+  border-bottom: 1px solid var(--gold);
+  padding-bottom: 0.3rem;
+}
+
+.mutter-card__empty {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+.mutter-card__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  overflow-y: auto;
+}
+
+.mutter-card__item {
+  font-size: 0.82rem;
+  color: var(--ink);
+  line-height: 1.5;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 /* ===== 书卷区域（多模式滚动区） ===== */
@@ -287,12 +339,6 @@ body {
   font-style: italic;
 }
 
-.message-bubble--mutter {
-  color: var(--ink-soft);
-  font-style: italic;
-  font-size: 0.85rem;
-}
-
 .message-bubble__content {
   white-space: pre-wrap;
 }
@@ -328,9 +374,69 @@ body {
   }
 }
 
+/* ===== 底部工具条（替换书卷区视图：聊天 / 内在状态 / 欲望 / 活动 / 记忆） ===== */
+.right-dock {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 2px double var(--gold);
+  box-shadow: inset 0 0 0 1px var(--parchment-deep);
+  border-radius: 4px;
+  background: var(--parchment);
+}
+
+.right-dock__entry {
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+}
+
+.right-dock__entry:hover {
+  background: var(--parchment-deep);
+}
+
+.right-dock__entry--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--parchment);
+}
+
+/* ===== 页内面板容器（替换书卷区显示各面板） ===== */
+.side-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 2px double var(--gold);
+  box-shadow: inset 0 0 0 1px var(--parchment-deep);
+  border-radius: 4px;
+  background: var(--parchment);
+  overflow: hidden;
+}
+
+.side-panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
 /* ===== 输入框（Galgame 对话框） ===== */
 .chat-input {
-  flex-shrink: 0;
+  grid-column: 2;
+  grid-row: 3;
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
@@ -861,40 +967,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-}
-
-.modal__tabs {
-  flex-shrink: 0;
-  display: flex;
-  gap: 0.4rem;
-  padding: 0.6rem 0.75rem;
-  border-bottom: 1px solid var(--parchment-deep);
-  overflow-x: auto;
-}
-
-.modal__tab {
-  padding: 0.4rem 0.9rem;
-  border: 1px solid var(--parchment-deep);
-  border-radius: 4px;
-  background: var(--parchment);
-  color: var(--ink-soft);
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 0.9rem;
-  letter-spacing: 1px;
-  white-space: nowrap;
-}
-
-.modal__tab:hover {
-  color: var(--ink);
-  border-color: var(--ink-soft);
-}
-
-.modal__tab--active {
-  background: var(--accent);
-  color: var(--parchment);
-  border-color: var(--accent);
-  font-weight: 700;
 }
 
 /* ===== 头像旁临时气泡 ===== */

@@ -4,6 +4,7 @@ import type {
   BackendEvent,
   CurrentState,
   DesireState,
+  Memory,
   Presence,
 } from "../types/api";
 
@@ -57,6 +58,10 @@ export async function postObserve(
 
 export async function getDesires(): Promise<DesireState> {
   return request<DesireState>(`${BASE_URL}/api/desires`);
+}
+
+export async function getMemories(): Promise<Memory[]> {
+  return request<Memory[]>(`${BASE_URL}/api/memories`);
 }
 
 export async function getActivity(): Promise<ActivitySnapshot> {

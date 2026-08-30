@@ -4,11 +4,13 @@ import { useAnnounceStore } from "../stores/announceStore";
 import { useChatStore } from "../stores/chatStore";
 import { useDesireStore } from "../stores/desireStore";
 import { useInnerLifeStore } from "../stores/innerLifeStore";
+import { useMemoryStore } from "../stores/memoryStore";
+import { useMutterStore } from "../stores/mutterStore";
 import type { SseEvent } from "../types/api";
 
 // 事件 → store 路由（01-sse §4.1）。
 // desire/activity 事件只带 id（{"desire_id"}/{"activity_id"}），
-// 面板收到就 refresh() 重拉快照；clock_tick/observation_state/reflection/memory_* 不路由。
+// 面板收到就 refresh() 重拉快照；clock_tick/observation_state/reflection 不路由。
 export function dispatchEvent(e: SseEvent): void {
   switch (e.event) {
     case "speak":
@@ -18,10 +20,10 @@ export function dispatchEvent(e: SseEvent): void {
     case "think":
       return useChatStore.getState().addThink(e);
     case "mutter":
-      useChatStore.getState().addMutter(e);
-      // 与 addMutter 一致的收窄（01-sse §4.1）：content 非 string 则丢弃，不进 announce
+      // 碎碎念不是聊天消息：独立入 mutterStore（MutterCard 常驻展示最近几条），
+      // 不进 chatStore、也不冒头像旁气泡。
       if (typeof e.content === "string") {
-        useAnnounceStore.getState().announce("mutter", e.content);
+        useMutterStore.getState().addMutter(e.event_id, e.content);
       }
       return;
     case "initiate_chat":
@@ -39,6 +41,10 @@ export function dispatchEvent(e: SseEvent): void {
     case "desire_satisfied":
     case "desire_expired":
       useDesireStore.getState().refresh();
+      return;
+    case "memory_created":
+    case "memory_promoted":
+      useMemoryStore.getState().refresh();
       return;
     case "activity_start":
     case "activity_interrupted":

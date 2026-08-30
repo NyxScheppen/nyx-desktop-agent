@@ -7,12 +7,11 @@ type MessageListProps = {
   messages: ChatMessage[];
 };
 
-// nyx 文本消息种类（speak/ask/think/mutter/initiate_chat）：打字机的候选集合。
+// nyx 文本消息种类（speak/ask/think/initiate_chat）：打字机的候选集合。
 const NYX_TEXT_KINDS: ReadonlySet<ChatMessage["kind"]> = new Set([
   "speak",
   "ask",
   "think",
-  "mutter",
   "initiate_chat",
 ]);
 

@@ -2,8 +2,13 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import AnnounceLayer from "./components/AnnounceLayer";
 import ChatInput from "./components/chat/ChatInput";
-import InnerDetail from "./components/layout/InnerDetail";
+import InnerStatePanel from "./components/inner/InnerStatePanel";
 import SettingsView from "./components/layout/SettingsView";
+import ActivityPanel from "./components/panels/ActivityPanel";
+import DesiresPanel from "./components/panels/DesiresPanel";
+import MemoryPanel from "./components/panels/MemoryPanel";
+import MutterCard from "./components/shell/MutterCard";
+import RightDock, { type View } from "./components/shell/RightDock";
 import ScrollArea from "./components/shell/ScrollArea";
 import StatusBar from "./components/shell/StatusBar";
 import { usePresence } from "./hooks/usePresence";
@@ -26,15 +31,17 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
   large: 1.12,
 };
 
-// 精简装配：顶栏（标题+设置按钮+连接状态）+ 左状态条 + 对话主区 + 两个弹层（内在详情/设置）+ 气泡层。
-// useSSE 只挂一次；点状态条信息区开内在详情；顶栏「设置」开设置弹层。
+// 装配：顶栏（标题+设置+连接状态）+ 左状态条 + 书卷区（底部工具条替换式切视图：
+// 聊天 / 内在状态 / 欲望 / 活动 / 记忆）+ 输入框 + 设置弹层 + 气泡层。
+// useSSE 只挂一次；顶栏「设置」开设置弹层。
 export default function App() {
   const status = useSSE(dispatchEvent);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
   const refreshActivity = useActivityStore((s) => s.refresh);
   usePresence();
-  const [detailOpen, setDetailOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 书卷区当前视图：null = 聊天主舞台；其余 = 对应面板（RightDock 底部按钮切换）
+  const [view, setView] = useState<View>(null);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
   const fontScale = useSettingsStore((s) => s.fontScale);
@@ -83,14 +90,26 @@ export default function App() {
       </header>
 
       <main className="game-shell" style={shellStyle}>
-        <StatusBar onOpenDetail={() => setDetailOpen(true)} />
+        <StatusBar />
+        <MutterCard />
         <div className="game-main">
-          <ScrollArea />
-          <ChatInput />
+          {view === null ? (
+            <ScrollArea />
+          ) : (
+            <section className="side-panel">
+              <div className="side-panel__body">
+                {view === "inner" && <InnerStatePanel />}
+                {view === "desire" && <DesiresPanel />}
+                {view === "activity" && <ActivityPanel />}
+                {view === "memory" && <MemoryPanel />}
+              </div>
+            </section>
+          )}
         </div>
+        <RightDock view={view} onSwitch={setView} />
+        <ChatInput />
       </main>
 
-      {detailOpen && <InnerDetail onClose={() => setDetailOpen(false)} />}
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
       <AnnounceLayer />
     </div>

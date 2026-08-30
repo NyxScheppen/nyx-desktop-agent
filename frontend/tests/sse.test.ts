@@ -8,6 +8,8 @@ import { useAnnounceStore } from "../src/stores/announceStore";
 import { useChatStore } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
+import { useMemoryStore } from "../src/stores/memoryStore";
+import { useMutterStore } from "../src/stores/mutterStore";
 import { isEmotionCategory } from "../src/types/api";
 import type { ActivitySnapshot, CurrentState } from "../src/types/api";
 
@@ -123,7 +125,9 @@ describe("dispatchEvent", () => {
     useInnerLifeStore.setState({ current: null, error: null });
     useDesireStore.setState({ data: null, error: null });
     useActivityStore.setState({ data: null, error: null });
+    useMemoryStore.setState({ data: null, error: null });
     useAnnounceStore.setState({ items: [] });
+    useMutterStore.setState({ mutters: [] });
   });
 
   it("speak → chatStore（kind=speak）", () => {
@@ -226,7 +230,22 @@ describe("dispatchEvent", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it("mutter → chatStore + announceStore（头像旁气泡）", () => {
+  it("memory_created → memoryStore.refresh()", () => {
+    const spy = vi
+      .spyOn(useMemoryStore.getState(), "refresh")
+      .mockResolvedValue(undefined);
+
+    dispatchEvent({
+      event: "memory_created",
+      event_id: "m1",
+      correlation_id: "c1",
+      memory_id: "x",
+    });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("mutter → mutterStore（不进 chatStore、不冒气泡）", () => {
     dispatchEvent({
       event: "mutter",
       event_id: "m1",
@@ -234,15 +253,14 @@ describe("dispatchEvent", () => {
       content: "在想你",
     });
 
-    expect(useChatStore.getState().messages).toHaveLength(1);
-    expect(useAnnounceStore.getState().items).toHaveLength(1);
-    expect(useAnnounceStore.getState().items[0]).toMatchObject({
-      kind: "mutter",
-      text: "在想你",
-    });
+    expect(useMutterStore.getState().mutters).toEqual([
+      { id: "m1", text: "在想你" },
+    ]);
+    expect(useChatStore.getState().messages).toHaveLength(0);
+    expect(useAnnounceStore.getState().items).toHaveLength(0);
   });
 
-  it("mutter 非 string content → addMutter 丢弃且不 announce", () => {
+  it("mutter 非 string content → addMutter 丢弃", () => {
     dispatchEvent({
       event: "mutter",
       event_id: "m1",
@@ -250,8 +268,7 @@ describe("dispatchEvent", () => {
       content: 123 as unknown as string,
     });
 
-    expect(useChatStore.getState().messages).toHaveLength(0);
-    expect(useAnnounceStore.getState().items).toHaveLength(0);
+    expect(useMutterStore.getState().mutters).toHaveLength(0);
   });
 
   it("activity_end → refresh 后按 activity_id 找到产出并 announce", async () => {

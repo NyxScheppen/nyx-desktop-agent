@@ -175,6 +175,20 @@ export type DesireState = {
   long_term: LongTermDesire[];
 };
 
+// ---- 记忆（07-memory-store / nyx/types.py Memory）----
+export type MemoryType = "short_term" | "long_term";
+
+export type Memory = {
+  id: string;
+  created_at: number;
+  content: string;
+  tag: string;
+  summary: string;
+  freshness: number;
+  type: MemoryType;
+  recall_count: number;
+};
+
 // ---- 活动（14-activity / nyx/types.py Activity）----
 export type ActivityType =
   | "reading"

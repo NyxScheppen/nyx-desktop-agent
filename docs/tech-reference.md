@@ -15,7 +15,7 @@
 
 ---
 
-## 2. 实体 dataclass（18 个 + 2 个 TypedDict）
+## 2. 实体 dataclass（20 个 + 2 个 TypedDict）
 
 > dataclass 字段与实现以 `nyx/types.py` 为准（spec 01-types 只给契约；固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`）。此处不再重复。
 
@@ -23,8 +23,8 @@
 
 ## 3. DB DDL（SQLite）
 
-> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；14 张业务表 + 5 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
-> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；14 张业务表 + `schema_version` 迁移簿记表 = 共 15 张。
+> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；15 张业务表 + 5 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
+> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；15 张业务表 + `schema_version` 迁移簿记表 = 共 16 张。
 
 ---
 
@@ -48,6 +48,10 @@
 | POST | `/api/upload` | `multipart/form-data`（`file`） | `{filename, path}`（落盘后 `register_material` 只注册书库，不立即读书） |
 | GET | `/api/materials` | — | `{materials: Material[]}`（书库进度） |
 | POST | `/api/books` | `multipart/form-data`（`file`） | `Book`（EPUB 导入：解析→去重→落库；重复 409 / 非 .epub·超限·空正文 400 / 解析失败 500） |
+| GET | `/api/books` | — | `BookListItem[]`（书架：已读按 last_read_at DESC 排前、未读按 created_at DESC 排后） |
+| GET | `/api/books/{book_id}/paragraphs?from=&to=` | query 范围（`from>=1`、`to>=from`） | `Paragraph[]`（`index` 升序；书不存在 404 / 越界 422） |
+| GET | `/api/progress/{book_id}` | — | `ReadingProgress`（书不存在 404；无记录返回默认进度） |
+| PUT | `/api/progress/{book_id}` | `{user_position, nyx_position, reading_speed}` | `{ok: true}`（书不存在 404） |
 > REST 端点分两类：
 > - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`> - **外部输入入口**：`/api/chat`、`/api/observe` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 `ActivityFacade.register_material()` 只注册书库（不发事件、不立即读书），返回 `{filename, path}`。回复/后续产出走 SSE。
 
@@ -112,6 +116,10 @@ async def register_material(path: str, filename: str, total_chars: int) -> None 
 
 ```python
 async def import_book(filename: str, data: bytes) -> Book       # 解析 EPUB → 去重 → 落库 books+paragraphs → 返回 Book；正文重复抛 DuplicateBookError、空正文抛 ValueError
+async def list_books() -> list[BookListItem]                    # 书架列表（直通 store，已读排前）
+async def list_paragraphs(book_id: str, from_idx: int, to_idx: int) -> list[Paragraph]  # 段落范围（index 升序）；书不存在抛 BookNotFoundError、to_idx 越界抛 ValueError
+async def get_progress(book_id: str) -> ReadingProgress         # 进度；书不存在抛 BookNotFoundError、无进度行返回默认（1,1,50,0,0.0）
+async def save_progress(book_id: str, user_position: int, nyx_position: int, reading_speed: int) -> ReadingProgress  # 写进度 UPSERT（不碰 read_count）；书不存在抛 BookNotFoundError
 ```
 
 ### DesireFacade
@@ -228,8 +236,8 @@ nyx/
     __init__.py
     segmenter.py           # segment_html（HTML 正文→阅读段落，纯函数）
     epub.py                # parse_epub（EPUB 字节→元数据+段落+content_hash）
-    store.py               # ReadingStore（books/paragraphs 存取）
-    facade.py              # ReadingFacade（import_book）
+    store.py               # ReadingStore（books/paragraphs/reading_progress 存取：进度/书架/分页/increment_read_count）
+    facade.py              # ReadingFacade（import_book / list_books / list_paragraphs / get_progress / save_progress）
   expression/
     facade.py             # ExpressionFacade
     pipeline.py           # 回复流程（LangGraph）

@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.material_store import MaterialStore
@@ -45,7 +45,7 @@ from nyx.llm.vision import VisionClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
-from nyx.reading.facade import DuplicateBookError, ReadingFacade
+from nyx.reading.facade import BookNotFoundError, DuplicateBookError, ReadingFacade
 from nyx.reading.store import ReadingStore
 from nyx.tools.file_io import build_file_io_tool, file_io
 from nyx.tools.local_search import build_local_search_tool
@@ -55,13 +55,16 @@ from nyx.tools.web_search import build_web_search_tool
 from nyx.types import (
     Activity,
     Book,
+    BookListItem,
     CurrentState,
     DesireState,
     Event,
     LongTermDesire,
     Material,
     Memory,
+    Paragraph,
     Personality,
+    ReadingProgress,
     ReflectionOutcome,
     SelfNarrative,
     Values,
@@ -369,6 +372,12 @@ class _ObservePayload(BaseModel):
     window_title: str = ""
 
 
+class _ProgressPayload(BaseModel):
+    user_position: int = Field(..., ge=1)
+    nyx_position: int = Field(..., ge=1)
+    reading_speed: int = Field(..., ge=10, le=200)
+
+
 def build_app(app: _App) -> FastAPI:
     """构建 FastAPI 应用：15 个端点（14 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
@@ -471,6 +480,45 @@ def build_app(app: _App) -> FastAPI:
         except Exception:
             logging.getLogger(__name__).exception("导入 EPUB 失败: %s", filename)
             raise HTTPException(status_code=500, detail="EPUB 解析失败") from None
+
+    @fast.get("/api/books")
+    async def api_books_list() -> list[BookListItem]:
+        return await app.reading.list_books()
+
+    @fast.get("/api/books/{book_id}/paragraphs")
+    async def api_book_paragraphs(
+        book_id: str,
+        from_: int = Query(..., ge=1, alias="from"),
+        to: int = Query(..., ge=1),
+    ) -> list[Paragraph]:
+        if to < from_:
+            raise HTTPException(status_code=422, detail="to 必须 >= from")
+        try:
+            return await app.reading.list_paragraphs(book_id, from_, to)
+        except BookNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+    @fast.get("/api/progress/{book_id}")
+    async def api_get_progress(book_id: str) -> ReadingProgress:
+        try:
+            return await app.reading.get_progress(book_id)
+        except BookNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @fast.put("/api/progress/{book_id}")
+    async def api_put_progress(
+        book_id: str, payload: _ProgressPayload
+    ) -> dict[str, bool]:
+        try:
+            await app.reading.save_progress(
+                book_id, payload.user_position, payload.nyx_position,
+                payload.reading_speed,
+            )
+        except BookNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return {"ok": True}
 
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:

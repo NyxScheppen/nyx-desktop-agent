@@ -20,8 +20,8 @@ from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import _App, build_app
 from nyx.memory.facade import MemoryFacade
-from nyx.reading.facade import DuplicateBookError, ReadingFacade
-from nyx.types import Book
+from nyx.reading.facade import BookNotFoundError, DuplicateBookError, ReadingFacade
+from nyx.types import Book, BookListItem, Paragraph, ReadingProgress
 
 
 class _FakeReading:
@@ -29,6 +29,15 @@ class _FakeReading:
         self.calls: list[tuple[str, bytes]] = []
         self.result: Book | None = None
         self.error: Exception | None = None
+        # 20-reading-progress 扩展
+        self.books_result: list[BookListItem] = []
+        self.books_error: Exception | None = None
+        self.progress_result: ReadingProgress | None = None
+        self.progress_error: Exception | None = None
+        self.saved: list[tuple[str, int, int, int]] = []
+        self.save_error: Exception | None = None
+        self.paragraphs_result: list[Paragraph] = []
+        self.paragraphs_error: Exception | None = None
 
     async def import_book(self, filename: str, data: bytes) -> Book:
         self.calls.append((filename, data))
@@ -36,6 +45,33 @@ class _FakeReading:
             raise self.error
         assert self.result is not None
         return self.result
+
+    async def list_books(self) -> list[BookListItem]:
+        if self.books_error is not None:
+            raise self.books_error
+        return self.books_result
+
+    async def get_progress(self, book_id: str) -> ReadingProgress:
+        if self.progress_error is not None:
+            raise self.progress_error
+        assert self.progress_result is not None
+        return self.progress_result
+
+    async def save_progress(
+        self, book_id: str, user_position: int, nyx_position: int, reading_speed: int
+    ) -> ReadingProgress:
+        self.saved.append((book_id, user_position, nyx_position, reading_speed))
+        if self.save_error is not None:
+            raise self.save_error
+        assert self.progress_result is not None
+        return self.progress_result
+
+    async def list_paragraphs(
+        self, book_id: str, from_idx: int, to_idx: int
+    ) -> list[Paragraph]:
+        if self.paragraphs_error is not None:
+            raise self.paragraphs_error
+        return self.paragraphs_result
 
 
 def _book() -> Book:
@@ -162,3 +198,144 @@ async def test_books_too_large_returns_400(
         )
     assert resp.status_code == 400
     assert fake.calls == []  # 超限中断，不继续读、不调 import_book
+
+
+# ---- 20-reading-progress：书架 / 进度 / 段落端点 ----
+
+async def test_books_list_returns_list() -> None:
+    fake = _FakeReading()
+    fake.books_result = [
+        BookListItem(id="b1", title="已读", author="a", filename="f1.epub",
+                     total_paragraphs=3, user_position=5, last_read_at=2.0),
+        BookListItem(id="b2", title="未读", author="a", filename="f2.epub",
+                     total_paragraphs=1, user_position=0, last_read_at=None),
+    ]
+    async with _client(_app(fake)) as client:
+        resp = await client.get("/api/books")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [b["id"] for b in body] == ["b1", "b2"]
+    assert body[0]["user_position"] == 5
+    assert body[1]["last_read_at"] is None
+
+
+async def test_progress_get_returns_value() -> None:
+    fake = _FakeReading()
+    fake.progress_result = ReadingProgress("b1", 3, 2, 60, 1, 123.0)
+    async with _client(_app(fake)) as client:
+        resp = await client.get("/api/progress/b1")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["user_position"] == 3
+    assert body["nyx_position"] == 2
+    assert body["reading_speed"] == 60
+    assert body["read_count"] == 1
+
+
+async def test_progress_get_book_not_found_returns_404() -> None:
+    fake = _FakeReading()
+    fake.progress_error = BookNotFoundError("missing")
+    async with _client(_app(fake)) as client:
+        resp = await client.get("/api/progress/missing")
+    assert resp.status_code == 404
+
+
+async def test_progress_put_saves_and_returns_ok() -> None:
+    fake = _FakeReading()
+    fake.progress_result = ReadingProgress("b1", 4, 3, 70, 0, 1.0)
+    async with _client(_app(fake)) as client:
+        resp = await client.put(
+            "/api/progress/b1",
+            json={"user_position": 4, "nyx_position": 3, "reading_speed": 70},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    assert fake.saved == [("b1", 4, 3, 70)]
+
+
+async def test_progress_put_missing_reading_speed_returns_422() -> None:
+    fake = _FakeReading()
+    async with _client(_app(fake)) as client:
+        resp = await client.put(
+            "/api/progress/b1",
+            json={"user_position": 4, "nyx_position": 3},
+        )
+    assert resp.status_code == 422
+    assert fake.saved == []
+
+
+async def test_progress_put_reading_speed_out_of_range_returns_422() -> None:
+    fake = _FakeReading()
+    async with _client(_app(fake)) as client:
+        resp_low = await client.put(
+            "/api/progress/b1",
+            json={"user_position": 4, "nyx_position": 3, "reading_speed": 9},
+        )
+        resp_high = await client.put(
+            "/api/progress/b1",
+            json={"user_position": 4, "nyx_position": 3, "reading_speed": 201},
+        )
+    assert resp_low.status_code == 422
+    assert resp_high.status_code == 422
+    assert fake.saved == []
+
+
+async def test_progress_put_book_not_found_returns_404() -> None:
+    fake = _FakeReading()
+    fake.save_error = BookNotFoundError("missing")
+    async with _client(_app(fake)) as client:
+        resp = await client.put(
+            "/api/progress/missing",
+            json={"user_position": 1, "nyx_position": 1, "reading_speed": 50},
+        )
+    assert resp.status_code == 404
+
+
+async def test_paragraphs_returns_range() -> None:
+    fake = _FakeReading()
+    fake.paragraphs_result = [
+        Paragraph(
+            id="p2", book_id="b1", index=2, text="第二段", is_chapter_start=False
+        ),
+        Paragraph(
+            id="p3", book_id="b1", index=3, text="第三段", is_chapter_start=False
+        ),
+    ]
+    async with _client(_app(fake)) as client:
+        resp = await client.get("/api/books/b1/paragraphs?from=2&to=3")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [p["index"] for p in body] == [2, 3]
+    assert body[0]["is_chapter_start"] is False
+
+
+async def test_paragraphs_missing_from_to_returns_422() -> None:
+    fake = _FakeReading()
+    async with _client(_app(fake)) as client:
+        resp = await client.get("/api/books/b1/paragraphs")
+    assert resp.status_code == 422
+
+
+async def test_paragraphs_invalid_range_returns_422() -> None:
+    fake = _FakeReading()
+    async with _client(_app(fake)) as client:
+        resp_from_lt_1 = await client.get("/api/books/b1/paragraphs?from=0&to=2")
+        resp_to_lt_from = await client.get("/api/books/b1/paragraphs?from=3&to=2")
+    assert resp_from_lt_1.status_code == 422
+    assert resp_to_lt_from.status_code == 422
+
+
+async def test_paragraphs_book_not_found_returns_404() -> None:
+    fake = _FakeReading()
+    fake.paragraphs_error = BookNotFoundError("missing")
+    async with _client(_app(fake)) as client:
+        resp = await client.get("/api/books/missing/paragraphs?from=1&to=2")
+    assert resp.status_code == 404
+
+
+async def test_paragraphs_to_exceeds_total_returns_422() -> None:
+    fake = _FakeReading()
+    fake.paragraphs_error = ValueError("段落越界")
+    async with _client(_app(fake)) as client:
+        resp = await client.get("/api/books/b1/paragraphs?from=1&to=99")
+    assert resp.status_code == 422

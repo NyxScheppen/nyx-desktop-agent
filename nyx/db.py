@@ -186,6 +186,22 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE UNIQUE INDEX idx_books_content_hash ON books(content_hash)",
         ],
     ),
+    (
+        9,
+        [
+            # 陪读进度：1:1 书（book_id PK），20-reading-progress。
+            # user/nyx_position 从 1 起（与 paragraphs."index" 对齐）；
+            # reading_speed 10-200；read_count 只由 22 整本读完 ++，默认 0。
+            """CREATE TABLE reading_progress (
+                book_id TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+                user_position INTEGER NOT NULL DEFAULT 1,
+                nyx_position INTEGER NOT NULL DEFAULT 1,
+                reading_speed INTEGER NOT NULL DEFAULT 50,
+                read_count INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL
+            )""",
+        ],
+    ),
 ]
 
 

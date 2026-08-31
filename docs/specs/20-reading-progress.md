@@ -5,9 +5,9 @@
 
 ## 元信息
 
-- **前置依赖**：19-reading-content（`books`/`paragraphs` 表 + `ReadingStore`）、04-db（`_MIGRATIONS` v8）
+- **前置依赖**：19-reading-content（`books`/`paragraphs` 表 + `ReadingStore`）、04-db（`_MIGRATIONS` v9）
 - **反向修订 18-api**：原 18-api 无 reading 端点（19 已加 1 个 `POST /api/books`）；`ReadingFacade` 构造与 `_App.reading` 字段已由 19 反向扩展完成，本 spec 在 `build_app` **追加** 4 个端点闭包（`GET /api/books` / `GET /api/books/{book_id}/paragraphs` / `GET /api/progress/{book_id}` / `PUT /api/progress/{book_id}`）。18-api 是「被扩展」的既有 spec，不是前置依赖。
-- **实现文件**：`nyx/types.py`（新增 `ReadingProgress`/`BookListItem`）、`nyx/db.py`（`_MIGRATIONS` 追加 v8）、`nyx/reading/store.py`（追加进度/列表/分页方法）、`nyx/reading/facade.py`（追加读方法 + `BookNotFoundError`）、`nyx/main.py`（端点）
+- **实现文件**：`nyx/types.py`（新增 `ReadingProgress`/`BookListItem`）、`nyx/db.py`（`_MIGRATIONS` 追加 v9）、`nyx/reading/store.py`（追加进度/列表/分页方法）、`nyx/reading/facade.py`（追加读方法 + `BookNotFoundError`）、`nyx/main.py`（端点）
 
 ## 用户故事
 
@@ -15,7 +15,7 @@
 
 ## 验收标准
 
-- [ ] `nyx/db.py` 的 `_MIGRATIONS` 追加 v8（`reading_progress` 表，见「数据变更」）
+- [ ] `nyx/db.py` 的 `_MIGRATIONS` 追加 v9（`reading_progress` 表，见「数据变更」）
 - [ ] `nyx/types.py` 含 `ReadingProgress`：`book_id/user_position/nyx_position/reading_speed/read_count/updated_at`（全非 Optional；keyed by `book_id`，无独立 id）
 - [ ] `nyx/types.py` 含 `BookListItem`：`id/title/author/filename/total_paragraphs/user_position/last_read_at`（`last_read_at: float | None`——未读 `None`；`user_position: int` 的 0 是未读哨兵；其余全非 Optional）
 - [ ] `ReadingStore` 追加 `find_book(book_id)` / `list_books` / `list_paragraphs(book_id, from_idx, to_idx)` / `get_progress(book_id)` / `upsert_progress(...)` / `increment_read_count(book_id)`（全 `async`）
@@ -47,7 +47,7 @@
   - **`user_position`/`nyx_position` 1 起，`BookListItem.user_position` 的 0 是未读哨兵**：落库的 `reading_progress.user_position`/`nyx_position` 恒 ≥ 1（`DEFAULT 1`，与 `Paragraph.index` 从 1 起对齐）；`BookListItem.user_position` 由 LEFT JOIN 的 `COALESCE(reading_progress.user_position, 0)` 派生，0 只表示「无进度行（未读）」，不是可落库值。二者语义不同、不冲突。
   - **`reading_speed` 默认 50**（字符/秒，10–200 可调），随进度行持久化（per 书）；端点 pydantic 模型 `ge=10, le=200` 校验（超界 422）
   - **`read_count` 是「读完几遍」计数，只由整本读完 `++`**（22 的 `check_chapter_boundary` 对 `nyx_position == total_paragraphs` 时 `increment_read_count`）：首读 0→1、重读 1→2、…。「重读」判定 = `read_count >= 1`（读过至少一遍）。`save_progress`/`PUT /api/progress` 写回进度**不碰** `read_count`（UPSERT 只更新 position/speed/updated_at），否则用户翻页写回会把重读计数冲掉。
-- **数据变更**（`_MIGRATIONS` v8，DDL 以 `nyx/db.py` 为准）：
+- **数据变更**（`_MIGRATIONS` v9，DDL 以 `nyx/db.py` 为准）：
   - `reading_progress`：`book_id TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE`、`user_position INTEGER NOT NULL DEFAULT 1`、`nyx_position INTEGER NOT NULL DEFAULT 1`、`reading_speed INTEGER NOT NULL DEFAULT 50`、`read_count INTEGER NOT NULL DEFAULT 0`、`updated_at REAL NOT NULL`
 - **API 端点**：
   - `GET /api/books` → 200 `[BookListItem, ...]`，`ORDER BY last_read_at IS NULL ASC, last_read_at DESC, created_at DESC`（`last_read_at` = `reading_progress.updated_at` 别名；未读排后按 `created_at` DESC，已读按 `last_read_at` DESC）

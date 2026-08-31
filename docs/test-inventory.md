@@ -68,7 +68,7 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 14 张业务表 + `schema_version`，共 15 张 |
+| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 15 张业务表 + `schema_version`，共 16 张 |
 | `test_migrate_creates_five_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_memory_content_hash` / `idx_books_content_hash` 五个 |
 | `test_migrate_books_content_hash_index_unique` | 功能正确 | `idx_books_content_hash` 的 `sqlite_master.sql` 以 `CREATE UNIQUE INDEX` 开头（v8 去重升级唯一索引） |
 | `test_migrate_v8_dedupes_duplicate_content_hash` | 边界鲁棒 | 先迁 v7 插两条同 `content_hash` 书 → 完整迁移不抛、重复清到 1、被删书 paragraphs 级联清空、唯一索引就位 |
@@ -668,6 +668,38 @@
 | `test_books_parse_failure_logs_error` | 边界鲁棒 | 解析失败 → 500 且 `caplog` 记录含「导入 EPUB」的 ERROR（异常不静默吞） |
 | `test_books_sanitizes_filename` | 功能正确 | 上传文件名 `../../evil<1>.epub` → `import_book` 收到 `"evil1.epub"`（剥路径 + 去 `<`/`>`） |
 | `test_books_too_large_returns_400` | 边界鲁棒 | 超 `_MAX_EPUB_BYTES` → 400、`import_book` 不调（中断不继续读） |
+
+## 20-reading-progress（陪读进度：progress/书架/分页 + 4 端点）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_find_book_hit_and_miss` | 功能正确 | `find_book` 命中返回同 id 书、未命中 `None` |
+| `test_list_books_unread_sentinel_and_read_ordering` | 功能正确 | 未读 `user_position=0`/`last_read_at=None`、已读排前（`[read_id, unread_id]`） |
+| `test_list_paragraphs_range_ascending_and_bool_restored` | 功能正确 | `list_paragraphs(1,2)` → `"index"==[1,2]` 升序、`is_chapter_start` 1→`True`/0→`False`（bool 还原） |
+| `test_get_progress_none_then_value` | 功能正确 | 无行 → `None`；upsert 后回读 `user_position=4`/`nyx_position=3`/`reading_speed=70`/`read_count=0` |
+| `test_upsert_progress_insert_then_update` | 功能正确 | 同 book_id 单行、`updated_at` 推进（monkeypatch 时钟）、`reading_speed` 更新 |
+| `test_upsert_does_not_reset_read_count` | 边界鲁棒 | `increment` 后 `upsert` → `read_count` 仍 1（进度写回不重置重读计数） |
+| `test_increment_read_count_zero_to_one_to_two` | 功能正确 | 两次 `++` → `read_count` 1→2 |
+| `test_increment_read_count_creates_default_row` | 功能正确 | 无行 `++` → 建默认行 `read_count=1`、position/speed 走 DDL DEFAULT（1/1/50） |
+| `test_delete_book_cascades_reading_progress` | 功能正确 | 删 book → `reading_progress` 级联删空 |
+| `test_list_books_lists_imported_book` | 功能正确 | 导入 1 本 → `list_books` 1 项、`user_position=0`/`last_read_at=None`（未读哨兵） |
+| `test_get_progress_default_when_no_row` | 功能正确 | 无进度行 → 默认 `(1,1,50,0,0.0)`（`updated_at=0.0` 从未保存哨兵） |
+| `test_save_progress_insert_then_update` | 功能正确 | 首次 INSERT 再次 UPDATE（单行）、`read_count` 不被写回（0） |
+| `test_list_paragraphs_range` | 功能正确 | `list_paragraphs(2,4)` → `"index"==[2,3,4]` |
+| `test_list_paragraphs_to_idx_exceeds_total_raises_value_error` | 边界鲁棒 | `to=99 > total` → `ValueError`（越界不截断） |
+| `test_book_not_found_raises` | 边界鲁棒 | `get_progress`/`save_progress`/`list_paragraphs` 对不存在书抛 `BookNotFoundError` |
+| `test_books_list_returns_list` | 功能正确 | `GET /api/books` → `[BookListItem]`、`user_position`/`last_read_at` 透传 |
+| `test_progress_get_returns_value` | 功能正确 | `GET /api/progress/{id}` → `ReadingProgress`（position/speed/read_count 透传） |
+| `test_progress_get_book_not_found_returns_404` | 边界鲁棒 | `BookNotFoundError` → 404 |
+| `test_progress_put_saves_and_returns_ok` | 功能正确 | `PUT /api/progress/{id}` → `{ok:true}`、`save_progress` 收对 `(book_id,4,3,70)` |
+| `test_progress_put_missing_reading_speed_returns_422` | 边界鲁棒 | 缺 `reading_speed` → 422、`save_progress` 不调 |
+| `test_progress_put_reading_speed_out_of_range_returns_422` | 边界鲁棒 | `reading_speed=9`/`201` → 422 |
+| `test_progress_put_book_not_found_returns_404` | 边界鲁棒 | `save_progress` 抛 `BookNotFoundError` → 404 |
+| `test_paragraphs_returns_range` | 功能正确 | `GET /api/books/{id}/paragraphs?from=2&to=3` → `"index"==[2,3]`、`is_chapter_start` 透传 |
+| `test_paragraphs_missing_from_to_returns_422` | 边界鲁棒 | 缺 `from`/`to` → 422 |
+| `test_paragraphs_invalid_range_returns_422` | 边界鲁棒 | `from=0` / `to<from` → 422 |
+| `test_paragraphs_book_not_found_returns_404` | 边界鲁棒 | `BookNotFoundError` → 404 |
+| `test_paragraphs_to_exceeds_total_returns_422` | 边界鲁棒 | `ValueError` → 422 |
 
 ## frontend-sse（SSE 数据流：useSSE + dispatchEvent 分发表）
 

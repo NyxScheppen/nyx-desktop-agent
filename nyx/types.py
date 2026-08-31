@@ -160,6 +160,27 @@ class Paragraph:                   # 书的正文段落（index 从 1 起、per 
     is_chapter_start: bool         # 以 h1/h2 开头（22 章末检测用）
 
 
+@dataclass
+class ReadingProgress:             # 20-reading-progress：进度 1:1 书
+    book_id: str
+    user_position: int             # ≥1，与 Paragraph.index 从 1 起对齐
+    nyx_position: int              # ≥1
+    reading_speed: int             # 字符/秒，10-200
+    read_count: int                # 读完几遍（只由 22 整本读完 ++）
+    updated_at: float
+
+
+@dataclass
+class BookListItem:                # 书架列表项（books LEFT JOIN reading_progress）
+    id: str
+    title: str
+    author: str
+    filename: str
+    total_paragraphs: int
+    user_position: int             # 0 = 未读哨兵（COALESCE 派生，非落库值）
+    last_read_at: float | None     # 未读 None
+
+
 # ---- 内在生命 ----
 @dataclass
 class CurrentState:         # 只读快照

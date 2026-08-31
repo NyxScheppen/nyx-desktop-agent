@@ -9,7 +9,7 @@ import pytest
 from nyx import db
 from nyx.reading import facade as facade_mod
 from nyx.reading.epub import EpubResult
-from nyx.reading.facade import DuplicateBookError, ReadingFacade
+from nyx.reading.facade import BookNotFoundError, DuplicateBookError, ReadingFacade
 from nyx.reading.segmenter import Segment
 from nyx.reading.store import ReadingStore
 
@@ -123,3 +123,111 @@ async def test_delete_book_cascades_paragraphs(
     finally:
         await database.conn.close()
     assert row is not None and row["n"] == 0
+
+
+# ---- 20-reading-progress：进度 / 书架 / 分页 ----
+
+async def test_list_books_lists_imported_book(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database = await _facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=False)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        items = await facade.list_books()
+    finally:
+        await database.conn.close()
+    assert len(items) == 1
+    assert items[0].id == book.id
+    assert items[0].user_position == 0  # 未读哨兵
+    assert items[0].last_read_at is None
+
+
+async def test_get_progress_default_when_no_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database = await _facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=False)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        progress = await facade.get_progress(book.id)
+    finally:
+        await database.conn.close()
+    assert progress.book_id == book.id
+    assert progress.user_position == 1
+    assert progress.nyx_position == 1
+    assert progress.reading_speed == 50
+    assert progress.read_count == 0
+    assert progress.updated_at == 0.0  # 从未保存哨兵
+
+
+async def test_save_progress_insert_then_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database = await _facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=False)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        first = await facade.save_progress(book.id, 2, 2, 50)
+        second = await facade.save_progress(book.id, 5, 4, 80)
+        cursor = await database.conn.execute(
+            "SELECT COUNT(*) AS n FROM reading_progress WHERE book_id = ?", (book.id,),
+        )
+        row = await cursor.fetchone()
+    finally:
+        await database.conn.close()
+    assert first.user_position == 2
+    assert second.user_position == 5
+    assert second.reading_speed == 80
+    assert second.read_count == 0  # save 不写 read_count
+    assert row is not None and row["n"] == 1
+
+
+async def test_list_paragraphs_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database = await _facade(
+        monkeypatch,
+        [Segment(text=f"第{i}段", is_chapter_start=(i == 1)) for i in range(1, 6)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        paras = await facade.list_paragraphs(book.id, 2, 4)
+    finally:
+        await database.conn.close()
+    assert [p.index for p in paras] == [2, 3, 4]
+    assert paras[0].is_chapter_start is False
+
+
+async def test_list_paragraphs_to_idx_exceeds_total_raises_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database = await _facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=False)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        with pytest.raises(ValueError):
+            await facade.list_paragraphs(book.id, 1, 99)
+    finally:
+        await database.conn.close()
+
+
+async def test_book_not_found_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database = await _facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=False)],
+    )
+    try:
+        with pytest.raises(BookNotFoundError):
+            await facade.get_progress("missing")
+        with pytest.raises(BookNotFoundError):
+            await facade.save_progress("missing", 1, 1, 50)
+        with pytest.raises(BookNotFoundError):
+            await facade.list_paragraphs("missing", 1, 2)
+    finally:
+        await database.conn.close()

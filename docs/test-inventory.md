@@ -721,6 +721,8 @@
 | `test_evaluate_paragraph_associate_searches_and_broadcasts` | 功能正确 | 联想检索 1 次 → 每条记忆广播一条 `reading_association`（`memory_id`/`snippet` 透传） |
 | `test_evaluate_paragraph_quote_question_splits_lines` | 功能正确 | `quote_question` 两行 → `content`=首行、`selected_text`=次行（划线拆分） |
 | `test_evaluate_paragraph_quote_question_single_line_null_selection` | 边界鲁棒 | `quote_question` 单行 → `selected_text=None` |
+| `test_mutter_reading_none_content_skips_without_raise` | 边界鲁棒 | LLM 返回 `content=None` → `.strip()` 不炸、零广播（try 兜住后处理） |
+| `test_associate_reading_none_search_skips_without_raise` | 边界鲁棒 | `memory.search` 返回 `None` → `[:3]` 不炸、零广播（try 兜住切片） |
 | `test_impulse_evaluate_returns_triggered` | 功能正确 | `POST /api/impulse/evaluate` → `{triggered:[associate, question_knowledge]}`、`evaluate_paragraph` 收对 `(book_id,2,1)` |
 | `test_impulse_evaluate_missing_last_paragraph_returns_422` | 边界鲁棒 | 缺 `last_paragraph_index` → 422、不调 facade |
 

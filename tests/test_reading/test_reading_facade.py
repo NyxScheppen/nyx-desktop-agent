@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """ReadingFacade 集成测试：19 内容导入 + 20 进度 + 21 冲动引擎，:memory: + 真 store。
 
 `parse_epub` 用 monkeypatch 注入固定 `EpubResult`（不碰真实 EPUB 字节）。
@@ -157,6 +158,35 @@ class _FakeEvaluator:
 
     async def evaluate(self, output: LLMOutput) -> None:
         self.evaluated.append(output)
+
+
+class _NoneContentLlm(_FakeLlm):
+    """LLM 返回 content=None（契约违约），模拟客户端异常输出。"""
+
+    async def complete(
+        self,
+        messages: list[LlmMessage],
+        *,
+        module: str,
+        output_type: str,
+        correlation_id: str,
+        json_mode: bool = False,
+        tools: list[dict[str, object]] | None = None,
+    ) -> LLMOutput:
+        return LLMOutput(
+            module=module,
+            type=output_type,
+            model="fake",
+            content=cast(str, None),
+            correlation_id=correlation_id,
+        )
+
+
+class _NoneSearchMemory(_FakeMemory):
+    """memory.search 返回 None（契约违约），模拟检索异常输出。"""
+
+    async def search(self, query: str) -> list[Memory]:
+        return cast(list[Memory], None)
 
 
 def _build_impulse_facade(
@@ -583,3 +613,33 @@ async def test_evaluate_paragraph_quote_question_single_line_null_selection(
     ]
     assert len(quote) == 1
     assert quote[0].content["selected_text"] is None
+
+
+async def test_mutter_reading_none_content_skips_without_raise() -> None:
+    """LLM 返回 None 内容（契约违约）→ 后处理不炸、不广播（try 兜住 .strip()）。"""
+    database = await db.connect(":memory:")
+    bus = _FakeBus()
+    facade = _build_impulse_facade(
+        database, bus, _NoneContentLlm(), _FakeMemory([]),
+        _FakeInnerLife(_mk_state()), _FakeDesire(_desire_values()),
+    )
+    try:
+        await facade._mutter_reading("b1", 1, _RICH_TEXT, _mk_state())
+    finally:
+        await database.conn.close()
+    assert bus.published == []
+
+
+async def test_associate_reading_none_search_skips_without_raise() -> None:
+    """memory.search 返回 None（契约违约）→ 切片不炸、不广播（try 兜住 [:3]）。"""
+    database = await db.connect(":memory:")
+    bus = _FakeBus()
+    facade = _build_impulse_facade(
+        database, bus, _FakeLlm(), _NoneSearchMemory([]),
+        _FakeInnerLife(_mk_state()), _FakeDesire(_desire_values()),
+    )
+    try:
+        await facade._associate_reading("b1", 1, _RICH_TEXT)
+    finally:
+        await database.conn.close()
+    assert bus.published == []

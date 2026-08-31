@@ -37,14 +37,6 @@ from nyx.types import (
     ReadingProgress,
 )
 
-# 4 个提问子型（associate 之外的全部复合行为）；mutter 是独立闸门，不在此列。
-_QUESTION_BEHAVIORS = frozenset({
-    ReadingBehavior.QUESTION_KNOWLEDGE,
-    ReadingBehavior.QUESTION_PERSONAL,
-    ReadingBehavior.QUESTION_REFLECTIVE,
-    ReadingBehavior.QUOTE_QUESTION,
-})
-
 _QUESTION_USER_PROMPTS: dict[ReadingBehavior, str] = {
     ReadingBehavior.QUESTION_KNOWLEDGE: "基于这段文字问一个知识型问题。",
     ReadingBehavior.QUESTION_PERSONAL: "基于这段文字问一个私人型问题。",
@@ -106,7 +98,8 @@ class ReadingFacade:
         self._bus = bus
         self._canon = canon
         self._logger = logging.getLogger(__name__)
-        # 冷却时间戳是唯一内存态（per 进程，重启清零）；无并发锁——见 spec 21 关键决策。
+        # 冷却时间戳是唯一内存态（per 进程，重启清零），用单调钟 time.monotonic
+        # 防墙钟跳变；无并发锁——见 spec 21 关键决策。
         self._cooldowns: dict[ReadingBehavior, float] = {}
         self._mutter_at = 0.0
 
@@ -196,7 +189,7 @@ class ReadingFacade:
             interaction_value=_desire_value(desires.values, DesireType.INTERACTION),
         )
         composite = compute_composite(drives)
-        now = time.time()
+        now = time.monotonic()
 
         # 冷却读写是连续同步块（读 _cooldowns/_mutter_at → 写），无 await 隔断，
         # asyncio 天然串行无竞态。
@@ -210,9 +203,10 @@ class ReadingFacade:
         if mutter:
             self._mutter_at = now
 
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._dispatch(book_id, paragraph_index, text, triggered, mutter, state)
         )
+        task.add_done_callback(self._log_task_error)
         return triggered
 
     async def _dispatch(
@@ -234,6 +228,14 @@ class ReadingFacade:
                 await self._question_reading(
                     book_id, paragraph_index, text, behavior, state
                 )
+
+    def _log_task_error(self, task: asyncio.Future[None]) -> None:
+        """后台分派兜底：记逃逸异常（best-effort 旁路，不反噬主流程）。"""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._logger.exception("阅读分派后台任务异常", exc_info=exc)
 
     async def _mutter_reading(
         self,
@@ -259,26 +261,26 @@ class ReadingFacade:
                 correlation_id=book_id,
             )
             await self._evaluator.evaluate(output)
+            content = output.content.strip()
+            if not content:
+                return
+            await self._bus.publish(
+                internal_event(
+                    EventType.READING_MUTTER,
+                    {
+                        "content": content,
+                        "book_id": book_id,
+                        "paragraph_index": paragraph_index,
+                    },
+                    book_id,
+                )
+            )
         except Exception:
             self._logger.exception(
                 "陪读碎碎念失败 book_id=%s paragraph_index=%d",
                 book_id, paragraph_index,
             )
             return
-        content = output.content.strip()
-        if not content:
-            return
-        await self._bus.publish(
-            internal_event(
-                EventType.READING_MUTTER,
-                {
-                    "content": content,
-                    "book_id": book_id,
-                    "paragraph_index": paragraph_index,
-                },
-                book_id,
-            )
-        )
 
     async def _question_reading(
         self,
@@ -302,37 +304,37 @@ class ReadingFacade:
                 correlation_id=book_id,
             )
             await self._evaluator.evaluate(output)
+            raw = output.content.strip()
+            if not raw:
+                return
+            if behavior is ReadingBehavior.QUOTE_QUESTION:
+                content, _, quote = raw.partition("\n")
+                content = content.strip()
+                selected_text = quote.strip() or None
+            else:
+                content = raw
+                selected_text = None
+            if not content:
+                return
+            await self._bus.publish(
+                internal_event(
+                    EventType.READING_QUESTION,
+                    {
+                        "content": content,
+                        "subtype": behavior.value,
+                        "book_id": book_id,
+                        "paragraph_index": paragraph_index,
+                        "selected_text": selected_text,
+                    },
+                    book_id,
+                )
+            )
         except Exception:
             self._logger.exception(
                 "陪读提问失败 behavior=%s book_id=%s paragraph_index=%d",
                 behavior.value, book_id, paragraph_index,
             )
             return
-        raw = output.content.strip()
-        if not raw:
-            return
-        if behavior is ReadingBehavior.QUOTE_QUESTION:
-            content, _, quote = raw.partition("\n")
-            content = content.strip()
-            selected_text = quote.strip() or None
-        else:
-            content = raw
-            selected_text = None
-        if not content:
-            return
-        await self._bus.publish(
-            internal_event(
-                EventType.READING_QUESTION,
-                {
-                    "content": content,
-                    "subtype": behavior.value,
-                    "book_id": book_id,
-                    "paragraph_index": paragraph_index,
-                    "selected_text": selected_text,
-                },
-                book_id,
-            )
-        )
 
     async def _associate_reading(
         self, book_id: str, paragraph_index: int, text: str
@@ -340,23 +342,24 @@ class ReadingFacade:
         """陪读记忆联想：检索段落相关记忆，每条命中广播一条 READING_ASSOCIATION。"""
         try:
             memories = await self._memory.search(text)
+            for memory in memories[:3]:
+                source = memory.summary or memory.content
+                snippet = source[:_ASSOCIATION_SNIPPET_CHARS]
+                await self._bus.publish(
+                    internal_event(
+                        EventType.READING_ASSOCIATION,
+                        {
+                            "memory_id": memory.id,
+                            "snippet": snippet,
+                            "book_id": book_id,
+                            "paragraph_index": paragraph_index,
+                        },
+                        book_id,
+                    )
+                )
         except Exception:
             self._logger.exception(
                 "陪读联想检索失败 book_id=%s paragraph_index=%d",
                 book_id, paragraph_index,
             )
             return
-        for memory in memories[:3]:
-            snippet = (memory.summary or memory.content)[:_ASSOCIATION_SNIPPET_CHARS]
-            await self._bus.publish(
-                internal_event(
-                    EventType.READING_ASSOCIATION,
-                    {
-                        "memory_id": memory.id,
-                        "snippet": snippet,
-                        "book_id": book_id,
-                        "paragraph_index": paragraph_index,
-                    },
-                    book_id,
-                )
-            )

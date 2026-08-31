@@ -196,7 +196,8 @@ class ReadingStore:
             (book_id,),
         )
         row = await cursor.fetchone()
-        assert row is not None  # 写路径刚 INSERT/UPDATE，行必在
+        if row is None:  # 写路径刚 INSERT/UPDATE，行必在；避免 -O 下 assert 被剥离
+            raise RuntimeError(f"写后回读缺失：{book_id}")
         return _row_to_progress(row)
 
 

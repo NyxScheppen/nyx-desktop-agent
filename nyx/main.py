@@ -378,8 +378,14 @@ class _ProgressPayload(BaseModel):
     reading_speed: int = Field(..., ge=10, le=200)
 
 
+class _ImpulsePayload(BaseModel):
+    book_id: str
+    paragraph_index: int = Field(..., ge=1)
+    last_paragraph_index: int = Field(..., ge=0)
+
+
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：15 个端点（14 个 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：20 个端点（19 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")
@@ -520,6 +526,15 @@ def build_app(app: _App) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(e)) from e
         return {"ok": True}
 
+    @fast.post("/api/impulse/evaluate")
+    async def api_impulse_evaluate(
+        payload: _ImpulsePayload,
+    ) -> dict[str, list[str]]:
+        triggered = await app.reading.evaluate_paragraph(
+            payload.book_id, payload.paragraph_index, payload.last_paragraph_index
+        )
+        return {"triggered": [b.value for b in triggered]}
+
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:
         presence = payload.presence
@@ -628,7 +643,9 @@ async def build_app_context(config: Config) -> _App:
     await _seed_inner_life(inner_life_store)
     await _seed_desire(desire_store)
 
-    reading = ReadingFacade(ReadingStore(db))
+    reading = ReadingFacade(
+        ReadingStore(db), inner_life, desire, memory, llm, evaluator, bus, canon
+    )
 
     expression = ExpressionFacade(
         bus, llm, evaluator, memory, activity, desire, inner_life, canon, ask,

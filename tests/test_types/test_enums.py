@@ -12,6 +12,8 @@ from nyx.enums import (
     EventType,
     GoalAction,
     MemoryType,
+    ReadingBehavior,
+    ReadingDrive,
     SearchMode,
     Source,
     TickType,
@@ -23,7 +25,8 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
         "ask", "think", "mutter", "initiate_chat", "emotion_update", "reflection",
         "reflection_done", "memory_created", "memory_promoted", "desire_generated",
         "desire_satisfied", "desire_expired", "activity_start", "activity_end",
-        "activity_interrupted",
+        "activity_interrupted", "reading_mutter", "reading_question",
+        "reading_association",
     },
     Source: {"external", "internal"},
     TickType: {
@@ -40,6 +43,14 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
         "rest",
     },
     MemoryType: {"short_term", "long_term"},
+    ReadingDrive: {
+        "motivation", "curiosity", "boredom", "aesthetic_sensitivity",
+        "empathy_bias", "associative_drive",
+    },
+    ReadingBehavior: {
+        "question_knowledge", "question_personal", "question_reflective",
+        "quote_question", "associate",
+    },
     DesireStatus: {"pending", "active", "satisfied", "expired", "suppressed"},
     ActivityStatus: {
         "pending", "running", "paused", "abandoned", "completed", "incomplete",

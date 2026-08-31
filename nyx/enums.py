@@ -21,6 +21,9 @@ class EventType(StrEnum):
     ACTIVITY_START = "activity_start"      # 活动开始
     ACTIVITY_END = "activity_end"          # 活动结束
     ACTIVITY_INTERRUPTED = "activity_interrupted"  # 活动打断
+    READING_MUTTER = "reading_mutter"      # 陪读碎碎念（21）
+    READING_QUESTION = "reading_question"  # 陪读提问
+    READING_ASSOCIATION = "reading_association"  # 陪读联想
 
 
 class Source(StrEnum):
@@ -71,6 +74,23 @@ class ActivityType(StrEnum):
 class MemoryType(StrEnum):
     SHORT_TERM = "short_term"
     LONG_TERM = "long_term"
+
+
+class ReadingDrive(StrEnum):            # 阅读冲动 6 驱动（21-reading-impulse）
+    MOTIVATION = "motivation"                       # 动力 → 精力
+    CURIOSITY = "curiosity"                         # 好奇 → 探索欲
+    BOREDOM = "boredom"                             # 无聊 → 互动欲
+    AESTHETIC_SENSITIVITY = "aesthetic_sensitivity"  # 审美敏感 → 段落丰富度
+    EMPATHY_BIAS = "empathy_bias"                   # 共鸣倾向 → 宜人性 + 情感
+    ASSOCIATIVE_DRIVE = "associative_drive"          # 记忆联想 → 联想密度
+
+
+class ReadingBehavior(StrEnum):         # 阅读冲动 5 复合行为（无 mutter）
+    QUESTION_KNOWLEDGE = "question_knowledge"        # 知识型提问
+    QUESTION_PERSONAL = "question_personal"          # 私人型提问
+    QUESTION_REFLECTIVE = "question_reflective"      # 反思型提问
+    QUOTE_QUESTION = "quote_question"                # 划线提问
+    ASSOCIATE = "associate"                          # 记忆联想
 
 
 class DesireStatus(StrEnum):

@@ -6,7 +6,7 @@
 ## 元信息
 
 - **前置依赖**：19-reading-content（`paragraphs` 表）、20-reading-progress（`ReadingFacade.list_paragraphs`）、09-memory-facade（`search`）、11-desire（`get_all`）、12-inner-life（`get_state`）、17-expression（复用 `build_system_prompt`）
-- **反向修订 08-events**：08-events 现行 `EventType` 无 reading 事件、`ROUTING` 无对应条目；本 spec 负责**新增** 3 个 `EventType`（`READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION`），且**不加 `ROUTING` 条目**（三者仅广播前端、无内部消费者，与 `MUTTER`/`SPEAK` 同款「空路由」）。08-events 是「被扩展」的既有 spec，不是前置依赖。
+- **反向修订 08-events**：08-events 现行 `EventType` 无 reading 事件、`ROUTING` 无对应条目；本 spec 负责**新增** 3 个 `EventType`（`READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION`），且**加 3 条空路由**（`READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION` → `[]`，仅广播前端、无内部消费者，与 `MUTTER`/`SPEAK` 同款「空路由」；穷尽断言 `set(ROUTING) == set(EventType) - {CLOCK_TICK}` 强制所有事件类型都在表里，故空列表键必须存在）。08-events 是「被扩展」的既有 spec，不是前置依赖。
 - **反向修订 18-api**：`ReadingFacade` 构造签名由 19 的 `(store)` 扩为 8 参 `(store, inner_life, desire, memory, llm, evaluator, bus, canon)` + `build_app_context` 装配更新（19 已甩给本 spec）+ `POST /api/impulse/evaluate` 端点（`_App.reading` 字段 19 已加）。18-api 是「被扩展」的既有 spec，不是前置依赖。
 - **实现文件**：`nyx/enums.py`（新增 `ReadingDrive`/`ReadingBehavior` + 3 个 `EventType`）、`nyx/reading/impulse.py`（纯函数 + 常量）、`nyx/reading/facade.py`（追加 `evaluate_paragraph` + 分派）、`nyx/main.py`（端点 + 组合根装配）
 - **无数据变更**：冲动驱动「现算」、冷却时间戳内存态，不新增 `impulse_params`/`impulse_events` 表（见「关键决策」）

@@ -17,6 +17,9 @@ ROUTING: dict[EventType, list[str]] = {
     EventType.ASK:                 [],
     EventType.THINK:               [],
     EventType.MUTTER:              [],
+    EventType.READING_MUTTER:      [],
+    EventType.READING_QUESTION:    [],
+    EventType.READING_ASSOCIATION: [],
     EventType.INITIATE_CHAT:       [],
     EventType.EMOTION_UPDATE:      [],
     # 协调器，内部调 memory/desire

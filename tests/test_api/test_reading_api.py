@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
+from nyx.enums import ReadingBehavior
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
@@ -38,6 +39,9 @@ class _FakeReading:
         self.save_error: Exception | None = None
         self.paragraphs_result: list[Paragraph] = []
         self.paragraphs_error: Exception | None = None
+        # 21-reading-impulse 扩展
+        self.impulse_result: list[ReadingBehavior] = []
+        self.impulse_calls: list[tuple[str, int, int]] = []
 
     async def import_book(self, filename: str, data: bytes) -> Book:
         self.calls.append((filename, data))
@@ -72,6 +76,12 @@ class _FakeReading:
         if self.paragraphs_error is not None:
             raise self.paragraphs_error
         return self.paragraphs_result
+
+    async def evaluate_paragraph(
+        self, book_id: str, paragraph_index: int, last_paragraph_index: int
+    ) -> list[ReadingBehavior]:
+        self.impulse_calls.append((book_id, paragraph_index, last_paragraph_index))
+        return list(self.impulse_result)
 
 
 def _book() -> Book:
@@ -339,3 +349,31 @@ async def test_paragraphs_to_exceeds_total_returns_422() -> None:
     async with _client(_app(fake)) as client:
         resp = await client.get("/api/books/b1/paragraphs?from=1&to=99")
     assert resp.status_code == 422
+
+
+# ---- 21-reading-impulse：冲动端点 ----
+
+async def test_impulse_evaluate_returns_triggered() -> None:
+    fake = _FakeReading()
+    fake.impulse_result = [
+        ReadingBehavior.ASSOCIATE, ReadingBehavior.QUESTION_KNOWLEDGE,
+    ]
+    async with _client(_app(fake)) as client:
+        resp = await client.post(
+            "/api/impulse/evaluate",
+            json={"book_id": "b1", "paragraph_index": 2, "last_paragraph_index": 1},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"triggered": ["associate", "question_knowledge"]}
+    assert fake.impulse_calls == [("b1", 2, 1)]
+
+
+async def test_impulse_evaluate_missing_last_paragraph_returns_422() -> None:
+    fake = _FakeReading()
+    async with _client(_app(fake)) as client:
+        resp = await client.post(
+            "/api/impulse/evaluate",
+            json={"book_id": "b1", "paragraph_index": 2},
+        )
+    assert resp.status_code == 422
+    assert fake.impulse_calls == []

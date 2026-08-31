@@ -4,7 +4,7 @@
 > `CLAUDE.md`「写 spec」模板里"涉及的 Facade / 数据变更 / API 端点 / 新增文件"直接抄这里，不现编。
 > 约定：主键/ID 用 **uuid4 字符串**，时间戳用 **epoch 秒（浮点）**。
 
-## 1. 枚举（13 个 StrEnum）
+## 1. 枚举（15 个 StrEnum）
 
 > 枚举成员与实现以 `nyx/enums.py` 为准（spec 01-types 只给契约），此处不再重复。§3 起的 DDL / API / Facade 签名直接引用这些枚举。
 
@@ -52,6 +52,7 @@
 | GET | `/api/books/{book_id}/paragraphs?from=&to=` | query 范围（`from>=1`、`to>=from`） | `Paragraph[]`（`index` 升序；书不存在 404 / 越界 422） |
 | GET | `/api/progress/{book_id}` | — | `ReadingProgress`（书不存在 404；无记录返回默认进度） |
 | PUT | `/api/progress/{book_id}` | `{user_position, nyx_position, reading_speed}` | `{ok: true}`（书不存在 404） |
+| POST | `/api/impulse/evaluate` | `{book_id, paragraph_index, last_paragraph_index}` | `{triggered: [ReadingBehavior 值]}`（回翻/缺段返回 `[]`；触发分派走 SSE） |
 > REST 端点分两类：
 > - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`> - **外部输入入口**：`/api/chat`、`/api/observe` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 `ActivityFacade.register_material()` 只注册书库（不发事件、不立即读书），返回 `{filename, path}`。回复/后续产出走 SSE。
 
@@ -66,6 +67,8 @@ data = {"event_id": event.id, "correlation_id": event.correlation_id, **event.co
 ```
 
 > 前端拿到该事件的完整 `content`（键结构由各生产方 spec 定义）再加两个溯源字段。`event.content` 的键从不与 `event_id`/`correlation_id` 冲突（生产方不产这两个键），展开安全。示例：`speak` → `{event_id, correlation_id, content}`；`activity_end` → `{event_id, correlation_id, activity_id, desire_id, goal_met, energy_delta, result}`，其中 `result` 形状随 `ActivityType` 变（读书→`{book, note, read_chars, total_chars}`、创作→`{title, content, path}`、探索→`{summary, core_discovery, knowledge, findings}`、发呆→`{summary}`、休息→`{}`、观察→`{presence, window_title, summary}`，见 14-activity）。
+
+> **陪读冲动事件（21）**：`reading_mutter`（`{content, book_id, paragraph_index}`）、`reading_question`（`{content, subtype, book_id, paragraph_index, selected_text}`）、`reading_association`（`{memory_id, snippet, book_id, paragraph_index}`）——`POST /api/impulse/evaluate` 后台分派广播，仅广播前端、无内部消费者（空路由）。
 
 > **SSE vs REST 切分**：SSE 实时推送**全部事件**（前端按 `event` 类型增量更新面板）；REST 只做**初始快照 + 历史查询 + 导出**（`GET /api/state` 初始快照，`/api/memories` `/api/events/log` 列表查询）。
 
@@ -115,11 +118,13 @@ async def register_material(path: str, filename: str, total_chars: int) -> None 
 ### ReadingFacade
 
 ```python
+# 构造：ReadingFacade(store, inner_life, desire, memory, llm, evaluator, bus, canon)  # 8 依赖注入
 async def import_book(filename: str, data: bytes) -> Book       # 解析 EPUB → 去重 → 落库 books+paragraphs → 返回 Book；正文重复抛 DuplicateBookError、空正文抛 ValueError
 async def list_books() -> list[BookListItem]                    # 书架列表（直通 store，已读排前）
 async def list_paragraphs(book_id: str, from_idx: int, to_idx: int) -> list[Paragraph]  # 段落范围（index 升序）；书不存在抛 BookNotFoundError、to_idx 越界抛 ValueError
 async def get_progress(book_id: str) -> ReadingProgress         # 进度；书不存在抛 BookNotFoundError、无进度行返回默认（1,1,50,0,0.0）
 async def save_progress(book_id: str, user_position: int, nyx_position: int, reading_speed: int) -> ReadingProgress  # 写进度 UPSERT（不碰 read_count）；书不存在抛 BookNotFoundError
+async def evaluate_paragraph(book_id: str, paragraph_index: int, last_paragraph_index: int) -> list[ReadingBehavior]  # 翻页冲动：现算 6 驱动→复合→阈值+冷却→后台分派；回翻/缺段返回 []
 ```
 
 ### DesireFacade
@@ -237,7 +242,8 @@ nyx/
     segmenter.py           # segment_html（HTML 正文→阅读段落，纯函数）
     epub.py                # parse_epub（EPUB 字节→元数据+段落+content_hash）
     store.py               # ReadingStore（books/paragraphs/reading_progress 存取：进度/书架/分页/increment_read_count）
-    facade.py              # ReadingFacade（import_book / list_books / list_paragraphs / get_progress / save_progress）
+    impulse.py             # 阅读冲动引擎纯函数（特征提取 / 驱动现算 / 复合加权 / 阈值+冷却，21）
+    facade.py              # ReadingFacade（import_book / list_books / list_paragraphs / get_progress / save_progress / evaluate_paragraph）
   expression/
     facade.py             # ExpressionFacade
     pipeline.py           # 回复流程（LangGraph）

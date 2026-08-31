@@ -6,7 +6,7 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_all_enums_exhaustive` | 功能正确 | 13 个枚举的值集合与 `EXPECTED` 逐枚举相等（防漏成员/多成员/改值） |
+| `test_all_enums_exhaustive` | 功能正确 | 15 个枚举的值集合与 `EXPECTED` 逐枚举相等（防漏成员/多成员/改值） |
 | `test_naming_convention` | 回归保护 | 每个成员 `value == name.lower()`（防手滑改值破坏 snake_case 契约） |
 | `test_strenum_json_serializable` | 功能正确 | `json.dumps(EventType.USER_MESSAGE) == '"user_message"'` |
 | `test_short_term_desire_default_status` | 功能正确 | `status` 默认 `DesireStatus.PENDING`（枚举成员而非裸字符串） |
@@ -88,7 +88,7 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_routing_keys_are_all_event_types_except_clock_tick` | 功能正确 | `set(ROUTING) == set(EventType) - {CLOCK_TICK}`（19 键） |
+| `test_routing_keys_are_all_event_types_except_clock_tick` | 功能正确 | `set(ROUTING) == set(EventType) - {CLOCK_TICK}`（21 键） |
 | `test_tick_routing_keys_are_all_tick_types` | 功能正确 | `set(TICK_ROUTING) == set(TickType)`（5 键） |
 | `test_routing_values_are_known_modules` | 功能正确 | 所有路由值 ⊆ `{expression, inner_life, desire, activity, memory}` |
 | `test_time_constants` | 功能正确 | `SECONDS_PER_DAY == 86400.0`、`SECONDS_PER_HOUR == 3600.0`（共享常量，防四处 Facade 漂移） |
@@ -700,6 +700,29 @@
 | `test_paragraphs_invalid_range_returns_422` | 边界鲁棒 | `from=0` / `to<from` → 422 |
 | `test_paragraphs_book_not_found_returns_404` | 边界鲁棒 | `BookNotFoundError` → 404 |
 | `test_paragraphs_to_exceeds_total_returns_422` | 边界鲁棒 | `ValueError` → 422 |
+
+## 21-reading-impulse（陪读冲动：特征提取 + 驱动现算 + 复合 + 阈值冷却 + 端点）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_extract_rich_paragraph_detects_features` | 功能正确 | 富段落（绝望/哭/意义/自由）→ `philosophical`/`negative_emo`/`exclamation_ratio`/`character_mention` > 0、`richness_score ∈ [0,1]` |
+| `test_extract_rich_scores_higher_than_flat` | 功能正确 | 富段落 `richness_score` > 平淡段落（「今天天气不错。」） |
+| `test_build_drives_energy_and_agreeableness` | 功能正确 | energy=100 → `motivation=1.0`；agreeableness=10 平段 → `empathy_bias=0.6`；`curiosity`/`boredom` 直通（0.5/0.3） |
+| `test_build_drives_emotional_paragraph_raises_empathy` | 功能正确 | 情绪段 `empathy_bias` > 平段（情感密度拉高共鸣） |
+| `test_compute_composite_weights_spot_check` | 功能正确 | `question_knowledge=0.52`、`associate=0.48`（Σ驱动×权重抽查两档） |
+| `test_check_triggers_above_threshold_fires` | 功能正确 | 复合值 0.6 ≥ 阈值 0.55 → 触发 `QUESTION_KNOWLEDGE` |
+| `test_check_triggers_within_cooldown_suppressed` | 边界鲁棒 | 冷却内（`last_at == now`）→ 不触发（`[]`） |
+| `test_check_triggers_below_threshold_suppressed` | 边界鲁棒 | 0.1 < 阈值 → 不触发（`[]`） |
+| `test_evaluate_paragraph_forward_dispatches_events` | 功能正确 | 富段落前翻 → `ASSOCIATE` 触发 + 后台广播 `reading_mutter`/`reading_question`/`reading_association` 三事件 |
+| `test_evaluate_paragraph_backtrack_returns_empty` | 边界鲁棒 | `paragraph_index ≤ last` → `[]` 且零广播（回翻幂等） |
+| `test_evaluate_paragraph_missing_book_returns_empty` | 边界鲁棒 | 书不存在 → `[]` 且零广播（不 404、幂等） |
+| `test_evaluate_paragraph_cooldown_suppresses_repeat` | 功能正确 | 同批行为连续两段 → 第二次 `[]`（冷却抑制重复） |
+| `test_evaluate_paragraph_flat_paragraph_no_mutter` | 边界鲁棒 | 平淡段落 → 无 `reading_mutter`（richness 闸门不越过） |
+| `test_evaluate_paragraph_associate_searches_and_broadcasts` | 功能正确 | 联想检索 1 次 → 每条记忆广播一条 `reading_association`（`memory_id`/`snippet` 透传） |
+| `test_evaluate_paragraph_quote_question_splits_lines` | 功能正确 | `quote_question` 两行 → `content`=首行、`selected_text`=次行（划线拆分） |
+| `test_evaluate_paragraph_quote_question_single_line_null_selection` | 边界鲁棒 | `quote_question` 单行 → `selected_text=None` |
+| `test_impulse_evaluate_returns_triggered` | 功能正确 | `POST /api/impulse/evaluate` → `{triggered:[associate, question_knowledge]}`、`evaluate_paragraph` 收对 `(book_id,2,1)` |
+| `test_impulse_evaluate_missing_last_paragraph_returns_422` | 边界鲁棒 | 缺 `last_paragraph_index` → 422、不调 facade |
 
 ## frontend-sse（SSE 数据流：useSSE + dispatchEvent 分发表）
 

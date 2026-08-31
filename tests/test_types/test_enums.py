@@ -4,6 +4,7 @@ from enum import StrEnum
 from nyx.enums import (
     ActivityStatus,
     ActivityType,
+    BoundaryResult,
     ContextMode,
     DesireStatus,
     DesireType,
@@ -58,6 +59,7 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
     EnergyState: {"energetic", "okay", "tired", "exhausted", "drained"},
     SearchMode: {"keyword", "vector", "association"},
     GoalAction: {"read", "write", "observe"},
+    BoundaryResult: {"none", "chapter_end", "book_finished"},
 }
 
 

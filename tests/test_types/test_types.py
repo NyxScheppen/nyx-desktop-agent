@@ -6,6 +6,7 @@ from nyx.types import (
     Memory,
     Personality,
     ShortTermDesire,
+    UserNote,
     Values,
 )
 
@@ -20,6 +21,14 @@ def test_memory_aspect_default_factory_isolated() -> None:
     second = Memory("", 0.0, "", "", "", 1.0, MemoryType.SHORT_TERM)
     first.aspect.append("x")
     assert second.aspect == []
+
+
+def test_user_note_annotations_default_factory_isolated() -> None:
+    first = UserNote("", None, None, "", None, 0.0, 0.0)
+    second = UserNote("", None, None, "", None, 0.0, 0.0)
+    assert first.annotations == []
+    assert second.annotations == []
+    assert first.annotations is not second.annotations  # 各自独立，非共享单例
 
 
 def test_long_term_desire_linked_values_default_factory_isolated() -> None:

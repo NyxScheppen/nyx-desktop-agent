@@ -5,10 +5,10 @@
 
 ## 元信息
 
-- **前置依赖**：19-reading-content（`books`/`paragraphs`）、20-reading-progress（`list_paragraphs` + `get_progress` 的 `read_count` + `increment_read_count`）、21-reading-impulse（注入 `llm`/`memory`/`inner_life`/`evaluator`/`bus`/`canon` + `_mutter_reading`/`_question_reading` 产出点）、09-memory-facade（新增 `remember_reading`）、12-inner-life（`InnerLifeFacade.reflect`）、04-db（`_MIGRATIONS` v9）
+- **前置依赖**：19-reading-content（`books`/`paragraphs`）、20-reading-progress（`list_paragraphs` + `get_progress` 的 `read_count` + `increment_read_count`）、21-reading-impulse（注入 `llm`/`memory`/`inner_life`/`evaluator`/`bus`/`canon` + `_mutter_reading`/`_question_reading` 产出点）、09-memory-facade（新增 `remember_reading`）、12-inner-life（`InnerLifeFacade.reflect`）、04-db（`_MIGRATIONS` v10）
 - **反向修订 21**：22 在 21 的 `_mutter_reading`/`_question_reading` 里、`llm.complete` 产出 `content` 后（与 `bus.publish` 同一方法内、best-effort）追加调用 `record_nyx_output(book_id, paragraph_index, content, source)`（`source="mutter"`/`"question"`）；`associate`（记忆检索、无 LLM 产出）不调。21 是「被扩展」的既有 spec（同时是前置依赖——22 复用其注入的 `llm`/`memory`/`inner_life`/`evaluator`/`bus`/`canon`）。
 - **反向修订 18-api**：本 spec 在 `build_app` 追加 6 个笔记端点闭包（`GET /api/notes/{book_id}` / `POST /api/notes/user` / `PUT /api/notes/user/{id}` / `DELETE /api/notes/user/{id}` / `POST /api/notes/{user_note_id}/show-to-nyx` / `POST /api/notes/check-chapter-boundary`）。18-api 是「被扩展」的既有 spec，不是前置依赖。
-- **实现文件**：`nyx/types.py`（新增 `UserNote`/`Annotation`）、`nyx/db.py`（`_MIGRATIONS` 追加 v9）、`nyx/reading/store.py`（笔记/批注 CRUD）、`nyx/reading/facade.py`（笔记方法 + buffer + 整合 + 模块级 `NyxBufferEntry` dataclass）、`nyx/memory/facade.py`（新增 `remember_reading`）、`nyx/enums.py`（新增 `BoundaryResult`）、`nyx/main.py`（端点）
+- **实现文件**：`nyx/types.py`（新增 `UserNote`/`Annotation`）、`nyx/db.py`（`_MIGRATIONS` 追加 v10）、`nyx/reading/store.py`（笔记/批注 CRUD）、`nyx/reading/facade.py`（笔记方法 + buffer + 整合 + 模块级 `NyxBufferEntry` dataclass）、`nyx/memory/facade.py`（新增 `remember_reading`）、`nyx/enums.py`（新增 `BoundaryResult`）、`nyx/main.py`（端点）
 
 ## 用户故事
 
@@ -16,7 +16,7 @@
 
 ## 验收标准
 
-- [ ] `nyx/db.py` 的 `_MIGRATIONS` 追加 v9（`user_notes` + `annotations` 两表 DDL，见「数据变更」）
+- [ ] `nyx/db.py` 的 `_MIGRATIONS` 追加 v10（`user_notes` + `annotations` 两表 DDL，见「数据变更」）
 - [ ] `nyx/types.py` 含 `UserNote`：`id/book_id/paragraph_id/content/selected_text/created_at/updated_at`（`id/content/created_at/updated_at` 非 Optional）
 - [ ] `nyx/types.py` 含 `Annotation`：`id/user_note_id/content/created_at`（全非 Optional）
 - [ ] `MemoryFacade` 新增 `remember_reading(content, summary, correlation_id)`（`tag='reading'`、`LONG_TERM`、无文本生成——不调 `llm.complete`；`_persist_memory` 的 embedding 照常）
@@ -49,8 +49,8 @@
   - `show_to_nyx`：复用 17 的 `build_system_prompt(canon, state)` + user prompt「给这条用户笔记写一句批注（一两句自然口语，可呼应笔记与原文）」→ `llm.complete(module="reading", output_type="reading_annotation", correlation_id=note_id)`（**无 JSON**，`content` 即批注文本）→ `evaluator.evaluate(output)` → 插 `annotations`（`insert_annotation` 返回完整 `Annotation`，`show_to_nyx` 原样返回——`{id, user_note_id, content, created_at}`）。
   - `_integrate_buffer`：用**固定 system prompt**（`_READING_NOTE_SYSTEM` 模块常量，仿 09 `_SCENE_SYSTEM`「你是尼克斯…写成第一人称记忆、只输出 JSON」风格，非 `build_system_prompt`）+ user prompt「这是你读这一章时的碎碎念/提问，整理成一条第一人称章末记忆」→ `llm.complete(module="reading", output_type="reading_note", json_mode=True, correlation_id=book_id)` → `evaluator.evaluate(output)` → `_parse_reading_note(output.content)` 拆 `{content, summary}`（JSON，仿 `_parse_scene`，结构非法抛 `ValueError`）→ `memory.remember_reading(content, summary, book_id)`。
   - 两处 `output_type`（`reading_annotation`/`reading_note`）**不进 `_VOICE_TYPES`**（`{speak, initiate_chat, think}`）——批注/整合是结构化/内部输出、非聊天语音，OOC 只走关键词档（与 `scene_memory`/`note`/`reflection` 同款）。
-- **数据变更**（`_MIGRATIONS` v9，DDL 以 `nyx/db.py` 为准）：
-  - **v9（本 spec）**：
+- **数据变更**（`_MIGRATIONS` v10，DDL 以 `nyx/db.py` 为准）：
+  - **v10（本 spec）**：
     - `user_notes`：`id TEXT PRIMARY KEY`、`book_id TEXT REFERENCES books(id) ON DELETE SET NULL`、`paragraph_id TEXT REFERENCES paragraphs(id) ON DELETE SET NULL`、`content TEXT NOT NULL`、`selected_text TEXT`、`created_at REAL NOT NULL`、`updated_at REAL NOT NULL`
     - `annotations`：`id TEXT PRIMARY KEY`、`user_note_id TEXT NOT NULL REFERENCES user_notes(id) ON DELETE CASCADE`、`content TEXT NOT NULL`、`created_at REAL NOT NULL`
 - **API 端点**：

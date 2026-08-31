@@ -4,7 +4,7 @@
 > `CLAUDE.md`「写 spec」模板里"涉及的 Facade / 数据变更 / API 端点 / 新增文件"直接抄这里，不现编。
 > 约定：主键/ID 用 **uuid4 字符串**，时间戳用 **epoch 秒（浮点）**。
 
-## 1. 枚举（15 个 StrEnum）
+## 1. 枚举（16 个 StrEnum）
 
 > 枚举成员与实现以 `nyx/enums.py` 为准（spec 01-types 只给契约），此处不再重复。§3 起的 DDL / API / Facade 签名直接引用这些枚举。
 
@@ -15,7 +15,7 @@
 
 ---
 
-## 2. 实体 dataclass（20 个 + 2 个 TypedDict）
+## 2. 实体 dataclass（22 个 + 2 个 TypedDict）
 
 > dataclass 字段与实现以 `nyx/types.py` 为准（spec 01-types 只给契约；固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`）。此处不再重复。
 
@@ -23,8 +23,8 @@
 
 ## 3. DB DDL（SQLite）
 
-> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；15 张业务表 + 5 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
-> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；15 张业务表 + `schema_version` 迁移簿记表 = 共 16 张。
+> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；17 张业务表 + 5 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
+> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；17 张业务表 + `schema_version` 迁移簿记表 = 共 18 张。
 
 ---
 
@@ -53,6 +53,12 @@
 | GET | `/api/progress/{book_id}` | — | `ReadingProgress`（书不存在 404；无记录返回默认进度） |
 | PUT | `/api/progress/{book_id}` | `{user_position, nyx_position, reading_speed}` | `{ok: true}`（书不存在 404） |
 | POST | `/api/impulse/evaluate` | `{book_id, paragraph_index, last_paragraph_index}` | `{triggered: [ReadingBehavior 值]}`（回翻/缺段返回 `[]`；触发分派走 SSE） |
+| GET | `/api/notes/{book_id}` | — | `UserNote[]`（含每条的 `annotations` 派生列表） |
+| POST | `/api/notes/user` | `{book_id, paragraph_id?, content, selected_text?}` | 201 `UserNote` |
+| PUT | `/api/notes/user/{note_id}` | `{content}` | `UserNote`（`NoteNotFoundError` 404） |
+| DELETE | `/api/notes/user/{note_id}` | — | 204（`NoteNotFoundError` 404） |
+| POST | `/api/notes/{user_note_id}/show-to-nyx` | — | `Annotation`（`NoteNotFoundError` 404） |
+| POST | `/api/notes/check-chapter-boundary` | `{book_id, nyx_position>=1}` | `{is_boundary: bool, book_finished: bool}`（`BookNotFoundError` 404） |
 > REST 端点分两类：
 > - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`> - **外部输入入口**：`/api/chat`、`/api/observe` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 `ActivityFacade.register_material()` 只注册书库（不发事件、不立即读书），返回 `{filename, path}`。回复/后续产出走 SSE。
 
@@ -98,6 +104,7 @@ async def record_recall(memory_id: str) -> None                 # 记录"想起"
 async def list_memories(tag: str | None = None, type: MemoryType | None = None, limit: int | None = None) -> list[Memory]  # 仪表盘过滤 + 可选截断
 async def export(fmt: str) -> str                              # 记忆导出（json|md）
 async def remember_knowledge(items: list[dict[str, str]], correlation_id: str) -> None  # 读书知识点入长期记忆（tag='knowledge'，无 LLM）
+async def remember_reading(content: str, summary: str, correlation_id: str) -> None  # 章节/整本读书记忆入长期（tag='reading'，无 LLM）
 ```
 
 ### ActivityFacade
@@ -125,6 +132,13 @@ async def list_paragraphs(book_id: str, from_idx: int, to_idx: int) -> list[Para
 async def get_progress(book_id: str) -> ReadingProgress         # 进度；书不存在抛 BookNotFoundError、无进度行返回默认（1,1,50,0,0.0）
 async def save_progress(book_id: str, user_position: int, nyx_position: int, reading_speed: int) -> ReadingProgress  # 写进度 UPSERT（不碰 read_count）；书不存在抛 BookNotFoundError
 async def evaluate_paragraph(book_id: str, paragraph_index: int, last_paragraph_index: int) -> list[ReadingBehavior]  # 翻页冲动：现算 6 驱动→复合→阈值+冷却→后台分派；回翻/缺段返回 []
+async def add_user_note(book_id: str, paragraph_id: str | None, content: str, selected_text: str | None) -> UserNote  # 用户笔记落库（book_id/paragraph_id 可 None 自由记）
+async def list_user_notes(book_id: str) -> list[UserNote]   # 笔记列表（每条附批注 annotations 派生列表）
+async def update_user_note(note_id: str, content: str) -> UserNote  # 改笔记内容；不存在抛 NoteNotFoundError
+async def delete_user_note(note_id: str) -> None             # 删笔记（批注 CASCADE）；不存在抛 NoteNotFoundError
+async def show_to_nyx(note_id: str) -> Annotation            # 用户「给 Nyx 看」→ LLM 生成批注（无 json_mode）；不存在抛 NoteNotFoundError
+async def record_nyx_output(book_id: str, paragraph_index: int, content: str, source: str) -> None  # mutter/question 入内存 buffer（source∈{mutter,question}）
+async def check_chapter_boundary(book_id: str, nyx_position: int) -> BoundaryResult  # 章节边界判定；命中边界后台 `_integrate_buffer`；书不存在抛 BookNotFoundError
 ```
 
 ### DesireFacade
@@ -227,7 +241,7 @@ nyx/
   config.py               # 配置加载（§8）
   enums.py                # §1 所有枚举
   types.py                # §2 实体 dataclass
-  db.py                   # SQLite 连接 + 14 表 DDL + 版本化迁移 + Database(conn, lock)（04-db）
+  db.py                   # SQLite 连接 + 17 表 DDL + 版本化迁移 + Database(conn, lock)（04-db）
   events/
     bus.py                # EventBus
     routing.py            # ROUTING 表
@@ -241,9 +255,9 @@ nyx/
     __init__.py
     segmenter.py           # segment_html（HTML 正文→阅读段落，纯函数）
     epub.py                # parse_epub（EPUB 字节→元数据+段落+content_hash）
-    store.py               # ReadingStore（books/paragraphs/reading_progress 存取：进度/书架/分页/increment_read_count）
+    store.py               # ReadingStore（books/paragraphs/reading_progress/user_notes/annotations 存取：进度/书架/分页/increment_read_count/笔记批注 CRUD）
     impulse.py             # 阅读冲动引擎纯函数（特征提取 / 驱动现算 / 复合加权 / 阈值+冷却，21）
-    facade.py              # ReadingFacade（import_book / list_books / list_paragraphs / get_progress / save_progress / evaluate_paragraph）
+    facade.py              # ReadingFacade（import_book / list_books / list_paragraphs / get_progress / save_progress / evaluate_paragraph / add_user_note / list_user_notes / update_user_note / delete_user_note / show_to_nyx / record_nyx_output / check_chapter_boundary）
   expression/
     facade.py             # ExpressionFacade
     pipeline.py           # 回复流程（LangGraph）

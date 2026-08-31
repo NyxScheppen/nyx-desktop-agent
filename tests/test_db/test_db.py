@@ -7,7 +7,7 @@ import pytest
 
 from nyx import db
 
-# 14 张业务表（不含 schema_version）
+# 17 张业务表（不含 schema_version）
 BUSINESS_TABLES = {
     "personality",
     "value_system",
@@ -24,15 +24,23 @@ BUSINESS_TABLES = {
     "books",
     "paragraphs",
     "reading_progress",
+    "user_notes",
+    "annotations",
 }
 
-# 5 个非 Optional 字段对应列必须 NOT NULL（01-types 契约）
+# 非 Optional 字段对应列必须 NOT NULL（01-types 契约）
 NOT_NULL_COLUMNS = {
     ("memory", "aspect"),
     ("long_term_desire", "linked_values"),
     ("activity", "progress"),
     ("event_log", "content"),
     ("event_log", "correlation_id"),
+    ("user_notes", "content"),
+    ("user_notes", "created_at"),
+    ("user_notes", "updated_at"),
+    ("annotations", "user_note_id"),
+    ("annotations", "content"),
+    ("annotations", "created_at"),
 }
 
 # Optional 字段对应列必须可空（01-types 的 X | None）
@@ -41,6 +49,9 @@ NULLABLE_COLUMNS = {
     ("activity", "ended_at"),
     ("memory", "embedding"),
     ("memory", "content_hash"),   # v6 迁移，旧行 NULL（不去重）
+    ("user_notes", "book_id"),
+    ("user_notes", "paragraph_id"),
+    ("user_notes", "selected_text"),
 }
 
 
@@ -81,7 +92,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 16
+    assert len(names) == 18
 
 
 async def test_migrate_creates_five_indexes() -> None:
@@ -201,7 +212,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 16
+    assert len(names) == 18
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

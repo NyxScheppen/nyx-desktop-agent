@@ -129,3 +129,9 @@ class GoalAction(StrEnum):
     READ = "read"
     WRITE = "write"
     OBSERVE = "observe"
+
+
+class BoundaryResult(StrEnum):          # 陪读章末/整本读完判定（22-reading-notes）
+    NONE = "none"                       # 非边界
+    CHAPTER_END = "chapter_end"         # 章末（下一段是新章标题）
+    BOOK_FINISHED = "book_finished"     # 整本读完（nyx_position == total）

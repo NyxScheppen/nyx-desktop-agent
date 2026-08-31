@@ -202,6 +202,29 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        10,
+        [
+            # 陪读笔记：用户手写笔记 + Nyx 批注，22-reading-notes。
+            # 用户笔记与 Nyx 笔记严格分离；book/paragraph 删除时 SET NULL 兜底
+            # （笔记文字仍可读）；批注随笔记 CASCADE 删除。
+            """CREATE TABLE user_notes (
+                id TEXT PRIMARY KEY,
+                book_id TEXT REFERENCES books(id) ON DELETE SET NULL,
+                paragraph_id TEXT REFERENCES paragraphs(id) ON DELETE SET NULL,
+                content TEXT NOT NULL,
+                selected_text TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )""",
+            """CREATE TABLE annotations (
+                id TEXT PRIMARY KEY,
+                user_note_id TEXT NOT NULL REFERENCES user_notes(id) ON DELETE CASCADE,
+                content TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )""",
+        ],
+    ),
 ]
 
 

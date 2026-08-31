@@ -331,6 +331,18 @@ class MemoryFacade:
             )
             await self._persist_memory(memory, correlation_id)
 
+    async def remember_reading(
+        self, content: str, summary: str, correlation_id: str
+    ) -> None:
+        """读书记忆：章末/整本整合产物落成一条长期、tag='reading' 的记忆。
+
+        无开头 LLM（content/summary 由 22 的 _integrate_buffer 拼好，这里只入库）；
+        复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。
+        type=LONG_TERM 使其豁免短期淘汰，读书记忆不随时间冲掉。
+        """
+        memory = _new_memory(content, "reading", summary, MemoryType.LONG_TERM)
+        await self._persist_memory(memory, correlation_id)
+
     async def record_no_answer(self, question: str, correlation_id: str) -> None:
         """用户未回答尼克斯的提问：落一条确定性的 SHORT_TERM 记忆（无 LLM）。
 

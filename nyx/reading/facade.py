@@ -6,11 +6,14 @@
 """
 
 import asyncio
+import json
 import logging
 import time
+from dataclasses import dataclass
+from typing import Any, cast
 
 from nyx.desire.facade import DesireFacade
-from nyx.enums import DesireType, EventType, ReadingBehavior
+from nyx.enums import BoundaryResult, DesireType, EventType, ReadingBehavior
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_event
@@ -29,12 +32,14 @@ from nyx.reading.impulse import (
 )
 from nyx.reading.store import ReadingStore
 from nyx.types import (
+    Annotation,
     Book,
     BookListItem,
     CurrentState,
     DesireValue,
     Paragraph,
     ReadingProgress,
+    UserNote,
 )
 
 _QUESTION_USER_PROMPTS: dict[ReadingBehavior, str] = {
@@ -49,6 +54,13 @@ _QUESTION_USER_PROMPTS: dict[ReadingBehavior, str] = {
 
 _ASSOCIATION_SNIPPET_CHARS = 80
 
+_READING_NOTE_SYSTEM = (
+    "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
+    "把下面这些你陪读时冒出的碎碎念和提问，整理成一条第一人称读书记忆（尼克斯视角）："
+    "你读到了什么、心里留下了什么。只输出 JSON，键：content（正文）、"
+    "summary（一句话总结），两者都是非空字符串。"
+)
+
 
 def _desire_value(values: list[DesireValue], type_: DesireType) -> float:
     """从 `DesireState.values` 取某类压力值；缺省 0.0。"""
@@ -56,6 +68,34 @@ def _desire_value(values: list[DesireValue], type_: DesireType) -> float:
         if v.type is type_:
             return v.value
     return 0.0
+
+
+@dataclass
+class NyxBufferEntry:
+    """Nyx 陪读输出（碎碎念/提问）的内存缓冲条目（22-reading-notes）。
+
+    进程内 transient、不落库；list 顺序即时间序，不另存时间戳。
+    """
+
+    paragraph_index: int
+    content: str
+    source: str
+
+
+def _parse_reading_note(raw: str) -> tuple[str, str]:
+    """解析读书记忆 LLM 的 JSON 产出 → (content, summary)；
+    结构非法抛 ValueError。"""
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError(f"读书记忆 JSON 应是对象，得到 {type(data).__name__}")
+    parsed = cast(dict[str, Any], data)
+    content = parsed.get("content")
+    summary = parsed.get("summary")
+    if not isinstance(content, str) or not content:
+        raise ValueError("读书记忆 JSON 缺 content 或非空字符串")
+    if not isinstance(summary, str) or not summary:
+        raise ValueError("读书记忆 JSON 缺 summary 或非空字符串")
+    return content, summary
 
 
 class DuplicateBookError(Exception):
@@ -73,6 +113,14 @@ class BookNotFoundError(Exception):
     def __init__(self, book_id: str) -> None:
         self.book_id = book_id
         super().__init__(f"书不存在：{book_id}")
+
+
+class NoteNotFoundError(Exception):
+    """用户笔记不存在（note_id 查无此行）；端点据此映射 404。"""
+
+    def __init__(self, note_id: str) -> None:
+        self.note_id = note_id
+        super().__init__(f"用户笔记不存在：{note_id}")
 
 
 class ReadingFacade:
@@ -102,6 +150,8 @@ class ReadingFacade:
         # 防墙钟跳变；无并发锁——见 spec 21 关键决策。
         self._cooldowns: dict[ReadingBehavior, float] = {}
         self._mutter_at = 0.0
+        # Nyx 陪读输出 buffer（22）：per book 的碎碎念/提问，章末整合后清空。
+        self._nyx_buffer: dict[str, list[NyxBufferEntry]] = {}
 
     async def import_book(self, filename: str, data: bytes) -> Book:
         """解析 EPUB → 去重 → 插入 books + paragraphs → 返回 Book。
@@ -264,6 +314,7 @@ class ReadingFacade:
             content = output.content.strip()
             if not content:
                 return
+            await self.record_nyx_output(book_id, paragraph_index, content, "mutter")
             await self._bus.publish(
                 internal_event(
                     EventType.READING_MUTTER,
@@ -316,6 +367,7 @@ class ReadingFacade:
                 selected_text = None
             if not content:
                 return
+            await self.record_nyx_output(book_id, paragraph_index, content, "question")
             await self._bus.publish(
                 internal_event(
                     EventType.READING_QUESTION,
@@ -361,5 +413,156 @@ class ReadingFacade:
             self._logger.exception(
                 "陪读联想检索失败 book_id=%s paragraph_index=%d",
                 book_id, paragraph_index,
+            )
+            return
+
+    # ---- 22-reading-notes：用户笔记 / Nyx 批注 / 章末整合 ----
+
+    async def add_user_note(
+        self,
+        book_id: str,
+        paragraph_id: str | None,
+        content: str,
+        selected_text: str | None,
+    ) -> UserNote:
+        """新增用户笔记（薄委托 store；id/时间戳由 store 生成）。"""
+        return await self._store.insert_user_note(
+            book_id, paragraph_id, content, selected_text
+        )
+
+    async def list_user_notes(self, book_id: str) -> list[UserNote]:
+        """某本书的用户笔记（按时间降序），每条附批注列表（派生字段）。"""
+        notes = await self._store.list_user_notes(book_id)
+        for note in notes:
+            note.annotations = await self._store.list_annotations(note.id)
+        return notes
+
+    async def update_user_note(self, note_id: str, content: str) -> UserNote:
+        """改笔记正文；不存在抛 `NoteNotFoundError`。"""
+        updated = await self._store.update_user_note(note_id, content)
+        if updated is None:
+            raise NoteNotFoundError(note_id)
+        return updated
+
+    async def delete_user_note(self, note_id: str) -> None:
+        """删笔记（批注随 FK CASCADE 清空）；不存在抛 `NoteNotFoundError`。"""
+        if not await self._store.delete_user_note(note_id):
+            raise NoteNotFoundError(note_id)
+
+    async def show_to_nyx(self, note_id: str) -> Annotation:
+        """「给尼克斯看」：读笔记（+原段落）→ LLM 批注 → 插 `annotations` 返回。
+
+        书已删（book_id=NULL）时只读笔记文字，不读段落（`ON DELETE SET NULL` 兜底）。
+        同一笔记多次展示每次新增一行（不覆盖旧批注）。
+        """
+        note = await self._store.get_user_note(note_id)
+        if note is None:
+            raise NoteNotFoundError(note_id)
+        paragraph_text: str | None = None
+        if note.paragraph_id is not None:
+            paragraph = await self._store.get_paragraph(note.paragraph_id)
+            if paragraph is not None:
+                paragraph_text = paragraph.text
+        state = await self._inner_life.get_state()
+        system = build_system_prompt(self._canon, state)
+        user = f"用户记了这条笔记：\n\n{note.content}\n\n"
+        if paragraph_text is not None:
+            user += f"对应原文：\n\n{paragraph_text}\n\n"
+        user += "给这条用户笔记写一句批注（一两句自然口语，可呼应笔记与原文）。"
+        output = await self._llm.complete(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            module="reading",
+            output_type="reading_annotation",
+            correlation_id=note_id,
+        )
+        await self._evaluator.evaluate(output)
+        return await self._store.insert_annotation(note_id, output.content.strip())
+
+    async def record_nyx_output(
+        self, book_id: str, paragraph_index: int, content: str, source: str
+    ) -> None:
+        """Nyx 陪读输出（mutter/question）追加进内存 buffer（章末整合攒料）。
+
+        associate（记忆检索、无 LLM 产出）不调；buffer 进程内 transient、重启清零。
+        """
+        self._nyx_buffer.setdefault(book_id, []).append(
+            NyxBufferEntry(paragraph_index, content, source)
+        )
+
+    async def check_chapter_boundary(
+        self, book_id: str, nyx_position: int
+    ) -> BoundaryResult:
+        """章末/整本读完检测 + 后台整合（22-reading-notes）。
+
+        `nyx_position >= total` → BOOK_FINISHED（先 ++ 再整本整合/反思）；
+        下一段 `is_chapter_start` → CHAPTER_END（章末整合）；否则 NONE。
+        整合在后台任务里跑（不阻塞翻页端点）。
+        """
+        book = await self._store.find_book(book_id)
+        if book is None:
+            raise BookNotFoundError(book_id)
+        if nyx_position >= book.total_paragraphs:
+            result = BoundaryResult.BOOK_FINISHED
+        else:
+            paragraphs = await self._store.list_paragraphs(
+                book_id, nyx_position + 1, nyx_position + 1
+            )
+            result = (
+                BoundaryResult.CHAPTER_END
+                if paragraphs and paragraphs[0].is_chapter_start
+                else BoundaryResult.NONE
+            )
+        if result is BoundaryResult.NONE:
+            return result
+        task = asyncio.create_task(self._integrate_buffer(book_id, result))
+        task.add_done_callback(self._log_task_error)
+        return result
+
+    async def _integrate_buffer(
+        self, book_id: str, result: BoundaryResult
+    ) -> None:
+        """章末/整本整合：buffer 攒的 Nyx 输出 → LLM 第一人称记忆 → remember_reading。
+
+        buffer 空跳过（不生成记忆）；重读（++ 前 read_count >= 1）每次整合额外 reflect。
+        整本读完先 `increment_read_count`，reflect 判定用 ++ 前的 read_count。
+        失败只记日志、不反噬翻页主流程。
+        """
+        try:
+            entries = self._nyx_buffer.pop(book_id, [])
+            if not entries:
+                return
+            progress = await self._store.get_progress(book_id)
+            pre_read_count = progress.read_count if progress is not None else 0
+            lines = [
+                f"[{e.source}] 第{e.paragraph_index}段：{e.content}" for e in entries
+            ]
+            user = (
+                "这是你陪读这一章/本书时冒出的碎碎念和提问：\n\n"
+                + "\n".join(lines)
+                + "\n\n整理成一条第一人称的读书记忆。"
+            )
+            output = await self._llm.complete(
+                [
+                    {"role": "system", "content": _READING_NOTE_SYSTEM},
+                    {"role": "user", "content": user},
+                ],
+                module="reading",
+                output_type="reading_note",
+                correlation_id=book_id,
+                json_mode=True,
+            )
+            await self._evaluator.evaluate(output)
+            content, summary = _parse_reading_note(output.content)
+            if result is BoundaryResult.BOOK_FINISHED:
+                await self._store.increment_read_count(book_id)
+            await self._memory.remember_reading(content, summary, book_id)
+            if pre_read_count >= 1:
+                await self._inner_life.reflect(book_id)
+        except Exception:
+            self._logger.exception(
+                "读书记忆整合失败 book_id=%s result=%s", book_id, result.value
             )
             return

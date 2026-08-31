@@ -27,6 +27,7 @@ from nyx.desire.store import DesireStore
 from nyx.desire.value import default_value
 from nyx.enums import (
     ActivityStatus,
+    BoundaryResult,
     DesireType,
     EnergyState,
     EventType,
@@ -45,7 +46,12 @@ from nyx.llm.vision import VisionClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
-from nyx.reading.facade import BookNotFoundError, DuplicateBookError, ReadingFacade
+from nyx.reading.facade import (
+    BookNotFoundError,
+    DuplicateBookError,
+    NoteNotFoundError,
+    ReadingFacade,
+)
 from nyx.reading.store import ReadingStore
 from nyx.tools.file_io import build_file_io_tool, file_io
 from nyx.tools.local_search import build_local_search_tool
@@ -54,6 +60,7 @@ from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
 from nyx.types import (
     Activity,
+    Annotation,
     Book,
     BookListItem,
     CurrentState,
@@ -67,6 +74,7 @@ from nyx.types import (
     ReadingProgress,
     ReflectionOutcome,
     SelfNarrative,
+    UserNote,
     Values,
 )
 
@@ -384,8 +392,24 @@ class _ImpulsePayload(BaseModel):
     last_paragraph_index: int = Field(..., ge=0)
 
 
+class _UserNotePayload(BaseModel):
+    book_id: str
+    paragraph_id: str | None = None
+    content: str
+    selected_text: str | None = None
+
+
+class _UpdateNotePayload(BaseModel):
+    content: str
+
+
+class _BoundaryPayload(BaseModel):
+    book_id: str
+    nyx_position: int = Field(..., ge=1)
+
+
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：20 个端点（19 个 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：26 个端点（25 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")
@@ -534,6 +558,55 @@ def build_app(app: _App) -> FastAPI:
             payload.book_id, payload.paragraph_index, payload.last_paragraph_index
         )
         return {"triggered": [b.value for b in triggered]}
+
+    @fast.get("/api/notes/{book_id}")
+    async def api_list_notes(book_id: str) -> list[UserNote]:
+        return await app.reading.list_user_notes(book_id)
+
+    @fast.post("/api/notes/user", status_code=201)
+    async def api_add_user_note(payload: _UserNotePayload) -> UserNote:
+        return await app.reading.add_user_note(
+            payload.book_id, payload.paragraph_id, payload.content,
+            payload.selected_text,
+        )
+
+    @fast.put("/api/notes/user/{note_id}")
+    async def api_update_user_note(
+        note_id: str, payload: _UpdateNotePayload
+    ) -> UserNote:
+        try:
+            return await app.reading.update_user_note(note_id, payload.content)
+        except NoteNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @fast.delete("/api/notes/user/{note_id}", status_code=204)
+    async def api_delete_user_note(note_id: str) -> None:
+        try:
+            await app.reading.delete_user_note(note_id)
+        except NoteNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @fast.post("/api/notes/{user_note_id}/show-to-nyx")
+    async def api_show_to_nyx(user_note_id: str) -> Annotation:
+        try:
+            return await app.reading.show_to_nyx(user_note_id)
+        except NoteNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @fast.post("/api/notes/check-chapter-boundary")
+    async def api_check_chapter_boundary(
+        payload: _BoundaryPayload,
+    ) -> dict[str, bool]:
+        try:
+            result = await app.reading.check_chapter_boundary(
+                payload.book_id, payload.nyx_position
+            )
+        except BookNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return {
+            "is_boundary": result is BoundaryResult.CHAPTER_END,
+            "book_finished": result is BoundaryResult.BOOK_FINISHED,
+        }
 
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:

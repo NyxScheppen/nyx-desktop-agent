@@ -68,13 +68,13 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 15 张业务表 + `schema_version`，共 16 张 |
+| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 17 张业务表 + `schema_version`，共 18 张 |
 | `test_migrate_creates_five_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_memory_content_hash` / `idx_books_content_hash` 五个 |
 | `test_migrate_books_content_hash_index_unique` | 功能正确 | `idx_books_content_hash` 的 `sqlite_master.sql` 以 `CREATE UNIQUE INDEX` 开头（v8 去重升级唯一索引） |
 | `test_migrate_v8_dedupes_duplicate_content_hash` | 边界鲁棒 | 先迁 v7 插两条同 `content_hash` 书 → 完整迁移不抛、重复清到 1、被删书 paragraphs 级联清空、唯一索引就位 |
 | `test_migrate_sets_version_to_max` | 功能正确 | `schema_version` 单行 = `_MIGRATIONS` 最高版本 |
-| `test_migrate_not_null_alignment` | 边界鲁棒 | 5 列 `notnull=1`（`memory.aspect` / `long_term_desire.linked_values` / `activity.progress` / `event_log.content` / `event_log.correlation_id`） |
-| `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `memory.embedding` / `memory.content_hash`） |
+| `test_migrate_not_null_alignment` | 边界鲁棒 | 11 列 `notnull=1`（`memory.aspect` / `long_term_desire.linked_values` / `activity.progress` / `event_log.content` / `event_log.correlation_id` / `user_notes.content` / `user_notes.created_at` / `user_notes.updated_at` / `annotations.user_note_id` / `annotations.content` / `annotations.created_at`） |
+| `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `memory.embedding` / `memory.content_hash` / `user_notes.book_id` / `user_notes.paragraph_id` / `user_notes.selected_text`） |
 | `test_migrate_idempotent` | 回归保护 | 连跑两次不报错，表数不变、版本不变 |
 | `test_migrate_version_gating` | 功能正确 | `monkeypatch` 追加「下一版本」后只套该版本，版本=下一版本，旧版本不重复建（动态取 max+1，不再硬编码 v3） |
 | `test_migrate_atomic_rollback` | 边界鲁棒 | 迁移含非法 SQL → 抛 `aiosqlite.Error`；`ok` 表回滚不存在；版本仍为 0 |
@@ -259,6 +259,7 @@
 | `test_remember_user_profile_fields` | 功能正确 | `remember_user_profile` → 写一条 `LONG_TERM`/`tag="user"`/`aspect` 全等的画像记忆、无 LLM 调用、发布 `memory_created`（correlation 透传） |
 | `test_record_no_answer` | 功能正确 | 问句未答 → 写一条 `SHORT_TERM`/`tag="interaction"`/summary「用户没有回答我的提问」、content 含问句、无 LLM 调用、发布 `memory_created`（correlation 透传） |
 | `test_remember_knowledge` | 功能正确 | 3 项入参 → 落 2 条 `LONG_TERM`/`tag="knowledge"` 记忆（空 content 项跳过）；summary 回退 content；无 LLM 调用；发布 2 条 `memory_created`（correlation 透传） |
+| `test_remember_reading` | 功能正确 | 读书入参 → 写 1 条 `LONG_TERM`/`tag="reading"` 记忆（summary 透传）、无 LLM 调用、发布 `memory_created`（correlation 透传） |
 
 ## 10-desire-value（欲望值机制）
 
@@ -725,6 +726,50 @@
 | `test_associate_reading_none_search_skips_without_raise` | 边界鲁棒 | `memory.search` 返回 `None` → `[:3]` 不炸、零广播（try 兜住切片） |
 | `test_impulse_evaluate_returns_triggered` | 功能正确 | `POST /api/impulse/evaluate` → `{triggered:[associate, question_knowledge]}`、`evaluate_paragraph` 收对 `(book_id,2,1)` |
 | `test_impulse_evaluate_missing_last_paragraph_returns_422` | 边界鲁棒 | 缺 `last_paragraph_index` → 422、不调 facade |
+
+## 22-reading-notes（陪读笔记：用户笔记 + Nyx 批注 + 章节边界整合 + 6 端点）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `test_insert_user_note_with_and_without_paragraph_id` | 功能正确 | 有段/无段两条笔记：`paragraph_id`/`selected_text` 有值或 `None`、`content` 正确 |
+| `test_list_user_notes_sorted_desc` | 功能正确 | 同书两笔记 → `list_user_notes` 新在前（`[second.id, first.id]`） |
+| `test_update_user_note_hit_and_miss` | 功能正确 | 命中 → 返回更新后笔记（`content=="新"`）；未命中 → `None` |
+| `test_delete_user_note_cascades_annotations` | 功能正确 | 删笔记 → `True` 且批注 FK CASCADE 清空；再删 → `False` |
+| `test_get_user_note_and_get_paragraph` | 功能正确 | `get_user_note`/`get_paragraph` 命中返回对象、未命中 `None` |
+| `test_list_annotations_sorted_desc` | 功能正确 | 同笔记两批注 → `list_annotations` 新在前 |
+| `test_delete_book_sets_note_fk_null` | 边界鲁棒 | 删书 → 笔记 `book_id`/`paragraph_id` 置 `None`、`content` 保留（SET NULL） |
+| `test_parse_reading_note_valid` | 功能正确 | 合法 JSON → `(content, summary)` 二元组 |
+| `test_parse_reading_note_non_json_raises` | 边界鲁棒 | 非 JSON → `ValueError` |
+| `test_parse_reading_note_missing_key_raises` | 边界鲁棒 | 缺 `summary` → `ValueError` |
+| `test_parse_reading_note_wrong_type_raises` | 边界鲁棒 | `content` 非 str → `ValueError` |
+| `test_add_and_list_user_notes_with_annotations` | 功能正确 | 加笔记+批注 → `list_user_notes` 返回带 `annotations` 的完整笔记 |
+| `test_add_user_note_without_paragraph_id` | 功能正确 | 自由记 → `paragraph_id`/`selected_text` 为 `None` |
+| `test_update_user_note_hit_and_miss` | 边界鲁棒 | 命中改 content；未命中 → `NoteNotFoundError` |
+| `test_delete_user_note_hit_and_miss` | 边界鲁棒 | 命中删；再删 → `NoteNotFoundError` |
+| `test_show_to_nyx_writes_annotation_with_paragraph` | 功能正确 | LLM `reading_annotation` → 写批注、prompt 含原段落、evaluator 记 1 次 |
+| `test_show_to_nyx_book_deleted_reads_note_only` | 边界鲁棒 | 书已删 → prompt 只含笔记文字、不含原段落 |
+| `test_check_chapter_boundary_chapter_end_integrates` | 功能正确 | 下一段 `is_chapter_start` → CHAPTER_END、LLM `reading_note` json_mode、`remember_reading` 收到 `(content, summary, book_id)` |
+| `test_check_chapter_boundary_none_when_next_not_chapter` | 边界鲁棒 | 非章节边界 → NONE、`remembered==[]` |
+| `test_check_chapter_boundary_book_finished_integrates` | 功能正确 | 读到末段 → BOOK_FINISHED、`read_count` 0→1 |
+| `test_check_chapter_boundary_reread_reflects` | 功能正确 | read_count=1（重读）→ `inner_life.reflect(book_id)` 调 1 次 |
+| `test_check_chapter_boundary_first_read_no_reflect` | 功能正确 | 首读 → 不 reflect |
+| `test_integrate_buffer_empty_skips` | 边界鲁棒 | buffer 空 → 仍返回边界、`remembered==[]` |
+| `test_mutter_and_question_record_nyx_output` | 功能正确 | mutter/question 各入 buffer（`source` 集合 `{"mutter","question"}`） |
+| `test_notes_list_returns_list` | 功能正确 | `GET /api/notes/{book_id}` → 200 列表、字段透传 |
+| `test_notes_add_returns_201` | 功能正确 | `POST /api/notes/user` → 201、`added_notes` 收对 `(book_id, paragraph_id, content, selected_text)` |
+| `test_notes_add_missing_content_returns_422` | 边界鲁棒 | 缺 `content` → 422 |
+| `test_notes_add_optional_fields_default_none` | 功能正确 | 只传 book_id+content → paragraph_id/selected_text 为 `None` |
+| `test_notes_update_returns_note` | 功能正确 | `PUT` → 200、返回笔记 |
+| `test_notes_update_not_found_returns_404` | 边界鲁棒 | `NoteNotFoundError` → 404 |
+| `test_notes_delete_returns_204` | 功能正确 | `DELETE` → 204 |
+| `test_notes_delete_not_found_returns_404` | 边界鲁棒 | `NoteNotFoundError` → 404 |
+| `test_notes_show_to_nyx_returns_annotation` | 功能正确 | `POST .../show-to-nyx` → 200 完整批注（`id`/`user_note_id`/`content`） |
+| `test_notes_show_to_nyx_not_found_returns_404` | 边界鲁棒 | `NoteNotFoundError` → 404 |
+| `test_boundary_chapter_end` | 功能正确 | `CHAPTER_END` → `{is_boundary:true, book_finished:false}` |
+| `test_boundary_book_finished` | 功能正确 | `BOOK_FINISHED` → `{is_boundary:false, book_finished:true}` |
+| `test_boundary_none` | 功能正确 | `NONE` → 两者 false |
+| `test_boundary_book_not_found_returns_404` | 边界鲁棒 | `BookNotFoundError` → 404 |
+| `test_boundary_missing_nyx_position_returns_422` | 边界鲁棒 | 缺 `nyx_position` → 422 |
 
 ## frontend-sse（SSE 数据流：useSSE + dispatchEvent 分发表）
 

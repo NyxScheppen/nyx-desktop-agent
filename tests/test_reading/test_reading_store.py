@@ -305,3 +305,121 @@ async def test_delete_book_cascades_reading_progress() -> None:
     finally:
         await database.conn.close()
     assert row is not None and row["n"] == 0
+
+
+# ---- 22-reading-notes：用户笔记 / 批注 ----
+
+async def _seed_paragraph_id(store: ReadingStore, book_id: str) -> str:
+    """返回某本书第 1 段的 id（供笔记挂 paragraph_id）。"""
+    paras = await store.list_paragraphs(book_id, 1, 1)
+    return paras[0].id
+
+
+async def test_insert_user_note_with_and_without_paragraph_id() -> None:
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store, n=2)
+        pid = await _seed_paragraph_id(store, book_id)
+        with_para = await store.insert_user_note(book_id, pid, "划了这句", "原文")
+        without = await store.insert_user_note(book_id, None, "自由记", None)
+    finally:
+        await database.conn.close()
+    assert with_para.paragraph_id == pid
+    assert with_para.selected_text == "原文"
+    assert without.paragraph_id is None
+    assert without.selected_text is None
+    assert with_para.content == "划了这句"
+
+
+async def test_list_user_notes_sorted_desc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nyx.reading.store.time.time", _Clock())
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store)
+        first = await store.insert_user_note(book_id, None, "第一条", None)
+        second = await store.insert_user_note(book_id, None, "第二条", None)
+        notes = await store.list_user_notes(book_id)
+    finally:
+        await database.conn.close()
+    assert [n.id for n in notes] == [second.id, first.id]  # 新在前
+
+
+async def test_update_user_note_hit_and_miss() -> None:
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store)
+        note = await store.insert_user_note(book_id, None, "旧", None)
+        updated = await store.update_user_note(note.id, "新")
+        missing = await store.update_user_note("nope", "x")
+    finally:
+        await database.conn.close()
+    assert updated is not None
+    assert updated.content == "新"
+    assert updated.id == note.id
+    assert missing is None
+
+
+async def test_delete_user_note_cascades_annotations() -> None:
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store)
+        note = await store.insert_user_note(book_id, None, "笔记", None)
+        await store.insert_annotation(note.id, "批注")
+        assert await store.delete_user_note(note.id) is True
+        assert await store.list_annotations(note.id) == []  # FK CASCADE 清空
+        assert await store.delete_user_note(note.id) is False  # 已删
+    finally:
+        await database.conn.close()
+
+
+async def test_get_user_note_and_get_paragraph() -> None:
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store)
+        pid = await _seed_paragraph_id(store, book_id)
+        note = await store.insert_user_note(book_id, pid, "笔记", "划线")
+        got_note = await store.get_user_note(note.id)
+        got_para = await store.get_paragraph(pid)
+        miss_note = await store.get_user_note("nope")
+        miss_para = await store.get_paragraph("nope")
+    finally:
+        await database.conn.close()
+    assert got_note is not None and got_note.content == "笔记"
+    assert got_para is not None and got_para.id == pid
+    assert miss_note is None
+    assert miss_para is None
+
+
+async def test_list_annotations_sorted_desc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nyx.reading.store.time.time", _Clock())
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store)
+        note = await store.insert_user_note(book_id, None, "笔记", None)
+        a1 = await store.insert_annotation(note.id, "批注1")
+        a2 = await store.insert_annotation(note.id, "批注2")
+        anns = await store.list_annotations(note.id)
+    finally:
+        await database.conn.close()
+    assert [a.id for a in anns] == [a2.id, a1.id]  # 新在前
+
+
+async def test_delete_book_sets_note_fk_null() -> None:
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store, n=2)
+        pid = await _seed_paragraph_id(store, book_id)
+        note = await store.insert_user_note(book_id, pid, "笔记", None)
+        await database.conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
+        await database.conn.commit()
+        after = await store.get_user_note(note.id)
+    finally:
+        await database.conn.close()
+    assert after is not None
+    assert after.book_id is None
+    assert after.paragraph_id is None
+    assert after.content == "笔记"  # 笔记文字保留

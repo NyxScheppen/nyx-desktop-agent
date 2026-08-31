@@ -181,6 +181,27 @@ class BookListItem:                # 书架列表项（books LEFT JOIN reading_p
     last_read_at: float | None     # 未读 None
 
 
+@dataclass
+class Annotation:                  # 用户笔记的 Nyx 批注（22-reading-notes）
+    id: str
+    user_note_id: str
+    content: str
+    created_at: float
+
+
+@dataclass
+class UserNote:                    # 用户手写笔记（22-reading-notes）
+    id: str
+    book_id: str | None            # 书删除后 ON DELETE SET NULL
+    paragraph_id: str | None       # 段删除后 SET NULL；自由记无段也为 None
+    content: str
+    selected_text: str | None
+    created_at: float
+    updated_at: float
+    # 派生，非落库列：list_user_notes 拼装每条笔记的批注列表
+    annotations: list[Annotation] = field(default_factory=list[Annotation])
+
+
 # ---- 内在生命 ----
 @dataclass
 class CurrentState:         # 只读快照

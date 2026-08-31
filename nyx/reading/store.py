@@ -16,12 +16,22 @@ import aiosqlite
 
 from nyx.db import Database
 from nyx.reading.segmenter import Segment
-from nyx.types import Book, BookListItem, Paragraph, ReadingProgress
+from nyx.types import (
+    Annotation,
+    Book,
+    BookListItem,
+    Paragraph,
+    ReadingProgress,
+    UserNote,
+)
 
 _COLS = (
     "id, title, author, filename, content_hash, total_paragraphs, "
     "created_at, updated_at"
 )
+
+_NOTE_COLS = "id, book_id, paragraph_id, content, selected_text, created_at, updated_at"
+_ANN_COLS = "id, user_note_id, content, created_at"
 
 
 class ReadingStore:
@@ -200,6 +210,116 @@ class ReadingStore:
             raise RuntimeError(f"写后回读缺失：{book_id}")
         return _row_to_progress(row)
 
+    # ---- 22-reading-notes：用户笔记 / 批注 ----
+
+    async def insert_user_note(
+        self,
+        book_id: str,
+        paragraph_id: str | None,
+        content: str,
+        selected_text: str | None,
+    ) -> UserNote:
+        """插一条用户笔记；id/created_at/updated_at 在写路径内生成。"""
+        async with self._db.lock:
+            note_id = str(uuid4())
+            now = time.time()
+            await self._db.conn.execute(
+                f"INSERT INTO user_notes ({_NOTE_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (note_id, book_id, paragraph_id, content, selected_text, now, now),
+            )
+            await self._db.conn.commit()
+            return UserNote(
+                id=note_id, book_id=book_id, paragraph_id=paragraph_id,
+                content=content, selected_text=selected_text,
+                created_at=now, updated_at=now,
+            )
+
+    async def get_user_note(self, note_id: str) -> UserNote | None:
+        """按 note_id 单行查，供 facade 判笔记是否存在 / show_to_nyx 读原文。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_NOTE_COLS} FROM user_notes WHERE id = ?", (note_id,),
+            )
+            row = await cursor.fetchone()
+            return _row_to_user_note(row) if row is not None else None
+
+    async def list_user_notes(self, book_id: str) -> list[UserNote]:
+        """某本书的用户笔记，按 created_at 降序（新在前）。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_NOTE_COLS} FROM user_notes WHERE book_id = ? "
+                "ORDER BY created_at DESC",
+                (book_id,),
+            )
+            rows = await cursor.fetchall()
+            return [_row_to_user_note(r) for r in rows]
+
+    async def update_user_note(self, note_id: str, content: str) -> UserNote | None:
+        """改笔记正文（updated_at 推进）；不存在返回 None。"""
+        async with self._db.lock:
+            now = time.time()
+            cursor = await self._db.conn.execute(
+                "UPDATE user_notes SET content = ?, updated_at = ? WHERE id = ?",
+                (content, now, note_id),
+            )
+            await self._db.conn.commit()
+            if cursor.rowcount == 0:
+                return None
+            return await self._get_user_note_locked(note_id)
+
+    async def delete_user_note(self, note_id: str) -> bool:
+        """删笔记（批注随 FK CASCADE 清空）；不存在返回 False。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "DELETE FROM user_notes WHERE id = ?", (note_id,),
+            )
+            await self._db.conn.commit()
+            return cursor.rowcount > 0
+
+    async def insert_annotation(self, user_note_id: str, content: str) -> Annotation:
+        """插一条 Nyx 批注；id/created_at 在写路径内生成。"""
+        async with self._db.lock:
+            ann_id = str(uuid4())
+            now = time.time()
+            await self._db.conn.execute(
+                f"INSERT INTO annotations ({_ANN_COLS}) VALUES (?, ?, ?, ?)",
+                (ann_id, user_note_id, content, now),
+            )
+            await self._db.conn.commit()
+            return Annotation(
+                id=ann_id, user_note_id=user_note_id, content=content, created_at=now,
+            )
+
+    async def list_annotations(self, user_note_id: str) -> list[Annotation]:
+        """某条笔记的批注，按 created_at 降序（新在前）。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_ANN_COLS} FROM annotations WHERE user_note_id = ? "
+                "ORDER BY created_at DESC",
+                (user_note_id,),
+            )
+            rows = await cursor.fetchall()
+            return [_row_to_annotation(r) for r in rows]
+
+    async def get_paragraph(self, paragraph_id: str) -> Paragraph | None:
+        """按段落 id 读单段（show_to_nyx 取原段落文字）；不存在 None。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                'SELECT id, book_id, "index", text, is_chapter_start '
+                "FROM paragraphs WHERE id = ?",
+                (paragraph_id,),
+            )
+            row = await cursor.fetchone()
+            return _row_to_paragraph(row) if row is not None else None
+
+    async def _get_user_note_locked(self, note_id: str) -> UserNote | None:
+        """写后回读笔记单行；调用方须已持锁。"""
+        cursor = await self._db.conn.execute(
+            f"SELECT {_NOTE_COLS} FROM user_notes WHERE id = ?", (note_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_user_note(row) if row is not None else None
+
 
 def _row_to_book(row: aiosqlite.Row) -> Book:
     return Book(
@@ -244,4 +364,25 @@ def _row_to_progress(row: aiosqlite.Row) -> ReadingProgress:
         reading_speed=row["reading_speed"],
         read_count=row["read_count"],
         updated_at=row["updated_at"],
+    )
+
+
+def _row_to_user_note(row: aiosqlite.Row) -> UserNote:
+    return UserNote(
+        id=row["id"],
+        book_id=row["book_id"],
+        paragraph_id=row["paragraph_id"],
+        content=row["content"],
+        selected_text=row["selected_text"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_annotation(row: aiosqlite.Row) -> Annotation:
+    return Annotation(
+        id=row["id"],
+        user_note_id=row["user_note_id"],
+        content=row["content"],
+        created_at=row["created_at"],
     )

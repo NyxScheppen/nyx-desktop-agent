@@ -1007,6 +1007,33 @@ async def test_remember_knowledge() -> None:
         await database.conn.close()
 
 
+# ---- remember_reading ----
+
+async def test_remember_reading() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.remember_reading(
+                "这一章我陪你读，记住了这段话", "读某章", "corr-1"
+            )
+        memories = await facade.list_memories()
+        assert len(memories) == 1
+        m = memories[0]
+        assert (m.type, m.tag, m.summary) == (
+            MemoryType.LONG_TERM, "reading", "读某章",
+        )
+        assert llm.calls == []   # 无 LLM（确定性落库）
+        [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
+        assert created.content["memory_id"] == m.id
+        assert created.correlation_id == "corr-1"
+    finally:
+        await database.conn.close()
+
+
 # ---- record_no_answer ----
 
 async def test_record_no_answer() -> None:

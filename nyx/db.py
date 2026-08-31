@@ -149,6 +149,31 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX idx_memory_content_hash ON memory(content_hash)",
         ],
     ),
+    (
+        7,
+        [
+            # 陪读：EPUB 书（books）+ 段落（paragraphs），19-reading-content
+            """CREATE TABLE books (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                author TEXT NOT NULL DEFAULT '',
+                filename TEXT NOT NULL DEFAULT '',
+                content_hash TEXT NOT NULL,
+                total_paragraphs INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )""",
+            "CREATE INDEX idx_books_content_hash ON books(content_hash)",
+            """CREATE TABLE paragraphs (
+                id TEXT PRIMARY KEY,
+                book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                "index" INTEGER NOT NULL,   -- index 是 SQLite 关键字，需引号
+                text TEXT NOT NULL,
+                is_chapter_start INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(book_id, "index")
+            )""",
+        ],
+    ),
 ]
 
 

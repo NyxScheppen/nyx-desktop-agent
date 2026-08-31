@@ -138,6 +138,28 @@ class Material:                    # 用户喂的读物（一本书），分块�
     updated_at: float              # 进度上次推进时间
 
 
+# ---- 陪读 ----
+@dataclass
+class Book:                        # 用户陪读的 EPUB 书（19-reading-content）
+    id: str
+    title: str
+    author: str
+    filename: str                  # 消毒后的上传文件名（展示用）
+    content_hash: str              # 分段后正文 SHA-256（去重键）
+    total_paragraphs: int
+    created_at: float
+    updated_at: float
+
+
+@dataclass
+class Paragraph:                   # 书的正文段落（index 从 1 起、per book 连续）
+    id: str
+    book_id: str
+    index: int
+    text: str
+    is_chapter_start: bool         # 以 h1/h2 开头（22 章末检测用）
+
+
 # ---- 内在生命 ----
 @dataclass
 class CurrentState:         # 只读快照

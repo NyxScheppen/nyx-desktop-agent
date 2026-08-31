@@ -20,6 +20,7 @@ from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import _App, build_app
 from nyx.memory.facade import MemoryFacade
+from nyx.reading.facade import ReadingFacade
 from nyx.types import (
     CurrentState,
     Event,
@@ -123,6 +124,7 @@ def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
         memory=cast(MemoryFacade, memory),
         activity=cast(ActivityFacade, object()),
         expression=cast(ExpressionFacade, object()),
+        reading=cast(ReadingFacade, object()),
         evaluator=cast(Evaluator, object()),
         config=Config(),
     )

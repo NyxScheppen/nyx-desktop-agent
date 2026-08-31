@@ -1,6 +1,6 @@
 # 枚举 + 实体类型
 
-> 范围：`nyx/enums.py`（13 个 `StrEnum`）、`nyx/types.py`（2 个 TypedDict + 16 个 dataclass）。
+> 范围：`nyx/enums.py`（13 个 `StrEnum`）、`nyx/types.py`（2 个 TypedDict + 18 个 dataclass）。
 > 纯声明 spec：只定义类型，不含函数、不含序列化 helper、不含 DDL（DDL 在 04-db）。
 > spec 只定义契约（签名 + 语义 + 决策）；枚举成员与 dataclass 字段以 `nyx/enums.py` / `nyx/types.py` 源文件为准。
 
@@ -15,7 +15,7 @@
 ## 验收标准
 
 - [ ] `enums.py` 含 13 个 `StrEnum`，成员与源文件一致（实现见 `nyx/enums.py`）
-- [ ] `types.py` 含 2 个 TypedDict + 16 个 dataclass，字段与源文件一致（实现见 `nyx/types.py`）
+- [ ] `types.py` 含 2 个 TypedDict + 18 个 dataclass，字段与源文件一致（实现见 `nyx/types.py`）
 - [ ] 所有枚举 `.value` 为小写 snake_case 字符串，可直接 `json.dumps` / 存 SQLite
 - [ ] 固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`（边界见「嵌套 dict 字段的边界」表）、不加 `frozen`
 - [ ] `pyright` strict 下零报错：无 implicit Any、无 `str` 赋给枚举成员的默认值告警
@@ -26,7 +26,7 @@
 - **约定**：枚举统一 `class X(StrEnum)`，成员 `UPPER_SNAKE`、值 = `成员名.lower()` 的 snake_case；dataclass 默认值用枚举成员而非裸字符串。
 - **公开面**：`nyx/__init__.py` 保持空（不 re-export）；引用一律 `from nyx.enums import X` / `from nyx.types import Y`，不从 `nyx` 根导入；两模块不加 `__all__`（CLAUDE.md 禁 `*` 导入，`__all__` 是死代码）。
 - **枚举清单（13 个）**：`EventType`（事件类型，19 键 ROUTING 的域，见 05-event）、`Source`、`TickType`（5 成员）、`ContextMode`、`EmotionCategory`（8 档，1:1 对应前端 sprites/）、`DesireType`、`ActivityType`（6 类活动）、`MemoryType`、`DesireStatus`、`ActivityStatus`、`EnergyState`、`SearchMode`（记忆检索三层，内部层标签）、`GoalAction`（read/write/observe，完成判定纯函数 switch 值）。
-- **实体清单（16 个 dataclass）**：事件 `Event`；记忆 `Memory` / `MemoryEdge`；欲望 `Goal` / `ShortTermDesire` / `LongTermDesire` / `DesireValue` / `DesireState`；活动 `Activity` / `Material`；内在生命 `CurrentState` / `SelfNarrative` / `ReflectionOutcome`；表达 `Message`；工具/eval `Tool` / `LLMOutput`。字段形状以 `nyx/types.py` 为准。
+- **实体清单（18 个 dataclass）**：事件 `Event`；记忆 `Memory` / `MemoryEdge`；欲望 `Goal` / `ShortTermDesire` / `LongTermDesire` / `DesireValue` / `DesireState`；活动 `Activity` / `Material`；内在生命 `CurrentState` / `SelfNarrative` / `ReflectionOutcome`；表达 `Message`；工具/eval `Tool` / `LLMOutput`；陪读 `Book` / `Paragraph`。字段形状以 `nyx/types.py` 为准。
 
 ### 嵌套 dict 字段的边界（哪些收 TypedDict / 哪些留 `dict[str, Any]`）
 

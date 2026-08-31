@@ -15,6 +15,7 @@ from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import _App, _root_event, _subscribe
 from nyx.memory.facade import MemoryFacade
+from nyx.reading.facade import ReadingFacade
 from nyx.types import Event
 
 
@@ -82,6 +83,7 @@ async def test_subscription_consistency() -> None:
         memory=cast(MemoryFacade, memory),
         activity=cast(ActivityFacade, activity),
         expression=cast(ExpressionFacade, expression),
+        reading=cast(ReadingFacade, object()),
         evaluator=cast(Evaluator, object()),
         config=Config(),
     )

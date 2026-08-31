@@ -45,6 +45,8 @@ from nyx.llm.vision import VisionClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
+from nyx.reading.facade import DuplicateBookError, ReadingFacade
+from nyx.reading.store import ReadingStore
 from nyx.tools.file_io import build_file_io_tool, file_io
 from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
@@ -52,6 +54,7 @@ from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
 from nyx.types import (
     Activity,
+    Book,
     CurrentState,
     DesireState,
     Event,
@@ -81,6 +84,7 @@ _SSE_QUEUE_SIZE = 100           # SSE 每连接队列上限（慢客户端丢帧
 _CANON_FILES = ("canon.md",)
 _ASK_FILES = ("ask.md",)
 _MAX_UPLOAD_BYTES = 500_000                  # 上传读物大小上限（decision，可推翻）
+_MAX_EPUB_BYTES = 50 * 1024 * 1024           # EPUB 导入大小上限（decision，可推翻）
 
 
 @dataclass
@@ -92,6 +96,7 @@ class _App:
     memory: MemoryFacade
     activity: ActivityFacade
     expression: ExpressionFacade
+    reading: ReadingFacade
     evaluator: Evaluator
     config: Config
     # 上次搭话时间戳（18-api 维护，供 should_initiate_chat）
@@ -356,7 +361,7 @@ class _ObservePayload(BaseModel):
 
 
 def build_app(app: _App) -> FastAPI:
-    """构建 FastAPI 应用：26 个端点（25 个 REST + SSE），薄封装 Facade。"""
+    """构建 FastAPI 应用：15 个端点（14 个 REST + SSE），薄封装 Facade。"""
     fast = FastAPI(title="Nyx Agent")
 
     @fast.get("/api/state")
@@ -432,6 +437,31 @@ def build_app(app: _App) -> FastAPI:
     @fast.get("/api/materials")
     async def api_materials() -> dict[str, list[Material]]:
         return {"materials": await app.activity.list_materials()}
+
+    @fast.post("/api/books", status_code=201)
+    async def api_books(file: UploadFile = File(...)) -> Book:
+        filename = file.filename or "book.epub"
+        if Path(filename).suffix.lower() != ".epub":
+            raise HTTPException(status_code=400, detail="仅支持 .epub 文件")
+        chunks: list[bytes] = []
+        total = 0
+        while chunk := await file.read(1 << 20):
+            total += len(chunk)
+            if total > _MAX_EPUB_BYTES:
+                raise HTTPException(status_code=400, detail="文件过大")
+            chunks.append(chunk)
+        data = b"".join(chunks)
+        try:
+            return await app.reading.import_book(filename, data)
+        except DuplicateBookError as e:
+            raise HTTPException(
+                status_code=409,
+                detail={"existing_book_id": e.existing_book_id, "title": e.title},
+            ) from e
+        except ValueError:
+            raise HTTPException(status_code=400, detail="EPUB 无正文") from None
+        except Exception:
+            raise HTTPException(status_code=500, detail="EPUB 解析失败") from None
 
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:
@@ -541,6 +571,8 @@ async def build_app_context(config: Config) -> _App:
     await _seed_inner_life(inner_life_store)
     await _seed_desire(desire_store)
 
+    reading = ReadingFacade(ReadingStore(db))
+
     expression = ExpressionFacade(
         bus, llm, evaluator, memory, activity, desire, inner_life, canon, ask,
         config.expression, tools,
@@ -548,7 +580,7 @@ async def build_app_context(config: Config) -> _App:
 
     app = _App(
         bus=bus, inner_life=inner_life, desire=desire, memory=memory,
-        activity=activity, expression=expression,
+        activity=activity, expression=expression, reading=reading,
         evaluator=evaluator, config=config,
     )
 

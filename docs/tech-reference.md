@@ -15,7 +15,7 @@
 
 ---
 
-## 2. 实体 dataclass（16 个 + 2 个 TypedDict）
+## 2. 实体 dataclass（18 个 + 2 个 TypedDict）
 
 > dataclass 字段与实现以 `nyx/types.py` 为准（spec 01-types 只给契约；固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`）。此处不再重复。
 
@@ -23,8 +23,8 @@
 
 ## 3. DB DDL（SQLite）
 
-> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；12 张业务表 + 4 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
-> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；12 张业务表 + `schema_version` 迁移簿记表 = 共 13 张。
+> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；14 张业务表 + 5 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
+> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；14 张业务表 + `schema_version` 迁移簿记表 = 共 15 张。
 
 ---
 
@@ -47,6 +47,7 @@
 | POST | `/api/export` | `{format: json|md}` | 记忆导出文件 |
 | POST | `/api/upload` | `multipart/form-data`（`file`） | `{filename, path}`（落盘后 `register_material` 只注册书库，不立即读书） |
 | GET | `/api/materials` | — | `{materials: Material[]}`（书库进度） |
+| POST | `/api/books` | `multipart/form-data`（`file`） | `Book`（EPUB 导入：解析→去重→落库；重复 409 / 非 .epub·超限·空正文 400 / 解析失败 500） |
 > REST 端点分两类：
 > - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`> - **外部输入入口**：`/api/chat`、`/api/observe` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 `ActivityFacade.register_material()` 只注册书库（不发事件、不立即读书），返回 `{filename, path}`。回复/后续产出走 SSE。
 
@@ -105,6 +106,12 @@ async def get_schedule() -> list[Activity]                      # 今日日程�
 async def get_results(limit: int = 100) -> list[Activity]       # 跨天历史产出（供 /api/activity/results）
 async def list_materials() -> list[Material]                    # 书库全量（含已读进度，供 /api/materials 资料面板）
 async def register_material(path: str, filename: str, total_chars: int) -> None  # 注册读物进书库（只登记不立即读；读书由欲望驱动选书）
+```
+
+### ReadingFacade
+
+```python
+async def import_book(filename: str, data: bytes) -> Book       # 解析 EPUB → 去重 → 落库 books+paragraphs → 返回 Book；正文重复抛 DuplicateBookError、空正文抛 ValueError
 ```
 
 ### DesireFacade
@@ -207,7 +214,7 @@ nyx/
   config.py               # 配置加载（§8）
   enums.py                # §1 所有枚举
   types.py                # §2 实体 dataclass
-  db.py                   # SQLite 连接 + 12 表 DDL + 版本化迁移 + Database(conn, lock)（04-db）
+  db.py                   # SQLite 连接 + 14 表 DDL + 版本化迁移 + Database(conn, lock)（04-db）
   events/
     bus.py                # EventBus
     routing.py            # ROUTING 表
@@ -217,6 +224,12 @@ nyx/
     store.py              # SQLite 存取
     graph.py              # networkx 联想图
     retrieval.py          # 三层检索
+  reading/
+    __init__.py
+    segmenter.py           # segment_html（HTML 正文→阅读段落，纯函数）
+    epub.py                # parse_epub（EPUB 字节→元数据+段落+content_hash）
+    store.py               # ReadingStore（books/paragraphs 存取）
+    facade.py              # ReadingFacade（import_book）
   expression/
     facade.py             # ExpressionFacade
     pipeline.py           # 回复流程（LangGraph）

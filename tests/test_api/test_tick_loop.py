@@ -25,6 +25,7 @@ from nyx.main import (
     main,
 )
 from nyx.memory.facade import MemoryFacade
+from nyx.reading.facade import ReadingFacade
 from nyx.types import Event, Memory, SelfNarrative
 
 
@@ -61,6 +62,7 @@ def _app(bus: object, *, grid_minutes: int = 0) -> _App:
         memory=cast(MemoryFacade, object()),
         activity=cast(ActivityFacade, object()),
         expression=cast(ExpressionFacade, _FakeExpression()),
+        reading=cast(ReadingFacade, object()),
         evaluator=cast(Evaluator, object()),
         config=config,
     )
@@ -303,6 +305,7 @@ def _reflect_app(
         memory=cast(MemoryFacade, memory),
         activity=cast(ActivityFacade, object()),
         expression=cast(ExpressionFacade, _FakeExpression()),
+        reading=cast(ReadingFacade, object()),
         evaluator=cast(Evaluator, object()),
         config=Config(),
     )

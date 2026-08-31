@@ -169,3 +169,5 @@ frontend/
 | `03-chat-panel.md` | 聊天面板组件树、发消息流程、speak/think/ask 渲染 |
 | `04-inner-state-panel.md` | 内在状态面板组件树、valence-arousal 图、精力条、情绪 sprite、Big Five/三观 |
 | `05-client.md` | `client.ts` 薄 fetch 封装（postChat/getState/postObserve）+ 错误契约 |
+| `06-reading-panel.md` | 阅读面板：书架 + 阅读页 + `readerStore` + Nyx 追赶（`setTimeout` 秒级逐段） |
+| `07-reading-events.md` | 阅读事件：SSE 冲动气泡（reading_mutter/question/association）+ 笔记面板 |

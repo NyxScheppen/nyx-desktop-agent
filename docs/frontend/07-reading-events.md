@@ -1,0 +1,172 @@
+# 阅读事件（SSE 冲动气泡 + 笔记面板）
+
+> 前端「陪伴读书」的**行为与笔记层**：订阅 `reading_mutter`/`reading_question`/`reading_association` 三个 SSE 事件在 Nyx 侧栏冒冲动气泡；笔记面板做用户笔记 CRUD + 「给尼克斯看」批注。Nyx 的章末整合记忆不在此上屏（落 memory，记忆面板已砍）。
+> 范围：`components/reading/{ReaderSidebar,NotePanel}.tsx` 的气泡/笔记部分 + `stores/readerStore.ts` 气泡/笔记 state + `api/client.ts` 笔记端点 + `api/dispatch.ts` 阅读事件分派 + `hooks/useSSE.ts` 的 `EVENT_TYPES`。
+> 对齐后端：`21-reading-impulse`（3 个 `READING_*` 事件）、`22-reading-notes`（笔记 CRUD/批注/章末整合端点）。
+> 反向修订 22：`show-to-nyx` 端点返回体从 `{annotation_id, content}` 改为完整 `Annotation`（`{id, user_note_id, content, created_at}`）——前端 append 完整对象，不造 `created_at`。
+
+## 1. 新 SSE 事件（后端 21 定义，前端增补三型）
+
+后端 21 在 `EventType` 追加 `READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION`，经既有 `GET /api/events` 广播。`data` 形状（01-sse §1 约定：`{event_id, correlation_id} + content`；`correlation_id` = `book_id`，21 决策「按书归组」）：
+
+```
+event: reading_mutter
+data: {"event_id":"…","correlation_id":"<book_id>","content":"…","book_id":"…","paragraph_index":12}
+```
+
+| 事件（`e.event`） | `content` 键（除 `event_id`/`correlation_id`） | 说明 |
+|---|---|---|
+| `reading_mutter` | `{content, book_id, paragraph_index}` | 读到精彩处碎碎念 |
+| `reading_question` | `{content, subtype, book_id, paragraph_index, selected_text}` | 冲动提问；`subtype` = 四子型之一；`selected_text` 仅 `quote_question` 非空 |
+| `reading_association` | `{memory_id, snippet, book_id, paragraph_index}` | 记忆联想（每个命中记忆一条） |
+
+### TS 类型（`types/api.ts` 增补）
+
+```typescript
+type QuestionSubtype = "question_knowledge" | "question_personal" | "question_reflective" | "quote_question";
+type ReadingMutterEvent = SseBase & {
+  event: "reading_mutter";
+  content: string;
+  book_id: string;
+  paragraph_index: number;
+};
+type ReadingQuestionEvent = SseBase & {
+  event: "reading_question";
+  content: string;
+  subtype: QuestionSubtype;                 // question_knowledge | question_personal | question_reflective | quote_question
+  book_id: string;
+  paragraph_index: number;
+  selected_text: string | null;
+};
+type ReadingAssociationEvent = SseBase & {
+  event: "reading_association";
+  memory_id: string;
+  snippet: string;                 // summary or content 截断 ~80 字
+  book_id: string;
+  paragraph_index: number;
+};
+```
+
+- 三型并入 `SseEvent` 判别联合；`hooks/useSSE.ts` 的 `EVENT_TYPES` 数组同步加三值（01-sse §4 前向兼容边界：新增 EventType 必须同步 `EVENT_TYPES` + 判别联合 + 分发表）。
+
+## 2. 冲动气泡（ReaderSidebar）
+
+- **分派**（`api/dispatch.ts` 增补三 case，全部进 `readerStore`，**透传原始事件**——snake→camel 映射在 store 的 `addReadingBubble` 内做，dispatch 不写映射逻辑）：
+
+```typescript
+case "reading_mutter":      return readerStore.addReadingBubble(e);  // e: ReadingMutterEvent
+case "reading_question":    return readerStore.addReadingBubble(e);  // e: ReadingQuestionEvent
+case "reading_association": return readerStore.addReadingBubble(e);  // e: ReadingAssociationEvent
+```
+
+- **readerStore 气泡 state/action**：
+
+```typescript
+type ReadingBubbleKind = "mutter" | "question" | "association";
+type ReadingBubble = {
+  id: string;                       // event_id
+  kind: ReadingBubbleKind;
+  bookId: string;                   // = e.book_id == correlation_id（21 决策「按书归组」，二者数值相等）
+  paragraphIndex: number;
+  content: string;                  // mutter/question 文本；association = snippet
+  subtype?: QuestionSubtype;                 // question 四子型
+  selectedText?: string | null;     // quote_question 划线文本
+  memoryId?: string;                // association 命中记忆 id
+};
+
+const _BUBBLE_CAP = 20;  // 侧栏气泡上限（decision 可推翻）
+
+impulseBubbles: ReadingBubble[];    // 侧栏气泡流（按到达顺序）
+addReadingBubble(e: ReadingMutterEvent | ReadingQuestionEvent | ReadingAssociationEvent): void;          // 过滤 e.book_id !== get().bookId 丢弃 → 构造 ReadingBubble（映射表见下）→ append；cap 到 _BUBBLE_CAP 条（溢出丢最旧）
+```
+
+- **只显当前书**：`addReadingBubble` 过滤 `e.book_id !== get().bookId` 丢弃（`correlation_id` 按书归组，切书/未开书时不串味）；气泡挂 `ReaderSidebar`，读 `readerStore.impulseBubbles` 渲染（`kind` 决定样式：mutter 斜体浅色 / question 带问句高亮 / association 带「联想」徽标 + 截断 snippet）。
+- **snake→camel 映射表**（`addReadingBubble` 内，事件字段 → `ReadingBubble` 字段）：
+
+  | 事件字段（snake） | `ReadingBubble` 字段（camel） | 说明 |
+  |---|---|---|
+  | `event_id` | `id` | |
+  | `event` | `kind` | `reading_mutter`→`"mutter"`、`reading_question`→`"question"`、`reading_association`→`"association"` |
+  | `book_id` | `bookId` | == `correlation_id`（21 决策二者数值相等） |
+  | `paragraph_index` | `paragraphIndex` | |
+  | `content`（mutter/question） | `content` | |
+  | `snippet`（仅 association） | `content` | association 的文本进 `content` |
+  | `subtype`（仅 question） | `subtype` | |
+  | `selected_text`（仅 question，可 null） | `selectedText` | |
+  | `memory_id`（仅 association） | `memoryId` | |
+- **气泡不进聊天历史**：与 `announceStore` 的碎碎念不同，阅读冲动气泡是阅读页侧栏瞬时流（对齐 02-stores §5「announce 不落聊天历史」同款哲学），不写 `chatStore`。
+
+## 3. 笔记面板（`NotePanel`）
+
+### 组件树
+
+```
+NotePanel                # 从 ReaderSidebar「笔记」入口打开（覆盖层/主区切换）
+├─ NoteList              # GET /api/notes/{book_id} 列表，created_at DESC
+│  └─ NoteItem           # 单条：content + selected_text 引用 + 批注列表 + 「给尼克斯看」/ 删除
+└─ NoteComposer          # 新建笔记：自由文本；从正文选中文本点「记笔记」时预填 selected_text + paragraph_id
+```
+
+### 共享类型（`types/api.ts` 增补）
+
+```typescript
+type Annotation = { id: string; user_note_id: string; content: string; created_at: number };
+type UserNote = {                   // 裸 7 键，对齐后端 TypedDict（POST/PUT 返回，无 annotations）
+  id: string;
+  book_id: string | null;          // 书删后 SET NULL
+  paragraph_id: string | null;     // 段落删后 SET NULL
+  content: string;
+  selected_text: string | null;
+  created_at: number;
+  updated_at: number;
+};
+type UserNoteWithAnnotations = UserNote & { annotations: Annotation[] };  // GET /api/notes/{book_id} 每条附带（created_at DESC）
+```
+
+### readerStore 笔记 state/actions
+
+```typescript
+notes: UserNoteWithAnnotations[];                 // 当前书用户笔记（含批注）
+notesError: string | null;
+
+loadNotes(): Promise<void>                  // GET /api/notes/{bookId} → notes
+addNote(p: {book_id, paragraph_id?, content, selected_text?}): Promise<void>  // POST → 返回裸 UserNote → 归一 {…note, annotations: []} unshift
+updateNote(id: string, content: string): Promise<void>  // PUT → 返回裸 UserNote → 覆盖该条 7 键（保留 annotations 数组）
+deleteNote(id: string): Promise<void>                // DELETE → 本地移除该条（连同其批注）
+showToNyx(noteId: string): Promise<void>             // POST show-to-nyx → 返回完整 Annotation → append 到该 note.annotations
+```
+
+### 关键决策
+
+- **只展示用户笔记 + 批注**：Nyx 章末整合的笔记走 `remember_reading` 落 memory（`tag='reading'`），**不上屏**（记忆面板已砍，README §5）；`NotePanel` 是「用户笔记」面板，用户笔记与 Nyx 笔记严格分离（22 决策）。`showToNyx` 的批注是「对用户笔记的回应」，挂在 `annotations` 下，与 Nyx 自己落 memory 的笔记无关。
+- **「给尼克斯看」主动触发**：Nyx 不主动读用户笔记（22 决策 C3）；`showToNyx` 读笔记 + 原段落 → LLM 批注 → 插 `annotations`。多次展示 → 每次新增一行批注（不覆盖）。
+- **章末检测由追赶循环触发**：06 的 `advanceNyx` 每次 `nyxPosition += 1` 后 fire-and-forget `checkChapterBoundary(bookId, nyxPosition)`；`is_boundary=true` 时后端后台整合（落 memory，不阻塞返回）。前端不渲染结果（见上条）。
+- **`showToNyx` 本地 append 批注**：成功后把返回的完整 `Annotation`（22 的 `show-to-nyx` 回 `{id, user_note_id, content, created_at}`，非 `{annotation_id, content}`）追加到该 note 的 `annotations`，不整表重拉（避免用户翻笔记时抖动）；失败静默记 `notesError`。
+
+## 4. `client.ts` 增补（笔记端点）
+
+```typescript
+async function getNotes(bookId: string): Promise<UserNoteWithAnnotations[]>                                   // GET /api/notes/{bookId}
+async function createUserNote(p: { book_id: string; paragraph_id?: string | null; content: string; selected_text?: string | null }): Promise<UserNote>  // POST /api/notes/user
+async function updateUserNote(id: string, content: string): Promise<UserNote>                  // PUT /api/notes/user/{id}
+async function deleteUserNote(id: string): Promise<void>                                       // DELETE /api/notes/user/{id}
+async function showNoteToNyx(noteId: string): Promise<Annotation>  // POST /api/notes/{noteId}/show-to-nyx（返回完整 Annotation）
+async function checkChapterBoundary(bookId: string, nyxPosition: number): Promise<{ is_boundary: boolean; book_finished: boolean }>  // POST /api/notes/check-chapter-boundary
+```
+
+- 请求体键 = 后端键（snake_case 零映射）；`createUserNote` 缺 `content` → 422（客户端上抛）、`updateUserNote`/`deleteUserNote`/`showNoteToNyx` 不存在 → 404 上抛（统一错误契约，05-client §2）。
+- `checkChapterBoundary` 由 06 追赶循环调用（非面板按钮），故放本 spec 一并定义（与 22 端点 1:1）。
+
+## 5. 对既有前端 spec 的修订
+
+- `01-sse.md`：§2 `SseEvent` 判别联合 + §4 分发表 + `EVENT_TYPES` 数组各增 `reading_mutter`/`reading_question`/`reading_association` 三型（分派到 `readerStore.addReadingBubble`）。
+- `05-client.md`：§1 端点列表增 6 个阅读 + 6 个笔记函数（06 §6 + 本 spec §4）。
+- `02-stores.md`：增 `readerStore` 条目（state 形状 + actions 完整实现，本文档只给签名）。
+
+## 6. 测试（`tests/` 并入 api/sse/stores 测试）
+
+- `useSSE`/分派（`tests/sse.test.ts` 增补）：mock `EventSource` 派发三型帧 → `dispatch` 路由到 `readerStore.addReadingBubble`；`EVENT_TYPES` 含三值（缺则帧被静默丢弃，01-sse §4）。
+- `readerStore` 气泡（`tests/stores.test.ts` 增补）：`addReadingBubble` 只收当前 `bookId` 事件（非当前书丢弃）；cap 到 `_BUBBLE_CAP` 溢出丢最旧；`kind` 映射正确（subtype/selectedText/memoryId 各落对字段）。
+- `readerStore` 笔记：`loadNotes` 落 `notes`；`addNote` unshift 归一 `annotations: []`；`updateNote` 覆盖 7 键保留 annotations；`deleteNote` 移除；`showToNyx` 成功后 `annotations` append 返回的完整 `Annotation`（不整表重拉）。
+- `client`（`tests/api.test.ts` 增补）：6 个笔记函数端点/方法/请求体键 + 非 2xx 统一 throw（422/404）。
+- 不依赖真实后端；验证管道正确（事件走对 store、气泡过滤对、笔记 CRUD 对），不验证视觉。

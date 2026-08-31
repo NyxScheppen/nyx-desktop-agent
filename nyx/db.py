@@ -177,7 +177,11 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
     (
         8,
         [
-            # content_hash 去重升级为唯一索引（并发导入不产重复书；原 v7 为普通索引）
+            # content_hash 去重升级为唯一索引（并发导入不产重复书；原 v7 为普通索引）。
+            # 升级前先清掉旧竞态窗口可能留下的重复行（保留最早插入的一本），否则
+            # CREATE UNIQUE INDEX 撞 IntegrityError 会让 migrate 整体回滚、应用起不来。
+            "DELETE FROM books WHERE rowid NOT IN ("
+            "SELECT MIN(rowid) FROM books GROUP BY content_hash)",
             "DROP INDEX IF EXISTS idx_books_content_hash",
             "CREATE UNIQUE INDEX idx_books_content_hash ON books(content_hash)",
         ],

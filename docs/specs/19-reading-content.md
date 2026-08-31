@@ -52,13 +52,13 @@
 - **ebooklib 解析契约**（`parse_epub` 内部）：`epub.read_epub(io.BytesIO(data))` → 按 `book.spine`（`list[(idref, linear)]`）**阅读序**遍历，`linear == 'no'` 跳过（辅助项）；每 `idref` 经 `book.get_item_with_id(idref)` 取 item，`item.get_type() != ebooklib.ITEM_DOCUMENT` 跳过（图片/CSS 等非 HTML 项不进正文）；`item.get_content()` 返回 bytes → `decode("utf-8", errors="replace")`（EPUB HTML 约定 UTF-8，坏编码兜底不抛）→ `segment_html` 收集 segments。标题/作者：`book.get_metadata("DC", "title")` 取第一个元组 `[0]`，空则回退 filename；`get_metadata("DC", "creator")` 同理，空则回退 `""`。
 - **空正文报错**：`parse_epub` 得 0 段（空 EPUB/无 HTML 正文）→ `import_book` 抛 `ValueError("EPUB 无正文")`，端点映射 400（可导入但无正文，属输入问题，与「非 epub/超限」同类）；**不插 0 段落的 book**（`total_paragraphs=0` 会让书架出现空书、`UNIQUE(book_id,index)` 无行语义诡异）。
 - **大小上限** `_MAX_EPUB_BYTES = 50 * 1024 * 1024`（50MB，decision 可推翻）；端点**分块读**（对齐 `/api/upload` 的 `while chunk := await file.read(1 << 20)` 模式），累计超 `_MAX_EPUB_BYTES` 立即 400 中断**不继续读剩余**；通过后 `bytearray` 累加（避免 `list[bytes]` + `b"".join` 双拷贝）得完整 bytes 交 `parse_epub`（此时总量已 ≤ 50MB）。
-- **解压后大小上限** `_MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024`（100MB，decision）：`parse_epub` 先读 zip 中央目录累加 `info.file_size` 预检解压总量（不解压、防 zip 炸弹），超限抛 `ValueError`；非 ZIP / 缺 `container.xml` 结构 → `ValueError("无效的 EPUB 文件")`。
+- **解压后大小上限** `_MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024`（100MB，decision）：`parse_epub` 先读 zip 中央目录累加 `info.file_size` 预检解压总量（不解压、防 zip 炸弹），超限抛 `ValueError`；非 ZIP / 缺 `container.xml` 结构 → `ValueError("无效的 EPUB 文件")`。**接受的两处取舍**：①信任中央目录声明的 `file_size`（拦标准高压缩比炸弹，不防 zip quine/重叠条目谎报——落在「不追求军工级防护」威胁模型内）；②按整包解压总量计（含图片/CSS 等随后被丢弃的资源，`read_epub` 读全量但只取 `ITEM_DOCUMENT`）——插画重但正文小的书可能被误拒、且为用不上的资源白耗内存，MVP 接受。
 
 ### 数据变更（`_MIGRATIONS` v7 + v8，DDL 以 `nyx/db.py` 为准）
 
 - `books`（v7）：`id TEXT PRIMARY KEY`、`title TEXT NOT NULL`、`author TEXT NOT NULL DEFAULT ''`、`filename TEXT NOT NULL DEFAULT ''`、`content_hash TEXT NOT NULL`、`total_paragraphs INTEGER NOT NULL DEFAULT 0`、`created_at REAL NOT NULL`、`updated_at REAL NOT NULL`；`CREATE INDEX idx_books_content_hash ON books(content_hash)`
 - `paragraphs`（v7）：`id TEXT PRIMARY KEY`、`book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE`、`index INTEGER NOT NULL`、`text TEXT NOT NULL`、`is_chapter_start INTEGER NOT NULL DEFAULT 0`、`UNIQUE(book_id, index)`
-- v8：`DROP INDEX IF EXISTS idx_books_content_hash` + `CREATE UNIQUE INDEX idx_books_content_hash ON books(content_hash)`（去重升级唯一索引，防并发重复导入）
+- v8：先 `DELETE FROM books WHERE rowid NOT IN (SELECT MIN(rowid) FROM books GROUP BY content_hash)`（清掉旧竞态窗口可能留下的重复行，保留最早插入的一本），再 `DROP INDEX IF EXISTS idx_books_content_hash` + `CREATE UNIQUE INDEX idx_books_content_hash ON books(content_hash)`（去重升级唯一索引，防并发重复导入）
 
 ### API 端点
 

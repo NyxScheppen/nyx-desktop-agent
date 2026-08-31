@@ -115,6 +115,52 @@ async def test_migrate_books_content_hash_index_unique() -> None:
     assert row["sql"].startswith("CREATE UNIQUE INDEX")
 
 
+async def test_migrate_v8_dedupes_duplicate_content_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = db._MIGRATIONS
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        # 先迁到 v7（旧竞态窗口可能留下的库），插入两条同 content_hash 的书
+        monkeypatch.setattr(db, "_MIGRATIONS", [m for m in full if m[0] <= 7])
+        await db.migrate(conn)
+        now = 1.0
+        for bid in ("b1", "b2"):
+            await conn.execute(
+                "INSERT INTO books (id, title, author, filename, content_hash, "
+                "total_paragraphs, created_at, updated_at) "
+                "VALUES (?, ?, '', '', ?, 0, ?, ?)",
+                (bid, f"书{bid}", "dup-hash", now, now),
+            )
+            await conn.execute(
+                'INSERT INTO paragraphs (id, book_id, "index", text, is_chapter_start) '
+                "VALUES (?, ?, 1, '正文', 0)",
+                (f"p-{bid}", bid),
+            )
+        await conn.commit()
+
+        # 再跑完整迁移（含 v8）：应自动去重 + 建唯一索引，不抛
+        monkeypatch.setattr(db, "_MIGRATIONS", full)
+        await db.migrate(conn)
+
+        cursor = await conn.execute("SELECT COUNT(*) AS n FROM books")
+        n = await cursor.fetchone()
+        cursor = await conn.execute("SELECT COUNT(*) AS n FROM paragraphs")
+        np_ = await cursor.fetchone()
+        cursor = await conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='index' AND name='idx_books_content_hash'"
+        )
+        idx = await cursor.fetchone()
+    finally:
+        await conn.close()
+    assert n is not None and n["n"] == 1  # 重复行被清到 1
+    assert np_ is not None and np_["n"] == 1  # 被删书其 paragraphs 级联清空
+    assert idx is not None and idx["sql"].startswith("CREATE UNIQUE INDEX")
+
+
 async def test_migrate_sets_version_to_max() -> None:
     conn = await _migrated_conn()
     try:

@@ -5,6 +5,7 @@
 """
 
 # pyright: reportPrivateUsage=false
+import logging
 from typing import cast
 
 import pytest
@@ -120,6 +121,33 @@ async def test_books_parse_failure_returns_500() -> None:
             "/api/books", files={"file": ("book.epub", b"x", "application/epub+zip")}
         )
     assert resp.status_code == 500
+
+
+async def test_books_parse_failure_logs_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = _FakeReading()
+    fake.error = RuntimeError("DRM 保护")
+    with caplog.at_level(logging.ERROR):
+        async with _client(_app(fake)) as client:
+            resp = await client.post(
+                "/api/books",
+                files={"file": ("book.epub", b"x", "application/epub+zip")},
+            )
+    assert resp.status_code == 500
+    assert any("导入 EPUB" in record.message for record in caplog.records)
+
+
+async def test_books_sanitizes_filename() -> None:
+    fake = _FakeReading()
+    fake.result = _book()
+    async with _client(_app(fake)) as client:
+        resp = await client.post(
+            "/api/books",
+            files={"file": ("../../evil<1>.epub", b"x", "application/epub+zip")},
+        )
+    assert resp.status_code == 201
+    assert fake.calls == [("evil1.epub", b"x")]  # 剥路径 + 去 HTML 危险字符
 
 
 async def test_books_too_large_returns_400(

@@ -101,6 +101,20 @@ async def test_migrate_creates_five_indexes() -> None:
     }
 
 
+async def test_migrate_books_content_hash_index_unique() -> None:
+    conn = await _migrated_conn()
+    try:
+        cursor = await conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='index' AND name='idx_books_content_hash'"
+        )
+        row = await cursor.fetchone()
+    finally:
+        await conn.close()
+    assert row is not None
+    assert row["sql"].startswith("CREATE UNIQUE INDEX")
+
+
 async def test_migrate_sets_version_to_max() -> None:
     conn = await _migrated_conn()
     try:

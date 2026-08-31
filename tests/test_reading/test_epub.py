@@ -3,6 +3,9 @@
 import io
 import zipfile
 
+import pytest
+
+from nyx.reading import epub as epub_mod
 from nyx.reading.epub import parse_epub
 from nyx.reading.segmenter import Segment
 
@@ -96,3 +99,24 @@ def test_parse_epub_skips_non_document_spine_items() -> None:
     # 封面图进 spine：parse_epub 只读 ITEM_DOCUMENT，段数不受图片影响
     result = parse_epub(_build_epub_bytes(image_in_spine=True))
     assert len(result.segments) == 2
+
+
+def test_parse_epub_non_zip_raises_value_error() -> None:
+    with pytest.raises(ValueError):
+        parse_epub(b"not a zip file")
+
+
+def test_parse_epub_zip_without_container_raises_value_error() -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("random.txt", "hello")
+    with pytest.raises(ValueError):
+        parse_epub(buf.getvalue())
+
+
+def test_parse_epub_rejects_oversized_uncompressed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(epub_mod, "_MAX_UNCOMPRESSED_BYTES", 100)
+    with pytest.raises(ValueError):
+        parse_epub(_build_epub_bytes())

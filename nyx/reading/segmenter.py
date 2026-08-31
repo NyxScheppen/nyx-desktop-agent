@@ -30,31 +30,46 @@ _BLOCK_TAGS = frozenset(
 
 
 class _BlockExtractor(HTMLParser):
-    """提取块级元素文本（文档序）；嵌套块只取最内层、不重复计数。"""
+    """提取块级元素文本（文档序）。
+
+    每个块级元素持一个「直接文本」缓冲（不含嵌套块内容）。嵌套块开始前先 flush
+    父块的直接文本（父先于子），嵌套块结束时 flush 子块，父块 endtag 时再 flush 父块
+    剩余尾文本——保证「父直接文本 / 子块 / 父尾文本」按文档序进入 blocks。纯嵌套
+    （`<li><p>…</p></li>`）父块直接文本为空 → 只出子块，即「嵌套块只取最内层、
+    不重复计数」。
+    """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.blocks: list[tuple[str, str]] = []  # (tag, text)
-        self._stack: list[list[str]] = []
+        self._stack: list[tuple[str, list[str]]] = []  # (tag, 直接文本片段)
         self.root_text: list[str] = []  # 块级之外（head/script/纯文本），回退用
 
     def _buf(self) -> list[str]:
-        return self._stack[-1] if self._stack else self.root_text
+        return self._stack[-1][1] if self._stack else self.root_text
+
+    def _flush_direct(self, frame: tuple[str, list[str]]) -> None:
+        """把单个块级元素的直接文本 flush 成段（空则跳过）。"""
+        tag, parts = frame
+        text = "".join(parts).strip()
+        if text:
+            self.blocks.append((tag, text))
+        parts.clear()
 
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
         del attrs  # 块级提取不关心属性；保留签名以匹配 HTMLParser 接口
         if tag in _BLOCK_TAGS:
-            self._stack.append([])
+            if self._stack:
+                self._flush_direct(self._stack[-1])  # 父直接文本先于嵌套子块
+            self._stack.append((tag, []))
         elif tag == "br":
             self._buf().append("\n")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in _BLOCK_TAGS and self._stack:
-            text = "".join(self._stack.pop()).strip()
-            if text:
-                self.blocks.append((tag, text))
+            self._flush_direct(self._stack.pop())
 
     def handle_data(self, data: str) -> None:
         self._buf().append(data)

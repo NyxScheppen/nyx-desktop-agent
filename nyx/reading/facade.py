@@ -35,12 +35,10 @@ class ReadingFacade:
         result = await asyncio.to_thread(parse_epub, data)
         if not result.segments:
             raise ValueError("EPUB 无正文")
-        existing = await self._store.find_by_hash(result.content_hash)
-        if existing is not None:
-            raise DuplicateBookError(existing.id, existing.title)
         title = result.title or filename
-        book = await self._store.insert_book(
-            title, result.author, filename, result.content_hash, len(result.segments)
+        book, inserted = await self._store.insert_book_with_paragraphs(
+            title, result.author, filename, result.content_hash, result.segments
         )
-        await self._store.insert_paragraphs(book.id, result.segments)
+        if not inserted:
+            raise DuplicateBookError(book.id, book.title)
         return book

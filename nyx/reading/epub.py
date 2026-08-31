@@ -7,6 +7,7 @@ pyright 豁免）。title/author 缺失回退空串——title 的 filename 回�
 # pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 import hashlib
 import io
+import zipfile
 from dataclasses import dataclass
 
 from ebooklib import ITEM_DOCUMENT, epub
@@ -24,12 +25,29 @@ class EpubResult:
     content_hash: str
 
 
+_MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024  # decision：解压后总大小上限（防 zip 炸弹）
+
+
+def _check_uncompressed_size(data: bytes) -> None:
+    """预检解压后总大小（读中央目录，不解压）；超限抛 `ValueError`。"""
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        total = sum(info.file_size for info in zf.infolist())
+    if total > _MAX_UNCOMPRESSED_BYTES:
+        raise ValueError(f"EPUB 解压后过大（{total} > {_MAX_UNCOMPRESSED_BYTES} 字节）")
+
+
 def parse_epub(data: bytes) -> EpubResult:
     """EPUB 字节 → 元数据 + 正文段落 + 全文 SHA-256。
 
     按 spine 阅读序遍历，跳过 `linear=='no'` 与非 `ITEM_DOCUMENT`（图片/CSS）。
+    非 ZIP / 缺 container 结构 → 抛 `ValueError`（无效 EPUB）；解压后超
+    `_MAX_UNCOMPRESSED_BYTES` → 抛 `ValueError`。
     """
-    book = epub.read_epub(io.BytesIO(data))
+    try:
+        _check_uncompressed_size(data)
+        book = epub.read_epub(io.BytesIO(data))
+    except (zipfile.BadZipFile, KeyError) as e:
+        raise ValueError("无效的 EPUB 文件") from e
     title = _extract_meta(book, "title")
     author = _extract_meta(book, "creator")
 

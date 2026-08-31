@@ -174,6 +174,14 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        8,
+        [
+            # content_hash 去重升级为唯一索引（并发导入不产重复书；原 v7 为普通索引）
+            "DROP INDEX IF EXISTS idx_books_content_hash",
+            "CREATE UNIQUE INDEX idx_books_content_hash ON books(content_hash)",
+        ],
+    ),
 ]
 
 

@@ -70,6 +70,7 @@
 |---|---|---|
 | `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 14 张业务表 + `schema_version`，共 15 张 |
 | `test_migrate_creates_five_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_memory_content_hash` / `idx_books_content_hash` 五个 |
+| `test_migrate_books_content_hash_index_unique` | 功能正确 | `idx_books_content_hash` 的 `sqlite_master.sql` 以 `CREATE UNIQUE INDEX` 开头（v8 去重升级唯一索引） |
 | `test_migrate_sets_version_to_max` | 功能正确 | `schema_version` 单行 = `_MIGRATIONS` 最高版本 |
 | `test_migrate_not_null_alignment` | 边界鲁棒 | 5 列 `notnull=1`（`memory.aspect` / `long_term_desire.linked_values` / `activity.progress` / `event_log.content` / `event_log.correlation_id`） |
 | `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `memory.embedding` / `memory.content_hash`） |
@@ -638,14 +639,21 @@
 | `test_fallback_no_block_tags_whole_text` | 边界鲁棒 | 无块级标签（`<div>`）→ 全文一段 |
 | `test_empty_html_returns_empty` | 边界鲁棒 | 空 HTML → `[]` |
 | `test_blockquote_independent` | 功能正确 | `blockquote` 独立成段，不与后续 `p` 合并 |
+| `test_nested_block_direct_text_preserves_document_order` | 功能正确 | `<li>引言正文 <p>这是列表项</p></li>` → `["引言正文", "这是列表项"]`（外块直接文本在嵌套块前，文档序不乱） |
+| `test_nested_block_tail_text_preserves_document_order` | 功能正确 | `<blockquote>引言<p>内文</p>续</blockquote>` → `["引言", "内文", "续"]`（尾随直接文本在嵌套块后） |
 | `test_parse_epub_extracts_title_author_and_segments` | 功能正确 | 内存 EPUB → title/author 提取 + 两章两段（章首标记） |
 | `test_parse_epub_content_hash_stable` | 功能正确 | 同字节两次 `content_hash` 相等、长度 64（SHA-256 hex） |
 | `test_parse_epub_missing_metadata_falls_back_to_empty` | 边界鲁棒 | 缺 title/author → 空串 `""` |
 | `test_parse_epub_skips_non_document_spine_items` | 功能正确 | 封面图进 spine → 只读 `ITEM_DOCUMENT`，段数仍 2 |
-| `test_insert_book_generates_id_and_timestamps` | 功能正确 | `insert_book` → id 非空、title/author/filename/content_hash/total_paragraphs 全等、`created_at`/`updated_at > 0` |
+| `test_parse_epub_non_zip_raises_value_error` | 边界鲁棒 | 非 ZIP 字节 → `ValueError`（无效 EPUB，不裸抛 `BadZipFile`） |
+| `test_parse_epub_zip_without_container_raises_value_error` | 边界鲁棒 | 缺 `container.xml` 的 ZIP → `ValueError` |
+| `test_parse_epub_rejects_oversized_uncompressed` | 边界鲁棒 | 解压后总量超 `_MAX_UNCOMPRESSED_BYTES`（monkeypatch 到 100）→ `ValueError`（zip 炸弹预检） |
+| `test_insert_book_with_paragraphs_returns_new` | 功能正确 | 原子插书+3 段：`created=True`、`title`/`total_paragraphs==3`、`"index"==[1,2,3]`、`is_chapter_start==[1,0,0]`、首段文本正确 |
+| `test_insert_book_with_paragraphs_duplicate_returns_existing` | 功能正确 | 同 `content_hash` 二次 → `created=False`、返回同 `id` 书、books 仍 1 行（唯一索引回退） |
+| `test_insert_concurrent_same_hash_yields_single_book` | 功能正确 | `asyncio.gather` 并发同哈希 → 恰 1 个 `created=True`、books 1 行（去重 TOCTOU 闭合） |
+| `test_insert_atomic_rolls_back_on_paragraphs_failure` | 边界鲁棒 | monkeypatch `_insert_paragraphs` 抛 `aiosqlite.Error` → 上抛且 books 0 行（无空壳书，事务回滚） |
 | `test_find_by_hash_hit` | 功能正确 | `find_by_hash` 命中返回同 id 书 |
 | `test_find_by_hash_miss_returns_none` | 边界鲁棒 | 未命中 → `None` |
-| `test_insert_paragraphs_index_from_one_and_chapter_flag` | 功能正确 | 3 段落库 `"index"` = `[1,2,3]`、`is_chapter_start` = `[1,0,0]`（bool→1/0） |
 | `test_import_book_inserts_book_and_paragraphs` | 功能正确 | mock `parse_epub` → `import_book` 落书+段落（`total_paragraphs==3`、`"index"==[1,2,3]`） |
 | `test_import_book_duplicate_raises` | 功能正确 | 同 `content_hash` 二次导入 → `DuplicateBookError`（`existing_book_id`/`title` 透传） |
 | `test_import_book_empty_segments_raises_value_error` | 边界鲁棒 | 空 segments → `ValueError`、books 表 0 行（不插书） |
@@ -656,6 +664,8 @@
 | `test_books_non_epub_returns_400` | 边界鲁棒 | `.txt` → 400、`import_book` 不调 |
 | `test_books_empty_body_returns_400` | 边界鲁棒 | `ValueError("EPUB 无正文")` → 400 |
 | `test_books_parse_failure_returns_500` | 边界鲁棒 | 解析抛 `RuntimeError` → 500 |
+| `test_books_parse_failure_logs_error` | 边界鲁棒 | 解析失败 → 500 且 `caplog` 记录含「导入 EPUB」的 ERROR（异常不静默吞） |
+| `test_books_sanitizes_filename` | 功能正确 | 上传文件名 `../../evil<1>.epub` → `import_book` 收到 `"evil1.epub"`（剥路径 + 去 `<`/`>`） |
 | `test_books_too_large_returns_400` | 边界鲁棒 | 超 `_MAX_EPUB_BYTES` → 400、`import_book` 不调（中断不继续读） |
 
 ## frontend-sse（SSE 数据流：useSSE + dispatchEvent 分发表）

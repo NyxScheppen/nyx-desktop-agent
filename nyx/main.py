@@ -121,6 +121,15 @@ def _root_event(
     )
 
 
+def _sanitize_filename(name: str) -> str:
+    """上传文件名消毒：剥路径、去控制字符与 HTML 危险字符、限长，空则回退。"""
+    cleaned = "".join(
+        ch for ch in Path(name).name
+        if ch.isprintable() and ch not in '<>"'
+    )
+    return cleaned[:255] or "book.epub"
+
+
 def _load_prompt_files(canon_dir: Path, names: tuple[str, ...]) -> str:
     """读若干 prompt 文件合并为一段字符串。任一缺失 fail-fast。"""
     parts: list[str] = []
@@ -440,27 +449,27 @@ def build_app(app: _App) -> FastAPI:
 
     @fast.post("/api/books", status_code=201)
     async def api_books(file: UploadFile = File(...)) -> Book:
-        filename = file.filename or "book.epub"
+        filename = _sanitize_filename(file.filename or "book.epub")
         if Path(filename).suffix.lower() != ".epub":
             raise HTTPException(status_code=400, detail="仅支持 .epub 文件")
-        chunks: list[bytes] = []
+        data = bytearray()
         total = 0
         while chunk := await file.read(1 << 20):
             total += len(chunk)
             if total > _MAX_EPUB_BYTES:
                 raise HTTPException(status_code=400, detail="文件过大")
-            chunks.append(chunk)
-        data = b"".join(chunks)
+            data += chunk
         try:
-            return await app.reading.import_book(filename, data)
+            return await app.reading.import_book(filename, bytes(data))
         except DuplicateBookError as e:
             raise HTTPException(
                 status_code=409,
                 detail={"existing_book_id": e.existing_book_id, "title": e.title},
             ) from e
-        except ValueError:
-            raise HTTPException(status_code=400, detail="EPUB 无正文") from None
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception:
+            logging.getLogger(__name__).exception("导入 EPUB 失败: %s", filename)
             raise HTTPException(status_code=500, detail="EPUB 解析失败") from None
 
     @fast.post("/api/observe")

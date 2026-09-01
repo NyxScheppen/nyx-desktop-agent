@@ -975,6 +975,8 @@
 | `MessageBubble > think → 逐字弱化显示（不再折叠）` | 功能正确 | think 气泡带 `message-bubble--think` class、content 经 `typeDone()` 推进 fake timers 后完整上屏 |
 | `MessageBubble > initiate_chat → 带「欲望搭话」标记 + 逐字 content` | 功能正确 | initiate_chat 气泡带「欲望搭话」badge；content 经 `typeDone()` 逐字上屏 |
 | `MessageBubble > user message → 右气泡 class` | 功能正确 | 用户消息带 `message-bubble--user` class |
+| `MessageBubble > reading_question → 「提问」徽标 + 即时全量 + selectedText 引文行` | 功能正确 | `reading_question` 气泡 content 即时全量（`为什么？` 无需 `typeDone()`）；「提问」带 `message-bubble__badge` class；`selectedText` 渲染 `原文：「划线句」` 且带 `message-bubble__quote` class |
+| `MessageBubble > reading_association → 「联想」徽标 + memoryId → 「记忆」标` | 功能正确 | `reading_association` 气泡 content 即时全量（`片段`）；「联想」带 `message-bubble__badge` class；`memoryId` 非空时渲染「记忆」且带 `message-bubble__memory` class |
 | `MessageList > 全部消息按序渲染，无历史折叠` | 功能正确 | 两条消息 `typeDone()` 后都上屏（微信式：不再只显示一条 / 折叠历史）；`queryByRole("button")` 无历史按钮 |
 | `MessageList > 全部气泡渲染即存在（串行门控只延迟内容，不延迟挂载）` | 功能正确 | 两条 nyx 消息渲染即 `.message-bubble` 数量 = 2（打字中 content 渐显但气泡已挂载，串行门控只延迟内容） |
 | `MessageList > 串行逐字：内心话先打完、对话才开打` | 功能正确 | think 在前、speak 在后：未推进 timer 两者皆空（think 刚开打、speak 等前置打完）；`typeDone()` 后 think→speak 串行完整上屏 |

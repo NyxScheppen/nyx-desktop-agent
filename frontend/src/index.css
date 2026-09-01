@@ -353,6 +353,28 @@ body {
   letter-spacing: 1px;
 }
 
+/* 读书 turn 的划线引用（08 §2.5）：复用 .note-item__quote 视觉语言（左金线 + 斜体小字） */
+.message-bubble__quote {
+  margin: 0.25rem 0 0;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--gold);
+  font-style: italic;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+/* 读书 turn 的记忆标（08 §2.5）：轻量非交互标记 */
+.message-bubble__memory {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+  margin-top: 0.25rem;
+  border: 1px solid var(--gold);
+  border-radius: 0.2rem;
+  color: var(--gold);
+  letter-spacing: 1px;
+}
+
 /* 打字光标 */
 .cursor-blink {
   display: inline-block;

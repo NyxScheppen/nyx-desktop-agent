@@ -924,9 +924,6 @@
 | `startCatchup 重入 > 旧 timer 清除不叠加` | 边界鲁棒 | 连续两次 `startCatchup()` → `vi.getTimerCount()=1`（旧 timer 被 clear 不叠加） |
 | `stopCatchup > clearTimeout 后 advance 不推进` | 功能正确 | `stopCatchup()` 后 advance → `nyxPosition` 不变、`getTimerCount()=0` |
 | `closeBook > 复位 bookId/paragraphs/positions` | 功能正确 | `bookId=null`、`totalParagraphs=0`、`paragraphs=[]`、`userPosition=nyxPosition=1` |
-| `addReadingBubble > 非当前书事件丢弃` | 功能正确 | `book_id !== bookId` → `impulseBubbles` 不变（书架切换后旧书气泡不串场） |
-| `addReadingBubble > kind 映射 + 字段各落对` | 功能正确 | mutter→`{kind:"mutter",content}`；question→`{kind:"question",subtype,selectedText}`；association→`{kind:"association",content:snippet,memoryId}` |
-| `addReadingBubble > cap 到 20 溢出丢最旧` | 边界鲁棒 | 25 条 → 只留 20 条，最旧 5 条被丢（`bubbles[0].id==="e6"`、`bubbles[19].id==="e25"`） |
 | `loadNotes > GET /api/notes/{bookId}` | 功能正确 | `notes` 落 fixture（含 `annotations`）、`notesError=null` |
 | `addNote > POST 返回裸 UserNote → unshift + 归一` | 功能正确 | 裸 7 键 `UserNote` 归一成 `{...note, annotations:[]}` 后 unshift 到 `notes[0]` |
 | `updateNote > 覆盖 7 键、保留 annotations` | 功能正确 | content/updated_at 更新、原 `annotations` 数组保留（后端不回批注，不整表重拉） |
@@ -934,13 +931,12 @@
 | `showToNyx > 成功后 append Annotation（不整表重拉）` | 功能正确 | fetch 恰 1 次（非重拉）、`annotations` append 完整 `Annotation` |
 | `showToNyx > LLM 空回 null → 不 append` | 边界鲁棒 | `showNoteToNyx` 返回 `null` → `annotations` 不变 |
 
-## frontend-reading-panel（阅读面板：ReaderView 位置高亮 + ReaderSidebar 气泡 + NotePanel 笔记）
+## frontend-reading-panel（阅读面板：ReaderView 真分页位置高亮 + NotePanel 笔记）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `ReaderView > 当前段 --current、Nyx 段 --nyx、其余无` | 功能正确 | `userPosition=3`、`nyxPosition=5` → 第 3 段 className 含 `reader-text__para--current` 不含 `--nyx`；第 5 段含 `--nyx` 不含 `--current`；第 2 段两者皆无 |
-| `ReaderSidebar > 渲染三态气泡（kind 决定样式类）` | 功能正确 | 三态气泡文案上屏 + class 恰为 `reader-bubble reader-bubble--mutter/question/association` |
-| `ReaderSidebar > 点「笔记」打开 NotePanel（挂载即 loadNotes）` | 功能正确 | 点「笔记」→ `role=dialog`（name 笔记）出现、`loadNotes` 恰 1 次 |
+| `ReaderView > 当前段加 --current、Nyx 段加 --nyx、其余无` | 功能正确 | 真分页：`userPosition=3`、`nyxPosition=5` → 第 3 段 className 含 `reader-text__para--current` 不含 `--nyx`；第 5 段含 `--nyx` 不含 `--current`；第 2 段两者皆无 |
+| `ReaderView > 侧栏已拆：笔记入口在 footer、header 显示她/你读到第几段` | 功能正确 | `.reader-sidebar` 为 null（侧栏已拆）；「笔记」按钮在 footer；`.reader__pos` 含「她读到第 5 段」「你读到第 3」 |
 | `NotePanel > 渲染笔记（content + selected_text + 批注）` | 功能正确 | content/划线原文/批注三文案均上屏 |
 | `NotePanel > composer 提交 → addNote（book_id + content）` | 功能正确 | 输入 `"  新笔记  "` 点「记笔记」→ `addNote({book_id:"b1", content:"新笔记"})`（trim） |
 | `NotePanel > 空白 composer 提交禁用` | 边界鲁棒 | 空白时「记笔记」按钮 `disabled` |

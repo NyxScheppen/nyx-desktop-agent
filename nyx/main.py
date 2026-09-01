@@ -726,13 +726,14 @@ async def build_app_context(config: Config) -> _App:
     await _seed_inner_life(inner_life_store)
     await _seed_desire(desire_store)
 
-    reading = ReadingFacade(
-        ReadingStore(db), inner_life, desire, memory, llm, evaluator, bus, canon
-    )
-
     expression = ExpressionFacade(
         bus, llm, evaluator, memory, activity, desire, inner_life, canon, ask,
         config.expression, tools,
+    )
+
+    reading = ReadingFacade(
+        ReadingStore(db), inner_life, desire, memory, llm, evaluator, bus, canon,
+        expression,
     )
 
     app = _App(

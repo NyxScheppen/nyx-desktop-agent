@@ -1056,12 +1056,6 @@
 | `DesiresPanel > 渲染活队列（pending/active/suppressed），过滤 expired/satisfied` | 功能正确 | 短期欲望里 pending/active/suppressed 三条描述上屏，satisfied/expired 两条描述不上屏 |
 | `DesiresPanel > 短期欲望全是终态 → 不渲染「短期欲望」空区块` | 边界鲁棒 | 短期欲望全为 satisfied/expired → `liveShortTerm.length===0`，「短期欲望」区块整体不渲染 |
 
-## frontend-scroll-area（书卷区域：ScrollArea 对话主舞台）
-
-| 测试 | 检查方向 | 断言内容 |
-|---|---|---|
-| `ScrollArea > 渲染对话主舞台：消息列表，无模式切换按钮` | 功能正确 | 渲染 `.message-list` 容器（空消息也渲染）；「记忆/笔记/对话」按钮已移除（`queryByText` 均 null） |
-
 ## frontend-settings-view（游戏设置页内面板：SettingsView 字体大小 + 背景外观）
 
 | 测试 | 检查方向 | 断言内容 |

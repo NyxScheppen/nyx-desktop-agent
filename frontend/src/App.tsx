@@ -2,6 +2,8 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import AnnounceLayer from "./components/AnnounceLayer";
 import ChatInput from "./components/chat/ChatInput";
+import MessageList from "./components/chat/MessageList";
+import Avatar from "./components/inner/Avatar";
 import InnerStatePanel from "./components/inner/InnerStatePanel";
 import SettingsView from "./components/layout/SettingsView";
 import ActivityPanel from "./components/panels/ActivityPanel";
@@ -10,11 +12,11 @@ import MemoryPanel from "./components/panels/MemoryPanel";
 import BookshelfView from "./components/reading/BookshelfView";
 import ReaderView from "./components/reading/ReaderView";
 import RightDock, { type View } from "./components/shell/RightDock";
-import ScrollArea from "./components/shell/ScrollArea";
 import StatusBar from "./components/shell/StatusBar";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
 import { useActivityStore } from "./stores/activityStore";
+import { useChatStore } from "./stores/chatStore";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
 import { useReaderStore } from "./stores/readerStore";
 import { useSettingsStore } from "./stores/settingsStore";
@@ -33,8 +35,8 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
   large: 1.12,
 };
 
-// 装配：顶栏（标题+设置+连接状态）+ 左状态条 + 书卷区（底部工具条替换式切视图：
-// 聊天 / 内在状态 / 欲望 / 活动 / 记忆）+ 输入框 + 设置弹层 + 气泡层。
+// 装配：顶栏（标题+设置+连接状态）+ 左栏常驻对话 + 中间内容区 + 立绘浮层 + 底部导航
+// （RightDock 切换中间视图：内在状态 / 欲望 / 活动 / 记忆 / 读书）+ 设置弹层 + 气泡层。
 // useSSE 只挂一次；顶栏「设置」开设置弹层。
 export default function App() {
   const status = useSSE(dispatchEvent);
@@ -42,9 +44,10 @@ export default function App() {
   const refreshActivity = useActivityStore((s) => s.refresh);
   usePresence();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // 书卷区当前视图：null = 聊天主舞台；其余 = 对应面板（RightDock 底部按钮切换）
-  const [view, setView] = useState<View>(null);
+  // 中间内容区当前视图：默认 reading（书架/阅读页）；其余 = 对应面板（RightDock 底部按钮切换）
+  const [view, setView] = useState<View>("reading");
   const bookId = useReaderStore((s) => s.bookId);
+  const messages = useChatStore((s) => s.messages);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
   const fontScale = useSettingsStore((s) => s.fontScale);
@@ -93,24 +96,26 @@ export default function App() {
       </header>
 
       <main className="game-shell" style={shellStyle}>
-        <StatusBar />
+        <div className="left-dock">
+          <StatusBar />
+          <MessageList messages={messages} />
+          <ChatInput />
+        </div>
         <div className="game-main">
-          {view === null ? (
-            <ScrollArea />
-          ) : (
-            <section className="side-panel">
-              <div className="side-panel__body">
-                {view === "inner" && <InnerStatePanel />}
-                {view === "desire" && <DesiresPanel />}
-                {view === "activity" && <ActivityPanel />}
-                {view === "memory" && <MemoryPanel />}
-                {view === "reading" && (bookId === null ? <BookshelfView /> : <ReaderView />)}
-              </div>
-            </section>
-          )}
+          <section className="side-panel">
+            <div className="side-panel__body">
+              {view === "inner" && <InnerStatePanel />}
+              {view === "desire" && <DesiresPanel />}
+              {view === "activity" && <ActivityPanel />}
+              {view === "memory" && <MemoryPanel />}
+              {view === "reading" && (bookId === null ? <BookshelfView /> : <ReaderView />)}
+            </div>
+          </section>
+          <div className="avatar-overlay">
+            <Avatar />
+          </div>
         </div>
         <RightDock view={view} onSwitch={setView} />
-        <ChatInput />
       </main>
 
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}

@@ -100,14 +100,25 @@ body {
   z-index: 2;
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 12px;
   height: 100vh;
   padding: 56px 16px 16px;
   font-size: calc(1rem * var(--text-scale));
 }
 
+/* 左栏对话（08 §1）：StatusBar + MessageList + ChatInput 竖排，占 col1 row1/span 2 */
+.left-dock {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .game-main {
+  position: relative;
   grid-column: 2;
   grid-row: 1;
   min-width: 0;
@@ -117,8 +128,7 @@ body {
 
 /* ===== 状态条（左栏） ===== */
 .status-bar {
-  grid-column: 1;
-  grid-row: 1;
+  flex-shrink: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -128,7 +138,6 @@ body {
   box-shadow: inset 0 0 0 1px var(--parchment-deep);
   border-radius: 4px;
   background: var(--parchment);
-  overflow-y: auto;
 }
 
 .status-bar__info {
@@ -182,6 +191,29 @@ body {
   cursor: pointer;
 }
 
+/* 立绘半透明浮层（08 §4）：盖在 game-main 右侧上层，不占布局宽、不挡正文点击 */
+.avatar-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  width: 40%;
+  z-index: 1;
+  pointer-events: none;
+}
+.avatar-overlay .avatar {
+  pointer-events: auto; /* 只在立绘上恢复点击（戳立绘 + 红点） */
+  height: 100%;         /* 让立绘的 height:100% 有确定参照（spec 未写，补上否则立绘塌成 0 高） */
+}
+.avatar-overlay .emotion-sprite--portrait {
+  opacity: 0.22;        /* 调淡 */
+  height: 100%;
+  object-fit: contain;  /* 整身高立绘 contain 不变形 */
+}
+.avatar-overlay .avatar-notice {
+  opacity: 1; /* 红点不被立绘 0.22 拖淡 */
+}
+
 .emotion-sprite--portrait {
   display: block;
   width: 100%;
@@ -227,75 +259,6 @@ body {
   max-width: 16rem;
 }
 
-/* ===== 碎碎念卡片（左栏下方，常驻显示最近碎碎念） ===== */
-.mutter-card {
-  grid-column: 1;
-  grid-row: 2 / span 2;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  padding: 0.5rem 0.75rem;
-  border: 2px double var(--gold);
-  box-shadow: inset 0 0 0 1px var(--parchment-deep);
-  border-radius: 4px;
-  background: var(--parchment);
-  overflow: hidden;
-}
-
-.mutter-card__title {
-  font-size: 0.78rem;
-  color: var(--accent);
-  letter-spacing: 2px;
-  border-bottom: 1px solid var(--gold);
-  padding-bottom: 0.3rem;
-}
-
-.mutter-card__empty {
-  margin: 0;
-  font-size: 0.82rem;
-  color: var(--ink-soft);
-  font-style: italic;
-}
-
-.mutter-card__list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  overflow-y: auto;
-}
-
-.mutter-card__item {
-  font-size: 0.82rem;
-  color: var(--ink);
-  line-height: 1.5;
-  overflow-wrap: break-word;
-  word-break: break-word;
-}
-
-/* ===== 书卷区域（多模式滚动区） ===== */
-.scroll-area {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 0.75rem;
-  border: 2px double var(--gold);
-  box-shadow: inset 0 0 0 1px var(--parchment-deep);
-  border-radius: 4px;
-  background: var(--parchment);
-}
-
-.scroll-area__body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-
 /* ===== 消息列表 + 气泡 ===== */
 .message-list {
   flex: 1;
@@ -303,8 +266,12 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  margin-bottom: 0.75rem;
   overflow-y: auto;
+  padding: 0.75rem;
+  border: 2px double var(--gold);
+  box-shadow: inset 0 0 0 1px var(--parchment-deep);
+  border-radius: 4px;
+  background: var(--parchment);
 }
 
 .message-bubble {
@@ -457,8 +424,7 @@ body {
 
 /* ===== 输入框（Galgame 对话框） ===== */
 .chat-input {
-  grid-column: 2;
-  grid-row: 3;
+  flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
@@ -1014,12 +980,13 @@ body {
 /* ===== 头像旁临时气泡 ===== */
 .announce-layer {
   position: fixed;
-  left: 16px;
-  bottom: 64px;
+  left: auto;
+  top: 72px;
+  bottom: auto;
   z-index: 3;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: flex-end;
   gap: 8px;
   max-width: 34%;
   pointer-events: none;

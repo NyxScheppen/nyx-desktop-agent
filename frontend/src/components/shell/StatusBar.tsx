@@ -2,10 +2,9 @@ import { EMOTION_LABELS } from "../../lib/labels";
 import { activityStatusText } from "../../lib/activityResult";
 import { useActivityStore } from "../../stores/activityStore";
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
-import Avatar from "../inner/Avatar";
 import EnergyBar from "../inner/EnergyBar";
 
-// 状态条（左栏）：立绘半身像（3:4）+ 底部信息块触底（名字/心情/精力条/现在状态）。
+// 状态条（左栏顶部）：信息块（名字/心情/精力条/现在状态）。立绘迁到中间浮层（08 §4）。
 export default function StatusBar() {
   const current = useInnerLifeStore((s) => s.current);
   const activity = useActivityStore((s) => s.data);
@@ -15,7 +14,6 @@ export default function StatusBar() {
 
   return (
     <div className="status-bar">
-      <Avatar />
       <div className="status-bar__info">
         <span className="status-bar__name">✦ Nyx ✦</span>
         <span className="status-bar__mood">心情：{mood}</span>

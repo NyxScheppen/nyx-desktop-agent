@@ -24,6 +24,7 @@ from nyx.enums import (
 )
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
@@ -184,6 +185,14 @@ class _FakeEvaluator:
         self.evaluated.append(output)
 
 
+class _FakeExpression:
+    def __init__(self) -> None:
+        self.recorded: list[str] = []
+
+    def record_proactive_turn(self, text: str) -> None:
+        self.recorded.append(text)
+
+
 class _NoneContentLlm(_FakeLlm):
     """LLM 返回 content=None（契约违约），模拟客户端异常输出。"""
 
@@ -268,6 +277,7 @@ def _build_impulse_facade(
     memory: _FakeMemory,
     inner_life: _FakeInnerLife,
     desire: _FakeDesire,
+    expression: _FakeExpression | None = None,
 ) -> ReadingFacade:
     return ReadingFacade(
         ReadingStore(database),
@@ -278,6 +288,10 @@ def _build_impulse_facade(
         cast(Evaluator, _FakeEvaluator()),
         cast(EventBus, bus),
         "canon",
+        cast(
+            ExpressionFacade,
+            expression if expression is not None else _FakeExpression(),
+        ),
     )
 
 
@@ -717,6 +731,64 @@ async def test_associate_reading_none_search_skips_without_raise() -> None:
     assert bus.published == []
 
 
+async def test_question_reading_records_proactive_turn() -> None:
+    # 提问触发：record_proactive_turn 记问题正文（quote_question 的
+    # selected_text 不进历史）
+    llm = _FakeLlm({"quote_question": "这段为什么重要？\n因为生命的意义。"})
+    bus = _FakeBus()
+    expr = _FakeExpression()
+    database = await db.connect(":memory:")
+    facade = _build_impulse_facade(
+        database, bus, llm, _FakeMemory([]),
+        _FakeInnerLife(_mk_state()), _FakeDesire(_desire_values()), expr,
+    )
+    try:
+        await facade._question_reading(
+            "b1", 1, _RICH_TEXT, ReadingBehavior.QUOTE_QUESTION, _mk_state()
+        )
+    finally:
+        await database.conn.close()
+    question = [e for e in bus.published if e.type is EventType.READING_QUESTION][0]
+    assert question.content["content"] == "这段为什么重要？"
+    assert expr.recorded == ["这段为什么重要？"]  # 只记正文，不含 selected_text
+
+
+async def test_associate_reading_records_proactive_turn_per_memory() -> None:
+    # 联想触发：每条命中记忆记一条 turn（snippet）
+    bus = _FakeBus()
+    expr = _FakeExpression()
+    database = await db.connect(":memory:")
+    memory = _FakeMemory([_memory("m1", "第一条记忆"), _memory("m2", "第二条记忆")])
+    facade = _build_impulse_facade(
+        database, bus, _FakeLlm(), memory,
+        _FakeInnerLife(_mk_state()), _FakeDesire(_desire_values()), expr,
+    )
+    try:
+        await facade._associate_reading("b1", 1, _RICH_TEXT)
+    finally:
+        await database.conn.close()
+    assoc = [e for e in bus.published if e.type is EventType.READING_ASSOCIATION]
+    assert [a.content["memory_id"] for a in assoc] == ["m1", "m2"]
+    assert expr.recorded == ["第一条记忆", "第二条记忆"]
+
+
+async def test_mutter_reading_does_not_record_proactive_turn() -> None:
+    # mutter 触发：只广播，不调 record_proactive_turn
+    bus = _FakeBus()
+    expr = _FakeExpression()
+    database = await db.connect(":memory:")
+    facade = _build_impulse_facade(
+        database, bus, _FakeLlm({"reading_mutter": "这句真美。"}), _FakeMemory([]),
+        _FakeInnerLife(_mk_state()), _FakeDesire(_desire_values()), expr,
+    )
+    try:
+        await facade._mutter_reading("b1", 1, _RICH_TEXT, _mk_state())
+    finally:
+        await database.conn.close()
+    assert any(e.type is EventType.READING_MUTTER for e in bus.published)
+    assert expr.recorded == []
+
+
 # ---- 22-reading-notes：用户笔记 / Nyx 批注 / 章末整合 ----
 
 async def _note_facade(
@@ -755,6 +827,7 @@ async def _note_facade(
         cast(Evaluator, fake_eval),
         cast(EventBus, bus),
         "canon",
+        cast(ExpressionFacade, _FakeExpression()),
     )
     return facade, database, bus, fake_llm, fake_memory, fake_inner, fake_eval
 

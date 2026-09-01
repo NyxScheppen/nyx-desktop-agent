@@ -2,7 +2,7 @@
 翻页 → 段落特征 → 冲动分派。
 
 `parse_epub` 是同步 CPU 阻塞调用，用 `asyncio.to_thread` 卸载，不阻塞事件循环。
-构造注入 8 依赖（store + inner_life/desire/memory/llm/evaluator/bus/canon）。
+构造注入 9 依赖（store + inner_life/desire/memory/llm/evaluator/bus/canon/expression）。
 """
 
 import asyncio
@@ -17,6 +17,7 @@ from nyx.enums import BoundaryResult, DesireType, EventType, ReadingBehavior
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_event
+from nyx.expression.facade import ExpressionFacade
 from nyx.expression.prompt import build_system_prompt
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
@@ -140,6 +141,7 @@ class ReadingFacade:
         evaluator: Evaluator,
         bus: EventBus,
         canon: str,
+        expression: ExpressionFacade,
     ) -> None:
         self._store = store
         self._inner_life = inner_life
@@ -149,6 +151,7 @@ class ReadingFacade:
         self._evaluator = evaluator
         self._bus = bus
         self._canon = canon
+        self._expression = expression
         self._logger = logging.getLogger(__name__)
         # 冷却时间戳是唯一内存态（per 进程，重启清零），用单调钟 time.monotonic
         # 防墙钟跳变；无并发锁——见 spec 21 关键决策。
@@ -388,6 +391,7 @@ class ReadingFacade:
                     book_id,
                 )
             )
+            self._expression.record_proactive_turn(content)
         except Exception:
             self._logger.exception(
                 "陪读提问失败 behavior=%s book_id=%s paragraph_index=%d",
@@ -416,6 +420,7 @@ class ReadingFacade:
                         book_id,
                     )
                 )
+                self._expression.record_proactive_turn(snippet)
         except Exception:
             self._logger.exception(
                 "陪读联想检索失败 book_id=%s paragraph_index=%d",

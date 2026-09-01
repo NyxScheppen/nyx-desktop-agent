@@ -150,6 +150,71 @@ describe("chatStore.add*", () => {
   });
 });
 
+describe("chatStore.addReadingTurn", () => {
+  beforeEach(resetChat);
+
+  it("reading_question → kind=reading_question + subtype/selectedText + correlation_id=book_id", () => {
+    useChatStore.getState().addReadingTurn({
+      event: "reading_question",
+      event_id: "e1",
+      correlation_id: "b1",
+      content: "为什么？",
+      subtype: "quote_question",
+      book_id: "b1",
+      paragraph_index: 4,
+      selected_text: "划线句",
+    });
+
+    const { messages } = useChatStore.getState();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      id: "e1",
+      role: "nyx",
+      kind: "reading_question",
+      content: "为什么？",
+      correlation_id: "b1",
+      subtype: "quote_question",
+      selectedText: "划线句",
+    });
+  });
+
+  it("reading_association → kind=reading_association + memoryId + content=snippet", () => {
+    useChatStore.getState().addReadingTurn({
+      event: "reading_association",
+      event_id: "e2",
+      correlation_id: "b1",
+      memory_id: "m1",
+      snippet: "片段",
+      book_id: "b1",
+      paragraph_index: 5,
+    });
+
+    const { messages } = useChatStore.getState();
+    expect(messages[0]).toMatchObject({
+      id: "e2",
+      role: "nyx",
+      kind: "reading_association",
+      content: "片段",
+      correlation_id: "b1",
+      memoryId: "m1",
+    });
+  });
+
+  it("question content 非 string 丢弃（复用 append 收窄校验）", () => {
+    useChatStore.getState().addReadingTurn({
+      event: "reading_question",
+      event_id: "e3",
+      correlation_id: "b1",
+      content: 123 as unknown as string,
+      subtype: "question_reflective",
+      book_id: "b1",
+      paragraph_index: 4,
+      selected_text: null,
+    });
+    expect(useChatStore.getState().messages).toHaveLength(0);
+  });
+});
+
 describe("mutterStore", () => {
   beforeEach(() => {
     useMutterStore.setState({ mutters: [] });
@@ -537,6 +602,46 @@ describe("chatStore.loadHistory", () => {
 
     useChatStore.getState().reset();
     expect(useChatStore.getState().typedIds).toEqual({});
+  });
+
+  it("loadHistory：reading_question/association 历史回填（content.content / content.snippet + 回填字段）", async () => {
+    vi.stubGlobal(
+      "fetch",
+      historyFetch({
+        reading_question: [
+          {
+            id: "q1",
+            timestamp: 1000,
+            source: "internal",
+            type: "reading_question",
+            content: { content: "为什么？", subtype: "quote_question", selected_text: "划线句" },
+            correlation_id: "b1",
+          },
+        ],
+        reading_association: [
+          {
+            id: "a1",
+            timestamp: 1001,
+            source: "internal",
+            type: "reading_association",
+            content: { snippet: "片段", memory_id: "m1" },
+            correlation_id: "b1",
+          },
+        ],
+      }),
+    );
+
+    await useChatStore.getState().loadHistory();
+
+    const { messages } = useChatStore.getState();
+    expect(messages.map((m) => m.kind)).toEqual(["reading_question", "reading_association"]);
+    expect(messages[0]).toMatchObject({
+      content: "为什么？",
+      subtype: "quote_question",
+      selectedText: "划线句",
+      correlation_id: "b1",
+    });
+    expect(messages[1]).toMatchObject({ content: "片段", memoryId: "m1" });
   });
 });
 

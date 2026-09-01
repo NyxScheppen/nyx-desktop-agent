@@ -2,6 +2,9 @@ import { create } from "zustand";
 import { getEventsLog, postChat } from "../api/client";
 import type {
   BackendEvent,
+  QuestionSubtype,
+  ReadingAssociationEvent,
+  ReadingQuestionEvent,
   TextEvent,
   TextEventType,
   UserMessageEvent,
@@ -10,10 +13,16 @@ import type {
 export type ChatMessage = {
   id: string; // event_id
   role: "user" | "nyx";
-  kind: "message" | "speak" | "ask" | "think" | "initiate_chat";
+  kind:
+    | "message" | "speak" | "ask" | "think" | "initiate_chat"
+    | "reading_question" | "reading_association";
   content: string;
   correlation_id: string;
   preloaded?: boolean; // 历史回填消息：渲染时不逐字
+  // 读书 turn 专属（kind==="reading_question" 才有 subtype/selectedText；"reading_association" 才有 memoryId）
+  subtype?: QuestionSubtype;
+  selectedText?: string | null;
+  memoryId?: string;
 };
 
 type ChatState = {
@@ -27,6 +36,7 @@ type ChatState = {
   addAsk: (e: TextEvent<"ask">) => void;
   addThink: (e: TextEvent<"think">) => void;
   addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
+  addReadingTurn: (e: ReadingQuestionEvent | ReadingAssociationEvent) => void;
   clearUnreadProactive: () => void;
   markTyped: (id: string) => void;
   loadHistory: () => Promise<void>; // 挂载时回填 GET /api/events/log 的历史消息（preloaded，不逐字）
@@ -41,6 +51,8 @@ const HISTORY_TYPES = [
   "ask",
   "think",
   "initiate_chat",
+  "reading_question",
+  "reading_association",
 ] as const;
 const HISTORY_LIMIT = 200; // 每类型拉取上限（够覆盖长会话，超出裁旧）
 
@@ -48,16 +60,30 @@ const HISTORY_LIMIT = 200; // 每类型拉取上限（够覆盖长会话，超�
 // 字段非 string 则丢弃（与 append 一致的收窄校验，01-sse §4.1）。
 function toChatMessage(e: BackendEvent): ChatMessage | null {
   const isUser = e.type === "user_message";
-  const text = isUser ? e.content.message : e.content.content;
-  if (typeof text !== "string") return null;
-  return {
+  const isQuestion = e.type === "reading_question";
+  const isAssociation = e.type === "reading_association";
+  const raw = isUser
+    ? e.content.message
+    : isAssociation
+      ? e.content.snippet
+      : e.content.content;
+  if (typeof raw !== "string") return null;
+  const msg: ChatMessage = {
     id: e.id,
     role: isUser ? "user" : "nyx",
     kind: isUser ? "message" : (e.type as ChatMessage["kind"]),
-    content: text,
+    content: raw,
     correlation_id: e.correlation_id,
     preloaded: true,
   };
+  if (isQuestion) {
+    msg.subtype = e.content.subtype as QuestionSubtype;
+    msg.selectedText = e.content.selected_text as string | null;
+  }
+  if (isAssociation) {
+    msg.memoryId = e.content.memory_id as string;
+  }
+  return msg;
 }
 
 // 回复超时兜底（02-stores §1）：60s 未收到 speak/ask 视为超时。
@@ -122,6 +148,43 @@ export const useChatStore = create<ChatState>((set, get) => {
     addInitiateChat: (e) => {
       append(e, "nyx", "initiate_chat");
       set({ unreadProactive: true });
+    },
+    // 读书提问/联想并进对话（08 §2.2）：correlation_id = book_id（后端用 book_id 当 correlation_id），
+    // 不过滤当前书（永久聊天消息，关书后仍留转录）；文本字段非 string 丢弃（复用 append 收窄）。
+    addReadingTurn: (e) => {
+      if (e.event === "reading_question") {
+        if (typeof e.content !== "string") return;
+        set((s) => ({
+          messages: [
+            ...s.messages,
+            {
+              id: e.event_id,
+              role: "nyx",
+              kind: "reading_question",
+              content: e.content,
+              correlation_id: e.book_id,
+              subtype: e.subtype,
+              selectedText: e.selected_text,
+            },
+          ],
+        }));
+        return;
+      }
+      // reading_association
+      if (typeof e.snippet !== "string") return;
+      set((s) => ({
+        messages: [
+          ...s.messages,
+          {
+            id: e.event_id,
+            role: "nyx",
+            kind: "reading_association",
+            content: e.snippet,
+            correlation_id: e.book_id,
+            memoryId: e.memory_id,
+          },
+        ],
+      }));
     },
     clearUnreadProactive: () => set({ unreadProactive: false }),
     markTyped: (id) => set((s) => ({ typedIds: { ...s.typedIds, [id]: true } })),

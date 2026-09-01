@@ -583,6 +583,8 @@
 | `test_history_fast_channel` | 回归保护 | 两次都走快通道时，第二次回复 prompt 仍含上一轮 `用户：`/`Nyx：` 历史（历史不因快通道丢失） |
 | `test_record_message_marks_fast` | 功能正确 | 快通道 nyx 消息 `fast=True`、慢通道 nyx 消息 `fast=False`（回溯截断的依据） |
 | `test_reply_slow_backtrack_skips_fast_nyx` | 功能正确 | 慢通道回溯：跳过 `fast=True` 的快通道 nyx 消息（`Nyx：嗯嗯` 不进 prompt）、保留更早的相关用户消息（`用户：我上周去爬山了` 进 prompt） |
+| `test_record_proactive_turn_appends_to_history` | 功能正确 | `record_proactive_turn("…")` → `_history` 尾多一条 `role="nyx"`、`content="…"`、`fast is False` |
+| `test_reading_turn_slow_backtrack_preserved` | 功能正确 | 读书 turn（fast=False）后慢通道 reply → 回溯 prompt 含 `Nyx：她刚才问：…`（与 fast-skip 各证一半） |
 | `test_mutter_skips_when_busy` | 功能正确 | `current_activity` 非 None → 不发 |
 | `test_mutter_miss` | 功能正确 | `random.random()` 未命中 → 不发 |
 | `test_mutter_activity_fills` | 功能正确 | 命中 + ACTIVITY 类有读书产出 → 发 `mutter`，content 含「读了《挪威的森林》」具体指涉 |
@@ -740,6 +742,9 @@
 | `test_evaluate_paragraph_quote_question_single_line_null_selection` | 边界鲁棒 | `quote_question` 单行 → `selected_text=None` |
 | `test_mutter_reading_none_content_skips_without_raise` | 边界鲁棒 | LLM 返回 `content=None` → `.strip()` 不炸、零广播（try 兜住后处理） |
 | `test_associate_reading_none_search_skips_without_raise` | 边界鲁棒 | `memory.search` 返回 `None` → `[:3]` 不炸、零广播（try 兜住切片） |
+| `test_question_reading_records_proactive_turn` | 功能正确 | `_question_reading`（quote_question）→ 广播 `reading_question` 且 `fake_expression.recorded == [问题正文]`（不含 selected_text） |
+| `test_associate_reading_records_proactive_turn_per_memory` | 功能正确 | 2 条记忆 → 2 条 `reading_association` 且 `recorded == [snippet1, snippet2]`（每条一次） |
+| `test_mutter_reading_does_not_record_proactive_turn` | 功能正确 | `_mutter_reading` → 广播 `reading_mutter` 且 `recorded == []`（未调 record_proactive_turn） |
 | `test_impulse_evaluate_returns_triggered` | 功能正确 | `POST /api/impulse/evaluate` → `{triggered:[associate, question_knowledge]}`、`evaluate_paragraph` 收对 `(book_id,2,1)` |
 | `test_impulse_evaluate_missing_last_paragraph_returns_422` | 边界鲁棒 | 缺 `last_paragraph_index` → 422、不调 facade |
 

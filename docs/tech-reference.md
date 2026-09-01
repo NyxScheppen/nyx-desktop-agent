@@ -93,6 +93,7 @@ async def reply(msg: str, correlation_id: str) -> None          # 完整回复�
 async def initiate_chat(desire: ShortTermDesire, state: CurrentState) -> bool  # 内部发布 initiate_chat；发话 True/无话 False（18-api 据此维护 last_chat_at）
 async def mutter(state: CurrentState, correlation_id: str) -> None  # 内部发布 mutter（无则不发）；correlation_id 接 MUTTER_CHECK tick
 async def check_timeouts(now: float) -> None                    # tick 心跳收尾：问句超时记「没答」记忆、搭话超时 expire 回灌
+def record_proactive_turn(text: str) -> None                     # 把 Nyx 主动产出（读书提问/联想）追加进 _history，供 reply() 回溯引用（同步，纯内存 append）
 ```
 
 ### MemoryFacade
@@ -126,7 +127,7 @@ async def register_material(path: str, filename: str, total_chars: int) -> None 
 ### ReadingFacade
 
 ```python
-# 构造：ReadingFacade(store, inner_life, desire, memory, llm, evaluator, bus, canon)  # 8 依赖注入
+# 构造：ReadingFacade(store, inner_life, desire, memory, llm, evaluator, bus, canon, expression)  # 9 依赖注入
 async def import_book(filename: str, data: bytes) -> Book       # 解析 EPUB → 去重 → 落库 books+paragraphs → 返回 Book；正文重复抛 DuplicateBookError、空正文抛 ValueError
 async def list_books() -> list[BookListItem]                    # 书架列表（直通 store，已读排前）
 async def list_paragraphs(book_id: str, from_idx: int, to_idx: int) -> list[Paragraph]  # 段落范围（index 升序）；书不存在抛 BookNotFoundError、to_idx 越界抛 ValueError

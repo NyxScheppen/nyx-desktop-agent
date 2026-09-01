@@ -103,7 +103,7 @@ addReadingBubble(e: ReadingMutterEvent | ReadingQuestionEvent | ReadingAssociati
 ```
 NotePanel                # 从 ReaderSidebar「笔记」入口打开（覆盖层/主区切换）
 ├─ NoteList              # GET /api/notes/{book_id} 列表，created_at DESC
-│  └─ NoteItem           # 单条：content + selected_text 引用 + 批注列表 + 「给尼克斯看」/ 删除
+│  └─ NoteItem           # 单条：content + selected_text 引用 + 批注列表 + 「给尼克斯看」/ 编辑 / 删除
 └─ NoteComposer          # 新建笔记：自由文本；从正文选中文本点「记笔记」时预填 selected_text + paragraph_id
 ```
 
@@ -150,7 +150,7 @@ async function getNotes(bookId: string): Promise<UserNoteWithAnnotations[]>     
 async function createUserNote(p: { book_id: string; paragraph_id?: string | null; content: string; selected_text?: string | null }): Promise<UserNote>  // POST /api/notes/user
 async function updateUserNote(id: string, content: string): Promise<UserNote>                  // PUT /api/notes/user/{id}
 async function deleteUserNote(id: string): Promise<void>                                       // DELETE /api/notes/user/{id}
-async function showNoteToNyx(noteId: string): Promise<Annotation>  // POST /api/notes/{noteId}/show-to-nyx（返回完整 Annotation）
+async function showNoteToNyx(noteId: string): Promise<Annotation | null>  // POST /api/notes/{noteId}/show-to-nyx（返回完整 Annotation；LLM 空/失败回 null）
 async function checkChapterBoundary(bookId: string, nyxPosition: number): Promise<{ is_boundary: boolean; book_finished: boolean }>  // POST /api/notes/check-chapter-boundary
 ```
 
@@ -169,4 +169,5 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 - `readerStore` 气泡（`tests/stores.test.ts` 增补）：`addReadingBubble` 只收当前 `bookId` 事件（非当前书丢弃）；cap 到 `_BUBBLE_CAP` 溢出丢最旧；`kind` 映射正确（subtype/selectedText/memoryId 各落对字段）。
 - `readerStore` 笔记：`loadNotes` 落 `notes`；`addNote` unshift 归一 `annotations: []`；`updateNote` 覆盖 7 键保留 annotations；`deleteNote` 移除；`showToNyx` 成功后 `annotations` append 返回的完整 `Annotation`（不整表重拉）。
 - `client`（`tests/api.test.ts` 增补）：6 个笔记函数端点/方法/请求体键 + 非 2xx 统一 throw（422/404）。
+- 组件（`tests/notePanel.test.tsx`）：NotePanel 渲染 content/selected_text/批注、composer 提交 `addNote`、空白禁用、「给尼克斯看」/「删除」/「编辑」按钮 wiring（编辑态保存 → `updateNote`（trim）、取消退出不调、空白保存禁用）。
 - 不依赖真实后端；验证管道正确（事件走对 store、气泡过滤对、笔记 CRUD 对），不验证视觉。

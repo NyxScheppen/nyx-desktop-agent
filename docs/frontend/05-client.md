@@ -1,6 +1,6 @@
 # REST 客户端（`api/client.ts`）
 
-> 薄 fetch 封装：7 个端点函数 + 统一错误契约。被 `chatStore`（`postChat`/`getEventsLog`）、`innerLifeStore`（`getState`）、`usePresence`（`postObserve`）、两个快照 store（`getDesires`/`getActivity`/`getActivityResults`）共享。
+> 薄 fetch 封装：19 个端点函数 + 统一错误契约。被 `chatStore`（`postChat`/`getEventsLog`）、`innerLifeStore`（`getState`）、`usePresence`（`postObserve`）、两个快照 store（`getDesires`/`getActivity`/`getActivityResults`）、`readerStore`（阅读 + 笔记）共享。
 > 范围：`api/client.ts` 全部。`BASE_URL` 常量在此定义，SSE 与 REST 共用（01-sse §3）。
 > 对齐后端：前端的基础设施独立成 spec，同 `04-db` / `05-event` / `03-llm` 各自独立。
 
@@ -16,6 +16,22 @@ async function getDesires(): Promise<DesireState>                               
 async function getActivity(): Promise<ActivitySnapshot>                          // GET /api/activity
 async function getActivityResults(): Promise<Activity[]>                          // GET /api/activity/results
 async function getEventsLog(params?): Promise<BackendEvent[]>                    // GET /api/events/log?limit=&event_type=&correlation_id=
+
+// ---- 阅读（06-reading-panel §6）----
+async function getBooks(): Promise<BookListItem[]>                               // GET /api/books
+async function getBookParagraphs(bookId: string, from: number, to: number): Promise<Paragraph[]>  // GET /api/books/{id}/paragraphs?from=&to=
+async function getProgress(bookId: string): Promise<Progress>                    // GET /api/progress/{id}
+async function putProgress(bookId: string, p: ProgressInput): Promise<void>      // PUT /api/progress/{id}（body 3 键，不含 read_count）
+async function importBook(file: File): Promise<Book>                             // POST /api/books（multipart，FormData 不设 json 头）
+async function evaluateImpulse(bookId: string, paragraphIndex: number, lastParagraphIndex: number): Promise<{ triggered: string[] }>  // POST /api/impulse/evaluate
+
+// ---- 笔记（07-reading-events §4）----
+async function getNotes(bookId: string): Promise<UserNoteWithAnnotations[]>      // GET /api/notes/{bookId}
+async function createUserNote(p: { book_id: string; paragraph_id?: string | null; content: string; selected_text?: string | null }): Promise<UserNote>  // POST /api/notes/user
+async function updateUserNote(id: string, content: string): Promise<UserNote>    // PUT /api/notes/user/{id}
+async function deleteUserNote(id: string): Promise<void>                         // DELETE /api/notes/user/{id}（204 无 body，直接 fetch + assertOk）
+async function showNoteToNyx(noteId: string): Promise<Annotation | null>         // POST /api/notes/{noteId}/show-to-nyx（LLM 空/失败回 null）
+async function checkChapterBoundary(bookId: string, nyxPosition: number): Promise<{ is_boundary: boolean; book_finished: boolean }>  // POST /api/notes/check-chapter-boundary
 ```
 
 - 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message}`、`postObserve` 发 `{presence, window_title}`。

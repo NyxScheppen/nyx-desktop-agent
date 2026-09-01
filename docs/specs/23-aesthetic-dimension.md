@@ -5,8 +5,8 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（TypedDict 约定）、04-db（`_MIGRATIONS` v10）、09-memory-facade（`list_memories(tag="reading")` 计数）、12-inner-life（`Reflection.run`/`get_state`）、22-reading-notes（`remember_reading` 落 `tag='reading'`）
-- **实现文件**：`nyx/types.py`（新增 `Aesthetic` + `CurrentState` 加字段）、`nyx/db.py`（`_MIGRATIONS` 追加 v10）、`nyx/inner_life/store.py`（`get_aesthetic`/`upsert_aesthetic`）、`nyx/inner_life/reflection.py`（`drift_aesthetic` + `_AESTHETIC_KEYS` + `_AESTHETIC_MIN_READING` + `_REFLECTION_SYSTEM` + `_parse_reflection` + `_build_reflection_prompt` + `run`）、`nyx/inner_life/facade.py`（`get_state` 读 aesthetic）、`nyx/expression/prompt.py`（`_state_block` 加审美行）、`nyx/main.py`（`_seed_inner_life` seed）
+- **前置依赖**：01-types（TypedDict 约定）、04-db（`_MIGRATIONS` v11 + v12 `first_created_at`）、09-memory-facade（`count_new(tag, since)` 计数）、12-inner-life（`Reflection.run`/`get_state`）、22-reading-notes（`remember_reading` 落 `tag='reading'`）
+- **实现文件**：`nyx/types.py`（新增 `Aesthetic` + `CurrentState` 加字段）、`nyx/db.py`（`_MIGRATIONS` 追加 v11 + v12 `first_created_at`）、`nyx/inner_life/store.py`（`get_aesthetic`/`upsert_aesthetic`）、`nyx/inner_life/reflection.py`（`drift_aesthetic` + `_AESTHETIC_KEYS` + `_AESTHETIC_MIN_READING` + `_REFLECTION_SYSTEM` + `_parse_reflection` + `_build_reflection_prompt` + `run`）、`nyx/inner_life/facade.py`（`get_state` 读 aesthetic）、`nyx/memory/store.py`（`count_new` + INSERT 落 `first_created_at`）、`nyx/memory/facade.py`（`count_new` 委托）、`nyx/expression/prompt.py`（`_state_block` 加审美行）、`nyx/main.py`（`_seed_inner_life` seed）
 
 ## 用户故事
 
@@ -14,7 +14,7 @@
 
 ## 验收标准
 
-- [ ] `nyx/db.py` 的 `_MIGRATIONS` 追加 v10（`aesthetic` 单行表，见「数据变更」）
+- [ ] `nyx/db.py` 的 `_MIGRATIONS` 追加 v11（`aesthetic` 单行表）+ v12（`memory.first_created_at`，见「数据变更」）
 - [ ] `nyx/types.py` 含 `Aesthetic` TypedDict：`ornate/lyrical/classical/somber` 四键（`float`，1-10，10=第一极）
 - [ ] `CurrentState` 加 `aesthetic: Aesthetic`
 - [ ] `InnerLifeStore` 加 `get_aesthetic() -> Aesthetic | None` / `upsert_aesthetic(a: Aesthetic) -> None`（`async`，`id='self'` 单行，复用 `conn`+`lock`）
@@ -23,7 +23,7 @@
 - [ ] `_REFLECTION_SYSTEM` 增加 `aesthetic_delta` 键说明（键 ornate/lyrical/classical/somber，值 [-0.5, 0.5]）
 - [ ] `_build_reflection_prompt` 加 `aesthetic: Aesthetic` 参数 + 输出「当前审美（1-10）：华丽{x} / 抒情{x} / 古典{x} / 沉重{x}」锚点行（delta 需当前值作参照，与 personality/values 同款）
 - [ ] `_parse_reflection` 校验 `aesthetic_delta`（并入既有漂移白名单循环，未知维度/非数值抛 `ValueError`）；返回值 dict 加 `aesthetic_delta` 键（`run` 读 `parsed["aesthetic_delta"]`）
-- [ ] `Reflection.run` 读 `get_aesthetic()` + 计「新读章数」→ 缩放 `aesthetic_delta` → `upsert_aesthetic(drift_aesthetic(...))`
+- [ ] `Reflection.run` 读 `get_aesthetic()` + `count_new("reading", narrative.updated_at)` 计「新读章数」→ 缩放 `aesthetic_delta` → `upsert_aesthetic(drift_aesthetic(...))`
 - [ ] `InnerLifeFacade.get_state` 读 `get_aesthetic()` 填入 `CurrentState.aesthetic`
 - [ ] `expression/prompt.py` 的 `_state_block` 加审美行（四轴 1-10 拼进 system prompt）
 - [ ] `main.py` 的 `_seed_inner_life` 表空时 seed `ornate=7/lyrical=7/classical=6/somber=6`
@@ -40,14 +40,15 @@
   - **不并入 Big Five/三观**：审美语义独立（对文风的品味），单开 `aesthetic` 单行表（`id='self'`），不往 `personality`/`value_system` 塞第 6/5 列——保 Big Five 5 维、三观 4 维完整（设计文档 §6.3）。
   - **偏移复用 `_drift_dim`**：`drift_aesthetic` 逐轴 `base + clamp(delta, ±0.5)` 再 clamp [1,10]，与性格/三观同款尺度（`_MAX_DRIFT=0.5`、`_SCALE_LO/HI=1.0/10.0` 复用），无新 clamp 逻辑。
   - **阅读量缩放是编排，不是纯函数参数**：`drift_aesthetic` 保持与 `drift_personality`/`drift_values` 同构（`(base, delta) -> Aesthetic`，纯函数可测）；`× min(新读章数 / _AESTHETIC_MIN_READING, 1.0)` 的缩放放在 `Reflection.run`（那里才拿得到「新读章数」），避免把阅读计数塞进纯函数签名。
-  - **新读章数 = `tag='reading'` 记忆新增条数**：`list_memories(tag="reading")`（`limit=None` 全量）里 `created_at > narrative.updated_at` 的条数；`narrative.updated_at` 即「上次反思」基准（与 `_check_reflect` 同款判定，`run` 里已拿到 narrative）。一条章末记忆 ≈ 一章（22 的章末整合落 `tag='reading'`），无需读 `reading_progress` 表、无 per-book 计数。**口径注**：「章数」是近似叫法——22 整本读完也落一条 `tag='reading'` 全书记忆，故 n 严格 = 章末记忆条数 + 每读完一本 +1（全书记忆）；缩放因子下这 +1 可忽略。
+  - **新读章数 = `tag='reading'` 且「首次创建」晚于 `narrative.updated_at` 的记忆条数**：`MemoryFacade.count_new("reading", narrative.updated_at)` → `MemoryStore.count_new` 的 `SELECT COUNT(*) WHERE tag='reading' AND first_created_at > ?`（不物化整行/embedding）；`narrative.updated_at` 即「上次反思」基准（与 `_check_reflect` 同款判定，`run` 里已拿到 narrative）。一条章末记忆 ≈ 一章（22 的章末整合落 `tag='reading'`），无需读 `reading_progress` 表、无 per-book 计数。**口径注**：「章数」是近似叫法——22 整本读完也落一条 `tag='reading'` 全书记忆，故 n 严格 = 章末记忆条数 + 每读完一本 +1（全书记忆）；缩放因子下这 +1 可忽略。**新增判定用 `first_created_at` 而非 `created_at`**：`strengthen` 会刷新 `created_at`（decay 锚点），若拿它当「是否新增」会污染——纯重读也计新章、推审美，违背「没读书不动」。`first_created_at` 在 INSERT 时定格（= `created_at`）、`strengthen`/`update_many`/`record_recall` 均不更新，是「新增」的不可变锚点。
   - **缩放因子 `min(n / _AESTHETIC_MIN_READING, 1.0)`**：0 章 → 0（审美不动）；1~2 章 → 1/3~2/3；≥3 章 → 1.0 满额。`_AESTHETIC_MIN_READING = 3` 模块常量（同反思参数，不进 config）；公式引用常量、不写死 `3`。
   - **反射 JSON 缺 `aesthetic_delta` → 空 dict 不漂**：与 `personality_delta`/`values_delta` 同款 `parsed.get(...) or {}` 兜底，`drift_aesthetic` 对缺键 `delta.get(k)` 返回 `None` → `_drift_dim` 原值不动（LLM 没输出审美就原地不动，不报错）。
   - **审美进 prompt 需显式改 `_state_block`**：`CurrentState` 加字段**不会**自动进 prompt（`_state_block` 逐段手拼 personality/values）。23 在 `_state_block` 加审美行，21 的 `aesthetic_sensitivity` 驱动（段落 `richness_score`）不受影响、互不依赖。
   - **无新 API 端点**：审美经既有 `GET /api/state`（返回 `CurrentState`）暴露；不单开 `/api/aesthetic`。
   - **无新事件**：审美漂移不单独广播（与性格/三观同，随反思 `REFLECTION_DONE` 前端整体刷新 state 即可）。
-- **数据变更**（`_MIGRATIONS` v10，DDL 以 `nyx/db.py` 为准）：
-  - `aesthetic`：`id TEXT PRIMARY KEY`（固定 'self'）、`ornate REAL NOT NULL`、`lyrical REAL NOT NULL`、`classical REAL NOT NULL`、`somber REAL NOT NULL`（四轴 1-10，10=第一极）
+- **数据变更**（`_MIGRATIONS` v11 + v12，DDL 以 `nyx/db.py` 为准）：
+  - v11 `aesthetic`：`id TEXT PRIMARY KEY`（固定 'self'）、`ornate REAL NOT NULL`、`lyrical REAL NOT NULL`、`classical REAL NOT NULL`、`somber REAL NOT NULL`（四轴 1-10，10=第一极）
+  - v12 `memory.first_created_at REAL`：INSERT 定格（= `created_at`）、`strengthen`/`update_many`/`record_recall` 不更新；回填旧行 `= created_at`（历史行近似）；`count_new` 的「新增」锚点
 
 ## 测试要点
 

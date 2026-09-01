@@ -68,7 +68,7 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 17 张业务表 + `schema_version`，共 18 张 |
+| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 18 张业务表 + `schema_version`，共 19 张 |
 | `test_migrate_creates_five_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_memory_content_hash` / `idx_books_content_hash` 五个 |
 | `test_migrate_books_content_hash_index_unique` | 功能正确 | `idx_books_content_hash` 的 `sqlite_master.sql` 以 `CREATE UNIQUE INDEX` 开头（v8 去重升级唯一索引） |
 | `test_migrate_v8_dedupes_duplicate_content_hash` | 边界鲁棒 | 先迁 v7 插两条同 `content_hash` 书 → 完整迁移不抛、重复清到 1、被删书 paragraphs 级联清空、唯一索引就位 |
@@ -174,6 +174,7 @@
 | `test_hash_content_deterministic` | 功能正确 | `hash_content` 同 content 同 hash、不同 content 不同 hash、SHA-256 hex 长度 64（纯函数） |
 | `test_find_by_content_hit_and_miss` | 功能正确 | `add` 后按原 content `find_by_content` 命中返回 `Memory`（id 一致）、不同 content 返回 `None` |
 | `test_strengthen` | 功能正确 | `add`（`recall_count=0, freshness=0.3`）→ `strengthen(m1, 100.0)` → `recall_count==0`、`freshness==1.0`、`created_at==100.0`（重复写入不涨 recall、锚点刷新） |
+| `test_count_new_ignores_strengthened_created_at` | 回归保护 | 读书记忆 `created_at=100` → `strengthen(m1, 200)`（刷新 created_at）→ `count_new("reading", 150)==0`（纯重读不算新增）；真新增（created_at=250）→ `==1`；since 更晚/非目标 tag → `==0`（first_created_at 锚点不被 strengthen 污染） |
 
 ## 08-memory-retrieval（三层检索 + 联想图）
 
@@ -238,6 +239,7 @@
 | `test_dedup_embed_none_skips_semantic` | 边界鲁棒 | `embed=None` 时语义去重跳过（旧记忆带 embedding 也不比较），仅精确去重生效 |
 | `test_search_delegates_to_retrieval` | 功能正确 | `search` 委托 fake `MemoryRetrieval`（返回预设 + 记录 query） |
 | `test_list_memories_delegates` | 功能正确 | `list_memories(type=)` 委托真 store 过滤 |
+| `test_count_new_delegates` | 功能正确 | `facade.count_new` 委托真 store：`since=500` → 1、`since=2000` → 0、非目标 tag → 0 |
 | `test_record_recall_below_threshold` | 功能正确 | 未达阈值 → recall_count+1、type 仍 SHORT_TERM、无 `memory_promoted` |
 | `test_record_recall_promotes` | 功能正确 | 达阈值 → type LONG_TERM + 发布 `memory_promoted` |
 | `test_record_recall_long_term_no_repromote` | 功能正确 | 已 LONG_TERM → 只 recall_count+1，不重复发布 |
@@ -352,16 +354,23 @@
 | `test_energy_to_state_boundary` | 边界鲁棒 | 分界 80/60/40/20 含等号归上一档 |
 | `test_personality_crud` | 功能正确 | 空表→`None`；upsert 后五维全等；改一维再 upsert（ON CONFLICT 更新不重复建行） |
 | `test_values_crud` | 功能正确 | 四维同上（空表→`None`、往返、改一维更新） |
+| `test_aesthetic_crud` | 功能正确 | 四维（华丽/抒情/古典/沉重）空表→`None`；upsert 往返四轴全等；改一维再 upsert 单行覆盖 |
 | `test_energy_crud` | 功能正确 | `value`+`state` 往返（`EnergyState` 枚举）；空表→`None` |
 | `test_narrative_crud` | 功能正确 | `story`/`self_view`/`becoming` JSON 往返 + `identity`/`updated_at`；空表→`None` |
 | `test_drift_dim` | 功能正确 | `delta=None` 不变；`+0.3`→base+0.3；`+2`→夹 `+0.5`；`9.8+0.5`→夹 10.0；`1.2-0.5`→夹 1.0 |
 | `test_drift_personality_and_values` | 功能正确 | 只改 delta 出现的维、其余维不变；结果夹 `[1,10]` |
+| `test_drift_aesthetic` | 功能正确 | 四轴按 delta 逐轴漂移、缺键轴不动；结果夹 `[1,10]` |
+| `test_drift_aesthetic_clamps` | 边界鲁棒 | `base=9.9, delta=+0.5` → 10.0；`base=1.1, delta=-0.5` → 1.0（上下界 clamp） |
+| `test_drift_aesthetic_empty_delta_unchanged` | 边界鲁棒 | 空 delta → 四轴原值不变 |
 | `test_build_reflection_prompt` | 功能正确 | 含记忆摘要/性格/三观数值/叙事身份/长期欲望名；空输入含「（无）」 |
 | `test_parse_reflection_ok` | 功能正确 | 合法 JSON → 各字段（story/becoming/self_view/personality_delta/long_term_desires） |
 | `test_parse_reflection_missing_story` | 边界鲁棒 | 缺 `story`/`becoming` → `ValueError` |
 | `test_parse_reflection_bad_types` | 边界鲁棒 | `self_view` 值非 str、漂移值非数值、`long_term_desires` 非数组、顶层非对象 → `ValueError` |
-| `test_parse_reflection_defaults` | 边界鲁棒 | 缺省 `self_view`/`personality_delta`/`values_delta`/`long_term_desires` → `{}`/`[]`（不静默吞错类型） |
+| `test_parse_reflection_defaults` | 边界鲁棒 | 缺省 `self_view`/`personality_delta`/`values_delta`/`aesthetic_delta`/`long_term_desires` → `{}`/`[]`（不静默吞错类型） |
 | `test_parse_reflection_unknown_drift_key` | 边界鲁棒 | 漂移 key 拼错（`openess`）/ 三观 key 拼错（`extroversion`）→ `ValueError`（不静默停滞某维度演化） |
+| `test_parse_reflection_aesthetic_delta` | 功能正确 | 合法 `aesthetic_delta` → 返回 dict 含该键、四轴数值透传 |
+| `test_parse_reflection_aesthetic_unknown_key_raises` | 边界鲁棒 | `aesthetic_delta` 含未知维度（`foo`）→ `ValueError` |
+| `test_parse_reflection_aesthetic_non_numeric_raises` | 边界鲁棒 | `aesthetic_delta` 值非数值（字符串）→ `ValueError` |
 | `test_parse_reflection_drops_bad_candidate` | 边界鲁棒 | 好 + 坏候选（`subtopics` 是字符串非数组）→ 只保留好候选、核心字段照常解析（best-effort 跳过单个坏候选） |
 | `test_validate_candidate` | 边界鲁棒 | `type` 非法、缺 `name`、`subtopics` 非字符串数组 → `ValueError`；合法不抛 |
 | `test_to_long_term` | 功能正确 | `type` 转 `DesireType`、`strength`=`_LONG_TERM_INIT_STRENGTH`、`progress`=0.0、`subtopics`/`created_at` 透传 |
@@ -377,15 +386,20 @@
 | `test_apply_event_unseeded_energy` | 边界鲁棒 | 未 seed energy → `DESIRE_SATISFIED`（读 `_publish_emotion`）与 `ACTIVITY_END`（写 `_apply_energy`）均抛 `RuntimeError`（fail-fast 不静默） |
 | `test_apply_event_reflection` | 功能正确 | REFLECTION 触发 `reflect`（LLM 1 次、correlation 透传）；情感偏移 -0.1 arousal 生效（0.1→0.0） |
 | `test_decay_settlement` | 功能正确 | 两次 `apply_event` 间隔 1 天 → 第二次前情感先衰减（0.2→0.1） |
-| `test_get_state` | 功能正确 | 注入 fake `ActivityFacade.get_current` + `DesireFacade.get_pending` → `CurrentState` 各字段正确（current_activity/active_desires/personality/energy/energy_state） |
+| `test_get_state` | 功能正确 | 注入 fake `ActivityFacade.get_current` + `DesireFacade.get_pending` → `CurrentState` 各字段正确（current_activity/active_desires/personality/aesthetic/energy/energy_state） |
 | `test_get_state_unseeded` | 边界鲁棒 | 未 seed → `get_state` 抛 `RuntimeError` |
 | `test_get_narrative` | 功能正确 | store 有→返回；空→`RuntimeError` |
 | `test_reflect_delegation` | 功能正确 | `facade.reflect()` → reflection LLM 调 1 次、correlation 透传 |
 | `test_build_reflection_prompt_feeds_story` | 功能正确 | 已写故事/认知内容被喂进反思 prompt（而非只喂条数）+ 含「新的、与之不同」指示 |
+| `test_build_reflection_prompt_aesthetic_anchor` | 功能正确 | prompt 含「当前审美（1-10）」锚点行 + `华丽 7.0`（delta 需当前值参照） |
 | `test_is_duplicate_fragment` | 功能正确 | 片段去重纯函数：strip 后精确相等/高相似度 → True；明显不同/空列表 → False |
 | `test_run_dedup_story` | 功能正确 | LLM story 与已有片段重复 → 不追加（`len(story)==1`）；becoming 不同照常追加、慢变量照常回写 |
 | `test_run_returns_outcome_new_story` | 功能正确 | story 真新增 → `run` 返回 `ReflectionOutcome(story_is_new=True)`（`story` 字段透传） |
 | `test_run_returns_outcome_dedup_story` | 功能正确 | story 与已有片段重复 → `ReflectionOutcome(story_is_new=False)`（返回值结构化，非 `str | None`） |
+| `test_run_aesthetic_zero_reading_unchanged` | 功能正确 | 0 条新 reading 记忆 → 审美四轴原值不变（scale=0） |
+| `test_run_aesthetic_one_reading_scaled_third` | 功能正确 | 1 条新 reading 记忆 → 按 1/3 缩放（`ornate` 7→7.1、`somber` 6→5.9，`+0.3`/`-0.3` × 1/3） |
+| `test_run_aesthetic_three_reading_full` | 功能正确 | ≥3 条新 reading 记忆 → 满额缩放（`ornate` 7→7.3，`+0.3` × 1.0） |
+| `test_run_aesthetic_ignores_non_reading` | 边界鲁棒 | 非 reading 记忆（`tag="user"`）不计入新读章数 → 审美不动 |
 | `test_reflect_publishes_reflection_done` | 功能正确 | `facade.reflect()` → 发布 `REFLECTION_DONE`（content `{story, story_is_new}`、correlation 透传） |
 
 ## 13-activity-scheduler（日程排期纯函数）
@@ -510,6 +524,7 @@
 | `test_build_system_prompt_optional_blocks` | 功能正确 | `narrative` 非 None 含 `identity` 与「近期变化」；`memories` 非空含 `m.summary` |
 | `test_build_system_prompt_state_fields` | 功能正确 | 状态段含 `valence=0.50` / `arousal=0.40` / `表情=happy` / `精力：80/100（energetic）` / `当前活动：reading` |
 | `test_build_system_prompt_personality_values` | 功能正确 | 含 `性格（Big Five` / `三观（` 且数值渲染（`开放性5` / `对人类态度5`） |
+| `test_build_system_prompt_aesthetic` | 功能正确 | 含 `审美（1-10）` 且数值渲染（`华丽7` / `沉重6`） |
 | `test_state_block_idle` | 边界鲁棒 | `current_activity=None` → `当前活动：空闲` |
 | `test_desires_block_empty` | 边界鲁棒 | 空欲望 → `[当前欲望]\n无` |
 | `test_desires_block_renders` | 功能正确 | 欲望行含 description / type.value / strength（`读骑士小说（exploration，强度0.8）`） |
@@ -605,7 +620,7 @@
 | `test_seed_desire_idempotent` | 功能正确 | `list_values()` 四类型、`list_long_term()` 3 条；再跑幂等（4 行 / 3 条不增） |
 | `test_build_tools_web_disabled` | 功能正确 | `web_enabled=False` → `{local_search, file_io}`（工厂构造无 I/O，`roots`/`DDGS` 惰性到 `.call()`） |
 | `test_build_tools_web_enabled` | 功能正确 | `web_enabled=True` → 多 `web_search` + `web_fetch` |
-| `test_state_endpoint` | 功能正确 | `GET /api/state` → `CurrentState` JSON，枚举字段为 `.value` 字符串（`emotion=neutral`、`energy_state=okay`） |
+| `test_state_endpoint` | 功能正确 | `GET /api/state` → `CurrentState` JSON，枚举字段为 `.value` 字符串（`emotion=neutral`、`energy_state=okay`）、`aesthetic` 四键 7/7/6/6 |
 | `test_chat_endpoint` | 功能正确 | `POST /api/chat` → `{event_id}`；bus 收一条 `USER_MESSAGE`（source EXTERNAL、`correlation_id == id`） |
 | `test_memories_endpoint` | 功能正确 | `GET /api/memories?tag=&type=` → `Memory[]`；`type` query 转 `MemoryType` 枚举传入 facade |
 | `test_memory_search_endpoint` | 功能正确 | `GET /api/memories/search?q=` → `Memory[]`；`q` query 传入 `memory.search`（fake 记 `search_calls`） |
@@ -681,7 +696,8 @@
 | `test_upsert_progress_insert_then_update` | 功能正确 | 同 book_id 单行、`updated_at` 推进（monkeypatch 时钟）、`reading_speed` 更新 |
 | `test_upsert_does_not_reset_read_count` | 边界鲁棒 | `increment` 后 `upsert` → `read_count` 仍 1（进度写回不重置重读计数） |
 | `test_increment_read_count_zero_to_one_to_two` | 功能正确 | 两次 `++` → `read_count` 1→2 |
-| `test_increment_read_count_creates_default_row` | 功能正确 | 无行 `++` → 建默认行 `read_count=1`、position/speed 走 DDL DEFAULT（1/1/50） |
+| `test_increment_read_count_creates_default_row` | 功能正确 | 无行 `++` → 建默认行 `read_count=1`、`user_position`/`reading_speed` 走 DDL DEFAULT（1/50）、`nyx_position` 显式落 `total`=3 |
+| `test_increment_read_count_persists_nyx_position` | 功能正确 | `increment_read_count(book_id, 5)` → `get_progress().nyx_position==5`（跨重启幂等信号落库） |
 | `test_delete_book_cascades_reading_progress` | 功能正确 | 删 book → `reading_progress` 级联删空 |
 | `test_list_books_lists_imported_book` | 功能正确 | 导入 1 本 → `list_books` 1 项、`user_position=0`/`last_read_at=None`（未读哨兵） |
 | `test_get_progress_default_when_no_row` | 功能正确 | 无进度行 → 默认 `(1,1,50,0,0.0)`（`updated_at=0.0` 从未保存哨兵） |
@@ -734,15 +750,17 @@
 | `test_insert_user_note_with_and_without_paragraph_id` | 功能正确 | 有段/无段两条笔记：`paragraph_id`/`selected_text` 有值或 `None`、`content` 正确 |
 | `test_list_user_notes_sorted_desc` | 功能正确 | 同书两笔记 → `list_user_notes` 新在前（`[second.id, first.id]`） |
 | `test_update_user_note_hit_and_miss` | 功能正确 | 命中 → 返回更新后笔记（`content=="新"`）；未命中 → `None` |
+| `test_update_user_note_same_tick_same_content_returns_note` | 边界鲁棒 | 同 tick 两次同内容更新 → 仍返回笔记（不误判 404） |
 | `test_delete_user_note_cascades_annotations` | 功能正确 | 删笔记 → `True` 且批注 FK CASCADE 清空；再删 → `False` |
 | `test_get_user_note_and_get_paragraph` | 功能正确 | `get_user_note`/`get_paragraph` 命中返回对象、未命中 `None` |
-| `test_list_annotations_sorted_desc` | 功能正确 | 同笔记两批注 → `list_annotations` 新在前 |
+| `test_list_annotations_for_notes_sorted_desc` | 功能正确 | 两条笔记各插批注 → 批量查按 `created_at` 降序（`[a3,a2,a1]`）、空列表返回 `[]` |
 | `test_delete_book_sets_note_fk_null` | 边界鲁棒 | 删书 → 笔记 `book_id`/`paragraph_id` 置 `None`、`content` 保留（SET NULL） |
 | `test_parse_reading_note_valid` | 功能正确 | 合法 JSON → `(content, summary)` 二元组 |
 | `test_parse_reading_note_non_json_raises` | 边界鲁棒 | 非 JSON → `ValueError` |
 | `test_parse_reading_note_missing_key_raises` | 边界鲁棒 | 缺 `summary` → `ValueError` |
 | `test_parse_reading_note_wrong_type_raises` | 边界鲁棒 | `content` 非 str → `ValueError` |
 | `test_add_and_list_user_notes_with_annotations` | 功能正确 | 加笔记+批注 → `list_user_notes` 返回带 `annotations` 的完整笔记 |
+| `test_list_user_notes_batches_annotations` | 功能正确 | 两笔记各一批注 → `list_annotations_for_notes` 只调 1 次、批注归到各自笔记 |
 | `test_add_user_note_without_paragraph_id` | 功能正确 | 自由记 → `paragraph_id`/`selected_text` 为 `None` |
 | `test_update_user_note_hit_and_miss` | 边界鲁棒 | 命中改 content；未命中 → `NoteNotFoundError` |
 | `test_delete_user_note_hit_and_miss` | 边界鲁棒 | 命中删；再删 → `NoteNotFoundError` |
@@ -751,10 +769,24 @@
 | `test_check_chapter_boundary_chapter_end_integrates` | 功能正确 | 下一段 `is_chapter_start` → CHAPTER_END、LLM `reading_note` json_mode、`remember_reading` 收到 `(content, summary, book_id)` |
 | `test_check_chapter_boundary_none_when_next_not_chapter` | 边界鲁棒 | 非章节边界 → NONE、`remembered==[]` |
 | `test_check_chapter_boundary_book_finished_integrates` | 功能正确 | 读到末段 → BOOK_FINISHED、`read_count` 0→1 |
+| `test_book_finished_persists_nyx_position_total` | 功能正确 | BOOK_FINISHED 后 `progress.nyx_position==total`（跨重启幂等信号落库） |
 | `test_check_chapter_boundary_reread_reflects` | 功能正确 | read_count=1（重读）→ `inner_life.reflect(book_id)` 调 1 次 |
 | `test_check_chapter_boundary_first_read_no_reflect` | 功能正确 | 首读 → 不 reflect |
 | `test_integrate_buffer_empty_skips` | 边界鲁棒 | buffer 空 → 仍返回边界、`remembered==[]` |
 | `test_mutter_and_question_record_nyx_output` | 功能正确 | mutter/question 各入 buffer（`source` 集合 `{"mutter","question"}`） |
+| `test_book_finished_increments_read_count_even_with_empty_buffer` | 边界鲁棒 | 整本读完 buffer 空 → `read_count` 仍 0→1 |
+| `test_book_finished_increments_read_count_even_when_integrate_fails` | 边界鲁棒 | 整本读完 LLM 抛异常 → `read_count` 仍 0→1 |
+| `test_check_chapter_boundary_repeat_book_finished_no_double_increment` | 功能正确 | 重复判 BOOK_FINISHED（`nyx_position` 停在 `>= total`）→ `read_count` 仍 1 |
+| `test_check_chapter_boundary_repeat_no_second_integration_no_reflect` | 边界鲁棒 | 重复 BOOK_FINISHED（首次整合仍在 LLM 等待中）→ 不 spawn 第二个整合、不误触 reflect |
+| `test_check_chapter_boundary_reread_increments_again` | 功能正确 | 回翻/重读（回到 `< total`）后再到末段 → `read_count` 1→2 |
+| `test_integrate_preserves_entries_added_during_llm` | 边界鲁棒 | 整合成功只删已消费快照 → LLM 等待期间新 append 的条目保留给下一轮 |
+| `test_integrate_failure_preserves_buffer` | 边界鲁棒 | 章末整合失败 → buffer 保留 1 条（供重试） |
+| `test_record_nyx_output_caps_buffer` | 边界鲁棒 | 超 `_NYX_BUFFER_MAXLEN` → 丢弃最旧 5 条、保留最新 100 条 |
+| `test_add_user_note_missing_book_raises` | 边界鲁棒 | 书不存在 → `BookNotFoundError` |
+| `test_add_user_note_missing_paragraph_raises` | 边界鲁棒 | 段落不存在 → `ValueError` |
+| `test_add_user_note_cross_book_paragraph_raises` | 边界鲁棒 | 段落属他书 → `ValueError` |
+| `test_show_to_nyx_llm_failure_returns_none` | 边界鲁棒 | LLM 抛异常 → 返回 `None`、不落批注 |
+| `test_show_to_nyx_none_content_returns_none` | 边界鲁棒 | LLM 返回空 → 返回 `None`、不落批注 |
 | `test_notes_list_returns_list` | 功能正确 | `GET /api/notes/{book_id}` → 200 列表、字段透传 |
 | `test_notes_add_returns_201` | 功能正确 | `POST /api/notes/user` → 201、`added_notes` 收对 `(book_id, paragraph_id, content, selected_text)` |
 | `test_notes_add_missing_content_returns_422` | 边界鲁棒 | 缺 `content` → 422 |
@@ -765,6 +797,9 @@
 | `test_notes_delete_not_found_returns_404` | 边界鲁棒 | `NoteNotFoundError` → 404 |
 | `test_notes_show_to_nyx_returns_annotation` | 功能正确 | `POST .../show-to-nyx` → 200 完整批注（`id`/`user_note_id`/`content`） |
 | `test_notes_show_to_nyx_not_found_returns_404` | 边界鲁棒 | `NoteNotFoundError` → 404 |
+| `test_notes_add_missing_book_returns_404` | 边界鲁棒 | `BookNotFoundError` → 404 |
+| `test_notes_add_missing_paragraph_returns_422` | 边界鲁棒 | `ValueError`（段落不存在）→ 422 |
+| `test_notes_show_to_nyx_llm_failure_returns_null` | 边界鲁棒 | facade 返回 `None` → 200 `null` |
 | `test_boundary_chapter_end` | 功能正确 | `CHAPTER_END` → `{is_boundary:true, book_finished:false}` |
 | `test_boundary_book_finished` | 功能正确 | `BOOK_FINISHED` → `{is_boundary:false, book_finished:true}` |
 | `test_boundary_none` | 功能正确 | `NONE` → 两者 false |
@@ -780,6 +815,7 @@
 | `useSSE > 命名帧解析` | 功能正确 | emit `speak` 帧 → dispatch 收到 `{event,event_id,correlation_id,content}` 展开 |
 | `useSSE > 坏 data/缺字段跳过` | 边界鲁棒 | 非法 JSON、缺 `event_id`/`correlation_id` → `console.error` 跳过不崩，仅正常帧 dispatch |
 | `useSSE > unmount 调 close()` | 功能正确 | 卸载 cleanup → `source.close()` 被调 |
+| `useSSE > EVENT_TYPES 含三型阅读事件` | 功能正确 | `reading_mutter`/`reading_question`/`reading_association` 三帧被 `addEventListener` 监听并各 dispatch 1 次（缺任一 `EVENT_TYPES` 值则该型帧被浏览器静默丢弃，dispatch 不会收到） |
 | `dispatchEvent > speak → chatStore` | 功能正确 | `kind=speak`/`role=nyx`/`content` 入 `messages` |
 | `dispatchEvent > user_message → chatStore` | 回归保护 | 读 `message` 非 `content` → `kind=message`/`role=user`/`content` 入 `messages`（Finding 1：user_message 裸 `{message}` 曾致用户消息被 `typeof e.content` 拦截静默丢弃） |
 | `dispatchEvent > emotion_update → innerLifeStore` | 功能正确 | 覆盖 `valence`/`arousal`/`emotion` 三字段 + 顺带 `refreshState()` 重拉全量快照（能量/性格/三观不随帧下发，补自动刷新） |
@@ -790,6 +826,7 @@
 | `dispatchEvent > activity_end → refresh 后按 activity_id 找产出 announce` | 功能正确 | `activity_end` → `refresh()` 后按 `activity_id` 找到完成活动，有产出则 `announce("activity", …)`（无产出静默） |
 | `dispatchEvent > reflection_done（story_is_new）→ 欲望 refresh + 气泡` | 功能正确 | `story_is_new=true` → `desireStore.refresh()` + `announceStore` 追加气泡「小狐狸我呀，反思了一下：…」 |
 | `dispatchEvent > reflection_done（story_is_new=false）→ 静默 refresh 不气泡` | 功能正确 | `story_is_new=false` → 仍 `desireStore.refresh()` 但 `announceStore` 空（静默刷新） |
+| `dispatchEvent > reading_mutter/question/association → readerStore.addReadingBubble` | 功能正确 | 三型阅读事件各触发 `readerStore.addReadingBubble` 1 次、透传原始事件对象（snake→camel 映射在 store 内做） |
 | `isEmotionCategory > 枚举收窄` | 边界鲁棒 | 合法枚举（`happy`/`neutral`）→ true；非法字符串（`不存在`）/非字符串（`5`/`null`）→ false |
 
 ## frontend-client（REST 客户端：api/client.ts）
@@ -807,8 +844,22 @@
 | `getActivity > GET /api/activity` | 功能正确 | 请求 URL、解析 `ActivitySnapshot` 直返 |
 | `getActivityResults > GET /api/activity/results` | 功能正确 | 请求 URL、解析 `Activity[]` 直返（跨天历史产出） |
 | `getEventsLog > limit/event_type/correlation_id 拼进 query` | 功能正确 | 三参拼进 query（`?limit=20&event_type=speak&correlation_id=c1`） |
+| `getBooks > GET /api/books` | 功能正确 | 请求 URL、解析 `BookListItem[]` 直返 |
+| `getBookParagraphs > from/to 拼进 query` | 功能正确 | 请求 URL `/api/books/b1/paragraphs?from=1&to=50`、解析 `Paragraph[]` |
+| `getProgress > GET /api/progress/{id}` | 功能正确 | 请求 URL `/api/progress/b1`、解析 `Progress`（四键 snake_case） |
+| `putProgress > PUT + body 三键` | 功能正确 | `PUT /api/progress/b1`、body `{user_position, nyx_position, reading_speed}`、`Content-Type: application/json` |
+| `importBook > POST /api/books FormData` | 功能正确 | `POST /api/books`、`init.body` 为 `FormData` 且 `.get("file")===file`、`init.headers` undefined（不设 json 头，浏览器带 boundary） |
+| `evaluateImpulse > POST /api/impulse/evaluate` | 功能正确 | body 三键 snake_case `{book_id, paragraph_index, last_paragraph_index}`、解析 `{triggered}` |
+| `checkChapterBoundary > POST /api/notes/check-chapter-boundary` | 功能正确 | body `{book_id, nyx_position}`、解析 `{is_boundary, book_finished}` |
+| `getNotes > GET /api/notes/{bookId}` | 功能正确 | 请求 URL `/api/notes/b1`、解析 `UserNoteWithAnnotations[]` 直返 |
+| `createUserNote > POST /api/notes/user` | 功能正确 | body 四键 snake_case `{book_id, paragraph_id, content, selected_text}` + `Content-Type: application/json`、解析裸 `UserNote` |
+| `updateUserNote > PUT /api/notes/user/{id}` | 功能正确 | 请求 URL `/api/notes/user/n1`、method PUT、body `{content}`、解析 `UserNote` |
+| `deleteUserNote > DELETE /api/notes/user/{id}` | 功能正确 | `DELETE` 204 无 body：`json()` 不调（抛「不该调 json」守卫断言）→ resolves undefined |
+| `showNoteToNyx > POST /api/notes/{noteId}/show-to-nyx` | 功能正确 | 请求 URL `/api/notes/n1/show-to-nyx`、method POST、解析 `Annotation` 直返 |
+| `showNoteToNyx > LLM 空回 null` | 边界鲁棒 | 响应 `null` → 返回 `null`（不抛、不反噬，与 store 的 `ann===null` 分支对齐） |
+| `createUserNote > 422 读 body.detail 上抛` | 边界鲁棒 | 422 body `{"detail":"content 不能为空"}` → reject（message 含 detail） |
 
-## frontend-stores（Zustand stores：chatStore + innerLifeStore + desire/activity 快照 + settingsStore）
+## frontend-stores（Zustand stores：chatStore + innerLifeStore + desire/activity 快照 + settingsStore + readerStore）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -841,6 +892,52 @@
 | `settingsStore > setTint/setImage 独立落 store` | 功能正确 | `setTint`/`setImage` 各落 `tint`/`image` 字段，可并存 |
 | `settingsStore > reset 恢复默认` | 功能正确 | `reset()` 后 `tint`/`image` 均回 null |
 | `isReady > think 也受串行门控` | 功能正确 | think2 在 speak1 之后、speak1 未入 `typedIds` → false；speak1 入 → true（每条 nyx 文本等前一条同 correlation_id 打完） |
+
+## frontend-reader-store（阅读 store：readerStore 书架/进度/追赶循环）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `nyxStatusOf > idle/reading/waiting 三态` | 功能正确 | 未开书 → idle；nyx<user → reading；nyx>=user → waiting（含 nyx>user 不超车） |
+| `computeWindow > 书首/书尾 clamp 到 [1, total]` | 边界鲁棒 | 书首 `{from:1,to:50}`；书尾非居中 `{from:120,to:120}`；居中 `{from:95,to:120}` 不越界 |
+| `catchupDurationMs > clamp 到 [1s, 30s]` | 功能正确 | 100/50→2000；1/50→1000（下限）；10000/50→30000（上限） |
+| `catchupDurationMs > 非法 speed 回退最小速度` | 边界鲁棒 | speed≤0 时回退 `MIN_READING_SPEED`(10 字/秒) 而非复用 `MIN_CATCHUP_SEC`（秒）：100/10→10000ms，不再 100/1 顶格 30s |
+| `loadBooks > GET /api/books → books 落 store` | 功能正确 | `loadBooks()` → `books` 落 fixture、`booksError=null` |
+| `loadBooks > getBooks throw → booksError` | 边界鲁棒 | reject → `booksError="fetch failed"`、`books=[]` |
+| `openBook > 会话态 + totalParagraphs 从 books 取 + 追赶` | 功能正确 | `totalParagraphs=120`（从 books 列表项取，非 progress）、位置/速度/读次落 store、窗口 `from=3&to=52`、`vi.getTimerCount()>0`（起追赶） |
+| `openBook > 书尾窗口 clamp 不越界` | 边界鲁棒 | `user_position=total` → 窗口 `from=120&to=120` 不越界 |
+| `syncPosition 前翻跨越 N 段 > 逐段补发 evaluateImpulse` | 功能正确 | 从 `userPosition=3` `syncPosition(6)` → `userPosition=6`；`PUT /api/progress/b1` body 三键 1 次；`POST /api/impulse/evaluate` 3 次 body `{book_id:"b1", paragraph_index:4/5/6, last_paragraph_index:3/4/5}`（逐段保住每段都有机会触发） |
+| `syncPosition 后翻 > 只 putProgress 不评估` | 功能正确 | `syncPosition(1)`（回翻）→ `userPosition=1`；fetch 仅 1 次 `/api/progress/b1`（回翻不触发冲动评估） |
+| `syncPosition 到同段 > no-op` | 边界鲁棒 | `syncPosition(3)`（== 当前 `userPosition`）→ 不 `putProgress`、不 `evaluateImpulse`（fetch 0 次） |
+| `reread > putProgress 复位 + 位置归 1` | 功能正确 | `userPosition=nyxPosition=1`、`PUT /api/progress/b1` body `{user_position:1, nyx_position:1}`（read_count 不碰） |
+| `追赶循环 > 按段长推进到 userPosition 停止` | 功能正确 | fake timers 按 `catchupDurationMs(100,50)` 逐段推进 nyxPosition 1→2→3，到 userPosition 后 `getTimerCount()=0`（停止） |
+| `advanceNyx 追到 userPosition > 收尾落库` | 回归保护 | 追到 userPosition 时除 `checkChapterBoundary` 外还 `PUT /api/progress/b1`（body `{user_position:120, nyx_position:120, reading_speed:50}`）——防重载后读到陈旧落后值重追、重放 BOOK_FINISHED（22 幂等靠进程内 `_finished_books` 重启即丢） |
+| `startCatchup 重入 > 旧 timer 清除不叠加` | 边界鲁棒 | 连续两次 `startCatchup()` → `vi.getTimerCount()=1`（旧 timer 被 clear 不叠加） |
+| `stopCatchup > clearTimeout 后 advance 不推进` | 功能正确 | `stopCatchup()` 后 advance → `nyxPosition` 不变、`getTimerCount()=0` |
+| `closeBook > 复位 bookId/paragraphs/positions` | 功能正确 | `bookId=null`、`totalParagraphs=0`、`paragraphs=[]`、`userPosition=nyxPosition=1` |
+| `addReadingBubble > 非当前书事件丢弃` | 功能正确 | `book_id !== bookId` → `impulseBubbles` 不变（书架切换后旧书气泡不串场） |
+| `addReadingBubble > kind 映射 + 字段各落对` | 功能正确 | mutter→`{kind:"mutter",content}`；question→`{kind:"question",subtype,selectedText}`；association→`{kind:"association",content:snippet,memoryId}` |
+| `addReadingBubble > cap 到 20 溢出丢最旧` | 边界鲁棒 | 25 条 → 只留 20 条，最旧 5 条被丢（`bubbles[0].id==="e6"`、`bubbles[19].id==="e25"`） |
+| `loadNotes > GET /api/notes/{bookId}` | 功能正确 | `notes` 落 fixture（含 `annotations`）、`notesError=null` |
+| `addNote > POST 返回裸 UserNote → unshift + 归一` | 功能正确 | 裸 7 键 `UserNote` 归一成 `{...note, annotations:[]}` 后 unshift 到 `notes[0]` |
+| `updateNote > 覆盖 7 键、保留 annotations` | 功能正确 | content/updated_at 更新、原 `annotations` 数组保留（后端不回批注，不整表重拉） |
+| `deleteNote > 本地移除该条` | 功能正确 | DELETE 204 后 `notes` filter 掉该条（连同其批注） |
+| `showToNyx > 成功后 append Annotation（不整表重拉）` | 功能正确 | fetch 恰 1 次（非重拉）、`annotations` append 完整 `Annotation` |
+| `showToNyx > LLM 空回 null → 不 append` | 边界鲁棒 | `showNoteToNyx` 返回 `null` → `annotations` 不变 |
+
+## frontend-reading-panel（阅读面板：ReaderView 位置高亮 + ReaderSidebar 气泡 + NotePanel 笔记）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `ReaderView > 当前段 --current、Nyx 段 --nyx、其余无` | 功能正确 | `userPosition=3`、`nyxPosition=5` → 第 3 段 className 含 `reader-text__para--current` 不含 `--nyx`；第 5 段含 `--nyx` 不含 `--current`；第 2 段两者皆无 |
+| `ReaderSidebar > 渲染三态气泡（kind 决定样式类）` | 功能正确 | 三态气泡文案上屏 + class 恰为 `reader-bubble reader-bubble--mutter/question/association` |
+| `ReaderSidebar > 点「笔记」打开 NotePanel（挂载即 loadNotes）` | 功能正确 | 点「笔记」→ `role=dialog`（name 笔记）出现、`loadNotes` 恰 1 次 |
+| `NotePanel > 渲染笔记（content + selected_text + 批注）` | 功能正确 | content/划线原文/批注三文案均上屏 |
+| `NotePanel > composer 提交 → addNote（book_id + content）` | 功能正确 | 输入 `"  新笔记  "` 点「记笔记」→ `addNote({book_id:"b1", content:"新笔记"})`（trim） |
+| `NotePanel > 空白 composer 提交禁用` | 边界鲁棒 | 空白时「记笔记」按钮 `disabled` |
+| `NotePanel > 「给尼克斯看」/「删除」调用对应 action` | 功能正确 | 两按钮分别触发 `showToNyx("n1")` / `deleteNote("n1")` |
+| `NotePanel > 点「编辑」进入编辑态，保存 → updateNote(trim 后) + 退出` | 功能正确 | 点「编辑」→ textarea 预填原文；改 `"  改后  "` 点「保存」→ `updateNote("n1","改后")` + 编辑按钮回归 |
+| `NotePanel > 取消 → 退出编辑态、不调 updateNote` | 功能正确 | 点「编辑」再「取消」→ `updateNote` 未调、编辑按钮回归 |
+| `NotePanel > 编辑态空白 → 保存禁用` | 边界鲁棒 | 编辑态 textarea 置空白 → 「保存」`disabled` |
 
 ## frontend-labels（枚举中文化映射：lib/labels.ts）
 

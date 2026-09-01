@@ -1,6 +1,6 @@
 # Zustand Stores（`stores/*.ts`）
 
-> 每系统一个 store（CLAUDE.md）。共 6 个：`chatStore`（聊天）、`innerLifeStore`（内在状态快照）、`desireStore` / `activityStore`（两个快照 store）、`settingsStore`（背景外观，纯前端 UI 状态）、`announceStore`（头像旁临时气泡，纯前端呈现）。
+> 每系统一个 store（CLAUDE.md）。共 7 个：`chatStore`（聊天）、`innerLifeStore`（内在状态快照）、`desireStore` / `activityStore`（两个快照 store）、`settingsStore`（背景外观，纯前端 UI 状态）、`announceStore`（头像旁临时气泡，纯前端呈现）、`readerStore`（阅读：书架/进度/追赶循环 + 冲动气泡/笔记）。
 > 范围：`stores/*.ts` 的 state 形状 + actions。
 > 约定：**SSE 是主通道**（01-sse 分发表），store 的增量 action 由 SSE 驱动；REST 只喂初始快照。TS 类型字段名 = 后端 JSON 键（snake_case，零映射）。
 
@@ -163,7 +163,75 @@ type AnnounceState = {
 - **不落聊天历史**：碎碎念既进 `chatStore`（聊天记录）又进 `announceStore`（头像旁淡出气泡），两者互不替代——前者是历史时间线（`loadHistory` 回填），后者是 design §8 的瞬时气泡。
 - **时长按 kind**：`mutter` 4s、`activity` 7s（产出句子更长）。id 用模块级自增（`announce-N`），不依赖 `Date.now`（测试可预测）。
 
-## 6. 测试（`tests/stores.test.ts`）
+## 6. `readerStore`（阅读：书架/进度/追赶 + 冲动气泡/笔记）
+
+> 阅读系统唯一 store（06-reading-panel §3 + 07-reading-events §2/§3）。追赶 timer 放 module-level（不进 store state，同 chatStore 的 replyTimer 约定）。
+
+### state
+
+```typescript
+type NyxStatus = "idle" | "reading" | "waiting";   // 派生态，不落 store（nyxStatusOf 纯函数）
+
+type ReadingBubbleKind = "mutter" | "question" | "association";
+type ReadingBubble = {
+  id: string;                       // event_id
+  kind: ReadingBubbleKind;
+  bookId: string;                   // = e.book_id == correlation_id（21 决策「按书归组」）
+  paragraphIndex: number;
+  content: string;                  // mutter/question 文本；association = snippet
+  subtype?: QuestionSubtype;        // question 四子型
+  selectedText?: string | null;     // quote_question 划线文本
+  memoryId?: string;                // association 命中记忆 id
+};
+
+type ReaderState = {
+  books: BookListItem[];            // 书架快照
+  booksError: string | null;
+  bookId: string | null;            // 当前打开的书（null = 未开书）
+  totalParagraphs: number;          // 当前书总段数（openBook 从 books 取）
+  paragraphs: Paragraph[];          // 当前窗口段落
+  windowFrom: number;               // 窗口起始 index（1-based）
+  userPosition: number;             // 用户读到第几段（1-based）
+  nyxPosition: number;              // Nyx 读到第几段（1-based）
+  readingSpeed: number;             // 字符/秒（10–200）
+  readCount: number;                // 读完几遍（>=1 可重读）
+  impulseBubbles: ReadingBubble[];  // 冲动气泡流（只收当前书，cap 20）
+  notes: UserNoteWithAnnotations[]; // 当前书用户笔记（含批注）
+  notesError: string | null;
+};
+```
+
+### actions
+
+```typescript
+// —— 06：书架/进度/追赶循环 ——
+loadBooks(): Promise<void>                 // GET /api/books → books
+openBook(bookId: string): Promise<void>    // getProgress → 会话态 + totalParagraphs（从 books 取）+ 拉首窗；nyx<user 时 startCatchup
+closeBook(): void                          // stopCatchup + 全量复位（含 impulseBubbles/notes）
+turnPage(dir: 1 | -1): Promise<void>       // 前翻 → putProgress + evaluateImpulse；越窗口边界重拉
+setReadingSpeed(speed: number): Promise<void>
+startCatchup(): void                       // setTimeout 秒级推进；段落未加载/过短兜底 1s
+stopCatchup(): void
+advanceNyx(): void                         // nyxPosition += 1（不超 userPosition）；收尾时落库 nyx_position
+reread(): Promise<void>                    // 复位 userPosition/nyxPosition=1（read_count 不碰）
+
+// —— 07：冲动气泡 + 笔记 ——
+addReadingBubble(e: ReadingMutterEvent | ReadingQuestionEvent | ReadingAssociationEvent): void  // 过滤 e.book_id !== bookId 丢弃 → snake→camel 映射 → append + cap 20（溢出丢最旧）
+loadNotes(): Promise<void>                 // GET /api/notes/{bookId} → notes
+addNote(p: { book_id; paragraph_id?; content; selected_text? }): Promise<void>   // POST → 归一 {…note, annotations: []} unshift
+updateNote(id: string, content: string): Promise<void>  // PUT → 覆盖 7 键保留 annotations
+deleteNote(id: string): Promise<void>      // DELETE → 本地移除该条（连同其批注）
+showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annotation | null → append 到 annotations（不整表重拉）
+```
+
+### 关键决策
+
+- **派生态不落 store**：`nyxStatusOf(bookId, nyxPosition, userPosition)` 纯函数派生 `idle/reading/waiting`；`catchupDurationMs` / `computeWindow` 同为可测纯函数（06）。
+- **追赶循环秒级**：`startCatchup` 用 module-level `catchupTimer`，`catchupDurationMs = clamp(字数/速度, 1, 30) 秒`；`advanceNyx` 不超 `userPosition`，追上后落库 `nyx_position`（否则重载读到陈旧落后值会重追、重放 BOOK_FINISHED → read_count 重复 ++）。
+- **气泡只显当前书**：`addReadingBubble` 过滤 `e.book_id !== bookId` 丢弃（`correlation_id` 按书归组，切书/未开书不串味）；cap 20 溢出丢最旧；snake→camel 映射在 store 内做（dispatch 透传原始事件）。
+- **笔记「给尼克斯看」本地 append**：`showToNyx` 成功把完整 `Annotation` append 到该 note（不整表重拉避免抖动）；LLM 空/失败回 `null` 不 append；失败静默记 `notesError`。用户笔记与 Nyx 章末整合记忆严格分离（后者落 memory 不上屏）。
+
+## 7. 测试（`tests/stores.test.ts`）
 
 - **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addMutter`/`addInitiateChat`/`addUserMessage` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
 - **chatStore.loadHistory**：按 `timestamp` 升序前置 + `preloaded=true` + 历史 think 入 `typedIds`；已存在的 id 去重不重复前置；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
@@ -172,4 +240,5 @@ type AnnounceState = {
 - **`isReady`（串行逐字纯函数）**：每条 nyx 文本消息等「同 `correlation_id` 且在其之前」的 nyx 文本消息都打完（入 `typedIds`）才就绪；无前置 nyx 文本 → 直接就绪；`preloaded` nyx 文本与 user 消息 → 恒就绪；不同 `correlation_id` 的 nyx 文本不阻塞。
 - **`settingsStore`**：`setTint`/`setImage` 独立落 store 可并存；`reset()` 回 null。
 - **`announceStore`**：`announce` 追加临时气泡（kind/text 落 store、id 唯一）；`dismiss` 摘除指定 id 其余保留；`advanceTimersByTime(ANNOUNCE_DURATION[kind])` 到时自动 dismiss。
+- **`readerStore`（06 + 07）**：`loadBooks` 落 books；`openBook` mock getProgress+getBookParagraphs → 会话态 + totalParagraphs、nyx<user 时 startCatchup；`turnPage` 前翻 putProgress+evaluateImpulse、回翻不评估；追赶循环 fake timers 推进/收尾/clearTimeout 不叠加；`addReadingBubble` 只收当前书、cap 20 溢出丢最旧、kind 映射各字段落对；`loadNotes`/`addNote`（unshift 归一）/`updateNote`（保留 annotations）/`deleteNote`/`showToNyx`（append 不重拉、null 不 append）。
 - 全部 mock fetch/无真实后端；验证管道正确（事件走对 store、字段零映射），不验证视觉。

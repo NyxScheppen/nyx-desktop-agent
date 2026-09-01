@@ -15,7 +15,7 @@
 
 ---
 
-## 2. 实体 dataclass（22 个 + 2 个 TypedDict）
+## 2. 实体 dataclass（22 个 + 3 个 TypedDict）
 
 > dataclass 字段与实现以 `nyx/types.py` 为准（spec 01-types 只给契约；固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`）。此处不再重复。
 
@@ -23,8 +23,8 @@
 
 ## 3. DB DDL（SQLite）
 
-> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；17 张业务表 + 5 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
-> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；17 张业务表 + `schema_version` 迁移簿记表 = 共 18 张。
+> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；18 张业务表 + 5 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
+> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；18 张业务表 + `schema_version` 迁移簿记表 = 共 19 张。
 
 ---
 
@@ -102,6 +102,7 @@ async def create_scene_memory(reply_context: dict[str, str]) -> Memory    # 场�
 async def search(query: str) -> list[Memory]                    # 内部跑三层+去重合并
 async def record_recall(memory_id: str) -> None                 # 记录"想起"
 async def list_memories(tag: str | None = None, type: MemoryType | None = None, limit: int | None = None) -> list[Memory]  # 仪表盘过滤 + 可选截断
+async def count_new(tag: str, since: float) -> int             # 计数「首次创建晚于 since」的 tag 记忆（first_created_at 锚点，轻量不物化 embedding）
 async def export(fmt: str) -> str                              # 记忆导出（json|md）
 async def remember_knowledge(items: list[dict[str, str]], correlation_id: str) -> None  # 读书知识点入长期记忆（tag='knowledge'，无 LLM）
 async def remember_reading(content: str, summary: str, correlation_id: str) -> None  # 章节/整本读书记忆入长期（tag='reading'，无 LLM）
@@ -159,8 +160,8 @@ async def add_long_term(desire: LongTermDesire) -> None         # 反思新增/�
 
 ```python
 async def apply_event(event: Event) -> None                     # 情感/精力更新
-async def reflect(correlation_id: str | None = None) -> None    # 协调器：内部调 MemoryFacade/DesireFacade，改性格/三观/长期欲望/自我叙事；correlation_id 来自触发事件（缺省自生成）
-async def get_state() -> CurrentState                           # 只读快照（内存缓存）
+async def reflect(correlation_id: str | None = None) -> None    # 协调器：内部调 MemoryFacade/DesireFacade，改性格/三观/审美/长期欲望/自我叙事；correlation_id 来自触发事件（缺省自生成）
+async def get_state() -> CurrentState                           # 只读快照（含 personality/values/aesthetic/energy 等慢变量）
 async def get_narrative() -> SelfNarrative                      # 自我叙事（供 /api/narrative）
 ```
 
@@ -241,7 +242,7 @@ nyx/
   config.py               # 配置加载（§8）
   enums.py                # §1 所有枚举
   types.py                # §2 实体 dataclass
-  db.py                   # SQLite 连接 + 17 表 DDL + 版本化迁移 + Database(conn, lock)（04-db）
+  db.py                   # SQLite 连接 + 18 表 DDL + 版本化迁移 + Database(conn, lock)（04-db）
   events/
     bus.py                # EventBus
     routing.py            # ROUTING 表
@@ -261,7 +262,7 @@ nyx/
   expression/
     facade.py             # ExpressionFacade
     pipeline.py           # 回复流程（LangGraph）
-    prompt.py             # prompt 拼装
+    prompt.py             # prompt 拼装（状态段含审美四轴）
     classifier.py         # 快慢通道判定
     mutter.py             # 碎碎念模板
   activity/
@@ -280,8 +281,8 @@ nyx/
   inner_life/
     facade.py             # InnerLifeFacade
     emotion.py            # valence/arousal/标签
-    reflection.py         # 反思
-    store.py              # InnerLifeStore（personality/value_system/energy/self_narrative 四张单行表）
+    reflection.py         # 反思（drift_aesthetic + 阅读量缩放）
+    store.py              # InnerLifeStore（personality/value_system/aesthetic/energy/self_narrative 五张单行表）
   tools/
     registry.py           # ToolRegistry
     local_search.py       # 本地搜索

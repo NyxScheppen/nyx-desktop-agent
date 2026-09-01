@@ -18,7 +18,7 @@
 - [ ] `nyx/db.py` 的 `_MIGRATIONS` 追加 v9（`reading_progress` 表，见「数据变更」）
 - [ ] `nyx/types.py` 含 `ReadingProgress`：`book_id/user_position/nyx_position/reading_speed/read_count/updated_at`（全非 Optional；keyed by `book_id`，无独立 id）
 - [ ] `nyx/types.py` 含 `BookListItem`：`id/title/author/filename/total_paragraphs/user_position/last_read_at`（`last_read_at: float | None`——未读 `None`；`user_position: int` 的 0 是未读哨兵；其余全非 Optional）
-- [ ] `ReadingStore` 追加 `find_book(book_id)` / `list_books` / `list_paragraphs(book_id, from_idx, to_idx)` / `get_progress(book_id)` / `upsert_progress(...)` / `increment_read_count(book_id)`（全 `async`）
+- [ ] `ReadingStore` 追加 `find_book(book_id)` / `list_books` / `list_paragraphs(book_id, from_idx, to_idx)` / `get_progress(book_id)` / `upsert_progress(...)` / `increment_read_count(book_id, nyx_position)`（全 `async`）
 - [ ] `ReadingFacade` 追加 `list_books() -> list[BookListItem]` / `list_paragraphs(book_id: str, from_idx: int, to_idx: int) -> list[Paragraph]` / `get_progress(book_id: str) -> ReadingProgress` / `save_progress(book_id: str, user_position: int, nyx_position: int, reading_speed: int) -> ReadingProgress`（全 `async`）
 - [ ] `GET /api/books` → 书架列表（按 `last_read_at` DESC，未读排后按 `created_at` DESC）
 - [ ] `GET /api/books/{book_id}/paragraphs?from=&to=` → 段落范围（`index` 升序）
@@ -35,7 +35,7 @@
     - `list_paragraphs(book_id, from_idx, to_idx) -> list[Paragraph]`——`WHERE book_id=? AND index BETWEEN ? AND ? ORDER BY index ASC`；`is_chapter_start`（INTEGER 0/1）读回 `bool(...)` 还原（19 已定「读侧在 20」，此处落实）
     - `get_progress(book_id) -> ReadingProgress | None`——按 `book_id` 单行查
     - `upsert_progress(book_id, user_position, nyx_position, reading_speed) -> ReadingProgress`——`INSERT ... ON CONFLICT(book_id) DO UPDATE`（`updated_at = now`；**不碰 `read_count`**，进度写回不得重置重读计数）
-    - `increment_read_count(book_id) -> ReadingProgress`——UPSERT 式 `++`：`INSERT INTO reading_progress(book_id, read_count, updated_at) VALUES (?, 1, now) ON CONFLICT(book_id) DO UPDATE SET read_count = read_count + 1, updated_at = excluded.updated_at`（有行 `+1`、无行建默认行 `read_count=1`，position/speed 走 DDL DEFAULT），供 22 的整本读完 `++`（首读 0→1、重读 1→2）；无进度行（前端从未 `save_progress`）也照常 `++`，不依赖先建行
+    - `increment_read_count(book_id, nyx_position) -> ReadingProgress`——UPSERT 式 `++`：`INSERT INTO reading_progress(book_id, nyx_position, read_count, updated_at) VALUES (?, ?, 1, now) ON CONFLICT(book_id) DO UPDATE SET nyx_position = excluded.nyx_position, read_count = read_count + 1, updated_at = excluded.updated_at`（有行 `+1`、无行建默认行 `read_count=1`；`user_position`/`reading_speed` 走 DDL DEFAULT，`nyx_position` 显式落 `total`——22 跨重启幂等信号），供 22 的整本读完 `++`（首读 0→1、重读 1→2）；无进度行（前端从未 `save_progress`）也照常 `++`，不依赖先建行
   - `ReadingFacade` 追加四个薄读方法（委托 store）：`list_books` 直通；`list_paragraphs`/`get_progress`/`save_progress` 先 `find_book` 判书存在、不存在抛 `BookNotFoundError(book_id)`（端点映射 404）；`list_paragraphs` 再判 `to_idx > book.total_paragraphs` → 抛 `ValueError`（端点 422，越界不截断）；`get_progress` 无进度行时返回默认 `ReadingProgress(book_id, 1, 1, 50, 0, 0.0)`（`read_count=0`、`updated_at=0.0` 从未保存哨兵），非 None
 - **关键决策**：
   - **进度 1:1 书**：`reading_progress` 用 `book_id` 作 PK（单行 per 书，`ON DELETE CASCADE`），与 V1 `material`（path PK）/`desire_value`（type PK）同款「key 即主键」模式，不另起自增 id
@@ -58,7 +58,7 @@
 ## 测试要点
 
 - [ ] 集成测试 `tests/test_reading/test_reading_facade.py`（`:memory:` + 真 `ReadingStore`）：
-  - [ ] `save_progress` 首次 INSERT、再次 UPDATE（同一 `book_id` 单行、`updated_at` 推进、`read_count` 不被写回重置）；`increment_read_count` 0→1→2、无进度行时建默认行 `read_count=1`
+  - [ ] `save_progress` 首次 INSERT、再次 UPDATE（同一 `book_id` 单行、`updated_at` 推进、`read_count` 不被写回重置）；`increment_read_count` 0→1→2、无进度行时建默认行 `read_count=1`、`nyx_position` 落 `total`
   - [ ] `list_books` 未读书 `user_position=0`/`last_read_at=None`、读过的书 `last_read_at` 非空且排前
   - [ ] `list_paragraphs` 范围查询：`from=2&to=4` 只回 `index 2..4`、升序、`is_chapter_start` bool 还原（INTEGER 1 → `True`）
   - [ ] 删 book → `reading_progress` CASCADE 清空

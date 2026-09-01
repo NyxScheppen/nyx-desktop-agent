@@ -32,6 +32,7 @@ const MAX_CATCHUP_SEC = 30; // 单段追赶耗时上界
 const MIN_READING_SPEED = 10; // 字/秒，后端校验下界 [10, 200]（20-reading-progress）
 const CATCHUP_REFRESH_FRACTION = 0.8; // 窗口 80% 边界触发重拉
 const _BUBBLE_CAP = 20; // 气泡上限：溢出丢最旧（07 §2）
+export const GAP_PX = 12; // 段间距（px），对齐 CSS .reader-text__pages 的 gap: 0.75rem（08 §5.1）
 
 // 冲动气泡三态（07 §2）：对应三个 SSE 事件，字段各落对。
 export type ReadingBubbleKind = "mutter" | "question" | "association";
@@ -117,6 +118,31 @@ export function computeWindow(
   from = Math.max(1, Math.min(from, total));
   const to = Math.min(total, from + WINDOW_SIZE - 1);
   return { from, to };
+}
+
+// 真分页（08 §5.1）：对当前窗口段落贪心填满。measureHeight(i) 返回第 i 段（全局 1-based）
+// 渲染高度 + 段间距；累计将溢出 viewportHeight 则封页、下一段开新页。空/<=0 返回 []。
+export function paginate(
+  paragraphs: Paragraph[],
+  measureHeight: (index: number) => number,
+  viewportHeight: number,
+): number[][] {
+  if (paragraphs.length === 0 || viewportHeight <= 0) return [];
+  const pages: number[][] = [];
+  let current: number[] = [];
+  let used = 0;
+  for (const p of paragraphs) {
+    const h = measureHeight(p.index);
+    if (current.length > 0 && used + h > viewportHeight) {
+      pages.push(current);
+      current = [];
+      used = 0;
+    }
+    current.push(p.index);
+    used += h;
+  }
+  if (current.length > 0) pages.push(current);
+  return pages;
 }
 
 // 是否需要重拉窗口：userPosition 越过窗口 80% 边界或跌出窗口起点。

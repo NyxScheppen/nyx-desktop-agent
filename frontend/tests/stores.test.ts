@@ -10,7 +10,9 @@ import { useSettingsStore } from "../src/stores/settingsStore";
 import {
   catchupDurationMs,
   computeWindow,
+  GAP_PX,
   nyxStatusOf,
+  paginate,
   useReaderStore,
 } from "../src/stores/readerStore";
 import type {
@@ -790,6 +792,30 @@ describe("readerStore", () => {
     // 100 字/1 = 100s 被 clamp 到 30s 顶格；应回退后端下界 10 字/秒 → 10s。
     expect(catchupDurationMs(100, 0)).toBe(10000);
     expect(catchupDurationMs(100, -5)).toBe(10000);
+  });
+
+  // ---- 真分页纯函数（08 §5.1） ----
+  it("paginate：长段独占一页、短段一页多段、溢出封页", () => {
+    const paras = [para(1, "一"), para(2, "二"), para(3, "三"), para(4, "四")];
+    const H = 50; // 每段 offsetHeight 50
+    const measure = () => H + GAP_PX; // measureHeight 含段间距 GAP_PX=12 → 62/段
+    expect(paginate(paras, measure, 62)).toEqual([[1], [2], [3], [4]]); // 62 装不下第二段 → 每页一段
+    expect(paginate(paras, measure, 124)).toEqual([[1, 2], [3, 4]]); // 62*2=124 恰好两段一页
+    expect(paginate(paras, measure, 125)).toEqual([[1, 2], [3, 4]]); // 第三段 62 溢出 → 封页
+    expect(paginate(paras, measure, 130)).toEqual([[1, 2], [3, 4]]); // 124+62=186>130 仍装不下第三段
+  });
+
+  it("paginate：空 paragraphs / viewportHeight<=0 返回 []", () => {
+    expect(paginate([], () => 50, 100)).toEqual([]);
+    expect(paginate([para(1, "一")], () => 50, 0)).toEqual([]);
+    expect(paginate([para(1, "一")], () => 50, -1)).toEqual([]);
+  });
+
+  it("paginate：measureHeight 含 GAP_PX 后页界正确（间距计入分页）", () => {
+    const paras = [para(1, "一"), para(2, "二")];
+    const H = 50;
+    // 不含 GAP_PX 时 50+50=100 <= 110 会挤进同一页；含 GAP_PX 后 62+62=124 > 110 → 分两页
+    expect(paginate(paras, () => H + GAP_PX, 110)).toEqual([[1], [2]]);
   });
 
   // ---- loadBooks ----

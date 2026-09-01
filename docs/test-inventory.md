@@ -908,6 +908,9 @@
 | `computeWindow > 书首/书尾 clamp 到 [1, total]` | 边界鲁棒 | 书首 `{from:1,to:50}`；书尾非居中 `{from:120,to:120}`；居中 `{from:95,to:120}` 不越界 |
 | `catchupDurationMs > clamp 到 [1s, 30s]` | 功能正确 | 100/50→2000；1/50→1000（下限）；10000/50→30000（上限） |
 | `catchupDurationMs > 非法 speed 回退最小速度` | 边界鲁棒 | speed≤0 时回退 `MIN_READING_SPEED`(10 字/秒) 而非复用 `MIN_CATCHUP_SEC`（秒）：100/10→10000ms，不再 100/1 顶格 30s |
+| `paginate > 长段独占一页、短段一页多段、溢出封页` | 功能正确 | 每段 `H+GAP_PX`(62)：viewport 62 → 每页一段 `[[1],[2],[3],[4]]`；124 恰好 `[[1,2],[3,4]]`；125/130 第三段 62 溢出 → 仍 `[[1,2],[3,4]]`（贪心封页） |
+| `paginate > 空 paragraphs / viewportHeight<=0 返回 []` | 边界鲁棒 | `[]`、`viewportHeight=0`、`-1` 均返回 `[]`（不崩） |
+| `paginate > measureHeight 含 GAP_PX 后页界正确` | 功能正确 | 两段各 62：`62+62=124 > 110` → `[[1],[2]]`；若不含间距 50+50=100≤110 会误挤同一页（间距计入分页） |
 | `loadBooks > GET /api/books → books 落 store` | 功能正确 | `loadBooks()` → `books` 落 fixture、`booksError=null` |
 | `loadBooks > getBooks throw → booksError` | 边界鲁棒 | reject → `booksError="fetch failed"`、`books=[]` |
 | `openBook > 会话态 + totalParagraphs 从 books 取 + 追赶` | 功能正确 | `totalParagraphs=120`（从 books 列表项取，非 progress）、位置/速度/读次落 store、窗口 `from=3&to=52`、`vi.getTimerCount()>0`（起追赶） |

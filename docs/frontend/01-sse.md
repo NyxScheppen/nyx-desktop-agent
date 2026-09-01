@@ -107,7 +107,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `speak` | `chatStore` | `addSpeak` | 聊天区 Nyx 回复 |
 | `ask` | `chatStore` | `addAsk` | 聊天区 Nyx 问句 |
 | `think` | `chatStore` | `addThink` | 内心话（灰色斜体逐字展示） |
-| `mutter` | `chatStore` + `announceStore` | `addMutter` + `announce("mutter", …)` | 碎碎念（聊天记录气泡 + 头像旁淡出气泡） |
+| `mutter` | `announceStore` | `announce("mutter", …)` | 碎碎念（头像旁淡出气泡，不再进聊天记录） |
 | `initiate_chat` | `chatStore` | `addInitiateChat` | 搭话 |
 | `emotion_update` | `innerLifeStore` | `updateEmotion` + `refreshState()` | 更新 valence/arousal/emotion（增量）+ 重拉全量快照带新能量/性格/三观（载荷只带情绪，不随帧下发） |
 | `user_message` | `chatStore` | `addUserMessage` | 用户消息回显（发消息后 SSE 回播） |
@@ -116,10 +116,11 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `activity_end` | `activityStore` + `announceStore` | `refresh()` 后按 `activity_id` 找产出并 `announce("activity", …)` | 活动完成 → 重拉快照 + 冒一句产出 |
 | `memory_created`/`memory_promoted` | — | — | 无消费者（记忆面板已砍，事件静默丢弃） |
 | `reflection_done` | `desireStore` + `announceStore` | `refresh()` +（`story_is_new` 时）`announce("mutter", …)` | 反思完成 → 欲望重拉快照 +（新故事时）头像旁冒一句 |
-| `reading_mutter`/`reading_question`/`reading_association` | `readerStore` | `addReadingBubble` | 阅读冲动气泡（透传原始事件，snake→camel 映射在 store 内做，只收当前书） |
+| `reading_mutter` | `announceStore` | `announce("mutter", …)` | 读书碎碎念归悬浮气泡（与全局 mutter 同一渲染路径） |
+| `reading_question`/`reading_association` | `chatStore` | `addReadingTurn(e)` | 读书提问/联想并进对话（永久聊天消息，correlation_id=book_id，不过滤当前书） |
 | `clock_tick`/`observation_state`/`reflection` | — | — | 无消费者 |
 
-> 完整 22 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`mutter` 额外进 `announceStore` 冒头像旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection`/`memory_*` 无消费者（故无 `default` 分支）。
+> 完整 22 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`mutter` 进 `announceStore` 冒头像旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection`/`memory_*` 无消费者（故无 `default` 分支）。
 > **前向兼容边界**：命名事件（带 `event:` 行）若没有匹配的 `addEventListener` 且无 `onmessage`，浏览器会静默丢弃——故后端**新增 EventType 必须同步前端** `EVENT_TYPES` 数组 + `types/api.ts` 判别联合 + 本分发表（monorepo 内本就在同一提交改）。不存在「旧前端自动接住新类型」的兜底。
 
 ### 4.1 分发函数（含类型收窄）
@@ -132,9 +133,7 @@ function dispatchEvent(e: SseEvent): void {
     case "ask": return chatStore.addAsk(e);
     case "think": return chatStore.addThink(e);
     case "mutter":
-      chatStore.addMutter(e);
-      announceStore.announce("mutter", e.content);
-      return;
+      return announceStore.announce("mutter", e.content);
     case "initiate_chat": return chatStore.addInitiateChat(e);
     case "user_message": return chatStore.addUserMessage(e);
     case "emotion_update":
@@ -155,6 +154,11 @@ function dispatchEvent(e: SseEvent): void {
         if (text !== null) announceStore.announce("activity", text);
       });
       return;
+    case "reading_mutter":
+      return announceStore.announce("mutter", e.content);
+    case "reading_question":
+    case "reading_association":
+      return chatStore.addReadingTurn(e);
     case "reflection_done":
       void desireStore.refresh();
       if (e.story_is_new) {
@@ -175,7 +179,7 @@ function dispatchEvent(e: SseEvent): void {
 chatStore.addSpeak(e: TextEvent<"speak">): void            // e.content → ChatMessage{kind:"speak"}
 chatStore.addAsk(e: TextEvent<"ask">): void                // kind:"ask"
 chatStore.addThink(e: TextEvent<"think">): void            // kind:"think"
-chatStore.addMutter(e: TextEvent<"mutter">): void          // kind:"mutter"
+chatStore.addReadingTurn(e: ReadingQuestionEvent | ReadingAssociationEvent): void  // 读书提问/联想并进对话（correlation_id=book_id，不过滤当前书）
 chatStore.addInitiateChat(e: TextEvent<"initiate_chat">): void // kind:"initiate_chat"
 chatStore.addUserMessage(e: UserMessageEvent): void        // 读 e.message → {kind:"message", role:"user"}
 innerLifeStore.updateEmotion(e: EmotionUpdateEvent): void  // 覆盖 current 的 valence/arousal/emotion（emotion 走 isEmotionCategory 收窄）
@@ -202,6 +206,6 @@ announceStore.announce(kind: "mutter" | "activity", text: string): void  // 头�
 ## 6. App 组合装配（`App.tsx`）
 
 - `useSSE` 只挂一次（App 顶层），子面板**不重复订阅**，只读 store。
-- 精简装配：顶栏（标题 `✦ Nyx ✦` + 连接状态 + 设置按钮）+ 左状态条 `StatusBar`（点信息区开内在详情）+ 主区 `ScrollArea` + `ChatInput` + 两个弹层（`InnerDetail` 内在详情 / `SettingsView` 设置）+ `AnnounceLayer` 气泡层。
+- 精简装配：顶栏（标题 `✦ Nyx ✦` + 连接状态 + 设置按钮）+ 左栏常驻对话 `div.left-dock`（`StatusBar` → `MessageList` → `ChatInput` 竖排）+ 中间内容区 `div.game-main`（`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书 + `avatar-overlay` 立绘浮层）+ 底部导航 `RightDock` + `AnnounceLayer` 气泡层。
 - 重连（`status === "open"`）时 `refreshState()` + `void refreshActivity()` 重拉快照对齐（断线期间 `emotion_update` 可能丢失）。
 - 背景由 `settingsStore` 驱动：`image` 以 `cover` 铺底、`tint` 无图时作纯色替默认羊皮纸（`--parchment`）、图+色并存时叠一层半透明 `.app-bg-tint`。

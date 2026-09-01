@@ -94,6 +94,7 @@ def _state_block(state: CurrentState) -> str:
     """当前状态段：情感 / 精力 / 活动 / 性格 / 三观（数值直接拼，LLM 能读）。"""
     p = state.personality
     v = state.values
+    a = state.aesthetic
     activity = (
         state.current_activity.value
         if state.current_activity is not None
@@ -108,7 +109,8 @@ def _state_block(state: CurrentState) -> str:
         f"尽责性{p['conscientiousness']:.0f}、"
         f"外向性{p['extraversion']:.0f}、宜人性{p['agreeableness']:.0f}、神经质{p['neuroticism']:.0f}\n"
         f"三观（1-10）：对人类态度{v['attitude_to_human']:.0f}、AI身份接纳{v['ai_identity_acceptance']:.0f}、"
-        f"利他{v['altruism']:.0f}、乐观{v['optimism']:.0f}"
+        f"利他{v['altruism']:.0f}、乐观{v['optimism']:.0f}\n"
+        f"审美（1-10）：华丽{a['ornate']:.0f}、抒情{a['lyrical']:.0f}、古典{a['classical']:.0f}、沉重{a['somber']:.0f}"
     )
 
 

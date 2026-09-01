@@ -11,8 +11,8 @@ _MEMORY_COLS = (
     "id, created_at, content, tag, summary, freshness, "
     "type, recall_count, aspect, embedding"
 )
-# INSERT 用：比 SELECT 多 content_hash（store 派生，Memory 不承载）
-_MEMORY_INSERT_COLS = _MEMORY_COLS + ", content_hash"
+# INSERT 用：比 SELECT 多 content_hash + first_created_at（store 派生，Memory 不承载）
+_MEMORY_INSERT_COLS = _MEMORY_COLS + ", content_hash, first_created_at"
 
 
 def hash_content(content: str) -> str:
@@ -35,8 +35,9 @@ class MemoryStore:
         async with self._db.lock:
             await self._db.conn.execute(
                 f"INSERT INTO memory ({_MEMORY_INSERT_COLS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (*_memory_row(memory), hash_content(memory.content)),
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*_memory_row(memory), hash_content(memory.content),
+                 memory.created_at),
             )
             await self._db.conn.commit()
 
@@ -138,6 +139,20 @@ class MemoryStore:
             promoted = cursor.rowcount == 1
             await self._db.conn.commit()
         return promoted
+
+    async def count_new(self, tag: str, since: float) -> int:
+        """计数「首次创建晚于 since 的 tag 记忆」，不物化整行/embedding。
+
+        用 first_created_at（INSERT 时定格、strengthen/update_many 不刷新）
+        而非 created_at（strengthen 刷新），避免纯重读被误计为「新增」。
+        """
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT COUNT(*) FROM memory WHERE tag = ? AND first_created_at > ?",
+                (tag, since),
+            )
+            row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
 
     async def strengthen(self, memory_id: str, now: float) -> None:
         """重复写入合并强化：freshness 重置、created_at 锚点刷新。

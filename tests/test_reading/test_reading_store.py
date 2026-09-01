@@ -148,6 +148,13 @@ class _Clock:
         return self._t
 
 
+class _FixedClock:
+    """固定时钟：所有 `time()` 返回同一值，构造「同一 tick 内两次更新」场景。"""
+
+    def __call__(self) -> float:
+        return 5000.0
+
+
 async def _seed_book(
     store: ReadingStore, title: str = "书", n: int = 3
 ) -> str:
@@ -248,7 +255,7 @@ async def test_upsert_does_not_reset_read_count() -> None:
     store, database = await _new_store()
     try:
         book_id = await _seed_book(store)
-        await store.increment_read_count(book_id)  # read_count = 1
+        await store.increment_read_count(book_id, 3)  # read_count = 1
         saved = await store.upsert_progress(book_id, 6, 6, 90)
         cursor = await database.conn.execute(
             "SELECT read_count FROM reading_progress WHERE book_id = ?", (book_id,),
@@ -264,8 +271,8 @@ async def test_increment_read_count_zero_to_one_to_two() -> None:
     store, database = await _new_store()
     try:
         book_id = await _seed_book(store)
-        first = await store.increment_read_count(book_id)
-        second = await store.increment_read_count(book_id)
+        first = await store.increment_read_count(book_id, 3)
+        second = await store.increment_read_count(book_id, 3)
     finally:
         await database.conn.close()
     assert first.read_count == 1
@@ -276,7 +283,7 @@ async def test_increment_read_count_creates_default_row() -> None:
     store, database = await _new_store()
     try:
         book_id = await _seed_book(store)
-        result = await store.increment_read_count(book_id)
+        result = await store.increment_read_count(book_id, 3)
         cursor = await database.conn.execute(
             "SELECT user_position, nyx_position, reading_speed "
             "FROM reading_progress WHERE book_id = ?", (book_id,),
@@ -286,9 +293,24 @@ async def test_increment_read_count_creates_default_row() -> None:
         await database.conn.close()
     assert result.read_count == 1
     assert row is not None
-    assert row["user_position"] == 1  # DDL DEFAULT
-    assert row["nyx_position"] == 1
+    assert row["user_position"] == 1  # DDL DEFAULT（未写）
+    assert row["nyx_position"] == 3  # 显式落 total（22 跨重启幂等信号）
     assert row["reading_speed"] == 50
+
+
+async def test_increment_read_count_persists_nyx_position() -> None:
+    """整本读完 ++ 同步落 nyx_position=total——跨重启幂等信号（前端重载读到
+    nyx_position==total → waiting，不再重追重放 BOOK_FINISHED）。"""
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store, n=5)
+        result = await store.increment_read_count(book_id, 5)
+        got = await store.get_progress(book_id)
+    finally:
+        await database.conn.close()
+    assert result.read_count == 1
+    assert got is not None
+    assert got.nyx_position == 5
 
 
 async def test_delete_book_cascades_reading_progress() -> None:
@@ -361,6 +383,25 @@ async def test_update_user_note_hit_and_miss() -> None:
     assert missing is None
 
 
+async def test_update_user_note_same_tick_same_content_returns_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同 tick 两次同内容更新，updated_at/content 都没变 → changes()=0，
+    但笔记存在，应返回笔记而非 None（rowcount 判「不存在」的脆弱点）。"""
+    monkeypatch.setattr("nyx.reading.store.time.time", _FixedClock())
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store)
+        note = await store.insert_user_note(book_id, None, "正文", None)
+        await store.update_user_note(note.id, "改后")
+        again = await store.update_user_note(note.id, "改后")  # 同 tick 同 content
+    finally:
+        await database.conn.close()
+    assert again is not None
+    assert again.id == note.id
+    assert again.content == "改后"
+
+
 async def test_delete_user_note_cascades_annotations() -> None:
     store, database = await _new_store()
     try:
@@ -368,7 +409,7 @@ async def test_delete_user_note_cascades_annotations() -> None:
         note = await store.insert_user_note(book_id, None, "笔记", None)
         await store.insert_annotation(note.id, "批注")
         assert await store.delete_user_note(note.id) is True
-        assert await store.list_annotations(note.id) == []  # FK CASCADE 清空
+        assert await store.list_annotations_for_notes([note.id]) == []  # CASCADE 清空
         assert await store.delete_user_note(note.id) is False  # 已删
     finally:
         await database.conn.close()
@@ -392,20 +433,25 @@ async def test_get_user_note_and_get_paragraph() -> None:
     assert miss_para is None
 
 
-async def test_list_annotations_sorted_desc(
+async def test_list_annotations_for_notes_sorted_desc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """批量查多条笔记的批注（一次 IN），按 created_at 降序，可归组到各自笔记。"""
     monkeypatch.setattr("nyx.reading.store.time.time", _Clock())
     store, database = await _new_store()
     try:
         book_id = await _seed_book(store)
-        note = await store.insert_user_note(book_id, None, "笔记", None)
-        a1 = await store.insert_annotation(note.id, "批注1")
-        a2 = await store.insert_annotation(note.id, "批注2")
-        anns = await store.list_annotations(note.id)
+        n1 = await store.insert_user_note(book_id, None, "笔记一", None)
+        n2 = await store.insert_user_note(book_id, None, "笔记二", None)
+        a1 = await store.insert_annotation(n1.id, "批注1")
+        a2 = await store.insert_annotation(n2.id, "批注2")
+        a3 = await store.insert_annotation(n1.id, "批注3")
+        anns = await store.list_annotations_for_notes([n1.id, n2.id])
+        empty = await store.list_annotations_for_notes([])
     finally:
         await database.conn.close()
-    assert [a.id for a in anns] == [a2.id, a1.id]  # 新在前
+    assert [a.id for a in anns] == [a3.id, a2.id, a1.id]  # 新在前（全局降序）
+    assert empty == []
 
 
 async def test_delete_book_sets_note_fk_null() -> None:

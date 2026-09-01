@@ -42,6 +42,9 @@ def _mk_state() -> CurrentState:
             "attitude_to_human": 5.0, "ai_identity_acceptance": 5.0,
             "altruism": 5.0, "optimism": 5.0,
         },
+        aesthetic={
+            "ornate": 7.0, "lyrical": 7.0, "classical": 6.0, "somber": 6.0,
+        },
         energy=80.0,
         energy_state=EnergyState.OKAY,
         current_activity=None,
@@ -144,6 +147,9 @@ async def test_state_endpoint() -> None:
     assert body["emotion"] == "neutral"
     assert body["energy_state"] == "okay"
     assert body["energy"] == 80.0
+    assert body["aesthetic"] == {
+        "ornate": 7.0, "lyrical": 7.0, "classical": 6.0, "somber": 6.0,
+    }
 
 
 async def test_chat_endpoint() -> None:

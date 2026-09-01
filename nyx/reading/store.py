@@ -184,16 +184,25 @@ class ReadingStore:
             await self._db.conn.commit()
             return await self._get_progress_locked(book_id)
 
-    async def increment_read_count(self, book_id: str) -> ReadingProgress:
-        """整本读完 ++（无行建默认行 read_count=1，position/speed 走 DDL DEFAULT）。"""
+    async def increment_read_count(
+        self, book_id: str, nyx_position: int
+    ) -> ReadingProgress:
+        """整本读完 ++（无行建默认行 read_count=1，position/speed 走 DDL DEFAULT）。
+
+        同时原子落 `nyx_position=total`——这是跨重启的幂等信号：整本读完时 Nyx 位置
+        已到书末，落库后前端重载读到 `nyx_position==total` → waiting，不再重追重放
+        BOOK_FINISHED（否则重启后 `nyx_position` 陈旧，`read_count` 会重复 ++）。
+        """
         async with self._db.lock:
             now = time.time()
             await self._db.conn.execute(
-                "INSERT INTO reading_progress (book_id, read_count, updated_at) "
-                "VALUES (?, 1, ?) "
+                "INSERT INTO reading_progress "
+                "(book_id, nyx_position, read_count, updated_at) "
+                "VALUES (?, ?, 1, ?) "
                 "ON CONFLICT(book_id) DO UPDATE SET "
+                "nyx_position = excluded.nyx_position, "
                 "read_count = read_count + 1, updated_at = excluded.updated_at",
-                (book_id, now),
+                (book_id, nyx_position, now),
             )
             await self._db.conn.commit()
             return await self._get_progress_locked(book_id)
@@ -255,16 +264,21 @@ class ReadingStore:
             return [_row_to_user_note(r) for r in rows]
 
     async def update_user_note(self, note_id: str, content: str) -> UserNote | None:
-        """改笔记正文（updated_at 推进）；不存在返回 None。"""
+        """改笔记正文（updated_at 推进）；不存在返回 None。
+
+        先 SELECT 判存在而非 `rowcount==0`——`rowcount` 依赖驱动/版本语义
+        （changed vs matched），「同 tick 同内容更新」在部分实现下返回 0 会
+        误判不存在。
+        """
         async with self._db.lock:
+            if await self._get_user_note_locked(note_id) is None:
+                return None
             now = time.time()
-            cursor = await self._db.conn.execute(
+            await self._db.conn.execute(
                 "UPDATE user_notes SET content = ?, updated_at = ? WHERE id = ?",
                 (content, now, note_id),
             )
             await self._db.conn.commit()
-            if cursor.rowcount == 0:
-                return None
             return await self._get_user_note_locked(note_id)
 
     async def delete_user_note(self, note_id: str) -> bool:
@@ -290,13 +304,18 @@ class ReadingStore:
                 id=ann_id, user_note_id=user_note_id, content=content, created_at=now,
             )
 
-    async def list_annotations(self, user_note_id: str) -> list[Annotation]:
-        """某条笔记的批注，按 created_at 降序（新在前）。"""
+    async def list_annotations_for_notes(
+        self, note_ids: list[str]
+    ) -> list[Annotation]:
+        """多条笔记的批注（一次 IN 查询，避免 N+1），按 created_at 降序。"""
+        if not note_ids:
+            return []
         async with self._db.lock:
+            placeholders = ", ".join("?" for _ in note_ids)
             cursor = await self._db.conn.execute(
-                f"SELECT {_ANN_COLS} FROM annotations WHERE user_note_id = ? "
-                "ORDER BY created_at DESC",
-                (user_note_id,),
+                f"SELECT {_ANN_COLS} FROM annotations "
+                f"WHERE user_note_id IN ({placeholders}) ORDER BY created_at DESC",
+                tuple(note_ids),
             )
             rows = await cursor.fetchall()
             return [_row_to_annotation(r) for r in rows]

@@ -119,8 +119,9 @@ class InnerLifeFacade:
     async def get_state(self) -> CurrentState:
         personality = await self._store.get_personality()
         values = await self._store.get_values()
+        aesthetic = await self._store.get_aesthetic()
         energy = await self._store.get_energy()
-        if personality is None or values is None or energy is None:
+        if personality is None or values is None or aesthetic is None or energy is None:
             raise RuntimeError("inner_life 单行表未初始化（18-api 组合根必须先 seed）")
         energy_value, energy_state = energy
         current_activity = await self._current_activity_type()
@@ -131,6 +132,7 @@ class InnerLifeFacade:
             emotion=emotion,
             personality=personality,
             values=values,
+            aesthetic=aesthetic,
             energy=energy_value,
             energy_state=energy_state,
             current_activity=current_activity,

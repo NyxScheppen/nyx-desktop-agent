@@ -10,6 +10,7 @@ from nyx.expression.prompt import (
     build_user_prompt,
 )
 from nyx.types import (
+    Aesthetic,
     CurrentState,
     Memory,
     Message,
@@ -36,6 +37,13 @@ _VALUES: Values = {
     "optimism": 5.0,
 }
 
+_AESTHETIC: Aesthetic = {
+    "ornate": 7.0,
+    "lyrical": 7.0,
+    "classical": 6.0,
+    "somber": 6.0,
+}
+
 
 def _state(
     *,
@@ -48,6 +56,7 @@ def _state(
         emotion=EmotionCategory.HAPPY,
         personality=_PERSONALITY,
         values=_VALUES,
+        aesthetic=_AESTHETIC,
         energy=80.0,
         energy_state=EnergyState.ENERGETIC,
         current_activity=current_activity,
@@ -137,6 +146,13 @@ def test_build_system_prompt_personality_values() -> None:
     assert "开放性5" in result
     assert "三观（" in result
     assert "对人类态度5" in result
+
+
+def test_build_system_prompt_aesthetic() -> None:
+    result = build_system_prompt(_CANON, _state())
+    assert "审美（1-10）" in result
+    assert "华丽7" in result
+    assert "沉重6" in result
 
 
 def test_state_block_idle() -> None:

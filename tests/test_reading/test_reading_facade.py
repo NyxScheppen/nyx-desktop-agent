@@ -38,6 +38,7 @@ from nyx.reading.facade import (
 from nyx.reading.segmenter import Segment
 from nyx.reading.store import ReadingStore
 from nyx.types import (
+    Annotation,
     CurrentState,
     DesireState,
     DesireValue,
@@ -75,6 +76,9 @@ def _mk_state(energy: float = 100.0, agreeableness: float = 10.0) -> CurrentStat
         emotion=EmotionCategory.NEUTRAL,
         personality=personality,
         values=values,
+        aesthetic={
+            "ornate": 7.0, "lyrical": 7.0, "classical": 6.0, "somber": 6.0,
+        },
         energy=energy,
         energy_state=EnergyState.OKAY,
         current_activity=None,
@@ -207,6 +211,54 @@ class _NoneSearchMemory(_FakeMemory):
 
     async def search(self, query: str) -> list[Memory]:
         return cast(list[Memory], None)
+
+
+class _RaisingLlm(_FakeLlm):
+    """LLM complete 抛异常，模拟 API 失败/超时（22 整合与批注的失败路径）。"""
+
+    async def complete(
+        self,
+        messages: list[LlmMessage],
+        *,
+        module: str,
+        output_type: str,
+        correlation_id: str,
+        json_mode: bool = False,
+        tools: list[dict[str, object]] | None = None,
+    ) -> LLMOutput:
+        raise RuntimeError("LLM 挂了")
+
+
+class _BlockingLlm(_FakeLlm):
+    """complete 阻塞在 `release` event，模拟 LLM 等待期间 buffer 被并发追加。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+        self.blocked = asyncio.Event()
+
+    async def complete(
+        self,
+        messages: list[LlmMessage],
+        *,
+        module: str,
+        output_type: str,
+        correlation_id: str,
+        json_mode: bool = False,
+        tools: list[dict[str, object]] | None = None,
+    ) -> LLMOutput:
+        self.calls.append((output_type, correlation_id))
+        self.messages.append(messages)
+        self.json_modes.append((output_type, json_mode))
+        self.blocked.set()
+        await self.release.wait()
+        return LLMOutput(
+            module=module,
+            type=output_type,
+            model="fake",
+            content='{"content": "记住了", "summary": "读某章"}',
+            correlation_id=correlation_id,
+        )
 
 
 def _build_impulse_facade(
@@ -765,6 +817,37 @@ async def test_add_and_list_user_notes_with_annotations(
     assert [a.content for a in notes[0].annotations] == ["批注"]
 
 
+async def test_list_user_notes_batches_annotations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """list_user_notes 一次批量查批注（非 N+1），且各笔记批注正确归组。"""
+    facade, database, *_ = await _note_facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=False)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        pid = (await facade.list_paragraphs(book.id, 1, 1))[0].id
+        note1 = await facade.add_user_note(book.id, pid, "一", None)
+        note2 = await facade.add_user_note(book.id, pid, "二", None)
+        await facade._store.insert_annotation(note1.id, "批1")
+        await facade._store.insert_annotation(note2.id, "批2")
+        batch_calls: list[list[str]] = []
+        real = facade._store.list_annotations_for_notes
+
+        async def spy(note_ids: list[str]) -> list[Annotation]:
+            batch_calls.append(list(note_ids))
+            return await real(note_ids)
+
+        monkeypatch.setattr(facade._store, "list_annotations_for_notes", spy)
+        notes = await facade.list_user_notes(book.id)
+    finally:
+        await database.conn.close()
+    assert len(batch_calls) == 1
+    assert set(batch_calls[0]) == {note1.id, note2.id}
+    by_id = {n.id: [a.content for a in n.annotations] for n in notes}
+    assert by_id == {note1.id: ["批1"], note2.id: ["批2"]}
+
+
 async def test_add_user_note_without_paragraph_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -830,6 +913,7 @@ async def test_show_to_nyx_writes_annotation_with_paragraph(
         annotation = await facade.show_to_nyx(note.id)
     finally:
         await database.conn.close()
+    assert annotation is not None
     assert annotation.user_note_id == note.id
     assert annotation.content == "这里写得好。"
     assert ("reading_annotation", note.id) in fake_llm.calls
@@ -853,6 +937,7 @@ async def test_show_to_nyx_book_deleted_reads_note_only(
         annotation = await facade.show_to_nyx(note.id)
     finally:
         await database.conn.close()
+    assert annotation is not None
     assert annotation.user_note_id == note.id
     # 书已删 → prompt 只含笔记文字，不含原段落
     assert "笔记正文" in fake_llm.messages[0][1]["content"]
@@ -927,6 +1012,31 @@ async def test_check_chapter_boundary_book_finished_integrates(
     assert progress is not None and progress.read_count == 1  # 0→1
 
 
+async def test_book_finished_persists_nyx_position_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """整本读完 ++ 时同步落 nyx_position=total——跨重启幂等信号（前端重载读到
+    nyx_position==total → waiting，不再重追重放 BOOK_FINISHED）。"""
+    facade, database, *_ = await _note_facade(
+        monkeypatch,
+        [
+            Segment(text="第一章", is_chapter_start=True),
+            Segment(text="正文", is_chapter_start=False),
+            Segment(text="第二章", is_chapter_start=True),
+        ],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        result = await _check_and_drain(facade, book.id, 3)  # total=3
+        progress = await facade._store.get_progress(book.id)
+    finally:
+        await database.conn.close()
+    assert result is BoundaryResult.BOOK_FINISHED
+    assert progress is not None
+    assert progress.read_count == 1
+    assert progress.nyx_position == 3  # 整本读完落 total
+
+
 async def test_check_chapter_boundary_reread_reflects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -944,7 +1054,7 @@ async def test_check_chapter_boundary_reread_reflects(
     )
     try:
         book = await facade.import_book("a.epub", b"x")
-        await facade._store.increment_read_count(book.id)  # read_count=1（重读）
+        await facade._store.increment_read_count(book.id, 3)  # read_count=1（重读）
         await facade.record_nyx_output(book.id, 1, "这句话", "mutter")
         result = await _check_and_drain(facade, book.id, 2)
     finally:
@@ -1014,3 +1124,279 @@ async def test_mutter_and_question_record_nyx_output(
         await database.conn.close()
     entries = facade._nyx_buffer.get(book.id, [])
     assert {e.source for e in entries} == {"mutter", "question"}
+
+
+async def test_book_finished_increments_read_count_even_with_empty_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch, [Segment(text="第一章", is_chapter_start=True)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        result = await _check_and_drain(facade, book.id, 1)  # buffer 空
+        progress = await facade._store.get_progress(book.id)
+    finally:
+        await database.conn.close()
+    assert result is BoundaryResult.BOOK_FINISHED
+    assert progress is not None and progress.read_count == 1
+
+
+async def test_book_finished_increments_read_count_even_when_integrate_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch,
+        [Segment(text="第一章", is_chapter_start=True)],
+        llm=_RaisingLlm(),
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        await facade.record_nyx_output(book.id, 1, "这句话", "mutter")
+        result = await _check_and_drain(facade, book.id, 1)
+        progress = await facade._store.get_progress(book.id)
+    finally:
+        await database.conn.close()
+    assert result is BoundaryResult.BOOK_FINISHED
+    assert progress is not None and progress.read_count == 1
+
+
+async def test_check_chapter_boundary_repeat_book_finished_no_double_increment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重复判 BOOK_FINISHED（nyx_position 停在 >= total）不重复 ++。"""
+    facade, database, *_ = await _note_facade(
+        monkeypatch, [Segment(text="第一章", is_chapter_start=True)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        first = await _check_and_drain(facade, book.id, 1)
+        second = await _check_and_drain(facade, book.id, 1)
+        progress = await facade._store.get_progress(book.id)
+    finally:
+        await database.conn.close()
+    assert first is BoundaryResult.BOOK_FINISHED
+    assert second is BoundaryResult.BOOK_FINISHED
+    assert progress is not None and progress.read_count == 1
+
+
+async def test_check_chapter_boundary_repeat_no_second_integration_no_reflect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重复 BOOK_FINISHED（首次整合仍在 LLM 等待中）→ 不 spawn 第二个整合、
+    不误触发 reflect（首读 pre_read_count 应仍是 0）。"""
+    llm = _BlockingLlm()
+    inner = _FakeInnerLife(_mk_state())
+    facade, database, _, _, _, inner, _ = await _note_facade(
+        monkeypatch,
+        [Segment(text="第一章", is_chapter_start=True)],
+        llm=llm,
+        inner_life=inner,
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        await facade.record_nyx_output(book.id, 1, "最后一句话", "mutter")
+        before = asyncio.all_tasks()
+        first = await facade.check_chapter_boundary(book.id, 1)  # total=1
+        created1 = asyncio.all_tasks() - before
+        await llm.blocked.wait()  # 首次整合阻塞在 LLM
+        before2 = asyncio.all_tasks()
+        second = await facade.check_chapter_boundary(book.id, 1)  # 重复调用
+        created2 = asyncio.all_tasks() - before2
+        llm.release.set()
+        if created1:
+            await asyncio.gather(*created1)
+        if created2:
+            await asyncio.gather(*created2)
+        progress = await facade._store.get_progress(book.id)
+    finally:
+        await database.conn.close()
+    assert first is BoundaryResult.BOOK_FINISHED
+    assert second is BoundaryResult.BOOK_FINISHED
+    assert len(created2) == 0  # 重复调用不 spawn 第二个整合任务
+    assert inner.reflect_calls == []  # 首读不误触发 reflect
+    assert progress is not None and progress.read_count == 1
+
+
+async def test_check_chapter_boundary_reread_increments_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回翻/重读（nyx_position 回到 < total）清除标记，下一遍读完再次 ++。"""
+    facade, database, *_ = await _note_facade(
+        monkeypatch,
+        [
+            Segment(text="第一章", is_chapter_start=True),
+            Segment(text="正文", is_chapter_start=False),
+            Segment(text="第二章", is_chapter_start=True),
+        ],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        await _check_and_drain(facade, book.id, 2)  # 第一遍 CHAPTER_END
+        await _check_and_drain(facade, book.id, 3)  # 第一遍 BOOK_FINISHED → 0→1
+        await _check_and_drain(facade, book.id, 1)  # 回翻 NONE → 清除标记
+        await _check_and_drain(facade, book.id, 3)  # 第二遍 BOOK_FINISHED → 1→2
+        progress = await facade._store.get_progress(book.id)
+    finally:
+        await database.conn.close()
+    assert progress is not None and progress.read_count == 2
+
+
+async def test_integrate_preserves_entries_added_during_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """整合成功只删已消费快照，LLM 等待期间新入的条目保留给下一轮。"""
+    llm = _BlockingLlm()
+    facade, database, *_ = await _note_facade(
+        monkeypatch,
+        [
+            Segment(text="第一章", is_chapter_start=True),
+            Segment(text="第二章", is_chapter_start=True),
+            Segment(text="正文", is_chapter_start=False),
+        ],
+        llm=llm,
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        await facade.record_nyx_output(book.id, 1, "第一章碎碎念", "mutter")
+        before = asyncio.all_tasks()
+        result = await facade.check_chapter_boundary(book.id, 1)  # CHAPTER_END
+        created = asyncio.all_tasks() - before
+        await llm.blocked.wait()  # 后台整合阻塞在 LLM
+        await facade.record_nyx_output(book.id, 2, "第二章碎碎念", "mutter")
+        llm.release.set()
+        if created:
+            await asyncio.gather(*created)
+        buffer = facade._nyx_buffer.get(book.id, [])
+    finally:
+        await database.conn.close()
+    assert result is BoundaryResult.CHAPTER_END
+    assert [e.paragraph_index for e in buffer] == [2]
+
+
+async def test_integrate_failure_preserves_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch,
+        [
+            Segment(text="第一章", is_chapter_start=True),
+            Segment(text="正文", is_chapter_start=False),
+            Segment(text="第二章", is_chapter_start=True),
+        ],
+        llm=_RaisingLlm(),
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        await facade.record_nyx_output(book.id, 1, "这句话", "mutter")
+        result = await _check_and_drain(facade, book.id, 2)  # CHAPTER_END 整合失败
+    finally:
+        await database.conn.close()
+    assert result is BoundaryResult.CHAPTER_END
+    assert len(facade._nyx_buffer.get(book.id, [])) == 1  # 失败保留 buffer 供重试
+
+
+async def test_record_nyx_output_caps_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """buffer 有上限：超限后丢弃最旧条目，不无限增长（长书不触章末的内存兜底）。"""
+    facade, database, *_ = await _note_facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=False)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        for i in range(facade_mod._NYX_BUFFER_MAXLEN + 5):
+            await facade.record_nyx_output(book.id, i, f"第{i}条", "mutter")
+        entries = facade._nyx_buffer.get(book.id, [])
+    finally:
+        await database.conn.close()
+    assert len(entries) == facade_mod._NYX_BUFFER_MAXLEN
+    assert entries[0].paragraph_index == 5  # 最旧 5 条被丢弃
+    assert entries[-1].paragraph_index == facade_mod._NYX_BUFFER_MAXLEN + 4
+
+
+async def test_add_user_note_missing_book_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=False)],
+    )
+    try:
+        with pytest.raises(BookNotFoundError):
+            await facade.add_user_note("no-book", None, "笔记", None)
+    finally:
+        await database.conn.close()
+
+
+async def test_add_user_note_missing_paragraph_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=False)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        with pytest.raises(ValueError):
+            await facade.add_user_note(book.id, "no-pid", "笔记", None)
+    finally:
+        await database.conn.close()
+
+
+async def test_add_user_note_cross_book_paragraph_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch, [Segment(text="书一正文", is_chapter_start=False)],
+    )
+    try:
+        book1 = await facade.import_book("a.epub", b"x")
+        book2, _ = await facade._store.insert_book_with_paragraphs(
+            "书二", "作者", "b.epub", "d" * 64,
+            [Segment(text="书二正文", is_chapter_start=False)],
+        )
+        pid2 = (await facade.list_paragraphs(book2.id, 1, 1))[0].id
+        with pytest.raises(ValueError):
+            await facade.add_user_note(book1.id, pid2, "笔记", None)
+    finally:
+        await database.conn.close()
+
+
+async def test_show_to_nyx_llm_failure_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch,
+        [Segment(text="独特原文段落", is_chapter_start=False)],
+        llm=_RaisingLlm(),
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        pid = (await facade.list_paragraphs(book.id, 1, 1))[0].id
+        note = await facade.add_user_note(book.id, pid, "笔记正文", "划线")
+        annotation = await facade.show_to_nyx(note.id)
+        annotations = await facade._store.list_annotations_for_notes([note.id])
+    finally:
+        await database.conn.close()
+    assert annotation is None
+    assert annotations == []  # 不落批注
+
+
+async def test_show_to_nyx_none_content_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch,
+        [Segment(text="独特原文段落", is_chapter_start=False)],
+        llm=_NoneContentLlm(),
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        pid = (await facade.list_paragraphs(book.id, 1, 1))[0].id
+        note = await facade.add_user_note(book.id, pid, "笔记正文", "划线")
+        annotation = await facade.show_to_nyx(note.id)
+        annotations = await facade._store.list_annotations_for_notes([note.id])
+    finally:
+        await database.conn.close()
+    assert annotation is None
+    assert annotations == []
+

@@ -7,12 +7,13 @@ import pytest
 
 from nyx import db
 
-# 17 张业务表（不含 schema_version）
+# 18 张业务表（不含 schema_version）
 BUSINESS_TABLES = {
     "personality",
     "value_system",
     "energy",
     "self_narrative",
+    "aesthetic",
     "memory",
     "memory_edge",
     "short_term_desire",
@@ -92,7 +93,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 18
+    assert len(names) == 19
 
 
 async def test_migrate_creates_five_indexes() -> None:
@@ -212,7 +213,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 18
+    assert len(names) == 19
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

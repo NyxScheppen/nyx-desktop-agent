@@ -68,6 +68,9 @@ def _mk_state(energy: float, arousal: float) -> CurrentState:
         emotion=EmotionCategory.NEUTRAL,
         personality=_PERSONALITY,
         values=_VALUES,
+        aesthetic={
+            "ornate": 7.0, "lyrical": 7.0, "classical": 6.0, "somber": 6.0,
+        },
         energy=energy,
         energy_state=EnergyState.OKAY,
         current_activity=None,

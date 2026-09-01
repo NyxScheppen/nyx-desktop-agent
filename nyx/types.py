@@ -31,6 +31,13 @@ class Values(TypedDict):                   # 三观，1-10
     optimism: float
 
 
+class Aesthetic(TypedDict):                # 审美维度，1-10，10=第一极
+    ornate: float                           # 华丽
+    lyrical: float                          # 抒情
+    classical: float                        # 古典
+    somber: float                           # 沉重
+
+
 # ---- 事件 ----
 @dataclass
 class Event:
@@ -210,6 +217,7 @@ class CurrentState:         # 只读快照
     emotion: EmotionCategory   # 最终表情（8 档之一，含 sleepy/thinking 覆盖）
     personality: Personality  # Big Five
     values: Values            # 三观
+    aesthetic: Aesthetic      # 审美维度
     energy: float           # 0-100
     energy_state: EnergyState
     # 当前活动类型（取 ActivityFacade.get_current() 返回对象的 .type，None=空闲）

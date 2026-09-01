@@ -418,6 +418,10 @@ class MemoryFacade:
     ) -> list[Memory]:
         return await self._store.list_memories(tag, type, limit)
 
+    async def count_new(self, tag: str, since: float) -> int:
+        """计数「首次创建晚于 since 的 tag 记忆」（轻量，不物化整行/embedding）。"""
+        return await self._store.count_new(tag, since)
+
     async def export(self, fmt: str) -> str:
         """记忆导出：json = JSON 数组字符串，
         md = 每记忆一个「## 总结 + 正文 + 标签」段。"""

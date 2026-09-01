@@ -2,16 +2,17 @@ import json
 
 from nyx.db import Database
 from nyx.enums import EnergyState
-from nyx.types import Personality, SelfNarrative, Values
+from nyx.types import Aesthetic, Personality, SelfNarrative, Values
 
 _PERSONALITY_COLS = (
     "openness, conscientiousness, extraversion, agreeableness, neuroticism"
 )
 _VALUES_COLS = "attitude_to_human, ai_identity_acceptance, altruism, optimism"
+_AESTHETIC_COLS = "ornate, lyrical, classical, somber"
 
 
 class InnerLifeStore:
-    """personality / value_system / energy / self_narrative 四张单行表
+    """personality / value_system / aesthetic / energy / self_narrative 五张单行表
     （id='self'）的 CRUD。
 
     db 由组合根注入（同所有 store 共享）。每个方法一个 `async with db.lock` 的 SQL 块。
@@ -83,6 +84,33 @@ class InnerLifeStore:
                     v["altruism"],
                     v["optimism"],
                 ),
+            )
+            await self._db.conn.commit()
+
+    async def get_aesthetic(self) -> Aesthetic | None:
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_AESTHETIC_COLS} FROM aesthetic WHERE id = 'self'"
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "ornate": row["ornate"],
+            "lyrical": row["lyrical"],
+            "classical": row["classical"],
+            "somber": row["somber"],
+        }
+
+    async def upsert_aesthetic(self, a: Aesthetic) -> None:
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "INSERT INTO aesthetic (id, ornate, lyrical, classical, somber) "
+                "VALUES ('self', ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET ornate = excluded.ornate, "
+                "lyrical = excluded.lyrical, classical = excluded.classical, "
+                "somber = excluded.somber",
+                (a["ornate"], a["lyrical"], a["classical"], a["somber"]),
             )
             await self._db.conn.commit()
 

@@ -18,6 +18,7 @@ from nyx.inner_life.reflection import (
     _parse_reflection,
     _to_long_term,
     _validate_candidate,
+    drift_aesthetic,
     drift_personality,
     drift_values,
 )
@@ -25,6 +26,7 @@ from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
 from nyx.types import (
+    Aesthetic,
     DesireState,
     LLMOutput,
     LongTermDesire,
@@ -65,6 +67,13 @@ _VALUES: Values = {
     "ai_identity_acceptance": 6.0,
     "altruism": 9.0,
     "optimism": 5.0,
+}
+
+_AESTHETIC: Aesthetic = {
+    "ornate": 7.0,
+    "lyrical": 7.0,
+    "classical": 6.0,
+    "somber": 6.0,
 }
 
 _NARRATIVE = SelfNarrative(
@@ -114,8 +123,19 @@ class _FakeMemoryFacade:
     def __init__(self, memories: list[Memory] | None = None) -> None:
         self._memories = memories if memories is not None else []
 
-    async def list_memories(self) -> list[Memory]:
-        return self._memories
+    async def list_memories(
+        self,
+        tag: str | None = None,
+        type: MemoryType | None = None,
+        limit: int | None = None,
+    ) -> list[Memory]:
+        del type, limit
+        if tag is None:
+            return self._memories
+        return [m for m in self._memories if m.tag == tag]
+
+    async def count_new(self, tag: str, since: float) -> int:
+        return sum(1 for m in self._memories if m.tag == tag and m.created_at > since)
 
 
 class _FakeDesireFacade:
@@ -151,6 +171,7 @@ def _make_reflection(
 async def _seed(store: InnerLifeStore) -> None:
     await store.upsert_personality(_PERSONALITY)
     await store.upsert_values(_VALUES)
+    await store.upsert_aesthetic(_AESTHETIC)
     await store.upsert_narrative(_NARRATIVE)
 
 
@@ -173,6 +194,30 @@ def test_drift_personality_and_values() -> None:
     v = drift_values(_VALUES, {"altruism": 2.0})
     assert v["altruism"] == 9.5
     assert v["optimism"] == 5.0
+
+
+def test_drift_aesthetic() -> None:
+    a = drift_aesthetic(_AESTHETIC, {"ornate": 0.3, "somber": -0.3})
+    assert a["ornate"] == pytest.approx(7.3)
+    assert a["somber"] == pytest.approx(5.7)
+    assert a["lyrical"] == 7.0  # 未提供维度原值不动
+    assert a["classical"] == 6.0
+
+
+def test_drift_aesthetic_clamps() -> None:
+    base: Aesthetic = {
+        "ornate": 9.9,
+        "lyrical": 1.1,
+        "classical": 6.0,
+        "somber": 6.0,
+    }
+    a = drift_aesthetic(base, {"ornate": 0.5, "lyrical": -0.5})
+    assert a["ornate"] == 10.0
+    assert a["lyrical"] == 1.0
+
+
+def test_drift_aesthetic_empty_delta_unchanged() -> None:
+    assert drift_aesthetic(_AESTHETIC, {}) == _AESTHETIC
 
 
 def test_build_reflection_prompt() -> None:
@@ -199,20 +244,34 @@ def test_build_reflection_prompt() -> None:
             subtopics=[],
         )
     ]
-    prompt = _build_reflection_prompt(memories, _PERSONALITY, _VALUES, _NARRATIVE, lt)
+    prompt = _build_reflection_prompt(
+        memories, _PERSONALITY, _VALUES, _NARRATIVE, lt, _AESTHETIC
+    )
     assert "用户喜欢历史" in prompt
     assert "开放性 8.0" in prompt
     assert "尼克斯" in prompt
     assert "探索世界" in prompt
-    empty = _build_reflection_prompt([], _PERSONALITY, _VALUES, _NARRATIVE, [])
+    empty = _build_reflection_prompt(
+        [], _PERSONALITY, _VALUES, _NARRATIVE, [], _AESTHETIC
+    )
     assert "（无）" in empty
 
 
 def test_build_reflection_prompt_feeds_story() -> None:
-    prompt = _build_reflection_prompt([], _PERSONALITY, _VALUES, _NARRATIVE, [])
+    prompt = _build_reflection_prompt(
+        [], _PERSONALITY, _VALUES, _NARRATIVE, [], _AESTHETIC
+    )
     assert "初始故事" in prompt  # 已写故事内容被喂进去（而非只喂条数）
     assert "初始认知" in prompt  # 认知变化内容同样喂进去
     assert "新的、与之不同" in prompt  # 明确指示写不同的故事片段
+
+
+def test_build_reflection_prompt_aesthetic_anchor() -> None:
+    prompt = _build_reflection_prompt(
+        [], _PERSONALITY, _VALUES, _NARRATIVE, [], _AESTHETIC
+    )
+    assert "当前审美（1-10）" in prompt
+    assert "华丽 7.0" in prompt  # 锚点行给出当前值作参照（与 personality/values 同款）
 
 
 def test_parse_reflection_ok() -> None:
@@ -247,6 +306,7 @@ def test_parse_reflection_defaults() -> None:
     assert parsed["self_view"] == {}
     assert parsed["personality_delta"] == {}
     assert parsed["values_delta"] == {}
+    assert parsed["aesthetic_delta"] == {}
     assert parsed["long_term_desires"] == []
 
 
@@ -260,6 +320,27 @@ def test_parse_reflection_unknown_drift_key() -> None:
     with pytest.raises(ValueError):
         _parse_reflection(
             '{"story": "s", "becoming": "b", "values_delta": {"extroversion": 0.4}}'
+        )
+
+
+def test_parse_reflection_aesthetic_delta() -> None:
+    parsed = _parse_reflection(
+        '{"story": "s", "becoming": "b", "aesthetic_delta": {"ornate": 0.2}}'
+    )
+    assert parsed["aesthetic_delta"] == {"ornate": 0.2}
+
+
+def test_parse_reflection_aesthetic_unknown_key_raises() -> None:
+    with pytest.raises(ValueError):
+        _parse_reflection(
+            '{"story": "s", "becoming": "b", "aesthetic_delta": {"foo": 0.2}}'
+        )
+
+
+def test_parse_reflection_aesthetic_non_numeric_raises() -> None:
+    with pytest.raises(ValueError):
+        _parse_reflection(
+            '{"story": "s", "becoming": "b", "aesthetic_delta": {"ornate": "x"}}'
         )
 
 
@@ -580,3 +661,77 @@ async def test_run_unseeded_raises() -> None:
         assert llm.calls == []
     finally:
         await database.conn.close()
+
+
+# ---- 审美维度：阅读量缩放漂移 ----
+
+def _reading_memory(created_at: float, tag: str = "reading") -> Memory:
+    return Memory(
+        id=f"r{created_at}",
+        created_at=created_at,
+        content="读书记忆",
+        tag=tag,
+        summary="读了一章",
+        freshness=1.0,
+        type=MemoryType.LONG_TERM,
+    )
+
+
+async def _run_and_get_aesthetic(
+    memories: list[Memory],
+    aesthetic_delta: dict[str, float],
+) -> Aesthetic | None:
+    """跑一轮反思（固定 aesthetic_delta），返回落库后的审美值。"""
+    response = json.dumps(
+        {
+            "story": "s",
+            "becoming": "b",
+            "self_view": {},
+            "personality_delta": {},
+            "values_delta": {},
+            "aesthetic_delta": aesthetic_delta,
+            "long_term_desires": [],
+        }
+    )
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    llm = _FakeLlm(response)
+    reflection = _make_reflection(
+        store, llm, _FakeEvaluator(), _FakeMemoryFacade(memories), _FakeDesireFacade()
+    )
+    try:
+        await _seed(store)
+        await reflection.run()
+        return await store.get_aesthetic()
+    finally:
+        await database.conn.close()
+
+
+async def test_run_aesthetic_zero_reading_unchanged() -> None:
+    a = await _run_and_get_aesthetic([], {"ornate": 0.3})
+    assert a == _AESTHETIC  # 无新读章 → 审美不动
+
+
+async def test_run_aesthetic_one_reading_scaled_third() -> None:
+    a = await _run_and_get_aesthetic(
+        [_reading_memory(2000.0)], {"ornate": 0.3, "somber": -0.3}
+    )
+    assert a is not None
+    assert a["ornate"] == pytest.approx(7.1)  # 7 + 0.3/3
+    assert a["somber"] == pytest.approx(5.9)  # 6 - 0.3/3
+    assert a["lyrical"] == 7.0
+    assert a["classical"] == 6.0
+
+
+async def test_run_aesthetic_three_reading_full() -> None:
+    memories = [_reading_memory(2000.0 + i) for i in range(3)]
+    a = await _run_and_get_aesthetic(memories, {"ornate": 0.3})
+    assert a is not None
+    assert a["ornate"] == pytest.approx(7.3)  # 7 + 0.3 满额
+
+
+async def test_run_aesthetic_ignores_non_reading() -> None:
+    a = await _run_and_get_aesthetic(
+        [_reading_memory(2000.0, tag="user")], {"ornate": 0.3}
+    )
+    assert a == _AESTHETIC  # tag='user' 不计入新读章数

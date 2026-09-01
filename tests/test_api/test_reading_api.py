@@ -59,6 +59,7 @@ class _FakeReading:
         self.note_result: UserNote | None = None
         self.annotation_result: Annotation | None = None
         self.note_error: Exception | None = None
+        self.add_error: Exception | None = None
         self.added_notes: list[tuple[str, str | None, str, str | None]] = []
         self.boundary_result: BoundaryResult = BoundaryResult.NONE
 
@@ -113,6 +114,8 @@ class _FakeReading:
         selected_text: str | None,
     ) -> UserNote:
         self.added_notes.append((book_id, paragraph_id, content, selected_text))
+        if self.add_error is not None:
+            raise self.add_error
         assert self.note_result is not None
         return self.note_result
 
@@ -126,10 +129,9 @@ class _FakeReading:
         if self.note_error is not None:
             raise self.note_error
 
-    async def show_to_nyx(self, note_id: str) -> Annotation:
+    async def show_to_nyx(self, note_id: str) -> Annotation | None:
         if self.note_error is not None:
             raise self.note_error
-        assert self.annotation_result is not None
         return self.annotation_result
 
     async def check_chapter_boundary(
@@ -608,3 +610,33 @@ async def test_boundary_missing_nyx_position_returns_422() -> None:
             "/api/notes/check-chapter-boundary", json={"book_id": "b1"},
         )
     assert resp.status_code == 422
+
+
+async def test_notes_add_missing_book_returns_404() -> None:
+    fake = _FakeReading()
+    fake.add_error = BookNotFoundError("missing")
+    async with _client(_app(fake)) as client:
+        resp = await client.post(
+            "/api/notes/user", json={"book_id": "missing", "content": "笔记"},
+        )
+    assert resp.status_code == 404
+
+
+async def test_notes_add_missing_paragraph_returns_422() -> None:
+    fake = _FakeReading()
+    fake.add_error = ValueError("段落不存在")
+    async with _client(_app(fake)) as client:
+        resp = await client.post(
+            "/api/notes/user",
+            json={"book_id": "b1", "paragraph_id": "no-pid", "content": "笔记"},
+        )
+    assert resp.status_code == 422
+
+
+async def test_notes_show_to_nyx_llm_failure_returns_null() -> None:
+    fake = _FakeReading()
+    fake.annotation_result = None  # LLM 失败/空 → facade 返回 None
+    async with _client(_app(fake)) as client:
+        resp = await client.post("/api/notes/n1/show-to-nyx")
+    assert resp.status_code == 200
+    assert resp.json() is None

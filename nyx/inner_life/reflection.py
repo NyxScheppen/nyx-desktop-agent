@@ -13,6 +13,7 @@ from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.types import (
+    Aesthetic,
     LongTermDesire,
     Memory,
     Personality,
@@ -36,6 +37,8 @@ _PERSONALITY_KEYS = frozenset(
 _VALUES_KEYS = frozenset(
     {"attitude_to_human", "ai_identity_acceptance", "altruism", "optimism"}
 )
+_AESTHETIC_KEYS = frozenset({"ornate", "lyrical", "classical", "somber"})
+_AESTHETIC_MIN_READING = 3     # 审美偏移满额所需的最少新读章数
 _DESIRE_TYPE_VALUES = frozenset(d.value for d in DesireType)
 _logger = logging.getLogger(__name__)
 
@@ -50,6 +53,7 @@ _REFLECTION_SYSTEM = (
     "值是 [-0.5, 0.5] 的漂移）、"
     "values_delta（对象，键是 attitude_to_human/ai_identity_acceptance/"
     "altruism/optimism，值同上）、"
+    "aesthetic_delta（对象，键是 ornate/lyrical/classical/somber，值同上）、"
     "long_term_desires（数组，元素 {type, name, description, subtopics}，可为空数组）。"
 )
 
@@ -60,6 +64,7 @@ def _build_reflection_prompt(
     values: Values,
     narrative: SelfNarrative,
     long_term: list[LongTermDesire],
+    aesthetic: Aesthetic,
 ) -> str:
     mem_lines = "\n".join(f"- {m.summary}" for m in memories) or "（无）"
     lt_lines = "\n".join(
@@ -81,6 +86,9 @@ def _build_reflection_prompt(
         f"当前三观（1-10）：对人类 {values['attitude_to_human']} / AI 身份接纳 "
         f"{values['ai_identity_acceptance']} / "
         f"利他 {values['altruism']} / 乐观 {values['optimism']}\n"
+        f"当前审美（1-10）：华丽 {aesthetic['ornate']} / 抒情 "
+        f"{aesthetic['lyrical']} / 古典 {aesthetic['classical']} / "
+        f"沉重 {aesthetic['somber']}\n"
         f"自我叙事：身份「{narrative.identity}」\n"
         f"已写过的故事（最近 {min(len(narrative.story), _STORY_CONTEXT_LIMIT)} 条，"
         f"请写一条新的、与之不同的故事片段）：\n{story_lines}\n"
@@ -138,6 +146,16 @@ def drift_values(base: Values, delta: dict[str, float]) -> Values:
     }
 
 
+def drift_aesthetic(base: Aesthetic, delta: dict[str, float]) -> Aesthetic:
+    """审美四维漂移。纯函数。"""
+    return {
+        "ornate": _drift_dim(base["ornate"], delta.get("ornate")),
+        "lyrical": _drift_dim(base["lyrical"], delta.get("lyrical")),
+        "classical": _drift_dim(base["classical"], delta.get("classical")),
+        "somber": _drift_dim(base["somber"], delta.get("somber")),
+    }
+
+
 def _validate_candidate(c: Any) -> None:
     """校验单个长期欲望候选结构。非法抛 ValueError。"""
     if not isinstance(c, dict):
@@ -187,9 +205,13 @@ def _parse_reflection(raw: str) -> dict[str, Any]:
     values_delta = parsed.get("values_delta")
     if values_delta is None:
         values_delta = cast(dict[str, Any], {})
+    aesthetic_delta = parsed.get("aesthetic_delta")
+    if aesthetic_delta is None:
+        aesthetic_delta = cast(dict[str, Any], {})
     for d, allowed in (
         (personality_delta, _PERSONALITY_KEYS),
         (values_delta, _VALUES_KEYS),
+        (aesthetic_delta, _AESTHETIC_KEYS),
     ):
         if not isinstance(d, dict):
             raise ValueError("反思 JSON 的漂移应是对象")
@@ -220,6 +242,7 @@ def _parse_reflection(raw: str) -> dict[str, Any]:
         "self_view": self_view,
         "personality_delta": personality_delta,
         "values_delta": values_delta,
+        "aesthetic_delta": aesthetic_delta,
         "long_term_desires": valid_candidates,
     }
 
@@ -267,9 +290,15 @@ class Reflection:
         recent = (await self._memory_facade.list_memories())[:_RECENT_MEMORY_LIMIT]
         personality = await self._store.get_personality()
         values = await self._store.get_values()
+        aesthetic = await self._store.get_aesthetic()
         narrative = await self._store.get_narrative()
         desire_state = await self._desire_facade.get_all()
-        if personality is None or values is None or narrative is None:
+        if (
+            personality is None
+            or values is None
+            or narrative is None
+            or aesthetic is None
+        ):
             raise RuntimeError("inner_life 单行表未初始化（18-api 组合根必须先 seed）")
 
         # 2. 1 次 LLM 产出全部
@@ -279,7 +308,8 @@ class Reflection:
                 {
                     "role": "user",
                     "content": _build_reflection_prompt(
-                        recent, personality, values, narrative, desire_state.long_term
+                        recent, personality, values, narrative, desire_state.long_term,
+                        aesthetic
                     ),
                 },
             ],
@@ -307,6 +337,17 @@ class Reflection:
             drift_personality(personality, parsed["personality_delta"])
         )
         await self._store.upsert_values(drift_values(values, parsed["values_delta"]))
+        # 审美偏移按「上次反思后新读章数」缩放：读得越多，漂移越接近满额
+        # （不读书则 scale=0，审美不动——读书是审美演化的唯一动力源）。
+        # 计数走 count_new（first_created_at 锚点）：strengthen 刷新 created_at
+        # 只影响 decay，不污染「是否新增」——纯重读不算新读章。
+        new_chapters = await self._memory_facade.count_new(
+            "reading", narrative.updated_at
+        )
+        scale = min(new_chapters / _AESTHETIC_MIN_READING, 1.0)
+        aesthetic_delta = cast(dict[str, float], parsed["aesthetic_delta"])
+        scaled_delta = {k: v * scale for k, v in aesthetic_delta.items()}
+        await self._store.upsert_aesthetic(drift_aesthetic(aesthetic, scaled_delta))
         await self._store.upsert_narrative(
             SelfNarrative(
                 identity=narrative.identity,

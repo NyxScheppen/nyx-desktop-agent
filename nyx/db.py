@@ -225,6 +225,32 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        11,
+        [
+            # 审美维度：23-aesthetic-dimension，四轴 1-10（10=第一极）。
+            """CREATE TABLE aesthetic (
+                id TEXT PRIMARY KEY,            -- 固定 'self'
+                ornate REAL NOT NULL,           -- 华丽
+                lyrical REAL NOT NULL,          -- 抒情
+                classical REAL NOT NULL,        -- 古典
+                somber REAL NOT NULL            -- 沉重
+            )""",
+        ],
+    ),
+    (
+        12,
+        [
+            # 记忆「首次创建」锚点：strengthen 会刷新 created_at（decay 锚点），
+            # 但 first_created_at 定格在 INSERT、永不更新——审美「新读章数」
+            # 用它判「是否新增」，纯重读不污染（23 口径注修正）。
+            "ALTER TABLE memory ADD COLUMN first_created_at REAL",
+            # 回填旧行：迁移前无 first_created_at，用当前 created_at 近似
+            # （历史行的真首次时间已不可考，这是能取到的最好近似）。
+            "UPDATE memory SET first_created_at = created_at "
+            "WHERE first_created_at IS NULL",
+        ],
+    ),
 ]
 
 

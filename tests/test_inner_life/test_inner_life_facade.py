@@ -28,6 +28,7 @@ from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
 from nyx.types import (
     Activity,
+    Aesthetic,
     DesireState,
     Event,
     LLMOutput,
@@ -63,6 +64,13 @@ _VALUES: Values = {
     "ai_identity_acceptance": 6.0,
     "altruism": 9.0,
     "optimism": 5.0,
+}
+
+_AESTHETIC: Aesthetic = {
+    "ornate": 7.0,
+    "lyrical": 7.0,
+    "classical": 6.0,
+    "somber": 6.0,
 }
 
 _NARRATIVE = SelfNarrative(
@@ -128,13 +136,19 @@ class _FakeDesireFacade:
 
 
 class _FakeMemoryFacade:
-    async def list_memories(self) -> list[Memory]:
+    async def list_memories(self, tag: str | None = None) -> list[Memory]:
+        del tag
         return []
+
+    async def count_new(self, tag: str, since: float) -> int:
+        del tag, since
+        return 0
 
 
 async def _seed(store: InnerLifeStore) -> None:
     await store.upsert_personality(_PERSONALITY)
     await store.upsert_values(_VALUES)
+    await store.upsert_aesthetic(_AESTHETIC)
     await store.upsert_energy(100.0, EnergyState.ENERGETIC)
 
 
@@ -341,6 +355,7 @@ async def test_get_state(monkeypatch: pytest.MonkeyPatch) -> None:
         assert state.current_activity is ActivityType.READING
         assert state.active_desires == pending
         assert state.personality == _PERSONALITY
+        assert state.aesthetic == _AESTHETIC
         assert state.energy == 100.0
         assert state.energy_state is EnergyState.ENERGETIC
     finally:

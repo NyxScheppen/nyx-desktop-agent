@@ -657,6 +657,22 @@ async def test_list_memories_delegates() -> None:
         await database.conn.close()
 
 
+async def test_count_new_delegates() -> None:
+    store, bus, database = await _new_stack()
+    m = _mem("m1", None)   # created_at=1000.0
+    m.tag = "reading"
+    await store.add(m)
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    try:
+        assert await facade.count_new("reading", 500.0) == 1
+        assert await facade.count_new("reading", 2000.0) == 0
+        assert await facade.count_new("user", 0.0) == 0
+    finally:
+        await database.conn.close()
+
+
 # ---- record_recall ----
 
 

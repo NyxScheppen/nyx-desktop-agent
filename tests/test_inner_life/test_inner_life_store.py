@@ -1,7 +1,7 @@
 from nyx import db
 from nyx.enums import EnergyState
 from nyx.inner_life.store import InnerLifeStore
-from nyx.types import Personality, SelfNarrative, Values
+from nyx.types import Aesthetic, Personality, SelfNarrative, Values
 
 _PERSONALITY: Personality = {
     "openness": 8.0,
@@ -16,6 +16,13 @@ _VALUES: Values = {
     "ai_identity_acceptance": 6.0,
     "altruism": 9.0,
     "optimism": 5.0,
+}
+
+_AESTHETIC: Aesthetic = {
+    "ornate": 7.0,
+    "lyrical": 7.0,
+    "classical": 6.0,
+    "somber": 6.0,
 }
 
 
@@ -58,6 +65,21 @@ async def test_energy_crud() -> None:
         assert await store.get_energy() == (75.5, EnergyState.OKAY)
         await store.upsert_energy(40.0, EnergyState.TIRED)
         assert await store.get_energy() == (40.0, EnergyState.TIRED)
+    finally:
+        await database.conn.close()
+
+
+async def test_aesthetic_crud() -> None:
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    try:
+        assert await store.get_aesthetic() is None
+        await store.upsert_aesthetic(_AESTHETIC)
+        assert await store.get_aesthetic() == _AESTHETIC
+        changed = _AESTHETIC.copy()
+        changed["ornate"] = 8.0
+        await store.upsert_aesthetic(changed)
+        assert await store.get_aesthetic() == changed
     finally:
         await database.conn.close()
 

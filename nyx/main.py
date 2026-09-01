@@ -60,6 +60,7 @@ from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
 from nyx.types import (
     Activity,
+    Aesthetic,
     Annotation,
     Book,
     BookListItem,
@@ -163,7 +164,7 @@ def _load_ask(canon_dir: Path) -> str:
 
 
 async def _seed_inner_life(store: InnerLifeStore) -> None:
-    """inner_life 四张单行表，表空才 seed（幂等）。初始值来自 canon §2/§3。"""
+    """inner_life 五张单行表，表空才 seed（幂等）。初始值来自 canon §2/§3。"""
     now = time.time()
     if await store.get_personality() is None:
         await store.upsert_personality(
@@ -176,6 +177,10 @@ async def _seed_inner_life(store: InnerLifeStore) -> None:
                 attitude_to_human=8.0, ai_identity_acceptance=6.0,
                 altruism=9.0, optimism=5.0,
             )
+        )
+    if await store.get_aesthetic() is None:
+        await store.upsert_aesthetic(
+            Aesthetic(ornate=7.0, lyrical=7.0, classical=6.0, somber=6.0)
         )
     if await store.get_energy() is None:
         await store.upsert_energy(100.0, EnergyState.ENERGETIC)
@@ -565,10 +570,15 @@ def build_app(app: _App) -> FastAPI:
 
     @fast.post("/api/notes/user", status_code=201)
     async def api_add_user_note(payload: _UserNotePayload) -> UserNote:
-        return await app.reading.add_user_note(
-            payload.book_id, payload.paragraph_id, payload.content,
-            payload.selected_text,
-        )
+        try:
+            return await app.reading.add_user_note(
+                payload.book_id, payload.paragraph_id, payload.content,
+                payload.selected_text,
+            )
+        except BookNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
 
     @fast.put("/api/notes/user/{note_id}")
     async def api_update_user_note(
@@ -587,7 +597,7 @@ def build_app(app: _App) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(e)) from e
 
     @fast.post("/api/notes/{user_note_id}/show-to-nyx")
-    async def api_show_to_nyx(user_note_id: str) -> Annotation:
+    async def api_show_to_nyx(user_note_id: str) -> Annotation | None:
         try:
             return await app.reading.show_to_nyx(user_note_id)
         except NoteNotFoundError as e:

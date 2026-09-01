@@ -308,3 +308,18 @@ async def test_strengthen() -> None:
         assert got.created_at == 100.0    # created_at 锚点刷新，decay 不会被旧锚点回滚
     finally:
         await db.conn.close()
+
+
+async def test_count_new_ignores_strengthened_created_at() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("m1", tag="reading", created_at=100.0))
+        await store.strengthen("m1", 200.0)  # created_at 刷新，first_created_at 不动
+        assert await store.count_new("reading", 150.0) == 0  # 纯重读不算新增
+        await store.add(_mem("m2", tag="reading", created_at=250.0))
+        assert await store.count_new("reading", 150.0) == 1  # 真新增算 1
+        assert await store.count_new("reading", 300.0) == 0  # since 更晚则都不算
+        assert await store.count_new("user", 0.0) == 0       # 非目标 tag 不计
+    finally:
+        await db.conn.close()

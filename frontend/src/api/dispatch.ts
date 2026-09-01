@@ -63,7 +63,7 @@ export function dispatchEvent(e: SseEvent): void {
       return useAnnounceStore.getState().announce("mutter", e.content);
     case "reading_question":
     case "reading_association":
-      // 读书提问/联想并进对话（08 §2.3）：不再走 readerStore.addReadingBubble。
+      // 读书提问/联想并进对话（08 §2.3）：并进对话转录，不再走 readerStore 气泡流。
       return useChatStore.getState().addReadingTurn(e);
     case "reflection_done": {
       // 反思完成：长期欲望（add_long_term 不发 desire_generated）刷新；

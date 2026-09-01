@@ -1065,3 +1065,295 @@ body {
     letter-spacing: 3px;
   }
 }
+
+/* ===== 读书：书架 + 阅读页（06-reading-panel） ===== */
+.reading-btn {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.8rem;
+  letter-spacing: 1px;
+}
+.reading-btn:hover:not(:disabled) {
+  background: var(--parchment-deep);
+}
+.reading-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.bookshelf__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.bookshelf__item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.35rem 0.5rem;
+  border: none;
+  border-radius: 0.3rem;
+  background: var(--parchment);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.82rem;
+}
+.bookshelf__item:hover {
+  background: var(--parchment-deep);
+}
+
+.reader {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.reader__header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.reader__title {
+  flex: 1;
+  font-size: 0.95rem;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader__pos {
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+
+.reader__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.reader-text {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding-right: 0.25rem;
+  position: relative; /* 使子段 offsetTop 相对本滚动容器（onScroll 定位用） */
+}
+
+.reader-text__para {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.9;
+  color: var(--ink);
+  text-align: justify;
+}
+
+.reader-text__para--chapter {
+  margin-top: 1.5rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+/* 当前段（你读到这）：左侧 accent 竖条 + 浅底高亮（inset 阴影不占布局） */
+.reader-text__para--current {
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: var(--parchment-deep);
+}
+
+/* Nyx 位置标记（她读到这）：段首 🦊，与正文清晰区分 */
+.reader-text__para--nyx::before {
+  content: "🦊 ";
+  font-size: 0.85rem;
+}
+
+.reader__footer {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.reader-sidebar {
+  flex-shrink: 0;
+  width: 180px;
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 4px;
+  background: var(--parchment-deep);
+}
+
+.reader-sidebar__title {
+  font-size: 0.9rem;
+  color: var(--accent);
+  letter-spacing: 1px;
+}
+
+.reader-sidebar__status {
+  font-size: 0.8rem;
+  color: var(--ink);
+}
+
+.reader-sidebar__pos {
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.reader-sidebar__progress {
+  height: 0.4rem;
+  background: var(--parchment);
+  border-radius: 0.2rem;
+  overflow: hidden;
+}
+
+.reader-sidebar__progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+/* ===== 读书：冲动气泡（07-reading-events §2） ===== */
+.reader-sidebar__bubbles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.reader-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.3rem 0.45rem;
+  border-left: 2px solid var(--gold);
+  background: var(--parchment);
+  border-radius: 0.2rem;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.reader-bubble__label {
+  font-size: 0.62rem;
+  letter-spacing: 1px;
+  color: var(--gold);
+}
+
+.reader-bubble--mutter .reader-bubble__text {
+  font-style: italic;
+  color: var(--ink-soft);
+}
+
+.reader-bubble--question {
+  border-left-color: var(--accent);
+  background: var(--parchment-deep);
+}
+
+.reader-bubble--association .reader-bubble__label {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 0 0.3rem;
+  border: 1px solid var(--gold);
+  border-radius: 0.2rem;
+}
+
+.reader-bubble__text {
+  color: var(--ink);
+}
+
+/* ===== 读书：笔记面板（07-reading-events §3） ===== */
+.note-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.note-composer__input {
+  min-height: 3.5rem;
+  resize: vertical;
+  padding: 0.5rem;
+  border: 1px solid var(--parchment-deep);
+  border-radius: 0.3rem;
+  background: var(--parchment);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.note-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.note-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--parchment-deep);
+  border-radius: 0.3rem;
+  background: var(--parchment);
+}
+
+.note-item__quote {
+  margin: 0;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--gold);
+  font-style: italic;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+.note-item__content {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.note-item__anns {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.note-item__ann {
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.2rem;
+  background: var(--parchment-deep);
+  font-size: 0.8rem;
+  color: var(--ink);
+}
+
+.note-item__actions {
+  display: flex;
+  gap: 0.5rem;
+}

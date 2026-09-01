@@ -6,6 +6,7 @@ import { useDesireStore } from "../stores/desireStore";
 import { useInnerLifeStore } from "../stores/innerLifeStore";
 import { useMemoryStore } from "../stores/memoryStore";
 import { useMutterStore } from "../stores/mutterStore";
+import { useReaderStore } from "../stores/readerStore";
 import type { SseEvent } from "../types/api";
 
 // 事件 → store 路由（01-sse §4.1）。
@@ -63,6 +64,12 @@ export function dispatchEvent(e: SseEvent): void {
       });
       return;
     }
+    case "reading_mutter":
+    case "reading_question":
+    case "reading_association":
+      // 阅读冲动气泡：透传原始事件，snake→camel 映射在 store.addReadingBubble 内做。
+      useReaderStore.getState().addReadingBubble(e);
+      return;
     case "reflection_done": {
       // 反思完成：长期欲望（add_long_term 不发 desire_generated）刷新；
       // story 真新增才冒气泡（去重跳过则静默刷新，不打扰）。

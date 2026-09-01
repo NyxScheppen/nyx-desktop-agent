@@ -1,11 +1,19 @@
 import type {
   Activity,
   ActivitySnapshot,
+  Annotation,
   BackendEvent,
+  Book,
+  BookListItem,
   CurrentState,
   DesireState,
   Memory,
+  Paragraph,
   Presence,
+  Progress,
+  ProgressInput,
+  UserNote,
+  UserNoteWithAnnotations,
 } from "../types/api";
 
 // 空 = 相对路径，走 Vite proxy 同源转发到后端 8000（18-api 不做 CORS，localhost 同源）
@@ -84,4 +92,113 @@ export async function getEventsLog(params?: {
     sp.set("correlation_id", params.correlation_id);
   const qs = sp.toString();
   return request<BackendEvent[]>(`${BASE_URL}/api/events/log${qs ? `?${qs}` : ""}`);
+}
+
+// ---- 阅读（19/20/21-reading，06-reading-panel §6）----
+
+export async function getBooks(): Promise<BookListItem[]> {
+  return request<BookListItem[]>(`${BASE_URL}/api/books`);
+}
+
+export async function getBookParagraphs(
+  bookId: string,
+  from: number,
+  to: number,
+): Promise<Paragraph[]> {
+  return request<Paragraph[]>(
+    `${BASE_URL}/api/books/${bookId}/paragraphs?from=${from}&to=${to}`,
+  );
+}
+
+export async function getProgress(bookId: string): Promise<Progress> {
+  return request<Progress>(`${BASE_URL}/api/progress/${bookId}`);
+}
+
+export async function putProgress(
+  bookId: string,
+  p: ProgressInput,
+): Promise<void> {
+  await request<{ ok: boolean }>(`${BASE_URL}/api/progress/${bookId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(p),
+  });
+}
+
+// 唯一 multipart 端点：FormData + file 字段，不设 Content-Type（浏览器自动带 boundary）。
+export async function importBook(file: File): Promise<Book> {
+  const form = new FormData();
+  form.append("file", file);
+  return request<Book>(`${BASE_URL}/api/books`, { method: "POST", body: form });
+}
+
+export async function evaluateImpulse(
+  bookId: string,
+  paragraphIndex: number,
+  lastParagraphIndex: number,
+): Promise<{ triggered: string[] }> {
+  return request<{ triggered: string[] }>(`${BASE_URL}/api/impulse/evaluate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      book_id: bookId,
+      paragraph_index: paragraphIndex,
+      last_paragraph_index: lastParagraphIndex,
+    }),
+  });
+}
+
+// 章末/整本检测（22-reading-notes，07-reading-events §4 定义，06 追赶循环调用）。
+export async function checkChapterBoundary(
+  bookId: string,
+  nyxPosition: number,
+): Promise<{ is_boundary: boolean; book_finished: boolean }> {
+  return request<{ is_boundary: boolean; book_finished: boolean }>(
+    `${BASE_URL}/api/notes/check-chapter-boundary`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ book_id: bookId, nyx_position: nyxPosition }),
+    },
+  );
+}
+
+// ---- 笔记（22-reading-notes，07-reading-events §4）----
+
+export async function getNotes(bookId: string): Promise<UserNoteWithAnnotations[]> {
+  return request<UserNoteWithAnnotations[]>(`${BASE_URL}/api/notes/${bookId}`);
+}
+
+export async function createUserNote(p: {
+  book_id: string;
+  paragraph_id?: string | null;
+  content: string;
+  selected_text?: string | null;
+}): Promise<UserNote> {
+  return request<UserNote>(`${BASE_URL}/api/notes/user`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(p),
+  });
+}
+
+export async function updateUserNote(id: string, content: string): Promise<UserNote> {
+  return request<UserNote>(`${BASE_URL}/api/notes/user/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+}
+
+// 204 No Content：无 body，走 request() 会 res.json() 抛，这里直接 fetch + assertOk。
+export async function deleteUserNote(id: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/notes/user/${id}`, { method: "DELETE" });
+  await assertOk(res);
+}
+
+// 后端 show_to_nyx LLM 空/失败回 null（200 null，非错误），故返回 Annotation | null。
+export async function showNoteToNyx(noteId: string): Promise<Annotation | null> {
+  return request<Annotation | null>(`${BASE_URL}/api/notes/${noteId}/show-to-nyx`, {
+    method: "POST",
+  });
 }

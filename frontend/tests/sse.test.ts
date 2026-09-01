@@ -10,8 +10,15 @@ import { useDesireStore } from "../src/stores/desireStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
 import { useMutterStore } from "../src/stores/mutterStore";
+import { useReaderStore } from "../src/stores/readerStore";
 import { isEmotionCategory } from "../src/types/api";
-import type { ActivitySnapshot, CurrentState } from "../src/types/api";
+import type {
+  ActivitySnapshot,
+  CurrentState,
+  ReadingAssociationEvent,
+  ReadingMutterEvent,
+  ReadingQuestionEvent,
+} from "../src/types/api";
 
 // —— fake EventSource（jsdom 无原生实现，需 stub）——
 class FakeEventSource {
@@ -90,6 +97,33 @@ describe("useSSE", () => {
       correlation_id: "c1",
       content: "你好",
     });
+  });
+
+  it("EVENT_TYPES 含三型阅读事件：reading_mutter/question/association 帧被监听并 dispatch", () => {
+    const dispatch = vi.fn();
+    renderHook(() => useSSE(dispatch));
+    const source = FakeEventSource.instances[0];
+
+    act(() => {
+      source.emit(
+        "reading_mutter",
+        JSON.stringify({ event_id: "e1", correlation_id: "b1", content: "妙", book_id: "b1", paragraph_index: 2 }),
+      );
+      source.emit(
+        "reading_question",
+        JSON.stringify({ event_id: "e2", correlation_id: "b1", content: "?", subtype: "question_reflective", book_id: "b1", paragraph_index: 3, selected_text: null }),
+      );
+      source.emit(
+        "reading_association",
+        JSON.stringify({ event_id: "e3", correlation_id: "b1", memory_id: "m1", snippet: "片段", book_id: "b1", paragraph_index: 4 }),
+      );
+    });
+
+    // 缺任一值则该型帧被浏览器静默丢弃（addEventListener 未注册），dispatch 不会被调。
+    expect(dispatch).toHaveBeenCalledTimes(3);
+    expect(dispatch).toHaveBeenNthCalledWith(1, expect.objectContaining({ event: "reading_mutter", book_id: "b1" }));
+    expect(dispatch).toHaveBeenNthCalledWith(2, expect.objectContaining({ event: "reading_question", subtype: "question_reflective" }));
+    expect(dispatch).toHaveBeenNthCalledWith(3, expect.objectContaining({ event: "reading_association", memory_id: "m1" }));
   });
 
   it("坏 data / 缺字段帧跳过不崩", () => {
@@ -343,6 +377,49 @@ describe("dispatchEvent", () => {
 
     expect(desireSpy).toHaveBeenCalledTimes(1);
     expect(useAnnounceStore.getState().items).toHaveLength(0);
+  });
+
+  it("reading_mutter/question/association → readerStore.addReadingBubble（透传原始事件）", () => {
+    const spy = vi
+      .spyOn(useReaderStore.getState(), "addReadingBubble")
+      .mockImplementation(() => {});
+
+    const mutter: ReadingMutterEvent = {
+      event: "reading_mutter",
+      event_id: "e1",
+      correlation_id: "b1",
+      content: "妙",
+      book_id: "b1",
+      paragraph_index: 2,
+    };
+    const question: ReadingQuestionEvent = {
+      event: "reading_question",
+      event_id: "e2",
+      correlation_id: "b1",
+      content: "?",
+      subtype: "question_reflective",
+      book_id: "b1",
+      paragraph_index: 3,
+      selected_text: null,
+    };
+    const association: ReadingAssociationEvent = {
+      event: "reading_association",
+      event_id: "e3",
+      correlation_id: "b1",
+      memory_id: "m1",
+      snippet: "片段",
+      book_id: "b1",
+      paragraph_index: 4,
+    };
+
+    dispatchEvent(mutter);
+    dispatchEvent(question);
+    dispatchEvent(association);
+
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(spy).toHaveBeenNthCalledWith(1, mutter);
+    expect(spy).toHaveBeenNthCalledWith(2, question);
+    expect(spy).toHaveBeenNthCalledWith(3, association);
   });
 });
 

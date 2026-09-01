@@ -8,7 +8,21 @@ import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
 import { useMutterStore } from "../src/stores/mutterStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
-import type { BackendEvent, CurrentState } from "../src/types/api";
+import {
+  catchupDurationMs,
+  computeWindow,
+  nyxStatusOf,
+  useReaderStore,
+} from "../src/stores/readerStore";
+import type {
+  BackendEvent,
+  BookListItem,
+  CurrentState,
+  Paragraph,
+  ReadingAssociationEvent,
+  ReadingMutterEvent,
+  ReadingQuestionEvent,
+} from "../src/types/api";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
@@ -624,6 +638,590 @@ describe("announceStore", () => {
     vi.advanceTimersByTime(ANNOUNCE_DURATION.mutter);
 
     expect(useAnnounceStore.getState().items).toHaveLength(0);
+  });
+});
+
+describe("readerStore", () => {
+  const bookItem = (id: string, total: number, userPosition: number): BookListItem => ({
+    id,
+    title: `书${id}`,
+    author: "作者",
+    filename: `${id}.epub`,
+    total_paragraphs: total,
+    user_position: userPosition,
+    last_read_at: null,
+  });
+  const para = (index: number, text: string): Paragraph => ({
+    id: `p${index}`,
+    book_id: "b1",
+    index,
+    text,
+    is_chapter_start: index === 1,
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    useReaderStore.getState().stopCatchup();
+    useReaderStore.setState({
+      books: [],
+      booksError: null,
+      bookId: null,
+      totalParagraphs: 0,
+      paragraphs: [],
+      windowFrom: 0,
+      userPosition: 1,
+      nyxPosition: 1,
+      readingSpeed: 50,
+      readCount: 0,
+      impulseBubbles: [],
+      notes: [],
+      notesError: null,
+    });
+  });
+
+  // ---- 纯函数 ----
+  it("nyxStatusOf：idle/reading/waiting 三态", () => {
+    expect(nyxStatusOf(null, 1, 1)).toBe("idle");
+    expect(nyxStatusOf("b1", 1, 3)).toBe("reading");
+    expect(nyxStatusOf("b1", 3, 3)).toBe("waiting");
+    expect(nyxStatusOf("b1", 5, 3)).toBe("waiting");
+  });
+
+  it("computeWindow：书首/书尾 clamp 到 [1, total] 不越界", () => {
+    expect(computeWindow(1, 120, false)).toEqual({ from: 1, to: 50 });
+    expect(computeWindow(120, 120, false)).toEqual({ from: 120, to: 120 });
+    expect(computeWindow(120, 120, true)).toEqual({ from: 95, to: 120 });
+    expect(computeWindow(1, 120, true)).toEqual({ from: 1, to: 50 });
+  });
+
+  it("catchupDurationMs：clamp 到 [1s, 30s]", () => {
+    expect(catchupDurationMs(100, 50)).toBe(2000);
+    expect(catchupDurationMs(1, 50)).toBe(1000);
+    expect(catchupDurationMs(10000, 50)).toBe(30000);
+  });
+
+  it("catchupDurationMs：非法 speed 回退最小速度而非复用秒常量", () => {
+    // speed<=0 时不该 fallback 到 MIN_CATCHUP_SEC（=1，语义是「秒」），否则
+    // 100 字/1 = 100s 被 clamp 到 30s 顶格；应回退后端下界 10 字/秒 → 10s。
+    expect(catchupDurationMs(100, 0)).toBe(10000);
+    expect(catchupDurationMs(100, -5)).toBe(10000);
+  });
+
+  // ---- loadBooks ----
+  it("loadBooks：GET /api/books → books 落 store", async () => {
+    const fixture = [bookItem("b1", 120, 3)];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(fixture)));
+
+    await useReaderStore.getState().loadBooks();
+
+    expect(useReaderStore.getState().books).toEqual(fixture);
+    expect(useReaderStore.getState().booksError).toBeNull();
+  });
+
+  it("loadBooks：getBooks throw → booksError", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+
+    await useReaderStore.getState().loadBooks();
+
+    expect(useReaderStore.getState().booksError).toBe("fetch failed");
+    expect(useReaderStore.getState().books).toEqual([]);
+  });
+
+  // ---- openBook ----
+  it("openBook：会话态 + totalParagraphs 从 books 取 + nyx<user 起追赶", async () => {
+    useReaderStore.setState({ books: [bookItem("b1", 120, 3)] });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ user_position: 3, nyx_position: 1, reading_speed: 50, read_count: 0 }))
+      .mockResolvedValueOnce(jsonResponse([para(3, "第三段")]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().openBook("b1");
+
+    const s = useReaderStore.getState();
+    expect(s.totalParagraphs).toBe(120); // 从 books 列表项取
+    expect(s.userPosition).toBe(3);
+    expect(s.nyxPosition).toBe(1);
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/books/b1/paragraphs?from=3&to=52");
+    expect(vi.getTimerCount()).toBeGreaterThan(0); // startCatchup 已排 timer
+  });
+
+  it("openBook：书尾 user_position=total → 窗口 clamp 不越界", async () => {
+    useReaderStore.setState({ books: [bookItem("b1", 120, 120)] });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ user_position: 120, nyx_position: 120, reading_speed: 50, read_count: 1 }))
+      .mockResolvedValueOnce(jsonResponse([para(120, "结尾")]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().openBook("b1");
+
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/books/b1/paragraphs?from=120&to=120");
+  });
+
+  // ---- syncPosition ----
+  it("syncPosition 前翻跨越 N 段：逐段 evaluateImpulse(bookId, i, i-1)", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      paragraphs: [para(3, "第三段"), para(4, "第四段"), para(5, "第五段"), para(6, "第六段")],
+      windowFrom: 1,
+      userPosition: 3,
+      nyxPosition: 3,
+      readingSpeed: 50,
+    });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().syncPosition(6);
+
+    expect(useReaderStore.getState().userPosition).toBe(6);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/progress/b1");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: "PUT",
+      body: JSON.stringify({ user_position: 6, nyx_position: 3, reading_speed: 50 }),
+    });
+    const impulseBodies = fetchMock.mock.calls.slice(1).map((c) => JSON.parse(c[1].body));
+    expect(impulseBodies).toEqual([
+      { book_id: "b1", paragraph_index: 4, last_paragraph_index: 3 },
+      { book_id: "b1", paragraph_index: 5, last_paragraph_index: 4 },
+      { book_id: "b1", paragraph_index: 6, last_paragraph_index: 5 },
+    ]);
+  });
+
+  it("syncPosition 后翻：只 putProgress 不评估", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      paragraphs: [para(3, "第三段"), para(4, "第四段")],
+      windowFrom: 1,
+      userPosition: 6,
+      nyxPosition: 6,
+      readingSpeed: 50,
+    });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().syncPosition(4);
+
+    expect(useReaderStore.getState().userPosition).toBe(4);
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual(["/api/progress/b1"]);
+  });
+
+  it("syncPosition 到同段：no-op（不 putProgress 不评估）", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      paragraphs: [para(3, "第三段")],
+      windowFrom: 1,
+      userPosition: 3,
+      nyxPosition: 3,
+      readingSpeed: 50,
+    });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().syncPosition(3);
+
+    expect(useReaderStore.getState().userPosition).toBe(3);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // ---- reread ----
+  it("reread：putProgress 复位 + userPosition=nyxPosition=1", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      userPosition: 120,
+      nyxPosition: 120,
+      readingSpeed: 50,
+      readCount: 1,
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse([para(1, "开头")]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().reread();
+
+    const s = useReaderStore.getState();
+    expect(s.userPosition).toBe(1);
+    expect(s.nyxPosition).toBe(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/progress/b1");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: "PUT",
+      body: JSON.stringify({ user_position: 1, nyx_position: 1, reading_speed: 50 }),
+    });
+  });
+
+  // ---- 追赶循环 ----
+  it("追赶循环：按段长推进 nyxPosition、到 userPosition 停止", () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      paragraphs: [para(1, "a".repeat(100)), para(2, "b".repeat(100)), para(3, "c".repeat(100))],
+      windowFrom: 1,
+      userPosition: 3,
+      nyxPosition: 1,
+      readingSpeed: 50,
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ is_boundary: false, book_finished: false })));
+
+    useReaderStore.getState().startCatchup();
+    vi.advanceTimersByTime(catchupDurationMs(100, 50));
+    expect(useReaderStore.getState().nyxPosition).toBe(2);
+
+    vi.advanceTimersByTime(catchupDurationMs(100, 50));
+    expect(useReaderStore.getState().nyxPosition).toBe(3);
+    expect(vi.getTimerCount()).toBe(0); // 到 userPosition 停止
+  });
+
+  it("advanceNyx 追到 userPosition：收尾把最新 nyx_position 落库（防重载重追重放 BOOK_FINISHED）", () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      paragraphs: [para(119, "倒数第二段")],
+      windowFrom: 1,
+      userPosition: 120,
+      nyxPosition: 119,
+      readingSpeed: 50,
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ is_boundary: true, book_finished: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    useReaderStore.getState().advanceNyx();
+
+    // 收尾：除 checkChapterBoundary，还要 putProgress 落库 nyx_position=120，
+    // 否则重载后读到陈旧落后值会重追、重放 BOOK_FINISHED（22 幂等靠进程内 set）。
+    const urls = fetchMock.mock.calls.map((c) => c[0]);
+    expect(urls).toContain("/api/notes/check-chapter-boundary");
+    expect(urls).toContain("/api/progress/b1");
+    const putCall = fetchMock.mock.calls.find((c) => c[0] === "/api/progress/b1");
+    expect(putCall?.[1]).toMatchObject({
+      method: "PUT",
+      body: JSON.stringify({ user_position: 120, nyx_position: 120, reading_speed: 50 }),
+    });
+  });
+
+  it("startCatchup 重入：旧 timer 清除不叠加", () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      paragraphs: [para(1, "a".repeat(100)), para(2, "b".repeat(100))],
+      windowFrom: 1,
+      userPosition: 2,
+      nyxPosition: 1,
+      readingSpeed: 50,
+    });
+
+    useReaderStore.getState().startCatchup();
+    useReaderStore.getState().startCatchup();
+
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it("stopCatchup：clearTimeout 后再 advance 不推进", () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      paragraphs: [para(1, "a".repeat(100)), para(2, "b".repeat(100))],
+      windowFrom: 1,
+      userPosition: 2,
+      nyxPosition: 1,
+      readingSpeed: 50,
+    });
+
+    useReaderStore.getState().startCatchup();
+    useReaderStore.getState().stopCatchup();
+    vi.advanceTimersByTime(catchupDurationMs(100, 50));
+
+    expect(useReaderStore.getState().nyxPosition).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  // ---- closeBook ----
+  it("closeBook：复位 bookId/paragraphs/positions", () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      paragraphs: [para(1, "x")],
+      userPosition: 5,
+      nyxPosition: 3,
+      readCount: 1,
+    });
+
+    useReaderStore.getState().closeBook();
+
+    const s = useReaderStore.getState();
+    expect(s.bookId).toBeNull();
+    expect(s.totalParagraphs).toBe(0);
+    expect(s.paragraphs).toEqual([]);
+    expect(s.userPosition).toBe(1);
+    expect(s.nyxPosition).toBe(1);
+  });
+
+  // ---- 气泡（07 §2） ----
+  const mutterEvent: ReadingMutterEvent = {
+    event_id: "e1",
+    correlation_id: "b1",
+    event: "reading_mutter",
+    content: "这句写得真好",
+    book_id: "b1",
+    paragraph_index: 3,
+  };
+  const questionEvent: ReadingQuestionEvent = {
+    event_id: "e2",
+    correlation_id: "b1",
+    event: "reading_question",
+    content: "为什么？",
+    subtype: "question_reflective",
+    book_id: "b1",
+    paragraph_index: 4,
+    selected_text: null,
+  };
+  const associationEvent: ReadingAssociationEvent = {
+    event_id: "e3",
+    correlation_id: "b1",
+    event: "reading_association",
+    memory_id: "m1",
+    snippet: "片段",
+    book_id: "b1",
+    paragraph_index: 5,
+  };
+
+  it("addReadingBubble：非当前书事件丢弃", () => {
+    useReaderStore.setState({ bookId: "b1" });
+    useReaderStore
+      .getState()
+      .addReadingBubble({ ...mutterEvent, book_id: "b2", correlation_id: "b2" });
+
+    expect(useReaderStore.getState().impulseBubbles).toEqual([]);
+  });
+
+  it("addReadingBubble：kind 映射 + 字段各落对", () => {
+    useReaderStore.setState({ bookId: "b1" });
+    const s = useReaderStore.getState();
+    s.addReadingBubble(mutterEvent);
+    s.addReadingBubble(questionEvent);
+    s.addReadingBubble(associationEvent);
+
+    const bubbles = useReaderStore.getState().impulseBubbles;
+    expect(bubbles).toHaveLength(3);
+    expect(bubbles[0]).toEqual({
+      id: "e1",
+      kind: "mutter",
+      bookId: "b1",
+      paragraphIndex: 3,
+      content: "这句写得真好",
+    });
+    expect(bubbles[1]).toEqual({
+      id: "e2",
+      kind: "question",
+      bookId: "b1",
+      paragraphIndex: 4,
+      content: "为什么？",
+      subtype: "question_reflective",
+      selectedText: null,
+    });
+    expect(bubbles[2]).toEqual({
+      id: "e3",
+      kind: "association",
+      bookId: "b1",
+      paragraphIndex: 5,
+      content: "片段",
+      memoryId: "m1",
+    });
+  });
+
+  it("addReadingBubble：cap 到 20 溢出丢最旧", () => {
+    useReaderStore.setState({ bookId: "b1" });
+    const s = useReaderStore.getState();
+    for (let i = 1; i <= 25; i++) {
+      s.addReadingBubble({ ...mutterEvent, event_id: `e${i}`, content: `c${i}` });
+    }
+
+    const bubbles = useReaderStore.getState().impulseBubbles;
+    expect(bubbles).toHaveLength(20);
+    expect(bubbles[0].id).toBe("e6"); // 最旧 5 条被丢
+    expect(bubbles[19].id).toBe("e25");
+  });
+
+  // ---- 笔记（07 §3） ----
+  it("loadNotes：GET /api/notes/{bookId} → notes 落 store", async () => {
+    useReaderStore.setState({ bookId: "b1" });
+    const fixture = [
+      {
+        id: "n1",
+        book_id: "b1",
+        paragraph_id: "p1",
+        content: "c",
+        selected_text: null,
+        created_at: 1,
+        updated_at: 2,
+        annotations: [],
+      },
+    ];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(fixture)));
+
+    await useReaderStore.getState().loadNotes();
+
+    expect(useReaderStore.getState().notes).toEqual(fixture);
+    expect(useReaderStore.getState().notesError).toBeNull();
+  });
+
+  it("addNote：POST 返回裸 UserNote → unshift + 归一 annotations:[]", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      notes: [
+        {
+          id: "old",
+          book_id: "b1",
+          paragraph_id: null,
+          content: "旧",
+          selected_text: null,
+          created_at: 1,
+          updated_at: 1,
+          annotations: [],
+        },
+      ],
+    });
+    const bare = {
+      id: "n2",
+      book_id: "b1",
+      paragraph_id: "p1",
+      content: "新",
+      selected_text: null,
+      created_at: 2,
+      updated_at: 2,
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(bare)));
+
+    await useReaderStore
+      .getState()
+      .addNote({ book_id: "b1", paragraph_id: "p1", content: "新" });
+
+    const notes = useReaderStore.getState().notes;
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toEqual({ ...bare, annotations: [] });
+  });
+
+  it("updateNote：覆盖 7 键、保留 annotations", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      notes: [
+        {
+          id: "n1",
+          book_id: "b1",
+          paragraph_id: "p1",
+          content: "旧",
+          selected_text: null,
+          created_at: 1,
+          updated_at: 1,
+          annotations: [{ id: "a1", user_note_id: "n1", content: "批注", created_at: 3 }],
+        },
+      ],
+    });
+    const updated = {
+      id: "n1",
+      book_id: "b1",
+      paragraph_id: "p1",
+      content: "改后",
+      selected_text: null,
+      created_at: 1,
+      updated_at: 2,
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(updated)));
+
+    await useReaderStore.getState().updateNote("n1", "改后");
+
+    const n = useReaderStore.getState().notes[0];
+    expect(n.content).toBe("改后");
+    expect(n.updated_at).toBe(2);
+    expect(n.annotations).toEqual([{ id: "a1", user_note_id: "n1", content: "批注", created_at: 3 }]);
+  });
+
+  it("deleteNote：本地移除该条（连同其批注）", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      notes: [
+        {
+          id: "n1",
+          book_id: "b1",
+          paragraph_id: null,
+          content: "c",
+          selected_text: null,
+          created_at: 1,
+          updated_at: 1,
+          annotations: [],
+        },
+      ],
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        json: async () => {
+          throw new Error("no body");
+        },
+      } as unknown as Response),
+    );
+
+    await useReaderStore.getState().deleteNote("n1");
+
+    expect(useReaderStore.getState().notes).toEqual([]);
+  });
+
+  it("showToNyx：成功后 annotations append 完整 Annotation（不整表重拉）", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      notes: [
+        {
+          id: "n1",
+          book_id: "b1",
+          paragraph_id: null,
+          content: "c",
+          selected_text: null,
+          created_at: 1,
+          updated_at: 1,
+          annotations: [],
+        },
+      ],
+    });
+    const ann = { id: "a1", user_note_id: "n1", content: "批注", created_at: 3 };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(ann));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().showToNyx("n1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1); // 不整表重拉
+    expect(useReaderStore.getState().notes[0].annotations).toEqual([ann]);
+  });
+
+  it("showToNyx：LLM 空回 null → 不 append", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      notes: [
+        {
+          id: "n1",
+          book_id: "b1",
+          paragraph_id: null,
+          content: "c",
+          selected_text: null,
+          created_at: 1,
+          updated_at: 1,
+          annotations: [],
+        },
+      ],
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(null)));
+
+    await useReaderStore.getState().showToNyx("n1");
+
+    expect(useReaderStore.getState().notes[0].annotations).toEqual([]);
   });
 });
 

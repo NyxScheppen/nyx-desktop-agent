@@ -7,6 +7,8 @@ import SettingsView from "./components/layout/SettingsView";
 import ActivityPanel from "./components/panels/ActivityPanel";
 import DesiresPanel from "./components/panels/DesiresPanel";
 import MemoryPanel from "./components/panels/MemoryPanel";
+import BookshelfView from "./components/reading/BookshelfView";
+import ReaderView from "./components/reading/ReaderView";
 import MutterCard from "./components/shell/MutterCard";
 import RightDock, { type View } from "./components/shell/RightDock";
 import ScrollArea from "./components/shell/ScrollArea";
@@ -15,6 +17,7 @@ import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
 import { useActivityStore } from "./stores/activityStore";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
+import { useReaderStore } from "./stores/readerStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import type { ConnectionState } from "./types/api";
 
@@ -42,6 +45,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 书卷区当前视图：null = 聊天主舞台；其余 = 对应面板（RightDock 底部按钮切换）
   const [view, setView] = useState<View>(null);
+  const bookId = useReaderStore((s) => s.bookId);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
   const fontScale = useSettingsStore((s) => s.fontScale);
@@ -102,6 +106,7 @@ export default function App() {
                 {view === "desire" && <DesiresPanel />}
                 {view === "activity" && <ActivityPanel />}
                 {view === "memory" && <MemoryPanel />}
+                {view === "reading" && (bookId === null ? <BookshelfView /> : <ReaderView />)}
               </div>
             </section>
           )}

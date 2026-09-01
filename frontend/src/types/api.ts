@@ -93,6 +93,40 @@ export type ReflectionDoneEvent = SseBase & {
   story_is_new: boolean;
 };
 
+// ---- 阅读事件（21-reading-impulse 三 SSE 事件，07-reading-events §1）----
+export type QuestionSubtype =
+  | "question_knowledge"
+  | "question_personal"
+  | "question_reflective"
+  | "quote_question";
+
+/** 读到精彩处碎碎念：{content, book_id, paragraph_index}。 */
+export type ReadingMutterEvent = SseBase & {
+  event: "reading_mutter";
+  content: string;
+  book_id: string;
+  paragraph_index: number;
+};
+
+/** 冲动提问：subtype 四子型之一；selected_text 仅 quote_question 非空。 */
+export type ReadingQuestionEvent = SseBase & {
+  event: "reading_question";
+  content: string;
+  subtype: QuestionSubtype;
+  book_id: string;
+  paragraph_index: number;
+  selected_text: string | null;
+};
+
+/** 记忆联想（每个命中记忆一条）：snippet 为 summary/content 截断 ~80 字。 */
+export type ReadingAssociationEvent = SseBase & {
+  event: "reading_association";
+  memory_id: string;
+  snippet: string;
+  book_id: string;
+  paragraph_index: number;
+};
+
 /** 未消费的事件：前端不读字段，payload 保持宽松。 */
 type OpaqueEventType =
   | "clock_tick"
@@ -118,6 +152,9 @@ export type SseEvent =
   | UserMessageEvent
   | EmotionUpdateEvent
   | ReflectionDoneEvent
+  | ReadingMutterEvent
+  | ReadingQuestionEvent
+  | ReadingAssociationEvent
   | OpaqueEvent;
 
 export type ConnectionState = "connecting" | "open" | "closed";
@@ -218,6 +255,70 @@ export type ActivitySnapshot = {
   current: Activity | null;
   schedule: Activity[];
 };
+
+// ---- 阅读（19/20/21-reading / nyx/types.py Book/Paragraph/ReadingProgress/BookListItem）----
+export type Book = {
+  id: string;
+  title: string;
+  author: string;
+  filename: string;
+  content_hash: string;
+  total_paragraphs: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export type BookListItem = {
+  id: string;
+  title: string;
+  author: string;
+  filename: string;
+  total_paragraphs: number;
+  user_position: number; // 读到第几段；未读 0
+  last_read_at: number | null; // 未读 null（书架排序键）
+};
+
+export type Paragraph = {
+  id: string;
+  book_id: string;
+  index: number; // 1-based
+  text: string;
+  is_chapter_start: boolean;
+};
+
+export type Progress = {
+  user_position: number;
+  nyx_position: number;
+  reading_speed: number; // 字符/秒（10–200，默认 50）
+  read_count: number; // 读完几遍（0=未读完，>=1 可重读）
+};
+
+export type ProgressInput = {
+  user_position: number;
+  nyx_position: number;
+  reading_speed: number;
+};
+
+// ---- 笔记（22-reading-notes / nyx/types.py Annotation/UserNote）----
+export type Annotation = {
+  id: string;
+  user_note_id: string;
+  content: string;
+  created_at: number;
+};
+
+export type UserNote = {
+  id: string;
+  book_id: string | null; // 书删后 SET NULL
+  paragraph_id: string | null; // 段删后 SET NULL；自由记无段也为 None
+  content: string;
+  selected_text: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+// GET /api/notes/{book_id} 每条附带批注列表（created_at DESC）。
+export type UserNoteWithAnnotations = UserNote & { annotations: Annotation[] };
 
 // ---- 事件溯源（05-event / nyx/types.py Event，对应 GET /api/events/log）----
 export type BackendEvent = {

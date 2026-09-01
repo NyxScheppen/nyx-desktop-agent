@@ -26,6 +26,9 @@ const EVENT_TYPES = [
   "activity_start",
   "activity_end",
   "activity_interrupted",
+  "reading_mutter",
+  "reading_question",
+  "reading_association",
 ];
 
 export function useSSE(dispatch: (e: SseEvent) => void): ConnectionState {

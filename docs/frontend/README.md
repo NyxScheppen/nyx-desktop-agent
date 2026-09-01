@@ -78,7 +78,7 @@ frontend/
   index.html
   src/
     main.tsx                 # React 入口，挂载 App
-    App.tsx                  # 精简装配：顶栏（标题/连接状态/设置）+ 左状态条 + 对话主区 + 内在详情/设置弹层 + 气泡层（01-sse §6）
+    App.tsx                  # 精简装配：顶栏（标题/连接状态/设置）+ 左栏常驻对话 + 中间内容区（side-panel + 立绘浮层）+ 底部导航 + 气泡层（01-sse §6）
     types/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     lib/
@@ -92,14 +92,16 @@ frontend/
       usePresence.ts         # 活跃度采集 + classifyPresence 判定 + POST /api/observe
       useTypewriter.ts       # 打字机：nyx 文本逐字显示（纯渲染层，03-chat-panel）
     stores/
-      chatStore.ts           # 聊天：消息列表 + 历史加载
+      chatStore.ts           # 聊天：消息列表 + 历史加载 + addReadingTurn
       innerLifeStore.ts      # 内在状态：CurrentState 快照
       desireStore.ts         # 欲望：DesireState 快照（快照 store）
       activityStore.ts       # 活动：ActivitySnapshot 快照 + 跨天产出 results（快照 store）
+      memoryStore.ts         # 记忆：Memory 快照（GET /api/memories + SSE memory_*）
+      readerStore.ts         # 阅读：书架/进度/段落/追赶/笔记 + paginate 真分页纯函数
       settingsStore.ts       # 背景外观：tint/image/fontScale（纯前端 UI 状态，无后端）
-      announceStore.ts       # 头像旁临时气泡：items/announce/dismiss（纯前端呈现，无后端）
+      announceStore.ts       # 立绘旁临时气泡：items/announce/dismiss（纯前端呈现，无后端）
     components/
-      AnnounceLayer.tsx      # 头像旁淡出气泡层（读 announceStore，App 层挂载）
+      AnnounceLayer.tsx      # 立绘旁淡出气泡层（读 announceStore，App 层挂载）
       chat/
         MessageList.tsx
         MessageBubble.tsx
@@ -108,7 +110,7 @@ frontend/
         InnerStatePanel.tsx
         ValenceArousalPlot.tsx
         EmotionSprite.tsx
-        Avatar.tsx           # 头像立绘：戳立绘/红点通知/昼夜节律（包裹 EmotionSprite）
+        Avatar.tsx           # 立绘：戳立绘/红点通知（包裹 EmotionSprite；半透明浮层见 08 §4）
         EnergyBar.tsx
         BarChart.tsx
         BigFiveChart.tsx
@@ -117,14 +119,18 @@ frontend/
         BackgroundPanel.tsx  # 背景外观（预设色调/自定义取色/上传背景图/恢复默认）
         DesiresPanel.tsx     # 欲望面板（GET /api/desires + SSE desire_*）
         ActivityPanel.tsx    # 活动时间线 + 产出面板（GET /api/activity + results + SSE activity_*；产出区列完整产出 + 工具轨迹）
+        MemoryPanel.tsx      # 记忆面板（GET /api/memories + SSE memory_*）
+      reading/
+        BookshelfView.tsx    # 书架（GET /api/books + 导入 EPUB）
+        ReaderView.tsx       # 阅读页：真分页（paginate + 测量/重测，08 §5）
+        NotePanel.tsx        # 笔记面板（07-reading-events）
       layout/
         Panel.tsx            # 通用面板容器
-        Modal.tsx            # 通用弹层容器（内在详情 / 设置复用）
-        InnerDetail.tsx      # 内在详情弹层（内在/欲望/活动 三 tab）
+        Modal.tsx            # 通用弹层容器
         SettingsView.tsx     # 设置弹层（字体大小 + 背景外观）
       shell/
-        ScrollArea.tsx       # 对话主区（书卷区域）
-        StatusBar.tsx        # 精简左状态条（头像/心情/精力/当前活动/欲望一句话）
+        RightDock.tsx        # 底部导航：读书|内在|欲望|活动|记忆（切中间视图）
+        StatusBar.tsx        # 左栏顶部状态条（名字/心情/精力条/现在状态）
     assets/
       sprites/               # 8 情绪 sprite（EmotionCategory 1:1）
   tests/
@@ -142,15 +148,17 @@ frontend/
 
 ## 5. 面板去向（精简装配）
 
-书卷风改造后（06-game-shell 已砍）精简为：顶栏（标题 `✦ Nyx ✦` + 连接状态 + 设置按钮）｜左状态条（头像/心情/精力/当前活动/欲望一句话）｜对话主区（`ScrollArea` + `ChatInput`）｜两个弹层（内在详情 `InnerDetail` / 设置 `SettingsView`）｜气泡层（`AnnounceLayer`）。点左状态条信息区弹出内在详情弹层（内在/欲望/活动 三 tab）；设置弹层（字号/背景）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
+08 布局重构后精简为：顶栏（标题 `✦ Nyx ✦` + 连接状态 + 设置按钮）｜左栏常驻对话（`div.left-dock`：`StatusBar` + `MessageList` + `ChatInput` 竖排）｜中间内容区（`div.game-main`：`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书 + `avatar-overlay` 立绘半透明浮层）｜底部导航（`RightDock`：读书|内在|欲望|活动|记忆）｜气泡层（`AnnounceLayer`，立绘旁）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|
-| 聊天区 | ✅ 实现（03-chat-panel） | `POST /api/chat` + SSE `speak`/`think`/`ask` | 对话主区（`components/shell/ScrollArea.tsx` + `components/chat/ChatInput.tsx`） |
+| 聊天区 | ✅ 实现（03-chat-panel） | `POST /api/chat` + SSE `speak`/`think`/`ask` | 左栏常驻（`div.left-dock`：`components/chat/MessageList.tsx` + `ChatInput.tsx`） |
+| 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | `components/inner/InnerStatePanel.tsx`（`view==="inner"`） |
+| 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | `components/panels/DesiresPanel.tsx`（`view==="desire"`） |
+| 活动时间线 | ✅ 实现 | `GET /api/activity` + SSE `activity_*` | `components/panels/ActivityPanel.tsx`（`view==="activity"`） |
+| 记忆面板 | ✅ 实现 | `GET /api/memories` + SSE `memory_*` | `components/panels/MemoryPanel.tsx`（`view==="memory"`） |
+| 读书 | ✅ 实现（06/07） | `GET /api/books` + 进度/段落/笔记端点 | `components/reading/BookshelfView.tsx` + `ReaderView.tsx`（`view==="reading"`） |
 | 背景外观 | ✅ 实现 | 无（纯前端 `settingsStore`） | `components/layout/SettingsView.tsx`（复用 `components/panels/BackgroundPanel.tsx`） |
-| 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | 左状态条摘要 + `components/layout/InnerDetail.tsx`（内在 tab） |
-| 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | `InnerDetail`（欲望 tab） |
-| 活动时间线 | ✅ 实现 | `GET /api/activity` + SSE `activity_*` | `InnerDetail`（活动 tab） |
 
 ## 6. 测试约定
 
@@ -170,4 +178,4 @@ frontend/
 | `04-inner-state-panel.md` | 内在状态面板组件树、valence-arousal 图、精力条、情绪 sprite、Big Five/三观 |
 | `05-client.md` | `client.ts` 薄 fetch 封装（postChat/getState/postObserve）+ 错误契约 |
 | `06-reading-panel.md` | 阅读面板：书架 + 阅读页 + `readerStore` + Nyx 追赶（`setTimeout` 秒级逐段） |
-| `07-reading-events.md` | 阅读事件：SSE 冲动气泡（reading_mutter/question/association）+ 笔记面板 |
+| `07-reading-events.md` | 阅读事件：读书提问/联想并进对话 + 碎碎念悬浮气泡 + 笔记面板 |

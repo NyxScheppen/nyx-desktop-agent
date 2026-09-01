@@ -55,15 +55,19 @@ export default function ReaderView() {
     setPageIndex(Math.max(0, Math.min(found < 0 ? 0 : found, pages.length - 1)));
   }, [pages, userPosition]);
 
+  // 书末守卫（08 §5.4）：窗口末段即书末段时已是最后一页，无「下一页」。
+  const lastParaIndex = paragraphs[paragraphs.length - 1]?.index ?? 0;
+  const onLastPageOfBook = pageIndex === pages.length - 1 && lastParaIndex >= totalParagraphs;
+
   // 整页切换（08 §5.4）：窗口内 pageIndex 由 userPosition 反推驱动；
   // 窗口首/末页越界时借 syncPosition 的 needsWindowRefresh 触发重拉（§5.5 既有，不改）。
   const goPage = (dir: 1 | -1) => {
     if (dir === 1) {
       if (pageIndex < pages.length - 1) {
         void syncPosition(pages[pageIndex + 1][0]);
-      } else if (userPosition < totalParagraphs) {
+      } else if (lastParaIndex < totalParagraphs) {
         // 窗口末页但书未读完：跳到下一窗口首段（窗口末段 +1），needsWindowRefresh 重拉。
-        void syncPosition((paragraphs[paragraphs.length - 1]?.index ?? userPosition) + 1);
+        void syncPosition(lastParaIndex + 1);
       }
     } else if (pageIndex > 0) {
       void syncPosition(pages[pageIndex - 1][0]);
@@ -132,7 +136,7 @@ export default function ReaderView() {
           type="button"
           className="reading-btn"
           onClick={() => goPage(1)}
-          disabled={userPosition >= totalParagraphs}
+          disabled={userPosition >= totalParagraphs || onLastPageOfBook}
         >
           下一页
         </button>

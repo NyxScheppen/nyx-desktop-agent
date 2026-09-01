@@ -163,7 +163,7 @@ type AnnounceState = {
 ### 关键决策
 
 - **纯呈现层、无后端/无 SSE 增量语义**：`announce` 由 SSE 分发表驱动（`mutter` → `announce("mutter", …)`、`activity_end` → `announce("activity", …)`），但 store 本身只管「临时气泡队列」：追加 → `setTimeout` 到时 `dismiss`。淡出视觉由 CSS `announce-pop` 动画承担（`AnnounceLayer` 读 `items` 渲染 + 按 `ANNOUNCE_DURATION[kind]` 设动画时长），store 到时摘除 DOM 节点。
-- **不落聊天历史**：碎碎念既进 `chatStore`（聊天记录）又进 `announceStore`（头像旁淡出气泡），两者互不替代——前者是历史时间线（`loadHistory` 回填），后者是 design §8 的瞬时气泡。
+- **不落聊天历史**：碎碎念只进 `announceStore`（瞬时气泡），不进 `chatStore` 历史——`dispatch` 把 `mutter`/`reading_mutter` 统一路由到 `announce("mutter", …)`（08 §3 迁移后原 `mutterStore` 已删），`HISTORY_TYPES` 不含 `mutter`。
 - **时长按 kind**：`mutter` 4s、`activity` 7s（产出句子更长）。id 用模块级自增（`announce-N`），不依赖 `Date.now`（测试可预测）。
 
 ## 6. `readerStore`（阅读：书架/进度/追赶 + 笔记）

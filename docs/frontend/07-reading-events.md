@@ -1,4 +1,4 @@
-# 阅读事件（SSE 冲动气泡 + 笔记面板）
+# 阅读事件（读书反应并进对话/悬浮气泡 + 笔记面板）
 
 > 前端「陪伴读书」的**行为与笔记层**：订阅 `reading_mutter`/`reading_question`/`reading_association` 三个 SSE 事件——读书碎碎念归悬浮气泡、提问/联想并进对话；笔记面板做用户笔记 CRUD + 「给尼克斯看」批注。Nyx 的章末整合记忆不在此上屏（落 memory，记忆面板已砍）。
 > 范围：`components/reading/NotePanel.tsx` 笔记部分 + `components/chat/MessageBubble.tsx` 读书 turn 渲染 + `stores/readerStore.ts` 笔记 state + `api/client.ts` 笔记端点 + `api/dispatch.ts` 阅读事件分派 + `hooks/useSSE.ts` 的 `EVENT_TYPES`。
@@ -147,4 +147,4 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 - `readerStore` 笔记：`loadNotes` 落 `notes`；`addNote` unshift 归一 `annotations: []`；`updateNote` 覆盖 7 键保留 annotations；`deleteNote` 移除；`showToNyx` 成功后 `annotations` append 返回的完整 `Annotation`（不整表重拉）。
 - `client`（`tests/api.test.ts` 增补）：6 个笔记函数端点/方法/请求体键 + 非 2xx 统一 throw（422/404）。
 - 组件（`tests/notePanel.test.tsx`）：NotePanel 渲染 content/selected_text/批注、composer 提交 `addNote`、空白禁用、「给尼克斯看」/「删除」/「编辑」按钮 wiring（编辑态保存 → `updateNote`（trim）、取消退出不调、空白保存禁用）。
-- 不依赖真实后端；验证管道正确（事件走对 store、气泡过滤对、笔记 CRUD 对），不验证视觉。
+- 不依赖真实后端；验证管道正确（事件走对 store、笔记 CRUD 对），不验证视觉。

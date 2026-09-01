@@ -78,7 +78,7 @@ type ReaderState = {
   nyxPosition: number;            // Nyx 读到第几段（1-based）
   readingSpeed: number;           // 字符/秒
   readCount: number;              // 读完几遍（0=未读完，>=1 可重读）
-  // 冲动气泡 + 笔记见 07，同属本 store（阅读系统唯一 store）
+  // 笔记见 07-reading-events，同属本 store（阅读系统唯一 store）
 };
 ```
 
@@ -101,7 +101,7 @@ reread(): Promise<void>                          // 重读：putProgress({user_p
 ### 关键决策
 
 - **`nyxStatus` 是派生态**：`idle`（`bookId===null`）/ `reading`（`nyxPosition < userPosition`）/ `waiting`（`nyxPosition >= userPosition`）——与后端 spec 20 决策一致（后端不存 `nyx_status`，前端派生）。
-- **阅读系统一个 store**：书架/进度/段落/冲动气泡/笔记同属「陪伴读书」一个系统，归 `readerStore`（CLAUDE.md「每系统一个 store」）。不拆 `noteStore`/`impulseStore`（反冗余）。
+- **阅读系统一个 store**：书架/进度/段落/笔记同属「陪伴读书」一个系统，归 `readerStore`（CLAUDE.md「每系统一个 store」）。不拆 `noteStore`（反冗余）。
 - **进度持久化后写**：位置同步 `syncPosition` 每次 `putProgress(userPosition, nyxPosition, readingSpeed)`（fire-and-forget，失败静默、下次翻页重写覆盖）；`nyxPosition` 由追赶循环推进，也随下次 `putProgress` 落库（后端已定「state 是 value 派生」不存派生态，前端把最新 nyx 位置随进度写回即可）。
 - **真分页 + 高亮定位**（08 §5）：正文 `overflow:hidden` 无滚动；`paginate` 纯函数按段实测高度贪心分页，「上一页/下一页」整页切换、页首段同步回 `syncPosition`（复用「前翻逐段补发 evaluateImpulse + putProgress + 窗口重拉 + startCatchup」管线）；当前段 `--current` 高亮、Nyx 段 `--nyx` 🦊 标记（`userPosition` 恒等于当前页首段，计数/高亮不漂移）。
 - **正文后端唯一来源**：`evaluateImpulse` 只传 `{book_id, paragraph_index, last_paragraph_index}`（不传 `paragraph_text`），正文后端自取（21 决策）。

@@ -6,8 +6,8 @@ type RightDockProps = {
   onSwitch: (view: View) => void;
 };
 
-// 底部工具条（输入框上方，常驻不随切视图消失）：聊天 / 内在状态 / 欲望 / 活动 / 记忆 / 读书。
-// 六个入口替换书卷区内容（切视图），当前入口高亮。未来加词条只需往 ENTRIES 追加一项。
+// 底部工具条（中间内容区下方，常驻不随切视图消失）：内在状态 / 欲望 / 活动 / 记忆 / 读书。
+// 五个入口切换中间内容区（切视图），当前入口高亮。未来加词条只需往 ENTRIES 追加一项。
 const ENTRIES: readonly { label: string; view: View }[] = [
   { label: "内在状态", view: "inner" },
   { label: "欲望", view: "desire" },

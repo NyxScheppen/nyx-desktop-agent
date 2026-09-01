@@ -363,7 +363,7 @@ body {
   }
 }
 
-/* ===== 底部工具条（替换书卷区视图：聊天 / 内在状态 / 欲望 / 活动 / 记忆） ===== */
+/* ===== 底部工具条（切换中间内容区视图：内在状态 / 欲望 / 活动 / 记忆 / 读书） ===== */
 .right-dock {
   grid-column: 2;
   grid-row: 2;
@@ -981,6 +981,7 @@ body {
 .announce-layer {
   position: fixed;
   left: auto;
+  right: 16px;
   top: 72px;
   bottom: auto;
   z-index: 3;

@@ -826,12 +826,11 @@
 | `dispatchEvent > emotion_update → innerLifeStore` | 功能正确 | 覆盖 `valence`/`arousal`/`emotion` 三字段 + 顺带 `refreshState()` 重拉全量快照（能量/性格/三观不随帧下发，补自动刷新） |
 | `dispatchEvent > desire_generated → desireStore.refresh()` | 功能正确 | `desire_generated` 触发 `desireStore.refresh()` 恰 1 次 |
 | `dispatchEvent > activity_start → activityStore.refresh()` | 功能正确 | `activity_start` 触发 `activityStore.refresh()` 恰 1 次 |
-| `dispatchEvent > mutter → mutterStore（不进 chatStore、不冒气泡）` | 功能正确 | `mutter`（content 为 string）→ `addMutter` 入 mutterStore `{id,text}`，`chatStore` 空、`announceStore` 空（碎碎念彻底脱离聊天流） |
-| `dispatchEvent > mutter 非 string content → addMutter 丢弃` | 边界鲁棒 | content 非 string → 不入 mutterStore（与 addMutter 收窄一致） |
+| `dispatchEvent > mutter → announceStore（冒气泡，不进 chatStore）` | 功能正确 | `mutter` → `announce("mutter", e.content)` 入 announceStore `{kind:"mutter",text:"在想你"}`，`chatStore` 空（碎碎念改悬浮气泡，与 reading_mutter/reflection_done 同路径） |
 | `dispatchEvent > activity_end → refresh 后按 activity_id 找产出 announce` | 功能正确 | `activity_end` → `refresh()` 后按 `activity_id` 找到完成活动，有产出则 `announce("activity", …)`（无产出静默） |
 | `dispatchEvent > reflection_done（story_is_new）→ 欲望 refresh + 气泡` | 功能正确 | `story_is_new=true` → `desireStore.refresh()` + `announceStore` 追加气泡「小狐狸我呀，反思了一下：…」 |
 | `dispatchEvent > reflection_done（story_is_new=false）→ 静默 refresh 不气泡` | 功能正确 | `story_is_new=false` → 仍 `desireStore.refresh()` 但 `announceStore` 空（静默刷新） |
-| `dispatchEvent > reading_mutter/question/association → readerStore.addReadingBubble` | 功能正确 | 三型阅读事件各触发 `readerStore.addReadingBubble` 1 次、透传原始事件对象（snake→camel 映射在 store 内做） |
+| `dispatchEvent > reading_question/association → chatStore.addReadingTurn；reading_mutter → announce(mutter)` | 功能正确 | `reading_question`/`reading_association` 各调 `chatStore.addReadingTurn` 1 次（透传原始事件对象）；`reading_mutter` → `announce("mutter", content)` 入 announceStore（读书提问/联想进对话、读书碎碎念归气泡） |
 | `isEmotionCategory > 枚举收窄` | 边界鲁棒 | 合法枚举（`happy`/`neutral`）→ true；非法字符串（`不存在`）/非字符串（`5`/`null`）→ false |
 
 ## frontend-client（REST 客户端：api/client.ts）
@@ -872,7 +871,6 @@
 | `chatStore.addReadingTurn > reading_question` | 功能正确 | `kind=reading_question` + `subtype`/`selectedText` 落字段 + `correlation_id=book_id`（读书 turn 用 `book_id` 当 correlation_id） |
 | `chatStore.addReadingTurn > reading_association` | 功能正确 | `kind=reading_association` + `memoryId` + `content=snippet` |
 | `chatStore.addReadingTurn > content 非 string 丢弃` | 边界鲁棒 | question 帧 `content` 非 string → 不进 `messages`（复用 append 收窄校验） |
-| `mutterStore.addMutter > 追加 {id,text}，reset 清空` | 功能正确 | `addMutter(id,text)` append `{id,text}`、`reset()` 清空（mutter 独立于 chatStore） |
 | `chatStore.addInitiateChat > unreadProactive=true + clearUnreadProactive 复位` | 功能正确 | 搭话入消息时置 `unreadProactive=true`（头像红点未读）；`clearUnreadProactive()` 复位 false |
 | `chatStore.reset > 复位 unreadProactive` | 功能正确 | 搭话置 true 后 `reset()` → `unreadProactive` 回 false（新会话清未读） |
 | `chatStore.sendMessage > 成功` | 功能正确 | mock fetch 断言 `POST /api/chat`、置 `isReplying=true` + `sendError=null` |
@@ -1018,13 +1016,6 @@
 | `Avatar > unreadProactive=true 显示徽标，点击清除` | 功能正确 | `unreadProactive=true` 渲染「小狐狸我有话对你说」徽标；点击 → `clearUnreadProactive` 置 false |
 | `Avatar > 戳立绘：戳一下害羞、连戳 5 次生气` | 功能正确 | 点击头像 → `announce("mutter", "呀！")`；连戳第 5 次 → `announce("mutter", "不要再戳了啦！")` |
 
-## frontend-mutter-card（碎碎念卡片：MutterCard 常驻显示最近碎碎念，数据源 mutterStore）
-
-| 测试 | 检查方向 | 断言内容 |
-|---|---|---|
-| `MutterCard > 显示最近 3 条碎碎念（最新在前）` | 功能正确 | mutterStore 5 条只渲染最近 3 条、倒序（`["第五条","第四条","第三条"]`） |
-| `MutterCard > 无碎碎念显示占位文案` | 边界鲁棒 | mutterStore 空 → 渲染占位「尼克斯安静地陪着你……」 |
-
 ## frontend-interactivity（交互性：常驻状态条 + 头像旁气泡 + 活动产出）
 
 | 测试 | 检查方向 | 断言内容 |
@@ -1051,8 +1042,6 @@
 | `announceStore > announce 追加临时气泡（kind/text 落 store、id 唯一）` | 功能正确 | `announce("mutter", …)` append `{kind,text}` 且两次 id 不同 |
 | `announceStore > dismiss 摘除指定 id，其余保留` | 功能正确 | `dismiss(id)` 后仅该 id 消失、其余保留 |
 | `announceStore > 到时自动 dismiss（按 kind 时长）` | 功能正确 | fake timers 推进 `ANNOUNCE_DURATION[kind]` 后 item 消失 |
-| `dispatch > mutter → mutterStore（不进 chatStore、不冒气泡）` | 功能正确 | `mutter` 事件进 mutterStore `{id,text}`，`chatStore`/`announceStore` 空（碎碎念彻底脱离聊天流，只进 MutterCard 常驻卡片） |
-| `dispatch > mutter 非 string content → addMutter 丢弃` | 回归保护 | `content=123` 的 mutter 帧：mutterStore 不 append（与 addMutter 收窄一致） |
 | `dispatch > activity_end → refresh 后按 activity_id 找到产出并 announce` | 功能正确 | `activity_end` 触发 `refresh()` 后，从 `data.schedule` 按 `activity_id` 找 completed 活动，`activityAnnouncement` 产出以 `kind="activity"` 进 announceStore |
 
 ## frontend-desires-panel（欲望面板：DesiresPanel 短期欲望过滤终态）

@@ -9,7 +9,6 @@ import DesiresPanel from "./components/panels/DesiresPanel";
 import MemoryPanel from "./components/panels/MemoryPanel";
 import BookshelfView from "./components/reading/BookshelfView";
 import ReaderView from "./components/reading/ReaderView";
-import MutterCard from "./components/shell/MutterCard";
 import RightDock, { type View } from "./components/shell/RightDock";
 import ScrollArea from "./components/shell/ScrollArea";
 import StatusBar from "./components/shell/StatusBar";
@@ -95,7 +94,6 @@ export default function App() {
 
       <main className="game-shell" style={shellStyle}>
         <StatusBar />
-        <MutterCard />
         <div className="game-main">
           {view === null ? (
             <ScrollArea />

@@ -6,7 +6,6 @@ import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
-import { useMutterStore } from "../src/stores/mutterStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
 import {
   catchupDurationMs,
@@ -212,25 +211,6 @@ describe("chatStore.addReadingTurn", () => {
       selected_text: null,
     });
     expect(useChatStore.getState().messages).toHaveLength(0);
-  });
-});
-
-describe("mutterStore", () => {
-  beforeEach(() => {
-    useMutterStore.setState({ mutters: [] });
-  });
-
-  it("addMutter 追加 {id,text}，reset 清空", () => {
-    useMutterStore.getState().addMutter("e1", "在想你");
-    useMutterStore.getState().addMutter("e2", "又想你");
-
-    expect(useMutterStore.getState().mutters).toEqual([
-      { id: "e1", text: "在想你" },
-      { id: "e2", text: "又想你" },
-    ]);
-
-    useMutterStore.getState().reset();
-    expect(useMutterStore.getState().mutters).toHaveLength(0);
   });
 });
 

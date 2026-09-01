@@ -9,8 +9,6 @@ import { useChatStore } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
-import { useMutterStore } from "../src/stores/mutterStore";
-import { useReaderStore } from "../src/stores/readerStore";
 import { isEmotionCategory } from "../src/types/api";
 import type {
   ActivitySnapshot,
@@ -161,7 +159,6 @@ describe("dispatchEvent", () => {
     useActivityStore.setState({ data: null, error: null });
     useMemoryStore.setState({ data: null, error: null });
     useAnnounceStore.setState({ items: [] });
-    useMutterStore.setState({ mutters: [] });
   });
 
   it("speak → chatStore（kind=speak）", () => {
@@ -279,7 +276,7 @@ describe("dispatchEvent", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it("mutter → mutterStore（不进 chatStore、不冒气泡）", () => {
+  it("mutter → announceStore（冒气泡，不进 chatStore）", () => {
     dispatchEvent({
       event: "mutter",
       event_id: "m1",
@@ -287,22 +284,12 @@ describe("dispatchEvent", () => {
       content: "在想你",
     });
 
-    expect(useMutterStore.getState().mutters).toEqual([
-      { id: "m1", text: "在想你" },
-    ]);
-    expect(useChatStore.getState().messages).toHaveLength(0);
-    expect(useAnnounceStore.getState().items).toHaveLength(0);
-  });
-
-  it("mutter 非 string content → addMutter 丢弃", () => {
-    dispatchEvent({
-      event: "mutter",
-      event_id: "m1",
-      correlation_id: "c1",
-      content: 123 as unknown as string,
+    expect(useAnnounceStore.getState().items).toHaveLength(1);
+    expect(useAnnounceStore.getState().items[0]).toMatchObject({
+      kind: "mutter",
+      text: "在想你",
     });
-
-    expect(useMutterStore.getState().mutters).toHaveLength(0);
+    expect(useChatStore.getState().messages).toHaveLength(0);
   });
 
   it("activity_end → refresh 后按 activity_id 找到产出并 announce", async () => {
@@ -379,9 +366,9 @@ describe("dispatchEvent", () => {
     expect(useAnnounceStore.getState().items).toHaveLength(0);
   });
 
-  it("reading_mutter/question/association → readerStore.addReadingBubble（透传原始事件）", () => {
-    const spy = vi
-      .spyOn(useReaderStore.getState(), "addReadingBubble")
+  it("reading_question/association → chatStore.addReadingTurn；reading_mutter → announce(mutter)", () => {
+    const addReadingTurnSpy = vi
+      .spyOn(useChatStore.getState(), "addReadingTurn")
       .mockImplementation(() => {});
 
     const mutter: ReadingMutterEvent = {
@@ -412,14 +399,15 @@ describe("dispatchEvent", () => {
       paragraph_index: 4,
     };
 
-    dispatchEvent(mutter);
     dispatchEvent(question);
     dispatchEvent(association);
+    dispatchEvent(mutter);
 
-    expect(spy).toHaveBeenCalledTimes(3);
-    expect(spy).toHaveBeenNthCalledWith(1, mutter);
-    expect(spy).toHaveBeenNthCalledWith(2, question);
-    expect(spy).toHaveBeenNthCalledWith(3, association);
+    expect(addReadingTurnSpy).toHaveBeenCalledTimes(2);
+    expect(addReadingTurnSpy).toHaveBeenNthCalledWith(1, question);
+    expect(addReadingTurnSpy).toHaveBeenNthCalledWith(2, association);
+    expect(useAnnounceStore.getState().items).toHaveLength(1);
+    expect(useAnnounceStore.getState().items[0]).toMatchObject({ kind: "mutter", text: "妙" });
   });
 });
 

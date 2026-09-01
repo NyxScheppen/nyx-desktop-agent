@@ -526,6 +526,14 @@ async def test_record_message_marks_fast() -> None:
     assert slow._history[-1].fast is False
 
 
+def test_record_proactive_turn_appends_to_history() -> None:
+    facade, *_ = _new_facade()
+    facade.record_proactive_turn("她在读书时问了个问题")
+    assert facade._history[-1].role == "nyx"
+    assert facade._history[-1].content == "她在读书时问了个问题"
+    assert facade._history[-1].fast is False
+
+
 async def test_reply_slow_backtrack_skips_fast_nyx() -> None:
     # 慢通道回溯：跳过快通道 nyx 消息、保留相关用户消息（端到端接线）
     facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(

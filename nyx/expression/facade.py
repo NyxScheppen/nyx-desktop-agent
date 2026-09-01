@@ -156,6 +156,10 @@ class ExpressionFacade:
         self._chat_at = time.time()
         return True
 
+    def record_proactive_turn(self, text: str) -> None:
+        """把 Nyx 主动产出（读书提问/联想）追加进会话历史，供后续 reply() 引用。"""
+        self._history.append(Message(role="nyx", content=text, timestamp=time.time()))
+
     async def mutter(self, state: CurrentState, correlation_id: str) -> None:
         """碎碎念：空闲 + 随机命中才发；低频走 LLM 即兴（走神），否则模板填空。
         无话可说 / 近期说过同一句则不发。"""

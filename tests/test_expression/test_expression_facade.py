@@ -551,6 +551,19 @@ async def test_reply_slow_backtrack_skips_fast_nyx() -> None:
     assert "Nyx：嗯嗯" not in think_user
 
 
+async def test_reading_turn_slow_backtrack_preserved() -> None:
+    # 读书 turn（fast=False）在慢通道回溯里保留——与
+    # test_reply_slow_backtrack_skips_fast_nyx 各证一半，
+    # （fast=True 跳 / fast=False 留）合起来闭合 fast 标志的唯一消费方契约。
+    facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=100.0, arousal=0.0
+    )
+    facade.record_proactive_turn("她刚才问：你觉得自由是什么")
+    await facade.reply("自由很虚无", "corr-bt")
+    think_user = _user_content([m for t, m, _c in llm.calls if t == "think"][0])
+    assert "Nyx：她刚才问：你觉得自由是什么" in think_user
+
+
 # ---- mutter ----
 
 

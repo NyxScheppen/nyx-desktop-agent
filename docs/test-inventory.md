@@ -869,6 +869,9 @@
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
 | `chatStore.add* > 5 个 action 转 ChatMessage` | 功能正确 | `addSpeak`/`addAsk`/`addThink`/`addInitiateChat`/`addUserMessage` 各断言 role/kind/content/correlation_id 且 append |
+| `chatStore.addReadingTurn > reading_question` | 功能正确 | `kind=reading_question` + `subtype`/`selectedText` 落字段 + `correlation_id=book_id`（读书 turn 用 `book_id` 当 correlation_id） |
+| `chatStore.addReadingTurn > reading_association` | 功能正确 | `kind=reading_association` + `memoryId` + `content=snippet` |
+| `chatStore.addReadingTurn > content 非 string 丢弃` | 边界鲁棒 | question 帧 `content` 非 string → 不进 `messages`（复用 append 收窄校验） |
 | `mutterStore.addMutter > 追加 {id,text}，reset 清空` | 功能正确 | `addMutter(id,text)` append `{id,text}`、`reset()` 清空（mutter 独立于 chatStore） |
 | `chatStore.addInitiateChat > unreadProactive=true + clearUnreadProactive 复位` | 功能正确 | 搭话入消息时置 `unreadProactive=true`（头像红点未读）；`clearUnreadProactive()` 复位 false |
 | `chatStore.reset > 复位 unreadProactive` | 功能正确 | 搭话置 true 后 `reset()` → `unreadProactive` 回 false（新会话清未读） |
@@ -884,9 +887,10 @@
 | `chatStore > 迟到回复清 sendError` | 功能正确 | 超时后（`sendError="回复超时"`）`addSpeak` 到达 → `sendError=null`（回复清超时残留） |
 | `chatStore > 非匹配 correlation 不清 timer` | 回归保护 | `addSpeak` 的 `correlation_id` ≠ `pendingId` → isReplying 保持 true、消息照常上屏、advance 60s 仍触发超时（防并发误清） |
 | `chatStore.reset > 新会话全清` | 功能正确 | `reset()` 复位 `messages/isReplying/sendError/typedIds` + 取消残留 timer（advance 60s 不触发超时） |
-| `chatStore.loadHistory > 升序前置 + preloaded + typedIds` | 功能正确 | 六类历史事件合并按 `timestamp` 升序前置、每条 `preloaded=true`、历史 think 入 `typedIds` |
+| `chatStore.loadHistory > 升序前置 + preloaded + typedIds` | 功能正确 | 七类历史事件合并按 `timestamp` 升序前置、每条 `preloaded=true`、历史 think 入 `typedIds` |
 | `chatStore.loadHistory > 已存在 id 去重` | 边界鲁棒 | 与现有 `messages` 撞 id 的历史消息不重复前置（`s1` 仅 1 条） |
 | `chatStore.loadHistory > getEventsLog 失败` | 边界鲁棒 | `getEventsLog` reject → best-effort 不抛、`messages` 不变 |
+| `chatStore.loadHistory > reading_question/association 历史回填` | 功能正确 | question 读 `content.content`、association 读 `content.snippet` + 回填 `subtype`/`selectedText`/`memoryId` |
 | `chatStore > markTyped + reset 清 typedIds` | 功能正确 | `markTyped("x")` 写入 `typedIds["x"]`；`reset()` 清空 `typedIds={}` |
 | `desireStore.refresh > GET /api/desires` | 功能正确 | mock fetch 断言端点 + `data` 落 store |
 | `activityStore.refresh > 并行 getActivity+getActivityResults` | 功能正确 | `fetch` 恰 2 次（`/api/activity` + `/api/activity/results`）→ `data`/`results` 双字段落 store |

@@ -1,5 +1,5 @@
-import { render } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ReaderView from "../src/components/reading/ReaderView";
 import { useReaderStore } from "../src/stores/readerStore";
 import type { Paragraph } from "../src/types/api";
@@ -12,8 +12,17 @@ const para = (index: number, text: string): Paragraph => ({
   is_chapter_start: index === 1,
 });
 
-describe("ReaderView 位置高亮", () => {
+describe("ReaderView 位置高亮（真分页）", () => {
   beforeEach(() => {
+    // jsdom 无 ResizeObserver：stub 空实现（viewportHeight 保持 0，分页返回空页，不影响类名断言）
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      },
+    );
     useReaderStore.setState({
       books: [],
       bookId: "b1",
@@ -29,10 +38,13 @@ describe("ReaderView 位置高亮", () => {
       userPosition: 3,
       nyxPosition: 5,
       readCount: 0,
-      impulseBubbles: [],
       notes: [],
       notesError: null,
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("当前段加 --current、Nyx 段加 --nyx，其余段无", () => {
@@ -42,11 +54,18 @@ describe("ReaderView 位置高亮", () => {
 
     expect(byText("三")?.className).toContain("reader-text__para--current");
     expect(byText("三")?.className).not.toContain("reader-text__para--nyx");
-
     expect(byText("五")?.className).toContain("reader-text__para--nyx");
     expect(byText("五")?.className).not.toContain("reader-text__para--current");
-
     expect(byText("二")?.className).not.toContain("reader-text__para--current");
     expect(byText("二")?.className).not.toContain("reader-text__para--nyx");
+  });
+
+  it("侧栏已拆：笔记入口在 footer、header 显示她/你读到第几段", () => {
+    render(<ReaderView />);
+    expect(document.querySelector(".reader-sidebar")).toBeNull(); // 侧栏已拆
+    expect(screen.getByRole("button", { name: "笔记" })).toBeInTheDocument(); // 笔记入口在 footer
+    const pos = document.querySelector(".reader__pos")?.textContent;
+    expect(pos).toContain("她读到第 5 段");
+    expect(pos).toContain("你读到第 3");
   });
 });

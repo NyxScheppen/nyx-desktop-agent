@@ -15,14 +15,11 @@ import {
 import type {
   BookListItem,
   Paragraph,
-  ReadingAssociationEvent,
-  ReadingMutterEvent,
-  ReadingQuestionEvent,
   UserNoteWithAnnotations,
 } from "../types/api";
 
 // 阅读系统唯一 store（06-reading-panel §3）：书架/进度/段落/追赶循环。
-// 冲动气泡 + 笔记见 07-reading-events，同属本 store（不拆 impulseStore/noteStore）。
+// 笔记见 07-reading-events，同属本 store（不拆 impulseStore/noteStore）。
 
 export type NyxStatus = "idle" | "reading" | "waiting"; // 派生态，不落 store
 
@@ -31,21 +28,7 @@ const MIN_CATCHUP_SEC = 1; // 段落未加载 / 过短时的保底节奏
 const MAX_CATCHUP_SEC = 30; // 单段追赶耗时上界
 const MIN_READING_SPEED = 10; // 字/秒，后端校验下界 [10, 200]（20-reading-progress）
 const CATCHUP_REFRESH_FRACTION = 0.8; // 窗口 80% 边界触发重拉
-const _BUBBLE_CAP = 20; // 气泡上限：溢出丢最旧（07 §2）
 export const GAP_PX = 12; // 段间距（px），对齐 CSS .reader-text__pages 的 gap: 0.75rem（08 §5.1）
-
-// 冲动气泡三态（07 §2）：对应三个 SSE 事件，字段各落对。
-export type ReadingBubbleKind = "mutter" | "question" | "association";
-export type ReadingBubble = {
-  id: string; // 事件 event_id
-  kind: ReadingBubbleKind;
-  bookId: string;
-  paragraphIndex: number;
-  content: string; // mutter/question 用 content；association 用 snippet
-  subtype?: "question_knowledge" | "question_personal" | "question_reflective" | "quote_question";
-  selectedText?: string | null;
-  memoryId?: string;
-};
 
 type ReaderState = {
   books: BookListItem[]; // 书架快照
@@ -58,7 +41,6 @@ type ReaderState = {
   nyxPosition: number; // Nyx 读到第几段（1-based）
   readingSpeed: number; // 字符/秒
   readCount: number; // 读完几遍（0=未读完，>=1 可重读）
-  impulseBubbles: ReadingBubble[]; // 冲动气泡（只收当前书，cap 20）
   notes: UserNoteWithAnnotations[]; // 用户笔记（含批注）
   notesError: string | null;
   loadBooks: () => Promise<void>;
@@ -70,7 +52,6 @@ type ReaderState = {
   stopCatchup: () => void;
   advanceNyx: () => void;
   reread: () => Promise<void>;
-  addReadingBubble: (e: ReadingMutterEvent | ReadingQuestionEvent | ReadingAssociationEvent) => void;
   loadNotes: () => Promise<void>;
   addNote: (p: { book_id: string; paragraph_id?: string | null; content: string; selected_text?: string | null }) => Promise<void>;
   updateNote: (id: string, content: string) => Promise<void>;
@@ -178,7 +159,6 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     nyxPosition: 1,
     readingSpeed: 50,
     readCount: 0,
-    impulseBubbles: [],
     notes: [],
     notesError: null,
 
@@ -223,7 +203,6 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         userPosition: 1,
         nyxPosition: 1,
         readCount: 0,
-        impulseBubbles: [],
         notes: [],
         notesError: null,
       });
@@ -315,46 +294,6 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         reading_speed: readingSpeed,
       }).catch(() => {});
       await fetchWindow(bookId, 1, totalParagraphs, false);
-    },
-
-    // 只收当前书事件（非当前书丢弃，避免书架切换后旧书气泡串场）；append + cap 丢最旧。
-    addReadingBubble: (e) => {
-      if (e.book_id !== get().bookId) return;
-      let bubble: ReadingBubble;
-      switch (e.event) {
-        case "reading_mutter":
-          bubble = {
-            id: e.event_id,
-            kind: "mutter",
-            bookId: e.book_id,
-            paragraphIndex: e.paragraph_index,
-            content: e.content,
-          };
-          break;
-        case "reading_question":
-          bubble = {
-            id: e.event_id,
-            kind: "question",
-            bookId: e.book_id,
-            paragraphIndex: e.paragraph_index,
-            content: e.content,
-            subtype: e.subtype,
-            selectedText: e.selected_text,
-          };
-          break;
-        case "reading_association":
-          bubble = {
-            id: e.event_id,
-            kind: "association",
-            bookId: e.book_id,
-            paragraphIndex: e.paragraph_index,
-            content: e.snippet,
-            memoryId: e.memory_id,
-          };
-          break;
-      }
-      const next = [...get().impulseBubbles, bubble];
-      set({ impulseBubbles: next.slice(-_BUBBLE_CAP) });
     },
 
     loadNotes: async () => {

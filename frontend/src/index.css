@@ -1140,12 +1140,16 @@ body {
 .reader-text {
   flex: 1;
   min-width: 0;
-  overflow-y: auto;
+  overflow: hidden; /* 真分页：无滚动条、无滚轮（08 §5） */
+  position: relative;
+}
+
+.reader-text__pages {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding-right: 0.25rem;
-  position: relative; /* 使子段 offsetTop 相对本滚动容器（onScroll 定位用） */
+  gap: 0.75rem; /* = GAP_PX（12px） */
+  transition: transform 0.3s ease;
+  will-change: transform;
 }
 
 .reader-text__para {
@@ -1157,7 +1161,7 @@ body {
 }
 
 .reader-text__para--chapter {
-  margin-top: 1.5rem;
+  padding-top: 1.5rem;
   font-size: 1.15rem;
   font-weight: 600;
 }
@@ -1178,97 +1182,6 @@ body {
   display: flex;
   gap: 0.5rem;
   flex-shrink: 0;
-}
-
-.reader-sidebar {
-  flex-shrink: 0;
-  width: 180px;
-  align-self: flex-start;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  border-radius: 4px;
-  background: var(--parchment-deep);
-}
-
-.reader-sidebar__title {
-  font-size: 0.9rem;
-  color: var(--accent);
-  letter-spacing: 1px;
-}
-
-.reader-sidebar__status {
-  font-size: 0.8rem;
-  color: var(--ink);
-}
-
-.reader-sidebar__pos {
-  font-size: 0.75rem;
-  color: var(--ink-soft);
-  line-height: 1.6;
-}
-
-.reader-sidebar__progress {
-  height: 0.4rem;
-  background: var(--parchment);
-  border-radius: 0.2rem;
-  overflow: hidden;
-}
-
-.reader-sidebar__progress-fill {
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.3s ease;
-}
-
-/* ===== 读书：冲动气泡（07-reading-events §2） ===== */
-.reader-sidebar__bubbles {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  max-height: 12rem;
-  overflow-y: auto;
-}
-
-.reader-bubble {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  padding: 0.3rem 0.45rem;
-  border-left: 2px solid var(--gold);
-  background: var(--parchment);
-  border-radius: 0.2rem;
-  font-size: 0.72rem;
-  line-height: 1.5;
-}
-
-.reader-bubble__label {
-  font-size: 0.62rem;
-  letter-spacing: 1px;
-  color: var(--gold);
-}
-
-.reader-bubble--mutter .reader-bubble__text {
-  font-style: italic;
-  color: var(--ink-soft);
-}
-
-.reader-bubble--question {
-  border-left-color: var(--accent);
-  background: var(--parchment-deep);
-}
-
-.reader-bubble--association .reader-bubble__label {
-  display: inline-block;
-  align-self: flex-start;
-  padding: 0 0.3rem;
-  border: 1px solid var(--gold);
-  border-radius: 0.2rem;
-}
-
-.reader-bubble__text {
-  color: var(--ink);
 }
 
 /* ===== 读书：笔记面板（07-reading-events §3） ===== */

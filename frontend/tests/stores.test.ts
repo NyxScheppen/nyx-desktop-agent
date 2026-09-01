@@ -20,9 +20,6 @@ import type {
   BookListItem,
   CurrentState,
   Paragraph,
-  ReadingAssociationEvent,
-  ReadingMutterEvent,
-  ReadingQuestionEvent,
 } from "../src/types/api";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
@@ -760,7 +757,6 @@ describe("readerStore", () => {
       nyxPosition: 1,
       readingSpeed: 50,
       readCount: 0,
-      impulseBubbles: [],
       notes: [],
       notesError: null,
     });
@@ -1072,92 +1068,6 @@ describe("readerStore", () => {
     expect(s.paragraphs).toEqual([]);
     expect(s.userPosition).toBe(1);
     expect(s.nyxPosition).toBe(1);
-  });
-
-  // ---- 气泡（07 §2） ----
-  const mutterEvent: ReadingMutterEvent = {
-    event_id: "e1",
-    correlation_id: "b1",
-    event: "reading_mutter",
-    content: "这句写得真好",
-    book_id: "b1",
-    paragraph_index: 3,
-  };
-  const questionEvent: ReadingQuestionEvent = {
-    event_id: "e2",
-    correlation_id: "b1",
-    event: "reading_question",
-    content: "为什么？",
-    subtype: "question_reflective",
-    book_id: "b1",
-    paragraph_index: 4,
-    selected_text: null,
-  };
-  const associationEvent: ReadingAssociationEvent = {
-    event_id: "e3",
-    correlation_id: "b1",
-    event: "reading_association",
-    memory_id: "m1",
-    snippet: "片段",
-    book_id: "b1",
-    paragraph_index: 5,
-  };
-
-  it("addReadingBubble：非当前书事件丢弃", () => {
-    useReaderStore.setState({ bookId: "b1" });
-    useReaderStore
-      .getState()
-      .addReadingBubble({ ...mutterEvent, book_id: "b2", correlation_id: "b2" });
-
-    expect(useReaderStore.getState().impulseBubbles).toEqual([]);
-  });
-
-  it("addReadingBubble：kind 映射 + 字段各落对", () => {
-    useReaderStore.setState({ bookId: "b1" });
-    const s = useReaderStore.getState();
-    s.addReadingBubble(mutterEvent);
-    s.addReadingBubble(questionEvent);
-    s.addReadingBubble(associationEvent);
-
-    const bubbles = useReaderStore.getState().impulseBubbles;
-    expect(bubbles).toHaveLength(3);
-    expect(bubbles[0]).toEqual({
-      id: "e1",
-      kind: "mutter",
-      bookId: "b1",
-      paragraphIndex: 3,
-      content: "这句写得真好",
-    });
-    expect(bubbles[1]).toEqual({
-      id: "e2",
-      kind: "question",
-      bookId: "b1",
-      paragraphIndex: 4,
-      content: "为什么？",
-      subtype: "question_reflective",
-      selectedText: null,
-    });
-    expect(bubbles[2]).toEqual({
-      id: "e3",
-      kind: "association",
-      bookId: "b1",
-      paragraphIndex: 5,
-      content: "片段",
-      memoryId: "m1",
-    });
-  });
-
-  it("addReadingBubble：cap 到 20 溢出丢最旧", () => {
-    useReaderStore.setState({ bookId: "b1" });
-    const s = useReaderStore.getState();
-    for (let i = 1; i <= 25; i++) {
-      s.addReadingBubble({ ...mutterEvent, event_id: `e${i}`, content: `c${i}` });
-    }
-
-    const bubbles = useReaderStore.getState().impulseBubbles;
-    expect(bubbles).toHaveLength(20);
-    expect(bubbles[0].id).toBe("e6"); // 最旧 5 条被丢
-    expect(bubbles[19].id).toBe("e25");
   });
 
   // ---- 笔记（07 §3） ----

@@ -3,7 +3,6 @@ import { getEventsLog, postChat } from "../api/client";
 import type {
   BackendEvent,
   QuestionSubtype,
-  ReadingAssociationEvent,
   ReadingQuestionEvent,
   TextEvent,
   TextEventType,
@@ -15,14 +14,13 @@ export type ChatMessage = {
   role: "user" | "nyx";
   kind:
     | "message" | "speak" | "ask" | "think" | "initiate_chat"
-    | "reading_question" | "reading_association";
+    | "reading_question";
   content: string;
   correlation_id: string;
   preloaded?: boolean; // 历史回填消息：渲染时不逐字
-  // 读书 turn 专属（kind==="reading_question" 才有 subtype/selectedText；"reading_association" 才有 memoryId）
+  // 读书 turn 专属（kind==="reading_question" 才有 subtype/selectedText）
   subtype?: QuestionSubtype;
   selectedText?: string | null;
-  memoryId?: string;
 };
 
 type ChatState = {
@@ -36,7 +34,7 @@ type ChatState = {
   addAsk: (e: TextEvent<"ask">) => void;
   addThink: (e: TextEvent<"think">) => void;
   addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
-  addReadingTurn: (e: ReadingQuestionEvent | ReadingAssociationEvent) => void;
+  addReadingTurn: (e: ReadingQuestionEvent) => void;
   clearUnreadProactive: () => void;
   markTyped: (id: string) => void;
   loadHistory: () => Promise<void>; // 挂载时回填 GET /api/events/log 的历史消息（preloaded，不逐字）
@@ -52,21 +50,15 @@ const HISTORY_TYPES = [
   "think",
   "initiate_chat",
   "reading_question",
-  "reading_association",
 ] as const;
-const HISTORY_LIMIT = 200; // 每类型拉取上限（够覆盖长会话，超出裁旧）
+const HISTORY_LIMIT = 5000; // 每类型拉取上限（大上限折中：覆盖长会话、后端不动）
 
 // BackendEvent（event_log）→ ChatMessage：user_message 读 content.message、文本事件读 content.content。
 // 字段非 string 则丢弃（与 append 一致的收窄校验，01-sse §4.1）。
 function toChatMessage(e: BackendEvent): ChatMessage | null {
   const isUser = e.type === "user_message";
   const isQuestion = e.type === "reading_question";
-  const isAssociation = e.type === "reading_association";
-  const raw = isUser
-    ? e.content.message
-    : isAssociation
-      ? e.content.snippet
-      : e.content.content;
+  const raw = isUser ? e.content.message : e.content.content;
   if (typeof raw !== "string") return null;
   const msg: ChatMessage = {
     id: e.id,
@@ -79,9 +71,6 @@ function toChatMessage(e: BackendEvent): ChatMessage | null {
   if (isQuestion) {
     msg.subtype = e.content.subtype as QuestionSubtype;
     msg.selectedText = e.content.selected_text as string | null;
-  }
-  if (isAssociation) {
-    msg.memoryId = e.content.memory_id as string;
   }
   return msg;
 }
@@ -149,39 +138,21 @@ export const useChatStore = create<ChatState>((set, get) => {
       append(e, "nyx", "initiate_chat");
       set({ unreadProactive: true });
     },
-    // 读书提问/联想并进对话（08 §2.2）：correlation_id = book_id（后端用 book_id 当 correlation_id），
+    // 读书提问并进对话（08 §2.2）：correlation_id = book_id（后端用 book_id 当 correlation_id），
     // 不过滤当前书（永久聊天消息，关书后仍留转录）；文本字段非 string 丢弃（复用 append 收窄）。
     addReadingTurn: (e) => {
-      if (e.event === "reading_question") {
-        if (typeof e.content !== "string") return;
-        set((s) => ({
-          messages: [
-            ...s.messages,
-            {
-              id: e.event_id,
-              role: "nyx",
-              kind: "reading_question",
-              content: e.content,
-              correlation_id: e.book_id,
-              subtype: e.subtype,
-              selectedText: e.selected_text,
-            },
-          ],
-        }));
-        return;
-      }
-      // reading_association
-      if (typeof e.snippet !== "string") return;
+      if (typeof e.content !== "string") return;
       set((s) => ({
         messages: [
           ...s.messages,
           {
             id: e.event_id,
             role: "nyx",
-            kind: "reading_association",
-            content: e.snippet,
+            kind: "reading_question",
+            content: e.content,
             correlation_id: e.book_id,
-            memoryId: e.memory_id,
+            subtype: e.subtype,
+            selectedText: e.selected_text,
           },
         ],
       }));

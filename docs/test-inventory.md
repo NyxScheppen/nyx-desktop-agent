@@ -849,7 +849,7 @@
 | `dispatchEvent > activity_end → refresh 后按 activity_id 找产出 announce` | 功能正确 | `activity_end` → `refresh()` 后按 `activity_id` 找到完成活动，有产出则 `announce("activity", …)`（无产出静默） |
 | `dispatchEvent > reflection_done（story_is_new）→ 欲望 refresh + 气泡` | 功能正确 | `story_is_new=true` → `desireStore.refresh()` + `announceStore` 追加气泡「小狐狸我呀，反思了一下：…」 |
 | `dispatchEvent > reflection_done（story_is_new=false）→ 静默 refresh 不气泡` | 功能正确 | `story_is_new=false` → 仍 `desireStore.refresh()` 但 `announceStore` 空（静默刷新） |
-| `dispatchEvent > reading_question/association → chatStore.addReadingTurn；reading_mutter → announce(mutter)` | 功能正确 | `reading_question`/`reading_association` 各调 `chatStore.addReadingTurn` 1 次（透传原始事件对象）；`reading_mutter` → `announce("mutter", content)` 入 announceStore（读书提问/联想进对话、读书碎碎念归气泡） |
+| `dispatchEvent > reading_question → chatStore.addReadingTurn；reading_association 静默丢弃；reading_mutter → announce(mutter)` | 功能正确 | `reading_question` 调 `chatStore.addReadingTurn` 1 次（透传原始事件对象）；`reading_association` 静默丢弃不进对话；`reading_mutter` → `announce("mutter", content)` 入 announceStore（读书提问进对话、联想丢弃、读书碎碎念归气泡） |
 | `isEmotionCategory > 枚举收窄` | 边界鲁棒 | 合法枚举（`happy`/`neutral`）→ true；非法字符串（`不存在`）/非字符串（`5`/`null`）→ false |
 
 ## frontend-client（REST 客户端：api/client.ts）
@@ -888,7 +888,6 @@
 |---|---|---|
 | `chatStore.add* > 5 个 action 转 ChatMessage` | 功能正确 | `addSpeak`/`addAsk`/`addThink`/`addInitiateChat`/`addUserMessage` 各断言 role/kind/content/correlation_id 且 append |
 | `chatStore.addReadingTurn > reading_question` | 功能正确 | `kind=reading_question` + `subtype`/`selectedText` 落字段 + `correlation_id=book_id`（读书 turn 用 `book_id` 当 correlation_id） |
-| `chatStore.addReadingTurn > reading_association` | 功能正确 | `kind=reading_association` + `memoryId` + `content=snippet` |
 | `chatStore.addReadingTurn > content 非 string 丢弃` | 边界鲁棒 | question 帧 `content` 非 string → 不进 `messages`（复用 append 收窄校验） |
 | `chatStore.addInitiateChat > unreadProactive=true + clearUnreadProactive 复位` | 功能正确 | 搭话入消息时置 `unreadProactive=true`（头像红点未读）；`clearUnreadProactive()` 复位 false |
 | `chatStore.reset > 复位 unreadProactive` | 功能正确 | 搭话置 true 后 `reset()` → `unreadProactive` 回 false（新会话清未读） |
@@ -907,7 +906,7 @@
 | `chatStore.loadHistory > 升序前置 + preloaded + typedIds` | 功能正确 | 七类历史事件合并按 `timestamp` 升序前置、每条 `preloaded=true`、历史 think 入 `typedIds` |
 | `chatStore.loadHistory > 已存在 id 去重` | 边界鲁棒 | 与现有 `messages` 撞 id 的历史消息不重复前置（`s1` 仅 1 条） |
 | `chatStore.loadHistory > getEventsLog 失败` | 边界鲁棒 | `getEventsLog` reject → best-effort 不抛、`messages` 不变 |
-| `chatStore.loadHistory > reading_question/association 历史回填` | 功能正确 | question 读 `content.content`、association 读 `content.snippet` + 回填 `subtype`/`selectedText`/`memoryId` |
+| `chatStore.loadHistory > reading_question 历史回填` | 功能正确 | question 读 `content.content` + 回填 `subtype`/`selectedText` |
 | `chatStore > markTyped + reset 清 typedIds` | 功能正确 | `markTyped("x")` 写入 `typedIds["x"]`；`reset()` 清空 `typedIds={}` |
 | `desireStore.refresh > GET /api/desires` | 功能正确 | mock fetch 断言端点 + `data` 落 store |
 | `activityStore.refresh > 并行 getActivity+getActivityResults` | 功能正确 | `fetch` 恰 2 次（`/api/activity` + `/api/activity/results`）→ `data`/`results` 双字段落 store |
@@ -999,7 +998,6 @@
 | `MessageBubble > initiate_chat → 带「欲望搭话」标记 + 逐字 content` | 功能正确 | initiate_chat 气泡带「欲望搭话」badge；content 经 `typeDone()` 逐字上屏 |
 | `MessageBubble > user message → 右气泡 class` | 功能正确 | 用户消息带 `message-bubble--user` class |
 | `MessageBubble > reading_question → 「提问」徽标 + 即时全量 + selectedText 引文行` | 功能正确 | `reading_question` 气泡 content 即时全量（`为什么？` 无需 `typeDone()`）；「提问」带 `message-bubble__badge` class；`selectedText` 渲染 `原文：「划线句」` 且带 `message-bubble__quote` class |
-| `MessageBubble > reading_association → 「联想」徽标 + memoryId → 「记忆」标` | 功能正确 | `reading_association` 气泡 content 即时全量（`片段`）；「联想」带 `message-bubble__badge` class；`memoryId` 非空时渲染「记忆」且带 `message-bubble__memory` class |
 | `MessageList > 全部消息按序渲染，无历史折叠` | 功能正确 | 两条消息 `typeDone()` 后都上屏（微信式：不再只显示一条 / 折叠历史）；`queryByRole("button")` 无历史按钮 |
 | `MessageList > 全部气泡渲染即存在（串行门控只延迟内容，不延迟挂载）` | 功能正确 | 两条 nyx 消息渲染即 `.message-bubble` 数量 = 2（打字中 content 渐显但气泡已挂载，串行门控只延迟内容） |
 | `MessageList > 串行逐字：内心话先打完、对话才开打` | 功能正确 | think 在前、speak 在后：未推进 timer 两者皆空（think 刚开打、speak 等前置打完）；`typeDone()` 后 think→speak 串行完整上屏 |

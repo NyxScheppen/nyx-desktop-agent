@@ -19,7 +19,7 @@
 - [ ] **当前消息在 prompt 里只出现一次**：`reply` 入口回溯的 `context` 不含当前消息（当前消息尚未进 history），`build_user_prompt` 里它只作为「本次消息」
 - [ ] **慢通道回溯截断**：慢通道 `assemble` 调 `build_backtrack_context` 重截断 context——命中「满 max_len / 相邻隔超 `context_time_gap` / 与当前消息零字符重叠」即停，快通道 Nyx 消息（`fast=True`）跳过继续往前；快通道保持入口朴素取最近 `max_context_len` 条
 - [ ] **累积式 prompt**：第 N 轮 think 的 user prompt 含前 N-1 轮 think/speak；第 N 轮 speak 的 user prompt 含前 N-1 轮 think/speak + 本轮 think
-- [ ] **慢通道递进续写**：首轮 think/speak 是「先想此刻的念头 / 先说出一句」，第 2 轮起的 think/speak 任务指令切换为「再往里想一层 / 再往下说一句」，不重复、不重新回答
+- [ ] **慢通道递进续写**：首轮 think/speak 是「先想此刻的念头 / 先说出一句」，第 2 轮起的 think/speak 任务指令切换为「再往里想一层 / 再往下说一句」，不重复、不重新回答；think 任务指令要求内心话用第一人称「我」写，不用「她」或「尼克斯」自称
 - [ ] 每个 LLM 产出（tool / think / speak / initiate_chat / mutter_wander）后紧跟 `await evaluator.evaluate(output)`；`output_type` 分别 `tool` / `think` / `speak` / `initiate_chat` / `mutter_wander`、`module="expression"`、`correlation_id` 透传
 - [ ] `initiate_chat` 返回 `bool`（发话 True / 无话 False），供 18-api 维护 `last_chat_at`；发话开场白 append 进 `_history`（`role="nyx"`），用户随后回复能回溯到这句搭话；`mutter` 返回 `None`（无状态依赖）
 - [ ] 事件发布：`think` / `speak` / `ask` / `mutter` / `initiate_chat` 全部 `content={"content": 文本}`、`source=INTERNAL`、`correlation_id` 接上游

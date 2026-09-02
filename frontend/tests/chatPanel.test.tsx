@@ -97,26 +97,6 @@ describe("MessageBubble", () => {
     expect(screen.getByText("提问")).toHaveClass("message-bubble__badge");
     expect(screen.getByText("原文：「划线句」")).toHaveClass("message-bubble__quote");
   });
-
-  it("reading_association → 「联想」徽标 + memoryId → 「记忆」标", () => {
-    render(
-      <MessageBubble
-        message={{
-          id: "a1",
-          role: "nyx",
-          kind: "reading_association",
-          content: "片段",
-          correlation_id: "b1",
-          memoryId: "m1",
-        }}
-        ready
-        onTyped={() => {}}
-      />,
-    );
-    expect(screen.getByText("片段")).toBeInTheDocument();
-    expect(screen.getByText("联想")).toHaveClass("message-bubble__badge");
-    expect(screen.getByText("记忆")).toHaveClass("message-bubble__memory");
-  });
 });
 
 describe("MessageList", () => {

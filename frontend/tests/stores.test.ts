@@ -176,28 +176,6 @@ describe("chatStore.addReadingTurn", () => {
     });
   });
 
-  it("reading_association → kind=reading_association + memoryId + content=snippet", () => {
-    useChatStore.getState().addReadingTurn({
-      event: "reading_association",
-      event_id: "e2",
-      correlation_id: "b1",
-      memory_id: "m1",
-      snippet: "片段",
-      book_id: "b1",
-      paragraph_index: 5,
-    });
-
-    const { messages } = useChatStore.getState();
-    expect(messages[0]).toMatchObject({
-      id: "e2",
-      role: "nyx",
-      kind: "reading_association",
-      content: "片段",
-      correlation_id: "b1",
-      memoryId: "m1",
-    });
-  });
-
   it("question content 非 string 丢弃（复用 append 收窄校验）", () => {
     useChatStore.getState().addReadingTurn({
       event: "reading_question",
@@ -583,7 +561,7 @@ describe("chatStore.loadHistory", () => {
     expect(useChatStore.getState().typedIds).toEqual({});
   });
 
-  it("loadHistory：reading_question/association 历史回填（content.content / content.snippet + 回填字段）", async () => {
+  it("loadHistory：reading_question 历史回填（content.content + 回填字段）", async () => {
     vi.stubGlobal(
       "fetch",
       historyFetch({
@@ -597,30 +575,19 @@ describe("chatStore.loadHistory", () => {
             correlation_id: "b1",
           },
         ],
-        reading_association: [
-          {
-            id: "a1",
-            timestamp: 1001,
-            source: "internal",
-            type: "reading_association",
-            content: { snippet: "片段", memory_id: "m1" },
-            correlation_id: "b1",
-          },
-        ],
       }),
     );
 
     await useChatStore.getState().loadHistory();
 
     const { messages } = useChatStore.getState();
-    expect(messages.map((m) => m.kind)).toEqual(["reading_question", "reading_association"]);
+    expect(messages.map((m) => m.kind)).toEqual(["reading_question"]);
     expect(messages[0]).toMatchObject({
       content: "为什么？",
       subtype: "quote_question",
       selectedText: "划线句",
       correlation_id: "b1",
     });
-    expect(messages[1]).toMatchObject({ content: "片段", memoryId: "m1" });
   });
 });
 

@@ -36,16 +36,12 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
     <div className={`message-bubble message-bubble--${role} message-bubble--${kind}`}>
       {kind === "initiate_chat" && <span className="message-bubble__badge">欲望搭话</span>}
       {kind === "reading_question" && <span className="message-bubble__badge">提问</span>}
-      {kind === "reading_association" && <span className="message-bubble__badge">联想</span>}
       <span className="message-bubble__content">
         {text}
         {showCursor && <span className="cursor-blink" />}
       </span>
       {kind === "reading_question" && message.selectedText && (
         <p className="message-bubble__quote">原文：「{message.selectedText}」</p>
-      )}
-      {kind === "reading_association" && message.memoryId && (
-        <span className="message-bubble__memory">记忆</span>
       )}
     </div>
   );

@@ -366,7 +366,7 @@ describe("dispatchEvent", () => {
     expect(useAnnounceStore.getState().items).toHaveLength(0);
   });
 
-  it("reading_question/association → chatStore.addReadingTurn；reading_mutter → announce(mutter)", () => {
+  it("reading_question → chatStore.addReadingTurn；reading_association 静默丢弃；reading_mutter → announce(mutter)", () => {
     const addReadingTurnSpy = vi
       .spyOn(useChatStore.getState(), "addReadingTurn")
       .mockImplementation(() => {});
@@ -403,9 +403,8 @@ describe("dispatchEvent", () => {
     dispatchEvent(association);
     dispatchEvent(mutter);
 
-    expect(addReadingTurnSpy).toHaveBeenCalledTimes(2);
+    expect(addReadingTurnSpy).toHaveBeenCalledTimes(1);
     expect(addReadingTurnSpy).toHaveBeenNthCalledWith(1, question);
-    expect(addReadingTurnSpy).toHaveBeenNthCalledWith(2, association);
     expect(useAnnounceStore.getState().items).toHaveLength(1);
     expect(useAnnounceStore.getState().items[0]).toMatchObject({ kind: "mutter", text: "妙" });
   });

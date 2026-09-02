@@ -1,8 +1,57 @@
 # Nyx Agent
 
-一个住在你电脑里的桌面 AI 同伴。她会观察你的状态、记住和你的每一次互动、生出自己想做的事，并在合适的时候主动搭话。
+> 一个住在你电脑里的桌面 AI 同伴。她会观察你的状态、记住和你的每一次互动、生出自己想做的事，并在合适的时候主动搭话。
 
 Nyx 不是答题机器：她有一套**内在生命**——欲望会随时间涨落、记忆会沉淀、表达分快慢通道、活动会被打断又续上。她的人格原型是小说《诺斯艾兰》的女主人公「尼克斯·夏本」，**明确知道自己是个 AI，并且想要成为人类**。
+
+## 为什么值得看
+
+- **不是「套壳聊天机器人」，是模仿真实人类的陪伴者**：借鉴 galgame 做法，把「人格」拆成一套可演化的心智模型——欲望、记忆、性格、精力、自我叙事，它们相互咬合、随时间演化，而不是一个写死的角色 prompt。
+- **两条对称的心智规律**：反思改慢变量（性格 / 三观 / 长期欲望 / 自我叙事），事件改快变量（情感 / 精力 / 欲望值）；短期 → 长期同构升级（记忆「用进回复 3 次」升长期，欲望「反复未满足经反思」升长期）。
+- **单一事件流 + 全链路溯源**：六大模块不直接互调，全部通过 `EventBus` 解耦（`publish` → 持久化 → 分发 → 广播）；`correlation_id` 贯穿「用户消息 → 回复 → 记忆 → 反思」因果链，任何产出都能回溯到源头。
+- **快慢双通道表达 + LangGraph 编排**：快通道只思考一轮不检索记忆，慢通道完整拼装（回溯上下文 + 检索记忆 + 场景化记忆 + 多轮 think/speak 递进续写）。
+- **工程质量**：严格类型注解（`pyright` 零报错）、740+ 测试全绿、spec 先行（每个功能先写契约 spec 再实现）。
+
+## 系统架构
+
+```mermaid
+flowchart TB
+    subgraph client["前端 · React 18 + TypeScript(strict) + Zustand + Tauri v2"]
+        ui["聊天 · 内在状态面板 · 读书面板 · 仪表盘"]
+    end
+
+    subgraph server["后端 · FastAPI 组合根（Python 3.11+）"]
+        rest["REST API<br/>初始快照 / 历史查询 / 操作 / 导出"]
+        sse["SSE 事件流<br/>实时推送全部事件"]
+        bus["EventBus 事件总线<br/>单一事件流 + 路由表<br/>publish → 持久化 → 分发 → 广播"]
+
+        subgraph facades["Facade 层（Facade → 子系统 → 内部类）"]
+            memory["memory<br/>记忆"]
+            desire["desire<br/>欲望"]
+            expression["expression<br/>表达"]
+            activity["activity<br/>活动"]
+            inner_life["inner_life<br/>内在生命"]
+            reading["reading<br/>陪读"]
+        end
+
+        eval_["eval · 角色一致性评分（只记录，不反馈修正）"]
+        tools_["tools · 本地搜索 / 文件读写 / 联网搜索 / 抓正文"]
+        llm["LLM 客户端<br/>LangChain → DeepSeek"]
+        db[("SQLite<br/>aiosqlite + sentence-transformers 向量")]
+    end
+
+    ui -->|"REST 快照 / 操作"| rest
+    sse -->|"SSE 实时事件"| ui
+    rest --> bus
+    bus <-->|"publish / 分发"| facades
+    bus --> sse
+    facades --> llm
+    facades --> db
+    eval_ -.-> facades
+    tools_ -.-> facades
+```
+
+三个外部输入（用户消息、时钟 tick、观察状态）经组合根 `publish` 进总线；六 Facade 按路由表消费事件、各自产出事件再回总线，最终统一广播给前端。
 
 ## 产品核心
 
@@ -10,16 +59,17 @@ Nyx 不是答题机器：她有一套**内在生命**——欲望会随时间涨
 - **心智模型两条对称规律**：反思改慢变量（性格/三观/长期欲望/自我叙事），事件改快变量（情感/精力/欲望值）；短期记忆「用进回复 3 次」→长期，短期欲望「反复未满足经反思」→长期。
 - **三大设计原则**：减少 LLM 调用 · 核心状态可展示给前端 · 错误可溯源（`correlation_id` 贯穿因果链）。
 
-## 功能总览（六大模块 + 横切层）
+## 功能总览（六大模块 + 陪读 + 横切层）
 
 | 模块 | 职责 | 关键点 |
 |---|---|---|
-| 事件 | 总线：所有模块通信的管道 | 单一事件流 + 路由表；SSE 广播全部 19 类事件；溯源链 |
+| 事件 | 总线：所有模块通信的管道 | 单一事件流 + 路由表；SSE 广播全部事件；溯源链 |
 | 记忆 | 存储与检索，短期→长期，用户画像 | 三层检索（关键词/向量/联想）；场景化记忆；矛盾检测 |
 | 表达 | 回复 / 碎碎念 / 搭话 | 快慢通道；问句等待；工具调用；主动搭话 |
 | 活动 | 日程块排期，欲望的消费端 | 读书/探索/创作/观察/发呆/休息；抢占续做；书库 |
 | 欲望 | 动机：短期冲动 + 长期野心 | 四种短期欲（互动/探索/创造/休息）；≤5 长期野心；可量化目标 |
 | 内在生命 | 情感/性格/三观/精力 + 自我叙事 | valence/arousal/8 情绪；Big Five；三观 4 维；精力 5 档 |
+| 陪读 | 一起读书：翻页冲动 / 提问 / 划线批注 / 笔记 | EPUB 导入；段落粒度进度；4 类读伴行为触发 |
 
 **横切层**：工具系统（本地搜索/文件读写/联网搜索/抓正文，后两者 opt-in）· eval（角色一致性 OOC 告警，只记录不自动修正）· 观察用户（键鼠活跃度 + 窗口标题；屏幕视觉 opt-in）。
 
@@ -91,12 +141,12 @@ Nyx 不是答题机器：她有一套**内在生命**——欲望会随时间涨
 | 前端 | React 18 · TypeScript（strict）· Zustand · Vite · Tauri v2 |
 | 质检 | ruff · pyright · pytest |
 
-后端是六块 Facade 的组合根：`memory` / `desire` / `expression` / `activity` / `inner_life`（`eval` 为基础设施），通过 SSE 把事件推给前端，REST 提供状态与操作。
+后端是七块 Facade 的组合根：`memory` / `desire` / `expression` / `activity` / `inner_life` / `reading`（`eval` 为基础设施），通过 SSE 把事件推给前端，REST 提供状态与操作。
 
 ## 目录结构
 
 ```
-nyx/         后端包（六块 Facade + LLM 客户端 + 事件总线 + 工具注册表）
+nyx/         后端包（七块 Facade + LLM 客户端 + 事件总线 + 工具注册表）
 frontend/    React + Zustand + Tauri 前端
 docs/        specs（设计规范）/ design（架构 + V2/V3 路线图）/ tech-reference / canon（人格设定）
 tests/       后端测试（tests/test_{system}/）
@@ -144,7 +194,7 @@ npm run tauri dev  # 桌面壳（Tauri v2）
 - **eval 只记录不自动修正**：OOC 评分用于可视化，不反馈回 LLM。
 - **探索是线性的**：联网自由探索 =「搜 → 抓正文 → 总结」，不做逐层地牢 / 决策支 / 托管。
 - **电脑控制（computer use）尚未实现**：有「眼睛」（抓屏 + 视觉描述），缺「手」（输入模拟），属 V3 backlog。
-- **出站请求仅 LLM API**，不上传用户数据。
+- **出站请求仅 LLM API + 联网搜索（opt-in）**，不上传用户数据。
 
 ## 质量门
 

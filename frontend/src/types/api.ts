@@ -127,7 +127,7 @@ export type ReadingAssociationEvent = SseBase & {
   paragraph_index: number;
 };
 
-/** 未消费的事件：前端不读字段，payload 保持宽松。 */
+/** 不读字段的事件：无消费者（clock_tick/observation_state/reflection）或只触发快照 refresh（desire/activity/memory），前端不解析 payload，保持宽松。 */
 type OpaqueEventType =
   | "clock_tick"
   | "observation_state"

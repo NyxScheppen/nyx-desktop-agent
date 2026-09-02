@@ -65,9 +65,10 @@ export default function ReaderView() {
     if (dir === 1) {
       if (pageIndex < pages.length - 1) {
         void syncPosition(pages[pageIndex + 1][0]);
-      } else if (lastParaIndex < totalParagraphs) {
-        // 窗口末页但书未读完：跳到下一窗口首段（窗口末段 +1），needsWindowRefresh 重拉。
-        void syncPosition(lastParaIndex + 1);
+      } else if (userPosition < totalParagraphs) {
+        // 窗口末页但书未读完：逐段前进（当前段 +1），与上一页跨窗（windowFrom -1）对称，
+        // 不跳过末页剩余段；越窗后 needsWindowRefresh 越过 80% 边界重拉下一窗口。
+        void syncPosition(userPosition + 1);
       }
     } else if (pageIndex > 0) {
       void syncPosition(pages[pageIndex - 1][0]);

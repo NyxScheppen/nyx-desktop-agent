@@ -110,7 +110,7 @@ frontend/
         InnerStatePanel.tsx
         ValenceArousalPlot.tsx
         EmotionSprite.tsx
-        Avatar.tsx           # 立绘：戳立绘/红点通知（包裹 EmotionSprite；半透明浮层见 08 §4）
+        Avatar.tsx           # 立绘：戳立绘/红点通知（包裹 EmotionSprite；右下角半身实体浮层见 08 §4）
         EnergyBar.tsx
         BarChart.tsx
         BigFiveChart.tsx
@@ -148,7 +148,7 @@ frontend/
 
 ## 5. 面板去向（精简装配）
 
-08 布局重构后精简为：顶栏（标题 `✦ Nyx ✦` + 连接状态 + 设置按钮）｜左栏常驻对话（`div.left-dock`：`StatusBar` + `MessageList` + `ChatInput` 竖排）｜中间内容区（`div.game-main`：`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书 + `avatar-overlay` 立绘半透明浮层）｜底部导航（`RightDock`：读书|内在|欲望|活动|记忆）｜气泡层（`AnnounceLayer`，立绘旁）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
+08 布局重构后精简为：顶栏（标题 `✦ Nyx ✦` + 连接状态 + 设置按钮）｜左栏常驻对话（`div.left-dock`：`StatusBar` + `MessageList` + `ChatInput` 竖排）｜中间内容区（`div.game-main`：`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书 + `avatar-overlay` 立绘右下角半身实体）｜底部导航（`RightDock`：读书|内在|欲望|活动|记忆）｜气泡层（`AnnounceLayer`，立绘旁）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|

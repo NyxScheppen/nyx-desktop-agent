@@ -191,28 +191,20 @@ body {
   cursor: pointer;
 }
 
-/* 立绘半透明浮层（08 §4）：盖在 game-main 右侧上层，不占布局宽、不挡正文点击 */
+/* 立绘实体浮层（08 §4 视觉改造）：右下角半身，盖在 game-main 右下，不占布局宽、不挡正文点击 */
 .avatar-overlay {
   position: absolute;
-  top: 12px;
-  right: 12px;
-  bottom: 12px;
-  width: 40%;
+  right: 0;
+  bottom: 0;
+  width: 32%;
   z-index: 1;
   pointer-events: none;
 }
 .avatar-overlay .avatar {
   pointer-events: auto; /* 只在立绘上恢复点击（戳立绘 + 红点） */
-  height: 100%;         /* 让立绘的 height:100% 有确定参照（spec 未写，补上否则立绘塌成 0 高） */
 }
-.avatar-overlay .emotion-sprite--portrait {
-  opacity: 0.22;        /* 调淡 */
-  height: 100%;
-  object-fit: contain;  /* 整身高立绘 contain 不变形 */
-}
-.avatar-overlay .avatar-notice {
-  opacity: 1; /* 红点不被立绘 0.22 拖淡 */
-}
+/* 半身立绘：回落基础 .emotion-sprite--portrait 的 aspect-ratio 3/4 + cover + top center
+   （裁出上半身、腿裁掉）；实体 opacity 1（原 0.22 调淡已移除）。 */
 
 .emotion-sprite--portrait {
   display: block;
@@ -982,8 +974,8 @@ body {
   position: fixed;
   left: auto;
   right: 16px;
-  top: 72px;
-  bottom: auto;
+  top: auto;
+  bottom: 40%; /* 立绘改右下角后，气泡冒在立绘头顶上方（偏移量待肉眼看渲染微调） */
   z-index: 3;
   display: flex;
   flex-direction: column;

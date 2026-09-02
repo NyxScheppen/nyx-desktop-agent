@@ -1,6 +1,6 @@
 # 08 阅读 × 聊天统一布局（左栏常驻对话 + 真分页 + 立绘浮层 + 碎碎念浮泡）
 
-> 前端「陪伴感」重构：聊天从中间舞台挪到**左栏常驻**（读书/看面板时都能聊）；读书改**真分页**（取消滚动）；立绘做**半透明浮层**盖在内容右侧；碎碎念改**悬浮气泡**；读书提问/联想**并进对话**。
+> 前端「陪伴感」重构：聊天从中间舞台挪到**左栏常驻**（读书/看面板时都能聊）；读书改**真分页**（取消滚动）；立绘做**右下角半身实体浮层**；碎碎念改**悬浮气泡**；读书提问/联想**并进对话**。
 > 对齐后端：`24-reading-chat-turn`（读书提问/联想进 `_history`，回复可引用）。
 
 > **行号是定位锚，不是指令**：本文行号只用于快速定位；落点以**符号名 + 变量名**为准。
@@ -14,7 +14,7 @@
 │ 左栏对话       │   中间内容区（game-main，position:relative）│
 │  StatusBar(瘦)│   · view==="reading" → ReaderView/书架      │
 │  MessageList  │   · 其余 → 内在/欲望/活动/记忆面板            │
-│  (滚动)        │   · 右侧：立绘半透明浮层（§4，盖在上层）      │
+│  (滚动)        │   · 右下角：立绘半身实体浮层（§4，盖在上层）      │
 │  ChatInput(扁)│   底部：导航（读书|内在|欲望|活动|记忆）       │
 └───────────────┴──────────────────────────────────────────┘
 ```
@@ -93,17 +93,17 @@ case "reading_mutter":
 - `dispatch.ts` 两处归入 `announceStore`：`mutter` case 改 `useAnnounceStore.getState().announce("mutter", e.content)`（删 `useMutterStore` import 与 `addMutter` 调用）；`reading_mutter`（§2.3）同样 `announce("mutter", e.content)`。
 - **`reflection_done` 不动**：已 `announce("mutter", …)`（`dispatch.ts` 现 73-86），与 mutter/reading_mutter **共享 `announce` 的 `"mutter"` kind**——`"mutter"` kind 语义统一为「Nyx 轻声自语/反思的瞬时气泡」，三者同一渲染路径，无冲突。
 - **删** `mutterStore.ts` + `MutterCard.tsx`（碎碎念不再有「最近几条卡片」，改为瞬时气泡几秒淡出）。
-- `AnnounceLayer` **重新定位**：从「头像旁」（`.announce-layer` `left:16px; bottom:64px`）移到「立绘旁」（内容区右上，见 §4）——`.announce-layer` 改 `left:auto; right:16px; top:72px; bottom:auto; align-items:flex-end`（气泡靠右、贴着立绘浮层上沿）。`ANNOUNCE_DURATION.mutter = 4000` 不变；`announceStore` 本体不动（`announce`/`dismiss`/`ANNOUNCE_DURATION` 已够用）。
+- `AnnounceLayer` **重新定位**：从「头像旁」（`.announce-layer` `left:16px; bottom:64px`）移到「立绘头顶上方」（立绘右下角，见 §4）——`.announce-layer` 改 `left:auto; right:16px; top:auto; bottom:40%; align-items:flex-end`（气泡靠右、贴着立绘头顶）。`ANNOUNCE_DURATION.mutter = 4000` 不变；`announceStore` 本体不动（`announce`/`dismiss`/`ANNOUNCE_DURATION` 已够用）。
 
-## 4. 立绘半透明浮层（CSS 契约 + 交互保全）
+## 4. 立绘右下角半身实体浮层（CSS 契约 + 交互保全）
 
-`Avatar`（`EmotionSprite` 立绘 + 红点通知）作为**半透明浮层**锚定在 `.game-main` 右侧，**不占布局宽、盖在正文上层**：
+`Avatar`（`EmotionSprite` 立绘 + 红点通知）作为**右下角半身实体浮层**锚定在 `.game-main` 右下，**不占布局宽、盖在正文上层**：
 
 - **结构**：`.game-main` 内新增 `<div className="avatar-overlay"><Avatar /></div>`（与 view 内容并列，`position:absolute` 浮在上层）；`StatusBar` 不再渲染 `Avatar`（§1）。
 - **`Avatar.tsx` 源码一字不动**：戳立绘交互（`handlePoke`：连续戳害羞 `SHY_PHRASES`、≥5 次生气 `ANGRY_PHRASES`、1.5s 停手复位 `POKE_RESET_MS`、戳时 `announce("mutter", …)`）与红点通知（`avatar-notice`）**全部保留**——只改 `App.tsx` 的包法（包进 `.avatar-overlay`）+ CSS 层（`pointer-events`/`opacity`），不动 `Avatar` 内部。它是有交互的立绘，不是纯装饰。
-- **容器**：`.avatar-overlay { position:absolute; top:12px; right:12px; bottom:12px; width:40%; z-index:1; pointer-events:none; }`——`pointer-events:none` 让浮层不挡正文点击（正文/面板仍占满中间，可读到立绘身后，用户已选「半透明浮层·会遮字」）。
-- **立绘调淡**：`.avatar-overlay .emotion-sprite--portrait { opacity:0.22; height:100%; object-fit:contain; }`（整身高立绘 `contain` 不变形；`opacity 0.22` 为「调淡」定值，可调）。
-- **交互保全（关键）**：`.avatar-overlay .avatar { pointer-events:auto; }`——只在 `.avatar` 子元素上恢复点击，戳立绘（`Avatar.handlePoke`）+ 红点通知（`.avatar-notice`）两个交互都保留，正文除立绘正下方外仍可点。**红点不必单独开点击区**：它本就是 `.avatar` 的子元素，随 `.avatar` 的 `pointer-events:auto` 自动可点；`.avatar-overlay .avatar-notice { opacity:1 }`（不被立绘的 0.22 拖淡，保持可读）。
+- **容器**：`.avatar-overlay { position:absolute; right:0; bottom:0; width:32%; z-index:1; pointer-events:none; }`——`pointer-events:none` 让浮层不挡正文点击（正文/面板仍占满中间，可读到立绘身后，实体立绘会遮右下角正文）。
+- **半身实体**：不设 `.avatar-overlay .emotion-sprite--portrait` 覆盖——回落到基础 `.emotion-sprite--portrait` 的 `aspect-ratio:3/4; object-fit:cover; object-position:top center`（裁出上半身、腿裁掉），`opacity` 默认 1（实体，原 0.22 调淡已移除）。
+- **交互保全（关键）**：`.avatar-overlay .avatar { pointer-events:auto; }`——只在 `.avatar` 子元素上恢复点击，戳立绘（`Avatar.handlePoke`）+ 红点通知（`.avatar-notice`）两个交互都保留，正文除立绘正下方外仍可点。**红点不必单独开点击区**：它本就是 `.avatar` 的子元素，随 `.avatar` 的 `pointer-events:auto` 自动可点。
 - `avatar-notice`（未读搭话红点）仍挂在立绘上，点击清除 `unreadProactive` 不变。
 
 ## 5. 真分页（取消滚动，纯函数分页 + 测量/重测契约）
@@ -174,4 +174,4 @@ export function paginate(
 
 - [ ] `npx vitest run` 全绿、`npx tsc --noEmit` 零报错
 - [ ] `test-inventory.md` 已更新（快照）
-- [ ] 手动：左栏常驻对话（读书/面板都能聊）；读书真分页不滚动、高亮/🦊 标记不漂、`fontScale`/resize/换书重测后位置不丢；立绘浮层盖右侧且戳立绘/红点仍可点、正文其余处可点；碎碎念/读书碎碎念/反思浮泡几秒淡出；读书提问/联想进对话、刷新后仍在（历史回填）、回复能接上
+- [ ] 手动：左栏常驻对话（读书/面板都能聊）；读书真分页不滚动、高亮/🦊 标记不漂、`fontScale`/resize/换书重测后位置不丢；立绘右下角半身实体且戳立绘/红点仍可点、正文其余处可点；碎碎念/读书碎碎念/反思浮泡几秒淡出；读书提问/联想进对话、刷新后仍在（历史回填）、回复能接上

@@ -44,9 +44,15 @@ from nyx.types import (
 )
 
 _QUESTION_USER_PROMPTS: dict[ReadingBehavior, str] = {
-    ReadingBehavior.QUESTION_KNOWLEDGE: "基于这段文字问一个知识型问题。",
-    ReadingBehavior.QUESTION_PERSONAL: "基于这段文字问一个私人型问题。",
-    ReadingBehavior.QUESTION_REFLECTIVE: "基于这段文字问一个反思型问题。",
+    ReadingBehavior.QUESTION_KNOWLEDGE: (
+        "基于这段文字，问一个你真想弄懂的知识型问题。只输出问题本身。"
+    ),
+    ReadingBehavior.QUESTION_PERSONAL: (
+        "基于这段文字，问一个你想了解用户的私人型问题。只输出问题本身。"
+    ),
+    ReadingBehavior.QUESTION_REFLECTIVE: (
+        "基于这段文字，问一个你想和用户一起想一想的反思型问题。只输出问题本身。"
+    ),
     ReadingBehavior.QUOTE_QUESTION: (
         "基于这段文字问一个问题，并在下一行逐字摘取段落原文里最值得划线的一句。"
         "只输出两行：第一行问题，第二行引用原文。"
@@ -61,9 +67,10 @@ _NYX_BUFFER_MAXLEN = 100
 
 _READING_NOTE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
-    "把下面这些你陪读时冒出的碎碎念和提问，整理成一条第一人称读书记忆（尼克斯视角）："
-    "你读到了什么、心里留下了什么。只输出 JSON，键：content（正文）、"
-    "summary（一句话总结），两者都是非空字符串。"
+    "你温柔克制、思虑很深。把下面这些你陪读时冒出的碎碎念和提问，"
+    "整理成一条第一人称读书记忆（尼克斯视角）：你读到了什么、心里留下了什么、"
+    "哪里让你停了一下，而不是复述原文或罗列要点。"
+    "只输出 JSON，键：content（正文）、summary（一句话总结），两者都是非空字符串。"
 )
 
 

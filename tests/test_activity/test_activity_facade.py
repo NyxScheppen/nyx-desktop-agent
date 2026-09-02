@@ -323,6 +323,9 @@ class _FakeMemory:
     ) -> list[Memory]:
         return self.knowledge
 
+    async def search(self, query: str) -> list[Memory]:
+        return self.knowledge
+
     async def remember_knowledge(
         self, items: list[dict[str, str]], correlation_id: str
     ) -> None:

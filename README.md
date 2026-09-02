@@ -29,7 +29,7 @@ Nyx 不是答题机器：她有一套**内在生命**——欲望会随时间涨
 |---|---|---|
 | `local_search` | 本地磁盘文本文件（`.txt`/`.md`）关键词搜索，返回匹配路径 + 片段 | 恒注册 |
 | `file_io` | 读写本地文件：`read` 全盘读文本 / `write` 写进 `workspace/` / `list` 列目录 | 恒注册 |
-| `web_search` | 联网搜索（DuckDuckGo），返回标题 / 链接 / 摘要 | `exploration.web_enabled` opt-in |
+| `web_search` | 联网搜索（Bing），返回标题 / 链接 / 摘要 | `exploration.web_enabled` opt-in |
 | `web_fetch` | 抓网页正文为纯文本，供探索直接消化（不写书库、不触发读书） | `exploration.web_enabled` opt-in |
 
 > 当前 `config.yaml` 里 `exploration.web_enabled: true`，四个工具均启用；置 `false` 则只保留前两个本地工具。

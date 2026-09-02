@@ -1,13 +1,15 @@
 # pyright: reportPrivateUsage=false
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from nyx.activity.exploration import Exploration, should_explore
 from nyx.config import ExplorationConfig
+from nyx.enums import MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.tools.registry import ToolRegistry
-from nyx.types import LLMOutput
+from nyx.types import LLMOutput, Memory
 
 _FINALIZE_JSON = json.dumps({
     "summary": "弄懂了量子退相干的机制",
@@ -23,6 +25,7 @@ class _FakeLlm:
         self._content = content
         self.calls: list[str] = []
         self.correlation_ids: list[str] = []
+        self.user_contents: list[str] = []
 
     async def complete(
         self,
@@ -35,6 +38,7 @@ class _FakeLlm:
     ) -> LLMOutput:
         self.calls.append(output_type)
         self.correlation_ids.append(correlation_id)
+        self.user_contents.append(messages[1]["content"])
         return LLMOutput(
             module=module,
             type=output_type,
@@ -59,13 +63,17 @@ class _FakeTools:
 
     async def call(self, name: str, args: dict[str, Any]) -> Any:
         self.calls.append((name, args))
-        if name in ("local_search", "web_search"):
+        if name == "local_search":
+            # 真实 local_search 返回 {path, snippet}（无 title/url）
+            return [{"path": "C:/notes/量子.txt", "snippet": "环境纠缠"}]
+        if name == "web_search":
             return [{"title": "量子退相干", "url": "https://example.com/a",
                      "snippet": "环境纠缠"}]
         if name == "web_fetch":
             if self._fetch_raises:
                 raise RuntimeError("download fail")
-            return "抓取的正文"
+            # 真实 web_fetch 返回 {text, url}
+            return {"text": "抓取的正文", "url": "https://example.com/a"}
         return "其他"
 
 
@@ -73,12 +81,14 @@ def _make_exploration(
     llm: _FakeLlm | None = None,
     tools: _FakeTools | None = None,
     web_enabled: bool = False,
+    search_memories: Callable[[str], Awaitable[list[Memory]]] | None = None,
 ) -> Exploration:
     return Exploration(
         cast(LlmClient, llm if llm is not None else _FakeLlm()),
         cast(Evaluator, _FakeEvaluator()),
         cast(ToolRegistry, tools if tools is not None else _FakeTools()),
         ExplorationConfig(web_enabled=web_enabled),
+        search_memories=search_memories,
     )
 
 
@@ -115,6 +125,16 @@ async def test_run_web_disabled_uses_local_search() -> None:
     assert tools.calls[0][0] == "local_search"
 
 
+async def test_run_local_search_results_flow_into_findings() -> None:
+    # 回归：local_search 返回 {path, snippet}，name 取文件名、不再被 _result_parts 丢弃
+    tools = _FakeTools()
+    expl = _make_exploration(tools=tools, web_enabled=False)
+    result = await expl.run("量子", "c1")
+    assert len(result["findings"]) == 1
+    assert "量子.txt" in result["findings"][0]
+    assert "环境纠缠" in result["findings"][0]
+
+
 async def test_run_web_enabled_uses_web_search() -> None:
     tools = _FakeTools()
     expl = _make_exploration(tools=tools, web_enabled=True)
@@ -146,3 +166,19 @@ async def test_run_llm_failure_returns_defaults() -> None:
     assert result["outcome"] == "exhausted"
     assert result["knowledge"] == []
     assert result["strong_new_topics"] == []
+
+
+async def test_summarize_injects_related_memories() -> None:
+    async def search(_topic: str) -> list[Memory]:
+        return [
+            Memory(
+                id="m1", created_at=1.0, content="旧认知", tag="explore",
+                summary="之前想过退相干", freshness=1.0,
+                type=MemoryType.SHORT_TERM,
+            )
+        ]
+
+    llm = _FakeLlm()
+    expl = _make_exploration(llm=llm, web_enabled=False, search_memories=search)
+    await expl.run("量子", "c1")
+    assert "之前想过退相干" in llm.user_contents[0]

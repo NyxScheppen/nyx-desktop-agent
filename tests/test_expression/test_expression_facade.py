@@ -461,7 +461,7 @@ async def test_cumulative_prompt() -> None:
 
 
 async def test_slow_channel_progressive() -> None:
-    # 慢通道三段递进：第 1 段是「第一句话」，第 2 段起是「接着往下说」续写
+    # 慢通道三段递进：第 1 段是「先说出一句」，第 2 段起是「再往下说一句」续写
     facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
         energy=100.0, arousal=0.0
     )
@@ -469,9 +469,9 @@ async def test_slow_channel_progressive() -> None:
     speak_calls = [m for t, m, _c in llm.calls if t == "speak"]
     first = _user_content(speak_calls[0])
     second = _user_content(speak_calls[1])
-    assert "第一句话" in first
-    assert "继续往下说" not in first
-    assert "继续往下说" in second
+    assert "先说出一句" in first
+    assert "再往下说一句" not in first
+    assert "再往下说一句" in second
 
 
 async def test_current_message_not_duplicated() -> None:

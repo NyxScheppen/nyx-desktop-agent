@@ -19,7 +19,7 @@
 - [ ] **当前消息在 prompt 里只出现一次**：`reply` 入口回溯的 `context` 不含当前消息（当前消息尚未进 history），`build_user_prompt` 里它只作为「本次消息」
 - [ ] **慢通道回溯截断**：慢通道 `assemble` 调 `build_backtrack_context` 重截断 context——命中「满 max_len / 相邻隔超 `context_time_gap` / 与当前消息零字符重叠」即停，快通道 Nyx 消息（`fast=True`）跳过继续往前；快通道保持入口朴素取最近 `max_context_len` 条
 - [ ] **累积式 prompt**：第 N 轮 think 的 user prompt 含前 N-1 轮 think/speak；第 N 轮 speak 的 user prompt 含前 N-1 轮 think/speak + 本轮 think
-- [ ] **慢通道递进续写**：首轮 think/speak 是「第一次想 / 第一句话」，第 2 轮起的 think/speak 任务指令切换为「基于前面继续深入 / 接着上面往下说」，不重复、不重新回答
+- [ ] **慢通道递进续写**：首轮 think/speak 是「先想此刻的念头 / 先说出一句」，第 2 轮起的 think/speak 任务指令切换为「再往里想一层 / 再往下说一句」，不重复、不重新回答
 - [ ] 每个 LLM 产出（tool / think / speak / initiate_chat / mutter_wander）后紧跟 `await evaluator.evaluate(output)`；`output_type` 分别 `tool` / `think` / `speak` / `initiate_chat` / `mutter_wander`、`module="expression"`、`correlation_id` 透传
 - [ ] `initiate_chat` 返回 `bool`（发话 True / 无话 False），供 18-api 维护 `last_chat_at`；发话开场白 append 进 `_history`（`role="nyx"`），用户随后回复能回溯到这句搭话；`mutter` 返回 `None`（无状态依赖）
 - [ ] 事件发布：`think` / `speak` / `ask` / `mutter` / `initiate_chat` 全部 `content={"content": 文本}`、`source=INTERNAL`、`correlation_id` 接上游
@@ -33,7 +33,7 @@
 - **公开面**：`from nyx.expression.facade import ExpressionFacade`；`from nyx.expression.mutter import naturalize_presence, clean_fragment, activity_subject, pick_mutter_category, pick_mutter_template, should_initiate_chat`（不加 `__all__`）
 - **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, activity, desire, inner_life, canon, ask_guidance, config, tools)`——`activity: ActivityFacade` 供碎碎念 ACTIVITY 类取最近活动；`canon: str` 由 18-api 组合根读 `prompts/canon.md`、`ask_guidance: str` 读 `prompts/ask.md` 传入（本 spec 不读文件，测试不碰文件系统）；`tools: ToolRegistry` 由组合根 `_build_tools(config)` 传入，仅慢通道 use_tools 用；`ask_guidance` 仅慢通道 think/speak 与 `initiate_chat` 注入，快通道省略
 - **会话历史（内存）**：`deque[Message]`（maxlen=`config.max_context_len`）由 facade 持有，跨 reply 持久。**用户消息 + Nyx 消息（多轮拼接）都在回合末的 `record_message` 节点按序 append**（先 user 后 nyx）——`reply` 入口回溯时当前消息还没进 history，天然不重复。重启丢失（同情感，内存易变态）
-- **多轮语义（慢通道）**：think → speak 循环，每轮 think 发 `THINK`、每轮 speak 发 `SPEAK`（**都交付**）；某轮 speak 是问句 → 发 `ASK` 后回合结束。`slow_max_rounds` 是「连续无 ask 的 think/speak 轮数上限」。**累积式 prompt**：后一轮的 think/speak 知道前几轮想了/说了什么（`_rounds_block` 拼前轮）。**递进续写**：首轮任务指令是「第一句话 / 第一次内心独白」，续写轮切换为「接着上面往下说 / 基于前面继续深入」，避免三段生成三个并列回答
+- **多轮语义（慢通道）**：think → speak 循环，每轮 think 发 `THINK`、每轮 speak 发 `SPEAK`（**都交付**）；某轮 speak 是问句 → 发 `ASK` 后回合结束。`slow_max_rounds` 是「连续无 ask 的 think/speak 轮数上限」。**累积式 prompt**：后一轮的 think/speak 知道前几轮想了/说了什么（`_rounds_block` 拼前轮）。**递进续写**：首轮任务指令是「先说出一句 / 先想此刻的念头」，续写轮切换为「再往下说一句 / 再往里想一层」，避免三段生成三个并列回答
 - **场景化记忆记整个回合**：`nyx_think`/`nyx_speak` = 多轮 `"\n".join(...)` 拼接（`create_scene_memory` 的 `str` 契约不变，只是内容是多轮）
 - **MVP 语义**：ask 后回合结束（走 scene_memory + record）；用户回应作为下一条 `USER_MESSAGE` 触发新 reply，round 自然从 0 重算
 - **V2 表达交互闭环**：facade 在 reply 后按 `result["ask"]` 置 `self._waiting_user`（问句已问出、等用户答）；`initiate_chat` 记 `self._pending_chat_desire_id`（搭话已发、等用户回）。tick 心跳（18-api 组合根）直呼 `check_timeouts(now)`：问句超时（`ask_timeout`）→ `memory.record_no_answer` 落一条「用户没回答」的 SHORT_TERM 记忆；搭话超时（`chat_ignore_timeout`）→ `desire.expire`（值立即 +0.3 回灌）。用户任一下条消息（`reply` 入口）即视为回应、清两者待回应态
@@ -65,7 +65,7 @@
     - [ ] `reply` 慢通道问句（第 1 轮 speak 返回 `"你还好吗？"`）：`bus.publish` 收到 `ask`（非 `speak`）且仅 1 条、`create_scene_memory` 仍被调（问句也走场景化记忆）、提前结束（tool 1 次 + think/speak 各 1 次，不循环到满）
     - [ ] **慢通道工具调用**：fake llm 返回 `tool_calls=[{"name": "local_search", "args": {...}}]` → `tools.call` 被调、结果拼进 think 的 system prompt「[工具查询结果]」段；大结果（超 `_TOOL_OUTPUT_MAX_CHARS`）→ 注入段被截断（尾带 `…`、越界 sentinel 不出现）；fake llm 返回空 `tool_calls` → 无该段；工具抛异常 → 降级「工具 X 执行失败」不崩回复
     - [ ] **累积式 prompt**：慢通道非问句多轮下，fake llm 记录的第 2 轮 think 调用 user prompt 含第 1 轮的 think 文本与 speak 文本；第 2 轮 speak 调用 user prompt 含第 2 轮 think 文本
-    - [ ] **慢通道递进续写**：慢通道非问句多轮下，第 1 轮 speak 的 user prompt 含「第一句话」、不含「继续往下说」；第 2 轮 speak 的 user prompt 含「继续往下说」
+    - [ ] **慢通道递进续写**：慢通道非问句多轮下，第 1 轮 speak 的 user prompt 含「先说出一句」、不含「再往下说一句」；第 2 轮 speak 的 user prompt 含「再往下说一句」
     - [ ] **当前消息不重复**（回归）：慢通道下，fake llm 记录的 think/speak 调用里，`[对话历史]` 段不含当前消息文本、`[本次消息]` 段含且仅含一次
     - [ ] **history 落库顺序**：连续两次 `reply` 后，facade 内部 history 的 role 序列为 `[user, nyx, user, nyx]`；两次都走快通道时第二次 prompt 仍含上一轮历史（回归：历史不因快通道丢失）
     - [ ] **快通道 nyx 落库标记**：快通道 `reply` 后，history 里 `role="nyx"` 的消息 `fast=True`、`role="user"` 的消息 `fast=False`（回溯截断据此跳过浅层回复）

@@ -955,6 +955,80 @@ async def test_run_eval_dedup_embed_error_skips(
         await database.conn.close()
 
 
+async def test_run_eval_dedup_same_topic_discards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm(json.dumps({
+        "description": "想和用户聊聊，知道ta为什么喜欢我",
+        "goal": None,
+    }))
+    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())  # embed=None
+    events = _subscribe(bus)
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        await store.insert_long_term(
+            _lt(DesireType.INTERACTION, ["用户为什么喜欢尼克斯"])
+        )
+        await store.add_desire(
+            ShortTermDesire(
+                id="existing",
+                created_at=t0,
+                type=DesireType.INTERACTION,
+                strength=0.9,
+                description="想和用户聊聊，知道ta为什么喜欢我",
+                goal=Goal(
+                    action=GoalAction.OBSERVE, count=1, topic="用户为什么喜欢尼克斯"
+                ),
+            )
+        )
+        async with _running(bus):
+            result = await lifecycle.run_eval()
+        assert result == []                                   # 同话题 → 丢弃
+        assert [d.id for d in await store.list_pending()] == ["existing"]
+        assert [e for e in events if e.type is EventType.DESIRE_GENERATED] == []
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_dedup_distinct_topic_keeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm(json.dumps({
+        "description": "想和用户聊聊，知道ta为什么喜欢我",
+        "goal": None,
+    }))
+    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())  # embed=None
+    events = _subscribe(bus)
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        await store.insert_long_term(
+            _lt(DesireType.INTERACTION, ["用户为什么喜欢尼克斯"])
+        )
+        await store.add_desire(
+            ShortTermDesire(
+                id="existing",
+                created_at=t0,
+                type=DesireType.INTERACTION,
+                strength=0.9,
+                description="想和用户聊聊，了解ta写代码的痛苦",
+                goal=Goal(action=GoalAction.OBSERVE, count=1, topic="写代码的痛苦"),
+            )
+        )
+        async with _running(bus):
+            result = await lifecycle.run_eval()
+        assert len(result) == 1                               # 不同话题 → 保留
+        assert [d.id for d in await store.list_pending()] == ["existing", result[0].id]
+        assert len([e for e in events if e.type is EventType.DESIRE_GENERATED]) == 1
+    finally:
+        await database.conn.close()
+
+
 # ---- satisfy/expire 幂等 ----
 
 

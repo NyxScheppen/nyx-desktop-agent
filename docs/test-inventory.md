@@ -130,8 +130,11 @@
 | `test_search_caps_results` | 边界鲁棒 | 命中超 `_MAX_RESULTS` → 截断到 50 |
 | `test_search_skips_oversized_file` | 边界鲁棒 | 单文件超 `_MAX_FILE_BYTES` → 跳过 |
 | `test_full_disk_roots_nonempty_and_exists` | 功能正确 | 非空且每项 `.exists()`；POSIX 下 `== [Path("/")]` |
-| `test_web_search_maps_fields` | 功能正确 | fake `DDGS` 的 `title`/`href`/`body` 映射为 `title`/`url`/`snippet`，不触真实网络 |
-| `test_web_search_returns_empty_on_error` | 边界鲁棒 | fake `DDGS.text` 抛异常 → 返回 `[]`（best-effort 不冒泡） |
+| `test_parse_bing_extracts_title_url_snippet` | 功能正确 | Bing 结果页 HTML（`li.b_algo`）解析为 `[{title,url,snippet}]`，无链接项跳过，不触真实网络 |
+| `test_parse_bing_empty_html` | 边界鲁棒 | 无 `b_algo` 的 HTML → `[]` |
+| `test_search_web_sync_returns_empty_on_error` | 边界鲁棒 | `httpx.get` 抛异常 → 记日志返回 `[]`（best-effort 不冒泡） |
+| `test_search_web_sync_returns_empty_on_no_results` | 边界鲁棒 | `httpx.get` 返回无结果页 → `[]` |
+| `test_handler_wires_through_search_sync` | 功能正确 | handler → `asyncio.to_thread(_search_web_sync)` 透传结果 |
 | `test_read` | 功能正确 | `read` 返回文件 content |
 | `test_read_non_utf8_replaces` | 边界鲁棒 | 非法 UTF-8 字节 → `�` 替换（不崩溃、不静默丢字节） |
 | `test_write` | 功能正确 | `write` 建文件在 `write_root` 内、返回 `written` |
@@ -313,6 +316,8 @@
 | `test_run_eval_dedup_keeps_distinct` | 功能正确 | 向量余弦 < 0.9 → 正常入队（`list_pending` 变 2 条）+ 发布 1 条 `desire_generated` |
 | `test_run_eval_dedup_disabled_without_embed` | 边界鲁棒 | `embed=None` → 不去重、正常入队（返回 1 个） |
 | `test_run_eval_dedup_embed_error_skips` | 边界鲁棒 | embed 抛 `RuntimeError` → 降级不去重、正常入队（返回 1 个）、不崩 |
+| `test_run_eval_dedup_same_topic_discards` | 功能正确 | 已有 PENDING 欲望 `goal.topic` 与 seed 精确相等 → 丢弃（`list_pending` 仍 1 条）、不发布 `desire_generated`（话题锚点，不依赖 embedding） |
+| `test_run_eval_dedup_distinct_topic_keeps` | 功能正确 | 异 topic → 保留（`list_pending` 2 条）+ 发布 1 条 `desire_generated` |
 | `test_satisfy_goal_met` | 功能正确 | `SATISFIED`、表达权重 `+0.05`、长期进度 `+0.1`、发布 `desire_satisfied` |
 | `test_satisfy_reinforces_most_relevant_long_term` | 功能正确 | 同类型两条长期欲望 + `goal.topic` 命中第二条 → 只回写第二条 progress（0.1）、第一条不动（0.0） |
 | `test_satisfy_goal_progress` | 功能正确 | goal.count=3 时前两次 goal_met → `goal_progress=2` 保持 PENDING；第三次 → SATISFIED + `goal_progress=3`（C3 精确计数累计） |
@@ -329,6 +334,12 @@
 | `test_get_all_snapshot` | 功能正确 | `get_all` 三字段非空；`short_term` 含 satisfied 历史、`long_term` 含 seed 的长期欲望 |
 | `test_satisfy_expire_delegate` | 功能正确 | `facade.satisfy`/`facade.expire` 委托改 `status`（SATISFIED / EXPIRED） |
 | `test_add_long_term_delegates` | 功能正确 | `add_long_term(desire)` → `list_long_term` 多一条、字段全等 |
+| `test_add_long_term_exact_name_duplicate_skips` | 功能正确 | 已有 name 精确相等 → 跳过（`list_long_term` 仍 1 条） |
+| `test_add_long_term_semantic_duplicate_skips` | 功能正确 | embedding 余弦 ≥ 0.9 → 跳过（`list_long_term` 仍 1 条） |
+| `test_add_long_term_semantic_distinct_keeps` | 功能正确 | 正交向量 → 新增（2 条） |
+| `test_add_long_term_capacity_full_skips` | 边界鲁棒 | seed 5 条 → 第 6 条跳过（仍 5 条） |
+| `test_add_long_term_embed_none_exact_only` | 边界鲁棒 | `embed=None` → 仅精确去重生效（语义跳过） |
+| `test_add_long_term_embed_error_skips_semantic` | 边界鲁棒 | embed 抛 `RuntimeError` → 降级不崩、精确去重仍生效 |
 | `test_list_suppressed_filters_and_orders` | 功能正确 | 只返回 suppressed（不含 pending/active），按 `created_at ASC` 排序 |
 | `test_mark_active_pending_to_active` | 功能正确 | `mark_active` 把 PENDING 欲望翻 ACTIVE |
 | `test_mark_active_guard` | 边界鲁棒 | SUPPRESSED/SATISFIED/EXPIRED/缺失 id → 不变（no-op） |
@@ -474,6 +485,14 @@
 | `test_get_results_delegates` | 功能正确 | `get_results` 委托 `store.list_results`（跨天历史产出倒序，供「产出」面板） |
 | `test_should_explore_rate_limited` | 边界鲁棒 | `last=1000` + `now-last < 1h*3600` → False（无 energy 入参，精力门已移除） |
 | `test_should_explore_ok` | 功能正确 | `last=0.0` + 频率过 → True（无 energy 入参，精力交给 build_schedule 兜底） |
+| `test_run_won_when_core_discovery` | 功能正确 | `web_enabled=True` + 合法 finalize JSON → `type=="free_exploration"`、`outcome=="won"`、`core_discovery` 非空、`knowledge[0].topic=="退相干"`、`strong_new_topics==["量子纠错"]` |
+| `test_run_web_disabled_uses_local_search` | 功能正确 | `web_enabled=False` → 首个工具调用是 `local_search`（不联网） |
+| `test_run_local_search_results_flow_into_findings` | 回归保护 | `local_search` 返回 `{path, snippet}` → `_result_parts` 取文件名当 name、`findings` 含文件名+片段（不再被空 name 丢弃） |
+| `test_run_web_enabled_uses_web_search` | 功能正确 | `web_enabled=True` → 首个工具调用是 `web_search` |
+| `test_run_fetch_failure_falls_back_to_snippet` | 边界鲁棒 | `web_fetch` 抛 `RuntimeError` → snippet 兜底、`findings` 仍 1 条含「环境纠缠」 |
+| `test_run_exhausted_when_no_core_discovery` | 边界鲁棒 | LLM 返回无 `core_discovery` → `outcome=="exhausted"`、`core_discovery==""` |
+| `test_run_llm_failure_returns_defaults` | 边界鲁棒 | LLM 返回非法 JSON → `outcome=="exhausted"`、`knowledge==[]`、`strong_new_topics==[]` |
+| `test_summarize_injects_related_memories` | 功能正确 | 注入 `search_memories` 后，检索到的记忆 `summary` 拼进结算 LLM 的 user content（`related_memories` 字段） |
 | `test_classify_presence_online` | 功能正确 | 键盘/鼠标活跃 → online |
 | `test_classify_presence_busy` | 功能正确 | 无输入 + 有窗口标题 → busy |
 | `test_classify_presence_away` | 功能正确 | 无输入无标题 → away |
@@ -577,7 +596,7 @@
 | `test_reply_slow_tool_output_truncated` | 边界鲁棒 | 大工具结果（5000 字符）→ 注入 think system prompt 的工具结果被截断（含 `…`、不含 `TAIL_SENTINEL`） |
 | `test_reply_slow_records_recall` | 功能正确 | 慢通道检索命中 2 条记忆 → 每条 `record_recall(m.id)` 调 1 次（短期→长期升级接线） |
 | `test_cumulative_prompt` | 功能正确 | 第 2 轮 think user prompt 含第 1 轮 think/speak 文本；第 2 轮 speak 含第 2 轮 think 文本 |
-| `test_slow_channel_progressive` | 功能正确 | 慢通道第 1 轮 speak prompt 含「第一句话」、不含「继续往下说」；第 2 轮 speak prompt 含「继续往下说」（递进续写） |
+| `test_slow_channel_progressive` | 功能正确 | 慢通道第 1 轮 speak prompt 含「先说出一句」、不含「再往下说一句」；第 2 轮 speak prompt 含「再往下说一句」（递进续写） |
 | `test_current_message_not_duplicated` | 回归保护 | `[对话历史]` 段不含当前消息、`[本次消息]` 含且仅一次 |
 | `test_history_order` | 功能正确 | 连续两次 reply 后 history 的 role 序列为 `[user, nyx, user, nyx]`（快慢通道都落历史、按序交替） |
 | `test_history_fast_channel` | 回归保护 | 两次都走快通道时，第二次回复 prompt 仍含上一轮 `用户：`/`Nyx：` 历史（历史不因快通道丢失） |
@@ -620,7 +639,7 @@
 | `test_load_ask_missing_file_fails` | 边界鲁棒 | 缺失 → `FileNotFoundError`（fail-fast） |
 | `test_seed_inner_life_idempotent` | 功能正确 | 空表 seed 四表（personality/values/energy/narrative）值 = canon §2/§3 初始值；再跑一遍值不变、不重复行 |
 | `test_seed_desire_idempotent` | 功能正确 | `list_values()` 四类型、`list_long_term()` 3 条；再跑幂等（4 行 / 3 条不增） |
-| `test_build_tools_web_disabled` | 功能正确 | `web_enabled=False` → `{local_search, file_io}`（工厂构造无 I/O，`roots`/`DDGS` 惰性到 `.call()`） |
+| `test_build_tools_web_disabled` | 功能正确 | `web_enabled=False` → `{local_search, file_io}`（工厂构造无 I/O，`roots`/`httpx` 惰性到 `.call()`） |
 | `test_build_tools_web_enabled` | 功能正确 | `web_enabled=True` → 多 `web_search` + `web_fetch` |
 | `test_state_endpoint` | 功能正确 | `GET /api/state` → `CurrentState` JSON，枚举字段为 `.value` 字符串（`emotion=neutral`、`energy_state=okay`）、`aesthetic` 四键 7/7/6/6 |
 | `test_chat_endpoint` | 功能正确 | `POST /api/chat` → `{event_id}`；bus 收一条 `USER_MESSAGE`（source EXTERNAL、`correlation_id == id`） |

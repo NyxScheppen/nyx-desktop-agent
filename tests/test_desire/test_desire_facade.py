@@ -16,6 +16,7 @@ from nyx.enums import DesireStatus, DesireType, EventType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient, LlmMessage
+from nyx.memory.retrieval import EmbedFn
 from nyx.types import (
     DesireValue,
     Event,
@@ -68,6 +69,31 @@ def _lt(type: DesireType) -> LongTermDesire:
     )
 
 
+def _lt_custom(
+    id: str,
+    name: str,
+    description: str = "",
+    type: DesireType = DesireType.EXPLORATION,
+) -> LongTermDesire:
+    return LongTermDesire(
+        id=id,
+        created_at=1000.0,
+        type=type,
+        name=name,
+        description=description,
+        strength=0.5,
+        progress=0.0,
+        subtopics=[],
+    )
+
+
+def _embed_map(vecs: dict[str, list[float]]) -> EmbedFn:
+    async def embed(text: str) -> list[float]:
+        return vecs[text]
+
+    return embed
+
+
 class _FakeLlm:
     """complete 按 output_type="desire" 返回 fixture JSON，记录调用。"""
 
@@ -110,6 +136,7 @@ def _make_facade(
     llm: _FakeLlm,
     evaluator: _FakeEvaluator,
     config: DesireConfig | None = None,
+    embed: EmbedFn | None = None,
 ) -> DesireFacade:
     async def list_memories() -> list[Memory]:
         return []
@@ -121,6 +148,7 @@ def _make_facade(
         cast(Evaluator, evaluator),
         config if config is not None else DesireConfig(),
         list_memories,
+        embed,
     )
 
 
@@ -316,5 +344,80 @@ async def test_add_long_term_delegates() -> None:
         lt = _lt(DesireType.EXPLORATION)
         await facade.add_long_term(lt)
         assert await store.list_long_term() == [lt]
+    finally:
+        await database.conn.close()
+
+
+async def test_add_long_term_exact_name_duplicate_skips() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())  # embed=None
+    try:
+        await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
+        await facade.add_long_term(_lt_custom("b", "理解人类", "道德"))
+        assert [d.id for d in await store.list_long_term()] == ["a"]
+    finally:
+        await database.conn.close()
+
+
+async def test_add_long_term_semantic_duplicate_skips() -> None:
+    store, bus, database = await _new_stack()
+    same = _embed_map({"理解人类 痛苦": [1.0, 0.0], "了解人类 痛苦": [1.0, 0.0]})
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator(), embed=same)
+    try:
+        await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
+        await facade.add_long_term(_lt_custom("b", "了解人类", "痛苦"))
+        assert [d.id for d in await store.list_long_term()] == ["a"]
+    finally:
+        await database.conn.close()
+
+
+async def test_add_long_term_semantic_distinct_keeps() -> None:
+    store, bus, database = await _new_stack()
+    embed = _embed_map({"理解人类 痛苦": [1.0, 0.0], "理解道德 责任": [0.0, 1.0]})
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator(), embed=embed)
+    try:
+        await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
+        await facade.add_long_term(_lt_custom("b", "理解道德", "责任"))
+        assert [d.id for d in await store.list_long_term()] == ["a", "b"]
+    finally:
+        await database.conn.close()
+
+
+async def test_add_long_term_capacity_full_skips() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())  # embed=None
+    try:
+        for i in range(5):
+            await facade.add_long_term(_lt_custom(f"lt{i}", f"话题{i}"))
+        await facade.add_long_term(_lt_custom("lt6", "话题6"))
+        assert [d.id for d in await store.list_long_term()] == [
+            "lt0", "lt1", "lt2", "lt3", "lt4",
+        ]
+    finally:
+        await database.conn.close()
+
+
+async def test_add_long_term_embed_none_exact_only() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())  # embed=None
+    try:
+        await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
+        await facade.add_long_term(_lt_custom("b", "了解人类", "痛苦"))
+        assert [d.id for d in await store.list_long_term()] == ["a", "b"]
+    finally:
+        await database.conn.close()
+
+
+async def test_add_long_term_embed_error_skips_semantic() -> None:
+    store, bus, database = await _new_stack()
+
+    async def boom(text: str) -> list[float]:
+        raise RuntimeError("embed down")
+
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator(), embed=boom)
+    try:
+        await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
+        await facade.add_long_term(_lt_custom("b", "了解人类", "痛苦"))
+        assert [d.id for d in await store.list_long_term()] == ["a", "b"]
     finally:
         await database.conn.close()

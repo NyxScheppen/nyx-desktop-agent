@@ -1,3 +1,5 @@
+import logging
+
 from nyx.config import DesireConfig
 from nyx.desire.lifecycle import DesireLifecycle, ListMemories
 from nyx.desire.store import DesireStore
@@ -5,8 +7,10 @@ from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient
-from nyx.memory.retrieval import EmbedFn
+from nyx.memory.retrieval import EmbedFn, cosine
 from nyx.types import DesireState, Event, LongTermDesire, ShortTermDesire
+
+_LT_DEDUP_SIM_THRESHOLD = 0.9  # 长期欲望语义重复判定阈值（embedding 余弦）
 
 
 class DesireFacade:
@@ -26,6 +30,9 @@ class DesireFacade:
         embed: EmbedFn | None = None,
     ) -> None:
         self._store = store
+        self._config = config
+        self._embed = embed
+        self._logger = logging.getLogger(__name__)
         self._lifecycle = DesireLifecycle(
             store, bus, llm, evaluator, config, list_memories, embed
         )
@@ -63,5 +70,27 @@ class DesireFacade:
         await self._lifecycle.mark_suppressed(desire_id)
 
     async def add_long_term(self, desire: LongTermDesire) -> None:
-        """反思新增/强化长期欲望入口：直接插入（容量检查归 12 反思）。"""
+        """新增长期欲望入口：容量检查 + 精确/语义去重，命中/超容则跳过。
+
+        去重与容量下沉到此处，探索（14）与反思（12）两个调用方统一走；
+        满不新增（不淘汰）。
+        """
+        existing = await self._store.list_long_term()
+        if len(existing) >= self._config.long_term_capacity:
+            return
+        name = desire.name.strip()
+        for d in existing:
+            if d.name.strip() == name:
+                self._logger.info("长期欲望重复丢弃（同名） name=%s", name)
+                return
+        if self._embed is not None:
+            try:
+                vec = await self._embed(f"{desire.name} {desire.description}")
+                for d in existing:
+                    other = await self._embed(f"{d.name} {d.description}")
+                    if cosine(vec, other) >= _LT_DEDUP_SIM_THRESHOLD:
+                        self._logger.info("长期欲望重复丢弃（语义） name=%s", name)
+                        return
+            except Exception:
+                self._logger.exception("长期欲望去重 embedding 失败，跳过去重")
         await self._store.insert_long_term(desire)

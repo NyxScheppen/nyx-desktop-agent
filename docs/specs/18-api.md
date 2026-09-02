@@ -64,7 +64,7 @@
     - [ ] `_load_ask`：tmp 目录放 `ask.md` → 返回内容；缺失 → `FileNotFoundError`（fail-fast）
     - [ ] `_seed_inner_life`（真 `InnerLifeStore` + `:memory:`）：空表 seed 四表 → `get_*` 非 None 且值 = canon §2/§3 初始值；**再跑一次幂等**（值不变、不重复行）
     - [ ] `_seed_desire`（真 `DesireStore`）：空表 seed 后 `list_values()` 四类型、`list_long_term()` 3 条；再跑幂等
-    - [ ] `_build_tools`（`Config` 的 `exploration.web_enabled=False` / `True`）：`{t["function"]["name"] for t in schema()}` `False` → `{local_search, file_io}`、`True` → 多 `web_search`（工厂构造无 I/O，`roots`/`DDGS` 惰性到 `.call()`）
+    - [ ] `_build_tools`（`Config` 的 `exploration.web_enabled=False` / `True`）：`{t["function"]["name"] for t in schema()}` `False` → `{local_search, file_io}`、`True` → 多 `web_search`（工厂构造无 I/O，`roots`/`httpx` 惰性到 `.call()`）
   - [ ] **端点薄封装**（`httpx.AsyncClient` + `ASGITransport`，fake Facade 返回 fixture）：
     - [ ] `GET /api/state` → `CurrentState` JSON（枚举字段为 `.value` 字符串）
     - [ ] `POST /api/chat` → 返回 `{event_id}`；`bus.list_events()` 含一条 `USER_MESSAGE`（`source=external`、`correlation_id == id`）

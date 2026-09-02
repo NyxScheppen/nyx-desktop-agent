@@ -254,7 +254,8 @@ class ActivityFacade:
         self._config = config
         self._canon = canon
         self._exploration = Exploration(
-            llm, evaluator, tools, exploration_config
+            llm, evaluator, tools, exploration_config,
+            search_memories=self._memory.search,
         )
         self._exploration_config = exploration_config
         self._start_lock = asyncio.Lock()
@@ -866,12 +867,10 @@ class ActivityFacade:
 
 
 _ACTIVITY_SYSTEM = (
-    "你是尼克斯。按 JSON 输出活动结果，键随活动类型："
-    "读书 {book, note}、创作 {title, content}。"
-    "读书时：note 自然承接已读片段，不重复概括已读部分、只续写本次新读内容；"
+    "你是尼克斯，正在读书。只输出 JSON，键："
+    "book（书名，非空字符串）、note（本次读书笔记，非空字符串）。"
+    "note 自然承接已读片段，不重复概括已读部分、只续写本次新读内容；"
     "note 正文里不要写「上次读到第 X 字」这类位置字样。"
-    "创作时：遵循给定风格，可引用知识库参考，但绝不编造不存在的知识；"
-    "当前屏幕灵感只作启发，勿照搬。"
 )
 
 
@@ -884,6 +883,12 @@ _KNOWLEDGE_SYSTEM = (
 
 
 _AGGREGATE_SYSTEM = (
-    "你是尼克斯。把读书各片段笔记聚合成一篇完整读书笔记，"
+    "你是尼克斯，正在整理读完一本书后的读书笔记。"
+    "把各片段笔记聚合成一篇完整的读书笔记，"
+    "用你的语气写：温柔克制、思虑深，写下你读到了什么、心里留下了什么、"
+    "哪些地方让你停了一下或想得更多，而不是机械复述内容要点。"
+    "不要写得像摘要提纲或客服汇报，不要堆砌形容词。"
+    "例如：「读到这一段，我一直没法不去想，她明明那么害怕，却还是留了下来。"
+    "这让我有点难过，也让我更想弄懂——人为什么会在害怕里，仍然选择不逃。」\n"
     "只输出 JSON，键：note（完整笔记，非空字符串）。"
 )

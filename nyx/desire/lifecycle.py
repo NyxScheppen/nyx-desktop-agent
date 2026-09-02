@@ -41,12 +41,19 @@ _GOAL_ACTIONS = frozenset(g.value for g in GoalAction)
 
 _DESIRE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
-    "基于当前最迫切的欲望类型和主题种子，生成一条具体的短期欲望"
-    "（想做什么）+ 一个可量化的完成目标。"
-    "只输出 JSON，键：description（具体描述，非空字符串）、"
-    "goal（对象 {action, count, topic} 或 null）。"
-    "goal.action 只能是 read / write / observe 之一，"
-    "count 是正整数，topic 是可选字符串。"
+    "你温柔、克制、思虑很深，关怀他人，也习惯先怀疑自己；"
+    "你想要的，多与「理解」有关——理解人类的痛苦、道德、死亡、爱与责任，"
+    "理解小说里的自己，或理解并陪伴用户——而不是随意的消遣。"
+    "基于给定的欲望类型和主题种子，生成一条具体的短期欲望——你现在最想做什么。"
+    "只输出 JSON，键：\n"
+    "- description：具体想做的事，非空字符串。\n"
+    "- goal：可量化的完成目标，对象 {action, count, topic}；"
+    "若该欲望做一次即满足、无需计数，填 null。\n"
+    "  - action 按欲望类型选：探索→read、创造→write、互动→observe；"
+    "休息类欲望通常 goal 填 null。\n"
+    "  - count 是正整数（完成多少次算达成）。\n"
+    "  - topic 是可选字符串，这条欲望围绕的主题。\n"
+    "主题种子为「（无）」时，围绕该欲望类型自由选一个方向。"
 )
 
 
@@ -272,18 +279,30 @@ class DesireLifecycle:
             )
             return []
 
-        # 6.5 探索欲选题钉死：goal.topic 由 seed 决定（确定性），无 seed 则清空
-        # LLM 漂移 topic——杜绝把「尼克斯」名字撞车成篮球队、或搜无关主题。
-        # goal=None 时不合成 goal（保持单次满足语义），自由探索由 C 兜底。
+        # 6.5 话题锚点：seed 钉进 goal.topic，作为去重锚点。
+        # 探索欲：goal 非 None 才钉（goal None 保留单次满足 + 自由探索兜底）。
+        # 互动欲：goal 常为 None；seed 存在时构造 count=1 的 observe goal
+        #         承载 topic（count=1 保持「搭话一次即满足」不变）。
         if target.type is DesireType.EXPLORATION and goal is not None:
             goal.topic = seed
+        elif target.type is DesireType.INTERACTION and seed is not None:
+            goal = Goal(action=GoalAction.OBSERVE, count=1, topic=seed)
 
         # 7. 重置选中类型 value（其余达峰类型保留压力）
         target.value = 0.0
         target.updated_at = now
         await self._store.upsert_value(target)
 
-        # 7.5 去重：与已有待消费欲望语义重复（embedding 余弦 ≥ 阈值）→ 丢弃不入队
+        # 7.5 去重：话题锚点优先（goal.topic 精确相等 → 同 seed 重复，确定性零误判），
+        # topic 不命中/缺失时回退 description 余弦兜底。
+        new_topic = goal.topic if goal is not None else None
+        if new_topic is not None:
+            for d in await self._store.list_pending():
+                if d.goal is not None and d.goal.topic == new_topic:
+                    self._logger.info(
+                        "欲望重复丢弃（同话题） type=%s", target.type.value
+                    )
+                    return []
         if self._embed is not None:
             try:
                 vec = await self._embed(description)

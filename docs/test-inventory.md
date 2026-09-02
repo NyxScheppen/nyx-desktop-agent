@@ -898,6 +898,14 @@
 | `isReady > 不同 correlation_id 不阻塞` | 功能正确 | 不同 `correlation_id` 的 nyx 文本不阻塞 speak → true |
 | `settingsStore > setTint/setImage 独立落 store` | 功能正确 | `setTint`/`setImage` 各落 `tint`/`image` 字段，可并存 |
 | `settingsStore > reset 恢复默认` | 功能正确 | `reset()` 后 `tint`/`image` 均回 null |
+| `settingsStore > setCircleColor 写 store + localStorage` | 功能正确 | `setCircleColor("#dcebf5")` → `circleColor="#dcebf5"` + `localStorage["nyx.circleColor"]="#dcebf5"` |
+| `settingsStore > setAvatarPos 写 store + localStorage` | 功能正确 | `setAvatarPos({x:120,y:340})` → `avatarPos` 同值 + `localStorage["nyx.avatarPos"]` 解析回 `{x:120,y:340}` |
+| `settingsStore > setCircleSize 写 store + localStorage` | 功能正确 | `setCircleSize("small")` → `circleSize="small"` + `localStorage["nyx.circleSize"]="small"` |
+| `settingsStore > reset 清 circleColor/circleSize/avatarPos + localStorage 键` | 功能正确 | `reset()` 后 `circleColor="#ffffff"`、`circleSize="large"`、`avatarPos=null`、三个 localStorage 键均删 |
+| `parseAvatarPos > 合法 JSON 对象` | 功能正确 | `{"x":1,"y":2}` → `{x:1,y:2}`；额外键忽略 |
+| `parseAvatarPos > null/空串/坏 JSON/缺键/非数字` | 边界鲁棒 | `null`/`""`/`"not json"`/`{"x":"1"}`/`{"x":null}`/`{"x":1}`（缺 y）均 → null |
+| `parseCircleSize > 合法三档原样返回` | 功能正确 | `"small"/"medium"/"large"` → 原样返回 |
+| `parseCircleSize > null/空串/未知值回退默认` | 边界鲁棒 | `null`/`""`/`"huge"` 均 → `"large"`（默认） |
 | `isReady > think 也受串行门控` | 功能正确 | think2 在 speak1 之后、speak1 未入 `typedIds` → false；speak1 入 → true（每条 nyx 文本等前一条同 correlation_id 打完） |
 
 ## frontend-reader-store（阅读 store：readerStore 书架/进度/追赶循环）
@@ -990,6 +998,7 @@
 |---|---|---|
 | `EnergyBar > 按 energy_state 渲染中文文案` | 功能正确 | `energy_state="tired"` 渲染中文 `疲惫`（经 `ENERGY_LABELS`，不再显原值） |
 | `EmotionSprite > 按 emotion 选图文件名` | 功能正确 | `emotion="happy"` 时 `<img alt="happy">` 的 `src` 含 `happy`（1:1 文件名映射，无 switch） |
+| `EmotionSprite > 表情图 draggable=false` | 功能正确 | `<img alt="neutral">` 带 `draggable="false"`（防原生图片拖拽抢占头像圆圈拖拽） |
 | `BigFiveChart > 按 personality 渲染双端语义` | 功能正确 | 渲染 `保守`/`开放`（openness 两端）+ `情绪稳定`/`敏感`（neuroticism 两端），不做数值断言 |
 | `ValuesChart > 按 values 渲染双端语义` | 功能正确 | 渲染 `疏离`/`亲近`（attitude_to_human 两端）+ `悲观`/`乐观`（optimism 两端），不做数值断言 |
 | `ValenceArousalPlot > 渲染不崩` | 功能正确 | SVG `.va-plot` 存在（坐标/像素不做断言，README §6） |
@@ -1009,13 +1018,15 @@
 | `usePresence > 鼠标活动 → 下次采样报 online` | 功能正确 | `mouseMove` 后 30s 采样点 `postObserve("online", "")` |
 | `usePresence > presence 不变 → 不再上报` | 边界鲁棒 | 无输入 30s 后 `postObserve` 仍 1 次（仅挂载那次 away，不重复上报） |
 
-## frontend-avatar（头像立绘：Avatar 戳立绘 + 红点通知 + 昼夜节律）
+## frontend-avatar（可拖拽头像圆圈：Avatar 拖拽坐标夹取 + 戳 + 红点通知 + 昼夜节律）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
 | `Avatar > isNight 昼夜节律纯函数` | 功能正确 | `isNight(22/0/5)` → true（夜间困倦）；`isNight(6/12/21)` → false（白天回落当前情绪） |
-| `Avatar > unreadProactive=true 显示徽标，点击清除` | 功能正确 | `unreadProactive=true` 渲染「小狐狸我有话对你说」徽标；点击 → `clearUnreadProactive` 置 false |
-| `Avatar > 戳立绘：戳一下害羞、连戳 5 次生气` | 功能正确 | 点击头像 → `announce("mutter", "呀！")`；连戳第 5 次 → `announce("mutter", "不要再戳了啦！")` |
+| `Avatar > clampAvatarPos 拖拽坐标夹取纯函数（含 size 参数）` | 功能正确 | 视口内坐标原样返回；越界夹回 `[0, viewport-size]`（`{-10,-5}`→`{0,0}`、`{2000,2000}`→`{880,624}`@1024×768 size=144） |
+| `Avatar > clampAvatarPos size 决定右/下边界` | 功能正确 | `{2000,2000}`@1024×768 size=96 → `{928,672}`（`1024-96`、`768-96`） |
+| `Avatar > unreadProactive=true 显示徽标，点击清除` | 功能正确 | `unreadProactive=true` 渲染「小狐狸我有话对你说」红点；点击 → `clearUnreadProactive` 置 false |
+| `Avatar > 戳立绘：戳一下害羞、连戳 5 次生气` | 功能正确 | 点击圆圈 → `announce("mutter", "呀！")`；连戳第 5 次 → `announce("mutter", "不要再戳了啦！")` |
 
 ## frontend-interactivity（交互性：常驻状态条 + 头像旁气泡 + 活动产出）
 
@@ -1052,10 +1063,12 @@
 | `DesiresPanel > 渲染活队列（pending/active/suppressed），过滤 expired/satisfied` | 功能正确 | 短期欲望里 pending/active/suppressed 三条描述上屏，satisfied/expired 两条描述不上屏 |
 | `DesiresPanel > 短期欲望全是终态 → 不渲染「短期欲望」空区块` | 边界鲁棒 | 短期欲望全为 satisfied/expired → `liveShortTerm.length===0`，「短期欲望」区块整体不渲染 |
 
-## frontend-settings-view（游戏设置页内面板：SettingsView 字体大小 + 背景外观）
+## frontend-settings-view（游戏设置页内面板：SettingsView 字体大小 + 圆圈背景 + 背景外观）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `SettingsView > 渲染标题 / 字体大小三档 / 背景外观` | 功能正确 | 「游戏设置」标题、「字体大小」「背景」两个面板标题（heading）、「小/中/大」三按钮均上屏 |
+| `SettingsView > 渲染标题 / 字体大小三档 / 圆圈背景 / 圆圈大小 / 背景外观` | 功能正确 | 「设置」标题、「字体大小」「圆圈背景」「圆圈大小」「背景」四个面板标题（heading）、字体「小/中/大」三按钮均上屏 |
 | `SettingsView > 默认「中」激活，点「大」写 settingsStore.fontScale` | 功能正确 | 默认「中」`aria-pressed=true`；点「大」→ `fontScale==="large"` 且「大」`aria-pressed=true` |
 | `SettingsView > 点预设色块「樱粉」写 settingsStore.tint` | 功能正确 | 点「樱粉」色块（aria-label）→ `settingsStore.tint === "#f7e8e0"` |
+| `SettingsView > 点圆圈底色「浅粉」写 settingsStore.circleColor` | 功能正确 | 点「浅粉」色块（aria-label，与「樱粉」错开）→ `settingsStore.circleColor === "#f7e8e0"` |
+| `SettingsView > 默认「大」激活，点「小」写 settingsStore.circleSize` | 功能正确 | 默认「圆圈大」`aria-pressed=true`；点「圆圈小」→ `circleSize==="small"` 且「圆圈小」`aria-pressed=true`（aria-label 与字体「小/中/大」错开） |

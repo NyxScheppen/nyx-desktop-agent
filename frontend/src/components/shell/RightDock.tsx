@@ -4,10 +4,11 @@ export type View = "inner" | "desire" | "activity" | "memory" | "reading";
 type RightDockProps = {
   view: View; // 当前视图，用于高亮激活入口
   onSwitch: (view: View) => void;
+  onOpenSettings: () => void; // 打开设置弹层（设置入口从顶栏迁到底部导航）
 };
 
-// 底部工具条（中间内容区下方，常驻不随切视图消失）：内在状态 / 欲望 / 活动 / 记忆 / 读书。
-// 五个入口切换中间内容区（切视图），当前入口高亮。未来加词条只需往 ENTRIES 追加一项。
+// 底部工具条（中间内容区下方，常驻不随切视图消失）：内在状态 / 欲望 / 活动 / 记忆 / 读书 + 设置。
+// 五个入口切换中间内容区（切视图），当前入口高亮；「设置」单独按钮开设置弹层。未来加词条只需往 ENTRIES 追加一项。
 const ENTRIES: readonly { label: string; view: View }[] = [
   { label: "内在状态", view: "inner" },
   { label: "欲望", view: "desire" },
@@ -16,7 +17,7 @@ const ENTRIES: readonly { label: string; view: View }[] = [
   { label: "读书", view: "reading" },
 ];
 
-export default function RightDock({ view, onSwitch }: RightDockProps) {
+export default function RightDock({ view, onSwitch, onOpenSettings }: RightDockProps) {
   return (
     <div className="right-dock">
       {ENTRIES.map((e) => (
@@ -32,6 +33,13 @@ export default function RightDock({ view, onSwitch }: RightDockProps) {
           {e.label}
         </button>
       ))}
+      <button
+        type="button"
+        className="right-dock__entry right-dock__entry--settings"
+        onClick={onOpenSettings}
+      >
+        设置
+      </button>
     </div>
   );
 }

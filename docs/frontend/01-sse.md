@@ -210,6 +210,6 @@ announceStore.announce(kind: "mutter" | "activity", text: string): void  // 立�
 ## 6. App 组合装配（`App.tsx`）
 
 - `useSSE` 只挂一次（App 顶层），子面板**不重复订阅**，只读 store。
-- 精简装配：顶栏（标题 `✦ Nyx ✦` + 连接状态 + 设置按钮）+ 左栏常驻对话 `div.left-dock`（`StatusBar` → `MessageList` → `ChatInput` 竖排）+ 中间内容区 `div.game-main`（`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书 + `avatar-overlay` 立绘浮层）+ 底部导航 `RightDock` + `AnnounceLayer` 气泡层。
+- 精简装配：顶栏（标题 `✦ Nyx ✦` + 连接状态）+ 左栏常驻对话 `div.left-dock`（`StatusBar` → `MessageList` → `ChatInput` 竖排）+ 中间内容区 `div.game-main`（`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书）+ 底部导航 `RightDock`（含设置入口）+ 可拖拽头像圆圈 `Avatar`（`AnnounceLayer` 嵌套其中，气泡随圆圈头顶冒）。
 - 重连（`status === "open"`）时 `refreshState()` + `void refreshActivity()` 重拉快照对齐（断线期间 `emotion_update` 可能丢失）。
 - 背景由 `settingsStore` 驱动：`image` 以 `cover` 铺底、`tint` 无图时作纯色替默认羊皮纸（`--parchment`）、图+色并存时叠一层半透明 `.app-bg-tint`。

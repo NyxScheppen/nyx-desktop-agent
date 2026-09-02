@@ -6,7 +6,7 @@ import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
-import { useSettingsStore } from "../src/stores/settingsStore";
+import { parseAvatarPos, parseCircleSize, useSettingsStore } from "../src/stores/settingsStore";
 import {
   catchupDurationMs,
   computeWindow,
@@ -645,6 +645,72 @@ describe("settingsStore", () => {
 
     expect(useSettingsStore.getState().tint).toBeNull();
     expect(useSettingsStore.getState().image).toBeNull();
+  });
+
+  it("setCircleColor 写 store 并持久化 localStorage", () => {
+    useSettingsStore.getState().setCircleColor("#dcebf5");
+
+    expect(useSettingsStore.getState().circleColor).toBe("#dcebf5");
+    expect(localStorage.getItem("nyx.circleColor")).toBe("#dcebf5");
+  });
+
+  it("setAvatarPos 写 store 并持久化 localStorage", () => {
+    useSettingsStore.getState().setAvatarPos({ x: 120, y: 340 });
+
+    expect(useSettingsStore.getState().avatarPos).toEqual({ x: 120, y: 340 });
+    expect(parseAvatarPos(localStorage.getItem("nyx.avatarPos"))).toEqual({ x: 120, y: 340 });
+  });
+
+  it("setCircleSize 写 store 并持久化 localStorage", () => {
+    useSettingsStore.getState().setCircleSize("small");
+
+    expect(useSettingsStore.getState().circleSize).toBe("small");
+    expect(localStorage.getItem("nyx.circleSize")).toBe("small");
+  });
+
+  it("reset 清 circleColor/circleSize/avatarPos 及 localStorage 键", () => {
+    useSettingsStore.getState().setCircleColor("#dcebf5");
+    useSettingsStore.getState().setCircleSize("small");
+    useSettingsStore.getState().setAvatarPos({ x: 1, y: 2 });
+
+    useSettingsStore.getState().reset();
+
+    expect(useSettingsStore.getState().circleColor).toBe("#ffffff");
+    expect(useSettingsStore.getState().circleSize).toBe("large");
+    expect(useSettingsStore.getState().avatarPos).toBeNull();
+    expect(localStorage.getItem("nyx.circleColor")).toBeNull();
+    expect(localStorage.getItem("nyx.circleSize")).toBeNull();
+    expect(localStorage.getItem("nyx.avatarPos")).toBeNull();
+  });
+});
+
+describe("parseAvatarPos（localStorage 原始串 → AvatarPos 纯函数）", () => {
+  it("合法 JSON 对象 → {x, y}（额外键忽略）", () => {
+    expect(parseAvatarPos('{"x":1,"y":2}')).toEqual({ x: 1, y: 2 });
+    expect(parseAvatarPos('{"x":1,"y":2,"z":3}')).toEqual({ x: 1, y: 2 });
+  });
+
+  it("null / 空串 / 坏 JSON / 缺键 / 非数字 → null", () => {
+    expect(parseAvatarPos(null)).toBeNull();
+    expect(parseAvatarPos("")).toBeNull();
+    expect(parseAvatarPos("not json")).toBeNull();
+    expect(parseAvatarPos('{"x":"1","y":2}')).toBeNull();
+    expect(parseAvatarPos('{"x":null,"y":2}')).toBeNull();
+    expect(parseAvatarPos('{"x":1}')).toBeNull();
+  });
+});
+
+describe("parseCircleSize（localStorage 原始串 → CircleSize 纯函数）", () => {
+  it("合法三档原样返回", () => {
+    expect(parseCircleSize("small")).toBe("small");
+    expect(parseCircleSize("medium")).toBe("medium");
+    expect(parseCircleSize("large")).toBe("large");
+  });
+
+  it("null / 空串 / 未知值 → 回退默认「large」", () => {
+    expect(parseCircleSize(null)).toBe("large");
+    expect(parseCircleSize("")).toBe("large");
+    expect(parseCircleSize("huge")).toBe("large");
   });
 });
 

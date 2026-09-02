@@ -154,14 +154,6 @@ body {
   text-align: left;
 }
 
-.status-bar__name {
-  font-size: 1.3rem;
-  color: var(--accent);
-  letter-spacing: 2px;
-  border-bottom: 1px solid var(--gold);
-  padding-bottom: 0.4rem;
-}
-
 .status-bar__mood {
   font-size: 0.92rem;
   line-height: 1.5;
@@ -179,70 +171,60 @@ body {
   word-break: break-word;
 }
 
-/* ===== 头像立绘（状态条内） ===== */
+/* ===== 情绪 sprite ===== */
 .emotion-sprite {
   border-radius: 0.4rem;
 }
 
-.avatar {
-  flex-shrink: 0;
-  width: 100%;
-  position: relative;
-  cursor: pointer;
+/* 可拖拽头像圆圈（08 §4 视觉改造）：position:fixed 白底圆形，内放方形表情头像；可拖到窗口任意处。
+   width/height 由 Avatar 内联（settingsStore.circleSize 三档 96/120/144），此处不写死。 */
+.avatar-circle {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--parchment-deep);
+  box-shadow: 0 8px 24px rgba(91, 70, 54, 0.3);
+  cursor: grab;
+  z-index: 5; /* 高于顶栏(4)，低于模态框(30) */
+  user-select: none;
+  touch-action: none; /* 移动端拖拽不被滚动抢占 */
 }
 
-/* 立绘实体浮层（08 §4 视觉改造）：右下角半身，盖在 game-main 右下，不占布局宽、不挡正文点击 */
-.avatar-overlay {
+.avatar-circle:active {
+  cursor: grabbing;
+}
+
+.avatar-circle__face {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 32%;
-  z-index: 1;
-  pointer-events: none;
+  inset: 0;
+  border-radius: 50%;
+  overflow: hidden; /* 裁出圆形，方形表情图超出部分裁掉 */
 }
-.avatar-overlay .avatar {
-  pointer-events: auto; /* 只在立绘上恢复点击（戳立绘 + 红点） */
-}
-/* 半身立绘：回落基础 .emotion-sprite--portrait 的 aspect-ratio 3/4 + cover + top center
-   （裁出上半身、腿裁掉）；实体 opacity 1（原 0.22 调淡已移除）。 */
 
-.emotion-sprite--portrait {
+/* 圆圈内表情头像：方形（1080×1080）撑满圆形，object-fit:cover 不裁不拉伸。
+   pointer-events:none——表情图纯装饰，指针事件交给 .avatar-circle 承载，防原生图片拖拽抢占圆圈拖拽。 */
+.emotion-sprite--circle {
   display: block;
   width: 100%;
-  height: auto;
-  aspect-ratio: 3 / 4;
+  height: 100%;
   object-fit: cover;
-  object-position: top center;
-  filter: drop-shadow(0 12px 30px rgba(91, 70, 54, 0.25));
+  pointer-events: none;
 }
 
-/* 红点通知徽标：搭话未读时挂在头像右上角，点击清除 */
+/* 红点通知：搭话未读时挂圆圈右上角，点击清除 */
 .avatar-notice {
   position: absolute;
-  top: 12px;
-  right: 12px;
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.35rem 0.75rem;
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  background: var(--parchment);
-  color: #c0392b;
-  font-family: inherit;
-  font-size: 0.78rem;
-  letter-spacing: 1px;
-  cursor: pointer;
-  box-shadow: 0 4px 14px rgba(91, 70, 54, 0.22);
-}
-
-.avatar-notice::before {
-  content: "";
-  width: 0.5rem;
-  height: 0.5rem;
+  top: -2px;
+  right: -2px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 2px solid var(--parchment);
   border-radius: 50%;
   background: #e74c3c;
-  flex-shrink: 0;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(91, 70, 54, 0.35);
 }
 
 .emotion-sprite--large {
@@ -389,6 +371,12 @@ body {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--parchment);
+}
+
+/* 底部导航「设置」入口：与切视图五入口错开，虚线边框区分 */
+.right-dock__entry--settings {
+  margin-left: 0.75rem;
+  border-style: dashed;
 }
 
 /* ===== 页内面板容器（替换书卷区显示各面板） ===== */
@@ -889,23 +877,6 @@ body {
   box-shadow: 0 0 0 2px rgba(140, 90, 59, 0.35);
 }
 
-/* ===== 顶栏「设置」按钮 ===== */
-.topbar-settings {
-  padding: 0.25rem 0.9rem;
-  border: 1px solid var(--gold);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--gold);
-  cursor: pointer;
-  font-family: inherit;
-  letter-spacing: 2px;
-}
-
-.topbar-settings:hover {
-  background: var(--parchment-deep);
-  color: var(--ink);
-}
-
 /* ===== 模态框（内在详情 / 设置弹层） ===== */
 .modal-overlay {
   position: fixed;
@@ -969,19 +940,18 @@ body {
   gap: 0.75rem;
 }
 
-/* ===== 头像旁临时气泡 ===== */
+/* ===== 头像圆圈头顶临时气泡（嵌套在 .avatar-circle 内，随圆圈拖拽走） ===== */
 .announce-layer {
-  position: fixed;
-  left: auto;
-  right: 16px;
-  top: auto;
-  bottom: 40%; /* 立绘改右下角后，气泡冒在立绘头顶上方（偏移量待肉眼看渲染微调） */
-  z-index: 3;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: center;
   gap: 8px;
-  max-width: 34%;
+  width: max-content;
+  max-width: min(260px, 80vw);
   pointer-events: none;
 }
 
@@ -1039,7 +1009,7 @@ body {
     padding: 48px 8px 8px;
     gap: 8px;
   }
-  .avatar {
+  .avatar-circle {
     display: none;
   }
   .scene-title {

@@ -78,7 +78,7 @@ frontend/
   index.html
   src/
     main.tsx                 # React 入口，挂载 App
-    App.tsx                  # 精简装配：顶栏（标题/连接状态/设置）+ 左栏常驻对话 + 中间内容区（side-panel + 立绘浮层）+ 底部导航 + 气泡层（01-sse §6）
+    App.tsx                  # 精简装配：顶栏（标题/连接状态）+ 左栏常驻对话 + 中间内容区（side-panel）+ 底部导航（含设置）+ 可拖拽头像圆圈（气泡随圆圈头顶冒，08 §4）
     types/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     lib/
@@ -98,10 +98,10 @@ frontend/
       activityStore.ts       # 活动：ActivitySnapshot 快照 + 跨天产出 results（快照 store）
       memoryStore.ts         # 记忆：Memory 快照（GET /api/memories + SSE memory_*）
       readerStore.ts         # 阅读：书架/进度/段落/追赶/笔记 + paginate 真分页纯函数
-      settingsStore.ts       # 背景外观：tint/image/fontScale（纯前端 UI 状态，无后端）
+      settingsStore.ts       # 背景外观：tint/image/fontScale + 圆圈底色/尺寸/位置 circleColor/circleSize/avatarPos（后三者持久化 localStorage）
       announceStore.ts       # 立绘旁临时气泡：items/announce/dismiss（纯前端呈现，无后端）
     components/
-      AnnounceLayer.tsx      # 立绘旁淡出气泡层（读 announceStore，App 层挂载）
+      AnnounceLayer.tsx      # 头像圆圈头顶淡出气泡层（读 announceStore，嵌套在 Avatar 内）
       chat/
         MessageList.tsx
         MessageBubble.tsx
@@ -110,7 +110,7 @@ frontend/
         InnerStatePanel.tsx
         ValenceArousalPlot.tsx
         EmotionSprite.tsx
-        Avatar.tsx           # 立绘：戳立绘/红点通知（包裹 EmotionSprite；右下角半身实体浮层见 08 §4）
+        Avatar.tsx           # 可拖拽头像圆圈：拖拽/戳/红点通知（包裹 EmotionSprite + AnnounceLayer；见 08 §4）
         EnergyBar.tsx
         BarChart.tsx
         BigFiveChart.tsx
@@ -127,12 +127,12 @@ frontend/
       layout/
         Panel.tsx            # 通用面板容器
         Modal.tsx            # 通用弹层容器
-        SettingsView.tsx     # 设置弹层（字体大小 + 背景外观）
+        SettingsView.tsx     # 设置弹层（字体大小 + 圆圈背景 + 圆圈大小 + 背景外观）
       shell/
-        RightDock.tsx        # 底部导航：读书|内在|欲望|活动|记忆（切中间视图）
-        StatusBar.tsx        # 左栏顶部状态条（名字/心情/精力条/现在状态）
+        RightDock.tsx        # 底部导航：读书|内在|欲望|活动|记忆（切中间视图）+ 设置入口
+        StatusBar.tsx        # 左栏顶部状态条（心情/精力条/现在状态）
     assets/
-      sprites/               # 8 情绪 sprite（EmotionCategory 1:1）
+      expressions/          # 8 情绪表情图（EmotionCategory 1:1，方形 1080×1080）
   tests/
     api.test.ts              # API 端点测试（CLAUDE.md 要求）
     sse.test.ts
@@ -148,7 +148,7 @@ frontend/
 
 ## 5. 面板去向（精简装配）
 
-08 布局重构后精简为：顶栏（标题 `✦ Nyx ✦` + 连接状态 + 设置按钮）｜左栏常驻对话（`div.left-dock`：`StatusBar` + `MessageList` + `ChatInput` 竖排）｜中间内容区（`div.game-main`：`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书 + `avatar-overlay` 立绘右下角半身实体）｜底部导航（`RightDock`：读书|内在|欲望|活动|记忆）｜气泡层（`AnnounceLayer`，立绘旁）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
+08 布局重构后精简为：顶栏（标题 `✦ Nyx ✦` + 连接状态）｜左栏常驻对话（`div.left-dock`：`StatusBar` + `MessageList` + `ChatInput` 竖排）｜中间内容区（`div.game-main`：`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书）｜底部导航（`RightDock`：读书|内在|欲望|活动|记忆 + 设置）｜可拖拽头像圆圈（`Avatar`，`position:fixed` 右下角，碎碎念气泡随圆圈头顶冒）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|

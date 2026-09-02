@@ -4,7 +4,7 @@ import { useActivityStore } from "../../stores/activityStore";
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import EnergyBar from "../inner/EnergyBar";
 
-// 状态条（左栏顶部）：信息块（名字/心情/精力条/现在状态）。立绘迁到中间浮层（08 §4）。
+// 状态条（左栏顶部）：信息块（心情/精力条/现在状态）。名字已去（顶栏占标题位，聊天区被挤），立绘迁到可拖拽头像圆圈。
 export default function StatusBar() {
   const current = useInnerLifeStore((s) => s.current);
   const activity = useActivityStore((s) => s.data);
@@ -15,7 +15,6 @@ export default function StatusBar() {
   return (
     <div className="status-bar">
       <div className="status-bar__info">
-        <span className="status-bar__name">✦ Nyx ✦</span>
         <span className="status-bar__mood">心情：{mood}</span>
         {current !== null && (
           <EnergyBar energy={current.energy} energy_state={current.energy_state} />

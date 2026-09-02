@@ -1,6 +1,6 @@
-# 08 阅读 × 聊天统一布局（左栏常驻对话 + 真分页 + 立绘浮层 + 碎碎念浮泡）
+# 08 阅读 × 聊天统一布局（左栏常驻对话 + 真分页 + 可拖拽头像圆圈 + 碎碎念浮泡）
 
-> 前端「陪伴感」重构：聊天从中间舞台挪到**左栏常驻**（读书/看面板时都能聊）；读书改**真分页**（取消滚动）；立绘做**右下角半身实体浮层**；碎碎念改**悬浮气泡**；读书提问/联想**并进对话**。
+> 前端「陪伴感」重构：聊天从中间舞台挪到**左栏常驻**（读书/看面板时都能聊）；读书改**真分页**（取消滚动）；立绘做**可拖拽头像圆圈**（白底可换底色，碎碎念头顶冒）；碎碎念改**悬浮气泡**；读书提问/联想**并进对话**。
 > 对齐后端：`24-reading-chat-turn`（读书提问/联想进 `_history`，回复可引用）。
 
 > **行号是定位锚，不是指令**：本文行号只用于快速定位；落点以**符号名 + 变量名**为准。
@@ -14,14 +14,14 @@
 │ 左栏对话       │   中间内容区（game-main，position:relative）│
 │  StatusBar(瘦)│   · view==="reading" → ReaderView/书架      │
 │  MessageList  │   · 其余 → 内在/欲望/活动/记忆面板            │
-│  (滚动)        │   · 右下角：立绘半身实体浮层（§4，盖在上层）      │
+│  (滚动)        │   · 右下角：可拖拽头像圆圈（§4，position:fixed 浮窗） │
 │  ChatInput(扁)│   底部：导航（读书|内在|欲望|活动|记忆）       │
 └───────────────┴──────────────────────────────────────────┘
 ```
 
 - **栅格改两行**：`.game-shell` `grid-template-columns: 340px minmax(0,1fr)`（左栏宽 **340px** 不变）；`grid-template-rows: minmax(0,1fr) auto`（**删第 3 行**，ChatInput 不再占右栏底部行）。
 - **左栏**（新 `div.left-dock`，`grid-column:1; grid-row:1/span 2`，`display:flex; flex-direction:column; gap:12px`）：`StatusBar`（瘦身，见下）→ `MessageList`（`flex:1`，滚动，占满中段）→ `ChatInput`（底部，`flex-shrink:0`）。聊天**全局唯一**，常驻不随切视图消失。
-- **`StatusBar` 瘦身**：删掉 `<Avatar />`（立绘迁到 §4 浮层），只留 `status-bar__info`（名字/心情/精力/现在状态）；组件内不再 import `Avatar`/`EmotionSprite`（清 orphan）。
+- **`StatusBar` 瘦身**：删掉 `<Avatar />`（立绘迁到 §4 圆圈）与「✦ Nyx ✦」名字（聊天区被挤，名字占顶栏标题位即可），只留 `status-bar__info`（心情/精力/现在状态）；组件内不再 import `Avatar`/`EmotionSprite`（清 orphan）。
 - **中间**（`.game-main`，`grid-column:2; grid-row:1; position:relative`）：`view` 类型删 `null`（聊天不再是可切换视图）；默认 `view = "reading"`（开应用即书架 + 左栏常驻对话）。`ScrollArea`（原聊天舞台）删除。
 - **导航**：`RightDock` 的 `ENTRIES` 删「聊天」一项（`{label:"聊天", view:null}`），剩 `读书|内在|欲望|活动|记忆` 五个，只切中间。`RightDock` `grid-column:2; grid-row:2`。
 - **反冗余**：删除 `ScrollArea.tsx`（聊天舞台）与 `MutterCard.tsx`（碎碎念卡片）两个被替代组件 + `mutterStore.ts`（§3）。
@@ -93,18 +93,18 @@ case "reading_mutter":
 - `dispatch.ts` 两处归入 `announceStore`：`mutter` case 改 `useAnnounceStore.getState().announce("mutter", e.content)`（删 `useMutterStore` import 与 `addMutter` 调用）；`reading_mutter`（§2.3）同样 `announce("mutter", e.content)`。
 - **`reflection_done` 不动**：已 `announce("mutter", …)`（`dispatch.ts` 现 73-86），与 mutter/reading_mutter **共享 `announce` 的 `"mutter"` kind**——`"mutter"` kind 语义统一为「Nyx 轻声自语/反思的瞬时气泡」，三者同一渲染路径，无冲突。
 - **删** `mutterStore.ts` + `MutterCard.tsx`（碎碎念不再有「最近几条卡片」，改为瞬时气泡几秒淡出）。
-- `AnnounceLayer` **重新定位**：从「头像旁」（`.announce-layer` `left:16px; bottom:64px`）移到「立绘头顶上方」（立绘右下角，见 §4）——`.announce-layer` 改 `left:auto; right:16px; top:auto; bottom:40%; align-items:flex-end`（气泡靠右、贴着立绘头顶）。`ANNOUNCE_DURATION.mutter = 4000` 不变；`announceStore` 本体不动（`announce`/`dismiss`/`ANNOUNCE_DURATION` 已够用）。
+- `AnnounceLayer` **重新定位**：从「头像旁」（`.announce-layer` `left:16px; bottom:64px`）移到「头像圆圈头顶上方」并**嵌套进 `Avatar` 圆圈内**（随圆圈拖拽走）——`.announce-layer` 改 `position:absolute; left:50%; bottom:calc(100% + 8px); transform:translateX(-50%); align-items:center`（气泡居中、贴着圆圈头顶）。`ANNOUNCE_DURATION.mutter = 4000` 不变；`announceStore` 本体不动（`announce`/`dismiss`/`ANNOUNCE_DURATION` 已够用）。
 
-## 4. 立绘右下角半身实体浮层（CSS 契约 + 交互保全）
+## 4. 可拖拽头像圆圈（白底可换底色 + 拖拽 + 头顶气泡）
 
-`Avatar`（`EmotionSprite` 立绘 + 红点通知）作为**右下角半身实体浮层**锚定在 `.game-main` 右下，**不占布局宽、盖在正文上层**：
+`Avatar` 改成**可拖拽圆形头像**：`position:fixed` 浮在窗口右下角，`EmotionSprite` 头部裁进圆圈，可拖到窗口任意处、位置/底色/尺寸存 localStorage；碎碎念气泡（`AnnounceLayer`）嵌套在圆圈内、头顶冒出随圆圈走。
 
-- **结构**：`.game-main` 内新增 `<div className="avatar-overlay"><Avatar /></div>`（与 view 内容并列，`position:absolute` 浮在上层）；`StatusBar` 不再渲染 `Avatar`（§1）。
-- **`Avatar.tsx` 源码一字不动**：戳立绘交互（`handlePoke`：连续戳害羞 `SHY_PHRASES`、≥5 次生气 `ANGRY_PHRASES`、1.5s 停手复位 `POKE_RESET_MS`、戳时 `announce("mutter", …)`）与红点通知（`avatar-notice`）**全部保留**——只改 `App.tsx` 的包法（包进 `.avatar-overlay`）+ CSS 层（`pointer-events`/`opacity`），不动 `Avatar` 内部。它是有交互的立绘，不是纯装饰。
-- **容器**：`.avatar-overlay { position:absolute; right:0; bottom:0; width:32%; z-index:1; pointer-events:none; }`——`pointer-events:none` 让浮层不挡正文点击（正文/面板仍占满中间，可读到立绘身后，实体立绘会遮右下角正文）。
-- **半身实体**：不设 `.avatar-overlay .emotion-sprite--portrait` 覆盖——回落到基础 `.emotion-sprite--portrait` 的 `aspect-ratio:3/4; object-fit:cover; object-position:top center`（裁出上半身、腿裁掉），`opacity` 默认 1（实体，原 0.22 调淡已移除）。
-- **交互保全（关键）**：`.avatar-overlay .avatar { pointer-events:auto; }`——只在 `.avatar` 子元素上恢复点击，戳立绘（`Avatar.handlePoke`）+ 红点通知（`.avatar-notice`）两个交互都保留，正文除立绘正下方外仍可点。**红点不必单独开点击区**：它本就是 `.avatar` 的子元素，随 `.avatar` 的 `pointer-events:auto` 自动可点。
-- `avatar-notice`（未读搭话红点）仍挂在立绘上，点击清除 `unreadProactive` 不变。
+- **结构**：`App.tsx` 直接挂 `<Avatar />`（不再包 `.avatar-overlay`）；`AnnounceLayer` 移到 `Avatar` 内部（气泡跟随圆圈），`App` 不再单独挂 `<AnnounceLayer />`。顶栏「设置」按钮删除，设置入口迁到 `RightDock`（底部导航新增「设置」项）。
+- **`Avatar.tsx` 重写**：白底圆形（`backgroundColor = settingsStore.circleColor`，默认 `#ffffff`）；`position:fixed; right:24px; bottom:24px; border-radius:50%`，`width/height` 内联自 `settingsStore.circleSize` 三档（`CIRCLE_SIZES`：小 96 / 中 120 / 大 144，默认大），内层 `.avatar-circle__face` `overflow:hidden` + `EmotionSprite size="circle"`（`object-fit:cover` 方形表情图撑满不裁，图源 `assets/expressions/`）。位置记忆 `avatarPos` 非 null 时内联 `left/top` 覆盖默认右下角。表情图 `<img>` 加 `draggable={false}`、`.emotion-sprite--circle` 加 `pointer-events:none`，防浏览器原生图片拖拽抢占圆圈拖拽。
+- **拖拽**：`onPointerDown/Move/Up/Cancel` + `setPointerCapture`；`getBoundingClientRect()` 记录起点，位移超 `DRAG_THRESHOLD=3` 判定为拖拽（否则算戳）；拖拽中本地 `dragPos` 渲染、松手才 `setAvatarPos` 提交（一次 localStorage 写）；`clampAvatarPos` 把坐标夹回视口内。挂载时若记忆坐标越界（窗口变小）自动夹回。
+- **戳立绘交互保留**：`handlePoke` 连续戳害羞 `SHY_PHRASES`、≥5 次生气 `ANGRY_PHRASES`、1.5s 停手复位 `POKE_RESET_MS`、戳时 `announce("mutter", …)`；`moved` 守卫让「拖拽后的 click」不误触发戳。红点通知（`.avatar-notice`）改为纯红点（`aria-label="小狐狸我有话对你说"`），点击 `stopPropagation` 清除 `unreadProactive`。
+- **持久化**：`settingsStore` 新增 `circleColor`/`circleSize`/`avatarPos` + 对应 setter，读写 localStorage（键 `nyx.circleColor`/`nyx.circleSize`/`nyx.avatarPos`），不可用时静默降级；`reset()` 一并清这三个键。`EmotionSprite` 的 `size` 变体删 `portrait`、增 `circle`（`portrait` 无调用方，清 orphan）。
+- **设置项**：`SettingsView` 新增「圆圈背景」面板（预设白/浅粉/浅蓝/浅绿/浅橙/淡紫 + 自定义取色），复用 `.bg-panel` 色块；预设名与「背景色调」预设（樱粉/晨蓝/…）错开，避免测试按名选色歧义。另新增「圆圈大小」三档（小/中/大，复用 `.font-scale__opt` 按钮，aria-label 用「圆圈小/中/大」与字体三档错开）。
 
 ## 5. 真分页（取消滚动，纯函数分页 + 测量/重测契约）
 
@@ -174,4 +174,4 @@ export function paginate(
 
 - [ ] `npx vitest run` 全绿、`npx tsc --noEmit` 零报错
 - [ ] `test-inventory.md` 已更新（快照）
-- [ ] 手动：左栏常驻对话（读书/面板都能聊）；读书真分页不滚动、高亮/🦊 标记不漂、`fontScale`/resize/换书重测后位置不丢；立绘右下角半身实体且戳立绘/红点仍可点、正文其余处可点；碎碎念/读书碎碎念/反思浮泡几秒淡出；读书提问/联想进对话、刷新后仍在（历史回填）、回复能接上
+- [ ] 手动：左栏常驻对话（读书/面板都能聊）；读书真分页不滚动、高亮/🦊 标记不漂、`fontScale`/resize/换书重测后位置不丢；可拖拽头像圆圈（白底、可换底色、拖到窗口任意处、重启后位置/底色记住）、戳圆圈冒害羞短语、红点可点清除、拖拽不误触戳；碎碎念/读书碎碎念/反思浮泡从圆圈头顶冒出、几秒淡出；读书提问/联想进对话、刷新后仍在（历史回填）、回复能接上

@@ -19,10 +19,10 @@ InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 in
 
 ## 2. 情绪 sprite（`EmotionSprite`）
 
-- 8 张图放 `assets/sprites/`，文件名 = `EmotionCategory` 值（`neutral.png` / `happy.png` / … / `thinking.png`），1:1 映射，组件按 `current.emotion` 选图，无 switch 分支。
+- 8 张图放 `assets/expressions/`，文件名 = `EmotionCategory` 值（`neutral.png` / `happy.png` / … / `thinking.png`），1:1 映射，组件按 `current.emotion` 选图，无 switch 分支。
 - sprite 同时被聊天面板复用（03-chat-panel §3），是情绪的唯一视觉载体。
 - 占位期：先用 emoji 或纯色块占位（`NEUTRAL→😐` 等），真图后续补；文件名约定不变，替换即生效。
-- **size 变体**：`small`（气泡内 2rem，当前无调用）/ `large`（面板大图，当前无调用——内在面板已移除立绘）/ `portrait`（半身像立绘，App 层 `app-stage` 左侧，CSS `object-fit: cover` + `object-position: top center` 裁切全身像下半身，见 01-sse §6）。
+- **size 变体**：`large`（面板大图，内在面板用）/ `circle`（可拖拽头像圆圈，CSS `object-fit: cover` 方形表情图撑满不裁，见 08 §4）。
 
 ## 3. Valence-Arousal 图（`ValenceArousalPlot`）
 

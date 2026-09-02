@@ -25,7 +25,7 @@
 - **新文件**：`nyx/enums.py`、`nyx/types.py`（无 Facade、无 API、无数据变更）
 - **约定**：枚举统一 `class X(StrEnum)`，成员 `UPPER_SNAKE`、值 = `成员名.lower()` 的 snake_case；dataclass 默认值用枚举成员而非裸字符串。
 - **公开面**：`nyx/__init__.py` 保持空（不 re-export）；引用一律 `from nyx.enums import X` / `from nyx.types import Y`，不从 `nyx` 根导入；两模块不加 `__all__`（CLAUDE.md 禁 `*` 导入，`__all__` 是死代码）。
-- **枚举清单（16 个）**：`EventType`（事件类型，21 键 ROUTING 的域，见 05-event）、`Source`、`TickType`（5 成员）、`ContextMode`、`EmotionCategory`（8 档，1:1 对应前端 sprites/）、`DesireType`、`ActivityType`（6 类活动）、`MemoryType`、`ReadingDrive`（阅读冲动 6 驱动）、`ReadingBehavior`（阅读冲动 5 复合行为）、`DesireStatus`、`ActivityStatus`、`EnergyState`、`SearchMode`（记忆检索三层，内部层标签）、`GoalAction`（read/write/observe，完成判定纯函数 switch 值）、`BoundaryResult`（陪读章节边界判定：none/chapter_end/book_finished）。
+- **枚举清单（16 个）**：`EventType`（事件类型，21 键 ROUTING 的域，见 05-event）、`Source`、`TickType`（5 成员）、`ContextMode`、`EmotionCategory`（8 档，1:1 对应前端 expressions/）、`DesireType`、`ActivityType`（6 类活动）、`MemoryType`、`ReadingDrive`（阅读冲动 6 驱动）、`ReadingBehavior`（阅读冲动 5 复合行为）、`DesireStatus`、`ActivityStatus`、`EnergyState`、`SearchMode`（记忆检索三层，内部层标签）、`GoalAction`（read/write/observe，完成判定纯函数 switch 值）、`BoundaryResult`（陪读章节边界判定：none/chapter_end/book_finished）。
 - **实体清单（22 个 dataclass）**：事件 `Event`；记忆 `Memory` / `MemoryEdge`；欲望 `Goal` / `ShortTermDesire` / `LongTermDesire` / `DesireValue` / `DesireState`；活动 `Activity` / `Material`；内在生命 `CurrentState` / `SelfNarrative` / `ReflectionOutcome`；表达 `Message`；工具/eval `Tool` / `LLMOutput`；陪读 `Book` / `Paragraph` / `ReadingProgress` / `BookListItem` / `UserNote` / `Annotation`。字段形状以 `nyx/types.py` 为准。
 
 ### 嵌套 dict 字段的边界（哪些收 TypedDict / 哪些留 `dict[str, Any]`）

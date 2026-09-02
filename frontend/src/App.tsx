@@ -1,6 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
-import AnnounceLayer from "./components/AnnounceLayer";
 import ChatInput from "./components/chat/ChatInput";
 import MessageList from "./components/chat/MessageList";
 import Avatar from "./components/inner/Avatar";
@@ -35,9 +34,9 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
   large: 1.12,
 };
 
-// 装配：顶栏（标题+设置+连接状态）+ 左栏常驻对话 + 中间内容区 + 立绘浮层 + 底部导航
-// （RightDock 切换中间视图：内在状态 / 欲望 / 活动 / 记忆 / 读书）+ 设置弹层 + 气泡层。
-// useSSE 只挂一次；顶栏「设置」开设置弹层。
+// 装配：顶栏（标题+连接状态）+ 左栏常驻对话 + 中间内容区 + 底部导航
+// （RightDock 切换中间视图：内在状态 / 欲望 / 活动 / 记忆 / 读书 + 设置入口）+ 设置弹层。
+// useSSE 只挂一次；可拖拽头像圆圈（Avatar）常驻窗口右下，碎碎念气泡随它头顶冒出。
 export default function App() {
   const status = useSSE(dispatchEvent);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
@@ -85,13 +84,6 @@ export default function App() {
         <span className="scene-title">✦ Nyx ✦</span>
         <div className="topbar-right">
           <span className="connection-state">{CONNECTION_LABEL[status]}</span>
-          <button
-            type="button"
-            className="topbar-settings"
-            onClick={() => setSettingsOpen(true)}
-          >
-            设置
-          </button>
         </div>
       </header>
 
@@ -111,15 +103,12 @@ export default function App() {
               {view === "reading" && (bookId === null ? <BookshelfView /> : <ReaderView />)}
             </div>
           </section>
-          <div className="avatar-overlay">
-            <Avatar />
-          </div>
         </div>
-        <RightDock view={view} onSwitch={setView} />
+        <RightDock view={view} onSwitch={setView} onOpenSettings={() => setSettingsOpen(true)} />
       </main>
 
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
-      <AnnounceLayer />
+      <Avatar />
     </div>
   );
 }

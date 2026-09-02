@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
-import Avatar, { isNight } from "../src/components/inner/Avatar";
+import Avatar, { clampAvatarPos, isNight } from "../src/components/inner/Avatar";
 import { useAnnounceStore } from "../src/stores/announceStore";
 import { useChatStore } from "../src/stores/chatStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
@@ -19,6 +19,22 @@ describe("isNight 昼夜节律纯函数", () => {
     expect(isNight(6)).toBe(false);
     expect(isNight(12)).toBe(false);
     expect(isNight(21)).toBe(false);
+  });
+});
+
+describe("clampAvatarPos 拖拽坐标夹取纯函数", () => {
+  it("视口内坐标原样返回", () => {
+    expect(clampAvatarPos({ x: 100, y: 200 }, 1024, 768, 144)).toEqual({ x: 100, y: 200 });
+  });
+
+  it("越界坐标夹回 [0, viewport-size]", () => {
+    // size=144：右下界 x<=1024-144=880、y<=768-144=624
+    expect(clampAvatarPos({ x: -10, y: -5 }, 1024, 768, 144)).toEqual({ x: 0, y: 0 });
+    expect(clampAvatarPos({ x: 2000, y: 2000 }, 1024, 768, 144)).toEqual({ x: 880, y: 624 });
+  });
+
+  it("size 决定右/下边界（小档 96 夹得更远）", () => {
+    expect(clampAvatarPos({ x: 2000, y: 2000 }, 1024, 768, 96)).toEqual({ x: 928, y: 672 });
   });
 });
 

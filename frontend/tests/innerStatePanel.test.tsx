@@ -49,6 +49,12 @@ describe("inner 面板子组件", () => {
     expect(img.src).toContain("happy");
   });
 
+  it("EmotionSprite 表情图 draggable=false（防原生图片拖拽抢占圆圈拖拽）", () => {
+    useInnerLifeStore.setState({ current: { ...currentFixture, emotion: "neutral" } });
+    render(<EmotionSprite />);
+    expect(screen.getByAltText("neutral")).toHaveAttribute("draggable", "false");
+  });
+
   it("BigFiveChart 按 personality 渲染双端语义", () => {
     render(<BigFiveChart personality={currentFixture.personality} />);
     expect(screen.getByText("保守")).toBeInTheDocument(); // openness 低端

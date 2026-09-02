@@ -12,11 +12,8 @@ build/
 .ruff_cache/
 .mypy_cache/
 
-# 本地设置
-.claude/settings.local.json
-
-# 隔离 worktree（勿提交）
-.claude/worktrees/
+# Claude Code 本地工作目录（设置 / worktree / 记忆等，勿提交）
+.claude/
 
 # 可视化 brainstorming 临时 mockup（勿提交）
 .superpowers/

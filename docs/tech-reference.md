@@ -213,21 +213,23 @@ class ReplyState(TypedDict):
     think: list[str]             # 累积：每轮 think 追加
     speak: list[str]             # 累积：每轮 speak 追加
     ask: str | None
-    round: int                   # 连续无 ask 的 think/speak 轮数（≤ slow_max_rounds）
+    round: int                   # 连续无 ask 的 respond 轮数（≤ slow_max_rounds）
     correlation_id: str          # 本次 reply 溯源
     tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
 ```
 
-**Nodes**：`classify_channel` → `assemble_context` → `use_tools` → `think` → `speak` → `should_ask` → `generate_scene_memory` → `record_message`
+**Nodes**：`classify_channel` → `assemble_context` → `use_tools` → `respond` → `should_ask` → `generate_scene_memory` → `record_message`
+
+> `respond` 一轮 think+speak 用一次 LLM 生成（`json_mode`，`_parse_reply` 解析 JSON 产出 think/speak，再分开发 THINK/SPEAK/ASK 事件）。
 
 **Edges**：
 
 ```
 start → classify_channel
-  ├ fast → think → speak → record_message → end            # 跳过记忆检索+场景化记忆；think/speak 各 1 次
-  └ slow → assemble_context → use_tools → think → speak → should_ask
+  ├ fast → respond → record_message → end            # 跳过记忆检索+场景化记忆；respond 一轮 think+speak 一次生成
+  └ slow → assemble_context → use_tools → respond → should_ask
              ├ 非问句：round+1，publish SPEAK（每轮交付；think 每轮 publish THINK）
-             │     round < slow_max_rounds → 回到 think（连续无 ask 最多 slow_max_rounds 轮）
+             │     round < slow_max_rounds → 回到 respond（连续无 ask 最多 slow_max_rounds 轮）
              │     round ≥ slow_max_rounds → generate_scene_memory → record_message → end
              └ 问句：publish ASK → generate_scene_memory → record_message → end
                      # MVP 问句即回合结束（用户回应作为下一条 USER_MESSAGE 触发新 reply，round 自然重算）

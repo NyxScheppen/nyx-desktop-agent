@@ -595,16 +595,23 @@
 | `test_rounds_block_empty` | 边界鲁棒 | `([], [])` → `""` |
 | `test_rounds_block_single` | 功能正确 | 含「第1轮内心：t1」「第1轮对外：s1」 |
 | `test_rounds_block_two` | 功能正确 | 两轮顺序正确（t1 < s1 < t2 < s2） |
-| `test_reply_fast` | 功能正确 | 快通道：complete×2（think+speak）、evaluate×2、`search`/`create_scene_memory` 未调、publish `[THINK, SPEAK]` |
-| `test_reply_slow_non_question` | 功能正确 | 慢通道非问句：complete×7（`["tool"] + ["think","speak"]×3`）、publish `[THINK, SPEAK]×3`、`search=1`、`create_scene_memory=1`、`nyx_think`/`nyx_speak` 3 轮 `"\n"` 拼接 |
-| `test_reply_slow_question` | 功能正确 | 慢通道问句：complete `["tool", "think", "speak"]`、publish `[THINK, ASK]`（非 SPEAK）、`create_scene_memory` 仍调、提前结束（think/speak 各 1） |
-| `test_reply_slow_tool_executes_and_flows_into_prompt` | 功能正确 | 工具被调用（`tools.calls` 记录名+args）、结果拼进 think system prompt（含 `[工具查询结果]` 与工具名） |
-| `test_reply_slow_no_tool_calls` | 边界鲁棒 | LLM 无 `tool_calls` → `tool_outputs` 空、think system prompt 不含 `[工具查询结果]` |
+| `test_parse_reply_valid` | 功能正确 | 合法 JSON → `(think, speak)` 二元组、首尾空白被 strip |
+| `test_parse_reply_missing_think_defaults_empty` | 边界鲁棒 | 缺 `think` → 归 `""`，speak 照常返回 |
+| `test_parse_reply_non_string_think_defaults_empty` | 边界鲁棒 | `think` 非字符串（int）→ 归 `""`，不崩 |
+| `test_parse_reply_missing_speak_raises` | 边界鲁棒 | 缺 `speak` → `ValueError` |
+| `test_parse_reply_empty_speak_raises` | 边界鲁棒 | 纯空白 `speak` → `ValueError` |
+| `test_parse_reply_invalid_json_raises` | 边界鲁棒 | 非法 JSON → `ValueError` |
+| `test_parse_reply_non_dict_raises` | 边界鲁棒 | 顶层非对象（数组）→ `ValueError` |
+| `test_reply_fast` | 功能正确 | 快通道：complete×1（reply）、evaluate×2、`search`/`create_scene_memory` 未调、publish `[THINK, SPEAK]` |
+| `test_reply_slow_non_question` | 功能正确 | 慢通道非问句：complete×4（`["tool"] + ["reply"]×3`）、publish `[THINK, SPEAK]×3`、`search=1`、`create_scene_memory=1`、`nyx_think`/`nyx_speak` 3 轮 `"\n"` 拼接 |
+| `test_reply_slow_question` | 功能正确 | 慢通道问句：complete `["tool", "reply"]`、publish `[THINK, ASK]`（非 SPEAK）、`create_scene_memory` 仍调、提前结束（think/speak 各 1） |
+| `test_reply_slow_tool_executes_and_flows_into_prompt` | 功能正确 | 工具被调用（`tools.calls` 记录名+args）、结果拼进 respond system prompt（含 `[工具查询结果]` 与工具名） |
+| `test_reply_slow_no_tool_calls` | 边界鲁棒 | LLM 无 `tool_calls` → `tool_outputs` 空、respond system prompt 不含 `[工具查询结果]` |
 | `test_reply_slow_tool_failure_fallback` | 边界鲁棒 | 工具 `call` 抛异常 → 回复不崩、prompt 含「工具 {name} 执行失败」降级文案 |
-| `test_reply_slow_tool_output_truncated` | 边界鲁棒 | 大工具结果（5000 字符）→ 注入 think system prompt 的工具结果被截断（含 `…`、不含 `TAIL_SENTINEL`） |
+| `test_reply_slow_tool_output_truncated` | 边界鲁棒 | 大工具结果（5000 字符）→ 注入 respond system prompt 的工具结果被截断（含 `…`、不含 `TAIL_SENTINEL`） |
 | `test_reply_slow_records_recall` | 功能正确 | 慢通道检索命中 2 条记忆 → 每条 `record_recall(m.id)` 调 1 次（短期→长期升级接线） |
-| `test_cumulative_prompt` | 功能正确 | 第 2 轮 think user prompt 含第 1 轮 think/speak 文本；第 2 轮 speak 含第 2 轮 think 文本 |
-| `test_slow_channel_progressive` | 功能正确 | 慢通道第 1 轮 speak prompt 含「先说出一句」、不含「再往下说一句」；第 2 轮 speak prompt 含「再往下说一句」（递进续写） |
+| `test_cumulative_prompt` | 功能正确 | 第 2 轮 reply user prompt 含第 1 轮累积（「第1轮内心：想法1」「第1轮对外：回答1」）、不含 `[我刚刚的内心想法]` 单独注入（think/speak 同源不事后拼接） |
+| `test_slow_channel_progressive` | 功能正确 | 第 1 轮 reply prompt 含「说出口的第一句话」、不含「往下说一句」；第 2 轮 reply prompt 含「往下说一句」（递进续写） |
 | `test_current_message_not_duplicated` | 回归保护 | `[对话历史]` 段不含当前消息、`[本次消息]` 含且仅一次 |
 | `test_history_order` | 功能正确 | 连续两次 reply 后 history 的 role 序列为 `[user, nyx, user, nyx]`（快慢通道都落历史、按序交替） |
 | `test_history_fast_channel` | 回归保护 | 两次都走快通道时，第二次回复 prompt 仍含上一轮 `用户：`/`Nyx：` 历史（历史不因快通道丢失） |

@@ -1,4 +1,5 @@
 # pyright: reportPrivateUsage=false
+import json
 import time
 from typing import Any, cast
 
@@ -103,15 +104,15 @@ class _FakeLlm:
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMOutput:
         self.calls.append((output_type, messages, correlation_id))
-        if output_type == "think":
+        if output_type == "reply":
             self._think_n += 1
-            content = f"想法{self._think_n}"
-        elif output_type == "speak":
+            think = f"想法{self._think_n}"
             if self._speak_override is not None:
-                content = self._speak_override
+                speak = self._speak_override
             else:
                 self._speak_n += 1
-                content = f"回答{self._speak_n}"
+                speak = f"回答{self._speak_n}"
+            content = json.dumps({"think": think, "speak": speak}, ensure_ascii=False)
         else:
             content = self._chat_content
         return LLMOutput(
@@ -295,7 +296,7 @@ async def test_reply_fast() -> None:
         energy=20.0, arousal=0.9
     )
     await facade.reply("哦", "corr-fast")
-    assert [t for t, _m, _c in llm.calls] == ["think", "speak"]
+    assert [t for t, _m, _c in llm.calls] == ["reply"]
     assert len(evaluator.evaluated) == 2
     assert memory.search_calls == 0
     assert memory.scene_memories == []
@@ -308,7 +309,7 @@ async def test_reply_fast_question_sets_ask() -> None:
         energy=20.0, arousal=0.9, llm=_FakeLlm(speak_override="你还好吗？")
     )
     await facade.reply("哦", "corr-fast-q")
-    assert [t for t, _m, _c in llm.calls] == ["think", "speak"]
+    assert [t for t, _m, _c in llm.calls] == ["reply"]
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.ASK]
     assert facade._waiting_user is True
     assert facade._ask_text == "你还好吗？"
@@ -320,7 +321,7 @@ async def test_reply_slow_non_question() -> None:
         energy=100.0, arousal=0.0
     )
     await facade.reply("在吗", "corr-slow")
-    assert [t for t, _m, _c in llm.calls] == ["tool"] + ["think", "speak"] * 3
+    assert [t for t, _m, _c in llm.calls] == ["tool"] + ["reply"] * 3
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.SPEAK] * 3
     assert memory.search_calls == 1
     assert len(memory.scene_memories) == 1
@@ -336,7 +337,7 @@ async def test_reply_slow_question() -> None:
         energy=100.0, arousal=0.0, llm=_FakeLlm(speak_override="你还好吗？")
     )
     await facade.reply("在吗", "corr-q")
-    assert [t for t, _m, _c in llm.calls] == ["tool", "think", "speak"]
+    assert [t for t, _m, _c in llm.calls] == ["tool", "reply"]
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.ASK]
     assert len(memory.scene_memories) == 1
 
@@ -353,7 +354,7 @@ async def test_reply_slow_tool_executes_and_flows_into_prompt() -> None:
     await facade.reply("在吗", "corr-tool")
     assert [t for t, _m, _c in llm.calls][0] == "tool"
     assert tools.calls == [("local_search", {"q": "骑士"})]
-    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "think"][0]
+    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
     assert "[工具查询结果]" in think_system
     assert "local_search" in think_system
 
@@ -363,7 +364,7 @@ async def test_reply_slow_no_tool_calls() -> None:
         energy=100.0, arousal=0.0
     )
     await facade.reply("在吗", "corr-empty")
-    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "think"][0]
+    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
     assert "[工具查询结果]" not in think_system
     assert [t for t, _m, _c in llm.calls][0] == "tool"
 
@@ -380,7 +381,7 @@ async def test_reply_slow_tool_failure_fallback() -> None:
         tools=_BoomTools(),
     )
     await facade.reply("在吗", "corr-boom")
-    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "think"][0]
+    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
     assert "工具 file_io 执行失败" in think_system
 
 
@@ -395,7 +396,7 @@ async def test_reply_slow_tool_output_truncated() -> None:
         tools=tools,
     )
     await facade.reply("在吗", "corr-trunc")
-    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "think"][0]
+    think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
     assert "file_io" in think_system
     assert "…" in think_system
     assert "TAIL_SENTINEL" not in think_system
@@ -447,31 +448,31 @@ async def test_reply_ask_guidance_slow_only() -> None:
 
 
 async def test_cumulative_prompt() -> None:
+    # 一轮 think+speak 一次生成：第 2 轮 prompt 带前一轮 think/speak 累积，
+    # 不再单独注入「我刚刚的内心想法」（think/speak 同源，无需事后拼接）。
     facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
         energy=100.0, arousal=0.0
     )
     await facade.reply("在吗", "corr-cum")
-    think_calls = [m for t, m, _c in llm.calls if t == "think"]
-    speak_calls = [m for t, m, _c in llm.calls if t == "speak"]
-    round2_think = _user_content(think_calls[1])
-    round2_speak = _user_content(speak_calls[1])
-    assert "第1轮内心：想法1" in round2_think
-    assert "第1轮对外：回答1" in round2_think
-    assert "[我刚刚的内心想法]\n想法2" in round2_speak
+    reply_calls = [m for t, m, _c in llm.calls if t == "reply"]
+    round2 = _user_content(reply_calls[1])
+    assert "第1轮内心：想法1" in round2
+    assert "第1轮对外：回答1" in round2
+    assert "[我刚刚的内心想法]" not in round2
 
 
 async def test_slow_channel_progressive() -> None:
-    # 慢通道三段递进：第 1 段是「先说出一句」，第 2 段起是「再往下说一句」续写
+    # 慢通道三段递进：第 1 段是「说出口的第一句话」，第 2 段起是「往下说一句」续写
     facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
         energy=100.0, arousal=0.0
     )
     await facade.reply("在吗", "corr-prog")
-    speak_calls = [m for t, m, _c in llm.calls if t == "speak"]
-    first = _user_content(speak_calls[0])
-    second = _user_content(speak_calls[1])
-    assert "先说出一句" in first
-    assert "再往下说一句" not in first
-    assert "再往下说一句" in second
+    reply_calls = [m for t, m, _c in llm.calls if t == "reply"]
+    first = _user_content(reply_calls[0])
+    second = _user_content(reply_calls[1])
+    assert "说出口的第一句话" in first
+    assert "往下说一句" not in first
+    assert "往下说一句" in second
 
 
 async def test_current_message_not_duplicated() -> None:
@@ -484,7 +485,7 @@ async def test_current_message_not_duplicated() -> None:
     )
     await facade.reply("你喜欢爬山吗", "corr-2")
     first_think = _user_content(
-        [m for t, m, _c in llm.calls if t == "think"][0]
+        [m for t, m, _c in llm.calls if t == "reply"][0]
     )
     assert "你喜欢爬山吗" not in first_think.split("[本次消息]")[0]
     assert first_think.count("[本次消息]") == 1
@@ -509,7 +510,7 @@ async def test_history_fast_channel() -> None:
     llm.calls = []
     await facade.reply("嗯", "corr-2")
     first_think = _user_content(
-        [m for t, m, _c in llm.calls if t == "think"][0]
+        [m for t, m, _c in llm.calls if t == "reply"][0]
     )
     assert "用户：哦" in first_think
     assert "Nyx：回答1" in first_think
@@ -546,7 +547,7 @@ async def test_reply_slow_backtrack_skips_fast_nyx() -> None:
         Message(role="nyx", content="嗯嗯", timestamp=time.time(), fast=True)
     )
     await facade.reply("你喜欢爬山吗", "corr-bt")
-    think_user = _user_content([m for t, m, _c in llm.calls if t == "think"][0])
+    think_user = _user_content([m for t, m, _c in llm.calls if t == "reply"][0])
     assert "用户：我上周去爬山了" in think_user
     assert "Nyx：嗯嗯" not in think_user
 
@@ -560,7 +561,7 @@ async def test_reading_turn_slow_backtrack_preserved() -> None:
     )
     facade.record_proactive_turn("她刚才问：你觉得自由是什么")
     await facade.reply("自由很虚无", "corr-bt")
-    think_user = _user_content([m for t, m, _c in llm.calls if t == "think"][0])
+    think_user = _user_content([m for t, m, _c in llm.calls if t == "reply"][0])
     assert "Nyx：她刚才问：你觉得自由是什么" in think_user
 
 

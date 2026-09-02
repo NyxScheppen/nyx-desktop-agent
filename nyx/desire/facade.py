@@ -44,8 +44,12 @@ class DesireFacade:
         elif source.type is EventType.ACTIVITY_END:
             await self._lifecycle.satisfy_from_activity_end(source)
 
-    async def evaluate(self) -> list[ShortTermDesire]:
-        return await self._lifecycle.run_eval()
+    async def evaluate(self, energy: float = 100.0) -> list[ShortTermDesire]:
+        return await self._lifecycle.run_eval(energy)
+
+    async def pressure_creation(self, delta: float) -> None:
+        """创造欲加压入口（反思/活动结束触发，delta 由调用方决定）。"""
+        await self._lifecycle.pressure_creation(delta)
 
     async def get_pending(self) -> list[ShortTermDesire]:
         return await self._store.list_pending()

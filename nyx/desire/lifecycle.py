@@ -17,10 +17,11 @@ from nyx.desire.value import (
     raise_suppression,
     reinforce_weight,
 )
-from nyx.enums import DesireStatus, DesireType, EventType, GoalAction
+from nyx.enums import ActivityType, DesireStatus, DesireType, EventType, GoalAction
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, internal_event
+from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
 from nyx.memory.retrieval import EmbedFn, cosine
 from nyx.types import (
@@ -37,6 +38,8 @@ _LONG_TERM_PRESSURE_DELTA = 0.1       # 每个长期欲望周期 → 对应类�
 _LONG_TERM_PROGRESS_DELTA = 0.1       # 满足一次长期进度 +0.1
 _LONG_TERM_STRENGTH_DECAY = 0.02      # 满足一次长期迫切度 -0.02
 _DEDUP_SIM_THRESHOLD = 0.9            # 欲望语义重复判定阈值（embedding 余弦）
+_REST_PRESSURE_DELTA = 0.1            # 疲惫（精力 < 阈值）→ 休息欲 +0.1/周期
+_CREATION_ACTIVITY_PRESSURE_DELTA = 0.15  # 读书/自由探索结束 → 创造欲 +0.15
 _GOAL_ACTIONS = frozenset(g.value for g in GoalAction)
 
 _DESIRE_SYSTEM = (
@@ -179,22 +182,37 @@ class DesireLifecycle:
 
     async def pressure_from_observation(self, event: Event) -> None:
         """OBSERVATION_STATE → 互动欲加压（增量固定 +0.15，不解析 event.content）。"""
-        dv = await self._store.get_value(DesireType.INTERACTION)
+        await self._pressure(DesireType.INTERACTION, _OBSERVATION_PRESSURE_DELTA)
+
+    async def _pressure(self, type_: DesireType, delta: float) -> None:
+        """某类型欲望压力值 +delta（desire_value 缺省初始化后加压）。"""
+        dv = await self._store.get_value(type_)
         if dv is None:
-            dv = default_value(DesireType.INTERACTION)
-        dv.value = apply_pressure(dv.value, _OBSERVATION_PRESSURE_DELTA)
+            dv = default_value(type_)
+        dv.value = apply_pressure(dv.value, delta)
         dv.updated_at = time.time()
         await self._store.upsert_value(dv)
 
+    async def pressure_creation(self, delta: float) -> None:
+        """创造欲加压（反思/活动结束触发，delta 由调用方决定）。"""
+        await self._pressure(DesireType.CREATION, delta)
+
     async def satisfy_from_activity_end(self, event: Event) -> None:
-        """ACTIVITY_END → 解析满足信号（desire_id + goal_met），调 satisfy。"""
+        """ACTIVITY_END → 解析满足信号（desire_id + goal_met），调 satisfy；
+        读书/自由探索结束额外加压创造欲（创作结束不压，避免自循环）。"""
         desire_id = event.content.get("desire_id")
         goal_met = event.content.get("goal_met")
         if isinstance(desire_id, str) and isinstance(goal_met, bool):
             await self.satisfy(desire_id, goal_met)
+        activity_type = event.content.get("type")
+        if activity_type in (
+            ActivityType.READING.value,
+            ActivityType.FREE_EXPLORATION.value,
+        ):
+            await self._pressure(DesireType.CREATION, _CREATION_ACTIVITY_PRESSURE_DELTA)
 
-    async def run_eval(self) -> list[ShortTermDesire]:
-        """DESIRE_EVAL：衰减 → 长期加压 → 达峰判定 → 只生成最迫切的 1 个。"""
+    async def run_eval(self, energy: float = 100.0) -> list[ShortTermDesire]:
+        """DESIRE_EVAL：衰减 → 长期加压 → 疲惫加压 → 达峰判定 → 只生成最迫切的 1 个。"""
         now = time.time()
         long_term = await self._store.list_long_term()
         values: dict[DesireType, DesireValue] = {
@@ -219,7 +237,13 @@ class DesireLifecycle:
                 values[lt.type].value, _LONG_TERM_PRESSURE_DELTA
             )
 
-        # 2.5 SUPPRESSED 释放：类型仍可表达（值越过抑制阈值）→ 放回队列
+        # 2.5 疲惫加压：精力低于阈值时休息欲按周期上升
+        if energy < ENERGY_REST_THRESHOLD:
+            values[DesireType.REST].value = apply_pressure(
+                values[DesireType.REST].value, _REST_PRESSURE_DELTA
+            )
+
+        # 2.6 SUPPRESSED 释放：类型仍可表达（值越过抑制阈值）→ 放回队列
         for d in await self._store.list_suppressed():
             dv = values.get(d.type)
             if dv is not None and is_expressible(dv.value, dv.suppression_threshold):

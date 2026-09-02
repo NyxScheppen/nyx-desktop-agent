@@ -1,5 +1,6 @@
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import Panel from "../layout/Panel";
+import AestheticChart from "./AestheticChart";
 import BigFiveChart from "./BigFiveChart";
 import EnergyBar from "./EnergyBar";
 import ValenceArousalPlot from "./ValenceArousalPlot";
@@ -20,8 +21,12 @@ export default function InnerStatePanel() {
         <div className="inner-state-panel__body">
           <ValenceArousalPlot valence={current.valence} arousal={current.arousal} />
           <EnergyBar energy={current.energy} energy_state={current.energy_state} />
+          <h3 className="panel-section-title">性格</h3>
           <BigFiveChart personality={current.personality} />
+          <h3 className="panel-section-title">三观</h3>
           <ValuesChart values={current.values} />
+          <h3 className="panel-section-title">审美</h3>
+          <AestheticChart aesthetic={current.aesthetic} />
         </div>
       )}
     </Panel>

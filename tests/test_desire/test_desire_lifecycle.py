@@ -26,6 +26,7 @@ from nyx.desire.value import (
     WEIGHT_REINFORCE_DELTA,
 )
 from nyx.enums import (
+    ActivityType,
     DesireStatus,
     DesireType,
     EventType,
@@ -35,6 +36,7 @@ from nyx.enums import (
 )
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.retrieval import EmbedFn
 from nyx.types import (
@@ -325,6 +327,75 @@ async def test_pressure_from_observation() -> None:
         await database.conn.close()
 
 
+async def test_pressure_creation() -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        await lifecycle.pressure_creation(0.2)
+        dv = await store.get_value(DesireType.CREATION)
+        assert dv is not None
+        assert dv.value == pytest.approx(0.2)       # default 0 → +0.2
+        assert dv.updated_at > 0.0
+    finally:
+        await database.conn.close()
+
+
+async def test_satisfy_from_activity_end_reading_pressures_creation() -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        event = Event(
+            id="e1",
+            timestamp=0.0,
+            source=Source.EXTERNAL,
+            type=EventType.ACTIVITY_END,
+            content={"type": ActivityType.READING.value},
+            correlation_id="c1",
+        )
+        await lifecycle.satisfy_from_activity_end(event)
+        dv = await store.get_value(DesireType.CREATION)
+        assert dv is not None and dv.value == pytest.approx(0.15)
+    finally:
+        await database.conn.close()
+
+
+async def test_satisfy_from_activity_end_free_exploration_pressures_creation() -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        event = Event(
+            id="e1",
+            timestamp=0.0,
+            source=Source.EXTERNAL,
+            type=EventType.ACTIVITY_END,
+            content={"type": ActivityType.FREE_EXPLORATION.value},
+            correlation_id="c1",
+        )
+        await lifecycle.satisfy_from_activity_end(event)
+        dv = await store.get_value(DesireType.CREATION)
+        assert dv is not None and dv.value == pytest.approx(0.15)
+    finally:
+        await database.conn.close()
+
+
+async def test_satisfy_from_activity_end_creation_no_self_loop() -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        event = Event(
+            id="e1",
+            timestamp=0.0,
+            source=Source.EXTERNAL,
+            type=EventType.ACTIVITY_END,
+            content={"type": ActivityType.CREATION.value},
+            correlation_id="c1",
+        )
+        await lifecycle.satisfy_from_activity_end(event)
+        assert await store.get_value(DesireType.CREATION) is None   # 创作不自我加压
+    finally:
+        await database.conn.close()
+
+
 # ---- run_eval ----
 
 
@@ -402,6 +473,42 @@ async def test_run_eval_long_term_pressure(monkeypatch: pytest.MonkeyPatch) -> N
         assert result == []                       # 0.5 + 0.1 = 0.6 < 0.9 未达峰
         dv = await store.get_value(DesireType.EXPLORATION)
         assert dv is not None and dv.value == pytest.approx(0.6)
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_rest_pressure_when_tired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.REST, 0.5, updated_at=t0))
+        async with _running(bus):
+            result = await lifecycle.run_eval(energy=ENERGY_REST_THRESHOLD - 1.0)
+        assert result == []                       # 0.5 + 0.1 = 0.6 < 0.9 未达峰
+        dv = await store.get_value(DesireType.REST)
+        assert dv is not None and dv.value == pytest.approx(0.6)
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_no_rest_pressure_when_energetic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.REST, 0.5, updated_at=t0))
+        async with _running(bus):
+            result = await lifecycle.run_eval(energy=ENERGY_REST_THRESHOLD)
+        assert result == []                       # 阈值边界不疲惫，不加压
+        dv = await store.get_value(DesireType.REST)
+        assert dv is not None and dv.value == pytest.approx(0.5)
     finally:
         await database.conn.close()
 

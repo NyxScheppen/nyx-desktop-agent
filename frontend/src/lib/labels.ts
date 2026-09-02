@@ -86,6 +86,14 @@ export const VALUES_POLES: Record<string, { low: string; high: string }> = {
   optimism: { low: "悲观", high: "乐观" },
 };
 
+// 审美四轴双端语义：低端词在前（1 端），高端词在后（10 端）。
+export const AESTHETIC_POLES: Record<string, { low: string; high: string }> = {
+  ornate: { low: "朴素", high: "华丽" },
+  lyrical: { low: "平实", high: "抒情" },
+  classical: { low: "现代", high: "古典" },
+  somber: { low: "轻盈", high: "沉重" },
+};
+
 /** 查中文标签，未收录回退原值（string 键，用于自由/宽松字段）。 */
 export function label(map: Record<string, string>, key: string): string {
   return map[key] ?? key;

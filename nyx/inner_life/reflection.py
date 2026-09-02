@@ -39,6 +39,7 @@ _VALUES_KEYS = frozenset(
 )
 _AESTHETIC_KEYS = frozenset({"ornate", "lyrical", "classical", "somber"})
 _AESTHETIC_MIN_READING = 3     # 审美偏移满额所需的最少新读章数
+_CREATION_REFLECTION_DELTA = 0.2  # 反思成功 → 创造欲 +0.2
 _DESIRE_TYPE_VALUES = frozenset(d.value for d in DesireType)
 _logger = logging.getLogger(__name__)
 
@@ -371,5 +372,8 @@ class Reflection:
         remaining = self._config.long_term_capacity - len(desire_state.long_term)
         for candidate in parsed["long_term_desires"][:max(0, remaining)]:
             await self._desire_facade.add_long_term(_to_long_term(candidate, now))
+
+        # 5. 反思成功触发创造欲加压（想做的事被想明白了 → 想把它做出来）
+        await self._desire_facade.pressure_creation(_CREATION_REFLECTION_DELTA)
 
         return ReflectionOutcome(story=new_story, story_is_new=story_is_new)

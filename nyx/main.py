@@ -267,7 +267,8 @@ async def _on_clock_tick(app: _App, event: Event) -> None:
     if tick_type is TickType.SCHEDULE_BLOCK_START:
         await app.activity.on_tick(tick_type)
     elif tick_type is TickType.DESIRE_EVAL:
-        await app.desire.evaluate()
+        state = await app.inner_life.get_state()
+        await app.desire.evaluate(state.energy)
     elif tick_type is TickType.MUTTER_CHECK:
         await app.expression.mutter(
             await app.inner_life.get_state(), event.correlation_id

@@ -142,12 +142,16 @@ class _FakeDesireFacade:
     def __init__(self, long_term: list[LongTermDesire] | None = None) -> None:
         self._long_term = long_term if long_term is not None else []
         self.added: list[LongTermDesire] = []
+        self.pressured: list[float] = []
 
     async def get_all(self) -> DesireState:
         return DesireState(values=[], short_term=[], long_term=self._long_term)
 
     async def add_long_term(self, desire: LongTermDesire) -> None:
         self.added.append(desire)
+
+    async def pressure_creation(self, delta: float) -> None:
+        self.pressured.append(delta)
 
 
 def _make_reflection(
@@ -457,6 +461,21 @@ async def test_run_writes_back() -> None:
         await database.conn.close()
 
 
+async def test_run_pressures_creation() -> None:
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    desire = _FakeDesireFacade()
+    reflection = _make_reflection(
+        store, _FakeLlm(), _FakeEvaluator(), _FakeMemoryFacade(), desire
+    )
+    try:
+        await _seed(store)
+        await reflection.run()
+        assert desire.pressured == [0.2]  # 反思成功 → 创造欲 +0.2
+    finally:
+        await database.conn.close()
+
+
 async def test_run_dedup_story() -> None:
     # story 与已有片段实质重复 → 不追加；becoming 不同照常追加
     response = json.dumps(
@@ -645,6 +664,7 @@ async def test_run_survives_invalid_json() -> None:
         n = await store.get_narrative()
         assert n is not None and len(n.story) == 1
         assert desire.added == []
+        assert desire.pressured == []  # 失败路径不触发创造欲加压
     finally:
         await database.conn.close()
 

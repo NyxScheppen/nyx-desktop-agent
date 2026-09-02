@@ -301,10 +301,16 @@
 | `test_most_relevant_long_term_blank_not_wildcard` | 功能正确 | 空串子主题被跳过（不当作 substring 通配符），`topic="骑士团"` 命中真实子主题的第二条 |
 | `test_build_desire_prompt` | 功能正确 | 含类型 `.value` 与种子；`seed=None` → 含「（无）」 |
 | `test_pressure_from_observation` | 功能正确 | 互动欲 `value` 0 → `+0.15`；`updated_at` 更新 |
+| `test_pressure_creation` | 功能正确 | 创造欲 `value` 0 → `+delta`（传 0.2）；`updated_at` 更新 |
+| `test_satisfy_from_activity_end_reading_pressures_creation` | 功能正确 | `content["type"]="reading"` → 满足逻辑外创造欲 `+0.15` |
+| `test_satisfy_from_activity_end_free_exploration_pressures_creation` | 功能正确 | `content["type"]="free_exploration"` → 创造欲 `+0.15` |
+| `test_satisfy_from_activity_end_creation_no_self_loop` | 边界鲁棒 | `content["type"]="creation"` → 创造欲不动（不自循环） |
 | `test_run_eval_no_peak` | 功能正确 | 四类型都低于 `peak_threshold` → `[]`、无 LLM 调用 |
 | `test_run_eval_generates_peak` | 功能正确 | 达峰 → 1 次 LLM（`output_type="desire"`）、`evaluator.evaluate` 1 次、返回 1 个（type/status/strength/description/goal 来自 fixture）、value 重置 0、发布 `desire_generated` |
 | `test_run_eval_only_most_urgent` | 功能正确 | 互动 0.95 + 探索 0.92 都达峰 → 只生成互动；探索 `value` 保留 0.92 不重置 |
 | `test_run_eval_long_term_pressure` | 功能正确 | 探索长期欲望 → 探索 `value` 额外 `+0.1`（0.5→0.6） |
+| `test_run_eval_rest_pressure_when_tired` | 功能正确 | `energy=ENERGY_REST_THRESHOLD-1` → 休息欲 `value` `+0.1`（0.5→0.6） |
+| `test_run_eval_no_rest_pressure_when_energetic` | 边界鲁棒 | `energy=ENERGY_REST_THRESHOLD`（不疲惫）→ 休息欲 `value` 不动（0.5） |
 | `test_run_eval_decay` | 功能正确 | `updated_at` 1 天前 → `value` 衰减 `value_decay × 1`（0.5→0.45） |
 | `test_run_eval_suppression_gate` | 功能正确 | 达峰但 `suppression_threshold > value` → 不生成、返回 `[]` |
 | `test_run_eval_topic_seed` | 功能正确 | 探索长期 `subtopics=["骑士团", "大学朋友"]` + 记忆命中「骑士团」→ LLM prompt 含「大学朋友」不含「骑士团」（没做过优先）；seed 钉死 goal.topic：LLM 返回「骑士团」被覆盖为「大学朋友」 |
@@ -334,6 +340,7 @@
 | `test_get_all_snapshot` | 功能正确 | `get_all` 三字段非空；`short_term` 含 satisfied 历史、`long_term` 含 seed 的长期欲望 |
 | `test_satisfy_expire_delegate` | 功能正确 | `facade.satisfy`/`facade.expire` 委托改 `status`（SATISFIED / EXPIRED） |
 | `test_add_long_term_delegates` | 功能正确 | `add_long_term(desire)` → `list_long_term` 多一条、字段全等 |
+| `test_pressure_creation_delegates` | 功能正确 | `facade.pressure_creation(0.2)` → 创造欲 `value` 加压 `0.2` |
 | `test_add_long_term_exact_name_duplicate_skips` | 功能正确 | 已有 name 精确相等 → 跳过（`list_long_term` 仍 1 条） |
 | `test_add_long_term_semantic_duplicate_skips` | 功能正确 | embedding 余弦 ≥ 0.9 → 跳过（`list_long_term` 仍 1 条） |
 | `test_add_long_term_semantic_distinct_keeps` | 功能正确 | 正交向量 → 新增（2 条） |
@@ -386,6 +393,7 @@
 | `test_validate_candidate` | 边界鲁棒 | `type` 非法、缺 `name`、`subtopics` 非字符串数组 → `ValueError`；合法不抛 |
 | `test_to_long_term` | 功能正确 | `type` 转 `DesireType`、`strength`=`_LONG_TERM_INIT_STRENGTH`、`progress`=0.0、`subtopics`/`created_at` 透传 |
 | `test_run_writes_back` | 功能正确 | 1 次 LLM（`output_type="reflection"`、`correlation_id` 透传）、evaluator 1 次；性格/三观按 delta 漂移回写、叙事 story/becoming 各 +1、self_view 合并；`add_long_term` 调 1 次 |
+| `test_run_pressures_creation` | 功能正确 | 反思成功 → 创造欲加压 `pressure_creation(0.2)` 被调 1 次（`desire.pressured == [0.2]`） |
 | `test_run_generates_correlation_id` | 功能正确 | `run(None)` → correlation_id 自生成非空 |
 | `test_run_long_term_capacity` | 功能正确 | 候选 3 超过 `long_term_capacity=2` → 只新增 2（容量封顶不超） |
 | `test_run_survives_bad_candidate` | 边界鲁棒 | 混合好 + 坏候选 → 核心慢变量（叙事/性格）照常回写、只新增好候选（单个坏候选不中断整次反思） |
@@ -1009,7 +1017,7 @@
 | `ChatInput > isReplying=true → 禁用 + 回车不触发` | 功能正确 | isReplying 时发送按钮 `disabled` + 文案「…」；填非空值后回车仍不触发 sendMessage（只有 isReplying 守卫能拦） |
 | `ChatInput > sendError 非 null → 红字显示` | 功能正确 | `sendError` 非空时渲染 `.chat-input__error` 红字 |
 
-## frontend-inner-state-panel（内在状态面板：InnerStatePanel + ValenceArousalPlot + EmotionSprite + EnergyBar + BigFiveChart + ValuesChart）
+## frontend-inner-state-panel（内在状态面板：InnerStatePanel + ValenceArousalPlot + EmotionSprite + EnergyBar + BigFiveChart + ValuesChart + AestheticChart）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -1018,10 +1026,12 @@
 | `EmotionSprite > 表情图 draggable=false` | 功能正确 | `<img alt="neutral">` 带 `draggable="false"`（防原生图片拖拽抢占头像圆圈拖拽） |
 | `BigFiveChart > 按 personality 渲染双端语义` | 功能正确 | 渲染 `保守`/`开放`（openness 两端）+ `情绪稳定`/`敏感`（neuroticism 两端），不做数值断言 |
 | `ValuesChart > 按 values 渲染双端语义` | 功能正确 | 渲染 `疏离`/`亲近`（attitude_to_human 两端）+ `悲观`/`乐观`（optimism 两端），不做数值断言 |
+| `AestheticChart > 按 aesthetic 渲染双端语义` | 功能正确 | 渲染 `朴素`/`华丽`（ornate 两端）+ `平实`/`抒情`（lyrical 两端）+ `现代`/`古典`（classical 两端）+ `轻盈`/`沉重`（somber 两端），不做数值断言 |
 | `ValenceArousalPlot > 渲染不崩` | 功能正确 | SVG `.va-plot` 存在（坐标/像素不做断言，README §6） |
 | `ValenceArousalPlot > 区域标签对齐后端 6 档` | 功能正确 | 渲染 `开心`/`生气`/`担忧`/`悲伤`/`害羞`/`平静`（经 `EMOTION_LABELS`），旧错误标签 `低落` 不在（对齐 `vad_to_category`） |
 | `InnerStatePanel > current=null → 整体占位不崩` | 边界鲁棒 | `current=null` 显示「等待核心服务连接…」且不渲染子组件（`开放` 不在） |
-| `InnerStatePanel > current 非 null → 渲染子组件字段` | 功能正确 | `精力充沛`/`开放`/`亲近` 分别经 EnergyBar/BigFiveChart/ValuesChart 上屏 |
+| `InnerStatePanel > current 非 null → 渲染子组件字段` | 功能正确 | `精力充沛`/`开放`/`亲近`/`华丽` 分别经 EnergyBar/BigFiveChart/ValuesChart/AestheticChart 上屏 |
+| `InnerStatePanel > 标注三观/性格/审美 section 标题` | 功能正确 | 渲染 `性格`/`三观`/`审美` 三个 section 标题（区分 personality/values/aesthetic 三类慢变量） |
 | `InnerStatePanel > error 非 null → 红字一行` | 功能正确 | `error` 非空渲染 `.inner-state-panel__error` 红字 |
 
 ## frontend-presence（活跃度上报：usePresence + classifyPresence）

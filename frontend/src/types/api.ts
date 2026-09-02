@@ -40,12 +40,20 @@ export type Values = {
   optimism: number;
 };
 
+export type Aesthetic = {
+  ornate: number;
+  lyrical: number;
+  classical: number;
+  somber: number;
+};
+
 export type CurrentState = {
   valence: number; // [-1, 1]
   arousal: number; // [0, 1]
   emotion: EmotionCategory;
   personality: Personality;
   values: Values;
+  aesthetic: Aesthetic;
   energy: number; // [0, 100]
   energy_state: EnergyState;
   current_activity: string | null; // ActivityType 值；核心先行仅展示，用 string 放宽

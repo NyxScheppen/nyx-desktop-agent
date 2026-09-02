@@ -147,14 +147,15 @@ async def check_chapter_boundary(book_id: str, nyx_position: int) -> BoundaryRes
 
 ```python
 async def add_value(source: Event) -> None                      # 事件入口：OBSERVATION_STATE 互动欲加压 + ACTIVITY_END 满足回写
-async def evaluate() -> list[ShortTermDesire]                   # 峰值→LLM 生成
+async def evaluate(energy: float = 100.0) -> list[ShortTermDesire]  # 峰值→LLM 生成；energy < ENERGY_REST_THRESHOLD 时先给休息欲加压
 async def get_pending() -> list[ShortTermDesire]                # 读待消费队列（pending/active，非破坏，供排期/拼 prompt）
 async def get_all() -> DesireState                              # 全量快照（values+短期+长期，供 /api/desires）
 async def satisfy(desire_id: str, goal_met: bool) -> None       # 达成/未达成回写；达成时发布 desire_satisfied（inner_life 消费更新情感）
 async def expire(desire_id: str) -> None                        # 淘汰→值回增
 async def mark_active(desire_id: str) -> None                   # PENDING → ACTIVE：活动开始消费（仅 PENDING 可转，幂等 no-op）
 async def mark_suppressed(desire_id: str) -> None               # ACTIVE → SUPPRESSED：中断/异常停车（仅 ACTIVE 可转，幂等 no-op）
-async def add_long_term(desire: LongTermDesire) -> None         # 反思新增/强化长期欲望入口（容量检查归 12 反思）
+async def add_long_term(desire: LongTermDesire) -> None         # 探索/反思共用长期欲望入口（去重 + 容量检查，满不新增）
+async def pressure_creation(delta: float) -> None               # 创造欲加压（反思成功 +0.2；读书/自由探索结束 +0.15）
 ```
 
 ### InnerLifeFacade

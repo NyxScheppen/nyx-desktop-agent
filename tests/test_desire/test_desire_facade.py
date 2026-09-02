@@ -265,6 +265,18 @@ async def test_add_value_activity_end_ignores_invalid() -> None:
         await database.conn.close()
 
 
+async def test_pressure_creation_delegates() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        await facade.pressure_creation(0.2)
+        dv = await store.get_value(DesireType.CREATION)
+        assert dv is not None
+        assert dv.value == pytest.approx(0.2)      # default 0 → +0.2
+    finally:
+        await database.conn.close()
+
+
 # ---- evaluate / get_pending / get_all ----
 
 

@@ -134,6 +134,9 @@ class _FakeDesireFacade:
     async def add_long_term(self, desire: LongTermDesire) -> None:
         return None
 
+    async def pressure_creation(self, delta: float) -> None:
+        return None
+
 
 class _FakeMemoryFacade:
     async def list_memories(self, tag: str | None = None) -> list[Memory]:

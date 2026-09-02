@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
+import AestheticChart from "../src/components/inner/AestheticChart";
 import BigFiveChart from "../src/components/inner/BigFiveChart";
 import EmotionSprite from "../src/components/inner/EmotionSprite";
 import EnergyBar from "../src/components/inner/EnergyBar";
@@ -25,6 +26,12 @@ const currentFixture: CurrentState = {
     ai_identity_acceptance: 6,
     altruism: 9,
     optimism: 5,
+  },
+  aesthetic: {
+    ornate: 7,
+    lyrical: 7,
+    classical: 6,
+    somber: 6,
   },
   energy: 100,
   energy_state: "energetic",
@@ -71,6 +78,17 @@ describe("inner 面板子组件", () => {
     expect(screen.getByText("乐观")).toBeInTheDocument(); // optimism 高端
   });
 
+  it("AestheticChart 按 aesthetic 渲染双端语义", () => {
+    render(<AestheticChart aesthetic={currentFixture.aesthetic} />);
+    expect(screen.getByText("朴素")).toBeInTheDocument(); // ornate 低端
+    expect(screen.getByText("华丽")).toBeInTheDocument(); // ornate 高端
+    expect(screen.getByText("平实")).toBeInTheDocument(); // lyrical 低端
+    expect(screen.getByText("抒情")).toBeInTheDocument(); // lyrical 高端
+    expect(screen.getByText("现代")).toBeInTheDocument(); // classical 低端
+    expect(screen.getByText("轻盈")).toBeInTheDocument(); // somber 低端
+    expect(screen.getByText("沉重")).toBeInTheDocument(); // somber 高端
+  });
+
   it("ValenceArousalPlot 渲染不崩（坐标不做断言）", () => {
     const { container } = render(<ValenceArousalPlot valence={0.1} arousal={0.2} />);
     expect(container.querySelector("svg.va-plot")).not.toBeNull();
@@ -96,6 +114,15 @@ describe("inner 面板子组件", () => {
     expect(screen.getByText("精力充沛")).toBeInTheDocument(); // EnergyBar
     expect(screen.getByText("开放")).toBeInTheDocument(); // BigFiveChart
     expect(screen.getByText("亲近")).toBeInTheDocument(); // ValuesChart
+    expect(screen.getByText("华丽")).toBeInTheDocument(); // AestheticChart
+  });
+
+  it("InnerStatePanel 标注三观/性格/审美 section 标题", () => {
+    useInnerLifeStore.setState({ current: currentFixture });
+    render(<InnerStatePanel />);
+    expect(screen.getByText("性格")).toBeInTheDocument();
+    expect(screen.getByText("三观")).toBeInTheDocument();
+    expect(screen.getByText("审美")).toBeInTheDocument();
   });
 
   it("InnerStatePanel error 非 null → 顶部红字一行", () => {

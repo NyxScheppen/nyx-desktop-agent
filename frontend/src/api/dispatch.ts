@@ -26,9 +26,9 @@ export function dispatchEvent(e: SseEvent): void {
     case "user_message":
       return useChatStore.getState().addUserMessage(e);
     case "emotion_update":
-      // 载荷只带 {valence, arousal, emotion}（12-inner-life），能量/性格/三观不随帧下发；
-      // 而 emotion_update 恰好在能量(ACTIVITY_END)/性格三观(REFLECTION)可能变化的那一刻发出，
-      // 故顺带 refreshState() 重拉全量快照，带新 EnergyBar/BigFiveChart/ValuesChart。
+      // 载荷只带 {valence, arousal, emotion}（12-inner-life），能量/性格/三观/审美不随帧下发；
+      // 而 emotion_update 恰好在能量(ACTIVITY_END)/性格三观审美(REFLECTION)可能变化的那一刻发出，
+      // 故顺带 refreshState() 重拉全量快照，带新 EnergyBar/BigFiveChart/ValuesChart/AestheticChart。
       useInnerLifeStore.getState().updateEmotion(e);
       void useInnerLifeStore.getState().refreshState();
       return;

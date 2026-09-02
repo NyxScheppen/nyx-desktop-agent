@@ -205,6 +205,12 @@ describe("dispatchEvent", () => {
         altruism: 9,
         optimism: 5,
       },
+      aesthetic: {
+        ornate: 7,
+        lyrical: 7,
+        classical: 6,
+        somber: 6,
+      },
       energy: 100,
       energy_state: "energetic",
       current_activity: null,

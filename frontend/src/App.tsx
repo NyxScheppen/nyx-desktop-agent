@@ -47,17 +47,20 @@ export default function App() {
   const [view, setView] = useState<View>("reading");
   const bookId = useReaderStore((s) => s.bookId);
   const messages = useChatStore((s) => s.messages);
+  const loadHistory = useChatStore((s) => s.loadHistory);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
   const fontScale = useSettingsStore((s) => s.fontScale);
 
-  // SSE 恢复连接后重拉快照（断线期间 emotion_update 可能丢失）
+  // SSE 恢复连接后重拉快照 + 回填聊天历史（断线期间 emotion_update/消息可能丢失；
+  // loadHistory 按 event_id 去重，重复调用不产生重复气泡）。
   useEffect(() => {
     if (status === "open") {
       refreshState();
       void refreshActivity();
+      void loadHistory();
     }
-  }, [status, refreshState, refreshActivity]);
+  }, [status, refreshState, refreshActivity, loadHistory]);
 
   // 背景：有图以图铺底（cover）；无图有色调作纯色；默认羊皮纸（--parchment）。
   const bgStyle: CSSProperties = {};

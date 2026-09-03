@@ -69,6 +69,20 @@ export const ACTIVITY_STATUS_LABELS: Record<ActivityStatus, string> = {
   incomplete: "未完成",
 };
 
+// eval 记账 output_type → 中文（15-eval）。未收录值经 label() 回退原值。
+export const OUTPUT_TYPE_LABELS: Record<string, string> = {
+  reply: "回复",
+  speak: "对外",
+  think: "内心",
+  initiate_chat: "搭话",
+  mutter: "碎碎念",
+  mutter_wander: "走神",
+  reflection: "反思",
+  desire: "欲望",
+  scene_memory: "场景记忆",
+  tool: "工具",
+};
+
 // Big Five 五维与三观四维的双端语义：low = 低分端(1) 语义，high = 高分端(10) 语义。
 // 键是类型字段名（snake_case），非枚举，故用 string 键；滑块偏左=偏 low、偏右=偏 high，两端词自解释维度。
 export const PERSONALITY_POLES: Record<string, { low: string; high: string }> = {

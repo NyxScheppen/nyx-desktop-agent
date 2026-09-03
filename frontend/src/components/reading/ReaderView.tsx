@@ -4,8 +4,8 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import NotePanel from "./NotePanel";
 
 // 阅读页（08 §5 真分页）：正文 overflow:hidden 整页切换，取消滚动/滚轮。
-// 页序由纯函数 paginate 从段落实测高度算出；pageIndex 从 userPosition（页首段）反推，
-// 翻页调 syncPosition(页首段) 复用既有「前翻逐段补发冲动 + putProgress + 窗口重拉 + 追赶」管线。
+// 页序由纯函数 paginate 从段落实测高度算出；pageIndex 从 userPosition（读到第 xx 段）反推，
+// 翻页一段一段来：syncPosition(userPosition ± 1) 移动光标，复用既有「前翻逐段补发冲动 + putProgress + 窗口重拉 + 追赶」管线。
 export default function ReaderView() {
   const bookId = useReaderStore((s) => s.bookId);
   const books = useReaderStore((s) => s.books);
@@ -55,27 +55,11 @@ export default function ReaderView() {
     setPageIndex(Math.max(0, Math.min(found < 0 ? 0 : found, pages.length - 1)));
   }, [pages, userPosition]);
 
-  // 书末守卫（08 §5.4）：窗口末段即书末段时已是最后一页，无「下一页」。
-  const lastParaIndex = paragraphs[paragraphs.length - 1]?.index ?? 0;
-  const onLastPageOfBook = pageIndex === pages.length - 1 && lastParaIndex >= totalParagraphs;
-
-  // 整页切换（08 §5.4）：窗口内 pageIndex 由 userPosition 反推驱动；
-  // 窗口首/末页越界时借 syncPosition 的 needsWindowRefresh 触发重拉（§5.5 既有，不改）。
+  // 一段一段翻（替代 08 §5.4 整页翻页）：上一页/下一页各移动 userPosition ±1，
+  // 光标（--current 高亮 =「你读到第 xx 段」）跟着走；pageIndex 由 userPosition 反推，
+  // 光标越页界时整页自动切换，窗口越界由 syncPosition 的 needsWindowRefresh 重拉（§5.5 既有）。
   const goPage = (dir: 1 | -1) => {
-    if (dir === 1) {
-      if (pageIndex < pages.length - 1) {
-        void syncPosition(pages[pageIndex + 1][0]);
-      } else if (userPosition < totalParagraphs) {
-        // 窗口末页但书未读完：逐段前进（当前段 +1），与上一页跨窗（windowFrom -1）对称，
-        // 不跳过末页剩余段；越窗后 needsWindowRefresh 越过 80% 边界重拉下一窗口。
-        void syncPosition(userPosition + 1);
-      }
-    } else if (pageIndex > 0) {
-      void syncPosition(pages[pageIndex - 1][0]);
-    } else if (windowFrom > 1) {
-      // 窗口首页但非书首：回上一段，needsWindowRefresh（< windowFrom）重拉上一窗口。
-      void syncPosition(windowFrom - 1);
-    }
+    void syncPosition(userPosition + dir);
   };
 
   const title = books.find((b) => b.id === bookId)?.title ?? "阅读中";
@@ -137,7 +121,7 @@ export default function ReaderView() {
           type="button"
           className="reading-btn"
           onClick={() => goPage(1)}
-          disabled={userPosition >= totalParagraphs || onLastPageOfBook}
+          disabled={userPosition >= totalParagraphs}
         >
           下一页
         </button>

@@ -88,7 +88,7 @@ type ReaderState = {
 loadBooks(): Promise<void>                      // GET /api/books → books；失败 → booksError
 openBook(bookId: string): Promise<void>         // totalParagraphs = books.find(b=>b.id===bookId)?.total_paragraphs ?? 0 → getProgress + 拉首窗口段落 → 会话态；nyx < user → startCatchup()
 closeBook(): void                               // stopCatchup() + bookId/paragraphs/positions 复位
-syncPosition(next: number): Promise<void>        // 位置同步（当前页首段同步）：clamp [1, total] → 存进度 + 前翻逐段补发 evaluateImpulse + 必要时翻窗口
+syncPosition(next: number): Promise<void>        // 位置同步（当前读到段同步）：clamp [1, total] → 存进度 + 前翻逐段补发 evaluateImpulse + 必要时翻窗口
 setReadingSpeed(speed: number): Promise<void>   // putProgress({user_position, nyx_position, reading_speed: speed})（三键全量；已排 timer 按旧 speed 走完当前段，新 speed 下一段才生效）
 startCatchup(): void                            // 起 setTimeout 追赶循环（§4）
 stopCatchup(): void                             // clearTimeout 停追赶
@@ -103,7 +103,7 @@ reread(): Promise<void>                          // 重读：putProgress({user_p
 - **`nyxStatus` 是派生态**：`idle`（`bookId===null`）/ `reading`（`nyxPosition < userPosition`）/ `waiting`（`nyxPosition >= userPosition`）——与后端 spec 20 决策一致（后端不存 `nyx_status`，前端派生）。
 - **阅读系统一个 store**：书架/进度/段落/笔记同属「陪伴读书」一个系统，归 `readerStore`（CLAUDE.md「每系统一个 store」）。不拆 `noteStore`（反冗余）。
 - **进度持久化后写**：位置同步 `syncPosition` 每次 `putProgress(userPosition, nyxPosition, readingSpeed)`（fire-and-forget，失败静默、下次翻页重写覆盖）；`nyxPosition` 由追赶循环推进，也随下次 `putProgress` 落库（后端已定「state 是 value 派生」不存派生态，前端把最新 nyx 位置随进度写回即可）。
-- **真分页 + 高亮定位**（08 §5）：正文 `overflow:hidden` 无滚动；`paginate` 纯函数按段实测高度贪心分页，「上一页/下一页」整页切换、页首段同步回 `syncPosition`（复用「前翻逐段补发 evaluateImpulse + putProgress + 窗口重拉 + startCatchup」管线）；当前段 `--current` 高亮、Nyx 段 `--nyx` 🦊 标记（`userPosition` 恒等于当前页首段，计数/高亮不漂移）。
+- **真分页 + 高亮定位**（08 §5）：正文 `overflow:hidden` 无滚动；`paginate` 纯函数按段实测高度贪心分页，「上一页/下一页」逐段移动、`syncPosition(userPosition ± 1)`（复用「前翻逐段补发 evaluateImpulse + putProgress + 窗口重拉 + startCatchup」管线）；当前段 `--current` 高亮、Nyx 段 `--nyx` 🦊 标记（`userPosition` 即当前读到段，计数/高亮不漂移）。
 - **正文后端唯一来源**：`evaluateImpulse` 只传 `{book_id, paragraph_index, last_paragraph_index}`（不传 `paragraph_text`），正文后端自取（21 决策）。
 - **「读完」「重读」是前端动作**：`userPosition == total_paragraphs` 时显示「读完」（UI 确认，无后端调用）；`Progress.read_count >= 1` 时显示「重读」（`reread()` = `putProgress({user_position:1, nyx_position:1, reading_speed})` 复位）。后端「读完」标记是 `read_count`（22 的整本读完自动 `++`），前端不额外写 finished；重读触发反思全在后端 22，前端只需复位进度。
 - **`totalParagraphs` 来自书架列表项**：后端 `GET /api/progress` 不回 total、段落窗口只回窗口内段，故唯一现成来源是 `BookListItem.total_paragraphs`；`openBook` 用 `books.find(b => b.id === bookId)` 落 `readerStore.totalParagraphs`。**前置 `books` 已加载**（书架点书天然已 `loadBooks`；深链/刷新先 `loadBooks` 再 `openBook`），否则 `totalParagraphs=0`、clamp 失效——`syncPosition` 需 `totalParagraphs>0` 守卫，0 时不推进。
@@ -125,10 +125,10 @@ reread(): Promise<void>                          // 重读：putProgress({user_p
   → nyxPosition < userPosition ? startCatchup() : waiting
 
 真分页 → paginate(paragraphs, measureHeight, viewportHeight) 贪心填满当前窗口
-  → 上一页/下一页 → syncPosition(页首段 pages[pageIndex±1][0])
-      → userPosition = clamp(页首段, 1, total_paragraphs)
+  → 上一页/下一页 → syncPosition(userPosition ± 1)（一段一段）
+      → userPosition = clamp(userPosition ± 1, 1, total_paragraphs)
       → putProgress(...)（异步写回，fire-and-forget）
-      → 前翻逐段补发 evaluateImpulse(bookId, i, i-1)，i ∈ (旧, 页首段]（整页翻一次跨 N 段，逐段保住每段都有机会触发；冲动走 SSE 07）
+      → 前翻逐段补发 evaluateImpulse(bookId, i, i-1)，i ∈ (旧, 新位置]（逐段 +1，每段都有机会触发；冲动走 SSE 07）
       → userPosition 越窗口 80% 边界时重拉新窗（centered=false，从 userPosition 起）
       → startCatchup()（拉开差距 Nyx 继续追）
   → 正文里高亮当前段（--current）+ 🦊 标 Nyx 段（--nyx）
@@ -138,7 +138,7 @@ reread(): Promise<void>                          // 重读：putProgress({user_p
 - **翻页方向守卫**：`evaluateImpulse` 后端的 `paragraph_index <= last_paragraph_index → []` 已兜底回翻不触发；前端只在前翻时调用（回翻不评估），双保险。
 - **分页纯函数 `paginate`**（08 §5.1）：`paginate(paragraphs, measureHeight, viewportHeight): number[][]` 对**当前窗口**（≤50 段）贪心填满——`measureHeight(index) = (paraRefs.get(index)?.offsetHeight ?? 0) + GAP_PX`（`GAP_PX=12` 段间距计入分页，对齐 CSS `gap:0.75rem`）；加下一段将溢出 `viewportHeight` 则封页；单段高于 viewport 独占一页；空 `paragraphs`/`viewportHeight<=0` 返回 `[]`。
 - **测量/重测**（08 §5.2）：`viewportHeight` = `.reader-text` 的 `clientHeight`，`ResizeObserver` 维护成组件 state；`useLayoutEffect` 依赖 `[paragraphs, fontScale, viewportHeight, windowFrom]` 任一变化重测全部段高 + 重分页。
-- **状态归属**（08 §5.3）：持久态只有 `userPosition`（= 当前页首段，唯一落库）；`pageIndex`/`pages`/`viewportHeight` 是 DOM 测量派生值，**不入 store**。`pageIndex` 从 `userPosition` 反推（`pages.findIndex(p => p.includes(userPosition))`，找不到归 0 再 clamp）。
+- **状态归属**（08 §5.3）：持久态只有 `userPosition`（= 当前读到段，唯一落库）；`pageIndex`/`pages`/`viewportHeight` 是 DOM 测量派生值，**不入 store**。`pageIndex` 从 `userPosition` 反推（`pages.findIndex(p => p.includes(userPosition))`，找不到归 0 再 clamp）。
 - **装配**：shell 底部导航加「读书」入口按钮 → 打开 `BookshelfView`；`ReaderView` 打开时 header/footer 读 `readerStore`（`nyxPosition`/`userPosition` 派生进度 + 翻页/重读/笔记入口）。`useSSE` 不在此（挂 App 层，01-sse §4），阅读事件经 `dispatch.ts` 分流（07）。
 
 ## 6. `client.ts` 增补

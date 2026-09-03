@@ -1,4 +1,5 @@
 import os
+import uuid
 from typing import Any, Literal, TypedDict, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -14,6 +15,29 @@ from nyx.types import LLMOutput
 class LlmMessage(TypedDict):
     role: Literal["system", "user", "assistant"]
     content: str
+
+
+def _extract_tokens(response: AIMessage) -> tuple[int, int]:
+    """从 AIMessage 抽 `(prompt_tokens, completion_tokens)`；抽不到 `(0, 0)`。
+
+    优先 `usage_metadata`（langchain-core 1.x 规范字段
+    `input_tokens`/`output_tokens`），回退
+    `response_metadata["token_usage"]`（OpenAI 兼容 provider 的
+    `prompt_tokens`/`completion_tokens`）。纯函数，可单测。
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if usage:
+        prompt = usage.get("input_tokens", 0) or 0
+        completion = usage.get("output_tokens", 0) or 0
+        if prompt or completion:
+            return int(prompt), int(completion)
+    token_usage = cast(
+        dict[str, Any],
+        (response.response_metadata or {}).get("token_usage") or {},
+    )
+    prompt = token_usage.get("prompt_tokens", 0) or 0
+    completion = token_usage.get("completion_tokens", 0) or 0
+    return int(prompt), int(completion)
 
 
 def _to_lc(m: LlmMessage) -> BaseMessage:
@@ -102,6 +126,7 @@ class LlmClient:
                     tool_calls.append(cast(dict[str, Any], tc.model_dump()))
                 else:
                     tool_calls.append(cast(dict[str, Any], tc))
+        prompt_tokens, completion_tokens = _extract_tokens(response)
         return LLMOutput(
             module=module,
             type=output_type,
@@ -109,4 +134,7 @@ class LlmClient:
             content=content,
             correlation_id=correlation_id,
             tool_calls=tool_calls,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            call_id=str(uuid.uuid4()),
         )

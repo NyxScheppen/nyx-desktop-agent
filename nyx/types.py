@@ -273,3 +273,35 @@ class LLMOutput:
     correlation_id: str
     # bind_tools 时 LLM 请求的工具调用（无则空）
     tool_calls: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    # 本次调用 token 消耗（抽不到记 0）；call_id 一次 complete() 唯一，
+    # think/speak 拆分后共享同一次调用（eval 总 token 去重锚点，15-eval）
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    call_id: str = ""
+
+
+@dataclass
+class EvalRecord:
+    """一次 evaluate() 的记账行（15-eval：LLM 调用 + token 可查询）。
+
+    不存 content 原文（数据最小化）。
+    """
+    id: str
+    created_at: float
+    call_id: str               # 一次 complete() 唯一 id；think/speak 共享
+    module: str                # 产出模块
+    output_type: str           # 产出类型（think/speak/tool/desire/…）
+    model: str                 # 本次调用模型名
+    correlation_id: str
+    ooc_keyword: float         # 关键词 OOC 分 [0,1]，1=完全贴合
+    ooc_embed: float | None    # embedding OOC 分；非 voice 类型 / embed 关闭为 None
+    prompt_tokens: int
+    completion_tokens: int
+
+
+@dataclass
+class EvalStats:
+    """累计 token（按 call_id 去重求和，think/speak 只计一次）。"""
+    total_tokens: int
+    prompt_tokens: int
+    completion_tokens: int

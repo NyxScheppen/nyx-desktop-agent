@@ -1,5 +1,6 @@
 import { useSettingsStore } from "../../stores/settingsStore";
 import BackgroundPanel from "../panels/BackgroundPanel";
+import EvalPanel from "../panels/EvalPanel";
 import Modal from "./Modal";
 import Panel from "./Panel";
 
@@ -106,6 +107,7 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
         </div>
       </Panel>
       <BackgroundPanel />
+      <EvalPanel />
     </Modal>
   );
 }

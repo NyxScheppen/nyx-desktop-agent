@@ -63,18 +63,23 @@
 | `test_from_config_ok`（VisionClient） | 功能正确 | 默认 `VisionConfig` → `VisionClient` 且 `_model_name == "llava"` |
 | `test_from_config_requires_key_for_non_ollama`（VisionClient） | 边界鲁棒 | `provider="openai"` 且 `api_key_env` 未设 → `ConfigError`（不再硬编码 "ollama" 静默 401） |
 | `test_from_config_reads_api_key`（VisionClient） | 功能正确 | `provider="openai"` 且 `api_key_env` 已设 → 正常返回 `VisionClient`（key 从 env 读） |
+| `test_extract_tokens_usage_metadata` | 功能正确 | `usage_metadata` 读 `input_tokens`/`output_tokens` → `(5, 3)` |
+| `test_extract_tokens_response_metadata_fallback` | 功能正确 | 无 `usage_metadata` 时回退 `response_metadata["token_usage"]` 读 `prompt_tokens`/`completion_tokens` → `(5, 3)` |
+| `test_extract_tokens_absent_zero` | 边界鲁棒 | 两处都无 → `(0, 0)`（纯函数） |
+| `test_complete_extracts_tokens_and_call_id` | 功能正确 | `complete()` 从 `usage_metadata` 抽 token 回填 + `call_id` 为 `uuid4` 非空串 |
+| `test_complete_no_usage_zero_tokens` | 边界鲁棒 | 响应无 usage → `prompt_tokens`/`completion_tokens` 均 0、`call_id` 仍非空 |
 
 ## 04-db（SQLite 连接 + 建表 + 迁移）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 18 张业务表 + `schema_version`，共 19 张 |
-| `test_migrate_creates_five_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_memory_content_hash` / `idx_books_content_hash` 五个 |
+| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 19 张业务表 + `schema_version`，共 20 张 |
+| `test_migrate_creates_six_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_memory_content_hash` / `idx_books_content_hash` / `idx_eval_log_created` 六个 |
 | `test_migrate_books_content_hash_index_unique` | 功能正确 | `idx_books_content_hash` 的 `sqlite_master.sql` 以 `CREATE UNIQUE INDEX` 开头（v8 去重升级唯一索引） |
 | `test_migrate_v8_dedupes_duplicate_content_hash` | 边界鲁棒 | 先迁 v7 插两条同 `content_hash` 书 → 完整迁移不抛、重复清到 1、被删书 paragraphs 级联清空、唯一索引就位 |
 | `test_migrate_sets_version_to_max` | 功能正确 | `schema_version` 单行 = `_MIGRATIONS` 最高版本 |
 | `test_migrate_not_null_alignment` | 边界鲁棒 | 11 列 `notnull=1`（`memory.aspect` / `long_term_desire.linked_values` / `activity.progress` / `event_log.content` / `event_log.correlation_id` / `user_notes.content` / `user_notes.created_at` / `user_notes.updated_at` / `annotations.user_note_id` / `annotations.content` / `annotations.created_at`） |
-| `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `memory.embedding` / `memory.content_hash` / `user_notes.book_id` / `user_notes.paragraph_id` / `user_notes.selected_text`） |
+| `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `memory.embedding` / `memory.content_hash` / `user_notes.book_id` / `user_notes.paragraph_id` / `user_notes.selected_text` / `eval_log.ooc_embed`） |
 | `test_migrate_idempotent` | 回归保护 | 连跑两次不报错，表数不变、版本不变 |
 | `test_migrate_version_gating` | 功能正确 | `monkeypatch` 追加「下一版本」后只套该版本，版本=下一版本，旧版本不重复建（动态取 max+1，不再硬编码 v3） |
 | `test_migrate_atomic_rollback` | 边界鲁棒 | 迁移含非法 SQL → 抛 `aiosqlite.Error`；`ok` 表回滚不存在；版本仍为 0 |
@@ -201,7 +206,7 @@
 | `test_search_sources_keyword_only` | 功能正确 | embed=None（向量层禁用）仅 keyword 命中 → `sources=[KEYWORD]` |
 | `test_search_sources_vector_only` | 功能正确 | content 不含 query、embedding 余弦命中 → `sources=[VECTOR]` |
 
-## eval（OOC 轻量告警）
+## eval（OOC 告警 + 调用/token 记账）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -211,6 +216,12 @@
 | `test_ooc_embed_score_identical` | 功能正确 | content 与语料同向量 → sim 1.0 越界 clamp 到 1.0 |
 | `test_ooc_embed_score_orthogonal` | 功能正确 | 正交向量 → sim 0.0 → 0.0 |
 | `test_ooc_embed_score_empty_baseline` | 边界鲁棒 | 空 baseline → 1.0（无语料无信息不惩罚） |
+| `test_insert_and_list_recent_order` | 功能正确 | 插 3 条 → `list_recent(2)` 按 `created_at` 倒序返回 `["c","b"]`（limit 截断） |
+| `test_total_tokens_dedups_call_id` | 功能正确 | think/speak 共享 `call-1` 只计一次：`prompt 13`/`completion 7`/`total 20`（`GROUP BY call_id` + `MAX` 去重） |
+| `test_total_tokens_empty` | 边界鲁棒 | 空表 → `total_tokens`/`prompt_tokens`/`completion_tokens` 全 0 |
+| `test_evaluate_records` | 功能正确 | `evaluate()` 落 1 条：`call_id`/`module`/`output_type`/`ooc_keyword=1.0`/`ooc_embed=None`/`prompt 7`/`completion 3` 正确 |
+| `test_evaluate_store_none_no_crash` | 边界鲁棒 | `store=None` → `evaluate()` 不落库、不抛 |
+| `test_evaluate_insert_error_swallowed` | 边界鲁棒 | `insert` 抛 `RuntimeError` → 吞掉不重抛（best-effort），`records` 仍空 |
 
 ## 09-memory-facade（记忆门面）
 
@@ -602,6 +613,7 @@
 | `test_parse_reply_empty_speak_raises` | 边界鲁棒 | 纯空白 `speak` → `ValueError` |
 | `test_parse_reply_invalid_json_raises` | 边界鲁棒 | 非法 JSON → `ValueError` |
 | `test_parse_reply_non_dict_raises` | 边界鲁棒 | 顶层非对象（数组）→ `ValueError` |
+| `test_voice_output_preserves_call_fields` | 功能正确 | `_voice_output` 透传 `type`/`content`，`tool_calls=[]`，且 `prompt_tokens`/`completion_tokens`/`call_id` 保留（think/speak 共享记账锚点） |
 | `test_reply_fast` | 功能正确 | 快通道：complete×1（reply）、evaluate×2、`search`/`create_scene_memory` 未调、publish `[THINK, SPEAK]` |
 | `test_reply_slow_non_question` | 功能正确 | 慢通道非问句：complete×4（`["tool"] + ["reply"]×3`）、publish `[THINK, SPEAK]×3`、`search=1`、`create_scene_memory=1`、`nyx_think`/`nyx_speak` 3 轮 `"\n"` 拼接 |
 | `test_reply_slow_question` | 功能正确 | 慢通道问句：complete `["tool", "reply"]`、publish `[THINK, ASK]`（非 SPEAK）、`create_scene_memory` 仍调、提前结束（think/speak 各 1） |
@@ -663,6 +675,8 @@
 | `test_observe_endpoint` | 功能正确 | `POST /api/observe`（`{presence, window_title}`）→ `{event_id}`；bus 收 `OBSERVATION_STATE`（content `{presence, window_title}`）、`last_presence`/`last_window_title` 更新 |
 | `test_export_endpoint` | 功能正确 | `POST /api/export` `json`/`md` 返回原始字符串（非 JSON 二次编码），`content-type` 分别 `application/json`/`text/markdown` |
 | `test_export_bogus_raises` | 边界鲁棒 | `format=bogus` → Facade 抛 `ValueError`（端点不吞，透出为 500） |
+| `test_eval_recent_endpoint` | 功能正确 | `GET /api/eval/recent?limit=3` → 200、`store.recent_calls == [3]`、首条 `call_id == "c1"` |
+| `test_eval_total_tokens_endpoint` | 功能正确 | `GET /api/eval/total_tokens` → 200、`{total 42 / prompt 30 / completion 12}` |
 | `test_tick_loop_emits_four_clock_ticks` | 功能正确 | 跑一个循环 → 4 条 `CLOCK_TICK`，`tick_type` 覆盖四类、每条 `source is INTERNAL`（系统定时器非外部输入） |
 | `test_subscription_consistency` | 功能正确 | 对 `ROUTING` 每个非空消费者 publish → 对应 Facade 方法被调（inner_life×4 / desire×2 / activity×1 / expression×1） |
 | `test_chat_missing_message_returns_422` | 边界鲁棒 | `POST /api/chat` 缺 `message` → 422（pydantic 请求模型校验，非 500） |
@@ -896,6 +910,9 @@
 | `showNoteToNyx > POST /api/notes/{noteId}/show-to-nyx` | 功能正确 | 请求 URL `/api/notes/n1/show-to-nyx`、method POST、解析 `Annotation` 直返 |
 | `showNoteToNyx > LLM 空回 null` | 边界鲁棒 | 响应 `null` → 返回 `null`（不抛、不反噬，与 store 的 `ann===null` 分支对齐） |
 | `createUserNote > 422 读 body.detail 上抛` | 边界鲁棒 | 422 body `{"detail":"content 不能为空"}` → reject（message 含 detail） |
+| `getEvalRecent > GET /api/eval/recent?limit=5` | 功能正确 | 默认 limit 拼 `?limit=5`、解析 `EvalRecord[]` 直返 |
+| `getEvalRecent > 显式 limit 拼进 query` | 功能正确 | `getEvalRecent(3)` → `/api/eval/recent?limit=3` |
+| `getEvalTotalTokens > GET /api/eval/total_tokens` | 功能正确 | 请求 URL、解析 `EvalStats`（三键 snake_case）直返 |
 
 ## frontend-stores（Zustand stores：chatStore + innerLifeStore + desire/activity 快照 + settingsStore + readerStore）
 
@@ -940,6 +957,8 @@
 | `parseCircleSize > 合法三档原样返回` | 功能正确 | `"small"/"medium"/"large"` → 原样返回 |
 | `parseCircleSize > null/空串/未知值回退默认` | 边界鲁棒 | `null`/`""`/`"huge"` 均 → `"large"`（默认） |
 | `isReady > think 也受串行门控` | 功能正确 | think2 在 speak1 之后、speak1 未入 `typedIds` → false；speak1 入 → true（每条 nyx 文本等前一条同 correlation_id 打完） |
+| `evalStore.refresh > 并行 getEvalRecent + getEvalTotalTokens` | 功能正确 | `fetch` 恰 2 次（`/api/eval/recent?limit=5` + `/api/eval/total_tokens`）→ `records`/`stats` 双字段落 store |
+| `evalStore.refresh > getEvalRecent throw → error` | 边界鲁棒 | `getEvalRecent` reject → `error=e.message` + `records`/`stats` 保持 null |
 
 ## frontend-reader-store（阅读 store：readerStore 书架/进度/追赶循环）
 
@@ -1097,12 +1116,20 @@
 | `DesiresPanel > 渲染活队列（pending/active/suppressed），过滤 expired/satisfied` | 功能正确 | 短期欲望里 pending/active/suppressed 三条描述上屏，satisfied/expired 两条描述不上屏 |
 | `DesiresPanel > 短期欲望全是终态 → 不渲染「短期欲望」空区块` | 边界鲁棒 | 短期欲望全为 satisfied/expired → `liveShortTerm.length===0`，「短期欲望」区块整体不渲染 |
 
-## frontend-settings-view（游戏设置页内面板：SettingsView 字体大小 + 圆圈背景 + 背景外观）
+## frontend-settings-view（游戏设置页内面板：SettingsView 字体大小 + 圆圈背景 + 背景外观 + LLM/token）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `SettingsView > 渲染标题 / 字体大小三档 / 圆圈背景 / 圆圈大小 / 背景外观` | 功能正确 | 「设置」标题、「字体大小」「圆圈背景」「圆圈大小」「背景」四个面板标题（heading）、字体「小/中/大」三按钮均上屏 |
+| `SettingsView > 渲染标题 / 字体大小三档 / 圆圈背景 / 圆圈大小 / 背景外观` | 功能正确 | 「设置」标题、「字体大小」「圆圈背景」「圆圈大小」「背景」「LLM 调用 / token」五个面板标题（heading）、字体「小/中/大」三按钮均上屏 |
 | `SettingsView > 默认「中」激活，点「大」写 settingsStore.fontScale` | 功能正确 | 默认「中」`aria-pressed=true`；点「大」→ `fontScale==="large"` 且「大」`aria-pressed=true` |
 | `SettingsView > 点预设色块「樱粉」写 settingsStore.tint` | 功能正确 | 点「樱粉」色块（aria-label）→ `settingsStore.tint === "#f7e8e0"` |
 | `SettingsView > 点圆圈底色「浅粉」写 settingsStore.circleColor` | 功能正确 | 点「浅粉」色块（aria-label，与「樱粉」错开）→ `settingsStore.circleColor === "#f7e8e0"` |
 | `SettingsView > 默认「大」激活，点「小」写 settingsStore.circleSize` | 功能正确 | 默认「圆圈大」`aria-pressed=true`；点「圆圈小」→ `circleSize==="small"` 且「圆圈小」`aria-pressed=true`（aria-label 与字体「小/中/大」错开） |
+
+## frontend-eval-panel（LLM 调用 / token 面板：EvalPanel）
+
+| 测试 | 检查方向 | 断言内容 |
+|---|---|---|
+| `EvalPanel > 渲染总 token 与最近调用` | 功能正确 | 「LLM 调用 / token」标题、「总 token」文案 + `14（prompt 10 / completion 4）`；output_type 中文化（`speak`→「对外」、`think`→「内心」）；每条 OOC 分（`OOC 1.00`/`OOC 0.80`）与 `5+2 token` |
+| `EvalPanel > 无记录空态` | 边界鲁棒 | `records=[]` → 「还没有 LLM 调用记录」 |
+| `EvalPanel > records=null 等待态` | 边界鲁棒 | `records=null` → 「等待核心服务连接…」 |

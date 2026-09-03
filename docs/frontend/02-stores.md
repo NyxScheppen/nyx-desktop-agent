@@ -198,7 +198,7 @@ type ReaderState = {
 loadBooks(): Promise<void>                 // GET /api/books → books
 openBook(bookId: string): Promise<void>    // getProgress → 会话态 + totalParagraphs（从 books 取）+ 拉首窗；nyx<user 时 startCatchup
 closeBook(): void                          // stopCatchup + 全量复位（含 notes）
-syncPosition(next: number): Promise<void>  // 位置同步（当前页首段同步）：clamp [1, total] → putProgress + 前翻逐段补发 evaluateImpulse + 越窗口边界重拉 + startCatchup
+syncPosition(next: number): Promise<void>  // 位置同步（当前读到段同步）：clamp [1, total] → putProgress + 前翻逐段补发 evaluateImpulse + 越窗口边界重拉 + startCatchup
 setReadingSpeed(speed: number): Promise<void>
 startCatchup(): void                       // setTimeout 秒级推进；段落未加载/过短兜底 1s
 stopCatchup(): void

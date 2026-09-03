@@ -337,3 +337,24 @@ export type BackendEvent = {
   content: Record<string, unknown>;
   correlation_id: string;
 };
+
+// ---- eval 记账（15-eval / nyx/types.py EvalRecord/EvalStats）----
+export type EvalRecord = {
+  id: string;
+  created_at: number;
+  call_id: string; // 一次 complete() 唯一；think/speak 共享
+  module: string;
+  output_type: string; // 产出类型（speak/think/initiate_chat/…）
+  model: string;
+  correlation_id: string;
+  ooc_keyword: number; // 关键词 OOC 分 [0,1]，1=完全贴合
+  ooc_embed: number | null; // embedding OOC 分 [0,1]；非 voice/关闭为 null
+  prompt_tokens: number;
+  completion_tokens: number;
+};
+
+export type EvalStats = {
+  total_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+};

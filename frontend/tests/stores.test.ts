@@ -4,6 +4,7 @@ import { ANNOUNCE_DURATION, useAnnounceStore } from "../src/stores/announceStore
 import { useActivityStore } from "../src/stores/activityStore";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
+import { useEvalStore } from "../src/stores/evalStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
 import { parseAvatarPos, parseCircleSize, useSettingsStore } from "../src/stores/settingsStore";
@@ -483,6 +484,46 @@ describe("desireStore / activityStore", () => {
 
     expect(useMemoryStore.getState().error).toBe("fetch failed");
     expect(useMemoryStore.getState().data).toBeNull();
+  });
+});
+
+describe("evalStore", () => {
+  beforeEach(() => {
+    useEvalStore.setState({ records: null, stats: null, error: null });
+  });
+
+  it("refresh：并行 getEvalRecent + getEvalTotalTokens → records/stats 落 store", async () => {
+    const records = [
+      {
+        id: "e1", created_at: 1, call_id: "c1", module: "expression",
+        output_type: "speak", model: "m", correlation_id: "k",
+        ooc_keyword: 1, ooc_embed: null, prompt_tokens: 5, completion_tokens: 2,
+      },
+    ];
+    const stats = { total_tokens: 7, prompt_tokens: 5, completion_tokens: 2 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(records))
+      .mockResolvedValueOnce(jsonResponse(stats));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useEvalStore.getState().refresh();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/eval/recent?limit=5");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/eval/total_tokens");
+    expect(useEvalStore.getState().records).toEqual(records);
+    expect(useEvalStore.getState().stats).toEqual(stats);
+  });
+
+  it("refresh：getEvalRecent throw → error + records 保持 null", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+
+    await useEvalStore.getState().refresh();
+
+    expect(useEvalStore.getState().error).toBe("fetch failed");
+    expect(useEvalStore.getState().records).toBeNull();
+    expect(useEvalStore.getState().stats).toBeNull();
   });
 });
 

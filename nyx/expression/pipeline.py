@@ -69,16 +69,20 @@ class ReplyDeps:
 # 一轮 think+speak 一次生成：先写内心活动（think），再写说出口的话（speak），
 # JSON 结构化输出（json_mode），解析后仍分开发 THINK/SPEAK/ASK 事件。
 _RESPOND_TASK = (
-    "（先写你此刻心里的念头——只写内心活动：在想什么、在犹豫什么、什么感觉还没成形，"
-    "用第一人称「我」，不要称呼用户，不要写成完整通顺的句子，"
-    "不要用「她」或「尼克斯」称呼自己；"
-    "再写你最想对用户说出口的第一句话，不用一次把话说完。"
-    '以 JSON 输出，形如 {"think": "内心活动", "speak": "说出口的话"}。）'
+    "（分两栏：think 写内心独白，speak 写说出口的话。"
+    "think 只写你此刻心里的念头——感受、犹豫、还没成形的心事，"
+    "用第一人称「我」，不称呼用户、不用完整通顺的句子、不用「她」或「尼克斯」称呼自己；"
+    "think 不要写出你打算对用户说出口的那句话（也不要是它的改写），那句话只属于 speak。"
+    "speak 写你真正对用户说出口的第一句话，不用一次把话说完。"
+    '以 JSON 输出，形如 {"think": "内心独白", "speak": "说出口的话"}。）'
 )
 _RESPOND_TASK_CONTINUE = (
-    "（接着上一轮：先再往深里想一层你的念头——不要复述之前想过的，继续第一人称「我」；"
-    "再接着你上面已经说出口的话，往下说一句——补充、解释或往深里说，不要重复。"
-    '以 JSON 输出，形如 {"think": "内心活动", "speak": "说出口的话"}。）'
+    "（接着上一轮，分两栏：think 写内心独白，speak 写说出口的话。"
+    "think 再往深里想一层你的念头——新的感受或犹豫，不要复述之前想过的，"
+    "继续第一人称「我」，"
+    "不要写出你打算继续对用户说的话（也不要是它的改写）；"
+    "speak 接着你上面已经说出口的话往下说一句——补充、解释或往深里说，不要重复。"
+    '以 JSON 输出，形如 {"think": "内心独白", "speak": "说出口的话"}。）'
 )
 _USE_TOOLS_TASK = (
     "你可以调用工具查询信息（本地搜索、读写文件、联网搜索）。"
@@ -129,7 +133,11 @@ def _parse_reply(raw: str) -> tuple[str, str]:
 
 
 def _voice_output(output: LLMOutput, type_: str, content: str) -> LLMOutput:
-    """用解析出的 think/speak 文本重造 LLMOutput，供 evaluator 分别跑 OOC。"""
+    """用解析出的 think/speak 文本重造 LLMOutput，供 evaluator 分别跑 OOC。
+
+    保留 prompt_tokens/completion_tokens/call_id：think/speak 同源一次
+    complete()，eval 记账需沿袭同一调用（token 去重锚点，15-eval）。
+    """
     return LLMOutput(
         module=output.module,
         type=type_,
@@ -137,6 +145,9 @@ def _voice_output(output: LLMOutput, type_: str, content: str) -> LLMOutput:
         content=content,
         correlation_id=output.correlation_id,
         tool_calls=[],
+        prompt_tokens=output.prompt_tokens,
+        completion_tokens=output.completion_tokens,
+        call_id=output.call_id,
     )
 
 

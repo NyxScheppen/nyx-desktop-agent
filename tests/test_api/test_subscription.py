@@ -9,6 +9,7 @@ from nyx.db import connect
 from nyx.desire.facade import DesireFacade
 from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
+from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
 from nyx.events.routing import ROUTING
 from nyx.expression.facade import ExpressionFacade
@@ -85,6 +86,7 @@ async def test_subscription_consistency() -> None:
         expression=cast(ExpressionFacade, expression),
         reading=cast(ReadingFacade, object()),
         evaluator=cast(Evaluator, object()),
+        eval_store=cast(EvalStore, object()),
         config=Config(),
     )
     _subscribe(app)

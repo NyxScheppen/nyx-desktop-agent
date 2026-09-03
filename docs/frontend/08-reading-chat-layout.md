@@ -108,7 +108,7 @@ case "reading_mutter":
 
 ## 5. 真分页（取消滚动，纯函数分页 + 测量/重测契约）
 
-`ReaderView` 由「滚动容器 + `onScroll`/`offsetTop`/`scrollBy`」改为**真分页**：容器 `overflow:hidden`，无滚动条、无滚轮，翻页整页切换。
+`ReaderView` 由「滚动容器 + `onScroll`/`offsetTop`/`scrollBy`」改为**真分页**：容器 `overflow:hidden`，无滚动条、无滚轮，翻页逐段移动光标、越页界整页切换。
 
 ### 5.1 纯函数 `paginate`（`readerStore.ts` 导出，同 `computeWindow` 纯函数族）
 
@@ -132,20 +132,20 @@ export function paginate(
 
 ### 5.3 状态归属（持久态 vs 瞬态）
 
-- **持久态（`readerStore`）**：`userPosition` = **当前页首段 index**，唯一落库（`putProgress` 已有）。不新增 store 字段。
+- **持久态（`readerStore`）**：`userPosition` = **读到第 xx 段**（逐段移动的光标位置，非页首段），唯一落库（`putProgress` 已有）。不新增 store 字段。
 - **瞬态（`ReaderView` 组件 state）**：`pageIndex`（当前页序号，0-based）、`heights`（段高 Map）、`pages`（`paginate` 结果）、`viewportHeight`。这些是 DOM 测量派生值，**不入 store**（store 状态须可序列化，DOM 高度不是）。
 - **`pageIndex` 从 `userPosition` 反推**：`pageIndex = pages.findIndex(p => p.includes(userPosition))`，找不到 → `0`；再 `clamp [0, pages.length-1]`。`userPosition` 是唯一事实来源，重分页后靠它找回页序，不丢位置。
 
 ### 5.4 翻页映射
 
-- `上一页/下一页` 按钮不再调 `scrollBy`，改 `setPageIndex(pageIndex ± 1)`（clamp `[0, pages.length-1]`）。
-- 页序变化后，**页首段 = `pages[pageIndex][0]`** → 调 `syncPosition(页首段)`（复用既有 `syncPosition` 的「前翻逐段补发 `evaluateImpulse` + `putProgress` + 必要时 `fetchWindow` + `startCatchup`」整条管线）。`userPosition` 恒等于当前页首段。
-- 视觉切换：内容 wrapper `transform: translateY(-页前累计高度)`（`-sum(measureHeight(前页各段))`，CSS `transition` 平滑），`overflow:hidden` 裁掉其余页；无滚动条、无滚轮。高亮 `--current`（`userPosition` 段）+ 🦊 `--nyx`（`nyxPosition` 段）保留（06 既有 class，只改「当前段」判定为 `pages[pageIndex][0]`）。
+- `上一页/下一页` 按钮不再调 `scrollBy`，改 `syncPosition(userPosition ± 1)`（逐段移动，clamp `[1, total]` 由 `syncPosition` 处理）。
+- 光标（`--current` 高亮 =「你读到第 xx 段」）随 `userPosition` 逐段移动；`pageIndex` 从 `userPosition` 反推（§5.3），光标越页界时整页自动切换。复用既有 `syncPosition` 的「前翻逐段补发 `evaluateImpulse` + `putProgress` + 必要时 `fetchWindow` + `startCatchup`」整条管线。
+- 视觉切换：内容 wrapper `transform: translateY(-页前累计高度)`（`-sum(measureHeight(前页各段))`，CSS `transition` 平滑），`overflow:hidden` 裁掉其余页；无滚动条、无滚轮。高亮 `--current`（`userPosition` 段）+ 🦊 `--nyx`（`nyxPosition` 段）保留（06 既有 class）。
 
 ### 5.5 窗口刷新不漂
 
-- `syncPosition` 内 `needsWindowRefresh` → `fetchWindow(centered=false)`（既有，**不改**），重拉后 `windowFrom = userPosition`、新窗口首段即当前页首段。
-- `windowFrom` 变化触发重分页（§5.2），`pageIndex` 归 `0`（新窗口从当前段开始），`userPosition` 恒为页首段——**页状态不漂**。
+- `syncPosition` 内 `needsWindowRefresh` → `fetchWindow(centered=false)`（既有，**不改**），重拉后 `windowFrom = userPosition`、新窗口首段即当前读到段。
+- `windowFrom` 变化触发重分页（§5.2），`pageIndex` 归 `0`（新窗口从当前段开始，`userPosition` 即窗口首段）——**页状态不漂**。
 
 ### 5.6 删除项
 
@@ -168,7 +168,7 @@ export function paginate(
 - `dispatch`（`tests/sse.test.ts`）：`reading_question`/`reading_association` → `addReadingTurn`；`reading_mutter`/`mutter` → `announceStore.announce("mutter")`；`reflection_done` → `announce("mutter")`（保持）；不再有 `addReadingBubble`/`addMutter` 调用。
 - 真分页纯函数 `paginate`（`tests/stores.test.ts`）：长段独占一页、短段一页多段、溢出封页（累加将超 viewport 即开新页）、空 `paragraphs`/`viewportHeight<=0` 返回 `[]`、`measureHeight` 含 `GAP_PX` 后页界正确。
 - `MessageBubble`（组件测试，如无则 `readerView.test.tsx` 增补）：`reading_question` 渲染「提问」徽标 + 即时全量（不逐字，`displayed===content`）；`selectedText` 非空渲染引文行；`reading_association` 渲染「联想」徽标 + `memoryId` 存在渲染「记忆」标。
-- `readerStore`：删 `addReadingBubble` 相关断言；`syncPosition` 页首段路径保持（前翻逐段补发、后翻不评估）。
+- `readerStore`：删 `addReadingBubble` 相关断言；`syncPosition` 逐段路径保持（前翻逐段补发、后翻不评估）。
 
 ## 完成定义
 

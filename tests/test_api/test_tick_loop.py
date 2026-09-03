@@ -10,6 +10,7 @@ from nyx.config import Config
 from nyx.desire.facade import DesireFacade
 from nyx.enums import EventType, MemoryType, Source
 from nyx.eval.evaluator import Evaluator
+from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
@@ -64,6 +65,7 @@ def _app(bus: object, *, grid_minutes: int = 0) -> _App:
         expression=cast(ExpressionFacade, _FakeExpression()),
         reading=cast(ReadingFacade, object()),
         evaluator=cast(Evaluator, object()),
+        eval_store=cast(EvalStore, object()),
         config=config,
     )
 
@@ -307,6 +309,7 @@ def _reflect_app(
         expression=cast(ExpressionFacade, _FakeExpression()),
         reading=cast(ReadingFacade, object()),
         evaluator=cast(Evaluator, object()),
+        eval_store=cast(EvalStore, object()),
         config=Config(),
     )
     return app, inner_life

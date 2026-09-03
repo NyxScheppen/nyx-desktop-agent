@@ -23,8 +23,8 @@
 
 ## 3. DB DDL（SQLite）
 
-> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；18 张业务表 + 5 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
-> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；18 张业务表 + `schema_version` 迁移簿记表 = 共 19 张。
+> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；19 张业务表 + 6 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
+> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；19 张业务表 + `schema_version` 迁移簿记表 = 共 20 张。迁移版图：v1/2/3/6 基础表（4/5 死号）、v7-v10 陪读（books/paragraphs/progress/user_notes/annotations）、v11-v12 审美维度（aesthetic 表 + `memory.first_created_at`）、v13 eval 记账（`eval_log` 表，15-eval）。
 
 ---
 
@@ -59,6 +59,8 @@
 | DELETE | `/api/notes/user/{note_id}` | — | 204（`NoteNotFoundError` 404） |
 | POST | `/api/notes/{user_note_id}/show-to-nyx` | — | `Annotation`（`NoteNotFoundError` 404） |
 | POST | `/api/notes/check-chapter-boundary` | `{book_id, nyx_position>=1}` | `{is_boundary: bool, book_finished: bool}`（`BookNotFoundError` 404） |
+| GET | `/api/eval/recent?limit=` | query 条数（默认 5） | `EvalRecord[]`（最近 N 条 LLM 调用记账，倒序） |
+| GET | `/api/eval/total_tokens` | — | `EvalStats`（按 `call_id` 去重累计 `total_tokens`/`prompt_tokens`/`completion_tokens`） |
 > REST 端点分两类：
 > - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`> - **外部输入入口**：`/api/chat`、`/api/observe` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 `ActivityFacade.register_material()` 只注册书库（不发事件、不立即读书），返回 `{filename, path}`。回复/后续产出走 SSE。
 
@@ -190,9 +192,11 @@ def schema() -> list[dict]                                      # 给 LLM 的 to
 ### Evaluator（基础设施）
 
 ```python
-def __init__(self, embed: EmbedFn | None = None) -> None         # OOC 轻量告警：embed 供 OOC embedding 档复用；不持 db、不落库不落分
-async def evaluate(output: LLMOutput) -> None                    # 算 ooc_score +（voice 且有 embed）ooc_embed_score，低于阈值 logger.warning
+def __init__(self, embed: EmbedFn | None = None, store: EvalStore | None = None) -> None  # embed 供 OOC embedding 档；store 供记账（15-eval），None 不落库
+async def evaluate(output: LLMOutput) -> None                    # 算 ooc_score +（voice 且有 embed）ooc_embed_score；store 非 None 时写一条 eval_log（best-effort，落库失败不重抛）
 ```
+
+> `EvalStore`（`nyx/eval/store.py`）提供 `insert` / `list_recent(limit=5)` / `total_tokens()`；`total_tokens` 按 `call_id` 分组去重（think/speak 共享一次 complete 的 token 只计一次）。
 
 ---
 
@@ -246,7 +250,7 @@ nyx/
   config.py               # 配置加载（§8）
   enums.py                # §1 所有枚举
   types.py                # §2 实体 dataclass
-  db.py                   # SQLite 连接 + 18 表 DDL + 版本化迁移 + Database(conn, lock)（04-db）
+  db.py                   # SQLite 连接 + 19 表 DDL + 版本化迁移 + Database(conn, lock)（04-db）
   events/
     bus.py                # EventBus
     routing.py            # ROUTING 表
@@ -294,6 +298,7 @@ nyx/
     file_io.py            # 读写本地文件
   eval/
     evaluator.py          # Evaluator
+    store.py              # EvalStore（eval_log 记账，15-eval）
     rules.py              # 规则层（纯函数）
   llm/
     client.py             # LangChain 统一客户端

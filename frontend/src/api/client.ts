@@ -7,6 +7,8 @@ import type {
   BookListItem,
   CurrentState,
   DesireState,
+  EvalRecord,
+  EvalStats,
   Memory,
   Paragraph,
   Presence,
@@ -201,4 +203,14 @@ export async function showNoteToNyx(noteId: string): Promise<Annotation | null> 
   return request<Annotation | null>(`${BASE_URL}/api/notes/${noteId}/show-to-nyx`, {
     method: "POST",
   });
+}
+
+// ---- eval 记账（15-eval，06-settings-panel §7）----
+
+export async function getEvalRecent(limit = 5): Promise<EvalRecord[]> {
+  return request<EvalRecord[]>(`${BASE_URL}/api/eval/recent?limit=${limit}`);
+}
+
+export async function getEvalTotalTokens(): Promise<EvalStats> {
+  return request<EvalStats>(`${BASE_URL}/api/eval/total_tokens`);
 }

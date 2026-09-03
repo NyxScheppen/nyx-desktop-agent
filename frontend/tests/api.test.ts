@@ -9,6 +9,8 @@ import {
   getBookParagraphs,
   getBooks,
   getDesires,
+  getEvalRecent,
+  getEvalTotalTokens,
   getEventsLog,
   getNotes,
   getProgress,
@@ -404,5 +406,51 @@ describe("api/client notes", () => {
     await expect(createUserNote({ book_id: "b1", content: "" })).rejects.toThrow(
       "content 不能为空",
     );
+  });
+});
+
+describe("api/client eval", () => {
+  const record = {
+    id: "e1",
+    created_at: 1,
+    call_id: "c1",
+    module: "expression",
+    output_type: "speak",
+    model: "m",
+    correlation_id: "k",
+    ooc_keyword: 1.0,
+    ooc_embed: null,
+    prompt_tokens: 5,
+    completion_tokens: 2,
+  };
+
+  it("getEvalRecent：GET /api/eval/recent?limit=5、解析 EvalRecord[]", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([record]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getEvalRecent();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/eval/recent?limit=5");
+    expect(res).toEqual([record]);
+  });
+
+  it("getEvalRecent：显式 limit 拼进 query", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getEvalRecent(3);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/eval/recent?limit=3");
+  });
+
+  it("getEvalTotalTokens：GET /api/eval/total_tokens、解析 EvalStats", async () => {
+    const fixture = { total_tokens: 42, prompt_tokens: 30, completion_tokens: 12 };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getEvalTotalTokens();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/eval/total_tokens");
+    expect(res).toEqual(fixture);
   });
 });

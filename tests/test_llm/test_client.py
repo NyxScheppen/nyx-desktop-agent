@@ -17,6 +17,7 @@ from nyx.config import ConfigError, LlmConfig
 from nyx.llm.client import (
     LlmClient,
     LlmMessage,
+    _extract_tokens,
     _to_lc,
     resolve_base_url,
 )
@@ -97,6 +98,33 @@ def test_to_lc_assistant() -> None:
 def test_to_lc_invalid_role() -> None:
     with pytest.raises(ValueError):
         _to_lc(cast(LlmMessage, {"role": "invalid", "content": "x"}))
+
+
+# ---- _extract_tokens ----
+
+
+def test_extract_tokens_usage_metadata() -> None:
+    msg = AIMessage(
+        content="x",
+        usage_metadata={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+    )
+    assert _extract_tokens(msg) == (7, 3)
+
+
+def test_extract_tokens_response_metadata_fallback() -> None:
+    msg = AIMessage(
+        content="x",
+        response_metadata={
+            "token_usage": {
+                "prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15,
+            }
+        },
+    )
+    assert _extract_tokens(msg) == (11, 4)
+
+
+def test_extract_tokens_absent_zero() -> None:
+    assert _extract_tokens(AIMessage(content="x")) == (0, 0)
 
 
 # ---- complete ----
@@ -184,6 +212,26 @@ def test_complete_non_text_content() -> None:
     client, _ = _client(response)
     with pytest.raises(RuntimeError):
         _complete(client)
+
+
+def test_complete_extracts_tokens_and_call_id() -> None:
+    response = AIMessage(
+        content="hi",
+        usage_metadata={"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+    )
+    client, _ = _client(response)
+    out = _complete(client)
+    assert out.prompt_tokens == 5
+    assert out.completion_tokens == 3
+    assert out.call_id != ""           # 每次调用生成唯一 id
+
+
+def test_complete_no_usage_zero_tokens() -> None:
+    client, _ = _client(AIMessage(content="hi"))
+    out = _complete(client)
+    assert out.prompt_tokens == 0
+    assert out.completion_tokens == 0
+    assert out.call_id != ""           # 无 usage 仍生成 call_id
 
 
 # ---- from_config ----

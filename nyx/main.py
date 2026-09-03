@@ -36,6 +36,7 @@ from nyx.enums import (
     TickType,
 )
 from nyx.eval.evaluator import Evaluator
+from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
 from nyx.expression.mutter import should_initiate_chat
@@ -66,6 +67,8 @@ from nyx.types import (
     BookListItem,
     CurrentState,
     DesireState,
+    EvalRecord,
+    EvalStats,
     Event,
     LongTermDesire,
     Material,
@@ -110,6 +113,7 @@ class _App:
     expression: ExpressionFacade
     reading: ReadingFacade
     evaluator: Evaluator
+    eval_store: EvalStore
     config: Config
     # 上次搭话时间戳（18-api 维护，供 should_initiate_chat）
     last_chat_at: float = 0.0
@@ -461,6 +465,14 @@ def build_app(app: _App) -> FastAPI:
     ) -> list[Event]:
         return await app.bus.list_events(limit, event_type, correlation_id)
 
+    @fast.get("/api/eval/recent")
+    async def api_eval_recent(limit: int = 5) -> list[EvalRecord]:
+        return await app.eval_store.list_recent(limit)
+
+    @fast.get("/api/eval/total_tokens")
+    async def api_eval_total_tokens() -> EvalStats:
+        return await app.eval_store.total_tokens()
+
     @fast.get("/api/narrative")
     async def api_narrative() -> SelfNarrative:
         return await app.inner_life.get_narrative()
@@ -677,7 +689,8 @@ async def build_app_context(config: Config) -> _App:
 
     memory_store = MemoryStore(db)
     embed = build_embed(config.embedding.model)  # MVP 默认启用向量层；测试注入 None
-    evaluator = Evaluator(embed)  # embed 供 OOC 第 2 档复用
+    eval_store = EvalStore(db)
+    evaluator = Evaluator(embed, eval_store)  # embed 供 OOC 第 2 档复用；store 记账
     retrieval = MemoryRetrieval(memory_store, embed)
     memory = MemoryFacade(
         memory_store, retrieval, bus, llm, evaluator, config.memory, embed
@@ -740,7 +753,7 @@ async def build_app_context(config: Config) -> _App:
     app = _App(
         bus=bus, inner_life=inner_life, desire=desire, memory=memory,
         activity=activity, expression=expression, reading=reading,
-        evaluator=evaluator, config=config,
+        evaluator=evaluator, eval_store=eval_store, config=config,
     )
 
     async def _read_observation() -> dict[str, str]:

@@ -15,6 +15,7 @@ from nyx.enums import (
     Source,
 )
 from nyx.eval.evaluator import Evaluator
+from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
@@ -23,6 +24,8 @@ from nyx.memory.facade import MemoryFacade
 from nyx.reading.facade import ReadingFacade
 from nyx.types import (
     CurrentState,
+    EvalRecord,
+    EvalStats,
     Event,
     Material,
     Memory,
@@ -129,6 +132,7 @@ def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
         expression=cast(ExpressionFacade, object()),
         reading=cast(ReadingFacade, object()),
         evaluator=cast(Evaluator, object()),
+        eval_store=cast(EvalStore, object()),
         config=Config(),
     )
 
@@ -137,6 +141,22 @@ def _client(app: _App) -> AsyncClient:
     return AsyncClient(
         transport=ASGITransport(app=build_app(app)), base_url="http://test"
     )
+
+
+class _FakeEvalStore:
+    def __init__(self) -> None:
+        self.recent_calls: list[int] = []
+        self.records: list[EvalRecord] = []
+        self.stats = EvalStats(
+            total_tokens=42, prompt_tokens=30, completion_tokens=12,
+        )
+
+    async def list_recent(self, limit: int = 5) -> list[EvalRecord]:
+        self.recent_calls.append(limit)
+        return self.records
+
+    async def total_tokens(self) -> EvalStats:
+        return self.stats
 
 
 async def test_state_endpoint() -> None:
@@ -262,6 +282,36 @@ async def test_materials_endpoint_returns_progress() -> None:
         ]
     }
     assert fake_activity.list_calls == 1
+
+
+async def test_eval_recent_endpoint() -> None:
+    store = _FakeEvalStore()
+    store.records = [
+        EvalRecord(
+            id="e1", created_at=1.0, call_id="c1", module="expression",
+            output_type="speak", model="x", correlation_id="k",
+            ooc_keyword=1.0, ooc_embed=None, prompt_tokens=5, completion_tokens=2,
+        )
+    ]
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.eval_store = cast(EvalStore, store)
+    async with _client(app) as client:
+        resp = await client.get("/api/eval/recent", params={"limit": 3})
+    assert resp.status_code == 200
+    assert store.recent_calls == [3]
+    assert resp.json()[0]["call_id"] == "c1"
+
+
+async def test_eval_total_tokens_endpoint() -> None:
+    store = _FakeEvalStore()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.eval_store = cast(EvalStore, store)
+    async with _client(app) as client:
+        resp = await client.get("/api/eval/total_tokens")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "total_tokens": 42, "prompt_tokens": 30, "completion_tokens": 12,
+    }
 
 
 async def test_upload_endpoint_registers_material(

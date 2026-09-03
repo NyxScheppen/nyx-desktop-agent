@@ -16,6 +16,7 @@ from nyx.config import Config
 from nyx.desire.facade import DesireFacade
 from nyx.enums import BoundaryResult, ReadingBehavior
 from nyx.eval.evaluator import Evaluator
+from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
@@ -160,6 +161,7 @@ def _app(reading: _FakeReading) -> _App:
         expression=cast(ExpressionFacade, object()),
         reading=cast(ReadingFacade, reading),
         evaluator=cast(Evaluator, object()),
+        eval_store=cast(EvalStore, object()),
         config=Config(),
     )
 

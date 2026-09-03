@@ -251,6 +251,29 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "WHERE first_created_at IS NULL",
         ],
     ),
+    (
+        13,
+        [
+            # eval 可观测（15-eval）：LLM 调用 + token 记账。
+            # 不存 content 原文（数据最小化）。
+            # call_id 一次 complete() 唯一，think/speak 共享（总 token 去重锚点）。
+
+            """CREATE TABLE eval_log (
+                id TEXT PRIMARY KEY,
+                created_at REAL NOT NULL,
+                call_id TEXT NOT NULL,
+                module TEXT NOT NULL,
+                output_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                correlation_id TEXT NOT NULL,
+                ooc_keyword REAL NOT NULL,
+                ooc_embed REAL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0
+            )""",
+            "CREATE INDEX idx_eval_log_created ON eval_log(created_at)",
+        ],
+    ),
 ]
 
 

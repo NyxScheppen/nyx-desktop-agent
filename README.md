@@ -105,6 +105,12 @@ flowchart TB
 - Python 3.11+
 - Node.js 18+（前端）
 
+### 一键启动（开发）
+
+```bash
+python dev.py        # 同时拉起后端(8000) + 前端 Vite(5173)，Ctrl+C 退出
+```
+
 ### 后端
 
 ```bash

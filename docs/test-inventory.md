@@ -422,6 +422,7 @@
 | `test_reflect_delegation` | 功能正确 | `facade.reflect()` → reflection LLM 调 1 次、correlation 透传 |
 | `test_build_reflection_prompt_feeds_story` | 功能正确 | 已写故事/认知内容被喂进反思 prompt（而非只喂条数）+ 含「新的、与之不同」指示 |
 | `test_build_reflection_prompt_aesthetic_anchor` | 功能正确 | prompt 含「当前审美（1-10）」锚点行 + `华丽 7.0`（delta 需当前值参照） |
+| `test_reflection_system_prompt_mentions_json` | 功能正确 | `_REFLECTION_SYSTEM` 含「JSON」（json_mode=True 要求 prompt 含 json 字样，reflection 是唯一 json_mode 调用点） |
 | `test_is_duplicate_fragment` | 功能正确 | 片段去重纯函数：strip 后精确相等/高相似度 → True；明显不同/空列表 → False |
 | `test_run_dedup_story` | 功能正确 | LLM story 与已有片段重复 → 不追加（`len(story)==1`）；becoming 不同照常追加、慢变量照常回写 |
 | `test_run_returns_outcome_new_story` | 功能正确 | story 真新增 → `run` 返回 `ReflectionOutcome(story_is_new=True)`（`story` 字段透传） |

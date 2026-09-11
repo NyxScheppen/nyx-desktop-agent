@@ -11,6 +11,7 @@ from nyx.enums import DesireType, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.inner_life.reflection import (
     _LONG_TERM_INIT_STRENGTH,
+    _REFLECTION_SYSTEM,
     Reflection,
     _build_reflection_prompt,
     _drift_dim,
@@ -276,6 +277,12 @@ def test_build_reflection_prompt_aesthetic_anchor() -> None:
     )
     assert "当前审美（1-10）" in prompt
     assert "华丽 7.0" in prompt  # 锚点行给出当前值作参照（与 personality/values 同款）
+
+
+def test_reflection_system_prompt_mentions_json() -> None:
+    # json_mode=True 要求 prompt 含 "json" 字样（OpenAI 兼容 provider 对 json_object
+    # 响应格式的硬性要求）；reflection 是 json_mode 唯一调用点，须常驻此关键词。
+    assert "JSON" in _REFLECTION_SYSTEM
 
 
 def test_parse_reflection_ok() -> None:

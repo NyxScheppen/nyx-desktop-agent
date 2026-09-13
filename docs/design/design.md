@@ -217,18 +217,19 @@ memory:
 ### 6.2 生命周期
 
 - **创建**：打标签 → 建联想边 → 进短期队列 → 检测矛盾（有则触发反思）
-- **去重**：写入前两层去重——精确（content 哈希命中）→ 语义（embedding 余弦 top-1 ≥ 0.95）；命中重复则**合并强化**旧记忆（`recall_count+1` + `freshness=1.0`，`created_at` 仍是创建时间），不新建行、不发 `memory_created`；未命中才入库（embedding 禁用时语义去重自动跳过，仅精确去重）
+- **去重**：写入前两层去重——精确（content 哈希命中）→ bounded persist semantic candidates 内最高候选 cosine >= 0.95；bounded candidates 由 ANN 候选上限约束，并复用于语义建边与矛盾检测门控，不再做无界全表余弦扫描。命中重复则**合并强化**旧记忆（`recall_count+1` + `freshness=1.0`，`created_at` 仍是创建时间），不新建行、不建边、不做矛盾检测、不发 `memory_created`；未命中才入库（embedding 禁用时语义去重自动跳过，仅精确去重）
 - **升级**：短期 --"实际用进回复 3 次"--> 长期。慢通道检索返回的全部记忆都会拼进 prompt，随后立即 `record_recall`；快通道不检索、不计 recall
 - **短期遗忘**：容量上限 + 新鲜度淘汰（满了挤掉最新鲜度最低的）
 - **长期**：不消失，只新鲜度下降（检索时排后）
 
-### 6.3 检索三层
+### 6.3 融合召回
 
-1. 关键词搜索（SQLite FTS/LIKE）
-2. 向量匹配（本地 embedding → 余弦相似度）
-3. 联想（networkx 沿边扩散）
+1. 整句 embedding 通过 ANN 取 bounded vector candidates。
+2. `extract_keywords` 后用 capped SQLite LIKE 取 keyword candidates。
+3. vector / keyword candidates 按融合公式排序，得到 direct top N。
+4. 只从 direct top N 出发，沿 typed memory edges 做 2 跳 association 追加。
 
-三层在 `MemoryFacade.search(query)` 内部顺序执行并去重合并，对外只返回一份 `list[Memory]`；`SearchMode` 是内部层标签（用于单层测试/来源标记），不暴露在公开签名。
+`MemoryFacade.search(query)` 对表达层仍只暴露 `search(query: str) -> list[Memory]`；默认内部使用 `direct_limit=20`、`association_limit=10`，最终返回 direct 在前、association 在后，数量不超过两者之和。`SearchMode` 是内部来源标签（`vector` / `keyword` / `association`），会写入返回记忆的瞬态 `sources` 字段供 REST 前端展示，不落库、不进 prompt、不进导出。
 
 ### 6.4 用户画像
 

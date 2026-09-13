@@ -399,7 +399,7 @@ class MemoryFacade:
     async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
         """慢通道场景化记忆：LLM 产出 content/tag/summary
         → 两层去重（命中合并强化，不新建）→ 入短期 → 建边 → 门控矛盾检测 → 淘汰。
-        去重命中时仍返回未入库的 memory（调用方丢弃返回值，无害）。"""
+        去重命中时返回已存在的持久化旧记忆。"""
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _SCENE_SYSTEM},
@@ -622,6 +622,7 @@ class MemoryFacade:
         ]
         if not contradiction_candidates:
             return
+        allowed_ids = {candidate.id for candidate in contradiction_candidates}
         try:
             output = await self._llm.complete(
                 [
@@ -647,6 +648,14 @@ class MemoryFacade:
             self._logger.exception(
                 "矛盾检测失败 memory_id=%s correlation_id=%s",
                 memory.id, correlation_id,
+            )
+            return
+        if conflicts_with is not None and conflicts_with not in allowed_ids:
+            self._logger.warning(
+                "矛盾检测返回未知候选 memory_id=%s new_memory_id=%s correlation_id=%s",
+                conflicts_with,
+                memory.id,
+                correlation_id,
             )
             return
         if conflicts_with is not None:

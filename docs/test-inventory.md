@@ -253,6 +253,7 @@
 | `test_contradiction_gating_under_threshold` | 功能正确 | 正交 embedding → 仅 1 次 LLM 调用、无 contradiction、无 reflection（门控 0 调用） |
 | `test_contradiction_detected` | 功能正确 | 过阈值候选 → 建边关系抽取后调用 `contradiction`；`conflicts_with` 命中 → 发布 reflection（含双方 id）；evaluator 再调 1 次 |
 | `test_contradiction_null_no_reflection` | 功能正确 | contradiction 返回 null → 不发 reflection |
+| `test_contradiction_unknown_id_no_reflection` | 边界鲁棒 | contradiction 返回非候选/未知 id → 不发布 reflection（只记录并跳过） |
 | `test_contradiction_recall_top_k` | 边界鲁棒 | 6 条高相似旧记忆 → 矛盾 prompt 候选恰 5 条（persist candidates top 5） |
 | `test_contradiction_uses_top_five_persist_candidates` | 边界鲁棒 | 矛盾检测从 bounded persist semantic candidates 取 top 5 写入 prompt |
 | `test_contradiction_prompt_negation_hint` | 功能正确 | 新记忆含否定词 → 矛盾 prompt 含「重点核对」句 |

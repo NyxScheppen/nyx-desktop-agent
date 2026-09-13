@@ -396,6 +396,25 @@ async def test_contradiction_null_no_reflection() -> None:
         await database.conn.close()
 
 
+async def test_contradiction_unknown_id_no_reflection() -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [0.8, 0.6]))
+    llm = _FakeLlm({
+        "scene_memory": _SCENE_JSON,
+        "contradiction": json.dumps({"conflicts_with": "ghost"}),
+    })
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator, embed=_embed([1.0, 0.0]))
+    events = _subscribe(bus)
+    try:
+        async with _running(bus):
+            await facade.create_scene_memory(_ctx())
+        assert llm.calls == ["scene_memory", "memory_relation", "contradiction"]
+        assert [e for e in events if e.type is EventType.REFLECTION] == []
+    finally:
+        await database.conn.close()
+
+
 async def test_contradiction_recall_top_k() -> None:
     store, bus, database = await _new_stack()
     for i in range(6):

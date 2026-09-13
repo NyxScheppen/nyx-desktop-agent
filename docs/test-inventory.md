@@ -210,7 +210,7 @@
 | `test_extract_keywords_keeps_short_cjk_with_particles` | 回归保护 | 2-8 字连续 CJK 片段即使包含 `可以` / `你们` / 语气边界字，也作为完整 token 直接保留 |
 | `test_extract_keywords_long_cjk_windows_without_stopword_splitting` | 功能正确 | 长 CJK 片段只用 2/3 字滑窗，包含 `诺斯艾`、不包含 4 字 token `诺斯艾兰`，重复 token 只保留一次 |
 | `test_extract_keywords_long_cjk_keeps_stopword_windows` | 回归保护 | 长 CJK 片段不按停用词/边界字预拆；保留跨边界窗口 `和中` 与 3 字窗口 `可以吗`，只过滤 exact stop-word token `可以` |
-| `test_search_fuses_vector_keyword_and_limits_direct_then_association` | 功能正确 | `search("alpha", direct_limit=2, association_limit=1)` 先按融合分返回 vector direct、keyword direct，再追加不重复 association；sources 分别为 `[VECTOR]` / `[KEYWORD]` / `[ASSOCIATION]` |
+| `test_search_fuses_vector_keyword_and_limits_direct_then_association` | 功能正确 | `search("alpha", direct_limit=2, association_limit=1)` 先按融合分返回 vector direct、vector+keyword direct，再追加不重复 association；sources 分别为 `[VECTOR]` / `[VECTOR, KEYWORD]` / `[ASSOCIATION]` |
 | `test_search_direct_limit_zero_returns_empty` | 边界鲁棒 | `direct_limit=0` 时直接召回为空且不追加 association，返回 `[]` |
 | `test_search_dedup` | 功能正确 | keyword 与 vector 命中同一记忆 → direct 去重只一次 |
 | `test_search_empty` | 功能正确 | 无命中 + embed=None + 无边 → `[]` |
@@ -218,6 +218,7 @@
 | `test_search_no_edge_no_crash` | 边界鲁棒 | keyword 命中无边记忆 → 不抛 `NetworkXError`（`neighbors` 过滤），返回命中本身 |
 | `test_search_sources_keyword_only` | 功能正确 | embed=None（向量层禁用）仅 keyword 命中 → `sources=[KEYWORD]` |
 | `test_search_sources_vector_only` | 功能正确 | content 不含 query、embedding 余弦命中 → `sources=[VECTOR]` |
+| `test_search_sources_zero_cosine_vector_candidate` | 回归保护 | ANN 候选 cosine 为 0.0 且 keyword 不命中时仍作为 direct 结果返回，`sources=[VECTOR]` |
 
 ## eval（OOC 告警 + 调用/token 记账）
 

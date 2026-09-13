@@ -185,8 +185,6 @@ class MemoryRetrieval:
         index = await self._ann_index(memories)
         scores: dict[str, float] = {}
         for candidate in index.query(query_vec, _RECALL_VECTOR_CANDIDATE_K):
-            if candidate.cosine <= 0.0:
-                continue
             scores[candidate.memory_id] = max(
                 0.0, min(1.0, (candidate.cosine + 1.0) / 2.0)
             )

@@ -119,7 +119,7 @@ async def test_search_fuses_vector_keyword_and_limits_direct_then_association() 
         results = await retrieval.search("alpha", direct_limit=2, association_limit=1)
         assert [m.id for m in results] == ["direct-vector", "direct-keyword", "assoc"]
         assert results[0].sources == [SearchMode.VECTOR]
-        assert results[1].sources == [SearchMode.KEYWORD]
+        assert results[1].sources == [SearchMode.VECTOR, SearchMode.KEYWORD]
         assert results[2].sources == [SearchMode.ASSOCIATION]
     finally:
         await db.conn.close()
@@ -157,6 +157,19 @@ async def test_search_sources_vector_only() -> None:
     try:
         # content 不含 query 词（keyword 不命中），仅 embedding 余弦命中
         await store.add(_mem("A", content="香蕉", embedding=[1.0, 0.0]))
+        retrieval = MemoryRetrieval(store, embed=_fake_embed([1.0, 0.0]))
+        results = await retrieval.search("alpha")
+        assert [m.id for m in results] == ["A"]
+        assert [m.sources for m in results] == [[SearchMode.VECTOR]]
+    finally:
+        await db.conn.close()
+
+
+async def test_search_sources_zero_cosine_vector_candidate() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("A", content="香蕉", embedding=[0.0, 1.0]))
         retrieval = MemoryRetrieval(store, embed=_fake_embed([1.0, 0.0]))
         results = await retrieval.search("alpha")
         assert [m.id for m in results] == ["A"]

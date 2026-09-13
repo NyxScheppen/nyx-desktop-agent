@@ -192,7 +192,7 @@
 | `test_strengthen` | 功能正确 | `add`（`recall_count=0, freshness=0.3, created_at=1.0`）→ `strengthen(m1, 100.0)` → `recall_count==1`、`freshness==1.0`、`created_at==1.0`（重复写入强化计数但不刷新创建时间） |
 | `test_count_new_ignores_strengthened_created_at` | 回归保护 | 读书记忆 `created_at=100` → `strengthen(m1, 200)`（created_at/first_created_at 都不动）→ `count_new("reading", 150)==0`（纯重读不算新增）；真新增（created_at=250）→ `==1`；`tag=None` 全量计数 → `==1`；since 更晚/非目标 tag → `==0`（first_created_at 锚点不被 strengthen 污染） |
 
-## 08-memory-retrieval（三层检索 + 联想图）
+## 08-memory-retrieval（融合召回 + 联想图）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -205,12 +205,12 @@
 | `test_associate_equal_paths_keep_lexicographically_smaller_prefix_via` | 回归保护 | equal score/depth 的多路径按字典序更小 `via` 保留最佳路径；覆盖 `"a"` / `"aa"` 前缀 tie-break |
 | `test_clusters_include_isolated_nodes_with_stable_ids` | 功能正确 | `MemoryGraph(edges, memory_ids=...)` 聚类返回全部 memory id；连通 a/b 同 cluster，孤立 z 单独 cluster，cluster id 稳定 |
 | `test_cosine` | 功能正确 | 正交=0、相同=1、相反=-1、零向量=0、维度不一致=0（纯函数） |
-| `test_rank_by_cosine` | 功能正确 | `embedding=None` 跳过、`s<=0` 过滤、按 `s` 降序（纯函数；`_vector_search` 与 09 `_similar` 共用） |
-| `test_vector_search_skips_none_and_filters` | 边界鲁棒 | `embedding=None` 跳过、`s<=0` 过滤（cos=-1/0）、cos=1 命中 |
-| `test_vector_search_top_k_truncates` | 功能正确 | 7 候选只返回 `_VECTOR_TOP_K=5` |
-| `test_vector_search_disabled_when_embed_none` | 功能正确 | `embed=None` → `[]`（向量层禁用） |
-| `test_search_merge_order_and_limit` | 功能正确 | keyword→vector→association 编排：A（keyword+vector）、B（association 扩散）→ `[A,B]`；limit=1 → `[A]`；sources：A=`[KEYWORD,VECTOR]`、B=`[ASSOCIATION]` |
-| `test_search_dedup` | 功能正确 | keyword 与 vector 命中同一记忆 → 去重只一次 |
+| `test_rank_by_cosine` | 功能正确 | `embedding=None` 跳过、`s<=0` 过滤、按 `s` 降序（纯函数；09 `_similar` 共用） |
+| `test_extract_keywords_mixed_text` | 功能正确 | 混合文本提取英文/数字 token 并 lower，停用词过滤后保留 CJK 短片段 `中文长句测试` |
+| `test_extract_keywords_long_cjk_windows_and_dedup` | 功能正确 | 长 CJK 片段用 2/3 字滑窗，包含 `诺斯艾`、不包含 4 字 token `诺斯艾兰`，重复 token 只保留一次 |
+| `test_search_fuses_vector_keyword_and_limits_direct_then_association` | 功能正确 | `search("alpha", direct_limit=2, association_limit=1)` 先按融合分返回 vector direct、keyword direct，再追加不重复 association；sources 分别为 `[VECTOR]` / `[KEYWORD]` / `[ASSOCIATION]` |
+| `test_search_direct_limit_zero_returns_empty` | 边界鲁棒 | `direct_limit=0` 时直接召回为空且不追加 association，返回 `[]` |
+| `test_search_dedup` | 功能正确 | keyword 与 vector 命中同一记忆 → direct 去重只一次 |
 | `test_search_empty` | 功能正确 | 无命中 + embed=None + 无边 → `[]` |
 | `test_search_blank_query_returns_empty` | 边界鲁棒 | `""`/`" "`/`"   "` 空/空白查询短路 → `[]`（`query.strip()`，不因 `LIKE '%%'`/`'% %'` 误返全量） |
 | `test_search_no_edge_no_crash` | 边界鲁棒 | keyword 命中无边记忆 → 不抛 `NetworkXError`（`neighbors` 过滤），返回命中本身 |

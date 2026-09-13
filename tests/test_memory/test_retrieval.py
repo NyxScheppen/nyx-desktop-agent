@@ -1,8 +1,12 @@
-# 测试需直接访问 _vector_search（spec 测试要点要求测私有方法）
-# pyright: reportPrivateUsage=false
 from nyx.db import connect
 from nyx.enums import MemoryEdgeKind, MemoryType, SearchMode
-from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, cosine, rank_by_cosine
+from nyx.memory.retrieval import (
+    EmbedFn,
+    MemoryRetrieval,
+    cosine,
+    extract_keywords,
+    rank_by_cosine,
+)
 from nyx.memory.store import MemoryStore
 from nyx.types import Memory
 
@@ -11,16 +15,20 @@ def _mem(
     id: str,
     *,
     content: str = "content",
+    summary: str = "summary",
+    freshness: float = 0.5,
+    created_at: float = 1.0,
+    type: MemoryType = MemoryType.SHORT_TERM,
     embedding: list[float] | None = None,
 ) -> Memory:
     return Memory(
         id=id,
-        created_at=1.0,
+        created_at=created_at,
         content=content,
         tag="general",
-        summary="summary",
-        freshness=0.5,
-        type=MemoryType.SHORT_TERM,
+        summary=summary,
+        freshness=freshness,
+        type=type,
         recall_count=0,
         aspect=[],
         embedding=embedding,
@@ -54,64 +62,66 @@ def test_rank_by_cosine() -> None:
     assert [m.id for _, m in ranked] == ["m1", "m4"]
 
 
-async def test_vector_search_skips_none_and_filters() -> None:
+def test_extract_keywords_mixed_text() -> None:
+    assert extract_keywords("这个 Alpha_1 和中文长句测试可以吗") == [
+        "alpha_1",
+        "中文长句测试",
+    ]
+
+
+def test_extract_keywords_long_cjk_windows_and_dedup() -> None:
+    tokens = extract_keywords("诺斯艾兰骑士团诺斯艾兰")
+    assert "诺斯艾" in tokens
+    assert "诺斯艾兰" not in tokens
+    assert tokens.count("诺斯艾") == 1
+
+
+async def test_search_fuses_vector_keyword_and_limits_direct_then_association() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
     try:
+        await store.add(_mem(
+            "direct-vector",
+            content="香蕉",
+            summary="无",
+            freshness=0.8,
+            embedding=[1.0, 0.0],
+        ))
+        await store.add(_mem(
+            "direct-keyword",
+            content="alpha beta",
+            summary="alpha beta",
+            freshness=1.0,
+            embedding=[0.0, 1.0],
+        ))
+        await store.add(_mem(
+            "assoc",
+            content="联想",
+            summary="联想",
+            freshness=1.0,
+            embedding=None,
+        ))
+        await store.upsert_edge(
+            "direct-vector", "assoc", MemoryEdgeKind.SEMANTIC, 1.0, 1.0
+        )
         retrieval = MemoryRetrieval(store, embed=_fake_embed([1.0, 0.0]))
-        candidates = [
-            _mem("m1", embedding=[1.0, 0.0]),   # cos=1 命中
-            _mem("m2", embedding=None),          # 跳过
-            _mem("m3", embedding=[-1.0, 0.0]),  # cos=-1 过滤
-            _mem("m4", embedding=[0.0, 1.0]),   # cos=0 过滤
-        ]
-        hits = await retrieval._vector_search("q", candidates)
-        assert [m.id for m in hits] == ["m1"]
+        results = await retrieval.search("alpha", direct_limit=2, association_limit=1)
+        assert [m.id for m in results] == ["direct-vector", "direct-keyword", "assoc"]
+        assert results[0].sources == [SearchMode.VECTOR]
+        assert results[1].sources == [SearchMode.KEYWORD]
+        assert results[2].sources == [SearchMode.ASSOCIATION]
     finally:
         await db.conn.close()
 
 
-async def test_vector_search_top_k_truncates() -> None:
+async def test_search_direct_limit_zero_returns_empty() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
     try:
+        await store.add(_mem("m1", content="alpha", embedding=[1.0, 0.0]))
         retrieval = MemoryRetrieval(store, embed=_fake_embed([1.0, 0.0]))
-        candidates = [
-            _mem(f"m{i}", embedding=[1.0, i * 0.01]) for i in range(1, 8)
-        ]
-        hits = await retrieval._vector_search("q", candidates)
-        assert len(hits) == 5
-    finally:
-        await db.conn.close()
-
-
-async def test_vector_search_disabled_when_embed_none() -> None:
-    db = await connect(":memory:")
-    store = MemoryStore(db)
-    try:
-        retrieval = MemoryRetrieval(store, embed=None)
-        hits = await retrieval._vector_search("q", [_mem("m1", embedding=[1.0, 0.0])])
-        assert hits == []
-    finally:
-        await db.conn.close()
-
-
-async def test_search_merge_order_and_limit() -> None:
-    db = await connect(":memory:")
-    store = MemoryStore(db)
-    try:
-        await store.add(_mem("A", content="关于 alpha 的记忆", embedding=[1.0, 0.0]))
-        await store.add(_mem("B", content="关于 beta", embedding=[0.0, 1.0]))
-        await store.add(_mem("C", content="关于 gamma", embedding=None))
-        await store.upsert_edge("A", "B", MemoryEdgeKind.SEMANTIC, 1.0, 0.0)
-        retrieval = MemoryRetrieval(store, embed=_fake_embed([1.0, 0.0]))
-        assert [m.id for m in await retrieval.search("alpha")] == ["A", "B"]
-        assert [m.id for m in await retrieval.search("alpha", limit=1)] == ["A"]
-        # A 被 keyword+vector 两层命中，B 仅 association 扩散到
-        assert [m.sources for m in await retrieval.search("alpha")] == [
-            [SearchMode.KEYWORD, SearchMode.VECTOR],
-            [SearchMode.ASSOCIATION],
-        ]
+        results = await retrieval.search("alpha", direct_limit=0, association_limit=10)
+        assert results == []
     finally:
         await db.conn.close()
 

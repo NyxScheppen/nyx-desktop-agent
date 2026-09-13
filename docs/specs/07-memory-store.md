@@ -19,7 +19,7 @@
 - [ ] 行↔`Memory` 往返：`aspect` JSON 数组（空 = `"[]"`）、`type` 枚举 `.value`、`recall_count` 整数、`embedding` `list[float] | None`（`None` ↔ SQL `NULL`）
 - [ ] 行↔`MemoryEdge` 往返：`kind` 读写 `MemoryEdgeKind` 枚举值，`created_at` 读写 `float`
 - [ ] `list_memories` 按 `tag` / `type` 过滤，`freshness DESC, created_at DESC` 排序；`limit` 截断（拼 `LIMIT {limit}`，避免无界拉取）
-- [ ] `search_keyword(query: str)` 已移除；关键词检索公开面为 `search_keywords(tokens: list[str], limit: int) -> dict[str, KeywordSearchHit]`
+- [ ] 旧单字符串关键词搜索公开面已移除；关键词检索公开面为 `search_keywords(tokens: list[str], limit: int) -> dict[str, KeywordSearchHit]`
 - [ ] `search_keywords` 对每个 token 用 escaped `LIKE '%token%' ESCAPE '\'` 分别匹配 `summary` / `content`；空 token list 或 `limit <= 0` 返回 `{}`
 - [ ] `search_keywords` 返回 ordered `dict`，value 为 `KeywordSearchHit(memory_id, summary_tokens, content_tokens)`；字段 token 去重并保持输入 token 顺序；排序为 matched unique token 数、summary 命中数、content 命中数、freshness、created_at、memory id
 - [ ] `delete_many` 级联删 typed `memory_edge`（删边 + 删记忆在**同一锁块**内原子完成）
@@ -43,7 +43,7 @@
 - **`embedding` 可空列（None ↔ SQL NULL）**：`list[float] | None` ⟺ `embedding TEXT` 可空；`_embedding_json` 把 `None` 序列化为 SQL `NULL`（不是 `"null"` 字符串）、`list` 序列化为 JSON 数组字符串，读回时 `None` 保持 `None`。这是首个可空 JSON 列，后续 store（`goal` / `ended_at` / `content_hash` 等）照此 `None ↔ NULL` 模式
 - **`content_hash` 是 store 派生列（不进 `Memory`）**：`memory` 表加 `content_hash TEXT`（04-db 迁移 v6），由 `add` 写入 `hash_content(content)`、`update_many` 随 `content` 同步重算、`find_by_content` 查重用；`Memory` dataclass 不承载它（不改 01-types、不改构造器），`_row_to_memory` 读回也不填充——`_MEMORY_COLS`（SELECT）不含它，`_MEMORY_INSERT_COLS`（INSERT）才追加。旧行 `content_hash` 为 NULL（不去重），新写入行有值
 - **`count_new(tag: str | None, since: float)` 使用 `first_created_at`**：`tag=None` 统计所有首次创建晚于 `since` 的记忆；传具体 tag 时只统计该 tag。`first_created_at` 在 INSERT 定格，`strengthen` / `update_many` / `record_recall` 均不更新。
-- **typed `memory_edge` schema**：边表主键是 `(from_id, to_id, kind)`，端点是 canonical unordered pair（`from_id < to_id`），`kind` 存 `MemoryEdgeKind.value`，`created_at` 由调用方传入。store API 不再保留旧 `upsert_edge(from_id, to_id, weight)` 兼容签名；Task 2 后旧 retrieval/facade 调用点已做临时兼容 wiring（见 08/09），后续 Task 5/6 会替换为完整召回融合和建边语义。
+- **typed `memory_edge` schema**：边表主键是 `(from_id, to_id, kind)`，端点是 canonical unordered pair（`from_id < to_id`），`kind` 存 `MemoryEdgeKind.value`，`created_at` 由调用方传入。store API 不保留旧 `upsert_edge(from_id, to_id, weight)` 兼容签名；retrieval 只读 `list_edges()` 建图，facade 通过五类建边信号调用 typed `upsert_edge(...)` 并用 `delete_edges(...)` 做度数剪枝。
 - **边界划分（明确不做）**：新鲜度衰减、容量淘汰是 09-facade 的生命周期逻辑；短期→长期升级的「何时升」也由 facade 决定（阈值经 `record_recall(memory_id, promote_threshold)` 传入）。但「加一 + 条件升型」这个原子原语必须落在 store 单锁内——原子性要求单锁、锁在 store，拆到 facade 会产生跨方法竞态（09 轮审查发现重复升级/丢计数）。`graph.py`（networkx 联想图）归 08，从 `list_edges()` 建图。FK 完整性靠 04-db 的 `PRAGMA foreign_keys=ON`（`upsert_edge` 引用不存在的 id 抛 `aiosqlite.IntegrityError`）
 
 ## 测试要点

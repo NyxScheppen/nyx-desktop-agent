@@ -40,7 +40,7 @@
 | POST | `/api/chat` | `{message: str}` | `{event_id: str}`（回复走 SSE） |
 | POST | `/api/observe` | `{presence: str, window_title: str}` | `{event_id: str}`（观察状态入口，前端 Tauri 判定后上报） |
 | GET | `/api/memories?tag=&type=` | query 过滤 | `Memory[]` |
-| GET | `/api/memories/search?q=` | query 语义检索 | `Memory[]`（三层检索：关键词/向量/联想） |
+| GET | `/api/memories/search?q=` | query 语义检索 | `Memory[]`（融合召回：整句 ANN + keyword LIKE direct top N，再追加 2 跳 association） |
 | GET | `/api/desires` | — | `{values, short_term[], long_term[]}` |
 | GET | `/api/activity` | — | `{current, schedule[]}` |
 | GET | `/api/activity/results` | — | `Activity[]`（跨天历史产出，倒序） |
@@ -104,7 +104,7 @@ def record_proactive_turn(text: str) -> None                     # 把 Nyx 主�
 
 ```python
 async def create_scene_memory(reply_context: dict[str, str]) -> Memory    # 场景化记忆（慢通道）
-async def search(query: str) -> list[Memory]                    # 内部跑三层+去重合并
+async def search(query: str) -> list[Memory]                    # 内部跑默认 direct_limit=20 / association_limit=10 的融合召回
 async def record_recall(memory_id: str) -> None                 # 记录"想起"
 async def list_memories(tag: str | None = None, type: MemoryType | None = None, limit: int | None = None) -> list[Memory]  # 仪表盘过滤 + 可选截断
 async def count_new(tag: str | None, since: float) -> int      # 计数「首次创建晚于 since」的记忆；tag=None 表示全量（first_created_at 锚点，轻量不物化 embedding）
@@ -112,6 +112,44 @@ async def export(fmt: str) -> str                              # 记忆导出（
 async def remember_knowledge(items: list[dict[str, str]], correlation_id: str) -> None  # 读书知识点入长期记忆（tag='knowledge'，无 LLM）
 async def remember_reading(content: str, summary: str, correlation_id: str) -> None  # 章节/整本读书记忆入长期（tag='reading'，无 LLM）
 ```
+
+### Memory 内部类索引
+
+```python
+# nyx.memory.ann
+class AnnCandidate(memory_id: str, cosine: float)
+class AnnIndex:
+    @classmethod
+    def build(cls, memories: list[Memory], *, planes: int = 16, tables: int = 4, seed: int = 0) -> AnnIndex: ...
+    def query(self, vector: list[float], candidate_k: int) -> list[AnnCandidate]: ...
+def hash_embedding(embedding: list[float]) -> int
+def ann_fingerprint(memories: list[Memory]) -> tuple[tuple[str, float, int], ...]
+
+# nyx.memory.store
+class KeywordSearchHit(memory_id: str, summary_tokens: list[str], content_tokens: list[str])
+async def MemoryStore.search_keywords(tokens: list[str], limit: int) -> dict[str, KeywordSearchHit]
+async def MemoryStore.list_edges(kind: MemoryEdgeKind | None = None) -> list[MemoryEdge]
+async def MemoryStore.upsert_edge(from_id: str, to_id: str, kind: MemoryEdgeKind, weight: float, created_at: float) -> None
+async def MemoryStore.delete_edges(keys: list[tuple[str, str, MemoryEdgeKind]]) -> None
+async def MemoryStore.list_edge_degrees(memory_ids: list[str]) -> dict[str, list[MemoryEdge]]
+
+# nyx.memory.retrieval
+class RankedMemory(memory: Memory, score: float, vector_score: float, keyword_score: float, sources: list[SearchMode])
+def extract_keywords(text: str) -> list[str]
+async def MemoryRetrieval.search(query: str, direct_limit: int = 20, association_limit: int = 10) -> list[Memory]
+
+# nyx.memory.graph
+class AssociationHit(memory_id: str, score: float, depth: int, via: str, kinds: list[str])
+class MemoryGraph:
+    def __init__(self, edges: list[MemoryEdge], *, memory_ids: set[str] | None = None) -> None: ...
+    def associate(self, seeds: dict[str, float], *, depth: int = 2, limit: int = 10, exclude: set[str] | None = None) -> list[AssociationHit]: ...
+    def clusters(self) -> dict[str, int]: ...
+
+# nyx.memory.facade
+class PersistSemanticHit(memory: Memory, cosine: float)
+```
+
+相关测试文件：`tests/test_memory/test_ann.py`、`tests/test_memory/test_retrieval.py`、`tests/test_memory/test_graph.py`、`tests/test_memory/test_store.py`、`tests/test_memory/test_facade.py`、`tests/test_db/test_db.py`、`tests/test_expression/test_expression_facade.py`。
 
 ### ActivityFacade
 
@@ -266,8 +304,9 @@ nyx/
   memory/
     facade.py             # MemoryFacade
     store.py              # SQLite 存取
+    ann.py                # deterministic ANN 候选索引
     graph.py              # networkx 联想图
-    retrieval.py          # 三层检索
+    retrieval.py          # 融合召回 + association 追加
   reading/
     __init__.py
     segmenter.py           # segment_html（HTML 正文→阅读段落，纯函数）

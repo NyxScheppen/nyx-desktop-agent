@@ -10,7 +10,7 @@
 | `test_naming_convention` | 回归保护 | 17 个枚举的每个成员 `value == name.lower()`（防手滑改值破坏 snake_case 契约） |
 | `test_strenum_json_serializable` | 功能正确 | `json.dumps(EventType.USER_MESSAGE) == '"user_message"'` |
 | `test_memory_edge_kind_values` | 功能正确 | `MemoryEdgeKind` 值集合恰为 `semantic` / `entity` / `keyword` / `temporal` / `same_topic` / `elaborates` / `contrasts` / `causes` / `updates_preference` / `user_profile_link` |
-| `test_memory_edge_defaults` | 功能正确 | `MemoryEdge("a", "b")` 默认 `kind is MemoryEdgeKind.SEMANTIC`、`weight == 1.0`、`created_at == 0.0` |
+| `test_memory_edge_defaults` | 功能正确 | 两端点构造的 `MemoryEdge` 默认 `kind is MemoryEdgeKind.SEMANTIC`、默认权重为 1.0、`created_at == 0.0` |
 | `test_frontend_sse_listeners_cover_all_event_types` | 跨端契约 | 前端 `useSSE.EVENT_TYPES` 与后端 `EventType` 值集合完全一致，防止命名事件被静默漏接 |
 | `test_short_term_desire_default_status` | 功能正确 | `status` 默认 `DesireStatus.PENDING`（枚举成员而非裸字符串） |
 | `test_memory_aspect_default_factory_isolated` | 边界鲁棒 | `default_factory` 保证两个实例的 `aspect` 互不共享 |

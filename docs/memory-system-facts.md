@@ -18,13 +18,14 @@
 ## 写入与去重
 
 - `content_hash` 是 store 派生列，不在 `Memory` dataclass 中；`add` 写入 `hash_content(content)`，`update_many` 改 content 时同步重算。
-- `_persist_memory` 两层去重：先精确 content hash，再语义 embedding 余弦 top-1 >= 0.95。命中时强化并返回持久化旧记忆；未命中才新增、建边、做矛盾检测、衰减/淘汰、发布 `memory_created`。
+- `_persist_memory` 两层去重：先精确 content hash，再 bounded persist semantic candidates 内 top-1 cosine >= 0.95。bounded persist semantic candidates 由 ANN 候选上限约束，同一批候选供语义去重、语义建边和矛盾检测门控使用，不再做无界全表余弦扫描。命中时强化并返回持久化旧记忆；未命中才新增、建边、做矛盾检测、衰减/淘汰、发布 `memory_created`。
 - `create_scene_memory` 返回最终持久化的 `Memory`：新建时返回新记忆；去重命中时返回旧记忆。
 - `remember_activity` / `remember_knowledge` / `remember_reading` 复用 `_persist_memory`，不要绕过统一去重尾段。
 
 ## 检索与前端
 
-- `MemoryRetrieval.search` 顺序是 keyword -> vector -> association，按顺序去重合并。
+- `MemoryRetrieval.search` 流程是整句 embedding ANN 候选 + keyword LIKE 候选融合评分 -> direct top N -> 2 跳 association 追加；`direct_limit` 只限制直接召回，`association_limit` 只限制联想追加。
+- `extract_keywords` 的 CJK 规则按 `docs/specs/25-memory-recall-ranking.md` 已确认契约执行：长度 2-8 的连续 CJK 片段直接保留，长 CJK 片段只做 2 字/3 字滑窗；不做隐藏边界字符剥离，也不在长片段内部按停用词预拆。
 - `Memory.sources` 是瞬态检索来源：`keyword`、`vector`、`association`。它不落库、不进 prompt、不进导出，但 REST `Memory[]` 会序列化给前端。
 - `list_memories` 返回库内快照，通常 `sources=[]`；`search` 返回的命中带 sources。
 

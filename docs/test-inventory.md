@@ -182,7 +182,7 @@
 | `test_record_recall_atomic` | 功能正确 | 未达阈值连调两次 → `recall_count==2` 且 type `SHORT_TERM`、返回 False；达阈值 → `LONG_TERM`、返回 True；已 `LONG_TERM` → 只递增、返回 False（加一+条件升型在单锁内原子完成） |
 | `test_search_keywords_returns_field_hits_ordered_and_capped` | 功能正确 | `search_keywords(["alpha","beta"], limit=2)` 返回 capped ordered `dict`：按 unique token / summary / content / freshness / created_at 排序，且 `KeywordSearchHit` 分别记录 summary/content 命中 token |
 | `test_search_keywords_empty_and_limit_zero_skip_db` | 边界鲁棒 | 空 token list 或 `limit <= 0` → `{}` |
-| `test_search_keywords_escapes_wildcards` | 边界鲁棒 | `%` 作字面量匹配（`ESCAPE '\'` 转义），不误命中通配符匹配 |
+| `test_search_keywords_escapes_wildcards` | 边界鲁棒 | `%` / `_` 作字面量匹配（`ESCAPE '\'` 转义），不误命中通配符匹配 |
 | `test_typed_edges_canonicalize_and_filter_kind` | 功能正确 | `upsert_edge` canonicalize 端点；同 pair 不同 `MemoryEdgeKind` 可共存；`list_edges(kind)` 只返回指定 kind；全量按 `from_id,to_id,kind` 排序 |
 | `test_delete_edges_and_list_edge_degrees` | 功能正确 | `list_edge_degrees(["b"])` 返回 incident typed edges（`from_id = id OR to_id = id`）；`delete_edges` 按完整 `(from_id,to_id,kind)` 三元键删除 |
 | `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | typed `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |

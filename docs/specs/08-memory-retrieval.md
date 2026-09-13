@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `SearchMode`）、02-config（`EmbeddingConfig.model` 供 `build_embed`）、07-memory-store（`MemoryStore`：`search_keyword` / `list_memories` / `list_edges`）
+- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `SearchMode`）、02-config（`EmbeddingConfig.model` 供 `build_embed`）、07-memory-store（`MemoryStore`：`search_keywords` / `list_memories` / `list_edges`）
 
 ## 用户故事
 
@@ -17,7 +17,7 @@
 - [ ] `graph.py` 含 `MemoryGraph`（`neighbors(seeds, depth)`）（实现见 `nyx/memory/graph.py`）
 - [ ] `retrieval.py` 含 `cosine` / `rank_by_cosine` / `build_embed` / `EmbedFn` / `MemoryRetrieval`（实现见 `nyx/memory/retrieval.py`）
 - [ ] `cosine` 纯函数：正交=0、相同=1、相反=-1、零向量=0、维度不一致=0
-- [ ] `search()` 空/空白查询（`not query.strip()`）短路返回 `[]`；顺序执行 keyword → vector → association，按此序去重合并（`seen` set，后到重复丢弃），`limit` 截断；每条命中 `sources` 按层标注（keyword+vector 重叠 = `[KEYWORD, VECTOR]`）
+- [ ] `search()` 空/空白查询（`not query.strip()`）短路返回 `[]`；当前 Task 2 兼容实现仍顺序执行 keyword → vector → association，按此序去重合并（`seen` set，后到重复丢弃），`limit` 截断；每条命中 `sources` 按层标注（keyword+vector 重叠 = `[KEYWORD, VECTOR]`）。Task 5 会替换为 ANN + keyword 融合排序
 - [ ] vector 层：`embed=None` → 跳过返回 `[]`；query 只 embed 一次；memory embedding 从 DB 读（不重算）；`embedding=None` 的记忆跳过；`s > 0` 过滤 + `_VECTOR_TOP_K` 截断
 - [ ] association 层：图从 `store.list_edges()` 构建，`neighbors` 无权重扩散、排除 seeds 本身、跳过不在图中的 seed（`nx.Graph.neighbors` 对不存在节点抛 `NetworkXError`）
 - [ ] `pyright` strict 零报错
@@ -27,14 +27,15 @@
 - **新文件**：`nyx/memory/graph.py`、`nyx/memory/retrieval.py`（无 Facade、无 API、无数据变更）
 - **库**：`networkx`（新增，联想图；依赖 pin 同 03-llm 约定）、`sentence-transformers`（新增，`build_embed` 惰性 import；依赖 pin）；其余标准库（`math` / `asyncio` / `collections.abc`）
 - **公开面**：`from nyx.memory.retrieval import MemoryRetrieval, cosine, rank_by_cosine, build_embed, EmbedFn`；`from nyx.memory.graph import MemoryGraph`（不加 `__all__`）
-- **三层顺序 = design §6.3**：keyword → vector → association；合并按此序（keyword 命中排最前），`seen` set 去重，`limit` 截断（默认 20）。对外返回一份去重 `list[Memory]`，每条 `sources` 标注命中来源层
+- **当前 Task 2 兼容 wiring**：旧 retrieval 流程暂时保留 keyword → vector → association；keyword leg 不再调用已移除的 `MemoryStore.search_keyword`，而是调用 `store.search_keywords([query], limit)` 并按返回的 ordered memory id 从 `by_id` 取回 `Memory`。这只是为删除旧 store API 后保持 `pyright` / 现有检索测试干净的过渡 wiring，不是 Task 5 的 ANN、token extraction、keyword score 融合或 association 追加实现
+- **三层顺序 = design §6.3（Task 5 前临时状态）**：keyword → vector → association；合并按此序（keyword 命中排最前），`seen` set 去重，`limit` 截断（默认 20）。对外返回一份去重 `list[Memory]`，每条 `sources` 标注命中来源层
 - **`SearchMode` 来源标记（V2，翻转 MVP「不带来源」）**：`search()` 去重合并时按层累计 `sources_by_id`，给每条命中赋 `sources: list[SearchMode]`——keyword/vector 可重叠（`[KEYWORD, VECTOR]`），association 与 seeds 互斥（只 `[ASSOCIATION]`）。`sources` 是 `Memory` 瞬态字段（01-types）：不持久化、不进 prompt、不进导出；REST `Memory[]` 会序列化给前端，普通 `list_memories` 快照通常是空列表。三层仍是私有方法（`_vector_search` 等）可单独测试
 - **vector 层（读持久化 embedding）**：`MemoryRetrieval(store, embed)` 构造注入 `embed`，`None` = 向量层禁用（返回 `[]`）。query 只 `embed` 一次；memory embedding 直接读 `m.embedding`（07 持久化的列），**不重算**——这正是「持久化 embedding 列」的价值。`cosine` 纯函数；MVP 常量 `_VECTOR_TOP_K=5` + `s > 0.0` 过滤（非 config，不引入检索阈值配置项）
 - **`rank_by_cosine` 共享纯函数（跨模块复用）**：`cosine` 之外，把「候选打分 + `s > 0` 过滤 + 降序」抽成纯函数 `rank_by_cosine(query_vec, candidates) -> list[tuple[float, Memory]]`（跳过 `embedding is None`）。`_vector_search` 用它做 vector 层打分；09-facade 的 `_similar` 也复用它（跨模块去重，见 09）。同一套余弦排序逻辑只此一处，改排序/过滤规则翻这里
 - **`build_embed` 惰性 import**：sentence-transformers 是重依赖（下载模型），`build_embed(model_name)` 内 `from sentence_transformers import ...`，未启用向量层（测试/无模型环境）不加载；`model.encode` 同步 → `asyncio.to_thread` 包成 async；返回 `list[float]`
 - **association 层（每次 search 现建图）**：`MemoryGraph(edges)` 从 `store.list_edges()` 构建——O(E) 小（≤ 几百条边），且图永远与 DB 一致（新建记忆后下次 search 自动包含）。`neighbors` 无权重扩散 `depth=1`（`weight` 存图待展示/加权扩散，当前不用）；seed 来自 keyword + vector 命中，扩散结果映射回 `by_id`（`list_memories()` 一次性建的 id→Memory 表，避免 N+1 查询）。**`neighbors` 先过滤不在图中的 seed**：图只从 edges 建节点，孤立记忆（无边的 keyword/vector 命中，属常态）不在图里，而 `nx.Graph.neighbors` 对不存在节点抛 `NetworkXError`——`frontier = [s for s in seeds if self._g.has_node(s)]` 过滤后孤立 seed 自然产出 `[]`，`search()` 不崩
 - **embedding 写归 09**：本 spec 只读 `memory.embedding`；记忆创建时算 embedding + 存列是 09-facade 的活（用同一个 `build_embed`）
-- **空查询守卫在检索层（已知限制）**：`search()` 入口 `not query.strip()` 短路，因为 store 的 `search_keyword("")` / `search_keyword(" ")` 会构造 `LIKE '%%'` / `LIKE '% %'` 全表命中。守卫只在本层——绕过 `search()` 直接调 `search_keyword` 仍会全表返回，属 07 层语义，本 spec 不强求改
+- **空查询守卫在检索层**：`search()` 入口 `not query.strip()` 短路，避免把空白 query 传给 keyword leg。07-store 的公开 keyword API 已改为 `search_keywords(tokens, limit)`，空 token list 或 `limit <= 0` 会返回 `{}`
 
 ## 测试要点
 

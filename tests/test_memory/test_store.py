@@ -309,8 +309,12 @@ async def test_search_keywords_escapes_wildcards() -> None:
     try:
         await store.add(_mem("m1", content="进度 100%"))
         await store.add(_mem("m2", content="进度 100 元"))
+        await store.add(_mem("m3", content="a_b"))
+        await store.add(_mem("m4", content="aXb"))
         hits = await store.search_keywords(["100%"], limit=10)
         assert list(hits) == ["m1"]
+        underscore_hits = await store.search_keywords(["a_b"], limit=10)
+        assert list(underscore_hits) == ["m3"]
     finally:
         await db.conn.close()
 

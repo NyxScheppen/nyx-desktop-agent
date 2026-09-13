@@ -30,7 +30,6 @@ _STOP_WORDS = {
     "我们",
     "你们",
 }
-_CJK_BOUNDARY_CHARS = "和吗呢吧呀啊了的得地"
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+")
 
 
@@ -78,14 +77,12 @@ def extract_keywords(text: str) -> list[str]:
         raw = match.group(0)
         if raw.isascii():
             _append_token(raw.lower(), tokens, seen)
+        elif 2 <= len(raw) <= 8:
+            _append_token(raw, tokens, seen)
         else:
-            for segment in _split_cjk(raw):
-                if 2 <= len(segment) <= 8:
-                    _append_token(segment, tokens, seen)
-                else:
-                    for size in (2, 3):
-                        for index in range(0, len(segment) - size + 1):
-                            _append_token(segment[index : index + size], tokens, seen)
+            for size in (2, 3):
+                for index in range(0, len(raw) - size + 1):
+                    _append_token(raw[index : index + size], tokens, seen)
     return tokens
 
 
@@ -251,18 +248,6 @@ def _append_token(token: str, tokens: list[str], seen: set[str]) -> None:
         return
     seen.add(token)
     tokens.append(token)
-
-
-def _split_cjk(text: str) -> list[str]:
-    pattern = "|".join(
-        re.escape(word) for word in sorted(_STOP_WORDS, key=len, reverse=True)
-    )
-    parts = re.split(pattern, text)
-    return [
-        part.strip(_CJK_BOUNDARY_CHARS)
-        for part in parts
-        if len(part.strip(_CJK_BOUNDARY_CHARS)) > 1
-    ]
 
 
 def _keyword_score(hit: KeywordSearchHit | None, query_token_count: int) -> float:

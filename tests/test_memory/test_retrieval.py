@@ -63,17 +63,28 @@ def test_rank_by_cosine() -> None:
 
 
 def test_extract_keywords_mixed_text() -> None:
-    assert extract_keywords("这个 Alpha_1 和中文长句测试可以吗") == [
+    assert extract_keywords("这个 Alpha_1 中文长句") == [
         "alpha_1",
-        "中文长句测试",
+        "中文长句",
     ]
 
 
-def test_extract_keywords_long_cjk_windows_and_dedup() -> None:
+def test_extract_keywords_keeps_short_cjk_with_particles() -> None:
+    assert extract_keywords("可以吗你们好") == ["可以吗你们好"]
+
+
+def test_extract_keywords_long_cjk_windows_without_stopword_splitting() -> None:
     tokens = extract_keywords("诺斯艾兰骑士团诺斯艾兰")
     assert "诺斯艾" in tokens
     assert "诺斯艾兰" not in tokens
     assert tokens.count("诺斯艾") == 1
+
+
+def test_extract_keywords_long_cjk_keeps_stopword_windows() -> None:
+    tokens = extract_keywords("和中文长句测试可以吗")
+    assert "和中" in tokens
+    assert "可以" not in tokens
+    assert "可以吗" in tokens
 
 
 async def test_search_fuses_vector_keyword_and_limits_direct_then_association() -> None:

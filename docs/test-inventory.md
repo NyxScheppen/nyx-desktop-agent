@@ -206,8 +206,10 @@
 | `test_clusters_include_isolated_nodes_with_stable_ids` | 功能正确 | `MemoryGraph(edges, memory_ids=...)` 聚类返回全部 memory id；连通 a/b 同 cluster，孤立 z 单独 cluster，cluster id 稳定 |
 | `test_cosine` | 功能正确 | 正交=0、相同=1、相反=-1、零向量=0、维度不一致=0（纯函数） |
 | `test_rank_by_cosine` | 功能正确 | `embedding=None` 跳过、`s<=0` 过滤、按 `s` 降序（纯函数；09 `_similar` 共用） |
-| `test_extract_keywords_mixed_text` | 功能正确 | 混合文本提取英文/数字 token 并 lower，停用词过滤后保留 CJK 短片段 `中文长句测试` |
-| `test_extract_keywords_long_cjk_windows_and_dedup` | 功能正确 | 长 CJK 片段用 2/3 字滑窗，包含 `诺斯艾`、不包含 4 字 token `诺斯艾兰`，重复 token 只保留一次 |
+| `test_extract_keywords_mixed_text` | 功能正确 | 混合文本提取英文/数字 token 并 lower；精确停用词 `这个` 被过滤，2-8 字 CJK 片段 `中文长句` 直接保留 |
+| `test_extract_keywords_keeps_short_cjk_with_particles` | 回归保护 | 2-8 字连续 CJK 片段即使包含 `可以` / `你们` / 语气边界字，也作为完整 token 直接保留 |
+| `test_extract_keywords_long_cjk_windows_without_stopword_splitting` | 功能正确 | 长 CJK 片段只用 2/3 字滑窗，包含 `诺斯艾`、不包含 4 字 token `诺斯艾兰`，重复 token 只保留一次 |
+| `test_extract_keywords_long_cjk_keeps_stopword_windows` | 回归保护 | 长 CJK 片段不按停用词/边界字预拆；保留跨边界窗口 `和中` 与 3 字窗口 `可以吗`，只过滤 exact stop-word token `可以` |
 | `test_search_fuses_vector_keyword_and_limits_direct_then_association` | 功能正确 | `search("alpha", direct_limit=2, association_limit=1)` 先按融合分返回 vector direct、keyword direct，再追加不重复 association；sources 分别为 `[VECTOR]` / `[KEYWORD]` / `[ASSOCIATION]` |
 | `test_search_direct_limit_zero_returns_empty` | 边界鲁棒 | `direct_limit=0` 时直接召回为空且不追加 association，返回 `[]` |
 | `test_search_dedup` | 功能正确 | keyword 与 vector 命中同一记忆 → direct 去重只一次 |

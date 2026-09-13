@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import dataclass
 
 import aiosqlite
 
@@ -13,6 +14,13 @@ _MEMORY_COLS = (
 )
 # INSERT 用：比 SELECT 多 content_hash + first_created_at（store 派生，Memory 不承载）
 _MEMORY_INSERT_COLS = _MEMORY_COLS + ", content_hash, first_created_at"
+
+
+@dataclass
+class KeywordSearchHit:
+    memory_id: str
+    summary_tokens: list[str]
+    content_tokens: list[str]
 
 
 def hash_content(content: str) -> str:
@@ -177,46 +185,125 @@ class MemoryStore:
             )
             await self._db.conn.commit()
 
-    async def search_keyword(self, query: str) -> list[Memory]:
-        pattern = f"%{_escape_like(query)}%"
-        async with self._db.lock:
-            cursor = await self._db.conn.execute(
-                f"SELECT {_MEMORY_COLS} FROM memory "
-                "WHERE content LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' "
-                "ORDER BY freshness DESC, created_at DESC",
-                (pattern, pattern),
-            )
-            rows = await cursor.fetchall()
-        return [_row_to_memory(r) for r in rows]
+    async def search_keywords(
+        self,
+        tokens: list[str],
+        limit: int,
+    ) -> dict[str, KeywordSearchHit]:
+        if not tokens or limit <= 0:
+            return {}
 
-    async def list_edges(self) -> list[MemoryEdge]:
+        hits: dict[str, KeywordSearchHit] = {}
+        freshness: dict[str, float] = {}
+        created_at: dict[str, float] = {}
+        async with self._db.lock:
+            for token in tokens:
+                pattern = f"%{_escape_like(token)}%"
+                cursor = await self._db.conn.execute(
+                    "SELECT id, freshness, created_at, "
+                    "summary LIKE ? ESCAPE '\\' AS summary_hit, "
+                    "content LIKE ? ESCAPE '\\' AS content_hit "
+                    "FROM memory "
+                    "WHERE summary LIKE ? ESCAPE '\\' "
+                    "OR content LIKE ? ESCAPE '\\'",
+                    (pattern, pattern, pattern, pattern),
+                )
+                rows = await cursor.fetchall()
+                for row in rows:
+                    memory_id = row["id"]
+                    hit = hits.setdefault(
+                        memory_id,
+                        KeywordSearchHit(memory_id, [], []),
+                    )
+                    freshness[memory_id] = row["freshness"]
+                    created_at[memory_id] = row["created_at"]
+                    if row["summary_hit"] and token not in hit.summary_tokens:
+                        hit.summary_tokens.append(token)
+                    if row["content_hit"] and token not in hit.content_tokens:
+                        hit.content_tokens.append(token)
+
+        sorted_hits = sorted(
+            hits.values(),
+            key=lambda hit: (
+                -len(set(hit.summary_tokens) | set(hit.content_tokens)),
+                -len(hit.summary_tokens),
+                -len(hit.content_tokens),
+                -freshness[hit.memory_id],
+                -created_at[hit.memory_id],
+                hit.memory_id,
+            ),
+        )
+        return {hit.memory_id: hit for hit in sorted_hits[:limit]}
+
+    async def list_edges(
+        self,
+        kind: MemoryEdgeKind | None = None,
+    ) -> list[MemoryEdge]:
+        params: tuple[str, ...] = ()
+        where = ""
+        if kind is not None:
+            where = "WHERE kind = ? "
+            params = (kind.value,)
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 "SELECT from_id, to_id, kind, weight, created_at FROM memory_edge "
-                "ORDER BY from_id ASC, to_id ASC, kind ASC",
+                f"{where}ORDER BY from_id ASC, to_id ASC, kind ASC",
+                params,
             )
             rows = await cursor.fetchall()
-        return [
-            MemoryEdge(
-                from_id=r["from_id"],
-                to_id=r["to_id"],
-                kind=MemoryEdgeKind(r["kind"]),
-                weight=r["weight"],
-                created_at=r["created_at"],
-            )
-            for r in rows
-        ]
+        return [_row_to_edge(r) for r in rows]
 
-    async def upsert_edge(self, from_id: str, to_id: str, weight: float) -> None:
-        left, right = sorted((from_id, to_id))
+    async def upsert_edge(
+        self,
+        from_id: str,
+        to_id: str,
+        kind: MemoryEdgeKind,
+        weight: float,
+        created_at: float,
+    ) -> None:
+        left, right = _canonical_edge_ids(from_id, to_id)
         async with self._db.lock:
             await self._db.conn.execute(
-                "INSERT INTO memory_edge (from_id, to_id, weight) VALUES (?, ?, ?) "
+                "INSERT INTO memory_edge (from_id, to_id, kind, weight, created_at) "
+                "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(from_id, to_id, kind) DO UPDATE SET "
-                "weight = excluded.weight",
-                (left, right, weight),
+                "weight = excluded.weight, created_at = excluded.created_at",
+                (left, right, kind.value, weight, created_at),
             )
             await self._db.conn.commit()
+
+    async def delete_edges(
+        self,
+        keys: list[tuple[str, str, MemoryEdgeKind]],
+    ) -> None:
+        async with self._db.lock:
+            for from_id, to_id, kind in keys:
+                await self._db.conn.execute(
+                    "DELETE FROM memory_edge "
+                    "WHERE from_id = ? AND to_id = ? AND kind = ?",
+                    (from_id, to_id, kind.value),
+                )
+            await self._db.conn.commit()
+
+    async def list_edge_degrees(
+        self,
+        memory_ids: list[str],
+    ) -> dict[str, list[MemoryEdge]]:
+        result: dict[str, list[MemoryEdge]] = {
+            memory_id: [] for memory_id in memory_ids
+        }
+        async with self._db.lock:
+            for memory_id in memory_ids:
+                cursor = await self._db.conn.execute(
+                    "SELECT from_id, to_id, kind, weight, created_at "
+                    "FROM memory_edge "
+                    "WHERE from_id = ? OR to_id = ? "
+                    "ORDER BY from_id ASC, to_id ASC, kind ASC",
+                    (memory_id, memory_id),
+                )
+                rows = await cursor.fetchall()
+                result[memory_id] = [_row_to_edge(r) for r in rows]
+        return result
 
 
 def _memory_row(
@@ -242,6 +329,10 @@ def _escape_like(query: str) -> str:
     return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _canonical_edge_ids(a: str, b: str) -> tuple[str, str]:
+    return (a, b) if a < b else (b, a)
+
+
 def _row_to_memory(row: aiosqlite.Row) -> Memory:
     return Memory(
         id=row["id"],
@@ -256,4 +347,14 @@ def _row_to_memory(row: aiosqlite.Row) -> Memory:
         embedding=(
             json.loads(row["embedding"]) if row["embedding"] is not None else None
         ),
+    )
+
+
+def _row_to_edge(row: aiosqlite.Row) -> MemoryEdge:
+    return MemoryEdge(
+        from_id=row["from_id"],
+        to_id=row["to_id"],
+        kind=MemoryEdgeKind(row["kind"]),
+        weight=row["weight"],
+        created_at=row["created_at"],
     )

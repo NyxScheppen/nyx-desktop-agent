@@ -177,13 +177,15 @@
 | `test_list_memories_limit` | 功能正确 | `limit=2` 截断（`freshness DESC` 前 2）；`limit` 与 `tag` 组合截断（`tag="a", limit=1` 取最高 freshness 那条） |
 | `test_update_fields` | 功能正确 | `update_many`（单条）改各字段 → `get` 验证；`id` / `created_at` 不可变 |
 | `test_update_many` | 功能正确 | `update_many` 批量改多条（含 `embedding=None` 与 `embedding=[...]`）→ `get` 逐条验证；空列表 no-op |
-| `test_delete_cascades_edges` | 功能正确 | `delete_many`（单条）级联删 canonical typed `memory_edge`（from/to 双向），其它记忆边保留 |
-| `test_delete_many` | 功能正确 | `delete_many` 批量删多条（含关联边）→ `get` 全部 `None`、`list_edges` 无残留；空列表 no-op |
+| `test_delete_cascades_edges` | 功能正确 | `delete_many`（单条）级联删 canonical typed `memory_edge`（from/to 双向同 kind 合并），其它 typed 边保留 |
+| `test_delete_many` | 功能正确 | `delete_many` 批量删多条（含 typed 关联边）→ `get` 全部 `None`、`list_edges` 无残留；空列表 no-op |
 | `test_record_recall_atomic` | 功能正确 | 未达阈值连调两次 → `recall_count==2` 且 type `SHORT_TERM`、返回 False；达阈值 → `LONG_TERM`、返回 True；已 `LONG_TERM` → 只递增、返回 False（加一+条件升型在单锁内原子完成） |
-| `test_search_keyword` | 功能正确 | `content` / `summary` 命中、无命中 `[]`、ASCII 大小写不敏感 |
-| `test_search_keyword_escapes_wildcards` | 边界鲁棒 | `%` / `_` 作字面量匹配（`ESCAPE '\'` 转义），不误命中通配符匹配 |
-| `test_list_edges_and_upsert` | 功能正确 | 旧签名 `upsert_edge` 新建默认 `semantic` / `created_at=0.0` typed edge；同 canonical 键重复 `ON CONFLICT` 改 `weight` 不重复建行 |
-| `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |
+| `test_search_keywords_returns_field_hits_ordered_and_capped` | 功能正确 | `search_keywords(["alpha","beta"], limit=2)` 返回 capped ordered `dict`：按 unique token / summary / content / freshness / created_at 排序，且 `KeywordSearchHit` 分别记录 summary/content 命中 token |
+| `test_search_keywords_empty_and_limit_zero_skip_db` | 边界鲁棒 | 空 token list 或 `limit <= 0` → `{}` |
+| `test_search_keywords_escapes_wildcards` | 边界鲁棒 | `%` 作字面量匹配（`ESCAPE '\'` 转义），不误命中通配符匹配 |
+| `test_typed_edges_canonicalize_and_filter_kind` | 功能正确 | `upsert_edge` canonicalize 端点；同 pair 不同 `MemoryEdgeKind` 可共存；`list_edges(kind)` 只返回指定 kind；全量按 `from_id,to_id,kind` 排序 |
+| `test_delete_edges_and_list_edge_degrees` | 功能正确 | `list_edge_degrees(["b"])` 返回 incident typed edges（`from_id = id OR to_id = id`）；`delete_edges` 按完整 `(from_id,to_id,kind)` 三元键删除 |
+| `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | typed `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |
 | `test_hash_content_deterministic` | 功能正确 | `hash_content` 同 content 同 hash、不同 content 不同 hash、SHA-256 hex 长度 64（纯函数） |
 | `test_find_by_content_hit_and_miss` | 功能正确 | `add` 后按原 content `find_by_content` 命中返回 `Memory`（id 一致）、不同 content 返回 `None` |
 | `test_update_many_keeps_content_hash_in_sync` | 回归保护 | `update_many` 改 content 后旧 content 不再被 `find_by_content` 命中，新 content 命中同一 id（派生 `content_hash` 同步） |

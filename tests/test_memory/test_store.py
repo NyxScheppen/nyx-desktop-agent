@@ -201,13 +201,13 @@ async def test_delete_cascades_edges() -> None:
         await store.add(_mem("a"))
         await store.add(_mem("b"))
         await store.add(_mem("c"))
-        await store.upsert_edge("a", "b", 1.0)
-        await store.upsert_edge("b", "a", 2.0)
-        await store.upsert_edge("b", "c", 3.0)
+        await store.upsert_edge("a", "b", MemoryEdgeKind.SEMANTIC, 1.0, 10.0)
+        await store.upsert_edge("b", "a", MemoryEdgeKind.SEMANTIC, 2.0, 11.0)
+        await store.upsert_edge("b", "c", MemoryEdgeKind.KEYWORD, 3.0, 12.0)
         await store.delete_many(["a"])
         assert await store.get("a") is None
-        edges = [(e.from_id, e.to_id) for e in await store.list_edges()]
-        assert edges == [("b", "c")]
+        edges = [(e.from_id, e.to_id, e.kind) for e in await store.list_edges()]
+        assert edges == [("b", "c", MemoryEdgeKind.KEYWORD)]
     finally:
         await db.conn.close()
 
@@ -219,8 +219,8 @@ async def test_delete_many() -> None:
         await store.add(_mem("a"))
         await store.add(_mem("b"))
         await store.add(_mem("c"))
-        await store.upsert_edge("a", "b", 1.0)
-        await store.upsert_edge("b", "c", 2.0)
+        await store.upsert_edge("a", "b", MemoryEdgeKind.SEMANTIC, 1.0, 10.0)
+        await store.upsert_edge("b", "c", MemoryEdgeKind.KEYWORD, 2.0, 11.0)
         await store.delete_many(["a", "b"])
         assert await store.get("a") is None
         assert await store.get("b") is None
@@ -254,52 +254,103 @@ async def test_record_recall_atomic() -> None:
         await db.conn.close()
 
 
-async def test_search_keyword() -> None:
+async def test_search_keywords_returns_field_hits_ordered_and_capped() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
     try:
-        await store.add(_mem("m1", content="deep sea", summary="no", freshness=0.3))
-        await store.add(_mem("m2", content="x", summary="deep sea 读书", freshness=0.7))
-        assert [m.id for m in await store.search_keyword("DEEP")] == ["m2", "m1"]
-        assert await store.search_keyword("none") == []
+        await store.add(
+            _mem(
+                "m1",
+                content="alpha beta",
+                summary="none",
+                freshness=0.3,
+                created_at=1.0,
+            )
+        )
+        await store.add(
+            _mem(
+                "m2",
+                content="alpha",
+                summary="alpha beta",
+                freshness=0.7,
+                created_at=2.0,
+            )
+        )
+        await store.add(
+            _mem(
+                "m3",
+                content="beta",
+                summary="none",
+                freshness=1.0,
+                created_at=3.0,
+            )
+        )
+        hits = await store.search_keywords(["alpha", "beta"], limit=2)
+        assert list(hits) == ["m2", "m1"]
+        assert hits["m2"].summary_tokens == ["alpha", "beta"]
+        assert hits["m2"].content_tokens == ["alpha"]
     finally:
         await db.conn.close()
 
 
-async def test_search_keyword_escapes_wildcards() -> None:
+async def test_search_keywords_empty_and_limit_zero_skip_db() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        assert await store.search_keywords([], limit=10) == {}
+        assert await store.search_keywords(["alpha"], limit=0) == {}
+    finally:
+        await db.conn.close()
+
+
+async def test_search_keywords_escapes_wildcards() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
     try:
         await store.add(_mem("m1", content="进度 100%"))
         await store.add(_mem("m2", content="进度 100 元"))
-        await store.add(_mem("m3", content="a_b"))
-        await store.add(_mem("m4", content="aXb"))
-        assert [m.id for m in await store.search_keyword("100%")] == ["m1"]
-        assert [m.id for m in await store.search_keyword("a_b")] == ["m3"]
+        hits = await store.search_keywords(["100%"], limit=10)
+        assert list(hits) == ["m1"]
     finally:
         await db.conn.close()
 
 
-async def test_list_edges_and_upsert() -> None:
+async def test_typed_edges_canonicalize_and_filter_kind() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
     try:
         await store.add(_mem("a"))
         await store.add(_mem("b"))
-        await store.upsert_edge("a", "b", 1.0)
-        edges = await store.list_edges()
-        assert edges == [
-            MemoryEdge(
-                from_id="a",
-                to_id="b",
-                kind=MemoryEdgeKind.SEMANTIC,
-                weight=1.0,
-                created_at=0.0,
-            )
+        await store.upsert_edge("b", "a", MemoryEdgeKind.SEMANTIC, 0.4, 10.0)
+        await store.upsert_edge("a", "b", MemoryEdgeKind.ENTITY, 0.8, 11.0)
+        semantic = await store.list_edges(MemoryEdgeKind.SEMANTIC)
+        all_edges = await store.list_edges()
+        assert semantic == [MemoryEdge("a", "b", MemoryEdgeKind.SEMANTIC, 0.4, 10.0)]
+        assert [e.kind for e in all_edges] == [
+            MemoryEdgeKind.ENTITY,
+            MemoryEdgeKind.SEMANTIC,
         ]
-        await store.upsert_edge("a", "b", 2.5)
-        edges = await store.list_edges()
-        assert len(edges) == 1 and edges[0].weight == 2.5
+    finally:
+        await db.conn.close()
+
+
+async def test_delete_edges_and_list_edge_degrees() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        for mid in ("a", "b", "c"):
+            await store.add(_mem(mid))
+        await store.upsert_edge("a", "b", MemoryEdgeKind.SEMANTIC, 0.4, 10.0)
+        await store.upsert_edge("b", "c", MemoryEdgeKind.KEYWORD, 0.5, 11.0)
+        degrees = await store.list_edge_degrees(["b"])
+        assert [(e.from_id, e.to_id, e.kind) for e in degrees["b"]] == [
+            ("a", "b", MemoryEdgeKind.SEMANTIC),
+            ("b", "c", MemoryEdgeKind.KEYWORD),
+        ]
+        await store.delete_edges([("a", "b", MemoryEdgeKind.SEMANTIC)])
+        assert [(e.from_id, e.to_id, e.kind) for e in await store.list_edges()] == [
+            ("b", "c", MemoryEdgeKind.KEYWORD)
+        ]
     finally:
         await db.conn.close()
 
@@ -309,7 +360,9 @@ async def test_upsert_edge_unknown_id_raises() -> None:
     store = MemoryStore(db)
     try:
         with pytest.raises(aiosqlite.IntegrityError):
-            await store.upsert_edge("ghost", "also_ghost", 1.0)
+            await store.upsert_edge(
+                "ghost", "also_ghost", MemoryEdgeKind.SEMANTIC, 1.0, 10.0
+            )
     finally:
         await db.conn.close()
 

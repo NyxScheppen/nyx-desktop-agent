@@ -75,9 +75,12 @@ class MemoryRetrieval:
     async def search(self, query: str, limit: int = 20) -> list[Memory]:
         if not query.strip():
             return []
-        keyword_hits = await self._store.search_keyword(query)
         all_memories = await self._store.list_memories()
         by_id = {m.id: m for m in all_memories}
+        keyword_hit_map = await self._store.search_keywords([query], limit)
+        keyword_hits = [
+            by_id[memory_id] for memory_id in keyword_hit_map if memory_id in by_id
+        ]
 
         vector_hits = await self._vector_search(query, all_memories)
 

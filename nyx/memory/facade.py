@@ -5,7 +5,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from nyx.config import MemoryConfig
-from nyx.enums import EventType, MemoryType
+from nyx.enums import EventType, MemoryEdgeKind, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, internal_event
@@ -508,7 +508,9 @@ class MemoryFacade:
         if scored is None:
             return
         for s, m in scored[:_EDGE_TOP_K]:
-            await self._store.upsert_edge(memory.id, m.id, s)
+            await self._store.upsert_edge(
+                memory.id, m.id, MemoryEdgeKind.SEMANTIC, s, 0.0
+            )
 
     async def _decay_and_evict(self, now: float) -> None:
         """新鲜度统一衰减（回写）+ 短期容量淘汰（满则挤掉最新鲜度最低的）。"""

@@ -1,7 +1,7 @@
 # 测试需直接访问 _vector_search（spec 测试要点要求测私有方法）
 # pyright: reportPrivateUsage=false
 from nyx.db import connect
-from nyx.enums import MemoryType, SearchMode
+from nyx.enums import MemoryEdgeKind, MemoryType, SearchMode
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, cosine, rank_by_cosine
 from nyx.memory.store import MemoryStore
 from nyx.types import Memory
@@ -103,7 +103,7 @@ async def test_search_merge_order_and_limit() -> None:
         await store.add(_mem("A", content="关于 alpha 的记忆", embedding=[1.0, 0.0]))
         await store.add(_mem("B", content="关于 beta", embedding=[0.0, 1.0]))
         await store.add(_mem("C", content="关于 gamma", embedding=None))
-        await store.upsert_edge("A", "B", 1.0)
+        await store.upsert_edge("A", "B", MemoryEdgeKind.SEMANTIC, 1.0, 0.0)
         retrieval = MemoryRetrieval(store, embed=_fake_embed([1.0, 0.0]))
         assert [m.id for m in await retrieval.search("alpha")] == ["A", "B"]
         assert [m.id for m in await retrieval.search("alpha", limit=1)] == ["A"]

@@ -35,6 +35,21 @@ def test_associate_parallel_typed_edges_take_best_path() -> None:
     assert hit.kinds == ["semantic"]
 
 
+def test_associate_equal_paths_keep_lexicographically_smaller_prefix_via() -> None:
+    g = MemoryGraph([
+        _edge("s", "a", MemoryEdgeKind.SEMANTIC, 1.0),
+        _edge("s", "aa", MemoryEdgeKind.SEMANTIC, 1.0),
+        _edge("a", "z", MemoryEdgeKind.SEMANTIC, 1.0),
+        _edge("aa", "z", MemoryEdgeKind.SEMANTIC, 1.0),
+    ])
+    z_hit = next(
+        hit
+        for hit in g.associate({"s": 1.0}, depth=2, limit=10)
+        if hit.memory_id == "z"
+    )
+    assert z_hit.via == "a"
+
+
 def test_clusters_include_isolated_nodes_with_stable_ids() -> None:
     g = MemoryGraph([
         _edge("a", "b", MemoryEdgeKind.SEMANTIC, 1.0),

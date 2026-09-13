@@ -223,16 +223,16 @@ class MemoryGraph:
         best: dict[str, AssociationHit], candidate: AssociationHit
     ) -> None:
         current = best.get(candidate.memory_id)
-        if current is None or (
-            candidate.score,
-            -candidate.depth,
-            _reverse_sort_text(candidate.via),
-        ) > (
-            current.score,
-            -current.depth,
-            _reverse_sort_text(current.via),
-        ):
+        if current is None or MemoryGraph._is_better_path(candidate, current):
             best[candidate.memory_id] = candidate
+
+    @staticmethod
+    def _is_better_path(candidate: AssociationHit, current: AssociationHit) -> bool:
+        if candidate.score != current.score:
+            return candidate.score > current.score
+        if candidate.depth != current.depth:
+            return candidate.depth < current.depth
+        return candidate.via < current.via
 
     @staticmethod
     def _communities(graph: nx.Graph[str]) -> list[set[str]]:
@@ -247,7 +247,3 @@ class MemoryGraph:
                 graph, weight="weight"
             )
         return [set(community) for community in communities]
-
-
-def _reverse_sort_text(text: str) -> tuple[int, ...]:
-    return tuple(-ord(char) for char in text)

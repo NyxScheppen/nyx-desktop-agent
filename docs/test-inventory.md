@@ -202,6 +202,7 @@
 | `test_hash_embedding_and_fingerprint_change_on_embedding_update` | 功能正确 | `hash_embedding` 按 8 位小数归一；`ann_fingerprint` 随 embedding 更新/记忆删除变化 |
 | `test_associate_depth_two_scores_and_excludes_seeds` | 功能正确 | typed graph 从 seed 扩散两跳：返回 path metadata（depth/via/kinds），排除 direct seed，score=`seed_score * edge_weight * depth_decay * kind_weight` |
 | `test_associate_parallel_typed_edges_take_best_path` | 功能正确 | 同一 unordered pair 的不同 `MemoryEdgeKind` 作为并行 typed edges 扩散；多路径按最高 score 选最佳 path kind |
+| `test_associate_equal_paths_keep_lexicographically_smaller_prefix_via` | 回归保护 | equal score/depth 的多路径按字典序更小 `via` 保留最佳路径；覆盖 `"a"` / `"aa"` 前缀 tie-break |
 | `test_clusters_include_isolated_nodes_with_stable_ids` | 功能正确 | `MemoryGraph(edges, memory_ids=...)` 聚类返回全部 memory id；连通 a/b 同 cluster，孤立 z 单独 cluster，cluster id 稳定 |
 | `test_cosine` | 功能正确 | 正交=0、相同=1、相反=-1、零向量=0、维度不一致=0（纯函数） |
 | `test_rank_by_cosine` | 功能正确 | `embedding=None` 跳过、`s<=0` 过滤、按 `s` 降序（纯函数；`_vector_search` 与 09 `_similar` 共用） |

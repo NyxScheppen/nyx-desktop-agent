@@ -6,8 +6,8 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_all_enums_exhaustive` | 功能正确 | 15 个枚举的值集合与 `EXPECTED` 逐枚举相等（防漏成员/多成员/改值） |
-| `test_naming_convention` | 回归保护 | 每个成员 `value == name.lower()`（防手滑改值破坏 snake_case 契约） |
+| `test_all_enums_exhaustive` | 功能正确 | 17 个枚举（含 `MemoryEdgeKind`）的值集合与 `EXPECTED` 逐枚举相等（防漏成员/多成员/改值） |
+| `test_naming_convention` | 回归保护 | 17 个枚举的每个成员 `value == name.lower()`（防手滑改值破坏 snake_case 契约） |
 | `test_strenum_json_serializable` | 功能正确 | `json.dumps(EventType.USER_MESSAGE) == '"user_message"'` |
 | `test_memory_edge_kind_values` | 功能正确 | `MemoryEdgeKind` 值集合恰为 `semantic` / `entity` / `keyword` / `temporal` / `same_topic` / `elaborates` / `contrasts` / `causes` / `updates_preference` / `user_profile_link` |
 | `test_memory_edge_defaults` | 功能正确 | `MemoryEdge("a", "b")` 默认 `kind is MemoryEdgeKind.SEMANTIC`、`weight == 1.0`、`created_at == 0.0` |

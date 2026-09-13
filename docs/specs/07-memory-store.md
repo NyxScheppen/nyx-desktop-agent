@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `MemoryType`）、04-db（`Database`（conn+lock）+ `memory` / `memory_edge` 表）
+- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `MemoryEdgeKind` / `MemoryType`）、04-db（`Database`（conn+lock）+ `memory` / typed `memory_edge` 表）
 
 ## 用户故事
 
@@ -17,10 +17,11 @@
 - [ ] `store.py` 含 `MemoryStore`（`add` / `get` / `find_by_content` / `list_memories` / `update_many` / `delete_many` / `record_recall` / `strengthen` / `search_keyword` / `list_edges` / `upsert_edge`）+ 模块级 `hash_content` + `_memory_row` / `_row_to_memory`（实现见 `nyx/memory/store.py`）
 - [ ] 所有 DB 读写都在 `async with self._db.lock` 内；**锁作用域 = 单个 store 方法的 SQL 块，不跨 store 方法嵌套**（`asyncio.Lock` 不可重入，嵌套死锁）
 - [ ] 行↔`Memory` 往返：`aspect` JSON 数组（空 = `"[]"`）、`type` 枚举 `.value`、`recall_count` 整数、`embedding` `list[float] | None`（`None` ↔ SQL `NULL`）
+- [ ] 行↔`MemoryEdge` 往返：`kind` 读写 `MemoryEdgeKind` 枚举值，`created_at` 读写 `float`；旧 `upsert_edge(from_id, to_id, weight)` 兼容签名写入默认 `semantic` 边
 - [ ] `list_memories` 按 `tag` / `type` 过滤，`freshness DESC, created_at DESC` 排序；`limit` 截断（拼 `LIMIT {limit}`，避免无界拉取）
 - [ ] `search_keyword` 用 `LIKE` 匹配 `content` 或 `summary`
-- [ ] `delete_many` 级联删 `memory_edge`（删边 + 删记忆在**同一锁块**内原子完成）
-- [ ] `upsert_edge` 用 `ON CONFLICT` 更新 `weight`
+- [ ] `delete_many` 级联删 typed `memory_edge`（删边 + 删记忆在**同一锁块**内原子完成）
+- [ ] `upsert_edge` canonicalize 端点为 `from_id < to_id`，用 `(from_id, to_id, kind)` 的 `ON CONFLICT` 更新 `weight`
 - [ ] `update_many` 不改 `id` / `created_at`（`created_at` 是创建时刻，不可变），并随 `content` 同步重算 `content_hash`
 - [ ] `pyright` strict 零报错
 
@@ -37,6 +38,7 @@
 - **`embedding` 可空列（None ↔ SQL NULL）**：`list[float] | None` ⟺ `embedding TEXT` 可空；`_embedding_json` 把 `None` 序列化为 SQL `NULL`（不是 `"null"` 字符串）、`list` 序列化为 JSON 数组字符串，读回时 `None` 保持 `None`。这是首个可空 JSON 列，后续 store（`goal` / `ended_at` / `content_hash` 等）照此 `None ↔ NULL` 模式
 - **`content_hash` 是 store 派生列（不进 `Memory`）**：`memory` 表加 `content_hash TEXT`（04-db 迁移 v6），由 `add` 写入 `hash_content(content)`、`update_many` 随 `content` 同步重算、`find_by_content` 查重用；`Memory` dataclass 不承载它（不改 01-types、不改构造器），`_row_to_memory` 读回也不填充——`_MEMORY_COLS`（SELECT）不含它，`_MEMORY_INSERT_COLS`（INSERT）才追加。旧行 `content_hash` 为 NULL（不去重），新写入行有值
 - **`count_new(tag: str | None, since: float)` 使用 `first_created_at`**：`tag=None` 统计所有首次创建晚于 `since` 的记忆；传具体 tag 时只统计该 tag。`first_created_at` 在 INSERT 定格，`strengthen` / `update_many` / `record_recall` 均不更新。
+- **typed `memory_edge` schema**：边表主键是 `(from_id, to_id, kind)`，端点是 canonical unordered pair（`from_id < to_id`），`kind` 存 `MemoryEdgeKind.value`，旧边兼容路径默认写 `semantic`，`created_at` 默认 `0.0`。Task 2 会替换公开 edge CRUD 签名；本 spec 当前只记录 Task 1 兼容实现，不提前引入新 store API。
 - **边界划分（明确不做）**：新鲜度衰减、容量淘汰是 09-facade 的生命周期逻辑；短期→长期升级的「何时升」也由 facade 决定（阈值经 `record_recall(memory_id, promote_threshold)` 传入）。但「加一 + 条件升型」这个原子原语必须落在 store 单锁内——原子性要求单锁、锁在 store，拆到 facade 会产生跨方法竞态（09 轮审查发现重复升级/丢计数）。`graph.py`（networkx 联想图）归 08，从 `list_edges()` 建图。FK 完整性靠 04-db 的 `PRAGMA foreign_keys=ON`（`upsert_edge` 引用不存在的 id 抛 `aiosqlite.IntegrityError`）
 
 ## 测试要点
@@ -49,12 +51,12 @@
   - [ ] **list_memories 过滤/排序/limit**：造 3 条不同 `tag` / `type` / `freshness` → `tag=` 过滤、`type=` 过滤、`tag+type` 组合、默认全量；排序按 `freshness DESC`（freshness 高的在前）；`limit=2` 截断、`limit` 与 `tag` 组合截断
   - [ ] **update_many（单条）**：改 `tag` / `summary` / `freshness` / `type` / `recall_count` / `aspect` / `embedding` → `get` 验证；`id` / `created_at` 不变；改 `content` 后 `find_by_content` 只命中新 content
   - [ ] **update_many**：改多条（含 `embedding=None` 与 `embedding=[...]`）→ `get` 逐条验证；空列表 → no-op
-  - [ ] **delete_many（单条）级联删边**：`add` 两条 memory + 两条关联它的 `upsert_edge` → `delete_many(["a"])` 后 `get=None`、`list_edges` 无残留（其它记忆的边不受影响）
+  - [ ] **delete_many（单条）级联删边**：`add` 多条 memory + typed canonical `upsert_edge` → `delete_many(["a"])` 后 `get=None`、关联 typed edge 无残留（其它记忆的边不受影响）
   - [ ] **delete_many**：删多条（含关联边）→ `get` 全部 `None`、`list_edges` 无残留；空列表 → no-op
   - [ ] **record_recall**：未达阈值连调两次 → `recall_count == 2` 且 `type is SHORT_TERM`、返回 `False`；达阈值 → 升 `LONG_TERM`、返回 `True`；已是 `LONG_TERM` → 只递增、返回 `False`
   - [ ] **search_keyword**：`content` 命中 / `summary` 命中 / 无命中 → `[]` / ASCII 大小写不敏感（"FOO" 命中 "foo"）
   - [ ] **search_keyword 转义通配符**：搜 `"100%"` 只命中含字面 `100%`、搜 `"a_b"` 只命中字面 `a_b`（`_escape_like` + `ESCAPE '\'`，不误命中通配符匹配）
-  - [ ] **list_edges + upsert_edge**：`upsert_edge` 新建 → `list_edges` 返回 `MemoryEdge`；同 `(from_id, to_id)` 再 `upsert_edge` 改 `weight`（ON CONFLICT 更新不重复建行）
+  - [ ] **list_edges + upsert_edge**：旧签名 `upsert_edge` 新建默认 `semantic` / `created_at=0.0` 的 canonical `MemoryEdge`；同 canonical `(from_id, to_id, kind)` 再 `upsert_edge` 改 `weight`（ON CONFLICT 更新不重复建行）
   - [ ] **upsert_edge 引用不存在的 id** → `aiosqlite.IntegrityError`（`PRAGMA foreign_keys=ON` 生效）
   - [ ] **hash_content 确定性**：同 content 同 hash、不同 content 不同 hash、SHA-256 hex 长度 64（`hash_content("x")` 长度 `== 64`）
   - [ ] **find_by_content 命中/未命中**：`add` 后按原 content 命中返回 `Memory`（`id` 一致）、不同 content 返回 `None`

@@ -4,7 +4,7 @@
 > `CLAUDE.md`「写 spec」模板里"涉及的 Facade / 数据变更 / API 端点 / 新增文件"直接抄这里，不现编。
 > 约定：主键/ID 用 **uuid4 字符串**，时间戳用 **epoch 秒（浮点）**。
 
-## 1. 枚举（16 个 StrEnum）
+## 1. 枚举（17 个 StrEnum）
 
 > 枚举成员与实现以 `nyx/enums.py` 为准（spec 01-types 只给契约），此处不再重复。§3 起的 DDL / API / Facade 签名直接引用这些枚举。
 
@@ -12,19 +12,21 @@
 - 统一 `enum.StrEnum`：成员 `UPPER_SNAKE`、值 = `成员名.lower()` 的 snake_case。
 - `EventType` 为初始集，可扩展。
 - `EmotionCategory` 8 档选择优先级：**困倦 > 思考 > 情绪**；`vad_to_category` 只落前 6 个情绪，`sleepy`/`thinking` 由精力/认知态覆盖（语义见 design/design.md §4.2，实现见 12-inner-life）。
+- `MemoryEdgeKind` 是 typed memory edge 的持久化域；`none` 只作为 LLM 输出哨兵，不是可落库边类型。
 
 ---
 
-## 2. 实体 dataclass（22 个 + 3 个 TypedDict）
+## 2. 实体 dataclass（24 个 + 3 个 TypedDict）
 
 > dataclass 字段与实现以 `nyx/types.py` 为准（spec 01-types 只给契约；固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`）。此处不再重复。
+> `MemoryEdge` 为 typed edge：`from_id` / `to_id` / `kind` / `weight` / `created_at`，其中 `kind` 默认 `MemoryEdgeKind.SEMANTIC`，`created_at` 默认 `0.0`。
 
 ---
 
 ## 3. DB DDL（SQLite）
 
 > DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；19 张业务表 + 6 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
-> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；19 张业务表 + `schema_version` 迁移簿记表 = 共 20 张。迁移版图：v1/2/3/6 基础表（4/5 死号）、v7-v10 陪读（books/paragraphs/progress/user_notes/annotations）、v11-v12 审美维度（aesthetic 表 + `memory.first_created_at`）、v13 eval 记账（`eval_log` 表，15-eval）。
+> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；19 张业务表 + `schema_version` 迁移簿记表 = 共 20 张。`memory_edge` 是 canonical typed edge 表：`CHECK (from_id < to_id)`，主键 `(from_id, to_id, kind)`，`kind TEXT NOT NULL DEFAULT 'semantic'`，`created_at REAL NOT NULL DEFAULT 0.0`。迁移版图：v1/2/3/6 基础表（4/5 死号）、v7-v10 陪读（books/paragraphs/progress/user_notes/annotations）、v11-v12 审美维度（aesthetic 表 + `memory.first_created_at`）、v13 eval 记账（`eval_log` 表，15-eval）、v14 typed memory edge schema（旧边 canonicalize 为 `semantic`，反向重复取最大 `weight`）。
 
 ---
 

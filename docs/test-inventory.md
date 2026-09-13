@@ -196,6 +196,10 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
+| `test_ann_empty_and_invalid_query` | 边界鲁棒 | 空 ANN index 查询返回 `[]`；`candidate_k <= 0` 返回 `[]` |
+| `test_ann_skips_none_and_wrong_dimensions` | 边界鲁棒 | ANN build 跳过 `embedding=None` 与首个有效 embedding 维度不一致的记忆；查询维度不一致返回 `[]` |
+| `test_ann_candidate_limit_and_order_are_stable` | 功能正确 | deterministic LSH 查询不超过 `candidate_k=2`，精确 cosine 排序稳定返回 `["a", "b"]` |
+| `test_hash_embedding_and_fingerprint_change_on_embedding_update` | 功能正确 | `hash_embedding` 按 8 位小数归一；`ann_fingerprint` 随 embedding 更新/记忆删除变化 |
 | `test_neighbors_empty_and_missing` | 边界鲁棒 | 空 edges → `neighbors([])=[]`；不存在节点 → `[]`（`has_node` 过滤防 `NetworkXError`） |
 | `test_neighbors_single_edge` | 功能正确 | 单边 a-b：`neighbors(["a"])=["b"]`；全 seed `["a","b"]` → `[]`（排除 seeds 本身） |
 | `test_neighbors_chain_depth` | 功能正确 | 链 a-b-c：depth=1 → `["b"]`、depth=2 → `["b","c"]` |

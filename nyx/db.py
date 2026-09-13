@@ -273,6 +273,34 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX idx_eval_log_created ON eval_log(created_at)",
         ],
     ),
+    (
+        14,
+        [
+            "ALTER TABLE memory_edge RENAME TO memory_edge_old",
+            """CREATE TABLE memory_edge (
+                from_id TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
+                to_id TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL DEFAULT 'semantic',
+                weight REAL NOT NULL DEFAULT 1.0,
+                created_at REAL NOT NULL DEFAULT 0.0,
+                CHECK (from_id < to_id),
+                PRIMARY KEY (from_id, to_id, kind)
+            )""",
+            """INSERT INTO memory_edge (from_id, to_id, kind, weight, created_at)
+            SELECT
+                CASE WHEN from_id < to_id THEN from_id ELSE to_id END,
+                CASE WHEN from_id < to_id THEN to_id ELSE from_id END,
+                'semantic',
+                MAX(weight),
+                0.0
+            FROM memory_edge_old
+            WHERE from_id != to_id
+            GROUP BY
+                CASE WHEN from_id < to_id THEN from_id ELSE to_id END,
+                CASE WHEN from_id < to_id THEN to_id ELSE from_id END""",
+            "DROP TABLE memory_edge_old",
+        ],
+    ),
 ]
 
 

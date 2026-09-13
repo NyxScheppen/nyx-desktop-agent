@@ -4,7 +4,7 @@ import json
 import aiosqlite
 
 from nyx.db import Database
-from nyx.enums import MemoryType
+from nyx.enums import MemoryEdgeKind, MemoryType
 from nyx.types import Memory, MemoryEdge
 
 _MEMORY_COLS = (
@@ -192,20 +192,29 @@ class MemoryStore:
     async def list_edges(self) -> list[MemoryEdge]:
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                "SELECT from_id, to_id, weight FROM memory_edge",
+                "SELECT from_id, to_id, kind, weight, created_at FROM memory_edge "
+                "ORDER BY from_id ASC, to_id ASC, kind ASC",
             )
             rows = await cursor.fetchall()
         return [
-            MemoryEdge(from_id=r["from_id"], to_id=r["to_id"], weight=r["weight"])
+            MemoryEdge(
+                from_id=r["from_id"],
+                to_id=r["to_id"],
+                kind=MemoryEdgeKind(r["kind"]),
+                weight=r["weight"],
+                created_at=r["created_at"],
+            )
             for r in rows
         ]
 
     async def upsert_edge(self, from_id: str, to_id: str, weight: float) -> None:
+        left, right = sorted((from_id, to_id))
         async with self._db.lock:
             await self._db.conn.execute(
                 "INSERT INTO memory_edge (from_id, to_id, weight) VALUES (?, ?, ?) "
-                "ON CONFLICT(from_id, to_id) DO UPDATE SET weight = excluded.weight",
-                (from_id, to_id, weight),
+                "ON CONFLICT(from_id, to_id, kind) DO UPDATE SET "
+                "weight = excluded.weight",
+                (left, right, weight),
             )
             await self._db.conn.commit()
 

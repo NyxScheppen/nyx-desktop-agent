@@ -9,6 +9,8 @@
 | `test_all_enums_exhaustive` | 功能正确 | 15 个枚举的值集合与 `EXPECTED` 逐枚举相等（防漏成员/多成员/改值） |
 | `test_naming_convention` | 回归保护 | 每个成员 `value == name.lower()`（防手滑改值破坏 snake_case 契约） |
 | `test_strenum_json_serializable` | 功能正确 | `json.dumps(EventType.USER_MESSAGE) == '"user_message"'` |
+| `test_memory_edge_kind_values` | 功能正确 | `MemoryEdgeKind` 值集合恰为 `semantic` / `entity` / `keyword` / `temporal` / `same_topic` / `elaborates` / `contrasts` / `causes` / `updates_preference` / `user_profile_link` |
+| `test_memory_edge_defaults` | 功能正确 | `MemoryEdge("a", "b")` 默认 `kind is MemoryEdgeKind.SEMANTIC`、`weight == 1.0`、`created_at == 0.0` |
 | `test_frontend_sse_listeners_cover_all_event_types` | 跨端契约 | 前端 `useSSE.EVENT_TYPES` 与后端 `EventType` 值集合完全一致，防止命名事件被静默漏接 |
 | `test_short_term_desire_default_status` | 功能正确 | `status` 默认 `DesireStatus.PENDING`（枚举成员而非裸字符串） |
 | `test_memory_aspect_default_factory_isolated` | 边界鲁棒 | `default_factory` 保证两个实例的 `aspect` 互不共享 |
@@ -77,7 +79,9 @@
 | `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 19 张业务表 + `schema_version`，共 20 张 |
 | `test_migrate_creates_six_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_memory_content_hash` / `idx_books_content_hash` / `idx_eval_log_created` 六个 |
 | `test_migrate_books_content_hash_index_unique` | 功能正确 | `idx_books_content_hash` 的 `sqlite_master.sql` 以 `CREATE UNIQUE INDEX` 开头（v8 去重升级唯一索引） |
+| `test_memory_edge_schema_typed_and_canonical` | 功能正确 | `memory_edge` 主键为 `(from_id, to_id, kind)`；`kind` / `created_at` 为 NOT NULL；DDL 含 `CHECK (from_id < to_id)` |
 | `test_migrate_v8_dedupes_duplicate_content_hash` | 边界鲁棒 | 先迁 v7 插两条同 `content_hash` 书 → 完整迁移不抛、重复清到 1、被删书 paragraphs 级联清空、唯一索引就位 |
+| `test_memory_edge_migration_canonicalizes_reverse_edges` | 边界鲁棒 | 先迁 v13 写入 `a→b` 与 `b→a` 旧边 → 完整迁移合并为单条 `("a","b","semantic",0.9,0.0)` |
 | `test_migrate_sets_version_to_max` | 功能正确 | `schema_version` 单行 = `_MIGRATIONS` 最高版本 |
 | `test_migrate_not_null_alignment` | 边界鲁棒 | 11 列 `notnull=1`（`memory.aspect` / `long_term_desire.linked_values` / `activity.progress` / `event_log.content` / `event_log.correlation_id` / `user_notes.content` / `user_notes.created_at` / `user_notes.updated_at` / `annotations.user_note_id` / `annotations.content` / `annotations.created_at`） |
 | `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `memory.embedding` / `memory.content_hash` / `user_notes.book_id` / `user_notes.paragraph_id` / `user_notes.selected_text` / `eval_log.ooc_embed`） |
@@ -173,12 +177,12 @@
 | `test_list_memories_limit` | 功能正确 | `limit=2` 截断（`freshness DESC` 前 2）；`limit` 与 `tag` 组合截断（`tag="a", limit=1` 取最高 freshness 那条） |
 | `test_update_fields` | 功能正确 | `update_many`（单条）改各字段 → `get` 验证；`id` / `created_at` 不可变 |
 | `test_update_many` | 功能正确 | `update_many` 批量改多条（含 `embedding=None` 与 `embedding=[...]`）→ `get` 逐条验证；空列表 no-op |
-| `test_delete_cascades_edges` | 功能正确 | `delete_many`（单条）级联删 `memory_edge`（from/to 双向），其它记忆边保留 |
+| `test_delete_cascades_edges` | 功能正确 | `delete_many`（单条）级联删 canonical typed `memory_edge`（from/to 双向），其它记忆边保留 |
 | `test_delete_many` | 功能正确 | `delete_many` 批量删多条（含关联边）→ `get` 全部 `None`、`list_edges` 无残留；空列表 no-op |
 | `test_record_recall_atomic` | 功能正确 | 未达阈值连调两次 → `recall_count==2` 且 type `SHORT_TERM`、返回 False；达阈值 → `LONG_TERM`、返回 True；已 `LONG_TERM` → 只递增、返回 False（加一+条件升型在单锁内原子完成） |
 | `test_search_keyword` | 功能正确 | `content` / `summary` 命中、无命中 `[]`、ASCII 大小写不敏感 |
 | `test_search_keyword_escapes_wildcards` | 边界鲁棒 | `%` / `_` 作字面量匹配（`ESCAPE '\'` 转义），不误命中通配符匹配 |
-| `test_list_edges_and_upsert` | 功能正确 | `upsert_edge` 新建 + 同键重复 `ON CONFLICT` 改 `weight` 不重复建行 |
+| `test_list_edges_and_upsert` | 功能正确 | 旧签名 `upsert_edge` 新建默认 `semantic` / `created_at=0.0` typed edge；同 canonical 键重复 `ON CONFLICT` 改 `weight` 不重复建行 |
 | `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |
 | `test_hash_content_deterministic` | 功能正确 | `hash_content` 同 content 同 hash、不同 content 不同 hash、SHA-256 hex 长度 64（纯函数） |
 | `test_find_by_content_hit_and_miss` | 功能正确 | `add` 后按原 content `find_by_content` 命中返回 `Memory`（id 一致）、不同 content 返回 `None` |

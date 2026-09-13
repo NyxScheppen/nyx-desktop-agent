@@ -10,6 +10,7 @@ from nyx.enums import (
     EnergyState,
     EventType,
     GoalAction,
+    MemoryEdgeKind,
     MemoryType,
     SearchMode,
     Source,
@@ -70,7 +71,9 @@ class Memory:
 class MemoryEdge:
     from_id: str
     to_id: str
+    kind: MemoryEdgeKind = MemoryEdgeKind.SEMANTIC
     weight: float = 1.0
+    created_at: float = 0.0
 
 
 # ---- 欲望 ----

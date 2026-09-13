@@ -76,6 +76,19 @@ class MemoryType(StrEnum):
     LONG_TERM = "long_term"
 
 
+class MemoryEdgeKind(StrEnum):
+    SEMANTIC = "semantic"
+    ENTITY = "entity"
+    KEYWORD = "keyword"
+    TEMPORAL = "temporal"
+    SAME_TOPIC = "same_topic"
+    ELABORATES = "elaborates"
+    CONTRASTS = "contrasts"
+    CAUSES = "causes"
+    UPDATES_PREFERENCE = "updates_preference"
+    USER_PROFILE_LINK = "user_profile_link"
+
+
 class ReadingDrive(StrEnum):            # 阅读冲动 6 驱动（21-reading-impulse）
     MOTIVATION = "motivation"                       # 动力 → 精力
     CURIOSITY = "curiosity"                         # 好奇 → 探索欲

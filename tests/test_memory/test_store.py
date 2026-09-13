@@ -2,7 +2,7 @@ import aiosqlite
 import pytest
 
 from nyx.db import connect
-from nyx.enums import MemoryType
+from nyx.enums import MemoryEdgeKind, MemoryType
 from nyx.memory.store import MemoryStore, hash_content
 from nyx.types import Memory, MemoryEdge
 
@@ -32,6 +32,21 @@ def _mem(
         aspect=aspect if aspect is not None else [],
         embedding=embedding,
     )
+
+
+def test_memory_edge_kind_values() -> None:
+    assert {k.value for k in MemoryEdgeKind} == {
+        "semantic", "entity", "keyword", "temporal",
+        "same_topic", "elaborates", "contrasts", "causes",
+        "updates_preference", "user_profile_link",
+    }
+
+
+def test_memory_edge_defaults() -> None:
+    edge = MemoryEdge("a", "b")
+    assert edge.kind is MemoryEdgeKind.SEMANTIC
+    assert edge.weight == 1.0
+    assert edge.created_at == 0.0
 
 
 async def test_add_get_roundtrip() -> None:
@@ -273,7 +288,15 @@ async def test_list_edges_and_upsert() -> None:
         await store.add(_mem("b"))
         await store.upsert_edge("a", "b", 1.0)
         edges = await store.list_edges()
-        assert edges == [MemoryEdge(from_id="a", to_id="b", weight=1.0)]
+        assert edges == [
+            MemoryEdge(
+                from_id="a",
+                to_id="b",
+                kind=MemoryEdgeKind.SEMANTIC,
+                weight=1.0,
+                created_at=0.0,
+            )
+        ]
         await store.upsert_edge("a", "b", 2.5)
         edges = await store.list_edges()
         assert len(edges) == 1 and edges[0].weight == 2.5

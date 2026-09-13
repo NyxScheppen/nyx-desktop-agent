@@ -200,11 +200,9 @@
 | `test_ann_skips_none_and_wrong_dimensions` | 边界鲁棒 | ANN build 跳过 `embedding=None` 与首个有效 embedding 维度不一致的记忆；查询维度不一致返回 `[]` |
 | `test_ann_candidate_limit_and_order_are_stable` | 功能正确 | deterministic LSH 查询不超过 `candidate_k=2`，精确 cosine 排序稳定返回 `["a", "b"]` |
 | `test_hash_embedding_and_fingerprint_change_on_embedding_update` | 功能正确 | `hash_embedding` 按 8 位小数归一；`ann_fingerprint` 随 embedding 更新/记忆删除变化 |
-| `test_neighbors_empty_and_missing` | 边界鲁棒 | 空 edges → `neighbors([])=[]`；不存在节点 → `[]`（`has_node` 过滤防 `NetworkXError`） |
-| `test_neighbors_single_edge` | 功能正确 | 单边 a-b：`neighbors(["a"])=["b"]`；全 seed `["a","b"]` → `[]`（排除 seeds 本身） |
-| `test_neighbors_chain_depth` | 功能正确 | 链 a-b-c：depth=1 → `["b"]`、depth=2 → `["b","c"]` |
-| `test_neighbors_diamond_dedup` | 功能正确 | 菱形 a-b/a-c/b-d/c-d：depth=2 → `["b","c","d"]`（d 去重只一次） |
-| `test_weight_does_not_affect_spread` | 功能正确 | weight 不影响扩散（只按可达性） |
+| `test_associate_depth_two_scores_and_excludes_seeds` | 功能正确 | typed graph 从 seed 扩散两跳：返回 path metadata（depth/via/kinds），排除 direct seed，score=`seed_score * edge_weight * depth_decay * kind_weight` |
+| `test_associate_parallel_typed_edges_take_best_path` | 功能正确 | 同一 unordered pair 的不同 `MemoryEdgeKind` 作为并行 typed edges 扩散；多路径按最高 score 选最佳 path kind |
+| `test_clusters_include_isolated_nodes_with_stable_ids` | 功能正确 | `MemoryGraph(edges, memory_ids=...)` 聚类返回全部 memory id；连通 a/b 同 cluster，孤立 z 单独 cluster，cluster id 稳定 |
 | `test_cosine` | 功能正确 | 正交=0、相同=1、相反=-1、零向量=0、维度不一致=0（纯函数） |
 | `test_rank_by_cosine` | 功能正确 | `embedding=None` 跳过、`s<=0` 过滤、按 `s` 降序（纯函数；`_vector_search` 与 09 `_similar` 共用） |
 | `test_vector_search_skips_none_and_filters` | 边界鲁棒 | `embedding=None` 跳过、`s<=0` 过滤（cos=-1/0）、cos=1 命中 |

@@ -1,6 +1,6 @@
 # 记忆系统事实表
 
-> Agent 修改 `nyx/memory/`、表达慢通道、反思触发、读书/活动落记忆、前端 `Memory` 类型前，先读本文件。细节契约仍在 `docs/specs/07-memory-store.md`、`08-memory-retrieval.md`、`09-memory-facade.md`、`17-expression.md`、`18-api.md`；本文件只钉容易漂移的事实。
+> 本文件是给“无关代码但会碰到记忆事实”的快速摘要，例如表达慢通道、反思触发、读书/活动落记忆、前端 `Memory` 类型。完整记忆系统契约在 `docs/specs/07-memory-system.md`；修改 `nyx/memory/` 或记忆契约时必须先读完整 spec，并同步更新本摘要。
 
 ## 时间字段
 
@@ -25,7 +25,7 @@
 ## 检索与前端
 
 - `MemoryRetrieval.search` 流程是整句 embedding ANN 候选 + keyword LIKE 候选融合评分 -> direct top N -> 2 跳 association 追加；`direct_limit` 只限制直接召回，`association_limit` 只限制联想追加。
-- `extract_keywords` 的 CJK 规则按 `docs/specs/25-memory-recall-ranking.md` 已确认契约执行：长度 2-8 的连续 CJK 片段直接保留，长 CJK 片段只做 2 字/3 字滑窗；不做隐藏边界字符剥离，也不在长片段内部按停用词预拆。
+- `extract_keywords` 的 CJK 规则按 `docs/specs/07-memory-system.md` 契约执行：长度 2-8 的连续 CJK 片段直接保留，长 CJK 片段只做 2 字/3 字滑窗；不做隐藏边界字符剥离，也不在长片段内部按停用词预拆。
 - `Memory.sources` 是瞬态检索来源：`keyword`、`vector`、`association`。它不落库、不进 prompt、不进导出，但 REST `Memory[]` 会序列化给前端。
 - `list_memories` 返回库内快照，通常 `sources=[]`；`search` 返回的命中带 sources。
 

@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Event`/`EventType`/`Source`/`ContextMode`/`Message`/`CurrentState`/`ShortTermDesire`/`SelfNarrative`）、02-config（`ExpressionConfig`）、03-llm（`LlmClient`）、05-event（`EventBus`）、06-tools（`ToolRegistry`）、09-memory-facade（`MemoryFacade`）、11-desire（`DesireFacade`）、12-inner-life（`InnerLifeFacade`）、14-activity（`ActivityFacade`）、eval（`Evaluator`）、16-expression-prompt（`build_system_prompt`/`build_user_prompt`/`classify_channel`）
+- **前置依赖**：01-types（`Event`/`EventType`/`Source`/`ContextMode`/`Message`/`CurrentState`/`ShortTermDesire`/`SelfNarrative`）、02-config（`ExpressionConfig`）、03-llm（`LlmClient`）、05-event（`EventBus`）、06-tools（`ToolRegistry`）、07-memory-system（`MemoryFacade`）、11-desire（`DesireFacade`）、12-inner-life（`InnerLifeFacade`）、14-activity（`ActivityFacade`）、eval（`Evaluator`）、16-expression-prompt（`build_system_prompt`/`build_user_prompt`/`classify_channel`）
 
 ## 用户故事
 
@@ -86,5 +86,5 @@
 - [ ] `test-inventory.md` 已更新
 - [ ] ripple 同步：tech-ref §6.1 `ReplyState` 的 `think`/`speak` 从 `str | None` 改 `list[str]`（多轮累积）、补 `narrative: SelfNarrative | None` 与 `correlation_id: str` 两字段、edges 补「每轮 SPEAK 交付 + ask 后回合结束走 scene_memory」；tech-ref §5 `initiate_chat` 签名 `-> bool`（发话 True/无话 False）、`mutter` 签名补 `correlation_id: str`（MUTTER_CHECK tick 恒定根）
 - [ ] ripple 同步（think+speak 合并）：tech-ref §6.1 图拓扑 `think`/`speak` 两节点合并为 `respond`（一轮 think+speak 一次 `json_mode` 生成，`_parse_reply` 解析后分开发 THINK/SPEAK/ASK）；本 spec 图拓扑/多轮语义/`output_type` 由 `think`/`speak` 改 `reply`
-- [ ] ripple 同步（V2 交互闭环）：tech-ref §5 `ExpressionFacade` 补 `check_timeouts(now)`；02-config `ExpressionConfig` 补 `ask_timeout`/`chat_ignore_timeout` 两字段；09-memory-facade 补 `record_no_answer`；18-api `_tick_loop` 每轮心跳 `await app.expression.check_timeouts(now)`
+- [ ] ripple 同步（V2 交互闭环）：tech-ref §5 `ExpressionFacade` 补 `check_timeouts(now)`；02-config `ExpressionConfig` 补 `ask_timeout`/`chat_ignore_timeout` 两字段；07-memory-system 补 `record_no_answer`；18-api `_tick_loop` 每轮心跳 `await app.expression.check_timeouts(now)`
 - [ ] 下游约定：18-api 组合根 `canon` = `prompts/canon.md`、`ask_guidance` = `prompts/ask.md` 读入后注入 `ExpressionFacade`；`POST /api/chat` → `ExpressionFacade.reply(msg, correlation_id)`；`INITIATE_CHAT_CHECK` tick 由组合根调 `should_initiate_chat` 判定、从 `DesireFacade.get_pending()` 选 interaction 欲望后 `await initiate_chat(desire, state)`，返回 `True` 才更新 `last_chat_at`；`MUTTER_CHECK` tick → `mutter(state, event.correlation_id)`；组合根构造 `ExpressionFacade` 时在 `memory` 实参后注入 `activity`（activity 先于 expression 构造）

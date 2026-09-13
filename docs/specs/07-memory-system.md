@@ -1,27 +1,27 @@
-# 记忆召回排序 + 联想图重构
+# 记忆系统（统一规格）
 
-> **状态：已确认，待实现。** 本 spec 是下一轮重构的完整目标契约。实现本 spec 前后必须同步 `docs/memory-system-facts.md`、01/04/07/08/09/17 相关 spec、`docs/tech-reference.md`、`docs/test-inventory.md`。
+> 本文件是记忆系统的唯一完整规格，覆盖 `nyx/memory/` 的 store / retrieval / graph / facade，以及相关类型、DB、表达慢通道和 API 边界。记忆相邻但不改记忆实现的任务可先读 `docs/memory-system-facts.md` 获取事实摘要；凡改记忆代码、记忆契约或文档，以本文件为完整契约，并同步事实表摘要。
 
 ## 元信息
 
-- **前置依赖**：无额外业务前置。本文件内联本重构所需的现有边界和新契约；实现时只需按下方文件清单修改。
+- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `MemoryType` / `MemoryEdgeKind` / `SearchMode` / `Event` / `EventType` / `Source`）、02-config（`MemoryConfig` / `EmbeddingConfig`）、03-llm（`LlmClient.complete`）、04-db（`Database` + `memory` / `memory_edge` DDL）、05-event（`EventBus.publish`）、17-expression（慢通道召回与 `record_recall` 时机）、18-api（组合根注入 / REST 薄封装）、eval（`Evaluator`）。
 - **实现文件**：`nyx/memory/ann.py`、`nyx/memory/retrieval.py`、`nyx/memory/graph.py`、`nyx/memory/store.py`、`nyx/memory/facade.py`、`nyx/types.py`、`nyx/enums.py`、`nyx/db.py`
-- **文档文件**：`docs/memory-system-facts.md`、`docs/specs/01-types.md`、`docs/specs/04-db.md`、`docs/specs/07-memory-store.md`、`docs/specs/08-memory-retrieval.md`、`docs/specs/09-memory-facade.md`、`docs/specs/17-expression.md`、`docs/tech-reference.md`、`docs/test-inventory.md`
+- **关联文档**：`docs/memory-system-facts.md`、`docs/specs/01-types.md`、`docs/specs/04-db.md`、`docs/specs/17-expression.md`、`docs/specs/18-api.md`、`docs/tech-reference.md`、`docs/test-inventory.md`
 - **测试文件**：`tests/test_memory/test_ann.py`、`tests/test_memory/test_retrieval.py`、`tests/test_memory/test_graph.py`、`tests/test_memory/test_store.py`、`tests/test_memory/test_facade.py`、`tests/test_db/test_db.py`、`tests/test_expression/test_expression_facade.py`
 
-## 现有边界
+## 系统边界
 
 - `MemoryFacade.search(query: str) -> list[Memory]` 是表达慢通道唯一检索入口；表达层不直接调 store/retrieval。
 - 慢通道 `assemble_context` 会把 `MemoryFacade.search(message)` 返回的全部记忆放进 prompt，并立即逐条 `record_recall(memory.id)`。
 - 快通道不检索记忆、不 `record_recall`、不生成场景化记忆。
-- `Memory` 当前字段是 `id`、`created_at`、`content`、`tag`、`summary`、`freshness`、`type`、`recall_count`、`aspect`、`embedding`、`sources`。
-- `MemoryType` 当前取值是 `SHORT_TERM="short_term"`、`LONG_TERM="long_term"`。
-- `SearchMode` 当前取值是 `KEYWORD="keyword"`、`VECTOR="vector"`、`ASSOCIATION="association"`。
-- `MemoryEdge` 当前字段是 `from_id`、`to_id`、`weight`；本 spec 会扩展它。
-- `MemoryStore` 当前负责 `memory` / `memory_edge` CRUD、关键词 SQL、行与 dataclass 序列化；所有 DB 方法持有同一个 `Database.lock`。
-- `MemoryRetrieval` 当前负责检索编排；本 spec 后它仍只读 store 和 ANN，不写 DB、不发布事件。
-- `MemoryGraph` 当前从 `MemoryEdge` 列表构建无向图；本 spec 后它仍不读 DB，只做图扩散和聚类，但必须接收完整 `memory_ids` 才能处理孤立节点。
-- `MemoryFacade._persist_memory` 当前在新记忆入库后建边；本 spec 后复杂建边仍放在 facade 侧，store 只提供原子 CRUD。
+- `Memory` 字段是 `id`、`created_at`、`content`、`tag`、`summary`、`freshness`、`type`、`recall_count`、`aspect`、`embedding`、`sources`。
+- `MemoryType` 取值是 `SHORT_TERM="short_term"`、`LONG_TERM="long_term"`。
+- `SearchMode` 取值是 `KEYWORD="keyword"`、`VECTOR="vector"`、`ASSOCIATION="association"`。
+- `MemoryEdge` 字段是 `from_id`、`to_id`、`kind`、`weight`、`created_at`；`kind` 是 typed edge 域，端点按 canonical unordered pair 使用。
+- `MemoryStore` 负责 `memory` / `memory_edge` CRUD、关键词 SQL、行与 dataclass 序列化；所有 DB 方法持有同一个 `Database.lock`。
+- `MemoryRetrieval` 负责检索编排；它只读 store 和 ANN，不写 DB、不发布事件。
+- `MemoryGraph` 从 `MemoryEdge` 列表构建无向图；它不读 DB，只做图扩散和聚类，但必须接收完整 `memory_ids` 才能处理孤立节点。
+- `MemoryFacade._persist_memory` 负责统一写入、去重、建边、矛盾检测、衰减/淘汰和 `memory_created` 事件；store 只提供原子 CRUD。
 
 ## 用户故事
 
@@ -41,8 +41,60 @@
 - [ ] `_persist_memory` 仍保留两层去重：先 content hash 精确去重，再 bounded persist semantic candidates 内 top-1 cosine `>= 0.95` 去重；去重命中旧记忆时只 `strengthen` 并返回旧记忆，不建边、不矛盾检测、不发布 `memory_created`。
 - [ ] `_detect_contradiction` 仍只在新记忆成功入库后运行，并只对 bounded persist semantic candidates top 5 中 cosine `>= 0.6` 的候选调用 LLM。
 - [ ] ANN 替代检索与建边中的无界全表暴力余弦扫描；任何 fallback 都必须受候选上限约束。
-- [ ] 记忆图支持聚类算法，输出 `memory_id -> cluster_id`，本轮不落库。
+- [ ] 记忆图支持聚类算法，输出 `memory_id -> cluster_id`，聚类结果不落库。
 - [ ] `pyright` strict 零报错，`ruff check` 零报错，相关 pytest 全绿。
+
+## Store 层契约
+
+`nyx/memory/store.py` 是 `memory` / `memory_edge` 两表的 SQLite 存取层，不包含召回排序、图算法、生命周期或 Facade 业务逻辑。
+
+公开面：
+
+```python
+class MemoryStore:
+    async def add(self, memory: Memory) -> None: ...
+    async def get(self, memory_id: str) -> Memory | None: ...
+    async def find_by_content(self, content: str) -> Memory | None: ...
+    async def list_memories(
+        self,
+        *,
+        tag: str | None = None,
+        type: MemoryType | None = None,
+        limit: int | None = None,
+    ) -> list[Memory]: ...
+    async def update_many(self, memories: list[Memory]) -> None: ...
+    async def delete_many(self, ids: list[str]) -> None: ...
+    async def record_recall(self, memory_id: str, promote_threshold: int) -> bool: ...
+    async def strengthen(self, memory_id: str, now: float) -> None: ...
+    async def count_new(self, tag: str | None, since: float) -> int: ...
+    async def search_keywords(self, tokens: list[str], limit: int) -> dict[str, KeywordSearchHit]: ...
+    async def list_edges(self, kind: MemoryEdgeKind | None = None) -> list[MemoryEdge]: ...
+    async def upsert_edge(
+        self,
+        from_id: str,
+        to_id: str,
+        kind: MemoryEdgeKind,
+        weight: float,
+        created_at: float,
+    ) -> None: ...
+    async def delete_edges(self, keys: list[tuple[str, str, MemoryEdgeKind]]) -> None: ...
+    async def list_edge_degrees(self, memory_ids: list[str]) -> dict[str, list[MemoryEdge]]: ...
+
+def hash_content(content: str) -> str: ...
+```
+
+Store 规则：
+
+- 所有 DB 读写都在 `async with self._db.lock` 内；锁作用域是单个 store 方法的 SQL 块，不跨 store 方法嵌套。
+- 行到 `Memory` 往返：`aspect` 是 JSON 数组；`type` 存 enum `.value`；`embedding=None` 对应 SQL `NULL`；`sources` 是检索瞬态字段，不落库。
+- `content_hash` 是 store 派生列，不进 `Memory` dataclass；`add` 写入 `hash_content(content)`，`update_many` 修改 content 时同步重算。
+- `created_at` 是创建时间，`update_many` / `strengthen` / `record_recall` 都不改；`count_new(tag, since)` 只看 `first_created_at > since`。
+- `list_memories` 按 `tag` / `type` 过滤，按 `freshness DESC, created_at DESC` 排序，`limit` 有值时截断。
+- `record_recall` 在一个锁块里执行 `recall_count+1` 和短期达阈值升级长期；升级时返回 `True`，长期记忆不重复升级。
+- `strengthen` 表示重复写入/语义去重命中旧记忆：`recall_count+1`、`freshness=1.0`，但不升级、不发布事件。
+- `delete_many` 在同一锁块里级联删记忆及 incident typed edges。
+- `memory_edge` 主键是 `(from_id, to_id, kind)`；`upsert_edge` canonicalize 为 `from_id < to_id` 后写库，同 pair 不同 kind 可共存。
+- `list_edge_degrees` 按无向 incident typed degree 统计，边方向不表达语义方向。
 
 ## 类型与接口契约
 
@@ -222,6 +274,42 @@ async def search(
 - `association_limit <= 0` 时只返回 direct。
 - 返回顺序固定为 direct ranked results 在前，association ranked results 在后。
 
+### facade 签名
+
+`MemoryFacade` 是表达、活动、读书、反思和 API 读取记忆的唯一入口：
+
+```python
+async def create_scene_memory(reply_context: dict[str, str]) -> Memory: ...
+async def remember_activity(event: Event) -> None: ...
+async def remember_user_profile(
+    content: str,
+    summary: str,
+    aspects: list[str],
+    correlation_id: str,
+) -> None: ...
+async def remember_knowledge(items: list[dict[str, str]], correlation_id: str) -> None: ...
+async def remember_reading(content: str, summary: str, correlation_id: str) -> None: ...
+async def record_no_answer(question: str, correlation_id: str) -> None: ...
+async def search(query: str) -> list[Memory]: ...
+async def record_recall(memory_id: str) -> None: ...
+async def list_memories(
+    tag: str | None = None,
+    type: MemoryType | None = None,
+    limit: int | None = None,
+) -> list[Memory]: ...
+async def count_new(tag: str | None, since: float) -> int: ...
+async def export(fmt: str) -> str: ...
+```
+
+Facade 规则：
+
+- `create_scene_memory` 只在慢通道回合末调用，LLM 调用 1 次（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）生成 `{content, tag, summary}` 后复用 `_persist_memory`。
+- 活动、读书、知识、用户画像、未答记录入口都复用 `_persist_memory`，不绕过去重、建边、矛盾检测、衰减/淘汰尾段；确定性入口不调用 scene-memory LLM。
+- `search(query)` 纯委托 `MemoryRetrieval.search(query)`，对表达层不暴露 `direct_limit` / `association_limit` 参数。
+- `record_recall(memory_id)` 只表示“进入慢通道 prompt 后被想起”：委托 store 加一；短期达阈值时发布 `memory_promoted`，长期不重复发布。
+- `export("json")` 输出 JSON 数组；`export("md")` 输出 Markdown；非法格式抛 `ValueError`；导出不包含 `Memory.sources`。
+- Facade 自己发布 `memory_created` / `memory_promoted` / `reflection` 事件，返回值只返回数据对象或 `None`，不返回 `Event` 给调用方发布。
+
 ## 召回流程
 
 `MemoryRetrieval.search` 分四步：
@@ -340,8 +428,6 @@ fingerprint = tuple(
 
 ## 持久化去重与矛盾候选
 
-本节替换现有 `_persist_memory` 里复用全表 cosine `scored` 的实现方式。
-
 模块常量：
 
 ```python
@@ -364,7 +450,6 @@ _CONTRADICTION_SIM_THRESHOLD = 0.6
 - 语义去重、语义建边、矛盾检测共用同一份 `PersistSemanticHit` 候选，不再创建旧的无界 `scored` 全表列表。
 - `_PERSIST_SEMANTIC_CANDIDATE_K` 是持久化语义候选上限；它不受聊天召回的 `direct_limit` / `association_limit` 影响。
 - `embed is None`、embedding 失败、ANN index 为空或维度不一致时，语义去重与矛盾检测跳过；content hash 去重仍生效。
-- 事实表的“语义 embedding 余弦 top-1 >= 0.95”在实现本 spec 后应同步改为“bounded persist semantic candidates 内 top-1 cosine >= 0.95”。
 - `_detect_contradiction(memory, candidates, correlation_id)` 只接收 `PersistSemanticHit`，不再接收旧 `scored`。
 - 矛盾检测候选取 `candidates[:_CONTRADICTION_CANDIDATE_K]` 中 `cosine >= _CONTRADICTION_SIM_THRESHOLD` 的记忆。
 - 无候选或全低于阈值时不调用 LLM。
@@ -553,7 +638,7 @@ combined_edge_score = max(
 
 - 存储是有向边，度数计算是无向有效度：`from_id = node_id OR to_id = node_id`。
 - 同一 unordered pair 的不同 `kind` 分别计入度数；例如 A-B 有 `semantic` 和 `entity` 两条 typed edge，则计 2。
-- 需要对新节点和本轮 upsert/delete 触达的旧节点都执行剪枝，避免旧节点无限涨度。
+- 需要对新节点和本次 upsert/delete 触达的旧节点都执行剪枝，避免旧节点无限涨度。
 - 每个节点每种 `kind` 最多 `_EDGE_PER_KIND_LIMIT` 条 incident edges。
 - 每个节点总 incident typed edges 最多 `_EDGE_TOTAL_LIMIT` 条。
 - 剪枝必须通过 `MemoryStore.delete_edges(keys)` 删除完整 `(from_id, to_id, kind)`。
@@ -580,7 +665,7 @@ prune_priority = edge.weight * prune_kind_weight
 - `cluster_kind_weight`：`semantic=1.0`、`entity=0.9`、`keyword=0.7`、`temporal=0.15`、`same_topic=1.0`、`elaborates=1.0`、`contrasts=1.0`、`causes=1.0`、`updates_preference=1.0`、`user_profile_link=1.0`。
 - 首选 `networkx.community.louvain_communities(G, weight="weight", seed=0)`。
 - 如果当前 networkx 不支持 Louvain，则 fallback 到 `networkx.community.greedy_modularity_communities(G, weight="weight")`。
-- 不在本轮落库，不发布事件，不影响聊天召回排序。
+- 聚类结果不落库，不发布事件，不影响聊天召回排序。
 - 返回 `dict[str, int]`；`cluster_id` 稳定规则为：先按每个 community 的最小 `memory_id` 升序排序，再从 0 开始编号。
 - 孤立节点也必须出现在返回值中，单独成为一个 cluster。
 
@@ -601,21 +686,6 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 
 无新增 API。`GET /api/memories/search` 仍返回 `Memory[]`；`sources` 会更准确地体现 `vector` / `keyword` / `association`。
 
-## 文档同步替换点
-
-实现本 spec 时必须同步以下旧契约，不留“旧顺序”和“新融合排序”并存：
-
-- `docs/memory-system-facts.md` 的“写入与去重”段：把“语义 embedding 余弦 top-1 >= 0.95”替换为“bounded persist semantic candidates 内 top-1 cosine >= 0.95”；明确该候选同时供建边和矛盾检测门控使用，不再要求无界全表 `scored`。
-- `docs/memory-system-facts.md` 的“检索与前端”段：把 `MemoryRetrieval.search` 顺序从 `keyword -> vector -> association` 替换为“整句 embedding ANN 候选 + keyword LIKE 候选融合评分 -> direct top N -> 2 跳 association 追加”；保留 `sources` 瞬态、不落库、不进 prompt、REST 序列化给前端的事实。
-- `docs/specs/01-types.md`：新增 `MemoryEdgeKind`；更新 `MemoryEdge` 字段为 `from_id`、`to_id`、`kind`、`weight`、`created_at`；确认 `Memory.sources` 仍是瞬态检索来源。
-- `docs/specs/04-db.md`：替换 `memory_edge` schema、canonical unordered 主键、迁移规则；明确旧边 canonicalize 后迁移为 `semantic`。
-- `docs/specs/07-memory-store.md`：替换 keyword 搜索、edge CRUD 签名、返回结构和无向度数统计契约。
-- `docs/specs/08-memory-retrieval.md`：替换旧检索顺序、`limit` 语义、评分公式、keyword cap、ANN 缓存与失效规则、association 追加规则。
-- `docs/specs/09-memory-facade.md`：替换 `_persist_memory` 语义候选管线和建边流程；明确去重命中旧记忆不建边，新记忆入库后建五类边并控度。
-- `docs/specs/17-expression.md`：确认慢通道仍调用 `MemoryFacade.search(message)`，把返回的全部记忆放入 prompt，并立即逐条 `record_recall`；无需暴露 direct/association 参数给表达层。
-- `docs/tech-reference.md`：把 `nyx/memory/ann.py`、新的 store/retrieval/graph 方法、edge schema 和相关测试文件加入实现索引。
-- `docs/test-inventory.md`：实现测试后同步为当前测试快照，只记录现状，不写变更历史。
-
 ## 测试要点
 
 - [ ] `extract_keywords`：中文长句切出稳定 token，英文 lower，停用词与单字被过滤，顺序去重。
@@ -633,11 +703,7 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 
 ## 完成定义
 
-- [ ] 用户审查并确认本 spec。
-- [ ] 先写失败测试，再改生产代码。
-- [ ] `docs/memory-system-facts.md` 更新为新召回事实。
-- [ ] 01/04/07/08/09/17 spec 与 `docs/tech-reference.md` 同步新契约。
-- [ ] `docs/test-inventory.md` 同步测试快照。
 - [ ] `ruff check` 零报错。
 - [ ] `pyright` 零报错。
-- [ ] `pytest tests/test_memory tests/test_db tests/test_expression/test_expression_facade.py` 全绿。
+- [ ] `pytest` 全绿。
+- [ ] `docs/memory-system-facts.md`、相关 spec、`docs/tech-reference.md`、`docs/test-inventory.md` 与本文件保持同步；如果实现需要改变既有文档语义，先询问用户确认。

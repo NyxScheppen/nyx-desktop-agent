@@ -5,7 +5,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（TypedDict 约定）、04-db（`_MIGRATIONS` v11 + v12 `first_created_at`）、09-memory-facade（`count_new(tag | None, since)` 计数）、12-inner-life（`Reflection.run`/`get_state`）、22-reading-notes（`remember_reading` 落 `tag='reading'`）
+- **前置依赖**：01-types（TypedDict 约定）、04-db（`_MIGRATIONS` v11 + v12 `first_created_at`）、07-memory-system（`count_new(tag | None, since)` 计数）、12-inner-life（`Reflection.run`/`get_state`）、22-reading-notes（`remember_reading` 落 `tag='reading'`）
 - **实现文件**：`nyx/types.py`（新增 `Aesthetic` + `CurrentState` 加字段）、`nyx/db.py`（`_MIGRATIONS` 追加 v11 + v12 `first_created_at`）、`nyx/inner_life/store.py`（`get_aesthetic`/`upsert_aesthetic`）、`nyx/inner_life/reflection.py`（`drift_aesthetic` + `_AESTHETIC_KEYS` + `_AESTHETIC_MIN_READING` + `_REFLECTION_SYSTEM` + `_parse_reflection` + `_build_reflection_prompt` + `run`）、`nyx/inner_life/facade.py`（`get_state` 读 aesthetic）、`nyx/memory/store.py`（`count_new` + INSERT 落 `first_created_at`）、`nyx/memory/facade.py`（`count_new` 委托）、`nyx/expression/prompt.py`（`_state_block` 加审美行）、`nyx/main.py`（`_seed_inner_life` seed）
 
 ## 用户故事

@@ -5,7 +5,7 @@
 
 ## 元信息
 
-- **前置依赖**：19-reading-content（`books`/`paragraphs`）、20-reading-progress（`list_paragraphs` + `get_progress` 的 `read_count` + `increment_read_count`）、21-reading-impulse（注入 `llm`/`memory`/`inner_life`/`evaluator`/`bus`/`canon` + `_mutter_reading`/`_question_reading` 产出点）、09-memory-facade（新增 `remember_reading`）、12-inner-life（`InnerLifeFacade.reflect`）、04-db（`_MIGRATIONS` v10）
+- **前置依赖**：19-reading-content（`books`/`paragraphs`）、20-reading-progress（`list_paragraphs` + `get_progress` 的 `read_count` + `increment_read_count`）、21-reading-impulse（注入 `llm`/`memory`/`inner_life`/`evaluator`/`bus`/`canon` + `_mutter_reading`/`_question_reading` 产出点）、07-memory-system（`remember_reading`）、12-inner-life（`InnerLifeFacade.reflect`）、04-db（`_MIGRATIONS` v10）
 - **反向修订 21**：22 在 21 的 `_mutter_reading`/`_question_reading` 里、`llm.complete` 产出 `content` 后（与 `bus.publish` 同一方法内、best-effort）追加调用 `record_nyx_output(book_id, paragraph_index, content, source)`（`source="mutter"`/`"question"`）；`associate`（记忆检索、无 LLM 产出）不调。21 是「被扩展」的既有 spec（同时是前置依赖——22 复用其注入的 `llm`/`memory`/`inner_life`/`evaluator`/`bus`/`canon`）。
 - **反向修订 18-api**：本 spec 在 `build_app` 追加 6 个笔记端点闭包（`GET /api/notes/{book_id}` / `POST /api/notes/user` / `PUT /api/notes/user/{id}` / `DELETE /api/notes/user/{id}` / `POST /api/notes/{user_note_id}/show-to-nyx` / `POST /api/notes/check-chapter-boundary`）。18-api 是「被扩展」的既有 spec，不是前置依赖。
 - **实现文件**：`nyx/types.py`（新增 `UserNote`/`Annotation`）、`nyx/db.py`（`_MIGRATIONS` 追加 v10）、`nyx/reading/store.py`（笔记/批注 CRUD）、`nyx/reading/facade.py`（笔记方法 + buffer + 整合 + 模块级 `NyxBufferEntry` dataclass）、`nyx/memory/facade.py`（新增 `remember_reading`）、`nyx/enums.py`（新增 `BoundaryResult`）、`nyx/main.py`（端点）

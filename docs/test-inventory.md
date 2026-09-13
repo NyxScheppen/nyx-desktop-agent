@@ -165,7 +165,7 @@
 | `test_is_safe_url_rejects_unresolvable_host` | SSRF 护栏 | 解析失败（`socket.gaierror`）→ `_is_safe_url` 为 `False` |
 | `test_fetch_url_sync_rejects_redirect_to_private` | SSRF 护栏 | 重定向到内网 IP 逐跳校验 → 返回 `""`（不跟随到内网） |
 
-## 07-memory-store（记忆存取）
+## 07-memory-system / store（记忆存取）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -192,7 +192,7 @@
 | `test_strengthen` | 功能正确 | `add`（`recall_count=0, freshness=0.3, created_at=1.0`）→ `strengthen(m1, 100.0)` → `recall_count==1`、`freshness==1.0`、`created_at==1.0`（重复写入强化计数但不刷新创建时间） |
 | `test_count_new_ignores_strengthened_created_at` | 回归保护 | 读书记忆 `created_at=100` → `strengthen(m1, 200)`（created_at/first_created_at 都不动）→ `count_new("reading", 150)==0`（纯重读不算新增）；真新增（created_at=250）→ `==1`；`tag=None` 全量计数 → `==1`；since 更晚/非目标 tag → `==0`（first_created_at 锚点不被 strengthen 污染） |
 
-## 08-memory-retrieval（融合召回 + 联想图）
+## 07-memory-system / retrieval + graph（融合召回 + 联想图）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -237,7 +237,7 @@
 | `test_evaluate_store_none_no_crash` | 边界鲁棒 | `store=None` → `evaluate()` 不落库、不抛 |
 | `test_evaluate_insert_error_swallowed` | 边界鲁棒 | `insert` 抛 `RuntimeError` → 吞掉不重抛（best-effort），`records` 仍空 |
 
-## 09-memory-facade（记忆门面）
+## 07-memory-system / facade（记忆门面）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|

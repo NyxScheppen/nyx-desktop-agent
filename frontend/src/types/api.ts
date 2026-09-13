@@ -219,7 +219,7 @@ export type DesireState = {
   long_term: LongTermDesire[];
 };
 
-// ---- 记忆（07-memory-store / nyx/types.py Memory）----
+// ---- 记忆（07-memory-system / nyx/types.py Memory）----
 export type MemoryType = "short_term" | "long_term";
 export type SearchMode = "keyword" | "vector" | "association";
 

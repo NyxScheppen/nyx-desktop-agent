@@ -5,7 +5,7 @@
 
 ## 元信息
 
-- **前置依赖**：02-config（`load_config`/`Config`）、03-llm（`LlmClient.from_config`）、04-db（`connect`/`Database`）、05-event（`EventBus`/`ROUTING`/`TICK_ROUTING`）、06-tools（`ToolRegistry`）、08-memory-retrieval（`MemoryRetrieval`/`build_embed`）、09-memory-facade、10-desire-value（`default_value`）、11-desire、12-inner-life、13-activity-scheduler、14-activity、eval（`Evaluator`，OOC 轻量告警）、17-expression（`should_initiate_chat`/`ExpressionFacade`）
+- **前置依赖**：02-config（`load_config`/`Config`）、03-llm（`LlmClient.from_config`）、04-db（`connect`/`Database`）、05-event（`EventBus`/`ROUTING`/`TICK_ROUTING`）、06-tools（`ToolRegistry`）、07-memory-system（`MemoryRetrieval`/`build_embed`/`MemoryFacade`）、10-desire-value（`default_value`）、11-desire、12-inner-life、13-activity-scheduler、14-activity、eval（`Evaluator`，OOC 轻量告警）、17-expression（`should_initiate_chat`/`ExpressionFacade`）
 - **canon**：原始 prompt 文件（两份：`canon.md` 核心 + `ask.md` 主动提问）由组合根读入（路径见「技术方案」）
 
 ## 用户故事
@@ -69,7 +69,7 @@
     - [ ] `GET /api/state` → `CurrentState` JSON（枚举字段为 `.value` 字符串）
     - [ ] `POST /api/chat` → 返回 `{event_id}`；`bus.list_events()` 含一条 `USER_MESSAGE`（`source=external`、`correlation_id == id`）
     - [ ] `GET /api/memories?tag=&type=` → `Memory[]`（`type` query 转 `MemoryType` 枚举）
-    - [ ] `GET /api/memories/search?q=` → `Memory[]`（委托 `memory.search(q)`，三层语义检索）
+    - [ ] `GET /api/memories/search?q=` → `Memory[]`（委托 `memory.search(q)`，融合召回）
     - [ ] `POST /api/observe` → 返回 `{event_id}`；`bus.list_events()` 含 `OBSERVATION_STATE`（content `{presence}`）
     - [ ] `POST /api/export` `format=json` / `md` 透传 `memory.export` 结果，返回原始字符串（非 JSON 二次编码：json 以 `[` 开头、md 无外层引号包裹），`content-type` 分别 `application/json` / `text/markdown`；`format=bogus` → `ValueError`（Facade 抛）
     - [ ] 请求体校验：`POST /api/chat` 缺 `message` → 422；`POST /api/observe` `presence=Online`（大小写拼写错误）→ 422（`Literal` 校验，不 publish 事件、不改 `last_presence`）

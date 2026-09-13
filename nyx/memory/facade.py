@@ -247,8 +247,7 @@ class MemoryFacade:
         await self._evaluator.evaluate(output)
         content, tag, summary = _parse_scene(output.content)
         memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
-        await self._persist_memory(memory, reply_context["correlation_id"])
-        return memory
+        return await self._persist_memory(memory, reply_context["correlation_id"])
 
     async def remember_activity(self, event: Event) -> None:
         """活动记忆：把 activity_end.result 落成一条短期记忆（无 LLM）。
@@ -362,20 +361,20 @@ class MemoryFacade:
 
     async def _persist_memory(
         self, memory: Memory, correlation_id: str
-    ) -> Memory | None:
+    ) -> Memory:
         """已构建 Memory 的共用入库尾段，带两层去重：
 
         1) 精确去重：content 完全相同（哈希命中）→ 合并强化旧记忆，不新建；
         2) 语义去重：embedding 余弦 top-1 ≥ 阈值 → 合并强化最相似旧记忆，不新建。
 
-        命中返回 None（无新记忆），否则补 embed → add → 建边 → 门控矛盾检测
+        命中返回已存在的持久化记忆，否则补 embed → add → 建边 → 门控矛盾检测
         → 新鲜度衰减/淘汰 → 发 MEMORY_CREATED，返回新记忆。场景/活动/画像/
         知识记忆复用。"""
         now = time.time()
         existing = await self._store.find_by_content(memory.content)
         if existing is not None:
             await self._store.strengthen(existing.id, now)
-            return None
+            return await self._persisted_or(existing)
         if self._embed is not None and memory.embedding is None:
             memory.embedding = await self._embed(memory.content)
         scored: list[tuple[float, Memory]] | None = None
@@ -385,7 +384,7 @@ class MemoryFacade:
             scored = await self._similar(memory.embedding)
             if scored and scored[0][0] >= _DEDUP_SIM_THRESHOLD:
                 await self._store.strengthen(scored[0][1].id, now)
-                return None
+                return await self._persisted_or(scored[0][1])
         await self._store.add(memory)
         await self._build_edges(memory, scored)
         await self._detect_contradiction(memory, scored, correlation_id)
@@ -421,9 +420,13 @@ class MemoryFacade:
     ) -> list[Memory]:
         return await self._store.list_memories(tag, type, limit)
 
-    async def count_new(self, tag: str, since: float) -> int:
+    async def count_new(self, tag: str | None, since: float) -> int:
         """计数「首次创建晚于 since 的 tag 记忆」（轻量，不物化整行/embedding）。"""
         return await self._store.count_new(tag, since)
+
+    async def _persisted_or(self, fallback: Memory) -> Memory:
+        persisted = await self._store.get(fallback.id)
+        return persisted if persisted is not None else fallback
 
     async def export(self, fmt: str) -> str:
         """记忆导出：json = JSON 数组字符串，

@@ -18,9 +18,9 @@
 - [ ] `facade.py` 含 `MemoryFacade` + `decay_freshness` / `_parse_scene` / `_build_scene_prompt` / `_has_negation` / `_content_preview` / `_build_contradiction_prompt` / `_parse_contradiction` / `_join_list` / `_activity_memory_fields` / `_memory_to_dict` / `_memory_to_markdown`（实现见 `nyx/memory/facade.py`）
 - [ ] 九个公开方法签名：`create_scene_memory(reply_context: dict[str, str]) -> Memory` / `remember_activity(event: Event) -> None` / `remember_user_profile(content: str, summary: str, aspects: list[str], correlation_id: str) -> None` / `remember_knowledge(items: list[dict[str, str]], correlation_id: str) -> None` / `record_no_answer(question: str, correlation_id: str) -> None` / `search(query) -> list[Memory]` / `record_recall(memory_id) -> None` / `list_memories(tag, type, limit) -> list[Memory]` / `export(fmt) -> str`
 - [ ] `create_scene_memory`：LLM 调用 1（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）产出三样 → 入短期（`freshness=1.0`）→ 算 embedding → 建边 → 矛盾检测（门控，可能调用 2）→ 命中矛盾发布 `reflection` → 衰减+淘汰 → 发布 `memory_created` → 返回 `Memory`
-- [ ] `remember_activity(event)`：读 `event.content["type"]`/`["result"]` 确定性映射（reading→note/book、creation→content/title、free_exploration→notes/findings，tag=活动类型值）；读书/创作/探索三类有产出才写，rest/idle_reflection 或空 result 跳过；`observe_user` 走 `_sediment_observation` 画像沉淀分支（presence/window_title 相对上次变化才写 tag='user' 长期记忆）；复用 `_persist_memory` 入库尾段，**无 LLM 调用**（除门控触发的矛盾判断）
+- [ ] `remember_activity(event)`：读 `event.content["type"]`/`["result"]` 确定性映射（reading→note/book、creation→content/title、free_exploration→summary/core_discovery，tag=活动类型值）；读书/创作/探索三类有产出才写，rest/idle_reflection 或空 result 跳过；`observe_user` 走 `_sediment_observation` 画像沉淀分支（presence/window_title 相对上次变化才写 tag='user' 长期记忆）；复用 `_persist_memory` 入库尾段，**无 LLM 调用**（除门控触发的矛盾判断）
 - [ ] `remember_knowledge(items, correlation_id)`：读书提取的客观知识点入长期记忆（`tag="knowledge"`、`type=LONG_TERM`、无 LLM、确定性拼好）；items 每项 `{topic, content}`，content 空则跳过；复用 `_persist_memory` 入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰），`type=LONG_TERM` 豁免短期淘汰、知识点不随时间冲掉、供创作检索参考（`list_memories(tag="knowledge")`）
-- [ ] 两层去重（`_persist_memory`）：精确（content 哈希命中）→ 语义（embedding 余弦 top-1 ≥ `_DEDUP_SIM_THRESHOLD`）；命中合并强化旧记忆（`strengthen`：`recall_count+1`、`freshness=1.0`），不新建、不发 `memory_created`；未命中才 `add` → 建边 → 门控矛盾检测 → 淘汰 → 发 `memory_created`。embedding 禁用（`embed is None`）时语义去重自动跳过，仅精确去重生效
+- [ ] 两层去重（`_persist_memory`）：精确（content 哈希命中）→ 语义（embedding 余弦 top-1 ≥ `_DEDUP_SIM_THRESHOLD`）；命中合并强化旧记忆（`strengthen`：`recall_count+1`、`freshness=1.0`、`created_at` 不变）并返回持久化旧记忆，不新建、不发 `memory_created`；未命中才 `add` → 建边 → 门控矛盾检测 → 淘汰 → 发 `memory_created`。embedding 禁用（`embed is None`）时语义去重自动跳过，仅精确去重生效
 - [ ] 矛盾检测门控：`embedding=None` 或召回 top-K 候选相似度全低于 `_CONTRADICTION_SIM_THRESHOLD` → **0 次**矛盾 LLM 调用；有候选过阈值 → **1 次**矛盾 LLM 调用（`output_type="contradiction"`），单任务判 `conflicts_with`
 - [ ] 两处 LLM 产出后紧跟 `await evaluator.evaluate(output)`：`create_scene_memory`（`output_type="scene_memory"`）与 `_detect_contradiction`（`output_type="contradiction"`，仅门控触发时）
 - [ ] 三杠杆落地：候选判据用 `summary + content 前 N 字`（非只 summary）；召回 `_RECALL_TOP_K=5`；新记忆含否定/转折词时矛盾 prompt 附「重点核对」提示（`_has_negation` 纯函数）
@@ -46,7 +46,7 @@
   3. `Memory(id=uuid4, created_at=now, freshness=1.0, type=SHORT_TERM, ...)`；`embed` 非空则算 `embedding` 存列（持久化，同 07/08 决策）
   4. `store.add` → 一次 `_similar` 全表余弦排序（建边 top-3 与矛盾召回 top-5 共用，避免重复扫描）→ `_build_edges` → `_detect_contradiction`（门控，可能 +1 调用；best-effort，失败 log 后跳过 reflection 不反噬创建）→ 命中矛盾 publish `reflection` → `_decay_and_evict` → publish `memory_created`
 - **`remember_activity` 流程**（design §8.2/§8.6 活动记忆，落地的确定性写入）：
-  1. `_activity_memory_fields(event.content["type"], event.content["result"])` 确定性映射，非读书/创作/探索类型或空 result → `None` 直接 return（不调 LLM、绝不编造）
+  1. `_activity_memory_fields(event.content["type"], event.content["result"])` 确定性映射，非读书/创作/探索类型或空 result → `None` 直接 return（不调 LLM、绝不编造）。`free_exploration` 使用当前活动结果形状：`summary` 作记忆正文，`core_discovery` 作记忆摘要
   2. `Memory(freshness=1.0, type=SHORT_TERM, tag=活动类型值)`；`embed` 非空则算 `embedding`
   3. 复用 `store.add` → `_similar` → `_build_edges` → `_detect_contradiction`（门控，可能 +1 调用）→ `_decay_and_evict` → publish `memory_created`——与 `create_scene_memory` 同一条入库管线，只缺开头的 LLM 场景构建
 - **矛盾检测 = 门控 + 独立单任务调用（决策：C 方案，准确率优先，已与用户确认）**：召回候选（embedding 余弦 top-K）做**门控**，判断交给**独立 LLM 调用**——单任务判矛盾，准确率最高，代价是**有条件地 +1 调用**。门控**无损**：矛盾 ⟹ 语义相近（"喜欢猫" vs "讨厌猫"同话题才矛盾），不同话题的旧记忆不可能与新记忆矛盾，所以「相似度过阈值才判断」不损失准确率，只省掉无谓调用。`embedding=None`（未启用向量层）→ 直接跳过
@@ -79,7 +79,7 @@
     - [ ] `_memory_to_dict`：`type` 是 `.value` 字符串、`embedding` 透传
     - [ ] `_memory_to_markdown`：含 `summary` 与 `content`
     - [ ] `_join_list`：`str` 原样、`list` 换行拼接、空 `list`/`None`/非 str-list → `""`
-    - [ ] `_activity_memory_fields`：reading→`(note, book)`、creation→`(content, title)`、free_exploration→`(notes 拼接, findings 拼接)`；非目标类型/空 result/空内容/类型非 str → `None`；summary 超 80 字截断
+    - [ ] `_activity_memory_fields`：reading→`(note, book)`、creation→`(content, title)`、free_exploration→`(summary, core_discovery)`；非目标类型/空 result/空内容/类型非 str → `None`；summary 超 80 字截断
   - [ ] **create_scene_memory**：
     - [ ] fake LLM 返回 `{"content","tag","summary"}` → 返回 `Memory` 各字段正确（`content`/`tag`/`summary`、`freshness==1.0`、`type is SHORT_TERM`、`embedding` 已算且 = fake embed(content)）；`evaluator.evaluate` 被调 1 次（收到 `output_type="scene_memory"` 的 `LLMOutput`）
     - [ ] 发布 `memory_created`：`content["memory_id"] == memory.id`、`source is INTERNAL`、`correlation_id == reply_context["correlation_id"]`
@@ -93,8 +93,8 @@
     - [ ] **淘汰**：`MemoryConfig(short_term_capacity=1, ...)`，create 第二条 → 旧的那条（freshness 更低）被删，`list_memories()` 只剩新的一条
     - [ ] **衰减回写**：monkeypatch `time.time` 使两条创建间隔 1 天 → 旧记忆的 `freshness` 被衰减（`< 1.0`）
   - [ ] **去重（`_persist_memory`）**：
-    - [ ] 精确去重：同 content 二次 `create_scene_memory` → 库内 1 条、`recall_count==1`、仅 1 个 `memory_created`
-    - [ ] 语义去重：新记忆与旧记忆 embedding 余弦 = 1.0（≥ 0.95）→ 合并到旧记忆（`recall_count+1`）、不新增、无 `memory_created`
+    - [ ] 精确去重：同 content 二次 `create_scene_memory` → 两次返回同一持久化记忆 id、库内 1 条、`recall_count==1`、仅 1 个 `memory_created`
+    - [ ] 语义去重：新记忆与旧记忆 embedding 余弦 = 1.0（≥ 0.95）→ 返回并合并到旧记忆（`recall_count+1`）、不新增、无 `memory_created`
     - [ ] 阈值以下：余弦 < 0.95 → 正常新建入库（`list_memories` 2 条、发 1 个 `memory_created`）
     - [ ] `embed=None`：语义去重跳过（即使库里旧记忆带 embedding，新记忆无 embedding 也不做语义比较），仅精确去重生效
   - [ ] **remember_activity**：

@@ -143,7 +143,7 @@ class _FakeMemoryFacade:
         del tag
         return []
 
-    async def count_new(self, tag: str, since: float) -> int:
+    async def count_new(self, tag: str | None, since: float) -> int:
         del tag, since
         return 0
 

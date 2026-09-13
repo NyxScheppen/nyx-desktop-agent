@@ -105,7 +105,7 @@ async def create_scene_memory(reply_context: dict[str, str]) -> Memory    # 场�
 async def search(query: str) -> list[Memory]                    # 内部跑三层+去重合并
 async def record_recall(memory_id: str) -> None                 # 记录"想起"
 async def list_memories(tag: str | None = None, type: MemoryType | None = None, limit: int | None = None) -> list[Memory]  # 仪表盘过滤 + 可选截断
-async def count_new(tag: str, since: float) -> int             # 计数「首次创建晚于 since」的 tag 记忆（first_created_at 锚点，轻量不物化 embedding）
+async def count_new(tag: str | None, since: float) -> int      # 计数「首次创建晚于 since」的记忆；tag=None 表示全量（first_created_at 锚点，轻量不物化 embedding）
 async def export(fmt: str) -> str                              # 记忆导出（json|md）
 async def remember_knowledge(items: list[dict[str, str]], correlation_id: str) -> None  # 读书知识点入长期记忆（tag='knowledge'，无 LLM）
 async def remember_reading(content: str, summary: str, correlation_id: str) -> None  # 章节/整本读书记忆入长期（tag='reading'，无 LLM）

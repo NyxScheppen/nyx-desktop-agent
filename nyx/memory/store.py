@@ -92,11 +92,12 @@ class MemoryStore:
                 await self._db.conn.execute(
                     "UPDATE memory SET content = ?, tag = ?, summary = ?, "
                     "freshness = ?, type = ?, recall_count = ?, aspect = ?, "
-                    "embedding = ? WHERE id = ?",
+                    "embedding = ?, content_hash = ? WHERE id = ?",
                     (
                         m.content, m.tag, m.summary, m.freshness,
                         m.type.value, m.recall_count, json.dumps(m.aspect),
                         _embedding_json(m.embedding),
+                        hash_content(m.content),
                         m.id,
                     ),
                 )
@@ -140,31 +141,39 @@ class MemoryStore:
             await self._db.conn.commit()
         return promoted
 
-    async def count_new(self, tag: str, since: float) -> int:
+    async def count_new(self, tag: str | None, since: float) -> int:
         """计数「首次创建晚于 since 的 tag 记忆」，不物化整行/embedding。
 
-        用 first_created_at（INSERT 时定格、strengthen/update_many 不刷新）
-        而非 created_at（strengthen 刷新），避免纯重读被误计为「新增」。
+        用 first_created_at（INSERT 时定格、strengthen/update_many 不刷新）。
+        tag=None 表示全量计数，供定时反思判断是否有足够新记忆。
         """
         async with self._db.lock:
-            cursor = await self._db.conn.execute(
-                "SELECT COUNT(*) FROM memory WHERE tag = ? AND first_created_at > ?",
-                (tag, since),
-            )
+            if tag is None:
+                cursor = await self._db.conn.execute(
+                    "SELECT COUNT(*) FROM memory WHERE first_created_at > ?",
+                    (since,),
+                )
+            else:
+                cursor = await self._db.conn.execute(
+                    "SELECT COUNT(*) FROM memory "
+                    "WHERE tag = ? AND first_created_at > ?",
+                    (tag, since),
+                )
             row = await cursor.fetchone()
         return int(row[0]) if row is not None else 0
 
     async def strengthen(self, memory_id: str, now: float) -> None:
-        """重复写入合并强化：freshness 重置、created_at 锚点刷新。
+        """重复写入合并强化：freshness 重置、recall_count+1。
 
-        不升型、不涨 recall_count——recall_count 只留给真实 recall（record_recall）
-        累计，重复写入不算「想起」；created_at 同步刷新，否则 decay_freshness 以旧
-        created_at 键控会把刚重置的 freshness 立刻再衰减回去。
+        created_at 是创建时间，不随强化刷新；升级仍只由 record_recall 的
+        promote_threshold 原子路径负责。
         """
+        del now
         async with self._db.lock:
             await self._db.conn.execute(
-                "UPDATE memory SET freshness = 1.0, created_at = ? WHERE id = ?",
-                (now, memory_id),
+                "UPDATE memory SET freshness = 1.0, recall_count = recall_count + 1 "
+                "WHERE id = ?",
+                (memory_id,),
             )
             await self._db.conn.commit()
 

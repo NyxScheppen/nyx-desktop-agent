@@ -546,7 +546,7 @@ async def test_decay_writeback(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # ---- 去重 ----
 # _persist_memory 两层去重：精确（content 哈希）→ 语义（embedding 余弦 ≥ 0.95）。
-# 命中合并强化（freshness 重置 + created_at 刷新，不涨 recall_count），
+# 命中合并强化（freshness 重置 + recall_count+1，created_at 不变），
 # 不新建行、不发 MEMORY_CREATED。
 
 
@@ -558,11 +558,12 @@ async def test_dedup_exact_same_content() -> None:
     events = _subscribe(bus)
     try:
         async with _running(bus):
-            await facade.create_scene_memory(_ctx())
-            await facade.create_scene_memory(_ctx())     # 同 content 二次写入
+            first = await facade.create_scene_memory(_ctx())
+            second = await facade.create_scene_memory(_ctx())     # 同 content 二次写入
         memories = await facade.list_memories()
         assert len(memories) == 1
-        assert memories[0].recall_count == 0             # 合并强化不涨 recall_count
+        assert second.id == first.id                     # 返回已持久化的旧记忆
+        assert memories[0].recall_count == 1             # 合并强化按设计涨 recall_count
         assert memories[0].content == "用户喜欢猫"
         [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
         assert created.content["memory_id"] == memories[0].id
@@ -583,7 +584,7 @@ async def test_dedup_semantic_merge() -> None:
         memories = await facade.list_memories()
         assert len(memories) == 1
         assert memories[0].id == "old-1"
-        assert memories[0].recall_count == 0
+        assert memories[0].recall_count == 1
         assert [e for e in events if e.type is EventType.MEMORY_CREATED] == []
     finally:
         await database.conn.close()

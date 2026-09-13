@@ -21,7 +21,7 @@
 - [ ] `search_keyword` 用 `LIKE` 匹配 `content` 或 `summary`
 - [ ] `delete_many` 级联删 `memory_edge`（删边 + 删记忆在**同一锁块**内原子完成）
 - [ ] `upsert_edge` 用 `ON CONFLICT` 更新 `weight`
-- [ ] `update_many` 不改 `id` / `created_at`（`created_at` 是创建时刻，不可变）
+- [ ] `update_many` 不改 `id` / `created_at`（`created_at` 是创建时刻，不可变），并随 `content` 同步重算 `content_hash`
 - [ ] `pyright` strict 零报错
 
 ## 技术方案
@@ -35,7 +35,8 @@
 - **关键词用 `LIKE`**：04-db 只有 `idx_memory_tag` / `idx_memory_type` 两个索引，**没有 FTS 表**，所以「SQLite FTS/LIKE」（design §6.3）落为 `LIKE '%query%'`。`%` / `_` / `\` 会被当通配符，已转义（`_escape_like` + `ESCAPE '\'`，让 query 按字面匹配）；ASCII 大小写不敏感、中文按字节
 - **枚举列存 `.value`、`aspect` 存 JSON 数组**：与 04-db「枚举列存 `.value` 字符串、复杂字段存 JSON 字符串」一致；`aspect` 空集合存 `"[]"`（非 Optional → 列 `NOT NULL`，序列化不必判 None）
 - **`embedding` 可空列（None ↔ SQL NULL）**：`list[float] | None` ⟺ `embedding TEXT` 可空；`_embedding_json` 把 `None` 序列化为 SQL `NULL`（不是 `"null"` 字符串）、`list` 序列化为 JSON 数组字符串，读回时 `None` 保持 `None`。这是首个可空 JSON 列，后续 store（`goal` / `ended_at` / `content_hash` 等）照此 `None ↔ NULL` 模式
-- **`content_hash` 是 store 派生列（不进 `Memory`）**：`memory` 表加 `content_hash TEXT`（04-db 迁移 v6），由 `add` 写入 `hash_content(content)`、`find_by_content` 查重用；`Memory` dataclass 不承载它（不改 01-types、不改构造器），`_row_to_memory` 读回也不填充——`_MEMORY_COLS`（SELECT）不含它，`_MEMORY_INSERT_COLS`（INSERT）才追加。旧行 `content_hash` 为 NULL（不去重），新写入行有值
+- **`content_hash` 是 store 派生列（不进 `Memory`）**：`memory` 表加 `content_hash TEXT`（04-db 迁移 v6），由 `add` 写入 `hash_content(content)`、`update_many` 随 `content` 同步重算、`find_by_content` 查重用；`Memory` dataclass 不承载它（不改 01-types、不改构造器），`_row_to_memory` 读回也不填充——`_MEMORY_COLS`（SELECT）不含它，`_MEMORY_INSERT_COLS`（INSERT）才追加。旧行 `content_hash` 为 NULL（不去重），新写入行有值
+- **`count_new(tag: str | None, since: float)` 使用 `first_created_at`**：`tag=None` 统计所有首次创建晚于 `since` 的记忆；传具体 tag 时只统计该 tag。`first_created_at` 在 INSERT 定格，`strengthen` / `update_many` / `record_recall` 均不更新。
 - **边界划分（明确不做）**：新鲜度衰减、容量淘汰是 09-facade 的生命周期逻辑；短期→长期升级的「何时升」也由 facade 决定（阈值经 `record_recall(memory_id, promote_threshold)` 传入）。但「加一 + 条件升型」这个原子原语必须落在 store 单锁内——原子性要求单锁、锁在 store，拆到 facade 会产生跨方法竞态（09 轮审查发现重复升级/丢计数）。`graph.py`（networkx 联想图）归 08，从 `list_edges()` 建图。FK 完整性靠 04-db 的 `PRAGMA foreign_keys=ON`（`upsert_edge` 引用不存在的 id 抛 `aiosqlite.IntegrityError`）
 
 ## 测试要点
@@ -46,7 +47,7 @@
   - [ ] **add 重复 id** → `aiosqlite.IntegrityError`（主键冲突）
   - [ ] **get 未命中** → `None`
   - [ ] **list_memories 过滤/排序/limit**：造 3 条不同 `tag` / `type` / `freshness` → `tag=` 过滤、`type=` 过滤、`tag+type` 组合、默认全量；排序按 `freshness DESC`（freshness 高的在前）；`limit=2` 截断、`limit` 与 `tag` 组合截断
-  - [ ] **update_many（单条）**：改 `tag` / `summary` / `freshness` / `type` / `recall_count` / `aspect` / `embedding` → `get` 验证；`id` / `created_at` 不变
+  - [ ] **update_many（单条）**：改 `tag` / `summary` / `freshness` / `type` / `recall_count` / `aspect` / `embedding` → `get` 验证；`id` / `created_at` 不变；改 `content` 后 `find_by_content` 只命中新 content
   - [ ] **update_many**：改多条（含 `embedding=None` 与 `embedding=[...]`）→ `get` 逐条验证；空列表 → no-op
   - [ ] **delete_many（单条）级联删边**：`add` 两条 memory + 两条关联它的 `upsert_edge` → `delete_many(["a"])` 后 `get=None`、`list_edges` 无残留（其它记忆的边不受影响）
   - [ ] **delete_many**：删多条（含关联边）→ `get` 全部 `None`、`list_edges` 无残留；空列表 → no-op
@@ -57,7 +58,7 @@
   - [ ] **upsert_edge 引用不存在的 id** → `aiosqlite.IntegrityError`（`PRAGMA foreign_keys=ON` 生效）
   - [ ] **hash_content 确定性**：同 content 同 hash、不同 content 不同 hash、SHA-256 hex 长度 64（`hash_content("x")` 长度 `== 64`）
   - [ ] **find_by_content 命中/未命中**：`add` 后按原 content 命中返回 `Memory`（`id` 一致）、不同 content 返回 `None`
-  - [ ] **strengthen**：`add`（`recall_count=0, freshness=0.3`）→ `strengthen` → `get` 验证 `recall_count == 1` 且 `freshness == 1.0`
+  - [ ] **strengthen**：`add`（`recall_count=0, freshness=0.3, created_at=1.0`）→ `strengthen(m1, 100.0)` → `get` 验证 `recall_count == 1`、`freshness == 1.0`、`created_at == 1.0`
 - [ ] 集成测试：无（store 是基础设施，无 Facade 管道；与 08/09 的编排归各自 spec）
 - [ ] E2E 测试：无
 

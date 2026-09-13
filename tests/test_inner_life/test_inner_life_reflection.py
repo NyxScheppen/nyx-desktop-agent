@@ -135,8 +135,12 @@ class _FakeMemoryFacade:
             return self._memories
         return [m for m in self._memories if m.tag == tag]
 
-    async def count_new(self, tag: str, since: float) -> int:
-        return sum(1 for m in self._memories if m.tag == tag and m.created_at > since)
+    async def count_new(self, tag: str | None, since: float) -> int:
+        return sum(
+            1
+            for m in self._memories
+            if (tag is None or m.tag == tag) and m.created_at > since
+        )
 
 
 class _FakeDesireFacade:

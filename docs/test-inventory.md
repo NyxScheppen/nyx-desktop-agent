@@ -182,8 +182,9 @@
 | `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |
 | `test_hash_content_deterministic` | 功能正确 | `hash_content` 同 content 同 hash、不同 content 不同 hash、SHA-256 hex 长度 64（纯函数） |
 | `test_find_by_content_hit_and_miss` | 功能正确 | `add` 后按原 content `find_by_content` 命中返回 `Memory`（id 一致）、不同 content 返回 `None` |
-| `test_strengthen` | 功能正确 | `add`（`recall_count=0, freshness=0.3`）→ `strengthen(m1, 100.0)` → `recall_count==0`、`freshness==1.0`、`created_at==100.0`（重复写入不涨 recall、锚点刷新） |
-| `test_count_new_ignores_strengthened_created_at` | 回归保护 | 读书记忆 `created_at=100` → `strengthen(m1, 200)`（刷新 created_at）→ `count_new("reading", 150)==0`（纯重读不算新增）；真新增（created_at=250）→ `==1`；since 更晚/非目标 tag → `==0`（first_created_at 锚点不被 strengthen 污染） |
+| `test_update_many_keeps_content_hash_in_sync` | 回归保护 | `update_many` 改 content 后旧 content 不再被 `find_by_content` 命中，新 content 命中同一 id（派生 `content_hash` 同步） |
+| `test_strengthen` | 功能正确 | `add`（`recall_count=0, freshness=0.3, created_at=1.0`）→ `strengthen(m1, 100.0)` → `recall_count==1`、`freshness==1.0`、`created_at==1.0`（重复写入强化计数但不刷新创建时间） |
+| `test_count_new_ignores_strengthened_created_at` | 回归保护 | 读书记忆 `created_at=100` → `strengthen(m1, 200)`（created_at/first_created_at 都不动）→ `count_new("reading", 150)==0`（纯重读不算新增）；真新增（created_at=250）→ `==1`；`tag=None` 全量计数 → `==1`；since 更晚/非目标 tag → `==0`（first_created_at 锚点不被 strengthen 污染） |
 
 ## 08-memory-retrieval（三层检索 + 联想图）
 
@@ -248,8 +249,8 @@
 | `test_eviction` | 功能正确 | `short_term_capacity=1` → 旧记忆（freshness 更低）被挤掉，只剩新的一条 |
 | `test_eviction_tie_break_oldest_first` | 边界鲁棒 | 新鲜度相等（`freshness_decay=0.0`）时按 `created_at` 升序挤掉最旧而非最新，`short_term_capacity=2` 造 3 条 |
 | `test_decay_writeback` | 功能正确 | 1 天间隔两次创建 → 旧记忆 freshness 衰减（`<1.0`） |
-| `test_dedup_exact_same_content` | 功能正确 | 同 content 二次 `create_scene_memory` → 库内 1 条、`recall_count==0`、仅 1 个 `memory_created`（精确去重合并强化不涨 recall） |
-| `test_dedup_semantic_merge` | 功能正确 | 新记忆与旧记忆 embedding 余弦=1.0 → 合并到旧记忆（`recall_count==0`）、不新增、无 `memory_created` |
+| `test_dedup_exact_same_content` | 功能正确 | 同 content 二次 `create_scene_memory` → 两次返回同一持久化记忆 id、库内 1 条、`recall_count==1`、仅 1 个 `memory_created`（精确去重合并强化计数） |
+| `test_dedup_semantic_merge` | 功能正确 | 新记忆与旧记忆 embedding 余弦=1.0 → 合并到旧记忆（`recall_count==1`）、不新增、无 `memory_created` |
 | `test_dedup_semantic_below_threshold` | 功能正确 | 余弦 < 0.95 → 正常新建入库（`list_memories` 2 条、发 1 个 `memory_created`） |
 | `test_dedup_embed_none_skips_semantic` | 边界鲁棒 | `embed=None` 时语义去重跳过（旧记忆带 embedding 也不比较），仅精确去重生效 |
 | `test_search_delegates_to_retrieval` | 功能正确 | `search` 委托 fake `MemoryRetrieval`（返回预设 + 记录 query） |
@@ -702,6 +703,7 @@
 | `test_check_reflect_skips_within_cooldown` | 边界鲁棒 | `updated_at` 距 now < `_REFLECT_MIN_INTERVAL` → 不触发（`reflect` 不调） |
 | `test_check_reflect_skips_below_new_memory_threshold` | 边界鲁棒 | 已过冷却但新记忆 < `_REFLECT_MIN_NEW_MEMORIES` → 不触发（`reflect` 不调） |
 | `test_check_reflect_triggers` | 功能正确 | 过冷却 + 新记忆达标 → `reflect` 调 1 次（correlation 透传） |
+| `test_check_reflect_uses_first_creation_count` | 回归保护 | `list_memories().created_at` 看似达标但 `count_new(None, updated_at)==0` → 不触发反思（新增判据走 first_created_at 口径） |
 
 ## 19-reading-content（陪读内容：segmenter + epub + store + facade + POST /api/books）
 

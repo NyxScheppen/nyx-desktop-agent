@@ -142,11 +142,9 @@ async def _check_reflect(app: _App, correlation_id: str) -> None:
     narrative = await app.inner_life.get_narrative()
     if time.time() - narrative.updated_at < _REFLECT_MIN_INTERVAL:
         return
-    memories = await app.memory.list_memories()
-    new_count = sum(1 for m in memories if m.created_at > narrative.updated_at)
-    if new_count < _REFLECT_MIN_NEW_MEMORIES:
-        return
-    await app.inner_life.reflect(correlation_id)
+    new_count = await app.memory.count_new(None, narrative.updated_at)
+    if new_count >= _REFLECT_MIN_NEW_MEMORIES:
+        await app.inner_life.reflect(correlation_id)
 
 
 async def _tick_loop(app: _App) -> None:

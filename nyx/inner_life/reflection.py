@@ -341,8 +341,8 @@ class Reflection:
         await self._store.upsert_values(drift_values(values, parsed["values_delta"]))
         # 审美偏移按「上次反思后新读章数」缩放：读得越多，漂移越接近满额
         # （不读书则 scale=0，审美不动——读书是审美演化的唯一动力源）。
-        # 计数走 count_new（first_created_at 锚点）：strengthen 刷新 created_at
-        # 只影响 decay，不污染「是否新增」——纯重读不算新读章。
+        # 计数走 count_new（first_created_at 锚点）：strengthen 不刷新创建时间，
+        # 纯重读/去重强化不污染「是否新增」。
         new_chapters = await self._memory_facade.count_new(
             "reading", narrative.updated_at
         )

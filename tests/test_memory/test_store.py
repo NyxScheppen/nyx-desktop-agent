@@ -143,6 +143,20 @@ async def test_update_fields() -> None:
         await db.conn.close()
 
 
+async def test_update_many_keeps_content_hash_in_sync() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("m1", content="old content"))
+        await store.update_many([_mem("m1", content="new content")])
+
+        assert await store.find_by_content("old content") is None
+        found = await store.find_by_content("new content")
+        assert found is not None and found.id == "m1"
+    finally:
+        await db.conn.close()
+
+
 async def test_update_many() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
@@ -303,9 +317,9 @@ async def test_strengthen() -> None:
         await store.strengthen("m1", 100.0)
         got = await store.get("m1")
         assert got is not None
-        assert got.recall_count == 0      # 重复写入不涨 recall_count
+        assert got.recall_count == 1      # 重复写入按设计计入 recall
         assert got.freshness == 1.0
-        assert got.created_at == 100.0    # created_at 锚点刷新，decay 不会被旧锚点回滚
+        assert got.created_at == 1.0      # created_at 是创建时间，不随强化刷新
     finally:
         await db.conn.close()
 
@@ -315,10 +329,11 @@ async def test_count_new_ignores_strengthened_created_at() -> None:
     store = MemoryStore(db)
     try:
         await store.add(_mem("m1", tag="reading", created_at=100.0))
-        await store.strengthen("m1", 200.0)  # created_at 刷新，first_created_at 不动
+        await store.strengthen("m1", 200.0)  # created_at / first_created_at 都不动
         assert await store.count_new("reading", 150.0) == 0  # 纯重读不算新增
         await store.add(_mem("m2", tag="reading", created_at=250.0))
         assert await store.count_new("reading", 150.0) == 1  # 真新增算 1
+        assert await store.count_new(None, 150.0) == 1       # tag=None 全量计数
         assert await store.count_new("reading", 300.0) == 0  # since 更晚则都不算
         assert await store.count_new("user", 0.0) == 0       # 非目标 tag 不计
     finally:

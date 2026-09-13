@@ -14,6 +14,7 @@ from nyx.enums import (
     EnergyState,
     EventType,
     GoalAction,
+    MemoryEdgeKind,
     MemoryType,
     ReadingBehavior,
     ReadingDrive,
@@ -46,6 +47,11 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
         "rest",
     },
     MemoryType: {"short_term", "long_term"},
+    MemoryEdgeKind: {
+        "semantic", "entity", "keyword", "temporal",
+        "same_topic", "elaborates", "contrasts", "causes",
+        "updates_preference", "user_profile_link",
+    },
     ReadingDrive: {
         "motivation", "curiosity", "boredom", "aesthetic_sensitivity",
         "empathy_bias", "associative_drive",

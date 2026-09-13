@@ -6,9 +6,11 @@
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_all_enums_exhaustive` | 功能正确 | 15 个枚举的值集合与 `EXPECTED` 逐枚举相等（防漏成员/多成员/改值） |
-| `test_naming_convention` | 回归保护 | 每个成员 `value == name.lower()`（防手滑改值破坏 snake_case 契约） |
+| `test_all_enums_exhaustive` | 功能正确 | 17 个枚举（含 `MemoryEdgeKind`）的值集合与 `EXPECTED` 逐枚举相等（防漏成员/多成员/改值） |
+| `test_naming_convention` | 回归保护 | 17 个枚举的每个成员 `value == name.lower()`（防手滑改值破坏 snake_case 契约） |
 | `test_strenum_json_serializable` | 功能正确 | `json.dumps(EventType.USER_MESSAGE) == '"user_message"'` |
+| `test_memory_edge_kind_values` | 功能正确 | `MemoryEdgeKind` 值集合恰为 `semantic` / `entity` / `keyword` / `temporal` / `same_topic` / `elaborates` / `contrasts` / `causes` / `updates_preference` / `user_profile_link` |
+| `test_memory_edge_defaults` | 功能正确 | 两端点构造的 `MemoryEdge` 默认 `kind is MemoryEdgeKind.SEMANTIC`、默认权重为 1.0、`created_at == 0.0` |
 | `test_frontend_sse_listeners_cover_all_event_types` | 跨端契约 | 前端 `useSSE.EVENT_TYPES` 与后端 `EventType` 值集合完全一致，防止命名事件被静默漏接 |
 | `test_short_term_desire_default_status` | 功能正确 | `status` 默认 `DesireStatus.PENDING`（枚举成员而非裸字符串） |
 | `test_memory_aspect_default_factory_isolated` | 边界鲁棒 | `default_factory` 保证两个实例的 `aspect` 互不共享 |
@@ -77,7 +79,9 @@
 | `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 19 张业务表 + `schema_version`，共 20 张 |
 | `test_migrate_creates_six_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_memory_content_hash` / `idx_books_content_hash` / `idx_eval_log_created` 六个 |
 | `test_migrate_books_content_hash_index_unique` | 功能正确 | `idx_books_content_hash` 的 `sqlite_master.sql` 以 `CREATE UNIQUE INDEX` 开头（v8 去重升级唯一索引） |
+| `test_memory_edge_schema_typed_and_canonical` | 功能正确 | `memory_edge` 主键为 `(from_id, to_id, kind)`；`kind` / `created_at` 为 NOT NULL；DDL 含 `CHECK (from_id < to_id)` |
 | `test_migrate_v8_dedupes_duplicate_content_hash` | 边界鲁棒 | 先迁 v7 插两条同 `content_hash` 书 → 完整迁移不抛、重复清到 1、被删书 paragraphs 级联清空、唯一索引就位 |
+| `test_memory_edge_migration_canonicalizes_reverse_edges` | 边界鲁棒 | 先迁 v13 写入 `a→b` 与 `b→a` 旧边 → 完整迁移合并为单条 `("a","b","semantic",0.9,0.0)` |
 | `test_migrate_sets_version_to_max` | 功能正确 | `schema_version` 单行 = `_MIGRATIONS` 最高版本 |
 | `test_migrate_not_null_alignment` | 边界鲁棒 | 11 列 `notnull=1`（`memory.aspect` / `long_term_desire.linked_values` / `activity.progress` / `event_log.content` / `event_log.correlation_id` / `user_notes.content` / `user_notes.created_at` / `user_notes.updated_at` / `annotations.user_note_id` / `annotations.content` / `annotations.created_at`） |
 | `test_migrate_nullable_alignment` | 边界鲁棒 | Optional 列 `notnull=0`（`short_term_desire.goal` / `activity.ended_at` / `memory.embedding` / `memory.content_hash` / `user_notes.book_id` / `user_notes.paragraph_id` / `user_notes.selected_text` / `eval_log.ooc_embed`） |
@@ -161,7 +165,7 @@
 | `test_is_safe_url_rejects_unresolvable_host` | SSRF 护栏 | 解析失败（`socket.gaierror`）→ `_is_safe_url` 为 `False` |
 | `test_fetch_url_sync_rejects_redirect_to_private` | SSRF 护栏 | 重定向到内网 IP 逐跳校验 → 返回 `""`（不跟随到内网） |
 
-## 07-memory-store（记忆存取）
+## 07-memory-system / store（记忆存取）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -173,39 +177,48 @@
 | `test_list_memories_limit` | 功能正确 | `limit=2` 截断（`freshness DESC` 前 2）；`limit` 与 `tag` 组合截断（`tag="a", limit=1` 取最高 freshness 那条） |
 | `test_update_fields` | 功能正确 | `update_many`（单条）改各字段 → `get` 验证；`id` / `created_at` 不可变 |
 | `test_update_many` | 功能正确 | `update_many` 批量改多条（含 `embedding=None` 与 `embedding=[...]`）→ `get` 逐条验证；空列表 no-op |
-| `test_delete_cascades_edges` | 功能正确 | `delete_many`（单条）级联删 `memory_edge`（from/to 双向），其它记忆边保留 |
-| `test_delete_many` | 功能正确 | `delete_many` 批量删多条（含关联边）→ `get` 全部 `None`、`list_edges` 无残留；空列表 no-op |
+| `test_delete_cascades_edges` | 功能正确 | `delete_many`（单条）级联删 canonical typed `memory_edge`（from/to 双向同 kind 合并），其它 typed 边保留 |
+| `test_delete_many` | 功能正确 | `delete_many` 批量删多条（含 typed 关联边）→ `get` 全部 `None`、`list_edges` 无残留；空列表 no-op |
 | `test_record_recall_atomic` | 功能正确 | 未达阈值连调两次 → `recall_count==2` 且 type `SHORT_TERM`、返回 False；达阈值 → `LONG_TERM`、返回 True；已 `LONG_TERM` → 只递增、返回 False（加一+条件升型在单锁内原子完成） |
-| `test_search_keyword` | 功能正确 | `content` / `summary` 命中、无命中 `[]`、ASCII 大小写不敏感 |
-| `test_search_keyword_escapes_wildcards` | 边界鲁棒 | `%` / `_` 作字面量匹配（`ESCAPE '\'` 转义），不误命中通配符匹配 |
-| `test_list_edges_and_upsert` | 功能正确 | `upsert_edge` 新建 + 同键重复 `ON CONFLICT` 改 `weight` 不重复建行 |
-| `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |
+| `test_search_keywords_returns_field_hits_ordered_and_capped` | 功能正确 | `search_keywords(["alpha","beta"], limit=2)` 返回 capped ordered `dict`：按 unique token / summary / content / freshness / created_at 排序，且 `KeywordSearchHit` 分别记录 summary/content 命中 token |
+| `test_search_keywords_empty_and_limit_zero_skip_db` | 边界鲁棒 | 空 token list 或 `limit <= 0` → `{}` |
+| `test_search_keywords_escapes_wildcards` | 边界鲁棒 | `%` / `_` 作字面量匹配（`ESCAPE '\'` 转义），不误命中通配符匹配 |
+| `test_typed_edges_canonicalize_and_filter_kind` | 功能正确 | `upsert_edge` canonicalize 端点；同 pair 不同 `MemoryEdgeKind` 可共存；`list_edges(kind)` 只返回指定 kind；全量按 `from_id,to_id,kind` 排序 |
+| `test_delete_edges_and_list_edge_degrees` | 功能正确 | `list_edge_degrees(["b"])` 返回 incident typed edges（`from_id = id OR to_id = id`）；`delete_edges` 按完整 `(from_id,to_id,kind)` 三元键删除 |
+| `test_upsert_edge_unknown_id_raises` | 边界鲁棒 | typed `upsert_edge` 引用不存在 id → `IntegrityError`（FK 生效） |
 | `test_hash_content_deterministic` | 功能正确 | `hash_content` 同 content 同 hash、不同 content 不同 hash、SHA-256 hex 长度 64（纯函数） |
 | `test_find_by_content_hit_and_miss` | 功能正确 | `add` 后按原 content `find_by_content` 命中返回 `Memory`（id 一致）、不同 content 返回 `None` |
-| `test_strengthen` | 功能正确 | `add`（`recall_count=0, freshness=0.3`）→ `strengthen(m1, 100.0)` → `recall_count==0`、`freshness==1.0`、`created_at==100.0`（重复写入不涨 recall、锚点刷新） |
-| `test_count_new_ignores_strengthened_created_at` | 回归保护 | 读书记忆 `created_at=100` → `strengthen(m1, 200)`（刷新 created_at）→ `count_new("reading", 150)==0`（纯重读不算新增）；真新增（created_at=250）→ `==1`；since 更晚/非目标 tag → `==0`（first_created_at 锚点不被 strengthen 污染） |
+| `test_update_many_keeps_content_hash_in_sync` | 回归保护 | `update_many` 改 content 后旧 content 不再被 `find_by_content` 命中，新 content 命中同一 id（派生 `content_hash` 同步） |
+| `test_strengthen` | 功能正确 | `add`（`recall_count=0, freshness=0.3, created_at=1.0`）→ `strengthen(m1, 100.0)` → `recall_count==1`、`freshness==1.0`、`created_at==1.0`（重复写入强化计数但不刷新创建时间） |
+| `test_count_new_ignores_strengthened_created_at` | 回归保护 | 读书记忆 `created_at=100` → `strengthen(m1, 200)`（created_at/first_created_at 都不动）→ `count_new("reading", 150)==0`（纯重读不算新增）；真新增（created_at=250）→ `==1`；`tag=None` 全量计数 → `==1`；since 更晚/非目标 tag → `==0`（first_created_at 锚点不被 strengthen 污染） |
 
-## 08-memory-retrieval（三层检索 + 联想图）
+## 07-memory-system / retrieval + graph（融合召回 + 联想图）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_neighbors_empty_and_missing` | 边界鲁棒 | 空 edges → `neighbors([])=[]`；不存在节点 → `[]`（`has_node` 过滤防 `NetworkXError`） |
-| `test_neighbors_single_edge` | 功能正确 | 单边 a-b：`neighbors(["a"])=["b"]`；全 seed `["a","b"]` → `[]`（排除 seeds 本身） |
-| `test_neighbors_chain_depth` | 功能正确 | 链 a-b-c：depth=1 → `["b"]`、depth=2 → `["b","c"]` |
-| `test_neighbors_diamond_dedup` | 功能正确 | 菱形 a-b/a-c/b-d/c-d：depth=2 → `["b","c","d"]`（d 去重只一次） |
-| `test_weight_does_not_affect_spread` | 功能正确 | weight 不影响扩散（只按可达性） |
+| `test_ann_empty_and_invalid_query` | 边界鲁棒 | 空 ANN index 查询返回 `[]`；`candidate_k <= 0` 返回 `[]` |
+| `test_ann_skips_none_and_wrong_dimensions` | 边界鲁棒 | ANN build 跳过 `embedding=None` 与首个有效 embedding 维度不一致的记忆；查询维度不一致返回 `[]` |
+| `test_ann_candidate_limit_and_order_are_stable` | 功能正确 | deterministic LSH 查询不超过 `candidate_k=2`，精确 cosine 排序稳定返回 `["a", "b"]` |
+| `test_hash_embedding_and_fingerprint_change_on_embedding_update` | 功能正确 | `hash_embedding` 按 8 位小数归一；`ann_fingerprint` 随 embedding 更新/记忆删除变化 |
+| `test_associate_depth_two_scores_and_excludes_seeds` | 功能正确 | typed graph 从 seed 扩散两跳：返回 path metadata（depth/via/kinds），排除 direct seed，score=`seed_score * edge_weight * depth_decay * kind_weight` |
+| `test_associate_parallel_typed_edges_take_best_path` | 功能正确 | 同一 unordered pair 的不同 `MemoryEdgeKind` 作为并行 typed edges 扩散；多路径按最高 score 选最佳 path kind |
+| `test_associate_equal_paths_keep_lexicographically_smaller_prefix_via` | 回归保护 | equal score/depth 的多路径按字典序更小 `via` 保留最佳路径；覆盖 `"a"` / `"aa"` 前缀 tie-break |
+| `test_clusters_include_isolated_nodes_with_stable_ids` | 功能正确 | `MemoryGraph(edges, memory_ids=...)` 聚类返回全部 memory id；连通 a/b 同 cluster，孤立 z 单独 cluster，cluster id 稳定 |
 | `test_cosine` | 功能正确 | 正交=0、相同=1、相反=-1、零向量=0、维度不一致=0（纯函数） |
-| `test_rank_by_cosine` | 功能正确 | `embedding=None` 跳过、`s<=0` 过滤、按 `s` 降序（纯函数；`_vector_search` 与 09 `_similar` 共用） |
-| `test_vector_search_skips_none_and_filters` | 边界鲁棒 | `embedding=None` 跳过、`s<=0` 过滤（cos=-1/0）、cos=1 命中 |
-| `test_vector_search_top_k_truncates` | 功能正确 | 7 候选只返回 `_VECTOR_TOP_K=5` |
-| `test_vector_search_disabled_when_embed_none` | 功能正确 | `embed=None` → `[]`（向量层禁用） |
-| `test_search_merge_order_and_limit` | 功能正确 | keyword→vector→association 编排：A（keyword+vector）、B（association 扩散）→ `[A,B]`；limit=1 → `[A]`；sources：A=`[KEYWORD,VECTOR]`、B=`[ASSOCIATION]` |
-| `test_search_dedup` | 功能正确 | keyword 与 vector 命中同一记忆 → 去重只一次 |
+| `test_rank_by_cosine` | 功能正确 | `embedding=None` 跳过、`s<=0` 过滤、按 `s` 降序（纯函数） |
+| `test_extract_keywords_mixed_text` | 功能正确 | 混合文本提取英文/数字 token 并 lower；精确停用词 `这个` 被过滤，2-8 字 CJK 片段 `中文长句` 直接保留 |
+| `test_extract_keywords_keeps_short_cjk_with_particles` | 回归保护 | 2-8 字连续 CJK 片段即使包含 `可以` / `你们` / 语气边界字，也作为完整 token 直接保留 |
+| `test_extract_keywords_long_cjk_windows_without_stopword_splitting` | 功能正确 | 长 CJK 片段只用 2/3 字滑窗，包含 `诺斯艾`、不包含 4 字 token `诺斯艾兰`，重复 token 只保留一次 |
+| `test_extract_keywords_long_cjk_keeps_stopword_windows` | 回归保护 | 长 CJK 片段不按停用词/边界字预拆；保留跨边界窗口 `和中` 与 3 字窗口 `可以吗`，只过滤 exact stop-word token `可以` |
+| `test_search_fuses_vector_keyword_and_limits_direct_then_association` | 功能正确 | `search("alpha", direct_limit=2, association_limit=1)` 先按融合分返回 vector direct、vector+keyword direct，再追加不重复 association；sources 分别为 `[VECTOR]` / `[VECTOR, KEYWORD]` / `[ASSOCIATION]` |
+| `test_search_direct_limit_zero_returns_empty` | 边界鲁棒 | `direct_limit=0` 时直接召回为空且不追加 association，返回 `[]` |
+| `test_search_dedup` | 功能正确 | keyword 与 vector 命中同一记忆 → direct 去重只一次 |
 | `test_search_empty` | 功能正确 | 无命中 + embed=None + 无边 → `[]` |
 | `test_search_blank_query_returns_empty` | 边界鲁棒 | `""`/`" "`/`"   "` 空/空白查询短路 → `[]`（`query.strip()`，不因 `LIKE '%%'`/`'% %'` 误返全量） |
 | `test_search_no_edge_no_crash` | 边界鲁棒 | keyword 命中无边记忆 → 不抛 `NetworkXError`（`neighbors` 过滤），返回命中本身 |
 | `test_search_sources_keyword_only` | 功能正确 | embed=None（向量层禁用）仅 keyword 命中 → `sources=[KEYWORD]` |
 | `test_search_sources_vector_only` | 功能正确 | content 不含 query、embedding 余弦命中 → `sources=[VECTOR]` |
+| `test_search_sources_zero_cosine_vector_candidate` | 回归保护 | ANN 候选 cosine 为 0.0 且 keyword 不命中时仍作为 direct 结果返回，`sources=[VECTOR]` |
 
 ## eval（OOC 告警 + 调用/token 记账）
 
@@ -224,7 +237,7 @@
 | `test_evaluate_store_none_no_crash` | 边界鲁棒 | `store=None` → `evaluate()` 不落库、不抛 |
 | `test_evaluate_insert_error_swallowed` | 边界鲁棒 | `insert` 抛 `RuntimeError` → 吞掉不重抛（best-effort），`records` 仍空 |
 
-## 09-memory-facade（记忆门面）
+## 07-memory-system / facade（记忆门面）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -239,17 +252,23 @@
 | `test_memory_to_markdown` | 功能正确 | 含 summary 与 content |
 | `test_create_scene_memory_basic` | 功能正确 | 字段正确（content/tag/summary、freshness=1.0、type SHORT_TERM、embedding=None）；`evaluator.evaluate` 调 1 次（scene_memory）；发布 `memory_created`（memory_id/source/correlation 透传） |
 | `test_contradiction_gating_under_threshold` | 功能正确 | 正交 embedding → 仅 1 次 LLM 调用、无 contradiction、无 reflection（门控 0 调用） |
-| `test_contradiction_detected` | 功能正确 | 过阈值候选 → 第 2 次 `output_type="contradiction"`；`conflicts_with` 命中 → 发布 reflection（含双方 id）；evaluator 再调 1 次 |
+| `test_contradiction_detected` | 功能正确 | 过阈值候选 → 建边关系抽取后调用 `contradiction`；`conflicts_with` 命中 → 发布 reflection（含双方 id）；evaluator 再调 1 次 |
 | `test_contradiction_null_no_reflection` | 功能正确 | contradiction 返回 null → 不发 reflection |
-| `test_contradiction_recall_top_k` | 边界鲁棒 | 6 条高相似旧记忆 → 矛盾 prompt 候选恰 5 条（`_RECALL_TOP_K=5`） |
+| `test_contradiction_unknown_id_no_reflection` | 边界鲁棒 | contradiction 返回非候选/未知 id → 不发布 reflection（只记录并跳过） |
+| `test_contradiction_recall_top_k` | 边界鲁棒 | 6 条高相似旧记忆 → 矛盾 prompt 候选恰 5 条（persist candidates top 5） |
+| `test_contradiction_uses_top_five_persist_candidates` | 边界鲁棒 | 矛盾检测从 bounded persist semantic candidates 取 top 5 写入 prompt |
 | `test_contradiction_prompt_negation_hint` | 功能正确 | 新记忆含否定词 → 矛盾 prompt 含「重点核对」句 |
 | `test_contradiction_parse_failure_no_crash` | 边界鲁棒 | 矛盾判断返回非法 JSON → 记忆主流程照常入库 + 发布 `memory_created`、无 reflection（矛盾检测 best-effort 不反噬创建） |
 | `test_build_edges` | 功能正确 | 新记忆有到旧记忆的 `memory_edge`（`weight>0`） |
+| `test_build_edges_creates_semantic_keyword_and_temporal_edges` | 功能正确 | 新记忆入库后建出 `semantic` / `keyword` / `temporal` typed edges |
+| `test_build_edges_creates_llm_relation_edge` | 功能正确 | `memory_relation` JSON 关系输出 `updates_preference` → 写入对应 typed edge |
+| `test_prune_edges_limits_per_kind_and_total_degree` | 功能正确 | `_prune_degrees({"hub"})` 通过 typed edge keys 剪枝，使单 kind incident edges 不超过 4 |
 | `test_eviction` | 功能正确 | `short_term_capacity=1` → 旧记忆（freshness 更低）被挤掉，只剩新的一条 |
 | `test_eviction_tie_break_oldest_first` | 边界鲁棒 | 新鲜度相等（`freshness_decay=0.0`）时按 `created_at` 升序挤掉最旧而非最新，`short_term_capacity=2` 造 3 条 |
 | `test_decay_writeback` | 功能正确 | 1 天间隔两次创建 → 旧记忆 freshness 衰减（`<1.0`） |
-| `test_dedup_exact_same_content` | 功能正确 | 同 content 二次 `create_scene_memory` → 库内 1 条、`recall_count==0`、仅 1 个 `memory_created`（精确去重合并强化不涨 recall） |
-| `test_dedup_semantic_merge` | 功能正确 | 新记忆与旧记忆 embedding 余弦=1.0 → 合并到旧记忆（`recall_count==0`）、不新增、无 `memory_created` |
+| `test_dedup_exact_same_content` | 功能正确 | 同 content 二次 `create_scene_memory` → 两次返回同一持久化记忆 id、库内 1 条、`recall_count==1`、仅 1 个 `memory_created`（精确去重合并强化计数） |
+| `test_dedup_semantic_merge` | 功能正确 | 新记忆与旧记忆 embedding 余弦=1.0 → 合并到旧记忆（`recall_count==1`）、不新增、无 `memory_created` |
+| `test_dedup_semantic_uses_bounded_candidates_and_returns_old_memory` | 功能正确 | bounded semantic candidate 命中去重 → 返回旧记忆 id、无 `memory_created` |
 | `test_dedup_semantic_below_threshold` | 功能正确 | 余弦 < 0.95 → 正常新建入库（`list_memories` 2 条、发 1 个 `memory_created`） |
 | `test_dedup_embed_none_skips_semantic` | 边界鲁棒 | `embed=None` 时语义去重跳过（旧记忆带 embedding 也不比较），仅精确去重生效 |
 | `test_search_delegates_to_retrieval` | 功能正确 | `search` 委托 fake `MemoryRetrieval`（返回预设 + 记录 query） |
@@ -270,12 +289,12 @@
 | `test_activity_memory_fields_skip` | 边界鲁棒 | 非目标类型/空 result/空内容/类型非 str/result 非 dict → `None` |
 | `test_activity_memory_fields_summary_truncated` | 边界鲁棒 | summary 超 80 字截断为 `x*80 + "…"` |
 | `test_remember_activity_reading` | 功能正确 | reading 事件 → 写一条 Memory（content=note/summary=book/tag="reading"/type SHORT_TERM）、发布 `memory_created`、无 LLM 调用 |
-| `test_remember_activity_creation_and_exploration` | 功能正确 | creation + free_exploration 各写一条（content/summary 正确、tag 为活动类型值）、无 LLM 调用 |
+| `test_remember_activity_creation_and_exploration` | 功能正确 | creation + free_exploration 各写一条（content/summary 正确、tag 为活动类型值）；不调用 scene/contradiction，允许 write-side `memory_relation` |
 | `test_remember_activity_skips_empty_or_other_type` | 边界鲁棒 | rest/空 result/observe_user → 不写、无 `memory_created` |
-| `test_remember_activity_contradiction` | 功能正确 | 有相似旧记忆 + embed → 门控触发 1 次 `contradiction`（参与矛盾判断，无 scene_memory）；命中 → 发布 reflection |
+| `test_remember_activity_contradiction` | 功能正确 | 有相似旧记忆 + embed → `memory_relation` 后门控触发 `contradiction`（无 scene_memory）；命中 → 发布 reflection |
 | `test_remember_user_profile_fields` | 功能正确 | `remember_user_profile` → 写一条 `LONG_TERM`/`tag="user"`/`aspect` 全等的画像记忆、无 LLM 调用、发布 `memory_created`（correlation 透传） |
 | `test_record_no_answer` | 功能正确 | 问句未答 → 写一条 `SHORT_TERM`/`tag="interaction"`/summary「用户没有回答我的提问」、content 含问句、无 LLM 调用、发布 `memory_created`（correlation 透传） |
-| `test_remember_knowledge` | 功能正确 | 3 项入参 → 落 2 条 `LONG_TERM`/`tag="knowledge"` 记忆（空 content 项跳过）；summary 回退 content；无 LLM 调用；发布 2 条 `memory_created`（correlation 透传） |
+| `test_remember_knowledge` | 功能正确 | 3 项入参 → 落 2 条 `LONG_TERM`/`tag="knowledge"` 记忆（空 content 项跳过）；summary 回退 content；不调用 scene/contradiction，允许 write-side `memory_relation`；发布 2 条 `memory_created`（correlation 透传） |
 | `test_remember_reading` | 功能正确 | 读书入参 → 写 1 条 `LONG_TERM`/`tag="reading"` 记忆（summary 透传）、无 LLM 调用、发布 `memory_created`（correlation 透传） |
 
 ## 10-desire-value（欲望值机制）
@@ -702,6 +721,7 @@
 | `test_check_reflect_skips_within_cooldown` | 边界鲁棒 | `updated_at` 距 now < `_REFLECT_MIN_INTERVAL` → 不触发（`reflect` 不调） |
 | `test_check_reflect_skips_below_new_memory_threshold` | 边界鲁棒 | 已过冷却但新记忆 < `_REFLECT_MIN_NEW_MEMORIES` → 不触发（`reflect` 不调） |
 | `test_check_reflect_triggers` | 功能正确 | 过冷却 + 新记忆达标 → `reflect` 调 1 次（correlation 透传） |
+| `test_check_reflect_uses_first_creation_count` | 回归保护 | `list_memories().created_at` 看似达标但 `count_new(None, updated_at)==0` → 不触发反思（新增判据走 first_created_at 口径） |
 
 ## 19-reading-content（陪读内容：segmenter + epub + store + facade + POST /api/books）
 

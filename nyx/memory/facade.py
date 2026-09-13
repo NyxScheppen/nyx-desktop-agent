@@ -1,18 +1,21 @@
 import json
 import logging
+import re
 import time
+from dataclasses import dataclass
 from typing import Any, cast
 from uuid import uuid4
 
 from nyx.config import MemoryConfig
-from nyx.enums import EventType, MemoryType
+from nyx.enums import EventType, MemoryEdgeKind, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
-from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, rank_by_cosine
+from nyx.memory.ann import AnnIndex
+from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, extract_keywords
 from nyx.memory.store import MemoryStore
-from nyx.types import Event, Memory
+from nyx.types import Event, Memory, MemoryEdge
 
 _SCENE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -32,12 +35,52 @@ _CONTRADICTION_SYSTEM = (
     "仅仅补充或角度不同不算。"
 )
 
-_EDGE_TOP_K = 3
-_RECALL_TOP_K = 5
+_PERSIST_SEMANTIC_CANDIDATE_K = 200
+_CONTRADICTION_CANDIDATE_K = 5
 _CONTRADICTION_SIM_THRESHOLD = 0.6
 _DEDUP_SIM_THRESHOLD = 0.95
+_EDGE_SEMANTIC_CANDIDATE_K = 40
+_EDGE_ENTITY_CANDIDATE_K = 40
+_EDGE_KEYWORD_CANDIDATE_K = 40
+_EDGE_TEMPORAL_CANDIDATE_K = 20
+_EDGE_LLM_CANDIDATE_K = 5
+_EDGE_PER_KIND_LIMIT = 4
+_EDGE_TOTAL_LIMIT = 16
+_ENTITY_THRESHOLD = 0.34
+_KEYWORD_THRESHOLD = 0.25
+_TEMPORAL_WINDOW_SECONDS = 86400.0
 _CONTENT_PREVIEW_CHARS = 60
 _NEGATION_WORDS = ("不", "没", "别", "讨厌", "恨", "拒绝", "否认", "放弃", "再也不")
+_ENTITY_BOOK_RE = re.compile(r"《([^》]{2,80})》")
+_ENTITY_ASCII_RE = re.compile(r"[A-Za-z0-9_]{2,}")
+_ENTITY_PROPER_RE = re.compile(r"[A-Z][A-Za-z0-9_]*(?:\s+[A-Z][A-Za-z0-9_]*)*")
+_ENTITY_CJK_RE = re.compile(r"[\u4e00-\u9fff]{2,12}")
+_RELATION_EDGE_KINDS = {
+    MemoryEdgeKind.SAME_TOPIC,
+    MemoryEdgeKind.ELABORATES,
+    MemoryEdgeKind.CONTRASTS,
+    MemoryEdgeKind.CAUSES,
+    MemoryEdgeKind.UPDATES_PREFERENCE,
+    MemoryEdgeKind.USER_PROFILE_LINK,
+}
+_PRUNE_KIND_WEIGHT = {
+    MemoryEdgeKind.SEMANTIC: 1.0,
+    MemoryEdgeKind.ENTITY: 0.95,
+    MemoryEdgeKind.KEYWORD: 0.8,
+    MemoryEdgeKind.TEMPORAL: 0.2,
+    MemoryEdgeKind.SAME_TOPIC: 1.1,
+    MemoryEdgeKind.ELABORATES: 1.1,
+    MemoryEdgeKind.CONTRASTS: 1.1,
+    MemoryEdgeKind.CAUSES: 1.1,
+    MemoryEdgeKind.UPDATES_PREFERENCE: 1.1,
+    MemoryEdgeKind.USER_PROFILE_LINK: 1.1,
+}
+
+
+@dataclass
+class PersistSemanticHit:
+    memory: Memory
+    cosine: float
 
 
 def _new_memory(
@@ -144,6 +187,129 @@ def _parse_contradiction(raw: str) -> str | None:
     return conflicts_with
 
 
+def extract_entities(memory: Memory) -> set[str]:
+    """Extract coarse entity anchors for write-side memory graph edges."""
+    text = "\n".join([memory.summary, memory.content, memory.tag, *memory.aspect])
+    entities: set[str] = set()
+    for pattern in (
+        _ENTITY_BOOK_RE,
+        _ENTITY_PROPER_RE,
+        _ENTITY_ASCII_RE,
+        _ENTITY_CJK_RE,
+    ):
+        for match in pattern.finditer(text):
+            raw = match.group(1) if pattern is _ENTITY_BOOK_RE else match.group(0)
+            normalized = raw.strip().lower()
+            if len(normalized) > 1:
+                entities.add(normalized)
+    return entities
+
+
+def _keyword_jaccard(new_tokens: set[str], old_tokens: set[str]) -> float:
+    if not new_tokens or not old_tokens:
+        return 0.0
+    return len(new_tokens & old_tokens) / len(new_tokens | old_tokens)
+
+
+def _temporal_score(new_created_at: float, old_created_at: float) -> float:
+    delta = abs(new_created_at - old_created_at)
+    if delta > _TEMPORAL_WINDOW_SECONDS:
+        return 0.0
+    return 1.0 - delta / _TEMPORAL_WINDOW_SECONDS
+
+
+def _parse_relation_edges(
+    raw: str, allowed_ids: set[str]
+) -> list[tuple[str, MemoryEdgeKind, float]]:
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError(f"记忆关系 JSON 应是对象，得到 {type(data).__name__}")
+    relations = cast(dict[str, Any], data).get("relations")
+    if not isinstance(relations, list):
+        return []
+
+    parsed: list[tuple[str, MemoryEdgeKind, float]] = []
+    for item in cast(list[object], relations):
+        if not isinstance(item, dict):
+            continue
+        relation = cast(dict[str, Any], item)
+        memory_id = relation.get("memory_id")
+        if not isinstance(memory_id, str) or memory_id not in allowed_ids:
+            continue
+        kind_value = relation.get("kind")
+        if kind_value == "none":
+            continue
+        if not isinstance(kind_value, str):
+            continue
+        try:
+            kind = MemoryEdgeKind(kind_value)
+        except ValueError:
+            continue
+        if kind not in _RELATION_EDGE_KINDS:
+            continue
+        raw_weight = relation.get("weight")
+        weight = float(raw_weight) if isinstance(raw_weight, int | float) else 0.7
+        parsed.append((memory_id, kind, max(0.0, min(1.0, weight))))
+    return parsed
+
+
+def _memory_relation_prompt(memory: Memory, candidates: list[Memory]) -> str:
+    lines = [
+        "判断新记忆与候选旧记忆是否存在明确关系。",
+        "只输出 JSON：",
+        (
+            "{\"relations\":[{\"memory_id\":\"...\",\"kind\":\"same_topic|"
+            "elaborates|contrasts|causes|updates_preference|user_profile_link|"
+            "none\",\"weight\":0.7}]}"
+        ),
+        "",
+        f"新记忆：id={memory.id}",
+        f"summary={memory.summary}",
+        f"tag={memory.tag}",
+        f"content={memory.content}",
+        "",
+        "候选旧记忆：",
+    ]
+    for candidate in candidates:
+        lines.extend(
+            [
+                f"- id={candidate.id}",
+                f"  summary={candidate.summary}",
+                f"  tag={candidate.tag}",
+                f"  content={candidate.content}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _vector_score(cosine_value: float) -> float:
+    return max(0.0, min(1.0, (cosine_value + 1.0) / 2.0))
+
+
+def _rank_edge_scores(
+    scores: dict[str, float],
+    by_id: dict[str, Memory],
+) -> list[tuple[str, float]]:
+    return sorted(
+        scores.items(),
+        key=lambda item: (-item[1], -by_id[item[0]].created_at, item[0]),
+    )
+
+
+def _edge_key(edge: MemoryEdge) -> tuple[str, str, MemoryEdgeKind]:
+    return (edge.from_id, edge.to_id, edge.kind)
+
+
+def _prune_priority(edge: MemoryEdge) -> tuple[float, float, str, str, str]:
+    return (
+        edge.weight * _PRUNE_KIND_WEIGHT[edge.kind],
+        edge.created_at,
+        edge.from_id,
+        edge.to_id,
+        edge.kind.value,
+    )
+
+
 def _join_list(value: Any) -> str:
     """list[str] → 换行拼接；str → 原样；None/空 → 空串。纯函数。"""
     if isinstance(value, str):
@@ -233,7 +399,7 @@ class MemoryFacade:
     async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
         """慢通道场景化记忆：LLM 产出 content/tag/summary
         → 两层去重（命中合并强化，不新建）→ 入短期 → 建边 → 门控矛盾检测 → 淘汰。
-        去重命中时仍返回未入库的 memory（调用方丢弃返回值，无害）。"""
+        去重命中时返回已存在的持久化旧记忆。"""
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _SCENE_SYSTEM},
@@ -247,8 +413,7 @@ class MemoryFacade:
         await self._evaluator.evaluate(output)
         content, tag, summary = _parse_scene(output.content)
         memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
-        await self._persist_memory(memory, reply_context["correlation_id"])
-        return memory
+        return await self._persist_memory(memory, reply_context["correlation_id"])
 
     async def remember_activity(self, event: Event) -> None:
         """活动记忆：把 activity_end.result 落成一条短期记忆（无 LLM）。
@@ -362,33 +527,34 @@ class MemoryFacade:
 
     async def _persist_memory(
         self, memory: Memory, correlation_id: str
-    ) -> Memory | None:
+    ) -> Memory:
         """已构建 Memory 的共用入库尾段，带两层去重：
 
         1) 精确去重：content 完全相同（哈希命中）→ 合并强化旧记忆，不新建；
         2) 语义去重：embedding 余弦 top-1 ≥ 阈值 → 合并强化最相似旧记忆，不新建。
 
-        命中返回 None（无新记忆），否则补 embed → add → 建边 → 门控矛盾检测
+        命中返回已存在的持久化记忆，否则补 embed → add → 建边 → 门控矛盾检测
         → 新鲜度衰减/淘汰 → 发 MEMORY_CREATED，返回新记忆。场景/活动/画像/
         知识记忆复用。"""
         now = time.time()
         existing = await self._store.find_by_content(memory.content)
         if existing is not None:
             await self._store.strengthen(existing.id, now)
-            return None
+            return await self._persisted_or(existing)
         if self._embed is not None and memory.embedding is None:
-            memory.embedding = await self._embed(memory.content)
-        scored: list[tuple[float, Memory]] | None = None
+            try:
+                memory.embedding = await self._embed(memory.content)
+            except Exception:
+                self._logger.exception("记忆 embedding 失败 memory_id=%s", memory.id)
+        candidates: list[PersistSemanticHit] = []
         if memory.embedding is not None:
-            # add 前全表余弦排序（新记忆尚未入库，天然 exclude 自己），
-            # 语义查重与建边/矛盾共用同一份 scored，不多扫一次全表。
-            scored = await self._similar(memory.embedding)
-            if scored and scored[0][0] >= _DEDUP_SIM_THRESHOLD:
-                await self._store.strengthen(scored[0][1].id, now)
-                return None
+            candidates = await self._persist_semantic_candidates(memory.embedding)
+            if candidates and candidates[0].cosine >= _DEDUP_SIM_THRESHOLD:
+                await self._store.strengthen(candidates[0].memory.id, now)
+                return await self._persisted_or(candidates[0].memory)
         await self._store.add(memory)
-        await self._build_edges(memory, scored)
-        await self._detect_contradiction(memory, scored, correlation_id)
+        await self._build_edges(memory, candidates, now, correlation_id)
+        await self._detect_contradiction(memory, candidates, correlation_id)
         await self._decay_and_evict(now)
         await self._bus.publish(
             internal_event(
@@ -421,9 +587,13 @@ class MemoryFacade:
     ) -> list[Memory]:
         return await self._store.list_memories(tag, type, limit)
 
-    async def count_new(self, tag: str, since: float) -> int:
+    async def count_new(self, tag: str | None, since: float) -> int:
         """计数「首次创建晚于 since 的 tag 记忆」（轻量，不物化整行/embedding）。"""
         return await self._store.count_new(tag, since)
+
+    async def _persisted_or(self, fallback: Memory) -> Memory:
+        persisted = await self._store.get(fallback.id)
+        return persisted if persisted is not None else fallback
 
     async def export(self, fmt: str) -> str:
         """记忆导出：json = JSON 数组字符串，
@@ -440,25 +610,28 @@ class MemoryFacade:
     async def _detect_contradiction(
         self,
         memory: Memory,
-        scored: list[tuple[float, Memory]] | None,
+        candidates: list[PersistSemanticHit],
         correlation_id: str,
     ) -> None:
         """门控矛盾检测：召回 top-K 相似候选，相似度过阈值的才发独立 LLM 判断；
         无候选或全低于阈值 → 0 调用跳过。命中矛盾 → 发布 reflection。"""
-        if scored is None:
-            return
-        candidates = [
-            m for s, m in scored[:_RECALL_TOP_K] if s >= _CONTRADICTION_SIM_THRESHOLD
+        contradiction_candidates = [
+            hit.memory
+            for hit in candidates[:_CONTRADICTION_CANDIDATE_K]
+            if hit.cosine >= _CONTRADICTION_SIM_THRESHOLD
         ]
-        if not candidates:
+        if not contradiction_candidates:
             return
+        allowed_ids = {candidate.id for candidate in contradiction_candidates}
         try:
             output = await self._llm.complete(
                 [
                     {"role": "system", "content": _CONTRADICTION_SYSTEM},
                     {
                         "role": "user",
-                        "content": _build_contradiction_prompt(memory, candidates),
+                        "content": _build_contradiction_prompt(
+                            memory, contradiction_candidates
+                        ),
                     },
                 ],
                 module="memory",
@@ -477,6 +650,14 @@ class MemoryFacade:
                 memory.id, correlation_id,
             )
             return
+        if conflicts_with is not None and conflicts_with not in allowed_ids:
+            self._logger.warning(
+                "矛盾检测返回未知候选 memory_id=%s new_memory_id=%s correlation_id=%s",
+                conflicts_with,
+                memory.id,
+                correlation_id,
+            )
+            return
         if conflicts_with is not None:
             await self._bus.publish(
                 internal_event(
@@ -491,21 +672,254 @@ class MemoryFacade:
                 )
             )
 
-    async def _similar(
-        self, query_vec: list[float]
-    ) -> list[tuple[float, Memory]]:
-        """query 向量与全表记忆的余弦排序（s>0 才保留）；纯计算 + store 读。"""
+    async def _persist_semantic_candidates(
+        self, embedding: list[float]
+    ) -> list[PersistSemanticHit]:
         memories = await self._store.list_memories()
-        return rank_by_cosine(query_vec, memories)
+        index = AnnIndex.build(memories)
+        by_id = {memory.id: memory for memory in memories}
+        return [
+            PersistSemanticHit(by_id[candidate.memory_id], candidate.cosine)
+            for candidate in index.query(
+                embedding, candidate_k=_PERSIST_SEMANTIC_CANDIDATE_K
+            )
+            if candidate.memory_id in by_id
+        ]
 
     async def _build_edges(
-        self, memory: Memory, scored: list[tuple[float, Memory]] | None
+        self,
+        memory: Memory,
+        persist_semantic_hits: list[PersistSemanticHit],
+        now: float,
+        correlation_id: str,
     ) -> None:
-        """新记忆与已有记忆按 embedding 余弦相似度建边（top-K，weight=相似度）。"""
-        if scored is None:
+        """Build typed graph edges from semantic/entity/keyword/time/LLM signals."""
+        old_memories = [
+            old for old in await self._store.list_memories() if old.id != memory.id
+        ]
+        by_id = {old.id: old for old in old_memories}
+        if not by_id:
             return
-        for s, m in scored[:_EDGE_TOP_K]:
-            await self._store.upsert_edge(memory.id, m.id, s)
+
+        semantic_scores = await self._semantic_edge_scores(
+            memory, persist_semantic_hits, by_id
+        )
+        entity_scores = self._entity_edge_scores(memory, persist_semantic_hits, by_id)
+        keyword_scores = await self._keyword_edge_scores(memory, by_id)
+        temporal_scores = self._temporal_edge_scores(memory, by_id)
+
+        edge_scores: dict[MemoryEdgeKind, dict[str, float]] = {
+            MemoryEdgeKind.SEMANTIC: semantic_scores,
+            MemoryEdgeKind.ENTITY: entity_scores,
+            MemoryEdgeKind.KEYWORD: keyword_scores,
+            MemoryEdgeKind.TEMPORAL: temporal_scores,
+        }
+        relation_candidates = self._relation_candidates(
+            semantic_scores, entity_scores, keyword_scores, temporal_scores, by_id
+        )
+        for old_id, kind, weight in await self._relation_edges(
+            memory, relation_candidates, correlation_id
+        ):
+            edge_scores.setdefault(kind, {})[old_id] = weight
+
+        touched = {memory.id}
+        for kind, scores in edge_scores.items():
+            ranked_scores = _rank_edge_scores(scores, by_id)[:_EDGE_PER_KIND_LIMIT]
+            for old_id, weight in ranked_scores:
+                await self._store.upsert_edge(memory.id, old_id, kind, weight, now)
+                touched.add(old_id)
+        await self._prune_degrees(touched)
+
+    async def _semantic_edge_scores(
+        self,
+        memory: Memory,
+        persist_semantic_hits: list[PersistSemanticHit],
+        by_id: dict[str, Memory],
+    ) -> dict[str, float]:
+        hits = persist_semantic_hits[:_EDGE_SEMANTIC_CANDIDATE_K]
+        if not hits and self._embed is not None:
+            try:
+                embedding = await self._embed(f"{memory.summary}\n{memory.content}")
+            except Exception:
+                self._logger.exception(
+                    "记忆语义建边 embedding 失败 memory_id=%s", memory.id
+                )
+                embedding = None
+            if embedding is not None:
+                memories = list(by_id.values())
+                index = AnnIndex.build(memories)
+                indexed_by_id = {old.id: old for old in memories}
+                hits = [
+                    PersistSemanticHit(indexed_by_id[candidate.memory_id],
+                                       candidate.cosine)
+                    for candidate in index.query(
+                        embedding, candidate_k=_EDGE_SEMANTIC_CANDIDATE_K
+                    )
+                    if candidate.memory_id in indexed_by_id
+                ]
+
+        scores: dict[str, float] = {}
+        for hit in hits:
+            old = by_id.get(hit.memory.id)
+            if old is None or old.embedding is None:
+                continue
+            score = _vector_score(hit.cosine)
+            if score >= 0.72:
+                scores[old.id] = max(scores.get(old.id, 0.0), score)
+        return scores
+
+    def _entity_edge_scores(
+        self,
+        memory: Memory,
+        persist_semantic_hits: list[PersistSemanticHit],
+        by_id: dict[str, Memory],
+    ) -> dict[str, float]:
+        new_entities = extract_entities(memory)
+        if not new_entities:
+            return {}
+        pool = [
+            hit.memory
+            for hit in persist_semantic_hits[:_EDGE_ENTITY_CANDIDATE_K]
+            if hit.memory.id in by_id
+        ]
+        if not pool:
+            pool = sorted(
+                by_id.values(), key=lambda old: (-old.created_at, old.id)
+            )[:_EDGE_ENTITY_CANDIDATE_K]
+
+        scores: dict[str, float] = {}
+        for old in pool:
+            old_entities = extract_entities(old)
+            shared = len(new_entities & old_entities)
+            score = shared / max(len(new_entities), len(old_entities), 1)
+            if score >= _ENTITY_THRESHOLD:
+                scores[old.id] = score
+        return scores
+
+    async def _keyword_edge_scores(
+        self, memory: Memory, by_id: dict[str, Memory]
+    ) -> dict[str, float]:
+        new_tokens_list = extract_keywords(f"{memory.summary}\n{memory.content}")
+        new_tokens = set(new_tokens_list)
+        if not new_tokens:
+            return {}
+        keyword_hits = await self._store.search_keywords(
+            new_tokens_list, limit=_EDGE_KEYWORD_CANDIDATE_K
+        )
+        scores: dict[str, float] = {}
+        for old_id in keyword_hits:
+            old = by_id.get(old_id)
+            if old is None:
+                continue
+            old_tokens = set(extract_keywords(f"{old.summary}\n{old.content}"))
+            score = _keyword_jaccard(new_tokens, old_tokens)
+            if score >= _KEYWORD_THRESHOLD:
+                scores[old_id] = score
+        return scores
+
+    def _temporal_edge_scores(
+        self, memory: Memory, by_id: dict[str, Memory]
+    ) -> dict[str, float]:
+        candidates = sorted(
+            by_id.values(),
+            key=lambda old: (abs(old.created_at - memory.created_at), old.id),
+        )[:_EDGE_TEMPORAL_CANDIDATE_K]
+        scores: dict[str, float] = {}
+        for old in candidates:
+            score = _temporal_score(memory.created_at, old.created_at)
+            if score > 0.0:
+                scores[old.id] = score
+        return scores
+
+    def _relation_candidates(
+        self,
+        semantic_scores: dict[str, float],
+        entity_scores: dict[str, float],
+        keyword_scores: dict[str, float],
+        temporal_scores: dict[str, float],
+        by_id: dict[str, Memory],
+    ) -> list[Memory]:
+        scores: dict[str, float] = {}
+        for old_id in (
+            set(semantic_scores)
+            | set(entity_scores)
+            | set(keyword_scores)
+            | set(temporal_scores)
+        ):
+            scores[old_id] = max(
+                semantic_scores.get(old_id, 0.0),
+                0.9 * entity_scores.get(old_id, 0.0),
+                0.75 * keyword_scores.get(old_id, 0.0),
+                0.35 * temporal_scores.get(old_id, 0.0),
+            )
+        ranked = sorted(
+            scores,
+            key=lambda old_id: (-scores[old_id], -by_id[old_id].created_at, old_id),
+        )
+        return [by_id[old_id] for old_id in ranked[:_EDGE_LLM_CANDIDATE_K]]
+
+    async def _relation_edges(
+        self,
+        memory: Memory,
+        candidates: list[Memory],
+        correlation_id: str,
+    ) -> list[tuple[str, MemoryEdgeKind, float]]:
+        if not candidates:
+            return []
+        allowed_ids = {candidate.id for candidate in candidates}
+        try:
+            output = await self._llm.complete(
+                [
+                    {"role": "system", "content": "你是记忆关系抽取器，只输出 JSON。"},
+                    {
+                        "role": "user",
+                        "content": _memory_relation_prompt(memory, candidates),
+                    },
+                ],
+                module="memory",
+                output_type="memory_relation",
+                correlation_id=correlation_id,
+                json_mode=True,
+            )
+            return _parse_relation_edges(output.content, allowed_ids)
+        except Exception:
+            self._logger.exception(
+                "记忆关系抽取失败 memory_id=%s correlation_id=%s",
+                memory.id, correlation_id,
+            )
+            return []
+
+    async def _prune_degrees(self, touched: set[str]) -> None:
+        if not touched:
+            return
+        while True:
+            degrees = await self._store.list_edge_degrees(sorted(touched))
+            delete_keys: set[tuple[str, str, MemoryEdgeKind]] = set()
+            for edges in degrees.values():
+                by_kind: dict[MemoryEdgeKind, list[MemoryEdge]] = {}
+                for edge in edges:
+                    by_kind.setdefault(edge.kind, []).append(edge)
+                for kind_edges in by_kind.values():
+                    if len(kind_edges) <= _EDGE_PER_KIND_LIMIT:
+                        continue
+                    overflow = sorted(kind_edges, key=_prune_priority)[
+                        : len(kind_edges) - _EDGE_PER_KIND_LIMIT
+                    ]
+                    delete_keys.update(_edge_key(edge) for edge in overflow)
+
+                remaining = [
+                    edge for edge in edges if _edge_key(edge) not in delete_keys
+                ]
+                if len(remaining) > _EDGE_TOTAL_LIMIT:
+                    overflow = sorted(remaining, key=_prune_priority)[
+                        : len(remaining) - _EDGE_TOTAL_LIMIT
+                    ]
+                    delete_keys.update(_edge_key(edge) for edge in overflow)
+            if not delete_keys:
+                return
+            await self._store.delete_edges(
+                sorted(delete_keys, key=lambda key: (key[0], key[1], key[2].value))
+            )
 
     async def _decay_and_evict(self, now: float) -> None:
         """新鲜度统一衰减（回写）+ 短期容量淘汰（满则挤掉最新鲜度最低的）。"""

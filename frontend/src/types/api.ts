@@ -219,8 +219,9 @@ export type DesireState = {
   long_term: LongTermDesire[];
 };
 
-// ---- 记忆（07-memory-store / nyx/types.py Memory）----
+// ---- 记忆（07-memory-system / nyx/types.py Memory）----
 export type MemoryType = "short_term" | "long_term";
+export type SearchMode = "keyword" | "vector" | "association";
 
 export type Memory = {
   id: string;
@@ -231,6 +232,7 @@ export type Memory = {
   freshness: number;
   type: MemoryType;
   recall_count: number;
+  sources: SearchMode[];
 };
 
 // ---- 活动（14-activity / nyx/types.py Activity）----

@@ -281,11 +281,20 @@ class _FakeInnerLife:
 
 
 class _FakeMemory:
-    def __init__(self, memories: list[Memory]) -> None:
+    def __init__(
+        self, memories: list[Memory], count_new_result: int | None = None
+    ) -> None:
         self._memories = memories
+        self._count_new_result = count_new_result
 
     async def list_memories(self) -> list[Memory]:
         return self._memories
+
+    async def count_new(self, tag: str | None, since: float) -> int:
+        del tag
+        if self._count_new_result is not None:
+            return self._count_new_result
+        return sum(1 for memory in self._memories if memory.created_at > since)
 
 
 def _memory(created_at: float) -> Memory:
@@ -296,10 +305,12 @@ def _memory(created_at: float) -> Memory:
 
 
 def _reflect_app(
-    narrative: SelfNarrative, memories: list[Memory]
+    narrative: SelfNarrative,
+    memories: list[Memory],
+    count_new_result: int | None = None,
 ) -> tuple[_App, _FakeInnerLife]:
     inner_life = _FakeInnerLife(narrative)
-    memory = _FakeMemory(memories)
+    memory = _FakeMemory(memories, count_new_result)
     app = _App(
         bus=cast(EventBus, object()),
         inner_life=cast(InnerLifeFacade, inner_life),
@@ -359,3 +370,23 @@ async def test_check_reflect_triggers(monkeypatch: pytest.MonkeyPatch) -> None:
     app, inner_life = _reflect_app(narrative, memories)
     await _check_reflect(app, "cid")
     assert inner_life.reflect_calls == ["cid"]
+
+
+async def test_check_reflect_uses_first_creation_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 1_000_000.0
+    monkeypatch.setattr("nyx.main.time.time", lambda: now)
+    narrative = SelfNarrative(
+        identity="尼克斯", story=[], self_view={}, becoming=[],
+        updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,
+    )
+    memories = [
+        _memory(narrative.updated_at + 100.0)
+        for _ in range(_REFLECT_MIN_NEW_MEMORIES)
+    ]
+    app, inner_life = _reflect_app(narrative, memories, count_new_result=0)
+
+    await _check_reflect(app, "cid")
+
+    assert inner_life.reflect_calls == []

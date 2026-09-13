@@ -241,9 +241,8 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
     (
         12,
         [
-            # 记忆「首次创建」锚点：strengthen 会刷新 created_at（decay 锚点），
-            # 但 first_created_at 定格在 INSERT、永不更新——审美「新读章数」
-            # 用它判「是否新增」，纯重读不污染（23 口径注修正）。
+            # 记忆「首次创建」锚点：created_at/first_created_at 均为创建时间，
+            # strengthen 不刷新；count_new 以 first_created_at 判定真新增。
             "ALTER TABLE memory ADD COLUMN first_created_at REAL",
             # 回填旧行：迁移前无 first_created_at，用当前 created_at 近似
             # （历史行的真首次时间已不可考，这是能取到的最好近似）。
@@ -272,6 +271,34 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
                 completion_tokens INTEGER NOT NULL DEFAULT 0
             )""",
             "CREATE INDEX idx_eval_log_created ON eval_log(created_at)",
+        ],
+    ),
+    (
+        14,
+        [
+            "ALTER TABLE memory_edge RENAME TO memory_edge_old",
+            """CREATE TABLE memory_edge (
+                from_id TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
+                to_id TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL DEFAULT 'semantic',
+                weight REAL NOT NULL DEFAULT 1.0,
+                created_at REAL NOT NULL DEFAULT 0.0,
+                CHECK (from_id < to_id),
+                PRIMARY KEY (from_id, to_id, kind)
+            )""",
+            """INSERT INTO memory_edge (from_id, to_id, kind, weight, created_at)
+            SELECT
+                CASE WHEN from_id < to_id THEN from_id ELSE to_id END,
+                CASE WHEN from_id < to_id THEN to_id ELSE from_id END,
+                'semantic',
+                MAX(weight),
+                0.0
+            FROM memory_edge_old
+            WHERE from_id != to_id
+            GROUP BY
+                CASE WHEN from_id < to_id THEN from_id ELSE to_id END,
+                CASE WHEN from_id < to_id THEN to_id ELSE from_id END""",
+            "DROP TABLE memory_edge_old",
         ],
     ),
 ]

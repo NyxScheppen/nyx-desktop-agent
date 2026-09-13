@@ -131,6 +131,28 @@ async def test_migrate_books_content_hash_index_unique() -> None:
     assert row["sql"].startswith("CREATE UNIQUE INDEX")
 
 
+async def test_memory_edge_schema_typed_and_canonical() -> None:
+    conn = await _migrated_conn()
+    try:
+        cols = await (await conn.execute("PRAGMA table_info(memory_edge)")).fetchall()
+        pk = {r["name"]: r["pk"] for r in cols}
+        notnull = {r["name"]: r["notnull"] for r in cols}
+        ddl = await (await conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_edge'"
+        )).fetchone()
+    finally:
+        await conn.close()
+    assert pk == {
+        "from_id": 1,
+        "to_id": 2,
+        "kind": 3,
+        "weight": 0,
+        "created_at": 0,
+    }
+    assert notnull["kind"] == 1 and notnull["created_at"] == 1
+    assert ddl is not None and "CHECK (from_id < to_id)" in ddl["sql"]
+
+
 async def test_migrate_v8_dedupes_duplicate_content_hash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -175,6 +197,46 @@ async def test_migrate_v8_dedupes_duplicate_content_hash(
     assert n is not None and n["n"] == 1  # 重复行被清到 1
     assert np_ is not None and np_["n"] == 1  # 被删书其 paragraphs 级联清空
     assert idx is not None and idx["sql"].startswith("CREATE UNIQUE INDEX")
+
+
+async def test_memory_edge_migration_canonicalizes_reverse_edges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = db._MIGRATIONS
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        monkeypatch.setattr(db, "_MIGRATIONS", [m for m in full if m[0] <= 13])
+        await db.migrate(conn)
+        for mid in ("a", "b"):
+            await conn.execute(
+                "INSERT INTO memory (id, created_at, content, tag, summary, freshness, "
+                "type, recall_count, aspect, embedding, content_hash, "
+                "first_created_at) VALUES (?, 1.0, ?, 't', 's', 1.0, "
+                "'short_term', 0, '[]', NULL, ?, 1.0)",
+                (mid, mid, mid),
+            )
+        await conn.execute(
+            "INSERT INTO memory_edge (from_id, to_id, weight) "
+            "VALUES ('a', 'b', 0.4)"
+        )
+        await conn.execute(
+            "INSERT INTO memory_edge (from_id, to_id, weight) "
+            "VALUES ('b', 'a', 0.9)"
+        )
+        await conn.commit()
+        monkeypatch.setattr(db, "_MIGRATIONS", full)
+        await db.migrate(conn)
+        rows = await (await conn.execute(
+            "SELECT from_id, to_id, kind, weight, created_at FROM memory_edge"
+        )).fetchall()
+    finally:
+        await conn.close()
+    assert [
+        (r["from_id"], r["to_id"], r["kind"], r["weight"], r["created_at"])
+        for r in rows
+    ] == [("a", "b", "semantic", 0.9, 0.0)]
 
 
 async def test_migrate_sets_version_to_max() -> None:

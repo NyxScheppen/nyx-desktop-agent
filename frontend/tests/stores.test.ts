@@ -466,6 +466,7 @@ describe("desireStore / activityStore", () => {
         freshness: 1,
         type: "long_term",
         recall_count: 0,
+        sources: ["keyword"],
       },
     ];
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));

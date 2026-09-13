@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Event`/`EventType`/`Source`/`ContextMode`/`Message`/`CurrentState`/`ShortTermDesire`/`SelfNarrative`）、02-config（`ExpressionConfig`）、03-llm（`LlmClient`）、05-event（`EventBus`）、06-tools（`ToolRegistry`）、09-memory-facade（`MemoryFacade`）、11-desire（`DesireFacade`）、12-inner-life（`InnerLifeFacade`）、14-activity（`ActivityFacade`）、eval（`Evaluator`）、16-expression-prompt（`build_system_prompt`/`build_user_prompt`/`classify_channel`）
+- **前置依赖**：01-types（`Event`/`EventType`/`Source`/`ContextMode`/`Message`/`CurrentState`/`ShortTermDesire`/`SelfNarrative`）、02-config（`ExpressionConfig`）、03-llm（`LlmClient`）、05-event（`EventBus`）、06-tools（`ToolRegistry`）、07-memory-system（`MemoryFacade`）、11-desire（`DesireFacade`）、12-inner-life（`InnerLifeFacade`）、14-activity（`ActivityFacade`）、eval（`Evaluator`）、16-expression-prompt（`build_system_prompt`/`build_user_prompt`/`classify_channel`）
 
 ## 用户故事
 
@@ -18,6 +18,7 @@
 - [ ] `reply` 走 LangGraph 图：快通道 `classify → respond → record → end`（不检索记忆、不生成场景化记忆）；慢通道 `classify → assemble → use_tools → respond → should_ask`，非问句 round 循环（≤ `slow_max_rounds`，**每轮 publish 一条 SPEAK**），问句 publish ASK 后回合结束，最终都走 `scene_memory → record → end`；`respond` 一轮 think+speak 用一次 LLM 生成（`json_mode`，`_parse_reply` 解析后分开发 THINK/SPEAK/ASK）
 - [ ] **当前消息在 prompt 里只出现一次**：`reply` 入口回溯的 `context` 不含当前消息（当前消息尚未进 history），`build_user_prompt` 里它只作为「本次消息」
 - [ ] **慢通道回溯截断**：慢通道 `assemble` 调 `build_backtrack_context` 重截断 context——命中「满 max_len / 相邻隔超 `context_time_gap` / 与当前消息零字符重叠」即停，快通道 Nyx 消息（`fast=True`）跳过继续往前；快通道保持入口朴素取最近 `max_context_len` 条
+- [ ] **慢通道记忆召回**：慢通道 `assemble` 只调用 `MemoryFacade.search(message)`（不暴露 `direct_limit` / `association_limit`），把返回的 direct + association 全部记忆放入 prompt，并立即逐条 `record_recall(memory.id)`；快通道不检索、不 record recall
 - [ ] **累积式 prompt**：第 N 轮 respond 的 user prompt 含前 N-1 轮 think/speak 累积（`_rounds_block` 拼前轮），不单独注入「我刚刚的内心想法」（think/speak 同源一次生成，无需事后拼接）
 - [ ] **慢通道递进续写**：首轮 respond 是「先想此刻的念头 + 说出口的第一句话」，第 2 轮起切换为「再往里想一层 + 往下说一句」，不重复、不重新回答；内心话（think）用第一人称「我」写，不用「她」或「尼克斯」自称
 - [ ] 每个 LLM 产出（tool / reply / initiate_chat / mutter_wander）后紧跟 `await evaluator.evaluate(output)`；`output_type` 分别 `tool` / `reply` / `initiate_chat` / `mutter_wander`、`module="expression"`、`correlation_id` 透传；reply 解析出的 think/speak 各自经 `_voice_output` 重造 LLMOutput 分别 evaluate（OOC 仍对内心话/对外话分跑）
@@ -85,5 +86,5 @@
 - [ ] `test-inventory.md` 已更新
 - [ ] ripple 同步：tech-ref §6.1 `ReplyState` 的 `think`/`speak` 从 `str | None` 改 `list[str]`（多轮累积）、补 `narrative: SelfNarrative | None` 与 `correlation_id: str` 两字段、edges 补「每轮 SPEAK 交付 + ask 后回合结束走 scene_memory」；tech-ref §5 `initiate_chat` 签名 `-> bool`（发话 True/无话 False）、`mutter` 签名补 `correlation_id: str`（MUTTER_CHECK tick 恒定根）
 - [ ] ripple 同步（think+speak 合并）：tech-ref §6.1 图拓扑 `think`/`speak` 两节点合并为 `respond`（一轮 think+speak 一次 `json_mode` 生成，`_parse_reply` 解析后分开发 THINK/SPEAK/ASK）；本 spec 图拓扑/多轮语义/`output_type` 由 `think`/`speak` 改 `reply`
-- [ ] ripple 同步（V2 交互闭环）：tech-ref §5 `ExpressionFacade` 补 `check_timeouts(now)`；02-config `ExpressionConfig` 补 `ask_timeout`/`chat_ignore_timeout` 两字段；09-memory-facade 补 `record_no_answer`；18-api `_tick_loop` 每轮心跳 `await app.expression.check_timeouts(now)`
+- [ ] ripple 同步（V2 交互闭环）：tech-ref §5 `ExpressionFacade` 补 `check_timeouts(now)`；02-config `ExpressionConfig` 补 `ask_timeout`/`chat_ignore_timeout` 两字段；07-memory-system 补 `record_no_answer`；18-api `_tick_loop` 每轮心跳 `await app.expression.check_timeouts(now)`
 - [ ] 下游约定：18-api 组合根 `canon` = `prompts/canon.md`、`ask_guidance` = `prompts/ask.md` 读入后注入 `ExpressionFacade`；`POST /api/chat` → `ExpressionFacade.reply(msg, correlation_id)`；`INITIATE_CHAT_CHECK` tick 由组合根调 `should_initiate_chat` 判定、从 `DesireFacade.get_pending()` 选 interaction 欲望后 `await initiate_chat(desire, state)`，返回 `True` 才更新 `last_chat_at`；`MUTTER_CHECK` tick → `mutter(state, event.correlation_id)`；组合根构造 `ExpressionFacade` 时在 `memory` 实参后注入 `activity`（activity 先于 expression 构造）

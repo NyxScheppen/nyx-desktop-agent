@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`CurrentState` / `Memory` / `Message` / `SelfNarrative` / `ShortTermDesire` / `ContextMode` / 各枚举）。输入数据由 09-memory-facade（`search`）、11-desire（`get_pending`，装配进 `CurrentState.active_desires`）、12-inner-life（`get_state` / `get_narrative`）生产，经 17-expression 编排传入本 spec 的纯函数；`canon` 文本来自 `prompts/canon.md`、`ask` 文本来自 `prompts/ask.md`（见「技术方案」）
+- **前置依赖**：01-types（`CurrentState` / `Memory` / `Message` / `SelfNarrative` / `ShortTermDesire` / `ContextMode` / 各枚举）。输入数据由 07-memory-system（`MemoryFacade.search`）、11-desire（`get_pending`，装配进 `CurrentState.active_desires`）、12-inner-life（`get_state` / `get_narrative`）生产，经 17-expression 编排传入本 spec 的纯函数；`canon` 文本来自 `prompts/canon.md`、`ask` 文本来自 `prompts/ask.md`（见「技术方案」）
 
 ## 用户故事
 

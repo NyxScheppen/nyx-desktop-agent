@@ -205,7 +205,7 @@
 | `test_associate_equal_paths_keep_lexicographically_smaller_prefix_via` | 回归保护 | equal score/depth 的多路径按字典序更小 `via` 保留最佳路径；覆盖 `"a"` / `"aa"` 前缀 tie-break |
 | `test_clusters_include_isolated_nodes_with_stable_ids` | 功能正确 | `MemoryGraph(edges, memory_ids=...)` 聚类返回全部 memory id；连通 a/b 同 cluster，孤立 z 单独 cluster，cluster id 稳定 |
 | `test_cosine` | 功能正确 | 正交=0、相同=1、相反=-1、零向量=0、维度不一致=0（纯函数） |
-| `test_rank_by_cosine` | 功能正确 | `embedding=None` 跳过、`s<=0` 过滤、按 `s` 降序（纯函数；09 `_similar` 共用） |
+| `test_rank_by_cosine` | 功能正确 | `embedding=None` 跳过、`s<=0` 过滤、按 `s` 降序（纯函数） |
 | `test_extract_keywords_mixed_text` | 功能正确 | 混合文本提取英文/数字 token 并 lower；精确停用词 `这个` 被过滤，2-8 字 CJK 片段 `中文长句` 直接保留 |
 | `test_extract_keywords_keeps_short_cjk_with_particles` | 回归保护 | 2-8 字连续 CJK 片段即使包含 `可以` / `你们` / 语气边界字，也作为完整 token 直接保留 |
 | `test_extract_keywords_long_cjk_windows_without_stopword_splitting` | 功能正确 | 长 CJK 片段只用 2/3 字滑窗，包含 `诺斯艾`、不包含 4 字 token `诺斯艾兰`，重复 token 只保留一次 |
@@ -251,17 +251,22 @@
 | `test_memory_to_markdown` | 功能正确 | 含 summary 与 content |
 | `test_create_scene_memory_basic` | 功能正确 | 字段正确（content/tag/summary、freshness=1.0、type SHORT_TERM、embedding=None）；`evaluator.evaluate` 调 1 次（scene_memory）；发布 `memory_created`（memory_id/source/correlation 透传） |
 | `test_contradiction_gating_under_threshold` | 功能正确 | 正交 embedding → 仅 1 次 LLM 调用、无 contradiction、无 reflection（门控 0 调用） |
-| `test_contradiction_detected` | 功能正确 | 过阈值候选 → 第 2 次 `output_type="contradiction"`；`conflicts_with` 命中 → 发布 reflection（含双方 id）；evaluator 再调 1 次 |
+| `test_contradiction_detected` | 功能正确 | 过阈值候选 → 建边关系抽取后调用 `contradiction`；`conflicts_with` 命中 → 发布 reflection（含双方 id）；evaluator 再调 1 次 |
 | `test_contradiction_null_no_reflection` | 功能正确 | contradiction 返回 null → 不发 reflection |
-| `test_contradiction_recall_top_k` | 边界鲁棒 | 6 条高相似旧记忆 → 矛盾 prompt 候选恰 5 条（`_RECALL_TOP_K=5`） |
+| `test_contradiction_recall_top_k` | 边界鲁棒 | 6 条高相似旧记忆 → 矛盾 prompt 候选恰 5 条（persist candidates top 5） |
+| `test_contradiction_uses_top_five_persist_candidates` | 边界鲁棒 | 矛盾检测从 bounded persist semantic candidates 取 top 5 写入 prompt |
 | `test_contradiction_prompt_negation_hint` | 功能正确 | 新记忆含否定词 → 矛盾 prompt 含「重点核对」句 |
 | `test_contradiction_parse_failure_no_crash` | 边界鲁棒 | 矛盾判断返回非法 JSON → 记忆主流程照常入库 + 发布 `memory_created`、无 reflection（矛盾检测 best-effort 不反噬创建） |
 | `test_build_edges` | 功能正确 | 新记忆有到旧记忆的 `memory_edge`（`weight>0`） |
+| `test_build_edges_creates_semantic_keyword_and_temporal_edges` | 功能正确 | 新记忆入库后建出 `semantic` / `keyword` / `temporal` typed edges |
+| `test_build_edges_creates_llm_relation_edge` | 功能正确 | `memory_relation` JSON 关系输出 `updates_preference` → 写入对应 typed edge |
+| `test_prune_edges_limits_per_kind_and_total_degree` | 功能正确 | `_prune_degrees({"hub"})` 通过 typed edge keys 剪枝，使单 kind incident edges 不超过 4 |
 | `test_eviction` | 功能正确 | `short_term_capacity=1` → 旧记忆（freshness 更低）被挤掉，只剩新的一条 |
 | `test_eviction_tie_break_oldest_first` | 边界鲁棒 | 新鲜度相等（`freshness_decay=0.0`）时按 `created_at` 升序挤掉最旧而非最新，`short_term_capacity=2` 造 3 条 |
 | `test_decay_writeback` | 功能正确 | 1 天间隔两次创建 → 旧记忆 freshness 衰减（`<1.0`） |
 | `test_dedup_exact_same_content` | 功能正确 | 同 content 二次 `create_scene_memory` → 两次返回同一持久化记忆 id、库内 1 条、`recall_count==1`、仅 1 个 `memory_created`（精确去重合并强化计数） |
 | `test_dedup_semantic_merge` | 功能正确 | 新记忆与旧记忆 embedding 余弦=1.0 → 合并到旧记忆（`recall_count==1`）、不新增、无 `memory_created` |
+| `test_dedup_semantic_uses_bounded_candidates_and_returns_old_memory` | 功能正确 | bounded semantic candidate 命中去重 → 返回旧记忆 id、无 `memory_created` |
 | `test_dedup_semantic_below_threshold` | 功能正确 | 余弦 < 0.95 → 正常新建入库（`list_memories` 2 条、发 1 个 `memory_created`） |
 | `test_dedup_embed_none_skips_semantic` | 边界鲁棒 | `embed=None` 时语义去重跳过（旧记忆带 embedding 也不比较），仅精确去重生效 |
 | `test_search_delegates_to_retrieval` | 功能正确 | `search` 委托 fake `MemoryRetrieval`（返回预设 + 记录 query） |
@@ -282,12 +287,12 @@
 | `test_activity_memory_fields_skip` | 边界鲁棒 | 非目标类型/空 result/空内容/类型非 str/result 非 dict → `None` |
 | `test_activity_memory_fields_summary_truncated` | 边界鲁棒 | summary 超 80 字截断为 `x*80 + "…"` |
 | `test_remember_activity_reading` | 功能正确 | reading 事件 → 写一条 Memory（content=note/summary=book/tag="reading"/type SHORT_TERM）、发布 `memory_created`、无 LLM 调用 |
-| `test_remember_activity_creation_and_exploration` | 功能正确 | creation + free_exploration 各写一条（content/summary 正确、tag 为活动类型值）、无 LLM 调用 |
+| `test_remember_activity_creation_and_exploration` | 功能正确 | creation + free_exploration 各写一条（content/summary 正确、tag 为活动类型值）；不调用 scene/contradiction，允许 write-side `memory_relation` |
 | `test_remember_activity_skips_empty_or_other_type` | 边界鲁棒 | rest/空 result/observe_user → 不写、无 `memory_created` |
-| `test_remember_activity_contradiction` | 功能正确 | 有相似旧记忆 + embed → 门控触发 1 次 `contradiction`（参与矛盾判断，无 scene_memory）；命中 → 发布 reflection |
+| `test_remember_activity_contradiction` | 功能正确 | 有相似旧记忆 + embed → `memory_relation` 后门控触发 `contradiction`（无 scene_memory）；命中 → 发布 reflection |
 | `test_remember_user_profile_fields` | 功能正确 | `remember_user_profile` → 写一条 `LONG_TERM`/`tag="user"`/`aspect` 全等的画像记忆、无 LLM 调用、发布 `memory_created`（correlation 透传） |
 | `test_record_no_answer` | 功能正确 | 问句未答 → 写一条 `SHORT_TERM`/`tag="interaction"`/summary「用户没有回答我的提问」、content 含问句、无 LLM 调用、发布 `memory_created`（correlation 透传） |
-| `test_remember_knowledge` | 功能正确 | 3 项入参 → 落 2 条 `LONG_TERM`/`tag="knowledge"` 记忆（空 content 项跳过）；summary 回退 content；无 LLM 调用；发布 2 条 `memory_created`（correlation 透传） |
+| `test_remember_knowledge` | 功能正确 | 3 项入参 → 落 2 条 `LONG_TERM`/`tag="knowledge"` 记忆（空 content 项跳过）；summary 回退 content；不调用 scene/contradiction，允许 write-side `memory_relation`；发布 2 条 `memory_created`（correlation 透传） |
 | `test_remember_reading` | 功能正确 | 读书入参 → 写 1 条 `LONG_TERM`/`tag="reading"` 记忆（summary 透传）、无 LLM 调用、发布 `memory_created`（correlation 透传） |
 
 ## 10-desire-value（欲望值机制）

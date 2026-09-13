@@ -4,24 +4,22 @@
 `parse_epub` 是同步 CPU 阻塞调用，用 `asyncio.to_thread` 卸载，不阻塞事件循环。
 构造注入 9 依赖（store + inner_life/desire/memory/llm/evaluator/bus/canon/expression）。
 """
+# pyright: reportUnusedFunction=false
 
 import asyncio
-import json
 import logging
 import time
-from dataclasses import dataclass
-from typing import Any, cast
 
 from nyx.desire.facade import DesireFacade
-from nyx.enums import BoundaryResult, DesireType, EventType, ReadingBehavior
+from nyx.enums import BoundaryResult, DesireType, ReadingBehavior
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
-from nyx.events.event import internal_event
 from nyx.expression.facade import ExpressionFacade
 from nyx.expression.prompt import build_system_prompt
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
+from nyx.reading.companions import ReadingCompanion
 from nyx.reading.epub import parse_epub
 from nyx.reading.impulse import (
     MUTTER_COOLDOWN_SEC,
@@ -30,6 +28,11 @@ from nyx.reading.impulse import (
     check_triggers,
     compute_composite,
     extract,
+)
+from nyx.reading.integration import (
+    NYX_BUFFER_MAXLEN,
+    ReadingIntegration,
+    parse_reading_note,
 )
 from nyx.reading.store import ReadingStore
 from nyx.types import (
@@ -43,35 +46,9 @@ from nyx.types import (
     UserNote,
 )
 
-_QUESTION_USER_PROMPTS: dict[ReadingBehavior, str] = {
-    ReadingBehavior.QUESTION_KNOWLEDGE: (
-        "基于这段文字，问一个你真想弄懂的知识型问题。只输出问题本身。"
-    ),
-    ReadingBehavior.QUESTION_PERSONAL: (
-        "基于这段文字，问一个你想了解用户的私人型问题。只输出问题本身。"
-    ),
-    ReadingBehavior.QUESTION_REFLECTIVE: (
-        "基于这段文字，问一个你想和用户一起想一想的反思型问题。只输出问题本身。"
-    ),
-    ReadingBehavior.QUOTE_QUESTION: (
-        "基于这段文字问一个问题，并在下一行逐字摘取段落原文里最值得划线的一句。"
-        "只输出两行：第一行问题，第二行引用原文。"
-    ),
-}
-
-_ASSOCIATION_SNIPPET_CHARS = 80
-
 # 每本书 Nyx 输出 buffer 的条数上限（22）：长书长时间不触章末时的内存兜底，
 # 超限丢弃最旧条目。值远大于单章正常产量，仅防无界增长。
-_NYX_BUFFER_MAXLEN = 100
-
-_READING_NOTE_SYSTEM = (
-    "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
-    "你温柔克制、思虑很深。把下面这些你陪读时冒出的碎碎念和提问，"
-    "整理成一条第一人称读书记忆（尼克斯视角）：你读到了什么、心里留下了什么、"
-    "哪里让你停了一下，而不是复述原文或罗列要点。"
-    "只输出 JSON，键：content（正文）、summary（一句话总结），两者都是非空字符串。"
-)
+_NYX_BUFFER_MAXLEN = NYX_BUFFER_MAXLEN
 
 
 def _desire_value(values: list[DesireValue], type_: DesireType) -> float:
@@ -82,32 +59,8 @@ def _desire_value(values: list[DesireValue], type_: DesireType) -> float:
     return 0.0
 
 
-@dataclass
-class NyxBufferEntry:
-    """Nyx 陪读输出（碎碎念/提问）的内存缓冲条目（22-reading-notes）。
-
-    进程内 transient、不落库；list 顺序即时间序，不另存时间戳。
-    """
-
-    paragraph_index: int
-    content: str
-    source: str
-
-
 def _parse_reading_note(raw: str) -> tuple[str, str]:
-    """解析读书记忆 LLM 的 JSON 产出 → (content, summary)；
-    结构非法抛 ValueError。"""
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise ValueError(f"读书记忆 JSON 应是对象，得到 {type(data).__name__}")
-    parsed = cast(dict[str, Any], data)
-    content = parsed.get("content")
-    summary = parsed.get("summary")
-    if not isinstance(content, str) or not content:
-        raise ValueError("读书记忆 JSON 缺 content 或非空字符串")
-    if not isinstance(summary, str) or not summary:
-        raise ValueError("读书记忆 JSON 缺 summary 或非空字符串")
-    return content, summary
+    return parse_reading_note(raw)
 
 
 class DuplicateBookError(Exception):
@@ -153,19 +106,19 @@ class ReadingFacade:
         self._store = store
         self._inner_life = inner_life
         self._desire = desire
-        self._memory = memory
         self._llm = llm
         self._evaluator = evaluator
-        self._bus = bus
         self._canon = canon
-        self._expression = expression
         self._logger = logging.getLogger(__name__)
         # 冷却时间戳是唯一内存态（per 进程，重启清零），用单调钟 time.monotonic
         # 防墙钟跳变；无并发锁——见 spec 21 关键决策。
         self._cooldowns: dict[ReadingBehavior, float] = {}
         self._mutter_at = 0.0
-        # Nyx 陪读输出 buffer（22）：per book 的碎碎念/提问，章末整合后清空。
-        self._nyx_buffer: dict[str, list[NyxBufferEntry]] = {}
+        self._integration = ReadingIntegration(llm, evaluator, memory, inner_life)
+        self._nyx_buffer = self._integration.buffer
+        self._companion = ReadingCompanion(
+            llm, evaluator, bus, memory, expression, canon, self.record_nyx_output
+        )
         # 已完成整本 ++ 的 book 标记（22）：判 BOOK_FINISHED 时仅首次 ++，
         # nyx_position 回到 < total（回翻/重读）时清除，下一遍读完再次 ++。
         self._finished_books: set[str] = set()
@@ -285,16 +238,9 @@ class ReadingFacade:
         mutter: bool,
         state: CurrentState,
     ) -> None:
-        """后台分派：mutter 独立闸门 + 各触发行为；每处失败只记日志不反噬。"""
-        if mutter:
-            await self._mutter_reading(book_id, paragraph_index, text, state)
-        for behavior in behaviors:
-            if behavior is ReadingBehavior.ASSOCIATE:
-                await self._associate_reading(book_id, paragraph_index, text)
-            else:
-                await self._question_reading(
-                    book_id, paragraph_index, text, behavior, state
-                )
+        await self._companion.dispatch(
+            book_id, paragraph_index, text, behaviors, mutter, state
+        )
 
     def _log_task_error(self, task: asyncio.Future[None]) -> None:
         """后台分派兜底：记逃逸异常（best-effort 旁路，不反噬主流程）。"""
@@ -311,44 +257,7 @@ class ReadingFacade:
         text: str,
         state: CurrentState,
     ) -> None:
-        """陪读碎碎念：LLM 一句自然口语；空/失败只记日志，不广播。"""
-        try:
-            system = build_system_prompt(self._canon, state)
-            user = (
-                f"读到这段：\n\n{text}\n\n"
-                "你陪在用户身边，说一句自然口语的碎碎念，一两句就好。"
-            )
-            output = await self._llm.complete(
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                module="reading",
-                output_type="reading_mutter",
-                correlation_id=book_id,
-            )
-            await self._evaluator.evaluate(output)
-            content = output.content.strip()
-            if not content:
-                return
-            await self.record_nyx_output(book_id, paragraph_index, content, "mutter")
-            await self._bus.publish(
-                internal_event(
-                    EventType.READING_MUTTER,
-                    {
-                        "content": content,
-                        "book_id": book_id,
-                        "paragraph_index": paragraph_index,
-                    },
-                    book_id,
-                )
-            )
-        except Exception:
-            self._logger.exception(
-                "陪读碎碎念失败 book_id=%s paragraph_index=%d",
-                book_id, paragraph_index,
-            )
-            return
+        await self._companion.mutter(book_id, paragraph_index, text, state)
 
     async def _question_reading(
         self,
@@ -358,82 +267,14 @@ class ReadingFacade:
         behavior: ReadingBehavior,
         state: CurrentState,
     ) -> None:
-        """陪读提问：LLM 生成一个子型问题；`quote_question` 拆首行/次行出划线。"""
-        try:
-            system = build_system_prompt(self._canon, state)
-            user = f"读到这段：\n\n{text}\n\n{_QUESTION_USER_PROMPTS[behavior]}"
-            output = await self._llm.complete(
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                module="reading",
-                output_type=behavior.value,
-                correlation_id=book_id,
-            )
-            await self._evaluator.evaluate(output)
-            raw = output.content.strip()
-            if not raw:
-                return
-            if behavior is ReadingBehavior.QUOTE_QUESTION:
-                content, _, quote = raw.partition("\n")
-                content = content.strip()
-                selected_text = quote.strip() or None
-            else:
-                content = raw
-                selected_text = None
-            if not content:
-                return
-            await self.record_nyx_output(book_id, paragraph_index, content, "question")
-            await self._bus.publish(
-                internal_event(
-                    EventType.READING_QUESTION,
-                    {
-                        "content": content,
-                        "subtype": behavior.value,
-                        "book_id": book_id,
-                        "paragraph_index": paragraph_index,
-                        "selected_text": selected_text,
-                    },
-                    book_id,
-                )
-            )
-            self._expression.record_proactive_turn(content)
-        except Exception:
-            self._logger.exception(
-                "陪读提问失败 behavior=%s book_id=%s paragraph_index=%d",
-                behavior.value, book_id, paragraph_index,
-            )
-            return
+        await self._companion.question(
+            book_id, paragraph_index, text, behavior, state
+        )
 
     async def _associate_reading(
         self, book_id: str, paragraph_index: int, text: str
     ) -> None:
-        """陪读记忆联想：检索段落相关记忆，每条命中广播一条 READING_ASSOCIATION。"""
-        try:
-            memories = await self._memory.search(text)
-            for memory in memories[:3]:
-                source = memory.summary or memory.content
-                snippet = source[:_ASSOCIATION_SNIPPET_CHARS]
-                await self._bus.publish(
-                    internal_event(
-                        EventType.READING_ASSOCIATION,
-                        {
-                            "memory_id": memory.id,
-                            "snippet": snippet,
-                            "book_id": book_id,
-                            "paragraph_index": paragraph_index,
-                        },
-                        book_id,
-                    )
-                )
-                self._expression.record_proactive_turn(snippet)
-        except Exception:
-            self._logger.exception(
-                "陪读联想检索失败 book_id=%s paragraph_index=%d",
-                book_id, paragraph_index,
-            )
-            return
+        await self._companion.associate(book_id, paragraph_index, text)
 
     # ---- 22-reading-notes：用户笔记 / Nyx 批注 / 章末整合 ----
 
@@ -539,10 +380,7 @@ class ReadingFacade:
         associate（记忆检索、无 LLM 产出）不调；buffer 进程内 transient、重启清零。
         超 `_NYX_BUFFER_MAXLEN` 丢弃最旧条目，防长书长时间不触章末时无界增长。
         """
-        buffer = self._nyx_buffer.setdefault(book_id, [])
-        buffer.append(NyxBufferEntry(paragraph_index, content, source))
-        if len(buffer) > _NYX_BUFFER_MAXLEN:
-            del buffer[: len(buffer) - _NYX_BUFFER_MAXLEN]
+        await self._integration.record(book_id, paragraph_index, content, source)
 
     async def check_chapter_boundary(
         self, book_id: str, nyx_position: int
@@ -604,39 +442,4 @@ class ReadingFacade:
         快照前缀（`remember_reading` 落库后）——失败保留，下次边界重试；LLM 等待
         期间新 append 的条目不吞掉，留给下一轮。
         """
-        entries = list(self._nyx_buffer.get(book_id, []))
-        if not entries:
-            return
-        try:
-            lines = [
-                f"[{e.source}] 第{e.paragraph_index}段：{e.content}" for e in entries
-            ]
-            user = (
-                "这是你陪读这一章/本书时冒出的碎碎念和提问：\n\n"
-                + "\n".join(lines)
-                + "\n\n整理成一条第一人称的读书记忆。"
-            )
-            output = await self._llm.complete(
-                [
-                    {"role": "system", "content": _READING_NOTE_SYSTEM},
-                    {"role": "user", "content": user},
-                ],
-                module="reading",
-                output_type="reading_note",
-                correlation_id=book_id,
-                json_mode=True,
-            )
-            await self._evaluator.evaluate(output)
-            content, summary = _parse_reading_note(output.content)
-            await self._memory.remember_reading(content, summary, book_id)
-            # 只删已消费的快照前缀；LLM 等待期间新 append 的条目保留给下一轮。
-            current = self._nyx_buffer.get(book_id)
-            if current is not None:
-                del current[: len(entries)]
-            if pre_read_count >= 1:
-                await self._inner_life.reflect(book_id)
-        except Exception:
-            self._logger.exception(
-                "读书记忆整合失败 book_id=%s result=%s", book_id, result.value
-            )
-            return
+        await self._integration.integrate(book_id, result, pre_read_count)

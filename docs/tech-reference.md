@@ -246,7 +246,13 @@ start → classify_channel
 ```
 nyx/
   __init__.py
-  main.py                 # uvicorn 服务入口：FastAPI 端点 + 组合根 + tick 循环
+  main.py                 # uvicorn 服务入口 + 兼容导出
+  app_context.py          # _App 组合根与 Facade 装配
+  bootstrap.py            # prompt 加载与初始数据 seed
+  runtime.py              # tick / EventBus 监督 / 视觉后台循环
+  subscriptions.py        # EventBus 订阅注册
+  api/
+    routes.py             # FastAPI 请求模型 + REST/SSE 路由
   config.py               # 配置加载（§8）
   enums.py                # §1 所有枚举
   types.py                # §2 实体 dataclass
@@ -266,6 +272,8 @@ nyx/
     epub.py                # parse_epub（EPUB 字节→元数据+段落+content_hash）
     store.py               # ReadingStore（books/paragraphs/reading_progress/user_notes/annotations 存取：进度/书架/分页/increment_read_count/笔记批注 CRUD）
     impulse.py             # 阅读冲动引擎纯函数（特征提取 / 驱动现算 / 复合加权 / 阈值+冷却，21）
+    companions.py          # 陪读碎碎念 / 提问 / 记忆联想分派
+    integration.py         # Nyx 输出 buffer + 章末记忆整合
     facade.py              # ReadingFacade（import_book / list_books / list_paragraphs / get_progress / save_progress / evaluate_paragraph / add_user_note / list_user_notes / update_user_note / delete_user_note / show_to_nyx / record_nyx_output / check_chapter_boundary）
   expression/
     facade.py             # ExpressionFacade
@@ -275,6 +283,12 @@ nyx/
     mutter.py             # 碎碎念模板
   activity/
     facade.py             # ActivityFacade
+    lifecycle.py          # 活动开始 / 完成 / 失败 / 打断状态转换
+    starter.py            # 活动恢复 / 选择 / 启动编排
+    reading_runner.py      # 本地读物分块执行与知识提取
+    creation.py            # 创作风格与 prompt 构建
+    llm_result.py          # 活动 LLM JSON 结果解析
+    paths.py               # 活动输出路径与文件名 helper
     store.py              # ActivityStore（activity 表单表 CRUD）
     material_store.py     # MaterialStore（书库分块进度 + 读书笔记片段）
     scheduler.py          # 日程块排期

@@ -9,6 +9,7 @@
 | `test_all_enums_exhaustive` | 功能正确 | 15 个枚举的值集合与 `EXPECTED` 逐枚举相等（防漏成员/多成员/改值） |
 | `test_naming_convention` | 回归保护 | 每个成员 `value == name.lower()`（防手滑改值破坏 snake_case 契约） |
 | `test_strenum_json_serializable` | 功能正确 | `json.dumps(EventType.USER_MESSAGE) == '"user_message"'` |
+| `test_frontend_sse_listeners_cover_all_event_types` | 跨端契约 | 前端 `useSSE.EVENT_TYPES` 与后端 `EventType` 值集合完全一致，防止命名事件被静默漏接 |
 | `test_short_term_desire_default_status` | 功能正确 | `status` 默认 `DesireStatus.PENDING`（枚举成员而非裸字符串） |
 | `test_memory_aspect_default_factory_isolated` | 边界鲁棒 | `default_factory` 保证两个实例的 `aspect` 互不共享 |
 | `test_long_term_desire_linked_values_default_factory_isolated` | 边界鲁棒 | `default_factory` 保证两个实例的 `linked_values` 互不共享 |
@@ -473,6 +474,14 @@
 | `test_parse_activity_result_valid` | 功能正确 | reading/creation 缺键结构合法 → 返回解析后 dict |
 | `test_parse_activity_result_missing_key_raises` | 边界鲁棒 | 缺必需键 → `ValueError`（fail-fast） |
 | `test_parse_activity_result_non_dict_raises` | 边界鲁棒 | JSON 顶层非 dict → `ValueError` |
+| `test_activity_llm_result_module` | 架构回归 | 抽出的 `nyx.activity.llm_result.parse_activity_result` 保持 reading/creation 合法结果与非法结构校验 |
+| `test_activity_paths` | 功能正确 | 抽出的活动路径 helper 保持文件名清洗与稳定 8 位路径哈希 |
+| `test_activity_creation_helpers` | 功能正确 | 抽出的创作 helper 保持风格池、上下文拼装与状态/人格 system prompt |
+| `test_reading_runner_has_single_activity_entrypoint` | 架构回归 | 读书活动执行细节通过 `ReadingActivityRunner.run` 的单一入口提供给 `ActivityFacade` |
+| `test_start_marks_running_and_publishes_event` | 功能正确 | lifecycle 启动活动后持久化 RUNNING、激活欲望并发布带 correlation 的 `activity_start` |
+| `test_complete_marks_completed_and_publishes_goal_result` | 功能正确 | lifecycle 完成活动后持久化 COMPLETED，并发布 goal_met 与 energy_delta 正确的 `activity_end` |
+| `test_fail_marks_incomplete_and_suppresses_desire` | 边界鲁棒 | lifecycle 失败收尾持久化 INCOMPLETE，并将消费中的欲望标记 SUPPRESSED |
+| `test_start_next_if_idle_inserts_and_executes_default_activity` | 功能正确 | starter 空闲且无欲望时插入默认观察活动，并创建执行 task |
 | `test_select_activity_empty` | 功能正确 | 无欲望 → `None` |
 | `test_select_activity_exploration` | 功能正确 | 探索欲 → READING，`desire_id`/`description`/`goal` 序列化正确 |
 | `test_select_activity_interaction_returns_none` | 功能正确 | 互动欲 → `None`（不可排程） |
@@ -794,6 +803,7 @@
 | `test_question_reading_records_proactive_turn` | 功能正确 | `_question_reading`（quote_question）→ 广播 `reading_question` 且 `fake_expression.recorded == [问题正文]`（不含 selected_text） |
 | `test_associate_reading_records_proactive_turn_per_memory` | 功能正确 | 2 条记忆 → 2 条 `reading_association` 且 `recorded == [snippet1, snippet2]`（每条一次） |
 | `test_mutter_reading_does_not_record_proactive_turn` | 功能正确 | `_mutter_reading` → 广播 `reading_mutter` 且 `recorded == []`（未调 record_proactive_turn） |
+| `test_dispatch_question_publishes_and_records_output` | 模块契约 | `ReadingCompanion.dispatch` 分派反思型提问 → 广播事件、写入 Nyx buffer、记录主动对话 turn |
 | `test_impulse_evaluate_returns_triggered` | 功能正确 | `POST /api/impulse/evaluate` → `{triggered:[associate, question_knowledge]}`、`evaluate_paragraph` 收对 `(book_id,2,1)` |
 | `test_impulse_evaluate_missing_last_paragraph_returns_422` | 边界鲁棒 | 缺 `last_paragraph_index` → 422、不调 facade |
 
@@ -827,6 +837,7 @@
 | `test_check_chapter_boundary_reread_reflects` | 功能正确 | read_count=1（重读）→ `inner_life.reflect(book_id)` 调 1 次 |
 | `test_check_chapter_boundary_first_read_no_reflect` | 功能正确 | 首读 → 不 reflect |
 | `test_integrate_buffer_empty_skips` | 边界鲁棒 | buffer 空 → 仍返回边界、`remembered==[]` |
+| `test_integrate_consumes_buffer_after_memory_is_saved` | 模块契约 | `ReadingIntegration.integrate` 成功落读书记忆后消费对应 buffer 快照 |
 | `test_mutter_and_question_record_nyx_output` | 功能正确 | mutter/question 各入 buffer（`source` 集合 `{"mutter","question"}`） |
 | `test_book_finished_increments_read_count_even_with_empty_buffer` | 边界鲁棒 | 整本读完 buffer 空 → `read_count` 仍 0→1 |
 | `test_book_finished_increments_read_count_even_when_integrate_fails` | 边界鲁棒 | 整本读完 LLM 抛异常 → `read_count` 仍 0→1 |

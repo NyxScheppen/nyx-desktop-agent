@@ -76,6 +76,6 @@ CREATE INDEX idx_eval_log_created ON eval_log(created_at);
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `docs/test-inventory.md` 已更新（快照）
-- [ ] `docs/tech-reference.md` Evaluator 段（`evaluate` 落库）+ API 端点表 + 迁移版图（v13）同步
+- [ ] `docs/tech-reference.md` 的源码导航同步；API、迁移和 `evaluate` 语义以本 spec 与源码为准
 - [ ] 前端 `tsc` + vitest 全绿
 - [ ] 用户能在设置面板看到总 token 与最近 5 条 LLM 调用

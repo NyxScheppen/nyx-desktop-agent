@@ -54,7 +54,7 @@
 
 | 缺口 | 说明 |
 |---|---|
-| 02-config 缺 `VisionConfig` 分段 | `config.py` 已有 `VisionConfig`（`enabled`/`provider`/`model`/`base_url`/`interval_seconds` + `api_key_env`），但 `02-config.md` 的「分段清单」仍只列 7 段 + `ActivityEnergyDelta`、无 VisionConfig。当前以 `tech-reference.md` §8 配置 surface + `03-llm.md` 屏幕视觉为准，待回补 02-config 的 VisionConfig 契约段（列出该分段、字段指向 `nyx/config.py`） |
+| 02-config 缺 `VisionConfig` 分段 | `config.py` 已有 `VisionConfig`（`enabled`/`provider`/`model`/`base_url`/`interval_seconds` + `api_key_env`），但 `02-config.md` 的「分段清单」仍只列 7 段 + `ActivityEnergyDelta`、无 VisionConfig。当前以 `02-config.md` + `03-llm.md` 屏幕视觉契约为准，待回补 02-config 的 VisionConfig 契约段（列出该分段、字段指向 `nyx/config.py`） |
 | ~~记忆 Facade 内联代码漂移~~ ✅ 已解决 | 契约化根治：spec 不再内联代码、指向 `nyx/memory/facade.py`，内联漂移随之消失 |
 
 ## 欲望消费接线（deferred）

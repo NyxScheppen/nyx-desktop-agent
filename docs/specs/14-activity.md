@@ -219,5 +219,5 @@
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `docs/activity-system-facts.md` 只保留无关代码所需的实现事实，并指向本文件
-- [ ] `docs/tech-reference.md`、11-desire、12-inner-life、05-module-bus-system 与本文件的公开签名和事件契约一致
+- [ ] `11-desire`、`12-inner-life`、`05-module-bus-system` 与本文件的公开签名和事件契约一致；`docs/tech-reference.md` 仅更新源码索引
 - [ ] `AGENTS.md` 与 `CLAUDE.md` 指向本文件作为活动系统唯一完整契约

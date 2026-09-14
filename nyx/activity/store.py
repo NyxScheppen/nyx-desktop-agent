@@ -54,6 +54,16 @@ class ActivityStore:
             row = await cursor.fetchone()
         return _row_to_activity(row) if row is not None else None
 
+    async def list_running(self) -> list[Activity]:
+        """所有 RUNNING 活动，按 started_at 升序（启动恢复清理用）。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM activity WHERE status = 'running' "
+                "ORDER BY started_at ASC"
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_activity(r) for r in rows]
+
     async def get_paused_in_block(self, schedule_block_id: str) -> Activity | None:
         """当前日程块内最新一条 PAUSED 记录（供恢复）；无则 None。"""
         async with self._db.lock:

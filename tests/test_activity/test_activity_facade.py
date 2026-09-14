@@ -24,9 +24,10 @@ from nyx.activity.facade import (
 )
 from nyx.activity.material_store import MaterialStore
 from nyx.activity.store import ActivityStore
-from nyx.config import ActivityConfig, ExplorationConfig
+from nyx.config import ActivityConfig, DesireConfig, ExplorationConfig
 from nyx.db import Database
 from nyx.desire.facade import DesireFacade
+from nyx.desire.store import DesireStore
 from nyx.enums import (
     ActivityStatus,
     ActivityType,
@@ -87,6 +88,13 @@ _KNOWLEDGE_JSON = json.dumps(
         ]
     }
 )
+_EXPLORATION_FINALIZE_JSON = json.dumps({
+    "summary": "弄懂了量子退相干的机制",
+    "core_discovery": "退相干来自系统与环境纠缠",
+    "knowledge": [{"topic": "退相干", "content": "环境纠缠会抹去相干性"}],
+    "strong_new_topics": ["量子纠错"],
+    "casual_new_topics": [],
+})
 
 
 def _mk_state(energy: float) -> CurrentState:
@@ -205,6 +213,35 @@ class _KnowledgeLlm(_FakeLlm):
         )
 
 
+class _ExplorationLlm(_FakeLlm):
+    async def complete(
+        self,
+        messages: list[LlmMessage],
+        *,
+        module: str,
+        output_type: str,
+        correlation_id: str,
+        json_mode: bool = False,
+    ) -> LLMOutput:
+        if output_type == "exploration_finalize":
+            self.calls.append(output_type)
+            self.correlation_ids.append(correlation_id)
+            return LLMOutput(
+                module=module,
+                type=output_type,
+                model="fake",
+                content=_EXPLORATION_FINALIZE_JSON,
+                correlation_id=correlation_id,
+            )
+        return await super().complete(
+            messages,
+            module=module,
+            output_type=output_type,
+            correlation_id=correlation_id,
+            json_mode=json_mode,
+        )
+
+
 class _CapturingLlm(_FakeLlm):
     """记录每次 complete 的 user/system content（用于断言创作上下文与人格注入）。"""
 
@@ -290,6 +327,7 @@ class _FakeDesire:
         self._values = values if values is not None else []
         self.mark_active_calls: list[str] = []
         self.mark_suppressed_calls: list[str] = []
+        self.release_active_calls: list[str] = []
         self.added_long_term: list[LongTermDesire] = []
 
     async def get_pending(self) -> list[ShortTermDesire]:
@@ -305,6 +343,9 @@ class _FakeDesire:
 
     async def mark_suppressed(self, desire_id: str) -> None:
         self.mark_suppressed_calls.append(desire_id)
+
+    async def release_active(self, desire_id: str) -> None:
+        self.release_active_calls.append(desire_id)
 
     async def add_long_term(self, desire: LongTermDesire) -> None:
         self.added_long_term.append(desire)
@@ -665,6 +706,53 @@ async def test_creation_result_has_path(
         )
         assert captured["path"] == "creations/小狐狸的日记.md"
         assert captured["content"] == "今天也努力了"
+    finally:
+        await database.conn.close()
+
+
+async def test_creation_resume_uses_checkpoint_without_rewriting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm = _FakeLlm()
+    writes: list[tuple[str, str, str | None]] = []
+
+    async def fake_file_io(
+        action: str,
+        path: str,
+        content: str | None = None,
+        write_root: Path = Path("workspace"),
+    ) -> dict[str, Any]:
+        writes.append((action, path, content))
+        return {"path": f"workspace/{path}", "written": len(content or "")}
+
+    monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
+    facade, _store, _bus, database = await _new_facade(llm=llm)
+    activity = _activity(
+        "a1",
+        type_=ActivityType.CREATION,
+        status=ActivityStatus.RUNNING,
+        progress={
+            "desire_id": "d1",
+            "goal": {"action": "write"},
+            "correlation_id": "d1",
+            "description": "写日记",
+            "creation": {
+                "style": "diary",
+                "llm_done": True,
+                "title": "旧标题",
+                "content": "旧内容",
+                "file_written": True,
+                "path": "workspace/creations/旧标题.md",
+            },
+        },
+    )
+    try:
+        result = await facade._run_activity(activity)
+        assert result["title"] == "旧标题"
+        assert result["content"] == "旧内容"
+        assert result["path"] == "workspace/creations/旧标题.md"
+        assert llm.calls == []
+        assert writes == []
     finally:
         await database.conn.close()
 
@@ -1220,6 +1308,69 @@ async def test_desire_reading_reads_latest_material(tmp_path: Path) -> None:
         await database.conn.close()
 
 
+async def test_partial_reading_progress_does_not_retry_desire(tmp_path: Path) -> None:
+    """读一块但未读完整本：activity 完成但欲望不结算，不计失败重试。"""
+    database = await db.connect(":memory:")
+    store = ActivityStore(database)
+    material_store = MaterialStore(database)
+    bus = EventBus(database)
+    desire_store = DesireStore(database)
+
+    async def list_memories() -> list[Memory]:
+        return []
+
+    desire = DesireFacade(
+        desire_store,
+        bus,
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        DesireConfig(),
+        list_memories,
+    )
+    source = tmp_path / "book.txt"
+    source.write_text("甲" * 7000, encoding="utf-8")
+    pending = _desire(
+        "d1", DesireType.EXPLORATION, goal=Goal(GoalAction.READ, 1, "骑士团")
+    )
+    await desire_store.add_desire(pending)
+
+    async def get_state() -> CurrentState:
+        return _mk_state(80.0)
+
+    facade = ActivityFacade(
+        store,
+        material_store,
+        bus,
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        cast(ToolRegistry, _FakeTools()),
+        desire,
+        cast(MemoryFacade, _FakeMemory()),
+        get_state,
+        _no_reflect,
+        _no_observation,
+        ActivityConfig(),
+        ExplorationConfig(),
+        "测试人格",
+    )
+    try:
+        await material_store.upsert(str(source), "book.txt", 7000, 1000.0)
+        events = _subscribe_activity(bus)
+        bus.subscribe(EventType.ACTIVITY_END, desire.add_value)
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        activity = (await store.list_schedule(0.0))[0]
+        got = await desire_store.get_desire("d1")
+        assert activity.progress["result"]["completed"] is False
+        assert events[-1].content["goal_met"] is None
+        assert got is not None
+        assert got.retry_count == 0
+        assert got.status is DesireStatus.PENDING
+    finally:
+        await database.conn.close()
+
+
 async def test_reading_relays_prior_fragments(tmp_path: Path) -> None:
     """滚动摘要接力：续读第二块时把「上次读到哪里 + 已读片段笔记」喂给 LLM。"""
 
@@ -1641,22 +1792,25 @@ async def test_creation_activity_injects_canon_system(
         await database.conn.close()
 
 
-async def test_exploration_finalize_writes_long_term_and_knowledge() -> None:
+async def test_exploration_state_machine_writes_long_term_and_knowledge() -> None:
     fake_desire = _FakeDesire()
     fake_memory = _FakeMemory()
     facade, _store, _bus, database = await _new_facade(
-        desire=fake_desire, memory=fake_memory
+        llm=_ExplorationLlm(), desire=fake_desire, memory=fake_memory
     )
     try:
-        await facade._finalize_exploration_sink(
-            {
-                "strong_new_topics": ["量子纠错"],
-                "knowledge": [{"topic": "退相干", "content": "环境纠缠"}],
-                "seed": {"desire_id": "d1", "topic": "量子"},
+        activity = _activity(
+            "a1",
+            type_=ActivityType.FREE_EXPLORATION,
+            status=ActivityStatus.RUNNING,
+            progress={
+                "goal": {"topic": "量子"},
+                "correlation_id": "c1",
             },
-            "c1",
         )
+        await facade._start_exploration_run(activity)
         assert fake_desire.added_long_term[0].name == "量子纠错"
         assert fake_memory.remembered[-1][0]["topic"] == "退相干"
+        assert activity.progress["exploration"]["state"] == "completed"
     finally:
         await database.conn.close()

@@ -1,15 +1,18 @@
 # pyright: reportPrivateUsage=false
 import json
-from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from typing import Any, cast
 
 from nyx.activity.exploration import Exploration, should_explore
+from nyx.activity.store import ActivityStore
 from nyx.config import ExplorationConfig
-from nyx.enums import MemoryType
+from nyx.desire.facade import DesireFacade
+from nyx.enums import ActivityStatus, ActivityType, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.llm.client import LlmClient, LlmMessage
+from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
-from nyx.types import LLMOutput, Memory
+from nyx.types import Activity, LLMOutput, LongTermDesire, Memory
 
 _FINALIZE_JSON = json.dumps({
     "summary": "弄懂了量子退相干的机制",
@@ -77,18 +80,69 @@ class _FakeTools:
         return "其他"
 
 
+class _FakeStore:
+    def __init__(self) -> None:
+        self.progress_updates: list[dict[str, Any]] = []
+
+    async def update(self, activity: Activity) -> None:
+        self.progress_updates.append(deepcopy(activity.progress))
+
+
+class _FakeDesire:
+    def __init__(self) -> None:
+        self.added_long_term: list[LongTermDesire] = []
+
+    async def add_long_term(self, desire: LongTermDesire) -> None:
+        self.added_long_term.append(desire)
+
+
+class _FakeMemory:
+    def __init__(self) -> None:
+        self.knowledge: list[Memory] = []
+        self.remembered: list[tuple[list[dict[str, str]], str]] = []
+
+    async def search(self, query: str) -> list[Memory]:
+        return self.knowledge
+
+    async def remember_knowledge(
+        self, items: list[dict[str, str]], correlation_id: str
+    ) -> None:
+        self.remembered.append((items, correlation_id))
+
+
 def _make_exploration(
     llm: _FakeLlm | None = None,
     tools: _FakeTools | None = None,
     web_enabled: bool = False,
-    search_memories: Callable[[str], Awaitable[list[Memory]]] | None = None,
+    store: _FakeStore | None = None,
+    desire: _FakeDesire | None = None,
+    memory: _FakeMemory | None = None,
 ) -> Exploration:
     return Exploration(
         cast(LlmClient, llm if llm is not None else _FakeLlm()),
         cast(Evaluator, _FakeEvaluator()),
         cast(ToolRegistry, tools if tools is not None else _FakeTools()),
+        cast(ActivityStore, store if store is not None else _FakeStore()),
+        cast(DesireFacade, desire if desire is not None else _FakeDesire()),
+        cast(MemoryFacade, memory if memory is not None else _FakeMemory()),
         ExplorationConfig(web_enabled=web_enabled),
-        search_memories=search_memories,
+    )
+
+
+def _activity(progress: dict[str, Any] | None = None) -> Activity:
+    return Activity(
+        id="a1",
+        type=ActivityType.FREE_EXPLORATION,
+        schedule_block_id="09:00",
+        status=ActivityStatus.RUNNING,
+        progress=progress
+        if progress is not None
+        else {
+            "goal": {"topic": "量子"},
+            "description": "理解量子退相干",
+            "correlation_id": "c1",
+        },
+        started_at=1000.0,
     )
 
 
@@ -109,19 +163,27 @@ def test_should_explore_ok() -> None:
 
 
 async def test_run_won_when_core_discovery() -> None:
-    expl = _make_exploration(web_enabled=True)
-    result = await expl.run("量子", "c1")
+    store = _FakeStore()
+    desire = _FakeDesire()
+    memory = _FakeMemory()
+    expl = _make_exploration(
+        web_enabled=True, store=store, desire=desire, memory=memory
+    )
+    result = await expl.run(_activity())
     assert result["type"] == "free_exploration"
     assert result["outcome"] == "won"
     assert result["core_discovery"] != ""
     assert result["knowledge"][0]["topic"] == "退相干"
     assert result["strong_new_topics"] == ["量子纠错"]
+    assert store.progress_updates[-1]["exploration"]["state"] == "completed"
+    assert desire.added_long_term[0].name == "量子纠错"
+    assert memory.remembered[-1][0][0]["topic"] == "退相干"
 
 
 async def test_run_web_disabled_uses_local_search() -> None:
     tools = _FakeTools()
     expl = _make_exploration(tools=tools, web_enabled=False)
-    await expl.run("量子", "c1")
+    await expl.run(_activity())
     assert tools.calls[0][0] == "local_search"
 
 
@@ -129,7 +191,7 @@ async def test_run_local_search_results_flow_into_findings() -> None:
     # 回归：local_search 返回 {path, snippet}，name 取文件名、不再被 _result_parts 丢弃
     tools = _FakeTools()
     expl = _make_exploration(tools=tools, web_enabled=False)
-    result = await expl.run("量子", "c1")
+    result = await expl.run(_activity())
     assert len(result["findings"]) == 1
     assert "量子.txt" in result["findings"][0]
     assert "环境纠缠" in result["findings"][0]
@@ -138,14 +200,14 @@ async def test_run_local_search_results_flow_into_findings() -> None:
 async def test_run_web_enabled_uses_web_search() -> None:
     tools = _FakeTools()
     expl = _make_exploration(tools=tools, web_enabled=True)
-    await expl.run("量子", "c1")
+    await expl.run(_activity())
     assert tools.calls[0][0] == "web_search"
 
 
 async def test_run_fetch_failure_falls_back_to_snippet() -> None:
     tools = _FakeTools(fetch_raises=True)
     expl = _make_exploration(tools=tools, web_enabled=True)
-    result = await expl.run("量子", "c1")
+    result = await expl.run(_activity())
     # web_fetch 抛错 → snippet 兜底，findings 仍有一条
     assert len(result["findings"]) == 1
     assert "环境纠缠" in result["findings"][0]
@@ -154,7 +216,7 @@ async def test_run_fetch_failure_falls_back_to_snippet() -> None:
 async def test_run_exhausted_when_no_core_discovery() -> None:
     llm = _FakeLlm(content=json.dumps({"summary": "没啥发现"}))
     expl = _make_exploration(llm=llm, web_enabled=True)
-    result = await expl.run("量子", "c1")
+    result = await expl.run(_activity())
     assert result["outcome"] == "exhausted"
     assert result["core_discovery"] == ""
 
@@ -162,7 +224,7 @@ async def test_run_exhausted_when_no_core_discovery() -> None:
 async def test_run_llm_failure_returns_defaults() -> None:
     llm = _FakeLlm(content="不是 JSON")
     expl = _make_exploration(llm=llm, web_enabled=True)
-    result = await expl.run("量子", "c1")
+    result = await expl.run(_activity())
     assert result["outcome"] == "exhausted"
     assert result["knowledge"] == []
     assert result["strong_new_topics"] == []
@@ -179,6 +241,68 @@ async def test_summarize_injects_related_memories() -> None:
         ]
 
     llm = _FakeLlm()
-    expl = _make_exploration(llm=llm, web_enabled=False, search_memories=search)
-    await expl.run("量子", "c1")
+    memory = _FakeMemory()
+    memory.knowledge = await search("量子")
+    expl = _make_exploration(llm=llm, web_enabled=False, memory=memory)
+    await expl.run(_activity())
     assert "之前想过退相干" in llm.user_contents[0]
+
+
+async def test_resume_reading_results_continues_from_cursor() -> None:
+    tools = _FakeTools()
+    activity = _activity({
+        "goal": {"topic": "量子"},
+        "correlation_id": "c1",
+        "exploration": {
+            "state": "reading_results",
+            "topic": "量子",
+            "raw_results": [
+                {"title": "已读", "url": "https://example.com/old", "snippet": "旧"},
+                {"title": "新读", "url": "https://example.com/new", "snippet": "新"},
+            ],
+            "cursor": 1,
+            "findings": ["已读：旧正文"],
+            "tool_calls": [
+                {
+                    "name": "web_fetch",
+                    "args": {"url": "https://example.com/old"},
+                    "ok": True,
+                }
+            ],
+            "summary_done": False,
+            "judged": None,
+            "sink_done": False,
+        },
+    })
+    expl = _make_exploration(tools=tools, web_enabled=True)
+    result = await expl.run(activity)
+    fetched_urls = [
+        args["url"] for name, args in tools.calls if name == "web_fetch"
+    ]
+    assert fetched_urls == ["https://example.com/new"]
+    assert result["findings"][0] == "已读：旧正文"
+
+
+async def test_resume_sinking_with_sink_done_skips_memory_and_desire() -> None:
+    desire = _FakeDesire()
+    memory = _FakeMemory()
+    activity = _activity({
+        "goal": {"topic": "量子"},
+        "correlation_id": "c1",
+        "exploration": {
+            "state": "sinking",
+            "topic": "量子",
+            "raw_results": [],
+            "cursor": 0,
+            "findings": ["量子：正文"],
+            "tool_calls": [],
+            "summary_done": True,
+            "judged": json.loads(_FINALIZE_JSON),
+            "sink_done": True,
+        },
+    })
+    expl = _make_exploration(desire=desire, memory=memory)
+    result = await expl.run(activity)
+    assert result["outcome"] == "won"
+    assert desire.added_long_term == []
+    assert memory.remembered == []

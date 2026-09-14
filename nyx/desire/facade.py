@@ -73,6 +73,9 @@ class DesireFacade:
     async def mark_suppressed(self, desire_id: str) -> None:
         await self._lifecycle.mark_suppressed(desire_id)
 
+    async def release_active(self, desire_id: str) -> None:
+        await self._lifecycle.release_active(desire_id)
+
     async def add_long_term(self, desire: LongTermDesire) -> None:
         """新增长期欲望入口：容量检查 + 精确/语义去重，命中/超容则跳过。
 

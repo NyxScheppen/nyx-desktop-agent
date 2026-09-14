@@ -82,6 +82,27 @@
 **怎么做**：审查召回、排序、候选池、source 标注类改动前，先查本文件是否有类似“旧 guard 残留”教训；对边界分数（0、阈值等于、负值）、fallback 补足和 sources 加回归测试。
 **影响的文件/决策**：`nyx/memory/retrieval.py`、`tests/test_memory/test_retrieval.py`、`docs/specs/07-memory-system.md`
 
+### 2026-09-14: checkpoint 字段要区分阶段产物和终局产物
+
+**来源**：活动状态机重构自审发现读书 checkpoint 曾准备用 `note` 同时表示“本块笔记”和“整本聚合笔记”，会导致恢复 finalize 时把片段笔记当完整笔记写入结果。
+**教训**：可续状态机里，同名字段跨阶段复用会制造隐性语义漂移；测试只看“跳过重复副作用”还不够，还要看恢复后返回的是哪个阶段的真实产物。
+**怎么做**：设计 checkpoint 时给中间产物和终局产物不同字段，例如 `note` vs `final_note`；为 finalized resume 增加“不重复副作用 + 返回终局产物”的回归测试，并同步事实表/spec/test-inventory。
+**影响的文件/决策**：`nyx/activity/reading_runner.py`、`tests/test_activity/test_reading_runner.py`、`docs/specs/14-activity.md`
+
+### 2026-09-14: 声明式路由必须和运行时注册共用单一来源
+
+**来源**：模块与事件总线架构审查发现 `ROUTING`/`TICK_ROUTING` 只被文档和测试读取，实际订阅仍由 `subscriptions.py` 手写，新增或修改事件时两处可以静默漂移。
+**教训**：路由表如果只是“说明数据”，就不能宣称它是运行时契约；仅测试 key 集合和模块名合法性，无法证明真实 handler 拓扑一致。
+**怎么做**：让运行时订阅从同一个注册表派生，或在启动时对声明路由与实际 handler 做强校验；新增事件必须同时覆盖路由、订阅和失败策略测试。
+**影响的文件/决策**：`nyx/events/routing.py`、`nyx/subscriptions.py`、`nyx/main.py`、`tests/test_api/test_subscription.py`
+
+### 2026-09-14: 事件落库成功不等于模块副作用成功
+
+**来源**：模块与事件总线架构审查发现总线在持久化后顺序执行 handler，handler 异常只记录日志并继续；事件不会重放，跨模块 `ACTIVITY_END` 等更新可能部分成功。
+**教训**：event log 只能证明事件被记录，不能证明所有消费者都完成；“persist → dispatch”若没有消费状态、重试或幂等策略，会把局部失败变成静默不一致。
+**怎么做**：为关键事件明确至少一次/至多一次语义；为消费者保留可重试的投递记录或幂等键；关停时排空队列，handler 失败要能被监控和补偿，而不是只依赖日志。
+**影响的文件/决策**：`nyx/events/bus.py`、`nyx/subscriptions.py`、`docs/specs/05-event.md`
+
 ---
 
 ## 模板

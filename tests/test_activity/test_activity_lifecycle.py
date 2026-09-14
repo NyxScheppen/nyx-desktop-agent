@@ -1,6 +1,6 @@
 from typing import cast
 
-from nyx.activity.lifecycle import ActivityLifecycle
+from nyx.activity.lifecycle import ActivityLifecycle, activity_goal_signal
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig
 from nyx.desire.facade import DesireFacade
@@ -12,9 +12,20 @@ from nyx.types import Activity, Event
 class _Store:
     def __init__(self) -> None:
         self.updated: list[Activity] = []
+        self.activities: dict[str, Activity] = {}
 
     async def update(self, activity: Activity) -> None:
         self.updated.append(activity)
+        self.activities[activity.id] = activity
+
+    async def get(self, activity_id: str) -> Activity | None:
+        return self.activities.get(activity_id)
+
+    async def list_running(self) -> list[Activity]:
+        return [
+            activity for activity in self.activities.values()
+            if activity.status is ActivityStatus.RUNNING
+        ]
 
 
 class _Bus:
@@ -46,6 +57,25 @@ def _activity(status: ActivityStatus = ActivityStatus.PENDING) -> Activity:
         progress={
             "desire_id": "d1",
             "correlation_id": "c1",
+            "goal": {"action": "read"},
+        },
+        started_at=1.0,
+    )
+
+
+def _typed_activity(
+    id: str,
+    type_: ActivityType,
+    status: ActivityStatus = ActivityStatus.RUNNING,
+) -> Activity:
+    return Activity(
+        id=id,
+        type=type_,
+        schedule_block_id="09:00",
+        status=status,
+        progress={
+            "desire_id": f"d-{id}",
+            "correlation_id": f"c-{id}",
             "goal": {"action": "read"},
         },
         started_at=1.0,
@@ -101,3 +131,52 @@ async def test_fail_marks_incomplete_and_suppresses_desire() -> None:
     assert activity.status is ActivityStatus.INCOMPLETE
     assert store.updated == [activity]
     assert desire.suppressed == ["d1"]
+
+
+async def test_recover_stale_running_pauses_resumable_and_suppresses_desire() -> None:
+    lifecycle, store, _bus, desire = _lifecycle()
+    reading = _typed_activity("reading", ActivityType.READING)
+    creation = _typed_activity("creation", ActivityType.CREATION)
+    exploration = _typed_activity("exploration", ActivityType.FREE_EXPLORATION)
+    store.activities = {
+        activity.id: activity for activity in (reading, creation, exploration)
+    }
+
+    recovered = await lifecycle.recover_stale_running()
+
+    assert [a.id for a in recovered] == ["reading", "creation", "exploration"]
+    assert all(a.status is ActivityStatus.PAUSED for a in recovered)
+    assert desire.suppressed == ["d-reading", "d-creation", "d-exploration"]
+
+
+async def test_recover_stale_running_abandons_non_resumable() -> None:
+    lifecycle, store, _bus, desire = _lifecycle()
+    rest = _typed_activity("rest", ActivityType.REST)
+    observe = _typed_activity("observe", ActivityType.OBSERVE_USER)
+    reflect = _typed_activity("reflect", ActivityType.IDLE_REFLECTION)
+    store.activities = {activity.id: activity for activity in (rest, observe, reflect)}
+
+    recovered = await lifecycle.recover_stale_running()
+
+    assert [a.id for a in recovered] == ["rest", "observe", "reflect"]
+    assert all(a.status is ActivityStatus.ABANDONED for a in recovered)
+    assert desire.suppressed == ["d-rest", "d-observe", "d-reflect"]
+
+
+def test_activity_goal_signal_uses_explicit_none() -> None:
+    activity = _activity(ActivityStatus.RUNNING)
+    activity.progress["goal_signal"] = None
+    activity.progress["result"] = {"completed": True}
+
+    assert activity_goal_signal(activity) is None
+
+
+async def test_interrupt_uses_activity_correlation_id() -> None:
+    lifecycle, store, bus, _desire = _lifecycle()
+    activity = _activity(ActivityStatus.RUNNING)
+    store.activities[activity.id] = activity
+
+    await lifecycle.interrupt(activity.id, EventType.USER_MESSAGE, None)
+
+    assert bus.events[0].type is EventType.ACTIVITY_INTERRUPTED
+    assert bus.events[0].correlation_id == "c1"

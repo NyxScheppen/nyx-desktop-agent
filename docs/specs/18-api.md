@@ -5,7 +5,7 @@
 
 ## 元信息
 
-- **前置依赖**：02-config（`load_config`/`Config`）、03-llm（`LlmClient.from_config`）、04-db（`connect`/`Database`）、05-event（`EventBus`/`ROUTING`/`TICK_ROUTING`）、06-tools（`ToolRegistry`）、07-memory-system（`MemoryRetrieval`/`build_embed`/`MemoryFacade`）、10-desire-value（`default_value`）、11-desire、12-inner-life、13-activity-scheduler、14-activity、eval（`Evaluator`，OOC 轻量告警）、17-expression（`should_initiate_chat`/`ExpressionFacade`）
+- **前置依赖**：02-config（`load_config`/`Config`）、03-llm（`LlmClient.from_config`）、04-db（`connect`/`Database`）、05-event（`EventBus`/`ROUTING`/`TICK_ROUTING`）、06-tools（`ToolRegistry`）、07-memory-system（`MemoryRetrieval`/`build_embed`/`MemoryFacade`）、10-desire-value（`default_value`）、11-desire、12-inner-life、14-activity、eval（`Evaluator`，OOC 轻量告警）、17-expression（`should_initiate_chat`/`ExpressionFacade`）
 - **canon**：原始 prompt 文件（两份：`canon.md` 核心 + `ask.md` 主动提问）由组合根读入（路径见「技术方案」）
 
 ## 用户故事

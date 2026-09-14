@@ -410,6 +410,14 @@ class DesireLifecycle:
         desire.status = DesireStatus.SUPPRESSED
         await self._store.update_desire(desire)
 
+    async def release_active(self, desire_id: str) -> None:
+        """ACTIVE → PENDING：活动有进展但本次不结算满足/失败。"""
+        desire = await self._store.get_desire(desire_id)
+        if desire is None or desire.status is not DesireStatus.ACTIVE:
+            return
+        desire.status = DesireStatus.PENDING
+        await self._store.update_desire(desire)
+
     async def _satisfy(self, desire: ShortTermDesire) -> None:
         desire.status = DesireStatus.SATISFIED
         await self._store.update_desire(desire)

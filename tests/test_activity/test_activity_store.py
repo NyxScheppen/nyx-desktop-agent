@@ -75,6 +75,24 @@ async def test_get_current_only_running() -> None:
         await database.conn.close()
 
 
+async def test_list_running_all_started_at_asc() -> None:
+    store, database = await _new_store()
+    try:
+        await store.insert(
+            _activity("paused", status=ActivityStatus.PAUSED, started_at=2000.0)
+        )
+        await store.insert(
+            _activity("late", status=ActivityStatus.RUNNING, started_at=3000.0)
+        )
+        await store.insert(
+            _activity("early", status=ActivityStatus.RUNNING, started_at=1000.0)
+        )
+        rows = await store.list_running()
+        assert [r.id for r in rows] == ["early", "late"]
+    finally:
+        await database.conn.close()
+
+
 async def test_get_last_exploration_empty() -> None:
     store, database = await _new_store()
     try:

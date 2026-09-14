@@ -50,6 +50,46 @@ def _correlation_id(activity: Activity) -> str:
     return str(activity.progress.get("correlation_id") or activity.id)
 
 
+def _reading_checkpoint(
+    activity: Activity, source: str, content_len: int
+) -> dict[str, Any]:
+    raw = activity.progress.get("reading")
+    if isinstance(raw, dict):
+        raw_map = cast(dict[str, Any], raw)
+    else:
+        raw_map = {}
+    if raw_map.get("source") == source:
+        checkpoint = raw_map
+    else:
+        read_from = _as_int(activity.progress.get("read_chars"), 0)
+        checkpoint: dict[str, Any] = {
+            "source": source,
+            "read_from": read_from,
+            "read_to": min(read_from + _READ_CONTEXT_CHARS, content_len),
+            "fragment_committed": False,
+            "advanced_to": read_from,
+            "finalized": False,
+            "note_path": None,
+            "knowledge_extracted": False,
+        }
+    checkpoint["read_from"] = _as_int(checkpoint.get("read_from"), 0)
+    checkpoint["read_to"] = min(
+        _as_int(checkpoint.get("read_to"), int(checkpoint["read_from"])),
+        content_len,
+    )
+    checkpoint["advanced_to"] = _as_int(
+        checkpoint.get("advanced_to"), int(checkpoint["read_from"])
+    )
+    return checkpoint
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class ReadingActivityRunner:
     """执行一次真实读物活动，隐藏分块阅读和知识沉淀细节。"""
 
@@ -60,24 +100,31 @@ class ReadingActivityRunner:
         evaluator: Evaluator,
         memory: MemoryFacade,
         write_file: Callable[[str, str, str | None], Awaitable[dict[str, Any]]],
+        update_activity: Callable[[Activity], Awaitable[None]],
     ) -> None:
         self._material_store = material_store
         self._llm = llm
         self._evaluator = evaluator
         self._memory = memory
         self._write_file = write_file
+        self._update_activity = update_activity
 
     async def run(self, activity: Activity, source: str) -> dict[str, Any]:
         """分块读真实文件，完成时落盘完整笔记并沉淀知识。"""
         content = await asyncio.to_thread(
             Path(source).read_text, encoding="utf-8", errors="replace"
         )
-        read_chars = int(activity.progress.get("read_chars", 0))
-        chunk = content[read_chars : read_chars + _READ_CONTEXT_CHARS]
+        checkpoint = _reading_checkpoint(activity, source, len(content))
+        await self._save_checkpoint(activity, checkpoint)
+        read_chars = int(checkpoint["read_from"])
+        read_to = int(checkpoint["read_to"])
+        chunk = content[read_chars:read_to]
         filename = str(activity.progress.get("filename") or Path(source).name)
         if chunk == "":
-            full = await self._finalize(activity, source, filename, len(content))
-            await self.extract_knowledge(activity, filename, content)
+            full = await self._finalize(
+                activity, checkpoint, source, filename, len(content)
+            )
+            await self._extract_knowledge_once(activity, checkpoint, filename, content)
             return full
 
         prior = await self._material_store.get_fragments(source)
@@ -93,22 +140,47 @@ class ReadingActivityRunner:
             f"{prior_block}"
             f"本次新读（第 {read_chars}～{read_chars + len(chunk)} 字）：\n{chunk}"
         )
-        result = await self._run_llm(activity, context)
-        new_read_chars = read_chars + len(chunk)
-        await self._material_store.append_fragment(
-            source, str(result.get("note", "")), time.time()
-        )
-        await self._material_store.advance(source, new_read_chars, time.time())
+        if isinstance(checkpoint.get("note"), str) and isinstance(
+            checkpoint.get("book"), str
+        ):
+            result = {"book": checkpoint["book"], "note": checkpoint["note"]}
+        else:
+            result = await self._run_llm(activity, context)
+            checkpoint["book"] = str(result.get("book", ""))
+            checkpoint["note"] = str(result.get("note", ""))
+            await self._save_checkpoint(activity, checkpoint)
+        new_read_chars = read_to
+        if not bool(checkpoint.get("fragment_committed")):
+            await self._material_store.append_fragment(
+                source, str(result.get("note", "")), time.time()
+            )
+            checkpoint["fragment_committed"] = True
+            await self._save_checkpoint(activity, checkpoint)
+        if int(checkpoint.get("advanced_to", 0)) < new_read_chars:
+            await self._material_store.advance(source, new_read_chars, time.time())
+            checkpoint["advanced_to"] = new_read_chars
+            await self._save_checkpoint(activity, checkpoint)
         result["read_chars"] = new_read_chars
         result["total_chars"] = len(content)
         if new_read_chars < len(content):
+            result["completed"] = False
+            activity.progress["goal_signal"] = None
             return result
 
-        full = await self._finalize(activity, source, filename, len(content))
-        await self.extract_knowledge(activity, filename, content)
+        full = await self._finalize(
+            activity, checkpoint, source, filename, len(content)
+        )
+        activity.progress["goal_signal"] = True
+        await self._extract_knowledge_once(activity, checkpoint, filename, content)
         full["read_chars"] = new_read_chars
         full["total_chars"] = len(content)
         return full
+
+    async def _save_checkpoint(
+        self, activity: Activity, checkpoint: dict[str, Any]
+    ) -> None:
+        activity.progress["reading"] = checkpoint
+        await self._update_activity(activity)
 
     async def _run_llm(self, activity: Activity, context: str) -> dict[str, Any]:
         output = await self._llm.complete(
@@ -128,20 +200,60 @@ class ReadingActivityRunner:
         return parse_activity_result(output.content, "reading")
 
     async def _finalize(
-        self, activity: Activity, source: str, filename: str, content_len: int
+        self,
+        activity: Activity,
+        checkpoint: dict[str, Any],
+        source: str,
+        filename: str,
+        content_len: int,
     ) -> dict[str, Any]:
-        fragments = await self._material_store.get_fragments(source)
-        full_note = await self._aggregate_note(activity, filename, fragments)
+        if bool(checkpoint.get("finalized")) and isinstance(
+            checkpoint.get("note_path"), str
+        ):
+            return {
+                "book": str(checkpoint.get("book") or filename),
+                "note": str(
+                    checkpoint.get("final_note") or checkpoint.get("note") or ""
+                ),
+                "path": str(checkpoint["note_path"]),
+                "completed": True,
+                "read_chars": content_len,
+                "total_chars": content_len,
+            }
+        if not isinstance(checkpoint.get("final_note"), str):
+            fragments = await self._material_store.get_fragments(source)
+            checkpoint["final_note"] = await self._aggregate_note(
+                activity, filename, fragments
+            )
+            checkpoint["book"] = filename
+            await self._save_checkpoint(activity, checkpoint)
+        full_note = str(checkpoint["final_note"])
         note_path = f"notes/{sanitize_filename(filename)}-{path_hash_suffix(source)}.md"
         written = await self._write_file("write", note_path, full_note)
+        checkpoint["note_path"] = str(written["path"])
+        checkpoint["finalized"] = True
+        await self._save_checkpoint(activity, checkpoint)
         return {
             "book": filename,
             "note": full_note,
-            "path": written["path"],
+            "path": str(checkpoint["note_path"]),
             "completed": True,
             "read_chars": content_len,
             "total_chars": content_len,
         }
+
+    async def _extract_knowledge_once(
+        self,
+        activity: Activity,
+        checkpoint: dict[str, Any],
+        filename: str,
+        content: str,
+    ) -> None:
+        if bool(checkpoint.get("knowledge_extracted")):
+            return
+        await self.extract_knowledge(activity, filename, content)
+        checkpoint["knowledge_extracted"] = True
+        await self._save_checkpoint(activity, checkpoint)
 
     async def _aggregate_note(
         self, activity: Activity, filename: str, fragments: list[str]

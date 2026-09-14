@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import time
-import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
@@ -17,7 +16,7 @@ from nyx.activity.starter import ActivityStarter, schedule_block_id
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ActivityType, DesireType, EventType, TickType
+from nyx.enums import ActivityType, EventType, TickType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY
@@ -29,7 +28,6 @@ from nyx.types import (
     Activity,
     CurrentState,
     Event,
-    LongTermDesire,
     Material,
     ReflectionOutcome,
     ShortTermDesire,
@@ -49,6 +47,22 @@ _logger = logging.getLogger(__name__)
 def _day_start(now: float) -> float:
     """当日零点（UTC 日边界，MVP 可推翻为本地时区）。纯函数。"""
     return now - now % SECONDS_PER_DAY
+
+
+def _creation_checkpoint(activity: Activity) -> dict[str, Any]:
+    raw = activity.progress.get("creation")
+    if isinstance(raw, dict):
+        checkpoint = cast(dict[str, Any], raw)
+    else:
+        checkpoint = {}
+    return {
+        "style": checkpoint.get("style"),
+        "llm_done": bool(checkpoint.get("llm_done")),
+        "title": checkpoint.get("title"),
+        "content": checkpoint.get("content"),
+        "file_written": bool(checkpoint.get("file_written")),
+        "path": checkpoint.get("path"),
+    }
 
 
 _schedule_block_id = schedule_block_id
@@ -94,11 +108,13 @@ class ActivityFacade:
             llm,
             evaluator,
             tools,
+            store,
+            desire,
+            memory,
             exploration_config,
-            search_memories=self._memory.search,
         )
         self._reading_runner = ReadingActivityRunner(
-            material_store, llm, evaluator, memory, file_io
+            material_store, llm, evaluator, memory, file_io, store.update
         )
         self._lifecycle = _activity_lifecycle.ActivityLifecycle(
             store, bus, desire, config
@@ -152,6 +168,10 @@ class ActivityFacade:
         """
         await self._lifecycle.interrupt(activity_id, by_event, self._task)
 
+    async def recover_stale_running(self) -> list[Activity]:
+        """启动恢复：清理 DB 中没有后台 task 承接的 RUNNING 活动。"""
+        return await self._lifecycle.recover_stale_running()
+
     # ---- 读 ----
 
     async def get_current(self) -> Activity | None:
@@ -203,13 +223,10 @@ class ActivityFacade:
         await self.complete_activity(activity)
 
     async def _start_exploration_run(self, activity: Activity) -> None:
-        """探索启动：线性「搜 → 抓正文 → 总结」跑完即结算（无决策点/托管/广播）。"""
-        seed_topic = self._exploration_seed(activity)
-        correlation_id = _correlation_id(activity)
-        result = await self._exploration.run(seed_topic, correlation_id)
+        """探索启动：交给 Exploration 状态机跑完并结算。"""
+        result = await self._exploration.run(activity)
         activity.progress["result"] = result
         await self.complete_activity(activity)
-        await self._finalize_exploration_sink(result, correlation_id)
 
     def _exploration_seed(self, activity: Activity) -> str:
         """种子话题：优先 goal.topic（探索欲的真实方向），退 description，
@@ -224,49 +241,6 @@ class ActivityFacade:
             return desc
         return activity.id
 
-    async def _finalize_exploration_sink(
-        self, result: dict[str, Any], correlation_id: str
-    ) -> None:
-        """探索终局回写（best-effort）：强烈新兴趣→长期欲望，知识→长期记忆。
-
-        「满足探索欲」由 ACTIVITY_END → satisfy_from_activity_end 走 goal_met 驱动，
-        这里只管新增长期欲望与知识。
-        """
-        strong = result.get("strong_new_topics")
-        if isinstance(strong, list):
-            for topic in cast(list[Any], strong):
-                if not isinstance(topic, str) or not topic.strip():
-                    continue
-                await self._desire.add_long_term(
-                    LongTermDesire(
-                        id=str(uuid.uuid4()),
-                        created_at=time.time(),
-                        type=DesireType.EXPLORATION,
-                        name=topic,
-                        description=f"想弄懂「{topic}」",
-                        strength=0.5,
-                        progress=0.0,
-                        subtopics=[],
-                    )
-                )
-        knowledge = result.get("knowledge")
-        if isinstance(knowledge, list):
-            items: list[dict[str, str]] = []
-            for k in cast(list[Any], knowledge):
-                if not isinstance(k, dict):
-                    continue
-                item_map = cast(dict[str, Any], k)
-                if not str(item_map.get("content", "")).strip():
-                    continue
-                items.append(
-                    {
-                        "topic": str(item_map.get("topic", "")),
-                        "content": str(item_map.get("content", "")),
-                    }
-                )
-            if items:
-                await self._memory.remember_knowledge(items, correlation_id)
-
     async def _run_activity(self, activity: Activity) -> dict[str, Any]:
         t = activity.type
         if t is ActivityType.READING:
@@ -276,31 +250,7 @@ class ActivityFacade:
                 raise ValueError("读书活动缺 source：已禁止凭空编造")
             return await self._run_reading_source(activity, str(source))
         if t is ActivityType.CREATION:
-            style = _pick_creation_style()
-            knowledge = await self._memory.list_memories(tag="knowledge", limit=3)
-            obs = await self._get_observation()
-            state = await self._get_state()
-            context = _build_creation_context(activity, style, knowledge, obs)
-            system = _build_creation_system(self._canon, state)
-            result = await self._run_llm_activity(
-                activity,
-                "creation",
-                extra_context=context,
-                context_label="创作参考",
-                system=system,
-            )
-            title = str(result["title"])
-            path = f"creations/{_sanitize_filename(title)}.md"
-            written = await file_io("write", path, str(result["content"]))
-            result["path"] = written["path"]
-            result["tools"] = [
-                {
-                    "name": "file_io",
-                    "args": {"action": "write", "path": path},
-                    "ok": True,
-                }
-            ]
-            return result
+            return await self._run_creation(activity)
         if t is ActivityType.IDLE_REFLECTION:
             outcome = await self._reflect(_correlation_id(activity))
             return {"summary": outcome.story if outcome is not None else None}
@@ -322,6 +272,61 @@ class ActivityFacade:
         if t is ActivityType.REST:
             return {}
         raise ValueError(f"未知活动类型 {t!r}")
+
+    async def _run_creation(self, activity: Activity) -> dict[str, Any]:
+        checkpoint = _creation_checkpoint(activity)
+        if not checkpoint.get("style"):
+            checkpoint["style"] = _pick_creation_style()
+            await self._save_creation_checkpoint(activity, checkpoint)
+        if not bool(checkpoint.get("llm_done")):
+            knowledge = await self._memory.list_memories(tag="knowledge", limit=3)
+            obs = await self._get_observation()
+            state = await self._get_state()
+            context = _build_creation_context(
+                activity, str(checkpoint["style"]), knowledge, obs
+            )
+            system = _build_creation_system(self._canon, state)
+            result = await self._run_llm_activity(
+                activity,
+                "creation",
+                extra_context=context,
+                context_label="创作参考",
+                system=system,
+            )
+            checkpoint["title"] = str(result["title"])
+            checkpoint["content"] = str(result["content"])
+            checkpoint["llm_done"] = True
+            await self._save_creation_checkpoint(activity, checkpoint)
+        title = str(checkpoint["title"])
+        content = str(checkpoint["content"])
+        if not bool(checkpoint.get("file_written")):
+            path = f"creations/{_sanitize_filename(title)}.md"
+            written = await file_io("write", path, content)
+            checkpoint["path"] = written["path"]
+            checkpoint["file_written"] = True
+            await self._save_creation_checkpoint(activity, checkpoint)
+        path_value = str(checkpoint["path"])
+        return {
+            "title": title,
+            "content": content,
+            "path": path_value,
+            "tools": [
+                {
+                    "name": "file_io",
+                    "args": {
+                        "action": "write",
+                        "path": f"creations/{_sanitize_filename(title)}.md",
+                    },
+                    "ok": True,
+                }
+            ],
+        }
+
+    async def _save_creation_checkpoint(
+        self, activity: Activity, checkpoint: dict[str, Any]
+    ) -> None:
+        activity.progress["creation"] = checkpoint
+        await self._store.update(activity)
 
     async def _run_reading_source(
         self, activity: Activity, source: str

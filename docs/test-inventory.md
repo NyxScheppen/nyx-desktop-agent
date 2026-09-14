@@ -453,7 +453,7 @@
 | `test_run_aesthetic_ignores_non_reading` | 边界鲁棒 | 非 reading 记忆（`tag="user"`）不计入新读章数 → 审美不动 |
 | `test_reflect_publishes_reflection_done` | 功能正确 | `facade.reflect()` → 发布 `REFLECTION_DONE`（content `{story, story_is_new}`、correlation 透传） |
 
-## 13-activity-scheduler（日程排期纯函数）
+## 14-activity（日程排期、行为系统：store + facade + 探索链 + 观察）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -472,13 +472,12 @@
 | `test_format_time_label_rounds_float_minutes` | 边界鲁棒 | 浮点小时 `4.1/8.2/16.4/16.9` → `"04:06"/"08:12"/"16:24"/"16:54"`（`round` 不截断少一分钟，回归保护） |
 | `test_rest_energy_threshold` | 边界鲁棒 | `0.0 <= ENERGY_REST_THRESHOLD <= 100.0`（共享常量，从 `nyx.inner_life.emotion` 导入） |
 
-## 14-activity（行为系统：store + facade + 探索链 + 观察）
-
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
 | `test_insert_get_roundtrip` | 功能正确 | `insert`+`get` 往返全等（`progress` JSON 往返、枚举 `.value` 往返） |
 | `test_get_missing_returns_none` | 功能正确 | `get` 未命中 → `None` |
 | `test_get_current_only_running` | 功能正确 | `get_current` 只取 running 最新一条（completed/abandoned 排除） |
+| `test_list_running_all_started_at_asc` | 功能正确 | `list_running` 只返回 RUNNING 活动，并按 `started_at ASC` 排序 |
 | `test_get_last_exploration_empty` | 边界鲁棒 | 无 free_exploration 记录 → `0.0` |
 | `test_get_last_exploration_max` | 功能正确 | 有 → `MAX(started_at)` |
 | `test_list_schedule_filters_and_orders` | 功能正确 | `started_at >= start` 过滤 + ASC |
@@ -500,6 +499,10 @@
 | `test_start_marks_running_and_publishes_event` | 功能正确 | lifecycle 启动活动后持久化 RUNNING、激活欲望并发布带 correlation 的 `activity_start` |
 | `test_complete_marks_completed_and_publishes_goal_result` | 功能正确 | lifecycle 完成活动后持久化 COMPLETED，并发布 goal_met 与 energy_delta 正确的 `activity_end` |
 | `test_fail_marks_incomplete_and_suppresses_desire` | 边界鲁棒 | lifecycle 失败收尾持久化 INCOMPLETE，并将消费中的欲望标记 SUPPRESSED |
+| `test_recover_stale_running_pauses_resumable_and_suppresses_desire` | 功能正确 | 启动恢复把遗留 RUNNING 可续活动转 PAUSED、写 ended_at，并 suppress 关联 desire |
+| `test_recover_stale_running_abandons_non_resumable` | 功能正确 | 启动恢复把遗留 RUNNING 瞬时活动转 ABANDONED |
+| `test_activity_goal_signal_uses_explicit_none` | 功能正确 | `activity.progress["goal_signal"]=None` 覆盖默认 goal 判定，发布中性结算信号 |
+| `test_interrupt_uses_activity_correlation_id` | 回归保护 | `activity_interrupted` 使用活动 progress 中的 correlation_id，而非 activity id |
 | `test_start_next_if_idle_inserts_and_executes_default_activity` | 功能正确 | starter 空闲且无欲望时插入默认观察活动，并创建执行 task |
 | `test_select_activity_empty` | 功能正确 | 无欲望 → `None` |
 | `test_select_activity_exploration` | 功能正确 | 探索欲 → READING，`desire_id`/`description`/`goal` 序列化正确 |
@@ -512,6 +515,7 @@
 | `test_default_observe_user_when_energetic` | 功能正确 | 空槽 + 高精力 → OBSERVE_USER、`desire_id` None |
 | `test_maybe_start_creation_activity` | 功能正确 | 有欲望 → insert + 发布 activity_start/end（source INTERNAL、desire_id/energy_delta 透传）、evaluator 调 1 次 |
 | `test_creation_result_has_path` | 功能正确 | 创作落盘：result 带 `path="workspace/creations/小狐狸的日记.md"`、`file_io` 收到 `creations/小狐狸的日记.md` 与 content（B3 创作产出落盘） |
+| `test_creation_resume_uses_checkpoint_without_rewriting` | 功能正确 | CREATION checkpoint 已有 LLM 结果和文件路径时，恢复执行不重复调用 LLM、不重复写文件 |
 | `test_idle_reflection_result_has_summary` | 功能正确 | 发呆反思：`reflect` 回带 story 写入 `result.summary`（不发 REFLECTION 事件，直接 await） |
 | `test_observe_user_result` | 功能正确 | 观察用户：result 带 `presence`/`window_title` + 确定性 summary `用户（online）正在浏览 编辑器`（0 LLM） |
 | `test_observe_user_result_no_window_title` | 边界鲁棒 | `window_title` 空 → summary 省略「正在浏览」仅 `用户（away）` |
@@ -533,14 +537,17 @@
 | `test_get_results_delegates` | 功能正确 | `get_results` 委托 `store.list_results`（跨天历史产出倒序，供「产出」面板） |
 | `test_should_explore_rate_limited` | 边界鲁棒 | `last=1000` + `now-last < 1h*3600` → False（无 energy 入参，精力门已移除） |
 | `test_should_explore_ok` | 功能正确 | `last=0.0` + 频率过 → True（无 energy 入参，精力交给 build_schedule 兜底） |
-| `test_run_won_when_core_discovery` | 功能正确 | `web_enabled=True` + 合法 finalize JSON → `type=="free_exploration"`、`outcome=="won"`、`core_discovery` 非空、`knowledge[0].topic=="退相干"`、`strong_new_topics==["量子纠错"]` |
+| `test_run_won_when_core_discovery` | 功能正确 | `web_enabled=True` + 合法 finalize JSON → `type=="free_exploration"`、`outcome=="won"`、`core_discovery` 非空、写 completed checkpoint，并回写长期欲望与 knowledge |
 | `test_run_web_disabled_uses_local_search` | 功能正确 | `web_enabled=False` → 首个工具调用是 `local_search`（不联网） |
 | `test_run_local_search_results_flow_into_findings` | 回归保护 | `local_search` 返回 `{path, snippet}` → `_result_parts` 取文件名当 name、`findings` 含文件名+片段（不再被空 name 丢弃） |
 | `test_run_web_enabled_uses_web_search` | 功能正确 | `web_enabled=True` → 首个工具调用是 `web_search` |
 | `test_run_fetch_failure_falls_back_to_snippet` | 边界鲁棒 | `web_fetch` 抛 `RuntimeError` → snippet 兜底、`findings` 仍 1 条含「环境纠缠」 |
 | `test_run_exhausted_when_no_core_discovery` | 边界鲁棒 | LLM 返回无 `core_discovery` → `outcome=="exhausted"`、`core_discovery==""` |
 | `test_run_llm_failure_returns_defaults` | 边界鲁棒 | LLM 返回非法 JSON → `outcome=="exhausted"`、`knowledge==[]`、`strong_new_topics==[]` |
-| `test_summarize_injects_related_memories` | 功能正确 | 注入 `search_memories` 后，检索到的记忆 `summary` 拼进结算 LLM 的 user content（`related_memories` 字段） |
+| `test_summarize_injects_related_memories` | 功能正确 | `Exploration` 通过 `MemoryFacade.search` 检索到的记忆 `summary` 拼进结算 LLM 的 user content（`related_memories` 字段） |
+| `test_resume_reading_results_continues_from_cursor` | 功能正确 | FREE_EXPLORATION 从 `reading_results.cursor=1` 恢复时，只抓取未完成的后续结果，不重复 fetch 已完成 URL |
+| `test_resume_sinking_with_sink_done_skips_memory_and_desire` | 功能正确 | FREE_EXPLORATION 从 `sinking` 且 `sink_done=true` 恢复时，不重复调用 `add_long_term` / `remember_knowledge` |
+| `test_exploration_state_machine_writes_long_term_and_knowledge` | 功能正确 | Facade 走 `_start_exploration_run` 时由 Exploration 状态机完成 sink，并写 `progress["exploration"]["state"]=="completed"` |
 | `test_classify_presence_online` | 功能正确 | 键盘/鼠标活跃 → online |
 | `test_classify_presence_busy` | 功能正确 | 无输入 + 有窗口标题 → busy |
 | `test_classify_presence_away` | 功能正确 | 无输入无标题 → away |
@@ -555,6 +562,7 @@
 | `test_no_material_rate_limited_falls_back_to_default` | 功能正确 | 探索欲（有 topic）+ 无书可读 + 限速中（`prev` FREE_EXPLORATION 刚做）→ 退回默认活动 `OBSERVE_USER`（绝不编造读书内容） |
 | `test_no_material_no_topic_falls_back_to_default` | 功能正确 | 探索欲无 goal（无 topic）+ 无书可读 → 不转自由探索，退回默认活动 `OBSERVE_USER`（无 seed 不联网搜主题） |
 | `test_desire_reading_reads_latest_material` | 功能正确 | 探索欲 + 已注册 7000 字书 → `READING` 读该书、`progress["result"]["read_chars"]==6000` / `["total_chars"]==7000`、书库 `next_readable().read_chars==6000`（分块推进、下次续读） |
+| `test_partial_reading_progress_does_not_retry_desire` | 功能正确 | 读长书第一块未读完整本 → `result.completed=False`、`activity_end.goal_met is None`，desire 回到 PENDING 且 `retry_count` 不增长 |
 | `test_maybe_start_reading_uses_topic` | 功能正确 | goal.topic「骑士团」命中 `骑士团历史.txt`（更早入库）→ 读该书而非更新的 `other.txt`（C2 读书按 topic 选料） |
 | `test_next_readable_picks_latest_unread` | 功能正确 | 两本未读 → `next_readable()` 取 `created_at` 最新的那本 |
 | `test_next_readable_skips_completed` | 功能正确 | b 已读完（`advance` 到 total）→ `next_readable()` 跳过 b 返回 a |
@@ -572,6 +580,9 @@
 | `test_list_all_returns_ordered_by_created_desc` | 功能正确 | `list_all()` 全量读物按 `created_at` 倒序（最近上传在前）、进度随 `advance` 刷新 |
 | `test_list_all_empty` | 边界鲁棒 | 空书库 → `list_all()` 返回 `[]` |
 | `test_reading_relays_prior_fragments` | 功能正确 | 续读第二块时把「上次读到第 6000 字 + 已读片段笔记」喂给 LLM（`上一块的笔记`/`第 6000 字`/`本次新读` 均在 user 消息里），只发一次 reading 调用（12000 < 13000 未读完不聚合） |
+| `test_resume_skips_committed_fragment` | 功能正确 | READING checkpoint 标记 fragment 已提交时，恢复执行跳过 `append_fragment`，避免重复追加笔记片段 |
+| `test_resume_skips_completed_advance` | 功能正确 | READING checkpoint 的 `advanced_to >= read_to` 时，恢复执行跳过 `advance`，避免重复推进书库进度 |
+| `test_resume_skips_finalized_note_and_knowledge` | 功能正确 | READING checkpoint 已 `finalized=true` 且 `knowledge_extracted=true` 时，恢复执行不重复聚合笔记、不重复写文件、不重复提取知识 |
 | `test_pick_creation_style` | 功能正确 | 返回值 ∈ `_CREATION_STYLES`（6 风格随机池，纯函数） |
 | `test_build_creation_context_full` | 功能正确 | 上下文串含「风格：日记体」/「主题：骑士团」/「知识库参考」+ 知识点正文 /「当前屏幕灵感」（W1/W2/W3 三部分拼装） |
 | `test_build_creation_context_empty` | 边界鲁棒 | 无主题/知识/屏幕 → 只剩 `风格：日记体`（空段省略） |

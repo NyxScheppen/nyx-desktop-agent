@@ -34,6 +34,17 @@ def goal_met(goal: dict[str, Any] | None, result: dict[str, Any]) -> bool:
     return False
 
 
+def activity_goal_signal(activity: Activity) -> bool | None:
+    """活动结束事件的欲望结算信号，允许 runner 显式声明“不结算”。"""
+    if "goal_signal" in activity.progress:
+        signal = activity.progress["goal_signal"]
+        if isinstance(signal, bool) or signal is None:
+            return signal
+    goal = activity.progress.get("goal")
+    result = activity.progress.get("result", {})
+    return goal_met(goal, result)
+
+
 def correlation_id(activity: Activity) -> str:
     """活动事件优先沿用欲望 correlation_id，否则回退活动 id。"""
     return str(activity.progress.get("correlation_id") or activity.id)
@@ -78,16 +89,19 @@ class ActivityLifecycle:
         activity.status = ActivityStatus.COMPLETED
         activity.ended_at = time.time()
         await self._store.update(activity)
-        goal = activity.progress.get("goal")
         result = activity.progress.get("result", {})
+        signal = activity_goal_signal(activity)
+        desire_id = activity.progress.get("desire_id")
+        if signal is None and isinstance(desire_id, str):
+            await self._desire.release_active(desire_id)
         await self._bus.publish(
             internal_event(
                 EventType.ACTIVITY_END,
                 {
                     "activity_id": activity.id,
                     "type": activity.type.value,
-                    "desire_id": activity.progress.get("desire_id"),
-                    "goal_met": goal_met(goal, result),
+                    "desire_id": desire_id,
+                    "goal_met": signal,
                     "energy_delta": getattr(
                         self._config.energy_delta, activity.type.value
                     ),
@@ -105,6 +119,23 @@ class ActivityLifecycle:
         desire_id = activity.progress.get("desire_id")
         if isinstance(desire_id, str):
             await self._desire.mark_suppressed(desire_id)
+
+    async def recover_stale_running(self) -> list[Activity]:
+        """启动时清理没有内存 task 承接的 RUNNING 活动。"""
+        recovered: list[Activity] = []
+        for activity in await self._store.list_running():
+            activity.status = (
+                ActivityStatus.PAUSED
+                if activity.type in _RESUMABLE_TYPES
+                else ActivityStatus.ABANDONED
+            )
+            activity.ended_at = time.time()
+            await self._store.update(activity)
+            desire_id = activity.progress.get("desire_id")
+            if isinstance(desire_id, str):
+                await self._desire.mark_suppressed(desire_id)
+            recovered.append(activity)
+        return recovered
 
     async def interrupt(
         self,
@@ -137,6 +168,6 @@ class ActivityLifecycle:
             internal_event(
                 EventType.ACTIVITY_INTERRUPTED,
                 {"activity_id": activity_id, "by": by_event.value},
-                activity_id,
+                correlation_id(activity),
             )
         )

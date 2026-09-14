@@ -136,6 +136,7 @@ async def build_app_context(
         config.exploration,
         canon,
     )
+    await activity.recover_stale_running()
     inner_life = InnerLifeFacade(
         inner_life_store, activity, desire, memory, bus, llm, evaluator, config
     )

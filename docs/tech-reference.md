@@ -159,11 +159,28 @@ async def on_desire_generated(event: Event) -> None             # DESIRE_GENERAT
 def select_activity(desires: list[ShortTermDesire], state: CurrentState) -> Activity | None  # desires 来自 DesireFacade.get_pending()；无欲望/全互动欲返回 None（纯决策，同步）
 async def complete_activity(activity: Activity) -> None         # 内部发布 activity_end（满足信号等）
 async def interrupt(activity_id: str, by: EventType) -> None    # 抢占即暂停：可续活动（读书/创作/探索）置 PAUSED、其余置 ABANDONED；同日程块内 _maybe_start_activity 恢复同一记录
+async def recover_stale_running() -> list[Activity]             # 启动恢复：遗留 RUNNING 可续转 PAUSED、不可续转 ABANDONED
 async def get_current() -> Activity | None                      # 当前活动（running），供快照/仪表盘
 async def get_schedule() -> list[Activity]                      # 今日日程块（供 /api/activity）
 async def get_results(limit: int = 100) -> list[Activity]       # 跨天历史产出（供 /api/activity/results）
 async def list_materials() -> list[Material]                    # 书库全量（含已读进度，供 /api/materials 资料面板）
 async def register_material(path: str, filename: str, total_chars: int) -> None  # 注册读物进书库（只登记不立即读；读书由欲望驱动选书）
+```
+
+Activity 内部类索引：
+
+```python
+# nyx.activity.store
+async def ActivityStore.list_running() -> list[Activity]
+
+# nyx.activity.lifecycle
+def activity_goal_signal(activity: Activity) -> bool | None
+async def ActivityLifecycle.recover_stale_running() -> list[Activity]
+
+# nyx.activity.exploration
+class Exploration:
+    def __init__(self, llm: LlmClient, evaluator: Evaluator, tools: ToolRegistry, store: ActivityStore, desire: DesireFacade, memory: MemoryFacade, exploration_config: ExplorationConfig) -> None: ...
+    async def run(self, activity: Activity) -> dict[str, Any]
 ```
 
 ### ReadingFacade
@@ -196,6 +213,7 @@ async def satisfy(desire_id: str, goal_met: bool) -> None       # 达成/未达�
 async def expire(desire_id: str) -> None                        # 淘汰→值回增
 async def mark_active(desire_id: str) -> None                   # PENDING → ACTIVE：活动开始消费（仅 PENDING 可转，幂等 no-op）
 async def mark_suppressed(desire_id: str) -> None               # ACTIVE → SUPPRESSED：中断/异常停车（仅 ACTIVE 可转，幂等 no-op）
+async def release_active(desire_id: str) -> None                # ACTIVE → PENDING：部分进展但不结算欲望时释放活动占用
 async def add_long_term(desire: LongTermDesire) -> None         # 探索/反思共用长期欲望入口（去重 + 容量检查，满不新增）
 async def pressure_creation(delta: float) -> None               # 创造欲加压（反思成功 +0.2；读书/自由探索结束 +0.15）
 ```
@@ -333,7 +351,7 @@ nyx/
     store.py              # ActivityStore（activity 表单表 CRUD）
     material_store.py     # MaterialStore（书库分块进度 + 读书笔记片段）
     scheduler.py          # 日程块排期
-    exploration.py        # 联网探索（线性）
+    exploration.py        # 联网探索状态机（checkpoint + sink）
     observe.py            # 观察用户
     screen.py             # 屏幕视觉（截屏+ScreenObserver，opt-in）
   desire/

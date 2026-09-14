@@ -237,6 +237,28 @@ async def test_apply_event_desire_satisfied(
         await database.conn.close()
 
 
+async def test_desire_satisfied_replay_does_not_repeat_emotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: t0)
+    facade, store, bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
+    try:
+        await _seed(store)
+        event = _event(EventType.DESIRE_SATISFIED, "c1")
+        await bus.publish(event)
+
+        await facade.apply_event(event, "inner_life.desire_satisfied")
+        await facade.apply_event(event, "inner_life.desire_satisfied")
+
+        assert facade._valence == pytest.approx(0.2)
+        assert facade._arousal == pytest.approx(0.1)
+        events = await bus.list_events(event_type=EventType.EMOTION_UPDATE)
+        assert len(events) == 1
+    finally:
+        await database.close()
+
+
 async def test_apply_event_activity_end(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -273,6 +295,66 @@ async def test_apply_event_activity_end_no_delta(
         await database.conn.close()
 
 
+async def test_activity_end_transaction_rolls_back_energy_and_emotion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: t0)
+    facade, store, bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
+    try:
+        await _seed(store)
+        root = _event(
+            EventType.ACTIVITY_END,
+            content={"energy_delta": -25},
+        )
+        await bus.publish(root)
+
+        async def fail_append(event: Event) -> tuple[str, ...]:
+            raise RuntimeError("emotion event append failed")
+
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        with pytest.raises(RuntimeError):
+            await facade.apply_event(root, "inner_life.activity_end")
+
+        energy = await store.get_energy()
+        assert energy is not None and energy[0] == pytest.approx(100.0)
+        assert facade._valence == pytest.approx(0.0)
+        assert facade._arousal == pytest.approx(0.0)
+        async with database.lock:
+            cursor = await database.conn.execute(
+                "SELECT 1 FROM event_effect WHERE event_id = ? AND consumer_id = ?",
+                (root.id, "inner_life.activity_end"),
+            )
+            assert await cursor.fetchone() is None
+    finally:
+        await database.conn.close()
+
+
+async def test_activity_end_replay_does_not_repeat_energy_or_emotion_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: t0)
+    facade, store, bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
+    try:
+        await _seed(store)
+        root = _event(
+            EventType.ACTIVITY_END,
+            content={"energy_delta": -25},
+        )
+        await bus.publish(root)
+
+        await facade.apply_event(root, "inner_life.activity_end")
+        await facade.apply_event(root, "inner_life.activity_end")
+
+        energy = await store.get_energy()
+        assert energy is not None and energy[0] == pytest.approx(75.0)
+        events = await bus.list_events(event_type=EventType.EMOTION_UPDATE)
+        assert len(events) == 1
+    finally:
+        await database.close()
+
+
 async def test_apply_event_unseeded_energy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -307,6 +389,68 @@ async def test_apply_event_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
         assert facade._arousal == pytest.approx(0.0)
     finally:
         await database.conn.close()
+
+
+async def test_reflection_event_replay_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: t0)
+    llm = _FakeLlm()
+    facade, store, bus, database = await _new_facade(llm, _FakeEvaluator())
+    try:
+        await _seed(store)
+        await store.upsert_narrative(_NARRATIVE)
+        root = _event(EventType.REFLECTION, "c1")
+        await bus.publish(root)
+        await facade.apply_event(root, "inner_life.reflection")
+        await facade.apply_event(root, "inner_life.reflection")
+
+        assert llm.calls == ["reflection"]
+        events = await bus.list_events(event_type=EventType.REFLECTION_DONE)
+        assert len(events) == 1
+        narrative = await store.get_narrative()
+        assert narrative is not None
+        assert narrative.story == ["初始故事", "今天对用户了解更多"]
+    finally:
+        await database.close()
+
+
+async def test_reflection_event_rolls_back_slow_variables_when_event_append_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: t0)
+    facade, store, bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
+    try:
+        await _seed(store)
+        await store.upsert_narrative(_NARRATIVE)
+        root = _event(EventType.REFLECTION, "c1")
+        await bus.publish(root)
+
+        async def fail_append(event: Event) -> tuple[str, ...]:
+            raise RuntimeError("reflection event append failed")
+
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        with pytest.raises(RuntimeError):
+            await facade.apply_event(root, "inner_life.reflection")
+
+        narrative = await store.get_narrative()
+        assert narrative == _NARRATIVE
+        async with database.lock:
+            cursor = await database.conn.execute(
+                "SELECT 1 FROM event_effect WHERE event_id = ? AND consumer_id = ?",
+                (root.id, "inner_life.reflection"),
+            )
+            assert await cursor.fetchone() is None
+            cursor = await database.conn.execute(
+                "SELECT COUNT(*) FROM event_log WHERE type = ?",
+                (EventType.REFLECTION_DONE.value,),
+            )
+            row = await cursor.fetchone()
+            assert row is not None and row[0] == 0
+    finally:
+        await database.close()
 
 
 async def test_decay_settlement(monkeypatch: pytest.MonkeyPatch) -> None:

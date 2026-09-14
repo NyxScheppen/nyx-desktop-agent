@@ -2,12 +2,12 @@
 
 > 薄 fetch 封装：19 个端点函数 + 统一错误契约。被 `chatStore`（`postChat`/`getEventsLog`）、`innerLifeStore`（`getState`）、`usePresence`（`postObserve`）、两个快照 store（`getDesires`/`getActivity`/`getActivityResults`）、`readerStore`（阅读 + 笔记）共享。
 > 范围：`api/client.ts` 全部。`BASE_URL` 常量在此定义，SSE 与 REST 共用（01-sse §3）。
-> 对齐后端：前端的基础设施独立成 spec，同 `04-db` / `05-event` / `03-llm` 各自独立。
+> 对齐后端：前端的基础设施独立成 spec，同底层模块总线系统和 `03-llm` 各自独立。
 
 ## 1. 函数签名 + 端点映射
 
 ```typescript
-const BASE_URL = "";   // 空 = 相对路径，走 Vite proxy 同源转发（18-api 不做 CORS，localhost 同源）
+const BASE_URL = "";   // 空 = 相对路径，走 Vite proxy 同源转发（本地组合根不做 CORS，localhost 同源）
 
 async function postChat(message: string): Promise<{ event_id: string }>          // POST /api/chat
 async function getState(): Promise<CurrentState>                                 // GET /api/state
@@ -41,7 +41,7 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 ## 2. 错误契约（统一）
 
 - **成功返回数据、失败 throw**。所有函数：fetch 网络错误（`TypeError`）与非 2xx 响应（读 body 错误信息后 `throw new Error(...)`）都上抛——**不返回 `{ok:false}`、不返回 null**。调用方自行 try/catch：
-- **非 2xx 错误体形状**：后端是 FastAPI，错误体 = 默认 `{"detail": str}`（18-api 未自定义错误响应）。client 读 `body.detail`，防御式兜底 `body.detail ?? body.error ?? JSON.stringify(body)`——任何形状都出非空 message，不 `undefined`。
+- **非 2xx 错误体形状**：后端是 FastAPI，错误体 = 默认 `{"detail": str}`（组合根未自定义错误响应）。client 读 `body.detail`，防御式兜底 `body.detail ?? body.error ?? JSON.stringify(body)`——任何形状都出非空 message，不 `undefined`。
   - `sendMessage`：catch → `sendError = e.message`（02-stores §1；失败时 `isReplying` 本就 false——成功才置 true，无需复位）。
   - `refreshState`：catch → `error = e.message`、`loading=false`（02-stores §2）。
   - `usePresence`：catch → `console.error` + 静默（下次采样重试，不上屏，README §2）。

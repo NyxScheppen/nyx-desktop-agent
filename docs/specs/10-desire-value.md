@@ -33,7 +33,7 @@
   - `expression_weight`（表达权重）∈ `[0, 1]`：满足后正强化上浮（越被满足越愿表达），活动系统选消费对象时的排序权重（消费端语义归 13/17）
   - `suppression_threshold`（抑制阈值）∈ `[0, 1]`：失败/放弃/抑制后习得性抑制上浮（越挫越压抑）
 - **抑制门控（决策：正强化 + 习得性抑制，已与用户确认）**：表达条件 = `at_peak(value, peak) and is_expressible(value, suppression)` = `value >= max(peak, suppression)`。初始 `suppression=0.5 < peak=0.8`，故初始表达门槛 = 0.8（peak 主导，达峰即表达）；失败每次 `+0.1`，4 次后 `suppression=0.9 > peak`，表达门槛 = 0.9（压抑主导，达峰也不表达，继续憋）。这塑造「越挫越压抑」的弧线——契合 canon 的「自卑、先怀疑自己、想太多」
-- **线性衰减（决策：已与用户确认）**：`decay_value(value, elapsed_days, rate) = max(0, value - rate × elapsed_days)`，`rate` = config `desire.value_decay`（0.02 = 每天降 0.02）。签名传 `elapsed_days` 而非 `(created_at, now)`：desire_value 表已有 `updated_at` 列（04-db DDL，注释「最后一次 value 变化的时间戳」= 衰减 elapsed 来源），`elapsed_days` 由 11-desire 编排时从 `updated_at` 计算——10 只提供纯数学，不预设时间戳方案
+- **线性衰减（决策：已与用户确认）**：`decay_value(value, elapsed_days, rate) = max(0, value - rate × elapsed_days)`，`rate` = config `desire.value_decay`（0.02 = 每天降 0.02）。签名传 `elapsed_days` 而非 `(created_at, now)`：desire_value 表已有 `updated_at` 列（05-module-bus-system DDL，注释「最后一次 value 变化的时间戳」= 衰减 elapsed 来源），`elapsed_days` 由 11-desire 编排时从 `updated_at` 计算——10 只提供纯数学，不预设时间戳方案
 - **回增复用 `apply_pressure`**：加压与回增数学相同（`value + delta` 夹 `[0,1]`），故合并为一个纯函数；`REFUND_DELTA=0.3` 是回增（放弃/淘汰压力回灌）的步长常量，11 调 `apply_pressure(v, REFUND_DELTA)` 表达回灌语义
 - **步长与初始值（默认值，标注可推翻）**：`WEIGHT_REINFORCE_DELTA=0.05`（满足一次表达权重 +0.05）、`SUPPRESSION_RAISE_DELTA=0.1`（失败一次抑制阈值 +0.1）、`REFUND_DELTA=0.3`（回增 +0.3）；`_WEIGHT_INIT=0.7`（初始表达权重，中性偏高）、`_SUPPRESSION_INIT=0.5`（初始抑制阈值，低于 peak，初始不压抑）。四类型**统一**初始值——差异化由满足/抑制漂移自然产生，符合「从初始人设出发、由经历塑造」；若想按 canon 分类型初始，改 `default_value` 一处
 - **`default_value(type_)`**：11-desire 初始化 `desire_value` 表四行时的唯一构造入口，避免初始值散落；四类型循环 `for t in DesireType: default_value(t)`
@@ -61,4 +61,4 @@
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
-- [ ] 11-desire 的 `DesireFacade` 编排时调 `value.py` 纯函数（不重写衰减/夹取逻辑）；初始化 `desire_value` 四行用 `default_value(t)`；`value_decay` / `peak_threshold` 从 config 注入、`elapsed_days` 来源由 11 定（04-db `desire_value.updated_at` 已落地，见 04-db DDL）
+- [ ] 11-desire 的 `DesireFacade` 编排时调 `value.py` 纯函数（不重写衰减/夹取逻辑）；初始化 `desire_value` 四行用 `default_value(t)`；`value_decay` / `peak_threshold` 从 config 注入、`elapsed_days` 来源由 11 定（05-module-bus-system `desire_value.updated_at` 已落地，见 05-module-bus-system DDL）

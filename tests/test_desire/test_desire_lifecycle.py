@@ -327,6 +327,30 @@ async def test_pressure_from_observation() -> None:
         await database.conn.close()
 
 
+async def test_pressure_from_observation_replay_is_idempotent() -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        event = Event(
+            id="e1",
+            timestamp=0.0,
+            source=Source.EXTERNAL,
+            type=EventType.OBSERVATION_STATE,
+            content={},
+            correlation_id="c1",
+        )
+        await bus.publish(event)
+
+        await lifecycle.pressure_from_observation(event, "desire.observation_state")
+        await lifecycle.pressure_from_observation(event, "desire.observation_state")
+
+        dv = await store.get_value(DesireType.INTERACTION)
+        assert dv is not None
+        assert dv.value == pytest.approx(0.15)
+    finally:
+        await database.close()
+
+
 async def test_pressure_creation() -> None:
     store, bus, database = await _new_stack()
     lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
@@ -376,6 +400,78 @@ async def test_satisfy_from_activity_end_free_exploration_pressures_creation() -
         assert dv is not None and dv.value == pytest.approx(0.15)
     finally:
         await database.conn.close()
+
+
+async def test_activity_end_transaction_rolls_back_on_derived_event_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        desire = _desire("d1")
+        desire.status = DesireStatus.ACTIVE
+        await store.add_desire(desire)
+
+        async def fail_append(event: Event) -> tuple[str, ...]:
+            raise RuntimeError("derived event append failed")
+
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        event = Event(
+            id="activity-1",
+            timestamp=1.0,
+            source=Source.INTERNAL,
+            type=EventType.ACTIVITY_END,
+            content={"desire_id": "d1", "goal_met": True},
+            correlation_id="c1",
+        )
+        await bus.publish(event)
+
+        with pytest.raises(RuntimeError):
+            await lifecycle.satisfy_from_activity_end(
+                event, "desire.activity_end"
+            )
+
+        got = await store.get_desire("d1")
+        assert got is not None and got.status is DesireStatus.ACTIVE
+        async with database.lock:
+            cursor = await database.conn.execute(
+                "SELECT 1 FROM event_effect WHERE event_id = ? AND consumer_id = ?",
+                (event.id, "desire.activity_end"),
+            )
+            assert await cursor.fetchone() is None
+    finally:
+        await database.conn.close()
+
+
+async def test_activity_end_replay_is_idempotent() -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        await store.add_desire(_desire("d1"))
+        event = Event(
+            id="activity-1",
+            timestamp=1.0,
+            source=Source.INTERNAL,
+            type=EventType.ACTIVITY_END,
+            content={"desire_id": "d1", "goal_met": True},
+            correlation_id="c1",
+        )
+        await bus.publish(event)
+
+        await lifecycle.satisfy_from_activity_end(event, "desire.activity_end")
+        await lifecycle.satisfy_from_activity_end(event, "desire.activity_end")
+
+        got = await store.get_desire("d1")
+        assert got is not None and got.status is DesireStatus.SATISFIED
+        assert len(
+            [
+                event
+                for event in await bus.list_events()
+                if event.type is EventType.DESIRE_SATISFIED
+            ]
+        ) == 1
+    finally:
+        await database.close()
 
 
 async def test_satisfy_from_activity_end_creation_no_self_loop() -> None:
@@ -437,6 +533,32 @@ async def test_run_eval_generates_peak(monkeypatch: pytest.MonkeyPatch) -> None:
         assert generated.content["desire_id"] == desire.id
         dv = await store.get_value(DesireType.INTERACTION)
         assert dv is not None and dv.value == pytest.approx(0.0)   # 重置
+    finally:
+        await database.conn.close()
+
+
+async def test_run_eval_rolls_back_desire_when_generated_event_append_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+
+        async def fail_append(event: Event) -> tuple[str, ...]:
+            raise RuntimeError("generated event append failed")
+
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        with pytest.raises(RuntimeError):
+            await lifecycle.run_eval()
+
+        assert await store.list_pending() == []
+        dv = await store.get_value(DesireType.INTERACTION)
+        assert dv is not None and dv.value == pytest.approx(0.9)
+        assert await bus.list_events() == []
     finally:
         await database.conn.close()
 

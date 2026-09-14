@@ -125,7 +125,7 @@ class ExpressionFacade:
     async def initiate_chat(self, desire: ShortTermDesire, state: CurrentState) -> bool:
         """搭话：快通道生成一句开场白。
 
-        无话则发 False（18-api 据此不更新 last_chat_at）。
+        无话则发 False（组合根 据此不更新 last_chat_at）。
         """
         system = build_system_prompt(
             self._canon, state, ask_guidance=self._ask_guidance

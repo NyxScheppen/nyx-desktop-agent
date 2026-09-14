@@ -1,10 +1,18 @@
 import asyncio
 import os
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from time import monotonic
 
 import aiosqlite
 
 DEFAULT_DB_PATH = "nyx.db"
+DB_LOCK_TIMEOUT = 3.0
+DB_OPERATION_TIMEOUT = 3.0
+DB_FAILURE_THRESHOLD = 5
+DB_COOLDOWN_SECONDS = 5.0
 
 
 @dataclass
@@ -16,6 +24,83 @@ class Database:
 
     conn: aiosqlite.Connection
     lock: asyncio.Lock
+    lock_timeout: float = DB_LOCK_TIMEOUT
+    operation_timeout: float = DB_OPERATION_TIMEOUT
+    failure_threshold: int = DB_FAILURE_THRESHOLD
+    cooldown_seconds: float = DB_COOLDOWN_SECONDS
+    _closed: bool = False
+    _failure_state: str = "closed"
+    _consecutive_failures: int = 0
+    _opened_at: float = 0.0
+    _transaction_state: ContextVar[bool] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._transaction_state = ContextVar(
+            f"nyx_db_transaction_{id(self)}", default=False
+        )
+
+    async def close(self) -> None:
+        """Close the shared connection once; repeated shutdown is a no-op."""
+        if self._closed:
+            return
+        await self.conn.close()
+        self._closed = True
+
+    @property
+    def is_closed(self) -> bool:
+        """Return whether this database wrapper has been closed."""
+        return self._closed
+
+    @property
+    def failure_state(self) -> str:
+        """Return whether admission is closed, open, or half-open."""
+        if self._failure_state == "open":
+            if monotonic() - self._opened_at >= self.cooldown_seconds:
+                self._failure_state = "half_open"
+        return self._failure_state
+
+    def record_success(self) -> None:
+        """Reset the database circuit after a successful operation."""
+        self._consecutive_failures = 0
+        self._failure_state = "closed"
+        self._opened_at = 0.0
+
+    def record_failure(self) -> None:
+        """Open the circuit after enough consecutive database failures."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.failure_threshold:
+            self._failure_state = "open"
+            self._opened_at = monotonic()
+
+    @property
+    def in_transaction(self) -> bool:
+        """Return whether the current task owns a transaction on this DB."""
+        return self._transaction_state.get()
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncGenerator[aiosqlite.Connection, None]:
+        """Run one bounded local transaction under the shared DB lock."""
+        if self.in_transaction:
+            raise RuntimeError("不允许嵌套 Database.transaction()")
+        await asyncio.wait_for(self.lock.acquire(), timeout=self.lock_timeout)
+        marker = self._transaction_state.set(True)
+        try:
+            await asyncio.wait_for(
+                self.conn.execute("BEGIN"), timeout=self.operation_timeout
+            )
+            try:
+                yield self.conn
+                await asyncio.wait_for(
+                    self.conn.commit(), timeout=self.operation_timeout
+                )
+            except BaseException:
+                await asyncio.wait_for(
+                    self.conn.rollback(), timeout=self.operation_timeout
+                )
+                raise
+        finally:
+            self._transaction_state.reset(marker)
+            self.lock.release()
 
 # 迁移列表：每项 (version, [单条 SQL])。升序；已应用（≤ schema_version）的跳过。
 _MIGRATIONS: list[tuple[int, list[str]]] = [
@@ -301,6 +386,33 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "DROP TABLE memory_edge_old",
         ],
     ),
+    (
+        15,
+        [
+            """CREATE TABLE event_delivery (
+                event_id TEXT NOT NULL REFERENCES event_log(id) ON DELETE CASCADE,
+                consumer_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                available_at REAL NOT NULL DEFAULT 0.0,
+                started_at REAL,
+                completed_at REAL,
+                lease_until REAL,
+                last_error TEXT,
+                PRIMARY KEY (event_id, consumer_id)
+            )""",
+            """CREATE INDEX idx_event_delivery_ready
+            ON event_delivery(status, available_at)""",
+            """CREATE INDEX idx_event_delivery_consumer_ready
+            ON event_delivery(consumer_id, status, available_at)""",
+            """CREATE TABLE event_effect (
+                event_id TEXT NOT NULL REFERENCES event_log(id) ON DELETE CASCADE,
+                consumer_id TEXT NOT NULL,
+                applied_at REAL NOT NULL,
+                PRIMARY KEY (event_id, consumer_id)
+            )""",
+        ],
+    ),
 ]
 
 
@@ -315,6 +427,9 @@ async def connect(path: str | None = None) -> Database:
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA foreign_keys = ON")   # FK 完整性（SQLite 默认关）
         await conn.execute("PRAGMA journal_mode = WAL")  # 崩溃安全 + 读写不互斥
+        await conn.execute(
+            f"PRAGMA busy_timeout = {int(DB_OPERATION_TIMEOUT * 1000)}"
+        )
         await migrate(conn)
     except Exception:
         await conn.close()   # 迁移失败：关连接避免泄漏，原异常上抛

@@ -31,7 +31,13 @@ from nyx.desire.store import DesireStore
 from nyx.enums import ActivityStatus, DesireType, EventType, Source, TickType
 from nyx.expression.mutter import should_initiate_chat
 from nyx.inner_life.store import InnerLifeStore
-from nyx.runtime import root_event, supervise_bus, tick_loop, vision_loop
+from nyx.runtime import (
+    check_reflect,
+    root_event,
+    supervise_bus,
+    tick_loop,
+    vision_loop,
+)
 from nyx.subscriptions import subscribe
 from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
@@ -139,12 +145,12 @@ async def _check_initiate_chat(app: _App) -> None:
 
 
 async def _check_reflect(app: _App, correlation_id: str) -> None:
-    narrative = await app.inner_life.get_narrative()
-    if time.time() - narrative.updated_at < _REFLECT_MIN_INTERVAL:
-        return
-    new_count = await app.memory.count_new(None, narrative.updated_at)
-    if new_count >= _REFLECT_MIN_NEW_MEMORIES:
-        await app.inner_life.reflect(correlation_id)
+    await check_reflect(
+        app,
+        correlation_id,
+        min_interval=_REFLECT_MIN_INTERVAL,
+        min_new_memories=_REFLECT_MIN_NEW_MEMORIES,
+    )
 
 
 async def _tick_loop(app: _App) -> None:
@@ -178,9 +184,11 @@ def _build_tools(config: Config) -> ToolRegistry:
 
 
 async def build_app_context(config: Config) -> _App:
-    return await assemble_app_context(
+    app = await assemble_app_context(
         config, canon_files=_CANON_FILES, ask_files=_ASK_FILES
     )
+    _subscribe(app)
+    return app
 
 
 async def _supervise_bus(app: _App) -> None:
@@ -201,9 +209,10 @@ async def main() -> None:
     config = load_config()
     app = await build_app_context(config)
     server = uvicorn.Server(uvicorn.Config(build_app(app), host=_HOST, port=_PORT))
+    bus_task = asyncio.create_task(_supervise_bus(app))
     tasks: set[asyncio.Task[Any]] = {
         asyncio.create_task(server.serve()),
-        asyncio.create_task(_supervise_bus(app)),
+        bus_task,
         asyncio.create_task(_tick_loop(app)),
     }
     if app.screen_observer is not None:
@@ -214,9 +223,18 @@ async def main() -> None:
             task.result()
     finally:
         for task in tasks:
-            if not task.done():
+            if task is not bus_task and not task.done():
                 task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(
+            *(task for task in tasks if task is not bus_task),
+            return_exceptions=True,
+        )
+        close_bus = getattr(app.bus, "close", None)
+        if close_bus is None:
+            bus_task.cancel()
+        else:
+            await close_bus()
+        await asyncio.gather(bus_task, return_exceptions=True)
 
 
 def _run_with_reload() -> None:

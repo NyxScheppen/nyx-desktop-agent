@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Activity` / `ActivityType` / `ActivityStatus` / `DesireType` / `ShortTermDesire` / `DesireValue` / `CurrentState` / `Event` / `EventType` / `Material`）、02-config（`ActivityConfig` / `ExplorationConfig` / `ActivityEnergyDelta`）、03-llm（`LlmClient.complete` / `VisionClient`）、04-db（`activity` / `material` 表）、05-event（`EventBus` / `internal_event` / tick 路由）、06-tools（`ToolRegistry`）、07-memory-system（活动/知识记忆落库）、11-desire（待消费欲望、活动状态接线、满足回写、长期欲望入口）、12-inner-life（状态快照、反思、精力变化）、18-api（组合根、REST、SSE）、eval（`Evaluator`）
+- **前置依赖**：01-types（`Activity` / `ActivityType` / `ActivityStatus` / `DesireType` / `ShortTermDesire` / `DesireValue` / `CurrentState` / `Event` / `EventType` / `Material`）、02-config（`ActivityConfig` / `ExplorationConfig` / `ActivityEnergyDelta`）、03-llm（`LlmClient.complete` / `VisionClient`）、05-module-bus-system（`activity` / `material` 表、`EventBus` / `internal_event` / tick 路由、组合根、REST、SSE）、06-tools（`ToolRegistry`）、07-memory-system（活动/知识记忆落库）、11-desire（待消费欲望、活动状态接线、满足回写、长期欲望入口）、12-inner-life（状态快照、反思、精力变化）、eval（`Evaluator`）
 - **实现文件**：`nyx/activity/scheduler.py`、`nyx/activity/store.py`、`nyx/activity/material_store.py`、`nyx/activity/starter.py`、`nyx/activity/lifecycle.py`、`nyx/activity/facade.py`、`nyx/activity/reading_runner.py`、`nyx/activity/creation.py`、`nyx/activity/llm_result.py`、`nyx/activity/paths.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/screen.py`
 
 ## 用户故事
@@ -219,5 +219,5 @@
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `docs/activity-system-facts.md` 只保留无关代码所需的实现事实，并指向本文件
-- [ ] `docs/tech-reference.md`、11-desire、12-inner-life、18-api 与本文件的公开签名和事件契约一致
+- [ ] `docs/tech-reference.md`、11-desire、12-inner-life、05-module-bus-system 与本文件的公开签名和事件契约一致
 - [ ] `AGENTS.md` 与 `CLAUDE.md` 指向本文件作为活动系统唯一完整契约

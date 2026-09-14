@@ -180,8 +180,21 @@ class DesireLifecycle:
         self._embed = embed
         self._logger = logging.getLogger(__name__)
 
-    async def pressure_from_observation(self, event: Event) -> None:
+    async def pressure_from_observation(
+        self, event: Event, consumer_id: str | None = None
+    ) -> None:
         """OBSERVATION_STATE → 互动欲加压（增量固定 +0.15，不解析 event.content）。"""
+        if consumer_id is not None:
+            async with self._store.db.transaction():
+                applied = await self._bus.try_mark_effect_in_transaction(
+                    event.id, consumer_id
+                )
+                if not applied:
+                    return
+                await self._pressure(
+                    DesireType.INTERACTION, _OBSERVATION_PRESSURE_DELTA
+                )
+            return
         await self._pressure(DesireType.INTERACTION, _OBSERVATION_PRESSURE_DELTA)
 
     async def _pressure(self, type_: DesireType, delta: float) -> None:
@@ -197,13 +210,31 @@ class DesireLifecycle:
         """创造欲加压（反思/活动结束触发，delta 由调用方决定）。"""
         await self._pressure(DesireType.CREATION, delta)
 
-    async def satisfy_from_activity_end(self, event: Event) -> None:
+    async def satisfy_from_activity_end(
+        self, event: Event, consumer_id: str | None = None
+    ) -> None:
         """ACTIVITY_END → 解析满足信号（desire_id + goal_met），调 satisfy；
         读书/自由探索结束额外加压创造欲（创作结束不压，避免自循环）。"""
+        if consumer_id is None:
+            await self._satisfy_from_activity_end(event)
+            return
+        async with self._store.db.transaction():
+            applied = await self._bus.try_mark_effect_in_transaction(
+                event.id, consumer_id
+            )
+            if not applied:
+                return
+            await self._satisfy_from_activity_end(event, in_transaction=True)
+
+    async def _satisfy_from_activity_end(
+        self, event: Event, *, in_transaction: bool = False
+    ) -> None:
         desire_id = event.content.get("desire_id")
         goal_met = event.content.get("goal_met")
         if isinstance(desire_id, str) and isinstance(goal_met, bool):
-            await self.satisfy(desire_id, goal_met)
+            await self.satisfy(
+                desire_id, goal_met, in_transaction=in_transaction
+            )
         activity_type = event.content.get("type")
         if activity_type in (
             ActivityType.READING.value,
@@ -315,7 +346,6 @@ class DesireLifecycle:
         # 7. 重置选中类型 value（其余达峰类型保留压力）
         target.value = 0.0
         target.updated_at = now
-        await self._store.upsert_value(target)
 
         # 7.5 去重：话题锚点优先（goal.topic 精确相等 → 同 seed 重复，确定性零误判），
         # topic 不命中/缺失时回退 description 余弦兜底。
@@ -326,6 +356,7 @@ class DesireLifecycle:
                     self._logger.info(
                         "欲望重复丢弃（同话题） type=%s", target.type.value
                     )
+                    await self._store.upsert_value(target)
                     return []
         if self._embed is not None:
             try:
@@ -334,6 +365,7 @@ class DesireLifecycle:
                     other = await self._embed(d.description)
                     if cosine(vec, other) >= _DEDUP_SIM_THRESHOLD:
                         self._logger.info("欲望重复丢弃 type=%s", target.type.value)
+                        await self._store.upsert_value(target)
                         return []
             except Exception:
                 self._logger.exception("欲望去重 embedding 失败，跳过去重")
@@ -349,17 +381,21 @@ class DesireLifecycle:
             retry_count=0,
             status=DesireStatus.PENDING,
         )
-        await self._store.add_desire(desire)
 
-        # 9. 发布
-        await self._bus.publish(
-            internal_event(
-                EventType.DESIRE_GENERATED, {"desire_id": desire.id}, desire.id
-            )
+        # 9. 入队 + 发布：新欲望和生成事件必须同事务提交。
+        event = internal_event(
+            EventType.DESIRE_GENERATED, {"desire_id": desire.id}, desire.id
         )
+        async with self._store.db.transaction():
+            await self._store.upsert_value(target)
+            await self._store.add_desire(desire)
+            await self._bus.append_in_transaction(event)
+        await self._bus.announce_committed(event)
         return [desire]
 
-    async def satisfy(self, desire_id: str, goal_met: bool) -> None:
+    async def satisfy(
+        self, desire_id: str, goal_met: bool, *, in_transaction: bool = False
+    ) -> None:
         """达成/未达成回写。goal 非 None 时按 count 累计 goal_progress，达标才满足；
         goal None 沿用单次满足。终态（SATISFIED/EXPIRED）幂等：重复投递 no-op。"""
         desire = await self._store.get_desire(desire_id)
@@ -372,16 +408,16 @@ class DesireLifecycle:
         if goal_met and desire.goal is not None:
             desire.goal_progress += 1
             if desire.goal_progress >= desire.goal.count:
-                await self._satisfy(desire)
+                await self._satisfy(desire, in_transaction=in_transaction)
             else:
                 await self._store.update_desire(desire)  # 保持 PENDING，累计进度
             return
         if goal_met:
-            await self._satisfy(desire)
+            await self._satisfy(desire, in_transaction=in_transaction)
         else:
             desire.retry_count += 1
             if desire.retry_count > self._config.retry_limit:
-                await self._expire(desire)
+                await self._expire(desire, in_transaction=in_transaction)
             else:
                 await self._store.update_desire(desire)  # 保持 PENDING，retry+1
 
@@ -418,29 +454,37 @@ class DesireLifecycle:
         desire.status = DesireStatus.PENDING
         await self._store.update_desire(desire)
 
-    async def _satisfy(self, desire: ShortTermDesire) -> None:
+    async def _satisfy(
+        self, desire: ShortTermDesire, *, in_transaction: bool = False
+    ) -> None:
         desire.status = DesireStatus.SATISFIED
         await self._store.update_desire(desire)
         await self._reinforce(desire)
-        await self._bus.publish(
-            internal_event(
-                EventType.DESIRE_SATISFIED,
-                {"desire_id": desire.id},
-                desire.id,
-            )
+        event = internal_event(
+            EventType.DESIRE_SATISFIED,
+            {"desire_id": desire.id},
+            desire.id,
         )
+        if in_transaction:
+            await self._bus.append_in_transaction(event)
+        else:
+            await self._bus.publish(event)
 
-    async def _expire(self, desire: ShortTermDesire) -> None:
+    async def _expire(
+        self, desire: ShortTermDesire, *, in_transaction: bool = False
+    ) -> None:
         desire.status = DesireStatus.EXPIRED
         await self._store.update_desire(desire)
         await self._suppress(desire.type)
-        await self._bus.publish(
-            internal_event(
-                EventType.DESIRE_EXPIRED,
-                {"desire_id": desire.id},
-                desire.id,
-            )
+        event = internal_event(
+            EventType.DESIRE_EXPIRED,
+            {"desire_id": desire.id},
+            desire.id,
         )
+        if in_transaction:
+            await self._bus.append_in_transaction(event)
+        else:
+            await self._bus.publish(event)
 
     async def _reinforce(self, desire: ShortTermDesire) -> None:
         """满足后：表达权重正强化 + 长期进度回写（最相关长期欲望）。"""

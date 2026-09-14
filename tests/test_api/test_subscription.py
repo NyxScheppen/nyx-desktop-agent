@@ -7,7 +7,7 @@ from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.db import connect
 from nyx.desire.facade import DesireFacade
-from nyx.enums import EventType
+from nyx.enums import EventType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
@@ -24,7 +24,8 @@ class _FakeInnerLife:
     def __init__(self) -> None:
         self.applied: list[Event] = []
 
-    async def apply_event(self, event: Event) -> None:
+    async def apply_event(self, event: Event, consumer_id: str | None = None) -> None:
+        del consumer_id
         self.applied.append(event)
 
 
@@ -32,7 +33,8 @@ class _FakeDesire:
     def __init__(self) -> None:
         self.added: list[Event] = []
 
-    async def add_value(self, event: Event) -> None:
+    async def add_value(self, event: Event, consumer_id: str | None = None) -> None:
+        del consumer_id
         self.added.append(event)
 
 
@@ -59,7 +61,10 @@ class _FakeMemory:
     def __init__(self) -> None:
         self.remembered: list[Event] = []
 
-    async def remember_activity(self, event: Event) -> None:
+    async def remember_activity(
+        self, event: Event, consumer_id: str | None = None
+    ) -> None:
+        del consumer_id
         self.remembered.append(event)
 
 
@@ -96,7 +101,7 @@ async def test_subscription_consistency() -> None:
         for event_type, consumers in ROUTING.items():
             if consumers:
                 await bus.publish(_root_event(event_type, _content(event_type)))
-        await asyncio.wait_for(bus._queue.join(), timeout=1.0)
+        assert await bus.drain(timeout=1.0)
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -108,3 +113,39 @@ async def test_subscription_consistency() -> None:
     assert len(desire.added) == 2
     assert len(activity.generated) == 1
     assert len(memory.remembered) == 1
+
+
+async def test_user_message_replay_skips_after_reply_event_exists() -> None:
+    database = await connect(":memory:")
+    bus = EventBus(database)
+    expression = _FakeExpression()
+    app = _App(
+        bus=bus,
+        inner_life=cast(InnerLifeFacade, _FakeInnerLife()),
+        desire=cast(DesireFacade, _FakeDesire()),
+        memory=cast(MemoryFacade, _FakeMemory()),
+        activity=cast(ActivityFacade, _FakeActivity()),
+        expression=cast(ExpressionFacade, expression),
+        reading=cast(ReadingFacade, object()),
+        evaluator=cast(Evaluator, object()),
+        eval_store=cast(EvalStore, object()),
+        config=Config(),
+    )
+    event = _root_event(EventType.USER_MESSAGE, {"message": "hi"})
+    await bus.publish(
+        Event(
+            id="reply-1",
+            timestamp=1.0,
+            source=Source.INTERNAL,
+            type=EventType.SPEAK,
+            content={"content": "hello"},
+            correlation_id=event.correlation_id,
+        )
+    )
+
+    from nyx.runtime import on_user_message
+
+    await on_user_message(app, event)
+
+    assert expression.replied == []
+    await database.close()

@@ -7,7 +7,7 @@
 ## 元信息
 
 - **前置依赖**：17-expression（`ExpressionFacade._history` / `initiate_chat`）、21-reading-impulse（`_dispatch` / `_question_reading` / `_associate_reading` / `_mutter_reading`）
-- **反向修订 18-api**：`ReadingFacade` 构造扩为 9 参（+`expression`）+ `main.py` 装配顺序（`expression` 先于 `reading`）
+- **反向修订组合根与底层契约**：`ReadingFacade` 构造扩为 9 参（+`expression`）+ `main.py` 装配顺序（`expression` 先于 `reading`）
 - **实现文件**：`nyx/expression/facade.py`、`nyx/reading/facade.py`、`nyx/main.py`
 
 ## 用户故事
@@ -101,4 +101,4 @@ def record_proactive_turn(self, text: str) -> None:
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新（快照）
-- [ ] ripple 同步：tech-ref §5 `ReadingFacade` 构造 9 参、18-api 装配顺序、17-expression 新方法、`test_reading_facade.py` 两个夹具（`_build_impulse_facade`/`_note_facade`）加第 9 参
+- [ ] ripple 同步：tech-ref §5 `ReadingFacade` 构造 9 参、组合根装配顺序、17-expression 新方法、`test_reading_facade.py` 两个夹具（`_build_impulse_facade`/`_note_facade`）加第 9 参

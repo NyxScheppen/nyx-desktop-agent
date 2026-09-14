@@ -18,7 +18,7 @@ def build_system_prompt(
 ) -> str:
     """拼 system prompt：角色设定 + 状态 + 欲望 + 自我认知 + 记忆 + 工具结果。
 
-    canon 为静态人格注入文本（prompts/canon.md，由 18-api 组合根读入传入）。
+    canon 为静态人格注入文本（prompts/canon.md，由 组合根 组合根读入传入）。
     ask_guidance 为主动提问指导（prompts/ask.md），仅慢通道/搭话注入，None 跳过。
     narrative / memories 为 None（或空）时跳过对应段——快通道省略、慢通道补全。
     tool_outputs 为 use_tools 节点查到的工具结果（慢通道专属），空则跳过。

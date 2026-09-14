@@ -5,7 +5,7 @@
 
 ## 元信息
 
-- **前置依赖**：03-llm（`LlmClient.complete`）、01-types（`LLMOutput`）、04-db（版本化迁移）、18-api（REST 薄封装）、17-expression（respond 节点 think/speak 拆分 + `_voice_output`）
+- **前置依赖**：03-llm（`LlmClient.complete`）、01-types（`LLMOutput`）、05-module-bus-system（版本化迁移）、05-module-bus-system（REST 薄封装）、17-expression（respond 节点 think/speak 拆分 + `_voice_output`）
 - **实现文件**：`nyx/llm/client.py`、`nyx/types.py`、`nyx/eval/evaluator.py`、`nyx/eval/store.py`（新）、`nyx/db.py`、`nyx/main.py`；前端 `api/client.ts`、`types/api.ts`、`stores/evalStore.ts`（新）、`components/layout/SettingsView.tsx`
 
 ## 用户故事
@@ -33,8 +33,8 @@
   - `total_tokens() -> EvalStats`（对 `eval_log` 按 `call_id` 分组后求和——同 `call_id` 的 think/speak 只计一次，避免 reply 双计）
   - **保留策略**：不裁剪、永久累计（用户已定「持久化 + 永久累计」）——记录永久保留、总 token 自首次调用累计、重启不清零；本 spec 不做裁剪，日后若担心膨胀可另加。
 - **`Evaluator` 落库（`nyx/eval/evaluator.py`）**：`__init__` 增注入 `store: EvalStore | None = None`。`evaluate()` 重构为「先算 OOC 关键词分 +（voice 且有 embed 时）embedding 分，再统一落一条记录」——`store` 为 `None` 或 `insert` 抛异常时降级为日志、不重抛（best-effort 旁路，同 eval 现有豁免约定）。docstring 由「不再落库、不再计 token、不再返回报告」改为「写 eval_log，best-effort」。
-- **数据变更（04-db 迁移 v13）**：建 `eval_log` 表 + `idx_eval_log_created` 索引（见下）。**不存 `content` 原文**（数据最小化，CLAUDE.md 安全节；面板只看 OOC 分 + token，不回看具体输出）。
-- **API 端点（18-api，main.py 薄封装）**：
+- **数据变更（05-module-bus-system 迁移 v13）**：建 `eval_log` 表 + `idx_eval_log_created` 索引（见下）。**不存 `content` 原文**（数据最小化，CLAUDE.md 安全节；面板只看 OOC 分 + token，不回看具体输出）。
+- **API 端点（05-module-bus-system，main.py 薄封装）**：
   - `GET /api/eval/recent?limit=5` → `list[EvalRecord]`（`app.eval_store.list_recent(limit)`）
   - `GET /api/eval/total_tokens` → `EvalStats`（`app.eval_store.total_tokens()`）
   - `_App` 增 `eval_store: EvalStore`；`build_app_context` 构造 `eval_store = EvalStore(db)`、`evaluator = Evaluator(embed, eval_store)`。

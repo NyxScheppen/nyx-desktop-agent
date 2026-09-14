@@ -18,7 +18,7 @@ import type {
   UserNoteWithAnnotations,
 } from "../types/api";
 
-// 空 = 相对路径，走 Vite proxy 同源转发到后端 8000（18-api 不做 CORS，localhost 同源）
+// 空 = 相对路径，走 Vite proxy 同源转发到后端 8000（组合根 不做 CORS，localhost 同源）
 export const BASE_URL = "";
 
 // 统一错误契约（05-client §2）：成功返回数据、失败 throw，不包裹 {ok, data}。

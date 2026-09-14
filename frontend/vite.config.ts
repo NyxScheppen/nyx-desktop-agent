@@ -8,7 +8,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     // /api 同源转发到后端：前端请求相对路径 /api/*，Vite 转发到 8000，
-    // 浏览器视角同源（5173），后端无需 CORS（18-api「不做 CORS（localhost 同源）」）
+    // 浏览器视角同源（5173），后端无需 CORS（组合根「不做 CORS（localhost 同源）」）
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8000",

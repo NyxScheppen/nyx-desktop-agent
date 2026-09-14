@@ -72,14 +72,15 @@
 | `test_complete_extracts_tokens_and_call_id` | 功能正确 | `complete()` 从 `usage_metadata` 抽 token 回填 + `call_id` 为 `uuid4` 非空串 |
 | `test_complete_no_usage_zero_tokens` | 边界鲁棒 | 响应无 usage → `prompt_tokens`/`completion_tokens` 均 0、`call_id` 仍非空 |
 
-## 04-db（SQLite 连接 + 建表 + 迁移）
+## module-bus-system：DB（SQLite 连接 + 建表 + 迁移）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
-| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 19 张业务表 + `schema_version`，共 20 张 |
-| `test_migrate_creates_six_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_memory_content_hash` / `idx_books_content_hash` / `idx_eval_log_created` 六个 |
+| `test_migrate_creates_all_tables` | 功能正确 | `sqlite_master` 含硬编码 21 张业务表 + `schema_version`，共 22 张 |
+| `test_migrate_creates_six_indexes` | 功能正确 | 显式索引（`sql IS NOT NULL`）恰为 `idx_memory_tag` / `idx_memory_type` / `idx_event_log_corr` / `idx_memory_content_hash` / `idx_books_content_hash` / `idx_eval_log_created` / `idx_event_delivery_ready` / `idx_event_delivery_consumer_ready` 八个 |
 | `test_migrate_books_content_hash_index_unique` | 功能正确 | `idx_books_content_hash` 的 `sqlite_master.sql` 以 `CREATE UNIQUE INDEX` 开头（v8 去重升级唯一索引） |
 | `test_memory_edge_schema_typed_and_canonical` | 功能正确 | `memory_edge` 主键为 `(from_id, to_id, kind)`；`kind` / `created_at` 为 NOT NULL；DDL 含 `CHECK (from_id < to_id)` |
+| `test_event_delivery_and_effect_schema` | 功能正确 | `event_delivery` / `event_effect` 复合主键均为 `(event_id, consumer_id)`；delivery 列集合含状态、attempts、租约、完成时间和错误字段 |
 | `test_migrate_v8_dedupes_duplicate_content_hash` | 边界鲁棒 | 先迁 v7 插两条同 `content_hash` 书 → 完整迁移不抛、重复清到 1、被删书 paragraphs 级联清空、唯一索引就位 |
 | `test_memory_edge_migration_canonicalizes_reverse_edges` | 边界鲁棒 | 先迁 v13 写入 `a→b` 与 `b→a` 旧边 → 完整迁移合并为单条 `("a","b","semantic",0.9,0.0)` |
 | `test_migrate_sets_version_to_max` | 功能正确 | `schema_version` 单行 = `_MIGRATIONS` 最高版本 |
@@ -93,8 +94,9 @@
 | `test_connect_env_override` | 功能正确 | `path=None` 时 `NYX_DB` 环境变量覆盖默认 |
 | `test_default_db_path_constant` | 功能正确 | `DEFAULT_DB_PATH == "nyx.db"` |
 | `test_connect_closes_conn_on_migrate_failure` | 边界鲁棒 | 迁移失败 → `connect` 抛异常且连接被 `close`（spy 记录），不泄漏 |
+| `test_database_close_is_idempotent` | 边界鲁棒 | `Database.close()` 调底层连接 `close` 一次；重复 close 不重复关闭且 `is_closed` 保持 true |
 
-## 05-event（事件总线 + 路由）
+## module-bus-system：EventBus（事件总线 + 路由）
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -104,25 +106,18 @@
 | `test_time_constants` | 功能正确 | `SECONDS_PER_DAY == 86400.0`、`SECONDS_PER_HOUR == 3600.0`（共享常量，防四处 Facade 漂移） |
 | `test_internal_event_shape` | 功能正确 | `internal_event` 返回 `Event`：`source is Source.INTERNAL`、`type`/`content`/`correlation_id` 透传、`id` 非空 uuid4、`timestamp` 为 float |
 | `test_internal_text_event_wraps_content` | 功能正确 | `internal_text_event` 把纯文本 content 包装成 `{"content": ...}` 载荷 |
-| `test_publish_only_enqueues` | 功能正确 | publish 后 handler 未调、`list_events()` 空（未到 run，不落库） |
-| `test_run_persists_dispatches_and_broadcasts` | 功能正确 | run 后 handler 收到完整 `Event`、SSE sink 收到同一对象、落库往返相等（含 correlation_id 透传） |
-| `test_multiple_handlers_run_in_subscribe_order` | 功能正确 | 多 handler 按订阅序调用 |
-| `test_list_events_filter_by_type` | 功能正确 | `event_type=` 只返回该类型事件 |
-| `test_list_events_filter_by_correlation` | 功能正确 | `correlation_id=` 只返回该因果链事件 |
-| `test_list_events_sorts_desc_and_limits` | 功能正确 | 默认按 `timestamp DESC`、`limit=` 截断 |
-| `test_list_events_stable_order_same_timestamp` | 边界鲁棒 | 同 `timestamp` 时按 `id` tiebreaker 稳定排序（不抖动） |
-| `test_row_to_event_roundtrip` | 功能正确 | `content` 是 `json.loads` 后 dict、`source`/`type` 从 `.value` 转回枚举成员 |
-| `test_add_and_remove_sse_sink` | 功能正确 | add 后收到、remove 后不再收到 |
-| `test_remove_sse_sink_is_idempotent` | 边界鲁棒 | 从未加入 / 二次移除均不抛 `ValueError`（幂等） |
-| `test_handler_exception_isolated` | 边界鲁棒 | handler 抛异常 → `logger.exception` 记录完整 traceback、后续 handler 照跑、SSE 照广播、run 任务不死 |
-| `test_persist_exception_propagates` | 边界鲁棒 | `_persist` 抛异常 → 传播、run 任务终止、事件放回队首不丢（`qsize()==1`） |
-| `test_persist_failure_requeues_and_retries` | 边界鲁棒 | `_persist` 首次抛、重试成功 → 事件最终落库 + handler 收到、`calls==2`（队首放回不丢） |
-| `test_broadcast_drops_oldest_when_sink_full` | 边界鲁棒 | sink 满（`Queue(maxsize=1)`）→ 丢最旧保最新（只剩最新事件，不抛 `QueueFull`、不杀 `run()`） |
-| `test_persist_poison_pill_dead_lettered` | 边界鲁棒 | `_persist` 恒抛 → 前 `_PERSIST_MAX_ATTEMPTS-1` 轮放回队首、第 `_PERSIST_MAX_ATTEMPTS` 轮死信丢弃（`qsize()==0`、run 不死）、`caplog` 含「死信丢弃」+ event.id（毒丸不阻塞整队、不杀进程） |
-| `test_persist_rolls_back_on_failure` | 边界鲁棒 | monkeypatch `conn.commit` 抛 `aiosqlite.Error` + spy `conn.rollback` → rollback 被调（失败回滚，不留坏事务给下次重试） |
-| `test_persist_serializes_non_json_types` | 功能正确 | content 含 `uuid.uuid4()` → 落库往返为字符串（`json.dumps(..., default=str)`，序列化与 SSE 对称，不抛 `TypeError`） |
-| `test_persist_rejects_nan` | 功能正确 | content 含 `float("nan")` → `_persist` 抛 `ValueError`（`allow_nan=False` 拦 NaN/Infinity，`default=str` 不拦 float，不写出非法 `NaN` 字面量） |
-| `test_put_left_resets_join` | 边界鲁棒 | `put_left` 后 `wait_for(join(), timeout=0.05)` 抛 `TimeoutError`（`_finished` 被 clear、`_unfinished_tasks` 递增，`join()` 语义对齐 `put_nowait`） |
+| `test_publish_is_durable_before_return` | 功能正确 | `publish()` 返回前 `event_log` 和 `event_delivery` 已落库；worker 未运行时 handler 不执行，delivery 为 `pending` |
+| `test_run_dispatches_and_broadcasts_after_durable_publish` | 功能正确 | `run()` 消费 durable delivery 后 handler 收完整 `Event`、SSE sink 收同一对象、delivery 进入 `succeeded` |
+| `test_multiple_handlers_are_independent_consumers` | 功能正确 | 同一事件两个 legacy handler 生成独立 consumer；两个 delivery 分别 `succeeded`，不依赖订阅顺序作为完成语义 |
+| `test_list_events_filter_sort_and_limit` | 功能正确 | `list_events()` 默认按 `timestamp DESC, id ASC`；支持 `limit`、`event_type`、`correlation_id` 过滤 |
+| `test_same_timestamp_has_stable_id_tiebreak` | 边界鲁棒 | 同 `timestamp` 时按 `id` 稳定排序（不抖动） |
+| `test_sse_sink_add_remove_and_backpressure` | 边界鲁棒 | SSE sink add/remove 生效；满队列丢旧保新，不影响事件落库和 delivery |
+| `test_handler_failure_retries_only_failed_consumer` | 边界鲁棒 | 一个 consumer handler 恒抛会重试 5 次后 `dead_letter`；另一个 consumer 只执行 1 次并 `succeeded` |
+| `test_delivery_failure_is_recovered_after_expired_lease` | 边界鲁棒 | `processing` 且租约过期的 delivery 经 `recover_deliveries()` 恢复为 `pending` |
+| `test_effect_marker_skips_duplicate_handler_replay` | 回归保护 | 已有 `(event_id, consumer_id)` effect marker 时 worker 不调用 handler，直接把 delivery 标记 `succeeded` |
+| `test_publish_failure_does_not_return_event_id` | 边界鲁棒 | admission commit 失败抛 `EventAdmissionError`，`event_log` 不留下假成功事件 |
+| `test_close_rejects_new_events_and_closes_database` | 功能正确 | `EventBus.close()` 后 DB closed；新 `publish()` 抛 `EventBusClosedError`；重复 close 幂等 |
+| `test_event_payload_serialization_is_stable` | 功能正确 | content 含 `uuid.UUID` 时落库 JSON 为字符串，序列化稳定 |
 
 ## 06-tools（工具系统）
 
@@ -276,6 +271,7 @@
 | `test_count_new_delegates` | 功能正确 | `facade.count_new` 委托真 store：`since=500` → 1、`since=2000` → 0、非目标 tag → 0 |
 | `test_record_recall_below_threshold` | 功能正确 | 未达阈值 → recall_count+1、type 仍 SHORT_TERM、无 `memory_promoted` |
 | `test_record_recall_promotes` | 功能正确 | 达阈值 → type LONG_TERM + 发布 `memory_promoted` |
+| `test_record_recall_rolls_back_when_promoted_event_append_fails` | 回归保护 | `MEMORY_PROMOTED` 事务内写入失败时，recall_count 和短期到长期升级一起回滚 |
 | `test_record_recall_long_term_no_repromote` | 功能正确 | 已 LONG_TERM → 只 recall_count+1，不重复发布 |
 | `test_record_recall_concurrent_single_promote` | 回归保护 | `asyncio.gather` 并发两次 → `recall_count==2`、仅 1 条 `memory_promoted`（原子加一+条件升型不重复升级） |
 | `test_export_json` | 功能正确 | `json.loads` 还原列表，`type` 为字符串、`embedding` 透传 |
@@ -289,6 +285,9 @@
 | `test_activity_memory_fields_skip` | 边界鲁棒 | 非目标类型/空 result/空内容/类型非 str/result 非 dict → `None` |
 | `test_activity_memory_fields_summary_truncated` | 边界鲁棒 | summary 超 80 字截断为 `x*80 + "…"` |
 | `test_remember_activity_reading` | 功能正确 | reading 事件 → 写一条 Memory（content=note/summary=book/tag="reading"/type SHORT_TERM）、发布 `memory_created`、无 LLM 调用 |
+| `test_remember_activity_replay_is_idempotent` | 回归保护 | `memory.activity_end` durable consumer 重放同一活动结束事件时 effect marker 阻止重复新增或 strengthen |
+| `test_remember_activity_rolls_back_when_created_event_append_fails` | 回归保护 | `MEMORY_CREATED` 事务内写入失败时，活动记忆和 `memory.activity_end` effect marker 同事务回滚 |
+| `test_remember_activity_observation_snapshot_rolls_back_on_failure` | 回归保护 | 观察画像沉淀失败会恢复 `_last_observation` 快照，后续重放同快照仍能落记忆 |
 | `test_remember_activity_creation_and_exploration` | 功能正确 | creation + free_exploration 各写一条（content/summary 正确、tag 为活动类型值）；不调用 scene/contradiction，允许 write-side `memory_relation` |
 | `test_remember_activity_skips_empty_or_other_type` | 边界鲁棒 | rest/空 result/observe_user → 不写、无 `memory_created` |
 | `test_remember_activity_contradiction` | 功能正确 | 有相似旧记忆 + embed → `memory_relation` 后门控触发 `contradiction`（无 scene_memory）；命中 → 发布 reflection |
@@ -332,12 +331,16 @@
 | `test_most_relevant_long_term_blank_not_wildcard` | 功能正确 | 空串子主题被跳过（不当作 substring 通配符），`topic="骑士团"` 命中真实子主题的第二条 |
 | `test_build_desire_prompt` | 功能正确 | 含类型 `.value` 与种子；`seed=None` → 含「（无）」 |
 | `test_pressure_from_observation` | 功能正确 | 互动欲 `value` 0 → `+0.15`；`updated_at` 更新 |
+| `test_pressure_from_observation_replay_is_idempotent` | 回归保护 | durable consumer 重放同一 `OBSERVATION_STATE` 时 effect marker 阻止互动欲重复加压 |
 | `test_pressure_creation` | 功能正确 | 创造欲 `value` 0 → `+delta`（传 0.2）；`updated_at` 更新 |
 | `test_satisfy_from_activity_end_reading_pressures_creation` | 功能正确 | `content["type"]="reading"` → 满足逻辑外创造欲 `+0.15` |
 | `test_satisfy_from_activity_end_free_exploration_pressures_creation` | 功能正确 | `content["type"]="free_exploration"` → 创造欲 `+0.15` |
+| `test_activity_end_transaction_rolls_back_on_derived_event_failure` | 回归保护 | `ACTIVITY_END` consumer 中派生事件写入失败时，欲望满足状态、值变化和 effect marker 同事务回滚 |
+| `test_activity_end_replay_is_idempotent` | 回归保护 | 同一 `ACTIVITY_END` + consumer id 重放不重复满足欲望、不重复创造欲加压 |
 | `test_satisfy_from_activity_end_creation_no_self_loop` | 边界鲁棒 | `content["type"]="creation"` → 创造欲不动（不自循环） |
 | `test_run_eval_no_peak` | 功能正确 | 四类型都低于 `peak_threshold` → `[]`、无 LLM 调用 |
 | `test_run_eval_generates_peak` | 功能正确 | 达峰 → 1 次 LLM（`output_type="desire"`）、`evaluator.evaluate` 1 次、返回 1 个（type/status/strength/description/goal 来自 fixture）、value 重置 0、发布 `desire_generated` |
+| `test_run_eval_rolls_back_desire_when_generated_event_append_fails` | 回归保护 | 生成欲望后 `DESIRE_GENERATED` 事务内写入失败时，新欲望和峰值归零一起回滚 |
 | `test_run_eval_only_most_urgent` | 功能正确 | 互动 0.95 + 探索 0.92 都达峰 → 只生成互动；探索 `value` 保留 0.92 不重置 |
 | `test_run_eval_long_term_pressure` | 功能正确 | 探索长期欲望 → 探索 `value` 额外 `+0.1`（0.5→0.6） |
 | `test_run_eval_rest_pressure_when_tired` | 功能正确 | `energy=ENERGY_REST_THRESHOLD-1` → 休息欲 `value` `+0.1`（0.5→0.6） |
@@ -431,10 +434,15 @@
 | `test_run_unseeded_raises` | 边界鲁棒 | 单行表未 seed（personality/values/narrative 任一 `None`）→ `RuntimeError`、未发 LLM |
 | `test_run_survives_invalid_json` | 边界鲁棒 | 非法 JSON（`[`）→ `run` 不抛、慢变量不回写（personality/narrative 不变、无欲望新增） |
 | `test_apply_event_desire_satisfied` | 功能正确 | valence/arousal 上升（+0.2/+0.1）；发布 `EMOTION_UPDATE`（content 含 valence/arousal/emotion 字符串、source INTERNAL、correlation 透传） |
+| `test_desire_satisfied_replay_does_not_repeat_emotion` | 回归保护 | 同一 `DESIRE_SATISFIED` durable consumer 重放时 effect marker 阻止情绪重复偏移 |
 | `test_apply_event_activity_end` | 功能正确 | content `energy_delta=-25` → energy 100→75、`energy_state` 重算 OKAY |
 | `test_apply_event_activity_end_no_delta` | 边界鲁棒 | 无 `energy_delta` 键 → 不崩、energy 不变（缺省 0） |
+| `test_activity_end_transaction_rolls_back_energy_and_emotion` | 回归保护 | `ACTIVITY_END` 能量更新后派生 `EMOTION_UPDATE` 写入失败时，能量、情绪内存快照和 effect marker 同步回滚 |
+| `test_activity_end_replay_does_not_repeat_energy_or_emotion_event` | 回归保护 | 同一 `ACTIVITY_END` durable consumer 重放时不重复扣能量、不重复写情绪事件 |
 | `test_apply_event_unseeded_energy` | 边界鲁棒 | 未 seed energy → `DESIRE_SATISFIED`（读 `_publish_emotion`）与 `ACTIVITY_END`（写 `_apply_energy`）均抛 `RuntimeError`（fail-fast 不静默） |
 | `test_apply_event_reflection` | 功能正确 | REFLECTION 触发 `reflect`（LLM 1 次、correlation 透传）；情感偏移 -0.1 arousal 生效（0.1→0.0） |
+| `test_reflection_event_replay_is_idempotent` | 回归保护 | 同一 `REFLECTION` durable consumer 重放时只调用一次反思 LLM、只写一次 `REFLECTION_DONE`，叙事不重复追加 |
+| `test_reflection_event_rolls_back_slow_variables_when_event_append_fails` | 回归保护 | `REFLECTION_DONE` 事务内写入失败时，反思慢变量和 `inner_life.reflection` effect marker 一起回滚 |
 | `test_decay_settlement` | 功能正确 | 两次 `apply_event` 间隔 1 天 → 第二次前情感先衰减（0.2→0.1） |
 | `test_get_state` | 功能正确 | 注入 fake `ActivityFacade.get_current` + `DesireFacade.get_pending` → `CurrentState` 各字段正确（current_activity/active_desires/personality/aesthetic/energy/energy_state） |
 | `test_get_state_unseeded` | 边界鲁棒 | 未 seed → `get_state` 抛 `RuntimeError` |
@@ -524,6 +532,9 @@
 | `test_upgrade_to_free_exploration` | 功能正确 | 探索欲（goal.topic「骑士团」钉死）+ 精力足 + 频率过 → FREE_EXPLORATION |
 | `test_no_upgrade_when_rate_limited` | 功能正确 | 频率未过 → 降级 READING |
 | `test_complete_activity` | 功能正确 | COMPLETED + `ended_at` 非空 + activity_end（energy_delta=-20） |
+| `test_complete_activity_rolls_back_when_event_append_fails` | 回归保护 | 完成活动时 `ACTIVITY_END` 事务内写入失败会回滚 activity 终态和 desire release |
+| `test_start_activity_rolls_back_when_event_append_fails` | 回归保护 | 启动活动时 `ACTIVITY_START` 事务内写入失败会回滚 RUNNING 状态和 desire active 标记 |
+| `test_interrupt_activity_rolls_back_when_event_append_fails` | 回归保护 | 打断活动时 `ACTIVITY_INTERRUPTED` 事务内写入失败会回滚 PAUSED/ABANDONED 状态和 desire suppressed 标记 |
 | `test_interrupt_non_resumable_abandons` | 功能正确 | 瞬时活动（休息）打断 → ABANDONED + activity_interrupted（`by=user_message`） |
 | `test_interrupt_creation_marks_paused` | 功能正确 | 创作被打断 → PAUSED（保留记录可重跑）+ activity_interrupted，非 ABANDONED |
 | `test_interrupt_reading_marks_paused` | 功能正确 | 读书被打断 → PAUSED（material 层 read_chars 已 advance 可续读）+ activity_interrupted，非 ABANDONED |
@@ -694,7 +705,7 @@
 | `test_check_timeouts_before_timeout_noop` | 边界鲁棒 | 未到超时点 → 无动作（wait_user 与待回搭话都保持） |
 | `test_check_timeouts_expires_ignored_chat` | 功能正确 | 搭话超时未回 → `desire.expire` 调 1 次（值回灌）、清 `_pending_chat_desire_id` |
 
-## 18-api（组合根 + REST + SSE）
+## module-bus-system：组合根 + REST + SSE
 
 | 测试 | 检查方向 | 断言内容 |
 |---|---|---|
@@ -718,7 +729,8 @@
 | `test_eval_recent_endpoint` | 功能正确 | `GET /api/eval/recent?limit=3` → 200、`store.recent_calls == [3]`、首条 `call_id == "c1"` |
 | `test_eval_total_tokens_endpoint` | 功能正确 | `GET /api/eval/total_tokens` → 200、`{total 42 / prompt 30 / completion 12}` |
 | `test_tick_loop_emits_four_clock_ticks` | 功能正确 | 跑一个循环 → 4 条 `CLOCK_TICK`，`tick_type` 覆盖四类、每条 `source is INTERNAL`（系统定时器非外部输入） |
-| `test_subscription_consistency` | 功能正确 | 对 `ROUTING` 每个非空消费者 publish → 对应 Facade 方法被调（inner_life×4 / desire×2 / activity×1 / expression×1） |
+| `test_subscription_consistency` | 功能正确 | 从 `ROUTE_SPECS` 派生注册所有非空 consumer；fake facades 接受 durable `consumer_id`；对各路由 publish 后对应 Facade 方法被调 |
+| `test_user_message_replay_skips_after_reply_event_exists` | 回归保护 | 同一用户消息已有同 correlation 的终局 `SPEAK` 事件时，重放不再次调用 expression handler |
 | `test_chat_missing_message_returns_422` | 边界鲁棒 | `POST /api/chat` 缺 `message` → 422（pydantic 请求模型校验，非 500） |
 | `test_observe_invalid_presence_returns_422` | 边界鲁棒 | `POST /api/observe` `presence=Online`（拼写错误）→ 422、不 publish、`last_presence` 不变 |
 | `test_supervise_bus_breaks_after_max_failures` | 回归保护 | `_supervise_bus` 连续 `_BUS_MAX_FAILURES` 次失败 → `RuntimeError` 重抛熔断（`run()` 调用 == 阈值） |
@@ -731,7 +743,7 @@
 | `test_upload_endpoint_registers_material` | 功能正确 | `POST /api/upload`（multipart 6 字书）→ `file_io` 写 `uploads/book.txt` 后 `register_material(path, name, 6)` 入库，返回 `{filename:"book.txt", path:"workspace/uploads/book.txt"}`；`registered == [("workspace/uploads/book.txt","book.txt",6)]`、`bus.published == []`（只注册不触发读书） |
 | `test_check_reflect_skips_within_cooldown` | 边界鲁棒 | `updated_at` 距 now < `_REFLECT_MIN_INTERVAL` → 不触发（`reflect` 不调） |
 | `test_check_reflect_skips_below_new_memory_threshold` | 边界鲁棒 | 已过冷却但新记忆 < `_REFLECT_MIN_NEW_MEMORIES` → 不触发（`reflect` 不调） |
-| `test_check_reflect_triggers` | 功能正确 | 过冷却 + 新记忆达标 → `reflect` 调 1 次（correlation 透传） |
+| `test_check_reflect_triggers` | 架构回归 | 过冷却 + 新记忆达标 → 发布 durable `REFLECTION` 事件（correlation 透传），由 `inner_life.reflection` consumer 执行反思 |
 | `test_check_reflect_uses_first_creation_count` | 回归保护 | `list_memories().created_at` 看似达标但 `count_new(None, updated_at)==0` → 不触发反思（新增判据走 first_created_at 口径） |
 
 ## 19-reading-content（陪读内容：segmenter + epub + store + facade + POST /api/books）

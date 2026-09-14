@@ -25,8 +25,8 @@
 
 ## 3. DB DDL（SQLite）
 
-> DDL 与迁移以 `nyx/db.py` 源文件为准（spec 04-db 只给契约；19 张业务表 + 6 个显式索引 + 版本化迁移 + `connect()`），此处不再重复。
-> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；19 张业务表 + `schema_version` 迁移簿记表 = 共 20 张。`memory_edge` 是 canonical typed edge 表：`CHECK (from_id < to_id)`，主键 `(from_id, to_id, kind)`，`kind TEXT NOT NULL DEFAULT 'semantic'`，`created_at REAL NOT NULL DEFAULT 0.0`。迁移版图：v1/2/3/6 基础表（4/5 死号）、v7-v10 陪读（books/paragraphs/progress/user_notes/annotations）、v11-v12 审美维度（aesthetic 表 + `memory.first_created_at`）、v13 eval 记账（`eval_log` 表，15-eval）、v14 typed memory edge schema（旧边 canonicalize 为 `semantic`，反向重复取最大 `weight`）。
+> DDL 与迁移以 `nyx/db.py` 源文件为准（底层契约见 `docs/specs/05-module-bus-system.md`；21 张业务表 + 8 个显式索引 + 版本化迁移 + `connect()` / `Database.close()` / `Database.transaction()`），此处不再重复。
+> 约定速记：复杂字段（story / becoming / subtopics / progress / aspect / goal / linked_values / self_view / content / embedding）存 JSON 字符串；枚举列存 `.value` 字符串；可空性严格对应 01-types 的 Optional（`X | None` ⟺ DDL 可空）；21 张业务表 + `schema_version` 迁移簿记表 = 共 22 张。`memory_edge` 是 canonical typed edge 表：`CHECK (from_id < to_id)`，主键 `(from_id, to_id, kind)`，`kind TEXT NOT NULL DEFAULT 'semantic'`，`created_at REAL NOT NULL DEFAULT 0.0`。事件投递表为 `event_delivery(event_id, consumer_id, status, attempts, available_at, started_at, completed_at, lease_until, last_error)`，消费者幂等表为 `event_effect(event_id, consumer_id, applied_at)`。迁移版图：v1/2/3/6 基础表（4/5 死号）、v7-v10 陪读（books/paragraphs/progress/user_notes/annotations）、v11-v12 审美维度（aesthetic 表 + `memory.first_created_at`）、v13 eval 记账（`eval_log` 表，15-eval）、v14 typed memory edge schema（旧边 canonicalize 为 `semantic`，反向重复取最大 `weight`）、v15 event delivery/effect schema。
 
 ---
 
@@ -64,7 +64,8 @@
 | GET | `/api/eval/recent?limit=` | query 条数（默认 5） | `EvalRecord[]`（最近 N 条 LLM 调用记账，倒序） |
 | GET | `/api/eval/total_tokens` | — | `EvalStats`（按 `call_id` 去重累计 `total_tokens`/`prompt_tokens`/`completion_tokens`） |
 > REST 端点分两类：
-> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`> - **外部输入入口**：`/api/chat`、`/api/observe` 不调 Facade 读方法，而是组合根构造事件 `publish` 后返回 `{event_id}`——`/api/chat` → publish `USER_MESSAGE`（bus 按 ROUTING 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 `ActivityFacade.register_material()` 只注册书库（不发事件、不立即读书），返回 `{filename, path}`。回复/后续产出走 SSE。
+> - **读方法薄封装**（无额外业务逻辑）：`/api/state` → `InnerLifeFacade.get_state()`；`/api/memories` → `MemoryFacade.list_memories(tag, type)`；`/api/memories/search` → `MemoryFacade.search(q)`；`/api/desires` → `DesireFacade.get_all()`；`/api/activity` → `ActivityFacade.get_current()` + `get_schedule()`；`/api/activity/results` → `ActivityFacade.get_results()`；`/api/events/log` → `EventBus.list_events(limit, event_type, correlation_id)`；`/api/narrative` → `InnerLifeFacade.get_narrative()`；`/api/export` → `MemoryFacade.export(fmt)`；`/api/materials` → `ActivityFacade.list_materials()`
+> - **外部输入入口**：`/api/chat`、`/api/observe` 不调 Facade 读方法，而是组合根构造事件 durable `publish` 后返回 `{event_id}`；受理失败返回 503。`/api/chat` → publish `USER_MESSAGE`（bus 按 `RouteSpec` 路由到 interrupt + `ExpressionFacade.reply()`）；`/api/observe` → publish `OBSERVATION_STATE`（bus 路由到 `InnerLifeFacade.apply_event()` + `DesireFacade.add_value()`）；`/api/upload` → 落盘后 `ActivityFacade.register_material()` 只注册书库（不发事件、不立即读书），返回 `{filename, path}`。回复/后续产出走 SSE。
 
 ### SSE（`GET /api/events`）
 
@@ -88,13 +89,13 @@ data = {"event_id": event.id, "correlation_id": event.correlation_id, **event.co
 
 > 三层：Facade → 子系统 → 内部类。此处列 Facade 公开方法（方法名 + 入参/出参类型），子系统见 §7 包结构，内部类不在此列。
 >
-> **发布约定**：Facade 内部自己 `publish` 它产生的事件，返回值只可能是 `None` 或**数据对象**（`Memory` / `Activity` / `CurrentState` / `list` / `bool`），**绝不返回 `Event` 让调用方发布**；产出统一由 EventBus 广播到 SSE。
+> **发布约定**：Facade 内部自己 `publish` 或在本地事务里 `append_in_transaction` 它产生的事件，返回值只可能是 `None` 或**数据对象**（`Memory` / `Activity` / `CurrentState` / `list` / `bool`），**绝不返回 `Event` 让调用方发布**；产出统一由 EventBus 广播到 SSE。
 
 ### ExpressionFacade
 
 ```python
 async def reply(msg: str, correlation_id: str) -> None          # 完整回复流程，内部发布 speak/ask/think
-async def initiate_chat(desire: ShortTermDesire, state: CurrentState) -> bool  # 内部发布 initiate_chat；发话 True/无话 False（18-api 据此维护 last_chat_at）
+async def initiate_chat(desire: ShortTermDesire, state: CurrentState) -> bool  # 内部发布 initiate_chat；发话 True/无话 False（组合根据此维护 last_chat_at）
 async def mutter(state: CurrentState, correlation_id: str) -> None  # 内部发布 mutter（无则不发）；correlation_id 接 MUTTER_CHECK tick
 async def check_timeouts(now: float) -> None                    # tick 心跳收尾：问句超时记「没答」记忆、搭话超时 expire 回灌
 def record_proactive_turn(text: str) -> None                     # 把 Nyx 主动产出（读书提问/联想）追加进 _history，供 reply() 回溯引用（同步，纯内存 append）
@@ -104,8 +105,9 @@ def record_proactive_turn(text: str) -> None                     # 把 Nyx 主�
 
 ```python
 async def create_scene_memory(reply_context: dict[str, str]) -> Memory    # 场景化记忆（慢通道）
+async def remember_activity(event: Event, consumer_id: str | None = None) -> None  # 活动结束落记忆；durable consumer 传入 consumer_id 做幂等
 async def search(query: str) -> list[Memory]                    # 内部跑默认 direct_limit=20 / association_limit=10 的融合召回
-async def record_recall(memory_id: str) -> None                 # 记录"想起"
+async def record_recall(memory_id: str) -> None                 # 记录"想起"；升级与 memory_promoted 事件同事务提交
 async def list_memories(tag: str | None = None, type: MemoryType | None = None, limit: int | None = None) -> list[Memory]  # 仪表盘过滤 + 可选截断
 async def count_new(tag: str | None, since: float) -> int      # 计数「首次创建晚于 since」的记忆；tag=None 表示全量（first_created_at 锚点，轻量不物化 embedding）
 async def export(fmt: str) -> str                              # 记忆导出（json|md）
@@ -205,7 +207,7 @@ async def check_chapter_boundary(book_id: str, nyx_position: int) -> BoundaryRes
 ### DesireFacade
 
 ```python
-async def add_value(source: Event) -> None                      # 事件入口：OBSERVATION_STATE 互动欲加压 + ACTIVITY_END 满足回写
+async def add_value(source: Event, consumer_id: str | None = None) -> None  # 事件入口：OBSERVATION_STATE 互动欲加压 + ACTIVITY_END 满足回写；durable consumer 传入 consumer_id 做幂等
 async def evaluate(energy: float = 100.0) -> list[ShortTermDesire]  # 峰值→LLM 生成；energy < ENERGY_REST_THRESHOLD 时先给休息欲加压
 async def get_pending() -> list[ShortTermDesire]                # 读待消费队列（pending/active，非破坏，供排期/拼 prompt）
 async def get_all() -> DesireState                              # 全量快照（values+短期+长期，供 /api/desires）
@@ -221,7 +223,7 @@ async def pressure_creation(delta: float) -> None               # 创造欲加�
 ### InnerLifeFacade
 
 ```python
-async def apply_event(event: Event) -> None                     # 情感/精力更新
+async def apply_event(event: Event, consumer_id: str | None = None) -> None  # 情感/精力更新；durable consumer 传入 consumer_id 做幂等
 async def reflect(correlation_id: str | None = None) -> None    # 协调器：内部调 MemoryFacade/DesireFacade，改性格/三观/审美/长期欲望/自我叙事；correlation_id 来自触发事件（缺省自生成）
 async def get_state() -> CurrentState                           # 只读快照（含 personality/values/aesthetic/energy 等慢变量）
 async def get_narrative() -> SelfNarrative                      # 自我叙事（供 /api/narrative）
@@ -230,12 +232,18 @@ async def get_narrative() -> SelfNarrative                      # 自我叙事�
 ### EventBus（基础设施，非 Facade）
 
 ```python
-def __init__(self, db: Database) -> None                         # 组合根注入；db.lock 串行化共享连接的并发访问（05-event）
-async def publish(event: Event) -> None                          # 入队即返回；持久化/分发/广播由 run() 完成
-def subscribe(event_type: EventType, handler: Callable[[Event], Awaitable[None]]) -> None
-def add_sse_sink(sink: asyncio.Queue[Event]) -> None             # SSE 客户端注册（05-event 补）
-def remove_sse_sink(sink: asyncio.Queue[Event]) -> None          # SSE 客户端注销（05-event 补）
-async def run() -> None                                         # 主循环
+def __init__(self, db: Database) -> None                         # 组合根注入；db.lock 串行化共享连接的并发访问（底层契约见 05-module-bus-system）
+async def publish(event: Event) -> None                          # durable admission：event_log + delivery commit 成功后返回
+async def append_in_transaction(event: Event) -> tuple[str, ...]  # 调用方已持 DB transaction 时写事件和 delivery，不 commit
+async def announce_committed(event: Event) -> None                # 外层事务 commit 后广播 SSE + wake consumer
+async def try_mark_effect_in_transaction(event_id: str, consumer_id: str) -> bool  # consumer 事务内幂等 marker
+def subscribe(spec_or_event_type: RouteSpec | EventType, handler: Callable[[Event], Awaitable[None]]) -> SubscriptionToken
+def unsubscribe(token: SubscriptionToken) -> None
+def add_sse_sink(sink: asyncio.Queue[Event]) -> None             # SSE 客户端注册（底层契约见 05-module-bus-system）
+def remove_sse_sink(sink: asyncio.Queue[Event]) -> None          # SSE 客户端注销（底层契约见 05-module-bus-system）
+async def run() -> None                                         # 恢复 delivery 后维持每 consumer FIFO worker
+async def drain(timeout: float = 15.0) -> bool                   # 有界排空 ready delivery；超时保留持久化状态
+async def close() -> None                                       # drain/stop workers 并幂等关闭共享 DB
 async def list_events(limit: int = 100, event_type: EventType | None = None, correlation_id: str | None = None) -> list[Event]  # event_log 历史查询（供 /api/events/log）
 ```
 
@@ -314,10 +322,10 @@ nyx/
   config.py               # 配置加载（§8）
   enums.py                # §1 所有枚举
   types.py                # §2 实体 dataclass
-  db.py                   # SQLite 连接 + 19 表 DDL + 版本化迁移 + Database(conn, lock)（04-db）
+  db.py                   # SQLite 连接 + 21 张业务表 DDL + 版本化迁移 + Database(conn, lock)（底层模块总线契约）
   events/
     bus.py                # EventBus
-    routing.py            # ROUTING 表
+    routing.py            # RouteSpec / ROUTING 派生视图
     event.py              # internal_event 内部事件构造 + SECONDS_PER_DAY/PER_HOUR 时间常量
   memory/
     facade.py             # MemoryFacade

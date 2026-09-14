@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`CurrentState` / `SelfNarrative` / `Personality` / `Values` / `Event` / `EventType` / `Source` / `EnergyState` / `EmotionCategory` / `ActivityType` / `LongTermDesire`）、02-config（`Config` / `DesireConfig.long_term_capacity`）、03-llm（`LlmClient.complete`）、04-db（`Database` + `personality` / `value_system` / `energy` / `self_narrative` 四表）、05-event（`EventBus.publish`）、07-memory-system（`MemoryFacade.list_memories`）、11-desire（`DesireFacade.get_pending` / `get_all` / `add_long_term` / `pressure_creation`）、**14-activity（`ActivityFacade.get_current`，向前引用——本 spec 只依赖 tech-ref §5 的签名；实现时 `from nyx.activity.facade import ActivityFacade` 是硬 import，需 14 先落地或建最小 stub，否则 pyright/pytest 挂在 import 上）、eval（`Evaluator`）**
+- **前置依赖**：01-types（`CurrentState` / `SelfNarrative` / `Personality` / `Values` / `Event` / `EventType` / `Source` / `EnergyState` / `EmotionCategory` / `ActivityType` / `LongTermDesire`）、02-config（`Config` / `DesireConfig.long_term_capacity`）、03-llm（`LlmClient.complete`）、05-module-bus-system（`Database`、`EventBus`、`personality` / `value_system` / `energy` / `self_narrative` 四表）、07-memory-system（`MemoryFacade.list_memories`）、11-desire（`DesireFacade.get_pending` / `get_all` / `add_long_term` / `pressure_creation`）、**14-activity（`ActivityFacade.get_current`，向前引用——本 spec 只依赖 tech-ref §5 的签名；实现时 `from nyx.activity.facade import ActivityFacade` 是硬 import，需 14 先落地或建最小 stub，否则 pyright/pytest 挂在 import 上）、eval（`Evaluator`）**
 - **本 spec 带来的连锁改动（ripple，本 spec 完成后同步）**：11-desire 的 `DesireFacade` 加 `add_long_term` / `pressure_creation`；tech-ref §5 `DesireFacade` 补 `add_long_term` / `pressure_creation` 签名；tech-ref §7 补 `inner_life/store.py`。
 - **旧设计残留（已与用户确认删除）**：CLAUDE.md 测试原则点名的 `VADCalibrator` / `AffinityMatrix` 是旧设计残留，本 spec **不实现**，只实现 `vad_to_category`（valence/arousal → 8 档标签）。设计文档为准，CLAUDE.md 这两名字已清理。
 
@@ -31,13 +31,13 @@
 
 ## 技术方案
 
-- **新文件**：`nyx/inner_life/store.py`、`nyx/inner_life/emotion.py`、`nyx/inner_life/reflection.py`、`nyx/inner_life/facade.py`（无 API、无数据变更——表结构是 04-db 的活）
-- **库**：无新库（标准库 `json` / `time` / `uuid` / `typing`；`aiosqlite` 已由 04-db 引入）
+- **新文件**：`nyx/inner_life/store.py`、`nyx/inner_life/emotion.py`、`nyx/inner_life/reflection.py`、`nyx/inner_life/facade.py`（无 API、无数据变更——表结构是 05-module-bus-system 的活）
+- **库**：无新库（标准库 `json` / `time` / `uuid` / `typing`；`aiosqlite` 已由 05-module-bus-system 引入）
 - **公开面**：`from nyx.inner_life.store import InnerLifeStore`；`from nyx.inner_life.facade import InnerLifeFacade`；`from nyx.inner_life.emotion import (vad_to_category, resolve_emotion, decay_emotion, ...)`（不加 `__all__`）
 - **三层**：`InnerLifeFacade`（Facade）→ `Reflection`（内部类，反思编排）→ `InnerLifeStore`（子系统，单行表 CRUD）。`Reflection` 由 `facade` 内部构造（共享 store），**不 import facade**（避免成环）；`facade.py` / `reflection.py` 都依赖 `store.py`（叶子）
 - **store 锁约定（同 07）**：每个方法一个 `async with self._db.lock` 的 SQL 块；store 方法之间不互相调用对方的持锁方法（`asyncio.Lock` 不可重入）
-- **四张单行表**：都 `id='self'`（04-db 固定键）。`get_*` 返回 `X | None`（未 seed 时 None）；**所有读路径**遇 None 抛 `RuntimeError`（"未初始化，18-api 组合根必须先 seed"）——`get_state`/`get_narrative` 读、`_apply_energy`/`_publish_emotion` 读 energy 都 fail-fast，不静默兜底默认值（单行表缺失是配置错误，兜底反而掩盖错误）
-- **情感不持久化（design §4.5）**：valence/arousal 在 `InnerLifeFacade` 内存字段（`self._valence` / `self._arousal` / `self._emotion_updated_at`），重启从基线（0,0）重启。没有 emotion 表（04-db 无此表）
+- **四张单行表**：都 `id='self'`（05-module-bus-system 固定键）。`get_*` 返回 `X | None`（未 seed 时 None）；**所有读路径**遇 None 抛 `RuntimeError`（"未初始化，组合根必须先 seed"）——`get_state`/`get_narrative` 读、`_apply_energy`/`_publish_emotion` 读 energy 都 fail-fast，不静默兜底默认值（单行表缺失是配置错误，兜底反而掩盖错误）
+- **情感不持久化（design §4.5）**：valence/arousal 在 `InnerLifeFacade` 内存字段（`self._valence` / `self._arousal` / `self._emotion_updated_at`），重启从基线（0,0）重启。没有 emotion 表（05-module-bus-system 无此表）
 - **情感衰减（回基线，决策可推翻）**：`decay_emotion(v, a, elapsed_days, rate) = (v×f, a×f)`，`f = max(0, 1 - rate×elapsed_days)`，基线 = (0,0)。`EMOTION_DECAY_RATE=0.5`（每天回基线 50%）。触发点 = `apply_event`（衰减在偏移前结算，同 09/11 的「读/写时结算」模式）；局限：两次 apply_event 之间情感不实时衰减（同 09 新鲜度、11 欲望值）
 - **事件偏移 `event_offset` 纯函数**：`_OFFSETS` 表映射 4 个 inner_life 事件 → `(Δvalence, Δarousal)`；`OBSERVATION_STATE (0,0)`（观察不改，但触发衰减）、`DESIRE_SATISFIED (+0.2, +0.1)`（满足感）、`ACTIVITY_END (+0.1, -0.1)`（完成感+唤醒略降）、`REFLECTION (0, -0.1)`（反思平复）。数值是可推翻默认；`apply_offset` 施加后 clamp（valence `[-1,1]`、arousal `[0,1]`）
 - **`vad_to_category` 6 档映射**：二维分区（阈值 `_V_NEAR=0.2` / `_A_LOW=0.3` / `_A_HIGH=0.6`）——低唤醒（`arousal<0.3`）：`valence>0.2`→shy、`<-0.2`→sad、否则 neutral；中高唤醒：`valence>0.2`→happy、`<-0.2`→（`arousal≥0.6`→angry 否则 worried）、否则 neutral。阈值是可推翻默认（分区语义按 01-types 各档注释）
@@ -51,7 +51,7 @@
 - **反思触发创造欲加压（ripple，11 提供 `pressure_creation`）**：`reflect()` 成功后（LLM 产出 + 规则回写完成）调 `desire_facade.pressure_creation(_CREATION_REFLECTION_DELTA)`；`_CREATION_REFLECTION_DELTA=0.2`（决策可推翻，用户定值）。这是「反思 → 想表达的冲动」——创造欲与读书/自由探索结束（11 的 `_CREATION_ACTIVITY_PRESSURE_DELTA`）并列为创造欲的两类压力源
 - **`add_long_term` 归 11（ripple）**：`DesireFacade.add_long_term(desire: LongTermDesire) -> None` 做容量检查 + 精确/语义去重后委托 `store.insert_long_term`。design §3.2「reflect 内部调 MemoryFacade/DesireFacade」→ 反思走 Facade 而非 DesireStore
 - **`reflect(correlation_id: str | None = None) -> ReflectionOutcome | None`（tech-ref §5 签名）**：`apply_event` 收到 `REFLECTION` 事件时内部调 `self.reflect(event.correlation_id)`，把触发事件的 correlation_id 串进反思 LLM（溯源链不断）；缺省（14-activity 发呆活动直接调用、测试）自生成 `uuid4`。`reflect()` 也是公开方法；成功后 `publish REFLECTION_DONE`（仅广播前端：叙事/欲望刷新 + 高亮气泡），返回产物摘要（发呆活动回带 summary 用；解析失败返回 None 且不广播）
-- **`apply_event` 是统一事件入口**：`bus.subscribe(OBSERVATION_STATE/DESIRE_SATISFIED/ACTIVITY_END/REFLECTION, facade.apply_event)`（18-api 组合根绑定）。`apply_event` 对 4 类事件都做「衰减+偏移」，另按类型分派 `ACTIVITY_END→精力`、`REFLECTION→反思`
+- **`apply_event` 是统一事件入口**：`bus.subscribe(OBSERVATION_STATE/DESIRE_SATISFIED/ACTIVITY_END/REFLECTION, facade.apply_event)`（组合根绑定）。`apply_event` 对 4 类事件都做「衰减+偏移」，另按类型分派 `ACTIVITY_END→精力`、`REFLECTION→反思`
 - **`EMOTION_UPDATE` 发布**：每次 `apply_event` 末尾发布（content `{valence, arousal, emotion}`，`emotion` 是 8 档 `.value` 字符串，经 `resolve_emotion` 求得），供前端 SSE；`correlation_id = 触发事件.correlation_id`
 - **`get_state` 依赖注入（决策：已与用户确认）**：构造注入 `ActivityFacade` + `DesireFacade`，`get_state` 调 `get_current()` / `get_pending()` 组装快照。只读、无环——`ActivityFacade.select_activity(desires, state)` 以参数收 `CurrentState`、`DesireFacade` 不反向调 inner_life，故 inner_life → {activity, desire} 不构成环
 - **inner_life 无配置段**：情感衰减/精力恢复等用模块级常量（可推翻）；`InnerLifeFacade` 构造收 `config: Config` 仅用于把 `config.desire` 传给 `Reflection`（长期欲望容量）
@@ -104,5 +104,5 @@
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
 - [ ] **ripple 已同步**：11-desire `DesireFacade` 加 `add_long_term` / `pressure_creation`；tech-ref §5 补 `add_long_term` / `pressure_creation` 签名 + `reflect` 加 correlation_id 参数、§7 补 `inner_life/store.py`；CLAUDE.md 测试原则的 `VADCalibrator`/`AffinityMatrix` 残留已清理
-- [ ] 18-api 组合根：`InnerLifeStore(db)` → `InnerLifeFacade(store, activity_facade, desire_facade, memory_facade, bus, llm, evaluator, config)`；启动时 seed 四张单行表（personality 8/8/2/6/7、values 8/6/9/5 来自 canon §2/§3、energy=100/energetic、self_narrative 初始 identity）；订阅 `OBSERVATION_STATE`/`DESIRE_SATISFIED`/`ACTIVITY_END`/`REFLECTION` 到 `facade.apply_event`
+- [ ] 组合根：`InnerLifeStore(db)` → `InnerLifeFacade(store, activity_facade, desire_facade, memory_facade, bus, llm, evaluator, config)`；启动时 seed 四张单行表（personality 8/8/2/6/7、values 8/6/9/5 来自 canon §2/§3、energy=100/energetic、self_narrative 初始 identity）；订阅 `OBSERVATION_STATE`/`DESIRE_SATISFIED`/`ACTIVITY_END`/`REFLECTION` 到 `facade.apply_event`
 - [ ] 14-activity 的 `activity_end` content 契约（`energy_delta`）与本 spec §技术方案一致；17-expression 拼 prompt 用 `InnerLifeFacade.get_state()`

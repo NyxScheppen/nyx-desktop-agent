@@ -840,6 +840,33 @@ async def test_record_recall_promotes() -> None:
         await database.conn.close()
 
 
+async def test_record_recall_rolls_back_when_promoted_event_append_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("m1", None))
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(
+        store, bus, llm, evaluator, config=MemoryConfig(promote_threshold=1)
+    )
+
+    async def fail_append(_: Event) -> tuple[str, ...]:
+        raise RuntimeError("append failed")
+
+    try:
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        with pytest.raises(RuntimeError, match="append failed"):
+            await facade.record_recall("m1")
+
+        memory = await store.get("m1")
+        assert memory is not None
+        assert memory.type is MemoryType.SHORT_TERM
+        assert memory.recall_count == 0
+    finally:
+        await database.conn.close()
+
+
 async def test_record_recall_long_term_no_repromote() -> None:
     store, bus, database = await _new_stack()
     long = _mem("m1", None)
@@ -965,6 +992,107 @@ async def test_remember_activity_reading() -> None:
         assert llm.calls == []   # 无 LLM 调用（确定性落库）
         [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
         assert created.content["memory_id"] == memories[0].id
+    finally:
+        await database.conn.close()
+
+
+async def test_remember_activity_replay_is_idempotent() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    event = _activity_event("reading", {"book": "某书", "note": "读后感"})
+    try:
+        await bus.publish(event)
+        await facade.remember_activity(event, "memory.activity_end")
+        await facade.remember_activity(event, "memory.activity_end")
+
+        memories = await facade.list_memories()
+        assert len(memories) == 1
+        assert memories[0].recall_count == 0
+        async with database.lock:
+            cursor = await database.conn.execute(
+                "SELECT COUNT(*) FROM event_effect "
+                "WHERE event_id = ? AND consumer_id = ?",
+                (event.id, "memory.activity_end"),
+            )
+            row = await cursor.fetchone()
+        assert row is not None and row[0] == 1
+    finally:
+        await database.conn.close()
+
+
+async def test_remember_activity_rolls_back_when_created_event_append_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    event = _activity_event("reading", {"book": "某书", "note": "读后感"})
+
+    async def fail_append(_: Event) -> tuple[str, ...]:
+        raise RuntimeError("append failed")
+
+    try:
+        await bus.publish(event)
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        with pytest.raises(RuntimeError, match="append failed"):
+            await facade.remember_activity(event, "memory.activity_end")
+
+        assert await facade.list_memories() == []
+        async with database.lock:
+            cursor = await database.conn.execute(
+                "SELECT COUNT(*) FROM event_effect "
+                "WHERE event_id = ? AND consumer_id = ?",
+                (event.id, "memory.activity_end"),
+            )
+            row = await cursor.fetchone()
+        assert row is not None and row[0] == 0
+    finally:
+        await database.conn.close()
+
+
+async def test_remember_activity_observation_snapshot_rolls_back_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    evaluator = _FakeEvaluator()
+    facade = _make_facade(store, bus, llm, evaluator)
+    first = _activity_event(
+        "observe_user",
+        {"presence": "online", "window_title": "编辑器", "summary": "s"},
+    )
+    second = Event(
+        id="evt-2",
+        timestamp=1001.0,
+        source=Source.INTERNAL,
+        type=EventType.ACTIVITY_END,
+        content=first.content,
+        correlation_id="corr-1",
+    )
+    failed = True
+
+    async def flaky_append(event: Event) -> tuple[str, ...]:
+        nonlocal failed
+        if event.type is EventType.MEMORY_CREATED and failed:
+            failed = False
+            raise RuntimeError("append failed")
+        return await EventBus.append_in_transaction(bus, event)
+
+    try:
+        await bus.publish(first)
+        await bus.publish(second)
+        monkeypatch.setattr(bus, "append_in_transaction", flaky_append)
+
+        with pytest.raises(RuntimeError, match="append failed"):
+            await facade.remember_activity(first, "memory.activity_end")
+        await facade.remember_activity(second, "memory.activity_end")
+
+        memories = await facade.list_memories()
+        assert len(memories) == 1
+        assert memories[0].tag == "user"
     finally:
         await database.conn.close()
 

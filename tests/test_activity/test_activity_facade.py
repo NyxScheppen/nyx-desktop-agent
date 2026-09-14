@@ -22,6 +22,7 @@ from nyx.activity.facade import (
     _sanitize_filename,
     _schedule_block_id,
 )
+from nyx.activity.lifecycle import ActivityLifecycle
 from nyx.activity.material_store import MaterialStore
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, DesireConfig, ExplorationConfig
@@ -1072,6 +1073,146 @@ async def test_complete_activity() -> None:
         ends = [e for e in events if e.type is EventType.ACTIVITY_END]
         assert len(ends) == 1
         assert ends[0].content["energy_delta"] == -20
+    finally:
+        await database.conn.close()
+
+
+async def test_complete_activity_rolls_back_when_event_append_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, store, bus, database = await _new_facade()
+
+    async def fail_append(event: Event) -> tuple[str, ...]:
+        raise RuntimeError("event append failed")
+
+    try:
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        await store.insert(
+            _activity("a1", type_=ActivityType.READING, status=ActivityStatus.RUNNING)
+        )
+        running = await store.get("a1")
+        assert running is not None
+
+        with pytest.raises(RuntimeError):
+            await facade.complete_activity(running)
+
+        got = await store.get("a1")
+        assert got is not None
+        assert got.status is ActivityStatus.RUNNING
+        assert got.ended_at is None
+        assert await bus.list_events() == []
+    finally:
+        await database.conn.close()
+
+
+async def test_start_activity_rolls_back_when_event_append_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    store = ActivityStore(database)
+    bus = EventBus(database)
+    desire_store = DesireStore(database)
+
+    async def list_memories() -> list[Memory]:
+        return []
+
+    desire = DesireFacade(
+        desire_store,
+        bus,
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        DesireConfig(),
+        list_memories,
+    )
+    lifecycle = ActivityLifecycle(store, bus, desire, ActivityConfig())
+
+    async def fail_append(event: Event) -> tuple[str, ...]:
+        raise RuntimeError("event append failed")
+
+    try:
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        await desire_store.add_desire(_desire("d1", DesireType.EXPLORATION))
+        await store.insert(
+            _activity(
+                "a1",
+                type_=ActivityType.READING,
+                status=ActivityStatus.PENDING,
+                progress={
+                    "desire_id": "d1",
+                    "goal": None,
+                    "correlation_id": "c1",
+                },
+            )
+        )
+        activity = await store.get("a1")
+        assert activity is not None
+
+        with pytest.raises(RuntimeError):
+            await lifecycle.start(activity)
+
+        got_activity = await store.get("a1")
+        got_desire = await desire_store.get_desire("d1")
+        assert got_activity is not None
+        assert got_activity.status is ActivityStatus.PENDING
+        assert got_desire is not None
+        assert got_desire.status is DesireStatus.PENDING
+        assert await bus.list_events() == []
+    finally:
+        await database.conn.close()
+
+
+async def test_interrupt_activity_rolls_back_when_event_append_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    store = ActivityStore(database)
+    bus = EventBus(database)
+    desire_store = DesireStore(database)
+
+    async def list_memories() -> list[Memory]:
+        return []
+
+    desire = DesireFacade(
+        desire_store,
+        bus,
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        DesireConfig(),
+        list_memories,
+    )
+    lifecycle = ActivityLifecycle(store, bus, desire, ActivityConfig())
+
+    async def fail_append(event: Event) -> tuple[str, ...]:
+        raise RuntimeError("event append failed")
+
+    try:
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        active = _desire("d1", DesireType.EXPLORATION)
+        active.status = DesireStatus.ACTIVE
+        await desire_store.add_desire(active)
+        await store.insert(
+            _activity(
+                "a1",
+                type_=ActivityType.READING,
+                status=ActivityStatus.RUNNING,
+                progress={
+                    "desire_id": "d1",
+                    "goal": None,
+                    "correlation_id": "c1",
+                },
+            )
+        )
+
+        with pytest.raises(RuntimeError):
+            await lifecycle.interrupt("a1", EventType.USER_MESSAGE, None)
+
+        got_activity = await store.get("a1")
+        got_desire = await desire_store.get_desire("d1")
+        assert got_activity is not None
+        assert got_activity.status is ActivityStatus.RUNNING
+        assert got_desire is not None
+        assert got_desire.status is DesireStatus.ACTIVE
+        assert await bus.list_events() == []
     finally:
         await database.conn.close()
 

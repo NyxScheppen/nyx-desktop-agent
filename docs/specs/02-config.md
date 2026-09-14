@@ -77,4 +77,4 @@
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
-- [ ] `load_config()` 能从 `config.yaml`（或显式 path）拿到 `Config`，点号访问到 `config.activity.energy_delta.reading`（组合根 `main.py` 归 18-api，本 spec 不创建）
+- [ ] `load_config()` 能从 `config.yaml`（或显式 path）拿到 `Config`，点号访问到 `config.activity.energy_delta.reading`（组合根 `main.py` 归组合根，本 spec 不创建）

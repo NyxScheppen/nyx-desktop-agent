@@ -330,7 +330,7 @@ export type UserNote = {
 // GET /api/notes/{book_id} 每条附带批注列表（created_at DESC）。
 export type UserNoteWithAnnotations = UserNote & { annotations: Annotation[] };
 
-// ---- 事件溯源（05-event / nyx/types.py Event，对应 GET /api/events/log）----
+// ---- 事件溯源（底层模块总线契约 / nyx/types.py Event，对应 GET /api/events/log）----
 export type BackendEvent = {
   id: string;
   timestamp: number;

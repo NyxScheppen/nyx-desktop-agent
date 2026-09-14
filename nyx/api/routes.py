@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from nyx.app_context import _App
 from nyx.enums import BoundaryResult, EventType, MemoryType
+from nyx.events.bus import EventAdmissionError
 from nyx.reading.facade import (
     BookNotFoundError,
     DuplicateBookError,
@@ -110,7 +111,10 @@ def build_app(
     @fast.post("/api/chat")
     async def api_chat(payload: _ChatPayload) -> dict[str, str]:
         event = root_event(EventType.USER_MESSAGE, {"message": payload.message})
-        await app.bus.publish(event)
+        try:
+            await app.bus.publish(event)
+        except EventAdmissionError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
         return {"event_id": event.id}
 
     @fast.get("/api/memories")
@@ -322,13 +326,16 @@ def build_app(
 
     @fast.post("/api/observe")
     async def api_observe(payload: _ObservePayload) -> dict[str, str]:
-        app.last_presence = payload.presence
-        app.last_window_title = payload.window_title
         event = root_event(
             EventType.OBSERVATION_STATE,
             {"presence": payload.presence, "window_title": payload.window_title},
         )
-        await app.bus.publish(event)
+        try:
+            await app.bus.publish(event)
+        except EventAdmissionError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        app.last_presence = payload.presence
+        app.last_window_title = payload.window_title
         return {"event_id": event.id}
 
     @fast.get("/api/events")

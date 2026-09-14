@@ -1,12 +1,12 @@
 # ExpressionFacade + 回复流程 + 碎碎念/搭话
 
 > 范围：`expression/facade.py`（`ExpressionFacade`：reply / initiate_chat / mutter）+ `expression/pipeline.py`（回复流程 LangGraph）+ `expression/mutter.py`（碎碎念模板 + 搭话触发判定纯函数）。
-> Facade spec：回复流程走 LangGraph 图、每个 LLM 产出紧跟 `evaluate`、事件统一 `publish`。不含 API（`POST /api/chat` 薄封装归 18-api）。
+> Facade spec：回复流程走 LangGraph 图、每个 LLM 产出紧跟 `evaluate`、事件统一 `publish`。不含 API（`POST /api/chat` 薄封装归组合根）。
 > spec 只定义契约（签名 + 图拓扑 + 多轮语义 + 模板契约）；实现以 `nyx/expression/facade.py` / `nyx/expression/pipeline.py` / `nyx/expression/mutter.py` 源文件为准。
 
 ## 元信息
 
-- **前置依赖**：01-types（`Event`/`EventType`/`Source`/`ContextMode`/`Message`/`CurrentState`/`ShortTermDesire`/`SelfNarrative`）、02-config（`ExpressionConfig`）、03-llm（`LlmClient`）、05-event（`EventBus`）、06-tools（`ToolRegistry`）、07-memory-system（`MemoryFacade`）、11-desire（`DesireFacade`）、12-inner-life（`InnerLifeFacade`）、14-activity（`ActivityFacade`）、eval（`Evaluator`）、16-expression-prompt（`build_system_prompt`/`build_user_prompt`/`classify_channel`）
+- **前置依赖**：01-types（`Event`/`EventType`/`Source`/`ContextMode`/`Message`/`CurrentState`/`ShortTermDesire`/`SelfNarrative`）、02-config（`ExpressionConfig`）、03-llm（`LlmClient`）、05-module-bus-system（`EventBus`）、06-tools（`ToolRegistry`）、07-memory-system（`MemoryFacade`）、11-desire（`DesireFacade`）、12-inner-life（`InnerLifeFacade`）、14-activity（`ActivityFacade`）、eval（`Evaluator`）、16-expression-prompt（`build_system_prompt`/`build_user_prompt`/`classify_channel`）
 
 ## 用户故事
 
@@ -22,7 +22,7 @@
 - [ ] **累积式 prompt**：第 N 轮 respond 的 user prompt 含前 N-1 轮 think/speak 累积（`_rounds_block` 拼前轮），不单独注入「我刚刚的内心想法」（think/speak 同源一次生成，无需事后拼接）
 - [ ] **慢通道递进续写**：首轮 respond 是「先想此刻的念头 + 说出口的第一句话」，第 2 轮起切换为「再往里想一层 + 往下说一句」，不重复、不重新回答；内心话（think）用第一人称「我」写，不用「她」或「尼克斯」自称
 - [ ] 每个 LLM 产出（tool / reply / initiate_chat / mutter_wander）后紧跟 `await evaluator.evaluate(output)`；`output_type` 分别 `tool` / `reply` / `initiate_chat` / `mutter_wander`、`module="expression"`、`correlation_id` 透传；reply 解析出的 think/speak 各自经 `_voice_output` 重造 LLMOutput 分别 evaluate（OOC 仍对内心话/对外话分跑）
-- [ ] `initiate_chat` 返回 `bool`（发话 True / 无话 False），供 18-api 维护 `last_chat_at`；发话开场白 append 进 `_history`（`role="nyx"`），用户随后回复能回溯到这句搭话；`mutter` 返回 `None`（无状态依赖）
+- [ ] `initiate_chat` 返回 `bool`（发话 True / 无话 False），供 05-module-bus-system 维护 `last_chat_at`；发话开场白 append 进 `_history`（`role="nyx"`），用户随后回复能回溯到这句搭话；`mutter` 返回 `None`（无状态依赖）
 - [ ] 事件发布：`think` / `speak` / `ask` / `mutter` / `initiate_chat` 全部 `content={"content": 文本}`、`source=INTERNAL`、`correlation_id` 接上游
 - [ ] 纯函数测全（`pick_mutter_category` / `pick_mutter_template` / `naturalize_presence` / `clean_fragment` / `activity_subject` / `should_initiate_chat` / `_is_question` / `_rounds_block`）；`pyright` strict 零报错
 - [ ] `reply` 后按 `result["ask"]` 置 `_waiting_user`/`_ask_text`/`_ask_cid`；`initiate_chat` 发话记 `_pending_chat_desire_id`；`check_timeouts(now)` 问句超时调 `memory.record_no_answer`、搭话超时调 `desire.expire`；`reply` 入口清两者待回应态，且用户回复搭话时调 `desire.satisfy(desire_id, True)` 闭环消费
@@ -32,17 +32,17 @@
 - **新文件**：`nyx/expression/facade.py`、`nyx/expression/pipeline.py`、`nyx/expression/mutter.py`（无 API、无数据变更——会话历史 `deque` 是内存态）
 - **库**：`langgraph`（`StateGraph` / `END` / `CompiledStateGraph`，与 14-activity 的 exploration 同源）
 - **公开面**：`from nyx.expression.facade import ExpressionFacade`；`from nyx.expression.mutter import naturalize_presence, clean_fragment, activity_subject, pick_mutter_category, pick_mutter_template, should_initiate_chat`（不加 `__all__`）
-- **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, activity, desire, inner_life, canon, ask_guidance, config, tools)`——`activity: ActivityFacade` 供碎碎念 ACTIVITY 类取最近活动；`canon: str` 由 18-api 组合根读 `prompts/canon.md`、`ask_guidance: str` 读 `prompts/ask.md` 传入（本 spec 不读文件，测试不碰文件系统）；`tools: ToolRegistry` 由组合根 `_build_tools(config)` 传入，仅慢通道 use_tools 用；`ask_guidance` 仅慢通道 think/speak 与 `initiate_chat` 注入，快通道省略
+- **Facade 依赖注入**：`__init__(bus, llm, evaluator, memory, activity, desire, inner_life, canon, ask_guidance, config, tools)`——`activity: ActivityFacade` 供碎碎念 ACTIVITY 类取最近活动；`canon: str` 由 组合根读 `prompts/canon.md`、`ask_guidance: str` 读 `prompts/ask.md` 传入（本 spec 不读文件，测试不碰文件系统）；`tools: ToolRegistry` 由组合根 `_build_tools(config)` 传入，仅慢通道 use_tools 用；`ask_guidance` 仅慢通道 think/speak 与 `initiate_chat` 注入，快通道省略
 - **会话历史（内存）**：`deque[Message]`（maxlen=`config.max_context_len`）由 facade 持有，跨 reply 持久。**用户消息 + Nyx 消息（多轮拼接）都在回合末的 `record_message` 节点按序 append**（先 user 后 nyx）——`reply` 入口回溯时当前消息还没进 history，天然不重复。重启丢失（同情感，内存易变态）
 - **多轮语义（慢通道）**：respond 循环，一轮 think+speak 用一次 LLM 生成（`json_mode`，`_parse_reply` 解析 JSON 产出 think/speak），每轮 think 非空发 `THINK`、每轮 speak 发 `SPEAK`（**都交付**）；某轮 speak 是问句 → 发 `ASK` 后回合结束。`slow_max_rounds` 是「连续无 ask 的 respond 轮数上限」。**累积式 prompt**：后一轮 respond 知道前几轮想了/说了什么（`_rounds_block` 拼前轮）。**递进续写**：首轮任务指令是「说出口的第一句话」，续写轮切换为「往下说一句」，避免三段生成三个并列回答
 - **场景化记忆记整个回合**：`nyx_think`/`nyx_speak` = 多轮 `"\n".join(...)` 拼接（`create_scene_memory` 的 `str` 契约不变，只是内容是多轮）
 - **MVP 语义**：ask 后回合结束（走 scene_memory + record）；用户回应作为下一条 `USER_MESSAGE` 触发新 reply，round 自然从 0 重算
-- **V2 表达交互闭环**：facade 在 reply 后按 `result["ask"]` 置 `self._waiting_user`（问句已问出、等用户答）；`initiate_chat` 记 `self._pending_chat_desire_id`（搭话已发、等用户回）。tick 心跳（18-api 组合根）直呼 `check_timeouts(now)`：问句超时（`ask_timeout`）→ `memory.record_no_answer` 落一条「用户没回答」的 SHORT_TERM 记忆；搭话超时（`chat_ignore_timeout`）→ `desire.expire`（值立即 +0.3 回灌）。用户任一下条消息（`reply` 入口）即视为回应、清两者待回应态
+- **V2 表达交互闭环**：facade 在 reply 后按 `result["ask"]` 置 `self._waiting_user`（问句已问出、等用户答）；`initiate_chat` 记 `self._pending_chat_desire_id`（搭话已发、等用户回）。tick 心跳（组合根）直呼 `check_timeouts(now)`：问句超时（`ask_timeout`）→ `memory.record_no_answer` 落一条「用户没回答」的 SHORT_TERM 记忆；搭话超时（`chat_ignore_timeout`）→ `desire.expire`（值立即 +0.3 回灌）。用户任一下条消息（`reply` 入口）即视为回应、清两者待回应态
 - **慢通道工具调用**：`use_tools` 节点（慢通道专属）在 assemble 后问 LLM 是否需查资料，有 `tool_calls` 就逐个执行（`ToolRegistry.call`）并把结果 `json.dumps` 拼进 `tool_outputs`，respond 的 system prompt 追加「[工具查询结果]」段；一轮，不做 agentic 循环；单条结果超 `_TOOL_OUTPUT_MAX_CHARS` 截断（尾加 `…`）；工具执行失败降级为失败文案（best-effort，不崩回复）
 - **回溯检测（V2）**：快通道入口朴素取最近 `max_context_len` 条；慢通道 `assemble` 调 `build_backtrack_context` 重截断——从新到旧累积，命中「满 max_len / 相邻隔超 `context_time_gap` / 与当前消息零字符重叠（十分不相关）」即停，快通道 Nyx 消息（`fast=True`）跳过继续往前（浅层回复不占上下文、不断深聊线程）
-- **搭话 `last_chat_at` 归 18-api**：`should_initiate_chat` 是纯函数（判定触发），`initiate_chat` 返回 `bool` 作为「是否真发话」的信号；18-api 组合根据此更新 `last_chat_at`（`since_last_chat` 的来源），facade 不持有搭话状态
+- **搭话 `last_chat_at` 归组合根**：`should_initiate_chat` 是纯函数（判定触发），`initiate_chat` 返回 `bool` 作为「是否真发话」的信号；组合根据此更新 `last_chat_at`（`since_last_chat` 的来源），facade 不持有搭话状态
 - **碎碎念去人机感（模板为主 + 低频 LLM 即兴 + 数据具体化）**：`mutter` 空闲命中后，`_LLM_MUTTER_RATE`（0.2）概率走 `_mutter_wander`（`output_type="mutter_wander"`、`build_system_prompt(canon, state)` + 一句自然口语，空回退模板）；否则按类填空——ACTIVITY 读活动产出 `progress["result"]` 的 `book`/`title`/`core_discovery`（`activity_subject` 转「读了《书名》」等具体指涉），MEMORY/USER 读 `content`（优先）或 `summary` 经 `clean_fragment` 清洗（「用户（presence）」观察串 → `naturalize_presence` 润色，raw 枚举不泄漏），DESIRE 读 `description`；骨架池带 `{subject}` 占位 + 内嵌停顿/自我修正/走神语气词；发前查 `_mutter_seen`（deque maxlen 8）去重，近期说过同一句不发
-- **明确不做**：`POST /api/chat`（归 18-api）；观察用户在线/忙状态（归 14-activity 的 observe，本 spec 只接收 `online`/`busy` bool）
+- **明确不做**：`POST /api/chat`（归组合根）；观察用户在线/忙状态（归 14-activity 的 observe，本 spec 只接收 `online`/`busy` bool）
 
 > 注：`facade.py` 与 `pipeline.py` 曾各有一份 `_make_event`（构造 `Event` 纯函数）。第五轮 review 判定为重复，已下沉到 `events/event.py` 的 `internal_text_event`（`content` 纯文本 → 包装成 `{"content": content}`）；两模块改 import 单一来源，删各自副本。
 
@@ -75,7 +75,7 @@
     - [ ] `mutter`：`state.current_activity` 非 None → 不发；`random.random()` 命中（monkeypatch）+ 该类数据源有值 → 发 `mutter`（content 含具体填充文本——书名/记忆片段/画像、`correlation_id == 传入值`）；`random` 命中 `_LLM_MUTTER_RATE` → 走 `_mutter_wander`（`output_type="mutter_wander"`）；LLM 即兴空 → 回退模板；观察串「用户（away）」→ 润色不含 raw 枚举；连续两次相同文本 → 第二次去重不发；该类数据源空 → 不发；未命中 → 不发
     - [ ] `initiate_chat`：mock `llm.complete` 返回空 content → 返回 `False` 且不发；返回非空 → 返回 `True` 且发 `initiate_chat`（`output_type="initiate_chat"`、correlation_id 一致）
     - [ ] `initiate_chat` 落历史：非空发话后 facade 内部 history 含一条 `role="nyx"`、content 为开场白的消息（用户随后回复可回溯搭话内容）
-- [ ] 集成测试：无（真实 LLM 不测；Facade 间的编排归 18-api 组合根）
+- [ ] 集成测试：无（真实 LLM 不测；Facade 间的编排归 组合根）
 - [ ] E2E 测试：无
 
 ## 完成定义
@@ -86,5 +86,5 @@
 - [ ] `test-inventory.md` 已更新
 - [ ] ripple 同步：tech-ref §6.1 `ReplyState` 的 `think`/`speak` 从 `str | None` 改 `list[str]`（多轮累积）、补 `narrative: SelfNarrative | None` 与 `correlation_id: str` 两字段、edges 补「每轮 SPEAK 交付 + ask 后回合结束走 scene_memory」；tech-ref §5 `initiate_chat` 签名 `-> bool`（发话 True/无话 False）、`mutter` 签名补 `correlation_id: str`（MUTTER_CHECK tick 恒定根）
 - [ ] ripple 同步（think+speak 合并）：tech-ref §6.1 图拓扑 `think`/`speak` 两节点合并为 `respond`（一轮 think+speak 一次 `json_mode` 生成，`_parse_reply` 解析后分开发 THINK/SPEAK/ASK）；本 spec 图拓扑/多轮语义/`output_type` 由 `think`/`speak` 改 `reply`
-- [ ] ripple 同步（V2 交互闭环）：tech-ref §5 `ExpressionFacade` 补 `check_timeouts(now)`；02-config `ExpressionConfig` 补 `ask_timeout`/`chat_ignore_timeout` 两字段；07-memory-system 补 `record_no_answer`；18-api `_tick_loop` 每轮心跳 `await app.expression.check_timeouts(now)`
-- [ ] 下游约定：18-api 组合根 `canon` = `prompts/canon.md`、`ask_guidance` = `prompts/ask.md` 读入后注入 `ExpressionFacade`；`POST /api/chat` → `ExpressionFacade.reply(msg, correlation_id)`；`INITIATE_CHAT_CHECK` tick 由组合根调 `should_initiate_chat` 判定、从 `DesireFacade.get_pending()` 选 interaction 欲望后 `await initiate_chat(desire, state)`，返回 `True` 才更新 `last_chat_at`；`MUTTER_CHECK` tick → `mutter(state, event.correlation_id)`；组合根构造 `ExpressionFacade` 时在 `memory` 实参后注入 `activity`（activity 先于 expression 构造）
+- [ ] ripple 同步（V2 交互闭环）：tech-ref §5 `ExpressionFacade` 补 `check_timeouts(now)`；02-config `ExpressionConfig` 补 `ask_timeout`/`chat_ignore_timeout` 两字段；07-memory-system 补 `record_no_answer`；05-module-bus-system `_tick_loop` 每轮心跳 `await app.expression.check_timeouts(now)`
+- [ ] 下游约定：组合根 `canon` = `prompts/canon.md`、`ask_guidance` = `prompts/ask.md` 读入后注入 `ExpressionFacade`；`POST /api/chat` → `ExpressionFacade.reply(msg, correlation_id)`；`INITIATE_CHAT_CHECK` tick 由组合根调 `should_initiate_chat` 判定、从 `DesireFacade.get_pending()` 选 interaction 欲望后 `await initiate_chat(desire, state)`，返回 `True` 才更新 `last_chat_at`；`MUTTER_CHECK` tick → `mutter(state, event.correlation_id)`；组合根构造 `ExpressionFacade` 时在 `memory` 实参后注入 `activity`（activity 先于 expression 构造）

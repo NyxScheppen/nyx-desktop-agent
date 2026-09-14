@@ -4,9 +4,9 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `MemoryType` / `MemoryEdgeKind` / `SearchMode` / `Event` / `EventType` / `Source`）、02-config（`MemoryConfig` / `EmbeddingConfig`）、03-llm（`LlmClient.complete`）、04-db（`Database` + `memory` / `memory_edge` DDL）、05-event（`EventBus.publish`）、17-expression（慢通道召回与 `record_recall` 时机）、18-api（组合根注入 / REST 薄封装）、eval（`Evaluator`）。
+- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `MemoryType` / `MemoryEdgeKind` / `SearchMode` / `Event` / `EventType` / `Source`）、02-config（`MemoryConfig` / `EmbeddingConfig`）、03-llm（`LlmClient.complete`）、05-module-bus-system（`Database`、`EventBus`、组合根注入 / REST 薄封装及相关 DDL）、17-expression（慢通道召回与 `record_recall` 时机）、eval（`Evaluator`）。
 - **实现文件**：`nyx/memory/ann.py`、`nyx/memory/retrieval.py`、`nyx/memory/graph.py`、`nyx/memory/store.py`、`nyx/memory/facade.py`、`nyx/types.py`、`nyx/enums.py`、`nyx/db.py`
-- **关联文档**：`docs/memory-system-facts.md`、`docs/specs/01-types.md`、`docs/specs/04-db.md`、`docs/specs/17-expression.md`、`docs/specs/18-api.md`、`docs/tech-reference.md`、`docs/test-inventory.md`
+- **关联文档**：`docs/memory-system-facts.md`、`docs/specs/01-types.md`、`docs/specs/05-module-bus-system.md`、`docs/specs/17-expression.md`、`docs/tech-reference.md`、`docs/test-inventory.md`
 - **测试文件**：`tests/test_memory/test_ann.py`、`tests/test_memory/test_retrieval.py`、`tests/test_memory/test_graph.py`、`tests/test_memory/test_store.py`、`tests/test_memory/test_facade.py`、`tests/test_db/test_db.py`、`tests/test_expression/test_expression_facade.py`
 
 ## 系统边界
@@ -280,7 +280,7 @@ async def search(
 
 ```python
 async def create_scene_memory(reply_context: dict[str, str]) -> Memory: ...
-async def remember_activity(event: Event) -> None: ...
+async def remember_activity(event: Event, consumer_id: str | None = None) -> None: ...
 async def remember_user_profile(
     content: str,
     summary: str,
@@ -306,7 +306,8 @@ Facade 规则：
 - `create_scene_memory` 只在慢通道回合末调用，LLM 调用 1 次（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）生成 `{content, tag, summary}` 后复用 `_persist_memory`。
 - 活动、读书、知识、用户画像、未答记录入口都复用 `_persist_memory`，不绕过去重、建边、矛盾检测、衰减/淘汰尾段；确定性入口不调用 scene-memory LLM。
 - `search(query)` 纯委托 `MemoryRetrieval.search(query)`，对表达层不暴露 `direct_limit` / `association_limit` 参数。
-- `record_recall(memory_id)` 只表示“进入慢通道 prompt 后被想起”：委托 store 加一；短期达阈值时发布 `memory_promoted`，长期不重复发布。
+- `remember_activity(event, consumer_id=None)` 是 `ACTIVITY_END` 的记忆消费者；RouteSpec 注册时传 `consumer_id="memory.activity_end"`，同一本地事务内写 `event_effect`、记忆状态和派生 `memory_created` / `reflection` 事件，重放时已应用则 no-op。普通直接调用不传 `consumer_id`，保留旧调用面。
+- `record_recall(memory_id)` 只表示“进入慢通道 prompt 后被想起”：委托 store 加一；短期达阈值时发布 `memory_promoted`，长期不重复发布。升级和 `memory_promoted` 事件行在同一本地事务提交，commit 后再 `announce_committed`。
 - `export("json")` 输出 JSON 数组；`export("md")` 输出 Markdown；非法格式抛 `ValueError`；导出不包含 `Memory.sources`。
 - Facade 自己发布 `memory_created` / `memory_promoted` / `reflection` 事件，返回值只返回数据对象或 `None`，不返回 `Event` 给调用方发布。
 

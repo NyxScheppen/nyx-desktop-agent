@@ -18,6 +18,11 @@ class ActivityStore:
     def __init__(self, db: Database) -> None:
         self._db = db
 
+    @property
+    def db(self) -> Database:
+        """Return the shared database for local transaction orchestration."""
+        return self._db
+
     async def insert(self, activity: Activity) -> None:
         async with self._db.lock:
             await self._db.conn.execute(
@@ -110,6 +115,21 @@ class ActivityStore:
         return [_row_to_activity(r) for r in rows]
 
     async def update(self, activity: Activity) -> None:
+        if self._db.in_transaction:
+            await self._db.conn.execute(
+                "UPDATE activity SET type = ?, schedule_block_id = ?, status = ?, "
+                "progress = ?, started_at = ?, ended_at = ? WHERE id = ?",
+                (
+                    activity.type.value,
+                    activity.schedule_block_id,
+                    activity.status.value,
+                    json.dumps(activity.progress),
+                    activity.started_at,
+                    activity.ended_at,
+                    activity.id,
+                ),
+            )
+            return
         async with self._db.lock:
             await self._db.conn.execute(
                 "UPDATE activity SET type = ?, schedule_block_id = ?, status = ?, "

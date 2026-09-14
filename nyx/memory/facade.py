@@ -415,7 +415,9 @@ class MemoryFacade:
         memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
         return await self._persist_memory(memory, reply_context["correlation_id"])
 
-    async def remember_activity(self, event: Event) -> None:
+    async def remember_activity(
+        self, event: Event, consumer_id: str | None = None
+    ) -> None:
         """活动记忆：把 activity_end.result 落成一条短期记忆（无 LLM）。
 
         只写读书/创作/探索三类有产出的活动；rest/idle_reflection（result 空或
@@ -423,8 +425,27 @@ class MemoryFacade:
         入库管线与 create_scene_memory 相同
         （embed → 建边 → 门控矛盾检测 → 淘汰），只缺开头的 LLM 场景构建。
         """
+        if consumer_id is not None:
+            observation_snapshot = self._last_observation
+            try:
+                async with self._store.db.transaction():
+                    applied = await self._bus.try_mark_effect_in_transaction(
+                        event.id, consumer_id
+                    )
+                    if not applied:
+                        return
+                    await self._remember_activity(event, in_transaction=True)
+            except BaseException:
+                self._last_observation = observation_snapshot
+                raise
+            return
+        await self._remember_activity(event, in_transaction=False)
+
+    async def _remember_activity(
+        self, event: Event, *, in_transaction: bool
+    ) -> None:
         if event.content.get("type") == "observe_user":
-            await self._sediment_observation(event)
+            await self._sediment_observation(event, in_transaction=in_transaction)
             return
         mapped = _activity_memory_fields(
             event.content.get("type"), event.content.get("result")
@@ -433,9 +454,13 @@ class MemoryFacade:
             return
         content, summary, tag = mapped
         memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
-        await self._persist_memory(memory, event.correlation_id)
+        await self._persist_memory(
+            memory, event.correlation_id, in_transaction=in_transaction
+        )
 
-    async def _sediment_observation(self, event: Event) -> None:
+    async def _sediment_observation(
+        self, event: Event, *, in_transaction: bool = False
+    ) -> None:
         """观察活动 → 用户画像沉淀：「presence/window_title 相对上次变化」才写。
 
         观察 result 非空 presence 视为有效观察（旧 shape 或缺 presence 跳过）；
@@ -459,8 +484,12 @@ class MemoryFacade:
         if window_title:
             content += f"；正在浏览：{window_title}"
         summary = str(parsed.get("summary") or f"用户（{presence}）")
-        await self.remember_user_profile(
-            content, summary, ["presence", "window_title"], event.correlation_id
+        await self._remember_user_profile(
+            content,
+            summary,
+            ["presence", "window_title"],
+            event.correlation_id,
+            in_transaction=in_transaction,
         )
 
     async def remember_user_profile(
@@ -476,8 +505,23 @@ class MemoryFacade:
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM
         使其豁免短期淘汰（_decay_and_evict 只淘汰短期），画像不随时间冲掉。
         """
+        await self._remember_user_profile(
+            content, summary, aspects, correlation_id, in_transaction=False
+        )
+
+    async def _remember_user_profile(
+        self,
+        content: str,
+        summary: str,
+        aspects: list[str],
+        correlation_id: str,
+        *,
+        in_transaction: bool,
+    ) -> None:
         memory = _new_memory(content, "user", summary, MemoryType.LONG_TERM, aspects)
-        await self._persist_memory(memory, correlation_id)
+        await self._persist_memory(
+            memory, correlation_id, in_transaction=in_transaction
+        )
 
     async def remember_knowledge(
         self, items: list[dict[str, str]], correlation_id: str
@@ -526,7 +570,7 @@ class MemoryFacade:
         await self._persist_memory(memory, correlation_id)
 
     async def _persist_memory(
-        self, memory: Memory, correlation_id: str
+        self, memory: Memory, correlation_id: str, *, in_transaction: bool = False
     ) -> Memory:
         """已构建 Memory 的共用入库尾段，带两层去重：
 
@@ -554,13 +598,17 @@ class MemoryFacade:
                 return await self._persisted_or(candidates[0].memory)
         await self._store.add(memory)
         await self._build_edges(memory, candidates, now, correlation_id)
-        await self._detect_contradiction(memory, candidates, correlation_id)
-        await self._decay_and_evict(now)
-        await self._bus.publish(
-            internal_event(
-                EventType.MEMORY_CREATED, {"memory_id": memory.id}, correlation_id
-            )
+        await self._detect_contradiction(
+            memory, candidates, correlation_id, in_transaction=in_transaction
         )
+        await self._decay_and_evict(now)
+        event = internal_event(
+            EventType.MEMORY_CREATED, {"memory_id": memory.id}, correlation_id
+        )
+        if in_transaction:
+            await self._bus.append_in_transaction(event)
+        else:
+            await self._bus.publish(event)
         return memory
 
     async def search(self, query: str) -> list[Memory]:
@@ -569,15 +617,18 @@ class MemoryFacade:
     async def record_recall(self, memory_id: str) -> None:
         """记录一次「想起」：recall_count+1；
         短期满 promote_threshold 次升级长期并发布 memory_promoted。"""
-        promoted = await self._store.record_recall(
-            memory_id, self._config.promote_threshold
-        )
-        if promoted:
-            await self._bus.publish(
-                internal_event(
+        event: Event | None = None
+        async with self._store.db.transaction():
+            promoted = await self._store.record_recall(
+                memory_id, self._config.promote_threshold
+            )
+            if promoted:
+                event = internal_event(
                     EventType.MEMORY_PROMOTED, {"memory_id": memory_id}, memory_id
                 )
-            )
+                await self._bus.append_in_transaction(event)
+        if event is not None:
+            await self._bus.announce_committed(event)
 
     async def list_memories(
         self,
@@ -612,6 +663,8 @@ class MemoryFacade:
         memory: Memory,
         candidates: list[PersistSemanticHit],
         correlation_id: str,
+        *,
+        in_transaction: bool = False,
     ) -> None:
         """门控矛盾检测：召回 top-K 相似候选，相似度过阈值的才发独立 LLM 判断；
         无候选或全低于阈值 → 0 调用跳过。命中矛盾 → 发布 reflection。"""
@@ -659,18 +712,20 @@ class MemoryFacade:
             )
             return
         if conflicts_with is not None:
-            await self._bus.publish(
-                internal_event(
-                    EventType.REFLECTION,
-                    {
-                        "summary": (
-                            f"场景记忆 {memory.id} 与旧记忆 {conflicts_with} 矛盾，"
-                            "触发反思"
-                        )
-                    },
-                    correlation_id,
-                )
+            event = internal_event(
+                EventType.REFLECTION,
+                {
+                    "summary": (
+                        f"场景记忆 {memory.id} 与旧记忆 {conflicts_with} 矛盾，"
+                        "触发反思"
+                    )
+                },
+                correlation_id,
             )
+            if in_transaction:
+                await self._bus.append_in_transaction(event)
+            else:
+                await self._bus.publish(event)
 
     async def _persist_semantic_candidates(
         self, embedding: list[float]

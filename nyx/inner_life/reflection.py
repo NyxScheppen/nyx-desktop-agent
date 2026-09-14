@@ -301,7 +301,7 @@ class Reflection:
             or narrative is None
             or aesthetic is None
         ):
-            raise RuntimeError("inner_life 单行表未初始化（18-api 组合根必须先 seed）")
+            raise RuntimeError("inner_life 单行表未初始化（组合根 组合根必须先 seed）")
 
         # 2. 1 次 LLM 产出全部
         output = await self._llm.complete(

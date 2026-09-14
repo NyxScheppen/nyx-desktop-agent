@@ -7,7 +7,7 @@
 
 - **前置依赖**：19-reading-content（`paragraphs` 表）、20-reading-progress（`ReadingFacade.list_paragraphs`）、07-memory-system（`MemoryFacade.search`）、11-desire（`get_all`）、12-inner-life（`get_state`）、17-expression（复用 `build_system_prompt`）
 - **反向修订 08-events**：08-events 现行 `EventType` 无 reading 事件、`ROUTING` 无对应条目；本 spec 负责**新增** 3 个 `EventType`（`READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION`），且**加 3 条空路由**（`READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION` → `[]`，仅广播前端、无内部消费者，与 `MUTTER`/`SPEAK` 同款「空路由」；穷尽断言 `set(ROUTING) == set(EventType) - {CLOCK_TICK}` 强制所有事件类型都在表里，故空列表键必须存在）。08-events 是「被扩展」的既有 spec，不是前置依赖。
-- **反向修订 18-api**：`ReadingFacade` 构造签名由 19 的 `(store)` 扩为 8 参 `(store, inner_life, desire, memory, llm, evaluator, bus, canon)` + `build_app_context` 装配更新（19 已甩给本 spec）+ `POST /api/impulse/evaluate` 端点（`_App.reading` 字段 19 已加）。18-api 是「被扩展」的既有 spec，不是前置依赖。
+- **组合根接线**：`ReadingFacade` 构造签名由 19 的 `(store)` 扩为 8 参 `(store, inner_life, desire, memory, llm, evaluator, bus, canon)`，并追加 `POST /api/impulse/evaluate` 端点；底层 API 和生命周期契约以 `docs/specs/05-module-bus-system.md` 为准。
 - **实现文件**：`nyx/enums.py`（新增 `ReadingDrive`/`ReadingBehavior` + 3 个 `EventType`）、`nyx/reading/impulse.py`（纯函数 + 常量）、`nyx/reading/facade.py`（追加 `evaluate_paragraph` + 分派）、`nyx/main.py`（端点 + 组合根装配）
 - **无数据变更**：冲动驱动「现算」、冷却时间戳内存态，不新增 `impulse_params`/`impulse_events` 表（见「关键决策」）
 
@@ -42,9 +42,9 @@
 
 **构造签名**（19 的 `ReadingFacade(store)` 扩为 8 参，本 spec 负责扩签）：`ReadingFacade.__init__(self, store: ReadingStore, inner_life: InnerLifeFacade, desire: DesireFacade, memory: MemoryFacade, llm: LlmClient, evaluator: Evaluator, bus: EventBus, canon: str) -> None`。
 
-### 组合根装配（本 spec 反向扩展 18-api）
+### 组合根装配
 
-- `build_app_context` 里 `reading = ReadingFacade(store, inner_life, desire, memory, llm, evaluator, bus, canon)`；装配位置在 `inner_life`/`desire`/`memory`/`llm`/`evaluator`/`bus`/`canon` **全部构造之后**（较 19 的「`inner_life` 之后」更靠后——从 0 依赖扩为 7 个依赖，`inner_life` 的 `_get_state` 环解已在 18-api 先于本装配完成），与 `ExpressionFacade` 同级（都吃 `llm`/`evaluator`/`bus`/`canon`）。`_App` 加 `reading: ReadingFacade` 字段（19 已定）。
+- `build_app_context` 里 `reading = ReadingFacade(store, inner_life, desire, memory, llm, evaluator, bus, canon)`；装配位置在 `inner_life`/`desire`/`memory`/`llm`/`evaluator`/`bus`/`canon` **全部构造之后**，与 `ExpressionFacade` 同级。`_App` 加 `reading: ReadingFacade` 字段（19 已定）。
 - `build_app` 里注册 `POST /api/impulse/evaluate` 端点闭包调 `app.reading.evaluate_paragraph(...)`（薄封装，错误映射见「API 端点」）。
 
 ### ParagraphFeatures 字段（照搬 S06 `feature_extractor.py`，砍到 10 字段）
@@ -142,5 +142,5 @@
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新（快照）
-- [ ] ripple 同步：tech-ref §1 枚举计数 +2（`ReadingDrive`/`ReadingBehavior`，后者 5 成员）、§5 补 `ReadingFacade`（构造 8 参 `(store, inner_life, desire, memory, llm, evaluator, bus, canon)` + `evaluate_paragraph`）、§7 补 `reading/impulse.py`、§4 REST 表补 `POST /api/impulse/evaluate` + SSE 三事件（`reading_mutter`/`reading_question`/`reading_association`）、18-api 装配反向扩展（`build_app_context` + `_App.reading`）、01-types 枚举计数 +2 + `EventType` 穷尽断言 EXPECTED +3 成员
+- [ ] ripple 同步：tech-ref §1 枚举计数 +2（`ReadingDrive`/`ReadingBehavior`，后者 5 成员）、§5 补 `ReadingFacade`（构造 8 参 `(store, inner_life, desire, memory, llm, evaluator, bus, canon)` + `evaluate_paragraph`）、§7 补 `reading/impulse.py`、§4 REST 表补 `POST /api/impulse/evaluate` + SSE 三事件（`reading_mutter`/`reading_question`/`reading_association`）、组合根装配（`build_app_context` + `_App.reading`）、01-types 枚举计数 +2 + `EventType` 穷尽断言 EXPECTED +3 成员
 - [ ] 翻页 → 精彩处 Nyx 碎碎念/提问/联想出现；回翻不重复

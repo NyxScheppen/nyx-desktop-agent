@@ -5,8 +5,8 @@
 
 ## 元信息
 
-- **前置依赖**：19-reading-content（`books`/`paragraphs` 表 + `ReadingStore`）、04-db（`_MIGRATIONS` v9）
-- **反向修订 18-api**：原 18-api 无 reading 端点（19 已加 1 个 `POST /api/books`）；`ReadingFacade` 构造与 `_App.reading` 字段已由 19 反向扩展完成，本 spec 在 `build_app` **追加** 4 个端点闭包（`GET /api/books` / `GET /api/books/{book_id}/paragraphs` / `GET /api/progress/{book_id}` / `PUT /api/progress/{book_id}`）。18-api 是「被扩展」的既有 spec，不是前置依赖。
+- **前置依赖**：19-reading-content（`books`/`paragraphs` 表 + `ReadingStore`）、05-module-bus-system（`_MIGRATIONS` v9）
+- **组合根接线**：本 spec 在已有 reading 装配基础上于 `build_app` **追加** 4 个端点闭包（`GET /api/books` / `GET /api/books/{book_id}/paragraphs` / `GET /api/progress/{book_id}` / `PUT /api/progress/{book_id}`）；底层 API 和生命周期契约以 `docs/specs/05-module-bus-system.md` 为准。
 - **实现文件**：`nyx/types.py`（新增 `ReadingProgress`/`BookListItem`）、`nyx/db.py`（`_MIGRATIONS` 追加 v9）、`nyx/reading/store.py`（追加进度/列表/分页方法）、`nyx/reading/facade.py`（追加读方法 + `BookNotFoundError`）、`nyx/main.py`（端点）
 
 ## 用户故事

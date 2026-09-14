@@ -1,4 +1,6 @@
 import json
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from nyx.db import Database
 from nyx.enums import EnergyState
@@ -21,8 +23,22 @@ class InnerLifeStore:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def get_personality(self) -> Personality | None:
+    @property
+    def db(self) -> Database:
+        """Return the shared database for local transaction orchestration."""
+        return self._db
+
+    @asynccontextmanager
+    async def _operation(self) -> AsyncGenerator[bool, None]:
+        """Yield whether this method owns the commit for its SQL block."""
+        if self._db.in_transaction:
+            yield False
+            return
         async with self._db.lock:
+            yield True
+
+    async def get_personality(self) -> Personality | None:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_PERSONALITY_COLS} FROM personality WHERE id = 'self'"
             )
@@ -38,7 +54,7 @@ class InnerLifeStore:
         }
 
     async def upsert_personality(self, p: Personality) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "INSERT INTO personality (id, openness, conscientiousness, "
                 "extraversion, "
@@ -51,10 +67,11 @@ class InnerLifeStore:
                 (p["openness"], p["conscientiousness"], p["extraversion"],
                  p["agreeableness"], p["neuroticism"]),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def get_values(self) -> Values | None:
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_VALUES_COLS} FROM value_system WHERE id = 'self'"
             )
@@ -69,7 +86,7 @@ class InnerLifeStore:
         }
 
     async def upsert_values(self, v: Values) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "INSERT INTO value_system (id, attitude_to_human, "
                 "ai_identity_acceptance, "
@@ -85,10 +102,11 @@ class InnerLifeStore:
                     v["optimism"],
                 ),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def get_aesthetic(self) -> Aesthetic | None:
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_AESTHETIC_COLS} FROM aesthetic WHERE id = 'self'"
             )
@@ -103,7 +121,7 @@ class InnerLifeStore:
         }
 
     async def upsert_aesthetic(self, a: Aesthetic) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "INSERT INTO aesthetic (id, ornate, lyrical, classical, somber) "
                 "VALUES ('self', ?, ?, ?, ?) "
@@ -112,10 +130,11 @@ class InnerLifeStore:
                 "somber = excluded.somber",
                 (a["ornate"], a["lyrical"], a["classical"], a["somber"]),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def get_energy(self) -> tuple[float, EnergyState] | None:
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT value, state FROM energy WHERE id = 'self'"
             )
@@ -125,17 +144,18 @@ class InnerLifeStore:
         return row["value"], EnergyState(row["state"])
 
     async def upsert_energy(self, value: float, state: EnergyState) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "INSERT INTO energy (id, value, state) VALUES ('self', ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET value = excluded.value, "
                 "state = excluded.state",
                 (value, state.value),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def get_narrative(self) -> SelfNarrative | None:
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT identity, story, self_view, becoming, updated_at "
                 "FROM self_narrative WHERE id = 'self'"
@@ -152,7 +172,7 @@ class InnerLifeStore:
         )
 
     async def upsert_narrative(self, n: SelfNarrative) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "INSERT INTO self_narrative (id, identity, story, self_view, "
                 "becoming, updated_at) "
@@ -163,4 +183,5 @@ class InnerLifeStore:
                 (n.identity, json.dumps(n.story), json.dumps(n.self_view),
                  json.dumps(n.becoming), n.updated_at),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()

@@ -101,7 +101,21 @@
 **来源**：模块与事件总线架构审查发现总线在持久化后顺序执行 handler，handler 异常只记录日志并继续；事件不会重放，跨模块 `ACTIVITY_END` 等更新可能部分成功。
 **教训**：event log 只能证明事件被记录，不能证明所有消费者都完成；“persist → dispatch”若没有消费状态、重试或幂等策略，会把局部失败变成静默不一致。
 **怎么做**：为关键事件明确至少一次/至多一次语义；为消费者保留可重试的投递记录或幂等键；关停时排空队列，handler 失败要能被监控和补偿，而不是只依赖日志。
-**影响的文件/决策**：`nyx/events/bus.py`、`nyx/subscriptions.py`、`docs/specs/05-event.md`
+**影响的文件/决策**：`nyx/events/bus.py`、`nyx/subscriptions.py`、`docs/specs/05-module-bus-system.md`
+
+### 2026-09-14: 事务回滚不能自动恢复进程内派生状态
+
+**来源**：模块总线重构中 `inner_life` durable consumer 的反思/情绪事务测试
+**教训**：数据库事务回滚只能撤销 SQLite 行；情感数值、时间锚点等进程内状态已经在事务中改变时，若派生事件追加失败，数据库虽回滚，内存仍会残留半次消费，重放会得到错误结果。
+**怎么做**：凡是把内存快照与数据库写入放进同一业务事务，进入事务前保存可恢复快照；异常路径先恢复快照再让事务回滚。为派生事件写入失败增加回归测试，并检查重放是否只产生一次结果。
+**影响的文件/决策**：`nyx/inner_life/facade.py`、`tests/test_inner_life/test_inner_life_facade.py`
+
+### 2026-09-14: 消费者重放要先识别已经产生的终局事件
+
+**来源**：模块总线重构中 `USER_MESSAGE` 消费者的重放测试
+**教训**：消费 handler 可能在业务逻辑已完成、但 delivery 成功标记尚未提交前崩溃；仅依赖 delivery 状态会再次调用 LLM、打断活动或写入会话历史。
+**怎么做**：对能产生可识别终局事件的消费者，重放入口先按 correlation 查询终局事件并短路；同时仍需为没有终局事件的中途失败保留重试路径，不能把任意中间事件当完成标记。
+**影响的文件/决策**：`nyx/runtime.py`、`tests/test_api/test_subscription.py`
 
 ---
 

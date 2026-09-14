@@ -1,5 +1,7 @@
 import hashlib
 import json
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import aiosqlite
@@ -39,18 +41,33 @@ class MemoryStore:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    async def add(self, memory: Memory) -> None:
+    @property
+    def db(self) -> Database:
+        """Return the shared database for local transaction orchestration."""
+        return self._db
+
+    @asynccontextmanager
+    async def _operation(self) -> AsyncGenerator[bool, None]:
+        """Yield whether this method owns the commit for its SQL block."""
+        if self._db.in_transaction:
+            yield False
+            return
         async with self._db.lock:
+            yield True
+
+    async def add(self, memory: Memory) -> None:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 f"INSERT INTO memory ({_MEMORY_INSERT_COLS}) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (*_memory_row(memory), hash_content(memory.content),
                  memory.created_at),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def get(self, memory_id: str) -> Memory | None:
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_MEMORY_COLS} FROM memory WHERE id = ?", (memory_id,),
             )
@@ -59,7 +76,7 @@ class MemoryStore:
 
     async def find_by_content(self, content: str) -> Memory | None:
         """按 content 精确哈希查重：命中返回已有记忆，未命中 None。"""
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_MEMORY_COLS} FROM memory WHERE content_hash = ?",
                 (hash_content(content),),
@@ -88,14 +105,14 @@ class MemoryStore:
         )
         if limit is not None:
             sql += f" LIMIT {limit}"
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(sql, params)
             rows = await cursor.fetchall()
         return [_row_to_memory(r) for r in rows]
 
     async def update_many(self, memories: list[Memory]) -> None:
         """批量更新：循环 UPDATE，单锁单 commit（衰减结算用，避免 N 次 commit）。"""
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             for m in memories:
                 await self._db.conn.execute(
                     "UPDATE memory SET content = ?, tag = ?, summary = ?, "
@@ -109,11 +126,12 @@ class MemoryStore:
                         m.id,
                     ),
                 )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def delete_many(self, ids: list[str]) -> None:
         """批量删除：循环删 edge/row，单锁单 commit（淘汰溢出，避免 N 次 commit）。"""
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             for memory_id in ids:
                 await self._db.conn.execute(
                     "DELETE FROM memory_edge WHERE from_id = ? OR to_id = ?",
@@ -122,7 +140,8 @@ class MemoryStore:
                 await self._db.conn.execute(
                     "DELETE FROM memory WHERE id = ?", (memory_id,)
                 )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def record_recall(self, memory_id: str, promote_threshold: int) -> bool:
         """原子：recall_count+1；短期且达阈值则升长期（单锁，避免跨方法竞态）。
@@ -130,7 +149,7 @@ class MemoryStore:
         返回是否升级（供 facade 发 memory_promoted）。阈值由 facade 传入——
         策略仍在 facade，store 只提供「加一 + 条件升型」原语。
         """
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "UPDATE memory SET recall_count = recall_count + 1 WHERE id = ?",
                 (memory_id,),
@@ -146,7 +165,8 @@ class MemoryStore:
                 ),
             )
             promoted = cursor.rowcount == 1
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
         return promoted
 
     async def count_new(self, tag: str | None, since: float) -> int:
@@ -155,7 +175,7 @@ class MemoryStore:
         用 first_created_at（INSERT 时定格、strengthen/update_many 不刷新）。
         tag=None 表示全量计数，供定时反思判断是否有足够新记忆。
         """
-        async with self._db.lock:
+        async with self._operation():
             if tag is None:
                 cursor = await self._db.conn.execute(
                     "SELECT COUNT(*) FROM memory WHERE first_created_at > ?",
@@ -177,13 +197,14 @@ class MemoryStore:
         promote_threshold 原子路径负责。
         """
         del now
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "UPDATE memory SET freshness = 1.0, recall_count = recall_count + 1 "
                 "WHERE id = ?",
                 (memory_id,),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def search_keywords(
         self,
@@ -196,7 +217,7 @@ class MemoryStore:
         hits: dict[str, KeywordSearchHit] = {}
         freshness: dict[str, float] = {}
         created_at: dict[str, float] = {}
-        async with self._db.lock:
+        async with self._operation():
             for token in tokens:
                 pattern = f"%{_escape_like(token)}%"
                 cursor = await self._db.conn.execute(
@@ -244,7 +265,7 @@ class MemoryStore:
         if kind is not None:
             where = "WHERE kind = ? "
             params = (kind.value,)
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT from_id, to_id, kind, weight, created_at FROM memory_edge "
                 f"{where}ORDER BY from_id ASC, to_id ASC, kind ASC",
@@ -262,7 +283,7 @@ class MemoryStore:
         created_at: float,
     ) -> None:
         left, right = _canonical_edge_ids(from_id, to_id)
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "INSERT INTO memory_edge (from_id, to_id, kind, weight, created_at) "
                 "VALUES (?, ?, ?, ?, ?) "
@@ -270,20 +291,22 @@ class MemoryStore:
                 "weight = excluded.weight, created_at = excluded.created_at",
                 (left, right, kind.value, weight, created_at),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def delete_edges(
         self,
         keys: list[tuple[str, str, MemoryEdgeKind]],
     ) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             for from_id, to_id, kind in keys:
                 await self._db.conn.execute(
                     "DELETE FROM memory_edge "
                     "WHERE from_id = ? AND to_id = ? AND kind = ?",
                     (from_id, to_id, kind.value),
                 )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def list_edge_degrees(
         self,
@@ -292,7 +315,7 @@ class MemoryStore:
         result: dict[str, list[MemoryEdge]] = {
             memory_id: [] for memory_id in memory_ids
         }
-        async with self._db.lock:
+        async with self._operation():
             for memory_id in memory_ids:
                 cursor = await self._db.conn.execute(
                     "SELECT from_id, to_id, kind, weight, created_at "

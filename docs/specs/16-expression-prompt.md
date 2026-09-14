@@ -26,11 +26,11 @@
 - **库**：无新库（标准库即可；类型从 `nyx.types` / `nyx.enums` 拿）
 - **公开面**：`from nyx.expression.prompt import build_system_prompt, build_user_prompt, build_backtrack_context`；`from nyx.expression.classifier import slow_score, classify_channel`（不加 `__all__`）
 - **定位**：两个模块都是内部类（非 Facade），被 17 的 `classify_channel` / `think` / `speak` 节点调用
-- **canon / ask 来源**：`build_system_prompt` 接收 `canon: str`（静态人格注入文本）+ `ask_guidance: str | None`（主动提问指导）。canon 来自 `prompts/canon.md`、ask 来自 `prompts/ask.md`（见 `docs/canon.md` 指针），由 18-api 组合根读入为字符串传入——**本 spec 不读文件**（保持纯函数可单测、测试不碰文件系统）；`ask_guidance=None` 时跳过该段
+- **canon / ask 来源**：`build_system_prompt` 接收 `canon: str`（静态人格注入文本）+ `ask_guidance: str | None`（主动提问指导）。canon 来自 `prompts/canon.md`、ask 来自 `prompts/ask.md`（见 `docs/canon.md` 指针），由 组合根读入为字符串传入——**本 spec 不读文件**（保持纯函数可单测、测试不碰文件系统）；`ask_guidance=None` 时跳过该段
 - **think/speak 任务指令归 17**：`build_user_prompt` 只拼「对话历史 + 本次消息」，不含「内心思考 / 说给用户」指令；那是 17 节点的活（think 与 speak 各拼自己的指令后接在 user prompt 上）
 - **数值直接拼，不转中文标签**：情感 valence/arousal、精力、性格/三观 1-10、枚举 `.value`（`happy`/`energetic` 等）直接格式化进 prompt。LLM 能读；不额外维护「数值→中文描述」映射（反冗余）。前端展示经 `lib/labels.ts` 转中文（`exploration → 发现`），但 prompt 仍用枚举原值——两处各自独立，不互相反噬
 - **回溯截断（纯函数）**：`build_backtrack_context(message, history, now, time_gap, max_len)` 从新到旧累积，命中「满 max_len / 相邻隔超 time_gap / 与当前消息零字符重叠（`_no_char_overlap`，十分不相关的保守判定）」即停；快通道 Nyx 消息（`Message.fast`）跳过该条继续往前（浅层回复不占上下文，但不断深聊线程）；返回按时间升序。这是 design §5.1 回溯检测的纯函数落地，**编排**（何时调、context 重截断、state 装配）归 17 的 `assemble_context`
-- **明确不做**：回溯上下文**检测/截断的编排**（`assemble_context` 节点的活，归 17）；`canon` / `ask` 文件读取（归 18-api）；think/speak 指令（归 17）；记忆检索（归 09）
+- **明确不做**：回溯上下文**检测/截断的编排**（`assemble_context` 节点的活，归 17）；`canon` / `ask` 文件读取（归组合根）；think/speak 指令（归 17）；记忆检索（归 09）
 
 ## 测试要点
 

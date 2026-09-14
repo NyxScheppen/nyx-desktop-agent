@@ -7,7 +7,7 @@ import pytest
 
 from nyx import db
 
-# 19 张业务表（不含 schema_version）
+# 21 张业务表（不含 schema_version）
 BUSINESS_TABLES = {
     "personality",
     "value_system",
@@ -28,6 +28,8 @@ BUSINESS_TABLES = {
     "user_notes",
     "annotations",
     "eval_log",
+    "event_delivery",
+    "event_effect",
 }
 
 # 非 Optional 字段对应列必须 NOT NULL（01-types 契约）
@@ -95,7 +97,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 20
+    assert len(names) == 22
 
 
 async def test_migrate_creates_six_indexes() -> None:
@@ -114,6 +116,8 @@ async def test_migrate_creates_six_indexes() -> None:
         "idx_memory_content_hash",
         "idx_books_content_hash",
         "idx_eval_log_created",
+        "idx_event_delivery_ready",
+        "idx_event_delivery_consumer_ready",
     }
 
 
@@ -151,6 +155,36 @@ async def test_memory_edge_schema_typed_and_canonical() -> None:
     }
     assert notnull["kind"] == 1 and notnull["created_at"] == 1
     assert ddl is not None and "CHECK (from_id < to_id)" in ddl["sql"]
+
+
+async def test_event_delivery_and_effect_schema() -> None:
+    conn = await _migrated_conn()
+    try:
+        delivery = await (
+            await conn.execute("PRAGMA table_info(event_delivery)")
+        ).fetchall()
+        effect = await (
+            await conn.execute("PRAGMA table_info(event_effect)")
+        ).fetchall()
+    finally:
+        await conn.close()
+    delivery_pk = {row["name"]: row["pk"] for row in delivery}
+    effect_pk = {row["name"]: row["pk"] for row in effect}
+    assert delivery_pk["event_id"] == 1
+    assert delivery_pk["consumer_id"] == 2
+    assert effect_pk["event_id"] == 1
+    assert effect_pk["consumer_id"] == 2
+    assert {row["name"] for row in delivery} == {
+        "event_id",
+        "consumer_id",
+        "status",
+        "attempts",
+        "available_at",
+        "started_at",
+        "completed_at",
+        "lease_until",
+        "last_error",
+    }
 
 
 async def test_migrate_v8_dedupes_duplicate_content_hash(
@@ -278,7 +312,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 20
+    assert len(names) == 22
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 
@@ -400,3 +434,23 @@ async def test_connect_closes_conn_on_migrate_failure(
         await db.connect("x.db")
 
     assert spy.closed  # 迁移失败 → 连接被 close，不泄漏
+
+
+async def test_database_close_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    close_calls = 0
+    real_close = database.conn.close
+
+    async def close() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        await real_close()
+
+    # aiosqlite connection methods are replaceable in the test double path.
+    monkeypatch.setattr(database.conn, "close", close)
+    await database.close()
+    await database.close()
+    assert database.is_closed
+    assert close_calls == 1

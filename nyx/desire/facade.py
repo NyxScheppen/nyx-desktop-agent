@@ -37,12 +37,14 @@ class DesireFacade:
             store, bus, llm, evaluator, config, list_memories, embed
         )
 
-    async def add_value(self, source: Event) -> None:
+    async def add_value(
+        self, source: Event, consumer_id: str | None = None
+    ) -> None:
         """事件入口：OBSERVATION_STATE 加压互动欲，ACTIVITY_END 满足回写。"""
         if source.type is EventType.OBSERVATION_STATE:
-            await self._lifecycle.pressure_from_observation(source)
+            await self._lifecycle.pressure_from_observation(source, consumer_id)
         elif source.type is EventType.ACTIVITY_END:
-            await self._lifecycle.satisfy_from_activity_end(source)
+            await self._lifecycle.satisfy_from_activity_end(source, consumer_id)
 
     async def evaluate(self, energy: float = 100.0) -> list[ShortTermDesire]:
         return await self._lifecycle.run_eval(energy)

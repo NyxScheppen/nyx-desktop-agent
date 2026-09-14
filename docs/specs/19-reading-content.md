@@ -5,9 +5,9 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（dataclass 约定）、04-db（`_MIGRATIONS` 版本化迁移）
+- **前置依赖**：01-types（dataclass 约定）、05-module-bus-system（`_MIGRATIONS` 版本化迁移）
 - **实现文件**：`nyx/types.py`（新增 `Book`/`Paragraph`）、`nyx/db.py`（`_MIGRATIONS` 追加 v7 + v8）、`nyx/reading/__init__.py`、`nyx/reading/segmenter.py`（`Segment` + `segment_html`）、`nyx/reading/epub.py`（`EpubResult` + `parse_epub`）、`nyx/reading/store.py`（`ReadingStore`）、`nyx/reading/facade.py`（`ReadingFacade` + `DuplicateBookError`）、`nyx/main.py`（端点 + 组合根装配）
-- **反向修订 18-api**：18-api 现行只含 14 个端点、`build_app_context`/`_App` 无 reading；本 spec 负责**新增** `ReadingFacade` 装配 + `POST /api/books` 端点（见「组合根装配」）。18-api 是「被扩展」的既有 spec，不是前置依赖。
+- **组合根接线**：本 spec 负责在现有组合根中新增 `ReadingFacade` 装配 + `POST /api/books` 端点（见「组合根装配」）；底层 DB、REST 和生命周期契约以 `docs/specs/05-module-bus-system.md` 为准。
 
 ## 用户故事
 
@@ -16,7 +16,7 @@
 ## 验收标准
 
 - [ ] `nyx/db.py` 的 `_MIGRATIONS` 追加 v7 + v8（`books` + `paragraphs` 两表 DDL + `content_hash` 唯一索引，见「数据变更」）；`connect(":memory:")` 后两表存在
-- [ ] `nyx/types.py` 含 `Book`：`id/title/author/filename/content_hash/total_paragraphs/created_at/updated_at`（**8 字段全非 Optional**——`books` 表所有列 `NOT NULL`，`author`/`filename` 的 `DEFAULT ''`、`total_paragraphs` 的 `DEFAULT 0` 只作用于 INSERT、不改变可空性，04-db「X | None ⟺ DDL 可空」约定下对应非 Optional `str`/`int`）
+- [ ] `nyx/types.py` 含 `Book`：`id/title/author/filename/content_hash/total_paragraphs/created_at/updated_at`（**8 字段全非 Optional**——`books` 表所有列 `NOT NULL`，`author`/`filename` 的 `DEFAULT ''`、`total_paragraphs` 的 `DEFAULT 0` 只作用于 INSERT、不改变可空性，底层契约的「X | None ⟺ DDL 可空」约定下对应非 Optional `str`/`int`）
 - [ ] `nyx/types.py` 含 `Paragraph`：`id/book_id/index/text/is_chapter_start`（`index` 从 1 起、per book 连续；`is_chapter_start` 供 22 章末检测用）
 - [ ] `nyx/reading/segmenter.py` 含 `Segment = NamedTuple("Segment", [("text", str), ("is_chapter_start", bool)])`（**定义在 segmenter.py**，`epub.py`/`store.py` 从此 import）与纯函数 `segment_html(html: str) -> list[Segment]`（同步、无 IO、无 LLM）
 - [ ] `nyx/reading/epub.py` 含 `EpubResult`（dataclass，定义在 epub.py：`title: str`/`author: str`/`segments: list[Segment]`/`content_hash: str`）与 `parse_epub(data: bytes) -> EpubResult`（同步、无 LLM）
@@ -35,7 +35,7 @@
 - `parse_epub`（`nyx/reading/epub.py`）——ebooklib 读 EPUB → 遍历 spine 文档 → 逐文档 `segment_html` → 提取 `dc:title`/`dc:creator` → 全文 SHA-256；**同步**（CPU + ebooklib 都是同步阻塞），Facade 用 `asyncio.to_thread(parse_epub, data)` 卸载，不阻塞事件循环
 - `segment_html`（`nyx/reading/segmenter.py`）——纯函数，HTML → `list[Segment]`（分段规则见下）
 
-### 组合根装配（本 spec 反向扩展 18-api）
+### 组合根装配
 
 - `build_app_context` 里：`reading = ReadingFacade(ReadingStore(db))`（P1 仅注入 store；21/22 各自 spec 追加 inner_life/desire/memory/llm/evaluator/bus/canon 依赖时同步扩构造签名 + 此处装配）。构造位置在 `inner_life` 装配之后即可（19 无依赖），`_App` 加 `reading: ReadingFacade` 字段。
 - `build_app` 里注册 `POST /api/books` 端点闭包调 `app.reading.import_book(...)`（薄封装，错误映射见「API 端点」）。

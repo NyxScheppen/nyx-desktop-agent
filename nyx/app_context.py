@@ -26,7 +26,6 @@ from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
 from nyx.reading.facade import ReadingFacade
 from nyx.reading.store import ReadingStore
-from nyx.subscriptions import subscribe
 from nyx.tools.file_io import build_file_io_tool
 from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
@@ -54,6 +53,7 @@ class _App:
     last_window_title: str = ""
     last_screen_summary: str = ""
     screen_observer: ScreenObserver | None = None
+    database: Database | None = None
 
 
 def build_tools(config: Config) -> ToolRegistry:
@@ -180,6 +180,7 @@ async def build_app_context(
         evaluator,
         eval_store,
         config,
+        database=db,
     )
 
     async def read_observation() -> dict[str, str]:
@@ -195,5 +196,4 @@ async def build_app_context(
         app.screen_observer = ScreenObserver(
             capture_screen, vision.describe, config.vision.interval_seconds
         )
-    subscribe(app)
     return app

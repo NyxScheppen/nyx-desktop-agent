@@ -204,7 +204,7 @@ announceStore.announce(kind: "mutter" | "activity", text: string): void  // 立�
 
 - **重连**：`EventSource` 原生重连；`onerror` 置 `connecting`，不手写退避（浏览器默认指数退避）。后端重启期间帧丢失，恢复后靠 `GET /api/state` 重新拉快照对齐（App 层在 `status === "open"` 时触发一次 `refreshState`）。
 - **断线期间的快照**：`innerLifeStore` 的 `CurrentState` 以 `GET /api/state` 快照为准，`emotion_update` 做增量覆盖（valence/arousal/emotion）+ 顺带 `refreshState()` 重拉全量快照（带新能量/性格/三观）；`chatStore` 的历史消息靠 `GET /api/events/log?event_type=speak` 补（核心先行可暂缓，先只展示 SSE 实时的）。
-- **顺序**：SSE 单连接、后端顺序广播（05-event「顺序分发」），前端按到达顺序 append，不额外排序。
+- **顺序**：SSE 单连接、后端顺序广播（底层模块总线契约「顺序分发」），前端按到达顺序 append，不额外排序。
 - **测试**（`tests/sse.test.ts`）：mock `EventSource`（fake 触发 `onopen`/`onmessage`/`onerror`）→ 断言 `dispatch` 收到解析正确的 `SseEvent`、`status` 三态切换、cleanup 调 `close()`、坏 `data` 帧被跳过不崩。
 
 ## 6. App 组合装配（`App.tsx`）

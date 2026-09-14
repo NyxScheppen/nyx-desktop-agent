@@ -10,7 +10,7 @@
 
 ## 计数语义
 
-- `record_recall(memory_id)` 表示这条记忆进入慢通道 prompt：`recall_count+1`，短期达到阈值后升级长期并发布 `memory_promoted`。
+- `record_recall(memory_id)` 表示这条记忆进入慢通道 prompt：`recall_count+1`，短期达到阈值后升级长期并发布 `memory_promoted`。升级和 `memory_promoted` 事件行同事务提交，失败一起回滚。
 - 慢通道 `assemble_context` 会把 `MemoryFacade.search(message)` 返回的全部命中放进 prompt，并立即对每条命中调用 `record_recall`。
 - 快通道不检索记忆，不调用 `record_recall`，不生成场景化记忆。
 - `strengthen(memory_id, now)` 表示重复写入/语义去重命中旧记忆：`recall_count+1`、`freshness=1.0`，但不刷新 `created_at`，不触发升级，不发布 `memory_created`。
@@ -21,6 +21,7 @@
 - `_persist_memory` 两层去重：先精确 content hash，再 bounded persist semantic candidates 内 top-1 cosine >= 0.95。bounded persist semantic candidates 由 ANN 候选上限约束，同一批候选供语义去重、语义建边和矛盾检测门控使用，不再做无界全表余弦扫描。命中时强化并返回持久化旧记忆；未命中才新增、建边、做矛盾检测、衰减/淘汰、发布 `memory_created`。
 - `create_scene_memory` 返回最终持久化的 `Memory`：新建时返回新记忆；去重命中时返回旧记忆。
 - `remember_activity` / `remember_knowledge` / `remember_reading` 复用 `_persist_memory`，不要绕过统一去重尾段。
+- `memory.activity_end` durable consumer 调用 `remember_activity(event, consumer_id)`；同一 `(event_id, consumer_id)` 重放不会重复新增或 strengthen，活动记忆与派生 `memory_created` / `reflection` 事件行同事务提交。
 
 ## 检索与前端
 

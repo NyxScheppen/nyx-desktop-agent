@@ -69,14 +69,50 @@ class InnerLifeFacade:
         self._reflection = Reflection(
             store, memory_facade, desire_facade, llm, evaluator, config.desire
         )
-        self._valence = BASELINE_VALENCE
-        self._arousal = BASELINE_AROUSAL
-        self._emotion_updated_at = time.time()
-        self._energy_updated_at = time.time()
+        self._valence: float = BASELINE_VALENCE
+        self._arousal: float = BASELINE_AROUSAL
+        self._emotion_updated_at: float = time.time()
+        self._energy_updated_at: float = time.time()
 
-    async def apply_event(self, event: Event) -> None:
+    async def apply_event(
+        self, event: Event, consumer_id: str | None = None
+    ) -> None:
         """情感/精力更新入口：衰减 + 偏移；ACTIVITY_END 额外更新精力；
         REFLECTION 额外触发反思。"""
+        if consumer_id is not None:
+            await self._apply_durable_event(event, consumer_id)
+            return
+        await self._apply_event(event)
+
+    async def _apply_durable_event(self, event: Event, consumer_id: str) -> None:
+        snapshot: tuple[float, float, float, float] = (
+            self._valence,
+            self._arousal,
+            self._emotion_updated_at,
+            self._energy_updated_at,
+        )
+        async with self._store.db.transaction():
+            applied = await self._bus.try_mark_effect_in_transaction(
+                event.id, consumer_id
+            )
+            if not applied:
+                return
+            try:
+                derived_events = await self._apply_event(event, in_transaction=True)
+            except BaseException:
+                (
+                    self._valence,
+                    self._arousal,
+                    self._emotion_updated_at,
+                    self._energy_updated_at,
+                ) = snapshot
+                raise
+        for derived_event in derived_events:
+            await self._bus.announce_committed(derived_event)
+
+    async def _apply_event(
+        self, event: Event, *, in_transaction: bool = False
+    ) -> list[Event]:
         now = time.time()
         elapsed_days = max(0.0, now - self._emotion_updated_at) / SECONDS_PER_DAY
         self._valence, self._arousal = decay_emotion(
@@ -90,13 +126,23 @@ class InnerLifeFacade:
 
         if event.type is EventType.ACTIVITY_END:
             await self._apply_energy(event, now)
+        derived_events: list[Event] = []
         if event.type is EventType.REFLECTION:
-            await self.reflect(event.correlation_id)
+            _, reflection_event = await self._run_reflection(
+                event.correlation_id, in_transaction=in_transaction
+            )
+            if reflection_event is not None:
+                derived_events.append(reflection_event)
 
-        await self._publish_emotion(event.correlation_id)
+        derived_events.append(
+            await self._publish_emotion(
+                event.correlation_id, in_transaction=in_transaction
+            )
+        )
+        return derived_events
 
     async def reflect(
-        self, correlation_id: str | None = None
+        self, correlation_id: str | None = None, *, in_transaction: bool = False
     ) -> ReflectionOutcome | None:
         """反思协调器（慢变量唯一入口）：内部调 MemoryFacade/DesireFacade。
 
@@ -105,16 +151,25 @@ class InnerLifeFacade:
         返回产物摘要（发呆活动回带 summary 用；解析失败返回 None 且不广播）。
         """
         cid = correlation_id or str(uuid4())
-        outcome = await self._reflection.run(cid)
-        if outcome is not None:
-            await self._bus.publish(
-                internal_event(
-                    EventType.REFLECTION_DONE,
-                    {"story": outcome.story, "story_is_new": outcome.story_is_new},
-                    cid,
-                )
-            )
+        outcome, _ = await self._run_reflection(cid, in_transaction=in_transaction)
         return outcome
+
+    async def _run_reflection(
+        self, correlation_id: str, *, in_transaction: bool = False
+    ) -> tuple[ReflectionOutcome | None, Event | None]:
+        outcome = await self._reflection.run(correlation_id)
+        if outcome is not None:
+            event = internal_event(
+                EventType.REFLECTION_DONE,
+                {"story": outcome.story, "story_is_new": outcome.story_is_new},
+                correlation_id,
+            )
+            if in_transaction:
+                await self._bus.append_in_transaction(event)
+            else:
+                await self._bus.publish(event)
+            return outcome, event
+        return outcome, None
 
     async def get_state(self) -> CurrentState:
         personality = await self._store.get_personality()
@@ -122,7 +177,7 @@ class InnerLifeFacade:
         aesthetic = await self._store.get_aesthetic()
         energy = await self._store.get_energy()
         if personality is None or values is None or aesthetic is None or energy is None:
-            raise RuntimeError("inner_life 单行表未初始化（18-api 组合根必须先 seed）")
+            raise RuntimeError("inner_life 单行表未初始化（组合根 组合根必须先 seed）")
         energy_value, energy_state = energy
         current_activity = await self._current_activity_type()
         emotion = self._resolve_emotion(energy_state, current_activity)
@@ -142,13 +197,13 @@ class InnerLifeFacade:
     async def get_narrative(self) -> SelfNarrative:
         narrative = await self._store.get_narrative()
         if narrative is None:
-            raise RuntimeError("self_narrative 未初始化（18-api 组合根必须先 seed）")
+            raise RuntimeError("self_narrative 未初始化（组合根 组合根必须先 seed）")
         return narrative
 
     async def _apply_energy(self, event: Event, now: float) -> None:
         energy = await self._store.get_energy()
         if energy is None:
-            raise RuntimeError("energy 未初始化（18-api 组合根必须先 seed）")
+            raise RuntimeError("energy 未初始化（组合根 组合根必须先 seed）")
         value, _ = energy
         elapsed_hours = max(0.0, now - self._energy_updated_at) / SECONDS_PER_HOUR
         value += _ENERGY_RECOVERY_PER_HOUR * elapsed_hours
@@ -173,19 +228,24 @@ class InnerLifeFacade:
             current_activity,
         )
 
-    async def _publish_emotion(self, correlation_id: str) -> None:
+    async def _publish_emotion(
+        self, correlation_id: str, *, in_transaction: bool = False
+    ) -> Event:
         energy = await self._store.get_energy()
         if energy is None:
-            raise RuntimeError("energy 未初始化（18-api 组合根必须先 seed）")
+            raise RuntimeError("energy 未初始化（组合根 组合根必须先 seed）")
         emotion = self._resolve_emotion(energy[1], await self._current_activity_type())
-        await self._bus.publish(
-            internal_event(
-                EventType.EMOTION_UPDATE,
-                {
-                    "valence": self._valence,
-                    "arousal": self._arousal,
-                    "emotion": emotion.value,
-                },
-                correlation_id,
-            )
+        event = internal_event(
+            EventType.EMOTION_UPDATE,
+            {
+                "valence": self._valence,
+                "arousal": self._arousal,
+                "emotion": emotion.value,
+            },
+            correlation_id,
         )
+        if in_transaction:
+            await self._bus.append_in_transaction(event)
+        else:
+            await self._bus.publish(event)
+        return event

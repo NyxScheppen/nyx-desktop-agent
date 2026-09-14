@@ -5,8 +5,13 @@ import time
 import uuid
 from typing import Any, Callable
 
-from nyx.enums import EventType, Source, TickType
+from nyx.enums import ActivityStatus, DesireType, EventType, Source, TickType
+from nyx.events.event import internal_event
+from nyx.expression.mutter import should_initiate_chat
 from nyx.types import Event
+
+DEFAULT_REFLECT_MIN_INTERVAL = 21600.0
+DEFAULT_REFLECT_MIN_NEW_MEMORIES = 3
 
 
 def root_event(
@@ -24,6 +29,97 @@ def root_event(
         content=content,
         correlation_id=event_id,
     )
+
+
+async def on_user_message(app: Any, event: Event) -> None:
+    """Interrupt a running activity, then hand the message to expression."""
+    previous = await app.bus.list_events(correlation_id=event.correlation_id)
+    if any(item.type in (EventType.SPEAK, EventType.ASK) for item in previous):
+        return
+    current = await app.activity.get_current()
+    if current is not None and current.status is ActivityStatus.RUNNING:
+        await app.activity.interrupt(current.id, EventType.USER_MESSAGE)
+    await app.expression.reply(event.content["message"], event.correlation_id)
+
+
+async def on_schedule_block_start(app: Any, event: Event) -> None:
+    """Consume a schedule tick for the activity subsystem."""
+    _require_tick(event, TickType.SCHEDULE_BLOCK_START)
+    await app.activity.on_tick(TickType.SCHEDULE_BLOCK_START)
+
+
+async def on_desire_eval(app: Any, event: Event) -> None:
+    """Consume a desire evaluation tick."""
+    _require_tick(event, TickType.DESIRE_EVAL)
+    state = await app.inner_life.get_state()
+    await app.desire.evaluate(state.energy)
+
+
+async def on_mutter_check(app: Any, event: Event) -> None:
+    """Consume a mutter check tick."""
+    _require_tick(event, TickType.MUTTER_CHECK)
+    await app.expression.mutter(
+        await app.inner_life.get_state(), event.correlation_id
+    )
+
+
+async def on_initiate_chat_check(app: Any, event: Event) -> None:
+    """Consume an initiative check tick."""
+    _require_tick(event, TickType.INITIATE_CHAT_CHECK)
+    await check_initiate_chat(app)
+
+
+async def on_reflection_check(app: Any, event: Event) -> None:
+    """Consume a reflection check tick."""
+    _require_tick(event, TickType.REFLECTION_CHECK)
+    await check_reflect(app, event.correlation_id)
+
+
+async def check_initiate_chat(app: Any) -> None:
+    """Start a desire-driven chat when presence and energy permit it."""
+    desires = await app.desire.get_pending()
+    interaction = next(
+        (desire for desire in desires if desire.type is DesireType.INTERACTION), None
+    )
+    if interaction is None:
+        return
+    state = await app.inner_life.get_state()
+    online = app.last_presence in ("online", "busy")
+    busy = app.last_presence == "busy"
+    if should_initiate_chat(
+        desires, online, busy, state.energy, time.time() - app.last_chat_at
+    ):
+        current = await app.activity.get_current()
+        if current is not None and current.status is ActivityStatus.RUNNING:
+            await app.activity.interrupt(current.id, EventType.INITIATE_CHAT)
+        if await app.expression.initiate_chat(interaction, state):
+            app.last_chat_at = time.time()
+
+
+async def check_reflect(
+    app: Any,
+    correlation_id: str,
+    *,
+    min_interval: float = DEFAULT_REFLECT_MIN_INTERVAL,
+    min_new_memories: int = DEFAULT_REFLECT_MIN_NEW_MEMORIES,
+) -> None:
+    """Run the reflection gate for a reflection check tick."""
+    narrative = await app.inner_life.get_narrative()
+    if time.time() - narrative.updated_at < min_interval:
+        return
+    new_count = await app.memory.count_new(None, narrative.updated_at)
+    if new_count >= min_new_memories:
+        await app.bus.publish(
+            internal_event(EventType.REFLECTION, {}, correlation_id)
+        )
+
+
+def _require_tick(event: Event, expected: TickType) -> None:
+    actual = event.content.get("tick_type")
+    if actual != expected.value:
+        raise ValueError(
+            f"tick consumer {expected.value!r} received {actual!r}"
+        )
 
 
 async def tick_loop(

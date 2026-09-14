@@ -1,7 +1,8 @@
 import asyncio
 import contextlib
 import time
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig
@@ -68,48 +69,70 @@ class ActivityLifecycle:
     async def start(self, activity: Activity) -> None:
         """进入 RUNNING，并发布活动开始事件。"""
         activity.status = ActivityStatus.RUNNING
-        await self._store.update(activity)
         desire_id = activity.progress.get("desire_id")
-        if isinstance(desire_id, str):
-            await self._desire.mark_active(desire_id)
-        await self._bus.publish(
-            internal_event(
-                EventType.ACTIVITY_START,
-                {
-                    "activity_id": activity.id,
-                    "type": activity.type.value,
-                    "schedule_block_id": activity.schedule_block_id,
-                },
-                correlation_id(activity),
-            )
+        event = internal_event(
+            EventType.ACTIVITY_START,
+            {
+                "activity_id": activity.id,
+                "type": activity.type.value,
+                "schedule_block_id": activity.schedule_block_id,
+            },
+            correlation_id(activity),
         )
+        append = getattr(self._bus, "append_in_transaction", None)
+        announce = getattr(self._bus, "announce_committed", None)
+        if not callable(append) or not callable(announce):
+            await self._store.update(activity)
+            if isinstance(desire_id, str):
+                await self._desire.mark_active(desire_id)
+            await self._bus.publish(event)
+            return
+        append_event = cast(Callable[[Any], Awaitable[tuple[str, ...]]], append)
+        announce_event = cast(Callable[[Any], Awaitable[None]], announce)
+        async with self._store.db.transaction():
+            await self._store.update(activity)
+            if isinstance(desire_id, str):
+                await self._desire.mark_active(desire_id)
+            await append_event(event)
+        await announce_event(event)
 
     async def complete(self, activity: Activity) -> None:
         """进入 COMPLETED，并发布携带目标结果的活动结束事件。"""
         activity.status = ActivityStatus.COMPLETED
         activity.ended_at = time.time()
-        await self._store.update(activity)
         result = activity.progress.get("result", {})
         signal = activity_goal_signal(activity)
         desire_id = activity.progress.get("desire_id")
-        if signal is None and isinstance(desire_id, str):
-            await self._desire.release_active(desire_id)
-        await self._bus.publish(
-            internal_event(
-                EventType.ACTIVITY_END,
-                {
-                    "activity_id": activity.id,
-                    "type": activity.type.value,
-                    "desire_id": desire_id,
-                    "goal_met": signal,
-                    "energy_delta": getattr(
-                        self._config.energy_delta, activity.type.value
-                    ),
-                    "result": result,
-                },
-                correlation_id(activity),
-            )
+        event = internal_event(
+            EventType.ACTIVITY_END,
+            {
+                "activity_id": activity.id,
+                "type": activity.type.value,
+                "desire_id": desire_id,
+                "goal_met": signal,
+                "energy_delta": getattr(
+                    self._config.energy_delta, activity.type.value
+                ),
+                "result": result,
+            },
+            correlation_id(activity),
         )
+        append = getattr(self._bus, "append_in_transaction", None)
+        announce = getattr(self._bus, "announce_committed", None)
+        if not callable(append) or not callable(announce):
+            if signal is None and isinstance(desire_id, str):
+                await self._desire.release_active(desire_id)
+            await self._store.update(activity)
+            await self._bus.publish(event)
+            return
+        append_event = cast(Callable[[Any], Awaitable[tuple[str, ...]]], append)
+        announce_event = cast(Callable[[Any], Awaitable[None]], announce)
+        async with self._store.db.transaction():
+            if signal is None and isinstance(desire_id, str):
+                await self._desire.release_active(desire_id)
+            await self._store.update(activity)
+            await append_event(event)
+        await announce_event(event)
 
     async def fail(self, activity: Activity) -> None:
         """进入 INCOMPLETE，并把消费中的欲望改为 SUPPRESSED。"""
@@ -160,14 +183,25 @@ class ActivityLifecycle:
             else ActivityStatus.ABANDONED
         )
         activity.ended_at = time.time()
-        await self._store.update(activity)
         desire_id = activity.progress.get("desire_id")
-        if isinstance(desire_id, str):
-            await self._desire.mark_suppressed(desire_id)
-        await self._bus.publish(
-            internal_event(
-                EventType.ACTIVITY_INTERRUPTED,
-                {"activity_id": activity_id, "by": by_event.value},
-                correlation_id(activity),
-            )
+        event = internal_event(
+            EventType.ACTIVITY_INTERRUPTED,
+            {"activity_id": activity_id, "by": by_event.value},
+            correlation_id(activity),
         )
+        append = getattr(self._bus, "append_in_transaction", None)
+        announce = getattr(self._bus, "announce_committed", None)
+        if not callable(append) or not callable(announce):
+            await self._store.update(activity)
+            if isinstance(desire_id, str):
+                await self._desire.mark_suppressed(desire_id)
+            await self._bus.publish(event)
+            return
+        append_event = cast(Callable[[Any], Awaitable[tuple[str, ...]]], append)
+        announce_event = cast(Callable[[Any], Awaitable[None]], announce)
+        async with self._store.db.transaction():
+            await self._store.update(activity)
+            if isinstance(desire_id, str):
+                await self._desire.mark_suppressed(desire_id)
+            await append_event(event)
+        await announce_event(event)

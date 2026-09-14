@@ -271,14 +271,9 @@ async def test_first_tick_starts_activity_not_mutter_or_chat(
 class _FakeInnerLife:
     def __init__(self, narrative: SelfNarrative) -> None:
         self._narrative = narrative
-        self.reflect_calls: list[str] = []
 
     async def get_narrative(self) -> SelfNarrative:
         return self._narrative
-
-    async def reflect(self, correlation_id: str) -> None:
-        self.reflect_calls.append(correlation_id)
-
 
 class _FakeMemory:
     def __init__(
@@ -308,11 +303,12 @@ def _reflect_app(
     narrative: SelfNarrative,
     memories: list[Memory],
     count_new_result: int | None = None,
-) -> tuple[_App, _FakeInnerLife]:
+) -> tuple[_App, _FakeInnerLife, _FakeBus]:
     inner_life = _FakeInnerLife(narrative)
     memory = _FakeMemory(memories, count_new_result)
+    bus = _FakeBus()
     app = _App(
-        bus=cast(EventBus, object()),
+        bus=cast(EventBus, bus),
         inner_life=cast(InnerLifeFacade, inner_life),
         desire=cast(DesireFacade, object()),
         memory=cast(MemoryFacade, memory),
@@ -323,7 +319,7 @@ def _reflect_app(
         eval_store=cast(EvalStore, object()),
         config=Config(),
     )
-    return app, inner_life
+    return app, inner_life, bus
 
 
 async def test_check_reflect_skips_within_cooldown(
@@ -336,9 +332,9 @@ async def test_check_reflect_skips_within_cooldown(
         updated_at=now - 100.0,  # 距上次反思仅 100s < 冷却
     )
     memories = [_memory(now - 50.0) for _ in range(_REFLECT_MIN_NEW_MEMORIES)]
-    app, inner_life = _reflect_app(narrative, memories)
+    app, _inner_life, bus = _reflect_app(narrative, memories)
     await _check_reflect(app, "cid")
-    assert inner_life.reflect_calls == []
+    assert bus.published == []
 
 
 async def test_check_reflect_skips_below_new_memory_threshold(
@@ -351,9 +347,9 @@ async def test_check_reflect_skips_below_new_memory_threshold(
         updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,  # 已过冷却
     )
     memories = [_memory(narrative.updated_at + 100.0) for _ in range(2)]
-    app, inner_life = _reflect_app(narrative, memories)
+    app, _inner_life, bus = _reflect_app(narrative, memories)
     await _check_reflect(app, "cid")
-    assert inner_life.reflect_calls == []
+    assert bus.published == []
 
 
 async def test_check_reflect_triggers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -367,9 +363,10 @@ async def test_check_reflect_triggers(monkeypatch: pytest.MonkeyPatch) -> None:
         _memory(narrative.updated_at + 100.0)
         for _ in range(_REFLECT_MIN_NEW_MEMORIES)
     ]
-    app, inner_life = _reflect_app(narrative, memories)
+    app, _inner_life, bus = _reflect_app(narrative, memories)
     await _check_reflect(app, "cid")
-    assert inner_life.reflect_calls == ["cid"]
+    assert [event.type for event in bus.published] == [EventType.REFLECTION]
+    assert bus.published[0].correlation_id == "cid"
 
 
 async def test_check_reflect_uses_first_creation_count(
@@ -385,8 +382,10 @@ async def test_check_reflect_uses_first_creation_count(
         _memory(narrative.updated_at + 100.0)
         for _ in range(_REFLECT_MIN_NEW_MEMORIES)
     ]
-    app, inner_life = _reflect_app(narrative, memories, count_new_result=0)
+    app, _inner_life, bus = _reflect_app(
+        narrative, memories, count_new_result=0
+    )
 
     await _check_reflect(app, "cid")
 
-    assert inner_life.reflect_calls == []
+    assert bus.published == []

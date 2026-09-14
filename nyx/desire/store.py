@@ -1,4 +1,6 @@
 import json
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import aiosqlite
 
@@ -28,19 +30,34 @@ class DesireStore:
     def __init__(self, db: Database) -> None:
         self._db = db
 
+    @property
+    def db(self) -> Database:
+        """Return the shared database for local transaction orchestration."""
+        return self._db
+
+    @asynccontextmanager
+    async def _operation(self) -> AsyncGenerator[bool, None]:
+        """Yield whether this method owns the commit for its SQL block."""
+        if self._db.in_transaction:
+            yield False
+            return
+        async with self._db.lock:
+            yield True
+
     # —— short_term_desire ——
 
     async def add_desire(self, desire: ShortTermDesire) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 f"INSERT INTO short_term_desire ({_STD_COLS}) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _std_row(desire),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def get_desire(self, desire_id: str) -> ShortTermDesire | None:
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_STD_COLS} FROM short_term_desire WHERE id = ?", (desire_id,),
             )
@@ -48,7 +65,7 @@ class DesireStore:
         return _row_to_std(row) if row is not None else None
 
     async def list_pending(self) -> list[ShortTermDesire]:
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_STD_COLS} FROM short_term_desire "
                 "WHERE status IN (?, ?) ORDER BY created_at ASC",
@@ -58,7 +75,7 @@ class DesireStore:
         return [_row_to_std(r) for r in rows]
 
     async def list_suppressed(self) -> list[ShortTermDesire]:
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_STD_COLS} FROM short_term_desire "
                 "WHERE status = ? ORDER BY created_at ASC",
@@ -70,7 +87,7 @@ class DesireStore:
     async def list_short_term(self) -> list[ShortTermDesire]:
         """全部短期欲望（含 satisfied/expired 历史），供 /api/desires
         全量快照；最新在前。"""
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_STD_COLS} FROM short_term_desire ORDER BY created_at DESC"
             )
@@ -78,7 +95,7 @@ class DesireStore:
         return [_row_to_std(r) for r in rows]
 
     async def update_desire(self, desire: ShortTermDesire) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "UPDATE short_term_desire SET type = ?, strength = ?, description = ?, "
                 "goal = ?, retry_count = ?, status = ?, goal_progress = ? WHERE id = ?",
@@ -88,12 +105,13 @@ class DesireStore:
                     desire.goal_progress, desire.id,
                 ),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     # —— desire_value ——
 
     async def get_value(self, type_: DesireType) -> DesireValue | None:
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_VALUE_COLS} FROM desire_value WHERE type = ?",
                 (type_.value,),
@@ -102,7 +120,7 @@ class DesireStore:
         return _row_to_value(row) if row is not None else None
 
     async def list_values(self) -> list[DesireValue]:
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_VALUE_COLS} FROM desire_value"
             )
@@ -110,7 +128,7 @@ class DesireStore:
         return [_row_to_value(r) for r in rows]
 
     async def upsert_value(self, dv: DesireValue) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 f"INSERT INTO desire_value ({_VALUE_COLS}) VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(type) DO UPDATE SET value = excluded.value, "
@@ -122,21 +140,23 @@ class DesireStore:
                     dv.suppression_threshold, dv.updated_at,
                 ),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     # —— long_term_desire ——
 
     async def insert_long_term(self, desire: LongTermDesire) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 f"INSERT INTO long_term_desire ({_LT_COLS}) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _lt_row(desire),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def list_long_term(self) -> list[LongTermDesire]:
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_LT_COLS} FROM long_term_desire"
             )
@@ -144,7 +164,7 @@ class DesireStore:
         return [_row_to_lt(r) for r in rows]
 
     async def update_long_term(self, desire: LongTermDesire) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "UPDATE long_term_desire SET type = ?, name = ?, description = ?, "
                 "strength = ?, progress = ?, subtopics = ?, "
@@ -155,7 +175,8 @@ class DesireStore:
                     json.dumps(desire.linked_values), desire.id,
                 ),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
 
 def _std_row(

@@ -1,26 +1,68 @@
 # pyright: reportPrivateUsage=false
+"""Runtime subscription assembly derived from the route specification."""
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from nyx.enums import EventType
+from nyx.events.routing import ROUTE_SPECS, RouteSpec
+from nyx.types import Event
 
 if TYPE_CHECKING:
     from nyx.app_context import _App
 
+Handler = Callable[[Event], Awaitable[None]]
+
 
 def subscribe(app: _App) -> None:
-    """按事件类型注册 Facade handler；保持组合根的单一订阅清单。"""
-    from nyx.main import _on_clock_tick, _on_user_message
+    """Resolve and register every declared route against the application."""
+    for spec in ROUTE_SPECS:
+        app.bus.subscribe(spec, _resolve_handler(app, spec))
+    app.bus.validate_routes()
 
-    bus = app.bus
-    bus.subscribe(EventType.USER_MESSAGE, lambda e: _on_user_message(app, e))
-    bus.subscribe(EventType.OBSERVATION_STATE, app.inner_life.apply_event)
-    bus.subscribe(EventType.OBSERVATION_STATE, app.desire.add_value)
-    bus.subscribe(EventType.DESIRE_GENERATED, app.activity.on_desire_generated)
-    bus.subscribe(EventType.DESIRE_SATISFIED, app.inner_life.apply_event)
-    bus.subscribe(EventType.ACTIVITY_END, app.desire.add_value)
-    bus.subscribe(EventType.ACTIVITY_END, app.inner_life.apply_event)
-    bus.subscribe(EventType.ACTIVITY_END, app.memory.remember_activity)
-    bus.subscribe(EventType.REFLECTION, app.inner_life.apply_event)
-    bus.subscribe(EventType.CLOCK_TICK, lambda e: _on_clock_tick(app, e))
+
+def _resolve_handler(app: _App, spec: RouteSpec) -> Handler:
+    if spec.handler_key == "on_user_message":
+        from nyx.runtime import on_user_message
+
+        return lambda event: on_user_message(app, event)
+    if spec.handler_key == "apply_observation_state":
+        if spec.module == "inner_life":
+            return lambda event: app.inner_life.apply_event(event, spec.consumer_id)
+        return lambda event: app.desire.add_value(event, spec.consumer_id)
+    if spec.handler_key == "on_desire_generated":
+        return app.activity.on_desire_generated
+    if spec.handler_key == "apply_desire_satisfied":
+        return lambda event: app.inner_life.apply_event(event, spec.consumer_id)
+    if spec.handler_key == "apply_activity_end":
+        if spec.module == "desire":
+            return lambda event: app.desire.add_value(event, spec.consumer_id)
+        return lambda event: app.inner_life.apply_event(event, spec.consumer_id)
+    if spec.handler_key == "remember_activity":
+        return lambda event: app.memory.remember_activity(event, spec.consumer_id)
+    if spec.handler_key == "apply_reflection":
+        return app.inner_life.apply_event
+
+    from nyx.runtime import (
+        on_desire_eval,
+        on_initiate_chat_check,
+        on_mutter_check,
+        on_reflection_check,
+        on_schedule_block_start,
+    )
+
+    tick_handlers: dict[str, Callable[[_App, Event], Awaitable[None]]] = {
+        "on_schedule_block_start": on_schedule_block_start,
+        "on_desire_eval": on_desire_eval,
+        "on_mutter_check": on_mutter_check,
+        "on_initiate_chat_check": on_initiate_chat_check,
+        "on_reflection_check": on_reflection_check,
+    }
+    try:
+        tick_handler = tick_handlers[spec.handler_key]
+    except KeyError as error:
+        raise RuntimeError(
+            f"没有为 route {spec.consumer_id!r} 配置 handler "
+            f"{spec.handler_key!r}"
+        ) from error
+    return lambda event: tick_handler(app, event)

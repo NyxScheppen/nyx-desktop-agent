@@ -3,11 +3,12 @@
 > 范围：`nyx/events/`、`nyx/subscriptions.py`、`nyx/runtime.py`、`nyx/app_context.py`、`nyx/main.py`、`nyx/db.py` 中与事件持久化、消费者投递、路由注册、DB 生命周期、关停生命周期相关的基础设施。  
 > 本文件是底层模块总线系统的唯一完整契约，统一覆盖 SQLite 生命周期、事件总线、路由订阅、组合根、REST/SSE、恢复重试和关停。
 > 快速事实摘要见 `docs/module-bus-system-facts.md`。
+> 本文件只定义运行时基础设施和模块通信边界，不定义共享类型、配置字段、LLM 调用细节或业务模块内部规则。
 
 ## 元信息
 
-- **前置依赖**：01-types（`Event` / `EventType` / `Source` / `TickType`）、02-config、03-llm、06-tools、07-memory-system、11-desire、12-inner-life、14-activity、17-expression、19-reading-content、20-reading-progress、21-reading-impulse、22-reading-notes、24-reading-chat-turn。
-- **实现文件**：`nyx/db.py`、`nyx/enums.py`、`nyx/types.py`、`nyx/events/bus.py`、`nyx/events/event.py`、`nyx/events/routing.py`、`nyx/subscriptions.py`、`nyx/runtime.py`、`nyx/app_context.py`、`nyx/main.py`。
+- **前置依赖**：01-types（`Event` / `EventType` / `Source` / `TickType`）。组合根装配时使用 02-config 和 03-llm；本文件不依赖任何业务系统 spec。
+- **实现文件**：`nyx/db.py`、`nyx/events/bus.py`、`nyx/events/event.py`、`nyx/events/routing.py`、`nyx/subscriptions.py`、`nyx/runtime.py`、`nyx/app_context.py`、`nyx/api/routes.py`、`nyx/main.py`。
 - **测试文件**：`tests/test_event/`、`tests/test_api/test_subscription.py`、`tests/test_api/test_tick_loop.py`、`tests/test_api/test_context.py`、必要时补 `tests/test_db/`。
 
 ## 用户故事
@@ -415,6 +416,31 @@ CREATE TABLE event_effect (
 ```
 
 若实现能证明 `event_delivery` 自身可作为业务幂等 marker，并且模块状态变更与 marker 写入在同一事务中完成，可以不建独立 `event_effect`；否则必须建。
+
+### 欲望系统辅助表
+
+`long_term_desire.name_normalized` 是由欲望系统按 `strip + casefold + 连续空白折叠`
+生成的持久化键；数据库必须提供唯一索引，作为并发新增的最终保护。
+
+```sql
+ALTER TABLE long_term_desire ADD COLUMN name_normalized TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_long_term_desire_name_normalized
+ON long_term_desire(name_normalized);
+```
+
+`desire_generation_attempt` 保存已经完成 LLM 调用和 JSON 解析、但正式欲望事务
+尚未提交的结果。它属于欲望系统的本地恢复数据，不表示跨模块事件已完成。
+
+```sql
+CREATE TABLE desire_generation_attempt (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    peak_value REAL NOT NULL,
+    seed TEXT,
+    output_content TEXT NOT NULL
+);
+```
 
 ### `event_log` 展开状态
 

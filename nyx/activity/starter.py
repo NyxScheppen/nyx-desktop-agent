@@ -13,6 +13,7 @@ from nyx.activity.scheduler import (
 )
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
+from nyx.db import Database
 from nyx.desire.facade import DesireFacade
 from nyx.enums import ActivityStatus, ActivityType, DesireType
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
@@ -174,8 +175,30 @@ class ActivityStarter:
                         activity.type = ActivityType.FREE_EXPLORATION
                     else:
                         activity = self.default_activity(state)
-            await self._store.insert(activity)
+            if not await self._insert_claimed(activity):
+                return None
             return self._create_task(activity)
+
+    async def _insert_claimed(self, activity: Activity) -> bool:
+        """Claim a desire and insert its activity in one local transaction."""
+        desire_id = activity.progress.get("desire_id")
+        claim = getattr(self._desire, "claim_for_activity_in_transaction", None)
+        database_obj = getattr(self._desire, "db", None)
+        if (
+            not isinstance(desire_id, str)
+            or not callable(claim)
+            or database_obj is None
+        ):
+            await self._store.insert(activity)
+            return True
+        claim_fn = cast(Callable[[str], Awaitable[bool]], claim)
+        database = cast(Database, database_obj)
+        async with database.transaction():
+            claimed = await claim_fn(desire_id)
+            if not claimed:
+                return False
+            await self._store.insert(activity)
+        return True
 
     def _create_task(self, activity: Activity) -> asyncio.Task[None]:
         task = asyncio.create_task(self._execute(activity))

@@ -371,6 +371,17 @@ async def test_add_long_term_exact_name_duplicate_skips() -> None:
         await database.conn.close()
 
 
+async def test_add_long_term_normalized_name_duplicate_skips() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        await facade.add_long_term(_lt_custom("a", "  理解   人类 "))
+        await facade.add_long_term(_lt_custom("b", "理解 人类"))
+        assert [d.id for d in await store.list_long_term()] == ["a"]
+    finally:
+        await database.close()
+
+
 async def test_add_long_term_semantic_duplicate_skips() -> None:
     store, bus, database = await _new_stack()
     same = _embed_map({"理解人类 痛苦": [1.0, 0.0], "了解人类 痛苦": [1.0, 0.0]})
@@ -420,7 +431,7 @@ async def test_add_long_term_embed_none_exact_only() -> None:
         await database.conn.close()
 
 
-async def test_add_long_term_embed_error_skips_semantic() -> None:
+async def test_add_long_term_embed_error_is_strict() -> None:
     store, bus, database = await _new_stack()
 
     async def boom(text: str) -> list[float]:
@@ -428,8 +439,8 @@ async def test_add_long_term_embed_error_skips_semantic() -> None:
 
     facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator(), embed=boom)
     try:
-        await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
-        await facade.add_long_term(_lt_custom("b", "了解人类", "痛苦"))
-        assert [d.id for d in await store.list_long_term()] == ["a", "b"]
+        with pytest.raises(RuntimeError):
+            await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
+        assert await store.list_long_term() == []
     finally:
         await database.conn.close()

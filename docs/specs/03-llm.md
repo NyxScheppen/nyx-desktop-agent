@@ -1,12 +1,12 @@
 # LLM 统一客户端
 
-> 范围：`nyx/llm/client.py`（`LlmClient` + `LlmMessage`），LangChain 统一调用、默认 Deepseek、模型名随调用记录、可注入 mock。纯文本 LLM 出口；多模态视觉走同包 `nyx/llm/vision.py`（`VisionClient`，见下方「屏幕视觉」）。
+> 范围：`nyx/llm/client.py`（`LlmClient` + `LlmMessage`）与 `nyx/llm/vision.py`（`VisionClient`），统一处理文本与多模态 LLM 调用、模型记录、provider endpoint 和可注入 mock。
 > 纯客户端 spec：只做「调 LLM → 返回 `LLMOutput`」，不含 Facade、不含 DDL、不含 API。
-> spec 只定义契约（`LlmClient` / `LlmMessage` 签名 + 调用语义）；实现以 `nyx/llm/client.py` 源文件为准。`LLMOutput` / `LlmConfig` / `ConfigError` 取自 01-types / 02-config（见前置依赖）。
+> spec 只定义客户端契约（`LlmClient` / `LlmMessage` / `VisionClient` 签名 + 调用语义）；实现以 `nyx/llm/client.py` 与 `nyx/llm/vision.py` 源文件为准。`LLMOutput` 由 `01-types` 定义，`LlmConfig` / `VisionConfig` / `ConfigError` 由 `02-config` 定义。
 
 ## 元信息
 
-- **前置依赖**：01-types（`LLMOutput`）、02-config（`LlmConfig`、`ConfigError`）
+- **前置依赖**：01-types（`LLMOutput`）、02-config（`LlmConfig`、`VisionConfig`、`ConfigError`）
 
 ## 用户故事
 
@@ -14,7 +14,7 @@
 
 ## 验收标准
 
-- [ ] `client.py` 含 `LlmClient` + `LlmMessage`（实现见 `nyx/llm/client.py`）
+- [ ] `client.py` 含 `LlmClient` + `LlmMessage`，`vision.py` 含 `VisionClient`（实现见对应源文件）
 - [ ] 全项目只有这一处直接调 LLM（不直接用 httpx、不绕过 client 直接 `ChatOpenAI`）
 - [ ] `complete()` 返回 `LLMOutput`：`module`/`type`/`content`/`model`/`correlation_id` 随每次调用正确回填
 - [ ] `json_mode=True` 时向模型传 `response_format={"type": "json_object"}`
@@ -24,9 +24,9 @@
 
 ## 技术方案
 
-- **新文件**：`nyx/llm/client.py`（无 Facade、无 API、无数据变更）
+- **实现文件**：`nyx/llm/client.py`、`nyx/llm/vision.py`（无 Facade、无 API、无数据变更）
 - **库**：`langchain_core`（`BaseChatModel` / 消息类）、`langchain_openai`（`ChatOpenAI`，deepseek / openai / ollama 等走 OpenAI 兼容接口）
-- **公开面**：`from nyx.llm.client import LlmClient, LlmMessage`（不加 `__all__`）
+- **公开面**：`from nyx.llm.client import LlmClient, LlmMessage`、`from nyx.llm.vision import VisionClient`（不加 `__all__`）
 - **内部类（非 Facade）**：Facade / LangGraph 节点都通过它调 LLM，是透明化+可追溯的落点
 - **多 provider（OpenAI 兼容）**：`from_config` 用 `resolve_base_url(provider, base_url)` 解析 endpoint——显式 `llm.base_url` 优先，否则查内置映射（deepseek / openai / ollama）；无命中报 `ConfigError`（列出内置 provider + 提示配 `llm.base_url`）。统一走 `ChatOpenAI`，token 抽取不变
 - **屏幕视觉（`vision.py`，V2）**：`VisionClient` 是独立多模态客户端（Ollama 视觉模型同走 OpenAI 兼容 `ChatOpenAI`），消息带 `image_url` 块、不混入纯文本 `complete`；复用 `resolve_base_url`（故该函数公开，供 `vision.py` 跨模块导入）。`from_config` 与 `LlmClient` 同规则读 key：`os.environ.get(config.api_key_env)`，未设且非 Ollama 报 `ConfigError`、Ollama 免 key 占位。
@@ -35,6 +35,7 @@
 - **json_mode = 减少 parse 失败重试**：欲望生成/分类器要结构化输出，靠 `response_format` 保证合法 JSON，少一次重调
 - **依赖 pin（实现时锁）**：`pyproject.toml` 里 `langchain-core`、`langchain-openai` 锁精确版本（非 `>=` 宽范围）；`pydantic` 用 `>=2.0` floor（`SecretStr` 自 v1 稳定，非 volatile API）。本 spec 的 `AIMessage.content`（文本为 `str`）、`response_format={"type":"json_object"}` 契约均以锁定版本为准，升级依赖须重跑本 spec 测试
 - **类型收窄（质量门驱动）**：`from_config` 里 `api_key` 用 `SecretStr(api_key)` 包装——langchain-openai 的 `api_key` 别名类型是 `SecretStr | Callable | None`，plain `str` 不满足 pyright strict，`SecretStr` 顺带让密钥不进 repr/日志
+- **配置边界**：`provider`、`model`、endpoint、超时、重试、温度和密钥环境变量名的字段、默认值、类型校验由 `02-config` 定义；本 spec 只定义这些值如何构造客户端以及如何影响调用。
 
 ## 测试要点
 

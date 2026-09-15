@@ -47,6 +47,7 @@ class MemoryConfig:
 class DesireConfig:
     peak_threshold: float = 0.9
     retry_limit: int = 3
+    short_term_capacity: int = 20
     long_term_capacity: int = 5
     value_decay: float = 0.05
 
@@ -190,6 +191,7 @@ def validate_config(cfg: Config) -> None:
     for path, v in (("memory.short_term_capacity", cfg.memory.short_term_capacity),
                     ("memory.promote_threshold", cfg.memory.promote_threshold),
                     ("desire.retry_limit", cfg.desire.retry_limit),
+                    ("desire.short_term_capacity", cfg.desire.short_term_capacity),
                     ("desire.long_term_capacity", cfg.desire.long_term_capacity),
                     ("activity.grid_minutes", cfg.activity.grid_minutes),
                     ("expression.max_context_len", cfg.expression.max_context_len),

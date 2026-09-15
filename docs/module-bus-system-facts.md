@@ -20,6 +20,7 @@
 - 当前已迁移的事务/幂等链：`ActivityLifecycle.start/complete/interrupt` 的活动状态、欲望状态和活动事件同事务提交；`DESIRE_EVAL -> DESIRE_GENERATED` 同事务提交；`desire.observation_state`、`desire.activity_end`、`inner_life.observation_state`、`inner_life.desire_satisfied`、`inner_life.activity_end`、`memory.activity_end`、`inner_life.reflection` 使用 `(event_id, consumer_id)` effect marker 防重放；`MemoryFacade.record_recall` 的升级和 `MEMORY_PROMOTED` 事件同事务提交。`inner_life.reflection` 的 LLM/解析在事务外完成，成功后的慢变量、effect marker 和 `REFLECTION_DONE` 在同一事务内提交，提交后才唤醒投递。
 - 当前未完全迁移的链仍需谨慎：包含 LLM/文件等不可回滚副作用的路径还不能宣称完整 at-least-once 幂等；`memory.activity_end` 已有本地事务和 effect marker，但其内部 LLM 关系/矛盾判断仍属 best-effort 副作用。`USER_MESSAGE` 重放时若已存在同 correlation 的终局 `SPEAK/ASK` 事件会短路，但中途无终局事件的失败仍会重试。
 - 数据库基础设施已有 `Database.close()`、`Database.transaction()`、锁/SQL 操作超时常量和基础熔断状态；不要新增绕过这些入口的长期连接管理。
+- 欲望系统额外使用 `desire_generation_attempt` 保存 LLM 已解析但尚未正式提交的结果；`long_term_desire.name_normalized` 有唯一索引，数据库迁移和唯一性语义见 `05-module-bus-system.md` 与 `11-desire.md`。
 - 关停采用有界 drain：先停止新输入，再等待已受理事件和 delivery 完成；超时保留未完成投递，下次启动恢复，不做伪全局回滚。
 - 当前 `_App` 是组合根内部 dataclass，也承担运行期状态容器；不要把 `_App` 传入 Facade。
 

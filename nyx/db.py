@@ -413,6 +413,30 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        16,
+        [
+            "ALTER TABLE long_term_desire ADD COLUMN name_normalized TEXT "
+            "NOT NULL DEFAULT ''",
+            "UPDATE long_term_desire SET name_normalized = lower(trim(name)) "
+            "WHERE name_normalized = ''",
+            "DELETE FROM long_term_desire WHERE rowid NOT IN ("
+            "SELECT MIN(rowid) FROM long_term_desire "
+            "GROUP BY name_normalized)",
+            "CREATE UNIQUE INDEX idx_long_term_desire_name_normalized "
+            "ON long_term_desire(name_normalized)",
+            """CREATE TABLE desire_generation_attempt (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                peak_value REAL NOT NULL,
+                seed TEXT,
+                output_content TEXT NOT NULL
+            )""",
+            "CREATE INDEX idx_desire_generation_attempt_type "
+            "ON desire_generation_attempt(type)",
+        ],
+    ),
 ]
 
 

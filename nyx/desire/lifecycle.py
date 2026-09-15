@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -179,6 +180,7 @@ class DesireLifecycle:
         self._list_memories = list_memories
         self._embed = embed
         self._logger = logging.getLogger(__name__)
+        self._eval_lock = asyncio.Lock()
 
     async def pressure_from_observation(
         self, event: Event, consumer_id: str | None = None
@@ -199,12 +201,7 @@ class DesireLifecycle:
 
     async def _pressure(self, type_: DesireType, delta: float) -> None:
         """某类型欲望压力值 +delta（desire_value 缺省初始化后加压）。"""
-        dv = await self._store.get_value(type_)
-        if dv is None:
-            dv = default_value(type_)
-        dv.value = apply_pressure(dv.value, delta)
-        dv.updated_at = time.time()
-        await self._store.upsert_value(dv)
+        await self._store.apply_value_delta(type_, delta, time.time())
 
     async def pressure_creation(self, delta: float) -> None:
         """创造欲加压（反思/活动结束触发，delta 由调用方决定）。"""
@@ -244,95 +241,113 @@ class DesireLifecycle:
 
     async def run_eval(self, energy: float = 100.0) -> list[ShortTermDesire]:
         """DESIRE_EVAL：衰减 → 长期加压 → 疲惫加压 → 达峰判定 → 只生成最迫切的 1 个。"""
-        now = time.time()
-        long_term = await self._store.list_long_term()
-        values: dict[DesireType, DesireValue] = {
-            v.type: v for v in await self._store.list_values()
-        }
-        for t in DesireType:
-            if t not in values:
-                dv = default_value(t)
-                dv.updated_at = now
-                values[t] = dv
+        async with self._eval_lock:
+            now = time.time()
+            async with self._store.db.transaction():
+                long_term = await self._store.list_long_term()
+                values: dict[DesireType, DesireValue] = {
+                    v.type: v for v in await self._store.list_values()
+                }
+                for t in DesireType:
+                    if t not in values:
+                        values[t] = default_value(t)
+                        values[t].updated_at = now
+                    dv = values[t]
+                    elapsed_days = max(0.0, now - dv.updated_at) / SECONDS_PER_DAY
+                    dv.value = decay_value(
+                        dv.value, elapsed_days, self._config.value_decay
+                    )
+                    dv.updated_at = now
+                    await self._store.upsert_value(dv)
+                if energy < ENERGY_REST_THRESHOLD:
+                    values[DesireType.REST].value = apply_pressure(
+                        values[DesireType.REST].value, _REST_PRESSURE_DELTA
+                    )
+                    await self._store.upsert_value(values[DesireType.REST])
+                for lt in long_term:
+                    values[lt.type].value = apply_pressure(
+                        values[lt.type].value, _LONG_TERM_PRESSURE_DELTA
+                    )
+                    await self._store.upsert_value(values[lt.type])
+                for d in await self._store.list_suppressed():
+                    dv = values[d.type]
+                    if is_expressible(dv.value, dv.suppression_threshold):
+                        d.status = DesireStatus.PENDING
+                        await self._store.update_desire(d)
 
-        # 1. 四类型衰减（结算时间流逝）
-        for t in DesireType:
-            dv = values[t]
-            elapsed_days = max(0.0, now - dv.updated_at) / SECONDS_PER_DAY
-            dv.value = decay_value(dv.value, elapsed_days, self._config.value_decay)
-            dv.updated_at = now
+            attempts = {
+                t: await self._store.get_generation_attempt(t) for t in DesireType
+            }
+            expressible = [
+                values[t]
+                for t in DesireType
+                if at_peak(values[t].value, self._config.peak_threshold)
+                and is_expressible(
+                    values[t].value, values[t].suppression_threshold
+                )
+            ]
+            pending_types = [t for t in DesireType if attempts[t] is not None]
+            if pending_types:
+                target = values[pending_types[0]]
+            elif expressible:
+                target = max(expressible, key=lambda dv: dv.value)
+            else:
+                return []
 
-        # 2. 长期欲望周期加压
-        for lt in long_term:
-            values[lt.type].value = apply_pressure(
-                values[lt.type].value, _LONG_TERM_PRESSURE_DELTA
-            )
-
-        # 2.5 疲惫加压：精力低于阈值时休息欲按周期上升
-        if energy < ENERGY_REST_THRESHOLD:
-            values[DesireType.REST].value = apply_pressure(
-                values[DesireType.REST].value, _REST_PRESSURE_DELTA
-            )
-
-        # 2.6 SUPPRESSED 释放：类型仍可表达（值越过抑制阈值）→ 放回队列
-        for d in await self._store.list_suppressed():
-            dv = values.get(d.type)
-            if dv is not None and is_expressible(dv.value, dv.suppression_threshold):
-                d.status = DesireStatus.PENDING
-                await self._store.update_desire(d)
-
-        # 3. 达峰判定（可表达 = 达峰且未被抑制压住）
-        expressible = [
-            dv for dv in values.values()
-            if at_peak(dv.value, self._config.peak_threshold)
-            and is_expressible(dv.value, dv.suppression_threshold)
-        ]
-        if not expressible:
-            for t in DesireType:
-                await self._store.upsert_value(values[t])
-            return []
-
-        # 4. 取最迫切的 1 个
-        target = max(expressible, key=lambda dv: dv.value)
-        peak_value = target.value
-        subtopics = _subtopics_for(target.type, long_term)
-        seed = (
-            _pick_topic_seed(subtopics, await self._list_memories())
-            if subtopics
-            else None
-        )
-
-        # 5. 写回非选中类型（保留压力）；选中类型生成后重置写 0（step 7）
-        for t in DesireType:
-            if t is not target.type:
-                await self._store.upsert_value(values[t])
-
-        # 6. LLM 生成 + 解析（best-effort：LLM 返回非法 JSON → 漏报优于误报，跳过
-        #    本次 eval；传输异常 / evaluator 真 bug 不吞，上抛给 supervisor 处理）
-        desire_id = str(uuid4())
-        output = await self._llm.complete(
-            [
-                {"role": "system", "content": _DESIRE_SYSTEM},
-                {
-                    "role": "user",
-                    "content": _build_desire_prompt(target.type, seed),
-                },
-            ],
-            module="desire",
-            output_type="desire",
-            correlation_id=desire_id,
-            json_mode=True,
-        )
-        await self._evaluator.evaluate(output)
-        try:
-            description, goal = _parse_desire(output.content)
-        except ValueError:
-            self._logger.exception(
-                "欲望 JSON 解析失败 type=%s correlation_id=%s",
-                target.type.value,
-                desire_id,
-            )
-            return []
+            pending_attempt = attempts[target.type]
+            if pending_attempt is not None:
+                desire_id, created_at, peak_value, seed, raw_content = pending_attempt
+                try:
+                    description, goal = _parse_desire(raw_content)
+                except ValueError:
+                    await self._store.delete_generation_attempt(desire_id)
+                    self._logger.exception(
+                        "已保存的欲望 JSON 无法解析 type=%s id=%s",
+                        target.type.value,
+                        desire_id,
+                    )
+                    return []
+            else:
+                peak_value = target.value
+                subtopics = _subtopics_for(target.type, long_term)
+                seed = (
+                    _pick_topic_seed(subtopics, await self._list_memories())
+                    if subtopics
+                    else None
+                )
+                desire_id = str(uuid4())
+                output = await self._llm.complete(
+                    [
+                        {"role": "system", "content": _DESIRE_SYSTEM},
+                        {
+                            "role": "user",
+                            "content": _build_desire_prompt(target.type, seed),
+                        },
+                    ],
+                    module="desire",
+                    output_type="desire",
+                    correlation_id=desire_id,
+                    json_mode=True,
+                )
+                await self._evaluator.evaluate(output)
+                try:
+                    description, goal = _parse_desire(output.content)
+                except ValueError:
+                    self._logger.exception(
+                        "欲望 JSON 解析失败 type=%s correlation_id=%s",
+                        target.type.value,
+                        desire_id,
+                    )
+                    return []
+                await self._store.insert_generation_attempt(
+                    desire_id,
+                    target.type,
+                    now,
+                    peak_value,
+                    seed,
+                    output.content,
+                )
+                created_at = now
 
         # 6.5 话题锚点：seed 钉进 goal.topic，作为去重锚点。
         # 探索欲：goal 非 None 才钉（goal None 保留单次满足 + 自由探索兜底）。
@@ -343,10 +358,6 @@ class DesireLifecycle:
         elif target.type is DesireType.INTERACTION and seed is not None:
             goal = Goal(action=GoalAction.OBSERVE, count=1, topic=seed)
 
-        # 7. 重置选中类型 value（其余达峰类型保留压力）
-        target.value = 0.0
-        target.updated_at = now
-
         # 7.5 去重：话题锚点优先（goal.topic 精确相等 → 同 seed 重复，确定性零误判），
         # topic 不命中/缺失时回退 description 余弦兜底。
         new_topic = goal.topic if goal is not None else None
@@ -356,7 +367,11 @@ class DesireLifecycle:
                     self._logger.info(
                         "欲望重复丢弃（同话题） type=%s", target.type.value
                     )
-                    await self._store.upsert_value(target)
+                    async with self._store.db.transaction():
+                        await self._store.reset_value_if_unchanged(
+                            target.type, target.updated_at, now
+                        )
+                        await self._store.delete_generation_attempt(desire_id)
                     return []
         if self._embed is not None:
             try:
@@ -365,7 +380,11 @@ class DesireLifecycle:
                     other = await self._embed(d.description)
                     if cosine(vec, other) >= _DEDUP_SIM_THRESHOLD:
                         self._logger.info("欲望重复丢弃 type=%s", target.type.value)
-                        await self._store.upsert_value(target)
+                        async with self._store.db.transaction():
+                            await self._store.reset_value_if_unchanged(
+                                target.type, target.updated_at, now
+                            )
+                            await self._store.delete_generation_attempt(desire_id)
                         return []
             except Exception:
                 self._logger.exception("欲望去重 embedding 失败，跳过去重")
@@ -373,7 +392,7 @@ class DesireLifecycle:
         # 8. 入队
         desire = ShortTermDesire(
             id=desire_id,
-            created_at=now,
+            created_at=created_at,
             type=target.type,
             strength=peak_value,
             description=description,
@@ -382,14 +401,25 @@ class DesireLifecycle:
             status=DesireStatus.PENDING,
         )
 
-        # 9. 入队 + 发布：新欲望和生成事件必须同事务提交。
         event = internal_event(
             EventType.DESIRE_GENERATED, {"desire_id": desire.id}, desire.id
         )
+        expression_weights = {
+            value.type: value.expression_weight for value in values.values()
+        }
         async with self._store.db.transaction():
-            await self._store.upsert_value(target)
+            await self._store.reset_value_if_unchanged(
+                target.type, target.updated_at, now
+            )
             await self._store.add_desire(desire)
-            await self._bus.append_in_transaction(event)
+            removed = await self._store.trim_pending(
+                self._config.short_term_capacity, expression_weights
+            )
+            await self._store.delete_generation_attempt(desire.id)
+            if desire.id not in removed:
+                await self._bus.append_in_transaction(event)
+        if desire.id in removed:
+            return []
         await self._bus.announce_committed(event)
         return [desire]
 
@@ -398,65 +428,118 @@ class DesireLifecycle:
     ) -> None:
         """达成/未达成回写。goal 非 None 时按 count 累计 goal_progress，达标才满足；
         goal None 沿用单次满足。终态（SATISFIED/EXPIRED）幂等：重复投递 no-op。"""
+        if in_transaction:
+            await self._satisfy_request(desire_id, goal_met, in_transaction=True)
+            return
+        async with self._store.db.transaction():
+            event = await self._satisfy_request(
+                desire_id, goal_met, in_transaction=True
+            )
+        if event is not None:
+            await self._bus.announce_committed(event)
+
+    async def _satisfy_request(
+        self, desire_id: str, goal_met: bool, *, in_transaction: bool
+    ) -> "Event | None":
         desire = await self._store.get_desire(desire_id)
-        if desire is None:
-            return
-        if desire.status in (DesireStatus.SATISFIED, DesireStatus.EXPIRED):
-            return
+        if desire is None or desire.status in (
+            DesireStatus.SATISFIED,
+            DesireStatus.EXPIRED,
+        ):
+            return None
         if desire.status is DesireStatus.ACTIVE:
-            desire.status = DesireStatus.PENDING  # 消费中先释放，未达标分支不卡 ACTIVE
+            desire.status = DesireStatus.PENDING
         if goal_met and desire.goal is not None:
             desire.goal_progress += 1
-            if desire.goal_progress >= desire.goal.count:
-                await self._satisfy(desire, in_transaction=in_transaction)
-            else:
-                await self._store.update_desire(desire)  # 保持 PENDING，累计进度
-            return
+            if desire.goal_progress < desire.goal.count:
+                await self._store.update_desire(desire)
+                return None
+            return await self._satisfy(desire, in_transaction=in_transaction)
         if goal_met:
-            await self._satisfy(desire, in_transaction=in_transaction)
-        else:
-            desire.retry_count += 1
-            if desire.retry_count > self._config.retry_limit:
-                await self._expire(desire, in_transaction=in_transaction)
-            else:
-                await self._store.update_desire(desire)  # 保持 PENDING，retry+1
+            return await self._satisfy(desire, in_transaction=in_transaction)
+        desire.retry_count += 1
+        if desire.retry_count > self._config.retry_limit:
+            return await self._expire(desire, in_transaction=in_transaction)
+        await self._store.update_desire(desire)
+        return None
 
     async def expire(self, desire_id: str) -> None:
         """淘汰：出队 + 值回增 + 抑制阈值上浮。终态幂等：重复投递 no-op。"""
+        async with self._store.db.transaction():
+            event = await self._expire_request(desire_id)
+        if event is not None:
+            await self._bus.announce_committed(event)
+
+    async def _expire_request(self, desire_id: str) -> "Event | None":
         desire = await self._store.get_desire(desire_id)
-        if desire is None:
-            return
-        if desire.status in (DesireStatus.SATISFIED, DesireStatus.EXPIRED):
-            return
-        await self._expire(desire)
+        if desire is None or desire.status in (
+            DesireStatus.SATISFIED,
+            DesireStatus.EXPIRED,
+        ):
+            return None
+        return await self._expire(desire, in_transaction=True)
 
     async def mark_active(self, desire_id: str) -> None:
         """PENDING → ACTIVE：活动开始消费。仅 PENDING 可转，其余幂等 no-op。"""
-        desire = await self._store.get_desire(desire_id)
-        if desire is None or desire.status is not DesireStatus.PENDING:
-            return
-        desire.status = DesireStatus.ACTIVE
-        await self._store.update_desire(desire)
+        await self._store.claim_for_activity(desire_id)
+
+    async def claim_for_activity(
+        self, desire_id: str, *, in_transaction: bool = False
+    ) -> bool:
+        """Claim a PENDING desire exactly once for an activity."""
+        return await self._store.claim_for_activity(desire_id)
 
     async def mark_suppressed(self, desire_id: str) -> None:
         """ACTIVE → SUPPRESSED：活动中断/异常停车，不立即重试。仅 ACTIVE 可转。"""
-        desire = await self._store.get_desire(desire_id)
-        if desire is None or desire.status is not DesireStatus.ACTIVE:
+        if self._store.db.in_transaction:
+            await self._store.db.conn.execute(
+                "UPDATE short_term_desire SET status = ? "
+                "WHERE id = ? AND status = ?",
+                (
+                    DesireStatus.SUPPRESSED.value,
+                    desire_id,
+                    DesireStatus.ACTIVE.value,
+                ),
+            )
             return
-        desire.status = DesireStatus.SUPPRESSED
-        await self._store.update_desire(desire)
+        async with self._store.db.transaction():
+            await self._store.db.conn.execute(
+                "UPDATE short_term_desire SET status = ? "
+                "WHERE id = ? AND status = ?",
+                (
+                    DesireStatus.SUPPRESSED.value,
+                    desire_id,
+                    DesireStatus.ACTIVE.value,
+                ),
+            )
 
     async def release_active(self, desire_id: str) -> None:
         """ACTIVE → PENDING：活动有进展但本次不结算满足/失败。"""
-        desire = await self._store.get_desire(desire_id)
-        if desire is None or desire.status is not DesireStatus.ACTIVE:
+        if self._store.db.in_transaction:
+            await self._store.db.conn.execute(
+                "UPDATE short_term_desire SET status = ? "
+                "WHERE id = ? AND status = ?",
+                (
+                    DesireStatus.PENDING.value,
+                    desire_id,
+                    DesireStatus.ACTIVE.value,
+                ),
+            )
             return
-        desire.status = DesireStatus.PENDING
-        await self._store.update_desire(desire)
+        async with self._store.db.transaction():
+            await self._store.db.conn.execute(
+                "UPDATE short_term_desire SET status = ? "
+                "WHERE id = ? AND status = ?",
+                (
+                    DesireStatus.PENDING.value,
+                    desire_id,
+                    DesireStatus.ACTIVE.value,
+                ),
+            )
 
     async def _satisfy(
         self, desire: ShortTermDesire, *, in_transaction: bool = False
-    ) -> None:
+    ) -> Event:
         desire.status = DesireStatus.SATISFIED
         await self._store.update_desire(desire)
         await self._reinforce(desire)
@@ -465,14 +548,12 @@ class DesireLifecycle:
             {"desire_id": desire.id},
             desire.id,
         )
-        if in_transaction:
-            await self._bus.append_in_transaction(event)
-        else:
-            await self._bus.publish(event)
+        await self._bus.append_in_transaction(event)
+        return event
 
     async def _expire(
         self, desire: ShortTermDesire, *, in_transaction: bool = False
-    ) -> None:
+    ) -> Event:
         desire.status = DesireStatus.EXPIRED
         await self._store.update_desire(desire)
         await self._suppress(desire.type)
@@ -481,10 +562,8 @@ class DesireLifecycle:
             {"desire_id": desire.id},
             desire.id,
         )
-        if in_transaction:
-            await self._bus.append_in_transaction(event)
-        else:
-            await self._bus.publish(event)
+        await self._bus.append_in_transaction(event)
+        return event
 
     async def _reinforce(self, desire: ShortTermDesire) -> None:
         """满足后：表达权重正强化 + 长期进度回写（最相关长期欲望）。"""

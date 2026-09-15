@@ -563,6 +563,37 @@ async def test_run_eval_rolls_back_desire_when_generated_event_append_fails(
         await database.conn.close()
 
 
+async def test_run_eval_reuses_saved_generation_after_commit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm()
+    lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        original = bus.append_in_transaction
+        failed = True
+
+        async def fail_once(event: Event) -> tuple[str, ...]:
+            nonlocal failed
+            if failed:
+                failed = False
+                raise RuntimeError("commit event failed")
+            return await original(event)
+
+        monkeypatch.setattr(bus, "append_in_transaction", fail_once)
+        with pytest.raises(RuntimeError):
+            await lifecycle.run_eval()
+        assert llm.calls == ["desire"]
+        result = await lifecycle.run_eval()
+        assert len(result) == 1
+        assert llm.calls == ["desire"]
+    finally:
+        await database.close()
+
+
 async def test_run_eval_only_most_urgent(monkeypatch: pytest.MonkeyPatch) -> None:
     store, bus, database = await _new_stack()
     llm = _FakeLlm()
@@ -774,9 +805,9 @@ async def test_satisfy_reinforces_most_relevant_long_term(
         monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
         await store.upsert_value(_dv(DesireType.EXPLORATION, 0.5, updated_at=t0))
         await store.insert_long_term(_lt(DesireType.EXPLORATION, ["骑士团"], id="lt1"))
-        await store.insert_long_term(
-            _lt(DesireType.EXPLORATION, ["大学朋友"], id="lt2")
-        )
+        second = _lt(DesireType.EXPLORATION, ["大学朋友"], id="lt2")
+        second.name = "探索世界 2"
+        await store.insert_long_term(second)
         desire = _desire("d1")
         desire.type = DesireType.EXPLORATION
         desire.goal = Goal(GoalAction.READ, 1, "大学朋友")

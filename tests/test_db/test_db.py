@@ -7,7 +7,7 @@ import pytest
 
 from nyx import db
 
-# 21 张业务表（不含 schema_version）
+# 22 张业务表（不含 schema_version）
 BUSINESS_TABLES = {
     "personality",
     "value_system",
@@ -30,6 +30,7 @@ BUSINESS_TABLES = {
     "eval_log",
     "event_delivery",
     "event_effect",
+    "desire_generation_attempt",
 }
 
 # 非 Optional 字段对应列必须 NOT NULL（01-types 契约）
@@ -97,7 +98,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 22
+    assert len(names) == 23
 
 
 async def test_migrate_creates_six_indexes() -> None:
@@ -118,6 +119,8 @@ async def test_migrate_creates_six_indexes() -> None:
         "idx_eval_log_created",
         "idx_event_delivery_ready",
         "idx_event_delivery_consumer_ready",
+        "idx_long_term_desire_name_normalized",
+        "idx_desire_generation_attempt_type",
     }
 
 
@@ -306,13 +309,15 @@ async def test_migrate_nullable_alignment() -> None:
 
 async def test_migrate_idempotent() -> None:
     conn = await _migrated_conn()
+    names: set[str] = set()
+    version = 0
     try:
         await db.migrate(conn)  # 第二遍
         names = await _table_names(conn)
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 22
+    assert len(names) == 23
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

@@ -1,8 +1,9 @@
 # 配置加载
 
-> 范围：`nyx/config.py`（`Config` + 7 个分段 dataclass + `load_config()` + `validate_config()` + `ConfigError`）+ `config.yaml`。
+> 范围：`nyx/config.py`（`Config` + 8 个分段 dataclass + `load_config()` + `validate_config()` + `ConfigError`）+ `config.yaml`。
 > 纯配置 spec：只做加载与校验，不含 Facade、不含 DDL、不含 API。
 > spec 只定义契约（分段 + 字段约束 + 加载/校验语义）；字段与默认值以 `config.yaml` / `nyx/config.py` 源文件为准。
+> 本文件只定义配置值本身；配置如何被 LLM 客户端使用由 `03-llm` 定义，组合根如何装配由 `05-module-bus-system` 定义。
 
 ## 元信息
 
@@ -14,7 +15,7 @@
 
 ## 验收标准
 
-- [ ] `config.py` 含 `Config` + 7 分段 dataclass + `ActivityEnergyDelta`，字段与源文件一致（实现见 `nyx/config.py`）
+- [ ] `config.py` 含 `Config` + 8 个分段 dataclass + `ActivityEnergyDelta`，字段与源文件一致（实现见 `nyx/config.py`）
 - [ ] `load_config()` 同步返回 `Config`；缺键填默认值、未知键（含嵌套 `energy_delta` 内部）报 `ConfigError`
 - [ ] `config.activity.energy_delta` 是 `ActivityEnergyDelta` 实例（不是裸 dict），`config.activity.energy_delta.reading` 点号访问成立
 - [ ] `validate_config()` 是纯函数，逐字段校验，非法报 `ConfigError`
@@ -30,7 +31,7 @@
 - **递归构造**：`_build` 看到字段类型是 dataclass 就递归构造，所以 `energy_delta` 会变成 `ActivityEnergyDelta`
 - **类型标注**：`_build` 用 `Any`（`dc: Any, raw: Any -> Any`）而非泛型 `_T`——`dataclasses.Field.type` 与 `yaml.safe_load` 都返回 `Any`，pyright strict 下 `type[_T]` 不满足 `DataclassInstance` 协议、返回类型无法静态验证。用 `Any` + `cast(dict[str, Any], raw)` 诚实承认反射构造是动态的，不假装类型精确。
 - **缺文件即报错**：`config.yaml` 缺失 → `ConfigError`（错误可溯源；"用全默认值"的场景由「缺键」覆盖，不靠「缺文件」）
-- **分段清单（8 个 dataclass）**：顶层 `Config` 聚合 7 段——`LlmConfig` / `EmbeddingConfig` / `MemoryConfig` / `DesireConfig` / `ActivityConfig`（含 `ActivityEnergyDelta`：reading/creation/free_exploration/observe_user/idle_reflection/rest 6 键能量增减）/ `ExpressionConfig` / `ExplorationConfig`。字段与默认值以 `nyx/config.py` 为准，约束见下方校验规则表。
+- **分段清单（8 个 dataclass）**：顶层 `Config` 聚合 8 段——`LlmConfig` / `EmbeddingConfig` / `MemoryConfig` / `DesireConfig` / `ActivityConfig`（含 `ActivityEnergyDelta`：reading/creation/free_exploration/observe_user/idle_reflection/rest 6 键能量增减）/ `ExpressionConfig` / `ExplorationConfig` / `VisionConfig`。字段、默认值和校验属于本 spec；LLM/视觉客户端如何消费这些配置由 `03-llm` 定义。
 
 **校验规则表**（`validate_config` 实现与此逐条对应）：
 
@@ -45,7 +46,7 @@
 | `memory.short_term_capacity` / `memory.promote_threshold` | `int > 0` |
 | `memory.freshness_decay` | 数 ∈ `[0, 1]` |
 | `desire.peak_threshold` | 数 ∈ `[0, 1]` |
-| `desire.retry_limit` / `desire.long_term_capacity` | `int > 0` |
+| `desire.retry_limit` / `desire.short_term_capacity` / `desire.long_term_capacity` | `int > 0` |
 | `desire.value_decay` | 数 `> 0` |
 | `activity.grid_minutes` | `int > 0` |
 | `activity.energy_delta.*` | 6 键全为 `int`（可为负） |
@@ -54,6 +55,10 @@
 | `expression.ask_timeout` / `expression.chat_ignore_timeout` | 数 `> 0` |
 | `exploration.web_enabled` | `bool` |
 | `exploration.rate_limit_hours` | `int > 0` |
+| `vision.enabled` | `bool` |
+| `vision.provider` / `vision.model` / `vision.api_key_env` | 非空 `str` |
+| `vision.base_url` | 非 `None` 时非空 `str` |
+| `vision.interval_seconds` | `int > 0` |
 
 ## 测试要点
 

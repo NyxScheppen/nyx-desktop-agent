@@ -1,8 +1,10 @@
+import asyncio
 import logging
 
 from nyx.config import DesireConfig
+from nyx.db import Database
 from nyx.desire.lifecycle import DesireLifecycle, ListMemories
-from nyx.desire.store import DesireStore
+from nyx.desire.store import DesireStore, normalize_name
 from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
@@ -33,9 +35,15 @@ class DesireFacade:
         self._config = config
         self._embed = embed
         self._logger = logging.getLogger(__name__)
+        self._long_term_lock = asyncio.Lock()
         self._lifecycle = DesireLifecycle(
             store, bus, llm, evaluator, config, list_memories, embed
         )
+
+    @property
+    def db(self) -> Database:
+        """Return the shared database for cross-module local transactions."""
+        return self._store.db
 
     async def add_value(
         self, source: Event, consumer_id: str | None = None
@@ -72,6 +80,14 @@ class DesireFacade:
     async def mark_active(self, desire_id: str) -> None:
         await self._lifecycle.mark_active(desire_id)
 
+    async def claim_for_activity(self, desire_id: str) -> bool:
+        return await self._lifecycle.claim_for_activity(desire_id)
+
+    async def claim_for_activity_in_transaction(self, desire_id: str) -> bool:
+        return await self._lifecycle.claim_for_activity(
+            desire_id, in_transaction=True
+        )
+
     async def mark_suppressed(self, desire_id: str) -> None:
         await self._lifecycle.mark_suppressed(desire_id)
 
@@ -84,22 +100,26 @@ class DesireFacade:
         去重与容量下沉到此处，探索（14）与反思（12）两个调用方统一走；
         满不新增（不淘汰）。
         """
-        existing = await self._store.list_long_term()
-        if len(existing) >= self._config.long_term_capacity:
-            return
-        name = desire.name.strip()
-        for d in existing:
-            if d.name.strip() == name:
+        async with self._long_term_lock:
+            name = normalize_name(desire.name)
+            if not name:
+                raise ValueError("长期欲望 name 不能为空")
+            existing = await self._store.list_long_term()
+            if len(existing) >= self._config.long_term_capacity:
+                return
+            if any(normalize_name(d.name) == name for d in existing):
                 self._logger.info("长期欲望重复丢弃（同名） name=%s", name)
                 return
-        if self._embed is not None:
-            try:
+            if self._embed is not None:
                 vec = await self._embed(f"{desire.name} {desire.description}")
                 for d in existing:
                     other = await self._embed(f"{d.name} {d.description}")
                     if cosine(vec, other) >= _LT_DEDUP_SIM_THRESHOLD:
-                        self._logger.info("长期欲望重复丢弃（语义） name=%s", name)
+                        self._logger.info(
+                            "长期欲望重复丢弃（语义） name=%s", name
+                        )
                         return
-            except Exception:
-                self._logger.exception("长期欲望去重 embedding 失败，跳过去重")
-        await self._store.insert_long_term(desire)
+            async with self._store.db.transaction():
+                await self._store.insert_long_term_if_available(
+                    desire, self._config.long_term_capacity
+                )

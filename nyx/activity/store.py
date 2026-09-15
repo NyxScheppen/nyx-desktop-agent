@@ -24,6 +24,21 @@ class ActivityStore:
         return self._db
 
     async def insert(self, activity: Activity) -> None:
+        if self._db.in_transaction:
+            await self._db.conn.execute(
+                "INSERT INTO activity (id, type, schedule_block_id, progress, "
+                "status, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    activity.id,
+                    activity.type.value,
+                    activity.schedule_block_id,
+                    json.dumps(activity.progress),
+                    activity.status.value,
+                    activity.started_at,
+                    activity.ended_at,
+                ),
+            )
+            return
         async with self._db.lock:
             await self._db.conn.execute(
                 "INSERT INTO activity (id, type, schedule_block_id, status, progress, "

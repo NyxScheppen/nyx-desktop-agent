@@ -1,7 +1,7 @@
 # 枚举 + 实体类型
 
 > 范围：`nyx/enums.py`（17 个 `StrEnum`）、`nyx/types.py`（3 个 TypedDict + 24 个 dataclass）。
-> 纯声明 spec：只定义类型，不含函数、不含序列化 helper、不含 DDL（DDL 与底层生命周期见 `05-module-bus-system`）。
+> 纯声明 spec：只定义类型，不含函数、不含序列化 helper、不含 DDL。
 > spec 只定义契约（签名 + 语义 + 决策）；枚举成员与 dataclass 字段以 `nyx/enums.py` / `nyx/types.py` 源文件为准。
 
 ## 元信息
@@ -25,10 +25,9 @@
 - **新文件**：`nyx/enums.py`、`nyx/types.py`（无 Facade、无 API、无数据变更）
 - **约定**：枚举统一 `class X(StrEnum)`，成员 `UPPER_SNAKE`、值 = `成员名.lower()` 的 snake_case；dataclass 默认值用枚举成员而非裸字符串。
 - **公开面**：`nyx/__init__.py` 保持空（不 re-export）；引用一律 `from nyx.enums import X` / `from nyx.types import Y`，不从 `nyx` 根导入；两模块不加 `__all__`（CLAUDE.md 禁 `*` 导入，`__all__` 是死代码）。
-- **枚举清单（17 个）**：`EventType`（事件类型，21 键 ROUTING 的域，见 `05-module-bus-system`）、`Source`、`TickType`（5 成员）、`ContextMode`、`EmotionCategory`（8 档，1:1 对应前端 expressions/）、`DesireType`、`ActivityType`（6 类活动）、`MemoryType`、`MemoryEdgeKind`（typed memory edge 域，含 `semantic` / `entity` / `keyword` / `temporal` / `same_topic` / `elaborates` / `contrasts` / `causes` / `updates_preference` / `user_profile_link`）、`ReadingDrive`（阅读冲动 6 驱动）、`ReadingBehavior`（阅读冲动 5 复合行为）、`DesireStatus`、`ActivityStatus`、`EnergyState`、`SearchMode`（记忆检索三层，内部层标签）、`GoalAction`（read/write/observe，完成判定纯函数 switch 值）、`BoundaryResult`（陪读章节边界判定：none/chapter_end/book_finished）。
+- **枚举清单（17 个）**：`EventType`、`Source`、`TickType`、`ContextMode`、`EmotionCategory`、`DesireType`、`ActivityType`、`MemoryType`、`MemoryEdgeKind`、`ReadingDrive`、`ReadingBehavior`、`DesireStatus`、`ActivityStatus`、`EnergyState`、`SearchMode`、`GoalAction`、`BoundaryResult`。枚举成员与领域语义以 `nyx/enums.py` 及对应业务 spec 为准。
 - **实体清单（24 个 dataclass）**：事件 `Event`；记忆 `Memory` / `MemoryEdge`；欲望 `Goal` / `ShortTermDesire` / `LongTermDesire` / `DesireValue` / `DesireState`；活动 `Activity` / `Material`；内在生命 `CurrentState` / `SelfNarrative` / `ReflectionOutcome`；表达 `Message`；工具/eval `Tool` / `LLMOutput` / `EvalRecord` / `EvalStats`；陪读 `Book` / `Paragraph` / `ReadingProgress` / `BookListItem` / `UserNote` / `Annotation`。字段形状以 `nyx/types.py` 为准。
-- **`Memory.sources` 字段**：`sources: list[SearchMode] = field(default_factory=list[SearchMode])` 是检索返回时的瞬态来源层（`vector` / `keyword` / `association`），不落库、不参与导出、不进入表达 prompt；REST `Memory[]` 会序列化给前端。
-- **`MemoryEdge` 字段**：`from_id: str`、`to_id: str`、`kind: MemoryEdgeKind = MemoryEdgeKind.SEMANTIC`、`weight: float = 1.0`、`created_at: float = 0.0`。端点按 `07-memory-system` 的 canonical unordered pair 语义使用，`kind` 约束 typed edge 域。
+- **记忆类型字段**：`Memory.sources` 的类型与默认值由本文件定义，检索来源、持久化和 API 语义由 `07-memory-system` 定义；`MemoryEdge` 的字段与默认值由本文件定义，端点和 typed edge 的存储语义由 `07-memory-system` 定义。
 
 ### 嵌套 dict 字段的边界（哪些收 TypedDict / 哪些留 `dict[str, Any]`）
 
@@ -42,7 +41,7 @@
 | `Tool.schema` | `dict[str, Any]` | 任意 JSON schema |
 | `SelfNarrative.self_view` | `dict[str, str]`（普通 dict） | 键是开放的自画像维度，但值类型统一 str |
 
-- **明确不做**：不加 `frozen`；`vad_to_category`、Goal 完成判定等纯函数留在各自 spec；`ReplyState`（LangGraph 内部 state）留在 17 spec。
+- **明确不做**：不加 `frozen`；`vad_to_category`、Goal 完成判定等纯函数留在各自 spec；`ReplyState`（LangGraph 内部 state）留在 17 spec；不在本文件定义枚举或实体的业务流程。
 - **default_factory 约定**：`field(default_factory=list)` 在 pyright strict 下报 `list[Unknown]`（裸 `list` 被推断为 `type[list[Unknown]]`，与字段注解 `list[str]` 不匹配）。故用 `field(default_factory=list[str])`——`list[str]` 作为类型对象可调用、返回空 `list[str]`，运行时等价 `list`，但类型精确、pyright 零报错、无需 ignore 压制。
 
 ## 测试要点

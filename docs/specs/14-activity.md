@@ -72,9 +72,9 @@
 
 - [ ] `select_activity` 是同步纯决策：无欲望或全为互动欲时返回 `None`；精力不足时返回无欲望关联的 `REST`；否则返回第一个可排程欲望映射出的活动，并在 `progress` 保存 `desire_id`、`goal`、`correlation_id`、`description`。
 - [ ] `SCHEDULE_BLOCK_START` 与 `DESIRE_GENERATED` 都进入同一个 `_maybe_start_activity` 启动路径；已有活动时不重复启动。
-- [ ] 活动先以 `PENDING` 插入，后台 task 开始后转 `RUNNING`；活动执行不阻塞 EventBus。
+- [ ] 有关联欲望的活动先在同一个本地事务中执行 `claim_for_activity(desire_id)`（`PENDING -> ACTIVE`）和活动 `PENDING` 插入；领取失败不创建活动，插入失败回滚领取。后台 task 开始后转 `RUNNING`；活动执行不阻塞 EventBus。
 - [ ] `activity_start`、`activity_end`、`activity_interrupted` 由活动 Facade/Lifecycle 自己发布，`source=INTERNAL`；事件优先使用活动 `progress["correlation_id"]`，缺失时回退活动 id。
-- [ ] `complete_activity` 将活动置为 `COMPLETED`、写入 `ended_at`，再发布 `activity_end`。执行异常将活动置为 `INCOMPLETE`、写入 `ended_at`、释放/抑制关联欲望并继续抛出异常供后台 task 收割。
+- [ ] `complete_activity` 将活动置为 `COMPLETED`、写入 `ended_at`，再发布 `activity_end`。执行异常将活动置为 `INCOMPLETE`、写入 `ended_at`、释放/抑制关联欲望并继续抛出异常供后台 task 收割。业务事务提交后 announce/wake 失败不得反向把已完成活动改成 `INCOMPLETE`。
 - [ ] 进程启动时，组合根在订阅事件前调用 `recover_stale_running()`：`READING`、`CREATION`、`FREE_EXPLORATION` 的遗留 `RUNNING` 转 `PAUSED`；`OBSERVE_USER`、`IDLE_REFLECTION`、`REST` 转 `ABANDONED`；关联欲望转 `SUPPRESSED`；不发布新的 `activity_interrupted`。
 - [ ] `interrupt` 只处理存在且当前为 `RUNNING` 的目标；取消并等待执行 task 后重读活动状态，再将可续类型置 `PAUSED`，其余置 `ABANDONED`，释放关联的活动占用并发布 `activity_interrupted`。
 - [ ] 可续活动类型固定为 `READING`、`CREATION`、`FREE_EXPLORATION`。同一 `schedule_block_id` 内优先恢复最近的 `PAUSED` 记录，复用原 activity id；跨日程块的旧 `PAUSED` 只留档，不自动恢复。

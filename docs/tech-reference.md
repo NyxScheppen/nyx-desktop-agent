@@ -6,6 +6,10 @@
 
 ## 契约入口
 
+### 底层建设阅读顺序
+
+底层契约按依赖方向阅读：`01-types` 定义共享类型，`02-config` 定义配置，`03-llm` 定义 LLM 客户端，`05-module-bus-system` 定义数据库、事务、事件总线、订阅、组合根和生命周期。后续业务 spec 依赖这些契约；这些底层 spec 不反向依赖业务 spec。
+
 | 领域 | 完整契约 | 快速事实摘要 | 主要源码 |
 |---|---|---|---|
 | 类型 | [`01-types.md`](specs/01-types.md) | — | `nyx/types.py`, `nyx/enums.py` |
@@ -13,7 +17,7 @@
 | LLM | [`03-llm.md`](specs/03-llm.md) | — | `nyx/llm/` |
 | 模块与事件总线 | [`05-module-bus-system.md`](specs/05-module-bus-system.md) | [`module-bus-system-facts.md`](module-bus-system-facts.md) | `nyx/db.py`, `nyx/events/`, `nyx/runtime.py` |
 | 记忆 | [`07-memory-system.md`](specs/07-memory-system.md) | [`memory-system-facts.md`](memory-system-facts.md) | `nyx/memory/` |
-| 欲望 | [`11-desire.md`](specs/11-desire.md) | — | `nyx/desire/` |
+| 欲望 | [`11-desire.md`](specs/11-desire.md) | [`desire-system-facts.md`](desire-system-facts.md) | `nyx/desire/` |
 | 内在生命（含审美维度） | [`12-inner-life.md`](specs/12-inner-life.md) | — | `nyx/inner_life/`、`nyx/types.py`、`nyx/db.py`、`nyx/memory/`、`nyx/expression/prompt.py`、`nyx/main.py` |
 | 活动 | [`14-activity.md`](specs/14-activity.md) | [`activity-system-facts.md`](activity-system-facts.md) | `nyx/activity/` |
 | 表达 | [`16-expression-prompt.md`](specs/16-expression-prompt.md)、[`17-expression.md`](specs/17-expression.md) | — | `nyx/expression/` |

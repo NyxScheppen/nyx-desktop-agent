@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：61
-- `pytest --collect-only -q`：841 tests collected
-- 最近一次全量验证：`840 passed, 1 skipped`
+- `pytest --collect-only -q`：846 tests collected
+- 最近一次全量验证：`845 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -81,6 +81,15 @@
 - `test_summarize_injects_related_memories`
 - `test_chat_endpoint`
 - `test_check_reflect_triggers`
+
+### 欲望系统重构
+
+- `test_claim_for_activity_is_single_use`
+- `test_trim_pending_keeps_high_expression_weight`
+- `test_add_long_term_embed_error_is_strict`
+- `test_add_long_term_normalized_name_duplicate_skips`
+- `test_apply_value_delta_preserves_concurrent_increments`
+- `test_run_eval_reuses_saved_generation_after_commit_failure`
 
 ## 维护规则
 

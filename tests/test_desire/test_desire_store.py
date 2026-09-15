@@ -1,3 +1,5 @@
+import asyncio
+
 from nyx import db
 from nyx.desire.store import DesireStore
 from nyx.enums import DesireStatus, DesireType, GoalAction
@@ -96,7 +98,7 @@ async def test_list_pending_filters_and_orders() -> None:
         await store.add_desire(
             _desire("e1", created_at=50.0, status=DesireStatus.EXPIRED)
         )
-        assert [d.id for d in await store.list_pending()] == ["p1", "a1"]
+        assert [d.id for d in await store.list_pending()] == ["p1"]
     finally:
         await database.conn.close()
 
@@ -213,3 +215,51 @@ async def test_goal_progress_roundtrip() -> None:
         assert again is not None and again.goal_progress == 3
     finally:
         await database.conn.close()
+
+
+async def test_claim_for_activity_is_single_use() -> None:
+    database = await db.connect(":memory:")
+    store = DesireStore(database)
+    try:
+        await store.add_desire(_desire("d1"))
+        assert await store.claim_for_activity("d1") is True
+        assert await store.claim_for_activity("d1") is False
+        got = await store.get_desire("d1")
+        assert got is not None and got.status is DesireStatus.ACTIVE
+    finally:
+        await database.close()
+
+
+async def test_apply_value_delta_preserves_concurrent_increments() -> None:
+    database = await db.connect(":memory:")
+    store = DesireStore(database)
+    try:
+        await asyncio.gather(
+            store.apply_value_delta(DesireType.INTERACTION, 0.1, 1000.0),
+            store.apply_value_delta(DesireType.INTERACTION, 0.1, 1001.0),
+        )
+        value = await store.get_value(DesireType.INTERACTION)
+        assert value is not None and value.value == 0.2
+    finally:
+        await database.close()
+
+
+async def test_trim_pending_keeps_high_expression_weight() -> None:
+    database = await db.connect(":memory:")
+    store = DesireStore(database)
+    try:
+        await store.add_desire(_desire("low", type=DesireType.REST, created_at=1.0))
+        await store.add_desire(
+            _desire("high", type=DesireType.INTERACTION, created_at=2.0)
+        )
+        removed = await store.trim_pending(
+            1,
+            {
+                DesireType.REST: 0.2,
+                DesireType.INTERACTION: 0.9,
+            },
+        )
+        assert removed == ["low"]
+        assert [d.id for d in await store.list_pending()] == ["high"]
+    finally:
+        await database.close()

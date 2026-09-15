@@ -64,7 +64,7 @@
 - `CREATION` 会取最多 3 条 knowledge 记忆、当前观察、当前状态和 canon，调用 LLM 生成 `{title, content}`，写入 `workspace/creations/<safe-title>.md`。进度写在 `activity.progress["creation"]`，恢复时复用 style / LLM 结果 / 文件路径，不重复写同一文件。
 - `FREE_EXPLORATION` 由 `Exploration.run(activity)` 执行显式 checkpoint 状态机：`searching -> reading_results -> summarizing -> sinking -> completed`。进度写在 `activity.progress["exploration"]`，恢复时从 cursor 继续抓取结果；`sink_done=true` 时不重复新增长期欲望或 knowledge 记忆。
 - `OBSERVE_USER` 读取组合根维护的 `last_presence`、`last_window_title`、`last_screen_summary`，用纯函数拼 summary。
-- `IDLE_REFLECTION` 直接调用注入的 `inner_life.reflect(correlation_id)`，不自己发布 `reflection` 事件。
+- `IDLE_REFLECTION` 通过组合根注入的 `reflect` 回调执行反思活动；阅读重读触发的反思不走直接调用，而是发布 durable `REFLECTION` 事件。
 - `REST` 返回空 result。
 
 ## API 与前端

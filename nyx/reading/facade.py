@@ -114,7 +114,7 @@ class ReadingFacade:
         # 防墙钟跳变；无并发锁——见 spec 21 关键决策。
         self._cooldowns: dict[ReadingBehavior, float] = {}
         self._mutter_at = 0.0
-        self._integration = ReadingIntegration(llm, evaluator, memory, inner_life)
+        self._integration = ReadingIntegration(llm, evaluator, memory, bus)
         self._nyx_buffer = self._integration.buffer
         self._companion = ReadingCompanion(
             llm, evaluator, bus, memory, expression, canon, self.record_nyx_output
@@ -437,7 +437,8 @@ class ReadingFacade:
     ) -> None:
         """章末/整本整合：buffer 攒的 Nyx 输出 → LLM 第一人称记忆 → remember_reading。
 
-        buffer 空跳过（不生成记忆）；重读（++ 前 read_count >= 1）每次整合额外 reflect。
+        buffer 空跳过（不生成记忆）；重读（++ 前 read_count >= 1）每次整合
+        额外发布 REFLECTION。
         整本读完 ++ 已在 check_chapter_boundary 同步完成。整合成功只删已消费的
         快照前缀（`remember_reading` 落库后）——失败保留，下次边界重试；LLM 等待
         期间新 append 的条目不吞掉，留给下一轮。

@@ -1115,7 +1115,7 @@ async def test_check_chapter_boundary_reread_reflects(
 ) -> None:
     llm = _FakeLlm({"reading_note": '{"content": "又读一遍", "summary": "重读"}'})
     inner = _FakeInnerLife(_mk_state())
-    facade, database, _, _, memory, inner, _ = await _note_facade(
+    facade, database, bus, _, memory, inner, _ = await _note_facade(
         monkeypatch,
         [
             Segment(text="第一章", is_chapter_start=True),
@@ -1134,7 +1134,12 @@ async def test_check_chapter_boundary_reread_reflects(
         await database.conn.close()
     assert result is BoundaryResult.CHAPTER_END
     assert memory.remembered == [("又读一遍", "重读", book.id)]
-    assert inner.reflect_calls == [book.id]
+    assert inner.reflect_calls == []
+    reflection_events = [
+        event for event in bus.published if event.type is EventType.REFLECTION
+    ]
+    assert len(reflection_events) == 1
+    assert reflection_events[0].correlation_id == book.id
 
 
 async def test_check_chapter_boundary_first_read_no_reflect(
@@ -1472,4 +1477,3 @@ async def test_show_to_nyx_none_content_returns_none(
         await database.conn.close()
     assert annotation is None
     assert annotations == []
-

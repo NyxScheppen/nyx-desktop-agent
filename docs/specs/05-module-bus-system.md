@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Event` / `EventType` / `Source` / `TickType`）、02-config、03-llm、06-tools、07-memory-system、11-desire、12-inner-life、14-activity、17-expression、19-reading-content、20-reading-progress、21-reading-impulse、22-reading-notes、23-aesthetic-dimension、24-reading-chat-turn。
+- **前置依赖**：01-types（`Event` / `EventType` / `Source` / `TickType`）、02-config、03-llm、06-tools、07-memory-system、11-desire、12-inner-life、14-activity、17-expression、19-reading-content、20-reading-progress、21-reading-impulse、22-reading-notes、24-reading-chat-turn。
 - **实现文件**：`nyx/db.py`、`nyx/enums.py`、`nyx/types.py`、`nyx/events/bus.py`、`nyx/events/event.py`、`nyx/events/routing.py`、`nyx/subscriptions.py`、`nyx/runtime.py`、`nyx/app_context.py`、`nyx/main.py`。
 - **测试文件**：`tests/test_event/`、`tests/test_api/test_subscription.py`、`tests/test_api/test_tick_loop.py`、`tests/test_api/test_context.py`、必要时补 `tests/test_db/`。
 
@@ -19,6 +19,7 @@
 - [ ] 事件接受和消费者完成分离：`event_log` 记录事件事实，`event_delivery` 记录 `(event_id, consumer_id)` 消费事实。
 - [ ] `EventBus.publish(event)` 变为 durable admission：事件和初始 delivery 同事务提交成功后才返回；失败时抛出受理错误，不返回假成功。
 - [ ] handler 失败不再只打日志：失败消费者进入 `retry_wait`，按固定退避重试，超过上限进入 `dead_letter`。
+- [ ] 反思类 handler 的外部调用必须在本地事务外完成；解析失败或本地提交失败都不得写入成功 effect，delivery 必须可重试。
 - [ ] 重放只针对失败消费者；成功消费者不会因其它消费者失败而重复执行。
 - [ ] 每个稳定 `consumer_id` 有独立 FIFO worker；同一消费者内按事件顺序执行，不同消费者之间不互相阻塞。
 - [ ] 至少一次投递配套幂等：跨模块写副作用按 `(event_id, consumer_id)` 防重。
@@ -152,6 +153,8 @@ at-least-once 意味着 handler 可能被调用多次。
 - 但不能只依赖“worker 准备把 delivery 标记为 succeeded”，因为业务 commit 与 delivery commit 之间仍可能崩溃。
 
 LLM 或文件写入这类不可回滚副作用应按 `event_id` 持久化结果；重放时先复用已有结果，不重复生成。
+
+`EventBus.has_effect(event_id, consumer_id) -> bool` 提供提交前的只读检查，供包含外部调用的消费者避免在已完成投递上重复执行外部工作；最终幂等仍必须由事务内的 `try_mark_effect_in_transaction` 保证。
 
 ### 事务事件记录
 

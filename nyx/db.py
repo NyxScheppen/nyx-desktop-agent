@@ -313,7 +313,7 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
     (
         11,
         [
-            # 审美维度：23-aesthetic-dimension，四轴 1-10（10=第一极）。
+            # 审美维度：12-inner-life，四轴 1-10（10=第一极）。
             """CREATE TABLE aesthetic (
                 id TEXT PRIMARY KEY,            -- 固定 'self'
                 ornate REAL NOT NULL,           -- 华丽

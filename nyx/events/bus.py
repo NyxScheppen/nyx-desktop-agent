@@ -476,6 +476,15 @@ class EventBus:
         )
         return cursor.rowcount == 1
 
+    async def has_effect(self, event_id: str, consumer_id: str) -> bool:
+        """Return whether a consumer effect was already committed."""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT 1 FROM event_effect WHERE event_id = ? AND consumer_id = ?",
+                (event_id, consumer_id),
+            )
+            return await cursor.fetchone() is not None
+
     async def _execute_locked(
         self, sql: str, parameters: tuple[object, ...] = ()
     ) -> aiosqlite.Cursor:

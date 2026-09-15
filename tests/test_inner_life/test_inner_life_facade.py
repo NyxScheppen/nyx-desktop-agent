@@ -453,6 +453,34 @@ async def test_reflection_event_rolls_back_slow_variables_when_event_append_fail
         await database.close()
 
 
+async def test_compat_apply_event_restores_emotion_when_append_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: t0)
+    facade, store, bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
+    try:
+        await _seed(store)
+        facade._valence = 0.4
+        facade._arousal = 0.3
+        facade._emotion_updated_at = t0
+        facade._energy_updated_at = t0
+
+        async def fail_append(event: Event) -> tuple[str, ...]:
+            raise RuntimeError("emotion event append failed")
+
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        with pytest.raises(RuntimeError):
+            await facade.apply_event(_event(EventType.DESIRE_SATISFIED))
+
+        assert facade._valence == pytest.approx(0.4)
+        assert facade._arousal == pytest.approx(0.3)
+        assert facade._emotion_updated_at == t0
+        assert facade._energy_updated_at == t0
+    finally:
+        await database.close()
+
+
 async def test_decay_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
     now = [1_000_000.0]
     monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: now[0])
@@ -465,6 +493,31 @@ async def test_decay_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
         async with _running(bus):
             await facade.apply_event(_event(EventType.OBSERVATION_STATE))
         assert facade._valence == pytest.approx(0.1)
+    finally:
+        await database.conn.close()
+
+
+async def test_get_state_settles_emotion_and_energy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [1_000_000.0]
+    monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: now[0])
+    facade, store, _bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
+    try:
+        await _seed(store)
+        await store.upsert_energy(50.0, EnergyState.TIRED)
+        facade._valence = 0.8
+        facade._arousal = 0.6
+        facade._emotion_updated_at = now[0]
+        facade._energy_updated_at = now[0]
+        now[0] += 3600.0
+
+        state = await facade.get_state()
+
+        assert state.valence == pytest.approx(0.8 * (1.0 - 0.5 / 24.0))
+        assert state.arousal == pytest.approx(0.6 * (1.0 - 0.5 / 24.0))
+        assert state.energy == pytest.approx(55.0)
+        assert state.energy_state is EnergyState.TIRED
     finally:
         await database.conn.close()
 

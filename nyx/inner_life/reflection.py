@@ -2,6 +2,7 @@ import difflib
 import json
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any, cast
 from uuid import uuid4
 
@@ -263,6 +264,19 @@ def _to_long_term(candidate: dict[str, Any], now: float) -> LongTermDesire:
     )
 
 
+@dataclass(frozen=True)
+class ReflectionPlan:
+    """LLM 产出的、等待本地事务提交的反思结果。"""
+
+    personality: Personality
+    values: Values
+    aesthetic: Aesthetic
+    narrative: SelfNarrative
+    long_term_desires: tuple[LongTermDesire, ...]
+    story: str
+    story_is_new: bool
+
+
 class Reflection:
     """反思协调器：慢变量（性格/三观/长期欲望/自我叙事）唯一入口。
 
@@ -286,9 +300,10 @@ class Reflection:
         self._evaluator = evaluator
         self._config = config
 
-    async def run(self, correlation_id: str | None = None) -> ReflectionOutcome | None:
+    async def prepare(self, correlation_id: str | None = None) -> ReflectionPlan:
+        """在事务外完成读取、LLM 调用和解析，产出可提交的确定性计划。"""
         now = time.time()
-        # 1. 收集输入
+        # 1. 收集输入。此阶段不持有本地事务，避免 LLM 占住 SQLite 锁。
         recent = (await self._memory_facade.list_memories())[:_RECENT_MEMORY_LIMIT]
         personality = await self._store.get_personality()
         values = await self._store.get_values()
@@ -301,9 +316,9 @@ class Reflection:
             or narrative is None
             or aesthetic is None
         ):
-            raise RuntimeError("inner_life 单行表未初始化（组合根 组合根必须先 seed）")
+            raise RuntimeError("inner_life 单行表未初始化（组合根必须先 seed）")
 
-        # 2. 1 次 LLM 产出全部
+        # 2. 1 次 LLM 产出全部。解析失败必须抛出，让 durable delivery 重试。
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _REFLECTION_SYSTEM},
@@ -321,24 +336,16 @@ class Reflection:
             json_mode=True,
         )
         await self._evaluator.evaluate(output)
-        try:
-            parsed = _parse_reflection(output.content)
-        except ValueError:
-            # best-effort：LLM 产出非法 JSON → 本轮跳过回写（下个 tick 重试），
-            # 不把解析失败抛给事件总线（对齐 11-desire run_eval 的容错）。
-            _logger.exception(
-                "反思 JSON 解析失败 correlation_id=%s", correlation_id
-            )
-            return None
+        parsed = _parse_reflection(output.content)
 
-        # 3. 回写慢变量（story/becoming 去重：与已有片段实质重复则跳过，不重复追加）
+        # 3. 在事务外计算最终写入值，事务内只执行确定性写入。
         new_story = parsed["story"]
         new_becoming = parsed["becoming"]
         story_is_new = not _is_duplicate_fragment(new_story, narrative.story)
-        await self._store.upsert_personality(
-            drift_personality(personality, parsed["personality_delta"])
+        new_personality = drift_personality(
+            personality, parsed["personality_delta"]
         )
-        await self._store.upsert_values(drift_values(values, parsed["values_delta"]))
+        new_values = drift_values(values, parsed["values_delta"])
         # 审美偏移按「上次反思后新读章数」缩放：读得越多，漂移越接近满额
         # （不读书则 scale=0，审美不动——读书是审美演化的唯一动力源）。
         # 计数走 count_new（first_created_at 锚点）：strengthen 不刷新创建时间，
@@ -349,31 +356,55 @@ class Reflection:
         scale = min(new_chapters / _AESTHETIC_MIN_READING, 1.0)
         aesthetic_delta = cast(dict[str, float], parsed["aesthetic_delta"])
         scaled_delta = {k: v * scale for k, v in aesthetic_delta.items()}
-        await self._store.upsert_aesthetic(drift_aesthetic(aesthetic, scaled_delta))
-        await self._store.upsert_narrative(
-            SelfNarrative(
-                identity=narrative.identity,
-                story=(
-                    narrative.story
-                    if not story_is_new
-                    else [*narrative.story, new_story]
-                ),
-                self_view={**narrative.self_view, **parsed["self_view"]},
-                becoming=(
-                    narrative.becoming
-                    if _is_duplicate_fragment(new_becoming, narrative.becoming)
-                    else [*narrative.becoming, new_becoming]
-                ),
-                updated_at=now,
-            )
+        new_aesthetic = drift_aesthetic(aesthetic, scaled_delta)
+        new_narrative = SelfNarrative(
+            identity=narrative.identity,
+            story=(
+                narrative.story
+                if not story_is_new
+                else [*narrative.story, new_story]
+            ),
+            self_view={**narrative.self_view, **parsed["self_view"]},
+            becoming=(
+                narrative.becoming
+                if _is_duplicate_fragment(new_becoming, narrative.becoming)
+                else [*narrative.becoming, new_becoming]
+            ),
+            updated_at=now,
         )
 
-        # 4. 长期欲望候选（容量内逐个新增）
+        # 4. 长期欲望候选只在计划阶段构造，实际写入仍在调用方事务内完成。
         remaining = self._config.long_term_capacity - len(desire_state.long_term)
-        for candidate in parsed["long_term_desires"][:max(0, remaining)]:
-            await self._desire_facade.add_long_term(_to_long_term(candidate, now))
+        long_term_desires = tuple(
+            _to_long_term(candidate, now)
+            for candidate in parsed["long_term_desires"][:max(0, remaining)]
+        )
 
-        # 5. 反思成功触发创造欲加压（想做的事被想明白了 → 想把它做出来）
+        return ReflectionPlan(
+            personality=new_personality,
+            values=new_values,
+            aesthetic=new_aesthetic,
+            narrative=new_narrative,
+            long_term_desires=long_term_desires,
+            story=new_story,
+            story_is_new=story_is_new,
+        )
+
+    async def apply(self, plan: ReflectionPlan) -> ReflectionOutcome:
+        """在调用方事务内提交已经准备好的反思计划。"""
+        await self._store.upsert_personality(plan.personality)
+        await self._store.upsert_values(plan.values)
+        await self._store.upsert_aesthetic(plan.aesthetic)
+        await self._store.upsert_narrative(plan.narrative)
+        for desire in plan.long_term_desires:
+            await self._desire_facade.add_long_term(desire)
         await self._desire_facade.pressure_creation(_CREATION_REFLECTION_DELTA)
+        return ReflectionOutcome(story=plan.story, story_is_new=plan.story_is_new)
 
-        return ReflectionOutcome(story=new_story, story_is_new=story_is_new)
+    async def run(self, correlation_id: str | None = None) -> ReflectionOutcome:
+        """准备并原子提交一轮反思；LLM 调用发生在事务外。"""
+        plan = await self.prepare(correlation_id)
+        if self._store.db.in_transaction:
+            return await self.apply(plan)
+        async with self._store.db.transaction():
+            return await self.apply(plan)

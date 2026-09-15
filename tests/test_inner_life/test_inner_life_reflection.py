@@ -658,7 +658,7 @@ async def test_run_survives_bad_candidate() -> None:
         await database.conn.close()
 
 
-async def test_run_survives_invalid_json() -> None:
+async def test_run_rejects_invalid_json_for_delivery_retry() -> None:
     database = await db.connect(":memory:")
     store = InnerLifeStore(database)
     llm = _FakeLlm("[")  # 截断的非法 JSON
@@ -668,7 +668,8 @@ async def test_run_survives_invalid_json() -> None:
     )
     try:
         await _seed(store)
-        await reflection.run("cid")  # 不抛，非法 JSON 容错跳过回写
+        with pytest.raises(ValueError):
+            await reflection.run("cid")
         assert llm.calls == ["reflection"]
         p = await store.get_personality()
         assert p == _PERSONALITY

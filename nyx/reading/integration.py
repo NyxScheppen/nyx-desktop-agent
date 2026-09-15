@@ -4,9 +4,10 @@ import logging
 from dataclasses import dataclass
 from typing import Any, cast
 
-from nyx.enums import BoundaryResult
+from nyx.enums import BoundaryResult, EventType
 from nyx.eval.evaluator import Evaluator
-from nyx.inner_life.facade import InnerLifeFacade
+from nyx.events.bus import EventBus
+from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 
@@ -53,12 +54,12 @@ class ReadingIntegration:
         llm: LlmClient,
         evaluator: Evaluator,
         memory: MemoryFacade,
-        inner_life: InnerLifeFacade,
+        bus: EventBus,
     ) -> None:
         self._llm = llm
         self._evaluator = evaluator
         self._memory = memory
-        self._inner_life = inner_life
+        self._bus = bus
         self._logger = logging.getLogger(__name__)
         self.buffer: dict[str, list[NyxBufferEntry]] = {}
 
@@ -101,11 +102,17 @@ class ReadingIntegration:
             await self._evaluator.evaluate(output)
             content, summary = parse_reading_note(output.content)
             await self._memory.remember_reading(content, summary, book_id)
+            if pre_read_count >= 1:
+                await self._bus.publish(
+                    internal_event(
+                        EventType.REFLECTION,
+                        {"reason": "reading_revisit", "book_id": book_id},
+                        book_id,
+                    )
+                )
             current = self.buffer.get(book_id)
             if current is not None:
                 del current[: len(entries)]
-            if pre_read_count >= 1:
-                await self._inner_life.reflect(book_id)
         except Exception:
             self._logger.exception(
                 "读书记忆整合失败 book_id=%s result=%s", book_id, result.value

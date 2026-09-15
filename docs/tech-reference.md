@@ -14,7 +14,7 @@
 | 模块与事件总线 | [`05-module-bus-system.md`](specs/05-module-bus-system.md) | [`module-bus-system-facts.md`](module-bus-system-facts.md) | `nyx/db.py`, `nyx/events/`, `nyx/runtime.py` |
 | 记忆 | [`07-memory-system.md`](specs/07-memory-system.md) | [`memory-system-facts.md`](memory-system-facts.md) | `nyx/memory/` |
 | 欲望 | [`11-desire.md`](specs/11-desire.md) | — | `nyx/desire/` |
-| 内在生命 | [`12-inner-life.md`](specs/12-inner-life.md) | — | `nyx/inner_life/` |
+| 内在生命（含审美维度） | [`12-inner-life.md`](specs/12-inner-life.md) | — | `nyx/inner_life/`、`nyx/types.py`、`nyx/db.py`、`nyx/memory/`、`nyx/expression/prompt.py`、`nyx/main.py` |
 | 活动 | [`14-activity.md`](specs/14-activity.md) | [`activity-system-facts.md`](activity-system-facts.md) | `nyx/activity/` |
 | 表达 | [`16-expression-prompt.md`](specs/16-expression-prompt.md)、[`17-expression.md`](specs/17-expression.md) | — | `nyx/expression/` |
 | 阅读 | [`19-reading-content.md`](specs/19-reading-content.md) 至 [`24-reading-chat-turn.md`](specs/24-reading-chat-turn.md) | — | `nyx/reading/` |

@@ -454,7 +454,7 @@ _CONTRADICTION_SIM_THRESHOLD = 0.6
 - `_detect_contradiction(memory, candidates, correlation_id)` 只接收 `PersistSemanticHit`，不再接收旧 `scored`。
 - 矛盾检测候选取 `candidates[:_CONTRADICTION_CANDIDATE_K]` 中 `cosine >= _CONTRADICTION_SIM_THRESHOLD` 的记忆。
 - 无候选或全低于阈值时不调用 LLM。
-- 矛盾 LLM 失败、JSON 解析失败、返回未知 id 时只记录日志并跳过 reflection，不回滚已入库记忆。
+- 矛盾 LLM 失败、JSON 解析失败、返回未知 id 时只记录日志并跳过矛盾触发的 reflection，不回滚已入库记忆；这只适用于 memory 的矛盾检测旁路，不改变 `inner_life.reflection` durable consumer 对反思自身解析/提交失败的 retry 语义。
 - 去重命中旧记忆时不建边、不矛盾检测、不发布 `memory_created`，保持事实表的 strengthen 语义。
 
 ## 联想记忆

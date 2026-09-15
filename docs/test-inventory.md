@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：61
-- `pytest --collect-only -q`：837 tests collected
-- 最近一次全量验证：`836 passed, 1 skipped`
+- `pytest --collect-only -q`：841 tests collected
+- 最近一次全量验证：`840 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -65,6 +65,11 @@
 - `test_run_eval_rolls_back_desire_when_generated_event_append_fails`
 - `test_activity_end_transaction_rolls_back_energy_and_emotion`
 - `test_reflection_event_rolls_back_slow_variables_when_event_append_fails`
+- `test_compat_apply_event_restores_emotion_when_append_fails`
+- `test_get_state_settles_emotion_and_energy`
+- `test_run_rejects_invalid_json_for_delivery_retry`
+- `test_integrate_revisit_publishes_reflection_event`
+- `test_integrate_keeps_buffer_when_reflection_admission_fails`
 - `test_record_recall_rolls_back_when_promoted_event_append_fails`
 
 ### 记忆、活动和用户路径

@@ -1,11 +1,11 @@
 # 阅读冲动引擎（段落特征 → 6 驱动「现算」 → 复合触发 → 分派）
 
-> 范围：`nyx/reading/` 模块的**行为层**——用户翻页时对当前段落提取特征、现算 6 维驱动、加权复合、阈值+冷却判定，触发提问/记忆联想；碎碎念（mutter）是独立的「段落精彩度」快通道闸门（`richness_score > 0.5`），**不进复合权重**。只管「段落进、冲动事件出」，不含笔记（22）、审美维度（23，只通过 `state` 间接注入 mutter prompt）。
+> 范围：`nyx/reading/` 模块的**行为层**——用户翻页时对当前段落提取特征、现算 6 维驱动、加权复合、阈值+冷却判定，触发提问/记忆联想；碎碎念（mutter）是独立的「段落精彩度」快通道闸门（`richness_score > 0.5`），**不进复合权重**。只管「段落进、冲动事件出」，不含笔记（22）；内在生命审美维度统一见 12-inner-life，仅通过 `state` 间接注入 mutter prompt。
 > spec 只定义契约（签名 + 语义 + 决策），不内联完整代码；代码唯一事实来源是 `nyx/` 源文件。
 
 ## 元信息
 
-- **前置依赖**：19-reading-content（`paragraphs` 表）、20-reading-progress（`ReadingFacade.list_paragraphs`）、07-memory-system（`MemoryFacade.search`）、11-desire（`get_all`）、12-inner-life（`get_state`）、17-expression（复用 `build_system_prompt`）
+- **前置依赖**：19-reading-content（`paragraphs` 表）、20-reading-progress（`ReadingFacade.list_paragraphs`）、07-memory-system（`MemoryFacade.search`）、11-desire（`get_all`）、12-inner-life（`get_state`，审美维度契约统一见此）、17-expression（复用 `build_system_prompt`）
 - **反向修订 08-events**：08-events 现行 `EventType` 无 reading 事件、`ROUTING` 无对应条目；本 spec 负责**新增** 3 个 `EventType`（`READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION`），且**加 3 条空路由**（`READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION` → `[]`，仅广播前端、无内部消费者，与 `MUTTER`/`SPEAK` 同款「空路由」；穷尽断言 `set(ROUTING) == set(EventType) - {CLOCK_TICK}` 强制所有事件类型都在表里，故空列表键必须存在）。08-events 是「被扩展」的既有 spec，不是前置依赖。
 - **组合根接线**：`ReadingFacade` 构造签名由 19 的 `(store)` 扩为 8 参 `(store, inner_life, desire, memory, llm, evaluator, bus, canon)`，并追加 `POST /api/impulse/evaluate` 端点；底层 API 和生命周期契约以 `docs/specs/05-module-bus-system.md` 为准。
 - **实现文件**：`nyx/enums.py`（新增 `ReadingDrive`/`ReadingBehavior` + 3 个 `EventType`）、`nyx/reading/impulse.py`（纯函数 + 常量）、`nyx/reading/facade.py`（追加 `evaluate_paragraph` + 分派）、`nyx/main.py`（端点 + 组合根装配）
@@ -107,7 +107,7 @@
 - **`quote_question` 的 `selected_text` 单次 LLM 拆行产出**：其余 4 行为（mutter + 3 提问）只产一个 `content` 单字符串；`quote_question` 的 prompt 要求输出**两行**——第一行一句问题、第二行从段落原文**逐字摘取**的一句引用（不改写）——`llm.complete` 仍返回 `output_type="quote_question"` 的**单字符串**，facade 按**第一个换行**拆（`content, _, quote = raw.partition("\n")`）：`content`=首行 strip、`selected_text`=次行 strip（空 → `None`，回退为不带划线的普通提问）。**不二次 LLM、不做文本回匹配**（逐字由 prompt 约束）。
 - **翻页方向守卫**：`paragraph_index <= last_paragraph_index`（重读/回翻）直接返回 `[]`，不触发不广播（mutter 一并抑制）——对齐 S06 FR-006/007，防回翻时重复反应。
 - **正文由后端取**：端点只收 `{book_id, paragraph_index, last_paragraph_index}`，正文经 `list_paragraphs(book_id, paragraph_index, paragraph_index)` 取，前端不回传 `paragraph_text`（与 20 的「后端唯一内容来源」一致）。
-- **审美维度只经 `state` 注入**：`aesthetic_sensitivity` 驱动用 `richness_score`（段落特征），**不依赖** 23 的审美表；审美维度（23）落在 `CurrentState.aesthetic` 上、由 23 改 `expression/prompt.py` 的 `_state_block` 显式加审美行才进 mutter prompt（`CurrentState` 加字段不自动进 prompt，见 23）。故 21 不硬依赖 23。
+- **审美维度只经 `state` 注入**：`aesthetic_sensitivity` 驱动用 `richness_score`（段落特征），**不依赖** 12 的审美表；内在生命审美维度落在 `CurrentState.aesthetic` 上，由 12 约束的 `expression/prompt.py` `_state_block` 显式加审美行才进 mutter prompt（`CurrentState` 加字段不自动进 prompt）。故 21 不直接实现审美漂移。
 - **分派经现有总线**（设计文档 §4）：mutter/question/associate 全部 `bus.publish` → 既有 `GET /api/events` SSE 广播，前端阅读面板按 `EventType` 过滤。`correlation_id` 用 `book_id`（按书归组）。
 
 ### API 端点

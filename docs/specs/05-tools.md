@@ -1,8 +1,8 @@
 # 工具系统
 
 > 范围：`tools/registry.py`（`ToolRegistry`：register / call / schema）、`tools/local_search.py`、`tools/web_search.py`、`tools/file_io.py`、`tools/web_fetch.py`（四个内置工具）。
-> 纯基础设施 spec：只做「工具注册 + 工具执行 + 四个内置工具」，不含 Facade、不含 API、不含 LangGraph 工具绑定（那是 14-activity 与 17-expression 的活）。
-> spec 只定义契约（签名 + 语义 + 决策）；实现以 `nyx/tools/registry.py` / `nyx/tools/local_search.py` / `nyx/tools/web_search.py` / `nyx/tools/file_io.py` / `nyx/tools/web_fetch.py` 源文件为准。
+> 纯基础设施 spec：只做「工具注册 + 工具执行 + 四个内置工具」，不含 Facade、不含 API、不含 LangGraph 工具绑定（那是 09-activity 与 11-expression 的活）。
+> spec 只定义契约（签名 + 语义 + 决策）；实现以 `nyx/tools/registry.py` / `nyx/tools/local_search.py` / `nyx/tools/web_search.py` / `nyx/tools/file_io.py` / `nyx/tools/web_fetch.py` 源文件为准。LangGraph 工具绑定仍由 11-expression 负责。
 
 ## 元信息
 
@@ -21,7 +21,7 @@
 - [ ] `file_io` 的 `write` 越界（`../` 或绝对路径逃逸 `write_root`）→ `ValueError`；`read` / `list` 不受写目录限制
 - [ ] `local_search` 缺省搜全盘（`full_disk_roots()`），`roots` 参数可收窄；遍历跳过无权限目录不崩
 - [ ] 四个工具返回 JSON 可序列化数据（`dict` / `list` / `str`，不返回 domain dataclass）
-- [ ] `web_search` 的 opt-in 由组合根（底层模块总线契约）按 `config.exploration.web_enabled` 决定是否注册；06-tools 本身不读 config
+- [ ] `web_search` 的 opt-in 由组合根（底层模块总线契约）按 `config.exploration.web_enabled` 决定是否注册；05-tools 本身不读 config
 - [ ] `web_fetch` 抓网页正文（httpx GET + trafilatura 抽正文）→ 返回 `{"text", "url"}` 纯正文（不写盘、不发事件，供探索直接消化）；抓取失败/空正文返回 `{"error": ...}`（best-effort 不崩）
 - [ ] `pyright` strict 零报错
 
@@ -34,12 +34,12 @@
 - **不校验 args 与 schema**：不引入 JSON schema validator（新依赖 + 复杂度）；schema 是给 LLM 的契约，handler 签名是给运行时的契约
 - **`Tool.schema` vs `schema()`**：`Tool.schema` 存**参数** JSON schema（`{"type":"object","properties":…,"required":[…]}`）；`ToolRegistry.schema()` 把它包成 OpenAI 兼容 function calling 格式 `[{"type":"function","function":{name, description, parameters}}]`，按注册序输出（`LlmClient.complete` 原样透传给 API，不二次包装）
 - **重复注册 → `ValueError`**：fail-fast 抓组合根的布线 bug（重复注册同名工具）；`register` 不静默覆盖
-- **结果 JSON 可序列化**：工具返回 `dict` / `list` / `str`，不返回 domain dataclass——结果要进 14-activity / 17-expression 的 LLM 上下文
+- **结果 JSON 可序列化**：工具返回 `dict` / `list` / `str`，不返回 domain dataclass——结果要进 09-activity / 11-expression 的 LLM 上下文
 - **全 async + 不阻塞事件循环**：fs / network 是阻塞 I/O，用 `asyncio.to_thread` 包一层（CLAUDE.md「I/O 操作用 async def」+ 不卡 SSE 广播）
-- **`web_search` opt-in 归组合根**：06-tools 只提供 `build_web_search_tool()`；`main.py`（底层模块总线契约）读 `config.exploration.web_enabled`，true 才注册。未注册 → 不出现在 `schema()` 里，LLM 不可见、`call` 报 `KeyError`
-- **`web_fetch` 抓正文（纯抓取，不落盘不触发读书）**：`fetch_url(url)`（httpx GET + trafilatura 抽正文，失败/空返 `""`，`asyncio.to_thread` 不阻塞事件循环）→ `build_web_fetch_tool()` 返回 `{"text", "url"}` 纯正文（正文超 `_MAX_DOWNLOAD_CHARS`（20 万）截断），供 14-activity 探索直接消化。不再写 `uploads/`、不再发 `USER_MATERIAL`（读书由欲望驱动从书库选书，见 14-activity）。依赖新增 `trafilatura`（pyproject）
+- **`web_search` opt-in 归组合根**：05-tools 只提供 `build_web_search_tool()`；`main.py`（底层模块总线契约）读 `config.exploration.web_enabled`，true 才注册。未注册 → 不出现在 `schema()` 里，LLM 不可见、`call` 报 `KeyError`
+- **`web_fetch` 抓正文（纯抓取，不落盘不触发读书）**：`fetch_url(url)`（httpx GET + trafilatura 抽正文，失败/空返 `""`，`asyncio.to_thread` 不阻塞事件循环）→ `build_web_fetch_tool()` 返回 `{"text", "url"}` 纯正文（正文超 `_MAX_DOWNLOAD_CHARS`（20 万）截断），供 09-activity 探索直接消化。不再写 `uploads/`、不再发 `USER_MATERIAL`（读书由欲望驱动从书库选书，见 09-activity）。依赖新增 `trafilatura`（pyproject）
 - **`file_io` 沙箱（只读 + 指定写目录）**：`read` / `list` 全盘（读安全，agent 需要读任意书/文件）；`write` 限定 `write_root`（默认 `Path("workspace")`，相对 cwd），越界抛 `ValueError`。路径校验用 `pathlib` 的 `.resolve()` + `.is_relative_to()`。已知边界：`read`/`list` 全盘是有意设计（探索特性），本地单机 agent 以用户权限运行、非沙箱，LLM 可经 exploration `focus` 指向任意路径——MVP 接受，不提供对外服务隔离（不为此加 read_root 配置）
-- **`local_search` 范围**：缺省搜**全盘**（`full_disk_roots()`：Windows 枚举存在的盘符、POSIX 根 `/`），与 `file_io.read` 的「读可全盘」一致；`.txt` / `.md` 文本，大小写不敏感子串匹配，返回 `[{path, snippet}]`。`roots` 参数可收窄（探索链传 `[workspace]`、测试传 `[tmp_path]`）。与记忆检索（07-memory-system）是两码事——本工具搜**文件**，不搜记忆表
+- **`local_search` 范围**：缺省搜**全盘**（`full_disk_roots()`：Windows 枚举存在的盘符、POSIX 根 `/`），与 `file_io.read` 的「读可全盘」一致；`.txt` / `.md` 文本，大小写不敏感子串匹配，返回 `[{path, snippet}]`。`roots` 参数可收窄（探索链传 `[workspace]`、测试传 `[tmp_path]`）。与记忆检索（06-memory-system）是两码事——本工具搜**文件**，不搜记忆表
 - **全盘遍历用 `os.walk` + `onerror` 跳过无权限目录**：`rglob` 在无权限目录（Windows `System Volume Information` 等）会抛 `PermissionError`；`os.walk(root, onerror=...)` 跳过不可读目录继续走。注意全盘搜索慢（冷跑可能分钟级），探索链若要收窄用 `roots` 参数；结果截断到 `_MAX_RESULTS`（50）、单文件超 `_MAX_FILE_BYTES`（1MiB）跳过（界内存/耗时兜底，不做超时——`to_thread` 无法干净中断 os.walk 线程）
 - **注入非全局**：`ToolRegistry` 是普通类，组合根实例化 + 注入活动 Facade 与表达 Facade（同 EventBus 约定），无模块级单例
 

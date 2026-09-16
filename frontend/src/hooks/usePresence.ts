@@ -7,7 +7,7 @@ import type { Presence } from "../types/api";
 const ACTIVE_WINDOW_SEC = 30;
 const OBSERVE_INTERVAL_SEC = 30;
 
-// 判定镜像后端 14-activity observe.py（规则逐字一致，不另造）
+// 判定镜像后端 09-activity observe.py（规则逐字一致，不另造）
 export function classifyPresence(
   keyboardActive: boolean,
   mouseActive: boolean,

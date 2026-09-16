@@ -14,11 +14,14 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from nyx.config import ExpressionConfig
-from nyx.enums import ContextMode, EventType
+from nyx.enums import ContextMode, EventType, InteractionKind, UserIntent
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
-from nyx.expression.classifier import QUESTION_MARKS, classify_channel
+from nyx.expression.classifier import (
+    classify_channel,
+    is_question,
+)
 from nyx.expression.prompt import (
     build_backtrack_context,
     build_system_prompt,
@@ -43,13 +46,15 @@ class ReplyState(TypedDict):
     memories: list[Memory]       # 检索到的记忆
     state: CurrentState          # 当前状态快照
     narrative: SelfNarrative | None   # 慢通道 assemble 填充，快通道恒 None
-    think: list[str]             # 累积：每轮 think 追加（17 改，tech-ref §6.1 ripple）
-    speak: list[str]             # 累积：每轮 speak 追加（17 改，tech-ref §6.1 ripple）
+    think: list[str]             # 累积：每轮 think 追加（11-expression，tech-ref §6.1 ripple）
+    speak: list[str]             # 累积：每轮 speak 追加（11-expression，tech-ref §6.1 ripple）
     ask: str | None
     round: int                   # 已完成 think/speak 的轮数（≤ slow_max_rounds）
-    correlation_id: str          # 本次 reply 溯源（17 补，对齐 14-activity）
+    correlation_id: str          # 本次 reply 溯源（11-expression，按 09-activity 对齐）
     last_slow_at: float          # 上次慢通道时间（facade 维护，每 reply 入 state）
     tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
+    intent: UserIntent
+    fallback: bool
 
 
 @dataclass
@@ -64,6 +69,8 @@ class ReplyDeps:
     config: ExpressionConfig
     history: deque[Message]              # facade 持有的会话历史（跨 reply）
     tools: ToolRegistry                  # use_tools 节点查资料（慢通道）
+    knowledge_boundary: str | None
+    register_question: Any
 
 
 # 一轮 think+speak 一次生成：先写内心活动（think），再写说出口的话（speak），
@@ -93,11 +100,8 @@ _TOOL_OUTPUT_MAX_CHARS = 4000  # 单条工具结果注入 prompt 的字符上限
 
 
 def _is_question(text: str) -> bool:
-    """speak 是否问句（纯函数）：含疑问词即视为问句。
-
-    词表单一来源 = 16 classifier 的 QUESTION_MARKS。
-    """
-    return any(w in text for w in QUESTION_MARKS)
+    """Compatibility wrapper for the single classifier implementation."""
+    return is_question(text)
 
 
 def _rounds_block(think: list[str], speak: list[str]) -> str:
@@ -136,7 +140,7 @@ def _voice_output(output: LLMOutput, type_: str, content: str) -> LLMOutput:
     """用解析出的 think/speak 文本重造 LLMOutput，供 evaluator 分别跑 OOC。
 
     保留 prompt_tokens/completion_tokens/call_id：think/speak 同源一次
-    complete()，eval 记账需沿袭同一调用（token 去重锚点，15-eval）。
+    complete()，eval 记账需沿袭同一调用（token 去重锚点，10-eval）。
     """
     return LLMOutput(
         module=output.module,
@@ -188,6 +192,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], state["memories"],
             ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
+            knowledge_boundary=deps.knowledge_boundary,
+            intent=state["intent"],
         )
         user = (
             build_user_prompt(state["message"], state["context"])
@@ -221,26 +227,59 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             deps.canon, state["state"], state["narrative"], state["memories"],
             ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             tool_outputs=state["tool_outputs"],
+            knowledge_boundary=deps.knowledge_boundary,
+            intent=state["intent"],
         )
         user = build_user_prompt(state["message"], state["context"])
         # 前几轮 think/speak（等长）
         prior = _rounds_block(state["think"], state["speak"])
         task = _RESPOND_TASK_CONTINUE if state["speak"] else _RESPOND_TASK
         user = "\n".join(p for p in (prior, user, task) if p)
-        output = await deps.llm.complete(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            module="expression",
-            output_type="reply",
-            correlation_id=state["correlation_id"],
-            json_mode=True,
-        )
         try:
-            think, speak = _parse_reply(output.content)
-        except ValueError:
-            # best-effort：LLM 未吐合法 JSON → 整段当 speak（think 留空），不吞话。
-            think, speak = "", output.content.strip()
-        await deps.evaluator.evaluate(_voice_output(output, "think", think))
-        await deps.evaluator.evaluate(_voice_output(output, "speak", speak))
+            output = await deps.llm.complete(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                module="expression",
+                output_type="reply",
+                correlation_id=state["correlation_id"],
+                json_mode=True,
+            )
+            try:
+                think, speak = _parse_reply(output.content)
+            except ValueError:
+                retry_user = (
+                    user
+                    + "\n上一次输出无法解析。只输出合法 JSON 对象，"
+                    "必须包含非空字符串 speak；"
+                    "不要输出 Markdown、解释或代码围栏。"
+                )
+                output = await deps.llm.complete(
+                    [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": retry_user},
+                    ],
+                    module="expression",
+                    output_type="reply",
+                    correlation_id=state["correlation_id"],
+                    json_mode=True,
+                )
+                think, speak = _parse_reply(output.content)
+            await deps.evaluator.evaluate(_voice_output(output, "think", think))
+            await deps.evaluator.evaluate(_voice_output(output, "speak", speak))
+        except Exception:
+            fallback = "我刚才有点卡住了，先让我缓一缓。"
+            event = internal_text_event(
+                EventType.SPEAK, fallback, state["correlation_id"]
+            )
+            event.content["response_kind"] = "fallback"
+            event.content["attempt_id"] = None
+            await deps.bus.publish(event)
+            return {
+                "speak": state["speak"] + [fallback],
+                "fallback": True,
+            }
         if think:
             await deps.bus.publish(
                 internal_text_event(EventType.THINK, think, state["correlation_id"])
@@ -250,8 +289,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         if state["mode"] is ContextMode.FAST:
             if _is_question(speak):
                 # 快通道绕过 should_ask，问句结尾也落 ask（信号不丢）
-                await deps.bus.publish(
-                    internal_text_event(EventType.ASK, speak, state["correlation_id"])
+                await deps.register_question(
+                    speak,
+                    InteractionKind.CHAT_ASK,
+                    state["correlation_id"],
+                    state["correlation_id"],
                 )
                 return {"think": new_think, "speak": new_speak, "ask": speak}
             await deps.bus.publish(
@@ -262,8 +304,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     async def should_ask(state: ReplyState) -> dict[str, Any]:
         speak = state["speak"][-1]
         if _is_question(speak):
-            await deps.bus.publish(
-                internal_text_event(EventType.ASK, speak, state["correlation_id"])
+            await deps.register_question(
+                speak,
+                InteractionKind.CHAT_ASK,
+                state["correlation_id"],
+                state["correlation_id"],
             )
             return {"ask": speak}
         await deps.bus.publish(
@@ -291,6 +336,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         return {}
 
     async def generate_scene_memory(state: ReplyState) -> dict[str, Any]:
+        if state["fallback"]:
+            return {}
         await deps.memory.create_scene_memory({
             "correlation_id": state["correlation_id"],
             "user_message": state["message"],
@@ -303,6 +350,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         return "assemble_context" if state["mode"] is ContextMode.SLOW else "respond"
 
     def route_after_respond(state: ReplyState) -> str:
+        if state["fallback"]:
+            return "record_message"
         return "record_message" if state["mode"] is ContextMode.FAST else "should_ask"
 
     def route_after_should_ask(state: ReplyState) -> str:

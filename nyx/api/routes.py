@@ -19,6 +19,7 @@ from nyx.reading.facade import (
     DuplicateBookError,
     NoteNotFoundError,
 )
+from nyx.reading.store import ProgressConflictError
 from nyx.types import (
     Activity,
     Annotation,
@@ -58,6 +59,7 @@ class _ProgressPayload(BaseModel):
     user_position: int = Field(..., ge=1)
     nyx_position: int = Field(..., ge=1)
     reading_speed: int = Field(..., ge=10, le=200)
+    expected_revision: int = Field(..., ge=0)
 
 
 class _ImpulsePayload(BaseModel):
@@ -69,12 +71,12 @@ class _ImpulsePayload(BaseModel):
 class _UserNotePayload(BaseModel):
     book_id: str
     paragraph_id: str | None = None
-    content: str
-    selected_text: str | None = None
+    content: str = Field(..., min_length=1, max_length=4000)
+    selected_text: str | None = Field(default=None, max_length=4000)
 
 
 class _UpdateNotePayload(BaseModel):
-    content: str
+    content: str = Field(..., min_length=1, max_length=4000)
 
 
 class _BoundaryPayload(BaseModel):
@@ -247,17 +249,22 @@ def build_app(
     @fast.put("/api/progress/{book_id}")
     async def api_put_progress(
         book_id: str, payload: _ProgressPayload
-    ) -> dict[str, bool]:
+    ) -> ReadingProgress:
         try:
-            await app.reading.save_progress(
+            progress = await app.reading.save_progress(
                 book_id,
                 payload.user_position,
                 payload.nyx_position,
                 payload.reading_speed,
+                payload.expected_revision,
             )
         except BookNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        return {"ok": True}
+        except ProgressConflictError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return progress
 
     @fast.post("/api/impulse/evaluate")
     async def api_impulse_evaluate(
@@ -270,7 +277,10 @@ def build_app(
 
     @fast.get("/api/notes/{book_id}")
     async def api_list_notes(book_id: str) -> list[UserNote]:
-        return await app.reading.list_user_notes(book_id)
+        try:
+            return await app.reading.list_user_notes(book_id)
+        except BookNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
 
     @fast.post("/api/notes/user", status_code=201)
     async def api_add_user_note(payload: _UserNotePayload) -> UserNote:
@@ -294,6 +304,8 @@ def build_app(
             return await app.reading.update_user_note(note_id, payload.content)
         except NoteNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     @fast.delete("/api/notes/user/{note_id}", status_code=204)
     async def api_delete_user_note(note_id: str) -> None:

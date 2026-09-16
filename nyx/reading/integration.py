@@ -12,6 +12,7 @@ from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 
 NYX_BUFFER_MAXLEN = 100
+_INTEGRATION_PROMPT_MAX_CHARS = 12000
 
 _READING_NOTE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -86,7 +87,7 @@ class ReadingIntegration:
             ]
             user = (
                 "这是你陪读这一章/本书时冒出的碎碎念和提问：\n\n"
-                + "\n".join(lines)
+                + "\n".join(lines)[:_INTEGRATION_PROMPT_MAX_CHARS]
                 + "\n\n整理成一条第一人称的读书记忆。"
             )
             output = await self._llm.complete(

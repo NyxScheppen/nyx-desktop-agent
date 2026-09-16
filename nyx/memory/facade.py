@@ -372,7 +372,7 @@ class MemoryFacade:
     """记忆模块门面：场景化记忆创建 + 检索 + 想起升级 + 新鲜度衰减/淘汰 + 导出。
 
     生命周期逻辑（新鲜度衰减、短期→长期升级、容量淘汰）都在这层；
-    纯 CRUD 在 MemoryStore（07）、三层检索在 MemoryRetrieval（08）。
+    纯 CRUD 在 MemoryStore、三层检索在 MemoryRetrieval（06-memory-system）。
     矛盾检测走「embedding 召回门控 + 独立单任务 LLM 调用」，无候选则 0 调用。
     """
 
@@ -548,7 +548,7 @@ class MemoryFacade:
     ) -> None:
         """读书记忆：章末/整本整合产物落成一条长期、tag='reading' 的记忆。
 
-        无开头 LLM（content/summary 由 22 的 _integrate_buffer 拼好，这里只入库）；
+        无开头 LLM（content/summary 由 12-reading-system 的阅读整合流程拼好，这里只入库）；
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。
         type=LONG_TERM 使其豁免短期淘汰，读书记忆不随时间冲掉。
         """

@@ -1,4 +1,4 @@
-"""parse_epub 单元测试（19-reading-content）：内存构造 EPUB 字节。"""
+"""parse_epub 单元测试（reading-system spec）：内存构造 EPUB 字节。"""
 
 import io
 import zipfile

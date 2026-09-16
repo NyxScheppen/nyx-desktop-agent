@@ -1,4 +1,4 @@
-"""eval 记账 store：`eval_log` 表（15-eval）。每次 `evaluate()` 写一条，
+"""eval 记账 store：`eval_log` 表（10-eval）。每次 `evaluate()` 写一条，
 供查询「最近 N 条 + 总 token（按 call_id 去重）」。
 """
 import aiosqlite

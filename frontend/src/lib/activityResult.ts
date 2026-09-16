@@ -1,6 +1,6 @@
 import type { Activity, ActivityType } from "../types/api";
 
-// 活动产出文案纯函数（14-activity §result 形状）。
+// 活动产出文案纯函数（09-activity §result 形状）。
 // 单一来源：ActivityPanel（日程产出）+ StatusBar（主题）+ AnnounceLayer（完成后冒一句）共用。
 // 键名 = 后端 progress 键（snake_case 零映射）；字段非预期类型则忽略不崩。
 

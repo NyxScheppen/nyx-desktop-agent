@@ -25,7 +25,7 @@ async function putProgress(bookId: string, p: ProgressInput): Promise<void>     
 async function importBook(file: File): Promise<Book>                             // POST /api/books（multipart，FormData 不设 json 头）
 async function evaluateImpulse(bookId: string, paragraphIndex: number, lastParagraphIndex: number): Promise<{ triggered: string[] }>  // POST /api/impulse/evaluate
 
-// ---- 笔记（07-reading-events §4）----
+// ---- 笔记（docs/frontend/07-reading-events.md §4）----
 async function getNotes(bookId: string): Promise<UserNoteWithAnnotations[]>      // GET /api/notes/{bookId}
 async function createUserNote(p: { book_id: string; paragraph_id?: string | null; content: string; selected_text?: string | null }): Promise<UserNote>  // POST /api/notes/user
 async function updateUserNote(id: string, content: string): Promise<UserNote>    // PUT /api/notes/user/{id}

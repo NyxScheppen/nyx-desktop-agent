@@ -1,4 +1,4 @@
-"""books / paragraphs 两表的唯一写路径（spec 19）。
+"""books / paragraphs 两表的唯一写路径（reading-system spec）。
 
 ReadingStore 由组合根注入 `Database`（共享 conn+lock），方法各自
 `async with self._db.lock:` 串行化（同其它 store）。`paragraphs."index"`
@@ -32,6 +32,14 @@ _COLS = (
 
 _NOTE_COLS = "id, book_id, paragraph_id, content, selected_text, created_at, updated_at"
 _ANN_COLS = "id, user_note_id, content, created_at"
+
+
+class ProgressConflictError(Exception):
+    """进度写入基于过期 revision，拒绝覆盖较新的服务器状态。"""
+
+    def __init__(self, book_id: str) -> None:
+        self.book_id = book_id
+        super().__init__(f"阅读进度已更新，请基于最新版本重试：{book_id}")
 
 
 class ReadingStore:
@@ -110,7 +118,7 @@ class ReadingStore:
         row = await cursor.fetchone()
         return _row_to_book(row) if row is not None else None
 
-    # ---- 20-reading-progress：进度 / 书架 / 分页 ----
+    # ---- 阅读系统：进度 / 书架 / 分页 ----
 
     async def find_book(self, book_id: str) -> Book | None:
         """按 book_id 单行查，供 facade 判书是否存在。"""
@@ -158,31 +166,56 @@ class ReadingStore:
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 "SELECT book_id, user_position, nyx_position, reading_speed, "
-                "read_count, updated_at FROM reading_progress WHERE book_id = ?",
+                "read_count, updated_at, revision "
+                "FROM reading_progress WHERE book_id = ?",
                 (book_id,),
             )
             row = await cursor.fetchone()
             return _row_to_progress(row) if row is not None else None
 
     async def upsert_progress(
-        self, book_id: str, user_position: int, nyx_position: int, reading_speed: int
+        self,
+        book_id: str,
+        user_position: int,
+        nyx_position: int,
+        reading_speed: int,
+        expected_revision: int,
     ) -> ReadingProgress:
-        """写进度 UPSERT；不碰 read_count（重读计数只由 22 ++）。"""
+        """按 revision 条件写进度；不碰 read_count（重读计数只由 12-reading-system ++）。"""
         async with self._db.lock:
             now = time.time()
-            await self._db.conn.execute(
-                "INSERT INTO reading_progress "
-                "(book_id, user_position, nyx_position, reading_speed, updated_at) "
-                "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(book_id) DO UPDATE SET "
-                "user_position = excluded.user_position, "
-                "nyx_position = excluded.nyx_position, "
-                "reading_speed = excluded.reading_speed, "
-                "updated_at = excluded.updated_at",
-                (book_id, user_position, nyx_position, reading_speed, now),
-            )
+            current = await self._get_progress_locked(book_id, allow_missing=True)
+            if current is None:
+                if expected_revision != 0:
+                    raise ProgressConflictError(book_id)
+                await self._db.conn.execute(
+                    "INSERT INTO reading_progress "
+                    "(book_id, user_position, nyx_position, reading_speed, "
+                    "updated_at, revision) VALUES (?, ?, ?, ?, ?, 1)",
+                    (book_id, user_position, nyx_position, reading_speed, now),
+                )
+            else:
+                cursor = await self._db.conn.execute(
+                    "UPDATE reading_progress SET "
+                    "user_position = ?, nyx_position = ?, reading_speed = ?, "
+                    "updated_at = ?, revision = revision + 1 "
+                    "WHERE book_id = ? AND revision = ?",
+                    (
+                        user_position,
+                        nyx_position,
+                        reading_speed,
+                        now,
+                        book_id,
+                        expected_revision,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise ProgressConflictError(book_id)
             await self._db.conn.commit()
-            return await self._get_progress_locked(book_id)
+            progress = await self._get_progress_locked(book_id)
+            if progress is None:
+                raise RuntimeError(f"写后回读缺失：{book_id}")
+            return progress
 
     async def increment_read_count(
         self, book_id: str, nyx_position: int
@@ -197,29 +230,52 @@ class ReadingStore:
             now = time.time()
             await self._db.conn.execute(
                 "INSERT INTO reading_progress "
-                "(book_id, nyx_position, read_count, updated_at) "
-                "VALUES (?, ?, 1, ?) "
+                "(book_id, nyx_position, read_count, updated_at, revision) "
+                "VALUES (?, ?, 1, ?, 1) "
                 "ON CONFLICT(book_id) DO UPDATE SET "
                 "nyx_position = excluded.nyx_position, "
-                "read_count = read_count + 1, updated_at = excluded.updated_at",
+                "read_count = read_count + 1, updated_at = excluded.updated_at, "
+                "revision = reading_progress.revision + 1",
                 (book_id, nyx_position, now),
             )
             await self._db.conn.commit()
-            return await self._get_progress_locked(book_id)
+            progress = await self._get_progress_locked(book_id)
+            if progress is None:
+                raise RuntimeError(f"写后回读缺失：{book_id}")
+            return progress
 
-    async def _get_progress_locked(self, book_id: str) -> ReadingProgress:
+    async def reset_completion_marker(
+        self, book_id: str, nyx_position: int
+    ) -> bool:
+        """Clear the persisted end marker when rereading moves inside the book."""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "UPDATE reading_progress SET nyx_position = ?, "
+                "updated_at = ?, revision = revision + 1 "
+                "WHERE book_id = ? AND nyx_position > ?",
+                (nyx_position, time.time(), book_id, nyx_position),
+            )
+            await self._db.conn.commit()
+            return cursor.rowcount == 1
+
+    async def _get_progress_locked(
+        self, book_id: str, *, allow_missing: bool = False
+    ) -> ReadingProgress | None:
         """读进度单行（供 upsert/increment 写后回读）；调用方须已持锁。"""
         cursor = await self._db.conn.execute(
             "SELECT book_id, user_position, nyx_position, reading_speed, "
-            "read_count, updated_at FROM reading_progress WHERE book_id = ?",
+            "read_count, updated_at, revision "
+            "FROM reading_progress WHERE book_id = ?",
             (book_id,),
         )
         row = await cursor.fetchone()
+        if row is None and allow_missing:
+            return None
         if row is None:  # 写路径刚 INSERT/UPDATE，行必在；避免 -O 下 assert 被剥离
             raise RuntimeError(f"写后回读缺失：{book_id}")
         return _row_to_progress(row)
 
-    # ---- 22-reading-notes：用户笔记 / 批注 ----
+    # ---- 阅读系统：用户笔记 / 批注 ----
 
     async def insert_user_note(
         self,
@@ -383,6 +439,7 @@ def _row_to_progress(row: aiosqlite.Row) -> ReadingProgress:
         reading_speed=row["reading_speed"],
         read_count=row["read_count"],
         updated_at=row["updated_at"],
+        revision=row["revision"],
     )
 
 

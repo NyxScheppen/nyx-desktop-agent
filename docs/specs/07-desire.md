@@ -6,8 +6,8 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`DesireType` / `DesireStatus` / `DesireValue` / `ShortTermDesire` / `LongTermDesire` / `Goal` / `DesireState` / `GoalAction` / `Event` / `EventType` / `Source`）、02-config（`DesireConfig`：`peak_threshold` / `retry_limit` / `long_term_capacity` / `short_term_capacity` / `value_decay`）、03-llm（`LlmClient.complete`）、05-module-bus-system（`Database`、`EventBus`、`short_term_desire` / `desire_value` / `long_term_desire` / `desire_generation_attempt` 表）、eval（`Evaluator`）
-- **本 spec 带来的连锁改动（ripple，已同步）**：01-types 给 `LongTermDesire` 加 `type` 字段、`DesireValue` 加 `updated_at` 字段；05-module-bus-system 给 `long_term_desire` 加 `type` 列、`desire_value` 加 `updated_at` 列；tech-ref 补 `desire/value.py` 与 `desire/store.py`；本轮为 `DesireConfig` 增加 `short_term_capacity`，并为 `long_term_desire.name_normalized` 建唯一索引。
+- **前置依赖**：01-types（`DesireType` / `DesireStatus` / `DesireValue` / `ShortTermDesire` / `LongTermDesire` / `Goal` / `DesireState` / `GoalAction` / `Event` / `EventType` / `Source`）、02-config（`DesireConfig`：`peak_threshold` / `retry_limit` / `long_term_capacity` / `short_term_capacity` / `value_decay`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、`short_term_desire` / `desire_value` / `long_term_desire` / `desire_generation_attempt` 表）、10-eval（`Evaluator`）
+- **本 spec 带来的连锁改动（ripple，已同步）**：01-types 给 `LongTermDesire` 加 `type` 字段、`DesireValue` 加 `updated_at` 字段；04-module-bus-system 给 `long_term_desire` 加 `type` 列、`desire_value` 加 `updated_at` 列；tech-ref 补 `desire/value.py` 与 `desire/store.py`；本轮为 `DesireConfig` 增加 `short_term_capacity`，并为 `long_term_desire.name_normalized` 建唯一索引。
 
 ## 用户故事
 
@@ -78,25 +78,25 @@
 
 ## 技术方案
 
-- **实现文件**：`nyx/desire/value.py`、`nyx/desire/store.py`、`nyx/desire/lifecycle.py`、`nyx/desire/facade.py`（无 API、无数据变更——表结构是 05-module-bus-system 的活）
-- **库**：无新库（标准库 `json` / `time` / `uuid` / `typing`；`aiosqlite` 已由 05-module-bus-system 引入）
+- **实现文件**：`nyx/desire/value.py`、`nyx/desire/store.py`、`nyx/desire/lifecycle.py`、`nyx/desire/facade.py`（无 API、无数据变更——表结构是 04-module-bus-system 的活）
+- **库**：无新库（标准库 `json` / `time` / `uuid` / `typing`；`aiosqlite` 已由 04-module-bus-system 引入）
 - **公开面**：`from nyx.desire.value import ...`（本 spec 的值机制函数与常量）；`from nyx.desire.store import DesireStore`；`from nyx.desire.lifecycle import DesireLifecycle`；`from nyx.desire.facade import DesireFacade`（不加 `__all__`；序列化 helper 私有）
 - **四层职责**：`DesireFacade`（Facade）→ `DesireLifecycle`（全周期编排）→ `DesireStore`（三表 CRUD）；`value.py` 是被 lifecycle/store 直接调用的纯函数模块，不新增运行时抽象层。`lifecycle` 由 `facade` 内部构造（共享 store），让 `facade` 只做事件入口 + 读委托
 - **store 锁约定（同 07）**：每个方法一个 `async with self._db.lock` 的 SQL 块；store 方法之间不互相调用对方的持锁方法（`asyncio.Lock` 不可重入）
 - **两个读路径（`get_pending` vs `get_all`）**：tech-ref §5 把它们分开——`get_pending` = 待消费队列（`list_pending`，只含 `PENDING`、`created_at ASC` FIFO），供活动排期/拼 prompt；`get_all` = 全量快照（`short_term` 用 `list_short_term`，含 satisfied/expired 历史、`created_at DESC`），供 `/api/desires` 仪表盘。故 store 要两个 list 方法，`DesireState.short_term` 是「全部」而非「待消费」
 - **可空 JSON 列（同 07 的 `embedding`）**：`short_term_desire.goal` 是 `Goal | None` ⟺ `goal TEXT` 可空，`None ↔ SQL NULL`（非 `"null"` 字符串）
 - **`add_value` 是事件入口（决策，对 tech-ref 注释的精确化）**：tech-ref 写「活动/对话/长期欲望 加压」，但 ROUTING 里 desire 订阅了 `OBSERVATION_STATE` 和 `ACTIVITY_END` 两个事件——`OBSERVATION_STATE` 是加压、`ACTIVITY_END` 是满足回写（design §3.2「满足信号」、ROUTING 注释「满足」）。故 `add_value` 按 `source.type` 派发；组合根用 `bus.subscribe(EventType.OBSERVATION_STATE, facade.add_value)` + `bus.subscribe(EventType.ACTIVITY_END, facade.add_value)` 绑定
-- **`evaluate()` 由 tick 触发**：TICK_ROUTING 的 `DESIRE_EVAL → desire`。`evaluate()` 不接受 Event（tech-ref 签名），由组合根的 CLOCK_TICK 分发器按 `tick_type == DESIRE_EVAL` 调 `facade.evaluate()`。`desire_generated` 因此无上游 tick 溯源——`desire_generated` 的 `correlation_id = desire.id`（溯源到欲望自身，断链局限，同 09 的 `record_recall`）
+- **`evaluate()` 由 tick 触发**：TICK_ROUTING 的 `DESIRE_EVAL → desire`。`evaluate()` 不接受 Event（tech-ref 签名），由组合根的 CLOCK_TICK 分发器按 `tick_type == DESIRE_EVAL` 调 `facade.evaluate()`。`desire_generated` 因此无上游 tick 溯源——`desire_generated` 的 `correlation_id = desire.id`（溯源到欲望自身，断链局限；与 06-memory-system 的 `record_recall` 一样属于当前实现限制）
 - **加压增量（默认值，标注可推翻）**：`_OBSERVATION_PRESSURE_DELTA=0.15`（观察状态→互动欲 +0.15）、`_LONG_TERM_PRESSURE_DELTA=0.1`（每个长期欲望周期→对应类型 +0.1）、`_REST_PRESSURE_DELTA=0.1`（疲惫 `energy < ENERGY_REST_THRESHOLD`→休息欲 +0.1）、`_CREATION_ACTIVITY_PRESSURE_DELTA=0.15`（读书/自由探索结束→创造欲 +0.15）。加压复用本 spec 值机制的 `apply_pressure`
-- **衰减时机（决策：加 `updated_at` 列，已与用户确认）**：`elapsed_days = (now - updated_at) / 86400`，`decay_value(value, elapsed_days, config.value_decay)`。`updated_at` 记录"最后一次 value 变化"，每次 evaluate 先衰减结算再写回 `updated_at = now`；衰减是单调的，两次 evaluate 之间 value 不实时下降（同 09 的 `decay_freshness` 局限），相对顺序不破坏
+- **衰减时机（决策：加 `updated_at` 列，已与用户确认）**：`elapsed_days = (now - updated_at) / 86400`，`decay_value(value, elapsed_days, config.value_decay)`。`updated_at` 记录"最后一次 value 变化"，每次 evaluate 先衰减结算再写回 `updated_at = now`；衰减是单调的，两次 evaluate 之间 value 不实时下降（与 06-memory-system 的 `decay_freshness` 一样属于按访问结算的当前实现限制），相对顺序不破坏
 - **达峰生成（决策：只生成最迫切 1 个，已与用户确认）**：达峰判据 = `at_peak(value, peak) and is_expressible(value, suppression)`（本 spec 值机制的门控组合）；多个达峰类型时 `max(..., key=value)` 取最高者生成 1 个，**只重置选中类型**，其余达峰类型保留压力下次 evaluate 再生成——每次 evaluate 最多 1 次 LLM 调用（原则 1）
 - **去重（decision，可推翻）**：`run_eval` 生成后、入队前两步判定——① **话题锚点优先**：新欲望 `goal.topic` 非 None 时，与 `list_pending()` 各待消费欲望的 `goal.topic` 精确相等即判重复丢弃（确定性、零误判、不依赖 embedding）；② **余弦兜底**：`goal.topic` 缺失（None）或未命中时，用注入的 `EmbedFn`（`memory/retrieval` 的 `build_embed`，与 memory/evaluator 共享同一实例）算新欲望 `description` 的 embedding，与 `list_pending()` 各 description embedding 做 `cosine` 比对，任一 `>= _DEDUP_SIM_THRESHOLD(0.9)` 判语义重复丢弃（不入队、不发布，value 已在重置步骤归零）。`embed=None`（向量层禁用）或 embed 抛异常降级为不去重（best-effort 旁路，同矛盾检测）
-- **主题种子（decision，可推翻）**：`_pick_topic_seed` 按「没做过 / 新鲜度最低」从对应类型长期欲望的子主题池取——先查记忆（注入的 `list_memories` 回调，组合根接 `memory.list_memories`）做 substring 匹配，无命中记忆（= 没做过）最优先，都做过取新鲜度最低者；空池返回 `None`。种子拼进 `_build_desire_prompt` 给 LLM 作生成上下文；**探索欲的 `goal.topic` 由 seed 确定性钉死**——解析后 `goal is not None` 时强制 `goal.topic = seed`（无 seed 则清空为 `None`），杜绝 LLM 漂移主题（如名字撞车）；`goal=None` 时不合成 goal（保持单次满足语义），自由探索由 14 的 topic 门槛兜底；**互动欲的 seed 同样承载进 `goal.topic`**——`goal` 常为 None，seed 存在时构造 `Goal(action=OBSERVE, count=1, topic=seed)`（count=1 保持「搭话一次即满足」语义不变），使互动欲也能按话题锚点去重
+- **主题种子（decision，可推翻）**：`_pick_topic_seed` 按「没做过 / 新鲜度最低」从对应类型长期欲望的子主题池取——先查记忆（注入的 `list_memories` 回调，组合根接 `memory.list_memories`）做 substring 匹配，无命中记忆（= 没做过）最优先，都做过取新鲜度最低者；空池返回 `None`。种子拼进 `_build_desire_prompt` 给 LLM 作生成上下文；**探索欲的 `goal.topic` 由 seed 确定性钉死**——解析后 `goal is not None` 时强制 `goal.topic = seed`（无 seed 则清空为 `None`），杜绝 LLM 漂移主题（如名字撞车）；`goal=None` 时不合成 goal（保持单次满足语义），自由探索由 09-activity 的 topic 非空条件与 `should_explore` 限速规则兜底；**互动欲的 seed 同样承载进 `goal.topic`**——`goal` 常为 None，seed 存在时构造 `Goal(action=OBSERVE, count=1, topic=seed)`（count=1 保持「搭话一次即满足」语义不变），使互动欲也能按话题锚点去重
 - **`strength` 语义**：`ShortTermDesire.strength` = 达峰时的 `value`（生成前保存，值重置后仍保留），供展示/排序
 - **长期进度回写（decision，可推翻）**：满足时回写**最相关**的长期欲望 `progress += 0.1`（夹 `[0,1]`）、`strength -= 0.02`（夹 `[0,1]`）。`_most_relevant_long_term` 按 `goal.topic` 双向 substring 命中 `subtopics` 者优先，无 topic 或都不命中退回第一个 `type` 匹配；无 `type` 匹配返回 `None`（不回写）。**MVP 局限**：长期 `strength` 递减结果未被消费（prompt 读的是 `ShortTermDesire.strength`），接线 deferred（见 V3-roadmap）
-- **长期欲望初始化（seed）**：3 个初始集来自 canon §4（硬编码），归组合根启动时 `insert_long_term`（表空才 seed）；四类型 `desire_value` 同样由组合根用 `default_value(t)` 初始化并覆盖 `updated_at=now`。11 只提供 store 原语，不提供 seed 方法；`long_term_capacity` 由 `add_long_term` 消费——长期欲望运行时新增有两个入口（12-inner-life 反思 + 14-activity 探索终局），统一走 `add_long_term` 归口去重 + 容量检查（满不新增，不淘汰）
+- **长期欲望初始化（seed）**：3 个初始集来自 canon §4（硬编码），归组合根启动时 `insert_long_term`（表空才 seed）；四类型 `desire_value` 同样由组合根用 `default_value(t)` 初始化并覆盖 `updated_at=now`。07 只提供 store 原语，不提供 seed 方法；`long_term_capacity` 由 `add_long_term` 消费——长期欲望运行时新增有两个入口（08-inner-life 反思 + 09-activity 探索终局），统一走 `add_long_term` 归口去重 + 容量检查（满不新增，不淘汰）
 - **五态流转（V2，`ACTIVE`/`SUPPRESSED` 纳入）**：`PENDING → ACTIVE` 由 `claim_for_activity` 原子领取；`ACTIVE → SATISFIED | EXPIRED`（满足时从 ACTIVE 释放并结算）；`ACTIVE → SUPPRESSED`；`SUPPRESSED → PENDING`（`run_eval` 里类型仍可表达即释放回队列）。`SUPPRESSED` 可逆、非终态；续做路径恢复同一记录时由活动完成结算，不重复领取。
-- **`activity_end` 的满足信号契约（14 引用）**：`event.content` 含 `desire_id`（`str | None`）与 `goal_met`（`bool | None`）。`satisfy_from_activity_end` 缺任一键或非预期类型即跳过（不抛），因为观察用户/发呆等活动无欲望可满足。额外：`event.content["type"]` 为 `reading` / `free_exploration`（`ActivityType.value`）时，满足逻辑之外再给创造欲加压 `_CREATION_ACTIVITY_PRESSURE_DELTA`（创作活动 `creation` 结束不自循环；`type` 缺失/其他值跳过）
+- **`activity_end` 的满足信号契约（09-activity 引用）**：`event.content` 含 `desire_id`（`str | None`）与 `goal_met`（`bool | None`）。`satisfy_from_activity_end` 缺任一键或非预期类型即跳过（不抛），因为观察用户/发呆等活动无欲望可满足。额外：`event.content["type"]` 为 `reading` / `free_exploration`（`ActivityType.value`）时，满足逻辑之外再给创造欲加压 `_CREATION_ACTIVITY_PRESSURE_DELTA`（创作活动 `creation` 结束不自循环；`type` 缺失/其他值跳过）
 - **新增 `output_type="desire"`**：`LLMOutput.type` 自由字符串，开放集合新增无冲突
 
 ## 测试要点
@@ -160,7 +160,7 @@
     - [ ] `add_long_term(desire)` → `list_long_term` 多一条、字段全等（委托 `insert_long_term`）
     - [ ] `pressure_creation(delta)` 委托 → 创造欲 `value` 加压 `delta`
     - [ ] `mark_active` / `mark_suppressed` 委托 → `status` 依次 ACTIVE / SUPPRESSED
-- [ ] 集成测试：无（LLM 全 mock、DB 用 `:memory:`；与 activity/expression 的真实编排归 13/14/17）
+- [ ] 集成测试：无（LLM 全 mock、DB 用 `:memory:`；与 activity/expression 的真实编排归 09-activity/11-expression）
 - [ ] E2E 测试：无
 
 ## 完成定义
@@ -170,4 +170,4 @@
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
 - [ ] 组合根：`DesireStore(db)` → `DesireFacade(store, bus, llm, evaluator, config.desire, lambda: memory.list_memories(), embed)`；启动时 seed 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）与 3 个初始长期欲望（canon §4，表空才 seed）；订阅 `OBSERVATION_STATE`/`ACTIVITY_END` 到 `facade.add_value`，CLOCK_TICK 的 `DESIRE_EVAL` 分发到 `facade.evaluate()`
-- [ ] 14-activity 消费欲望走 `get_pending()`；14-activity 的 `activity_end` content 契约（`desire_id`/`goal_met`）与本 spec §技术方案一致；17-expression 搭话：用户回复时 `satisfy` 该互动欲（消费闭环）
+- [ ] 09-activity 消费欲望走 `get_pending()`；09-activity 的 `activity_end` content 契约（`desire_id`/`goal_met`）与本 spec §技术方案一致；11-expression 搭话：用户回复时 `satisfy` 该互动欲（消费闭环）

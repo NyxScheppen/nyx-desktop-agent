@@ -2,7 +2,7 @@
 
 > 前端「陪伴读书」的**内容与进度层**：shell 加「读书」入口 → 书架 → 阅读页（真分页，无滚动）。用户翻页、Nyx 按 `reading_speed` 逐段追赶（前端 `setTimeout`，秒级逐段）、进度持久化、翻页触发冲动评估。
 > 范围：`components/reading/{BookshelfView,ReaderView}.tsx` + `stores/readerStore.ts` + `api/client.ts` 阅读端点。笔记面板见 `07-reading-events.md`。
-> 对齐后端：`19-reading-content`（books/paragraphs）、`20-reading-progress`（书架/进度/分页）、`21-reading-impulse`（`POST /api/impulse/evaluate`）。
+> 对齐后端：`12-reading-system`（books/paragraphs、书架/进度/分页、`POST /api/impulse/evaluate`）。
 
 ## 1. 组件树
 
@@ -100,12 +100,12 @@ reread(): Promise<void>                          // 重读：putProgress({user_p
 
 ### 关键决策
 
-- **`nyxStatus` 是派生态**：`idle`（`bookId===null`）/ `reading`（`nyxPosition < userPosition`）/ `waiting`（`nyxPosition >= userPosition`）——与后端 spec 20 决策一致（后端不存 `nyx_status`，前端派生）。
+- **`nyxStatus` 是派生态**：`idle`（`bookId===null`）/ `reading`（`nyxPosition < userPosition`）/ `waiting`（`nyxPosition >= userPosition`）——与阅读系统契约决策一致（后端不存 `nyx_status`，前端派生）。
 - **阅读系统一个 store**：书架/进度/段落/笔记同属「陪伴读书」一个系统，归 `readerStore`（CLAUDE.md「每系统一个 store」）。不拆 `noteStore`（反冗余）。
 - **进度持久化后写**：位置同步 `syncPosition` 每次 `putProgress(userPosition, nyxPosition, readingSpeed)`（fire-and-forget，失败静默、下次翻页重写覆盖）；`nyxPosition` 由追赶循环推进，也随下次 `putProgress` 落库（后端已定「state 是 value 派生」不存派生态，前端把最新 nyx 位置随进度写回即可）。
 - **真分页 + 高亮定位**（08 §5）：正文 `overflow:hidden` 无滚动；`paginate` 纯函数按段实测高度贪心分页，「上一页/下一页」逐段移动、`syncPosition(userPosition ± 1)`（复用「前翻逐段补发 evaluateImpulse + putProgress + 窗口重拉 + startCatchup」管线）；当前段 `--current` 高亮、Nyx 段 `--nyx` 🦊 标记（`userPosition` 即当前读到段，计数/高亮不漂移）。
-- **正文后端唯一来源**：`evaluateImpulse` 只传 `{book_id, paragraph_index, last_paragraph_index}`（不传 `paragraph_text`），正文后端自取（21 决策）。
-- **「读完」「重读」是前端动作**：`userPosition == total_paragraphs` 时显示「读完」（UI 确认，无后端调用）；`Progress.read_count >= 1` 时显示「重读」（`reread()` = `putProgress({user_position:1, nyx_position:1, reading_speed})` 复位）。后端「读完」标记是 `read_count`（22 的整本读完自动 `++`），前端不额外写 finished；重读触发反思全在后端 22，前端只需复位进度。
+- **正文后端唯一来源**：`evaluateImpulse` 只传 `{book_id, paragraph_index, last_paragraph_index}`（不传 `paragraph_text`），正文后端自取（12-reading-system 决策）。
+- **「读完」「重读」是前端动作**：`userPosition == total_paragraphs` 时显示「读完」（UI 确认，无后端调用）；`Progress.read_count >= 1` 时显示「重读」（`reread()` = `putProgress({user_position:1, nyx_position:1, reading_speed})` 复位）。后端「读完」标记是 `read_count`（12-reading-system 的整本读完自动 `++`），前端不额外写 finished；重读触发反思全在后端 12-reading-system，前端只需复位进度。
 - **`totalParagraphs` 来自书架列表项**：后端 `GET /api/progress` 不回 total、段落窗口只回窗口内段，故唯一现成来源是 `BookListItem.total_paragraphs`；`openBook` 用 `books.find(b => b.id === bookId)` 落 `readerStore.totalParagraphs`。**前置 `books` 已加载**（书架点书天然已 `loadBooks`；深链/刷新先 `loadBooks` 再 `openBook`），否则 `totalParagraphs=0`、clamp 失效——`syncPosition` 需 `totalParagraphs>0` 守卫，0 时不推进。
 
 ## 4. Nyx 追赶（`setTimeout`，秒级逐段）
@@ -134,7 +134,7 @@ reread(): Promise<void>                          // 重读：putProgress({user_p
   → 正文里高亮当前段（--current）+ 🦊 标 Nyx 段（--nyx）
 ```
 
-- **窗口规则**：`WINDOW_SIZE = 50`（每窗段数，decision 可推翻）。`openBook` 拉 `[user_position, user_position+WINDOW_SIZE-1]`；`syncPosition` 到窗口边界（`userPosition` 超出 `[windowFrom, windowFrom+WINDOW_SIZE-1]` 的 80%）时重拉**从 `userPosition` 起**的新窗（`centered=false`，当前段恒为窗口顶）。**请求前 clamp 到 `[1, total_paragraphs]`**（`from=max(1, …)`、`to=min(total_paragraphs, …)`）——后端 20 对 `from<1`/`to>total` 返回 422（越界不截断），前端必须先 clamp，否则书首/书尾窗口会 422。`nyxPosition` 追赶只在窗口内段有字长可算（§4 兜底）。
+- **窗口规则**：`WINDOW_SIZE = 50`（每窗段数，decision 可推翻）。`openBook` 拉 `[user_position, user_position+WINDOW_SIZE-1]`；`syncPosition` 到窗口边界（`userPosition` 超出 `[windowFrom, windowWindowFrom+WINDOW_SIZE-1]` 的 80%）时重拉**从 `userPosition` 起**的新窗（`centered=false`，当前段恒为窗口顶）。**请求前 clamp 到 `[1, total_paragraphs]`**（`from=max(1, …)`、`to=min(total_paragraphs, …)`）——阅读系统后端对 `from<1`/`to>total` 返回 422（越界不截断），前端必须先 clamp，否则书首/书尾窗口会 422。`nyxPosition` 追赶只在窗口内段有字长可算（§4 兜底）。
 - **翻页方向守卫**：`evaluateImpulse` 后端的 `paragraph_index <= last_paragraph_index → []` 已兜底回翻不触发；前端只在前翻时调用（回翻不评估），双保险。
 - **分页纯函数 `paginate`**（08 §5.1）：`paginate(paragraphs, measureHeight, viewportHeight): number[][]` 对**当前窗口**（≤50 段）贪心填满——`measureHeight(index) = (paraRefs.get(index)?.offsetHeight ?? 0) + GAP_PX`（`GAP_PX=12` 段间距计入分页，对齐 CSS `gap:0.75rem`）；加下一段将溢出 `viewportHeight` 则封页；单段高于 viewport 独占一页；空 `paragraphs`/`viewportHeight<=0` 返回 `[]`。
 - **测量/重测**（08 §5.2）：`viewportHeight` = `.reader-text` 的 `clientHeight`，`ResizeObserver` 维护成组件 state；`useLayoutEffect` 依赖 `[paragraphs, fontScale, viewportHeight, windowFrom]` 任一变化重测全部段高 + 重分页。

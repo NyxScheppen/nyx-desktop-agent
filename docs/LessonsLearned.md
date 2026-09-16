@@ -9,7 +9,7 @@
 
 ### 2026-08-24: 派生标签先分桶再格式化，别用原始值直接拼
 
-**来源**：14-activity `_schedule_block_id` PAUSED 恢复后时间线错位 Bug（#2）
+**来源**：09-activity `_schedule_block_id` PAUSED 恢复后时间线错位 Bug（#2）
 **教训**：时间线/网格标签本应从「第几个格子」推出，却用 `now % 一天秒数` 的原始余数直接格式化，产生 14:37 这类非整点标签，恢复时错位。
 **怎么做**：任何「桶/格/周期」标签，先 `block_index = int(now % SECONDS_PER_DAY) // 60 // grid_minutes` 分桶，再 `format_time_label(block_index, ...)` 格式化——标签必须只依赖格序号，不依赖格内偏移。
 **影响的文件/决策**：`nyx/activity/facade.py:_schedule_block_id`
@@ -80,14 +80,14 @@
 **来源**：记忆召回重构终审发现 `_vector_scores()` 仍保留旧的 `cosine > 0` 过滤，导致 ANN 返回的零余弦候选被丢弃，违背新 spec 的 bounded candidate 语义。
 **教训**：重构排序/检索公式时，旧实现里的 guard、filter、fallback 往往也是契约；如果新 spec 没明确保留，就必须逐个移除或改写，而不是只换主公式。
 **怎么做**：审查召回、排序、候选池、source 标注类改动前，先查本文件是否有类似“旧 guard 残留”教训；对边界分数（0、阈值等于、负值）、fallback 补足和 sources 加回归测试。
-**影响的文件/决策**：`nyx/memory/retrieval.py`、`tests/test_memory/test_retrieval.py`、`docs/specs/07-memory-system.md`
+**影响的文件/决策**：`nyx/memory/retrieval.py`、`tests/test_memory/test_retrieval.py`、`docs/specs/06-memory-system.md`
 
 ### 2026-09-14: checkpoint 字段要区分阶段产物和终局产物
 
 **来源**：活动状态机重构自审发现读书 checkpoint 曾准备用 `note` 同时表示“本块笔记”和“整本聚合笔记”，会导致恢复 finalize 时把片段笔记当完整笔记写入结果。
 **教训**：可续状态机里，同名字段跨阶段复用会制造隐性语义漂移；测试只看“跳过重复副作用”还不够，还要看恢复后返回的是哪个阶段的真实产物。
 **怎么做**：设计 checkpoint 时给中间产物和终局产物不同字段，例如 `note` vs `final_note`；为 finalized resume 增加“不重复副作用 + 返回终局产物”的回归测试，并同步事实表/spec/test-inventory。
-**影响的文件/决策**：`nyx/activity/reading_runner.py`、`tests/test_activity/test_reading_runner.py`、`docs/specs/14-activity.md`
+**影响的文件/决策**：`nyx/activity/reading_runner.py`、`tests/test_activity/test_reading_runner.py`、`docs/specs/09-activity.md`
 
 ### 2026-09-14: 声明式路由必须和运行时注册共用单一来源
 
@@ -101,7 +101,7 @@
 **来源**：模块与事件总线架构审查发现总线在持久化后顺序执行 handler，handler 异常只记录日志并继续；事件不会重放，跨模块 `ACTIVITY_END` 等更新可能部分成功。
 **教训**：event log 只能证明事件被记录，不能证明所有消费者都完成；“persist → dispatch”若没有消费状态、重试或幂等策略，会把局部失败变成静默不一致。
 **怎么做**：为关键事件明确至少一次/至多一次语义；为消费者保留可重试的投递记录或幂等键；关停时排空队列，handler 失败要能被监控和补偿，而不是只依赖日志。
-**影响的文件/决策**：`nyx/events/bus.py`、`nyx/subscriptions.py`、`docs/specs/05-module-bus-system.md`
+**影响的文件/决策**：`nyx/events/bus.py`、`nyx/subscriptions.py`、`docs/specs/04-module-bus-system.md`
 
 ### 2026-09-14: 事务回滚不能自动恢复进程内派生状态
 
@@ -129,7 +129,7 @@
 **来源**：阅读重读反思事件链审查
 **教训**：记忆已经落库不代表后续 `REFLECTION` 事件已经被总线受理；若先清空 buffer、再发布事件，事件受理失败会让后续反思触发永久丢失。
 **怎么做**：把所有必需的下游事件发布放在瞬态快照清理之前；任一步失败都保留快照，允许边界重试。对于可重复的落库步骤依靠内容/语义去重，避免重试造成重复记忆。
-**影响的文件/决策**：`nyx/reading/integration.py`、`docs/specs/22-reading-notes.md`
+**影响的文件/决策**：`nyx/reading/integration.py`、`docs/specs/12-reading-system.md`
 
 ### 2026-09-15: 聚合状态禁止分离式读改写
 
@@ -144,6 +144,41 @@
 **教训**：本地业务事务已经提交后，`announce_committed`/唤醒失败不等于业务执行失败；若外层统一进入失败收尾，会把已完成活动改成 `INCOMPLETE`，或把已满足欲望重新抑制。
 **怎么做**：把「本地事实提交」「事件已持久化」「内存 worker 已被唤醒」分成独立结果；提交后的广播失败只记录并依靠启动扫描/重试恢复，不能再次执行反向业务状态转换。
 **影响的文件/决策**：`nyx/activity/lifecycle.py`、`nyx/activity/facade.py`、`nyx/events/bus.py`
+
+### 2026-09-15: 主动副作用必须晚于成功承诺
+
+**来源**：表达系统主动搭话审查
+**教训**：主动搭话在 LLM 产出和事件发布前就打断当前活动；若生成失败、事件受理失败或调用中途崩溃，活动已经被改变但搭话并未成立。
+**怎么做**：先完成可重试的外部生成，再用一个可证明成功的本地事务/事件承诺记录主动行为，最后才执行活动打断等派生副作用；失败路径不得留下“已打断但没有主动行为”的状态。
+**影响的文件/决策**：`nyx/runtime.py`、`nyx/expression/facade.py`、`nyx/activity/`
+
+### 2026-09-15: 等待用户回应的状态不能只放进程内存
+
+**来源**：表达系统提问与主动搭话审查
+**教训**：`_waiting_user`、`_pending_chat_desire_id`、`_ask_at`、`_chat_at` 和 `last_chat_at` 都是进程内状态；重启或多实例后会丢失等待关系，导致未回答记忆不落库、互动欲不超时回灌或主动搭话冷却失效。
+**怎么做**：需要跨 tick、重试或重启维持的等待关系持久化为可恢复状态，并以 correlation/desire id 做幂等键；超时结算与状态清理必须在同一业务事务中完成。
+**影响的文件/决策**：`nyx/expression/facade.py`、`nyx/runtime.py`、`nyx/app_context.py`、事件/数据库契约
+
+### 2026-09-15: 共享资源消费要先原子领取再执行
+
+**来源**：表达系统主动搭话审查
+**教训**：主动搭话从 `get_pending()` 读取互动欲望后直接调用 LLM，未原子领取；并发 tick、重放或其他消费者可能同时使用同一条欲望，产生重复搭话或与活动消费冲突。
+**怎么做**：将欲望消费统一为条件更新的 claim；只有 claim 成功的调用方才生成和发送主动行为，失败调用方必须退出，超时/失败再按明确状态释放或结算。
+**影响的文件/决策**：`nyx/runtime.py`、`nyx/desire/facade.py`、`nyx/expression/facade.py`
+
+### 2026-09-15: 解析失败不能伪装成成功产出
+
+**来源**：表达系统回复流程审查
+**教训**：`_parse_reply` 失败后把原始输出直接当作 `speak`；空输出甚至会发布空 `SPEAK`，并记录为一次已完成回复，导致提问信号、历史和重试语义失真。
+**怎么做**：解析失败或空产出必须进入明确失败/重试路径；只有结构合法且内容非空时才发布 `SPEAK`/`ASK`、写会话历史和结束本次消费。
+**影响的文件/决策**：`nyx/expression/pipeline.py`、`nyx/expression/facade.py`、`nyx/events/`
+
+### 2026-09-16: 写后回读的可空内部契约必须在公开边界显式收窄
+
+**来源**：阅读进度 CAS 重构的 `pyright` 检查
+**教训**：内部查询函数为了支持“写前不存在”的分支而返回 `T | None` 时，写入函数不能直接把它返回为公开的 `T`；数据库理论上应已写入，不等于类型系统可以替调用方证明这一点。
+**怎么做**：写入提交后显式检查回读结果，空值抛出明确的内部一致性错误，再返回非空值；同时保留针对写后回读缺失的回归路径。
+**影响的文件/决策**：`nyx/reading/store.py`、所有带写后回读的 store 写路径
 
 ---
 

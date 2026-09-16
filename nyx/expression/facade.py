@@ -7,14 +7,16 @@
 import random
 import time
 from collections import deque
+from uuid import uuid4
 
 from nyx.activity.facade import ActivityFacade
 from nyx.config import ExpressionConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ContextMode, EventType
+from nyx.enums import ContextMode, EventType, InteractionKind
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
+from nyx.expression.classifier import classify_user_intent
 from nyx.expression.mutter import (
     _LLM_MUTTER_RATE,
     _MUTTER_RATE,
@@ -26,11 +28,12 @@ from nyx.expression.mutter import (
 )
 from nyx.expression.pipeline import ReplyDeps, ReplyState, build_reply_graph
 from nyx.expression.prompt import build_system_prompt
+from nyx.expression.store import ExpressionInteractionStore
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
-from nyx.types import CurrentState, Message, ShortTermDesire
+from nyx.types import CurrentState, Event, InteractionAttempt, Message, ShortTermDesire
 
 
 class ExpressionFacade:
@@ -49,6 +52,8 @@ class ExpressionFacade:
         ask_guidance: str,
         config: ExpressionConfig,
         tools: ToolRegistry,
+        interaction_store: ExpressionInteractionStore | None = None,
+        knowledge_boundary: str | None = None,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -60,6 +65,8 @@ class ExpressionFacade:
         self._canon = canon
         self._ask_guidance = ask_guidance
         self._config = config
+        self._interaction_store = interaction_store
+        self._knowledge_boundary = knowledge_boundary
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._last_slow_at = 0.0
         # 待用户回应状态：问句（wait_user）与搭话（被忽略回灌）各一组。
@@ -84,17 +91,128 @@ class ExpressionFacade:
                 config=self._config,
                 history=self._history,
                 tools=tools,
+                knowledge_boundary=knowledge_boundary,
+                register_question=self.register_question,
             )
         )
 
-    async def reply(self, msg: str, correlation_id: str) -> None:
+    async def register_question(
+        self,
+        text: str,
+        kind: InteractionKind,
+        source_id: str,
+        correlation_id: str,
+    ) -> str:
+        """Persist a question attempt and its canonical ASK atomically."""
+        attempt_id = str(uuid4())
+        now = time.time()
+        attempt = InteractionAttempt(
+            id=attempt_id,
+            kind=kind,
+            source_id=source_id,
+            correlation_id=correlation_id,
+            text=text,
+            created_at=now,
+            expires_at=now + self._config.ask_timeout,
+        )
+        event = _ask_event(text, attempt_id, correlation_id, kind)
+        await self._commit_attempt_event(attempt, event)
+        return attempt_id
+
+    async def _commit_attempt_event(
+        self, attempt: InteractionAttempt, event: Event
+    ) -> None:
+        """Commit an interaction row and its event as one local transaction."""
+        await self._commit_attempt_events(attempt, [event])
+
+    async def _commit_attempt_events(
+        self, attempt: InteractionAttempt, events: list[Event]
+    ) -> None:
+        """Commit one interaction attempt and all durable events atomically."""
+        if self._interaction_store is None:
+            for event in events:
+                await self._bus.publish(event)
+            return
+        async with self._interaction_store.db.transaction():
+            await self._interaction_store.create(attempt)
+            for event in events:
+                await self._bus.append_in_transaction(event)
+        for event in events:
+            await self._bus.announce_committed(event)
+
+    async def commit_reading_question(
+        self,
+        text: str,
+        source_id: str,
+        correlation_id: str,
+        event_content: dict[str, object],
+    ) -> str:
+        """Atomically admit the reading question attempt, ASK, and reading event."""
+        attempt_id = str(uuid4())
+        now = time.time()
+        attempt = InteractionAttempt(
+            id=attempt_id,
+            kind=InteractionKind.READING_QUESTION,
+            source_id=source_id,
+            correlation_id=correlation_id,
+            text=text,
+            created_at=now,
+            expires_at=now + self._config.ask_timeout,
+        )
+        ask = _ask_event(
+            text, attempt_id, correlation_id, InteractionKind.READING_QUESTION
+        )
+        reading = Event(
+            id=str(uuid4()),
+            timestamp=now,
+            source=ask.source,
+            type=EventType.READING_QUESTION,
+            content={**event_content, "attempt_id": attempt_id},
+            correlation_id=correlation_id,
+        )
+        await self._commit_attempt_events(attempt, [ask, reading])
+        return attempt_id
+
+    async def answer_waiting(
+        self, reply_event_id: str, reply_to: str | None = None
+    ) -> InteractionAttempt | None:
+        """Atomically claim and finish at most one waiting interaction."""
+        if self._interaction_store is None:
+            return None
+        attempt = await self._interaction_store.claim_reply(reply_event_id, reply_to)
+        if attempt is None:
+            return None
+        if not await self._interaction_store.finish_answer(
+            attempt.id, reply_event_id
+        ):
+            return None
+        return attempt
+
+    async def latest_initiate_chat_at(self) -> float | None:
+        """Return the latest durable proactive-chat commitment time."""
+        if self._interaction_store is None:
+            return None
+        return await self._interaction_store.latest_created_at(
+            InteractionKind.INITIATE_CHAT
+        )
+
+    async def reply(
+        self,
+        msg: str,
+        correlation_id: str,
+        reply_to: str | None = None,
+    ) -> None:
         """完整回复流程：跑 LangGraph 图，内部发布 think/speak/ask。"""
         # 用户说话 = 回应了之前的问句/搭话；清等待状态（不做「是否真在答」判断）。
-        self._waiting_user = False
-        self._ask_cid = None
-        if self._pending_chat_desire_id is not None:
-            await self._desire.satisfy(self._pending_chat_desire_id, True)
-        self._pending_chat_desire_id = None
+        answered = await self.answer_waiting(correlation_id, reply_to)
+        if answered is not None and answered.kind is InteractionKind.INITIATE_CHAT:
+            await self._desire.satisfy(answered.source_id, True)
+        if self._interaction_store is None:
+            self._waiting_user = False
+            self._ask_cid = None
+            if self._pending_chat_desire_id is not None:
+                await self._desire.satisfy(self._pending_chat_desire_id, True)
+            self._pending_chat_desire_id = None
         state = await self._inner_life.get_state()
         initial: ReplyState = {
             "message": msg,
@@ -112,15 +230,18 @@ class ExpressionFacade:
             "correlation_id": correlation_id,
             "last_slow_at": self._last_slow_at,
             "tool_outputs": [],
+            "intent": classify_user_intent(msg),
+            "fallback": False,
         }
         result = await self._graph.ainvoke(initial)
         if result["mode"] is ContextMode.SLOW:
             self._last_slow_at = time.time()
         if result["ask"] is not None:
-            self._waiting_user = True
-            self._ask_text = result["ask"]
-            self._ask_at = time.time()
-            self._ask_cid = correlation_id
+            if self._interaction_store is None:
+                self._waiting_user = True
+                self._ask_text = result["ask"]
+                self._ask_at = time.time()
+                self._ask_cid = correlation_id
 
     async def initiate_chat(self, desire: ShortTermDesire, state: CurrentState) -> bool:
         """搭话：快通道生成一句开场白。
@@ -128,13 +249,18 @@ class ExpressionFacade:
         无话则发 False（组合根 据此不更新 last_chat_at）。
         """
         system = build_system_prompt(
-            self._canon, state, ask_guidance=self._ask_guidance
+            self._canon,
+            state,
+            ask_guidance=self._ask_guidance,
+            knowledge_boundary=self._knowledge_boundary,
         )
         user = (
             f"你想主动和用户说点什么。基于这个念头：{desire.description}。"
             "说一句自然的开场白。"
         )
-        correlation_id = desire.id
+        correlation_id = (
+            str(uuid4()) if self._interaction_store is not None else desire.id
+        )
         output = await self._llm.complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             module="expression",
@@ -144,16 +270,31 @@ class ExpressionFacade:
         await self._evaluator.evaluate(output)
         if not output.content.strip():
             return False  # 无话则不发
-        await self._bus.publish(
-            internal_text_event(EventType.INITIATE_CHAT, output.content, correlation_id)
+        attempt_id = str(uuid4())
+        now = time.time()
+        attempt = InteractionAttempt(
+            id=attempt_id,
+            kind=InteractionKind.INITIATE_CHAT,
+            source_id=desire.id,
+            correlation_id=correlation_id,
+            text=output.content,
+            created_at=now,
+            expires_at=now + self._config.chat_ignore_timeout,
         )
+        event = internal_text_event(
+            EventType.INITIATE_CHAT, output.content, correlation_id
+        )
+        event.content["attempt_id"] = attempt_id
+        event.content["desire_id"] = desire.id
+        await self._commit_attempt_event(attempt, event)
         # 开场白落历史：用户随后回复时能回溯到这句搭话（记忆互通）。
         self._history.append(
             Message(role="nyx", content=output.content, timestamp=time.time())
         )
         # 记「待回应」：用户没回 → check_timeouts 淘汰该互动欲（值回灌）。
-        self._pending_chat_desire_id = desire.id
-        self._chat_at = time.time()
+        if self._interaction_store is None:
+            self._pending_chat_desire_id = desire.id
+            self._chat_at = time.time()
         return True
 
     def record_proactive_turn(self, text: str) -> None:
@@ -187,7 +328,11 @@ class ExpressionFacade:
         self, state: CurrentState, correlation_id: str
     ) -> str | None:
         """LLM 即兴碎碎念（低频走神）：一句自然口语，可停顿/离题；空则回退模板。"""
-        system = build_system_prompt(self._canon, state)
+        system = build_system_prompt(
+            self._canon,
+            state,
+            knowledge_boundary=self._knowledge_boundary,
+        )
         user = (
             "你闲下来了，心里冒出一句碎碎念。说一句自然、口语的话，"
             "可以有点走神或停顿，一两句就好，别太正式。"
@@ -237,6 +382,23 @@ class ExpressionFacade:
     async def check_timeouts(self, now: float) -> None:
         """超时收尾（tick 心跳直呼）：问句无人答 → 记「用户未回答」；
         搭话被忽略 → 淘汰该互动欲（expire 内值回灌 +0.3）。"""
+        if self._interaction_store is not None:
+            while True:
+                attempt = await self._interaction_store.claim_expired(now)
+                if attempt is None:
+                    return
+                try:
+                    if attempt.kind is InteractionKind.INITIATE_CHAT:
+                        await self._desire.expire(attempt.source_id)
+                    else:
+                        await self._memory.record_no_answer(
+                            attempt.text, attempt.correlation_id
+                        )
+                except Exception:
+                    await self._interaction_store.release_claim(attempt.id)
+                    raise
+                if not await self._interaction_store.finish_expired(attempt.id):
+                    return
         if self._waiting_user and now - self._ask_at >= self._config.ask_timeout:
             await self._memory.record_no_answer(self._ask_text, self._ask_cid or "")
             self._waiting_user = False
@@ -247,3 +409,15 @@ class ExpressionFacade:
         ):
             await self._desire.expire(self._pending_chat_desire_id)
             self._pending_chat_desire_id = None
+
+
+def _ask_event(
+    text: str,
+    attempt_id: str,
+    correlation_id: str,
+    kind: InteractionKind,
+):
+    event = internal_text_event(EventType.ASK, text, correlation_id)
+    event.content["attempt_id"] = attempt_id
+    event.content["kind"] = kind.value
+    return event

@@ -1,4 +1,4 @@
-"""segment_html 纯函数测试（19-reading-content）。"""
+"""segment_html 纯函数测试（reading-system spec）。"""
 
 from nyx.reading.segmenter import Segment, segment_html
 
@@ -39,6 +39,12 @@ def test_long_paragraph_splits_at_period() -> None:
 def test_fallback_no_block_tags_whole_text() -> None:
     segments = segment_html("<div>纯文本无块级</div>")
     assert segments == [Segment(text="纯文本无块级", is_chapter_start=False)]
+
+
+def test_fallback_no_block_tags_also_splits_long_text() -> None:
+    segments = segment_html("。".join(["长"] * 3501))
+    assert len(segments) > 1
+    assert all(len(segment.text) <= 3000 for segment in segments)
 
 
 def test_empty_html_returns_empty() -> None:

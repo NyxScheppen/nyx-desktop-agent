@@ -8,7 +8,13 @@ from nyx.activity.facade import ActivityFacade
 from nyx.activity.material_store import MaterialStore
 from nyx.activity.screen import ScreenObserver, capture_screen
 from nyx.activity.store import ActivityStore
-from nyx.bootstrap import load_ask, load_canon, seed_desire, seed_inner_life
+from nyx.bootstrap import (
+    load_ask,
+    load_canon,
+    load_prompt_files,
+    seed_desire,
+    seed_inner_life,
+)
 from nyx.config import Config
 from nyx.db import Database, connect
 from nyx.desire.facade import DesireFacade
@@ -17,6 +23,7 @@ from nyx.eval.evaluator import Evaluator
 from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
+from nyx.expression.store import ExpressionInteractionStore
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
@@ -120,6 +127,9 @@ async def build_app_context(
     prompt_dir = Path(os.environ.get("NYX_CANON_DIR", "prompts"))
     canon = load_canon(prompt_dir, canon_files)
     ask = load_ask(prompt_dir, ask_files)
+    knowledge_boundary = load_prompt_files(
+        prompt_dir, ("knowledge-boundary.md",)
+    )
     activity = ActivityFacade(
         activity_store,
         material_store,
@@ -157,6 +167,8 @@ async def build_app_context(
         ask,
         config.expression,
         tools,
+        interaction_store=ExpressionInteractionStore(db),
+        knowledge_boundary=knowledge_boundary,
     )
     reading = ReadingFacade(
         ReadingStore(db),

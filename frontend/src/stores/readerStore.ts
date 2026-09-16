@@ -19,14 +19,14 @@ import type {
 } from "../types/api";
 
 // 阅读系统唯一 store（06-reading-panel §3）：书架/进度/段落/追赶循环。
-// 笔记见 07-reading-events，同属本 store（不拆 impulseStore/noteStore）。
+// 笔记见 docs/frontend/07-reading-events.md，同属本 store（不拆 impulseStore/noteStore）。
 
 export type NyxStatus = "idle" | "reading" | "waiting"; // 派生态，不落 store
 
 export const WINDOW_SIZE = 50; // 每窗段数（§5 决策）
 const MIN_CATCHUP_SEC = 1; // 段落未加载 / 过短时的保底节奏
 const MAX_CATCHUP_SEC = 30; // 单段追赶耗时上界
-const MIN_READING_SPEED = 10; // 字/秒，后端校验下界 [10, 200]（20-reading-progress）
+const MIN_READING_SPEED = 10; // 字/秒，后端校验下界 [10, 200]（reading-system spec）
 const CATCHUP_REFRESH_FRACTION = 0.8; // 窗口 80% 边界触发重拉
 export const GAP_PX = 12; // 段间距（px），对齐 CSS .reader-text__pages 的 gap: 0.75rem（08 §5.1）
 
@@ -41,6 +41,7 @@ type ReaderState = {
   nyxPosition: number; // Nyx 读到第几段（1-based）
   readingSpeed: number; // 字符/秒
   readCount: number; // 读完几遍（0=未读完，>=1 可重读）
+  progressRevision: number; // 后端 CAS 版本
   notes: UserNoteWithAnnotations[]; // 用户笔记（含批注）
   notesError: string | null;
   loadBooks: () => Promise<void>;
@@ -61,12 +62,84 @@ type ReaderState = {
 
 // 追赶 timer 放 module-level（不进 store state，同 chatStore 的 replyTimer 约定，02-stores §1）。
 let catchupTimer: ReturnType<typeof setTimeout> | null = null;
+const progressQueues = new Map<string, Promise<void>>();
+const impulseQueues = new Map<string, Promise<void>>();
 
 function clearCatchupTimer(): void {
   if (catchupTimer !== null) {
     clearTimeout(catchupTimer);
     catchupTimer = null;
   }
+}
+
+function enqueueImpulse(
+  bookId: string,
+  paragraphIndex: number,
+  lastParagraphIndex: number,
+): Promise<void> {
+  const previous = impulseQueues.get(bookId);
+  const run = () =>
+    evaluateImpulse(bookId, paragraphIndex, lastParagraphIndex).then(
+      () => undefined,
+    );
+  const next =
+    previous === undefined ? run() : previous.catch(() => {}).then(run);
+  const tracked = next.finally(() => {
+    if (impulseQueues.get(bookId) === tracked) impulseQueues.delete(bookId);
+  });
+  impulseQueues.set(bookId, tracked);
+  return tracked;
+}
+
+function enqueueProgress(
+  bookId: string,
+  payload: {
+    user_position: number;
+    nyx_position: number;
+    reading_speed: number;
+  },
+  get: () => ReaderState,
+  set: (state: Partial<ReaderState>) => void,
+): Promise<void> {
+  const previous = progressQueues.get(bookId);
+  const run = async (): Promise<void> => {
+      if (get().bookId !== bookId) return;
+      const revision = get().progressRevision;
+      try {
+        const result = await putProgress(bookId, {
+          ...payload,
+          expected_revision: revision,
+        });
+        if (get().bookId === bookId) {
+          set({
+            progressRevision: result.revision,
+            readCount: result.read_count,
+          });
+        }
+      } catch {
+        try {
+          const fresh = await getProgress(bookId);
+          const retry = await putProgress(bookId, {
+            ...payload,
+            expected_revision: fresh.revision,
+          });
+          if (get().bookId === bookId) {
+            set({
+              progressRevision: retry.revision,
+              readCount: retry.read_count,
+            });
+          }
+        } catch {
+          // 下一次用户动作会再次尝试写入。
+        }
+      }
+    };
+  const next = previous === undefined ? run() : previous.catch(() => {}).then(run);
+  const tracked = next.finally(() => {
+    if (progressQueues.get(bookId) === tracked) progressQueues.delete(bookId);
+  });
+  progressQueues.set(bookId, tracked);
+  return tracked;
 }
 
 // 派生态：idle（未开书）/ reading（Nyx 落后）/ waiting（Nyx 追上）。纯函数可测。
@@ -87,7 +160,7 @@ export function catchupDurationMs(textLength: number, readingSpeed: number): num
   return sec * 1000;
 }
 
-// 窗口计算：clamp 到 [1, total]（后端 20 对越界 from/to 返回 422，前端必须先 clamp）。
+// 窗口计算：clamp 到 [1, total]（12-reading-system 后端对越界 from/to 返回 422，前端必须先 clamp）。
 // centered=false：窗口从 userPosition 起（当前段在窗口顶）；true：以 userPosition 为中心。
 export function computeWindow(
   userPosition: number,
@@ -159,6 +232,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     nyxPosition: 1,
     readingSpeed: 50,
     readCount: 0,
+    progressRevision: 0,
     notes: [],
     notesError: null,
 
@@ -173,10 +247,20 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     },
 
     openBook: async (bookId) => {
-      // totalParagraphs 唯一现成来源是书架列表项（后端 GET /api/progress 不回 total）。
-      const total = get().books.find((b) => b.id === bookId)?.total_paragraphs ?? 0;
-      set({ bookId, totalParagraphs: total, booksError: null });
       try {
+        let book = get().books.find((b) => b.id === bookId);
+        if (book === undefined || book.total_paragraphs <= 0) {
+          const books = await getBooks();
+          set({ books });
+          book = books.find((b) => b.id === bookId);
+        }
+        const total = book?.total_paragraphs ?? 0;
+        set({
+          bookId,
+          totalParagraphs: total,
+          booksError: null,
+          progressRevision: 0,
+        });
         const progress = await getProgress(bookId);
         const userPosition = progress.user_position;
         const nyxPosition = progress.nyx_position;
@@ -185,6 +269,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           nyxPosition,
           readingSpeed: progress.reading_speed,
           readCount: progress.read_count,
+        progressRevision: progress.revision ?? 0,
         });
         await fetchWindow(bookId, userPosition, total, false);
         if (nyxPosition < userPosition) get().startCatchup();
@@ -203,6 +288,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         userPosition: 1,
         nyxPosition: 1,
         readCount: 0,
+        progressRevision: 0,
         notes: [],
         notesError: null,
       });
@@ -216,17 +302,19 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       set({ userPosition: clamped });
       const { nyxPosition, readingSpeed } = get();
       // 进度持久化后写：fire-and-forget，失败静默、下次翻页重写覆盖。
-      void putProgress(bookId, {
+      await enqueueProgress(bookId, {
         user_position: clamped,
         nyx_position: nyxPosition,
         reading_speed: readingSpeed,
-      }).catch(() => {});
+      }, get, set);
       // 前翻逐段补发冲动（整屏翻一次跨 N 段，逐段 evaluate 保住每段都有机会触发；
       // 后翻不评估，双保险；正文后端自取，不传 text）。
       if (clamped > userPosition) {
+        const impulseTasks: Promise<void>[] = [];
         for (let i = userPosition + 1; i <= clamped; i += 1) {
-          void evaluateImpulse(bookId, i, i - 1).catch(() => {});
+          impulseTasks.push(enqueueImpulse(bookId, i, i - 1));
         }
+        await Promise.all(impulseTasks);
       }
       if (needsWindowRefresh(clamped, get().windowFrom)) {
         await fetchWindow(bookId, clamped, totalParagraphs, false);
@@ -238,11 +326,11 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const { bookId, userPosition, nyxPosition } = get();
       if (bookId === null) return;
       set({ readingSpeed: speed });
-      void putProgress(bookId, {
+      await enqueueProgress(bookId, {
         user_position: userPosition,
         nyx_position: nyxPosition,
         reading_speed: speed,
-      }).catch(() => {});
+      }, get, set);
     },
 
     startCatchup: () => {
@@ -271,14 +359,14 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         get().startCatchup();
       } else {
         // 追赶收尾（追上 userPosition，无「下一次 putProgress」）：把最新 nyx_position
-        // 落库，否则重载后读到陈旧落后值会重追、重放 BOOK_FINISHED——22 幂等靠进程内
+        // 落库，否则重载后读到陈旧落后值会重追、重放 BOOK_FINISHED——12-reading-system 幂等靠进程内
         // _finished_books，重启即丢 → read_count 重复 ++ 且误触 reflect。
         const readingSpeed = get().readingSpeed;
-        void putProgress(bookId, {
-          user_position: userPosition,
-          nyx_position: next,
-          reading_speed: readingSpeed,
-        }).catch(() => {});
+      void enqueueProgress(bookId, {
+        user_position: userPosition,
+        nyx_position: next,
+        reading_speed: readingSpeed,
+        }, get, set);
       }
     },
 
@@ -288,11 +376,11 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       get().stopCatchup();
       set({ userPosition: 1, nyxPosition: 1 });
       // read_count 后端不碰（保持 >=1）；只复位进度。
-      void putProgress(bookId, {
+      await enqueueProgress(bookId, {
         user_position: 1,
         nyx_position: 1,
         reading_speed: readingSpeed,
-      }).catch(() => {});
+      }, get, set);
       await fetchWindow(bookId, 1, totalParagraphs, false);
     },
 

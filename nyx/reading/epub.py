@@ -1,4 +1,4 @@
-"""EPUB 解析：字节 → 元数据 + 段落 + 内容哈希（spec 19）。同步、无 LLM。
+"""EPUB 解析：字节 → 元数据 + 段落 + 内容哈希（reading-system spec）。同步、无 LLM。
 
 ebooklib 无类型标注，本文件对它的返回值按 untyped 第三方处理（见文件头
 pyright 豁免）。title/author 缺失回退空串——title 的 filename 回退由

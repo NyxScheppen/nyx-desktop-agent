@@ -217,7 +217,15 @@ describe("api/client reading", () => {
   });
 
   it("getProgress：GET /api/progress/{id}、解析 Progress", async () => {
-    const fixture = { user_position: 3, nyx_position: 1, reading_speed: 50, read_count: 0 };
+    const fixture = {
+      book_id: "b1",
+      user_position: 3,
+      nyx_position: 1,
+      reading_speed: 50,
+      read_count: 0,
+      updated_at: 1,
+      revision: 2,
+    };
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -227,18 +235,36 @@ describe("api/client reading", () => {
     expect(res).toEqual(fixture);
   });
 
-  it("putProgress：PUT + body 三键 {user_position, nyx_position, reading_speed}", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+  it("putProgress：PUT + body 带 expected_revision，并返回新进度", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      book_id: "b1",
+      user_position: 4,
+      nyx_position: 2,
+      reading_speed: 60,
+      read_count: 0,
+      updated_at: 2,
+      revision: 3,
+    }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await putProgress("b1", { user_position: 4, nyx_position: 2, reading_speed: 60 });
+    await putProgress("b1", {
+      user_position: 4,
+      nyx_position: 2,
+      reading_speed: 60,
+      expected_revision: 2,
+    });
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/progress/b1");
     expect(init).toMatchObject({
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_position: 4, nyx_position: 2, reading_speed: 60 }),
+      body: JSON.stringify({
+        user_position: 4,
+        nyx_position: 2,
+        reading_speed: 60,
+        expected_revision: 2,
+      }),
     });
   });
 

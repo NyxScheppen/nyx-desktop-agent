@@ -1,4 +1,4 @@
-"""eval Evaluator：OOC 告警 + 记账（15-eval）。基础设施（非 Facade）。
+"""eval Evaluator：OOC 告警 + 记账（10-eval）。基础设施（非 Facade）。
 
 算 OOC（关键词 + embedding 两档）、命中时 `logger.warning`，并把每次评估
 写进 `eval_log`（含 token 消耗），供前端查询。落库失败 best-effort 不重抛。

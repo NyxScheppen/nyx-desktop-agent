@@ -18,7 +18,7 @@ data: {"event_id":"…","correlation_id":"…","content":"…"}
 - 各事件 `content` 形状由生产方 spec 定义，核心先行只依赖四个：
   - `speak` / `ask` / `mutter` / `initiate_chat` → `{content: string}`
   - `think` → `{content: string}`（内心话，仅日志/聊天区灰色展示）
-  - `emotion_update` → `{valence, arousal, emotion}`（12-inner-life 定义）
+  - `emotion_update` → `{valence, arousal, emotion}`（08-inner-life 定义）
   - `user_message` → `{message: string}`（main.py 裸载荷，非 internal_text_event，键名与文本事件不同）
 
 ## 2. TS 类型
@@ -50,7 +50,7 @@ type ReflectionDoneEvent = SseBase & {
   story_is_new: boolean; // true = 故事真新增（去重通过）；false = 与已有片段重复、未追加
 };
 
-// 阅读冲动三型（完整字段见 07-reading-events §1）：mutter/question/association。
+// 阅读冲动三型（完整字段见 docs/frontend/07-reading-events.md §1）：mutter/question/association。
 type ReadingMutterEvent = SseBase & { event: "reading_mutter"; content: string; book_id: string; paragraph_index: number };
 type ReadingQuestionEvent = SseBase & { event: "reading_question"; content: string; subtype: QuestionSubtype; book_id: string; paragraph_index: number; selected_text: string | null };
 type ReadingAssociationEvent = SseBase & { event: "reading_association"; memory_id: string; snippet: string; book_id: string; paragraph_index: number };

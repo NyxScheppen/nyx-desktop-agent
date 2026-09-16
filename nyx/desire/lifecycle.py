@@ -489,6 +489,35 @@ class DesireLifecycle:
         """Claim a PENDING desire exactly once for an activity."""
         return await self._store.claim_for_activity(desire_id)
 
+    async def claim_for_interaction(self, desire_id: str) -> bool:
+        """Claim a PENDING desire exactly once for proactive interaction."""
+        return await self._store.claim_for_activity(desire_id)
+
+    async def release_interaction_claim(self, desire_id: str) -> bool:
+        """Return an initiative claim to PENDING without touching pressure."""
+        if self._store.db.in_transaction:
+            cursor = await self._store.db.conn.execute(
+                "UPDATE short_term_desire SET status = ? "
+                "WHERE id = ? AND status = ?",
+                (
+                    DesireStatus.PENDING.value,
+                    desire_id,
+                    DesireStatus.ACTIVE.value,
+                ),
+            )
+            return cursor.rowcount == 1
+        async with self._store.db.transaction():
+            cursor = await self._store.db.conn.execute(
+                "UPDATE short_term_desire SET status = ? "
+                "WHERE id = ? AND status = ?",
+                (
+                    DesireStatus.PENDING.value,
+                    desire_id,
+                    DesireStatus.ACTIVE.value,
+                ),
+            )
+        return cursor.rowcount == 1
+
     async def mark_suppressed(self, desire_id: str) -> None:
         """ACTIVE → SUPPRESSED：活动中断/异常停车，不立即重试。仅 ACTIVE 可转。"""
         if self._store.db.in_transaction:

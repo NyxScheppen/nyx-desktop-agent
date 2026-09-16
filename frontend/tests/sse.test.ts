@@ -217,7 +217,7 @@ describe("dispatchEvent", () => {
       active_desires: [],
     };
     useInnerLifeStore.setState({ current });
-    // emotion_update 载荷只带情绪（12-inner-life），能量/性格/三观不随帧下发；
+    // emotion_update 载荷只带情绪（08-inner-life），能量/性格/三观不随帧下发；
     // dispatch 现顺带 refreshState() 重拉全量，spy 拦下真实 fetch。
     const refreshSpy = vi
       .spyOn(useInnerLifeStore.getState(), "refreshState")

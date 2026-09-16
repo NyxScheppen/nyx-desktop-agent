@@ -1,4 +1,4 @@
-"""ReadingStore 单元测试（19-reading-content）：:memory: + 真 store。
+"""ReadingStore 单元测试（reading-system spec）：:memory: + 真 store。
 
 store 是 books/paragraphs 唯一写路径，直接测其契约：`insert_book_with_paragraphs`
 单锁单事务原子落书+段、`content_hash` 去重（唯一索引 + IntegrityError 回退）、
@@ -13,7 +13,7 @@ import pytest
 
 from nyx import db
 from nyx.reading.segmenter import Segment
-from nyx.reading.store import ReadingStore
+from nyx.reading.store import ProgressConflictError, ReadingStore
 
 
 async def _new_store() -> tuple[ReadingStore, db.Database]:
@@ -135,7 +135,7 @@ async def test_find_by_hash_miss_returns_none() -> None:
         await database.conn.close()
 
 
-# ---- 20-reading-progress：进度 / 书架 / 分页 ----
+# ---- 阅读系统：进度 / 书架 / 分页 ----
 
 class _Clock:
     """可预测递增时钟，验证 `updated_at` 推进（每次调用 +1 秒）。"""
@@ -187,7 +187,7 @@ async def test_list_books_unread_sentinel_and_read_ordering() -> None:
     try:
         unread_id = await _seed_book(store, title="未读")
         read_id = await _seed_book(store, title="读过")
-        await store.upsert_progress(read_id, 3, 2, 50)
+        await store.upsert_progress(read_id, 3, 2, 50, 0)
         items = await store.list_books()
     finally:
         await database.conn.close()
@@ -216,7 +216,7 @@ async def test_get_progress_none_then_value() -> None:
     try:
         book_id = await _seed_book(store)
         assert await store.get_progress(book_id) is None
-        await store.upsert_progress(book_id, 4, 3, 70)
+        await store.upsert_progress(book_id, 4, 3, 70, 0)
         got = await store.get_progress(book_id)
     finally:
         await database.conn.close()
@@ -235,8 +235,8 @@ async def test_upsert_progress_insert_then_update(
     store, database = await _new_store()
     try:
         book_id = await _seed_book(store)
-        first = await store.upsert_progress(book_id, 2, 2, 50)
-        second = await store.upsert_progress(book_id, 5, 5, 80)
+        first = await store.upsert_progress(book_id, 2, 2, 50, 0)
+        second = await store.upsert_progress(book_id, 5, 5, 80, first.revision)
         cursor = await database.conn.execute(
             "SELECT COUNT(*) AS n FROM reading_progress WHERE book_id = ?",
             (book_id,),
@@ -251,12 +251,27 @@ async def test_upsert_progress_insert_then_update(
     assert second.updated_at > first.updated_at  # 更新推进时间戳
 
 
+async def test_upsert_progress_rejects_stale_revision() -> None:
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store)
+        first = await store.upsert_progress(book_id, 2, 2, 50, 0)
+        with pytest.raises(ProgressConflictError):
+            await store.upsert_progress(book_id, 3, 3, 50, first.revision - 1)
+        current = await store.get_progress(book_id)
+    finally:
+        await database.conn.close()
+    assert current is not None
+    assert current.user_position == 2
+    assert current.revision == first.revision
+
+
 async def test_upsert_does_not_reset_read_count() -> None:
     store, database = await _new_store()
     try:
         book_id = await _seed_book(store)
         await store.increment_read_count(book_id, 3)  # read_count = 1
-        saved = await store.upsert_progress(book_id, 6, 6, 90)
+        saved = await store.upsert_progress(book_id, 6, 6, 90, 1)
         cursor = await database.conn.execute(
             "SELECT read_count FROM reading_progress WHERE book_id = ?", (book_id,),
         )
@@ -294,7 +309,7 @@ async def test_increment_read_count_creates_default_row() -> None:
     assert result.read_count == 1
     assert row is not None
     assert row["user_position"] == 1  # DDL DEFAULT（未写）
-    assert row["nyx_position"] == 3  # 显式落 total（22 跨重启幂等信号）
+    assert row["nyx_position"] == 3  # 显式落 total（12-reading-system 跨重启幂等信号）
     assert row["reading_speed"] == 50
 
 
@@ -317,7 +332,7 @@ async def test_delete_book_cascades_reading_progress() -> None:
     store, database = await _new_store()
     try:
         book_id = await _seed_book(store)
-        await store.upsert_progress(book_id, 2, 2, 50)
+        await store.upsert_progress(book_id, 2, 2, 50, 0)
         await database.conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
         await database.conn.commit()
         cursor = await database.conn.execute(
@@ -329,7 +344,7 @@ async def test_delete_book_cascades_reading_progress() -> None:
     assert row is not None and row["n"] == 0
 
 
-# ---- 22-reading-notes：用户笔记 / 批注 ----
+# ---- 阅读系统：用户笔记 / 批注 ----
 
 async def _seed_paragraph_id(store: ReadingStore, book_id: str) -> str:
     """返回某本书第 1 段的 id（供笔记挂 paragraph_id）。"""

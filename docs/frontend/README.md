@@ -29,17 +29,17 @@
                │ localhost HTTP / SSE     │（前端 Tauri 采集活跃度+窗口标题）
 ┌──────────────┴──────────────────────────▼───────────────────┐
 │  Python 核心服务（uvicorn，独立本地进程）                     │
-│    17 个 spec 实现的 Facade + EventBus + LangGraph            │
+│    12 个 spec 实现的 Facade + EventBus + LangGraph            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 - Python 核心作为**独立本地服务**运行（`uvicorn`），Tauri 壳 + React 前端通过 localhost HTTP/SSE 连接；开发时手动起服务，不打包 sidecar（design §2）。
-- 前端 Tauri 采集键盘/鼠标活跃度 + 窗口标题 → `classify_presence` 判定 → `POST /api/observe`（05-module-bus-system 下游约定）。这是核心先行里唯一由前端发起的**被动上报**。
+- 前端 Tauri 采集键盘/鼠标活跃度 + 窗口标题 → `classify_presence` 判定 → `POST /api/observe`（04-module-bus-system 下游约定）。这是核心先行里唯一由前端发起的**被动上报**。
 
 ### 活跃度上报（`hooks/usePresence.ts`，核心先行唯一被动上报）
 
 - **落点**：`hooks/usePresence.ts`，App 层挂载一次（与 `useSSE` 并列，见 01-sse §6），无 store（纯「采集 → 判定 → 上报」，不上屏，结果存后端 `last_presence`）。
-- **判定镜像后端**（14-activity `observe.py`，规则逐字一致，不另造）：
+- **判定镜像后端**（09-activity `observe.py`，规则逐字一致，不另造）：
   ```typescript
   type Presence = "online" | "away" | "busy";
   function classifyPresence(keyboardActive: boolean, mouseActive: boolean, windowTitle: string): Presence {
@@ -123,7 +123,7 @@ frontend/
       reading/
         BookshelfView.tsx    # 书架（GET /api/books + 导入 EPUB）
         ReaderView.tsx       # 阅读页：真分页（paginate + 测量/重测，08 §5）
-        NotePanel.tsx        # 笔记面板（07-reading-events）
+        NotePanel.tsx        # 笔记面板（阅读事件文档）
       layout/
         Panel.tsx            # 通用面板容器
         Modal.tsx            # 通用弹层容器

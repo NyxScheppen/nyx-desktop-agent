@@ -28,11 +28,17 @@ from nyx.bootstrap import (
 )
 from nyx.config import Config, load_config
 from nyx.desire.store import DesireStore
-from nyx.enums import ActivityStatus, DesireType, EventType, Source, TickType
-from nyx.expression.mutter import should_initiate_chat
+from nyx.enums import EventType, Source, TickType
 from nyx.inner_life.store import InnerLifeStore
 from nyx.runtime import (
+    check_initiate_chat,
     check_reflect,
+    on_desire_eval,
+    on_initiate_chat_check,
+    on_mutter_check,
+    on_reflection_check,
+    on_schedule_block_start,
+    on_user_message,
     root_event,
     supervise_bus,
     tick_loop,
@@ -60,6 +66,7 @@ _CANON_FILES = ("canon.md",)
 _ASK_FILES = ("ask.md",)
 _MAX_UPLOAD_BYTES = 500_000
 _MAX_EPUB_BYTES = 50 * 1024 * 1024
+_TIME_MODULE = time  # compatibility patch target for existing runtime tests
 
 
 def _root_event(
@@ -98,50 +105,24 @@ def _seed_long_term(now: float) -> list[LongTermDesire]:
     return seed_long_term(now)
 
 
-async def _interrupt_running(app: _App, by: EventType) -> None:
-    current = await app.activity.get_current()
-    if current is not None and current.status is ActivityStatus.RUNNING:
-        await app.activity.interrupt(current.id, by)
-
-
 async def _on_user_message(app: _App, event: Event) -> None:
-    await _interrupt_running(app, EventType.USER_MESSAGE)
-    await app.expression.reply(event.content["message"], event.correlation_id)
+    await on_user_message(app, event)
 
 
 async def _on_clock_tick(app: _App, event: Event) -> None:
     tick_type = TickType(event.content["tick_type"])
-    if tick_type is TickType.SCHEDULE_BLOCK_START:
-        await app.activity.on_tick(tick_type)
-    elif tick_type is TickType.DESIRE_EVAL:
-        state = await app.inner_life.get_state()
-        await app.desire.evaluate(state.energy)
-    elif tick_type is TickType.MUTTER_CHECK:
-        await app.expression.mutter(
-            await app.inner_life.get_state(), event.correlation_id
-        )
-    elif tick_type is TickType.INITIATE_CHAT_CHECK:
-        await _check_initiate_chat(app)
-    elif tick_type is TickType.REFLECTION_CHECK:
-        await _check_reflect(app, event.correlation_id)
+    handlers = {
+        TickType.SCHEDULE_BLOCK_START: on_schedule_block_start,
+        TickType.DESIRE_EVAL: on_desire_eval,
+        TickType.MUTTER_CHECK: on_mutter_check,
+        TickType.INITIATE_CHAT_CHECK: on_initiate_chat_check,
+        TickType.REFLECTION_CHECK: on_reflection_check,
+    }
+    await handlers[tick_type](app, event)
 
 
 async def _check_initiate_chat(app: _App) -> None:
-    desires = await app.desire.get_pending()
-    interaction = next(
-        (desire for desire in desires if desire.type is DesireType.INTERACTION), None
-    )
-    if interaction is None:
-        return
-    state = await app.inner_life.get_state()
-    online = app.last_presence in ("online", "busy")
-    busy = app.last_presence == "busy"
-    if should_initiate_chat(
-        desires, online, busy, state.energy, time.time() - app.last_chat_at
-    ):
-        await _interrupt_running(app, EventType.INITIATE_CHAT)
-        if await app.expression.initiate_chat(interaction, state):
-            app.last_chat_at = time.time()
+    await check_initiate_chat(app)
 
 
 async def _check_reflect(app: _App, correlation_id: str) -> None:
@@ -222,6 +203,9 @@ async def main() -> None:
         for task in done:
             task.result()
     finally:
+        reading_quiesce = getattr(app.reading, "quiesce", None)
+        if reading_quiesce is not None:
+            await reading_quiesce()
         for task in tasks:
             if task is not bus_task and not task.done():
                 task.cancel()
@@ -229,6 +213,9 @@ async def main() -> None:
             *(task for task in tasks if task is not bus_task),
             return_exceptions=True,
         )
+        reading_drain = getattr(app.reading, "drain", None)
+        if reading_drain is not None:
+            await reading_drain()
         close_bus = getattr(app.bus, "close", None)
         if close_bus is None:
             bus_task.cancel()

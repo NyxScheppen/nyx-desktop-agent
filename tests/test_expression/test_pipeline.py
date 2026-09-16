@@ -74,7 +74,7 @@ def test_voice_output_preserves_call_fields() -> None:
     assert out.type == "speak"
     assert out.content == "你好"
     assert out.tool_calls == []
-    # think/speak 同源一次 complete()：token 与 call_id 沿袭（15-eval 去重锚点）
+    # think/speak 同源一次 complete()：token 与 call_id 沿袭（10-eval 去重锚点）
     assert out.prompt_tokens == 9
     assert out.completion_tokens == 4
     assert out.call_id == "call-9"

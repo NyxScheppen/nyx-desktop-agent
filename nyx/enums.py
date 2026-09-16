@@ -21,7 +21,7 @@ class EventType(StrEnum):
     ACTIVITY_START = "activity_start"      # 活动开始
     ACTIVITY_END = "activity_end"          # 活动结束
     ACTIVITY_INTERRUPTED = "activity_interrupted"  # 活动打断
-    READING_MUTTER = "reading_mutter"      # 陪读碎碎念（21）
+    READING_MUTTER = "reading_mutter"      # 陪读碎碎念（12-reading-system）
     READING_QUESTION = "reading_question"  # 陪读提问
     READING_ASSOCIATION = "reading_association"  # 陪读联想
 
@@ -42,6 +42,29 @@ class TickType(StrEnum):
 class ContextMode(StrEnum):
     FAST = "fast"                          # 快通道
     SLOW = "slow"                          # 慢通道
+
+
+class InteractionKind(StrEnum):
+    CHAT_ASK = "chat_ask"
+    READING_QUESTION = "reading_question"
+    INITIATE_CHAT = "initiate_chat"
+
+
+class InteractionStatus(StrEnum):
+    WAITING = "waiting"
+    CLAIMED = "claimed"
+    ANSWERED = "answered"
+    EXPIRED = "expired"
+    FAILED = "failed"
+
+
+class UserIntent(StrEnum):
+    QUESTION = "question"
+    REQUEST = "request"
+    SHARING = "sharing"
+    EMOTIONAL_SUPPORT = "emotional_support"
+    GREETING = "greeting"
+    UNKNOWN = "unknown"
 
 
 class EmotionCategory(StrEnum):            # 8 档，1:1 对应前端 sprites/ 与 expressions/
@@ -89,7 +112,7 @@ class MemoryEdgeKind(StrEnum):
     USER_PROFILE_LINK = "user_profile_link"
 
 
-class ReadingDrive(StrEnum):            # 阅读冲动 6 驱动（21-reading-impulse）
+class ReadingDrive(StrEnum):            # 阅读冲动 6 驱动（12-reading-system）
     MOTIVATION = "motivation"                       # 动力 → 精力
     CURIOSITY = "curiosity"                         # 好奇 → 探索欲
     BOREDOM = "boredom"                             # 无聊 → 互动欲
@@ -98,7 +121,7 @@ class ReadingDrive(StrEnum):            # 阅读冲动 6 驱动（21-reading-imp
     ASSOCIATIVE_DRIVE = "associative_drive"          # 记忆联想 → 联想密度
 
 
-class ReadingBehavior(StrEnum):         # 阅读冲动 5 复合行为（无 mutter）
+class ReadingBehavior(StrEnum):         # 阅读冲动 5 复合行为（12-reading-system）
     QUESTION_KNOWLEDGE = "question_knowledge"        # 知识型提问
     QUESTION_PERSONAL = "question_personal"          # 私人型提问
     QUESTION_REFLECTIVE = "question_reflective"      # 反思型提问
@@ -144,7 +167,7 @@ class GoalAction(StrEnum):
     OBSERVE = "observe"
 
 
-class BoundaryResult(StrEnum):          # 陪读章末/整本读完判定（22-reading-notes）
+class BoundaryResult(StrEnum):          # 陪读章末/整本读完判定（12-reading-system）
     NONE = "none"                       # 非边界
     CHAPTER_END = "chapter_end"         # 章末（下一段是新章标题）
     BOOK_FINISHED = "book_finished"     # 整本读完（nyx_position == total）

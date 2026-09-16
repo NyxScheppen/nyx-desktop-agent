@@ -237,7 +237,7 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
     (
         7,
         [
-            # 陪读：EPUB 书（books）+ 段落（paragraphs），19-reading-content
+            # 陪读：EPUB 书（books）+ 段落（paragraphs），12-reading-system
             """CREATE TABLE books (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -274,9 +274,9 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
     (
         9,
         [
-            # 陪读进度：1:1 书（book_id PK），20-reading-progress。
+            # 陪读进度：1:1 书（book_id PK），12-reading-system。
             # user/nyx_position 从 1 起（与 paragraphs."index" 对齐）；
-            # reading_speed 10-200；read_count 只由 22 整本读完 ++，默认 0。
+            # reading_speed 10-200；read_count 只由 12-reading-system 整本读完 ++，默认 0。
             """CREATE TABLE reading_progress (
                 book_id TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
                 user_position INTEGER NOT NULL DEFAULT 1,
@@ -290,7 +290,7 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
     (
         10,
         [
-            # 陪读笔记：用户手写笔记 + Nyx 批注，22-reading-notes。
+            # 陪读笔记：用户手写笔记 + Nyx 批注，12-reading-system。
             # 用户笔记与 Nyx 笔记严格分离；book/paragraph 删除时 SET NULL 兜底
             # （笔记文字仍可读）；批注随笔记 CASCADE 删除。
             """CREATE TABLE user_notes (
@@ -313,7 +313,7 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
     (
         11,
         [
-            # 审美维度：12-inner-life，四轴 1-10（10=第一极）。
+            # 审美维度：08-inner-life，四轴 1-10（10=第一极）。
             """CREATE TABLE aesthetic (
                 id TEXT PRIMARY KEY,            -- 固定 'self'
                 ornate REAL NOT NULL,           -- 华丽
@@ -338,7 +338,7 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
     (
         13,
         [
-            # eval 可观测（15-eval）：LLM 调用 + token 记账。
+            # eval 可观测（10-eval）：LLM 调用 + token 记账。
             # 不存 content 原文（数据最小化）。
             # call_id 一次 complete() 唯一，think/speak 共享（总 token 去重锚点）。
 
@@ -435,6 +435,40 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
             "CREATE INDEX idx_desire_generation_attempt_type "
             "ON desire_generation_attempt(type)",
+        ],
+    ),
+    (
+        17,
+        [
+            """CREATE TABLE expression_interaction_attempt (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                correlation_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                status TEXT NOT NULL,
+                answered_at REAL,
+                answer_event_id TEXT,
+                failure_reason TEXT
+            )""",
+            "CREATE INDEX idx_expression_attempt_status_expiry "
+            "ON expression_interaction_attempt(status, expires_at)",
+            "CREATE INDEX idx_expression_attempt_status_created "
+            "ON expression_interaction_attempt(status, created_at)",
+            "CREATE INDEX idx_expression_attempt_correlation "
+            "ON expression_interaction_attempt(correlation_id)",
+        ],
+    ),
+    (
+        18,
+        [
+            # 阅读进度 CAS 版本：每次成功写入递增，防旧快照覆盖新位置。
+            (
+                "ALTER TABLE reading_progress ADD COLUMN revision "
+                "INTEGER NOT NULL DEFAULT 0"
+            ),
         ],
     ),
 ]

@@ -1,8 +1,8 @@
 # pyright: reportPrivateUsage=false
-"""ReadingFacade 集成测试：19 内容导入 + 20 进度 + 21 冲动引擎，:memory: + 真 store。
+"""ReadingFacade 集成测试：12-reading-system 内容导入、进度、冲动引擎和笔记，:memory: + 真 store。
 
 `parse_epub` 用 monkeypatch 注入固定 `EpubResult`（不碰真实 EPUB 字节）。
-21 的依赖（inner_life/desire/memory/llm/evaluator/bus）用 duck-typed fake
+12-reading-system 的依赖（inner_life/desire/memory/llm/evaluator/bus）用 duck-typed fake
 `cast` 注入；后台分派用 `asyncio.sleep(0)` 跑完（fake 无真 I/O，不悬挂）。
 """
 
@@ -147,7 +147,8 @@ class _FakeBus:
 
 class _FakeLlm:
     def __init__(
-        self, contents: dict[str, str] | None = None, default: str = "好问题。"
+        self, contents: dict[str, str] | None = None,
+        default: str = "为什么这段重要？",
     ) -> None:
         self._contents = contents or {}
         self._default = default
@@ -223,7 +224,7 @@ class _NoneSearchMemory(_FakeMemory):
 
 
 class _RaisingLlm(_FakeLlm):
-    """LLM complete 抛异常，模拟 API 失败/超时（22 整合与批注的失败路径）。"""
+    """LLM complete 抛异常，模拟 API 失败/超时（12-reading-system 整合与批注的失败路径）。"""
 
     async def complete(
         self,
@@ -439,7 +440,7 @@ async def test_delete_book_cascades_paragraphs(
     assert row is not None and row["n"] == 0
 
 
-# ---- 20-reading-progress：进度 / 书架 / 分页 ----
+# ---- 阅读系统：进度 / 书架 / 分页 ----
 
 async def test_list_books_lists_imported_book(
     monkeypatch: pytest.MonkeyPatch,
@@ -485,18 +486,19 @@ async def test_save_progress_insert_then_update(
     )
     try:
         book = await facade.import_book("a.epub", b"x")
-        first = await facade.save_progress(book.id, 2, 2, 50)
-        second = await facade.save_progress(book.id, 5, 4, 80)
+        first = await facade.save_progress(book.id, 1, 1, 50, 0)
+        second = await facade.save_progress(book.id, 1, 1, 80, first.revision)
         cursor = await database.conn.execute(
             "SELECT COUNT(*) AS n FROM reading_progress WHERE book_id = ?", (book.id,),
         )
         row = await cursor.fetchone()
     finally:
         await database.conn.close()
-    assert first.user_position == 2
-    assert second.user_position == 5
+    assert first.user_position == 1
+    assert second.user_position == 1
     assert second.reading_speed == 80
     assert second.read_count == 0  # save 不写 read_count
+    assert second.revision == 2
     assert row is not None and row["n"] == 1
 
 
@@ -540,14 +542,14 @@ async def test_book_not_found_raises(
         with pytest.raises(BookNotFoundError):
             await facade.get_progress("missing")
         with pytest.raises(BookNotFoundError):
-            await facade.save_progress("missing", 1, 1, 50)
+                await facade.save_progress("missing", 1, 1, 50, 0)
         with pytest.raises(BookNotFoundError):
             await facade.list_paragraphs("missing", 1, 2)
     finally:
         await database.conn.close()
 
 
-# ---- 21-reading-impulse：段落冲动引擎 ----
+# ---- 阅读系统：冲动引擎 ----
 
 async def test_evaluate_paragraph_forward_dispatches_events(
     monkeypatch: pytest.MonkeyPatch,
@@ -677,7 +679,7 @@ async def test_evaluate_paragraph_quote_question_splits_lines(
     assert quote[0].content["selected_text"] == "因为生命的意义。"
 
 
-async def test_evaluate_paragraph_quote_question_single_line_null_selection(
+async def test_evaluate_paragraph_quote_question_single_line_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     llm = _FakeLlm({"quote_question": "这段为什么重要？"})
@@ -697,8 +699,7 @@ async def test_evaluate_paragraph_quote_question_single_line_null_selection(
         if e.type is EventType.READING_QUESTION
         and e.content["subtype"] == "quote_question"
     ]
-    assert len(quote) == 1
-    assert quote[0].content["selected_text"] is None
+    assert quote == []
 
 
 async def test_mutter_reading_none_content_skips_without_raise() -> None:
@@ -789,7 +790,7 @@ async def test_mutter_reading_does_not_record_proactive_turn() -> None:
     assert expr.recorded == []
 
 
-# ---- 22-reading-notes：用户笔记 / Nyx 批注 / 章末整合 ----
+# ---- 阅读系统：用户笔记 / Nyx 批注 / 章末整合 ----
 
 async def _note_facade(
     monkeypatch: pytest.MonkeyPatch,
@@ -803,7 +804,7 @@ async def _note_facade(
     ReadingFacade, db.Database, _FakeBus, _FakeLlm, _FakeMemory,
     _FakeInnerLife, _FakeEvaluator,
 ]:
-    """22 笔记测试栈：真 ReadingStore + 暴露全部 fake（断言批注/整合/反思）。"""
+    """12-reading-system 笔记测试栈：真 ReadingStore + 暴露全部 fake（断言批注/整合/反思）。"""
     database = await db.connect(":memory:")
 
     def fake_parse(data: bytes) -> EpubResult:

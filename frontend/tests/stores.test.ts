@@ -838,6 +838,7 @@ describe("readerStore", () => {
       nyxPosition: 1,
       readingSpeed: 50,
       readCount: 0,
+      progressRevision: 0,
       notes: [],
       notesError: null,
     });
@@ -920,7 +921,15 @@ describe("readerStore", () => {
     useReaderStore.setState({ books: [bookItem("b1", 120, 3)] });
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse({ user_position: 3, nyx_position: 1, reading_speed: 50, read_count: 0 }))
+      .mockResolvedValueOnce(jsonResponse({
+        book_id: "b1",
+        user_position: 3,
+        nyx_position: 1,
+        reading_speed: 50,
+        read_count: 0,
+        updated_at: 1,
+        revision: 0,
+      }))
       .mockResolvedValueOnce(jsonResponse([para(3, "第三段")]));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -938,13 +947,47 @@ describe("readerStore", () => {
     useReaderStore.setState({ books: [bookItem("b1", 120, 120)] });
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse({ user_position: 120, nyx_position: 120, reading_speed: 50, read_count: 1 }))
+      .mockResolvedValueOnce(jsonResponse({
+        book_id: "b1",
+        user_position: 120,
+        nyx_position: 120,
+        reading_speed: 50,
+        read_count: 1,
+        updated_at: 1,
+        revision: 1,
+      }))
       .mockResolvedValueOnce(jsonResponse([para(120, "结尾")]));
     vi.stubGlobal("fetch", fetchMock);
 
     await useReaderStore.getState().openBook("b1");
 
     expect(fetchMock.mock.calls[1][0]).toBe("/api/books/b1/paragraphs?from=120&to=120");
+  });
+
+  it("openBook：书架缓存缺失时先刷新书架再打开", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([bookItem("b1", 20, 0)]))
+      .mockResolvedValueOnce(jsonResponse({
+        book_id: "b1",
+        user_position: 1,
+        nyx_position: 1,
+        reading_speed: 50,
+        read_count: 0,
+        updated_at: 0,
+        revision: 0,
+      }))
+      .mockResolvedValueOnce(jsonResponse([para(1, "开头")]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().openBook("b1");
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/books",
+      "/api/progress/b1",
+      "/api/books/b1/paragraphs?from=1&to=20",
+    ]);
+    expect(useReaderStore.getState().totalParagraphs).toBe(20);
   });
 
   // ---- syncPosition ----
@@ -958,7 +1001,15 @@ describe("readerStore", () => {
       nyxPosition: 3,
       readingSpeed: 50,
     });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      book_id: "b1",
+      user_position: 6,
+      nyx_position: 3,
+      reading_speed: 50,
+      read_count: 0,
+      updated_at: 1,
+      revision: 1,
+    }));
     vi.stubGlobal("fetch", fetchMock);
 
     await useReaderStore.getState().syncPosition(6);
@@ -967,7 +1018,12 @@ describe("readerStore", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("/api/progress/b1");
     expect(fetchMock.mock.calls[0][1]).toMatchObject({
       method: "PUT",
-      body: JSON.stringify({ user_position: 6, nyx_position: 3, reading_speed: 50 }),
+      body: JSON.stringify({
+        user_position: 6,
+        nyx_position: 3,
+        reading_speed: 50,
+        expected_revision: 0,
+      }),
     });
     const impulseBodies = fetchMock.mock.calls.slice(1).map((c) => JSON.parse(c[1].body));
     expect(impulseBodies).toEqual([
@@ -987,7 +1043,15 @@ describe("readerStore", () => {
       nyxPosition: 6,
       readingSpeed: 50,
     });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      book_id: "b1",
+      user_position: 4,
+      nyx_position: 6,
+      reading_speed: 50,
+      read_count: 0,
+      updated_at: 1,
+      revision: 1,
+    }));
     vi.stubGlobal("fetch", fetchMock);
 
     await useReaderStore.getState().syncPosition(4);
@@ -1006,7 +1070,15 @@ describe("readerStore", () => {
       nyxPosition: 3,
       readingSpeed: 50,
     });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      book_id: "b1",
+      user_position: 1,
+      nyx_position: 1,
+      reading_speed: 50,
+      read_count: 1,
+      updated_at: 1,
+      revision: 2,
+    }));
     vi.stubGlobal("fetch", fetchMock);
 
     await useReaderStore.getState().syncPosition(3);
@@ -1024,10 +1096,19 @@ describe("readerStore", () => {
       nyxPosition: 120,
       readingSpeed: 50,
       readCount: 1,
+      progressRevision: 1,
     });
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({
+        book_id: "b1",
+        user_position: 1,
+        nyx_position: 1,
+        reading_speed: 50,
+        read_count: 1,
+        updated_at: 1,
+        revision: 2,
+      }))
       .mockResolvedValueOnce(jsonResponse([para(1, "开头")]));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -1039,7 +1120,12 @@ describe("readerStore", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("/api/progress/b1");
     expect(fetchMock.mock.calls[0][1]).toMatchObject({
       method: "PUT",
-      body: JSON.stringify({ user_position: 1, nyx_position: 1, reading_speed: 50 }),
+      body: JSON.stringify({
+        user_position: 1,
+        nyx_position: 1,
+        reading_speed: 50,
+        expected_revision: 1,
+      }),
     });
   });
 
@@ -1077,7 +1163,22 @@ describe("readerStore", () => {
     });
     const fetchMock = vi
       .fn()
-      .mockResolvedValue(jsonResponse({ is_boundary: true, book_finished: true }));
+      .mockImplementation((url: string) => {
+        if (url === "/api/progress/b1") {
+          return Promise.resolve(jsonResponse({
+            book_id: "b1",
+            user_position: 120,
+            nyx_position: 120,
+            reading_speed: 50,
+            read_count: 0,
+            updated_at: 1,
+            revision: 1,
+          }));
+        }
+        return Promise.resolve(
+          jsonResponse({ is_boundary: true, book_finished: true }),
+        );
+      });
     vi.stubGlobal("fetch", fetchMock);
 
     useReaderStore.getState().advanceNyx();
@@ -1090,7 +1191,12 @@ describe("readerStore", () => {
     const putCall = fetchMock.mock.calls.find((c) => c[0] === "/api/progress/b1");
     expect(putCall?.[1]).toMatchObject({
       method: "PUT",
-      body: JSON.stringify({ user_position: 120, nyx_position: 120, reading_speed: 50 }),
+      body: JSON.stringify({
+        user_position: 120,
+        nyx_position: 120,
+        reading_speed: 50,
+        expected_revision: 0,
+      }),
     });
   });
 

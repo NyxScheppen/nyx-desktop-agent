@@ -1,6 +1,6 @@
 """HTML 正文分段器：块级元素 → 阅读段落（纯文本 + 章首标记）。
 
-spec 19：照搬参考项目 S03 `segment_html` 语义，输出收窄为纯文本
+    reading-system spec：照搬参考项目 S03 `segment_html` 语义，输出收窄为纯文本
 （`Segment = (text, is_chapter_start)`，不保留 tag/raw_html）。纯函数：
 同步、无 IO、无 LLM，用标准库 `html.parser`（不引入 bs4/lxml 依赖）。
 
@@ -18,7 +18,7 @@ from typing import NamedTuple
 
 
 class Segment(NamedTuple):
-    """一个阅读段落。`is_chapter_start` = 以 `h1`/`h2` 开头（22 章末检测用）。"""
+    """一个阅读段落。`is_chapter_start` = 以 `h1`/`h2` 开头（12-reading-system 章末检测用）。"""
 
     text: str
     is_chapter_start: bool
@@ -85,7 +85,11 @@ def segment_html(html: str) -> list[Segment]:
         text = "".join(extractor.root_text).strip()
         if not text:
             return []
-        return [Segment(text=text, is_chapter_start=False)]
+        split = _split_long_paragraphs([(text, "root")])
+        return [
+            Segment(text=part, is_chapter_start=False)
+            for part, _tag in split
+        ]
 
     with_heading_merge = _merge_heading_and_paragraph(extractor.blocks)
     with_list_merge = _merge_consecutive_lists(with_heading_merge)

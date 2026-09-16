@@ -69,7 +69,7 @@ export const ACTIVITY_STATUS_LABELS: Record<ActivityStatus, string> = {
   incomplete: "未完成",
 };
 
-// eval 记账 output_type → 中文（15-eval）。未收录值经 label() 回退原值。
+// eval 记账 output_type → 中文（10-eval）。未收录值经 label() 回退原值。
 export const OUTPUT_TYPE_LABELS: Record<string, string> = {
   reply: "回复",
   speak: "对外",

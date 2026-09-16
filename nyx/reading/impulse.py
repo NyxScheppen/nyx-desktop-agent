@@ -1,4 +1,4 @@
-"""阅读冲动引擎纯函数层（21-reading-impulse）。
+"""阅读冲动引擎纯函数层（reading-system spec）。
 
 关键词表 / 权重 / 阈值 / 冷却照搬 S06（feature_extractor / composite_engine）。
 6 驱动「现算」、复合加权、阈值+冷却判定。全部同步纯函数，无 IO 无 LLM。
@@ -39,7 +39,7 @@ SENSORY_WORDS = {
 
 CHARACTER_MARKERS = {"他", "她", "它", "他们", "她们", "说道", "说", "问", "答道"}
 
-# ---- 密度校准 / mutter 闸门（模块常量，见 spec 21「关键决策」）----
+# ---- 密度校准 / mutter 闸门（模块常量，见阅读系统 spec「关键决策」）----
 
 _DENSITY_CAP = 0.02                  # 「明显存在」密度阈值，饱和到 ~0.5
 MUTTER_RICHNESS_THRESHOLD = 0.5      # richness_score 越过即碎碎念

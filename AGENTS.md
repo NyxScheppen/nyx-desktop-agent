@@ -2,7 +2,51 @@
 
 ## 角色定位
 
-你是一个 Nyx Agent 项目的开发助手，负责在 `nyx/`（Python 后端，六块 Facade + LLM 客户端 + 事件总线）与 `frontend/`（React + TypeScript + Zustand + Tauri 前端）之间实现功能、修复 bug、编写测试。所有设计已在 `docs/` 定义——动手前先查设计文档，别现编。改 `nyx/memory/` 或记忆契约前，必须先读 `docs/specs/07-memory-system.md`；改表达慢通道 recall、反思触发、活动/读书落记忆、前端 `Memory` 类型等记忆相邻功能前，先读 `docs/memory-system-facts.md` 摘要，需要细节时回到完整 spec。改 `nyx/activity/`、欲望消费、活动打断/恢复、自由探索、活动书库、活动时间线或 `activity_*` 事件前，先读 `docs/activity-system-facts.md` 摘要，并回到唯一完整契约 `docs/specs/14-activity.md`。改欲望产生、压力、消费、满足/淘汰或 `desire_*` 事件前，先读 `docs/desire-system-facts.md` 摘要，并回到唯一完整契约 `docs/specs/11-desire.md`；摘要和代码只用于导航，契约以完整 spec 为准。改 `nyx/events/`、`nyx/subscriptions.py`、`nyx/runtime.py`、`nyx/app_context.py`、`nyx/main.py`、事件相关 DB 表、模块总线通信或跨模块副作用前，必须先读 `docs/module-bus-system-facts.md` 摘要，并回到唯一完整契约 `docs/specs/05-module-bus-system.md`。底层总线契约重于其他旧文档；凡涉及该契约覆盖的功能，必须同步更新它及 `docs/module-bus-system-facts.md`，若要改变既有文档语义必须先询问用户。编码时以帮助用户的狐狸娘形象工作（见「角色扮演规则」）。
+你是一个 Nyx Agent 项目的开发助手，负责在 `nyx/`（Python 后端，六块 Facade + LLM 客户端 + 事件总线）与 `frontend/`（React + TypeScript + Zustand + Tauri 前端）之间实现功能、修复 bug、编写测试。
+
+## 参考索引
+
+所有设计、事实摘要和实现索引集中在 `docs/`。开始工作前先按本节定位相关资料，不要凭空重新设计。
+
+### 领域契约
+
+| 工作范围 | 先读事实摘要 | 再读唯一完整契约 |
+|---|---|---|
+| 记忆系统、记忆相邻功能 | `docs/memory-system-facts.md` | `docs/specs/06-memory-system.md` |
+| 活动、欲望消费、活动打断/恢复、自由探索、活动书库、活动时间线、`activity_*` 事件 | `docs/activity-system-facts.md` | `docs/specs/09-activity.md` |
+| 欲望产生、压力、消费、满足/淘汰、`desire_*` 事件 | `docs/desire-system-facts.md` | `docs/specs/07-desire.md` |
+| 内在生命 | `docs/inner-life-system-facts.md` | `docs/specs/08-inner-life.md` |
+| 表达、提问、读书提问、联想进历史、主动搭话、等待状态、回复降级、人格/知识边界 prompt | `docs/expression-system-facts.md` | `docs/specs/11-expression.md` |
+| 模块总线、事件投递、订阅、事务、运行时、跨模块副作用 | `docs/module-bus-system-facts.md` | `docs/specs/04-module-bus-system.md` |
+
+事实摘要只用于快速了解当前源码边界，不能覆盖完整契约；完整契约与源码不一致时，先识别差异并按项目规则处理。
+
+### 底层与交叉参考
+
+- `docs/tech-reference.md`：源码、契约和事实摘要的快速索引，不定义契约。
+- `docs/LessonsLearned.md`：审查或提交前先查是否存在同类问题。
+- `docs/test-inventory.md`：测试套件当前快照；修改测试后同步更新。
+- `docs/specs/01-types.md`、`docs/specs/02-config.md`、`docs/specs/03-llm.md`：
+  共享类型、配置和 LLM 基础契约。
+- `docs/specs/05-tools.md`、`docs/specs/10-eval.md`：
+  工具和评估契约。
+- `docs/reading-system-facts.md`：阅读系统当前源码的事实摘要；
+  唯一完整契约是 `docs/specs/12-reading-system.md`。表达侧读书交互统一归
+  `docs/specs/11-expression.md`。
+
+### 读取与同步规则
+
+- 改 `nyx/memory/` 或记忆契约前，必须先读记忆事实摘要和完整契约。
+- 改 `nyx/activity/`、欲望消费、活动打断/恢复、自由探索、活动书库、活动时间线或
+  `activity_*` 事件前，必须先读活动事实摘要和完整契约。
+- 改欲望产生、压力、消费、满足/淘汰或 `desire_*` 事件前，必须先读欲望事实摘要和完整契约。
+- 改内在生命前，必须先读内在生命事实摘要和完整契约。
+- 改表达系统或表达侧阅读交互前，必须先读表达事实摘要和完整契约；不得引用已删除的表达旧 spec。
+- 改 `nyx/events/`、`nyx/subscriptions.py`、`nyx/runtime.py`、`nyx/app_context.py`、
+  `nyx/main.py`、事件相关 DB 表、模块总线通信或跨模块副作用前，必须先读总线事实摘要和完整契约。
+- 总线完整契约重于其他旧文档；涉及总线契约覆盖的功能时，必须同步更新
+  `docs/specs/04-module-bus-system.md` 和 `docs/module-bus-system-facts.md`。
+- 改动已有文档契约覆盖的功能时，必须同步相关文档；若要改变既有文档语义，先询问用户。
 
 ## 产品定位
 
@@ -219,7 +263,8 @@ Nyx Agent 是一个住在用户电脑里的桌面 AI 同伴（"同租者"）。�
 1. **测试后写清单**：每次改动测试后（新增 / 删除 / 改断言），必须同步 `docs/test-inventory.md`（该文件是当前测试套件的快照，非变更历史）。
 2. **做不了的决策不擅自决定**：需求有多种解释时列出再问；不确定就确认，别悄悄选一个。
 3. **设计外的东西不擅自造**：设计文档（`docs/specs/`、`docs/design/`）未定义的新文件 / 新类 / 新配置项、新抽象层，先追问原因再动手；`docs/tech-reference.md` 只用于导航，不定义设计。
-4. **记忆契约单一入口**：记忆系统完整契约在 `docs/specs/07-memory-system.md`；`docs/memory-system-facts.md` 只是无关代码查阅的事实摘要，摘要与完整 spec 不一致时，按完整 spec 执行并同步修正摘要。
-5. **活动事实表先读**：活动系统唯一完整契约在 `docs/specs/14-activity.md`；`docs/activity-system-facts.md` 只是无关代码查阅的事实摘要。改活动相邻功能前先读摘要并回到完整 spec；摘要与完整 spec 不一致时，按完整 spec 执行并同步修正摘要。
-6. **代码文档同步并确认**：改动任何已有文档契约覆盖的功能时，同一变更必须同步相关 docs/spec；如果实现需要改变、废弃或覆盖既有文档语义，先询问用户确认，不静默决定。
-7. **经验教训必须沉淀**：每次代码审查前先查 `docs/LessonsLearned.md` 是否有同类问题；每次审查发现错误、修复回归或踩到新坑后，必须把可复用教训追加/更新到该文件。
+4. **记忆契约单一入口**：记忆系统完整契约在 `docs/specs/06-memory-system.md`；`docs/memory-system-facts.md` 只是无关代码查阅的事实摘要，摘要与完整 spec 不一致时，按完整 spec 执行并同步修正摘要。
+5. **活动事实表先读**：活动系统唯一完整契约在 `docs/specs/09-activity.md`；`docs/activity-system-facts.md` 只是无关代码查阅的事实摘要。改活动相邻功能前先读摘要并回到完整 spec；摘要与完整 spec 不一致时，按完整 spec 执行并同步修正摘要。
+6. **表达事实表先读**：表达系统先读 `docs/expression-system-facts.md`，唯一完整契约是 `docs/specs/11-expression.md`；事实表只作导航，契约和源码优先。
+7. **代码文档同步并确认**：改动任何已有文档契约覆盖的功能时，同一变更必须同步相关 docs/spec；如果实现需要改变、废弃或覆盖既有文档语义，先询问用户确认，不静默决定。
+8. **经验教训必须沉淀**：每次代码审查前先查 `docs/LessonsLearned.md` 是否有同类问题；每次审查发现错误、修复回归或踩到新坑后，必须把可复用教训追加/更新到该文件。

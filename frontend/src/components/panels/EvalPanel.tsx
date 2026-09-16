@@ -3,7 +3,7 @@ import { label, OUTPUT_TYPE_LABELS } from "../../lib/labels";
 import { useEvalStore } from "../../stores/evalStore";
 import Panel from "../layout/Panel";
 
-// LLM 调用 / token 面板（15-eval）：总 token + 最近 5 条调用（类型 + OOC 分 + token）。
+// LLM 调用 / token 面板（10-eval）：总 token + 最近 5 条调用（类型 + OOC 分 + token）。
 export default function EvalPanel() {
   const records = useEvalStore((s) => s.records);
   const stats = useEvalStore((s) => s.stats);

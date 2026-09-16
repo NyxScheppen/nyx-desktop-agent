@@ -6,9 +6,9 @@
 
 ## 当前快照
 
-- 后端测试文件：61
-- `pytest --collect-only -q`：846 tests collected
-- 最近一次全量验证：`845 passed, 1 skipped`
+- 后端测试文件：62
+- `pytest --collect-only -q`：855 tests collected
+- 最近一次全量验证：`854 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -28,8 +28,8 @@
 | 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、满足、重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
 | 活动 | `tests/test_activity/` | 13 | 排期、活动生命周期、探索、观察、读书恢复 |
-| 表达 | `tests/test_expression/` | 5 | prompt、快慢通道、回复、搭话、碎碎念 |
-| 阅读 | `tests/test_reading/` | 7 | EPUB、进度、冲动、笔记和集成路径 |
+| 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt |
+| 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动、笔记、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账和 token |
 
 ## 前端覆盖
@@ -55,6 +55,8 @@
 - `test_delivery_failure_is_recovered_after_expired_lease`
 - `test_effect_marker_skips_duplicate_handler_replay`
 - `test_user_message_replay_skips_after_reply_event_exists`
+- `test_attempt_insert_rolls_back_with_outer_transaction`
+- `test_concurrent_reply_claims_only_claim_once`
 - `test_close_rejects_new_events_and_closes_database`
 
 ### 跨模块状态一致性

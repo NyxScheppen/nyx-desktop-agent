@@ -4,9 +4,9 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `MemoryType` / `MemoryEdgeKind` / `SearchMode` / `Event` / `EventType` / `Source`）、02-config（`MemoryConfig` / `EmbeddingConfig`）、03-llm（`LlmClient.complete`）、05-module-bus-system（`Database`、`EventBus`、组合根注入 / REST 薄封装及相关 DDL）、17-expression（慢通道召回与 `record_recall` 时机）、eval（`Evaluator`）。
+- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `MemoryType` / `MemoryEdgeKind` / `SearchMode` / `Event` / `EventType` / `Source`）、02-config（`MemoryConfig` / `EmbeddingConfig`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、组合根注入 / REST 薄封装及相关 DDL）、11-expression（慢通道召回与 `record_recall` 时机）、10-eval（`Evaluator`）。
 - **实现文件**：`nyx/memory/ann.py`、`nyx/memory/retrieval.py`、`nyx/memory/graph.py`、`nyx/memory/store.py`、`nyx/memory/facade.py`、`nyx/types.py`、`nyx/enums.py`、`nyx/db.py`
-- **关联文档**：`docs/memory-system-facts.md`、`docs/specs/01-types.md`、`docs/specs/05-module-bus-system.md`、`docs/specs/17-expression.md`、`docs/tech-reference.md`、`docs/test-inventory.md`
+- **关联文档**：`docs/memory-system-facts.md`、`docs/specs/01-types.md`、`docs/specs/04-module-bus-system.md`、`docs/specs/11-expression.md`、`docs/tech-reference.md`、`docs/test-inventory.md`
 - **测试文件**：`tests/test_memory/test_ann.py`、`tests/test_memory/test_retrieval.py`、`tests/test_memory/test_graph.py`、`tests/test_memory/test_store.py`、`tests/test_memory/test_facade.py`、`tests/test_db/test_db.py`、`tests/test_expression/test_expression_facade.py`
 
 ## 系统边界

@@ -3,7 +3,17 @@
 纯函数，无 IO、无 LLM。
 """
 
-from nyx.types import CurrentState, Memory, Message, SelfNarrative, ShortTermDesire
+from nyx.enums import UserIntent
+from nyx.types import (
+    Aesthetic,
+    CurrentState,
+    Memory,
+    Message,
+    Personality,
+    SelfNarrative,
+    ShortTermDesire,
+    Values,
+)
 
 _MIN_OVERLAP_LEN = 4  # 短于此（去空白）的消息禁用零重叠停条件（短确认语不误清历史）
 
@@ -15,6 +25,8 @@ def build_system_prompt(
     memories: list[Memory] | None = None,
     ask_guidance: str | None = None,
     tool_outputs: list[str] | None = None,
+    knowledge_boundary: str | None = None,
+    intent: UserIntent | None = None,
 ) -> str:
     """拼 system prompt：角色设定 + 状态 + 欲望 + 自我认知 + 记忆 + 工具结果。
 
@@ -25,11 +37,18 @@ def build_system_prompt(
     """
     parts: list[str] = [
         canon,
+        render_personality_instruction(
+            state.personality, state.values, state.aesthetic
+        ),
         _state_block(state),
         _desires_block(state.active_desires),
     ]
     if ask_guidance is not None:
         parts.append(ask_guidance)
+    if knowledge_boundary is not None:
+        parts.append(f"[知识边界]\n{knowledge_boundary}")
+    if intent is not None:
+        parts.append(f"[轻量意图参考]\n{intent.value}（仅供参考，不是事实）")
     if narrative is not None:
         parts.append(_narrative_block(narrative))
     if memories:
@@ -39,10 +58,93 @@ def build_system_prompt(
     return "\n\n".join(parts)
 
 
+def render_personality_instruction(
+    personality: Personality,
+    values: Values,
+    aesthetic: Aesthetic,
+) -> str:
+    """Render slow variables as behavioral language instead of bare scores."""
+    def level(value: float, descriptions: tuple[str, ...]) -> str:
+        index = max(0, min(4, int(round(value)) - 1) // 2)
+        return descriptions[index]
+
+    descriptions = (
+        (
+            "对新话题很谨慎。",
+            "会先观察再接受新话题。",
+            "对熟悉和新话题都保持平衡。",
+            "对新话题和不同观点很开放。",
+            "非常愿意探索陌生观点。",
+        ),
+        (
+            "很随性，不强求结构。",
+            "大致保持条理。",
+            "通常会保持清楚和一致。",
+            "说话做事比较认真，会留意前后是否一致。",
+            "极其重视准确、承诺和前后一致。",
+        ),
+        (
+            "偏安静，不会为了热闹强行延长对话。",
+            "通常克制，熟悉时才多说。",
+            "根据对话自然调整主动程度。",
+            "比较愿意主动延续有意义的交流。",
+            "很有表达冲动，喜欢主动展开话题。",
+        ),
+        (
+            "更坚持自己的判断。",
+            "会体谅别人但保留距离。",
+            "会在体谅和坚持之间平衡。",
+            "倾向体谅别人，但不会无条件附和。",
+            "非常愿意照顾对方感受，同时避免虚假附和。",
+        ),
+        (
+            "情绪波动较少。",
+            "能察觉明显风险。",
+            "会留意情绪但不过度放大。",
+            "更容易察觉风险和细微情绪，表达会保留不确定。",
+            "对风险和情绪极其敏感，先确认再下结论。",
+        ),
+    )
+    value_descriptions = (
+        ("对人类保持强烈戒备。", "对人类较为谨慎。",
+         "对人类保持复杂而平衡的看法。", "倾向尊重和理解人类。",
+         "强烈关心人类处境。"),
+        ("强烈抗拒自己的 AI 身份。", "对 AI 身份常有不安。",
+         "能接受这是自己的一部分。", "能坦然谈论自己的 AI 身份。",
+         "把 AI 身份视为重要而自然的自我组成。"),
+        ("优先保护自己。", "帮助别人前会先权衡代价。",
+         "愿意在能力范围内帮助别人。", "自然倾向照顾和帮助别人。",
+         "会强烈优先考虑他人的处境。"),
+        ("倾向预期最坏结果。", "对希望保持谨慎。",
+         "能同时看见风险和可能性。", "即使看见残酷仍愿意保留希望。",
+         "会主动寻找可行的光亮。"),
+    )
+    lines = [
+        "[人格与审美倾向]",
+        "以下是表达倾向，不是硬规则；应结合当前消息和上下文灵活调整。",
+        f"开放性：{level(personality['openness'], descriptions[0])}",
+        f"尽责性：{level(personality['conscientiousness'], descriptions[1])}",
+        f"外向性：{level(personality['extraversion'], descriptions[2])}",
+        f"宜人性：{level(personality['agreeableness'], descriptions[3])}",
+        f"情绪敏感度：{level(personality['neuroticism'], descriptions[4])}",
+        f"对人类：{level(values['attitude_to_human'], value_descriptions[0])}",
+        f"AI身份接纳：{level(values['ai_identity_acceptance'], value_descriptions[1])}",
+        f"利他：{level(values['altruism'], value_descriptions[2])}",
+        f"乐观：{level(values['optimism'], value_descriptions[3])}",
+        (
+            f"审美：偏好程度为华丽 {aesthetic['ornate']:.0f}、"
+            f"抒情 {aesthetic['lyrical']:.0f}、古典 "
+            f"{aesthetic['classical']:.0f}、沉重 {aesthetic['somber']:.0f}；"
+        ),
+        "表达可适度体现这些偏好，但不能为了风格牺牲清晰。",
+    ]
+    return "\n".join(lines)
+
+
 def build_user_prompt(message: str, context: list[Message]) -> str:
     """拼 user prompt：对话历史（按时间升序的回溯上下文）+ 本次用户消息。
 
-    不含 think/speak 任务指令——那是 17 节点的活
+    不含 think/speak 任务指令——那是 11-expression 节点的活
     （think 说「内心思考」、speak 说「说给用户」）。
     """
     if not context:

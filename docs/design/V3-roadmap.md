@@ -64,7 +64,7 @@
 | 项 | 现状 | V3 接入点 |
 |---|---|---|
 | `LongTermDesire.linked_values` | design 规划「关联价值观」（01-types:240），production 唯一写入点 reflection 恒 `[]`，全后端无消费逻辑 | reflection 回填关联价值观，或排序/prompt 参考 |
-| `LongTermDesire.strength` | design 规划衰减（11-desire:51 `strength -= 0.02`），lifecycle 也在递减，但递减结果不被任何排序/prompt/决策消费（prompt 读的是 `ShortTermDesire.strength`） | 长期欲望排序/取舍时考虑 `strength` |
+| `LongTermDesire.strength` | design 规划衰减（07-desire:51 `strength -= 0.02`），lifecycle 也在递减，但递减结果不被任何排序/prompt/决策消费（prompt 读的是 `ShortTermDesire.strength`） | 长期欲望排序/取舍时考虑 `strength` |
 
 ## 电脑控制（computer use）— 推迟
 

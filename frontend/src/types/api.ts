@@ -86,7 +86,7 @@ export type UserMessageEvent = SseBase & {
   message: string;
 };
 
-/** 情感更新帧（12-inner-life）：{valence, arousal, emotion}。 */
+/** 情感更新帧（08-inner-life）：{valence, arousal, emotion}。 */
 export type EmotionUpdateEvent = SseBase & {
   event: "emotion_update";
   valence: number;
@@ -94,14 +94,14 @@ export type EmotionUpdateEvent = SseBase & {
   emotion: EmotionCategory;
 };
 
-/** 反思完成帧（12-inner-life）：{story, story_is_new}。story_is_new 决定前端是否高亮+气泡。 */
+/** 反思完成帧（08-inner-life）：{story, story_is_new}。story_is_new 决定前端是否高亮+气泡。 */
 export type ReflectionDoneEvent = SseBase & {
   event: "reflection_done";
   story: string;
   story_is_new: boolean;
 };
 
-// ---- 阅读事件（21-reading-impulse 三 SSE 事件，07-reading-events §1）----
+// ---- 阅读事件（12-reading-system 三 SSE 事件，docs/frontend/07-reading-events.md §1）----
 export type QuestionSubtype =
   | "question_knowledge"
   | "question_personal"
@@ -167,7 +167,7 @@ export type SseEvent =
 
 export type ConnectionState = "connecting" | "open" | "closed";
 
-// ---- 欲望（10-desire / nyx/types.py DesireState）----
+// ---- 欲望（07-desire / nyx/types.py DesireState）----
 export type DesireType = "interaction" | "exploration" | "creation" | "rest";
 export type DesireStatus =
   | "pending"
@@ -219,7 +219,7 @@ export type DesireState = {
   long_term: LongTermDesire[];
 };
 
-// ---- 记忆（07-memory-system / nyx/types.py Memory）----
+// ---- 记忆（06-memory-system / nyx/types.py Memory）----
 export type MemoryType = "short_term" | "long_term";
 export type SearchMode = "keyword" | "vector" | "association";
 
@@ -235,7 +235,7 @@ export type Memory = {
   sources: SearchMode[];
 };
 
-// ---- 活动（14-activity / nyx/types.py Activity）----
+// ---- 活动（09-activity / nyx/types.py Activity）----
 export type ActivityType =
   | "reading"
   | "free_exploration"
@@ -266,7 +266,7 @@ export type ActivitySnapshot = {
   schedule: Activity[];
 };
 
-// ---- 阅读（19/20/21-reading / nyx/types.py Book/Paragraph/ReadingProgress/BookListItem）----
+// ---- 阅读（12-reading-system / nyx/types.py Book/Paragraph/ReadingProgress/BookListItem）----
 export type Book = {
   id: string;
   title: string;
@@ -297,19 +297,23 @@ export type Paragraph = {
 };
 
 export type Progress = {
+  book_id: string;
   user_position: number;
   nyx_position: number;
   reading_speed: number; // 字符/秒（10–200，默认 50）
   read_count: number; // 读完几遍（0=未读完，>=1 可重读）
+  updated_at: number;
+  revision: number;
 };
 
 export type ProgressInput = {
   user_position: number;
   nyx_position: number;
   reading_speed: number;
+  expected_revision: number;
 };
 
-// ---- 笔记（22-reading-notes / nyx/types.py Annotation/UserNote）----
+// ---- 笔记（12-reading-system / nyx/types.py Annotation/UserNote）----
 export type Annotation = {
   id: string;
   user_note_id: string;
@@ -340,7 +344,7 @@ export type BackendEvent = {
   correlation_id: string;
 };
 
-// ---- eval 记账（15-eval / nyx/types.py EvalRecord/EvalStats）----
+// ---- eval 记账（10-eval / nyx/types.py EvalRecord/EvalStats）----
 export type EvalRecord = {
   id: string;
   created_at: number;

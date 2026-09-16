@@ -3,7 +3,7 @@
 > 范围：`nyx/config.py`（`Config` + 8 个分段 dataclass + `load_config()` + `validate_config()` + `ConfigError`）+ `config.yaml`。
 > 纯配置 spec：只做加载与校验，不含 Facade、不含 DDL、不含 API。
 > spec 只定义契约（分段 + 字段约束 + 加载/校验语义）；字段与默认值以 `config.yaml` / `nyx/config.py` 源文件为准。
-> 本文件只定义配置值本身；配置如何被 LLM 客户端使用由 `03-llm` 定义，组合根如何装配由 `05-module-bus-system` 定义。
+> 本文件只定义配置值本身；配置如何被 LLM 客户端使用由 `03-llm` 定义，组合根如何装配由 `04-module-bus-system` 定义。
 
 ## 元信息
 

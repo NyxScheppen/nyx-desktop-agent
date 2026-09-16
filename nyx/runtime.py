@@ -3,7 +3,8 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import Any, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 from nyx.enums import ActivityStatus, DesireType, EventType, Source, TickType
 from nyx.events.event import internal_event
@@ -39,7 +40,13 @@ async def on_user_message(app: Any, event: Event) -> None:
     current = await app.activity.get_current()
     if current is not None and current.status is ActivityStatus.RUNNING:
         await app.activity.interrupt(current.id, EventType.USER_MESSAGE)
-    await app.expression.reply(event.content["message"], event.correlation_id)
+    reply_to = event.content.get("reply_to")
+    if isinstance(reply_to, str):
+        await app.expression.reply(
+            event.content["message"], event.correlation_id, reply_to
+        )
+    else:
+        await app.expression.reply(event.content["message"], event.correlation_id)
 
 
 async def on_schedule_block_start(app: Any, event: Event) -> None:
@@ -86,14 +93,51 @@ async def check_initiate_chat(app: Any) -> None:
     state = await app.inner_life.get_state()
     online = app.last_presence in ("online", "busy")
     busy = app.last_presence == "busy"
-    if should_initiate_chat(
-        desires, online, busy, state.energy, time.time() - app.last_chat_at
+    latest_method = cast(
+        Callable[[], Awaitable[float | None]] | None,
+        getattr(app.expression, "latest_initiate_chat_at", None),
+    )
+    latest = await latest_method() if callable(latest_method) else None
+    last_chat_at = app.last_chat_at if latest is None else latest
+    if not should_initiate_chat(
+        desires, online, busy, state.energy, time.time() - last_chat_at
     ):
-        current = await app.activity.get_current()
-        if current is not None and current.status is ActivityStatus.RUNNING:
+        return
+    claim = cast(
+        Callable[[str], Awaitable[bool]] | None,
+        getattr(app.desire, "claim_for_interaction", None),
+    )
+    claimed = await claim(interaction.id) if callable(claim) else True
+    if not claimed:
+        return
+    try:
+        committed = await app.expression.initiate_chat(interaction, state)
+    except Exception:
+        release = cast(
+            Callable[[str], Awaitable[bool]] | None,
+            getattr(app.desire, "release_interaction_claim", None),
+        )
+        if callable(release):
+            await release(interaction.id)
+        raise
+    if not committed:
+        release = cast(
+            Callable[[str], Awaitable[bool]] | None,
+            getattr(app.desire, "release_interaction_claim", None),
+        )
+        if callable(release):
+            await release(interaction.id)
+        return
+    current = await app.activity.get_current()
+    if current is not None and current.status is ActivityStatus.RUNNING:
+        try:
             await app.activity.interrupt(current.id, EventType.INITIATE_CHAT)
-        if await app.expression.initiate_chat(interaction, state):
-            app.last_chat_at = time.time()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "主动搭话已提交但活动打断失败，等待后续补偿 desire_id=%s",
+                interaction.id,
+            )
+    app.last_chat_at = time.time()
 
 
 async def check_reflect(

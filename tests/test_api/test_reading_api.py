@@ -1,4 +1,4 @@
-"""POST /api/books 契约测试（19-reading-content）：fake ReadingFacade。
+"""阅读系统 REST 契约测试：fake ReadingFacade。
 
 验证端点薄封装：multipart `file` → 201 Book；重复 409；非 .epub/超限/空正文
 400；解析失败 500。不碰真实 EPUB/DB。
@@ -28,6 +28,7 @@ from nyx.reading.facade import (
     NoteNotFoundError,
     ReadingFacade,
 )
+from nyx.reading.store import ProgressConflictError
 from nyx.types import (
     Annotation,
     Book,
@@ -43,7 +44,7 @@ class _FakeReading:
         self.calls: list[tuple[str, bytes]] = []
         self.result: Book | None = None
         self.error: Exception | None = None
-        # 20-reading-progress 扩展
+        # 阅读系统进度扩展
         self.books_result: list[BookListItem] = []
         self.books_error: Exception | None = None
         self.progress_result: ReadingProgress | None = None
@@ -52,10 +53,10 @@ class _FakeReading:
         self.save_error: Exception | None = None
         self.paragraphs_result: list[Paragraph] = []
         self.paragraphs_error: Exception | None = None
-        # 21-reading-impulse 扩展
+        # 阅读系统冲动扩展
         self.impulse_result: list[ReadingBehavior] = []
         self.impulse_calls: list[tuple[str, int, int]] = []
-        # 22-reading-notes 扩展
+        # 阅读系统笔记扩展
         self.notes_result: list[UserNote] = []
         self.note_result: UserNote | None = None
         self.annotation_result: Annotation | None = None
@@ -83,7 +84,12 @@ class _FakeReading:
         return self.progress_result
 
     async def save_progress(
-        self, book_id: str, user_position: int, nyx_position: int, reading_speed: int
+        self,
+        book_id: str,
+        user_position: int,
+        nyx_position: int,
+        reading_speed: int,
+        expected_revision: int,
     ) -> ReadingProgress:
         self.saved.append((book_id, user_position, nyx_position, reading_speed))
         if self.save_error is not None:
@@ -283,7 +289,7 @@ async def test_books_too_large_returns_400(
     assert fake.calls == []  # 超限中断，不继续读、不调 import_book
 
 
-# ---- 20-reading-progress：书架 / 进度 / 段落端点 ----
+# ---- 阅读系统：书架 / 进度 / 段落端点 ----
 
 async def test_books_list_returns_list() -> None:
     fake = _FakeReading()
@@ -304,7 +310,7 @@ async def test_books_list_returns_list() -> None:
 
 async def test_progress_get_returns_value() -> None:
     fake = _FakeReading()
-    fake.progress_result = ReadingProgress("b1", 3, 2, 60, 1, 123.0)
+    fake.progress_result = ReadingProgress("b1", 3, 2, 60, 1, 123.0, 4)
     async with _client(_app(fake)) as client:
         resp = await client.get("/api/progress/b1")
     assert resp.status_code == 200
@@ -325,14 +331,19 @@ async def test_progress_get_book_not_found_returns_404() -> None:
 
 async def test_progress_put_saves_and_returns_ok() -> None:
     fake = _FakeReading()
-    fake.progress_result = ReadingProgress("b1", 4, 3, 70, 0, 1.0)
+    fake.progress_result = ReadingProgress("b1", 4, 3, 70, 0, 1.0, 1)
     async with _client(_app(fake)) as client:
         resp = await client.put(
             "/api/progress/b1",
-            json={"user_position": 4, "nyx_position": 3, "reading_speed": 70},
+            json={
+                "user_position": 4,
+                "nyx_position": 3,
+                "reading_speed": 70,
+                "expected_revision": 0,
+            },
         )
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True}
+    assert resp.json()["revision"] == 1
     assert fake.saved == [("b1", 4, 3, 70)]
 
 
@@ -341,7 +352,7 @@ async def test_progress_put_missing_reading_speed_returns_422() -> None:
     async with _client(_app(fake)) as client:
         resp = await client.put(
             "/api/progress/b1",
-            json={"user_position": 4, "nyx_position": 3},
+            json={"user_position": 4, "nyx_position": 3, "reading_speed": 70},
         )
     assert resp.status_code == 422
     assert fake.saved == []
@@ -352,11 +363,21 @@ async def test_progress_put_reading_speed_out_of_range_returns_422() -> None:
     async with _client(_app(fake)) as client:
         resp_low = await client.put(
             "/api/progress/b1",
-            json={"user_position": 4, "nyx_position": 3, "reading_speed": 9},
+            json={
+                "user_position": 4,
+                "nyx_position": 3,
+                "reading_speed": 9,
+                "expected_revision": 0,
+            },
         )
         resp_high = await client.put(
             "/api/progress/b1",
-            json={"user_position": 4, "nyx_position": 3, "reading_speed": 201},
+            json={
+                "user_position": 4,
+                "nyx_position": 3,
+                "reading_speed": 201,
+                "expected_revision": 0,
+            },
         )
     assert resp_low.status_code == 422
     assert resp_high.status_code == 422
@@ -369,9 +390,30 @@ async def test_progress_put_book_not_found_returns_404() -> None:
     async with _client(_app(fake)) as client:
         resp = await client.put(
             "/api/progress/missing",
-            json={"user_position": 1, "nyx_position": 1, "reading_speed": 50},
+            json={
+                "user_position": 1,
+                "nyx_position": 1,
+                "reading_speed": 50,
+                "expected_revision": 0,
+            },
         )
     assert resp.status_code == 404
+
+
+async def test_progress_put_stale_revision_returns_409() -> None:
+    fake = _FakeReading()
+    fake.save_error = ProgressConflictError("b1")
+    async with _client(_app(fake)) as client:
+        resp = await client.put(
+            "/api/progress/b1",
+            json={
+                "user_position": 1,
+                "nyx_position": 1,
+                "reading_speed": 50,
+                "expected_revision": 0,
+            },
+        )
+    assert resp.status_code == 409
 
 
 async def test_paragraphs_returns_range() -> None:
@@ -424,7 +466,7 @@ async def test_paragraphs_to_exceeds_total_returns_422() -> None:
     assert resp.status_code == 422
 
 
-# ---- 21-reading-impulse：冲动端点 ----
+# ---- 阅读系统：冲动端点 ----
 
 async def test_impulse_evaluate_returns_triggered() -> None:
     fake = _FakeReading()
@@ -452,7 +494,7 @@ async def test_impulse_evaluate_missing_last_paragraph_returns_422() -> None:
     assert fake.impulse_calls == []
 
 
-# ---- 22-reading-notes：笔记 / 批注 / 章节边界端点 ----
+# ---- 阅读系统：笔记 / 批注 / 章节边界端点 ----
 
 async def test_notes_list_returns_list() -> None:
     fake = _FakeReading()

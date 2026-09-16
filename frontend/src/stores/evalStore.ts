@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { getEvalRecent, getEvalTotalTokens } from "../api/client";
 import type { EvalRecord, EvalStats } from "../types/api";
 
-// eval 记账面板（15-eval）：最近 5 条 LLM 调用 + 总 token。
+// eval 记账面板（10-eval）：最近 5 条 LLM 调用 + 总 token。
 // 设置弹层打开时 mount 触发 refresh，拉 REST 快照；无 SSE 事件驱动（低频面板）。
 type EvalStoreState = {
   records: EvalRecord[] | null;

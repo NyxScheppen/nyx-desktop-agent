@@ -442,6 +442,33 @@ CREATE TABLE desire_generation_attempt (
 );
 ```
 
+### 表达交互 attempt
+
+`expression_interaction_attempt` 是表达系统的 durable 领域状态，不替代
+`event_delivery`。它记录一次提问/主动搭话是否已被用户回答或已超时结算；状态转换必须用
+条件更新。attempt 与对应的 `ASK` 或 `INITIATE_CHAT` 事件在同一本地事务中提交，
+事务提交后才调用 `announce_committed`。
+
+```sql
+CREATE TABLE expression_interaction_attempt (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    status TEXT NOT NULL,
+    answered_at REAL,
+    answer_event_id TEXT,
+    failure_reason TEXT
+);
+```
+
+索引为 `(status, expires_at)`、`(status, created_at)` 和 `(correlation_id)`。
+它与总线 delivery 的恢复职责不同：delivery 负责消费者投递，attempt 负责表达领域内的
+claim/answer/expire 幂等。
+
 ### `event_log` 展开状态
 
 事件行需要能被 delivery expander 幂等扫描。可选择：

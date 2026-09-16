@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Activity` / `ActivityType` / `ActivityStatus` / `DesireType` / `ShortTermDesire` / `DesireValue` / `CurrentState` / `Event` / `EventType` / `Material`）、02-config（`ActivityConfig` / `ExplorationConfig` / `ActivityEnergyDelta`）、03-llm（`LlmClient.complete` / `VisionClient`）、05-module-bus-system（`activity` / `material` 表、`EventBus` / `internal_event` / tick 路由、组合根、REST、SSE）、06-tools（`ToolRegistry`）、07-memory-system（活动/知识记忆落库）、11-desire（待消费欲望、活动状态接线、满足回写、长期欲望入口）、12-inner-life（状态快照、反思、精力变化）、eval（`Evaluator`）
+- **前置依赖**：01-types（`Activity` / `ActivityType` / `ActivityStatus` / `DesireType` / `ShortTermDesire` / `DesireValue` / `CurrentState` / `Event` / `EventType` / `Material`）、02-config（`ActivityConfig` / `ExplorationConfig` / `ActivityEnergyDelta`）、03-llm（`LlmClient.complete` / `VisionClient`）、04-module-bus-system（`activity` / `material` 表、`EventBus` / `internal_event` / tick 路由、组合根、REST、SSE）、05-tools（`ToolRegistry`）、06-memory-system（活动/知识记忆落库）、07-desire（待消费欲望、活动状态接线、满足回写、长期欲望入口）、08-inner-life（状态快照、反思、精力变化）、10-eval（`Evaluator`）
 - **实现文件**：`nyx/activity/scheduler.py`、`nyx/activity/store.py`、`nyx/activity/material_store.py`、`nyx/activity/starter.py`、`nyx/activity/lifecycle.py`、`nyx/activity/facade.py`、`nyx/activity/reading_runner.py`、`nyx/activity/creation.py`、`nyx/activity/llm_result.py`、`nyx/activity/paths.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/screen.py`
 
 ## 用户故事
@@ -84,7 +84,7 @@
 - [ ] `_goal_met(goal, result)` 的语义为：`goal is None -> True`；`action == "read"` 要求 `result.completed` 为真；`action == "write"` 要求 `title` 与 `content` 都存在且非空；`action == "observe"` 要求 `presence` 存在；自由探索 `outcome == "won"` 视为达成；其他情况为假。
 - [ ] `activity_goal_signal(activity) -> bool | None` 优先读取 `activity.progress["goal_signal"]`：该键存在且值为 `bool` 或 `None` 时直接使用，否则按 `goal` 与 `result` 调用 `_goal_met`。
 - [ ] `activity_end.goal_met is None` 表示本次有进展但不结算欲望；下游不得把它当作失败，不增加 `retry_count`。此时若欲望仍为 `ACTIVE`，活动完成逻辑将其释放回可消费状态。
-- [ ] `activity_end.goal_met is True` 或 `False` 时，按 11-desire 的满足/失败规则回写 `goal_progress`、`retry_count` 与欲望状态。
+- [ ] `activity_end.goal_met is True` 或 `False` 时，按 07-desire 的满足/失败规则回写 `goal_progress`、`retry_count` 与欲望状态。
 - [ ] `should_explore(last_explored_at: float, rate_limit_hours: int, now: float) -> bool` 只按时间间隔判断自由探索限速，`now - last_explored_at >= rate_limit_hours * 3600` 时允许升级；探索欲与精力条件由调用方分别保证。
 
 ### 可续执行与 checkpoint
@@ -195,7 +195,7 @@
   }
   ```
 
-- [ ] `desire_id`/`goal_met` 由 11-desire 消费，`energy_delta` 由 12-inner-life 消费，`type`/`result` 由记忆系统与前端消费；`reading` 与 `free_exploration` 结束后按 11-desire 规则给创造欲加压。
+- [ ] `desire_id`/`goal_met` 由 07-desire 消费，`energy_delta` 由 08-inner-life 消费，`type`/`result` 由记忆系统与前端消费；`reading` 与 `free_exploration` 结束后按 07-desire 规则给创造欲加压。
 - [ ] REST 路径保持不变：`GET /api/activity` 返回 `{current, schedule}`，`GET /api/activity/results` 返回历史产出，`POST /api/upload` 只注册 material，`GET /api/materials` 返回书库进度。
 - [ ] `current`、`schedule`、`results` 继续返回现有 `Activity` dataclass；`progress` 中的 checkpoint 作为 JSON 内追加字段，不破坏旧字段。
 - [ ] SSE 事件类型保持 `activity_start`、`activity_end`、`activity_interrupted`；统一 payload 为 `event.content` 展开并附 `event_id`、`correlation_id`。
@@ -219,5 +219,5 @@
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `docs/activity-system-facts.md` 只保留无关代码所需的实现事实，并指向本文件
-- [ ] `11-desire`、`12-inner-life`、`05-module-bus-system` 与本文件的公开签名和事件契约一致；`docs/tech-reference.md` 仅更新源码索引
+- [ ] `07-desire`、`08-inner-life`、`04-module-bus-system` 与本文件的公开签名和事件契约一致；`docs/tech-reference.md` 仅更新源码索引
 - [ ] `AGENTS.md` 与 `CLAUDE.md` 指向本文件作为活动系统唯一完整契约

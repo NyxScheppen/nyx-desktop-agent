@@ -3,27 +3,28 @@
 > 本文件只用于快速定位源码，不定义契约，不复制完整签名、DDL、事件语义或测试断言。
 > 业务契约以 `docs/specs/` 中对应的唯一完整 spec 为准；当前实现以 `nyx/` 源码为准。
 > 无关代码需要快速了解模块边界时，优先查对应的 `docs/*-system-facts.md`。
+> 合并多个旧 spec 后保留该领域原主编号；旧子 spec 编号不再作为引用使用。
 
 ## 契约入口
 
 ### 底层建设阅读顺序
 
-底层契约按依赖方向阅读：`01-types` 定义共享类型，`02-config` 定义配置，`03-llm` 定义 LLM 客户端，`05-module-bus-system` 定义数据库、事务、事件总线、订阅、组合根和生命周期。后续业务 spec 依赖这些契约；这些底层 spec 不反向依赖业务 spec。
+底层契约按依赖方向阅读：`01-types` 定义共享类型，`02-config` 定义配置，`03-llm` 定义 LLM 客户端，`04-module-bus-system` 定义数据库、事务、事件总线、订阅、组合根和生命周期。后续业务 spec 依赖这些契约；这些底层 spec 不反向依赖业务 spec。
 
 | 领域 | 完整契约 | 快速事实摘要 | 主要源码 |
 |---|---|---|---|
 | 类型 | [`01-types.md`](specs/01-types.md) | — | `nyx/types.py`, `nyx/enums.py` |
 | 配置 | [`02-config.md`](specs/02-config.md) | — | `nyx/config.py` |
 | LLM | [`03-llm.md`](specs/03-llm.md) | — | `nyx/llm/` |
-| 模块与事件总线 | [`05-module-bus-system.md`](specs/05-module-bus-system.md) | [`module-bus-system-facts.md`](module-bus-system-facts.md) | `nyx/db.py`, `nyx/events/`, `nyx/runtime.py` |
-| 记忆 | [`07-memory-system.md`](specs/07-memory-system.md) | [`memory-system-facts.md`](memory-system-facts.md) | `nyx/memory/` |
-| 欲望 | [`11-desire.md`](specs/11-desire.md) | [`desire-system-facts.md`](desire-system-facts.md) | `nyx/desire/` |
-| 内在生命（含审美维度） | [`12-inner-life.md`](specs/12-inner-life.md) | — | `nyx/inner_life/`、`nyx/types.py`、`nyx/db.py`、`nyx/memory/`、`nyx/expression/prompt.py`、`nyx/main.py` |
-| 活动 | [`14-activity.md`](specs/14-activity.md) | [`activity-system-facts.md`](activity-system-facts.md) | `nyx/activity/` |
-| 表达 | [`16-expression-prompt.md`](specs/16-expression-prompt.md)、[`17-expression.md`](specs/17-expression.md) | — | `nyx/expression/` |
-| 阅读 | [`19-reading-content.md`](specs/19-reading-content.md) 至 [`24-reading-chat-turn.md`](specs/24-reading-chat-turn.md) | — | `nyx/reading/` |
-| 工具 | [`06-tools.md`](specs/06-tools.md) | — | `nyx/tools/` |
-| 评估 | [`15-eval.md`](specs/15-eval.md) | — | `nyx/eval/` |
+| 模块与事件总线 | [`04-module-bus-system.md`](specs/04-module-bus-system.md) | [`module-bus-system-facts.md`](module-bus-system-facts.md) | `nyx/db.py`, `nyx/events/`, `nyx/runtime.py` |
+| 工具 | [`05-tools.md`](specs/05-tools.md) | — | `nyx/tools/` |
+| 记忆 | [`06-memory-system.md`](specs/06-memory-system.md) | [`memory-system-facts.md`](memory-system-facts.md) | `nyx/memory/` |
+| 欲望 | [`07-desire.md`](specs/07-desire.md) | [`desire-system-facts.md`](desire-system-facts.md) | `nyx/desire/` |
+| 内在生命（含审美维度） | [`08-inner-life.md`](specs/08-inner-life.md) | [`inner-life-system-facts.md`](inner-life-system-facts.md) | `nyx/inner_life/`、`nyx/types.py`、`nyx/db.py`、`nyx/memory/`、`nyx/expression/prompt.py`、`nyx/main.py` |
+| 活动 | [`09-activity.md`](specs/09-activity.md) | [`activity-system-facts.md`](activity-system-facts.md) | `nyx/activity/` |
+| 评估 | [`10-eval.md`](specs/10-eval.md) | — | `nyx/eval/` |
+| 表达 | [`11-expression.md`](specs/11-expression.md) | [`expression-system-facts.md`](expression-system-facts.md) | `nyx/expression/`、`nyx/reading/companions.py`、`prompts/knowledge-boundary.md` |
+| 阅读 | [`12-reading-system.md`](specs/12-reading-system.md)；表达侧读书交互归 11 | [`reading-system-facts.md`](reading-system-facts.md) | `nyx/reading/` |
 
 ## 运行时地图
 
@@ -46,7 +47,7 @@
 | `DesireFacade` | `nyx/desire/facade.py` | 欲望入口、全量/待消费查询和生命周期接线 |
 | `InnerLifeFacade` | `nyx/inner_life/facade.py` | 情感、精力、慢变量和反思接线 |
 | `ActivityFacade` | `nyx/activity/facade.py` | 排期、活动启动/执行/完成/打断 |
-| `ExpressionFacade` | `nyx/expression/facade.py` | 快慢通道回复、搭话和碎碎念 |
+| `ExpressionFacade` | `nyx/expression/facade.py`、`nyx/expression/store.py` | 快慢通道回复、durable 提问/搭话 attempt、主动搭话和碎碎念 |
 | `ReadingFacade` | `nyx/reading/facade.py` | 书籍、进度、陪读冲动和笔记 |
 
 ## 前端地图
@@ -62,7 +63,7 @@
 
 ## 数据与测试
 
-- 数据库文件默认由 `nyx/db.py` 决定；表结构、迁移和关闭语义见 `05-module-bus-system.md`。
+- 数据库文件默认由 `nyx/db.py` 决定；表结构、迁移和关闭语义见 `04-module-bus-system.md`。
 - 后端测试入口为 `tests/`；按系统分目录，覆盖索引见 [`test-inventory.md`](test-inventory.md)。
 - 前端测试入口为 `frontend/tests/`，运行 `npm test`；构建检查运行 `npm run build`。
 - 发现索引与源码不一致时，以源码和对应完整 spec 为准，并在同一变更中修正索引。

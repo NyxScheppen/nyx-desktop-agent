@@ -1,7 +1,7 @@
 # 08 阅读 × 聊天统一布局（左栏常驻对话 + 真分页 + 可拖拽头像圆圈 + 碎碎念浮泡）
 
 > 前端「陪伴感」重构：聊天从中间舞台挪到**左栏常驻**（读书/看面板时都能聊）；读书改**真分页**（取消滚动）；立绘做**可拖拽头像圆圈**（白底可换底色，碎碎念头顶冒）；碎碎念改**悬浮气泡**；读书提问/联想**并进对话**。
-> 对齐后端：`24-reading-chat-turn`（读书提问/联想进 `_history`，回复可引用）。
+> 对齐后端：`11-expression`（读书提问/联想进表达 history，回复可引用）。
 
 > **行号是定位锚，不是指令**：本文行号只用于快速定位；落点以**符号名 + 变量名**为准。
 
@@ -28,7 +28,7 @@
 
 ## 2. 读书反应并进对话（类型扩展 + dispatch 重路由 + 渲染契约）
 
-后端 24 不改事件（仍发 `READING_QUESTION`/`READING_ASSOCIATION`/`READING_MUTTER`），前端**重路由**进 `chatStore`。
+表达系统（11-expression）不改事件（仍发 `READING_QUESTION`/`READING_ASSOCIATION`/`READING_MUTTER`），前端**重路由**进 `chatStore`。
 
 ### 2.1 `ChatMessage` 类型扩展（`chatStore.ts`）
 

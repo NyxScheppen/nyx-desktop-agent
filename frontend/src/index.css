@@ -1146,7 +1146,7 @@ body {
   flex-shrink: 0;
 }
 
-/* ===== 读书：笔记面板（07-reading-events §3） ===== */
+/* ===== 读书：笔记面板（docs/frontend/07-reading-events.md §3） ===== */
 .note-composer {
   display: flex;
   flex-direction: column;

@@ -96,7 +96,7 @@ export async function getEventsLog(params?: {
   return request<BackendEvent[]>(`${BASE_URL}/api/events/log${qs ? `?${qs}` : ""}`);
 }
 
-// ---- 阅读（19/20/21-reading，06-reading-panel §6）----
+// ---- 阅读（12-reading-system，docs/frontend/06-reading-panel.md §6）----
 
 export async function getBooks(): Promise<BookListItem[]> {
   return request<BookListItem[]>(`${BASE_URL}/api/books`);
@@ -119,8 +119,8 @@ export async function getProgress(bookId: string): Promise<Progress> {
 export async function putProgress(
   bookId: string,
   p: ProgressInput,
-): Promise<void> {
-  await request<{ ok: boolean }>(`${BASE_URL}/api/progress/${bookId}`, {
+): Promise<Progress> {
+  return request<Progress>(`${BASE_URL}/api/progress/${bookId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(p),
@@ -150,7 +150,7 @@ export async function evaluateImpulse(
   });
 }
 
-// 章末/整本检测（22-reading-notes，07-reading-events §4 定义，06 追赶循环调用）。
+// 章末/整本检测（12-reading-system，07-reading-events §4 定义，06 追赶循环调用）。
 export async function checkChapterBoundary(
   bookId: string,
   nyxPosition: number,
@@ -165,7 +165,7 @@ export async function checkChapterBoundary(
   );
 }
 
-// ---- 笔记（22-reading-notes，07-reading-events §4）----
+// ---- 笔记（12-reading-system，07-reading-events §4）----
 
 export async function getNotes(bookId: string): Promise<UserNoteWithAnnotations[]> {
   return request<UserNoteWithAnnotations[]>(`${BASE_URL}/api/notes/${bookId}`);
@@ -198,14 +198,14 @@ export async function deleteUserNote(id: string): Promise<void> {
   await assertOk(res);
 }
 
-// 后端 show_to_nyx LLM 空/失败回 null（200 null，非错误），故返回 Annotation | null。
+// 12-reading-system 的 show_to_nyx 在 LLM 空/失败时回 null（200 null，非错误），故返回 Annotation | null。
 export async function showNoteToNyx(noteId: string): Promise<Annotation | null> {
   return request<Annotation | null>(`${BASE_URL}/api/notes/${noteId}/show-to-nyx`, {
     method: "POST",
   });
 }
 
-// ---- eval 记账（15-eval，06-settings-panel §7）----
+// ---- eval 记账（10-eval，06-settings-panel §7）----
 
 export async function getEvalRecent(limit = 5): Promise<EvalRecord[]> {
   return request<EvalRecord[]>(`${BASE_URL}/api/eval/recent?limit=${limit}`);

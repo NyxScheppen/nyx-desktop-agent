@@ -88,6 +88,14 @@ class DesireFacade:
             desire_id, in_transaction=True
         )
 
+    async def claim_for_interaction(self, desire_id: str) -> bool:
+        """Atomically claim a pending interaction desire for initiative."""
+        return await self._lifecycle.claim_for_interaction(desire_id)
+
+    async def release_interaction_claim(self, desire_id: str) -> bool:
+        """Release an initiative claim when generation did not commit."""
+        return await self._lifecycle.release_interaction_claim(desire_id)
+
     async def mark_suppressed(self, desire_id: str) -> None:
         await self._lifecycle.mark_suppressed(desire_id)
 

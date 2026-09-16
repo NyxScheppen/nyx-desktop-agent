@@ -10,6 +10,8 @@ from nyx.enums import (
     EnergyState,
     EventType,
     GoalAction,
+    InteractionKind,
+    InteractionStatus,
     MemoryEdgeKind,
     MemoryType,
     SearchMode,
@@ -89,7 +91,7 @@ class ShortTermDesire:
     id: str
     created_at: float
     type: DesireType
-    strength: float         # 强度（范围由 10-desire-value 定义，本 spec 不定）
+    strength: float         # 强度（范围由 07-desire 定义，本 spec 不定）
     description: str        # LLM 生成的具体描述
     goal: Goal | None
     retry_count: int = 0
@@ -104,7 +106,7 @@ class LongTermDesire:
     type: DesireType        # 对应 DesireType，长期欲望给对应类型加压 + 主题种子
     name: str
     description: str
-    strength: float         # 迫切度，消退不归零（范围由 10-desire-value 定义）
+    strength: float         # 迫切度，消退不归零（范围由 07-desire 定义）
     progress: float         # 0-1
     subtopics: list[str]    # 子主题池
     linked_values: list[str] = field(default_factory=list[str])
@@ -150,7 +152,7 @@ class Material:                    # 用户喂的读物（一本书），分块�
 
 # ---- 陪读 ----
 @dataclass
-class Book:                        # 用户陪读的 EPUB 书（19-reading-content）
+class Book:                        # 用户陪读的 EPUB 书（12-reading-system）
     id: str
     title: str
     author: str
@@ -167,17 +169,18 @@ class Paragraph:                   # 书的正文段落（index 从 1 起、per 
     book_id: str
     index: int
     text: str
-    is_chapter_start: bool         # 以 h1/h2 开头（22 章末检测用）
+    is_chapter_start: bool         # 以 h1/h2 开头（12-reading-system 章末检测用）
 
 
 @dataclass
-class ReadingProgress:             # 20-reading-progress：进度 1:1 书
+class ReadingProgress:             # 12-reading-system：进度 1:1 书
     book_id: str
     user_position: int             # ≥1，与 Paragraph.index 从 1 起对齐
     nyx_position: int              # ≥1
     reading_speed: int             # 字符/秒，10-200
-    read_count: int                # 读完几遍（只由 22 整本读完 ++）
+    read_count: int                # 读完几遍（只由 12-reading-system 整本读完 ++）
     updated_at: float
+    revision: int = 0              # 条件写版本；0 = 尚未成功写入进度
 
 
 @dataclass
@@ -192,7 +195,7 @@ class BookListItem:                # 书架列表项（books LEFT JOIN reading_p
 
 
 @dataclass
-class Annotation:                  # 用户笔记的 Nyx 批注（22-reading-notes）
+class Annotation:                  # 用户笔记的 Nyx 批注（12-reading-system）
     id: str
     user_note_id: str
     content: str
@@ -200,7 +203,7 @@ class Annotation:                  # 用户笔记的 Nyx 批注（22-reading-not
 
 
 @dataclass
-class UserNote:                    # 用户手写笔记（22-reading-notes）
+class UserNote:                    # 用户手写笔记（12-reading-system）
     id: str
     book_id: str | None            # 书删除后 ON DELETE SET NULL
     paragraph_id: str | None       # 段删除后 SET NULL；自由记无段也为 None
@@ -257,6 +260,21 @@ class Message:
     fast: bool = False
 
 
+@dataclass
+class InteractionAttempt:
+    id: str
+    kind: InteractionKind
+    source_id: str
+    correlation_id: str
+    text: str
+    created_at: float
+    expires_at: float
+    status: InteractionStatus = InteractionStatus.WAITING
+    answered_at: float | None = None
+    answer_event_id: str | None = None
+    failure_reason: str | None = None
+
+
 # ---- 工具 / eval ----
 @dataclass
 class Tool:
@@ -277,7 +295,7 @@ class LLMOutput:
     # bind_tools 时 LLM 请求的工具调用（无则空）
     tool_calls: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     # 本次调用 token 消耗（抽不到记 0）；call_id 一次 complete() 唯一，
-    # think/speak 拆分后共享同一次调用（eval 总 token 去重锚点，15-eval）
+    # think/speak 拆分后共享同一次调用（eval 总 token 去重锚点，10-eval）
     prompt_tokens: int = 0
     completion_tokens: int = 0
     call_id: str = ""
@@ -285,7 +303,7 @@ class LLMOutput:
 
 @dataclass
 class EvalRecord:
-    """一次 evaluate() 的记账行（15-eval：LLM 调用 + token 可查询）。
+    """一次 evaluate() 的记账行（10-eval：LLM 调用 + token 可查询）。
 
     不存 content 原文（数据最小化）。
     """

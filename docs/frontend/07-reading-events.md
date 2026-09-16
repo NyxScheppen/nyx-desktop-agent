@@ -2,12 +2,12 @@
 
 > 前端「陪伴读书」的**行为与笔记层**：订阅 `reading_mutter`/`reading_question`/`reading_association` 三个 SSE 事件——读书碎碎念归悬浮气泡、提问/联想并进对话；笔记面板做用户笔记 CRUD + 「给尼克斯看」批注。Nyx 的章末整合记忆不在此上屏（落 memory，记忆面板已砍）。
 > 范围：`components/reading/NotePanel.tsx` 笔记部分 + `components/chat/MessageBubble.tsx` 读书 turn 渲染 + `stores/readerStore.ts` 笔记 state + `api/client.ts` 笔记端点 + `api/dispatch.ts` 阅读事件分派 + `hooks/useSSE.ts` 的 `EVENT_TYPES`。
-> 对齐后端：`21-reading-impulse`（3 个 `READING_*` 事件）、`22-reading-notes`（笔记 CRUD/批注/章末整合端点）。
-> 反向修订 22：`show-to-nyx` 端点返回体从 `{annotation_id, content}` 改为完整 `Annotation`（`{id, user_note_id, content, created_at}`）——前端 append 完整对象，不造 `created_at`。
+> 对齐后端：`12-reading-system`（3 个 `READING_*` 事件、笔记 CRUD/批注/章末整合端点）。
+> 反向修订阅读系统：`show-to-nyx` 端点返回体从 `{annotation_id, content}` 改为完整 `Annotation`（`{id, user_note_id, content, created_at}`）——前端 append 完整对象，不造 `created_at`。
 
-## 1. 新 SSE 事件（后端 21 定义，前端增补三型）
+## 1. 新 SSE 事件（后端 12-reading-system 定义，前端增补三型）
 
-后端 21 在 `EventType` 追加 `READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION`，经既有 `GET /api/events` 广播。`data` 形状（01-sse §1 约定：`{event_id, correlation_id} + content`；`correlation_id` = `book_id`，21 决策「按书归组」）：
+后端 12-reading-system 在 `EventType` 追加 `READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION`，经既有 `GET /api/events` 广播。`data` 形状（01-sse §1 约定：`{event_id, correlation_id} + content`；`correlation_id` = `book_id`，按书归组）：
 
 ```
 event: reading_mutter
@@ -115,10 +115,10 @@ showToNyx(noteId: string): Promise<void>             // POST show-to-nyx → 返
 
 ### 关键决策
 
-- **只展示用户笔记 + 批注**：Nyx 章末整合的笔记走 `remember_reading` 落 memory（`tag='reading'`），**不上屏**（记忆面板已砍，README §5）；`NotePanel` 是「用户笔记」面板，用户笔记与 Nyx 笔记严格分离（22 决策）。`showToNyx` 的批注是「对用户笔记的回应」，挂在 `annotations` 下，与 Nyx 自己落 memory 的笔记无关。
-- **「给尼克斯看」主动触发**：Nyx 不主动读用户笔记（22 决策 C3）；`showToNyx` 读笔记 + 原段落 → LLM 批注 → 插 `annotations`。多次展示 → 每次新增一行批注（不覆盖）。
+- **只展示用户笔记 + 批注**：Nyx 章末整合的笔记走 `remember_reading` 落 memory（`tag='reading'`），**不上屏**（记忆面板已砍，README §5）；`NotePanel` 是「用户笔记」面板，用户笔记与 Nyx 笔记严格分离（12-reading-system 决策）。`showToNyx` 的批注是「对用户笔记的回应」，挂在 `annotations` 下，与 Nyx 自己落 memory 的笔记无关。
+- **「给尼克斯看」主动触发**：Nyx 不主动读用户笔记（12-reading-system 决策 C3）；`showToNyx` 读笔记 + 原段落 → LLM 批注 → 插 `annotations`。多次展示 → 每次新增一行批注（不覆盖）。
 - **章末检测由追赶循环触发**：06 的 `advanceNyx` 每次 `nyxPosition += 1` 后 fire-and-forget `checkChapterBoundary(bookId, nyxPosition)`；`is_boundary=true` 时后端后台整合（落 memory，不阻塞返回）。前端不渲染结果（见上条）。
-- **`showToNyx` 本地 append 批注**：成功后把返回的完整 `Annotation`（22 的 `show-to-nyx` 回 `{id, user_note_id, content, created_at}`，非 `{annotation_id, content}`）追加到该 note 的 `annotations`，不整表重拉（避免用户翻笔记时抖动）；失败静默记 `notesError`。
+- **`showToNyx` 本地 append 批注**：成功后把返回的完整 `Annotation`（12-reading-system 的 `show-to-nyx` 回 `{id, user_note_id, content, created_at}`，非 `{annotation_id, content}`）追加到该 note 的 `annotations`，不整表重拉（避免用户翻笔记时抖动）；失败静默记 `notesError`。
 
 ## 4. `client.ts` 增补（笔记端点）
 
@@ -132,7 +132,7 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 ```
 
 - 请求体键 = 后端键（snake_case 零映射）；`createUserNote` 缺 `content` → 422（客户端上抛）、`updateUserNote`/`deleteUserNote`/`showNoteToNyx` 不存在 → 404 上抛（统一错误契约，05-client §2）。
-- `checkChapterBoundary` 由 06 追赶循环调用（非面板按钮），故放本 spec 一并定义（与 22 端点 1:1）。
+- `checkChapterBoundary` 由 06 追赶循环调用（非面板按钮），故放本 spec 一并定义（与 12-reading-system 端点 1:1）。
 
 ## 5. 对既有前端 spec 的修订
 

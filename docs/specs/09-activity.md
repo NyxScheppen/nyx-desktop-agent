@@ -1,7 +1,7 @@
 # 活动系统：日程排期、活动执行与状态机
 
 > 本文件是活动系统的唯一完整契约。它合并日程排期、活动 Facade、活动生命周期、可续活动状态机、自由探索、观察与屏幕视觉的规格。
-> `docs/activity-system-facts.md` 只是供无关代码查阅的事实摘要，不替代本文件；摘要与本文件不一致时，以本文件为准，并同步修正摘要。
+> `docs/facts/activity-system-facts.md` 只是供无关代码查阅的事实摘要，不替代本文件；摘要与本文件不一致时，以本文件为准，并同步修正摘要。
 > spec 只定义契约（签名、语义与决策），不内联完整代码；实现以 `nyx/activity/` 源文件为准。
 
 ## 元信息
@@ -218,6 +218,6 @@
 - [ ] `ruff check` 零报错
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
-- [ ] `docs/activity-system-facts.md` 只保留无关代码所需的实现事实，并指向本文件
+- [ ] `docs/facts/activity-system-facts.md` 只保留无关代码所需的实现事实，并指向本文件
 - [ ] `07-desire`、`08-inner-life`、`04-module-bus-system` 与本文件的公开签名和事件契约一致；`docs/tech-reference.md` 仅更新源码索引
 - [ ] `AGENTS.md` 与 `CLAUDE.md` 指向本文件作为活动系统唯一完整契约

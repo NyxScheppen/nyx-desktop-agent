@@ -2,7 +2,7 @@
 
 > 本文件只用于快速定位源码，不定义契约，不复制完整签名、DDL、事件语义或测试断言。
 > 业务契约以 `docs/specs/` 中对应的唯一完整 spec 为准；当前实现以 `nyx/` 源码为准。
-> 无关代码需要快速了解模块边界时，优先查对应的 `docs/*-system-facts.md`。
+> 无关代码需要快速了解模块边界时，优先查对应的 `docs/facts/*-system-facts.md`。
 > 合并多个旧 spec 后保留该领域原主编号；旧子 spec 编号不再作为引用使用。
 
 ## 契约入口
@@ -16,15 +16,15 @@
 | 类型 | [`01-types.md`](specs/01-types.md) | — | `nyx/types.py`, `nyx/enums.py` |
 | 配置 | [`02-config.md`](specs/02-config.md) | — | `nyx/config.py` |
 | LLM | [`03-llm.md`](specs/03-llm.md) | — | `nyx/llm/` |
-| 模块与事件总线 | [`04-module-bus-system.md`](specs/04-module-bus-system.md) | [`module-bus-system-facts.md`](module-bus-system-facts.md) | `nyx/db.py`, `nyx/events/`, `nyx/runtime.py` |
+| 模块与事件总线 | [`04-module-bus-system.md`](specs/04-module-bus-system.md) | [`module-bus-system-facts.md`](facts/module-bus-system-facts.md) | `nyx/db.py`, `nyx/events/`, `nyx/runtime.py` |
 | 工具 | [`05-tools.md`](specs/05-tools.md) | — | `nyx/tools/` |
-| 记忆 | [`06-memory-system.md`](specs/06-memory-system.md) | [`memory-system-facts.md`](memory-system-facts.md) | `nyx/memory/` |
-| 欲望 | [`07-desire.md`](specs/07-desire.md) | [`desire-system-facts.md`](desire-system-facts.md) | `nyx/desire/` |
-| 内在生命（含审美维度） | [`08-inner-life.md`](specs/08-inner-life.md) | [`inner-life-system-facts.md`](inner-life-system-facts.md) | `nyx/inner_life/`、`nyx/types.py`、`nyx/db.py`、`nyx/memory/`、`nyx/expression/prompt.py`、`nyx/main.py` |
-| 活动 | [`09-activity.md`](specs/09-activity.md) | [`activity-system-facts.md`](activity-system-facts.md) | `nyx/activity/` |
+| 记忆 | [`06-memory-system.md`](specs/06-memory-system.md) | [`memory-system-facts.md`](facts/memory-system-facts.md) | `nyx/memory/` |
+| 欲望 | [`07-desire.md`](specs/07-desire.md) | [`desire-system-facts.md`](facts/desire-system-facts.md) | `nyx/desire/` |
+| 内在生命（含审美维度） | [`08-inner-life.md`](specs/08-inner-life.md) | [`inner-life-system-facts.md`](facts/inner-life-system-facts.md) | `nyx/inner_life/`、`nyx/types.py`、`nyx/db.py`、`nyx/memory/`、`nyx/expression/prompt.py`、`nyx/main.py` |
+| 活动 | [`09-activity.md`](specs/09-activity.md) | [`activity-system-facts.md`](facts/activity-system-facts.md) | `nyx/activity/` |
 | 评估 | [`10-eval.md`](specs/10-eval.md) | — | `nyx/eval/` |
-| 表达 | [`11-expression.md`](specs/11-expression.md) | [`expression-system-facts.md`](expression-system-facts.md) | `nyx/expression/`、`nyx/reading/companions.py`、`prompts/knowledge-boundary.md` |
-| 阅读 | [`12-reading-system.md`](specs/12-reading-system.md)；表达侧读书交互归 11 | [`reading-system-facts.md`](reading-system-facts.md) | `nyx/reading/` |
+| 表达 | [`11-expression.md`](specs/11-expression.md) | [`expression-system-facts.md`](facts/expression-system-facts.md) | `nyx/expression/`、`nyx/reading/companions.py`、`prompts/knowledge-boundary.md` |
+| 阅读 | [`12-reading-system.md`](specs/12-reading-system.md)；表达侧读书交互归 11 | [`reading-system-facts.md`](facts/reading-system-facts.md) | `nyx/reading/` |
 
 ## 运行时地图
 

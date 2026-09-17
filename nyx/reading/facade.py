@@ -48,8 +48,9 @@ from nyx.types import (
     UserNote,
 )
 
-# 每本书 Nyx 输出 buffer 的条数上限（12-reading-system）：长书长时间不触章末时的内存兜底，
-# 超限丢弃最旧条目。值远大于单章正常产量，仅防无界增长。
+# 每本书 Nyx 输出 buffer 的条数上限（12-reading-system）：
+# 长书长时间不触章末时的内存兜底，超限丢弃最旧条目。
+# 值远大于单章正常产量，仅防无界增长。
 _NYX_BUFFER_MAXLEN = NYX_BUFFER_MAXLEN
 _READING_INPUT_MAX_CHARS = 4000
 _READING_PROMPT_MAX_CHARS = 6000
@@ -124,7 +125,8 @@ class ReadingFacade:
         self._companion = ReadingCompanion(
             llm, evaluator, bus, memory, expression, canon, self.record_nyx_output
         )
-        # 已完成整本 ++ 的 book 标记（12-reading-system）：判 BOOK_FINISHED 时仅首次 ++，
+        # 已完成整本 ++ 的 book 标记（12-reading-system）：
+        # 判 BOOK_FINISHED 时仅首次 ++，
         # nyx_position 回到 < total（回翻/重读）时清除，下一遍读完再次 ++。
         self._finished_books: set[str] = set()
         self._background_tasks: set[asyncio.Task[None]] = set()

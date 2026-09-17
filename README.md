@@ -111,6 +111,8 @@ flowchart TB
 python dev.py        # 同时拉起后端(8000) + 前端 Vite(5173)，Ctrl+C 退出
 ```
 
+Windows 用户也可以直接双击项目根目录的 `start_nyx.bat` 启动；脚本会优先使用项目 `.venv`，并检查 Python/uvicorn、Node.js/npm 与前端依赖。启动失败时窗口会保持打开，方便直接查看错误。
+
 ### 后端
 
 ```bash
@@ -147,10 +149,11 @@ npm run tauri dev  # 桌面壳（Tauri v2）
 
 | 文档 | 内容 |
 |---|---|
-| [`docs/design/design.md`](docs/design/design.md) | 系统架构 + 六大模块设计 |
+| [`docs/design/design.md`](docs/design/design.md) | 产品定位、长期架构原则和文档边界 |
 | [`docs/canon.md`](docs/canon.md) | 人格设定（尼克斯·夏本） |
-| [`docs/tech-reference.md`](docs/tech-reference.md) | 技术接口（DDL / Facade 签名 / API / SSE 契约） |
+| [`docs/tech-reference.md`](docs/tech-reference.md) | 源码、spec 与 fact 的快速索引 |
 | [`docs/specs/`](docs/specs/) | 每项功能的设计契约（spec 先行） |
+| [`docs/facts/`](docs/facts/) | 当前源码事实摘要（只作快速导航） |
 | [`docs/design/V3-roadmap.md`](docs/design/V3-roadmap.md) | 后续路线图 |
 
 ## ✅ 质量门

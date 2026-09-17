@@ -145,7 +145,7 @@ def should_initiate_chat(
     energy: float,
     since_last_chat: float,
 ) -> bool:
-    """搭话触发判定（design §5.5）。
+    """搭话触发判定（契约见 11-expression spec）。
 
     互动欲非空 + 在线 + 不忙 + 精力够 + 距上次 ≥ 间隔。
     """

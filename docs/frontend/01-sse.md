@@ -1,6 +1,8 @@
 # SSE 数据流（`hooks/useSSE.ts`）
 
-> 前端实时数据的**主通道**。后端广播全部事件（design §3.2），本 spec 定义 `useSSE` hook 契约、SSE 帧格式、事件→store 分发表、重连容错。
+> 前端实时数据的**主通道**。后端广播全部事件；事件持久化、路由和广播语义见
+> `docs/specs/04-module-bus-system.md`。本 spec 定义 `useSSE` hook 契约、SSE 帧格式、
+> 事件→store 分发表、重连容错。
 > 范围：`hooks/useSSE.ts` + `api/client.ts` 里的 SSE 相关部分。
 
 ## 1. 端点与帧格式

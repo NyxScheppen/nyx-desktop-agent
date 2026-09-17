@@ -18,7 +18,10 @@ from typing import NamedTuple
 
 
 class Segment(NamedTuple):
-    """一个阅读段落。`is_chapter_start` = 以 `h1`/`h2` 开头（12-reading-system 章末检测用）。"""
+    """一个阅读段落。
+
+    `is_chapter_start` = 以 `h1`/`h2` 开头（12-reading-system 章末检测用）。
+    """
 
     text: str
     is_chapter_start: bool

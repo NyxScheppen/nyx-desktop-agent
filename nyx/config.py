@@ -76,7 +76,7 @@ class ExplorationConfig:
 
 @dataclass
 class VisionConfig:
-    enabled: bool = False               # 屏幕视觉 opt-in（design §8.5）
+    enabled: bool = False               # 屏幕视觉 opt-in（见 09-activity spec）
     provider: str = "ollama"            # 复用 provider→base_url 映射
     model: str = "llava"                # 本地视觉模型 tag（Ollama）
     api_key_env: str = "DEEPSEEK_API_KEY"  # 存环境变量名，key 本体由 03-llm 读

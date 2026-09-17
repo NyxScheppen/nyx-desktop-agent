@@ -47,6 +47,7 @@ def main() -> None:
         subprocess.Popen([npm, "run", "dev"], cwd=FRONTEND),
     ]
     names = ["backend(8000)", "frontend(5173)"]
+    failed = False
     print("[dev] 一键启动：backend(8000) + frontend(5173)，Ctrl+C 退出")
     try:
         while True:
@@ -54,13 +55,20 @@ def main() -> None:
                 code = proc.poll()
                 if code is not None:
                     print(f"[dev] {name} 已退出 (code={code})，关闭其余…")
-                    return
+                    failed = code != 0
+                    break
+            if failed or any(proc.poll() is not None for proc in procs):
+                break
             time.sleep(0.3)
     except KeyboardInterrupt:
         print("\n[dev] 收到 Ctrl+C，关闭全部…")
     finally:
         for proc in procs:
             _stop(proc)
+    # Preserve a non-zero exit status so wrappers (for example start_nyx.bat)
+    # can report backend/frontend startup failures accurately.
+    if failed or any(proc.returncode not in (None, 0) for proc in procs):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

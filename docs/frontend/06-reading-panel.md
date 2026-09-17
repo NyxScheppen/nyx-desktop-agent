@@ -110,7 +110,7 @@ reread(): Promise<void>                          // 重读：putProgress({user_p
 
 ## 4. Nyx 追赶（`setTimeout`，秒级逐段）
 
-> 设计文档 §5.4：逐段追赶是**秒级**，后端不另起 tick 推进 Nyx，前端 `setTimeout` 按 `reading_speed` 推进 `nyxPosition`。
+> 阅读契约规定逐段追赶是**秒级**，后端不另起 tick 推进 Nyx，前端 `setTimeout` 按 `reading_speed` 推进 `nyxPosition`；详见 `docs/specs/12-reading-system.md`。
 
 - **节奏**：Nyx 每读一段耗时 `duration = clamp(段落字数 / readingSpeed, 1, 30)` 秒（`readingSpeed` 字符/秒，段越长读越久；`1`/`30` 为保底上下界，decision 可推翻）。
 - **循环**：`startCatchup()` 时若 `nyxPosition >= userPosition` 直接返回（无需追）。否则对「Nyx 当前即将读的段」（`paragraphs` 里 `index === nyxPosition` 的段，取 `text.length`）算 `duration` → `catchupTimer = setTimeout(advanceNyx, duration*1000)`；`advanceNyx` 里 `nyxPosition += 1` 后 `checkChapterBoundary(bookId, nyxPosition)`（fire-and-forget，07）→ 若仍 `nyxPosition < userPosition` 续排下一段，否则停止（`waiting`）。

@@ -2,7 +2,7 @@
 
 > 范围：`nyx/events/`、`nyx/subscriptions.py`、`nyx/runtime.py`、`nyx/app_context.py`、`nyx/main.py`、`nyx/db.py` 中与事件持久化、消费者投递、路由注册、DB 生命周期、关停生命周期相关的基础设施。  
 > 本文件是底层模块总线系统的唯一完整契约，统一覆盖 SQLite 生命周期、事件总线、路由订阅、组合根、REST/SSE、恢复重试和关停。
-> 快速事实摘要见 `docs/module-bus-system-facts.md`。
+> 快速事实摘要见 `docs/facts/module-bus-system-facts.md`。
 > 本文件只定义运行时基础设施和模块通信边界，不定义共享类型、配置字段、LLM 调用细节或业务模块内部规则。
 
 ## 元信息
@@ -31,7 +31,7 @@
 - [ ] 路由声明和运行时订阅由同一份 `RouteSpec` 派生；启动时校验声明、handler、delivery consumer 一致。
 - [ ] 组合根导入环被拆除：`app_context` 只装配，不导入 `subscriptions`；`subscriptions` 不导入 `main`；runtime handler 编排在 `runtime.py` 或等价运行期模块。
 - [ ] `Database` 提供幂等 `close()`；组合根构造失败和应用退出都会关闭连接。
-- [ ] 文档同步：本文件、`tech-reference`、`module-bus-system-facts.md`、`test-inventory.md` 与实现一致。
+- [ ] 文档同步：本文件、`tech-reference`、`docs/facts/module-bus-system-facts.md`、`test-inventory.md` 与实现一致。
 
 ## 核心决策
 
@@ -516,7 +516,7 @@ claim/answer/expire 幂等。
 
 - [ ] 本文件统一定义 DB 表、EventBus 投递、路由、组合根、REST/SSE、恢复重试和关停语义。
 - [ ] `docs/tech-reference.md` 已同步实现文件、表数量、API 语义、路由数量和包结构。
-- [ ] `docs/module-bus-system-facts.md` 已同步当前事实。
+- [ ] `docs/facts/module-bus-system-facts.md` 已同步当前事实。
 - [ ] `ruff check` 零报错。
 - [ ] `pyright` 零报错。
 - [ ] `pytest` 全绿或用户确认的范围测试全绿。

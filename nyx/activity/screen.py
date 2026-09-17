@@ -19,7 +19,7 @@ def capture_screen() -> bytes:
 class ScreenObserver:
     """周期截屏 → 视觉描述 → 回调摘要。
 
-    best-effort：单次采样失败记日志返 None，循环不中断（design §8.5 手动开启，
+    best-effort：单次采样失败记日志返 None，循环不中断（09-activity spec 规定手动开启，
     主流程正确性不依赖其产出）。capture/describe 可注入（测试不碰真桌面/真模型）。
     """
 

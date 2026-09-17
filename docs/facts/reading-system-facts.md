@@ -1,7 +1,7 @@
 # 阅读系统事实摘要
 
 > 本文只记录当前源码已经实现的事实，供无关代码快速定位。它不是契约，也不替代
-> [`specs/12-reading-system.md`](specs/12-reading-system.md)。契约和源码不一致时，
+> [`../specs/12-reading-system.md`](../specs/12-reading-system.md)。契约和源码不一致时，
 > 先识别差异并按项目文档同步规则处理。
 
 ## 模块与装配

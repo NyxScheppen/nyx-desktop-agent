@@ -39,7 +39,7 @@ exploration:
   rate_limit_hours: 1         # 自由探索频率上限
 
 vision:
-  enabled: false              # 屏幕视觉 opt-in（design §8.5，手动开启）
+  enabled: false              # 屏幕视觉 opt-in（见 docs/specs/09-activity.md）
   provider: ollama            # 视觉模型 provider→base_url 映射（复用 llm 映射）
   model: llava                # 本地视觉模型 tag（换成实际 pull 的，如 qwen2-vl）
   # base_url: http://localhost:11434/v1   # 可选：覆盖视觉 endpoint

@@ -1,4 +1,4 @@
-"""embedding 相似度 OOC（design §9.2 第 2 档）：对比尼克斯基准语料。
+"""embedding 相似度 OOC（契约见 10-eval spec）：对比尼克斯基准语料。
 
 复用 retrieval 的 `EmbedFn`/`cosine`，不另写向量函数、不重加载模型——
 embed 实例由组合根（main.py）注入，与记忆检索共享同一份。

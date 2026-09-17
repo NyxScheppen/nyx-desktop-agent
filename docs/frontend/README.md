@@ -1,7 +1,7 @@
 # 前端（Nyx Agent）
 
 > React 前端，跑在 Tauri 薄壳里，通过 localhost HTTP/SSE 连接 Python 核心服务。
-> 本文档集是前端的**设计/规划**：技术栈、目录结构、store 划分、SSE 数据流、核心面板组件契约。实现细节在编码阶段补全（对齐后端「spec 定义契约 → 实现照抄」的分工）。
+> 本文档集是前端实现索引：技术栈、目录结构、store 划分、SSE 数据流、面板边界和当前实现状态。后端契约以 `docs/specs/` 为准，具体实现以 `frontend/` 源文件为准。
 > 范围：聊天面板 + 内在状态面板 + SSE 数据流 + 面板骨架，以及后续补齐的欲望/活动两个面板（均已落地）。
 
 ## 1. 技术栈
@@ -13,8 +13,8 @@
 | 状态 | Zustand（每系统一个 store） | CLAUDE.md |
 | 构建 | Vite | React 常规工具链 |
 | 测试 | Vitest + React Testing Library | Vite 生态，同构 TS |
-| 桌面壳 | Tauri（薄壳：**核心先行仅承载 webview**） | design §2 |
-| 通信 | SSE over localhost（实时）+ REST（快照） | design §2 / tech-ref §4 |
+| 桌面壳 | Tauri（薄壳：**核心先行仅承载 webview**） | `docs/design/design.md` |
+| 通信 | SSE over localhost（实时）+ REST（快照） | `docs/specs/04-module-bus-system.md` / `docs/tech-reference.md` |
 
 > **核心先行范围外（defer）**：Tauri 壳的**托盘菜单、系统通知、自定义窗口行为**不在核心先行内。webview 层（聊天 + 内在 + SSE）跑通后，系统通知的**触发 UX 未定义**——搭话（`initiate_chat`）虽是核心先行事件、欲望满足（`desire_satisfied`）非核心先行，但两者「是否/何时弹系统通知」都未定义，届时再定，不在现在预埋触发点（反冗余）。
 
@@ -33,7 +33,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-- Python 核心作为**独立本地服务**运行（`uvicorn`），Tauri 壳 + React 前端通过 localhost HTTP/SSE 连接；开发时手动起服务，不打包 sidecar（design §2）。
+- Python 核心作为**独立本地服务**运行（`uvicorn`），Tauri 壳 + React 前端通过 localhost HTTP/SSE 连接；开发时手动起服务，不打包 sidecar（见 `docs/design/design.md`）。
 - 前端 Tauri 采集键盘/鼠标活跃度 + 窗口标题 → `classify_presence` 判定 → `POST /api/observe`（04-module-bus-system 下游约定）。这是核心先行里唯一由前端发起的**被动上报**。
 
 ### 活跃度上报（`hooks/usePresence.ts`，核心先行唯一被动上报）
@@ -59,7 +59,7 @@
 | REST | 初始快照 + 发消息 + 历史查询 + 导出 | 13 个端点（tech-ref §4） |
 | SSE | 实时**全部事件** | `GET /api/events` |
 
-- **SSE 是主通道**：后端广播全部 19 类事件（design §3.2），前端按 `event` 类型增量更新面板；REST 只做进页面时的初始快照 + 用户主动动作（发消息/导出）。
+- **SSE 是主通道**：后端广播全部事件，前端按 `event` 类型增量更新面板；REST 只做进页面时的初始快照 + 用户主动动作（发消息/导出）。事件语义见 `docs/specs/04-module-bus-system.md`。
 - SSE `data` 统一形状（tech-ref §4）：
 
 ```json

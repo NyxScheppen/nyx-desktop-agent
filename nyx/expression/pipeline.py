@@ -46,8 +46,9 @@ class ReplyState(TypedDict):
     memories: list[Memory]       # 检索到的记忆
     state: CurrentState          # 当前状态快照
     narrative: SelfNarrative | None   # 慢通道 assemble 填充，快通道恒 None
-    think: list[str]             # 累积：每轮 think 追加（11-expression，tech-ref §6.1 ripple）
-    speak: list[str]             # 累积：每轮 speak 追加（11-expression，tech-ref §6.1 ripple）
+    # 累积：每轮 think/speak 追加（11-expression，tech-ref §6.1 ripple）
+    think: list[str]
+    speak: list[str]
     ask: str | None
     round: int                   # 已完成 think/speak 的轮数（≤ slow_max_rounds）
     correlation_id: str          # 本次 reply 溯源（11-expression，按 09-activity 对齐）

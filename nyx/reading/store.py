@@ -181,7 +181,10 @@ class ReadingStore:
         reading_speed: int,
         expected_revision: int,
     ) -> ReadingProgress:
-        """按 revision 条件写进度；不碰 read_count（重读计数只由 12-reading-system ++）。"""
+        """按 revision 条件写进度。
+
+        不碰 read_count（重读计数只由 12-reading-system ++）。
+        """
         async with self._db.lock:
             now = time.time()
             current = await self._get_progress_locked(book_id, allow_missing=True)

@@ -1,7 +1,12 @@
 # pyright: reportPrivateUsage=false
+import asyncio
+import json
+from collections.abc import AsyncGenerator
 from typing import cast
 
 import pytest
+from fastapi.responses import StreamingResponse
+from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
 from nyx.activity.facade import ActivityFacade
@@ -17,7 +22,7 @@ from nyx.enums import (
 )
 from nyx.eval.evaluator import Evaluator
 from nyx.eval.store import EvalStore
-from nyx.events.bus import EventBus
+from nyx.events.bus import EventAdmissionError, EventBus
 from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import _App, build_app
@@ -58,18 +63,34 @@ def _mk_state() -> CurrentState:
 
 def _mem() -> Memory:
     return Memory(
-        id="m1", created_at=0.0, content="内容",
-        kind=MemoryKind.USER_PROFILE, summary="摘要",
-        freshness=1.0, type=MemoryType.SHORT_TERM,
+        id="m1",
+        created_at=0.0,
+        content="内容",
+        kind=MemoryKind.USER_PROFILE,
+        summary="摘要",
+        freshness=1.0,
+        type=MemoryType.SHORT_TERM,
     )
 
 
 class _FakeBus:
     def __init__(self) -> None:
         self.published: list[Event] = []
+        self.failure: Exception | None = None
+        self.sinks: list[asyncio.Queue[Event]] = []
 
     async def publish(self, event: Event) -> None:
+        if self.failure is not None:
+            raise self.failure
         self.published.append(event)
+        for sink in self.sinks:
+            sink.put_nowait(event)
+
+    def add_sse_sink(self, sink: asyncio.Queue[Event]) -> None:
+        self.sinks.append(sink)
+
+    def remove_sse_sink(self, sink: asyncio.Queue[Event]) -> None:
+        self.sinks.remove(sink)
 
 
 class _FakeInnerLife:
@@ -214,16 +235,119 @@ async def test_observe_endpoint() -> None:
     app = _app(_mk_state(), bus, _FakeMemory())
     async with _client(app) as client:
         resp = await client.post(
-            "/api/observe", json={"presence": "online", "window_title": "编辑器"}
+            "/api/observe",
+            json={"presence": "online", "window_title": "编辑器", "idle_seconds": 0},
         )
     assert resp.status_code == 200
     data = resp.json()
     assert set(data) == {"event_id"}
     [event] = bus.published
     assert event.type is EventType.OBSERVATION_STATE
-    assert event.content == {"presence": "online", "window_title": "编辑器"}
+    assert event.content == {
+        "presence": "online",
+        "window_title": "编辑器",
+        "idle_seconds": 0.0,
+        "previous_presence": None,
+        "transition": "initial",
+        "away_duration_seconds": None,
+    }
+    assert app.presence_initialized is True
     assert app.last_presence == "online"
     assert app.last_window_title == "编辑器"
+
+
+async def test_sse_frame_uses_backend_event_timestamp() -> None:
+    bus = _FakeBus()
+    fast = build_app(_app(_mk_state(), bus, _FakeMemory()))
+    route = next(
+        route
+        for route in fast.routes
+        if isinstance(route, APIRoute) and route.path == "/api/events"
+    )
+    response = cast(StreamingResponse, await route.endpoint())
+    event = Event(
+        id="event-with-time",
+        timestamp=1234.5,
+        source=Source.INTERNAL,
+        type=EventType.SPEAK,
+        content={"content": "你好"},
+        correlation_id="corr-time",
+    )
+    await bus.publish(event)
+    iterator = cast(AsyncGenerator[str, None], response.body_iterator)
+    chunk = await iterator.__anext__()
+    await iterator.aclose()
+    data_line = next(line for line in chunk.splitlines() if line.startswith("data: "))
+
+    assert json.loads(data_line.removeprefix("data: "))["timestamp"] == 1234.5
+
+
+async def test_observe_away_to_online_records_return_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timestamps = iter((500.0, 800.0))
+
+    def _root_event(
+        type_: EventType, content: dict[str, object], source: Source
+    ) -> Event:
+        timestamp = next(timestamps)
+        return Event(
+            id=str(timestamp),
+            timestamp=timestamp,
+            source=source,
+            type=type_,
+            content=content,
+            correlation_id=str(timestamp),
+        )
+
+    monkeypatch.setattr("nyx.main.root_event", _root_event)
+    bus = _FakeBus()
+    app = _app(_mk_state(), bus, _FakeMemory())
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/observe",
+            json={"presence": "away", "window_title": "编辑器", "idle_seconds": 300},
+        )
+        second = await client.post(
+            "/api/observe",
+            json={"presence": "online", "window_title": "编辑器", "idle_seconds": 0},
+        )
+    assert first.status_code == second.status_code == 200
+    assert bus.published[1].content["transition"] == "returned"
+    assert bus.published[1].content["away_duration_seconds"] == 600.0
+    assert app.pending_return == {
+        "returned_at": 800.0,
+        "away_duration_seconds": 600.0,
+    }
+
+
+async def test_observe_admission_failure_preserves_presence_snapshot() -> None:
+    bus = _FakeBus()
+    app = _app(_mk_state(), bus, _FakeMemory())
+    bus.failure = EventAdmissionError("closed")
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/observe",
+            json={"presence": "online", "window_title": "编辑器", "idle_seconds": 0},
+        )
+    assert resp.status_code == 503
+    assert app.presence_initialized is False
+    assert app.last_presence == "away"
+    assert app.pending_return is None
+
+
+def test_release_old_return_claim_does_not_overwrite_new_return() -> None:
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    old = {"returned_at": 10.0, "away_duration_seconds": 300.0}
+    new = {"returned_at": 20.0, "away_duration_seconds": 600.0}
+    app.pending_return = old
+    claim = app.claim_return_context()
+    app.pending_return = new
+
+    app.release_return_context(claim)
+
+    assert app.pending_return == new
+    assert app.claimed_return is None
 
 
 async def test_export_endpoint() -> None:
@@ -231,7 +355,7 @@ async def test_export_endpoint() -> None:
     async with _client(_app(_mk_state(), _FakeBus(), memory)) as client:
         j = await client.post("/api/export", json={"format": "json"})
         m = await client.post("/api/export", json={"format": "md"})
-    assert j.text == "exported:json"      # 原始字符串，不二次 json.dumps
+    assert j.text == "exported:json"  # 原始字符串，不二次 json.dumps
     assert m.text == "exported:md"
     assert j.headers["content-type"].startswith("application/json")
     assert m.headers["content-type"].startswith("text/markdown")

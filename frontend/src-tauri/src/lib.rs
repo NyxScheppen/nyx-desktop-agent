@@ -1,5 +1,5 @@
 #[cfg(target_os = "windows")]
-fn desktop_presence(active_window_ms: u32) -> (bool, String) {
+fn desktop_presence() -> Result<(u64, String), String> {
     use windows_sys::Win32::System::SystemInformation::GetTickCount;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetLastInputInfo, LASTINPUTINFO,
@@ -13,13 +13,15 @@ fn desktop_presence(active_window_ms: u32) -> (bool, String) {
             cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
             dwTime: 0,
         };
-        let input_active = GetLastInputInfo(&mut input) != 0
-            && GetTickCount().wrapping_sub(input.dwTime) < active_window_ms;
+        if GetLastInputInfo(&mut input) == 0 {
+            return Err("无法读取系统最后输入时间".to_owned());
+        }
+        let idle_ms = GetTickCount().wrapping_sub(input.dwTime) as u64;
 
         let foreground = GetForegroundWindow();
         let length = GetWindowTextLengthW(foreground);
         if length <= 0 {
-            return (input_active, String::new());
+            return Ok((idle_ms, String::new()));
         }
         let mut buffer = vec![0_u16; length as usize + 1];
         let copied = GetWindowTextW(
@@ -28,18 +30,18 @@ fn desktop_presence(active_window_ms: u32) -> (bool, String) {
             buffer.len() as i32,
         );
         let title = String::from_utf16_lossy(&buffer[..copied.max(0) as usize]);
-        (input_active, title)
+        Ok((idle_ms, title))
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn desktop_presence(_active_window_ms: u32) -> (bool, String) {
-    (false, String::new())
+fn desktop_presence() -> Result<(u64, String), String> {
+    Err("此平台不支持原生输入采样".to_owned())
 }
 
 #[tauri::command]
-fn sample_presence(active_window_ms: u32) -> (bool, String) {
-    desktop_presence(active_window_ms)
+fn sample_presence() -> Result<(u64, String), String> {
+    desktop_presence()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

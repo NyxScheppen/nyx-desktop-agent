@@ -26,6 +26,10 @@
 | 表达 | [`11-expression.md`](specs/11-expression.md) | [`expression-system-facts.md`](facts/expression-system-facts.md) | `nyx/expression/`、`nyx/reading/companions.py`、`prompts/knowledge-boundary.md` |
 | 阅读 | [`12-reading-system.md`](specs/12-reading-system.md)；表达侧读书交互归 11 | [`reading-system-facts.md`](facts/reading-system-facts.md) | `nyx/reading/` |
 
+### 跨域施工规格
+
+- [`13-temporal-presence.md`](specs/13-temporal-presence.md)：已批准并实现的时间感知、离开/归来、对话明线时间与昼夜视觉施工方案。它汇总跨域实施顺序和整体验收，不替代 04/09/11 与前端文档各自拥有的契约。
+
 ## 运行时地图
 
 | 职责 | 入口 |
@@ -61,6 +65,7 @@
 | Zustand 状态 | `frontend/src/stores/` |
 | 页面与面板 | `frontend/src/components/` |
 | 枚举展示文本 | `frontend/src/lib/labels.ts` |
+| 时间标签、分钟时钟与昼夜视觉 | `frontend/src/lib/time.ts`, `frontend/src/App.tsx`, `frontend/src/index.css` |
 
 ## 数据与测试
 

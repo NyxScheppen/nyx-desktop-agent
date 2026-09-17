@@ -47,9 +47,11 @@ export function useSSE(dispatch: (e: SseEvent) => void): ConnectionState {
         const rec = data as Record<string, unknown>;
         if (
           typeof rec.event_id !== "string" ||
-          typeof rec.correlation_id !== "string"
+          typeof rec.correlation_id !== "string" ||
+          typeof rec.timestamp !== "number" ||
+          !Number.isFinite(rec.timestamp)
         ) {
-          console.error("SSE 帧缺 event_id/correlation_id，跳过", event.data);
+          console.error("SSE 帧公共头非法，跳过", event.data);
           return;
         }
         // 信任边界：帧头已校验，其余键形状交给 store action 运行时收窄；

@@ -29,12 +29,12 @@
                │ localhost HTTP / SSE     │（前端 Tauri 采集活跃度+窗口标题）
 ┌──────────────┴──────────────────────────▼───────────────────┐
 │  Python 核心服务（uvicorn，独立本地进程）                     │
-│    12 个 spec 实现的 Facade + EventBus + LangGraph            │
+│    12 个领域 spec + 13 跨域施工 spec 的 Facade/EventBus/LangGraph │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 - Python 核心作为**独立本地服务**运行（`uvicorn`），Tauri 壳 + React 前端通过 localhost HTTP/SSE 连接；开发时手动起服务，不打包 sidecar（见 `docs/design/design.md`）。
-- 前端 Tauri 采集键盘/鼠标活跃度 + 窗口标题 → `classify_presence` 判定 → `POST /api/observe`（04-module-bus-system 下游约定）。这是核心先行里唯一由前端发起的**被动上报**。
+- 前端 Tauri 采集系统输入空闲毫秒数 + 窗口标题 → `classifyPresence` 判定 → `POST /api/observe`（04-module-bus-system 下游约定）。这是核心先行里唯一由前端发起的**被动上报**。
 
 ### 活跃度上报（`hooks/usePresence.ts`，核心先行唯一被动上报）
 
@@ -42,15 +42,15 @@
 - **判定镜像后端**（09-activity `observe.py`，规则逐字一致，不另造）：
   ```typescript
   type Presence = "online" | "away" | "busy";
-  function classifyPresence(keyboardActive: boolean, mouseActive: boolean, windowTitle: string): Presence {
-    if (keyboardActive || mouseActive) return "online";
-    if (windowTitle) return "busy";
+  function classifyPresence(idleMs: number): Presence {
+    if (idleMs < 30_000) return "online";
+    if (idleMs < 300_000) return "busy";
     return "away";
   }
   ```
-- **活跃窗口降采样**：`keydown`/`mousemove` 监听更新 `last_key_ts`/`last_mouse_ts`；采样时刻算 `keyboardActive = now - last_key_ts < ACTIVE_WINDOW_SEC`、`mouseActive = now - last_mouse_ts < ACTIVE_WINDOW_SEC`（`ACTIVE_WINDOW_SEC = 30`）。
-- **窗口标题**：Tauri `getCurrentWindow().title()`；核心先行可先恒传 `""`（→ 无输入时恒走 `away` 分支），真实采集后续补。
-- **节奏**：每 `OBSERVE_INTERVAL_SEC = 30` 采样一次，**presence 变化才 `client.postObserve(presence)`**（→ `POST /api/observe`；不变不上报，避免每 tick 打后端）；首次挂载必报一次（后端 `last_presence` 初始 `"away"`，前端真实值要对齐）。
+- **原生采样**：Windows Tauri `sample_presence()` 返回系统最后输入距今 `idle_ms` 与真实前台窗口标题；Rust 不应用 30 秒/5 分钟阈值。浏览器降级监听 `keydown`/`mousemove` 推导 idle，标题固定为空。
+- **窗口标题**：只丰富观察内容，不参与 online/busy/away 判定；因此即使前台标题非空，空闲满 5 分钟仍为 away。
+- **节奏**：每 `OBSERVE_INTERVAL_SEC = 30` 采样一次，presence 或标题变化时调用 `client.postObserve(presence, windowTitle, idleSeconds)`。首次成功请求只建立基线；请求成功后才更新 last-sent 快照，失败会在下次采样重试；同一时刻只允许一个请求在途。
 
 ## 3. 数据流（双通道）
 
@@ -63,7 +63,7 @@
 - SSE `data` 统一形状（tech-ref §4）：
 
 ```json
-{"event_id": "…", "correlation_id": "…", **event.content}
+{"event_id": "…", "correlation_id": "…", "timestamp": 1789603200.0, **event.content}
 ```
 
 - 核心先行用到的端点：`GET /api/state`（`CurrentState` 快照）、`POST /api/chat`（发消息，返回 `{event_id}`，回复走 SSE）、`POST /api/observe`（活跃度上报 `{presence}`，返回 `{event_id}`，见 §2）、`GET /api/events`（SSE）。
@@ -78,12 +78,13 @@ frontend/
   index.html
   src/
     main.tsx                 # React 入口，挂载 App
-    App.tsx                  # 精简装配：顶栏（标题/连接状态）+ 左栏常驻对话 + 中间内容区（side-panel）+ 底部导航（含设置）+ 可拖拽头像圆圈（气泡随圆圈头顶冒，08 §4）
+    App.tsx                  # 精简装配：顶栏（标题/本地时钟/连接状态）+ 昼夜根状态 + 左栏常驻对话 + 中间内容区 + 底部导航 + 可拖拽头像圆圈
     types/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     lib/
       labels.ts              # 枚举值→中文 UI 标签（label() 未知键回退原值）
       activityResult.ts      # 活动产出纯函数（activitySubject / formatResult / formatOutputBody / formatTools / activityAnnouncement）
+      time.ts                # 本地时段、昼夜、消息时间标签与时间分隔纯函数
     api/
       client.ts              # REST fetch 封装（postChat / getState / postObserve / getDesires / getActivity / getActivityResults / getEventsLog，见 05-client）
       dispatch.ts            # SseEvent → store 路由（01-sse §4.1）
@@ -148,7 +149,7 @@ frontend/
 
 ## 5. 面板去向（精简装配）
 
-08 布局重构后精简为：顶栏（标题 `✦ Nyx ✦` + 连接状态）｜左栏常驻对话（`div.left-dock`：`StatusBar` + `MessageList` + `ChatInput` 竖排）｜中间内容区（`div.game-main`：`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书）｜底部导航（`RightDock`：读书|内在|欲望|活动|记忆 + 设置）｜可拖拽头像圆圈（`Avatar`，`position:fixed` 右下角，碎碎念气泡随圆圈头顶冒）。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
+08 布局重构后精简为：顶栏（标题 `✦ Nyx ✦` + 本地日期/星期/时间 + 连接状态）｜左栏常驻对话（`div.left-dock`：`StatusBar` + `MessageList` + `ChatInput` 竖排）｜中间内容区（`div.game-main`：`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书）｜底部导航（`RightDock`：读书|内在|欲望|活动|记忆 + 设置）｜可拖拽头像圆圈（`Avatar`，`position:fixed` 右下角，碎碎念气泡随圆圈头顶冒）。App 每分钟刷新本地时钟，在 06:00/22:00 切换 day/night 根状态；夜间视觉只改变 CSS 变量、遮罩与头像默认显示，不修改内在生命数值。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|

@@ -42,6 +42,7 @@ type ChatMessage = {
   kind: "message" | "speak" | "ask" | "think" | "initiate_chat" | "reading_question" | "reading_association";
   content: string;
   correlation_id: string;
+  timestamp: number;           // 后端 Event.timestamp，epoch 秒
   preloaded?: boolean;        // 历史回填消息：渲染时不逐字（loadHistory 写入）
   subtype?: QuestionSubtype;         // kind==="reading_question" 才有（提问四子型）
   selectedText?: string | null;      // kind==="reading_question" 才有（quote_question 划线文本）
@@ -80,7 +81,9 @@ reset(): void                            // 新会话全清：clearTimeout(reply
 
 - **SSE 是聊天消息的唯一来源**：`sendMessage` 只 `POST`（拿 `{event_id}` 后 `isReplying=true`），**不本地 append**。用户消息靠 SSE `user_message` 回显上屏（localhost 往返 ~10ms，视觉无延迟）。好处：无「乐观消息 + SSE 回显」的**去重/替换**复杂度；`correlation_id` 沿事件一路一致，追溯无分歧（原则 5）。
 - **isReplying 生命周期 + 60s 超时（必须取消）+ correlation 匹配**：`sendMessage` 成功时**存 `postChat` 返回的 `event_id` 到 module-level `pendingId`**（该 id = 后端 `user_message` 事件 id = 回复帧的 `correlation_id`），置 `isReplying=true` + `sendError=null` 并起 60s 超时 timer（`setTimeout`，回调置 `isReplying=false` + `sendError="回复超时"`、**不清 pendingId**——迟到回复仍需能匹配清 sendError）；`addSpeak`/`addAsk` 收到回复时**先判 `e.correlation_id === pendingId`**——匹配才 `clearTimeout` 取消 timer + 置 `isReplying=false` + `sendError=null`，非匹配（搭话等别的发言）只 append 不动生命周期。`think` 不结束回复（后必跟 `speak`）。`timer`/`pendingId` 都放 module-level（`let replyTimer`/`let pendingId`，**不进 store state**——store 状态须可序列化）。缺取消机制 = 真 bug：10s 收到回复，60s 时 timer 照样触发假「回复超时」。
-- **消息顺序与时间戳**：SSE 顺序到达，直接 `push`，不排序——故 `ChatMessage` **不存 `timestamp`**（SSE `data` 无后端 `Event.timestamp`，见 01-sse §1；排序靠到达顺序，前端 `Date.now()` 只是近似，核心先行不需要）。
+- **消息顺序与时间戳**：SSE 顺序到达，实时 action 直接 `push`，不额外排序；每条
+  `ChatMessage.timestamp` 必须复制 SSE 的后端 `Event.timestamp`。历史回填复制
+  `BackendEvent.timestamp`，因此重连/重启前后使用同一来源；禁止用 `Date.now()` 替代事件时间。
 
 ## 2. `innerLifeStore`
 
@@ -222,7 +225,7 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 
 ## 7. 测试（`tests/stores.test.ts`）
 
-- **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addInitiateChat`/`addUserMessage`/`addReadingTurn` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
+- **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addInitiateChat`/`addUserMessage`/`addReadingTurn` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id/timestamp）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
 - **chatStore.loadHistory**：按 `timestamp` 升序前置 + `preloaded=true` + 历史 think 入 `typedIds`；已存在的 id 去重不重复前置；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
 - **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
 - **两个快照 store**：`desireStore` 断言 `refresh()` 请求对端点 + `data` 落 store；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`（fetch 恰 2 次）→ `data`/`results` 落 store；`desireStore.refresh()` 失败 → `error` + `data` 保持 null。

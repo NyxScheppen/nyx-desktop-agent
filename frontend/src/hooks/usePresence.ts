@@ -3,70 +3,89 @@ import { invoke } from "@tauri-apps/api/core";
 import { postObserve } from "../api/client";
 import type { Presence } from "../types/api";
 
-// 活跃度采集 + classifyPresence 判定 + POST /api/observe（README §2，核心先行唯一被动上报）。
-// 无 store：纯「采集 → 判定 → 上报」，不上屏，结果存后端 last_presence；App 层挂载一次（01-sse §6）。
-const ACTIVE_WINDOW_SEC = 30;
-const OBSERVE_INTERVAL_SEC = 30;
+const OBSERVE_INTERVAL_MS = 30_000;
 
-// 判定镜像后端 09-activity observe.py（规则逐字一致，不另造）
-export function classifyPresence(
-  keyboardActive: boolean,
-  mouseActive: boolean,
-  windowTitle: string,
-): Presence {
-  if (keyboardActive || mouseActive) return "online";
-  if (windowTitle) return "busy";
+type PresenceSnapshot = {
+  presence: Presence;
+  windowTitle: string;
+  idleMs: number;
+};
+
+export function classifyPresence(idleMs: number): Presence {
+  if (idleMs < 30_000) return "online";
+  if (idleMs < 300_000) return "busy";
   return "away";
 }
 
+function sameSnapshot(a: PresenceSnapshot | null, b: PresenceSnapshot): boolean {
+  return a?.presence === b.presence && a.windowTitle === b.windowTitle;
+}
+
 export function usePresence(): void {
-  const lastKeyTs = useRef(0); // 初始 0 = 「从未活跃」（now - 0 远大于活跃窗口）
-  const lastMouseTs = useRef(0);
-  const lastPresence = useRef<Presence | null>(null); // null → 首次采样必报
-  const lastWindowTitle = useRef<string | null>(null);
+  const lastWebInputAt = useRef(Date.now());
 
   useEffect(() => {
-    const onKey = () => {
-      lastKeyTs.current = Date.now();
+    let disposed = false;
+    let sending = false;
+    let pending: PresenceSnapshot | null = null;
+    let lastSent: PresenceSnapshot | null = null;
+
+    const onInput = () => {
+      lastWebInputAt.current = Date.now();
     };
-    const onMouse = () => {
-      lastMouseTs.current = Date.now();
+    window.addEventListener("keydown", onInput);
+    window.addEventListener("mousemove", onInput);
+
+    const flush = async () => {
+      if (sending) return;
+      sending = true;
+      while (!disposed && pending !== null) {
+        const next = pending;
+        pending = null;
+        if (sameSnapshot(lastSent, next)) continue;
+        try {
+          await postObserve(next.presence, next.windowTitle, next.idleMs / 1000);
+        } catch (err) {
+          console.error("presence 上报失败", err);
+          if (pending === null) pending = next;
+          break;
+        }
+        lastSent = next;
+      }
+      sending = false;
     };
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("mousemove", onMouse);
+
+    const enqueue = (snapshot: PresenceSnapshot) => {
+      if (sameSnapshot(lastSent, snapshot) && pending === null) return;
+      pending = snapshot;
+      void flush();
+    };
 
     const sample = async () => {
       const now = Date.now();
-      let inputActive: boolean;
+      let idleMs: number;
       let windowTitle: string;
       try {
-        [inputActive, windowTitle] = await invoke<[boolean, string]>(
-          "sample_presence",
-          { activeWindowMs: ACTIVE_WINDOW_SEC * 1000 },
-        );
+        [idleMs, windowTitle] = await invoke<[number, string]>("sample_presence");
       } catch {
-        inputActive =
-          now - lastKeyTs.current < ACTIVE_WINDOW_SEC * 1000 ||
-          now - lastMouseTs.current < ACTIVE_WINDOW_SEC * 1000;
+        idleMs = Math.max(0, now - lastWebInputAt.current);
         windowTitle = "";
       }
-      const presence = classifyPresence(inputActive, false, windowTitle);
-      if (presence !== lastPresence.current || windowTitle !== lastWindowTitle.current) {
-        lastPresence.current = presence;
-        lastWindowTitle.current = windowTitle;
-        // 上报 best-effort：失败只记日志，下次采样重试，不上屏（05-client §2）
-        void postObserve(presence, windowTitle).catch((err) => {
-          console.error("presence 上报失败", err);
-        });
-      }
+      const normalizedIdle = Number.isFinite(idleMs) ? Math.max(0, idleMs) : 0;
+      enqueue({
+        presence: classifyPresence(normalizedIdle),
+        windowTitle,
+        idleMs: normalizedIdle,
+      });
     };
 
-    void sample(); // 首次挂载必报（后端 last_presence 初始 "away"，前端真实值要对齐）
-    const timer = setInterval(() => void sample(), OBSERVE_INTERVAL_SEC * 1000);
+    void sample();
+    const timer = setInterval(() => void sample(), OBSERVE_INTERVAL_MS);
 
     return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("mousemove", onMouse);
+      disposed = true;
+      window.removeEventListener("keydown", onInput);
+      window.removeEventListener("mousemove", onInput);
       clearInterval(timer);
     };
   }, []);

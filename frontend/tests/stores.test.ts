@@ -73,6 +73,7 @@ describe("chatStore.add*", () => {
       event: "speak",
       event_id: "e1",
       correlation_id: "c1",
+      timestamp: 1001,
       content: "你好",
     });
 
@@ -84,6 +85,7 @@ describe("chatStore.add*", () => {
       kind: "speak",
       content: "你好",
       correlation_id: "c1",
+      timestamp: 1001,
     });
   });
 
@@ -92,6 +94,7 @@ describe("chatStore.add*", () => {
       event: "ask",
       event_id: "e2",
       correlation_id: "c2",
+      timestamp: 1002,
       content: "想聊聊吗？",
     });
     expect(useChatStore.getState().messages[0]).toMatchObject({
@@ -106,6 +109,7 @@ describe("chatStore.add*", () => {
       event: "think",
       event_id: "e3",
       correlation_id: "c3",
+      timestamp: 1003,
       content: "…",
     });
     expect(useChatStore.getState().messages[0]).toMatchObject({
@@ -119,6 +123,7 @@ describe("chatStore.add*", () => {
       event: "initiate_chat",
       event_id: "e5",
       correlation_id: "c5",
+      timestamp: 1005,
       content: "在忙吗？",
     });
     expect(useChatStore.getState().messages[0]).toMatchObject({
@@ -132,6 +137,7 @@ describe("chatStore.add*", () => {
       event: "initiate_chat",
       event_id: "e5b",
       correlation_id: "c5b",
+      timestamp: 1006,
       content: "在忙吗？",
     });
     expect(useChatStore.getState().unreadProactive).toBe(true);
@@ -145,6 +151,7 @@ describe("chatStore.add*", () => {
       event: "user_message",
       event_id: "e6",
       correlation_id: "c6",
+      timestamp: 1007,
       message: "你好",
     });
     expect(useChatStore.getState().messages[0]).toMatchObject({
@@ -163,6 +170,7 @@ describe("chatStore.addReadingTurn", () => {
       event: "reading_question",
       event_id: "e1",
       correlation_id: "b1",
+      timestamp: 1008,
       content: "为什么？",
       subtype: "quote_question",
       book_id: "b1",
@@ -188,6 +196,7 @@ describe("chatStore.addReadingTurn", () => {
       event: "reading_question",
       event_id: "e3",
       correlation_id: "b1",
+      timestamp: 1009,
       content: 123 as unknown as string,
       subtype: "question_reflective",
       book_id: "b1",
@@ -264,6 +273,7 @@ describe("chatStore.sendMessage", () => {
       event: "speak",
       event_id: "e2",
       correlation_id: "e1",
+      timestamp: 1010,
       content: "回复",
     });
     expect(useChatStore.getState().isReplying).toBe(false);
@@ -284,6 +294,7 @@ describe("chatStore.sendMessage", () => {
       event: "speak",
       event_id: "e2",
       correlation_id: "e1",
+      timestamp: 1011,
       content: "迟到的回复",
     });
 
@@ -300,6 +311,7 @@ describe("chatStore.sendMessage", () => {
       event: "speak",
       event_id: "eX",
       correlation_id: "other", // 非本次发送的回复（如搭话）
+      timestamp: 1012,
       content: "别的发言",
     });
 
@@ -338,6 +350,7 @@ describe("chatStore.reset", () => {
       event: "initiate_chat",
       event_id: "e7",
       correlation_id: "c7",
+      timestamp: 1013,
       content: "在吗",
     });
     expect(useChatStore.getState().unreadProactive).toBe(true);
@@ -382,6 +395,7 @@ describe("innerLifeStore", () => {
       event: "emotion_update",
       event_id: "e1",
       correlation_id: "c1",
+      timestamp: 1014,
       valence: 0.9,
       arousal: 0.8,
       emotion: "happy",
@@ -403,6 +417,7 @@ describe("innerLifeStore", () => {
         event: "emotion_update",
         event_id: "e1",
         correlation_id: "c1",
+        timestamp: 1015,
         valence: 0.9,
         arousal: 0.8,
         emotion: "happy",
@@ -570,6 +585,7 @@ describe("chatStore.loadHistory", () => {
       event: "speak",
       event_id: "s1",
       correlation_id: "u1",
+      timestamp: 1002,
       content: "你好呀",
     });
     vi.stubGlobal(
@@ -730,9 +746,9 @@ describe("parseCircleSize（localStorage 原始串 → CircleSize 纯函数）",
 });
 
 describe("isReady（串行逐字纯函数）", () => {
-  const think: ChatMessage = { id: "t1", role: "nyx", kind: "think", content: "…", correlation_id: "c1" };
-  const speak: ChatMessage = { id: "s1", role: "nyx", kind: "speak", content: "你好", correlation_id: "c1" };
-  const user: ChatMessage = { id: "u1", role: "user", kind: "message", content: "hi", correlation_id: "c1" };
+  const think: ChatMessage = { id: "t1", role: "nyx", kind: "think", content: "…", correlation_id: "c1", timestamp: 1 };
+  const speak: ChatMessage = { id: "s1", role: "nyx", kind: "speak", content: "你好", correlation_id: "c1", timestamp: 2 };
+  const user: ChatMessage = { id: "u1", role: "user", kind: "message", content: "hi", correlation_id: "c1", timestamp: 1 };
 
   it("前置 think 未打完 → speak 等（ready=false）", () => {
     expect(isReady(speak, 1, [think, speak], {})).toBe(false);

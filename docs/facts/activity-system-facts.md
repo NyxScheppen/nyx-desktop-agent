@@ -64,7 +64,11 @@
 - `CREATION` 会取最多 3 条 knowledge 记忆、当前观察、当前状态和 canon，调用 LLM 生成 `{title, content}`，写入 `workspace/creations/<safe-title>.md`。进度写在 `activity.progress["creation"]`，恢复时复用 style / LLM 结果 / 文件路径，不重复写同一文件。
 - `FREE_EXPLORATION` 由 `Exploration.run(activity)` 执行显式 checkpoint 状态机：`searching -> reading_results -> summarizing -> sinking -> completed`。进度写在 `activity.progress["exploration"]`，恢复时从 cursor 继续抓取结果；`sink_done=true` 时不重复新增长期欲望或 knowledge 记忆。
 - `OBSERVE_USER` 读取组合根维护的 `last_presence`、`last_window_title`、`last_screen_summary`，用纯函数拼 summary。
-- Windows Tauri command `sample_presence` 读取系统最后输入时间和前台窗口标题；浏览器/非 Windows 降级不使用 `document.title`，避免 Nyx 自身标题把空闲误判为 busy。
+- `classify_presence(idle_seconds)` 的边界为 `<30` 秒 online、`30-300` 秒 busy、`>=300` 秒 away，窗口标题不参与三态判定。
+- Windows Tauri command `sample_presence` 返回系统空闲毫秒和前台窗口标题；原生采样失败或非 Windows 拒绝命令，前端降级为 WebView 输入时间，标题为空，不使用 `document.title`。
+- 前端每 30 秒采样，single-flight 保留最新待上报值，成功请求才推进 last-sent，失败下轮重试。
+- `_App` 首次观察只建立基线，away 起点回溯到最后输入时刻；away→online 产生一次性归来事实，durable USER_MESSAGE 在表达前也可即时提供 online 证据。归来不强制发言。
+- 昼夜是本地 22:00-06:00，只影响表达与前端视觉，不改变活动能耗或内在生命数值。
 - `IDLE_REFLECTION` 通过组合根注入的 `reflect` 回调执行反思活动；阅读重读触发的反思不走直接调用，而是发布 durable `REFLECTION` 事件。
 - `REST` 返回空 result。
 
@@ -74,7 +78,7 @@
 - `GET /api/activity/results` 返回已完成且带产出的 `reading`、`free_exploration`、`creation`，按 `ended_at DESC`。
 - `POST /api/upload` 读取文本上传，写入 `workspace/uploads/<filename>`，再调用 `activity.register_material(path, filename, len(text))`；它只注册书库，不立即启动读书。
 - `GET /api/materials` 返回 `{materials}`，供资料面板展示 activity/material 书库进度。
-- `activity_start`、`activity_end`、`activity_interrupted` 都经 EventBus 持久化并广播到 SSE；前端事件 payload 由 `event.content` 展开并附加 `event_id`、`correlation_id`。
+- `activity_start`、`activity_end`、`activity_interrupted` 都经 EventBus 持久化并广播到 SSE；前端事件 payload 由 `event.content` 展开并附加 `event_id`、`correlation_id`、后端 `timestamp`。
 
 ## 重构后状态机事实
 

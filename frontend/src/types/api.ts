@@ -64,6 +64,7 @@ export type CurrentState = {
 type SseBase = {
   event_id: string; // 事件唯一 id
   correlation_id: string; // 溯源：上游 correlation_id（根事件 = 自身 id）
+  timestamp: number; // 后端 Event.timestamp，epoch 秒
 };
 
 /** 文本事件类型：internal_text_event 包装成 {"content": string}。 */

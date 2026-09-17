@@ -55,6 +55,8 @@ class ReplyState(TypedDict):
     last_slow_at: float          # 上次慢通道时间（facade 维护，每 reply 入 state）
     tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
     intent: UserIntent
+    temporal_context: str
+    claimed_return: dict[str, float] | None
     fallback: bool
 
 
@@ -195,6 +197,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             knowledge_boundary=deps.knowledge_boundary,
             intent=state["intent"],
+            temporal_context=state["temporal_context"],
         )
         user = (
             build_user_prompt(state["message"], state["context"])
@@ -230,6 +233,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             tool_outputs=state["tool_outputs"],
             knowledge_boundary=deps.knowledge_boundary,
             intent=state["intent"],
+            temporal_context=state["temporal_context"],
         )
         user = build_user_prompt(state["message"], state["context"])
         # 前几轮 think/speak（等长）

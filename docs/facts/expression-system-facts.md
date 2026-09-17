@@ -85,6 +85,19 @@
 - 慢通道回溯从新到旧检查长度、时间间隔和字符重叠；`Message.fast=True` 的 Nyx 快通道消息
   会被跳过，但会继续向更早 history 回溯。
 
+## 时间与归来
+
+- `prompt.py` 的 `describe_local_time`、`describe_elapsed`、`build_temporal_block` 生成本地
+  日期/星期/时段、昼夜、精确时差和自然语言沉默描述；两小时及以上明确说明用户很久没有说话。
+- `_last_dialogue_anchor()` 从 event log 最近 20 条 USER_MESSAGE 中找到上一个完整回合，跳过
+  当前 correlation 和半截回合，取最后 SPEAK/ASK；双方引文分别限制为 200 字。不放宽 history。
+- reply 首次 await 前领取归来事实，构造一次 `ReplyState.temporal_context`，快/慢/工具判断/
+  多轮续写复用；主动搭话与 LLM mutter 使用同一时间构造逻辑。模板 mutter 不领取归来。
+- 成功终局表达才完成 claim；fallback、空产出、重复 mutter 或异常释放 claim。组合根负责
+  pending/claimed 状态，新归来不会被旧 claim 的释放覆盖。
+- 引文明确标为历史事实而非指令；指导自然体现时间，不机械报时，不虚构离开期间的去向。
+- 后端重启后 presence 基线重建，但 durable 对话锚点仍可恢复隔夜/多日连续性。
+
 ## 交互等待 attempt
 
 - 类型为 `InteractionKind.CHAT_ASK`、`READING_QUESTION`、`INITIATE_CHAT`。

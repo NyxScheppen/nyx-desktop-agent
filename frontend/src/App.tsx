@@ -14,6 +14,7 @@ import RightDock, { type View } from "./components/shell/RightDock";
 import StatusBar from "./components/shell/StatusBar";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
+import { formatCurrentTime, timePhaseAt } from "./lib/time";
 import { useActivityStore } from "./stores/activityStore";
 import { useChatStore } from "./stores/chatStore";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
@@ -51,6 +52,20 @@ export default function App() {
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
   const fontScale = useSettingsStore((s) => s.fontScale);
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const delay = 60_000 - (now.getSeconds() * 1000 + now.getMilliseconds());
+    const timeout = setTimeout(() => {
+      setNow(new Date());
+      interval = setInterval(() => setNow(new Date()), 60_000);
+    }, delay);
+    return () => {
+      clearTimeout(timeout);
+      if (interval !== undefined) clearInterval(interval);
+    };
+  }, []);
 
   // SSE 恢复连接后重拉快照 + 回填聊天历史（断线期间 emotion_update/消息可能丢失；
   // loadHistory 按 event_id 去重，重复调用不产生重复气泡）。
@@ -75,17 +90,22 @@ export default function App() {
   const shellStyle = {
     "--text-scale": FONT_SCALE_VALUE[fontScale],
   } as CSSProperties;
+  const timePhase = timePhaseAt(now);
 
   return (
-    <div className="app">
+    <div className="app" data-time-phase={timePhase}>
       <div className="app-bg" aria-hidden="true" style={bgStyle} />
       {tint !== null && image !== null && (
         <div className="app-bg-tint" aria-hidden="true" style={{ backgroundColor: tint }} />
       )}
+      <div className="app-time-overlay" aria-hidden="true" />
 
       <header className="app-topbar">
         <span className="scene-title">✦ Nyx ✦</span>
         <div className="topbar-right">
+          <time className="current-time" dateTime={now.toISOString()}>
+            {formatCurrentTime(now)}
+          </time>
           <span className="connection-state">{CONNECTION_LABEL[status]}</span>
         </div>
       </header>
@@ -93,7 +113,7 @@ export default function App() {
       <main className="game-shell" style={shellStyle}>
         <div className="left-dock">
           <StatusBar />
-          <MessageList messages={messages} />
+          <MessageList messages={messages} now={now} />
           <ChatInput />
         </div>
         <div className="game-main">
@@ -111,7 +131,7 @@ export default function App() {
       </main>
 
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
-      <Avatar />
+      <Avatar night={timePhase === "night"} />
     </div>
   );
 }

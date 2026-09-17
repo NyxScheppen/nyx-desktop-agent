@@ -85,7 +85,7 @@ describe("useSSE", () => {
     act(() => {
       source.emit(
         "speak",
-        JSON.stringify({ event_id: "e1", correlation_id: "c1", content: "你好" }),
+        JSON.stringify({ event_id: "e1", correlation_id: "c1", timestamp: 123.5, content: "你好" }),
       );
     });
 
@@ -93,6 +93,7 @@ describe("useSSE", () => {
       event: "speak",
       event_id: "e1",
       correlation_id: "c1",
+      timestamp: 123.5,
       content: "你好",
     });
   });
@@ -105,15 +106,15 @@ describe("useSSE", () => {
     act(() => {
       source.emit(
         "reading_mutter",
-        JSON.stringify({ event_id: "e1", correlation_id: "b1", content: "妙", book_id: "b1", paragraph_index: 2 }),
+        JSON.stringify({ event_id: "e1", correlation_id: "b1", timestamp: 1, content: "妙", book_id: "b1", paragraph_index: 2 }),
       );
       source.emit(
         "reading_question",
-        JSON.stringify({ event_id: "e2", correlation_id: "b1", content: "?", subtype: "question_reflective", book_id: "b1", paragraph_index: 3, selected_text: null }),
+        JSON.stringify({ event_id: "e2", correlation_id: "b1", timestamp: 2, content: "?", subtype: "question_reflective", book_id: "b1", paragraph_index: 3, selected_text: null }),
       );
       source.emit(
         "reading_association",
-        JSON.stringify({ event_id: "e3", correlation_id: "b1", memory_id: "m1", snippet: "片段", book_id: "b1", paragraph_index: 4 }),
+        JSON.stringify({ event_id: "e3", correlation_id: "b1", timestamp: 3, memory_id: "m1", snippet: "片段", book_id: "b1", paragraph_index: 4 }),
       );
     });
 
@@ -130,11 +131,13 @@ describe("useSSE", () => {
     const source = FakeEventSource.instances[0];
 
     act(() => source.emit("speak", "not-json")); // 非法 JSON
-    act(() => source.emit("speak", JSON.stringify({ content: "x" }))); // 缺 event_id/correlation_id
+    act(() => source.emit("speak", JSON.stringify({ content: "x" }))); // 缺公共头
+    act(() => source.emit("speak", JSON.stringify({ event_id: "bad", correlation_id: "c", timestamp: "x", content: "x" })));
+    act(() => source.emit("speak", JSON.stringify({ event_id: "bad2", correlation_id: "c", timestamp: null, content: "x" })));
     act(() =>
       source.emit(
         "speak",
-        JSON.stringify({ event_id: "e1", correlation_id: "c1", content: "ok" }),
+        JSON.stringify({ event_id: "e1", correlation_id: "c1", timestamp: 1, content: "ok" }),
       ),
     );
 
@@ -166,6 +169,7 @@ describe("dispatchEvent", () => {
       event: "speak",
       event_id: "e1",
       correlation_id: "c1",
+      timestamp: 1,
       content: "hi",
     });
 
@@ -179,6 +183,7 @@ describe("dispatchEvent", () => {
       event: "user_message",
       event_id: "e4",
       correlation_id: "c4",
+      timestamp: 1,
       message: "hi",
     });
 
@@ -227,6 +232,7 @@ describe("dispatchEvent", () => {
       event: "emotion_update",
       event_id: "e2",
       correlation_id: "c2",
+      timestamp: 1,
       valence: 0.5,
       arousal: 0.3,
       emotion: "happy",
@@ -246,6 +252,7 @@ describe("dispatchEvent", () => {
       event: "desire_generated",
       event_id: "d1",
       correlation_id: "c1",
+      timestamp: 1,
       desire_id: "x",
     });
 
@@ -261,6 +268,7 @@ describe("dispatchEvent", () => {
       event: "activity_start",
       event_id: "a1",
       correlation_id: "c1",
+      timestamp: 1,
       activity_id: "z",
     });
 
@@ -276,6 +284,7 @@ describe("dispatchEvent", () => {
       event: "memory_created",
       event_id: "m1",
       correlation_id: "c1",
+      timestamp: 1,
       memory_id: "x",
     });
 
@@ -287,6 +296,7 @@ describe("dispatchEvent", () => {
       event: "mutter",
       event_id: "m1",
       correlation_id: "c1",
+      timestamp: 1,
       content: "在想你",
     });
 
@@ -322,6 +332,7 @@ describe("dispatchEvent", () => {
       event: "activity_end",
       event_id: "a1",
       correlation_id: "c1",
+      timestamp: 1,
       activity_id: "a1",
     });
 
@@ -343,6 +354,7 @@ describe("dispatchEvent", () => {
       event: "reflection_done",
       event_id: "e1",
       correlation_id: "c1",
+      timestamp: 1,
       story: "今天对用户了解更多",
       story_is_new: true,
     });
@@ -364,6 +376,7 @@ describe("dispatchEvent", () => {
       event: "reflection_done",
       event_id: "e2",
       correlation_id: "c2",
+      timestamp: 1,
       story: "初始故事",
       story_is_new: false,
     });
@@ -381,6 +394,7 @@ describe("dispatchEvent", () => {
       event: "reading_mutter",
       event_id: "e1",
       correlation_id: "b1",
+      timestamp: 1,
       content: "妙",
       book_id: "b1",
       paragraph_index: 2,
@@ -389,6 +403,7 @@ describe("dispatchEvent", () => {
       event: "reading_question",
       event_id: "e2",
       correlation_id: "b1",
+      timestamp: 2,
       content: "?",
       subtype: "question_reflective",
       book_id: "b1",
@@ -399,6 +414,7 @@ describe("dispatchEvent", () => {
       event: "reading_association",
       event_id: "e3",
       correlation_id: "b1",
+      timestamp: 3,
       memory_id: "m1",
       snippet: "片段",
       book_id: "b1",

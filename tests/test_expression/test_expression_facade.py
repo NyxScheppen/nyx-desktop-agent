@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false
 import json
 import time
+from datetime import datetime
 from typing import Any, cast
 
 import pytest
@@ -20,6 +21,7 @@ from nyx.enums import (
     InteractionStatus,
     MemoryKind,
     MemoryType,
+    Source,
 )
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
@@ -205,6 +207,22 @@ class _FakeBus:
     async def publish(self, event: Event) -> None:
         self.published.append(event)
 
+    async def list_events(
+        self,
+        limit: int = 100,
+        event_type: EventType | None = None,
+        correlation_id: str | None = None,
+    ) -> list[Event]:
+        events = [
+            event
+            for event in self.published
+            if (event_type is None or event.type is event_type)
+            and (correlation_id is None or event.correlation_id == correlation_id)
+        ]
+        return sorted(
+            events, key=lambda event: (event.timestamp, event.id), reverse=True
+        )[:limit]
+
 
 class _FakeDesire:
     def __init__(self) -> None:
@@ -239,6 +257,35 @@ class _FakeTools:
         return self.results.get(name, [])
 
 
+class _ReturnState:
+    def __init__(self) -> None:
+        self.pending: dict[str, float] | None = {
+            "returned_at": 2000.0,
+            "away_duration_seconds": 600.0,
+        }
+        self.finished = 0
+        self.released = 0
+
+    def claim(self) -> dict[str, float] | None:
+        claim = self.pending
+        self.pending = None
+        return claim
+
+    def finish(self, claim: dict[str, float] | None) -> None:
+        if claim is not None:
+            self.finished += 1
+
+    def release(self, claim: dict[str, float] | None) -> None:
+        if claim is not None:
+            self.released += 1
+            if self.pending is None:
+                self.pending = claim
+
+
+async def _observation() -> dict[str, object]:
+    return {"presence": "online", "window_title": "编辑器"}
+
+
 def _user_content(messages: list[LlmMessage]) -> str:
     return messages[-1]["content"]
 
@@ -252,6 +299,7 @@ def _new_facade(
     memory: _FakeMemory | None = None,
     activity: _FakeActivity | None = None,
     interaction_store: ExpressionInteractionStore | None = None,
+    return_state: _ReturnState | None = None,
 ) -> tuple[
     ExpressionFacade,
     _FakeLlm,
@@ -285,6 +333,10 @@ def _new_facade(
         config=ExpressionConfig(),
         tools=tools_obj,
         interaction_store=interaction_store,
+        observation_reader=_observation,
+        claim_return=(return_state.claim if return_state is not None else None),
+        finish_return=(return_state.finish if return_state is not None else None),
+        release_return=(return_state.release if return_state is not None else None),
     )
     return facade, fake_llm, evaluator, memory, inner_life, bus
 
@@ -300,7 +352,100 @@ def _desire() -> ShortTermDesire:
     )
 
 
+def _event(
+    id_: str,
+    timestamp: float,
+    type_: EventType,
+    content: dict[str, object],
+    correlation_id: str,
+) -> Event:
+    return Event(
+        id=id_,
+        timestamp=timestamp,
+        source=Source.EXTERNAL if type_ is EventType.USER_MESSAGE else Source.INTERNAL,
+        type=type_,
+        content=content,
+        correlation_id=correlation_id,
+    )
+
+
 # ---- reply ----
+
+
+async def test_last_dialogue_anchor_skips_current_and_incomplete_turns() -> None:
+    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade()
+    bus.published.extend(
+        [
+            _event("u-old", 10.0, EventType.USER_MESSAGE, {"message": "旧问题"}, "old"),
+            _event("t-old", 11.0, EventType.THINK, {"content": "不应引用"}, "old"),
+            _event("s-old", 12.0, EventType.SPEAK, {"content": "旧回答"}, "old"),
+            _event("a-old", 13.0, EventType.ASK, {"content": "最后追问"}, "old"),
+            _event("u-half", 20.0, EventType.USER_MESSAGE, {"message": "半截"}, "half"),
+            _event(
+                "u-now", 30.0, EventType.USER_MESSAGE, {"message": "当前"}, "current"
+            ),
+        ]
+    )
+
+    anchor = await facade._last_dialogue_anchor("current")
+
+    assert anchor is not None
+    assert (anchor[0].content, anchor[0].timestamp) == ("旧问题", 10.0)
+    assert (anchor[1].content, anchor[1].timestamp) == ("最后追问", 13.0)
+
+
+async def test_last_dialogue_anchor_returns_none_without_complete_turn() -> None:
+    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade()
+    bus.published.append(
+        _event("u-half", 20.0, EventType.USER_MESSAGE, {"message": "半截"}, "half")
+    )
+
+    assert await facade._last_dialogue_anchor(None) is None
+
+
+async def test_reply_recovers_overnight_dialogue_from_durable_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evening = datetime(2026, 9, 17, 19).astimezone().timestamp()
+    morning = datetime(2026, 9, 18, 8).astimezone().timestamp()
+    database = await db.connect(":memory:")
+    try:
+        bus = EventBus(database)
+        await bus.publish(
+            _event(
+                "dinner-user",
+                evening,
+                EventType.USER_MESSAGE,
+                {"message": "尼克斯，我去吃饭了"},
+                "dinner",
+            )
+        )
+        await bus.publish(
+            _event(
+                "dinner-nyx",
+                evening + 1,
+                EventType.SPEAK,
+                {"content": "好的，我在这里等着你"},
+                "dinner",
+            )
+        )
+        # A fresh facade has no in-memory history, as after a backend restart.
+        facade, llm, _eval, _memory, _inner, _fake_bus = _new_facade(
+            energy=20.0, arousal=0.9
+        )
+        facade._bus = bus
+        monkeypatch.setattr("nyx.expression.facade.time.time", lambda: morning)
+
+        await facade.reply("早上好，尼克斯", "morning")
+
+        system = llm.calls[0][1][0]["content"]
+        assert "2026-09-18" in system and "早上 08:00" in system
+        assert "13小时" in system and "昨天晚上" in system
+        assert "用户已经很久没有和你说话了" in system
+        assert "尼克斯，我去吃饭了" in system and "好的，我在这里等着你" in system
+        assert facade._history[-1].role == "nyx"
+    finally:
+        await database.close()
 
 
 async def test_reply_fast() -> None:
@@ -313,6 +458,53 @@ async def test_reply_fast() -> None:
     assert memory.search_calls == 0
     assert memory.scene_memories == []
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.SPEAK]
+
+
+async def test_reply_fast_uses_temporal_context_and_consumes_return() -> None:
+    return_state = _ReturnState()
+    facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        energy=20.0, arousal=0.9, return_state=return_state
+    )
+
+    await facade.reply("哦", "corr-temporal")
+
+    system = llm.calls[0][1][0]["content"]
+    assert "[时间与重逢上下文]" in system
+    assert "用户刚刚回来" in system
+    assert "当前观察：用户状态为 online" in system
+    assert return_state.finished == 1
+    assert return_state.released == 0
+
+
+async def test_reply_fallback_releases_return_context() -> None:
+    class _FailLlm(_FakeLlm):
+        async def complete(
+            self,
+            messages: list[LlmMessage],
+            *,
+            module: str,
+            output_type: str,
+            correlation_id: str,
+            json_mode: bool = False,
+            tools: list[dict[str, Any]] | None = None,
+        ) -> LLMOutput:
+            del messages, module, output_type, correlation_id, json_mode, tools
+            raise RuntimeError("llm down")
+
+    return_state = _ReturnState()
+    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade(
+        energy=20.0,
+        arousal=0.9,
+        llm=_FailLlm(),
+        return_state=return_state,
+    )
+
+    await facade.reply("哦", "corr-fallback")
+
+    assert bus.published[-1].content["response_kind"] == "fallback"
+    assert return_state.finished == 0
+    assert return_state.released == 1
+    assert return_state.pending is not None
 
 
 async def test_reply_fast_question_sets_ask() -> None:
@@ -366,7 +558,15 @@ async def test_reply_slow_tool_executes_and_flows_into_prompt() -> None:
     await facade.reply("在吗", "corr-tool")
     assert [t for t, _m, _c in llm.calls][0] == "tool"
     assert tools.calls == [("local_search", {"q": "骑士"})]
+    tool_system = llm.calls[0][1][0]["content"]
     think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
+    time_blocks = [
+        messages[0]["content"].split("[时间与重逢上下文]", 1)[1].split(
+            "[当前欲望]", 1
+        )[0]
+        for _type, messages, _cid in llm.calls
+    ]
+    assert "[时间与重逢上下文]" in tool_system and len(set(time_blocks)) == 1
     assert "[工具查询结果]" in think_system
     assert "local_search" in think_system
 
@@ -710,8 +910,10 @@ async def test_mutter_user_naturalizes_presence(
 
 
 async def test_mutter_llm_wander(monkeypatch: pytest.MonkeyPatch) -> None:
+    return_state = _ReturnState()
     facade, llm, _evaluator, _memory, _inner_life, bus = _new_facade(
-        llm=_FakeLlm(chat_content="嗯……有点走神了。")
+        llm=_FakeLlm(chat_content="嗯……有点走神了。"),
+        return_state=return_state,
     )
     monkeypatch.setattr(
         "nyx.expression.facade.random.random",
@@ -719,8 +921,10 @@ async def test_mutter_llm_wander(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     await facade.mutter(_mk_state(80.0, 0.0), "corr-m")
     assert [t for t, _m, _c in llm.calls] == ["mutter_wander"]
+    assert "[时间与重逢上下文]" in llm.calls[0][1][0]["content"]
     assert len(bus.published) == 1
     assert bus.published[0].content["content"] == "嗯……有点走神了。"
+    assert (return_state.finished, return_state.released) == (1, 0)
 
 
 async def test_mutter_llm_wander_empty_falls_back(
@@ -729,8 +933,11 @@ async def test_mutter_llm_wander_empty_falls_back(
     # LLM 即兴空 → 回退模板填空
     activity = _FakeActivity()
     activity.results = [_mk_activity(ActivityType.READING, {"book": "挪威的森林"})]
+    return_state = _ReturnState()
     facade, llm, _evaluator, _memory, _inner_life, bus = _new_facade(
-        activity=activity, llm=_FakeLlm(chat_content="   ")
+        activity=activity,
+        llm=_FakeLlm(chat_content="   "),
+        return_state=return_state,
     )
     monkeypatch.setattr(
         "nyx.expression.facade.random.random",
@@ -740,8 +947,12 @@ async def test_mutter_llm_wander_empty_falls_back(
     assert [t for t, _m, _c in llm.calls] == ["mutter_wander"]
     assert len(bus.published) == 1
     assert bus.published[0].content["content"] == (
-        _MUTTER_SKELETONS[MutterCategory.ACTIVITY][0].format(subject="读了《挪威的森林》")
+        _MUTTER_SKELETONS[MutterCategory.ACTIVITY][0].format(
+            subject="读了《挪威的森林》"
+        )
     )
+    assert return_state.finished == 0
+    assert return_state.released == 1
 
 
 async def test_mutter_dedup(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -792,6 +1003,18 @@ async def test_initiate_chat_non_empty() -> None:
     assert bus.published[0].correlation_id == "d1"
     assert [t for t, _m, _c in llm.calls] == ["initiate_chat"]
     assert "[主动提问指导]" in llm.calls[0][1][0]["content"]
+    assert "[时间与重逢上下文]" in llm.calls[0][1][0]["content"]
+
+
+async def test_initiate_chat_consumes_return_only_after_commit() -> None:
+    return_state = _ReturnState()
+    facade, _llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
+        llm=_FakeLlm(chat_content="你在忙吗？"), return_state=return_state
+    )
+
+    assert await facade.initiate_chat(_desire(), _mk_state(80.0, 0.0)) is True
+    assert return_state.finished == 1
+    assert return_state.released == 0
 
 
 async def test_initiate_chat_appends_history() -> None:

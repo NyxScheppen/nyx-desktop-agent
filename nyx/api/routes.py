@@ -53,6 +53,7 @@ class _ExportPayload(BaseModel):
 class _ObservePayload(BaseModel):
     presence: Literal["online", "away", "busy"]
     window_title: str = ""
+    idle_seconds: float = Field(..., ge=0, allow_inf_nan=False)
 
 
 class _ProgressPayload(BaseModel):
@@ -343,11 +344,9 @@ def build_app(
             {"presence": payload.presence, "window_title": payload.window_title},
         )
         try:
-            await app.bus.publish(event)
+            await app.publish_observation(event, payload.idle_seconds)
         except EventAdmissionError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
-        app.last_presence = payload.presence
-        app.last_window_title = payload.window_title
         return {"event_id": event.id}
 
     @fast.get("/api/events")
@@ -360,9 +359,10 @@ def build_app(
                 while True:
                     event = await queue.get()
                     data = {
+                        **event.content,
                         "event_id": event.id,
                         "correlation_id": event.correlation_id,
-                        **event.content,
+                        "timestamp": event.timestamp,
                     }
                     payload = json.dumps(data, ensure_ascii=False, default=str)
                     yield f"event: {event.type.value}\ndata: {payload}\n\n"

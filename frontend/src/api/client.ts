@@ -58,11 +58,16 @@ export async function getState(): Promise<CurrentState> {
 export async function postObserve(
   presence: Presence,
   windowTitle: string,
+  idleSeconds: number,
 ): Promise<{ event_id: string }> {
   return request<{ event_id: string }>(`${BASE_URL}/api/observe`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ presence, window_title: windowTitle }),
+    body: JSON.stringify({
+      presence,
+      window_title: windowTitle,
+      idle_seconds: idleSeconds,
+    }),
   });
 }
 

@@ -11,7 +11,7 @@ const BASE_URL = "";   // 空 = 相对路径，走 Vite proxy 同源转发（本
 
 async function postChat(message: string): Promise<{ event_id: string }>          // POST /api/chat
 async function getState(): Promise<CurrentState>                                 // GET /api/state
-async function postObserve(presence: Presence, windowTitle: string): Promise<{ event_id: string }>  // POST /api/observe
+async function postObserve(presence: Presence, windowTitle: string, idleSeconds: number): Promise<{ event_id: string }>  // POST /api/observe
 async function getDesires(): Promise<DesireState>                                // GET /api/desires
 async function getActivity(): Promise<ActivitySnapshot>                          // GET /api/activity
 async function getActivityResults(): Promise<Activity[]>                          // GET /api/activity/results
@@ -34,7 +34,7 @@ async function showNoteToNyx(noteId: string): Promise<Annotation | null>        
 async function checkChapterBoundary(bookId: string, nyxPosition: number): Promise<{ is_boundary: boolean; book_finished: boolean }>  // POST /api/notes/check-chapter-boundary
 ```
 
-- 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message}`、`postObserve` 发 `{presence, window_title}`。
+- 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message}`、`postObserve` 发 `{presence, window_title, idle_seconds}`。
 - **请求头**：`Content-Type: application/json`（FastAPI + Pydantic 体，错头会 422）。
 - 返回值直接 JSON 反序列化后上抛给调用方，**不包裹** `{ok, data}`。
 
@@ -57,7 +57,7 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 - 每个函数 mock `fetch`，断言请求 URL/method/请求体键 + 响应解析：
   - `postChat`：请求 `POST /api/chat`、body `{message}` → 返回 `{event_id}` 解析正确。
   - `getState`：`GET /api/state` → 返回 `CurrentState` 解析正确。
-  - `postObserve`：`POST /api/observe`、body `{presence, window_title}` → 返回 `{event_id}` 解析正确。
+  - `postObserve`：`POST /api/observe`、body `{presence, window_title, idle_seconds}` → 返回 `{event_id}` 解析正确。
   - `getDesires`：`GET /api/desires` → `DesireState` 解析正确。
   - `getActivity`：`GET /api/activity` → `ActivitySnapshot` 解析正确。
   - `getActivityResults`：`GET /api/activity/results` → `Activity[]` 解析正确。

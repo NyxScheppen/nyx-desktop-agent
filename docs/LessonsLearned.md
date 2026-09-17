@@ -230,6 +230,13 @@
 
 ---
 
+### 2026-09-17: 采样失败不能用正常数值伪装成功观察
+
+**来源**：时间感知与 presence 原生采样收口审查。
+**教训**：系统输入 API 失败或平台不支持时成功返回 `idle_ms=0`，会绕过前端降级并长期误判在线；默认值在观察链里也会被当作真实事实。
+**怎么做**：原生命令保留明确错误通道，失败触发已有 WebView fallback；用 mock 原生失败测试覆盖 idle 增长、away 和恢复输入，不依赖真实桌面。
+**影响的文件/决策**：`frontend/src-tauri/src/lib.rs`、`frontend/src/hooks/usePresence.ts`、`frontend/tests/presence.test.ts`。
+
 ## 模板
 
 ```

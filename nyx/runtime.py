@@ -37,6 +37,7 @@ async def on_user_message(app: Any, event: Event) -> None:
     previous = await app.bus.list_events(correlation_id=event.correlation_id)
     if any(item.type in (EventType.SPEAK, EventType.ASK) for item in previous):
         return
+    await app.record_user_online(event.timestamp)
     current = await app.activity.get_current()
     if current is not None and current.status is ActivityStatus.RUNNING:
         await app.activity.interrupt(current.id, EventType.USER_MESSAGE)

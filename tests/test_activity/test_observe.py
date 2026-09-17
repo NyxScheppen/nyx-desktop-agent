@@ -2,16 +2,18 @@ from nyx.activity.observe import build_observation_summary, classify_presence
 
 
 def test_classify_presence_online() -> None:
-    assert classify_presence(True, False, "") == "online"
-    assert classify_presence(False, True, "") == "online"
+    assert classify_presence(0.0) == "online"
+    assert classify_presence(29.999) == "online"
 
 
 def test_classify_presence_busy() -> None:
-    assert classify_presence(False, False, "编辑器") == "busy"
+    assert classify_presence(30.0) == "busy"
+    assert classify_presence(299.999) == "busy"
 
 
 def test_classify_presence_away() -> None:
-    assert classify_presence(False, False, "") == "away"
+    assert classify_presence(300.0) == "away"
+    assert classify_presence(900.0) == "away"
 
 
 def test_build_observation_summary_window_title() -> None:

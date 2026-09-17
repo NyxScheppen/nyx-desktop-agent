@@ -13,7 +13,14 @@ function makeMsg(
   content: string,
 ): ChatMessage {
   msgSeq += 1;
-  return { id: `id-${kind}-${msgSeq}`, role, kind, content, correlation_id: "c" };
+  return {
+    id: `id-${kind}-${msgSeq}`,
+    role,
+    kind,
+    content,
+    correlation_id: "c",
+    timestamp: 1,
+  };
 }
 
 // nyx 文本消息走 useTypewriter 逐字，测试须推进 fake timers 打完再断言完整文案。
@@ -85,6 +92,7 @@ describe("MessageBubble", () => {
           kind: "reading_question",
           content: "为什么？",
           correlation_id: "b1",
+          timestamp: 1,
           subtype: "quote_question",
           selectedText: "划线句",
         }}
@@ -106,6 +114,24 @@ describe("MessageList", () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("首条和跨日消息显示时间，同一回复 think/speak 不重复", () => {
+    const yesterday = new Date(2026, 8, 17, 19, 0).getTime() / 1000;
+    const today = new Date(2026, 8, 18, 8, 0).getTime() / 1000;
+    const messages: ChatMessage[] = [
+      { ...makeMsg("message", "user", "我去吃饭了"), timestamp: yesterday, preloaded: true },
+      { ...makeMsg("speak", "nyx", "我等你"), timestamp: yesterday + 60, preloaded: true },
+      { ...makeMsg("message", "user", "早上好"), correlation_id: "next", timestamp: today, preloaded: true },
+      { ...makeMsg("think", "nyx", "回来了"), correlation_id: "next", timestamp: today + 1, preloaded: true },
+      { ...makeMsg("speak", "nyx", "早上好"), correlation_id: "next", timestamp: today + 2, preloaded: true },
+    ];
+
+    render(<MessageList messages={messages} now={new Date(2026, 8, 18, 8, 1)} />);
+
+    expect(screen.getAllByText("昨天 19:00")).toHaveLength(1);
+    expect(screen.getAllByText("今天 08:00")).toHaveLength(1);
+    expect(document.querySelectorAll(".message-time-divider")).toHaveLength(2);
   });
 
   it("全部消息按序渲染，无历史折叠", () => {

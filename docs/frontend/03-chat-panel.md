@@ -10,6 +10,7 @@
 ```
 （`ChatPanel` 容器已拆散，以下为保留复用的组件）
 MessageList                # 微信式全量列表：全部消息按序渲染，最新滚到底，上滑看历史（滚动条隐藏）——现挂左栏（div.left-dock，flex:1 滚动）
+├─ TimeDivider             # 首条、跨自然日或跨会话间隔时显示后端事件时间
 └─ MessageBubble           # 单条：按 role/kind 渲染，nyx 文本走 useTypewriter 逐字（见 §3）
 ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用发送按钮（输入框可预打下一句）——现挂左栏底部
 └─ sendError               # 红字，挂在 ChatInput 下方，读 chatStore.sendError
@@ -49,6 +50,11 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 - **打字机（`useTypewriter`）**：nyx 文本消息（`speak`/`ask`/`think`/`initiate_chat`，即 `isNyxText` 白名单）逐字显示，纯渲染层 hook（`hooks/useTypewriter.ts`），不改 store——消息仍完整 append，仅控制「显示到第几个字」；未打完时挂 `.cursor-blink` 光标。`useTypewriter(text, speed, ready)` 加第三参 `ready`：false 时不启动（`displayed=""`、`done=false`、无光标），转 true 才从 0 逐字。**reading 两 kind 不进 `isNyxText`/`NYX_TEXT_KINDS` 白名单**：即时全量渲染、不进打字机串行门。
 - **微信式全量 + 全串行逐字（视觉改造 §4）**：`MessageList` 全部消息按序渲染，每条非 `preloaded` 的 nyx 文本消息都逐字（`MessageBubble` 内部 `isNyxText && !preloaded` 判定走 `useTypewriter`），用户消息与读书 turn 即时全量；每条消息不打完也已在 DOM；后端 SSE 顺序 THINK 先于 SPEAK（11-expression），故「内心话气泡」天然排在「发言气泡」之上；随内容增长同步滚到底——`MessageList` 用 `MutationObserver` 观察滚动容器自身 DOM 变化（新消息 `childList` + 打字机逐字 `characterData` 都触发），但仅当用户已在底部才跟随（上滑看历史不被逐字拉回底，回到底部恢复跟随）；故打字过程中页面跟着她的话往下滚（滚动条隐藏）。
 - **串行逐字（内心话 → 对话，不并发）**：`MessageList` 对每条消息算 `ready = isReady(message, index, messages, typedIds)`（纯函数，导出供测试）——每条 nyx 文本消息需等「同 `correlation_id` 且在其之前的所有 nyx 文本消息」都已入 `typedIds` 才就绪；逐字 `done` 时经 `onTyped → markTyped` 写入 `typedIds`。故内心话气泡先完整逐字打完，对话气泡才开始逐字（等待期 `displayed=""`、无光标），而非两条并发一起显示。`preloaded` 历史消息与用户消息恒就绪。
+- **明线时间分隔**：`shouldShowTimeDivider(current, previous)` 为纯函数。列表首条必显示；与上一条
+  不同本地自然日时显示；同日相隔至少 30 分钟时显示；同一 `correlation_id` 内的
+  THINK/SPEAK/ASK 即使生成稍慢也不重复分隔。标签使用事件 `timestamp` 转本地时间：今天为
+  `今天 HH:mm`，昨天为 `昨天 HH:mm`，更早为 `M月D日 周X HH:mm`。时间分隔属于列表内容，
+  同样参与现有滚动跟随，但不进入 store、不参与打字机。
 
 ## 4. 边界
 
@@ -60,5 +66,7 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 
 - `MessageBubble`：按 `kind` 渲染正确（`speak` 正常 / `think` 灰色斜体逐字 / `ask` 高亮）；nyx 文本消息须先 `advanceTimersByTime`（fake timers）打完字再断言完整文案——React Testing Library 断言关键 class/文案。
 - `MessageList`：全部消息按序渲染、无历史折叠（`typeDone` 推进 fake timers 后两条都上屏，无历史按钮）；全部气泡渲染即存在（串行门控只延迟内容不延迟挂载）；串行逐字：内心话先打完、对话才开打（未推进 timer 两者皆空，`typeDone` 后串行完整上屏）；`isReady` 全串行逐字门控纯函数在 stores.test.ts 覆盖。
+- 时间显示：fake system time 覆盖列表首条、同 correlation、同日 29:59/30:00、跨午夜、
+  今天/昨天/更早标签；历史回填与实时消息在相同 epoch 下渲染完全一致。
 - `ChatInput`：`isReplying=true` 禁用发送；回车/点发送触发 `sendMessage`（mock store action）。
 - 视觉样式不做断言（README §6 测试约定）。

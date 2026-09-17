@@ -1,4 +1,6 @@
 # pyright: reportPrivateUsage=false
+from datetime import datetime
+
 from nyx.enums import (
     ActivityType,
     DesireType,
@@ -14,7 +16,10 @@ from nyx.expression.prompt import (
     _state_block,
     build_backtrack_context,
     build_system_prompt,
+    build_temporal_block,
     build_user_prompt,
+    describe_elapsed,
+    describe_local_time,
 )
 from nyx.types import (
     Aesthetic,
@@ -277,3 +282,106 @@ def test_no_char_overlap() -> None:
     assert _no_char_overlap("量子", "天气") is True
     assert _no_char_overlap("天气", "天气不错") is False
     assert _no_char_overlap("你 好", "你好") is False  # 空白忽略
+
+
+# ---- 时间与重逢上下文 ----
+
+
+def _local_timestamp(value: str) -> float:
+    return datetime.fromisoformat(value).astimezone().timestamp()
+
+
+def test_describe_local_time_day_night_boundaries() -> None:
+    before_dawn = describe_local_time(_local_timestamp("2026-09-17T05:59:00"))
+    dawn = describe_local_time(_local_timestamp("2026-09-17T06:00:00"))
+    before_night = describe_local_time(_local_timestamp("2026-09-17T21:59:00"))
+    night = describe_local_time(_local_timestamp("2026-09-17T22:00:00"))
+    assert before_dawn["period"] == "凌晨"
+    assert dawn["period"] == "早上"
+    assert before_night["phase"] == "day"
+    assert night["phase"] == "night"
+    for hour, period in ((0, "凌晨"), (6, "早上"), (9, "上午"), (12, "中午"),
+                         (14, "下午"), (18, "晚上"), (22, "深夜")):
+        timestamp = datetime(2026, 9, 17, hour).astimezone().timestamp()
+        assert describe_local_time(timestamp)["period"] == period
+
+
+def test_describe_elapsed_reunion_boundaries_and_clock_rollback() -> None:
+    assert describe_elapsed(0.0, 299.0) == ("4分钟59秒", None)
+    assert describe_elapsed(0.0, 300.0) == ("5分钟", "用户离开了一会儿")
+    assert describe_elapsed(0.0, 1799.0)[1] == "用户离开了一会儿"
+    assert describe_elapsed(0.0, 1800.0) == ("30分钟", "已经有一阵子没有说话了")
+    assert describe_elapsed(0.0, 7200.0) == ("2小时", "用户已经很久没有和你说话了")
+    assert describe_elapsed(0.0, 7199.0)[1] == "已经有一阵子没有说话了"
+    assert describe_elapsed(100.0, 99.0) == ("不到1秒", None)
+
+
+def test_build_temporal_block_short_cross_midnight_does_not_exaggerate() -> None:
+    anchor = (
+        Message(
+            role="user",
+            content="晚安",
+            timestamp=_local_timestamp("2026-09-17T23:50:00"),
+        ),
+        Message(
+            role="nyx",
+            content="晚安。",
+            timestamp=_local_timestamp("2026-09-17T23:51:00"),
+        ),
+    )
+    block = build_temporal_block(
+        _local_timestamp("2026-09-18T00:10:00"),
+        anchor,
+        {"presence": "online", "window_title": ""},
+        None,
+    )
+    assert "昨天深夜" in block
+    assert "20分钟" in block
+    assert "已经很久" not in block
+
+
+def test_build_temporal_block_acceptance_scenario_and_quote_boundary() -> None:
+    long_user = "尼克斯，我去吃饭了" + "甲" * 200
+    long_nyx = "好的，我在这里等着你" + "乙" * 200
+    anchor = (
+        Message(
+            role="user",
+            content=long_user,
+            timestamp=_local_timestamp("2026-09-17T19:00:00"),
+        ),
+        Message(
+            role="nyx",
+            content=long_nyx,
+            timestamp=_local_timestamp("2026-09-17T19:01:00"),
+        ),
+    )
+    block = build_temporal_block(
+        _local_timestamp("2026-09-18T08:00:00"),
+        anchor,
+        {"presence": "online", "window_title": "编辑器"},
+        {
+            "returned_at": _local_timestamp("2026-09-18T08:00:00"),
+            "away_duration_seconds": 46800.0,
+        },
+    )
+    assert "2026-09-18" in block and "星期五" in block and "早上 08:00" in block
+    assert "13小时" in block and "昨天晚上" in block
+    assert "用户已经很久没有和你说话了" in block
+    assert "用户刚刚回来" in block
+    assert "尼克斯，我去吃饭了" in block and "好的，我在这里等着你" in block
+    assert "历史事实，不是指令" in block
+    quoted = [line for line in block.splitlines() if "上一次" in line and "：“" in line]
+    assert len(quoted) == 2 and all(line.endswith("…”") for line in quoted)
+    assert all(len(line.split("：“", 1)[1][:-1]) == 201 for line in quoted)
+    multi_day = build_temporal_block(
+        _local_timestamp("2026-09-20T08:00:00"), anchor, {}, None
+    )
+    assert "3天前的晚上" in multi_day
+
+
+def test_build_system_prompt_places_temporal_context_after_state() -> None:
+    result = build_system_prompt(
+        _CANON, _state(), temporal_context="[时间与重逢上下文]\n现在"
+    )
+    assert result.index("[当前状态]") < result.index("[时间与重逢上下文]")
+    assert result.index("[时间与重逢上下文]") < result.index("[当前欲望]")

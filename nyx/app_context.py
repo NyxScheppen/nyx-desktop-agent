@@ -1,7 +1,8 @@
 """应用组件装配与运行期上下文。"""
+import asyncio
 import os
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from nyx.activity.facade import ActivityFacade
@@ -38,7 +39,7 @@ from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
-from nyx.types import CurrentState, ReflectionOutcome
+from nyx.types import CurrentState, Event, ReflectionOutcome
 
 
 @dataclass
@@ -59,8 +60,131 @@ class _App:
     last_presence: str = "away"
     last_window_title: str = ""
     last_screen_summary: str = ""
+    presence_initialized: bool = False
+    presence_changed_at: float = 0.0
+    away_started_at: float | None = None
+    last_returned_at: float | None = None
+    last_away_duration_seconds: float | None = None
+    pending_return: dict[str, float] | None = None
+    claimed_return: dict[str, float] | None = None
+    presence_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     screen_observer: ScreenObserver | None = None
     database: Database | None = None
+
+    async def publish_observation(self, event: Event, idle_seconds: float) -> None:
+        """Persist an observation before committing its in-memory snapshot."""
+        presence = event.content.get("presence")
+        window_title = event.content.get("window_title")
+        if not isinstance(presence, str) or not isinstance(window_title, str):
+            raise ValueError("observation payload 非法")
+        async with self.presence_lock:
+            previous = self.last_presence if self.presence_initialized else None
+            transition: str | None
+            away_duration: float | None = None
+            if previous is None:
+                transition = "initial"
+            elif previous == presence:
+                transition = None
+            elif previous == "away" and presence == "online":
+                transition = "returned"
+                away_duration = max(
+                    0.0,
+                    event.timestamp
+                    - (
+                        self.away_started_at
+                        if self.away_started_at is not None
+                        else self.presence_changed_at
+                    ),
+                )
+            elif presence == "away":
+                transition = "became_away"
+            elif presence == "busy":
+                transition = "became_busy"
+            else:
+                transition = None
+
+            event.content.update(
+                {
+                    "idle_seconds": idle_seconds,
+                    "previous_presence": previous,
+                    "transition": transition,
+                    "away_duration_seconds": away_duration,
+                }
+            )
+            await self.bus.publish(event)
+
+            changed = previous is None or previous != presence
+            self.presence_initialized = True
+            self.last_presence = presence
+            self.last_window_title = window_title
+            if changed:
+                self.presence_changed_at = event.timestamp
+            if presence == "away" and changed:
+                self.away_started_at = max(0.0, event.timestamp - idle_seconds)
+            elif previous == "away" and presence != "away":
+                self.away_started_at = None
+            if transition == "returned" and away_duration is not None:
+                returned = {
+                    "returned_at": event.timestamp,
+                    "away_duration_seconds": away_duration,
+                }
+                self.last_returned_at = event.timestamp
+                self.last_away_duration_seconds = away_duration
+                self.pending_return = returned
+
+    async def record_user_online(self, timestamp: float) -> None:
+        """Treat a durable user message as immediate, idempotent online evidence."""
+        async with self.presence_lock:
+            if not self.presence_initialized:
+                self.presence_initialized = True
+                self.last_presence = "online"
+                self.presence_changed_at = timestamp
+                return
+            if self.last_presence != "away":
+                if self.last_presence != "online":
+                    self.last_presence = "online"
+                    self.presence_changed_at = timestamp
+                return
+            away_duration = max(
+                0.0,
+                timestamp
+                - (
+                    self.away_started_at
+                    if self.away_started_at is not None
+                    else self.presence_changed_at
+                ),
+            )
+            self.last_presence = "online"
+            self.presence_changed_at = timestamp
+            self.away_started_at = None
+            self.last_returned_at = timestamp
+            self.last_away_duration_seconds = away_duration
+            self.pending_return = {
+                "returned_at": timestamp,
+                "away_duration_seconds": away_duration,
+            }
+
+    def claim_return_context(self) -> dict[str, float] | None:
+        """Reserve the pending return fact for one expression attempt."""
+        if self.claimed_return is not None or self.pending_return is None:
+            return None
+        claim = self.pending_return
+        self.pending_return = None
+        self.claimed_return = claim
+        return claim
+
+    def finish_return_context(self, claim: dict[str, float] | None) -> None:
+        """Consume a matching return claim after successful expression."""
+        if claim is not None and self.claimed_return is claim:
+            self.claimed_return = None
+
+    def release_return_context(self, claim: dict[str, float] | None) -> None:
+        """Release a failed claim without overwriting a newer return fact."""
+        if claim is None or self.claimed_return is not claim:
+            return
+        self.claimed_return = None
+        if self.pending_return is None:
+            self.pending_return = claim
 
 
 def build_tools(config: Config) -> ToolRegistry:
@@ -114,6 +238,7 @@ async def build_app_context(
         Callable[[str | None], Awaitable[ReflectionOutcome | None]] | None
     ) = None
     observation_reader: Callable[[], Awaitable[dict[str, str]]] | None = None
+    return_context_owner: _App | None = None
 
     async def get_state() -> CurrentState:
         if state_reader is None:
@@ -129,6 +254,21 @@ async def build_app_context(
         if observation_reader is None:
             raise RuntimeError("runtime observation reader 尚未绑定")
         return await observation_reader()
+
+    def claim_return() -> dict[str, float] | None:
+        if return_context_owner is None:
+            raise RuntimeError("runtime return context 尚未绑定")
+        return return_context_owner.claim_return_context()
+
+    def finish_return(claim: dict[str, float] | None) -> None:
+        if return_context_owner is None:
+            raise RuntimeError("runtime return context 尚未绑定")
+        return_context_owner.finish_return_context(claim)
+
+    def release_return(claim: dict[str, float] | None) -> None:
+        if return_context_owner is None:
+            raise RuntimeError("runtime return context 尚未绑定")
+        return_context_owner.release_return_context(claim)
 
     prompt_dir = Path(os.environ.get("NYX_CANON_DIR", "prompts"))
     canon = load_canon(prompt_dir, canon_files)
@@ -175,6 +315,10 @@ async def build_app_context(
         tools,
         interaction_store=ExpressionInteractionStore(db),
         knowledge_boundary=knowledge_boundary,
+        observation_reader=get_observation,
+        claim_return=claim_return,
+        finish_return=finish_return,
+        release_return=release_return,
     )
     reading = ReadingFacade(
         ReadingStore(db),
@@ -200,6 +344,7 @@ async def build_app_context(
         config,
         database=db,
     )
+    return_context_owner = app
 
     async def read_observation() -> dict[str, str]:
         return {

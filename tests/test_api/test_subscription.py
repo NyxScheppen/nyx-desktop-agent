@@ -51,8 +51,12 @@ class _FakeActivity:
 class _FakeExpression:
     def __init__(self) -> None:
         self.replied: list[tuple[str, str]] = []
+        self.app: _App | None = None
+        self.return_seen_at_reply: dict[str, float] | None = None
 
     async def reply(self, msg: str, correlation_id: str) -> None:
+        if self.app is not None:
+            self.return_seen_at_reply = self.app.pending_return
         self.replied.append((msg, correlation_id))
 
 
@@ -155,4 +159,102 @@ async def test_user_message_replay_skips_after_reply_event_exists() -> None:
     await on_user_message(app, event)
 
     assert expression.replied == []
+    await database.close()
+
+
+async def test_user_message_marks_away_user_returned_before_reply() -> None:
+    database = await connect(":memory:")
+    bus = EventBus(database)
+    expression = _FakeExpression()
+    app = _App(
+        bus=bus,
+        inner_life=cast(InnerLifeFacade, _FakeInnerLife()),
+        desire=cast(DesireFacade, _FakeDesire()),
+        memory=cast(MemoryFacade, _FakeMemory()),
+        activity=cast(ActivityFacade, _FakeActivity()),
+        expression=cast(ExpressionFacade, expression),
+        reading=cast(ReadingFacade, object()),
+        evaluator=cast(Evaluator, object()),
+        eval_store=cast(EvalStore, object()),
+        config=Config(),
+        presence_initialized=True,
+        last_presence="away",
+        presence_changed_at=100.0,
+        away_started_at=100.0,
+    )
+    expression.app = app
+    event = Event(
+        id="user-return",
+        timestamp=700.0,
+        source=Source.EXTERNAL,
+        type=EventType.USER_MESSAGE,
+        content={"message": "我回来了"},
+        correlation_id="user-return",
+    )
+
+    from nyx.runtime import on_user_message
+
+    await on_user_message(app, event)
+    first_return = app.pending_return
+    observation = Event(
+        id="observe-online",
+        timestamp=701.0,
+        source=Source.EXTERNAL,
+        type=EventType.OBSERVATION_STATE,
+        content={"presence": "online", "window_title": "编辑器"},
+        correlation_id="observe-online",
+    )
+    await app.publish_observation(observation, 0.0)
+    await bus.publish(
+        Event(
+            id="reply-return",
+            timestamp=702.0,
+            source=Source.INTERNAL,
+            type=EventType.SPEAK,
+            content={"content": "欢迎回来"},
+            correlation_id="user-return",
+        )
+    )
+    await on_user_message(app, event)
+
+    assert expression.return_seen_at_reply == {
+        "returned_at": 700.0,
+        "away_duration_seconds": 600.0,
+    }
+    assert app.pending_return is first_return
+    assert expression.replied == [("我回来了", "user-return")]
+    await database.close()
+
+
+async def test_first_user_message_only_establishes_presence_baseline() -> None:
+    database = await connect(":memory:")
+    bus = EventBus(database)
+    expression = _FakeExpression()
+    app = _App(
+        bus=bus,
+        inner_life=cast(InnerLifeFacade, _FakeInnerLife()),
+        desire=cast(DesireFacade, _FakeDesire()),
+        memory=cast(MemoryFacade, _FakeMemory()),
+        activity=cast(ActivityFacade, _FakeActivity()),
+        expression=cast(ExpressionFacade, expression),
+        reading=cast(ReadingFacade, object()),
+        evaluator=cast(Evaluator, object()),
+        eval_store=cast(EvalStore, object()),
+        config=Config(),
+    )
+    event = Event(
+        id="first-user",
+        timestamp=700.0,
+        source=Source.EXTERNAL,
+        type=EventType.USER_MESSAGE,
+        content={"message": "你好"},
+        correlation_id="first-user",
+    )
+
+    from nyx.runtime import on_user_message
+
+    await on_user_message(app, event)
+
+    assert app.last_presence == "online"
+    assert app.pending_return is None
     await database.close()

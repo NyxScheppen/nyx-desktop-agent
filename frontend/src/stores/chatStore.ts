@@ -17,6 +17,7 @@ export type ChatMessage = {
     | "reading_question";
   content: string;
   correlation_id: string;
+  timestamp: number;
   preloaded?: boolean; // 历史回填消息：渲染时不逐字
   // 读书 turn 专属（kind==="reading_question" 才有 subtype/selectedText）
   subtype?: QuestionSubtype;
@@ -66,6 +67,7 @@ function toChatMessage(e: BackendEvent): ChatMessage | null {
     kind: isUser ? "message" : (e.type as ChatMessage["kind"]),
     content: raw,
     correlation_id: e.correlation_id,
+    timestamp: e.timestamp,
     preloaded: true,
   };
   if (isQuestion) {
@@ -109,6 +111,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       kind,
       content: text,
       correlation_id: e.correlation_id,
+      timestamp: e.timestamp,
     };
     set((s) => ({ messages: [...s.messages, msg] }));
   };
@@ -151,6 +154,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             kind: "reading_question",
             content: e.content,
             correlation_id: e.book_id,
+            timestamp: e.timestamp,
             subtype: e.subtype,
             selectedText: e.selected_text,
           },

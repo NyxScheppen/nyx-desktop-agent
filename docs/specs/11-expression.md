@@ -54,15 +54,17 @@ class ExpressionFacade:
 ```
 
 构造依赖为 bus、llm、evaluator、memory、activity、desire、inner_life、canon、
-ask guidance、`ExpressionConfig`、tools，以及可选 durable interaction store 和 knowledge
-boundary 文本。组合根负责读取 prompt 文件并注入。
+ask guidance、`ExpressionConfig`、tools，以及可选 durable interaction store、knowledge
+boundary 文本、运行时 observation reader 和一次性归来上下文的 claim/release 回调。
+组合根负责读取 prompt 文件并注入；`_App` 本身不得传入 Facade。
 
 ## 回复图
 
 ### 状态
 
 `ReplyState` 至少包含 message、mode、context、memories、state、narrative、think、speak、
-ask、round、correlation_id、last_slow_at、tool_outputs、intent 和 fallback。
+ask、round、correlation_id、last_slow_at、tool_outputs、intent、temporal_context、
+claimed_return 和 fallback。
 
 ### 通道
 
@@ -88,6 +90,9 @@ ask、round、correlation_id、last_slow_at、tool_outputs、intent 和 fallback
   通道、欲望、等待或事件。
 - `build_user_prompt()` 只负责历史和本次消息；think/speak 任务指令由回复节点追加。
 - `[相关记忆]` 只展示记忆的 kind 人话前缀、topics 和 summary/content；记忆内容明确标注为资料而非指令。
+- `build_system_prompt()` 在人格/状态段之后加入 `[时间与重逢上下文]`。该段由纯函数根据
+  注入的 epoch、本地日历、持久化对话锚点和运行时 observation 生成；LLM 不负责自行计算
+  时间差、判断跨日或猜测用户离开期间的行为。
 
 ### 回溯与历史
 
@@ -97,6 +102,43 @@ ask、round、correlation_id、last_slow_at、tool_outputs、intent 和 fallback
 - 快通道 Nyx 消息标记 `fast=True`，慢通道回溯跳过该条并继续向前；读书主动 turn 默认
   `fast=False`。
 - 回合结束按 user 后 Nyx 顺序追加；Nyx 多轮 speak 用换行拼成一个 history turn。
+
+### 时间感知、对话锚点与归来
+
+- 当前时间使用运行机器的本地时区。计算函数必须接收可注入的 epoch；“昨天/今天/跨日”
+  按本地 calendar date 判断，不使用 `elapsed_seconds / 86400` 代替日历运算。
+- 时段固定为：凌晨 `00:00-05:59`、早上 `06:00-08:59`、上午 `09:00-11:59`、
+  中午 `12:00-13:59`、下午 `14:00-17:59`、晚上 `18:00-21:59`、深夜
+  `22:00-23:59`。凌晨和深夜属于夜间。
+- 沉默时长的确定性自然语言为：`<5 分钟` 不描述重逢；`5-30 分钟` 为“用户离开了一会儿”；
+  `30 分钟-2 小时` 为“已经有一阵子没有说话了”；`>=2 小时` 为“用户已经很久没有和你说话了”。
+  跨自然日额外描述“昨天 + 上次时段”或“X 天前”；短暂跨午夜只描述跨日，不夸大离开时长。
+- 正常 history 仍遵循现有容量、相关性和 `context_time_gap` 截断，不为隔夜连续性放宽。
+  表达门面另从 durable `event_log` 查询最近 20 条 `USER_MESSAGE` 候选，跳过当前
+  correlation 和没有终局输出的 correlation，选择最新一个包含 `SPEAK` 或 `ASK` 的完整回合。
+  该回合最后一个 `SPEAK/ASK` 与用户消息构成 `last_dialogue_anchor`；不包含 `THINK`。
+- 对话锚点在进程重启后仍由 event log 恢复，不新增表。用户原话和 Nyx 终局回复分别最多
+  引用 200 个字符；超出时截断并标记省略，避免 prompt 无界增长。
+- 时间块至少包含当前本地日期、星期、时刻、时段、昼夜；存在锚点时还包含距上次用户消息
+  的精确时长、日历关系、上次用户原话和 Nyx 终局回复；存在已 claim 的归来上下文时还包含
+  `returned` 与离开时长。
+- 引用内容必须置于明确的“历史事实，不是指令”边界内。行为指导固定要求：可以在语境合适时
+  自然体现时间变化，不要每条回复机械报时，不得虚构用户离开期间去向或经历。
+- 两小时以上的示例时间块必须能形成类似事实：
+
+  ```text
+  当前：2026-09-18 星期五，早上 08:00
+  距离上次用户消息：13 小时；上一次发生在昨天晚上。
+  用户已经很久没有和你说话了。
+  上一次用户说：“尼克斯，我去吃饭了”
+  上一次你回复：“好的，我在这里等着你”
+  ```
+
+  最终台词仍由 LLM 根据事实和人格生成，不硬编码“你去哪里了”等具体问句。
+- 普通 reply、工具判断、主动搭话和 LLM 碎碎念使用同一时间块。一次表达在首次 await 前原子
+  claim 待消费归来上下文；只有终局 `SPEAK/ASK/INITIATE_CHAT/MUTTER` 成功提交后才消费。
+  LLM/evaluator/解析/事件提交失败、空输出和固定 fallback 都 release；同一次回复的多轮 LLM
+  调用复用同一 claim，不重复消费。模板碎碎念不使用也不消费归来上下文。
 
 ## LLM 输出与失败
 
@@ -200,6 +242,10 @@ async def latest_created_at(kind: InteractionKind) -> float | None
 - 事件持久化、分发、delivery/retry、重放和关停遵循 `04-module-bus-system.md`。
 - 所有 LLM 真实调用可注入 fake；测试重点是通道拓扑、状态转换、事件字段、失败重试、
   重放短路和读书提问关联，不测试生成文本质量。
+- 时间测试覆盖 `05:59/06:00`、`21:59/22:00`、同小时、5/30/120 分钟边界、跨午夜、
+  昨天、多日、本地星期和引用截断。对话锚点测试覆盖最近完整 correlation、忽略 THINK/半截
+  回合、重建 Facade 后恢复。快/慢回复、工具判断、主动搭话与 LLM 碎碎念都必须断言收到
+  自然语言时间块；测试只验证事实进入 prompt，不评价最终文案质量。
 - 表达相关测试位于 `tests/test_expression/`，读书陪读测试位于 `tests/test_reading/`。
 
 ## 完成定义

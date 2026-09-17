@@ -31,6 +31,8 @@
 - [ ] 路由声明和运行时订阅由同一份 `RouteSpec` 派生；启动时校验声明、handler、delivery consumer 一致。
 - [ ] 组合根导入环被拆除：`app_context` 只装配，不导入 `subscriptions`；`subscriptions` 不导入 `main`；runtime handler 编排在 `runtime.py` 或等价运行期模块。
 - [ ] `Database` 提供幂等 `close()`；组合根构造失败和应用退出都会关闭连接。
+- [ ] SSE 公共帧携带事件自身的 `timestamp`；实时消息与 `GET /api/events/log` 历史消息使用同一后端时间源。
+- [ ] `POST /api/observe` 先持久化包含 transition 事实的 `OBSERVATION_STATE`，成功后才提交组合根 presence 快照；受理失败不留下半次离开/归来状态。
 - [ ] 文档同步：本文件、`tech-reference`、`docs/facts/module-bus-system-facts.md`、`test-inventory.md` 与实现一致。
 
 ## 核心决策
@@ -371,6 +373,15 @@ CLOCK_TICK + REFLECTION_CHECK     -> inner_life.reflection_check
 
 组合根使用可检查闭包延迟绑定 inner-life 和 runtime observation 回调；未绑定时抛出带上下文的 `RuntimeError`，不得使用 `holder[0]` 形式的可变列表占位。
 
+组合根同时保存 presence 的进程内运行时快照：是否已经建立基线、当前/上一个 presence、
+presence 变化时间、离开起点、最近一次归来时间与离开时长，以及尚未被自然表达消费的归来事实。
+这些字段不进入 `CurrentState`、不新增数据库表；进程重启后的跨时段连续性由持久化
+`event_log` 中的对话时间恢复，首次 presence 采样只建立新进程基线，不伪造一次“归来”。
+已经 durable admission 的 `USER_MESSAGE` 本身也是用户当前在线的权威证据：
+`runtime.on_user_message()` 必须在调用 expression 前幂等更新运行时 presence/归来快照，避免
+消息先于 30 秒 observation 采样到达时漏掉“刚回来”；该内存更新不额外发布
+`OBSERVATION_STATE`，随后真实 observation 只做状态/窗口信息对齐，不得重复产生归来。
+
 ## 数据变更
 
 ### `event_delivery`
@@ -497,8 +508,28 @@ claim/answer/expire 幂等。
 现有写入口语义会变化：
 
 - `POST /api/chat`：只有 durable admission 成功才返回 `{event_id}`；失败返回 503/429。
-- `POST /api/observe`：同上。
-- SSE 仍广播事件本身，不代表所有消费者完成。
+- `POST /api/observe`：请求体为 `{presence, window_title, idle_seconds}`；`idle_seconds`
+  必须是有限且非负的秒数。端点根据当前运行时快照构造下列
+  `OBSERVATION_STATE.content`，只有 durable admission 成功后才提交新快照并返回
+  `{event_id}`；失败返回 503/429，旧快照保持不变。
+
+  ```json
+  {
+    "presence": "online | busy | away",
+    "window_title": "string",
+    "idle_seconds": 0.0,
+    "previous_presence": "online | busy | away | null",
+    "transition": "initial | became_busy | became_away | returned | null",
+    "away_duration_seconds": "number | null"
+  }
+  ```
+
+  `initial` 只表示建立基线；`returned` 只用于已经建立基线后的 `away -> online`。
+  `away_duration_seconds` 只在 `returned` 时非空。已有 desire/inner-life consumer 可以忽略
+  新增字段，不能依赖其它 consumer 的执行顺序。
+- SSE 仍广播事件本身，不代表所有消费者完成。所有 SSE `data` 公共字段固定为
+  `{event_id, correlation_id, timestamp}`，再展开 `event.content`；其中 `timestamp` 是
+  `Event.timestamp` 的 epoch 秒，不使用浏览器接收时刻代替。
 
 可选后续调试端点需另写 spec，不在本轮默认新增。
 
@@ -523,6 +554,9 @@ claim/answer/expire 幂等。
 - [ ] supervisor：`EventBus.run()` 正常返回时 supervisor 同步结束，不重入已关闭 bus 或忙循环。
 - [ ] 路由单一来源：`ROUTING`、`TICK_ROUTING`、订阅 handler 和 delivery consumer 集合全部从 `RouteSpec` 派生并一致。
 - [ ] 导入环回归：`api.routes`、`app_context`、`subscriptions`、`main` 不再形成循环导入。
+- [ ] observe 原子性：首次采样只产生 `initial`；`away -> online` 含离开时长；event admission 失败时组合根 presence/归来快照完全不变。
+- [ ] 用户消息在线证据：away 后立即收到 durable `USER_MESSAGE` 时，在 expression 前产生一次归来上下文；随后 online observation 不重复产生归来，handler 重放也不重复。
+- [ ] SSE 时间：实时帧含原始 `Event.timestamp`，并与事件日志中的同一事件时间一致；缺失/非法公共字段在前端被丢弃。
 - [ ] 文档同步：`docs/test-inventory.md` 更新为当前测试快照。
 
 ## 完成定义

@@ -27,6 +27,9 @@
 - 表达系统的 fallback `SPEAK` 是正常终局事件：解析/评估失败不会吞掉为成功，fallback 发布失败会让用户消息 consumer 进入总线重试；同 correlation 已有终局 SPEAK/ASK 时重放应短路。
 - 关停采用有界 drain：先停止新输入，再等待已受理事件和 delivery 完成；超时保留未完成投递，下次启动恢复，不做伪全局回滚。
 - 当前 `_App` 是组合根内部 dataclass，也承担运行期状态容器；不要把 `_App` 传入 Facade。
+- `/api/observe` 要求有限非负的 `idle_seconds`，`_App.presence_lock` 串行化观察与用户消息 online 对齐；观察事件 durable publish 成功后才提交 presence/归来内存快照，失败保留旧状态。
+- 归来 pending/claimed 是进程内一次性事实，通过组合根同步回调注入 ExpressionFacade；领取在首次 await 前，成功表达才消费，失败释放且不覆盖较新的 pending return。重启初次观察不补造归来。
+- SSE 公共头固定包含 `event_id`、`correlation_id`、后端 `Event.timestamp`，公共头覆盖同名 content 键。前端拒绝非法 timestamp，实时与历史均保留后端时间，不使用浏览器接收时间。
 
 ## 模块边界
 

@@ -8,11 +8,9 @@ import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import { useSettingsStore, type AvatarPos, type CircleSize } from "../../stores/settingsStore";
 import type { EmotionCategory } from "../../types/api";
 
-// 昼夜节律：夜间（22:00–06:00）默认困倦，白天回落当前情绪。
-// 抽成纯函数便于测试（Avatar 内用 new Date().getHours() 传参）。
-export function isNight(hour: number): boolean {
-  return hour >= 22 || hour < 6;
-}
+type AvatarProps = {
+  night: boolean;
+};
 
 // 头像圆圈三档直径（px）：小/中/大。供 clampAvatarPos 边界夹取 + 内联 width/height。
 export const CIRCLE_SIZES: Record<CircleSize, number> = {
@@ -47,7 +45,7 @@ const DRAG_THRESHOLD = 3; // 指针位移超过 3px 判定为拖拽（否则算�
 // 1) 拖拽：pointer 捕获 + 位移阈值区分「戳/拖」，拖完提交 setAvatarPos 持久化；
 // 2) 戳：点击临时害羞/生气 + announce 冒一句（moved 守卫：拖拽不触发戳）；
 // 3) 红点通知：搭话（initiate_chat）时挂右上角红点，点击清除。
-export default function Avatar() {
+export default function Avatar({ night }: AvatarProps) {
   const emotion = useInnerLifeStore((s) => s.current?.emotion);
   const unreadProactive = useChatStore((s) => s.unreadProactive);
   const clearUnreadProactive = useChatStore((s) => s.clearUnreadProactive);
@@ -142,7 +140,7 @@ export default function Avatar() {
     }
   };
 
-  const displayed = pokeEmotion ?? (isNight(new Date().getHours()) ? "sleepy" : emotion);
+  const displayed = pokeEmotion ?? (night ? "sleepy" : emotion);
 
   const pos = dragPos ?? avatarPos;
   const style: CSSProperties = { backgroundColor: circleColor, width: size, height: size };

@@ -9,14 +9,16 @@
 
 - 端点：`GET /api/events`（SSE，tech-ref §4）。
 - 每个事件一条；`event:` 行 = `EventType` 成员值（小写 snake_case，如 `speak` / `emotion_update` / `activity_end`）。
-- `data:` 行 = **`event.content` 展开 + `event_id` + `correlation_id`**：
+- `data:` 行 = **`event.content` 展开 + `event_id` + `correlation_id` + `timestamp`**：
 
 ```
 event: speak
-data: {"event_id":"…","correlation_id":"…","content":"…"}
+data: {"event_id":"…","correlation_id":"…","timestamp":1789603200.0,"content":"…"}
 ```
 
-- `data` 的键 = `{event_id, correlation_id}` + `event.content` 的键。`content` 的键从不与 `event_id`/`correlation_id` 冲突（生产方不产这两个键，展开安全——tech-ref §4）。
+- `data` 的键 = `{event_id, correlation_id, timestamp}` + `event.content` 的键。`timestamp`
+  是后端 `Event.timestamp` 的 epoch 秒，实时消息与事件日志使用同一时间源；禁止用浏览器收到
+  帧的时刻替代。`content` 的键不得与三个公共键冲突。
 - 各事件 `content` 形状由生产方 spec 定义，核心先行只依赖四个：
   - `speak` / `ask` / `mutter` / `initiate_chat` → `{content: string}`
   - `think` → `{content: string}`（内心话，仅日志/聊天区灰色展示）
@@ -32,6 +34,7 @@ data: {"event_id":"…","correlation_id":"…","content":"…"}
 type SseBase = {
   event_id: string;        // 事件唯一 id
   correlation_id: string;  // 溯源：上游 correlation_id（根事件 = 自身 id）
+  timestamp: number;       // Event.timestamp，epoch 秒
 };
 
 type TextEventType = "speak" | "ask" | "think" | "mutter" | "initiate_chat";
@@ -89,10 +92,11 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 - **返回**：`ConnectionState`，供 App 显示连接状态（右上角「已连接/重连中」）。
 - **行为**：
   1. `useEffect` 里 `new EventSource(BASE_URL + "/api/events")`，`BASE_URL` 来自统一常量（空 = 相对路径，走 Vite proxy 同源转发到后端 8000）。
-  2. 对 22 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` → 拼 `SseEvent` → `dispatch`。
+  2. 对 22 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` 和有限数值 `timestamp` → 拼 `SseEvent` → `dispatch`。
   3. `onopen` / `onerror`：更新 `ConnectionState`。`EventSource` 浏览器原生自动重连（`onerror` 时置 `connecting`），后端重启后自动恢复，无需手写重连循环。
   4. cleanup：`source.close()`（防重复挂载泄漏）。
-- **解析失败**：`JSON.parse` 抛错 → `console.error` + 跳过该帧（不崩整个流）；`data` 缺 `event_id`/`correlation_id` 时同样跳过（防御，正常不触发）。
+- **解析失败**：`JSON.parse` 抛错 → `console.error` + 跳过该帧（不崩整个流）；`data` 缺
+  `event_id`/`correlation_id`、`timestamp` 缺失/非有限数值时同样跳过（防御，正常不触发）。
 - **`ConnectionState` 三态触发点**：
   - 初始态 = `connecting`（挂载即 `new EventSource`）。
   - `onopen` → `open`；`onerror` → `connecting`（EventSource 原生自动重连中）。
@@ -194,7 +198,7 @@ activityStore.refresh(): Promise<void>                     // activity_start/int
 announceStore.announce(kind: "mutter" | "activity", text: string): void  // 立绘旁临时气泡（mutter 4s / activity 7s 后自动 dismiss）
 ```
 
-> 每个 store 的 state 形状（`ChatMessage` 含 `id`/`role`/`kind`/`content`/`correlation_id`/`preloaded?`，不存 `timestamp`——见 02-stores；`InnerLifeState`、两个快照 store）与 action 完整实现见 `02-stores.md`。本表只给签名，保证分发表能独立落地。
+> 每个 store 的 state 形状（`ChatMessage` 含 `id`/`role`/`kind`/`content`/`correlation_id`/`timestamp`/`preloaded?`，见 02-stores；`InnerLifeState`、两个快照 store）与 action 完整实现见 `02-stores.md`。本表只给签名，保证分发表能独立落地。
 
 ### 4.3 user_message 回显与发消息的关系
 
@@ -207,11 +211,15 @@ announceStore.announce(kind: "mutter" | "activity", text: string): void  // 立�
 - **重连**：`EventSource` 原生重连；`onerror` 置 `connecting`，不手写退避（浏览器默认指数退避）。后端重启期间帧丢失，恢复后靠 `GET /api/state` 重新拉快照对齐（App 层在 `status === "open"` 时触发一次 `refreshState`）。
 - **断线期间的快照**：`innerLifeStore` 的 `CurrentState` 以 `GET /api/state` 快照为准，`emotion_update` 做增量覆盖（valence/arousal/emotion）+ 顺带 `refreshState()` 重拉全量快照（带新能量/性格/三观）；`chatStore` 的历史消息靠 `GET /api/events/log?event_type=speak` 补（核心先行可暂缓，先只展示 SSE 实时的）。
 - **顺序**：SSE 单连接、后端顺序广播（底层模块总线契约「顺序分发」），前端按到达顺序 append，不额外排序。
-- **测试**（`tests/sse.test.ts`）：mock `EventSource`（fake 触发 `onopen`/`onmessage`/`onerror`）→ 断言 `dispatch` 收到解析正确的 `SseEvent`、`status` 三态切换、cleanup 调 `close()`、坏 `data` 帧被跳过不崩。
+- **测试**（`tests/sse.test.ts`）：mock `EventSource`（fake 触发 `onopen`/`onmessage`/`onerror`）→ 断言 `dispatch` 收到保留后端 `timestamp` 的 `SseEvent`、`status` 三态切换、cleanup 调 `close()`、缺失/非法 timestamp 与坏 `data` 帧被跳过不崩。
 
 ## 6. App 组合装配（`App.tsx`）
 
 - `useSSE` 只挂一次（App 顶层），子面板**不重复订阅**，只读 store。
-- 精简装配：顶栏（标题 `✦ Nyx ✦` + 连接状态）+ 左栏常驻对话 `div.left-dock`（`StatusBar` → `MessageList` → `ChatInput` 竖排）+ 中间内容区 `div.game-main`（`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书）+ 底部导航 `RightDock`（含设置入口）+ 可拖拽头像圆圈 `Avatar`（`AnnounceLayer` 嵌套其中，气泡随圆圈头顶冒）。
+- 精简装配：顶栏（标题 `✦ Nyx ✦` + 本地日期/星期/`HH:mm` + 连接状态）+ 左栏常驻对话 `div.left-dock`（`StatusBar` → `MessageList` → `ChatInput` 竖排）+ 中间内容区 `div.game-main`（`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书）+ 底部导航 `RightDock`（含设置入口）+ 可拖拽头像圆圈 `Avatar`（`AnnounceLayer` 嵌套其中，气泡随圆圈头顶冒）。
+- App 持有一个对齐到下一分钟边界的本地时钟，之后每分钟刷新；根节点设置
+  `data-time-phase="day|night"`，并把同一昼夜值传给 Avatar。`06:00`/`22:00` 因分钟刷新
+  自动切换，不等待其它状态触发重渲染。夜间通过 CSS 变量和半透明遮罩改变面板/背景氛围，
+  但不覆盖用户选择的背景图或色调。
 - 重连（`status === "open"`）时 `refreshState()` + `void refreshActivity()` 重拉快照对齐（断线期间 `emotion_update` 可能丢失）。
 - 背景由 `settingsStore` 驱动：`image` 以 `cover` 铺底、`tint` 无图时作纯色替默认羊皮纸（`--parchment`）、图+色并存时叠一层半透明 `.app-bg-tint`。

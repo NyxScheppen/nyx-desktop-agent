@@ -7,12 +7,12 @@
 ## 当前快照
 
 - 后端测试文件：63
-- `pytest --collect-only -q`：877 tests collected
-- 最近一次全量验证：`876 passed, 1 skipped`
+- `pytest --collect-only -q`：894 tests collected
+- 最近一次全量验证：`893 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：`15 files / 211 passed`
+- 最近一次前端全量验证：`17 files / 222 passed`
 
 ## 后端覆盖
 
@@ -23,13 +23,13 @@
 | LLM | `tests/test_llm/` | 2 | 统一客户端、视觉客户端、token 元数据 |
 | DB | `tests/test_db/` | 1 | 迁移、索引、可空性、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
-| API/运行时 | `tests/test_api/` | 5 | 组合根、REST、订阅、tick、恢复重放 |
+| API/运行时 | `tests/test_api/` | 5 | 组合根、REST、订阅、tick、恢复重放、presence 原子提交与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件、搜索、工具注册和网络抓取 |
 | 记忆 | `tests/test_memory/` | 6 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、满足、重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
 | 活动 | `tests/test_activity/` | 13 | 排期、活动生命周期、探索、观察、读书恢复 |
-| 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt |
+| 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动、笔记、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账和 token |
 
@@ -39,10 +39,10 @@
 |---|---|---|
 | REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、错误、事件解析 |
 | 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts` | Zustand、活跃度、活动产出 |
-| 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、设置、评估面板 |
+| 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、设置、评估面板 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 状态显示、过滤、枚举中文化 |
 | 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 分页、笔记和章节交互 |
-| 视觉与通用 UI | `avatar.test.tsx`, `useTypewriter.test.tsx` | 头像、打字机 |
+| 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 统一分钟时钟、昼夜/头像、时间标签、打字机 |
 
 ## 关键回归清单
 
@@ -109,8 +109,22 @@
 
 ### 前端桌面采集
 
-- `presence.test.ts`：Tauri 原生输入/前台标题采样、三态判定与去重上报
+- `presence.test.ts`：Tauri 空闲毫秒/前台标题采样、三态边界、浏览器降级、失败重试与 single-flight
 - `readerView.test.tsx`：阅读位置和 Nyx 追赶/等待派生态展示
+
+### 时间感知与离开归来
+
+- `test_build_temporal_block_short_cross_midnight_does_not_exaggerate`
+- `test_build_temporal_block_acceptance_scenario_and_quote_boundary`
+- `test_last_dialogue_anchor_skips_current_and_incomplete_turns`
+- `test_reply_recovers_overnight_dialogue_from_durable_log`
+- `test_reply_fallback_releases_return_context`
+- `test_observe_admission_failure_preserves_presence_snapshot`
+- `test_release_old_return_claim_does_not_overwrite_new_return`
+- `test_user_message_marks_away_user_returned_before_reply`
+- `test_first_user_message_only_establishes_presence_baseline`
+- `test_sse_frame_uses_backend_event_timestamp`
+- `app.test.tsx`：无 SSE/用户操作跨 06:00/22:00，根主题、顶栏时钟和 Avatar 同步
 
 ## 维护规则
 

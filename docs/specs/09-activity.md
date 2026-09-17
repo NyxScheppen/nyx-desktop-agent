@@ -176,9 +176,16 @@
 
 ### 观察与屏幕视觉
 
-- [ ] `classify_presence` 是 presence 三态判定的唯一事实来源：活跃输入为 `"online"`，无活跃但有窗口标题为 `"busy"`，两者都无为 `"away"`。Tauri `sample_presence(active_window_ms)` 在 Windows 读取系统最后输入时间与真实前台窗口标题；WebView 定时调用并上报。非 Tauri/非 Windows 降级为 WebView 内输入且标题为空，不得使用 Nyx 自身 `document.title` 冒充前台应用。
+- [ ] `classify_presence(idle_seconds: float) -> str` 是 presence 三态判定的纯函数事实来源：最后输入距今 `<30` 秒为 `"online"`，`30 <= idle_seconds < 300` 为 `"busy"`，`>=300` 秒为 `"away"`。边界分别归入后一档；窗口标题只作为观察内容，不参与 presence 判定。
+- [ ] Windows Tauri `sample_presence() -> tuple[int, str]` 返回系统最后输入距今的毫秒数和真实前台窗口标题，不在 Rust 层应用 presence 阈值。WebView 每 30 秒采样一次；非 Tauri/非 Windows 降级为 WebView 内键盘/鼠标最后输入时间，窗口标题固定为空，不得使用 Nyx 自身 `document.title` 冒充前台应用。
+- [ ] Rust 命令使用 `Result<(u64, String), String>` 承载错误通道；成功 JS 值仍是 `[idle_ms, title]`。原生采样失败/非 Windows 必须拒绝调用以触发 WebView 降级，不返回 `0` 伪造在线事实。
+- [ ] 前端只在 presence 或窗口标题变化时上报 `{presence, window_title, idle_seconds}`；“已发送快照”必须在 `POST /api/observe` 成功后更新，失败只记录日志并在后续采样重试。同一时刻至多一个上报请求在途，避免旧请求晚回覆盖新状态。
+- [ ] 首次成功观察只建立 presence 基线，不产生归来。基线建立后进入 `away` 时，运行时以 `event.timestamp - idle_seconds` 记录最后活跃起点；后续 `away -> online` 产生 `returned` 和离开时长。`busy -> online` 不算离开归来。
+- [ ] 已持久化的 `USER_MESSAGE` 是比周期采样更及时的 online 证据：runtime 在交给表达系统前，按消息事件时间把 presence 幂等对齐为 online；若此前为 away，则产生同一份一次性 returned 上下文。之后到达的 online observation 不得重复产生 returned。首次运行时事实来自用户消息时仍只建立基线，不伪造归来。
+- [ ] 归来不立即强制 Nyx 发言；它作为一次性运行时上下文，交给下一次成功的回复、主动搭话或 LLM 碎碎念。表达失败、空输出或固定 fallback 不消费该上下文；进程重启后不得根据初次采样补造归来。
 - [ ] `build_observation_summary` 按窗口标题优先、屏幕摘要次之拼装观察文本；无二者时返回稳定的空/默认摘要。
 - [ ] `vision.enabled=true` 时，`ScreenObserver` 周期抓屏并调用 `VisionClient` 描述，失败返回 `None`；屏幕视觉只丰富观察摘要，不改变 presence 判定。
+- [ ] 昼夜边界固定为本地时间 `22:00 <= time < 06:00`；本轮只影响表达上下文和前端视觉，不改变活动选择、活动能耗、情绪或精力数值。
 
 ## `activity_end`、REST 与 SSE 契约
 
@@ -209,8 +216,10 @@
 - [ ] `tests/test_activity/test_activity_facade.py`：空槽默认、欲望映射、精力休息、后台启动、`activity_end` content、读书部分进展的 `goal_met=None`、完整读书满足、创作 checkpoint 恢复、同块恢复与跨块不恢复、读书知识提取。
 - [ ] `tests/test_activity/test_reading_runner.py`：分块读取、fragment/advance 去重、终局笔记与 knowledge finalize 去重、恢复返回 `final_note`。
 - [ ] `tests/test_activity/test_exploration.py`：所有探索阶段 checkpoint、local/web 搜索分支、fetch 失败兜底、cursor 恢复、summary 评估、sink 去重、最终结果结构。
-- [ ] `tests/test_activity/test_observe.py`：presence 三态和观察摘要四种组合。
+- [ ] `tests/test_activity/test_observe.py`：presence 的 30 秒/5 分钟边界、窗口标题不参与判定，以及观察摘要四种组合。
 - [ ] `tests/test_activity/test_screen.py`：抓屏/视觉描述成功路径及 best-effort 失败路径。
+- [ ] 前端 presence 测试：首次采样非归来、非空窗口标题仍可在 5 分钟后 away、失败 POST 会重试、旧请求不会覆盖新快照、`away -> online` 携带离开时长。
+- [ ] runtime 测试：away 后用户立即发消息时，回复前已经得到归来上下文；随后 online observation 和 USER_MESSAGE delivery 重放都不重复归来。
 - [ ] LLM、工具、文件系统、观察、评估均可注入 fake；测试验证数据流、状态与副作用次数，不验证 LLM 文本质量。
 
 ## 完成定义

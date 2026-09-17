@@ -19,6 +19,7 @@ data: {"event_id":"…","correlation_id":"…","timestamp":1789603200.0,"content
 - `data` 的键 = `{event_id, correlation_id, timestamp}` + `event.content` 的键。`timestamp`
   是后端 `Event.timestamp` 的 epoch 秒，实时消息与事件日志使用同一时间源；禁止用浏览器收到
   帧的时刻替代。`content` 的键不得与三个公共键冲突。
+- `timestamp` 是必填线协议字段，前后端必须同批发布；新前端不会接收缺少该字段的旧后端帧。
 - 各事件 `content` 形状由生产方 spec 定义，核心先行只依赖四个：
   - `speak` / `ask` / `mutter` / `initiate_chat` → `{content: string}`
   - `think` → `{content: string}`（内心话，仅日志/聊天区灰色展示）

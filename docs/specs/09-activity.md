@@ -180,12 +180,16 @@
 - [ ] Windows Tauri `sample_presence() -> tuple[int, str]` 返回系统最后输入距今的毫秒数和真实前台窗口标题，不在 Rust 层应用 presence 阈值。WebView 每 30 秒采样一次；非 Tauri/非 Windows 降级为 WebView 内键盘/鼠标最后输入时间，窗口标题固定为空，不得使用 Nyx 自身 `document.title` 冒充前台应用。
 - [ ] Rust 命令使用 `Result<(u64, String), String>` 承载错误通道；成功 JS 值仍是 `[idle_ms, title]`。原生采样失败/非 Windows 必须拒绝调用以触发 WebView 降级，不返回 `0` 伪造在线事实。
 - [ ] 前端只在 presence 或窗口标题变化时上报 `{presence, window_title, idle_seconds}`；“已发送快照”必须在 `POST /api/observe` 成功后更新，失败只记录日志并在后续采样重试。同一时刻至多一个上报请求在途，避免旧请求晚回覆盖新状态。
+  请求在途时新采样覆盖待上报快照，只保留最新值。采样分辨率为 30 秒，识别离开/归来允许
+  该级别误差；WebView 降级只能观察窗口内输入，不能宣称有系统级感知。
 - [ ] 首次成功观察只建立 presence 基线，不产生归来。基线建立后进入 `away` 时，运行时以 `event.timestamp - idle_seconds` 记录最后活跃起点；后续 `away -> online` 产生 `returned` 和离开时长。`busy -> online` 不算离开归来。
 - [ ] 已持久化的 `USER_MESSAGE` 是比周期采样更及时的 online 证据：runtime 在交给表达系统前，按消息事件时间把 presence 幂等对齐为 online；若此前为 away，则产生同一份一次性 returned 上下文。之后到达的 online observation 不得重复产生 returned。首次运行时事实来自用户消息时仍只建立基线，不伪造归来。
 - [ ] 归来不立即强制 Nyx 发言；它作为一次性运行时上下文，交给下一次成功的回复、主动搭话或 LLM 碎碎念。表达失败、空输出或固定 fallback 不消费该上下文；进程重启后不得根据初次采样补造归来。
 - [ ] `build_observation_summary` 按窗口标题优先、屏幕摘要次之拼装观察文本；无二者时返回稳定的空/默认摘要。
 - [ ] `vision.enabled=true` 时，`ScreenObserver` 周期抓屏并调用 `VisionClient` 描述，失败返回 `None`；屏幕视觉只丰富观察摘要，不改变 presence 判定。
 - [ ] 昼夜边界固定为本地时间 `22:00 <= time < 06:00`；本轮只影响表达上下文和前端视觉，不改变活动选择、活动能耗、情绪或精力数值。
+  前后端运行于同一台电脑并使用系统本地时区，不处理远程时区分离；活动系统现有 UTC
+  日边界和日程块计时保持原契约，不随表达昼夜感知改变。
 
 ## `activity_end`、REST 与 SSE 契约
 
@@ -205,7 +209,7 @@
 - [ ] `desire_id`/`goal_met` 由 07-desire 消费，`energy_delta` 由 08-inner-life 消费，`type`/`result` 由记忆系统与前端消费；`reading` 与 `free_exploration` 结束后按 07-desire 规则给创造欲加压。
 - [ ] REST 路径保持不变：`GET /api/activity` 返回 `{current, schedule}`，`GET /api/activity/results` 返回历史产出，`POST /api/upload` 只注册 material，`GET /api/materials` 返回书库进度。
 - [ ] `current`、`schedule`、`results` 继续返回现有 `Activity` dataclass；`progress` 中的 checkpoint 作为 JSON 内追加字段，不破坏旧字段。
-- [ ] SSE 事件类型保持 `activity_start`、`activity_end`、`activity_interrupted`；统一 payload 为 `event.content` 展开并附 `event_id`、`correlation_id`。
+- [ ] SSE 事件类型保持 `activity_start`、`activity_end`、`activity_interrupted`；统一 payload 为 `event.content` 展开并附 `event_id`、`correlation_id`、后端 `timestamp`，公共头按 04-module-bus-system 定义。
 
 ## 测试要点
 

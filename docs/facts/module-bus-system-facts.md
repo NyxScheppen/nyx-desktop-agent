@@ -28,7 +28,7 @@
 - 关停采用有界 drain：先停止新输入，再等待已受理事件和 delivery 完成；超时保留未完成投递，下次启动恢复，不做伪全局回滚。
 - 当前 `_App` 是组合根内部 dataclass，也承担运行期状态容器；不要把 `_App` 传入 Facade。
 - `/api/observe` 要求有限非负的 `idle_seconds`，`_App.presence_lock` 串行化观察与用户消息 online 对齐；观察事件 durable publish 成功后才提交 presence/归来内存快照，失败保留旧状态。
-- 归来 pending/claimed 是进程内一次性事实，通过组合根同步回调注入 ExpressionFacade；领取在首次 await 前，成功表达才消费，失败释放且不覆盖较新的 pending return。重启初次观察不补造归来。
+- 归来 pending/claimed 是进程内一次性事实，只含 returned_at/away_duration_seconds，通过组合根同步 claim/finish/release 回调注入 ExpressionFacade；领取在首次 await 前，finish/release 比对同一对象，成功表达才消费，失败释放且不覆盖较新的 pending return。重启初次观察不补造归来。
 - SSE 公共头固定包含 `event_id`、`correlation_id`、后端 `Event.timestamp`，公共头覆盖同名 content 键。前端拒绝非法 timestamp，实时与历史均保留后端时间，不使用浏览器接收时间。
 
 ## 模块边界

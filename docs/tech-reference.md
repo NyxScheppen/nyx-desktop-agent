@@ -26,9 +26,10 @@
 | 表达 | [`11-expression.md`](specs/11-expression.md) | [`expression-system-facts.md`](facts/expression-system-facts.md) | `nyx/expression/`、`nyx/reading/companions.py`、`prompts/knowledge-boundary.md` |
 | 阅读 | [`12-reading-system.md`](specs/12-reading-system.md)；表达侧读书交互归 11 | [`reading-system-facts.md`](facts/reading-system-facts.md) | `nyx/reading/` |
 
-### 跨域施工规格
+### 时间感知与离开归来导航
 
-- [`13-temporal-presence.md`](specs/13-temporal-presence.md)：已批准并实现的时间感知、离开/归来、对话明线时间与昼夜视觉施工方案。它汇总跨域实施顺序和整体验收，不替代 04/09/11 与前端文档各自拥有的契约。
+- 运行时快照、归来领取和 SSE 公共头见 [04](specs/04-module-bus-system.md)；presence 与采样见 [09](specs/09-activity.md)；时间 prompt、对话锚点及隔夜验收见 [11](specs/11-expression.md)。
+- 前端时间函数与消息标签见 [聊天面板](frontend/03-chat-panel.md)；共享时钟、昼夜视觉及头像输入见 [App 布局](frontend/08-reading-chat-layout.md)；线协议与状态保留分别见 [SSE](frontend/01-sse.md)、[stores](frontend/02-stores.md)。
 
 ## 运行时地图
 

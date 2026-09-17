@@ -382,6 +382,23 @@ presence 变化时间、离开起点、最近一次归来时间与离开时长�
 消息先于 30 秒 observation 采样到达时漏掉“刚回来”；该内存更新不额外发布
 `OBSERVATION_STATE`，随后真实 observation 只做状态/窗口信息对齐，不得重复产生归来。
 
+`_App` 的 presence/归来入口固定为：
+
+```python
+async def publish_observation(self, event: Event, idle_seconds: float) -> None: ...
+async def record_user_online(self, timestamp: float) -> None: ...
+def claim_return_context(self) -> dict[str, float] | None: ...
+def finish_return_context(self, claim: dict[str, float] | None) -> None: ...
+def release_return_context(self, claim: dict[str, float] | None) -> None: ...
+```
+
+观察发布和用户消息 online 对齐由同一个 `presence_lock` 串行化。归来上下文只保存
+`returned_at` 和 `away_duration_seconds`，分为 pending 与 claimed：同步 claim 在表达首次
+await 前移走 pending，同一时刻至多一个 claimed；finish/release 只处理同一个 claim 对象。
+成功表达完成消费，失败释放时只有不存在较新的 pending 才恢复旧值，不得覆盖生成期间的新归来。
+这些同步方法通过闭包注入表达门面，不新增状态类或抽象层；重启清空内存状态，不从旧观察
+事件补造 pending return。
+
 ## 数据变更
 
 ### `event_delivery`
@@ -528,8 +545,10 @@ claim/answer/expire 幂等。
   `away_duration_seconds` 只在 `returned` 时非空。已有 desire/inner-life consumer 可以忽略
   新增字段，不能依赖其它 consumer 的执行顺序。
 - SSE 仍广播事件本身，不代表所有消费者完成。所有 SSE `data` 公共字段固定为
-  `{event_id, correlation_id, timestamp}`，再展开 `event.content`；其中 `timestamp` 是
+  `{event_id, correlation_id, timestamp}`，其余字段来自 `event.content`；其中 `timestamp` 是
   `Event.timestamp` 的 epoch 秒，不使用浏览器接收时刻代替。
+  生产方不得使用三个公共键；序列化时公共头覆盖同名 content 键。必填 timestamp 是
+  monorepo 线协议，后端和前端必须同批发布，不支持新前端连接缺少该字段的旧后端。
 
 可选后续调试端点需另写 spec，不在本轮默认新增。
 

@@ -55,8 +55,17 @@ class ExpressionFacade:
 
 构造依赖为 bus、llm、evaluator、memory、activity、desire、inner_life、canon、
 ask guidance、`ExpressionConfig`、tools，以及可选 durable interaction store、knowledge
-boundary 文本、运行时 observation reader 和一次性归来上下文的 claim/release 回调。
+boundary 文本、运行时 observation reader 和一次性归来上下文的 claim/finish/release 回调。
 组合根负责读取 prompt 文件并注入；`_App` 本身不得传入 Facade。
+
+时间相关的可选构造参数固定为：
+
+```python
+observation_reader: Callable[[], Awaitable[Mapping[str, object]]] | None = None
+claim_return: Callable[[], dict[str, float] | None] | None = None
+finish_return: Callable[[dict[str, float] | None], None] | None = None
+release_return: Callable[[dict[str, float] | None], None] | None = None
+```
 
 ## 回复图
 
@@ -105,8 +114,39 @@ claimed_return 和 fallback。
 
 ### 时间感知、对话锚点与归来
 
+`nyx/expression/prompt.py` 的纯函数签名为：
+
+```python
+def describe_local_time(now: float) -> dict[str, str]: ...
+def describe_elapsed(previous: float, now: float) -> tuple[str, str | None]: ...
+def build_temporal_block(
+    now: float,
+    anchor: tuple[Message, Message] | None,
+    observation: Mapping[str, object],
+    claimed_return: Mapping[str, float] | None,
+) -> str: ...
+```
+
+`describe_local_time()` 返回 `date/weekday/time/period/phase`；`describe_elapsed()` 返回精确时长
+文本与可选沉默描述。时间运算使用 Python 标准库，不新增依赖、配置、事件类型或 `CurrentState` 字段。
+
+表达门面的私有查询与拼装入口为：
+
+```python
+async def _last_dialogue_anchor(
+    self, current_correlation_id: str | None,
+) -> tuple[Message, Message] | None: ...
+async def _temporal_context(
+    self,
+    now: float,
+    current_correlation_id: str | None,
+    claimed_return: Mapping[str, float] | None,
+) -> str: ...
+```
+
 - 当前时间使用运行机器的本地时区。计算函数必须接收可注入的 epoch；“昨天/今天/跨日”
   按本地 calendar date 判断，不使用 `elapsed_seconds / 86400` 代替日历运算。
+  持续时间使用 epoch 差并夹到非负，系统时钟回拨不生成负时长。
 - 时段固定为：凌晨 `00:00-05:59`、早上 `06:00-08:59`、上午 `09:00-11:59`、
   中午 `12:00-13:59`、下午 `14:00-17:59`、晚上 `18:00-21:59`、深夜
   `22:00-23:59`。凌晨和深夜属于夜间。
@@ -119,11 +159,14 @@ claimed_return 和 fallback。
   该回合最后一个 `SPEAK/ASK` 与用户消息构成 `last_dialogue_anchor`；不包含 `THINK`。
 - 对话锚点在进程重启后仍由 event log 恢复，不新增表。用户原话和 Nyx 终局回复分别最多
   引用 200 个字符；超出时截断并标记省略，避免 prompt 无界增长。
+  每次表达只查询一次锚点，并在本次调用内复用；最近 20 条候选内没有完整回合时返回 `None`，
+  仍提供当前时间，不引用不存在的上一轮。候选上限是固定查询边界，不提供配置项。
 - 时间块至少包含当前本地日期、星期、时刻、时段、昼夜；存在锚点时还包含距上次用户消息
   的精确时长、日历关系、上次用户原话和 Nyx 终局回复；存在已 claim 的归来上下文时还包含
   `returned` 与离开时长。
 - 引用内容必须置于明确的“历史事实，不是指令”边界内。行为指导固定要求：可以在语境合适时
   自然体现时间变化，不要每条回复机械报时，不得虚构用户离开期间去向或经历。
+  历史引文是不可信资料；该边界减少指令混淆，不承诺完整的 prompt-injection 防御。
 - 两小时以上的示例时间块必须能形成类似事实：
 
   ```text
@@ -139,6 +182,27 @@ claimed_return 和 fallback。
   claim 待消费归来上下文；只有终局 `SPEAK/ASK/INITIATE_CHAT/MUTTER` 成功提交后才消费。
   LLM/evaluator/解析/事件提交失败、空输出和固定 fallback 都 release；同一次回复的多轮 LLM
   调用复用同一 claim，不重复消费。模板碎碎念不使用也不消费归来上下文。
+  一次回复的 FAST/SLOW、工具判断和多轮续写复用同一个 `ReplyState.temporal_context`，
+  不因生成期间跨分钟重新计算。近期重复的 mutter 未发布时同样释放 claim；运行时 claim
+  的持有、完成和释放边界见 [模块与事件总线契约](04-module-bus-system.md)。
+
+### 隔夜连续性验收
+
+固定系统本地时间执行以下回合，LLM 使用 fake：
+
+```text
+2026-09-17 19:00
+用户：尼克斯，我去吃饭了
+Nyx：好的，我在这里等着你
+
+2026-09-18 08:00
+用户：早上好，尼克斯
+```
+
+第二次回复的 LLM 输入必须包含第二天早上的当前时间、距上次用户消息 13 小时、昨天晚上、
+长时间未交谈的自然语言和双方上一轮原话；重建 Facade 后仍能从 durable event log 得到这些
+事实。不固定最终台词，也不要求必问“去了哪里”。两组消息的可见时间标签及实时/历史一致性
+按 [聊天面板契约](../frontend/03-chat-panel.md) 验收。
 
 ## LLM 输出与失败
 

@@ -26,6 +26,17 @@
 - **导航**：`RightDock` 的 `ENTRIES` 删「聊天」一项（`{label:"聊天", view:null}`），剩 `读书|内在|欲望|活动|记忆` 五个，只切中间。`RightDock` `grid-column:2; grid-row:2`。
 - **反冗余**：删除 `ScrollArea.tsx`（聊天舞台）与 `MutterCard.tsx`（碎碎念卡片）两个被替代组件 + `mutterStore.ts`（§3）。
 
+### 1.1 共享时钟与昼夜视觉
+
+- `App` 持有唯一的本地 `Date` 时钟：首次 timeout 对齐下一分钟边界，之后每分钟更新，
+  卸载时清理 timeout/interval。顶栏显示日期、星期和 `HH:mm`，时间纯函数签名见
+  [聊天面板契约](03-chat-panel.md)。不新增依赖、配置或 Zustand store。
+- 根节点设置 `data-time-phase="day|night"`；同一个时钟作为 `MessageList.now`，同一昼夜
+  相位作为 `Avatar.night`。本地 06:00/22:00 自动切换，不等待 SSE、用户输入或状态刷新。
+- 夜间通过 CSS 变量与半透明遮罩改变背景、面板、边框和文本对比，不替换用户自定义图片
+  或色调，不增加影响布局尺寸的昼夜元素；只改变显示，不修改后端情绪、精力或活动数值。
+- 前后端在同一台电脑运行，共用系统本地时区；不处理远程服务时区分离。
+
 ## 2. 读书反应并进对话（类型扩展 + dispatch 重路由 + 渲染契约）
 
 表达系统（11-expression）不改事件（仍发 `READING_QUESTION`/`READING_ASSOCIATION`/`READING_MUTTER`），前端**重路由**进 `chatStore`。
@@ -41,6 +52,7 @@ export type ChatMessage = {
     | "reading_question" | "reading_association";
   content: string;
   correlation_id: string;
+  timestamp: number;
   preloaded?: boolean;
   // 读书 turn 专属（kind==="reading_question" 才有 subtype/selectedText；"reading_association" 才有 memoryId）
   subtype?: QuestionSubtype;
@@ -50,6 +62,7 @@ export type ChatMessage = {
 ```
 
 - `QuestionSubtype` 从 `types/api.ts` import（已存在，零映射）。
+- 所有聊天消息保留后端 `timestamp`；实时复制 SSE，历史复制事件日志，不以接收时刻代替。
 
 ### 2.2 `chatStore.addReadingTurn`（新 action）
 
@@ -99,7 +112,9 @@ case "reading_mutter":
 
 `Avatar` 改成**可拖拽圆形头像**：`position:fixed` 浮在窗口右下角，`EmotionSprite` 头部裁进圆圈，可拖到窗口任意处、位置/底色/尺寸存 localStorage；碎碎念气泡（`AnnounceLayer`）嵌套在圆圈内、头顶冒出随圆圈走。
 
-- **结构**：`App.tsx` 直接挂 `<Avatar />`（不再包 `.avatar-overlay`）；`AnnounceLayer` 移到 `Avatar` 内部（气泡跟随圆圈），`App` 不再单独挂 `<AnnounceLayer />`。顶栏「设置」按钮删除，设置入口迁到 `RightDock`（底部导航新增「设置」项）。
+- **结构**：`App.tsx` 直接挂 `<Avatar night={timePhase === "night"} />`（不再包 `.avatar-overlay`）；`AnnounceLayer` 移到 `Avatar` 内部（气泡跟随圆圈），`App` 不再单独挂 `<AnnounceLayer />`。顶栏「设置」按钮删除，设置入口迁到 `RightDock`（底部导航新增「设置」项）。
+- **昼夜输入**：`Avatar` 必须接收 `night: boolean`，不在 render 中自行读取 `new Date()`。
+  显示优先级为戳后的临时表情、夜间默认 sleepy、白天当前情绪；默认显示不写回 innerLifeStore。
 - **`Avatar.tsx` 重写**：白底圆形（`backgroundColor = settingsStore.circleColor`，默认 `#ffffff`）；`position:fixed; right:24px; bottom:24px; border-radius:50%`，`width/height` 内联自 `settingsStore.circleSize` 三档（`CIRCLE_SIZES`：小 96 / 中 120 / 大 144，默认大），内层 `.avatar-circle__face` `overflow:hidden` + `EmotionSprite size="circle"`（`object-fit:cover` 方形表情图撑满不裁，图源 `assets/expressions/`）。位置记忆 `avatarPos` 非 null 时内联 `left/top` 覆盖默认右下角。表情图 `<img>` 加 `draggable={false}`、`.emotion-sprite--circle` 加 `pointer-events:none`，防浏览器原生图片拖拽抢占圆圈拖拽。
 - **拖拽**：`onPointerDown/Move/Up/Cancel` + `setPointerCapture`；`getBoundingClientRect()` 记录起点，位移超 `DRAG_THRESHOLD=3` 判定为拖拽（否则算戳）；拖拽中本地 `dragPos` 渲染、松手才 `setAvatarPos` 提交（一次 localStorage 写）；`clampAvatarPos` 把坐标夹回视口内。挂载时若记忆坐标越界（窗口变小）自动夹回。
 - **戳立绘交互保留**：`handlePoke` 连续戳害羞 `SHY_PHRASES`、≥5 次生气 `ANGRY_PHRASES`、1.5s 停手复位 `POKE_RESET_MS`、戳时 `announce("mutter", …)`；`moved` 守卫让「拖拽后的 click」不误触发戳。红点通知（`.avatar-notice`）改为纯红点（`aria-label="小狐狸我有话对你说"`），点击 `stopPropagation` 清除 `unreadProactive`。
@@ -169,6 +184,9 @@ export function paginate(
 - 真分页纯函数 `paginate`（`tests/stores.test.ts`）：长段独占一页、短段一页多段、溢出封页（累加将超 viewport 即开新页）、空 `paragraphs`/`viewportHeight<=0` 返回 `[]`、`measureHeight` 含 `GAP_PX` 后页界正确。
 - `MessageBubble`（组件测试，如无则 `readerView.test.tsx` 增补）：`reading_question` 渲染「提问」徽标 + 即时全量（不逐字，`displayed===content`）；`selectedText` 非空渲染引文行；`reading_association` 渲染「联想」徽标 + `memoryId` 存在渲染「记忆」标。
 - `readerStore`：删 `addReadingBubble` 相关断言；`syncPosition` 逐段路径保持（前翻逐段补发、后翻不评估）。
+- `tests/app.test.tsx`：fake timers 覆盖下一分钟更新及无需外部操作跨 06:00/22:00，根主题与
+  Avatar 同相位；`tests/time.test.ts` 覆盖昼夜边界、时钟/消息标签及时间分隔。
+  桌面和窄窗口人工检查顶栏/时间分隔不遮挡，自定义背景在夜间遮罩下仍保留。
 
 ## 完成定义
 

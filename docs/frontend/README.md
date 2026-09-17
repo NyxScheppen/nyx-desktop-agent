@@ -29,7 +29,7 @@
                │ localhost HTTP / SSE     │（前端 Tauri 采集活跃度+窗口标题）
 ┌──────────────┴──────────────────────────▼───────────────────┐
 │  Python 核心服务（uvicorn，独立本地进程）                     │
-│    12 个领域 spec + 13 跨域施工 spec 的 Facade/EventBus/LangGraph │
+│    12 个领域 spec 定义的 Facade / EventBus / LangGraph         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,7 +50,7 @@
   ```
 - **原生采样**：Windows Tauri `sample_presence()` 返回系统最后输入距今 `idle_ms` 与真实前台窗口标题；Rust 不应用 30 秒/5 分钟阈值。浏览器降级监听 `keydown`/`mousemove` 推导 idle，标题固定为空。
 - **窗口标题**：只丰富观察内容，不参与 online/busy/away 判定；因此即使前台标题非空，空闲满 5 分钟仍为 away。
-- **节奏**：每 `OBSERVE_INTERVAL_SEC = 30` 采样一次，presence 或标题变化时调用 `client.postObserve(presence, windowTitle, idleSeconds)`。首次成功请求只建立基线；请求成功后才更新 last-sent 快照，失败会在下次采样重试；同一时刻只允许一个请求在途。
+- **节奏**：每 `OBSERVE_INTERVAL_MS = 30_000` 采样一次，presence 或标题变化时调用 `client.postObserve(presence, windowTitle, idleSeconds)`。首次成功请求只建立基线；请求成功后才更新 last-sent 快照，失败会在下次采样重试；同一时刻只允许一个请求在途。
 
 ## 3. 数据流（双通道）
 
@@ -66,7 +66,7 @@
 {"event_id": "…", "correlation_id": "…", "timestamp": 1789603200.0, **event.content}
 ```
 
-- 核心先行用到的端点：`GET /api/state`（`CurrentState` 快照）、`POST /api/chat`（发消息，返回 `{event_id}`，回复走 SSE）、`POST /api/observe`（活跃度上报 `{presence}`，返回 `{event_id}`，见 §2）、`GET /api/events`（SSE）。
+- 核心先行用到的端点：`GET /api/state`（`CurrentState` 快照）、`POST /api/chat`（发消息，返回 `{event_id}`，回复走 SSE）、`POST /api/observe`（活跃度上报 `{presence, window_title, idle_seconds}`，返回 `{event_id}`，见 §2）、`GET /api/events`（SSE）。
 
 ## 4. 目录结构
 
@@ -84,7 +84,7 @@ frontend/
     lib/
       labels.ts              # 枚举值→中文 UI 标签（label() 未知键回退原值）
       activityResult.ts      # 活动产出纯函数（activitySubject / formatResult / formatOutputBody / formatTools / activityAnnouncement）
-      time.ts                # 本地时段、昼夜、消息时间标签与时间分隔纯函数
+      time.ts                # 本地昼夜、时钟/消息时间标签与时间分隔纯函数
     api/
       client.ts              # REST fetch 封装（postChat / getState / postObserve / getDesires / getActivity / getActivityResults / getEventsLog，见 05-client）
       dispatch.ts            # SseEvent → store 路由（01-sse §4.1）
@@ -175,8 +175,9 @@ frontend/
 | `README.md` | 本文（总览） |
 | `01-sse.md` | `useSSE` hook、EventSource 对接、data 形状、EventType→store 分发表、重连容错 |
 | `02-stores.md` | `chatStore` / `innerLifeStore` / 快照 store 的 state 形状 + actions |
-| `03-chat-panel.md` | 聊天面板组件树、发消息流程、speak/think/ask 渲染 |
+| `03-chat-panel.md` | 聊天面板组件树、发消息流程、speak/think/ask 渲染、共享时间纯函数与时间分隔 |
 | `04-inner-state-panel.md` | 内在状态面板组件树、valence-arousal 图、精力条、情绪 sprite、Big Five/三观 |
 | `05-client.md` | `client.ts` 薄 fetch 封装（postChat/getState/postObserve）+ 错误契约 |
 | `06-reading-panel.md` | 阅读面板：书架 + 阅读页 + `readerStore` + Nyx 追赶（`setTimeout` 秒级逐段） |
 | `07-reading-events.md` | 阅读事件：读书提问/联想并进对话 + 碎碎念悬浮气泡 + 笔记面板 |
+| `08-reading-chat-layout.md` | App 布局、共享分钟时钟、昼夜视觉、头像圆圈与真分页 |

@@ -1,7 +1,7 @@
 # 聊天面板（`components/chat/`）
 
 > 核心面板之一：消息列表 + 输入框。用户发消息 → `POST /api/chat` → SSE 回显 + `speak`/`think`/`ask` 上屏。
-> 范围：`components/chat/{MessageList,MessageBubble,ChatInput}.tsx` 的组件树、发消息流程、Nyx 产出渲染。
+> 范围：`components/chat/{MessageList,MessageBubble,ChatInput}.tsx` 的组件树、发消息流程、Nyx 产出渲染，以及 `lib/time.ts` 的共享时间纯函数。
 >
 > **`ChatPanel` 已拆散**：容器职责迁到 App 精简装配——`MessageList` → 左栏常驻对话（`div.left-dock`）、`ChatInput` → 左栏底部输入框。本 spec 保留 `MessageList`/`MessageBubble`/`ChatInput` 的组件契约（复用不重写），不再描述 `ChatPanel` 容器。
 
@@ -58,6 +58,23 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 
 ## 4. 边界
 
+- **共享时间纯函数**：`lib/time.ts` 不访问网络、不保存状态；`Date` 使用系统本地时区，消息
+  timestamp 使用 epoch 秒。公开签名为：
+
+  ```typescript
+  export type TimePhase = "day" | "night";
+  type TimedMessage = { kind: string; correlation_id: string; timestamp: number };
+  export function timePhaseAt(value: Date): TimePhase;
+  export function formatCurrentTime(value: Date): string;
+  export function formatMessageTime(timestamp: number, now: Date): string;
+  export function shouldShowTimeDivider(
+    current: TimedMessage, previous: TimedMessage | null,
+  ): boolean;
+  ```
+
+  `timePhaseAt()` 夜间为本地 `22:00-06:00`；`formatCurrentTime()` 返回 `M月D日 星期X HH:mm`。
+  消息标签与分隔规则见 §3。`MessageList` 接收 `messages: ChatMessage[]` 和可选 `now: Date`，
+  App 注入共享时钟；独立使用时才以当前本地时间作默认值，不新增时间 store。
 - **历史加载（`loadHistory()`）**：进页面并行 `GET /api/events/log`（`user_message`/`speak`/`ask`/`think`/`initiate_chat`/`reading_question`/`reading_association` 七类，各 `limit=200`）回填历史消息，`preloaded:true`（渲染时不逐字、直接全量上屏），按 `timestamp` 升序前置到现有消息前、按 `id` 去重（跳过已存在的）；历史 think 一并入 `typedIds` 视为已打完，不阻塞实时 speak/ask。重启后消息列表不再空。
 - **`initiate_chat`/读书 turn 无用户消息对齐**：它们 `correlation_id` 指向 desire tick / book_id，不在用户消息链上——渲染按到达顺序插在列表里，不强行对齐到某条用户消息。
 - **长文本**：气泡 `max-width` + 自动换行；`think` 逐字弱化展示（灰色斜体小字），不再折叠。
@@ -68,5 +85,8 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 - `MessageList`：全部消息按序渲染、无历史折叠（`typeDone` 推进 fake timers 后两条都上屏，无历史按钮）；全部气泡渲染即存在（串行门控只延迟内容不延迟挂载）；串行逐字：内心话先打完、对话才开打（未推进 timer 两者皆空，`typeDone` 后串行完整上屏）；`isReady` 全串行逐字门控纯函数在 stores.test.ts 覆盖。
 - 时间显示：fake system time 覆盖列表首条、同 correlation、同日 29:59/30:00、跨午夜、
   今天/昨天/更早标签；历史回填与实时消息在相同 epoch 下渲染完全一致。
+  隔夜验收沿用 [表达契约](../specs/11-expression.md) 的 19:00→次日 08:00 场景：两组消息前
+  分别显示对应时间，前端重启或重连回填后保留相同事件时间；不改变气泡宽度、串行逐字或
+  滚动跟随行为。
 - `ChatInput`：`isReplying=true` 禁用发送；回车/点发送触发 `sendMessage`（mock store action）。
 - 视觉样式不做断言（README §6 测试约定）。

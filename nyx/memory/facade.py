@@ -669,8 +669,19 @@ class MemoryFacade:
                 self._logger.exception("记忆 embedding 失败 memory_id=%s", memory.id)
         candidates: list[PersistSemanticHit] = []
         if memory.embedding is not None:
-            dedup_candidates = await self._persist_semantic_candidates(
-                memory.embedding, kind=memory.kind
+            memories = await self._store.list_memories()
+            index = AnnIndex.build(memories)
+            by_id = {candidate.id: candidate for candidate in memories}
+            same_kind_ids = {
+                candidate.id
+                for candidate in memories
+                if candidate.kind is memory.kind
+            }
+            dedup_candidates = self._persist_semantic_candidates(
+                memory.embedding,
+                index,
+                by_id,
+                allowed_ids=same_kind_ids,
             )
             if dedup_candidates:
                 threshold = (
@@ -691,7 +702,9 @@ class MemoryFacade:
                 ):
                     await self._store.strengthen(candidate.memory.id, now)
                     return await self._persisted_or(candidate.memory)
-            candidates = await self._persist_semantic_candidates(memory.embedding)
+            candidates = self._persist_semantic_candidates(
+                memory.embedding, index, by_id
+            )
         await self._store.add(memory)
         await self._build_edges(memory, candidates, now, correlation_id)
         await self._detect_contradiction(
@@ -823,16 +836,20 @@ class MemoryFacade:
             else:
                 await self._bus.publish(event)
 
-    async def _persist_semantic_candidates(
-        self, embedding: list[float], kind: MemoryKind | None = None
+    def _persist_semantic_candidates(
+        self,
+        embedding: list[float],
+        index: AnnIndex,
+        by_id: dict[str, Memory],
+        *,
+        allowed_ids: set[str] | None = None,
     ) -> list[PersistSemanticHit]:
-        memories = await self._store.list_memories(kind=kind)
-        index = AnnIndex.build(memories)
-        by_id = {memory.id: memory for memory in memories}
         return [
             PersistSemanticHit(by_id[candidate.memory_id], candidate.cosine)
             for candidate in index.query(
-                embedding, candidate_k=_PERSIST_SEMANTIC_CANDIDATE_K
+                embedding,
+                candidate_k=_PERSIST_SEMANTIC_CANDIDATE_K,
+                allowed_ids=allowed_ids,
             )
             if candidate.memory_id in by_id
         ]

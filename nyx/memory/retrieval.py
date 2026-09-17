@@ -191,19 +191,20 @@ class MemoryRetrieval:
         for memory in memories:
             for topic in memory.topics:
                 buckets.setdefault(topic, []).append(memory)
+        ranked_buckets: dict[str, list[Memory]] = {}
         scores: dict[str, float] = {}
         for seed in seeds:
             for topic in seed.memory.topics:
-                bucket = sorted(
-                    buckets.get(topic, []),
-                    key=lambda memory: (
-                        -memory.freshness, -memory.created_at, memory.id
-                    ),
-                )[:_TOPIC_BUCKET_LIMIT]
-                scale = 1.0 / math.log2(2.0 + len(buckets.get(topic, [])))
-                for candidate in bucket:
-                    if candidate.id in exclude:
-                        continue
+                full_bucket = buckets.get(topic, [])
+                if topic not in ranked_buckets:
+                    ranked_buckets[topic] = sorted(
+                        (memory for memory in full_bucket if memory.id not in exclude),
+                        key=lambda memory: (
+                            -memory.freshness, -memory.created_at, memory.id
+                        ),
+                    )[:_TOPIC_BUCKET_LIMIT]
+                scale = 1.0 / math.log2(2.0 + len(full_bucket))
+                for candidate in ranked_buckets[topic]:
                     overlap = len(set(seed.memory.topics) & set(candidate.topics))
                     score = seed.score * max(1, overlap) * 0.20 * scale
                     scores[candidate.id] = max(scores.get(candidate.id, 0.0), score)

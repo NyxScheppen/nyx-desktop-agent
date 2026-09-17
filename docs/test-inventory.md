@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：63
-- `pytest --collect-only -q`：873 tests collected
-- 最近一次全量验证：`872 passed, 1 skipped`
+- `pytest --collect-only -q`：877 tests collected
+- 最近一次全量验证：`876 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -84,6 +84,10 @@
 ### 记忆、活动和用户路径
 
 - `test_search_fuses_vector_keyword_and_limits_direct_then_association`
+- `test_search_topic_association_limits_after_excluding_direct`
+- `test_topic_association_sorts_shared_bucket_once`
+- `test_ann_allowed_ids_filter_applies_before_candidate_limit`
+- `test_persist_builds_ann_index_once_when_dedup_misses`
 - `test_associate_depth_two_scores_and_excludes_seeds`
 - kind-scoped exact/semantic dedup and humanized memory prompt regressions
 - schema 19 clears legacy memory/edges and installs kind/topics indexes

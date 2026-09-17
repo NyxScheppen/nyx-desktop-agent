@@ -14,6 +14,7 @@ from nyx.enums import EventType, MemoryEdgeKind, MemoryKind, MemoryType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient, LlmMessage
+from nyx.memory.ann import AnnIndex
 from nyx.memory.facade import (
     _SUMMARY_MAX_CHARS,
     MemoryFacade,
@@ -767,6 +768,39 @@ async def test_dedup_semantic_below_threshold() -> None:
         assert len(memories) == 2                     # 不合并，正常新建
         assert memory.content == "用户喜欢猫"
         assert len([e for e in events if e.type is EventType.MEMORY_CREATED]) == 1
+    finally:
+        await database.conn.close()
+
+
+async def test_persist_builds_ann_index_once_when_dedup_misses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    await store.add(_mem("old-1", [0.0, 1.0]))
+    facade = _make_facade(
+        store, bus, _FakeLlm(), _FakeEvaluator(), embed=_embed([1.0, 0.0])
+    )
+    original_build = AnnIndex.build
+    build_count = 0
+
+    def counting_build(
+        cls: type[AnnIndex],
+        memories: list[Memory],
+        *,
+        planes: int = 16,
+        tables: int = 4,
+        seed: int = 0,
+    ) -> AnnIndex:
+        nonlocal build_count
+        build_count += 1
+        return original_build(memories, planes=planes, tables=tables, seed=seed)
+
+    monkeypatch.setattr(AnnIndex, "build", classmethod(counting_build))
+    try:
+        async with _running(bus):
+            await facade.create_scene_memory(_ctx())
+        assert build_count == 1
+        assert len(await facade.list_memories()) == 2
     finally:
         await database.conn.close()
 

@@ -80,8 +80,14 @@ class AnnIndex:
             indexed_memories,
         )
 
-    def query(self, vector: list[float], candidate_k: int) -> list[AnnCandidate]:
-        """Return bounded candidates sorted by exact cosine and stable tie-breaks."""
+    def query(
+        self,
+        vector: list[float],
+        candidate_k: int,
+        *,
+        allowed_ids: set[str] | None = None,
+    ) -> list[AnnCandidate]:
+        """Return bounded eligible candidates sorted by exact cosine."""
         if (
             candidate_k <= 0
             or self._dimension is None
@@ -103,6 +109,8 @@ class AnnIndex:
                     query_hash, radius, self._plane_count
                 ):
                     layer_ids.update(self._buckets[table_index].get(bucket_key, []))
+            if allowed_ids is not None:
+                layer_ids.intersection_update(allowed_ids)
             self._append_candidates(candidate_ids, seen, sorted(layer_ids), candidate_k)
             if len(candidate_ids) >= candidate_k:
                 break
@@ -114,6 +122,7 @@ class AnnIndex:
                     self._indexed_memories,
                     key=lambda memory: (-memory.created_at, memory.id),
                 )
+                if allowed_ids is None or memory.id in allowed_ids
             ]
             self._append_candidates(candidate_ids, seen, newest_ids, candidate_k)
 

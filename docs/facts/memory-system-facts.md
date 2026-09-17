@@ -19,7 +19,7 @@
 ## 写入与去重
 
 - `content_hash` 是 store 派生列，不在 `Memory` dataclass 中；`add` 写入 `hash_content(content)`，`update_many` 改 content 时同步重算。
-- `_persist_memory` 两层去重：先精确 content hash，再 bounded persist semantic candidates 内 top-1 cosine >= 0.95。bounded persist semantic candidates 由 ANN 候选上限约束，同一批候选供语义去重、语义建边和矛盾检测门控使用，不再做无界全表余弦扫描。命中时强化并返回持久化旧记忆；未命中才新增、建边、做矛盾检测、衰减/淘汰、发布 `memory_created`。
+- `_persist_memory` 两层去重：先精确 content hash，再 bounded persist semantic candidates 内 top-1 cosine >= 0.95。新记忆有 embedding 时只读取一次旧记忆、构建一次 ANN index；同 kind 去重查询把 id 过滤放在候选上限之前，未命中时复用同一 index 取全局候选供语义建边和矛盾检测门控，不做无界全表余弦扫描或重复建索引。命中时强化并返回持久化旧记忆；未命中才新增、建边、做矛盾检测、衰减/淘汰、发布 `memory_created`。
 - `create_scene_memory` 返回最终持久化的 `Memory`：新建时返回新记忆；去重命中时返回旧记忆。
 - `remember_activity` / `remember_knowledge` / `remember_reading` 复用 `_persist_memory`，不要绕过统一去重尾段。
 - `memory.activity_end` durable consumer 调用 `remember_activity(event, consumer_id)`；同一 `(event_id, consumer_id)` 重放不会重复新增或 strengthen，活动记忆与派生 `memory_created` / `reflection` 事件行同事务提交。
@@ -27,6 +27,7 @@
 ## 检索与前端
 
 - `MemoryRetrieval.search` 流程是整句 embedding ANN 候选 + keyword LIKE 候选融合评分 -> direct top N -> 2 跳 association 追加；`direct_limit` 只限制直接召回，`association_limit` 只限制联想追加。
+- topics 旁路对每个参与联想的 topic 在单次检索中只排序一次，先排除 direct 命中再截取最多 8 条；热门度衰减仍按排除前的完整桶大小计算。
 - `extract_keywords` 的 CJK 规则按 `docs/specs/06-memory-system.md` 契约执行：长度 2-8 的连续 CJK 片段直接保留，长 CJK 片段只做 2 字/3 字滑窗；不做隐藏边界字符剥离，也不在长片段内部按停用词预拆。
 - `Memory.sources` 是瞬态检索来源：`keyword`、`vector`、`association`。它不落库、不进 prompt、不进导出，但 REST `Memory[]` 会序列化给前端。
 - `list_memories` 返回库内快照，通常 `sources=[]`；`search` 返回的命中带 sources。

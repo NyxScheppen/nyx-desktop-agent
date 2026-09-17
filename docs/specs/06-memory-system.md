@@ -73,9 +73,9 @@ prompt 的 `[相关记忆]` 每条只展示人话化 kind、topics 和 summary�
 
 topics 联想约束：
 
-- 单 topic 桶最多取 8 条；topics 旁路每次最多追加 5 条；最终仍受 association 总预算限制。
+- 每个参与联想的 topic 桶在单次检索中只排序一次；先排除 direct 命中，再按 `freshness DESC, created_at DESC, id ASC` 取最多 8 条。topics 旁路每次最多追加 5 条；最终仍受 association 总预算限制。
 - 同一 memory 通过多个 topic 命中时按 memory id 去重并保留最高分。
-- topic 桶规模越大，联想权重越低，避免泛化 topic 形成超级节点。
+- topic 桶规模越大，联想权重越低；衰减使用排除 direct 前的完整桶大小，避免泛化 topic 形成超级节点。
 
 ### 验收与 bad case
 
@@ -468,7 +468,13 @@ class AnnIndex:
         seed: int = 0,
     ) -> AnnIndex: ...
 
-    def query(self, vector: list[float], candidate_k: int) -> list[AnnCandidate]: ...
+    def query(
+        self,
+        vector: list[float],
+        candidate_k: int,
+        *,
+        allowed_ids: set[str] | None = None,
+    ) -> list[AnnCandidate]: ...
 ```
 
 规则：
@@ -480,6 +486,7 @@ class AnnIndex:
 - 查询维度与 index 维度不一致时返回 `[]`。
 - 查询先取同桶候选，再枚举 Hamming radius 1，再 radius 2；每一层按 `memory_id ASC` 稳定加入，达到 `candidate_k` 停止。
 - 如果 radius 2 后仍不足，从 indexed memories 按 `created_at DESC, id ASC` 补足；总数仍不超过 `candidate_k`。
+- `allowed_ids` 不是 `None` 时，同桶、Hamming 邻桶和 newest fallback 都先排除集合外 id，再应用 `candidate_k`；空集合表示没有候选，不能先截断全局 top-K 再过滤。
 - 最后只对候选集计算精确 cosine，并按 `cosine DESC, memory.created_at DESC, memory.id ASC` 排序。
 - `candidate_k <= 0` 返回 `[]`。
 
@@ -512,13 +519,13 @@ _CONTRADICTION_SIM_THRESHOLD = 0.6
 
 1. 先调用 `store.find_by_content(memory.content, memory.kind)` 做同 kind 的 canonical content hash 精确去重；命中则 `strengthen(existing.id, now)` 并返回持久化旧记忆。
 2. 如果 `memory.embedding is None` 且 `embed` 可用，调用 `embed(memory.content)` 补 embedding。
-3. 如果新记忆有 embedding，用 `AnnIndex.query(memory.embedding, candidate_k=_PERSIST_SEMANTIC_CANDIDATE_K)` 取已有记忆候选，并在候选内计算精确 cosine，得到 `PersistSemanticHit(memory, cosine)` 列表。
+3. 如果新记忆有 embedding，一次读取全部旧记忆并构建一个 `AnnIndex`；先用 `allowed_ids` 限定同 kind 查询去重候选，未命中去重时再复用同一 index 查询全局候选。两次查询都受 `_PERSIST_SEMANTIC_CANDIDATE_K` 约束，并在候选内计算精确 cosine，得到 `PersistSemanticHit(memory, cosine)` 列表。
 4. 如果候选 top-1 达到 kind 对应阈值，并且否定极性、数字集合、显式时间锚点均兼容，则 `strengthen(top.memory.id, now)` 并返回持久化旧记忆；`episode` 还要求创建时间差不超过一小时。
 5. 未命中去重时才 `store.add(memory)`，随后建边、矛盾检测、衰减/淘汰、发布 `memory_created`。
 
 规则：
 
-- 语义去重、语义建边、矛盾检测共用同一份 `PersistSemanticHit` 候选，不再创建旧的无界 `scored` 全表列表。
+- 同 kind 语义去重与全局建边/矛盾候选复用同一个 ANN index；未命中去重后的全局 `PersistSemanticHit` 同时供语义建边和矛盾检测使用，不再创建旧的无界 `scored` 全表列表，也不重复构建 index。
 - `_PERSIST_SEMANTIC_CANDIDATE_K` 是持久化语义候选上限；它不受聊天召回的 `direct_limit` / `association_limit` 影响。
 - `embed is None`、embedding 失败、ANN index 为空或维度不一致时，语义去重与矛盾检测跳过；content hash 去重仍生效。
 - 语义去重的确定性冲突门控宁可漏合并也不误合并：否定极性不同、数字集合不同或显式时间锚点不同均视为不兼容，继续创建新记忆。

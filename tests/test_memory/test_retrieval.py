@@ -1,8 +1,16 @@
+# pyright: reportPrivateUsage=false
+import builtins
+from typing import Any, cast
+
+import pytest
+
+import nyx.memory.retrieval as retrieval_module
 from nyx.db import connect
 from nyx.enums import MemoryEdgeKind, MemoryKind, MemoryType, SearchMode
 from nyx.memory.retrieval import (
     EmbedFn,
     MemoryRetrieval,
+    RankedMemory,
     cosine,
     extract_keywords,
     rank_by_cosine,
@@ -151,6 +159,67 @@ async def test_search_adds_topic_only_association() -> None:
         assert results[1].sources == [SearchMode.ASSOCIATION]
     finally:
         await db.conn.close()
+
+
+async def test_search_topic_association_limits_after_excluding_direct() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        for index in range(8):
+            await store.add(_mem(
+                f"direct-{index}",
+                content=f"alpha {index}",
+                freshness=1.0,
+                created_at=float(20 - index),
+                topics=["信任"],
+            ))
+        await store.add(_mem(
+            "topic-ninth",
+            content="无关键词",
+            freshness=0.5,
+            created_at=1.0,
+            topics=["信任"],
+        ))
+        retrieval = MemoryRetrieval(store, embed=None)
+        results = await retrieval.search("alpha", direct_limit=8, association_limit=1)
+        assert len(results) == 9
+        assert results[-1].id == "topic-ninth"
+        assert results[-1].sources == [SearchMode.ASSOCIATION]
+    finally:
+        await db.conn.close()
+
+
+def test_topic_association_sorts_shared_bucket_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeds = [
+        RankedMemory(
+            _mem(f"seed-{index}", topics=["信任"]),
+            score=1.0,
+            vector_score=0.0,
+            keyword_score=1.0,
+            sources=[SearchMode.KEYWORD],
+        )
+        for index in range(3)
+    ]
+    memories = [seed.memory for seed in seeds]
+    memories.append(_mem("candidate", topics=["信任"]))
+    retrieval = MemoryRetrieval(cast(MemoryStore, object()))
+    sort_count = 0
+
+    def counting_sorted(
+        iterable: Any, *, key: Any = None, reverse: bool = False
+    ) -> list[Any]:
+        nonlocal sort_count
+        sort_count += 1
+        return builtins.sorted(iterable, key=key, reverse=reverse)
+
+    monkeypatch.setattr(retrieval_module, "sorted", counting_sorted, raising=False)
+    hits = retrieval._topic_associate(
+        seeds, memories, limit=5, exclude={seed.memory.id for seed in seeds}
+    )
+    assert [hit.memory_id for hit in hits] == ["candidate"]
+    assert sort_count == 2  # one bucket sort plus one final score sort
 
 
 async def test_search_sources_keyword_only() -> None:

@@ -44,6 +44,16 @@ def test_ann_candidate_limit_and_order_are_stable() -> None:
     assert len(result) == 2
 
 
+def test_ann_allowed_ids_filter_applies_before_candidate_limit() -> None:
+    memories = [
+        _mem("excluded", [1.0, 0.0], created_at=2.0),
+        _mem("allowed", [1.0, 0.0], created_at=1.0),
+    ]
+    index = AnnIndex.build(memories, planes=4, tables=2, seed=0)
+    result = index.query([1.0, 0.0], candidate_k=1, allowed_ids={"allowed"})
+    assert [candidate.memory_id for candidate in result] == ["allowed"]
+
+
 def test_hash_embedding_and_fingerprint_change_on_embedding_update() -> None:
     old = [_mem("a", [0.123456789])]
     new = [_mem("a", [0.223456789])]

@@ -30,6 +30,7 @@ from nyx.types import (
     EvalRecord,
     EvalStats,
     Event,
+    LlmMessage,
     Material,
     Memory,
     Paragraph,
@@ -154,12 +155,29 @@ def build_app(
         return await app.bus.list_events(limit, event_type, correlation_id)
 
     @fast.get("/api/eval/recent")
-    async def api_eval_recent(limit: int = 5) -> list[EvalRecord]:
+    async def api_eval_recent(
+        limit: int = Query(5, ge=1, le=100),
+    ) -> list[EvalRecord]:
         return await app.eval_store.list_recent(limit)
 
     @fast.get("/api/eval/total_tokens")
     async def api_eval_total_tokens() -> EvalStats:
         return await app.eval_store.total_tokens()
+
+    @fast.get("/api/eval/{record_id}/prompt")
+    async def api_eval_prompt(
+        record_id: str, response: Response,
+    ) -> list[LlmMessage] | None:
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            found, prompt = await app.eval_store.get_prompt(record_id)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=500, detail="stored prompt is invalid"
+            ) from error
+        if not found:
+            raise HTTPException(status_code=404, detail="eval record not found")
+        return prompt
 
     @fast.get("/api/narrative")
     async def api_narrative() -> SelfNarrative:

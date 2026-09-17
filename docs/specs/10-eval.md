@@ -1,45 +1,48 @@
-# eval 可观测（LLM 调用 + token 消耗查询）
+# eval 可观测（LLM 调用、token 与最终 prompt）
 
-> eval 系统从「只告警、不落库」升级为「落库 + 可查询」：`LlmClient.complete()` 补上 token 抽取与 `call_id`，`Evaluator.evaluate()` 每次算完 OOC 后写一条 `eval_log` 记录（含 token 消耗）；新增两个 REST 查询端点；前端设置面板展示「总 token + 最近 5 条 LLM 调用（OOC 结果 + token）」。
+> eval 系统记录 OOC/token，并把传给 `ainvoke` 的应用层最终有序消息按 `call_id` 永久明文保存。最近记录接口保持轻量；用户展开某行时才读取完整 prompt。
 > spec 只定义**契约**（签名 + 语义 + 决策），不内联完整代码；代码的唯一事实来源是 `nyx/` 源文件，spec 指向它、不改写它。
 
 ## 元信息
 
 - **前置依赖**：03-llm（`LlmClient.complete`）、01-types（`LLMOutput`）、04-module-bus-system（版本化迁移与 REST 薄封装）、11-expression（respond 节点 think/speak 拆分 + `_voice_output`）
-- **实现文件**：`nyx/llm/client.py`、`nyx/types.py`、`nyx/eval/evaluator.py`、`nyx/eval/store.py`（新）、`nyx/db.py`、`nyx/main.py`；前端 `api/client.ts`、`types/api.ts`、`stores/evalStore.ts`（新）、`components/layout/SettingsView.tsx`
+- **实现文件**：`nyx/llm/client.py`、`nyx/types.py`、`nyx/eval/evaluator.py`、`nyx/eval/store.py`、`nyx/db.py`、`nyx/api/routes.py`；前端 `api/client.ts`、`types/api.ts`、`stores/evalStore.ts`、`components/panels/EvalPanel.tsx`
 
 ## 用户故事
 
-> 作为 Nyx 的开发者，我想要查询每次 LLM 调用的 token 消耗与 OOC 评估结果，以便在设置面板看到「总 token 消耗 + 最近 5 条 LLM 调用及其 OOC 结果、token 消耗」，验证 eval 记账与 token 开销在正常工作。
+> 作为 Nyx 的开发者，我想在最近的 eval 记录上展开查看当次组装完成的最终 prompt，以便定位上下文、记忆和人格设定是怎样进入模型请求的。
 
 ## 验收标准
 
-- [ ] `LLMOutput` 增补 `prompt_tokens` / `completion_tokens` / `call_id`（`nyx/types.py`；默认 `0`/`0`/`""`，既有构造点与测试 mock 不破坏）
-- [ ] `LlmClient.complete()` 每次调用生成唯一 `call_id`，并从 AIMessage 抽取 token（抽不到记 0）
+- [ ] `LLMOutput` 除 token/call_id 外包含 `prompt_messages: list[LlmMessage] | None`，不进入 repr
+- [ ] `LlmClient.complete()` 在 `ainvoke` 前复制有序 role/content，并用同一快照调用模型和回填输出
 - [ ] `Evaluator.evaluate()` 每次调用写一条 `eval_log` 记录（best-effort，落库失败不重抛）
-- [ ] `EvalStore` 提供 `insert` / `list_recent(limit)` / `total_tokens()`；`total_tokens` 对共享 `call_id` 去重（think/speak 只计一次）
-- [ ] 迁移 v13 建 `eval_log` 表（**不存 `content` 原文**）
-- [ ] `GET /api/eval/recent?limit=N` 返回最近 N 条；`GET /api/eval/total_tokens` 返回累计 token
-- [ ] 前端设置面板展示「总 token + 最近 5 条」（think/speak 分两行，各自 OOC + 共享 token）
+- [ ] `EvalStore` 原子写 `eval_log` + `eval_prompt`；同 `call_id` 的 think/speak 只保存一份 prompt
+- [ ] 迁移 v21 建 `eval_prompt`，旧 eval 记录保持可读但 prompt 为 unavailable
+- [ ] recent 的 `limit` 范围为 1..100，响应不包含 prompt；详情端点按 record id 懒加载并返回 `messages | null`
+- [ ] 前端 think/speak 继续分两行；每行可独立展开，逐记录加载、缓存、报错和重试
 
 ## 技术方案
 
 - **token 抽取（03-llm）**：`complete()` 里 `response = await self._model.ainvoke(...)` 后用纯函数 `_extract_tokens(response) -> tuple[int, int]` 抽 `(prompt_tokens, completion_tokens)`——优先 `response.usage_metadata`（`input_tokens`/`output_tokens`，langchain-core 1.5.5 规范字段），回退 `response.response_metadata["token_usage"]`（`prompt_tokens`/`completion_tokens`，OpenAI 兼容 provider），皆无则 `(0, 0)`。`call_id = str(uuid.uuid4())` 每次调用生成。三者随 `LLMOutput` 返回（保持 `json_mode`/`tools`/`tool_calls` 既有行为不变）。
-- **`LLMOutput` 增补（01-types）**：加 `prompt_tokens: int = 0`、`completion_tokens: int = 0`、`call_id: str = ""`，默认值保证既有构造点（各 Facade 的 mock、`_voice_output`、测试）不改也能过。
-- **`_voice_output` 透传（11-expression）**：respond 节点拆 think/speak 时，`_voice_output` 把 `prompt_tokens`/`completion_tokens`/`call_id` 原样带过去——think、speak 两条 eval 记录**共享同一 `call_id` 与同一 token 消耗**（一次 LLM 生成拆两份 OOC，token 归这一次调用）。
-- **`EvalStore`（新，`nyx/eval/store.py`）**：SQLite store，遵循既有 store 锁约定（`db.lock` 串行化、方法不嵌套持锁，见 store-lock-scope）。三方法：
-  - `insert(record: EvalRecord) -> None`
-  - `list_recent(limit: int = 5) -> list[EvalRecord]`（`ORDER BY created_at DESC LIMIT ?`）
+- **最终 prompt 定义**：仅指 `LlmClient.complete()` 传给 `ainvoke` 的 `system/user/assistant` 有序消息。`tools`、`response_format`、provider 隐式字段、LangChain 内部重试和 `VisionClient` 不在本契约内。调用失败时没有 `LLMOutput`，不新增 eval 行。
+- **`LLMOutput` / `_voice_output`**：`prompt_messages` 默认 `None` 兼容旧 mock；真实 client 即使收到空消息列表也写 `[]`。respond 拆出的 think/speak 原样透传同一快照、token 与 call_id。
+- **`EvalStore`**：
+  - `insert(record, prompt_messages=None) -> None`：在一个 `Database.transaction()` 中 `INSERT OR IGNORE eval_prompt` 后写 `eval_log`
+  - `list_recent(limit=5) -> list[EvalRecord]`（`ORDER BY created_at DESC, id DESC`，不读取 prompt）
+  - `get_prompt(record_id) -> tuple[bool, list[LlmMessage] | None]`：首项区分记录不存在；次项 `None` 表示旧记录未保存
   - `total_tokens() -> EvalStats`（对 `eval_log` 按 `call_id` 分组后求和——同 `call_id` 的 think/speak 只计一次，避免 reply 双计）
-  - **保留策略**：不裁剪、永久累计（用户已定「持久化 + 永久累计」）——记录永久保留、总 token 自首次调用累计、重启不清零；本 spec 不做裁剪，日后若担心膨胀可另加。
+  - JSON 解码必须验证顶层 list、role 枚举和字符串 content；损坏数据不能作为任意结构返回。
+- **保留与隐私**：prompt 可能包含用户文本、记忆、canon、历史和工具结果；按产品决策在本地 SQLite 永久明文保存，不裁剪、不加密、不做保留期配置。prompt 不进入 `EvalRecord` 和 recent 响应，避免列表批量暴露及 think/speak 重复存储。
 - **`Evaluator` 落库（`nyx/eval/evaluator.py`）**：`__init__` 增注入 `store: EvalStore | None = None`。`evaluate()` 重构为「先算 OOC 关键词分 +（voice 且有 embed 时）embedding 分，再统一落一条记录」——`store` 为 `None` 或 `insert` 抛异常时降级为日志、不重抛（best-effort 旁路，同 eval 现有豁免约定）。docstring 由「不再落库、不再计 token、不再返回报告」改为「写 eval_log，best-effort」。
-- **数据变更（04-module-bus-system 迁移 v13）**：建 `eval_log` 表 + `idx_eval_log_created` 索引（见下）。**不存 `content` 原文**（数据最小化，CLAUDE.md 安全节；面板只看 OOC 分 + token，不回看具体输出）。
+- **数据变更**：v13 的 `eval_log` 仍不存输出 `content`；v21 新增 `eval_prompt`，按真实 call 去重保存输入 prompt。
 - **API 端点（04-module-bus-system，main.py 薄封装）**：
   - `GET /api/eval/recent?limit=5` → `list[EvalRecord]`（`app.eval_store.list_recent(limit)`）
   - `GET /api/eval/total_tokens` → `EvalStats`（`app.eval_store.total_tokens()`）
+  - `GET /api/eval/{record_id}/prompt` → `list[LlmMessage] | null`；不存在 404、损坏 500、成功响应 `Cache-Control: no-store`
   - `_App` 增 `eval_store: EvalStore`；`build_app_context` 构造 `eval_store = EvalStore(db)`、`evaluator = Evaluator(embed, eval_store)`。
 - **类型（01-types）**：`EvalRecord`（`id`/`created_at`/`call_id`/`module`/`output_type`/`model`/`correlation_id`/`ooc_keyword`/`ooc_embed`/`prompt_tokens`/`completion_tokens`）、`EvalStats`（`total_tokens`/`prompt_tokens`/`completion_tokens`）。字段名 = 前端 JSON 键（snake_case 零映射，README §4）。
-- **前端**：`types/api.ts` 增 `EvalRecord`/`EvalStats`；`api/client.ts` 增 `getEvalRecent(limit?)`/`getEvalTotalTokens()`；新 `stores/evalStore.ts`（state：`records`/`stats`/`error`/`loading`；action：`load()` = `Promise.all([getEvalRecent(5), getEvalTotalTokens()])`）；`SettingsView.tsx` 加一个 `<Panel title="LLM 调用 / token">`——顶部总 token（`stats.total_tokens`，可细分 prompt/completion），下面列最近 5 条：**think/speak 分两行**（用户已定），每行显 `output_type`、`ooc_keyword`（embed 非空也显 `ooc_embed`）、`prompt_tokens + completion_tokens`。
+- **前端**：`evalStore` 用 record-id keyed maps 管理 prompt/loading/error，成功结果缓存、失败可重试、晚到旧记录结果丢弃。`EvalPanel` 用原生 `<details>/<summary>`，React 文本节点 + `<pre>` 渲染，不使用 HTML 注入；长内容内部滚动且不截断。
 
 ### `eval_log` 表（迁移 v13）
 
@@ -60,14 +63,23 @@ CREATE TABLE eval_log (
 CREATE INDEX idx_eval_log_created ON eval_log(created_at);
 ```
 
+### `eval_prompt` 表（迁移 v21）
+
+```sql
+CREATE TABLE eval_prompt (
+    call_id TEXT NOT NULL PRIMARY KEY,
+    prompt_json TEXT NOT NULL
+);
+```
+
 ## 测试要点
 
-- [ ] 单元测试 `tests/test_llm/test_client.py`：`_extract_tokens` 纯函数——`usage_metadata`（input/output_tokens）/ `response_metadata.token_usage`（prompt/completion_tokens）/ 皆无 → `(0,0)`；`complete`（fake AIMessage 带 usage）→ `LLMOutput.prompt_tokens`/`completion_tokens` 正确、`call_id` 非空且两次调用不同。
-- [ ] 单元测试 `tests/test_expression/test_pipeline.py`：`_voice_output` 透传 `prompt_tokens`/`completion_tokens`/`call_id`。
-- [ ] 集成测试 `tests/test_eval/test_store.py`（新）：`insert` 后 `list_recent` 倒序 + limit 正确、字段读回一致；`total_tokens` 对共享 `call_id` 的两行（think/speak）只计一次、不共享的分别计。
+- [ ] `tests/test_llm/test_client.py`：调用前快照、Unicode/换行、解除别名、repr 隐藏。
+- [ ] `tests/test_expression/test_pipeline.py`：`_voice_output` 透传 prompt/token/call_id。
+- [ ] `tests/test_eval/test_eval_store.py`：JSON 往返、think/speak 只存一份、旧/空/缺失区分、损坏拒绝、token 去重。
 - [ ] 集成测试 `tests/test_eval/test_evaluator.py`（新，Mock embed + fake/真 store）：`evaluate`（`store` 有值）写一条记录、`ooc_keyword`/`ooc_embed`/token 字段正确；`store=None` 不写不崩；`store.insert` 抛异常降级不重抛。
-- [ ] 集成测试 `tests/test_api/test_endpoints.py`：`GET /api/eval/recent?limit=5` 返回最近 5、`GET /api/eval/total_tokens` 返回累计。
-- [ ] 前端 `tests/api.test.ts`：`getEvalRecent`（limit 拼 query）/`getEvalTotalTokens` 端点与方法正确。`tests/stores.test.ts`：`evalStore.load` 落 `records`/`stats`、失败置 `error`。`tests/settingsView.test.tsx`：面板渲染总 token + 最近 5 条。
+- [ ] `tests/test_api/test_endpoints.py`：detail 成功/null/404/损坏、no-store、recent limit 边界。
+- [ ] 前端：client URL/cache；store 逐行缓存与失败重试；EvalPanel 展开、状态区分、Unicode/换行及 HTML 字面安全渲染。
 - 不测 LLM 文本质量 / OOC 分数大小；验证管道正确（token 抽对、落库对、去重对、端点走对），不验证「分打得好不好」。
 
 ## 完成定义

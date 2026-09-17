@@ -1,6 +1,6 @@
 import os
 import uuid
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -8,13 +8,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from nyx.config import ConfigError, LlmConfig
-from nyx.types import LLMOutput
-
-
-# role 与 01-types 的 Message(user/nyx) 是两码事
-class LlmMessage(TypedDict):
-    role: Literal["system", "user", "assistant"]
-    content: str
+from nyx.types import LlmMessage, LLMOutput
 
 
 def _extract_tokens(response: AIMessage) -> tuple[int, int]:
@@ -108,12 +102,18 @@ class LlmClient:
         json_mode: bool = False,
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMOutput:
+        prompt_messages = [
+            LlmMessage(role=message["role"], content=message["content"])
+            for message in messages
+        ]
         kwargs: dict[str, Any] = {}
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         if tools:
             kwargs["tools"] = tools  # OpenAI 兼容 function calling 工具定义
-        response = await self._model.ainvoke([_to_lc(m) for m in messages], **kwargs)
+        response = await self._model.ainvoke(
+            [_to_lc(message) for message in prompt_messages], **kwargs
+        )
         content = response.content
         if not isinstance(content, str):
             raise RuntimeError(f"期望文本 content，得到 {type(content).__name__}")
@@ -137,4 +137,5 @@ class LlmClient:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             call_id=str(uuid.uuid4()),
+            prompt_messages=prompt_messages,
         )

@@ -494,6 +494,16 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        21,
+        [
+            # 完整 prompt 按真实 LLM call 去重；think/speak 通过 call_id 共享。
+            """CREATE TABLE eval_prompt (
+                call_id TEXT NOT NULL PRIMARY KEY,
+                prompt_json TEXT NOT NULL
+            )""",
+        ],
+    ),
 ]
 
 

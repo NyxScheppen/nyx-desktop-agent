@@ -83,7 +83,8 @@ class Evaluator:
                     ooc_embed=embed_s,
                     prompt_tokens=output.prompt_tokens,
                     completion_tokens=output.completion_tokens,
-                )
+                ),
+                output.prompt_messages,
             )
         except Exception:
             _logger.exception(

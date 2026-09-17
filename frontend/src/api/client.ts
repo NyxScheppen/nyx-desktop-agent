@@ -9,6 +9,7 @@ import type {
   DesireState,
   EvalRecord,
   EvalStats,
+  LlmPromptMessage,
   Memory,
   Paragraph,
   Presence,
@@ -218,4 +219,13 @@ export async function getEvalRecent(limit = 5): Promise<EvalRecord[]> {
 
 export async function getEvalTotalTokens(): Promise<EvalStats> {
   return request<EvalStats>(`${BASE_URL}/api/eval/total_tokens`);
+}
+
+export async function getEvalPrompt(
+  recordId: string,
+): Promise<LlmPromptMessage[] | null> {
+  return request<LlmPromptMessage[] | null>(
+    `${BASE_URL}/api/eval/${encodeURIComponent(recordId)}/prompt`,
+    { cache: "no-store" },
+  );
 }

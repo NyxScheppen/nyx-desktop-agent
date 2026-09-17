@@ -8,7 +8,7 @@ import pytest
 
 from nyx import db
 
-# 24 张业务表（不含 schema_version）
+# 25 张业务表（不含 schema_version）
 BUSINESS_TABLES = {
     "personality",
     "value_system",
@@ -29,6 +29,7 @@ BUSINESS_TABLES = {
     "user_notes",
     "annotations",
     "eval_log",
+    "eval_prompt",
     "event_delivery",
     "event_effect",
     "desire_generation_attempt",
@@ -49,6 +50,8 @@ NOT_NULL_COLUMNS = {
     ("annotations", "user_note_id"),
     ("annotations", "content"),
     ("annotations", "created_at"),
+    ("eval_prompt", "call_id"),
+    ("eval_prompt", "prompt_json"),
 }
 
 # Optional 字段对应列必须可空（01-types 的 X | None）
@@ -101,7 +104,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 25
+    assert len(names) == 26
 
 
 async def test_migrate_creates_expected_indexes() -> None:
@@ -368,7 +371,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 25
+    assert len(names) == 26
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

@@ -10,6 +10,7 @@ import {
   getBooks,
   getDesires,
   getEvalRecent,
+  getEvalPrompt,
   getEvalTotalTokens,
   getEventsLog,
   getNotes,
@@ -482,5 +483,19 @@ describe("api/client eval", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/eval/total_tokens");
     expect(res).toEqual(fixture);
+  });
+
+  it("getEvalPrompt：编码记录 id、禁用缓存并解析消息", async () => {
+    const prompt = [{ role: "user", content: "你好\nNyx" }];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(prompt));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await getEvalPrompt("id/with space");
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/eval/id%2Fwith%20space/prompt",
+    );
+    expect(fetchMock.mock.calls[0][1]).toEqual({ cache: "no-store" });
+    expect(res).toEqual(prompt);
   });
 });

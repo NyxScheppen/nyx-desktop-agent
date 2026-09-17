@@ -237,6 +237,13 @@
 **怎么做**：原生命令保留明确错误通道，失败触发已有 WebView fallback；用 mock 原生失败测试覆盖 idle 增长、away 和恢复输入，不依赖真实桌面。
 **影响的文件/决策**：`frontend/src-tauri/src/lib.rs`、`frontend/src/hooks/usePresence.ts`、`frontend/tests/presence.test.ts`。
 
+### 2026-09-17: 大型调试详情必须懒加载并按真实实体去重
+
+**来源**：eval 面板完整 prompt 查看方案审查。
+**教训**：把大型 prompt 塞进 recent 列表会让未展开的内容也被批量传输；按展示行永久保存又会让同一 LLM 调用拆出的 think/speak 重复占库。无界 limit 会进一步把本地调试接口放大成全表读取。
+**怎么做**：列表只返回摘要并限制分页参数；详情按精确 id 懒加载。持久化以真实 call_id 为键去重，展示行通过关联读取；旧数据、空数据、损坏数据必须使用不同状态。
+**影响的文件/决策**：`eval_prompt`、`EvalStore`、eval REST 端点、`evalStore`、`EvalPanel`、10-eval 契约。
+
 ## 模板
 
 ```

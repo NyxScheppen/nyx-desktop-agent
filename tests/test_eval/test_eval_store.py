@@ -1,6 +1,9 @@
+import aiosqlite
+import pytest
+
 from nyx import db
 from nyx.eval.store import EvalStore
-from nyx.types import EvalRecord
+from nyx.types import EvalRecord, LlmMessage
 
 
 def _rec(
@@ -36,6 +39,75 @@ async def test_insert_and_list_recent_order() -> None:
         assert [r.id for r in rows] == ["c", "b"]   # 倒序 + limit
     finally:
         await database.conn.close()
+
+
+async def test_prompt_round_trip_is_shared_by_call_id() -> None:
+    database = await db.connect(":memory:")
+    store = EvalStore(database)
+    prompt: list[LlmMessage] = [
+        {"role": "system", "content": "设定\n第二行"},
+        {"role": "user", "content": "你好"},
+    ]
+    try:
+        await store.insert(_rec("think", "call-1"), prompt)
+        await store.insert(_rec("speak", "call-1"), prompt)
+        think = await store.get_prompt("think")
+        speak = await store.get_prompt("speak")
+        count = await (await database.conn.execute(
+            "SELECT COUNT(*) AS count FROM eval_prompt"
+        )).fetchone()
+    finally:
+        await database.conn.close()
+    assert think == (True, prompt)
+    assert speak == (True, prompt)
+    assert count is not None and count["count"] == 1
+
+
+async def test_prompt_distinguishes_legacy_and_missing_rows() -> None:
+    database = await db.connect(":memory:")
+    store = EvalStore(database)
+    try:
+        await store.insert(_rec("legacy", "call-old"))
+        legacy = await store.get_prompt("legacy")
+        missing = await store.get_prompt("missing")
+    finally:
+        await database.conn.close()
+    assert legacy == (True, None)
+    assert missing == (False, None)
+
+
+async def test_prompt_rejects_corrupt_json() -> None:
+    database = await db.connect(":memory:")
+    store = EvalStore(database)
+    try:
+        await store.insert(_rec("e1", "call-1"))
+        await database.conn.execute(
+            "INSERT INTO eval_prompt (call_id, prompt_json) VALUES (?, ?)",
+            ("call-1", '{"role":"user"}'),
+        )
+        await database.conn.commit()
+        with pytest.raises(ValueError, match="prompt"):
+            await store.get_prompt("e1")
+    finally:
+        await database.conn.close()
+
+
+async def test_prompt_and_eval_record_insert_roll_back_together() -> None:
+    database = await db.connect(":memory:")
+    store = EvalStore(database)
+    try:
+        await store.insert(_rec("duplicate", "call-1"))
+        with pytest.raises(aiosqlite.IntegrityError):
+            await store.insert(
+                _rec("duplicate", "call-2"),
+                [{"role": "user", "content": "不能留下"}],
+            )
+        row = await (await database.conn.execute(
+            "SELECT COUNT(*) AS count FROM eval_prompt WHERE call_id = 'call-2'"
+        )).fetchone()
+    finally:
+        await database.conn.close()
+    assert row is not None and row["count"] == 0
 
 
 async def test_total_tokens_dedups_call_id() -> None:

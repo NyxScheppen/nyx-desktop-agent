@@ -42,6 +42,11 @@ class Aesthetic(TypedDict):                # 审美维度，1-10，10=第一极
     somber: float                           # 沉重
 
 
+class LlmMessage(TypedDict):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
 # ---- 事件 ----
 @dataclass
 class Event:
@@ -301,6 +306,8 @@ class LLMOutput:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     call_id: str = ""
+    # 应用层传给 ainvoke 的最终有序消息；None = 调用方未捕获（旧 mock）。
+    prompt_messages: list[LlmMessage] | None = field(default=None, repr=False)
 
 
 @dataclass

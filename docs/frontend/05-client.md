@@ -1,6 +1,6 @@
 # REST 客户端（`api/client.ts`）
 
-> 薄 fetch 封装：19 个端点函数 + 统一错误契约。被 `chatStore`（`postChat`/`getEventsLog`）、`innerLifeStore`（`getState`）、`usePresence`（`postObserve`）、两个快照 store（`getDesires`/`getActivity`/`getActivityResults`）、`readerStore`（阅读 + 笔记）共享。
+> 薄 fetch 封装：端点函数 + 统一错误契约。被 `chatStore`、`innerLifeStore`、`usePresence`、快照 store、`readerStore` 和 `evalStore` 共享。
 > 范围：`api/client.ts` 全部。`BASE_URL` 常量在此定义，SSE 与 REST 共用（01-sse §3）。
 > 对齐后端：前端的基础设施独立成 spec，同底层模块总线系统和 `03-llm` 各自独立。
 
@@ -16,6 +16,9 @@ async function getDesires(): Promise<DesireState>                               
 async function getActivity(): Promise<ActivitySnapshot>                          // GET /api/activity
 async function getActivityResults(): Promise<Activity[]>                          // GET /api/activity/results
 async function getEventsLog(params?): Promise<BackendEvent[]>                    // GET /api/events/log?limit=&event_type=&correlation_id=
+async function getEvalRecent(limit = 5): Promise<EvalRecord[]>                   // GET /api/eval/recent?limit=
+async function getEvalTotalTokens(): Promise<EvalStats>                          // GET /api/eval/total_tokens
+async function getEvalPrompt(recordId: string): Promise<LlmPromptMessage[] | null> // GET /api/eval/{recordId}/prompt，cache:no-store
 
 // ---- 阅读（06-reading-panel §6）----
 async function getBooks(): Promise<BookListItem[]>                               // GET /api/books
@@ -62,5 +65,6 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
   - `getActivity`：`GET /api/activity` → `ActivitySnapshot` 解析正确。
   - `getActivityResults`：`GET /api/activity/results` → `Activity[]` 解析正确。
   - `getEventsLog(params)`：`limit`/`event_type`/`correlation_id` 拼进 query。
+  - eval：recent/total 路径正确；prompt 对 record id 做 URL 编码、禁用缓存并保留 `null`（旧记录无 prompt）。
 - **错误契约**：非 2xx 响应（mock body `{"detail": "..."}`）→ throw（`Error`，message 含 `detail` 内容）；fetch 网络错误（reject `TypeError`）→ 上抛不吞；不返回 `{ok:false}`/null。
 - 不依赖真实后端；验证管道正确（端点走对、键零映射、错误上抛），不验证视觉。

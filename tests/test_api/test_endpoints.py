@@ -173,6 +173,8 @@ class _FakeEvalStore:
         self.stats = EvalStats(
             total_tokens=42, prompt_tokens=30, completion_tokens=12,
         )
+        self.prompts: dict[str, tuple[bool, list[dict[str, str]] | None]] = {}
+        self.prompt_error: ValueError | None = None
 
     async def list_recent(self, limit: int = 5) -> list[EvalRecord]:
         self.recent_calls.append(limit)
@@ -180,6 +182,13 @@ class _FakeEvalStore:
 
     async def total_tokens(self) -> EvalStats:
         return self.stats
+
+    async def get_prompt(
+        self, record_id: str
+    ) -> tuple[bool, list[dict[str, str]] | None]:
+        if self.prompt_error is not None:
+            raise self.prompt_error
+        return self.prompts.get(record_id, (False, None))
 
 
 async def test_state_endpoint() -> None:
@@ -427,6 +436,53 @@ async def test_eval_recent_endpoint() -> None:
     assert resp.status_code == 200
     assert store.recent_calls == [3]
     assert resp.json()[0]["call_id"] == "c1"
+
+
+@pytest.mark.parametrize("limit", [0, -1, 101])
+async def test_eval_recent_rejects_out_of_range_limit(limit: int) -> None:
+    store = _FakeEvalStore()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.eval_store = cast(EvalStore, store)
+    async with _client(app) as client:
+        resp = await client.get("/api/eval/recent", params={"limit": limit})
+    assert resp.status_code == 422
+    assert store.recent_calls == []
+
+
+async def test_eval_prompt_endpoint() -> None:
+    store = _FakeEvalStore()
+    prompt = [{"role": "user", "content": "你好\nNyx"}]
+    store.prompts["e1"] = (True, prompt)
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.eval_store = cast(EvalStore, store)
+    async with _client(app) as client:
+        resp = await client.get("/api/eval/e1/prompt")
+    assert resp.status_code == 200
+    assert resp.json() == prompt
+    assert resp.headers["cache-control"] == "no-store"
+
+
+async def test_eval_prompt_legacy_and_missing() -> None:
+    store = _FakeEvalStore()
+    store.prompts["legacy"] = (True, None)
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.eval_store = cast(EvalStore, store)
+    async with _client(app) as client:
+        legacy = await client.get("/api/eval/legacy/prompt")
+        missing = await client.get("/api/eval/missing/prompt")
+    assert legacy.status_code == 200 and legacy.json() is None
+    assert missing.status_code == 404
+
+
+async def test_eval_prompt_corruption_returns_controlled_error() -> None:
+    store = _FakeEvalStore()
+    store.prompt_error = ValueError("raw prompt must not leak")
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.eval_store = cast(EvalStore, store)
+    async with _client(app) as client:
+        resp = await client.get("/api/eval/e1/prompt")
+    assert resp.status_code == 500
+    assert resp.json() == {"detail": "stored prompt is invalid"}
 
 
 async def test_eval_total_tokens_endpoint() -> None:

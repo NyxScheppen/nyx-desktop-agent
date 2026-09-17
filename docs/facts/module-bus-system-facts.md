@@ -30,6 +30,7 @@
 - `/api/observe` 要求有限非负的 `idle_seconds`，`_App.presence_lock` 串行化观察与用户消息 online 对齐；观察事件 durable publish 成功后才提交 presence/归来内存快照，失败保留旧状态。
 - 归来 pending/claimed 是进程内一次性事实，只含 returned_at/away_duration_seconds，通过组合根同步 claim/finish/release 回调注入 ExpressionFacade；领取在首次 await 前，finish/release 比对同一对象，成功表达才消费，失败释放且不覆盖较新的 pending return。重启初次观察不补造归来。
 - SSE 公共头固定包含 `event_id`、`correlation_id`、后端 `Event.timestamp`，公共头覆盖同名 content 键。前端拒绝非法 timestamp，实时与历史均保留后端时间，不使用浏览器接收时间。
+- eval 的完整应用层 prompt 由 `eval_prompt` 按 `call_id` 永久明文保存；think/speak 两条 `eval_log` 共用一份。recent 列表不返回 prompt，详情通过精确 record id 懒加载，语义以 `10-eval.md` 为准。
 
 ## 模块边界
 

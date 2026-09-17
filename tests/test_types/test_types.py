@@ -2,6 +2,8 @@ from typing import get_type_hints
 
 from nyx.enums import DesireStatus, DesireType, MemoryKind, MemoryType
 from nyx.types import (
+    Aesthetic,
+    LlmMessage,
     LongTermDesire,
     Memory,
     Personality,
@@ -52,3 +54,7 @@ def test_typed_dict_keys() -> None:
         "altruism",
         "optimism",
     }
+    assert set(get_type_hints(Aesthetic)) == {
+        "ornate", "lyrical", "classical", "somber",
+    }
+    assert set(get_type_hints(LlmMessage)) == {"role", "content"}

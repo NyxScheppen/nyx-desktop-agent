@@ -368,6 +368,11 @@ export type EvalRecord = {
   completion_tokens: number;
 };
 
+export type LlmPromptMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
 export type EvalStats = {
   total_tokens: number;
   prompt_tokens: number;

@@ -207,7 +207,8 @@ Nyx：好的，我在这里等着你
 ## LLM 输出与失败
 
 - 每次 reply LLM 使用 JSON 模式，期望非空字符串 `speak` 和可选字符串 `think`。
-- 合法解析后 think/speak 分别经过 evaluator，并分别产生 THINK/SPEAK 事件。
+- 合法解析后 think/speak 分别经过 evaluator，并分别产生 THINK/SPEAK 事件；拆分后的两个
+  `LLMOutput` 共享原始调用的 call_id、token 和 `prompt_messages`，prompt 只按 call_id 存一份。
 - 非法 JSON、顶层类型错误、speak 缺失/为空、LLM 或 evaluator 异常都属于失败，不得把原始
   文本当作合法 speak。
 - 解析失败最多重试一次。仍失败时发布固定 fallback SPEAK，载荷增加

@@ -508,6 +508,19 @@ CREATE TABLE expression_interaction_attempt (
 它与总线 delivery 的恢复职责不同：delivery 负责消费者投递，attempt 负责表达领域内的
 claim/answer/expire 幂等。
 
+### eval prompt 辅助表
+
+`eval_prompt` 由 `10-eval.md` 定义，按真实 LLM `call_id` 保存应用层最终消息。它不是事件
+事实，也不参与 delivery；`EvalStore.insert()` 必须在同一个 `Database.transaction()` 中先
+幂等写 prompt、再写 `eval_log`，避免半条可观测记录。
+
+```sql
+CREATE TABLE eval_prompt (
+    call_id TEXT NOT NULL PRIMARY KEY,
+    prompt_json TEXT NOT NULL
+);
+```
+
 ### `event_log` 展开状态
 
 事件行需要能被 delivery expander 幂等扫描。可选择：
@@ -520,7 +533,13 @@ claim/answer/expire 幂等。
 
 ## API 端点
 
-本 spec 不新增用户可见 REST 端点。
+本 spec 的总线重构不新增用户业务端点；其它完整领域契约定义的现有辅助端点仍由
+`nyx/api/routes.py` 薄封装。eval 调试端点遵循 `10-eval.md`：
+
+- `GET /api/eval/recent?limit=N` 的 `N` 限制为 1..100，且列表不携带 prompt；
+- `GET /api/eval/total_tokens` 返回按 `call_id` 去重的累计 token；
+- `GET /api/eval/{record_id}/prompt` 精确查询一行对应的共享 prompt，旧记录返回 `null`、
+  不存在返回 404、损坏数据返回受控 500，成功响应禁止缓存。
 
 现有写入口语义会变化：
 
@@ -550,11 +569,11 @@ claim/answer/expire 幂等。
   生产方不得使用三个公共键；序列化时公共头覆盖同名 content 键。必填 timestamp 是
   monorepo 线协议，后端和前端必须同批发布，不支持新前端连接缺少该字段的旧后端。
 
-可选后续调试端点需另写 spec，不在本轮默认新增。
+其它可选调试端点需另写 spec，不在本轮默认新增。
 
 ## 测试要点
 
-- [ ] DB 迁移：新库包含 `event_delivery`，必要时包含 `event_effect`；索引存在；迁移幂等。
+- [ ] DB 迁移：新库包含 `event_delivery`、`event_effect` 和领域 spec 已定义的辅助表（含 `eval_prompt`）；索引存在；迁移幂等。
 - [ ] durable publish：publish 后即使不启动 worker，`event_log` 和 delivery 已落库；DB 失败时 publish 抛错且无半截记录。
 - [ ] route expand：每个非空 `RouteSpec` 都创建对应 delivery；空路由事件只落 `event_log` 和 SSE，不创建消费者 delivery。
 - [ ] handler 成功：delivery 从 `pending` 到 `processing` 到 `succeeded`，`completed_at` 写入。

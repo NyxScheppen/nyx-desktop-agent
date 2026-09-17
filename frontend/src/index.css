@@ -617,6 +617,67 @@ body {
   word-break: break-word;
 }
 
+.eval-record details {
+  width: 100%;
+}
+
+.eval-record__summary {
+  cursor: pointer;
+}
+
+.eval-record__summary .panel-item__main,
+.eval-record__summary .panel-item__meta {
+  display: block;
+}
+
+.eval-record__summary::marker {
+  color: var(--ink-soft);
+}
+
+.eval-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+  max-width: 100%;
+}
+
+.eval-prompt__status {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+}
+
+.eval-prompt__status button {
+  margin-left: 0.5rem;
+}
+
+.eval-prompt__message {
+  min-width: 0;
+}
+
+.eval-prompt__message h3 {
+  margin: 0 0 0.2rem;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.eval-prompt__message pre {
+  box-sizing: border-box;
+  margin: 0;
+  max-height: 18rem;
+  max-width: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.75rem;
+}
+
 /* ===== 活动产出 ===== */
 .outputs {
   margin-top: 0.75rem;

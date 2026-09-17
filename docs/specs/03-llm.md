@@ -16,7 +16,7 @@
 
 - [ ] `client.py` 含 `LlmClient` + `LlmMessage`，`vision.py` 含 `VisionClient`（实现见对应源文件）
 - [ ] 全项目只有这一处直接调 LLM（不直接用 httpx、不绕过 client 直接 `ChatOpenAI`）
-- [ ] `complete()` 返回 `LLMOutput`：`module`/`type`/`content`/`model`/`correlation_id` 随每次调用正确回填
+- [ ] `complete()` 返回 `LLMOutput`：`module`/`type`/`content`/`model`/`correlation_id` 及独立的 `prompt_messages` 快照随每次调用正确回填
 - [ ] `json_mode=True` 时向模型传 `response_format={"type": "json_object"}`
 - [ ] `LlmClient(model=..., model_name=...)` 可注入 fake model，测试不触网
 - [ ] `pyright` strict 零报错
@@ -26,7 +26,8 @@
 
 - **实现文件**：`nyx/llm/client.py`、`nyx/llm/vision.py`（无 Facade、无 API、无数据变更）
 - **库**：`langchain_core`（`BaseChatModel` / 消息类）、`langchain_openai`（`ChatOpenAI`，deepseek / openai / ollama 等走 OpenAI 兼容接口）
-- **公开面**：`from nyx.llm.client import LlmClient, LlmMessage`、`from nyx.llm.vision import VisionClient`（不加 `__all__`）
+- **公开面**：`LlmMessage` 的唯一类型定义在 `nyx.types`，`nyx.llm.client` 导入后仍支持 `from nyx.llm.client import LlmClient, LlmMessage`；视觉入口为 `from nyx.llm.vision import VisionClient`（不加 `__all__`）
+- **最终 prompt 快照**：`complete()` 在第一次 await 前复制 `role/content`，并用该快照构造传给 `ainvoke` 的消息；返回的 `LLMOutput.prompt_messages` 因而不受调用方后续修改影响。这里的“最终 prompt”仅指应用层有序消息，不包含独立 kwargs `tools` / `response_format`、provider 隐式字段或视觉调用。
 - **内部类（非 Facade）**：Facade / LangGraph 节点都通过它调 LLM，是透明化+可追溯的落点
 - **多 provider（OpenAI 兼容）**：`from_config` 用 `resolve_base_url(provider, base_url)` 解析 endpoint——显式 `llm.base_url` 优先，否则查内置映射（deepseek / openai / ollama）；无命中报 `ConfigError`（列出内置 provider + 提示配 `llm.base_url`）。统一走 `ChatOpenAI`，token 抽取不变
 - **屏幕视觉（`vision.py`，V2）**：`VisionClient` 是独立多模态客户端（Ollama 视觉模型同走 OpenAI 兼容 `ChatOpenAI`），消息带 `image_url` 块、不混入纯文本 `complete`；复用 `resolve_base_url`（故该函数公开，供 `vision.py` 跨模块导入）。`from_config` 与 `LlmClient` 同规则读 key：`os.environ.get(config.api_key_env)`，未设且非 Ollama 报 `ConfigError`、Ollama 免 key 占位。
@@ -48,6 +49,7 @@
     - [ ] `tools` 非空 → 传给模型的 kwargs 含 `tools`；空/None → 不含
     - [ ] fake 返回带 `tool_calls` 的 `AIMessage`（pydantic ToolCall 有 `model_dump`）→ `LLMOutput.tool_calls` 正确解析出 name/args；无 `tool_calls` → `[]`
     - [ ] `messages` 顺序与内容按原序透传（fake 记录收到的 LangChain 消息）
+    - [ ] `prompt_messages` 保留 Unicode/换行且与输入解除可变别名，`LLMOutput.__repr__` 不暴露 prompt
     - [ ] 非文本 content（fake 返回 `content=list`）→ `RuntimeError`（不是 `str(list)` 的 repr 垃圾）
   - [ ] `resolve_base_url` 纯函数：显式 `base_url` 优先 / 已知 provider 命中 / 未知 provider 返回 `None`
   - [ ] `from_config`（`monkeypatch` 环境变量）：`provider="claude"`（无 base_url）→ `ConfigError`；`api_key_env` 未设（`delenv`）→ `ConfigError`；正常 → 返回 `LlmClient` 且 `_model_name == config.model`（`setenv` 设 key）；`provider="openai"` → 正常返回；自定义 `base_url` → 正常返回；`temperature` 透传（monkeypatch `ChatOpenAI` 捕获 kwargs，断言 `temperature` 值）

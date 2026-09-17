@@ -69,6 +69,7 @@ def test_voice_output_preserves_call_fields() -> None:
     src = LLMOutput(
         module="m", type="reply", model="x", content="full",
         correlation_id="c", prompt_tokens=9, completion_tokens=4, call_id="call-9",
+        prompt_messages=[{"role": "user", "content": "你好"}],
     )
     out = _voice_output(src, "speak", "你好")
     assert out.type == "speak"
@@ -78,3 +79,4 @@ def test_voice_output_preserves_call_fields() -> None:
     assert out.prompt_tokens == 9
     assert out.completion_tokens == 4
     assert out.call_id == "call-9"
+    assert out.prompt_messages == [{"role": "user", "content": "你好"}]

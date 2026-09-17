@@ -7,23 +7,23 @@
 ## 当前快照
 
 - 后端测试文件：63
-- `pytest --collect-only -q`：894 tests collected
-- 最近一次全量验证：`893 passed, 1 skipped`
+- `pytest --collect-only -q`：905 tests collected
+- 最近一次全量验证：`904 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：`17 files / 222 passed`
+- 最近一次前端全量验证：`17 files / 227 passed`
 
 ## 后端覆盖
 
 | 系统 | 测试目录 | 文件数 | 主要覆盖 |
 |---|---|---:|---|
-| 类型 | `tests/test_types/` | 2 | 枚举穷尽、实体默认值、TypedDict |
+| 类型 | `tests/test_types/` | 2 | 枚举穷尽、实体默认值、LLM prompt TypedDict |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
-| LLM | `tests/test_llm/` | 2 | 统一客户端、视觉客户端、token 元数据 |
-| DB | `tests/test_db/` | 1 | 迁移、索引、可空性、事务回滚、关闭 |
+| LLM | `tests/test_llm/` | 2 | 统一客户端、视觉客户端、token 元数据、最终 prompt 快照 |
+| DB | `tests/test_db/` | 1 | 迁移、索引、可空性、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
-| API/运行时 | `tests/test_api/` | 5 | 组合根、REST、订阅、tick、恢复重放、presence 原子提交与归来 |
+| API/运行时 | `tests/test_api/` | 5 | 组合根、REST、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件、搜索、工具注册和网络抓取 |
 | 记忆 | `tests/test_memory/` | 6 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、满足、重放 |
@@ -31,15 +31,15 @@
 | 活动 | `tests/test_activity/` | 13 | 排期、活动生命周期、探索、观察、读书恢复 |
 | 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动、笔记、整合和后台生命周期 |
-| 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账和 token |
+| 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
 
 ## 前端覆盖
 
 | 范围 | 测试目录 | 主要覆盖 |
 |---|---|---|
-| REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、错误、事件解析 |
-| 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts` | Zustand、活跃度、活动产出 |
-| 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、设置、评估面板 |
+| REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、eval prompt 懒加载端点、错误、事件解析 |
+| 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts` | Zustand、eval prompt 逐行缓存/重试、活跃度、活动产出 |
+| 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、设置、评估面板展开详情与安全文本渲染 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 状态显示、过滤、枚举中文化 |
 | 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 分页、笔记和章节交互 |
 | 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 统一分钟时钟、昼夜/头像、时间标签、打字机 |
@@ -111,6 +111,16 @@
 
 - `presence.test.ts`：Tauri 空闲毫秒/前台标题采样、三态边界、浏览器降级、失败重试与 single-flight
 - `readerView.test.tsx`：阅读位置和 Nyx 追赶/等待派生态展示
+
+### Eval prompt 可观测
+
+- `test_complete_captures_independent_prompt_messages`
+- `test_prompt_round_trip_is_shared_by_call_id`
+- `test_prompt_and_eval_record_insert_roll_back_together`
+- `test_eval_prompt_legacy_and_missing`
+- `test_eval_prompt_corruption_returns_controlled_error`
+- `evalPanel.test.tsx`：展开懒加载、旧/空/加载/错误状态、Unicode/换行和 HTML 字面安全渲染
+
 
 ### 时间感知与离开归来
 

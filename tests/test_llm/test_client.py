@@ -206,6 +206,24 @@ def test_complete_messages_passthrough() -> None:
     assert fake._recorded_messages[1].content == "q"
 
 
+def test_complete_captures_independent_prompt_messages() -> None:
+    client, _ = _client(AIMessage(content="hi"))
+    messages: list[LlmMessage] = [
+        {"role": "system", "content": "设定\n第二行"},
+        {"role": "user", "content": "你好，Nyx"},
+    ]
+    out = asyncio.run(
+        client.complete(messages, module="t", output_type="o", correlation_id="c")
+    )
+    messages[0]["content"] = "被修改"
+
+    assert out.prompt_messages == [
+        {"role": "system", "content": "设定\n第二行"},
+        {"role": "user", "content": "你好，Nyx"},
+    ]
+    assert "设定" not in repr(out)
+
+
 def test_complete_non_text_content() -> None:
     response = AIMessage(content="x")
     setattr(response, "content", ["not", "text"])

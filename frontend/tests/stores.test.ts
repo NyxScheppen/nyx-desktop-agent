@@ -505,7 +505,14 @@ describe("desireStore / activityStore", () => {
 
 describe("evalStore", () => {
   beforeEach(() => {
-    useEvalStore.setState({ records: null, stats: null, error: null });
+    useEvalStore.setState({
+      records: null,
+      stats: null,
+      error: null,
+      prompts: {},
+      promptLoading: {},
+      promptErrors: {},
+    });
   });
 
   it("refresh：并行 getEvalRecent + getEvalTotalTokens → records/stats 落 store", async () => {
@@ -522,6 +529,11 @@ describe("evalStore", () => {
       .mockResolvedValueOnce(jsonResponse(records))
       .mockResolvedValueOnce(jsonResponse(stats));
     vi.stubGlobal("fetch", fetchMock);
+    useEvalStore.setState({
+      prompts: { old: [{ role: "user", content: "old" }] },
+      promptLoading: { old: true },
+      promptErrors: { old: "old error" },
+    });
 
     await useEvalStore.getState().refresh();
 
@@ -530,6 +542,7 @@ describe("evalStore", () => {
     expect(fetchMock.mock.calls[1][0]).toBe("/api/eval/total_tokens");
     expect(useEvalStore.getState().records).toEqual(records);
     expect(useEvalStore.getState().stats).toEqual(stats);
+    expect(useEvalStore.getState().prompts).toEqual({});
   });
 
   it("refresh：getEvalRecent throw → error + records 保持 null", async () => {
@@ -540,6 +553,44 @@ describe("evalStore", () => {
     expect(useEvalStore.getState().error).toBe("fetch failed");
     expect(useEvalStore.getState().records).toBeNull();
     expect(useEvalStore.getState().stats).toBeNull();
+  });
+
+  it("loadPrompt：按记录加载并缓存成功结果", async () => {
+    const prompt = [{ role: "user" as const, content: "问题" }];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(prompt));
+    vi.stubGlobal("fetch", fetchMock);
+    useEvalStore.setState({ records: [{
+      id: "e1", created_at: 1, call_id: "c1", module: "expression",
+      output_type: "speak", model: "m", correlation_id: "k",
+      ooc_keyword: 1, ooc_embed: null, prompt_tokens: 5, completion_tokens: 2,
+    }] });
+
+    await useEvalStore.getState().loadPrompt("e1");
+    await useEvalStore.getState().loadPrompt("e1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(useEvalStore.getState().prompts.e1).toEqual(prompt);
+    expect(useEvalStore.getState().promptLoading.e1).toBe(false);
+  });
+
+  it("loadPrompt：失败按行记录且下一次可重试", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(jsonResponse(null));
+    vi.stubGlobal("fetch", fetchMock);
+    useEvalStore.setState({ records: [{
+      id: "e1", created_at: 1, call_id: "c1", module: "expression",
+      output_type: "speak", model: "m", correlation_id: "k",
+      ooc_keyword: 1, ooc_embed: null, prompt_tokens: 5, completion_tokens: 2,
+    }] });
+
+    await useEvalStore.getState().loadPrompt("e1");
+    await useEvalStore.getState().loadPrompt("e1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(useEvalStore.getState().promptErrors.e1).toBeUndefined();
+    expect(useEvalStore.getState().prompts.e1).toBeNull();
   });
 });
 

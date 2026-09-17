@@ -2,18 +2,24 @@ from typing import cast
 
 from nyx.eval.evaluator import Evaluator
 from nyx.eval.store import EvalStore
-from nyx.types import EvalRecord, LLMOutput
+from nyx.types import EvalRecord, LlmMessage, LLMOutput
 
 
 class _FakeStore:
     def __init__(self) -> None:
         self.records: list[EvalRecord] = []
         self.raise_on_insert = False
+        self.prompt_messages: list[LlmMessage] | None = None
 
-    async def insert(self, record: EvalRecord) -> None:
+    async def insert(
+        self,
+        record: EvalRecord,
+        prompt_messages: list[LlmMessage] | None = None,
+    ) -> None:
         if self.raise_on_insert:
             raise RuntimeError("boom")
         self.records.append(record)
+        self.prompt_messages = prompt_messages
 
 
 def _out(call_id: str = "call-1") -> LLMOutput:
@@ -26,6 +32,7 @@ def _out(call_id: str = "call-1") -> LLMOutput:
         prompt_tokens=7,
         completion_tokens=3,
         call_id=call_id,
+        prompt_messages=[{"role": "user", "content": "问题"}],
     )
 
 
@@ -42,6 +49,7 @@ async def test_evaluate_records() -> None:
     assert r.ooc_embed is None                 # embed=None 关 embedding 档
     assert r.prompt_tokens == 7
     assert r.completion_tokens == 3
+    assert store.prompt_messages == [{"role": "user", "content": "问题"}]
 
 
 async def test_evaluate_store_none_no_crash() -> None:

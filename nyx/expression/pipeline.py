@@ -31,7 +31,14 @@ from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
-from nyx.types import CurrentState, LLMOutput, Memory, Message, SelfNarrative
+from nyx.types import (
+    CurrentState,
+    LlmMessage,
+    LLMOutput,
+    Memory,
+    Message,
+    SelfNarrative,
+)
 
 
 def _ask_guidance_for(mode: ContextMode, ask_guidance: str | None) -> str | None:
@@ -155,6 +162,14 @@ def _voice_output(output: LLMOutput, type_: str, content: str) -> LLMOutput:
         prompt_tokens=output.prompt_tokens,
         completion_tokens=output.completion_tokens,
         call_id=output.call_id,
+        prompt_messages=(
+            [
+                LlmMessage(role=message["role"], content=message["content"])
+                for message in output.prompt_messages
+            ]
+            if output.prompt_messages is not None
+            else None
+        ),
     )
 
 

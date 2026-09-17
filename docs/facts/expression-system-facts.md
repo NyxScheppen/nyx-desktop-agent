@@ -55,7 +55,8 @@
   - `respond` 最多继续到 `slow_max_rounds`，问句会提前结束；
   - 最后生成场景记忆，之后记录会话 history。
 - 每轮 `respond` 一次 LLM 调用同时生成 JSON 的 `think` 和 `speak`，解析后分别评估并分别
-  发布文本事件。后续轮次使用累积的前轮 think/speak，任务改为续写。
+  发布文本事件；两条评估记录共享 call_id、token 和最终 prompt。后续轮次使用累积的前轮
+  think/speak，任务改为续写。
 - `THINK`、`SPEAK`、`ASK` 使用同一个上游 `correlation_id`；文本事件载荷由
   `internal_text_event()` 包装为 `{"content": ...}`。
 

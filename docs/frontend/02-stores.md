@@ -223,7 +223,14 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 - **读书 turn 迁出气泡流**：`reading_question`/`reading_association` 并进 `chatStore`（`addReadingTurn`），不再进 `readerStore`；`reading_mutter` 走 `announceStore`。readerStore 只留书架/进度/追赶/笔记。
 - **笔记「给尼克斯看」本地 append**：`showToNyx` 成功把完整 `Annotation` append 到该 note（不整表重拉避免抖动）；LLM 空/失败回 `null` 不 append；失败静默记 `notesError`。用户笔记与 Nyx 章末整合记忆严格分离（后者落 memory 不上屏）。
 
-## 7. 测试（`tests/stores.test.ts`）
+## 7. `evalStore`
+
+- `refresh()` 并行读取最近 5 条评估记录和累计 token；每次刷新清空 prompt 详情缓存。
+- `loadPrompt(recordId)` 只在用户展开记录时请求；成功结果（含 `null` 和空数组）按 record id 缓存，重复展开不重取。
+- loading/error 均按 record id 隔离；失败不写成功缓存，下一次展开或“重试”可重新请求。请求返回时若该记录已不在当前 recent 列表，丢弃晚到结果。
+- `EvalPanel` 用原生 `<details>/<summary>` 展开，按 role 显示转义后的 `<pre>` 文本；长 prompt 在固定最大高度内滚动，不截断内容。
+
+## 8. 测试（`tests/stores.test.ts`）
 
 - **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addInitiateChat`/`addUserMessage`/`addReadingTurn` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id/timestamp）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
 - **chatStore.loadHistory**：按 `timestamp` 升序前置 + `preloaded=true` + 历史 think 入 `typedIds`；已存在的 id 去重不重复前置；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
@@ -233,4 +240,5 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 - **`settingsStore`**：`setTint`/`setImage` 独立落 store 可并存；`reset()` 回 null。
 - **`announceStore`**：`announce` 追加临时气泡（kind/text 落 store、id 唯一）；`dismiss` 摘除指定 id 其余保留；`advanceTimersByTime(ANNOUNCE_DURATION[kind])` 到时自动 dismiss。
 - **`readerStore`（06 + 07）**：`loadBooks` 落 books；`openBook` mock getProgress+getBookParagraphs → 会话态 + totalParagraphs、nyx<user 时 startCatchup；`syncPosition` 前翻 putProgress+evaluateImpulse、回翻不评估；`paginate` 真分页纯函数（贪心封页/空/溢出/GAP_PX）；追赶循环 fake timers 推进/收尾/clearTimeout 不叠加；`loadNotes`/`addNote`（unshift 归一）/`updateNote`（保留 annotations）/`deleteNote`/`showToNyx`（append 不重拉、null 不 append）。
+- **`evalStore`**：refresh 清详情；展开后逐 id 加载、成功缓存、失败可重试、旧记录 `null` 与真实空数组区分；面板安全渲染 Unicode/换行/HTML 字面文本。
 - 全部 mock fetch/无真实后端；验证管道正确（事件走对 store、字段零映射），不验证视觉。

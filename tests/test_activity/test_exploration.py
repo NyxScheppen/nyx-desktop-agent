@@ -7,7 +7,7 @@ from nyx.activity.exploration import Exploration, should_explore
 from nyx.activity.store import ActivityStore
 from nyx.config import ExplorationConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ActivityStatus, ActivityType, MemoryType
+from nyx.enums import ActivityStatus, ActivityType, MemoryKind, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
@@ -234,7 +234,8 @@ async def test_summarize_injects_related_memories() -> None:
     async def search(_topic: str) -> list[Memory]:
         return [
             Memory(
-                id="m1", created_at=1.0, content="旧认知", tag="explore",
+                id="m1", created_at=1.0, content="旧认知",
+                kind=MemoryKind.KNOWLEDGE,
                 summary="之前想过退相干", freshness=1.0,
                 type=MemoryType.SHORT_TERM,
             )

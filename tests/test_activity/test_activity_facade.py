@@ -38,6 +38,7 @@ from nyx.enums import (
     EnergyState,
     EventType,
     GoalAction,
+    MemoryKind,
     MemoryType,
     Source,
 )
@@ -359,7 +360,7 @@ class _FakeMemory:
 
     async def list_memories(
         self,
-        tag: str | None = None,
+        kind: MemoryKind | None = None,
         type: MemoryType | None = None,
         limit: int | None = None,
     ) -> list[Memory]:
@@ -1714,7 +1715,7 @@ def _knowledge_mem(summary: str, content: str) -> Memory:
         id=f"km-{summary}",
         created_at=1.0,
         content=content,
-        tag="knowledge",
+        kind=MemoryKind.KNOWLEDGE,
         summary=summary,
         freshness=1.0,
         type=MemoryType.LONG_TERM,

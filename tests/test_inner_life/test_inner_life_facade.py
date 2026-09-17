@@ -18,6 +18,7 @@ from nyx.enums import (
     DesireType,
     EnergyState,
     EventType,
+    MemoryKind,
     Source,
 )
 from nyx.eval.evaluator import Evaluator
@@ -139,12 +140,14 @@ class _FakeDesireFacade:
 
 
 class _FakeMemoryFacade:
-    async def list_memories(self, tag: str | None = None) -> list[Memory]:
-        del tag
+    async def list_memories(
+        self, kind: MemoryKind | None = None
+    ) -> list[Memory]:
+        del kind
         return []
 
-    async def count_new(self, tag: str | None, since: float) -> int:
-        del tag, since
+    async def count_new(self, kind: MemoryKind | None, since: float) -> int:
+        del kind, since
         return 0
 
 

@@ -1,5 +1,5 @@
 from nyx.db import connect
-from nyx.enums import MemoryEdgeKind, MemoryType, SearchMode
+from nyx.enums import MemoryEdgeKind, MemoryKind, MemoryType, SearchMode
 from nyx.memory.retrieval import (
     EmbedFn,
     MemoryRetrieval,
@@ -20,15 +20,17 @@ def _mem(
     created_at: float = 1.0,
     type: MemoryType = MemoryType.SHORT_TERM,
     embedding: list[float] | None = None,
+    topics: list[str] | None = None,
 ) -> Memory:
     return Memory(
         id=id,
         created_at=created_at,
         content=content,
-        tag="general",
+        kind=MemoryKind.EPISODE,
         summary=summary,
         freshness=freshness,
         type=type,
+        topics=topics or [],
         recall_count=0,
         aspect=[],
         embedding=embedding,
@@ -133,6 +135,20 @@ async def test_search_direct_limit_zero_returns_empty() -> None:
         retrieval = MemoryRetrieval(store, embed=_fake_embed([1.0, 0.0]))
         results = await retrieval.search("alpha", direct_limit=0, association_limit=10)
         assert results == []
+    finally:
+        await db.conn.close()
+
+
+async def test_search_adds_topic_only_association() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("direct", content="alpha", topics=["信任"]))
+        await store.add(_mem("topic-only", content="无关键词", topics=["信任"]))
+        retrieval = MemoryRetrieval(store, embed=None)
+        results = await retrieval.search("alpha", direct_limit=1, association_limit=5)
+        assert [memory.id for memory in results] == ["direct", "topic-only"]
+        assert results[1].sources == [SearchMode.ASSOCIATION]
     finally:
         await db.conn.close()
 

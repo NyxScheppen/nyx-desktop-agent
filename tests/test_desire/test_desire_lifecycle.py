@@ -31,6 +31,7 @@ from nyx.enums import (
     DesireType,
     EventType,
     GoalAction,
+    MemoryKind,
     MemoryType,
     Source,
 )
@@ -105,7 +106,7 @@ def _mem(summary: str = "x", content: str = "y", freshness: float = 1.0) -> Memo
         id="m1",
         created_at=1000.0,
         content=content,
-        tag="reading",
+        kind=MemoryKind.READING,
         summary=summary,
         freshness=freshness,
         type=MemoryType.SHORT_TERM,

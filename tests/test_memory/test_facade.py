@@ -10,7 +10,7 @@ import pytest
 from nyx import db
 from nyx.config import MemoryConfig
 from nyx.db import Database
-from nyx.enums import EventType, MemoryEdgeKind, MemoryType, Source
+from nyx.enums import EventType, MemoryEdgeKind, MemoryKind, MemoryType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient, LlmMessage
@@ -35,12 +35,24 @@ from nyx.types import Event, LLMOutput, Memory
 
 
 def _scene(content: str) -> str:
-    return json.dumps({"content": content, "tag": "cat", "summary": "喜欢猫"})
+    return json.dumps(
+        {
+            "content": content,
+            "kind": "episode",
+            "topics": ["猫"],
+            "summary": "喜欢猫",
+        }
+    )
 
 
 _SCENE_JSON = _scene("用户喜欢猫")
 _NEG_SCENE_JSON = json.dumps(
-    {"content": "我不喜欢猫", "tag": "cat", "summary": "不喜欢猫"}
+    {
+        "content": "我不喜欢猫",
+        "kind": "episode",
+        "topics": ["猫"],
+        "summary": "不喜欢猫",
+    }
 )
 
 
@@ -54,7 +66,7 @@ def _mem(
         id=id,
         created_at=1000.0,
         content=content,
-        tag="old",
+        kind=MemoryKind.EPISODE,
         summary=summary,
         freshness=1.0,
         type=MemoryType.SHORT_TERM,
@@ -199,11 +211,15 @@ def test_decay_freshness() -> None:
 
 
 def test_parse_scene() -> None:
-    assert _parse_scene(_SCENE_JSON) == ("用户喜欢猫", "cat", "喜欢猫")
+    assert _parse_scene(_SCENE_JSON) == (
+        "用户喜欢猫", MemoryKind.EPISODE, ["猫"], "喜欢猫"
+    )
     with pytest.raises(ValueError):
-        _parse_scene('{"content": "x", "summary": "s"}')   # 缺 tag
+        _parse_scene('{"content": "x", "summary": "s"}')   # 缺 kind
     with pytest.raises(ValueError):
-        _parse_scene('{"content": "", "tag": "t", "summary": "s"}')  # 空 content
+        _parse_scene(
+            '{"content":"","kind":"episode","topics":[],"summary":"s"}'
+        )
     with pytest.raises(ValueError):
         _parse_scene("[]")                                 # 非对象
 
@@ -322,7 +338,8 @@ async def test_create_scene_memory_basic() -> None:
         async with _running(bus):
             memory = await facade.create_scene_memory(_ctx())
         assert memory.content == "用户喜欢猫"
-        assert memory.tag == "cat"
+        assert memory.kind is MemoryKind.EPISODE
+        assert memory.topics == ["猫"]
         assert memory.summary == "喜欢猫"
         assert memory.freshness == 1.0
         assert memory.type is MemoryType.SHORT_TERM
@@ -676,7 +693,8 @@ async def test_dedup_exact_same_content() -> None:
         await database.conn.close()
 
 
-async def test_dedup_semantic_merge() -> None:
+async def test_dedup_semantic_merge(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("nyx.memory.facade.time.time", lambda: 1000.0)
     store, bus, database = await _new_stack()
     await store.add(_mem("old-1", [1.0, 0.0]))
     llm = _FakeLlm()
@@ -695,7 +713,10 @@ async def test_dedup_semantic_merge() -> None:
         await database.conn.close()
 
 
-async def test_dedup_semantic_uses_bounded_candidates_and_returns_old_memory() -> None:
+async def test_dedup_semantic_uses_bounded_candidates_and_returns_old_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nyx.memory.facade.time.time", lambda: 1000.0)
     store, bus, database = await _new_stack()
     await store.add(_mem("old-1", [1.0, 0.0]))
     llm = _FakeLlm()
@@ -707,6 +728,27 @@ async def test_dedup_semantic_uses_bounded_candidates_and_returns_old_memory() -
             memory = await facade.create_scene_memory(_ctx())
         assert memory.id == "old-1"
         assert [e for e in events if e.type is EventType.MEMORY_CREATED] == []
+    finally:
+        await database.conn.close()
+
+
+async def test_dedup_semantic_keeps_negated_episode_separate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nyx.memory.facade.time.time", lambda: 1000.0)
+    store, bus, database = await _new_stack()
+    await store.add(
+        _mem("old-1", [1.0, 0.0], content="用户喜欢猫", summary="喜欢猫")
+    )
+    llm = _FakeLlm({"scene_memory": _NEG_SCENE_JSON})
+    facade = _make_facade(
+        store, bus, llm, _FakeEvaluator(), embed=_embed([1.0, 0.0])
+    )
+    try:
+        async with _running(bus):
+            created = await facade.create_scene_memory(_ctx())
+        assert created.id != "old-1"
+        assert len(await facade.list_memories()) == 2
     finally:
         await database.conn.close()
 
@@ -782,15 +824,15 @@ async def test_list_memories_delegates() -> None:
 async def test_count_new_delegates() -> None:
     store, bus, database = await _new_stack()
     m = _mem("m1", None)   # created_at=1000.0
-    m.tag = "reading"
+    m.kind = MemoryKind.READING
     await store.add(m)
     llm = _FakeLlm()
     evaluator = _FakeEvaluator()
     facade = _make_facade(store, bus, llm, evaluator)
     try:
-        assert await facade.count_new("reading", 500.0) == 1
-        assert await facade.count_new("reading", 2000.0) == 0
-        assert await facade.count_new("user", 0.0) == 0
+        assert await facade.count_new(MemoryKind.READING, 500.0) == 1
+        assert await facade.count_new(MemoryKind.READING, 2000.0) == 0
+        assert await facade.count_new(MemoryKind.USER_PROFILE, 0.0) == 0
     finally:
         await database.conn.close()
 
@@ -987,7 +1029,8 @@ async def test_remember_activity_reading() -> None:
         assert len(memories) == 1
         assert memories[0].content == "读后感"
         assert memories[0].summary == "某书"
-        assert memories[0].tag == "reading"
+        assert memories[0].kind is MemoryKind.ACTIVITY
+        assert memories[0].topics == ["reading"]
         assert memories[0].type is MemoryType.SHORT_TERM
         assert llm.calls == []   # 无 LLM 调用（确定性落库）
         [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
@@ -1092,7 +1135,7 @@ async def test_remember_activity_observation_snapshot_rolls_back_on_failure(
 
         memories = await facade.list_memories()
         assert len(memories) == 1
-        assert memories[0].tag == "user"
+        assert memories[0].kind is MemoryKind.USER_PROFILE
     finally:
         await database.conn.close()
 
@@ -1113,11 +1156,11 @@ async def test_remember_activity_creation_and_exploration() -> None:
                     {"summary": "s1", "core_discovery": "cd1"},
                 )
             )
-        by_tag = {m.tag: m for m in await facade.list_memories()}
-        assert by_tag["creation"].content == "正文"
-        assert by_tag["creation"].summary == "标题"
-        assert by_tag["free_exploration"].content == "s1"
-        assert by_tag["free_exploration"].summary == "cd1"
+        by_topic = {m.topics[0]: m for m in await facade.list_memories()}
+        assert by_topic["creation"].content == "正文"
+        assert by_topic["creation"].summary == "标题"
+        assert by_topic["free_exploration"].content == "s1"
+        assert by_topic["free_exploration"].summary == "cd1"
         assert set(llm.calls) <= {"memory_relation"}
     finally:
         await database.conn.close()
@@ -1162,7 +1205,7 @@ async def test_remember_activity_contradiction() -> None:
 
 
 async def test_remember_activity_observe_sediments_profile() -> None:
-    """观察活动 result 带 presence → 沉淀一条 tag='user' 的长期画像记忆（无 LLM）。"""
+    """观察活动 result 带 presence → 沉淀长期用户画像记忆（无 LLM）。"""
     store, bus, database = await _new_stack()
     llm = _FakeLlm()
     evaluator = _FakeEvaluator()
@@ -1180,7 +1223,7 @@ async def test_remember_activity_observe_sediments_profile() -> None:
         assert len(memories) == 1
         m = memories[0]
         assert m.type is MemoryType.LONG_TERM
-        assert m.tag == "user"
+        assert m.kind is MemoryKind.USER_PROFILE
         assert m.aspect == ["presence", "window_title"]
         assert llm.calls == []
     finally:
@@ -1226,8 +1269,11 @@ async def test_remember_user_profile_fields() -> None:
         memories = await facade.list_memories()
         assert len(memories) == 1
         m = memories[0]
-        assert (m.type, m.tag, m.aspect, m.summary) == (
-            MemoryType.LONG_TERM, "user", ["presence", "window_title"], "浏览骑士团史",
+        assert (m.type, m.kind, m.aspect, m.summary) == (
+            MemoryType.LONG_TERM,
+            MemoryKind.USER_PROFILE,
+            ["presence", "window_title"],
+            "浏览骑士团史",
         )
         assert llm.calls == []   # 无 LLM（确定性落库）
         [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
@@ -1258,8 +1304,8 @@ async def test_remember_knowledge() -> None:
             )
         memories = await facade.list_memories()
         assert len(memories) == 2
-        assert {(m.type, m.tag) for m in memories} == {
-            (MemoryType.LONG_TERM, "knowledge")
+        assert {(m.type, m.kind) for m in memories} == {
+            (MemoryType.LONG_TERM, MemoryKind.KNOWLEDGE)
         }
         by_summary = {m.summary: m.content for m in memories}
         assert by_summary == {
@@ -1289,8 +1335,8 @@ async def test_remember_reading() -> None:
         memories = await facade.list_memories()
         assert len(memories) == 1
         m = memories[0]
-        assert (m.type, m.tag, m.summary) == (
-            MemoryType.LONG_TERM, "reading", "读某章",
+        assert (m.type, m.kind, m.summary) == (
+            MemoryType.LONG_TERM, MemoryKind.READING, "读某章",
         )
         assert llm.calls == []   # 无 LLM（确定性落库）
         [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
@@ -1314,8 +1360,10 @@ async def test_record_no_answer() -> None:
         memories = await facade.list_memories()
         assert len(memories) == 1
         m = memories[0]
-        assert (m.type, m.tag, m.summary) == (
-            MemoryType.SHORT_TERM, "interaction", "用户没有回答我的提问",
+        assert (m.type, m.kind, m.summary) == (
+            MemoryType.SHORT_TERM,
+            MemoryKind.INTERACTION,
+            "用户没有回答我的提问",
         )
         assert "你还好吗？" in m.content
         assert llm.calls == []   # 无 LLM（确定性落库）
@@ -1329,7 +1377,7 @@ def test_activity_memory_fields_free_exploration_new_shape() -> None:
     result = {"summary": "弄懂了退相干", "core_discovery": "环境纠缠抹去相干性"}
     mapped = _activity_memory_fields("free_exploration", result)
     assert mapped is not None
-    content, summary, tag = mapped
-    assert tag == "free_exploration"
+    content, summary, activity_type = mapped
+    assert activity_type == "free_exploration"
     assert "退相干" in content
     assert "抹去相干性" in summary

@@ -26,7 +26,7 @@ export default function MemoryPanel() {
             <li key={m.id} className="panel-item">
               <span className="panel-item__main">{m.summary || m.content}</span>
               <span className="panel-item__meta">
-                {m.tag} · {MEMORY_TYPE_LABELS[m.type]}
+                {m.kind} · {MEMORY_TYPE_LABELS[m.type]}
               </span>
               <span className="panel-item__body">{m.content}</span>
             </li>

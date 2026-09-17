@@ -12,7 +12,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from nyx.app_context import _App
-from nyx.enums import BoundaryResult, EventType, MemoryType
+from nyx.enums import BoundaryResult, EventType, MemoryKind, MemoryType
 from nyx.events.bus import EventAdmissionError
 from nyx.reading.facade import (
     BookNotFoundError,
@@ -121,9 +121,9 @@ def build_app(
 
     @fast.get("/api/memories")
     async def api_memories(
-        tag: str | None = None, type: MemoryType | None = None
+        kind: MemoryKind | None = None, type: MemoryType | None = None
     ) -> list[Memory]:
-        return await app.memory.list_memories(tag, type)
+        return await app.memory.list_memories(kind, type)
 
     @fast.get("/api/memories/search")
     async def api_memory_search(q: str) -> list[Memory]:

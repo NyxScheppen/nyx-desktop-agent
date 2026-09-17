@@ -2,7 +2,7 @@
 
 > 本文只记录当前源码已经实现的事实，供 agent 快速理解模块边界和运行路径。
 > 它不是完整契约；需要修改表达系统时，先读本文，再回到唯一完整契约
-> [`specs/11-expression.md`](specs/11-expression.md)，最后以 `nyx/` 源码为准。
+> [`../specs/11-expression.md`](../specs/11-expression.md)，最后以 `nyx/` 源码为准。
 
 ## 模块与职责
 
@@ -128,14 +128,14 @@
 - `subscriptions.py` 是事件订阅注册入口，实际用户消息/tick handler 来自 `runtime.py`。
 - `main.py` 保留兼容委托和启动/HTTP 绑定，不应复制 runtime 的业务逻辑。
 - 本系统使用 EventBus 持久化/广播事件；事件已落库、消费者已完成和前端已收到是不同层次。
-- 具体投递、事务、重放、关停语义以 [`specs/04-module-bus-system.md`](specs/04-module-bus-system.md)
+- 具体投递、事务、重放、关停语义以 [`../specs/04-module-bus-system.md`](../specs/04-module-bus-system.md)
   为准。
 
 ## 事实导航
 
-- 唯一完整契约：[`specs/11-expression.md`](specs/11-expression.md)
-- 记忆召回：[`specs/06-memory-system.md`](specs/06-memory-system.md)
-- 欲望领取与生命周期：[`specs/07-desire.md`](specs/07-desire.md)
+- 唯一完整契约：[`../specs/11-expression.md`](../specs/11-expression.md)
+- 记忆召回：[`../specs/06-memory-system.md`](../specs/06-memory-system.md)
+- 欲望领取与生命周期：[`../specs/07-desire.md`](../specs/07-desire.md)
 - 阅读系统事实与契约：[`reading-system-facts.md`](reading-system-facts.md)、
-  [`specs/12-reading-system.md`](specs/12-reading-system.md)
-- 总线与事务：[`specs/04-module-bus-system.md`](specs/04-module-bus-system.md)
+  [`../specs/12-reading-system.md`](../specs/12-reading-system.md)
+- 总线与事务：[`../specs/04-module-bus-system.md`](../specs/04-module-bus-system.md)

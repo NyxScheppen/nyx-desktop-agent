@@ -6,7 +6,8 @@
 
 - `Memory.created_at` 是创建时间，不随 `update_many`、`strengthen`、`record_recall` 改动。
 - DB 列 `memory.first_created_at` 是首次创建锚点，INSERT 时等于 `created_at`，旧行迁移时回填为当时的 `created_at`。
-- `count_new(tag: str | None, since: float)` 只看 `first_created_at > since`。`tag=None` 表示统计所有 tag；传具体 tag 时只统计该 tag。
+- `count_new(kind: MemoryKind | None, since: float)` 只看 `first_created_at > since`。`kind=None` 表示统计全部记忆。
+- 记忆使用受控 `MemoryKind` 和最多五项 `topics`；旧 `tag` 数据在 schema 19 迁移时清空。
 
 ## 计数语义
 
@@ -32,6 +33,6 @@
 
 ## 活动记忆
 
-- `reading` 活动记忆：`result.note` 作 content，`result.book` 作 summary，tag=`reading`。
-- `creation` 活动记忆：`result.content` 作 content，`result.title` 作 summary，tag=`creation`。
-- `free_exploration` 活动记忆：`result.summary` 作 content，`result.core_discovery` 作 summary，tag=`free_exploration`。`findings`/`knowledge` 可存在于活动结果，但不是活动记忆的主字段。
+- `reading` 活动记忆：`result.note` 作 content，`result.book` 作 summary，kind=`activity`。
+- `creation` 活动记忆：`result.content` 作 content，`result.title` 作 summary，kind=`activity`。
+- `free_exploration` 活动记忆：`result.summary` 作 content，`result.core_discovery` 作 summary，kind=`activity`。`findings`/`knowledge` 可存在于活动结果，但不是活动记忆的主字段。

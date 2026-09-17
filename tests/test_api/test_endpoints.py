@@ -11,6 +11,7 @@ from nyx.enums import (
     EmotionCategory,
     EnergyState,
     EventType,
+    MemoryKind,
     MemoryType,
     Source,
 )
@@ -57,7 +58,8 @@ def _mk_state() -> CurrentState:
 
 def _mem() -> Memory:
     return Memory(
-        id="m1", created_at=0.0, content="内容", tag="user", summary="摘要",
+        id="m1", created_at=0.0, content="内容",
+        kind=MemoryKind.USER_PROFILE, summary="摘要",
         freshness=1.0, type=MemoryType.SHORT_TERM,
     )
 
@@ -80,14 +82,14 @@ class _FakeInnerLife:
 
 class _FakeMemory:
     def __init__(self) -> None:
-        self.list_calls: list[tuple[str | None, MemoryType | None]] = []
+        self.list_calls: list[tuple[MemoryKind | None, MemoryType | None]] = []
         self.export_calls: list[str] = []
         self.search_calls: list[str] = []
 
     async def list_memories(
-        self, tag: str | None = None, type: MemoryType | None = None
+        self, kind: MemoryKind | None = None, type: MemoryType | None = None
     ) -> list[Memory]:
-        self.list_calls.append((tag, type))
+        self.list_calls.append((kind, type))
         return [_mem()]
 
     async def search(self, query: str) -> list[Memory]:
@@ -190,11 +192,12 @@ async def test_memories_endpoint() -> None:
     memory = _FakeMemory()
     async with _client(_app(_mk_state(), _FakeBus(), memory)) as client:
         resp = await client.get(
-            "/api/memories", params={"tag": "user", "type": "long_term"}
+            "/api/memories",
+            params={"kind": "user_profile", "type": "long_term"},
         )
     assert resp.status_code == 200
     assert [m["type"] for m in resp.json()] == ["short_term"]
-    assert memory.list_calls == [("user", MemoryType.LONG_TERM)]
+    assert memory.list_calls == [(MemoryKind.USER_PROFILE, MemoryType.LONG_TERM)]
 
 
 async def test_memory_search_endpoint() -> None:

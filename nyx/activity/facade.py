@@ -16,7 +16,7 @@ from nyx.activity.starter import ActivityStarter, schedule_block_id
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ActivityType, EventType, TickType
+from nyx.enums import ActivityType, EventType, MemoryKind, TickType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY
@@ -279,7 +279,9 @@ class ActivityFacade:
             checkpoint["style"] = _pick_creation_style()
             await self._save_creation_checkpoint(activity, checkpoint)
         if not bool(checkpoint.get("llm_done")):
-            knowledge = await self._memory.list_memories(tag="knowledge", limit=3)
+            knowledge = await self._memory.list_memories(
+                kind=MemoryKind.KNOWLEDGE, limit=3
+            )
             obs = await self._get_observation()
             state = await self._get_state()
             context = _build_creation_context(

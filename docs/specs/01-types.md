@@ -25,9 +25,9 @@
 - **新文件**：`nyx/enums.py`、`nyx/types.py`（无 Facade、无 API、无数据变更）
 - **约定**：枚举统一 `class X(StrEnum)`，成员 `UPPER_SNAKE`、值 = `成员名.lower()` 的 snake_case；dataclass 默认值用枚举成员而非裸字符串。
 - **公开面**：`nyx/__init__.py` 保持空（不 re-export）；引用一律 `from nyx.enums import X` / `from nyx.types import Y`，不从 `nyx` 根导入；两模块不加 `__all__`（CLAUDE.md 禁 `*` 导入，`__all__` 是死代码）。
-- **枚举清单（17 个）**：`EventType`、`Source`、`TickType`、`ContextMode`、`EmotionCategory`、`DesireType`、`ActivityType`、`MemoryType`、`MemoryEdgeKind`、`ReadingDrive`、`ReadingBehavior`、`DesireStatus`、`ActivityStatus`、`EnergyState`、`SearchMode`、`GoalAction`、`BoundaryResult`。枚举成员与领域语义以 `nyx/enums.py` 及对应业务 spec 为准。
+- **枚举清单**：包含 `MemoryKind`；枚举成员与领域语义以 `nyx/enums.py` 及对应业务 spec 为准。
 - **实体清单（24 个 dataclass）**：事件 `Event`；记忆 `Memory` / `MemoryEdge`；欲望 `Goal` / `ShortTermDesire` / `LongTermDesire` / `DesireValue` / `DesireState`；活动 `Activity` / `Material`；内在生命 `CurrentState` / `SelfNarrative` / `ReflectionOutcome`；表达 `Message`；工具/eval `Tool` / `LLMOutput` / `EvalRecord` / `EvalStats`；陪读 `Book` / `Paragraph` / `ReadingProgress` / `BookListItem` / `UserNote` / `Annotation`。字段形状以 `nyx/types.py` 为准。
-- **记忆类型字段**：`Memory.sources` 的类型与默认值由本文件定义，检索来源、持久化和 API 语义由 `06-memory-system` 定义；`MemoryEdge` 的字段与默认值由本文件定义，端点和 typed edge 的存储语义由 `06-memory-system` 定义。
+- **记忆类型字段**：`Memory.kind` 使用 `MemoryKind`，`Memory.topics` 为受限主题列表；`Memory.sources` 的类型与默认值由本文件定义，检索来源、持久化和 API 语义由 `06-memory-system` 定义。
 
 ### 嵌套 dict 字段的边界（哪些收 TypedDict / 哪些留 `dict[str, Any]`）
 

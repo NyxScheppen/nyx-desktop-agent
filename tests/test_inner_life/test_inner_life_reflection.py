@@ -7,7 +7,7 @@ import pytest
 from nyx import db
 from nyx.config import DesireConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import DesireType, MemoryType
+from nyx.enums import DesireType, MemoryKind, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.inner_life.reflection import (
     _LONG_TERM_INIT_STRENGTH,
@@ -126,20 +126,20 @@ class _FakeMemoryFacade:
 
     async def list_memories(
         self,
-        tag: str | None = None,
+        kind: MemoryKind | None = None,
         type: MemoryType | None = None,
         limit: int | None = None,
     ) -> list[Memory]:
         del type, limit
-        if tag is None:
+        if kind is None:
             return self._memories
-        return [m for m in self._memories if m.tag == tag]
+        return [m for m in self._memories if m.kind is kind]
 
-    async def count_new(self, tag: str | None, since: float) -> int:
+    async def count_new(self, kind: MemoryKind | None, since: float) -> int:
         return sum(
             1
             for m in self._memories
-            if (tag is None or m.tag == tag) and m.created_at > since
+            if (kind is None or m.kind is kind) and m.created_at > since
         )
 
 
@@ -235,7 +235,7 @@ def test_build_reflection_prompt() -> None:
             id="m1",
             created_at=1.0,
             content="c",
-            tag="user",
+            kind=MemoryKind.USER_PROFILE,
             summary="用户喜欢历史",
             freshness=1.0,
             type=MemoryType.SHORT_TERM,
@@ -697,12 +697,14 @@ async def test_run_unseeded_raises() -> None:
 
 # ---- 审美维度：阅读量缩放漂移 ----
 
-def _reading_memory(created_at: float, tag: str = "reading") -> Memory:
+def _reading_memory(
+    created_at: float, kind: MemoryKind = MemoryKind.READING
+) -> Memory:
     return Memory(
         id=f"r{created_at}",
         created_at=created_at,
         content="读书记忆",
-        tag=tag,
+        kind=kind,
         summary="读了一章",
         freshness=1.0,
         type=MemoryType.LONG_TERM,
@@ -764,6 +766,6 @@ async def test_run_aesthetic_three_reading_full() -> None:
 
 async def test_run_aesthetic_ignores_non_reading() -> None:
     a = await _run_and_get_aesthetic(
-        [_reading_memory(2000.0, tag="user")], {"ornate": 0.3}
+        [_reading_memory(2000.0, kind=MemoryKind.USER_PROFILE)], {"ornate": 0.3}
     )
-    assert a == _AESTHETIC  # tag='user' 不计入新读章数
+    assert a == _AESTHETIC  # user_profile 不计入新读章数

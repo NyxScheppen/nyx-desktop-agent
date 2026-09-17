@@ -6,9 +6,9 @@
 
 ## 当前快照
 
-- 后端测试文件：62
-- `pytest --collect-only -q`：855 tests collected
-- 最近一次全量验证：`854 passed, 1 skipped`
+- 后端测试文件：63
+- `pytest --collect-only -q`：866 tests collected
+- 最近一次全量验证：`865 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -24,7 +24,7 @@
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
 | API/运行时 | `tests/test_api/` | 5 | 组合根、REST、订阅、tick、恢复重放 |
 | 工具 | `tests/test_tools/` | 5 | 文件、搜索、工具注册和网络抓取 |
-| 记忆 | `tests/test_memory/` | 5 | store、ANN、融合召回、联想图、Facade |
+| 记忆 | `tests/test_memory/` | 6 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、满足、重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
 | 活动 | `tests/test_activity/` | 13 | 排期、活动生命周期、探索、观察、读书恢复 |
@@ -78,6 +78,8 @@
 
 - `test_search_fuses_vector_keyword_and_limits_direct_then_association`
 - `test_associate_depth_two_scores_and_excludes_seeds`
+- kind-scoped exact/semantic dedup and humanized memory prompt regressions
+- schema 19 clears legacy memory/edges and installs kind/topics indexes
 - `test_resume_skips_committed_fragment`
 - `test_resume_skips_finalized_note_and_knowledge`
 - `test_summarize_injects_related_memories`

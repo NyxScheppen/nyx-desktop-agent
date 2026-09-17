@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -7,11 +8,11 @@ from dataclasses import dataclass
 import aiosqlite
 
 from nyx.db import Database
-from nyx.enums import MemoryEdgeKind, MemoryType
+from nyx.enums import MemoryEdgeKind, MemoryKind, MemoryType
 from nyx.types import Memory, MemoryEdge
 
 _MEMORY_COLS = (
-    "id, created_at, content, tag, summary, freshness, "
+    "id, created_at, content, kind, topics, summary, freshness, "
     "type, recall_count, aspect, embedding"
 )
 # INSERT 用：比 SELECT 多 content_hash + first_created_at（store 派生，Memory 不承载）
@@ -26,8 +27,10 @@ class KeywordSearchHit:
 
 
 def hash_content(content: str) -> str:
-    """content → SHA-256 hex 精确哈希（去重键）。纯函数。"""
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    """Canonical content → SHA-256 hex exact-dedup key."""
+    canonical = re.sub(r"\s+", " ", content.strip())
+    canonical = canonical.replace("，", ",").replace("。", ".")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class MemoryStore:
@@ -59,7 +62,7 @@ class MemoryStore:
         async with self._operation() as should_commit:
             await self._db.conn.execute(
                 f"INSERT INTO memory ({_MEMORY_INSERT_COLS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (*_memory_row(memory), hash_content(memory.content),
                  memory.created_at),
             )
@@ -74,27 +77,30 @@ class MemoryStore:
             row = await cursor.fetchone()
         return _row_to_memory(row) if row is not None else None
 
-    async def find_by_content(self, content: str) -> Memory | None:
-        """按 content 精确哈希查重：命中返回已有记忆，未命中 None。"""
+    async def find_by_content(
+        self, content: str, kind: MemoryKind
+    ) -> Memory | None:
+        """在同一 kind 内按 content 精确哈希查重。"""
         async with self._operation():
             cursor = await self._db.conn.execute(
-                f"SELECT {_MEMORY_COLS} FROM memory WHERE content_hash = ?",
-                (hash_content(content),),
+                f"SELECT {_MEMORY_COLS} FROM memory "
+                "WHERE kind = ? AND content_hash = ?",
+                (kind.value, hash_content(content)),
             )
             row = await cursor.fetchone()
         return _row_to_memory(row) if row is not None else None
 
     async def list_memories(
         self,
-        tag: str | None = None,
+        kind: MemoryKind | None = None,
         type: MemoryType | None = None,
         limit: int | None = None,
     ) -> list[Memory]:
         clauses: list[str] = []
         params: list[str] = []
-        if tag is not None:
-            clauses.append("tag = ?")
-            params.append(tag)
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind.value)
         if type is not None:
             clauses.append("type = ?")
             params.append(type.value)
@@ -115,11 +121,12 @@ class MemoryStore:
         async with self._operation() as should_commit:
             for m in memories:
                 await self._db.conn.execute(
-                    "UPDATE memory SET content = ?, tag = ?, summary = ?, "
+                    "UPDATE memory SET content = ?, kind = ?, topics = ?, summary = ?, "
                     "freshness = ?, type = ?, recall_count = ?, aspect = ?, "
                     "embedding = ?, content_hash = ? WHERE id = ?",
                     (
-                        m.content, m.tag, m.summary, m.freshness,
+                        m.content, m.kind.value, json.dumps(m.topics),
+                        m.summary, m.freshness,
                         m.type.value, m.recall_count, json.dumps(m.aspect),
                         _embedding_json(m.embedding),
                         hash_content(m.content),
@@ -169,14 +176,14 @@ class MemoryStore:
                 await self._db.conn.commit()
         return promoted
 
-    async def count_new(self, tag: str | None, since: float) -> int:
-        """计数「首次创建晚于 since 的 tag 记忆」，不物化整行/embedding。
+    async def count_new(self, kind: MemoryKind | None, since: float) -> int:
+        """计数「首次创建晚于 since 的 kind 记忆」，不物化整行/embedding。
 
         用 first_created_at（INSERT 时定格、strengthen/update_many 不刷新）。
-        tag=None 表示全量计数，供定时反思判断是否有足够新记忆。
+        kind=None 表示全量计数，供定时反思判断是否有足够新记忆。
         """
         async with self._operation():
-            if tag is None:
+            if kind is None:
                 cursor = await self._db.conn.execute(
                     "SELECT COUNT(*) FROM memory WHERE first_created_at > ?",
                     (since,),
@@ -184,8 +191,8 @@ class MemoryStore:
             else:
                 cursor = await self._db.conn.execute(
                     "SELECT COUNT(*) FROM memory "
-                    "WHERE tag = ? AND first_created_at > ?",
-                    (tag, since),
+                    "WHERE kind = ? AND first_created_at > ?",
+                    (kind.value, since),
                 )
             row = await cursor.fetchone()
         return int(row[0]) if row is not None else 0
@@ -331,9 +338,9 @@ class MemoryStore:
 
 def _memory_row(
     m: Memory,
-) -> tuple[str, float, str, str, str, float, str, int, str, str | None]:
+) -> tuple[str, float, str, str, str, str, float, str, int, str, str | None]:
     return (
-        m.id, m.created_at, m.content, m.tag, m.summary,
+        m.id, m.created_at, m.content, m.kind.value, json.dumps(m.topics), m.summary,
         m.freshness, m.type.value, m.recall_count, json.dumps(m.aspect),
         _embedding_json(m.embedding),
     )
@@ -361,7 +368,8 @@ def _row_to_memory(row: aiosqlite.Row) -> Memory:
         id=row["id"],
         created_at=row["created_at"],
         content=row["content"],
-        tag=row["tag"],
+        kind=MemoryKind(row["kind"]),
+        topics=json.loads(row["topics"]),
         summary=row["summary"],
         freshness=row["freshness"],
         type=MemoryType(row["type"]),

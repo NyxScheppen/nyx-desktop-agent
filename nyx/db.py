@@ -276,7 +276,8 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
         [
             # 陪读进度：1:1 书（book_id PK），12-reading-system。
             # user/nyx_position 从 1 起（与 paragraphs."index" 对齐）；
-            # reading_speed 10-200；read_count 只由 12-reading-system 整本读完 ++，默认 0。
+            # reading_speed 10-200；read_count 只由 12-reading-system
+            # 整本读完 ++，默认 0。
             """CREATE TABLE reading_progress (
                 book_id TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
                 user_position INTEGER NOT NULL DEFAULT 1,
@@ -469,6 +470,19 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
                 "ALTER TABLE reading_progress ADD COLUMN revision "
                 "INTEGER NOT NULL DEFAULT 0"
             ),
+        ],
+    ),
+    (
+        19,
+        [
+            # 记忆标签正式替换为受控 kind；旧记忆及其关系/召回状态按产品决策清空。
+            "DELETE FROM memory_edge",
+            "DELETE FROM memory",
+            "DROP INDEX IF EXISTS idx_memory_tag",
+            "ALTER TABLE memory RENAME COLUMN tag TO kind",
+            "ALTER TABLE memory ADD COLUMN topics TEXT NOT NULL DEFAULT '[]'",
+            "CREATE INDEX idx_memory_kind ON memory(kind)",
+            "CREATE INDEX idx_memory_kind_hash ON memory(kind, content_hash)",
         ],
     ),
 ]

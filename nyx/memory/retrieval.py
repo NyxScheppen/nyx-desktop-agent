@@ -7,7 +7,7 @@ from typing import cast
 
 from nyx.enums import MemoryType, SearchMode
 from nyx.memory.ann import AnnIndex, ann_fingerprint
-from nyx.memory.graph import MemoryGraph
+from nyx.memory.graph import AssociationHit, MemoryGraph
 from nyx.memory.store import KeywordSearchHit, MemoryStore
 from nyx.types import Memory
 
@@ -15,6 +15,8 @@ EmbedFn = Callable[[str], Awaitable[list[float]]]
 
 _RECALL_VECTOR_CANDIDATE_K = 80
 _RECALL_KEYWORD_CANDIDATE_K = 80
+_TOPIC_BUCKET_LIMIT = 8
+_TOPIC_ASSOCIATION_LIMIT = 5
 _STOP_WORDS = {
     "这个",
     "那个",
@@ -153,6 +155,20 @@ class MemoryRetrieval:
             limit=association_limit,
             exclude=set(seeds),
         )
+        topic_hits = self._topic_associate(
+            direct_ranked, all_memories, association_limit, set(seeds)
+        )
+        combined_hits: dict[str, AssociationHit | _TopicHit] = {
+            hit.memory_id: hit for hit in association_hits
+        }
+        for hit in topic_hits:
+            current = combined_hits.get(hit.memory_id)
+            if current is None or hit.score > current.score:
+                combined_hits[hit.memory_id] = hit
+        association_hits = sorted(
+            combined_hits.values(),
+            key=lambda hit: (-hit.score, hit.depth, hit.memory_id),
+        )[:association_limit]
         association_memories: list[Memory] = []
         for hit in association_hits:
             memory = by_id.get(hit.memory_id)
@@ -161,6 +177,42 @@ class MemoryRetrieval:
             memory.sources = [SearchMode.ASSOCIATION]
             association_memories.append(memory)
         return [*direct_memories, *association_memories]
+
+    def _topic_associate(
+        self,
+        seeds: list[RankedMemory],
+        memories: list[Memory],
+        limit: int,
+        exclude: set[str],
+    ) -> list["_TopicHit"]:
+        if limit <= 0:
+            return []
+        buckets: dict[str, list[Memory]] = {}
+        for memory in memories:
+            for topic in memory.topics:
+                buckets.setdefault(topic, []).append(memory)
+        scores: dict[str, float] = {}
+        for seed in seeds:
+            for topic in seed.memory.topics:
+                bucket = sorted(
+                    buckets.get(topic, []),
+                    key=lambda memory: (
+                        -memory.freshness, -memory.created_at, memory.id
+                    ),
+                )[:_TOPIC_BUCKET_LIMIT]
+                scale = 1.0 / math.log2(2.0 + len(buckets.get(topic, [])))
+                for candidate in bucket:
+                    if candidate.id in exclude:
+                        continue
+                    overlap = len(set(seed.memory.topics) & set(candidate.topics))
+                    score = seed.score * max(1, overlap) * 0.20 * scale
+                    scores[candidate.id] = max(scores.get(candidate.id, 0.0), score)
+        return [
+            _TopicHit(memory_id, score)
+            for memory_id, score in sorted(
+                scores.items(), key=lambda item: (-item[1], item[0])
+            )[: min(limit, _TOPIC_ASSOCIATION_LIMIT)]
+        ]
 
     async def _ann_index(self, memories: list[Memory]) -> AnnIndex:
         fingerprint = ann_fingerprint(memories)
@@ -259,3 +311,10 @@ def _keyword_score(hit: KeywordSearchHit | None, query_token_count: int) -> floa
     content_hit_ratio = len(content_tokens) / query_token_count
     field_score = min(1.0, 0.7 * summary_hit_ratio + 0.3 * content_hit_ratio)
     return min(1.0, 0.7 * coverage + 0.3 * field_score)
+
+
+@dataclass
+class _TopicHit:
+    memory_id: str
+    score: float
+    depth: int = 1

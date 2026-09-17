@@ -11,6 +11,7 @@ from nyx.enums import (
     DesireType,
     EmotionCategory,
     EnergyState,
+    MemoryKind,
     MemoryType,
 )
 from nyx.types import (
@@ -88,7 +89,7 @@ def _memory() -> Memory:
         id="m1",
         created_at=1.0,
         content="成立于 1147 年",
-        tag="knowledge",
+        kind=MemoryKind.KNOWLEDGE,
         summary="骑士团",
         freshness=1.0,
         type=MemoryType.LONG_TERM,

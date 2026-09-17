@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false
 import asyncio
 from pathlib import Path
+from typing import cast
 
 import aiosqlite
 import pytest
@@ -102,7 +103,7 @@ async def test_migrate_creates_all_tables() -> None:
     assert len(names) == 24
 
 
-async def test_migrate_creates_six_indexes() -> None:
+async def test_migrate_creates_expected_indexes() -> None:
     conn = await _migrated_conn()
     try:
         cursor = await conn.execute(
@@ -112,7 +113,8 @@ async def test_migrate_creates_six_indexes() -> None:
     finally:
         await conn.close()
     assert names == {
-        "idx_memory_tag",
+        "idx_memory_kind",
+        "idx_memory_kind_hash",
         "idx_memory_type",
         "idx_event_log_corr",
         "idx_memory_content_hash",
@@ -267,7 +269,7 @@ async def test_memory_edge_migration_canonicalizes_reverse_edges(
             "VALUES ('b', 'a', 0.9)"
         )
         await conn.commit()
-        monkeypatch.setattr(db, "_MIGRATIONS", full)
+        monkeypatch.setattr(db, "_MIGRATIONS", [m for m in full if m[0] <= 14])
         await db.migrate(conn)
         rows = await (await conn.execute(
             "SELECT from_id, to_id, kind, weight, created_at FROM memory_edge"
@@ -278,6 +280,50 @@ async def test_memory_edge_migration_canonicalizes_reverse_edges(
         (r["from_id"], r["to_id"], r["kind"], r["weight"], r["created_at"])
         for r in rows
     ] == [("a", "b", "semantic", 0.9, 0.0)]
+
+
+async def test_memory_kind_migration_clears_legacy_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = db._MIGRATIONS
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        monkeypatch.setattr(db, "_MIGRATIONS", [m for m in full if m[0] <= 18])
+        await db.migrate(conn)
+        for mid in ("a", "b"):
+            await conn.execute(
+                "INSERT INTO memory (id, created_at, content, tag, summary, freshness, "
+                "type, recall_count, aspect, embedding, content_hash, "
+                "first_created_at) VALUES (?, 1.0, ?, 'legacy', 's', 1.0, "
+                "'short_term', 0, '[]', NULL, ?, 1.0)",
+                (mid, mid, mid),
+            )
+        await conn.execute(
+            "INSERT INTO memory_edge (from_id, to_id, kind, weight, created_at) "
+            "VALUES ('a', 'b', 'semantic', 0.9, 1.0)"
+        )
+        await conn.commit()
+        monkeypatch.setattr(db, "_MIGRATIONS", full)
+        await db.migrate(conn)
+        memory_row = await (await conn.execute(
+            "SELECT COUNT(*) AS count FROM memory"
+        )).fetchone()
+        edge_row = await (await conn.execute(
+            "SELECT COUNT(*) AS count FROM memory_edge"
+        )).fetchone()
+        assert memory_row is not None
+        assert edge_row is not None
+        memory_count = cast(int, memory_row["count"])
+        edge_count = cast(int, edge_row["count"])
+        cursor = await conn.execute("PRAGMA table_info(memory)")
+        columns = {row["name"] for row in await cursor.fetchall()}
+    finally:
+        await conn.close()
+    assert memory_count == 0
+    assert edge_count == 0
+    assert "kind" in columns and "topics" in columns and "tag" not in columns
 
 
 async def test_migrate_sets_version_to_max() -> None:

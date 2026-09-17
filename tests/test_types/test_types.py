@@ -1,6 +1,6 @@
 from typing import get_type_hints
 
-from nyx.enums import DesireStatus, DesireType, MemoryType
+from nyx.enums import DesireStatus, DesireType, MemoryKind, MemoryType
 from nyx.types import (
     LongTermDesire,
     Memory,
@@ -17,8 +17,8 @@ def test_short_term_desire_default_status() -> None:
 
 
 def test_memory_aspect_default_factory_isolated() -> None:
-    first = Memory("", 0.0, "", "", "", 1.0, MemoryType.SHORT_TERM)
-    second = Memory("", 0.0, "", "", "", 1.0, MemoryType.SHORT_TERM)
+    first = Memory("", 0.0, "", MemoryKind.EPISODE, "", 1.0, MemoryType.SHORT_TERM)
+    second = Memory("", 0.0, "", MemoryKind.EPISODE, "", 1.0, MemoryType.SHORT_TERM)
     first.aspect.append("x")
     assert second.aspect == []
 

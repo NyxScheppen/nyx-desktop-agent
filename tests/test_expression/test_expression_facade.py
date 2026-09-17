@@ -15,6 +15,7 @@ from nyx.enums import (
     EmotionCategory,
     EnergyState,
     EventType,
+    MemoryKind,
     MemoryType,
 )
 from nyx.eval.evaluator import Evaluator
@@ -149,11 +150,15 @@ class _FakeMemory:
 
     async def list_memories(
         self,
-        tag: str | None = None,
+        kind: MemoryKind | None = None,
         type: MemoryType | None = None,
         limit: int | None = None,
     ) -> list[Memory]:
-        source = self.user_profile if tag == "user" else self.recent_memories
+        source = (
+            self.user_profile
+            if kind is MemoryKind.USER_PROFILE
+            else self.recent_memories
+        )
         return list(source[:limit]) if limit is not None else list(source)
 
     async def record_recall(self, memory_id: str) -> None:
@@ -165,7 +170,7 @@ class _FakeMemory:
             id="mem-1",
             created_at=0.0,
             content="",
-            tag="",
+            kind=MemoryKind.EPISODE,
             summary="",
             freshness=1.0,
             type=MemoryType.SHORT_TERM,
@@ -410,7 +415,7 @@ async def test_reply_slow_records_recall() -> None:
             id="m1",
             created_at=0.0,
             content="c1",
-            tag="user",
+            kind=MemoryKind.USER_PROFILE,
             summary="",
             freshness=1.0,
             type=MemoryType.SHORT_TERM,
@@ -419,7 +424,7 @@ async def test_reply_slow_records_recall() -> None:
             id="m2",
             created_at=0.0,
             content="c2",
-            tag="user",
+            kind=MemoryKind.USER_PROFILE,
             summary="",
             freshness=1.0,
             type=MemoryType.SHORT_TERM,
@@ -568,12 +573,14 @@ async def test_reading_turn_slow_backtrack_preserved() -> None:
 # ---- mutter ----
 
 
-def _mk_memory(summary: str, tag: str = "") -> Memory:
+def _mk_memory(
+    summary: str, kind: MemoryKind = MemoryKind.EPISODE
+) -> Memory:
     return Memory(
         id="m1",
         created_at=0.0,
         content="",
-        tag=tag,
+        kind=kind,
         summary=summary,
         freshness=1.0,
         type=MemoryType.SHORT_TERM,
@@ -662,7 +669,9 @@ async def test_mutter_desire_fills(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def test_mutter_user_fills(monkeypatch: pytest.MonkeyPatch) -> None:
     memory = _FakeMemory()
-    memory.user_profile = [_mk_memory("你喜欢安静", tag="user")]
+    memory.user_profile = [
+        _mk_memory("你喜欢安静", kind=MemoryKind.USER_PROFILE)
+    ]
     facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade(memory=memory)
     monkeypatch.setattr(
         "nyx.expression.facade.random.random",
@@ -679,7 +688,9 @@ async def test_mutter_user_naturalizes_presence(
 ) -> None:
     # 用户画像 summary 是观察串「用户（away）」→ 润色成「你走开了」，raw 枚举不泄漏
     memory = _FakeMemory()
-    memory.user_profile = [_mk_memory("用户（away）", tag="user")]
+    memory.user_profile = [
+        _mk_memory("用户（away）", kind=MemoryKind.USER_PROFILE)
+    ]
     facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade(memory=memory)
     monkeypatch.setattr(
         "nyx.expression.facade.random.random",

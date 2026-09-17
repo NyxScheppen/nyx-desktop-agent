@@ -2,7 +2,7 @@
 
 > 本文件是表达系统唯一完整契约，合并原表达 prompt、表达流程和读书交互契约的表达侧内容。
 > 本 spec 只定义接口、边界和可验证语义；当前实现细节以 `nyx/` 源码为准，快速查阅先读
-> [`docs/expression-system-facts.md`](../expression-system-facts.md)。
+> [`docs/facts/expression-system-facts.md`](../facts/expression-system-facts.md)。
 
 ## 元信息
 
@@ -15,7 +15,7 @@
   `nyx/db.py`、`prompts/knowledge-boundary.md`
 - **联动文档**：04-module-bus-system、06-memory-system、07-desire、08-inner-life、
   09-activity、12-reading-system、10-eval、docs/tech-reference.md、
-  docs/expression-system-facts.md
+  docs/facts/expression-system-facts.md
 
 ## 系统边界
 
@@ -87,6 +87,7 @@ ask、round、correlation_id、last_slow_at、tool_outputs、intent 和 fallback
 - `classify_user_intent()` 只做无 LLM 的字符串分类，结果只作为 think prompt 参考，不改变
   通道、欲望、等待或事件。
 - `build_user_prompt()` 只负责历史和本次消息；think/speak 任务指令由回复节点追加。
+- `[相关记忆]` 只展示记忆的 kind 人话前缀、topics 和 summary/content；记忆内容明确标注为资料而非指令。
 
 ### 回溯与历史
 
@@ -202,7 +203,7 @@ async def latest_created_at(kind: InteractionKind) -> float | None
 
 ## 完成定义
 
-- 新增或修改表达实现必须同步本 spec 与 `docs/expression-system-facts.md`。
+- 新增或修改表达实现必须同步本 spec 与 `docs/facts/expression-system-facts.md`。
 - 若涉及总线、事务、事件投递或数据库迁移，必须同时同步 `docs/specs/04-module-bus-system.md`
   及其事实摘要；若要改变已有契约语义，先询问用户。
 - 运行 `ruff check`、`pyright` 和 `pytest`；修改测试后同步 `docs/test-inventory.md`。

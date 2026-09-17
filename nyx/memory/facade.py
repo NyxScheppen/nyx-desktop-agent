@@ -2,12 +2,13 @@ import json
 import logging
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 from uuid import uuid4
 
 from nyx.config import MemoryConfig
-from nyx.enums import EventType, MemoryEdgeKind, MemoryType
+from nyx.enums import EventType, MemoryEdgeKind, MemoryKind, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, internal_event
@@ -21,8 +22,10 @@ _SCENE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
     "你温柔、克制、思虑很深，关怀他人，也习惯先怀疑自己。"
     "把下面这段对话写成一条第一人称场景记忆（尼克斯视角）：用户说了什么、你内心怎么想、最后说了什么。"
-    "只输出 JSON，键：content（正文）、tag（标签）、summary（一句话总结），"
-    "三者都是非空字符串。"
+    "只输出 JSON，键：content（正文）、"
+    "kind（episode/user_profile/knowledge/reading/activity/interaction）、"
+    "topics（最多 5 个主题字符串）、summary（一句话总结），"
+    "content、kind、summary 非空；topics 可以为空数组。"
 )
 
 _CONTRADICTION_SYSTEM = (
@@ -39,6 +42,8 @@ _PERSIST_SEMANTIC_CANDIDATE_K = 200
 _CONTRADICTION_CANDIDATE_K = 5
 _CONTRADICTION_SIM_THRESHOLD = 0.6
 _DEDUP_SIM_THRESHOLD = 0.95
+_EPISODE_DEDUP_SIM_THRESHOLD = 0.985
+_EPISODE_DEDUP_WINDOW_SECONDS = 3600.0
 _EDGE_SEMANTIC_CANDIDATE_K = 40
 _EDGE_ENTITY_CANDIDATE_K = 40
 _EDGE_KEYWORD_CANDIDATE_K = 40
@@ -51,6 +56,12 @@ _KEYWORD_THRESHOLD = 0.25
 _TEMPORAL_WINDOW_SECONDS = 86400.0
 _CONTENT_PREVIEW_CHARS = 60
 _NEGATION_WORDS = ("不", "没", "别", "讨厌", "恨", "拒绝", "否认", "放弃", "再也不")
+_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9_])\d+(?:\.\d+)?(?![A-Za-z0-9_])")
+_TIME_ANCHOR_RE = re.compile(
+    r"今天|明天|后天|昨天|前天|今晚|今早|今晨|"
+    r"本周|上周|下周|本月|上月|下月|今年|去年|明年|"
+    r"上午|下午|晚上|凌晨"
+)
 _ENTITY_BOOK_RE = re.compile(r"《([^》]{2,80})》")
 _ENTITY_ASCII_RE = re.compile(r"[A-Za-z0-9_]{2,}")
 _ENTITY_PROPER_RE = re.compile(r"[A-Z][A-Za-z0-9_]*(?:\s+[A-Z][A-Za-z0-9_]*)*")
@@ -85,9 +96,10 @@ class PersistSemanticHit:
 
 def _new_memory(
     content: str,
-    tag: str,
+    kind: MemoryKind,
     summary: str,
     type: MemoryType,
+    topics: list[str] | None = None,
     aspect: list[str] | None = None,
 ) -> Memory:
     """构造一条新记忆：id/created_at/freshness/recall_count/embedding 固定尾段。
@@ -98,10 +110,11 @@ def _new_memory(
         id=str(uuid4()),
         created_at=time.time(),
         content=content,
-        tag=tag,
+        kind=kind,
         summary=summary,
         freshness=1.0,
         type=type,
+        topics=_normalize_topics(topics or []),
         recall_count=0,
         aspect=aspect if aspect is not None else [],
         embedding=None,
@@ -116,23 +129,51 @@ def decay_freshness(
     return max(0.0, freshness - rate * elapsed_days)
 
 
-def _parse_scene(raw: str) -> tuple[str, str, str]:
-    """解析场景记忆 LLM 的 JSON 产出 → (content, tag, summary)；
+def _normalize_topics(topics: Sequence[object]) -> list[str]:
+    """Normalize bounded topic labels before persistence."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for topic in topics:
+        if not isinstance(topic, str):
+            continue
+        if "\n" in topic or "\r" in topic:
+            continue
+        value = " ".join(topic.strip().split())[:24]
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+            if len(result) == 5:
+                break
+    return result
+
+
+def _parse_scene(raw: str) -> tuple[str, MemoryKind, list[str], str]:
+    """解析场景记忆 LLM 的 JSON 产出 → (content, kind, topics, summary)；
     结构非法抛 ValueError。"""
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError(f"场景记忆 JSON 应是对象，得到 {type(data).__name__}")
     parsed = cast(dict[str, Any], data)
     content = parsed.get("content")
-    tag = parsed.get("tag")
+    kind_value = parsed.get("kind")
+    topics = parsed.get("topics", [])
     summary = parsed.get("summary")
     if not isinstance(content, str) or not content:
         raise ValueError("场景记忆 JSON 缺 content 或非空字符串")
-    if not isinstance(tag, str) or not tag:
-        raise ValueError("场景记忆 JSON 缺 tag 或非空字符串")
+    if not isinstance(kind_value, str):
+        raise ValueError("场景记忆 JSON 缺 kind")
+    try:
+        kind = MemoryKind(kind_value)
+    except ValueError as exc:
+        raise ValueError("场景记忆 JSON 的 kind 非法") from exc
+    if not isinstance(topics, list):
+        raise ValueError("场景记忆 JSON 的 topics 必须是字符串数组")
+    raw_topics = cast(list[object], topics)
+    if any(not isinstance(topic, str) for topic in raw_topics):
+        raise ValueError("场景记忆 JSON 的 topics 必须是字符串数组")
     if not isinstance(summary, str) or not summary:
         raise ValueError("场景记忆 JSON 缺 summary 或非空字符串")
-    return content, tag, summary
+    return content, kind, _normalize_topics(raw_topics), summary
 
 
 def _build_scene_prompt(ctx: dict[str, str]) -> str:
@@ -148,6 +189,19 @@ def _has_negation(text: str) -> bool:
     """新记忆正文是否含否定/转折锚点
     （软信号，非判定：命中则矛盾 prompt 提示重点核对）。纯函数。"""
     return any(w in text for w in _NEGATION_WORDS)
+
+
+def _semantic_dedup_compatible(new: Memory, old: Memory) -> bool:
+    """Reject high-similarity candidates with deterministic factual conflicts."""
+    new_text = f"{new.summary}\n{new.content}"
+    old_text = f"{old.summary}\n{old.content}"
+    if _has_negation(new_text) != _has_negation(old_text):
+        return False
+    if set(_NUMBER_RE.findall(new_text)) != set(_NUMBER_RE.findall(old_text)):
+        return False
+    return set(_TIME_ANCHOR_RE.findall(new_text)) == set(
+        _TIME_ANCHOR_RE.findall(old_text)
+    )
 
 
 def _content_preview(m: Memory) -> str:
@@ -189,7 +243,15 @@ def _parse_contradiction(raw: str) -> str | None:
 
 def extract_entities(memory: Memory) -> set[str]:
     """Extract coarse entity anchors for write-side memory graph edges."""
-    text = "\n".join([memory.summary, memory.content, memory.tag, *memory.aspect])
+    text = "\n".join(
+        [
+            memory.summary,
+            memory.content,
+            memory.kind.value,
+            *memory.topics,
+            *memory.aspect,
+        ]
+    )
     entities: set[str] = set()
     for pattern in (
         _ENTITY_BOOK_RE,
@@ -265,7 +327,8 @@ def _memory_relation_prompt(memory: Memory, candidates: list[Memory]) -> str:
         "",
         f"新记忆：id={memory.id}",
         f"summary={memory.summary}",
-        f"tag={memory.tag}",
+        f"kind={memory.kind.value}",
+        f"topics={memory.topics}",
         f"content={memory.content}",
         "",
         "候选旧记忆：",
@@ -275,7 +338,8 @@ def _memory_relation_prompt(memory: Memory, candidates: list[Memory]) -> str:
             [
                 f"- id={candidate.id}",
                 f"  summary={candidate.summary}",
-                f"  tag={candidate.tag}",
+                f"  kind={candidate.kind.value}",
+                f"  topics={candidate.topics}",
                 f"  content={candidate.content}",
             ]
         )
@@ -325,7 +389,7 @@ _SUMMARY_MAX_CHARS = 80
 def _activity_memory_fields(
     activity_type: object, result: object
 ) -> tuple[str, str, str] | None:
-    """活动 result → (content, summary, tag)；非读书/创作/探索或空 result → None。
+    """活动 result → (content, summary, activity_type)；不支持或空 result → None。
 
     不调 LLM：直接取活动真实产出，绝不凭空编造。
     """
@@ -354,7 +418,8 @@ def _memory_to_dict(m: Memory) -> dict[str, Any]:
         "id": m.id,
         "created_at": m.created_at,
         "content": m.content,
-        "tag": m.tag,
+        "kind": m.kind.value,
+        "topics": m.topics,
         "summary": m.summary,
         "freshness": m.freshness,
         "type": m.type.value,
@@ -365,7 +430,10 @@ def _memory_to_dict(m: Memory) -> dict[str, Any]:
 
 
 def _memory_to_markdown(m: Memory) -> str:
-    return f"## {m.summary}\n\n{m.content}\n\n标签：{m.tag}"
+    return (
+        f"## {m.summary}\n\n{m.content}\n\n"
+        f"类型：{m.kind.value}\n主题：{', '.join(m.topics)}"
+    )
 
 
 class MemoryFacade:
@@ -397,7 +465,7 @@ class MemoryFacade:
         self._last_observation: tuple[str, str] | None = None  # 「变化才沉淀」快照
 
     async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
-        """慢通道场景化记忆：LLM 产出 content/tag/summary
+        """慢通道场景化记忆：LLM 产出 content/kind/topics/summary
         → 两层去重（命中合并强化，不新建）→ 入短期 → 建边 → 门控矛盾检测 → 淘汰。
         去重命中时返回已存在的持久化旧记忆。"""
         output = await self._llm.complete(
@@ -411,8 +479,8 @@ class MemoryFacade:
             json_mode=True,
         )
         await self._evaluator.evaluate(output)
-        content, tag, summary = _parse_scene(output.content)
-        memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
+        content, kind, topics, summary = _parse_scene(output.content)
+        memory = _new_memory(content, kind, summary, MemoryType.SHORT_TERM, topics)
         return await self._persist_memory(memory, reply_context["correlation_id"])
 
     async def remember_activity(
@@ -452,8 +520,14 @@ class MemoryFacade:
         )
         if mapped is None:
             return
-        content, summary, tag = mapped
-        memory = _new_memory(content, tag, summary, MemoryType.SHORT_TERM)
+        content, summary, _activity_type = mapped
+        memory = _new_memory(
+            content,
+            MemoryKind.ACTIVITY,
+            summary,
+            MemoryType.SHORT_TERM,
+            [_activity_type],
+        )
         await self._persist_memory(
             memory, event.correlation_id, in_transaction=in_transaction
         )
@@ -464,7 +538,7 @@ class MemoryFacade:
         """观察活动 → 用户画像沉淀：「presence/window_title 相对上次变化」才写。
 
         观察 result 非空 presence 视为有效观察（旧 shape 或缺 presence 跳过）；
-        同快照重复上报不沉淀（防膨胀）。产出一条 tag='user' 的长期记忆。
+        同快照重复上报不沉淀（防膨胀）。产出一条 user_profile 长期记忆。
         """
         result = event.content.get("result")
         if not isinstance(result, dict):
@@ -499,7 +573,7 @@ class MemoryFacade:
         aspects: list[str],
         correlation_id: str,
     ) -> None:
-        """用户画像记忆：把观察到的用户状态落成一条长期、tag='user' 的记忆。
+        """用户画像记忆：把观察到的用户状态落成一条长期 user_profile 记忆。
 
         无开头 LLM（content/summary/aspects 由调用方确定性拼好，贴「禁编造」）；
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM
@@ -518,7 +592,10 @@ class MemoryFacade:
         *,
         in_transaction: bool,
     ) -> None:
-        memory = _new_memory(content, "user", summary, MemoryType.LONG_TERM, aspects)
+        memory = _new_memory(
+            content, MemoryKind.USER_PROFILE, summary, MemoryType.LONG_TERM,
+            aspect=aspects,
+        )
         await self._persist_memory(
             memory, correlation_id, in_transaction=in_transaction
         )
@@ -526,7 +603,7 @@ class MemoryFacade:
     async def remember_knowledge(
         self, items: list[dict[str, str]], correlation_id: str
     ) -> None:
-        """读书提取的客观知识点入长期记忆（tag='knowledge'，无 LLM，确定性拼好）。
+        """读书提取的客观知识点入长期记忆（kind=knowledge，无 LLM，确定性拼好）。
 
         items 每项 {topic, content}；content 空则跳过。复用 _persist_memory
         入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM 使其
@@ -538,21 +615,21 @@ class MemoryFacade:
             if not content:
                 continue
             memory = _new_memory(
-                content, "knowledge", topic or content[:_SUMMARY_MAX_CHARS],
-                MemoryType.LONG_TERM,
+                content, MemoryKind.KNOWLEDGE, topic or content[:_SUMMARY_MAX_CHARS],
+                MemoryType.LONG_TERM, [topic] if topic else [],
             )
             await self._persist_memory(memory, correlation_id)
 
     async def remember_reading(
         self, content: str, summary: str, correlation_id: str
     ) -> None:
-        """读书记忆：章末/整本整合产物落成一条长期、tag='reading' 的记忆。
+        """读书记忆：章末/整本整合产物落成一条长期 reading 记忆。
 
-        无开头 LLM（content/summary 由 12-reading-system 的阅读整合流程拼好，这里只入库）；
+        无开头 LLM（content/summary 由阅读整合流程拼好，这里只入库）；
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。
         type=LONG_TERM 使其豁免短期淘汰，读书记忆不随时间冲掉。
         """
-        memory = _new_memory(content, "reading", summary, MemoryType.LONG_TERM)
+        memory = _new_memory(content, MemoryKind.READING, summary, MemoryType.LONG_TERM)
         await self._persist_memory(memory, correlation_id)
 
     async def record_no_answer(self, question: str, correlation_id: str) -> None:
@@ -563,7 +640,7 @@ class MemoryFacade:
         """
         memory = _new_memory(
             f"我问了「{question}」，用户没有回答。",
-            "interaction",
+            MemoryKind.INTERACTION,
             "用户没有回答我的提问",
             MemoryType.SHORT_TERM,
         )
@@ -581,7 +658,7 @@ class MemoryFacade:
         → 新鲜度衰减/淘汰 → 发 MEMORY_CREATED，返回新记忆。场景/活动/画像/
         知识记忆复用。"""
         now = time.time()
-        existing = await self._store.find_by_content(memory.content)
+        existing = await self._store.find_by_content(memory.content, memory.kind)
         if existing is not None:
             await self._store.strengthen(existing.id, now)
             return await self._persisted_or(existing)
@@ -592,10 +669,29 @@ class MemoryFacade:
                 self._logger.exception("记忆 embedding 失败 memory_id=%s", memory.id)
         candidates: list[PersistSemanticHit] = []
         if memory.embedding is not None:
+            dedup_candidates = await self._persist_semantic_candidates(
+                memory.embedding, kind=memory.kind
+            )
+            if dedup_candidates:
+                threshold = (
+                    _EPISODE_DEDUP_SIM_THRESHOLD
+                    if memory.kind is MemoryKind.EPISODE
+                    else _DEDUP_SIM_THRESHOLD
+                )
+                candidate = dedup_candidates[0]
+                close_enough = (
+                    memory.kind is not MemoryKind.EPISODE
+                    or abs(memory.created_at - candidate.memory.created_at)
+                    <= _EPISODE_DEDUP_WINDOW_SECONDS
+                )
+                if (
+                    candidate.cosine >= threshold
+                    and close_enough
+                    and _semantic_dedup_compatible(memory, candidate.memory)
+                ):
+                    await self._store.strengthen(candidate.memory.id, now)
+                    return await self._persisted_or(candidate.memory)
             candidates = await self._persist_semantic_candidates(memory.embedding)
-            if candidates and candidates[0].cosine >= _DEDUP_SIM_THRESHOLD:
-                await self._store.strengthen(candidates[0].memory.id, now)
-                return await self._persisted_or(candidates[0].memory)
         await self._store.add(memory)
         await self._build_edges(memory, candidates, now, correlation_id)
         await self._detect_contradiction(
@@ -632,15 +728,15 @@ class MemoryFacade:
 
     async def list_memories(
         self,
-        tag: str | None = None,
+        kind: MemoryKind | None = None,
         type: MemoryType | None = None,
         limit: int | None = None,
     ) -> list[Memory]:
-        return await self._store.list_memories(tag, type, limit)
+        return await self._store.list_memories(kind, type, limit)
 
-    async def count_new(self, tag: str | None, since: float) -> int:
-        """计数「首次创建晚于 since 的 tag 记忆」（轻量，不物化整行/embedding）。"""
-        return await self._store.count_new(tag, since)
+    async def count_new(self, kind: MemoryKind | None, since: float) -> int:
+        """计数「首次创建晚于 since 的 kind 记忆」（轻量，不物化整行/embedding）。"""
+        return await self._store.count_new(kind, since)
 
     async def _persisted_or(self, fallback: Memory) -> Memory:
         persisted = await self._store.get(fallback.id)
@@ -728,9 +824,9 @@ class MemoryFacade:
                 await self._bus.publish(event)
 
     async def _persist_semantic_candidates(
-        self, embedding: list[float]
+        self, embedding: list[float], kind: MemoryKind | None = None
     ) -> list[PersistSemanticHit]:
-        memories = await self._store.list_memories()
+        memories = await self._store.list_memories(kind=kind)
         index = AnnIndex.build(memories)
         by_id = {memory.id: memory for memory in memories}
         return [

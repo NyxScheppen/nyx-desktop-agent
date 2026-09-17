@@ -1,4 +1,4 @@
-from nyx.enums import MemoryType
+from nyx.enums import MemoryKind, MemoryType
 from nyx.memory.ann import AnnIndex, ann_fingerprint, hash_embedding
 from nyx.types import Memory
 
@@ -8,7 +8,7 @@ def _mem(id: str, embedding: list[float] | None, created_at: float = 1.0) -> Mem
         id,
         created_at,
         id,
-        "t",
+        MemoryKind.EPISODE,
         id,
         1.0,
         MemoryType.SHORT_TERM,

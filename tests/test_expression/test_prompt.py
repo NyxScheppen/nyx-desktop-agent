@@ -1,5 +1,12 @@
 # pyright: reportPrivateUsage=false
-from nyx.enums import ActivityType, DesireType, EmotionCategory, EnergyState, MemoryType
+from nyx.enums import (
+    ActivityType,
+    DesireType,
+    EmotionCategory,
+    EnergyState,
+    MemoryKind,
+    MemoryType,
+)
 from nyx.expression.prompt import (
     _desires_block,
     _memory_block,
@@ -80,7 +87,7 @@ def _memory(summary: str = "", content: str = "原始记忆") -> Memory:
         id="m1",
         created_at=1000.0,
         content=content,
-        tag="user",
+        kind=MemoryKind.USER_PROFILE,
         summary=summary,
         freshness=1.0,
         type=MemoryType.SHORT_TERM,
@@ -184,7 +191,7 @@ def test_build_user_prompt_with_context() -> None:
 
 
 def test_memory_block_fallback_to_content() -> None:
-    assert "- 原始记忆" in _memory_block([_memory(summary="")])
+    assert "你了解到用户：原始记忆" in _memory_block([_memory(summary="")])
 
 
 def test_build_system_prompt_tool_outputs() -> None:

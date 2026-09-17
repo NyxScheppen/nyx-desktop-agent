@@ -12,7 +12,7 @@ from uuid import uuid4
 from nyx.activity.facade import ActivityFacade
 from nyx.config import ExpressionConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ContextMode, EventType, InteractionKind
+from nyx.enums import ContextMode, EventType, InteractionKind, MemoryKind
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
@@ -368,7 +368,9 @@ class ExpressionFacade:
                 return None
             subject = state.active_desires[0].description.strip()
         else:  # USER
-            profile = await self._memory.list_memories(tag="user", limit=1)
+            profile = await self._memory.list_memories(
+                kind=MemoryKind.USER_PROFILE, limit=1
+            )
             if not profile:
                 return None
             subject = clean_fragment(profile[0].content or profile[0].summary or "")

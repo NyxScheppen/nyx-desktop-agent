@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from nyx.config import DesireConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import DesireType
+from nyx.enums import DesireType, MemoryKind
 from nyx.eval.evaluator import Evaluator
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
@@ -351,7 +351,7 @@ class Reflection:
         # 计数走 count_new（first_created_at 锚点）：strengthen 不刷新创建时间，
         # 纯重读/去重强化不污染「是否新增」。
         new_chapters = await self._memory_facade.count_new(
-            "reading", narrative.updated_at
+            MemoryKind.READING, narrative.updated_at
         )
         scale = min(new_chapters / _AESTHETIC_MIN_READING, 1.0)
         aesthetic_delta = cast(dict[str, float], parsed["aesthetic_delta"])

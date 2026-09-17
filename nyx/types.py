@@ -13,6 +13,7 @@ from nyx.enums import (
     InteractionKind,
     InteractionStatus,
     MemoryEdgeKind,
+    MemoryKind,
     MemoryType,
     SearchMode,
     Source,
@@ -59,12 +60,13 @@ class Memory:
     id: str
     created_at: float
     content: str
-    tag: str                # 自由标签，'user' 保留
+    kind: MemoryKind
     summary: str
     freshness: float        # 0-1，随时间衰减
     type: MemoryType
+    topics: list[str] = field(default_factory=list[str])
     recall_count: int = 0   # "想起"次数（实际用进回复）
-    aspect: list[str] = field(default_factory=list[str])  # 仅 user 画像，可多值
+    aspect: list[str] = field(default_factory=list[str])  # 仅 user_profile 画像，可多值
     embedding: list[float] | None = None   # 向量检索用，未嵌入为 None
     sources: list[SearchMode] = field(default_factory=list[SearchMode])  # 检索来源层
 

@@ -8,7 +8,7 @@ import pytest
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
-from nyx.enums import EventType, MemoryType, Source
+from nyx.enums import EventType, MemoryKind, MemoryType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
@@ -285,8 +285,8 @@ class _FakeMemory:
     async def list_memories(self) -> list[Memory]:
         return self._memories
 
-    async def count_new(self, tag: str | None, since: float) -> int:
-        del tag
+    async def count_new(self, kind: MemoryKind | None, since: float) -> int:
+        del kind
         if self._count_new_result is not None:
             return self._count_new_result
         return sum(1 for memory in self._memories if memory.created_at > since)
@@ -294,7 +294,8 @@ class _FakeMemory:
 
 def _memory(created_at: float) -> Memory:
     return Memory(
-        id=f"m{created_at}", created_at=created_at, content="c", tag="user",
+        id=f"m{created_at}", created_at=created_at, content="c",
+        kind=MemoryKind.USER_PROFILE,
         summary="s", freshness=1.0, type=MemoryType.SHORT_TERM,
     )
 

@@ -222,12 +222,20 @@ export type DesireState = {
 // ---- 记忆（06-memory-system / nyx/types.py Memory）----
 export type MemoryType = "short_term" | "long_term";
 export type SearchMode = "keyword" | "vector" | "association";
+export type MemoryKind =
+  | "episode"
+  | "user_profile"
+  | "knowledge"
+  | "reading"
+  | "activity"
+  | "interaction";
 
 export type Memory = {
   id: string;
   created_at: number;
   content: string;
-  tag: string;
+  kind: MemoryKind;
+  topics: string[];
   summary: string;
   freshness: number;
   type: MemoryType;

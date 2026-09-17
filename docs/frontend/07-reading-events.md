@@ -115,7 +115,7 @@ showToNyx(noteId: string): Promise<void>             // POST show-to-nyx → 返
 
 ### 关键决策
 
-- **只展示用户笔记 + 批注**：Nyx 章末整合的笔记走 `remember_reading` 落 memory（`tag='reading'`），**不上屏**（记忆面板已砍，README §5）；`NotePanel` 是「用户笔记」面板，用户笔记与 Nyx 笔记严格分离（12-reading-system 决策）。`showToNyx` 的批注是「对用户笔记的回应」，挂在 `annotations` 下，与 Nyx 自己落 memory 的笔记无关。
+- **只展示用户笔记 + 批注**：Nyx 章末整合的笔记走 `remember_reading` 落 memory（`kind='reading'`），**不上屏**（记忆面板已砍，README §5）；`NotePanel` 是「用户笔记」面板，用户笔记与 Nyx 笔记严格分离（12-reading-system 决策）。`showToNyx` 的批注是「对用户笔记的回应」，挂在 `annotations` 下，与 Nyx 自己落 memory 的笔记无关。
 - **「给尼克斯看」主动触发**：Nyx 不主动读用户笔记（12-reading-system 决策 C3）；`showToNyx` 读笔记 + 原段落 → LLM 批注 → 插 `annotations`。多次展示 → 每次新增一行批注（不覆盖）。
 - **章末检测由追赶循环触发**：06 的 `advanceNyx` 每次 `nyxPosition += 1` 后 fire-and-forget `checkChapterBoundary(bookId, nyxPosition)`；`is_boundary=true` 时后端后台整合（落 memory，不阻塞返回）。前端不渲染结果（见上条）。
 - **`showToNyx` 本地 append 批注**：成功后把返回的完整 `Annotation`（12-reading-system 的 `show-to-nyx` 回 `{id, user_note_id, content, created_at}`，非 `{annotation_id, content}`）追加到该 note 的 `annotations`，不整表重拉（避免用户翻笔记时抖动）；失败静默记 `notesError`。

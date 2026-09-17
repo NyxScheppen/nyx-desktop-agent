@@ -2,7 +2,7 @@ import aiosqlite
 import pytest
 
 from nyx.db import connect
-from nyx.enums import MemoryEdgeKind, MemoryType
+from nyx.enums import MemoryEdgeKind, MemoryKind, MemoryType
 from nyx.memory.store import MemoryStore, hash_content
 from nyx.types import Memory, MemoryEdge
 
@@ -12,7 +12,8 @@ def _mem(
     *,
     created_at: float = 1.0,
     content: str = "content",
-    tag: str = "general",
+    kind: MemoryKind = MemoryKind.EPISODE,
+    topics: list[str] | None = None,
     summary: str = "summary",
     freshness: float = 0.5,
     type: MemoryType = MemoryType.SHORT_TERM,
@@ -24,10 +25,11 @@ def _mem(
         id=id,
         created_at=created_at,
         content=content,
-        tag=tag,
+        kind=kind,
         summary=summary,
         freshness=freshness,
         type=type,
+        topics=topics if topics is not None else [],
         recall_count=recall_count,
         aspect=aspect if aspect is not None else [],
         embedding=embedding,
@@ -101,14 +103,31 @@ async def test_list_memories_filters_and_sorts() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
     try:
-        await store.add(_mem("m1", tag="a", freshness=0.3))
-        await store.add(_mem("m2", tag="b", type=MemoryType.LONG_TERM, freshness=0.9))
-        await store.add(_mem("m3", tag="a", type=MemoryType.LONG_TERM, freshness=0.6))
+        await store.add(_mem("m1", kind=MemoryKind.EPISODE, freshness=0.3))
+        await store.add(
+            _mem(
+                "m2",
+                kind=MemoryKind.READING,
+                type=MemoryType.LONG_TERM,
+                freshness=0.9,
+            )
+        )
+        await store.add(
+            _mem(
+                "m3",
+                kind=MemoryKind.EPISODE,
+                type=MemoryType.LONG_TERM,
+                freshness=0.6,
+            )
+        )
         assert [m.id for m in await store.list_memories()] == ["m2", "m3", "m1"]
-        assert [m.id for m in await store.list_memories(tag="a")] == ["m3", "m1"]
+        episode_memories = await store.list_memories(kind=MemoryKind.EPISODE)
+        assert [m.id for m in episode_memories] == ["m3", "m1"]
         by_type = await store.list_memories(type=MemoryType.LONG_TERM)
         assert [m.id for m in by_type] == ["m2", "m3"]
-        combo = await store.list_memories(tag="a", type=MemoryType.LONG_TERM)
+        combo = await store.list_memories(
+            kind=MemoryKind.EPISODE, type=MemoryType.LONG_TERM
+        )
         assert [m.id for m in combo] == ["m3"]
     finally:
         await db.conn.close()
@@ -118,11 +137,13 @@ async def test_list_memories_limit() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
     try:
-        await store.add(_mem("m1", tag="a", freshness=0.3))
-        await store.add(_mem("m2", tag="b", freshness=0.9))
-        await store.add(_mem("m3", tag="a", freshness=0.6))
+        await store.add(_mem("m1", kind=MemoryKind.EPISODE, freshness=0.3))
+        await store.add(_mem("m2", kind=MemoryKind.READING, freshness=0.9))
+        await store.add(_mem("m3", kind=MemoryKind.EPISODE, freshness=0.6))
         assert [m.id for m in await store.list_memories(limit=2)] == ["m2", "m3"]
-        assert [m.id for m in await store.list_memories(tag="a", limit=1)] == ["m3"]
+        assert [m.id for m in await store.list_memories(
+            kind=MemoryKind.EPISODE, limit=1
+        )] == ["m3"]
     finally:
         await db.conn.close()
 
@@ -137,7 +158,8 @@ async def test_update_fields() -> None:
                 _mem(
                     "m1",
                     created_at=999.0,
-                    tag="new",
+                    kind=MemoryKind.READING,
+                    topics=["new"],
                     summary="s2",
                     freshness=0.8,
                     type=MemoryType.LONG_TERM,
@@ -150,7 +172,8 @@ async def test_update_fields() -> None:
         got = await store.get("m1")
         assert got is not None
         assert got.id == "m1" and got.created_at == 111.0
-        assert got.tag == "new" and got.summary == "s2"
+        assert got.kind is MemoryKind.READING and got.summary == "s2"
+        assert got.topics == ["new"]
         assert got.type is MemoryType.LONG_TERM and got.freshness == 0.8
         assert got.recall_count == 5 and got.aspect == ["x"]
         assert got.embedding == [0.9]
@@ -165,8 +188,10 @@ async def test_update_many_keeps_content_hash_in_sync() -> None:
         await store.add(_mem("m1", content="old content"))
         await store.update_many([_mem("m1", content="new content")])
 
-        assert await store.find_by_content("old content") is None
-        found = await store.find_by_content("new content")
+        assert await store.find_by_content(
+            "old content", MemoryKind.EPISODE
+        ) is None
+        found = await store.find_by_content("new content", MemoryKind.EPISODE)
         assert found is not None and found.id == "m1"
     finally:
         await db.conn.close()
@@ -180,13 +205,17 @@ async def test_update_many() -> None:
         await store.add(_mem("m2", freshness=0.6))
         await store.update_many(
             [
-                _mem("m1", freshness=0.1, tag="a", embedding=[0.5]),
+                _mem(
+                    "m1", freshness=0.1, kind=MemoryKind.READING,
+                    embedding=[0.5]
+                ),
                 _mem("m2", freshness=0.2, summary="s2"),
             ]
         )
         m1 = await store.get("m1")
         m2 = await store.get("m2")
-        assert m1 is not None and m1.freshness == 0.1 and m1.tag == "a"
+        assert m1 is not None and m1.freshness == 0.1
+        assert m1.kind is MemoryKind.READING
         assert m1.embedding == [0.5]
         assert m2 is not None and m2.freshness == 0.2 and m2.summary == "s2"
         await store.update_many([])  # 空列表 no-op
@@ -382,9 +411,9 @@ async def test_find_by_content_hit_and_miss() -> None:
     store = MemoryStore(db)
     try:
         await store.add(_mem("m1", content="同一句话"))
-        found = await store.find_by_content("同一句话")
+        found = await store.find_by_content("同一句话", MemoryKind.EPISODE)
         assert found is not None and found.id == "m1"
-        assert await store.find_by_content("别的内容") is None
+        assert await store.find_by_content("别的内容", MemoryKind.EPISODE) is None
     finally:
         await db.conn.close()
 
@@ -408,13 +437,13 @@ async def test_count_new_ignores_strengthened_created_at() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)
     try:
-        await store.add(_mem("m1", tag="reading", created_at=100.0))
+        await store.add(_mem("m1", kind=MemoryKind.READING, created_at=100.0))
         await store.strengthen("m1", 200.0)  # created_at / first_created_at 都不动
-        assert await store.count_new("reading", 150.0) == 0  # 纯重读不算新增
-        await store.add(_mem("m2", tag="reading", created_at=250.0))
-        assert await store.count_new("reading", 150.0) == 1  # 真新增算 1
-        assert await store.count_new(None, 150.0) == 1       # tag=None 全量计数
-        assert await store.count_new("reading", 300.0) == 0  # since 更晚则都不算
-        assert await store.count_new("user", 0.0) == 0       # 非目标 tag 不计
+        assert await store.count_new(MemoryKind.READING, 150.0) == 0
+        await store.add(_mem("m2", kind=MemoryKind.READING, created_at=250.0))
+        assert await store.count_new(MemoryKind.READING, 150.0) == 1
+        assert await store.count_new(None, 150.0) == 1
+        assert await store.count_new(MemoryKind.READING, 300.0) == 0
+        assert await store.count_new(MemoryKind.USER_PROFILE, 0.0) == 0
     finally:
         await db.conn.close()

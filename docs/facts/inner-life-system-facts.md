@@ -1,7 +1,7 @@
 # 内在生命系统事实摘要
 
 > 本文件只记录当前源码已经实现的事实，供无关代码快速了解边界。
-> 它不是契约，不替代唯一完整 spec：[`specs/08-inner-life.md`](specs/08-inner-life.md)。
+> 它不是契约，不替代唯一完整 spec：[`../specs/08-inner-life.md`](../specs/08-inner-life.md)。
 > 如果本摘要、完整 spec 与源码不一致，先按完整 spec 的项目规则处理并同步修正文档；代码行为的最终事实仍以 `nyx/` 源文件为准。
 
 ## 入口与依赖
@@ -99,7 +99,7 @@
 - 每个性格、三观、审美维度每轮最多漂移 `±0.5`，最后夹到 `[1, 10]`。
 - story/becoming 使用字符相似度阈值 `0.9` 去重；story 去重后返回 `story_is_new=False`，becoming 重复则不追加。
 - `self_view` 合并旧对象和新对象；`identity` 不变；`updated_at` 使用本轮时间。
-- 审美漂移按 `count_new("reading", narrative.updated_at)` / `3` 缩放，上限为 1。
+- 审美漂移按 `count_new(MemoryKind.READING, narrative.updated_at)` / `3` 缩放，上限为 1。
 - 长期欲望候选在读取配置容量后截断，再交给欲望 Facade 做容量和名称/语义去重。
 - 合法的单个候选失败只记日志并跳过；核心反思字段仍可提交。
 - 反思 JSON 非法、LLM 失败、eval 失败或本地事务失败都会抛出，不会写成功 effect，供 durable delivery 重试。
@@ -115,7 +115,7 @@
 
 相关完整契约：
 
-- 内在生命：[`specs/08-inner-life.md`](specs/08-inner-life.md)
-- 模块总线：[`module-bus-system-facts.md`](module-bus-system-facts.md)、[`specs/04-module-bus-system.md`](specs/04-module-bus-system.md)
+- 内在生命：[`../specs/08-inner-life.md`](../specs/08-inner-life.md)
+- 模块总线：[`module-bus-system-facts.md`](module-bus-system-facts.md)、[`../specs/04-module-bus-system.md`](../specs/04-module-bus-system.md)
 - 表达系统事实摘要：[`expression-system-facts.md`](expression-system-facts.md)
-- 表达系统唯一完整契约：[`specs/11-expression.md`](specs/11-expression.md)
+- 表达系统唯一完整契约：[`../specs/11-expression.md`](../specs/11-expression.md)

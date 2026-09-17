@@ -99,6 +99,15 @@ class MemoryType(StrEnum):
     LONG_TERM = "long_term"
 
 
+class MemoryKind(StrEnum):
+    EPISODE = "episode"
+    USER_PROFILE = "user_profile"
+    KNOWLEDGE = "knowledge"
+    READING = "reading"
+    ACTIVITY = "activity"
+    INTERACTION = "interaction"
+
+
 class MemoryEdgeKind(StrEnum):
     SEMANTIC = "semantic"
     ENTITY = "entity"

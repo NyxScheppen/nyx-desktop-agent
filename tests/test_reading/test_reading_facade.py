@@ -19,6 +19,7 @@ from nyx.enums import (
     EmotionCategory,
     EnergyState,
     EventType,
+    MemoryKind,
     MemoryType,
     ReadingBehavior,
 )
@@ -96,7 +97,8 @@ def _desire_values() -> list[DesireValue]:
 
 def _memory(mid: str = "m1", content: str = "生命的意义在于寻找") -> Memory:
     return Memory(
-        id=mid, created_at=0.0, content=content, tag="knowledge",
+        id=mid, created_at=0.0, content=content,
+        kind=MemoryKind.KNOWLEDGE,
         summary="", freshness=1.0, type=MemoryType.SHORT_TERM,
     )
 

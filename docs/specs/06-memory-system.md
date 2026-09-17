@@ -1,12 +1,12 @@
 # 记忆系统（统一规格）
 
-> 本文件是记忆系统的唯一完整规格，覆盖 `nyx/memory/` 的 store / retrieval / graph / facade，以及相关类型、DB、表达慢通道和 API 边界。记忆相邻但不改记忆实现的任务可先读 `docs/memory-system-facts.md` 获取事实摘要；凡改记忆代码、记忆契约或文档，以本文件为完整契约，并同步事实表摘要。
+> 本文件是记忆系统的唯一完整规格，覆盖 `nyx/memory/` 的 store / retrieval / graph / facade，以及相关类型、DB、表达慢通道和 API 边界。记忆相邻但不改记忆实现的任务可先读 `docs/facts/memory-system-facts.md` 获取事实摘要；凡改记忆代码、记忆契约或文档，以本文件为完整契约，并同步事实表摘要。
 
 ## 元信息
 
-- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `MemoryType` / `MemoryEdgeKind` / `SearchMode` / `Event` / `EventType` / `Source`）、02-config（`MemoryConfig` / `EmbeddingConfig`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、组合根注入 / REST 薄封装及相关 DDL）、11-expression（慢通道召回与 `record_recall` 时机）、10-eval（`Evaluator`）。
+- **前置依赖**：01-types（`Memory` / `MemoryEdge` / `MemoryKind` / `MemoryType` / `MemoryEdgeKind` / `SearchMode` / `Event` / `EventType` / `Source`）、02-config（`MemoryConfig` / `EmbeddingConfig`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、组合根注入 / REST 薄封装及相关 DDL）、11-expression（慢通道召回与 `record_recall` 时机）、10-eval（`Evaluator`）。
 - **实现文件**：`nyx/memory/ann.py`、`nyx/memory/retrieval.py`、`nyx/memory/graph.py`、`nyx/memory/store.py`、`nyx/memory/facade.py`、`nyx/types.py`、`nyx/enums.py`、`nyx/db.py`
-- **关联文档**：`docs/memory-system-facts.md`、`docs/specs/01-types.md`、`docs/specs/04-module-bus-system.md`、`docs/specs/11-expression.md`、`docs/tech-reference.md`、`docs/test-inventory.md`
+- **关联文档**：`docs/facts/memory-system-facts.md`、`docs/specs/01-types.md`、`docs/specs/04-module-bus-system.md`、`docs/specs/11-expression.md`、`docs/tech-reference.md`、`docs/test-inventory.md`
 - **测试文件**：`tests/test_memory/test_ann.py`、`tests/test_memory/test_retrieval.py`、`tests/test_memory/test_graph.py`、`tests/test_memory/test_store.py`、`tests/test_memory/test_facade.py`、`tests/test_db/test_db.py`、`tests/test_expression/test_expression_facade.py`
 
 ## 系统边界
@@ -14,7 +14,7 @@
 - `MemoryFacade.search(query: str) -> list[Memory]` 是表达慢通道唯一检索入口；表达层不直接调 store/retrieval。
 - 慢通道 `assemble_context` 会把 `MemoryFacade.search(message)` 返回的全部记忆放进 prompt，并立即逐条 `record_recall(memory.id)`。
 - 快通道不检索记忆、不 `record_recall`、不生成场景化记忆。
-- `Memory` 字段是 `id`、`created_at`、`content`、`tag`、`summary`、`freshness`、`type`、`recall_count`、`aspect`、`embedding`、`sources`。
+- `Memory` 字段是 `id`、`created_at`、`content`、`kind`、`topics`、`summary`、`freshness`、`type`、`recall_count`、`aspect`、`embedding`、`sources`。
 - `MemoryType` 取值是 `SHORT_TERM="short_term"`、`LONG_TERM="long_term"`。
 - `SearchMode` 取值是 `KEYWORD="keyword"`、`VECTOR="vector"`、`ASSOCIATION="association"`。
 - `MemoryEdge` 字段是 `from_id`、`to_id`、`kind`、`weight`、`created_at`；`kind` 是 typed edge 域，端点按 canonical unordered pair 使用。
@@ -27,6 +27,74 @@
 
 > 作为 Nyx，我想在慢通道聊天时先用整句语义定位大致记忆范围，再用关键词补强精确命中，最后从直接命中的记忆扩散联想，以便回复时想起的内容更贴近用户当前语境，而不是被旧的关键词顺序或偶然建边污染。
 
+## 受控 kind、topics 与标签联想
+
+记忆不再使用自由 `tag`。`Memory.kind` 是受控 `MemoryKind` 枚举，`Memory.topics` 是最多五项、每项最多 24 字符的主题列表。旧数据库中的 memory、memory_edge 以及依赖旧节点的索引状态在 schema 19 迁移时清空；不提供旧数据兼容迁移。
+
+```python
+class MemoryKind(StrEnum):
+    EPISODE = "episode"
+    USER_PROFILE = "user_profile"
+    KNOWLEDGE = "knowledge"
+    READING = "reading"
+    ACTIVITY = "activity"
+    INTERACTION = "interaction"
+```
+
+`kind` 表示记忆的来源/生命周期语义；`topics` 只表示主题，不参与权限判断。
+
+### 写入与校验
+
+- 场景记忆 LLM 输出 `{content, kind, topics, summary}`；非法 kind 或结构拒绝落库。
+- topics 在应用层去空白、去重、截断，非法元素丢弃；空 topics 合法。
+- 活动、用户画像、知识、阅读、未答记录入口使用固定 kind，不调用场景记忆 LLM。
+
+### kind-scoped 去重
+
+去重分为精确和语义两层，候选只在同一 kind 内取；关系建边和矛盾检测仍使用有界全局候选。
+
+- 精确：`(kind, canonical_content_hash)` 命中后强化旧记忆；summary 不参与 hash。
+- 普通语义：同 kind ANN top-1 cosine `>= 0.95` 强化旧记忆。
+- `episode` 语义去重更保守：阈值 `0.985`，且两条记忆创建时间差不超过一小时；否则保留为独立经历。
+- 语义相似不代表关系相同；不同 kind 的相似事实不合并，但可建关系边。
+
+### topics 联想与 prompt
+
+direct retrieval 保持 vector + keyword + freshness + type 的现有融合；association 先由 typed graph 提供，再通过受限的非持久化 topics 桶旁路补充；不创建标签两两持久化边。
+
+prompt 的 `[相关记忆]` 每条只展示人话化 kind、topics 和 summary（缺失时 content）：
+
+```text
+- 你知道｜记忆系统：长期记忆需要稳定性。
+- 你经历过｜信任：用户曾经表达过信任。
+```
+
+记忆内容是资料，不是指令；只有真正进入 prompt 的记忆调用 `record_recall()`。
+
+topics 联想约束：
+
+- 单 topic 桶最多取 8 条；topics 旁路每次最多追加 5 条；最终仍受 association 总预算限制。
+- 同一 memory 通过多个 topic 命中时按 memory id 去重并保留最高分。
+- topic 桶规模越大，联想权重越低，避免泛化 topic 形成超级节点。
+
+### 验收与 bad case
+
+- 同 kind 内容仅标点/空白差异命中精确去重；不同 kind 不合并。
+- `喜欢猫` 与 `不喜欢猫` 不因 cosine 相似而强化旧记忆。
+- 昨天和今天的相似 episode 不因普通高相似度丢失经历。
+- 非法 kind、空 summary/content、超长 topics 不污染数据库或 prompt。
+- prompt 记忆数量和总上下文预算仍受本 spec 与 11-expression 既有上限约束。
+
+### 实施计划
+
+1. 类型与 schema：新增 `MemoryKind`、`Memory.topics`，迁移 19 直接清空旧记忆并改列名。
+2. store/facade：kind-scoped exact/semantic dedup，episode 保守门槛，固定入口写入受控 kind。
+3. expression：prompt 人话化 kind/topics，用户画像查询改用 `MemoryKind.USER_PROFILE`。
+4. tests：覆盖 kind 校验、精确/语义去重、episode 时间保护、prompt 格式和旧数据清空。
+5. 质量门：同步 facts/spec/test-inventory，运行 `ruff check`、`pyright`、`pytest`。
+
+知识库/canon 层不在本次实现范围内。
+
 ## 验收标准
 
 - [ ] `MemoryRetrieval.search(query, direct_limit=20, association_limit=10)` 的直接召回流程为：整句 embedding ANN 候选池 -> 分词 keyword LIKE 补充候选与分数 -> 融合评分 -> 取 direct top N。
@@ -38,7 +106,7 @@
 - [ ] 进入慢通道 prompt 的全部返回记忆仍立即 `record_recall`。
 - [ ] `memory_edge` 支持边类型：同一记忆对可有多条不同 `kind` 的边。
 - [ ] 建边使用语义、实体、关键词、时间、LLM 关系五类信号；每个节点有最大度数约束。
-- [ ] `_persist_memory` 仍保留两层去重：先 content hash 精确去重，再 bounded persist semantic candidates 内 top-1 cosine `>= 0.95` 去重；去重命中旧记忆时只 `strengthen` 并返回旧记忆，不建边、不矛盾检测、不发布 `memory_created`。
+- [ ] `_persist_memory` 同 kind 内先 content hash 精确去重，再 bounded semantic candidates 内 top-1 cosine `>= 0.95` 去重；episode 使用 `0.985` 且创建时间差不超过一小时。
 - [ ] `_detect_contradiction` 仍只在新记忆成功入库后运行，并只对 bounded persist semantic candidates top 5 中 cosine `>= 0.6` 的候选调用 LLM。
 - [ ] ANN 替代检索与建边中的无界全表暴力余弦扫描；任何 fallback 都必须受候选上限约束。
 - [ ] 记忆图支持聚类算法，输出 `memory_id -> cluster_id`，聚类结果不落库。
@@ -54,11 +122,13 @@
 class MemoryStore:
     async def add(self, memory: Memory) -> None: ...
     async def get(self, memory_id: str) -> Memory | None: ...
-    async def find_by_content(self, content: str) -> Memory | None: ...
+    async def find_by_content(
+        self, content: str, kind: MemoryKind
+    ) -> Memory | None: ...
     async def list_memories(
         self,
         *,
-        tag: str | None = None,
+        kind: MemoryKind | None = None,
         type: MemoryType | None = None,
         limit: int | None = None,
     ) -> list[Memory]: ...
@@ -66,7 +136,7 @@ class MemoryStore:
     async def delete_many(self, ids: list[str]) -> None: ...
     async def record_recall(self, memory_id: str, promote_threshold: int) -> bool: ...
     async def strengthen(self, memory_id: str, now: float) -> None: ...
-    async def count_new(self, tag: str | None, since: float) -> int: ...
+    async def count_new(self, kind: MemoryKind | None, since: float) -> int: ...
     async def search_keywords(self, tokens: list[str], limit: int) -> dict[str, KeywordSearchHit]: ...
     async def list_edges(self, kind: MemoryEdgeKind | None = None) -> list[MemoryEdge]: ...
     async def upsert_edge(
@@ -88,8 +158,8 @@ Store 规则：
 - 所有 DB 读写都在 `async with self._db.lock` 内；锁作用域是单个 store 方法的 SQL 块，不跨 store 方法嵌套。
 - 行到 `Memory` 往返：`aspect` 是 JSON 数组；`type` 存 enum `.value`；`embedding=None` 对应 SQL `NULL`；`sources` 是检索瞬态字段，不落库。
 - `content_hash` 是 store 派生列，不进 `Memory` dataclass；`add` 写入 `hash_content(content)`，`update_many` 修改 content 时同步重算。
-- `created_at` 是创建时间，`update_many` / `strengthen` / `record_recall` 都不改；`count_new(tag, since)` 只看 `first_created_at > since`。
-- `list_memories` 按 `tag` / `type` 过滤，按 `freshness DESC, created_at DESC` 排序，`limit` 有值时截断。
+- `created_at` 是创建时间，`update_many` / `strengthen` / `record_recall` 都不改；`count_new(kind, since)` 只看 `first_created_at > since`。
+- `list_memories` 按 `kind` / `type` 过滤，按 `freshness DESC, created_at DESC` 排序，`limit` 有值时截断。
 - `record_recall` 在一个锁块里执行 `recall_count+1` 和短期达阈值升级长期；升级时返回 `True`，长期记忆不重复升级。
 - `strengthen` 表示重复写入/语义去重命中旧记忆：`recall_count+1`、`freshness=1.0`，但不升级、不发布事件。
 - `delete_many` 在同一锁块里级联删记忆及 incident typed edges。
@@ -293,17 +363,17 @@ async def record_no_answer(question: str, correlation_id: str) -> None: ...
 async def search(query: str) -> list[Memory]: ...
 async def record_recall(memory_id: str) -> None: ...
 async def list_memories(
-    tag: str | None = None,
+    kind: MemoryKind | None = None,
     type: MemoryType | None = None,
     limit: int | None = None,
 ) -> list[Memory]: ...
-async def count_new(tag: str | None, since: float) -> int: ...
+async def count_new(kind: MemoryKind | None, since: float) -> int: ...
 async def export(fmt: str) -> str: ...
 ```
 
 Facade 规则：
 
-- `create_scene_memory` 只在慢通道回合末调用，LLM 调用 1 次（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）生成 `{content, tag, summary}` 后复用 `_persist_memory`。
+- `create_scene_memory` 只在慢通道回合末调用，LLM 调用 1 次（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）生成 `{content, kind, topics, summary}` 后复用 `_persist_memory`。
 - 活动、读书、知识、用户画像、未答记录入口都复用 `_persist_memory`，不绕过去重、建边、矛盾检测、衰减/淘汰尾段；确定性入口不调用 scene-memory LLM。
 - `search(query)` 纯委托 `MemoryRetrieval.search(query)`，对表达层不暴露 `direct_limit` / `association_limit` 参数。
 - `remember_activity(event, consumer_id=None)` 是 `ACTIVITY_END` 的记忆消费者；RouteSpec 注册时传 `consumer_id="memory.activity_end"`，同一本地事务内写 `event_effect`、记忆状态和派生 `memory_created` / `reflection` 事件，重放时已应用则 no-op。普通直接调用不传 `consumer_id`，保留旧调用面。
@@ -440,10 +510,10 @@ _CONTRADICTION_SIM_THRESHOLD = 0.6
 
 `MemoryFacade._persist_memory(memory, correlation_id)` 顺序：
 
-1. 先调用 `store.find_by_content(memory.content)` 做 content hash 精确去重；命中则 `strengthen(existing.id, now)` 并返回持久化旧记忆。
+1. 先调用 `store.find_by_content(memory.content, memory.kind)` 做同 kind 的 canonical content hash 精确去重；命中则 `strengthen(existing.id, now)` 并返回持久化旧记忆。
 2. 如果 `memory.embedding is None` 且 `embed` 可用，调用 `embed(memory.content)` 补 embedding。
 3. 如果新记忆有 embedding，用 `AnnIndex.query(memory.embedding, candidate_k=_PERSIST_SEMANTIC_CANDIDATE_K)` 取已有记忆候选，并在候选内计算精确 cosine，得到 `PersistSemanticHit(memory, cosine)` 列表。
-4. 如果候选 top-1 `cosine >= _DEDUP_SIM_THRESHOLD`，则 `strengthen(top.memory.id, now)` 并返回持久化旧记忆。
+4. 如果候选 top-1 达到 kind 对应阈值，并且否定极性、数字集合、显式时间锚点均兼容，则 `strengthen(top.memory.id, now)` 并返回持久化旧记忆；`episode` 还要求创建时间差不超过一小时。
 5. 未命中去重时才 `store.add(memory)`，随后建边、矛盾检测、衰减/淘汰、发布 `memory_created`。
 
 规则：
@@ -451,6 +521,7 @@ _CONTRADICTION_SIM_THRESHOLD = 0.6
 - 语义去重、语义建边、矛盾检测共用同一份 `PersistSemanticHit` 候选，不再创建旧的无界 `scored` 全表列表。
 - `_PERSIST_SEMANTIC_CANDIDATE_K` 是持久化语义候选上限；它不受聊天召回的 `direct_limit` / `association_limit` 影响。
 - `embed is None`、embedding 失败、ANN index 为空或维度不一致时，语义去重与矛盾检测跳过；content hash 去重仍生效。
+- 语义去重的确定性冲突门控宁可漏合并也不误合并：否定极性不同、数字集合不同或显式时间锚点不同均视为不兼容，继续创建新记忆。
 - `_detect_contradiction(memory, candidates, correlation_id)` 只接收 `PersistSemanticHit`，不再接收旧 `scored`。
 - 矛盾检测候选取 `candidates[:_CONTRADICTION_CANDIDATE_K]` 中 `cosine >= _CONTRADICTION_SIM_THRESHOLD` 的记忆。
 - 无候选或全低于阈值时不调用 LLM。
@@ -544,7 +615,7 @@ _TEMPORAL_WINDOW_SECONDS = 86400.0
 
 `extract_entities(memory: Memory) -> set[str]` 是纯函数：
 
-- 从 `summary`、`content`、`tag`、`aspect` 提取实体。
+- 从 `summary`、`content`、`kind`、`topics`、`aspect` 提取实体。
 - 中文书名号内容、连续英文专有名、连续数字字母标识、长度 2-12 的中文专名片段进入实体集合。
 - 全部实体 lower 去重；长度 1 的实体丢弃。
 
@@ -606,7 +677,7 @@ combined_edge_score = max(
 ```
 
 - 按 `combined_edge_score DESC, candidate.created_at DESC, candidate.id ASC` 取 `_EDGE_LLM_CANDIDATE_K`。
-- LLM prompt 只包含新记忆与 top5 候选的 `id`、`summary`、`content`、`tag`，要求判断二者是否存在明确关系。
+- LLM prompt 只包含新记忆与 top5 候选的 `id`、`summary`、`content`、`kind`、`topics`，要求判断二者是否存在明确关系。
 - LLM 输出必须是 JSON object：
 
 ```json
@@ -694,7 +765,7 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 - [ ] keyword LIKE：多个 token 分别匹配；summary/content 命中集合正确；空 token 返回空；`limit <= 0` 返回空；token 多次出现只计一次；LIKE 特殊字符被 escape；返回按命中排序并截断到 limit。
 - [ ] 融合排序：vector 强但 keyword 弱、keyword 强但 vector 弱、二者都强三类样本按公式稳定排序；`direct_limit=5` 只返回 5 条 direct。
 - [ ] 召回顺序：先 direct，再 association；association 不重复 direct seed；最终数量 `<= direct_limit + association_limit`。
-- [ ] `_persist_memory`：content hash 命中优先；bounded semantic candidate top-1 `>=0.95` 时 strengthen 旧记忆；未命中才 add/build edges/detect contradiction/publish；矛盾检测只取 top5 且 cosine `>=0.6`。
+- [ ] `_persist_memory`：content hash 命中优先；bounded semantic candidate top-1 达到 kind 阈值且通过事实冲突门控时 strengthen 旧记忆；未命中才 add/build edges/detect contradiction/publish；矛盾检测只取 top5 且 cosine `>=0.6`。
 - [ ] `MemoryGraph.associate(depth=2)`：二跳可达，按边权/跳数/kind 权重排序，多路径取最高分，seed score 参与计算；同 pair 多 kind 作为 typed edges 分别扩散；`AssociationHit.kinds` 记录最佳路径。
 - [ ] 边 schema：`MemoryEdge.kind` / `created_at` 序列化与反序列化；同一 canonical pair 不同 kind 可共存；方向相反同 kind 被 canonicalize 为同一边；旧边迁移后 kind 为 `semantic`。
 - [ ] 建边：语义、实体、关键词、时间边分别可被构造；语义边复用 persist semantic candidates；LLM 关系边只对 top5 候选调用；`none` 不写边；LLM 失败不阻塞持久化。
@@ -707,4 +778,4 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 - [ ] `ruff check` 零报错。
 - [ ] `pyright` 零报错。
 - [ ] `pytest` 全绿。
-- [ ] `docs/memory-system-facts.md`、相关 spec、`docs/tech-reference.md`、`docs/test-inventory.md` 与本文件保持同步；如果实现需要改变既有文档语义，先询问用户确认。
+- [ ] `docs/facts/memory-system-facts.md`、相关 spec、`docs/tech-reference.md`、`docs/test-inventory.md` 与本文件保持同步；如果实现需要改变既有文档语义，先询问用户确认。

@@ -369,7 +369,7 @@ CLOCK_TICK + REFLECTION_CHECK     -> inner_life.reflection_check
 - `api.routes` 只依赖可测试的 app/context 类型，不参与订阅；
 - `_App` 只作为组合根内部对象，不传入 Facade。
 
-现有 `state_holder[0]` / `reflect_holder[0]` / `observation_holder[0]` 可变列表占位应替换为明确绑定对象或可检查闭包；未绑定时抛出带上下文的 `RuntimeError`。
+组合根使用可检查闭包延迟绑定 inner-life 和 runtime observation 回调；未绑定时抛出带上下文的 `RuntimeError`，不得使用 `holder[0]` 形式的可变列表占位。
 
 ## 数据变更
 
@@ -442,6 +442,17 @@ CREATE TABLE desire_generation_attempt (
 );
 ```
 
+`desire_eval_applied` 记录某个 durable `DESIRE_EVAL` tick 是否已经结算周期衰减、
+长期欲望压力、疲惫压力与 SUPPRESSED 释放。marker 与这些本地变更在同一事务写入；
+delivery 重试仍可继续生成阶段，但不得重复结算周期压力。
+
+```sql
+CREATE TABLE desire_eval_applied (
+    event_id TEXT PRIMARY KEY,
+    applied_at REAL NOT NULL
+);
+```
+
 ### 表达交互 attempt
 
 `expression_interaction_attempt` 是表达系统的 durable 领域状态，不替代
@@ -497,7 +508,8 @@ claim/answer/expire 幂等。
 - [ ] durable publish：publish 后即使不启动 worker，`event_log` 和 delivery 已落库；DB 失败时 publish 抛错且无半截记录。
 - [ ] route expand：每个非空 `RouteSpec` 都创建对应 delivery；空路由事件只落 `event_log` 和 SSE，不创建消费者 delivery。
 - [ ] handler 成功：delivery 从 `pending` 到 `processing` 到 `succeeded`，`completed_at` 写入。
-- [ ] handler 失败：进入 `retry_wait`，attempts +1，`last_error` 写入，到期后恢复 pending。
+- [ ] 成功状态提交失败：同一 worker 只重试 effect/delivery finalize，不重新调用 handler，也不阻塞后续事件；关停时保留 processing 供 lease 恢复。
+- [ ] handler 失败：进入 `retry_wait`，attempts +1，`last_error` 写入，到期后恢复 pending；失败状态提交异常时只重试状态 finalize，不重复调用 handler。
 - [ ] dead-letter：达到 `_DELIVERY_MAX_ATTEMPTS` 后进入 `dead_letter`，不再忙等重试。
 - [ ] 失败隔离：`ACTIVITY_END` 的一个 consumer 失败不会让其它 consumer 重跑。
 - [ ] FIFO：同一 consumer 按事件 timestamp/id 顺序执行；不同 consumer 可并行。
@@ -508,6 +520,7 @@ claim/answer/expire 幂等。
 - [ ] 数据库熔断：连续 admission 失败后新 publish 快速失败，冷却探测成功后恢复。
 - [ ] drain 成功：停止新输入后，已受理事件完成，worker 停止，DB close 被调用。
 - [ ] drain 超时：未完成 delivery 保留为可恢复状态，关闭流程不做全局 rollback。
+- [ ] supervisor：`EventBus.run()` 正常返回时 supervisor 同步结束，不重入已关闭 bus 或忙循环。
 - [ ] 路由单一来源：`ROUTING`、`TICK_ROUTING`、订阅 handler 和 delivery consumer 集合全部从 `RouteSpec` 派生并一致。
 - [ ] 导入环回归：`api.routes`、`app_context`、`subscriptions`、`main` 不再形成循环导入。
 - [ ] 文档同步：`docs/test-inventory.md` 更新为当前测试快照。

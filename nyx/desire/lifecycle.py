@@ -239,11 +239,17 @@ class DesireLifecycle:
         ):
             await self._pressure(DesireType.CREATION, _CREATION_ACTIVITY_PRESSURE_DELTA)
 
-    async def run_eval(self, energy: float = 100.0) -> list[ShortTermDesire]:
+    async def run_eval(
+        self, energy: float = 100.0, *, event_id: str | None = None
+    ) -> list[ShortTermDesire]:
         """DESIRE_EVAL：衰减 → 长期加压 → 疲惫加压 → 达峰判定 → 只生成最迫切的 1 个。"""
         async with self._eval_lock:
             now = time.time()
             async with self._store.db.transaction():
+                apply_periodic = (
+                    event_id is None
+                    or await self._store.try_mark_eval_applied(event_id, now)
+                )
                 long_term = await self._store.list_long_term()
                 values: dict[DesireType, DesireValue] = {
                     v.type: v for v in await self._store.list_values()
@@ -253,27 +259,29 @@ class DesireLifecycle:
                         values[t] = default_value(t)
                         values[t].updated_at = now
                     dv = values[t]
-                    elapsed_days = max(0.0, now - dv.updated_at) / SECONDS_PER_DAY
-                    dv.value = decay_value(
-                        dv.value, elapsed_days, self._config.value_decay
-                    )
-                    dv.updated_at = now
-                    await self._store.upsert_value(dv)
-                if energy < ENERGY_REST_THRESHOLD:
+                    if apply_periodic:
+                        elapsed_days = max(0.0, now - dv.updated_at) / SECONDS_PER_DAY
+                        dv.value = decay_value(
+                            dv.value, elapsed_days, self._config.value_decay
+                        )
+                        dv.updated_at = now
+                        await self._store.upsert_value(dv)
+                if apply_periodic and energy < ENERGY_REST_THRESHOLD:
                     values[DesireType.REST].value = apply_pressure(
                         values[DesireType.REST].value, _REST_PRESSURE_DELTA
                     )
                     await self._store.upsert_value(values[DesireType.REST])
-                for lt in long_term:
-                    values[lt.type].value = apply_pressure(
-                        values[lt.type].value, _LONG_TERM_PRESSURE_DELTA
-                    )
-                    await self._store.upsert_value(values[lt.type])
-                for d in await self._store.list_suppressed():
-                    dv = values[d.type]
-                    if is_expressible(dv.value, dv.suppression_threshold):
-                        d.status = DesireStatus.PENDING
-                        await self._store.update_desire(d)
+                if apply_periodic:
+                    for lt in long_term:
+                        values[lt.type].value = apply_pressure(
+                            values[lt.type].value, _LONG_TERM_PRESSURE_DELTA
+                        )
+                        await self._store.upsert_value(values[lt.type])
+                    for d in await self._store.list_suppressed():
+                        dv = values[d.type]
+                        if is_expressible(dv.value, dv.suppression_threshold):
+                            d.status = DesireStatus.PENDING
+                            await self._store.update_desire(d)
 
             attempts = {
                 t: await self._store.get_generation_attempt(t) for t in DesireType

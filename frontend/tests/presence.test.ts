@@ -1,11 +1,15 @@
-import { fireEvent, renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 import { postObserve } from "../src/api/client";
 import { classifyPresence, usePresence } from "../src/hooks/usePresence";
 
 // usePresence 直接消费 postObserve，mock 掉以隔离 hook 的判定/上报节奏（fetch 细节归 api.test.ts）
 vi.mock("../src/api/client", () => ({
   postObserve: vi.fn(),
+}));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
 }));
 
 describe("classifyPresence", () => {
@@ -28,37 +32,38 @@ describe("usePresence", () => {
     vi.setSystemTime(new Date("2026-08-19T12:00:00Z"));
     vi.mocked(postObserve).mockReset();
     vi.mocked(postObserve).mockResolvedValue({ event_id: "e1" });
+    vi.mocked(invoke).mockReset();
+    vi.mocked(invoke).mockResolvedValue([false, ""]);
   });
 
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("首次挂载必报一次（初始 away）", () => {
+  it("首次挂载通过 Tauri 采样并上报 away", async () => {
     renderHook(() => usePresence());
+    await act(async () => Promise.resolve());
+    expect(invoke).toHaveBeenCalledWith("sample_presence", {
+      activeWindowMs: 30_000,
+    });
     expect(postObserve).toHaveBeenCalledTimes(1);
-    expect(postObserve).toHaveBeenCalledWith("away", ""); // jsdom document.title 默认 ""
+    expect(postObserve).toHaveBeenCalledWith("away", "");
   });
 
-  it("键盘活动 → 下次采样报 online", () => {
+  it("原生输入活跃时上报 online", async () => {
+    vi.mocked(invoke).mockResolvedValue([true, "编辑器"]);
     renderHook(() => usePresence());
-    vi.advanceTimersByTime(10_000);
-    fireEvent.keyDown(window);
-    vi.advanceTimersByTime(20_000); // 距挂载 30s 采样；活动仅 20s 前，< 30s 窗口 → online
-    expect(postObserve).toHaveBeenCalledWith("online", "");
+    await act(async () => Promise.resolve());
+    expect(postObserve).toHaveBeenCalledWith("online", "编辑器");
   });
 
-  it("鼠标活动 → 下次采样报 online", () => {
+  it("presence 和前台标题不变时不重复上报", async () => {
     renderHook(() => usePresence());
-    vi.advanceTimersByTime(10_000);
-    fireEvent.mouseMove(window);
-    vi.advanceTimersByTime(20_000);
-    expect(postObserve).toHaveBeenCalledWith("online", "");
-  });
-
-  it("presence 不变 → 30s 后不上报", () => {
-    renderHook(() => usePresence());
-    vi.advanceTimersByTime(30_000);
+    await act(async () => Promise.resolve());
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+    });
     expect(postObserve).toHaveBeenCalledTimes(1); // 仅挂载那次 away
   });
 });

@@ -191,6 +191,36 @@
 
 ---
 
+### 2026-09-17: durable claim 必须在外部结算成功后再完成
+
+**来源**：表达 interaction attempt 回复结算修复
+**教训**：先把 claim 永久写成完成态，再执行另一个模块的结算，会让 delivery 重试失去重新领取入口，留下无法自行恢复的 ACTIVE 状态。
+**怎么做**：状态顺序固定为 `WAITING -> CLAIMED -> 外部结算 -> ANSWERED/EXPIRED`；结算或完成写入失败都释放 claim，并用失败注入测试验证下一次仍能领取。
+**影响的文件/决策**：`nyx/expression/facade.py`、`expression_interaction_attempt` 状态机
+
+### 2026-09-17: durable handler 的中间提交也需要事件级阶段标记
+
+**来源**：`DESIRE_EVAL` 重放重复加压修复
+**教训**：最终产出幂等不代表整个 handler 幂等；LLM 前已经提交的衰减、压力或状态释放，在后续失败重放时仍会重复应用。
+**怎么做**：对不可与最终结果放进同一事务的中间阶段，按上游 event id 保存阶段 marker，并与该阶段状态变更同事务提交；重放跳过已完成阶段但继续未完成阶段。
+**影响的文件/决策**：`desire_eval_applied`、`nyx/desire/lifecycle.py`、durable tick 消费
+
+### 2026-09-17: 提交后再启动的后台任务必须恢复提交前状态
+
+**来源**：活动 PENDING 崩溃窗口修复
+**教训**：数据库先写 PENDING、提交后才创建内存 task 时，进程可能停在两者之间；只恢复 RUNNING 会永久遗留 PENDING 记录和已领取资源。
+**怎么做**：启动恢复同时扫描 PENDING/RUNNING；从未真正启动的 PENDING 记为 ABANDONED 并释放 claim，已运行记录再按可续性暂停或放弃。
+**影响的文件/决策**：`ActivityStore.list_unfinished()`、`ActivityLifecycle.recover_stale_running()`
+
+### 2026-09-17: supervisor 必须区分正常返回与异常重启
+
+**来源**：EventBus 正常关停忙循环修复
+**教训**：只在异常分支退避、正常返回后无条件重入的 supervisor，会在被监督对象关闭后形成无 await 忙循环，使关停无法完成。
+**怎么做**：正常返回代表生命周期结束并立即退出；只有明确异常才执行带上限和退避的重启。状态 finalize 的持久化失败则在 worker 内重试，不伪装成成功。
+**影响的文件/决策**：`nyx/runtime.py:supervise_bus`、`nyx/events/bus.py`
+
+---
+
 ## 模板
 
 ```

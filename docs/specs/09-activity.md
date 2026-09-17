@@ -44,7 +44,7 @@
 
 ### Facade、生命周期与恢复
 
-- [ ] `ActivityStore` 提供 activity 表 CRUD：`insert`、`get`、`get_current`、`list_running`、`get_paused_in_block`、`get_last_exploration`、`list_schedule`、`list_results`、`update`。
+- [ ] `ActivityStore` 提供 activity 表 CRUD：`insert`、`get`、`get_current`、`list_running`、`list_unfinished`、`get_paused_in_block`、`get_last_exploration`、`list_schedule`、`list_results`、`update`。
 - [ ] `MaterialStore` 提供 material 表 CRUD：`upsert`、`next_readable`、`find_by_topic`、`get_by_path`、`advance`、`append_fragment`、`get_fragments`、`list_all`。
 - [ ] `ActivityLifecycle` 提供 `recover_stale_running() -> list[Activity]` 与 `interrupt(activity_id: str, by_event: EventType, task: asyncio.Task[None] | None) -> None`；`activity_goal_signal(activity: Activity) -> bool | None` 为其结算辅助函数。
 - [ ] `ActivityFacade` 提供：
@@ -75,7 +75,7 @@
 - [ ] 有关联欲望的活动先在同一个本地事务中执行 `claim_for_activity(desire_id)`（`PENDING -> ACTIVE`）和活动 `PENDING` 插入；领取失败不创建活动，插入失败回滚领取。后台 task 开始后转 `RUNNING`；活动执行不阻塞 EventBus。
 - [ ] `activity_start`、`activity_end`、`activity_interrupted` 由活动 Facade/Lifecycle 自己发布，`source=INTERNAL`；事件优先使用活动 `progress["correlation_id"]`，缺失时回退活动 id。
 - [ ] `complete_activity` 将活动置为 `COMPLETED`、写入 `ended_at`，再发布 `activity_end`。执行异常将活动置为 `INCOMPLETE`、写入 `ended_at`、释放/抑制关联欲望并继续抛出异常供后台 task 收割。业务事务提交后 announce/wake 失败不得反向把已完成活动改成 `INCOMPLETE`。
-- [ ] 进程启动时，组合根在订阅事件前调用 `recover_stale_running()`：`READING`、`CREATION`、`FREE_EXPLORATION` 的遗留 `RUNNING` 转 `PAUSED`；`OBSERVE_USER`、`IDLE_REFLECTION`、`REST` 转 `ABANDONED`；关联欲望转 `SUPPRESSED`；不发布新的 `activity_interrupted`。
+- [ ] 进程启动时，组合根在订阅事件前调用 `recover_stale_running()`：遗留 `PENDING` 一律转 `ABANDONED` 并把关联 ACTIVE 欲望释放回 `PENDING`；遗留 `RUNNING` 中 `READING`、`CREATION`、`FREE_EXPLORATION` 转 `PAUSED`，其余转 `ABANDONED`，关联欲望转 `SUPPRESSED`；不发布新的 `activity_interrupted`。
 - [ ] `interrupt` 只处理存在且当前为 `RUNNING` 的目标；取消并等待执行 task 后重读活动状态，再将可续类型置 `PAUSED`，其余置 `ABANDONED`，释放关联的活动占用并发布 `activity_interrupted`。
 - [ ] 可续活动类型固定为 `READING`、`CREATION`、`FREE_EXPLORATION`。同一 `schedule_block_id` 内优先恢复最近的 `PAUSED` 记录，复用原 activity id；跨日程块的旧 `PAUSED` 只留档，不自动恢复。
 
@@ -176,7 +176,7 @@
 
 ### 观察与屏幕视觉
 
-- [ ] `classify_presence` 是 presence 三态判定的唯一事实来源：活跃输入为 `"online"`，无活跃但有窗口标题为 `"busy"`，两者都无为 `"away"`。采集由前端 Tauri ingress 完成，后端接收判定结果。
+- [ ] `classify_presence` 是 presence 三态判定的唯一事实来源：活跃输入为 `"online"`，无活跃但有窗口标题为 `"busy"`，两者都无为 `"away"`。Tauri `sample_presence(active_window_ms)` 在 Windows 读取系统最后输入时间与真实前台窗口标题；WebView 定时调用并上报。非 Tauri/非 Windows 降级为 WebView 内输入且标题为空，不得使用 Nyx 自身 `document.title` 冒充前台应用。
 - [ ] `build_observation_summary` 按窗口标题优先、屏幕摘要次之拼装观察文本；无二者时返回稳定的空/默认摘要。
 - [ ] `vision.enabled=true` 时，`ScreenObserver` 周期抓屏并调用 `VisionClient` 描述，失败返回 `None`；屏幕视觉只丰富观察摘要，不改变 presence 判定。
 

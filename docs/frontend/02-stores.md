@@ -215,7 +215,7 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 
 ### 关键决策
 
-- **派生态不落 store**：`nyxStatusOf(bookId, nyxPosition, userPosition)` 纯函数派生 `idle/reading/waiting`；`catchupDurationMs` / `computeWindow` / `paginate`（真分页，08 §5.1）同为可测纯函数（06）。
+- **派生态不落 store**：`nyxStatusOf(bookId, nyxPosition, userPosition)` 纯函数派生 `idle/reading/waiting`，ReaderView 用它展示 Nyx 正在追赶或等待；`catchupDurationMs` / `computeWindow` / `paginate`（真分页，08 §5.1）同为可测纯函数（06）。
 - **追赶循环秒级**：`startCatchup` 用 module-level `catchupTimer`，`catchupDurationMs = clamp(字数/速度, 1, 30) 秒`；`advanceNyx` 不超 `userPosition`，追上后落库 `nyx_position`（否则重载读到陈旧落后值会重追、重放 BOOK_FINISHED → read_count 重复 ++）。
 - **读书 turn 迁出气泡流**：`reading_question`/`reading_association` 并进 `chatStore`（`addReadingTurn`），不再进 `readerStore`；`reading_mutter` 走 `announceStore`。readerStore 只留书架/进度/追赶/笔记。
 - **笔记「给尼克斯看」本地 append**：`showToNyx` 成功把完整 `Annotation` append 到该 note（不整表重拉避免抖动）；LLM 空/失败回 `null` 不 append；失败静默记 `notesError`。用户笔记与 Nyx 章末整合记忆严格分离（后者落 memory 不上屏）。

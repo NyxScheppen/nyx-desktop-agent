@@ -80,7 +80,7 @@ async def build_app_context(
     canon_files: tuple[str, ...],
     ask_files: tuple[str, ...],
 ) -> _App:
-    """Build stores and facades in dependency order, then seed and subscribe."""
+    """Build stores and facades in dependency order, then seed local state."""
     db: Database = await connect()
     llm = LlmClient.from_config(config.llm)
     bus = EventBus(db)
@@ -109,20 +109,26 @@ async def build_app_context(
     inner_life_store = InnerLifeStore(db)
     activity_store = ActivityStore(db)
     material_store = MaterialStore(db)
-    state_holder: list[Callable[[], Awaitable[CurrentState]]] = []
-    reflect_holder: list[
-        Callable[[str | None], Awaitable[ReflectionOutcome | None]]
-    ] = []
-    observation_holder: list[Callable[[], Awaitable[dict[str, str]]]] = []
+    state_reader: Callable[[], Awaitable[CurrentState]] | None = None
+    reflection_runner: (
+        Callable[[str | None], Awaitable[ReflectionOutcome | None]] | None
+    ) = None
+    observation_reader: Callable[[], Awaitable[dict[str, str]]] | None = None
 
     async def get_state() -> CurrentState:
-        return await state_holder[0]()
+        if state_reader is None:
+            raise RuntimeError("inner_life state reader 尚未绑定")
+        return await state_reader()
 
     async def reflect(correlation_id: str | None) -> ReflectionOutcome | None:
-        return await reflect_holder[0](correlation_id)
+        if reflection_runner is None:
+            raise RuntimeError("inner_life reflection runner 尚未绑定")
+        return await reflection_runner(correlation_id)
 
     async def get_observation() -> dict[str, str]:
-        return await observation_holder[0]()
+        if observation_reader is None:
+            raise RuntimeError("runtime observation reader 尚未绑定")
+        return await observation_reader()
 
     prompt_dir = Path(os.environ.get("NYX_CANON_DIR", "prompts"))
     canon = load_canon(prompt_dir, canon_files)
@@ -150,8 +156,8 @@ async def build_app_context(
     inner_life = InnerLifeFacade(
         inner_life_store, activity, desire, memory, bus, llm, evaluator, config
     )
-    state_holder.append(inner_life.get_state)
-    reflect_holder.append(inner_life.reflect)
+    state_reader = inner_life.get_state
+    reflection_runner = inner_life.reflect
 
     await seed_inner_life(inner_life_store)
     await seed_desire(desire_store)
@@ -202,7 +208,7 @@ async def build_app_context(
             "screen_summary": app.last_screen_summary,
         }
 
-    observation_holder.append(read_observation)
+    observation_reader = read_observation
     if config.vision.enabled:
         vision = VisionClient.from_config(config.vision)
         app.screen_observer = ScreenObserver(

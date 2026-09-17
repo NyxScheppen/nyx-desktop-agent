@@ -54,8 +54,10 @@ class DesireFacade:
         elif source.type is EventType.ACTIVITY_END:
             await self._lifecycle.satisfy_from_activity_end(source, consumer_id)
 
-    async def evaluate(self, energy: float = 100.0) -> list[ShortTermDesire]:
-        return await self._lifecycle.run_eval(energy)
+    async def evaluate(
+        self, energy: float = 100.0, event_id: str | None = None
+    ) -> list[ShortTermDesire]:
+        return await self._lifecycle.run_eval(energy, event_id=event_id)
 
     async def pressure_creation(self, delta: float) -> None:
         """创造欲加压入口（反思/活动结束触发，delta 由调用方决定）。"""

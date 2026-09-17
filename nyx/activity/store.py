@@ -84,6 +84,17 @@ class ActivityStore:
             rows = await cursor.fetchall()
         return [_row_to_activity(r) for r in rows]
 
+    async def list_unfinished(self) -> list[Activity]:
+        """Return stale startup candidates in creation order."""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM activity "
+                "WHERE status IN ('pending', 'running') "
+                "ORDER BY started_at ASC"
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_activity(row) for row in rows]
+
     async def get_paused_in_block(self, schedule_block_id: str) -> Activity | None:
         """当前日程块内最新一条 PAUSED 记录（供恢复）；无则 None。"""
         async with self._db.lock:

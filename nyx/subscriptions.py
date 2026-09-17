@@ -41,7 +41,7 @@ def _resolve_handler(app: _App, spec: RouteSpec) -> Handler:
     if spec.handler_key == "remember_activity":
         return lambda event: app.memory.remember_activity(event, spec.consumer_id)
     if spec.handler_key == "apply_reflection":
-        return app.inner_life.apply_event
+        return lambda event: app.inner_life.apply_event(event, spec.consumer_id)
 
     from nyx.runtime import (
         on_desire_eval,

@@ -155,7 +155,8 @@ async def latest_created_at(kind: InteractionKind) -> float | None
 
 所有转换使用 `WHERE status = ...` 条件更新。用户消息最多关联一条等待项：
 有合法 `reply_to` 时只尝试该 id，否则选择最新 WAITING；超时按最早到期项逐条领取。
-外部结算失败释放 claim，未被领取的其它等待项不受影响。
+`answer_waiting()` 对主动搭话先结算对应互动欲，再把 attempt 完成为 `ANSWERED`；
+外部结算或完成写入失败时释放 claim，未被领取的其它等待项不受影响。
 
 真实组合根注入 store；没有 store 的兼容路径可以使用进程内等待字段，但不提供重启恢复保证。
 

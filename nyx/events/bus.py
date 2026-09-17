@@ -633,29 +633,43 @@ class EventBus:
                 raise
 
     async def _mark_success(self, consumer_id: str, event_id: str) -> None:
-        async with self._db.lock:
+        while not self._stop_event.is_set():
+            async with self._db.lock:
+                try:
+                    await self._db.conn.execute(
+                        """INSERT OR IGNORE INTO event_effect
+                        (event_id, consumer_id, applied_at) VALUES (?, ?, ?)""",
+                        (event_id, consumer_id, time.time()),
+                    )
+                    await self._db.conn.execute(
+                        """UPDATE event_delivery
+                        SET status = 'succeeded', completed_at = ?,
+                            lease_until = NULL, last_error = NULL
+                        WHERE event_id = ? AND consumer_id = ?
+                          AND status = 'processing'""",
+                        (time.time(), event_id, consumer_id),
+                    )
+                    await self._db.conn.commit()
+                except asyncio.CancelledError:
+                    await self._db.conn.rollback()
+                    raise
+                except Exception:
+                    await self._db.conn.rollback()
+                    self._logger.exception(
+                        "delivery 成功状态写入失败，等待重试 "
+                        "event_id=%s consumer_id=%s",
+                        event_id,
+                        consumer_id,
+                    )
+                else:
+                    self._compat_delivery_done(event_id)
+                    return
             try:
-                await self._db.conn.execute(
-                    """INSERT OR IGNORE INTO event_effect
-                    (event_id, consumer_id, applied_at) VALUES (?, ?, ?)""",
-                    (event_id, consumer_id, time.time()),
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=_SCAN_INTERVAL_SECONDS
                 )
-                await self._db.conn.execute(
-                    """UPDATE event_delivery
-                    SET status = 'succeeded', completed_at = ?,
-                        lease_until = NULL, last_error = NULL
-                    WHERE event_id = ? AND consumer_id = ? AND status = 'processing'""",
-                    (time.time(), event_id, consumer_id),
-                )
-                await self._db.conn.commit()
-                self._compat_delivery_done(event_id)
-            except BaseException:
-                await self._db.conn.rollback()
-                self._logger.exception(
-                    "delivery 成功状态写入失败 event_id=%s consumer_id=%s",
-                    event_id,
-                    consumer_id,
-                )
+            except asyncio.TimeoutError:
+                pass
 
     async def _mark_failure(
         self, consumer_id: str, event_id: str, attempts: int, error: Exception
@@ -668,31 +682,45 @@ class EventBus:
             min(attempts - 1, len(_DELIVERY_RETRY_DELAYS) - 1)
         ]
         available_at = time.time() + delay if not terminal else time.time()
-        async with self._db.lock:
-            try:
-                await self._db.conn.execute(
-                    """UPDATE event_delivery
-                    SET status = ?, available_at = ?, lease_until = NULL,
-                        last_error = ?
-                    WHERE event_id = ? AND consumer_id = ? AND status = 'processing'""",
-                    (
-                        status,
-                        available_at,
-                        f"{type(error).__name__}: {error}"[:2000],
+        while not self._stop_event.is_set():
+            async with self._db.lock:
+                try:
+                    await self._db.conn.execute(
+                        """UPDATE event_delivery
+                        SET status = ?, available_at = ?, lease_until = NULL,
+                            last_error = ?
+                        WHERE event_id = ? AND consumer_id = ?
+                          AND status = 'processing'""",
+                        (
+                            status,
+                            available_at,
+                            f"{type(error).__name__}: {error}"[:2000],
+                            event_id,
+                            consumer_id,
+                        ),
+                    )
+                    await self._db.conn.commit()
+                except asyncio.CancelledError:
+                    await self._db.conn.rollback()
+                    raise
+                except Exception:
+                    await self._db.conn.rollback()
+                    self._logger.exception(
+                        "delivery 失败状态写入失败，等待重试 "
+                        "event_id=%s consumer_id=%s",
                         event_id,
                         consumer_id,
-                    ),
+                    )
+                else:
+                    if terminal:
+                        self._compat_delivery_done(event_id)
+                    return
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=_SCAN_INTERVAL_SECONDS
                 )
-                await self._db.conn.commit()
-                if terminal:
-                    self._compat_delivery_done(event_id)
-            except BaseException:
-                await self._db.conn.rollback()
-                self._logger.exception(
-                    "delivery 失败状态写入失败 event_id=%s consumer_id=%s",
-                    event_id,
-                    consumer_id,
-                )
+            except asyncio.TimeoutError:
+                pass
 
     async def _has_effect(self, event_id: str, consumer_id: str) -> bool:
         async with self._db.lock:

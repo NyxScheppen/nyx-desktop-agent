@@ -7,11 +7,12 @@
 ## 当前快照
 
 - 后端测试文件：63
-- `pytest --collect-only -q`：866 tests collected
-- 最近一次全量验证：`865 passed, 1 skipped`
+- `pytest --collect-only -q`：873 tests collected
+- 最近一次全量验证：`872 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
+- 最近一次前端全量验证：`15 files / 211 passed`
 
 ## 后端覆盖
 
@@ -53,11 +54,14 @@
 - `test_publish_failure_does_not_return_event_id`
 - `test_handler_failure_retries_only_failed_consumer`
 - `test_delivery_failure_is_recovered_after_expired_lease`
+- `test_success_finalization_retries_without_blocking_consumer`
+- `test_failure_finalization_retries_without_wedging_delivery`
 - `test_effect_marker_skips_duplicate_handler_replay`
 - `test_user_message_replay_skips_after_reply_event_exists`
 - `test_attempt_insert_rolls_back_with_outer_transaction`
 - `test_concurrent_reply_claims_only_claim_once`
 - `test_close_rejects_new_events_and_closes_database`
+- `test_supervise_bus_returns_when_bus_stops_normally`
 
 ### 跨模块状态一致性
 
@@ -67,6 +71,9 @@
 - `test_run_eval_rolls_back_desire_when_generated_event_append_fails`
 - `test_activity_end_transaction_rolls_back_energy_and_emotion`
 - `test_reflection_event_rolls_back_slow_variables_when_event_append_fails`
+- `test_subscription_consistency`（含 durable consumer id 接线）
+- `test_answer_waiting_releases_claim_when_desire_settlement_fails`
+- `test_recover_stale_pending_abandons_and_releases_desire`
 - `test_compat_apply_event_restores_emotion_when_append_fails`
 - `test_get_state_settles_emotion_and_energy`
 - `test_run_rejects_invalid_json_for_delivery_retry`
@@ -94,6 +101,12 @@
 - `test_add_long_term_normalized_name_duplicate_skips`
 - `test_apply_value_delta_preserves_concurrent_increments`
 - `test_run_eval_reuses_saved_generation_after_commit_failure`
+- `test_run_eval_same_tick_applies_periodic_pressure_once`
+
+### 前端桌面采集
+
+- `presence.test.ts`：Tauri 原生输入/前台标题采样、三态判定与去重上报
+- `readerView.test.tsx`：阅读位置和 Nyx 追赶/等待派生态展示
 
 ## 维护规则
 

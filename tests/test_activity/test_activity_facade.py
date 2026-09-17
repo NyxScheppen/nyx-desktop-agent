@@ -1763,13 +1763,15 @@ def test_build_creation_system() -> None:
     assert "按 JSON 输出" in sys
 
 
-async def test_extract_knowledge_persists_items() -> None:
+async def test_reading_runner_extract_knowledge_persists_items() -> None:
     memory = _FakeMemory()
     facade, _store, _bus, database = await _new_facade(
         llm=_KnowledgeLlm(), memory=memory
     )
     try:
-        await facade._extract_knowledge(_activity("a1"), "骑士团史.md", "正文")
+        await facade._reading_runner.extract_knowledge(
+            _activity("a1"), "骑士团史.md", "正文"
+        )
         assert memory.remembered == [
             [
                 {"topic": "骑士团", "content": "成立于 1147 年"},
@@ -1780,19 +1782,21 @@ async def test_extract_knowledge_persists_items() -> None:
         await database.conn.close()
 
 
-async def test_extract_knowledge_best_effort_no_raise() -> None:
+async def test_reading_runner_extract_knowledge_best_effort_no_raise() -> None:
     memory = _FakeMemory()
     facade, _store, _bus, database = await _new_facade(
         llm=_RaisingLlm(), memory=memory
     )
     try:
-        await facade._extract_knowledge(_activity("a1"), "骑士团史.md", "正文")
+        await facade._reading_runner.extract_knowledge(
+            _activity("a1"), "骑士团史.md", "正文"
+        )
         assert memory.remembered == []
     finally:
         await database.conn.close()
 
 
-async def test_extract_knowledge_chunks_long_content() -> None:
+async def test_reading_runner_extract_knowledge_chunks_long_content() -> None:
     """长正文分块提取：7000 字切成两块，每块喂 LLM 的正文 ≤ 6000 字，跨块去重。"""
 
     class RecordingKnowledgeLlm(_KnowledgeLlm):
@@ -1823,7 +1827,9 @@ async def test_extract_knowledge_chunks_long_content() -> None:
     llm = RecordingKnowledgeLlm()
     facade, _store, _bus, database = await _new_facade(llm=llm, memory=memory)
     try:
-        await facade._extract_knowledge(_activity("a1"), "长书.md", "甲" * 7000)
+        await facade._reading_runner.extract_knowledge(
+            _activity("a1"), "长书.md", "甲" * 7000
+        )
         assert len(llm.knowledge_bodies) == 2  # 7000 字 → 两块
         for body in llm.knowledge_bodies:
             assert len(body.split("正文：\n", 1)[1]) <= 6000  # 每块正文不超预算

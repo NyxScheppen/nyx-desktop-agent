@@ -56,6 +56,7 @@
 |---|---|
 | REST 请求 | `frontend/src/api/client.ts` |
 | SSE 连接与事件分发 | `frontend/src/hooks/useSSE.ts` |
+| 桌面 presence 采集 | `frontend/src/hooks/usePresence.ts`, `frontend/src-tauri/src/lib.rs` |
 | API 类型 | `frontend/src/types/api.ts` |
 | Zustand 状态 | `frontend/src/stores/` |
 | 页面与面板 | `frontend/src/components/` |

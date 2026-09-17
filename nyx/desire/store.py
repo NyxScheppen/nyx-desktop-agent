@@ -204,6 +204,18 @@ class DesireStore:
                 await self._db.conn.commit()
         return cursor.rowcount == 1
 
+    async def try_mark_eval_applied(self, event_id: str, now: float) -> bool:
+        """Claim periodic pressure application for one durable eval tick."""
+        async with self._operation() as should_commit:
+            cursor = await self._db.conn.execute(
+                "INSERT OR IGNORE INTO desire_eval_applied (event_id, applied_at) "
+                "VALUES (?, ?)",
+                (event_id, now),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+        return cursor.rowcount == 1
+
     async def claim_for_activity(self, desire_id: str) -> bool:
         """Atomically claim one pending desire for an activity."""
         async with self._operation() as should_commit:

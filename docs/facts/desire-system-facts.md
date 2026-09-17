@@ -18,6 +18,7 @@
 - `desire_value` 每种 `DesireType` 一行，包含压力、表达权重、抑制阈值和 `updated_at`。
 - `long_term_desire` 保存长期欲望；`name_normalized` 由规范化名称生成并有唯一索引。
 - `desire_generation_attempt` 保存已解析但正式写入尚未完成的 LLM 结果，提交成功后删除。
+- `desire_eval_applied` 按 durable tick event id 记录周期状态已经结算，避免 delivery 重试重复衰减、加压或释放 SUPPRESSED。
 
 ## 当前状态流
 
@@ -36,7 +37,7 @@ PENDING --retry limit--> EXPIRED
 
 - `OBSERVATION_STATE` 原子增加互动欲压力。
 - `ACTIVITY_END` 按 payload 的 `desire_id`/`goal_met` 结算，并对读书/自由探索增加创造欲压力。
-- `DESIRE_EVAL` 先在短事务内结算衰减和周期压力，再在事务外调用 LLM。
+- `DESIRE_EVAL` 先在短事务内结算衰减和周期压力，并与 `desire_eval_applied` marker 一起提交，再在事务外调用 LLM；同一 tick 重试跳过周期结算但继续生成阶段。
 - 同一进程的评估调用由 lifecycle 锁串行；最终压力重置使用 `updated_at` 条件，保护评估期间的新压力。
 - 解析成功的 LLM JSON 先进入 generation attempt；正式状态、容量裁剪和 `DESIRE_GENERATED` 在一个事务中提交。
 - 短期容量溢出时，按类型表达权重降序、创建时间升序保留，低表达权重待消费欲望被裁剪。

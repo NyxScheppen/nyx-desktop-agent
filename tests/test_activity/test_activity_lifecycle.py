@@ -27,6 +27,12 @@ class _Store:
             if activity.status is ActivityStatus.RUNNING
         ]
 
+    async def list_unfinished(self) -> list[Activity]:
+        return [
+            activity for activity in self.activities.values()
+            if activity.status in (ActivityStatus.PENDING, ActivityStatus.RUNNING)
+        ]
+
 
 class _Bus:
     def __init__(self) -> None:
@@ -40,12 +46,16 @@ class _Desire:
     def __init__(self) -> None:
         self.active: list[str] = []
         self.suppressed: list[str] = []
+        self.released: list[str] = []
 
     async def mark_active(self, desire_id: str) -> None:
         self.active.append(desire_id)
 
     async def mark_suppressed(self, desire_id: str) -> None:
         self.suppressed.append(desire_id)
+
+    async def release_active(self, desire_id: str) -> None:
+        self.released.append(desire_id)
 
 
 def _activity(status: ActivityStatus = ActivityStatus.PENDING) -> Activity:
@@ -161,6 +171,18 @@ async def test_recover_stale_running_abandons_non_resumable() -> None:
     assert [a.id for a in recovered] == ["rest", "observe", "reflect"]
     assert all(a.status is ActivityStatus.ABANDONED for a in recovered)
     assert desire.suppressed == ["d-rest", "d-observe", "d-reflect"]
+
+
+async def test_recover_stale_pending_abandons_and_releases_desire() -> None:
+    lifecycle, store, _bus, desire = _lifecycle()
+    pending = _typed_activity("pending", ActivityType.READING, ActivityStatus.PENDING)
+    store.activities[pending.id] = pending
+
+    recovered = await lifecycle.recover_stale_running()
+
+    assert recovered == [pending]
+    assert pending.status is ActivityStatus.ABANDONED
+    assert desire.released == ["d-pending"]
 
 
 def test_activity_goal_signal_uses_explicit_none() -> None:

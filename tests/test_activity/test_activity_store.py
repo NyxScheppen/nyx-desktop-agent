@@ -93,6 +93,26 @@ async def test_list_running_all_started_at_asc() -> None:
         await database.conn.close()
 
 
+async def test_list_unfinished_includes_pending_and_running() -> None:
+    store, database = await _new_store()
+    try:
+        await store.insert(
+            _activity("done", status=ActivityStatus.COMPLETED, started_at=1.0)
+        )
+        await store.insert(
+            _activity("running", status=ActivityStatus.RUNNING, started_at=3.0)
+        )
+        await store.insert(
+            _activity("pending", status=ActivityStatus.PENDING, started_at=2.0)
+        )
+
+        rows = await store.list_unfinished()
+
+        assert [row.id for row in rows] == ["pending", "running"]
+    finally:
+        await database.conn.close()
+
+
 async def test_get_last_exploration_empty() -> None:
     store, database = await _new_store()
     try:

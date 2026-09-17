@@ -127,6 +127,23 @@ class _RecoveringBus:
         raise RuntimeError("transient")
 
 
+class _NormallyStoppedBus:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.persisted_count = 0
+
+    async def run(self) -> None:
+        self.calls += 1
+
+
+async def test_supervise_bus_returns_when_bus_stops_normally() -> None:
+    bus = _NormallyStoppedBus()
+
+    await asyncio.wait_for(_supervise_bus(_app(bus)), timeout=0.1)
+
+    assert bus.calls == 1
+
+
 async def test_supervise_bus_resets_on_recovery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

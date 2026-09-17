@@ -149,9 +149,6 @@ class ActivityFacade:
     ) -> Activity | None:
         return self._starter.select_activity(desires, state)
 
-    def _default_activity(self, state: CurrentState) -> Activity:
-        return self._starter.default_activity(state)
-
     # ---- 生命周期 ----
 
     async def complete_activity(self, activity: Activity) -> None:
@@ -227,19 +224,6 @@ class ActivityFacade:
         result = await self._exploration.run(activity)
         activity.progress["result"] = result
         await self.complete_activity(activity)
-
-    def _exploration_seed(self, activity: Activity) -> str:
-        """种子话题：优先 goal.topic（探索欲的真实方向），退 description，
-        退 activity.id。"""
-        goal = activity.progress.get("goal")
-        if isinstance(goal, dict):
-            topic = cast(dict[str, Any], goal).get("topic")
-            if isinstance(topic, str) and topic:
-                return topic
-        desc = activity.progress.get("description")
-        if isinstance(desc, str) and desc:
-            return desc
-        return activity.id
 
     async def _run_activity(self, activity: Activity) -> dict[str, Any]:
         t = activity.type
@@ -335,12 +319,6 @@ class ActivityFacade:
     ) -> dict[str, Any]:
         """兼容旧内部调用；读书实现位于 `ReadingActivityRunner`。"""
         return await self._reading_runner.run(activity, source)
-
-    async def _extract_knowledge(
-        self, activity: Activity, filename: str, content: str
-    ) -> None:
-        """兼容旧测试入口；知识点提取由 runner 执行。"""
-        await self._reading_runner.extract_knowledge(activity, filename, content)
 
     async def _run_llm_activity(
         self,

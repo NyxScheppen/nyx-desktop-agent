@@ -144,19 +144,23 @@ class ActivityLifecycle:
             await self._desire.mark_suppressed(desire_id)
 
     async def recover_stale_running(self) -> list[Activity]:
-        """启动时清理没有内存 task 承接的 RUNNING 活动。"""
+        """启动时清理没有内存 task 承接的 PENDING/RUNNING 活动。"""
         recovered: list[Activity] = []
-        for activity in await self._store.list_running():
+        for activity in await self._store.list_unfinished():
+            was_pending = activity.status is ActivityStatus.PENDING
             activity.status = (
-                ActivityStatus.PAUSED
-                if activity.type in _RESUMABLE_TYPES
-                else ActivityStatus.ABANDONED
+                ActivityStatus.ABANDONED
+                if was_pending or activity.type not in _RESUMABLE_TYPES
+                else ActivityStatus.PAUSED
             )
             activity.ended_at = time.time()
             await self._store.update(activity)
             desire_id = activity.progress.get("desire_id")
             if isinstance(desire_id, str):
-                await self._desire.mark_suppressed(desire_id)
+                if was_pending:
+                    await self._desire.release_active(desire_id)
+                else:
+                    await self._desire.mark_suppressed(desire_id)
             recovered.append(activity)
         return recovered
 

@@ -10,7 +10,6 @@ import uvicorn
 from fastapi import FastAPI
 
 from nyx.api.routes import build_app as build_api
-from nyx.api.routes import sanitize_filename
 from nyx.app_context import (
     _App,
     build_tools,
@@ -21,24 +20,15 @@ from nyx.app_context import (
 from nyx.bootstrap import (
     load_ask,
     load_canon,
-    load_prompt_files,
     seed_desire,
     seed_inner_life,
-    seed_long_term,
 )
 from nyx.config import Config, load_config
 from nyx.desire.store import DesireStore
-from nyx.enums import EventType, Source, TickType
+from nyx.enums import EventType, Source
 from nyx.inner_life.store import InnerLifeStore
 from nyx.runtime import (
-    check_initiate_chat,
     check_reflect,
-    on_desire_eval,
-    on_initiate_chat_check,
-    on_mutter_check,
-    on_reflection_check,
-    on_schedule_block_start,
-    on_user_message,
     root_event,
     supervise_bus,
     tick_loop,
@@ -47,7 +37,7 @@ from nyx.runtime import (
 from nyx.subscriptions import subscribe
 from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
-from nyx.types import Event, LongTermDesire
+from nyx.types import Event
 
 _HOST = "127.0.0.1"
 _PORT = 8000
@@ -77,14 +67,6 @@ def _root_event(
     return root_event(type_, content, source)
 
 
-def _sanitize_filename(name: str) -> str:
-    return sanitize_filename(name)
-
-
-def _load_prompt_files(canon_dir: Path, names: tuple[str, ...]) -> str:
-    return load_prompt_files(canon_dir, names)
-
-
 def _load_canon(canon_dir: Path) -> str:
     return load_canon(canon_dir, _CANON_FILES)
 
@@ -99,30 +81,6 @@ async def _seed_inner_life(store: InnerLifeStore) -> None:
 
 async def _seed_desire(store: DesireStore) -> None:
     await seed_desire(store)
-
-
-def _seed_long_term(now: float) -> list[LongTermDesire]:
-    return seed_long_term(now)
-
-
-async def _on_user_message(app: _App, event: Event) -> None:
-    await on_user_message(app, event)
-
-
-async def _on_clock_tick(app: _App, event: Event) -> None:
-    tick_type = TickType(event.content["tick_type"])
-    handlers = {
-        TickType.SCHEDULE_BLOCK_START: on_schedule_block_start,
-        TickType.DESIRE_EVAL: on_desire_eval,
-        TickType.MUTTER_CHECK: on_mutter_check,
-        TickType.INITIATE_CHAT_CHECK: on_initiate_chat_check,
-        TickType.REFLECTION_CHECK: on_reflection_check,
-    }
-    await handlers[tick_type](app, event)
-
-
-async def _check_initiate_chat(app: _App) -> None:
-    await check_initiate_chat(app)
 
 
 async def _check_reflect(app: _App, correlation_id: str) -> None:

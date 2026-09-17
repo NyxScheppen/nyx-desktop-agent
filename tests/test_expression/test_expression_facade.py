@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import pytest
 
+from nyx import db
 from nyx.activity.facade import ActivityFacade
 from nyx.config import ExpressionConfig
 from nyx.desire.facade import DesireFacade
@@ -15,6 +16,8 @@ from nyx.enums import (
     EmotionCategory,
     EnergyState,
     EventType,
+    InteractionKind,
+    InteractionStatus,
     MemoryKind,
     MemoryType,
 )
@@ -22,6 +25,7 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
 from nyx.expression.mutter import _MUTTER_SKELETONS, MutterCategory
+from nyx.expression.store import ExpressionInteractionStore
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
@@ -30,6 +34,7 @@ from nyx.types import (
     Activity,
     CurrentState,
     Event,
+    InteractionAttempt,
     LLMOutput,
     Memory,
     Message,
@@ -246,6 +251,7 @@ def _new_facade(
     tools: _FakeTools | None = None,
     memory: _FakeMemory | None = None,
     activity: _FakeActivity | None = None,
+    interaction_store: ExpressionInteractionStore | None = None,
 ) -> tuple[
     ExpressionFacade,
     _FakeLlm,
@@ -278,6 +284,7 @@ def _new_facade(
         ask_guidance="[主动提问指导]\n在合适的时候向用户提问。",
         config=ExpressionConfig(),
         tools=tools_obj,
+        interaction_store=interaction_store,
     )
     return facade, fake_llm, evaluator, memory, inner_life, bus
 
@@ -825,6 +832,41 @@ async def test_reply_clears_pending_state() -> None:
     assert facade._ask_cid is None
     assert facade._pending_chat_desire_id is None
     assert desire.satisfied == [("d1", True)]
+
+
+async def test_answer_waiting_releases_claim_when_desire_settlement_fails() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = ExpressionInteractionStore(database)
+        await store.create(
+            InteractionAttempt(
+                id="attempt-1",
+                kind=InteractionKind.INITIATE_CHAT,
+                source_id="d1",
+                correlation_id="chat-1",
+                text="在吗？",
+                created_at=1.0,
+                expires_at=100.0,
+            )
+        )
+
+        class _FailingDesire(_FakeDesire):
+            async def satisfy(self, desire_id: str, goal_met: bool) -> None:
+                raise RuntimeError("settlement failed")
+
+        facade, *_ = _new_facade(
+            desire=_FailingDesire(), interaction_store=store
+        )
+
+        with pytest.raises(RuntimeError, match="settlement failed"):
+            await facade.answer_waiting("reply-1")
+
+        attempt = await store.get("attempt-1")
+        assert attempt is not None
+        assert attempt.status is InteractionStatus.WAITING
+        assert attempt.answer_event_id is None
+    finally:
+        await database.close()
 
 
 async def test_initiate_chat_sets_pending_desire() -> None:

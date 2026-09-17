@@ -485,6 +485,15 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX idx_memory_kind_hash ON memory(kind, content_hash)",
         ],
     ),
+    (
+        20,
+        [
+            """CREATE TABLE desire_eval_applied (
+                event_id TEXT PRIMARY KEY,
+                applied_at REAL NOT NULL
+            )""",
+        ],
+    ),
 ]
 
 

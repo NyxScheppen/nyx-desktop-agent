@@ -59,7 +59,7 @@ async def on_desire_eval(app: Any, event: Event) -> None:
     """Consume a desire evaluation tick."""
     _require_tick(event, TickType.DESIRE_EVAL)
     state = await app.inner_life.get_state()
-    await app.desire.evaluate(state.energy)
+    await app.desire.evaluate(state.energy, event_id=event.id)
 
 
 async def on_mutter_check(app: Any, event: Event) -> None:
@@ -233,6 +233,7 @@ async def supervise_bus(
     while True:
         try:
             await app.bus.run()
+            return
         except asyncio.CancelledError:
             raise
         except Exception:

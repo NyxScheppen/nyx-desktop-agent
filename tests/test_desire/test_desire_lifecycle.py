@@ -222,6 +222,24 @@ def test_parse_desire() -> None:
         _parse_desire('{"description": "x", "goal": {"action": "read", "count": 0}}')
     with pytest.raises(ValueError):
         _parse_desire('{"description": "x", "goal": {"action": "read", "count": "3"}}')
+
+
+async def test_run_eval_same_tick_applies_periodic_pressure_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    try:
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: 2000.0)
+        await store.insert_long_term(_lt(DesireType.CREATION))
+        lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+
+        await lifecycle.run_eval(100.0, event_id="tick-1")
+        await lifecycle.run_eval(100.0, event_id="tick-1")
+
+        value = await store.get_value(DesireType.CREATION)
+        assert value is not None and value.value == pytest.approx(0.1)
+    finally:
+        await database.close()
     with pytest.raises(ValueError):
         _parse_desire(
             '{"description": "x", "goal": {"action": "read", "count": 1, "topic": 5}}'

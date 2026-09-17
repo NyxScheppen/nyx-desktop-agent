@@ -95,7 +95,8 @@
 - `runtime.on_user_message()` 先检查同 correlation 的 `SPEAK`/`ASK` 终局事件，再按
   `reply_to` 或最新 WAITING attempt 原子关联至多一条等待项。
 - durable store 存在时，用户回复和超时都使用 `WAITING -> CLAIMED` 条件更新，再完成为
-  `ANSWERED` 或 `EXPIRED`。外部结算失败会释放 claim 并保留重试机会。
+  `ANSWERED` 或 `EXPIRED`。主动搭话回复先满足互动欲，再写 `ANSWERED`；任一步失败会释放
+  claim 并保留 delivery 重试机会。
 - durable store 未注入时，兼容路径仍使用 `_waiting_user`、`_pending_chat_desire_id` 等
   进程内状态；这条路径重启后不具备 durable 恢复能力。
 

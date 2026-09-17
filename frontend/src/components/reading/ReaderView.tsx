@@ -1,5 +1,10 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { GAP_PX, paginate, useReaderStore } from "../../stores/readerStore";
+import {
+  GAP_PX,
+  nyxStatusOf,
+  paginate,
+  useReaderStore,
+} from "../../stores/readerStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import NotePanel from "./NotePanel";
 
@@ -63,6 +68,8 @@ export default function ReaderView() {
   };
 
   const title = books.find((b) => b.id === bookId)?.title ?? "阅读中";
+  const nyxStatus = nyxStatusOf(bookId, nyxPosition, userPosition);
+  const nyxStatusText = nyxStatus === "reading" ? "她正在追上你" : "她在等你";
 
   // translateY：当前页前所有段的累计高度（整页视觉切换，08 §5.4）。
   let offset = 0;
@@ -78,7 +85,7 @@ export default function ReaderView() {
         </button>
         <span className="reader__title">{title}</span>
         <span className="reader__pos">
-          她读到第 {nyxPosition} 段 · 你读到第 {userPosition} / {totalParagraphs} 段
+          {nyxStatusText} · 她读到第 {nyxPosition} 段 · 你读到第 {userPosition} / {totalParagraphs} 段
         </span>
       </header>
       <div className="reader__body">

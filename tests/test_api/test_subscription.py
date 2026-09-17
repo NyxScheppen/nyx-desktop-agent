@@ -22,11 +22,10 @@ from nyx.types import Event
 
 class _FakeInnerLife:
     def __init__(self) -> None:
-        self.applied: list[Event] = []
+        self.applied: list[tuple[Event, str | None]] = []
 
     async def apply_event(self, event: Event, consumer_id: str | None = None) -> None:
-        del consumer_id
-        self.applied.append(event)
+        self.applied.append((event, consumer_id))
 
 
 class _FakeDesire:
@@ -110,6 +109,14 @@ async def test_subscription_consistency() -> None:
 
     assert len(expression.replied) == 1
     assert len(inner_life.applied) == 4
+    assert {
+        (event.type, consumer_id) for event, consumer_id in inner_life.applied
+    } == {
+        (EventType.OBSERVATION_STATE, "inner_life.observation_state"),
+        (EventType.DESIRE_SATISFIED, "inner_life.desire_satisfied"),
+        (EventType.ACTIVITY_END, "inner_life.activity_end"),
+        (EventType.REFLECTION, "inner_life.reflection"),
+    }
     assert len(desire.added) == 2
     assert len(activity.generated) == 1
     assert len(memory.remembered) == 1

@@ -1,23 +1,23 @@
 # 欲望系统（desire）：值机制、store、全周期与门面
 
-> 范围：`desire/value.py`（值机制纯函数与常量）、`desire/store.py`（`DesireStore` 三表 CRUD + 序列化）、`desire/lifecycle.py`（`DesireLifecycle` 全周期编排）、`desire/facade.py`（`DesireFacade` 门面）。
+> 范围：`desire/value.py`（值机制纯函数与常量）、`desire/store.py`（`DesireStore` 三类领域表 + 恢复 marker CRUD）、`desire/lifecycle.py`（`DesireLifecycle` 全周期编排）、`desire/facade.py`（`DesireFacade` 门面）。
 > 值机制负责压力值、表达权重、抑制阈值的数学语义；生命周期负责加压/衰减/达峰生成/满足/淘汰；纯 CRUD 在 `store.py`；`facade.py` 是薄门面（事件入口 + 读委托）。
 > spec 只定义契约（签名 + 数学语义 + 全周期编排语义 + 阈值/增量决策）；实现以 `nyx/desire/value.py` / `nyx/desire/store.py` / `nyx/desire/lifecycle.py` / `nyx/desire/facade.py` 源文件为准。
 
 ## 元信息
 
-- **前置依赖**：01-types（`DesireType` / `DesireStatus` / `DesireValue` / `ShortTermDesire` / `LongTermDesire` / `Goal` / `DesireState` / `GoalAction` / `Event` / `EventType` / `Source`）、02-config（`DesireConfig`：`peak_threshold` / `retry_limit` / `long_term_capacity` / `short_term_capacity` / `value_decay`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、`short_term_desire` / `desire_value` / `long_term_desire` / `desire_generation_attempt` 表）、10-eval（`Evaluator`）
+- **前置依赖**：01-types（`DesireType` / `DesireStatus` / `DesireValue` / `ShortTermDesire` / `LongTermDesire` / `Goal` / `DesireState` / `GoalAction` / `Event` / `EventType` / `Source`）、02-config（`DesireConfig`：`peak_threshold` / `retry_limit` / `long_term_capacity` / `short_term_capacity` / `value_decay`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、欲望表、`desire_generation_attempt` / `desire_eval_applied`）、10-eval（`Evaluator`）
 - **本 spec 带来的连锁改动（ripple，已同步）**：01-types 给 `LongTermDesire` 加 `type` 字段、`DesireValue` 加 `updated_at` 字段；04-module-bus-system 给 `long_term_desire` 加 `type` 列、`desire_value` 加 `updated_at` 列；tech-ref 补 `desire/value.py` 与 `desire/store.py`；本轮为 `DesireConfig` 增加 `short_term_capacity`，并为 `long_term_desire.name_normalized` 建唯一索引。
 
 ## 用户故事
 
-> 作为 Nyx 系统的开发者，我想要 `DesireFacade` 把欲望全周期（观察加压、达峰生成、满足/淘汰回写）统一成一个门面，以便 `activity` 只调 `get_pending` 消费、`inner_life`/`activity` 只靠事件回写满足、仪表盘只调 `get_all` 快照；值机制纯函数收口在 `value.py`，三表 CRUD 收口在 `store.py`，全周期编排在 `lifecycle.py`，所有 LLM 调用和事件发布走可注入的 `llm` / `bus`。
+> 作为 Nyx 系统的开发者，我想要 `DesireFacade` 把欲望全周期（观察加压、达峰生成、满足/淘汰回写）统一成一个门面，以便 `activity` 只调 `get_pending` 消费、`inner_life`/`activity` 只靠事件回写满足、仪表盘只调 `get_all` 快照；值机制纯函数收口在 `value.py`，领域与恢复状态 CRUD 收口在 `store.py`，全周期编排在 `lifecycle.py`，所有 LLM 调用和事件发布走可注入的 `llm` / `bus`。
 
 ## 验收标准
 
-- [ ] `store.py` 含 `DesireStore`（`add_desire` / `get_desire` / `list_pending` / `list_suppressed` / `list_short_term` / `update_desire` / `get_value` / `list_values` / `upsert_value` / `apply_value_delta` / `reset_value_if_unchanged` / `claim_for_activity` / `trim_pending` / `insert_long_term_if_available` / `insert_long_term` / `list_long_term` / `update_long_term` / 生成尝试 CRUD）+ 序列化 helper（实现见 `nyx/desire/store.py`）
+- [ ] `store.py` 含 `DesireStore`（`add_desire` / `get_desire` / `list_pending` / `list_suppressed` / `list_short_term` / `update_desire` / `get_value` / `list_values` / `upsert_value` / `apply_value_delta` / `reset_value_if_unchanged` / `try_mark_eval_applied` / `claim_for_activity` / `trim_pending` / `insert_long_term_if_available` / `insert_long_term` / `list_long_term` / `update_long_term` / 生成尝试 CRUD）+ 序列化 helper（实现见 `nyx/desire/store.py`）
 - [ ] `lifecycle.py` 含 `DesireLifecycle`（`pressure_from_observation` / `pressure_creation` / `satisfy_from_activity_end` / `run_eval` / `satisfy` / `expire` / `mark_active` / `mark_suppressed`）+ `_parse_desire` / `_subtopics_for` / `_subtopic_freshness` / `_pick_topic_seed` / `_most_relevant_long_term` / `_build_desire_prompt`（实现见 `nyx/desire/lifecycle.py`）
-- [ ] `facade.py` 含 `DesireFacade`，公开方法包括：`add_value(source: Event, consumer_id: str | None = None) -> None` / `evaluate(energy: float = 100.0) -> list[ShortTermDesire]` / `pressure_creation(delta: float) -> None` / `get_pending() -> list[ShortTermDesire]` / `get_all() -> DesireState` / `satisfy(desire_id: str, goal_met: bool) -> None` / `expire(desire_id: str) -> None` / `mark_active(desire_id: str) -> None` / `mark_suppressed(desire_id: str) -> None` / `release_active(desire_id: str) -> None` / `claim_for_activity(desire_id: str) -> bool` / `claim_for_activity_in_transaction(desire_id: str) -> bool` / `add_long_term(desire: LongTermDesire) -> None`
+- [ ] `facade.py` 含 `DesireFacade`，公开方法包括：`add_value(source: Event, consumer_id: str | None = None) -> None` / `evaluate(energy: float = 100.0, event_id: str | None = None) -> list[ShortTermDesire]` / `pressure_creation(delta: float) -> None` / `get_pending() -> list[ShortTermDesire]` / `get_all() -> DesireState` / `satisfy(desire_id: str, goal_met: bool) -> None` / `expire(desire_id: str) -> None` / `mark_active(desire_id: str) -> None` / `mark_suppressed(desire_id: str) -> None` / `release_active(desire_id: str) -> None` / `claim_for_activity(desire_id: str) -> bool` / `claim_for_activity_in_transaction(desire_id: str) -> bool` / `add_long_term(desire: LongTermDesire) -> None`
 - [ ] `add_value` 是**事件入口**（对 tech-ref「加压」注释的精确化）：`OBSERVATION_STATE` → 互动欲加压，`ACTIVITY_END` → 解析满足信号回写；其余类型忽略
 - [ ] `run_eval`：先四类型衰减（`elapsed_days` 来自 `updated_at`）→ 长期欲望周期加压 → 疲惫加压（`energy < ENERGY_REST_THRESHOLD` → 休息欲 +`_REST_PRESSURE_DELTA`）→ 达峰判定（`at_peak and is_expressible`）→ **只生成最迫切的 1 个**（value 最高）→ LLM 生成 → 重置该类型 value → 入队 → 发布 `desire_generated`；无达峰返回 `[]`，非选中类型**保留压力**（不重置）
 - [ ] `satisfy(goal_met=True, goal=None)`：出队（`SATISFIED`）+ 表达权重正强化 + 长期进度回写 + 发布 `desire_satisfied`
@@ -32,6 +32,7 @@
 - [ ] 事件发布遵守「Facade 自己 publish、绝不返回 Event」；事件 `source=INTERNAL`；`desire_satisfied` / `desire_expired` 的 `correlation_id` = `desire.id`
 - [ ] `run_eval` 的 LLM 产出（`output_type="desire"`）后紧跟 `await evaluator.evaluate(output)`（漏记由测试断言兜底）；解析成功的产出先保存到 `desire_generation_attempt`，正式提交失败后的重试必须复用该 JSON，不重复调用 LLM。
 - [ ] `run_eval` 的本地状态使用评估锁和 `updated_at` 条件重置；评估期间发生的新压力不得被旧快照覆盖。
+- [ ] durable tick 传入 `event_id` 时，周期衰减/压力/SUPPRESSED 释放与 `desire_eval_applied` marker 同事务提交；同一 tick 重试继续生成阶段但不重复结算周期状态。兼容直调 `event_id=None` 时每次照常结算。
 - [ ] `run_eval` 生成后按 `DesireConfig.short_term_capacity` 裁剪待消费短期欲望；保留排序为 `expression_weight DESC`、`created_at ASC`，低权重记录被移除。若新记录被裁剪，不发布 `desire_generated`。
 - [ ] `pyright` strict 零报错
 
@@ -78,15 +79,15 @@
 
 ## 技术方案
 
-- **实现文件**：`nyx/desire/value.py`、`nyx/desire/store.py`、`nyx/desire/lifecycle.py`、`nyx/desire/facade.py`（无 API、无数据变更——表结构是 04-module-bus-system 的活）
+- **实现文件**：`nyx/desire/value.py`、`nyx/desire/store.py`、`nyx/desire/lifecycle.py`、`nyx/desire/facade.py`（无 API；`desire_eval_applied` 表结构由 04-module-bus-system 定义）
 - **库**：无新库（标准库 `json` / `time` / `uuid` / `typing`；`aiosqlite` 已由 04-module-bus-system 引入）
 - **公开面**：`from nyx.desire.value import ...`（本 spec 的值机制函数与常量）；`from nyx.desire.store import DesireStore`；`from nyx.desire.lifecycle import DesireLifecycle`；`from nyx.desire.facade import DesireFacade`（不加 `__all__`；序列化 helper 私有）
-- **四层职责**：`DesireFacade`（Facade）→ `DesireLifecycle`（全周期编排）→ `DesireStore`（三表 CRUD）；`value.py` 是被 lifecycle/store 直接调用的纯函数模块，不新增运行时抽象层。`lifecycle` 由 `facade` 内部构造（共享 store），让 `facade` 只做事件入口 + 读委托
+- **四层职责**：`DesireFacade`（Facade）→ `DesireLifecycle`（全周期编排）→ `DesireStore`（领域表与恢复 marker CRUD）；`value.py` 是被 lifecycle/store 直接调用的纯函数模块，不新增运行时抽象层。`lifecycle` 由 `facade` 内部构造（共享 store），让 `facade` 只做事件入口 + 读委托
 - **store 锁约定（同 07）**：每个方法一个 `async with self._db.lock` 的 SQL 块；store 方法之间不互相调用对方的持锁方法（`asyncio.Lock` 不可重入）
 - **两个读路径（`get_pending` vs `get_all`）**：tech-ref §5 把它们分开——`get_pending` = 待消费队列（`list_pending`，只含 `PENDING`、`created_at ASC` FIFO），供活动排期/拼 prompt；`get_all` = 全量快照（`short_term` 用 `list_short_term`，含 satisfied/expired 历史、`created_at DESC`），供 `/api/desires` 仪表盘。故 store 要两个 list 方法，`DesireState.short_term` 是「全部」而非「待消费」
 - **可空 JSON 列（同 07 的 `embedding`）**：`short_term_desire.goal` 是 `Goal | None` ⟺ `goal TEXT` 可空，`None ↔ SQL NULL`（非 `"null"` 字符串）
 - **`add_value` 是事件入口（决策，对 tech-reference 注释的精确化）**：tech-ref 写「活动/对话/长期欲望 加压」，但 ROUTING 里 desire 订阅了 `OBSERVATION_STATE` 和 `ACTIVITY_END` 两个事件——`OBSERVATION_STATE` 是加压、`ACTIVITY_END` 是满足回写（`04-module-bus-system` 的路由与事件语义、ROUTING 注释「满足」）。故 `add_value` 按 `source.type` 派发；组合根用 `bus.subscribe(EventType.OBSERVATION_STATE, facade.add_value)` + `bus.subscribe(EventType.ACTIVITY_END, facade.add_value)` 绑定
-- **`evaluate()` 由 tick 触发**：TICK_ROUTING 的 `DESIRE_EVAL → desire`。`evaluate()` 不接受 Event（tech-ref 签名），由组合根的 CLOCK_TICK 分发器按 `tick_type == DESIRE_EVAL` 调 `facade.evaluate()`。`desire_generated` 因此无上游 tick 溯源——`desire_generated` 的 `correlation_id = desire.id`（溯源到欲望自身，断链局限；与 06-memory-system 的 `record_recall` 一样属于当前实现限制）
+- **`evaluate()` 由 tick 触发**：TICK_ROUTING 的 `DESIRE_EVAL → desire`。runtime 不把完整 Event 传入 Facade，只把 `event.id` 作为 `event_id` 传给 `evaluate()`，用于周期状态幂等；兼容直调可省略。`desire_generated` 的 `correlation_id = desire.id`，不改成 tick correlation。
 - **加压增量（默认值，标注可推翻）**：`_OBSERVATION_PRESSURE_DELTA=0.15`（观察状态→互动欲 +0.15）、`_LONG_TERM_PRESSURE_DELTA=0.1`（每个长期欲望周期→对应类型 +0.1）、`_REST_PRESSURE_DELTA=0.1`（疲惫 `energy < ENERGY_REST_THRESHOLD`→休息欲 +0.1）、`_CREATION_ACTIVITY_PRESSURE_DELTA=0.15`（读书/自由探索结束→创造欲 +0.15）。加压复用本 spec 值机制的 `apply_pressure`
 - **衰减时机（决策：加 `updated_at` 列，已与用户确认）**：`elapsed_days = (now - updated_at) / 86400`，`decay_value(value, elapsed_days, config.value_decay)`。`updated_at` 记录"最后一次 value 变化"，每次 evaluate 先衰减结算再写回 `updated_at = now`；衰减是单调的，两次 evaluate 之间 value 不实时下降（与 06-memory-system 的 `decay_freshness` 一样属于按访问结算的当前实现限制），相对顺序不破坏
 - **达峰生成（决策：只生成最迫切 1 个，已与用户确认）**：达峰判据 = `at_peak(value, peak) and is_expressible(value, suppression)`（本 spec 值机制的门控组合）；多个达峰类型时 `max(..., key=value)` 取最高者生成 1 个，**只重置选中类型**，其余达峰类型保留压力下次 evaluate 再生成——每次 evaluate 最多 1 次 LLM 调用（原则 1）

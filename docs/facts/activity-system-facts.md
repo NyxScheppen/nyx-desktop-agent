@@ -7,13 +7,13 @@
 - `ActivityFacade` 是活动系统唯一门面：对外提供 `on_tick`、`on_desire_generated`、`select_activity`、`complete_activity`、`interrupt`、`recover_stale_running`、`get_current`、`get_schedule`、`get_results`、`list_materials`、`register_material`。
 - `ActivityStarter` 负责“空闲时启动什么”：单 task 守卫、查 RUNNING、同日程块 PAUSED 恢复、欲望排序、材料选择、默认活动。
 - `ActivityLifecycle` 负责状态转换和副作用：`start`、`complete`、`fail`、`interrupt`，并发布 `activity_start`、`activity_end`、`activity_interrupted`。
-- `ActivityStore` 只管 `activity` 表；`MaterialStore` 只管 `material` 表。Facade 不直接写 SQL。
+- `ActivityStore` 只管 `activity` 表，并用 `list_unfinished()` 提供启动恢复候选；`MaterialStore` 只管 `material` 表。Facade 不直接写 SQL。
 - `ReadingActivityRunner` 执行活动系统自己的分块读书；`Exploration` 执行自由探索；`creation.py`、`observe.py`、`screen.py` 提供对应活动的纯函数或旁路能力。
 - `reading/` 是陪读系统，使用 `books` / `paragraphs` / `reading_progress`；`activity/material` 是 Nyx 自己读的分块文本书库。两套书库当前按 spec 并行存在，不互相替代。
 
 ## 触发与调度
 
-- `runtime.tick_loop` 发布 `CLOCK_TICK`；`main._on_clock_tick` 只在 `TickType.SCHEDULE_BLOCK_START` 时调用 `activity.on_tick`。
+- `runtime.tick_loop` 发布 `CLOCK_TICK`；`subscriptions.py` 按 `RouteSpec.tick_type` 把 `SCHEDULE_BLOCK_START` 路由到 `runtime.on_schedule_block_start()`，再调用 `activity.on_tick`。
 - `DESIRE_GENERATED` 事件订阅到 `activity.on_desire_generated`，新欲望出现时也会尝试启动活动。
 - `_maybe_start_activity` 不 await 完整活动，只创建后台 task，避免 EventBus 被 LLM、文件读取或探索链阻塞。
 - 同一进程内唯一活动靠两层守卫：`ActivityStarter._lock` 串行化启动决策，`ActivityFacade._task` 在锁内赋值并用于关闭 PENDING 到 RUNNING 之间的窗口。
@@ -33,7 +33,7 @@
 ## 生命周期
 
 - 新活动先以 `PENDING` 插入 activity 表，后台 `_execute` 开始后由 `ActivityLifecycle.start` 改为 `RUNNING` 并发布 `activity_start`。
-- app context 启动后会调用 `ActivityFacade.recover_stale_running()`：DB 遗留 RUNNING 中，`READING` / `CREATION` / `FREE_EXPLORATION` 转 `PAUSED`，瞬时活动转 `ABANDONED`，关联 desire 标 `SUPPRESSED`，不发布新的打断事件。
+- app context 启动后会调用 `ActivityFacade.recover_stale_running()`：DB 遗留 PENDING 一律转 `ABANDONED` 并释放关联 ACTIVE desire；遗留 RUNNING 中，`READING` / `CREATION` / `FREE_EXPLORATION` 转 `PAUSED`，瞬时活动转 `ABANDONED`，关联 desire 标 `SUPPRESSED`，不发布新的打断事件。
 - `start` 会把关联的 PENDING desire 标为 ACTIVE；无 `desire_id` 的默认活动不碰 desire。
 - 正常结束由 `complete` 改为 `COMPLETED`，写 `ended_at`，发布 `activity_end`。
 - 异常结束由 `fail` 改为 `INCOMPLETE`，写 `ended_at`，并把 ACTIVE desire 标为 SUPPRESSED；异常继续上抛，由 task done callback 收割。
@@ -64,6 +64,7 @@
 - `CREATION` 会取最多 3 条 knowledge 记忆、当前观察、当前状态和 canon，调用 LLM 生成 `{title, content}`，写入 `workspace/creations/<safe-title>.md`。进度写在 `activity.progress["creation"]`，恢复时复用 style / LLM 结果 / 文件路径，不重复写同一文件。
 - `FREE_EXPLORATION` 由 `Exploration.run(activity)` 执行显式 checkpoint 状态机：`searching -> reading_results -> summarizing -> sinking -> completed`。进度写在 `activity.progress["exploration"]`，恢复时从 cursor 继续抓取结果；`sink_done=true` 时不重复新增长期欲望或 knowledge 记忆。
 - `OBSERVE_USER` 读取组合根维护的 `last_presence`、`last_window_title`、`last_screen_summary`，用纯函数拼 summary。
+- Windows Tauri command `sample_presence` 读取系统最后输入时间和前台窗口标题；浏览器/非 Windows 降级不使用 `document.title`，避免 Nyx 自身标题把空闲误判为 busy。
 - `IDLE_REFLECTION` 通过组合根注入的 `reflect` 回调执行反思活动；阅读重读触发的反思不走直接调用，而是发布 durable `REFLECTION` 事件。
 - `REST` 返回空 result。
 

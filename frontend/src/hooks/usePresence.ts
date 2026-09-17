@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { postObserve } from "../api/client";
 import type { Presence } from "../types/api";
 
@@ -34,14 +35,22 @@ export function usePresence(): void {
     window.addEventListener("keydown", onKey);
     window.addEventListener("mousemove", onMouse);
 
-    const sample = () => {
+    const sample = async () => {
       const now = Date.now();
-      const keyboardActive = now - lastKeyTs.current < ACTIVE_WINDOW_SEC * 1000;
-      const mouseActive = now - lastMouseTs.current < ACTIVE_WINDOW_SEC * 1000;
-      // 窗口标题：本轮采 document.title（placeholder，Nyx 自己标题）；
-      // src-tauri 落地后换真实「前台应用窗口标题」（README §2）
-      const windowTitle = document.title;
-      const presence = classifyPresence(keyboardActive, mouseActive, windowTitle);
+      let inputActive: boolean;
+      let windowTitle: string;
+      try {
+        [inputActive, windowTitle] = await invoke<[boolean, string]>(
+          "sample_presence",
+          { activeWindowMs: ACTIVE_WINDOW_SEC * 1000 },
+        );
+      } catch {
+        inputActive =
+          now - lastKeyTs.current < ACTIVE_WINDOW_SEC * 1000 ||
+          now - lastMouseTs.current < ACTIVE_WINDOW_SEC * 1000;
+        windowTitle = "";
+      }
+      const presence = classifyPresence(inputActive, false, windowTitle);
       if (presence !== lastPresence.current || windowTitle !== lastWindowTitle.current) {
         lastPresence.current = presence;
         lastWindowTitle.current = windowTitle;
@@ -52,8 +61,8 @@ export function usePresence(): void {
       }
     };
 
-    sample(); // 首次挂载必报（后端 last_presence 初始 "away"，前端真实值要对齐）
-    const timer = setInterval(sample, OBSERVE_INTERVAL_SEC * 1000);
+    void sample(); // 首次挂载必报（后端 last_presence 初始 "away"，前端真实值要对齐）
+    const timer = setInterval(() => void sample(), OBSERVE_INTERVAL_SEC * 1000);
 
     return () => {
       window.removeEventListener("keydown", onKey);

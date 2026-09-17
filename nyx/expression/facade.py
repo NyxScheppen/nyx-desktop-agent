@@ -182,10 +182,17 @@ class ExpressionFacade:
         attempt = await self._interaction_store.claim_reply(reply_event_id, reply_to)
         if attempt is None:
             return None
-        if not await self._interaction_store.finish_answer(
-            attempt.id, reply_event_id
-        ):
-            return None
+        try:
+            if attempt.kind is InteractionKind.INITIATE_CHAT:
+                await self._desire.satisfy(attempt.source_id, True)
+            if not await self._interaction_store.finish_answer(
+                attempt.id, reply_event_id
+            ):
+                await self._interaction_store.release_claim(attempt.id)
+                return None
+        except BaseException:
+            await self._interaction_store.release_claim(attempt.id)
+            raise
         return attempt
 
     async def latest_initiate_chat_at(self) -> float | None:
@@ -204,9 +211,7 @@ class ExpressionFacade:
     ) -> None:
         """完整回复流程：跑 LangGraph 图，内部发布 think/speak/ask。"""
         # 用户说话 = 回应了之前的问句/搭话；清等待状态（不做「是否真在答」判断）。
-        answered = await self.answer_waiting(correlation_id, reply_to)
-        if answered is not None and answered.kind is InteractionKind.INITIATE_CHAT:
-            await self._desire.satisfy(answered.source_id, True)
+        await self.answer_waiting(correlation_id, reply_to)
         if self._interaction_store is None:
             self._waiting_user = False
             self._ask_cid = None

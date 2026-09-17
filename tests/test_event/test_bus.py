@@ -307,6 +307,94 @@ async def test_effect_marker_skips_duplicate_handler_replay() -> None:
         await _close(bus)
 
 
+async def test_success_finalization_retries_without_blocking_consumer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = await _new_bus()
+    try:
+        received: list[str] = []
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handler(event: Event) -> None:
+            received.append(event.id)
+            if event.id == "first":
+                entered.set()
+                await release.wait()
+
+        bus.subscribe(EventType.THINK, handler)
+        first = _make_event(id="first", timestamp=1.0)
+        second = _make_event(id="second", timestamp=2.0)
+        async with _running(bus):
+            await bus.publish(first)
+            await bus.publish(second)
+            await asyncio.wait_for(entered.wait(), timeout=1.0)
+
+            real_commit = bus._db.conn.commit
+            failures = 0
+
+            async def fail_once() -> None:
+                nonlocal failures
+                failures += 1
+                if failures == 1:
+                    raise RuntimeError("transient commit failure")
+                await real_commit()
+
+            monkeypatch.setattr(bus._db.conn, "commit", fail_once)
+            release.set()
+            await _wait_delivery(bus, first.id, status="succeeded")
+            await _wait_delivery(bus, second.id, status="succeeded")
+
+        assert received == ["first", "second"]
+    finally:
+        await _close(bus)
+
+
+async def test_failure_finalization_retries_without_wedging_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nyx.events.bus as bus_module
+
+    monkeypatch.setattr(bus_module, "_DELIVERY_RETRY_DELAYS", (0.0,) * 5)
+    bus = await _new_bus()
+    try:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def handler(event: Event) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                entered.set()
+                await release.wait()
+            raise RuntimeError("handler failed")
+
+        bus.subscribe(EventType.THINK, handler)
+        event = _make_event()
+        async with _running(bus):
+            await bus.publish(event)
+            await asyncio.wait_for(entered.wait(), timeout=1.0)
+            real_commit = bus._db.conn.commit
+            failures = 0
+
+            async def fail_once() -> None:
+                nonlocal failures
+                failures += 1
+                if failures == 1:
+                    raise RuntimeError("transient commit failure")
+                await real_commit()
+
+            monkeypatch.setattr(bus._db.conn, "commit", fail_once)
+            release.set()
+            row = await _wait_delivery(bus, event.id, status="dead_letter")
+
+        assert row["attempts"] == 5
+        assert calls == 5
+    finally:
+        await _close(bus)
+
+
 async def test_publish_failure_does_not_return_event_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

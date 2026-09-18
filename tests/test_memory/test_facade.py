@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 
 from nyx import db
+from nyx.browsing.store import BrowsingStore
 from nyx.config import MemoryConfig
 from nyx.db import Database
 from nyx.enums import EventType, MemoryEdgeKind, MemoryKind, MemoryType, Source
@@ -32,7 +33,7 @@ from nyx.memory.facade import (
 )
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval
 from nyx.memory.store import MemoryStore
-from nyx.types import Event, LLMOutput, Memory
+from nyx.types import BrowserPageSnapshot, Event, LLMOutput, Memory
 
 
 def _scene(content: str) -> str:
@@ -170,6 +171,39 @@ def _make_facade(
 async def _new_stack() -> tuple[MemoryStore, EventBus, Database]:
     database = await db.connect(":memory:")
     return MemoryStore(database), EventBus(database), database
+
+
+async def test_browsing_memory_is_fenced_and_idempotent() -> None:
+    store, bus, database = await _new_stack()
+    browsing = BrowsingStore(database)
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        session = await browsing.get_or_create_active_session(1.0)
+        await browsing.begin_navigation(session.id, "nav", 2.0)
+        page, _ = await browsing.upsert_capture(
+            session.id,
+            BrowserPageSnapshot("nav", 1, "https://example.com", None,
+                                "Title", "Text", None, False),
+            3.0,
+        )
+        await browsing.freeze_page(page.id, "nav", 1, 4.0)
+        await browsing.finalize_page_outputs(page.id, "nav", 1, 5.0)
+        await browsing.claim_next("worker", "expired", 6.0, 7.0)
+        with pytest.raises(ValueError, match="state_conflict"):
+            await facade.remember_browsing(page.id, "expired", "Note", "Summary", [])
+        assert await store.get(page.id) is None
+        await browsing.recover_expired(8.0)
+        await browsing.claim_next("worker", "summary", 8.0, 308.0)
+        await browsing.finish_summary(page.id, "summary", "Note", "Summary", [], 9.0)
+        await browsing.claim_next("worker", "valid", 10.0, 1e12)
+        memory = await facade.remember_browsing(page.id, "valid", "Note", "Summary", [])
+        again = await facade.remember_browsing(page.id, "valid", "Note", "Summary", [])
+        assert memory.id == again.id == page.id
+        assert (memory.kind is MemoryKind.BROWSING
+                and memory.type is MemoryType.LONG_TERM)
+        assert len(await bus.list_events(correlation_id=page.id)) == 1
+    finally:
+        await database.close()
 
 
 def _subscribe(bus: EventBus) -> list[Event]:

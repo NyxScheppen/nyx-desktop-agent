@@ -1,7 +1,9 @@
 import { create } from "zustand";
 import { getEventsLog, postChat } from "../api/client";
+import { isValidTimestamp } from "../lib/time";
 import type {
   BackendEvent,
+  BrowsingEvent,
   QuestionSubtype,
   ReadingQuestionEvent,
   TextEvent,
@@ -14,7 +16,8 @@ export type ChatMessage = {
   role: "user" | "nyx";
   kind:
     | "message" | "speak" | "ask" | "think" | "initiate_chat"
-    | "reading_question";
+    | "reading_question"
+    | "browsing_mutter" | "browsing_question" | "browsing_association";
   content: string;
   correlation_id: string;
   timestamp: number;
@@ -22,12 +25,16 @@ export type ChatMessage = {
   // 读书 turn 专属（kind==="reading_question" 才有 subtype/selectedText）
   subtype?: QuestionSubtype;
   selectedText?: string | null;
+  memoryId?: string;
+  attemptId?: string;
 };
 
 type ChatState = {
   messages: ChatMessage[];
   isReplying: boolean; // 发消息后等待回复中
   sendError: string | null;
+  replyTo: string | null;
+  setReplyTo: (attemptId: string | null) => void;
   typedIds: Record<string, true>; // 已逐字打完的 think id（speak/ask 等其同 correlation_id 的 think 打完才开打）
   unreadProactive: boolean; // 搭话（initiate_chat）未读：头像红点，用户点徽标/发消息即清
   addUserMessage: (e: UserMessageEvent) => void;
@@ -36,10 +43,11 @@ type ChatState = {
   addThink: (e: TextEvent<"think">) => void;
   addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
   addReadingTurn: (e: ReadingQuestionEvent) => void;
+  addBrowsingTurn: (e: BrowsingEvent) => void;
   clearUnreadProactive: () => void;
   markTyped: (id: string) => void;
   loadHistory: () => Promise<void>; // 挂载时回填 GET /api/events/log 的历史消息（preloaded，不逐字）
-  sendMessage: (text: string) => Promise<boolean>; // 成功 true / 失败 false（ChatInput 据其决定是否清空输入框）
+  sendMessage: (text: string, context?: { browsing_page_id?: string; reply_to?: string }) => Promise<boolean>; // 成功才清输入框
   reset: () => void;
 };
 
@@ -51,16 +59,28 @@ const HISTORY_TYPES = [
   "think",
   "initiate_chat",
   "reading_question",
+  "browsing_mutter",
+  "browsing_question",
+  "browsing_association",
 ] as const;
 const HISTORY_LIMIT = 5000; // 每类型拉取上限（大上限折中：覆盖长会话、后端不动）
+
+function compareMessages(a: ChatMessage, b: ChatMessage): number {
+  const rank = (kind: ChatMessage["kind"]) => kind === "message" ? 0 : kind === "think" ? 1 : 2;
+  return a.timestamp - b.timestamp || rank(a.kind) - rank(b.kind)
+    || a.id.localeCompare(b.id);
+}
 
 // BackendEvent（event_log）→ ChatMessage：user_message 读 content.message、文本事件读 content.content。
 // 字段非 string 则丢弃（与 append 一致的收窄校验，01-sse §4.1）。
 function toChatMessage(e: BackendEvent): ChatMessage | null {
+  if (e.type === "ask" && e.content.kind === "browsing_question") return null;
   const isUser = e.type === "user_message";
   const isQuestion = e.type === "reading_question";
-  const raw = isUser ? e.content.message : e.content.content;
-  if (typeof raw !== "string") return null;
+  const raw = isUser ? e.content.message
+    : e.type === "browsing_association" ? e.content.snippet : e.content.content;
+  if (typeof raw !== "string" || !isValidTimestamp(e.timestamp)) return null;
+  if (e.type.startsWith("browsing_") && raw.trim() === "") return null;
   const msg: ChatMessage = {
     id: e.id,
     role: isUser ? "user" : "nyx",
@@ -73,6 +93,13 @@ function toChatMessage(e: BackendEvent): ChatMessage | null {
   if (isQuestion) {
     msg.subtype = e.content.subtype as QuestionSubtype;
     msg.selectedText = e.content.selected_text as string | null;
+  }
+  if (e.type === "browsing_question" && typeof e.content.selected_text === "string") {
+    msg.selectedText = e.content.selected_text;
+  }
+  if (e.type === "browsing_question" && typeof e.content.attempt_id === "string") msg.attemptId = e.content.attempt_id;
+  if (e.type === "browsing_association" && typeof e.content.memory_id === "string") {
+    msg.memoryId = e.content.memory_id;
   }
   return msg;
 }
@@ -101,9 +128,9 @@ export const useChatStore = create<ChatState>((set, get) => {
     kind: ChatMessage["kind"],
   ) => {
     const text = e.event === "user_message" ? e.message : e.content;
-    if (typeof text !== "string") {
-      console.error(`SSE ${e.event} 帧文本字段非 string，丢弃`, e);
-      return;
+    if (typeof text !== "string" || !isValidTimestamp(e.timestamp)) {
+      console.error(`SSE ${e.event} 帧文本或时间戳非法，丢弃`, e);
+      return false;
     }
     const msg: ChatMessage = {
       id: e.event_id,
@@ -113,12 +140,17 @@ export const useChatStore = create<ChatState>((set, get) => {
       correlation_id: e.correlation_id,
       timestamp: e.timestamp,
     };
-    set((s) => ({ messages: [...s.messages, msg] }));
+    if (get().messages.some((message) => message.id === msg.id)) return false;
+    set((s) => ({
+      messages: [...s.messages, msg].sort(compareMessages),
+    }));
+    return true;
   };
 
   // speak/ask 是「会结束回复等待」的产出：correlation_id 匹配本次发送（pendingId）才结束等待，
   // 非匹配（搭话/碎碎念）只 append 不动生命周期。kind 取 e.event（"speak"/"ask"）。
   const finishReply = (e: TextEvent<"speak"> | TextEvent<"ask">) => {
+    if (typeof e.content !== "string" || !isValidTimestamp(e.timestamp)) return;
     if (e.correlation_id === pendingId) {
       clearReplyTimer();
       pendingId = null;
@@ -131,37 +163,44 @@ export const useChatStore = create<ChatState>((set, get) => {
     messages: [],
     isReplying: false,
     sendError: null,
+    replyTo: null,
+    setReplyTo: (replyTo) => set({ replyTo }),
     typedIds: {},
     unreadProactive: false,
     addUserMessage: (e) => append(e, "user", "message"),
     addSpeak: (e) => finishReply(e),
-    addAsk: (e) => finishReply(e),
+    addAsk: (e) => { if (e.kind !== "browsing_question") finishReply(e); },
     addThink: (e) => append(e, "nyx", "think"),
     addInitiateChat: (e) => {
-      append(e, "nyx", "initiate_chat");
-      set({ unreadProactive: true });
+      if (append(e, "nyx", "initiate_chat")) set({ unreadProactive: true });
     },
     // 读书提问并进对话（08 §2.2）：correlation_id = book_id（后端用 book_id 当 correlation_id），
     // 不过滤当前书（永久聊天消息，关书后仍留转录）；文本字段非 string 丢弃（复用 append 收窄）。
     addReadingTurn: (e) => {
-      if (typeof e.content !== "string") return;
-      set((s) => ({
-        messages: [
-          ...s.messages,
-          {
-            id: e.event_id,
-            role: "nyx",
-            kind: "reading_question",
-            content: e.content,
-            correlation_id: e.book_id,
-            timestamp: e.timestamp,
-            subtype: e.subtype,
-            selectedText: e.selected_text,
-          },
-        ],
+      if (typeof e.content !== "string" || !isValidTimestamp(e.timestamp)) return;
+      const message: ChatMessage = {
+        id: e.event_id,
+        role: "nyx",
+        kind: "reading_question",
+        content: e.content,
+        correlation_id: e.book_id,
+        timestamp: e.timestamp,
+        subtype: e.subtype,
+        selectedText: e.selected_text,
+      };
+      set((s) => s.messages.some((message) => message.id === e.event_id) ? {} : ({
+        messages: [...s.messages, message].sort(compareMessages),
       }));
     },
     clearUnreadProactive: () => set({ unreadProactive: false }),
+    addBrowsingTurn: (e) => {
+      const { event, event_id, correlation_id, timestamp, ...content } = e;
+      const message = toChatMessage({id: event_id, type: event, correlation_id,
+        timestamp, source: "internal", content});
+      if (message === null || get().messages.some((item) => item.id === event_id)) return;
+      message.preloaded = false;
+      set((s) => ({messages: [...s.messages, message].sort(compareMessages)}));
+    },
     markTyped: (id) => set((s) => ({ typedIds: { ...s.typedIds, [id]: true } })),
     loadHistory: async () => {
       // 每类型并行拉取，合并后按时间升序（旧→新，历史在前）。getEventsLog 失败即整组放弃
@@ -184,9 +223,9 @@ export const useChatStore = create<ChatState>((set, get) => {
             if (msg.kind === "think") thinkIds[msg.id] = true;
           }
           if (fresh.length === 0) return {};
-          // 前置到现有消息前；历史 think 视为已打完（不阻塞实时 speak/ask）
+          // 重连可能回填比现有消息更新的事实；合并后统一排序。
           return {
-            messages: [...fresh, ...s.messages],
+            messages: [...s.messages, ...fresh].sort(compareMessages),
             typedIds: { ...s.typedIds, ...thinkIds },
           };
         });
@@ -194,13 +233,13 @@ export const useChatStore = create<ChatState>((set, get) => {
         console.error("加载聊天历史失败", err);
       }
     },
-    sendMessage: async (text) => {
+    sendMessage: async (text, context) => {
       // 串行锁要同步上：get() 同步读 store（非 React 订阅），在 await postChat 之前置 isReplying=true。
       // 否则网络往返窗口内 isReplying 仍 false，双击/连击可并发第二次发送、覆盖 pendingId。
       if (get().isReplying) return false;
       set({ isReplying: true, sendError: null, unreadProactive: false });
       try {
-        const { event_id } = await postChat(text);
+        const { event_id } = await (context === undefined ? postChat(text) : postChat(text, context));
         pendingId = event_id; // 回复帧 correlation_id 与此匹配（后端 user_message 沿它溯源）
         clearReplyTimer();
         replyTimer = setTimeout(() => {
@@ -218,7 +257,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     reset: () => {
       clearReplyTimer(); // 新会话：取消残留 timer + 复位 isReplying/sendError（防假超时）
       pendingId = null;
-      set({ messages: [], isReplying: false, sendError: null, typedIds: {}, unreadProactive: false });
+      set({ messages: [], isReplying: false, sendError: null, replyTo: null, typedIds: {}, unreadProactive: false });
     },
   };
 });

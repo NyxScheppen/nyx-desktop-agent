@@ -13,6 +13,10 @@ import {
   getEvalPrompt,
   getEvalTotalTokens,
   getEventsLog,
+  getBrowsingSession,
+  retryBrowsingPage,
+  deleteBrowsingPage,
+  deleteBrowsingHistory,
   getNotes,
   getProgress,
   getState,
@@ -59,9 +63,49 @@ const snapshot = {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("api/client", () => {
+  it("chat forwards page context and explicit attempt reply without host secrets", async () => {
+    const mock = vi.fn().mockResolvedValue(jsonResponse({ event_id: "e1" }));
+    vi.stubGlobal("fetch", mock);
+    await postChat("看这一段", { browsing_page_id: "page", reply_to: "attempt" });
+    expect(JSON.parse(mock.mock.calls[0][1].body)).toEqual({ message: "看这一段", browsing_page_id: "page", reply_to: "attempt" });
+  });
+
+  it("browsing session lookup only uses the public metadata endpoint", async () => {
+    const mock = vi.fn().mockResolvedValue(jsonResponse({ session: { id: "s" }, pages: [] }));
+    vi.stubGlobal("fetch", mock);
+    expect((await getBrowsingSession("s")).pages).toEqual([]);
+    expect(mock).toHaveBeenCalledWith("/api/browsing/sessions/s", undefined);
+  });
+
+  it("browsing retry is an empty JSON POST", async () => {
+    const mock = vi.fn().mockResolvedValue(jsonResponse({ page_id: "p", status: "pending" }));
+    vi.stubGlobal("fetch", mock);
+    await retryBrowsingPage("p");
+    expect(mock).toHaveBeenCalledWith("/api/browsing/pages/p/retry", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  });
+
+  it.each([false, true])("browsing DELETE all=%s accepts 204 without parsing JSON", async (all) => {
+    const mock = vi.fn().mockResolvedValue({ ok: true, status: 204, json: () => { throw new Error("no body"); } });
+    vi.stubGlobal("fetch", mock);
+    await (all ? deleteBrowsingHistory() : deleteBrowsingPage("p"));
+    expect(mock).toHaveBeenCalledWith(all ? "/api/browsing/history" : "/api/browsing/pages/p", { method: "DELETE" });
+  });
+  it.each([true, false])("DEV=%s selects the shared REST/SSE base", async (dev) => {
+    vi.stubEnv("DEV", dev);
+    vi.resetModules();
+    const client = await import("../src/api/client");
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(snapshot));
+    vi.stubGlobal("fetch", fetchMock);
+    const base = dev ? "" : "http://127.0.0.1:8000";
+    expect(client.BASE_URL).toBe(base);
+    await client.getState();
+    expect(fetchMock.mock.calls[0][0]).toBe(`${base}/api/state`);
+  });
+
   it("postChat：POST /api/chat、body {message}、解析 {event_id}", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ event_id: "e1" }));
     vi.stubGlobal("fetch", fetchMock);
@@ -92,7 +136,8 @@ describe("api/client", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ event_id: "e2" }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const res = await postObserve("away", "编辑器", 300);
+    const signal = new AbortController().signal;
+    const res = await postObserve({ presence: "away", window_title: "编辑器", idle_seconds: 300, sampled_at: 1000 }, signal);
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/observe");
@@ -102,7 +147,9 @@ describe("api/client", () => {
         presence: "away",
         window_title: "编辑器",
         idle_seconds: 300,
+        sampled_at: 1000,
       }),
+      signal,
     });
     expect(res).toEqual({ event_id: "e2" });
   });

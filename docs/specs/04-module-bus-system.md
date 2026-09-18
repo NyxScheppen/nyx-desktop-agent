@@ -359,6 +359,37 @@ CLOCK_TICK + REFLECTION_CHECK     -> inner_life.reflection_check
 
 事件 payload 必须包含消费者完成工作所需事实；消费者不能依赖另一个消费者的执行顺序。
 
+共同浏览的 `BROWSING_MUTTER`、`BROWSING_QUESTION`、`BROWSING_ASSOCIATION` 是持久化后
+广播、无 RouteSpec consumer 的展示事件；`BROWSING_QUESTION` 与 canonical `ASK` 及
+waiting interaction attempt 同一本地事务提交。浏览页面 checkpoint、整合恢复和事件载荷
+遵循 `13-browsing-system.md`；三类事件固定 `correlation_id=page_id`，作为页面记忆整合
+恢复 Nyx 已提交输出的事实源，不注册为 Activity 或 `FREE_EXPLORATION` consumer。
+浏览 integration 自身使用 lease owner/token fencing；这不复用 `event_delivery` row，也不改变
+总线 worker 的既有 schema。eval 失败继续遵循 `10-eval.md` 的 best-effort 语义，不能改变浏览
+事件是否提交或页面是否重试。
+
+浏览整合对已提交输出的读取仍由 EventBus 拥有，新增只读接口：
+
+```python
+async def EventBus.list_events_for_correlation(
+    self, correlation_id: str, event_types: tuple[EventType, ...], limit: int = 100
+) -> list[Event]: ...
+```
+
+`event_types` 必须非空，`limit` 为 1..100；只过滤精确 correlation 和指定类型，不读取
+delivery 状态，不修改事件。以 `(timestamp DESC, id DESC)` 选最近 `limit` 条，再反转为
+`(timestamp ASC, id ASC)` 返回；同一 DB 锁下读已提交行。BrowsingIntegration 在
+`outputs_finalized=1` 后调用此接口，BrowsingStore 不直接查询总线的 `event_log`；原有
+`list_events` 的过滤和排序保持不变。payload 校验与字符预算仍由 `13-browsing-system.md`
+定义。
+
+当前实现由 schema 22 建立浏览 checkpoint 辅助表；组合根装配 BrowsingFacade，启动恢复
+旧会话与 pending checkpoint，应用关停先 quiesce/drain 浏览任务再关闭 EventBus/DB。
+浏览记忆核心写入通过共享 DB 事务内验证 claim 并提交固定 id 的 memory/event，不引入
+新 RouteSpec consumer。Windows 原生 child、OAuth popup、launcher/sidecar 配对已实现。
+冻结后端 stdin EOF 通知正常 quiesce/drain；父进程退出最多等待 35 秒后回收自己的 child。
+真实打包 transport 验收尚未完成，不以开发桌面 smoke 替代。
+
 ### 组合根与导入边界
 
 目标边界：
@@ -385,17 +416,26 @@ presence 变化时间、离开起点、最近一次归来时间与离开时长�
 `_App` 的 presence/归来入口固定为：
 
 ```python
-async def publish_observation(self, event: Event, idle_seconds: float) -> None: ...
+async def publish_observation(self, event: Event, idle_seconds: float) -> bool: ...
 async def record_user_online(self, timestamp: float) -> None: ...
 def claim_return_context(self) -> dict[str, float] | None: ...
 def finish_return_context(self, claim: dict[str, float] | None) -> None: ...
 def release_return_context(self, claim: dict[str, float] | None) -> None: ...
 ```
 
-观察发布和用户消息 online 对齐由同一个 `presence_lock` 串行化。归来上下文只保存
+观察发布和用户消息 online 对齐由同一个 `presence_lock` 串行化，以 `presence_observed_at`
+记录最新证据时间。采样时间不晚于该水位的观察返回 False，不投递、不修改快照；旧用户
+消息也不覆盖新证据。观察的 Event.timestamp 是接收时间，sampled_at 才是状态事实时间。
+锁内读取的系统时间早于最近证据接收时间时重建基线、清空归来上下文，不计算跨时钟跳变
+的离开时长。不得用等待锁之前的 Event.timestamp 判断回拨；回拨前的未来采样不受理。
+取消发生在 durable commit 与 publish 返回之间时，用现有 is_durable 查询核实；已落库的
+观察仍提交内存快照，再传播取消。真正未提交的取消不改变快照。用户未来时间校验在锁内执行。
+归来上下文只保存
 `returned_at` 和 `away_duration_seconds`，分为 pending 与 claimed：同步 claim 在表达首次
 await 前移走 pending，同一时刻至多一个 claimed；finish/release 只处理同一个 claim 对象。
-成功表达完成消费，失败释放时只有不存在较新的 pending 才恢复旧值，不得覆盖生成期间的新归来。
+正常表达在终局事件成功提交时立即消费；后续失败或取消不得恢复已消费事实。失败释放时
+只有不存在较新的 pending 才恢复旧值，不得覆盖生成期间的新归来。重新进入 away 时
+废弃 pending 和 claimed，旧表达的 release 不得复活已经失效的归来。
 这些同步方法通过闭包注入表达门面，不新增状态类或抽象层；重启清空内存状态，不从旧观察
 事件补造 pending return。
 
@@ -536,6 +576,13 @@ CREATE TABLE eval_prompt (
 本 spec 的总线重构不新增用户业务端点；其它完整领域契约定义的现有辅助端点仍由
 `nyx/api/routes.py` 薄封装。eval 调试端点遵循 `10-eval.md`：
 
+共同浏览引入不可信远程 WebView 后，所有 `/api` 状态变更端点按
+`13-browsing-system.md` 校验 Host、Origin 和 `Sec-Fetch-Site`；远程 origin 不因页面可在
+Nyx 窗口内显示而获得 localhost API 权限。打包版可信 UI 的 REST/SSE 则以固定
+`http://127.0.0.1:8000` 为 base URL，精确可信 Origin 的 CORS/OPTIONS/PNA 和
+`Sec-Fetch-Site: cross-site` 例外按浏览 spec 处理；开发版仍由 Vite proxy 同源转发。
+现有 JSON 请求体和无副作用 GET 约定保持不变。
+
 - `GET /api/eval/recent?limit=N` 的 `N` 限制为 1..100，且列表不携带 prompt；
 - `GET /api/eval/total_tokens` 返回按 `call_id` 去重的累计 token；
 - `GET /api/eval/{record_id}/prompt` 精确查询一行对应的共享 prompt，旧记录返回 `null`、
@@ -544,8 +591,16 @@ CREATE TABLE eval_prompt (
 现有写入口语义会变化：
 
 - `POST /api/chat`：只有 durable admission 成功才返回 `{event_id}`；失败返回 503/429。
-- `POST /api/observe`：请求体为 `{presence, window_title, idle_seconds}`；`idle_seconds`
-  必须是有限且非负的秒数。端点根据当前运行时快照构造下列
+  请求体可按 `13-browsing-system` 增加可选 `browsing_page_id`；该字段只提供当前页只读
+  prompt 上下文，不改变 `USER_MESSAGE` 的 durable admission 和 correlation 语义。
+- `POST /api/observe`：请求体为 `{presence, window_title, idle_seconds, sampled_at}`；两项
+  数值必须是严格的有限非负数（不接受字符串和布尔值），idle_seconds <= sampled_at，
+  sampled_at 为客户端开始采样时的 epoch 秒，不晚于后端接收时间；标题最多 512 字符。
+  presence 必须与 30 秒/300 秒 idle 阈值一致；非法输入返回 422。过期/重复采样返回 409，
+  不发布事件、不伪造 event_id。模型校验错误 detail 只返回 loc/msg/type，不回显可能
+  无法序列化的原始输入；未来采样错误返回字符串 detail。数值上限为
+  253402300799（epoch 年 9999 上界）；用户 online 证据也不能来自未来/非有限时间。
+  端点根据当前运行时快照构造下列
   `OBSERVATION_STATE.content`，只有 durable admission 成功后才提交新快照并返回
   `{event_id}`；失败返回 503/429，旧快照保持不变。
 
@@ -554,6 +609,7 @@ CREATE TABLE eval_prompt (
     "presence": "online | busy | away",
     "window_title": "string",
     "idle_seconds": 0.0,
+    "sampled_at": 0.0,
     "previous_presence": "online | busy | away | null",
     "transition": "initial | became_busy | became_away | returned | null",
     "away_duration_seconds": "number | null"
@@ -595,6 +651,7 @@ CREATE TABLE eval_prompt (
 - [ ] observe 原子性：首次采样只产生 `initial`；`away -> online` 含离开时长；event admission 失败时组合根 presence/归来快照完全不变。
 - [ ] 用户消息在线证据：away 后立即收到 durable `USER_MESSAGE` 时，在 expression 前产生一次归来上下文；随后 online observation 不重复产生归来，handler 重放也不重复。
 - [ ] SSE 时间：实时帧含原始 `Event.timestamp`，并与事件日志中的同一事件时间一致；缺失/非法公共字段在前端被丢弃。
+- [ ] 浏览输出查询：精确 correlation + 三类 EventType 的最近 100 条按时间/id 稳定选取并升序返回；其它类型/页面不混入，非法 limit/type 集合拒绝，BrowsingStore 不直接读 `event_log`。
 - [ ] 文档同步：`docs/test-inventory.md` 更新为当前测试快照。
 
 ## 完成定义

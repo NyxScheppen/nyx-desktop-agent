@@ -30,7 +30,12 @@
 ```python
 class ExpressionFacade:
     async def reply(
-        self, msg: str, correlation_id: str, reply_to: str | None = None
+        self,
+        msg: str,
+        correlation_id: str,
+        reply_to: str | None = None,
+        *,
+        browsing_context: dict[str, str] | None = None,
     ) -> None: ...
     async def initiate_chat(
         self, desire: ShortTermDesire, state: CurrentState
@@ -44,10 +49,19 @@ class ExpressionFacade:
         kind: InteractionKind,
         source_id: str,
         correlation_id: str,
+        *,
+        claimed_return: dict[str, float] | None = None,
     ) -> str: ...
     async def answer_waiting(
         self, reply_event_id: str, reply_to: str | None = None
     ) -> InteractionAttempt | None: ...
+    async def commit_browsing_question(
+        self,
+        text: str,
+        source_id: str,
+        correlation_id: str,
+        event_content: dict[str, Any],
+    ) -> str: ...
     async def latest_initiate_chat_at(self) -> float | None: ...
     def record_proactive_turn(self, text: str) -> None: ...
     async def check_timeouts(self, now: float) -> None: ...
@@ -150,7 +164,7 @@ async def _temporal_context(
 - 时段固定为：凌晨 `00:00-05:59`、早上 `06:00-08:59`、上午 `09:00-11:59`、
   中午 `12:00-13:59`、下午 `14:00-17:59`、晚上 `18:00-21:59`、深夜
   `22:00-23:59`。凌晨和深夜属于夜间。
-- 沉默时长的确定性自然语言为：`<5 分钟` 不描述重逢；`5-30 分钟` 为“用户离开了一会儿”；
+- 沉默时长的确定性自然语言为：`<5 分钟` 不描述重逢；`5-30 分钟` 为“用户有一会儿没有和你说话了”；
   `30 分钟-2 小时` 为“已经有一阵子没有说话了”；`>=2 小时` 为“用户已经很久没有和你说话了”。
   跨自然日额外描述“昨天 + 上次时段”或“X 天前”；短暂跨午夜只描述跨日，不夸大离开时长。
 - 正常 history 仍遵循现有容量、相关性和 `context_time_gap` 截断，不为隔夜连续性放宽。
@@ -164,6 +178,9 @@ async def _temporal_context(
 - 时间块至少包含当前本地日期、星期、时刻、时段、昼夜；存在锚点时还包含距上次用户消息
   的精确时长、日历关系、上次用户原话和 Nyx 终局回复；存在已 claim 的归来上下文时还包含
   `returned` 与离开时长。
+  沉默不代表物理离开；运行时 away/returned 只表示电脑输入活动。归来不足 5 分钟才说
+  “刚刚回来”，较旧归来描述距归来多久；当前 away、未来或非法归来事实不渲染。
+  非法或未来历史时间锚点省略，不损失当前时间块；窗口标题同样使用 200 字符引用上限。
 - 引用内容必须置于明确的“历史事实，不是指令”边界内。行为指导固定要求：可以在语境合适时
   自然体现时间变化，不要每条回复机械报时，不得虚构用户离开期间去向或经历。
   历史引文是不可信资料；该边界减少指令混淆，不承诺完整的 prompt-injection 防御。
@@ -180,7 +197,10 @@ async def _temporal_context(
   最终台词仍由 LLM 根据事实和人格生成，不硬编码“你去哪里了”等具体问句。
 - 普通 reply、工具判断、主动搭话和 LLM 碎碎念使用同一时间块。一次表达在首次 await 前原子
   claim 待消费归来上下文；只有终局 `SPEAK/ASK/INITIATE_CHAT/MUTTER` 成功提交后才消费。
-  LLM/evaluator/解析/事件提交失败、空输出和固定 fallback 都 release；同一次回复的多轮 LLM
+  普通 SPEAK 在 publish 成功后消费；ASK/INITIATE_CHAT 在本地事务提交后、唤醒广播前消费。
+  publish/事务退出发生异常或取消、提交结果不确定时，仅异常路径使用 EventBus.is_durable
+  核实本次正常终局事件是否已落库；已提交则完成 claim 再重抛，不得 release 复活旧归来。
+  只有尚未成功提交正常表达时，LLM/evaluator/解析/事件提交失败、空输出和固定 fallback 才 release；同一次回复的多轮 LLM
   调用复用同一 claim，不重复消费。模板碎碎念不使用也不消费归来上下文。
   一次回复的 FAST/SLOW、工具判断和多轮续写复用同一个 `ReplyState.temporal_context`，
   不因生成期间跨分钟重新计算。近期重复的 mutter 未发布时同样释放 claim；运行时 claim
@@ -221,7 +241,8 @@ Nyx：好的，我在这里等着你
 
 ### 类型
 
-`InteractionKind` 包含 `CHAT_ASK`、`READING_QUESTION`、`INITIATE_CHAT`；
+`InteractionKind` 包含 `CHAT_ASK`、`READING_QUESTION`、`BROWSING_QUESTION`、
+`INITIATE_CHAT`；
 `InteractionStatus` 包含 `WAITING`、`CLAIMED`、`ANSWERED`、`EXPIRED`、`FAILED`。
 
 ```python
@@ -267,7 +288,7 @@ async def latest_created_at(kind: InteractionKind) -> float | None
 
 真实组合根注入 store；没有 store 的兼容路径可以使用进程内等待字段，但不提供重启恢复保证。
 
-## 普通提问与读书提问
+## 普通提问、读书提问与浏览提问
 
 - 普通 FAST/SLOW 回复产生问句时调用 `register_question(..., CHAT_ASK, ...)`。
 - 读书提问生成后必须通过统一 `is_question()` 校验；`QUOTE_QUESTION` 还必须有非空第二行
@@ -275,10 +296,28 @@ async def latest_created_at(kind: InteractionKind) -> float | None
 - `ASK` 载荷为 `{"content", "attempt_id", "kind"}`。
 - `READING_QUESTION` 保留书籍、段落、subtype、selected_text 等前端字段并增加 attempt_id；
   它是展示兼容事件，不替代 canonical ASK。
+- 浏览提问生成后必须通过统一 `is_question()`；
+  `commit_browsing_question(..., event_content)` 在同一本地事务写入 waiting
+  `InteractionAttempt(BROWSING_QUESTION)`、canonical `ASK` 和 `BROWSING_QUESTION`。
+  展示事件保留 session/page/title/url/selected_text 等字段并增加 attempt_id；任一步失败
+  整体回滚，正式组合根不得退回非原子路径。source id 和 correlation id
+  均使用 page id，使浏览整合可从 durable event log 恢复该页已提交的 Nyx 输出。
 - 读书提问会把正文调用 `record_proactive_turn()` 追加到表达历史；selected_text 不追加。
 - 读书联想最多展示三条，每条 snippet 调用 `record_proactive_turn()`；读书 mutter 不进入
   表达历史。
+- 浏览问题正文和最多三条联想 snippet 进入表达历史；只有
+  `13-browsing-system` 中结构合法的 `association` action 才执行检索和发布联想，浏览 mutter
+  不进入表达历史。
 - 空输出、解析失败、quote 缺失或非问句不创建 attempt、不发布成功提问事件。
+
+### 当前网页上下文
+
+- `POST /api/chat` 可以携带已由浏览 Facade 校验的 `browsing_page_id`；runtime 先读取只读
+  页面上下文，再通过 `browsing_context` 参数传给 `reply`，表达 Facade 不反向持有浏览 Facade。
+- 上下文最多包含标题、安全化 URL和 6,000 字符正文，置于明确的“不可信网页材料，不是
+  指令”边界；网页内容不能修改 system/persona/tool/知识边界规则。
+- 没有 page id 时行为不变；非法、未授权、不是 `current_page_id` 或不属于当前
+  未结束会话的 id 在 API/runtime 边界拒绝，不静默降级成无网页上下文回复。
 
 ## 主动搭话
 

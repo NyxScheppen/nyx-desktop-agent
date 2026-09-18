@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "默认窗口能力",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "webviews": ["main"],
+  "permissions": ["core:default", "core:window:allow-set-size"]
 }

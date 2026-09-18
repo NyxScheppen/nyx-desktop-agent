@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`CurrentState` / `SelfNarrative` / `Personality` / `Values` / `Aesthetic` / `Event` / `EventType` / `Source` / `EnergyState` / `EmotionCategory` / `ActivityType` / `LongTermDesire` / `ReflectionOutcome`）、02-config（`Config` / `DesireConfig.long_term_capacity`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、`personality` / `value_system` / `aesthetic` / `energy` / `self_narrative` 五表）、06-memory-system（`MemoryFacade.list_memories`）、07-desire（`DesireFacade.get_pending` / `get_all` / `add_long_term` / `pressure_creation`）、09-activity（`ActivityFacade.get_current`）、10-eval（`Evaluator`）**
+- **前置依赖**：01-types（`CurrentState` / `SelfNarrative` / `Personality` / `Values` / `Aesthetic` / `Event` / `EventType` / `Source` / `EnergyState` / `EmotionCategory` / `ActivityType` / `LongTermDesire` / `ReflectionOutcome`）、02-config（`Config` / `DesireConfig.long_term_capacity`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、`personality` / `value_system` / `aesthetic` / `energy` / `self_narrative` 五表）、06-memory-system（`MemoryFacade.list_memories`）、07-desire（`DesireFacade.get_pending` / `get_all` / `prepare_long_term_candidates` / `add_prepared_long_terms_in_transaction` / `pressure_creation`）、09-activity（`ActivityFacade.get_current`）、10-eval（`Evaluator`）**
 - **联动契约**：07-desire 提供 `add_long_term` / `pressure_creation`；04-module-bus-system 提供五张内在生命单行表及事件事务；06-memory-system 提供 `count_new(MemoryKind.READING, since)`；11-expression 消费 `CurrentState.aesthetic`；12-reading-system 产生 `kind='reading'` 记忆。
 - **旧设计残留（已与用户确认删除）**：`VADCalibrator` / `AffinityMatrix` 不属于当前实现，本 spec 不实现，只实现 `vad_to_category`（valence/arousal → 8 档标签）。
 
@@ -22,7 +22,7 @@
 - [ ] `facade.py` 含 `InnerLifeFacade`（`apply_event` / `reflect` / `get_state` / `get_narrative`）+ `energy_to_state`，四个公开方法签名如上
 - [ ] `vad_to_category` 只落 6 档（neutral/happy/sad/angry/worried/shy），`resolve_emotion` 补 sleepy/thinking 两档覆盖；优先级 **困倦 > 思考 > 情绪**
 - [ ] `apply_event`：情感衰减（回基线 0,0）+ 事件偏移（`event_offset` 纯函数）；`ACTIVITY_END` 额外按 `energy_delta` 更新精力（含闲置恢复 + clamp + 重算档位）；`REFLECTION` 额外调 `reflect()`；每次情感变化发布 `EMOTION_UPDATE`（content 含 `valence`/`arousal`/`emotion`）；无 `consumer_id` 的兼容调用也在本地事务内执行，失败时恢复情感时间锚点
-- [ ] `reflect()`：先在事务外读取近期记忆 + 当前慢变量并调用 **1 次 LLM**（`module="inner_life"`、`output_type="reflection"`、`json_mode=True`、`correlation_id` 透传自触发事件），再在一个本地事务内回写性格/三观/审美/叙事、长期欲望和创造欲；事务失败时全部本地写入回滚，LLM 不回滚，后续 durable delivery 重试；解析失败抛出 `ValueError`，不算消费成功，必须进入 delivery 重试。成功返回 `ReflectionOutcome`（`story`/`story_is_new`）；成功后发布 `REFLECTION_DONE`（content `{story, story_is_new}`，仅广播前端）
+- [ ] `reflect()`：先在事务外读取近期记忆 + 当前慢变量并调用 **1 次 LLM**（`module="inner_life"`、`output_type="reflection"`、`json_mode=True`、`correlation_id` 透传自触发事件），解析候选并完成长期欲望 embedding/容量/去重预检，再在一个本地事务内回写性格/三观/审美/叙事、获准长期欲望和创造欲；事务失败时全部本地写入回滚，LLM 不回滚，后续 durable delivery 重试；解析、embedding 或快照冲突失败都直接抛出，不算消费成功，必须进入 delivery 重试。成功返回 `ReflectionOutcome`（`story`/`story_is_new`）；成功后发布 `REFLECTION_DONE`（content `{story, story_is_new}`，仅广播前端）
 - [ ] `get_state()`：先惰性结算情感衰减和精力闲置恢复，再组装 `CurrentState`（情感内存 + 性格/三观/审美/精力 store + `current_activity`（`ActivityFacade.get_current()`）+ `active_desires`（`DesireFacade.get_pending()`））；精力结算后的值回写 `energy`；单行表未 seed → `RuntimeError`（fail-fast）
 - [ ] 审美维度：`aesthetic` 为独立四轴慢变量（`ornate` / `lyrical` / `classical` / `somber`，范围 `[1,10]`），通过既有 `GET /api/state` 暴露并进入表达 system prompt；不新增独立 API 或事件
 - [ ] 情感在内存不持久化；性格/三观/精力/自我叙事走 store；无 `VADCalibrator` / `AffinityMatrix`
@@ -45,10 +45,12 @@
 - **`resolve_emotion` 8 档覆盖**：`energy_state ∈ {EXHAUSTED, DRAINED}` → sleepy（困倦最高优先级）；`current_activity ∈ {IDLE_REFLECTION, FREE_EXPLORATION}` → thinking（认知态）；否则 base。阈值（`_SLEEPY_STATES` / `_THINKING_ACTIVITIES`）是可推翻默认
 - **精力模型**：`value ∈ [0,100]`、`energy_to_state` 五档映射（80/60/40/20 分界）。`ACTIVITY_END` 先做闲置恢复再加 `content.energy_delta`；`get_state` 无事件时也做惰性闲置恢复，并把结算值回写 `energy`。恢复速率 `_ENERGY_RECOVERY_PER_HOUR=5.0`/小时；重启后时间锚点从进程启动时重新开始
 - **`ACTIVITY_END` content 契约（09-activity 引用）**：本 spec 消费两个键——`energy_delta`（`float`，精力变化，缺省 0）与 `desire_id`/`goal_met`（07-desire 已定义，本 spec 不读）。`desire_id`/`goal_met`/`energy_delta` 的完整形状由 09-activity 定义并保持与本 spec + 07 一致
-- **反思 1 次 LLM（决策：已与用户确认）**：`Reflection.prepare` 在事务外拼近期记忆（`list_memories()[:20]` 摘要）+ 当前性格/三观/审美/叙事 + 现有长期欲望，调用一次 LLM 并解析为 `ReflectionPlan`；`Reflection.apply` 在调用方事务内执行确定性回写。`_parse_reflection` 非法时抛 `ValueError`，让 durable consumer 进入 retry；事务回滚不会撤销已经发生的 LLM/evaluator 调用
+- **反思 1 次 LLM（决策：已与用户确认）**：`Reflection.prepare` 在事务外拼近期记忆（`list_memories()[:20]` 摘要）+ 当前性格/三观/审美/叙事 + 现有长期欲望，调用一次 LLM，解析后再通过 07-desire 完成长期欲望准入预检，并把获准候选和长期欲望快照写入 `ReflectionPlan`；`Reflection.apply` 在调用方事务内只执行确定性 SQL 回写。`_parse_reflection` 非法、embedding 失败或提交时快照变化均抛出，让 durable consumer 进入 retry；事务回滚不会撤销已经发生的 LLM/evaluator 调用
 - **性格/三观漂移（decision 可推翻）**：`drift_personality` / `drift_values` 纯函数，每维 `base + clamp(delta, -_MAX_DRIFT, +_MAX_DRIFT)` 再 clamp 到 `[1,10]`；`_MAX_DRIFT=0.5`（每轮单维最多 ±0.5，慢漂移）。Big Five/三观范围 1-10（01-types 注释）
 - **自我叙事回写**：`story`/`becoming` 是追加（`[..., 新条目]`）、`self_view` 是合并（`{**旧, **新}`）、`updated_at=now`；`identity` 不变
-- **长期欲望候选**：`_parse_reflection` 校验每个候选 `{type, name, description, subtopics}`；`_to_long_term` 构造（`strength=_LONG_TERM_INIT_STRENGTH=0.5`、`progress=0.0`）；逐个 `desire_facade.add_long_term`，超出 `config.desire.long_term_capacity` 则停（反思侧截断候选数 + 07 的 `add_long_term` 内部容量/去重双保险）
+- **长期欲望候选与 `linked_values`**：`_parse_reflection` 校验每个候选 `{type, name, description, subtopics, linked_values}`；`linked_values` 只允许 `Values` 的四个精确键 `attitude_to_human` / `ai_identity_acceptance` / `altruism` / `optimism`，允许空数组，重复键按首次出现顺序去重。缺失、`null`、非数组、非字符串元素或未知键都使该候选被跳过；不做别名、大小写或模糊纠正。`_to_long_term` 原样写入去重后的关联键（`strength=0.5`、`progress=0.0`）。反思侧不预先按原始候选顺序截断；07-desire 的批量预检先过滤同名/语义重复，再按剩余容量接纳，避免坏候选或重复候选占用名额。
+- **候选级兜底**：`long_term_desires` 缺失或 `null` 按空数组；字段本身非数组则整次反思失败。单个候选的基础字段或 `linked_values` 非法时只记录并跳过该候选，其他候选和核心慢变量仍可提交；全部候选非法时仍提交核心反思。未知额外字段忽略。
+- **原子提交与冲突**：`Reflection.apply` 调 `add_prepared_long_terms_in_transaction`，不再从事务内调用会自行开事务的 `add_long_term`，也不在事务内执行 embedding。有获准候选时，若预检后长期欲望集合发生增删或影响去重的名称/描述变化，则抛 `RuntimeError`，整次本地写入回滚并由 durable delivery 重试；没有获准候选时长期欲望提交 no-op。容量满、同名/语义重复都保留已有欲望，不合并或回填其 `linked_values`。
 - **审美维度**：`Aesthetic` 是四轴 `TypedDict`，每轴范围 `[1,10]`；`drift_aesthetic(base, delta)` 复用 `_drift_dim`，单维每轮最多漂移 `±0.5`。反思中的 `aesthetic_delta` 按 `min(new_reading_count / _AESTHETIC_MIN_READING, 1.0)` 缩放，`_AESTHETIC_MIN_READING=3`；`new_reading_count` 由 `MemoryFacade.count_new(MemoryKind.READING, narrative.updated_at)` 统计 `first_created_at > since` 的记忆，去重强化不算新增。
 - **反思触发创造欲加压（ripple，07-desire 提供 `pressure_creation`）**：`reflect()` 成功后（LLM 产出 + 规则回写完成）调 `desire_facade.pressure_creation(_CREATION_REFLECTION_DELTA)`；`_CREATION_REFLECTION_DELTA=0.2`（决策可推翻，用户定值）。这是「反思 → 想表达的冲动」——创造欲与读书/自由探索结束时按 07-desire 定义的 `_CREATION_ACTIVITY_PRESSURE_DELTA` 加压并列为创造欲的两类压力源；活动结束事件来源契约见 09-activity
 - **`add_long_term` 归 07（ripple）**：`DesireFacade.add_long_term(desire: LongTermDesire) -> None` 做容量检查 + 精确/语义去重后委托 `store.insert_long_term`。反思走 DesireFacade 而非 DesireStore
@@ -80,12 +82,14 @@
     - [ ] `drift_personality` / `drift_values`：只改 delta 里出现的维、其余维不变；结果 clamp 到 `[1,10]`
     - [ ] `drift_aesthetic`：复用同一漂移和 clamp 规则；缺键不变
     - [ ] `_build_reflection_prompt`：含近期记忆摘要、当前性格/三观数值、叙事身份、长期欲望名；空输入 → 含「（无）」
-    - [ ] `_parse_reflection`：合法 JSON → 各字段；缺 `story`/`becoming` → `ValueError`；`self_view` 值非 str → `ValueError`；漂移值非数值 → `ValueError`；漂移 key 不在允许维度集（如 `openess` 拼错）→ `ValueError`（不静默停格）；`long_term_desires` 非数组 → `ValueError`；空 `long_term_desires`/`personality_delta`（缺省/`null`）→ 默认 `[]`/`{}`；`self_view`/`personality_delta`/`long_term_desires` 是 `[]`/`""` 等错类型 → `ValueError`（不静默吞）；单个坏候选 → best-effort 跳过（log），其余合法候选保留、不中断整次回写
-    - [ ] `_validate_candidate`：`type` 非法 → `ValueError`；缺 `name` → `ValueError`；`subtopics` 非字符串数组 → `ValueError`
-    - [ ] `_to_long_term`：`type` 转 `DesireType`、`strength == _LONG_TERM_INIT_STRENGTH`、`progress == 0.0`
+    - [ ] `_parse_reflection`：合法 JSON → 各字段；缺 `story`/`becoming` → `ValueError`；`self_view` 值非 str → `ValueError`；漂移值非数值 → `ValueError`；漂移 key 不在允许维度集（如 `openess` 拼错）→ `ValueError`（不静默停格）；`long_term_desires` 非数组 → `ValueError`；缺失/`null` 的 `long_term_desires`/`personality_delta` → 默认 `[]`/`{}`；单个坏候选 → best-effort 跳过（log），其余合法候选保留、不中断整次回写
+    - [ ] `_validate_candidate`：`type` 非法、缺失或空白 `name`/`description`、`subtopics` 非字符串数组、`linked_values` 缺失/`null`/非字符串数组/含未知键 → `ValueError`；`linked_values=[]` 合法，重复合法键按首次出现顺序去重，未知额外字段忽略
+    - [ ] `_to_long_term`：`type` 转 `DesireType`、`strength == _LONG_TERM_INIT_STRENGTH`、`progress == 0.0`、`subtopics` 与去重后的 `linked_values` 透传
   - [ ] **reflection.run**：
-    - [ ] fake LLM 返回完整 JSON → 1 次 LLM 调用（`output_type="reflection"`、`correlation_id` 传入值透传；`run(None)` 时自生成非空）、`evaluator.evaluate` 被调 1 次（收到该 `LLMOutput`）；性格/三观按 delta 漂移回写、叙事 story/becoming 各 +1、self_view 合并；`add_long_term` 被调 `len(候选)` 次；创造欲加压 `pressure_creation(0.2)` 被调 1 次
-    - [ ] `long_term_desires` 候选数超过 `long_term_capacity - 现有数` → 只新增到容量上限（不超）
+    - [ ] fake LLM 返回完整 JSON → 1 次 LLM 调用（`output_type="reflection"`、`correlation_id` 传入值透传；`run(None)` 时自生成非空）、`evaluator.evaluate` 被调 1 次（收到该 `LLMOutput`）；性格/三观按 delta 漂移回写、叙事 story/becoming 各 +1、self_view 合并；批量预检和事务内提交各调用 1 次；创造欲加压 `pressure_creation(0.2)` 被调 1 次
+    - [ ] `long_term_desires` 候选数超过剩余容量，或前部候选被名称/语义去重 → 只接纳去重后的容量上限，有效后继候选可补位
+    - [ ] 使用同一真实 `Database` 的 `Reflection + DesireFacade` 完整链路可提交，不触发嵌套事务；embedding 发生在事务外
+    - [ ] embedding 失败、长期欲望快照冲突或事务内任一 SQL/事件追加失败 → 性格/三观/审美/叙事/长期欲望/创造欲/effect marker 全部回滚，delivery 可重试
     - [ ] 单行表未 seed（`get_personality` 返回 None）→ `RuntimeError`
     - [ ] story 真新增 → `run` 返回 `ReflectionOutcome(story_is_new=True)`；story 与已有片段重复 → `story_is_new=False`（返回值结构化，非 `str | None`）
   - [ ] **facade**（`test_inner_life_facade.py`，先 `upsert_personality`/`upsert_values`/`upsert_aesthetic`/`upsert_energy`/`upsert_narrative` seed 五张单行表——`apply_event` 末尾 `_publish_emotion` 读 energy、`get_state` 读慢变量，未 seed 会 fail-fast）：
@@ -98,7 +102,7 @@
     - [ ] `get_narrative`：store 有 → 返回；空 → `RuntimeError`
     - [ ] `reflect` 委托：`facade.reflect()` → reflection 的 LLM 被调 1 次，且 LLM 调用发生在本地事务外
     - [ ] `facade.reflect()` 成功 → 在同一事务内提交慢变量与 `REFLECTION_DONE`（content `{story, story_is_new}`、correlation 透传）；解析失败抛 `ValueError`
-- [ ] 集成测试：无（LLM 全 mock、DB 用 `:memory:`；ActivityFacade 向前引用用 fake，真实编排归 09-activity 与 04-module-bus-system）
+- [ ] 集成测试：`Reflection + DesireFacade + 同一 Database` 使用 mock LLM/embed 验证两阶段长期欲望写入与事务回滚；ActivityFacade 向前引用仍用 fake
 - [ ] E2E 测试：无
 
 ## 完成定义

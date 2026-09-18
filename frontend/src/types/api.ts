@@ -23,6 +23,13 @@ export function isEmotionCategory(v: unknown): v is EmotionCategory {
 
 export type EnergyState = "energetic" | "okay" | "tired" | "exhausted" | "drained";
 
+export type PresenceObservation = {
+  presence: Presence;
+  window_title: string;
+  idle_seconds: number;
+  sampled_at: number;
+};
+
 export type Presence = "online" | "away" | "busy";
 
 export type Personality = {
@@ -79,6 +86,8 @@ export type TextEventType =
 export type TextEvent<T extends TextEventType> = SseBase & {
   event: T;
   content: string;
+  kind?: "chat_ask" | "reading_question" | "browsing_question" | "initiate_chat";
+  attempt_id?: string;
 };
 
 /** 用户消息回显：后端 main.py 裸 {"message": string}（非 internal_text_event，键名不同）。 */
@@ -137,6 +146,22 @@ export type ReadingAssociationEvent = SseBase & {
 };
 
 /** 不读字段的事件：无消费者（clock_tick/observation_state/reflection）或只触发快照 refresh（desire/activity/memory），前端不解析 payload，保持宽松。 */
+export type BrowsingEvent = SseBase & {
+  session_id: string;
+  page_id: string;
+} & ({
+  event: "browsing_mutter" | "browsing_question";
+  content: string;
+  title: string;
+  url: string;
+  attempt_id?: string;
+  selected_text?: string | null;
+} | {
+  event: "browsing_association";
+  snippet: string;
+  memory_id: string;
+});
+
 type OpaqueEventType =
   | "clock_tick"
   | "observation_state"
@@ -164,6 +189,7 @@ export type SseEvent =
   | ReadingMutterEvent
   | ReadingQuestionEvent
   | ReadingAssociationEvent
+  | BrowsingEvent
   | OpaqueEvent;
 
 export type ConnectionState = "connecting" | "open" | "closed";
@@ -229,6 +255,7 @@ export type MemoryKind =
   | "knowledge"
   | "reading"
   | "activity"
+  | "browsing"
   | "interaction";
 
 export type Memory = {
@@ -377,4 +404,10 @@ export type EvalStats = {
   total_tokens: number;
   prompt_tokens: number;
   completion_tokens: number;
+};
+export type BrowsingPage = {
+  id: string; session_id: string; navigation_id: string; revision: number; url: string;
+  canonical_url: string; origin: string; title: string; content_hash: string; captured_at: number;
+  status: string; capture_source: string; truncated: boolean; memory_id: string | null;
+  last_error: string | null;
 };

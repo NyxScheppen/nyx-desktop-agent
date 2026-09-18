@@ -1,4 +1,5 @@
 # pyright: reportPrivateUsage=false
+import asyncio
 import json
 import time
 from datetime import datetime
@@ -207,6 +208,9 @@ class _FakeBus:
     async def publish(self, event: Event) -> None:
         self.published.append(event)
 
+    async def is_durable(self, event_id: str) -> bool:
+        return any(event.id == event_id for event in self.published)
+
     async def list_events(
         self,
         limit: int = 100,
@@ -260,23 +264,29 @@ class _FakeTools:
 class _ReturnState:
     def __init__(self) -> None:
         self.pending: dict[str, float] | None = {
-            "returned_at": 2000.0,
+            "returned_at": time.time(),
             "away_duration_seconds": 600.0,
         }
         self.finished = 0
         self.released = 0
+        self.claimed: dict[str, float] | None = None
 
     def claim(self) -> dict[str, float] | None:
+        if self.claimed is not None:
+            return None
         claim = self.pending
         self.pending = None
+        self.claimed = claim
         return claim
 
     def finish(self, claim: dict[str, float] | None) -> None:
-        if claim is not None:
+        if claim is not None and self.claimed is claim:
+            self.claimed = None
             self.finished += 1
 
     def release(self, claim: dict[str, float] | None) -> None:
-        if claim is not None:
+        if claim is not None and self.claimed is claim:
+            self.claimed = None
             self.released += 1
             if self.pending is None:
                 self.pending = claim
@@ -288,6 +298,33 @@ async def _observation() -> dict[str, object]:
 
 def _user_content(messages: list[LlmMessage]) -> str:
     return messages[-1]["content"]
+
+
+async def test_browsing_question_commits_attempt_and_both_events() -> None:
+    database = await db.connect(":memory:")
+    bus = EventBus(database)
+    facade, *_ = _new_facade(
+        interaction_store=ExpressionInteractionStore(database)
+    )
+    facade._bus = bus
+    try:
+        attempt_id = await facade.commit_browsing_question(
+            "What do you think?", "page", "page",
+            {"content": "What do you think?", "page_id": "page",
+             "session_id": "session"},
+        )
+        events = await bus.list_events(correlation_id="page")
+        cursor = await database.conn.execute(
+            "SELECT kind FROM expression_interaction_attempt WHERE id=?", (attempt_id,)
+        )
+        row = await cursor.fetchone()
+        assert row is not None and row["kind"] == "browsing_question"
+        assert {event.type for event in events} == {
+            EventType.ASK, EventType.BROWSING_QUESTION
+        }
+        assert all(event.content["attempt_id"] == attempt_id for event in events)
+    finally:
+        await database.close()
 
 
 def _new_facade(
@@ -370,6 +407,54 @@ def _event(
 
 
 # ---- reply ----
+
+
+@pytest.mark.parametrize("failure", ["scene", "second_round", "cancel"])
+async def test_return_is_consumed_when_normal_reply_precedes_failure(
+    failure: str,
+) -> None:
+    scene_entered = asyncio.Event()
+
+    class _SceneFailure(_FakeMemory):
+        async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
+            if failure == "cancel":
+                scene_entered.set()
+                await asyncio.Event().wait()
+            if failure == "scene":
+                raise RuntimeError("scene failure")
+            return await super().create_scene_memory(reply_context)
+
+    class _LaterFailure(_FakeLlm):
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any
+        ) -> LLMOutput:
+            if (
+                failure == "second_round"
+                and kwargs["output_type"] == "reply" and self._speak_n
+            ):
+                raise RuntimeError("later round failure")
+            return await super().complete(messages, **kwargs)
+
+    returns = _ReturnState()
+    facade, _llm, _eval, _memory, _inner, bus = _new_facade(
+        llm=_LaterFailure(), memory=_SceneFailure(), return_state=returns,
+    )
+    if failure == "second_round":
+        await facade.reply("为什么" * 30 + "？", "partial")
+    elif failure == "cancel":
+        task = asyncio.create_task(facade.reply("为什么" * 30 + "？", "partial"))
+        await asyncio.wait_for(scene_entered.wait(), timeout=1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(RuntimeError):
+            await facade.reply("为什么" * 30 + "？", "partial")
+
+    assert any(e.type is EventType.SPEAK for e in bus.published)
+    assert returns.finished == 1
+    assert returns.pending is None
+    assert returns.released == 0
 
 
 async def test_last_dialogue_anchor_skips_current_and_incomplete_turns() -> None:
@@ -474,6 +559,32 @@ async def test_reply_fast_uses_temporal_context_and_consumes_return() -> None:
     assert "当前观察：用户状态为 online" in system
     assert return_state.finished == 1
     assert return_state.released == 0
+
+
+async def test_reply_cancelled_at_publish_return_does_not_restore_durable_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    returns = _ReturnState()
+    facade, _llm, _eval, _memory, _inner, bus = _new_facade(
+        energy=20.0, arousal=0.9, return_state=returns
+    )
+    committed = asyncio.Event()
+    original = bus.publish
+
+    async def publish_then_pause(event: Event) -> None:
+        await original(event)
+        if event.type is EventType.SPEAK:
+            committed.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(bus, "publish", publish_then_pause)
+    task = asyncio.create_task(facade.reply("哦", "commit-cancel"))
+    await asyncio.wait_for(committed.wait(), 1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert (returns.finished, returns.released) == (1, 0)
+    assert returns.pending is None
 
 
 async def test_reply_fallback_releases_return_context() -> None:
@@ -1015,6 +1126,120 @@ async def test_initiate_chat_consumes_return_only_after_commit() -> None:
     assert await facade.initiate_chat(_desire(), _mk_state(80.0, 0.0)) is True
     assert return_state.finished == 1
     assert return_state.released == 0
+
+
+@pytest.mark.parametrize("kind", ["ask", "initiate_chat"])
+async def test_committed_expression_does_not_restore_return_on_announce_failure(
+    kind: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = ExpressionInteractionStore(database)
+        returns = _ReturnState()
+        facade, *_ = _new_facade(interaction_store=store, return_state=returns)
+        bus = EventBus(database)
+        facade._bus = bus
+
+        async def fail_announce(event: Event) -> None:
+            raise RuntimeError("announce failed after commit")
+
+        monkeypatch.setattr(bus, "announce_committed", fail_announce)
+        with pytest.raises(RuntimeError, match="announce failed"):
+            if kind == "ask":
+                claim = facade._claim_pending_return()
+                try:
+                    await facade.register_question(
+                        "在吗？", InteractionKind.CHAT_ASK, "u", "u",
+                        claimed_return=claim,
+                    )
+                except BaseException:
+                    facade._release_return_claim(claim)
+                    raise
+            else:
+                await facade.initiate_chat(_desire(), _mk_state(80.0, 0.0))
+
+        events = await bus.list_events()
+        assert len(events) == 1
+        assert (returns.finished, returns.released) == (1, 0)
+        assert returns.pending is None
+    finally:
+        await database.close()
+
+
+async def test_mutter_publish_failure_does_not_suppress_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    returns = _ReturnState()
+    facade, *_ = _new_facade(
+        llm=_FakeLlm(chat_content="我在这里。"), return_state=returns
+    )
+
+    class _FailOnceBus(_FakeBus):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failed = False
+
+        async def publish(self, event: Event) -> None:
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("admission failed")
+            await super().publish(event)
+
+    bus = _FailOnceBus()
+    facade._bus = cast(EventBus, bus)
+    monkeypatch.setattr("nyx.expression.facade.random.random", lambda: 0.0)
+    with pytest.raises(RuntimeError, match="admission failed"):
+        await facade.mutter(_mk_state(80.0, 0.0), "first")
+    await facade.mutter(_mk_state(80.0, 0.0), "retry")
+
+    assert len(bus.published) == 1
+    assert bus.published[-1].correlation_id == "retry"
+    assert (returns.finished, returns.released) == (1, 1)
+
+
+@pytest.mark.parametrize("kind", ["ask", "initiate_chat"])
+async def test_transaction_cancelled_after_commit_does_not_restore_return(
+    kind: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    try:
+        returns = _ReturnState()
+        facade, *_ = _new_facade(
+            interaction_store=ExpressionInteractionStore(database),
+            return_state=returns,
+        )
+        bus = EventBus(database)
+        facade._bus = bus
+        committed = asyncio.Event()
+        original_commit = database.conn.commit
+
+        async def commit_then_pause() -> None:
+            await original_commit()
+            committed.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(database.conn, "commit", commit_then_pause)
+        claim = None
+        if kind == "ask":
+            claim = returns.claim()
+            task = asyncio.create_task(facade.register_question(
+                "在吗？", InteractionKind.CHAT_ASK, "u", "u", claimed_return=claim,
+            ))
+        else:
+            task = asyncio.create_task(
+                facade.initiate_chat(_desire(), _mk_state(80.0, 0.0))
+            )
+        await asyncio.wait_for(committed.wait(), 1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        returns.release(claim)
+
+        assert len(await bus.list_events()) == 1
+        assert (returns.finished, returns.released) == (1, 0)
+        assert returns.pending is None
+    finally:
+        await database.close()
 
 
 async def test_initiate_chat_appends_history() -> None:

@@ -79,6 +79,9 @@ class _FakeBus:
         self.failure: Exception | None = None
         self.sinks: list[asyncio.Queue[Event]] = []
 
+    async def is_durable(self, event_id: str) -> bool:
+        return any(event.id == event_id for event in self.published)
+
     async def publish(self, event: Event) -> None:
         if self.failure is not None:
             raise self.failure
@@ -162,7 +165,7 @@ def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
 
 def _client(app: _App) -> AsyncClient:
     return AsyncClient(
-        transport=ASGITransport(app=build_app(app)), base_url="http://test"
+        transport=ASGITransport(app=build_app(app)), base_url="http://127.0.0.1:8000"
     )
 
 
@@ -245,7 +248,10 @@ async def test_observe_endpoint() -> None:
     async with _client(app) as client:
         resp = await client.post(
             "/api/observe",
-            json={"presence": "online", "window_title": "编辑器", "idle_seconds": 0},
+            json={
+                "presence": "online", "window_title": "编辑器",
+                "idle_seconds": 0, "sampled_at": 1.0,
+            },
         )
     assert resp.status_code == 200
     data = resp.json()
@@ -256,6 +262,7 @@ async def test_observe_endpoint() -> None:
         "presence": "online",
         "window_title": "编辑器",
         "idle_seconds": 0.0,
+        "sampled_at": 1.0,
         "previous_presence": None,
         "transition": "initial",
         "away_duration_seconds": None,
@@ -315,11 +322,17 @@ async def test_observe_away_to_online_records_return_duration(
     async with _client(app) as client:
         first = await client.post(
             "/api/observe",
-            json={"presence": "away", "window_title": "编辑器", "idle_seconds": 300},
+            json={
+                "presence": "away", "window_title": "编辑器",
+                "idle_seconds": 300, "sampled_at": 500.0,
+            },
         )
         second = await client.post(
             "/api/observe",
-            json={"presence": "online", "window_title": "编辑器", "idle_seconds": 0},
+            json={
+                "presence": "online", "window_title": "编辑器",
+                "idle_seconds": 0, "sampled_at": 800.0,
+            },
         )
     assert first.status_code == second.status_code == 200
     assert bus.published[1].content["transition"] == "returned"
@@ -337,7 +350,10 @@ async def test_observe_admission_failure_preserves_presence_snapshot() -> None:
     async with _client(app) as client:
         resp = await client.post(
             "/api/observe",
-            json={"presence": "online", "window_title": "编辑器", "idle_seconds": 0},
+            json={
+                "presence": "online", "window_title": "编辑器",
+                "idle_seconds": 0, "sampled_at": 1.0,
+            },
         )
     assert resp.status_code == 503
     assert app.presence_initialized is False
@@ -359,6 +375,274 @@ def test_release_old_return_claim_does_not_overwrite_new_return() -> None:
     assert app.claimed_return is None
 
 
+def _observation(timestamp: float, presence: str, sampled_at: float) -> Event:
+    return Event(
+        id=str(timestamp), timestamp=timestamp, source=Source.EXTERNAL,
+        type=EventType.OBSERVATION_STATE,
+        content={"presence": presence, "window_title": "", "sampled_at": sampled_at},
+        correlation_id=str(timestamp),
+    )
+
+
+@pytest.mark.parametrize("received_at", [1099.0, 1101.0])
+async def test_stale_observation_cannot_overwrite_user_online(
+    received_at: float,
+) -> None:
+    bus = _FakeBus()
+    app = _app(_mk_state(), bus, _FakeMemory())
+    await app.publish_observation(_observation(1000.0, "away", 1000.0), 300.0)
+    await app.record_user_online(1100.0)
+    returned = app.pending_return
+
+    applied = await app.publish_observation(
+        _observation(received_at, "away", 1099.0), 399.0
+    )
+
+    assert applied is False
+    assert app.last_presence == "online"
+    assert app.pending_return is returned
+    assert len(bus.published) == 1
+
+
+async def test_old_user_message_cannot_overwrite_fresh_away() -> None:
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    await app.publish_observation(_observation(1000.0, "away", 1000.0), 300.0)
+
+    await app.record_user_online(600.0)
+
+    assert app.last_presence == "away"
+    assert app.pending_return is None
+    assert app.presence_changed_at == 1000.0
+
+
+async def test_new_absence_invalidates_pending_and_claimed_return() -> None:
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    await app.publish_observation(_observation(1000.0, "away", 1000.0), 300.0)
+    await app.record_user_online(1100.0)
+    claim = app.claim_return_context()
+    await app.publish_observation(_observation(1500.0, "away", 1500.0), 300.0)
+
+    app.release_return_context(claim)
+
+    assert app.pending_return is None
+    assert app.claimed_return is None
+
+
+async def test_observation_and_message_are_serialized_without_false_return() -> None:
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+
+    class _BlockedBus(_FakeBus):
+        async def publish(self, event: Event) -> None:
+            entered.set()
+            await proceed.wait()
+            await super().publish(event)
+
+    app = _app(_mk_state(), _BlockedBus(), _FakeMemory())
+    observation = asyncio.create_task(app.publish_observation(
+        _observation(1000.0, "away", 1000.0), 300.0
+    ))
+    await asyncio.wait_for(entered.wait(), 1.0)
+    message = asyncio.create_task(app.record_user_online(1100.0))
+    proceed.set()
+    await asyncio.gather(observation, message)
+
+    assert app.last_presence == "online"
+    assert app.pending_return == {"returned_at": 1100.0, "away_duration_seconds": 400.0}
+    assert app.claim_return_context() is not None
+    assert app.claim_return_context() is None
+
+
+async def test_clock_rollback_rebuilds_presence_baseline_without_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = _FakeBus()
+    app = _app(_mk_state(), bus, _FakeMemory())
+    await app.publish_observation(_observation(2000.0, "away", 2000.0), 300.0)
+    await app.record_user_online(2100.0)
+    claim = app.claim_return_context()
+    monkeypatch.setattr("nyx.app_context.time.time", lambda: 1000.0)
+    await app.publish_observation(_observation(1000.0, "online", 1000.0), 0.0)
+    app.release_return_context(claim)
+
+    assert bus.published[-1].content["transition"] == "initial"
+    assert app.presence_observed_at == 1000.0
+    assert app.pending_return is None and app.claimed_return is None
+    monkeypatch.setattr("nyx.app_context.time.time", lambda: 1001.0)
+    assert await app.publish_observation(_observation(1001.0, "busy", 1001.0), 30.0)
+
+
+async def test_cancelled_observation_does_not_commit_snapshot() -> None:
+    entered = asyncio.Event()
+
+    class _HangingBus(_FakeBus):
+        async def publish(self, event: Event) -> None:
+            entered.set()
+            await asyncio.Event().wait()
+
+    app = _app(_mk_state(), _HangingBus(), _FakeMemory())
+    task = asyncio.create_task(app.publish_observation(
+        _observation(1000.0, "away", 1000.0), 300.0
+    ))
+    await asyncio.wait_for(entered.wait(), 1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert app.presence_initialized is False
+    assert app.presence_observed_at == 0.0
+    assert not app.presence_lock.locked()
+
+
+async def test_committed_observation_cancellation_still_commits_snapshot() -> None:
+    committed = asyncio.Event()
+
+    class _CommittedBus(_FakeBus):
+        async def publish(self, event: Event) -> None:
+            await super().publish(event)
+            committed.set()
+            await asyncio.Event().wait()
+
+    app = _app(_mk_state(), _CommittedBus(), _FakeMemory())
+    task = asyncio.create_task(app.publish_observation(
+        _observation(1000.0, "away", 1000.0), 300.0
+    ))
+    await asyncio.wait_for(committed.wait(), 1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert app.presence_initialized is True
+    assert app.presence_observed_at == 1000.0
+    assert app.last_presence == "away"
+
+
+async def test_future_user_delivery_after_clock_rollback_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    monkeypatch.setattr("nyx.app_context.time.time", lambda: 1000.0)
+    await app.publish_observation(_observation(1000.0, "away", 1000.0), 300.0)
+    await app.record_user_online(2000.0)
+    assert app.last_presence == "away"
+    assert app.pending_return is None
+
+
+async def test_failed_clock_reset_preserves_existing_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = _FakeBus()
+    app = _app(_mk_state(), bus, _FakeMemory())
+    await app.publish_observation(_observation(2000.0, "away", 2000.0), 300.0)
+    await app.record_user_online(2100.0)
+    pending = app.pending_return
+    monkeypatch.setattr("nyx.app_context.time.time", lambda: 1000.0)
+    bus.failure = EventAdmissionError("database unavailable")
+    with pytest.raises(EventAdmissionError):
+        await app.publish_observation(_observation(1000.0, "away", 1000.0), 300.0)
+    assert app.pending_return is pending
+    assert app.presence_observed_at == 2100.0
+    assert app.last_presence == "online"
+
+
+@pytest.mark.parametrize("raw", ["NaN", "Infinity", "-Infinity", "1e309"])
+async def test_nonfinite_json_observation_returns_validation_error(raw: str) -> None:
+    bus = _FakeBus()
+    app = _app(_mk_state(), bus, _FakeMemory())
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/observe",
+            content='{"presence":"away","idle_seconds":' + raw + ',"sampled_at":1000}',
+            headers={"Content-Type": "application/json"},
+        )
+    assert response.status_code == 422
+    assert not bus.published and not app.presence_initialized
+
+
+@pytest.mark.parametrize("title", ["\ud800", "\udfff"])
+async def test_non_utf8_window_title_is_rejected(title: str) -> None:
+    bus = _FakeBus()
+    async with _client(_app(_mk_state(), bus, _FakeMemory())) as client:
+        response = await client.post(
+            "/api/observe",
+            content=json.dumps({
+                "presence": "online", "idle_seconds": 0,
+                "sampled_at": 1000, "window_title": title,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+    assert response.status_code == 422
+    assert not bus.published
+
+
+@pytest.mark.parametrize("idle, presence", [
+    (0, "online"), (29.999, "online"), (30, "busy"),
+    (299.999, "busy"), (300, "away"),
+])
+async def test_observe_accepts_exact_idle_boundaries(
+    idle: float, presence: str,
+) -> None:
+    bus = _FakeBus()
+    async with _client(_app(_mk_state(), bus, _FakeMemory())) as client:
+        response = await client.post("/api/observe", json={
+            "presence": presence, "idle_seconds": idle, "sampled_at": 1000,
+            "window_title": "x" * 512,
+        })
+    assert response.status_code == 200
+    assert bus.published[0].content["transition"] == "initial"
+
+
+@pytest.mark.parametrize("payload", [
+    {"presence": "online", "idle_seconds": 0},
+    {"presence": "online", "idle_seconds": 0, "sampled_at": 253402300799},
+    {"presence": "away", "idle_seconds": 300, "sampled_at": 100},
+    {"presence": "absent", "idle_seconds": 300, "sampled_at": 1000},
+])
+async def test_missing_future_and_inconsistent_sample_is_rejected(
+    payload: dict[str, object],
+) -> None:
+    bus = _FakeBus()
+    async with _client(_app(_mk_state(), bus, _FakeMemory())) as client:
+        response = await client.post("/api/observe", json=payload)
+    assert response.status_code == 422
+    assert not bus.published
+
+
+async def test_stale_observe_api_returns_conflict_without_delivery() -> None:
+    bus = _FakeBus()
+    app = _app(_mk_state(), bus, _FakeMemory())
+    await app.record_user_online(1100.0)
+    async with _client(app) as client:
+        response = await client.post("/api/observe", json={
+            "presence": "away", "idle_seconds": 300, "sampled_at": 1000.0,
+        })
+    assert response.status_code == 409
+    assert bus.published == []
+    assert app.last_presence == "online"
+
+
+@pytest.mark.parametrize("patch", [
+    {"idle_seconds": -1}, {"idle_seconds": "300"}, {"idle_seconds": True},
+    {"idle_seconds": None}, {"idle_seconds": 1e308},
+    {"sampled_at": -1}, {"sampled_at": "1000"}, {"sampled_at": True},
+    {"sampled_at": None}, {"sampled_at": 1e308},
+    {"window_title": "x" * 513}, {"window_title": []},
+    {"presence": "online"},
+])
+async def test_observe_rejects_adversarial_payload_without_mutation(
+    patch: dict[str, object],
+) -> None:
+    bus = _FakeBus()
+    app = _app(_mk_state(), bus, _FakeMemory())
+    async with _client(app) as client:
+        response = await client.post("/api/observe", json={
+            "presence": "away", "idle_seconds": 300, "sampled_at": 1000.0,
+            **patch,
+        })
+    assert response.status_code == 422
+    assert bus.published == []
+    assert app.presence_initialized is False
+
+
 async def test_export_endpoint() -> None:
     memory = _FakeMemory()
     async with _client(_app(_mk_state(), _FakeBus(), memory)) as client:
@@ -377,7 +661,9 @@ async def test_export_bogus_raises() -> None:
         app=build_app(_app(_mk_state(), _FakeBus(), memory)),
         raise_app_exceptions=False,
     )
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport, base_url="http://127.0.0.1:8000"
+    ) as client:
         resp = await client.post("/api/export", json={"format": "bogus"})
     assert resp.status_code == 500
     assert memory.export_calls == ["bogus"]

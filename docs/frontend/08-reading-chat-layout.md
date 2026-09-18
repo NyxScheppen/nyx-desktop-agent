@@ -21,6 +21,8 @@
 
 - **栅格改两行**：`.game-shell` `grid-template-columns: 340px minmax(0,1fr)`（左栏宽 **340px** 不变）；`grid-template-rows: minmax(0,1fr) auto`（**删第 3 行**，ChatInput 不再占右栏底部行）。
 - **左栏**（新 `div.left-dock`，`grid-column:1; grid-row:1/span 2`，`display:flex; flex-direction:column; gap:12px`）：`StatusBar`（瘦身，见下）→ `MessageList`（`flex:1`，滚动，占满中段）→ `ChatInput`（底部，`flex-shrink:0`）。聊天**全局唯一**，常驻不随切视图消失。
+- 共同浏览增加 `view==="browsing"` 与常驻 BrowserView；只在正文矩形显示 native child。离开浏览或打开设置之前 await hide，失败则保持当前视图，避免网页盖住弹层；返回后恢复同会话。
+- 浏览视图隐藏 Avatar，避免 native z-order 遮挡；左栏保留。ChatInput 仅在浏览视图且当前页不在加载/暂停/关闭、设置未打开时携带 page id。完整浏览契约归 `13-browsing-system`。
 - **`StatusBar` 瘦身**：删掉 `<Avatar />`（立绘迁到 §4 圆圈）与「✦ Nyx ✦」名字（聊天区被挤，名字占顶栏标题位即可），只留 `status-bar__info`（心情/精力/现在状态）；组件内不再 import `Avatar`/`EmotionSprite`（清 orphan）。
 - **中间**（`.game-main`，`grid-column:2; grid-row:1; position:relative`）：`view` 类型删 `null`（聊天不再是可切换视图）；默认 `view = "reading"`（开应用即书架 + 左栏常驻对话）。`ScrollArea`（原聊天舞台）删除。
 - **导航**：`RightDock` 的 `ENTRIES` 删「聊天」一项（`{label:"聊天", view:null}`），剩 `读书|内在|欲望|活动|记忆` 五个，只切中间。`RightDock` `grid-column:2; grid-row:2`。
@@ -29,7 +31,7 @@
 ### 1.1 共享时钟与昼夜视觉
 
 - `App` 持有唯一的本地 `Date` 时钟：首次 timeout 对齐下一分钟边界，之后每分钟更新，
-  卸载时清理 timeout/interval。顶栏显示日期、星期和 `HH:mm`，时间纯函数签名见
+  focus/恢复可见时立即校时并重新对齐分钟，卸载时清理 timeout 与监听器。顶栏显示日期、星期和 `HH:mm`，时间纯函数签名见
   [聊天面板契约](03-chat-panel.md)。不新增依赖、配置或 Zustand store。
 - 根节点设置 `data-time-phase="day|night"`；同一个时钟作为 `MessageList.now`，同一昼夜
   相位作为 `Avatar.night`。本地 06:00/22:00 自动切换，不等待 SSE、用户输入或状态刷新。

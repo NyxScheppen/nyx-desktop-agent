@@ -13,6 +13,14 @@ from nyx.memory.retrieval import EmbedFn, cosine
 from nyx.types import DesireState, Event, LongTermDesire, ShortTermDesire
 
 _LT_DEDUP_SIM_THRESHOLD = 0.9  # 长期欲望语义重复判定阈值（embedding 余弦）
+LongTermSnapshot = tuple[tuple[str, str, str], ...]
+
+
+def _long_term_snapshot(desires: list[LongTermDesire]) -> LongTermSnapshot:
+    return tuple(sorted(
+        (desire.id, normalize_name(desire.name), desire.description)
+        for desire in desires
+    ))
 
 
 class DesireFacade:
@@ -111,25 +119,96 @@ class DesireFacade:
         满不新增（不淘汰）。
         """
         async with self._long_term_lock:
+            while True:
+                existing = await self._store.list_long_term()
+                accepted, snapshot = await self._prepare_long_term_candidates(
+                    (desire,), existing
+                )
+                if not accepted:
+                    return
+                conflict = False
+                async with self._store.db.transaction():
+                    current = await self._store.list_long_term()
+                    if _long_term_snapshot(current) != snapshot:
+                        conflict = True
+                    else:
+                        await self._store.insert_long_term_if_available(
+                            accepted[0], self._config.long_term_capacity
+                        )
+                if not conflict:
+                    return
+
+    async def prepare_long_term_candidates(
+        self, desires: tuple[LongTermDesire, ...]
+    ) -> tuple[tuple[LongTermDesire, ...], LongTermSnapshot]:
+        """Preflight a batch outside the database transaction."""
+        if self._store.db.in_transaction:
+            raise RuntimeError("长期欲望预检必须在数据库事务外执行")
+        async with self._long_term_lock:
+            existing = await self._store.list_long_term()
+            return await self._prepare_long_term_candidates(desires, existing)
+
+    async def _prepare_long_term_candidates(
+        self,
+        desires: tuple[LongTermDesire, ...],
+        existing: list[LongTermDesire],
+    ) -> tuple[tuple[LongTermDesire, ...], LongTermSnapshot]:
+        snapshot = _long_term_snapshot(existing)
+        remaining = max(0, self._config.long_term_capacity - len(existing))
+        if remaining == 0:
+            return (), snapshot
+
+        known_names = {normalize_name(desire.name) for desire in existing}
+        existing_vectors: list[list[float]] | None = None
+        accepted_vectors: list[list[float]] = []
+        accepted: list[LongTermDesire] = []
+        for desire in desires:
             name = normalize_name(desire.name)
             if not name:
                 raise ValueError("长期欲望 name 不能为空")
-            existing = await self._store.list_long_term()
-            if len(existing) >= self._config.long_term_capacity:
-                return
-            if any(normalize_name(d.name) == name for d in existing):
+            if name in known_names:
                 self._logger.info("长期欲望重复丢弃（同名） name=%s", name)
-                return
+                continue
+            if len(accepted) >= remaining:
+                break
+
+            vector: list[float] | None = None
             if self._embed is not None:
-                vec = await self._embed(f"{desire.name} {desire.description}")
-                for d in existing:
-                    other = await self._embed(f"{d.name} {d.description}")
-                    if cosine(vec, other) >= _LT_DEDUP_SIM_THRESHOLD:
-                        self._logger.info(
-                            "长期欲望重复丢弃（语义） name=%s", name
-                        )
-                        return
-            async with self._store.db.transaction():
-                await self._store.insert_long_term_if_available(
-                    desire, self._config.long_term_capacity
-                )
+                if existing_vectors is None:
+                    existing_vectors = [
+                        await self._embed(f"{item.name} {item.description}")
+                        for item in existing
+                    ]
+                vector = await self._embed(f"{desire.name} {desire.description}")
+                if any(
+                    cosine(vector, other) >= _LT_DEDUP_SIM_THRESHOLD
+                    for other in [*existing_vectors, *accepted_vectors]
+                ):
+                    self._logger.info(
+                        "长期欲望重复丢弃（语义） name=%s", name
+                    )
+                    continue
+
+            accepted.append(desire)
+            known_names.add(name)
+            if vector is not None:
+                accepted_vectors.append(vector)
+        return tuple(accepted), snapshot
+
+    async def add_prepared_long_terms_in_transaction(
+        self,
+        desires: tuple[LongTermDesire, ...],
+        snapshot: LongTermSnapshot,
+    ) -> None:
+        """Commit preflighted candidates inside the caller's transaction."""
+        if not self._store.db.in_transaction:
+            raise RuntimeError("长期欲望计划提交必须在数据库事务内执行")
+        if not desires:
+            return
+        current = await self._store.list_long_term()
+        if _long_term_snapshot(current) != snapshot:
+            raise RuntimeError("长期欲望快照已变化，请重试反思")
+        for desire in desires:
+            await self._store.insert_long_term_if_available(
+                desire, self._config.long_term_capacity
+            )

@@ -1,6 +1,8 @@
 """应用组件装配与运行期上下文。"""
 import asyncio
+import math
 import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +18,10 @@ from nyx.bootstrap import (
     seed_desire,
     seed_inner_life,
 )
+from nyx.browsing.companions import BrowsingCompanion
+from nyx.browsing.facade import BrowsingFacade
+from nyx.browsing.integration import BrowsingIntegration
+from nyx.browsing.store import BrowsingStore
 from nyx.config import Config
 from nyx.db import Database, connect
 from nyx.desire.facade import DesireFacade
@@ -62,6 +68,8 @@ class _App:
     last_screen_summary: str = ""
     presence_initialized: bool = False
     presence_changed_at: float = 0.0
+    presence_observed_at: float = 0.0
+    presence_received_at: float = 0.0
     away_started_at: float | None = None
     last_returned_at: float | None = None
     last_away_duration_seconds: float | None = None
@@ -70,15 +78,31 @@ class _App:
     presence_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     screen_observer: ScreenObserver | None = None
     database: Database | None = None
+    browsing: BrowsingFacade | None = None
 
-    async def publish_observation(self, event: Event, idle_seconds: float) -> None:
+    async def publish_observation(self, event: Event, idle_seconds: float) -> bool:
         """Persist an observation before committing its in-memory snapshot."""
         presence = event.content.get("presence")
         window_title = event.content.get("window_title")
         if not isinstance(presence, str) or not isinstance(window_title, str):
             raise ValueError("observation payload 非法")
+        sampled_at = float(event.content.get("sampled_at", event.timestamp))
         async with self.presence_lock:
-            previous = self.last_presence if self.presence_initialized else None
+            observed_now = time.time()
+            if sampled_at > observed_now:
+                return False
+            clock_reset = observed_now < self.presence_received_at
+            if (
+                not clock_reset
+                and self.presence_initialized
+                and sampled_at <= self.presence_observed_at
+            ):
+                return False
+            previous = (
+                self.last_presence
+                if self.presence_initialized and not clock_reset
+                else None
+            )
             transition: str | None
             away_duration: float | None = None
             if previous is None:
@@ -89,7 +113,7 @@ class _App:
                 transition = "returned"
                 away_duration = max(
                     0.0,
-                    event.timestamp
+                    sampled_at
                     - (
                         self.away_started_at
                         if self.away_started_at is not None
@@ -106,35 +130,67 @@ class _App:
             event.content.update(
                 {
                     "idle_seconds": idle_seconds,
+                    "sampled_at": sampled_at,
                     "previous_presence": previous,
                     "transition": transition,
                     "away_duration_seconds": away_duration,
                 }
             )
-            await self.bus.publish(event)
+            cancelled: asyncio.CancelledError | None = None
+            try:
+                await self.bus.publish(event)
+            except asyncio.CancelledError as error:
+                try:
+                    committed = await self.bus.is_durable(event.id)
+                except Exception:
+                    raise error
+                if not committed:
+                    raise
+                cancelled = error
 
             changed = previous is None or previous != presence
             self.presence_initialized = True
+            self.presence_observed_at = sampled_at
+            self.presence_received_at = max(
+                event.timestamp, sampled_at,
+                0.0 if clock_reset else self.presence_received_at,
+            )
             self.last_presence = presence
             self.last_window_title = window_title
             if changed:
-                self.presence_changed_at = event.timestamp
+                self.presence_changed_at = sampled_at
+            if clock_reset or (presence == "away" and changed):
+                self.pending_return = None
+                self.claimed_return = None
+            if clock_reset:
+                self.last_returned_at = None
+                self.last_away_duration_seconds = None
+                self.away_started_at = None
             if presence == "away" and changed:
-                self.away_started_at = max(0.0, event.timestamp - idle_seconds)
+                self.away_started_at = max(0.0, sampled_at - idle_seconds)
             elif previous == "away" and presence != "away":
                 self.away_started_at = None
             if transition == "returned" and away_duration is not None:
                 returned = {
-                    "returned_at": event.timestamp,
+                    "returned_at": sampled_at,
                     "away_duration_seconds": away_duration,
                 }
-                self.last_returned_at = event.timestamp
+                self.last_returned_at = sampled_at
                 self.last_away_duration_seconds = away_duration
                 self.pending_return = returned
+            if cancelled is not None:
+                raise cancelled
+            return True
 
     async def record_user_online(self, timestamp: float) -> None:
         """Treat a durable user message as immediate, idempotent online evidence."""
         async with self.presence_lock:
+            if not math.isfinite(timestamp) or timestamp < 0 or timestamp > time.time():
+                return
+            if self.presence_initialized and timestamp <= self.presence_observed_at:
+                return
+            self.presence_observed_at = timestamp
+            self.presence_received_at = max(self.presence_received_at, timestamp)
             if not self.presence_initialized:
                 self.presence_initialized = True
                 self.last_presence = "online"
@@ -205,6 +261,7 @@ async def build_app_context(
     ask_files: tuple[str, ...],
 ) -> _App:
     """Build stores and facades in dependency order, then seed local state."""
+    bootstrap_secret = os.environ.pop("NYX_BROWSER_BOOTSTRAP_SECRET", None)
     db: Database = await connect()
     llm = LlmClient.from_config(config.llm)
     bus = EventBus(db)
@@ -331,6 +388,13 @@ async def build_app_context(
         canon,
         expression,
     )
+    browsing = BrowsingFacade(
+        BrowsingStore(db),
+        BrowsingCompanion(llm, evaluator, bus, memory, expression, canon),
+        BrowsingIntegration(llm, evaluator, bus), memory,
+        bootstrap_secret=bootstrap_secret,
+    )
+    await browsing.recover_pending()
     app = _App(
         bus,
         inner_life,
@@ -343,6 +407,7 @@ async def build_app_context(
         eval_store,
         config,
         database=db,
+        browsing=browsing,
     )
     return_context_owner = app
 

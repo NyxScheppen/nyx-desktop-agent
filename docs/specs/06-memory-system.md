@@ -39,6 +39,7 @@ class MemoryKind(StrEnum):
     READING = "reading"
     ACTIVITY = "activity"
     INTERACTION = "interaction"
+    BROWSING = "browsing"
 ```
 
 `kind` 表示记忆的来源/生命周期语义；`topics` 只表示主题，不参与权限判断。
@@ -47,11 +48,13 @@ class MemoryKind(StrEnum):
 
 - 场景记忆 LLM 输出 `{content, kind, topics, summary}`；非法 kind 或结构拒绝落库。
 - topics 在应用层去空白、去重、截断，非法元素丢弃；空 topics 合法。
-- 活动、用户画像、知识、阅读、未答记录入口使用固定 kind，不调用场景记忆 LLM。
+- 活动、用户画像、知识、阅读、浏览、未答记录入口使用固定 kind，不调用场景记忆 LLM。
 
 ### kind-scoped 去重
 
 去重分为精确和语义两层，候选只在同一 kind 内取；关系建边和矛盾检测仍使用有界全局候选。
+`MemoryKind.BROWSING` 是唯一例外：逐页共同浏览经历由 `13-browsing-system` 的 page checkpoint
+负责幂等，固定 memory id；它跳过 content/semantic 合并，但仍参与全局候选建边与矛盾检测。
 
 - 精确：`(kind, canonical_content_hash)` 命中后强化旧记忆；summary 不参与 hash。
 - 普通语义：同 kind ANN top-1 cosine `>= 0.95` 强化旧记忆。
@@ -346,7 +349,7 @@ async def search(
 
 ### facade 签名
 
-`MemoryFacade` 是表达、活动、读书、反思和 API 读取记忆的唯一入口：
+`MemoryFacade` 是表达、活动、读书、共同浏览、反思和 API 读取记忆的唯一入口：
 
 ```python
 async def create_scene_memory(reply_context: dict[str, str]) -> Memory: ...
@@ -359,6 +362,15 @@ async def remember_user_profile(
 ) -> None: ...
 async def remember_knowledge(items: list[dict[str, str]], correlation_id: str) -> None: ...
 async def remember_reading(content: str, summary: str, correlation_id: str) -> None: ...
+async def remember_browsing(
+    page_id: str,
+    lease_token: str,
+    content: str,
+    summary: str,
+    topics: list[str],
+) -> Memory: ...
+async def forget_browsing(page_id: str) -> None: ...
+async def forget_all_browsing() -> None: ...
 async def record_no_answer(question: str, correlation_id: str) -> None: ...
 async def search(query: str) -> list[Memory]: ...
 async def record_recall(memory_id: str) -> None: ...
@@ -374,7 +386,30 @@ async def export(fmt: str) -> str: ...
 Facade 规则：
 
 - `create_scene_memory` 只在慢通道回合末调用，LLM 调用 1 次（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）生成 `{content, kind, topics, summary}` 后复用 `_persist_memory`。
-- 活动、读书、知识、用户画像、未答记录入口都复用 `_persist_memory`，不绕过去重、建边、矛盾检测、衰减/淘汰尾段；确定性入口不调用 scene-memory LLM。
+- 活动、读书、浏览、知识、用户画像、未答记录入口都复用 `_persist_memory` 的入库
+  尾段，不绕过建边、矛盾检测、衰减/淘汰和事件；浏览分支只为固定 memory/event id
+  和跳过合并做最小特例。确定性入口不调用 scene-memory LLM。
+- `remember_browsing` 的整合文本由 `13-browsing-system` 生成。它创建
+  `LONG_TERM / BROWSING` 记忆并固定 `Memory.id = page_id`；对应
+  `MEMORY_CREATED` 使用 `uuid5(NAMESPACE_URL, "nyx:browsing-memory:" + page_id)`
+  作稳定 event id，`correlation_id=page_id`。只有当前有效的 browsing page
+  `integrating` lease token 才可写入：在同一共享 DB 事务内验证 token、page 存在且
+  `lease_until` 未到期，并原子插入固定 memory id 与稳定 event；旧 worker 或已删除 page
+  影响 0 行且不发事件。embedding/LLM 与候选计算在事务外；建边/矛盾检测等
+  best-effort 副作用不在事务锁内执行。同 memory id 已存在时不 strengthen、
+  不重做 embedding/建边/矛盾检测；有效 claim 只核对稳定 event 并幂等补发缺失事件。
+  如进程在核心事务之后、best-effort 建边/矛盾检测之前崩溃，恢复不重放 LLM，
+  该记忆可能少部分关系边；核心记忆和事件仍可达。`BROWSING` 跳过 content/semantic
+  合并，避免相似网页的不同共同浏览经历只被强化而丢失正文；刷新/后退
+  等重复由浏览 page checkpoint 的 URL+hash 唯一键处理。其它 kind 的两层去重
+  语义不变。
+- `forget_browsing(page_id)` 先按 id 读取并严格校验 `kind is MemoryKind.BROWSING`；
+  不存在时幂等返回，kind 不匹配时拒绝。删除 memory 时依赖 SQLite 外键同一
+  提交级联删除对应 browsing page 和当前页指针；不清浏览 profile。
+- `forget_all_browsing()` 在一个本地事务批量删除全部 `MemoryKind.BROWSING` 记忆及其 embedding/
+  incident edges，依赖外键级联删除对应 browsing page；不删除其它 kind、浏览 profile或通用
+  event/eval 记录。由 browsing Facade 的全量删除流程调用，流程重试必须能收尾没有 memory 的
+  failed page/session。
 - `search(query)` 纯委托 `MemoryRetrieval.search(query)`，对表达层不暴露 `direct_limit` / `association_limit` 参数。
 - `remember_activity(event, consumer_id=None)` 是 `ACTIVITY_END` 的记忆消费者；RouteSpec 注册时传 `consumer_id="memory.activity_end"`，同一本地事务内写 `event_effect`、记忆状态和派生 `memory_created` / `reflection` 事件，重放时已应用则 no-op。普通直接调用不传 `consumer_id`，保留旧调用面。
 - `record_recall(memory_id)` 只表示“进入慢通道 prompt 后被想起”：委托 store 加一；短期达阈值时发布 `memory_promoted`，长期不重复发布。升级和 `memory_promoted` 事件行在同一本地事务提交，commit 后再 `announce_committed`。
@@ -773,6 +808,9 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 - [ ] 融合排序：vector 强但 keyword 弱、keyword 强但 vector 弱、二者都强三类样本按公式稳定排序；`direct_limit=5` 只返回 5 条 direct。
 - [ ] 召回顺序：先 direct，再 association；association 不重复 direct seed；最终数量 `<= direct_limit + association_limit`。
 - [ ] `_persist_memory`：content hash 命中优先；bounded semantic candidate top-1 达到 kind 阈值且通过事实冲突门控时 strengthen 旧记忆；未命中才 add/build edges/detect contradiction/publish；矛盾检测只取 top5 且 cosine `>=0.6`。
+- [ ] 浏览记忆：固定 memory/event id，新增时原子提交；已有 memory 但缺事件时幂等补发，
+  两者都有时不 strengthen/不重复广播；过期/接管 lease token 或已删除 page 不能创建/补发；
+  `forget_browsing` 只删 `BROWSING` 且级联清 page/pointer。
 - [ ] `MemoryGraph.associate(depth=2)`：二跳可达，按边权/跳数/kind 权重排序，多路径取最高分，seed score 参与计算；同 pair 多 kind 作为 typed edges 分别扩散；`AssociationHit.kinds` 记录最佳路径。
 - [ ] 边 schema：`MemoryEdge.kind` / `created_at` 序列化与反序列化；同一 canonical pair 不同 kind 可共存；方向相反同 kind 被 canonicalize 为同一边；旧边迁移后 kind 为 `semantic`。
 - [ ] 建边：语义、实体、关键词、时间边分别可被构造；语义边复用 persist semantic candidates；LLM 关系边只对 top5 候选调用；`none` 不写边；LLM 失败不阻塞持久化。

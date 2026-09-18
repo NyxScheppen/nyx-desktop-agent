@@ -91,8 +91,9 @@
 4. 紧跟 `Evaluator.evaluate`；
 5. 解析并校验 story、becoming、self_view、三类 delta、长期欲望候选；
 6. 计算漂移、叙事去重、按新阅读数缩放审美漂移；
-7. 在本地事务内写 personality、values、aesthetic、narrative，逐项通过 `DesireFacade.add_long_term` 写长期欲望，并给创造欲加压；
-8. 同一事务追加 `REFLECTION_DONE`，提交后广播。
+7. 在事务外通过 DesireFacade 批量预检长期欲望容量、名称和 embedding 去重，并记录长期欲望快照；
+8. 在本地事务内写 personality、values、aesthetic、narrative，以预检计划确定性写长期欲望，并给创造欲加压；
+9. 同一事务追加 `REFLECTION_DONE`，提交后广播。
 
 当前规则：
 
@@ -100,8 +101,10 @@
 - story/becoming 使用字符相似度阈值 `0.9` 去重；story 去重后返回 `story_is_new=False`，becoming 重复则不追加。
 - `self_view` 合并旧对象和新对象；`identity` 不变；`updated_at` 使用本轮时间。
 - 审美漂移按 `count_new(MemoryKind.READING, narrative.updated_at)` / `3` 缩放，上限为 1。
-- 长期欲望候选在读取配置容量后截断，再交给欲望 Facade 做容量和名称/语义去重。
-- 合法的单个候选失败只记日志并跳过；核心反思字段仍可提交。
+- 长期欲望候选必须带 `linked_values`，只允许四个 `Values` 精确键；空数组合法，重复键稳定去重，非法关联键会使该候选被跳过。
+- 候选先做结构过滤，再由欲望 Facade 按容量和名称/语义去重接纳，重复或坏候选不占后继有效候选的容量名额。
+- 单个候选非法只记日志并跳过；核心反思字段仍可提交。`long_term_desires` 缺失/`null` 按空数组，字段非数组则整次失败。
+- 长期欲望 embedding 失败或预检后快照变化会使整次提交失败并回滚，交由 durable delivery 重试；事务内不执行 embedding，也不嵌套开启欲望事务。
 - 反思 JSON 非法、LLM 失败、eval 失败或本地事务失败都会抛出，不会写成功 effect，供 durable delivery 重试。
 - 事务回滚不会撤销已经发生的 LLM/eval 调用，所以重试依靠 effect marker 和后续幂等写入。
 

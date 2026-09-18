@@ -339,6 +339,24 @@ class EventBus:
             rows = await cursor.fetchall()
         return [_row_to_event(row) for row in rows]
 
+    async def list_events_for_correlation(
+        self, correlation_id: str, event_types: tuple[EventType, ...],
+        limit: int = 100,
+    ) -> list[Event]:
+        """Select the latest matching facts, then restore causal display order."""
+        if not event_types or not 1 <= limit <= 100:
+            raise ValueError("event_types must be nonempty and limit must be 1..100")
+        placeholders = ",".join("?" for _ in event_types)
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM (SELECT * FROM event_log WHERE correlation_id=? "
+                f"AND type IN ({placeholders}) ORDER BY timestamp DESC,id DESC "
+                "LIMIT ?) ORDER BY timestamp,id",
+                (correlation_id, *(kind.value for kind in event_types), limit),
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_event(row) for row in rows]
+
     async def _admit(self, event: Event) -> tuple[bool, tuple[str, ...]]:
         event_content = json.dumps(
             event.content, default=str, allow_nan=False, ensure_ascii=False
@@ -442,6 +460,11 @@ class EventBus:
 
     async def is_durable(self, event_id: str) -> bool:
         """Return whether an event row already exists in the durable log."""
+        if self._db.in_transaction:
+            cursor = await self._db.conn.execute(
+                "SELECT 1 FROM event_log WHERE id = ?", (event_id,)
+            )
+            return await cursor.fetchone() is not None
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 "SELECT 1 FROM event_log WHERE id = ?", (event_id,)

@@ -60,6 +60,29 @@ function resetChat() {
   useChatStore.getState().reset(); // 复用 reset()：全清 messages/isReplying/sendError + 清 module 级 pendingId/replyTimer
 }
 
+describe("browsing transcript", () => {
+  beforeEach(resetChat);
+
+  it("shows browsing outputs once and suppresses the canonical ASK", () => {
+    const store = useChatStore.getState();
+    store.addAsk({event: "ask", event_id: "ask", correlation_id: "page", timestamp: 1,
+      content: "Question?", kind: "browsing_question"});
+    const question = {event: "browsing_question" as const, event_id: "question",
+      correlation_id: "page", timestamp: 2, content: "Question?", attempt_id: "attempt",
+      page_id: "page", session_id: "session", title: "Title", url: "https://example.com",
+      selected_text: "A passage"};
+    store.addBrowsingTurn(question);
+    store.addBrowsingTurn(question);
+    store.addBrowsingTurn({event: "browsing_association", event_id: "association",
+      correlation_id: "page", timestamp: 3, page_id: "page", session_id: "session",
+      memory_id: "memory", snippet: "A remembered idea"});
+    expect(useChatStore.getState().messages.map((message) => message.kind))
+      .toEqual(["browsing_question", "browsing_association"]);
+    expect(useChatStore.getState().messages[0].selectedText).toBe("A passage");
+    expect(useChatStore.getState().messages[1].memoryId).toBe("memory");
+  });
+});
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -67,6 +90,37 @@ afterEach(() => {
 
 describe("chatStore.add*", () => {
   beforeEach(resetChat);
+
+  it.each(["content", "timestamp"])("非法 %s 的回复帧不能提前结束等待", async (field) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ event_id: "pending" })));
+    await useChatStore.getState().sendMessage("hello");
+    useChatStore.getState().addSpeak({
+      event: "speak", event_id: "bad", correlation_id: "pending",
+      timestamp: field === "timestamp" ? 1e308 : 1000,
+      content: field === "content" ? null as unknown as string : "bad",
+    });
+    expect(useChatStore.getState().isReplying).toBe(true);
+    expect(useChatStore.getState().messages).toEqual([]);
+    resetChat();
+  });
+
+  it.each(["content", "timestamp"])("非法 %s 的主动消息不能点亮未读标记", (field) => {
+    useChatStore.getState().addInitiateChat({
+      event: "initiate_chat", event_id: "bad", correlation_id: "u",
+      timestamp: field === "timestamp" ? 1e308 : 1000,
+      content: field === "content" ? null as unknown as string : "bad",
+    });
+    expect(useChatStore.getState().unreadProactive).toBe(false);
+  });
+
+  it("重复主动消息不能重新点亮已读标记", () => {
+    const event = { event: "initiate_chat" as const, event_id: "same", correlation_id: "u", timestamp: 1000, content: "hello" };
+    useChatStore.getState().addInitiateChat(event);
+    useChatStore.getState().clearUnreadProactive();
+    useChatStore.getState().addInitiateChat(event);
+    expect(useChatStore.getState().unreadProactive).toBe(false);
+    expect(useChatStore.getState().messages).toHaveLength(1);
+  });
 
   it("addSpeak → ChatMessage{role:nyx, kind:speak, content, correlation_id}", () => {
     useChatStore.getState().addSpeak({
@@ -605,6 +659,58 @@ describe("chatStore.loadHistory", () => {
       return Promise.resolve(jsonResponse(byType[m?.[1] ?? ""] ?? []));
     });
   }
+
+  it("历史与 SSE 交错、重复到达时按 id 去重并全局排序", async () => {
+    const event = { event: "speak" as const, event_id: "same", correlation_id: "u", timestamp: 2000, content: "reply" };
+    vi.stubGlobal("fetch", historyFetch({ speak: [{
+      id: "same", timestamp: 2000, source: "internal", type: "speak",
+      content: { content: "reply" }, correlation_id: "u",
+    }] }));
+    const loading = useChatStore.getState().loadHistory();
+    useChatStore.getState().addSpeak(event);
+    await loading;
+    useChatStore.getState().addSpeak(event);
+    useChatStore.getState().addThink({
+      event: "think", event_id: "before", correlation_id: "u", timestamp: 1000, content: "thought",
+    });
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(["before", "same"]);
+  });
+
+  it("同一回合相同时间戳按用户、think、speak 的因果顺序", async () => {
+    useChatStore.getState().addSpeak({
+      event: "speak", event_id: "s", correlation_id: "u", timestamp: 1000, content: "reply",
+    });
+    vi.stubGlobal("fetch", historyFetch({
+      user_message: [{ id: "u", timestamp: 1000, source: "external", type: "user_message", content: { message: "hello" }, correlation_id: "u" }],
+      think: [{ id: "t", timestamp: 1000, source: "internal", type: "think", content: { content: "thinking" }, correlation_id: "u" }],
+    }));
+    await useChatStore.getState().loadHistory();
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(["u", "t", "s"]);
+  });
+
+  it.each([NaN, Infinity, 1e308])("非法时间戳 %s 的历史与实时消息都丢弃", async (timestamp) => {
+    vi.stubGlobal("fetch", historyFetch({ speak: [{
+      id: "bad-history", timestamp, source: "internal", type: "speak",
+      content: { content: "bad" }, correlation_id: "u",
+    }] }));
+    await useChatStore.getState().loadHistory();
+    useChatStore.getState().addSpeak({
+      event: "speak", event_id: "bad-live", correlation_id: "u", timestamp, content: "bad",
+    });
+    expect(useChatStore.getState().messages).toEqual([]);
+  });
+
+  it("重连回填比已有消息更新的历史时，整体仍按时间升序", async () => {
+    useChatStore.getState().addSpeak({
+      event: "speak", event_id: "old", correlation_id: "old", timestamp: 1000, content: "old",
+    });
+    vi.stubGlobal("fetch", historyFetch({ speak: [{
+      id: "new", timestamp: 2000, source: "internal", type: "speak",
+      content: { content: "new" }, correlation_id: "new",
+    }] }));
+    await useChatStore.getState().loadHistory();
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(["old", "new"]);
+  });
 
   it("按 timestamp 升序前置 + preloaded + 历史 think 入 typedIds", async () => {
     vi.stubGlobal(

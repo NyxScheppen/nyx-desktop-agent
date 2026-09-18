@@ -1,10 +1,14 @@
 # pyright: reportPrivateUsage=false
 import asyncio
 import contextlib
+import io
+from pathlib import Path
 from typing import cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from nyx import main as entry
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
@@ -266,6 +270,37 @@ async def test_main_propagates_tick_failure(
 
     with pytest.raises(RuntimeError):
         await main()
+
+
+async def test_frozen_parent_pipe_eof_requests_exit_without_blocking_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def frozen_config(_path: str) -> Config:
+        return Config()
+
+    server = MagicMock(should_exit=False)
+    server.serve = AsyncMock(side_effect=RuntimeError("serve failed"))
+
+    def frozen_server(_config: object) -> MagicMock:
+        return server
+
+    thread = MagicMock()
+    monkeypatch.setattr(entry.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(entry.sys, "_MEIPASS", str(tmp_path), raising=False)
+    monkeypatch.setattr(entry.sys, "stdin", MagicMock(buffer=io.BytesIO()))
+    monkeypatch.setenv("NYX_CANON_DIR", str(tmp_path))
+    monkeypatch.setattr(entry, "load_config", frozen_config)
+    monkeypatch.setattr(entry, "build_app_context", _fake_context)
+    monkeypatch.setattr(entry, "build_app", _fake_build_app)
+    monkeypatch.setattr(entry.uvicorn, "Config", _fake_uvicorn_config)
+    monkeypatch.setattr(entry.uvicorn, "Server", frozen_server)
+    with pytest.MonkeyPatch.context() as watcher:
+        watcher.setattr(entry.threading, "Thread", thread)
+        with pytest.raises(RuntimeError, match="serve failed"):
+            await asyncio.wait_for(main(), timeout=1)
+    assert thread.call_args.kwargs["daemon"] is True
+    thread.call_args.kwargs["target"]()
+    assert server.should_exit is True
 
 
 async def test_first_tick_starts_activity_not_mutter_or_chat(

@@ -23,6 +23,9 @@ dependencies = [
     "watchfiles>=0.13",
 ]
 
+[project.optional-dependencies]
+desktop-build = ["pyinstaller==6.19.0"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 88
@@ -40,6 +43,7 @@ asyncio_mode = "auto"
 
 [tool.pyright]
 pythonVersion = "3.11"
+exclude = ["build", "frontend/src-tauri/target", "**/node_modules", "**/__pycache__", ".venv", ".runtime", ".claude"]
 typeCheckingMode = "strict"
 reportUnusedFunction = true
 reportUnusedClass = true

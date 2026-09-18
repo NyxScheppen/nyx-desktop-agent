@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
 
@@ -56,5 +56,18 @@ describe("App 分钟时钟与昼夜同步", () => {
     expect(container.firstElementChild).toHaveAttribute("data-time-phase", phase);
     expect(screen.getByText(label)).toBeInTheDocument();
     expect(screen.getByTestId("avatar")).toHaveAttribute("data-night", avatarNight);
+  });
+
+  it.each(["focus", "visibilitychange"])("休眠后 %s 立即刷新并重新对齐分钟", (event) => {
+    vi.setSystemTime(new Date(2026, 8, 17, 19, 0));
+    const { container } = render(<App />);
+    vi.setSystemTime(new Date(2026, 8, 18, 5, 59, 59, 500));
+    if (event === "focus") fireEvent.focus(window);
+    else fireEvent(document, new Event("visibilitychange"));
+    expect(container.firstElementChild).toHaveAttribute("data-time-phase", "night");
+    expect(screen.getByText("9月18日 星期五 05:59")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.getByText("9月18日 星期五 06:00")).toBeInTheDocument();
+    expect(container.firstElementChild).toHaveAttribute("data-time-phase", "day");
   });
 });

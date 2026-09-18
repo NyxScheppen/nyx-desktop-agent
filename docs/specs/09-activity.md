@@ -179,10 +179,14 @@
 - [ ] `classify_presence(idle_seconds: float) -> str` 是 presence 三态判定的纯函数事实来源：最后输入距今 `<30` 秒为 `"online"`，`30 <= idle_seconds < 300` 为 `"busy"`，`>=300` 秒为 `"away"`。边界分别归入后一档；窗口标题只作为观察内容，不参与 presence 判定。
 - [ ] Windows Tauri `sample_presence() -> tuple[int, str]` 返回系统最后输入距今的毫秒数和真实前台窗口标题，不在 Rust 层应用 presence 阈值。WebView 每 30 秒采样一次；非 Tauri/非 Windows 降级为 WebView 内键盘/鼠标最后输入时间，窗口标题固定为空，不得使用 Nyx 自身 `document.title` 冒充前台应用。
 - [ ] Rust 命令使用 `Result<(u64, String), String>` 承载错误通道；成功 JS 值仍是 `[idle_ms, title]`。原生采样失败/非 Windows 必须拒绝调用以触发 WebView 降级，不返回 `0` 伪造在线事实。
-- [ ] 前端只在 presence 或窗口标题变化时上报 `{presence, window_title, idle_seconds}`；“已发送快照”必须在 `POST /api/observe` 成功后更新，失败只记录日志并在后续采样重试。同一时刻至多一个上报请求在途，避免旧请求晚回覆盖新状态。
-  请求在途时新采样覆盖待上报快照，只保留最新值。采样分辨率为 30 秒，识别离开/归来允许
-  该级别误差；WebView 降级只能观察窗口内输入，不能宣称有系统级感知。
-- [ ] 首次成功观察只建立 presence 基线，不产生归来。基线建立后进入 `away` 时，运行时以 `event.timestamp - idle_seconds` 记录最后活跃起点；后续 `away -> online` 产生 `returned` 和离开时长。`busy -> online` 不算离开归来。
+- [ ] 前端在 presence 或窗口标题变化时上报 `{presence, window_title, idle_seconds, sampled_at}`；SSE 重连后重新采样、强制建立后端基线。“已发送快照”必须在请求成功后更新，失败在后续采样重试。单次请求 10 秒超时并取消，卸载也取消；同一 effect 至多一个请求在途。
+  请求在途时新采样覆盖待上报快照，只保留最新值（A/B/A 不得漏掉末次 A）；原生采样序号
+  丢弃乱序完成的旧结果。非法原生 tuple/数值/标题走已有 WebView fallback，不伪造 idle=0。
+  sampled_at 在调用原生采样前记录，标题截断至 512 字符。
+  WebView fallback 的闲置时长用 performance.now 单调时钟计算，不受系统时间跳变影响；
+  sampled_at 回拨时不去重、强制上报基线，字符截断不切开 Unicode 代理对。
+  采样分辨率为 30 秒，识别离开/归来允许该级别误差；WebView 降级只能观察窗口内输入，不能宣称有系统级感知。
+- [ ] 首次成功观察只建立 presence 基线，不产生归来。基线建立后进入 `away` 时，运行时以 `sampled_at - idle_seconds` 记录最后活跃起点；后续 `away -> online` 产生 `returned` 和离开时长。`busy -> online` 不算离开归来。迟到采样/用户消息不能覆盖新证据；再次 away 废弃旧归来。时钟回拨观察重建基线，不伪造归来。
 - [ ] 已持久化的 `USER_MESSAGE` 是比周期采样更及时的 online 证据：runtime 在交给表达系统前，按消息事件时间把 presence 幂等对齐为 online；若此前为 away，则产生同一份一次性 returned 上下文。之后到达的 online observation 不得重复产生 returned。首次运行时事实来自用户消息时仍只建立基线，不伪造归来。
 - [ ] 归来不立即强制 Nyx 发言；它作为一次性运行时上下文，交给下一次成功的回复、主动搭话或 LLM 碎碎念。表达失败、空输出或固定 fallback 不消费该上下文；进程重启后不得根据初次采样补造归来。
 - [ ] `build_observation_summary` 按窗口标题优先、屏幕摘要次之拼装观察文本；无二者时返回稳定的空/默认摘要。

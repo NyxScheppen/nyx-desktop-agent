@@ -3,6 +3,7 @@ import type { ChatMessage } from "../src/stores/chatStore";
 import {
   formatCurrentTime,
   formatMessageTime,
+  isValidTimestamp,
   shouldShowTimeDivider,
   timePhaseAt,
 } from "../src/lib/time";
@@ -37,6 +38,16 @@ describe("timePhaseAt", () => {
 });
 
 describe("time labels", () => {
+  it.each([NaN, Infinity, 1e308, -1e308])("时间戳 %s 不生成 NaN 标签", (timestamp) => {
+    expect(isValidTimestamp(timestamp)).toBe(false);
+    expect(formatMessageTime(timestamp, new Date())).toBe("时间未知");
+  });
+
+  it("Date 表示范围的精确边界", () => {
+    expect(isValidTimestamp(8_640_000_000_000)).toBe(true);
+    expect(isValidTimestamp(8_640_000_000_001)).toBe(false);
+    expect(isValidTimestamp("1000")).toBe(false);
+  });
   it("顶栏显示日期、星期和分钟", () => {
     expect(formatCurrentTime(at(2026, 9, 17, 8, 5))).toBe("9月17日 星期四 08:05");
   });

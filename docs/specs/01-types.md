@@ -1,6 +1,6 @@
 # 枚举 + 实体类型
 
-> 范围：`nyx/enums.py`（17 个 `StrEnum`）、`nyx/types.py`（4 个 TypedDict + 24 个 dataclass）。
+> 范围：`nyx/enums.py`（17 个 `StrEnum`）、`nyx/types.py`（4 个 TypedDict + 27 个 dataclass）。
 > 纯声明 spec：只定义类型，不含函数、不含序列化 helper、不含 DDL。
 > spec 只定义契约（签名 + 语义 + 决策）；枚举成员与 dataclass 字段以 `nyx/enums.py` / `nyx/types.py` 源文件为准。
 
@@ -15,7 +15,7 @@
 ## 验收标准
 
 - [ ] `enums.py` 含 17 个 `StrEnum`，成员与源文件一致（实现见 `nyx/enums.py`）
-- [ ] `types.py` 含 4 个 TypedDict + 24 个 dataclass，字段与源文件一致（实现见 `nyx/types.py`）
+- [ ] `types.py` 含 4 个 TypedDict + 27 个 dataclass，字段与源文件一致（实现见 `nyx/types.py`）
 - [ ] 所有枚举 `.value` 为小写 snake_case 字符串，可直接 `json.dumps` / 存 SQLite
 - [ ] 固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`（边界见「嵌套 dict 字段的边界」表）、不加 `frozen`
 - [ ] `pyright` strict 下零报错：无 implicit Any、无 `str` 赋给枚举成员的默认值告警
@@ -25,8 +25,8 @@
 - **新文件**：`nyx/enums.py`、`nyx/types.py`（无 Facade、无 API、无数据变更）
 - **约定**：枚举统一 `class X(StrEnum)`，成员 `UPPER_SNAKE`、值 = `成员名.lower()` 的 snake_case；dataclass 默认值用枚举成员而非裸字符串。
 - **公开面**：`nyx/__init__.py` 保持空（不 re-export）；引用一律 `from nyx.enums import X` / `from nyx.types import Y`，不从 `nyx` 根导入；两模块不加 `__all__`（CLAUDE.md 禁 `*` 导入，`__all__` 是死代码）。
-- **枚举清单**：包含 `MemoryKind`；枚举成员与领域语义以 `nyx/enums.py` 及对应业务 spec 为准。
-- **实体清单（24 个 dataclass）**：事件 `Event`；记忆 `Memory` / `MemoryEdge`；欲望 `Goal` / `ShortTermDesire` / `LongTermDesire` / `DesireValue` / `DesireState`；活动 `Activity` / `Material`；内在生命 `CurrentState` / `SelfNarrative` / `ReflectionOutcome`；表达 `Message`；工具/eval `Tool` / `LLMOutput` / `EvalRecord` / `EvalStats`；陪读 `Book` / `Paragraph` / `ReadingProgress` / `BookListItem` / `UserNote` / `Annotation`。字段形状以 `nyx/types.py` 为准。
+- **枚举清单**：包含 `MemoryKind`；浏览系统为现有 `EventType` 增加 `BROWSING_MUTTER` / `BROWSING_QUESTION` / `BROWSING_ASSOCIATION`，为 `InteractionKind` 增加 `BROWSING_QUESTION`，为 `MemoryKind` 增加 `BROWSING`；不新增枚举类。成员与领域语义以 `nyx/enums.py` 及对应业务 spec 为准。
+- **实体清单（27 个 dataclass）**：事件 `Event`；记忆 `Memory` / `MemoryEdge`；欲望 `Goal` / `ShortTermDesire` / `LongTermDesire` / `DesireValue` / `DesireState`；活动 `Activity` / `Material`；内在生命 `CurrentState` / `SelfNarrative` / `ReflectionOutcome`；表达 `Message`；工具/eval `Tool` / `LLMOutput` / `EvalRecord` / `EvalStats`；陪读 `Book` / `Paragraph` / `ReadingProgress` / `BookListItem` / `UserNote` / `Annotation`；共同浏览 `BrowsingSession` / `BrowserPageSnapshot` / `BrowsingPage`。字段形状以 `nyx/types.py` 和对应领域 spec 为准。
 - **消息 TypedDict**：`LlmMessage` 固定为 `role: Literal["system", "user", "assistant"]` + `content: str`；`nyx.llm.client` 导入并继续公开该名字。
 - **记忆类型字段**：`Memory.kind` 使用 `MemoryKind`，`Memory.topics` 为受限主题列表；`Memory.sources` 的类型与默认值由本文件定义，检索来源、持久化和 API 语义由 `06-memory-system` 定义。
 

@@ -444,3 +444,76 @@ async def test_add_long_term_embed_error_is_strict() -> None:
         assert await store.list_long_term() == []
     finally:
         await database.conn.close()
+
+
+async def test_prepare_long_term_candidates_filters_before_capacity() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(
+        store,
+        bus,
+        _FakeLlm(),
+        _FakeEvaluator(),
+        config=DesireConfig(long_term_capacity=2),
+    )
+    try:
+        await store.insert_long_term(_lt_custom("existing", "理解人类"))
+        accepted, snapshot = await facade.prepare_long_term_candidates((
+            _lt_custom("duplicate", "  理解人类  "),
+            _lt_custom("accepted", "理解道德"),
+            _lt_custom("overflow", "理解历史"),
+        ))
+        assert [d.id for d in accepted] == ["accepted"]
+        assert snapshot == (("existing", "理解人类", ""),)
+    finally:
+        await database.conn.close()
+
+
+async def test_prepare_long_term_candidates_deduplicates_batch_semantically() -> None:
+    store, bus, database = await _new_stack()
+    embed = _embed_map({
+        "理解人类 痛苦": [1.0, 0.0],
+        "了解人类 苦难": [1.0, 0.0],
+        "理解道德 责任": [0.0, 1.0],
+    })
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator(), embed=embed)
+    try:
+        accepted, _ = await facade.prepare_long_term_candidates((
+            _lt_custom("a", "理解人类", "痛苦"),
+            _lt_custom("b", "了解人类", "苦难"),
+            _lt_custom("c", "理解道德", "责任"),
+        ))
+        assert [d.id for d in accepted] == ["a", "c"]
+    finally:
+        await database.conn.close()
+
+
+async def test_add_prepared_long_terms_requires_transaction() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        accepted, snapshot = await facade.prepare_long_term_candidates((
+            _lt_custom("a", "理解人类"),
+        ))
+        with pytest.raises(RuntimeError, match="事务"):
+            await facade.add_prepared_long_terms_in_transaction(accepted, snapshot)
+        assert await store.list_long_term() == []
+    finally:
+        await database.conn.close()
+
+
+async def test_add_prepared_long_terms_rejects_snapshot_conflict() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        accepted, snapshot = await facade.prepare_long_term_candidates((
+            _lt_custom("a", "理解人类"),
+        ))
+        await store.insert_long_term(_lt_custom("external", "理解道德"))
+        with pytest.raises(RuntimeError, match="快照"):
+            async with database.transaction():
+                await facade.add_prepared_long_terms_in_transaction(
+                    accepted, snapshot
+                )
+        assert [d.id for d in await store.list_long_term()] == ["external"]
+    finally:
+        await database.conn.close()

@@ -42,10 +42,12 @@ PENDING --retry limit--> EXPIRED
 - 解析成功的 LLM JSON 先进入 generation attempt；正式状态、容量裁剪和 `DESIRE_GENERATED` 在一个事务中提交。
 - 短期容量溢出时，按类型表达权重降序、创建时间升序保留，低表达权重待消费欲望被裁剪。
 - 长期欲望 embedding 是严格前置；embedding 失败不插入，不降级为仅名称去重。
+- 反思批量新增长期欲望走两阶段入口：事务外预检容量/名称/embedding 去重并记录 `id/name/description` 快照，事务内只校验快照和执行受容量/名称保护的插入；快照冲突抛错交给 durable delivery 重试。
 
 ## 跨模块事务
 
 - 活动 starter 在同一数据库事务中 claim 欲望并插入活动；任一步失败都会回滚。
 - 活动完成事件由活动事务产生；欲望消费者用 `(event_id, consumer_id)` effect marker 防重。
 - 欲望满足/淘汰的欲望状态、值强化/回灌、长期进度和终局事件在同一本地事务中提交。
+- 反思事务不得调用会自行开启事务的 `add_long_term`，也不得在持有数据库事务时计算 embedding。
 - 事务提交后的 announce/wake 失败只影响唤醒，不得反向修改已提交的业务事实；总线恢复扫描负责补投递。

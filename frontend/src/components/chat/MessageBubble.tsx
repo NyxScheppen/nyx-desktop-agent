@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useTypewriter } from "../../hooks/useTypewriter";
-import type { ChatMessage } from "../../stores/chatStore";
+import { useChatStore, type ChatMessage } from "../../stores/chatStore";
 
 type MessageBubbleProps = {
   message: ChatMessage;
@@ -15,6 +15,7 @@ type MessageBubbleProps = {
 // 不再挂情绪 sprite（视觉改造：尼克斯消息旁只显示信息）。
 export default function MessageBubble({ message, ready, onTyped }: MessageBubbleProps) {
   const { role, kind, content } = message;
+  const setReplyTo = useChatStore((s) => s.setReplyTo);
   const isNyxText =
     kind === "speak" ||
     kind === "ask" ||
@@ -35,14 +36,20 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
   return (
     <div className={`message-bubble message-bubble--${role} message-bubble--${kind}`}>
       {kind === "initiate_chat" && <span className="message-bubble__badge">欲望搭话</span>}
-      {kind === "reading_question" && <span className="message-bubble__badge">提问</span>}
+      {(kind === "reading_question" || kind === "browsing_question") && (
+        <span className="message-bubble__badge">提问</span>
+      )}
+      {kind === "browsing_association" && (
+        <span className="message-bubble__badge" title={message.memoryId}>联想</span>
+      )}
       <span className="message-bubble__content">
         {text}
         {showCursor && <span className="cursor-blink" />}
       </span>
-      {kind === "reading_question" && message.selectedText && (
+      {(kind === "reading_question" || kind === "browsing_question") && message.selectedText && (
         <p className="message-bubble__quote">原文：「{message.selectedText}」</p>
       )}
+      {kind === "browsing_question" && message.attemptId && <button type="button" title="回复此提问" aria-label="回复此提问" onClick={() => setReplyTo(message.attemptId!)}>↩</button>}
     </div>
   );
 }

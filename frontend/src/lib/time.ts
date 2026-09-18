@@ -9,6 +9,11 @@ type TimedMessage = {
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"] as const;
 const RESPONSE_KINDS = new Set(["think", "speak", "ask"]);
 
+export function isValidTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) &&
+    Number.isFinite(new Date(value * 1000).getTime());
+}
+
 function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
@@ -38,6 +43,7 @@ export function formatCurrentTime(value: Date): string {
 }
 
 export function formatMessageTime(timestamp: number, now: Date): string {
+  if (!isValidTimestamp(timestamp)) return "时间未知";
   const value = new Date(timestamp * 1000);
   const clock = `${pad(value.getHours())}:${pad(value.getMinutes())}`;
   if (sameLocalDate(value, now)) return `今天 ${clock}`;

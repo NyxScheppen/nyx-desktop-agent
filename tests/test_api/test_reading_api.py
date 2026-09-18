@@ -174,7 +174,7 @@ def _app(reading: _FakeReading) -> _App:
 
 def _client(app: _App) -> AsyncClient:
     return AsyncClient(
-        transport=ASGITransport(app=build_app(app)), base_url="http://test"
+        transport=ASGITransport(app=build_app(app)), base_url="http://127.0.0.1:8000"
     )
 
 

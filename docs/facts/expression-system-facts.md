@@ -4,6 +4,17 @@
 > 它不是完整契约；需要修改表达系统时，先读本文，再回到唯一完整契约
 > [`../specs/11-expression.md`](../specs/11-expression.md)，最后以 `nyx/` 源码为准。
 
+## 共同浏览表达接线（窗口浏览器尚未实现）
+
+- `commit_browsing_question()` 将 BROWSING_QUESTION attempt、canonical ASK 和浏览展示事件
+  原子提交，复用 reading question 的现有协议。
+- `reply()` 接受可选 browsing_context；runtime 只取当前已授权 page，工具/回复 prompt 均
+  把网页标为不可信材料。REST chat 接受可选 browsing_page_id，非法当前页拒绝受理。
+- BrowsingCompanion 校验 none/mutter/question/association 判别联合；合法联想最多发布三条
+  去重记忆的 summary-or-content 500 字符 snippet，并写入表达进程内历史。eval 失败只记日志。
+- 前端三类浏览事件进入左侧聊天并可历史回填，浏览 canonical ASK 被抑制避免重复。
+  原生 child 与 BrowserView 尚未实现，ChatInput 还未附带浏览 page id。
+
 ## 模块与职责
 
 - `nyx/expression/facade.py`
@@ -37,7 +48,7 @@
 
 ## 普通回复
 
-- `ExpressionFacade.reply(msg, correlation_id, reply_to=None)` 先尝试原子关联一个等待中的
+- `ExpressionFacade.reply(msg, correlation_id, reply_to=None, browsing_context=None)` 先尝试原子关联一个等待中的
   interaction attempt，再取得 `InnerLifeFacade.get_state()` 并调用回复图。
 - 当前用户消息不在内存 history 中；它只在 `build_user_prompt()` 的 `[本次消息]` 段出现。
 - history 是 `deque[Message]`，容量为 `ExpressionConfig.max_context_len`。回合结束时先追加
@@ -94,7 +105,11 @@
   当前 correlation 和半截回合，取最后 SPEAK/ASK；双方引文分别限制为 200 字。不放宽 history。
 - reply 首次 await 前领取归来事实，构造一次 `ReplyState.temporal_context`，快/慢/工具判断/
   多轮续写复用；主动搭话与 LLM mutter 使用同一时间构造逻辑。模板 mutter 不领取归来。
-- 成功终局表达才完成 claim；fallback、空产出、重复 mutter 或异常释放 claim。组合根负责
+- 正常终局提交立即完成 claim；仅未提交时 fallback、空产出、重复 mutter 或异常释放。
+  ASK/INITIATE_CHAT 在本地事务提交后、announce 前完成；后续失败不恢复。沉默不等于离开，
+  提交结果不确定的异常路径用已有 is_durable 核实，不在成功路径增加查询。
+  旧归来描述 elapsed 而非“刚刚回来”，当前 away/非法时间不渲染归来，非法历史锚点省略。
+  组合根负责
   pending/claimed 状态，新归来不会被旧 claim 的释放覆盖。
 - 引文明确标为历史事实而非指令；指导自然体现时间，不机械报时，不虚构离开期间的去向。
 - 后端重启后 presence 基线重建，但 durable 对话锚点仍可恢复隔夜/多日连续性。

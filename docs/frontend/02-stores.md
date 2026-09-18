@@ -1,6 +1,6 @@
 # Zustand Stores（`stores/*.ts`）
 
-> 每系统一个 store（CLAUDE.md）。共 7 个：`chatStore`（聊天）、`innerLifeStore`（内在状态快照）、`desireStore` / `activityStore`（两个快照 store）、`settingsStore`（背景外观，纯前端 UI 状态）、`announceStore`（头像旁临时气泡，纯前端呈现）、`readerStore`（阅读：书架/进度/追赶循环 + 笔记）。
+> 每系统一个 store（CLAUDE.md）。现有聊天、内在状态、欲望、活动、记忆、设置、表达气泡、阅读、评估与 `browserStore`（共同浏览宿主展示状态）。
 > 范围：`stores/*.ts` 的 state 形状 + actions。
 > 约定：**SSE 是主通道**（01-sse 分发表），store 的增量 action 由 SSE 驱动；REST 只喂初始快照。TS 类型字段名 = 后端 JSON 键（snake_case，零映射）。
 
@@ -39,14 +39,16 @@ type Presence = "online" | "away" | "busy";
 type ChatMessage = {
   id: string;                 // event_id
   role: "user" | "nyx";
-  kind: "message" | "speak" | "ask" | "think" | "initiate_chat" | "reading_question" | "reading_association";
+  kind: "message" | "speak" | "ask" | "think" | "initiate_chat" | "reading_question"
+    | "browsing_mutter" | "browsing_question" | "browsing_association";
   content: string;
   correlation_id: string;
   timestamp: number;           // 后端 Event.timestamp，epoch 秒
   preloaded?: boolean;        // 历史回填消息：渲染时不逐字（loadHistory 写入）
   subtype?: QuestionSubtype;         // kind==="reading_question" 才有（提问四子型）
-  selectedText?: string | null;      // kind==="reading_question" 才有（quote_question 划线文本）
-  memoryId?: string;                 // kind==="reading_association" 才有（命中记忆 id）
+  selectedText?: string | null;      // reading_question / browsing_question 引文
+  memoryId?: string;                 // browsing_association 命中记忆 id
+  attemptId?: string;                // browsing_question 的 durable attempt_id
 };
 
 type ChatState = {
@@ -54,10 +56,11 @@ type ChatState = {
   isReplying: boolean;        // 发消息后等待回复中
   sendError: string | null;
   typedIds: Record<string, true>;  // 已逐字打完的 nyx 文本 id（后一条同 correlation_id 的 nyx 文本等其打完才开打）
+  replyTo: string | null;         // 当前选中的浏览提问 attempt_id
 };
 ```
 
-> `kind` 区分 Nyx 的产出（speak/ask/think/initiate_chat 四种文本 + reading_question/reading_association 两种读书 turn），渲染样式不同（03-chat-panel）；`role` 只决定左右气泡。
+> `kind` 区分普通文本、读书提问和三类浏览 turn（03-chat-panel）；`role` 只决定左右气泡。
 
 ### actions
 
@@ -67,23 +70,38 @@ addSpeak(e: TextEvent<"speak">): void                // {role:"nyx", kind:"speak
 addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}；correlation_id === pendingId 时才 clearTimeout(replyTimer) + isReplying=false + sendError=null
 addThink(e: TextEvent<"think">): void                // {role:"nyx", kind:"think"}
 addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initiate_chat"}
-addReadingTurn(e: ReadingQuestionEvent | ReadingAssociationEvent): void  // {role:"nyx"}; question→kind:"reading_question"（subtype/selectedText 落字段）、association→kind:"reading_association"（content=e.snippet、memoryId 落字段）；correlation_id=e.book_id；文本字段非 string 丢弃
+addReadingTurn(e: ReadingQuestionEvent): void  // {role:"nyx",kind:"reading_question"}; subtype/selectedText 落字段
+addBrowsingTurn(e: BrowsingEvent): void  // mutter/question 读 content，association 读 snippet，保留 selectedText/memoryId
 
-sendMessage(text: string): Promise<void>  // 内部调 client.postChat(text)（client 契约见 05-client）
+sendMessage(text: string, context?: { browsing_page_id?: string; reply_to?: string }): Promise<boolean>  // 内部调 client.postChat；成功 true，失败/忙 false
                                           // 成功：pendingId = 返回的 event_id + isReplying=true + sendError=null + 起 60s 超时 timer
                                           // postChat throw → catch → sendError = e.message（isReplying 未置，无需复位）
 markTyped(id: string): void              // 把 nyx 文本 id 写入 typedIds（逐字 done 时调，解锁其后同 correlation_id 的下一条 nyx 文本）
-loadHistory(): Promise<void>             // 并行 GET /api/events/log（七类文本事件，含 reading_question/reading_association）→ 合并按 timestamp 升序 → 按 id 去重 → preloaded:true 前置到 messages；历史 think 一并入 typedIds；失败 best-effort 不抛（不阻塞实时 SSE）
+loadHistory(): Promise<void>             // 并行 GET /api/events/log（九类文本事件，含 reading_question 与三类浏览）→ 合并去重排序；新增历史 preloaded:true；历史 think 入 typedIds；失败 best-effort 不抛
 reset(): void                            // 新会话全清：clearTimeout(replyTimer) + messages/isReplying/sendError/typedIds 复位
+setReplyTo(attemptId: string | null): void // 选择或取消提问回复；reset 同时清空
 ```
 
 ### 关键决策
 
 - **SSE 是聊天消息的唯一来源**：`sendMessage` 只 `POST`（拿 `{event_id}` 后 `isReplying=true`），**不本地 append**。用户消息靠 SSE `user_message` 回显上屏（localhost 往返 ~10ms，视觉无延迟）。好处：无「乐观消息 + SSE 回显」的**去重/替换**复杂度；`correlation_id` 沿事件一路一致，追溯无分歧（原则 5）。
 - **isReplying 生命周期 + 60s 超时（必须取消）+ correlation 匹配**：`sendMessage` 成功时**存 `postChat` 返回的 `event_id` 到 module-level `pendingId`**（该 id = 后端 `user_message` 事件 id = 回复帧的 `correlation_id`），置 `isReplying=true` + `sendError=null` 并起 60s 超时 timer（`setTimeout`，回调置 `isReplying=false` + `sendError="回复超时"`、**不清 pendingId**——迟到回复仍需能匹配清 sendError）；`addSpeak`/`addAsk` 收到回复时**先判 `e.correlation_id === pendingId`**——匹配才 `clearTimeout` 取消 timer + 置 `isReplying=false` + `sendError=null`，非匹配（搭话等别的发言）只 append 不动生命周期。`think` 不结束回复（后必跟 `speak`）。`timer`/`pendingId` 都放 module-level（`let replyTimer`/`let pendingId`，**不进 store state**——store 状态须可序列化）。缺取消机制 = 真 bug：10s 收到回复，60s 时 timer 照样触发假「回复超时」。
-- **消息顺序与时间戳**：SSE 顺序到达，实时 action 直接 `push`，不额外排序；每条
-  `ChatMessage.timestamp` 必须复制 SSE 的后端 `Event.timestamp`。历史回填复制
+- **消息顺序与时间戳**：实时与历史都按 id 去重，合并后全局按 timestamp 稳定升序排列，
+  相同时按用户消息、think、对外文本排列，同等级按 event id 排列，避免回填令回复先于用户。
+  缺失/非有限或 Date 不可表示的时间戳丢弃。
+  非法帧在任何等待/未读副作用前丢弃；重复主动消息也不能重新点亮已读标记。
+  每条 `ChatMessage.timestamp` 必须复制 SSE 的后端 `Event.timestamp`。历史回填复制
   `BackendEvent.timestamp`，因此重连/重启前后使用同一来源；禁止用 `Date.now()` 替代事件时间。
+- 浏览三类 turn 按 event id 去重，实时/历史统一抑制 kind=browsing_question 的 canonical ASK。
+  三者只进聊天，不修改普通回复等待状态。浏览提问保存 attemptId，用户可选择 reply_to。
+
+### `browserStore`（完整契约归 13-browsing-system）
+
+- 只保存 session/navigation/page/revision、展示 URL/title、加载/前后退/暂停/显隐状态、错误、整合状态与未决 focus ID；不持有 token、正文或 cookie。
+- 固定 Rust commands 对应 open/navigate/back/forward/reload/stop/capture/focus/auth/close/clearData；busy 串行化用户操作。导航前立即丢弃 page，上游事件与迟到结果按 navigation ID 守卫。
+- focus 回包不确定时保留 UUID，重试复用；确定结果或换导航后丢弃，下次主动 focus 是新 UUID。
+- 隐私/崩溃/失效 token 清当前页并暂停；setVisible 先记录期望状态，创建结束按该状态 show/hide，防止迟到创建遮挡别的视图。
+- 原生事件监听属于常驻 BrowserView；普通 web 模式不调用 native command。
 
 ## 2. `innerLifeStore`
 
@@ -233,7 +251,7 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 ## 8. 测试（`tests/stores.test.ts`）
 
 - **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addInitiateChat`/`addUserMessage`/`addReadingTurn` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id/timestamp）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
-- **chatStore.loadHistory**：按 `timestamp` 升序前置 + `preloaded=true` + 历史 think 入 `typedIds`；已存在的 id 去重不重复前置；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
+- **chatStore.loadHistory**：新旧消息统一按 `timestamp` 稳定升序 + `preloaded=true` + 历史 think 入 `typedIds`；与实时消息按 id 去重；非法时间戳丢弃；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
 - **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
 - **两个快照 store**：`desireStore` 断言 `refresh()` 请求对端点 + `data` 落 store；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`（fetch 恰 2 次）→ `data`/`results` 落 store；`desireStore.refresh()` 失败 → `error` + `data` 保持 null。
 - **`isReady`（串行逐字纯函数）**：每条 nyx 文本消息等「同 `correlation_id` 且在其之前」的 nyx 文本消息都打完（入 `typedIds`）才就绪；无前置 nyx 文本 → 直接就绪；`preloaded` nyx 文本与 user 消息 → 恒就绪；不同 `correlation_id` 的 nyx 文本不阻塞。

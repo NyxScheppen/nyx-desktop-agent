@@ -3,6 +3,7 @@
 纯函数，无 IO、无 LLM。
 """
 
+import math
 from collections.abc import Mapping
 from datetime import datetime
 
@@ -112,7 +113,7 @@ def describe_elapsed(previous: float, now: float) -> tuple[str, str | None]:
     if seconds < 300:
         reunion = None
     elif seconds < 1800:
-        reunion = "用户离开了一会儿"
+        reunion = "用户有一会儿没有和你说话了"
     elif seconds < 7200:
         reunion = "已经有一阵子没有说话了"
     else:
@@ -142,9 +143,22 @@ def build_temporal_block(
         observation_line = f"当前观察：用户状态为 {presence}"
         window_title = observation.get("window_title")
         if isinstance(window_title, str) and window_title:
-            observation_line += f"，前台窗口为“{window_title}”"
+            observation_line += f"，前台窗口为“{_bounded_quote(window_title)}”"
         lines.append(observation_line + "。")
 
+    if anchor is not None:
+        timestamp = anchor[0].timestamp
+        if (
+            isinstance(timestamp, bool)
+            or not math.isfinite(timestamp)
+            or timestamp > now
+        ):
+            anchor = None
+        else:
+            try:
+                describe_local_time(timestamp)
+            except (ValueError, OverflowError, OSError):
+                anchor = None
     if anchor is not None:
         user_message, nyx_message = anchor
         duration, reunion = describe_elapsed(user_message.timestamp, now)
@@ -175,11 +189,27 @@ def build_temporal_block(
             ]
         )
 
-    if claimed_return is not None:
+    if claimed_return is not None and presence != "away":
         away_duration = claimed_return.get("away_duration_seconds")
-        if isinstance(away_duration, (int, float)):
-            duration, _ = describe_elapsed(0.0, max(0.0, float(away_duration)))
-            lines.append(f"运行时观察：用户刚刚回来，此前离开了{duration}。")
+        returned_at = claimed_return.get("returned_at")
+        if all(
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+            and 0 <= value <= now
+            for value in (away_duration, returned_at)
+        ):
+            assert away_duration is not None and returned_at is not None
+            duration, _ = describe_elapsed(0.0, away_duration)
+            since_return, _ = describe_elapsed(returned_at, now)
+            wording = (
+                "用户刚刚回来" if now - returned_at < 300
+                else f"用户回来已有{since_return}"
+            )
+            lines.append(
+                f"运行时观察：{wording}，此前电脑输入闲置了{duration}。"
+                "这只能证明电脑输入恢复，不能证明用户的实际去向。"
+            )
 
     lines.append(
         "可以在语境合适时自然体现时间变化；不要每条回复机械报时，"

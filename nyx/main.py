@@ -1,7 +1,9 @@
 """Nyx 服务入口与兼容导出。"""
 # pyright: reportPrivateUsage=false, reportUnusedFunction=false
 import asyncio
+import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -145,9 +147,26 @@ async def _vision_loop(app: _App) -> None:
 
 
 async def main() -> None:
-    config = load_config()
+    frozen = bool(getattr(sys, "frozen", False))
+    if frozen:
+        resources = Path(str(getattr(sys, "_MEIPASS")))
+        os.environ.setdefault("NYX_CANON_DIR", str(resources / "prompts"))
+        config = load_config(
+            os.environ.get("NYX_CONFIG") or str(resources / "config.yaml")
+        )
+        if config.embedding.model == "all-MiniLM-L6-v2":
+            config.embedding.model = str(resources / "embedding-model")
+    else:
+        config = load_config()
     app = await build_app_context(config)
     server = uvicorn.Server(uvicorn.Config(build_app(app), host=_HOST, port=_PORT))
+    def watch_parent() -> None:
+        # The owned pipe reaches EOF even if the desktop process crashes.
+        sys.stdin.buffer.read(1)
+        server.should_exit = True
+
+    if frozen:
+        threading.Thread(target=watch_parent, daemon=True).start()
     bus_task = asyncio.create_task(_supervise_bus(app))
     tasks: set[asyncio.Task[Any]] = {
         asyncio.create_task(server.serve()),
@@ -161,6 +180,9 @@ async def main() -> None:
         for task in done:
             task.result()
     finally:
+        browsing = getattr(app, "browsing", None)
+        if browsing is not None:
+            await browsing.quiesce()
         reading_quiesce = getattr(app.reading, "quiesce", None)
         if reading_quiesce is not None:
             await reading_quiesce()
@@ -174,6 +196,8 @@ async def main() -> None:
         reading_drain = getattr(app.reading, "drain", None)
         if reading_drain is not None:
             await reading_drain()
+        if browsing is not None:
+            await browsing.drain()
         close_bus = getattr(app.bus, "close", None)
         if close_bus is None:
             bus_task.cancel()

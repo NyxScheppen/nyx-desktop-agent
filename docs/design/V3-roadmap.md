@@ -7,7 +7,7 @@
 
 | 项 | 当前状态 | 未来接入点 |
 |---|---|---|
-| `LongTermDesire.linked_values` | 字段已存在，但当前反思产出仍为空，系统没有消费逻辑 | 反思回填关联价值观，或用于长期欲望排序/prompt |
+| `LongTermDesire.linked_values` 消费 | 反思已按四个 `Values` 键回填；现阶段仅持久化，尚未消费 | 用于长期欲望排序、短期欲望 prompt 或活动决策 |
 | `LongTermDesire.strength` | 当前会衰减，但衰减结果未参与排序、prompt 或活动决策 | 将长期欲望强度接入排序、prompt 或决策 |
 
 ## 电脑控制
@@ -18,6 +18,12 @@
 | 项 | 未来方向 |
 |---|---|
 | 卡牌策略游戏 | 作为首个 computer-use 试验场；需要作用域限制、高危动作确认、急停、动作预算和审计记录。实时动作游戏不在范围内。 |
+
+## 共同浏览
+
+- 设计契约已进入 [`../specs/13-browsing-system.md`](../specs/13-browsing-system.md)，尚未实现。
+- 浏览 fallback 不复用探索工具 `fetch_url()`；实现按 13 号 spec 使用 browsing 内部逐跳公网
+  HTTPS fetch，并先通过 Tauri ACL 与 OAuth popup 平台 spike。
 
 ## 延后事项
 

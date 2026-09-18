@@ -1,5 +1,5 @@
 // 中间内容区当前视图（聊天不再可切换，左栏常驻）：默认 reading。
-export type View = "inner" | "desire" | "activity" | "memory" | "reading";
+export type View = "inner" | "desire" | "activity" | "memory" | "reading" | "browsing";
 
 type RightDockProps = {
   view: View; // 当前视图，用于高亮激活入口
@@ -15,6 +15,7 @@ const ENTRIES: readonly { label: string; view: View }[] = [
   { label: "活动", view: "activity" },
   { label: "记忆", view: "memory" },
   { label: "读书", view: "reading" },
+  { label: "浏览", view: "browsing" },
 ];
 
 export default function RightDock({ view, onSwitch, onOpenSettings }: RightDockProps) {

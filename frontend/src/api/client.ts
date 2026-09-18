@@ -5,6 +5,7 @@ import type {
   BackendEvent,
   Book,
   BookListItem,
+  BrowsingPage,
   CurrentState,
   DesireState,
   EvalRecord,
@@ -12,15 +13,15 @@ import type {
   LlmPromptMessage,
   Memory,
   Paragraph,
-  Presence,
+  PresenceObservation,
   Progress,
   ProgressInput,
   UserNote,
   UserNoteWithAnnotations,
 } from "../types/api";
 
-// 空 = 相对路径，走 Vite proxy 同源转发到后端 8000（组合根 不做 CORS，localhost 同源）
-export const BASE_URL = "";
+// Development uses Vite proxy; packaged REST and SSE share the loopback endpoint.
+export const BASE_URL = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
 
 // 统一错误契约（05-client §2）：成功返回数据、失败 throw，不包裹 {ok, data}。
 // fetch 网络错误（TypeError）自然上抛不吞；非 2xx 读 body.detail ?? body.error ?? JSON.stringify(body)，
@@ -44,11 +45,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function postChat(message: string): Promise<{ event_id: string }> {
+export async function postChat(message: string, context?: { browsing_page_id?: string; reply_to?: string }): Promise<{ event_id: string }> {
   return request<{ event_id: string }>(`${BASE_URL}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, ...context }),
   });
 }
 
@@ -57,18 +58,14 @@ export async function getState(): Promise<CurrentState> {
 }
 
 export async function postObserve(
-  presence: Presence,
-  windowTitle: string,
-  idleSeconds: number,
+  observation: PresenceObservation,
+  signal?: AbortSignal,
 ): Promise<{ event_id: string }> {
   return request<{ event_id: string }>(`${BASE_URL}/api/observe`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      presence,
-      window_title: windowTitle,
-      idle_seconds: idleSeconds,
-    }),
+    body: JSON.stringify(observation),
+    signal,
   });
 }
 
@@ -219,6 +216,24 @@ export async function getEvalRecent(limit = 5): Promise<EvalRecord[]> {
 
 export async function getEvalTotalTokens(): Promise<EvalStats> {
   return request<EvalStats>(`${BASE_URL}/api/eval/total_tokens`);
+}
+
+export async function getBrowsingSession(sessionId: string): Promise<{ session: { id: string; current_page_id: string | null }; pages: BrowsingPage[] }> {
+  return request(`${BASE_URL}/api/browsing/sessions/${sessionId}`);
+}
+
+export async function retryBrowsingPage(pageId: string): Promise<{ page_id: string; status: string }> {
+  return request(`${BASE_URL}/api/browsing/pages/${pageId}/retry`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  });
+}
+
+export async function deleteBrowsingPage(pageId: string): Promise<void> {
+  await assertOk(await fetch(`${BASE_URL}/api/browsing/pages/${pageId}`, { method: "DELETE" }));
+}
+
+export async function deleteBrowsingHistory(): Promise<void> {
+  await assertOk(await fetch(`${BASE_URL}/api/browsing/history`, { method: "DELETE" }));
 }
 
 export async function getEvalPrompt(

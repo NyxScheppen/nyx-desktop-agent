@@ -16,9 +16,12 @@ echo [Nyx] This window stays open. Press Ctrl+C to stop the services.
 echo.
 
 set "PYTHON="
-if exist "%~dp0.runtime" set "PYTHONPATH=%~dp0.runtime;%PYTHONPATH%"
 if exist "%~dp0.venv\Scripts\python.exe" call :find_python "%~dp0.venv\Scripts\python.exe"
 if not defined PYTHON call :find_python python
+if not defined PYTHON if exist "%~dp0.runtime" (
+    set "PYTHONPATH=%~dp0.runtime;%PYTHONPATH%"
+    call :find_python python
+)
 if not defined PYTHON (
     echo [Nyx] No usable Python with uvicorn was found.
     echo [Nyx] The project environment may be broken or dependencies are missing.
@@ -33,7 +36,8 @@ if not defined NPM (
     echo [Nyx] Node.js/npm was not found. Please install Node.js first.
     goto :failed
 )
-"%NPM%" --version >nul 2>&1
+echo [Nyx] Checking npm: %NPM%
+call "%NPM%" --version >nul 2>&1
 if errorlevel 1 (
     echo [Nyx] npm.cmd is not working. Please repair the Node.js installation.
     echo [Nyx] Resolved npm: %NPM%

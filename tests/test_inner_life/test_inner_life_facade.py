@@ -132,8 +132,17 @@ class _FakeDesireFacade:
     async def get_all(self) -> DesireState:
         return DesireState(values=[], short_term=self._pending, long_term=[])
 
-    async def add_long_term(self, desire: LongTermDesire) -> None:
-        return None
+    async def prepare_long_term_candidates(
+        self, desires: tuple[LongTermDesire, ...]
+    ) -> tuple[tuple[LongTermDesire, ...], tuple[tuple[str, str, str], ...]]:
+        return desires, ()
+
+    async def add_prepared_long_terms_in_transaction(
+        self,
+        desires: tuple[LongTermDesire, ...],
+        snapshot: tuple[tuple[str, str, str], ...],
+    ) -> None:
+        del desires, snapshot
 
     async def pressure_creation(self, delta: float) -> None:
         return None

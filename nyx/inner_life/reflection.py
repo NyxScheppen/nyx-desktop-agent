@@ -7,7 +7,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from nyx.config import DesireConfig
-from nyx.desire.facade import DesireFacade
+from nyx.desire.facade import DesireFacade, LongTermSnapshot
 from nyx.enums import DesireType, MemoryKind
 from nyx.eval.evaluator import Evaluator
 from nyx.inner_life.store import InnerLifeStore
@@ -55,9 +55,12 @@ _REFLECTION_SYSTEM = (
     "  键分别为 openness/conscientiousness/extraversion/agreeableness/neuroticism、\n"
     "  attitude_to_human/ai_identity_acceptance/altruism/optimism、\n"
     "  ornate/lyrical/classical/somber；值都是 [-0.5, 0.5] 的漂移。\n"
-    "- long_term_desires：数组（可为空），元素 {type, name, description, subtopics}；\n"
+    "- long_term_desires：数组（可为空），元素 "
+    "{type, name, description, subtopics, linked_values}；\n"
     "  仅当某主题反复出现且未满足时提出，type 只能用 exploration 或 interaction；\n"
-    "  subtopics 是源话题下的子主题池（供后续欲望取种子）。"
+    "  subtopics 是源话题下的子主题池（供后续欲望取种子）；\n"
+    "  linked_values 是数组，只能从 attitude_to_human、ai_identity_acceptance、"
+    "altruism、optimism 中选择，可为空。"
 )
 
 
@@ -171,15 +174,26 @@ def _validate_candidate(c: Any) -> None:
         )
     name = candidate.get("name")
     description = candidate.get("description")
-    if not isinstance(name, str) or not name:
+    if not isinstance(name, str) or not name.strip():
         raise ValueError("长期欲望候选缺 name 或非空字符串")
-    if not isinstance(description, str) or not description:
+    if not isinstance(description, str) or not description.strip():
         raise ValueError("长期欲望候选缺 description 或非空字符串")
     subtopics = candidate.get("subtopics")
     if not isinstance(subtopics, list) or not all(
         isinstance(s, str) for s in cast(list[Any], subtopics)
     ):
         raise ValueError("长期欲望候选 subtopics 应是字符串数组")
+    linked_values = candidate.get("linked_values")
+    if not isinstance(linked_values, list) or not all(
+        isinstance(value, str) for value in cast(list[Any], linked_values)
+    ):
+        raise ValueError("长期欲望候选 linked_values 应是字符串数组")
+    unknown_values = set(cast(list[str], linked_values)) - _VALUES_KEYS
+    if unknown_values:
+        raise ValueError(
+            f"长期欲望候选 linked_values 含未知维度 "
+            f"{sorted(unknown_values)!r}"
+        )
 
 
 def _parse_reflection(raw: str) -> dict[str, Any]:
@@ -238,7 +252,11 @@ def _parse_reflection(raw: str) -> dict[str, Any]:
             # （长期欲望是增量，核心 story/becoming/性格/三观不受影响）。
             _logger.warning("反思长期欲望候选非法，已跳过：%r", c)
             continue
-        valid_candidates.append(cast(dict[str, Any], c))
+        candidate = cast(dict[str, Any], c)
+        candidate["linked_values"] = list(dict.fromkeys(
+            cast(list[str], candidate["linked_values"])
+        ))
+        valid_candidates.append(candidate)
     return {
         "story": story,
         "becoming": becoming,
@@ -260,7 +278,7 @@ def _to_long_term(candidate: dict[str, Any], now: float) -> LongTermDesire:
         strength=_LONG_TERM_INIT_STRENGTH,
         progress=0.0,
         subtopics=list(candidate["subtopics"]),
-        linked_values=[],
+        linked_values=list(candidate["linked_values"]),
     )
 
 
@@ -273,6 +291,7 @@ class ReflectionPlan:
     aesthetic: Aesthetic
     narrative: SelfNarrative
     long_term_desires: tuple[LongTermDesire, ...]
+    long_term_snapshot: LongTermSnapshot
     story: str
     story_is_new: bool
 
@@ -373,11 +392,13 @@ class Reflection:
             updated_at=now,
         )
 
-        # 4. 长期欲望候选只在计划阶段构造，实际写入仍在调用方事务内完成。
-        remaining = self._config.long_term_capacity - len(desire_state.long_term)
-        long_term_desires = tuple(
+        # 4. 容量/名称/embedding 去重都在事务外完成；事务内仅校验快照并写入。
+        candidates = tuple(
             _to_long_term(candidate, now)
-            for candidate in parsed["long_term_desires"][:max(0, remaining)]
+            for candidate in parsed["long_term_desires"]
+        )
+        long_term_desires, long_term_snapshot = (
+            await self._desire_facade.prepare_long_term_candidates(candidates)
         )
 
         return ReflectionPlan(
@@ -386,6 +407,7 @@ class Reflection:
             aesthetic=new_aesthetic,
             narrative=new_narrative,
             long_term_desires=long_term_desires,
+            long_term_snapshot=long_term_snapshot,
             story=new_story,
             story_is_new=story_is_new,
         )
@@ -396,8 +418,9 @@ class Reflection:
         await self._store.upsert_values(plan.values)
         await self._store.upsert_aesthetic(plan.aesthetic)
         await self._store.upsert_narrative(plan.narrative)
-        for desire in plan.long_term_desires:
-            await self._desire_facade.add_long_term(desire)
+        await self._desire_facade.add_prepared_long_terms_in_transaction(
+            plan.long_term_desires, plan.long_term_snapshot
+        )
         await self._desire_facade.pressure_creation(_CREATION_REFLECTION_DELTA)
         return ReflectionOutcome(story=plan.story, story_is_new=plan.story_is_new)
 

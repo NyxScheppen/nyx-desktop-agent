@@ -56,6 +56,14 @@ afterEach(() => {
 });
 
 describe("useSSE", () => {
+  it("有限但超出 Date 范围的时间戳被拒绝", () => {
+    const dispatch = vi.fn();
+    renderHook(() => useSSE(dispatch));
+    act(() => FakeEventSource.instances[0].emit("speak", JSON.stringify({
+      event_id: "huge", correlation_id: "huge", timestamp: 1e308, content: "bad",
+    })));
+    expect(dispatch).not.toHaveBeenCalled();
+  });
   it("挂载即 new EventSource(/api/events)，初始 connecting", () => {
     const dispatch = vi.fn();
     const { result } = renderHook(() => useSSE(dispatch));

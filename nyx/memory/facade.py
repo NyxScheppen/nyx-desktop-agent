@@ -5,7 +5,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from nyx.config import MemoryConfig
 from nyx.enums import EventType, MemoryEdgeKind, MemoryKind, MemoryType
@@ -631,6 +631,84 @@ class MemoryFacade:
         """
         memory = _new_memory(content, MemoryKind.READING, summary, MemoryType.LONG_TERM)
         await self._persist_memory(memory, correlation_id)
+
+    async def remember_browsing(
+        self, page_id: str, lease_token: str, content: str, summary: str,
+        topics: list[str],
+    ) -> Memory:
+        """Commit a fixed-id memory and event only under a live page claim."""
+        memory = await self._store.get(page_id)
+        if memory is None:
+            memory = _new_memory(
+                content, MemoryKind.BROWSING, summary, MemoryType.LONG_TERM,
+                topics=topics,
+            )
+            memory.id = page_id
+            if self._embed is not None:
+                try:
+                    memory.embedding = await self._embed(content)
+                except Exception:
+                    self._logger.exception(
+                        "浏览记忆 embedding 失败 page_id=%s", page_id
+                    )
+        event = internal_event(
+            EventType.MEMORY_CREATED, {"memory_id": page_id}, page_id
+        )
+        event.id = str(uuid5(NAMESPACE_URL, "nyx:browsing-memory:" + page_id))
+        created = False
+        async with self._store.db.transaction():
+            cursor = await self._store.db.conn.execute(
+                "SELECT 1 FROM browsing_page WHERE id=? AND status='integrating' "
+                "AND lease_token=? AND lease_until>? "
+                "AND integrated_content IS NOT NULL",
+                (page_id, lease_token, time.time()),
+            )
+            if await cursor.fetchone() is None:
+                raise ValueError("state_conflict")
+            existing = await self._store.get(page_id)
+            if existing is None:
+                await self._store.add(memory)
+                created = True
+            else:
+                if existing.kind is not MemoryKind.BROWSING:
+                    raise ValueError("state_conflict")
+                memory = existing
+            announce = not await self._bus.is_durable(event.id)
+            if announce:
+                await self._bus.append_in_transaction(event)
+        if announce:
+            await self._bus.announce_committed(event)
+        if created:
+            try:
+                candidates: list[PersistSemanticHit] = []
+                if memory.embedding is not None:
+                    memories = await self._store.list_memories()
+                    by_id = {item.id: item for item in memories if item.id != page_id}
+                    candidates = self._persist_semantic_candidates(
+                        memory.embedding, AnnIndex.build(list(by_id.values())), by_id
+                    )
+                await self._build_edges(memory, candidates, time.time(), page_id)
+                await self._detect_contradiction(memory, candidates, page_id)
+                await self._decay_and_evict(time.time())
+            except Exception:
+                self._logger.exception("浏览记忆图旁路失败 page_id=%s", page_id)
+        return memory
+
+    async def forget_browsing(self, page_id: str) -> None:
+        """Delete only browsing memory; its checkpoint cascades atomically."""
+        async with self._store.db.transaction():
+            memory = await self._store.get(page_id)
+            if memory is None:
+                raise ValueError("not_found")
+            if memory.kind is not MemoryKind.BROWSING:
+                raise ValueError("state_conflict")
+            await self._store.delete_many([page_id])
+
+    async def forget_all_browsing(self) -> None:
+        """Keep non-browsing memories and shared event/chat audit records."""
+        async with self._store.db.transaction():
+            memories = await self._store.list_memories(kind=MemoryKind.BROWSING)
+            await self._store.delete_many([memory.id for memory in memories])
 
     async def record_no_answer(self, question: str, correlation_id: str) -> None:
         """用户未回答尼克斯的提问：落一条确定性的 SHORT_TERM 记忆（无 LLM）。

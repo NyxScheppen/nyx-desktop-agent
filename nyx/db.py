@@ -504,6 +504,56 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        22,
+        [
+            """CREATE TABLE browsing_session (
+                id TEXT PRIMARY KEY,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                current_navigation_id TEXT,
+                current_page_id TEXT REFERENCES browsing_page(id) ON DELETE SET NULL
+            )""",
+            "CREATE UNIQUE INDEX ux_browsing_one_active_session "
+            "ON browsing_session((1)) WHERE ended_at IS NULL",
+            """CREATE TABLE browsing_page (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES browsing_session(id)
+                    ON DELETE CASCADE,
+                navigation_id TEXT NOT NULL,
+                last_capture_seq INTEGER NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1,
+                url TEXT NOT NULL,
+                canonical_url TEXT NOT NULL,
+                origin TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content_text TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                focus_entries TEXT NOT NULL DEFAULT '[]',
+                integrated_content TEXT,
+                integrated_summary TEXT,
+                integrated_topics TEXT,
+                capture_source TEXT NOT NULL,
+                truncated INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                captured_at REAL NOT NULL,
+                frozen_at REAL,
+                outputs_finalized INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                available_at REAL NOT NULL DEFAULT 0.0,
+                lease_owner TEXT,
+                lease_token TEXT,
+                lease_until REAL,
+                raw_retained_until REAL,
+                memory_id TEXT REFERENCES memory(id) ON DELETE CASCADE,
+                last_error TEXT,
+                UNIQUE(session_id, canonical_url, content_hash)
+            )""",
+            "CREATE INDEX idx_browsing_page_ready "
+            "ON browsing_page(status, outputs_finalized, available_at)",
+        ],
+    ),
 ]
 
 

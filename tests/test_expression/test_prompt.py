@@ -1,6 +1,8 @@
 # pyright: reportPrivateUsage=false
 from datetime import datetime
 
+import pytest
+
 from nyx.enums import (
     ActivityType,
     DesireType,
@@ -308,8 +310,8 @@ def test_describe_local_time_day_night_boundaries() -> None:
 
 def test_describe_elapsed_reunion_boundaries_and_clock_rollback() -> None:
     assert describe_elapsed(0.0, 299.0) == ("4分钟59秒", None)
-    assert describe_elapsed(0.0, 300.0) == ("5分钟", "用户离开了一会儿")
-    assert describe_elapsed(0.0, 1799.0)[1] == "用户离开了一会儿"
+    assert describe_elapsed(0.0, 300.0) == ("5分钟", "用户有一会儿没有和你说话了")
+    assert describe_elapsed(0.0, 1799.0)[1] == "用户有一会儿没有和你说话了"
     assert describe_elapsed(0.0, 1800.0) == ("30分钟", "已经有一阵子没有说话了")
     assert describe_elapsed(0.0, 7200.0) == ("2小时", "用户已经很久没有和你说话了")
     assert describe_elapsed(0.0, 7199.0)[1] == "已经有一阵子没有说话了"
@@ -385,3 +387,55 @@ def test_build_system_prompt_places_temporal_context_after_state() -> None:
     )
     assert result.index("[当前状态]") < result.index("[时间与重逢上下文]")
     assert result.index("[时间与重逢上下文]") < result.index("[当前欲望]")
+
+
+def test_old_return_is_not_described_as_just_returned() -> None:
+    now = _local_timestamp("2026-09-17T12:00:00")
+    block = build_temporal_block(now, None, {"presence": "online"}, {
+        "returned_at": now - 3600, "away_duration_seconds": 600,
+    })
+    assert "刚刚回来" not in block
+    assert "1小时" in block
+
+
+def test_return_context_is_not_rendered_for_away_user() -> None:
+    now = _local_timestamp("2026-09-17T12:00:00")
+    block = build_temporal_block(now, None, {"presence": "away"}, {
+        "returned_at": now - 600, "away_duration_seconds": 600,
+    })
+    assert "回来" not in block
+
+
+@pytest.mark.parametrize("timestamp", [float("nan"), float("inf"), 1e308])
+def test_corrupt_anchor_does_not_break_current_time(timestamp: float) -> None:
+    now = _local_timestamp("2026-09-17T12:00:00")
+    anchor = (
+        Message(role="user", content="old", timestamp=timestamp),
+        Message(role="nyx", content="reply", timestamp=timestamp),
+    )
+    block = build_temporal_block(now, anchor, {"window_title": "x" * 10_000}, None)
+    assert "当前：2026-09-17" in block
+    assert "上一次" not in block
+
+
+@pytest.mark.parametrize("duration", [float("nan"), float("inf"), -1.0, 1e308])
+def test_invalid_return_duration_is_omitted(duration: float) -> None:
+    now = _local_timestamp("2026-09-17T12:00:00")
+    block = build_temporal_block(now, None, {"presence": "online"}, {
+        "returned_at": now, "away_duration_seconds": duration,
+    })
+    assert "运行时观察" not in block
+    assert "当前：2026-09-17" in block
+
+
+def test_future_anchor_and_return_are_not_misrepresented_as_today() -> None:
+    now = _local_timestamp("2026-09-17T12:00:00")
+    anchor = (
+        Message(role="user", content="old", timestamp=now + 3600),
+        Message(role="nyx", content="reply", timestamp=now + 3601),
+    )
+    block = build_temporal_block(now, anchor, {"presence": "online"}, {
+        "returned_at": now + 3600, "away_duration_seconds": 600,
+    })
+    assert "上一次" not in block
+    assert "刚刚回来" not in block

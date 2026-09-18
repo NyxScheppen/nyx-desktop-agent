@@ -102,6 +102,7 @@ class ExpressionFacade:
                 tools=tools,
                 knowledge_boundary=knowledge_boundary,
                 register_question=self.register_question,
+                finish_return=self._finish_return_claim,
             )
         )
 
@@ -111,6 +112,8 @@ class ExpressionFacade:
         kind: InteractionKind,
         source_id: str,
         correlation_id: str,
+        *,
+        claimed_return: dict[str, float] | None = None,
     ) -> str:
         """Persist a question attempt and its canonical ASK atomically."""
         attempt_id = str(uuid4())
@@ -125,27 +128,51 @@ class ExpressionFacade:
             expires_at=now + self._config.ask_timeout,
         )
         event = _ask_event(text, attempt_id, correlation_id, kind)
-        await self._commit_attempt_event(attempt, event)
+        await self._commit_attempt_event(attempt, event, claimed_return)
         return attempt_id
 
     async def _commit_attempt_event(
-        self, attempt: InteractionAttempt, event: Event
+        self, attempt: InteractionAttempt, event: Event,
+        claimed_return: dict[str, float] | None = None,
     ) -> None:
         """Commit an interaction row and its event as one local transaction."""
-        await self._commit_attempt_events(attempt, [event])
+        await self._commit_attempt_events(attempt, [event], claimed_return)
 
     async def _commit_attempt_events(
-        self, attempt: InteractionAttempt, events: list[Event]
+        self, attempt: InteractionAttempt, events: list[Event],
+        claimed_return: dict[str, float] | None = None,
     ) -> None:
         """Commit one interaction attempt and all durable events atomically."""
         if self._interaction_store is None:
             for event in events:
-                await self._bus.publish(event)
+                try:
+                    await self._bus.publish(event)
+                except BaseException as error:
+                    if claimed_return is not None:
+                        try:
+                            committed = await self._bus.is_durable(event.id)
+                        except Exception:
+                            raise error
+                        if committed:
+                            self._finish_return_claim(claimed_return)
+                    raise
+            self._finish_return_claim(claimed_return)
             return
-        async with self._interaction_store.db.transaction():
-            await self._interaction_store.create(attempt)
-            for event in events:
-                await self._bus.append_in_transaction(event)
+        try:
+            async with self._interaction_store.db.transaction():
+                await self._interaction_store.create(attempt)
+                for event in events:
+                    await self._bus.append_in_transaction(event)
+        except BaseException as error:
+            if claimed_return is not None:
+                try:
+                    committed = await self._bus.is_durable(events[0].id)
+                except Exception:
+                    raise error
+                if committed:
+                    self._finish_return_claim(claimed_return)
+            raise
+        self._finish_return_claim(claimed_return)
         for event in events:
             await self._bus.announce_committed(event)
 
@@ -157,11 +184,30 @@ class ExpressionFacade:
         event_content: dict[str, object],
     ) -> str:
         """Atomically admit the reading question attempt, ASK, and reading event."""
+        return await self._commit_companion_question(
+            text, source_id, correlation_id, event_content,
+            InteractionKind.READING_QUESTION, EventType.READING_QUESTION,
+        )
+
+    async def commit_browsing_question(
+        self, text: str, source_id: str, correlation_id: str,
+        event_content: dict[str, object],
+    ) -> str:
+        """Atomically admit a browsing attempt, canonical ASK and display event."""
+        return await self._commit_companion_question(
+            text, source_id, correlation_id, event_content,
+            InteractionKind.BROWSING_QUESTION, EventType.BROWSING_QUESTION,
+        )
+
+    async def _commit_companion_question(
+        self, text: str, source_id: str, correlation_id: str,
+        event_content: dict[str, object], kind: InteractionKind, event_type: EventType,
+    ) -> str:
         attempt_id = str(uuid4())
         now = time.time()
         attempt = InteractionAttempt(
             id=attempt_id,
-            kind=InteractionKind.READING_QUESTION,
+            kind=kind,
             source_id=source_id,
             correlation_id=correlation_id,
             text=text,
@@ -169,13 +215,13 @@ class ExpressionFacade:
             expires_at=now + self._config.ask_timeout,
         )
         ask = _ask_event(
-            text, attempt_id, correlation_id, InteractionKind.READING_QUESTION
+            text, attempt_id, correlation_id, kind
         )
         reading = Event(
             id=str(uuid4()),
             timestamp=now,
             source=ask.source,
-            type=EventType.READING_QUESTION,
+            type=event_type,
             content={**event_content, "attempt_id": attempt_id},
             correlation_id=correlation_id,
         )
@@ -279,6 +325,7 @@ class ExpressionFacade:
         msg: str,
         correlation_id: str,
         reply_to: str | None = None,
+        browsing_context: dict[str, str] | None = None,
     ) -> None:
         """完整回复流程：跑 LangGraph 图，内部发布 think/speak/ask。"""
         claimed_return = self._claim_pending_return()
@@ -316,6 +363,7 @@ class ExpressionFacade:
                 "temporal_context": temporal_context,
                 "claimed_return": claimed_return,
                 "fallback": False,
+                "browsing_context": browsing_context,
             }
             result = await self._graph.ainvoke(initial)
             if result["mode"] is ContextMode.SLOW:
@@ -327,8 +375,6 @@ class ExpressionFacade:
                 self._ask_cid = correlation_id
             if result["fallback"]:
                 self._release_return_claim(claimed_return)
-            else:
-                self._finish_return_claim(claimed_return)
         except BaseException:
             self._release_return_claim(claimed_return)
             raise
@@ -387,14 +433,13 @@ class ExpressionFacade:
             )
             event.content["attempt_id"] = attempt_id
             event.content["desire_id"] = desire.id
-            await self._commit_attempt_event(attempt, event)
+            await self._commit_attempt_event(attempt, event, claimed_return)
             self._history.append(
                 Message(role="nyx", content=output.content, timestamp=time.time())
             )
             if self._interaction_store is None:
                 self._pending_chat_desire_id = desire.id
                 self._chat_at = time.time()
-            self._finish_return_claim(claimed_return)
             return True
         except BaseException:
             self._release_return_claim(claimed_return)
@@ -434,10 +479,19 @@ class ExpressionFacade:
             if text is None or text in self._mutter_seen:
                 self._release_return_claim(claimed_return)
                 return
+            event = internal_text_event(EventType.MUTTER, text, correlation_id)
+            try:
+                await self._bus.publish(event)
+            except BaseException as error:
+                try:
+                    committed = await self._bus.is_durable(event.id)
+                except Exception:
+                    raise error
+                if committed:
+                    self._mutter_seen.append(text)
+                    self._finish_return_claim(claimed_return)
+                raise
             self._mutter_seen.append(text)
-            await self._bus.publish(
-                internal_text_event(EventType.MUTTER, text, correlation_id)
-            )
             self._finish_return_claim(claimed_return)
         except BaseException:
             self._release_return_claim(claimed_return)

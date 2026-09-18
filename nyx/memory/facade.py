@@ -94,6 +94,13 @@ class PersistSemanticHit:
     cosine: float
 
 
+@dataclass
+class _PersistResult:
+    memory: Memory
+    candidates: list[PersistSemanticHit]
+    created: bool
+
+
 def _new_memory(
     content: str,
     kind: MemoryKind,
@@ -481,7 +488,8 @@ class MemoryFacade:
         await self._evaluator.evaluate(output)
         content, kind, topics, summary = _parse_scene(output.content)
         memory = _new_memory(content, kind, summary, MemoryType.SHORT_TERM, topics)
-        return await self._persist_memory(memory, reply_context["correlation_id"])
+        result = await self._persist_memory(memory, reply_context["correlation_id"])
+        return result.memory
 
     async def remember_activity(
         self, event: Event, consumer_id: str | None = None
@@ -496,25 +504,105 @@ class MemoryFacade:
         if consumer_id is not None:
             observation_snapshot = self._last_observation
             try:
+                if await self._bus.has_effect(event.id, consumer_id):
+                    return
+                prepared = await self._prepare_activity_memory(event)
                 async with self._store.db.transaction():
                     applied = await self._bus.try_mark_effect_in_transaction(
                         event.id, consumer_id
                     )
                     if not applied:
+                        self._last_observation = observation_snapshot
                         return
-                    await self._remember_activity(event, in_transaction=True)
+                    result = await self._remember_activity(
+                        event,
+                        in_transaction=True,
+                        defer_best_effort=True,
+                        prepared_memory=prepared,
+                    )
             except BaseException:
                 self._last_observation = observation_snapshot
                 raise
+            if result is not None and result.created:
+                try:
+                    await self._run_best_effort_tail(
+                        result.memory, result.candidates, event.correlation_id
+                    )
+                except Exception:
+                    self._logger.exception(
+                        "活动记忆旁路处理失败 correlation_id=%s",
+                        event.correlation_id,
+                    )
             return
         await self._remember_activity(event, in_transaction=False)
 
-    async def _remember_activity(
-        self, event: Event, *, in_transaction: bool
-    ) -> None:
+    async def _prepare_activity_memory(self, event: Event) -> Memory | None:
         if event.content.get("type") == "observe_user":
-            await self._sediment_observation(event, in_transaction=in_transaction)
-            return
+            result = event.content.get("result")
+            if not isinstance(result, dict):
+                return None
+            parsed = cast(dict[str, Any], result)
+            presence = parsed.get("presence")
+            if not isinstance(presence, str) or not presence:
+                return None
+            window_title = parsed.get("window_title")
+            if not isinstance(window_title, str):
+                window_title = ""
+            snapshot = (presence, window_title)
+            if snapshot == self._last_observation:
+                return None
+            self._last_observation = snapshot
+            content = f"用户状态：{presence}"
+            if window_title:
+                content += f"；正在浏览：{window_title}"
+            summary = str(parsed.get("summary") or f"用户（{presence}）")
+            memory = _new_memory(
+                content,
+                MemoryKind.USER_PROFILE,
+                summary,
+                MemoryType.LONG_TERM,
+                aspect=["presence", "window_title"],
+            )
+        else:
+            mapped = _activity_memory_fields(
+                event.content.get("type"), event.content.get("result")
+            )
+            if mapped is None:
+                return None
+            content, summary, activity_type = mapped
+            memory = _new_memory(
+                content,
+                MemoryKind.ACTIVITY,
+                summary,
+                MemoryType.SHORT_TERM,
+                [activity_type],
+            )
+        if self._embed is not None:
+            try:
+                memory.embedding = await self._embed(memory.content)
+            except Exception:
+                self._logger.exception("记忆 embedding 失败 memory_id=%s", memory.id)
+        return memory
+
+    async def _remember_activity(
+        self, event: Event, *, in_transaction: bool,
+        defer_best_effort: bool = False,
+        prepared_memory: Memory | None = None,
+    ) -> _PersistResult | None:
+        if prepared_memory is not None:
+            return await self._persist_memory(
+                prepared_memory,
+                event.correlation_id,
+                in_transaction=in_transaction,
+                defer_best_effort=defer_best_effort,
+                embedding_prepared=True,
+            )
+        if event.content.get("type") == "observe_user":
+            return await self._sediment_observation(
+                event,
+                in_transaction=in_transaction,
+                defer_best_effort=defer_best_effort,
+            )
         mapped = _activity_memory_fields(
             event.content.get("type"), event.content.get("result")
         )
@@ -528,13 +616,15 @@ class MemoryFacade:
             MemoryType.SHORT_TERM,
             [_activity_type],
         )
-        await self._persist_memory(
-            memory, event.correlation_id, in_transaction=in_transaction
+        return await self._persist_memory(
+            memory, event.correlation_id, in_transaction=in_transaction,
+            defer_best_effort=defer_best_effort,
         )
 
     async def _sediment_observation(
-        self, event: Event, *, in_transaction: bool = False
-    ) -> None:
+        self, event: Event, *, in_transaction: bool = False,
+        defer_best_effort: bool = False,
+    ) -> _PersistResult | None:
         """观察活动 → 用户画像沉淀：「presence/window_title 相对上次变化」才写。
 
         观察 result 非空 presence 视为有效观察（旧 shape 或缺 presence 跳过）；
@@ -542,28 +632,29 @@ class MemoryFacade:
         """
         result = event.content.get("result")
         if not isinstance(result, dict):
-            return
+            return None
         parsed = cast(dict[str, Any], result)
         presence = parsed.get("presence")
         if not isinstance(presence, str) or not presence:
-            return
+            return None
         window_title = parsed.get("window_title")
         if not isinstance(window_title, str):
             window_title = ""
         snapshot = (presence, window_title)
         if snapshot == self._last_observation:
-            return
+            return None
         self._last_observation = snapshot
         content = f"用户状态：{presence}"
         if window_title:
             content += f"；正在浏览：{window_title}"
         summary = str(parsed.get("summary") or f"用户（{presence}）")
-        await self._remember_user_profile(
+        return await self._remember_user_profile(
             content,
             summary,
             ["presence", "window_title"],
             event.correlation_id,
             in_transaction=in_transaction,
+            defer_best_effort=defer_best_effort,
         )
 
     async def remember_user_profile(
@@ -591,13 +682,17 @@ class MemoryFacade:
         correlation_id: str,
         *,
         in_transaction: bool,
-    ) -> None:
+        defer_best_effort: bool = False,
+    ) -> _PersistResult:
         memory = _new_memory(
             content, MemoryKind.USER_PROFILE, summary, MemoryType.LONG_TERM,
             aspect=aspects,
         )
-        await self._persist_memory(
-            memory, correlation_id, in_transaction=in_transaction
+        return await self._persist_memory(
+            memory,
+            correlation_id,
+            in_transaction=in_transaction,
+            defer_best_effort=defer_best_effort,
         )
 
     async def remember_knowledge(
@@ -725,8 +820,14 @@ class MemoryFacade:
         await self._persist_memory(memory, correlation_id)
 
     async def _persist_memory(
-        self, memory: Memory, correlation_id: str, *, in_transaction: bool = False
-    ) -> Memory:
+        self,
+        memory: Memory,
+        correlation_id: str,
+        *,
+        in_transaction: bool = False,
+        defer_best_effort: bool = False,
+        embedding_prepared: bool = False,
+    ) -> _PersistResult:
         """已构建 Memory 的共用入库尾段，带两层去重：
 
         1) 精确去重：content 完全相同（哈希命中）→ 合并强化旧记忆，不新建；
@@ -739,8 +840,12 @@ class MemoryFacade:
         existing = await self._store.find_by_content(memory.content, memory.kind)
         if existing is not None:
             await self._store.strengthen(existing.id, now)
-            return await self._persisted_or(existing)
-        if self._embed is not None and memory.embedding is None:
+            return _PersistResult(await self._persisted_or(existing), [], False)
+        if (
+            self._embed is not None
+            and memory.embedding is None
+            and not embedding_prepared
+        ):
             try:
                 memory.embedding = await self._embed(memory.content)
             except Exception:
@@ -779,16 +884,17 @@ class MemoryFacade:
                     and _semantic_dedup_compatible(memory, candidate.memory)
                 ):
                     await self._store.strengthen(candidate.memory.id, now)
-                    return await self._persisted_or(candidate.memory)
+                    return _PersistResult(
+                        await self._persisted_or(candidate.memory),
+                        dedup_candidates,
+                        False,
+                    )
             candidates = self._persist_semantic_candidates(
                 memory.embedding, index, by_id
             )
         await self._store.add(memory)
-        await self._build_edges(memory, candidates, now, correlation_id)
-        await self._detect_contradiction(
-            memory, candidates, correlation_id, in_transaction=in_transaction
-        )
-        await self._decay_and_evict(now)
+        if not defer_best_effort:
+            await self._run_best_effort_tail(memory, candidates, correlation_id)
         event = internal_event(
             EventType.MEMORY_CREATED, {"memory_id": memory.id}, correlation_id
         )
@@ -796,7 +902,18 @@ class MemoryFacade:
             await self._bus.append_in_transaction(event)
         else:
             await self._bus.publish(event)
-        return memory
+        return _PersistResult(memory, candidates, True)
+
+    async def _run_best_effort_tail(
+        self,
+        memory: Memory,
+        candidates: list[PersistSemanticHit],
+        correlation_id: str,
+    ) -> None:
+        now = time.time()
+        await self._build_edges(memory, candidates, now, correlation_id)
+        await self._detect_contradiction(memory, candidates, correlation_id)
+        await self._decay_and_evict(now)
 
     async def search(self, query: str) -> list[Memory]:
         return await self._retrieval.search(query)

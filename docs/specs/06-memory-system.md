@@ -411,7 +411,7 @@ Facade 规则：
   event/eval 记录。由 browsing Facade 的全量删除流程调用，流程重试必须能收尾没有 memory 的
   failed page/session。
 - `search(query)` 纯委托 `MemoryRetrieval.search(query)`，对表达层不暴露 `direct_limit` / `association_limit` 参数。
-- `remember_activity(event, consumer_id=None)` 是 `ACTIVITY_END` 的记忆消费者；RouteSpec 注册时传 `consumer_id="memory.activity_end"`，同一本地事务内写 `event_effect`、记忆状态和派生 `memory_created` / `reflection` 事件，重放时已应用则 no-op。普通直接调用不传 `consumer_id`，保留旧调用面。
+- `remember_activity(event, consumer_id=None)` 是 `ACTIVITY_END` 的记忆消费者；RouteSpec 注册时传 `consumer_id="memory.activity_end"`。durable 路径在同一本地事务内写 `event_effect`、记忆状态和 `memory_created` 事件，事务外才运行 embedding/关系边/矛盾检测/衰减等旁路；旁路失败不撤销已提交核心记忆，重放时已应用则 no-op。普通直接调用不传 `consumer_id`，保留旧调用面。
 - `record_recall(memory_id)` 只表示“进入慢通道 prompt 后被想起”：委托 store 加一；短期达阈值时发布 `memory_promoted`，长期不重复发布。升级和 `memory_promoted` 事件行在同一本地事务提交，commit 后再 `announce_committed`。
 - `export("json")` 输出 JSON 数组；`export("md")` 输出 Markdown；非法格式抛 `ValueError`；导出不包含 `Memory.sources`。
 - Facade 自己发布 `memory_created` / `memory_promoted` / `reflection` 事件，返回值只返回数据对象或 `None`，不返回 `Event` 给调用方发布。

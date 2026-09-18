@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：68
-- `pytest --collect-only -q`：1035 tests collected
-- 最近一次全量验证：`1033 passed, 2 skipped`
+- `pytest --collect-only -q`：1036 tests collected
+- 最近一次全量验证：`1034 passed, 2 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -37,7 +37,7 @@
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
 | API/运行时 | `tests/test_api/` | 6 | 组合根、REST、浏览 bridge/本机 guard/CORS/PNA/body 上限、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件、搜索、工具注册和网络抓取 |
-| 记忆 | `tests/test_memory/` | 6 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade |
+| 记忆 | `tests/test_memory/` | 6 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade、durable 活动记忆不持锁等待 embedding |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、满足、重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
 | 活动 | `tests/test_activity/` | 13 | 排期、活动生命周期、探索、观察、读书恢复 |

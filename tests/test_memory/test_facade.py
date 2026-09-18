@@ -1133,6 +1133,33 @@ async def test_remember_activity_replay_is_idempotent() -> None:
         await database.conn.close()
 
 
+async def test_durable_activity_memory_does_not_hold_db_lock_during_embedding() -> None:
+    store, bus, database = await _new_stack()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_embed(_: str) -> list[float]:
+        entered.set()
+        await release.wait()
+        return [1.0, 0.0]
+
+    facade = _make_facade(
+        store, bus, _FakeLlm(), _FakeEvaluator(), embed=slow_embed
+    )
+    event = _activity_event("reading", {"book": "某书", "note": "读后感"})
+    await bus.publish(event)
+    task = asyncio.create_task(facade.remember_activity(event, "memory.activity_end"))
+    browsing = BrowsingStore(database)
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        database.lock_timeout = 0.05
+        assert await asyncio.wait_for(browsing.recover_expired(1.0), timeout=0.5) == 0
+    finally:
+        release.set()
+        await asyncio.wait_for(task, timeout=2.0)
+        await database.close()
+
+
 async def test_remember_activity_rolls_back_when_created_event_append_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

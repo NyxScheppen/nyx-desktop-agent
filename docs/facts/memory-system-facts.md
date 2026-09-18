@@ -2,7 +2,7 @@
 
 > 本文件是给“无关代码但会碰到记忆事实”的快速摘要，例如表达慢通道、反思触发、读书/活动落记忆、前端 `Memory` 类型。完整记忆系统契约在 `docs/specs/06-memory-system.md`；修改 `nyx/memory/` 或记忆契约时必须先读完整 spec，并同步更新本摘要。
 
-## 浏览记忆接线（窗口浏览器尚未实现）
+## 浏览记忆接线
 
 - `remember_browsing(page_id, lease_token, content, summary, topics)` 写入 BROWSING 长期记忆，
   固定 memory id 为 page id；稳定 uuid5 事件与记忆同事务提交，并在事务内检查有效 claim。
@@ -10,7 +10,8 @@
   embedding 与图尾段是事务外 best-effort，不能撤销已提交核心记忆。
 - `forget_browsing()` / `forget_all_browsing()` 只删除浏览记忆与相关边；page FK 同事务级联。
   浏览 worker 分别持久化整合结果与记忆阶段，失败重试复用已有结果。
-- 已有后端 close→worker→长期记忆回归；原生 child 和浏览 UI 尚未实现，无法从窗口使用。
+- 后端 close→worker→长期记忆链路，以及 Windows 原生 child 和浏览 UI 已接线；跨平台打包
+  smoke 尚未完成，具体限制见 `docs/facts/browsing-system-facts.md`。
 
 ## 时间字段
 
@@ -32,7 +33,7 @@
 - `_persist_memory` 两层去重：先精确 content hash，再 bounded persist semantic candidates 内 top-1 cosine >= 0.95。新记忆有 embedding 时只读取一次旧记忆、构建一次 ANN index；同 kind 去重查询把 id 过滤放在候选上限之前，未命中时复用同一 index 取全局候选供语义建边和矛盾检测门控，不做无界全表余弦扫描或重复建索引。命中时强化并返回持久化旧记忆；未命中才新增、建边、做矛盾检测、衰减/淘汰、发布 `memory_created`。
 - `create_scene_memory` 返回最终持久化的 `Memory`：新建时返回新记忆；去重命中时返回旧记忆。
 - `remember_activity` / `remember_knowledge` / `remember_reading` 复用 `_persist_memory`，不要绕过统一去重尾段。
-- `memory.activity_end` durable consumer 调用 `remember_activity(event, consumer_id)`；同一 `(event_id, consumer_id)` 重放不会重复新增或 strengthen，活动记忆与派生 `memory_created` / `reflection` 事件行同事务提交。
+- `memory.activity_end` durable consumer 调用 `remember_activity(event, consumer_id)`；同一 `(event_id, consumer_id)` 重放不会重复新增或 strengthen。`event_effect`、活动记忆和 `memory_created` 同事务提交；embedding、关系边、矛盾检测和衰减在事务外 best-effort，避免阻塞共享数据库锁。
 
 ## 检索与前端
 

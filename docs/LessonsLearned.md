@@ -288,7 +288,15 @@ store 的校验必须先于等待状态/未读标记等副作用；只阻止消�
 **来源**：反思回填长期欲望 `linked_values` 的真实栈集成测试。
 **教训**：上层已经持有 `Database.transaction()` 时调用另一个 Facade，看似普通的方法可能再次开事务；即使简单绕过嵌套事务，也可能把 embedding 等线程/外部计算留在 SQLite 锁内。只用 fake Facade 的单元测试会同时掩盖这两类问题。
 **怎么做**：跨 Facade 的“外部计算 + 本地提交”拆成事务外预检计划和事务内确定性写入；计划携带足以检测准入条件变化的快照，冲突时整体回滚并重算。至少保留一条共享真实 `Database`、真实两个 Facade 的集成测试，并对事务中段失败做回滚注入。
+**补充验证**：活动记忆 durable consumer 在事务内调用 `_persist_memory`，会持锁等待本地 embedding，候选命中时还可能等待矛盾检测 LLM。受控内存库复现确认 embedding 等待期间浏览 `recover_expired()` 获取同一锁超时，计算完成后锁释放；报错模块不一定是持锁源头，不能靠增加锁超时掩盖。
 **影响的文件/决策**：`nyx/inner_life/reflection.py`、`nyx/desire/facade.py`、`tests/test_inner_life/test_inner_life_reflection.py`、07/08 契约。
+
+### 2026-09-18: durable 活动记忆只把核心提交放进事务
+
+**来源**：浏览 worker 报数据库锁等待超时；真实共享数据库复现活动记忆 embedding 持锁。
+**教训**：`event_effect`、记忆行和 `memory_created` 是可恢复核心；关系边、矛盾检测和衰减是可丢失的旁路，不能在核心事务中等待外部或耗时计算。
+**怎么做**：活动 durable consumer 先在事务外准备 embedding，再在事务内完成幂等 marker、记忆和核心事件；commit 后运行旁路，失败只记录日志，重放不重复核心写入。
+**影响的文件/决策**：`nyx/memory/facade.py`、06-memory-system、共享 SQLite 锁边界。
 
 ### 2026-09-18: 嵌入式网页登录不能等同于通用 OAuth 支持
 

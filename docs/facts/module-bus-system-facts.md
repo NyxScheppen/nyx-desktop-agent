@@ -2,7 +2,7 @@
 
 > 本文件是给“无关代码但会碰到模块通信、事件总线、组合根、DB 生命周期”的快速摘要。底层模块总线系统的唯一完整契约是 `docs/specs/04-module-bus-system.md`；本文件不复制完整 spec。修改 `nyx/events/`、`nyx/subscriptions.py`、`nyx/runtime.py`、`nyx/app_context.py`、`nyx/main.py`、事件相关 DB 表或跨模块副作用前，必须先读完整 spec，并同步更新本摘要。
 
-## 共同浏览接线（部分实现）
+## 共同浏览接线
 
 - schema 22 新增 browsing session/page、单活索引与 integration claim owner/token。
   组合根装配 BrowsingFacade，启动关闭旧会话并恢复 checkpoint；关停先 quiesce/drain 浏览任务。

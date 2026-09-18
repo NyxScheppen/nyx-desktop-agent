@@ -18,7 +18,7 @@
 
 - **前置依赖**：`01-types`、`03-llm`、`04-module-bus-system`、
   `06-memory-system`、`10-eval`、`11-expression`、`12-reading-system`
-- **计划实现文件**：`nyx/enums.py`、`nyx/types.py`、`nyx/db.py`、
+- **实现文件**：`nyx/enums.py`、`nyx/types.py`、`nyx/db.py`、
   `nyx/browsing/store.py`、`nyx/browsing/integration.py`、
   `nyx/browsing/companions.py`、`nyx/browsing/facade.py`、
   `nyx/api/routes.py`、`nyx/app_context.py`、`nyx/main.py`、`dev.py`、`start_nyx.bat`、
@@ -30,7 +30,7 @@
   `frontend/src/api/dispatch.ts`、`frontend/src/hooks/useSSE.ts`、
   `frontend/src/stores/chatStore.ts`、`frontend/src/types/api.ts`、`frontend/src/App.tsx`、
   `nyx/events/bus.py`
-- **计划测试文件**：`tests/test_browsing/`、`tests/test_api/test_browsing_api.py`、
+- **测试文件**：`tests/test_browsing/`、`tests/test_api/test_browsing_api.py`、
   `tests/test_memory/test_facade.py`、`tests/test_expression/test_expression_facade.py`、
   `frontend/tests/browser.test.tsx`、`frontend/tests/stores.test.ts`、
   `frontend/src-tauri/src/lib.rs` 内 Rust 单元测试
@@ -38,6 +38,14 @@
   [`WebviewBuilder`](https://docs.rs/tauri/latest/tauri/webview/struct.WebviewBuilder.html) /
   [`Webview`](https://docs.rs/tauri/latest/tauri/webview/struct.Webview.html) API；RFC 8252
   [第 8.12 节](https://www.rfc-editor.org/rfc/rfc8252#section-8.12) 对 embedded user-agent OAuth 的限制。
+
+### 当前实现状态
+
+本 spec 的后端 checkpoint、bridge、授权、陪伴、逐页整合、浏览记忆、Windows child WebView、
+BrowserView、聊天页面上下文、OAuth mock IdP、开发配对和 sidecar 生命周期已经落地；对应当前
+源码事实见 [`../facts/browsing-system-facts.md`](../facts/browsing-system-facts.md)。尚未完成的
+不是产品契约，而是跨平台 child/popup fail-closed 和各平台打包 REST/SSE Origin/CORS/PNA
+smoke 验收。服务器端正文 fallback 仍按本契约保持禁用，不应在 facts 或 design 中写成已实现。
 
 ## 用户故事
 
@@ -48,6 +56,17 @@
 > 并把每次成功采集的页面整合成自己的长期记忆。
 
 ## 验收标准
+
+> 下列复选框仍是跨平台发布的最终验收门槛。当前源码已经满足的部分以“已接线”记录，
+> 不把 Windows smoke 误写成所有平台都完成。
+
+| 范围 | 当前状态 |
+|---|---|
+| Python session/page/checkpoint、授权、陪伴、整合、浏览记忆 | 已接线并有后端/API 回归测试 |
+| Windows child WebView、ACL 拒绝、隐私门、OAuth mock IdP、BrowserView | 已接线并完成公开页面/本地 mock smoke |
+| 开发配对、sidecar、bridge token、历史分页、浏览上下文失效 fallback | 已接线 |
+| 非 Windows child/popup fail-closed | 尚未完成平台实现，当前固定拒绝 |
+| 各平台打包版 REST/SSE Origin、CORS、PNA smoke | 尚未完成，不能宣称发布验收通过 |
 
 - [ ] 中间内容区提供单标签页浏览视图；左侧聊天、地址栏和导航控件属于受信任 UI，
   远程网页只能占据其专用原生 child WebView 矩形。

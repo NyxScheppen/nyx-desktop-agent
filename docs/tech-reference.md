@@ -25,7 +25,7 @@
 | 评估 | [`10-eval.md`](specs/10-eval.md) | — | `nyx/eval/` |
 | 表达 | [`11-expression.md`](specs/11-expression.md) | [`expression-system-facts.md`](facts/expression-system-facts.md) | `nyx/expression/`、`nyx/reading/companions.py`、`prompts/knowledge-boundary.md` |
 | 阅读 | [`12-reading-system.md`](specs/12-reading-system.md)；表达侧读书交互归 11 | [`reading-system-facts.md`](facts/reading-system-facts.md) | `nyx/reading/` |
-| 共同浏览（Windows 主链路） | [`13-browsing-system.md`](specs/13-browsing-system.md) | [`browsing-system-facts.md`](facts/browsing-system-facts.md) | `nyx/browsing/`、`nyx/api/routes.py`、`frontend/src-tauri/src/lib.rs`、`frontend/src/components/browsing/BrowserView.tsx`、`frontend/src/stores/browserStore.ts`、`dev.py`；Windows popup/sidecar 已接线，非 Windows 与跨平台打包验收待完成 |
+| 网页共读/共同浏览（Windows 主链路） | [`13-browsing-system.md`](specs/13-browsing-system.md) | [`browsing-system-facts.md`](facts/browsing-system-facts.md) | `nyx/browsing/`、`nyx/api/routes.py`、`frontend/src-tauri/src/lib.rs`、`frontend/src/components/browsing/BrowserView.tsx`、`frontend/src/stores/browserStore.ts`、`dev.py`；Windows popup/sidecar 已接线，非 Windows 与跨平台打包验收待完成 |
 
 ### 时间感知与离开归来导航
 

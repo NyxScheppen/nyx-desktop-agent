@@ -9,6 +9,13 @@
 - **前置依赖**：01-types（`DesireType` / `DesireStatus` / `DesireValue` / `ShortTermDesire` / `LongTermDesire` / `Goal` / `DesireState` / `GoalAction` / `Event` / `EventType` / `Source`）、02-config（`DesireConfig`：`peak_threshold` / `retry_limit` / `long_term_capacity` / `short_term_capacity` / `value_decay`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、欲望表、`desire_generation_attempt` / `desire_eval_applied`）、10-eval（`Evaluator`）
 - **本 spec 带来的连锁改动（ripple，已同步）**：01-types 给 `LongTermDesire` 加 `type` 字段、`DesireValue` 加 `updated_at` 字段；04-module-bus-system 给 `long_term_desire` 加 `type` 列、`desire_value` 加 `updated_at` 列；tech-ref 补 `desire/value.py` 与 `desire/store.py`；本轮为 `DesireConfig` 增加 `short_term_capacity`，并为 `long_term_desire.name_normalized` 建唯一索引。
 
+### 当前实现状态
+
+压力、短期欲望全生命周期、长期欲望候选、`linked_values` 回填、`strength` 衰减/满足回写、
+活动消费和 durable tick 幂等均已实现；当前仍未完成的是把长期欲望的 `linked_values` 与
+`strength` 接入长期排序、短期 prompt 或活动决策。这两个消费入口保留在
+`docs/design/V3-roadmap.md`，不要把“字段已落库”误写成“决策已使用”。
+
 ## 用户故事
 
 > 作为 Nyx 系统的开发者，我想要 `DesireFacade` 把欲望全周期（观察加压、达峰生成、满足/淘汰回写）统一成一个门面，以便 `activity` 只调 `get_pending` 消费、`inner_life`/`activity` 只靠事件回写满足、仪表盘只调 `get_all` 快照；值机制纯函数收口在 `value.py`，领域与恢复状态 CRUD 收口在 `store.py`，全周期编排在 `lifecycle.py`，所有 LLM 调用和事件发布走可注入的 `llm` / `bus`。
@@ -96,7 +103,7 @@
 - **去重（decision，可推翻）**：`run_eval` 生成后、入队前两步判定——① **话题锚点优先**：新欲望 `goal.topic` 非 None 时，与 `list_pending()` 各待消费欲望的 `goal.topic` 精确相等即判重复丢弃（确定性、零误判、不依赖 embedding）；② **余弦兜底**：`goal.topic` 缺失（None）或未命中时，用注入的 `EmbedFn`（`memory/retrieval` 的 `build_embed`，与 memory/evaluator 共享同一实例）算新欲望 `description` 的 embedding，与 `list_pending()` 各 description embedding 做 `cosine` 比对，任一 `>= _DEDUP_SIM_THRESHOLD(0.9)` 判语义重复丢弃（不入队、不发布，value 已在重置步骤归零）。`embed=None`（向量层禁用）或 embed 抛异常降级为不去重（best-effort 旁路，同矛盾检测）
 - **主题种子（decision，可推翻）**：`_pick_topic_seed` 按「没做过 / 新鲜度最低」从对应类型长期欲望的子主题池取——先查记忆（注入的 `list_memories` 回调，组合根接 `memory.list_memories`）做 substring 匹配，无命中记忆（= 没做过）最优先，都做过取新鲜度最低者；空池返回 `None`。种子拼进 `_build_desire_prompt` 给 LLM 作生成上下文；**探索欲的 `goal.topic` 由 seed 确定性钉死**——解析后 `goal is not None` 时强制 `goal.topic = seed`（无 seed 则清空为 `None`），杜绝 LLM 漂移主题（如名字撞车）；`goal=None` 时不合成 goal（保持单次满足语义），自由探索由 09-activity 的 topic 非空条件与 `should_explore` 限速规则兜底；**互动欲的 seed 同样承载进 `goal.topic`**——`goal` 常为 None，seed 存在时构造 `Goal(action=OBSERVE, count=1, topic=seed)`（count=1 保持「搭话一次即满足」语义不变），使互动欲也能按话题锚点去重
 - **`strength` 语义**：`ShortTermDesire.strength` = 达峰时的 `value`（生成前保存，值重置后仍保留），供展示/排序
-- **长期进度回写（decision，可推翻）**：满足时回写**最相关**的长期欲望 `progress += 0.1`（夹 `[0,1]`）、`strength -= 0.02`（夹 `[0,1]`）。`_most_relevant_long_term` 按 `goal.topic` 双向 substring 命中 `subtopics` 者优先，无 topic 或都不命中退回第一个 `type` 匹配；无 `type` 匹配返回 `None`（不回写）。**MVP 局限**：长期 `strength` 递减结果未被消费（prompt 读的是 `ShortTermDesire.strength`），接线 deferred（见 V3-roadmap）
+- **长期进度回写（decision，可推翻）**：满足时回写**最相关**的长期欲望 `progress += 0.1`（夹 `[0,1]`）、`strength -= 0.02`（夹 `[0,1]`）。`_most_relevant_long_term` 按 `goal.topic` 双向 substring 命中 `subtopics` 者优先，无 topic 或都不命中退回第一个 `type` 匹配；无 `type` 匹配返回 `None`（不回写）。当前 `strength` 递减结果仍未被排序、prompt 或活动决策消费；`linked_values` 也只完成候选回填和持久化，两个消费入口 deferred（见 V3-roadmap）。
 - **长期欲望初始化（seed）**：3 个初始集来自 canon §4（硬编码），归组合根启动时 `insert_long_term`（表空才 seed）；四类型 `desire_value` 同样由组合根用 `default_value(t)` 初始化并覆盖 `updated_at=now`。07 只提供 store 原语，不提供 seed 方法；`long_term_capacity` 由 `add_long_term` 消费——长期欲望运行时新增有两个入口（08-inner-life 反思 + 09-activity 探索终局），统一走 `add_long_term` 归口去重 + 容量检查（满不新增，不淘汰）
 - **反思批量接入**：08-inner-life 在事务外调用 `prepare_long_term_candidates`，把获准候选与 `LongTermSnapshot` 放入 `ReflectionPlan`；事务内调用 `add_prepared_long_terms_in_transaction`。该两阶段入口复用 `add_long_term` 的准入规则，不新增 Repository/Service 层；`LongTermSnapshot` 只是 `facade.py` 内公开类型别名，不进入共享 `types.py`。
 - **五态流转（V2，`ACTIVE`/`SUPPRESSED` 纳入）**：`PENDING → ACTIVE` 由 `claim_for_activity` 原子领取；`ACTIVE → SATISFIED | EXPIRED`（满足时从 ACTIVE 释放并结算）；`ACTIVE → SUPPRESSED`；`SUPPRESSED → PENDING`（`run_eval` 里类型仍可表达即释放回队列）。`SUPPRESSED` 可逆、非终态；续做路径恢复同一记录时由活动完成结算，不重复领取。

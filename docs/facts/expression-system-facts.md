@@ -4,7 +4,7 @@
 > 它不是完整契约；需要修改表达系统时，先读本文，再回到唯一完整契约
 > [`../specs/11-expression.md`](../specs/11-expression.md)，最后以 `nyx/` 源码为准。
 
-## 共同浏览表达接线（窗口浏览器尚未实现）
+## 共同浏览表达接线
 
 - `commit_browsing_question()` 将 BROWSING_QUESTION attempt、canonical ASK 和浏览展示事件
   原子提交，复用 reading question 的现有协议。
@@ -13,8 +13,9 @@
 - API 受理后才失效的页面上下文，由 runtime 发布固定 fallback SPEAK，不调用 reply/LLM。
 - BrowsingCompanion 校验 none/mutter/question/association 判别联合；合法联想最多发布三条
   去重记忆的 summary-or-content 500 字符 snippet，并写入表达进程内历史。eval 失败只记日志。
-- 前端三类浏览事件进入左侧聊天并可历史回填，浏览 canonical ASK 被抑制避免重复。
-  原生 child 与 BrowserView 尚未实现，ChatInput 还未附带浏览 page id。
+- 前端三类浏览事件进入左侧聊天并可历史回填，浏览 canonical ASK 被抑制避免重复；原生
+  child、BrowserView 和 ChatInput 的当前 page id 接线已由浏览前端实现。跨平台打包验收状态
+  以 `docs/facts/browsing-system-facts.md` 为准。
 
 ## 模块与职责
 

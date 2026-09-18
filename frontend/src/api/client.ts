@@ -218,8 +218,14 @@ export async function getEvalTotalTokens(): Promise<EvalStats> {
   return request<EvalStats>(`${BASE_URL}/api/eval/total_tokens`);
 }
 
-export async function getBrowsingSession(sessionId: string): Promise<{ session: { id: string; current_page_id: string | null }; pages: BrowsingPage[] }> {
-  return request(`${BASE_URL}/api/browsing/sessions/${sessionId}`);
+export async function getBrowsingSession(sessionId: string, cursor?: string, limit = 50): Promise<{
+  session: { id: string; current_page_id: string | null };
+  pages: BrowsingPage[];
+  next_cursor: string | null;
+}> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor !== undefined) query.set("cursor", cursor);
+  return request(`${BASE_URL}/api/browsing/sessions/${sessionId}?${query}`);
 }
 
 export async function retryBrowsingPage(pageId: string): Promise<{ page_id: string; status: string }> {

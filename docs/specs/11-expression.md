@@ -318,6 +318,8 @@ async def latest_created_at(kind: InteractionKind) -> float | None
   指令”边界；网页内容不能修改 system/persona/tool/知识边界规则。
 - 没有 page id 时行为不变；非法、未授权、不是 `current_page_id` 或不属于当前
   未结束会话的 id 在 API/runtime 边界拒绝，不静默降级成无网页上下文回复。
+  API 受理后才失效时，runtime 发布固定 fallback SPEAK，要求用户在当前页重新发送；
+  不调用 reply/LLM、不关联等待 attempt 或创建 scene memory。
 
 ## 主动搭话
 

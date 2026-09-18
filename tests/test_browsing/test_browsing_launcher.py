@@ -141,6 +141,14 @@ def test_local_https_mock_idp_create_popup(tmp_path: Path) -> None:
 
         def do_GET(self) -> None:
             paths.append(self.path)
+            if self.path in ("/redirect-hop", "/unsafe-redirect"):
+                self.send_response(302)
+                target = "/callback" if self.path == "/redirect-hop" else (
+                    f"https://localhost:{server.server_port}/unsafe-target"
+                )
+                self.send_header("Location", target)
+                self.end_headers()
+                return
             pages = {
                 "/opener": """<title>Remote fixture</title><script>
                   window.addEventListener('message', e => {
@@ -150,7 +158,7 @@ def test_local_https_mock_idp_create_popup(tmp_path: Path) -> None:
                 "/authorize": """<script>
                   document.cookie='nyxFixture=one; Secure; SameSite=Lax; path=/';
                   window.open('/nested');
-                  location.href='/callback';
+                  location.href='/redirect-hop';
                 </script>""",
                 "/callback": """<title>Untrusted title</title><script>
                   (async()=>{
@@ -194,9 +202,10 @@ def test_local_https_mock_idp_create_popup(tmp_path: Path) -> None:
             cwd=dev.ROOT / "frontend" / "src-tauri", env=fixture_env,
             capture_output=True, text=True, timeout=180,
         )
-        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.returncode == 0, result.stdout + result.stderr + repr(paths)
         assert paths.count("/authorize") == 1 and "/callback" in paths
         assert "/nested" not in paths
+        assert "/unsafe-target" not in paths
         assert not any(path.endswith("/pages") for path in paths)
     finally:
         server.shutdown()

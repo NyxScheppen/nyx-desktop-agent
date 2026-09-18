@@ -103,6 +103,65 @@ it("ordinary browser development never embeds or invokes a native browser", asyn
   expect(invoke).not.toHaveBeenCalled();
 });
 
+it("history loads on demand without installing a polling timer", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ session: { id: "s" }, pages: [], next_cursor: null }),
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const interval = vi.spyOn(globalThis, "setInterval");
+  vi.mocked(invoke).mockResolvedValue(undefined);
+
+  render(<BrowserView active />);
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "浏览记录" })); });
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(interval).not.toHaveBeenCalled();
+  interval.mockRestore();
+});
+
+it("history appends cursor pages and prevents overlapping requests", async () => {
+  let finish!: (response: unknown) => void;
+  const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, status: 200,
+    json: async () => ({ session: { id: "s" }, pages: [{ id: "p1", title: "First", url: "https://example.com/1", status: "open" }], next_cursor: "p1" }),
+  }).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  vi.stubGlobal("fetch", fetchMock);
+  vi.mocked(invoke).mockResolvedValue(undefined);
+  render(<BrowserView active />);
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "浏览记录" })); });
+  fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
+  fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
+
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(fetchMock.mock.calls[1][0]).toBe("/api/browsing/sessions/s?limit=50&cursor=p1");
+  await act(async () => { finish({ ok: true, status: 200,
+    json: async () => ({ session: { id: "s" }, pages: [{ id: "p2", title: "Second", url: "https://example.com/2", status: "failed" }], next_cursor: null }),
+  }); });
+  expect(screen.getByText("First")).toBeInTheDocument();
+  expect(screen.getByText("Second")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "加载更多" })).not.toBeInTheDocument();
+});
+
+it("deleting all history clears rows and cursor without reading the deleted session", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, status: 200,
+    json: async () => ({ session: { id: "s" }, pages: [{ id: "p1", title: "First", url: "https://example.com/1", status: "remembered" }], next_cursor: "p1" }),
+  }).mockResolvedValue({ ok: true, status: 204 });
+  vi.stubGlobal("fetch", fetchMock);
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  vi.mocked(invoke).mockResolvedValue(undefined);
+  useBrowserStore.setState({ closed: true, pageId: null });
+  render(<BrowserView active />);
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "浏览记录" })); });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "删除浏览 checkpoint 与 Nyx 浏览记忆" })); });
+
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(screen.queryByText("First")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "加载更多" })).not.toBeInTheDocument();
+  expect(screen.getByText("暂无浏览记录")).toBeInTheDocument();
+  vi.mocked(window.confirm).mockRestore();
+});
+
 it("activating browsing expands a narrow native window before creating a child", async () => {
   vi.mocked(isTauri).mockReturnValue(true);
   const setSize = vi.fn().mockResolvedValue(undefined);

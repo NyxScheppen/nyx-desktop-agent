@@ -300,11 +300,13 @@ class BrowsingFacade:
     async def get_session(
         self,
         session_id: str,
-    ) -> tuple[BrowsingSession, list[BrowsingPage]]:
-        return (
-            await self._store.get_session(session_id),
-            await self._store.list_pages(session_id),
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> tuple[BrowsingSession, list[BrowsingPage], str | None]:
+        pages, next_cursor = await self._store.list_pages(
+            session_id, limit=limit, cursor=cursor
         )
+        return await self._store.get_session(session_id), pages, next_cursor
 
     async def get_page(self, page_id: str) -> BrowsingPage:
         return await self._store.get_page(page_id)

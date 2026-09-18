@@ -10,6 +10,7 @@
   原子提交，复用 reading question 的现有协议。
 - `reply()` 接受可选 browsing_context；runtime 只取当前已授权 page，工具/回复 prompt 均
   把网页标为不可信材料。REST chat 接受可选 browsing_page_id，非法当前页拒绝受理。
+- API 受理后才失效的页面上下文，由 runtime 发布固定 fallback SPEAK，不调用 reply/LLM。
 - BrowsingCompanion 校验 none/mutter/question/association 判别联合；合法联想最多发布三条
   去重记忆的 summary-or-content 500 字符 snippet，并写入表达进程内历史。eval 失败只记日志。
 - 前端三类浏览事件进入左侧聊天并可历史回填，浏览 canonical ASK 被抑制避免重复。

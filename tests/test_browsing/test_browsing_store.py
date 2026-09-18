@@ -5,7 +5,7 @@ import pytest
 
 from nyx.browsing.store import BrowsingStore
 from nyx.db import connect
-from nyx.types import BrowserPageSnapshot
+from nyx.types import BrowserPageSnapshot, BrowsingPage
 
 
 @pytest.fixture
@@ -96,6 +96,33 @@ async def test_navigation_start_clears_old_context(store: BrowsingStore) -> None
     assert (await store.get_session(session.id)).current_page_id is None
     with pytest.raises(ValueError, match="stale_navigation"):
         await store.upsert_capture(session.id, snapshot("a", 2), 5.0)
+
+
+async def test_pages_use_stable_cursor_without_reading_the_whole_session(
+    store: BrowsingStore,
+) -> None:
+    session = await store.get_or_create_active_session(1.0)
+    pages: list[BrowsingPage] = []
+    for index in range(3):
+        navigation = f"nav-{index}"
+        await store.begin_navigation(session.id, navigation, 2.0 + index * 2)
+        capture = snapshot(navigation)
+        capture.raw_url = f"https://example.com/article-{index}"
+        capture.text = f"Some visible text {index}"
+        page, _ = await store.upsert_capture(
+            session.id, capture, 3.0 + index * 2
+        )
+        pages.append(page)
+
+    first, cursor = await store.list_pages(session.id, limit=2)
+    second, final_cursor = await store.list_pages(
+        session.id, limit=2, cursor=cursor
+    )
+
+    assert [page.id for page in first] == [pages[0].id, pages[1].id]
+    assert cursor == pages[1].id
+    assert [page.id for page in second] == [pages[2].id]
+    assert final_cursor is None
 
 
 async def test_focus_retry_and_new_action(store: BrowsingStore) -> None:

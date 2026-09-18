@@ -2,6 +2,7 @@
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, Mock
 
@@ -21,6 +22,7 @@ from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval
 from nyx.memory.store import MemoryStore
+from nyx.runtime import on_user_message, root_event
 from nyx.types import BrowserPageSnapshot, BrowsingPage, LLMOutput, Memory
 
 
@@ -75,7 +77,7 @@ async def test_tainted_origin_requires_exact_probe_and_explicit_grant(
     await facade.revoke_origin(session.id, "https://example.com")
     await asyncio.sleep(0.05)
     assert await facade.get_prompt_context(page.id) is None
-    _, pages = await facade.get_session(session.id)
+    _, pages, _ = await facade.get_session(session.id)
     assert pages[0].status == "pending"
 
 
@@ -92,6 +94,44 @@ async def test_checkpoint_precedes_companion_and_retry_does_not_repeat(
     assert context is not None and context["text"] == "Text"
     companion = cast(Mock, facade._companion)
     companion.dispatch.assert_awaited_once()
+
+
+@pytest.mark.parametrize("invalidate", ["navigation", "revoke", "close"])
+async def test_chat_page_invalidated_before_consumption_is_not_normal_reply(
+    facade: BrowsingFacade, invalidate: str,
+) -> None:
+    session = await facade.start_session()
+    await facade.navigation_started(session.id, "nav")
+    page = await facade.capture_page(session.id, snapshot("nav"))
+    assert await facade.get_prompt_context(page.id) is not None
+    event = root_event(
+        EventType.USER_MESSAGE,
+        {"message": "Summarize this page", "browsing_page_id": page.id},
+    )
+    bus = EventBus(facade._store._db)
+    await bus.publish(event)
+    if invalidate == "navigation":
+        await facade.navigation_started(session.id, "next")
+    elif invalidate == "revoke":
+        await facade.revoke_origin(session.id, page.origin)
+    else:
+        await facade.close_session(session.id)
+    reply = AsyncMock()
+    app = SimpleNamespace(
+        bus=bus, browsing=facade, record_user_online=AsyncMock(),
+        activity=SimpleNamespace(get_current=AsyncMock(return_value=None)),
+        expression=SimpleNamespace(reply=reply),
+    )
+
+    await on_user_message(app, event)
+    await on_user_message(app, event)
+
+    reply.assert_not_awaited()
+    replies = await bus.list_events(
+        correlation_id=event.correlation_id, event_type=EventType.SPEAK
+    )
+    assert len(replies) == 1
+    assert replies[0].content["response_kind"] == "fallback"
 
 
 async def test_stale_sensitive_capture_does_not_revoke_current_page(

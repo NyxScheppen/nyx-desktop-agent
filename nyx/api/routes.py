@@ -691,10 +691,20 @@ def build_app(
         return {"closed": True}
 
     @fast.get("/api/browsing/sessions/{session_id}")
-    async def browser_session(session_id: str) -> dict[str, Any]:
+    async def browser_session(
+        session_id: str,
+        limit: int = Query(50, ge=1, le=100),
+        cursor: str | None = Query(None, min_length=1, max_length=128),
+    ) -> dict[str, Any]:
         try:
-            session, pages = await browsing_facade().get_session(session_id)
-            return {"session": session, "pages": pages}
+            session, pages, next_cursor = await browsing_facade().get_session(
+                session_id, limit, cursor
+            )
+            return {
+                "session": session,
+                "pages": pages,
+                "next_cursor": next_cursor,
+            }
         except ValueError as error:
             raise browsing_error(str(error)) from error
 

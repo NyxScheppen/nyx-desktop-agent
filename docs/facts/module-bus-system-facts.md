@@ -8,6 +8,8 @@
   组合根装配 BrowsingFacade，启动关闭旧会话并恢复 checkpoint；关停先 quiesce/drain 浏览任务。
 - 三类 `BROWSING_*` 是无 consumer 的持久化展示事件。浏览提问 attempt、ASK 和展示事件
   同事务提交；浏览记忆与固定 id 的 MEMORY_CREATED 在验证有效 lease 的事务内提交。
+- USER_MESSAGE 消费时浏览上下文失效会发布固定 fallback SPEAK，不进入无网页材料的普通 reply；
+  事件提交失败继续总线重试，终局已存在时重放短路。
 - `list_events_for_correlation()` 由 EventBus 过滤已提交事件，取最近 100 条后按时间/id 升序
   返回；BrowsingStore 不读取 event_log。浏览页面冻结后先结束 companion 再 CAS 封口。
 - 本机 API 已有精确 Host/Origin/媒介 guard、CORS/OPTIONS/PNA 与 bridge 2 MiB 流式上限。

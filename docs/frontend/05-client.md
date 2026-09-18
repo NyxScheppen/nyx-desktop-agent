@@ -37,7 +37,7 @@ async function showNoteToNyx(noteId: string): Promise<Annotation | null>        
 async function checkChapterBoundary(bookId: string, nyxPosition: number): Promise<{ is_boundary: boolean; book_finished: boolean }>  // POST /api/notes/check-chapter-boundary
 
 // ---- 共同浏览（13-browsing-system；不接触 Rust-only bridge）----
-async function getBrowsingSession(sessionId: string): Promise<{ session: { id: string; current_page_id: string | null }; pages: BrowsingPage[] }> // GET /api/browsing/sessions/{id}
+async function getBrowsingSession(sessionId: string, cursor?: string, limit = 50): Promise<{ session: { id: string; current_page_id: string | null }; pages: BrowsingPage[]; next_cursor: string | null }> // GET /api/browsing/sessions/{id}?limit=&cursor=
 async function retryBrowsingPage(pageId: string): Promise<{ page_id: string; status: string }> // POST /api/browsing/pages/{id}/retry，{}
 async function deleteBrowsingPage(pageId: string): Promise<void> // DELETE /api/browsing/pages/{id}，204
 async function deleteBrowsingHistory(): Promise<void> // DELETE /api/browsing/history，204

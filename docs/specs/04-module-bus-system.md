@@ -593,6 +593,8 @@ Nyx 窗口内显示而获得 localhost API 权限。打包版可信 UI 的 REST/
 - `POST /api/chat`：只有 durable admission 成功才返回 `{event_id}`；失败返回 503/429。
   请求体可按 `13-browsing-system` 增加可选 `browsing_page_id`；该字段只提供当前页只读
   prompt 上下文，不改变 `USER_MESSAGE` 的 durable admission 和 correlation 语义。
+  API 校验后、消费前浏览上下文失效时，runtime 发布同 correlation 的固定失败 SPEAK，
+  不调用无网页材料的普通 reply；发布失败仍重试，终局已提交时重放短路。
 - `POST /api/observe`：请求体为 `{presence, window_title, idle_seconds, sampled_at}`；两项
   数值必须是严格的有限非负数（不接受字符串和布尔值），idle_seconds <= sampled_at，
   sampled_at 为客户端开始采样时的 epoch 秒，不晚于后端接收时间；标题最多 512 字符。

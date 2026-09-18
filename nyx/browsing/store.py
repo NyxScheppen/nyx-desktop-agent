@@ -199,14 +199,40 @@ class BrowsingStore:
         async with self._db.lock:
             return dict(await self._row("browsing_page", page_id))
 
-    async def list_pages(self, session_id: str) -> list[BrowsingPage]:
+    async def list_pages(
+        self, session_id: str, limit: int = 50, cursor: str | None = None
+    ) -> tuple[list[BrowsingPage], str | None]:
+        if not 1 <= limit <= 100:
+            raise ValueError("invalid_payload")
         async with self._db.lock:
-            cursor = await self._db.conn.execute(
-                "SELECT * FROM browsing_page WHERE session_id=? "
-                "ORDER BY captured_at, id",
-                (session_id,),
+            params: list[str | float | int] = [session_id]
+            after = ""
+            if cursor is not None:
+                cursor_query = await self._db.conn.execute(
+                    "SELECT captured_at,id FROM browsing_page "
+                    "WHERE id=? AND session_id=?",
+                    (cursor, session_id),
+                )
+                cursor_row = await cursor_query.fetchone()
+                if cursor_row is None:
+                    raise ValueError("invalid_payload")
+                after = (
+                    "AND (captured_at>? OR (captured_at=? AND id>?)) "
+                )
+                params.extend(
+                    [cursor_row["captured_at"], cursor_row["captured_at"], cursor]
+                )
+            params.append(limit + 1)
+            columns = ",".join(BrowsingPage.__dataclass_fields__)
+            query = await self._db.conn.execute(
+                f"SELECT {columns} FROM browsing_page WHERE session_id=? "
+                f"{after}ORDER BY captured_at, id LIMIT ?",
+                params,
             )
-            return [_page(row) for row in await cursor.fetchall()]
+            rows = list(await query.fetchall())
+            pages = [_page(row) for row in rows[:limit]]
+            next_cursor = pages[-1].id if len(rows) > limit else None
+            return pages, next_cursor
 
     async def get_or_create_active_session(self, now: float) -> BrowsingSession:
         async with self._db.transaction():

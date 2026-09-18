@@ -75,10 +75,10 @@ describe("api/client", () => {
   });
 
   it("browsing session lookup only uses the public metadata endpoint", async () => {
-    const mock = vi.fn().mockResolvedValue(jsonResponse({ session: { id: "s" }, pages: [] }));
+    const mock = vi.fn().mockResolvedValue(jsonResponse({ session: { id: "s" }, pages: [], next_cursor: null }));
     vi.stubGlobal("fetch", mock);
-    expect((await getBrowsingSession("s")).pages).toEqual([]);
-    expect(mock).toHaveBeenCalledWith("/api/browsing/sessions/s", undefined);
+    expect((await getBrowsingSession("s", "page-1")).pages).toEqual([]);
+    expect(mock).toHaveBeenCalledWith("/api/browsing/sessions/s?limit=50&cursor=page-1", undefined);
   });
 
   it("browsing retry is an empty JSON POST", async () => {

@@ -517,6 +517,27 @@ mock 测试无法证明 DOM 提取器满足非表单契约。
 **怎么做**：同一 crate 的 native spike 和重编译串行执行，测试退出后再修改或重链。
 **影响的文件/决策**：Windows Rust 验收流程。
 
+### 2026-09-18: API 校验不冻结异步消费所依赖的页面上下文
+
+**来源**：浏览消息通过 API 后导航、撤权或关闭会话，runtime 静默转普通回复。
+**教训**：入队前合法的可变上下文，到 handler 消费时可能已经失效；把 None 传给普通 reply 会改变用户问题的含义。
+**怎么做**：消费时重新验证，失效则提交同 correlation 的明确 fallback 展示事件并结束；重放复用已有事件，不调用 LLM。
+**影响的文件/决策**：`nyx/runtime.py`、总线/表达/浏览契约。
+
+### 2026-09-18: 调度出原生回调不等于可以在 UI 线程等待网络
+
+**来源**：OAuth popup 同步 handler 用 block_on 等待 DNS/HTTP，冻结桌面主线程。
+**教训**：Wry 的 new-window 调度解决 COM 重入，不解决主线程阻塞；NavigationStarting 没有 deferral。WebResourceRequested 的过滤器又与 Wry IPC 共享，只安装 DOCUMENT filter 不足以限定收到的事件。
+**怎么做**：DOCUMENT 请求取得 deferral 后异步预检，COM 对象留在 UI 线程，以 request id 接回结果；检查实际 ResourceContext。用本地 IdP 验证重定向逐跳阻断、IPC 可用及慢预检时 UI 响应。
+**影响的文件/决策**：`frontend/src-tauri/src/lib.rs`、Windows mock IdP spike。
+
+### 2026-09-18: 元数据面板也必须限制读取规模
+
+**来源**：浏览记录五秒全量 fetchall 与渲染，长期会话积累最多 10,000 条 checkpoint。
+**教训**：不返回正文仍会造成持续全量转换/传输/渲染，固定定时器还会叠加慢请求；全量删除后重查旧会话会留下过期列表。
+**怎么做**：仅投影公开字段，用稳定 cursor 有界读取，按需刷新并限制一个在途请求；全量删除成功直接清空列表、cursor 和旧 session id。
+**影响的文件/决策**：BrowsingStore、REST、BrowserView 和分页契约。
+
 ## 模板（条目格式）
 
 ```

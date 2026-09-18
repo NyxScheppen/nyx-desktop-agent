@@ -216,6 +216,11 @@ fn browser_url(input: &str) -> Result<tauri::Url, BrowserCommandError> {
 async fn preflight(input: &str) -> Result<tauri::Url, BrowserCommandError> {
     #[cfg(all(test, target_os = "windows"))]
     if let Ok(origin) = std::env::var("NYX_OAUTH_FIXTURE_ORIGIN") {
+        browsing_tests::POPUP_PREFLIGHTS
+            .lock()
+            .unwrap()
+            .push(input.to_owned());
+        tokio::time::sleep(Duration::from_millis(300)).await;
         if let Ok(url) = tauri::Url::parse(input) {
             if url.scheme() == "https"
                 && url.host_str() == Some("127.0.0.1")
@@ -846,14 +851,21 @@ async fn install_native_guards(
     webview: &tauri::Webview,
 ) -> Result<(), BrowserCommandError> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2Settings4, COREWEBVIEW2_PERMISSION_STATE_DENY,
+        ICoreWebView2Settings4, ICoreWebView2_2, COREWEBVIEW2_PERMISSION_STATE_DENY,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
     };
     use webview2_com::{
         HistoryChangedEventHandler, NavigationCompletedEventHandler,
         NavigationStartingEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
-        WindowCloseRequestedEventHandler,
+        WebResourceRequestedEventHandler, WindowCloseRequestedEventHandler,
     };
-    use windows::core::{Interface, BOOL};
+    use windows::core::{w, Interface, BOOL, PWSTR};
+
+    // COM request/deferral objects stay on their owning UI thread.
+    thread_local! {
+        static POPUP_REQUESTS: std::cell::RefCell<HashMap<String, Box<dyn FnOnce(bool)>>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
 
     let app = app.clone();
     let popup = webview.label() == "browsing-auth";
@@ -883,6 +895,107 @@ async fn install_native_guards(
                         &mut token,
                     )?;
                     if popup {
+                        let popup_id = app
+                            .state::<BrowserHost>()
+                            .state
+                            .lock()
+                            .unwrap()
+                            .popup_id
+                            .clone()
+                            .ok_or_else(|| {
+                                windows::core::Error::from_hresult(windows::core::HRESULT(
+                                    0x80004005u32 as i32,
+                                ))
+                            })?;
+                        let request_app = app.clone();
+                        let request_id = popup_id.clone();
+                        let opener_origin = tauri::Url::parse(
+                            &app.state::<BrowserHost>().state.lock().unwrap().url,
+                        )
+                        .map_err(|_| {
+                            windows::core::Error::from_hresult(windows::core::HRESULT(
+                                0x80004005u32 as i32,
+                            ))
+                        })?
+                        .origin()
+                        .ascii_serialization();
+                        let revoked = std::sync::Arc::new(tokio::sync::OnceCell::new());
+                        let environment = core.cast::<ICoreWebView2_2>()?.Environment()?;
+                        core.AddWebResourceRequestedFilter(
+                            w!("*"),
+                            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
+                        )?;
+                        core.add_WebResourceRequested(
+                            &WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
+                                let Some(args) = args else {
+                                    return Ok(());
+                                };
+                                // Filters are shared with Wry's IPC handler; only gate documents.
+                                let mut context = Default::default();
+                                args.ResourceContext(&mut context)?;
+                                if context != COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT {
+                                    return Ok(());
+                                }
+                                let request = args.Request()?;
+                                let mut uri = PWSTR::null();
+                                request.Uri(&mut uri)?;
+                                let target = uri.to_string()?;
+                                windows::Win32::System::Com::CoTaskMemFree(Some(uri.0.cast()));
+                                let deferral = args.GetDeferral()?;
+                                let check_app = request_app.clone();
+                                let check_id = request_id.clone();
+                                let opener_origin = opener_origin.clone();
+                                let revoked = revoked.clone();
+                                let response_environment = environment.clone();
+                                let request_id = uuid::Uuid::new_v4().to_string();
+                                let finish_app = check_app.clone();
+                                POPUP_REQUESTS.with(|requests| {
+                                    requests.borrow_mut().insert(
+                                        request_id.clone(),
+                                        Box::new(move |allowed| {
+                                            if !allowed {
+                                                if let Ok(response) = response_environment
+                                                    .CreateWebResourceResponse(
+                                                        None,
+                                                        403,
+                                                        w!("Forbidden"),
+                                                        w!("Content-Type: text/plain"),
+                                                    )
+                                                {
+                                                    let _ = args.SetResponse(&response);
+                                                }
+                                            }
+                                            let _ = deferral.Complete();
+                                            if !allowed {
+                                                tauri::async_runtime::spawn(finish_auth_popup(
+                                                    finish_app,
+                                                    check_id,
+                                                    "unsupported",
+                                                ));
+                                            }
+                                        }),
+                                    );
+                                });
+                                tauri::async_runtime::spawn(async move {
+                                    let ready = revoked
+                                        .get_or_init(|| async {
+                                            revoke(&check_app, &opener_origin, None).await.is_ok()
+                                        })
+                                        .await;
+                                    let allowed = *ready && preflight(&target).await.is_ok();
+                                    let _ = check_app.run_on_main_thread(move || {
+                                        let finish = POPUP_REQUESTS.with(|requests| {
+                                            requests.borrow_mut().remove(&request_id)
+                                        });
+                                        if let Some(finish) = finish {
+                                            finish(allowed);
+                                        }
+                                    });
+                                });
+                                Ok(())
+                            })),
+                            &mut token,
+                        )?;
                         let close_app = app.clone();
                         core.add_WindowCloseRequested(
                             &WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
@@ -1071,17 +1184,6 @@ fn open_auth_popup(
         }
     };
     let result = (|| -> Result<tauri::WebviewWindow, BrowserCommandError> {
-        let origin = {
-            let host = app.state::<BrowserHost>();
-            let state = host.state.lock().unwrap();
-            tauri::Url::parse(&state.url)
-                .map_err(|_| browser_error("not_ready"))?
-                .origin()
-                .ascii_serialization()
-        };
-        // Wry invokes this on its deferred main-thread message, not inside the COM callback.
-        tauri::async_runtime::block_on(revoke(app, &origin, None))?;
-        let url = tauri::async_runtime::block_on(preflight(url.as_str()))?;
         let title_origin = std::sync::Arc::new(Mutex::new(url.origin().ascii_serialization()));
         let nav_title = title_origin.clone();
         let title = title_origin.clone();
@@ -1105,7 +1207,12 @@ fn open_auth_popup(
                 return true;
             }
             initial_blank.store(false, std::sync::atomic::Ordering::SeqCst);
-            if tauri::async_runtime::block_on(preflight(target.as_str())).is_err() {
+            if target.scheme() != "https"
+                || target.host_str().is_none()
+                || !target.username().is_empty()
+                || target.password().is_some()
+                || target.as_str().chars().count() > 8192
+            {
                 tauri::async_runtime::spawn(finish_auth_popup(
                     nav_app.clone(),
                     nav_id.clone(),
@@ -1974,6 +2081,9 @@ mod browsing_tests {
     use super::*;
 
     #[cfg(target_os = "windows")]
+    pub(super) static POPUP_PREFLIGHTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    #[cfg(target_os = "windows")]
     fn blank_context() -> tauri::Context<tauri::Wry> {
         let mut context = tauri::generate_context!();
         context.config_mut().app.windows[0].url =
@@ -2087,6 +2197,21 @@ mod browsing_tests {
             .take_popup_permit(now + Duration::from_millis(1))
             .is_err());
         assert!(state.popup_id.is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn oauth_popup_callbacks_do_not_wait_for_network() {
+        let source = include_str!("lib.rs");
+        let popup = source
+            .split("fn open_auth_popup(")
+            .nth(1)
+            .unwrap()
+            .split("#[cfg(not(target_os = \"windows\"))]")
+            .next()
+            .unwrap();
+        assert!(!popup.contains("block_on(preflight"));
+        assert!(!popup.contains("block_on(revoke"));
     }
 
     #[cfg(target_os = "windows")]
@@ -2238,6 +2363,13 @@ mod browsing_tests {
                     app.state::<BrowserHost>().state.lock().unwrap().granted.insert(origin.clone());
                     app.state::<BrowserHost>().state.lock().unwrap().popup_permit = Some(Instant::now()+Duration::from_secs(10));
                     webview.eval("window.open('/authorize','fixtureLogin')").unwrap();
+                    let until = Instant::now() + Duration::from_secs(5);
+                    while POPUP_PREFLIGHTS.lock().unwrap().is_empty() {
+                        if Instant::now() > until { return Err(browser_error("load_failed")); }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    tokio::time::timeout(Duration::from_millis(200), eval_json(&webview, "({ok:true,alive:true})"))
+                        .await.expect("UI froze during popup preflight")?;
                     let until = Instant::now() + Duration::from_secs(15);
                     let facts = loop {
                         let facts = eval_json(&webview, "({ok:true,result:window.result||null,cookie:document.cookie})").await?;
@@ -2246,6 +2378,9 @@ mod browsing_tests {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     };
                     assert_eq!(facts["result"]["denied"], true);
+                    for path in ["/authorize", "/redirect-hop", "/callback"] {
+                        assert!(POPUP_PREFLIGHTS.lock().unwrap().iter().any(|url| url.ends_with(path)), "missing connection-before preflight: {path}");
+                    }
                     assert_eq!(app.state::<std::sync::atomic::AtomicUsize>().load(std::sync::atomic::Ordering::SeqCst),0);
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     assert!(app.get_webview_window("browsing-auth").is_none(), "callback must close native window");
@@ -2269,6 +2404,18 @@ mod browsing_tests {
                     assert!(app.get_webview_window("browsing-auth").is_some(),"old timer must not close new popup");
                     let id=app.state::<BrowserHost>().state.lock().unwrap().popup_id.clone().unwrap();
                     finish_auth_popup(app.clone(),id,"cancelled").await;
+                    app.state::<BrowserHost>().state.lock().unwrap().popup_permit=Some(Instant::now()+Duration::from_secs(10));
+                    webview.eval("window.open('/unsafe-redirect','unsafeFixture')").unwrap();
+                    let until=Instant::now()+Duration::from_secs(10);
+                    while !POPUP_PREFLIGHTS.lock().unwrap().iter().any(|url| url.ends_with("/unsafe-redirect")) {
+                        if Instant::now()>until { return Err(browser_error("popup_unsupported")); }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    loop {
+                        if app.state::<BrowserHost>().state.lock().unwrap().popup_id.is_none() { break; }
+                        if Instant::now()>until { return Err(browser_error("popup_unsupported")); }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
                     webview.close().unwrap();
                     Ok::<_,BrowserCommandError>(facts)
                 }.await;

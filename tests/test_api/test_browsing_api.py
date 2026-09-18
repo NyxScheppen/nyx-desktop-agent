@@ -79,6 +79,12 @@ async def test_bridge_bootstrap_and_capture_are_authenticated(
     state = (await client.get(f"/api/browsing/sessions/{session}")).json()
     assert state["pages"][0]["url"] == "https://example.com/article"
     assert "content_text" not in state["pages"][0]
+    assert state["next_cursor"] is None
+
+    invalid_limit = await client.get(
+        f"/api/browsing/sessions/{session}", params={"limit": 0}
+    )
+    assert invalid_limit.status_code == 422
 
 
 async def test_remote_origins_host_and_media_are_rejected(client: AsyncClient) -> None:
@@ -92,6 +98,39 @@ async def test_remote_origins_host_and_media_are_rejected(client: AsyncClient) -
         "/api/chat", content="message=Hi", headers={"Content-Type": "text/plain"}
     )
     assert response.status_code == 415
+
+
+async def test_history_cursor_pages_and_invalid_cursor(client: AsyncClient) -> None:
+    boot = (await client.post(
+        "/api/browsing/bridge/sessions", json={},
+        headers={"Authorization": "Bearer secret"},
+    )).json()
+    session = boot["session"]["id"]
+    headers = {"Authorization": "Bearer " + boot["bridge_token"]}
+    for index in range(3):
+        await client.post(
+            f"/api/browsing/bridge/sessions/{session}/navigations",
+            json={"navigation_id": str(index)}, headers=headers,
+        )
+        await client.post(
+            f"/api/browsing/bridge/sessions/{session}/pages",
+            json={
+                "session_id": session, "navigation_id": str(index),
+                "capture_seq": 1, "raw_url": f"https://example.com/{index}",
+                "title": str(index), "visible_text": "Text",
+                "auth_tainted": False, "truncated": False,
+            }, headers=headers,
+        )
+    path = f"/api/browsing/sessions/{session}"
+    first = (await client.get(path, params={"limit": 2})).json()
+    second = (await client.get(
+        path, params={"limit": 2, "cursor": first["next_cursor"]}
+    )).json()
+
+    assert [page["title"] for page in first["pages"]] == ["0", "1"]
+    assert [page["title"] for page in second["pages"]] == ["2"]
+    assert second["next_cursor"] is None
+    assert (await client.get(path, params={"cursor": "missing"})).status_code == 422
 
 
 async def test_trusted_packaged_cors_and_pna(client: AsyncClient) -> None:

@@ -20,6 +20,9 @@
   同一事务提交。记忆阶段重试不重复 LLM 整合。eval/embedding/图旁路不撤销核心提交。
 - REST bridge 使用配对 secret/session token；UI 查询不返回正文或 lease/token。
   本机 API 已有精确 Host/Origin、CORS/PNA、路由声明媒介检查及 bridge 2 MiB 前置上限。
+- 历史 metadata 默认 50、最多 100 条，page id cursor 按 captured_at/id 续页；查询仅投影
+  公开字段。BrowserView 打开/显式刷新/操作完成读取第一页，加载更多续页，无周期全量轮询。
+- 消费用户消息时若页面上下文已失效，runtime 发布明确 fallback SPEAK，不调用普通 reply。
 - 前端三类浏览输出进入聊天且可历史回填，抑制重复 canonical ASK；REST/SSE 开发版
   共用 Vite proxy，打包构建共用固定 loopback 地址。
 - `frontend/src-tauri/src/lib.rs` 固定 Tauri 2.11.5/Wry 0.55.1，Windows 直接安装 WebView2
@@ -38,7 +41,9 @@
 - Windows 原生 ACL/password spike 已通过，公开 Example Domain 桌面 smoke 已验证 child
   正确占位、视图切换、持久 checkpoint 和本地 SSE；使用内存 DB/mock LLM，未使用用户数据库或真实 LLM。
 - Windows popup 使用 Wry deferral 下的 Create；一次许可 10 秒、窗口最长 120 秒，共享远程
-  profile/opener，不指向 main。mock IdP 验证 cookie、postMessage、ACL、嵌套拒绝和原生关闭。
+  profile/opener，不指向 main。DOCUMENT WebResourceRequested deferral 在每跳连接前异步
+  revoke/预检，COM 对象留在 UI 线程；实际 ResourceContext 检查避免误拦 Wry IPC。
+  mock IdP 验证 cookie、postMessage、ACL、嵌套拒绝、原生关闭、302 后续预检、私网拒绝与慢预检时 UI 响应。
   认证期间撤授权/清上下文；关闭不推断成功。WebView2 WindowCloseRequested 关闭顶层窗口。
 - `dev.py --build-sidecar` 冻结公开资源和默认 embedding 模型，不包含 `.env`；Tauri 生产启动
   相邻后端并私发 secret，以 stdin EOF 通知退出，35 秒超时回收自己进程；90 秒启动期限。

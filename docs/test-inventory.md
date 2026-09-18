@@ -7,21 +7,22 @@
 ## 当前快照
 
 - 后端测试文件：68
-- `pytest --collect-only -q`：1029 tests collected
-- 最近一次全量验证：`1027 passed, 2 skipped`
+- `pytest --collect-only -q`：1035 tests collected
+- 最近一次全量验证：`1033 passed, 2 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：`18 files / 289 passed`。
+- 最近一次前端全量验证：`18 files / 292 passed`。
 - 浏览转录回归：`stores.test.ts` 校验 browsing 输出去重、canonical ASK 抑制、选区及记忆引用。
 - 浏览后端回归另覆盖 focus/summary 容量上限、eval 失败保持联想、记忆阶段复用 checkpoint
   和 heartbeat 数据库失败回收子任务、迟到认证页不撤销当前页；打包地址回归验证开发/生产共用 REST/SSE base。
 - 浏览事件查询拒绝空类型集合及 1..100 之外的 limit，排序/过滤由总线接口拥有。
 - 桌面 launcher 回归：后端/Tauri 共享 256-bit secret；8000 已占用时不创建进程；打包资源定位和 sidecar 构建产物；可选 Windows 本地 HTTPS mock IdP spike（临时 CA，默认跳过）。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
-- Rust 单元：6 条；三个 opt-in 桌面 spike，分别覆盖 ACL/DOM、本地 HTTPS mock IdP 与窄窗口激活浏览扩宽（不创建 child）。
+- Rust 单元：7 条；三个 opt-in 桌面 spike，分别覆盖 ACL/DOM、本地 HTTPS mock IdP 与窄窗口激活浏览扩宽（不创建 child）；mock IdP 另覆盖 302 逐跳预检、私网拒绝与慢预检时 UI 响应。
 - Windows 桌面 spike：ACL/DOM、HTTPS mock IdP、静态 main 窄窗扩宽均单独通过；真实远程 app/core/plugin invoke 拒绝、公开正文、非表单正文/选区及 password 零正文。
-- `browser.test.tsx`：13 条覆盖导航失效/迟到结果、隐私暂停、token 失效清上下文、focus ID 重试、新操作 ID、显隐、普通浏览器降级及提问回复；旧发送完成不清新提问选择，未创建 child 时激活视图按 DPI 扩宽窗口；popup 许可和关闭不假定登录成功。
+- `browser.test.tsx`：16 条覆盖导航失效/迟到结果、隐私暂停、token 失效清上下文、focus ID 重试、新操作 ID、显隐、普通浏览器降级及提问回复；旧发送完成不清新提问选择，未创建 child 时激活视图按 DPI 扩宽窗口；popup 许可和关闭不假定登录成功；记录按需读取、cursor 续页/防重叠、全量删除清空列表和 cursor。
+- 浏览 metadata store/API 覆盖有界 cursor 分页与非法 cursor；runtime 覆盖导航/revoke/close 在消息消费前使上下文失效时只发明确 fallback，重放不再调用 reply。
 - REST 另覆盖 page/reply_to 转发、浏览 metadata/retry、单页与全量 204 DELETE。
 - 浏览提问回复：展示事件的 attempt_id 进入回复选择，ChatInput 转发 reply_to 与当前 page id。
 

@@ -365,9 +365,17 @@ BrowserBounds:
   隔离 profile cookie、`postMessage`、回调和自动关闭，验证 handler 位于 Wry deferral 调度后、
   无死锁、cookie 可由主浏览 child 读取、opener 只指向远程 child。弹窗首跳及之后每次顶层
   导航也必须在发起连接前通过公网 HTTPS 校验；同步 callback 无法安全完成异步 DNS 预检时，
-  spike 必须证明 deferral 路径可在创建/导航前完成该预检，不能先加载再补查。该 spike 在目标
+  spike 必须证明 deferral 路径可在文档发起连接前完成该预检；允许先创建空白窗口并安装 guards，
+  不能先加载再补查。该 spike 在目标
   OS 任一条件未通过时，
   该平台的 `browser_allow_auth_popup` 固定返回 `popup_unsupported`；不回退默认 popup。
+- Windows 同步 popup 回调不得 `block_on` 等待 DNS/HTTP。`NavigationStarting` 没有 deferral；
+  使用 `WebResourceRequested` 的 DOCUMENT filter，在每跳请求发出前取得 deferral，异步完成
+  opener revoke 和公网 HTTPS/DNS 检查，再回 UI 线程放行或返回 403 并关闭 popup。
+  首次 revoke 的结果由该 popup 共用；COM args/deferral/environment 留在 UI 线程，以随机
+  request id 接回异步结果，不通过 unsafe Send 搬运 COM 对象。保留原请求方法、body 与 opener。
+  event handler 还须检查实际 ResourceContext 为 DOCUMENT；Wry IPC 共享同一过滤器集合，不做该检查会误拦 IPC。
+  本地 IdP fixture 必须验证 302 后续跳、私网拒绝和慢预检期间 UI 响应。
 - 测试中的 loopback HTTPS 仅由编译在测试 fixture 的受控导航策略允许，使用临时自签测试 CA；
   生产构建没有该例外，公网 HTTPS 与证书校验规则不放宽。provider refusal 用 mock IdP 固定
   拒绝页模拟，不访问真实账号、真实 OAuth provider或真实公网。
@@ -652,8 +660,8 @@ class BrowsingFacade:
     async def forget_page(self, page_id: str) -> None: ...
     async def forget_all_history(self) -> None: ...
     async def get_session(
-        self, session_id: str
-    ) -> tuple[BrowsingSession, list[BrowsingPage]]: ...
+        self, session_id: str, limit: int = 50, cursor: str | None = None
+    ) -> tuple[BrowsingSession, list[BrowsingPage], str | None]: ...
     async def get_prompt_context(self, page_id: str) -> dict[str, str] | None: ...
     async def recover_pending(self) -> None: ...
     async def quiesce(self) -> None: ...
@@ -665,6 +673,9 @@ Repository/Service/Manager 层：
 
 ```python
 async def get_or_create_active_session(now: float) -> BrowsingSession: ...
+async def list_pages(
+    session_id: str, limit: int = 50, cursor: str | None = None
+) -> tuple[list[BrowsingPage], str | None]: ...
 async def begin_navigation(
     session_id: str, navigation_id: str, now: float
 ) -> tuple[BrowsingPage | None, int | None]: ...
@@ -1086,7 +1097,7 @@ Rust、React 和 browsing HTTP 共用同一稳定 `code` 名称；后端结构�
 
 | 方法 | 路径 | 请求 | 成功响应 |
 |---|---|---|---|
-| GET | `/api/browsing/sessions/{session_id}` | 无 | `{session,pages}`，page 不含正文/租约/token |
+| GET | `/api/browsing/sessions/{session_id}` | `limit=50`（1..100）、可选 `cursor` | `{session,pages,next_cursor}`，page 不含正文/租约/token |
 | POST | `/api/browsing/pages/{page_id}/retry` | `{}` | `{page_id,status}` |
 | DELETE | `/api/browsing/pages/{page_id}` | 无 | 204 |
 | DELETE | `/api/browsing/history` | 无；须先关闭 session | 204 |
@@ -1094,6 +1105,10 @@ Rust、React 和 browsing HTTP 共用同一稳定 `code` 名称；后端结构�
 - `session` 字段固定为 `BrowsingSession`；`pages` 为 `BrowsingPage[]`，按
   `captured_at ASC, id ASC`。对外 page 必须包含 `revision` 与可见 `status`，不返回正文、focus、
   integrated content、lease 或 bridge token。
+- `next_cursor` 为本页最后一条 page id，仅还有下一页时非 null。续页按 cursor row 的
+  `(captured_at,id)` 严格大于条件查询；cursor 必须属于该 session，缺失/已删除/其它 session
+  的 cursor 返回 422 `invalid_payload`。SQL 仅投影公开元数据、最多取 `limit+1` 行，
+  不返回总数、不读取正文。cursor 失效时 UI 可刷新第一页。
 - 不存在资源返回 404；状态/CAS 冲突返回 409；非法 URL、长度、枚举或正文返回 422；达到
   容量上限返回 507 `browsing_storage_limit`；quiesce 或 durable admission 不可用返回 503。
 - browsing 端点的非 Pydantic 错误统一为
@@ -1102,6 +1117,9 @@ Rust、React 和 browsing HTTP 共用同一稳定 `code` 名称；后端结构�
 - `POST /api/chat` 增加可选 `browsing_page_id`；不存在、未允许、不是当前
   `current_page_id` 或不属于当前未结束浏览会话的 page id 返回 422，不静默忽略。
   无该字段时保持现有行为。
+- API 受理成功后、USER_MESSAGE 消费前失效的 page context，runtime 发布同 correlation 的
+  固定失败 `SPEAK`（`response_kind="fallback",attempt_id=null`），不调用普通 reply、不调 LLM；
+  发布失败按总线重试，已有终局事件时重放短路。
 
 ## 前端状态与交互
 
@@ -1132,6 +1150,9 @@ error, integrationStatus
 - 登录模式开关调用 `browser_set_auth_mode`，开启立即暂停，关闭后不自动解除污点或授权。
 - ChatInput 在浏览视图且当前 page 可用时自动附带 page id；离开浏览视图后不携带陈旧 id。
 - OAuth 窗口、清浏览数据和删除记忆是明确的用户操作，不自动触发。
+- 浏览记录打开时加载第一页，手动刷新或 retry/单页 delete 完成后重新加载第一页；全量删除成功
+  清空本地记录、cursor 和已删除的 session id，不查询已删除会话。加载更多
+  使用 `next_cursor`。无五秒全量轮询，单个面板最多一个在途历史请求，按钮在加载时禁用。
 
 ## Bad Cases 与固定兜底
 

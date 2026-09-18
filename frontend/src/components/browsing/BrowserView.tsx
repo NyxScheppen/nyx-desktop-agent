@@ -13,6 +13,9 @@ export default function BrowserView({ active }: { active: boolean }) {
   const [address, setAddress] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [pages, setPages] = useState<BrowsingPage[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const historyInFlight = useRef(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const native = isTauri();
   const enabled = native && browser.sessionId !== null && !browser.closed;
@@ -57,16 +60,21 @@ export default function BrowserView({ active }: { active: boolean }) {
     return () => { observer.disconnect(); window.removeEventListener("resize", update); };
   }, [active, historyOpen, native, browser.sessionId, browser.closed, browser.setVisible, browser.setBounds]);
 
-  const refreshHistory = async () => {
-    if (browser.sessionId === null) return;
-    try { setPages((await getBrowsingSession(browser.sessionId)).pages); setHistoryError(null); }
-    catch { setHistoryError("浏览记录读取失败"); }
+  const refreshHistory = async (cursor?: string) => {
+    if (browser.sessionId === null || historyInFlight.current) return;
+    historyInFlight.current = true;
+    setHistoryLoading(true);
+    try {
+      const result = await getBrowsingSession(browser.sessionId, cursor);
+      setPages((current) => cursor === undefined ? result.pages : [...current, ...result.pages]);
+      setNextCursor(result.next_cursor);
+      setHistoryError(null);
+    } catch { setHistoryError("浏览记录读取失败"); }
+    finally { historyInFlight.current = false; setHistoryLoading(false); }
   };
   useEffect(() => {
     if (!active || !historyOpen) return;
     void refreshHistory();
-    const timer = setInterval(() => void refreshHistory(), 5000);
-    return () => clearInterval(timer);
   }, [active, historyOpen, browser.sessionId]);
 
   const toggleHistory = async () => {
@@ -110,11 +118,17 @@ export default function BrowserView({ active }: { active: boolean }) {
       {historyOpen && <div className="browser-history">
         {historyError && <p className="error-text" role="alert">{historyError}</p>}
         <div className="browser-privacy">
+          <button disabled={historyLoading || browser.sessionId === null} onClick={() => void refreshHistory()}>刷新记录</button>
           <button disabled={!browser.closed || browser.busy} onClick={() => {
             if (window.confirm("清除浏览 cookie 与缓存？Nyx 的浏览记忆会保留。")) void browser.clearData();
           }}>清除 cookie 与缓存</button>
-          <button disabled={!browser.closed} onClick={() => {
-            if (window.confirm("删除浏览 checkpoint 与 Nyx 浏览记忆？聊天、事件和评估记录会保留。")) void historyAction(deleteBrowsingHistory);
+          <button disabled={!browser.closed || historyLoading} onClick={async () => {
+            if (!window.confirm("删除浏览 checkpoint 与 Nyx 浏览记忆？聊天、事件和评估记录会保留。")) return;
+            try {
+              await deleteBrowsingHistory();
+              setPages([]); setNextCursor(null); setHistoryError(null);
+              useBrowserStore.setState({ sessionId: null });
+            } catch { setHistoryError("当前记录不可操作"); }
           }}>删除浏览 checkpoint 与 Nyx 浏览记忆</button>
         </div>
         {pages.length === 0 && <p>暂无浏览记录</p>}
@@ -126,6 +140,7 @@ export default function BrowserView({ active }: { active: boolean }) {
             if (window.confirm("删除此页浏览 checkpoint 与记忆？")) void historyAction(() => deleteBrowsingPage(page.id));
           }}>删除</button>
         </div>)}
+        {nextCursor !== null && <button disabled={historyLoading} onClick={() => void refreshHistory(nextCursor)}>加载更多</button>}
       </div>}
       <div className="browser-body" ref={body} aria-label="网页内容" />
     </div>

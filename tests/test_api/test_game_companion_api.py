@@ -126,4 +126,7 @@ async def test_game_frame_accepts_matching_identity_and_revision() -> None:
             headers=_headers(),
         )
     assert response.status_code == 200
-    assert response.json()["status"] == "tentative"
+    body = response.json()
+    assert body["accepted"] is False
+    assert body["status"] == "rejected"
+    assert body["error_code"] == "ocr_unavailable"

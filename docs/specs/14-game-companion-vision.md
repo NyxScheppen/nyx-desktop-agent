@@ -1054,6 +1054,10 @@ nyx_interpretation  Nyx 对剧情的理解
 }
 ```
 
+`window_identity` 是必填的 native 绑定快照，`window_identity.window_id` 必须等于顶层
+`window_id`；缺失、PID/启动时间为非正数或两者不一致都拒绝创建会话。这样不会创建一个
+随后所有真实 frame 都必然身份不匹配的占位 session。
+
 创建事务尚无 accepted observation 时，`last_accepted_revision=0`、`last_observation_hash=null`、
 `last_observation=null`、`corrections=[]`；上面的非空对象展示第一份或后续 checkpoint 的形状。
 
@@ -1063,6 +1067,11 @@ nyx_interpretation  Nyx 对剧情的理解
   因此可以在重启后恢复成完整 accepted observation；另外最多保留 64 个 correction overlay
   和 128 个 choice key；不持久化 tentative、rejected、paused 帧或原始图片；
 - `checkpoint_seq` 每次成功写入 accepted observation 或 confirmed choice 加一；
+- 游戏 checkpoint mutation 使用 `checkpoint_seq` 条件更新（CAS）；并发的旧对象若未命中
+  当前 sequence，不发布事件并返回 `game_state_conflict`。`observation_events` 最多保留最近
+  128 个 hash→event 映射；accepted 新 revision 会清理上一 revision 的 choice 幂等索引，
+  避免 progress JSON 无界增长。全局视觉关闭时，session 的 `remote_vision_enabled` 强制为
+  `false`，不能由 start 请求覆盖。
 - profile/version/threshold version 随 checkpoint 保存，恢复时不允许用新 profile 重新解释旧 observation；
 - 进程重启从该 progress 恢复 session id、revision 和 hash，不从内存计数器重新开始；
 - window identity 只用于恢复时重新校验，不能保证重启后窗口仍存在。
@@ -1504,7 +1513,14 @@ POST /api/game-companion/sessions
   "game_id": "disco_elysium",
   "profile": "disco_elysium",
   "window_id": "hwnd:0x1234",
-  "remote_vision_enabled": false
+  "remote_vision_enabled": false,
+  "window_identity": {
+    "window_id": "hwnd:0x1234",
+    "hwnd": 4660,
+    "pid": 1234,
+    "process_name": "game.exe",
+    "process_start_time_ms": 1700000000000
+  }
 }
 // 201
 {
@@ -1556,6 +1572,10 @@ status；不返回图片。
 }
 ```
 
+当本地 OCR 尚未可用时，frame 仍只返回明确的 `accepted=false`、`status="rejected"`、
+`error_code="ocr_unavailable"` 和 validation，不返回成功但无效果的空 observation；不写入
+checkpoint/event。真实 OCR worker 可用后，accepted/tentative/rejected 按观察管线处理。
+
 所有 mutation 请求必须携带 session/revision（start 除外）；response 返回当前 revision 和
 状态。SSE 的 `GAME_*` 帧按 session id 更新 store；丢失 SSE 后 store 通过
 `GET /api/game-companion/sessions/{id}` 重新读取当前 checkpoint，不重放图片。
@@ -1595,6 +1615,7 @@ REST/bridge 错误码固定为：
     correction_storage_limit | game_context_stale
 413 capture_too_large | payload_too_large | observation_payload_too_large
 422 capture_invalid | profile_mismatch
+409 game_state_conflict
 503 ocr_unavailable | vision_unavailable | database_unavailable
 ```
 

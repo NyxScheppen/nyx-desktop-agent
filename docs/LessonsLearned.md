@@ -553,6 +553,13 @@ mock 测试无法证明 DOM 提取器满足非表单契约。
 **怎么做**：为明确声明的 raw binary bridge 路径在 middleware 中先执行独立的 Content-Length/流式大小限制，并把 body 回填给路由；路由继续执行自己的媒体类型、identity 和 revision 校验。
 **影响的文件/决策**：`nyx/api/routes.py`、游戏 frame bridge 测试。
 
+### 2026-09-19: 游戏 checkpoint mutation 必须在事务内做 sequence CAS
+
+**来源**：游戏陪玩审查发现并发 observation/choice/correction 会以旧 Activity 对象覆盖新状态。
+**教训**：调用前读取 revision 或幂等键不能保护异步并发；两个请求可能同时通过预检查，随后重复发布事件或丢失对方的 progress 更新。
+**怎么做**：为游戏 checkpoint 使用单调 `checkpoint_seq` 条件更新；只有命中旧 sequence 的事务才能追加事件，失败者不发布事件并返回冲突。对无限增长的事件索引设置有界保留策略。
+**影响的文件/决策**：`nyx/activity/store.py`、`nyx/activity/facade.py`、游戏陪玩 REST/回归测试。
+
 ## 模板（条目格式）
 
 ```

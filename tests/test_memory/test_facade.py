@@ -14,6 +14,7 @@ from nyx.db import Database
 from nyx.enums import EventType, MemoryEdgeKind, MemoryKind, MemoryType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.ann import AnnIndex
 from nyx.memory.facade import (
@@ -203,6 +204,51 @@ async def test_browsing_memory_is_fenced_and_idempotent() -> None:
                 and memory.type is MemoryType.LONG_TERM)
         assert len(await bus.list_events(correlation_id=page.id)) == 1
     finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_game_choice_embedding_runs_outside_database_transaction() -> None:
+    store, bus, database = await _new_stack()
+    browsing = BrowsingStore(database)
+    transaction_states: list[bool] = []
+    embedding_started = asyncio.Event()
+    release_embedding = asyncio.Event()
+
+    async def embed(_: str) -> list[float]:
+        transaction_states.append(database.in_transaction)
+        embedding_started.set()
+        await release_embedding.wait()
+        return [1.0, 0.0]
+
+    facade = _make_facade(
+        store, bus, _FakeLlm(), _FakeEvaluator(), embed=embed
+    )
+    events = (
+        internal_event(
+            EventType.GAME_CHOICE_CONFIRMED,
+            {"game_id": "disco", "choice_text": "走进旅馆"},
+            "game-session",
+        ),
+        internal_event(
+            EventType.GAME_OBSERVATION_CORRECTED,
+            {"field": "dialogue", "value": {"text": "这里不对"}},
+            "game-session",
+        ),
+    )
+    try:
+        await bus.publish(events[0])
+        choice_task = asyncio.create_task(facade.on_game_choice_confirmed(events[0]))
+        await asyncio.wait_for(embedding_started.wait(), timeout=1.0)
+        database.lock_timeout = 0.05
+        assert await browsing.recover_expired(1.0) == 0
+        release_embedding.set()
+        await choice_task
+        await bus.publish(events[1])
+        await facade.on_game_observation_corrected(events[1])
+        assert transaction_states == [False, False]
+    finally:
+        release_embedding.set()
         await database.close()
 
 

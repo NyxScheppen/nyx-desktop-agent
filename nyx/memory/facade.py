@@ -552,6 +552,7 @@ class MemoryFacade:
             MemoryType.SHORT_TERM,
             [game_id, "game_companion"],
         )
+        await self._prepare_memory_embedding(memory)
         async with self._store.db.transaction():
             applied = await self._bus.try_mark_effect_in_transaction(
                 event.id, consumer_id
@@ -563,6 +564,7 @@ class MemoryFacade:
                 event.correlation_id,
                 in_transaction=True,
                 defer_best_effort=True,
+                embedding_prepared=True,
             )
         if result.created:
             await self._run_best_effort_tail(
@@ -589,6 +591,7 @@ class MemoryFacade:
             MemoryType.SHORT_TERM,
             ["game_companion", field],
         )
+        await self._prepare_memory_embedding(memory)
         async with self._store.db.transaction():
             applied = await self._bus.try_mark_effect_in_transaction(
                 event.id, consumer_id
@@ -600,6 +603,7 @@ class MemoryFacade:
                 event.correlation_id,
                 in_transaction=True,
                 defer_best_effort=True,
+                embedding_prepared=True,
             )
         if result.created:
             await self._run_best_effort_tail(
@@ -653,6 +657,15 @@ class MemoryFacade:
             except Exception:
                 self._logger.exception("记忆 embedding 失败 memory_id=%s", memory.id)
         return memory
+
+    async def _prepare_memory_embedding(self, memory: Memory) -> None:
+        """在进入核心记忆事务前完成可耗时的向量计算。"""
+        if self._embed is None or memory.embedding is not None:
+            return
+        try:
+            memory.embedding = await self._embed(memory.content)
+        except Exception:
+            self._logger.exception("记忆 embedding 失败 memory_id=%s", memory.id)
 
     async def _remember_activity(
         self, event: Event, *, in_transaction: bool,

@@ -295,7 +295,7 @@ store 的校验必须先于等待状态/未读标记等副作用；只阻止消�
 
 **来源**：浏览 worker 报数据库锁等待超时；真实共享数据库复现活动记忆 embedding 持锁。
 **教训**：`event_effect`、记忆行和 `memory_created` 是可恢复核心；关系边、矛盾检测和衰减是可丢失的旁路，不能在核心事务中等待外部或耗时计算。
-**怎么做**：活动 durable consumer 先在事务外准备 embedding，再在事务内完成幂等 marker、记忆和核心事件；commit 后运行旁路，失败只记录日志，重放不重复核心写入。
+**怎么做**：活动 durable consumer 先在事务外准备 embedding，再在事务内完成幂等 marker、记忆和核心事件；游戏选择/观察修正消费者也必须遵守同一边界。commit 后运行旁路，失败只记录日志，重放不重复核心写入。
 **影响的文件/决策**：`nyx/memory/facade.py`、06-memory-system、共享 SQLite 锁边界。
 
 ### 2026-09-18: 嵌入式网页登录不能等同于通用 OAuth 支持

@@ -6,9 +6,9 @@
 
 ## 当前快照
 
-- 后端测试文件：68
-- `pytest --collect-only -q`：1036 tests collected
-- 最近一次全量验证：`1034 passed, 2 skipped`
+- 后端测试文件：71
+- `pytest --collect-only -q`：1053 tests collected
+- 最近一次全量验证：`1051 passed, 2 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -35,7 +35,7 @@
 | LLM | `tests/test_llm/` | 2 | 统一客户端、视觉客户端、token 元数据、最终 prompt 快照 |
 | DB | `tests/test_db/` | 1 | 迁移、索引、可空性、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
-| API/运行时 | `tests/test_api/` | 6 | 组合根、REST、浏览 bridge/本机 guard/CORS/PNA/body 上限、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
+| API/运行时 | `tests/test_api/` | 7 | 组合根、REST、游戏陪玩 frame bridge 身份/revision/body guard、浏览 bridge/本机 guard/CORS/PNA/body 上限、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件、搜索、工具注册和网络抓取 |
 | 记忆 | `tests/test_memory/` | 6 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade、durable 活动记忆不持锁等待 embedding |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、满足、重放 |
@@ -44,6 +44,7 @@
 | 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动、笔记、整合和后台生命周期 |
 | 共同浏览 | `tests/test_browsing/` | 4 | checkpoint、封口、fencing、启动恢复、授权污点、companion 幂等、配对 token、结构校验、close→worker→长期记忆、容量压力清理及桌面 launcher；API `test_browsing_api.py` 覆盖 bridge、精确 Host/Origin/媒介、CORS/PNA、声明长度与无长度流式 body 上限、multipart 快照，既有 API fixture 使用真实 loopback Host；相邻套件覆盖总线/记忆/提问事务、枚举及 DB 表快照 |
+| 游戏陪玩 | `tests/test_game_companion/`、`tests/test_api/test_game_companion_api.py` | 3 | transient bridge PNG 校验、OCR/crop 预算、OCR 候选到 tentative/accepted observation、越界框硬拒绝、canonical observation hash、score/evidence 闸门、session/observation/choice/correction 事务与幂等、frame bridge 完整窗口 identity/revision/body 上限 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
 
 ## 前端覆盖

@@ -546,6 +546,13 @@ mock 测试无法证明 DOM 提取器满足非表单契约。
 **怎么做**：仅投影公开字段，用稳定 cursor 有界读取，按需刷新并限制一个在途请求；全量删除成功直接清空列表、cursor 和旧 session id。
 **影响的文件/决策**：BrowsingStore、REST、BrowserView 和分页契约。
 
+### 2026-09-19: 原始二进制 bridge 必须绕过通用 JSON media guard
+
+**来源**：游戏陪玩 frame bridge 首次 API 红测。
+**教训**：全局请求守卫把没有 Pydantic body field 的非空请求统一视为不支持媒体类型，导致合法的 PNG frame 在进入路由前被 415 拒绝。
+**怎么做**：为明确声明的 raw binary bridge 路径在 middleware 中先执行独立的 Content-Length/流式大小限制，并把 body 回填给路由；路由继续执行自己的媒体类型、identity 和 revision 校验。
+**影响的文件/决策**：`nyx/api/routes.py`、游戏 frame bridge 测试。
+
 ## 模板（条目格式）
 
 ```

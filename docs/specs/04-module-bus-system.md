@@ -654,6 +654,16 @@ Nyx 窗口内显示而获得 localhost API 权限。打包版可信 UI 的 REST/
 - [ ] 用户消息在线证据：away 后立即收到 durable `USER_MESSAGE` 时，在 expression 前产生一次归来上下文；随后 online observation 不重复产生归来，handler 重放也不重复。
 - [ ] SSE 时间：实时帧含原始 `Event.timestamp`，并与事件日志中的同一事件时间一致；缺失/非法公共字段在前端被丢弃。
 - [ ] 浏览输出查询：精确 correlation + 三类 EventType 的最近 100 条按时间/id 稳定选取并升序返回；其它类型/页面不混入，非法 limit/type 集合拒绝，BrowsingStore 不直接读 `event_log`。
+
+### 游戏陪玩事件接线
+
+`GAME_SESSION_STARTED` 只进入 durable event log 与 SSE，不创建 delivery；
+`GAME_OBSERVATION` 由 `expression.game_observation` 消费，
+`GAME_CHOICE_CONFIRMED` 由 `memory.game_choice_confirmed` 和
+`expression.game_choice_confirmed` 消费，`GAME_OBSERVATION_CORRECTED` 由
+`memory.game_observation_corrected` 消费。事件 payload 必须携带对应 immutable snapshot/choice
+事实，消费者按 `(event_id, consumer_id)` effect marker 幂等，详见
+`14-game-companion-vision.md`。
 - [ ] 文档同步：`docs/test-inventory.md` 更新为当前测试快照。
 
 ## 完成定义

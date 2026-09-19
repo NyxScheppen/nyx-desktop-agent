@@ -4,19 +4,27 @@ from typing import Any, Awaitable, Callable, Literal, TypedDict
 from nyx.enums import (
     ActivityStatus,
     ActivityType,
+    CorrectionField,
     DesireStatus,
     DesireType,
     EmotionCategory,
     EnergyState,
     EventType,
+    EvidenceSource,
+    GamePhase,
+    GameProfile,
+    GameSessionStatus,
     GoalAction,
     InteractionKind,
     InteractionStatus,
     MemoryEdgeKind,
     MemoryKind,
     MemoryType,
+    ObservationStatus,
     SearchMode,
     Source,
+    TextSource,
+    VisionResultStatus,
 )
 
 
@@ -186,6 +194,251 @@ class Activity:
     progress: dict[str, Any]  # 进度状态，形状随 ActivityType 而异（读书读到第几段等）
     started_at: float
     ended_at: float | None = None
+
+
+@dataclass(frozen=True)
+class PixelRect:
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+
+@dataclass(frozen=True)
+class WindowCandidate:
+    window_id: str
+    hwnd: int
+    pid: int
+    process_name: str
+    process_path: str | None
+    process_start_time_ms: int
+    title: str
+    client_bounds_physical: PixelRect
+    scale_factor: float
+    foreground: bool
+    minimized: bool
+
+
+@dataclass(frozen=True)
+class WindowTarget(WindowCandidate):
+    profile: GameProfile
+    game_id: str
+    profile_version: int
+
+
+@dataclass(frozen=True)
+class WindowIdentity:
+    window_id: str
+    hwnd: int
+    pid: int
+    process_name: str
+    process_start_time_ms: int
+
+
+@dataclass(frozen=True)
+class ValidatedFrame:
+    capture_id: str
+    image_bytes: bytes
+    width: int
+    height: int
+    window_id: str
+    expected_revision: int
+
+
+@dataclass(frozen=True)
+class GameTextBlock:
+    id: str
+    text: str
+    bbox: tuple[int, int, int, int]
+    line_index: int
+    confidence: float
+    char_confidences: list[float]
+    source: TextSource
+    evidence_ids: list[str]
+
+
+@dataclass(frozen=True)
+class GameChoice:
+    id: str
+    text: str
+    order: int
+    bbox: tuple[int, int, int, int] | None
+    confidence: float
+    evidence_ids: list[str]
+
+
+@dataclass(frozen=True)
+class DialogueCorrectionValue:
+    text: str
+
+
+@dataclass(frozen=True)
+class SpeakerCorrectionValue:
+    text: str
+
+
+@dataclass(frozen=True)
+class ChoiceCorrectionValue:
+    choice_id: str | None
+    text: str
+    order: int | None
+
+
+@dataclass(frozen=True)
+class ObservationEvidence:
+    id: str
+    source: EvidenceSource
+    ref: str
+    bbox: tuple[int, int, int, int] | None
+
+
+@dataclass(frozen=True)
+class AcceptedObservationSnapshot:
+    session_id: str
+    game_id: str
+    profile: GameProfile
+    profile_version: int
+    threshold_version: int
+    revision: int
+    phase: GamePhase
+    observation_hash: str
+    captured_at: float
+    speaker: str | None
+    speaker_evidence_ids: list[str]
+    dialogue: list[GameTextBlock]
+    text_blocks: list[GameTextBlock]
+    choices: list[GameChoice]
+    visible_entities: list[str]
+    entity_evidence_ids: list[str]
+    scene_summary: str | None
+    scene_evidence_ids: list[str]
+    confidence: float
+    evidence: list[ObservationEvidence]
+    uncertainties: list[str]
+
+
+@dataclass(frozen=True)
+class GameObservation:
+    session_id: str
+    game_id: str
+    profile: GameProfile
+    profile_version: int
+    threshold_version: int
+    phase: GamePhase
+    status: ObservationStatus
+    speaker: str | None
+    speaker_evidence_ids: list[str]
+    dialogue: list[GameTextBlock]
+    text_blocks: list[GameTextBlock]
+    choices: list[GameChoice]
+    visible_entities: list[str]
+    entity_evidence_ids: list[str]
+    scene_summary: str | None
+    scene_evidence_ids: list[str]
+    confidence: float
+    observation_hash: str
+    captured_at: float
+    revision: int
+    evidence: list[ObservationEvidence]
+    uncertainties: list[str]
+
+
+@dataclass(frozen=True)
+class ValidationReport:
+    status: ObservationStatus
+    score: float
+    score_components: dict[str, float]
+    threshold_version: int
+    hard_failures: list[str]
+    soft_warnings: list[str]
+    evidence_ids: list[str]
+    checked_revision: int
+
+
+@dataclass(frozen=True)
+class GameImageCrop:
+    id: str
+    bbox: tuple[int, int, int, int]
+    image_bytes: bytes
+    mime_type: str = "image/png"
+
+
+@dataclass(frozen=True)
+class GameVisionRequest:
+    session_id: str
+    profile: GameProfile
+    profile_version: int
+    remote_vision_allowed: bool
+    crops: list[GameImageCrop]
+    ocr_candidates: list[GameTextBlock]
+    previous_observation: AcceptedObservationSnapshot | None
+
+
+@dataclass(frozen=True)
+class GameVisionResult:
+    status: VisionResultStatus
+    phase: GamePhase
+    speaker: str | None
+    speaker_evidence_ids: list[str]
+    dialogue_evidence_ids: list[str]
+    choice_evidence_ids: list[str]
+    entity_evidence_ids: list[str]
+    scene_evidence_ids: list[str]
+    visible_entities: list[str]
+    scene_summary: str | None
+    uncertainties: list[str]
+    error_code: str | None = None
+
+
+@dataclass(frozen=True)
+class GameChoiceConfirmation:
+    session_id: str
+    revision: int
+    choice_id: str
+    choice_text: str
+    confirmed: bool
+    event_id: str
+    current_observation: AcceptedObservationSnapshot
+
+
+@dataclass(frozen=True)
+class GameCorrectionRequest:
+    revision: int
+    correction_id: str
+    field: CorrectionField
+    value: DialogueCorrectionValue | SpeakerCorrectionValue | ChoiceCorrectionValue
+    reason: str
+
+
+@dataclass(frozen=True)
+class GameCorrectionResult:
+    session_id: str
+    base_revision: int
+    correction_id: str
+    field: CorrectionField
+    value: DialogueCorrectionValue | SpeakerCorrectionValue | ChoiceCorrectionValue
+    reason: str
+    event_id: str
+    applied: bool
+
+
+@dataclass(frozen=True)
+class GameSessionState:
+    session_id: str
+    activity_id: str
+    game_id: str
+    profile: GameProfile
+    profile_version: int
+    threshold_version: int
+    status: GameSessionStatus
+    revision: int
+    observation_hash: str | None
+    window_identity: WindowIdentity
+    last_observation: AcceptedObservationSnapshot | None
+    corrections: list[GameCorrectionResult]
+    pending_choice: GameChoice | None
+    remote_vision_enabled: bool
+    error: str | None
 
 
 @dataclass

@@ -818,6 +818,13 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 - [ ] 聚类：`MemoryGraph(edges, memory_ids=...)` 下 Louvain/greedy fallback 均返回稳定 `memory_id -> cluster_id`；孤立节点保留；temporal 边低权重不主导聚类。
 - [ ] 表达慢通道：`MemoryFacade.search` 返回 direct + association 后，`assemble_context` 对全部返回记忆逐条 `record_recall`。
 
+### 游戏陪玩记忆接线
+
+`memory.game_choice_confirmed` 将用户确认的选择写为 `MemoryKind.ACTIVITY` 短期记忆，主题
+至少包含 game id 与 `game_companion`；`memory.game_observation_corrected` 写入用户修正，
+不覆盖原 observation。两个消费者均从事件 payload 读取事实，以 `(event_id, consumer_id)`
+effect marker 幂等；失败时不推进陪玩 checkpoint 的 memory cursor。
+
 ## 完成定义
 
 - [ ] `ruff check` 零报错。

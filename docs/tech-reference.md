@@ -52,10 +52,14 @@
 | `MemoryFacade` | `nyx/memory/facade.py` | 记忆写入、召回、联想和回忆升级 |
 | `DesireFacade` | `nyx/desire/facade.py` | 欲望入口、全量/待消费查询和生命周期接线 |
 | `InnerLifeFacade` | `nyx/inner_life/facade.py` | 情感、精力、慢变量和反思接线 |
-| `ActivityFacade` | `nyx/activity/facade.py` | 排期、活动启动/执行/完成/打断 |
+| `ActivityFacade` | `nyx/activity/facade.py` | 排期、活动启动/执行/完成/打断、游戏陪玩 session/checkpoint |
 | `ExpressionFacade` | `nyx/expression/facade.py`、`nyx/expression/store.py` | 快慢通道回复、durable 提问/搭话 attempt、主动搭话和碎碎念 |
 | `ReadingFacade` | `nyx/reading/facade.py` | 书籍、进度、陪读冲动和笔记 |
 | `BrowsingFacade` | `nyx/browsing/facade.py` | 会话、checkpoint、授权、输出封口、整合恢复与浏览记忆删除 |
+
+游戏陪玩视觉核心位于 `nyx/activity/game_observer.py`、`nyx/activity/game_profiles.py`、
+`nyx/activity/screen.py`；结构化视觉入口位于 `nyx/llm/vision.py`，契约见
+`docs/specs/14-game-companion-vision.md`。
 
 ## 前端地图
 

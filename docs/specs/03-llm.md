@@ -31,6 +31,8 @@
 - **内部类（非 Facade）**：Facade / LangGraph 节点都通过它调 LLM，是透明化+可追溯的落点
 - **多 provider（OpenAI 兼容）**：`from_config` 用 `resolve_base_url(provider, base_url)` 解析 endpoint——显式 `llm.base_url` 优先，否则查内置映射（deepseek / openai / ollama）；无命中报 `ConfigError`（列出内置 provider + 提示配 `llm.base_url`）。统一走 `ChatOpenAI`，token 抽取不变
 - **屏幕视觉（`vision.py`，V2）**：`VisionClient` 是独立多模态客户端（Ollama 视觉模型同走 OpenAI 兼容 `ChatOpenAI`），消息带 `image_url` 块、不混入纯文本 `complete`；复用 `resolve_base_url`（故该函数公开，供 `vision.py` 跨模块导入）。`from_config` 与 `LlmClient` 同规则读 key：`os.environ.get(config.api_key_env)`，未设且非 Ollama 报 `ConfigError`、Ollama 免 key 占位。
+
+- **游戏陪玩视觉**：`VisionClient.observe(request: GameVisionRequest, *, timeout_seconds: float | None = None) -> GameVisionResult` 使用 `VisionConfig.timeout`（显式有限正数覆盖本次调用），受全局 `enabled` 与 request 的 `remote_vision_allowed` 双重闸门约束；`disabled`、`malformed`、`failed` 均返回结构化状态，不把原图写入 eval 或 durable DTO。旧 `describe(bytes) -> str` 契约保持不变。
 - **超时/重试**：`from_config` 把 `config.timeout` / `config.max_retries`（02-config 的 `LlmConfig`）透传给 `ChatOpenAI`；重试仍由 LangChain 兜底，异常原样上抛由调用方处理
 - **采样温度**：`from_config` 把 `config.temperature`（02-config 的 `LlmConfig`，0-2，默认 0.8）透传给 `ChatOpenAI`；`complete()` 不加 per-call 温度——单一全局旋钮，让人格声音更一致（比 DeepSeek 默认 1.0 略收紧）
 - **json_mode = 减少 parse 失败重试**：欲望生成/分类器要结构化输出，靠 `response_format` 保证合法 JSON，少一次重调

@@ -11,13 +11,14 @@ class ConfigError(Exception):
 
 
 @dataclass
-class ActivityEnergyDelta:              # activity.energy_delta：6 键 = ActivityType 值
+class ActivityEnergyDelta:              # activity.energy_delta：ActivityType 值
     reading: int = -20
     creation: int = -25
     free_exploration: int = -30
     observe_user: int = -10
     idle_reflection: int = 10
     rest: int = 30
+    game_companion: int = 0
 
 
 @dataclass
@@ -82,6 +83,8 @@ class VisionConfig:
     api_key_env: str = "DEEPSEEK_API_KEY"  # 存环境变量名，key 本体由 03-llm 读
     base_url: str | None = None         # 可选 endpoint 覆盖；缺省查 provider 映射
     interval_seconds: int = 60          # 抓屏周期（秒）
+    timeout: float = 10.0
+    max_retries: int = 1
 
 
 @dataclass
@@ -213,6 +216,8 @@ def validate_config(cfg: Config) -> None:
     _pos_num(cfg.expression.ask_timeout, "expression.ask_timeout")
     _pos_num(cfg.expression.chat_ignore_timeout, "expression.chat_ignore_timeout")
     _pos_num(cfg.expression.context_time_gap, "expression.context_time_gap")
+    _pos_num(cfg.vision.timeout, "vision.timeout")
+    _int(cfg.vision.max_retries, "vision.max_retries")
     _flag(cfg.exploration.web_enabled, "exploration.web_enabled")   # bool
     _flag(cfg.vision.enabled, "vision.enabled")
 

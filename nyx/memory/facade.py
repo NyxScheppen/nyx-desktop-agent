@@ -536,6 +536,76 @@ class MemoryFacade:
             return
         await self._remember_activity(event, in_transaction=False)
 
+    async def on_game_choice_confirmed(self, event: Event) -> None:
+        """Persist an explicit game choice as a bounded activity memory."""
+        consumer_id = "memory.game_choice_confirmed"
+        if await self._bus.has_effect(event.id, consumer_id):
+            return
+        game_id = str(event.content.get("game_id") or "game")
+        choice_text = str(event.content.get("choice_text") or "")
+        if not choice_text.strip():
+            return
+        memory = _new_memory(
+            f"和用户在 {game_id} 中选择了：{choice_text}",
+            MemoryKind.ACTIVITY,
+            f"{game_id}：{choice_text}",
+            MemoryType.SHORT_TERM,
+            [game_id, "game_companion"],
+        )
+        async with self._store.db.transaction():
+            applied = await self._bus.try_mark_effect_in_transaction(
+                event.id, consumer_id
+            )
+            if not applied:
+                return
+            result = await self._persist_memory(
+                memory,
+                event.correlation_id,
+                in_transaction=True,
+                defer_best_effort=True,
+            )
+        if result.created:
+            await self._run_best_effort_tail(
+                result.memory, result.candidates, event.correlation_id
+            )
+
+    async def on_game_observation_corrected(self, event: Event) -> None:
+        """Persist a user correction without overwriting the observed event."""
+        consumer_id = "memory.game_observation_corrected"
+        if await self._bus.has_effect(event.id, consumer_id):
+            return
+        value = event.content.get("value")
+        if not isinstance(value, dict):
+            return
+        value = cast(dict[str, Any], value)
+        field = str(event.content.get("field") or "fact")
+        text = str(value.get("text") or value.get("choice_id") or "").strip()
+        if not text:
+            return
+        memory = _new_memory(
+            f"用户修正了游戏中的{field}：{text}",
+            MemoryKind.ACTIVITY,
+            f"用户修正游戏{field}",
+            MemoryType.SHORT_TERM,
+            ["game_companion", field],
+        )
+        async with self._store.db.transaction():
+            applied = await self._bus.try_mark_effect_in_transaction(
+                event.id, consumer_id
+            )
+            if not applied:
+                return
+            result = await self._persist_memory(
+                memory,
+                event.correlation_id,
+                in_transaction=True,
+                defer_best_effort=True,
+            )
+        if result.created:
+            await self._run_best_effort_tail(
+                result.memory, result.candidates, event.correlation_id
+            )
+
     async def _prepare_activity_memory(self, event: Event) -> Memory | None:
         if event.content.get("type") == "observe_user":
             result = event.content.get("result")

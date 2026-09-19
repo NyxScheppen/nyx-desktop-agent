@@ -354,6 +354,13 @@ async def latest_created_at(kind: InteractionKind) -> float | None
   自然语言时间块；测试只验证事实进入 prompt，不评价最终文案质量。
 - 表达相关测试位于 `tests/test_expression/`，读书陪读测试位于 `tests/test_reading/`。
 
+### 游戏陪玩表达接线
+
+`GAME_OBSERVATION` 只消费 accepted 的 immutable snapshot；`GAME_CHOICE_CONFIRMED` 只消费用户
+明确确认的 choice。两类 handler 使用 EventBus effect marker 幂等，生成的即时反应走现有
+`MUTTER` 事件。聊天请求携带的 game session/revision 若在消费前失效，必须返回明确的
+`game_context_stale`，不得降级为无网页/无游戏材料的普通回复。
+
 ## 完成定义
 
 - 新增或修改表达实现必须同步本 spec 与 `docs/facts/expression-system-facts.md`。

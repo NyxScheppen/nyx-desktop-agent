@@ -75,6 +75,30 @@ ROUTE_SPECS: tuple[RouteSpec, ...] = (
         "apply_reflection",
     ),
     RouteSpec(
+        EventType.GAME_OBSERVATION,
+        "expression.game_observation",
+        "expression",
+        "on_game_observation",
+    ),
+    RouteSpec(
+        EventType.GAME_CHOICE_CONFIRMED,
+        "memory.game_choice_confirmed",
+        "memory",
+        "on_game_choice_confirmed",
+    ),
+    RouteSpec(
+        EventType.GAME_CHOICE_CONFIRMED,
+        "expression.game_choice_confirmed",
+        "expression",
+        "on_game_choice_confirmed",
+    ),
+    RouteSpec(
+        EventType.GAME_OBSERVATION_CORRECTED,
+        "memory.game_observation_corrected",
+        "memory",
+        "on_game_observation_corrected",
+    ),
+    RouteSpec(
         EventType.CLOCK_TICK,
         "activity.schedule_block_start",
         "activity",

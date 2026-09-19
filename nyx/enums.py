@@ -27,6 +27,10 @@ class EventType(StrEnum):
     BROWSING_MUTTER = "browsing_mutter"
     BROWSING_QUESTION = "browsing_question"
     BROWSING_ASSOCIATION = "browsing_association"
+    GAME_SESSION_STARTED = "game_session_started"
+    GAME_OBSERVATION = "game_observation"
+    GAME_CHOICE_CONFIRMED = "game_choice_confirmed"
+    GAME_OBSERVATION_CORRECTED = "game_observation_corrected"
 
 
 class Source(StrEnum):
@@ -96,6 +100,7 @@ class ActivityType(StrEnum):
     OBSERVE_USER = "observe_user"          # 观察用户
     IDLE_REFLECTION = "idle_reflection"    # 发呆(反思)
     REST = "rest"                          # 休息
+    GAME_COMPANION = "game_companion"      # 游戏陪玩（仅显式入口）
 
 
 class MemoryType(StrEnum):
@@ -172,6 +177,61 @@ class SearchMode(StrEnum):                 # 记忆检索三层；内部层标�
     KEYWORD = "keyword"
     VECTOR = "vector"
     ASSOCIATION = "association"
+
+
+class GameProfile(StrEnum):
+    DISCO_ELYSIUM = "disco_elysium"
+    REIGNS = "reigns"
+    GENERIC_TEXT = "generic_text"
+
+
+class GamePhase(StrEnum):
+    UNKNOWN = "unknown"
+    EXPLORATION = "exploration"
+    DIALOGUE = "dialogue"
+    CHOICE = "choice"
+    TURN = "turn"
+    TRANSITION = "transition"
+
+
+class ObservationStatus(StrEnum):
+    ACCEPTED = "accepted"
+    TENTATIVE = "tentative"
+    REJECTED = "rejected"
+    PAUSED = "paused"
+
+
+class VisionResultStatus(StrEnum):
+    OK = "ok"
+    DISABLED = "disabled"
+    MALFORMED = "malformed"
+    FAILED = "failed"
+
+
+class CorrectionField(StrEnum):
+    DIALOGUE = "dialogue"
+    SPEAKER = "speaker"
+    CHOICE = "choice"
+
+
+class GameSessionStatus(StrEnum):
+    OBSERVING = "observing"
+    PAUSED = "paused"
+    ENDED = "ended"
+
+
+class TextSource(StrEnum):
+    OCR = "ocr"
+    VISION = "vision"
+    USER = "user"
+
+
+class EvidenceSource(StrEnum):
+    OCR = "ocr"
+    CROP = "crop"
+    GEOMETRY = "geometry"
+    TEMPORAL = "temporal"
+    USER = "user"
 
 
 # 可量化目标动作，完成判定为纯函数须 switch 这些值

@@ -2,6 +2,10 @@ import { useEffect } from "react";
 import { useGameCompanionStore } from "../../stores/gameCompanionStore";
 import Panel from "../layout/Panel";
 
+type GameCompanionViewProps = {
+  showWindowButton?: boolean;
+};
+
 const STATUS_LABELS = {
   observing: "观察中",
   paused: "已暂停",
@@ -17,7 +21,7 @@ const PHASE_LABELS = {
   transition: "转场",
 } as const;
 
-export default function GameCompanionView() {
+export default function GameCompanionView({ showWindowButton = true }: GameCompanionViewProps) {
   const sessionId = useGameCompanionStore((s) => s.sessionId);
   const status = useGameCompanionStore((s) => s.status);
   const gameId = useGameCompanionStore((s) => s.gameId);
@@ -30,6 +34,7 @@ export default function GameCompanionView() {
   const stop = useGameCompanionStore((s) => s.stop);
   const confirmChoice = useGameCompanionStore((s) => s.confirmChoice);
   const loadCurrent = useGameCompanionStore((s) => s.loadCurrent);
+  const openCompanion = useGameCompanionStore((s) => s.openCompanion);
 
   useEffect(() => {
     if (sessionId === null) void loadCurrent();
@@ -38,6 +43,11 @@ export default function GameCompanionView() {
   return (
     <Panel title="游戏陪玩">
       {error !== null && <p className="error-text">{error}</p>}
+      {showWindowButton && (
+        <button type="button" className="reading-btn" onClick={() => void openCompanion()}>
+          打开陪玩窗口
+        </button>
+      )}
       {sessionId === null ? (
         <p className="panel-item">还没有进行中的游戏陪玩会话</p>
       ) : (
@@ -83,7 +93,7 @@ export default function GameCompanionView() {
                   ))}
                 </div>
               )}
-              {observation.choices.length > 0 && (
+              {status === "observing" && observation.choices.length > 0 && (
                 <div className="game-companion__choices">
                   {observation.choices.map((choice) => (
                     <button

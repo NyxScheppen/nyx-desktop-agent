@@ -58,7 +58,8 @@
 | `BrowsingFacade` | `nyx/browsing/facade.py` | 会话、checkpoint、授权、输出封口、整合恢复与浏览记忆删除 |
 
 游戏陪玩视觉核心位于 `nyx/activity/game_observer.py`、`nyx/activity/game_profiles.py`、
-`nyx/activity/screen.py`；结构化视觉入口位于 `nyx/llm/vision.py`，契约见
+`nyx/activity/screen.py`；Windows 窗口枚举和 companion window 原生命令位于
+`frontend/src-tauri/src/lib.rs`；结构化视觉入口位于 `nyx/llm/vision.py`，契约见
 `docs/specs/14-game-companion-vision.md`。
 
 ## 前端地图

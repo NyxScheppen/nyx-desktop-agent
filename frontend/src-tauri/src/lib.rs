@@ -1895,6 +1895,287 @@ async fn browser_clear_data(
     Ok(result)
 }
 
+#[derive(Debug, Serialize)]
+struct GameNativeError {
+    code: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GamePixelRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+#[derive(Debug, Serialize)]
+struct GameWindowCandidate {
+    window_id: String,
+    hwnd: u64,
+    pid: u32,
+    process_name: String,
+    process_path: Option<String>,
+    process_start_time_ms: u64,
+    title: String,
+    client_bounds_physical: GamePixelRect,
+    scale_factor: f64,
+    foreground: bool,
+    minimized: bool,
+}
+
+fn game_native_error(code: &str, message: &str) -> GameNativeError {
+    GameNativeError {
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+fn check_game_caller(webview: &tauri::Webview) -> Result<(), GameNativeError> {
+    let url = webview
+        .url()
+        .map_err(|_| game_native_error("companion_window_lost", "调用来源不可用"))?;
+    let origin = url.origin().ascii_serialization();
+    if webview.label() != "main"
+        || !matches!(
+            origin.as_str(),
+            "http://localhost:5173" | "http://tauri.localhost" | "tauri://localhost"
+        )
+    {
+        return Err(game_native_error("companion_window_lost", "调用来源不受信任"));
+    }
+    Ok(())
+}
+
+fn game_window_id(hwnd: u64) -> String {
+    format!("hwnd:0x{hwnd:x}")
+}
+
+#[cfg(target_os = "windows")]
+fn enumerate_game_windows() -> Result<Vec<GameWindowCandidate>, GameNativeError> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HWND, LPARAM, POINT, RECT};
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcessId, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetClientRect, GetForegroundWindow,
+        GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+        IsWindowVisible,
+    };
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+
+    unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> i32 {
+        let windows = &mut *(lparam as *mut Vec<HWND>);
+        windows.push(hwnd);
+        1
+    }
+
+    fn utf16_string(buffer: &[u16], length: usize) -> String {
+        OsString::from_wide(&buffer[..length]).to_string_lossy().into_owned()
+    }
+
+    fn process_details(pid: u32) -> (String, Option<String>, u64) {
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return (format!("pid:{pid}"), None, 0);
+            }
+            let mut path = vec![0_u16; 32_768];
+            let mut path_len = path.len() as u32;
+            let process_path = if QueryFullProcessImageNameW(handle, 0, path.as_mut_ptr(), &mut path_len) != 0 {
+                let path = utf16_string(&path, path_len as usize);
+                Some(path)
+            } else {
+                None
+            };
+            let process_name = process_path
+                .as_deref()
+                .and_then(|path| path.rsplit(['\\', '/']).next())
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("pid:{pid}"));
+            let mut creation = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+            let mut exit = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+            let mut kernel = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+            let mut user = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+            let process_start_time_ms = if GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) != 0 {
+                let ticks = ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
+                ticks.saturating_sub(116_444_736_000_000_000) / 10_000
+            } else {
+                0
+            };
+            CloseHandle(handle);
+            (process_name, process_path, process_start_time_ms)
+        }
+    }
+
+    unsafe {
+        let mut handles: Vec<HWND> = Vec::new();
+        if EnumWindows(Some(collect_window), &mut handles as *mut _ as LPARAM) == 0 {
+            return Err(game_native_error("window_enumeration_failed", "窗口枚举失败"));
+        }
+        let current_pid = GetCurrentProcessId();
+        let foreground = GetForegroundWindow();
+        let mut candidates = Vec::new();
+        for hwnd in handles {
+            if hwnd.is_null() {
+                continue;
+            }
+            let mut pid = 0_u32;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid == 0 || pid == current_pid || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+                continue;
+            }
+            let mut client = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            if GetClientRect(hwnd, &mut client) == 0 || client.right <= client.left || client.bottom <= client.top {
+                continue;
+            }
+            let mut top_left = POINT { x: client.left, y: client.top };
+            let mut bottom_right = POINT { x: client.right, y: client.bottom };
+            if ClientToScreen(hwnd, &mut top_left) == 0 || ClientToScreen(hwnd, &mut bottom_right) == 0 {
+                continue;
+            }
+            let title_length = GetWindowTextLengthW(hwnd);
+            let mut title_buffer = vec![0_u16; title_length.max(0) as usize + 1];
+            let title_size = GetWindowTextW(hwnd, title_buffer.as_mut_ptr(), title_buffer.len() as i32);
+            let title = utf16_string(&title_buffer, title_size.max(0) as usize);
+            let scale_factor = (GetDpiForWindow(hwnd).max(96) as f64) / 96.0;
+            let (process_name, process_path, process_start_time_ms) = process_details(pid);
+            if process_start_time_ms == 0 {
+                continue;
+            }
+            let hwnd_u64 = hwnd as usize as u64;
+            candidates.push(GameWindowCandidate {
+                window_id: game_window_id(hwnd_u64),
+                hwnd: hwnd_u64,
+                pid,
+                process_name,
+                process_path,
+                process_start_time_ms,
+                title,
+                client_bounds_physical: GamePixelRect {
+                    left: top_left.x,
+                    top: top_left.y,
+                    right: bottom_right.x,
+                    bottom: bottom_right.y,
+                },
+                scale_factor,
+                foreground: hwnd == foreground,
+                minimized: false,
+            });
+        }
+        Ok(candidates)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn enumerate_game_windows() -> Result<Vec<GameWindowCandidate>, GameNativeError> {
+    Err(game_native_error("window_enumeration_failed", "此平台不支持窗口枚举"))
+}
+
+#[tauri::command]
+fn game_list_windows(webview: tauri::Webview) -> Result<Vec<GameWindowCandidate>, GameNativeError> {
+    check_game_caller(&webview)?;
+    enumerate_game_windows()
+}
+
+#[tauri::command]
+fn game_companion_open(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+) -> Result<(), GameNativeError> {
+    check_game_caller(&webview)?;
+    if let Some(window) = app.get_webview_window("game-companion") {
+        window
+            .show()
+            .and_then(|_| window.set_focus())
+            .map_err(|_| {
+                game_native_error(
+                    "companion_window_create_failed",
+                    "陪玩窗口无法显示",
+                )
+            })?;
+        return Ok(());
+    }
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "game-companion",
+        tauri::WebviewUrl::App("index.html?companion=game".into()),
+    )
+    .title("Nyx 游戏陪玩")
+    .inner_size(360.0, 300.0)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .build()
+    .map_err(|_| game_native_error("companion_window_create_failed", "陪玩窗口创建失败"))?;
+    window.show().and_then(|_| window.set_focus()).map_err(|_| {
+        game_native_error("companion_window_create_failed", "陪玩窗口无法显示")
+    })?;
+    Ok(())
+}
+
+#[tauri::command]
+fn game_companion_close(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+) -> Result<(), GameNativeError> {
+    check_game_caller(&webview)?;
+    if let Some(window) = app.get_webview_window("game-companion") {
+        window
+            .close()
+            .map_err(|_| game_native_error("companion_window_lost", "陪玩窗口关闭失败"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn game_companion_set_visible(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+    visible: bool,
+) -> Result<(), GameNativeError> {
+    check_game_caller(&webview)?;
+    let window = app
+        .get_webview_window("game-companion")
+        .ok_or_else(|| game_native_error("companion_window_not_found", "陪玩窗口不存在"))?;
+    if visible {
+        window
+            .show()
+            .map_err(|_| game_native_error("companion_window_lost", "陪玩窗口无法显示"))?;
+    } else {
+        window
+            .hide()
+            .map_err(|_| game_native_error("companion_window_lost", "陪玩窗口无法隐藏"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn game_companion_set_position(
+    webview: tauri::Webview,
+    app: tauri::AppHandle,
+    x: f64,
+    y: f64,
+) -> Result<(), GameNativeError> {
+    check_game_caller(&webview)?;
+    if !x.is_finite() || !y.is_finite() {
+        return Err(game_native_error("companion_window_position_failed", "坐标无效"));
+    }
+    let window = app
+        .get_webview_window("game-companion")
+        .ok_or_else(|| game_native_error("companion_window_not_found", "陪玩窗口不存在"))?;
+    window
+        .set_position(tauri::LogicalPosition::new(x, y))
+        .map_err(|_| game_native_error("companion_window_position_failed", "陪玩窗口定位失败"))?;
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn desktop_presence() -> Result<(u64, String), String> {
     use windows_sys::Win32::System::SystemInformation::GetTickCount;
@@ -2042,7 +2323,12 @@ pub fn run() {
             browser_revoke_origin,
             browser_allow_auth_popup,
             browser_close,
-            browser_clear_data
+            browser_clear_data,
+            game_companion_open,
+            game_list_windows,
+            game_companion_close,
+            game_companion_set_visible,
+            game_companion_set_position
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2169,6 +2455,25 @@ mod browsing_tests {
             }
             .validate()
             .is_err());
+        }
+    }
+
+    #[test]
+    fn game_window_ids_use_lowercase_hex() {
+        assert_eq!(game_window_id(0xABCD), "hwnd:0xabcd");
+    }
+
+    #[test]
+    fn game_native_commands_are_registered() {
+        let source = include_str!("lib.rs");
+        for command in [
+            "game_list_windows",
+            "game_companion_open",
+            "game_companion_close",
+            "game_companion_set_visible",
+            "game_companion_set_position",
+        ] {
+            assert!(source.contains(command), "missing native command: {command}");
         }
     }
 

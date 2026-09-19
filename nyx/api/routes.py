@@ -175,6 +175,11 @@ class _GameChoicePayload(BaseModel):
     choice_id: str = Field(..., min_length=1, max_length=64)
 
 
+class _GameLifecyclePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expected_revision: int = Field(..., ge=0)
+
+
 class _GameCorrectionPayload(BaseModel):
     revision: int = Field(..., ge=0)
     correction_id: str = Field(..., min_length=1, max_length=128)
@@ -325,29 +330,74 @@ def build_app(
         game = cast(dict[str, Any], game)
         return {"activity_id": activity.id, **game}
 
+    async def _game_session_response(session_id: str) -> dict[str, Any]:
+        activity = await app.activity.get_game_session(session_id)
+        if activity is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        game = activity.progress.get("game_companion")
+        if not isinstance(game, dict):
+            raise HTTPException(status_code=404, detail="session_not_found")
+        game = cast(dict[str, Any], game)
+        return {
+            "activity_id": activity.id,
+            **game,
+            "revision": game.get("last_accepted_revision", 0),
+        }
+
+    def _raise_game_lifecycle_error(error: ValueError) -> None:
+        code = str(error)
+        status = {
+            "session_not_found": 404,
+            "stale_observation": 409,
+            "session_state_conflict": 409,
+            "game_state_conflict": 409,
+        }.get(code, 409)
+        raise HTTPException(status_code=status, detail=code) from error
+
     @fast.post("/api/game-companion/sessions/{session_id}/pause")
-    async def api_game_session_pause(session_id: str) -> dict[str, str]:
-        await app.activity.pause_game_companion(session_id)
+    async def api_game_session_pause(
+        session_id: str, payload: _GameLifecyclePayload
+    ) -> dict[str, Any]:
+        try:
+            await app.activity.pause_game_companion(
+                session_id, payload.expected_revision
+            )
+        except ValueError as error:
+            _raise_game_lifecycle_error(error)
         pending = getattr(app, "game_pending_observations", None)
         if isinstance(pending, dict):
             cast(dict[str, GameObservation], pending).pop(session_id, None)
-        return {"status": "paused"}
+        return await _game_session_response(session_id)
 
     @fast.post("/api/game-companion/sessions/{session_id}/resume")
-    async def api_game_session_resume(session_id: str) -> dict[str, str]:
-        await app.activity.resume_game_companion(session_id)
+    async def api_game_session_resume(
+        session_id: str, payload: _GameLifecyclePayload
+    ) -> dict[str, Any]:
+        try:
+            await app.activity.resume_game_companion(
+                session_id, payload.expected_revision
+            )
+        except ValueError as error:
+            _raise_game_lifecycle_error(error)
         pending = getattr(app, "game_pending_observations", None)
         if isinstance(pending, dict):
             cast(dict[str, GameObservation], pending).pop(session_id, None)
-        return {"status": "observing"}
+        return await _game_session_response(session_id)
 
     @fast.post("/api/game-companion/sessions/{session_id}/stop")
-    async def api_game_session_stop(session_id: str) -> dict[str, str]:
-        await app.activity.stop_game_companion(session_id)
+    async def api_game_session_stop(
+        session_id: str, payload: _GameLifecyclePayload
+    ) -> dict[str, Any]:
+        try:
+            await app.activity.stop_game_companion(
+                session_id, payload.expected_revision
+            )
+        except ValueError as error:
+            _raise_game_lifecycle_error(error)
         pending = getattr(app, "game_pending_observations", None)
         if isinstance(pending, dict):
             cast(dict[str, GameObservation], pending).pop(session_id, None)
-        return {"status": "ended"}
+        return await _game_session_response(session_id)
 
     @fast.post("/api/game-companion/sessions/{session_id}/choice")
     async def api_game_choice(

@@ -111,6 +111,16 @@ export default function App() {
     "--text-scale": FONT_SCALE_VALUE[fontScale],
   } as CSSProperties;
   const timePhase = timePhaseAt(now);
+  const isCompanionWindow =
+    new URLSearchParams(window.location.search).get("companion") === "game";
+
+  if (isCompanionWindow) {
+    return (
+      <div className="game-companion-window" style={shellStyle}>
+        <GameCompanionView showWindowButton={false} />
+      </div>
+    );
+  }
 
   return (
     <div className="app" data-time-phase={timePhase}>

@@ -1,9 +1,11 @@
 import io
+import threading
 
 import pytest
 from PIL import Image
 
 from nyx.activity.game_observer import (
+    RapidOcrEngine,
     build_ocr_observation,
     canonical_observation_hash,
     observation_to_snapshot,
@@ -132,3 +134,25 @@ def test_ocr_observation_rejects_out_of_bounds_text() -> None:
     assert report.status.value == "rejected"
     assert "bbox_out_of_bounds" in report.hard_failures
     assert observation.status.value == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_rapid_ocr_timeout_does_not_start_second_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = RapidOcrEngine(timeout_seconds=0.01)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking(_: bytes) -> list[GameTextBlock]:
+        started.set()
+        release.wait(timeout=2.0)
+        return []
+
+    monkeypatch.setattr(engine, "_recognize_sync", blocking)
+    first = await engine.recognize(b"frame", 1, 1)
+    assert started.is_set()
+    second = await engine.recognize(b"frame", 1, 1)
+    release.set()
+    assert first == ([], "ocr_unavailable")
+    assert second == ([], "ocr_busy")

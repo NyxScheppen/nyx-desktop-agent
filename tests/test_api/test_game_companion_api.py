@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
+import asyncio
 import io
 from types import SimpleNamespace
 from typing import cast
@@ -54,31 +55,22 @@ class _FakeActivity:
         self, session_id: str, snapshot: AcceptedObservationSnapshot
     ) -> str:
         game = self.activity.progress["game_companion"]
+        if game.get("last_observation_hash") == snapshot.observation_hash:
+            return str(game.get("last_observation_event", "event-1"))
         game["last_accepted_revision"] = snapshot.revision
-        game["last_observation"] = {
-            "session_id": snapshot.session_id,
-            "game_id": snapshot.game_id,
-            "profile": snapshot.profile.value,
-            "profile_version": snapshot.profile_version,
-            "threshold_version": snapshot.threshold_version,
-            "revision": snapshot.revision,
-            "phase": snapshot.phase.value,
-            "observation_hash": snapshot.observation_hash,
-            "captured_at": snapshot.captured_at,
-            "speaker": snapshot.speaker,
-            "speaker_evidence_ids": snapshot.speaker_evidence_ids,
-            "dialogue": [],
-            "text_blocks": [],
-            "choices": [],
-            "visible_entities": [],
-            "entity_evidence_ids": [],
-            "scene_summary": None,
-            "scene_evidence_ids": [],
-            "confidence": snapshot.confidence,
-            "evidence": [],
-            "uncertainties": [],
-        }
+        game["last_observation_hash"] = snapshot.observation_hash
+        game["last_observation_event"] = "event-1"
+        from nyx.activity.game_observer import snapshot_to_dict
+
+        game["last_observation"] = snapshot_to_dict(snapshot)
         return "event-1"
+
+
+class _OversizedActivity(_FakeActivity):
+    async def record_game_observation(
+        self, session_id: str, snapshot: AcceptedObservationSnapshot
+    ) -> str:
+        raise ValueError("observation_payload_too_large")
 
 
 class _FakeOcr:
@@ -93,9 +85,33 @@ class _FakeOcr:
         ], None
 
 
+class _BlockingOcr:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls = 0
+
+    async def recognize(
+        self, image_bytes: bytes, width: int, height: int
+    ) -> tuple[list[GameTextBlock], str | None]:
+        self.calls += 1
+        self.started.set()
+        await self.release.wait()
+        return [], "ocr_unavailable"
+
+
 def _client(activity: Activity, ocr: object | None = None) -> AsyncClient:
     app = build_app(
         cast(_App, SimpleNamespace(activity=_FakeActivity(activity), game_ocr=ocr))
+    )
+    return AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://127.0.0.1:8000"
+    )
+
+
+def _client_with_activity(activity: object, ocr: object | None = None) -> AsyncClient:
+    app = build_app(
+        cast(_App, SimpleNamespace(activity=activity, game_ocr=ocr))
     )
     return AsyncClient(
         transport=ASGITransport(app=app), base_url="http://127.0.0.1:8000"
@@ -208,3 +224,68 @@ async def test_two_stable_injected_frames_are_committed() -> None:
     assert second.json()["accepted"] is True
     assert second.json()["status"] == "accepted"
     assert second.json()["revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_accepted_frame_returns_durable_revision() -> None:
+    activity = _activity()
+    async with _client(activity, _FakeOcr()) as client:
+        headers = _headers()
+        await client.post(
+            "/api/game-companion/bridge/sessions/session-1/frames",
+            content=_png(960, 540), headers=headers,
+        )
+        accepted = await client.post(
+            "/api/game-companion/bridge/sessions/session-1/frames",
+            content=_png(960, 540), headers=headers,
+        )
+        duplicate = await client.post(
+            "/api/game-companion/bridge/sessions/session-1/frames",
+            content=_png(960, 540), headers=_headers(revision=1),
+        )
+    assert accepted.json()["revision"] == 1
+    assert duplicate.status_code == 200
+    assert duplicate.json()["accepted"] is True
+    assert duplicate.json()["revision"] == 1
+    assert duplicate.json()["observation_hash"] == accepted.json()["observation_hash"]
+    assert activity.progress["game_companion"]["last_accepted_revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_game_frame_rejects_second_inflight_frame_for_same_session() -> None:
+    ocr = _BlockingOcr()
+    async with _client(_activity(), ocr) as client:
+        first_task = asyncio.create_task(
+            client.post(
+                "/api/game-companion/bridge/sessions/session-1/frames",
+                content=_png(), headers=_headers(),
+            )
+        )
+        await ocr.started.wait()
+        second = await client.post(
+            "/api/game-companion/bridge/sessions/session-1/frames",
+            content=_png(), headers=_headers(),
+        )
+        ocr.release.set()
+        first = await first_task
+    assert second.status_code == 409
+    assert second.json()["detail"] == "frame_busy"
+    assert first.status_code == 200
+    assert ocr.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_observation_payload_limit_maps_to_413() -> None:
+    activity = _OversizedActivity(_activity())
+    async with _client_with_activity(activity, _FakeOcr()) as client:
+        headers = _headers()
+        await client.post(
+            "/api/game-companion/bridge/sessions/session-1/frames",
+            content=_png(960, 540), headers=headers,
+        )
+        response = await client.post(
+            "/api/game-companion/bridge/sessions/session-1/frames",
+            content=_png(960, 540), headers=headers,
+        )
+    assert response.status_code == 413
+    assert response.json()["detail"] == "observation_payload_too_large"

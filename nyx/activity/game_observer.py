@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import re
+import threading
 import unicodedata
 from collections.abc import Callable
 from dataclasses import replace
@@ -38,6 +39,12 @@ _MAX_CROP_BYTES = 1024 * 1024
 _MAX_TOTAL_CROP_BYTES = 3 * 1024 * 1024
 
 
+def _drain_ocr_worker(task: asyncio.Task[list[GameTextBlock]]) -> None:
+    """Consume a late worker exception after the caller timed out."""
+    if not task.cancelled():
+        task.exception()
+
+
 class OcrEngine(Protocol):
     async def recognize(
         self, image_bytes: bytes, width: int, height: int
@@ -50,13 +57,20 @@ class RapidOcrEngine:
     def __init__(self, timeout_seconds: float = 5.0) -> None:
         self._timeout_seconds = timeout_seconds
         self._engine: Callable[[Any], Any] | None = None
+        self._run_lock = threading.Lock()
 
     async def recognize(
         self, image_bytes: bytes, width: int, height: int
     ) -> tuple[list[GameTextBlock], str | None]:
+        if not self._run_lock.acquire(blocking=False):
+            return [], "ocr_busy"
         try:
+            worker = asyncio.create_task(
+                asyncio.to_thread(self._recognize_sync_with_release, image_bytes)
+            )
+            worker.add_done_callback(_drain_ocr_worker)
             blocks = await asyncio.wait_for(
-                asyncio.to_thread(self._recognize_sync, image_bytes),
+                asyncio.shield(worker),
                 timeout=self._timeout_seconds,
             )
         except asyncio.TimeoutError:
@@ -73,6 +87,12 @@ class RapidOcrEngine:
         ):
             return [], "ocr_unavailable"
         return blocks, None
+
+    def _recognize_sync_with_release(self, image_bytes: bytes) -> list[GameTextBlock]:
+        try:
+            return self._recognize_sync(image_bytes)
+        finally:
+            self._run_lock.release()
 
     def _recognize_sync(self, image_bytes: bytes) -> list[GameTextBlock]:
         import importlib

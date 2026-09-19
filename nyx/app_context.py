@@ -84,6 +84,9 @@ class _App:
     game_pending_observations: dict[str, GameObservation] = field(
         default_factory=lambda: dict[str, GameObservation]()
     )
+    game_frame_locks: dict[str, asyncio.Lock] = field(
+        default_factory=lambda: dict[str, asyncio.Lock]()
+    )
 
     async def publish_observation(self, event: Event, idle_seconds: float) -> bool:
         """Persist an observation before committing its in-memory snapshot."""

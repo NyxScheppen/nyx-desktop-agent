@@ -567,6 +567,13 @@ mock 测试无法证明 DOM 提取器满足非表单契约。
 **怎么做**：tentative `GameObservation` 只保存在进程内 session pending map，不进入 durable checkpoint/event；accepted、pause、resume、stop 时清理 pending，重启后从 durable accepted 重新开始稳定窗口。
 **影响的文件/决策**：`nyx/app_context.py`、`nyx/api/routes.py`、游戏 observation pipeline。
 
+### 2026-09-19: OCR 超时必须保护实际 worker 生命周期
+
+**来源**：游戏陪玩 frame bridge 并发与 RapidOCR 超时审查。
+**教训**：`asyncio.wait_for(to_thread(...))` 超时只取消协程等待，已经运行的 OCR 线程仍会继续；高频 frame 会不断提交新任务，造成 executor 堆积，并让旧帧晚于新帧完成。
+**怎么做**：frame bridge 以 session single-flight 锁拒绝重叠主识别；OCR adapter 以实际线程生命周期持有 gate，超时后不提前释放，后续调用返回 busy，直到线程真正结束才允许下一次执行；accepted 幂等重放必须返回 durable revision，payload 预算错误固定映射 413。
+**影响的文件/决策**：`nyx/api/routes.py`、`nyx/activity/game_observer.py`、`nyx/app_context.py`、游戏陪玩 spec 与回归测试。
+
 ## 模板（条目格式）
 
 ```

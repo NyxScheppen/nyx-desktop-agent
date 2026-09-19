@@ -572,10 +572,13 @@ trusted origin，不能由普通浏览器页面调用。
 
 同一 session 同一时刻最多一个主识别任务：
 
-- 新帧到达时，若旧任务仍在等待 OCR/视觉模型，保留最新帧并丢弃中间帧；
-- 旧任务完成时必须比较 `revision` 和 `observation_hash`；
-- 旧结果不能覆盖新结果、不能触发旧剧情反应、不能写入新选择；
-- 队列满时丢弃临时帧，不丢失已确认的 durable checkpoint。
+- frame bridge 在 session 级 single-flight 锁已占用时立即返回 `409 frame_busy`，不排队、
+  不启动第二个 OCR/视觉任务；客户端应等待下一次采样并继续使用原 durable revision；
+- 获取锁后必须重新读取 session/checkpoint，再校验状态、窗口 identity 和
+  `expected_revision`，不能复用获取锁前的旧快照；
+- OCR、tentative pending 更新、accepted record 必须在该锁保护范围内完成；
+- 旧结果不能覆盖新结果、不能触发旧剧情反应、不能写入新选择；已提交的 durable
+  checkpoint 不因临时 frame 被丢弃而改变。
 
 ## 图像预处理与 OCR
 
@@ -603,6 +606,8 @@ OCR 运行约束：
 - 单个 crop OCR 超时 2 秒，整帧 OCR 超时 5 秒；
 - 初始化/推理失败返回 `ocr_unavailable`，不抛出到主循环；若没有可接受的旧观察，结果为
   `tentative` 或 `rejected`，不自动暂停整个 session；
+- RapidOCR 同时只允许一个实际 worker 执行；协程超时不会提前释放 worker gate。底层线程
+  结束前，后续请求返回 `ocr_busy`，不再向 executor 提交新任务；线程结束后 gate 才释放；
 - OCR 输出的 bbox 是目标客户区像素坐标，行和字符 confidence 归一化到 `[0,1]`；
 - 测试注入 fake OCR，不加载真实模型。
 
@@ -1576,6 +1581,14 @@ status；不返回图片。
 `error_code="ocr_unavailable"` 和 validation，不返回成功但无效果的空 observation；不写入
 checkpoint/event。真实 OCR worker 可用后，accepted/tentative/rejected 按观察管线处理。
 
+相同 accepted 画面再次提交时，若其 hash 已是 durable checkpoint 的当前 hash，响应仍可
+返回 `accepted=true`，但 `revision` 和 `observation_hash` 必须返回 durable checkpoint 的
+值，不得返回未写入的候选 revision；该重放不得追加新的 `game_observation` 事件。
+
+同一 session 的另一帧正在 OCR/视觉处理时，bridge 返回 `409 frame_busy`；这不是 session
+revision 冲突，客户端不得推进 revision。accepted snapshot 或事件 envelope 超过预算时，
+返回 `413 observation_payload_too_large`，保留上一份 durable observation。
+
 所有 mutation 请求必须携带 session/revision（start 除外）；response 返回当前 revision 和
 状态。SSE 的 `GAME_*` 帧按 session id 更新 store；丢失 SSE 后 store 通过
 `GET /api/game-companion/sessions/{id}` 重新读取当前 checkpoint，不重放图片。
@@ -1612,7 +1625,7 @@ REST/bridge 错误码固定为：
 404 session_not_found | choice_not_found
 409 stale_choice | choice_already_confirmed | session_state_conflict
     window_identity_mismatch | stale_observation | overlay_polluted
-    correction_storage_limit | game_context_stale
+    correction_storage_limit | game_context_stale | frame_busy
 413 capture_too_large | payload_too_large | observation_payload_too_large
 422 capture_invalid | profile_mismatch
 409 game_state_conflict
@@ -1626,6 +1639,7 @@ REST/bridge 错误码固定为：
 | 400 | `invalid_correction_value` | correction field/value 判别校验失败 |
 | 409 | `correction_storage_limit` | 未整合 overlay 已达到 64 条，不能安全淘汰 |
 | 409 | `game_context_stale` | chat 消费时 session/revision 已失效，禁止普通回复降级 |
+| 409 | `frame_busy` | 同一 session 已有识别任务，当前 frame 未排队或执行 |
 | 413 | `observation_payload_too_large` | accepted snapshot 或 event envelope 超过序列化预算 |
 
 409 必须返回当前 session 状态和 revision（不返回图片）；413 必须在 JSON/Pydantic 解析前

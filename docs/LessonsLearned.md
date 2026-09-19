@@ -574,6 +574,27 @@ mock 测试无法证明 DOM 提取器满足非表单契约。
 **怎么做**：frame bridge 以 session single-flight 锁拒绝重叠主识别；OCR adapter 以实际线程生命周期持有 gate，超时后不提前释放，后续调用返回 busy，直到线程真正结束才允许下一次执行；accepted 幂等重放必须返回 durable revision，payload 预算错误固定映射 413。
 **影响的文件/决策**：`nyx/api/routes.py`、`nyx/activity/game_observer.py`、`nyx/app_context.py`、游戏陪玩 spec 与回归测试。
 
+### 2026-09-19: 独立窗口必须隔离全局应用生命周期
+
+**来源**：游戏陪玩 companion window 审查。
+**教训**：复用顶层 App 但在 hooks 之后才分流，会让 child 重复建立 SSE、presence 和恢复轮询；没有原生采样权限时还会把 WebView 输入时间误报成系统在线状态。
+**怎么做**：在 App 入口先按 URL 分流到无全局副作用的 companion 壳；主窗口才挂 SSE、presence 和全局恢复逻辑。
+**影响的文件/决策**：`frontend/src/App.tsx`、陪玩窗口 capability 边界。
+
+### 2026-09-19: 原生子窗口销毁必须反馈到会话状态机
+
+**来源**：游戏陪玩 companion window 关闭/崩溃审查。
+**教训**：只处理主窗口 Destroyed 会留下 observing session 和失效窗口句柄，重新打开时也无法形成明确的暂停语义。
+**怎么做**：监听 companion window Destroyed，向仍存活的主窗口发送结构化 lost 事件；主窗口按当前 revision 调用现有 pause 接口，冲突时先 hydrate 再重试。
+**影响的文件/决策**：`frontend/src-tauri/src/lib.rs`、`frontend/src/App.tsx`、`frontend/src/stores/gameCompanionStore.ts`。
+
+### 2026-09-19: Win32 窗口枚举不能占用 Tauri UI 线程
+
+**来源**：游戏窗口枚举性能审查。
+**教训**：EnumWindows 后逐窗口 OpenProcess/QueryFullProcessImageNameW/GetProcessTimes 属于可能阻塞的原生 I/O，放在同步 command 会卡住桌面。
+**怎么做**：保留同步 Win32 收集函数，但通过 Tauri `spawn_blocking` 执行；command 线程只做调用来源校验和任务调度。
+**影响的文件/决策**：`frontend/src-tauri/src/lib.rs`。
+
 ## 模板（条目格式）
 
 ```

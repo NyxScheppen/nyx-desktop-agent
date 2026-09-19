@@ -275,6 +275,22 @@ describe("gameCompanionStore", () => {
 
     expect(useGameCompanionStore.getState().error).toBe("陪玩窗口创建失败");
   });
+
+  it("pauses the session when the native companion window is lost", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: "paused", revision: 2 }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    useGameCompanionStore.setState({ sessionId: "s1", status: "observing", revision: 2 });
+
+    await useGameCompanionStore.getState().handleNativeWindowLost();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/sessions/s1/pause"),
+      expect.objectContaining({ body: JSON.stringify({ expected_revision: 2 }) }),
+    );
+    expect(useGameCompanionStore.getState()).toMatchObject({ status: "paused", revision: 2 });
+  });
 });
 
 describe("GameCompanionView", () => {

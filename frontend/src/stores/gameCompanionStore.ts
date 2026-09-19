@@ -41,6 +41,7 @@ export type GameCompanionState = {
   stop: () => Promise<void>;
   confirmChoice: (choiceId: string) => Promise<void>;
   openCompanion: () => Promise<void>;
+  handleNativeWindowLost: () => Promise<void>;
   reset: () => void;
 };
 
@@ -60,7 +61,7 @@ const INITIAL_STATE = {
   pendingChoice: null,
   remoteVisionEnabled: false,
   error: null,
-} satisfies Omit<GameCompanionState, "hydrate" | "loadCurrent" | "acceptEvent" | "pause" | "resume" | "stop" | "confirmChoice" | "openCompanion" | "reset">;
+} satisfies Omit<GameCompanionState, "hydrate" | "loadCurrent" | "acceptEvent" | "pause" | "resume" | "stop" | "confirmChoice" | "openCompanion" | "handleNativeWindowLost" | "reset">;
 
 function recordOf(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null
@@ -317,6 +318,26 @@ export const useGameCompanionStore = create<GameCompanionState>((set, get) => ({
         error: code === null ? errorText(error) : NATIVE_ERROR_LABELS[code] ?? "陪玩窗口操作失败",
       });
     }
+  },
+  handleNativeWindowLost: async () => {
+    const current = get();
+    if (current.sessionId === null || current.status !== "observing") return;
+    const sessionId = current.sessionId;
+    const pauseCurrent = async (): Promise<boolean> => {
+      const latest = get();
+      if (latest.sessionId !== sessionId || latest.status !== "observing") return true;
+      try {
+        const result = await pauseGameCompanion(latest.sessionId, latest.revision);
+        set({ status: result.status as GameSessionStatus, revision: result.revision,
+          error: "陪玩窗口已关闭，观察已暂停" });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    if (await pauseCurrent()) return;
+    await get().hydrate(sessionId);
+    if (!(await pauseCurrent())) set({ error: "陪玩窗口已关闭，但暂停观察失败" });
   },
   reset: () => set({ ...INITIAL_STATE }),
 }));

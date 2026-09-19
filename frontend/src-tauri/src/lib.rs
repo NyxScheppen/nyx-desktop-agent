@@ -2078,9 +2078,13 @@ fn enumerate_game_windows() -> Result<Vec<GameWindowCandidate>, GameNativeError>
 }
 
 #[tauri::command]
-fn game_list_windows(webview: tauri::Webview) -> Result<Vec<GameWindowCandidate>, GameNativeError> {
+async fn game_list_windows(
+    webview: tauri::Webview,
+) -> Result<Vec<GameWindowCandidate>, GameNativeError> {
     check_game_caller(&webview)?;
-    enumerate_game_windows()
+    tauri::async_runtime::spawn_blocking(enumerate_game_windows)
+        .await
+        .map_err(|_| game_native_error("window_enumeration_failed", "窗口枚举失败"))?
 }
 
 #[tauri::command]
@@ -2333,6 +2337,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     app.run(|app, event| {
+        if matches!(&event, tauri::RunEvent::WindowEvent {label, event: tauri::WindowEvent::Destroyed, ..} if label == "game-companion") {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.emit("game_companion_lost", json!({
+                    "code": "companion_window_lost"
+                }));
+            }
+        }
         if matches!(&event, tauri::RunEvent::WindowEvent {label, event: tauri::WindowEvent::Destroyed, ..} if label == "main") {
             if let Some(window) = app.get_webview_window("browsing-auth") { let _ = window.close(); }
             app.exit(0);
@@ -2475,6 +2486,14 @@ mod browsing_tests {
         ] {
             assert!(source.contains(command), "missing native command: {command}");
         }
+    }
+
+    #[test]
+    fn game_window_enumeration_is_off_the_ui_thread() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains("async fn game_list_windows"));
+        assert!(source.contains("spawn_blocking(enumerate_game_windows)"));
+        assert!(source.contains("game_companion_lost"));
     }
 
     #[test]

@@ -12,14 +12,14 @@
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：`19 files / 308 passed`。
+- 最近一次前端全量验证：`19 files / 309 passed`。
 - 浏览转录回归：`stores.test.ts` 校验 browsing 输出去重、canonical ASK 抑制、选区及记忆引用。
 - 浏览后端回归另覆盖 focus/summary 容量上限、eval 失败保持联想、记忆阶段复用 checkpoint
   和 heartbeat 数据库失败回收子任务、迟到认证页不撤销当前页；打包地址回归验证开发/生产共用 REST/SSE base。
 - 浏览事件查询拒绝空类型集合及 1..100 之外的 limit，排序/过滤由总线接口拥有。
 - 桌面 launcher 回归：后端/Tauri 共享 256-bit secret；8000 已占用时不创建进程；打包资源定位和 sidecar 构建产物；可选 Windows 本地 HTTPS mock IdP spike（临时 CA，默认跳过）。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
-- Rust 单元：9 条；覆盖游戏窗口 ID/命令注册及既有浏览纯函数；三个 opt-in 桌面 spike，分别覆盖 ACL/DOM、本地 HTTPS mock IdP 与窄窗口激活浏览扩宽（不创建 child）；mock IdP 另覆盖 302 逐跳预检、私网拒绝与慢预检时 UI 响应。
+- Rust 单元：10 条；覆盖游戏窗口 ID/命令注册、后台枚举契约及既有浏览纯函数；三个 opt-in 桌面 spike，分别覆盖 ACL/DOM、本地 HTTPS mock IdP 与窄窗口激活浏览扩宽（不创建 child）；mock IdP 另覆盖 302 逐跳预检、私网拒绝与慢预检时 UI 响应。
 - Windows 桌面 spike：ACL/DOM、HTTPS mock IdP、静态 main 窄窗扩宽均单独通过；真实远程 app/core/plugin invoke 拒绝、公开正文、非表单正文/选区及 password 零正文。
 - `browser.test.tsx`：16 条覆盖导航失效/迟到结果、隐私暂停、token 失效清上下文、focus ID 重试、新操作 ID、显隐、普通浏览器降级及提问回复；旧发送完成不清新提问选择，未创建 child 时激活视图按 DPI 扩宽窗口；popup 许可和关闭不假定登录成功；记录按需读取、cursor 续页/防重叠、全量删除清空列表和 cursor。
 - `gameCompanion.test.tsx`：durable checkpoint hydrate、旧 observation revision 丢弃、hydrate/SSE 竞态保护、`stale_choice` 重拉并保留提示、当前/废弃 game activity 恢复、迟到 session-start 丢弃、生命周期 expected revision、结束后禁止选择、陪玩面板对白/阶段/选项显示与选择确认、native companion window 打开及错误码映射。

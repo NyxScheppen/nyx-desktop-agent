@@ -595,6 +595,27 @@ mock 测试无法证明 DOM 提取器满足非表单契约。
 **怎么做**：保留同步 Win32 收集函数，但通过 Tauri `spawn_blocking` 执行；command 线程只做调用来源校验和任务调度。
 **影响的文件/决策**：`frontend/src-tauri/src/lib.rs`。
 
+### 2026-09-19: 原生窗口列表不等于可用的绑定链路
+
+**来源**：游戏陪玩第三步全量审查。
+**教训**：加入 `game_list_windows` 但没有同步实现前端调用、窗口身份绑定、完整 start payload 和 WGC/frame 上传，会形成“命令可用、用户却无法开始真实陪玩”的假完成状态。
+**怎么做**：验收必须沿窗口枚举 → 绑定复核 → session start → WGC capture → frame bridge → observation 全链路走通；只完成其中一段时明确标记为未闭环。
+**影响的文件/决策**：`frontend/src-tauri/src/lib.rs`、`frontend/src/api/client.ts`、`GameCompanionView.tsx`、游戏陪玩第三步验收。
+
+### 2026-09-19: 原生窗口丢失通知不能只依赖一次性 UI 事件
+
+**来源**：游戏陪玩窗口关闭/崩溃全量审查。
+**教训**：Destroyed 事件只在主 WebView 存活且监听器已注册时才能触发后端暂停；事件丢失会让 durable session 继续保持 observing。
+**怎么做**：除本地 UI 通知外，窗口丢失必须有可恢复的后端状态同步或启动时的失效窗口复核；测试覆盖监听注册竞态、主窗口不可用和重启恢复。
+**影响的文件/决策**：`frontend/src-tauri/src/lib.rs`、`frontend/src/App.tsx`、`gameCompanionStore.ts`。
+
+### 2026-09-19: 失效 WebView 句柄必须有重建出口
+
+**来源**：游戏陪玩 companion window 全量审查。
+**教训**：复用 label 时只对已有窗口调用 show/focus，失败后直接返回 create_failed，会把已销毁句柄留下的 registry 状态变成不可恢复窗口。
+**怎么做**：show/focus 失败时先清理旧句柄，再按同一 label 重建；回归覆盖关闭后立即重开和 Destroyed 后重开。
+**影响的文件/决策**：`frontend/src-tauri/src/lib.rs`。
+
 ## 模板（条目格式）
 
 ```

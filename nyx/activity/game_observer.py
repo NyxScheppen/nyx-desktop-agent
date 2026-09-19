@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import replace
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Protocol, cast
 
 from nyx.activity.game_profiles import parse_choices
 from nyx.enums import (
@@ -34,6 +36,86 @@ _MAX_OCR_BYTES = 16 * 1024
 _MAX_CROPS = 4
 _MAX_CROP_BYTES = 1024 * 1024
 _MAX_TOTAL_CROP_BYTES = 3 * 1024 * 1024
+
+
+class OcrEngine(Protocol):
+    async def recognize(
+        self, image_bytes: bytes, width: int, height: int
+    ) -> tuple[list[GameTextBlock], str | None]: ...
+
+
+class RapidOcrEngine:
+    """Lazy RapidOCR adapter; model import/initialization stays off the UI path."""
+
+    def __init__(self, timeout_seconds: float = 5.0) -> None:
+        self._timeout_seconds = timeout_seconds
+        self._engine: Callable[[Any], Any] | None = None
+
+    async def recognize(
+        self, image_bytes: bytes, width: int, height: int
+    ) -> tuple[list[GameTextBlock], str | None]:
+        try:
+            blocks = await asyncio.wait_for(
+                asyncio.to_thread(self._recognize_sync, image_bytes),
+                timeout=self._timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return [], "ocr_unavailable"
+        except (
+            ImportError,
+            OSError,
+            ValueError,
+            RuntimeError,
+            TypeError,
+            AttributeError,
+            IndexError,
+            KeyError,
+        ):
+            return [], "ocr_unavailable"
+        return blocks, None
+
+    def _recognize_sync(self, image_bytes: bytes) -> list[GameTextBlock]:
+        import importlib
+        from io import BytesIO
+
+        import numpy as np
+        from PIL import Image
+
+        if self._engine is None:
+            module: Any = importlib.import_module("rapidocr_onnxruntime")
+            factory = cast(
+                Callable[[], Callable[[Any], Any]], module.RapidOCR
+            )
+            self._engine = factory()
+        with Image.open(BytesIO(image_bytes)) as image:
+            rgb = np.asarray(image.convert("RGB"))
+            raw_result = self._engine(rgb)
+            result = raw_result[0]
+        blocks: list[GameTextBlock] = []
+        for index, item in enumerate(cast(list[Any], result or [])):
+            box, text, confidence = item
+            points = [(int(point[0]), int(point[1])) for point in box]
+            left = min(point[0] for point in points)
+            top = min(point[1] for point in points)
+            right = max(point[0] for point in points)
+            bottom = max(point[1] for point in points)
+            normalized = normalize_text(str(text))
+            if not normalized:
+                continue
+            score = max(0.0, min(float(confidence), 1.0))
+            blocks.append(
+                GameTextBlock(
+                    id=f"ocr:{index}",
+                    text=normalized,
+                    bbox=(left, top, right, bottom),
+                    line_index=index,
+                    confidence=score,
+                    char_confidences=[score] * len(normalized),
+                    source=TextSource.OCR,
+                    evidence_ids=[],
+                )
+            )
+        return blocks
 
 
 def _bbox_in_bounds(
@@ -78,7 +160,7 @@ def build_ocr_observation(
     width: int,
     height: int,
     blocks: list[GameTextBlock],
-    previous: GameObservation | None = None,
+    previous: GameObservation | AcceptedObservationSnapshot | None = None,
     ocr_error: str | None = None,
 ) -> tuple[GameObservation, ValidationReport]:
     """Build a conservative image-free observation from injected OCR blocks.

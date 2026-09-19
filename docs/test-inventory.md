@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：71
-- `pytest --collect-only -q`：1056 tests collected
-- 最近一次全量验证：`1054 passed, 2 skipped`
+- `pytest --collect-only -q`：1058 tests collected
+- 最近一次全量验证：`1056 passed, 2 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -44,7 +44,7 @@
 | 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动、笔记、整合和后台生命周期 |
 | 共同浏览 | `tests/test_browsing/` | 4 | checkpoint、封口、fencing、启动恢复、授权污点、companion 幂等、配对 token、结构校验、close→worker→长期记忆、容量压力清理及桌面 launcher；API `test_browsing_api.py` 覆盖 bridge、精确 Host/Origin/媒介、CORS/PNA、声明长度与无长度流式 body 上限、multipart 快照，既有 API fixture 使用真实 loopback Host；相邻套件覆盖总线/记忆/提问事务、枚举及 DB 表快照 |
-| 游戏陪玩 | `tests/test_game_companion/`、`tests/test_api/test_game_companion_api.py` | 3 | transient bridge PNG 校验、OCR/crop 预算、OCR 候选到 tentative/accepted observation、越界框硬拒绝、全局视觉隐私开关、窗口 identity、OCR unavailable 明确 rejected、checkpoint CAS 并发幂等、幂等索引有界、canonical observation hash、score/evidence 闸门、session/observation/choice/correction 事务与幂等、frame bridge 完整窗口 identity/revision/body 上限 |
+| 游戏陪玩 | `tests/test_game_companion/`、`tests/test_api/test_game_companion_api.py` | 3 | transient bridge PNG 校验、懒加载 RapidOCR adapter、OCR/crop 预算、frame→tentative/accepted observation 接线、越界框硬拒绝、全局视觉隐私开关、窗口 identity、OCR unavailable 明确 rejected、checkpoint CAS 并发幂等、幂等索引有界、canonical observation hash、score/evidence 闸门、session/observation/choice/correction 事务与幂等、frame bridge 完整窗口 identity/revision/body 上限 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
 
 ## 前端覆盖

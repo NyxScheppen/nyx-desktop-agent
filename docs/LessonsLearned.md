@@ -560,6 +560,13 @@ mock 测试无法证明 DOM 提取器满足非表单契约。
 **怎么做**：为游戏 checkpoint 使用单调 `checkpoint_seq` 条件更新；只有命中旧 sequence 的事务才能追加事件，失败者不发布事件并返回冲突。对无限增长的事件索引设置有界保留策略。
 **影响的文件/决策**：`nyx/activity/store.py`、`nyx/activity/facade.py`、游戏陪玩 REST/回归测试。
 
+### 2026-09-19: 跨帧稳定不能只回读 accepted checkpoint
+
+**来源**：游戏 frame→observation 接线审查。
+**教训**：如果 tentative candidate 只存在于当前请求，下一帧只能看到上一份 accepted observation，首个候选永远无法满足“两帧稳定后 accepted”。
+**怎么做**：tentative `GameObservation` 只保存在进程内 session pending map，不进入 durable checkpoint/event；accepted、pause、resume、stop 时清理 pending，重启后从 durable accepted 重新开始稳定窗口。
+**影响的文件/决策**：`nyx/app_context.py`、`nyx/api/routes.py`、游戏 observation pipeline。
+
 ## 模板（条目格式）
 
 ```

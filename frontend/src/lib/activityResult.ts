@@ -19,6 +19,8 @@ export function activityStatusText(a: Activity | null): string {
   if (a === null) return "空闲";
   const subject = activitySubject(a);
   switch (a.type) {
+    case "game_companion":
+      return "在陪你玩游戏";
     case "reading":
       return subject !== null ? `在读《${subject}》` : "在读书";
     case "free_exploration":

@@ -193,6 +193,7 @@ describe("activityAnnouncement", () => {
 describe("activityStatusText", () => {
   it("null → 空闲；六类活动文案", () => {
     expect(activityStatusText(null)).toBe("空闲");
+    expect(activityStatusText(activity({ type: "game_companion" }))).toBe("在陪你玩游戏");
     expect(activityStatusText(activity({ type: "reading", progress: { filename: "书.txt" } }))).toBe("在读《书.txt》");
     expect(activityStatusText(activity({ type: "free_exploration", progress: { description: "某主题" } }))).toBe("在探索「某主题」");
     expect(activityStatusText(activity({ type: "creation" }))).toBe("在创作");

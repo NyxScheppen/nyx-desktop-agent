@@ -12,7 +12,7 @@
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：`18 files / 292 passed`。
+- 最近一次前端全量验证：`19 files / 299 passed`。
 - 浏览转录回归：`stores.test.ts` 校验 browsing 输出去重、canonical ASK 抑制、选区及记忆引用。
 - 浏览后端回归另覆盖 focus/summary 容量上限、eval 失败保持联想、记忆阶段复用 checkpoint
   和 heartbeat 数据库失败回收子任务、迟到认证页不撤销当前页；打包地址回归验证开发/生产共用 REST/SSE base。
@@ -22,6 +22,7 @@
 - Rust 单元：7 条；三个 opt-in 桌面 spike，分别覆盖 ACL/DOM、本地 HTTPS mock IdP 与窄窗口激活浏览扩宽（不创建 child）；mock IdP 另覆盖 302 逐跳预检、私网拒绝与慢预检时 UI 响应。
 - Windows 桌面 spike：ACL/DOM、HTTPS mock IdP、静态 main 窄窗扩宽均单独通过；真实远程 app/core/plugin invoke 拒绝、公开正文、非表单正文/选区及 password 零正文。
 - `browser.test.tsx`：16 条覆盖导航失效/迟到结果、隐私暂停、token 失效清上下文、focus ID 重试、新操作 ID、显隐、普通浏览器降级及提问回复；旧发送完成不清新提问选择，未创建 child 时激活视图按 DPI 扩宽窗口；popup 许可和关闭不假定登录成功；记录按需读取、cursor 续页/防重叠、全量删除清空列表和 cursor。
+- `gameCompanion.test.tsx`：durable checkpoint hydrate、旧 observation revision 丢弃、hydrate/SSE 竞态保护、`stale_choice` 重拉并保留提示、当前 game activity 恢复、陪玩面板对白/阶段/选项显示与选择确认。
 - 浏览 metadata store/API 覆盖有界 cursor 分页与非法 cursor；runtime 覆盖导航/revoke/close 在消息消费前使上下文失效时只发明确 fallback，重放不再调用 reply。
 - REST 另覆盖 page/reply_to 转发、浏览 metadata/retry、单页与全量 204 DELETE。
 - 浏览提问回复：展示事件的 attempt_id 进入回复选择，ChatInput 转发 reply_to 与当前 page id。
@@ -57,6 +58,7 @@
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 状态显示、过滤、枚举中文化 |
 | 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 分页、笔记和章节交互 |
 | 共同浏览 | `browser.test.tsx` | 宿主状态与 CAS、隐私/token 暂停、focus 幂等 ID、native 显隐、web 降级、提问 attempt 回复 |
+| 游戏陪玩 | `gameCompanion.test.tsx` | checkpoint hydrate、SSE 旧 revision 丢弃与竞态恢复、`stale_choice` 重拉、当前活动恢复、对白/阶段/选项显示与选择确认 |
 | 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 统一分钟时钟、休眠恢复校时、昼夜/头像、非法时间标签边界、打字机 |
 
 ## 关键回归清单

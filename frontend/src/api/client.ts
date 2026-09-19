@@ -263,8 +263,24 @@ export async function confirmGameChoice(
   sessionId: string,
   revision: number,
   choiceId: string,
-): Promise<unknown> {
-  return request<unknown>(
+): Promise<{
+  session_id: string;
+  revision: number;
+  choice_id: string;
+  choice_text: string;
+  confirmed: boolean;
+  event_id: string;
+  current_observation: GameSessionState["last_observation"];
+}> {
+  return request<{
+    session_id: string;
+    revision: number;
+    choice_id: string;
+    choice_text: string;
+    confirmed: boolean;
+    event_id: string;
+    current_observation: GameSessionState["last_observation"];
+  }>(
     `${BASE_URL}/api/game-companion/sessions/${sessionId}/choice`,
     {
       method: "POST",

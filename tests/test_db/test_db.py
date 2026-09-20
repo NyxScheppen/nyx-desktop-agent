@@ -330,6 +330,71 @@ async def test_memory_kind_migration_clears_legacy_memory(
     assert "kind" in columns and "topics" in columns and "tag" not in columns
 
 
+async def test_removed_browsing_data_is_cleaned_from_previous_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = db._MIGRATIONS
+    conn = await _migrated_conn()
+    try:
+        await conn.execute(
+            "INSERT INTO event_log "
+            "(id, timestamp, source, type, content, correlation_id) "
+            "VALUES ('old-event', 1.0, 'internal', 'browsing_mutter', '{}', 'page')"
+        )
+        await conn.execute(
+            "INSERT INTO event_delivery (event_id, consumer_id, status) "
+            "VALUES ('old-event', 'legacy.consumer', 'pending')"
+        )
+        await conn.execute(
+            "INSERT INTO memory "
+            "(id, created_at, content, kind, topics, summary, freshness, type, "
+            "recall_count, aspect, embedding, content_hash, first_created_at) "
+            "VALUES ('old-memory', 1.0, 'old', 'browsing', '[]', 'old', 1.0, "
+            "'long_term', 0, '[]', NULL, NULL, 1.0)"
+        )
+        await conn.execute(
+            "INSERT INTO expression_interaction_attempt "
+            "(id, kind, source_id, correlation_id, text, created_at, expires_at, "
+            "status) "
+            "VALUES ('old-attempt', 'browsing_question', 'page', 'page', 'old', "
+            "1.0, 2.0, 'waiting')"
+        )
+        await conn.execute(
+            "CREATE TABLE browsing_session (id TEXT PRIMARY KEY)"
+        )
+        await conn.execute(
+            "CREATE TABLE browsing_page ("
+            "id TEXT PRIMARY KEY, session_id TEXT REFERENCES browsing_session(id))"
+        )
+        await conn.execute("UPDATE schema_version SET version = 22")
+        await conn.commit()
+
+        monkeypatch.setattr(db, "_MIGRATIONS", full)
+        await db.migrate(conn)
+
+        for table, column, value in (
+            ("event_log", "type", "browsing_mutter"),
+            ("memory", "kind", "browsing"),
+            ("expression_interaction_attempt", "kind", "browsing_question"),
+        ):
+            cursor = await conn.execute(
+                f"SELECT COUNT(*) AS count FROM {table} WHERE {column} = ?",
+                (value,),
+            )
+            row = await cursor.fetchone()
+            assert row is not None and row["count"] == 0
+        cursor = await conn.execute(
+            "SELECT COUNT(*) AS count FROM event_delivery WHERE event_id = 'old-event'"
+        )
+        row = await cursor.fetchone()
+        assert row is not None and row["count"] == 0
+        tables = await _table_names(conn)
+        assert "browsing_session" not in tables
+        assert "browsing_page" not in tables
+    finally:
+        await conn.close()
+
+
 async def test_migrate_sets_version_to_max() -> None:
     conn = await _migrated_conn()
     try:

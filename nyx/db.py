@@ -504,6 +504,29 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        23,
+        [
+            # Browsing was removed after schema 22. Delete its durable rows before
+            # the corresponding enum values disappear from the runtime.
+            "DELETE FROM event_delivery WHERE event_id IN ("
+            "SELECT id FROM event_log WHERE type IN ("
+            "'browsing_mutter', 'browsing_question', 'browsing_association'))",
+            "DELETE FROM event_effect WHERE event_id IN ("
+            "SELECT id FROM event_log WHERE type IN ("
+            "'browsing_mutter', 'browsing_question', 'browsing_association'))",
+            "DELETE FROM event_log WHERE type IN ("
+            "'browsing_mutter', 'browsing_question', 'browsing_association')",
+            "DELETE FROM memory_edge WHERE from_id IN ("
+            "SELECT id FROM memory WHERE kind = 'browsing') OR to_id IN ("
+            "SELECT id FROM memory WHERE kind = 'browsing')",
+            "DELETE FROM memory WHERE kind = 'browsing'",
+            "DELETE FROM expression_interaction_attempt "
+            "WHERE kind = 'browsing_question'",
+            "DROP TABLE IF EXISTS browsing_page",
+            "DROP TABLE IF EXISTS browsing_session",
+        ],
+    ),
 ]
 
 

@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：64
-- `pytest --collect-only -q`：994 tests collected
-- 最近一次全量验证：`993 passed, 1 skipped`
+- `pytest --collect-only -q`：995 tests collected
+- 最近一次全量验证：`994 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -25,7 +25,7 @@
 | 类型 | `tests/test_types/` | 2 | 枚举穷尽、实体默认值、LLM prompt TypedDict |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 迁移、索引、可空性、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 迁移、索引、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
 | API/运行时 | `tests/test_api/` | 7 | 组合根、REST、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件、搜索、工具注册和网络抓取 |

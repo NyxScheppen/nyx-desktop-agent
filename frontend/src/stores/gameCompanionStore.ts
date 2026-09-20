@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import {
   confirmGameChoice,
@@ -40,7 +39,6 @@ export type GameCompanionState = {
   resume: () => Promise<void>;
   stop: () => Promise<void>;
   confirmChoice: (choiceId: string) => Promise<void>;
-  openCompanion: () => Promise<void>;
   reset: () => void;
 };
 
@@ -60,7 +58,7 @@ const INITIAL_STATE = {
   pendingChoice: null,
   remoteVisionEnabled: false,
   error: null,
-} satisfies Omit<GameCompanionState, "hydrate" | "loadCurrent" | "acceptEvent" | "pause" | "resume" | "stop" | "confirmChoice" | "openCompanion" | "reset">;
+} satisfies Omit<GameCompanionState, "hydrate" | "loadCurrent" | "acceptEvent" | "pause" | "resume" | "stop" | "confirmChoice" | "reset">;
 
 function recordOf(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null
@@ -140,19 +138,6 @@ function hasErrorCode(error: unknown, code: string): boolean {
   return errorText(error).includes(code);
 }
 
-function nativeErrorCode(error: unknown): string | null {
-  const raw = recordOf(error);
-  return raw === null || typeof raw.code !== "string" ? null : raw.code;
-}
-
-const NATIVE_ERROR_LABELS: Record<string, string> = {
-  companion_window_create_failed: "陪玩窗口创建失败",
-  companion_window_lost: "陪玩窗口已丢失",
-  companion_window_not_found: "陪玩窗口不存在",
-  companion_window_position_failed: "陪玩窗口定位失败",
-  window_enumeration_failed: "游戏窗口枚举失败",
-};
-
 export const useGameCompanionStore = create<GameCompanionState>((set, get) => ({
   ...INITIAL_STATE,
   hydrate: async (sessionId) => {
@@ -196,9 +181,7 @@ export const useGameCompanionStore = create<GameCompanionState>((set, get) => ({
         (item): item is NonNullable<typeof item> => item !== null,
       );
       const current = activities.find(
-        (item) =>
-          item.type === "game_companion" &&
-          (item.status === "running" || item.status === "paused"),
+        (item) => item.type === "game_companion" && item.status !== "completed",
       );
       const progress = current === undefined ? null : recordOf(current.progress);
       const game = progress === null ? null : recordOf(progress.game_companion);
@@ -214,7 +197,6 @@ export const useGameCompanionStore = create<GameCompanionState>((set, get) => ({
     if (event.event === "game_session_started") {
       const sessionId = stringValue(data.session_id);
       if (sessionId === null) return;
-      if (current.sessionId === sessionId) return;
       set({
         ...sessionFromRaw(data),
         sessionId,
@@ -248,38 +230,38 @@ export const useGameCompanionStore = create<GameCompanionState>((set, get) => ({
     }
   },
   pause: async () => {
-    const current = get();
-    if (current.sessionId === null || current.status !== "observing") return;
+    const sessionId = get().sessionId;
+    if (sessionId === null) return;
     try {
-      const result = await pauseGameCompanion(current.sessionId, current.revision);
-      set({ status: result.status as GameSessionStatus, revision: result.revision, error: null });
+      const result = await pauseGameCompanion(sessionId);
+      set({ status: result.status as GameSessionStatus, error: null });
     } catch (error) {
       set({ error: errorText(error) });
     }
   },
   resume: async () => {
-    const current = get();
-    if (current.sessionId === null || current.status !== "paused") return;
+    const sessionId = get().sessionId;
+    if (sessionId === null) return;
     try {
-      const result = await resumeGameCompanion(current.sessionId, current.revision);
-      set({ status: result.status as GameSessionStatus, revision: result.revision, error: null });
+      const result = await resumeGameCompanion(sessionId);
+      set({ status: result.status as GameSessionStatus, error: null });
     } catch (error) {
       set({ error: errorText(error) });
     }
   },
   stop: async () => {
-    const current = get();
-    if (current.sessionId === null || current.status === "ended") return;
+    const sessionId = get().sessionId;
+    if (sessionId === null) return;
     try {
-      const result = await stopGameCompanion(current.sessionId, current.revision);
-      set({ status: result.status as GameSessionStatus, revision: result.revision, error: null });
+      const result = await stopGameCompanion(sessionId);
+      set({ status: result.status as GameSessionStatus, error: null });
     } catch (error) {
       set({ error: errorText(error) });
     }
   },
   confirmChoice: async (choiceId) => {
     const current = get();
-    if (current.sessionId === null || current.status !== "observing") return;
+    if (current.sessionId === null) return;
     try {
       const result = await confirmGameChoice(current.sessionId, current.revision, choiceId);
       const observation = snapshotValue(result.current_observation);
@@ -305,17 +287,6 @@ export const useGameCompanionStore = create<GameCompanionState>((set, get) => ({
         return;
       }
       set({ error: errorText(error) });
-    }
-  },
-  openCompanion: async () => {
-    set({ error: null });
-    try {
-      await invoke("game_companion_open");
-    } catch (error) {
-      const code = nativeErrorCode(error);
-      set({
-        error: code === null ? errorText(error) : NATIVE_ERROR_LABELS[code] ?? "陪玩窗口操作失败",
-      });
     }
   },
   reset: () => set({ ...INITIAL_STATE }),

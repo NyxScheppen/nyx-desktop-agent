@@ -1,11 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
 import { dispatchEvent } from "../src/api/dispatch";
 import GameCompanionView from "../src/components/game/GameCompanionView";
 import { useGameCompanionStore } from "../src/stores/gameCompanionStore";
-
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const snapshot = {
   session_id: "s1",
@@ -50,7 +47,6 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   useGameCompanionStore.setState(useGameCompanionStore.getInitialState(), true);
-  vi.mocked(invoke).mockReset();
 });
 
 describe("gameCompanionStore", () => {
@@ -145,7 +141,7 @@ describe("gameCompanionStore", () => {
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ detail: "stale_choice" }), { status: 409 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(refreshed), { status: 200 })));
-    useGameCompanionStore.setState({ sessionId: "s1", status: "observing", revision: 2 });
+    useGameCompanionStore.setState({ sessionId: "s1", revision: 2 });
 
     await useGameCompanionStore.getState().confirmChoice("c1");
 
@@ -174,117 +170,9 @@ describe("gameCompanionStore", () => {
 
     expect(useGameCompanionStore.getState()).toMatchObject({ sessionId: "s1", revision: 2 });
   });
-
-  it("does not restore abandoned game activities", async () => {
-    const activity = {
-      current: {
-        id: "a-old",
-        type: "game_companion",
-        schedule_block_id: "b1",
-        status: "abandoned",
-        progress: { game_companion: { session_id: "old-session" } },
-        started_at: 1,
-        ended_at: 2,
-      },
-      schedule: [],
-    };
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(activity), { status: 200 }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useGameCompanionStore.getState().loadCurrent();
-
-    expect(useGameCompanionStore.getState().sessionId).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not let a late session-start event reset a hydrated session", () => {
-    useGameCompanionStore.setState({
-      sessionId: "s1",
-      revision: 3,
-      observation: { ...snapshot, revision: 3, observation_hash: "sha256:h3" },
-      observationHash: "sha256:h3",
-      status: "observing",
-    });
-
-    useGameCompanionStore.getState().acceptEvent({
-      event: "game_session_started",
-      event_id: "start-late",
-      correlation_id: "s1",
-      timestamp: 6,
-      session_id: "s1",
-      activity_id: "a1",
-      game_id: "disco_elysium",
-      profile: "disco_elysium",
-      profile_version: 1,
-      threshold_version: 1,
-      revision: 0,
-      remote_vision_enabled: false,
-    });
-
-    expect(useGameCompanionStore.getState()).toMatchObject({
-      sessionId: "s1",
-      revision: 3,
-      observationHash: "sha256:h3",
-    });
-  });
-
-  it("does not submit a choice after the session has ended", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    useGameCompanionStore.setState({ sessionId: "s1", status: "ended", revision: 2 });
-
-    await useGameCompanionStore.getState().confirmChoice("c1");
-
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["pause", "observing", "paused", "pause"],
-    ["resume", "paused", "observing", "resume"],
-    ["stop", "observing", "ended", "stop"],
-  ] as const)("sends expected_revision for %s", async (action, status, nextStatus, path) => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ status: nextStatus, revision: 2 }), { status: 200 }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    useGameCompanionStore.setState({ sessionId: "s1", status, revision: 2 });
-
-    await useGameCompanionStore.getState()[action]();
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining(`/sessions/s1/${path}`),
-      expect.objectContaining({ body: JSON.stringify({ expected_revision: 2 }) }),
-    );
-  });
-
-  it("opens the companion window through the native command", async () => {
-    vi.mocked(invoke).mockResolvedValue(undefined);
-
-    await useGameCompanionStore.getState().openCompanion();
-
-    expect(invoke).toHaveBeenCalledWith("game_companion_open");
-    expect(useGameCompanionStore.getState().error).toBeNull();
-  });
-
-  it("maps native companion errors by code", async () => {
-    vi.mocked(invoke).mockRejectedValue({ code: "companion_window_create_failed" });
-
-    await useGameCompanionStore.getState().openCompanion();
-
-    expect(useGameCompanionStore.getState().error).toBe("陪玩窗口创建失败");
-  });
 });
 
 describe("GameCompanionView", () => {
-  it("shows the native companion window entry in the main panel", async () => {
-    render(<GameCompanionView />);
-
-    expect(screen.getByRole("button", { name: "打开陪玩窗口" })).toBeInTheDocument();
-    await waitFor(() => expect(useGameCompanionStore.getState().error).toBeNull());
-  });
-
   it("renders the current scene and confirms a visible choice", async () => {
     const confirmChoice = vi.fn().mockResolvedValue(undefined);
     useGameCompanionStore.setState({

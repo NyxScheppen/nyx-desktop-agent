@@ -40,13 +40,6 @@ body {
   color: var(--ink);
 }
 
-.game-companion-window {
-  min-height: 100vh;
-  padding: 0.5rem;
-  overflow: auto;
-  background: transparent;
-}
-
 .app[data-time-phase="night"] {
   --parchment: #d8d4cf;
   --parchment-deep: #aaa7a5;

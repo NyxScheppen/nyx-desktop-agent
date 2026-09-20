@@ -530,20 +530,11 @@ class ActivityFacade:
             reason.strip(), event.id, True,
         )
 
-    async def pause_game_companion(
-        self, session_id: str, expected_revision: int
-    ) -> None:
+    async def pause_game_companion(self, session_id: str) -> None:
         activity = await self._find_game_activity(session_id)
-        if activity is None:
-            raise ValueError("session_not_found")
+        if activity is None or activity.status is not ActivityStatus.RUNNING:
+            return
         game = cast(dict[str, Any], activity.progress["game_companion"])
-        if int(game.get("last_accepted_revision", 0)) != expected_revision:
-            raise ValueError("stale_observation")
-        if (
-            activity.status is not ActivityStatus.RUNNING
-            or game.get("status") != "observing"
-        ):
-            raise ValueError("session_state_conflict")
         game["status"] = "paused"
         activity.status = ActivityStatus.PAUSED
         activity.ended_at = time.time()
@@ -555,20 +546,11 @@ class ActivityFacade:
         )
         await self._commit_game_event(activity, event)
 
-    async def resume_game_companion(
-        self, session_id: str, expected_revision: int
-    ) -> None:
+    async def resume_game_companion(self, session_id: str) -> None:
         activity = await self._find_game_activity(session_id)
-        if activity is None:
-            raise ValueError("session_not_found")
+        if activity is None or activity.status is not ActivityStatus.PAUSED:
+            return
         game = cast(dict[str, Any], activity.progress["game_companion"])
-        if int(game.get("last_accepted_revision", 0)) != expected_revision:
-            raise ValueError("stale_observation")
-        if (
-            activity.status is not ActivityStatus.PAUSED
-            or game.get("status") != "paused"
-        ):
-            raise ValueError("session_state_conflict")
         game["status"] = "observing"
         activity.status = ActivityStatus.RUNNING
         activity.ended_at = None
@@ -585,17 +567,11 @@ class ActivityFacade:
         else:
             await self._store.update(activity)
 
-    async def stop_game_companion(
-        self, session_id: str, expected_revision: int
-    ) -> None:
+    async def stop_game_companion(self, session_id: str) -> None:
         activity = await self._find_game_activity(session_id)
-        if activity is None:
-            raise ValueError("session_not_found")
+        if activity is None or activity.status is ActivityStatus.COMPLETED:
+            return
         game = cast(dict[str, Any], activity.progress["game_companion"])
-        if int(game.get("last_accepted_revision", 0)) != expected_revision:
-            raise ValueError("stale_observation")
-        if activity.status is ActivityStatus.COMPLETED or game.get("status") == "ended":
-            raise ValueError("session_state_conflict")
         game["status"] = "ended"
         game["ended_at"] = time.time()
         game["checkpoint_seq"] = int(game.get("checkpoint_seq", 0)) + 1
@@ -622,11 +598,6 @@ class ActivityFacade:
         if activity is None:
             raise ValueError("session_not_found")
         game = cast(dict[str, Any], activity.progress["game_companion"])
-        if (
-            activity.status is not ActivityStatus.RUNNING
-            or game.get("status") != "observing"
-        ):
-            raise ValueError("session_state_conflict")
         if int(game.get("last_accepted_revision", 0)) != revision:
             raise ValueError("stale_choice")
         raw_snapshot = game.get("last_observation")

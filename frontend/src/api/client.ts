@@ -238,45 +238,24 @@ export async function getGameSession(sessionId: string): Promise<GameSessionStat
   );
 }
 
-export async function pauseGameCompanion(
-  sessionId: string,
-  expectedRevision: number,
-): Promise<{ status: string; revision: number }> {
-  return request<{ status: string; revision: number }>(
+export async function pauseGameCompanion(sessionId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(
     `${BASE_URL}/api/game-companion/sessions/${sessionId}/pause`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ expected_revision: expectedRevision }),
-    },
+    { method: "POST" },
   );
 }
 
-export async function resumeGameCompanion(
-  sessionId: string,
-  expectedRevision: number,
-): Promise<{ status: string; revision: number }> {
-  return request<{ status: string; revision: number }>(
+export async function resumeGameCompanion(sessionId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(
     `${BASE_URL}/api/game-companion/sessions/${sessionId}/resume`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ expected_revision: expectedRevision }),
-    },
+    { method: "POST" },
   );
 }
 
-export async function stopGameCompanion(
-  sessionId: string,
-  expectedRevision: number,
-): Promise<{ status: string; revision: number }> {
-  return request<{ status: string; revision: number }>(
+export async function stopGameCompanion(sessionId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(
     `${BASE_URL}/api/game-companion/sessions/${sessionId}/stop`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ expected_revision: expectedRevision }),
-    },
+    { method: "POST" },
   );
 }
 

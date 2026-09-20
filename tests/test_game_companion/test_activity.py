@@ -152,30 +152,6 @@ async def test_concurrent_choice_confirmation_has_one_durable_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_game_lifecycle_checks_revision_and_ended_session_rejects_choice(
-) -> None:
-    facade, database = await _facade()
-    try:
-        activity = await facade.start_game_companion(
-            GameProfile.DISCO_ELYSIUM, "disco_elysium", "hwnd:0x10",
-            window_identity=_identity(),
-        )
-        session_id = activity.progress["game_companion"]["session_id"]
-        await facade.record_game_observation(session_id, _snapshot(session_id, 1))
-
-        with pytest.raises(ValueError, match="stale_observation"):
-            await facade.pause_game_companion(session_id, 0)
-        await facade.pause_game_companion(session_id, 1)
-        await facade.resume_game_companion(session_id, 1)
-        await facade.stop_game_companion(session_id, 1)
-
-        with pytest.raises(ValueError, match="session_state_conflict"):
-            await facade.confirm_game_choice(session_id, 1, "2")
-    finally:
-        await database.close()
-
-
-@pytest.mark.asyncio
 async def test_observation_event_index_is_bounded_and_new_revision_clears_choices(
 ) -> None:
     facade, database = await _facade()

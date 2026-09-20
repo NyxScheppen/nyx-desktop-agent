@@ -669,7 +669,6 @@ mock 测试无法证明 DOM 提取器满足非表单契约。
 **教训**：复用 label 时只对已有窗口调用 show/focus，失败后直接返回 create_failed，会把已销毁句柄留下的 registry 状态变成不可恢复窗口。
 **怎么做**：show/focus 失败时先清理旧句柄，再按同一 label 重建；回归覆盖关闭后立即重开和 Destroyed 后重开。
 **影响的文件/决策**：`frontend/src-tauri/src/lib.rs`。
-
 ## 模板（条目格式）
 
 ```

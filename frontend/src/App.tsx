@@ -1,6 +1,4 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { dispatchEvent } from "./api/dispatch";
 import ChatInput from "./components/chat/ChatInput";
 import BrowserView from "./components/browsing/BrowserView";
@@ -45,21 +43,6 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
 // （RightDock 切换中间视图：内在状态 / 欲望 / 活动 / 记忆 / 读书 + 设置入口）+ 设置弹层。
 // useSSE 只挂一次；可拖拽头像圆圈（Avatar）常驻窗口右下，碎碎念气泡随它头顶冒出。
 export default function App() {
-  const isCompanionWindow =
-    new URLSearchParams(window.location.search).get("companion") === "game";
-  return isCompanionWindow ? <CompanionApp /> : <MainApp />;
-}
-
-function CompanionApp() {
-  const shellStyle = { "--text-scale": 1 } as CSSProperties;
-  return (
-    <div className="game-companion-window" style={shellStyle}>
-      <GameCompanionView showWindowButton={false} />
-    </div>
-  );
-}
-
-function MainApp() {
   const status = useSSE(dispatchEvent);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
   const refreshActivity = useActivityStore((s) => s.refresh);
@@ -114,22 +97,6 @@ function MainApp() {
     }
   }, [status, refreshState, refreshActivity, loadHistory]);
 
-  useEffect(() => {
-    if (!isTauri()) return;
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void listen("game_companion_lost", () => {
-      if (!disposed) void useGameCompanionStore.getState().handleNativeWindowLost();
-    }).then((cleanup) => {
-      if (disposed) cleanup();
-      else unlisten = cleanup;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
   // 背景：有图以图铺底（cover）；无图有色调作纯色；默认羊皮纸（--parchment）。
   const bgStyle: CSSProperties = {};
   if (image !== null) {
@@ -144,6 +111,16 @@ function MainApp() {
     "--text-scale": FONT_SCALE_VALUE[fontScale],
   } as CSSProperties;
   const timePhase = timePhaseAt(now);
+  const isCompanionWindow =
+    new URLSearchParams(window.location.search).get("companion") === "game";
+
+  if (isCompanionWindow) {
+    return (
+      <div className="game-companion-window" style={shellStyle}>
+        <GameCompanionView showWindowButton={false} />
+      </div>
+    );
+  }
 
   return (
     <div className="app" data-time-phase={timePhase}>

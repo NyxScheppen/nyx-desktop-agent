@@ -2,10 +2,6 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn().mockResolvedValue(vi.fn()),
-}));
-
 vi.mock("../src/hooks/useSSE", () => ({ useSSE: () => "closed" }));
 vi.mock("../src/hooks/usePresence", () => ({ usePresence: () => undefined }));
 vi.mock("../src/stores/activityStore", () => ({

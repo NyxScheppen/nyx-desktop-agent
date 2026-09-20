@@ -112,7 +112,7 @@ python dev.py        # 同时拉起后端(8000) + 前端 Vite(5173)，Ctrl+C 退
 python dev.py --desktop # 配对启动后端 + Tauri，启用 Windows 窗口内共同浏览
 ```
 
-Windows 用户也可以直接双击项目根目录的 `start_nyx.bat` 启动；脚本会优先使用项目 `.venv`，并检查 Python/uvicorn、Node.js/npm 与前端依赖。仅在常规 Python 环境不可用时尝试 `.runtime` 依赖，不混入可用的 `.venv`。启动失败时窗口会保持打开，方便直接查看错误。看到 `Checking npm` 后应继续显示 `Starting backend` 与前后端日志；浏览器访问 `http://localhost:5173` 测试，Ctrl+C 停止服务。
+Windows 用户也可以直接双击项目根目录的 `start_nyx.bat` 启动；脚本会优先使用项目 `.venv`，并检查 Python/uvicorn、Node.js/npm 与前端依赖。重启时 launcher 会用原子 lock 串行化流程，先关闭自己记录或在 8000 上发现的旧 Nyx backend；若端口由未知进程占用则拒绝启动。仅在常规 Python 环境不可用时尝试 `.runtime` 依赖，不混入可用的 `.venv`。启动失败时窗口会保持打开，方便直接查看错误。看到 `Checking npm` 后应继续显示 `Starting backend` 与前后端日志；浏览器访问 `http://localhost:5173` 测试，Ctrl+C 停止服务。
 
 共同浏览需要 Rust/Tauri Windows 环境，通过 `python dev.py --desktop` 配对启动；普通网页模式不提供原生浏览器。Windows 受控 OAuth 弹窗已通过本地 HTTPS mock IdP 验收，不保证所有提供方允许嵌入式登录；非 Windows 原生浏览器暂不支持。不要把独立 `npm run tauri dev` 当作已配对的浏览入口。
 
@@ -125,7 +125,7 @@ cd frontend
 npm run tauri build
 ```
 
-构建会下载官方本地 embedding 模型，并冻结 Python 后端、公开 `config.yaml` 和 `prompts/`，不包含 `.env`。桌面包只启动并管理自己的后端，API Key 由运行环境提供；`8000` 已占用时拒绝启动，不连接未知服务。关闭桌面应用会通过 stdin 管道通知后端退出，超时后仅回收自己启动的进程。各平台打包 REST/SSE smoke 验收未全部完成，不将开发验收等同于可发布。
+构建会下载官方本地 embedding 模型，并冻结 Python 后端、公开 `config.yaml` 和 `prompts/`，不包含 `.env`。桌面包只启动并管理自己的后端，API Key 由运行环境提供；检测到旧 Nyx 启动器时会先结束其进程树再接管，未知程序占用 `8000` 时拒绝启动，不连接未知服务。关闭桌面应用会通过 stdin 管道通知后端退出，超时后仅回收自己启动的进程。各平台打包 REST/SSE smoke 验收未全部完成，不将开发验收等同于可发布。
 
 ### 后端
 

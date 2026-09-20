@@ -2,6 +2,41 @@
 
 > Nyx Agent 项目经验教训汇总。每次踩坑后追加条目，格式见底部模板。
 
+### 2026-09-19: 启动器必须阻止第二个后端共享 SQLite
+
+**来源**：双击 `start_nyx.bat` 重启后，旧 backend 未随窗口关闭而退出；新 backend
+同时打开 `nyx.db`，其 SQLite 操作持锁等待，浏览 worker 先报 `数据库暂不可用`，并伴随
+8000 端口 `WinError 10048`。
+**教训**：开发 launcher 只在桌面配对模式检查端口是不够的；普通 Vite 模式也必须在创建
+任何子进程前识别第二个 backend：旧 Nyx launcher 先接管并结束，未知进程则拒绝启动。
+否则重复启动会把跨进程 SQLite 锁竞争误诊为浏览模块故障。
+**怎么做**：`dev.py` 的所有服务模式先按 PID 文件校验并结束上一次由本项目启动的
+backend，再做 127.0.0.1:8000 预绑定检查；占用时不创建 backend 或 frontend，并提示先
+关闭已有 Nyx 后端。PID 不匹配 Nyx 命令时不强杀，避免误伤复用该 PID 的其他进程。
+**影响的文件/决策**：`dev.py`、`tests/test_browsing/test_browsing_launcher.py`
+
+### 2026-09-20: 端口预检查必须和启动流程原子串行化
+
+**来源**：两次双击启动几乎同时执行时，两个 launcher 都能在 backend 绑定 8000 之前通过
+端口预绑定检查，随后各自启动 `nyx.main`，重新造成 SQLite 跨进程锁竞争。
+**教训**：PID 清理和端口检查如果分开执行，仍存在“检查通过但尚未启动”的竞态窗口；单靠
+端口占用不能实现启动器单实例。
+**怎么做**：使用项目目录内的原子 lock 文件串行化清理、端口检查和子进程创建；发现仍存活
+的旧 `dev.py` 时先结束其进程树，再由新 launcher 接管；旧 owner 退出后才回收 lock。lock
+owner 不存在时回收 stale lock，未知程序占用端口时仍拒绝启动。
+**影响的文件/决策**：`dev.py`、`.gitignore`、`tests/test_browsing/test_browsing_launcher.py`
+
+### 2026-09-19: Windows venv wrapper 不能被 launcher 当成旧实例杀掉
+
+**来源**：双击 `start_nyx.bat` 时启动器无日志直接退出并留下 `.nyx-launcher.lock`；真实进程树
+包含 venv wrapper Python 与实际 Python 两层，扫描结果把当前启动链的 wrapper 误判成旧 launcher。
+旧进程接管后还可能短暂持有 lock 文件，立即删除会触发 `WinError 32`。
+**教训**：按命令行匹配进程不足以区分“当前启动链的父 wrapper”和“另一个旧 launcher”；结束进程
+成功也不等于 Windows 文件句柄已经释放。
+**怎么做**：扫描 PID 时读取父子关系并排除当前 Python 的全部祖先进程；结束旧 owner 后，在有限时限内
+重试删除 lock 文件，超时才失败。回归必须覆盖 wrapper ancestor 和 lock handle 短暂不可删除。
+**影响的文件/决策**：`dev.py`、`tests/test_browsing/test_browsing_launcher.py`
+
 ## 2026-08-24: 全量代码审查（起点 commit 5a319a9，共 33 条 finding）
 
 > 本次为「后端 + 前端」全量审查，重点 bug + 冗余简化。17 条经代码改动修复（3 个 commit），
@@ -290,6 +325,18 @@ store 的校验必须先于等待状态/未读标记等副作用；只阻止消�
 **怎么做**：跨 Facade 的“外部计算 + 本地提交”拆成事务外预检计划和事务内确定性写入；计划携带足以检测准入条件变化的快照，冲突时整体回滚并重算。至少保留一条共享真实 `Database`、真实两个 Facade 的集成测试，并对事务中段失败做回滚注入。
 **补充验证**：活动记忆 durable consumer 在事务内调用 `_persist_memory`，会持锁等待本地 embedding，候选命中时还可能等待矛盾检测 LLM。受控内存库复现确认 embedding 等待期间浏览 `recover_expired()` 获取同一锁超时，计算完成后锁释放；报错模块不一定是持锁源头，不能靠增加锁超时掩盖。
 **影响的文件/决策**：`nyx/inner_life/reflection.py`、`nyx/desire/facade.py`、`tests/test_inner_life/test_inner_life_reflection.py`、07/08 契约。
+
+### 2026-09-19: 共享事务锁不可重入，读方法必须复用外层事务
+
+**来源**：应用启动后浏览 worker 持续报告数据库暂不可用；数据库 schema 为最新且
+`PRAGMA quick_check` 正常。真实栈显示内在生命事件消费者持有
+`Database.transaction()` 时调用 `ActivityStore.get_current()`，该方法再次获取同一
+`asyncio.Lock`，导致消费者永久等待自身释放的锁，浏览 worker 随后在锁超时。
+**教训**：同一个 `Database` 的事务锁是不可重入的；把“读方法”标成只读并不能安全地
+在事务内再次调用。修复 schema、删除数据库或单纯增大锁超时都不能解决应用内死锁。
+**怎么做**：store 方法在检测到当前 task 已处于外层事务时直接复用连接，否则才获取共享
+锁；为该路径保留共享真实 `Database` 的回归测试。旧数据库只需正常迁移，不得为此删除或重建。
+**影响的文件/决策**：`nyx/activity/store.py`、`tests/test_activity/test_activity_store.py`。
 
 ### 2026-09-18: durable 活动记忆只把核心提交放进事务
 

@@ -1075,8 +1075,14 @@ session 建立或 Python 重启时彻底失效。
   Tauri 在 app data 工作目录启动相邻 sidecar，日志写 `backend.log`，90 秒内未就绪则
   回收自己的进程。父进程持有 stdin 管道，后端 daemon thread 在 EOF 后通知 Uvicorn
   退出；正常退出等待最多 35 秒，然后 kill/wait 自己的 child。开发构建不要求 sidecar 产物。
-- 桌面 launcher 在分发 secret 前确认 8000 端口未被旧后端占用；若占用则整体拒绝启动
-  browsing，不把 secret 发给未知服务。bridge HTTP 只连固定 loopback，token 不经 Vite
+- Windows 开发启动模式中，`dev.py` 先读取自己的 backend PID 文件，并扫描 8000 上所有命令行
+  确认为 `nyx.main` 的监听进程，逐个结束后再做端口预绑定；这样双击重启不会让旧 backend
+  与新 backend 共同访问 SQLite。其他平台只按 PID 文件回收本 launcher 记录的 backend。
+  启动器还使用项目目录内的原子 lock 文件串行化“清理旧 backend → 端口检查 → 启动新 backend”
+  流程；检测到仍存活的旧 `dev.py` 时先结束其进程树，再继续重启，避免两个启动器在 backend
+  尚未绑定端口的竞态窗口内同时通过检查。
+  若端口仍被未知进程占用，则在分发 secret 前整体拒绝启动 browsing，不把 secret 发给未知服务。
+  bridge HTTP 只连固定 loopback，token 不经 Vite
   proxy；同机恶意进程不在单用户桌面安全
   模型承诺范围内，但远程网页不能获取或伪造上述 secret。
 - 同一 Python 进程内对 active session 重复 bootstrap 返回同一 token，不轮换到让现有 Rust
@@ -1214,7 +1220,7 @@ error, integrationStatus
 | revoke 通知 Python 失败 | Rust 先清 grant/正文，停止 capture；显示后端错误并关闭或重绑 session |
 | revoke/认证模式/敏感检测时 page 仍 open | 全部走 `open -> pending` 冻结与 task 退出后封口；DB finalizer 失败退避补调度，未封口不可 claim |
 | Python 重启导致 bridge token 失效 | 旧 session 由恢复流程关闭；Rust 停止采集，用户重建浏览会话，不静默换 token |
-| 桌面进程未配对或旧后端占用 8000 | 共同浏览不可用/启动失败，不把 secret 送给未知进程；普通浏览器开发模式保持可用 |
+| 桌面进程未配对或未知进程占用 8000 | 已知旧 `nyx.main` 由开发 launcher 在重启前结束；未知占用则共同浏览启动失败，不把 secret 送给未知进程；普通浏览器开发模式保持可用 |
 | 刷新/前进后退重复页 | 同会话 canonical URL+hash 复用 checkpoint，但写新 navigation 并递增 revision |
 | 命中仍 pending/integrating/failed 的重复页 | 不重开 checkpoint，返回 `duplicate_page_not_ready`，页面可显示但暂停 Nyx 上下文 |
 | 返回已 remembered 的重复页 | 复用 page/memory id，临时回填正文供当前对话；离页清理且不重写记忆 |

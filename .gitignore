@@ -36,3 +36,7 @@ node_modules/
 
 # 本地 Python 运行时依赖（由 start_nyx.bat 使用，勿提交）
 .runtime/
+
+# 开发启动器 backend PID（勿提交）
+.nyx-backend.pid
+.nyx-launcher.lock

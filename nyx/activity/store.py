@@ -1,4 +1,6 @@
 import json
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import aiosqlite
 
@@ -22,6 +24,15 @@ class ActivityStore:
     def db(self) -> Database:
         """Return the shared database for local transaction orchestration."""
         return self._db
+
+    @asynccontextmanager
+    async def _operation(self) -> AsyncGenerator[bool, None]:
+        """Reuse the caller's transaction instead of acquiring the lock twice."""
+        if self._db.in_transaction:
+            yield False
+            return
+        async with self._db.lock:
+            yield True
 
     async def insert(self, activity: Activity) -> None:
         if self._db.in_transaction:
@@ -111,7 +122,7 @@ class ActivityStore:
 
     async def get_current(self) -> Activity | None:
         """当前活动（running），取最新一条。"""
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_COLS} FROM activity WHERE status = 'running' "
                 "ORDER BY started_at DESC LIMIT 1",

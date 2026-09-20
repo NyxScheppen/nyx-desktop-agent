@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：71
-- `pytest --collect-only -q`：1064 tests collected
-- 最近一次全量验证：`1062 passed, 2 skipped`
+- `pytest --collect-only -q`：1073 tests collected
+- 最近一次全量验证：`1071 passed, 2 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -17,7 +17,7 @@
 - 浏览后端回归另覆盖 focus/summary 容量上限、eval 失败保持联想、记忆阶段复用 checkpoint
   和 heartbeat 数据库失败回收子任务、迟到认证页不撤销当前页；打包地址回归验证开发/生产共用 REST/SSE base。
 - 浏览事件查询拒绝空类型集合及 1..100 之外的 limit，排序/过滤由总线接口拥有。
-- 桌面 launcher 回归：后端/Tauri 共享 256-bit secret；8000 已占用时不创建进程；打包资源定位和 sidecar 构建产物；可选 Windows 本地 HTTPS mock IdP spike（临时 CA，默认跳过）。
+- 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；普通/桌面模式在未知程序占用 8000 时不创建进程；后端/Tauri 共享 256-bit secret；打包资源定位和 sidecar 构建产物；可选 Windows 本地 HTTPS mock IdP spike（临时 CA，默认跳过）。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
 - Rust 单元：10 条；覆盖游戏窗口 ID/命令注册、后台枚举契约及既有浏览纯函数；三个 opt-in 桌面 spike，分别覆盖 ACL/DOM、本地 HTTPS mock IdP 与窄窗口激活浏览扩宽（不创建 child）；mock IdP 另覆盖 302 逐跳预检、私网拒绝与慢预检时 UI 响应。
 - Windows 桌面 spike：ACL/DOM、HTTPS mock IdP、静态 main 窄窗扩宽均单独通过；真实远程 app/core/plugin invoke 拒绝、公开正文、非表单正文/选区及 password 零正文。

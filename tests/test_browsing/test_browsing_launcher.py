@@ -1,4 +1,5 @@
 """Desktop pairing is private to the two launch chains, never VITE_* config."""
+# pyright: reportPrivateUsage=false
 
 import os
 import sys
@@ -11,13 +12,17 @@ import dev
 import nyx.main as entry
 
 
-def test_desktop_launcher_pairs_backend_and_tauri() -> None:
+def test_desktop_launcher_pairs_backend_and_tauri(tmp_path: Path) -> None:
     process = MagicMock()
     process.poll.return_value = 0
     process.returncode = 0
     with (
         patch.object(dev.sys, "argv", ["dev.py", "--desktop"]),
         patch.object(dev.shutil, "which", return_value="npm"),
+        patch.object(dev, "_BACKEND_PID_FILE", tmp_path / "backend.pid"),
+        patch.object(dev, "_LAUNCH_LOCK_FILE", tmp_path / "launcher.lock"),
+        patch.object(dev, "_find_launcher_pids", return_value=[]),
+        patch.object(dev, "_find_listening_backend_pids", return_value=[]),
         patch.object(dev.socket, "socket") as listener,
         patch.object(dev.subprocess, "Popen", return_value=process) as spawn,
     ):
@@ -32,10 +37,16 @@ def test_desktop_launcher_pairs_backend_and_tauri() -> None:
     assert desktop.kwargs["env"]["NYX_BROWSER_BOOTSTRAP_SECRET"] == secret
 
 
-def test_occupied_backend_port_refuses_before_secret_distribution() -> None:
+def test_occupied_backend_port_refuses_before_secret_distribution(
+    tmp_path: Path,
+) -> None:
     with (
         patch.object(dev.sys, "argv", ["dev.py", "--desktop"]),
         patch.object(dev.shutil, "which", return_value="npm"),
+        patch.object(dev, "_BACKEND_PID_FILE", tmp_path / "backend.pid"),
+        patch.object(dev, "_LAUNCH_LOCK_FILE", tmp_path / "launcher.lock"),
+        patch.object(dev, "_find_launcher_pids", return_value=[]),
+        patch.object(dev, "_find_listening_backend_pids", return_value=[]),
         patch.object(dev.socket, "socket") as listener,
         patch.object(dev.subprocess, "Popen") as spawn,
     ):
@@ -43,6 +54,159 @@ def test_occupied_backend_port_refuses_before_secret_distribution() -> None:
         with pytest.raises(SystemExit, match="1"):
             dev.main()
     spawn.assert_not_called()
+
+
+def test_occupied_backend_port_refuses_plain_launcher(tmp_path: Path) -> None:
+    with (
+        patch.object(dev.sys, "argv", ["dev.py"]),
+        patch.object(dev.shutil, "which", return_value="npm"),
+        patch.object(dev, "_BACKEND_PID_FILE", tmp_path / "backend.pid"),
+        patch.object(dev, "_LAUNCH_LOCK_FILE", tmp_path / "launcher.lock"),
+        patch.object(dev, "_find_launcher_pids", return_value=[]),
+        patch.object(dev, "_find_listening_backend_pids", return_value=[]),
+        patch.object(dev.socket, "socket") as listener,
+        patch.object(dev.subprocess, "Popen") as spawn,
+    ):
+        listener.return_value.__enter__.return_value.bind.side_effect = OSError()
+        with pytest.raises(SystemExit, match="1"):
+            dev.main()
+    spawn.assert_not_called()
+
+
+def test_launcher_lock_replaces_live_owner_before_restart(tmp_path: Path) -> None:
+    lock_file = tmp_path / "launcher.lock"
+    lock_file.write_text("1234", encoding="ascii")
+    with (
+        patch.object(dev, "_LAUNCH_LOCK_FILE", lock_file),
+        patch.object(
+            dev, "_launcher_process_matches", side_effect=[True, False, False]
+        ),
+        patch.object(dev.os, "getpid", return_value=5678),
+        patch.object(dev.os, "name", "nt"),
+        patch.object(dev.subprocess, "run") as run,
+    ):
+        fd = dev._acquire_launcher_lock()
+        try:
+            assert lock_file.read_text(encoding="ascii") == "5678"
+        finally:
+            dev._release_launcher_lock(fd)
+    run.assert_called_once_with(
+        ["taskkill", "/PID", "1234", "/T", "/F"],
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_launcher_lock_waits_for_old_lock_handle_to_close(tmp_path: Path) -> None:
+    lock_file = tmp_path / "launcher.lock"
+    lock_file.write_text("1234", encoding="ascii")
+    real_unlink = Path.unlink
+    unlink_calls = 0
+
+    def unlink(path: Path, *, missing_ok: bool = False) -> None:
+        nonlocal unlink_calls
+        if path == lock_file and unlink_calls == 0:
+            unlink_calls += 1
+            raise PermissionError("lock still closing")
+        unlink_calls += 1
+        real_unlink(path, missing_ok=missing_ok)
+
+    with (
+        patch.object(dev, "_LAUNCH_LOCK_FILE", lock_file),
+        patch.object(
+            dev, "_launcher_process_matches", side_effect=[True, False, False]
+        ),
+        patch.object(dev.os, "getpid", return_value=5678),
+        patch.object(dev.os, "name", "nt"),
+        patch.object(dev.subprocess, "run"),
+        patch.object(Path, "unlink", unlink),
+        patch.object(dev.time, "sleep"),
+    ):
+        fd = dev._acquire_launcher_lock()
+        try:
+            assert lock_file.read_text(encoding="ascii") == "5678"
+        finally:
+            dev._release_launcher_lock(fd)
+    assert unlink_calls == 3
+
+
+def test_launcher_lock_replaces_stale_owner(tmp_path: Path) -> None:
+    lock_file = tmp_path / "launcher.lock"
+    lock_file.write_text("1234", encoding="ascii")
+    with (
+        patch.object(dev, "_LAUNCH_LOCK_FILE", lock_file),
+        patch.object(dev, "_launcher_process_matches", return_value=False),
+        patch.object(dev.os, "getpid", return_value=5678),
+        patch.object(dev.os, "name", "nt"),
+    ):
+        fd = dev._acquire_launcher_lock()
+        try:
+            assert lock_file.read_text(encoding="ascii") == "5678"
+        finally:
+            dev._release_launcher_lock(fd)
+    assert not lock_file.exists()
+
+
+def test_launcher_stops_legacy_launchers(tmp_path: Path) -> None:
+    with (
+        patch.object(dev, "_find_launcher_pids", return_value=[1234, 5678]),
+        patch.object(dev.os, "name", "nt"),
+        patch.object(dev.subprocess, "run") as run,
+    ):
+        dev._stop_legacy_launchers()
+    assert run.call_args_list == [
+        ((["taskkill", "/PID", "1234", "/T", "/F"],),
+         {"capture_output": True, "check": False}),
+        ((["taskkill", "/PID", "5678", "/T", "/F"],),
+         {"capture_output": True, "check": False}),
+    ]
+
+
+def test_launcher_stops_recorded_backend_before_restart(tmp_path: Path) -> None:
+    pid_file = tmp_path / "backend.pid"
+    pid_file.write_text("1234", encoding="ascii")
+    with (
+        patch.object(dev, "_BACKEND_PID_FILE", pid_file),
+        patch.object(dev, "_find_listening_backend_pids", return_value=[]),
+        patch.object(dev, "_backend_process_matches", return_value=True),
+        patch.object(dev.os, "name", "nt"),
+        patch.object(dev.subprocess, "run") as run,
+    ):
+        dev._stop_previous_backend()
+    run.assert_called_once_with(
+        ["taskkill", "/PID", "1234", "/T", "/F"],
+        capture_output=True,
+        check=False,
+    )
+    assert not pid_file.exists()
+
+
+def test_launcher_stops_legacy_backend_without_pid_file(tmp_path: Path) -> None:
+    pid_file = tmp_path / "backend.pid"
+    with (
+        patch.object(dev, "_BACKEND_PID_FILE", pid_file),
+        patch.object(dev, "_find_listening_backend_pids", return_value=[1234, 5678]),
+        patch.object(dev, "_backend_process_matches", return_value=True),
+        patch.object(dev.os, "name", "nt"),
+        patch.object(dev.subprocess, "run") as run,
+    ):
+        dev._stop_previous_backend()
+    assert run.call_args_list == [
+        ((["taskkill", "/PID", "1234", "/T", "/F"],),
+         {"capture_output": True, "check": False}),
+        ((["taskkill", "/PID", "5678", "/T", "/F"],),
+         {"capture_output": True, "check": False}),
+    ]
+
+
+def test_launcher_scan_excludes_current_process_ancestors() -> None:
+    result = MagicMock(stdout="29840,7084\n30072,29840\n1234,9999\n")
+    with (
+        patch.object(dev.os, "name", "nt"),
+        patch.object(dev.os, "getpid", return_value=30072),
+        patch.object(dev.subprocess, "run", return_value=result),
+    ):
+        assert dev._find_launcher_pids() == [1234]
 
 
 async def test_packaged_entry_resolves_resources_without_launch_directory(

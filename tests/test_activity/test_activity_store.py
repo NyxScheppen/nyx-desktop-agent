@@ -113,6 +113,18 @@ async def test_list_unfinished_includes_pending_and_running() -> None:
         await database.conn.close()
 
 
+async def test_get_current_reuses_outer_transaction() -> None:
+    store, database = await _new_store()
+    try:
+        await store.insert(_activity("a1", status=ActivityStatus.RUNNING))
+        async with database.transaction():
+            current = await store.get_current()
+        assert current is not None
+        assert current.id == "a1"
+    finally:
+        await database.conn.close()
+
+
 async def test_get_last_exploration_empty() -> None:
     store, database = await _new_store()
     try:

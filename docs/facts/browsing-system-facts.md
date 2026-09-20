@@ -38,8 +38,10 @@
   native 激活时按物理尺寸/scale factor 把过窄主窗口扩到 960px，set-size 权限仅给 main。
   左栏聊天只在浏览视图且当前页面可用时携带 page id；浏览提问可选择 attempt_id 回复。
   历史查询/重试/删除与关闭后 profile 清理已接线，删除前确认，清理失败不报告成功。
-- `python dev.py --desktop` 启动后端和 Tauri CLI，分发共享随机 256-bit secret，8000 已占用
-  则拒绝启动；普通 web 模式不配对。Rust/Python 启动后移除环境 secret。
+- `python dev.py --desktop` 启动后端和 Tauri CLI，分发共享随机 256-bit secret；Windows 开发模式
+  重启前会清理 PID 文件及 8000 监听中且命令行确认为 `nyx.main` 的旧 backend，其他平台按
+  PID 文件回收；启动器 lock 文件串行化重启流程，发现存活的旧 `dev.py` 会先结束其进程树；
+  未知进程占用端口则拒绝启动。普通 web 模式不配对。Rust/Python 启动后移除环境 secret。
 - Windows 原生 ACL/password spike 已通过，公开 Example Domain 桌面 smoke 已验证 child
   正确占位、视图切换、持久 checkpoint 和本地 SSE；使用内存 DB/mock LLM，未使用用户数据库或真实 LLM。
 - Windows popup 使用 Wry deferral 下的 Create；一次许可 10 秒、窗口最长 120 秒，共享远程

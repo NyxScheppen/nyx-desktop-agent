@@ -75,51 +75,6 @@ class ActivityStore:
             row = await cursor.fetchone()
         return _row_to_activity(row) if row is not None else None
 
-    async def get_game_session(self, session_id: str) -> Activity | None:
-        """Load one game companion activity by its durable session id."""
-        async with self._db.lock:
-            cursor = await self._db.conn.execute(
-                f"SELECT {_COLS} FROM activity "
-                "WHERE type = 'game_companion' "
-                "AND json_extract(progress, '$.game_companion.session_id') = ? "
-                "LIMIT 1",
-                (session_id,),
-            )
-            row = await cursor.fetchone()
-        return _row_to_activity(row) if row is not None else None
-
-    async def update_game_if_checkpoint(
-        self, activity: Activity, expected_checkpoint_seq: int
-    ) -> bool:
-        """CAS-update a game checkpoint inside the caller's transaction."""
-        params = (
-            activity.type.value,
-            activity.schedule_block_id,
-            activity.status.value,
-            json.dumps(activity.progress),
-            activity.started_at,
-            activity.ended_at,
-            activity.id,
-            expected_checkpoint_seq,
-        )
-        if self._db.in_transaction:
-            cursor = await self._db.conn.execute(
-                "UPDATE activity SET type = ?, schedule_block_id = ?, status = ?, "
-                "progress = ?, started_at = ?, ended_at = ? WHERE id = ? "
-                "AND json_extract(progress, '$.game_companion.checkpoint_seq') = ?",
-                params,
-            )
-            return cursor.rowcount == 1
-        async with self._db.lock:
-            cursor = await self._db.conn.execute(
-                "UPDATE activity SET type = ?, schedule_block_id = ?, status = ?, "
-                "progress = ?, started_at = ?, ended_at = ? WHERE id = ? "
-                "AND json_extract(progress, '$.game_companion.checkpoint_seq') = ?",
-                params,
-            )
-            await self._db.conn.commit()
-        return cursor.rowcount == 1
-
     async def get_current(self) -> Activity | None:
         """当前活动（running），取最新一条。"""
         async with self._operation():

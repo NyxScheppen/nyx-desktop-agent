@@ -348,7 +348,6 @@ async def build_app_context(
         config.activity,
         config.exploration,
         canon,
-        config.vision.enabled,
     )
     await activity.recover_stale_running()
     inner_life = InnerLifeFacade(

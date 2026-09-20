@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -18,7 +17,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.routing import Match
 
-from nyx.activity.game_observer import build_ocr_observation
 from nyx.activity.observe import classify_presence
 from nyx.activity.screen import validate_bridge_frame
 from nyx.app_context import _App
@@ -58,7 +56,6 @@ from nyx.types import (
     SelfNarrative,
     UserNote,
     WindowCandidate,
-    WindowIdentity,
     WindowTarget,
 )
 
@@ -146,22 +143,11 @@ class _BoundaryPayload(BaseModel):
     nyx_position: int = Field(..., ge=1)
 
 
-class _GameWindowIdentityPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    window_id: str = Field(..., min_length=1, max_length=256)
-    hwnd: int = Field(..., gt=0)
-    pid: int = Field(..., gt=0)
-    process_name: str = Field(..., min_length=1, max_length=512)
-    process_start_time_ms: int = Field(..., gt=0)
-
-
 class _GameSessionStartPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
     profile: GameProfile
     game_id: str = Field(..., min_length=1, max_length=128)
     window_id: str = Field(..., min_length=1, max_length=256)
     remote_vision_enabled: bool = False
-    window_identity: _GameWindowIdentityPayload
 
 
 class _GameChoicePayload(BaseModel):
@@ -273,21 +259,11 @@ def build_app(
         payload: _GameSessionStartPayload,
     ) -> dict[str, Any]:
         try:
-            if payload.window_identity.window_id != payload.window_id:
-                raise ValueError("window_identity_mismatch")
-            identity = WindowIdentity(
-                payload.window_identity.window_id,
-                payload.window_identity.hwnd,
-                payload.window_identity.pid,
-                payload.window_identity.process_name,
-                payload.window_identity.process_start_time_ms,
-            )
             activity = await app.activity.start_game_companion(
                 payload.profile,
                 payload.game_id,
                 payload.window_id,
                 payload.remote_vision_enabled,
-                window_identity=identity,
             )
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
@@ -470,31 +446,11 @@ def build_app(
             code = str(error)
             status = 413 if code == "capture_too_large" else 422
             raise HTTPException(status_code=status, detail=code) from error
-        _, report = build_ocr_observation(
-            session_id=session_id,
-            game_id=str(game["game_id"]),
-            profile=GameProfile(str(game["profile"])),
-            profile_version=int(game["profile_version"]),
-            threshold_version=1,
-            revision=expected_revision,
-            captured_at=time.time(),
-            width=frame.width,
-            height=frame.height,
-            blocks=[],
-            ocr_error="ocr_unavailable",
-        )
         return {
             "capture_id": frame.capture_id,
             "revision": frame.expected_revision,
-            "accepted": False,
-            "status": report.status.value,
-            "observation_hash": None,
-            "validation": {
-                "score": report.score,
-                "hard_failures": report.hard_failures,
-                "soft_warnings": report.soft_warnings,
-            },
-            "error_code": "ocr_unavailable",
+            "status": "tentative",
+            "observation": None,
         }
 
     @fast.get("/api/events/log")

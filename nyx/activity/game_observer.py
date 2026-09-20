@@ -79,7 +79,6 @@ def build_ocr_observation(
     height: int,
     blocks: list[GameTextBlock],
     previous: GameObservation | None = None,
-    ocr_error: str | None = None,
 ) -> tuple[GameObservation, ValidationReport]:
     """Build a conservative image-free observation from injected OCR blocks.
 
@@ -127,8 +126,6 @@ def build_ocr_observation(
         or (profile is GameProfile.REIGNS and (width < 800 or height < 450))
     )
     warnings = ["low_resolution"] if low_resolution else []
-    if ocr_error is not None:
-        warnings.append(ocr_error)
     score, components = score_observation(
         ocr_confidence, evidence_coverage, temporal_agreement, 0.5
     )

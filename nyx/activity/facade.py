@@ -47,7 +47,6 @@ from nyx.types import (
     ReflectionOutcome,
     ShortTermDesire,
     SpeakerCorrectionValue,
-    WindowIdentity,
 )
 
 _CREATION_STYLES = _creation.CREATION_STYLES
@@ -60,7 +59,6 @@ _path_hash_suffix = _activity_paths.path_hash_suffix
 _sanitize_filename = _activity_paths.sanitize_filename
 
 _logger = logging.getLogger(__name__)
-_MAX_OBSERVATION_EVENT_INDEX = 128
 
 
 def _accepted_fields(snapshot: AcceptedObservationSnapshot) -> list[str]:
@@ -159,7 +157,6 @@ class ActivityFacade:
         config: ActivityConfig,
         exploration_config: ExplorationConfig,
         canon: str,
-        vision_enabled: bool = True,
     ) -> None:
         self._store = store
         self._material_store = material_store
@@ -172,7 +169,6 @@ class ActivityFacade:
         self._reflect = reflect
         self._get_observation = get_observation
         self._config = config
-        self._vision_enabled = vision_enabled
         self._canon = canon
         self._exploration = Exploration(
             llm,
@@ -273,8 +269,6 @@ class ActivityFacade:
         game_id: str,
         window_id: str,
         remote_vision_enabled: bool = False,
-        *,
-        window_identity: WindowIdentity,
     ) -> Activity:
         """Create the explicit GAME_COMPANION activity and its start event."""
         current = await self._find_game_activity()
@@ -290,10 +284,14 @@ class ActivityFacade:
                 "profile": profile.value,
                 "profile_version": 1,
                 "threshold_version": 1,
-                "remote_vision_enabled": (
-                    remote_vision_enabled and getattr(self, "_vision_enabled", True)
-                ),
-                "window_identity": window_identity.__dict__,
+                "remote_vision_enabled": remote_vision_enabled,
+                "window_identity": {
+                    "window_id": window_id,
+                    "hwnd": 0,
+                    "pid": 0,
+                    "process_name": "",
+                    "process_start_time_ms": 0,
+                },
                 "status": "observing",
                 "last_accepted_revision": 0,
                 "last_observation_hash": None,
@@ -342,9 +340,7 @@ class ActivityFacade:
                 "profile_version": 1,
                 "threshold_version": 1,
                 "revision": 0,
-                "remote_vision_enabled": (
-                    remote_vision_enabled and getattr(self, "_vision_enabled", True)
-                ),
+                "remote_vision_enabled": remote_vision_enabled,
                 "window_identity": progress["game_companion"]["window_identity"],
             },
             session_id,
@@ -434,12 +430,8 @@ class ActivityFacade:
         game["last_observation_hash"] = snapshot.observation_hash
         game["last_observation"] = snapshot_dict
         game["checkpoint_seq"] = int(game.get("checkpoint_seq", 0)) + 1
-        game["confirmed_choice_keys"] = []
-        game["confirmed_choice_events"] = {}
         events = cast(dict[str, str], game.setdefault("observation_events", {}))
         events[snapshot.observation_hash] = event.id
-        while len(events) > _MAX_OBSERVATION_EVENT_INDEX:
-            events.pop(next(iter(events)))
         await self._commit_game_event(activity, event)
         return event.id
 
@@ -538,7 +530,6 @@ class ActivityFacade:
         game["status"] = "paused"
         activity.status = ActivityStatus.PAUSED
         activity.ended_at = time.time()
-        game["checkpoint_seq"] = int(game.get("checkpoint_seq", 0)) + 1
         event = internal_event(
             EventType.ACTIVITY_INTERRUPTED,
             {"activity_id": activity.id, "by": EventType.GAME_OBSERVATION.value},
@@ -554,18 +545,7 @@ class ActivityFacade:
         game["status"] = "observing"
         activity.status = ActivityStatus.RUNNING
         activity.ended_at = None
-        game["checkpoint_seq"] = int(game.get("checkpoint_seq", 0)) + 1
-        expected = int(game["checkpoint_seq"]) - 1
-        update_cas = getattr(self._store, "update_game_if_checkpoint", None)
-        if callable(update_cas):
-            update_cas = cast(
-                Callable[[Activity, int], Awaitable[bool]], update_cas
-            )
-            async with self._store.db.transaction():
-                if not await update_cas(activity, expected):
-                    raise ValueError("game_state_conflict")
-        else:
-            await self._store.update(activity)
+        await self._store.update(activity)
 
     async def stop_game_companion(self, session_id: str) -> None:
         activity = await self._find_game_activity(session_id)
@@ -574,7 +554,6 @@ class ActivityFacade:
         game = cast(dict[str, Any], activity.progress["game_companion"])
         game["status"] = "ended"
         game["ended_at"] = time.time()
-        game["checkpoint_seq"] = int(game.get("checkpoint_seq", 0)) + 1
         activity.status = ActivityStatus.COMPLETED
         activity.ended_at = time.time()
         event = internal_event(
@@ -656,8 +635,6 @@ class ActivityFacade:
     async def _find_game_activity(
         self, session_id: str | None = None
     ) -> Activity | None:
-        if session_id is not None:
-            return await self._store.get_game_session(session_id)
         activities = await self._store.list_unfinished()
         activities.extend(await self._store.list_schedule(0.0))
         seen: set[str] = set()
@@ -684,17 +661,7 @@ class ActivityFacade:
             append_event = cast(Callable[[Event], Awaitable[tuple[str, ...]]], append)
             announce_event = cast(Callable[[Event], Awaitable[None]], announce)
             async with self._store.db.transaction():
-                update_cas = getattr(self._store, "update_game_if_checkpoint", None)
-                if callable(update_cas):
-                    update_cas = cast(
-                        Callable[[Activity, int], Awaitable[bool]], update_cas
-                    )
-                    game = cast(dict[str, Any], activity.progress["game_companion"])
-                    new_seq = int(game.get("checkpoint_seq", 0))
-                    if not await update_cas(activity, new_seq - 1):
-                        raise ValueError("game_state_conflict")
-                else:
-                    await self._store.update(activity)
+                await self._store.update(activity)
                 await append_event(event)
             await announce_event(event)
             return

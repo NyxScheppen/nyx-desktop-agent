@@ -393,23 +393,6 @@ def build_app(
     @fast.post("/api/game-companion/bridge/sessions/{session_id}/frames")
     async def api_game_frame(session_id: str, request: Request) -> dict[str, Any]:
         """Validate a transient native frame; OCR/vision runs in the observer worker."""
-        locks_raw = getattr(app, "game_frame_locks", None)
-        if not isinstance(locks_raw, dict):
-            locks_raw = {}
-            setattr(app, "game_frame_locks", locks_raw)
-        locks = cast(dict[str, asyncio.Lock], locks_raw)
-        lock = locks.setdefault(session_id, asyncio.Lock())
-        if lock.locked():
-            raise HTTPException(status_code=409, detail="frame_busy")
-        await lock.acquire()
-        try:
-            return await _process_game_frame(session_id, request)
-        finally:
-            lock.release()
-
-    async def _process_game_frame(
-        session_id: str, request: Request
-    ) -> dict[str, Any]:
         content_type = request.headers.get("content-type", "").split(";", 1)[0]
         if content_type != "image/png":
             raise HTTPException(status_code=415, detail="capture_invalid")
@@ -540,35 +523,26 @@ def build_app(
         else:
             pending.pop(session_id, None)
         if snapshot is not None:
-            durable_revision = int(game.get("last_accepted_revision", 0))
-            durable_hash = game.get("last_observation_hash")
             try:
                 event_id = await app.activity.record_game_observation(
                     session_id, snapshot
                 )
             except ValueError as error:
                 code = str(error)
-                status = {
-                    "stale_observation": 409,
-                    "game_state_conflict": 409,
-                    "observation_payload_too_large": 413,
-                }.get(code, 422)
+                status = 409 if code in {
+                    "stale_observation", "game_state_conflict"
+                } else 422
                 raise HTTPException(status_code=status, detail=code) from error
-            if event_id is not None and snapshot.observation_hash == durable_hash:
-                response_revision = durable_revision
-                response_hash = str(durable_hash)
-            else:
-                response_revision = snapshot.revision
-                response_hash = snapshot.observation_hash
-        else:
-            response_revision = expected_revision
-            response_hash = None
         return {
             "capture_id": frame.capture_id,
             "accepted": event_id is not None,
             "status": report.status.value,
-            "revision": response_revision,
-            "observation_hash": response_hash,
+            "revision": (
+                snapshot.revision if snapshot is not None else expected_revision
+            ),
+            "observation_hash": (
+                snapshot.observation_hash if snapshot is not None else None
+            ),
             "validation": {
                 "score": report.score,
                 "hard_failures": report.hard_failures,

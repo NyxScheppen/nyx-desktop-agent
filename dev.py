@@ -19,6 +19,8 @@ from typing import cast
 ROOT = Path(__file__).resolve().parent
 FRONTEND = ROOT / "frontend"
 _BACKEND_ADDRESS = ("127.0.0.1", 8000)
+_BACKEND_STARTUP_TIMEOUT = 120.0
+_BACKEND_PROBE_TIMEOUT = 0.2
 _BACKEND_PID_FILE = ROOT / ".nyx-backend.pid"
 _LAUNCH_LOCK_FILE = ROOT / ".nyx-launcher.lock"
 
@@ -52,6 +54,24 @@ def _ensure_backend_port_free() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def _wait_for_backend_ready(proc: subprocess.Popen[bytes]) -> None:
+    """Wait until the owned backend accepts loopback connections."""
+    deadline = time.monotonic() + _BACKEND_STARTUP_TIMEOUT
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"backend exited before becoming ready (code={proc.returncode})"
+            )
+        try:
+            with socket.create_connection(
+                _BACKEND_ADDRESS, timeout=_BACKEND_PROBE_TIMEOUT
+            ):
+                return
+        except OSError:
+            time.sleep(_BACKEND_PROBE_TIMEOUT)
+    raise RuntimeError("backend did not become ready before the startup timeout")
 
 
 def _backend_process_matches(pid: int) -> bool:
@@ -350,20 +370,27 @@ def main() -> None:
             backend_pid = cast(object, backend.pid)
             if isinstance(backend_pid, int):
                 _remember_backend(backend_pid)
-            procs.append(subprocess.Popen(
-                [npm, "run", "tauri", "dev"] if desktop else [npm, "run", "dev"],
-                cwd=FRONTEND, env=launch_env,
-            ))
-            while True:
-                for name, proc in zip(names, procs):
-                    code = proc.poll()
-                    if code is not None:
-                        print(f"[dev] {name} 已退出 (code={code})，关闭其余…")
-                        failed = code != 0
+            print("[dev] 后端启动中，等待 8000 端口就绪…")
+            try:
+                _wait_for_backend_ready(backend)
+            except RuntimeError as exc:
+                print(f"[dev] 后端未就绪：{exc}")
+                failed = True
+            else:
+                procs.append(subprocess.Popen(
+                    [npm, "run", "tauri", "dev"] if desktop else [npm, "run", "dev"],
+                    cwd=FRONTEND, env=launch_env,
+                ))
+                while True:
+                    for name, proc in zip(names, procs):
+                        code = proc.poll()
+                        if code is not None:
+                            print(f"[dev] {name} 已退出 (code={code})，关闭其余…")
+                            failed = code != 0
+                            break
+                    if failed or any(proc.poll() is not None for proc in procs):
                         break
-                if failed or any(proc.poll() is not None for proc in procs):
-                    break
-                time.sleep(0.3)
+                    time.sleep(0.3)
         except KeyboardInterrupt:
             print("\n[dev] 收到 Ctrl+C，关闭全部…")
         finally:

@@ -43,6 +43,10 @@ export function useSSE(dispatch: (e: SseEvent) => void): ConnectionState {
   const [status, setStatus] = useState<ConnectionState>("connecting");
 
   useEffect(() => {
+    // An HMR/StrictMode effect replacement runs cleanup before the new source
+    // opens; publish the replacement's connecting state immediately so the
+    // old cleanup cannot leave the UI showing a stale "closed" state.
+    setStatus("connecting");
     const source = new EventSource(`${BASE_URL}/api/events`);
 
     const onEvent = (type: string) => (event: MessageEvent) => {

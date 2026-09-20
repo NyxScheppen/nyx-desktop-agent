@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BASE_URL } from "../src/api/client";
 import { dispatchEvent } from "../src/api/dispatch";
@@ -83,6 +84,42 @@ describe("useSSE", () => {
 
     act(() => source.onerror?.());
     expect(result.current).toBe("connecting");
+  });
+
+  it("初次连接失败仍保持 connecting，随后同一 EventSource 恢复为 open", () => {
+    const dispatch = vi.fn();
+    const { result } = renderHook(() => useSSE(dispatch));
+    const source = FakeEventSource.instances[0];
+
+    act(() => source.onerror?.());
+    expect(result.current).toBe("connecting");
+
+    act(() => source.onopen?.());
+    expect(result.current).toBe("open");
+  });
+
+  it("StrictMode 的开发期 effect 重放不会把活动连接留在 closed", () => {
+    const dispatch = vi.fn();
+    const { result } = renderHook(() => useSSE(dispatch), { wrapper: StrictMode });
+    const source = FakeEventSource.instances.at(-1);
+
+    expect(source).toBeDefined();
+    act(() => source?.onopen?.());
+    expect(result.current).toBe("open");
+  });
+
+  it("effect 被替换时，旧连接 cleanup 不会把新连接状态留在 closed", () => {
+    const firstDispatch = vi.fn();
+    const secondDispatch = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ dispatch }) => useSSE(dispatch),
+      { initialProps: { dispatch: firstDispatch } },
+    );
+
+    act(() => rerender({ dispatch: secondDispatch }));
+
+    expect(result.current).toBe("connecting");
+    expect(FakeEventSource.instances).toHaveLength(2);
   });
 
   it("命名帧解析正确并 dispatch", () => {

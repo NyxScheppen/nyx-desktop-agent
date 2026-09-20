@@ -15,6 +15,13 @@ backend，再做 127.0.0.1:8000 预绑定检查；占用时不创建 backend 或
 关闭已有 Nyx 后端。PID 不匹配 Nyx 命令时不强杀，避免误伤复用该 PID 的其他进程。
 **影响的文件/决策**：`dev.py`、`tests/test_browsing/test_browsing_launcher.py`
 
+### 2026-09-20: SSE effect 替换时不要保留旧连接的 closed 状态
+
+**来源**：Vite/React 开发期 effect 重放导致前端显示“已断开”。
+**教训**：旧 `EventSource` 的 cleanup 会在新连接尚未 `open` 时先写入 `closed`；若新 effect 不立即声明连接正在建立，UI 会被旧生命周期状态卡住。
+**怎么做**：每次 `useSSE` effect 建立新 `EventSource` 前先设置 `connecting`；继续让浏览器原生 EventSource 负责重连，不新增手写循环。回归覆盖 effect 替换、初次失败和恢复。
+**影响的文件/决策**：`frontend/src/hooks/useSSE.ts`、`frontend/tests/sse.test.ts`
+
 ### 2026-09-20: 端口预检查必须和启动流程原子串行化
 
 **来源**：两次双击启动几乎同时执行时，两个 launcher 都能在 backend 绑定 8000 之前通过

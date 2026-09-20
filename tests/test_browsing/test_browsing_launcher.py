@@ -3,6 +3,7 @@
 
 import os
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +24,7 @@ def test_desktop_launcher_pairs_backend_and_tauri(tmp_path: Path) -> None:
         patch.object(dev, "_LAUNCH_LOCK_FILE", tmp_path / "launcher.lock"),
         patch.object(dev, "_find_launcher_pids", return_value=[]),
         patch.object(dev, "_find_listening_backend_pids", return_value=[]),
+        patch.object(dev, "_wait_for_backend_ready"),
         patch.object(dev.socket, "socket") as listener,
         patch.object(dev.subprocess, "Popen", return_value=process) as spawn,
     ):
@@ -71,6 +73,53 @@ def test_occupied_backend_port_refuses_plain_launcher(tmp_path: Path) -> None:
         with pytest.raises(SystemExit, match="1"):
             dev.main()
     spawn.assert_not_called()
+
+
+def test_launcher_waits_for_backend_ready_before_starting_frontend(
+    tmp_path: Path,
+) -> None:
+    """The frontend must not start while the backend is still booting."""
+    ready = threading.Event()
+    spawned: list[tuple[str, bool]] = []
+
+    class FakeProcess:
+        def __init__(self, pid: int, exit_code: int | None) -> None:
+            self.pid = pid
+            self.returncode = exit_code
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+    backend = FakeProcess(101, None)
+    frontend = FakeProcess(102, 1)
+
+    def fake_popen(command: list[str], **_: object) -> FakeProcess:
+        if command[1:] == ["-m", "nyx.main"]:
+            spawned.append(("backend", ready.is_set()))
+            threading.Timer(0.05, ready.set).start()
+            return backend
+        spawned.append(("frontend", ready.is_set()))
+        return frontend
+
+    def wait_for_ready(_proc: object) -> None:
+        ready.wait(1)
+
+    with (
+        patch.object(dev.sys, "argv", ["dev.py"]),
+        patch.object(dev.shutil, "which", return_value="npm"),
+        patch.object(dev, "_BACKEND_PID_FILE", tmp_path / "backend.pid"),
+        patch.object(dev, "_LAUNCH_LOCK_FILE", tmp_path / "launcher.lock"),
+        patch.object(dev, "_stop_legacy_launchers"),
+        patch.object(dev, "_stop_previous_backend"),
+        patch.object(dev, "_ensure_backend_port_free"),
+        patch.object(dev, "_wait_for_backend_ready", side_effect=wait_for_ready),
+        patch.object(dev, "_stop"),
+        patch.object(dev.subprocess, "Popen", side_effect=fake_popen),
+    ):
+        with pytest.raises(SystemExit, match="1"):
+            dev.main()
+
+    assert spawned == [("backend", False), ("frontend", True)]
 
 
 def test_launcher_lock_replaces_live_owner_before_restart(tmp_path: Path) -> None:

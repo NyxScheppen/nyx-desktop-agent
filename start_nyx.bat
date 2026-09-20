@@ -52,7 +52,7 @@ if not exist "%~dp0frontend\node_modules\.bin\vite.cmd" (
 )
 
 echo.
-echo [Nyx] Starting backend (8000) and frontend (5173)...
+echo [Nyx] Starting backend (8000), waiting for readiness, then frontend (5173)...
 "%PYTHON%" dev.py
 set "EXIT_CODE=%ERRORLEVEL%"
 

@@ -172,10 +172,7 @@
 - [ ] `OBSERVE_USER` 读取组合根维护的 presence、窗口标题和可选 screen summary，使用 `build_observation_summary` 生成摘要，运行时不调用 LLM。
 - [ ] `REST` 不调用 LLM，返回空 result。
 - [ ] 空槽默认活动：无欲望或全为互动欲时，精力 `< ENERGY_REST_THRESHOLD` 选择 `IDLE_REFLECTION`，否则选择 `OBSERVE_USER`；默认活动不关联欲望。
-- [ ] 精力变化按 `ActivityType.value` 从 `ActivityEnergyDelta` 同名字段读取：既有值保持不变，`game_companion=0`；陪玩只能由显式入口启动，不参与欲望排程。
-
-- [ ] `ActivityType.GAME_COMPANION` 的 session/checkpoint、暂停/恢复/停止和选择确认由
-  `ActivityFacade` 承载，完整 progress 与事务边界见 `14-game-companion-vision.md`。
+- [ ] 精力变化按 `ActivityType.value` 从 `ActivityEnergyDelta` 同名字段读取：`reading=-20`、`creation=-25`、`free_exploration=-30`、`observe_user=-10`、`idle_reflection=+10`、`rest=+30`。
 
 ### 观察与屏幕视觉
 

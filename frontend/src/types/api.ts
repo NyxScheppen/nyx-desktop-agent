@@ -74,22 +74,6 @@ type SseBase = {
   timestamp: number; // 后端 Event.timestamp，epoch 秒
 };
 
-export type GameSessionState = {
-  session_id: string;
-  activity_id: string;
-  game_id: string;
-  profile: "disco_elysium" | "reigns" | "generic_text";
-  profile_version: number;
-  threshold_version: number;
-  status: "observing" | "paused" | "ended";
-  revision: number;
-  observation_hash: string | null;
-  last_observation: unknown | null;
-  corrections: unknown[];
-  remote_vision_enabled: boolean;
-  error: string | null;
-};
-
 /** 文本事件类型：internal_text_event 包装成 {"content": string}。 */
 export type TextEventType =
   | "speak"
@@ -189,11 +173,7 @@ type OpaqueEventType =
   | "desire_expired"
   | "activity_start"
   | "activity_end"
-  | "activity_interrupted"
-  | "game_session_started"
-  | "game_observation"
-  | "game_choice_confirmed"
-  | "game_observation_corrected";
+  | "activity_interrupted";
 type OpaqueEvent = SseBase & { event: OpaqueEventType } & Record<string, unknown>;
 
 /** SSE 帧：按 event 值判别联合——键名错位在编译期即拦（曾放过 user_message 读 content 的 bug）。 */

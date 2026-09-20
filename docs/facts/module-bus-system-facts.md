@@ -20,8 +20,6 @@
 
 ## 当前实现事实
 
-- 游戏陪玩新增 `GAME_SESSION_STARTED`（仅 event log/SSE）、`GAME_OBSERVATION`（expression consumer）、`GAME_CHOICE_CONFIRMED`（memory + expression consumers）和 `GAME_OBSERVATION_CORRECTED`（memory consumer）；消费者从事件携带的 immutable snapshot/choice 事实读取并使用 effect marker 防重放。
-
 - 当前系统不是纯“模块只通过总线通信”：EventBus 负责事件受理、`event_log` 持久化、`event_delivery` 投递、SSE 广播和 handler 通知；Facade 之间仍存在直接查询/编排调用。
 - `EventBus.publish(event)` 是 durable admission：根事件必须先持久化 `event_log` 和已注册 consumer 的初始 delivery，commit 成功后才返回；数据库不可用或总线关闭时抛受理错误。
 - `event_log` 表示事件已发生；`event_delivery` 表示某个 `consumer_id` 对该事件的消费状态。不要用 `event_log` 推断消费者已完成。

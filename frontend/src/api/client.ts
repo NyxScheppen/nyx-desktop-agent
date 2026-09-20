@@ -18,7 +18,6 @@ import type {
   ProgressInput,
   UserNote,
   UserNoteWithAnnotations,
-  GameSessionState,
 } from "../types/api";
 
 // Development uses Vite proxy; packaged REST and SSE share the loopback endpoint.
@@ -217,61 +216,6 @@ export async function getEvalRecent(limit = 5): Promise<EvalRecord[]> {
 
 export async function getEvalTotalTokens(): Promise<EvalStats> {
   return request<EvalStats>(`${BASE_URL}/api/eval/total_tokens`);
-}
-
-export async function startGameCompanion(input: {
-  profile: GameSessionState["profile"];
-  game_id: string;
-  window_id: string;
-  remote_vision_enabled?: boolean;
-}): Promise<GameSessionState> {
-  return request<GameSessionState>(`${BASE_URL}/api/game-companion/sessions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
-}
-
-export async function getGameSession(sessionId: string): Promise<GameSessionState> {
-  return request<GameSessionState>(
-    `${BASE_URL}/api/game-companion/sessions/${sessionId}`,
-  );
-}
-
-export async function pauseGameCompanion(sessionId: string): Promise<{ status: string }> {
-  return request<{ status: string }>(
-    `${BASE_URL}/api/game-companion/sessions/${sessionId}/pause`,
-    { method: "POST" },
-  );
-}
-
-export async function resumeGameCompanion(sessionId: string): Promise<{ status: string }> {
-  return request<{ status: string }>(
-    `${BASE_URL}/api/game-companion/sessions/${sessionId}/resume`,
-    { method: "POST" },
-  );
-}
-
-export async function stopGameCompanion(sessionId: string): Promise<{ status: string }> {
-  return request<{ status: string }>(
-    `${BASE_URL}/api/game-companion/sessions/${sessionId}/stop`,
-    { method: "POST" },
-  );
-}
-
-export async function confirmGameChoice(
-  sessionId: string,
-  revision: number,
-  choiceId: string,
-): Promise<unknown> {
-  return request<unknown>(
-    `${BASE_URL}/api/game-companion/sessions/${sessionId}/choice`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ revision, choice_id: choiceId }),
-    },
-  );
 }
 
 export async function getBrowsingSession(sessionId: string, cursor?: string, limit = 50): Promise<{

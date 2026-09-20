@@ -5,7 +5,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -18,17 +18,9 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.routing import Match
 
 from nyx.activity.observe import classify_presence
-from nyx.activity.screen import validate_bridge_frame
 from nyx.app_context import _App
 from nyx.browsing.facade import BrowsingFacade
-from nyx.enums import (
-    BoundaryResult,
-    CorrectionField,
-    EventType,
-    GameProfile,
-    MemoryKind,
-    MemoryType,
-)
+from nyx.enums import BoundaryResult, EventType, MemoryKind, MemoryType
 from nyx.events.bus import EventAdmissionError
 from nyx.reading.facade import (
     BookNotFoundError,
@@ -51,12 +43,9 @@ from nyx.types import (
     Material,
     Memory,
     Paragraph,
-    PixelRect,
     ReadingProgress,
     SelfNarrative,
     UserNote,
-    WindowCandidate,
-    WindowTarget,
 )
 
 RootEvent = Callable[[EventType, dict[str, Any]], Event]
@@ -141,26 +130,6 @@ class _UpdateNotePayload(BaseModel):
 class _BoundaryPayload(BaseModel):
     book_id: str
     nyx_position: int = Field(..., ge=1)
-
-
-class _GameSessionStartPayload(BaseModel):
-    profile: GameProfile
-    game_id: str = Field(..., min_length=1, max_length=128)
-    window_id: str = Field(..., min_length=1, max_length=256)
-    remote_vision_enabled: bool = False
-
-
-class _GameChoicePayload(BaseModel):
-    revision: int = Field(..., ge=1)
-    choice_id: str = Field(..., min_length=1, max_length=64)
-
-
-class _GameCorrectionPayload(BaseModel):
-    revision: int = Field(..., ge=0)
-    correction_id: str = Field(..., min_length=1, max_length=128)
-    field: CorrectionField
-    value: dict[str, Any]
-    reason: str = Field(..., min_length=1, max_length=512)
 
 
 def sanitize_filename(name: str) -> str:
@@ -253,205 +222,6 @@ def build_app(
     @fast.get("/api/activity/results")
     async def api_activity_results(limit: int = 100) -> list[Activity]:
         return await app.activity.get_results(limit)
-
-    @fast.post("/api/game-companion/sessions")
-    async def api_game_session_start(
-        payload: _GameSessionStartPayload,
-    ) -> dict[str, Any]:
-        try:
-            activity = await app.activity.start_game_companion(
-                payload.profile,
-                payload.game_id,
-                payload.window_id,
-                payload.remote_vision_enabled,
-            )
-        except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        game = activity.progress.get("game_companion")
-        if not isinstance(game, dict):
-            raise HTTPException(status_code=500, detail="invalid_game_checkpoint")
-        game = cast(dict[str, Any], game)
-        return {
-            "session_id": game.get("session_id"),
-            "activity_id": activity.id,
-            "game_id": game.get("game_id"),
-            "profile": game.get("profile"),
-            "profile_version": game.get("profile_version"),
-            "threshold_version": game.get("threshold_version"),
-            "status": game.get("status"),
-            "revision": game.get("last_accepted_revision", 0),
-            "remote_vision_enabled": game.get("remote_vision_enabled", False),
-            "window_identity": game.get("window_identity"),
-        }
-
-    @fast.get("/api/game-companion/sessions/{session_id}")
-    async def api_game_session_get(session_id: str) -> dict[str, Any]:
-        activity = await app.activity.get_game_session(session_id)
-        if activity is None:
-            raise HTTPException(status_code=404, detail="session_not_found")
-        game = activity.progress.get("game_companion")
-        if not isinstance(game, dict):
-            raise HTTPException(status_code=404, detail="session_not_found")
-        game = cast(dict[str, Any], game)
-        return {"activity_id": activity.id, **game}
-
-    @fast.post("/api/game-companion/sessions/{session_id}/pause")
-    async def api_game_session_pause(session_id: str) -> dict[str, str]:
-        await app.activity.pause_game_companion(session_id)
-        return {"status": "paused"}
-
-    @fast.post("/api/game-companion/sessions/{session_id}/resume")
-    async def api_game_session_resume(session_id: str) -> dict[str, str]:
-        await app.activity.resume_game_companion(session_id)
-        return {"status": "observing"}
-
-    @fast.post("/api/game-companion/sessions/{session_id}/stop")
-    async def api_game_session_stop(session_id: str) -> dict[str, str]:
-        await app.activity.stop_game_companion(session_id)
-        return {"status": "ended"}
-
-    @fast.post("/api/game-companion/sessions/{session_id}/choice")
-    async def api_game_choice(
-        session_id: str, payload: _GameChoicePayload
-    ) -> Any:
-        try:
-            return await app.activity.confirm_game_choice(
-                session_id, payload.revision, payload.choice_id
-            )
-        except ValueError as error:
-            code = str(error)
-            status = {
-                "session_not_found": 404,
-                "choice_not_found": 404,
-                "stale_choice": 409,
-                "choice_already_confirmed": 409,
-            }.get(code, 409)
-            raise HTTPException(status_code=status, detail=code) from error
-
-    @fast.post("/api/game-companion/sessions/{session_id}/corrections")
-    async def api_game_correction(
-        session_id: str, payload: _GameCorrectionPayload
-    ) -> Any:
-        try:
-            return await app.activity.correct_game_observation(
-                session_id,
-                payload.revision,
-                payload.correction_id,
-                payload.field,
-                payload.value,
-                payload.reason,
-            )
-        except ValueError as error:
-            code = str(error)
-            status = {
-                "session_not_found": 404,
-                "invalid_correction_value": 400,
-                "correction_storage_limit": 409,
-                "stale_observation": 409,
-            }.get(code, 409)
-            raise HTTPException(status_code=status, detail=code) from error
-
-    @fast.post("/api/game-companion/bridge/sessions/{session_id}/frames")
-    async def api_game_frame(session_id: str, request: Request) -> dict[str, Any]:
-        """Validate a transient native frame; OCR/vision runs in the observer worker."""
-        content_type = request.headers.get("content-type", "").split(";", 1)[0]
-        if content_type != "image/png":
-            raise HTTPException(status_code=415, detail="capture_invalid")
-        capture_id = request.headers.get("x-nyx-capture-id", "")
-        window_id = request.headers.get("x-nyx-window-id", "")
-        pid_text = request.headers.get("x-nyx-window-pid", "")
-        start_time_text = request.headers.get("x-nyx-window-start-time", "")
-        revision_text = request.headers.get("x-nyx-expected-revision", "")
-        try:
-            pid = int(pid_text)
-            process_start_time_ms = int(start_time_text)
-            expected_revision = int(revision_text)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="invalid_payload") from error
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
-            try:
-                declared_length = int(content_length)
-            except ValueError as error:
-                raise HTTPException(
-                    status_code=422, detail="invalid_payload"
-                ) from error
-            if declared_length <= 0:
-                raise HTTPException(status_code=422, detail="invalid_payload")
-            if declared_length > 4 * 1024 * 1024:
-                raise HTTPException(status_code=413, detail="capture_too_large")
-        activity = await app.activity.get_game_session(session_id)
-        if activity is None:
-            raise HTTPException(status_code=404, detail="session_not_found")
-        game_raw = activity.progress.get("game_companion")
-        if not isinstance(game_raw, dict):
-            raise HTTPException(status_code=409, detail="session_state_conflict")
-        game = cast(dict[str, Any], game_raw)
-        if game.get("status") != "observing":
-            raise HTTPException(status_code=409, detail="session_state_conflict")
-        identity_raw = game.get("window_identity")
-        identity = (
-            cast(dict[str, Any], identity_raw)
-            if isinstance(identity_raw, dict)
-            else None
-        )
-        if not isinstance(identity, dict) or identity.get("window_id") != window_id:
-            raise HTTPException(status_code=409, detail="window_identity_mismatch")
-        if (
-            identity.get("pid") != pid
-            or identity.get("process_start_time_ms") != process_start_time_ms
-        ):
-            raise HTTPException(status_code=409, detail="window_identity_mismatch")
-        if expected_revision != int(game.get("last_accepted_revision", 0)):
-            raise HTTPException(status_code=409, detail="stale_observation")
-        chunks: list[bytes] = []
-        total = 0
-        async for chunk in request.stream():
-            total += len(chunk)
-            if total > 4 * 1024 * 1024:
-                raise HTTPException(status_code=413, detail="capture_too_large")
-            chunks.append(chunk)
-        candidate = WindowCandidate(
-            window_id=window_id,
-            hwnd=int(identity.get("hwnd", 0)),
-            pid=pid,
-            process_name=str(identity.get("process_name", "")),
-            process_path=None,
-            process_start_time_ms=process_start_time_ms,
-            title="",
-            client_bounds_physical=PixelRect(0, 0, 4096, 4096),
-            scale_factor=1.0,
-            foreground=True,
-            minimized=False,
-        )
-        target = WindowTarget(
-            candidate.window_id,
-            candidate.hwnd,
-            candidate.pid,
-            candidate.process_name,
-            candidate.process_path,
-            candidate.process_start_time_ms,
-            candidate.title,
-            candidate.client_bounds_physical,
-            candidate.scale_factor,
-            candidate.foreground,
-            candidate.minimized, GameProfile(str(game["profile"])),
-            str(game["game_id"]), int(game["profile_version"]),
-        )
-        try:
-            frame = validate_bridge_frame(
-                target, b"".join(chunks), capture_id, expected_revision
-            )
-        except ValueError as error:
-            code = str(error)
-            status = 413 if code == "capture_too_large" else 422
-            raise HTTPException(status_code=status, detail=code) from error
-        return {
-            "capture_id": frame.capture_id,
-            "revision": frame.expected_revision,
-            "status": "tentative",
-            "observation": None,
-        }
 
     @fast.get("/api/events/log")
     async def api_events_log(
@@ -1057,7 +827,6 @@ def build_app(
                 response.headers["Access-Control-Allow-Private-Network"] = "true"
         else:
             response = None
-            raw_body_route = False
             if request.url.path.startswith("/api/browsing/bridge/"):
                 length = request.headers.get("content-length", "")
                 if length.isdecimal() and int(length) > 2097152:
@@ -1071,25 +840,10 @@ def build_app(
                         chunks.extend(chunk)
                     if response is None:
                         request._body = bytes(chunks)
-            elif request.url.path.startswith("/api/game-companion/bridge/"):
-                raw_body_route = True
-                length = request.headers.get("content-length", "")
-                if length.isdecimal() and int(length) > 4 * 1024 * 1024:
-                    response = reject(413, "capture_too_large")
-                else:
-                    chunks = bytearray()
-                    async for chunk in request.stream():
-                        if len(chunks) + len(chunk) > 4 * 1024 * 1024:
-                            response = reject(413, "capture_too_large")
-                            break
-                        chunks.extend(chunk)
-                    if response is None:
-                        request._body = bytes(chunks)
             if (
                 response is None
                 and request.method in ("POST", "PUT", "DELETE")
                 and route
-                and not raw_body_route
             ):
                 content_type = request.headers.get("content-type", "")
                 media = content_type.split(";", 1)[0].strip().lower()

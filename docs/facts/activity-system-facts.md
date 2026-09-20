@@ -75,13 +75,6 @@
 
 ## API 与前端
 
-## 游戏陪玩（14-game-companion-vision）
-
-- `ActivityType.GAME_COMPANION` 由 `ActivityFacade.start_game_companion()` 显式创建，能量变化固定为 0，不参与欲望排程。
-- `progress["game_companion"]` 保存 session、窗口 identity、revision/hash、完整 accepted observation、choice/correction 幂等键；选择确认与 observation 事件通过现有 EventBus 事务追加。
-- `nyx/activity/game_observer.py` 提供 transient request 校验、canonical observation hash、四项 score、证据引用闸门、注入式 OCR 候选解析和 image-free snapshot 编解码；首帧为 tentative，1.2 秒内相似度达到 0.85 的第二帧才可 accepted；`screen.py` 保留旧全屏摘要旁路，同时提供 native frame 校验。游戏 frame bridge 还在 API middleware 先执行 PNG/4 MiB body guard，再由路由校验 capture id、完整窗口 identity（window id、PID、process start time）和当前 observation revision；迟到 revision 在读取图片前返回 `stale_observation`。
-- `VisionClient.observe()` 使用 `VisionConfig.timeout/max_retries` 与 session remote-vision 闸门，失败返回结构化状态，不把图片写入 durable 数据。
-
 - `GET /api/activity` 返回 `{current, schedule}`，分别来自 `ActivityFacade.get_current()` 与 `get_schedule()`。
 - `GET /api/activity/results` 返回已完成且带产出的 `reading`、`free_exploration`、`creation`，按 `ended_at DESC`。
 - `POST /api/upload` 读取文本上传，写入 `workspace/uploads/<filename>`，再调用 `activity.register_material(path, filename, len(text))`；它只注册书库，不立即启动读书。

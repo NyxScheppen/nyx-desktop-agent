@@ -71,11 +71,6 @@ export function dispatchEvent(e: SseEvent): void {
     case "browsing_question":
     case "browsing_association":
       return useChatStore.getState().addBrowsingTurn(e);
-    case "game_session_started":
-    case "game_observation":
-    case "game_choice_confirmed":
-    case "game_observation_corrected":
-      return;
     case "reflection_done": {
       // 反思完成：长期欲望（add_long_term 不发 desire_generated）刷新；
       // story 真新增才冒气泡（去重跳过则静默刷新，不打扰）。

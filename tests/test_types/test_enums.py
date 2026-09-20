@@ -32,8 +32,6 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
         "activity_interrupted", "reading_mutter", "reading_question",
         "reading_association",
         "browsing_mutter", "browsing_question", "browsing_association",
-        "game_session_started", "game_observation", "game_choice_confirmed",
-        "game_observation_corrected",
     },
     Source: {"external", "internal"},
     TickType: {
@@ -47,7 +45,7 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
     DesireType: {"interaction", "exploration", "creation", "rest"},
     ActivityType: {
         "reading", "free_exploration", "creation", "observe_user", "idle_reflection",
-        "rest", "game_companion",
+        "rest",
     },
     MemoryType: {"short_term", "long_term"},
     MemoryEdgeKind: {

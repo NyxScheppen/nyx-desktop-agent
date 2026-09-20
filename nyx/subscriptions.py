@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from nyx.events.routing import ROUTE_SPECS, RouteSpec
 from nyx.types import Event
@@ -42,18 +42,6 @@ def _resolve_handler(app: _App, spec: RouteSpec) -> Handler:
         return lambda event: app.memory.remember_activity(event, spec.consumer_id)
     if spec.handler_key == "apply_reflection":
         return lambda event: app.inner_life.apply_event(event, spec.consumer_id)
-    if spec.handler_key == "on_game_observation":
-        handler = getattr(app.expression, "on_game_observation", None)
-        return cast(Handler, handler) if callable(handler) else _ignore_game_event
-    if spec.handler_key == "on_game_choice_confirmed":
-        if spec.module == "memory":
-            handler = getattr(app.memory, "on_game_choice_confirmed", None)
-        else:
-            handler = getattr(app.expression, "on_game_choice_confirmed", None)
-        return cast(Handler, handler) if callable(handler) else _ignore_game_event
-    if spec.handler_key == "on_game_observation_corrected":
-        handler = getattr(app.memory, "on_game_observation_corrected", None)
-        return cast(Handler, handler) if callable(handler) else _ignore_game_event
 
     from nyx.runtime import (
         on_desire_eval,
@@ -78,8 +66,3 @@ def _resolve_handler(app: _App, spec: RouteSpec) -> Handler:
             f"{spec.handler_key!r}"
         ) from error
     return lambda event: tick_handler(app, event)
-
-
-async def _ignore_game_event(event: Event) -> None:
-    """Compatibility handler for lightweight subscription test doubles."""
-    return None

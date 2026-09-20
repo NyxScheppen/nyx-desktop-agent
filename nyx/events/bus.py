@@ -100,11 +100,6 @@ class EventBus:
         return self._accepting and not self._closed and not self._db.is_closed
 
     @property
-    def db(self) -> Database:
-        """Shared database for callers that must append effects atomically."""
-        return self._db
-
-    @property
     def consumer_ids(self) -> frozenset[str]:
         """Return the currently registered durable consumers."""
         return frozenset(self._handlers)

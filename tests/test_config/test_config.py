@@ -44,8 +44,6 @@ def test_validate_config_accepts_temperature_bounds() -> None:
         ("expression", "chat_ignore_timeout", 0.0),   # 非正
         ("vision", "interval_seconds", 0),            # 非正
         ("vision", "interval_seconds", "60"),         # 错类型 str
-        ("vision", "timeout", 0.0),                    # 非正
-        ("vision", "timeout", "10"),                  # 错类型 str
         ("vision", "enabled", "yes"),                 # 错类型 str 当 bool
         ("vision", "provider", ""),                   # 空 str
         ("vision", "api_key_env", ""),                # 空 str

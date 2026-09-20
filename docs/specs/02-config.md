@@ -31,7 +31,7 @@
 - **递归构造**：`_build` 看到字段类型是 dataclass 就递归构造，所以 `energy_delta` 会变成 `ActivityEnergyDelta`
 - **类型标注**：`_build` 用 `Any`（`dc: Any, raw: Any -> Any`）而非泛型 `_T`——`dataclasses.Field.type` 与 `yaml.safe_load` 都返回 `Any`，pyright strict 下 `type[_T]` 不满足 `DataclassInstance` 协议、返回类型无法静态验证。用 `Any` + `cast(dict[str, Any], raw)` 诚实承认反射构造是动态的，不假装类型精确。
 - **缺文件即报错**：`config.yaml` 缺失 → `ConfigError`（错误可溯源；"用全默认值"的场景由「缺键」覆盖，不靠「缺文件」）
-- **分段清单（8 个 dataclass）**：顶层 `Config` 聚合 8 段——`LlmConfig` / `EmbeddingConfig` / `MemoryConfig` / `DesireConfig` / `ActivityConfig`（含 `ActivityEnergyDelta`：既有 6 键加 `game_companion=0`）/ `ExpressionConfig` / `ExplorationConfig` / `VisionConfig`。`VisionConfig` 另含 `timeout=10.0`、`max_retries=1`。字段、默认值和校验属于本 spec；LLM/视觉客户端如何消费这些配置由 `03-llm` 定义。
+- **分段清单（8 个 dataclass）**：顶层 `Config` 聚合 8 段——`LlmConfig` / `EmbeddingConfig` / `MemoryConfig` / `DesireConfig` / `ActivityConfig`（含 `ActivityEnergyDelta`：reading/creation/free_exploration/observe_user/idle_reflection/rest 6 键能量增减）/ `ExpressionConfig` / `ExplorationConfig` / `VisionConfig`。字段、默认值和校验属于本 spec；LLM/视觉客户端如何消费这些配置由 `03-llm` 定义。
 
 **校验规则表**（`validate_config` 实现与此逐条对应）：
 
@@ -49,7 +49,7 @@
 | `desire.retry_limit` / `desire.short_term_capacity` / `desire.long_term_capacity` | `int > 0` |
 | `desire.value_decay` | 数 `> 0` |
 | `activity.grid_minutes` | `int > 0` |
-| `activity.energy_delta.*` | 7 键全为 `int`（可为负；`game_companion` 固定 0） |
+| `activity.energy_delta.*` | 6 键全为 `int`（可为负） |
 | `expression.slow_threshold` | 数 ∈ `[0, 1]` |
 | `expression.max_context_len` / `expression.slow_max_rounds` | `int > 0` |
 | `expression.ask_timeout` / `expression.chat_ignore_timeout` | 数 `> 0` |
@@ -59,8 +59,6 @@
 | `vision.provider` / `vision.model` / `vision.api_key_env` | 非空 `str` |
 | `vision.base_url` | 非 `None` 时非空 `str` |
 | `vision.interval_seconds` | `int > 0` |
-| `vision.timeout` | 数 `> 0` |
-| `vision.max_retries` | `int`（应用层不额外重试） |
 
 ## 测试要点
 

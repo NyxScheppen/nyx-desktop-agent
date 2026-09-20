@@ -16,7 +16,6 @@ _RESUMABLE_TYPES = (
     ActivityType.READING,
     ActivityType.CREATION,
     ActivityType.FREE_EXPLORATION,
-    ActivityType.GAME_COMPANION,
 )
 
 

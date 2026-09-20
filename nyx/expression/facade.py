@@ -8,7 +8,6 @@ import random
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, cast
 from uuid import uuid4
 
 from nyx.activity.facade import ActivityFacade
@@ -589,54 +588,6 @@ class ExpressionFacade:
         ):
             await self._desire.expire(self._pending_chat_desire_id)
             self._pending_chat_desire_id = None
-
-    async def on_game_observation(self, event: Event) -> None:
-        """Emit one short reaction for an accepted immutable observation."""
-        consumer_id = "expression.game_observation"
-        if await self._bus.has_effect(event.id, consumer_id):
-            return
-        snapshot = event.content.get("observation_snapshot")
-        if not isinstance(snapshot, dict):
-            return
-        snapshot = cast(dict[str, Any], snapshot)
-        phase = str(snapshot.get("phase") or "unknown")
-        dialogue = snapshot.get("dialogue")
-        choices = snapshot.get("choices")
-        if phase == "choice" or isinstance(choices, list) and choices:
-            text = "到做选择的时候了……你想和我一起看看哪一条？"
-        elif isinstance(dialogue, list) and dialogue:
-            text = "我看到了这一段对白，我们可以一起琢磨它。"
-        else:
-            text = "我大概看清了这一幕，但还想再观察一下。"
-        reaction = internal_text_event(EventType.MUTTER, text, event.correlation_id)
-        async with self._bus.db.transaction():
-            applied = await self._bus.try_mark_effect_in_transaction(
-                event.id, consumer_id
-            )
-            if not applied:
-                return
-            await self._bus.append_in_transaction(reaction)
-        await self._bus.announce_committed(reaction)
-
-    async def on_game_choice_confirmed(self, event: Event) -> None:
-        """React once after the user explicitly confirms a game choice."""
-        consumer_id = "expression.game_choice_confirmed"
-        if await self._bus.has_effect(event.id, consumer_id):
-            return
-        choice_text = str(event.content.get("choice_text") or "这个选择")
-        reaction = internal_text_event(
-            EventType.MUTTER,
-            f"好，我们就选「{choice_text}」——一起看看故事会往哪里走。",
-            event.correlation_id,
-        )
-        async with self._bus.db.transaction():
-            applied = await self._bus.try_mark_effect_in_transaction(
-                event.id, consumer_id
-            )
-            if not applied:
-                return
-            await self._bus.append_in_transaction(reaction)
-        await self._bus.announce_committed(reaction)
 
 
 def _ask_event(

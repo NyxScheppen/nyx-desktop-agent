@@ -359,37 +359,6 @@ CLOCK_TICK + REFLECTION_CHECK     -> inner_life.reflection_check
 
 事件 payload 必须包含消费者完成工作所需事实；消费者不能依赖另一个消费者的执行顺序。
 
-共同浏览的 `BROWSING_MUTTER`、`BROWSING_QUESTION`、`BROWSING_ASSOCIATION` 是持久化后
-广播、无 RouteSpec consumer 的展示事件；`BROWSING_QUESTION` 与 canonical `ASK` 及
-waiting interaction attempt 同一本地事务提交。浏览页面 checkpoint、整合恢复和事件载荷
-遵循 `13-browsing-system.md`；三类事件固定 `correlation_id=page_id`，作为页面记忆整合
-恢复 Nyx 已提交输出的事实源，不注册为 Activity 或 `FREE_EXPLORATION` consumer。
-浏览 integration 自身使用 lease owner/token fencing；这不复用 `event_delivery` row，也不改变
-总线 worker 的既有 schema。eval 失败继续遵循 `10-eval.md` 的 best-effort 语义，不能改变浏览
-事件是否提交或页面是否重试。
-
-浏览整合对已提交输出的读取仍由 EventBus 拥有，新增只读接口：
-
-```python
-async def EventBus.list_events_for_correlation(
-    self, correlation_id: str, event_types: tuple[EventType, ...], limit: int = 100
-) -> list[Event]: ...
-```
-
-`event_types` 必须非空，`limit` 为 1..100；只过滤精确 correlation 和指定类型，不读取
-delivery 状态，不修改事件。以 `(timestamp DESC, id DESC)` 选最近 `limit` 条，再反转为
-`(timestamp ASC, id ASC)` 返回；同一 DB 锁下读已提交行。BrowsingIntegration 在
-`outputs_finalized=1` 后调用此接口，BrowsingStore 不直接查询总线的 `event_log`；原有
-`list_events` 的过滤和排序保持不变。payload 校验与字符预算仍由 `13-browsing-system.md`
-定义。
-
-当前实现由 schema 22 建立浏览 checkpoint 辅助表；组合根装配 BrowsingFacade，启动恢复
-旧会话与 pending checkpoint，应用关停先 quiesce/drain 浏览任务再关闭 EventBus/DB。
-浏览记忆核心写入通过共享 DB 事务内验证 claim 并提交固定 id 的 memory/event，不引入
-新 RouteSpec consumer。Windows 原生 child、OAuth popup、launcher/sidecar 配对已实现。
-冻结后端 stdin EOF 通知正常 quiesce/drain；父进程退出最多等待 35 秒后回收自己的 child。
-真实打包 transport 验收尚未完成，不以开发桌面 smoke 替代。
-
 ### 组合根与导入边界
 
 目标边界：
@@ -576,11 +545,6 @@ CREATE TABLE eval_prompt (
 本 spec 的总线重构不新增用户业务端点；其它完整领域契约定义的现有辅助端点仍由
 `nyx/api/routes.py` 薄封装。eval 调试端点遵循 `10-eval.md`：
 
-共同浏览引入不可信远程 WebView 后，所有 `/api` 状态变更端点按
-`13-browsing-system.md` 校验 Host、Origin 和 `Sec-Fetch-Site`；远程 origin 不因页面可在
-Nyx 窗口内显示而获得 localhost API 权限。打包版可信 UI 的 REST/SSE 则以固定
-`http://127.0.0.1:8000` 为 base URL，精确可信 Origin 的 CORS/OPTIONS/PNA 和
-`Sec-Fetch-Site: cross-site` 例外按浏览 spec 处理；开发版仍由 Vite proxy 同源转发。
 现有 JSON 请求体和无副作用 GET 约定保持不变。
 
 - `GET /api/eval/recent?limit=N` 的 `N` 限制为 1..100，且列表不携带 prompt；
@@ -591,10 +555,6 @@ Nyx 窗口内显示而获得 localhost API 权限。打包版可信 UI 的 REST/
 现有写入口语义会变化：
 
 - `POST /api/chat`：只有 durable admission 成功才返回 `{event_id}`；失败返回 503/429。
-  请求体可按 `13-browsing-system` 增加可选 `browsing_page_id`；该字段只提供当前页只读
-  prompt 上下文，不改变 `USER_MESSAGE` 的 durable admission 和 correlation 语义。
-  API 校验后、消费前浏览上下文失效时，runtime 发布同 correlation 的固定失败 SPEAK，
-  不调用无网页材料的普通 reply；发布失败仍重试，终局已提交时重放短路。
 - `POST /api/observe`：请求体为 `{presence, window_title, idle_seconds, sampled_at}`；两项
   数值必须是严格的有限非负数（不接受字符串和布尔值），idle_seconds <= sampled_at，
   sampled_at 为客户端开始采样时的 epoch 秒，不晚于后端接收时间；标题最多 512 字符。
@@ -653,7 +613,6 @@ Nyx 窗口内显示而获得 localhost API 权限。打包版可信 UI 的 REST/
 - [ ] observe 原子性：首次采样只产生 `initial`；`away -> online` 含离开时长；event admission 失败时组合根 presence/归来快照完全不变。
 - [ ] 用户消息在线证据：away 后立即收到 durable `USER_MESSAGE` 时，在 expression 前产生一次归来上下文；随后 online observation 不重复产生归来，handler 重放也不重复。
 - [ ] SSE 时间：实时帧含原始 `Event.timestamp`，并与事件日志中的同一事件时间一致；缺失/非法公共字段在前端被丢弃。
-- [ ] 浏览输出查询：精确 correlation + 三类 EventType 的最近 100 条按时间/id 稳定选取并升序返回；其它类型/页面不混入，非法 limit/type 集合拒绝，BrowsingStore 不直接读 `event_log`。
 - [ ] 文档同步：`docs/test-inventory.md` 更新为当前测试快照。
 
 ## 完成定义

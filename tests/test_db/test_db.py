@@ -35,8 +35,6 @@ BUSINESS_TABLES = {
     "desire_generation_attempt",
     "expression_interaction_attempt",
     "desire_eval_applied",
-    "browsing_session",
-    "browsing_page",
 }
 
 # 非 Optional 字段对应列必须 NOT NULL（01-types 契约）
@@ -106,7 +104,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 28
+    assert len(names) == 26
 
 
 async def test_migrate_creates_expected_indexes() -> None:
@@ -133,8 +131,6 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_expression_attempt_status_expiry",
         "idx_expression_attempt_status_created",
         "idx_expression_attempt_correlation",
-        "ux_browsing_one_active_session",
-        "idx_browsing_page_ready",
     }
 
 
@@ -375,7 +371,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 28
+    assert len(names) == 26
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

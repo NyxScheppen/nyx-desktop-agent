@@ -35,7 +35,6 @@
 
 - Python 核心作为**独立本地服务**运行（`uvicorn`），Tauri 壳 + React 前端通过 localhost HTTP/SSE 连接；开发时手动起服务，不打包 sidecar（见 `docs/design/design.md`）。
 - 前端 Tauri 采集系统输入空闲毫秒数 + 窗口标题 → `classifyPresence` 判定 → `POST /api/observe`（04-module-bus-system 下游约定）。这是核心先行里唯一由前端发起的**被动上报**。
-- 共同浏览归 `13-browsing-system`：受信任 main UI 调固定 Rust commands，远程 Windows child 只占正文矩形；Rust 以私有 token 直连 browsing bridge，不经 React/Vite 转发正文。`python dev.py --desktop` 提供开发配对，Windows OAuth popup/sidecar 已接线，非 Windows尚未完成。
 
 ### 活跃度上报（`hooks/usePresence.ts`，核心先行唯一被动上报）
 
@@ -100,7 +99,6 @@ frontend/
       activityStore.ts       # 活动：ActivitySnapshot 快照 + 跨天产出 results（快照 store）
       memoryStore.ts         # 记忆：Memory 快照（GET /api/memories + SSE memory_*）
       readerStore.ts         # 阅读：书架/进度/段落/追赶/笔记 + paginate 真分页纯函数
-      browserStore.ts        # 共同浏览：宿主展示状态、导航守卫、隐私暂停与 focus ID
       settingsStore.ts       # 背景外观：tint/image/fontScale + 圆圈底色/尺寸/位置 circleColor/circleSize/avatarPos（后三者持久化 localStorage）
       announceStore.ts       # 立绘旁临时气泡：items/announce/dismiss（纯前端呈现，无后端）
     components/
@@ -127,14 +125,12 @@ frontend/
         BookshelfView.tsx    # 书架（GET /api/books + 导入 EPUB）
         ReaderView.tsx       # 阅读页：真分页（paginate + 测量/重测，08 §5）
         NotePanel.tsx        # 笔记面板（阅读事件文档）
-      browsing/
-        BrowserView.tsx      # 常驻原生正文占位、导航/隐私控件、历史/重试/删除
       layout/
         Panel.tsx            # 通用面板容器
         Modal.tsx            # 通用弹层容器
         SettingsView.tsx     # 设置弹层（字体大小 + 圆圈背景 + 圆圈大小 + 背景外观）
       shell/
-        RightDock.tsx        # 底部导航：读书|浏览|内在|欲望|活动|记忆（切中间视图）+ 设置入口
+        RightDock.tsx        # 底部导航：读书|内在|欲望|活动|记忆（切中间视图）+ 设置入口
         StatusBar.tsx        # 左栏顶部状态条（心情/精力条/现在状态）
     assets/
       expressions/          # 8 情绪表情图（EmotionCategory 1:1，方形 1080×1080）
@@ -163,7 +159,6 @@ frontend/
 | 活动时间线 | ✅ 实现 | `GET /api/activity` + SSE `activity_*` | `components/panels/ActivityPanel.tsx`（`view==="activity"`） |
 | 记忆面板 | ✅ 实现 | `GET /api/memories` + SSE `memory_*` | `components/panels/MemoryPanel.tsx`（`view==="memory"`） |
 | 读书 | ✅ 实现（06/07） | `GET /api/books` + 进度/段落/笔记端点 | `components/reading/BookshelfView.tsx` + `ReaderView.tsx`（`view==="reading"`） |
-| 共同浏览 | Windows child/popup/sidecar 已实现，真实打包 transport 与其它平台待验收 | Rust child/commands + metadata REST + browsing SSE | `components/browsing/BrowserView.tsx` 常驻挂载，active 控制显隐 |
 | 背景外观 | ✅ 实现 | 无（纯前端 `settingsStore`） | `components/layout/SettingsView.tsx`（复用 `components/panels/BackgroundPanel.tsx`） |
 
 ## 6. 测试约定

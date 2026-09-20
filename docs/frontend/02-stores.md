@@ -1,6 +1,6 @@
 # Zustand Stores（`stores/*.ts`）
 
-> 每系统一个 store（CLAUDE.md）。现有聊天、内在状态、欲望、活动、记忆、设置、表达气泡、阅读、评估与 `browserStore`（共同浏览宿主展示状态）。
+> 每系统一个 store（CLAUDE.md）。现有聊天、内在状态、欲望、活动、记忆、设置、表达气泡、阅读与评估。
 > 范围：`stores/*.ts` 的 state 形状 + actions。
 > 约定：**SSE 是主通道**（01-sse 分发表），store 的增量 action 由 SSE 驱动；REST 只喂初始快照。TS 类型字段名 = 后端 JSON 键（snake_case，零映射）。
 
@@ -39,16 +39,13 @@ type Presence = "online" | "away" | "busy";
 type ChatMessage = {
   id: string;                 // event_id
   role: "user" | "nyx";
-  kind: "message" | "speak" | "ask" | "think" | "initiate_chat" | "reading_question"
-    | "browsing_mutter" | "browsing_question" | "browsing_association";
+  kind: "message" | "speak" | "ask" | "think" | "initiate_chat" | "reading_question";
   content: string;
   correlation_id: string;
   timestamp: number;           // 后端 Event.timestamp，epoch 秒
   preloaded?: boolean;        // 历史回填消息：渲染时不逐字（loadHistory 写入）
   subtype?: QuestionSubtype;         // kind==="reading_question" 才有（提问四子型）
-  selectedText?: string | null;      // reading_question / browsing_question 引文
-  memoryId?: string;                 // browsing_association 命中记忆 id
-  attemptId?: string;                // browsing_question 的 durable attempt_id
+  selectedText?: string | null;      // reading_question 引文
 };
 
 type ChatState = {
@@ -56,7 +53,7 @@ type ChatState = {
   isReplying: boolean;        // 发消息后等待回复中
   sendError: string | null;
   typedIds: Record<string, true>;  // 已逐字打完的 nyx 文本 id（后一条同 correlation_id 的 nyx 文本等其打完才开打）
-  replyTo: string | null;         // 当前选中的浏览提问 attempt_id
+  replyTo: string | null;
 };
 ```
 
@@ -71,13 +68,11 @@ addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}
 addThink(e: TextEvent<"think">): void                // {role:"nyx", kind:"think"}
 addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initiate_chat"}
 addReadingTurn(e: ReadingQuestionEvent): void  // {role:"nyx",kind:"reading_question"}; subtype/selectedText 落字段
-addBrowsingTurn(e: BrowsingEvent): void  // mutter/question 读 content，association 读 snippet，保留 selectedText/memoryId
-
-sendMessage(text: string, context?: { browsing_page_id?: string; reply_to?: string }): Promise<boolean>  // 内部调 client.postChat；成功 true，失败/忙 false
+sendMessage(text: string): Promise<boolean>  // 内部调 client.postChat；成功 true，失败/忙 false
                                           // 成功：pendingId = 返回的 event_id + isReplying=true + sendError=null + 起 60s 超时 timer
                                           // postChat throw → catch → sendError = e.message（isReplying 未置，无需复位）
 markTyped(id: string): void              // 把 nyx 文本 id 写入 typedIds（逐字 done 时调，解锁其后同 correlation_id 的下一条 nyx 文本）
-loadHistory(): Promise<void>             // 并行 GET /api/events/log（九类文本事件，含 reading_question 与三类浏览）→ 合并去重排序；新增历史 preloaded:true；历史 think 入 typedIds；失败 best-effort 不抛
+loadHistory(): Promise<void>             // 并行 GET /api/events/log（文本事件，含 reading_question）→ 合并去重排序；新增历史 preloaded:true；历史 think 入 typedIds；失败 best-effort 不抛
 reset(): void                            // 新会话全清：clearTimeout(replyTimer) + messages/isReplying/sendError/typedIds 复位
 setReplyTo(attemptId: string | null): void // 选择或取消提问回复；reset 同时清空
 ```
@@ -92,16 +87,6 @@ setReplyTo(attemptId: string | null): void // 选择或取消提问回复；rese
   非法帧在任何等待/未读副作用前丢弃；重复主动消息也不能重新点亮已读标记。
   每条 `ChatMessage.timestamp` 必须复制 SSE 的后端 `Event.timestamp`。历史回填复制
   `BackendEvent.timestamp`，因此重连/重启前后使用同一来源；禁止用 `Date.now()` 替代事件时间。
-- 浏览三类 turn 按 event id 去重，实时/历史统一抑制 kind=browsing_question 的 canonical ASK。
-  三者只进聊天，不修改普通回复等待状态。浏览提问保存 attemptId，用户可选择 reply_to。
-
-### `browserStore`（完整契约归 13-browsing-system）
-
-- 只保存 session/navigation/page/revision、展示 URL/title、加载/前后退/暂停/显隐状态、错误、整合状态与未决 focus ID；不持有 token、正文或 cookie。
-- 固定 Rust commands 对应 open/navigate/back/forward/reload/stop/capture/focus/auth/close/clearData；busy 串行化用户操作。导航前立即丢弃 page，上游事件与迟到结果按 navigation ID 守卫。
-- focus 回包不确定时保留 UUID，重试复用；确定结果或换导航后丢弃，下次主动 focus 是新 UUID。
-- 隐私/崩溃/失效 token 清当前页并暂停；setVisible 先记录期望状态，创建结束按该状态 show/hide，防止迟到创建遮挡别的视图。
-- 原生事件监听属于常驻 BrowserView；普通 web 模式不调用 native command。
 
 ## 2. `innerLifeStore`
 

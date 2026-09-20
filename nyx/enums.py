@@ -24,9 +24,6 @@ class EventType(StrEnum):
     READING_MUTTER = "reading_mutter"      # 陪读碎碎念（12-reading-system）
     READING_QUESTION = "reading_question"  # 陪读提问
     READING_ASSOCIATION = "reading_association"  # 陪读联想
-    BROWSING_MUTTER = "browsing_mutter"
-    BROWSING_QUESTION = "browsing_question"
-    BROWSING_ASSOCIATION = "browsing_association"
 
 
 class Source(StrEnum):
@@ -50,7 +47,6 @@ class ContextMode(StrEnum):
 class InteractionKind(StrEnum):
     CHAT_ASK = "chat_ask"
     READING_QUESTION = "reading_question"
-    BROWSING_QUESTION = "browsing_question"
     INITIATE_CHAT = "initiate_chat"
 
 
@@ -109,7 +105,6 @@ class MemoryKind(StrEnum):
     KNOWLEDGE = "knowledge"
     READING = "reading"
     ACTIVITY = "activity"
-    BROWSING = "browsing"
     INTERACTION = "interaction"
 
 

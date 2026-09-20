@@ -4,19 +4,6 @@
 > 它不是完整契约；需要修改表达系统时，先读本文，再回到唯一完整契约
 > [`../specs/11-expression.md`](../specs/11-expression.md)，最后以 `nyx/` 源码为准。
 
-## 共同浏览表达接线
-
-- `commit_browsing_question()` 将 BROWSING_QUESTION attempt、canonical ASK 和浏览展示事件
-  原子提交，复用 reading question 的现有协议。
-- `reply()` 接受可选 browsing_context；runtime 只取当前已授权 page，工具/回复 prompt 均
-  把网页标为不可信材料。REST chat 接受可选 browsing_page_id，非法当前页拒绝受理。
-- API 受理后才失效的页面上下文，由 runtime 发布固定 fallback SPEAK，不调用 reply/LLM。
-- BrowsingCompanion 校验 none/mutter/question/association 判别联合；合法联想最多发布三条
-  去重记忆的 summary-or-content 500 字符 snippet，并写入表达进程内历史。eval 失败只记日志。
-- 前端三类浏览事件进入左侧聊天并可历史回填，浏览 canonical ASK 被抑制避免重复；原生
-  child、BrowserView 和 ChatInput 的当前 page id 接线已由浏览前端实现。跨平台打包验收状态
-  以 `docs/facts/browsing-system-facts.md` 为准。
-
 ## 模块与职责
 
 - `nyx/expression/facade.py`
@@ -50,7 +37,7 @@
 
 ## 普通回复
 
-- `ExpressionFacade.reply(msg, correlation_id, reply_to=None, browsing_context=None)` 先尝试原子关联一个等待中的
+- `ExpressionFacade.reply(msg, correlation_id, reply_to=None)` 先尝试原子关联一个等待中的
   interaction attempt，再取得 `InnerLifeFacade.get_state()` 并调用回复图。
 - 当前用户消息不在内存 history 中；它只在 `build_user_prompt()` 的 `[本次消息]` 段出现。
 - history 是 `deque[Message]`，容量为 `ExpressionConfig.max_context_len`。回合结束时先追加

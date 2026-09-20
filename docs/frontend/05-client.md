@@ -9,7 +9,7 @@
 ```typescript
 const BASE_URL = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
 
-async function postChat(message: string, context?: { browsing_page_id?: string; reply_to?: string }): Promise<{ event_id: string }> // POST /api/chat
+async function postChat(message: string): Promise<{ event_id: string }> // POST /api/chat
 async function getState(): Promise<CurrentState>                                 // GET /api/state
 async function postObserve(observation: PresenceObservation, signal?: AbortSignal): Promise<{ event_id: string }>  // POST /api/observe
 async function getDesires(): Promise<DesireState>                                // GET /api/desires
@@ -36,25 +36,12 @@ async function deleteUserNote(id: string): Promise<void>                        
 async function showNoteToNyx(noteId: string): Promise<Annotation | null>         // POST /api/notes/{noteId}/show-to-nyx（LLM 空/失败回 null）
 async function checkChapterBoundary(bookId: string, nyxPosition: number): Promise<{ is_boundary: boolean; book_finished: boolean }>  // POST /api/notes/check-chapter-boundary
 
-// ---- 共同浏览（13-browsing-system；不接触 Rust-only bridge）----
-async function getBrowsingSession(sessionId: string, cursor?: string, limit = 50): Promise<{ session: { id: string; current_page_id: string | null }; pages: BrowsingPage[]; next_cursor: string | null }> // GET /api/browsing/sessions/{id}?limit=&cursor=
-async function retryBrowsingPage(pageId: string): Promise<{ page_id: string; status: string }> // POST /api/browsing/pages/{id}/retry，{}
-async function deleteBrowsingPage(pageId: string): Promise<void> // DELETE /api/browsing/pages/{id}，204
-async function deleteBrowsingHistory(): Promise<void> // DELETE /api/browsing/history，204
 ```
 
-- 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message, browsing_page_id?, reply_to?}`、`postObserve` 发 `{presence, window_title, idle_seconds, sampled_at}`，PresenceObservation 定义在 types/api.ts。signal 透传 fetch；409 表示过期采样，422 表示非法输入。
+- 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message}`、`postObserve` 发 `{presence, window_title, idle_seconds, sampled_at}`，PresenceObservation 定义在 types/api.ts。signal 透传 fetch；409 表示过期采样，422 表示非法输入。
 - **请求头**：`Content-Type: application/json`（FastAPI + Pydantic 体，错头会 422）。
 - 返回值直接 JSON 反序列化后上抛给调用方，**不包裹** `{ok, data}`。
 
-### 共同浏览打包传输（待平台验收）
-
-`13-browsing-system.md` 要求开发版保持 `BASE_URL=""` 与 Vite proxy；打包版把共享
-`BASE_URL` 固定为 `http://127.0.0.1:8000`，REST 和 `useSSE` 使用同一值。打包 WebView
-跨 origin 请求的精确 CORS/OPTIONS/PNA、`Sec-Fetch-Site` 规则归浏览 spec 与总线 spec；
-不把 bridge token 放进 React，也不为跨域请求设置 credentials。当前源码按 Vite DEV
-构建标志选择地址，API 测试覆盖两种构建值，后端测试覆盖精确 CORS/PNA；在各平台真实
-请求 smoke test 完成前，不宣称打包版 REST/SSE 已通过验收。
 
 ## 2. 错误契约（统一）
 

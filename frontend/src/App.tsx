@@ -1,7 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import ChatInput from "./components/chat/ChatInput";
-import BrowserView from "./components/browsing/BrowserView";
 import MessageList from "./components/chat/MessageList";
 import Avatar from "./components/inner/Avatar";
 import InnerStatePanel from "./components/inner/InnerStatePanel";
@@ -18,7 +17,6 @@ import { useSSE } from "./hooks/useSSE";
 import { formatCurrentTime, timePhaseAt } from "./lib/time";
 import { useActivityStore } from "./stores/activityStore";
 import { useChatStore } from "./stores/chatStore";
-import { useBrowserStore } from "./stores/browserStore";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
 import { useReaderStore } from "./stores/readerStore";
 import { useSettingsStore } from "./stores/settingsStore";
@@ -48,12 +46,6 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 中间内容区当前视图：默认 reading（书架/阅读页）；其余 = 对应面板（RightDock 底部按钮切换）
   const [view, setView] = useState<View>("reading");
-  const browsingPageId = useBrowserStore((s) => s.capturePaused || s.loading || s.closed ? null : s.pageId);
-  const hideBrowser = async () => {
-    if (view !== "browsing") return true;
-    try { await useBrowserStore.getState().setVisible(false); return true; }
-    catch { return false; }
-  };
   const bookId = useReaderStore((s) => s.bookId);
   const messages = useChatStore((s) => s.messages);
   const loadHistory = useChatStore((s) => s.loadHistory);
@@ -131,25 +123,24 @@ export default function App() {
         <div className="left-dock">
           <StatusBar />
           <MessageList messages={messages} now={now} />
-          <ChatInput browsingPageId={view === "browsing" && !settingsOpen ? browsingPageId ?? undefined : undefined} />
+          <ChatInput />
         </div>
         <div className="game-main">
           <section className="side-panel">
-            <div className={`side-panel__body${view === "browsing" ? " side-panel__body--browsing" : ""}`}>
+            <div className="side-panel__body">
               {view === "inner" && <InnerStatePanel />}
               {view === "desire" && <DesiresPanel />}
               {view === "activity" && <ActivityPanel />}
               {view === "memory" && <MemoryPanel />}
               {view === "reading" && (bookId === null ? <BookshelfView /> : <ReaderView />)}
-              <BrowserView active={view === "browsing" && !settingsOpen} />
             </div>
           </section>
         </div>
-        <RightDock view={view} onSwitch={(next) => { void hideBrowser().then((hidden) => { if (hidden) setView(next); }); }} onOpenSettings={() => { void hideBrowser().then((hidden) => { if (hidden) setSettingsOpen(true); }); }} />
+        <RightDock view={view} onSwitch={setView} onOpenSettings={() => setSettingsOpen(true)} />
       </main>
 
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
-      {view !== "browsing" && <Avatar night={timePhase === "night"} />}
+      <Avatar night={timePhase === "night"} />
     </div>
   );
 }

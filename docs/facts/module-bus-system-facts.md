@@ -2,22 +2,6 @@
 
 > 本文件是给“无关代码但会碰到模块通信、事件总线、组合根、DB 生命周期”的快速摘要。底层模块总线系统的唯一完整契约是 `docs/specs/04-module-bus-system.md`；本文件不复制完整 spec。修改 `nyx/events/`、`nyx/subscriptions.py`、`nyx/runtime.py`、`nyx/app_context.py`、`nyx/main.py`、事件相关 DB 表或跨模块副作用前，必须先读完整 spec，并同步更新本摘要。
 
-## 共同浏览接线
-
-- schema 22 新增 browsing session/page、单活索引与 integration claim owner/token。
-  组合根装配 BrowsingFacade，启动关闭旧会话并恢复 checkpoint；关停先 quiesce/drain 浏览任务。
-- 三类 `BROWSING_*` 是无 consumer 的持久化展示事件。浏览提问 attempt、ASK 和展示事件
-  同事务提交；浏览记忆与固定 id 的 MEMORY_CREATED 在验证有效 lease 的事务内提交。
-- USER_MESSAGE 消费时浏览上下文失效会发布固定 fallback SPEAK，不进入无网页材料的普通 reply；
-  事件提交失败继续总线重试，终局已存在时重放短路。
-- `list_events_for_correlation()` 由 EventBus 过滤已提交事件，取最近 100 条后按时间/id 升序
-  返回；BrowsingStore 不读取 event_log。浏览页面冻结后先结束 companion 再 CAS 封口。
-- 本机 API 已有精确 Host/Origin/媒介 guard、CORS/OPTIONS/PNA 与 bridge 2 MiB 流式上限。
-  bridge 使用配对 secret 签发的内存 session token；secret 在组合根启动时从环境取出。
-- 前端 REST/SSE 已按开发/打包选择相对路径或固定 loopback 地址。Windows child、OAuth
-  popup、配对 launcher/sidecar 已实现；冻结后端 stdin EOF 触发正常关停，父进程有界回收。
-  真实打包平台 smoke test 尚未完成，Windows 固定 8000 被用户 Docker 占用。
-
 ## 当前实现事实
 
 - 当前系统不是纯“模块只通过总线通信”：EventBus 负责事件受理、`event_log` 持久化、`event_delivery` 投递、SSE 广播和 handler 通知；Facade 之间仍存在直接查询/编排调用。

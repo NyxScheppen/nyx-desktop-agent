@@ -13,13 +13,12 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.routing import Match
 
 from nyx.activity.observe import classify_presence
 from nyx.app_context import _App
-from nyx.browsing.facade import BrowsingFacade
 from nyx.enums import BoundaryResult, EventType, MemoryKind, MemoryType
 from nyx.events.bus import EventAdmissionError
 from nyx.reading.facade import (
@@ -33,7 +32,6 @@ from nyx.types import (
     Annotation,
     Book,
     BookListItem,
-    BrowserPageSnapshot,
     CurrentState,
     DesireState,
     EvalRecord,
@@ -54,30 +52,6 @@ FileIo = Callable[..., Awaitable[dict[str, Any]]]
 
 class _ChatPayload(BaseModel):
     message: str
-    reply_to: str | None = None
-    browsing_page_id: str | None = None
-
-
-class _HostCaptureEnvelope(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    session_id: str
-    navigation_id: str
-    capture_seq: int = Field(ge=1)
-    raw_url: str = Field(max_length=8192)
-    canonical_candidate: str | None = Field(default=None, max_length=8192)
-    title: str = Field(max_length=512)
-    visible_text: str = Field(max_length=200000)
-    selected_text: str | None = Field(default=None, max_length=4000)
-    auth_tainted: bool
-    truncated: bool = False
-
-
-class _HostAuthorizationProbe(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    session_id: str
-    navigation_id: str
-    sanitized_origin: str = Field(max_length=8192)
-    auth_tainted: Literal[True]
 
 
 class _ExportPayload(BaseModel):
@@ -158,8 +132,7 @@ def build_app(
     async def validation_error(
         request: Request, error: RequestValidationError
     ) -> JSONResponse:
-        if (request.url.path != "/api/observe"
-                and not request.url.path.startswith("/api/browsing/")):
+        if request.url.path != "/api/observe":
             return await request_validation_exception_handler(request, error)
         # Rejected input may contain NaN/Infinity, which JSONResponse cannot encode.
         return JSONResponse(status_code=422, content={
@@ -175,23 +148,7 @@ def build_app(
 
     @fast.post("/api/chat")
     async def api_chat(payload: _ChatPayload) -> dict[str, str]:
-        if payload.browsing_page_id is not None:
-            try:
-                context = (
-                    await app.browsing.get_prompt_context(payload.browsing_page_id)
-                    if app.browsing is not None
-                    else None
-                )
-            except ValueError:
-                context = None
-            if context is None:
-                raise HTTPException(status_code=422, detail="invalid browsing_page_id")
-        content: dict[str, Any] = {"message": payload.message}
-        if payload.reply_to is not None:
-            content["reply_to"] = payload.reply_to
-        if payload.browsing_page_id is not None:
-            content["browsing_page_id"] = payload.browsing_page_id
-        event = root_event(EventType.USER_MESSAGE, content)
+        event = root_event(EventType.USER_MESSAGE, {"message": payload.message})
         try:
             await app.bus.publish(event)
         except EventAdmissionError as error:
@@ -474,266 +431,6 @@ def build_app(
 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
-    def browsing_error(code: str) -> HTTPException:
-        status = {
-            "invalid_bridge_token": 401,
-            "session_mismatch": 403,
-            "not_found": 404,
-            "invalid_url": 422,
-            "unsafe_url": 422,
-            "invalid_payload": 422,
-            "backend_unavailable": 503,
-            "browsing_storage_limit": 507,
-        }.get(code, 409)
-        return HTTPException(
-            status_code=status,
-            detail={
-                "code": code,
-                "message": "Browsing request was rejected",
-                "retryable": code == "backend_unavailable",
-            },
-        )
-
-    def browsing_facade() -> BrowsingFacade:
-        if app.browsing is None:
-            raise browsing_error("backend_unavailable")
-        return app.browsing
-
-    def bearer(request: Request) -> str | None:
-        value = request.headers.get("authorization", "")
-        return value[7:] if value.startswith("Bearer ") else None
-
-    def bridge(
-        request: Request, session_id: str, closing: bool = False
-    ) -> BrowsingFacade:
-        browsing = browsing_facade()
-        try:
-            browsing.validate_bridge(bearer(request), session_id, closing=closing)
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-        return browsing
-
-    def exact_body(data: dict[str, Any], keys: set[str]) -> None:
-        if set(data) != keys or any(
-            not isinstance(value, str) for value in data.values()
-        ):
-            raise browsing_error("invalid_payload")
-
-    @fast.post("/api/browsing/bridge/sessions")
-    async def browser_bootstrap(
-        request: Request, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        if payload:
-            raise browsing_error("invalid_payload")
-        try:
-            session, token = await browsing_facade().bootstrap(bearer(request))
-            return {"session": session, "bridge_token": token}
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-
-    @fast.post("/api/browsing/bridge/sessions/{session_id}/navigations")
-    async def browser_navigation(
-        session_id: str,
-        request: Request,
-        payload: dict[str, Any],
-    ) -> dict[str, bool]:
-        exact_body(payload, {"navigation_id"})
-        try:
-            await bridge(request, session_id).navigation_started(
-                session_id, payload["navigation_id"]
-            )
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-        return {"accepted": True}
-
-    @fast.post("/api/browsing/bridge/sessions/{session_id}/origins")
-    async def browser_authorize(
-        session_id: str,
-        request: Request,
-        payload: dict[str, Any],
-    ) -> dict[str, bool]:
-        exact_body(payload, {"navigation_id", "origin"})
-        try:
-            await bridge(request, session_id).allow_origin(
-                session_id, payload["navigation_id"], payload["origin"]
-            )
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-        return {"granted": True}
-
-    @fast.post("/api/browsing/bridge/sessions/{session_id}/origins/revoke")
-    async def browser_revoke(
-        session_id: str,
-        request: Request,
-        payload: dict[str, Any],
-    ) -> dict[str, bool]:
-        exact_body(payload, {"origin"})
-        try:
-            await bridge(request, session_id).revoke_origin(
-                session_id, payload["origin"]
-            )
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-        return {"revoked": True}
-
-    @fast.post("/api/browsing/bridge/sessions/{session_id}/pages")
-    async def browser_capture(
-        session_id: str,
-        request: Request,
-        response: Response,
-        payload: _HostCaptureEnvelope | _HostAuthorizationProbe,
-    ) -> dict[str, Any]:
-        browsing = bridge(request, session_id)
-        if payload.session_id != session_id:
-            raise browsing_error("session_mismatch")
-        try:
-            if isinstance(payload, _HostAuthorizationProbe):
-                await browsing.authorization_probe(
-                    session_id, payload.navigation_id, payload.sanitized_origin
-                )
-                raise browsing_error("origin_authorization_required")
-            page, created = await browsing.capture_checkpoint(
-                session_id,
-                BrowserPageSnapshot(
-                    payload.navigation_id,
-                    payload.capture_seq,
-                    payload.raw_url,
-                    payload.canonical_candidate,
-                    payload.title,
-                    payload.visible_text,
-                    payload.selected_text,
-                    payload.auth_tainted,
-                    payload.truncated,
-                ),
-            )
-            response.status_code = 201 if created else 200
-            return {
-                "page_id": page.id,
-                "status": page.status,
-                "revision": page.revision,
-                "created": created,
-            }
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-
-    async def page_bridge(request: Request, page_id: str) -> BrowsingFacade:
-        browsing = browsing_facade()
-        try:
-            browsing.validate_bridge(bearer(request), browsing._session_id or "")
-            page = await browsing.get_page(page_id)
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-        return bridge(request, page.session_id)
-
-    @fast.post("/api/browsing/bridge/pages/{page_id}/focus")
-    async def browser_focus(
-        page_id: str,
-        request: Request,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if (
-            set(payload) - {"navigation_id", "revision", "focus_id", "selected_text"}
-            or not isinstance(payload.get("navigation_id"), str)
-            or type(payload.get("revision")) is not int
-            or not isinstance(payload.get("focus_id"), str)
-            or (
-                payload.get("selected_text") is not None
-                and not isinstance(payload["selected_text"], str)
-            )
-        ):
-            raise browsing_error("invalid_payload")
-        try:
-            await (await page_bridge(request, page_id)).focus_page(
-                page_id,
-                payload["navigation_id"],
-                payload["revision"],
-                payload["focus_id"],
-                payload.get("selected_text"),
-            )
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-        return {"accepted": True, "revision": payload["revision"]}
-
-    @fast.post("/api/browsing/bridge/pages/{page_id}/leave")
-    async def browser_leave(
-        page_id: str,
-        request: Request,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        if (
-            set(payload) != {"navigation_id", "revision"}
-            or not isinstance(payload["navigation_id"], str)
-            or type(payload["revision"]) is not int
-        ):
-            raise browsing_error("invalid_payload")
-        try:
-            browsing = await page_bridge(request, page_id)
-            await browsing.leave_page(
-                page_id, payload["navigation_id"], payload["revision"]
-            )
-            page = await browsing.get_page(page_id)
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-        return {"frozen": True, "status": page.status}
-
-    @fast.post("/api/browsing/bridge/sessions/{session_id}/close")
-    async def browser_close(
-        session_id: str,
-        request: Request,
-        payload: dict[str, Any],
-    ) -> dict[str, bool]:
-        if payload:
-            raise browsing_error("invalid_payload")
-        try:
-            await bridge(request, session_id, closing=True).close_session(session_id)
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-        return {"closed": True}
-
-    @fast.get("/api/browsing/sessions/{session_id}")
-    async def browser_session(
-        session_id: str,
-        limit: int = Query(50, ge=1, le=100),
-        cursor: str | None = Query(None, min_length=1, max_length=128),
-    ) -> dict[str, Any]:
-        try:
-            session, pages, next_cursor = await browsing_facade().get_session(
-                session_id, limit, cursor
-            )
-            return {
-                "session": session,
-                "pages": pages,
-                "next_cursor": next_cursor,
-            }
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-
-    @fast.post("/api/browsing/pages/{page_id}/retry")
-    async def browser_retry(page_id: str, payload: dict[str, Any]) -> dict[str, str]:
-        if payload:
-            raise browsing_error("invalid_payload")
-        try:
-            browsing = browsing_facade()
-            await browsing.retry_page(page_id)
-            page = await browsing.get_page(page_id)
-            return {"page_id": page.id, "status": page.status}
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-
-    @fast.delete("/api/browsing/pages/{page_id}", status_code=204)
-    async def browser_forget(page_id: str) -> None:
-        try:
-            await browsing_facade().forget_page(page_id)
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-
-    @fast.delete("/api/browsing/history", status_code=204)
-    async def browser_forget_all() -> None:
-        try:
-            await browsing_facade().forget_all_history()
-        except ValueError as error:
-            raise browsing_error(str(error)) from error
-
     trusted_origins = frozenset(
         (
             "http://localhost:5173",
@@ -827,19 +524,6 @@ def build_app(
                 response.headers["Access-Control-Allow-Private-Network"] = "true"
         else:
             response = None
-            if request.url.path.startswith("/api/browsing/bridge/"):
-                length = request.headers.get("content-length", "")
-                if length.isdecimal() and int(length) > 2097152:
-                    response = reject(413, "request_too_large")
-                else:
-                    chunks = bytearray()
-                    async for chunk in request.stream():
-                        if len(chunks) + len(chunk) > 2097152:
-                            response = reject(413, "request_too_large")
-                            break
-                        chunks.extend(chunk)
-                    if response is None:
-                        request._body = bytes(chunks)
             if (
                 response is None
                 and request.method in ("POST", "PUT", "DELETE")

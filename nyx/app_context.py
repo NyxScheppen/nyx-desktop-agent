@@ -18,10 +18,6 @@ from nyx.bootstrap import (
     seed_desire,
     seed_inner_life,
 )
-from nyx.browsing.companions import BrowsingCompanion
-from nyx.browsing.facade import BrowsingFacade
-from nyx.browsing.integration import BrowsingIntegration
-from nyx.browsing.store import BrowsingStore
 from nyx.config import Config
 from nyx.db import Database, connect
 from nyx.desire.facade import DesireFacade
@@ -78,7 +74,6 @@ class _App:
     presence_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     screen_observer: ScreenObserver | None = None
     database: Database | None = None
-    browsing: BrowsingFacade | None = None
 
     async def publish_observation(self, event: Event, idle_seconds: float) -> bool:
         """Persist an observation before committing its in-memory snapshot."""
@@ -261,7 +256,6 @@ async def build_app_context(
     ask_files: tuple[str, ...],
 ) -> _App:
     """Build stores and facades in dependency order, then seed local state."""
-    bootstrap_secret = os.environ.pop("NYX_BROWSER_BOOTSTRAP_SECRET", None)
     db: Database = await connect()
     llm = LlmClient.from_config(config.llm)
     bus = EventBus(db)
@@ -388,13 +382,6 @@ async def build_app_context(
         canon,
         expression,
     )
-    browsing = BrowsingFacade(
-        BrowsingStore(db),
-        BrowsingCompanion(llm, evaluator, bus, memory, expression, canon),
-        BrowsingIntegration(llm, evaluator, bus), memory,
-        bootstrap_secret=bootstrap_secret,
-    )
-    await browsing.recover_pending()
     app = _App(
         bus,
         inner_life,
@@ -407,7 +394,6 @@ async def build_app_context(
         eval_store,
         config,
         database=db,
-        browsing=browsing,
     )
     return_context_owner = app
 

@@ -34,8 +34,6 @@ class ExpressionFacade:
         msg: str,
         correlation_id: str,
         reply_to: str | None = None,
-        *,
-        browsing_context: dict[str, str] | None = None,
     ) -> None: ...
     async def initiate_chat(
         self, desire: ShortTermDesire, state: CurrentState
@@ -55,13 +53,6 @@ class ExpressionFacade:
     async def answer_waiting(
         self, reply_event_id: str, reply_to: str | None = None
     ) -> InteractionAttempt | None: ...
-    async def commit_browsing_question(
-        self,
-        text: str,
-        source_id: str,
-        correlation_id: str,
-        event_content: dict[str, Any],
-    ) -> str: ...
     async def latest_initiate_chat_at(self) -> float | None: ...
     def record_proactive_turn(self, text: str) -> None: ...
     async def check_timeouts(self, now: float) -> None: ...
@@ -241,7 +232,7 @@ Nyx：好的，我在这里等着你
 
 ### 类型
 
-`InteractionKind` 包含 `CHAT_ASK`、`READING_QUESTION`、`BROWSING_QUESTION`、
+`InteractionKind` 包含 `CHAT_ASK`、`READING_QUESTION`、
 `INITIATE_CHAT`；
 `InteractionStatus` 包含 `WAITING`、`CLAIMED`、`ANSWERED`、`EXPIRED`、`FAILED`。
 
@@ -288,7 +279,7 @@ async def latest_created_at(kind: InteractionKind) -> float | None
 
 真实组合根注入 store；没有 store 的兼容路径可以使用进程内等待字段，但不提供重启恢复保证。
 
-## 普通提问、读书提问与浏览提问
+## 普通提问与读书提问
 
 - 普通 FAST/SLOW 回复产生问句时调用 `register_question(..., CHAT_ASK, ...)`。
 - 读书提问生成后必须通过统一 `is_question()` 校验；`QUOTE_QUESTION` 还必须有非空第二行
@@ -296,30 +287,10 @@ async def latest_created_at(kind: InteractionKind) -> float | None
 - `ASK` 载荷为 `{"content", "attempt_id", "kind"}`。
 - `READING_QUESTION` 保留书籍、段落、subtype、selected_text 等前端字段并增加 attempt_id；
   它是展示兼容事件，不替代 canonical ASK。
-- 浏览提问生成后必须通过统一 `is_question()`；
-  `commit_browsing_question(..., event_content)` 在同一本地事务写入 waiting
-  `InteractionAttempt(BROWSING_QUESTION)`、canonical `ASK` 和 `BROWSING_QUESTION`。
-  展示事件保留 session/page/title/url/selected_text 等字段并增加 attempt_id；任一步失败
-  整体回滚，正式组合根不得退回非原子路径。source id 和 correlation id
-  均使用 page id，使浏览整合可从 durable event log 恢复该页已提交的 Nyx 输出。
 - 读书提问会把正文调用 `record_proactive_turn()` 追加到表达历史；selected_text 不追加。
 - 读书联想最多展示三条，每条 snippet 调用 `record_proactive_turn()`；读书 mutter 不进入
   表达历史。
-- 浏览问题正文和最多三条联想 snippet 进入表达历史；只有
-  `13-browsing-system` 中结构合法的 `association` action 才执行检索和发布联想，浏览 mutter
-  不进入表达历史。
 - 空输出、解析失败、quote 缺失或非问句不创建 attempt、不发布成功提问事件。
-
-### 当前网页上下文
-
-- `POST /api/chat` 可以携带已由浏览 Facade 校验的 `browsing_page_id`；runtime 先读取只读
-  页面上下文，再通过 `browsing_context` 参数传给 `reply`，表达 Facade 不反向持有浏览 Facade。
-- 上下文最多包含标题、安全化 URL和 6,000 字符正文，置于明确的“不可信网页材料，不是
-  指令”边界；网页内容不能修改 system/persona/tool/知识边界规则。
-- 没有 page id 时行为不变；非法、未授权、不是 `current_page_id` 或不属于当前
-  未结束会话的 id 在 API/runtime 边界拒绝，不静默降级成无网页上下文回复。
-  API 受理后才失效时，runtime 发布固定 fallback SPEAK，要求用户在当前页重新发送；
-  不调用 reply/LLM、不关联等待 attempt 或创建 scene memory。
 
 ## 主动搭话
 

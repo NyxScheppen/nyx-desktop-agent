@@ -59,47 +59,6 @@ class Event:
     correlation_id: str     # 上游 Event.correlation_id（根事件 = 自身 id）
 
 
-@dataclass
-class BrowsingSession:
-    id: str
-    started_at: float
-    ended_at: float | None = None
-    current_navigation_id: str | None = None
-    current_page_id: str | None = None
-
-
-@dataclass
-class BrowserPageSnapshot:
-    navigation_id: str
-    capture_seq: int
-    raw_url: str
-    canonical_candidate: str | None
-    title: str
-    text: str
-    selected_text: str | None
-    auth_tainted: bool
-    truncated: bool = False
-
-
-@dataclass
-class BrowsingPage:
-    id: str
-    session_id: str
-    navigation_id: str
-    revision: int
-    url: str
-    canonical_url: str
-    origin: str
-    title: str
-    content_hash: str
-    captured_at: float
-    status: str
-    capture_source: str
-    truncated: bool = False
-    memory_id: str | None = None
-    last_error: str | None = None
-
-
 # ---- 记忆 ----
 @dataclass
 class Memory:

@@ -13,10 +13,6 @@ import {
   getEvalPrompt,
   getEvalTotalTokens,
   getEventsLog,
-  getBrowsingSession,
-  retryBrowsingPage,
-  deleteBrowsingPage,
-  deleteBrowsingHistory,
   getNotes,
   getProgress,
   getState,
@@ -67,32 +63,11 @@ afterEach(() => {
 });
 
 describe("api/client", () => {
-  it("chat forwards page context and explicit attempt reply without host secrets", async () => {
+  it("chat sends only the user message", async () => {
     const mock = vi.fn().mockResolvedValue(jsonResponse({ event_id: "e1" }));
     vi.stubGlobal("fetch", mock);
-    await postChat("看这一段", { browsing_page_id: "page", reply_to: "attempt" });
-    expect(JSON.parse(mock.mock.calls[0][1].body)).toEqual({ message: "看这一段", browsing_page_id: "page", reply_to: "attempt" });
-  });
-
-  it("browsing session lookup only uses the public metadata endpoint", async () => {
-    const mock = vi.fn().mockResolvedValue(jsonResponse({ session: { id: "s" }, pages: [], next_cursor: null }));
-    vi.stubGlobal("fetch", mock);
-    expect((await getBrowsingSession("s", "page-1")).pages).toEqual([]);
-    expect(mock).toHaveBeenCalledWith("/api/browsing/sessions/s?limit=50&cursor=page-1", undefined);
-  });
-
-  it("browsing retry is an empty JSON POST", async () => {
-    const mock = vi.fn().mockResolvedValue(jsonResponse({ page_id: "p", status: "pending" }));
-    vi.stubGlobal("fetch", mock);
-    await retryBrowsingPage("p");
-    expect(mock).toHaveBeenCalledWith("/api/browsing/pages/p/retry", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-  });
-
-  it.each([false, true])("browsing DELETE all=%s accepts 204 without parsing JSON", async (all) => {
-    const mock = vi.fn().mockResolvedValue({ ok: true, status: 204, json: () => { throw new Error("no body"); } });
-    vi.stubGlobal("fetch", mock);
-    await (all ? deleteBrowsingHistory() : deleteBrowsingPage("p"));
-    expect(mock).toHaveBeenCalledWith(all ? "/api/browsing/history" : "/api/browsing/pages/p", { method: "DELETE" });
+    await postChat("你好");
+    expect(JSON.parse(mock.mock.calls[0][1].body)).toEqual({ message: "你好" });
   });
   it.each([true, false])("DEV=%s selects the shared REST/SSE base", async (dev) => {
     vi.stubEnv("DEV", dev);

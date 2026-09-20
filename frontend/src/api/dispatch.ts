@@ -67,10 +67,6 @@ export function dispatchEvent(e: SseEvent): void {
     case "reading_association":
       // 联想不进对话（对话框只放对话+提问）：后端仍产生，前端静默丢弃。
       return;
-    case "browsing_mutter":
-    case "browsing_question":
-    case "browsing_association":
-      return useChatStore.getState().addBrowsingTurn(e);
     case "reflection_done": {
       // 反思完成：长期欲望（add_long_term 不发 desire_generated）刷新；
       // story 真新增才冒气泡（去重跳过则静默刷新，不打扰）。

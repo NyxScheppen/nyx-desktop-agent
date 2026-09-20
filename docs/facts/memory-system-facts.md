@@ -2,17 +2,6 @@
 
 > 本文件是给“无关代码但会碰到记忆事实”的快速摘要，例如表达慢通道、反思触发、读书/活动落记忆、前端 `Memory` 类型。完整记忆系统契约在 `docs/specs/06-memory-system.md`；修改 `nyx/memory/` 或记忆契约时必须先读完整 spec，并同步更新本摘要。
 
-## 浏览记忆接线
-
-- `remember_browsing(page_id, lease_token, content, summary, topics)` 写入 BROWSING 长期记忆，
-  固定 memory id 为 page id；稳定 uuid5 事件与记忆同事务提交，并在事务内检查有效 claim。
-- 浏览经历不走 content/semantic 合并；重复写入不强化或重建 embedding/图，事件缺失可补齐。
-  embedding 与图尾段是事务外 best-effort，不能撤销已提交核心记忆。
-- `forget_browsing()` / `forget_all_browsing()` 只删除浏览记忆与相关边；page FK 同事务级联。
-  浏览 worker 分别持久化整合结果与记忆阶段，失败重试复用已有结果。
-- 后端 close→worker→长期记忆链路，以及 Windows 原生 child 和浏览 UI 已接线；跨平台打包
-  smoke 尚未完成，具体限制见 `docs/facts/browsing-system-facts.md`。
-
 ## 时间字段
 
 - `Memory.created_at` 是创建时间，不随 `update_many`、`strengthen`、`record_recall` 改动。

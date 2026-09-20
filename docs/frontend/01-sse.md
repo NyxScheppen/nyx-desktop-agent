@@ -93,7 +93,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 - **返回**：`ConnectionState`，供 App 显示连接状态（右上角「已连接/重连中」）。
 - **行为**：
   1. `useEffect` 里 `new EventSource(BASE_URL + "/api/events")`，`BASE_URL` 来自统一常量（空 = 相对路径，走 Vite proxy 同源转发到后端 8000）。
-  2. 对 25 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` 和有限数值 `timestamp` → 拼 `SseEvent` → `dispatch`。
+  2. 对 22 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` 和有限数值 `timestamp` → 拼 `SseEvent` → `dispatch`。
   3. `onopen` / `onerror`：更新 `ConnectionState`。`EventSource` 浏览器原生自动重连（`onerror` 时置 `connecting`），后端重启后自动恢复，无需手写重连循环。
   4. cleanup：`source.close()`（防重复挂载泄漏）。
 - **解析失败**：`JSON.parse` 抛错 → `console.error` + 跳过该帧（不崩整个流）；`data` 缺
@@ -129,15 +129,9 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `reading_question`/`reading_association` | `chatStore` | `addReadingTurn(e)` | 读书提问/联想并进对话（永久聊天消息，correlation_id=book_id，不过滤当前书） |
 | `clock_tick`/`observation_state`/`reflection` | — | — | 无消费者 |
 
-> 完整 25 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`memory_*`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`mutter` 进 `announceStore` 冒立绘旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection` 无消费者（故无 `default` 分支）。
+> 完整 22 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`memory_*`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`mutter` 进 `announceStore` 冒立绘旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection` 无消费者（故无 `default` 分支）。
 > **前向兼容边界**：命名事件（带 `event:` 行）若没有匹配的 `addEventListener` 且无 `onmessage`，浏览器会静默丢弃——故后端**新增 EventType 必须同步前端** `EVENT_TYPES` 数组 + `types/api.ts` 判别联合 + 本分发表（monorepo 内本就在同一提交改）。不存在「旧前端自动接住新类型」的兜底。
 
-共同浏览的已实现事件接线见 `13-browsing-system.md`：`useSSE` 注册三类具名
-`browsing_*` 事件，三者走左侧 `chatStore` 而非随 Avatar 隐藏的 announce；
-历史分别按类型回填且按事件 id 去重。`BROWSING_QUESTION` 展示时必须抑制同一问题的
-canonical `ASK` 气泡（等待回应仍使用 ASK/attempt）。打包版 SSE 与 REST 共用固定
-loopback `BASE_URL` 和精确 Origin CORS/PNA；地址与后端预检已有测试，但真实打包 WebView
-smoke test 尚未完成，不能据此认定各平台打包版本可连接。
 
 ### 4.1 分发函数（含类型收窄）
 

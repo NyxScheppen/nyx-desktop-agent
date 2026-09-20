@@ -5,7 +5,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, cast
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
 from nyx.config import MemoryConfig
 from nyx.enums import EventType, MemoryEdgeKind, MemoryKind, MemoryType
@@ -536,80 +536,6 @@ class MemoryFacade:
             return
         await self._remember_activity(event, in_transaction=False)
 
-    async def on_game_choice_confirmed(self, event: Event) -> None:
-        """Persist an explicit game choice as a bounded activity memory."""
-        consumer_id = "memory.game_choice_confirmed"
-        if await self._bus.has_effect(event.id, consumer_id):
-            return
-        game_id = str(event.content.get("game_id") or "game")
-        choice_text = str(event.content.get("choice_text") or "")
-        if not choice_text.strip():
-            return
-        memory = _new_memory(
-            f"和用户在 {game_id} 中选择了：{choice_text}",
-            MemoryKind.ACTIVITY,
-            f"{game_id}：{choice_text}",
-            MemoryType.SHORT_TERM,
-            [game_id, "game_companion"],
-        )
-        await self._prepare_memory_embedding(memory)
-        async with self._store.db.transaction():
-            applied = await self._bus.try_mark_effect_in_transaction(
-                event.id, consumer_id
-            )
-            if not applied:
-                return
-            result = await self._persist_memory(
-                memory,
-                event.correlation_id,
-                in_transaction=True,
-                defer_best_effort=True,
-                embedding_prepared=True,
-            )
-        if result.created:
-            await self._run_best_effort_tail(
-                result.memory, result.candidates, event.correlation_id
-            )
-
-    async def on_game_observation_corrected(self, event: Event) -> None:
-        """Persist a user correction without overwriting the observed event."""
-        consumer_id = "memory.game_observation_corrected"
-        if await self._bus.has_effect(event.id, consumer_id):
-            return
-        value = event.content.get("value")
-        if not isinstance(value, dict):
-            return
-        value = cast(dict[str, Any], value)
-        field = str(event.content.get("field") or "fact")
-        text = str(value.get("text") or value.get("choice_id") or "").strip()
-        if not text:
-            return
-        memory = _new_memory(
-            f"用户修正了游戏中的{field}：{text}",
-            MemoryKind.ACTIVITY,
-            f"用户修正游戏{field}",
-            MemoryType.SHORT_TERM,
-            ["game_companion", field],
-        )
-        await self._prepare_memory_embedding(memory)
-        async with self._store.db.transaction():
-            applied = await self._bus.try_mark_effect_in_transaction(
-                event.id, consumer_id
-            )
-            if not applied:
-                return
-            result = await self._persist_memory(
-                memory,
-                event.correlation_id,
-                in_transaction=True,
-                defer_best_effort=True,
-                embedding_prepared=True,
-            )
-        if result.created:
-            await self._run_best_effort_tail(
-                result.memory, result.candidates, event.correlation_id
-            )
-
     async def _prepare_activity_memory(self, event: Event) -> Memory | None:
         if event.content.get("type") == "observe_user":
             result = event.content.get("result")
@@ -809,84 +735,6 @@ class MemoryFacade:
         """
         memory = _new_memory(content, MemoryKind.READING, summary, MemoryType.LONG_TERM)
         await self._persist_memory(memory, correlation_id)
-
-    async def remember_browsing(
-        self, page_id: str, lease_token: str, content: str, summary: str,
-        topics: list[str],
-    ) -> Memory:
-        """Commit a fixed-id memory and event only under a live page claim."""
-        memory = await self._store.get(page_id)
-        if memory is None:
-            memory = _new_memory(
-                content, MemoryKind.BROWSING, summary, MemoryType.LONG_TERM,
-                topics=topics,
-            )
-            memory.id = page_id
-            if self._embed is not None:
-                try:
-                    memory.embedding = await self._embed(content)
-                except Exception:
-                    self._logger.exception(
-                        "浏览记忆 embedding 失败 page_id=%s", page_id
-                    )
-        event = internal_event(
-            EventType.MEMORY_CREATED, {"memory_id": page_id}, page_id
-        )
-        event.id = str(uuid5(NAMESPACE_URL, "nyx:browsing-memory:" + page_id))
-        created = False
-        async with self._store.db.transaction():
-            cursor = await self._store.db.conn.execute(
-                "SELECT 1 FROM browsing_page WHERE id=? AND status='integrating' "
-                "AND lease_token=? AND lease_until>? "
-                "AND integrated_content IS NOT NULL",
-                (page_id, lease_token, time.time()),
-            )
-            if await cursor.fetchone() is None:
-                raise ValueError("state_conflict")
-            existing = await self._store.get(page_id)
-            if existing is None:
-                await self._store.add(memory)
-                created = True
-            else:
-                if existing.kind is not MemoryKind.BROWSING:
-                    raise ValueError("state_conflict")
-                memory = existing
-            announce = not await self._bus.is_durable(event.id)
-            if announce:
-                await self._bus.append_in_transaction(event)
-        if announce:
-            await self._bus.announce_committed(event)
-        if created:
-            try:
-                candidates: list[PersistSemanticHit] = []
-                if memory.embedding is not None:
-                    memories = await self._store.list_memories()
-                    by_id = {item.id: item for item in memories if item.id != page_id}
-                    candidates = self._persist_semantic_candidates(
-                        memory.embedding, AnnIndex.build(list(by_id.values())), by_id
-                    )
-                await self._build_edges(memory, candidates, time.time(), page_id)
-                await self._detect_contradiction(memory, candidates, page_id)
-                await self._decay_and_evict(time.time())
-            except Exception:
-                self._logger.exception("浏览记忆图旁路失败 page_id=%s", page_id)
-        return memory
-
-    async def forget_browsing(self, page_id: str) -> None:
-        """Delete only browsing memory; its checkpoint cascades atomically."""
-        async with self._store.db.transaction():
-            memory = await self._store.get(page_id)
-            if memory is None:
-                raise ValueError("not_found")
-            if memory.kind is not MemoryKind.BROWSING:
-                raise ValueError("state_conflict")
-            await self._store.delete_many([page_id])
-
-    async def forget_all_browsing(self) -> None:
-        """Keep non-browsing memories and shared event/chat audit records."""
-        async with self._store.db.transaction():
-            memories = await self._store.list_memories(kind=MemoryKind.BROWSING)
-            await self._store.delete_many([memory.id for memory in memories])
 
     async def record_no_answer(self, question: str, correlation_id: str) -> None:
         """用户未回答尼克斯的提问：落一条确定性的 SHORT_TERM 记忆（无 LLM）。

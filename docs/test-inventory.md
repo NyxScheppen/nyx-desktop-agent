@@ -6,26 +6,16 @@
 
 ## 当前快照
 
-- 后端测试文件：71
-- `pytest --collect-only -q`：1074 tests collected
-- 最近一次全量验证：`1072 passed, 2 skipped`
+- 后端测试文件：64
+- `pytest --collect-only -q`：994 tests collected
+- 最近一次全量验证：`993 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：`19 files / 312 passed`。
-- 浏览转录回归：`stores.test.ts` 校验 browsing 输出去重、canonical ASK 抑制、选区及记忆引用。
-- 浏览后端回归另覆盖 focus/summary 容量上限、eval 失败保持联想、记忆阶段复用 checkpoint
-  和 heartbeat 数据库失败回收子任务、迟到认证页不撤销当前页；打包地址回归验证开发/生产共用 REST/SSE base。
-- 浏览事件查询拒绝空类型集合及 1..100 之外的 limit，排序/过滤由总线接口拥有。
-- 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；普通/桌面模式在未知程序占用 8000 时不创建进程；后端/Tauri 共享 256-bit secret；打包资源定位和 sidecar 构建产物；可选 Windows 本地 HTTPS mock IdP spike（临时 CA，默认跳过）；前端只在后端 ready 后启动。
+- 最近一次前端全量验证：`17 files / 274 passed`。
+- 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；前端只在后端 ready 后启动。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
-- Rust 单元：7 条；三个 opt-in 桌面 spike，分别覆盖 ACL/DOM、本地 HTTPS mock IdP 与窄窗口激活浏览扩宽（不创建 child）；mock IdP 另覆盖 302 逐跳预检、私网拒绝与慢预检时 UI 响应。
-- Windows 桌面 spike：ACL/DOM、HTTPS mock IdP、静态 main 窄窗扩宽均单独通过；真实远程 app/core/plugin invoke 拒绝、公开正文、非表单正文/选区及 password 零正文。
-- `browser.test.tsx`：16 条覆盖导航失效/迟到结果、隐私暂停、token 失效清上下文、focus ID 重试、新操作 ID、显隐、普通浏览器降级及提问回复；旧发送完成不清新提问选择，未创建 child 时激活视图按 DPI 扩宽窗口；popup 许可和关闭不假定登录成功；记录按需读取、cursor 续页/防重叠、全量删除清空列表和 cursor。
-- `gameCompanion.test.tsx`：durable checkpoint hydrate、旧 observation revision 丢弃、hydrate/SSE 竞态保护、`stale_choice` 重拉并保留提示、当前 game activity 恢复、陪玩面板对白/阶段/选项显示与选择确认。
-- 浏览 metadata store/API 覆盖有界 cursor 分页与非法 cursor；runtime 覆盖导航/revoke/close 在消息消费前使上下文失效时只发明确 fallback，重放不再调用 reply。
-- REST 另覆盖 page/reply_to 转发、浏览 metadata/retry、单页与全量 204 DELETE。
-- 浏览提问回复：展示事件的 attempt_id 进入回复选择，ChatInput 转发 reply_to 与当前 page id。
+- 前端测试覆盖通用 API、SSE、状态、聊天、阅读、设置和桌面 presence。
 - SSE 回归：初次连接失败保持 `connecting`，同一连接恢复后转为 `open`，不把启动期失败误报为 `closed`。
 
 ## 后端覆盖
@@ -37,16 +27,14 @@
 | LLM | `tests/test_llm/` | 2 | 统一客户端、视觉客户端、token 元数据、最终 prompt 快照 |
 | DB | `tests/test_db/` | 1 | 迁移、索引、可空性、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
-| API/运行时 | `tests/test_api/` | 7 | 组合根、REST、游戏陪玩 frame bridge 身份/revision/body guard、浏览 bridge/本机 guard/CORS/PNA/body 上限、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
+| API/运行时 | `tests/test_api/` | 7 | 组合根、REST、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件、搜索、工具注册和网络抓取 |
-| 记忆 | `tests/test_memory/` | 6 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade、durable 活动/游戏记忆不持锁等待 embedding |
+| 记忆 | `tests/test_memory/` | 6 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade、durable 活动记忆不持锁等待 embedding |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、满足、重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
 | 活动 | `tests/test_activity/` | 13 | 排期、活动生命周期、探索、观察、读书恢复 |
 | 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动、笔记、整合和后台生命周期 |
-| 共同浏览 | `tests/test_browsing/` | 4 | checkpoint、封口、fencing、启动恢复、授权污点、companion 幂等、配对 token、结构校验、close→worker→长期记忆、容量压力清理及桌面 launcher；API `test_browsing_api.py` 覆盖 bridge、精确 Host/Origin/媒介、CORS/PNA、声明长度与无长度流式 body 上限、multipart 快照，既有 API fixture 使用真实 loopback Host；相邻套件覆盖总线/记忆/提问事务、枚举及 DB 表快照 |
-| 游戏陪玩 | `tests/test_game_companion/`、`tests/test_api/test_game_companion_api.py` | 3 | transient bridge PNG 校验、懒加载 RapidOCR adapter、OCR/crop 预算、frame→tentative/accepted observation 接线、越界框硬拒绝、全局视觉隐私开关、窗口 identity、OCR unavailable 明确 rejected、OCR timeout worker gate、同 session frame single-flight、重复 accepted durable revision、observation 超限 413、checkpoint CAS 并发幂等、幂等索引有界、canonical observation hash、score/evidence 闸门、session/observation/choice/correction 事务与幂等、frame bridge 完整窗口 identity/revision/body 上限 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
 
 ## 前端覆盖
@@ -58,8 +46,6 @@
 | 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、设置、评估面板展开详情与安全文本渲染 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 状态显示、过滤、枚举中文化 |
 | 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 分页、笔记和章节交互 |
-| 共同浏览 | `browser.test.tsx` | 宿主状态与 CAS、隐私/token 暂停、focus 幂等 ID、native 显隐、web 降级、提问 attempt 回复 |
-| 游戏陪玩 | `gameCompanion.test.tsx` | checkpoint hydrate、SSE 旧 revision 丢弃与竞态恢复、`stale_choice` 重拉、当前活动恢复、对白/阶段/选项显示与选择确认 |
 | 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 统一分钟时钟、休眠恢复校时、昼夜/头像、非法时间标签边界、打字机 |
 
 ## 关键回归清单

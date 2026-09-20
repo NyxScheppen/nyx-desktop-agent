@@ -109,12 +109,9 @@ flowchart TB
 
 ```bash
 python dev.py        # 同时拉起后端(8000) + 前端 Vite(5173)，Ctrl+C 退出
-python dev.py --desktop # 配对启动后端 + Tauri，启用 Windows 窗口内共同浏览
 ```
 
 Windows 用户也可以直接双击项目根目录的 `start_nyx.bat` 启动；脚本会优先使用项目 `.venv`，并检查 Python/uvicorn、Node.js/npm 与前端依赖。重启时 launcher 会用原子 lock 串行化流程，先关闭自己记录或在 8000 上发现的旧 Nyx backend；若端口由未知进程占用则拒绝启动。仅在常规 Python 环境不可用时尝试 `.runtime` 依赖，不混入可用的 `.venv`。启动失败时窗口会保持打开，方便直接查看错误。看到 `Checking npm` 后应继续显示 `Starting backend` 与前后端日志；浏览器访问 `http://localhost:5173` 测试，Ctrl+C 停止服务。
-
-共同浏览需要 Rust/Tauri Windows 环境，通过 `python dev.py --desktop` 配对启动；普通网页模式不提供原生浏览器。Windows 受控 OAuth 弹窗已通过本地 HTTPS mock IdP 验收，不保证所有提供方允许嵌入式登录；非 Windows 原生浏览器暂不支持。不要把独立 `npm run tauri dev` 当作已配对的浏览入口。
 
 ### Windows 桌面构建
 
@@ -185,5 +182,5 @@ python -m pytest -q
 - **本地单用户**：无端到端加密、无用户认证 / 多账户、无企业级审计日志。
 - **eval 只记录不自动修正**：OOC 评分用于可视化，不反馈回 LLM。
 - **探索是线性的**：联网自由探索 =「搜 → 抓正文 → 总结」，不做逐层地牢 / 决策支 / 托管。
-- **电脑控制（computer use）尚未实现**：有「眼睛」（抓屏 + 视觉描述），缺「手」（输入模拟），属 V3 backlog。
+- **电脑控制（computer use）尚未实现**：输入模拟闭环属 V3 backlog。
 - **出站请求仅 LLM API + 联网搜索（opt-in）**，不上传用户数据。

@@ -40,35 +40,6 @@ async def _new_bus() -> EventBus:
     return EventBus(await db.connect(":memory:"))
 
 
-@pytest.mark.parametrize(
-    ("types", "limit"),
-    [((), 100), ((EventType.BROWSING_MUTTER,), 0), ((EventType.BROWSING_MUTTER,), 101)],
-)
-async def test_correlation_outputs_reject_invalid_query(
-    types: tuple[EventType, ...], limit: int
-) -> None:
-    bus = await _new_bus()
-    try:
-        with pytest.raises(ValueError):
-            await bus.list_events_for_correlation("page", types, limit)
-    finally:
-        await _close(bus)
-
-
-async def test_correlation_outputs_select_latest_then_restore_order() -> None:
-    bus = await _new_bus()
-    try:
-        for key in ("a", "b", "c"):
-            await bus.publish(_make_event(id=key, type_=EventType.MUTTER))
-        await bus.publish(_make_event(id="other", correlation_id="elsewhere"))
-        outputs = await bus.list_events_for_correlation(
-            "corr-1", (EventType.MUTTER,), limit=2
-        )
-        assert [event.id for event in outputs] == ["b", "c"]
-    finally:
-        await _close(bus)
-
-
 async def _wait_delivery(
     bus: EventBus,
     event_id: str,

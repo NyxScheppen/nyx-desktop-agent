@@ -300,33 +300,6 @@ def _user_content(messages: list[LlmMessage]) -> str:
     return messages[-1]["content"]
 
 
-async def test_browsing_question_commits_attempt_and_both_events() -> None:
-    database = await db.connect(":memory:")
-    bus = EventBus(database)
-    facade, *_ = _new_facade(
-        interaction_store=ExpressionInteractionStore(database)
-    )
-    facade._bus = bus
-    try:
-        attempt_id = await facade.commit_browsing_question(
-            "What do you think?", "page", "page",
-            {"content": "What do you think?", "page_id": "page",
-             "session_id": "session"},
-        )
-        events = await bus.list_events(correlation_id="page")
-        cursor = await database.conn.execute(
-            "SELECT kind FROM expression_interaction_attempt WHERE id=?", (attempt_id,)
-        )
-        row = await cursor.fetchone()
-        assert row is not None and row["kind"] == "browsing_question"
-        assert {event.type for event in events} == {
-            EventType.ASK, EventType.BROWSING_QUESTION
-        }
-        assert all(event.content["attempt_id"] == attempt_id for event in events)
-    finally:
-        await database.close()
-
-
 def _new_facade(
     energy: float = 80.0,
     arousal: float = 0.0,

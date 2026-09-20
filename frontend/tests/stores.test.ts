@@ -60,29 +60,6 @@ function resetChat() {
   useChatStore.getState().reset(); // 复用 reset()：全清 messages/isReplying/sendError + 清 module 级 pendingId/replyTimer
 }
 
-describe("browsing transcript", () => {
-  beforeEach(resetChat);
-
-  it("shows browsing outputs once and suppresses the canonical ASK", () => {
-    const store = useChatStore.getState();
-    store.addAsk({event: "ask", event_id: "ask", correlation_id: "page", timestamp: 1,
-      content: "Question?", kind: "browsing_question"});
-    const question = {event: "browsing_question" as const, event_id: "question",
-      correlation_id: "page", timestamp: 2, content: "Question?", attempt_id: "attempt",
-      page_id: "page", session_id: "session", title: "Title", url: "https://example.com",
-      selected_text: "A passage"};
-    store.addBrowsingTurn(question);
-    store.addBrowsingTurn(question);
-    store.addBrowsingTurn({event: "browsing_association", event_id: "association",
-      correlation_id: "page", timestamp: 3, page_id: "page", session_id: "session",
-      memory_id: "memory", snippet: "A remembered idea"});
-    expect(useChatStore.getState().messages.map((message) => message.kind))
-      .toEqual(["browsing_question", "browsing_association"]);
-    expect(useChatStore.getState().messages[0].selectedText).toBe("A passage");
-    expect(useChatStore.getState().messages[1].memoryId).toBe("memory");
-  });
-});
-
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();

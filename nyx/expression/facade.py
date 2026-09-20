@@ -184,30 +184,11 @@ class ExpressionFacade:
         event_content: dict[str, object],
     ) -> str:
         """Atomically admit the reading question attempt, ASK, and reading event."""
-        return await self._commit_companion_question(
-            text, source_id, correlation_id, event_content,
-            InteractionKind.READING_QUESTION, EventType.READING_QUESTION,
-        )
-
-    async def commit_browsing_question(
-        self, text: str, source_id: str, correlation_id: str,
-        event_content: dict[str, object],
-    ) -> str:
-        """Atomically admit a browsing attempt, canonical ASK and display event."""
-        return await self._commit_companion_question(
-            text, source_id, correlation_id, event_content,
-            InteractionKind.BROWSING_QUESTION, EventType.BROWSING_QUESTION,
-        )
-
-    async def _commit_companion_question(
-        self, text: str, source_id: str, correlation_id: str,
-        event_content: dict[str, object], kind: InteractionKind, event_type: EventType,
-    ) -> str:
         attempt_id = str(uuid4())
         now = time.time()
         attempt = InteractionAttempt(
             id=attempt_id,
-            kind=kind,
+            kind=InteractionKind.READING_QUESTION,
             source_id=source_id,
             correlation_id=correlation_id,
             text=text,
@@ -215,13 +196,13 @@ class ExpressionFacade:
             expires_at=now + self._config.ask_timeout,
         )
         ask = _ask_event(
-            text, attempt_id, correlation_id, kind
+            text, attempt_id, correlation_id, InteractionKind.READING_QUESTION
         )
         reading = Event(
             id=str(uuid4()),
             timestamp=now,
             source=ask.source,
-            type=event_type,
+            type=EventType.READING_QUESTION,
             content={**event_content, "attempt_id": attempt_id},
             correlation_id=correlation_id,
         )
@@ -325,7 +306,6 @@ class ExpressionFacade:
         msg: str,
         correlation_id: str,
         reply_to: str | None = None,
-        browsing_context: dict[str, str] | None = None,
     ) -> None:
         """完整回复流程：跑 LangGraph 图，内部发布 think/speak/ask。"""
         claimed_return = self._claim_pending_return()
@@ -363,7 +343,6 @@ class ExpressionFacade:
                 "temporal_context": temporal_context,
                 "claimed_return": claimed_return,
                 "fallback": False,
-                "browsing_context": browsing_context,
             }
             result = await self._graph.ainvoke(initial)
             if result["mode"] is ContextMode.SLOW:

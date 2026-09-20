@@ -5,7 +5,6 @@ import type {
   BackendEvent,
   Book,
   BookListItem,
-  BrowsingPage,
   CurrentState,
   DesireState,
   EvalRecord,
@@ -45,11 +44,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function postChat(message: string, context?: { browsing_page_id?: string; reply_to?: string }): Promise<{ event_id: string }> {
+export async function postChat(message: string): Promise<{ event_id: string }> {
   return request<{ event_id: string }>(`${BASE_URL}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, ...context }),
+    body: JSON.stringify({ message }),
   });
 }
 
@@ -216,30 +215,6 @@ export async function getEvalRecent(limit = 5): Promise<EvalRecord[]> {
 
 export async function getEvalTotalTokens(): Promise<EvalStats> {
   return request<EvalStats>(`${BASE_URL}/api/eval/total_tokens`);
-}
-
-export async function getBrowsingSession(sessionId: string, cursor?: string, limit = 50): Promise<{
-  session: { id: string; current_page_id: string | null };
-  pages: BrowsingPage[];
-  next_cursor: string | null;
-}> {
-  const query = new URLSearchParams({ limit: String(limit) });
-  if (cursor !== undefined) query.set("cursor", cursor);
-  return request(`${BASE_URL}/api/browsing/sessions/${sessionId}?${query}`);
-}
-
-export async function retryBrowsingPage(pageId: string): Promise<{ page_id: string; status: string }> {
-  return request(`${BASE_URL}/api/browsing/pages/${pageId}/retry`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
-  });
-}
-
-export async function deleteBrowsingPage(pageId: string): Promise<void> {
-  await assertOk(await fetch(`${BASE_URL}/api/browsing/pages/${pageId}`, { method: "DELETE" }));
-}
-
-export async function deleteBrowsingHistory(): Promise<void> {
-  await assertOk(await fetch(`${BASE_URL}/api/browsing/history`, { method: "DELETE" }));
 }
 
 export async function getEvalPrompt(

@@ -8,13 +8,11 @@ from typing import cast
 import pytest
 
 from nyx import db
-from nyx.browsing.store import BrowsingStore
 from nyx.config import MemoryConfig
 from nyx.db import Database
 from nyx.enums import EventType, MemoryEdgeKind, MemoryKind, MemoryType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
-from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.ann import AnnIndex
 from nyx.memory.facade import (
@@ -34,7 +32,7 @@ from nyx.memory.facade import (
 )
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval
 from nyx.memory.store import MemoryStore
-from nyx.types import BrowserPageSnapshot, Event, LLMOutput, Memory
+from nyx.types import Event, LLMOutput, Memory
 
 
 def _scene(content: str) -> str:
@@ -174,43 +172,9 @@ async def _new_stack() -> tuple[MemoryStore, EventBus, Database]:
     return MemoryStore(database), EventBus(database), database
 
 
-async def test_browsing_memory_is_fenced_and_idempotent() -> None:
-    store, bus, database = await _new_stack()
-    browsing = BrowsingStore(database)
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
-    try:
-        session = await browsing.get_or_create_active_session(1.0)
-        await browsing.begin_navigation(session.id, "nav", 2.0)
-        page, _ = await browsing.upsert_capture(
-            session.id,
-            BrowserPageSnapshot("nav", 1, "https://example.com", None,
-                                "Title", "Text", None, False),
-            3.0,
-        )
-        await browsing.freeze_page(page.id, "nav", 1, 4.0)
-        await browsing.finalize_page_outputs(page.id, "nav", 1, 5.0)
-        await browsing.claim_next("worker", "expired", 6.0, 7.0)
-        with pytest.raises(ValueError, match="state_conflict"):
-            await facade.remember_browsing(page.id, "expired", "Note", "Summary", [])
-        assert await store.get(page.id) is None
-        await browsing.recover_expired(8.0)
-        await browsing.claim_next("worker", "summary", 8.0, 308.0)
-        await browsing.finish_summary(page.id, "summary", "Note", "Summary", [], 9.0)
-        await browsing.claim_next("worker", "valid", 10.0, 1e12)
-        memory = await facade.remember_browsing(page.id, "valid", "Note", "Summary", [])
-        again = await facade.remember_browsing(page.id, "valid", "Note", "Summary", [])
-        assert memory.id == again.id == page.id
-        assert (memory.kind is MemoryKind.BROWSING
-                and memory.type is MemoryType.LONG_TERM)
-        assert len(await bus.list_events(correlation_id=page.id)) == 1
-    finally:
-        await database.close()
-
-
 @pytest.mark.asyncio
-async def test_game_choice_embedding_runs_outside_database_transaction() -> None:
+async def test_activity_embedding_runs_outside_database_transaction() -> None:
     store, bus, database = await _new_stack()
-    browsing = BrowsingStore(database)
     transaction_states: list[bool] = []
     embedding_started = asyncio.Event()
     release_embedding = asyncio.Event()
@@ -224,29 +188,16 @@ async def test_game_choice_embedding_runs_outside_database_transaction() -> None
     facade = _make_facade(
         store, bus, _FakeLlm(), _FakeEvaluator(), embed=embed
     )
-    events = (
-        internal_event(
-            EventType.GAME_CHOICE_CONFIRMED,
-            {"game_id": "disco", "choice_text": "走进旅馆"},
-            "game-session",
-        ),
-        internal_event(
-            EventType.GAME_OBSERVATION_CORRECTED,
-            {"field": "dialogue", "value": {"text": "这里不对"}},
-            "game-session",
-        ),
-    )
+    event = _activity_event("reading", {"book": "某书", "note": "读后感"})
     try:
-        await bus.publish(events[0])
-        choice_task = asyncio.create_task(facade.on_game_choice_confirmed(events[0]))
+        await bus.publish(event)
+        activity_task = asyncio.create_task(
+            facade.remember_activity(event, "memory.activity_end")
+        )
         await asyncio.wait_for(embedding_started.wait(), timeout=1.0)
-        database.lock_timeout = 0.05
-        assert await browsing.recover_expired(1.0) == 0
         release_embedding.set()
-        await choice_task
-        await bus.publish(events[1])
-        await facade.on_game_observation_corrected(events[1])
-        assert transaction_states == [False, False]
+        await activity_task
+        assert transaction_states == [False]
     finally:
         release_embedding.set()
         await database.close()
@@ -1195,11 +1146,9 @@ async def test_durable_activity_memory_does_not_hold_db_lock_during_embedding() 
     event = _activity_event("reading", {"book": "某书", "note": "读后感"})
     await bus.publish(event)
     task = asyncio.create_task(facade.remember_activity(event, "memory.activity_end"))
-    browsing = BrowsingStore(database)
     try:
         await asyncio.wait_for(entered.wait(), timeout=1.0)
-        database.lock_timeout = 0.05
-        assert await asyncio.wait_for(browsing.recover_expired(1.0), timeout=0.5) == 0
+        assert database.in_transaction is False
     finally:
         release.set()
         await asyncio.wait_for(task, timeout=2.0)

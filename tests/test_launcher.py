@@ -1,8 +1,6 @@
-"""Desktop pairing is private to the two launch chains, never VITE_* config."""
+"""Launcher lifecycle and resource packaging regressions."""
 # pyright: reportPrivateUsage=false
 
-import os
-import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,32 +9,6 @@ import pytest
 
 import dev
 import nyx.main as entry
-
-
-def test_desktop_launcher_pairs_backend_and_tauri(tmp_path: Path) -> None:
-    process = MagicMock()
-    process.poll.return_value = 0
-    process.returncode = 0
-    with (
-        patch.object(dev.sys, "argv", ["dev.py", "--desktop"]),
-        patch.object(dev.shutil, "which", return_value="npm"),
-        patch.object(dev, "_BACKEND_PID_FILE", tmp_path / "backend.pid"),
-        patch.object(dev, "_LAUNCH_LOCK_FILE", tmp_path / "launcher.lock"),
-        patch.object(dev, "_find_launcher_pids", return_value=[]),
-        patch.object(dev, "_find_listening_backend_pids", return_value=[]),
-        patch.object(dev, "_wait_for_backend_ready"),
-        patch.object(dev.socket, "socket") as listener,
-        patch.object(dev.subprocess, "Popen", return_value=process) as spawn,
-    ):
-        dev.main()
-    listener.return_value.__enter__.return_value.bind.assert_called_once_with(
-        ("127.0.0.1", 8000)
-    )
-    backend, desktop = spawn.call_args_list
-    assert desktop.args[0] == ["npm", "run", "tauri", "dev"]
-    secret = backend.kwargs["env"]["NYX_BROWSER_BOOTSTRAP_SECRET"]
-    assert len(bytes.fromhex(secret)) == 32
-    assert desktop.kwargs["env"]["NYX_BROWSER_BOOTSTRAP_SECRET"] == secret
 
 
 def test_occupied_backend_port_refuses_before_secret_distribution(
@@ -305,125 +277,3 @@ def test_sidecar_build_bundles_only_public_resources(
     assert "x86_64-pc-windows-msvc" in str(copy.call_args.args[1])
 
 
-@pytest.mark.skipif(
-    sys.platform != "win32" or os.environ.get("NYX_RUN_DESKTOP_SPIKES") != "1",
-    reason="Opt-in Windows desktop / local HTTPS mock IdP spike",
-)
-def test_local_https_mock_idp_create_popup(tmp_path: Path) -> None:
-    import datetime
-    import ipaddress
-    import ssl
-    import subprocess
-    import threading
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Nyx fixture CA")])
-    now = datetime.datetime.now(datetime.timezone.utc)
-    cert = (
-        x509.CertificateBuilder().subject_name(name).issuer_name(name)
-        .public_key(key.public_key()).serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(minutes=1))
-        .not_valid_after(now + datetime.timedelta(hours=1))
-        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
-        .add_extension(x509.SubjectAlternativeName([
-            x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
-        ]), critical=False).sign(key, hashes.SHA256())
-    )
-    pem = cert.public_bytes(serialization.Encoding.PEM)
-    (tmp_path / "cert.pem").write_bytes(pem)
-    (tmp_path / "key.pem").write_bytes(key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    ))
-    paths: list[str] = []
-
-    class MockIdp(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:
-            paths.append(self.path)
-            self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b"{}")
-
-        def do_GET(self) -> None:
-            paths.append(self.path)
-            if self.path in ("/redirect-hop", "/unsafe-redirect"):
-                self.send_response(302)
-                target = "/callback" if self.path == "/redirect-hop" else (
-                    f"https://localhost:{server.server_port}/unsafe-target"
-                )
-                self.send_header("Location", target)
-                self.end_headers()
-                return
-            pages = {
-                "/opener": """<title>Remote fixture</title><script>
-                  window.addEventListener('message', e => {
-                    if(e.origin===location.origin) window.result=e.data;
-                  });
-                </script><main>Mock IdP opener</main>""",
-                "/authorize": """<script>
-                  document.cookie='nyxFixture=one; Secure; SameSite=Lax; path=/';
-                  window.open('/nested');
-                  location.href='/redirect-hop';
-                </script>""",
-                "/callback": """<title>Untrusted title</title><script>
-                  (async()=>{
-                    let denied=false;
-                    try { await window.__TAURI_INTERNALS__.invoke('acl_probe'); }
-                    catch(e) { denied=String(e).includes('not allowed'); }
-                    opener.postMessage({ok:opener.location.pathname==='/opener',
-                      denied}, location.origin); window.close();
-                  })();
-                </script>""",
-                "/refused": (
-                    "<title>Untrusted title</title>"
-                    "Mock provider refuses embedded login"
-                ),
-            }
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(pages.get(self.path, "refused").encode())
-
-        def log_message(self, format: str, *args: object) -> None:
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), MockIdp)
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(tmp_path / "cert.pem", tmp_path / "key.pem")
-    server.socket = context.wrap_socket(server.socket, server_side=True)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    bridge = ThreadingHTTPServer(("127.0.0.1", 0), MockIdp)
-    bridge_worker = threading.Thread(target=bridge.serve_forever, daemon=True)
-    bridge_worker.start()
-    fixture_env = os.environ.copy()
-    fixture_env["NYX_OAUTH_FIXTURE_ORIGIN"] = f"https://127.0.0.1:{server.server_port}"
-    fixture_env["NYX_OAUTH_FIXTURE_CERT"] = pem.decode()
-    fixture_env["NYX_OAUTH_FIXTURE_BRIDGE_PORT"] = str(bridge.server_port)
-    try:
-        result = subprocess.run(
-            ["cargo", "test", "--lib", "local_https_idp_create_popup", "--",
-             "--ignored", "--nocapture"],
-            cwd=dev.ROOT / "frontend" / "src-tauri", env=fixture_env,
-            capture_output=True, text=True, timeout=180,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr + repr(paths)
-        assert paths.count("/authorize") == 1 and "/callback" in paths
-        assert "/nested" not in paths
-        assert "/unsafe-target" not in paths
-        assert not any(path.endswith("/pages") for path in paths)
-    finally:
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=2)
-        bridge.shutdown()
-        bridge.server_close()
-        bridge_worker.join(timeout=2)

@@ -18,8 +18,6 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 
 - `ChatPanel`：`useChatStore(s => s.messages)` 订阅；`useSSE` 不在此（SSE 挂 App 层，见 01-sse §4，`ChatPanel` 只消费 store）。
 - 连接状态显示：`ConnectionState` 由 App 层在顶栏 `connection-state` 直接显示，不再传 `ChatPanel`（01-sse §6）。
-- `ChatInput({browsingPageId?})` 在当前浏览页可用时附带 `browsing_page_id`；App 在暂停、加载、关闭、切视图和设置弹层时不传该值。
-- 浏览提问气泡的回复箭头选择 durable `attemptId`；输入区显示可取消回复状态并附带 `reply_to`。发送成功只清仍属于该次发送的选择，失败保留，不清发送期间后来选中的提问；不把展示 event id 当作 attempt id。
 
 ## 2. 发消息流程
 
@@ -47,9 +45,6 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 | `nyx` | `think` | 灰色斜体小字，逐字显示 | 内心话，弱化展示（useTypewriter 逐字，后端 THINK 先于 SPEAK 到达） |
 | `nyx` | `initiate_chat` | 左气泡，带「欲望搭话」徽标 | 主动搭话 |
 | `nyx` | `reading_question` | 左气泡，带「提问」徽标 + 划线引文，即时全量 | 读书提问并进对话（不逐字，不进打字机） |
-| `nyx` | `browsing_mutter` | 左气泡，即时全量 | 浏览碎碎念 |
-| `nyx` | `browsing_question` | 左气泡，「提问」徽标 + 可选引文，即时全量 | canonical 浏览 ASK 不重复显示 |
-| `nyx` | `browsing_association` | 左气泡，「联想」徽标，title 显示记忆 id，即时全量 | snippet 文本安全渲染 |
 
 - **打字机（`useTypewriter`）**：nyx 文本消息（`speak`/`ask`/`think`/`initiate_chat`，即 `isNyxText` 白名单）逐字显示，纯渲染层 hook（`hooks/useTypewriter.ts`），不改 store——消息仍完整 append，仅控制「显示到第几个字」；未打完时挂 `.cursor-blink` 光标。`useTypewriter(text, speed, ready)` 加第三参 `ready`：false 时不启动（`displayed=""`、`done=false`、无光标），转 true 才从 0 逐字。**reading 两 kind 不进 `isNyxText`/`NYX_TEXT_KINDS` 白名单**：即时全量渲染、不进打字机串行门。
 - **微信式全量 + 全串行逐字（视觉改造 §4）**：`MessageList` 全部消息按序渲染，每条非 `preloaded` 的 nyx 文本消息都逐字（`MessageBubble` 内部 `isNyxText && !preloaded` 判定走 `useTypewriter`），用户消息与读书 turn 即时全量；每条消息不打完也已在 DOM；后端 SSE 顺序 THINK 先于 SPEAK（11-expression），故「内心话气泡」天然排在「发言气泡」之上；随内容增长同步滚到底——`MessageList` 用 `MutationObserver` 观察滚动容器自身 DOM 变化（新消息 `childList` + 打字机逐字 `characterData` 都触发），但仅当用户已在底部才跟随（上滑看历史不被逐字拉回底，回到底部恢复跟随）；故打字过程中页面跟着她的话往下滚（滚动条隐藏）。

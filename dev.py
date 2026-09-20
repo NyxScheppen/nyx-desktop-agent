@@ -5,7 +5,6 @@ Ctrl+C 或任一子进程退出时，关闭本 launcher 的全部子进程后退
 """
 
 import os
-import secrets
 import shutil
 import signal
 import socket
@@ -355,9 +354,6 @@ def main() -> None:
         _stop_previous_backend()
         _ensure_backend_port_free()
         launch_env = os.environ.copy()
-        launch_env.pop("NYX_BROWSER_BOOTSTRAP_SECRET", None)
-        if desktop:
-            launch_env["NYX_BROWSER_BOOTSTRAP_SECRET"] = secrets.token_hex(32)
         procs: list[subprocess.Popen[bytes]] = []
         names = ["backend(8000)", "desktop" if desktop else "frontend(5173)"]
         failed = False

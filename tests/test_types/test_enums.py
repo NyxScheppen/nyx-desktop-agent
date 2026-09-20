@@ -31,7 +31,6 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
         "desire_satisfied", "desire_expired", "activity_start", "activity_end",
         "activity_interrupted", "reading_mutter", "reading_question",
         "reading_association",
-        "browsing_mutter", "browsing_question", "browsing_association",
     },
     Source: {"external", "internal"},
     TickType: {

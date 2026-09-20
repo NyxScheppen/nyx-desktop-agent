@@ -4,7 +4,6 @@ import contextlib
 from typing import cast
 
 from nyx.activity.facade import ActivityFacade
-from nyx.browsing.facade import BrowsingFacade
 from nyx.config import Config
 from nyx.db import connect
 from nyx.desire.facade import DesireFacade
@@ -55,11 +54,7 @@ class _FakeExpression:
         self.app: _App | None = None
         self.return_seen_at_reply: dict[str, float] | None = None
 
-    async def reply(
-        self, msg: str, correlation_id: str, reply_to: str | None = None,
-        *, browsing_context: dict[str, str] | None = None,
-    ) -> None:
-        del reply_to, browsing_context
+    async def reply(self, msg: str, correlation_id: str) -> None:
         if self.app is not None:
             self.return_seen_at_reply = self.app.pending_return
         self.replied.append((msg, correlation_id))
@@ -74,24 +69,6 @@ class _FakeMemory:
     ) -> None:
         del consumer_id
         self.remembered.append(event)
-
-
-class _InvalidBrowsingContext:
-    async def get_prompt_context(self, page_id: str) -> None:
-        del page_id
-        return None
-
-
-class _RecordingBus:
-    def __init__(self) -> None:
-        self.published: list[Event] = []
-
-    async def list_events(self, **kwargs: object) -> list[Event]:
-        del kwargs
-        return self.published
-
-    async def publish(self, event: Event) -> None:
-        self.published.append(event)
 
 
 def _content(event_type: EventType) -> dict[str, str]:
@@ -183,37 +160,6 @@ async def test_user_message_replay_skips_after_reply_event_exists() -> None:
 
     assert expression.replied == []
     await database.close()
-
-
-async def test_expired_browsing_context_returns_explicit_failure() -> None:
-    bus = _RecordingBus()
-    expression = _FakeExpression()
-    app = _App(
-        bus=cast(EventBus, bus),
-        inner_life=cast(InnerLifeFacade, _FakeInnerLife()),
-        desire=cast(DesireFacade, _FakeDesire()),
-        memory=cast(MemoryFacade, _FakeMemory()),
-        activity=cast(ActivityFacade, _FakeActivity()),
-        expression=cast(ExpressionFacade, expression),
-        reading=cast(ReadingFacade, object()),
-        evaluator=cast(Evaluator, object()),
-        eval_store=cast(EvalStore, object()),
-        config=Config(),
-        browsing=cast(BrowsingFacade, _InvalidBrowsingContext()),
-    )
-    event = _root_event(
-        EventType.USER_MESSAGE,
-        {"message": "这页说了什么？", "browsing_page_id": "stale-page"},
-    )
-
-    from nyx.runtime import on_user_message
-
-    await on_user_message(app, event)
-    await on_user_message(app, event)
-
-    assert expression.replied == []
-    assert [item.type for item in bus.published] == [EventType.SPEAK]
-    assert bus.published[0].correlation_id == event.correlation_id
 
 
 async def test_user_message_marks_away_user_returned_before_reply() -> None:

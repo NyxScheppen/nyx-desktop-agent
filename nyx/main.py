@@ -180,9 +180,6 @@ async def main() -> None:
         for task in done:
             task.result()
     finally:
-        browsing = getattr(app, "browsing", None)
-        if browsing is not None:
-            await browsing.quiesce()
         reading_quiesce = getattr(app.reading, "quiesce", None)
         if reading_quiesce is not None:
             await reading_quiesce()
@@ -196,8 +193,6 @@ async def main() -> None:
         reading_drain = getattr(app.reading, "drain", None)
         if reading_drain is not None:
             await reading_drain()
-        if browsing is not None:
-            await browsing.drain()
         close_bus = getattr(app.bus, "close", None)
         if close_bus is None:
             bus_task.cancel()

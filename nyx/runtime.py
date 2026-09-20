@@ -42,28 +42,6 @@ async def on_user_message(app: Any, event: Event) -> None:
     if current is not None and current.status is ActivityStatus.RUNNING:
         await app.activity.interrupt(current.id, EventType.USER_MESSAGE)
     reply_to = event.content.get("reply_to")
-    page_id = event.content.get("browsing_page_id")
-    if isinstance(page_id, str):
-        context = await app.browsing.get_prompt_context(page_id)
-        if context is None:
-            await app.bus.publish(
-                internal_event(
-                    EventType.SPEAK,
-                    {
-                        "content": "浏览页面已经失效，请在当前页面重新发送。",
-                        "response_kind": "fallback",
-                        "attempt_id": None,
-                    },
-                    event.correlation_id,
-                )
-            )
-            return
-        await app.expression.reply(
-            event.content["message"], event.correlation_id,
-            reply_to if isinstance(reply_to, str) else None,
-            browsing_context=context,
-        )
-        return
     if isinstance(reply_to, str):
         await app.expression.reply(
             event.content["message"], event.correlation_id, reply_to

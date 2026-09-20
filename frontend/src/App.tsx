@@ -2,7 +2,6 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import ChatInput from "./components/chat/ChatInput";
 import BrowserView from "./components/browsing/BrowserView";
-import GameCompanionView from "./components/game/GameCompanionView";
 import MessageList from "./components/chat/MessageList";
 import Avatar from "./components/inner/Avatar";
 import InnerStatePanel from "./components/inner/InnerStatePanel";
@@ -23,7 +22,6 @@ import { useBrowserStore } from "./stores/browserStore";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
 import { useReaderStore } from "./stores/readerStore";
 import { useSettingsStore } from "./stores/settingsStore";
-import { useGameCompanionStore } from "./stores/gameCompanionStore";
 import type { ConnectionState } from "./types/api";
 
 const CONNECTION_LABEL: Record<ConnectionState, string> = {
@@ -93,7 +91,6 @@ export default function App() {
       refreshState();
       void refreshActivity();
       void loadHistory();
-      void useGameCompanionStore.getState().loadCurrent();
     }
   }, [status, refreshState, refreshActivity, loadHistory]);
 
@@ -144,7 +141,6 @@ export default function App() {
               {view === "activity" && <ActivityPanel />}
               {view === "memory" && <MemoryPanel />}
               {view === "reading" && (bookId === null ? <BookshelfView /> : <ReaderView />)}
-              {view === "game" && <GameCompanionView />}
               <BrowserView active={view === "browsing" && !settingsOpen} />
             </div>
           </section>

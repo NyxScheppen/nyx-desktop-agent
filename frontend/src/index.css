@@ -565,34 +565,6 @@ body {
   padding: 0.75rem;
 }
 
-.game-companion {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.game-companion__header,
-.game-companion__meta,
-.game-companion__actions,
-.game-companion__choices {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.game-companion__summary,
-.game-companion__dialogue p {
-  margin: 0;
-  line-height: 1.6;
-}
-
-.game-companion__dialogue {
-  padding: 0.65rem;
-  border-left: 2px solid var(--gold);
-  background: var(--parchment);
-}
-
 /* ===== 面板列表视图（欲望/活动/记忆/Eval/溯源） ===== */
 .panel-list {
   list-style: none;

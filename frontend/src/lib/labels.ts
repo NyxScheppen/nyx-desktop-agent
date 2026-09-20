@@ -52,7 +52,6 @@ export const MEMORY_TYPE_LABELS: Record<MemoryType, string> = {
 };
 
 export const ACTIVITY_TYPE_LABELS: Record<ActivityType, string> = {
-  game_companion: "游戏陪玩",
   reading: "阅读",
   free_exploration: "自由探索",
   creation: "创作",

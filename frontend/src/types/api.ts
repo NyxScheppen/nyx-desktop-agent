@@ -74,75 +74,20 @@ type SseBase = {
   timestamp: number; // 后端 Event.timestamp，epoch 秒
 };
 
-export type GameProfile = "disco_elysium" | "reigns" | "generic_text";
-export type GamePhase =
-  | "unknown"
-  | "exploration"
-  | "dialogue"
-  | "choice"
-  | "turn"
-  | "transition";
-export type GameSessionStatus = "observing" | "paused" | "ended";
-
-export type GameTextBlock = {
-  id: string;
-  text: string;
-  bbox: [number, number, number, number];
-  line_index: number;
-  confidence: number;
-  char_confidences: number[];
-  source: "ocr" | "vision" | "user";
-  evidence_ids: string[];
-};
-
-export type GameChoice = {
-  id: string;
-  text: string;
-  order: number;
-  bbox: [number, number, number, number] | null;
-  confidence: number;
-  evidence_ids: string[];
-};
-
-export type GameObservationSnapshot = {
-  session_id: string;
-  game_id: string;
-  profile: GameProfile;
-  profile_version: number;
-  threshold_version: number;
-  revision: number;
-  phase: GamePhase;
-  observation_hash: string;
-  captured_at: number;
-  speaker: string | null;
-  speaker_evidence_ids: string[];
-  dialogue: GameTextBlock[];
-  text_blocks: GameTextBlock[];
-  choices: GameChoice[];
-  visible_entities: string[];
-  entity_evidence_ids: string[];
-  scene_summary: string | null;
-  scene_evidence_ids: string[];
-  confidence: number;
-  evidence: unknown[];
-  uncertainties: string[];
-};
-
 export type GameSessionState = {
   session_id: string;
   activity_id: string;
   game_id: string;
-  profile: GameProfile;
+  profile: "disco_elysium" | "reigns" | "generic_text";
   profile_version: number;
   threshold_version: number;
-  status: GameSessionStatus;
+  status: "observing" | "paused" | "ended";
   revision: number;
   observation_hash: string | null;
-  last_observation: GameObservationSnapshot | null;
+  last_observation: unknown | null;
   corrections: unknown[];
   remote_vision_enabled: boolean;
   error: string | null;
-  pending_choice?: GameChoice | null;
 };
 
 /** 文本事件类型：internal_text_event 包装成 {"content": string}。 */
@@ -348,7 +293,6 @@ export type Memory = {
 
 // ---- 活动（09-activity / nyx/types.py Activity）----
 export type ActivityType =
-  | "game_companion"
   | "reading"
   | "free_exploration"
   | "creation"

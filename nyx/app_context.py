@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from nyx.activity.facade import ActivityFacade
-from nyx.activity.game_observer import OcrEngine, RapidOcrEngine
 from nyx.activity.material_store import MaterialStore
 from nyx.activity.screen import ScreenObserver, capture_screen
 from nyx.activity.store import ActivityStore
@@ -46,7 +45,7 @@ from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
-from nyx.types import CurrentState, Event, GameObservation, ReflectionOutcome
+from nyx.types import CurrentState, Event, ReflectionOutcome
 
 
 @dataclass
@@ -80,10 +79,6 @@ class _App:
     screen_observer: ScreenObserver | None = None
     database: Database | None = None
     browsing: BrowsingFacade | None = None
-    game_ocr: OcrEngine | None = None
-    game_pending_observations: dict[str, GameObservation] = field(
-        default_factory=lambda: dict[str, GameObservation]()
-    )
 
     async def publish_observation(self, event: Event, idle_seconds: float) -> bool:
         """Persist an observation before committing its in-memory snapshot."""
@@ -414,7 +409,6 @@ async def build_app_context(
         config,
         database=db,
         browsing=browsing,
-        game_ocr=RapidOcrEngine(),
     )
     return_context_owner = app
 

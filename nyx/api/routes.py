@@ -18,11 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.routing import Match
 
-from nyx.activity.game_observer import (
-    build_ocr_observation,
-    observation_to_snapshot,
-    snapshot_from_dict,
-)
+from nyx.activity.game_observer import build_ocr_observation
 from nyx.activity.observe import classify_presence
 from nyx.activity.screen import validate_bridge_frame
 from nyx.app_context import _App
@@ -53,8 +49,6 @@ from nyx.types import (
     EvalRecord,
     EvalStats,
     Event,
-    GameObservation,
-    GameTextBlock,
     LlmMessage,
     Material,
     Memory,
@@ -328,25 +322,16 @@ def build_app(
     @fast.post("/api/game-companion/sessions/{session_id}/pause")
     async def api_game_session_pause(session_id: str) -> dict[str, str]:
         await app.activity.pause_game_companion(session_id)
-        pending = getattr(app, "game_pending_observations", None)
-        if isinstance(pending, dict):
-            cast(dict[str, GameObservation], pending).pop(session_id, None)
         return {"status": "paused"}
 
     @fast.post("/api/game-companion/sessions/{session_id}/resume")
     async def api_game_session_resume(session_id: str) -> dict[str, str]:
         await app.activity.resume_game_companion(session_id)
-        pending = getattr(app, "game_pending_observations", None)
-        if isinstance(pending, dict):
-            cast(dict[str, GameObservation], pending).pop(session_id, None)
         return {"status": "observing"}
 
     @fast.post("/api/game-companion/sessions/{session_id}/stop")
     async def api_game_session_stop(session_id: str) -> dict[str, str]:
         await app.activity.stop_game_companion(session_id)
-        pending = getattr(app, "game_pending_observations", None)
-        if isinstance(pending, dict):
-            cast(dict[str, GameObservation], pending).pop(session_id, None)
         return {"status": "ended"}
 
     @fast.post("/api/game-companion/sessions/{session_id}/choice")
@@ -485,70 +470,31 @@ def build_app(
             code = str(error)
             status = 413 if code == "capture_too_large" else 422
             raise HTTPException(status_code=status, detail=code) from error
-        ocr = getattr(app, "game_ocr", None)
-        blocks: list[GameTextBlock] = []
-        ocr_error: str | None = "ocr_unavailable"
-        if ocr is not None:
-            blocks, ocr_error = await ocr.recognize(
-                frame.image_bytes, frame.width, frame.height
-            )
-        pending_raw = getattr(app, "game_pending_observations", None)
-        if isinstance(pending_raw, dict):
-            pending = cast(dict[str, GameObservation], pending_raw)
-        else:
-            pending = {}
-            setattr(app, "game_pending_observations", pending)
-        previous = pending.get(session_id)
-        raw_previous = game.get("last_observation")
-        if previous is None and isinstance(raw_previous, dict):
-            previous = snapshot_from_dict(cast(dict[str, Any], raw_previous))
-        observation, report = build_ocr_observation(
+        _, report = build_ocr_observation(
             session_id=session_id,
             game_id=str(game["game_id"]),
             profile=GameProfile(str(game["profile"])),
             profile_version=int(game["profile_version"]),
-            threshold_version=int(game.get("threshold_version", 1)),
-            revision=expected_revision + 1,
+            threshold_version=1,
+            revision=expected_revision,
             captured_at=time.time(),
             width=frame.width,
             height=frame.height,
-            blocks=blocks,
-            previous=previous,
-            ocr_error=ocr_error,
+            blocks=[],
+            ocr_error="ocr_unavailable",
         )
-        event_id: str | None = None
-        snapshot = observation_to_snapshot(observation)
-        if snapshot is None and report.status.value == "tentative":
-            pending[session_id] = observation
-        else:
-            pending.pop(session_id, None)
-        if snapshot is not None:
-            try:
-                event_id = await app.activity.record_game_observation(
-                    session_id, snapshot
-                )
-            except ValueError as error:
-                code = str(error)
-                status = 409 if code in {
-                    "stale_observation", "game_state_conflict"
-                } else 422
-                raise HTTPException(status_code=status, detail=code) from error
         return {
             "capture_id": frame.capture_id,
-            "accepted": event_id is not None,
+            "revision": frame.expected_revision,
+            "accepted": False,
             "status": report.status.value,
-            "revision": (
-                snapshot.revision if snapshot is not None else expected_revision
-            ),
-            "observation_hash": (
-                snapshot.observation_hash if snapshot is not None else None
-            ),
+            "observation_hash": None,
             "validation": {
                 "score": report.score,
                 "hard_failures": report.hard_failures,
                 "soft_warnings": report.soft_warnings,
             },
-            "error_code": ocr_error,
+            "error_code": "ocr_unavailable",
         }
 
     @fast.get("/api/events/log")

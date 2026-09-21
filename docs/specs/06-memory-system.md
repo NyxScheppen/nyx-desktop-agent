@@ -96,27 +96,39 @@ topics 联想约束：
 
 ## 事实层
 
-记忆层另外维护实体与时间有效事实，不改变 `Memory` 和 `memory_edge` 的语义。事实由
+记忆层另外维护通用的时序实体关系图，不改变 `Memory` 和 `memory_edge` 的语义。事实由
 `MemoryFact` 表示：`subject`、`predicate`、`object_value`、`valid_from`、
-`valid_until` 与可空 `source_memory_id`。事实关闭有效期而不物理删除，因此可以回答
-“六月正在求职、九月已经工作”的历史变化。
+`valid_until`、`polarity` 与可空 `source_memory_id`。实体不是“用户属性”专表，至少可以
+表示用户、Nyx、书籍、书中人物、地点、组织、概念和事件。事实关闭有效期而不物理删除，
+因此可以回答“六月正在求职、九月已经工作”的历史变化，也可以表达“某书包含某人物”、
+“Nyx 喜欢古典文学”等多值关系。
 
 - `memory_entity` 与 `memory_fact` 是独立表；事实不混入 `Memory[]` 或 `memory_edge`。
-- 新记忆成功落库后更新事实；精确重复记忆不重复抽取事实。
-- 同一 subject + predicate 的新事实只关闭 `valid_from` 更早且仍有效的旧事实；
-  未来事实不会被倒序写入错误关闭。
+- schema 25 为 `memory_fact` 增加 `polarity`，并把 `memory_entity` 的唯一性从全局名称迁移为
+  `(canonical_name, entity_type)`；迁移保留已有实体、事实和 source memory 外键。
+- 每条新语义记忆成功落库后 best-effort 调用统一 `LlmClient` 的
+  `output_type="fact_extraction"` 抽取实体和关系；精确/语义去重命中不重复抽取。
+  抽取失败、非法 JSON 或事实 SQL 失败只记录日志并降级，不阻断原始 `Memory`。
+- 抽取 prompt 必须携带 `memory_kind`、来源名称/范围和说话者归因规则；不明确主语、
+  书中引用、书中人物或示例内容不得强行归因给用户。已有确定性用户就业状态抽取是
+  LLM 失败时的 fallback。
+- 实体以规范化名称 + `entity_type` 唯一；aliases 用于 Nyx/Nyx 夏本/尼克斯等别名合并，
+  同名异类实体不合并。
+- 单值谓词（就业状态、当前职业、居住地、当前公司等）只关闭更早且仍有效的旧事实；
+  多值谓词（包含人物、讨论主题、作者、影响等）保留同一时间点的多个对象。相同
+  subject + predicate + valid_from 的单值候选按输入顺序折叠，避免同一时间并存矛盾状态。
+- `polarity` 区分喜欢/不喜欢、相信/不相信等否定关系；历史事实乱序写入时只按有效时间
+  重新计算区间，不错误关闭未来事实。
 - 事实抽取、事实召回失败只记录日志并降级为空结果，不回滚原始记忆或阻断回复。
 - `search_facts(query)` 只返回查询命中的实体所关联的全部当前有效事实；事实命中不调用
   `record_recall`，也不影响短期记忆升级。
-- 事实抽取只处理 `episode` 与 `user_profile` 记忆，并要求事实模式前有“用户/我的/本人”
-  主语锚点；知识、阅读、活动产出和 Nyx 自身叙述不直接写入用户事实。
-- 同一条记忆中同一 subject + predicate + `valid_from` 的多个候选按文本出现顺序折叠，
-  后出现的状态覆盖先出现的状态，避免同一时间点并存互斥事实。
-- 普通闲聊在表达层先经过事实查询提示词门控；实际查询在 SQL 中先过滤实体/关系/宾语，
-  再按实体展开有效事实，单次召回最多 64 条，不全表物化。
+- 普通闲聊在表达层先经过事实查询提示词门控；实际查询在 SQL 中先过滤实体、别名、
+  关系或宾语，再按命中实体展开有效事实，单次召回最多 64 条，不全表物化。
 - 查询包含明确的 `YYYY年M月`、`M月` 或中文月份时，以该月份中点作为有效性判断时间；
   没有历史时间时使用当前时间。
 - 快通道与慢通道都可注入 `[相关事实]`；慢通道另行注入 `[相关记忆]`，两者保持隔离。
+- 事实变化本身不单独发布 `REFLECTION`；反思准备阶段读取有界的近期有效事实并以
+  `[近期事实变化]` 独立注入现有反思 prompt，避免同一记忆同时触发两次反思。
 
 ## 验收标准
 
@@ -380,11 +392,21 @@ async def remember_user_profile(
     aspects: list[str],
     correlation_id: str,
 ) -> None: ...
-async def remember_knowledge(items: list[dict[str, str]], correlation_id: str) -> None: ...
-async def remember_reading(content: str, summary: str, correlation_id: str) -> None: ...
+async def remember_knowledge(
+    items: list[dict[str, str]],
+    correlation_id: str,
+    source_name: str | None = None,
+) -> None: ...
+async def remember_reading(
+    content: str,
+    summary: str,
+    correlation_id: str,
+    source_name: str | None = None,
+) -> None: ...
 async def record_no_answer(question: str, correlation_id: str) -> None: ...
 async def search(query: str) -> list[Memory]: ...
 async def search_facts(query: str) -> list[MemoryFact]: ...
+async def recent_facts(limit: int = 32) -> list[MemoryFact]: ...
 async def record_recall(memory_id: str) -> None: ...
 async def list_memories(
     kind: MemoryKind | None = None,

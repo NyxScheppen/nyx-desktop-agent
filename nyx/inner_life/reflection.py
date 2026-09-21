@@ -2,6 +2,7 @@ import difflib
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
 from uuid import uuid4
@@ -17,6 +18,7 @@ from nyx.types import (
     Aesthetic,
     LongTermDesire,
     Memory,
+    MemoryFact,
     Personality,
     ReflectionOutcome,
     SelfNarrative,
@@ -24,11 +26,11 @@ from nyx.types import (
 )
 
 _RECENT_MEMORY_LIMIT = 20
-_MAX_DRIFT = 0.5               # 每轮性格/三观单维最大漂移
+_MAX_DRIFT = 0.5  # 每轮性格/三观单维最大漂移
 _LONG_TERM_INIT_STRENGTH = 0.5  # 新长期欲望初始迫切度
-_SCALE_LO = 1.0                # 性格/三观范围下限
-_SCALE_HI = 10.0               # 性格/三观范围上限
-_STORY_CONTEXT_LIMIT = 5        # 反思 prompt 喂最近 N 条故事/认知（封顶防 token 膨胀）
+_SCALE_LO = 1.0  # 性格/三观范围下限
+_SCALE_HI = 10.0  # 性格/三观范围上限
+_STORY_CONTEXT_LIMIT = 5  # 反思 prompt 喂最近 N 条故事/认知（封顶防 token 膨胀）
 _DUP_SIMILARITY_THRESHOLD = 0.9  # 片段去重相似度阈值（只拦逐字近似）
 
 # 漂移 key 白名单（对齐 types.py 的 Personality/Values TypedDict 键名）
@@ -39,7 +41,7 @@ _VALUES_KEYS = frozenset(
     {"attitude_to_human", "ai_identity_acceptance", "altruism", "optimism"}
 )
 _AESTHETIC_KEYS = frozenset({"ornate", "lyrical", "classical", "somber"})
-_AESTHETIC_MIN_READING = 3     # 审美偏移满额所需的最少新读章数
+_AESTHETIC_MIN_READING = 3  # 审美偏移满额所需的最少新读章数
 _CREATION_REFLECTION_DELTA = 0.2  # 反思成功 → 创造欲 +0.2
 _DESIRE_TYPE_VALUES = frozenset(d.value for d in DesireType)
 _logger = logging.getLogger(__name__)
@@ -71,6 +73,7 @@ def _build_reflection_prompt(
     narrative: SelfNarrative,
     long_term: list[LongTermDesire],
     aesthetic: Aesthetic,
+    facts: list[MemoryFact] | None = None,
 ) -> str:
     mem_lines = "\n".join(f"- {m.summary}" for m in memories) or "（无）"
     lt_lines = "\n".join(
@@ -82,6 +85,13 @@ def _build_reflection_prompt(
     becoming_lines = "\n".join(
         f"- {b}" for b in narrative.becoming[-_STORY_CONTEXT_LIMIT:]
     ) or "（无）"
+    fact_lines = (
+        "\n".join(
+            f"- {fact.subject}｜{fact.predicate}｜{fact.object_value}"
+            for fact in (facts or [])
+        )
+        or "（无）"
+    )
     return (
         f"近期记忆：\n{mem_lines}\n\n"
         f"当前性格（1-10）：开放性 {personality['openness']} / 尽责性 "
@@ -100,6 +110,7 @@ def _build_reflection_prompt(
         f"请写一条新的、与之不同的故事片段）：\n{story_lines}\n"
         f"已有的认知变化：\n{becoming_lines}\n"
         f"现有长期欲望：\n{lt_lines}"
+        f"\n近期事实变化（只作为独立资料，不直接触发第二次反思）：\n{fact_lines}"
     )
 
 
@@ -324,6 +335,16 @@ class Reflection:
         now = time.time()
         # 1. 收集输入。此阶段不持有本地事务，避免 LLM 占住 SQLite 锁。
         recent = (await self._memory_facade.list_memories())[:_RECENT_MEMORY_LIMIT]
+        recent_facts: list[MemoryFact] = []
+        recent_facts_method = getattr(self._memory_facade, "recent_facts", None)
+        if callable(recent_facts_method):
+            try:
+                typed_recent_facts = cast(
+                    Callable[[], Awaitable[list[MemoryFact]]], recent_facts_method
+                )
+                recent_facts = await typed_recent_facts()
+            except Exception:
+                _logger.exception("反思读取近期事实失败")
         personality = await self._store.get_personality()
         values = await self._store.get_values()
         aesthetic = await self._store.get_aesthetic()
@@ -344,8 +365,13 @@ class Reflection:
                 {
                     "role": "user",
                     "content": _build_reflection_prompt(
-                        recent, personality, values, narrative, desire_state.long_term,
-                        aesthetic
+                        recent,
+                        personality,
+                        values,
+                        narrative,
+                        desire_state.long_term,
+                        aesthetic,
+                        recent_facts,
                     ),
                 },
             ],

@@ -560,6 +560,43 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON memory_fact(predicate, valid_from)",
         ],
     ),
+    (
+        25,
+        [
+            "CREATE TABLE memory_entity_new ("
+            "id TEXT PRIMARY KEY, canonical_name TEXT NOT NULL, "
+            "entity_type TEXT NOT NULL DEFAULT 'concept', "
+            "aliases TEXT NOT NULL DEFAULT '[]', "
+            "created_at REAL NOT NULL, updated_at REAL NOT NULL, "
+            "UNIQUE(canonical_name, entity_type))",
+            "INSERT INTO memory_entity_new "
+            "SELECT id, canonical_name, entity_type, aliases, created_at, updated_at "
+            "FROM memory_entity",
+            "CREATE TABLE memory_fact_new ("
+            "id TEXT PRIMARY KEY, "
+            "subject_entity_id TEXT NOT NULL REFERENCES memory_entity_new(id), "
+            "predicate TEXT NOT NULL, "
+            "object_entity_id TEXT REFERENCES memory_entity_new(id), "
+            "object_value TEXT NOT NULL, "
+            "source_memory_id TEXT REFERENCES memory(id) ON DELETE SET NULL, "
+            "valid_from REAL NOT NULL, valid_until REAL, created_at REAL NOT NULL, "
+            "polarity INTEGER NOT NULL DEFAULT 1, "
+            "CHECK (valid_until IS NULL OR valid_until > valid_from))",
+            "INSERT INTO memory_fact_new "
+            "SELECT id, subject_entity_id, predicate, object_entity_id, object_value, "
+            "source_memory_id, valid_from, valid_until, created_at, 1 FROM memory_fact",
+            "DROP TABLE memory_fact",
+            "DROP TABLE memory_entity",
+            "ALTER TABLE memory_entity_new RENAME TO memory_entity",
+            "ALTER TABLE memory_fact_new RENAME TO memory_fact",
+            "CREATE INDEX idx_memory_fact_subject ON memory_fact(subject_entity_id)",
+            "CREATE INDEX idx_memory_fact_object ON memory_fact(object_entity_id)",
+            "CREATE INDEX idx_memory_fact_validity "
+            "ON memory_fact(valid_from, valid_until)",
+            "CREATE INDEX idx_memory_fact_predicate "
+            "ON memory_fact(predicate, valid_from)",
+        ],
+    ),
 ]
 
 
@@ -572,14 +609,14 @@ async def connect(path: str | None = None) -> Database:
     conn = await aiosqlite.connect(resolved)
     try:
         conn.row_factory = aiosqlite.Row
-        await conn.execute("PRAGMA foreign_keys = ON")   # FK 完整性（SQLite 默认关）
+        await conn.execute("PRAGMA foreign_keys = ON")  # FK 完整性（SQLite 默认关）
         await conn.execute("PRAGMA journal_mode = WAL")  # 崩溃安全 + 读写不互斥
         await conn.execute(
             f"PRAGMA busy_timeout = {int(DB_OPERATION_TIMEOUT * 1000)}"
         )
         await migrate(conn)
     except Exception:
-        await conn.close()   # 迁移失败：关连接避免泄漏，原异常上抛
+        await conn.close()  # 迁移失败：关连接避免泄漏，原异常上抛
         raise
     return Database(conn=conn, lock=asyncio.Lock())
 

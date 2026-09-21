@@ -15,8 +15,10 @@ from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.ann import AnnIndex
 from nyx.memory.facts import (
+    FactCandidate,
     MemoryFactStore,
     extract_fact_candidates,
+    parse_fact_extraction,
 )
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, extract_keywords
 from nyx.memory.store import MemoryStore
@@ -30,6 +32,16 @@ _SCENE_SYSTEM = (
     "kind（episode/user_profile/knowledge/reading/activity/interaction）、"
     "topics（最多 5 个主题字符串）、summary（一句话总结），"
     "content、kind、summary 非空；topics 可以为空数组。"
+)
+
+_FACT_EXTRACTION_SYSTEM = (
+    "你是一个通用的时序知识图谱抽取器。把来源文本中的明确陈述抽成实体和事实。"
+    "实体类型可用 person、agent、book、character、place、organization、concept、event。"
+    "不要把书中人物、引文、示例或尼克斯的自述误归因给用户；主体不明确就跳过。"
+    "事实必须是来源明确断言，不要凭常识补全。只输出 JSON："
+    "entities 数组元素为 {name,type,aliases}；facts 数组元素为 "
+    "{subject,subject_type,predicate,object,object_type,polarity,mode,asserted}。"
+    "mode 为 functional 或 multi；polarity 为 positive 或 negative。"
 )
 
 _CONTRADICTION_SYSTEM = (
@@ -196,6 +208,40 @@ def _build_scene_prompt(ctx: dict[str, str]) -> str:
     )
 
 
+def _build_fact_extraction_prompt(
+    memory: Memory, source_name: str | None, source_scope: str
+) -> str:
+    source = source_name or "（无明确外部来源）"
+    return (
+        f"来源范围：{source_scope}\n来源名称：{source}\n"
+        "主体归因规则：对话中用户明确说的‘我’归为用户；尼克斯明确说的‘我’归为尼克斯；"
+        "书名、书中人物、地点、组织和概念必须分别作为实体。引用或书中叙述不是现实主体事实。\n"
+        f"记忆类型：{memory.kind.value}\n摘要：{memory.summary}\n正文：{memory.content}"
+    )
+
+
+def _merge_fact_candidates(
+    fallback: list[FactCandidate], extracted: list[FactCandidate]
+) -> list[FactCandidate]:
+    result: list[FactCandidate] = []
+    seen: set[tuple[str, str, str, float, int]] = set()
+    for candidate in [*fallback, *extracted]:
+        key = (
+            candidate.subject,
+            candidate.predicate,
+            candidate.object_value,
+            candidate.valid_from,
+            candidate.polarity,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(candidate)
+        if len(result) >= 32:
+            break
+    return result
+
+
 def _has_negation(text: str) -> bool:
     """新记忆正文是否含否定/转折锚点
     （软信号，非判定：命中则矛盾 prompt 提示重点核对）。纯函数。"""
@@ -331,9 +377,9 @@ def _memory_relation_prompt(memory: Memory, candidates: list[Memory]) -> str:
         "判断新记忆与候选旧记忆是否存在明确关系。",
         "只输出 JSON：",
         (
-            "{\"relations\":[{\"memory_id\":\"...\",\"kind\":\"same_topic|"
+            '{"relations":[{"memory_id":"...","kind":"same_topic|'
             "elaborates|contrasts|causes|updates_preference|user_profile_link|"
-            "none\",\"weight\":0.7}]}"
+            'none","weight":0.7}]}'
         ),
         "",
         f"新记忆：id={memory.id}",
@@ -472,7 +518,7 @@ class MemoryFacade:
         self._llm = llm
         self._evaluator = evaluator
         self._config = config
-        self._embed = embed          # 与 retrieval 共享同一实例（组合根注入）
+        self._embed = embed  # 与 retrieval 共享同一实例（组合根注入）
         self._fact_store = fact_store
         self._logger = logging.getLogger(__name__)
         self._last_observation: tuple[str, str] | None = None  # 「变化才沉淀」快照
@@ -500,7 +546,7 @@ class MemoryFacade:
     async def remember_activity(
         self, event: Event, consumer_id: str | None = None
     ) -> None:
-        """活动记忆：把 activity_end.result 落成一条短期记忆（无 LLM）。
+        """活动记忆：把 activity_end.result 落成一条短期记忆（无场景 LLM）。
 
         只写读书/创作/探索三类有产出的活动；rest/idle_reflection（result 空或
         类型不匹配）跳过。observe_user 走「画像沉淀」分支（见 _sediment_observation）。
@@ -513,6 +559,21 @@ class MemoryFacade:
                 if await self._bus.has_effect(event.id, consumer_id):
                     return
                 prepared = await self._prepare_activity_memory(event)
+                prepared_facts: list[FactCandidate] | None = None
+                if prepared is not None:
+                    existing = await self._store.find_by_content(
+                        prepared.content, prepared.kind
+                    )
+                    if existing is None:
+                        prepared_facts = await self._prepare_fact_candidates(
+                            prepared,
+                            event.correlation_id,
+                            source_scope=(
+                                "user_observation"
+                                if prepared.kind is MemoryKind.USER_PROFILE
+                                else "activity"
+                            ),
+                        )
                 async with self._store.db.transaction():
                     applied = await self._bus.try_mark_effect_in_transaction(
                         event.id, consumer_id
@@ -525,6 +586,7 @@ class MemoryFacade:
                         in_transaction=True,
                         defer_best_effort=True,
                         prepared_memory=prepared,
+                        prepared_facts=prepared_facts,
                     )
             except BaseException:
                 self._last_observation = observation_snapshot
@@ -600,9 +662,13 @@ class MemoryFacade:
             self._logger.exception("记忆 embedding 失败 memory_id=%s", memory.id)
 
     async def _remember_activity(
-        self, event: Event, *, in_transaction: bool,
+        self,
+        event: Event,
+        *,
+        in_transaction: bool,
         defer_best_effort: bool = False,
         prepared_memory: Memory | None = None,
+        prepared_facts: list[FactCandidate] | None = None,
     ) -> _PersistResult | None:
         if prepared_memory is not None:
             return await self._persist_memory(
@@ -611,6 +677,8 @@ class MemoryFacade:
                 in_transaction=in_transaction,
                 defer_best_effort=defer_best_effort,
                 embedding_prepared=True,
+                fact_candidates=prepared_facts,
+                source_scope="activity",
             )
         if event.content.get("type") == "observe_user":
             return await self._sediment_observation(
@@ -632,12 +700,18 @@ class MemoryFacade:
             [_activity_type],
         )
         return await self._persist_memory(
-            memory, event.correlation_id, in_transaction=in_transaction,
+            memory,
+            event.correlation_id,
+            in_transaction=in_transaction,
             defer_best_effort=defer_best_effort,
+            source_scope="activity",
         )
 
     async def _sediment_observation(
-        self, event: Event, *, in_transaction: bool = False,
+        self,
+        event: Event,
+        *,
+        in_transaction: bool = False,
         defer_best_effort: bool = False,
     ) -> _PersistResult | None:
         """观察活动 → 用户画像沉淀：「presence/window_title 相对上次变化」才写。
@@ -670,6 +744,7 @@ class MemoryFacade:
             event.correlation_id,
             in_transaction=in_transaction,
             defer_best_effort=defer_best_effort,
+            source_scope="user_observation",
         )
 
     async def remember_user_profile(
@@ -681,7 +756,7 @@ class MemoryFacade:
     ) -> None:
         """用户画像记忆：把观察到的用户状态落成一条长期 user_profile 记忆。
 
-        无开头 LLM（content/summary/aspects 由调用方确定性拼好，贴「禁编造」）；
+        无场景 LLM（content/summary/aspects 由调用方确定性拼好，贴「禁编造」）；
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM
         使其豁免短期淘汰（_decay_and_evict 只淘汰短期），画像不随时间冲掉。
         """
@@ -698,9 +773,13 @@ class MemoryFacade:
         *,
         in_transaction: bool,
         defer_best_effort: bool = False,
+        source_scope: str = "user_observation",
     ) -> _PersistResult:
         memory = _new_memory(
-            content, MemoryKind.USER_PROFILE, summary, MemoryType.LONG_TERM,
+            content,
+            MemoryKind.USER_PROFILE,
+            summary,
+            MemoryType.LONG_TERM,
             aspect=aspects,
         )
         return await self._persist_memory(
@@ -708,12 +787,16 @@ class MemoryFacade:
             correlation_id,
             in_transaction=in_transaction,
             defer_best_effort=defer_best_effort,
+            source_scope=source_scope,
         )
 
     async def remember_knowledge(
-        self, items: list[dict[str, str]], correlation_id: str
+        self,
+        items: list[dict[str, str]],
+        correlation_id: str,
+        source_name: str | None = None,
     ) -> None:
-        """读书提取的客观知识点入长期记忆（kind=knowledge，无 LLM，确定性拼好）。
+        """读书提取的客观知识点入长期记忆（kind=knowledge，正文确定性拼好）。
 
         items 每项 {topic, content}；content 空则跳过。复用 _persist_memory
         入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM 使其
@@ -725,25 +808,42 @@ class MemoryFacade:
             if not content:
                 continue
             memory = _new_memory(
-                content, MemoryKind.KNOWLEDGE, topic or content[:_SUMMARY_MAX_CHARS],
-                MemoryType.LONG_TERM, [topic] if topic else [],
+                content,
+                MemoryKind.KNOWLEDGE,
+                topic or content[:_SUMMARY_MAX_CHARS],
+                MemoryType.LONG_TERM,
+                [topic] if topic else [],
             )
-            await self._persist_memory(memory, correlation_id)
+            await self._persist_memory(
+                memory,
+                correlation_id,
+                source_name=(item.get("source_name") or source_name or topic or None),
+                source_scope="knowledge",
+            )
 
     async def remember_reading(
-        self, content: str, summary: str, correlation_id: str
+        self,
+        content: str,
+        summary: str,
+        correlation_id: str,
+        source_name: str | None = None,
     ) -> None:
         """读书记忆：章末/整本整合产物落成一条长期 reading 记忆。
 
-        无开头 LLM（content/summary 由阅读整合流程拼好，这里只入库）；
+        无场景 LLM（content/summary 由阅读整合流程拼好，这里只入库）；
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。
         type=LONG_TERM 使其豁免短期淘汰，读书记忆不随时间冲掉。
         """
         memory = _new_memory(content, MemoryKind.READING, summary, MemoryType.LONG_TERM)
-        await self._persist_memory(memory, correlation_id)
+        await self._persist_memory(
+            memory,
+            correlation_id,
+            source_name=source_name or summary,
+            source_scope="reading",
+        )
 
     async def record_no_answer(self, question: str, correlation_id: str) -> None:
-        """用户未回答尼克斯的提问：落一条确定性的 SHORT_TERM 记忆（无 LLM）。
+        """用户未回答尼克斯的提问：落一条确定性的 SHORT_TERM 记忆（无场景 LLM）。
 
         问句本身已由慢通道场景化记忆记过，这里只补「没答」这半句；
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。
@@ -764,6 +864,9 @@ class MemoryFacade:
         in_transaction: bool = False,
         defer_best_effort: bool = False,
         embedding_prepared: bool = False,
+        fact_candidates: list[FactCandidate] | None = None,
+        source_name: str | None = None,
+        source_scope: str = "conversation",
     ) -> _PersistResult:
         """已构建 Memory 的共用入库尾段，带两层去重：
 
@@ -793,9 +896,7 @@ class MemoryFacade:
             index = AnnIndex.build(memories)
             by_id = {candidate.id: candidate for candidate in memories}
             same_kind_ids = {
-                candidate.id
-                for candidate in memories
-                if candidate.kind is memory.kind
+                candidate.id for candidate in memories if candidate.kind is memory.kind
             }
             dedup_candidates = self._persist_semantic_candidates(
                 memory.embedding,
@@ -829,16 +930,28 @@ class MemoryFacade:
             candidates = self._persist_semantic_candidates(
                 memory.embedding, index, by_id
             )
+        if (
+            fact_candidates is None
+            and self._fact_store is not None
+            and not in_transaction
+        ):
+            fact_candidates = await self._prepare_fact_candidates(
+                memory,
+                correlation_id,
+                source_name=source_name,
+                source_scope=source_scope,
+            )
         await self._store.add(memory)
         if self._fact_store is not None:
             try:
                 await self._fact_store.apply(
-                    extract_fact_candidates(memory), memory.id
+                    fact_candidates
+                    if fact_candidates is not None
+                    else extract_fact_candidates(memory),
+                    memory.id,
                 )
             except Exception:
-                self._logger.exception(
-                    "事实层更新失败 memory_id=%s", memory.id
-                )
+                self._logger.exception("事实层更新失败 memory_id=%s", memory.id)
         if not defer_best_effort:
             await self._run_best_effort_tail(memory, candidates, correlation_id)
         event = internal_event(
@@ -849,6 +962,55 @@ class MemoryFacade:
         else:
             await self._bus.publish(event)
         return _PersistResult(memory, candidates, True)
+
+    async def _prepare_fact_candidates(
+        self,
+        memory: Memory | None,
+        correlation_id: str,
+        *,
+        source_name: str | None = None,
+        source_scope: str = "conversation",
+    ) -> list[FactCandidate]:
+        """Best-effort extraction outside durable memory transactions."""
+        if memory is None or self._fact_store is None:
+            return []
+        fallback = extract_fact_candidates(memory)
+        try:
+            output = await self._llm.complete(
+                [
+                    {"role": "system", "content": _FACT_EXTRACTION_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": _build_fact_extraction_prompt(
+                            memory, source_name, source_scope
+                        ),
+                    },
+                ],
+                module="memory",
+                output_type="fact_extraction",
+                correlation_id=correlation_id,
+                json_mode=True,
+            )
+            await self._evaluator.evaluate(output)
+            parsed = parse_fact_extraction(
+                output.content,
+                valid_from=memory.created_at,
+                source_scope=source_scope,
+            )
+            extracted = [
+                candidate
+                for candidate in parsed.facts
+                if not (
+                    source_scope in {"knowledge", "reading", "activity"}
+                    and candidate.subject in {"用户", "我", "本人"}
+                )
+            ]
+            return _merge_fact_candidates(fallback, extracted)
+        except Exception:
+            self._logger.exception(
+                "事实抽取失败 memory_id=%s correlation_id=%s", memory.id, correlation_id
+            )
+            return fallback
 
     async def _run_best_effort_tail(
         self,
@@ -872,6 +1034,15 @@ class MemoryFacade:
             return await self._fact_store.search(query)
         except Exception:
             self._logger.exception("事实层召回失败")
+            return []
+
+    async def recent_facts(self, limit: int = 32) -> list[MemoryFact]:
+        if self._fact_store is None:
+            return []
+        try:
+            return await self._fact_store.recent(limit)
+        except Exception:
+            self._logger.exception("近期事实读取失败")
             return []
 
     async def record_recall(self, memory_id: str) -> None:
@@ -960,7 +1131,8 @@ class MemoryFacade:
             # 只跳过本次 reflection（漏报优于误报，同 _parse_contradiction 默认）。
             self._logger.exception(
                 "矛盾检测失败 memory_id=%s correlation_id=%s",
-                memory.id, correlation_id,
+                memory.id,
+                correlation_id,
             )
             return
         if conflicts_with is not None and conflicts_with not in allowed_ids:
@@ -976,8 +1148,7 @@ class MemoryFacade:
                 EventType.REFLECTION,
                 {
                     "summary": (
-                        f"场景记忆 {memory.id} 与旧记忆 {conflicts_with} 矛盾，"
-                        "触发反思"
+                        f"场景记忆 {memory.id} 与旧记忆 {conflicts_with} 矛盾，触发反思"
                     )
                 },
                 correlation_id,
@@ -1069,8 +1240,9 @@ class MemoryFacade:
                 index = AnnIndex.build(memories)
                 indexed_by_id = {old.id: old for old in memories}
                 hits = [
-                    PersistSemanticHit(indexed_by_id[candidate.memory_id],
-                                       candidate.cosine)
+                    PersistSemanticHit(
+                        indexed_by_id[candidate.memory_id], candidate.cosine
+                    )
                     for candidate in index.query(
                         embedding, candidate_k=_EDGE_SEMANTIC_CANDIDATE_K
                     )
@@ -1102,9 +1274,9 @@ class MemoryFacade:
             if hit.memory.id in by_id
         ]
         if not pool:
-            pool = sorted(
-                by_id.values(), key=lambda old: (-old.created_at, old.id)
-            )[:_EDGE_ENTITY_CANDIDATE_K]
+            pool = sorted(by_id.values(), key=lambda old: (-old.created_at, old.id))[
+                :_EDGE_ENTITY_CANDIDATE_K
+            ]
 
         scores: dict[str, float] = {}
         for old in pool:
@@ -1204,7 +1376,8 @@ class MemoryFacade:
         except Exception:
             self._logger.exception(
                 "记忆关系抽取失败 memory_id=%s correlation_id=%s",
-                memory.id, correlation_id,
+                memory.id,
+                correlation_id,
             )
             return []
 

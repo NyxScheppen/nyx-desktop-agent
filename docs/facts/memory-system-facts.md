@@ -34,13 +34,17 @@
 
 ## 事实层
 
-- `memory_entity` / `memory_fact` 独立于 `memory` / `memory_edge`，事实保存 subject、predicate、object 与有效时间区间。
-- 新记忆落库后由 `MemoryFactStore` 更新事实；重复记忆不重复写事实。
+- `memory_entity` / `memory_fact` 独立于 `memory` / `memory_edge`，是通用实体关系图，不只保存用户事实；实体类型覆盖 person/agent/book/character/place/organization/concept 等。
+- schema 25 已迁移实体唯一键为 `(canonical_name, entity_type)`，并为事实增加 `polarity`；已有事实和来源外键保留。
+- 新语义记忆成功落库后由 `LlmClient(output_type="fact_extraction")` best-effort 更新事实；精确或语义去重命中不重复抽取。LLM/JSON/事实 SQL 失败只记日志，不阻塞原始记忆。
+- `memory_entity` 以规范化名称 + `entity_type` 唯一，aliases 合并 Nyx/Nyx 夏本/尼克斯等别名，同名异类不合并。
 - 查询只围绕命中的实体返回全部当前有效事实；事实召回失败降级为空集。
 - 查询包含明确月份时按该月份的有效事实召回，否则按当前时间过滤。
-- 事实只从 episode/user_profile 且有用户主语锚点的记忆中抽取；同记忆同时间同关系按最后出现状态折叠。
-- 表达层先做事实查询提示词门控；store 先 SQL 筛选再按实体展开，单次最多 64 条。
+- 单值谓词（就业状态、当前职业、居住地、当前公司等）按有效时间关闭旧事实；多值谓词（书中人物、主题、作者、影响等）同一时间保留多个对象；`polarity` 区分正/负关系。
+- 抽取 prompt 带 memory kind、来源范围和说话者规则，避免书中人物、引用和 Nyx 自述误归因给用户；旧就业/偏好规则作为 fallback。
+- 表达层先做事实查询提示词门控；store 先 SQL 筛选实体/别名/谓词/宾语，再按实体展开，单次最多 64 条。
 - 事实不会进入 `Memory[]`，不会调用 `record_recall`；快慢通道都可把事实放入独立的 `[相关事实]` prompt 段。
+- 事实不单独发布反思事件；反思准备阶段读取有界近期有效事实，注入独立的 `[近期事实变化]` 段，避免普通记忆矛盾与事实变化各反思一次。
 
 ## 活动记忆
 

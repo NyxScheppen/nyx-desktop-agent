@@ -15,7 +15,7 @@
 - 组合根：`nyx/app_context.py` 构造并注入 activity、desire、memory、bus、LLM、eval
 - 启动 seed：`nyx/bootstrap.py:seed_inner_life`
 
-依赖方向是 `InnerLifeFacade -> Reflection -> InnerLifeStore`。`Reflection` 不反向 import Facade，避免循环依赖。Facade 还读取 `ActivityFacade` 的当前活动、`DesireFacade` 的待处理欲望，反思读取 `MemoryFacade` 的近期记忆和阅读计数。
+依赖方向是 `InnerLifeFacade -> Reflection -> InnerLifeStore`。`Reflection` 不反向 import Facade，避免循环依赖。Facade 还读取 `ActivityFacade` 的当前活动、`DesireFacade` 的待处理欲望，反思读取 `MemoryFacade` 的近期记忆、近期有效事实和阅读计数。
 
 ## 持久化表
 
@@ -83,10 +83,10 @@
 
 ## 反思
 
-`Reflection` 是慢变量的唯一写入口，当前一次反思只调用一次 LLM：
+`Reflection` 是慢变量的唯一写入口，当前一次反思只调用一次 LLM；事实变化不额外触发第二次反思：
 
 1. 事务外读取最近最多 20 条记忆、五类慢变量、当前长期欲望；
-2. 构造反思 prompt；
+2. 构造反思 prompt（近期事实以独立资料段注入）；
 3. 调 `LlmClient.complete(module='inner_life', output_type='reflection', json_mode=True)`；
 4. 紧跟 `Evaluator.evaluate`；
 5. 解析并校验 story、becoming、self_view、三类 delta、长期欲望候选；

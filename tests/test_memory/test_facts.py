@@ -1,8 +1,14 @@
+import json
 import time
 
 from nyx import db
 from nyx.enums import MemoryKind, MemoryType
-from nyx.memory.facts import FactCandidate, MemoryFactStore, extract_fact_candidates
+from nyx.memory.facts import (
+    FactCandidate,
+    MemoryFactStore,
+    extract_fact_candidates,
+    parse_fact_extraction,
+)
 from nyx.types import Memory
 
 
@@ -170,5 +176,101 @@ async def test_fact_search_has_bounded_result_size() -> None:
         )
         facts = await store.search("用户", now=100.0)
         assert len(facts) == 64
+    finally:
+        await database.close()
+
+
+def test_parse_generic_facts_resolves_aliases_and_entity_types() -> None:
+    parsed = parse_fact_extraction(
+        json.dumps(
+            {
+                "entities": [
+                    {"name": "尼克斯", "type": "agent", "aliases": ["Nyx"]},
+                    {"name": "《百年孤独》", "type": "book", "aliases": []},
+                ],
+                "facts": [
+                    {
+                        "subject": "Nyx",
+                        "predicate": "读过",
+                        "object": "《百年孤独》",
+                        "object_type": "book",
+                        "mode": "multi",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        valid_from=100.0,
+        source_scope="reading",
+    )
+    assert parsed.facts[0].subject == "尼克斯"
+    assert parsed.facts[0].subject_type == "agent"
+    assert parsed.facts[0].multi_valued is True
+
+
+async def test_fact_store_keeps_multi_valued_relations_and_polarity() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = MemoryFactStore(database)
+        await store.apply(
+            [
+                FactCandidate(
+                    "《书》",
+                    "讨论主题",
+                    "爱情",
+                    100.0,
+                    None,
+                    object_type="concept",
+                    multi_valued=True,
+                ),
+                FactCandidate(
+                    "《书》",
+                    "讨论主题",
+                    "战争",
+                    100.0,
+                    None,
+                    object_type="concept",
+                    multi_valued=True,
+                ),
+            ],
+            None,
+        )
+        facts = await store.search("书 主题", now=200.0)
+        assert {fact.object_value for fact in facts} == {"爱情", "战争"}
+        assert all(fact.polarity == 1 for fact in facts)
+    finally:
+        await database.close()
+
+
+async def test_fact_store_allows_same_name_with_different_entity_types() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = MemoryFactStore(database)
+        await store.apply(
+            [
+                FactCandidate(
+                    "同名",
+                    "关联",
+                    "对象",
+                    100.0,
+                    None,
+                    subject_type="person",
+                ),
+                FactCandidate(
+                    "同名",
+                    "关联",
+                    "对象",
+                    100.0,
+                    None,
+                    subject_type="book",
+                ),
+            ],
+            None,
+        )
+        cursor = await database.conn.execute(
+            "SELECT COUNT(*) FROM memory_entity WHERE canonical_name = '同名'"
+        )
+        row = await cursor.fetchone()
+        assert row is not None and row[0] == 2
     finally:
         await database.close()

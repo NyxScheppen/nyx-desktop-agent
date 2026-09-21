@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -304,7 +305,15 @@ class ReadingActivityRunner:
                 break
         if items:
             try:
-                await self._memory.remember_knowledge(items, _correlation_id(activity))
+                remember = self._memory.remember_knowledge
+                if "source_name" in inspect.signature(remember).parameters:
+                    await remember(
+                        items,
+                        _correlation_id(activity),
+                        source_name=filename,
+                    )
+                else:
+                    await remember(items, _correlation_id(activity))
             except Exception:
                 _logger.exception("知识点入库失败 activity_id=%s", activity.id)
 

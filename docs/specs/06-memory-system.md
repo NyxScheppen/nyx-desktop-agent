@@ -106,14 +106,23 @@ topics 联想约束：
 - `memory_entity` 与 `memory_fact` 是独立表；事实不混入 `Memory[]` 或 `memory_edge`。
 - schema 25 为 `memory_fact` 增加 `polarity`，并把 `memory_entity` 的唯一性从全局名称迁移为
   `(canonical_name, entity_type)`；迁移保留已有实体、事实和 source memory 外键。
+- schema 26 增加 `memory_entity_alias` 规范化别名表，以 `(alias, entity_type)` 做索引；
+  `memory_entity.aliases` JSON 仍作为导出兼容快照，但实体合并不再扫描同类型实体全集。
 - 每条新语义记忆成功落库后 best-effort 调用统一 `LlmClient` 的
   `output_type="fact_extraction"` 抽取实体和关系；精确/语义去重命中不重复抽取。
   抽取失败、非法 JSON 或事实 SQL 失败只记录日志并降级，不阻断原始 `Memory`。
+- 一次 `remember_knowledge` 批量写入多个知识点时，事实抽取合并为一次 LLM 调用；每条
+  fact 必须带 `memory_index`，解析后按最终 `source_memory_id` 分发。批量解析失败时逐条
+  使用确定性 fallback，所有原始知识记忆仍然落库。
 - 抽取 prompt 必须携带 `memory_kind`、来源名称/范围和说话者归因规则；不明确主语、
   书中引用、书中人物或示例内容不得强行归因给用户。已有确定性用户就业状态抽取是
   LLM 失败时的 fallback。
+- `observe_user` 生成的 `USER_PROFILE` 仅表示前台观察，不参与事实抽取；窗口标题、摘要或
+  presence 字段中的文本不能伪造用户偏好或状态事实。其他显式用户画像仍需通过主语锚点。
 - 实体以规范化名称 + `entity_type` 唯一；aliases 用于 Nyx/Nyx 夏本/尼克斯等别名合并，
   同名异类实体不合并。
+- `mode="functional"` 明确表示单值关系，即使谓词尚未进入内置白名单也不能降级为多值；
+  缺省 mode 才按谓词白名单推断。
 - 单值谓词（就业状态、当前职业、居住地、当前公司等）只关闭更早且仍有效的旧事实；
   多值谓词（包含人物、讨论主题、作者、影响等）保留同一时间点的多个对象。相同
   subject + predicate + valid_from 的单值候选按输入顺序折叠，避免同一时间并存矛盾状态。
@@ -421,7 +430,8 @@ Facade 规则：
 
 - `create_scene_memory` 只在慢通道回合末调用，LLM 调用 1 次（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）生成 `{content, kind, topics, summary}` 后复用 `_persist_memory`。
 - 活动、读书、知识、用户画像、未答记录入口都复用 `_persist_memory` 的入库尾段，
-  不绕过建边、矛盾检测、衰减/淘汰和事件。确定性入口不调用 scene-memory LLM。
+  不绕过建边、矛盾检测、衰减/淘汰和事件。确定性入口不调用 scene-memory LLM；知识点
+  批量事实抽取合并为一次 `fact_extraction` 调用后再逐条复用尾段。
 - `search(query)` 纯委托 `MemoryRetrieval.search(query)`，对表达层不暴露 `direct_limit` / `association_limit` 参数。
 - `remember_activity(event, consumer_id=None)` 是 `ACTIVITY_END` 的记忆消费者；RouteSpec 注册时传 `consumer_id="memory.activity_end"`。durable 路径在同一本地事务内写 `event_effect`、记忆状态和 `memory_created` 事件，事务外才运行 embedding/关系边/矛盾检测/衰减等旁路；旁路失败不撤销已提交核心记忆，重放时已应用则 no-op。普通直接调用不传 `consumer_id`，保留旧调用面。
 - `record_recall(memory_id)` 只表示“进入慢通道 prompt 后被想起”：委托 store 加一；短期达阈值时发布 `memory_promoted`，长期不重复发布。升级和 `memory_promoted` 事件行在同一本地事务提交，commit 后再 `announce_committed`。
@@ -802,6 +812,8 @@ prune_priority = edge.weight * prune_kind_weight
 - `memory_edge` 增加 `kind TEXT NOT NULL DEFAULT 'semantic'`。
 - `memory_edge` 增加 `created_at REAL NOT NULL DEFAULT 0.0`。
 - 主键从 `(from_id, to_id)` 改为 `(from_id, to_id, kind)`。
+- 新增 `memory_entity_alias(entity_id, alias, entity_type)`，主键为 `(entity_id, alias)`，
+  并以 `(alias, entity_type)` 建索引；迁移从既有 `memory_entity.aliases` JSON 回填。
 - 迁移旧边：端点 canonicalize 后全部视为 `kind='semantic'`，`created_at=0.0`，方向相反重复边合并。
 - 不新增 `memory_cluster` 表。
 - 不新增配置项；候选数、权重、度数上限先作为模块常量，避免未请求的配置膨胀。
@@ -826,6 +838,8 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 - [ ] 度数控制：每 kind 最多 4 条，总有效度最多 16；新节点和触达旧节点都会剪枝；剪枝通过 `delete_edges` 删除完整三元键。
 - [ ] 聚类：`MemoryGraph(edges, memory_ids=...)` 下 Louvain/greedy fallback 均返回稳定 `memory_id -> cluster_id`；孤立节点保留；temporal 边低权重不主导聚类。
 - [ ] 表达慢通道：`MemoryFacade.search` 返回 direct + association 后，`assemble_context` 对全部返回记忆逐条 `record_recall`。
+- [ ] 事实回归：观察窗口标题不产偏好事实；未知谓词的显式 functional/multi 模式保持；别名
+  命中走别名索引；批量知识点只调用一次 `fact_extraction` 且来源 Memory 正确映射，失败仍落库。
 
 ## 完成定义
 

@@ -8,7 +8,7 @@ import pytest
 
 from nyx import db
 
-# 29 张业务表（不含 schema_version）
+# 28 张业务表（不含 schema_version）
 BUSINESS_TABLES = {
     "personality",
     "value_system",
@@ -36,6 +36,7 @@ BUSINESS_TABLES = {
     "expression_interaction_attempt",
     "desire_eval_applied",
     "memory_entity",
+    "memory_entity_alias",
     "memory_fact",
 }
 
@@ -106,7 +107,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 28
+    assert len(names) == 29
 
 
 async def test_migrate_creates_expected_indexes() -> None:
@@ -137,6 +138,7 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_memory_fact_object",
         "idx_memory_fact_validity",
         "idx_memory_fact_predicate",
+        "idx_memory_entity_alias_lookup",
     }
 
 
@@ -442,8 +444,37 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 28
+    assert len(names) == 29
     assert version == max(v for v, _ in db._MIGRATIONS)
+
+
+async def test_migrate_backfills_memory_entity_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = db._MIGRATIONS
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA foreign_keys = ON")
+    aliases: list[str] = []
+    try:
+        monkeypatch.setattr(db, "_MIGRATIONS", [m for m in full if m[0] <= 25])
+        await db.migrate(conn)
+        await conn.execute(
+            "INSERT INTO memory_entity "
+            "(id, canonical_name, entity_type, aliases, created_at, updated_at) "
+            "VALUES ('entity-1', '尼克斯', 'agent', '[\"Nyx\", \"尼克斯夏本\"]', 1, 1)"
+        )
+        await conn.commit()
+        monkeypatch.setattr(db, "_MIGRATIONS", full)
+        await db.migrate(conn)
+        cursor = await conn.execute(
+            "SELECT alias FROM memory_entity_alias "
+            "WHERE entity_id = 'entity-1' ORDER BY alias"
+        )
+        aliases = [row["alias"] for row in await cursor.fetchall()]
+    finally:
+        await conn.close()
+    assert aliases == ["Nyx", "尼克斯夏本"]
 
 
 async def test_migrate_version_gating(monkeypatch: pytest.MonkeyPatch) -> None:

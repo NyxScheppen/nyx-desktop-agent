@@ -1484,6 +1484,115 @@ async def test_generic_fact_graph_does_not_attribute_knowledge_to_user() -> None
         await database.close()
 
 
+async def test_observation_window_title_does_not_update_fact_graph() -> None:
+    store, bus, database = await _new_stack()
+    fact_store = MemoryFactStore(database)
+    llm = _FakeLlm()
+    facade = _make_facade(store, bus, llm, _FakeEvaluator(), fact_store=fact_store)
+    try:
+        await facade.remember_activity(
+            _activity_event(
+                "observe_user",
+                {
+                    "presence": "online",
+                    "window_title": "我喜欢猫",
+                    "summary": "我喜欢猫",
+                },
+            )
+        )
+        assert await facade.search_facts("喜欢 猫") == []
+        assert llm.calls == []
+    finally:
+        await database.close()
+
+
+async def test_remember_knowledge_batches_fact_extraction_and_maps_sources() -> None:
+    store, bus, database = await _new_stack()
+    fact_store = MemoryFactStore(database)
+    llm = _FakeLlm(
+        {
+            "fact_extraction": json.dumps(
+                {
+                    "entities": [
+                        {"name": "《百年孤独》", "type": "book"},
+                        {"name": "奥雷里亚诺", "type": "character"},
+                        {"name": "《局外人》", "type": "book"},
+                    ],
+                    "facts": [
+                        {
+                            "memory_index": 0,
+                            "subject": "《百年孤独》",
+                            "subject_type": "book",
+                            "predicate": "包含人物",
+                            "object": "奥雷里亚诺",
+                            "object_type": "character",
+                            "mode": "multi",
+                        },
+                        {
+                            "memory_index": 1,
+                            "subject": "《局外人》",
+                            "subject_type": "book",
+                            "predicate": "讨论主题",
+                            "object": "疏离",
+                            "object_type": "concept",
+                            "mode": "multi",
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        }
+    )
+    facade = _make_facade(store, bus, llm, _FakeEvaluator(), fact_store=fact_store)
+    try:
+        await facade.remember_knowledge(
+            [
+                {"topic": "《百年孤独》", "content": "书中人物奥雷里亚诺"},
+                {"topic": "《局外人》", "content": "作品讨论疏离"},
+            ],
+            "corr-1",
+        )
+        memories = await facade.list_memories()
+        assert len(memories) == 2
+        assert llm.calls.count("fact_extraction") == 1
+        cursor = await database.conn.execute(
+            "SELECT s.canonical_name AS subject, f.source_memory_id "
+            "FROM memory_fact f JOIN memory_entity s "
+            "ON s.id = f.subject_entity_id ORDER BY subject"
+        )
+        rows = await cursor.fetchall()
+        source_by_subject = {row["subject"]: row["source_memory_id"] for row in rows}
+        memory_by_summary = {memory.summary: memory.id for memory in memories}
+        assert source_by_subject == {
+            "《百年孤独》": memory_by_summary["《百年孤独》"],
+            "《局外人》": memory_by_summary["《局外人》"],
+        }
+    finally:
+        await database.close()
+
+
+async def test_remember_knowledge_fact_failure_keeps_all_memories() -> None:
+    store, bus, database = await _new_stack()
+    fact_store = MemoryFactStore(database)
+    llm = _FakeLlm({"fact_extraction": "not-json"})
+    facade = _make_facade(store, bus, llm, _FakeEvaluator(), fact_store=fact_store)
+    try:
+        await facade.remember_knowledge(
+            [
+                {"topic": "一", "content": "知识一"},
+                {"topic": "二", "content": "知识二"},
+            ],
+            "corr-1",
+        )
+        assert len(await facade.list_memories()) == 2
+        assert llm.calls.count("fact_extraction") == 1
+        cursor = await database.conn.execute("SELECT COUNT(*) FROM memory_fact")
+        row = await cursor.fetchone()
+        assert row is not None and row[0] == 0
+    finally:
+        await database.close()
+
+
 # ---- remember_reading ----
 
 

@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：65
-- `pytest --collect-only -q`：1011 tests collected
-- 最近一次全量验证：`1010 passed, 1 skipped`
+- `pytest --collect-only -q`：1019 tests collected
+- 最近一次全量验证：`1018 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -29,7 +29,7 @@
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
 | API/运行时 | `tests/test_api/` | 7 | 组合根、REST、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件、搜索、工具注册和网络抓取 |
-| 记忆 | `tests/test_memory/` | 7 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade、通用实体事实抽取/类型与别名/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、durable 活动记忆不持锁等待 embedding |
+| 记忆 | `tests/test_memory/` | 7 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade、通用实体事实抽取/类型与别名索引/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级、durable 活动记忆不持锁等待 embedding |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、满足、重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
 | 活动 | `tests/test_activity/` | 13 | 排期、活动生命周期、探索、观察、读书恢复 |
@@ -94,6 +94,8 @@
 - `test_search_fuses_vector_keyword_and_limits_direct_then_association`
 - `test_fact_store_replaces_old_valid_fact_and_keeps_history`
 - `test_fact_store_duplicate_is_idempotent`
+- `test_observation_window_title_does_not_update_fact_graph`
+- `test_remember_knowledge_batches_fact_extraction_and_maps_sources`
 - `test_build_system_prompt_renders_facts_separately`
 - `test_search_topic_association_limits_after_excluding_direct`
 - `test_topic_association_sorts_shared_bucket_once`

@@ -109,6 +109,58 @@ def test_extract_fact_candidates_ignores_non_user_memory_kinds() -> None:
     assert extract_fact_candidates(memory) == []
 
 
+def test_extract_fact_candidates_ignores_observation_window_title() -> None:
+    memory = Memory(
+        id="m4",
+        created_at=100.0,
+        content="用户状态：online；正在浏览：我喜欢猫",
+        kind=MemoryKind.USER_PROFILE,
+        summary="我喜欢猫",
+        freshness=1.0,
+        type=MemoryType.LONG_TERM,
+        aspect=["presence", "window_title"],
+    )
+    assert extract_fact_candidates(memory) == []
+
+
+def test_extract_fact_candidates_keeps_explicit_user_preference() -> None:
+    memory = Memory(
+        id="m5",
+        created_at=100.0,
+        content="我喜欢猫。",
+        kind=MemoryKind.EPISODE,
+        summary="用户表达偏好",
+        freshness=1.0,
+        type=MemoryType.SHORT_TERM,
+    )
+    facts = extract_fact_candidates(memory)
+    assert [(fact.subject, fact.object_value) for fact in facts] == [("用户", "喜欢猫")]
+
+
+def test_parse_fact_extraction_honors_explicit_relation_mode() -> None:
+    raw = json.dumps(
+        {
+            "facts": [
+                {
+                    "subject": "用户",
+                    "predicate": "血型",
+                    "object": "A型",
+                    "mode": "functional",
+                },
+                {
+                    "subject": "用户",
+                    "predicate": "兴趣",
+                    "object": "猫",
+                    "mode": "multi",
+                },
+            ]
+        },
+        ensure_ascii=False,
+    )
+    parsed = parse_fact_extraction(raw, valid_from=100.0, source_scope="conversation")
+    assert [fact.multi_valued for fact in parsed.facts] == [False, True]
+
+
 async def test_fact_search_only_returns_current_facts() -> None:
     database = await db.connect(":memory:")
     try:
@@ -272,5 +324,46 @@ async def test_fact_store_allows_same_name_with_different_entity_types() -> None
         )
         row = await cursor.fetchone()
         assert row is not None and row[0] == 2
+    finally:
+        await database.close()
+
+
+async def test_fact_store_resolves_alias_without_scanning_entities() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = MemoryFactStore(database)
+        await store.apply(
+            [
+                FactCandidate(
+                    "尼克斯",
+                    "喜欢",
+                    "古典文学",
+                    100.0,
+                    None,
+                    subject_type="agent",
+                    aliases=("Nyx",),
+                )
+            ],
+            None,
+        )
+        await store.apply(
+            [
+                FactCandidate(
+                    "Nyx",
+                    "擅长",
+                    "写作",
+                    101.0,
+                    None,
+                    subject_type="agent",
+                )
+            ],
+            None,
+        )
+        cursor = await database.conn.execute(
+            "SELECT COUNT(*) FROM memory_entity "
+            "WHERE canonical_name = '尼克斯' AND entity_type = 'agent'"
+        )
+        row = await cursor.fetchone()
+        assert row is not None and row[0] == 1
     finally:
         await database.close()

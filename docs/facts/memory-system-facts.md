@@ -35,9 +35,11 @@
 ## 事实层
 
 - `memory_entity` / `memory_fact` 独立于 `memory` / `memory_edge`，是通用实体关系图，不只保存用户事实；实体类型覆盖 person/agent/book/character/place/organization/concept 等。
-- schema 25 已迁移实体唯一键为 `(canonical_name, entity_type)`，并为事实增加 `polarity`；已有事实和来源外键保留。
+- schema 25 已迁移实体唯一键为 `(canonical_name, entity_type)`，并为事实增加 `polarity`；已有事实和来源外键保留。schema 26 增加 `memory_entity_alias` 及 `(alias, entity_type)` 索引，并从旧 aliases JSON 回填。
 - 新语义记忆成功落库后由 `LlmClient(output_type="fact_extraction")` best-effort 更新事实；精确或语义去重命中不重复抽取。LLM/JSON/事实 SQL 失败只记日志，不阻塞原始记忆。
-- `memory_entity` 以规范化名称 + `entity_type` 唯一，aliases 合并 Nyx/Nyx 夏本/尼克斯等别名，同名异类不合并。
+- `memory_entity` 以规范化名称 + `entity_type` 唯一，别名通过索引表合并 Nyx/Nyx 夏本/尼克斯等别名，同名异类不合并；旧 `aliases` JSON 保留作快照。
+- `remember_knowledge` 批量输入多个知识点时只调用一次 fact_extraction，输出用 `memory_index` 映射回各条 Memory；批量调用失败逐条 fallback，原始记忆仍落库。
+- `observe_user` 生成的 `USER_PROFILE` 不参与事实抽取，窗口标题和摘要不能制造用户偏好或状态事实；显式 functional 模式优先于谓词白名单。
 - 查询只围绕命中的实体返回全部当前有效事实；事实召回失败降级为空集。
 - 查询包含明确月份时按该月份的有效事实召回，否则按当前时间过滤。
 - 单值谓词（就业状态、当前职业、居住地、当前公司等）按有效时间关闭旧事实；多值谓词（书中人物、主题、作者、影响等）同一时间保留多个对象；`polarity` 区分正/负关系。

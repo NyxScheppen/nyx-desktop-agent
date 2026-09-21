@@ -41,6 +41,7 @@ _FACT_EXTRACTION_SYSTEM = (
     "事实必须是来源明确断言，不要凭常识补全。只输出 JSON："
     "entities 数组元素为 {name,type,aliases}；facts 数组元素为 "
     "{subject,subject_type,predicate,object,object_type,polarity,mode,asserted}。"
+    "批量输入时 facts 还必须带 memory_index（从 0 开始）。"
     "mode 为 functional 或 multi；polarity 为 positive 或 negative。"
 )
 
@@ -218,6 +219,23 @@ def _build_fact_extraction_prompt(
         "书名、书中人物、地点、组织和概念必须分别作为实体。引用或书中叙述不是现实主体事实。\n"
         f"记忆类型：{memory.kind.value}\n摘要：{memory.summary}\n正文：{memory.content}"
     )
+
+
+def _build_fact_extraction_batch_prompt(
+    entries: Sequence[tuple[Memory, str | None]],
+) -> str:
+    """Build one bounded fact-extraction prompt for several knowledge memories."""
+    sections: list[str] = [
+        "这是批量输入。每条 fact 必须带 memory_index（从 0 开始），"
+        "只归属于该索引对应的记忆；无法确定来源索引的事实请跳过。"
+    ]
+    for index, (memory, source_name) in enumerate(entries):
+        source = source_name or "（无明确外部来源）"
+        sections.append(
+            f"记忆索引：{index}\n来源范围：knowledge\n来源名称：{source}\n"
+            f"记忆类型：{memory.kind.value}\n摘要：{memory.summary}\n正文：{memory.content}"
+        )
+    return "\n\n".join(sections)
 
 
 def _merge_fact_candidates(
@@ -802,6 +820,7 @@ class MemoryFacade:
         入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM 使其
         豁免短期淘汰，知识点不随时间冲掉，供创作时检索参考（list_memories）。
         """
+        entries: list[tuple[Memory, str | None]] = []
         for item in items:
             content = (item.get("content") or "").strip()
             topic = (item.get("topic") or "").strip()
@@ -814,10 +833,28 @@ class MemoryFacade:
                 MemoryType.LONG_TERM,
                 [topic] if topic else [],
             )
+            entries.append(
+                (
+                    memory,
+                    item.get("source_name") or source_name or topic or None,
+                )
+            )
+
+        if not entries:
+            return
+        batch_facts: list[list[FactCandidate]] | None = None
+        if self._fact_store is not None and len(entries) > 1:
+            batch_facts = await self._prepare_fact_candidates_batch(
+                entries, correlation_id
+            )
+        for index, (memory, memory_source_name) in enumerate(entries):
             await self._persist_memory(
                 memory,
                 correlation_id,
-                source_name=(item.get("source_name") or source_name or topic or None),
+                fact_candidates=(
+                    batch_facts[index] if batch_facts is not None else None
+                ),
+                source_name=memory_source_name,
                 source_scope="knowledge",
             )
 
@@ -947,7 +984,7 @@ class MemoryFacade:
                 await self._fact_store.apply(
                     fact_candidates
                     if fact_candidates is not None
-                    else extract_fact_candidates(memory),
+                    else extract_fact_candidates(memory, source_scope=source_scope),
                     memory.id,
                 )
             except Exception:
@@ -974,7 +1011,9 @@ class MemoryFacade:
         """Best-effort extraction outside durable memory transactions."""
         if memory is None or self._fact_store is None:
             return []
-        fallback = extract_fact_candidates(memory)
+        if source_scope == "user_observation":
+            return []
+        fallback = extract_fact_candidates(memory, source_scope=source_scope)
         try:
             output = await self._llm.complete(
                 [
@@ -1011,6 +1050,70 @@ class MemoryFacade:
                 "事实抽取失败 memory_id=%s correlation_id=%s", memory.id, correlation_id
             )
             return fallback
+
+    async def _prepare_fact_candidates_batch(
+        self,
+        entries: Sequence[tuple[Memory, str | None]],
+        correlation_id: str,
+    ) -> list[list[FactCandidate]]:
+        """Extract facts for several knowledge memories with one LLM call."""
+        fallbacks = [
+            extract_fact_candidates(memory, source_scope="knowledge")
+            for memory, _source_name in entries
+        ]
+        if not entries or self._fact_store is None:
+            return fallbacks
+        try:
+            output = await self._llm.complete(
+                [
+                    {"role": "system", "content": _FACT_EXTRACTION_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": _build_fact_extraction_batch_prompt(entries),
+                    },
+                ],
+                module="memory",
+                output_type="fact_extraction",
+                correlation_id=correlation_id,
+                json_mode=True,
+            )
+            await self._evaluator.evaluate(output)
+            data = json.loads(output.content)
+            if not isinstance(data, dict):
+                return fallbacks
+            parsed_data = cast(dict[str, Any], data)
+            raw_entities = parsed_data.get("entities", [])
+            raw_facts = parsed_data.get("facts", [])
+            if not isinstance(raw_facts, list):
+                return fallbacks
+            raw_fact_items = [
+                cast(dict[str, Any], item)
+                for item in cast(list[Any], raw_facts)
+                if isinstance(item, dict)
+            ]
+            results: list[list[FactCandidate]] = []
+            for index, (memory, _source_name) in enumerate(entries):
+                scoped_facts: list[dict[str, Any]] = [
+                    item for item in raw_fact_items if item.get("memory_index") == index
+                ]
+                payload = {"entities": raw_entities, "facts": scoped_facts}
+                parsed = parse_fact_extraction(
+                    json.dumps(payload, ensure_ascii=False),
+                    valid_from=memory.created_at,
+                    source_scope="knowledge",
+                )
+                extracted = [
+                    candidate
+                    for candidate in parsed.facts
+                    if candidate.subject not in {"用户", "我", "本人"}
+                ]
+                results.append(_merge_fact_candidates(fallbacks[index], extracted))
+            return results
+        except Exception:
+            self._logger.exception(
+                "批量事实抽取失败 correlation_id=%s", correlation_id
+            )
+            return fallbacks
 
     async def _run_best_effort_tail(
         self,

@@ -597,6 +597,25 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON memory_fact(predicate, valid_from)",
         ],
     ),
+    (
+        26,
+        [
+            """CREATE TABLE IF NOT EXISTS memory_entity_alias (
+                entity_id TEXT NOT NULL REFERENCES memory_entity(id) ON DELETE CASCADE,
+                alias TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                PRIMARY KEY (entity_id, alias),
+                UNIQUE (alias, entity_type)
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_memory_entity_alias_lookup "
+            "ON memory_entity_alias(alias, entity_type)",
+            "INSERT OR IGNORE INTO memory_entity_alias "
+            "(entity_id, alias, entity_type) "
+            "SELECT e.id, trim(j.value), e.entity_type "
+            "FROM memory_entity e, json_each(e.aliases) j "
+            "WHERE trim(j.value) <> ''",
+        ],
+    ),
 ]
 
 

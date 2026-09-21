@@ -164,7 +164,12 @@ def parse_fact_extraction(
                 continue
             polarity = -1 if item.get("polarity") in {-1, "negative", "否定"} else 1
             mode = item.get("mode")
-            multi = mode == "multi" or predicate_name not in _FUNCTIONAL_PREDICATES
+            if mode == "functional":
+                multi = False
+            elif mode == "multi":
+                multi = True
+            else:
+                multi = predicate_name not in _FUNCTIONAL_PREDICATES
             if source_scope == "quoted" and item.get("asserted") is not True:
                 continue
             facts.append(
@@ -202,7 +207,9 @@ def _normalize_entity_name(value: str) -> str:
     return " ".join(value.strip().split())[:120]
 
 
-def extract_fact_candidates(memory: Memory) -> list[FactCandidate]:
+def extract_fact_candidates(
+    memory: Memory, source_scope: str = "conversation"
+) -> list[FactCandidate]:
     """Extract a small deterministic fact set without making the write path fragile.
 
     The first implementation deliberately uses conservative lexical patterns.  It
@@ -210,6 +217,10 @@ def extract_fact_candidates(memory: Memory) -> list[FactCandidate]:
     external call inside the memory transaction.
     """
     if memory.kind not in _FACT_MEMORY_KINDS:
+        return []
+    if source_scope == "user_observation" or (
+        memory.kind is MemoryKind.USER_PROFILE and "window_title" in memory.aspect
+    ):
         return []
     text = f"{memory.summary}\n{memory.content}"
     result_with_positions: list[tuple[int, FactCandidate]] = []
@@ -229,11 +240,12 @@ def extract_fact_candidates(memory: Memory) -> list[FactCandidate]:
                     ),
                 )
             )
-    preference = re.search(
-        r"(?:我|用户).{0,8}(喜欢|不喜欢|讨厌)([^，。！？\n]{1,24})",
+    for preference in re.finditer(
+        r"(不喜欢|讨厌|喜欢)([^，。！？\n]{1,24})",
         text,
-    )
-    if preference is not None:
+    ):
+        if not _has_user_anchor(text, preference.start()):
+            continue
         result_with_positions.append(
             (
                 preference.start(),
@@ -273,7 +285,7 @@ def _has_user_anchor(text: str, position: int) -> bool:
         + 1
     )
     prefix = text[clause_start:position]
-    return bool(re.search(r"(?:用户|我的|本人)", prefix))
+    return bool(re.search(r"(?:我|用户|我的|本人)", prefix))
 
 
 def _fact_terms(text: str) -> set[str]:
@@ -487,6 +499,13 @@ class MemoryFactStore:
     ) -> str:
         normalized = _normalize_entity_name(name)
         type_name = entity_type.strip()[:32] or "concept"
+        normalized_aliases = tuple(
+            dict.fromkeys(
+                alias
+                for alias in (_normalize_entity_name(value) for value in aliases)
+                if alias
+            )
+        )[:8]
         cursor = await self._db.conn.execute(
             "SELECT id, aliases FROM memory_entity "
             "WHERE canonical_name = ? AND entity_type = ?",
@@ -495,22 +514,25 @@ class MemoryFactStore:
         row = await cursor.fetchone()
         if row is None:
             cursor = await self._db.conn.execute(
-                "SELECT id, canonical_name, aliases FROM memory_entity "
-                "WHERE entity_type = ?",
-                (type_name,),
+                "SELECT e.id, e.canonical_name, e.aliases "
+                "FROM memory_entity_alias a "
+                "JOIN memory_entity e ON e.id = a.entity_id "
+                "WHERE a.alias = ? AND a.entity_type = ? LIMIT 1",
+                (normalized, type_name),
             )
-            for alias_row in await cursor.fetchall():
-                aliases_raw = json.loads(alias_row["aliases"] or "[]")
-                if normalized in aliases_raw:
-                    row = alias_row
-                    break
         if row is not None:
-            if aliases:
-                current = json.loads(row["aliases"] or "[]")
-                merged = list(dict.fromkeys([*current, *aliases]))[:8]
+            current = json.loads(row["aliases"] or "[]")
+            merged = list(dict.fromkeys([*current, *normalized_aliases]))[:8]
+            if merged != current:
                 await self._db.conn.execute(
                     "UPDATE memory_entity SET aliases = ?, updated_at = ? WHERE id = ?",
                     (json.dumps(merged, ensure_ascii=False), time.time(), row["id"]),
+                )
+            for alias in normalized_aliases:
+                await self._db.conn.execute(
+                    "INSERT OR IGNORE INTO memory_entity_alias "
+                    "(entity_id, alias, entity_type) VALUES (?, ?, ?)",
+                    (row["id"], alias, type_name),
                 )
             return str(row["id"])
         entity_id = str(uuid4())
@@ -522,11 +544,17 @@ class MemoryFactStore:
                 entity_id,
                 normalized,
                 type_name,
-                json.dumps(list(aliases)[:8], ensure_ascii=False),
+                json.dumps(list(normalized_aliases), ensure_ascii=False),
                 time.time(),
                 time.time(),
             ),
         )
+        for alias in normalized_aliases:
+            await self._db.conn.execute(
+                "INSERT OR IGNORE INTO memory_entity_alias "
+                "(entity_id, alias, entity_type) VALUES (?, ?, ?)",
+                (entity_id, alias, type_name),
+            )
         return entity_id
 
     async def _find_duplicate(

@@ -9,10 +9,17 @@ from uuid import uuid4
 import aiosqlite
 
 from nyx.db import Database
+from nyx.enums import MemoryKind
 from nyx.memory.retrieval import extract_keywords
 from nyx.types import Memory, MemoryFact
 
 _MAX_TEXT = 80
+_FACT_RECALL_LIMIT = 64
+_FACT_QUERY_HINT_RE = re.compile(
+    r"工作|求职|投简历|入职|上班|喜欢|不喜欢|讨厌|偏好|状态|职业|公司|"
+    r"生日|年龄|住|家里|六月|七月|八月|九月|十月|十一月|十二月|"
+    r"[1-9一二三四五六七八九十十二]月"
+)
 _FACT_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}")
 _MONTH_QUERY_RE = re.compile(
     r"(?:(20\d{2})年)?(1[0-2]|[1-9]|十一|十二|十|[一二三四五六七八九])月"
@@ -32,6 +39,16 @@ class FactCandidate:
     valid_until: float | None
 
 
+def is_fact_query(query: str) -> bool:
+    return bool(query.strip()) and _FACT_QUERY_HINT_RE.search(query) is not None
+
+
+_FACT_MEMORY_KINDS = {
+    MemoryKind.EPISODE,
+    MemoryKind.USER_PROFILE,
+}
+
+
 def extract_fact_candidates(memory: Memory) -> list[FactCandidate]:
     """Extract a small deterministic fact set without making the write path fragile.
 
@@ -39,17 +56,24 @@ def extract_fact_candidates(memory: Memory) -> list[FactCandidate]:
     keeps fact updates available when an LLM is unavailable and avoids putting an
     external call inside the memory transaction.
     """
+    if memory.kind not in _FACT_MEMORY_KINDS:
+        return []
     text = f"{memory.summary}\n{memory.content}"
-    result: list[FactCandidate] = []
+    result_with_positions: list[tuple[int, FactCandidate]] = []
     status_patterns = (
         (r"投简历|找工作|求职|正在.*找工作", "就业状态", "正在求职"),
         (r"已经在工作|已入职|已经入职|开始上班|在工作了", "就业状态", "已工作"),
     )
     for pattern, predicate, object_value in status_patterns:
-        if re.search(pattern, text):
-            result.append(
-                FactCandidate(
-                    "用户", predicate, object_value, memory.created_at, None
+        for match in re.finditer(pattern, text):
+            if not _has_user_anchor(text, match.start()):
+                continue
+            result_with_positions.append(
+                (
+                    match.start(),
+                    FactCandidate(
+                        "用户", predicate, object_value, memory.created_at, None
+                    ),
                 )
             )
     preference = re.search(
@@ -57,16 +81,42 @@ def extract_fact_candidates(memory: Memory) -> list[FactCandidate]:
         text,
     )
     if preference is not None:
-        result.append(
-            FactCandidate(
-                "用户",
-                "偏好",
-                f"{preference.group(1)}{preference.group(2).strip()}",
-                memory.created_at,
-                None,
+        result_with_positions.append(
+            (
+                preference.start(),
+                FactCandidate(
+                    "用户",
+                    "偏好",
+                    f"{preference.group(1)}{preference.group(2).strip()}",
+                    memory.created_at,
+                    None,
+                ),
             )
         )
+    result_with_positions.sort(key=lambda item: item[0])
+    result: list[FactCandidate] = []
+    positions: dict[tuple[str, str, float], int] = {}
+    for _, candidate in result_with_positions:
+        key = (candidate.subject, candidate.predicate, candidate.valid_from)
+        existing_index = positions.get(key)
+        if existing_index is None:
+            positions[key] = len(result)
+            result.append(candidate)
+        else:
+            result[existing_index] = candidate
     return result[:4]
+
+
+def _has_user_anchor(text: str, position: int) -> bool:
+    """Require a nearby first/second-person subject before recording a fact."""
+    clause_start = max(
+        text.rfind("。", 0, position),
+        text.rfind("！", 0, position),
+        text.rfind("？", 0, position),
+        text.rfind("\n", 0, position),
+    ) + 1
+    prefix = text[clause_start:position]
+    return bool(re.search(r"(?:用户|我的|本人)", prefix))
 
 
 def _fact_terms(text: str) -> set[str]:
@@ -130,6 +180,12 @@ class MemoryFactStore:
                 )
                 if duplicate:
                     continue
+                await self._remove_same_start_conflicts(
+                    subject_id,
+                    candidate.predicate,
+                    candidate.valid_from,
+                    object_id,
+                )
                 await self._close_replaced(
                     subject_id, candidate.predicate, candidate.valid_from
                 )
@@ -156,6 +212,17 @@ class MemoryFactStore:
             return []
         fallback = time.time() if now is None else now
         at = _query_time(query, fallback)
+        terms = _fact_terms(query)
+        if not terms:
+            return []
+        patterns = [f"%{_escape_like(term)}%" for term in terms]
+        direct_where = " OR ".join(
+            "s.canonical_name LIKE ? ESCAPE '\\' "
+            "OR f.predicate LIKE ? ESCAPE '\\' "
+            "OR COALESCE(o.canonical_name, f.object_value) LIKE ? ESCAPE '\\'"
+            for _ in patterns
+        )
+        direct_params = [value for pattern in patterns for value in (pattern,) * 3]
         async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
@@ -166,24 +233,37 @@ class MemoryFactStore:
                 "JOIN memory_entity s ON s.id = f.subject_entity_id "
                 "LEFT JOIN memory_entity o ON o.id = f.object_entity_id "
                 "WHERE f.valid_from <= ? AND "
-                "(f.valid_until IS NULL OR f.valid_until > ?) "
-                "ORDER BY f.valid_from DESC, f.created_at DESC, f.id",
-                (at, at),
+                "(f.valid_until IS NULL OR f.valid_until > ?) AND ("
+                + direct_where
+                + ") ORDER BY f.valid_from DESC, f.created_at DESC, f.id LIMIT ?",
+                (at, at, *direct_params, _FACT_RECALL_LIMIT),
             )
-            rows = await cursor.fetchall()
-        terms = _fact_terms(query)
-        direct_rows = [row for row in rows if self._matches(row, terms)]
-        entity_ids: set[str] = set()
-        for row in direct_rows:
-            entity_ids.add(row["subject_entity_id"])
-            object_id = row["object_entity_id"]
-            if object_id is not None:
-                entity_ids.add(object_id)
-        selected = [
-            row for row in rows
-            if row["subject_entity_id"] in entity_ids
-            or row["object_entity_id"] in entity_ids
-        ]
+            direct_rows = await cursor.fetchall()
+            entity_ids: set[str] = set()
+            for row in direct_rows:
+                entity_ids.add(row["subject_entity_id"])
+                object_id = row["object_entity_id"]
+                if object_id is not None:
+                    entity_ids.add(object_id)
+            if not entity_ids:
+                return []
+            placeholders = ", ".join("?" for _ in entity_ids)
+            ids = list(entity_ids)
+            cursor = await self._db.conn.execute(
+                "SELECT f.id, s.canonical_name AS subject, f.predicate, "
+                "COALESCE(o.canonical_name, f.object_value) AS object_value, "
+                "f.valid_from, f.valid_until, f.source_memory_id, f.created_at "
+                "FROM memory_fact f "
+                "JOIN memory_entity s ON s.id = f.subject_entity_id "
+                "LEFT JOIN memory_entity o ON o.id = f.object_entity_id "
+                "WHERE f.valid_from <= ? AND "
+                "(f.valid_until IS NULL OR f.valid_until > ?) AND ("
+                f"f.subject_entity_id IN ({placeholders}) OR "
+                f"f.object_entity_id IN ({placeholders})) "
+                "ORDER BY f.valid_from DESC, f.created_at DESC, f.id LIMIT ?",
+                (at, at, *ids, *ids, _FACT_RECALL_LIMIT),
+            )
+            selected = await cursor.fetchall()
         return [_row_to_fact(row) for row in selected]
 
     async def _ensure_entity(self, name: str) -> str:
@@ -217,6 +297,19 @@ class MemoryFactStore:
         )
         return await cursor.fetchone() is not None
 
+    async def _remove_same_start_conflicts(
+        self,
+        subject_id: str,
+        predicate: str,
+        valid_from: float,
+        object_id: str,
+    ) -> None:
+        await self._db.conn.execute(
+            "DELETE FROM memory_fact WHERE subject_entity_id = ? "
+            "AND predicate = ? AND valid_from = ? AND object_entity_id != ?",
+            (subject_id, predicate, valid_from, object_id),
+        )
+
     async def _close_replaced(
         self, subject_id: str, predicate: str, valid_from: float
     ) -> None:
@@ -248,18 +341,6 @@ class MemoryFactStore:
             return next_start
         return valid_until
 
-    @staticmethod
-    def _matches(row: aiosqlite.Row, terms: set[str]) -> bool:
-        if not terms:
-            return False
-        values = (
-            str(row["subject"]).lower(),
-            str(row["predicate"]).lower(),
-            str(row["object_value"]).lower(),
-        )
-        return any(term in value or value in term for term in terms for value in values)
-
-
 def _row_to_fact(row: aiosqlite.Row) -> MemoryFact:
     return MemoryFact(
         id=str(row["id"]),
@@ -276,3 +357,7 @@ def _row_to_fact(row: aiosqlite.Row) -> MemoryFact:
         ),
         created_at=float(row["created_at"]),
     )
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

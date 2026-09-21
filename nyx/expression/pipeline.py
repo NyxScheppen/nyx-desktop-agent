@@ -31,6 +31,7 @@ from nyx.expression.prompt import (
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
+from nyx.memory.facts import is_fact_query
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     CurrentState,
@@ -183,6 +184,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     """
 
     async def search_facts(query: str) -> list[MemoryFact]:
+        if not is_fact_query(query):
+            return []
         method = getattr(deps.memory, "search_facts", None)
         if not callable(method):
             return []

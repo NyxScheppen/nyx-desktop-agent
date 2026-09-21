@@ -41,11 +41,28 @@ async def test_fact_store_duplicate_is_idempotent() -> None:
         await database.close()
 
 
+async def test_fact_store_same_start_conflict_keeps_one_current_fact() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = MemoryFactStore(database)
+        await store.apply(
+            [
+                FactCandidate("用户", "就业状态", "正在求职", 200.0, None),
+                FactCandidate("用户", "就业状态", "已工作", 200.0, None),
+            ],
+            None,
+        )
+        facts = await store.search("用户 工作", now=250.0)
+        assert [fact.object_value for fact in facts] == ["已工作"]
+    finally:
+        await database.close()
+
+
 def test_extract_fact_candidates_is_conservative() -> None:
     memory = Memory(
         id="m1",
         created_at=time.time(),
-        content="我最近在投简历，准备找工作。",
+        content="用户最近在投简历，准备找工作。",
         kind=MemoryKind.EPISODE,
         summary="用户在求职",
         freshness=1.0,
@@ -55,6 +72,35 @@ def test_extract_fact_candidates_is_conservative() -> None:
     assert [(fact.predicate, fact.object_value) for fact in facts] == [
         ("就业状态", "正在求职")
     ]
+
+
+def test_extract_fact_candidates_keeps_last_same_time_status() -> None:
+    memory = Memory(
+        id="m2",
+        created_at=100.0,
+        content="用户之前在找工作，后来已经入职。",
+        kind=MemoryKind.EPISODE,
+        summary="用户状态变化",
+        freshness=1.0,
+        type=MemoryType.SHORT_TERM,
+    )
+    facts = extract_fact_candidates(memory)
+    assert [(fact.predicate, fact.object_value) for fact in facts] == [
+        ("就业状态", "已工作")
+    ]
+
+
+def test_extract_fact_candidates_ignores_non_user_memory_kinds() -> None:
+    memory = Memory(
+        id="m3",
+        created_at=100.0,
+        content="书中人物正在找工作，也喜欢猫。",
+        kind=MemoryKind.KNOWLEDGE,
+        summary="小说情节",
+        freshness=1.0,
+        type=MemoryType.LONG_TERM,
+    )
+    assert extract_fact_candidates(memory) == []
 
 
 async def test_fact_search_only_returns_current_facts() -> None:
@@ -107,5 +153,22 @@ async def test_month_query_uses_historical_validity_point() -> None:
         )
         facts = await store.search("六月 用户", now=1730000000.0)
         assert [fact.object_value for fact in facts] == ["正在求职"]
+    finally:
+        await database.close()
+
+
+async def test_fact_search_has_bounded_result_size() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = MemoryFactStore(database)
+        await store.apply(
+            [
+                FactCandidate("用户", f"属性{i}", f"值{i}", float(i), None)
+                for i in range(70)
+            ],
+            None,
+        )
+        facts = await store.search("用户", now=100.0)
+        assert len(facts) == 64
     finally:
         await database.close()

@@ -519,9 +519,17 @@ async def test_reply_fast() -> None:
     assert [t for t, _m, _c in llm.calls] == ["reply"]
     assert len(evaluator.evaluated) == 2
     assert memory.search_calls == 0
-    assert memory.fact_search_calls == 1
+    assert memory.fact_search_calls == 0
     assert memory.scene_memories == []
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.SPEAK]
+
+
+async def test_reply_fast_searches_facts_for_fact_query() -> None:
+    facade, _llm, _evaluator, memory, _inner_life, _bus = _new_facade(
+        energy=20.0, arousal=0.9
+    )
+    await facade.reply("我已经入职了", "corr-fast-fact")
+    assert memory.fact_search_calls == 1
 
 
 async def test_reply_fast_uses_temporal_context_and_consumes_return() -> None:

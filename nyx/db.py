@@ -527,6 +527,39 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "DROP TABLE IF EXISTS browsing_session",
         ],
     ),
+    (
+        24,
+        [
+            """CREATE TABLE IF NOT EXISTS memory_entity (
+                id TEXT PRIMARY KEY,
+                canonical_name TEXT NOT NULL UNIQUE,
+                entity_type TEXT NOT NULL DEFAULT 'concept',
+                aliases TEXT NOT NULL DEFAULT '[]',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS memory_fact (
+                id TEXT PRIMARY KEY,
+                subject_entity_id TEXT NOT NULL REFERENCES memory_entity(id),
+                predicate TEXT NOT NULL,
+                object_entity_id TEXT REFERENCES memory_entity(id),
+                object_value TEXT NOT NULL,
+                source_memory_id TEXT REFERENCES memory(id) ON DELETE SET NULL,
+                valid_from REAL NOT NULL,
+                valid_until REAL,
+                created_at REAL NOT NULL,
+                CHECK (valid_until IS NULL OR valid_until > valid_from)
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_memory_fact_subject "
+            "ON memory_fact(subject_entity_id)",
+            "CREATE INDEX IF NOT EXISTS idx_memory_fact_object "
+            "ON memory_fact(object_entity_id)",
+            "CREATE INDEX IF NOT EXISTS idx_memory_fact_validity "
+            "ON memory_fact(valid_from, valid_until)",
+            "CREATE INDEX IF NOT EXISTS idx_memory_fact_predicate "
+            "ON memory_fact(predicate, valid_from)",
+        ],
+    ),
 ]
 
 

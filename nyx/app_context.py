@@ -32,6 +32,7 @@ from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
 from nyx.llm.vision import VisionClient
 from nyx.memory.facade import MemoryFacade
+from nyx.memory.facts import MemoryFactStore
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
 from nyx.reading.facade import ReadingFacade
@@ -262,12 +263,14 @@ async def build_app_context(
     tools = build_tools(config)
 
     memory_store = MemoryStore(db)
+    fact_store = MemoryFactStore(db)
     embed = build_embed(config.embedding.model)
     eval_store = EvalStore(db)
     evaluator = Evaluator(embed, eval_store)
     retrieval = MemoryRetrieval(memory_store, embed)
     memory = MemoryFacade(
-        memory_store, retrieval, bus, llm, evaluator, config.memory, embed
+        memory_store, retrieval, bus, llm, evaluator, config.memory, embed,
+        fact_store,
     )
 
     desire_store = DesireStore(db)

@@ -7,7 +7,7 @@
 import json
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, TypedDict, cast
 
@@ -37,6 +37,7 @@ from nyx.types import (
     LlmMessage,
     LLMOutput,
     Memory,
+    MemoryFact,
     Message,
     SelfNarrative,
 )
@@ -52,6 +53,7 @@ class ReplyState(TypedDict):
     mode: ContextMode
     context: list[Message]       # 回溯上下文（facade 入口填，快慢一致；不含当前消息）
     memories: list[Memory]       # 检索到的记忆
+    facts: list[MemoryFact]       # 当前有效事实（与原始记忆隔离）
     state: CurrentState          # 当前状态快照
     narrative: SelfNarrative | None   # 慢通道 assemble 填充，快通道恒 None
     # 累积：每轮 think/speak 追加（11-expression，tech-ref §6.1 ripple）
@@ -180,6 +182,16 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     correlation_id/last_slow_at 走 state（图可复用，见 facade.__init__）。
     """
 
+    async def search_facts(query: str) -> list[MemoryFact]:
+        method = getattr(deps.memory, "search_facts", None)
+        if not callable(method):
+            return []
+        typed = cast(Callable[[str], Awaitable[list[MemoryFact]]], method)
+        try:
+            return await typed(query)
+        except Exception:
+            return []
+
     async def classify(state: ReplyState) -> dict[str, Any]:
         mode = classify_channel(
             state["message"],
@@ -188,10 +200,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             state["last_slow_at"],
             deps.config.slow_threshold,
         )
-        return {"mode": mode}
+        facts = await search_facts(state["message"])
+        return {"mode": mode, "facts": facts}
 
     async def assemble(state: ReplyState) -> dict[str, Any]:
-        # 慢通道专属三件事——回溯上下文截断 + 检索记忆 + 取 self-narrative。
+        # 慢通道专属四件事——回溯上下文截断 + 检索记忆/事实 + 取 self-narrative。
         # context 由 facade 入口朴素填（快通道用），慢通道在此按停条件重截断。
         context = build_backtrack_context(
             state["message"],
@@ -201,16 +214,21 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             deps.config.max_context_len,
         )
         memories = await deps.memory.search(state["message"])
+        facts = state["facts"]
         for m in memories:
             await deps.memory.record_recall(m.id)   # 慢通道检索命中即记「想起」
         narrative = await deps.inner_life.get_narrative()
-        return {"context": context, "memories": memories, "narrative": narrative}
+        return {
+            "context": context, "memories": memories, "facts": facts,
+            "narrative": narrative,
+        }
 
     async def use_tools(state: ReplyState) -> dict[str, Any]:
         # 慢通道专属：问 LLM 是否需查资料（文件/搜索），查到的结果拼进 tool_outputs，
         # think/speak 再据此回复。一轮，不做「查完再决定继续查」的循环。
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], state["memories"],
+            facts=state["facts"],
             ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             knowledge_boundary=deps.knowledge_boundary,
             intent=state["intent"],
@@ -261,6 +279,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     async def respond(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], state["memories"],
+            facts=state["facts"],
             ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             tool_outputs=state["tool_outputs"],
             knowledge_boundary=deps.knowledge_boundary,

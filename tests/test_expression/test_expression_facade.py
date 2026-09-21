@@ -145,6 +145,7 @@ class _FakeEvaluator:
 class _FakeMemory:
     def __init__(self) -> None:
         self.search_calls = 0
+        self.fact_search_calls = 0
         self.scene_memories: list[dict[str, str]] = []
         self.no_answers: list[str] = []
         self.search_results: list[Memory] = []
@@ -155,6 +156,10 @@ class _FakeMemory:
     async def search(self, query: str) -> list[Memory]:
         self.search_calls += 1
         return list(self.search_results)
+
+    async def search_facts(self, query: str) -> list[object]:
+        self.fact_search_calls += 1
+        return []
 
     async def list_memories(
         self,
@@ -514,6 +519,7 @@ async def test_reply_fast() -> None:
     assert [t for t, _m, _c in llm.calls] == ["reply"]
     assert len(evaluator.evaluated) == 2
     assert memory.search_calls == 0
+    assert memory.fact_search_calls == 1
     assert memory.scene_memories == []
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.SPEAK]
 

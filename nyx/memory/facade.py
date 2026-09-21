@@ -14,9 +14,13 @@ from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.ann import AnnIndex
+from nyx.memory.facts import (
+    MemoryFactStore,
+    extract_fact_candidates,
+)
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, extract_keywords
 from nyx.memory.store import MemoryStore
-from nyx.types import Event, Memory, MemoryEdge
+from nyx.types import Event, Memory, MemoryEdge, MemoryFact
 
 _SCENE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -460,6 +464,7 @@ class MemoryFacade:
         evaluator: Evaluator,
         config: MemoryConfig,
         embed: EmbedFn | None = None,
+        fact_store: MemoryFactStore | None = None,
     ) -> None:
         self._store = store
         self._retrieval = retrieval
@@ -468,6 +473,7 @@ class MemoryFacade:
         self._evaluator = evaluator
         self._config = config
         self._embed = embed          # 与 retrieval 共享同一实例（组合根注入）
+        self._fact_store = fact_store
         self._logger = logging.getLogger(__name__)
         self._last_observation: tuple[str, str] | None = None  # 「变化才沉淀」快照
 
@@ -824,6 +830,15 @@ class MemoryFacade:
                 memory.embedding, index, by_id
             )
         await self._store.add(memory)
+        if self._fact_store is not None:
+            try:
+                await self._fact_store.apply(
+                    extract_fact_candidates(memory), memory.id
+                )
+            except Exception:
+                self._logger.exception(
+                    "事实层更新失败 memory_id=%s", memory.id
+                )
         if not defer_best_effort:
             await self._run_best_effort_tail(memory, candidates, correlation_id)
         event = internal_event(
@@ -848,6 +863,16 @@ class MemoryFacade:
 
     async def search(self, query: str) -> list[Memory]:
         return await self._retrieval.search(query)
+
+    async def search_facts(self, query: str) -> list[MemoryFact]:
+        """召回查询命中实体关联的当前有效事实；失败时返回空集。"""
+        if self._fact_store is None:
+            return []
+        try:
+            return await self._fact_store.search(query)
+        except Exception:
+            self._logger.exception("事实层召回失败")
+            return []
 
     async def record_recall(self, memory_id: str) -> None:
         """记录一次「想起」：recall_count+1；

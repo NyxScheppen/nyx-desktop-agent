@@ -85,6 +85,20 @@ class MemoryEdge:
     created_at: float = 0.0
 
 
+@dataclass
+class MemoryFact:
+    """时间有效的实体关系事实；来源记忆仅用于溯源，不决定事实生命周期。"""
+
+    id: str
+    subject: str
+    predicate: str
+    object_value: str
+    valid_from: float
+    valid_until: float | None
+    source_memory_id: str | None
+    created_at: float
+
+
 # ---- 欲望 ----
 @dataclass
 class Goal:                 # 可量化目标，规则可判

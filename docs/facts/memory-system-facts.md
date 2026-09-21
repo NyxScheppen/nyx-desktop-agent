@@ -32,6 +32,14 @@
 - `Memory.sources` 是瞬态检索来源：`keyword`、`vector`、`association`。它不落库、不进 prompt、不进导出，但 REST `Memory[]` 会序列化给前端。
 - `list_memories` 返回库内快照，通常 `sources=[]`；`search` 返回的命中带 sources。
 
+## 事实层
+
+- `memory_entity` / `memory_fact` 独立于 `memory` / `memory_edge`，事实保存 subject、predicate、object 与有效时间区间。
+- 新记忆落库后由 `MemoryFactStore` 更新事实；重复记忆不重复写事实。
+- 查询只围绕命中的实体返回全部当前有效事实；事实召回失败降级为空集。
+- 查询包含明确月份时按该月份的有效事实召回，否则按当前时间过滤。
+- 事实不会进入 `Memory[]`，不会调用 `record_recall`；快慢通道都可把事实放入独立的 `[相关事实]` prompt 段。
+
 ## 活动记忆
 
 - `reading` 活动记忆：`result.note` 作 content，`result.book` 作 summary，kind=`activity`。

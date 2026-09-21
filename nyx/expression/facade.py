@@ -330,6 +330,7 @@ class ExpressionFacade:
                 # 慢通道在 assemble 重截断。
                 "context": list(self._history)[-self._config.max_context_len:],
                 "memories": [],
+                "facts": [],
                 "state": state,
                 "narrative": None,
                 "think": [],

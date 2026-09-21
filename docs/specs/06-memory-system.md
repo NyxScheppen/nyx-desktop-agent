@@ -5,7 +5,7 @@
 ## 元信息
 
 - **前置依赖**：01-types（`Memory` / `MemoryEdge` / `MemoryKind` / `MemoryType` / `MemoryEdgeKind` / `SearchMode` / `Event` / `EventType` / `Source`）、02-config（`MemoryConfig` / `EmbeddingConfig`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、组合根注入 / REST 薄封装及相关 DDL）、11-expression（慢通道召回与 `record_recall` 时机）、10-eval（`Evaluator`）。
-- **实现文件**：`nyx/memory/ann.py`、`nyx/memory/retrieval.py`、`nyx/memory/graph.py`、`nyx/memory/store.py`、`nyx/memory/facade.py`、`nyx/types.py`、`nyx/enums.py`、`nyx/db.py`
+- **实现文件**：`nyx/memory/ann.py`、`nyx/memory/retrieval.py`、`nyx/memory/graph.py`、`nyx/memory/store.py`、`nyx/memory/facts.py`、`nyx/memory/facade.py`、`nyx/types.py`、`nyx/enums.py`、`nyx/db.py`
 - **关联文档**：`docs/facts/memory-system-facts.md`、`docs/specs/01-types.md`、`docs/specs/04-module-bus-system.md`、`docs/specs/11-expression.md`、`docs/tech-reference.md`、`docs/test-inventory.md`
 - **测试文件**：`tests/test_memory/test_ann.py`、`tests/test_memory/test_retrieval.py`、`tests/test_memory/test_graph.py`、`tests/test_memory/test_store.py`、`tests/test_memory/test_facade.py`、`tests/test_db/test_db.py`、`tests/test_expression/test_expression_facade.py`
 
@@ -93,6 +93,24 @@ topics 联想约束：
 5. 质量门：同步 facts/spec/test-inventory，运行 `ruff check`、`pyright`、`pytest`。
 
 知识库/canon 层不在本次实现范围内。
+
+## 事实层
+
+记忆层另外维护实体与时间有效事实，不改变 `Memory` 和 `memory_edge` 的语义。事实由
+`MemoryFact` 表示：`subject`、`predicate`、`object_value`、`valid_from`、
+`valid_until` 与可空 `source_memory_id`。事实关闭有效期而不物理删除，因此可以回答
+“六月正在求职、九月已经工作”的历史变化。
+
+- `memory_entity` 与 `memory_fact` 是独立表；事实不混入 `Memory[]` 或 `memory_edge`。
+- 新记忆成功落库后更新事实；精确重复记忆不重复抽取事实。
+- 同一 subject + predicate 的新事实只关闭 `valid_from` 更早且仍有效的旧事实；
+  未来事实不会被倒序写入错误关闭。
+- 事实抽取、事实召回失败只记录日志并降级为空结果，不回滚原始记忆或阻断回复。
+- `search_facts(query)` 只返回查询命中的实体所关联的全部当前有效事实；事实命中不调用
+  `record_recall`，也不影响短期记忆升级。
+- 查询包含明确的 `YYYY年M月`、`M月` 或中文月份时，以该月份中点作为有效性判断时间；
+  没有历史时间时使用当前时间。
+- 快通道与慢通道都可注入 `[相关事实]`；慢通道另行注入 `[相关记忆]`，两者保持隔离。
 
 ## 验收标准
 
@@ -360,6 +378,7 @@ async def remember_knowledge(items: list[dict[str, str]], correlation_id: str) -
 async def remember_reading(content: str, summary: str, correlation_id: str) -> None: ...
 async def record_no_answer(question: str, correlation_id: str) -> None: ...
 async def search(query: str) -> list[Memory]: ...
+async def search_facts(query: str) -> list[MemoryFact]: ...
 async def record_recall(memory_id: str) -> None: ...
 async def list_memories(
     kind: MemoryKind | None = None,

@@ -27,6 +27,7 @@ from nyx.types import (
     Aesthetic,
     CurrentState,
     Memory,
+    MemoryFact,
     Message,
     Personality,
     SelfNarrative,
@@ -128,6 +129,21 @@ def test_build_system_prompt_optional_blocks() -> None:
     assert "我是想变成人的 AI" in result
     assert "近期变化：更会关心人" in result
     assert "记得你" in result
+
+
+def test_build_system_prompt_renders_facts_separately() -> None:
+    result = build_system_prompt(
+        _CANON,
+        _state(),
+        facts=[
+            MemoryFact(
+                "f1", "用户", "就业状态", "已工作", 100.0, None, None, 100.0
+            )
+        ],
+    )
+    assert "[相关事实]" in result
+    assert "用户｜就业状态｜已工作" in result
+    assert "[相关记忆]" not in result
 
 
 def test_build_system_prompt_ask_guidance() -> None:

@@ -7,12 +7,12 @@
 ## 当前快照
 
 - 后端测试文件：65
-- `pytest --collect-only -q`：1019 tests collected
-- 最近一次全量验证：`1018 passed, 1 skipped`
+- `pytest --collect-only -q`：1020 tests collected
+- 最近一次全量验证：`1019 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：`17 files / 274 passed`。
+- 最近一次前端全量验证：`20 files / 295 passed`。
 - 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；前端只在后端 ready 后启动。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
 - 前端测试覆盖通用 API、SSE、状态、聊天、阅读、设置和桌面 presence。
@@ -41,12 +41,13 @@
 
 | 范围 | 测试目录 | 主要覆盖 |
 |---|---|---|
-| REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、开发/打包共享 base URL、eval prompt 懒加载端点、取消信号、错误、事件解析 |
-| 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts` | Zustand、eval prompt 逐行缓存/重试、历史/SSE 去重与因果排序、非法帧不改变等待/未读状态、活跃度、异常原生采样、请求超时/取消、网络结果不确定、活动产出 |
+| REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、记忆搜索/事实快照端点、开发/打包共享 base URL、eval prompt 懒加载端点、取消信号、错误、事件解析 |
+| 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts` | Zustand、记忆搜索与事实图独立降级、eval prompt 逐行缓存/重试、历史/SSE 去重与因果排序、非法帧不改变等待/未读状态、活跃度、异常原生采样、请求超时/取消、网络结果不确定、活动产出 |
 | 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、设置、评估面板展开详情与安全文本渲染 |
-| 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 状态显示、过滤、枚举中文化 |
+| 记忆面板 | `memoryPanel.test.tsx` | 关键词查询提交、事实图实体关系渲染、事实加载失败降级 |
+| 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 状态显示、紧凑布局容器、过滤、枚举中文化 |
 | 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 分页、笔记和章节交互 |
-| 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 统一分钟时钟、休眠恢复校时、昼夜/头像、非法时间标签边界、打字机 |
+| 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `desktopWindow.test.ts`, `petShell.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 统一分钟时钟、休眠恢复校时、昼夜/头像、完整端与桌宠态拖动模式隔离、桌宠点击/拖动阈值与窗口层级、头像下方四项圆弧菜单/内心摘要/可修改设置入口、状态气泡、桌宠陪读翻页边界、非法时间标签边界、打字机 |
 
 ## 关键回归清单
 
@@ -93,6 +94,7 @@
 
 - `test_search_fuses_vector_keyword_and_limits_direct_then_association`
 - `test_fact_store_replaces_old_valid_fact_and_keeps_history`
+- `test_memory_facts_endpoint`、`memoryPanel.test.tsx`：事实快照 API、实体关系图与事实独立降级
 - `test_fact_store_duplicate_is_idempotent`
 - `test_observation_window_title_does_not_update_fact_graph`
 - `test_remember_knowledge_batches_fact_extraction_and_maps_sources`
@@ -126,7 +128,7 @@
 ### 前端桌面采集
 
 - `presence.test.ts`：Tauri 空闲毫秒/前台标题采样、三态边界、浏览器降级与时钟跳变、失败重试、single-flight A/B/A、采样乱序、Unicode 截断、超时/卸载取消和重连同步
-- `readerView.test.tsx`：阅读位置和 Nyx 追赶/等待派生态展示
+- `readerView.test.tsx`：阅读位置和 Nyx 追赶/等待派生态展示、完整端翻页按钮存在
 
 ### Eval prompt 可观测
 

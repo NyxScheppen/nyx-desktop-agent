@@ -116,6 +116,25 @@ updateEmotion(e: EmotionUpdateEvent): void  // SSE emotion_update → 覆盖 cur
 
 两个 store 对齐 `innerLifeStore` 的「REST 快照 + SSE 增量」模式：state = `{data|null, error}` + `refresh()`。SSE 增量事件只带 id（不含完整对象），面板收到事件调 `refresh()` 重拉快照（01-sse §4 分发表）。
 
+### `memoryStore`
+
+```typescript
+type MemoryStoreState = {
+  data: Memory[] | null;
+  facts: MemoryFact[] | null;
+  query: string;
+  error: string | null;
+  factsError: string | null;
+  refresh(): Promise<void>;
+  search(query: string): Promise<void>;
+};
+```
+
+`refresh()` 并行加载当前查询对应的记忆列表和最多 64 条当前有效事实；事实请求失败只设置
+`factsError`，不清空或阻塞 `data`。`search()` 只更新记忆列表，事实图保持隔离；空查询恢复
+`GET /api/memories`。`memory_created` / `memory_promoted` 的 SSE 分发仍只调用一次
+`refresh()`，从而同时刷新记忆和事实图。
+
 ```typescript
 // desireStore —— GET /api/desires
 type DesireStoreState = { data: DesireState | null; error: string | null };

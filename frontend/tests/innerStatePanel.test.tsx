@@ -119,10 +119,13 @@ describe("inner 面板子组件", () => {
 
   it("InnerStatePanel 标注三观/性格/审美 section 标题", () => {
     useInnerLifeStore.setState({ current: currentFixture });
-    render(<InnerStatePanel />);
+    const { container } = render(<InnerStatePanel />);
     expect(screen.getByText("性格")).toBeInTheDocument();
     expect(screen.getByText("三观")).toBeInTheDocument();
     expect(screen.getByText("审美")).toBeInTheDocument();
+    expect(container.querySelector("section.inner-state-panel")).not.toBeNull();
+    expect(container.querySelector(".inner-state-panel__top")).not.toBeNull();
+    expect(container.querySelectorAll(".inner-state-panel__section")).toHaveLength(3);
   });
 
   it("InnerStatePanel error 非 null → 顶部红字一行", () => {

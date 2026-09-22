@@ -1,15 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import AnnounceLayer from "../AnnounceLayer";
+import { isTauriRuntime, startNativeWindowDrag } from "../../lib/desktopWindow";
 import EmotionSprite from "./EmotionSprite";
-import { useAnnounceStore } from "../../stores/announceStore";
 import { useChatStore } from "../../stores/chatStore";
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import { useSettingsStore, type AvatarPos, type CircleSize } from "../../stores/settingsStore";
-import type { EmotionCategory } from "../../types/api";
 
 type AvatarProps = {
   night: boolean;
+  children?: ReactNode;
+  showAnnouncements?: boolean;
+  useNativeWindowDrag?: boolean;
+  onActivate?: () => void;
+  onDoubleClick?: () => void;
 };
 
 // 头像圆圈三档直径（px）：小/中/大。供 clampAvatarPos 边界夹取 + 内联 width/height。
@@ -32,33 +36,30 @@ export function clampAvatarPos(
   };
 }
 
-// 戳立绘短语（借鉴 nyx_desktop_agent DockAvatar）：连续戳害羞，戳多了生气。
-const SHY_PHRASES = ["呀！", "别戳啦……", "呜，好痒……"];
-const ANGRY_PHRASES = ["不要再戳了啦！", "小狐狸我呀，要生气了！"];
-const ANGRY_THRESHOLD = 5; // 连续戳 ≥5 次生气
-const POKE_RESET_MS = 1500; // 停手 1.5s 后戳计数 + 临时情绪复位
 const DRAG_THRESHOLD = 3; // 指针位移超过 3px 判定为拖拽（否则算戳）
 
-// 可拖拽头像圆圈（视觉改造 §4）：白底/可换底色圆形，内放方形表情头像（expressions/）；可拖到窗口任意处（position:fixed），
-// 位置/底色/尺寸存 localStorage（settingsStore）；碎碎念气泡（AnnounceLayer）头顶冒出、随圆圈走。
-// 三项交互增强——
-// 1) 拖拽：pointer 捕获 + 位移阈值区分「戳/拖」，拖完提交 setAvatarPos 持久化；
-// 2) 戳：点击临时害羞/生气 + announce 冒一句（moved 守卫：拖拽不触发戳）；
-// 3) 红点通知：搭话（initiate_chat）时挂右上角红点，点击清除。
-export default function Avatar({ night }: AvatarProps) {
+// 可拖拽头像圆圈（视觉改造 §4）：白底/可换底色圆形，内放方形表情头像（expressions/）；浏览器里可拖到窗口任意处（position:fixed），
+// 位置/底色/尺寸存 localStorage（settingsStore）；Tauri 桌宠里拖拽的是整个原生窗口，圆球不再在窗口内单独定位；
+// 碎碎念气泡（AnnounceLayer）头顶冒出、随圆圈走。桌宠模式由 onActivate/onDoubleClick 交给上层处理：单击打开菜单，双击切换完整端；
+// 红点通知仍由 Avatar 负责清除。
+export default function Avatar({
+  night,
+  children,
+  showAnnouncements = true,
+  useNativeWindowDrag = false,
+  onActivate,
+  onDoubleClick,
+}: AvatarProps) {
   const emotion = useInnerLifeStore((s) => s.current?.emotion);
   const unreadProactive = useChatStore((s) => s.unreadProactive);
   const clearUnreadProactive = useChatStore((s) => s.clearUnreadProactive);
-  const announce = useAnnounceStore((s) => s.announce);
   const circleColor = useSettingsStore((s) => s.circleColor);
   const circleSize = useSettingsStore((s) => s.circleSize);
   const avatarPos = useSettingsStore((s) => s.avatarPos);
   const setAvatarPos = useSettingsStore((s) => s.setAvatarPos);
   const size = CIRCLE_SIZES[circleSize];
-
-  const [pokeEmotion, setPokeEmotion] = useState<EmotionCategory | null>(null);
-  const pokeCount = useRef(0);
-  const pokeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 原生窗口拖动只属于桌宠态；完整端仍在窗口内移动头像，避免拖动头像时移动整个窗口。
+  const nativeWindowDrag = useNativeWindowDrag && isTauriRuntime();
 
   // 拖拽中途的实时坐标（渲染用）；松手时才提交进 store（一次 localStorage 写，避免 60fps 狂写）。
   const [dragPos, setDragPos] = useState<AvatarPos | null>(null);
@@ -69,34 +70,21 @@ export default function Avatar({ night }: AvatarProps) {
 
   // 挂载时 / 尺寸变化时把记忆坐标夹回当前视口（窗口或圆圈尺寸可能变小，防圆圈跑出屏幕够不到）。
   useEffect(() => {
+    if (nativeWindowDrag) return;
     const pos = useSettingsStore.getState().avatarPos;
     if (pos === null) return;
     const clamped = clampAvatarPos(pos, window.innerWidth, window.innerHeight, size);
     if (clamped.x !== pos.x || clamped.y !== pos.y) {
       useSettingsStore.getState().setAvatarPos(clamped);
     }
-  }, [size]);
+  }, [nativeWindowDrag, size]);
 
-  const handlePoke = () => {
+  const handleActivate = () => {
     if (moved.current) {
-      moved.current = false; // 拖拽后的 click，吞掉戳、复位标记
+      moved.current = false;
       return;
     }
-    pokeCount.current += 1;
-    if (pokeTimer.current !== null) clearTimeout(pokeTimer.current);
-    pokeTimer.current = setTimeout(() => {
-      pokeCount.current = 0;
-      setPokeEmotion(null);
-      pokeTimer.current = null;
-    }, POKE_RESET_MS);
-
-    if (pokeCount.current >= ANGRY_THRESHOLD) {
-      setPokeEmotion("angry");
-      announce("mutter", ANGRY_PHRASES[(pokeCount.current - ANGRY_THRESHOLD) % ANGRY_PHRASES.length]);
-    } else {
-      setPokeEmotion("shy");
-      announce("mutter", SHY_PHRASES[(pokeCount.current - 1) % SHY_PHRASES.length]);
-    }
+    onActivate?.();
   };
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -113,6 +101,16 @@ export default function Avatar({ night }: AvatarProps) {
     const dy = e.clientY - start.originY;
     if (!moved.current && Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return;
     moved.current = true;
+    if (nativeWindowDrag) {
+      // 点击先保留给 onClick；只有越过阈值后才交给原生窗口拖动。
+      // 释放 pointer capture 后再调用 startDragging，避免 WebView 抢走系统拖动。
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      dragStart.current = null;
+      void startNativeWindowDrag();
+      return;
+    }
     setDragPos(
       clampAvatarPos(
         { x: start.left + dx, y: start.top + dy },
@@ -127,6 +125,14 @@ export default function Avatar({ night }: AvatarProps) {
     const start = dragStart.current;
     dragStart.current = null;
     setDragPos(null);
+    if (nativeWindowDrag) {
+      if (start !== null && clientX !== null && clientY !== null) {
+        moved.current = moved.current ||
+          Math.abs(clientX - start.originX) >= DRAG_THRESHOLD ||
+          Math.abs(clientY - start.originY) >= DRAG_THRESHOLD;
+      }
+      return;
+    }
     // 松手提交（pointerup）；取消（pointercancel）不提交、放弃本次拖拽。
     if (start !== null && moved.current && clientX !== null && clientY !== null) {
       setAvatarPos(
@@ -140,9 +146,9 @@ export default function Avatar({ night }: AvatarProps) {
     }
   };
 
-  const displayed = pokeEmotion ?? (night ? "sleepy" : emotion);
+  const displayed = night ? "sleepy" : emotion;
 
-  const pos = dragPos ?? avatarPos;
+  const pos = nativeWindowDrag ? null : dragPos ?? avatarPos;
   const style: CSSProperties = { backgroundColor: circleColor, width: size, height: size };
   if (pos !== null) {
     style.left = pos.x;
@@ -155,17 +161,19 @@ export default function Avatar({ night }: AvatarProps) {
     <div
       className="avatar-circle"
       style={style}
-      title="戳一戳"
+      title="Nyx 头像"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={(e) => finishDrag(e.clientX, e.clientY)}
       onPointerCancel={() => finishDrag(null, null)}
-      onClick={handlePoke}
+      onClick={handleActivate}
+      onDoubleClick={onDoubleClick}
     >
+      {children}
       <div className="avatar-circle__face">
         <EmotionSprite size="circle" emotion={displayed} />
       </div>
-      <AnnounceLayer />
+      {showAnnouncements && <AnnounceLayer />}
       {unreadProactive && (
         <button
           type="button"

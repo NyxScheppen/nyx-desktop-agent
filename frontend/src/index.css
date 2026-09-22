@@ -32,6 +32,11 @@ body {
   user-select: none;
 }
 
+html:has(.app--pet),
+body:has(.app--pet) {
+  background: transparent;
+}
+
 /* ===== 全屏布局 ===== */
 .app {
   position: relative;
@@ -152,6 +157,7 @@ body {
   grid-column: 2;
   grid-row: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -771,6 +777,110 @@ body {
   margin-bottom: 0.5rem;
 }
 
+.panel-tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.6rem;
+  border-bottom: 1px solid var(--parchment-deep);
+}
+
+.panel-tab {
+  padding: 0.3rem 0.65rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.8rem;
+}
+
+.panel-tab--active {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.memory-search {
+  align-items: center;
+  justify-content: stretch;
+  gap: 0.35rem;
+}
+
+.memory-search__label {
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.memory-search__input {
+  min-width: 0;
+  flex: 1;
+}
+
+.fact-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.fact-graph__canvas {
+  max-width: 100%;
+  overflow: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--parchment-deep);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.fact-graph svg {
+  display: block;
+  min-width: 100%;
+}
+
+.fact-graph__edge line {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  opacity: 0.8;
+}
+
+.fact-graph__edge text {
+  fill: var(--ink-soft);
+  font-size: 0.68rem;
+  paint-order: stroke;
+  stroke: var(--parchment);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.fact-graph__edge--negative line {
+  stroke: #a34f4f;
+  stroke-dasharray: 4 3;
+}
+
+.fact-graph__edge--negative text {
+  fill: #8d4040;
+}
+
+.fact-graph__arrow {
+  fill: var(--accent);
+}
+
+.fact-graph__node rect {
+  fill: var(--parchment);
+  stroke: var(--gold);
+  stroke-width: 1.5;
+}
+
+.fact-graph__node text {
+  fill: var(--ink);
+  font-size: 0.75rem;
+}
+
+.fact-graph__node-type {
+  fill: var(--ink-soft) !important;
+  font-size: 0.62rem !important;
+}
+
 .panel-refresh {
   padding: 0.25rem 0.75rem;
   border: 1px solid var(--ink-soft);
@@ -872,6 +982,18 @@ body {
 }
 
 /* ===== 内在状态面板 ===== */
+.inner-state-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.inner-state-panel > .panel-body {
+  flex: 1;
+  min-height: 0;
+}
+
 .inner-state-panel__error {
   margin: 0 0 0.5rem;
 }
@@ -879,7 +1001,41 @@ body {
 .inner-state-panel__body {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.6rem;
+}
+
+.inner-state-panel__top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(11rem, 1.25fr);
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.inner-state-panel__top .va-plot {
+  justify-self: center;
+  max-width: 14rem;
+}
+
+.inner-state-panel__top .energy-bar {
+  min-width: 0;
+}
+
+.inner-state-panel__charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 0.55rem 0.75rem;
+}
+
+.inner-state-panel__section {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.inner-state-panel__section:last-child {
+  grid-column: 1 / -1;
 }
 
 .va-plot {
@@ -910,7 +1066,7 @@ body {
 .energy-bar {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.35rem;
 }
 
 .energy-bar__title {
@@ -935,26 +1091,26 @@ body {
 }
 
 .energy-bar__label {
-  min-width: 6rem;
-  font-size: 0.85rem;
+  min-width: 5rem;
+  font-size: 0.78rem;
   color: var(--ink-soft);
 }
 
 .bar-chart {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.3rem;
 }
 
 .bar-chart__row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.35rem;
 }
 
 .bar-chart__pole {
-  flex: 0 0 3.5rem;
-  font-size: 0.78rem;
+  flex: 0 0 3rem;
+  font-size: 0.68rem;
   color: var(--ink);
 }
 
@@ -969,7 +1125,7 @@ body {
 .bar-chart__track {
   flex: 1;
   position: relative;
-  height: 0.5rem;
+  height: 0.42rem;
   background: var(--parchment);
   border: 1px solid var(--ink-soft);
   border-radius: 0.25rem;
@@ -978,8 +1134,8 @@ body {
 .bar-chart__dot {
   position: absolute;
   top: 50%;
-  width: 0.9rem;
-  height: 0.9rem;
+  width: 0.78rem;
+  height: 0.78rem;
   background: var(--gold);
   border: 2px solid var(--parchment);
   border-radius: 50%;
@@ -1131,6 +1287,16 @@ body {
   .game-shell {
     padding: 48px 8px 8px;
     gap: 8px;
+  }
+  .inner-state-panel__top,
+  .inner-state-panel__charts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .inner-state-panel__section:last-child {
+    grid-column: auto;
+  }
+  .inner-state-panel__top .va-plot {
+    max-width: 16rem;
   }
   .avatar-circle {
     display: none;
@@ -1344,4 +1510,309 @@ body {
 .note-item__actions {
   display: flex;
   gap: 0.5rem;
+}
+
+/* ===== 系统级桌宠模式 ===== */
+.app--pet {
+  background: transparent;
+}
+
+/* 桌宠窗口固定为 560px 宽，会命中移动端媒体查询；桌宠模式仍必须显示圆球。 */
+.app--pet .avatar-circle {
+  display: block;
+  bottom: 100px;
+}
+
+.app--pet .app-bg,
+.app--pet .app-bg-tint,
+.app--pet .app-time-overlay,
+.app--pet .app-topbar,
+.app--pet .game-shell {
+  display: none;
+}
+
+.pet-interaction-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.pet-status-bubble {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  width: max-content;
+  max-width: 260px;
+  padding: 6px 10px;
+  transform: translateX(-50%);
+  border: 1px solid var(--parchment-deep);
+  border-radius: 999px;
+  background: rgba(255, 250, 240, .97);
+  box-shadow: 0 7px 16px rgba(48, 30, 15, .22);
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.pet-status-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 9px;
+  height: 9px;
+  transform: translateX(-50%) rotate(45deg);
+  border-right: 1px solid var(--parchment-deep);
+  border-bottom: 1px solid var(--parchment-deep);
+  background: rgba(255, 250, 240, .97);
+}
+
+.pet-fan-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  width: 190px;
+  height: 88px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.pet-fan-menu__item {
+  position: absolute;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 1px solid var(--gold);
+  border-radius: 50%;
+  background: rgba(255, 250, 240, .98);
+  box-shadow: 0 8px 18px rgba(48, 30, 15, .2);
+  color: var(--ink);
+  font-size: 10px;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  transition: transform .16s ease, background .16s ease;
+}
+
+.pet-fan-menu__item:hover {
+  background: #f0dfb6;
+  transform: translate(-50%, -50%) scale(1.07);
+}
+
+.pet-fan-menu__item--chat {
+  left: 12%;
+  top: 52%;
+}
+
+.pet-fan-menu__item--reading {
+  left: 37%;
+  top: 8%;
+}
+
+.pet-fan-menu__item--inner {
+  left: 63%;
+  top: 8%;
+}
+
+.pet-fan-menu__item--settings {
+  left: 88%;
+  top: 52%;
+}
+
+.pet-panel {
+  position: absolute;
+  right: calc(100% + 16px);
+  bottom: 0;
+  width: 320px;
+  color: var(--ink);
+  pointer-events: auto;
+}
+
+.pet-panel--reading {
+  width: 350px;
+}
+
+.pet-panel--inner {
+  width: 280px;
+}
+
+.pet-panel__back {
+  display: block;
+  margin: 0 0 8px 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--gold);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.pet-panel__card,
+.pet-reading-card {
+  padding: 15px;
+  border: 1px solid var(--parchment-deep);
+  border-radius: 13px;
+  background: rgba(255, 250, 240, .98);
+  box-shadow: 0 17px 35px rgba(48, 30, 15, .28);
+}
+
+.pet-panel__title {
+  margin: 0 0 9px;
+  color: var(--gold);
+  font-size: 16px;
+  letter-spacing: 2px;
+}
+
+.pet-panel__text,
+.pet-panel__muted {
+  margin: 0 0 12px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pet-panel__muted {
+  margin-top: 12px;
+  margin-bottom: 0;
+  font-size: 12px;
+}
+
+.pet-book-list {
+  display: grid;
+  gap: 7px;
+}
+
+.pet-book-list button {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #c9a96a;
+  border-radius: 8px;
+  background: #f8edcf;
+  text-align: left;
+  font-size: 12px;
+}
+
+.pet-book-list button:hover {
+  background: #ecd9a9;
+}
+
+.pet-book-list small {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink-soft);
+}
+
+.pet-dialogue {
+  min-height: 54px;
+  padding: 11px 13px;
+  border-left: 4px solid var(--gold);
+  border-radius: 4px;
+  background: rgba(255, 250, 240, .97);
+  box-shadow: 0 9px 18px rgba(48, 30, 15, .28);
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+.pet-dialogue__name {
+  margin-right: 7px;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.pet-chat-input {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  pointer-events: auto;
+}
+
+.pet-chat-input input {
+  min-width: 0;
+  flex: 1;
+  padding: 9px 10px;
+  border: 1px solid #c9a96a;
+  border-radius: 8px;
+  outline: 0;
+  background: rgba(255, 250, 240, .97);
+  box-shadow: 0 8px 16px rgba(48, 30, 15, .28);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.pet-chat-input button {
+  padding: 8px 10px;
+  border: 1px solid #c9a96a;
+  border-radius: 8px;
+  background: #f4dfb3;
+  box-shadow: 0 8px 16px rgba(48, 30, 15, .28);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.pet-reading-bubble {
+  margin-bottom: 9px;
+  padding: 7px 11px;
+  border-left: 3px solid var(--gold);
+  background: rgba(255, 250, 240, .96);
+  box-shadow: 0 7px 15px rgba(48, 30, 15, .25);
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pet-reading-content {
+  height: 148px;
+  overflow: hidden;
+  padding: 3px 1px 8px;
+  line-height: 1.78;
+  font-size: 13px;
+}
+
+.pet-reading-progress {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #ead9ae;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.pet-reading-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pet-reading-actions .reading-btn {
+  flex: 1;
+}
+
+.pet-inner-state {
+  display: grid;
+  gap: 8px;
+}
+
+.pet-inner-state > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #ead9ae;
+  font-size: 12px;
+}
+
+.pet-inner-state span {
+  color: var(--ink-soft);
+}
+
+.pet-inner-state strong {
+  color: var(--ink);
+  font-weight: 600;
+  text-align: right;
 }

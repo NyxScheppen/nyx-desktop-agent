@@ -1,14 +1,23 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import Avatar, { clampAvatarPos } from "../src/components/inner/Avatar";
-import { useAnnounceStore } from "../src/stores/announceStore";
 import { useChatStore } from "../src/stores/chatStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
+import { useSettingsStore } from "../src/stores/settingsStore";
+
+const desktopWindowMocks = vi.hoisted(() => ({
+  isTauriRuntime: vi.fn(() => false),
+  startNativeWindowDrag: vi.fn(async () => {}),
+}));
+
+vi.mock("../src/lib/desktopWindow", () => desktopWindowMocks);
 
 beforeEach(() => {
   useInnerLifeStore.setState({ current: null, error: null });
   useChatStore.getState().reset();
-  useAnnounceStore.setState({ items: [] });
+  useSettingsStore.setState({ circleSize: "large", avatarPos: null });
+  desktopWindowMocks.isTauriRuntime.mockReturnValue(false);
+  desktopWindowMocks.startNativeWindowDrag.mockClear();
 });
 
 describe("clampAvatarPos 拖拽坐标夹取纯函数", () => {
@@ -38,17 +47,75 @@ describe("Avatar 红点通知", () => {
   });
 });
 
-describe("Avatar 戳立绘", () => {
-  it("戳一下冒害羞短语，连戳 5 次冒生气短语", () => {
-    render(<Avatar night={false} />);
-    const avatar = screen.getByTitle("戳一戳");
+describe("Avatar 桌宠入口", () => {
+  it("单击和双击分别触发菜单与完整桌面端回调", () => {
+    const onActivate = vi.fn();
+    const onDoubleClick = vi.fn();
+    render(<Avatar night={false} onActivate={onActivate} onDoubleClick={onDoubleClick} />);
+    const avatar = screen.getByTitle("Nyx 头像");
     fireEvent.click(avatar);
-    expect(useAnnounceStore.getState().items[0]?.text).toBe("呀！");
+    fireEvent.doubleClick(avatar);
+    expect(onActivate).toHaveBeenCalledTimes(1);
+    expect(onDoubleClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("拖拽越过阈值后不把释放动作当成点击", () => {
+    const onActivate = vi.fn();
+    render(<Avatar night={false} onActivate={onActivate} />);
+    const avatar = screen.getByTitle("Nyx 头像");
+    Object.defineProperty(avatar, "getBoundingClientRect", {
+      value: () => ({ left: 0, top: 0, right: 144, bottom: 144, width: 144, height: 144 }),
+    });
+    Object.defineProperty(avatar, "setPointerCapture", { value: vi.fn() });
+    const dispatchPointer = (type: string, clientX: number, clientY: number) => {
+      const event = new Event(type, { bubbles: true });
+      Object.defineProperties(event, {
+        pointerId: { value: 1 },
+        clientX: { value: clientX },
+        clientY: { value: clientY },
+      });
+      fireEvent(avatar, event);
+    };
+
+    dispatchPointer("pointerdown", 10, 10);
+    dispatchPointer("pointermove", 20, 10);
+    dispatchPointer("pointerup", 20, 10);
     fireEvent.click(avatar);
-    fireEvent.click(avatar);
-    fireEvent.click(avatar);
-    fireEvent.click(avatar); // 第 5 次
-    expect(useAnnounceStore.getState().items[4]?.text).toBe("不要再戳了啦！");
+
+    expect(onActivate).not.toHaveBeenCalled();
+  });
+
+  it("完整端在 Tauri 中只移动头像，桌宠态才移动原生窗口", () => {
+    desktopWindowMocks.isTauriRuntime.mockReturnValue(true);
+    const { rerender } = render(<Avatar night={false} useNativeWindowDrag={false} />);
+    const avatar = screen.getByTitle("Nyx 头像");
+    Object.defineProperty(avatar, "getBoundingClientRect", {
+      value: () => ({ left: 0, top: 0, right: 144, bottom: 144, width: 144, height: 144 }),
+    });
+    Object.defineProperty(avatar, "setPointerCapture", { value: vi.fn() });
+    Object.defineProperty(avatar, "hasPointerCapture", { value: vi.fn(() => true) });
+    Object.defineProperty(avatar, "releasePointerCapture", { value: vi.fn() });
+    const dispatchPointer = (type: string, clientX: number, clientY: number) => {
+      const event = new Event(type, { bubbles: true });
+      Object.defineProperties(event, {
+        pointerId: { value: 1 },
+        clientX: { value: clientX },
+        clientY: { value: clientY },
+      });
+      fireEvent(avatar, event);
+    };
+    const drag = () => {
+      dispatchPointer("pointerdown", 10, 10);
+      dispatchPointer("pointermove", 20, 10);
+      dispatchPointer("pointerup", 20, 10);
+    };
+
+    drag();
+    expect(desktopWindowMocks.startNativeWindowDrag).not.toHaveBeenCalled();
+
+    rerender(<Avatar night={false} useNativeWindowDrag />);
+    drag();
+    expect(desktopWindowMocks.startNativeWindowDrag).toHaveBeenCalledTimes(1);
   });
 
   it("夜间由 App 的统一时钟切为困倦表情", () => {

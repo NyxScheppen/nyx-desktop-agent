@@ -1,9 +1,10 @@
-# 08 阅读 × 聊天统一布局（左栏常驻对话 + 真分页 + 可拖拽头像圆圈 + 碎碎念浮泡）
+# 08 阅读 × 聊天统一布局（左栏常驻对话 + 真分页 + 桌宠窗口 + 碎碎念浮泡）
 
 > 前端「陪伴感」重构：聊天从中间舞台挪到**左栏常驻**（读书/看面板时都能聊）；读书改**真分页**（取消滚动）；立绘做**可拖拽头像圆圈**（白底可换底色，碎碎念头顶冒）；碎碎念改**悬浮气泡**；读书提问/联想**并进对话**。
 > 对齐后端：`11-expression`（读书提问/联想进表达 history，回复可引用）。
 
 > **行号是定位锚，不是指令**：本文行号只用于快速定位；落点以**符号名 + 变量名**为准。
+> 桌宠模式的交互补充见 §8；Tauri 窗口行为由 `frontend/src/lib/desktopWindow.ts` 与 `src-tauri/tauri.conf.json` 实现。
 
 ## 1. 布局重构（App 装配 + 复用既有组件，不造新组件）
 
@@ -114,10 +115,10 @@ case "reading_mutter":
 
 - **结构**：`App.tsx` 直接挂 `<Avatar night={timePhase === "night"} />`（不再包 `.avatar-overlay`）；`AnnounceLayer` 移到 `Avatar` 内部（气泡跟随圆圈），`App` 不再单独挂 `<AnnounceLayer />`。顶栏「设置」按钮删除，设置入口迁到 `RightDock`（底部导航新增「设置」项）。
 - **昼夜输入**：`Avatar` 必须接收 `night: boolean`，不在 render 中自行读取 `new Date()`。
-  显示优先级为戳后的临时表情、夜间默认 sleepy、白天当前情绪；默认显示不写回 innerLifeStore。
+  夜间默认显示 sleepy，白天显示当前情绪；默认显示不写回 innerLifeStore。
 - **`Avatar.tsx` 重写**：白底圆形（`backgroundColor = settingsStore.circleColor`，默认 `#ffffff`）；`position:fixed; right:24px; bottom:24px; border-radius:50%`，`width/height` 内联自 `settingsStore.circleSize` 三档（`CIRCLE_SIZES`：小 96 / 中 120 / 大 144，默认大），内层 `.avatar-circle__face` `overflow:hidden` + `EmotionSprite size="circle"`（`object-fit:cover` 方形表情图撑满不裁，图源 `assets/expressions/`）。位置记忆 `avatarPos` 非 null 时内联 `left/top` 覆盖默认右下角。表情图 `<img>` 加 `draggable={false}`、`.emotion-sprite--circle` 加 `pointer-events:none`，防浏览器原生图片拖拽抢占圆圈拖拽。
-- **拖拽**：`onPointerDown/Move/Up/Cancel` + `setPointerCapture`；`getBoundingClientRect()` 记录起点，位移超 `DRAG_THRESHOLD=3` 判定为拖拽（否则算戳）；拖拽中本地 `dragPos` 渲染、松手才 `setAvatarPos` 提交（一次 localStorage 写）；`clampAvatarPos` 把坐标夹回视口内。挂载时若记忆坐标越界（窗口变小）自动夹回。
-- **戳立绘交互保留**：`handlePoke` 连续戳害羞 `SHY_PHRASES`、≥5 次生气 `ANGRY_PHRASES`、1.5s 停手复位 `POKE_RESET_MS`、戳时 `announce("mutter", …)`；`moved` 守卫让「拖拽后的 click」不误触发戳。红点通知（`.avatar-notice`）改为纯红点（`aria-label="小狐狸我有话对你说"`），点击 `stopPropagation` 清除 `unreadProactive`。
+- **拖拽**：`onPointerDown/Move/Up/Cancel` + `setPointerCapture`；浏览器回退时 `getBoundingClientRect()` 记录起点，位移超 `DRAG_THRESHOLD=3` 判定为拖拽；拖拽中本地 `dragPos` 渲染、松手才 `setAvatarPos` 提交（一次 localStorage 写）。只有桌宠层显式传入 `useNativeWindowDrag` 且运行于 Tauri 时才调用原生 `startDragging()`；完整端保持窗口内头像拖动。`clampAvatarPos` 把浏览器回退坐标夹回视口内。
+- **桌宠入口**：单击头像由 `PetShell` 打开半月菜单；双击头像切换完整桌面端。红点通知（`.avatar-notice`）仍为纯红点（`aria-label="小狐狸我有话对你说"`），点击 `stopPropagation` 清除 `unreadProactive`。
 - **持久化**：`settingsStore` 新增 `circleColor`/`circleSize`/`avatarPos` + 对应 setter，读写 localStorage（键 `nyx.circleColor`/`nyx.circleSize`/`nyx.avatarPos`），不可用时静默降级；`reset()` 一并清这三个键。`EmotionSprite` 的 `size` 变体删 `portrait`、增 `circle`（`portrait` 无调用方，清 orphan）。
 - **设置项**：`SettingsView` 新增「圆圈背景」面板（预设白/浅粉/浅蓝/浅绿/浅橙/淡紫 + 自定义取色），复用 `.bg-panel` 色块；预设名与「背景色调」预设（樱粉/晨蓝/…）错开，避免测试按名选色歧义。另新增「圆圈大小」三档（小/中/大，复用 `.font-scale__opt` 按钮，aria-label 用「圆圈小/中/大」与字体三档错开）。
 
@@ -188,8 +189,19 @@ export function paginate(
   Avatar 同相位；`tests/time.test.ts` 覆盖昼夜边界、时钟/消息标签及时间分隔。
   桌面和窄窗口人工检查顶栏/时间分隔不遮挡，自定义背景在夜间遮罩下仍保留。
 
+## 8. 桌宠模式（`components/desktop/PetShell.tsx`）
+
+- Tauri 启动窗口为透明、无边框、普通非置顶的小窗口（`560×520`，足够容纳圆球左侧小面板；其他应用激活时自然位于其后）；浏览器开发环境仍直接显示完整端，便于测试。
+- `App` 维护 `DesktopMode = "pet" | "full"`：桌宠态隐藏完整布局，只渲染可拖拽 `Avatar` 与 `PetShell`；双击头像进入完整端，完整端再次双击头像收回桌宠。
+- 半月菜单包含「聊天」「读书」「内心」「设置」四个入口，四项在头像下方紧凑半圆排列；状态仍在头像头顶以被动摘要显示。
+- 聊天小界面是无外框的一行 Galgame 对话 + 悬空输入框；读书先选书，再显示扁平主动对话气泡、正文、你/Nyx 段落标记和悬空输入框；选书页与陪读页都保留顶部无文字返回箭头 `→`。
+- 陪读正文下方提供「上一页」「下一页」两个轻量按钮，调用 `readerStore.syncPosition(userPosition ± 1)` 逐段移动进度；到达首段或末段时禁用对应按钮，避免桌宠态只能读当前段而无法继续。
+- 「内心」入口显示情绪、精力、当前活动和简短感受摘要；「设置」入口回调打开现有 `SettingsView`，直接修改 `settingsStore`，不复制设置写入逻辑。
+- 桌宠小界面不复制业务逻辑：聊天复用 `chatStore.sendMessage`，读书复用 `readerStore.loadBooks/openBook` 与 `readerStore.syncPosition`；双击头像是唯一进入完整端的入口。
+- `Avatar` 仅在收到 `useNativeWindowDrag` 且运行于 Tauri 时，在 pointer down 超过阈值后调用原生 `startDragging()`；桌宠层传入该标记，完整桌面端显式关闭，避免拖动完整端头像时带动整个窗口。浏览器回退到现有 CSS 拖拽和 `avatarPos` 持久化。
+
 ## 完成定义
 
 - [ ] `npx vitest run` 全绿、`npx tsc --noEmit` 零报错
 - [ ] `test-inventory.md` 已更新（快照）
-- [ ] 手动：左栏常驻对话（读书/面板都能聊）；读书真分页不滚动、高亮/🦊 标记不漂、`fontScale`/resize/换书重测后位置不丢；可拖拽头像圆圈（白底、可换底色、拖到窗口任意处、重启后位置/底色记住）、戳圆圈冒害羞短语、红点可点清除、拖拽不误触戳；碎碎念/读书碎碎念/反思浮泡从圆圈头顶冒出、几秒淡出；读书提问/联想进对话、刷新后仍在（历史回填）、回复能接上
+- [ ] 手动：桌宠态透明无边框且使用普通非置顶层级；头像可拖动整个窗口；单击展开半月菜单、双击切换完整端；聊天浮框/输入框、选书/陪读面板、读书上方主动气泡和返回箭头位置正确；完整端继续复用现有聊天/阅读/状态逻辑；桌宠与完整端切换不丢聊天或阅读状态

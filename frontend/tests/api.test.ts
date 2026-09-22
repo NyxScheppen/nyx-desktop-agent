@@ -13,6 +13,9 @@ import {
   getEvalPrompt,
   getEvalTotalTokens,
   getEventsLog,
+  getMemories,
+  getMemorySearch,
+  getRecentFacts,
   getNotes,
   getProgress,
   getState,
@@ -105,6 +108,33 @@ describe("api/client", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/state");
     expect(res).toEqual(snapshot);
+  });
+
+  it("getMemories：GET /api/memories", async () => {
+    const fixture = [{ id: "m1" }];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getMemories()).resolves.toEqual(fixture);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories");
+  });
+
+  it("getMemorySearch：关键词会 URL 编码", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getMemorySearch("猫 喜欢");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories/search?q=%E7%8C%AB+%E5%96%9C%E6%AC%A2");
+  });
+
+  it("getRecentFacts：GET /api/memories/facts 带有界 limit", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getRecentFacts(64);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories/facts?limit=64");
   });
 
   it("postObserve：POST /api/observe、body 含 idle_seconds、解析 {event_id}", async () => {

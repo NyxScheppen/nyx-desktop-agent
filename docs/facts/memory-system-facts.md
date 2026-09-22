@@ -40,7 +40,11 @@
 - `memory_entity` 以规范化名称 + `entity_type` 唯一，别名通过索引表合并 Nyx/Nyx 夏本/尼克斯等别名，同名异类不合并；旧 `aliases` JSON 保留作快照。
 - `remember_knowledge` 批量输入多个知识点时只调用一次 fact_extraction，输出用 `memory_index` 映射回各条 Memory；批量调用失败逐条 fallback，原始记忆仍落库。
 - `observe_user` 生成的 `USER_PROFILE` 不参与事实抽取，窗口标题和摘要不能制造用户偏好或状态事实；显式 functional 模式优先于谓词白名单。
+- `MemoryFact` REST/前端展示同时带 `subject_type`、`object_type`，前端用“类型 + canonical name”
+  区分同名异类实体。
 - 查询只围绕命中的实体返回全部当前有效事实；事实召回失败降级为空集。
+- `GET /api/memories/facts?limit=64` 为前端事实图提供有界当前有效事实快照；它不进入
+  `Memory[]`，也不调用 `record_recall`。
 - 查询包含明确月份时按该月份的有效事实召回，否则按当前时间过滤。
 - 单值谓词（就业状态、当前职业、居住地、当前公司等）按有效时间关闭旧事实；多值谓词（书中人物、主题、作者、影响等）同一时间保留多个对象；`polarity` 区分正/负关系。
 - 抽取 prompt 带 memory kind、来源范围和说话者规则，避免书中人物、引用和 Nyx 自述误归因给用户；旧就业/偏好规则作为 fallback。

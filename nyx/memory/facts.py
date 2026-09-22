@@ -429,7 +429,8 @@ class MemoryFactStore:
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
                 "COALESCE(o.canonical_name, f.object_value) AS object_value, "
                 "f.valid_from, f.valid_until, f.source_memory_id, "
-                "f.created_at, f.polarity, "
+                "f.created_at, f.polarity, s.entity_type AS subject_type, "
+                "o.entity_type AS object_type, "
                 "f.subject_entity_id, f.object_entity_id "
                 "FROM memory_fact f "
                 "JOIN memory_entity s ON s.id = f.subject_entity_id "
@@ -455,7 +456,8 @@ class MemoryFactStore:
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
                 "COALESCE(o.canonical_name, f.object_value) AS object_value, "
                 "f.valid_from, f.valid_until, f.source_memory_id, "
-                "f.created_at, f.polarity "
+                "f.created_at, f.polarity, s.entity_type AS subject_type, "
+                "o.entity_type AS object_type "
                 "FROM memory_fact f "
                 "JOIN memory_entity s ON s.id = f.subject_entity_id "
                 "LEFT JOIN memory_entity o ON o.id = f.object_entity_id "
@@ -482,7 +484,8 @@ class MemoryFactStore:
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
                 "COALESCE(o.canonical_name, f.object_value) AS object_value, "
                 "f.valid_from, f.valid_until, f.source_memory_id, "
-                "f.created_at, f.polarity "
+                "f.created_at, f.polarity, s.entity_type AS subject_type, "
+                "o.entity_type AS object_type "
                 "FROM memory_fact f "
                 "JOIN memory_entity s ON s.id = f.subject_entity_id "
                 "LEFT JOIN memory_entity o ON o.id = f.object_entity_id "
@@ -643,6 +646,16 @@ def _row_to_fact(row: aiosqlite.Row) -> MemoryFact:
         ),
         created_at=float(row["created_at"]),
         polarity=int(row["polarity"]) if "polarity" in row.keys() else 1,
+        subject_type=(
+            str(row["subject_type"])
+            if "subject_type" in row.keys() and row["subject_type"] is not None
+            else "person"
+        ),
+        object_type=(
+            str(row["object_type"])
+            if "object_type" in row.keys() and row["object_type"] is not None
+            else "concept"
+        ),
     )
 
 

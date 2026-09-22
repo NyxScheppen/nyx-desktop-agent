@@ -20,6 +20,7 @@ import type {
   BackendEvent,
   BookListItem,
   CurrentState,
+  MemoryFact,
   Paragraph,
 } from "../src/types/api";
 
@@ -462,7 +463,13 @@ describe("desireStore / activityStore", () => {
   beforeEach(() => {
     useDesireStore.setState({ data: null, error: null });
     useActivityStore.setState({ data: null, results: null, error: null });
-    useMemoryStore.setState({ data: null, error: null });
+    useMemoryStore.setState({
+      data: null,
+      facts: null,
+      query: "",
+      error: null,
+      factsError: null,
+    });
   });
 
   it("desireStore.refresh：GET /api/desires → data 落 store", async () => {
@@ -515,22 +522,85 @@ describe("desireStore / activityStore", () => {
         sources: ["keyword"],
       },
     ];
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(fixture))
+      .mockResolvedValueOnce(jsonResponse([]));
     vi.stubGlobal("fetch", fetchMock);
 
     await useMemoryStore.getState().refresh();
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/memories");
     expect(useMemoryStore.getState().data).toEqual(fixture);
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/memories/facts?limit=64");
+    expect(useMemoryStore.getState().facts).toEqual([]);
   });
 
   it("memoryStore.refresh：getMemories throw → error", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
 
     await useMemoryStore.getState().refresh();
 
     expect(useMemoryStore.getState().error).toBe("fetch failed");
     expect(useMemoryStore.getState().data).toBeNull();
+    expect(useMemoryStore.getState().facts).toEqual([]);
+  });
+
+  it("memoryStore.refresh：事实接口失败不影响记忆列表", async () => {
+    const fixture = [{ id: "m1", summary: "记忆" }];
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(fixture))
+      .mockRejectedValueOnce(new TypeError("facts failed"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useMemoryStore.getState().refresh();
+
+    expect(useMemoryStore.getState().data).toEqual(fixture);
+    expect(useMemoryStore.getState().factsError).toBe("facts failed");
+  });
+
+  it("memoryStore.search：搜索记忆但保持事实图隔离", async () => {
+    const fact: MemoryFact = {
+      id: "f1",
+      subject: "用户",
+      subject_type: "person",
+      predicate: "就业状态",
+      object_value: "已工作",
+      object_type: "concept",
+      valid_from: 1,
+      valid_until: null,
+      source_memory_id: null,
+      created_at: 1,
+      polarity: 1,
+    };
+    useMemoryStore.setState({ facts: [fact] });
+    const fixture = [{ id: "m2", summary: "搜索结果" }];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useMemoryStore.getState().search("猫");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories/search?q=%E7%8C%AB");
+    expect(useMemoryStore.getState().query).toBe("猫");
+    expect(useMemoryStore.getState().data).toEqual(fixture);
+    expect(useMemoryStore.getState().facts).toEqual([fact]);
+  });
+
+  it("memoryStore.search：空关键词恢复全部记忆", async () => {
+    const fixture = [{ id: "m1", summary: "全部记忆" }];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(fixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useMemoryStore.getState().search("   ");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories");
+    expect(useMemoryStore.getState().query).toBe("");
+    expect(useMemoryStore.getState().data).toEqual(fixture);
   });
 });
 

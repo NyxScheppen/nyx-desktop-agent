@@ -1,10 +1,17 @@
 @echo off
 setlocal EnableExtensions
 
+set "NYX_MODE="
+set "NYX_NO_PAUSE="
+for %%A in (%*) do (
+    if /i "%%~A"=="--desktop" set "NYX_MODE=--desktop"
+    if /i "%%~A"=="--no-pause" set "NYX_NO_PAUSE=1"
+)
+
 rem A double-click normally uses "cmd /c"; relaunch with "cmd /k" so errors
 rem and tracebacks remain visible after the launcher exits.
 if /i not "%~1"=="--run" (
-    start "Nyx launcher" cmd.exe /k call "%~f0" --run
+    start "Nyx launcher" cmd.exe /k call "%~f0" --run %NYX_MODE% %NYX_NO_PAUSE%
     exit /b 0
 )
 
@@ -53,7 +60,7 @@ if not exist "%~dp0frontend\node_modules\.bin\vite.cmd" (
 
 echo.
 echo [Nyx] Starting backend (8000), waiting for readiness, then frontend (5173)...
-"%PYTHON%" dev.py
+"%PYTHON%" dev.py %NYX_MODE%
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
@@ -77,6 +84,10 @@ echo.
 echo [Nyx] Startup failed. Press any key to close this window.
 
 :finished
+if defined NYX_NO_PAUSE (
+    endlocal
+    exit /b %EXIT_CODE%
+)
 pause
 endlocal
 exit /b %EXIT_CODE%

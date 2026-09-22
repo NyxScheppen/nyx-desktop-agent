@@ -98,6 +98,8 @@ class MemoryFact:
     source_memory_id: str | None
     created_at: float
     polarity: int = 1
+    subject_type: str = "person"
+    object_type: str = "concept"
 
 
 # ---- 欲望 ----

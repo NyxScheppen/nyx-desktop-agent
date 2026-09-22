@@ -391,6 +391,40 @@ Python 过滤会随事实规模线性放大每条消息成本。
 查询门控。
 **影响的文件/决策**：`nyx/memory/facts.py`、`nyx/expression/pipeline.py`、事实层测试。
 
+### 2026-09-21: 桌宠窗口不能用 always-on-bottom 代替“不覆盖其他操作”
+
+**来源**：Tauri 桌宠窗口不可见、头像无法点击和拖动。
+**教训**：Windows 的 always-on-bottom 会把窗口强制压到其他应用后面；窗口虽然没有覆盖操作，
+但用户也无法看见或命中它的交互区域，表现为桌宠被截断或不能拖动。
+**怎么做**：桌宠使用普通非置顶窗口层级；其他应用激活时自然位于其后，桌宠重新获得焦点时仍可见可交互。
+窗口层级变更后必须重启 Tauri 进程，并检查窗口尺寸、可见性和 topmost 样式。
+**影响的文件/决策**：`frontend/src/lib/desktopWindow.ts`、`frontend/src-tauri/tauri.conf.json`、桌宠窗口契约。
+
+### 2026-09-21: 桌宠子面板必须阻止指针事件冒泡到头像拖动层
+
+**来源**：半月菜单中的聊天、读书和设置按钮点击无效。
+**教训**：菜单/面板虽然视觉上位于圆球外，仍是 Avatar 的子节点；头像在 `pointerdown` 时捕获指针后，
+子按钮的后续 click 会被拖动逻辑抢走。
+**怎么做**：桌宠交互层在 `pointerdown`、`click` 和 `doubleclick` 上阻止冒泡；Avatar 只处理圆球本身的
+点击/拖动。半月菜单的所有按钮还必须落在透明窗口的可视区域内。
+**影响的文件/决策**：`frontend/src/components/desktop/PetShell.tsx`、桌宠菜单布局 CSS。
+
+### 2026-09-21: 桌宠入口布局要按窗口几何预留头像上下空间
+
+**来源**：半月菜单的下方按钮超出透明窗口底部，部分入口被裁切；菜单球还会遮住头像。
+**教训**：桌宠菜单的绝对定位相对 Avatar 内部层，而不是整个窗口；只调整菜单坐标不够，必须同时为
+头像和菜单预留上下空间，并按圆球尺寸检查最小窗口边界。
+**怎么做**：头像上移，为下方入口预留固定空间；菜单使用紧凑的对称圆弧并限制总宽高，所有可点击控件都必须落在
+`560×520` 桌宠窗口内。
+**影响的文件/决策**：`frontend/src/components/desktop/PetShell.tsx`、`frontend/src/index.css`、桌宠窗口布局契约。
+
+### 2026-09-21: 原生窗口拖动必须由桌宠模式显式授权
+
+**来源**：完整桌面端拖动头像时整个 Tauri 窗口跟着移动。
+**教训**：把 `isTauriRuntime()` 直接当作拖动策略，会让同一组件在完整端和桌宠态共享错误的窗口级副作用。
+**怎么做**：由上层传入 `useNativeWindowDrag`；桌宠态开启，完整端关闭，运行时检测只负责确认 Tauri API 是否可用。为两种模式各留一条回归测试。
+**影响的文件/决策**：`frontend/src/components/inner/Avatar.tsx`、`frontend/src/App.tsx`、`frontend/src/components/desktop/PetShell.tsx`、`docs/specs/13-desktop-pet.md`。
+
 ## 模板（条目格式）
 
 ```

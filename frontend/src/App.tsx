@@ -3,6 +3,7 @@ import { dispatchEvent } from "./api/dispatch";
 import ChatInput from "./components/chat/ChatInput";
 import MessageList from "./components/chat/MessageList";
 import Avatar from "./components/inner/Avatar";
+import PetShell from "./components/desktop/PetShell";
 import InnerStatePanel from "./components/inner/InnerStatePanel";
 import SettingsView from "./components/layout/SettingsView";
 import ActivityPanel from "./components/panels/ActivityPanel";
@@ -20,6 +21,7 @@ import { useChatStore } from "./stores/chatStore";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
 import { useReaderStore } from "./stores/readerStore";
 import { useSettingsStore } from "./stores/settingsStore";
+import { applyDesktopMode, isTauriRuntime, type DesktopMode } from "./lib/desktopWindow";
 import type { ConnectionState } from "./types/api";
 
 const CONNECTION_LABEL: Record<ConnectionState, string> = {
@@ -44,6 +46,9 @@ export default function App() {
   const refreshActivity = useActivityStore((s) => s.refresh);
   usePresence(status);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [desktopMode, setDesktopMode] = useState<DesktopMode>(() =>
+    isTauriRuntime() ? "pet" : "full",
+  );
   // 中间内容区当前视图：默认 reading（书架/阅读页）；其余 = 对应面板（RightDock 底部按钮切换）
   const [view, setView] = useState<View>("reading");
   const bookId = useReaderStore((s) => s.bookId);
@@ -101,8 +106,22 @@ export default function App() {
   } as CSSProperties;
   const timePhase = timePhaseAt(now);
 
+  useEffect(() => {
+    void applyDesktopMode(desktopMode);
+  }, [desktopMode]);
+
+  const enterFullDesktop = () => {
+    setSettingsOpen(false);
+    setDesktopMode("full");
+  };
+
+  const enterPetMode = () => {
+    setSettingsOpen(false);
+    setDesktopMode("pet");
+  };
+
   return (
-    <div className="app" data-time-phase={timePhase}>
+    <div className={`app app--${desktopMode}`} data-time-phase={timePhase}>
       <div className="app-bg" aria-hidden="true" style={bgStyle} />
       {tint !== null && image !== null && (
         <div className="app-bg-tint" aria-hidden="true" style={{ backgroundColor: tint }} />
@@ -140,7 +159,19 @@ export default function App() {
       </main>
 
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
-      <Avatar night={timePhase === "night"} />
+      {desktopMode === "pet" ? (
+        <PetShell
+          night={timePhase === "night"}
+          onExpand={enterFullDesktop}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+      ) : (
+        <Avatar
+          night={timePhase === "night"}
+          useNativeWindowDrag={false}
+          onDoubleClick={enterPetMode}
+        />
+      )}
     </div>
   );
 }

@@ -97,8 +97,8 @@ topics 联想约束：
 ## 事实层
 
 记忆层另外维护通用的时序实体关系图，不改变 `Memory` 和 `memory_edge` 的语义。事实由
-`MemoryFact` 表示：`subject`、`predicate`、`object_value`、`valid_from`、
-`valid_until`、`polarity` 与可空 `source_memory_id`。实体不是“用户属性”专表，至少可以
+`MemoryFact` 表示：`subject`、`subject_type`、`predicate`、`object_value`、
+`object_type`、`valid_from`、`valid_until`、`polarity` 与可空 `source_memory_id`。实体不是“用户属性”专表，至少可以
 表示用户、Nyx、书籍、书中人物、地点、组织、概念和事件。事实关闭有效期而不物理删除，
 因此可以回答“六月正在求职、九月已经工作”的历史变化，也可以表达“某书包含某人物”、
 “Nyx 喜欢古典文学”等多值关系。
@@ -822,7 +822,16 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 
 ## API 端点
 
-无新增 API。`GET /api/memories/search` 仍返回 `Memory[]`；`sources` 会更准确地体现 `vector` / `keyword` / `association`。
+记忆相关 REST 端点：
+
+- `GET /api/memories` 返回 `Memory[]` 快照。
+- `GET /api/memories/search?q=...` 返回复用现有混合召回的 `Memory[]`；`sources` 会体现
+  `vector` / `keyword` / `association`。
+- `GET /api/memories/facts?limit=64` 返回最多 64 条当前有效 `MemoryFact[]`，供前端事实图
+  使用。`limit` 范围为 `0..64`；事实读取失败由 Facade 降级为空集，不阻塞记忆功能。
+
+事实图与普通记忆列表在前端保持两个独立视图；事实不会混入 `Memory[]`，记忆搜索也不会改变
+事实图数据。
 
 ## 测试要点
 

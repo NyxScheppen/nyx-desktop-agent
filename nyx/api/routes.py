@@ -40,6 +40,7 @@ from nyx.types import (
     LlmMessage,
     Material,
     Memory,
+    MemoryFact,
     Paragraph,
     ReadingProgress,
     SelfNarrative,
@@ -164,6 +165,12 @@ def build_app(
     @fast.get("/api/memories/search")
     async def api_memory_search(q: str) -> list[Memory]:
         return await app.memory.search(q)
+
+    @fast.get("/api/memories/facts")
+    async def api_memory_facts(
+        limit: int = Query(64, ge=0, le=64),
+    ) -> list[MemoryFact]:
+        return await app.memory.recent_facts(limit)
 
     @fast.get("/api/desires")
     async def api_desires() -> DesireState:

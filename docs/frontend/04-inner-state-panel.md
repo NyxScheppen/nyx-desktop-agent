@@ -8,13 +8,18 @@
 
 ```
 InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 innerLifeStore.current
-├─ ValenceArousalPlot           # 二维散点图：x=valence, y=arousal（放大，最显眼）
-├─ EnergyBar                    # 精力条 + energy_state 文案
-├─ BigFiveChart                 # 五维双端量表（openness..neuroticism）
-└─ ValuesChart                  # 三观四维（attitude_to_human..optimism）
+├─ inner-state-panel__top       # VAD 图 + 精力条，顶部并排
+│  ├─ ValenceArousalPlot        # 二维散点图：x=valence, y=arousal
+│  └─ EnergyBar                 # 精力条 + energy_state 文案
+└─ inner-state-panel__charts    # 性格/三观两列，审美占整行
+   ├─ BigFiveChart              # 五维双端量表（openness..neuroticism）
+   ├─ ValuesChart               # 三观四维（attitude_to_human..optimism）
+   └─ AestheticChart            # 审美四维
 ```
 
 - `InnerStatePanel`：`useInnerLifeStore(s => s.current)`；`current === null` 时显示「加载中/未连接」；`error` 非 null 时在面板顶部红字一行显示（同 03 ChatInput 的 sendError）。
+- 内在状态主体使用紧凑的两列布局，常规桌面窗口中一次展示 VAD、精力、性格、三观和审美；窄屏回退为单列以避免语义标签被挤压。布局只调整展示，不改变 `CurrentState` 或 store。
+- 面板容器填满外围 `side-panel` 的可用高度，内容仍从顶部紧凑排列；窄屏布局只改变内部列数，不改变面板尺寸。
 - 各子组件只收**它需要的字段**作 props（如 `ValenceArousalPlot` 收 `{valence, arousal}`），不传整个 `CurrentState`，减少重渲染（简单，非过度抽象——每子组件确实独立消费）。
 
 ## 2. 情绪 sprite（`EmotionSprite`）
@@ -29,7 +34,7 @@ InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 in
 - 二维散点：x 轴 `valence ∈ [-1, 1]`（左负右正），y 轴 `arousal ∈ [0, 1]`（下低上高）。单点 + 十字虚线标出当前值。
 - 用 `<canvas>` 或轻量 SVG 手绘（核心先行不引图表库——单点定位图，canvas 足够，避免新依赖）。**不引 recharts/d3**（未请求的复杂度）。
 - 语义对齐 `docs/specs/08-inner-life.md`：`valence` 正负 = 情绪正负，`arousal` 高低 = 激活度；图上轻标注 6 档象限区（开心/害羞/悲伤/生气/担忧/平静），经 `EMOTION_LABELS` 与后端 `vad_to_category` 的 6 分类一一对应（右上下=开心/害羞、左上中下=生气/担忧/悲伤、中央带=平静），纯视觉辅助。
-- 放大：`va-plot` `max-width: 24rem`（原 16rem），内在面板移除立绘后作为最显眼的可视化元素。
+- 紧凑展示：桌面布局中 `va-plot` 的面板内最大宽度为 `14rem`，仍保留为顶部主视觉；窄屏回退到最多 `16rem`。
 
 ## 4. 精力条（`EnergyBar`）
 
@@ -52,5 +57,5 @@ InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 in
 
 ## 7. 测试（`tests/stores.test.ts` 已覆盖数据层）
 
-- 组件层（React Testing Library）轻测：`EnergyBar` 按 `energy`/`energy_state` 渲染中文文案、`EmotionSprite` 按 `emotion` 选图文件名、`BigFiveChart`/`ValuesChart` 按 personality/values 渲染双端语义（低端词/高端词，不做数值断言）、`InnerStatePanel` 在 `current=null` 时整体占位不崩（§6 守卫在面板层，不渲染子组件）。
+- 组件层（React Testing Library）轻测：`EnergyBar` 按 `energy`/`energy_state` 渲染中文文案、`EmotionSprite` 按 `emotion` 选图文件名、`BigFiveChart`/`ValuesChart` 按 personality/values 渲染双端语义（低端词/高端词，不做数值断言）、`InnerStatePanel` 在 `current=null` 时整体占位不崩（§6 守卫在面板层，不渲染子组件），非空时保留顶部和三段指标布局容器。
 - 图表坐标/像素不做断言（README §6）。

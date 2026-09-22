@@ -13,10 +13,10 @@
 | 状态 | Zustand（每系统一个 store） | CLAUDE.md |
 | 构建 | Vite | React 常规工具链 |
 | 测试 | Vitest + React Testing Library | Vite 生态，同构 TS |
-| 桌面壳 | Tauri（薄壳：**核心先行仅承载 webview**） | `docs/design/design.md` |
+| 桌面壳 | Tauri v2（透明桌宠窗口 + 完整 WebView） | `docs/specs/13-desktop-pet.md` |
 | 通信 | SSE over localhost（实时）+ REST（快照） | `docs/specs/04-module-bus-system.md` / `docs/tech-reference.md` |
 
-> **核心先行范围外（defer）**：Tauri 壳的**托盘菜单、系统通知、自定义窗口行为**不在核心先行内。webview 层（聊天 + 内在 + SSE）跑通后，系统通知的**触发 UX 未定义**——搭话（`initiate_chat`）虽是核心先行事件、欲望满足（`desire_satisfied`）非核心先行，但两者「是否/何时弹系统通知」都未定义，届时再定，不在现在预埋触发点（反冗余）。
+> 托盘菜单和系统通知仍未定义；当前已落地桌宠窗口行为：Tauri 启动为透明、无边框、普通非置顶的小窗口（其他应用激活时自然位于其后），头像拖动会移动整个窗口，双击头像切换完整桌面端，完整端再次双击头像收回。
 
 ## 2. 进程边界
 
@@ -56,7 +56,7 @@
 
 | 通道 | 用途 | 端点 |
 |---|---|---|
-| REST | 初始快照 + 发消息 + 历史查询 + 导出 | 13 个端点（tech-ref §4） |
+| REST | 初始快照 + 发消息 + 历史查询 + 导出 | 15 个端点（tech-ref §4） |
 | SSE | 实时**全部事件** | `GET /api/events` |
 
 - **SSE 是主通道**：后端广播全部事件，前端按 `event` 类型增量更新面板；REST 只做进页面时的初始快照 + 用户主动动作（发消息/导出）。事件语义见 `docs/specs/04-module-bus-system.md`。
@@ -85,8 +85,9 @@ frontend/
       labels.ts              # 枚举值→中文 UI 标签（label() 未知键回退原值）
       activityResult.ts      # 活动产出纯函数（activitySubject / formatResult / formatOutputBody / formatTools / activityAnnouncement）
       time.ts                # 本地昼夜、时钟/消息时间标签与时间分隔纯函数
+      desktopWindow.ts       # Tauri 桌宠/完整窗口尺寸、层级与原生拖动适配
     api/
-      client.ts              # REST fetch 封装（postChat / getState / postObserve / getDesires / getActivity / getActivityResults / getEventsLog，见 05-client）
+      client.ts              # REST fetch 封装（含记忆搜索/事实快照，见 05-client）
       dispatch.ts            # SseEvent → store 路由（01-sse §4.1）
     hooks/
       useSSE.ts              # SSE 订阅 hook（CLAUDE.md 点名）
@@ -97,11 +98,13 @@ frontend/
       innerLifeStore.ts      # 内在状态：CurrentState 快照
       desireStore.ts         # 欲望：DesireState 快照（快照 store）
       activityStore.ts       # 活动：ActivitySnapshot 快照 + 跨天产出 results（快照 store）
-      memoryStore.ts         # 记忆：Memory 快照（GET /api/memories + SSE memory_*）
+      memoryStore.ts         # 记忆 + 事实图：Memory/MemoryFact 快照、关键词查询 + SSE memory_*
       readerStore.ts         # 阅读：书架/进度/段落/追赶/笔记 + paginate 真分页纯函数
       settingsStore.ts       # 背景外观：tint/image/fontScale + 圆圈底色/尺寸/位置 circleColor/circleSize/avatarPos（后三者持久化 localStorage）
       announceStore.ts       # 立绘旁临时气泡：items/announce/dismiss（纯前端呈现，无后端）
     components/
+      desktop/
+        PetShell.tsx          # 头像下方紧凑圆弧菜单、聊天/选书/陪读小面板与状态气泡
       AnnounceLayer.tsx      # 头像圆圈头顶淡出气泡层（读 announceStore，嵌套在 Avatar 内）
       chat/
         MessageList.tsx
@@ -111,7 +114,7 @@ frontend/
         InnerStatePanel.tsx
         ValenceArousalPlot.tsx
         EmotionSprite.tsx
-        Avatar.tsx           # 可拖拽头像圆圈：拖拽/戳/红点通知（包裹 EmotionSprite + AnnounceLayer；见 08 §4）
+        Avatar.tsx           # 可拖拽头像圆圈：拖拽/菜单入口/红点通知（包裹 EmotionSprite + AnnounceLayer；见 08 §4/§8）
         EnergyBar.tsx
         BarChart.tsx
         BigFiveChart.tsx
@@ -120,7 +123,8 @@ frontend/
         BackgroundPanel.tsx  # 背景外观（预设色调/自定义取色/上传背景图/恢复默认）
         DesiresPanel.tsx     # 欲望面板（GET /api/desires + SSE desire_*）
         ActivityPanel.tsx    # 活动时间线 + 产出面板（GET /api/activity + results + SSE activity_*；产出区列完整产出 + 工具轨迹）
-        MemoryPanel.tsx      # 记忆面板（GET /api/memories + SSE memory_*）
+        MemoryPanel.tsx      # 记忆/事实图面板（搜索 + GET /api/memories/facts + SSE memory_*）
+        FactGraph.tsx         # 手写 SVG 实体关系图（不引入图表依赖）
       reading/
         BookshelfView.tsx    # 书架（GET /api/books + 导入 EPUB）
         ReaderView.tsx       # 阅读页：真分页（paginate + 测量/重测，08 §5）
@@ -136,6 +140,7 @@ frontend/
       expressions/          # 8 情绪表情图（EmotionCategory 1:1，方形 1080×1080）
   tests/
     api.test.ts              # API 端点测试（CLAUDE.md 要求）
+    memoryPanel.test.tsx     # 记忆搜索、事实图和事实降级测试
     sse.test.ts
     stores.test.ts
     labels.test.ts           # 枚举中文化映射 + label() 回退
@@ -157,9 +162,10 @@ frontend/
 | 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | `components/inner/InnerStatePanel.tsx`（`view==="inner"`） |
 | 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | `components/panels/DesiresPanel.tsx`（`view==="desire"`） |
 | 活动时间线 | ✅ 实现 | `GET /api/activity` + SSE `activity_*` | `components/panels/ActivityPanel.tsx`（`view==="activity"`） |
-| 记忆面板 | ✅ 实现 | `GET /api/memories` + SSE `memory_*` | `components/panels/MemoryPanel.tsx`（`view==="memory"`） |
+| 记忆面板 | ✅ 实现 | `GET /api/memories`、`GET /api/memories/search`、`GET /api/memories/facts` + SSE `memory_*` | `components/panels/MemoryPanel.tsx` + `FactGraph.tsx`（`view==="memory"`） |
 | 读书 | ✅ 实现（06/07） | `GET /api/books` + 进度/段落/笔记端点 | `components/reading/BookshelfView.tsx` + `ReaderView.tsx`（`view==="reading"`） |
 | 背景外观 | ✅ 实现 | 无（纯前端 `settingsStore`） | `components/layout/SettingsView.tsx`（复用 `components/panels/BackgroundPanel.tsx`） |
+| 桌宠模式 | ✅ 实现 | Tauri 窗口配置 + 纯前端 UI 状态 | `components/desktop/PetShell.tsx`、`lib/desktopWindow.ts` |
 
 ## 6. 测试约定
 
@@ -180,4 +186,4 @@ frontend/
 | `05-client.md` | `client.ts` 薄 fetch 封装（postChat/getState/postObserve）+ 错误契约 |
 | `06-reading-panel.md` | 阅读面板：书架 + 阅读页 + `readerStore` + Nyx 追赶（`setTimeout` 秒级逐段） |
 | `07-reading-events.md` | 阅读事件：读书提问/联想并进对话 + 碎碎念悬浮气泡 + 笔记面板 |
-| `08-reading-chat-layout.md` | App 布局、共享分钟时钟、昼夜视觉、头像圆圈与真分页 |
+| `08-reading-chat-layout.md` | App 布局、共享分钟时钟、昼夜视觉、头像圆圈、真分页与桌宠模式 |

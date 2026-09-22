@@ -11,6 +11,7 @@ import type {
   EvalStats,
   LlmPromptMessage,
   Memory,
+  MemoryFact,
   Paragraph,
   PresenceObservation,
   Progress,
@@ -74,6 +75,16 @@ export async function getDesires(): Promise<DesireState> {
 
 export async function getMemories(): Promise<Memory[]> {
   return request<Memory[]>(`${BASE_URL}/api/memories`);
+}
+
+export async function getMemorySearch(query: string): Promise<Memory[]> {
+  const params = new URLSearchParams({ q: query });
+  return request<Memory[]>(`${BASE_URL}/api/memories/search?${params.toString()}`);
+}
+
+export async function getRecentFacts(limit = 64): Promise<MemoryFact[]> {
+  const bounded = Math.max(0, Math.min(64, Math.floor(limit)));
+  return request<MemoryFact[]>(`${BASE_URL}/api/memories/facts?limit=${bounded}`);
 }
 
 export async function getActivity(): Promise<ActivitySnapshot> {

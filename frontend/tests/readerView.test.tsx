@@ -63,6 +63,8 @@ describe("ReaderView 位置高亮（真分页）", () => {
   it("侧栏已拆：笔记入口在 footer、header 显示她/你读到第几段", () => {
     render(<ReaderView />);
     expect(document.querySelector(".reader-sidebar")).toBeNull(); // 侧栏已拆
+    expect(screen.getByRole("button", { name: "上一页" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "下一页" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "笔记" })).toBeInTheDocument(); // 笔记入口在 footer
     const pos = document.querySelector(".reader__pos")?.textContent;
     expect(pos).toContain("她在等你");

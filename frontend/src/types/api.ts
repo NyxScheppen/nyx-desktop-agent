@@ -252,6 +252,20 @@ export type Memory = {
   sources: SearchMode[];
 };
 
+export type MemoryFact = {
+  id: string;
+  subject: string;
+  subject_type: string;
+  predicate: string;
+  object_value: string;
+  object_type: string;
+  valid_from: number;
+  valid_until: number | null;
+  source_memory_id: string | null;
+  created_at: number;
+  polarity: number;
+};
+
 // ---- 活动（09-activity / nyx/types.py Activity）----
 export type ActivityType =
   | "reading"

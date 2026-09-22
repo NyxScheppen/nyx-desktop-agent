@@ -13,20 +13,30 @@ export default function InnerStatePanel() {
   const error = useInnerLifeStore((s) => s.error);
 
   return (
-    <Panel title="内在状态">
+    <Panel title="内在状态" className="inner-state-panel">
       {error !== null && <p className="error-text inner-state-panel__error">{error}</p>}
       {current === null ? (
         "等待核心服务连接…"
       ) : (
         <div className="inner-state-panel__body">
-          <ValenceArousalPlot valence={current.valence} arousal={current.arousal} />
-          <EnergyBar energy={current.energy} energy_state={current.energy_state} />
-          <h3 className="panel-section-title">性格</h3>
-          <BigFiveChart personality={current.personality} />
-          <h3 className="panel-section-title">三观</h3>
-          <ValuesChart values={current.values} />
-          <h3 className="panel-section-title">审美</h3>
-          <AestheticChart aesthetic={current.aesthetic} />
+          <div className="inner-state-panel__top">
+            <ValenceArousalPlot valence={current.valence} arousal={current.arousal} />
+            <EnergyBar energy={current.energy} energy_state={current.energy_state} />
+          </div>
+          <div className="inner-state-panel__charts">
+            <section className="inner-state-panel__section">
+              <h3 className="panel-section-title">性格</h3>
+              <BigFiveChart personality={current.personality} />
+            </section>
+            <section className="inner-state-panel__section">
+              <h3 className="panel-section-title">三观</h3>
+              <ValuesChart values={current.values} />
+            </section>
+            <section className="inner-state-panel__section">
+              <h3 className="panel-section-title">审美</h3>
+              <AestheticChart aesthetic={current.aesthetic} />
+            </section>
+          </div>
         </div>
       )}
     </Panel>

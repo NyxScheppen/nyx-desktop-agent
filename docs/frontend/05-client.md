@@ -13,6 +13,9 @@ async function postChat(message: string): Promise<{ event_id: string }> // POST 
 async function getState(): Promise<CurrentState>                                 // GET /api/state
 async function postObserve(observation: PresenceObservation, signal?: AbortSignal): Promise<{ event_id: string }>  // POST /api/observe
 async function getDesires(): Promise<DesireState>                                // GET /api/desires
+async function getMemories(): Promise<Memory[]>                                  // GET /api/memories
+async function getMemorySearch(query: string): Promise<Memory[]>                 // GET /api/memories/search?q=（混合召回）
+async function getRecentFacts(limit = 64): Promise<MemoryFact[]>                 // GET /api/memories/facts?limit=（0..64）
 async function getActivity(): Promise<ActivitySnapshot>                          // GET /api/activity
 async function getActivityResults(): Promise<Activity[]>                          // GET /api/activity/results
 async function getEventsLog(params?): Promise<BackendEvent[]>                    // GET /api/events/log?limit=&event_type=&correlation_id=
@@ -62,6 +65,9 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 - 每个函数 mock `fetch`，断言请求 URL/method/请求体键 + 响应解析：
   - `postChat`：请求 `POST /api/chat`、body `{message}` → 返回 `{event_id}` 解析正确。
   - `getState`：`GET /api/state` → 返回 `CurrentState` 解析正确。
+  - `getMemories` / `getMemorySearch`：分别请求 `/api/memories` 与 URL 编码后的
+    `/api/memories/search?q=`。
+  - `getRecentFacts`：请求 `/api/memories/facts?limit=`，limit 在 client 侧限制到 `0..64`。
   - `postObserve`：`POST /api/observe`、body `{presence, window_title, idle_seconds, sampled_at}` + signal → 返回 `{event_id}` 解析正确。
   - `getDesires`：`GET /api/desires` → `DesireState` 解析正确。
   - `getActivity`：`GET /api/activity` → `ActivitySnapshot` 解析正确。

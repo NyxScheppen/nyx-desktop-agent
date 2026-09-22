@@ -113,6 +113,20 @@ python dev.py        # 同时拉起后端(8000) + 前端 Vite(5173)，Ctrl+C 退
 
 Windows 用户也可以直接双击项目根目录的 `start_nyx.bat` 启动；脚本会优先使用项目 `.venv`，并检查 Python/uvicorn、Node.js/npm 与前端依赖。重启时 launcher 会用原子 lock 串行化流程，先关闭自己记录或在 8000 上发现的旧 Nyx backend；若端口由未知进程占用则拒绝启动。仅在常规 Python 环境不可用时尝试 `.runtime` 依赖，不混入可用的 `.venv`。启动失败时窗口会保持打开，方便直接查看错误。看到 `Checking npm` 后应继续显示 `Starting backend` 与前后端日志；浏览器访问 `http://localhost:5173` 测试，Ctrl+C 停止服务。
 
+### Windows 自动启动桌面端
+
+在项目根目录执行一次：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_nyx_autostart.ps1
+```
+
+脚本会在当前用户的 Windows 启动文件夹创建 `Nyx Desktop.lnk`，下次登录时以 `python dev.py --desktop` 启动桌面端，并沿用现有 launcher 的端口检查与进程清理。移除自动启动：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_nyx_autostart.ps1 -Uninstall
+```
+
 ### Windows 桌面构建
 
 ```bash

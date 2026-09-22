@@ -14,9 +14,14 @@
       {
         "label": "main",
         "title": "Nyx",
-        "width": 400,
-        "height": 700,
-        "resizable": true
+        "width": 560,
+        "height": 520,
+        "resizable": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": false,
+        "alwaysOnBottom": false,
+        "shadow": false
       }
     ],
     "security": {

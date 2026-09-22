@@ -324,6 +324,8 @@ async def test_fact_store_allows_same_name_with_different_entity_types() -> None
         )
         row = await cursor.fetchone()
         assert row is not None and row[0] == 2
+        facts = await store.search("同名", now=200.0)
+        assert {fact.subject_type for fact in facts} == {"person", "book"}
     finally:
         await database.close()
 

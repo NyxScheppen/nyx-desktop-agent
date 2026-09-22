@@ -35,6 +35,7 @@ from nyx.types import (
     Event,
     Material,
     Memory,
+    MemoryFact,
 )
 
 
@@ -109,6 +110,7 @@ class _FakeMemory:
         self.list_calls: list[tuple[MemoryKind | None, MemoryType | None]] = []
         self.export_calls: list[str] = []
         self.search_calls: list[str] = []
+        self.recent_facts_calls: list[int] = []
 
     async def list_memories(
         self, kind: MemoryKind | None = None, type: MemoryType | None = None
@@ -119,6 +121,15 @@ class _FakeMemory:
     async def search(self, query: str) -> list[Memory]:
         self.search_calls.append(query)
         return [_mem()]
+
+    async def recent_facts(self, limit: int = 32) -> list[MemoryFact]:
+        self.recent_facts_calls.append(limit)
+        return [
+            MemoryFact(
+                "f1", "用户", "就业状态", "已工作", 100.0, None, "m1", 100.0,
+                subject_type="person", object_type="concept",
+            )
+        ]
 
     async def export(self, fmt: str) -> str:
         self.export_calls.append(fmt)
@@ -240,6 +251,16 @@ async def test_memory_search_endpoint() -> None:
     assert resp.status_code == 200
     assert [m["type"] for m in resp.json()] == ["short_term"]
     assert memory.search_calls == ["猫"]
+
+
+async def test_memory_facts_endpoint() -> None:
+    memory = _FakeMemory()
+    async with _client(_app(_mk_state(), _FakeBus(), memory)) as client:
+        resp = await client.get("/api/memories/facts", params={"limit": 5})
+    assert resp.status_code == 200
+    assert resp.json()[0]["subject_type"] == "person"
+    assert resp.json()[0]["object_type"] == "concept"
+    assert memory.recent_facts_calls == [5]
 
 
 async def test_observe_endpoint() -> None:

@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：65
-- `pytest --collect-only -q`：1023 tests collected
-- 最近一次全量验证：`1022 passed, 1 skipped`
+- `pytest --collect-only -q`：1026 tests collected
+- 最近一次全量验证：`1025 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -34,7 +34,7 @@
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
 | 活动 | `tests/test_activity/` | 13 | 排期、活动生命周期、探索、观察、读书恢复 |
 | 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、时间/对话锚点/归来消费 |
-| 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动（单段单问、问题共享 180 秒冷却、联想共存）、笔记、整合和后台生命周期 |
+| 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动（单段单问、问题共享 180 秒冷却、成功后才计冷却、联想共存）、笔记、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
 
 ## 前端覆盖

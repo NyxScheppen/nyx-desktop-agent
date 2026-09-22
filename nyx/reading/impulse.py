@@ -236,6 +236,7 @@ def check_triggers(
     now: float,
     *,
     question_cooldown_at: float = 0.0,
+    question_pending: bool = False,
 ) -> list[ReadingBehavior]:
     """返回越过阈值且不在冷却中的行为列表。
 
@@ -249,7 +250,7 @@ def check_triggers(
         for behavior in QUESTION_BEHAVIORS
         if composite.get(behavior, 0.0) >= DEFAULT_THRESHOLDS[behavior]
     ]
-    question_in_cooldown = (
+    question_in_cooldown = question_pending or (
         question_cooldown_at > 0
         and now < question_cooldown_at + QUESTION_COOLDOWN_SEC
     )

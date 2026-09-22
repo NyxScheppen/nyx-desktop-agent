@@ -122,6 +122,7 @@ class ReadingFacade:
         # 见阅读系统 spec 关键决策。
         self._cooldowns: dict[ReadingBehavior, float] = {}
         self._question_cooldown_at = 0.0
+        self._question_pending = False
         self._mutter_at = 0.0
         self._integration = ReadingIntegration(llm, evaluator, memory, bus)
         self._nyx_buffer = self._integration.buffer
@@ -218,6 +219,9 @@ class ReadingFacade:
         """
         if paragraph_index <= last_paragraph_index:
             return []
+        key = (book_id, paragraph_index)
+        if key in self._impulse_inflight:
+            return []
         paragraphs = await self._store.list_paragraphs(
             book_id, paragraph_index, paragraph_index
         )
@@ -245,22 +249,23 @@ class ReadingFacade:
             self._cooldowns,
             now,
             question_cooldown_at=self._question_cooldown_at,
+            question_pending=self._question_pending,
         )
         mutter = (
             features.richness_score > MUTTER_RICHNESS_THRESHOLD
             and now - self._mutter_at >= MUTTER_COOLDOWN_SEC
         )
+        has_question = any(behavior in QUESTION_BEHAVIORS for behavior in triggered)
         for behavior in triggered:
-            if behavior in QUESTION_BEHAVIORS:
-                self._question_cooldown_at = now
-            else:
+            if behavior not in QUESTION_BEHAVIORS:
                 self._cooldowns[behavior] = now
         if mutter:
             self._mutter_at = now
 
         if triggered or mutter:
-            key = (book_id, paragraph_index)
             if key not in self._impulse_inflight:
+                if has_question:
+                    self._question_pending = True
                 task = self._spawn_background(
                     self._dispatch(
                         book_id, paragraph_index, text, triggered, mutter, state
@@ -271,6 +276,8 @@ class ReadingFacade:
                     task.add_done_callback(
                         lambda _task, key=key: self._impulse_inflight.pop(key, None)
                     )
+                elif has_question:
+                    self._question_pending = False
         return triggered
 
     async def _dispatch(
@@ -285,10 +292,17 @@ class ReadingFacade:
         semaphore = self._impulse_semaphores.setdefault(
             book_id, asyncio.Semaphore(_IMPULSE_MAX_CONCURRENCY_PER_BOOK)
         )
-        async with semaphore:
-            await self._companion.dispatch(
-                book_id, paragraph_index, text, behaviors, mutter, state
-            )
+        has_question = any(behavior in QUESTION_BEHAVIORS for behavior in behaviors)
+        try:
+            async with semaphore:
+                question_succeeded = await self._companion.dispatch(
+                    book_id, paragraph_index, text, behaviors, mutter, state
+                )
+            if has_question and question_succeeded:
+                self._question_cooldown_at = time.monotonic()
+        finally:
+            if has_question:
+                self._question_pending = False
 
     def _spawn_background(
         self, coroutine: Coroutine[Any, Any, None]

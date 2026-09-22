@@ -91,6 +91,13 @@ def test_check_triggers_question_types_share_cooldown() -> None:
     ) == []
 
 
+def test_check_triggers_pending_question_is_suppressed() -> None:
+    composite = {ReadingBehavior.QUESTION_KNOWLEDGE: 0.6}
+    assert check_triggers(
+        composite, {}, now=1100.0, question_pending=True
+    ) == []
+
+
 def test_check_triggers_question_cooldown_opens_at_180_seconds() -> None:
     composite = {ReadingBehavior.QUESTION_KNOWLEDGE: 0.6}
     assert check_triggers(

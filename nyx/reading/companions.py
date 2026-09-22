@@ -65,15 +65,20 @@ class ReadingCompanion:
         behaviors: list[ReadingBehavior],
         mutter: bool,
         state: CurrentState,
-    ) -> None:
+    ) -> bool:
         """Run each selected behavior without changing trigger semantics."""
+        question_succeeded = False
         if mutter:
             await self.mutter(book_id, paragraph_index, text, state)
         for behavior in behaviors:
             if behavior is ReadingBehavior.ASSOCIATE:
                 await self.associate(book_id, paragraph_index, text)
             else:
-                await self.question(book_id, paragraph_index, text, behavior, state)
+                question_succeeded = (
+                    await self.question(book_id, paragraph_index, text, behavior, state)
+                    or question_succeeded
+                )
+        return question_succeeded
 
     async def mutter(
         self,
@@ -129,8 +134,9 @@ class ReadingCompanion:
         text: str,
         behavior: ReadingBehavior,
         state: CurrentState,
-    ) -> None:
+    ) -> bool:
         """Generate and publish one question behavior."""
+        committed = False
         try:
             system = build_system_prompt(self._canon, state)
             user = (
@@ -150,18 +156,18 @@ class ReadingCompanion:
             await self._evaluator.evaluate(output)
             raw = output.content.strip()
             if not raw:
-                return
+                return False
             if behavior is ReadingBehavior.QUOTE_QUESTION:
                 content, _, quote = raw.partition("\n")
                 content = content.strip()
                 selected_text = quote.strip()
                 if not selected_text:
-                    return
+                    return False
             else:
                 content = raw
                 selected_text = None
             if not content or not is_question(content):
-                return
+                return False
             correlation_id = f"{book_id}:{paragraph_index}"
             commit = getattr(self._expression, "commit_reading_question", None)
             if callable(commit):
@@ -181,6 +187,7 @@ class ReadingCompanion:
                         "selected_text": selected_text,
                     },
                 )
+                committed = True
             else:
                 register = getattr(self._expression, "register_question", None)
                 if callable(register):
@@ -210,8 +217,10 @@ class ReadingCompanion:
                         correlation_id,
                     )
                 )
+                committed = True
             await self._record_output(book_id, paragraph_index, content, "question")
             self._expression.record_proactive_turn(content)
+            return committed
         except Exception:
             self._logger.exception(
                 "陪读提问失败 behavior=%s book_id=%s paragraph_index=%d",
@@ -219,6 +228,7 @@ class ReadingCompanion:
                 book_id,
                 paragraph_index,
             )
+            return committed
 
     async def associate(
         self, book_id: str, paragraph_index: int, text: str

@@ -621,6 +621,7 @@ async def test_evaluate_paragraph_cooldown_suppresses_repeat(
         book = await facade.import_book("a.epub", b"x")
         first = await facade.evaluate_paragraph(book.id, 1, 0)
         second = await facade.evaluate_paragraph(book.id, 2, 1)
+        await facade.drain()
     finally:
         await database.conn.close()
     assert ReadingBehavior.ASSOCIATE in first
@@ -668,6 +669,71 @@ async def test_evaluate_paragraph_allows_one_question_and_association(
     assert ReadingBehavior.ASSOCIATE in triggered
     assert len(question_calls) == 1
     assert len(question_events) == 1
+
+
+async def test_evaluate_paragraph_failed_question_does_not_consume_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, bus, llm, _ = await _impulse_facade(
+        monkeypatch,
+        [
+            Segment(text=_RICH_TEXT, is_chapter_start=False),
+            Segment(text=_RICH_TEXT, is_chapter_start=False),
+        ],
+        llm=_FakeLlm(default=""),
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        first = await facade.evaluate_paragraph(book.id, 1, 0)
+        await facade.drain()
+        llm._default = "为什么这段重要？"
+        second = await facade.evaluate_paragraph(book.id, 2, 1)
+        await facade.drain()
+    finally:
+        await database.conn.close()
+    question_behaviors = {
+        ReadingBehavior.QUESTION_KNOWLEDGE,
+        ReadingBehavior.QUESTION_PERSONAL,
+        ReadingBehavior.QUESTION_REFLECTIVE,
+        ReadingBehavior.QUOTE_QUESTION,
+    }
+    assert question_behaviors.intersection(first)
+    assert question_behaviors.intersection(second)
+    question_events = [
+        event for event in bus.published
+        if event.type is EventType.READING_QUESTION
+    ]
+    assert len(question_events) == 1
+
+
+async def test_evaluate_paragraph_llm_failure_does_not_consume_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, _, _, _ = await _impulse_facade(
+        monkeypatch,
+        [
+            Segment(text=_RICH_TEXT, is_chapter_start=False),
+            Segment(text=_RICH_TEXT, is_chapter_start=False),
+        ],
+        llm=_RaisingLlm(),
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        first = await facade.evaluate_paragraph(book.id, 1, 0)
+        await facade.drain()
+        second = await facade.evaluate_paragraph(book.id, 2, 1)
+        await facade.drain()
+    finally:
+        await database.conn.close()
+    question_behaviors = {
+        ReadingBehavior.QUESTION_KNOWLEDGE,
+        ReadingBehavior.QUESTION_PERSONAL,
+        ReadingBehavior.QUESTION_REFLECTIVE,
+        ReadingBehavior.QUOTE_QUESTION,
+    }
+    assert question_behaviors.intersection(first)
+    assert question_behaviors.intersection(second)
+    assert facade._question_cooldown_at == 0.0
 
 
 async def test_evaluate_paragraph_flat_paragraph_no_mutter(

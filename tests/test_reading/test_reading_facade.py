@@ -611,7 +611,11 @@ async def test_evaluate_paragraph_cooldown_suppresses_repeat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     facade, database, _, _, _ = await _impulse_facade(
-        monkeypatch, [Segment(text=_RICH_TEXT, is_chapter_start=False)],
+        monkeypatch,
+        [
+            Segment(text=_RICH_TEXT, is_chapter_start=False),
+            Segment(text=_RICH_TEXT, is_chapter_start=False),
+        ],
     )
     try:
         book = await facade.import_book("a.epub", b"x")
@@ -621,6 +625,49 @@ async def test_evaluate_paragraph_cooldown_suppresses_repeat(
         await database.conn.close()
     assert ReadingBehavior.ASSOCIATE in first
     assert second == []  # 同一批行为全部在冷却中
+
+
+async def test_evaluate_paragraph_allows_one_question_and_association(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, bus, llm, _ = await _impulse_facade(
+        monkeypatch, [Segment(text=_RICH_TEXT, is_chapter_start=False)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        triggered = await facade.evaluate_paragraph(book.id, 1, 0)
+        await facade.drain()
+    finally:
+        await database.conn.close()
+    question_types = {
+        behavior
+        for behavior in triggered
+        if behavior
+        in {
+            ReadingBehavior.QUESTION_KNOWLEDGE,
+            ReadingBehavior.QUESTION_PERSONAL,
+            ReadingBehavior.QUESTION_REFLECTIVE,
+            ReadingBehavior.QUOTE_QUESTION,
+        }
+    }
+    question_calls = [
+        call for call in llm.calls
+        if call[0]
+        in {
+            "question_knowledge",
+            "question_personal",
+            "question_reflective",
+            "quote_question",
+        }
+    ]
+    question_events = [
+        event for event in bus.published
+        if event.type is EventType.READING_QUESTION
+    ]
+    assert len(question_types) == 1
+    assert ReadingBehavior.ASSOCIATE in triggered
+    assert len(question_calls) == 1
+    assert len(question_events) == 1
 
 
 async def test_evaluate_paragraph_flat_paragraph_no_mutter(
@@ -665,6 +712,7 @@ async def test_evaluate_paragraph_quote_question_splits_lines(
     facade, database, bus, _, _ = await _impulse_facade(
         monkeypatch,
         [Segment(text=_RICH_TEXT, is_chapter_start=False)],
+        state=_mk_state(energy=0.0, agreeableness=2.0),
         llm=llm,
     )
     try:
@@ -690,6 +738,7 @@ async def test_evaluate_paragraph_quote_question_single_line_is_rejected(
     facade, database, bus, _, _ = await _impulse_facade(
         monkeypatch,
         [Segment(text=_RICH_TEXT, is_chapter_start=False)],
+        state=_mk_state(energy=0.0, agreeableness=2.0),
         llm=llm,
     )
     try:

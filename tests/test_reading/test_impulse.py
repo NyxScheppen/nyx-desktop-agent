@@ -72,16 +72,40 @@ def test_compute_composite_weights_spot_check() -> None:
 
 
 def test_check_triggers_above_threshold_fires() -> None:
-    composite = {ReadingBehavior.QUESTION_KNOWLEDGE: 0.6}
+    composite = {
+        ReadingBehavior.QUESTION_KNOWLEDGE: 0.6,
+        ReadingBehavior.QUESTION_PERSONAL: 0.7,
+    }
     assert check_triggers(composite, {}, now=1000.0) == [
-        ReadingBehavior.QUESTION_KNOWLEDGE
+        ReadingBehavior.QUESTION_PERSONAL
     ]
 
 
-def test_check_triggers_within_cooldown_suppressed() -> None:
+def test_check_triggers_question_types_share_cooldown() -> None:
+    composite = {
+        ReadingBehavior.QUESTION_KNOWLEDGE: 0.6,
+        ReadingBehavior.QUESTION_PERSONAL: 0.7,
+    }
+    assert check_triggers(
+        composite, {}, now=1100.0, question_cooldown_at=1000.0
+    ) == []
+
+
+def test_check_triggers_question_cooldown_opens_at_180_seconds() -> None:
     composite = {ReadingBehavior.QUESTION_KNOWLEDGE: 0.6}
-    cooldowns = {ReadingBehavior.QUESTION_KNOWLEDGE: 1000.0}
-    assert check_triggers(composite, cooldowns, now=1000.0) == []
+    assert check_triggers(
+        composite, {}, now=1180.0, question_cooldown_at=1000.0
+    ) == [ReadingBehavior.QUESTION_KNOWLEDGE]
+
+
+def test_check_triggers_associate_remains_independent() -> None:
+    composite = {
+        ReadingBehavior.QUESTION_KNOWLEDGE: 0.6,
+        ReadingBehavior.ASSOCIATE: 0.6,
+    }
+    assert check_triggers(
+        composite, {}, now=1100.0, question_cooldown_at=1000.0
+    ) == [ReadingBehavior.ASSOCIATE]
 
 
 def test_check_triggers_below_threshold_suppressed() -> None:

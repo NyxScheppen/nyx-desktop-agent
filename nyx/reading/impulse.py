@@ -1,7 +1,8 @@
 """阅读冲动引擎纯函数层（reading-system spec）。
 
-关键词表 / 权重 / 阈值 / 冷却照搬 S06（feature_extractor / composite_engine）。
-6 驱动「现算」、复合加权、阈值+冷却判定。全部同步纯函数，无 IO 无 LLM。
+关键词表 / 权重 / 阈值照搬 S06（feature_extractor / composite_engine）。
+6 驱动「现算」、复合加权、阈值+冷却判定；四类提问在 V1 共享冷却并互斥
+选择。全部同步纯函数，无 IO 无 LLM。
 
 密度校准：S06 的原始密度 ~0.01 量级，直接进 richness 加权后阈值 0.5 永不可达
 （latent bug）。V1 对原始密度先 `_saturate` 线性饱和到 [0,1]（`_DENSITY_CAP` 为
@@ -47,6 +48,14 @@ MUTTER_COOLDOWN_SEC = 30             # mutter 冷却（替代 S06 的 S12 should
 
 # ---- 复合权重 / 阈值 / 冷却（照搬 S06 composite_engine.py，5 行为无 mutter）----
 
+QUESTION_BEHAVIORS = (
+    ReadingBehavior.QUESTION_KNOWLEDGE,
+    ReadingBehavior.QUESTION_PERSONAL,
+    ReadingBehavior.QUESTION_REFLECTIVE,
+    ReadingBehavior.QUOTE_QUESTION,
+)
+QUESTION_COOLDOWN_SEC = 180
+
 DEFAULT_COMPOSITE_WEIGHTS: dict[ReadingBehavior, dict[ReadingDrive, float]] = {
     ReadingBehavior.QUESTION_KNOWLEDGE: {
         ReadingDrive.CURIOSITY: 0.50,
@@ -84,10 +93,6 @@ DEFAULT_THRESHOLDS: dict[ReadingBehavior, float] = {
 }
 
 DEFAULT_COOLDOWNS_SEC: dict[ReadingBehavior, int] = {
-    ReadingBehavior.QUESTION_KNOWLEDGE: 120,
-    ReadingBehavior.QUESTION_PERSONAL: 180,
-    ReadingBehavior.QUESTION_REFLECTIVE: 150,
-    ReadingBehavior.QUOTE_QUESTION: 180,
     ReadingBehavior.ASSOCIATE: 60,
 }
 
@@ -229,14 +234,39 @@ def check_triggers(
     composite: dict[ReadingBehavior, float],
     cooldowns: dict[ReadingBehavior, float],
     now: float,
+    *,
+    question_cooldown_at: float = 0.0,
 ) -> list[ReadingBehavior]:
-    """返回越过阈值且不在冷却中的行为列表（`now` 显式注入，不依赖真实时钟）。"""
+    """返回越过阈值且不在冷却中的行为列表。
+
+    四类提问共享一个冷却窗口，每段只保留分数最高的提问；联想仍独立
+    使用自己的冷却。`now` 和冷却时间戳显式注入，便于纯函数测试。
+    """
     triggered: list[ReadingBehavior] = []
-    for behavior, value in composite.items():
-        last_at = cooldowns.get(behavior, 0.0)
-        in_cooldown = (
-            last_at > 0 and now < last_at + DEFAULT_COOLDOWNS_SEC[behavior]
+
+    question_candidates = [
+        behavior
+        for behavior in QUESTION_BEHAVIORS
+        if composite.get(behavior, 0.0) >= DEFAULT_THRESHOLDS[behavior]
+    ]
+    question_in_cooldown = (
+        question_cooldown_at > 0
+        and now < question_cooldown_at + QUESTION_COOLDOWN_SEC
+    )
+    if question_candidates and not question_in_cooldown:
+        triggered.append(
+            max(question_candidates, key=lambda behavior: composite[behavior])
         )
-        if value >= DEFAULT_THRESHOLDS[behavior] and not in_cooldown:
-            triggered.append(behavior)
+
+    associate = ReadingBehavior.ASSOCIATE
+    associate_last_at = cooldowns.get(associate, 0.0)
+    associate_in_cooldown = (
+        associate_last_at > 0
+        and now < associate_last_at + DEFAULT_COOLDOWNS_SEC[associate]
+    )
+    if (
+        composite.get(associate, 0.0) >= DEFAULT_THRESHOLDS[associate]
+        and not associate_in_cooldown
+    ):
+        triggered.append(associate)
     return triggered

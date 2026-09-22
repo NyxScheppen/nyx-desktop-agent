@@ -26,6 +26,7 @@ from nyx.reading.epub import parse_epub
 from nyx.reading.impulse import (
     MUTTER_COOLDOWN_SEC,
     MUTTER_RICHNESS_THRESHOLD,
+    QUESTION_BEHAVIORS,
     build_drives,
     check_triggers,
     compute_composite,
@@ -117,8 +118,10 @@ class ReadingFacade:
         self._canon = canon
         self._logger = logging.getLogger(__name__)
         # 冷却时间戳是唯一内存态（per 进程，重启清零），用单调钟 time.monotonic
-        # 防墙钟跳变；无并发锁——见阅读系统 spec 关键决策。
+        # 防墙钟跳变；问题共用一个时间戳，联想和 mutter 各自独立；无并发锁——
+        # 见阅读系统 spec 关键决策。
         self._cooldowns: dict[ReadingBehavior, float] = {}
+        self._question_cooldown_at = 0.0
         self._mutter_at = 0.0
         self._integration = ReadingIntegration(llm, evaluator, memory, bus)
         self._nyx_buffer = self._integration.buffer
@@ -235,15 +238,23 @@ class ReadingFacade:
         composite = compute_composite(drives)
         now = time.monotonic()
 
-        # 冷却读写是连续同步块（读 _cooldowns/_mutter_at → 写），无 await 隔断，
+        # 冷却读写是连续同步块（读问题/联想/mutter 时间戳 → 写），无 await 隔断，
         # asyncio 天然串行无竞态。
-        triggered = check_triggers(composite, self._cooldowns, now)
+        triggered = check_triggers(
+            composite,
+            self._cooldowns,
+            now,
+            question_cooldown_at=self._question_cooldown_at,
+        )
         mutter = (
             features.richness_score > MUTTER_RICHNESS_THRESHOLD
             and now - self._mutter_at >= MUTTER_COOLDOWN_SEC
         )
         for behavior in triggered:
-            self._cooldowns[behavior] = now
+            if behavior in QUESTION_BEHAVIORS:
+                self._question_cooldown_at = now
+            else:
+                self._cooldowns[behavior] = now
         if mutter:
             self._mutter_at = now
 

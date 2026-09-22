@@ -115,6 +115,12 @@ ReadingFacade.save_progress(
 - `extract`、`build_drives`、`compute_composite`、`check_triggers` 是同步纯函数。
 - `ReadingFacade.evaluate_paragraph(book_id, paragraph_index, last_paragraph_index)`
   对回翻、缺书、缺段返回空列表；只对前进段落计算并返回触发行为。
+- 四类提问行为（`question_knowledge`、`question_personal`、
+  `question_reflective`、`quote_question`）先分别通过各自阈值，再只选择复合分最高的
+  一个；同一段最多触发一个提问。若无提问候选，则不产生提问行为。
+- 四类提问共享 `ReadingFacade` 进程级的 180 秒单调钟冷却；冷却在恰好 180 秒时
+  结束，服务重启后清零。`associate` 保持独立的 60 秒冷却，`mutter` 保持独立的
+  30 秒冷却，因此联想或碎碎念仍可与一个提问并存。
 - 分派在后台执行，但必须由 Facade 追踪，并提供：
 
 ```python

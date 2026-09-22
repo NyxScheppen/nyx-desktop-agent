@@ -2,6 +2,16 @@
 
 > Nyx Agent 项目经验教训汇总。每次踩坑后追加条目，格式见底部模板。
 
+### 2026-09-22: Windows PowerShell 脚本含非 ASCII 文本时必须带 UTF-8 BOM
+
+**来源**：整理自动启动入口时，README 使用的 Windows PowerShell 5.1 直接解析 UTF-8 无
+BOM 的中文 `.ps1`，把字符串误读后报缺少引号。
+**教训**：PowerShell 5.1 不像新版 PowerShell 那样默认按 UTF-8 读取无 BOM 脚本；语法检查
+不能只在 UTF-8 兼容的编辑器或 PowerShell 7 中进行。
+**怎么做**：面向 Windows PowerShell 的脚本保存为 UTF-8 BOM，并用 `powershell -NoProfile`
+实际解析回归；安装器只引用一个稳定的主启动入口。
+**影响的文件/决策**：`install_nyx_autostart.ps1`、`start_nyx.bat`、启动器文档。
+
 ### 2026-09-22: 异步主动行为要区分占位与成功后的频率预算
 
 **来源**：读书提问在后台任务启动前就写入 180 秒冷却；LLM 空输出、非法问句或原子提交

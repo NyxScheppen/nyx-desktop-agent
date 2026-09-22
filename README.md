@@ -121,7 +121,9 @@ Windows 用户也可以直接双击项目根目录的 `start_nyx.bat` 启动；�
 powershell -ExecutionPolicy Bypass -File .\install_nyx_autostart.ps1
 ```
 
-脚本会在当前用户的 Windows 启动文件夹创建 `Nyx Desktop.lnk`，下次登录时以 `python dev.py --desktop` 启动桌面端，并沿用现有 launcher 的端口检查与进程清理。移除自动启动：
+脚本会在当前用户的 Windows 启动文件夹创建 `Nyx Desktop.lnk`，快捷方式直接调用
+`start_nyx.bat --run --desktop --no-pause`，下次登录时以桌面端模式启动，并沿用现有
+launcher 的端口检查与进程清理。移除自动启动：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install_nyx_autostart.ps1 -Uninstall

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$Uninstall
 )
 
@@ -6,7 +6,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $startupDirectory = [Environment]::GetFolderPath("Startup")
 $shortcutPath = Join-Path $startupDirectory "Nyx Desktop.lnk"
-$launcherPath = Join-Path $projectRoot "start_nyx_autostart.bat"
+$launcherPath = Join-Path $projectRoot "start_nyx.bat"
 
 if ($Uninstall) {
     if (Test-Path -LiteralPath $shortcutPath) {
@@ -25,6 +25,7 @@ if (-not (Test-Path -LiteralPath $launcherPath)) {
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $launcherPath
+$shortcut.Arguments = "--run --desktop --no-pause"
 $shortcut.WorkingDirectory = $projectRoot
 $shortcut.WindowStyle = 7
 $shortcut.Description = "Nyx 桌面端自动启动"

@@ -76,8 +76,9 @@
 ## API 与前端
 
 - `GET /api/activity` 返回 `{current, schedule}`，分别来自 `ActivityFacade.get_current()` 与 `get_schedule()`。
-- `GET /api/activity/results` 返回已完成且带产出的活动，按 `ended_at DESC`；`limit=1..100`、`offset>=0` 在 SQL 层分页，可用 `activity_type=creation` 只取创作。省略类型参数时保持返回 `reading`、`free_exploration`、`creation` 的兼容行为。
+- `GET /api/activity/results` 返回已完成且带产出的活动，按 `ended_at DESC`；`limit=1..100`、`offset=0..100000` 在 SQL 层分页，可用 `activity_type=creation` 只取创作，越界参数返回 422。省略类型参数时保持返回 `reading`、`free_exploration`、`creation` 的兼容行为；`activity(status, type, ended_at DESC)` 复合索引支撑创作历史查询。
 - 前端活动页的产出区只列最近 12 条创作标题摘要；独立“创作”页按 12 条一批加载，正文默认折叠，展开后显示完整正文与文件路径。
+- `activityStore.refresh()` 会推进创作结果请求世代；更早发出的“加载更多”响应或错误不得改写刷新后的首页、错误或 loading 状态。
 - `POST /api/upload` 读取文本上传，写入 `workspace/uploads/<filename>`，再调用 `activity.register_material(path, filename, len(text))`；它只注册书库，不立即启动读书。
 - `GET /api/materials` 返回 `{materials}`，供资料面板展示 activity/material 书库进度。
 - `activity_start`、`activity_end`、`activity_interrupted` 都经 EventBus 持久化并广播到 SSE；前端事件 payload 由 `event.content` 展开并附加 `event_id`、`correlation_id`、后端 `timestamp`。

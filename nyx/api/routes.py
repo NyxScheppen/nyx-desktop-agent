@@ -47,6 +47,8 @@ from nyx.types import (
     UserNote,
 )
 
+_MAX_ACTIVITY_RESULTS_OFFSET = 100_000
+
 RootEvent = Callable[[EventType, dict[str, Any]], Event]
 FileIo = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -186,7 +188,7 @@ def build_app(
     @fast.get("/api/activity/results")
     async def api_activity_results(
         limit: int = Query(100, ge=1, le=100),
-        offset: int = Query(0, ge=0),
+        offset: int = Query(0, ge=0, le=_MAX_ACTIVITY_RESULTS_OFFSET),
         activity_type: Literal["creation"] | None = None,
     ) -> list[Activity]:
         selected_type = (

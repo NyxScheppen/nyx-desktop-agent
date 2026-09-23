@@ -543,6 +543,90 @@ describe("desireStore / activityStore", () => {
     expect(useActivityStore.getState().hasMoreResults).toBe(false);
   });
 
+  it("activityStore.loadMoreResults：旧分页响应不能覆盖较新的 refresh", async () => {
+    const old = Array.from({ length: 12 }, (_, index) => ({
+      id: `old-${index}`,
+      type: "creation" as const,
+      schedule_block_id: "12:00",
+      status: "completed" as const,
+      progress: { result: { title: `旧作 ${index}`, content: "正文" } },
+      started_at: index,
+      ended_at: index,
+    }));
+    const fresh = { ...old[0], id: "fresh", ended_at: 100 };
+    let resolveOldPage!: (response: Response) => void;
+    const oldPage = new Promise<Response>((resolve) => {
+      resolveOldPage = resolve;
+    });
+    useActivityStore.setState({
+      results: old,
+      hasMoreResults: true,
+      resultsLoading: false,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes("offset=12")) return oldPage;
+        if (url === "/api/activity") {
+          return Promise.resolve(jsonResponse({ current: null, schedule: [] }));
+        }
+        return Promise.resolve(jsonResponse([fresh]));
+      }),
+    );
+
+    const loadingOldPage = useActivityStore.getState().loadMoreResults();
+    await useActivityStore.getState().refresh();
+    resolveOldPage(jsonResponse([{ ...old[0], id: "stale-page" }]));
+    await loadingOldPage;
+
+    expect(useActivityStore.getState().results).toEqual([fresh]);
+    expect(useActivityStore.getState().hasMoreResults).toBe(false);
+    expect(useActivityStore.getState().resultsLoading).toBe(false);
+  });
+
+  it("activityStore.loadMoreResults：旧分页错误不能覆盖较新的 refresh", async () => {
+    const existing = Array.from({ length: 12 }, (_, index) => ({
+      id: `old-${index}`,
+      type: "creation" as const,
+      schedule_block_id: "12:00",
+      status: "completed" as const,
+      progress: { result: { title: `旧作 ${index}`, content: "正文" } },
+      started_at: index,
+      ended_at: index,
+    }));
+    const fresh = { ...existing[0], id: "fresh", ended_at: 100 };
+    let rejectOldPage!: (error: Error) => void;
+    const oldPage = new Promise<Response>((_resolve, reject) => {
+      rejectOldPage = reject;
+    });
+    useActivityStore.setState({
+      results: existing,
+      hasMoreResults: true,
+      resultsLoading: false,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes("offset=12")) return oldPage;
+        if (url === "/api/activity") {
+          return Promise.resolve(jsonResponse({ current: null, schedule: [] }));
+        }
+        return Promise.resolve(jsonResponse([fresh]));
+      }),
+    );
+
+    const loadingOldPage = useActivityStore.getState().loadMoreResults();
+    await useActivityStore.getState().refresh();
+    rejectOldPage(new Error("stale page failed"));
+    await loadingOldPage;
+
+    expect(useActivityStore.getState().results).toEqual([fresh]);
+    expect(useActivityStore.getState().error).toBeNull();
+    expect(useActivityStore.getState().resultsLoading).toBe(false);
+  });
+
   it("desireStore.refresh：getDesires throw → error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
 

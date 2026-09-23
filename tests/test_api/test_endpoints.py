@@ -312,6 +312,8 @@ async def test_activity_results_endpoint_filters_and_paginates() -> None:
         ({"limit": 0}, 422),
         ({"limit": 101}, 422),
         ({"offset": -1}, 422),
+        ({"offset": 100_001}, 422),
+        ({"offset": 2**63}, 422),
         ({"activity_type": "reading"}, 422),
     ],
 )

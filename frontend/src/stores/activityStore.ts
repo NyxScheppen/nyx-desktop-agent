@@ -5,6 +5,7 @@ import type { Activity, ActivitySnapshot } from "../types/api";
 // 活动时间线面板：REST 快照 + SSE activity_* 事件触发 refresh。
 // 「产出」与「创作」页数据同源：results 只保存按结束时间倒序的创作活动。
 const RESULTS_PAGE_SIZE = 12;
+let resultsGeneration = 0;
 
 type ActivityStoreState = {
   data: ActivitySnapshot | null;
@@ -23,7 +24,8 @@ export const useActivityStore = create<ActivityStoreState>((set, get) => ({
   resultsLoading: false,
   hasMoreResults: false,
   refresh: async () => {
-    set({ error: null });
+    const generation = ++resultsGeneration;
+    set({ error: null, resultsLoading: true });
     try {
       const [data, results] = await Promise.all([
         getActivity(),
@@ -33,20 +35,25 @@ export const useActivityStore = create<ActivityStoreState>((set, get) => ({
           activity_type: "creation",
         }),
       ]);
+      if (generation !== resultsGeneration) return;
       set({
         data,
         results: results.slice(0, RESULTS_PAGE_SIZE),
         hasMoreResults: results.length > RESULTS_PAGE_SIZE,
+        resultsLoading: false,
       });
     } catch (err) {
+      if (generation !== resultsGeneration) return;
       set({
         error: err instanceof Error ? err.message : String(err),
+        resultsLoading: false,
       });
     }
   },
   loadMoreResults: async () => {
     const { results, resultsLoading, hasMoreResults } = get();
     if (results === null || resultsLoading || !hasMoreResults) return;
+    const generation = resultsGeneration;
     set({ resultsLoading: true, error: null });
     try {
       const next = await getActivityResults({
@@ -54,14 +61,18 @@ export const useActivityStore = create<ActivityStoreState>((set, get) => ({
         offset: results.length,
         activity_type: "creation",
       });
+      if (generation !== resultsGeneration || get().results !== results) return;
       set({
         results: [...results, ...next.slice(0, RESULTS_PAGE_SIZE)],
         hasMoreResults: next.length > RESULTS_PAGE_SIZE,
+        resultsLoading: false,
       });
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-    } finally {
-      set({ resultsLoading: false });
+      if (generation !== resultsGeneration || get().results !== results) return;
+      set({
+        error: err instanceof Error ? err.message : String(err),
+        resultsLoading: false,
+      });
     }
   },
 }));

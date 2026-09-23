@@ -618,6 +618,13 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "WHERE trim(j.value) <> ''",
         ],
     ),
+    (
+        27,
+        [
+            "CREATE INDEX IF NOT EXISTS idx_activity_results "
+            "ON activity(status, type, ended_at DESC)",
+        ],
+    ),
 ]
 
 

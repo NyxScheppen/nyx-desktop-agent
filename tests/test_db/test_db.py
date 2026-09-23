@@ -139,7 +139,26 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_memory_fact_validity",
         "idx_memory_fact_predicate",
         "idx_memory_entity_alias_lookup",
+        "idx_activity_results",
     }
+
+
+async def test_activity_results_index_matches_query() -> None:
+    conn = await _migrated_conn()
+    try:
+        rows = await (
+            await conn.execute("PRAGMA index_info(idx_activity_results)")
+        ).fetchall()
+        ddl = await (
+            await conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='index' AND name='idx_activity_results'"
+            )
+        ).fetchone()
+    finally:
+        await conn.close()
+    assert [row["name"] for row in rows] == ["status", "type", "ended_at"]
+    assert ddl is not None and "ended_at DESC" in ddl["sql"]
 
 
 async def test_migrate_books_content_hash_index_unique() -> None:

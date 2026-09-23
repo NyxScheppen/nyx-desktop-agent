@@ -155,6 +155,7 @@ loadMoreResults(): Promise<void>  // offset=results.length，追加下一批 12 
 ### 关键决策
 
 - **双字段快照 store**：`activityStore`（`data`+`results`）并行拉时间线和创作首页；创作查询固定 `activity_type=creation`，每次请求 13 条、展示 12 条，用多出的一条判断是否显示“加载更多”。
+- **分页响应受刷新世代保护**：`refresh()` 开始即推进内部世代；`loadMoreResults()` 只在世代和发起时的 `results` 引用都未变化时追加，旧分页的成功/失败/收尾不会覆盖新首页状态。
 - **SSE 增量只触发 `refresh()`**：`desire_*` → `desireStore.refresh()`、`activity_*` → `activityStore.refresh()`。事件 content 只带 `{desire_id}`/`{activity_id}`，不含完整对象，故重拉快照而非本地拼装。
 
 ## 4. `settingsStore`（背景外观 + 字体大小，纯前端）

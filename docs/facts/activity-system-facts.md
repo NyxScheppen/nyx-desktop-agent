@@ -18,7 +18,7 @@
 - `_maybe_start_activity` 不 await 完整活动，只创建后台 task，避免 EventBus 被 LLM、文件读取或探索链阻塞。
 - 同一进程内唯一活动靠两层守卫：`ActivityStarter._lock` 串行化启动决策，`ActivityFacade._task` 在锁内赋值并用于关闭 PENDING 到 RUNNING 之间的窗口。
 - `ActivityStore.get_current()` 只返回 status 为 `running` 的最新活动；PENDING 不算 current。
-- `get_schedule()` 返回今天已产生的活动记录，按 `started_at ASC`；今天的起点由 `_day_start(time.time())` 算 UTC 日边界。
+- `get_schedule()` 返回今天已产生的活动记录，按 `started_at ASC`；今天的起点由 `_day_start(time.time())` 按运行电脑的系统本地时区计算自然日 `00:00`。
 - `schedule_block_id(now, grid_minutes)` 先按 grid 分桶，再格式化成 `HH:MM`。不要用格内原始分钟拼标签。
 
 ## 欲望到活动
@@ -76,7 +76,8 @@
 ## API 与前端
 
 - `GET /api/activity` 返回 `{current, schedule}`，分别来自 `ActivityFacade.get_current()` 与 `get_schedule()`。
-- `GET /api/activity/results` 返回已完成且带产出的 `reading`、`free_exploration`、`creation`，按 `ended_at DESC`。
+- `GET /api/activity/results` 返回已完成且带产出的活动，按 `ended_at DESC`；`limit=1..100`、`offset>=0` 在 SQL 层分页，可用 `activity_type=creation` 只取创作。省略类型参数时保持返回 `reading`、`free_exploration`、`creation` 的兼容行为。
+- 前端活动页的产出区只列最近 12 条创作标题摘要；独立“创作”页按 12 条一批加载，正文默认折叠，展开后显示完整正文与文件路径。
 - `POST /api/upload` 读取文本上传，写入 `workspace/uploads/<filename>`，再调用 `activity.register_material(path, filename, len(text))`；它只注册书库，不立即启动读书。
 - `GET /api/materials` 返回 `{materials}`，供资料面板展示 activity/material 书库进度。
 - `activity_start`、`activity_end`、`activity_interrupted` 都经 EventBus 持久化并广播到 SSE；前端事件 payload 由 `event.content` 展开并附加 `event_id`、`correlation_id`、后端 `timestamp`。

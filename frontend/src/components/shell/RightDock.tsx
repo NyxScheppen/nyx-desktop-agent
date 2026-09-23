@@ -1,5 +1,11 @@
 // 中间内容区当前视图（聊天不再可切换，左栏常驻）：默认 reading。
-export type View = "inner" | "desire" | "activity" | "memory" | "reading";
+export type View =
+  | "inner"
+  | "desire"
+  | "activity"
+  | "creation"
+  | "memory"
+  | "reading";
 
 type RightDockProps = {
   view: View; // 当前视图，用于高亮激活入口
@@ -7,12 +13,13 @@ type RightDockProps = {
   onOpenSettings: () => void; // 打开设置弹层（设置入口从顶栏迁到底部导航）
 };
 
-// 底部工具条（中间内容区下方，常驻不随切视图消失）：内在状态 / 欲望 / 活动 / 记忆 / 读书 + 设置。
-// 五个入口切换中间内容区（切视图），当前入口高亮；「设置」单独按钮开设置弹层。未来加词条只需往 ENTRIES 追加一项。
+// 底部工具条（中间内容区下方，常驻不随切视图消失）：
+// 内在状态 / 欲望 / 活动 / 创作 / 记忆 / 读书 + 设置。
 const ENTRIES: readonly { label: string; view: View }[] = [
   { label: "内在状态", view: "inner" },
   { label: "欲望", view: "desire" },
   { label: "活动", view: "activity" },
+  { label: "创作", view: "creation" },
   { label: "记忆", view: "memory" },
   { label: "读书", view: "reading" },
 ];

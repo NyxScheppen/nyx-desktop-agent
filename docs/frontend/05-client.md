@@ -17,7 +17,7 @@ async function getMemories(): Promise<Memory[]>                                 
 async function getMemorySearch(query: string): Promise<Memory[]>                 // GET /api/memories/search?q=（混合召回）
 async function getRecentFacts(limit = 64): Promise<MemoryFact[]>                 // GET /api/memories/facts?limit=（0..64）
 async function getActivity(): Promise<ActivitySnapshot>                          // GET /api/activity
-async function getActivityResults(): Promise<Activity[]>                          // GET /api/activity/results
+async function getActivityResults(params?): Promise<Activity[]>                  // GET /api/activity/results?limit=&offset=&activity_type=creation
 async function getEventsLog(params?): Promise<BackendEvent[]>                    // GET /api/events/log?limit=&event_type=&correlation_id=
 async function getEvalRecent(limit = 5): Promise<EvalRecord[]>                   // GET /api/eval/recent?limit=
 async function getEvalTotalTokens(): Promise<EvalStats>                          // GET /api/eval/total_tokens
@@ -71,7 +71,7 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
   - `postObserve`：`POST /api/observe`、body `{presence, window_title, idle_seconds, sampled_at}` + signal → 返回 `{event_id}` 解析正确。
   - `getDesires`：`GET /api/desires` → `DesireState` 解析正确。
   - `getActivity`：`GET /api/activity` → `ActivitySnapshot` 解析正确。
-  - `getActivityResults`：`GET /api/activity/results` → `Activity[]` 解析正确。
+  - `getActivityResults`：`limit` / `offset` / `activity_type=creation` 拼入 `GET /api/activity/results`，`Activity[]` 解析正确。
   - `getEventsLog(params)`：`limit`/`event_type`/`correlation_id` 拼进 query。
   - eval：recent/total 路径正确；prompt 对 record id 做 URL 编码、禁用缓存并保留 `null`（旧记录无 prompt）。
 - **错误契约**：非 2xx 响应（mock body `{"detail": "..."}`）→ throw（`Error`，message 含 `detail` 内容）；fetch 网络错误（reject `TypeError`）→ 上抛不吞；不返回 `{ok:false}`/null。

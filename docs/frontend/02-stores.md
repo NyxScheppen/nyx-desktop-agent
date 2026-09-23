@@ -140,14 +140,21 @@ type MemoryStoreState = {
 type DesireStoreState = { data: DesireState | null; error: string | null };
 refresh(): Promise<void>          // 内部调 client.getDesires() → data；throw → error
 
-// activityStore —— GET /api/activity + GET /api/activity/results（并行）
-type ActivityStoreState = { data: ActivitySnapshot | null; results: Activity[] | null; error: string | null };
-refresh(): Promise<void>          // Promise.all([getActivity(), getActivityResults()]) → data/results
+// activityStore —— GET /api/activity + 创作 results（并行）
+type ActivityStoreState = {
+  data: ActivitySnapshot | null;
+  results: Activity[] | null;
+  error: string | null;
+  resultsLoading: boolean;
+  hasMoreResults: boolean;
+};
+refresh(): Promise<void>          // 时间线 + 最近 12 条创作，额外取第 13 条判断 hasMore
+loadMoreResults(): Promise<void>  // offset=results.length，追加下一批 12 条
 ```
 
 ### 关键决策
 
-- **双字段快照 store**：`activityStore`（`data`+`results`）并行拉两个端点（`Promise.all`）。
+- **双字段快照 store**：`activityStore`（`data`+`results`）并行拉时间线和创作首页；创作查询固定 `activity_type=creation`，每次请求 13 条、展示 12 条，用多出的一条判断是否显示“加载更多”。
 - **SSE 增量只触发 `refresh()`**：`desire_*` → `desireStore.refresh()`、`activity_*` → `activityStore.refresh()`。事件 content 只带 `{desire_id}`/`{activity_id}`，不含完整对象，故重拉快照而非本地拼装。
 
 ## 4. `settingsStore`（背景外观 + 字体大小，纯前端）

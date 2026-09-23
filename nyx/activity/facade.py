@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any, cast
 
 from nyx.activity import creation as _creation
@@ -19,7 +20,6 @@ from nyx.desire.facade import DesireFacade
 from nyx.enums import ActivityType, EventType, MemoryKind, TickType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
-from nyx.events.event import SECONDS_PER_DAY
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.file_io import file_io
@@ -47,8 +47,9 @@ _sanitize_filename = _activity_paths.sanitize_filename
 _logger = logging.getLogger(__name__)
 
 def _day_start(now: float) -> float:
-    """当日零点（UTC 日边界，MVP 可推翻为本地时区）。纯函数。"""
-    return now - now % SECONDS_PER_DAY
+    """Return the Unix timestamp for midnight in the system local timezone."""
+    local_now = datetime.fromtimestamp(now)
+    return local_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
 def _creation_checkpoint(activity: Activity) -> dict[str, Any]:
@@ -180,9 +181,14 @@ class ActivityFacade:
     async def get_schedule(self) -> list[Activity]:
         return await self._store.list_schedule(_day_start(time.time()))
 
-    async def get_results(self, limit: int = 100) -> list[Activity]:
+    async def get_results(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        activity_type: ActivityType | None = None,
+    ) -> list[Activity]:
         """跨天历史产出（读书笔记/探索发现/创作内容），按结束时间倒序。"""
-        return await self._store.list_results(limit)
+        return await self._store.list_results(limit, offset, activity_type)
 
     async def list_materials(self) -> list[Material]:
         """书库全量（含已读进度），供资料面板展示「读到哪了」。"""

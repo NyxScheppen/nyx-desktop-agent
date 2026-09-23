@@ -462,7 +462,13 @@ describe("innerLifeStore", () => {
 describe("desireStore / activityStore", () => {
   beforeEach(() => {
     useDesireStore.setState({ data: null, error: null });
-    useActivityStore.setState({ data: null, results: null, error: null });
+    useActivityStore.setState({
+      data: null,
+      results: null,
+      error: null,
+      resultsLoading: false,
+      hasMoreResults: false,
+    });
     useMemoryStore.setState({
       data: null,
       facts: null,
@@ -494,9 +500,47 @@ describe("desireStore / activityStore", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/activity");
-    expect(fetchMock.mock.calls[1][0]).toBe("/api/activity/results");
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "/api/activity/results?limit=13&offset=0&activity_type=creation",
+    );
     expect(useActivityStore.getState().data).toEqual({ current: null, schedule: [] });
     expect(useActivityStore.getState().results).toEqual([]);
+  });
+
+  it("activityStore.loadMoreResults：按当前长度追加下一批并更新 hasMore", async () => {
+    const existing = Array.from({ length: 12 }, (_, index) => ({
+      id: `old-${index}`,
+      type: "creation" as const,
+      schedule_block_id: "12:00",
+      status: "completed" as const,
+      progress: { result: { title: `旧作 ${index}`, content: "正文" } },
+      started_at: index,
+      ended_at: index,
+    }));
+    const next = {
+      id: "new-1",
+      type: "creation" as const,
+      schedule_block_id: "11:00",
+      status: "completed" as const,
+      progress: { result: { title: "下一页", content: "正文" } },
+      started_at: 0,
+      ended_at: 0,
+    };
+    useActivityStore.setState({
+      results: existing,
+      hasMoreResults: true,
+      resultsLoading: false,
+    });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([next]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useActivityStore.getState().loadMoreResults();
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/activity/results?limit=13&offset=12&activity_type=creation",
+    );
+    expect(useActivityStore.getState().results).toEqual([...existing, next]);
+    expect(useActivityStore.getState().hasMoreResults).toBe(false);
   });
 
   it("desireStore.refresh：getDesires throw → error", async () => {

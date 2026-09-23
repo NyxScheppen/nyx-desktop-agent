@@ -205,6 +205,36 @@ async def test_list_results_filters_and_orders() -> None:
         await database.conn.close()
 
 
+async def test_list_results_filters_creation_and_paginates() -> None:
+    store, database = await _new_store()
+    try:
+        for index in range(4):
+            await store.insert(
+                _activity(
+                    f"creation-{index}",
+                    type_=ActivityType.CREATION,
+                    status=ActivityStatus.COMPLETED,
+                    ended_at=float(index),
+                )
+            )
+        await store.insert(
+            _activity(
+                "reading",
+                type_=ActivityType.READING,
+                status=ActivityStatus.COMPLETED,
+                ended_at=10.0,
+            )
+        )
+
+        rows = await store.list_results(
+            2, offset=1, activity_type=ActivityType.CREATION
+        )
+
+        assert [row.id for row in rows] == ["creation-2", "creation-1"]
+    finally:
+        await database.conn.close()
+
+
 async def test_update() -> None:
     store, database = await _new_store()
     try:

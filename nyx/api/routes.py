@@ -19,7 +19,7 @@ from starlette.routing import Match
 
 from nyx.activity.observe import classify_presence
 from nyx.app_context import _App
-from nyx.enums import BoundaryResult, EventType, MemoryKind, MemoryType
+from nyx.enums import ActivityType, BoundaryResult, EventType, MemoryKind, MemoryType
 from nyx.events.bus import EventAdmissionError
 from nyx.reading.facade import (
     BookNotFoundError,
@@ -184,8 +184,15 @@ def build_app(
         }
 
     @fast.get("/api/activity/results")
-    async def api_activity_results(limit: int = 100) -> list[Activity]:
-        return await app.activity.get_results(limit)
+    async def api_activity_results(
+        limit: int = Query(100, ge=1, le=100),
+        offset: int = Query(0, ge=0),
+        activity_type: Literal["creation"] | None = None,
+    ) -> list[Activity]:
+        selected_type = (
+            ActivityType.CREATION if activity_type == "creation" else None
+        )
+        return await app.activity.get_results(limit, offset, selected_type)
 
     @fast.get("/api/events/log")
     async def api_events_log(

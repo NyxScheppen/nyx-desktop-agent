@@ -33,6 +33,7 @@ vi.mock("../src/components/inner/Avatar", () => ({
 vi.mock("../src/components/inner/InnerStatePanel", () => ({ default: () => null }));
 vi.mock("../src/components/layout/SettingsView", () => ({ default: () => null }));
 vi.mock("../src/components/panels/ActivityPanel", () => ({ default: () => null }));
+vi.mock("../src/components/panels/CreationPanel", () => ({ default: () => null }));
 vi.mock("../src/components/panels/DesiresPanel", () => ({ default: () => null }));
 vi.mock("../src/components/panels/MemoryPanel", () => ({ default: () => null }));
 vi.mock("../src/components/reading/BookshelfView", () => ({ default: () => null }));

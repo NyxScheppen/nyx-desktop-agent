@@ -217,13 +217,19 @@ describe("api/client", () => {
     expect(res).toEqual(fixture);
   });
 
-  it("getActivityResults：GET /api/activity/results、解析 Activity[]", async () => {
+  it("getActivityResults：拼接创作分页参数、解析 Activity[]", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
     vi.stubGlobal("fetch", fetchMock);
 
-    const res = await getActivityResults();
+    const res = await getActivityResults({
+      limit: 13,
+      offset: 12,
+      activity_type: "creation",
+    });
 
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/activity/results");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/activity/results?limit=13&offset=12&activity_type=creation",
+    );
     expect(res).toEqual([]);
   });
 

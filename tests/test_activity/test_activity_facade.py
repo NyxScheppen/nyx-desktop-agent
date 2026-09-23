@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -486,7 +487,9 @@ async def _await_task(facade: ActivityFacade) -> None:
 
 
 def test_day_start() -> None:
-    assert _day_start(86400.0 * 1.5) == 86400.0
+    local_afternoon = datetime(2026, 9, 23, 15, 30).timestamp()
+    local_midnight = datetime(2026, 9, 23).timestamp()
+    assert _day_start(local_afternoon) == local_midnight
 
 
 def test_schedule_block_id_aligns_to_grid() -> None:
@@ -1365,7 +1368,9 @@ async def test_get_results_delegates() -> None:
                 "a1", type_=ActivityType.CREATION, status=ActivityStatus.COMPLETED
             )
         )
-        acts = await facade.get_results()
+        acts = await facade.get_results(
+            limit=12, offset=0, activity_type=ActivityType.CREATION
+        )
         assert [a.id for a in acts] == ["a1"]
     finally:
         await database.conn.close()

@@ -97,7 +97,7 @@ frontend/
       chatStore.ts           # 聊天：消息列表 + 历史加载 + addReadingTurn
       innerLifeStore.ts      # 内在状态：CurrentState 快照
       desireStore.ts         # 欲望：DesireState 快照（快照 store）
-      activityStore.ts       # 活动：ActivitySnapshot 快照 + 跨天产出 results（快照 store）
+      activityStore.ts       # 活动：ActivitySnapshot + 12 条一批的创作 results
       memoryStore.ts         # 记忆 + 事实图：Memory/MemoryFact 快照、关键词查询 + SSE memory_*
       readerStore.ts         # 阅读：书架/进度/段落/追赶/笔记 + paginate 真分页纯函数
       settingsStore.ts       # 背景外观：tint/image/fontScale + 圆圈底色/尺寸/位置 circleColor/circleSize/avatarPos（后三者持久化 localStorage）
@@ -122,7 +122,8 @@ frontend/
       panels/
         BackgroundPanel.tsx  # 背景外观（预设色调/自定义取色/上传背景图/恢复默认）
         DesiresPanel.tsx     # 欲望面板（GET /api/desires + SSE desire_*）
-        ActivityPanel.tsx    # 活动时间线 + 产出面板（GET /api/activity + results + SSE activity_*；创作摘要只列标题，产出区列完整正文/路径/工具轨迹）
+        ActivityPanel.tsx    # 本地今日活动时间线 + 最近 12 条创作标题摘要
+        CreationPanel.tsx    # 历史创作：正文折叠 + 12 条一批加载更多
         MemoryPanel.tsx      # 记忆/事实图面板（搜索 + GET /api/memories/facts + SSE memory_*）
         FactGraph.tsx         # 手写 SVG 实体关系图（不引入图表依赖）
       reading/
@@ -134,7 +135,7 @@ frontend/
         Modal.tsx            # 通用弹层容器
         SettingsView.tsx     # 设置弹层（字体大小 + 圆圈背景 + 圆圈大小 + 背景外观）
       shell/
-        RightDock.tsx        # 底部导航：读书|内在|欲望|活动|记忆（切中间视图）+ 设置入口
+        RightDock.tsx        # 底部导航：读书|内在|欲望|活动|创作|记忆 + 设置入口
         StatusBar.tsx        # 左栏顶部状态条（心情/精力条/现在状态）
     assets/
       expressions/          # 8 情绪表情图（EmotionCategory 1:1，方形 1080×1080）
@@ -154,7 +155,7 @@ frontend/
 
 ## 5. 面板去向（精简装配）
 
-08 布局重构后精简为：顶栏（标题 `✦ Nyx ✦` + 本地日期/星期/时间 + 连接状态）｜左栏常驻对话（`div.left-dock`：`StatusBar` + `MessageList` + `ChatInput` 竖排）｜中间内容区（`div.game-main`：`side-panel` 按 `view` 切内在/欲望/活动/记忆/读书）｜底部导航（`RightDock`：读书|内在|欲望|活动|记忆 + 设置）｜可拖拽头像圆圈（`Avatar`，`position:fixed` 右下角，碎碎念气泡随圆圈头顶冒）。App 每分钟刷新本地时钟，在 06:00/22:00 切换 day/night 根状态；夜间视觉只改变 CSS 变量、遮罩与头像默认显示，不修改内在生命数值。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
+08 布局重构后精简为：顶栏（标题 `✦ Nyx ✦` + 本地日期/星期/时间 + 连接状态）｜左栏常驻对话（`div.left-dock`：`StatusBar` + `MessageList` + `ChatInput` 竖排）｜中间内容区（`div.game-main`：`side-panel` 按 `view` 切内在/欲望/活动/创作/记忆/读书）｜底部导航（`RightDock`：读书|内在|欲望|活动|创作|记忆 + 设置）｜可拖拽头像圆圈（`Avatar`，`position:fixed` 右下角，碎碎念气泡随圆圈头顶冒）。App 每分钟刷新本地时钟，在 06:00/22:00 切换 day/night 根状态；夜间视觉只改变 CSS 变量、遮罩与头像默认显示，不修改内在生命数值。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|
@@ -162,6 +163,7 @@ frontend/
 | 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | `components/inner/InnerStatePanel.tsx`（`view==="inner"`） |
 | 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | `components/panels/DesiresPanel.tsx`（`view==="desire"`） |
 | 活动时间线 | ✅ 实现 | `GET /api/activity` + SSE `activity_*` | `components/panels/ActivityPanel.tsx`（`view==="activity"`） |
+| 创作 | ✅ 实现 | `GET /api/activity/results?activity_type=creation&limit=&offset=` | `components/panels/CreationPanel.tsx`（`view==="creation"`） |
 | 记忆面板 | ✅ 实现 | `GET /api/memories`、`GET /api/memories/search`、`GET /api/memories/facts` + SSE `memory_*` | `components/panels/MemoryPanel.tsx` + `FactGraph.tsx`（`view==="memory"`） |
 | 读书 | ✅ 实现（06/07） | `GET /api/books` + 进度/段落/笔记端点 | `components/reading/BookshelfView.tsx` + `ReaderView.tsx`（`view==="reading"`） |
 | 背景外观 | ✅ 实现 | 无（纯前端 `settingsStore`） | `components/layout/SettingsView.tsx`（复用 `components/panels/BackgroundPanel.tsx`） |

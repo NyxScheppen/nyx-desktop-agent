@@ -392,7 +392,7 @@ body:has(.app--pet) {
   }
 }
 
-/* ===== 底部工具条（切换中间内容区视图：内在状态 / 欲望 / 活动 / 记忆 / 读书） ===== */
+/* ===== 底部工具条（切换中间内容区视图，另含设置入口） ===== */
 .right-dock {
   grid-column: 2;
   grid-row: 2;
@@ -702,6 +702,52 @@ body:has(.app--pet) {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
+}
+
+.outputs__more {
+  display: block;
+  margin: 0.65rem auto 0;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.outputs__more:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.creation-record details {
+  width: 100%;
+}
+
+.creation-record__summary {
+  cursor: pointer;
+}
+
+.creation-record__summary .panel-item__main,
+.creation-record__summary .panel-item__meta {
+  display: block;
+}
+
+.creation-record__summary::marker {
+  color: var(--ink-soft);
+}
+
+.creation-record__body {
+  margin-top: 0.5rem;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.creation-record__path {
+  margin-top: 0.5rem;
+  overflow-wrap: anywhere;
 }
 
 /* 资料面板：每本读物进度条（已读/共读字数 + 在读/读完） */

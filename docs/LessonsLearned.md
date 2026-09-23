@@ -494,6 +494,13 @@ Python 过滤会随事实规模线性放大每条消息成本。
 **怎么做**：由上层传入 `useNativeWindowDrag`；桌宠态开启，完整端关闭，运行时检测只负责确认 Tauri API 是否可用。为两种模式各留一条回归测试。
 **影响的文件/决策**：`frontend/src/components/inner/Avatar.tsx`、`frontend/src/App.tsx`、`frontend/src/components/desktop/PetShell.tsx`、`docs/specs/13-desktop-pet.md`。
 
+### 2026-09-23: 用户可见的“今天”必须按系统本地自然日计算
+
+**来源**：活动时间线在 UTC 零点换日，东八区会从本地早上 08:00 才开始显示“今天”。
+**教训**：`timestamp - timestamp % 86400` 只能得到 UTC 日边界，不能表示用户电脑上的日历日期；固定秒长也不能表达带夏令时的本地自然日。
+**怎么做**：先把时间戳转换为系统本地日期，再从该日期的 `00:00` 生成时间戳；测试用本地 `datetime.timestamp()` 同时构造当天时刻和预期零点，不写死 UTC 偏移。
+**影响的文件/决策**：`nyx/activity/facade.py:_day_start`、活动时间线契约与回归测试。
+
 ## 模板（条目格式）
 
 ```

@@ -91,8 +91,20 @@ export async function getActivity(): Promise<ActivitySnapshot> {
   return request<ActivitySnapshot>(`${BASE_URL}/api/activity`);
 }
 
-export async function getActivityResults(): Promise<Activity[]> {
-  return request<Activity[]>(`${BASE_URL}/api/activity/results`);
+export async function getActivityResults(params?: {
+  limit?: number;
+  offset?: number;
+  activity_type?: "creation";
+}): Promise<Activity[]> {
+  const sp = new URLSearchParams();
+  if (params?.limit !== undefined) sp.set("limit", String(params.limit));
+  if (params?.offset !== undefined) sp.set("offset", String(params.offset));
+  if (params?.activity_type !== undefined)
+    sp.set("activity_type", params.activity_type);
+  const qs = sp.toString();
+  return request<Activity[]>(
+    `${BASE_URL}/api/activity/results${qs ? `?${qs}` : ""}`,
+  );
 }
 
 export async function getEventsLog(params?: {

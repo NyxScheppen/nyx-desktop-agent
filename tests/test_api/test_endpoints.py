@@ -13,6 +13,8 @@ from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
 from nyx.enums import (
+    ActivityStatus,
+    ActivityType,
     EmotionCategory,
     EnergyState,
     EventType,
@@ -29,6 +31,7 @@ from nyx.main import _App, build_app
 from nyx.memory.facade import MemoryFacade
 from nyx.reading.facade import ReadingFacade
 from nyx.types import (
+    Activity,
     CurrentState,
     EvalRecord,
     EvalStats,
@@ -142,6 +145,32 @@ class _FakeActivity:
     def __init__(self) -> None:
         self.list_calls = 0
         self.registered: list[tuple[str, str, int]] = []
+        self.result_calls: list[tuple[int, int, ActivityType | None]] = []
+
+    async def get_current(self) -> Activity | None:
+        return None
+
+    async def get_schedule(self) -> list[Activity]:
+        return []
+
+    async def get_results(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        activity_type: ActivityType | None = None,
+    ) -> list[Activity]:
+        self.result_calls.append((limit, offset, activity_type))
+        return [
+            Activity(
+                id="creation-1",
+                type=ActivityType.CREATION,
+                schedule_block_id="15:00",
+                status=ActivityStatus.COMPLETED,
+                progress={"result": {"title": "夜色", "content": "正文"}},
+                started_at=1.0,
+                ended_at=2.0,
+            )
+        ]
 
     async def list_materials(self) -> list[Material]:
         self.list_calls += 1
@@ -261,6 +290,39 @@ async def test_memory_facts_endpoint() -> None:
     assert resp.json()[0]["subject_type"] == "person"
     assert resp.json()[0]["object_type"] == "concept"
     assert memory.recent_facts_calls == [5]
+
+
+async def test_activity_results_endpoint_filters_and_paginates() -> None:
+    fake_activity = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake_activity)
+    async with _client(app) as client:
+        resp = await client.get(
+            "/api/activity/results",
+            params={"limit": 13, "offset": 12, "activity_type": "creation"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()[0]["progress"]["result"]["title"] == "夜色"
+    assert fake_activity.result_calls == [(13, 12, ActivityType.CREATION)]
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_status"),
+    [
+        ({"limit": 0}, 422),
+        ({"limit": 101}, 422),
+        ({"offset": -1}, 422),
+        ({"activity_type": "reading"}, 422),
+    ],
+)
+async def test_activity_results_endpoint_rejects_invalid_query(
+    params: dict[str, int | str], expected_status: int
+) -> None:
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, _FakeActivity())
+    async with _client(app) as client:
+        resp = await client.get("/api/activity/results", params=params)
+    assert resp.status_code == expected_status
 
 
 async def test_observe_endpoint() -> None:

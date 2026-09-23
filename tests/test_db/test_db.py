@@ -563,8 +563,36 @@ async def test_connect_env_override(
     assert env_db.exists()
 
 
-def test_default_db_path_constant() -> None:
-    assert db.DEFAULT_DB_PATH == "data/nyx.db"
+async def test_connect_default_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("NYX_DB", raising=False)
+    database = await db.connect()
+    await database.conn.close()
+    assert (tmp_path / "data" / "nyx.db").exists()
+
+
+async def test_connect_reuses_legacy_default_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("NYX_DB", raising=False)
+    legacy_path = tmp_path / "nyx.db"
+    legacy = await aiosqlite.connect(legacy_path)
+    await legacy.execute("CREATE TABLE legacy_marker (value TEXT NOT NULL)")
+    await legacy.execute("INSERT INTO legacy_marker VALUES ('preserved')")
+    await legacy.commit()
+    await legacy.close()
+
+    database = await db.connect()
+    row = await (
+        await database.conn.execute("SELECT value FROM legacy_marker")
+    ).fetchone()
+    await database.conn.close()
+
+    assert row is not None and row["value"] == "preserved"
+    assert not (tmp_path / "data" / "nyx.db").exists()
 
 
 # ---- connect：错误路径不泄漏连接 ----

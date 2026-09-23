@@ -1,8 +1,19 @@
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 from nyx.tools.file_io import file_io
+
+
+class _TrackingReader(BytesIO):
+    def __init__(self, content: bytes) -> None:
+        super().__init__(content)
+        self.read_sizes: list[int] = []
+
+    def read(self, size: int | None = -1) -> bytes:
+        self.read_sizes.append(-1 if size is None else size)
+        return super().read(size)
 
 
 async def test_read(tmp_path: Path) -> None:
@@ -37,6 +48,29 @@ async def test_write_same_content_does_not_rewrite(
     monkeypatch.setattr(Path, "write_text", fail_write)
     result = await file_io("write", "note.txt", "hi", write_root=tmp_path)
     assert result["written"] == 2
+
+
+async def test_same_content_comparison_reads_in_bounded_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"x" * (256 * 1024 + 1)
+    target = tmp_path / "large.txt"
+    target.write_bytes(payload)
+    reader = _TrackingReader(payload)
+
+    def tracking_open(path: Path, mode: str = "r") -> _TrackingReader:
+        assert path == target
+        assert mode == "rb"
+        return reader
+
+    monkeypatch.setattr(Path, "open", tracking_open)
+    result = await file_io(
+        "write", target.name, payload.decode("ascii"), write_root=tmp_path
+    )
+
+    assert result["written"] == len(payload)
+    assert reader.read_sizes
+    assert all(0 < size < len(payload) for size in reader.read_sizes)
 
 
 async def test_write_replaces_non_utf8_content(tmp_path: Path) -> None:

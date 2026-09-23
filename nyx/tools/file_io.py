@@ -5,6 +5,7 @@ from typing import Any
 from nyx.types import Tool
 
 DEFAULT_WRITE_ROOT = Path("workspace")
+_COMPARE_CHUNK_SIZE = 64 * 1024
 
 
 def _resolve_write(root: Path, path: str) -> Path:
@@ -17,6 +18,17 @@ def _resolve_write(root: Path, path: str) -> Path:
     if resolved == root_resolved:
         raise ValueError(f"写入路径无效：{path!r} 指向 write_root 本身")
     return resolved
+
+
+def _matches_existing_bytes(target: Path, payload: bytes) -> bool:
+    offset = 0
+    with target.open("rb") as existing:
+        while chunk := existing.read(_COMPARE_CHUNK_SIZE):
+            end = offset + len(chunk)
+            if end > len(payload) or chunk != payload[offset:end]:
+                return False
+            offset = end
+    return offset == len(payload)
 
 
 async def file_io(
@@ -42,7 +54,8 @@ async def file_io(
 
         def _do() -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
-            if target.is_file() and target.read_bytes() == payload.encode("utf-8"):
+            payload_bytes = payload.encode("utf-8")
+            if target.is_file() and _matches_existing_bytes(target, payload_bytes):
                 return len(payload)
             return target.write_text(payload, encoding="utf-8")
 

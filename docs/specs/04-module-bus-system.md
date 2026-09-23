@@ -31,7 +31,7 @@
 - [ ] 路由声明和运行时订阅由同一份 `RouteSpec` 派生；启动时校验声明、handler、delivery consumer 一致。
 - [ ] 组合根导入环被拆除：`app_context` 只装配，不导入 `subscriptions`；`subscriptions` 不导入 `main`；runtime handler 编排在 `runtime.py` 或等价运行期模块。
 - [ ] `Database` 提供幂等 `close()`；组合根构造失败和应用退出都会关闭连接。
-- [ ] `connect()` 的路径优先级为显式参数、`NYX_DB`、默认 `data/nyx.db`；非 `:memory:` 路径连接前创建父目录。
+- [ ] `connect()` 的路径优先级为显式参数、`NYX_DB`、已存在的旧默认 `nyx.db`、新默认 `data/nyx.db`；非 `:memory:` 路径连接前创建父目录。
 - [ ] SSE 公共帧携带事件自身的 `timestamp`；实时消息与 `GET /api/events/log` 历史消息使用同一后端时间源。
 - [ ] `POST /api/observe` 先持久化包含 transition 事实的 `OBSERVATION_STATE`，成功后才提交组合根 presence 快照；受理失败不留下半次离开/归来状态。
 - [ ] 文档同步：本文件、`tech-reference`、`docs/facts/module-bus-system-facts.md`、`test-inventory.md` 与实现一致。
@@ -592,7 +592,7 @@ CREATE TABLE eval_prompt (
 
 ## 测试要点
 
-- [ ] DB 连接与迁移：默认路径为 `data/nyx.db`，嵌套父目录自动创建；新库包含 `event_delivery`、`event_effect` 和领域 spec 已定义的辅助表（含 `eval_prompt`）；索引存在；迁移幂等。
+- [ ] DB 连接与迁移：已有 `nyx.db` 时继续复用，否则默认创建 `data/nyx.db`；显式嵌套路径自动创建父目录；新库包含 `event_delivery`、`event_effect` 和领域 spec 已定义的辅助表（含 `eval_prompt`）；索引存在；迁移幂等。
 - [ ] durable publish：publish 后即使不启动 worker，`event_log` 和 delivery 已落库；DB 失败时 publish 抛错且无半截记录。
 - [ ] route expand：每个非空 `RouteSpec` 都创建对应 delivery；空路由事件只落 `event_log` 和 SSE，不创建消费者 delivery。
 - [ ] handler 成功：delivery 从 `pending` 到 `processing` 到 `succeeded`，`completed_at` 写入。

@@ -18,7 +18,7 @@
 - [ ] 四个工具模块各含 `build_*_tool()` 工厂 + 对应 handler（实现见 `nyx/tools/local_search.py` / `web_search.py` / `file_io.py` / `web_fetch.py`）
 - [ ] `register` 重名 → `ValueError`；`call` 用 `handler(**args)` 调 handler；`call` 未注册名 → `KeyError`
 - [ ] `schema()` 返回 `[{"type":"function","function":{name, description, parameters}}]`，按注册序
-- [ ] `file_io` 的 `write` 越界（`../` 或绝对路径逃逸 `write_root`）→ `ValueError`；目标已存在且 UTF-8 内容相同时不重复写盘并返回相同 `written`；`read` / `list` 不受写目录限制
+- [ ] `file_io` 的 `write` 越界（`../` 或绝对路径逃逸 `write_root`）→ `ValueError`；目标已存在且 UTF-8 内容相同时不重复写盘并返回相同 `written`，判等时分块读取旧文件；`read` / `list` 不受写目录限制
 - [ ] `local_search` 缺省搜全盘（`full_disk_roots()`），`roots` 参数可收窄；遍历跳过无权限目录不崩
 - [ ] 四个工具返回 JSON 可序列化数据（`dict` / `list` / `str`，不返回 domain dataclass）
 - [ ] `web_search` 的 opt-in 由组合根（底层模块总线契约）按 `config.exploration.web_enabled` 决定是否注册；05-tools 本身不读 config
@@ -38,7 +38,7 @@
 - **全 async + 不阻塞事件循环**：fs / network 是阻塞 I/O，用 `asyncio.to_thread` 包一层（CLAUDE.md「I/O 操作用 async def」+ 不卡 SSE 广播）
 - **`web_search` opt-in 归组合根**：05-tools 只提供 `build_web_search_tool()`；`main.py`（底层模块总线契约）读 `config.exploration.web_enabled`，true 才注册。未注册 → 不出现在 `schema()` 里，LLM 不可见、`call` 报 `KeyError`
 - **`web_fetch` 抓正文（纯抓取，不落盘不触发读书）**：`fetch_url(url)`（httpx GET + trafilatura 抽正文，失败/空返 `""`，`asyncio.to_thread` 不阻塞事件循环）→ `build_web_fetch_tool()` 返回 `{"text", "url"}` 纯正文（正文超 `_MAX_DOWNLOAD_CHARS`（20 万）截断），供 09-activity 探索直接消化。不再写 `uploads/`、不再发 `USER_MATERIAL`（读书由欲望驱动从书库选书，见 09-activity）。依赖新增 `trafilatura`（pyproject）
-- **`file_io` 沙箱（只读 + 指定写目录）**：`read` / `list` 全盘（读安全，agent 需要读任意书/文件）；`write` 限定 `write_root`（默认 `Path("workspace")`，相对 cwd），越界抛 `ValueError`。路径校验用 `pathlib` 的 `.resolve()` + `.is_relative_to()`。同路径已有 UTF-8 文件且内容相同时直接返回长度，不调用 `write_text`，让 activity checkpoint 在“文件已写、标记未提交”的恢复窗口保持效果幂等。已知边界：`read`/`list` 全盘是有意设计（探索特性），本地单机 agent 以用户权限运行、非沙箱，LLM 可经 exploration `focus` 指向任意路径——MVP 接受，不提供对外服务隔离（不为此加 read_root 配置）
+- **`file_io` 沙箱（只读 + 指定写目录）**：`read` / `list` 全盘（读安全，agent 需要读任意书/文件）；`write` 限定 `write_root`（默认 `Path("workspace")`，相对 cwd），越界抛 `ValueError`。路径校验用 `pathlib` 的 `.resolve()` + `.is_relative_to()`。同路径已有 UTF-8 文件且内容相同时直接返回长度，不调用 `write_text`，让 activity checkpoint 在“文件已写、标记未提交”的恢复窗口保持效果幂等；旧文件按固定大小分块判等，不整文件读入内存。已知边界：`read`/`list` 全盘是有意设计（探索特性），本地单机 agent 以用户权限运行、非沙箱，LLM 可经 exploration `focus` 指向任意路径——MVP 接受，不提供对外服务隔离（不为此加 read_root 配置）
 - **`local_search` 范围**：缺省搜**全盘**（`full_disk_roots()`：Windows 枚举存在的盘符、POSIX 根 `/`），与 `file_io.read` 的「读可全盘」一致；`.txt` / `.md` 文本，大小写不敏感子串匹配，返回 `[{path, snippet}]`。`roots` 参数可收窄（探索链传 `[workspace]`、测试传 `[tmp_path]`）。与记忆检索（06-memory-system）是两码事——本工具搜**文件**，不搜记忆表
 - **全盘遍历用 `os.walk` + `onerror` 跳过无权限目录**：`rglob` 在无权限目录（Windows `System Volume Information` 等）会抛 `PermissionError`；`os.walk(root, onerror=...)` 跳过不可读目录继续走。注意全盘搜索慢（冷跑可能分钟级），探索链若要收窄用 `roots` 参数；结果截断到 `_MAX_RESULTS`（50）、单文件超 `_MAX_FILE_BYTES`（1MiB）跳过（界内存/耗时兜底，不做超时——`to_thread` 无法干净中断 os.walk 线程）
 - **注入非全局**：`ToolRegistry` 是普通类，组合根实例化 + 注入活动 Facade 与表达 Facade（同 EventBus 约定），无模块级单例
@@ -66,7 +66,7 @@
   - [ ] **file_io**（`test_file_io.py`，`tmp_path` 作 `write_root`）：
     - [ ] `read`：写一个 tmp 文件 → `file_io("read", path)` 返回 `content`
     - [ ] `write`：`file_io("write", "note.txt", "hi", write_root)` → 文件建在 `write_root/note.txt`，返回 `written`
-    - [ ] `write` 同路径同内容：返回 `written` 且不重复调用 `Path.write_text`
+    - [ ] `write` 同路径同内容：按固定大小分块读取旧文件，返回 `written` 且不重复调用 `Path.write_text`
     - [ ] `write` 目标不是合法 UTF-8：不在幂等判等阶段失败，正常覆盖为 UTF-8 内容
     - [ ] `write` 越界：`file_io("write", "../evil.txt", ..., write_root)` → `ValueError`
     - [ ] `write` 绝对路径逃逸 → `ValueError`

@@ -32,7 +32,7 @@
 - `nyx/runtime.py`
   - 是用户消息、tick、主动搭话、反思和总线监督的实际运行入口。
 - `nyx/app_context.py`
-  - 读取 `prompts/canon.md`、`prompts/ask.md` 和 `prompts/knowledge-boundary.md`，
+  - 读取 `nyx/prompts/canon.md`、`nyx/prompts/ask.md` 和 `nyx/prompts/knowledge-boundary.md`，
     按依赖顺序装配表达与阅读门面。
 
 ## 普通回复
@@ -78,7 +78,7 @@
   ask guidance、自我叙事、记忆、工具结果、知识边界和轻量意图参考。
 - Big Five、三观和审美数值仍在结构化状态段保留；人格指令另将数值映射为自然语言，且声明
   只是倾向而非硬规则。
-- `prompts/knowledge-boundary.md` 是启动时读取的静态指导，约束熟悉领域、推理复杂度、
+- `nyx/prompts/knowledge-boundary.md` 是启动时读取的静态指导，约束熟悉领域、推理复杂度、
   不确定性表达、澄清和工具失败行为。
 - `classify_user_intent()` 不调 LLM、不访问 DB，只返回 `UserIntent`；结果仅作为 think
   prompt 参考，不改变通道路由或直接触发副作用。

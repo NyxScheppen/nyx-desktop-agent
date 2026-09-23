@@ -61,7 +61,7 @@
 - `READING` 必须有真实 `source`；缺 source 会 `raise ValueError`，防止 LLM 凭空编造读书内容。
 - `ReadingActivityRunner` 每次读取 `source` 的 `[read_chars, read_chars+6000)` 文本块，调用 LLM 生成 `{book, note}`，追加到 `material.note_fragments`，再推进 `material.read_chars`。进度写在 `activity.progress["reading"]`，恢复时跳过已提交 fragment、已 advance、已写完整笔记、已提取 knowledge 的步骤；完整聚合笔记用 `final_note` 锚定。
 - 读到末尾或 chunk 为空时，runner 聚合所有片段成完整笔记，写入 `workspace/notes/<filename>-<path-hash>.md`，并从全文提取最多 5 条 knowledge 记忆。
-- `CREATION` 会取最多 3 条 knowledge 记忆、当前观察、当前状态和 canon，调用 LLM 生成 `{title, content}`，写入 `workspace/creations/<safe-title>.md`。进度写在 `activity.progress["creation"]`，恢复时复用 style / LLM 结果 / 文件路径，不重复写同一文件。
+- `CREATION` 按 goal topic/描述融合召回最多 3 条相关 knowledge/历史创作，连同当前观察、情绪、精力、审美和 canon 调用 LLM；`title/content` 必须是非空字符串。文件经 `ToolRegistry` 写入 `workspace/creations/<safe-title>-<activity-hash>.md`，标题 stem 最长 96 字符，同名活动不覆盖；同路径同内容写入幂等。进度写在 `activity.progress["creation"]`，恢复时复用 style / LLM 结果 / 文件路径。
 - `FREE_EXPLORATION` 由 `Exploration.run(activity)` 执行显式 checkpoint 状态机：`searching -> reading_results -> summarizing -> sinking -> completed`。进度写在 `activity.progress["exploration"]`，恢复时从 cursor 继续抓取结果；`sink_done=true` 时不重复新增长期欲望或 knowledge 记忆。
 - `OBSERVE_USER` 读取组合根维护的 `last_presence`、`last_window_title`、`last_screen_summary`，用纯函数拼 summary。
 - `classify_presence(idle_seconds)` 的边界为 `<30` 秒 online、`30-300` 秒 busy、`>=300` 秒 away，窗口标题不参与三态判定。

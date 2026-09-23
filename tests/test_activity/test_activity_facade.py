@@ -357,6 +357,7 @@ class _FakeMemory:
     def __init__(self) -> None:
         self.remembered: list[list[dict[str, str]]] = []
         self.knowledge: list[Memory] = []
+        self.search_queries: list[str] = []
 
     async def list_memories(
         self,
@@ -367,6 +368,7 @@ class _FakeMemory:
         return self.knowledge
 
     async def search(self, query: str) -> list[Memory]:
+        self.search_queries.append(query)
         return self.knowledge
 
     async def remember_knowledge(
@@ -376,9 +378,23 @@ class _FakeMemory:
 
 
 class _FakeTools:
+    def __init__(self, write_root: Path | None = None) -> None:
+        self.write_root = write_root
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
     async def call(self, name: str, args: dict[str, Any]) -> Any:
+        self.calls.append((name, args))
         if name in ("local_search", "web_search"):
             return ["一条检索结果"]
+        if name == "file_io":
+            path = str(args["path"])
+            content = str(args.get("content") or "")
+            if self.write_root is None:
+                return {"path": f"workspace/{path}", "written": len(content)}
+            target = self.write_root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            return {"path": str(target), "written": len(content)}
         return "文件内容"
 
 
@@ -400,6 +416,7 @@ async def _new_facade(
     get_observation: Callable[[], Awaitable[dict[str, str]]] | None = None,
     desire: _FakeDesire | None = None,
     memory: _FakeMemory | None = None,
+    tools: _FakeTools | None = None,
     canon: str = "测试人格",
 ) -> tuple[ActivityFacade, ActivityStore, EventBus, Database]:
     database = await db.connect(":memory:")
@@ -416,7 +433,7 @@ async def _new_facade(
         bus,
         cast(LlmClient, llm if llm is not None else _FakeLlm()),
         cast(Evaluator, evaluator if evaluator is not None else _FakeEvaluator()),
-        cast(ToolRegistry, _FakeTools()),
+        cast(ToolRegistry, tools if tools is not None else _FakeTools()),
         cast(
             DesireFacade,
             desire if desire is not None else _FakeDesire(pending, values),
@@ -675,26 +692,16 @@ async def test_maybe_start_creation_activity(
 
 async def test_creation_result_has_path(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """创作落盘：LLM 产 {title, content} 后写进 workspace/creations，result 带 path。"""
+    """创作落盘：写入 pytest 临时工作区并确认内容，测试后自动清理。"""
     t0 = 1_000_000.0
     monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
-    captured: dict[str, Any] = {}
-
-    async def fake_file_io(
-        action: str,
-        path: str,
-        content: str | None = None,
-        write_root: Path = Path("workspace"),
-    ) -> dict[str, Any]:
-        captured["path"] = path
-        captured["content"] = content
-        return {"path": f"workspace/{path}", "written": len(content or "")}
-
-    monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
+    tools = _FakeTools(tmp_path)
     facade, _store, bus, database = await _new_facade(
         pending=[_desire("d1", DesireType.CREATION)], energy=80.0,
         llm=_FakeLlm(), evaluator=_FakeEvaluator(),
+        tools=tools,
     )
     try:
         events = _subscribe_activity(bus)
@@ -702,33 +709,30 @@ async def test_creation_result_has_path(
             await facade._maybe_start_activity()
             await _await_task(facade)
         ends = [e for e in events if e.type is EventType.ACTIVITY_END]
-        assert (
-            ends[0].content["result"]["path"]
-            == "workspace/creations/小狐狸的日记.md"
-        )
-        assert captured["path"] == "creations/小狐狸的日记.md"
-        assert captured["content"] == "今天也努力了"
+        activity_id = str(ends[0].content["activity_id"])
+        filename = f"小狐狸的日记-{_path_hash_suffix(activity_id)}.md"
+        output = tmp_path / "creations" / filename
+        assert ends[0].content["result"]["path"] == str(output)
+        assert tools.calls == [
+            (
+                "file_io",
+                {
+                    "action": "write",
+                    "path": f"creations/{filename}",
+                    "content": "今天也努力了",
+                },
+            )
+        ]
+        assert output.read_text(encoding="utf-8") == "今天也努力了"
     finally:
         await database.conn.close()
 
 
 async def test_creation_resume_uses_checkpoint_without_rewriting(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     llm = _FakeLlm()
-    writes: list[tuple[str, str, str | None]] = []
-
-    async def fake_file_io(
-        action: str,
-        path: str,
-        content: str | None = None,
-        write_root: Path = Path("workspace"),
-    ) -> dict[str, Any]:
-        writes.append((action, path, content))
-        return {"path": f"workspace/{path}", "written": len(content or "")}
-
-    monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
-    facade, _store, _bus, database = await _new_facade(llm=llm)
+    tools = _FakeTools()
+    facade, _store, _bus, database = await _new_facade(llm=llm, tools=tools)
     activity = _activity(
         "a1",
         type_=ActivityType.CREATION,
@@ -754,7 +758,7 @@ async def test_creation_resume_uses_checkpoint_without_rewriting(
         assert result["content"] == "旧内容"
         assert result["path"] == "workspace/creations/旧标题.md"
         assert llm.calls == []
-        assert writes == []
+        assert tools.calls == []
     finally:
         await database.conn.close()
 
@@ -1381,9 +1385,12 @@ async def test_reading_completion_aggregates_note(
         content: str | None = None,
         write_root: Path = Path("workspace"),
     ) -> dict[str, Any]:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content or "", encoding="utf-8")
         captured["path"] = path
         captured["content"] = content
-        return {"path": f"workspace/{path}", "written": len(content or "")}
+        return {"path": str(target), "written": len(content or "")}
 
     monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
     source = tmp_path / "book.txt"
@@ -1410,8 +1417,10 @@ async def test_reading_completion_aggregates_note(
         assert result["completed"] is True
         assert result["note"] == "完整读书笔记"
         suffix = _path_hash_suffix(str(source))
-        assert result["path"] == f"workspace/notes/book.txt-{suffix}.md"
+        output = tmp_path / "notes" / f"book.txt-{suffix}.md"
+        assert result["path"] == str(output)
         assert captured["path"] == f"notes/book.txt-{suffix}.md"
+        assert output.read_text(encoding="utf-8") == "完整读书笔记"
         assert llm.calls == ["reading", "note", "knowledge"]
     finally:
         await database.conn.close()
@@ -1737,7 +1746,7 @@ def test_build_creation_context_full() -> None:
     )
     assert "风格：日记体" in ctx
     assert "主题：骑士团" in ctx
-    assert "知识库参考" in ctx
+    assert "参考记忆" in ctx
     assert "成立于 1147 年" in ctx
     assert "当前屏幕灵感" in ctx
 
@@ -1886,7 +1895,13 @@ async def test_creation_activity_injects_context(
     monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
     llm = _CapturingLlm()
     memory = _FakeMemory()
-    memory.knowledge = [_knowledge_mem("骑士团", "成立于 1147 年")]
+    previous = _knowledge_mem("旧作《雨夜》", "她曾在雨里等过一个人")
+    previous.kind = MemoryKind.ACTIVITY
+    previous.topics = ["creation"]
+    memory.knowledge = [
+        previous,
+        _knowledge_mem("骑士团", "成立于 1147 年"),
+    ]
 
     async def fake_observation() -> dict[str, str]:
         return {
@@ -1908,9 +1923,11 @@ async def test_creation_activity_injects_context(
             await facade._maybe_start_activity()
             await _await_task(facade)
         user = llm.user_contents[0]
+        assert memory.search_queries == ["读骑士小说"]
         assert "创作参考" in user
         assert "风格：" in user
-        assert "知识库参考" in user
+        assert "参考记忆" in user
+        assert "旧作《雨夜》" in user
         assert "当前屏幕灵感" in user
     finally:
         await database.conn.close()

@@ -8,7 +8,7 @@ from time import monotonic
 
 import aiosqlite
 
-DEFAULT_DB_PATH = "nyx.db"
+DEFAULT_DB_PATH = "data/nyx.db"
 DB_LOCK_TIMEOUT = 3.0
 DB_OPERATION_TIMEOUT = 3.0
 DB_FAILURE_THRESHOLD = 5
@@ -622,9 +622,13 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
 async def connect(path: str | None = None) -> Database:
     """打开（或创建）SQLite：设 pragma + row_factory，跑迁移，返回 conn+lock 捆绑。
 
-    path 优先级：显式参数 > NYX_DB env > 默认 "nyx.db"（同 NYX_CONFIG 约定）。
+    path 优先级：显式参数 > NYX_DB env > 默认 data/nyx.db。
     """
     resolved = path or os.environ.get("NYX_DB") or DEFAULT_DB_PATH
+    if resolved != ":memory:":
+        from pathlib import Path
+
+        Path(resolved).parent.mkdir(parents=True, exist_ok=True)
     conn = await aiosqlite.connect(resolved)
     try:
         conn.row_factory = aiosqlite.Row

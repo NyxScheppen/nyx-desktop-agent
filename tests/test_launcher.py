@@ -246,7 +246,7 @@ async def test_packaged_entry_resolves_resources_without_launch_directory(
         await entry.main()
     config = build.call_args.args[0]
     assert config.embedding.model == str(tmp_path / "embedding-model")
-    assert entry.os.environ["NYX_CANON_DIR"] == str(tmp_path / "prompts")
+    assert entry.os.environ["NYX_CANON_DIR"] == str(tmp_path / "nyx" / "prompts")
 
 
 def test_sidecar_build_bundles_only_public_resources(
@@ -272,8 +272,17 @@ def test_sidecar_build_bundles_only_public_resources(
         dev.main()
     command = run.call_args_list[-1].args[0]
     assert command[:3] == [dev.sys.executable, "-m", "PyInstaller"]
-    assert f"{tmp_path / 'prompts'};prompts" in command
+    assert f"{tmp_path / 'nyx' / 'prompts'};nyx/prompts" in command
     assert not any(".env" in argument for argument in command)
     assert "x86_64-pc-windows-msvc" in str(copy.call_args.args[1])
 
 
+def test_reload_skips_missing_config_path() -> None:
+    process = MagicMock()
+    with (
+        patch.object(entry.Path, "is_file", return_value=False),
+        patch("watchfiles.watch", return_value=[]) as watch,
+        patch("subprocess.Popen", return_value=process),
+    ):
+        entry._run_with_reload()
+    assert watch.call_args.args == ("nyx",)

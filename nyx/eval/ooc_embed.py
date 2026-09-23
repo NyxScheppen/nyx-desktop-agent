@@ -5,7 +5,7 @@ embed 实例由组合根（main.py）注入，与记忆检索共享同一份。
 """
 from nyx.memory.retrieval import EmbedFn, cosine
 
-# 基准语料：从 prompts/canon.md 抽的 in-character 例句（语气参考 + 可以说段）。
+# 基准语料：从 nyx/prompts/canon.md 抽的 in-character 例句（语气参考 + 可以说段）。
 # 静态常量，随 canon.md 校准（可推翻）。
 NYX_CORPUS: tuple[str, ...] = (
     "啊啊，啊啊啊，女神在上……这、这也太丢人了，呜……",

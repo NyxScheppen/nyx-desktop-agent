@@ -47,10 +47,7 @@ export function formatResult(a: Activity): string | null {
     return parts.length > 0 ? parts.join(" — ") : null;
   }
   if (a.type === "creation") {
-    const parts: string[] = [];
-    if (typeof r.title === "string") parts.push(r.title);
-    if (typeof r.content === "string") parts.push(r.content);
-    return parts.length > 0 ? parts.join(" — ") : null;
+    return typeof r.title === "string" && r.title.length > 0 ? r.title : null;
   }
   if (a.type === "free_exploration") {
     const parts: string[] = [];
@@ -60,6 +57,15 @@ export function formatResult(a: Activity): string | null {
     return parts.length > 0 ? parts.join(" — ") : null;
   }
   return null;
+}
+
+/** 已完成活动的落盘路径；当前读书与创作产出可带 path。 */
+export function formatOutputPath(a: Activity): string | null {
+  if (a.status !== "completed") return null;
+  const result = a.progress.result;
+  if (typeof result !== "object" || result === null) return null;
+  const path = (result as Record<string, unknown>).path;
+  return typeof path === "string" && path.length > 0 ? path : null;
 }
 
 /** 产出面板正文：完整产出文本（多行），与 formatResult 的单行摘要互补。

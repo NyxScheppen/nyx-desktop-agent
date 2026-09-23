@@ -50,3 +50,6 @@ reportUnusedClass = true
 
 [tool.setuptools.packages.find]
 include = ["nyx*"]
+
+[tool.setuptools.package-data]
+nyx = ["prompts/*.md"]

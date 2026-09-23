@@ -29,7 +29,7 @@ async def file_io(
 
     已知边界：read/list 全盘是有意设计（探索特性），本地单机 agent 以用户权限
     运行、非沙箱；LLM 可经 exploration focus 指向任意路径，MVP 接受，不提供
-    对外服务隔离。write 仍受 write_root 越界校验约束。
+    对外服务隔离。write 仍受 write_root 越界校验约束；同路径同内容不重复写盘。
     """
     if action == "read":
         text = await asyncio.to_thread(
@@ -38,10 +38,13 @@ async def file_io(
         return {"path": path, "content": text}
     if action == "write":
         target = _resolve_write(write_root, path)
+        payload = content or ""
 
         def _do() -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
-            return target.write_text(content or "", encoding="utf-8")
+            if target.is_file() and target.read_bytes() == payload.encode("utf-8"):
+                return len(payload)
+            return target.write_text(payload, encoding="utf-8")
 
         return {"path": str(target), "written": await asyncio.to_thread(_do)}
     if action == "list":

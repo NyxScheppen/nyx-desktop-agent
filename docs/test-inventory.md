@@ -7,12 +7,12 @@
 ## 当前快照
 
 - 后端测试文件：65
-- `pytest --collect-only -q`：1026 tests collected
-- 最近一次全量验证：`1025 passed, 1 skipped`
+- `pytest --collect-only -q`：1038 tests collected
+- 最近一次全量验证：`1037 passed, 1 skipped`
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：`20 files / 295 passed`。
+- 最近一次前端全量验证：`20 files / 297 passed`。
 - 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；前端只在后端 ready 后启动。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
 - 前端测试覆盖通用 API、SSE、状态、聊天、阅读、设置和桌面 presence。
@@ -25,14 +25,14 @@
 | 类型 | `tests/test_types/` | 2 | 枚举穷尽、实体默认值、LLM prompt TypedDict |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 迁移、索引、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 默认路径与父目录创建、迁移、索引、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
 | API/运行时 | `tests/test_api/` | 7 | 组合根、REST、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
-| 工具 | `tests/test_tools/` | 5 | 文件、搜索、工具注册和网络抓取 |
+| 工具 | `tests/test_tools/` | 5 | 文件沙箱与同内容幂等写、搜索、工具注册和网络抓取 |
 | 记忆 | `tests/test_memory/` | 7 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade、通用实体事实抽取/类型与别名索引/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级、durable 活动记忆不持锁等待 embedding |
-| 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、满足、重放 |
+| 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、类型/action 钉死、满足、重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
-| 活动 | `tests/test_activity/` | 13 | 排期、活动生命周期、探索、观察、读书恢复 |
+| 活动 | `tests/test_activity/` | 13 | 排期、活动生命周期、探索、观察、读书恢复、创作结果严格校验、主题/旧作参考、唯一文件名与注册表落盘 |
 | 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动（单段单问、问题共享 180 秒冷却、成功后才计冷却、联想共存）、笔记、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
@@ -42,7 +42,7 @@
 | 范围 | 测试目录 | 主要覆盖 |
 |---|---|---|
 | REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、记忆搜索/事实快照端点、开发/打包共享 base URL、eval prompt 懒加载端点、取消信号、错误、事件解析 |
-| 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts` | Zustand、记忆搜索与事实图独立降级、eval prompt 逐行缓存/重试、历史/SSE 去重与因果排序、非法帧不改变等待/未读状态、活跃度、异常原生采样、请求超时/取消、网络结果不确定、活动产出 |
+| 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts` | Zustand、记忆搜索与事实图独立降级、eval prompt 逐行缓存/重试、历史/SSE 去重与因果排序、非法帧不改变等待/未读状态、活跃度、异常原生采样、请求超时/取消、网络结果不确定、创作标题摘要/正文/落盘路径分层展示 |
 | 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、设置、评估面板展开详情与安全文本渲染 |
 | 记忆面板 | `memoryPanel.test.tsx` | 关键词查询提交、事实图实体关系渲染、事实加载失败降级 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 状态显示、紧凑布局容器、过滤、枚举中文化 |
@@ -108,6 +108,13 @@
 - schema 19 clears legacy memory/edges and installs kind/topics indexes
 - `test_resume_skips_committed_fragment`
 - `test_resume_skips_finalized_note_and_knowledge`
+- `test_parse_activity_result_requires_non_empty_strings`
+- `test_creation_output_path_is_unique_per_activity`
+- `test_creation_activity_injects_context`
+- `test_write_same_content_does_not_rewrite`
+- `test_write_replaces_non_utf8_content`
+- `test_connect_creates_parent_directory`
+- `test_reload_skips_missing_config_path`
 - `test_summarize_injects_related_memories`
 - `test_chat_endpoint`
 - `test_check_reflect_triggers`
@@ -124,6 +131,7 @@
 - `test_apply_value_delta_preserves_concurrent_increments`
 - `test_run_eval_reuses_saved_generation_after_commit_failure`
 - `test_run_eval_same_tick_applies_periodic_pressure_once`
+- `test_parse_desire_pins_goal_action_to_desire_type`
 
 ### 前端桌面采集
 

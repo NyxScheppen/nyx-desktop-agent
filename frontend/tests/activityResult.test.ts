@@ -4,6 +4,7 @@ import {
   activityStatusText,
   activitySubject,
   formatOutputBody,
+  formatOutputPath,
   formatResult,
   formatTools,
 } from "../src/lib/activityResult";
@@ -45,12 +46,12 @@ describe("formatResult", () => {
     ).toBe("《小王子》 — 关于驯服");
   });
 
-  it("creation → {title} — {content}", () => {
+  it("creation → 只返回标题，避免时间线重复整篇正文", () => {
     expect(
       formatResult(
         activity({ type: "creation", progress: { result: { title: "诗", content: "正文" } } }),
       ),
-    ).toBe("诗 — 正文");
+    ).toBe("诗");
   });
 
   it("free_exploration → summary 与 core_discovery 用 — 连接", () => {
@@ -130,6 +131,25 @@ describe("formatOutputBody", () => {
   });
 });
 
+describe("formatOutputPath", () => {
+  it("已完成且 path 非空 → 返回落盘路径", () => {
+    expect(
+      formatOutputPath(
+        activity({
+          type: "creation",
+          progress: { result: { title: "诗", content: "正文", path: "creations/诗-a1.md" } },
+        }),
+      ),
+    ).toBe("creations/诗-a1.md");
+  });
+
+  it("未完成 / 无 path / 空 path → null", () => {
+    expect(formatOutputPath(activity({ status: "running", progress: { result: { path: "a" } } }))).toBeNull();
+    expect(formatOutputPath(activity({ progress: { result: {} } }))).toBeNull();
+    expect(formatOutputPath(activity({ progress: { result: { path: "" } } }))).toBeNull();
+  });
+});
+
 describe("formatTools", () => {
   it("多工具链 → 用 → 连接；ok=false 标记（失败）", () => {
     expect(
@@ -173,7 +193,7 @@ describe("activityAnnouncement", () => {
       activityAnnouncement(
         activity({ type: "creation", progress: { result: { title: "诗", content: "正文" } } }),
       ),
-    ).toBe("创作完成：诗 — 正文");
+    ).toBe("创作完成：诗");
   });
 
   it("free_exploration → 探索收获：…", () => {

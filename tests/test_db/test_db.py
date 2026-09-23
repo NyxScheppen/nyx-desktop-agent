@@ -546,6 +546,13 @@ async def test_connect_explicit_path_priority(tmp_path: Path) -> None:
     assert a.exists()
 
 
+async def test_connect_creates_parent_directory(tmp_path: Path) -> None:
+    nested = tmp_path / "data" / "nyx.db"
+    database = await db.connect(str(nested))
+    await database.conn.close()
+    assert nested.exists()
+
+
 async def test_connect_env_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -557,7 +564,7 @@ async def test_connect_env_override(
 
 
 def test_default_db_path_constant() -> None:
-    assert db.DEFAULT_DB_PATH == "nyx.db"
+    assert db.DEFAULT_DB_PATH == "data/nyx.db"
 
 
 # ---- connect：错误路径不泄漏连接 ----

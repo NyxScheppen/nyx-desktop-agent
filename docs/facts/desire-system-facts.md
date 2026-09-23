@@ -40,6 +40,7 @@ PENDING --retry limit--> EXPIRED
 - `DESIRE_EVAL` 先在短事务内结算衰减和周期压力，并与 `desire_eval_applied` marker 一起提交，再在事务外调用 LLM；同一 tick 重试跳过周期结算但继续生成阶段。
 - 同一进程的评估调用由 lifecycle 锁串行；最终压力重置使用 `updated_at` 条件，保护评估期间的新压力。
 - 解析成功的 LLM JSON 先进入 generation attempt；正式状态、容量裁剪和 `DESIRE_GENERATED` 在一个事务中提交。
+- goal 的 `action` 不信任 LLM 选择：解析结构合法后按欲望类型固定为探索=`read`、创造=`write`、互动=`observe`，休息欲为 `None`，避免活动类型与结算动作错配。
 - 短期容量溢出时，按类型表达权重降序、创建时间升序保留，低表达权重待消费欲望被裁剪。
 - 长期欲望 embedding 是严格前置；embedding 失败不插入，不降级为仅名称去重。
 - 反思批量新增长期欲望走两阶段入口：事务外预检容量/名称/embedding 去重并记录 `id/name/description` 快照，事务内只校验快照和执行受容量/名称保护的插入；快照冲突抛错交给 durable delivery 重试。

@@ -12,7 +12,16 @@ def parse_activity_result(raw: str, output_type: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"活动结果 JSON 应是对象，得到 {type(data).__name__}")
     parsed = cast(dict[str, Any], data)
-    required = ("book", "note") if output_type == "reading" else ("title", "content")
+    if output_type == "reading":
+        required = ("book", "note")
+    elif output_type == "creation":
+        required = ("title", "content")
+    else:
+        raise ValueError(f"未知活动输出类型：{output_type!r}")
     if not all(k in parsed for k in required):
         raise ValueError(f"活动结果 JSON 缺键：{required}")
+    for key in required:
+        value = parsed[key]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"活动结果 JSON 的 {key} 应为非空字符串")
     return parsed

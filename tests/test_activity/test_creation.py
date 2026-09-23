@@ -109,7 +109,7 @@ def test_build_creation_context_full() -> None:
     )
     assert "风格：日记体" in ctx
     assert "主题：骑士团" in ctx
-    assert "知识库参考" in ctx
+    assert "参考记忆" in ctx
     assert "成立于 1147 年" in ctx
     assert "当前屏幕灵感" in ctx
 
@@ -130,5 +130,8 @@ def test_build_creation_system_injects_state_and_voice() -> None:
     assert "neutral" in sys
     assert "精力：70/100" in sys
     assert "写点东西" in sys
+    assert "华丽 7" in sys
+    assert "抒情 7" in sys
+    assert "输出前" in sys
     assert "[创作要求]" in sys
     assert "按 JSON 输出" in sys

@@ -36,7 +36,9 @@ from nyx.types import (
 _CREATION_STYLES = _creation.CREATION_STYLES
 _build_creation_context = _creation.build_creation_context
 _build_creation_system = _creation.build_creation_system
+_creation_subject = _creation.creation_subject
 _pick_creation_style = _creation.pick_creation_style
+_creation_output_path = _activity_paths.creation_output_path
 _correlation_id = _activity_lifecycle.correlation_id
 _goal_met = _activity_lifecycle.goal_met
 _path_hash_suffix = _activity_paths.path_hash_suffix
@@ -97,6 +99,7 @@ class ActivityFacade:
         self._bus = bus
         self._llm = llm
         self._evaluator = evaluator
+        self._tools = tools
         self._desire = desire
         self._memory = memory
         self._get_state = get_state
@@ -263,13 +266,32 @@ class ActivityFacade:
             checkpoint["style"] = _pick_creation_style()
             await self._save_creation_checkpoint(activity, checkpoint)
         if not bool(checkpoint.get("llm_done")):
-            knowledge = await self._memory.list_memories(
-                kind=MemoryKind.KNOWLEDGE, limit=3
-            )
+            subject = _creation_subject(activity)
+            recalled = await self._memory.search(subject) if subject else []
+            references = [
+                memory
+                for memory in recalled
+                if memory.kind is MemoryKind.KNOWLEDGE
+                or (
+                    memory.kind is MemoryKind.ACTIVITY
+                    and ActivityType.CREATION.value in memory.topics
+                )
+            ][:3]
+            if len(references) < 3:
+                fresh_knowledge = await self._memory.list_memories(
+                    kind=MemoryKind.KNOWLEDGE, limit=3
+                )
+                seen = {memory.id for memory in references}
+                references.extend(
+                    memory
+                    for memory in fresh_knowledge
+                    if memory.id not in seen
+                )
+                references = references[:3]
             obs = await self._get_observation()
             state = await self._get_state()
             context = _build_creation_context(
-                activity, str(checkpoint["style"]), knowledge, obs
+                activity, str(checkpoint["style"]), references, obs
             )
             system = _build_creation_system(self._canon, state)
             result = await self._run_llm_activity(
@@ -285,10 +307,19 @@ class ActivityFacade:
             await self._save_creation_checkpoint(activity, checkpoint)
         title = str(checkpoint["title"])
         content = str(checkpoint["content"])
+        write_path = _creation_output_path(title, activity.id)
         if not bool(checkpoint.get("file_written")):
-            path = f"creations/{_sanitize_filename(title)}.md"
-            written = await file_io("write", path, content)
-            checkpoint["path"] = written["path"]
+            written_raw = await self._tools.call(
+                "file_io",
+                {"action": "write", "path": write_path, "content": content},
+            )
+            if not isinstance(written_raw, dict):
+                raise ValueError("file_io.write 应返回对象")
+            written = cast(dict[str, Any], written_raw)
+            path_value = written.get("path")
+            if not isinstance(path_value, str) or not path_value:
+                raise ValueError("file_io.write 返回缺少非空 path")
+            checkpoint["path"] = path_value
             checkpoint["file_written"] = True
             await self._save_creation_checkpoint(activity, checkpoint)
         path_value = str(checkpoint["path"])
@@ -301,7 +332,7 @@ class ActivityFacade:
                     "name": "file_io",
                     "args": {
                         "action": "write",
-                        "path": f"creations/{_sanitize_filename(title)}.md",
+                        "path": write_path,
                     },
                     "ok": True,
                 }

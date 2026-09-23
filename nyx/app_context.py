@@ -324,7 +324,9 @@ async def build_app_context(
             raise RuntimeError("runtime return context 尚未绑定")
         return_context_owner.release_return_context(claim)
 
-    prompt_dir = Path(os.environ.get("NYX_CANON_DIR", "prompts"))
+    prompt_dir = Path(
+        os.environ.get("NYX_CANON_DIR", Path(__file__).parent / "prompts")
+    )
     canon = load_canon(prompt_dir, canon_files)
     ask = load_ask(prompt_dir, ask_files)
     knowledge_boundary = load_prompt_files(

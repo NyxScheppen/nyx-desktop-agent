@@ -25,6 +25,28 @@ async def test_write(tmp_path: Path) -> None:
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "hi"
 
 
+async def test_write_same_content_does_not_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "note.txt"
+    target.write_text("hi", encoding="utf-8")
+
+    def fail_write(*args: object, **kwargs: object) -> int:
+        raise AssertionError("相同内容不应重复写盘")
+
+    monkeypatch.setattr(Path, "write_text", fail_write)
+    result = await file_io("write", "note.txt", "hi", write_root=tmp_path)
+    assert result["written"] == 2
+
+
+async def test_write_replaces_non_utf8_content(tmp_path: Path) -> None:
+    target = tmp_path / "note.txt"
+    target.write_bytes(b"\xff")
+    result = await file_io("write", "note.txt", "hi", write_root=tmp_path)
+    assert result["written"] == 2
+    assert target.read_text(encoding="utf-8") == "hi"
+
+
 async def test_write_escape_parent(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         await file_io("write", "../evil.txt", "x", write_root=tmp_path)

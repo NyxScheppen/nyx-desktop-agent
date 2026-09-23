@@ -150,7 +150,7 @@ async def main() -> None:
     frozen = bool(getattr(sys, "frozen", False))
     if frozen:
         resources = Path(str(getattr(sys, "_MEIPASS")))
-        os.environ.setdefault("NYX_CANON_DIR", str(resources / "prompts"))
+        os.environ.setdefault("NYX_CANON_DIR", str(resources / "nyx" / "prompts"))
         config = load_config(
             os.environ.get("NYX_CONFIG") or str(resources / "config.yaml")
         )
@@ -206,7 +206,7 @@ def _run_with_reload() -> None:
 
     from watchfiles import DefaultFilter, watch
 
-    paths: list[str] = ["nyx", "prompts"]
+    paths: list[str] = ["nyx"]
     if Path("config.yaml").is_file():
         paths.append("config.yaml")
     process = subprocess.Popen([sys.executable, "-m", "nyx.main"])

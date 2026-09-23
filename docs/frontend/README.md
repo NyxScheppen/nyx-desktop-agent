@@ -83,7 +83,7 @@ frontend/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     lib/
       labels.ts              # 枚举值→中文 UI 标签（label() 未知键回退原值）
-      activityResult.ts      # 活动产出纯函数（activitySubject / formatResult / formatOutputBody / formatTools / activityAnnouncement）
+      activityResult.ts      # 活动产出纯函数（activitySubject / formatResult / formatOutputBody / formatOutputPath / formatTools / activityAnnouncement）
       time.ts                # 本地昼夜、时钟/消息时间标签与时间分隔纯函数
       desktopWindow.ts       # Tauri 桌宠/完整窗口尺寸、层级与原生拖动适配
     api/
@@ -122,7 +122,7 @@ frontend/
       panels/
         BackgroundPanel.tsx  # 背景外观（预设色调/自定义取色/上传背景图/恢复默认）
         DesiresPanel.tsx     # 欲望面板（GET /api/desires + SSE desire_*）
-        ActivityPanel.tsx    # 活动时间线 + 产出面板（GET /api/activity + results + SSE activity_*；产出区列完整产出 + 工具轨迹）
+        ActivityPanel.tsx    # 活动时间线 + 产出面板（GET /api/activity + results + SSE activity_*；创作摘要只列标题，产出区列完整正文/路径/工具轨迹）
         MemoryPanel.tsx      # 记忆/事实图面板（搜索 + GET /api/memories/facts + SSE memory_*）
         FactGraph.tsx         # 手写 SVG 实体关系图（不引入图表依赖）
       reading/
@@ -144,7 +144,7 @@ frontend/
     sse.test.ts
     stores.test.ts
     labels.test.ts           # 枚举中文化映射 + label() 回退
-    activityResult.test.ts   # activityResult 纯函数（activitySubject/formatResult/formatOutputBody/formatTools/activityAnnouncement）
+    activityResult.test.ts   # activityResult 纯函数（activitySubject/formatResult/formatOutputBody/formatOutputPath/formatTools/activityAnnouncement）
 ```
 
 ### 命名约定（对齐 CLAUDE.md 前端规范）

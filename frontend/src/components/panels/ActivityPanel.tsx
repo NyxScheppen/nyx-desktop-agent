@@ -1,6 +1,11 @@
 import { useEffect } from "react";
 import { ACTIVITY_TYPE_LABELS, ACTIVITY_STATUS_LABELS } from "../../lib/labels";
-import { formatResult, formatOutputBody, formatTools } from "../../lib/activityResult";
+import {
+  formatOutputBody,
+  formatOutputPath,
+  formatResult,
+  formatTools,
+} from "../../lib/activityResult";
 import { useActivityStore } from "../../stores/activityStore";
 import Panel from "../layout/Panel";
 
@@ -72,8 +77,9 @@ export default function ActivityPanel() {
           <ul className="outputs__list">
             {results.map((a) => {
               const body = formatOutputBody(a);
+              const path = formatOutputPath(a);
               const tools = formatTools(a);
-              if (body === null && tools === null) return null;
+              if (body === null && path === null && tools === null) return null;
               return (
                 <li key={a.id} className="panel-item">
                   <span className="panel-item__main">
@@ -84,6 +90,11 @@ export default function ActivityPanel() {
                   </span>
                   {tools !== null && (
                     <span className="panel-item__meta">{tools}</span>
+                  )}
+                  {path !== null && (
+                    <span className="panel-item__meta" title={path}>
+                      {path}
+                    </span>
                   )}
                   {body !== null && (
                     <div className="panel-item__body">{body}</div>

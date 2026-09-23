@@ -23,3 +23,24 @@ def test_parse_activity_result_missing_key_raises() -> None:
 def test_parse_activity_result_non_dict_raises() -> None:
     with pytest.raises(ValueError):
         parse_activity_result("[1, 2, 3]", "reading")
+
+
+@pytest.mark.parametrize(
+    ("output_type", "payload"),
+    [
+        ("reading", {"book": "", "note": "n"}),
+        ("reading", {"book": "b", "note": 3}),
+        ("creation", {"title": None, "content": "正文"}),
+        ("creation", {"title": "标题", "content": "   "}),
+    ],
+)
+def test_parse_activity_result_requires_non_empty_strings(
+    output_type: str, payload: dict[str, object]
+) -> None:
+    with pytest.raises(ValueError):
+        parse_activity_result(json.dumps(payload), output_type)
+
+
+def test_parse_activity_result_unknown_type_raises() -> None:
+    with pytest.raises(ValueError):
+        parse_activity_result('{"title": "t", "content": "c"}', "unknown")

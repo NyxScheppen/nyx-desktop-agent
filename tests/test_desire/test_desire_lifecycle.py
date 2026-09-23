@@ -208,20 +208,46 @@ async def _running(bus: EventBus) -> AsyncGenerator[None]:
 
 
 def test_parse_desire() -> None:
-    description, goal = _parse_desire(_DESIRE_JSON)
+    description, goal = _parse_desire(_DESIRE_JSON, DesireType.EXPLORATION)
     assert description == "读一段骑士团的历史"
     assert goal == Goal(action=GoalAction.READ, count=3, topic="骑士团")
-    assert _parse_desire('{"description": "x", "goal": null}') == ("x", None)
+    assert _parse_desire(
+        '{"description": "x", "goal": null}', DesireType.REST
+    ) == ("x", None)
     with pytest.raises(ValueError):
-        _parse_desire('{"goal": null}')                              # 缺 description
+        _parse_desire('{"goal": null}', DesireType.REST)  # 缺 description
     with pytest.raises(ValueError):
-        _parse_desire('{"description": "", "goal": null}')           # 空 description
+        _parse_desire(
+            '{"description": "", "goal": null}', DesireType.REST
+        )  # 空 description
     with pytest.raises(ValueError):
-        _parse_desire('{"description": "x", "goal": {"action": "fly", "count": 1}}')
+        _parse_desire(
+            '{"description": "x", "goal": {"action": "fly", "count": 1}}',
+            DesireType.EXPLORATION,
+        )
     with pytest.raises(ValueError):
-        _parse_desire('{"description": "x", "goal": {"action": "read", "count": 0}}')
+        _parse_desire(
+            '{"description": "x", "goal": {"action": "read", "count": 0}}',
+            DesireType.EXPLORATION,
+        )
     with pytest.raises(ValueError):
-        _parse_desire('{"description": "x", "goal": {"action": "read", "count": "3"}}')
+        _parse_desire(
+            '{"description": "x", "goal": {"action": "read", "count": "3"}}',
+            DesireType.EXPLORATION,
+        )
+    with pytest.raises(ValueError):
+        _parse_desire(
+            '{"description": "x", "goal": {"action": "read", "count": 1, "topic": 5}}',
+            DesireType.EXPLORATION,
+        )
+    with pytest.raises(ValueError):
+        _parse_desire("[]", DesireType.EXPLORATION)  # 非对象
+
+
+def test_parse_desire_pins_goal_action_to_desire_type() -> None:
+    raw = '{"description": "写一首诗", "goal": {"action": "read", "count": 1}}'
+    _, goal = _parse_desire(raw, DesireType.CREATION)
+    assert goal is not None and goal.action is GoalAction.WRITE
 
 
 async def test_run_eval_same_tick_applies_periodic_pressure_once(
@@ -240,12 +266,6 @@ async def test_run_eval_same_tick_applies_periodic_pressure_once(
         assert value is not None and value.value == pytest.approx(0.1)
     finally:
         await database.close()
-    with pytest.raises(ValueError):
-        _parse_desire(
-            '{"description": "x", "goal": {"action": "read", "count": 1, "topic": 5}}'
-        )
-    with pytest.raises(ValueError):
-        _parse_desire("[]")                                          # 非对象
 
 
 def test_subtopics_for() -> None:
@@ -545,7 +565,7 @@ async def test_run_eval_generates_peak(monkeypatch: pytest.MonkeyPatch) -> None:
         assert desire.status is DesireStatus.PENDING
         assert desire.strength == pytest.approx(0.9)
         assert desire.description == "读一段骑士团的历史"
-        assert desire.goal == Goal(action=GoalAction.READ, count=3, topic="骑士团")
+        assert desire.goal == Goal(action=GoalAction.OBSERVE, count=3, topic="骑士团")
         assert llm.calls == ["desire"]
         assert [o.type for o in evaluator.evaluated] == ["desire"]
         [generated] = [e for e in events if e.type is EventType.DESIRE_GENERATED]

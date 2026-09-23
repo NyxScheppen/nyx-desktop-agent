@@ -122,7 +122,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `user_message` | `chatStore` | `addUserMessage` | 用户消息回显（发消息后 SSE 回播） |
 | `desire_generated`/`desire_satisfied`/`desire_expired` | `desireStore` | `refresh()` | 欲望变化 → 重拉快照（事件只带 `desire_id`） |
 | `activity_start`/`activity_interrupted` | `activityStore` | `refresh()` | 活动开始/抢占 → 重拉快照（事件只带 `activity_id`） |
-| `activity_end` | `activityStore` + `announceStore` | `refresh()` 后按 `activity_id` 找产出并 `announce("activity", …)` | 活动完成 → 重拉快照 + 冒一句产出 |
+| `activity_end` | `activityStore` + `announceStore` | `refresh()` 后按 `activity_id` 找产出并 `announce("activity", …)` | 活动完成 → 重拉快照 + 冒一句产出；创作只冒标题，正文和路径留在产出面板 |
 | `memory_created`/`memory_promoted` | `memoryStore` | `refresh()` | 记忆变化 → 重拉快照（事件只带 `memory_id`） |
 | `reflection_done` | `desireStore` + `announceStore` | `refresh()` +（`story_is_new` 时）`announce("mutter", …)` | 反思完成 → 欲望重拉快照 +（新故事时）立绘旁冒一句 |
 | `reading_mutter` | `announceStore` | `announce("mutter", …)` | 读书碎碎念归悬浮气泡（与全局 mutter 同一渲染路径） |

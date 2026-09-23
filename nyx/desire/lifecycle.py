@@ -42,6 +42,11 @@ _DEDUP_SIM_THRESHOLD = 0.9            # 欲望语义重复判定阈值（embeddi
 _REST_PRESSURE_DELTA = 0.1            # 疲惫（精力 < 阈值）→ 休息欲 +0.1/周期
 _CREATION_ACTIVITY_PRESSURE_DELTA = 0.15  # 读书/自由探索结束 → 创造欲 +0.15
 _GOAL_ACTIONS = frozenset(g.value for g in GoalAction)
+_GOAL_ACTION_BY_DESIRE = {
+    DesireType.EXPLORATION: GoalAction.READ,
+    DesireType.CREATION: GoalAction.WRITE,
+    DesireType.INTERACTION: GoalAction.OBSERVE,
+}
 
 _DESIRE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -65,8 +70,10 @@ def _build_desire_prompt(type_: DesireType, seed: str | None) -> str:
     return f"欲望类型：{type_.value}\n主题种子：{seed or '（无）'}"
 
 
-def _parse_desire(raw: str) -> tuple[str, Goal | None]:
-    """解析欲望 LLM 的 JSON 产出 → (description, goal)；结构非法抛 ValueError。"""
+def _parse_desire(
+    raw: str, desire_type: DesireType
+) -> tuple[str, Goal | None]:
+    """解析欲望 JSON，并按欲望类型覆盖模型给出的合法 action。"""
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError(f"欲望 JSON 应是对象，得到 {type(data).__name__}")
@@ -91,7 +98,10 @@ def _parse_desire(raw: str) -> tuple[str, Goal | None]:
     topic = goal.get("topic")
     if topic is not None and not isinstance(topic, str):
         raise ValueError("欲望 JSON 的 goal.topic 应是字符串或 null")
-    return description, Goal(action=GoalAction(action), count=count, topic=topic)
+    expected_action = _GOAL_ACTION_BY_DESIRE.get(desire_type)
+    if expected_action is None:
+        return description, None
+    return description, Goal(action=expected_action, count=count, topic=topic)
 
 
 ListMemories = Callable[[], Awaitable[list[Memory]]]
@@ -306,7 +316,7 @@ class DesireLifecycle:
             if pending_attempt is not None:
                 desire_id, created_at, peak_value, seed, raw_content = pending_attempt
                 try:
-                    description, goal = _parse_desire(raw_content)
+                    description, goal = _parse_desire(raw_content, target.type)
                 except ValueError:
                     await self._store.delete_generation_attempt(desire_id)
                     self._logger.exception(
@@ -339,7 +349,7 @@ class DesireLifecycle:
                 )
                 await self._evaluator.evaluate(output)
                 try:
-                    description, goal = _parse_desire(output.content)
+                    description, goal = _parse_desire(output.content, target.type)
                 except ValueError:
                     self._logger.exception(
                         "欲望 JSON 解析失败 type=%s correlation_id=%s",

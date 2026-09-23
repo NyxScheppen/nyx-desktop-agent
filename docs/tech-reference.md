@@ -23,7 +23,7 @@
 | 内在生命（含审美维度） | [`08-inner-life.md`](specs/08-inner-life.md) | [`inner-life-system-facts.md`](facts/inner-life-system-facts.md) | `nyx/inner_life/`、`nyx/types.py`、`nyx/db.py`、`nyx/memory/`、`nyx/expression/prompt.py`、`nyx/main.py` |
 | 活动 | [`09-activity.md`](specs/09-activity.md) | [`activity-system-facts.md`](facts/activity-system-facts.md) | `nyx/activity/` |
 | 评估 | [`10-eval.md`](specs/10-eval.md) | — | `nyx/eval/` |
-| 表达 | [`11-expression.md`](specs/11-expression.md) | [`expression-system-facts.md`](facts/expression-system-facts.md) | `nyx/expression/`、`nyx/reading/companions.py`、`prompts/knowledge-boundary.md` |
+| 表达 | [`11-expression.md`](specs/11-expression.md) | [`expression-system-facts.md`](facts/expression-system-facts.md) | `nyx/expression/`、`nyx/reading/companions.py`、`nyx/prompts/knowledge-boundary.md` |
 | 阅读 | [`12-reading-system.md`](specs/12-reading-system.md)；表达侧读书交互归 11 | [`reading-system-facts.md`](facts/reading-system-facts.md) | `nyx/reading/` |
 | 桌宠窗口与轻量入口 | [`13-desktop-pet.md`](specs/13-desktop-pet.md) | — | `frontend/src/components/desktop/`, `frontend/src/lib/desktopWindow.ts`, `frontend/src-tauri/tauri.conf.json` |
 

@@ -318,7 +318,7 @@ def main() -> None:
             "--workpath", str(ROOT / "build" / "pyinstaller"),
             "--specpath", str(ROOT / "build"), "--paths", str(ROOT),
             "--add-data", f"{ROOT / 'config.yaml'}{separator}.",
-            "--add-data", f"{ROOT / 'prompts'}{separator}prompts",
+            "--add-data", f"{ROOT / 'nyx' / 'prompts'}{separator}nyx/prompts",
             "--add-data", f"{model}{separator}embedding-model",
             "--collect-submodules", "sentence_transformers",
             "--copy-metadata", "sentence-transformers",

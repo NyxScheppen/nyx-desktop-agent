@@ -136,8 +136,9 @@
   ```
 
 - [ ] 首次执行选定创作风格并保存；恢复时复用原风格。
-- [ ] LLM 成功后保存 `title`/`content` 并置 `llm_done=true`；文件写入成功后保存 `path` 并置 `file_written=true`；恢复不得重复调用 LLM 或重复写同一文件。
-- [ ] 创作 prompt 注入 canon、当前情绪/精力/活动欲望，并可注入最多 3 条 knowledge 与当前观察；输出为 JSON `{title, content}`，文件名经过安全清洗。
+- [ ] LLM 结果的 `title`/`content` 必须都是去空白后非空的字符串；成功后保存两字段并置 `llm_done=true`。文件写入经注入的 `ToolRegistry.call("file_io", ...)`，成功后保存非空 `path` 并置 `file_written=true`；恢复不得重复调用 LLM，同路径同内容由 05-tools 保证效果幂等。
+- [ ] 创作 prompt 注入 canon、当前情绪/精力/活动欲望、四轴审美与当前观察；按 goal topic/描述调用记忆融合召回，从相关 knowledge 和历史 creation 记忆中取最多 3 条参考，并要求输出前内部自审。输出 JSON `{title, content}`。
+- [ ] 创作文件 stem 先移除非法字符、截断到 96 字符并清除尾部空格/点，再附加 activity id 的 8 位稳定哈希；路径为 `workspace/creations/<safe-title>-<activity-hash>.md`，同名作品不得互相覆盖。
 
 #### Free exploration checkpoint
 
@@ -167,7 +168,7 @@
 ### 活动类型执行
 
 - [ ] `READING` 由探索欲映射而来。启动时先按 `goal.topic` 选择 material，再按最近未读完 material 续读；无 source 不创建/不执行读书活动。无可读 material 且 topic 非空、通过 `should_explore` 限速时升级为 `FREE_EXPLORATION`，否则回退默认活动。
-- [ ] `CREATION` 执行一次创作 LLM 并写入 `workspace/creations/<safe-title>.md`。
+- [ ] `CREATION` 执行一次创作 LLM，并通过 `ToolRegistry` 写入 `workspace/creations/<safe-title>-<activity-hash>.md`。
 - [ ] `IDLE_REFLECTION` 调用组合根注入的 `inner_life.reflect`，不自行发布 `REFLECTION` 事件，并把反思摘要放进结果。
 - [ ] `OBSERVE_USER` 读取组合根维护的 presence、窗口标题和可选 screen summary，使用 `build_observation_summary` 生成摘要，运行时不调用 LLM。
 - [ ] `REST` 不调用 LLM，返回空 result。
@@ -221,7 +222,8 @@
 - [ ] `tests/test_activity/test_activity_store.py`：activity insert/get 往返、枚举与 progress JSON、current/running/paused/schedule/results 查询、exploration 最近时间、update。
 - [ ] `tests/test_activity/test_material_store.py`：material upsert、按 path 读取最新进度、next readable、topic 选择、fragment 追加与读取。
 - [ ] `tests/test_activity/test_activity_lifecycle.py`：goal 判定、`goal_signal` 覆盖、启动/完成/失败/打断事件、correlation 透传、启动清理与欲望状态回写。
-- [ ] `tests/test_activity/test_activity_facade.py`：空槽默认、欲望映射、精力休息、后台启动、`activity_end` content、读书部分进展的 `goal_met=None`、完整读书满足、创作 checkpoint 恢复、同块恢复与跨块不恢复、读书知识提取。
+- [ ] `tests/test_activity/test_activity_facade.py`：空槽默认、欲望映射、精力休息、后台启动、`activity_end` content、读书部分进展的 `goal_met=None`、完整读书满足、创作 checkpoint 恢复、注册表落盘、主题召回与历史创作参考、同块恢复与跨块不恢复、读书知识提取。
+- [ ] `tests/test_activity/test_llm_result.py` / `test_activity_paths.py`：活动结果非空字符串校验、未知输出类型拒绝、安全文件名长度和同名创作唯一路径。
 - [ ] `tests/test_activity/test_reading_runner.py`：分块读取、fragment/advance 去重、终局笔记与 knowledge finalize 去重、恢复返回 `final_note`。
 - [ ] `tests/test_activity/test_exploration.py`：所有探索阶段 checkpoint、local/web 搜索分支、fetch 失败兜底、cursor 恢复、summary 评估、sink 去重、最终结果结构。
 - [ ] `tests/test_activity/test_observe.py`：presence 的 30 秒/5 分钟边界、窗口标题不参与判定，以及观察摘要四种组合。

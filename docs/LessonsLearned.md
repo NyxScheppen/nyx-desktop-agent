@@ -2,6 +2,29 @@
 
 > Nyx Agent 项目经验教训汇总。每次踩坑后追加条目，格式见底部模板。
 
+### 2026-09-23: 资源目录迁移必须端到端对齐路径
+
+**来源**：prompt 从顶层 `prompts/` 移入 `nyx/prompts/` 后，源码默认路径、PyInstaller
+目标和冻结运行时路径已同步，但 launcher 测试误断言为打包整个 `nyx/` 目录，导致全量测试失败。
+**教训**：包内静态资源迁移要同时核对源码位置、package-data、冻结打包源/目标、运行时
+查找路径和测试断言；测试应断言实际公开资源目录，不能扩大成整个源码包。
+**怎么做**：用同一相对路径 `nyx/prompts` 串起 package-data、PyInstaller `--add-data`
+和 `_MEIPASS` 查找，并让 launcher 回归精确匹配该目录。
+**影响的文件/决策**：`dev.py`、`nyx/main.py`、`nyx/app_context.py`、
+`pyproject.toml`、`tests/test_launcher.py`。
+
+### 2026-09-23: LLM 结构合法不等于领域语义合法
+
+**来源**：创作结果只检查 `title/content` 键存在，`null` 和空白正文会被 `str()`
+伪装成有效作品；欲望 goal 的 action 虽属于合法枚举，却可与欲望类型错配。
+**教训**：LLM 边界必须校验字段类型和去空白后的非空性；能由领域类型唯一推出的字段，
+如探索/read、创造/write、互动/observe，不应继续信任模型选择。
+**怎么做**：解析器拒绝空白或非字符串产出；结构校验后按领域类型钉死确定性 action。
+文件产物还要使用有界且唯一的名字，并让 checkpoint 窗口内的重复写保持效果幂等；
+幂等判等按预定 UTF-8 字节比较，不能先严格解码来源未知的旧文件。
+**影响的文件/决策**：`nyx/activity/llm_result.py`、`nyx/activity/paths.py`、
+`nyx/desire/lifecycle.py`、`nyx/tools/file_io.py`、07/09 完整契约。
+
 ### 2026-09-22: Windows PowerShell 脚本含非 ASCII 文本时必须带 UTF-8 BOM
 
 **来源**：整理自动启动入口时，README 使用的 Windows PowerShell 5.1 直接解析 UTF-8 无

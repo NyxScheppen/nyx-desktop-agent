@@ -12,7 +12,7 @@
   `nyx/expression/prompt.py`、`nyx/expression/classifier.py`、`nyx/expression/mutter.py`、
   `nyx/expression/store.py`、`nyx/reading/companions.py`、`nyx/reading/facade.py`、
   `nyx/runtime.py`、`nyx/main.py`、`nyx/app_context.py`、`nyx/types.py`、`nyx/enums.py`、
-  `nyx/db.py`、`prompts/knowledge-boundary.md`
+  `nyx/db.py`、`nyx/prompts/knowledge-boundary.md`
 - **联动文档**：04-module-bus-system、06-memory-system、07-desire、08-inner-life、
   09-activity、12-reading-system、10-eval、docs/tech-reference.md、
   docs/facts/expression-system-facts.md
@@ -97,7 +97,7 @@ claimed_return 和 fallback。
   ask guidance、知识边界、轻量意图、自我叙事、相关记忆和工具结果。
 - `render_personality_instruction()` 将 1-10 的 Big Five、三观和审美转为自然语言行为倾向；
   prompt 同时明确这些只是倾向，不是硬规则。结构化数值仍保留在状态段。
-- `knowledge_boundary` 由组合根读取 `prompts/knowledge-boundary.md`，不由 LLM 改写。它要求
+- `knowledge_boundary` 由组合根读取 `nyx/prompts/knowledge-boundary.md`，不由 LLM 改写。它要求
   对陌生、最新、精确或专业诊断类事实表达不确定，必要时澄清或建议工具；工具失败不能
   伪造查询结果。
 - `classify_user_intent()` 只做无 LLM 的字符串分类，结果只作为 think prompt 参考，不改变

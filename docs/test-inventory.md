@@ -47,7 +47,7 @@
 | 记忆面板 | `memoryPanel.test.tsx` | 关键词查询提交、事实图实体关系渲染、事实加载失败降级 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 状态显示、紧凑布局容器、过滤、枚举中文化 |
 | 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 分页、笔记和章节交互 |
-| 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `desktopWindow.test.ts`, `petShell.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 统一分钟时钟、休眠恢复校时、昼夜/头像、完整端与桌宠态拖动模式隔离、桌宠点击/拖动阈值与窗口层级、头像下方四项圆弧菜单/内心摘要/可修改设置入口、状态气泡、桌宠陪读翻页边界、非法时间标签边界、打字机 |
+| 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `desktopWindow.test.ts`, `petShell.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 统一分钟时钟、休眠恢复校时、昼夜/头像、完整端与桌宠态拖动模式隔离、桌宠点击/拖动阈值与窗口层级、头像东西南北四项入口/内心摘要/可修改设置入口、状态气泡、桌宠陪读翻页边界、非法时间标签边界、打字机 |
 
 ## 关键回归清单
 

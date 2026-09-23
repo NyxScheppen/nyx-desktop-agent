@@ -104,7 +104,7 @@ frontend/
       announceStore.ts       # 立绘旁临时气泡：items/announce/dismiss（纯前端呈现，无后端）
     components/
       desktop/
-        PetShell.tsx          # 头像下方紧凑圆弧菜单、聊天/选书/陪读小面板与状态气泡
+        PetShell.tsx          # 头像东西南北四点入口、聊天/选书/陪读小面板与状态气泡
       AnnounceLayer.tsx      # 头像圆圈头顶淡出气泡层（读 announceStore，嵌套在 Avatar 内）
       chat/
         MessageList.tsx

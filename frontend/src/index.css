@@ -1520,7 +1520,9 @@ body:has(.app--pet) {
 /* 桌宠窗口固定为 560px 宽，会命中移动端媒体查询；桌宠模式仍必须显示圆球。 */
 .app--pet .avatar-circle {
   display: block;
+  right: 50%;
   bottom: 100px;
+  transform: translateX(50%);
 }
 
 .app--pet .app-bg,
@@ -1572,12 +1574,13 @@ body:has(.app--pet) {
 }
 
 .pet-fan-menu {
+  /* 以头像中心为原点：四个入口固定在正北、正东、正南、正西。 */
   position: absolute;
-  top: calc(100% + 8px);
+  top: 50%;
   left: 50%;
-  width: 190px;
-  height: 88px;
-  transform: translateX(-50%);
+  width: calc(100% + 84px);
+  height: calc(100% + 84px);
+  transform: translate(-50%, -50%);
   pointer-events: none;
 }
 
@@ -1603,23 +1606,23 @@ body:has(.app--pet) {
 }
 
 .pet-fan-menu__item--chat {
-  left: 12%;
-  top: 52%;
+  left: 0;
+  top: 50%;
 }
 
 .pet-fan-menu__item--reading {
-  left: 37%;
-  top: 8%;
+  left: 50%;
+  top: 0;
 }
 
 .pet-fan-menu__item--inner {
-  left: 63%;
-  top: 8%;
+  left: 100%;
+  top: 50%;
 }
 
 .pet-fan-menu__item--settings {
-  left: 88%;
-  top: 52%;
+  left: 50%;
+  top: 100%;
 }
 
 .pet-panel {

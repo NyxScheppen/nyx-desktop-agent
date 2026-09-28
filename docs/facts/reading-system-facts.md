@@ -23,7 +23,11 @@
 - `parse_epub` 在工作线程执行，沿 EPUB spine 读取文档，跳过 `linear=no` 和非
   `ITEM_DOCUMENT` 项，正文交给 `segment_html`。
 - `segment_html` 按块标签、标题合并、连续列表合并、短段合并和长段拆分生成
-  `Segment(text, is_chapter_start)`。无块标签 fallback 也会走长段拆分。
+  `Segment(text, is_chapter_start, blocks, marks)`。无块标签 fallback 也会走长段拆分；
+  `script`/`style` 内容被忽略。
+- `blocks` 保留标题、正文、引用、列表和预格式文本语义，`marks` 只保留粗体/斜体；
+  两者 offset 都是 UTF-16 code unit，原始 HTML、属性和 EPUB CSS 不落库。旧段落的格式数组
+  为空时，前端按普通正文回退。
 - `ReadingStore.insert_book_with_paragraphs` 在单事务内写 `books` 和 `paragraphs`；
   `content_hash` 唯一索引冲突时回滚并返回已存在的书。
 
@@ -44,6 +48,9 @@
 - 前端 `readerStore` 保存 `progressRevision`；同一本书的写入串行排队，409 或其他
   写入失败会先重新读取服务端进度，再用最新 revision 重试。翻页跨多段的冲动请求
   也按书串行排队。
+- 普通翻页走 `syncPosition` 并只为实际前进段落评估冲动；从历史划线或书签定位走
+  `jumpToPosition`，同样持久化位置、按需重拉窗口和恢复 Nyx 追赶，但不为跨过的段落
+  补发冲动。
 
 ## 阅读冲动与陪读输出
 
@@ -80,10 +87,16 @@
   来源内相关 knowledge Top 5 的事实正文、触发提问的完整原段落，以及书名/作者/profile。
   组合根以窄回调注入表达门面，FAST 和 SLOW 共用，避免短回复“已读乱回”。
 
-## 笔记与整合
+## 笔记、划线、书签与整合
 
 - 用户笔记和批注分别存于 `user_notes`、`annotations`；笔记正文和选中文本都限制
   4000 字符。
+- 纯划线复用 `user_notes`，以空 `content` 加段落、选中文本和 UTF-16 闭开 offset 表示；
+  后端严格校验 offset 切出的原文，完全相同的纯划线幂等。旧的无 offset 引用仍作为
+  普通笔记显示，但不绘制到正文。
+- `bookmarks` 独立存储，同书同段唯一；列表返回段号和原文预览。前端只在当前书已加载
+  的有效划线中按 `selected_text` 做大小写不敏感过滤，点击划线或书签统一调用
+  `jumpToPosition`。`NotePanel` 不展示空正文的纯划线。
 - `GET /api/notes/{book_id}` 先确认书存在，不存在返回 404；批注通过一次 IN 查询
   批量拼装，避免 N+1。
 - Nyx 的碎碎念和提问只进入进程内 `ReadingIntegration.buffer`，每本最多 100 条；
@@ -99,8 +112,10 @@
 
 ## 数据库迁移与测试
 
-- 当前阅读表由 `nyx/db.py` 的 v7-v10 和 v18 迁移建立/升级；v18 增加
-  `reading_progress.revision`，v28 为 `books` 增加内部 `memory_state` checkpoint。
+- 当前阅读表由 `nyx/db.py` 的 v7-v10、v18 和 v28-v30 迁移建立/升级；v18 增加
+  `reading_progress.revision`，v28 为 `books` 增加内部 `memory_state` checkpoint，
+  v29 增加段落格式 JSON，v30 增加划线 offset 和书签表。
 - 后端阅读测试位于 `tests/test_reading/`，API 契约测试位于
   `tests/test_api/test_reading_api.py`；前端阅读测试主要位于
-  `frontend/tests/stores.test.ts`、`frontend/tests/api.test.ts`。
+  `frontend/tests/stores.test.ts`、`frontend/tests/api.test.ts`、
+  `frontend/tests/readerView.test.tsx`。

@@ -7,12 +7,12 @@
 ## 当前快照
 
 - 后端测试文件：65
-- `pytest --collect-only -q`：1060 tests collected
-- 最近一次全量验证：`1059 passed, 1 skipped`（本轮未采集语句覆盖率）
+- `pytest --collect-only -q`：1074 tests collected
+- 最近一次全量验证：`1073 passed, 1 skipped`（本轮未采集语句覆盖率）
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：`23 files / 303 passed`。
+- 最近一次前端全量验证：`23 files / 311 passed`。
 - 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；前端只在后端 ready 后启动。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
 - 前端测试覆盖通用 API、SSE、状态、聊天、阅读、设置和桌面 presence。
@@ -34,7 +34,7 @@
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
 | 活动 | `tests/test_activity/` | 13 | 本地自然日时间线、结果过滤/分页、排期、活动生命周期、探索、观察、材料每 6000 字符画像/pending/source checkpoint、网页 URL 来源隔离、本地探索读取真实文件、读书恢复、创作结果严格校验、主题/旧作参考、唯一文件名与注册表落盘 |
 | 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
-| 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动（单段单问、问题共享 180 秒冷却、成功后才计冷却、联想共存）、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记、整合和后台生命周期 |
+| 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/UTF-16 offset/脚本样式过滤、进度 CAS、冲动（单段单问、问题共享 180 秒冷却、成功后才计冷却、联想共存）、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
 
 ## 前端覆盖
@@ -46,7 +46,7 @@
 | 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、设置、评估面板展开详情与安全文本渲染 |
 | 记忆面板 | `memoryPanel.test.tsx` | 关键词查询提交、事实图实体关系渲染、事实加载失败降级 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 状态显示、紧凑布局容器、过滤、枚举中文化 |
-| 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 分页、笔记和章节交互 |
+| 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 真分页与长段可达、受控富文本、UTF-16 同段划线、跨段拒绝、划线查询/删除/定位、书签定位、普通笔记和章节交互 |
 | 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `rightDock.test.tsx`, `desktopWindow.test.ts`, `petShell.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 创作页导航入口、统一分钟时钟、休眠恢复校时、昼夜/头像、完整端与桌宠态拖动模式隔离、桌宠点击/拖动阈值与窗口层级、头像东西南北四项入口/内心摘要/可修改设置入口、状态气泡、桌宠陪读翻页边界、非法时间标签边界、打字机 |
 
 ## 关键回归清单
@@ -114,6 +114,7 @@
 - `test_sediment_reuses_pending_without_digest_call`
 - `test_reading_question_reply_injects_context_on_fast_short_reply`
 - `test_build_reply_context_contains_three_scoped_layers`（事实层使用正文而非主题 summary）
+- `test_script_and_style_content_is_ignored`
 - `test_source_knowledge_keeps_web_url_scope`
 - `test_migrate_adds_source_memory_state_columns`
 - kind-scoped exact/semantic dedup and humanized memory prompt regressions
@@ -150,7 +151,7 @@
 ### 前端桌面采集
 
 - `presence.test.ts`：Tauri 空闲毫秒/前台标题采样、三态边界、浏览器降级与时钟跳变、失败重试、single-flight A/B/A、采样乱序、Unicode 截断、超时/卸载取消和重连同步
-- `readerView.test.tsx`：阅读位置和 Nyx 追赶/等待派生态展示、完整端翻页按钮存在
+- `readerView.test.tsx`：阅读位置和 Nyx 追赶/等待派生态展示、结构化标题/粗体/已有划线、当前书划线搜索、UTF-16 同段选区、跨段拒绝，以及划线/书签持久定位
 
 ### Eval prompt 可观测
 

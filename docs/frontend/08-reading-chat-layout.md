@@ -122,9 +122,9 @@ case "reading_mutter":
 - **持久化**：`settingsStore` 新增 `circleColor`/`circleSize`/`avatarPos` + 对应 setter，读写 localStorage（键 `nyx.circleColor`/`nyx.circleSize`/`nyx.avatarPos`），不可用时静默降级；`reset()` 一并清这三个键。`EmotionSprite` 的 `size` 变体删 `portrait`、增 `circle`（`portrait` 无调用方，清 orphan）。
 - **设置项**：`SettingsView` 新增「圆圈背景」面板（预设白/浅粉/浅蓝/浅绿/浅橙/淡紫 + 自定义取色），复用 `.bg-panel` 色块；预设名与「背景色调」预设（樱粉/晨蓝/…）错开，避免测试按名选色歧义。另新增「圆圈大小」三档（小/中/大，复用 `.font-scale__opt` 按钮，aria-label 用「圆圈小/中/大」与字体三档错开）。
 
-## 5. 真分页（取消滚动，纯函数分页 + 测量/重测契约）
+## 5. 真分页（页级取消滚动，纯函数分页 + 测量/重测契约）
 
-`ReaderView` 由「滚动容器 + `onScroll`/`offsetTop`/`scrollBy`」改为**真分页**：容器 `overflow:hidden`，无滚动条、无滚轮，翻页逐段移动光标、越页界整页切换。
+`ReaderView` 由「整页滚动容器 + `onScroll`/`offsetTop`/`scrollBy`」改为**真分页**：页容器 `overflow:hidden`，翻页逐段移动光标、越页界整页切换；只有单段本身高于视口时，该段内部提供纵向滚动以保证全文可达。
 
 ### 5.1 纯函数 `paginate`（`readerStore.ts` 导出，同 `computeWindow` 纯函数族）
 
@@ -142,9 +142,9 @@ export function paginate(
 
 ### 5.2 测量触发（重测重分页）
 
-- **量哪个元素**：每段 `<p>` 的 `offsetHeight`（段 `margin:0`，只有内容+padding，`offsetHeight` 即段高）。用现有 `paraRefs`（`ref` 回填 `Map<number, HTMLParagraphElement>`，键 = `p.index`）。
+- **量哪个元素**：每段 `<article>` 的 `offsetHeight`（内部可含标题、正文、引用、列表和 pre）。用现有 `paraRefs`（`ref` 回填 `Map<number, HTMLElement>`，键 = `p.index`）。单段设置视口内 `max-height` 与 `overflow-y:auto`，分页测到的是稳定的可视高度。
 - **`viewportHeight`**：`.reader-text` 容器 `clientHeight`，由 `ResizeObserver` 维护成组件 state。
-- **重测时机**：`useLayoutEffect` 依赖 `[paragraphs, fontScale, viewportHeight, windowFrom]`——任一变化重测全部段高 + 重分页。覆盖三处：`fontScale` 变（`--text-scale` 改字号 → 段高变）、窗口 resize（`viewportHeight` 变）、换书/窗口重拉（`paragraphs`/`windowFrom` 变）。
+- **重测时机**：`useLayoutEffect` 依赖 `[paragraphs, notes, fontScale, viewportHeight, windowFrom]`——任一变化重测全部段高 + 重分页。覆盖正文/划线变化、字号变化、窗口 resize 和换书/窗口重拉。
 
 ### 5.3 状态归属（持久态 vs 瞬态）
 

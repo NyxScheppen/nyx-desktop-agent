@@ -325,6 +325,22 @@ export type Paragraph = {
   index: number; // 1-based
   text: string;
   is_chapter_start: boolean;
+  blocks?: ParagraphBlock[];
+  marks?: TextMark[];
+};
+
+export type ParagraphBlock = {
+  kind: "paragraph" | "heading" | "blockquote" | "list_item" | "pre";
+  start: number;
+  end: number;
+  level: number | null;
+};
+
+export type TextMark = {
+  start: number;
+  end: number;
+  bold: boolean;
+  italic: boolean;
 };
 
 export type Progress = {
@@ -358,12 +374,24 @@ export type UserNote = {
   paragraph_id: string | null; // 段删后 SET NULL；自由记无段也为 None
   content: string;
   selected_text: string | null;
+  paragraph_index?: number | null;
+  selection_start?: number | null;
+  selection_end?: number | null;
   created_at: number;
   updated_at: number;
 };
 
 // GET /api/notes/{book_id} 每条附带批注列表（created_at DESC）。
 export type UserNoteWithAnnotations = UserNote & { annotations: Annotation[] };
+
+export type Bookmark = {
+  id: string;
+  book_id: string;
+  paragraph_id: string;
+  paragraph_index: number;
+  preview: string;
+  created_at: number;
+};
 
 // ---- 事件溯源（底层模块总线契约 / nyx/types.py Event，对应 GET /api/events/log）----
 export type BackendEvent = {

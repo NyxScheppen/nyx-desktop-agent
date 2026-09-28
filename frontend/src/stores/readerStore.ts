@@ -1,11 +1,14 @@
 import { create } from "zustand";
 import {
   checkChapterBoundary,
+  createBookmark,
   createUserNote,
+  deleteBookmark,
   deleteUserNote,
   evaluateImpulse,
   getBookParagraphs,
   getBooks,
+  getBookmarks,
   getNotes,
   getProgress,
   putProgress,
@@ -14,6 +17,7 @@ import {
 } from "../api/client";
 import type {
   BookListItem,
+  Bookmark,
   Paragraph,
   UserNoteWithAnnotations,
 } from "../types/api";
@@ -44,20 +48,32 @@ type ReaderState = {
   progressRevision: number; // 后端 CAS 版本
   notes: UserNoteWithAnnotations[]; // 用户笔记（含批注）
   notesError: string | null;
+  bookmarks: Bookmark[];
+  bookmarksError: string | null;
   loadBooks: () => Promise<void>;
   openBook: (bookId: string) => Promise<void>;
   closeBook: () => void;
   syncPosition: (next: number) => Promise<void>;
+  jumpToPosition: (next: number) => Promise<void>;
   setReadingSpeed: (speed: number) => Promise<void>;
   startCatchup: () => void;
   stopCatchup: () => void;
   advanceNyx: () => void;
   reread: () => Promise<void>;
   loadNotes: () => Promise<void>;
-  addNote: (p: { book_id: string; paragraph_id?: string | null; content: string; selected_text?: string | null }) => Promise<void>;
+  addNote: (p: {
+    book_id: string;
+    paragraph_id?: string | null;
+    content: string;
+    selected_text?: string | null;
+    selection_start?: number | null;
+    selection_end?: number | null;
+  }) => Promise<void>;
   updateNote: (id: string, content: string) => Promise<void>;
   deleteNote: (id: string) => Promise<void>;
   showToNyx: (noteId: string) => Promise<void>;
+  loadBookmarks: () => Promise<void>;
+  toggleBookmark: (paragraphId: string) => Promise<void>;
 };
 
 // 追赶 timer 放 module-level（不进 store state，同 chatStore 的 replyTimer 约定，02-stores §1）。
@@ -235,6 +251,8 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     progressRevision: 0,
     notes: [],
     notesError: null,
+    bookmarks: [],
+    bookmarksError: null,
 
     loadBooks: async () => {
       set({ booksError: null });
@@ -291,6 +309,8 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         progressRevision: 0,
         notes: [],
         notesError: null,
+        bookmarks: [],
+        bookmarksError: null,
       });
     },
 
@@ -316,6 +336,24 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         }
         await Promise.all(impulseTasks);
       }
+      if (needsWindowRefresh(clamped, get().windowFrom)) {
+        await fetchWindow(bookId, clamped, totalParagraphs, false);
+      }
+      get().startCatchup();
+    },
+
+    jumpToPosition: async (next) => {
+      const { bookId, totalParagraphs, userPosition } = get();
+      if (bookId === null || totalParagraphs <= 0) return;
+      const clamped = Math.min(totalParagraphs, Math.max(1, next));
+      if (clamped === userPosition) return;
+      set({ userPosition: clamped });
+      const { nyxPosition, readingSpeed } = get();
+      await enqueueProgress(bookId, {
+        user_position: clamped,
+        nyx_position: nyxPosition,
+        reading_speed: readingSpeed,
+      }, get, set);
       if (needsWindowRefresh(clamped, get().windowFrom)) {
         await fetchWindow(bookId, clamped, totalParagraphs, false);
       }
@@ -441,6 +479,40 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         });
       } catch (err) {
         set({ notesError: err instanceof Error ? err.message : String(err) });
+      }
+    },
+
+    loadBookmarks: async () => {
+      const { bookId } = get();
+      if (bookId === null) return;
+      set({ bookmarksError: null });
+      try {
+        set({ bookmarks: await getBookmarks(bookId) });
+      } catch (err) {
+        set({ bookmarksError: err instanceof Error ? err.message : String(err) });
+      }
+    },
+
+    toggleBookmark: async (paragraphId) => {
+      const { bookId, bookmarks } = get();
+      if (bookId === null) return;
+      const existing = bookmarks.find((item) => item.paragraph_id === paragraphId);
+      try {
+        if (existing !== undefined) {
+          await deleteBookmark(existing.id);
+          set({
+            bookmarks: get().bookmarks.filter((item) => item.id !== existing.id),
+          });
+          return;
+        }
+        const bookmark = await createBookmark(bookId, paragraphId);
+        set({
+          bookmarks: [...get().bookmarks, bookmark].sort(
+            (a, b) => a.paragraph_index - b.paragraph_index,
+          ),
+        });
+      } catch (err) {
+        set({ bookmarksError: err instanceof Error ? err.message : String(err) });
       }
     },
   };

@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   checkChapterBoundary,
+  createBookmark,
   createUserNote,
+  deleteBookmark,
   deleteUserNote,
   evaluateImpulse,
   getActivity,
   getActivityResults,
   getBookParagraphs,
   getBooks,
+  getBookmarks,
   getDesires,
   getEvalRecent,
   getEvalPrompt,
@@ -417,6 +420,8 @@ describe("api/client notes", () => {
       paragraph_id: "p1",
       content: "这条笔记",
       selected_text: "划线原文",
+      selection_start: 3,
+      selection_end: 7,
     });
 
     const [url, init] = fetchMock.mock.calls[0];
@@ -429,6 +434,8 @@ describe("api/client notes", () => {
         paragraph_id: "p1",
         content: "这条笔记",
         selected_text: "划线原文",
+        selection_start: 3,
+        selection_end: 7,
       }),
     });
     expect(res).toEqual(note);
@@ -495,6 +502,41 @@ describe("api/client notes", () => {
     await expect(createUserNote({ book_id: "b1", content: "" })).rejects.toThrow(
       "content 不能为空",
     );
+  });
+});
+
+describe("api/client bookmarks", () => {
+  const bookmark = {
+    id: "bm1",
+    book_id: "b1",
+    paragraph_id: "p1",
+    paragraph_index: 1,
+    preview: "第一段",
+    created_at: 1,
+  };
+
+  it("列表、新增和删除使用书签端点", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([bookmark]))
+      .mockResolvedValueOnce(jsonResponse(bookmark))
+      .mockResolvedValueOnce({ ok: true, status: 204 } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getBookmarks("b1")).resolves.toEqual([bookmark]);
+    await expect(createBookmark("b1", "p1")).resolves.toEqual(bookmark);
+    await expect(deleteBookmark("bm1")).resolves.toBeUndefined();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/bookmarks/b1");
+    expect(fetchMock.mock.calls[1]).toEqual([
+      "/api/bookmarks",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ book_id: "b1", paragraph_id: "p1" }),
+      },
+    ]);
+    expect(fetchMock.mock.calls[2][0]).toBe("/api/bookmarks/bm1");
   });
 });
 

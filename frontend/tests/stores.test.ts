@@ -1189,6 +1189,8 @@ describe("readerStore", () => {
       progressRevision: 0,
       notes: [],
       notesError: null,
+      bookmarks: [],
+      bookmarksError: null,
     });
   });
 
@@ -1433,6 +1435,39 @@ describe("readerStore", () => {
 
     expect(useReaderStore.getState().userPosition).toBe(3);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("jumpToPosition：保存位置并重拉窗口，但不补发跨段冲动", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      paragraphs: [para(3, "第三段")],
+      windowFrom: 1,
+      userPosition: 3,
+      nyxPosition: 3,
+      readingSpeed: 50,
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({
+        book_id: "b1",
+        user_position: 80,
+        nyx_position: 3,
+        reading_speed: 50,
+        read_count: 0,
+        updated_at: 1,
+        revision: 1,
+      }))
+      .mockResolvedValueOnce(jsonResponse([para(80, "第八十段")]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().jumpToPosition(80);
+
+    expect(useReaderStore.getState().userPosition).toBe(80);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/progress/b1",
+      "/api/books/b1/paragraphs?from=80&to=120",
+    ]);
   });
 
   // ---- reread ----
@@ -1778,6 +1813,36 @@ describe("readerStore", () => {
     await useReaderStore.getState().showToNyx("n1");
 
     expect(useReaderStore.getState().notes[0].annotations).toEqual([]);
+  });
+
+  it("书签：加载、添加和取消都更新当前书列表", async () => {
+    useReaderStore.setState({ bookId: "b1", bookmarks: [] });
+    const bookmark = {
+      id: "bm1",
+      book_id: "b1",
+      paragraph_id: "p3",
+      paragraph_index: 3,
+      preview: "第三段",
+      created_at: 1,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse(bookmark))
+      .mockResolvedValueOnce({ ok: true, status: 204 } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().loadBookmarks();
+    await useReaderStore.getState().toggleBookmark("p3");
+    expect(useReaderStore.getState().bookmarks).toEqual([bookmark]);
+    await useReaderStore.getState().toggleBookmark("p3");
+
+    expect(useReaderStore.getState().bookmarks).toEqual([]);
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/bookmarks/b1",
+      "/api/bookmarks",
+      "/api/bookmarks/bm1",
+    ]);
   });
 });
 

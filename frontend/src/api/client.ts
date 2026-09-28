@@ -5,6 +5,7 @@ import type {
   BackendEvent,
   Book,
   BookListItem,
+  Bookmark,
   CurrentState,
   DesireState,
   EvalRecord,
@@ -201,6 +202,8 @@ export async function createUserNote(p: {
   paragraph_id?: string | null;
   content: string;
   selected_text?: string | null;
+  selection_start?: number | null;
+  selection_end?: number | null;
 }): Promise<UserNote> {
   return request<UserNote>(`${BASE_URL}/api/notes/user`, {
     method: "POST",
@@ -228,6 +231,28 @@ export async function showNoteToNyx(noteId: string): Promise<Annotation | null> 
   return request<Annotation | null>(`${BASE_URL}/api/notes/${noteId}/show-to-nyx`, {
     method: "POST",
   });
+}
+
+export async function getBookmarks(bookId: string): Promise<Bookmark[]> {
+  return request<Bookmark[]>(`${BASE_URL}/api/bookmarks/${bookId}`);
+}
+
+export async function createBookmark(
+  bookId: string,
+  paragraphId: string,
+): Promise<Bookmark> {
+  return request<Bookmark>(`${BASE_URL}/api/bookmarks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ book_id: bookId, paragraph_id: paragraphId }),
+  });
+}
+
+export async function deleteBookmark(id: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/bookmarks/${id}`, {
+    method: "DELETE",
+  });
+  await assertOk(res);
 }
 
 // ---- eval 记账（10-eval，06-settings-panel §7）----

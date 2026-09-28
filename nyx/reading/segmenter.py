@@ -51,6 +51,7 @@ _BLOCK_TAGS = frozenset(
 )
 _BOLD_TAGS = frozenset({"strong", "b"})
 _ITALIC_TAGS = frozenset({"em", "i"})
+_IGNORED_TAGS = frozenset({"script", "style"})
 
 
 class _BlockExtractor(HTMLParser):
@@ -63,6 +64,7 @@ class _BlockExtractor(HTMLParser):
         self.root_runs: list[_Run] = []
         self._bold_depth = 0
         self._italic_depth = 0
+        self._ignored_tag: str | None = None
 
     def _buf(self) -> list[_Run]:
         return self._stack[-1][1] if self._stack else self.root_runs
@@ -86,7 +88,11 @@ class _BlockExtractor(HTMLParser):
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
         del attrs
-        if tag in _BLOCK_TAGS:
+        if self._ignored_tag is not None:
+            return
+        if tag in _IGNORED_TAGS:
+            self._ignored_tag = tag
+        elif tag in _BLOCK_TAGS:
             if self._stack:
                 self._flush_direct(self._stack[-1])
             self._stack.append((tag, []))
@@ -98,6 +104,10 @@ class _BlockExtractor(HTMLParser):
             self._append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        if self._ignored_tag is not None:
+            if tag == self._ignored_tag:
+                self._ignored_tag = None
+            return
         if tag in _BOLD_TAGS:
             self._bold_depth = max(0, self._bold_depth - 1)
         elif tag in _ITALIC_TAGS:
@@ -106,6 +116,8 @@ class _BlockExtractor(HTMLParser):
             self._flush_direct(self._stack.pop())
 
     def handle_data(self, data: str) -> None:
+        if self._ignored_tag is not None:
+            return
         self._append(data)
 
 

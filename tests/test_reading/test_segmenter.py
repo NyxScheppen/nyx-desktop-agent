@@ -86,6 +86,16 @@ def test_empty_html_returns_empty() -> None:
     assert segment_html("") == []
 
 
+def test_script_and_style_content_is_ignored() -> None:
+    html = (
+        "<h2>第一章</h2>"
+        "<p>正文前<script>window.secret = '不该出现';</script>"
+        "<style>.hidden { display: none; }</style>正文后</p>"
+    )
+    segments = segment_html(html)
+    assert [segment.text for segment in segments] == ["第一章\n正文前正文后"]
+
+
 def test_blockquote_independent() -> None:
     html = "<blockquote>引文独立</blockquote><p>正文</p>"
     segments = segment_html(html)

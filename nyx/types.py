@@ -187,6 +187,27 @@ class Book:  # 用户陪读的 EPUB 书（12-reading-system）
     updated_at: float
 
 
+ParagraphBlockKind = Literal[
+    "paragraph", "heading", "blockquote", "list_item", "pre"
+]
+
+
+@dataclass(frozen=True)
+class ParagraphBlock:  # 受控块语义；offset 为 UTF-16 code unit
+    kind: ParagraphBlockKind
+    start: int
+    end: int
+    level: int | None
+
+
+@dataclass(frozen=True)
+class TextMark:  # 受控行内样式；offset 为 UTF-16 code unit
+    start: int
+    end: int
+    bold: bool
+    italic: bool
+
+
 @dataclass
 class Paragraph:  # 书的正文段落（index 从 1 起、per book 连续）
     id: str
@@ -194,6 +215,8 @@ class Paragraph:  # 书的正文段落（index 从 1 起、per book 连续）
     index: int
     text: str
     is_chapter_start: bool  # 以 h1/h2 开头（12-reading-system 章末检测用）
+    blocks: list[ParagraphBlock] = field(default_factory=list[ParagraphBlock])
+    marks: list[TextMark] = field(default_factory=list[TextMark])
 
 
 @dataclass

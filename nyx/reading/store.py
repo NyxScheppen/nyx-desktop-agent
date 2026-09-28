@@ -23,7 +23,10 @@ from nyx.types import (
     Book,
     BookListItem,
     Paragraph,
+    ParagraphBlock,
+    ParagraphBlockKind,
     ReadingProgress,
+    TextMark,
     UserNote,
 )
 
@@ -100,9 +103,16 @@ class ReadingStore:
         """批量落段（`executemany`，一次往返）；调用方须已持锁 + 在事务内。"""
         await self._db.conn.executemany(
             'INSERT INTO paragraphs (id, book_id, "index", text, '
-            "is_chapter_start) VALUES (?, ?, ?, ?, ?)",
+            "is_chapter_start, format_json) VALUES (?, ?, ?, ?, ?, ?)",
             [
-                (str(uuid4()), book_id, i, segment.text, int(segment.is_chapter_start))
+                (
+                    str(uuid4()),
+                    book_id,
+                    i,
+                    segment.text,
+                    int(segment.is_chapter_start),
+                    _segment_format_json(segment),
+                )
                 for i, segment in enumerate(segments, start=1)
             ],
         )
@@ -155,7 +165,7 @@ class ReadingStore:
         """读 [from_idx, to_idx] 闭区间段落；is_chapter_start 还原 bool。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                'SELECT id, book_id, "index", text, is_chapter_start '
+                'SELECT id, book_id, "index", text, is_chapter_start, format_json '
                 "FROM paragraphs WHERE book_id = ? AND \"index\" BETWEEN ? AND ? "
                 'ORDER BY "index" ASC',
                 (book_id, from_idx, to_idx),
@@ -408,7 +418,7 @@ class ReadingStore:
         """按段落 id 读单段（show_to_nyx 取原段落文字）；不存在 None。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                'SELECT id, book_id, "index", text, is_chapter_start '
+                'SELECT id, book_id, "index", text, is_chapter_start, format_json '
                 "FROM paragraphs WHERE id = ?",
                 (paragraph_id,),
             )
@@ -450,12 +460,60 @@ def _row_to_list_item(row: aiosqlite.Row) -> BookListItem:
 
 
 def _row_to_paragraph(row: aiosqlite.Row) -> Paragraph:
+    content_format = cast(dict[str, Any], json.loads(row["format_json"]))
+    blocks = [
+        ParagraphBlock(
+            kind=cast(ParagraphBlockKind, item["kind"]),
+            start=item["start"],
+            end=item["end"],
+            level=item["level"],
+        )
+        for item in cast(list[dict[str, Any]], content_format["blocks"])
+    ]
+    marks = [
+        TextMark(
+            start=item["start"],
+            end=item["end"],
+            bold=item["bold"],
+            italic=item["italic"],
+        )
+        for item in cast(list[dict[str, Any]], content_format["marks"])
+    ]
     return Paragraph(
         id=row["id"],
         book_id=row["book_id"],
         index=row["index"],
         text=row["text"],
         is_chapter_start=bool(row["is_chapter_start"]),
+        blocks=blocks,
+        marks=marks,
+    )
+
+
+def _segment_format_json(segment: Segment) -> str:
+    return json.dumps(
+        {
+            "blocks": [
+                {
+                    "kind": block.kind,
+                    "start": block.start,
+                    "end": block.end,
+                    "level": block.level,
+                }
+                for block in segment.blocks
+            ],
+            "marks": [
+                {
+                    "start": mark.start,
+                    "end": mark.end,
+                    "bold": mark.bold,
+                    "italic": mark.italic,
+                }
+                for mark in segment.marks
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
     )
 
 

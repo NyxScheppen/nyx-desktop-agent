@@ -7,7 +7,6 @@ import pytest
 
 from nyx.reading import epub as epub_mod
 from nyx.reading.epub import parse_epub
-from nyx.reading.segmenter import Segment
 
 _CONTAINER_XML = (
     '<?xml version="1.0" encoding="utf-8"?>'
@@ -77,10 +76,11 @@ def test_parse_epub_extracts_title_author_and_segments() -> None:
     result = parse_epub(_build_epub_bytes())
     assert result.title == "测试书名"
     assert result.author == "测试作者"
-    assert result.segments == [
-        Segment(text="第一章\n第一段正文。", is_chapter_start=True),
-        Segment(text="第二章\n第二段正文。", is_chapter_start=True),
+    assert [(s.text, s.is_chapter_start) for s in result.segments] == [
+        ("第一章\n第一段正文。", True),
+        ("第二章\n第二段正文。", True),
     ]
+    assert result.segments[0].blocks[0].kind == "heading"
 
 
 def test_parse_epub_content_hash_stable() -> None:

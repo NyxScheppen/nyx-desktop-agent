@@ -1,196 +1,344 @@
-"""HTML 正文分段器：块级元素 → 阅读段落（纯文本 + 章首标记）。
+"""HTML 正文分段器：块级元素 → 纯文本段落 + 受控格式。
 
-    reading-system spec：照搬参考项目 S03 `segment_html` 语义，输出收窄为纯文本
-（`Segment = (text, is_chapter_start)`，不保留 tag/raw_html）。纯函数：
-同步、无 IO、无 LLM，用标准库 `html.parser`（不引入 bs4/lxml 依赖）。
-
-分段规则（按优先级）：
-1. 块级元素（`p`/`h1`-`h6`/`blockquote`/`li`/`pre`）各成段；
-2. `h1`-`h6` 与紧随的 `p` 合并（`"标题\n正文"` 一段）；
-3. 连续 `li` 合并（换行分隔）；
-4. 连续短 `p`（累计 < 100 字符）合并；
-5. 单段 > 3000 字符在最后一个句号（。或 .）处拆；
-6. 无结构化标签则全文一段。
+同步、无 IO、无 LLM，使用标准库 html.parser。只保留当前阅读器会渲染的
+块语义和 strong/em 行内标记，不保存 raw HTML、属性或 EPUB CSS。
 """
 
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import NamedTuple
 
+from nyx.types import ParagraphBlock, ParagraphBlockKind, TextMark
+
 
 class Segment(NamedTuple):
-    """一个阅读段落。
-
-    `is_chapter_start` = 以 `h1`/`h2` 开头（12-reading-system 章末检测用）。
-    """
+    """一个阅读段落；格式 offset 统一为 UTF-16 code unit。"""
 
     text: str
     is_chapter_start: bool
+    blocks: tuple[ParagraphBlock, ...] = ()
+    marks: tuple[TextMark, ...] = ()
+
+
+@dataclass(frozen=True)
+class _Run:
+    text: str
+    bold: bool
+    italic: bool
+
+
+@dataclass(frozen=True)
+class _Block:
+    tag: str
+    runs: tuple[_Run, ...]
+
+    @property
+    def text(self) -> str:
+        return "".join(run.text for run in self.runs)
+
+
+@dataclass(frozen=True)
+class _Draft:
+    blocks: tuple[_Block, ...]
+
+    @property
+    def text(self) -> str:
+        return "\n".join(block.text for block in self.blocks)
 
 
 _BLOCK_TAGS = frozenset(
     {"p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "li", "pre"}
 )
+_BOLD_TAGS = frozenset({"strong", "b"})
+_ITALIC_TAGS = frozenset({"em", "i"})
 
 
 class _BlockExtractor(HTMLParser):
-    """提取块级元素文本（文档序）。
-
-    每个块级元素持一个「直接文本」缓冲（不含嵌套块内容）。嵌套块开始前先 flush
-    父块的直接文本（父先于子），嵌套块结束时 flush 子块，父块 endtag 时再 flush 父块
-    剩余尾文本——保证「父直接文本 / 子块 / 父尾文本」按文档序进入 blocks。纯嵌套
-    （`<li><p>…</p></li>`）父块直接文本为空 → 只出子块，即「嵌套块只取最内层、
-    不重复计数」。
-    """
+    """按文档序提取块和行内标记，嵌套块只保留直接文本。"""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.blocks: list[tuple[str, str]] = []  # (tag, text)
-        self._stack: list[tuple[str, list[str]]] = []  # (tag, 直接文本片段)
-        self.root_text: list[str] = []  # 块级之外（head/script/纯文本），回退用
+        self.blocks: list[_Block] = []
+        self._stack: list[tuple[str, list[_Run]]] = []
+        self.root_runs: list[_Run] = []
+        self._bold_depth = 0
+        self._italic_depth = 0
 
-    def _buf(self) -> list[str]:
-        return self._stack[-1][1] if self._stack else self.root_text
+    def _buf(self) -> list[_Run]:
+        return self._stack[-1][1] if self._stack else self.root_runs
 
-    def _flush_direct(self, frame: tuple[str, list[str]]) -> None:
-        """把单个块级元素的直接文本 flush 成段（空则跳过）。"""
-        tag, parts = frame
-        text = "".join(parts).strip()
-        if text:
-            self.blocks.append((tag, text))
-        parts.clear()
+    def _append(self, text: str) -> None:
+        if not text:
+            return
+        _append_run(
+            self._buf(),
+            _Run(text, self._bold_depth > 0, self._italic_depth > 0),
+        )
+
+    def _flush_direct(self, frame: tuple[str, list[_Run]]) -> None:
+        tag, runs = frame
+        trimmed = _trim_runs(runs)
+        if trimmed:
+            self.blocks.append(_Block(tag, trimmed))
+        runs.clear()
 
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
-        del attrs  # 块级提取不关心属性；保留签名以匹配 HTMLParser 接口
+        del attrs
         if tag in _BLOCK_TAGS:
             if self._stack:
-                self._flush_direct(self._stack[-1])  # 父直接文本先于嵌套子块
+                self._flush_direct(self._stack[-1])
             self._stack.append((tag, []))
+        elif tag in _BOLD_TAGS:
+            self._bold_depth += 1
+        elif tag in _ITALIC_TAGS:
+            self._italic_depth += 1
         elif tag == "br":
-            self._buf().append("\n")
+            self._append("\n")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in _BLOCK_TAGS and self._stack:
+        if tag in _BOLD_TAGS:
+            self._bold_depth = max(0, self._bold_depth - 1)
+        elif tag in _ITALIC_TAGS:
+            self._italic_depth = max(0, self._italic_depth - 1)
+        elif tag in _BLOCK_TAGS and self._stack:
             self._flush_direct(self._stack.pop())
 
     def handle_data(self, data: str) -> None:
-        self._buf().append(data)
+        self._append(data)
 
 
 def segment_html(html: str) -> list[Segment]:
-    """HTML → 阅读段落。无块级元素时回退为全文一段；全空返回 []。"""
+    """HTML → 阅读段落；无块级元素时回退为一个普通正文块。"""
     extractor = _BlockExtractor()
     extractor.feed(html)
     extractor.close()
 
     if not extractor.blocks:
-        text = "".join(extractor.root_text).strip()
-        if not text:
+        runs = _trim_runs(extractor.root_runs)
+        if not runs:
             return []
-        split = _split_long_paragraphs([(text, "root")])
-        return [
-            Segment(text=part, is_chapter_start=False)
-            for part, _tag in split
-        ]
+        return _split_long_drafts([_Draft((_Block("p", runs),))])
 
-    with_heading_merge = _merge_heading_and_paragraph(extractor.blocks)
-    with_list_merge = _merge_consecutive_lists(with_heading_merge)
-    with_short_merge = _merge_short_paragraphs(with_list_merge)
-    merged = _split_long_paragraphs(with_short_merge)
-
-    return [
-        Segment(text=text, is_chapter_start=_is_chapter_start(tag))
-        for text, tag in merged
-    ]
+    drafts = _merge_heading_and_paragraph(extractor.blocks)
+    drafts = _merge_consecutive_lists(drafts)
+    drafts = _merge_short_paragraphs(drafts)
+    return _split_long_drafts(drafts)
 
 
-def _is_chapter_start(tag: str) -> bool:
-    """`h1`/`h2`（或其合并段 `h2+p`）开头 → 章首。"""
-    return tag.startswith("h1") or tag.startswith("h2")
+def _append_run(runs: list[_Run], run: _Run) -> None:
+    if runs and runs[-1].bold == run.bold and runs[-1].italic == run.italic:
+        previous = runs[-1]
+        runs[-1] = _Run(previous.text + run.text, run.bold, run.italic)
+    else:
+        runs.append(run)
 
 
-def _merge_heading_and_paragraph(
-    blocks: list[tuple[str, str]],
-) -> list[tuple[str, str]]:
-    """规则 2：`h1`-`h6` 与紧随的 `p` 合并为 `"标题\n正文"`。"""
-    result: list[tuple[str, str]] = []
-    skip_next = False
-    for i, (tag, text) in enumerate(blocks):
-        if skip_next:
-            skip_next = False
-            continue
-        if tag.startswith("h") and i + 1 < len(blocks):
-            next_tag, next_text = blocks[i + 1]
-            if next_tag == "p":
-                result.append((f"{text}\n{next_text}", f"{tag}+p"))
-                skip_next = True
-                continue
-        result.append((text, tag))
+def _trim_runs(runs: list[_Run]) -> tuple[_Run, ...]:
+    text = "".join(run.text for run in runs)
+    start = len(text) - len(text.lstrip())
+    end = len(text.rstrip())
+    return _slice_runs(runs, start, end)
+
+
+def _slice_runs(runs: list[_Run], start: int, end: int) -> tuple[_Run, ...]:
+    result: list[_Run] = []
+    cursor = 0
+    for run in runs:
+        run_end = cursor + len(run.text)
+        left = max(start, cursor)
+        right = min(end, run_end)
+        if left < right:
+            _append_run(
+                result,
+                _Run(
+                    run.text[left - cursor:right - cursor],
+                    run.bold,
+                    run.italic,
+                ),
+            )
+        cursor = run_end
+    return tuple(result)
+
+
+def _merge_heading_and_paragraph(blocks: list[_Block]) -> list[_Draft]:
+    """标题与紧邻正文仍共用一个阅读进度段，但保留两个块。"""
+    result: list[_Draft] = []
+    index = 0
+    while index < len(blocks):
+        block = blocks[index]
+        if (
+            block.tag.startswith("h")
+            and index + 1 < len(blocks)
+            and blocks[index + 1].tag == "p"
+        ):
+            result.append(_Draft((block, blocks[index + 1])))
+            index += 2
+        else:
+            result.append(_Draft((block,)))
+            index += 1
     return result
 
 
-def _merge_consecutive_lists(
-    segments: list[tuple[str, str]],
-) -> list[tuple[str, str]]:
-    """规则 3：连续 `li` 合并为一段（换行分隔）。"""
-    result: list[tuple[str, str]] = []
-    buffer: list[str] = []
-    for text, tag in segments:
-        if tag == "li":
-            buffer.append(text)
-        else:
-            if buffer:
-                result.append(("\n".join(buffer), "li-group"))
-                buffer = []
-            result.append((text, tag))
-    if buffer:
-        result.append(("\n".join(buffer), "li-group"))
+def _merge_consecutive_lists(drafts: list[_Draft]) -> list[_Draft]:
+    result: list[_Draft] = []
+    buffered: list[_Block] = []
+    for draft in drafts:
+        if len(draft.blocks) == 1 and draft.blocks[0].tag == "li":
+            buffered.extend(draft.blocks)
+            continue
+        if buffered:
+            result.append(_Draft(tuple(buffered)))
+            buffered.clear()
+        result.append(draft)
+    if buffered:
+        result.append(_Draft(tuple(buffered)))
     return result
 
 
 def _merge_short_paragraphs(
-    segments: list[tuple[str, str]], short_threshold: int = 100
-) -> list[tuple[str, str]]:
-    """规则 4：连续短 `p`（累计 < 阈值）合并。"""
-    result: list[tuple[str, str]] = []
-    buffer_texts: list[str] = []
-    buffer_tags: list[str] = []
+    drafts: list[_Draft], short_threshold: int = 100
+) -> list[_Draft]:
+    result: list[_Draft] = []
+    buffered: list[_Block] = []
 
     def flush() -> None:
-        if buffer_texts:
-            result.append(("\n".join(buffer_texts), "+".join(buffer_tags)))
-            buffer_texts.clear()
-            buffer_tags.clear()
+        if buffered:
+            result.append(_Draft(tuple(buffered)))
+            buffered.clear()
 
-    for text, tag in segments:
-        accumulated = sum(len(t) for t in buffer_texts) + len(text)
-        if tag == "p" and accumulated < short_threshold:
-            buffer_texts.append(text)
-            buffer_tags.append(tag)
+    for draft in drafts:
+        accumulated = sum(len(block.text) for block in buffered) + len(draft.text)
+        if (
+            len(draft.blocks) == 1
+            and draft.blocks[0].tag == "p"
+            and accumulated < short_threshold
+        ):
+            buffered.extend(draft.blocks)
         else:
             flush()
-            result.append((text, tag))
+            result.append(draft)
     flush()
     return result
 
 
-def _split_long_paragraphs(
-    segments: list[tuple[str, str]], max_chars: int = 3000
-) -> list[tuple[str, str]]:
-    """规则 5：> `max_chars` 的段落在最后一个句号（。或 .）处拆分；无句号硬切。"""
-    result: list[tuple[str, str]] = []
-    for text, tag in segments:
-        while len(text) > max_chars:
-            split_at = text.rfind("。", 0, max_chars)
-            if split_at == -1:
-                split_at = text.rfind(".", 0, max_chars)
-            if split_at == -1:
-                split_at = max_chars
-            else:
-                split_at += 1  # 包含句号
-            result.append((text[:split_at].strip(), tag))
-            text = text[split_at:].lstrip()
-        if text:
-            result.append((text, tag))
+def _split_long_drafts(
+    drafts: list[_Draft], max_chars: int = 3000
+) -> list[Segment]:
+    result: list[Segment] = []
+    for draft in drafts:
+        result.extend(_split_segment(_draft_to_segment(draft), max_chars))
     return result
+
+
+def _draft_to_segment(draft: _Draft) -> Segment:
+    text_parts: list[str] = []
+    blocks: list[ParagraphBlock] = []
+    marks: list[TextMark] = []
+    cursor = 0
+    for index, block in enumerate(draft.blocks):
+        if index > 0:
+            text_parts.append("\n")
+            cursor += 1
+        block_start = cursor
+        for run in block.runs:
+            text_parts.append(run.text)
+            run_start = cursor
+            cursor += _utf16_len(run.text)
+            if run.bold or run.italic:
+                mark = TextMark(run_start, cursor, run.bold, run.italic)
+                if (
+                    marks
+                    and marks[-1].end == mark.start
+                    and marks[-1].bold == mark.bold
+                    and marks[-1].italic == mark.italic
+                ):
+                    previous = marks[-1]
+                    marks[-1] = TextMark(
+                        previous.start,
+                        mark.end,
+                        mark.bold,
+                        mark.italic,
+                    )
+                else:
+                    marks.append(mark)
+        kind, level = _block_kind(block.tag)
+        blocks.append(ParagraphBlock(kind, block_start, cursor, level))
+    first_tag = draft.blocks[0].tag
+    return Segment(
+        text="".join(text_parts),
+        is_chapter_start=first_tag in {"h1", "h2"},
+        blocks=tuple(blocks),
+        marks=tuple(marks),
+    )
+
+
+def _block_kind(tag: str) -> tuple[ParagraphBlockKind, int | None]:
+    if tag.startswith("h") and len(tag) == 2 and tag[1].isdigit():
+        return "heading", int(tag[1])
+    if tag == "blockquote":
+        return "blockquote", None
+    if tag == "li":
+        return "list_item", None
+    if tag == "pre":
+        return "pre", None
+    return "paragraph", None
+
+
+def _split_segment(segment: Segment, max_chars: int) -> list[Segment]:
+    if len(segment.text) <= max_chars:
+        return [segment]
+    result: list[Segment] = []
+    cursor = 0
+    while len(segment.text) - cursor > max_chars:
+        window = segment.text[cursor:cursor + max_chars]
+        split_at = window.rfind("。")
+        if split_at == -1:
+            split_at = window.rfind(".")
+        split_at = max_chars if split_at == -1 else split_at + 1
+        raw = segment.text[cursor:cursor + split_at]
+        leading = len(raw) - len(raw.lstrip())
+        trailing = len(raw.rstrip())
+        if leading < trailing:
+            result.append(_slice_segment(segment, cursor + leading, cursor + trailing))
+        cursor += split_at
+        cursor += len(segment.text[cursor:]) - len(segment.text[cursor:].lstrip())
+    if cursor < len(segment.text):
+        result.append(_slice_segment(segment, cursor, len(segment.text)))
+    return result
+
+
+def _slice_segment(segment: Segment, start: int, end: int) -> Segment:
+    utf16_start = _utf16_len(segment.text[:start])
+    utf16_end = _utf16_len(segment.text[:end])
+    blocks = tuple(
+        ParagraphBlock(
+            block.kind,
+            max(block.start, utf16_start) - utf16_start,
+            min(block.end, utf16_end) - utf16_start,
+            block.level,
+        )
+        for block in segment.blocks
+        if block.end > utf16_start and block.start < utf16_end
+    )
+    marks = tuple(
+        TextMark(
+            max(mark.start, utf16_start) - utf16_start,
+            min(mark.end, utf16_end) - utf16_start,
+            mark.bold,
+            mark.italic,
+        )
+        for mark in segment.marks
+        if mark.end > utf16_start and mark.start < utf16_end
+    )
+    return Segment(
+        text=segment.text[start:end],
+        is_chapter_start=segment.is_chapter_start,
+        blocks=blocks,
+        marks=marks,
+    )
+
+
+def _utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2

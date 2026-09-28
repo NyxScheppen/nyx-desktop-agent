@@ -632,6 +632,13 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE material ADD COLUMN memory_state TEXT NOT NULL DEFAULT '{}'",
         ],
     ),
+    (
+        29,
+        [
+            "ALTER TABLE paragraphs ADD COLUMN format_json TEXT NOT NULL "
+            "DEFAULT '{\"blocks\":[],\"marks\":[]}'",
+        ],
+    ),
 ]
 
 

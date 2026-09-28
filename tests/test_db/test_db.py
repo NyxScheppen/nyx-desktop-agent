@@ -123,6 +123,17 @@ async def test_migrate_adds_source_memory_state_columns() -> None:
     assert "memory_state" in columns["material"]
 
 
+async def test_migrate_adds_paragraph_format_column() -> None:
+    conn = await _migrated_conn()
+    try:
+        cursor = await conn.execute("PRAGMA table_info(paragraphs)")
+        columns = {row["name"]: row for row in await cursor.fetchall()}
+    finally:
+        await conn.close()
+    assert columns["format_json"]["notnull"] == 1
+    assert columns["format_json"]["dflt_value"] == "'{\"blocks\":[],\"marks\":[]}'"
+
+
 async def test_migrate_creates_expected_indexes() -> None:
     conn = await _migrated_conn()
     try:

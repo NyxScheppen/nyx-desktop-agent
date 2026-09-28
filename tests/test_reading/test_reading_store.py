@@ -14,6 +14,7 @@ import pytest
 from nyx import db
 from nyx.reading.segmenter import Segment
 from nyx.reading.store import ProgressConflictError, ReadingStore
+from nyx.types import ParagraphBlock, TextMark
 
 
 async def _new_store() -> tuple[ReadingStore, db.Database]:
@@ -47,6 +48,34 @@ async def test_insert_book_with_paragraphs_returns_new() -> None:
     assert [r["index"] for r in rows] == [1, 2, 3]
     assert [r["is_chapter_start"] for r in rows] == [1, 0, 0]
     assert rows[0]["text"] == "第一章\n开头"
+
+
+async def test_paragraph_format_round_trip() -> None:
+    store, database = await _new_store()
+    try:
+        book, _ = await store.insert_book_with_paragraphs(
+            title="格式书",
+            author="作者",
+            filename="format.epub",
+            content_hash="f" * 64,
+            segments=[
+                Segment(
+                    text="标题\n粗体😀",
+                    is_chapter_start=True,
+                    blocks=(
+                        ParagraphBlock("heading", 0, 2, 2),
+                        ParagraphBlock("paragraph", 3, 7, None),
+                    ),
+                    marks=(TextMark(3, 7, True, False),),
+                )
+            ],
+        )
+        paragraph = (await store.list_paragraphs(book.id, 1, 1))[0]
+    finally:
+        await database.conn.close()
+    assert paragraph.blocks[0].kind == "heading"
+    assert paragraph.blocks[1].start == 3
+    assert paragraph.marks == [TextMark(3, 7, True, False)]
 
 
 async def test_insert_book_with_paragraphs_duplicate_returns_existing() -> None:

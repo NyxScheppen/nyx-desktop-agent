@@ -1,31 +1,64 @@
 """segment_html 纯函数测试（reading-system spec）。"""
 
-from nyx.reading.segmenter import Segment, segment_html
+from nyx.reading.segmenter import segment_html
+from nyx.types import ParagraphBlock, TextMark
 
 
 def test_heading_plus_paragraph_merges_and_marks_chapter_start() -> None:
     segments = segment_html("<h2>第一章</h2><p>正文</p>")
-    assert segments == [Segment(text="第一章\n正文", is_chapter_start=True)]
+    assert len(segments) == 1
+    assert segments[0].text == "第一章\n正文"
+    assert segments[0].is_chapter_start is True
+    assert segments[0].blocks == (
+        ParagraphBlock(kind="heading", start=0, end=3, level=2),
+        ParagraphBlock(kind="paragraph", start=4, end=6, level=None),
+    )
+
+
+def test_inline_marks_use_utf16_offsets() -> None:
+    segments = segment_html(
+        "<p>普通<strong>加粗😀</strong><em>斜体</em></p>"
+    )
+    assert len(segments) == 1
+    assert segments[0].text == "普通加粗😀斜体"
+    assert segments[0].marks == (
+        TextMark(start=2, end=6, bold=True, italic=False),
+        TextMark(start=6, end=8, bold=False, italic=True),
+    )
+
+
+def test_fallback_preserves_inline_mark() -> None:
+    segments = segment_html("<div><strong>粗体</strong></div>")
+    assert segments[0].marks == (
+        TextMark(start=0, end=2, bold=True, italic=False),
+    )
 
 
 def test_h1_alone_marks_chapter_start() -> None:
     segments = segment_html("<h1>序章</h1>")
-    assert segments == [Segment(text="序章", is_chapter_start=True)]
+    assert [(s.text, s.is_chapter_start) for s in segments] == [("序章", True)]
+    assert segments[0].blocks[0].level == 1
 
 
 def test_h3_is_not_chapter_start() -> None:
     segments = segment_html("<h3>小节</h3>")
-    assert segments == [Segment(text="小节", is_chapter_start=False)]
+    assert [(s.text, s.is_chapter_start) for s in segments] == [("小节", False)]
+    assert segments[0].blocks[0].level == 3
 
 
 def test_consecutive_li_merge_newline_separated() -> None:
     segments = segment_html("<ul><li>一</li><li>二</li><li>三</li></ul>")
-    assert segments == [Segment(text="一\n二\n三", is_chapter_start=False)]
+    assert [(s.text, s.is_chapter_start) for s in segments] == [
+        ("一\n二\n三", False)
+    ]
+    assert [block.kind for block in segments[0].blocks] == ["list_item"] * 3
 
 
 def test_short_paragraphs_merge() -> None:
     segments = segment_html("<p>短。</p><p>也短。</p>")
-    assert segments == [Segment(text="短。\n也短。", is_chapter_start=False)]
+    assert [(s.text, s.is_chapter_start) for s in segments] == [
+        ("短。\n也短。", False)
+    ]
 
 
 def test_long_paragraph_splits_at_period() -> None:
@@ -38,7 +71,9 @@ def test_long_paragraph_splits_at_period() -> None:
 
 def test_fallback_no_block_tags_whole_text() -> None:
     segments = segment_html("<div>纯文本无块级</div>")
-    assert segments == [Segment(text="纯文本无块级", is_chapter_start=False)]
+    assert [(s.text, s.is_chapter_start) for s in segments] == [
+        ("纯文本无块级", False)
+    ]
 
 
 def test_fallback_no_block_tags_also_splits_long_text() -> None:
@@ -54,10 +89,11 @@ def test_empty_html_returns_empty() -> None:
 def test_blockquote_independent() -> None:
     html = "<blockquote>引文独立</blockquote><p>正文</p>"
     segments = segment_html(html)
-    assert segments == [
-        Segment(text="引文独立", is_chapter_start=False),
-        Segment(text="正文", is_chapter_start=False),
+    assert [(s.text, s.is_chapter_start) for s in segments] == [
+        ("引文独立", False),
+        ("正文", False),
     ]
+    assert segments[0].blocks[0].kind == "blockquote"
 
 
 def test_nested_block_direct_text_preserves_document_order() -> None:

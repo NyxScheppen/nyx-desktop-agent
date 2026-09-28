@@ -1,8 +1,16 @@
 from typing import get_type_hints
 
-from nyx.enums import DesireStatus, DesireType, MemoryKind, MemoryType
+from nyx.enums import (
+    AssignedTaskStatus,
+    AssignedTaskType,
+    DesireStatus,
+    DesireType,
+    MemoryKind,
+    MemoryType,
+)
 from nyx.types import (
     Aesthetic,
+    AssignedTask,
     LlmMessage,
     LongTermDesire,
     Memory,
@@ -11,6 +19,15 @@ from nyx.types import (
     UserNote,
     Values,
 )
+
+
+def test_assigned_task_round_trip_shape() -> None:
+    task = AssignedTask(
+        "t1", AssignedTaskType.BOOK, AssignedTaskStatus.PENDING,
+        None, "b1", 42, {}, None, 1.0, 1.0,
+    )
+    assert task.book_id == "b1"
+    assert task.target_paragraph == 42
 
 
 def test_short_term_desire_default_status() -> None:

@@ -1,9 +1,11 @@
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from nyx.activity import creation as _creation
 from nyx.activity import lifecycle as _activity_lifecycle
@@ -17,18 +19,30 @@ from nyx.activity.starter import ActivityStarter, schedule_block_id
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ActivityType, EventType, MemoryKind, TickType
+from nyx.enums import (
+    ActivityStatus,
+    ActivityType,
+    AssignedTaskStatus,
+    AssignedTaskType,
+    EventType,
+    MemoryKind,
+    TickType,
+)
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient
-from nyx.memory.facade import MemoryFacade
+from nyx.memory.facade import MemoryFacade, build_source_topic
 from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
+    AssignedTask,
+    Book,
     CurrentState,
     Event,
     Material,
+    ReadingProgress,
     ReflectionOutcome,
     ShortTermDesire,
 )
@@ -45,6 +59,10 @@ _path_hash_suffix = _activity_paths.path_hash_suffix
 _sanitize_filename = _activity_paths.sanitize_filename
 
 _logger = logging.getLogger(__name__)
+
+
+class WebTasksDisabledError(ValueError):
+    """Explicit web tasks are unavailable while networking is disabled."""
 
 def _day_start(now: float) -> float:
     """Return the Unix timestamp for midnight in the system local timezone."""
@@ -94,6 +112,14 @@ class ActivityFacade:
         config: ActivityConfig,
         exploration_config: ExplorationConfig,
         canon: str,
+        list_reader_books: Callable[[], Awaitable[list[Book]]] | None = None,
+        read_reader_book: (
+            Callable[[str, int | None, str], Awaitable[dict[str, Any]]] | None
+        ) = None,
+        get_reader_book: Callable[[str], Awaitable[Book]] | None = None,
+        get_reader_progress: (
+            Callable[[str], Awaitable[ReadingProgress]] | None
+        ) = None,
     ) -> None:
         self._store = store
         self._material_store = material_store
@@ -108,6 +134,10 @@ class ActivityFacade:
         self._get_observation = get_observation
         self._config = config
         self._canon = canon
+        self._read_reader_book = read_reader_book
+        self._get_reader_book = get_reader_book
+        self._get_reader_progress = get_reader_progress
+        self._web_enabled = exploration_config.web_enabled
         self._exploration = Exploration(
             llm,
             evaluator,
@@ -132,6 +162,7 @@ class ActivityFacade:
             config,
             exploration_config,
             time.time,
+            list_reader_books,
         )
         self._task: asyncio.Task[None] | None = None
 
@@ -167,11 +198,22 @@ class ActivityFacade:
         执行中的 result 尚未写入，故仅落终态（不持久化部分进度）；
         读书的 read_chars 已 advance 进 material 层，恢复时从那里续读。
         """
+        activity = await self._store.get(activity_id)
         await self._lifecycle.interrupt(activity_id, by_event, self._task)
+        task_id = activity.progress.get("task_id") if activity is not None else None
+        if isinstance(task_id, str):
+            updated = await self._store.get(activity_id)
+            if updated is not None and updated.status in {
+                ActivityStatus.PAUSED,
+                ActivityStatus.ABANDONED,
+            }:
+                await self._set_task_status(task_id, AssignedTaskStatus.PENDING)
 
     async def recover_stale_running(self) -> list[Activity]:
         """启动恢复：清理 DB 中没有后台 task 承接的 RUNNING 活动。"""
-        return await self._lifecycle.recover_stale_running()
+        recovered = await self._lifecycle.recover_stale_running()
+        await self._store.recover_running_tasks(time.time())
+        return recovered
 
     # ---- 读 ----
 
@@ -204,6 +246,70 @@ class ActivityFacade:
         """
         await self._material_store.upsert(path, filename, total_chars, time.time())
 
+    async def list_tasks(self) -> list[AssignedTask]:
+        return await self._store.list_tasks()
+
+    async def assign_web_task(self, url: str) -> AssignedTask:
+        if not self._web_enabled:
+            raise WebTasksDisabledError("联网探索已关闭")
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("只支持 HTTP(S) URL")
+        now = time.time()
+        task = await self._store.create_task(
+            AssignedTask(
+                id=str(uuid.uuid4()),
+                type=AssignedTaskType.WEB,
+                status=AssignedTaskStatus.PENDING,
+                url=url,
+                book_id=None,
+                target_paragraph=None,
+                checkpoint={},
+                error=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await self._publish_task_update(task)
+        await self._maybe_start_activity()
+        return await self._require_task(task.id)
+
+    async def assign_book_task(
+        self, book_id: str, target_paragraph: int
+    ) -> AssignedTask:
+        if self._get_reader_book is None or self._get_reader_progress is None:
+            raise RuntimeError("reading facade 尚未绑定")
+        book = await self._get_reader_book(book_id)
+        if target_paragraph < 1 or target_paragraph > book.total_paragraphs:
+            raise ValueError("段落越界")
+        progress = await self._get_reader_progress(book_id)
+        now = time.time()
+        already_read = (
+            progress.revision > 0 and target_paragraph <= progress.nyx_position
+        )
+        task = await self._store.create_task(
+            AssignedTask(
+                id=str(uuid.uuid4()),
+                type=AssignedTaskType.BOOK,
+                status=(
+                    AssignedTaskStatus.COMPLETED
+                    if already_read
+                    else AssignedTaskStatus.PENDING
+                ),
+                url=None,
+                book_id=book_id,
+                target_paragraph=target_paragraph,
+                checkpoint={},
+                error=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await self._publish_task_update(task)
+        if task.status is AssignedTaskStatus.PENDING:
+            await self._maybe_start_activity()
+        return await self._require_task(task.id)
+
     # ---- 内部 ----
 
     async def _maybe_start_activity(self) -> None:
@@ -211,14 +317,22 @@ class ActivityFacade:
 
     async def _execute(self, activity: Activity) -> None:
         await self._lifecycle.start(activity)
+        task_id = activity.progress.get("task_id")
+        if isinstance(task_id, str):
+            await self._set_task_status(task_id, AssignedTaskStatus.RUNNING)
         try:
             if activity.type is ActivityType.FREE_EXPLORATION:
                 await self._start_exploration_run(activity)
                 return
             result = await self._run_activity(activity)
-        except Exception:
+        except Exception as error:
             # fail-fast：失败态落库后仍上抛（不吞异常），但活动不卡 RUNNING
             await self._lifecycle.fail(activity)
+            task_id = activity.progress.get("task_id")
+            if isinstance(task_id, str):
+                await self._set_task_status(
+                    task_id, AssignedTaskStatus.FAILED, str(error)[:500]
+                )
             _logger.exception(
                 "活动执行失败 activity_id=%s type=%s",
                 activity.id,
@@ -227,6 +341,8 @@ class ActivityFacade:
             raise
         activity.progress["result"] = result
         await self.complete_activity(activity)
+        if isinstance(task_id, str):
+            await self._set_task_status(task_id, AssignedTaskStatus.COMPLETED)
 
     async def _start_exploration_run(self, activity: Activity) -> None:
         """探索启动：交给 Exploration 状态机跑完并结算。"""
@@ -237,6 +353,20 @@ class ActivityFacade:
     async def _run_activity(self, activity: Activity) -> dict[str, Any]:
         t = activity.type
         if t is ActivityType.READING:
+            task_id = activity.progress.get("task_id")
+            if isinstance(task_id, str):
+                task = await self._require_task(task_id)
+                if task.type is AssignedTaskType.WEB:
+                    return await self._run_web_task(task)
+            book_id = activity.progress.get("book_id")
+            if isinstance(book_id, str):
+                if self._read_reader_book is None:
+                    raise RuntimeError("EPUB activity reader 尚未绑定")
+                target_raw = activity.progress.get("target_paragraph")
+                target = target_raw if isinstance(target_raw, int) else None
+                return await self._read_reader_book(
+                    book_id, target, _correlation_id(activity)
+                )
             source = activity.progress.get("source")
             if source is None:
                 # READING 必须有真实读物；缺 source 说明上游决策出错，fail-fast
@@ -265,6 +395,108 @@ class ActivityFacade:
         if t is ActivityType.REST:
             return {}
         raise ValueError(f"未知活动类型 {t!r}")
+
+    async def _run_web_task(self, task: AssignedTask) -> dict[str, Any]:
+        if task.url is None:
+            raise ValueError("网页任务缺 URL")
+        fetched = await self._tools.call("web_fetch", {"url": task.url})
+        if not isinstance(fetched, dict):
+            raise ValueError("网页正文抓取失败")
+        text = cast(dict[str, Any], fetched).get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("网页正文抓取失败或为空")
+        cursor_raw = task.checkpoint.get("cursor", 0)
+        cursor = cursor_raw if isinstance(cursor_raw, int) else 0
+        while cursor < len(text):
+            pending_raw = task.checkpoint.get("pending")
+            if isinstance(pending_raw, dict):
+                pending = cast(dict[str, Any], pending_raw)
+            else:
+                block = text[cursor:cursor + 6000]
+                profile_raw = task.checkpoint.get("profile")
+                profile = (
+                    cast(dict[str, object], profile_raw)
+                    if isinstance(profile_raw, dict)
+                    else None
+                )
+                next_profile, items = await self._memory.digest_source_block(
+                    block, task.url, task.id, profile=profile
+                )
+                source_topic = build_source_topic("web", task.url)
+                for item in items:
+                    item["source_topic"] = source_topic
+                    item["source_name"] = task.url
+                pending = {
+                    "cursor": cursor + len(block),
+                    "profile": next_profile,
+                    "knowledge": items,
+                }
+                task.checkpoint["pending"] = pending
+                task.updated_at = time.time()
+                await self._store.save_task(task)
+            raw_items = pending.get("knowledge", [])
+            items = (
+                [
+                    cast(dict[str, str], item)
+                    for item in cast(list[object], raw_items)
+                    if isinstance(item, dict)
+                ]
+                if isinstance(raw_items, list)
+                else []
+            )
+            if items:
+                await self._memory.remember_knowledge(items, task.id)
+            next_cursor = pending.get("cursor")
+            cursor = next_cursor if isinstance(next_cursor, int) else cursor
+            profile = pending.get("profile")
+            task.checkpoint["cursor"] = cursor
+            task.checkpoint["profile"] = profile if isinstance(profile, dict) else {}
+            task.checkpoint["pending"] = None
+            task.updated_at = time.time()
+            await self._store.save_task(task)
+        profile_raw = task.checkpoint.get("profile")
+        profile = (
+            cast(dict[str, object], profile_raw)
+            if isinstance(profile_raw, dict)
+            else {}
+        )
+        summary = profile.get("summary")
+        return {
+            "book": task.url,
+            "note": summary if isinstance(summary, str) else "",
+            "url": task.url,
+            "completed": True,
+        }
+
+    async def _require_task(self, task_id: str) -> AssignedTask:
+        task = await self._store.get_task(task_id)
+        if task is None:
+            raise ValueError(f"任务不存在：{task_id}")
+        return task
+
+    async def _set_task_status(
+        self,
+        task_id: str,
+        status: AssignedTaskStatus,
+        error: str | None = None,
+    ) -> None:
+        task = await self._store.set_task_status(
+            task_id, status, time.time(), error
+        )
+        if task is not None:
+            await self._publish_task_update(task)
+
+    async def _publish_task_update(self, task: AssignedTask) -> None:
+        try:
+            await self._bus.publish(
+                internal_event(
+                    EventType.TASK_UPDATED,
+                    {"task_id": task.id, "status": task.status.value},
+                    task.id,
+                )
+            )
+        except Exception:
+            _logger.exception("委派任务状态广播失败 task_id=%s", task.id)
 
     async def _run_creation(self, activity: Activity) -> dict[str, Any]:
         checkpoint = _creation_checkpoint(activity)

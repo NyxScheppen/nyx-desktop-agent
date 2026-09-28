@@ -4,6 +4,8 @@ from typing import Any, Awaitable, Callable, Literal, TypedDict
 from nyx.enums import (
     ActivityStatus,
     ActivityType,
+    AssignedTaskStatus,
+    AssignedTaskType,
     DesireStatus,
     DesireType,
     EmotionCategory,
@@ -172,6 +174,20 @@ class Material:  # 用户喂的读物（一本书），分块读进度
     read_chars: int  # 已读字数（分块进度，>=total 视为读完）
     created_at: float  # 上传时间（「最近那本」排序键）
     updated_at: float  # 进度上次推进时间
+
+
+@dataclass
+class AssignedTask:
+    id: str
+    type: AssignedTaskType
+    status: AssignedTaskStatus
+    url: str | None
+    book_id: str | None
+    target_paragraph: int | None
+    checkpoint: dict[str, Any]
+    error: str | None
+    created_at: float
+    updated_at: float
 
 
 # ---- 陪读 ----

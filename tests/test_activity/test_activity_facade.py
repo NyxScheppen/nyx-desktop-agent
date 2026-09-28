@@ -33,6 +33,7 @@ from nyx.desire.store import DesireStore
 from nyx.enums import (
     ActivityStatus,
     ActivityType,
+    AssignedTaskStatus,
     DesireStatus,
     DesireType,
     EmotionCategory,
@@ -50,6 +51,7 @@ from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
+    Book,
     CurrentState,
     DesireState,
     DesireValue,
@@ -59,6 +61,7 @@ from nyx.types import (
     LongTermDesire,
     Memory,
     Personality,
+    ReadingProgress,
     ReflectionOutcome,
     ShortTermDesire,
     Values,
@@ -318,6 +321,8 @@ class _FakeDesire:
 class _FakeMemory:
     def __init__(self) -> None:
         self.remembered: list[list[dict[str, str]]] = []
+        self.remembered_correlation_ids: list[str] = []
+        self.digested_blocks: list[tuple[str, str, str]] = []
         self.knowledge: list[Memory] = []
         self.search_queries: list[str] = []
 
@@ -337,6 +342,7 @@ class _FakeMemory:
         self, items: list[dict[str, str]], correlation_id: str
     ) -> None:
         self.remembered.append(items)
+        self.remembered_correlation_ids.append(correlation_id)
 
     async def digest_source_block(
         self,
@@ -347,6 +353,7 @@ class _FakeMemory:
         author: str = "",
         profile: dict[str, object] | None = None,
     ) -> tuple[dict[str, object], list[dict[str, str]]]:
+        self.digested_blocks.append((text, source_name, correlation_id))
         return (
             {
                 "summary": text[:20] or source_name,
@@ -378,6 +385,31 @@ class _FakeTools:
         return "文件内容"
 
 
+class _WebTaskTools(_FakeTools):
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+
+    async def call(self, name: str, args: dict[str, Any]) -> Any:
+        if name == "web_fetch":
+            self.calls.append((name, args))
+            return {"text": self.text, "url": args["url"]}
+        return await super().call(name, args)
+
+
+class _BlockingWebTaskTools(_FakeTools):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def call(self, name: str, args: dict[str, Any]) -> Any:
+        if name == "web_fetch":
+            self.calls.append((name, args))
+            self.started.set()
+            await asyncio.Event().wait()
+        return await super().call(name, args)
+
+
 async def _no_reflect(correlation_id: str | None) -> ReflectionOutcome | None:
     return None
 
@@ -398,6 +430,15 @@ async def _new_facade(
     memory: _FakeMemory | None = None,
     tools: _FakeTools | None = None,
     canon: str = "测试人格",
+    exploration_config: ExplorationConfig | None = None,
+    list_reader_books: Callable[[], Awaitable[list[Book]]] | None = None,
+    read_reader_book: (
+        Callable[[str, int | None, str], Awaitable[dict[str, Any]]] | None
+    ) = None,
+    get_reader_book: Callable[[str], Awaitable[Book]] | None = None,
+    get_reader_progress: (
+        Callable[[str], Awaitable[ReadingProgress]] | None
+    ) = None,
 ) -> tuple[ActivityFacade, ActivityStore, EventBus, Database]:
     database = await db.connect(":memory:")
     store = ActivityStore(database)
@@ -423,8 +464,12 @@ async def _new_facade(
         reflect if reflect is not None else _no_reflect,
         get_observation if get_observation is not None else _no_observation,
         ActivityConfig(),
-        ExplorationConfig(),
+        exploration_config or ExplorationConfig(),
         canon,
+        list_reader_books,
+        read_reader_book,
+        get_reader_book,
+        get_reader_progress,
     )
     return facade, store, bus, database
 
@@ -460,6 +505,220 @@ async def _await_task(facade: ActivityFacade) -> None:
     task = facade._task
     assert task is not None
     await task
+
+
+async def test_assigned_task_does_not_preempt_running_activity() -> None:
+    facade, store, bus, database = await _new_facade(
+        tools=_WebTaskTools("正文"),
+        exploration_config=ExplorationConfig(web_enabled=True),
+    )
+    try:
+        await store.insert(
+            _activity(
+                "busy",
+                type_=ActivityType.OBSERVE_USER,
+                status=ActivityStatus.RUNNING,
+            )
+        )
+        async with _running(bus):
+            assigned = await facade.assign_web_task("https://example.com/article")
+        current = await store.get_current()
+        assert current is not None and current.id == "busy"
+        assert assigned.status is AssignedTaskStatus.PENDING
+        assert facade._task is None
+    finally:
+        await database.conn.close()
+
+
+async def test_low_energy_rests_before_assigned_task() -> None:
+    facade, store, bus, database = await _new_facade(
+        energy=0.0,
+        tools=_WebTaskTools("正文"),
+        exploration_config=ExplorationConfig(web_enabled=True),
+    )
+    try:
+        async with _running(bus):
+            assigned = await facade.assign_web_task("https://example.com/article")
+            await _await_task(facade)
+        saved = await store.get_task(assigned.id)
+        activities = await store.list_schedule(0.0)
+        assert saved is not None and saved.status is AssignedTaskStatus.PENDING
+        assert len(activities) == 1
+        assert activities[0].type is ActivityType.REST
+    finally:
+        await database.conn.close()
+
+
+async def test_assigned_task_precedes_pending_desire() -> None:
+    tools = _WebTaskTools("正文")
+    facade, store, bus, database = await _new_facade(
+        pending=[_desire("d1", DesireType.CREATION)],
+        tools=tools,
+        exploration_config=ExplorationConfig(web_enabled=True),
+    )
+    try:
+        async with _running(bus):
+            assigned = await facade.assign_web_task("https://example.com/article")
+            await _await_task(facade)
+        saved = await store.get_task(assigned.id)
+        activities = await store.list_schedule(0.0)
+        assert saved is not None and saved.status is AssignedTaskStatus.COMPLETED
+        assert activities[0].type is ActivityType.READING
+        assert activities[0].progress["task_id"] == assigned.id
+    finally:
+        await database.conn.close()
+
+
+async def test_web_task_sediments_every_6000_character_block() -> None:
+    text = "甲" * 13001
+    tools = _WebTaskTools(text)
+    memory = _FakeMemory()
+    facade, store, bus, database = await _new_facade(
+        tools=tools,
+        memory=memory,
+        exploration_config=ExplorationConfig(web_enabled=True),
+    )
+    try:
+        async with _running(bus):
+            assigned = await facade.assign_web_task("https://example.com/article")
+            await _await_task(facade)
+        saved = await store.get_task(assigned.id)
+        assert [len(item[0]) for item in memory.digested_blocks] == [6000, 6000, 1001]
+        assert memory.remembered_correlation_ids == [assigned.id] * 3
+        assert saved is not None and saved.checkpoint["cursor"] == len(text)
+        assert saved.status is AssignedTaskStatus.COMPLETED
+    finally:
+        await database.conn.close()
+
+
+async def test_empty_web_task_fails_without_memory() -> None:
+    memory = _FakeMemory()
+    facade, store, bus, database = await _new_facade(
+        tools=_WebTaskTools("  "),
+        memory=memory,
+        exploration_config=ExplorationConfig(web_enabled=True),
+    )
+    try:
+        async with _running(bus):
+            assigned = await facade.assign_web_task("https://example.com/empty")
+            with pytest.raises(ValueError, match="正文"):
+                await _await_task(facade)
+        saved = await store.get_task(assigned.id)
+        assert saved is not None and saved.status is AssignedTaskStatus.FAILED
+        assert memory.digested_blocks == []
+        assert memory.remembered == []
+    finally:
+        await database.conn.close()
+
+
+async def test_interrupted_assigned_task_returns_to_queue() -> None:
+    tools = _BlockingWebTaskTools()
+    facade, store, bus, database = await _new_facade(
+        tools=tools,
+        exploration_config=ExplorationConfig(web_enabled=True),
+    )
+    try:
+        async with _running(bus):
+            assigned = await facade.assign_web_task("https://example.com/slow")
+            await asyncio.wait_for(tools.started.wait(), timeout=1.0)
+            current = await store.get_current()
+            assert current is not None
+            await facade.interrupt(current.id, EventType.USER_MESSAGE)
+        saved = await store.get_task(assigned.id)
+        interrupted = await store.get(current.id)
+        assert saved is not None and saved.status is AssignedTaskStatus.PENDING
+        assert interrupted is not None
+        assert interrupted.status is ActivityStatus.PAUSED
+    finally:
+        await database.conn.close()
+
+
+async def test_assigned_book_task_uses_reader_and_completes() -> None:
+    book = Book("b1", "诺斯艾兰", "作者", "book.epub", "h", 20, 1.0, 1.0)
+    calls: list[tuple[str, int | None, str]] = []
+
+    async def get_reader_book(book_id: str) -> Book:
+        assert book_id == book.id
+        return book
+
+    async def get_reader_progress(book_id: str) -> ReadingProgress:
+        return ReadingProgress(book_id, 1, 1, 50, 0, 0.0)
+
+    async def read_reader_book(
+        book_id: str, target: int | None, correlation_id: str
+    ) -> dict[str, Any]:
+        calls.append((book_id, target, correlation_id))
+        return {"book": book.title, "target_paragraph": target, "completed": True}
+
+    facade, store, bus, database = await _new_facade(
+        read_reader_book=read_reader_book,
+        get_reader_book=get_reader_book,
+        get_reader_progress=get_reader_progress,
+    )
+    try:
+        await database.conn.execute(
+            "INSERT INTO books "
+            "(id, title, author, filename, content_hash, total_paragraphs, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                book.id,
+                book.title,
+                book.author,
+                book.filename,
+                book.content_hash,
+                book.total_paragraphs,
+                book.created_at,
+                book.updated_at,
+            ),
+        )
+        await database.conn.commit()
+        async with _running(bus):
+            assigned = await facade.assign_book_task(book.id, 12)
+            await _await_task(facade)
+        saved = await store.get_task(assigned.id)
+        assert calls == [(book.id, 12, assigned.id)]
+        assert saved is not None and saved.status is AssignedTaskStatus.COMPLETED
+    finally:
+        await database.conn.close()
+
+
+async def test_already_read_book_task_completes_without_activity() -> None:
+    book = Book("b1", "诺斯艾兰", "作者", "book.epub", "h", 20, 1.0, 1.0)
+
+    async def get_reader_book(book_id: str) -> Book:
+        return book
+
+    async def get_reader_progress(book_id: str) -> ReadingProgress:
+        return ReadingProgress(book_id, 9, 9, 50, 1, 1.0, revision=2)
+
+    facade, store, bus, database = await _new_facade(
+        get_reader_book=get_reader_book,
+        get_reader_progress=get_reader_progress,
+    )
+    try:
+        await database.conn.execute(
+            "INSERT INTO books "
+            "(id, title, author, filename, content_hash, total_paragraphs, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                book.id,
+                book.title,
+                book.author,
+                book.filename,
+                book.content_hash,
+                book.total_paragraphs,
+                book.created_at,
+                book.updated_at,
+            ),
+        )
+        await database.conn.commit()
+        async with _running(bus):
+            assigned = await facade.assign_book_task(book.id, 8)
+        assert assigned.status is AssignedTaskStatus.COMPLETED
+        assert await store.list_schedule(0.0) == []
+        assert facade._task is None
+    finally:
+        await database.conn.close()
 
 
 # ---- 纯函数 ----
@@ -973,6 +1232,7 @@ async def test_upgrade_to_free_exploration(
 ) -> None:
     t0 = 1_000_000.0
     monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
+    tools = _FakeTools()
     facade, store, bus, database = await _new_facade(
         pending=[
             _desire(
@@ -981,14 +1241,20 @@ async def test_upgrade_to_free_exploration(
             )
         ],
         energy=80.0,
+        tools=tools,
+        exploration_config=ExplorationConfig(web_enabled=True),
     )
     try:
+        await facade._material_store.upsert(
+            "unrelated.txt", "完全无关.txt", 100, t0
+        )
         async with _running(bus):
             await facade._maybe_start_activity()
             await _await_task(facade)
         acts = await store.list_schedule(0.0)
         assert len(acts) == 1
         assert acts[0].type is ActivityType.FREE_EXPLORATION
+        assert tools.calls[0] == ("web_search", {"query": "骑士团"})
     finally:
         await database.conn.close()
 
@@ -1394,7 +1660,7 @@ async def test_reading_completion_aggregates_note(
         memory=memory,
     )
     try:
-        await facade.register_material(str(source), "book.txt", 6)
+        await facade.register_material(str(source), "骑士团.txt", 6)
         async with _running(bus):
             await facade._maybe_start_activity()
             await _await_task(facade)
@@ -1403,9 +1669,9 @@ async def test_reading_completion_aggregates_note(
         assert result["completed"] is True
         assert result["note"] == "完整读书笔记"
         suffix = _path_hash_suffix(str(source))
-        output = tmp_path / "notes" / f"book.txt-{suffix}.md"
+        output = tmp_path / "notes" / f"骑士团.txt-{suffix}.md"
         assert result["path"] == str(output)
-        assert captured["path"] == f"notes/book.txt-{suffix}.md"
+        assert captured["path"] == f"notes/骑士团.txt-{suffix}.md"
         assert output.read_text(encoding="utf-8") == "完整读书笔记"
         assert llm.calls == ["reading", "note"]
         assert memory.remembered[0][0]["source_topic"].startswith("material:")
@@ -1413,8 +1679,8 @@ async def test_reading_completion_aggregates_note(
         await database.conn.close()
 
 
-async def test_desire_reading_reads_latest_material(tmp_path: Path) -> None:
-    """探索欲触发：读最近未读完的那本（分块 + 推进度），而非凭空编造。"""
+async def test_desire_reading_reads_matching_material(tmp_path: Path) -> None:
+    """探索欲触发：只读文件名匹配的未读材料并推进进度。"""
     source = tmp_path / "book.txt"
     source.write_text("甲" * 7000, encoding="utf-8")
     facade, store, bus, database = await _new_facade(
@@ -1427,7 +1693,9 @@ async def test_desire_reading_reads_latest_material(tmp_path: Path) -> None:
         energy=80.0,
     )
     try:
-        await facade._material_store.upsert(str(source), "book.txt", 7000, 1000.0)
+        await facade._material_store.upsert(
+            str(source), "骑士团.txt", 7000, 1000.0
+        )
         async with _running(bus):
             await facade._maybe_start_activity()
             await _await_task(facade)
@@ -1492,7 +1760,7 @@ async def test_partial_reading_progress_does_not_retry_desire(tmp_path: Path) ->
         "测试人格",
     )
     try:
-        await material_store.upsert(str(source), "book.txt", 7000, 1000.0)
+        await material_store.upsert(str(source), "骑士团.txt", 7000, 1000.0)
         events = _subscribe_activity(bus)
         bus.subscribe(EventType.ACTIVITY_END, desire.add_value)
         async with _running(bus):
@@ -1546,7 +1814,9 @@ async def test_reading_relays_prior_fragments(tmp_path: Path) -> None:
         llm=llm,
     )
     try:
-        await facade._material_store.upsert(str(source), "book.txt", 13000, 1000.0)
+        await facade._material_store.upsert(
+            str(source), "骑士团.txt", 13000, 1000.0
+        )
         # 模拟已读完第一块：进度 6000 + 留下一篇片段笔记
         await facade._material_store.append_fragment(
             str(source), "上一块的笔记", 1000.0
@@ -1597,6 +1867,51 @@ async def test_maybe_start_reading_uses_topic(
         assert len(acts) == 1
         assert acts[0].progress["source"] == str(target)
         assert acts[0].progress["filename"] == "骑士团历史.txt"
+    finally:
+        await database.conn.close()
+
+
+async def test_maybe_start_reading_can_match_uploaded_epub() -> None:
+    book = Book(
+        "b1",
+        "诺斯艾兰",
+        "作者",
+        "nuosi.epub",
+        "hash",
+        20,
+        1.0,
+        1.0,
+    )
+    calls: list[tuple[str, int | None, str]] = []
+
+    async def list_reader_books() -> list[Book]:
+        return [book]
+
+    async def read_reader_book(
+        book_id: str, target: int | None, correlation_id: str
+    ) -> dict[str, Any]:
+        calls.append((book_id, target, correlation_id))
+        return {"book": book.title, "target_paragraph": 5, "completed": False}
+
+    facade, store, bus, database = await _new_facade(
+        pending=[
+            _desire(
+                "d1",
+                DesireType.EXPLORATION,
+                goal=Goal(GoalAction.READ, 1, "诺斯艾兰"),
+            )
+        ],
+        list_reader_books=list_reader_books,
+        read_reader_book=read_reader_book,
+    )
+    try:
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+        activity = (await store.list_schedule(0.0))[0]
+        assert activity.type is ActivityType.READING
+        assert activity.progress["book_id"] == book.id
+        assert calls == [(book.id, None, "d1")]
     finally:
         await database.conn.close()
 

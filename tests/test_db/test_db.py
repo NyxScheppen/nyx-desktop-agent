@@ -8,7 +8,7 @@ import pytest
 
 from nyx import db
 
-# 28 张业务表（不含 schema_version）
+# 29 张业务表（不含 schema_version）
 BUSINESS_TABLES = {
     "personality",
     "value_system",
@@ -39,6 +39,7 @@ BUSINESS_TABLES = {
     "memory_entity",
     "memory_entity_alias",
     "memory_fact",
+    "assigned_task",
 }
 
 # 非 Optional 字段对应列必须 NOT NULL（01-types 契约）
@@ -108,7 +109,17 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 30
+    assert len(names) == 31
+
+
+async def test_migrate_adds_assigned_task_fifo_index() -> None:
+    conn = await _migrated_conn()
+    try:
+        cursor = await conn.execute("PRAGMA index_list(assigned_task)")
+        indexes = {row["name"] for row in await cursor.fetchall()}
+    finally:
+        await conn.close()
+    assert "idx_assigned_task_status_created" in indexes
 
 
 async def test_migrate_adds_source_memory_state_columns() -> None:
@@ -186,6 +197,7 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_memory_fact_predicate",
         "idx_memory_entity_alias_lookup",
         "idx_activity_results",
+        "idx_assigned_task_status_created",
     }
 
 
@@ -510,7 +522,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 30
+    assert len(names) == 31
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

@@ -21,6 +21,7 @@ class EventType(StrEnum):
     ACTIVITY_START = "activity_start"      # 活动开始
     ACTIVITY_END = "activity_end"          # 活动结束
     ACTIVITY_INTERRUPTED = "activity_interrupted"  # 活动打断
+    TASK_UPDATED = "task_updated"          # 委派任务状态变化
     READING_MUTTER = "reading_mutter"      # 陪读碎碎念（12-reading-system）
     READING_QUESTION = "reading_question"  # 陪读提问
     READING_ASSOCIATION = "reading_association"  # 陪读联想
@@ -94,6 +95,11 @@ class ActivityType(StrEnum):
     REST = "rest"                          # 休息
 
 
+class AssignedTaskType(StrEnum):
+    WEB = "web"
+    BOOK = "book"
+
+
 class MemoryType(StrEnum):
     SHORT_TERM = "short_term"
     LONG_TERM = "long_term"
@@ -153,6 +159,13 @@ class ActivityStatus(StrEnum):
     ABANDONED = "abandoned"
     COMPLETED = "completed"
     INCOMPLETE = "incomplete"
+
+
+class AssignedTaskStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class EnergyState(StrEnum):

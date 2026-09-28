@@ -653,6 +653,25 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             )""",
         ],
     ),
+    (
+        31,
+        [
+            """CREATE TABLE assigned_task (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                url TEXT,
+                book_id TEXT REFERENCES books(id) ON DELETE SET NULL,
+                target_paragraph INTEGER,
+                checkpoint TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )""",
+            "CREATE INDEX idx_assigned_task_status_created "
+            "ON assigned_task(status, created_at)",
+        ],
+    ),
 ]
 
 

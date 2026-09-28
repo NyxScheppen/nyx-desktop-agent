@@ -72,7 +72,12 @@ class ReadingIntegration:
         self._source_locks: dict[str, asyncio.Lock] = {}
 
     async def sediment(
-        self, book_id: str, through_paragraph: int, *, flush: bool
+        self,
+        book_id: str,
+        through_paragraph: int,
+        *,
+        flush: bool,
+        correlation_id: str | None = None,
     ) -> None:
         """Sediment bounded source blocks through one visible paragraph."""
         if self._store is None:
@@ -101,7 +106,7 @@ class ReadingIntegration:
                     next_profile, items = await self._memory.digest_source_block(
                         text,
                         book.title,
-                        book_id,
+                        correlation_id or book_id,
                         author=book.author,
                         profile=profile,
                     )
@@ -117,7 +122,10 @@ class ReadingIntegration:
                     state["pending"] = pending
                     await self._store.update_memory_state(book_id, state)
                 await self._commit_pending(
-                    book_id, state, cast(dict[str, Any], pending)
+                    book_id,
+                    state,
+                    cast(dict[str, Any], pending),
+                    correlation_id or book_id,
                 )
 
     async def _commit_pending(
@@ -125,6 +133,7 @@ class ReadingIntegration:
         book_id: str,
         state: dict[str, Any],
         pending: dict[str, Any],
+        correlation_id: str,
     ) -> None:
         raw_items = pending.get("knowledge", [])
         items = (
@@ -137,7 +146,7 @@ class ReadingIntegration:
             else []
         )
         if items:
-            await self._memory.remember_knowledge(items, book_id)
+            await self._memory.remember_knowledge(items, correlation_id)
         raw_cursor = pending.get("cursor")
         raw_profile = pending.get("profile")
         state["cursor"] = raw_cursor if isinstance(raw_cursor, dict) else {}

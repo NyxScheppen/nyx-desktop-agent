@@ -1,12 +1,37 @@
 from typing import cast
 
 from nyx.activity.material_store import MaterialStore
-from nyx.activity.starter import ActivityStarter
+from nyx.activity.starter import ActivityStarter, best_reading_match
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.desire.facade import DesireFacade
 from nyx.enums import ActivityType, EmotionCategory, EnergyState
-from nyx.types import Activity, CurrentState, DesireState, Personality, Values
+from nyx.types import (
+    Activity,
+    Book,
+    CurrentState,
+    DesireState,
+    Material,
+    Personality,
+    Values,
+)
+
+
+def test_best_reading_match_compares_epub_and_material_fuzzily() -> None:
+    material = Material("a", "无关资料.txt", 100, 0, 3.0, 3.0)
+    book = Book("b1", "诺斯艾兰", "作者", "诺斯艾兰-新版.epub", "h", 10, 2.0, 2.0)
+    matched_material, matched_book = best_reading_match(
+        "《诺斯艾兰》", [material], [book]
+    )
+    assert matched_material is None
+    assert matched_book is book
+
+
+def test_best_reading_match_does_not_fall_back_to_latest() -> None:
+    latest = Material("a", "完全无关.txt", 100, 0, 9.0, 9.0)
+    matched_material, matched_book = best_reading_match("量子力学", [latest], [])
+    assert matched_material is None
+    assert matched_book is None
 
 
 class _Store:
@@ -17,6 +42,9 @@ class _Store:
         return None
 
     async def get_paused_in_block(self, block_id: str) -> None:
+        return None
+
+    async def get_next_task(self) -> None:
         return None
 
     async def insert(self, activity: Activity) -> None:

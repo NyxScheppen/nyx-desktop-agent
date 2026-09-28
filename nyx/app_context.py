@@ -6,6 +6,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.material_store import MaterialStore
@@ -42,7 +43,7 @@ from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
-from nyx.types import CurrentState, Event, ReflectionOutcome
+from nyx.types import Book, CurrentState, Event, ReadingProgress, ReflectionOutcome
 
 
 @dataclass
@@ -292,6 +293,7 @@ async def build_app_context(
         Callable[[str | None], Awaitable[ReflectionOutcome | None]] | None
     ) = None
     reading_context_reader: Callable[[str, str], Awaitable[str]] | None = None
+    reading_owner: ReadingFacade | None = None
     observation_reader: Callable[[], Awaitable[dict[str, str]]] | None = None
     return_context_owner: _App | None = None
 
@@ -330,6 +332,30 @@ async def build_app_context(
             return ""
         return await reading_context_reader(source_id, query)
 
+    async def list_reader_books() -> list[Book]:
+        if reading_owner is None:
+            raise RuntimeError("reading facade 尚未绑定")
+        return await reading_owner.list_readable_books()
+
+    async def read_reader_book(
+        book_id: str, target_paragraph: int | None, correlation_id: str
+    ) -> dict[str, Any]:
+        if reading_owner is None:
+            raise RuntimeError("reading facade 尚未绑定")
+        return await reading_owner.read_for_activity(
+            book_id, target_paragraph, correlation_id
+        )
+
+    async def get_reader_book(book_id: str) -> Book:
+        if reading_owner is None:
+            raise RuntimeError("reading facade 尚未绑定")
+        return await reading_owner.get_book(book_id)
+
+    async def get_reader_progress(book_id: str) -> ReadingProgress:
+        if reading_owner is None:
+            raise RuntimeError("reading facade 尚未绑定")
+        return await reading_owner.get_progress(book_id)
+
     prompt_dir = Path(
         os.environ.get("NYX_CANON_DIR", Path(__file__).parent / "prompts")
     )
@@ -353,6 +379,10 @@ async def build_app_context(
         config.activity,
         config.exploration,
         canon,
+        list_reader_books,
+        read_reader_book,
+        get_reader_book,
+        get_reader_progress,
     )
     await activity.recover_stale_running()
     inner_life = InnerLifeFacade(
@@ -394,6 +424,7 @@ async def build_app_context(
         canon,
         expression,
     )
+    reading_owner = reading
     reading_context_reader = reading.build_reply_context
     app = _App(
         bus,

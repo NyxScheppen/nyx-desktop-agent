@@ -412,6 +412,26 @@ async def test_import_book_inserts_book_and_paragraphs(
     assert indexes == [1, 2, 3]
 
 
+async def test_read_for_activity_sediments_and_only_advances_nyx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database = await _facade(
+        monkeypatch,
+        [Segment(text="正文" * 1000, is_chapter_start=i == 1) for i in range(1, 5)],
+    )
+    try:
+        book = await facade.import_book("book.epub", b"epub")
+        initial = await facade.save_progress(book.id, 4, 1, 80, 0)
+        result = await facade.read_for_activity(book.id, 3, "task-1")
+        progress = await facade.get_progress(book.id)
+    finally:
+        await database.conn.close()
+    assert result["target_paragraph"] == 3
+    assert progress.user_position == 4
+    assert progress.nyx_position == 3
+    assert progress.revision == initial.revision + 1
+
+
 async def test_import_book_duplicate_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

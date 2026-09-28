@@ -3,8 +3,13 @@ from typing import Any
 from nyx import db
 from nyx.activity.store import ActivityStore
 from nyx.db import Database
-from nyx.enums import ActivityStatus, ActivityType
-from nyx.types import Activity
+from nyx.enums import (
+    ActivityStatus,
+    ActivityType,
+    AssignedTaskStatus,
+    AssignedTaskType,
+)
+from nyx.types import Activity, AssignedTask
 
 
 def _activity(
@@ -30,6 +35,74 @@ def _activity(
 async def _new_store() -> tuple[ActivityStore, Database]:
     database = await db.connect(":memory:")
     return ActivityStore(database), database
+
+
+def _task(
+    id: str,
+    *,
+    status: AssignedTaskStatus = AssignedTaskStatus.PENDING,
+    url: str | None = "https://example.com/article",
+    book_id: str | None = None,
+    target: int | None = None,
+    created_at: float = 1.0,
+) -> AssignedTask:
+    return AssignedTask(
+        id=id,
+        type=(AssignedTaskType.BOOK if book_id is not None else AssignedTaskType.WEB),
+        status=status,
+        url=url if book_id is None else None,
+        book_id=book_id,
+        target_paragraph=target,
+        checkpoint={},
+        error=None,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+
+
+async def test_create_task_is_idempotent_while_active() -> None:
+    store, database = await _new_store()
+    try:
+        first = await store.create_task(_task("t1"))
+        duplicate = await store.create_task(_task("t2", created_at=2.0))
+        tasks = await store.list_tasks()
+    finally:
+        await database.conn.close()
+    assert duplicate.id == first.id
+    assert [task.id for task in tasks] == ["t1"]
+
+
+async def test_claim_task_and_activity_is_atomic_fifo() -> None:
+    store, database = await _new_store()
+    try:
+        await store.create_task(_task("later", created_at=2.0))
+        await store.create_task(
+            _task("earlier", url="https://example.com/other", created_at=1.0)
+        )
+        pending = await store.get_next_task()
+        assert pending is not None
+        activity = _activity("a1", progress={"task_id": pending.id})
+        claimed = await store.claim_task_and_insert(pending.id, activity, 3.0)
+        saved = await store.get_task(pending.id)
+    finally:
+        await database.conn.close()
+    assert pending.id == "earlier"
+    assert claimed is True
+    assert saved is not None and saved.status is AssignedTaskStatus.RUNNING
+
+
+async def test_recover_running_tasks_returns_them_to_pending() -> None:
+    store, database = await _new_store()
+    try:
+        await store.create_task(_task("t1"))
+        activity = _activity("a1", progress={"task_id": "t1"})
+        await store.claim_task_and_insert("t1", activity, 2.0)
+        await store.recover_running_tasks(3.0)
+        saved = await store.get_task("t1")
+    finally:
+        await database.conn.close()
+    assert saved is not None
+    assert saved.status is AssignedTaskStatus.PENDING
 
 
 async def test_insert_get_roundtrip() -> None:

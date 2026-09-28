@@ -9,12 +9,14 @@ from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
-from nyx.activity.facade import ActivityFacade
+from nyx.activity.facade import ActivityFacade, WebTasksDisabledError
 from nyx.config import Config
 from nyx.desire.facade import DesireFacade
 from nyx.enums import (
     ActivityStatus,
     ActivityType,
+    AssignedTaskStatus,
+    AssignedTaskType,
     EmotionCategory,
     EnergyState,
     EventType,
@@ -29,9 +31,10 @@ from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import _App, build_app
 from nyx.memory.facade import MemoryFacade
-from nyx.reading.facade import ReadingFacade
+from nyx.reading.facade import BookNotFoundError, ReadingFacade
 from nyx.types import (
     Activity,
+    AssignedTask,
     CurrentState,
     EvalRecord,
     EvalStats,
@@ -146,6 +149,7 @@ class _FakeActivity:
         self.list_calls = 0
         self.registered: list[tuple[str, str, int]] = []
         self.result_calls: list[tuple[int, int, ActivityType | None]] = []
+        self.tasks: list[AssignedTask] = []
 
     async def get_current(self) -> Activity | None:
         return None
@@ -186,6 +190,51 @@ class _FakeActivity:
         self, path: str, filename: str, total_chars: int
     ) -> None:
         self.registered.append((path, filename, total_chars))
+
+    async def list_tasks(self) -> list[AssignedTask]:
+        return self.tasks
+
+    async def assign_web_task(self, url: str) -> AssignedTask:
+        task = AssignedTask(
+            "tw", AssignedTaskType.WEB, AssignedTaskStatus.PENDING,
+            url, None, None, {}, None, 1.0, 1.0,
+        )
+        self.tasks.append(task)
+        return task
+
+    async def assign_book_task(
+        self, book_id: str, target_paragraph: int
+    ) -> AssignedTask:
+        task = AssignedTask(
+            "tb", AssignedTaskType.BOOK, AssignedTaskStatus.PENDING,
+            None, book_id, target_paragraph, {}, None, 1.0, 1.0,
+        )
+        self.tasks.append(task)
+        return task
+
+
+class _TaskErrorActivity(_FakeActivity):
+    def __init__(
+        self,
+        *,
+        web_error: Exception | None = None,
+        book_error: Exception | None = None,
+    ) -> None:
+        super().__init__()
+        self.web_error = web_error
+        self.book_error = book_error
+
+    async def assign_web_task(self, url: str) -> AssignedTask:
+        if self.web_error is not None:
+            raise self.web_error
+        return await super().assign_web_task(url)
+
+    async def assign_book_task(
+        self, book_id: str, target_paragraph: int
+    ) -> AssignedTask:
+        if self.book_error is not None:
+            raise self.book_error
+        return await super().assign_book_task(book_id, target_paragraph)
 
 
 def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
@@ -304,6 +353,78 @@ async def test_activity_results_endpoint_filters_and_paginates() -> None:
     assert resp.status_code == 200
     assert resp.json()[0]["progress"]["result"]["title"] == "夜色"
     assert fake_activity.result_calls == [(13, 12, ActivityType.CREATION)]
+
+
+async def test_tasks_endpoints_create_and_list() -> None:
+    fake_activity = _FakeActivity()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, fake_activity)
+    async with _client(app) as client:
+        web = await client.post(
+            "/api/tasks/web", json={"url": "https://example.com/article"}
+        )
+        book = await client.post(
+            "/api/tasks/book", json={"book_id": "b1", "target_paragraph": 12}
+        )
+        listed = await client.get("/api/tasks")
+    assert web.status_code == 201
+    assert book.status_code == 201
+    assert [item["id"] for item in listed.json()] == ["tw", "tb"]
+
+
+async def test_web_task_rejects_non_http_url() -> None:
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(ActivityFacade, _FakeActivity())
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/tasks/web", json={"url": "file:///etc/passwd"}
+        )
+    assert response.status_code == 422
+
+
+async def test_web_task_returns_conflict_when_network_is_disabled() -> None:
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.activity = cast(
+        ActivityFacade,
+        _TaskErrorActivity(
+            web_error=WebTasksDisabledError("联网探索已关闭")
+        ),
+    )
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/tasks/web", json={"url": "https://example.com"}
+        )
+    assert response.status_code == 409
+
+
+async def test_book_task_maps_missing_and_invalid_targets() -> None:
+    missing_app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    missing_app.activity = cast(
+        ActivityFacade,
+        _TaskErrorActivity(book_error=BookNotFoundError("missing")),
+    )
+    invalid_app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    invalid_app.activity = cast(
+        ActivityFacade,
+        _TaskErrorActivity(book_error=ValueError("段落越界")),
+    )
+    async with _client(missing_app) as client:
+        missing = await client.post(
+            "/api/tasks/book",
+            json={"book_id": "missing", "target_paragraph": 2},
+        )
+    async with _client(invalid_app) as client:
+        invalid = await client.post(
+            "/api/tasks/book",
+            json={"book_id": "b1", "target_paragraph": 99},
+        )
+        rejected_shape = await client.post(
+            "/api/tasks/book",
+            json={"book_id": "b1", "target_paragraph": 0},
+        )
+    assert missing.status_code == 404
+    assert invalid.status_code == 422
+    assert rejected_shape.status_code == 422
 
 
 @pytest.mark.parametrize(

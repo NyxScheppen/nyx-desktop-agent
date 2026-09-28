@@ -172,6 +172,20 @@ class ReadingStore:
             rows = await cursor.fetchall()
             return [_row_to_list_item(r) for r in rows]
 
+    async def list_readable_books(self) -> list[Book]:
+        """List EPUB books that have not reached a persisted completed state."""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT b.id, b.title, b.author, b.filename, b.content_hash, "
+                "b.total_paragraphs, b.created_at, b.updated_at "
+                "FROM books b LEFT JOIN reading_progress p ON p.book_id = b.id "
+                "WHERE p.book_id IS NULL OR p.read_count = 0 "
+                "OR p.nyx_position < b.total_paragraphs "
+                "ORDER BY b.created_at DESC"
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_book(row) for row in rows]
+
     async def list_paragraphs(
         self, book_id: str, from_idx: int, to_idx: int
     ) -> list[Paragraph]:
@@ -262,6 +276,34 @@ class ReadingStore:
                 )
                 if cursor.rowcount != 1:
                     raise ProgressConflictError(book_id)
+            await self._db.conn.commit()
+            progress = await self._get_progress_locked(book_id)
+            if progress is None:
+                raise RuntimeError(f"写后回读缺失：{book_id}")
+            return progress
+
+    async def advance_nyx_position(
+        self, book_id: str, nyx_position: int
+    ) -> ReadingProgress:
+        """Advance only Nyx's position, preserving user-owned progress fields."""
+        async with self._db.lock:
+            now = time.time()
+            current = await self._get_progress_locked(book_id, allow_missing=True)
+            if current is None:
+                await self._db.conn.execute(
+                    "INSERT INTO reading_progress "
+                    "(book_id, nyx_position, updated_at, revision) "
+                    "VALUES (?, ?, ?, 1)",
+                    (book_id, nyx_position, now),
+                )
+            elif nyx_position > current.nyx_position:
+                await self._db.conn.execute(
+                    "UPDATE reading_progress SET nyx_position = ?, updated_at = ?, "
+                    "revision = revision + 1 WHERE book_id = ?",
+                    (nyx_position, now, book_id),
+                )
+            else:
+                return current
             await self._db.conn.commit()
             progress = await self._get_progress_locked(book_id)
             if progress is None:

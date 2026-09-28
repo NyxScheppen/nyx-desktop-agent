@@ -1,6 +1,8 @@
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine
+from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any, cast
 
 from nyx.activity.exploration import should_explore
@@ -15,9 +17,62 @@ from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.db import Database
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ActivityStatus, ActivityType, DesireType
+from nyx.enums import (
+    ActivityStatus,
+    ActivityType,
+    AssignedTaskStatus,
+    AssignedTaskType,
+    DesireType,
+)
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
-from nyx.types import Activity, CurrentState, ShortTermDesire
+from nyx.types import Activity, Book, CurrentState, Material, ShortTermDesire
+
+_READING_MATCH_THRESHOLD = 0.6
+
+
+def _normalized_title(value: str) -> str:
+    stem = Path(value.strip()).stem
+    return "".join(char for char in stem.casefold() if char.isalnum())
+
+
+def _reading_match_score(topic: str, candidate: str) -> float:
+    query = _normalized_title(topic)
+    name = _normalized_title(candidate)
+    if not query or not name:
+        return 0.0
+    if query == name:
+        return 1.0
+    if query in name or name in query:
+        return 0.9 + 0.09 * min(len(query), len(name)) / max(len(query), len(name))
+    return SequenceMatcher(None, query, name).ratio()
+
+
+def best_reading_match(
+    topic: str, materials: list[Material], books: list[Book]
+) -> tuple[Material | None, Book | None]:
+    """Return the best fuzzy filename/title match across both local libraries."""
+    ranked: list[tuple[float, float, int, Material | Book]] = []
+    for material in materials:
+        if material.read_chars >= material.total_chars:
+            continue
+        score = _reading_match_score(topic, material.filename)
+        if score >= _READING_MATCH_THRESHOLD:
+            ranked.append((score, material.created_at, 0, material))
+    for book in books:
+        score = max(
+            _reading_match_score(topic, book.title),
+            _reading_match_score(topic, book.filename),
+        )
+        if score >= _READING_MATCH_THRESHOLD:
+            ranked.append((score, book.created_at, 1, book))
+    if not ranked:
+        return None, None
+    _score, _created, kind, selected = max(
+        ranked, key=lambda item: (item[0], item[1], item[2])
+    )
+    if kind == 0:
+        return cast(Material, selected), None
+    return None, cast(Book, selected)
 
 
 def schedule_block_id(now: float, grid_minutes: int) -> str:
@@ -48,6 +103,7 @@ class ActivityStarter:
         config: ActivityConfig,
         exploration_config: ExplorationConfig,
         now: Callable[[], float],
+        list_reader_books: Callable[[], Awaitable[list[Book]]] | None = None,
     ) -> None:
         self._store = store
         self._material_store = material_store
@@ -57,6 +113,7 @@ class ActivityStarter:
         self._config = config
         self._exploration_config = exploration_config
         self._now = now
+        self._list_reader_books = list_reader_books
         self._lock = asyncio.Lock()
 
     def select_activity(
@@ -127,6 +184,13 @@ class ActivityStarter:
             block_id = schedule_block_id(self._now(), self._config.grid_minutes)
             resumed = await self._store.get_paused_in_block(block_id)
             if resumed is not None:
+                resumed_task_id = resumed.progress.get("task_id")
+                if isinstance(resumed_task_id, str):
+                    await self._store.set_task_status(
+                        resumed_task_id,
+                        AssignedTaskStatus.RUNNING,
+                        self._now(),
+                    )
                 if resumed.type is ActivityType.READING:
                     source = resumed.progress.get("source")
                     if isinstance(source, str):
@@ -137,9 +201,53 @@ class ActivityStarter:
                 resumed.ended_at = None
                 return self._create_task(resumed)
 
+            task = await self._store.get_next_task()
+            state = await self._get_state()
+            if task is not None:
+                now = self._now()
+                if state.energy < ENERGY_REST_THRESHOLD:
+                    rest = Activity(
+                        id=str(uuid.uuid4()),
+                        type=ActivityType.REST,
+                        schedule_block_id=schedule_block_id(
+                            now, self._config.grid_minutes
+                        ),
+                        status=ActivityStatus.PENDING,
+                        progress=_empty_progress(),
+                        started_at=now,
+                    )
+                    await self._store.insert(rest)
+                    return self._create_task(rest)
+                progress = _empty_progress()
+                progress.update(
+                    {
+                        "task_id": task.id,
+                        "correlation_id": task.id,
+                        "assigned_task_type": task.type.value,
+                        "description": task.url or task.book_id,
+                    }
+                )
+                if task.type is AssignedTaskType.WEB:
+                    progress["url"] = task.url
+                else:
+                    progress["book_id"] = task.book_id
+                    progress["target_paragraph"] = task.target_paragraph
+                activity = Activity(
+                    id=str(uuid.uuid4()),
+                    type=ActivityType.READING,
+                    schedule_block_id=schedule_block_id(
+                        now, self._config.grid_minutes
+                    ),
+                    status=ActivityStatus.PENDING,
+                    progress=progress,
+                    started_at=now,
+                )
+                if not await self._store.claim_task_and_insert(task.id, activity, now):
+                    return None
+                return self._create_task(activity)
+
             desires = await self._desire.get_pending()
             values = (await self._desire.get_all()).values
-            state = await self._get_state()
             activity = self.select_activity(rank_desires(desires, values), state)
             if activity is None:
                 activity = self.default_activity(state)
@@ -147,10 +255,15 @@ class ActivityStarter:
                 goal = cast(dict[str, Any] | None, activity.progress.get("goal"))
                 topic = goal.get("topic") if goal is not None else None
                 material = None
+                book = None
                 if isinstance(topic, str) and topic:
-                    material = await self._material_store.find_by_topic(topic)
-                if material is None:
-                    material = await self._material_store.next_readable()
+                    materials = await self._material_store.list_all()
+                    books = (
+                        await self._list_reader_books()
+                        if self._list_reader_books is not None
+                        else []
+                    )
+                    material, book = best_reading_match(topic, materials, books)
                 if material is not None:
                     activity.progress.update(
                         {
@@ -159,6 +272,14 @@ class ActivityStarter:
                             "description": material.filename,
                             "read_chars": material.read_chars,
                             "total_chars": material.total_chars,
+                        }
+                    )
+                elif book is not None:
+                    activity.progress.update(
+                        {
+                            "book_id": book.id,
+                            "filename": book.filename,
+                            "description": book.title,
                         }
                     )
                 else:

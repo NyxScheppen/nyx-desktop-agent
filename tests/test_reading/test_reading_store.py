@@ -295,6 +295,21 @@ async def test_upsert_progress_rejects_stale_revision() -> None:
     assert current.revision == first.revision
 
 
+async def test_advance_nyx_position_is_monotonic_and_preserves_user_state() -> None:
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store, n=8)
+        first = await store.upsert_progress(book_id, 6, 2, 90, 0)
+        advanced = await store.advance_nyx_position(book_id, 5)
+        unchanged = await store.advance_nyx_position(book_id, 3)
+    finally:
+        await database.conn.close()
+    assert advanced.user_position == 6
+    assert advanced.nyx_position == 5
+    assert advanced.reading_speed == 90
+    assert unchanged.revision == first.revision + 1
+
+
 async def test_upsert_does_not_reset_read_count() -> None:
     store, database = await _new_store()
     try:

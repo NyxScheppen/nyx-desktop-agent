@@ -6,6 +6,8 @@ from pathlib import Path
 from nyx.enums import (
     ActivityStatus,
     ActivityType,
+    AssignedTaskStatus,
+    AssignedTaskType,
     BoundaryResult,
     ContextMode,
     DesireStatus,
@@ -30,7 +32,7 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
         "reflection_done", "memory_created", "memory_promoted", "desire_generated",
         "desire_satisfied", "desire_expired", "activity_start", "activity_end",
         "activity_interrupted", "reading_mutter", "reading_question",
-        "reading_association",
+        "reading_association", "task_updated",
     },
     Source: {"external", "internal"},
     TickType: {
@@ -46,6 +48,8 @@ EXPECTED: dict[type[StrEnum], set[str]] = {
         "reading", "free_exploration", "creation", "observe_user", "idle_reflection",
         "rest",
     },
+    AssignedTaskType: {"web", "book"},
+    AssignedTaskStatus: {"pending", "running", "completed", "failed"},
     MemoryType: {"short_term", "long_term"},
     MemoryEdgeKind: {
         "semantic", "entity", "keyword", "temporal",

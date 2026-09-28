@@ -191,6 +191,17 @@ class ReadingFacade:
         """书架列表（直通 store；列表本身不需要某本书存在，故不判书存在）。"""
         return await self._store.list_books()
 
+    async def get_book(self, book_id: str) -> Book:
+        """Return one imported book or raise the public not-found error."""
+        book = await self._store.find_book(book_id)
+        if book is None:
+            raise BookNotFoundError(book_id)
+        return book
+
+    async def list_readable_books(self) -> list[Book]:
+        """Return EPUB candidates that Nyx has not durably completed."""
+        return await self._store.list_readable_books()
+
     async def list_paragraphs(
         self, book_id: str, from_idx: int, to_idx: int
     ) -> list[Paragraph]:
@@ -234,6 +245,73 @@ class ReadingFacade:
         return await self._store.upsert_progress(
             book_id, user_position, nyx_position, reading_speed, expected_revision
         )
+
+    async def read_for_activity(
+        self,
+        book_id: str,
+        target_paragraph: int | None,
+        correlation_id: str,
+    ) -> dict[str, Any]:
+        """Read EPUB source for an activity without producing companion impulses."""
+        book = await self.get_book(book_id)
+        progress = await self.get_progress(book_id)
+        explicit_target = target_paragraph is not None
+        if target_paragraph is None:
+            start = (
+                progress.nyx_position
+                if progress.revision == 0
+                else progress.nyx_position + 1
+            )
+            if start > book.total_paragraphs:
+                return {
+                    "book": book.title,
+                    "target_paragraph": progress.nyx_position,
+                    "completed": True,
+                }
+            target_paragraph = await self._activity_read_target(book, start)
+        if target_paragraph < 1 or target_paragraph > book.total_paragraphs:
+            raise ValueError("段落越界")
+        if progress.revision > 0 and target_paragraph <= progress.nyx_position:
+            return {
+                "book": book.title,
+                "target_paragraph": progress.nyx_position,
+                "completed": explicit_target or progress.read_count > 0,
+            }
+        await self._integration.sediment(
+            book_id,
+            target_paragraph,
+            flush=True,
+            correlation_id=correlation_id,
+        )
+        advanced = await self._store.advance_nyx_position(
+            book_id, target_paragraph
+        )
+        boundary = await self.check_chapter_boundary(book_id, target_paragraph)
+        if boundary is BoundaryResult.BOOK_FINISHED:
+            advanced = await self.get_progress(book_id)
+        return {
+            "book": book.title,
+            "target_paragraph": advanced.nyx_position,
+            "completed": target_paragraph >= book.total_paragraphs,
+        }
+
+    async def _activity_read_target(self, book: Book, start: int) -> int:
+        """Choose a paragraph endpoint containing roughly one source block."""
+        cursor = start
+        target = start
+        chars = 0
+        while cursor <= book.total_paragraphs and chars < _READING_PROMPT_MAX_CHARS:
+            end = min(cursor + 49, book.total_paragraphs)
+            paragraphs = await self._store.list_paragraphs(book.id, cursor, end)
+            if not paragraphs:
+                break
+            for paragraph in paragraphs:
+                target = paragraph.index
+                chars += len(paragraph.text) + 1
+                if chars >= _READING_PROMPT_MAX_CHARS:
+                    break
+            cursor = end + 1
+        return target
 
     # ---- 阅读系统：段落冲动引擎 ----
 

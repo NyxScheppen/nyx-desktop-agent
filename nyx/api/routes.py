@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.routing import Match
 
+from nyx.activity.facade import WebTasksDisabledError
 from nyx.activity.observe import classify_presence
 from nyx.app_context import _App
 from nyx.enums import ActivityType, BoundaryResult, EventType, MemoryKind, MemoryType
@@ -31,6 +32,7 @@ from nyx.reading.store import ProgressConflictError
 from nyx.types import (
     Activity,
     Annotation,
+    AssignedTask,
     Book,
     BookListItem,
     Bookmark,
@@ -131,6 +133,22 @@ class _BookmarkPayload(BaseModel):
     paragraph_id: str
 
 
+class _WebTaskPayload(BaseModel):
+    url: str = Field(..., min_length=1, max_length=2048)
+
+    @model_validator(mode="after")
+    def validate_http_url(self) -> "_WebTaskPayload":
+        parsed = urlsplit(self.url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("只支持 HTTP(S) URL")
+        return self
+
+
+class _BookTaskPayload(BaseModel):
+    book_id: str = Field(..., min_length=1)
+    target_paragraph: int = Field(..., ge=1)
+
+
 def sanitize_filename(name: str) -> str:
     """Remove path, control, and HTML-dangerous characters from an upload name."""
     cleaned = "".join(
@@ -217,6 +235,30 @@ def build_app(
             ActivityType.CREATION if activity_type == "creation" else None
         )
         return await app.activity.get_results(limit, offset, selected_type)
+
+    @fast.get("/api/tasks")
+    async def api_tasks() -> list[AssignedTask]:
+        return await app.activity.list_tasks()
+
+    @fast.post("/api/tasks/web", status_code=201)
+    async def api_assign_web_task(payload: _WebTaskPayload) -> AssignedTask:
+        try:
+            return await app.activity.assign_web_task(payload.url)
+        except WebTasksDisabledError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @fast.post("/api/tasks/book", status_code=201)
+    async def api_assign_book_task(payload: _BookTaskPayload) -> AssignedTask:
+        try:
+            return await app.activity.assign_book_task(
+                payload.book_id, payload.target_paragraph
+            )
+        except BookNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     @fast.get("/api/events/log")
     async def api_events_log(

@@ -5,10 +5,19 @@ from contextlib import asynccontextmanager
 import aiosqlite
 
 from nyx.db import Database
-from nyx.enums import ActivityStatus, ActivityType
-from nyx.types import Activity
+from nyx.enums import (
+    ActivityStatus,
+    ActivityType,
+    AssignedTaskStatus,
+    AssignedTaskType,
+)
+from nyx.types import Activity, AssignedTask
 
 _COLS = "id, type, schedule_block_id, status, progress, started_at, ended_at"
+_TASK_COLS = (
+    "id, type, status, url, book_id, target_paragraph, checkpoint, error, "
+    "created_at, updated_at"
+)
 
 
 class ActivityStore:
@@ -196,6 +205,134 @@ class ActivityStore:
             )
             await self._db.conn.commit()
 
+    async def create_task(self, task: AssignedTask) -> AssignedTask:
+        """Insert a task, returning an equivalent active task when one exists."""
+        async with self._db.lock:
+            if task.type is AssignedTaskType.WEB:
+                cursor = await self._db.conn.execute(
+                    f"SELECT {_TASK_COLS} FROM assigned_task "
+                    "WHERE type = 'web' AND url = ? "
+                    "AND status IN ('pending', 'running') "
+                    "ORDER BY created_at ASC LIMIT 1",
+                    (task.url,),
+                )
+            else:
+                cursor = await self._db.conn.execute(
+                    f"SELECT {_TASK_COLS} FROM assigned_task "
+                    "WHERE type = 'book' AND book_id = ? AND target_paragraph = ? "
+                    "AND status IN ('pending', 'running') "
+                    "ORDER BY created_at ASC LIMIT 1",
+                    (task.book_id, task.target_paragraph),
+                )
+            existing = await cursor.fetchone()
+            if existing is not None:
+                return _row_to_task(existing)
+            await self._db.conn.execute(
+                "INSERT INTO assigned_task "
+                "(id, type, status, url, book_id, target_paragraph, checkpoint, "
+                "error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    task.id,
+                    task.type.value,
+                    task.status.value,
+                    task.url,
+                    task.book_id,
+                    task.target_paragraph,
+                    json.dumps(task.checkpoint, ensure_ascii=False),
+                    task.error,
+                    task.created_at,
+                    task.updated_at,
+                ),
+            )
+            await self._db.conn.commit()
+        return task
+
+    async def get_task(self, task_id: str) -> AssignedTask | None:
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_TASK_COLS} FROM assigned_task WHERE id = ?", (task_id,)
+            )
+            row = await cursor.fetchone()
+        return _row_to_task(row) if row is not None else None
+
+    async def list_tasks(self, limit: int = 100) -> list[AssignedTask]:
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_TASK_COLS} FROM assigned_task "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_task(row) for row in rows]
+
+    async def get_next_task(self) -> AssignedTask | None:
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_TASK_COLS} FROM assigned_task WHERE status = 'pending' "
+                "ORDER BY created_at ASC LIMIT 1"
+            )
+            row = await cursor.fetchone()
+        return _row_to_task(row) if row is not None else None
+
+    async def claim_task_and_insert(
+        self, task_id: str, activity: Activity, now: float
+    ) -> bool:
+        """Atomically claim one pending task and insert its activity."""
+        async with self._db.transaction():
+            cursor = await self._db.conn.execute(
+                "UPDATE assigned_task SET status = 'running', error = NULL, "
+                "updated_at = ? WHERE id = ? AND status = 'pending'",
+                (now, task_id),
+            )
+            if cursor.rowcount != 1:
+                return False
+            await self.insert(activity)
+        return True
+
+    async def save_task(self, task: AssignedTask) -> None:
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "UPDATE assigned_task SET status = ?, checkpoint = ?, error = ?, "
+                "updated_at = ? WHERE id = ?",
+                (
+                    task.status.value,
+                    json.dumps(task.checkpoint, ensure_ascii=False),
+                    task.error,
+                    task.updated_at,
+                    task.id,
+                ),
+            )
+            await self._db.conn.commit()
+
+    async def set_task_status(
+        self,
+        task_id: str,
+        status: AssignedTaskStatus,
+        now: float,
+        error: str | None = None,
+    ) -> AssignedTask | None:
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "UPDATE assigned_task SET status = ?, error = ?, updated_at = ? "
+                "WHERE id = ?",
+                (status.value, error, now, task_id),
+            )
+            await self._db.conn.commit()
+            cursor = await self._db.conn.execute(
+                f"SELECT {_TASK_COLS} FROM assigned_task WHERE id = ?", (task_id,)
+            )
+            row = await cursor.fetchone()
+        return _row_to_task(row) if row is not None else None
+
+    async def recover_running_tasks(self, now: float) -> None:
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "UPDATE assigned_task SET status = 'pending', updated_at = ? "
+                "WHERE status = 'running'",
+                (now,),
+            )
+            await self._db.conn.commit()
+
 
 def _row_to_activity(row: aiosqlite.Row) -> Activity:
     return Activity(
@@ -206,4 +343,19 @@ def _row_to_activity(row: aiosqlite.Row) -> Activity:
         progress=json.loads(row["progress"]),
         started_at=row["started_at"],
         ended_at=row["ended_at"],
+    )
+
+
+def _row_to_task(row: aiosqlite.Row) -> AssignedTask:
+    return AssignedTask(
+        id=row["id"],
+        type=AssignedTaskType(row["type"]),
+        status=AssignedTaskStatus(row["status"]),
+        url=row["url"],
+        book_id=row["book_id"],
+        target_paragraph=row["target_paragraph"],
+        checkpoint=json.loads(row["checkpoint"]),
+        error=row["error"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

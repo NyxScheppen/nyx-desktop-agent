@@ -1459,23 +1459,40 @@ body:has(.app--pet) {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  background: color-mix(in srgb, var(--parchment) 92%, white);
+  border: 1px solid color-mix(in srgb, var(--ink-soft) 16%, transparent);
+  border-radius: 6px;
+  overflow: hidden;
 }
 
 .reader__header {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.9rem;
+  min-height: 3.75rem;
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink-soft) 14%, transparent);
   flex-shrink: 0;
 }
 
-.reader__title {
+.reader__identity {
+  min-width: 0;
+  display: flex;
   flex: 1;
-  font-size: 0.95rem;
+  flex-direction: column;
+}
+
+.reader__title {
+  font-size: 1rem;
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.reader__author {
+  font-size: 0.72rem;
+  color: var(--ink-soft);
 }
 
 .reader__pos {
@@ -1487,11 +1504,13 @@ body:has(.app--pet) {
   flex: 1;
   min-height: 0;
   display: flex;
-  gap: 0.75rem;
+  padding: clamp(1.25rem, 4vh, 2.5rem) clamp(1rem, 6vw, 4rem) 1rem;
 }
 
 .reader-text {
   flex: 1;
+  width: min(100%, 46rem);
+  margin: 0 auto;
   min-width: 0;
   overflow: hidden; /* 真分页：无滚动条、无滚轮（08 §5） */
   position: relative;
@@ -1507,34 +1526,246 @@ body:has(.app--pet) {
 
 .reader-text__para {
   margin: 0;
+  padding: 0 1.25rem;
   font-size: 1rem;
-  line-height: 1.9;
+  line-height: 2;
   color: var(--ink);
-  text-align: justify;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .reader-text__para--chapter {
-  padding-top: 1.5rem;
-  font-size: 1.15rem;
-  font-weight: 600;
+  padding-top: 0.5rem;
+}
+
+.reader-block {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.reader-block--paragraph + .reader-block--paragraph {
+  margin-top: 0.9rem;
+}
+
+.reader-block--heading {
+  margin: 0 0 1.4rem;
+  color: var(--ink);
+  font-size: 1.55rem;
+  line-height: 1.4;
+  font-weight: 700;
+  text-align: left;
+}
+
+h3.reader-block--heading,
+h4.reader-block--heading,
+h5.reader-block--heading,
+h6.reader-block--heading {
+  font-size: 1.18rem;
+  margin-bottom: 0.8rem;
+}
+
+.reader-block--blockquote {
+  margin: 0.7rem 0;
+  padding: 0.2rem 1rem;
+  border-left: 3px solid var(--gold);
+  color: var(--ink-soft);
+}
+
+.reader-block--list_item {
+  position: relative;
+  padding-left: 1.2rem;
+}
+
+.reader-block--list_item::before {
+  content: "•";
+  position: absolute;
+  left: 0.2rem;
+}
+
+.reader-block--pre {
+  overflow-x: auto;
+  padding: 0.7rem;
+  background: var(--parchment-deep);
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.reader-run--bold {
+  font-weight: 700;
+}
+
+.reader-run--italic {
+  font-style: italic;
+}
+
+.reader-run--highlight {
+  background: color-mix(in srgb, var(--gold) 38%, transparent);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent) 72%, transparent);
+}
+
+.reader-run--focused {
+  background: color-mix(in srgb, var(--accent) 30%, var(--parchment));
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 /* 当前段（你读到这）：左侧 accent 竖条 + 浅底高亮（inset 阴影不占布局） */
 .reader-text__para--current {
   box-shadow: inset 3px 0 0 var(--accent);
-  background: var(--parchment-deep);
+  background: color-mix(in srgb, var(--parchment-deep) 38%, transparent);
 }
 
 /* Nyx 位置标记（她读到这）：段首 🦊，与正文清晰区分 */
 .reader-text__para--nyx::before {
-  content: "🦊 ";
-  font-size: 0.85rem;
+  content: "NYX";
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.62rem;
+  color: var(--accent);
 }
 
 .reader__footer {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
+  min-height: 3.25rem;
+  padding: 0.45rem 1rem;
+  border-top: 1px solid color-mix(in srgb, var(--ink-soft) 14%, transparent);
   flex-shrink: 0;
+}
+
+.reader-tool {
+  min-height: 2rem;
+  padding: 0.25rem 0.55rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.reader-tool:hover:not(:disabled) {
+  background: var(--parchment-deep);
+  color: var(--ink);
+}
+
+.reader-tool:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.reader-tool--icon {
+  width: 2rem;
+  padding: 0;
+  font-size: 1.05rem;
+}
+
+.reader__page-number {
+  min-width: 3.5rem;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+}
+
+.reader__footer-spacer {
+  flex: 1;
+}
+
+.reader-selection {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  gap: 0.2rem;
+  padding: 0.25rem;
+  border: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
+  border-radius: 5px;
+  background: var(--parchment);
+  box-shadow: 0 5px 16px rgba(20, 18, 16, 0.18);
+}
+
+.reader-selection button {
+  border: 0;
+  padding: 0.3rem 0.5rem;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.75rem;
+}
+
+.reader-selection button:hover {
+  background: var(--parchment-deep);
+}
+
+.reader-search {
+  width: 100%;
+  margin-bottom: 0.75rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--parchment-deep);
+  border-radius: 4px;
+  background: var(--parchment);
+  color: var(--ink);
+  font: inherit;
+}
+
+.reader-mark-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reader-mark-item {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--parchment-deep);
+}
+
+.reader-mark-item__jump {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.reader-mark-item__jump span,
+.reader-mark-empty {
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+}
+
+.reader-mark-item__jump q {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.84rem;
+}
+
+.reader-mark-item__delete {
+  width: 2rem;
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+@media (max-width: 1000px) {
+  .reader__pos {
+    display: none;
+  }
 }
 
 /* ===== 读书：笔记面板（docs/frontend/07-reading-events.md §3） ===== */

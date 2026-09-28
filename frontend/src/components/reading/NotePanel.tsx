@@ -17,6 +17,7 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
   const [draft, setDraft] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const visibleNotes = notes.filter((note) => note.content !== "");
 
   useEffect(() => {
     void loadNotes();
@@ -67,11 +68,11 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
         </button>
       </div>
       {notesError !== null && <p className="error-text">{notesError}</p>}
-      {notes.length === 0 ? (
+      {visibleNotes.length === 0 ? (
         <p className="panel-item">还没有笔记，随手记一条吧。</p>
       ) : (
         <ul className="note-list">
-          {notes.map((n) => (
+          {visibleNotes.map((n) => (
             <li key={n.id} className="note-item">
               {n.selected_text !== null && (
                 <blockquote className="note-item__quote">{n.selected_text}</blockquote>

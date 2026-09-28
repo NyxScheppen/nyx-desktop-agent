@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：65
-- `pytest --collect-only -q`：1049 tests collected
-- 最近一次全量验证：`1048 passed, 1 skipped`
+- `pytest --collect-only -q`：1060 tests collected
+- 最近一次全量验证：`1059 passed, 1 skipped`（本轮未采集语句覆盖率）
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -25,16 +25,16 @@
 | 类型 | `tests/test_types/` | 2 | 枚举穷尽、实体默认值、LLM prompt TypedDict |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、活动历史复合索引、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、活动历史复合索引、书籍/材料原文记忆 checkpoint 列、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
 | API/运行时 | `tests/test_api/` | 7 | 组合根、REST、活动结果过滤/有界分页参数、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取 |
-| 记忆 | `tests/test_memory/` | 7 | kind/topics、精确与语义去重、episode 保守去重、ANN、融合召回、联想图、Facade、通用实体事实抽取/类型与别名索引/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级、durable 活动记忆不持锁等待 embedding |
+| 记忆 | `tests/test_memory/` | 7 | kind/topics、精确与语义去重、episode 保守去重、原文画像/类别归因/稳定来源 topic、同内容跨来源隔离、来源过滤先于排序、ANN、融合召回、联想图、Facade、通用实体事实抽取/类型与别名索引/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级、durable 活动记忆不持锁等待 embedding |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、类型/action 钉死、满足、重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
-| 活动 | `tests/test_activity/` | 13 | 本地自然日时间线、结果过滤/分页、排期、活动生命周期、探索、观察、读书恢复、创作结果严格校验、主题/旧作参考、唯一文件名与注册表落盘 |
-| 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、时间/对话锚点/归来消费 |
-| 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动（单段单问、问题共享 180 秒冷却、成功后才计冷却、联想共存）、笔记、整合和后台生命周期 |
+| 活动 | `tests/test_activity/` | 13 | 本地自然日时间线、结果过滤/分页、排期、活动生命周期、探索、观察、材料每 6000 字符画像/pending/source checkpoint、网页 URL 来源隔离、本地探索读取真实文件、读书恢复、创作结果严格校验、主题/旧作参考、唯一文件名与注册表落盘 |
+| 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
+| 阅读 | `tests/test_reading/` | 7 | EPUB、进度 CAS、冲动（单段单问、问题共享 180 秒冷却、成功后才计冷却、联想共存）、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
 
 ## 前端覆盖
@@ -104,6 +104,18 @@
 - `test_ann_allowed_ids_filter_applies_before_candidate_limit`
 - `test_persist_builds_ann_index_once_when_dedup_misses`
 - `test_associate_depth_two_scores_and_excludes_seeds`
+- `test_digest_source_block_updates_profile_and_attributes_fiction`
+- `test_same_knowledge_from_two_books_keeps_both_source_scopes`
+- `test_source_semantic_dedup_ranks_only_within_same_source`
+- `test_search_filters_source_before_ranking`
+- `test_each_chunk_persists_profile_and_source_before_advancing`
+- `test_pending_digest_is_reused_without_second_extraction`
+- `test_sediment_splits_long_paragraph_and_flushes_remainder`
+- `test_sediment_reuses_pending_without_digest_call`
+- `test_reading_question_reply_injects_context_on_fast_short_reply`
+- `test_build_reply_context_contains_three_scoped_layers`（事实层使用正文而非主题 summary）
+- `test_source_knowledge_keeps_web_url_scope`
+- `test_migrate_adds_source_memory_state_columns`
 - kind-scoped exact/semantic dedup and humanized memory prompt regressions
 - schema 19 clears legacy memory/edges and installs kind/topics indexes
 - `test_resume_skips_committed_fragment`

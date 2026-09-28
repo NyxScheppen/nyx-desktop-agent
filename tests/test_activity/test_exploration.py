@@ -248,6 +248,29 @@ async def test_run_fetch_failure_falls_back_to_snippet() -> None:
     assert "环境纠缠" in result["findings"][0]
 
 
+async def test_run_empty_source_skips_memory_digest() -> None:
+    class EmptySourceTools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any]) -> Any:
+            self.calls.append((name, args))
+            if name == "web_search":
+                return [{
+                    "title": "空页面",
+                    "url": "https://example.com/empty",
+                    "snippet": "",
+                }]
+            if name == "web_fetch":
+                return {"text": "", "url": args["url"]}
+            return []
+
+    memory = _FakeMemory()
+    result = await _make_exploration(
+        tools=EmptySourceTools(), web_enabled=True, memory=memory
+    ).run(_activity())
+
+    assert memory.digested == []
+    assert result["findings"] == []
+
+
 async def test_run_exhausted_when_no_core_discovery() -> None:
     llm = _FakeLlm(content=json.dumps({"summary": "没啥发现"}))
     expl = _make_exploration(llm=llm, web_enabled=True)

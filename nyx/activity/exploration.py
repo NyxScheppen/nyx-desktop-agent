@@ -184,6 +184,8 @@ class Exploration:
         except Exception:
             pass
         bounded = content[:_SOURCE_TEXT_MAX_CHARS]
+        if not bounded.strip():
+            return {"cursor": cursor, "finding": "", "knowledge": []}
         _profile, items = await self._memory.digest_source_block(
             bounded, name, correlation_id
         )

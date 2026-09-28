@@ -364,9 +364,12 @@ class ActivityFacade:
                     raise RuntimeError("EPUB activity reader 尚未绑定")
                 target_raw = activity.progress.get("target_paragraph")
                 target = target_raw if isinstance(target_raw, int) else None
-                return await self._read_reader_book(
+                result = await self._read_reader_book(
                     book_id, target, _correlation_id(activity)
                 )
+                if target is None and result.get("completed") is False:
+                    activity.progress["goal_signal"] = None
+                return result
             source = activity.progress.get("source")
             if source is None:
                 # READING 必须有真实读物；缺 source 说明上游决策出错，fail-fast

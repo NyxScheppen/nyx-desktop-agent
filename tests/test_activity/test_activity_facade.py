@@ -1905,13 +1905,17 @@ async def test_maybe_start_reading_can_match_uploaded_epub() -> None:
         read_reader_book=read_reader_book,
     )
     try:
+        events = _subscribe_activity(bus)
         async with _running(bus):
             await facade._maybe_start_activity()
             await _await_task(facade)
         activity = (await store.list_schedule(0.0))[0]
-        assert activity.type is ActivityType.READING
         assert activity.progress["book_id"] == book.id
         assert calls == [(book.id, None, "d1")]
+        assert activity.progress["result"]["completed"] is False
+        assert events[-1].content["goal_met"] is None
+        desire = cast(_FakeDesire, facade._desire)
+        assert desire.release_active_calls == ["d1"]
     finally:
         await database.conn.close()
 

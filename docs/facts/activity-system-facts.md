@@ -49,7 +49,9 @@
 - `activity_end` content 形状为 `{activity_id, type, desire_id, goal_met, energy_delta, result}`。
 - `goal_met(goal, result)` 当前代码语义：`goal is None -> True`。
 - `ActivityLifecycle.complete` 先读 `activity.progress["goal_signal"]`；值为 `bool` 或 `None` 时直接作为 `activity_end.goal_met`，否则调用 `goal_met(goal, result)`。
-- `read` 目标只有 `result.completed` 为真才算满足；普通分块读完一块但未读完整本时会设置 `goal_signal=None` 并发布 `goal_met=None`，表示有进展但不结算欲望、不增加 retry。
+- `read` 目标只有 `result.completed` 为真才算满足；material 与探索欲 EPUB 自动分块读完
+  一块但未读完整本时都会设置 `goal_signal=None` 并发布 `goal_met=None`，表示有进展但不
+  结算欲望、不增加 retry。
 - `write` 目标要求 result 同时有 `title` 和 `content`。
 - `observe` 目标要求 result 有 `presence`。
 - `free_exploration` result 若 `outcome == "won"`，即使 goal action 是 read，也会被视为满足。
@@ -76,7 +78,8 @@
 - 探索的 web 结果先用 `web_fetch` 读取正文，本地结果先用 `file_io(read)` 读取文件，失败才
   回退 snippet；每条正文最多取 6000 字符进入 finding 和原文沉淀。URL/路径生成稳定的
   `web:` / `local:` topic；`source_pending` 在写 knowledge 前落 activity checkpoint，写完
-  才推进 cursor，因此恢复不会重复抓取或丢失来源知识。
+  才推进 cursor，因此恢复不会重复抓取或丢失来源知识。正文和 snippet 都为空白时跳过
+  `digest_source_block` 与 finding/knowledge，但 cursor 继续推进。
 - `OBSERVE_USER` 读取组合根维护的 `last_presence`、`last_window_title`、`last_screen_summary`，用纯函数拼 summary。
 - `classify_presence(idle_seconds)` 的边界为 `<30` 秒 online、`30-300` 秒 busy、`>=300` 秒 away，窗口标题不参与三态判定。
 - Windows Tauri command `sample_presence` 返回系统空闲毫秒和前台窗口标题；原生采样失败或非 Windows 拒绝命令，前端降级为 WebView 输入时间，标题为空，不使用 `document.title`。

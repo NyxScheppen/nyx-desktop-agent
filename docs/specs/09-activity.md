@@ -223,6 +223,8 @@ class AssignedTask:
   `remember_knowledge`，成功后推进 `processed_to`、采纳 profile 并清空 pending；最后才追加
   note fragment 和推进 material `read_chars`。恢复时复用 pending，不重复原文提取 LLM。
 - [ ] 未读完整本但成功读完一块时返回 `completed=False`、实际 `read_chars` 与 `total_chars`，并设置 `goal_signal=None`。
+- [ ] 探索欲命中 EPUB 并由 `read_for_activity(..., target_paragraph=None)` 读完一块但未到
+  书末时，同样设置 `goal_signal=None`；这是可续进展，不得按失败增加欲望 retry。
 - [ ] 读到文件末尾时只执行一次 finalize：聚合片段得到 `final_note`，写入
   `notes/<safe-filename>-<path-hash>.md`，保存 `note_path`/`finalized=true`；知识已随每块
   沉淀，不再在整本完成后重扫全文。
@@ -280,7 +282,8 @@ class AssignedTask:
   字符，来源分别用 URL / 绝对路径生成 `web:` / `local:` topic。
 - [ ] 每条搜索结果的 `{finding, knowledge}` 先保存在 `source_pending`，再写 knowledge
   并推进 cursor；崩溃恢复复用 pending，记忆已写但 cursor 未推进时由既有去重吸收重放。
-  正文读取失败才回退 snippet。
+  正文读取失败才回退 snippet；正文与 snippet 都为空白时不调用原文沉淀 LLM、不生成
+  finding/knowledge，但该条 cursor 仍正常推进。
 - [ ] `FREE_EXPLORATION` 被打断后恢复同一 activity id，不重复抓取 cursor 之前的结果、不重复成功 tool call、不重复 `add_long_term` 或 `remember_knowledge`。
 - [ ] `web_enabled=false` 时只调用 `local_search`；联网搜索为空时可回退 local search；单条 `web_fetch` 失败记录失败 tool call 并使用 snippet，不使探索崩溃。
 - [ ] 探索 LLM 调用传递活动 correlation id，`output_type="exploration_finalize"` 的输出完成后紧跟 `evaluator.evaluate`；总结 JSON 非对象时返回可序列化的空结果。
@@ -294,6 +297,7 @@ class AssignedTask:
 | 材料 knowledge 已写、checkpoint 未推进 | 重放 pending，由同一 `material:` 来源内去重吸收 |
 | web fetch / local file read 失败 | 记录失败 tool call，仅此时回退搜索 snippet |
 | local search 只返回短 snippet | 使用现有 `file_io(read)` 读取真实文件，不能把 snippet 当全文 |
+| 正文与 snippet 都为空白 | 跳过原文沉淀 LLM 与 finding/knowledge，完成该条 cursor 推进 |
 | 单条网页或本地正文超过 6000 字符 | 本轮仅取前 6000 字符进入 finding 与沉淀，保持现有每条搜索结果一次处理边界 |
 | 探索 knowledge 已写、cursor 未推进 | 重放 `source_pending`，按 `web:` / `local:` 来源内去重 |
 
@@ -308,7 +312,8 @@ class AssignedTask:
 - [ ] 命中 EPUB 时经 12-reading-system 的 `read_for_activity` 窄回调执行；命中 material
   时沿用 `ReadingActivityRunner`。没有匹配时禁止调用 `next_readable()` 或读取最近上传材料；
   通过 `should_explore` 限速后升级 `FREE_EXPLORATION`。网络关闭时沿用本地搜索配置，不调用
-  web 工具。没有非空 topic 时不能臆测书名，直接走既有默认活动。
+  web 工具。没有非空 topic 时不能臆测书名，直接走既有默认活动。自动 EPUB 读块返回
+  `completed=False` 时必须显式写 `goal_signal=None`，与 material 分块结算一致。
 - [ ] `CREATION` 执行一次创作 LLM，并通过 `ToolRegistry` 写入 `workspace/creations/<safe-title>-<activity-hash>.md`。
 - [ ] `IDLE_REFLECTION` 调用组合根注入的 `inner_life.reflect`，不自行发布 `REFLECTION` 事件，并把反思摘要放进结果。
 - [ ] `OBSERVE_USER` 读取组合根维护的 presence、窗口标题和可选 screen summary，使用 `build_observation_summary` 生成摘要，运行时不调用 LLM。
@@ -392,6 +397,8 @@ class AssignedTask:
   profile、pending 恢复、写入后重放去重锚点、末块 flush、恢复返回 `final_note`。
 - [ ] `tests/test_activity/test_exploration.py`：所有探索阶段 checkpoint、local/web 搜索分支、fetch 失败兜底、cursor 恢复、summary 评估、sink 去重、最终结果结构。
 - [ ] 委派与选材集成：任务不抢占、暂停优先、低精力休息、任务优先欲望、网页多块 6000 字符与 pending 恢复、稳定来源 topic、空正文失败、禁网拒绝、EPUB/material 跨库排序、无匹配不读最新并升级搜索。
+- [ ] EPUB 自动分块未读完时 `activity_end.goal_met=None` 且释放 ACTIVE 欲望；探索结果
+  正文与 snippet 都为空白时不调用 `digest_source_block`。
 - [ ] 前端活动页：网页/EPUB 表单、目标段前后预览、任务状态/失败原因和 `task_updated` 刷新。
 - [ ] `tests/test_activity/test_observe.py`：presence 的 30 秒/5 分钟边界、窗口标题不参与判定，以及观察摘要四种组合。
 - [ ] `tests/test_activity/test_screen.py`：抓屏/视觉描述成功路径及 best-effort 失败路径。

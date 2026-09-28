@@ -33,6 +33,10 @@ updated_at`。`Paragraph` 字段为 `id/book_id/index/text/is_chapter_start`。
 - `index` 从 1 起，按书连续。
 - `is_chapter_start` 表示段落由 `h1`/`h2` 开始，用于边界检测。
 - `content_hash` 是分段正文以换行连接后的 SHA-256，唯一索引防重复书。
+- `books.memory_state` 是内部 JSON checkpoint，不进入 `Book` 或书架 API：
+  `cursor={paragraph_index, char_offset}` 指向下一未沉淀字符，`profile` 保存滚动摘要、最多 5
+  个主题和内容类别，`pending` 保存一次已经完成提取但尚未确认写入的结果。旧库默认 `{}`，
+  读取时补成 cursor 起点、空摘要/主题和 `unknown`。
 
 ### 进度
 
@@ -133,6 +137,8 @@ ReadingFacade.drain(timeout: float = 10.0) -> bool
 
 - 每书后台陪读最多 2 个并发任务；同一书同一段落在途时不得重复派发。
 - 原文 prompt 截断为 6000 字符并标明材料边界。
+- 每次前进到新段落都在现有阅读后台任务集合中请求原文沉淀；同一本书由
+  `ReadingIntegration` 的 per-book lock 串行处理，不改变冲动返回值或阻塞翻页接口。
 - 非空 mutter 才能发布 `READING_MUTTER`；合法问题才可发布
   `READING_QUESTION`。
 - `READING_ASSOCIATION` 每次最多 3 条，使用 `MemoryFacade.search`，不写 Nyx buffer。
@@ -150,6 +156,52 @@ event_content) -> str` 必须在一个本地事务内提交：
 buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路径，但正式组合根必须提供
 该方法。
 
+用户回答后不需要在 attempt 中复制原文：表达层使用 `source_id` 回读 book/paragraph，并
+调用 `ReadingFacade.build_reply_context()` 取得 06-memory 的来源内 Top 5 事实正文与当前
+书籍画像；Top 5 使用 `Memory.content`，不以主题型 `summary` 代替事实。
+
+## 原文沉淀与书籍画像
+
+- 原文按最多 6000 字符组成块；cursor 可以停在段落中间，因此单个超长段落会拆成多个
+  有界提取块，但 `paragraphs.text` 保持原样，回答该段提问时仍提供完整原段落。
+- 累积满 6000 字符立即沉淀；章末和整本末尾 flush 小于 6000 的余量。块可跨多个短段落，
+  不为“每段”额外调用 LLM。
+- 每块使用上一 profile + 本块原文生成新 profile 和最多 5 条知识；profile 为
+  `{summary, themes, content_category}`，类别固定为
+  `fiction/nonfiction/essay/poetry/drama/reference/unknown`。
+- 顺序固定为：生成结果 -> 持久化 `pending` -> `remember_knowledge` -> 推进 cursor、采纳
+  profile、清空 pending。提取/解析失败不推进 cursor；记忆写入后崩溃则重放 pending，
+  由统一记忆去重吸收，不增加第二套幂等表。
+- fiction 事实归于作品/人物/虚构世界；essay 归于作者主张；nonfiction/reference 可成为
+  领域知识；unknown 保守注明来源。书中第一人称不得归于用户/Nyx。
+- 重读已经越过 cursor 的段落不重复沉淀；同名书按 `book_id` 来源 topic 隔离。重复章末
+  调用由已有 integration task 去重和 per-book lock 共同保证不会并发处理同一 pending。
+
+真实 bad case 的处理边界：
+
+| 情况 | 处理 |
+|---|---|
+| 提取完成后进程退出 | pending 已落库，恢复不再调用提取 LLM |
+| knowledge 已写、cursor 未推进 | 重放 pending；现有记忆去重不新增重复行 |
+| 章末/书末不足 6000 字符 | 边界 flush |
+| 单段超过 6000 字符 | cursor 的 `char_offset` 分块；回复仍读取完整段落 |
+| 同名书 | source topic 基于 `book_id`，不用标题作隔离键 |
+| 旧库无画像 | 空摘要/主题 + `unknown` |
+| 提取 JSON 非法 | 记录后台错误并保留 cursor，后续前进/边界调用重试 |
+| 重复边界调用 | 不创建第二个并行整合任务；锁内重读最新 checkpoint |
+
+### 最小实施计划
+
+1. 在既有 `books` / `material` 行增加 JSON `memory_state`，不新增来源表、配置项或服务层。
+2. 复用 `MemoryFacade` 增加 6000 字符原文整理、稳定 source topic、同源去重与来源内检索；
+   knowledge 仍走现有统一持久化和事实抽取尾段。
+3. EPUB 翻页后台累计满块沉淀，章末/书末 flush；材料阅读在推进 `read_chars` 前完成同样的
+   pending checkpoint，网页/本地探索复用现有结果 cursor 保存单条 `source_pending`。
+4. 读书提问 attempt 只保留现有 `source_id`；用户回答时回读同书 Top 5 事实正文、完整触发
+   段落和书籍画像，并同时注入 FAST/SLOW，不复制第二份原文到 attempt。
+5. 用同名书、全局高分干扰、短回复、超长段落、边界余量和两个崩溃窗口做回归；同步
+   memory/activity/expression/reading 契约与事实摘要。
+
 ## 笔记与整合契约
 
 - `add_user_note`、`list_user_notes`、`update_user_note`、`delete_user_note`、
@@ -166,6 +218,8 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
   空 buffer 或整合失败不撤销读完计数。
 - 同一本书同一时间只有一个整合任务。重复边界请求不得重复计数或并发调用 LLM；
   失败后只要 buffer 仍在，后续边界调用可以重试。
+- 边界任务先 flush 原文沉淀，再运行既有 Nyx 主观输出整合；两者分别保留 checkpoint，
+  主观 buffer 为空不影响原文 flush。
 - 整合流程为：snapshot buffer → LLM JSON `{content, summary}` → evaluator →
   `remember_reading` →（重读时）成功受理 `REFLECTION` → 删除已消费 snapshot。
   任何一步失败都保留 snapshot；LLM 期间新增的 buffer 条目不得被删除。
@@ -203,6 +257,8 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
 - 纯函数测试覆盖分段、特征、驱动、冷却。
 - 集成测试覆盖导入原子性、revision 冲突、位置边界、重复整本完成、整合失败保留
   buffer、下游事件失败不清理 buffer 和后台任务追踪。
+- 原文记忆测试覆盖 6000 字符块、跨段 cursor、超长单段、章/书末 flush、pending 两个
+  崩溃窗口、来源内 Top 5、画像滚动与类别归因、短回复三层上下文。
 - API 测试覆盖 2xx/404/409/422/500 语义；前端测试覆盖 revision 写队列和缓存缺失
   时刷新书架。
 - `ruff check`、`pyright`、后端 `pytest`、前端 `npm test` 和 `npm run build` 应通过。

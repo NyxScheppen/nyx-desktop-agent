@@ -110,6 +110,11 @@
 - 表为 `expression_interaction_attempt`，包含 `id`、kind/source/correlation、文本、创建/过期
   时间、状态、回答事件和失败原因，并有超时、创建时间、correlation 索引。
 - 普通提问和读书提问通过 `register_question()` 产生 attempt + `ASK`。
+- 用户回复读书提问时，`answer_waiting()` 返回完成的 `READING_QUESTION` attempt；`reply()`
+  通过组合根注入的阅读回调，按 `source_id` 回读触发段落和书籍画像，并用“原问题 + 用户
+  回复”检索该书来源内 Top 5；knowledge 层注入事实 `content`，不用主题型 `summary`
+  替代。所得三层只读材料会同时进入 FAST/SLOW，因此“嗯”等短回复也不会脱离刚才读到
+  的内容。
 - `runtime.on_user_message()` 先检查同 correlation 的 `SPEAK`/`ASK` 终局事件，再按
   `reply_to` 或最新 WAITING attempt 原子关联至多一条等待项。
 - durable store 存在时，用户回复和超时都使用 `WAITING -> CLAIMED` 条件更新，再完成为
@@ -132,10 +137,9 @@
 ## 读书交互
 
 - `ReadingCompanion.question()` 先校验非空和 `is_question()`；quote 类型还要求第二行引用。
-- 成功提问时先调用 `register_question()`，再单独广播 `READING_QUESTION`；后者载荷包含
-  `attempt_id`、书籍/段落、subtype 和可选 `selected_text`。
-- `READING_QUESTION` 与 canonical `ASK` 共享 attempt/correlation，但两个事件不是同一条
-  `bus` 调用：attempt + ASK 先提交，reading 展示事件随后发布。
+- 正式组合根下，成功提问通过 `commit_reading_question()` 把 attempt、canonical `ASK` 和
+  展示用 `READING_QUESTION` 放在同一本地事务中；后者载荷包含 `attempt_id`、书籍/段落、
+  subtype 和可选 `selected_text`。只在兼容未提供该方法的 fake 时退回分步路径。
 - `ReadingCompanion.associate()` 对记忆检索结果最多取 3 条，每条广播
   `READING_ASSOCIATION`，并把 80 字 snippet 追加到表达 history。
 - 读书提问只把问题正文追加到 history，不把 quote 的 `selected_text` 追加；读书 mutter

@@ -1,4 +1,5 @@
 import json
+from typing import Any, cast
 
 import aiosqlite
 
@@ -28,7 +29,7 @@ class MaterialStore:
                 "created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?) "
                 "ON CONFLICT(path) DO UPDATE SET filename = excluded.filename, "
                 "total_chars = excluded.total_chars, read_chars = 0, "
-                "note_fragments = '[]', "
+                "note_fragments = '[]', memory_state = '{}', "
                 "created_at = excluded.created_at, updated_at = excluded.updated_at",
                 (path, filename, total_chars, now, now),
             )
@@ -112,6 +113,29 @@ class MaterialStore:
         if row is None:
             return []
         return json.loads(row["note_fragments"])
+
+    async def get_memory_state(self, path: str) -> dict[str, Any]:
+        """Read the durable source-memory checkpoint for one material."""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT memory_state FROM material WHERE path = ?", (path,)
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return {}
+        value = json.loads(row["memory_state"])
+        return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+
+    async def update_memory_state(
+        self, path: str, state: dict[str, Any], now: float
+    ) -> None:
+        """Persist the source-memory checkpoint independently of read progress."""
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "UPDATE material SET memory_state = ?, updated_at = ? WHERE path = ?",
+                (json.dumps(state, ensure_ascii=False), now, path),
+            )
+            await self._db.conn.commit()
 
 
 def _row_to_material(row: aiosqlite.Row) -> Material:

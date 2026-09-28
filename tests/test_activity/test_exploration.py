@@ -77,6 +77,8 @@ class _FakeTools:
                 raise RuntimeError("download fail")
             # 真实 web_fetch 返回 {text, url}
             return {"text": "抓取的正文", "url": "https://example.com/a"}
+        if name == "file_io":
+            return {"path": args["path"], "content": "本地文件的完整正文"}
         return "其他"
 
 
@@ -100,6 +102,7 @@ class _FakeMemory:
     def __init__(self) -> None:
         self.knowledge: list[Memory] = []
         self.remembered: list[tuple[list[dict[str, str]], str]] = []
+        self.digested: list[tuple[str, str]] = []
 
     async def search(self, query: str) -> list[Memory]:
         return self.knowledge
@@ -108,6 +111,25 @@ class _FakeMemory:
         self, items: list[dict[str, str]], correlation_id: str
     ) -> None:
         self.remembered.append((items, correlation_id))
+
+    async def digest_source_block(
+        self,
+        text: str,
+        source_name: str,
+        correlation_id: str,
+        *,
+        author: str = "",
+        profile: dict[str, object] | None = None,
+    ) -> tuple[dict[str, object], list[dict[str, str]]]:
+        self.digested.append((source_name, text))
+        return (
+            {
+                "summary": text[:20],
+                "themes": [],
+                "content_category": "unknown",
+            },
+            [{"topic": "来源知识", "content": f"来自正文：{text[:20]}"}],
+        )
 
 
 def _make_exploration(
@@ -194,7 +216,20 @@ async def test_run_local_search_results_flow_into_findings() -> None:
     result = await expl.run(_activity())
     assert len(result["findings"]) == 1
     assert "量子.txt" in result["findings"][0]
-    assert "环境纠缠" in result["findings"][0]
+    assert "本地文件的完整正文" in result["findings"][0]
+    assert [name for name, _args in tools.calls][:2] == [
+        "local_search",
+        "file_io",
+    ]
+
+
+async def test_source_knowledge_keeps_web_url_scope() -> None:
+    memory = _FakeMemory()
+    expl = _make_exploration(web_enabled=True, memory=memory)
+    await expl.run(_activity())
+    source_items = memory.remembered[0][0]
+    assert source_items[0]["source_topic"].startswith("web:")
+    assert source_items[0]["source_name"] == "量子退相干"
 
 
 async def test_run_web_enabled_uses_web_search() -> None:

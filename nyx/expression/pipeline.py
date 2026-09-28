@@ -67,6 +67,7 @@ class ReplyState(TypedDict):
     tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
     intent: UserIntent
     temporal_context: str
+    reading_context: str
     claimed_return: dict[str, float] | None
     fallback: bool
 
@@ -183,6 +184,16 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     correlation_id/last_slow_at 走 state（图可复用，见 facade.__init__）。
     """
 
+    def user_prompt(state: ReplyState) -> str:
+        return "\n\n".join(
+            part
+            for part in (
+                state["reading_context"],
+                build_user_prompt(state["message"], state["context"]),
+            )
+            if part
+        )
+
     async def search_facts(query: str) -> list[MemoryFact]:
         if not is_fact_query(query):
             return []
@@ -237,11 +248,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             intent=state["intent"],
             temporal_context=state["temporal_context"],
         )
-        user = (
-            build_user_prompt(state["message"], state["context"])
-            + "\n"
-            + _USE_TOOLS_TASK
-        )
+        user = user_prompt(state) + "\n" + _USE_TOOLS_TASK
         output = await deps.llm.complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             module="expression",
@@ -289,7 +296,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             intent=state["intent"],
             temporal_context=state["temporal_context"],
         )
-        user = build_user_prompt(state["message"], state["context"])
+        user = user_prompt(state)
         # 前几轮 think/speak（等长）
         prior = _rounds_block(state["think"], state["speak"])
         task = _RESPOND_TASK_CONTINUE if state["speak"] else _RESPOND_TASK

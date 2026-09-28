@@ -625,6 +625,13 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON activity(status, type, ended_at DESC)",
         ],
     ),
+    (
+        28,
+        [
+            "ALTER TABLE books ADD COLUMN memory_state TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE material ADD COLUMN memory_state TEXT NOT NULL DEFAULT '{}'",
+        ],
+    ),
 ]
 
 

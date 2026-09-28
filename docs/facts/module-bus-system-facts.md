@@ -22,7 +22,9 @@
 - 当前未完全迁移的链仍需谨慎：包含 LLM/文件等不可回滚副作用的路径还不能宣称完整 at-least-once 幂等；`memory.activity_end` 已有本地事务和 effect marker，但其内部 LLM 关系/矛盾判断仍属 best-effort 副作用。`USER_MESSAGE` 重放时若已存在同 correlation 的终局 `SPEAK/ASK` 事件会短路，但中途无终局事件的失败仍会重试。
 - 数据库基础设施已有 `Database.close()`、`Database.transaction()`、锁/SQL 操作超时常量和基础熔断状态；`connect()` 无显式参数或 `NYX_DB` 时优先复用已存在的旧默认 `nyx.db`，否则使用 `data/nyx.db`；非内存路径会先创建父目录；不要新增绕过这些入口的长期连接管理。
 - 欲望系统额外使用 `desire_generation_attempt` 保存 LLM 已解析但尚未正式提交的结果；`long_term_desire.name_normalized` 有唯一索引，数据库迁移和唯一性语义见 `04-module-bus-system.md` 与 `07-desire.md`。
-- 组合根延迟依赖使用显式可空回调和带上下文的 `RuntimeError` 检查，不再使用可变列表下标占位；总线 supervisor 在 `run()` 正常返回时结束。
+- 组合根延迟依赖使用显式可空回调和带上下文的 `RuntimeError` 检查，不再使用可变列表下标占位；表达门面先构造、阅读门面后构造时，通过同样的窄回调延迟绑定
+  `ReadingFacade.build_reply_context()`，不让两个 Facade 直接循环依赖。总线 supervisor 在
+  `run()` 正常返回时结束。
 - 表达系统额外使用 `expression_interaction_attempt` 持久化等待用户回应和主动行为承诺；attempt 与 `ASK`/`INITIATE_CHAT` 事件通过 `Database.transaction()` + `EventBus.append_in_transaction()` 同事务提交，提交后再 announce 唤醒消费者。
 - 表达系统的 fallback `SPEAK` 是正常终局事件：解析/评估失败不会吞掉为成功，fallback 发布失败会让用户消息 consumer 进入总线重试；同 correlation 已有终局 SPEAK/ASK 时重放应短路。
 - 关停采用有界 drain：先停止新输入，再等待已受理事件和 delivery 完成；超时保留未完成投递，下次启动恢复，不做伪全局回滚。

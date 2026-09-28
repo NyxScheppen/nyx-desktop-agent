@@ -110,6 +110,19 @@ async def test_migrate_creates_all_tables() -> None:
     assert len(names) == 29
 
 
+async def test_migrate_adds_source_memory_state_columns() -> None:
+    conn = await _migrated_conn()
+    try:
+        columns: dict[str, set[str]] = {}
+        for table in ("books", "material"):
+            cursor = await conn.execute(f"PRAGMA table_info({table})")
+            columns[table] = {row["name"] for row in await cursor.fetchall()}
+    finally:
+        await conn.close()
+    assert "memory_state" in columns["books"]
+    assert "memory_state" in columns["material"]
+
+
 async def test_migrate_creates_expected_indexes() -> None:
     conn = await _migrated_conn()
     try:
@@ -361,6 +374,7 @@ async def test_removed_browsing_data_is_cleaned_from_previous_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     full = db._MIGRATIONS
+    monkeypatch.setattr(db, "_MIGRATIONS", [m for m in full if m[0] <= 22])
     conn = await _migrated_conn()
     try:
         await conn.execute(

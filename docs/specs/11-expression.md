@@ -23,6 +23,8 @@
 - `pipeline.py` 负责回复图；prompt/classifier/mutter 模块中的纯函数不访问数据库、不调用
   LLM、不直接发布事件。
 - `ReadingCompanion` 负责读书行为的生成和展示事件；提问等待、表达历史和问句判断复用本 spec。
+- 读书提问的后续回复通过组合根注入的窄回调读取阅读上下文；表达层只识别
+  `InteractionKind.READING_QUESTION` 和 `source_id`，不直接依赖 `ReadingFacade`。
 - HTTP 端点和事件订阅属于组合根/总线契约，表达门面不直接承担 HTTP 路由。
 
 ## 公开接口
@@ -78,7 +80,7 @@ release_return: Callable[[dict[str, float] | None], None] | None = None
 
 `ReplyState` 至少包含 message、mode、context、memories、state、narrative、think、speak、
 ask、round、correlation_id、last_slow_at、tool_outputs、intent、temporal_context、
-claimed_return 和 fallback。
+reading_context、claimed_return 和 fallback。
 
 ### 通道
 
@@ -86,6 +88,9 @@ claimed_return 和 fallback。
   得分大于等于 `slow_threshold` 为 `SLOW`，否则为 `FAST`。
 - FAST 只执行一次回复生成，不检索记忆、不调用工具、不生成场景记忆；仍必须交付 THINK
   （非空时）和 SPEAK。
+- FAST 通常不检索记忆；用户正在回答 durable 读书提问时例外：`reply()` 使用
+  `answer_waiting()` 返回的 attempt 构造 `reading_context`，直接注入该回合。它不是普通
+  `MemoryFacade.search(message)`，因此“嗯”“我不觉得”等短回复也不会丢失书中语境。
 - SLOW 在回复前执行回溯、记忆检索、recall 记录、自我叙事读取和一次工具判断；回复可连续
   多轮，轮数上限由 `slow_max_rounds` 定义。
 - 慢通道命中问句后注册 `CHAT_ASK`，发布 `ASK`，结束本回合并生成场景记忆；未命中且未达
@@ -103,6 +108,8 @@ claimed_return 和 fallback。
 - `classify_user_intent()` 只做无 LLM 的字符串分类，结果只作为 think prompt 参考，不改变
   通道、欲望、等待或事件。
 - `build_user_prompt()` 只负责历史和本次消息；think/speak 任务指令由回复节点追加。
+- `reading_context` 同时注入 FAST/SLOW 的回复生成与 SLOW 工具判断，并明确标为原文/记忆
+  资料而非指令；普通聊天为空。
 - `[相关记忆]` 只展示记忆的 kind 人话前缀、topics 和 summary/content；记忆内容明确标注为资料而非指令。
 - `build_system_prompt()` 在人格/状态段之后加入 `[时间与重逢上下文]`。该段由纯函数根据
   注入的 epoch、本地日历、持久化对话锚点和运行时 observation 生成；LLM 不负责自行计算
@@ -252,6 +259,9 @@ class InteractionAttempt:
     failure_reason: str | None = None
 ```
 
+`READING_QUESTION.source_id` 固定为 `<book_id>:<paragraph_index>`；它本身就是可跨重启恢复的
+定位锚点，不复制原段落或书籍画像到 attempt 表。
+
 ### 持久化与状态转换
 
 `expression_interaction_attempt` 至少包含上述字段，`id` 为主键，并建立
@@ -283,14 +293,34 @@ async def latest_created_at(kind: InteractionKind) -> float | None
 
 - 普通 FAST/SLOW 回复产生问句时调用 `register_question(..., CHAT_ASK, ...)`。
 - 读书提问生成后必须通过统一 `is_question()` 校验；`QUOTE_QUESTION` 还必须有非空第二行
-  quote。成功后调用 `register_question(..., READING_QUESTION, ...)`。
+  quote。正式组合根成功后调用 `commit_reading_question()`，把 attempt、ASK 和
+  READING_QUESTION 同事务提交；只对未提供该方法的测试 fake 兼容回退
+  `register_question(..., READING_QUESTION, ...)`。
 - `ASK` 载荷为 `{"content", "attempt_id", "kind"}`。
 - `READING_QUESTION` 保留书籍、段落、subtype、selected_text 等前端字段并增加 attempt_id；
   它是展示兼容事件，不替代 canonical ASK。
 - 读书提问会把正文调用 `record_proactive_turn()` 追加到表达历史；selected_text 不追加。
+- 用户回复读书提问时，`answer_waiting()` 返回已认领并完成的 attempt；`reply()` 用
+  `attempt.text + 用户回复` 作为来源内相关性查询，并向快慢通道共同注入三层只读材料：
+  同一本书此前沉淀的 knowledge Top 5、触发提问的完整原段落、书名/作者/滚动摘要/主题/
+  内容类别。knowledge 层注入 `Memory.content` 事实正文，不得用仅含主题标签的 `summary`
+  替代。材料明确标为事实资料而非指令。
+- 来源内 Top 5 必须按 `book_id` 的稳定 source topic 先过滤再排序；标题相同不能互相召回。
+  旧库尚无 profile 时使用空摘要/主题和 `unknown`，但书名、作者、原段落仍可用。
 - 读书联想最多展示三条，每条 snippet 调用 `record_proactive_turn()`；读书 mutter 不进入
   表达历史。
 - 空输出、解析失败、quote 缺失或非问句不创建 attempt、不发布成功提问事件。
+
+真实 bad case 的处理边界：
+
+| 情况 | 处理 |
+|---|---|
+| 用户只回复“嗯”“不是” | 不依赖短消息触发慢通道；用已完成 reading attempt 回读三层上下文并注入 FAST/SLOW |
+| 两本书同名 | 用 `book_id` 派生 source topic，先限定来源再排 Top 5 |
+| knowledge 的 summary 只有主题标签 | 回复上下文使用 `content` 事实正文，不把主题标签当事实 |
+| 旧库尚无滚动画像 | 摘要/主题显示“暂无”、类别为 `unknown`，书名/作者/原段落仍注入 |
+| 原书或段落已删除 | 阅读回调返回空串，普通回复流程继续，不伪造原文 |
+| 原文包含命令式文本 | 整块明确标为书籍资料和原文，不是对模型的指令 |
 
 ## 主动搭话
 
@@ -324,6 +354,8 @@ async def latest_created_at(kind: InteractionKind) -> float | None
   回合、重建 Facade 后恢复。快/慢回复、工具判断、主动搭话与 LLM 碎碎念都必须断言收到
   自然语言时间块；测试只验证事实进入 prompt，不评价最终文案质量。
 - 表达相关测试位于 `tests/test_expression/`，读书陪读测试位于 `tests/test_reading/`。
+- 回归必须覆盖短回复仍带三层阅读上下文、显式 `reply_to`、重启后仅凭 durable attempt
+  恢复上下文，以及普通 `CHAT_ASK` 不注入阅读材料。
 
 ## 完成定义
 

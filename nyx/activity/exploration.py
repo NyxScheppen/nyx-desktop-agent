@@ -18,13 +18,14 @@ from nyx.enums import DesireType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.event import SECONDS_PER_HOUR
 from nyx.llm.client import LlmClient
-from nyx.memory.facade import MemoryFacade
+from nyx.memory.facade import MemoryFacade, build_source_topic
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, LongTermDesire
 
 _logger = logging.getLogger(__name__)
 
 _FETCH_COUNT = 3  # 抓正文的检索结果条数（decision，可推翻）
+_SOURCE_TEXT_MAX_CHARS = 6000
 
 
 def should_explore(last_explored_at: float, rate_limit_hours: int, now: float) -> bool:
@@ -105,30 +106,96 @@ class Exploration:
         tool_calls = cast(list[dict[str, Any]], checkpoint["tool_calls"])
         cursor = int(checkpoint["cursor"])
         while cursor < min(len(raw_results), _FETCH_COUNT):
-            result = raw_results[cursor]
-            name, url, snippet = _result_parts(result)
-            if name:
-                content = snippet
-                if url:
-                    try:
-                        fetched = await self._call_tool(
-                            "web_fetch", {"url": url}, tool_calls
-                        )
-                        if isinstance(fetched, dict):
-                            text = cast(dict[str, Any], fetched).get("text")
-                            if isinstance(text, str) and text.strip():
-                                content = text
-                    except Exception:
-                        pass  # best-effort：抓正文失败不崩 run，snippet 兜底
-                findings.append(f"{name}：{content}")
+            pending = checkpoint.get("source_pending")
+            if not isinstance(pending, dict):
+                result = raw_results[cursor]
+                name, url, path, snippet = _result_parts(result)
+                pending = await self._prepare_source_pending(
+                    name,
+                    url,
+                    path,
+                    snippet,
+                    cursor,
+                    _correlation_id(activity),
+                    tool_calls,
+                )
+                checkpoint["source_pending"] = pending
+                await self._save_checkpoint(activity, checkpoint)
+            pending_map = cast(dict[str, Any], pending)
+            raw_knowledge = pending_map.get("knowledge", [])
+            knowledge = (
+                [
+                    cast(dict[str, str], item)
+                    for item in cast(list[object], raw_knowledge)
+                    if isinstance(item, dict)
+                ]
+                if isinstance(raw_knowledge, list)
+                else []
+            )
+            if knowledge:
+                await self._memory.remember_knowledge(
+                    knowledge, _correlation_id(activity)
+                )
+            finding = pending_map.get("finding")
+            if isinstance(finding, str) and finding:
+                findings.append(finding)
             cursor += 1
             checkpoint["cursor"] = cursor
+            checkpoint["source_pending"] = None
             await self._save_checkpoint(activity, checkpoint)
         if not findings:
             _logger.info(
                 "自由探索无 findings topic=%s（联网/本地均空）",
                 checkpoint["topic"],
             )
+
+    async def _prepare_source_pending(
+        self,
+        name: str,
+        url: str,
+        path: str,
+        snippet: str,
+        cursor: int,
+        correlation_id: str,
+        tool_calls: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not name:
+            return {"cursor": cursor, "finding": "", "knowledge": []}
+        content = snippet
+        source_kind = "web" if url else "local"
+        source_identifier = url or path
+        try:
+            if url:
+                fetched = await self._call_tool(
+                    "web_fetch", {"url": url}, tool_calls
+                )
+                if isinstance(fetched, dict):
+                    text = cast(dict[str, Any], fetched).get("text")
+                    if isinstance(text, str) and text.strip():
+                        content = text
+            elif path:
+                read = await self._call_tool(
+                    "file_io", {"action": "read", "path": path}, tool_calls
+                )
+                if isinstance(read, dict):
+                    text = cast(dict[str, Any], read).get("content")
+                    if isinstance(text, str) and text.strip():
+                        content = text
+        except Exception:
+            pass
+        bounded = content[:_SOURCE_TEXT_MAX_CHARS]
+        _profile, items = await self._memory.digest_source_block(
+            bounded, name, correlation_id
+        )
+        source_topic = build_source_topic(source_kind, source_identifier or name)
+        for item in items:
+            item["source_topic"] = source_topic
+            item["source_name"] = name
+        return {
+            "cursor": cursor,
+            "finding": f"{name}：{bounded}",
+            "knowledge": items,
+        }
 
     async def _call_tool(
         self, name: str, args: dict[str, Any], tool_calls: list[dict[str, Any]]
@@ -239,8 +306,8 @@ class Exploration:
         await self._store.update(activity)
 
 
-def _result_parts(result: Any) -> tuple[str, str, str]:
-    """一条检索结果 → (name, url, snippet)；无法解析返回 ('', '', '')。
+def _result_parts(result: Any) -> tuple[str, str, str, str]:
+    """一条检索结果 → (name, url, path, snippet)；无法解析返回空 tuple。
 
     兼容两种来源：web 结果 {title/name, url, snippet/content}、
     本地结果 {path, snippet}（local_search 只有 path+snippet，name 取文件名）。
@@ -249,6 +316,7 @@ def _result_parts(result: Any) -> tuple[str, str, str]:
         title = cast(str | None, result.get("title"))
         name_key = cast(str | None, result.get("name"))
         path_key = cast(str | None, result.get("path"))
+        path = str(path_key or "")
         url = str(cast(str | None, result.get("url")) or "")
         snippet = str(
             cast(str | None, result.get("snippet"))
@@ -258,13 +326,13 @@ def _result_parts(result: Any) -> tuple[str, str, str]:
         name = (
             title
             or name_key
-            or (_basename(path_key) if path_key else "")
+            or (_basename(path) if path else "")
             or (_domain(url) if url else "")
         )
-        return name, url, snippet
+        return name, url, path, snippet
     if isinstance(result, str):
-        return result, "", ""
-    return "", "", ""
+        return result, "", "", ""
+    return "", "", "", ""
 
 
 def _basename(path: str) -> str:
@@ -290,6 +358,11 @@ def _exploration_checkpoint(activity: Activity) -> dict[str, Any]:
         "cursor": int(checkpoint.get("cursor", 0)),
         "findings": _str_list(checkpoint.get("findings")),
         "tool_calls": _dict_list(checkpoint.get("tool_calls")),
+        "source_pending": (
+            checkpoint.get("source_pending")
+            if isinstance(checkpoint.get("source_pending"), dict)
+            else None
+        ),
         "summary_done": bool(checkpoint.get("summary_done")),
         "judged": judged if isinstance(judged, dict) else None,
         "sink_done": bool(checkpoint.get("sink_done")),

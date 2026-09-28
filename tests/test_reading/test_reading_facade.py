@@ -97,11 +97,15 @@ def _desire_values() -> list[DesireValue]:
     ]
 
 
-def _memory(mid: str = "m1", content: str = "生命的意义在于寻找") -> Memory:
+def _memory(
+    mid: str = "m1",
+    content: str = "生命的意义在于寻找",
+    summary: str = "",
+) -> Memory:
     return Memory(
         id=mid, created_at=0.0, content=content,
         kind=MemoryKind.KNOWLEDGE,
-        summary="", freshness=1.0, type=MemoryType.SHORT_TERM,
+        summary=summary, freshness=1.0, type=MemoryType.SHORT_TERM,
     )
 
 
@@ -130,6 +134,7 @@ class _FakeMemory:
         self._results = results
         self.search_calls = 0
         self.remembered: list[tuple[str, str, str]] = []
+        self.source_queries: list[tuple[str, str, int]] = []
 
     async def search(self, query: str) -> list[Memory]:
         self.search_calls += 1
@@ -139,6 +144,35 @@ class _FakeMemory:
         self, content: str, summary: str, correlation_id: str
     ) -> None:
         self.remembered.append((content, summary, correlation_id))
+
+    async def digest_source_block(
+        self,
+        text: str,
+        source_name: str,
+        correlation_id: str,
+        *,
+        author: str = "",
+        profile: dict[str, object] | None = None,
+    ) -> tuple[dict[str, object], list[dict[str, str]]]:
+        return (
+            {
+                "summary": text[:20],
+                "themes": [],
+                "content_category": "unknown",
+            },
+            [],
+        )
+
+    async def remember_knowledge(
+        self, items: list[dict[str, str]], correlation_id: str
+    ) -> None:
+        return None
+
+    async def search_source(
+        self, query: str, source_topic: str, limit: int = 5
+    ) -> list[Memory]:
+        self.source_queries.append((query, source_topic, limit))
+        return list(self._results[:limit])
 
 
 class _FakeBus:
@@ -1527,6 +1561,38 @@ async def test_add_user_note_missing_book_raises(
             await facade.add_user_note("no-book", None, "笔记", None)
     finally:
         await database.conn.close()
+
+
+async def test_build_reply_context_contains_three_scoped_layers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = _FakeMemory([_memory(content="旧事实正文", summary="旧事实主题")])
+    facade, database, *_ = await _note_facade(
+        monkeypatch,
+        [Segment(text="触发问题的完整原段落", is_chapter_start=True)],
+        memory=memory,
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        await facade._store.update_memory_state(
+            book.id,
+            {
+                "profile": {
+                    "summary": "滚动摘要",
+                    "themes": ["成长"],
+                    "content_category": "fiction",
+                }
+            },
+        )
+        context = await facade.build_reply_context(f"{book.id}:1", "问题\n嗯")
+    finally:
+        await database.close()
+    assert "旧事实正文" in context
+    assert "旧事实主题" not in context
+    assert "触发问题的完整原段落" in context
+    assert "测试书" in context and "测试作者" in context
+    assert "滚动摘要" in context and "fiction" in context
+    assert memory.source_queries[0][0] == "问题\n嗯"
 
 
 async def test_add_user_note_missing_paragraph_raises(

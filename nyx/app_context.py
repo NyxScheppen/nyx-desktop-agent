@@ -291,6 +291,7 @@ async def build_app_context(
     reflection_runner: (
         Callable[[str | None], Awaitable[ReflectionOutcome | None]] | None
     ) = None
+    reading_context_reader: Callable[[str, str], Awaitable[str]] | None = None
     observation_reader: Callable[[], Awaitable[dict[str, str]]] | None = None
     return_context_owner: _App | None = None
 
@@ -323,6 +324,11 @@ async def build_app_context(
         if return_context_owner is None:
             raise RuntimeError("runtime return context 尚未绑定")
         return_context_owner.release_return_context(claim)
+
+    async def read_reading_context(source_id: str, query: str) -> str:
+        if reading_context_reader is None:
+            return ""
+        return await reading_context_reader(source_id, query)
 
     prompt_dir = Path(
         os.environ.get("NYX_CANON_DIR", Path(__file__).parent / "prompts")
@@ -375,6 +381,7 @@ async def build_app_context(
         claim_return=claim_return,
         finish_return=finish_return,
         release_return=release_return,
+        reading_context_reader=read_reading_context,
     )
     reading = ReadingFacade(
         ReadingStore(db),
@@ -387,6 +394,7 @@ async def build_app_context(
         canon,
         expression,
     )
+    reading_context_reader = reading.build_reply_context
     app = _App(
         bus,
         inner_life,

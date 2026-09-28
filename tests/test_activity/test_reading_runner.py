@@ -20,6 +20,7 @@ class _FakeMaterialStore:
         self.append_calls = 0
         self.advance_calls = 0
         self.read_chars = 0
+        self.memory_state: dict[str, Any] = {}
 
     async def get_fragments(self, path: str) -> list[str]:
         return self.fragments
@@ -34,6 +35,14 @@ class _FakeMaterialStore:
 
     async def get_by_path(self, path: str) -> Material | None:
         return None
+
+    async def get_memory_state(self, path: str) -> dict[str, Any]:
+        return dict(self.memory_state)
+
+    async def update_memory_state(
+        self, path: str, state: dict[str, Any], now: float
+    ) -> None:
+        self.memory_state = dict(state)
 
 
 class _FakeLlm:
@@ -67,11 +76,33 @@ class _FakeEvaluator:
 class _FakeMemory:
     def __init__(self) -> None:
         self.calls = 0
+        self.digest_calls = 0
+        self.items: list[dict[str, str]] = []
+
+    async def digest_source_block(
+        self,
+        text: str,
+        source_name: str,
+        correlation_id: str,
+        *,
+        author: str = "",
+        profile: dict[str, object] | None = None,
+    ) -> tuple[dict[str, object], list[dict[str, str]]]:
+        self.digest_calls += 1
+        return (
+            {
+                "summary": f"读到 {text[-1:]}",
+                "themes": ["主题"],
+                "content_category": "unknown",
+            },
+            [{"topic": "主题", "content": f"事实：{text}"}],
+        )
 
     async def remember_knowledge(
         self, items: list[dict[str, str]], correlation_id: str
     ) -> None:
         self.calls += 1
+        self.items = items
         return None
 
 
@@ -232,3 +263,70 @@ async def test_resume_skips_finalized_note_and_knowledge(tmp_path: Path) -> None
     assert llm.calls == []
     assert write_file.calls == 0
     assert memory.calls == 0
+
+
+async def test_each_chunk_persists_profile_and_source_before_advancing(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "book.txt"
+    source.write_text("a" * 6001, encoding="utf-8")
+    material = _FakeMaterialStore()
+    memory = _FakeMemory()
+
+    async def update(activity: Activity) -> None:
+        return None
+
+    runner = ReadingActivityRunner(
+        cast(Any, material),
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        cast(MemoryFacade, memory),
+        _noop_write,
+        update,
+    )
+    result = await runner.run(_activity(str(source), {}), str(source))
+
+    assert result["read_chars"] == 6000
+    assert material.memory_state["processed_to"] == 6000
+    assert material.memory_state["pending"] is None
+    assert memory.items[0]["source_topic"].startswith("material:")
+    assert material.advance_calls == 1
+
+
+async def test_pending_digest_is_reused_without_second_extraction(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "book.txt"
+    source.write_text("0123456789", encoding="utf-8")
+    material = _FakeMaterialStore()
+    material.memory_state = {
+        "processed_to": 0,
+        "profile": {},
+        "pending": {
+            "to": 10,
+            "profile": {
+                "summary": "已整理",
+                "themes": [],
+                "content_category": "unknown",
+            },
+            "knowledge": [{"topic": "t", "content": "c"}],
+        },
+    }
+    memory = _FakeMemory()
+
+    async def update(activity: Activity) -> None:
+        return None
+
+    runner = ReadingActivityRunner(
+        cast(Any, material),
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        cast(MemoryFacade, memory),
+        _noop_write,
+        update,
+    )
+    await runner.run(_activity(str(source), {}), str(source))
+
+    assert memory.digest_calls == 0
+    assert memory.calls == 1
+    assert material.memory_state["processed_to"] == 10

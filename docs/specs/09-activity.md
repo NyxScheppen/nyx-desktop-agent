@@ -112,19 +112,38 @@
     "advanced_to": 0,
     "finalized": false,
     "note_path": null,
-    "knowledge_extracted": false,
     "book": null,
     "note": null,
     "final_note": null
   }
   ```
 
+  `material.memory_state` 另持久化跨 activity 的原文沉淀状态：
+
+  ```json
+  {
+    "processed_to": 0,
+    "profile": {"summary": "", "themes": [], "content_category": "unknown"},
+    "pending": null
+  }
+  ```
+
 - [ ] `ReadingActivityRunner.run(activity, source)` 只读取真实文件的 `[read_chars, read_chars + 6000)`，缺少 `source` 直接失败，禁止让 LLM 凭空编造读书内容。
-- [ ] 单块 LLM 结果先保存 `book`/`note`，再至多一次追加 note fragment、至多一次推进 material `read_chars`；恢复时跳过已经提交或推进的副作用。
+- [ ] 单块 LLM 结果先保存 `book`/`note`；随后以本次至多 6000 字符原文更新滚动 profile
+  并提取知识。提取结果先写入 `material.memory_state.pending`，再调用
+  `remember_knowledge`，成功后推进 `processed_to`、采纳 profile 并清空 pending；最后才追加
+  note fragment 和推进 material `read_chars`。恢复时复用 pending，不重复原文提取 LLM。
 - [ ] 未读完整本但成功读完一块时返回 `completed=False`、实际 `read_chars` 与 `total_chars`，并设置 `goal_signal=None`。
-- [ ] 读到文件末尾时只执行一次 finalize：聚合片段得到 `final_note`，写入 `notes/<safe-filename>-<path-hash>.md`，保存 `note_path`/`finalized=true`，再只执行一次 knowledge 提取。
+- [ ] 读到文件末尾时只执行一次 finalize：聚合片段得到 `final_note`，写入
+  `notes/<safe-filename>-<path-hash>.md`，保存 `note_path`/`finalized=true`；知识已随每块
+  沉淀，不再在整本完成后重扫全文。
 - [ ] 中间片段笔记使用 `note`，整本聚合笔记使用 `final_note`；恢复 finalize 必须返回终局笔记，不得把片段笔记当成完整笔记。
-- [ ] knowledge 提取最多处理 16 个 6000 字块、最多沉淀 5 条去重后的 `{topic, content}`；单次提取或入库失败为 best-effort，不阻塞读书活动完成。
+- [ ] 每块最多沉淀 5 条 `{topic, content, source_topic, source_name}`，来源 topic 按材料绝对
+  路径稳定生成。最后不足 6000 字符的块照常沉淀。提取结构非法或记忆写入失败时不得推进
+  `processed_to` / `read_chars`；沿用现有活动失败状态，下一次读同一 material 时重试，
+  不把未沉淀的原文静默标成已读。
+- [ ] 崩溃发生在提取后、记忆写入前时恢复复用 pending；发生在记忆写入后、checkpoint
+  推进前时允许重放 `remember_knowledge`，由既有 kind-scoped 去重保证不新增重复记忆。
 
 #### Creation checkpoint
 
@@ -159,6 +178,7 @@
     "cursor": 0,
     "findings": [],
     "tool_calls": [],
+    "source_pending": null,
     "summary_done": false,
     "judged": null,
     "sink_done": false
@@ -166,10 +186,27 @@
   ```
 
 - [ ] `searching` 调用 web 或 local search，并保存结果与工具调用；`reading_results` 从 `cursor` 继续处理最多 3 条结果，每条完成后追加 finding、记录 tool call 并推进 cursor；`summarizing` 调用 LLM 生成判断结果；`sinking` 只执行一次长期欲望与 knowledge 回写；`completed` 构造最终结果。
+- [ ] web 结果用 `web_fetch` 取正文；local 结果不能只使用搜索 snippet，必须用既有
+  `file_io(action="read")` 读取文件。进入 finding / 原文沉淀 prompt 的单条正文最多 6000
+  字符，来源分别用 URL / 绝对路径生成 `web:` / `local:` topic。
+- [ ] 每条搜索结果的 `{finding, knowledge}` 先保存在 `source_pending`，再写 knowledge
+  并推进 cursor；崩溃恢复复用 pending，记忆已写但 cursor 未推进时由既有去重吸收重放。
+  正文读取失败才回退 snippet。
 - [ ] `FREE_EXPLORATION` 被打断后恢复同一 activity id，不重复抓取 cursor 之前的结果、不重复成功 tool call、不重复 `add_long_term` 或 `remember_knowledge`。
 - [ ] `web_enabled=false` 时只调用 `local_search`；联网搜索为空时可回退 local search；单条 `web_fetch` 失败记录失败 tool call 并使用 snippet，不使探索崩溃。
 - [ ] 探索 LLM 调用传递活动 correlation id，`output_type="exploration_finalize"` 的输出完成后紧跟 `evaluator.evaluate`；总结 JSON 非对象时返回可序列化的空结果。
 - [ ] 探索最终结果至少包含 `type`、`outcome`、`summary`、`core_discovery`、`knowledge`、`new_topics`、`strong_new_topics`、`findings`、`tools`。
+
+真实 bad case 的处理边界：
+
+| 情况 | 处理 |
+|---|---|
+| 材料原文提取或 knowledge 写入失败 | 不推进 `processed_to` / `read_chars`，活动按既有失败语义结束，后续续读重试 |
+| 材料 knowledge 已写、checkpoint 未推进 | 重放 pending，由同一 `material:` 来源内去重吸收 |
+| web fetch / local file read 失败 | 记录失败 tool call，仅此时回退搜索 snippet |
+| local search 只返回短 snippet | 使用现有 `file_io(read)` 读取真实文件，不能把 snippet 当全文 |
+| 单条网页或本地正文超过 6000 字符 | 本轮仅取前 6000 字符进入 finding 与沉淀，保持现有每条搜索结果一次处理边界 |
+| 探索 knowledge 已写、cursor 未推进 | 重放 `source_pending`，按 `web:` / `local:` 来源内去重 |
 
 ### 活动类型执行
 
@@ -232,7 +269,8 @@
 - [ ] `tests/test_activity/test_activity_lifecycle.py`：goal 判定、`goal_signal` 覆盖、启动/完成/失败/打断事件、correlation 透传、启动清理与欲望状态回写。
 - [ ] `tests/test_activity/test_activity_facade.py`：空槽默认、欲望映射、精力休息、后台启动、`activity_end` content、读书部分进展的 `goal_met=None`、完整读书满足、创作 checkpoint 恢复、注册表落盘、主题召回与历史创作参考、同块恢复与跨块不恢复、读书知识提取。
 - [ ] `tests/test_activity/test_llm_result.py` / `test_activity_paths.py`：活动结果非空字符串校验、未知输出类型拒绝、安全文件名长度和同名创作唯一路径。
-- [ ] `tests/test_activity/test_reading_runner.py`：分块读取、fragment/advance 去重、终局笔记与 knowledge finalize 去重、恢复返回 `final_note`。
+- [ ] `tests/test_activity/test_reading_runner.py`：分块读取、fragment/advance 去重、每块知识与
+  profile、pending 恢复、写入后重放去重锚点、末块 flush、恢复返回 `final_note`。
 - [ ] `tests/test_activity/test_exploration.py`：所有探索阶段 checkpoint、local/web 搜索分支、fetch 失败兜底、cursor 恢复、summary 评估、sink 去重、最终结果结构。
 - [ ] `tests/test_activity/test_observe.py`：presence 的 30 秒/5 分钟边界、窗口标题不参与判定，以及观察摘要四种组合。
 - [ ] `tests/test_activity/test_screen.py`：抓屏/视觉描述成功路径及 best-effort 失败路径。

@@ -315,6 +315,7 @@ def _new_facade(
     activity: _FakeActivity | None = None,
     interaction_store: ExpressionInteractionStore | None = None,
     return_state: _ReturnState | None = None,
+    reading_context_reader: Any = None,
 ) -> tuple[
     ExpressionFacade,
     _FakeLlm,
@@ -352,6 +353,7 @@ def _new_facade(
         claim_return=(return_state.claim if return_state is not None else None),
         finish_return=(return_state.finish if return_state is not None else None),
         release_return=(return_state.release if return_state is not None else None),
+        reading_context_reader=reading_context_reader,
     )
     return facade, fake_llm, evaluator, memory, inner_life, bus
 
@@ -1302,6 +1304,41 @@ async def test_answer_waiting_releases_claim_when_desire_settlement_fails() -> N
         assert attempt.answer_event_id is None
     finally:
         await database.close()
+
+
+async def test_reading_question_reply_injects_context_on_fast_short_reply() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = ExpressionInteractionStore(database)
+        await store.create(
+            InteractionAttempt(
+                id="reading-1",
+                kind=InteractionKind.READING_QUESTION,
+                source_id="book-1:7",
+                correlation_id="book-1:7",
+                text="你觉得她为什么没有离开？",
+                created_at=1.0,
+                expires_at=time.time() + 1000.0,
+            )
+        )
+        calls: list[tuple[str, str]] = []
+
+        async def read_context(source_id: str, query: str) -> str:
+            calls.append((source_id, query))
+            return "[读书上下文]\n原段落：她留了下来。"
+
+        facade, llm, *_ = _new_facade(
+            energy=80.0,
+            arousal=0.0,
+            interaction_store=store,
+            reading_context_reader=read_context,
+        )
+        await facade.reply("嗯", "reply-1")
+        reply_call = next(call for call in llm.calls if call[0] == "reply")
+    finally:
+        await database.close()
+    assert calls == [("book-1:7", "你觉得她为什么没有离开？\n嗯")]
+    assert "[读书上下文]" in _user_content(reply_call[1])
 
 
 async def test_initiate_chat_sets_pending_desire() -> None:

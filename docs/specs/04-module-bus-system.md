@@ -372,7 +372,9 @@ CLOCK_TICK + REFLECTION_CHECK     -> inner_life.reflection_check
 - `api.routes` 只依赖可测试的 app/context 类型，不参与订阅；
 - `_App` 只作为组合根内部对象，不传入 Facade。
 
-组合根使用可检查闭包延迟绑定 inner-life 和 runtime observation 回调；未绑定时抛出带上下文的 `RuntimeError`，不得使用 `holder[0]` 形式的可变列表占位。
+组合根使用可检查闭包延迟绑定 inner-life、runtime observation 和读书提问回复上下文回调；
+未绑定的必要依赖抛出带上下文的 `RuntimeError`，可选的阅读上下文在绑定前返回空串。不得使用
+`holder[0]` 形式的可变列表占位，也不得为 ExpressionFacade 与 ReadingFacade 增加直接循环依赖。
 
 组合根同时保存 presence 的进程内运行时快照：是否已经建立基线、当前/上一个 presence、
 presence 变化时间、离开起点、最近一次归来时间与离开时长，以及尚未被自然表达消费的归来事实。

@@ -9,7 +9,9 @@ books 再批量插 paragraphs（`executemany`），任一失败整体回滚，�
 `content_hash` 靠 v8 唯一索引兜底，插入撞 UNIQUE 时回滚并返回已入库的那本。
 """
 
+import json
 import time
+from typing import Any, cast
 from uuid import uuid4
 
 import aiosqlite
@@ -160,6 +162,29 @@ class ReadingStore:
             )
             rows = await cursor.fetchall()
             return [_row_to_paragraph(r) for r in rows]
+
+    async def get_memory_state(self, book_id: str) -> dict[str, Any]:
+        """Read one book's durable source-memory checkpoint."""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT memory_state FROM books WHERE id = ?", (book_id,)
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return {}
+        value = json.loads(row["memory_state"])
+        return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+
+    async def update_memory_state(
+        self, book_id: str, state: dict[str, Any]
+    ) -> None:
+        """Persist one book's source-memory checkpoint."""
+        async with self._db.lock:
+            await self._db.conn.execute(
+                "UPDATE books SET memory_state = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(state, ensure_ascii=False), time.time(), book_id),
+            )
+            await self._db.conn.commit()
 
     async def get_progress(self, book_id: str) -> ReadingProgress | None:
         """读进度单行；无记录返回 None（默认值由 facade 补）。"""

@@ -1,5 +1,4 @@
 import asyncio
-import inspect
 import json
 import logging
 import time
@@ -12,27 +11,17 @@ from nyx.activity.material_store import MaterialStore
 from nyx.activity.paths import path_hash_suffix, sanitize_filename
 from nyx.eval.evaluator import Evaluator
 from nyx.llm.client import LlmClient
-from nyx.memory.facade import MemoryFacade
+from nyx.memory.facade import MemoryFacade, build_source_topic
 from nyx.types import Activity
 
 _logger = logging.getLogger(__name__)
 
 _READ_CONTEXT_CHARS = 6000
-_KNOWLEDGE_MAX_POINTS = 5
-_KNOWLEDGE_MAX_CHUNKS = 16
-
 _ACTIVITY_SYSTEM = (
     "你是尼克斯，正在读书。只输出 JSON，键："
     "book（书名，非空字符串）、note（本次读书笔记，非空字符串）。"
     "note 自然承接已读片段，不重复概括已读部分、只续写本次新读内容；"
     "note 正文里不要写「上次读到第 X 字」这类位置字样。"
-)
-
-_KNOWLEDGE_SYSTEM = (
-    "你是尼克斯，正在阅读一本书。从下面的文本中提取 1-5 个客观、可复用的知识点"
-    "（事实、概念、方法）。只输出 JSON，键：points（数组，每项 {topic, content}，"
-    "topic 是主题/概念名、content 是一句完整自洽的知识陈述）。"
-    "没有值得提取的知识就输出 {\"points\": []}。"
 )
 
 _AGGREGATE_SYSTEM = (
@@ -71,7 +60,6 @@ def _reading_checkpoint(
             "advanced_to": read_from,
             "finalized": False,
             "note_path": None,
-            "knowledge_extracted": False,
         }
     checkpoint["read_from"] = _as_int(checkpoint.get("read_from"), 0)
     checkpoint["read_to"] = min(
@@ -122,11 +110,9 @@ class ReadingActivityRunner:
         chunk = content[read_chars:read_to]
         filename = str(activity.progress.get("filename") or Path(source).name)
         if chunk == "":
-            full = await self._finalize(
+            return await self._finalize(
                 activity, checkpoint, source, filename, len(content)
             )
-            await self._extract_knowledge_once(activity, checkpoint, filename, content)
-            return full
 
         prior = await self._material_store.get_fragments(source)
         prior_block = ""
@@ -150,6 +136,14 @@ class ReadingActivityRunner:
             checkpoint["book"] = str(result.get("book", ""))
             checkpoint["note"] = str(result.get("note", ""))
             await self._save_checkpoint(activity, checkpoint)
+        await self._sediment_chunk(
+            activity,
+            checkpoint,
+            source,
+            filename,
+            chunk,
+            read_to,
+        )
         new_read_chars = read_to
         if not bool(checkpoint.get("fragment_committed")):
             await self._material_store.append_fragment(
@@ -172,7 +166,6 @@ class ReadingActivityRunner:
             activity, checkpoint, source, filename, len(content)
         )
         activity.progress["goal_signal"] = True
-        await self._extract_knowledge_once(activity, checkpoint, filename, content)
         full["read_chars"] = new_read_chars
         full["total_chars"] = len(content)
         return full
@@ -243,18 +236,79 @@ class ReadingActivityRunner:
             "total_chars": content_len,
         }
 
-    async def _extract_knowledge_once(
+    async def _sediment_chunk(
         self,
         activity: Activity,
         checkpoint: dict[str, Any],
+        source: str,
         filename: str,
-        content: str,
+        chunk: str,
+        read_to: int,
     ) -> None:
+        state = await self._material_store.get_memory_state(source)
+        processed_to = _as_int(state.get("processed_to"), 0)
         if bool(checkpoint.get("knowledge_extracted")):
+            if processed_to < read_to:
+                state["processed_to"] = read_to
+                state.setdefault(
+                    "profile",
+                    {
+                        "summary": "",
+                        "themes": [],
+                        "content_category": "unknown",
+                    },
+                )
+                state["pending"] = None
+                await self._material_store.update_memory_state(
+                    source, state, time.time()
+                )
             return
-        await self.extract_knowledge(activity, filename, content)
-        checkpoint["knowledge_extracted"] = True
-        await self._save_checkpoint(activity, checkpoint)
+        if processed_to >= read_to:
+            return
+        raw_pending = state.get("pending")
+        if isinstance(raw_pending, dict):
+            pending = cast(dict[str, Any], raw_pending)
+        else:
+            raw_profile = state.get("profile")
+            profile = (
+                cast(dict[str, object], raw_profile)
+                if isinstance(raw_profile, dict)
+                else None
+            )
+            next_profile, items = await self._memory.digest_source_block(
+                chunk,
+                filename,
+                _correlation_id(activity),
+                profile=profile,
+            )
+            source_topic = build_source_topic("material", source)
+            for item in items:
+                item["source_topic"] = source_topic
+                item["source_name"] = filename
+            pending = {
+                "to": read_to,
+                "profile": next_profile,
+                "knowledge": items,
+            }
+            state["pending"] = pending
+            await self._material_store.update_memory_state(
+                source, state, time.time()
+            )
+        raw_items = pending.get("knowledge", [])
+        items = [
+            cast(dict[str, str], item)
+            for item in cast(list[object], raw_items)
+            if isinstance(item, dict)
+        ] if isinstance(raw_items, list) else []
+        if items:
+            await self._memory.remember_knowledge(
+                items, _correlation_id(activity)
+            )
+        state["processed_to"] = _as_int(pending.get("to"), read_to)
+        raw_profile = pending.get("profile")
+        state["profile"] = raw_profile if isinstance(raw_profile, dict) else {}
+        state["pending"] = None
+        await self._material_store.update_memory_state(source, state, time.time())
 
     async def _aggregate_note(
         self, activity: Activity, filename: str, fragments: list[str]
@@ -281,78 +335,3 @@ class ReadingActivityRunner:
         if not isinstance(note, str) or not note:
             raise ValueError("聚合笔记 JSON 缺 note 或非空字符串")
         return note
-
-    async def extract_knowledge(
-        self, activity: Activity, filename: str, content: str
-    ) -> None:
-        items: list[dict[str, str]] = []
-        seen: set[str] = set()
-        budget_chars = _KNOWLEDGE_MAX_CHUNKS * _READ_CONTEXT_CHARS
-        for start in range(0, min(len(content), budget_chars), _READ_CONTEXT_CHARS):
-            chunk = content[start : start + _READ_CONTEXT_CHARS]
-            if not chunk.strip():
-                continue
-            for point in await self._extract_knowledge_points(
-                activity, filename, chunk
-            ):
-                if len(items) >= _KNOWLEDGE_MAX_POINTS:
-                    break
-                content_pt = point.get("content", "")
-                if content_pt and content_pt not in seen:
-                    seen.add(content_pt)
-                    items.append(point)
-            if len(items) >= _KNOWLEDGE_MAX_POINTS:
-                break
-        if items:
-            try:
-                remember = self._memory.remember_knowledge
-                if "source_name" in inspect.signature(remember).parameters:
-                    await remember(
-                        items,
-                        _correlation_id(activity),
-                        source_name=filename,
-                    )
-                else:
-                    await remember(items, _correlation_id(activity))
-            except Exception:
-                _logger.exception("知识点入库失败 activity_id=%s", activity.id)
-
-    async def _extract_knowledge_points(
-        self, activity: Activity, filename: str, chunk: str
-    ) -> list[dict[str, str]]:
-        try:
-            output = await self._llm.complete(
-                [
-                    {"role": "system", "content": _KNOWLEDGE_SYSTEM},
-                    {"role": "user", "content": f"书名：{filename}\n正文：\n{chunk}"},
-                ],
-                module="activity",
-                output_type="knowledge",
-                correlation_id=_correlation_id(activity),
-                json_mode=True,
-            )
-            await self._evaluator.evaluate(output)
-            data: Any = json.loads(output.content)
-            if not isinstance(data, dict):
-                return []
-            raw_points = cast(dict[str, Any], data).get("points")
-            if not isinstance(raw_points, list):
-                return []
-            items: list[dict[str, str]] = []
-            for point in cast(list[Any], raw_points)[:_KNOWLEDGE_MAX_POINTS]:
-                if not isinstance(point, dict):
-                    continue
-                point_map = cast(dict[str, Any], point)
-                topic = point_map.get("topic")
-                content_pt = point_map.get("content")
-                if isinstance(content_pt, str) and content_pt.strip():
-                    items.append(
-                        {
-                            "topic": topic if isinstance(topic, str) else "",
-                            "content": content_pt.strip(),
-                        }
-                    )
-            return items
-        except Exception:
-            _logger.exception("知识点提取失败 activity_id=%s", activity.id)
-            return []

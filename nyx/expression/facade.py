@@ -59,6 +59,9 @@ class ExpressionFacade:
         claim_return: Callable[[], dict[str, float] | None] | None = None,
         finish_return: Callable[[dict[str, float] | None], None] | None = None,
         release_return: Callable[[dict[str, float] | None], None] | None = None,
+        reading_context_reader: (
+            Callable[[str, str], Awaitable[str]] | None
+        ) = None,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -76,6 +79,7 @@ class ExpressionFacade:
         self._claim_return = claim_return
         self._finish_return = finish_return
         self._release_return = release_return
+        self._reading_context_reader = reading_context_reader
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._last_slow_at = 0.0
         # 待用户回应状态：问句（wait_user）与搭话（被忽略回灌）各一组。
@@ -312,7 +316,16 @@ class ExpressionFacade:
         now = time.time()
         try:
             # 用户说话 = 回应了之前的问句/搭话；清等待状态（不判断是否真在答）。
-            await self.answer_waiting(correlation_id, reply_to)
+            answered = await self.answer_waiting(correlation_id, reply_to)
+            reading_context = ""
+            if (
+                answered is not None
+                and answered.kind is InteractionKind.READING_QUESTION
+                and self._reading_context_reader is not None
+            ):
+                reading_context = await self._reading_context_reader(
+                    answered.source_id, f"{answered.text}\n{msg}"
+                )
             if self._interaction_store is None:
                 self._waiting_user = False
                 self._ask_cid = None
@@ -342,6 +355,7 @@ class ExpressionFacade:
                 "tool_outputs": [],
                 "intent": classify_user_intent(msg),
                 "temporal_context": temporal_context,
+                "reading_context": reading_context,
                 "claimed_return": claimed_return,
                 "fallback": False,
             }

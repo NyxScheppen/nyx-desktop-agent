@@ -83,14 +83,6 @@ _READING_JSON = json.dumps({"book": "骑士团历史", "note": "读到了第三�
 _CREATION_JSON = json.dumps({"title": "小狐狸的日记", "content": "今天也努力了"})
 _PLAN_JSON = json.dumps({"focus": "骑士团", "done": False})
 _NOTE_JSON = json.dumps({"note": "完整读书笔记"})
-_KNOWLEDGE_JSON = json.dumps(
-    {
-        "points": [
-            {"topic": "骑士团", "content": "成立于 1147 年"},
-            {"topic": "纪律", "content": "严守教规"},
-        ]
-    }
-)
 _EXPLORATION_FINALIZE_JSON = json.dumps({
     "summary": "弄懂了量子退相干的机制",
     "core_discovery": "退相干来自系统与环境纠缠",
@@ -182,37 +174,6 @@ class _FakeLlm:
             model="fake",
             content=content,
             correlation_id=correlation_id,
-        )
-
-
-class _KnowledgeLlm(_FakeLlm):
-    """output_type='knowledge' 返回知识点 JSON，其余走默认。"""
-
-    async def complete(
-        self,
-        messages: list[LlmMessage],
-        *,
-        module: str,
-        output_type: str,
-        correlation_id: str,
-        json_mode: bool = False,
-    ) -> LLMOutput:
-        if output_type == "knowledge":
-            self.calls.append(output_type)
-            self.correlation_ids.append(correlation_id)
-            return LLMOutput(
-                module=module,
-                type=output_type,
-                model="fake",
-                content=_KNOWLEDGE_JSON,
-                correlation_id=correlation_id,
-            )
-        return await super().complete(
-            messages,
-            module=module,
-            output_type=output_type,
-            correlation_id=correlation_id,
-            json_mode=json_mode,
         )
 
 
@@ -376,6 +337,24 @@ class _FakeMemory:
         self, items: list[dict[str, str]], correlation_id: str
     ) -> None:
         self.remembered.append(items)
+
+    async def digest_source_block(
+        self,
+        text: str,
+        source_name: str,
+        correlation_id: str,
+        *,
+        author: str = "",
+        profile: dict[str, object] | None = None,
+    ) -> tuple[dict[str, object], list[dict[str, str]]]:
+        return (
+            {
+                "summary": text[:20] or source_name,
+                "themes": [],
+                "content_category": "unknown",
+            },
+            [{"topic": source_name, "content": text[:80]}] if text else [],
+        )
 
 
 class _FakeTools:
@@ -1401,6 +1380,7 @@ async def test_reading_completion_aggregates_note(
     source = tmp_path / "book.txt"
     source.write_text("骑士团的历史", encoding="utf-8")  # 6 字符，一块读尽
     llm = _FakeLlm()
+    memory = _FakeMemory()
     facade, store, bus, database = await _new_facade(
         pending=[
             _desire(
@@ -1411,6 +1391,7 @@ async def test_reading_completion_aggregates_note(
         energy=80.0,
         llm=llm,
         evaluator=_FakeEvaluator(),
+        memory=memory,
     )
     try:
         await facade.register_material(str(source), "book.txt", 6)
@@ -1426,7 +1407,8 @@ async def test_reading_completion_aggregates_note(
         assert result["path"] == str(output)
         assert captured["path"] == f"notes/book.txt-{suffix}.md"
         assert output.read_text(encoding="utf-8") == "完整读书笔记"
-        assert llm.calls == ["reading", "note", "knowledge"]
+        assert llm.calls == ["reading", "note"]
+        assert memory.remembered[0][0]["source_topic"].startswith("material:")
     finally:
         await database.conn.close()
 
@@ -1777,91 +1759,10 @@ def test_build_creation_system() -> None:
     assert "按 JSON 输出" in sys
 
 
-async def test_reading_runner_extract_knowledge_persists_items() -> None:
-    memory = _FakeMemory()
-    facade, _store, _bus, database = await _new_facade(
-        llm=_KnowledgeLlm(), memory=memory
-    )
-    try:
-        await facade._reading_runner.extract_knowledge(
-            _activity("a1"), "骑士团史.md", "正文"
-        )
-        assert memory.remembered == [
-            [
-                {"topic": "骑士团", "content": "成立于 1147 年"},
-                {"topic": "纪律", "content": "严守教规"},
-            ]
-        ]
-    finally:
-        await database.conn.close()
-
-
-async def test_reading_runner_extract_knowledge_best_effort_no_raise() -> None:
-    memory = _FakeMemory()
-    facade, _store, _bus, database = await _new_facade(
-        llm=_RaisingLlm(), memory=memory
-    )
-    try:
-        await facade._reading_runner.extract_knowledge(
-            _activity("a1"), "骑士团史.md", "正文"
-        )
-        assert memory.remembered == []
-    finally:
-        await database.conn.close()
-
-
-async def test_reading_runner_extract_knowledge_chunks_long_content() -> None:
-    """长正文分块提取：7000 字切成两块，每块喂 LLM 的正文 ≤ 6000 字，跨块去重。"""
-
-    class RecordingKnowledgeLlm(_KnowledgeLlm):
-        def __init__(self) -> None:
-            super().__init__()
-            self.knowledge_bodies: list[str] = []
-
-        async def complete(
-            self,
-            messages: list[LlmMessage],
-            *,
-            module: str,
-            output_type: str,
-            correlation_id: str,
-            json_mode: bool = False,
-        ) -> LLMOutput:
-            if output_type == "knowledge":
-                self.knowledge_bodies.append(str(messages[-1]["content"]))
-            return await super().complete(
-                messages,
-                module=module,
-                output_type=output_type,
-                correlation_id=correlation_id,
-                json_mode=json_mode,
-            )
-
-    memory = _FakeMemory()
-    llm = RecordingKnowledgeLlm()
-    facade, _store, _bus, database = await _new_facade(llm=llm, memory=memory)
-    try:
-        await facade._reading_runner.extract_knowledge(
-            _activity("a1"), "长书.md", "甲" * 7000
-        )
-        assert len(llm.knowledge_bodies) == 2  # 7000 字 → 两块
-        for body in llm.knowledge_bodies:
-            assert len(body.split("正文：\n", 1)[1]) <= 6000  # 每块正文不超预算
-        # 两块返回同两点 → 去重后只入一次记忆（2 条）
-        assert memory.remembered == [
-            [
-                {"topic": "骑士团", "content": "成立于 1147 年"},
-                {"topic": "纪律", "content": "严守教规"},
-            ]
-        ]
-    finally:
-        await database.conn.close()
-
-
-async def test_read_finalizes_and_extracts_on_empty_chunk(
+async def test_read_finalizes_without_rescanning_on_empty_chunk(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """读到末尾（文件比注册时短）走 chunk=="" 分支：既聚合笔记也提取知识点。"""
+    """已在旧进度读到末尾时只补 finalize，不重新扫描整本原文。"""
 
     async def fake_file_io(
         action: str, path: str, content: str | None = None
@@ -1871,7 +1772,7 @@ async def test_read_finalizes_and_extracts_on_empty_chunk(
     monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
     source = tmp_path / "book.txt"
     source.write_text("甲" * 100, encoding="utf-8")
-    llm = _KnowledgeLlm()
+    llm = _FakeLlm()
     memory = _FakeMemory()
     facade, _store, _bus, database = await _new_facade(llm=llm, memory=memory)
     try:
@@ -1886,9 +1787,8 @@ async def test_read_finalizes_and_extracts_on_empty_chunk(
         )
         result = await facade._run_reading_source(activity, str(source))
         assert result["completed"] is True
-        assert "note" in llm.calls       # 聚合笔记
-        assert "knowledge" in llm.calls  # 提取知识点（修复点：此前漏调）
-        assert memory.remembered != []
+        assert llm.calls == ["note"]
+        assert memory.remembered == []
     finally:
         await database.conn.close()
 

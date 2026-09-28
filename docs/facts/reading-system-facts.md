@@ -66,6 +66,20 @@
 - 联想读取 `MemoryFacade.search`，每段最多广播 3 条 `READING_ASSOCIATION`，不进入
   Nyx 读书 buffer。
 
+## 原文沉淀与提问回复
+
+- 前进到新段落时，阅读后台任务还会调用 `ReadingIntegration.sediment()`；同一本书用
+  per-book lock 串行。原文累计到 6000 字符立即沉淀，章末/书末 flush 余量；超长单段用
+  `{paragraph_index, char_offset}` cursor 拆块，段落表中的原文不拆改。
+- `books.memory_state` 保存 cursor、滚动 profile 和 pending。每块先生成 profile 与最多 5
+  条知识，再保存 pending、写带 `book:` topic 的 knowledge，最后推进 cursor 并清 pending；
+  崩溃恢复重放 pending，统一来源内去重吸收重复。
+- profile 包含滚动摘要、最多 5 个主题和固定内容类别。fiction/essay/unknown 使用来源归因，
+  书中第一人称不归给用户或 Nyx；同名书按 `book_id` 隔离。
+- 用户回答 durable 读书提问时，`ReadingFacade.build_reply_context()` 返回三层资料：该书
+  来源内相关 knowledge Top 5 的事实正文、触发提问的完整原段落，以及书名/作者/profile。
+  组合根以窄回调注入表达门面，FAST 和 SLOW 共用，避免短回复“已读乱回”。
+
 ## 笔记与整合
 
 - 用户笔记和批注分别存于 `user_notes`、`annotations`；笔记正文和选中文本都限制
@@ -86,7 +100,7 @@
 ## 数据库迁移与测试
 
 - 当前阅读表由 `nyx/db.py` 的 v7-v10 和 v18 迁移建立/升级；v18 增加
-  `reading_progress.revision`。
+  `reading_progress.revision`，v28 为 `books` 增加内部 `memory_state` checkpoint。
 - 后端阅读测试位于 `tests/test_reading/`，API 契约测试位于
   `tests/test_api/test_reading_api.py`；前端阅读测试主要位于
   `frontend/tests/stores.test.ts`、`frontend/tests/api.test.ts`。

@@ -52,6 +52,42 @@ def _fake_embed(vec: list[float]) -> EmbedFn:
     return embed
 
 
+async def test_search_filters_source_before_ranking() -> None:
+    database = await connect(":memory:")
+    store = MemoryStore(database)
+    retrieval = MemoryRetrieval(store)
+    try:
+        for index in range(81):
+            await store.add(
+                _mem(
+                    f"other-{index:02d}",
+                    content="量子",
+                    summary="量子",
+                    freshness=1.0,
+                    created_at=float(index + 2),
+                    topics=["book:other"],
+                )
+            )
+        await store.add(
+            _mem(
+                "target",
+                content="量子",
+                summary="目标书里的量子",
+                freshness=0.1,
+                topics=["book:target"],
+            )
+        )
+        result = await retrieval.search(
+            "量子",
+            direct_limit=5,
+            association_limit=0,
+            required_topic="book:target",
+        )
+    finally:
+        await database.close()
+    assert [memory.id for memory in result] == ["target"]
+
+
 def test_cosine() -> None:
     assert cosine([1.0, 0.0], [0.0, 1.0]) == 0.0   # 正交
     assert cosine([1.0, 0.0], [1.0, 0.0]) == 1.0   # 相同

@@ -28,6 +28,7 @@ from nyx.memory.facade import (
     _memory_to_markdown,
     _parse_contradiction,
     _parse_scene,
+    build_source_topic,
     decay_freshness,
 )
 from nyx.memory.facts import MemoryFactStore
@@ -256,6 +257,147 @@ def test_parse_scene() -> None:
         _parse_scene('{"content":"","kind":"episode","topics":[],"summary":"s"}')
     with pytest.raises(ValueError):
         _parse_scene("[]")  # 非对象
+
+
+def test_build_source_topic_is_stable_and_bounded() -> None:
+    first = build_source_topic("book", "book-id-1")
+    assert first == build_source_topic("book", "book-id-1")
+    assert first != build_source_topic("book", "book-id-2")
+    assert first.startswith("book:")
+    assert len(first) <= 24
+
+
+async def test_digest_source_block_updates_profile_and_attributes_fiction() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm({
+        "source_digest": json.dumps(
+            {
+                "summary": "少年进入魔法学校。",
+                "themes": ["成长", "友谊"],
+                "content_category": "fiction",
+                "points": [{"topic": "校长", "content": "校长隐瞒了真相"}],
+            },
+            ensure_ascii=False,
+        )
+    })
+    facade = _make_facade(store, bus, llm, _FakeEvaluator())
+    try:
+        profile, points = await facade.digest_source_block(
+            "校长隐瞒了真相",
+            "魔法学校",
+            "corr-1",
+            author="某作者",
+            profile={
+                "summary": "少年入学。",
+                "themes": ["成长"],
+                "content_category": "fiction",
+            },
+        )
+    finally:
+        await database.close()
+    assert profile["content_category"] == "fiction"
+    assert profile["themes"] == ["成长", "友谊"]
+    assert points[0]["content"] == "《魔法学校》中，校长隐瞒了真相"
+
+
+async def test_remember_knowledge_persists_source_topic() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    source_topic = build_source_topic("book", "book-1")
+    try:
+        await facade.remember_knowledge(
+            [{
+                "topic": "主题",
+                "content": "来源事实",
+                "source_topic": source_topic,
+                "source_name": "书名",
+            }],
+            "corr-1",
+        )
+        [memory] = await facade.list_memories()
+    finally:
+        await database.close()
+    assert memory.topics == [source_topic, "主题"]
+
+
+async def test_same_knowledge_from_two_books_keeps_both_source_scopes() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    first_source = build_source_topic("book", "book-1")
+    second_source = build_source_topic("book", "book-2")
+    try:
+        for source_topic in (first_source, second_source):
+            await facade.remember_knowledge(
+                [{
+                    "topic": "共同事实",
+                    "content": "两本书都出现的同一句",
+                    "source_topic": source_topic,
+                }],
+                source_topic,
+            )
+        memories = await facade.list_memories()
+    finally:
+        await database.close()
+    assert len(memories) == 2
+    assert {memory.topics[0] for memory in memories} == {
+        first_source,
+        second_source,
+    }
+
+
+async def test_source_semantic_dedup_ranks_only_within_same_source() -> None:
+    store, bus, database = await _new_stack()
+    target_source = build_source_topic("book", "target-book")
+    other_source = build_source_topic("book", "other-book")
+    await store.add(
+        Memory(
+            id="other-source",
+            created_at=2.0,
+            content="别书里的近似事实",
+            kind=MemoryKind.KNOWLEDGE,
+            summary="共同主题",
+            freshness=1.0,
+            type=MemoryType.LONG_TERM,
+            topics=[other_source, "共同主题"],
+            embedding=[1.0, 0.0],
+        )
+    )
+    await store.add(
+        Memory(
+            id="same-source",
+            created_at=1.0,
+            content="本书已经沉淀的事实",
+            kind=MemoryKind.KNOWLEDGE,
+            summary="共同主题",
+            freshness=1.0,
+            type=MemoryType.LONG_TERM,
+            topics=[target_source, "共同主题"],
+            embedding=[0.999, 0.01],
+        )
+    )
+    facade = _make_facade(
+        store,
+        bus,
+        _FakeLlm(),
+        _FakeEvaluator(),
+        embed=_embed([1.0, 0.0]),
+    )
+    try:
+        await facade.remember_knowledge(
+            [{
+                "topic": "共同主题",
+                "content": "本书新提取的同义事实",
+                "source_topic": target_source,
+            }],
+            "corr-source-dedup",
+        )
+        memories = await facade.list_memories()
+    finally:
+        await database.close()
+    assert len(memories) == 2
+    persisted = {memory.id: memory for memory in memories}
+    assert persisted["same-source"].recall_count == 1
+    assert persisted["other-source"].recall_count == 0
 
 
 def test_build_scene_prompt() -> None:

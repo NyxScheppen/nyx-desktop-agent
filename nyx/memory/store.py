@@ -78,14 +78,26 @@ class MemoryStore:
         return _row_to_memory(row) if row is not None else None
 
     async def find_by_content(
-        self, content: str, kind: MemoryKind
+        self,
+        content: str,
+        kind: MemoryKind,
+        required_topic: str | None = None,
     ) -> Memory | None:
         """在同一 kind 内按 content 精确哈希查重。"""
+        topic_clause = (
+            " AND EXISTS (SELECT 1 FROM json_each(memory.topics) "
+            "WHERE json_each.value = ?)"
+            if required_topic is not None
+            else ""
+        )
+        params: tuple[str, ...] = (kind.value, hash_content(content))
+        if required_topic is not None:
+            params = (*params, required_topic)
         async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_MEMORY_COLS} FROM memory "
-                "WHERE kind = ? AND content_hash = ?",
-                (kind.value, hash_content(content)),
+                f"WHERE kind = ? AND content_hash = ?{topic_clause}",
+                params,
             )
             row = await cursor.fetchone()
         return _row_to_memory(row) if row is not None else None
@@ -217,6 +229,7 @@ class MemoryStore:
         self,
         tokens: list[str],
         limit: int,
+        required_topic: str | None = None,
     ) -> dict[str, KeywordSearchHit]:
         if not tokens or limit <= 0:
             return {}
@@ -227,14 +240,24 @@ class MemoryStore:
         async with self._operation():
             for token in tokens:
                 pattern = f"%{_escape_like(token)}%"
+                topic_clause = (
+                    " AND EXISTS (SELECT 1 FROM json_each(memory.topics) "
+                    "WHERE json_each.value = ?)"
+                    if required_topic is not None
+                    else ""
+                )
+                params: tuple[str, ...] = (pattern, pattern, pattern, pattern)
+                if required_topic is not None:
+                    params = (*params, required_topic)
                 cursor = await self._db.conn.execute(
                     "SELECT id, freshness, created_at, "
                     "summary LIKE ? ESCAPE '\\' AS summary_hit, "
                     "content LIKE ? ESCAPE '\\' AS content_hit "
                     "FROM memory "
-                    "WHERE summary LIKE ? ESCAPE '\\' "
-                    "OR content LIKE ? ESCAPE '\\'",
-                    (pattern, pattern, pattern, pattern),
+                    "WHERE (summary LIKE ? ESCAPE '\\' "
+                    "OR content LIKE ? ESCAPE '\\')"
+                    f"{topic_clause}",
+                    params,
                 )
                 rows = await cursor.fetchall()
                 for row in rows:

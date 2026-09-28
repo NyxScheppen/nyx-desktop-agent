@@ -124,6 +124,7 @@ class MemoryRetrieval:
         query: str,
         direct_limit: int = 20,
         association_limit: int = 10,
+        required_topic: str | None = None,
     ) -> list[Memory]:
         if not query.strip():
             return []
@@ -131,12 +132,20 @@ class MemoryRetrieval:
             return []
 
         all_memories = await self._store.list_memories()
+        if required_topic is not None:
+            all_memories = [
+                memory
+                for memory in all_memories
+                if required_topic in memory.topics
+            ]
         by_id = {m.id: m for m in all_memories}
         query_vec = await self._embed_query(query)
         vector_scores = await self._vector_scores(query_vec, all_memories)
         tokens = extract_keywords(query)
         keyword_hits = await self._store.search_keywords(
-            tokens, _RECALL_KEYWORD_CANDIDATE_K
+            tokens,
+            _RECALL_KEYWORD_CANDIDATE_K,
+            required_topic=required_topic,
         )
         direct_ranked = self._rank_direct(
             by_id, vector_scores, keyword_hits, len(tokens)

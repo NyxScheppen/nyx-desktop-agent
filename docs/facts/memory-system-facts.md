@@ -22,11 +22,22 @@
 - `_persist_memory` 两层去重：先精确 content hash，再 bounded persist semantic candidates 内 top-1 cosine >= 0.95。新记忆有 embedding 时只读取一次旧记忆、构建一次 ANN index；同 kind 去重查询把 id 过滤放在候选上限之前，未命中时复用同一 index 取全局候选供语义建边和矛盾检测门控，不做无界全表余弦扫描或重复建索引。命中时强化并返回持久化旧记忆；未命中才新增、建边、做矛盾检测、衰减/淘汰、发布 `memory_created`。
 - `create_scene_memory` 返回最终持久化的 `Memory`：新建时返回新记忆；去重命中时返回旧记忆。
 - `remember_activity` / `remember_knowledge` / `remember_reading` 复用 `_persist_memory`，不要绕过统一去重尾段。
+- 原文知识通过 `build_source_topic(kind, identifier)` 获得稳定的 `book:` / `material:` /
+  `web:` / `local:` topic；`remember_knowledge` 把该来源 topic 和知识主题一同写入
+  `Memory.topics`。原文记忆的精确与语义去重都保留来源边界，同一句内容来自不同书籍或
+  页面时不会折叠成一条；语义 top-1 也在同一来源候选池内选取，不受其它来源更高相似项
+  挤占。
+- `digest_source_block()` 一次只处理最多 6000 字符，使用上一版
+  `{summary, themes, content_category}` 生成滚动画像和最多 5 条带归因的知识；fiction、
+  essay、unknown 不得伪装为无来源的现实事实，也不得把原文第一人称归给用户或 Nyx。
 - `memory.activity_end` durable consumer 调用 `remember_activity(event, consumer_id)`；同一 `(event_id, consumer_id)` 重放不会重复新增或 strengthen。`event_effect`、活动记忆和 `memory_created` 同事务提交；embedding、关系边、矛盾检测和衰减在事务外 best-effort，避免阻塞共享数据库锁。
 
 ## 检索与前端
 
 - `MemoryRetrieval.search` 流程是整句 embedding ANN 候选 + keyword LIKE 候选融合评分 -> direct top N -> 2 跳 association 追加；`direct_limit` 只限制直接召回，`association_limit` 只限制联想追加。
+- `MemoryFacade.search_source(query, source_topic, limit=5)` 先按来源 topic 过滤全部候选，
+  再执行 direct 融合排序，且不追加跨来源 association；读书提问回复用它取同一本书的
+  Top 5，不能先取全局 Top N 再过滤。
 - topics 旁路对每个参与联想的 topic 在单次检索中只排序一次，先排除 direct 命中再截取最多 8 条；热门度衰减仍按排除前的完整桶大小计算。
 - `extract_keywords` 的 CJK 规则按 `docs/specs/06-memory-system.md` 契约执行：长度 2-8 的连续 CJK 片段直接保留，长 CJK 片段只做 2 字/3 字滑窗；不做隐藏边界字符剥离，也不在长片段内部按停用词预拆。
 - `Memory.sources` 是瞬态检索来源：`keyword`、`vector`、`association`。它不落库、不进 prompt、不进导出，但 REST `Memory[]` 会序列化给前端。

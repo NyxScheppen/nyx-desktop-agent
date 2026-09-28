@@ -81,6 +81,11 @@ topics 联想约束：
 - 同 kind 内容仅标点/空白差异命中精确去重；不同 kind 不合并。
 - `喜欢猫` 与 `不喜欢猫` 不因 cosine 相似而强化旧记忆。
 - 昨天和今天的相似 episode 不因普通高相似度丢失经历。
+- 相同 knowledge 内容来自不同 source topic 时保留为不同记忆；同名来源也必须用稳定标识
+  隔离，不能用展示标题参与去重。
+- source knowledge 的语义去重必须先限定同一 source topic 再选 top-1；别的来源即使 cosine
+  更高，也不能挡住本来源内可合并的重复事实。
+- 来源内召回先过滤资格再排序；全局高分记忆不能挤占来源内 Top 5 后再被过滤为空。
 - 非法 kind、空 summary/content、超长 topics 不污染数据库或 prompt。
 - prompt 记忆数量和总上下文预算仍受本 spec 与 11-expression 既有上限约束。
 
@@ -114,6 +119,17 @@ topics 联想约束：
 - 一次 `remember_knowledge` 批量写入多个知识点时，事实抽取合并为一次 LLM 调用；每条
   fact 必须带 `memory_index`，解析后按最终 `source_memory_id` 分发。批量解析失败时逐条
   使用确定性 fallback，所有原始知识记忆仍然落库。
+- 外部原文沉淀的 knowledge 记忆必须带一个稳定来源 topic。来源 topic 由
+  `build_source_topic(kind, identifier)` 生成，形如 `book:<digest>`、
+  `material:<digest>`、`web:<digest>`、`local:<digest>`；digest 来自稳定标识
+  （`book_id`、绝对路径或 URL），整体不超过 topics 的 24 字符上限。标题仅用于展示，
+  不参与来源隔离，因此同名书不会串线。
+- `remember_knowledge` 接受 item 内可选的 `source_topic` / `source_name`；
+  `source_topic` 与知识主题一起进入现有 `Memory.topics`，仍复用统一去重和事实抽取尾段，
+  不新增来源表或第二套事实写入路径。
+- `search_source(query, source_topic, limit=5)` 必须先把候选限制在该来源 topic 内，再执行
+  现有 vector + keyword 融合排序；禁止先取全局 Top N 再按来源过滤。该入口只供阅读回复
+  恢复同一本书的既有知识，返回最多 5 条，不追加跨来源 association。
 - 抽取 prompt 必须携带 `memory_kind`、来源名称/范围和说话者归因规则；不明确主语、
   书中引用、书中人物或示例内容不得强行归因给用户。已有确定性用户就业状态抽取是
   LLM 失败时的 fallback。
@@ -167,7 +183,10 @@ class MemoryStore:
     async def add(self, memory: Memory) -> None: ...
     async def get(self, memory_id: str) -> Memory | None: ...
     async def find_by_content(
-        self, content: str, kind: MemoryKind
+        self,
+        content: str,
+        kind: MemoryKind,
+        required_topic: str | None = None,
     ) -> Memory | None: ...
     async def list_memories(
         self,
@@ -181,7 +200,12 @@ class MemoryStore:
     async def record_recall(self, memory_id: str, promote_threshold: int) -> bool: ...
     async def strengthen(self, memory_id: str, now: float) -> None: ...
     async def count_new(self, kind: MemoryKind | None, since: float) -> int: ...
-    async def search_keywords(self, tokens: list[str], limit: int) -> dict[str, KeywordSearchHit]: ...
+    async def search_keywords(
+        self,
+        tokens: list[str],
+        limit: int,
+        required_topic: str | None = None,
+    ) -> dict[str, KeywordSearchHit]: ...
     async def list_edges(self, kind: MemoryEdgeKind | None = None) -> list[MemoryEdge]: ...
     async def upsert_edge(
         self,
@@ -349,6 +373,7 @@ async def search_keywords(
     self,
     tokens: list[str],
     limit: int,
+    required_topic: str | None = None,
 ) -> dict[str, KeywordSearchHit]
 async def list_edges(self, kind: MemoryEdgeKind | None = None) -> list[MemoryEdge]
 async def upsert_edge(
@@ -363,8 +388,10 @@ async def delete_edges(self, keys: list[tuple[str, str, MemoryEdgeKind]]) -> Non
 async def list_edge_degrees(self, memory_ids: list[str]) -> dict[str, list[MemoryEdge]]
 ```
 
-- `search_keyword(query: str)` 删除；所有检索与建边流程只调用 `search_keywords(tokens, limit)`。
-- `search_keywords(tokens, limit)` 的 `limit <= 0` 返回 `{}`。
+- `search_keyword(query: str)` 删除；所有检索与建边流程只调用
+  `search_keywords(tokens, limit, required_topic=None)`。
+- `search_keywords` 的 `limit <= 0` 返回 `{}`；`required_topic` 非空时在 SQL 候选阶段用
+  `json_each(memory.topics)` 限定来源，不能在全局候选截断后再过滤。
 - `list_edges(kind=None)` 返回所有边；传 kind 时只返回该 kind。
 - `upsert_edge` 先把 `from_id` / `to_id` 规范化为字典序升序再写库；冲突键为 `(from_id, to_id, kind)`，其中 `from_id < to_id`。
 - `delete_edges` 按完整三元键删除；调用方传入的端点也必须使用 canonical 顺序。
@@ -406,6 +433,14 @@ async def remember_knowledge(
     correlation_id: str,
     source_name: str | None = None,
 ) -> None: ...
+async def digest_source_block(
+    text: str,
+    source_name: str,
+    correlation_id: str,
+    *,
+    author: str = "",
+    profile: dict[str, object] | None = None,
+) -> tuple[dict[str, object], list[dict[str, str]]]: ...
 async def remember_reading(
     content: str,
     summary: str,
@@ -414,6 +449,9 @@ async def remember_reading(
 ) -> None: ...
 async def record_no_answer(question: str, correlation_id: str) -> None: ...
 async def search(query: str) -> list[Memory]: ...
+async def search_source(
+    query: str, source_topic: str, limit: int = 5
+) -> list[Memory]: ...
 async def search_facts(query: str) -> list[MemoryFact]: ...
 async def recent_facts(limit: int = 32) -> list[MemoryFact]: ...
 async def record_recall(memory_id: str) -> None: ...
@@ -433,6 +471,15 @@ Facade 规则：
   不绕过建边、矛盾检测、衰减/淘汰和事件。确定性入口不调用 scene-memory LLM；知识点
   批量事实抽取合并为一次 `fact_extraction` 调用后再逐条复用尾段。
 - `search(query)` 纯委托 `MemoryRetrieval.search(query)`，对表达层不暴露 `direct_limit` / `association_limit` 参数。
+- `digest_source_block` 每次只接收至多 6000 字符的原文和上一版 profile，输出新的
+  `{summary, themes, content_category}` 与 0-5 条知识点；类别只允许 `fiction`、
+  `nonfiction`、`essay`、`poetry`、`drama`、`reference`、`unknown`，非法值按
+  `unknown` 处理。summary 必须非空，结构非法时抛错，由持有 checkpoint 的调用方决定重试。
+- 来源归因是知识内容的写入约束：`fiction` 的陈述归于作品/人物/虚构世界；`essay`
+  归于作者在作品中的主张；`nonfiction` / `reference` 可作为领域知识；`unknown`
+  使用“据该来源所述”的保守归因。原文中的“我”不得因此归于用户或 Nyx。
+- `search_source` 使用来源过滤后的候选集做排序；这些命中作为读书即时上下文，不调用
+  `record_recall`，不改变普通 `search` 的慢通道升级语义。
 - `remember_activity(event, consumer_id=None)` 是 `ACTIVITY_END` 的记忆消费者；RouteSpec 注册时传 `consumer_id="memory.activity_end"`。durable 路径在同一本地事务内写 `event_effect`、记忆状态和 `memory_created` 事件，事务外才运行 embedding/关系边/矛盾检测/衰减等旁路；旁路失败不撤销已提交核心记忆，重放时已应用则 no-op。普通直接调用不传 `consumer_id`，保留旧调用面。
 - `record_recall(memory_id)` 只表示“进入慢通道 prompt 后被想起”：委托 store 加一；短期达阈值时发布 `memory_promoted`，长期不重复发布。升级和 `memory_promoted` 事件行在同一本地事务提交，commit 后再 `announce_committed`。
 - `export("json")` 输出 JSON 数组；`export("md")` 输出 Markdown；非法格式抛 `ValueError`；导出不包含 `Memory.sources`。
@@ -451,7 +498,9 @@ _RECALL_KEYWORD_CANDIDATE_K = 80
 
 1. `query_vec = await embed(query)`。`embed is None` 或 embedding 失败时，`query_vec=None`，跳过 ANN，只走 keyword。
 2. `AnnIndex.query(query_vec, candidate_k=_RECALL_VECTOR_CANDIDATE_K)` 返回 ANN 候选 id 和 cosine；只对这些候选计算精确 vector score。
-3. `extract_keywords(query)` 后调 `store.search_keywords(tokens, limit=_RECALL_KEYWORD_CANDIDATE_K)`，得到 keyword 候选。
+3. `extract_keywords(query)` 后调
+   `store.search_keywords(tokens, limit=_RECALL_KEYWORD_CANDIDATE_K, required_topic=required_topic)`，
+   得到 keyword 候选；普通检索的 `required_topic=None`。
 4. 合并候选，算 `RankedMemory.score`，取 `direct_limit`，再把 direct 分数传给 `MemoryGraph.associate`。
 
 融合公式：
@@ -491,11 +540,12 @@ score = 0.65 * vector_score
 - 过滤停用词：`这个`、`那个`、`什么`、`怎么`、`为什么`、`然后`、`就是`、`一下`、`可以`、`还是`、`一个`、`我们`、`你们`。
 - 去重并保持首次出现顺序。
 
-`MemoryStore.search_keywords(tokens, limit)`：
+`MemoryStore.search_keywords(tokens, limit, required_topic=None)`：
 
 - 空 token list 返回 `{}`，不查 DB。
 - `limit <= 0` 返回 `{}`，不查 DB。
 - 每个 token 都用 escaped `LIKE '%token%' ESCAPE '\'` 查 `summary` 和 `content`。
+- `required_topic` 非空时，同一 SQL 先限制 `memory.topics` 包含该值，再参与候选排序和 limit。
 - 返回 `dict[memory_id, KeywordSearchHit]`。
 - `summary_tokens` 只记录命中 summary 的 unique token，按输入 token 顺序。
 - `content_tokens` 只记录命中 content 的 unique token，按输入 token 顺序。
@@ -574,9 +624,11 @@ _CONTRADICTION_SIM_THRESHOLD = 0.6
 
 `MemoryFacade._persist_memory(memory, correlation_id)` 顺序：
 
-1. 先调用 `store.find_by_content(memory.content, memory.kind)` 做同 kind 的 canonical content hash 精确去重；命中则 `strengthen(existing.id, now)` 并返回持久化旧记忆。
+1. 先调用 `store.find_by_content(memory.content, memory.kind, source_topic)` 做同 kind 的
+   canonical content hash 精确去重；原文记忆还要求 source topic 相同。命中则
+   `strengthen(existing.id, now)` 并返回持久化旧记忆。
 2. 如果 `memory.embedding is None` 且 `embed` 可用，调用 `embed(memory.content)` 补 embedding。
-3. 如果新记忆有 embedding，一次读取全部旧记忆并构建一个 `AnnIndex`；先用 `allowed_ids` 限定同 kind 查询去重候选，未命中去重时再复用同一 index 查询全局候选。两次查询都受 `_PERSIST_SEMANTIC_CANDIDATE_K` 约束，并在候选内计算精确 cosine，得到 `PersistSemanticHit(memory, cosine)` 列表。
+3. 如果新记忆有 embedding，一次读取全部旧记忆并构建一个 `AnnIndex`；先用 `allowed_ids` 限定同 kind、同 source topic 查询去重候选（无 source topic 的普通记忆只和同样无 source topic 的记忆去重），未命中去重时再复用同一 index 查询全局候选。两次查询都受 `_PERSIST_SEMANTIC_CANDIDATE_K` 约束，并在候选内计算精确 cosine，得到 `PersistSemanticHit(memory, cosine)` 列表。
 4. 如果候选 top-1 达到 kind 对应阈值，并且否定极性、数字集合、显式时间锚点均兼容，则 `strengthen(top.memory.id, now)` 并返回持久化旧记忆；`episode` 还要求创建时间差不超过一小时。
 5. 未命中去重时才 `store.add(memory)`，随后建边、矛盾检测、衰减/淘汰、发布 `memory_created`。
 
@@ -817,6 +869,8 @@ prune_priority = edge.weight * prune_kind_weight
 - 迁移旧边：端点 canonicalize 后全部视为 `kind='semantic'`，`created_at=0.0`，方向相反重复边合并。
 - 不新增 `memory_cluster` 表。
 - 不新增配置项；候选数、权重、度数上限先作为模块常量，避免未请求的配置膨胀。
+- 原文来源身份复用 `memory.topics`，不新增 memory/source 关联表；书籍与材料的滚动画像和
+  checkpoint 由 09/12 各自的既有持久化对象持有。
 
 SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、删除旧表、重命名新表，并恢复外键约束。
 
@@ -849,6 +903,8 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 - [ ] 表达慢通道：`MemoryFacade.search` 返回 direct + association 后，`assemble_context` 对全部返回记忆逐条 `record_recall`。
 - [ ] 事实回归：观察窗口标题不产偏好事实；未知谓词的显式 functional/multi 模式保持；别名
   命中走别名索引；批量知识点只调用一次 `fact_extraction` 且来源 Memory 正确映射，失败仍落库。
+- [ ] 原文沉淀：类别白名单和 fiction/essay/unknown 归因正确；source topic 不超 24 字符；
+  同名不同 `book_id` 不共享候选；`search_source` 先过滤来源再排序并最多返回 5 条。
 
 ## 完成定义
 

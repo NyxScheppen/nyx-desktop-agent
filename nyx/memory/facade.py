@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -44,6 +45,28 @@ _FACT_EXTRACTION_SYSTEM = (
     "批量输入时 facts 还必须带 memory_index（从 0 开始）。"
     "mode 为 functional 或 multi；polarity 为 positive 或 negative。"
 )
+
+_SOURCE_DIGEST_SYSTEM = (
+    "你负责把连续阅读的原文整理成滚动书籍画像和可复用知识。"
+    "只输出 JSON：summary 为读到目前的滚动摘要，themes 为最多 5 个主题字符串，"
+    "content_category 只能是 fiction/nonfiction/essay/poetry/drama/reference/unknown，"
+    "points 为 0-5 个 {topic,content}。"
+    "fiction 的陈述必须明确归于作品、人物或虚构世界；essay 必须归于作者主张；"
+    "nonfiction/reference 才可直接整理为领域知识；unknown 必须保守注明来源。"
+    "原文中的第一人称不是用户或尼克斯，不得改写成用户事实。"
+)
+
+_SOURCE_CONTENT_CATEGORIES = {
+    "fiction",
+    "nonfiction",
+    "essay",
+    "poetry",
+    "drama",
+    "reference",
+    "unknown",
+}
+_SOURCE_DIGEST_MAX_CHARS = 6000
+_SOURCE_TOPIC_PREFIXES = ("book:", "material:", "web:", "local:")
 
 _CONTRADICTION_SYSTEM = (
     "你是记忆一致性检查员。给出一条新记忆和若干候选旧记忆，判断新记忆是否与其中某条矛盾。"
@@ -143,6 +166,94 @@ def _new_memory(
         aspect=aspect if aspect is not None else [],
         embedding=None,
     )
+
+
+def build_source_topic(kind: str, identifier: str) -> str:
+    """Build a stable source label that fits the persisted topic bound."""
+    digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:16]
+    return f"{kind}:{digest}"[:24]
+
+
+def _source_topic(memory: Memory) -> str | None:
+    return next(
+        (
+            topic
+            for topic in memory.topics
+            if topic.startswith(_SOURCE_TOPIC_PREFIXES)
+        ),
+        None,
+    )
+
+
+def _work_title(source_name: str) -> str:
+    name = source_name.strip() or "该来源"
+    return name if name.startswith("《") and name.endswith("》") else f"《{name}》"
+
+
+def _attribute_source_point(
+    content: str,
+    source_name: str,
+    author: str,
+    category: str,
+) -> str:
+    title = _work_title(source_name)
+    if category == "fiction":
+        return f"{title}中，{content}"
+    if category == "essay":
+        subject = author.strip() or "作者"
+        return f"{subject}在{title}中主张：{content}"
+    if category in {"poetry", "drama", "unknown"}:
+        return f"据{title}文本所述，{content}"
+    return content
+
+
+def _parse_source_digest(
+    raw: str, source_name: str, author: str
+) -> tuple[dict[str, object], list[dict[str, str]]]:
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("原文沉淀 JSON 应为对象")
+    parsed = cast(dict[str, Any], data)
+    summary = parsed.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValueError("原文沉淀 JSON 缺非空 summary")
+    raw_themes = parsed.get("themes", [])
+    if not isinstance(raw_themes, list):
+        raise ValueError("原文沉淀 JSON 的 themes 必须是数组")
+    themes = _normalize_topics(cast(list[object], raw_themes))
+    raw_category = parsed.get("content_category", "unknown")
+    category = (
+        raw_category
+        if isinstance(raw_category, str)
+        and raw_category in _SOURCE_CONTENT_CATEGORIES
+        else "unknown"
+    )
+    raw_points = parsed.get("points", [])
+    if not isinstance(raw_points, list):
+        raise ValueError("原文沉淀 JSON 的 points 必须是数组")
+    points: list[dict[str, str]] = []
+    for raw_point in cast(list[object], raw_points)[:5]:
+        if not isinstance(raw_point, dict):
+            continue
+        point = cast(dict[str, Any], raw_point)
+        content = point.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        topic = point.get("topic")
+        points.append(
+            {
+                "topic": topic.strip() if isinstance(topic, str) else "",
+                "content": _attribute_source_point(
+                    content.strip(), source_name, author, category
+                ),
+            }
+        )
+    profile: dict[str, object] = {
+        "summary": summary.strip(),
+        "themes": themes,
+        "content_category": category,
+    }
+    return profile, points
 
 
 def decay_freshness(
@@ -268,6 +379,8 @@ def _has_negation(text: str) -> bool:
 
 def _semantic_dedup_compatible(new: Memory, old: Memory) -> bool:
     """Reject high-similarity candidates with deterministic factual conflicts."""
+    if _source_topic(new) != _source_topic(old):
+        return False
     new_text = f"{new.summary}\n{new.content}"
     old_text = f"{old.summary}\n{old.content}"
     if _has_negation(new_text) != _has_negation(old_text):
@@ -561,6 +674,44 @@ class MemoryFacade:
         result = await self._persist_memory(memory, reply_context["correlation_id"])
         return result.memory
 
+    async def digest_source_block(
+        self,
+        text: str,
+        source_name: str,
+        correlation_id: str,
+        *,
+        author: str = "",
+        profile: dict[str, object] | None = None,
+    ) -> tuple[dict[str, object], list[dict[str, str]]]:
+        """Update a rolling source profile and extract attributed knowledge."""
+        if len(text) > _SOURCE_DIGEST_MAX_CHARS:
+            raise ValueError("原文沉淀块不能超过 6000 字符")
+        previous = profile or {
+            "summary": "",
+            "themes": [],
+            "content_category": "unknown",
+        }
+        user = json.dumps(
+            {
+                "source": {"name": source_name, "author": author},
+                "previous_profile": previous,
+                "source_text": text,
+            },
+            ensure_ascii=False,
+        )
+        output = await self._llm.complete(
+            [
+                {"role": "system", "content": _SOURCE_DIGEST_SYSTEM},
+                {"role": "user", "content": user},
+            ],
+            module="memory",
+            output_type="source_digest",
+            correlation_id=correlation_id,
+            json_mode=True,
+        )
+        await self._evaluator.evaluate(output)
+        return _parse_source_digest(output.content, source_name, author)
+
     async def remember_activity(
         self, event: Event, consumer_id: str | None = None
     ) -> None:
@@ -831,7 +982,11 @@ class MemoryFacade:
                 MemoryKind.KNOWLEDGE,
                 topic or content[:_SUMMARY_MAX_CHARS],
                 MemoryType.LONG_TERM,
-                [topic] if topic else [],
+                [
+                    value
+                    for value in (item.get("source_topic"), topic)
+                    if value
+                ],
             )
             entries.append(
                 (
@@ -914,7 +1069,9 @@ class MemoryFacade:
         → 新鲜度衰减/淘汰 → 发 MEMORY_CREATED，返回新记忆。场景/活动/画像/
         知识记忆复用。"""
         now = time.time()
-        existing = await self._store.find_by_content(memory.content, memory.kind)
+        existing = await self._store.find_by_content(
+            memory.content, memory.kind, _source_topic(memory)
+        )
         if existing is not None:
             await self._store.strengthen(existing.id, now)
             return _PersistResult(await self._persisted_or(existing), [], False)
@@ -932,8 +1089,12 @@ class MemoryFacade:
             memories = await self._store.list_memories()
             index = AnnIndex.build(memories)
             by_id = {candidate.id: candidate for candidate in memories}
+            source_topic = _source_topic(memory)
             same_kind_ids = {
-                candidate.id for candidate in memories if candidate.kind is memory.kind
+                candidate.id
+                for candidate in memories
+                if candidate.kind is memory.kind
+                and _source_topic(candidate) == source_topic
             }
             dedup_candidates = self._persist_semantic_candidates(
                 memory.embedding,
@@ -1128,6 +1289,16 @@ class MemoryFacade:
 
     async def search(self, query: str) -> list[Memory]:
         return await self._retrieval.search(query)
+
+    async def search_source(
+        self, query: str, source_topic: str, limit: int = 5
+    ) -> list[Memory]:
+        return await self._retrieval.search(
+            query,
+            direct_limit=limit,
+            association_limit=0,
+            required_topic=source_topic,
+        )
 
     async def search_facts(self, query: str) -> list[MemoryFact]:
         """召回查询命中实体关联的当前有效事实；失败时返回空集。"""

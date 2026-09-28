@@ -250,6 +250,16 @@ class Annotation:  # 用户笔记的 Nyx 批注（12-reading-system）
 
 
 @dataclass
+class Bookmark:  # 阅读书签；段号与预览由 paragraphs JOIN 派生
+    id: str
+    book_id: str
+    paragraph_id: str
+    paragraph_index: int
+    preview: str
+    created_at: float
+
+
+@dataclass
 class UserNote:  # 用户手写笔记（12-reading-system）
     id: str
     book_id: str | None  # 书删除后 ON DELETE SET NULL
@@ -258,6 +268,9 @@ class UserNote:  # 用户手写笔记（12-reading-system）
     selected_text: str | None
     created_at: float
     updated_at: float
+    paragraph_index: int | None = None  # JOIN 派生，不落库
+    selection_start: int | None = None  # UTF-16 code unit
+    selection_end: int | None = None
     # 派生，非落库列：list_user_notes 拼装每条笔记的批注列表
     annotations: list[Annotation] = field(default_factory=list[Annotation])
 

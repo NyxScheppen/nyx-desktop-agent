@@ -42,6 +42,7 @@ from nyx.types import (
     Annotation,
     Book,
     BookListItem,
+    Bookmark,
     CurrentState,
     DesireValue,
     Paragraph,
@@ -70,6 +71,25 @@ def _parse_reading_note(raw: str) -> tuple[str, str]:
     return parse_reading_note(raw)
 
 
+def _selection_matches(
+    text: str,
+    start: int,
+    end: int,
+    selected_text: str | None,
+) -> bool:
+    """按 UTF-16 code unit 校验选区，拒绝越界和拆开代理对。"""
+    if selected_text is None or start < 0 or end <= start:
+        return False
+    encoded = text.encode("utf-16-le")
+    if end * 2 > len(encoded):
+        return False
+    try:
+        selected = encoded[start * 2:end * 2].decode("utf-16-le")
+    except UnicodeDecodeError:
+        return False
+    return selected == selected_text
+
+
 class DuplicateBookError(Exception):
     """正文重复导入（`content_hash` 命中已有书）；端点据此映射 409。"""
 
@@ -93,6 +113,14 @@ class NoteNotFoundError(Exception):
     def __init__(self, note_id: str) -> None:
         self.note_id = note_id
         super().__init__(f"用户笔记不存在：{note_id}")
+
+
+class BookmarkNotFoundError(Exception):
+    """书签不存在；端点据此映射 404。"""
+
+    def __init__(self, bookmark_id: str) -> None:
+        self.bookmark_id = bookmark_id
+        super().__init__(f"书签不存在：{bookmark_id}")
 
 
 class ReadingFacade:
@@ -367,6 +395,8 @@ class ReadingFacade:
         paragraph_id: str | None,
         content: str,
         selected_text: str | None,
+        selection_start: int | None = None,
+        selection_end: int | None = None,
     ) -> UserNote:
         """新增用户笔记；书不存在抛 `BookNotFoundError`，段落不存在/跨书抛
         `ValueError`。校验在写库前做，避免 FK 违约直接 500；跨书段落错配会让
@@ -375,18 +405,39 @@ class ReadingFacade:
         book = await self._store.find_book(book_id)
         if book is None:
             raise BookNotFoundError(book_id)
-        if not content or len(content) > _READING_INPUT_MAX_CHARS:
-            raise ValueError("笔记正文长度必须为 1-4000 字符")
+        if len(content) > _READING_INPUT_MAX_CHARS:
+            raise ValueError("笔记正文长度不能超过 4000 字符")
         if selected_text is not None and len(selected_text) > _READING_INPUT_MAX_CHARS:
             raise ValueError("选中文本长度不能超过 4000 字符")
+        has_range = selection_start is not None and selection_end is not None
+        if (selection_start is None) != (selection_end is None):
+            raise ValueError("划线范围必须同时提供起止位置")
+        if not content and (
+            paragraph_id is None or not selected_text or not has_range
+        ):
+            raise ValueError("空笔记必须包含有效划线")
         if paragraph_id is not None:
             paragraph = await self._store.get_paragraph(paragraph_id)
             if paragraph is None:
                 raise ValueError("段落不存在")
             if paragraph.book_id != book_id:
                 raise ValueError("段落不属于这本书")
+            if has_range and not _selection_matches(
+                paragraph.text,
+                cast(int, selection_start),
+                cast(int, selection_end),
+                selected_text,
+            ):
+                raise ValueError("划线范围与段落原文不一致")
+        elif has_range:
+            raise ValueError("划线必须属于一个段落")
         return await self._store.insert_user_note(
-            book_id, paragraph_id, content, selected_text
+            book_id,
+            paragraph_id,
+            content,
+            selected_text,
+            selection_start,
+            selection_end,
         )
 
     async def list_user_notes(self, book_id: str) -> list[UserNote]:
@@ -422,6 +473,30 @@ class ReadingFacade:
         """删笔记（批注随 FK CASCADE 清空）；不存在抛 `NoteNotFoundError`。"""
         if not await self._store.delete_user_note(note_id):
             raise NoteNotFoundError(note_id)
+
+    async def list_bookmarks(self, book_id: str) -> list[Bookmark]:
+        """列出当前书书签。"""
+        if await self._store.find_book(book_id) is None:
+            raise BookNotFoundError(book_id)
+        return await self._store.list_bookmarks(book_id)
+
+    async def add_bookmark(
+        self, book_id: str, paragraph_id: str
+    ) -> Bookmark:
+        """同书同段幂等新增书签。"""
+        if await self._store.find_book(book_id) is None:
+            raise BookNotFoundError(book_id)
+        paragraph = await self._store.get_paragraph(paragraph_id)
+        if paragraph is None:
+            raise ValueError("段落不存在")
+        if paragraph.book_id != book_id:
+            raise ValueError("段落不属于这本书")
+        return await self._store.insert_bookmark(book_id, paragraph_id)
+
+    async def delete_bookmark(self, bookmark_id: str) -> None:
+        """删除书签；不存在抛 BookmarkNotFoundError。"""
+        if not await self._store.delete_bookmark(bookmark_id):
+            raise BookmarkNotFoundError(bookmark_id)
 
     async def show_to_nyx(self, note_id: str) -> Annotation | None:
         """「给尼克斯看」：读笔记（+原段落）→ LLM 批注 → 插 `annotations` 返回。

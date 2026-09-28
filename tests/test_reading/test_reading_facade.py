@@ -34,6 +34,7 @@ from nyx.memory.facade import MemoryFacade
 from nyx.reading import facade as facade_mod
 from nyx.reading.epub import EpubResult
 from nyx.reading.facade import (
+    BookmarkNotFoundError,
     BookNotFoundError,
     DuplicateBookError,
     NoteNotFoundError,
@@ -1091,6 +1092,64 @@ async def test_add_user_note_without_paragraph_id(
         await database.conn.close()
     assert note.paragraph_id is None
     assert note.selected_text is None
+
+
+async def test_add_highlight_validates_utf16_range_and_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch, [Segment(text="A😀B", is_chapter_start=False)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        pid = (await facade.list_paragraphs(book.id, 1, 1))[0].id
+        first = await facade.add_user_note(book.id, pid, "", "😀", 1, 3)
+        duplicate = await facade.add_user_note(book.id, pid, "", "😀", 1, 3)
+    finally:
+        await database.conn.close()
+    assert duplicate.id == first.id
+    assert first.paragraph_index == 1
+    assert (first.selection_start, first.selection_end) == (1, 3)
+
+
+async def test_add_highlight_rejects_mismatched_or_partial_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch, [Segment(text="A😀B", is_chapter_start=False)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        pid = (await facade.list_paragraphs(book.id, 1, 1))[0].id
+        with pytest.raises(ValueError):
+            await facade.add_user_note(book.id, pid, "", "B", 1, 3)
+        with pytest.raises(ValueError):
+            await facade.add_user_note(book.id, pid, "", "😀", 1, None)
+        with pytest.raises(ValueError):
+            await facade.add_user_note(book.id, None, "", None)
+    finally:
+        await database.conn.close()
+
+
+async def test_bookmark_facade_crud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=False)],
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        pid = (await facade.list_paragraphs(book.id, 1, 1))[0].id
+        bookmark = await facade.add_bookmark(book.id, pid)
+        duplicate = await facade.add_bookmark(book.id, pid)
+        listed = await facade.list_bookmarks(book.id)
+        await facade.delete_bookmark(bookmark.id)
+        with pytest.raises(BookmarkNotFoundError):
+            await facade.delete_bookmark(bookmark.id)
+    finally:
+        await database.conn.close()
+    assert duplicate.id == bookmark.id
+    assert [item.paragraph_index for item in listed] == [1]
 
 
 async def test_update_user_note_hit_and_miss(

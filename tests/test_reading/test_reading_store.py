@@ -397,6 +397,25 @@ async def test_insert_user_note_with_and_without_paragraph_id() -> None:
     assert with_para.content == "划了这句"
 
 
+async def test_insert_highlight_is_idempotent_and_returns_paragraph_index() -> None:
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store)
+        pid = await _seed_paragraph_id(store, book_id)
+        first = await store.insert_user_note(
+            book_id, pid, "", "1", selection_start=1, selection_end=2,
+        )
+        again = await store.insert_user_note(
+            book_id, pid, "", "1", selection_start=1, selection_end=2,
+        )
+        listed = await store.list_user_notes(book_id)
+    finally:
+        await database.conn.close()
+    assert again.id == first.id
+    assert listed[0].paragraph_index == 1
+    assert (listed[0].selection_start, listed[0].selection_end) == (1, 2)
+
+
 async def test_list_user_notes_sorted_desc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -513,3 +532,24 @@ async def test_delete_book_sets_note_fk_null() -> None:
     assert after.book_id is None
     assert after.paragraph_id is None
     assert after.content == "笔记"  # 笔记文字保留
+
+
+# ---- 阅读系统：书签 ----
+
+async def test_bookmark_insert_is_idempotent_listed_by_paragraph_and_deleted() -> None:
+    store, database = await _new_store()
+    try:
+        book_id = await _seed_book(store, n=2)
+        paragraphs = await store.list_paragraphs(book_id, 1, 2)
+        second = await store.insert_bookmark(book_id, paragraphs[1].id)
+        first = await store.insert_bookmark(book_id, paragraphs[0].id)
+        duplicate = await store.insert_bookmark(book_id, paragraphs[0].id)
+        listed = await store.list_bookmarks(book_id)
+        deleted = await store.delete_bookmark(second.id)
+        missing = await store.delete_bookmark(second.id)
+    finally:
+        await database.conn.close()
+    assert duplicate.id == first.id
+    assert [item.paragraph_index for item in listed] == [1, 2]
+    assert listed[0].preview == "第1段"
+    assert deleted is True and missing is False

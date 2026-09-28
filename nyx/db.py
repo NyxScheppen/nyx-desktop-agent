@@ -639,6 +639,20 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "DEFAULT '{\"blocks\":[],\"marks\":[]}'",
         ],
     ),
+    (
+        30,
+        [
+            "ALTER TABLE user_notes ADD COLUMN selection_start INTEGER",
+            "ALTER TABLE user_notes ADD COLUMN selection_end INTEGER",
+            """CREATE TABLE bookmarks (
+                id TEXT PRIMARY KEY,
+                book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                paragraph_id TEXT NOT NULL REFERENCES paragraphs(id) ON DELETE CASCADE,
+                created_at REAL NOT NULL,
+                UNIQUE(book_id, paragraph_id)
+            )""",
+        ],
+    ),
 ]
 
 

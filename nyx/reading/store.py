@@ -22,6 +22,7 @@ from nyx.types import (
     Annotation,
     Book,
     BookListItem,
+    Bookmark,
     Paragraph,
     ParagraphBlock,
     ParagraphBlockKind,
@@ -35,8 +36,20 @@ _COLS = (
     "created_at, updated_at"
 )
 
-_NOTE_COLS = "id, book_id, paragraph_id, content, selected_text, created_at, updated_at"
+_NOTE_COLS = (
+    "id, book_id, paragraph_id, content, selected_text, "
+    "selection_start, selection_end, created_at, updated_at"
+)
+_NOTE_SELECT = (
+    "n.id, n.book_id, n.paragraph_id, n.content, n.selected_text, "
+    "n.selection_start, n.selection_end, n.created_at, n.updated_at, "
+    'p."index" AS paragraph_index'
+)
 _ANN_COLS = "id, user_note_id, content, created_at"
+_BOOKMARK_SELECT = (
+    'm.id, m.book_id, m.paragraph_id, p."index" AS paragraph_index, '
+    "substr(p.text, 1, 120) AS preview, m.created_at"
+)
 
 
 class ProgressConflictError(Exception):
@@ -321,27 +334,51 @@ class ReadingStore:
         paragraph_id: str | None,
         content: str,
         selected_text: str | None,
+        selection_start: int | None = None,
+        selection_end: int | None = None,
     ) -> UserNote:
         """插一条用户笔记；id/created_at/updated_at 在写路径内生成。"""
         async with self._db.lock:
+            if content == "" and paragraph_id is not None:
+                existing = await self._find_highlight_locked(
+                    book_id,
+                    paragraph_id,
+                    selected_text,
+                    selection_start,
+                    selection_end,
+                )
+                if existing is not None:
+                    return existing
             note_id = str(uuid4())
             now = time.time()
             await self._db.conn.execute(
-                f"INSERT INTO user_notes ({_NOTE_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (note_id, book_id, paragraph_id, content, selected_text, now, now),
+                f"INSERT INTO user_notes ({_NOTE_COLS}) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    note_id,
+                    book_id,
+                    paragraph_id,
+                    content,
+                    selected_text,
+                    selection_start,
+                    selection_end,
+                    now,
+                    now,
+                ),
             )
             await self._db.conn.commit()
-            return UserNote(
-                id=note_id, book_id=book_id, paragraph_id=paragraph_id,
-                content=content, selected_text=selected_text,
-                created_at=now, updated_at=now,
-            )
+            inserted = await self._get_user_note_locked(note_id)
+            if inserted is None:
+                raise RuntimeError(f"写后回读缺失：{note_id}")
+            return inserted
 
     async def get_user_note(self, note_id: str) -> UserNote | None:
         """按 note_id 单行查，供 facade 判笔记是否存在 / show_to_nyx 读原文。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                f"SELECT {_NOTE_COLS} FROM user_notes WHERE id = ?", (note_id,),
+                f"SELECT {_NOTE_SELECT} FROM user_notes n "
+                "LEFT JOIN paragraphs p ON p.id = n.paragraph_id WHERE n.id = ?",
+                (note_id,),
             )
             row = await cursor.fetchone()
             return _row_to_user_note(row) if row is not None else None
@@ -350,8 +387,9 @@ class ReadingStore:
         """某本书的用户笔记，按 created_at 降序（新在前）。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                f"SELECT {_NOTE_COLS} FROM user_notes WHERE book_id = ? "
-                "ORDER BY created_at DESC",
+                f"SELECT {_NOTE_SELECT} FROM user_notes n "
+                "LEFT JOIN paragraphs p ON p.id = n.paragraph_id "
+                "WHERE n.book_id = ? ORDER BY n.created_at DESC",
                 (book_id,),
             )
             rows = await cursor.fetchall()
@@ -425,13 +463,102 @@ class ReadingStore:
             row = await cursor.fetchone()
             return _row_to_paragraph(row) if row is not None else None
 
+    # ---- 阅读系统：书签 ----
+
+    async def insert_bookmark(
+        self, book_id: str, paragraph_id: str
+    ) -> Bookmark:
+        """同书同段幂等新增书签。"""
+        async with self._db.lock:
+            existing = await self._find_bookmark_locked(book_id, paragraph_id)
+            if existing is not None:
+                return existing
+            bookmark_id = str(uuid4())
+            await self._db.conn.execute(
+                "INSERT INTO bookmarks "
+                "(id, book_id, paragraph_id, created_at) VALUES (?, ?, ?, ?)",
+                (bookmark_id, book_id, paragraph_id, time.time()),
+            )
+            await self._db.conn.commit()
+            inserted = await self._get_bookmark_locked(bookmark_id)
+            if inserted is None:
+                raise RuntimeError(f"写后回读缺失：{bookmark_id}")
+            return inserted
+
+    async def list_bookmarks(self, book_id: str) -> list[Bookmark]:
+        """按段号返回一本书的书签。"""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                f"SELECT {_BOOKMARK_SELECT} FROM bookmarks m "
+                "JOIN paragraphs p ON p.id = m.paragraph_id "
+                'WHERE m.book_id = ? ORDER BY p."index" ASC',
+                (book_id,),
+            )
+            return [_row_to_bookmark(row) for row in await cursor.fetchall()]
+
+    async def delete_bookmark(self, bookmark_id: str) -> bool:
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "DELETE FROM bookmarks WHERE id = ?", (bookmark_id,)
+            )
+            await self._db.conn.commit()
+            return cursor.rowcount > 0
+
     async def _get_user_note_locked(self, note_id: str) -> UserNote | None:
         """写后回读笔记单行；调用方须已持锁。"""
         cursor = await self._db.conn.execute(
-            f"SELECT {_NOTE_COLS} FROM user_notes WHERE id = ?", (note_id,),
+            f"SELECT {_NOTE_SELECT} FROM user_notes n "
+            "LEFT JOIN paragraphs p ON p.id = n.paragraph_id WHERE n.id = ?",
+            (note_id,),
         )
         row = await cursor.fetchone()
         return _row_to_user_note(row) if row is not None else None
+
+    async def _find_highlight_locked(
+        self,
+        book_id: str,
+        paragraph_id: str,
+        selected_text: str | None,
+        selection_start: int | None,
+        selection_end: int | None,
+    ) -> UserNote | None:
+        cursor = await self._db.conn.execute(
+            f"SELECT {_NOTE_SELECT} FROM user_notes n "
+            "LEFT JOIN paragraphs p ON p.id = n.paragraph_id "
+            "WHERE n.book_id = ? AND n.paragraph_id = ? AND n.content = '' "
+            "AND n.selected_text = ? AND n.selection_start = ? "
+            "AND n.selection_end = ?",
+            (
+                book_id,
+                paragraph_id,
+                selected_text,
+                selection_start,
+                selection_end,
+            ),
+        )
+        row = await cursor.fetchone()
+        return _row_to_user_note(row) if row is not None else None
+
+    async def _find_bookmark_locked(
+        self, book_id: str, paragraph_id: str
+    ) -> Bookmark | None:
+        cursor = await self._db.conn.execute(
+            f"SELECT {_BOOKMARK_SELECT} FROM bookmarks m "
+            "JOIN paragraphs p ON p.id = m.paragraph_id "
+            "WHERE m.book_id = ? AND m.paragraph_id = ?",
+            (book_id, paragraph_id),
+        )
+        row = await cursor.fetchone()
+        return _row_to_bookmark(row) if row is not None else None
+
+    async def _get_bookmark_locked(self, bookmark_id: str) -> Bookmark | None:
+        cursor = await self._db.conn.execute(
+            f"SELECT {_BOOKMARK_SELECT} FROM bookmarks m "
+            "JOIN paragraphs p ON p.id = m.paragraph_id WHERE m.id = ?",
+            (bookmark_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_bookmark(row) if row is not None else None
 
 
 def _row_to_book(row: aiosqlite.Row) -> Book:
@@ -538,6 +665,20 @@ def _row_to_user_note(row: aiosqlite.Row) -> UserNote:
         selected_text=row["selected_text"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        paragraph_index=row["paragraph_index"],
+        selection_start=row["selection_start"],
+        selection_end=row["selection_end"],
+    )
+
+
+def _row_to_bookmark(row: aiosqlite.Row) -> Bookmark:
+    return Bookmark(
+        id=row["id"],
+        book_id=row["book_id"],
+        paragraph_id=row["paragraph_id"],
+        paragraph_index=row["paragraph_index"],
+        preview=row["preview"],
+        created_at=row["created_at"],
     )
 
 

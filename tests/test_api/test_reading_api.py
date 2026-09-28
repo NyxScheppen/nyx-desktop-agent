@@ -23,6 +23,7 @@ from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import _App, build_app
 from nyx.memory.facade import MemoryFacade
 from nyx.reading.facade import (
+    BookmarkNotFoundError,
     BookNotFoundError,
     DuplicateBookError,
     NoteNotFoundError,
@@ -33,6 +34,7 @@ from nyx.types import (
     Annotation,
     Book,
     BookListItem,
+    Bookmark,
     Paragraph,
     ReadingProgress,
     UserNote,
@@ -62,7 +64,13 @@ class _FakeReading:
         self.annotation_result: Annotation | None = None
         self.note_error: Exception | None = None
         self.add_error: Exception | None = None
-        self.added_notes: list[tuple[str, str | None, str, str | None]] = []
+        self.added_notes: list[
+            tuple[str, str | None, str, str | None, int | None, int | None]
+        ] = []
+        self.bookmarks_result: list[Bookmark] = []
+        self.bookmark_result: Bookmark | None = None
+        self.bookmark_error: Exception | None = None
+        self.added_bookmarks: list[tuple[str, str]] = []
         self.boundary_result: BoundaryResult = BoundaryResult.NONE
 
     async def import_book(self, filename: str, data: bytes) -> Book:
@@ -119,8 +127,19 @@ class _FakeReading:
         paragraph_id: str | None,
         content: str,
         selected_text: str | None,
+        selection_start: int | None = None,
+        selection_end: int | None = None,
     ) -> UserNote:
-        self.added_notes.append((book_id, paragraph_id, content, selected_text))
+        self.added_notes.append(
+            (
+                book_id,
+                paragraph_id,
+                content,
+                selected_text,
+                selection_start,
+                selection_end,
+            )
+        )
         if self.add_error is not None:
             raise self.add_error
         assert self.note_result is not None
@@ -140,6 +159,22 @@ class _FakeReading:
         if self.note_error is not None:
             raise self.note_error
         return self.annotation_result
+
+    async def list_bookmarks(self, book_id: str) -> list[Bookmark]:
+        if self.bookmark_error is not None:
+            raise self.bookmark_error
+        return self.bookmarks_result
+
+    async def add_bookmark(self, book_id: str, paragraph_id: str) -> Bookmark:
+        self.added_bookmarks.append((book_id, paragraph_id))
+        if self.bookmark_error is not None:
+            raise self.bookmark_error
+        assert self.bookmark_result is not None
+        return self.bookmark_result
+
+    async def delete_bookmark(self, bookmark_id: str) -> None:
+        if self.bookmark_error is not None:
+            raise self.bookmark_error
 
     async def check_chapter_boundary(
         self, book_id: str, nyx_position: int
@@ -188,6 +223,17 @@ def _note() -> UserNote:
 def _annotation() -> Annotation:
     return Annotation(
         id="a1", user_note_id="n1", content="我也喜欢这段", created_at=3.0
+    )
+
+
+def _bookmark() -> Bookmark:
+    return Bookmark(
+        id="bm1",
+        book_id="b1",
+        paragraph_id="p1",
+        paragraph_index=1,
+        preview="第一段",
+        created_at=4.0,
     )
 
 
@@ -520,7 +566,28 @@ async def test_notes_add_returns_201() -> None:
         )
     assert resp.status_code == 201
     assert resp.json()["id"] == "n1"
-    assert fake.added_notes == [("b1", "p1", "这段写得真好", "真好")]
+    assert fake.added_notes == [
+        ("b1", "p1", "这段写得真好", "真好", None, None)
+    ]
+
+
+async def test_highlight_add_returns_201_with_utf16_range() -> None:
+    fake = _FakeReading()
+    fake.note_result = _note()
+    async with _client(_app(fake)) as client:
+        resp = await client.post(
+            "/api/notes/user",
+            json={
+                "book_id": "b1",
+                "paragraph_id": "p1",
+                "content": "",
+                "selected_text": "😀",
+                "selection_start": 1,
+                "selection_end": 3,
+            },
+        )
+    assert resp.status_code == 201
+    assert fake.added_notes == [("b1", "p1", "", "😀", 1, 3)]
 
 
 async def test_notes_add_missing_content_returns_422() -> None:
@@ -541,7 +608,7 @@ async def test_notes_add_optional_fields_default_none() -> None:
             "/api/notes/user", json={"book_id": "b1", "content": "自由笔记"},
         )
     assert resp.status_code == 201
-    assert fake.added_notes == [("b1", None, "自由笔记", None)]
+    assert fake.added_notes == [("b1", None, "自由笔记", None, None, None)]
 
 
 async def test_notes_update_returns_note() -> None:
@@ -684,3 +751,31 @@ async def test_notes_show_to_nyx_llm_failure_returns_null() -> None:
         resp = await client.post("/api/notes/n1/show-to-nyx")
     assert resp.status_code == 200
     assert resp.json() is None
+
+
+# ---- 阅读系统：书签端点 ----
+
+async def test_bookmarks_list_add_delete() -> None:
+    fake = _FakeReading()
+    fake.bookmarks_result = [_bookmark()]
+    fake.bookmark_result = _bookmark()
+    async with _client(_app(fake)) as client:
+        listed = await client.get("/api/bookmarks/b1")
+        added = await client.post(
+            "/api/bookmarks", json={"book_id": "b1", "paragraph_id": "p1"}
+        )
+        deleted = await client.delete("/api/bookmarks/bm1")
+    assert listed.json()[0]["paragraph_index"] == 1
+    assert added.status_code == 201
+    assert fake.added_bookmarks == [("b1", "p1")]
+    assert deleted.status_code == 204
+
+
+async def test_bookmarks_errors_map_to_404_and_422() -> None:
+    fake = _FakeReading()
+    fake.bookmark_error = BookmarkNotFoundError("missing")
+    async with _client(_app(fake)) as client:
+        missing = await client.delete("/api/bookmarks/missing")
+        invalid = await client.post("/api/bookmarks", json={"book_id": "b1"})
+    assert missing.status_code == 404
+    assert invalid.status_code == 422

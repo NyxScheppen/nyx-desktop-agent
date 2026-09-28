@@ -28,6 +28,7 @@ BUSINESS_TABLES = {
     "reading_progress",
     "user_notes",
     "annotations",
+    "bookmarks",
     "eval_log",
     "eval_prompt",
     "event_delivery",
@@ -107,7 +108,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 29
+    assert len(names) == 30
 
 
 async def test_migrate_adds_source_memory_state_columns() -> None:
@@ -132,6 +133,27 @@ async def test_migrate_adds_paragraph_format_column() -> None:
         await conn.close()
     assert columns["format_json"]["notnull"] == 1
     assert columns["format_json"]["dflt_value"] == "'{\"blocks\":[],\"marks\":[]}'"
+
+
+async def test_migrate_adds_highlight_offsets_and_bookmarks() -> None:
+    conn = await _migrated_conn()
+    try:
+        note_rows = await (
+            await conn.execute("PRAGMA table_info(user_notes)")
+        ).fetchall()
+        bookmark_rows = await (
+            await conn.execute("PRAGMA table_info(bookmarks)")
+        ).fetchall()
+        note_columns = {
+            row["name"] for row in note_rows
+        }
+        bookmark_columns = {row["name"] for row in bookmark_rows}
+    finally:
+        await conn.close()
+    assert {"selection_start", "selection_end"} <= note_columns
+    assert bookmark_columns == {
+        "id", "book_id", "paragraph_id", "created_at"
+    }
 
 
 async def test_migrate_creates_expected_indexes() -> None:
@@ -488,7 +510,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 29
+    assert len(names) == 30
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

@@ -22,6 +22,7 @@ from nyx.app_context import _App
 from nyx.enums import ActivityType, BoundaryResult, EventType, MemoryKind, MemoryType
 from nyx.events.bus import EventAdmissionError
 from nyx.reading.facade import (
+    BookmarkNotFoundError,
     BookNotFoundError,
     DuplicateBookError,
     NoteNotFoundError,
@@ -32,6 +33,7 @@ from nyx.types import (
     Annotation,
     Book,
     BookListItem,
+    Bookmark,
     CurrentState,
     DesireState,
     EvalRecord,
@@ -96,8 +98,23 @@ class _ImpulsePayload(BaseModel):
 class _UserNotePayload(BaseModel):
     book_id: str
     paragraph_id: str | None = None
-    content: str = Field(..., min_length=1, max_length=4000)
+    content: str = Field(..., max_length=4000)
     selected_text: str | None = Field(default=None, max_length=4000)
+    selection_start: int | None = Field(default=None, ge=0)
+    selection_end: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_note_or_highlight(self) -> "_UserNotePayload":
+        if self.content:
+            return self
+        if (
+            self.paragraph_id is None
+            or not self.selected_text
+            or self.selection_start is None
+            or self.selection_end is None
+        ):
+            raise ValueError("空笔记必须包含有效划线")
+        return self
 
 
 class _UpdateNotePayload(BaseModel):
@@ -107,6 +124,11 @@ class _UpdateNotePayload(BaseModel):
 class _BoundaryPayload(BaseModel):
     book_id: str
     nyx_position: int = Field(..., ge=1)
+
+
+class _BookmarkPayload(BaseModel):
+    book_id: str
+    paragraph_id: str
 
 
 def sanitize_filename(name: str) -> str:
@@ -359,6 +381,8 @@ def build_app(
                 payload.paragraph_id,
                 payload.content,
                 payload.selected_text,
+                payload.selection_start,
+                payload.selection_end,
             )
         except BookNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
@@ -388,6 +412,31 @@ def build_app(
         try:
             return await app.reading.show_to_nyx(user_note_id)
         except NoteNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @fast.get("/api/bookmarks/{book_id}")
+    async def api_list_bookmarks(book_id: str) -> list[Bookmark]:
+        try:
+            return await app.reading.list_bookmarks(book_id)
+        except BookNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @fast.post("/api/bookmarks", status_code=201)
+    async def api_add_bookmark(payload: _BookmarkPayload) -> Bookmark:
+        try:
+            return await app.reading.add_bookmark(
+                payload.book_id, payload.paragraph_id
+            )
+        except BookNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @fast.delete("/api/bookmarks/{bookmark_id}", status_code=204)
+    async def api_delete_bookmark(bookmark_id: str) -> None:
+        try:
+            await app.reading.delete_bookmark(bookmark_id)
+        except BookmarkNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
 
     @fast.post("/api/notes/check-chapter-boundary")

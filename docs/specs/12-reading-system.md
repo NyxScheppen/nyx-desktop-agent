@@ -19,8 +19,8 @@
 
 ## 范围
 
-阅读系统负责用户陪读书库：EPUB 导入、段落读取、用户/Nyx 双位置进度、阅读冲动、
-Nyx 陪读事件、用户笔记、Nyx 批注和章末/整本记忆整合。`material` 活动书库是
+阅读系统负责用户陪读书库：EPUB 导入、结构化段落读取、用户/Nyx 双位置进度、阅读冲动、
+Nyx 陪读事件、用户笔记、段内划线、书签、Nyx 批注和章末/整本记忆整合。`material` 活动书库是
 Nyx 自己读的另一套数据，不由本 spec 替代。
 
 ## 数据模型
@@ -28,7 +28,16 @@ Nyx 自己读的另一套数据，不由本 spec 替代。
 ### 书籍与段落
 
 `Book` 字段为 `id/title/author/filename/content_hash/total_paragraphs/created_at/
-updated_at`。`Paragraph` 字段为 `id/book_id/index/text/is_chapter_start`。
+updated_at`。`Paragraph` 字段为
+`id/book_id/index/text/is_chapter_start/blocks/marks`。
+
+- `ParagraphBlock` 字段为 `kind/start/end/level`；`kind` 只允许
+  `paragraph/heading/blockquote/list_item/pre`，仅 `heading` 使用 `level=1..6`。
+- `TextMark` 字段为 `start/end/bold/italic`。`blocks`、`marks` 与用户划线的 offset
+  都是 `Paragraph.text` 的 UTF-16 code unit 闭开区间（与 JavaScript `slice` 一致）；
+  后端按同一规则生成和校验，前端不得从 HTML 重新推导。
+- `text` 仍是记忆、LLM、哈希、字数与选区校验的唯一纯文本来源；`blocks/marks`
+  只负责受控渲染。旧数据的两数组为空时按普通正文回退。
 
 - `index` 从 1 起，按书连续。
 - `is_chapter_start` 表示段落由 `h1`/`h2` 开始，用于边界检测。
@@ -50,14 +59,22 @@ updated_at/revision`。`BookListItem` 字段为
 - `read_count` 只由整本读完原子操作递增。
 - `revision` 是每书单调递增的条件写版本；无进度行的默认版本是 0。
 
-### 用户笔记与批注
+### 用户笔记、划线、书签与批注
 
-`UserNote` 字段为 `id/book_id/paragraph_id/content/selected_text/created_at/
-updated_at/annotations`；`Annotation` 字段为
-`id/user_note_id/content/created_at`。
+`UserNote` 字段为 `id/book_id/paragraph_id/paragraph_index/content/selected_text/
+selection_start/selection_end/created_at/updated_at/annotations`；`paragraph_index`
+由段落关联派生、不单独落库。`Annotation` 字段为
+`id/user_note_id/content/created_at`。`Bookmark` 字段为
+`id/book_id/paragraph_id/paragraph_index/preview/created_at`，其中后两项段落信息由查询派生。
 
 - 书或段删除时用户笔记的外键置空，批注随用户笔记级联删除。
-- `content` 和 `selected_text` 均最多 4000 字符，正文不能为空。
+- `content` 和 `selected_text` 均最多 4000 字符。普通笔记的 `content` 非空；纯划线允许
+  `content=""`，但必须同时提供有效的 `paragraph_id/selected_text/selection_start/
+  selection_end`，并满足 `paragraph.text[start:end] == selected_text`。
+- 旧笔记可以只有 `selected_text` 而无 offset；它继续显示为笔记引用，但不在正文绘制划线。
+- 划线只支持单个 `Paragraph`；完全相同的纯划线幂等返回已有记录。重叠划线各自保留，
+  前端只合并视觉区间，删除一条后其余记录仍生效。
+- 书签与笔记分表；同一本书同一段最多一个书签，书或段删除时级联删除。
 
 ## 内容导入契约
 
@@ -68,8 +85,11 @@ updated_at/annotations`；`Annotation` 字段为
 - `ReadingFacade.import_book(filename: str, data: bytes) -> Book`：
   空正文抛 `ValueError`，重复抛 `DuplicateBookError`。
 
-分段规则是块级标签成段、标题与紧邻 `p` 合并、连续 `li` 合并、短段合并、超过
-3000 字符按句号拆分；无结构标签的 fallback 也必须经过长段拆分。
+分段规则仍是块级标签成段、标题与紧邻 `p` 合并、连续 `li` 合并、短段合并、超过
+3000 字符按句号拆分；无结构标签的 fallback 也必须经过长段拆分。分段同时保存当前
+已识别块标签的语义，以及 `strong/b`、`em/i` 两类行内标记；文本必须先 HTML 解码，
+不得保存原始 HTML、脚本、样式、属性或 EPUB CSS。拆分与合并后的 offset 必须仍能精确
+切回 `Paragraph.text`。
 
 ## 进度契约
 
@@ -113,6 +133,10 @@ ReadingFacade.save_progress(
 
 前端必须保存服务端 revision；同书进度写入串行化。冲突或写失败时先读服务端最新
 进度，再以最新 revision 重试，不能直接以旧快照覆盖。
+
+阅读器普通上一段/下一段继续调用 `syncPosition` 并按前进段落评估冲动。点击历史划线或
+书签调用独立的 `jumpToPosition`：正式更新并持久化 `user_position`、按需重拉窗口并恢复
+Nyx 追赶，但无论向前或向后都不调用 `evaluateImpulse`，避免把定位跨过的内容伪装成逐段阅读。
 
 ## 阅读冲动契约
 
@@ -202,11 +226,16 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
 5. 用同名书、全局高分干扰、短回复、超长段落、边界余量和两个崩溃窗口做回归；同步
    memory/activity/expression/reading 契约与事实摘要。
 
-## 笔记与整合契约
+## 笔记、划线、书签与整合契约
 
 - `add_user_note`、`list_user_notes`、`update_user_note`、`delete_user_note`、
   `show_to_nyx` 均为异步 Facade 方法。
+- `list_bookmarks`、`add_bookmark`、`delete_bookmark` 均为异步 Facade 方法；新增前校验
+  书与段落归属，重复新增幂等返回已有书签。
 - `list_user_notes` 先确认书存在，不存在抛 `BookNotFoundError`，一次批量查询批注。
+- “快速查询”只搜索当前书已加载的有效划线，匹配 `selected_text`（大小写不敏感）；
+  不调用 LLM、不搜索 Nyx 记忆、不新增服务端全文搜索端点。点击结果使用上文
+  `jumpToPosition` 语义。
 - `show_to_nyx` 使用统一人格 prompt；LLM 失败或空输出返回 `None`，不插入批注。
 - Nyx 输出仅支持 `source="mutter"` 或 `"question"`，写入每书最多 100 条的进程内
   buffer，重启后清空。
@@ -251,14 +280,20 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
 | DELETE | `/api/notes/user/{note_id}` | 删除用户笔记 |
 | POST | `/api/notes/{note_id}/show-to-nyx` | 生成批注 |
 | POST | `/api/notes/check-chapter-boundary` | 检查章末/整本边界 |
+| GET | `/api/bookmarks/{book_id}` | 当前书书签 |
+| POST | `/api/bookmarks` | 新增书签（同段幂等） |
+| DELETE | `/api/bookmarks/{bookmark_id}` | 删除书签 |
 
 ## 测试与完成定义
 
-- 纯函数测试覆盖分段、特征、驱动、冷却。
+- 纯函数测试覆盖分段格式与 offset、特征、驱动、冷却。
 - 集成测试覆盖导入原子性、revision 冲突、位置边界、重复整本完成、整合失败保留
   buffer、下游事件失败不清理 buffer 和后台任务追踪。
 - 原文记忆测试覆盖 6000 字符块、跨段 cursor、超长单段、章/书末 flush、pending 两个
   崩溃窗口、来源内 Top 5、画像滚动与类别归因、短回复三层上下文。
-- API 测试覆盖 2xx/404/409/422/500 语义；前端测试覆盖 revision 写队列和缓存缺失
-  时刷新书架。
+- API 测试覆盖 2xx/404/409/422/500 语义；前端测试覆盖 revision 写队列、缓存缺失
+  时刷新书架、划线检索、书签切换，以及定位保存进度但不补发冲动。
+- 阅读器使用受控结构渲染标题、正文、加粗、斜体、引用、列表与预格式文本；版心限制
+  行宽。富文本、字号或窗口变化后沿用实测真分页。单段高于视口时该页允许局部纵向
+  滚动，不能用 `overflow:hidden` 裁掉正文。
 - `ruff check`、`pyright`、后端 `pytest`、前端 `npm test` 和 `npm run build` 应通过。

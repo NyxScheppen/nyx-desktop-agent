@@ -6,7 +6,8 @@
 ## 元信息
 
 - **前置依赖**：`01-types`、`03-llm`、`04-module-bus-system`、`06-memory-system`、
-  `07-desire`、`08-inner-life`、`10-eval`、`11-expression`
+  `07-desire`、`08-inner-life`、`10-eval`、`11-expression`；委派读取扩展见
+  `14-assigned-tasks`
 - **实现文件**：
   `nyx/types.py`、`nyx/enums.py`、`nyx/db.py`、
   `nyx/reading/segmenter.py`、`nyx/reading/epub.py`、
@@ -21,7 +22,8 @@
 
 阅读系统负责用户陪读书库：EPUB 导入、结构化段落读取、用户/Nyx 双位置进度、阅读冲动、
 Nyx 陪读事件、用户笔记、段内划线、书签、Nyx 批注和章末/整本记忆整合。`material` 活动书库是
-Nyx 自己读的另一套数据，不由本 spec 替代。
+Nyx 自己读的另一套数据，不由本 spec 替代；14-assigned-tasks 只在活动选材层统一两套
+书库，并通过本 Facade 的窄入口读取 EPUB，不复制书籍或段落。
 
 ## 数据模型
 
@@ -110,6 +112,9 @@ ReadingStore.increment_read_count(
 ReadingStore.reset_completion_marker(
     book_id: str, nyx_position: int
 ) -> bool
+ReadingStore.advance_nyx_position(
+    book_id: str, nyx_position: int
+) -> ReadingProgress
 
 ReadingFacade.get_progress(book_id: str) -> ReadingProgress
 ReadingFacade.save_progress(
@@ -119,6 +124,11 @@ ReadingFacade.save_progress(
     reading_speed: int,
     expected_revision: int,
 ) -> ReadingProgress
+ReadingFacade.read_for_activity(
+    book_id: str,
+    target_paragraph: int | None,
+    correlation_id: str,
+) -> dict[str, Any]
 ```
 
 - `save_progress` 先确认书存在并校验两处位置不越界。
@@ -132,7 +142,12 @@ ReadingFacade.save_progress(
 - `GET /api/books/{book_id}/paragraphs?from=&to=` 对非法范围返回 422，不截断越界。
 
 前端必须保存服务端 revision；同书进度写入串行化。冲突或写失败时先读服务端最新
-进度，再以最新 revision 重试，不能直接以旧快照覆盖。
+进度，再以最新 revision 重试。除显式“重读”外，重试的 `nyx_position` 必须取本地与
+服务器较大值并更新本地状态，不能以旧快照覆盖活动后台已经推进的 Nyx 位置。
+
+活动系统读取 EPUB 时只调用 `read_for_activity`：明确任务读到指定目标；探索欲匹配书籍
+时读取约一个 6000 字符段落范围。该入口复用原文沉淀，成功后才单调推进 Nyx 位置，
+保留用户位置、阅读速度和读完次数，不触发陪读冲动、主动提问、联想或用户翻页语义。
 
 阅读器普通上一段/下一段继续调用 `syncPosition` 并按前进段落评估冲动。点击历史划线或
 书签调用独立的 `jumpToPosition`：正式更新并持久化 `user_position`、按需重拉窗口并恢复

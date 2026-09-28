@@ -1,6 +1,6 @@
 # 枚举 + 实体类型
 
-> 范围：`nyx/enums.py`（17 个 `StrEnum`）、`nyx/types.py`（4 个 TypedDict + 27 个 dataclass）。
+> 范围：`nyx/enums.py`（23 个 `StrEnum`）、`nyx/types.py`（4 个 TypedDict + 30 个 dataclass）。
 > 纯声明 spec：只定义类型，不含函数、不含序列化 helper、不含 DDL。
 > spec 只定义契约（签名 + 语义 + 决策）；枚举成员与 dataclass 字段以 `nyx/enums.py` / `nyx/types.py` 源文件为准。
 
@@ -14,8 +14,8 @@
 
 ## 验收标准
 
-- [ ] `enums.py` 含 17 个 `StrEnum`，成员与源文件一致（实现见 `nyx/enums.py`）
-- [ ] `types.py` 含 4 个 TypedDict + 27 个 dataclass，字段与源文件一致（实现见 `nyx/types.py`）
+- [ ] `enums.py` 含 23 个 `StrEnum`，成员与源文件一致（实现见 `nyx/enums.py`）
+- [ ] `types.py` 含 4 个 TypedDict + 30 个 dataclass，字段与源文件一致（实现见 `nyx/types.py`）
 - [ ] 所有枚举 `.value` 为小写 snake_case 字符串，可直接 `json.dumps` / 存 SQLite
 - [ ] 固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`（边界见「嵌套 dict 字段的边界」表）、不加 `frozen`
 - [ ] `pyright` strict 下零报错：无 implicit Any、无 `str` 赋给枚举成员的默认值告警
@@ -26,7 +26,7 @@
 - **约定**：枚举统一 `class X(StrEnum)`，成员 `UPPER_SNAKE`、值 = `成员名.lower()` 的 snake_case；dataclass 默认值用枚举成员而非裸字符串。
 - **公开面**：`nyx/__init__.py` 保持空（不 re-export）；引用一律 `from nyx.enums import X` / `from nyx.types import Y`，不从 `nyx` 根导入；两模块不加 `__all__`（CLAUDE.md 禁 `*` 导入，`__all__` 是死代码）。
 - **枚举清单**：包含 `MemoryKind`；成员与领域语义以 `nyx/enums.py` 及对应业务 spec 为准。
-- **实体清单（24 个 dataclass）**：事件 `Event`；记忆 `Memory` / `MemoryEdge`；欲望 `Goal` / `ShortTermDesire` / `LongTermDesire` / `DesireValue` / `DesireState`；活动 `Activity` / `Material`；内在生命 `CurrentState` / `SelfNarrative` / `ReflectionOutcome`；表达 `Message`；工具/eval `Tool` / `LLMOutput` / `EvalRecord` / `EvalStats`；陪读 `Book` / `Paragraph` / `ReadingProgress` / `BookListItem` / `UserNote` / `Annotation`。字段形状以 `nyx/types.py` 为准。
+- **实体清单**：除既有事件、记忆、欲望、活动、内在生命、表达、工具/eval 与陪读实体外，委派任务新增 `AssignedTask`；完整字段形状以 `nyx/types.py` 为准。
 - **消息 TypedDict**：`LlmMessage` 固定为 `role: Literal["system", "user", "assistant"]` + `content: str`；`nyx.llm.client` 导入并继续公开该名字。
 - **记忆类型字段**：`Memory.kind` 使用 `MemoryKind`，`Memory.topics` 为受限主题列表；`Memory.sources` 的类型与默认值由本文件定义，检索来源、持久化和 API 语义由 `06-memory-system` 定义。
 
@@ -49,7 +49,7 @@
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_types/`：
-  - [ ] 17 个枚举**穷尽断言**（防漏成员/多成员/改值）：`EXPECTED` 硬编码每个枚举的完整值集合，`{m.value for m in X} == expected` 逐枚举比对（EXPECTED 字典与枚举成员同源，随 `nyx/enums.py` 维护）
+  - [ ] 23 个枚举**穷尽断言**（防漏成员/多成员/改值）：`EXPECTED` 硬编码每个枚举的完整值集合，`{m.value for m in X} == expected` 逐枚举比对（EXPECTED 字典与枚举成员同源，随 `nyx/enums.py` 维护）
   - [ ] 命名约定断言 `all(m.value == m.name.lower() for m in X)`（值 = 成员名小写，防手滑改值）
   - [ ] `json.dumps(EventType.USER_MESSAGE) == '"user_message"'`（StrEnum 可直接序列化）
   - [ ] `ShortTermDesire("", 0.0, DesireType.INTERACTION, 1.0, "", None).status is DesireStatus.PENDING`

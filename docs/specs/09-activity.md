@@ -6,7 +6,7 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Activity` / `ActivityType` / `ActivityStatus` / `DesireType` / `ShortTermDesire` / `DesireValue` / `CurrentState` / `Event` / `EventType` / `Material`）、02-config（`ActivityConfig` / `ExplorationConfig` / `ActivityEnergyDelta`）、03-llm（`LlmClient.complete` / `VisionClient`）、04-module-bus-system（`activity` / `material` 表、`EventBus` / `internal_event` / tick 路由、组合根、REST、SSE）、05-tools（`ToolRegistry`）、06-memory-system（活动/知识记忆落库）、07-desire（待消费欲望、活动状态接线、满足回写、长期欲望入口）、08-inner-life（状态快照、反思、精力变化）、10-eval（`Evaluator`）
+- **前置依赖**：01-types（`Activity` / `ActivityType` / `ActivityStatus` / `DesireType` / `ShortTermDesire` / `DesireValue` / `CurrentState` / `Event` / `EventType` / `Material`）、02-config（`ActivityConfig` / `ExplorationConfig` / `ActivityEnergyDelta`）、03-llm（`LlmClient.complete` / `VisionClient`）、04-module-bus-system（`activity` / `material` 表、`EventBus` / `internal_event` / tick 路由、组合根、REST、SSE）、05-tools（`ToolRegistry`）、06-memory-system（活动/知识记忆落库）、07-desire（待消费欲望、活动状态接线、满足回写、长期欲望入口）、08-inner-life（状态快照、反思、精力变化）、10-eval（`Evaluator`）、12-reading-system（EPUB 读取入口）；委派任务扩展见 14-assigned-tasks
 - **实现文件**：`nyx/activity/scheduler.py`、`nyx/activity/store.py`、`nyx/activity/material_store.py`、`nyx/activity/starter.py`、`nyx/activity/lifecycle.py`、`nyx/activity/facade.py`、`nyx/activity/reading_runner.py`、`nyx/activity/creation.py`、`nyx/activity/llm_result.py`、`nyx/activity/paths.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/screen.py`
 
 ## 用户故事
@@ -75,7 +75,7 @@
   ```
 
 - [ ] `select_activity` 是同步纯决策：无欲望或全为互动欲时返回 `None`；精力不足时返回无欲望关联的 `REST`；否则返回第一个可排程欲望映射出的活动，并在 `progress` 保存 `desire_id`、`goal`、`correlation_id`、`description`。
-- [ ] `SCHEDULE_BLOCK_START` 与 `DESIRE_GENERATED` 都进入同一个 `_maybe_start_activity` 启动路径；已有活动时不重复启动。
+- [ ] `SCHEDULE_BLOCK_START`、`DESIRE_GENERATED` 与新建委派任务都进入同一个 `_maybe_start_activity` 启动路径；已有活动时不重复启动。
 - [ ] `get_schedule()` 以运行 Nyx 的电脑系统本地时区计算当天 `00:00`，只返回本地自然日内 `started_at` 不早于该时刻的活动，按 `started_at ASC`；不新增时区配置，不处理前后端分处不同时区。
 - [ ] `get_results()` 返回跨天历史产出并按 `ended_at DESC`；`limit` / `offset` 在 SQL 层分页，`activity_type` 非空时在 SQL 层过滤，不先物化全部记录。数据库迁移为创作历史查询建立 `(status, type, ended_at DESC)` 复合索引。
 - [ ] 有关联欲望的活动先在同一个本地事务中执行 `claim_for_activity(desire_id)`（`PENDING -> ACTIVE`）和活动 `PENDING` 插入；领取失败不创建活动，插入失败回滚领取。后台 task 开始后转 `RUNNING`；活动执行不阻塞 EventBus。
@@ -210,7 +210,11 @@
 
 ### 活动类型执行
 
-- [ ] `READING` 由探索欲映射而来。启动时先按 `goal.topic` 选择 material，再按最近未读完 material 续读；无 source 不创建/不执行读书活动。无可读 material 且 topic 非空、通过 `should_explore` 限速时升级为 `FREE_EXPLORATION`，否则回退默认活动。
+- [ ] `READING` 可由探索欲或 14-assigned-tasks 的委派任务产生。探索欲只按非空
+  `goal.topic` 在 EPUB 书架与 material 书库间执行统一模糊匹配；不再用最近未读 material
+  兜底。匹配 EPUB 时经 12-reading-system 的窄回调执行，匹配 material 时沿用
+  `ReadingActivityRunner`；无匹配且通过 `should_explore` 限速时升级为
+  `FREE_EXPLORATION`，否则回退默认活动。完整排序、阈值与任务优先级见 14。
 - [ ] `CREATION` 执行一次创作 LLM，并通过 `ToolRegistry` 写入 `workspace/creations/<safe-title>-<activity-hash>.md`。
 - [ ] `IDLE_REFLECTION` 调用组合根注入的 `inner_life.reflect`，不自行发布 `REFLECTION` 事件，并把反思摘要放进结果。
 - [ ] `OBSERVE_USER` 读取组合根维护的 presence、窗口标题和可选 screen summary，使用 `build_observation_summary` 生成摘要，运行时不调用 LLM。

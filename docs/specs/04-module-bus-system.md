@@ -589,6 +589,9 @@ CREATE TABLE eval_prompt (
   `Event.timestamp` 的 epoch 秒，不使用浏览器接收时刻代替。
   生产方不得使用三个公共键；序列化时公共头覆盖同名 content 键。必填 timestamp 是
   monorepo 线协议，后端和前端必须同批发布，不支持新前端连接缺少该字段的旧后端。
+- `task_updated` 是委派任务状态快照通知：先持久化任务，再以
+  `{task_id, status}`、`correlation_id=task_id` 广播；它没有 durable consumer，
+  前端收到后重拉 `/api/tasks`。广播失败不得回滚已经提交的任务状态。
 
 其它可选调试端点需另写 spec，不在本轮默认新增。
 

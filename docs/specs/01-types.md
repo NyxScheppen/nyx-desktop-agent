@@ -25,7 +25,7 @@
 - **新文件**：`nyx/enums.py`、`nyx/types.py`（无 Facade、无 API、无数据变更）
 - **约定**：枚举统一 `class X(StrEnum)`，成员 `UPPER_SNAKE`、值 = `成员名.lower()` 的 snake_case；dataclass 默认值用枚举成员而非裸字符串。
 - **公开面**：`nyx/__init__.py` 保持空（不 re-export）；引用一律 `from nyx.enums import X` / `from nyx.types import Y`，不从 `nyx` 根导入；两模块不加 `__all__`（CLAUDE.md 禁 `*` 导入，`__all__` 是死代码）。
-- **枚举清单**：包含 `MemoryKind`；成员与领域语义以 `nyx/enums.py` 及对应业务 spec 为准。
+- **枚举清单**：包含 `MemoryKind`、`AssignedTaskType` 与 `AssignedTaskStatus`；成员与领域语义以 `nyx/enums.py` 及对应业务 spec 为准。
 - **实体清单**：除既有事件、记忆、欲望、活动、内在生命、表达、工具/eval 与陪读实体外，委派任务新增 `AssignedTask`；完整字段形状以 `nyx/types.py` 为准。
 - **消息 TypedDict**：`LlmMessage` 固定为 `role: Literal["system", "user", "assistant"]` + `content: str`；`nyx.llm.client` 导入并继续公开该名字。
 - **记忆类型字段**：`Memory.kind` 使用 `MemoryKind`，`Memory.topics` 为受限主题列表；`Memory.sources` 的类型与默认值由本文件定义，检索来源、持久化和 API 语义由 `06-memory-system` 定义。

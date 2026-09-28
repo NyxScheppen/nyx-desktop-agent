@@ -6,8 +6,7 @@
 ## 元信息
 
 - **前置依赖**：`01-types`、`03-llm`、`04-module-bus-system`、`06-memory-system`、
-  `07-desire`、`08-inner-life`、`10-eval`、`11-expression`；委派读取扩展见
-  `14-assigned-tasks`
+  `07-desire`、`08-inner-life`、`10-eval`、`11-expression`
 - **实现文件**：
   `nyx/types.py`、`nyx/enums.py`、`nyx/db.py`、
   `nyx/reading/segmenter.py`、`nyx/reading/epub.py`、
@@ -22,8 +21,8 @@
 
 阅读系统负责用户陪读书库：EPUB 导入、结构化段落读取、用户/Nyx 双位置进度、阅读冲动、
 Nyx 陪读事件、用户笔记、段内划线、书签、Nyx 批注和章末/整本记忆整合。`material` 活动书库是
-Nyx 自己读的另一套数据，不由本 spec 替代；14-assigned-tasks 只在活动选材层统一两套
-书库，并通过本 Facade 的窄入口读取 EPUB，不复制书籍或段落。
+Nyx 自己读的另一套数据，不由本 spec 替代；活动系统只在选材层统一两套书库，并通过本
+Facade 的窄入口读取 EPUB，不复制书籍或段落。
 
 ## 数据模型
 
@@ -149,6 +148,14 @@ ReadingFacade.read_for_activity(
 时读取约一个 6000 字符段落范围。该入口复用原文沉淀，成功后才单调推进 Nyx 位置，
 保留用户位置、阅读速度和读完次数，不触发陪读冲动、主动提问、联想或用户翻页语义。
 
+### 活动系统读取 EPUB
+
+- 明确委派任务传 `target_paragraph`；普通探索欲匹配 EPUB 时传 `None`，从当前 Nyx 位置向前选择约一个 6000 字符块的段落范围。
+- `read_for_activity` 复用 `ReadingIntegration.sediment(..., flush=True)`，成功后才调用 `advance_nyx_position`。推进取 `max(current, requested)`，保留服务端当前 `user_position/reading_speed/read_count` 并递增 revision。
+- 目标已不晚于持久化 `nyx_position` 时幂等返回完成，不回退、不重复沉淀；只有阅读器显式“重读”允许 Nyx 位置回退。
+- 目标到书末时沿用既有整本完成幂等语义，首次完成递增 `read_count`；活动读取不写陪读 buffer，因此不生成冲动、提问、联想或主观碎碎念整合。
+- `book_id` 不存在与目标段越界分别由调用方映射为 404/422；排队期间书被删除或段落范围变化时，活动任务按 09-activity 进入可见失败态。
+
 阅读器普通上一段/下一段继续调用 `syncPosition` 并按前进段落评估冲动。点击历史划线或
 书签调用独立的 `jumpToPosition`：正式更新并持久化 `user_position`、按需重拉窗口并恢复
 Nyx 追赶，但无论向前或向后都不调用 `evaluateImpulse`，避免把定位跨过的内容伪装成逐段阅读。
@@ -228,6 +235,8 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
 | 旧库无画像 | 空摘要/主题 + `unknown` |
 | 提取 JSON 非法 | 记录后台错误并保留 cursor，后续前进/边界调用重试 |
 | 重复边界调用 | 不创建第二个并行整合任务；锁内重读最新 checkpoint |
+| 活动目标已经读过 | 幂等返回，不重复沉淀、不回退、不重复增加读完次数 |
+| 活动后台与阅读器并发保存 | 普通进度冲突重读服务端快照，Nyx 位置取本地/服务端最大值；显式重读除外 |
 
 ### 最小实施计划
 
@@ -306,6 +315,7 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
   buffer、下游事件失败不清理 buffer 和后台任务追踪。
 - 原文记忆测试覆盖 6000 字符块、跨段 cursor、超长单段、章/书末 flush、pending 两个
   崩溃窗口、来源内 Top 5、画像滚动与类别归因、短回复三层上下文。
+- 活动读取测试覆盖明确目标、约 6000 字符自动目标、只推进 Nyx、已读目标 no-op、整本计数幂等与 revision 并发合并。
 - API 测试覆盖 2xx/404/409/422/500 语义；前端测试覆盖 revision 写队列、缓存缺失
   时刷新书架、划线检索、书签切换，以及定位保存进度但不补发冲动。
 - 阅读器使用受控结构渲染标题、正文、加粗、斜体、引用、列表与预格式文本；版心限制

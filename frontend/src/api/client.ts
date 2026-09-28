@@ -2,6 +2,7 @@ import type {
   Activity,
   ActivitySnapshot,
   Annotation,
+  AssignedTask,
   BackendEvent,
   Book,
   BookListItem,
@@ -106,6 +107,32 @@ export async function getActivityResults(params?: {
   return request<Activity[]>(
     `${BASE_URL}/api/activity/results${qs ? `?${qs}` : ""}`,
   );
+}
+
+export async function getTasks(): Promise<AssignedTask[]> {
+  return request<AssignedTask[]>(`${BASE_URL}/api/tasks`);
+}
+
+export async function createWebTask(url: string): Promise<AssignedTask> {
+  return request<AssignedTask>(`${BASE_URL}/api/tasks/web`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+}
+
+export async function createBookTask(
+  bookId: string,
+  targetParagraph: number,
+): Promise<AssignedTask> {
+  return request<AssignedTask>(`${BASE_URL}/api/tasks/book`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      book_id: bookId,
+      target_paragraph: targetParagraph,
+    }),
+  });
 }
 
 export async function getEventsLog(params?: {

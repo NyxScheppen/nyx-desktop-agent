@@ -156,7 +156,8 @@ type OpaqueEventType =
   | "desire_expired"
   | "activity_start"
   | "activity_end"
-  | "activity_interrupted";
+  | "activity_interrupted"
+  | "task_updated";
 type OpaqueEvent = SseBase & { event: OpaqueEventType } & Record<string, unknown>;
 
 /** SSE 帧：按 event 值判别联合——键名错位在编译期即拦（曾放过 user_message 读 content 的 bug）。 */
@@ -295,6 +296,22 @@ export type Activity = {
 export type ActivitySnapshot = {
   current: Activity | null;
   schedule: Activity[];
+};
+
+export type AssignedTaskType = "web" | "book";
+export type AssignedTaskStatus = "pending" | "running" | "completed" | "failed";
+
+export type AssignedTask = {
+  id: string;
+  type: AssignedTaskType;
+  status: AssignedTaskStatus;
+  url: string | null;
+  book_id: string | null;
+  target_paragraph: number | null;
+  checkpoint: Record<string, unknown>;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
 };
 
 // ---- 阅读（12-reading-system / nyx/types.py Book/Paragraph/ReadingProgress/BookListItem）----

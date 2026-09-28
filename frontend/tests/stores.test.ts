@@ -465,7 +465,10 @@ describe("desireStore / activityStore", () => {
     useActivityStore.setState({
       data: null,
       results: null,
+      tasks: null,
       error: null,
+      taskError: null,
+      creatingTask: false,
       resultsLoading: false,
       hasMoreResults: false,
     });
@@ -489,22 +492,49 @@ describe("desireStore / activityStore", () => {
     expect(useDesireStore.getState().data).toEqual(fixture);
   });
 
-  it("activityStore.refresh：并行 getActivity + getActivityResults → data/results 落 store", async () => {
+  it("activityStore.refresh：并行加载活动、产出和任务", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ current: null, schedule: [] }))
-      .mockResolvedValueOnce(jsonResponse([]));
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse([{ id: "t1", status: "pending" }]));
     vi.stubGlobal("fetch", fetchMock);
 
     await useActivityStore.getState().refresh();
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/activity");
+    expect(fetchMock.mock.calls[2][0]).toBe("/api/tasks");
     expect(fetchMock.mock.calls[1][0]).toBe(
       "/api/activity/results?limit=13&offset=0&activity_type=creation",
     );
     expect(useActivityStore.getState().data).toEqual({ current: null, schedule: [] });
     expect(useActivityStore.getState().results).toEqual([]);
+    expect(useActivityStore.getState().tasks).toEqual([
+      { id: "t1", status: "pending" },
+    ]);
+  });
+
+  it("activityStore 创建书籍任务后把返回状态加入列表", async () => {
+    const task = {
+      id: "t1",
+      type: "book" as const,
+      status: "pending" as const,
+      url: null,
+      book_id: "b1",
+      target_paragraph: 12,
+      checkpoint: {},
+      error: null,
+      created_at: 2,
+      updated_at: 2,
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(task)));
+
+    const created = await useActivityStore.getState().createBookTask("b1", 12);
+
+    expect(created).toBe(true);
+    expect(useActivityStore.getState().tasks).toEqual([task]);
+    expect(useActivityStore.getState().taskError).toBeNull();
   });
 
   it("activityStore.loadMoreResults：按当前长度追加下一批并更新 hasMore", async () => {
@@ -1510,6 +1540,72 @@ describe("readerStore", () => {
         expected_revision: 1,
       }),
     });
+  });
+
+  it("普通进度冲突：重读服务端并保留更靠前的 Nyx 位置", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      paragraphs: [para(3, "第三段"), para(4, "第四段")],
+      windowFrom: 1,
+      userPosition: 3,
+      nyxPosition: 2,
+      readingSpeed: 50,
+      progressRevision: 1,
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ detail: "进度冲突" }, false, 409))
+      .mockResolvedValueOnce(jsonResponse({
+        book_id: "b1", user_position: 3, nyx_position: 8,
+        reading_speed: 50, read_count: 0, updated_at: 2, revision: 2,
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        book_id: "b1", user_position: 4, nyx_position: 8,
+        reading_speed: 50, read_count: 0, updated_at: 3, revision: 3,
+      }))
+      .mockResolvedValue(jsonResponse({ triggered: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().syncPosition(4);
+
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toMatchObject({
+      user_position: 4,
+      nyx_position: 8,
+      expected_revision: 2,
+    });
+    expect(useReaderStore.getState().nyxPosition).toBe(8);
+    expect(useReaderStore.getState().progressRevision).toBe(3);
+  });
+
+  it("显式重读冲突：仍允许把 Nyx 位置回退到第一段", async () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      userPosition: 120,
+      nyxPosition: 120,
+      readingSpeed: 50,
+      readCount: 1,
+      progressRevision: 1,
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ detail: "进度冲突" }, false, 409))
+      .mockResolvedValueOnce(jsonResponse({
+        book_id: "b1", user_position: 120, nyx_position: 120,
+        reading_speed: 50, read_count: 1, updated_at: 2, revision: 2,
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        book_id: "b1", user_position: 1, nyx_position: 1,
+        reading_speed: 50, read_count: 1, updated_at: 3, revision: 3,
+      }))
+      .mockResolvedValueOnce(jsonResponse([para(1, "开头")]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useReaderStore.getState().reread();
+
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body).nyx_position).toBe(1);
+    expect(useReaderStore.getState().nyxPosition).toBe(1);
   });
 
   // ---- 追赶循环 ----

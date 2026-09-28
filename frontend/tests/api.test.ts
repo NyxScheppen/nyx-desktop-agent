@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   checkChapterBoundary,
+  createBookTask,
   createBookmark,
   createUserNote,
+  createWebTask,
   deleteBookmark,
   deleteUserNote,
   evaluateImpulse,
@@ -22,6 +24,7 @@ import {
   getNotes,
   getProgress,
   getState,
+  getTasks,
   importBook,
   postChat,
   postObserve,
@@ -245,6 +248,56 @@ describe("api/client", () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       "/api/events/log?limit=20&event_type=speak&correlation_id=c1",
     );
+  });
+
+  it("任务 API：列表、网页与书籍创建使用约定端点和载荷", async () => {
+    const task = {
+      id: "t1",
+      type: "web",
+      status: "pending",
+      url: "https://example.com",
+      book_id: null,
+      target_paragraph: null,
+      checkpoint: {},
+      error: null,
+      created_at: 1,
+      updated_at: 1,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([task]))
+      .mockResolvedValueOnce(jsonResponse(task))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...task,
+          id: "t2",
+          type: "book",
+          url: null,
+          book_id: "b1",
+          target_paragraph: 12,
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getTasks();
+    await createWebTask("https://example.com");
+    await createBookTask("b1", 12);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/tasks");
+    expect(fetchMock.mock.calls[1]).toEqual([
+      "/api/tasks/web",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ url: "https://example.com" }),
+      }),
+    ]);
+    expect(fetchMock.mock.calls[2]).toEqual([
+      "/api/tasks/book",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ book_id: "b1", target_paragraph: 12 }),
+      }),
+    ]);
   });
 });
 

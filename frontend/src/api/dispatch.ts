@@ -43,6 +43,7 @@ export function dispatchEvent(e: SseEvent): void {
       return;
     case "activity_start":
     case "activity_interrupted":
+    case "task_updated":
       useActivityStore.getState().refresh();
       return;
     case "activity_end": {

@@ -5,6 +5,7 @@
 import type {
   ActivityStatus,
   ActivityType,
+  AssignedTaskStatus,
   DesireStatus,
   DesireType,
   EmotionCategory,
@@ -67,6 +68,13 @@ export const ACTIVITY_STATUS_LABELS: Record<ActivityStatus, string> = {
   abandoned: "放弃",
   completed: "完成",
   incomplete: "未完成",
+};
+
+export const ASSIGNED_TASK_STATUS_LABELS: Record<AssignedTaskStatus, string> = {
+  pending: "排队中",
+  running: "阅读中",
+  completed: "已完成",
+  failed: "失败",
 };
 
 // eval 记账 output_type → 中文（10-eval）。未收录值经 label() 回退原值。

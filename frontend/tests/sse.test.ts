@@ -320,6 +320,23 @@ describe("dispatchEvent", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
+  it("task_updated → activityStore.refresh()", () => {
+    const spy = vi
+      .spyOn(useActivityStore.getState(), "refresh")
+      .mockResolvedValue(undefined);
+
+    dispatchEvent({
+      event: "task_updated",
+      event_id: "t1",
+      correlation_id: "task-1",
+      timestamp: 1,
+      task_id: "task-1",
+      status: "running",
+    });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   it("memory_created → memoryStore.refresh()", () => {
     const spy = vi
       .spyOn(useMemoryStore.getState(), "refresh")

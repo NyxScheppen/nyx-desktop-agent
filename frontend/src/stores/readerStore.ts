@@ -116,40 +116,64 @@ function enqueueProgress(
   },
   get: () => ReaderState,
   set: (state: Partial<ReaderState>) => void,
+  allowNyxRewind = false,
 ): Promise<void> {
   const previous = progressQueues.get(bookId);
   const run = async (): Promise<void> => {
-      if (get().bookId !== bookId) return;
-      const revision = get().progressRevision;
+    if (get().bookId !== bookId) return;
+    const current = get();
+    const desiredNyxPosition = allowNyxRewind
+      ? payload.nyx_position
+      : Math.max(payload.nyx_position, current.nyxPosition);
+    try {
+      const result = await putProgress(bookId, {
+        ...payload,
+        nyx_position: desiredNyxPosition,
+        expected_revision: current.progressRevision,
+      });
+      if (get().bookId === bookId) {
+        set({
+          nyxPosition: allowNyxRewind
+            ? result.nyx_position
+            : Math.max(get().nyxPosition, result.nyx_position),
+          progressRevision: result.revision,
+          readCount: result.read_count,
+        });
+      }
+    } catch {
       try {
-        const result = await putProgress(bookId, {
+        const fresh = await getProgress(bookId);
+        const retryNyxPosition = allowNyxRewind
+          ? payload.nyx_position
+          : Math.max(desiredNyxPosition, fresh.nyx_position, get().nyxPosition);
+        if (get().bookId === bookId) {
+          set({
+            nyxPosition: allowNyxRewind
+              ? get().nyxPosition
+              : Math.max(get().nyxPosition, fresh.nyx_position),
+            progressRevision: fresh.revision,
+            readCount: fresh.read_count,
+          });
+        }
+        const retry = await putProgress(bookId, {
           ...payload,
-          expected_revision: revision,
+          nyx_position: retryNyxPosition,
+          expected_revision: fresh.revision,
         });
         if (get().bookId === bookId) {
           set({
-            progressRevision: result.revision,
-            readCount: result.read_count,
+            nyxPosition: allowNyxRewind
+              ? retry.nyx_position
+              : Math.max(get().nyxPosition, retry.nyx_position),
+            progressRevision: retry.revision,
+            readCount: retry.read_count,
           });
         }
       } catch {
-        try {
-          const fresh = await getProgress(bookId);
-          const retry = await putProgress(bookId, {
-            ...payload,
-            expected_revision: fresh.revision,
-          });
-          if (get().bookId === bookId) {
-            set({
-              progressRevision: retry.revision,
-              readCount: retry.read_count,
-            });
-          }
-        } catch {
-          // 下一次用户动作会再次尝试写入。
-        }
+        // 下一次用户动作会再次尝试写入。
       }
-    };
+    }
+  };
   const next = previous === undefined ? run() : previous.catch(() => {}).then(run);
   const tracked = next.finally(() => {
     if (progressQueues.get(bookId) === tracked) progressQueues.delete(bookId);
@@ -418,7 +442,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         user_position: 1,
         nyx_position: 1,
         reading_speed: readingSpeed,
-      }, get, set);
+      }, get, set, true);
       await fetchWindow(bookId, 1, totalParagraphs, false);
     },
 

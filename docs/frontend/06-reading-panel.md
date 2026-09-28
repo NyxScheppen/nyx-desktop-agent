@@ -105,7 +105,7 @@ startCatchup(): void                            // 起 setTimeout 追赶循环�
 stopCatchup(): void                             // clearTimeout 停追赶
 advanceNyx(): void                              //（内部）nyxPosition += 1 → checkChapterBoundary(07) + 续排下段
 reread(): Promise<void>                          // 重读：putProgress({user_position:1, nyx_position:1, reading_speed}) 复位进度；read_count 后端不碰（保持 >=1）
-loadBookmarks(): Promise<void>                   // GET 当前书书签
+loadBookmarks(): Promise<void>                   // GET 当前书书签；晚到回包按请求 bookId 丢弃
 toggleBookmark(paragraphId: string): Promise<void> // 当前段已有则删，否则新增
 ```
 
@@ -117,6 +117,8 @@ toggleBookmark(paragraphId: string): Promise<void> // 当前段已有则删，�
 - **阅读系统一个 store**：书架/进度/段落/笔记同属「陪伴读书」一个系统，归 `readerStore`（CLAUDE.md「每系统一个 store」）。不拆 `noteStore`（反冗余）。
 - **revision 条件写**：同书 `putProgress` 串行排队并携带 `expected_revision`；冲突或写失败时先拉服务端最新 revision 再重试。位置、速度和 Nyx 追赶收尾都走同一队列。
 - **定位不等于阅读**：划线/书签点击调用 `jumpToPosition`，正式更新并持久化 `userPosition`、按需重拉窗口并恢复追赶，但不调用 `evaluateImpulse`；普通逐段翻页仍走 `syncPosition`。
+- **重叠划线端点扫描**：`ReaderView.renderRange` 先汇总格式/划线起止事件并排序，再维护
+  active 计数生成原子区间；不在每个区间对全部划线执行 `filter/find`。
 - **真分页 + 高亮定位**（08 §5）：正文 `overflow:hidden` 无滚动；`paginate` 纯函数按段实测高度贪心分页，「上一页/下一页」逐段移动、`syncPosition(userPosition ± 1)`（复用「前翻逐段补发 evaluateImpulse + putProgress + 窗口重拉 + startCatchup」管线）；当前段 `--current` 高亮、Nyx 段 `--nyx` 🦊 标记（`userPosition` 即当前读到段，计数/高亮不漂移）。
 - **正文后端唯一来源**：`evaluateImpulse` 只传 `{book_id, paragraph_index, last_paragraph_index}`（不传 `paragraph_text`），正文后端自取（12-reading-system 决策）。
 - **「读完」「重读」是前端动作**：`userPosition == total_paragraphs` 时显示「读完」（UI 确认，无后端调用）；`Progress.read_count >= 1` 时显示「重读」（`reread()` = `putProgress({user_position:1, nyx_position:1, reading_speed})` 复位）。后端「读完」标记是 `read_count`（12-reading-system 的整本读完自动 `++`），前端不额外写 finished；重读触发反思全在后端 12-reading-system，前端只需复位进度。
@@ -176,6 +178,6 @@ async function evaluateImpulse(bookId: string, paragraphIndex: number, lastParag
 ## 7. 测试（`tests/` 并入 api/stores 测试）
 
 - `client`（`tests/api.test.ts` 增补）：`getBooks`/`getBookParagraphs`（`from`/`to` 拼进 query）/`getProgress`/`putProgress`（PUT + body 键 `{user_position, nyx_position, reading_speed}`）/`importBook`（FormData、不设 json 头）/`evaluateImpulse` 各断言端点与方法；非 2xx 统一 throw。
-- `readerStore`（`tests/stores.test.ts` 增补）：`loadBooks` 落 `books`；`openBook` mock `getProgress`+`getBookParagraphs` → 会话态 + `totalParagraphs` 正确（从 books 列表项取）、`nyx<user` 时 `startCatchup` 被调；`syncPosition` 前翻跨越 N 段 → 逐段 `evaluateImpulse(bookId, i, i-1)` 被调 + `putProgress` 一次、回翻/同段 → 不评估；`jumpToPosition` 保存并重拉窗口但不补发冲动；书签加载/添加/取消更新同一 store；`paginate` 真分页纯函数（长段独占/短段一页多段/溢出封页/GAP_PX 计入/空/`viewportHeight<=0`）；`nyxStatus` 派生三态正确；书首/书尾请求 clamp 到 `[1, total_paragraphs]`；`reread` 复位双位置。
+- `readerStore`（`tests/stores.test.ts` 增补）：`loadBooks` 落 `books`；`openBook` mock `getProgress`+`getBookParagraphs` → 会话态 + `totalParagraphs` 正确（从 books 列表项取）、`nyx<user` 时 `startCatchup` 被调；`syncPosition` 前翻跨越 N 段 → 逐段 `evaluateImpulse(bookId, i, i-1)` 被调 + `putProgress` 一次、回翻/同段 → 不评估；`jumpToPosition` 保存并重拉窗口但不补发冲动；书签加载/添加/取消更新同一 store，切书后旧请求成功/失败回包均不得污染当前书；`paginate` 真分页纯函数（长段独占/短段一页多段/溢出封页/GAP_PX 计入/空/`viewportHeight<=0`）；`nyxStatus` 派生三态正确；书首/书尾请求 clamp 到 `[1, total_paragraphs]`；`reread` 复位双位置。
 - **追赶循环**（fake timers）：`openBook` 后 `nyxPosition < userPosition` → `advanceTimersByTime(duration)` 推进 `nyxPosition += 1` 且续排下段；`nyxPosition` 到 `userPosition` → 停止（不再排 timer）；`closeBook`/`stopCatchup` → `clearTimeout`（再 `advanceTimersByTime` 不推进）；`startCatchup` 重入 → 旧 timer 清除不叠加。
 - 不依赖真实后端；验证管道正确（端点走对、追赶循环时序对、派生态对），不验证视觉。

@@ -1940,5 +1940,55 @@ describe("readerStore", () => {
       "/api/bookmarks/bm1",
     ]);
   });
+
+  it("书签：旧书加载晚到时不覆盖当前书状态", async () => {
+    let resolveOld!: (response: Response) => void;
+    const oldRequest = new Promise<Response>((resolve) => {
+      resolveOld = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(oldRequest));
+    useReaderStore.setState({ bookId: "b1", bookmarks: [] });
+
+    const loading = useReaderStore.getState().loadBookmarks();
+    const current = {
+      id: "bm2",
+      book_id: "b2",
+      paragraph_id: "p2",
+      paragraph_index: 2,
+      preview: "当前书",
+      created_at: 2,
+    };
+    useReaderStore.setState({
+      bookId: "b2",
+      bookmarks: [current],
+      bookmarksError: "当前状态",
+    });
+    resolveOld(jsonResponse([{
+      ...current,
+      id: "bm1",
+      book_id: "b1",
+      preview: "旧书",
+    }]));
+    await loading;
+
+    expect(useReaderStore.getState().bookmarks).toEqual([current]);
+    expect(useReaderStore.getState().bookmarksError).toBe("当前状态");
+  });
+
+  it("书签：旧书加载失败晚到时不污染当前书错误", async () => {
+    let rejectOld!: (reason: Error) => void;
+    const oldRequest = new Promise<Response>((_resolve, reject) => {
+      rejectOld = reject;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(oldRequest));
+    useReaderStore.setState({ bookId: "b1", bookmarksError: null });
+
+    const loading = useReaderStore.getState().loadBookmarks();
+    useReaderStore.setState({ bookId: "b2", bookmarksError: null });
+    rejectOld(new Error("旧请求失败"));
+    await loading;
+
+    expect(useReaderStore.getState().bookmarksError).toBeNull();
+  });
 });
 

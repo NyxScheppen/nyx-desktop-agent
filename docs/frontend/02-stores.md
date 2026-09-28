@@ -257,6 +257,8 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 - **追赶循环秒级**：`startCatchup` 用 module-level `catchupTimer`，`catchupDurationMs = clamp(字数/速度, 1, 30) 秒`；`advanceNyx` 不超 `userPosition`，追上后落库 `nyx_position`（否则重载读到陈旧落后值会重追、重放 BOOK_FINISHED → read_count 重复 ++）。
 - **读书 turn 迁出气泡流**：`reading_question`/`reading_association` 并进 `chatStore`（`addReadingTurn`），不再进 `readerStore`；`reading_mutter` 走 `announceStore`。readerStore 只留书架/进度/追赶/笔记。
 - **笔记「给尼克斯看」本地 append**：`showToNyx` 成功把完整 `Annotation` append 到该 note（不整表重拉避免抖动）；LLM 空/失败回 `null` 不 append；失败静默记 `notesError`。用户笔记与 Nyx 章末整合记忆严格分离（后者落 memory 不上屏）。
+- **书签请求按书隔离**：`loadBookmarks` 捕获发起时的 `bookId`，成功或失败回包仅在该书
+  仍为当前书时更新 `bookmarks/bookmarksError`，切书或关书后的旧回包直接丢弃。
 
 ## 7. `evalStore`
 

@@ -28,7 +28,8 @@
   `script`/`style` 内容被忽略。
 - `blocks` 保留标题、正文、引用、列表和预格式文本语义，`marks` 只保留粗体/斜体；
   两者 offset 都是 UTF-16 code unit，原始 HTML、属性和 EPUB CSS 不落库。旧段落的格式数组
-  为空时，前端按普通正文回退。
+  为空时，前端按普通正文回退。`li`、`blockquote`、`pre` 内的嵌套块继承最近语义容器，
+  同时保持原有文档顺序与分段边界。
 - `ReadingStore.insert_book_with_paragraphs` 在单事务内写 `books` 和 `paragraphs`；
   `content_hash` 唯一索引冲突时回滚并返回已存在的书。
 
@@ -100,7 +101,9 @@
   普通笔记显示，但不绘制到正文。
 - `bookmarks` 独立存储，同书同段唯一；列表返回段号和原文预览。前端只在当前书已加载
   的有效划线中按 `selected_text` 做大小写不敏感过滤，点击划线或书签统一调用
-  `jumpToPosition`。`NotePanel` 不展示空正文的纯划线。
+  `jumpToPosition`。书签列表请求的成功/失败回包仅在请求书仍是当前书时落 store；旧书
+  晚到回包丢弃。正文重叠划线以排序端点扫描渲染，不按原子区间反复全量扫描。
+  `NotePanel` 不展示空正文的纯划线。
 - `GET /api/notes/{book_id}` 先确认书存在，不存在返回 404；批注通过一次 IN 查询
   批量拼装，避免 N+1。
 - Nyx 的碎碎念和提问只进入进程内 `ReadingIntegration.buffer`，每本最多 100 条；

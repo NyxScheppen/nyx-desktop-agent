@@ -79,7 +79,14 @@ function blockTag(block: ParagraphBlock): keyof HTMLElementTagNameMap {
   return "p";
 }
 
-function renderRange(
+type RangeDelta = {
+  bold: number;
+  italic: number;
+  highlight: number;
+  focused: number;
+};
+
+export function renderRange(
   paragraph: Paragraph,
   start: number,
   end: number,
@@ -87,41 +94,65 @@ function renderRange(
   highlights: UserNoteWithAnnotations[],
   focusedHighlightId: string | null,
 ): ReactNode[] {
-  const boundaries = new Set([start, end]);
-  const highlightRanges = highlights.map((note) => ({
-    start: note.selection_start ?? 0,
-    end: note.selection_end ?? 0,
-  }));
-  for (const item of [...marks, ...highlightRanges]) {
-    if (item.end > start && item.start < end) {
-      boundaries.add(Math.max(start, item.start));
-      boundaries.add(Math.min(end, item.end));
+  const events = new Map<number, RangeDelta>();
+  const eventAt = (position: number): RangeDelta => {
+    const existing = events.get(position);
+    if (existing !== undefined) return existing;
+    const created = { bold: 0, italic: 0, highlight: 0, focused: 0 };
+    events.set(position, created);
+    return created;
+  };
+  eventAt(start);
+  eventAt(end);
+  for (const mark of marks) {
+    const rangeStart = Math.max(start, mark.start);
+    const rangeEnd = Math.min(end, mark.end);
+    if (rangeStart >= rangeEnd) continue;
+    const opening = eventAt(rangeStart);
+    const closing = eventAt(rangeEnd);
+    if (mark.bold) {
+      opening.bold += 1;
+      closing.bold -= 1;
+    }
+    if (mark.italic) {
+      opening.italic += 1;
+      closing.italic -= 1;
     }
   }
-  const points = [...boundaries].sort((a, b) => a - b);
+  for (const note of highlights) {
+    const noteStart = note.selection_start ?? 0;
+    const noteEnd = note.selection_end ?? 0;
+    const rangeStart = Math.max(start, noteStart);
+    const rangeEnd = Math.min(end, noteEnd);
+    if (rangeStart >= rangeEnd) continue;
+    const opening = eventAt(rangeStart);
+    const closing = eventAt(rangeEnd);
+    opening.highlight += 1;
+    closing.highlight -= 1;
+    if (note.id === focusedHighlightId) {
+      opening.focused += 1;
+      closing.focused -= 1;
+    }
+  }
+  const points = [...events.keys()].sort((a, b) => a - b);
   const nodes: ReactNode[] = [];
+  const active = { bold: 0, italic: 0, highlight: 0, focused: 0 };
   for (let index = 0; index < points.length - 1; index += 1) {
     const atomStart = points[index];
     const atomEnd = points[index + 1];
-    if (atomStart === atomEnd) continue;
-    const format = marks.find(
-      (mark) => mark.start <= atomStart && mark.end >= atomEnd,
-    );
-    const activeHighlights = highlights.filter(
-      (note) =>
-        (note.selection_start ?? 0) <= atomStart &&
-        (note.selection_end ?? 0) >= atomEnd,
-    );
-    const classes = ["reader-run"];
-    if (format?.bold) classes.push("reader-run--bold");
-    if (format?.italic) classes.push("reader-run--italic");
-    if (activeHighlights.length > 0) classes.push("reader-run--highlight");
-    if (
-      focusedHighlightId !== null &&
-      activeHighlights.some((note) => note.id === focusedHighlightId)
-    ) {
-      classes.push("reader-run--focused");
+    const delta = events.get(atomStart);
+    if (delta !== undefined) {
+      active.bold += delta.bold;
+      active.italic += delta.italic;
+      active.highlight += delta.highlight;
+      active.focused += delta.focused;
     }
+    if (atomStart === atomEnd) continue;
+    const classes = ["reader-run"];
+    if (active.bold > 0) classes.push("reader-run--bold");
+    if (active.italic > 0) classes.push("reader-run--italic");
+    if (active.highlight > 0) classes.push("reader-run--highlight");
+    if (active.focused > 0) classes.push("reader-run--focused");
     nodes.push(
       <span
         key={atomStart + ":" + atomEnd}

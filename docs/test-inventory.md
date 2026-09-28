@@ -7,12 +7,12 @@
 ## 当前快照
 
 - 后端测试文件：66
-- `pytest --collect-only -q`：1108 tests collected
-- 最近一次全量验证：`1107 passed, 1 skipped`（本轮未采集语句覆盖率）
+- `pytest --collect-only -q`：1109 tests collected
+- 最近一次全量验证：`1108 passed, 1 skipped`（本轮未采集语句覆盖率）
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：`23 files / 322 passed`。
+- 最近一次前端全量验证：`23 files / 326 passed`。
 - 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；前端只在后端 ready 后启动。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
 - 前端测试覆盖通用 API、SSE、状态、聊天、阅读、设置和桌面 presence。
@@ -32,9 +32,9 @@
 | 记忆 | `tests/test_memory/` | 7 | kind/topics、精确与语义去重、episode 保守去重、原文画像/类别归因/稳定来源 topic、同内容跨来源隔离、来源过滤先于排序、ANN、融合召回、联想图、Facade、通用实体事实抽取/类型与别名索引/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级、durable 活动记忆不持锁等待 embedding |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、类型/action 钉死、满足、重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
-| 活动 | `tests/test_activity/` | 13 | 本地自然日时间线、结果过滤/分页、排期、活动生命周期、委派任务 FIFO/低精力/打断恢复、网页任务 6000 字符 checkpoint、EPUB 与材料跨库模糊选材、无匹配搜索、探索、观察、材料原文沉淀、本地探索读取真实文件、读书恢复、创作结果严格校验、主题/旧作参考、唯一文件名与注册表落盘 |
+| 活动 | `tests/test_activity/` | 13 | 本地自然日时间线、结果过滤/分页、排期、活动生命周期、委派任务 FIFO/低精力/打断恢复、网页任务 6000 字符 checkpoint、EPUB 与材料跨库模糊选材及分块不结算、无匹配搜索、空来源不沉淀、探索、观察、材料原文沉淀、本地探索读取真实文件、读书恢复、创作结果严格校验、主题/旧作参考、唯一文件名与注册表落盘 |
 | 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
-| 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、整合和后台生命周期 |
+| 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/嵌套块语义/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
 
 ## 前端覆盖
@@ -42,11 +42,11 @@
 | 范围 | 测试目录 | 主要覆盖 |
 |---|---|---|
 | REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、委派任务端点与 `task_updated` 分发、创作过滤/分页参数、记忆搜索/事实快照端点、开发/打包共享 base URL、eval prompt 懒加载端点、取消信号、错误、事件解析 |
-| 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts`, `activityPanel.test.tsx`, `creationPanel.test.tsx` | Zustand、委派网页/EPUB 表单与段落预览、任务状态/失败原因、普通进度冲突合并与显式重读回退、创作分批追加与刷新竞态、创作正文折叠/加载更多、记忆搜索与事实图独立降级、eval prompt 逐行缓存/重试、历史/SSE 去重与因果排序、非法帧不改变等待/未读状态、活跃度、异常原生采样、请求超时/取消、网络结果不确定 |
+| 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts`, `activityPanel.test.tsx`, `creationPanel.test.tsx` | Zustand、委派网页/EPUB 表单与段落预览、任务状态/失败原因、普通进度冲突合并与显式重读回退、书签切书乱序回包隔离、创作分批追加与刷新竞态、创作正文折叠/加载更多、记忆搜索与事实图独立降级、eval prompt 逐行缓存/重试、历史/SSE 去重与因果排序、非法帧不改变等待/未读状态、活跃度、异常原生采样、请求超时/取消、网络结果不确定 |
 | 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、设置、评估面板展开详情与安全文本渲染 |
 | 记忆面板 | `memoryPanel.test.tsx` | 关键词查询提交、事实图实体关系渲染、事实加载失败降级 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 状态显示、紧凑布局容器、过滤、枚举中文化 |
-| 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 真分页与长段可达、受控富文本、UTF-16 同段划线、跨段拒绝、划线查询/删除/定位、书签定位、普通笔记和章节交互 |
+| 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 真分页与长段可达、受控富文本、UTF-16 同段划线、重叠划线线性端点读取、跨段拒绝、划线查询/删除/定位、书签定位、普通笔记和章节交互 |
 | 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `rightDock.test.tsx`, `desktopWindow.test.ts`, `petShell.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 创作页导航入口、统一分钟时钟、休眠恢复校时、昼夜/头像、完整端与桌宠态拖动模式隔离、桌宠点击/拖动阈值与窗口层级、头像东西南北四项入口/内心摘要/可修改设置入口、状态气泡、桌宠陪读翻页边界、非法时间标签边界、打字机 |
 
 ## 关键回归清单
@@ -115,7 +115,10 @@
 - `test_reading_question_reply_injects_context_on_fast_short_reply`
 - `test_build_reply_context_contains_three_scoped_layers`（事实层使用正文而非主题 summary）
 - `test_script_and_style_content_is_ignored`
+- `test_nested_block_direct_text_preserves_document_order`
+- `test_nested_block_tail_text_preserves_document_order`
 - `test_source_knowledge_keeps_web_url_scope`
+- `test_run_empty_source_skips_memory_digest`
 - `test_migrate_adds_source_memory_state_columns`
 - `test_assigned_task_does_not_preempt_running_activity`
 - `test_web_task_sediments_every_6000_character_block`
@@ -160,6 +163,8 @@
 
 - `presence.test.ts`：Tauri 空闲毫秒/前台标题采样、三态边界、浏览器降级与时钟跳变、失败重试、single-flight A/B/A、采样乱序、Unicode 截断、超时/卸载取消和重连同步
 - `readerView.test.tsx`：阅读位置和 Nyx 追赶/等待派生态展示、结构化标题/粗体/已有划线、当前书划线搜索、UTF-16 同段选区、跨段拒绝，以及划线/书签持久定位
+- `stores.test.ts`：旧书书签请求成功或失败晚到时，均不得覆盖当前书状态
+- `readerView.test.tsx`：重叠划线分段保持端点读取为线性次数，不使用耗时阈值
 
 ### Eval prompt 可观测
 

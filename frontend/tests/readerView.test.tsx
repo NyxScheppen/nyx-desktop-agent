@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import ReaderView from "../src/components/reading/ReaderView";
+import ReaderView, { renderRange } from "../src/components/reading/ReaderView";
 import { useReaderStore } from "../src/stores/readerStore";
 import type { Paragraph } from "../src/types/api";
 
@@ -132,6 +132,85 @@ describe("ReaderView 位置高亮（真分页）", () => {
       "data-paragraph-id",
       "p1",
     );
+  });
+
+  it("重叠划线分段不会反复读取全部划线端点", () => {
+    let offsetReads = 0;
+    const notes = Array.from({ length: 100 }, (_, index) => {
+      const note = {
+        id: `n${index}`,
+        book_id: "b1",
+        paragraph_id: "p1",
+        paragraph_index: 1,
+        content: "",
+        selected_text: "x",
+        created_at: index,
+        updated_at: index,
+        annotations: [],
+      };
+      Object.defineProperties(note, {
+        selection_start: {
+          get: () => {
+            offsetReads += 1;
+            return index;
+          },
+        },
+        selection_end: {
+          get: () => {
+            offsetReads += 1;
+            return 200 - index;
+          },
+        },
+      });
+      return note;
+    });
+
+    const nodes = renderRange(
+      para(1, "x".repeat(200)),
+      0,
+      200,
+      [],
+      notes,
+      null,
+    );
+
+    expect(nodes.length).toBeGreaterThan(100);
+    expect(offsetReads).toBeLessThanOrEqual(notes.length * 4);
+  });
+
+  it("重叠划线扫描保留格式和聚焦状态", () => {
+    const baseNote = {
+      book_id: "b1",
+      paragraph_id: "p1",
+      paragraph_index: 1,
+      content: "",
+      created_at: 1,
+      updated_at: 1,
+      annotations: [],
+    };
+    const nodes = renderRange(
+      para(1, "abcdef"),
+      0,
+      6,
+      [{ start: 1, end: 3, bold: false, italic: true }],
+      [
+        { ...baseNote, id: "n1", selected_text: "abcd", selection_start: 0, selection_end: 4 },
+        { ...baseNote, id: "n2", selected_text: "cdef", selection_start: 2, selection_end: 6 },
+      ],
+      "n2",
+    );
+    const { container } = render(<>{nodes}</>);
+
+    expect(Array.from(container.querySelectorAll("span")).map((node) => ({
+      text: node.textContent,
+      classes: node.className,
+    }))).toEqual([
+      { text: "a", classes: "reader-run reader-run--highlight" },
+      { text: "b", classes: "reader-run reader-run--italic reader-run--highlight" },
+      { text: "c", classes: "reader-run reader-run--italic reader-run--highlight reader-run--focused" },
+      { text: "d", classes: "reader-run reader-run--highlight reader-run--focused" },
+      { text: "ef", classes: "reader-run reader-run--highlight reader-run--focused" },
+    ]);
   });
 
   it("划线搜索过滤结果，点击结果调用持久定位", () => {

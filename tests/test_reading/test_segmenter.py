@@ -109,9 +109,11 @@ def test_blockquote_independent() -> None:
 def test_nested_block_direct_text_preserves_document_order() -> None:
     segments = segment_html("<li>引言正文 <p>这是列表项</p></li>")
     assert [s.text for s in segments] == ["引言正文", "这是列表项"]
+    assert [s.blocks[0].kind for s in segments] == ["list_item", "list_item"]
     assert all(not s.is_chapter_start for s in segments)
 
 
 def test_nested_block_tail_text_preserves_document_order() -> None:
     segments = segment_html("<blockquote>引言<p>内文</p>续</blockquote>")
     assert [s.text for s in segments] == ["引言", "内文", "续"]
+    assert [s.blocks[0].kind for s in segments] == ["blockquote"] * 3

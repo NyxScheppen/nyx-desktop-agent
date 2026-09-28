@@ -511,9 +511,12 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       if (bookId === null) return;
       set({ bookmarksError: null });
       try {
-        set({ bookmarks: await getBookmarks(bookId) });
+        const bookmarks = await getBookmarks(bookId);
+        if (get().bookId === bookId) set({ bookmarks });
       } catch (err) {
-        set({ bookmarksError: err instanceof Error ? err.message : String(err) });
+        if (get().bookId === bookId) {
+          set({ bookmarksError: err instanceof Error ? err.message : String(err) });
+        }
       }
     },
 

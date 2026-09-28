@@ -75,7 +75,8 @@ selection_start/selection_end/created_at/updated_at/annotations`；`paragraph_in
 - 旧笔记可以只有 `selected_text` 而无 offset；它继续显示为笔记引用，但不在正文绘制划线。
 - 划线只支持单个 `Paragraph`；完全相同的纯划线幂等返回已有记录。重叠划线各自保留，
   前端只合并视觉区间，删除一条后其余记录仍生效。
-- 书签与笔记分表；同一本书同一段最多一个书签，书或段删除时级联删除。
+- 书签与笔记分表；同一本书同一段最多一个书签，书或段删除时级联删除。前端书签加载
+  的成功或失败回包只有在请求书仍是当前 `bookId` 时才能写入 store，旧书晚到回包丢弃。
 
 ## 内容导入契约
 
@@ -90,7 +91,8 @@ selection_start/selection_end/created_at/updated_at/annotations`；`paragraph_in
 3000 字符按句号拆分；无结构标签的 fallback 也必须经过长段拆分。分段同时保存当前
 已识别块标签的语义，以及 `strong/b`、`em/i` 两类行内标记；文本必须先 HTML 解码，
 不得保存原始 HTML、脚本、样式、属性或 EPUB CSS。拆分与合并后的 offset 必须仍能精确
-切回 `Paragraph.text`。
+切回 `Paragraph.text`。`p` 等嵌套块位于 `li`、`blockquote` 或 `pre` 时，保持原有文档
+顺序与分段边界，同时继承最近语义容器的块类型，不能降级成普通 paragraph。
 
 ## 进度契约
 
@@ -317,8 +319,10 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
   崩溃窗口、来源内 Top 5、画像滚动与类别归因、短回复三层上下文。
 - 活动读取测试覆盖明确目标、约 6000 字符自动目标、只推进 Nyx、已读目标 no-op、整本计数幂等与 revision 并发合并。
 - API 测试覆盖 2xx/404/409/422/500 语义；前端测试覆盖 revision 写队列、缓存缺失
-  时刷新书架、划线检索、书签切换，以及定位保存进度但不补发冲动。
+  时刷新书架、划线检索、书签切换、切书后旧书签回包丢弃，以及定位保存进度但不补发
+  冲动。
 - 阅读器使用受控结构渲染标题、正文、加粗、斜体、引用、列表与预格式文本；版心限制
   行宽。富文本、字号或窗口变化后沿用实测真分页。单段高于视口时该页允许局部纵向
-  滚动，不能用 `overflow:hidden` 裁掉正文。
+  滚动，不能用 `overflow:hidden` 裁掉正文。重叠划线与行内格式按排序端点扫描生成原子
+  区间，不得在每个原子区间重新遍历全部划线。
 - `ruff check`、`pyright`、后端 `pytest`、前端 `npm test` 和 `npm run build` 应通过。

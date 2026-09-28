@@ -30,6 +30,7 @@ class _Run:
 @dataclass(frozen=True)
 class _Block:
     tag: str
+    semantic_tag: str
     runs: tuple[_Run, ...]
 
     @property
@@ -52,6 +53,7 @@ _BLOCK_TAGS = frozenset(
 _BOLD_TAGS = frozenset({"strong", "b"})
 _ITALIC_TAGS = frozenset({"em", "i"})
 _IGNORED_TAGS = frozenset({"script", "style"})
+_SEMANTIC_CONTAINER_TAGS = frozenset({"blockquote", "li", "pre"})
 
 
 class _BlockExtractor(HTMLParser):
@@ -60,14 +62,14 @@ class _BlockExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.blocks: list[_Block] = []
-        self._stack: list[tuple[str, list[_Run]]] = []
+        self._stack: list[tuple[str, str, list[_Run]]] = []
         self.root_runs: list[_Run] = []
         self._bold_depth = 0
         self._italic_depth = 0
         self._ignored_tag: str | None = None
 
     def _buf(self) -> list[_Run]:
-        return self._stack[-1][1] if self._stack else self.root_runs
+        return self._stack[-1][2] if self._stack else self.root_runs
 
     def _append(self, text: str) -> None:
         if not text:
@@ -77,11 +79,11 @@ class _BlockExtractor(HTMLParser):
             _Run(text, self._bold_depth > 0, self._italic_depth > 0),
         )
 
-    def _flush_direct(self, frame: tuple[str, list[_Run]]) -> None:
-        tag, runs = frame
+    def _flush_direct(self, frame: tuple[str, str, list[_Run]]) -> None:
+        tag, semantic_tag, runs = frame
         trimmed = _trim_runs(runs)
         if trimmed:
-            self.blocks.append(_Block(tag, trimmed))
+            self.blocks.append(_Block(tag, semantic_tag, trimmed))
         runs.clear()
 
     def handle_starttag(
@@ -95,7 +97,19 @@ class _BlockExtractor(HTMLParser):
         elif tag in _BLOCK_TAGS:
             if self._stack:
                 self._flush_direct(self._stack[-1])
-            self._stack.append((tag, []))
+            semantic_tag = tag
+            if tag not in _SEMANTIC_CONTAINER_TAGS:
+                parent_semantic_tag = next(
+                    (
+                        frame[1]
+                        for frame in reversed(self._stack)
+                        if frame[1] in _SEMANTIC_CONTAINER_TAGS
+                    ),
+                    None,
+                )
+                if parent_semantic_tag is not None:
+                    semantic_tag = parent_semantic_tag
+            self._stack.append((tag, semantic_tag, []))
         elif tag in _BOLD_TAGS:
             self._bold_depth += 1
         elif tag in _ITALIC_TAGS:
@@ -131,7 +145,7 @@ def segment_html(html: str) -> list[Segment]:
         runs = _trim_runs(extractor.root_runs)
         if not runs:
             return []
-        return _split_long_drafts([_Draft((_Block("p", runs),))])
+        return _split_long_drafts([_Draft((_Block("p", "p", runs),))])
 
     drafts = _merge_heading_and_paragraph(extractor.blocks)
     drafts = _merge_consecutive_lists(drafts)
@@ -275,7 +289,7 @@ def _draft_to_segment(draft: _Draft) -> Segment:
                     )
                 else:
                     marks.append(mark)
-        kind, level = _block_kind(block.tag)
+        kind, level = _block_kind(block.semantic_tag)
         blocks.append(ParagraphBlock(kind, block_start, cursor, level))
     first_tag = draft.blocks[0].tag
     return Segment(

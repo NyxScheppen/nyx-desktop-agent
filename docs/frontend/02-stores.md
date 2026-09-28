@@ -140,23 +140,28 @@ type MemoryStoreState = {
 type DesireStoreState = { data: DesireState | null; error: string | null };
 refresh(): Promise<void>          // 内部调 client.getDesires() → data；throw → error
 
-// activityStore —— GET /api/activity + 创作 results（并行）
+// activityStore —— GET /api/activity + 创作 results + GET /api/tasks（并行）
 type ActivityStoreState = {
   data: ActivitySnapshot | null;
   results: Activity[] | null;
+  tasks: AssignedTask[] | null;
   error: string | null;
+  taskError: string | null;
+  creatingTask: boolean;
   resultsLoading: boolean;
   hasMoreResults: boolean;
 };
-refresh(): Promise<void>          // 时间线 + 最近 12 条创作，额外取第 13 条判断 hasMore
+refresh(): Promise<void>          // 时间线 + 最近 12 条创作 + 任务快照
 loadMoreResults(): Promise<void>  // offset=results.length，追加下一批 12 条
+createWebTask(url): Promise<boolean>
+createBookTask(bookId, targetParagraph): Promise<boolean>
 ```
 
 ### 关键决策
 
-- **双字段快照 store**：`activityStore`（`data`+`results`）并行拉时间线和创作首页；创作查询固定 `activity_type=creation`，每次请求 13 条、展示 12 条，用多出的一条判断是否显示“加载更多”。
+- **三字段快照 store**：`activityStore`（`data`+`results`+`tasks`）并行拉时间线、创作首页和委派任务；创作查询固定 `activity_type=creation`，每次请求 13 条、展示 12 条，用多出的一条判断是否显示“加载更多”。
 - **分页响应受刷新世代保护**：`refresh()` 开始即推进内部世代；`loadMoreResults()` 只在世代和发起时的 `results` 引用都未变化时追加，旧分页的成功/失败/收尾不会覆盖新首页状态。
-- **SSE 增量只触发 `refresh()`**：`desire_*` → `desireStore.refresh()`、`activity_*` → `activityStore.refresh()`。事件 content 只带 `{desire_id}`/`{activity_id}`，不含完整对象，故重拉快照而非本地拼装。
+- **SSE 增量只触发 `refresh()`**：`desire_*` → `desireStore.refresh()`、`activity_*` / `task_updated` → `activityStore.refresh()`。事件 content 只带 id/status 等最小事实，不含完整对象，故重拉快照而非本地拼装。
 
 ## 4. `settingsStore`（背景外观 + 字体大小，纯前端）
 
@@ -265,10 +270,10 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 - **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addInitiateChat`/`addUserMessage`/`addReadingTurn` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id/timestamp）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
 - **chatStore.loadHistory**：新旧消息统一按 `timestamp` 稳定升序 + `preloaded=true` + 历史 think 入 `typedIds`；与实时消息按 id 去重；非法时间戳丢弃；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
 - **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
-- **两个快照 store**：`desireStore` 断言 `refresh()` 请求对端点 + `data` 落 store；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`（fetch 恰 2 次）→ `data`/`results` 落 store；`desireStore.refresh()` 失败 → `error` + `data` 保持 null。
+- **两个快照 store**：`desireStore` 断言 `refresh()` 请求对端点 + `data` 落 store；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`+`getTasks`（fetch 恰 3 次）并验证任务创建回写；`desireStore.refresh()` 失败 → `error` + `data` 保持 null。
 - **`isReady`（串行逐字纯函数）**：每条 nyx 文本消息等「同 `correlation_id` 且在其之前」的 nyx 文本消息都打完（入 `typedIds`）才就绪；无前置 nyx 文本 → 直接就绪；`preloaded` nyx 文本与 user 消息 → 恒就绪；不同 `correlation_id` 的 nyx 文本不阻塞。
 - **`settingsStore`**：`setTint`/`setImage` 独立落 store 可并存；`reset()` 回 null。
 - **`announceStore`**：`announce` 追加临时气泡（kind/text 落 store、id 唯一）；`dismiss` 摘除指定 id 其余保留；`advanceTimersByTime(ANNOUNCE_DURATION[kind])` 到时自动 dismiss。
-- **`readerStore`（06 + 07）**：`loadBooks` 落 books；`openBook` mock getProgress+getBookParagraphs → 会话态 + totalParagraphs、nyx<user 时 startCatchup；`syncPosition` 前翻 putProgress+evaluateImpulse、回翻不评估；`paginate` 真分页纯函数（贪心封页/空/溢出/GAP_PX）；追赶循环 fake timers 推进/收尾/clearTimeout 不叠加；`loadNotes`/`addNote`（unshift 归一）/`updateNote`（保留 annotations）/`deleteNote`/`showToNyx`（append 不重拉、null 不 append）。
+- **`readerStore`（06 + 07）**：`loadBooks` 落 books；`openBook` mock getProgress+getBookParagraphs → 会话态 + totalParagraphs、nyx<user 时 startCatchup；`syncPosition` 前翻 putProgress+evaluateImpulse、回翻不评估，冲突重试保留服务端更靠前的 Nyx 位置，显式重读允许回退；`paginate` 真分页纯函数（贪心封页/空/溢出/GAP_PX）；追赶循环 fake timers 推进/收尾/clearTimeout 不叠加；`loadNotes`/`addNote`（unshift 归一）/`updateNote`（保留 annotations）/`deleteNote`/`showToNyx`（append 不重拉、null 不 append）。
 - **`evalStore`**：refresh 清详情；展开后逐 id 加载、成功缓存、失败可重试、旧记录 `null` 与真实空数组区分；面板安全渲染 Unicode/换行/HTML 字面文本。
 - 全部 mock fetch/无真实后端；验证管道正确（事件走对 store、字段零映射），不验证视觉。

@@ -4,12 +4,12 @@
 
 ## 模块边界
 
-- `ActivityFacade` 是活动系统唯一门面：对外提供 `on_tick`、`on_desire_generated`、`select_activity`、`complete_activity`、`interrupt`、`recover_stale_running`、`get_current`、`get_schedule`、`get_results`、`list_materials`、`register_material`。
-- `ActivityStarter` 负责“空闲时启动什么”：单 task 守卫、查 RUNNING、同日程块 PAUSED 恢复、欲望排序、材料选择、默认活动。
+- `ActivityFacade` 是活动系统唯一门面：除活动生命周期、查询与材料登记外，还提供 `list_tasks`、`assign_web_task`、`assign_book_task` 三个委派任务入口。
+- `ActivityStarter` 负责“空闲时启动什么”：单 task 守卫、查 RUNNING、同日程块 PAUSED 恢复、委派任务领取、欲望排序、跨书库选材和默认活动。
 - `ActivityLifecycle` 负责状态转换和副作用：`start`、`complete`、`fail`、`interrupt`，并发布 `activity_start`、`activity_end`、`activity_interrupted`。
-- `ActivityStore` 只管 `activity` 表，并用 `list_unfinished()` 提供启动恢复候选；`MaterialStore` 只管 `material` 表。Facade 不直接写 SQL。
+- `ActivityStore` 管理 `activity` 与 `assigned_task` 表，并用 `list_unfinished()` 提供启动恢复候选；`MaterialStore` 只管 `material` 表。Facade 不直接写 SQL。
 - `ReadingActivityRunner` 执行活动系统自己的分块读书；`Exploration` 执行自由探索；`creation.py`、`observe.py`、`screen.py` 提供对应活动的纯函数或旁路能力。
-- `reading/` 是陪读系统，使用 `books` / `paragraphs` / `reading_progress`；`activity/material` 是 Nyx 自己读的分块文本书库。两套书库当前按 spec 并行存在，不互相替代。
+- `reading/` 是陪读系统，使用 `books` / `paragraphs` / `reading_progress`；`activity/material` 是 Nyx 自己读的分块文本书库。两套书库继续并行持有数据，但探索欲选材会统一枚举二者。
 
 ## 触发与调度
 
@@ -17,6 +17,7 @@
 - `DESIRE_GENERATED` 事件订阅到 `activity.on_desire_generated`，新欲望出现时也会尝试启动活动。
 - `_maybe_start_activity` 不 await 完整活动，只创建后台 task，避免 EventBus 被 LLM、文件读取或探索链阻塞。
 - 同一进程内唯一活动靠两层守卫：`ActivityStarter._lock` 串行化启动决策，`ActivityFacade._task` 在锁内赋值并用于关闭 PENDING 到 RUNNING 之间的窗口。
+- 空闲选择顺序是：当前后台 task / RUNNING、同块 PAUSED、低精力 REST、最早 PENDING 委派任务、短期欲望、默认活动。领取任务与插入活动在同一 SQLite 事务内完成。
 - `ActivityStore.get_current()` 只返回 status 为 `running` 的最新活动；PENDING 不算 current。
 - `get_schedule()` 返回今天已产生的活动记录，按 `started_at ASC`；今天的起点由 `_day_start(time.time())` 按运行电脑的系统本地时区计算自然日 `00:00`。
 - `schedule_block_id(now, grid_minutes)` 先按 grid 分桶，再格式化成 `HH:MM`。不要用格内原始分钟拼标签。
@@ -28,12 +29,13 @@
 - `build_schedule` 在精力低于 `ENERGY_REST_THRESHOLD` 时先插入 `REST`，再安排欲望活动；它只输出活动类型序列，不写库。
 - `select_activity` 返回 `Activity | None`：无欲望或全互动欲返回 None；精力不足时可能先返回无 desire 关联的 REST。
 - `progress` 里保存欲望关联：`desire_id`、`goal`、`correlation_id`、`description`。当前实现把 `correlation_id` 设为欲望 id。
-- `READING` 活动由探索欲映射而来；运行时先尝试选本地 material，只有无可读材料且 `goal.topic` 非空并过自由探索限速时才升级为 `FREE_EXPLORATION`。
+- `READING` 活动由探索欲或委派任务产生。探索欲有非空 `goal.topic` 时，对 EPUB 书名/文件名与 material 文件名使用同一归一化模糊评分；没有匹配且过自由探索限速时才升级 `FREE_EXPLORATION`，不再回退到最近上传材料。没有 topic 时走默认活动。
 
 ## 生命周期
 
 - 新活动先以 `PENDING` 插入 activity 表，后台 `_execute` 开始后由 `ActivityLifecycle.start` 改为 `RUNNING` 并发布 `activity_start`。
 - app context 启动后会调用 `ActivityFacade.recover_stale_running()`：DB 遗留 PENDING 一律转 `ABANDONED` 并释放关联 ACTIVE desire；遗留 RUNNING 中，`READING` / `CREATION` / `FREE_EXPLORATION` 转 `PAUSED`，瞬时活动转 `ABANDONED`，关联 desire 标 `SUPPRESSED`，不发布新的打断事件。
+- 启动恢复在活动恢复后把没有执行者承接的 RUNNING 委派任务重置为 PENDING；委派活动被打断时任务也回到 PENDING，同块恢复时重新标 RUNNING。
 - `start` 会把关联的 PENDING desire 标为 ACTIVE；无 `desire_id` 的默认活动不碰 desire。
 - 正常结束由 `complete` 改为 `COMPLETED`，写 `ended_at`，发布 `activity_end`。
 - 异常结束由 `fail` 改为 `INCOMPLETE`，写 `ended_at`，并把 ACTIVE desire 标为 SUPPRESSED；异常继续上抛，由 task done callback 收割。
@@ -59,6 +61,8 @@
 ## 活动执行
 
 - `READING` 必须有真实 `source`；缺 source 会 `raise ValueError`，防止 LLM 凭空编造读书内容。
+- 明确网页任务只调用 `web_fetch`，正文按 6000 字符块沉淀 knowledge 和滚动 profile；checkpoint 以 pending 两阶段提交，失败或空正文把任务置为 FAILED。
+- EPUB 委派任务与探索欲命中的 EPUB 都调用 `ReadingFacade.read_for_activity()`：复用原文沉淀、只单调推进 Nyx 进度，不修改用户进度，也不触发陪读冲动、提问或联想。
 - `ReadingActivityRunner` 每次读取 `source` 的 `[read_chars, read_chars+6000)` 文本块，调用
   LLM 生成 `{book, note}`，并在追加 fragment、推进 `material.read_chars` 之前沉淀本块原文。
   `material.memory_state` 保存 `processed_to`、滚动 profile 和 pending；恢复时先复用 pending，
@@ -87,11 +91,12 @@
 
 - `GET /api/activity` 返回 `{current, schedule}`，分别来自 `ActivityFacade.get_current()` 与 `get_schedule()`。
 - `GET /api/activity/results` 返回已完成且带产出的活动，按 `ended_at DESC`；`limit=1..100`、`offset=0..100000` 在 SQL 层分页，可用 `activity_type=creation` 只取创作，越界参数返回 422。省略类型参数时保持返回 `reading`、`free_exploration`、`creation` 的兼容行为；`activity(status, type, ended_at DESC)` 复合索引支撑创作历史查询。
+- `GET /api/tasks` 返回任务快照；`POST /api/tasks/web` 和 `/api/tasks/book` 创建网页/EPUB 任务。活动页提供网页/书籍分段表单、目标段前后预览及任务状态/失败原因。
 - 前端活动页的产出区只列最近 12 条创作标题摘要；独立“创作”页按 12 条一批加载，正文默认折叠，展开后显示完整正文与文件路径。
 - `activityStore.refresh()` 会推进创作结果请求世代；更早发出的“加载更多”响应或错误不得改写刷新后的首页、错误或 loading 状态。
 - `POST /api/upload` 读取文本上传，写入 `workspace/uploads/<filename>`，再调用 `activity.register_material(path, filename, len(text))`；它只注册书库，不立即启动读书。
 - `GET /api/materials` 返回 `{materials}`，供资料面板展示 activity/material 书库进度。
-- `activity_start`、`activity_end`、`activity_interrupted` 都经 EventBus 持久化并广播到 SSE；前端事件 payload 由 `event.content` 展开并附加 `event_id`、`correlation_id`、后端 `timestamp`。
+- `activity_start`、`activity_end`、`activity_interrupted` 都经 EventBus 持久化并广播到 SSE；任务状态变化另发 `task_updated`，前端据此重拉活动与任务快照。事件 payload 由 `event.content` 展开并附加 `event_id`、`correlation_id`、后端 `timestamp`。
 
 ## 重构后状态机事实
 

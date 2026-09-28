@@ -11,6 +11,7 @@
   `InnerLifeFacade`、`DesireFacade`、`MemoryFacade`、`LlmClient`、`Evaluator`、
   `EventBus`、canon 和 `ExpressionFacade`。
 - `ReadingFacade` 还持有 `ReadingCompanion` 和 `ReadingIntegration`。
+- 组合根以窄回调向活动系统暴露未完成 EPUB 列表、单书查询、进度查询和 `read_for_activity()`；活动系统不直接访问阅读表。
 - `nyx/main.py` 关停时先停止阅读后台任务接收，再等待阅读任务 `drain()`，最后关闭总线；
   总线最终关闭共享数据库。
 
@@ -45,9 +46,10 @@
   `nyx_position=total`、revision 加 1。
 - 回到书内时 `reset_completion_marker` 把持久化的 `nyx_position` 改回当前位置并
   增加 revision，供重读跨重启识别。
+- `advance_nyx_position` 只在目标更靠后时更新 Nyx 位置，保留服务端当前的用户位置、速度和读完次数；供后台活动与前端并发保存进度时使用。
 - 前端 `readerStore` 保存 `progressRevision`；同一本书的写入串行排队，409 或其他
-  写入失败会先重新读取服务端进度，再用最新 revision 重试。翻页跨多段的冲动请求
-  也按书串行排队。
+  写入失败会先重新读取服务端进度，再用最新 revision 重试。普通写入取本地/服务端
+  Nyx 位置最大值，显式“重读”仍允许回退。翻页跨多段的冲动请求也按书串行排队。
 - 普通翻页走 `syncPosition` 并只为实际前进段落评估冲动；从历史划线或书签定位走
   `jumpToPosition`，同样持久化位置、按需重拉窗口和恢复 Nyx 追赶，但不为跨过的段落
   补发冲动。
@@ -81,6 +83,8 @@
 - `books.memory_state` 保存 cursor、滚动 profile 和 pending。每块先生成 profile 与最多 5
   条知识，再保存 pending、写带 `book:` topic 的 knowledge，最后推进 cursor 并清 pending；
   崩溃恢复重放 pending，统一来源内去重吸收重复。
+- `read_for_activity()` 从持久化 Nyx 位置读到明确目标，或为普通探索选择约 6000 字符的
+  下一块；它以 `flush=True` 复用同一原文沉淀管道，成功后才单调推进 Nyx 位置，不写陪读 buffer。
 - profile 包含滚动摘要、最多 5 个主题和固定内容类别。fiction/essay/unknown 使用来源归因，
   书中第一人称不归给用户或 Nyx；同名书按 `book_id` 隔离。
 - 用户回答 durable 读书提问时，`ReadingFacade.build_reply_context()` 返回三层资料：该书
@@ -114,7 +118,8 @@
 
 - 当前阅读表由 `nyx/db.py` 的 v7-v10、v18 和 v28-v30 迁移建立/升级；v18 增加
   `reading_progress.revision`，v28 为 `books` 增加内部 `memory_state` checkpoint，
-  v29 增加段落格式 JSON，v30 增加划线 offset 和书签表。
+  v29 增加段落格式 JSON，v30 增加划线 offset 和书签表。v31 的 `assigned_task.book_id`
+  外键指向 `books`，删除书后置空并由任务执行显式失败。
 - 后端阅读测试位于 `tests/test_reading/`，API 契约测试位于
   `tests/test_api/test_reading_api.py`；前端阅读测试主要位于
   `frontend/tests/stores.test.ts`、`frontend/tests/api.test.ts`、

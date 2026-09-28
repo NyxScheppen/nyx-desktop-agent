@@ -19,6 +19,7 @@
 - SSE 每连接有界，满时丢最旧保最新；SSE 广播事件事实，不表示消费者完成。
 - `RouteSpec` / `ROUTE_SPECS` 是路由运行时来源；`ROUTING` / `TICK_ROUTING` 是由它派生的兼容视图；`subscriptions.py` 从同一份 route spec 注册 handler。
 - 当前已迁移的事务/幂等链：`ActivityLifecycle.start/complete/interrupt` 的活动状态、欲望状态和活动事件同事务提交；`DESIRE_EVAL` 的周期压力由 `desire_eval_applied` 防重，生成与 `DESIRE_GENERATED` 同事务提交；`desire.observation_state`、`desire.activity_end`、`inner_life.observation_state`、`inner_life.desire_satisfied`、`inner_life.activity_end`、`memory.activity_end`、`inner_life.reflection` 使用 `(event_id, consumer_id)` effect marker 防重放；`MemoryFacade.record_recall` 的升级和 `MEMORY_PROMOTED` 事件同事务提交。`inner_life.reflection` 的 LLM/解析在事务外完成，成功后的慢变量、effect marker 和 `REFLECTION_DONE` 在同一事务内提交，提交后才唤醒投递。
+- 委派任务领取与对应 PENDING activity 插入在同一 `Database.transaction()` 中；任务状态先落 `assigned_task`，再发布无 durable consumer 的 `TASK_UPDATED` 广播事件。广播失败只记日志，不回滚已提交状态，前端还可用 REST 快照恢复。
 - 当前未完全迁移的链仍需谨慎：包含 LLM/文件等不可回滚副作用的路径还不能宣称完整 at-least-once 幂等；`memory.activity_end` 已有本地事务和 effect marker，但其内部 LLM 关系/矛盾判断仍属 best-effort 副作用。`USER_MESSAGE` 重放时若已存在同 correlation 的终局 `SPEAK/ASK` 事件会短路，但中途无终局事件的失败仍会重试。
 - 数据库基础设施已有 `Database.close()`、`Database.transaction()`、锁/SQL 操作超时常量和基础熔断状态；`connect()` 无显式参数或 `NYX_DB` 时优先复用已存在的旧默认 `nyx.db`，否则使用 `data/nyx.db`；非内存路径会先创建父目录；不要新增绕过这些入口的长期连接管理。
 - 欲望系统额外使用 `desire_generation_attempt` 保存 LLM 已解析但尚未正式提交的结果；`long_term_desire.name_normalized` 有唯一索引，数据库迁移和唯一性语义见 `04-module-bus-system.md` 与 `07-desire.md`。

@@ -11,6 +11,46 @@
 - `ReadingActivityRunner` 执行活动系统自己的分块读书；`Exploration` 执行自由探索；`creation.py`、`observe.py`、`screen.py` 提供对应活动的纯函数或旁路能力。
 - `reading/` 是陪读系统，使用 `books` / `paragraphs` / `reading_progress`；`activity/material` 是 Nyx 自己读的分块文本书库。两套书库继续并行持有数据，但探索欲选材会统一枚举二者。
 
+## 跨书库选材对象审计
+
+### 入口清单
+
+| 对象 | 写入口 | 持久化位置 |
+|---|---|---|
+| activity material | `POST /api/upload` 写入 `workspace/uploads/`，再调用 `ActivityFacade.register_material()` | `material` 表，以文件路径为键 |
+| 阅读器 EPUB | `POST /api/books` 调用 `ReadingFacade.import_book()` | `books` 与 `paragraphs` 在同一事务写入 |
+
+### 消费者清单
+
+| 对象 | 消费者 | 发现与使用方式 |
+|---|---|---|
+| activity material | 资料面板、探索欲选材、`ReadingActivityRunner` | `list_materials()` 展示；`ActivityStarter` 枚举全部 material；命中后按 path 分块读 |
+| 阅读器 EPUB | 阅读器、委派任务、探索欲选材 | 阅读 Facade 提供书架和段落；组合根向活动系统注入 `list_readable_books()` 与 `read_for_activity()` 窄回调 |
+| 两类对象的统一候选 | `ActivityStarter` | 有非空 topic 时同时读取当前两套来源，交给 `best_reading_match()` 统一评分；只存在于任一存储的读物都能进入候选集 |
+
+### 状态迁移表
+
+| 对象 | 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
+|---|---|---|---|---|
+| material | 未登记 | 上传文件并成功注册 | 未读 | 同路径重传会清空片段、memory checkpoint，并把 `read_chars` 重置为 0 |
+| material | 未读 / 部分已读 | 成功处理一个最多 6000 字符块 | 部分已读 / 已完成 | 先沉淀知识再推进 `read_chars`；未读完整本时 `goal_met=None` |
+| EPUB | 未导入 | EPUB 解析、去重和事务写入成功 | 可读 | 空正文不写入；同正文 hash 不产生第二本书 |
+| EPUB | 可读 / 部分已读 | `read_for_activity()` 成功读到目标 | 部分已读 / 已完成 | 只单调推进 Nyx 位置；未到书末仍保留在活动候选中 |
+| EPUB | 已完成 | 阅读器显式进入重读 | 可读 | 重置完成标记；普通活动重放不允许回退位置 |
+
+### Bad case 表
+
+| 情况 | 当前处理 |
+|---|---|
+| 空 | `total_chars=0` 的 material 不满足未读条件；无正文 EPUB 拒绝导入；空 topic 不臆测书名，走默认活动 |
+| 失败 | material 源文件缺失或 runner 失败时活动进入失败路径；EPUB 解析失败不写书，委派任务执行失败对用户可见 |
+| 部分完成 | 两类来源读完一块但未读完整体时都保留进度并返回 `goal_met=None`，不结算欲望失败 |
+| 乱序 | material 恢复时以表内最新 `read_chars` 为准；EPUB 后台推进使用单调更新，不让旧进度覆盖新进度 |
+| 重放 | material 同路径重传按现有 upsert 语义重置；EPUB 同正文 hash 返回 409；块沉淀靠 pending 与来源内去重吸收重放 |
+| 删除 | 当前没有公开的 material/书籍删除端点；源文件缺失时 material 阅读失败，EPUB 行不存在时从候选消失且关联委派任务执行失败 |
+| 多来源匹配 | EPUB 标题/文件名与 material 文件名进入同一评分集合，已完成项不参与，同分取最近导入项 |
+| 无匹配 | 禁止调用 `next_readable()` 或读取最近上传材料；过限速后进入探索，否则走默认活动 |
+
 ## 触发与调度
 
 - `runtime.tick_loop` 发布 `CLOCK_TICK`；`subscriptions.py` 按 `RouteSpec.tick_type` 把 `SCHEDULE_BLOCK_START` 路由到 `runtime.on_schedule_block_start()`，再调用 `activity.on_tick`。

@@ -33,6 +33,51 @@
 - `ReadingStore.insert_book_with_paragraphs` 在单事务内写 `books` 和 `paragraphs`；
   `content_hash` 唯一索引冲突时回滚并返回已存在的书。
 
+## EPUB 对象完整性审计
+
+### 入口清单
+
+| 入口 | 产生条件 | 写入位置 |
+|---|---|---|
+| `POST /api/books` -> `ReadingFacade.import_book()` | 文件为 EPUB、大小合法、解析后正文非空、正文 hash 未重复 | `books` 与全部 `paragraphs` 同事务提交 |
+
+当前没有第二个正式 EPUB 写入口；活动系统只消费阅读 Facade 暴露的书，不复制或直接写阅读表。
+
+### 消费者清单
+
+| 消费者 | 发现方式 | 用途 |
+|---|---|---|
+| 阅读器书架与正文窗口 | `list_books()`、`list_paragraphs()` | 展示、翻页、划线、书签和阅读进度 |
+| 阅读整合与表达回复 | 段落查询、`ReadingIntegration`、`build_reply_context()` | 原文沉淀、书籍画像和读书提问回复上下文 |
+| 委派任务 | 精确 `book_id`，执行时调用 `read_for_activity()` | 让 Nyx 读到用户指定段落 |
+| 探索欲选材 | 组合根注入 `list_readable_books()`，命中后调用 `read_for_activity()` | 与 activity material 一起进行文件名/书名模糊匹配并读取约 6000 字符 |
+
+### 状态迁移表
+
+`Book` 本身没有 status 枚举；下表记录对象存在性及由 `reading_progress` 派生的可读状态，
+不为填表新增状态字段。
+
+| 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
+|---|---|---|---|
+| 不存在 | 导入成功 | 已导入、未读 | 原子写入书和段落；失败整体回滚 |
+| 已导入、未读 | 用户或 Nyx 前进 | 部分已读 | 新建或更新 `reading_progress`，revision 递增 |
+| 部分已读 | 首次到达书末 | 已完成 | Nyx 位置到末段，`read_count` 原子递增 |
+| 已完成 | 阅读器显式重读并回到书内 | 部分已读 | `reset_completion_marker()` 增加 revision，重新允许完成计数 |
+| 任意已导入状态 | 底层书籍行被删除 | 不存在 | 段落、进度和书签级联删除；笔记书/段外键置空，排队任务的 `book_id` 置空并在执行时失败 |
+
+### Bad case 表
+
+| 情况 | 当前处理 |
+|---|---|
+| 空 | 解析后没有正文时返回 400，不创建空壳书 |
+| 失败 | 解析异常返回 500；书与段落事务回滚，不留下部分导入 |
+| 部分完成 | 阅读块成功后才推进 Nyx 位置；未到书末仍由 `list_readable_books()` 返回给活动选材 |
+| 乱序 | 进度以 revision 做 CAS；前端和后台冲突时重读服务端状态，普通路径只允许 Nyx 位置前进 |
+| 重放 | 相同正文 hash 幂等定位已有书并由 API 返回 409；原文 pending 重放按 `book:` 来源内去重 |
+| 删除 | 当前没有公开书籍删除 API；若底层删除发生，外键按上表处理，旧活动读取返回书不存在，排队任务进入失败态 |
+| 新消费者 | 活动选材通过 `list_readable_books()` 枚举 `POST /api/books` 产生的全部未完成 EPUB，而不是只看 activity material |
+| 无本地匹配 | 活动系统进入既定搜索/默认路径，不以“最近上传 EPUB 或材料”冒充主题命中 |
+
 ## 进度
 
 - `reading_progress` 一书一行，保存 `user_position`、`nyx_position`、

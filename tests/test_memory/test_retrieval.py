@@ -1,5 +1,8 @@
 # pyright: reportPrivateUsage=false
+import asyncio
 import builtins
+import sys
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -11,6 +14,7 @@ from nyx.memory.retrieval import (
     EmbedFn,
     MemoryRetrieval,
     RankedMemory,
+    build_embed,
     cosine,
     extract_keywords,
     rank_by_cosine,
@@ -50,6 +54,30 @@ def _fake_embed(vec: list[float]) -> EmbedFn:
         return vec
 
     return embed
+
+
+async def test_build_embed_loads_model_lazily_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructed: list[str] = []
+
+    class FakeModel:
+        def __init__(self, model_name: str) -> None:
+            constructed.append(model_name)
+
+        def encode(self, text: str) -> list[float]:
+            return [float(len(text))]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer=FakeModel),
+    )
+
+    embed = build_embed("local-model")
+    assert constructed == []
+    assert await asyncio.gather(embed("a"), embed("bb")) == [[1.0], [2.0]]
+    assert constructed == ["local-model"]
 
 
 async def test_search_filters_source_before_ranking() -> None:

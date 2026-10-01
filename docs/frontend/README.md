@@ -33,7 +33,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-- Python 核心作为**独立本地服务**运行（`uvicorn`），Tauri 壳 + React 前端通过 localhost HTTP/SSE 连接；开发时手动起服务，不打包 sidecar（见 `docs/design/design.md`）。
+- Python 核心作为**独立本地服务**运行（`uvicorn`），Tauri 壳 + React 前端通过 localhost HTTP/SSE 连接。开发态由 `dev.py --desktop` 配对启动后端与 Tauri；发布包内置 `nyx-backend` sidecar，由 Rust 壳启动、等待 8000 端口就绪并在退出时关闭，后端日志位于 Tauri app data 的 `backend.log`。
 - 前端 Tauri 采集系统输入空闲毫秒数 + 窗口标题 → `classifyPresence` 判定 → `POST /api/observe`（04-module-bus-system 下游约定）。这是核心先行里唯一由前端发起的**被动上报**。
 
 ### 活跃度上报（`hooks/usePresence.ts`，核心先行唯一被动上报）

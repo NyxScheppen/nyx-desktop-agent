@@ -191,13 +191,14 @@ export function paginate(
 
 ## 8. 桌宠模式（`components/desktop/PetShell.tsx`）
 
-- Tauri 启动窗口为透明、无边框、普通非置顶的小窗口（`560×520`，足够容纳圆球左侧小面板；其他应用激活时自然位于其后）；浏览器开发环境仍直接显示完整端，便于测试。
+- Tauri 启动窗口为透明、无边框、普通非置顶的小窗口（`560×520`；其他应用激活时自然位于其后）；浏览器开发环境仍直接显示完整端，便于测试。菜单态头像水平居中，聊天/读书/内心等左展子面板打开时，交互层增加统一的 panel-open 标记并把头像改为距右侧 `24px`，保证最宽 `350px` 阅读面板完整留在窗口内；返回菜单后恢复居中。
 - `App` 维护 `DesktopMode = "pet" | "full"`：桌宠态隐藏完整布局，只渲染可拖拽 `Avatar` 与 `PetShell`；双击头像进入完整端，完整端再次双击头像收回桌宠。
 - 桌宠菜单包含「聊天」「读书」「内心」「设置」四个入口，四项以头像中心为基准正东南西北排列；状态仍在头像头顶以被动摘要显示。
 - 聊天小界面是无外框的一行 Galgame 对话 + 悬空输入框；读书先选书，再显示扁平主动对话气泡、正文、你/Nyx 段落标记和悬空输入框；选书页与陪读页都保留顶部无文字返回箭头 `→`。
-- 陪读正文下方提供「上一页」「下一页」两个轻量按钮，调用 `readerStore.syncPosition(userPosition ± 1)` 逐段移动进度；到达首段或末段时禁用对应按钮，避免桌宠态只能读当前段而无法继续。
+- 陪读正文下方提供「上一页」「下一页」两个轻量按钮，调用 `readerStore.syncPosition(userPosition ± 1)` 逐段移动进度；到达首段或末段时禁用对应按钮，避免桌宠态只能读当前段而无法继续。正文区域保持 `148px` 高，单段过长时在区域内纵向滚动，既不裁掉原文，也不撑破固定桌宠窗口。
 - 「内心」入口显示情绪、精力、当前活动和简短感受摘要；「设置」入口回调打开现有 `SettingsView`，直接修改 `settingsStore`，不复制设置写入逻辑。
 - 桌宠小界面不复制业务逻辑：聊天复用 `chatStore.sendMessage`，读书复用 `readerStore.loadBooks/openBook` 与 `readerStore.syncPosition`；双击头像是唯一进入完整端的入口。
+- 发布版 Tauri 由 Rust 壳启动同目录的 `nyx-backend` sidecar，并在 `127.0.0.1:8000` 可连接后完成 setup；日志和工作目录使用 Tauri app data，退出时关闭 sidecar stdin 触发 Python 优雅停止。Debug 版仍由 `dev.py --desktop` 启动后端，避免重复进程。
 - `Avatar` 仅在收到 `useNativeWindowDrag` 且运行于 Tauri 时，在 pointer down 超过阈值后调用原生 `startDragging()`；桌宠层传入该标记，完整桌面端显式关闭，避免拖动完整端头像时带动整个窗口。浏览器回退到现有 CSS 拖拽和 `avatarPos` 持久化。
 
 ## 完成定义

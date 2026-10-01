@@ -38,6 +38,7 @@
 - `MemoryFacade.search_source(query, source_topic, limit=5)` 先按来源 topic 过滤全部候选，
   再执行 direct 融合排序，且不追加跨来源 association；读书提问回复用它取同一本书的
   Top 5，不能先取全局 Top N 再过滤。
+- `build_embed(model_name)` 只在装配期创建闭包；本地 `SentenceTransformer` 在首次实际编码时转到工作线程加载，并发首次调用只构造一次，避免后端启动和端口监听被模型初始化阻塞。
 - topics 旁路对每个参与联想的 topic 在单次检索中只排序一次，先排除 direct 命中再截取最多 8 条；热门度衰减仍按排除前的完整桶大小计算。
 - `extract_keywords` 的 CJK 规则按 `docs/specs/06-memory-system.md` 契约执行：长度 2-8 的连续 CJK 片段直接保留，长 CJK 片段只做 2 字/3 字滑窗；不做隐藏边界字符剥离，也不在长片段内部按停用词预拆。
 - `Memory.sources` 是瞬态检索来源：`keyword`、`vector`、`association`。它不落库、不进 prompt、不进导出，但 REST `Memory[]` 会序列化给前端。

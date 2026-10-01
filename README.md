@@ -10,6 +10,7 @@
   <a href="#"><img src="https://img.shields.io/badge/Tauri-v2-FFC131?logo=tauri&logoColor=black" alt="Tauri v2" /></a>
   <a href="#"><img src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white" alt="FastAPI" /></a>
   <a href="#"><img src="https://img.shields.io/badge/LangGraph-orchestration-FF6633" alt="LangGraph" /></a>
+  <a href="https://github.com/NyxScheppen/nyx-desktop-agent/actions/workflows/ci.yml"><img src="https://github.com/NyxScheppen/nyx-desktop-agent/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
 > 一个住在你电脑里的桌面 AI 同伴。她会观察你的状态、记住和你的每一次互动、生出自己想做的事，并在合适的时候主动搭话。
@@ -96,7 +97,7 @@ flowchart TB
     tools_ -.-> facades
 ```
 
-七个 Facade 不直接互调，全部通过 `EventBus` 解耦；三个外部输入（用户消息、时钟 tick、观察状态）经组合根 `publish` 进总线，产出统一广播给前端。
+六个 Facade 不直接互调，全部通过 `EventBus` 解耦；三个外部输入（用户消息、时钟 tick、观察状态）经组合根 `publish` 进总线，产出统一广播给前端。
 
 ## 🚀 快速开始
 
@@ -193,13 +194,15 @@ npm run tauri dev  # 桌面壳（Tauri v2）
 |---|---|
 | 后端 | Python 3.11+ · FastAPI · LangGraph · SQLite（aiosqlite）· sentence-transformers |
 | 前端 | React 18 · TypeScript（strict）· Zustand · Vite · Tauri v2 |
-| 质检 | ruff · pyright · pytest（740+ 测试全绿） |
+| 质检 | ruff · pyright · pytest（1060 项通过）· Vitest（305 项通过） |
 
 ## 📖 文档
 
 | 文档 | 内容 |
 |---|---|
 | [`docs/design/design.md`](docs/design/design.md) | 产品定位、长期架构原则和文档边界 |
+| [`docs/design/portfolio-optimization.md`](docs/design/portfolio-optimization.md) | 作品集成熟度基线、优先级与完成标准 |
+| [`docs/design/ci-cd.md`](docs/design/ci-cd.md) | 最大复用现有入口的 CI/CD 设计 |
 | [`docs/canon.md`](docs/canon.md) | 人格设定（尼克斯·夏本） |
 | [`docs/tech-reference.md`](docs/tech-reference.md) | 源码、spec 与 fact 的快速索引 |
 | [`docs/specs/`](docs/specs/) | 每项功能的设计契约（spec 先行） |
@@ -209,12 +212,14 @@ npm run tauri dev  # 桌面壳（Tauri v2）
 ## ✅ 质量门
 
 ```bash
-python -m ruff check nyx/ tests/
-python -m pyright nyx/ tests/
-python -m pytest -q
+pip install uv==0.12.18
+uv sync --locked --extra dev
+uv run --no-sync python -m ruff check nyx/ tests/ scripts/
+uv run --no-sync python -m pyright nyx/ tests/ scripts/
+uv run --no-sync python -m pytest -q --cov=nyx --cov-report=term-missing --cov-fail-under=90
 ```
 
-三项必须全绿。测试不依赖真实 LLM / 桌面 / 文件系统，LLM 全部注入 mock。
+三项必须全绿。测试不依赖真实 LLM 或已安装桌面端；LLM 使用 mock，文件测试使用临时路径。
 
 ## 📋 功能边界
 

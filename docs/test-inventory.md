@@ -13,6 +13,7 @@
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
 - 最近一次前端全量验证：`23 files / 326 passed`。
+- Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；Debug/Release 均通过编译检查。
 - 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；前端只在后端 ready 后启动。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
 - 前端测试覆盖通用 API、SSE、状态、聊天、阅读、设置和桌面 presence。
@@ -24,18 +25,19 @@
 |---|---|---:|---|
 | 类型 | `tests/test_types/` | 2 | 枚举穷尽、实体默认值、LLM prompt TypedDict |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
-| LLM | `tests/test_llm/` | 2 | 统一客户端、视觉客户端、token 元数据、最终 prompt 快照 |
+| LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
 | DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、活动历史/委派任务 FIFO 索引、书籍/材料原文记忆 checkpoint 列、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
 | API/运行时 | `tests/test_api/` | 7 | 组合根、REST、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取 |
-| 记忆 | `tests/test_memory/` | 7 | kind/topics、精确与语义去重、episode 保守去重、原文画像/类别归因/稳定来源 topic、同内容跨来源隔离、来源过滤先于排序、ANN、融合召回、联想图、Facade、通用实体事实抽取/类型与别名索引/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级、durable 活动记忆不持锁等待 embedding |
+| 记忆 | `tests/test_memory/` | 7 | kind/topics、精确与语义去重、episode 保守去重、原文画像/类别归因/稳定来源 topic、同内容跨来源隔离、来源过滤先于排序、embedding 延迟单次加载、ANN、融合召回、联想图、Facade、通用实体事实抽取/类型与别名索引/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级、durable 活动记忆不持锁等待 embedding |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、类型/action 钉死、满足、重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
 | 活动 | `tests/test_activity/` | 13 | 本地自然日时间线、结果过滤/分页、排期、活动生命周期、委派任务 FIFO/低精力/打断恢复、网页任务 6000 字符 checkpoint、EPUB 与材料跨库模糊选材及分块不结算、无匹配搜索、空来源不沉淀、探索、观察、材料原文沉淀、本地探索读取真实文件、读书恢复、创作结果严格校验、主题/旧作参考、唯一文件名与注册表落盘 |
 | 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/嵌套块语义/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
+| 发布工具 | `tests/test_release_tools.py` | 1 | 六处版本一致性、tag 校验、冻结制品布局、REST/SSE smoke、stdin EOF 回收、占位 key、workflow 权限/依赖/Action SHA 与锁文件 |
 
 ## 前端覆盖
 
@@ -47,7 +49,7 @@
 | 记忆面板 | `memoryPanel.test.tsx` | 关键词查询提交、事实图实体关系渲染、事实加载失败降级 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 状态显示、紧凑布局容器、过滤、枚举中文化 |
 | 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 真分页与长段可达、受控富文本、UTF-16 同段划线、重叠划线线性端点读取、跨段拒绝、划线查询/删除/定位、书签定位、普通笔记和章节交互 |
-| 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `rightDock.test.tsx`, `desktopWindow.test.ts`, `petShell.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 创作页导航入口、统一分钟时钟、休眠恢复校时、昼夜/头像、完整端与桌宠态拖动模式隔离、桌宠点击/拖动阈值与窗口层级、头像东西南北四项入口/内心摘要/可修改设置入口、状态气泡、桌宠陪读翻页边界、非法时间标签边界、打字机 |
+| 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `rightDock.test.tsx`, `desktopWindow.test.ts`, `petShell.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 创作页导航入口、统一分钟时钟、休眠恢复校时、昼夜/头像、完整端与桌宠态拖动模式隔离、桌宠双击后重新挂载完整内容、桌宠点击/拖动阈值与窗口层级、聊天/读书子面板靠右停靠标记、头像东西南北四项入口/内心摘要/可修改设置入口、状态气泡、桌宠陪读长段滚动与翻页边界、非法时间标签边界、打字机 |
 
 ## 关键回归清单
 
@@ -93,6 +95,7 @@
 ### 记忆、活动和用户路径
 
 - `test_search_fuses_vector_keyword_and_limits_direct_then_association`
+- `test_build_embed_loads_model_lazily_once`
 - `test_fact_store_replaces_old_valid_fact_and_keeps_history`
 - `test_memory_facts_endpoint`、`memoryPanel.test.tsx`：事实快照 API、实体关系图与事实独立降级
 - `test_fact_store_duplicate_is_idempotent`
@@ -165,9 +168,23 @@
 - `readerView.test.tsx`：阅读位置和 Nyx 追赶/等待派生态展示、结构化标题/粗体/已有划线、当前书划线搜索、UTF-16 同段选区、跨段拒绝，以及划线/书签持久定位
 - `stores.test.ts`：旧书书签请求成功或失败晚到时，均不得覆盖当前书状态
 - `readerView.test.tsx`：重叠划线分段保持端点读取为线性次数，不使用耗时阈值
+- `app.test.tsx`：Tauri 桌宠态不保留隐藏的完整布局，双击头像后重新挂载顶栏、主布局和完整端头像
+- `petShell.test.tsx`：聊天和读书子面板打开时设置统一靠右停靠标记，避免固定窗口裁切
+- `petShell.test.tsx`：超长陪读段落在固定高度正文区域内纵向滚动，不再被隐藏裁切
+- `packaged_backend_is_a_sibling_of_the_desktop_executable`
+
+### CI/CD 与发布制品
+
+- `test_validate_versions_accepts_matching_sources_and_tag`
+- `test_validate_versions_reports_drift`
+- `test_release_binaries_require_desktop_and_sidecar`
+- `test_run_smoke_uses_nonsecret_placeholder_key`
+- `test_ci_workflow_has_quality_package_and_tag_release_gates`
+- `test_ci_actions_are_pinned_and_python_dev_dependencies_are_locked`
 
 ### Eval prompt 可观测
 
+- `test_complete_concurrent_first_calls_build_model_once`、`test_from_config_ok`、`test_from_config_passes_timeout_and_retries`、`test_from_config_passes_temperature`：LLM 模型延迟且并发只构造一次，配置不丢失
 - `test_complete_captures_independent_prompt_messages`
 - `test_prompt_round_trip_is_shared_by_call_id`
 - `test_prompt_and_eval_record_insert_roll_back_together`

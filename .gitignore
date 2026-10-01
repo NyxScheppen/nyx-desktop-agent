@@ -24,6 +24,7 @@ graphify-out/
 # 本地密钥（api key 等，勿提交）
 .env
 .env.*
+!.env.example
 
 # SQLite 运行时数据库（后端启动生成，勿提交）
 nyx.db*
@@ -36,6 +37,11 @@ node_modules/
 
 # 本地 Python 运行时依赖（由 start_nyx.bat 使用，勿提交）
 .runtime/
+
+# CI/CD 本地产物
+.coverage
+htmlcov/
+artifacts/
 
 # 开发启动器 backend PID（勿提交）
 .nyx-backend.pid

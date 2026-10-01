@@ -31,7 +31,6 @@ from nyx.expression.store import ExpressionInteractionStore
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
-from nyx.llm.vision import VisionClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.facts import MemoryFactStore
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
@@ -450,6 +449,8 @@ async def build_app_context(
 
     observation_reader = read_observation
     if config.vision.enabled:
+        from nyx.llm.vision import VisionClient
+
         vision = VisionClient.from_config(config.vision)
         app.screen_observer = ScreenObserver(
             capture_screen, vision.describe, config.vision.interval_seconds

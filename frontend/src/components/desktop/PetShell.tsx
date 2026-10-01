@@ -123,7 +123,7 @@ function ReadingPanel({ onBack }: { onBack: () => void }) {
       )}
       <div className="pet-reading-card">
         <h2 className="pet-panel__title">陪读 · {book?.title ?? "阅读中"}</h2>
-        <div className="pet-reading-content">
+        <div className="pet-reading-content" role="region" aria-label="当前阅读段落" tabIndex={0}>
           {paragraph?.text ?? "正在读取这一页……"}
         </div>
         <div className="pet-reading-progress">
@@ -213,7 +213,11 @@ export default function PetShell({ night, onExpand, onOpenSettings }: PetShellPr
       onDoubleClick={onExpand}
     >
       <div
-        className="pet-interaction-layer"
+        className={
+          panel !== null && panel !== "fan"
+            ? "pet-interaction-layer pet-interaction-layer--panel-open"
+            : "pet-interaction-layer"
+        }
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
         onDoubleClick={(event) => event.stopPropagation()}

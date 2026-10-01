@@ -1,6 +1,7 @@
 import asyncio
 import math
 import re
+import threading
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import cast
@@ -91,18 +92,30 @@ def extract_keywords(text: str) -> list[str]:
 def build_embed(model_name: str) -> EmbedFn:
     """用本地 sentence-transformers 建 embed 函数。
 
-    惰性 import 避免未启用向量层时加载重依赖。
+    模型在第一次编码时加载，让后端先完成启动和端口监听。
     """
-    from sentence_transformers import SentenceTransformer
+    encode: Callable[[str], Iterable[float]] | None = None
+    model_lock = threading.Lock()
 
-    model = SentenceTransformer(model_name)
-    # sentence-transformers 的 encode 返回类型含 Unknown（SingleInput 里
-    # PIL/torchcodec 可选导入兜底 None），getattr + cast 收窄为明确的
-    # Callable，避免 pyright 报 partially-unknown。
-    encode = cast(Callable[[str], Iterable[float]], getattr(model, "encode"))
+    def get_encode() -> Callable[[str], Iterable[float]]:
+        nonlocal encode
+        if encode is not None:
+            return encode
+        with model_lock:
+            if encode is None:
+                from sentence_transformers import SentenceTransformer
+
+                model = SentenceTransformer(model_name)
+                # sentence-transformers 的 encode 返回类型含 Unknown（SingleInput 里
+                # PIL/torchcodec 可选导入兜底 None），getattr + cast 收窄为明确的
+                # Callable，避免 pyright 报 partially-unknown。
+                encode = cast(
+                    Callable[[str], Iterable[float]], getattr(model, "encode")
+                )
+            return encode
 
     def _encode_sync(text: str) -> list[float]:
-        return [float(x) for x in encode(text)]
+        return [float(x) for x in get_encode()(text)]
 
     async def embed(text: str) -> list[float]:
         return await asyncio.to_thread(_encode_sync, text)

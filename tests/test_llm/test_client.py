@@ -206,6 +206,34 @@ def test_complete_messages_passthrough() -> None:
     assert fake._recorded_messages[1].content == "q"
 
 
+async def test_complete_concurrent_first_calls_build_model_once() -> None:
+    fake = FakeChatModel(AIMessage(content="hi"))
+    constructed = 0
+
+    def create_model() -> BaseChatModel:
+        nonlocal constructed
+        constructed += 1
+        return fake
+
+    client = LlmClient(None, "test-model", model_factory=create_model)
+    await asyncio.gather(
+        client.complete(
+            [{"role": "user", "content": "a"}],
+            module="test",
+            output_type="reply",
+            correlation_id="a",
+        ),
+        client.complete(
+            [{"role": "user", "content": "b"}],
+            module="test",
+            output_type="reply",
+            correlation_id="b",
+        ),
+    )
+
+    assert constructed == 1
+
+
 def test_complete_captures_independent_prompt_messages() -> None:
     client, _ = _client(AIMessage(content="hi"))
     messages: list[LlmMessage] = [
@@ -279,6 +307,7 @@ def test_from_config_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     client = LlmClient.from_config(LlmConfig())
     assert client._model_name == "deepseek-chat"
+    assert client._model is None
 
 
 def test_from_config_known_provider(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -308,7 +337,9 @@ def test_from_config_passes_timeout_and_retries(
             captured.update(kwargs)
 
     monkeypatch.setattr("nyx.llm.client.ChatOpenAI", _FakeChatOpenAI)
-    LlmClient.from_config(LlmConfig(timeout=30.0, max_retries=5))
+    client = LlmClient.from_config(LlmConfig(timeout=30.0, max_retries=5))
+    assert captured == {}
+    client._get_model()
     assert captured["timeout"] == 30.0
     assert captured["max_retries"] == 5
 
@@ -324,5 +355,7 @@ def test_from_config_passes_temperature(
             captured.update(kwargs)
 
     monkeypatch.setattr("nyx.llm.client.ChatOpenAI", _FakeChatOpenAI)
-    LlmClient.from_config(LlmConfig(temperature=1.2))
+    client = LlmClient.from_config(LlmConfig(temperature=1.2))
+    assert captured == {}
+    client._get_model()
     assert captured["temperature"] == 1.2

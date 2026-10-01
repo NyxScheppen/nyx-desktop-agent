@@ -1,11 +1,15 @@
-import os
-import uuid
-from typing import Any, cast
+from __future__ import annotations
 
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
+import asyncio
+import os
+import threading
+import uuid
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.messages import AIMessage, BaseMessage
 
 from nyx.config import ConfigError, LlmConfig
 from nyx.types import LlmMessage, LLMOutput
@@ -36,6 +40,8 @@ def _extract_tokens(response: AIMessage) -> tuple[int, int]:
 
 def _to_lc(m: LlmMessage) -> BaseMessage:
     """LlmMessage → LangChain 消息；纯函数，可单测。"""
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
     role = m["role"]
     if role == "system":
         return SystemMessage(content=m["content"])
@@ -61,12 +67,26 @@ def resolve_base_url(provider: str, base_url: str | None) -> str | None:
     return _PROVIDER_BASE_URLS.get(provider)
 
 
+def ChatOpenAI(**kwargs: Any) -> BaseChatModel:
+    """Construct the real LangChain client only when the first call needs it."""
+    from langchain_openai import ChatOpenAI as LangChainChatOpenAI
+
+    return LangChainChatOpenAI(**kwargs)
+
+
 class LlmClient:
     """全项目唯一 LLM 出口。持有 LangChain model 与 model 名，负责调用。"""
 
-    def __init__(self, model: BaseChatModel, model_name: str) -> None:
+    def __init__(
+        self,
+        model: BaseChatModel | None,
+        model_name: str,
+        model_factory: Callable[[], BaseChatModel] | None = None,
+    ) -> None:
         self._model = model
         self._model_name = model_name
+        self._model_factory = model_factory
+        self._model_lock = threading.Lock()
         # 显式传，不依赖 LangChain 的 model_name 属性（fake 未必有）
 
     @classmethod
@@ -80,17 +100,29 @@ class LlmClient:
         api_key = os.environ.get(config.api_key_env)
         if not api_key:
             raise ConfigError(f"环境变量 {config.api_key_env} 未设置")
-        return cls(
-            ChatOpenAI(
+        def create_model() -> BaseChatModel:
+            from pydantic import SecretStr
+
+            return ChatOpenAI(
                 model=config.model,
                 api_key=SecretStr(api_key),
                 base_url=base_url,
                 timeout=config.timeout,
                 max_retries=config.max_retries,
                 temperature=config.temperature,
-            ),
-            model_name=config.model,
-        )
+            )
+
+        return cls(None, model_name=config.model, model_factory=create_model)
+
+    def _get_model(self) -> BaseChatModel:
+        if self._model is not None:
+            return self._model
+        with self._model_lock:
+            if self._model is None:
+                if self._model_factory is None:
+                    raise RuntimeError("LLM client 未配置 model factory")
+                self._model = self._model_factory()
+            return self._model
 
     async def complete(
         self,
@@ -111,7 +143,10 @@ class LlmClient:
             kwargs["response_format"] = {"type": "json_object"}
         if tools:
             kwargs["tools"] = tools  # OpenAI 兼容 function calling 工具定义
-        response = await self._model.ainvoke(
+        model = self._model
+        if model is None:
+            model = await asyncio.to_thread(self._get_model)
+        response = await model.ainvoke(
             [_to_lc(message) for message in prompt_messages], **kwargs
         )
         content = response.content

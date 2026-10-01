@@ -1,6 +1,13 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
+
+const desktopWindowMocks = vi.hoisted(() => ({
+  applyDesktopMode: vi.fn(async () => undefined),
+  isTauriRuntime: vi.fn(() => false),
+}));
+
+vi.mock("../src/lib/desktopWindow", () => desktopWindowMocks);
 
 vi.mock("../src/hooks/useSSE", () => ({ useSSE: () => "closed" }));
 vi.mock("../src/hooks/usePresence", () => ({ usePresence: () => undefined }));
@@ -28,7 +35,14 @@ vi.mock("../src/stores/settingsStore", () => ({
 vi.mock("../src/components/chat/ChatInput", () => ({ default: () => null }));
 vi.mock("../src/components/chat/MessageList", () => ({ default: () => null }));
 vi.mock("../src/components/inner/Avatar", () => ({
-  default: ({ night }: { night: boolean }) => <div data-testid="avatar" data-night={night} />,
+  default: ({ night, onDoubleClick }: { night: boolean; onDoubleClick?: () => void }) => (
+    <button type="button" data-testid="avatar" data-night={night} onDoubleClick={onDoubleClick} />
+  ),
+}));
+vi.mock("../src/components/desktop/PetShell", () => ({
+  default: ({ onExpand }: { onExpand: () => void }) => (
+    <button type="button" aria-label="Nyx 桌宠头像" onDoubleClick={onExpand} />
+  ),
 }));
 vi.mock("../src/components/inner/InnerStatePanel", () => ({ default: () => null }));
 vi.mock("../src/components/layout/SettingsView", () => ({ default: () => null }));
@@ -42,7 +56,10 @@ vi.mock("../src/components/shell/RightDock", () => ({ default: () => null }));
 vi.mock("../src/components/shell/StatusBar", () => ({ default: () => null }));
 
 describe("App 分钟时钟与昼夜同步", () => {
-  beforeEach(() => vi.useFakeTimers());
+  beforeEach(() => {
+    vi.useFakeTimers();
+    desktopWindowMocks.isTauriRuntime.mockReturnValue(false);
+  });
   afterEach(() => vi.useRealTimers());
 
   it.each([
@@ -70,5 +87,26 @@ describe("App 分钟时钟与昼夜同步", () => {
     act(() => vi.advanceTimersByTime(500));
     expect(screen.getByText("9月18日 星期五 06:00")).toBeInTheDocument();
     expect(container.firstElementChild).toHaveAttribute("data-time-phase", "day");
+  });
+});
+
+describe("App 桌宠与完整端切换", () => {
+  beforeEach(() => {
+    desktopWindowMocks.isTauriRuntime.mockReturnValue(true);
+    desktopWindowMocks.applyDesktopMode.mockClear();
+  });
+
+  it("双击桌宠头像后重新挂载完整内容，避免只剩空白背景", async () => {
+    const { container } = render(<App />);
+
+    expect(container.querySelector(".app")).toHaveClass("app--pet");
+    expect(screen.queryByText("✦ Nyx ✦")).not.toBeInTheDocument();
+
+    fireEvent.doubleClick(screen.getByRole("button", { name: "Nyx 桌宠头像" }));
+
+    expect(container.querySelector(".app")).toHaveClass("app--full");
+    expect(screen.getByText("✦ Nyx ✦")).toBeInTheDocument();
+    expect(screen.getByTestId("avatar")).toBeInTheDocument();
+    await waitFor(() => expect(desktopWindowMocks.applyDesktopMode).toHaveBeenCalledWith("full"));
   });
 });

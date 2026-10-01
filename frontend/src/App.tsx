@@ -129,36 +129,40 @@ export default function App() {
       )}
       <div className="app-time-overlay" aria-hidden="true" />
 
-      <header className="app-topbar">
-        <span className="scene-title">✦ Nyx ✦</span>
-        <div className="topbar-right">
-          <time className="current-time" dateTime={now.toISOString()}>
-            {formatCurrentTime(now)}
-          </time>
-          <span className="connection-state">{CONNECTION_LABEL[status]}</span>
-        </div>
-      </header>
-
-      <main className="game-shell" style={shellStyle}>
-        <div className="left-dock">
-          <StatusBar />
-          <MessageList messages={messages} now={now} />
-          <ChatInput />
-        </div>
-        <div className="game-main">
-          <section className="side-panel">
-            <div className="side-panel__body">
-              {view === "inner" && <InnerStatePanel />}
-              {view === "desire" && <DesiresPanel />}
-              {view === "activity" && <ActivityPanel />}
-              {view === "creation" && <CreationPanel />}
-              {view === "memory" && <MemoryPanel />}
-              {view === "reading" && (bookId === null ? <BookshelfView /> : <ReaderView />)}
+      {desktopMode === "full" && (
+        <>
+          <header className="app-topbar">
+            <span className="scene-title">✦ Nyx ✦</span>
+            <div className="topbar-right">
+              <time className="current-time" dateTime={now.toISOString()}>
+                {formatCurrentTime(now)}
+              </time>
+              <span className="connection-state">{CONNECTION_LABEL[status]}</span>
             </div>
-          </section>
-        </div>
-        <RightDock view={view} onSwitch={setView} onOpenSettings={() => setSettingsOpen(true)} />
-      </main>
+          </header>
+
+          <main className="game-shell" style={shellStyle}>
+            <div className="left-dock">
+              <StatusBar />
+              <MessageList messages={messages} now={now} />
+              <ChatInput />
+            </div>
+            <div className="game-main">
+              <section className="side-panel">
+                <div className="side-panel__body">
+                  {view === "inner" && <InnerStatePanel />}
+                  {view === "desire" && <DesiresPanel />}
+                  {view === "activity" && <ActivityPanel />}
+                  {view === "creation" && <CreationPanel />}
+                  {view === "memory" && <MemoryPanel />}
+                  {view === "reading" && (bookId === null ? <BookshelfView /> : <ReaderView />)}
+                </div>
+              </section>
+            </div>
+            <RightDock view={view} onSwitch={setView} onOpenSettings={() => setSettingsOpen(true)} />
+          </main>
+        </>
+      )}
 
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
       {desktopMode === "pet" ? (

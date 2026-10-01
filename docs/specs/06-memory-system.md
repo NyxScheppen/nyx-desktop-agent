@@ -20,6 +20,7 @@
 - `MemoryEdge` 字段是 `from_id`、`to_id`、`kind`、`weight`、`created_at`；`kind` 是 typed edge 域，端点按 canonical unordered pair 使用。
 - `MemoryStore` 负责 `memory` / `memory_edge` CRUD、关键词 SQL、行与 dataclass 序列化；所有 DB 方法持有同一个 `Database.lock`。
 - `MemoryRetrieval` 负责检索编排；它只读 store 和 ANN，不写 DB、不发布事件。
+- 组合根调用 `build_embed(model_name)` 只创建异步 embed 闭包；`SentenceTransformer` 延迟到首次实际编码时在工作线程加载，并发首次调用通过锁只构造一个模型，避免模型加载阻塞后端端口监听。加载或编码异常继续向既有调用方传播，由各调用方按原契约决定严格失败或 best-effort 降级。
 - `MemoryGraph` 从 `MemoryEdge` 列表构建无向图；它不读 DB，只做图扩散和聚类，但必须接收完整 `memory_ids` 才能处理孤立节点。
 - `MemoryFacade._persist_memory` 负责统一写入、去重、建边、矛盾检测、衰减/淘汰和 `memory_created` 事件；store 只提供原子 CRUD。
 
@@ -891,6 +892,7 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 
 - [ ] `extract_keywords`：中文长句切出稳定 token，英文 lower，停用词与单字被过滤，顺序去重。
 - [ ] ANN：构建后能召回近邻；空 embedding 记忆跳过；维度不一致跳过；查询维度不一致返回空；候选数不超过 `candidate_k`；fingerprint 覆盖新增、删除、embedding 更新。
+- [ ] embedding 装配：`build_embed` 本身不构造 `SentenceTransformer`；首次并发编码只加载一次模型，返回值仍规范化为 `list[float]`。
 - [ ] keyword LIKE：多个 token 分别匹配；summary/content 命中集合正确；空 token 返回空；`limit <= 0` 返回空；token 多次出现只计一次；LIKE 特殊字符被 escape；返回按命中排序并截断到 limit。
 - [ ] 融合排序：vector 强但 keyword 弱、keyword 强但 vector 弱、二者都强三类样本按公式稳定排序；`direct_limit=5` 只返回 5 条 direct。
 - [ ] 召回顺序：先 direct，再 association；association 不重复 direct seed；最终数量 `<= direct_limit + association_limit`。

@@ -2070,11 +2070,15 @@ h6.reader-block--heading {
   transform: translateX(50%);
 }
 
+/* 子面板向头像左侧展开；打开时把组合靠右停放，最宽阅读面板仍完整留在 560px 窗口内。 */
+.app--pet .avatar-circle:has(.pet-interaction-layer--panel-open) {
+  right: 24px;
+  transform: none;
+}
+
 .app--pet .app-bg,
 .app--pet .app-bg-tint,
-.app--pet .app-time-overlay,
-.app--pet .app-topbar,
-.app--pet .game-shell {
+.app--pet .app-time-overlay {
   display: none;
 }
 
@@ -2313,7 +2317,7 @@ h6.reader-block--heading {
 
 .pet-reading-content {
   height: 148px;
-  overflow: hidden;
+  overflow-y: auto;
   padding: 3px 1px 8px;
   line-height: 1.78;
   font-size: 13px;

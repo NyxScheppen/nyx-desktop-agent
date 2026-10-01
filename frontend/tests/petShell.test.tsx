@@ -16,7 +16,7 @@ vi.mock("../src/components/inner/Avatar", () => ({
     onActivate?: () => void;
     onDoubleClick?: () => void;
   }) => (
-    <div>
+    <div data-testid="avatar-shell">
       <button type="button" aria-label="Nyx 头像" onClick={onActivate} onDoubleClick={onDoubleClick} />
       {children}
     </div>
@@ -78,6 +78,15 @@ describe("PetShell 桌宠菜单", () => {
     expect(screen.getByRole("button", { name: "内心" })).toBeInTheDocument();
   });
 
+  it.each(["聊天", "读书"])("打开%s面板时标记靠右停靠，避免内容被窗口左边裁切", (label) => {
+    render(<PetShell night={false} onExpand={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Nyx 头像" }));
+    fireEvent.click(screen.getByRole("button", { name: label }));
+
+    expect(screen.getByTestId("avatar-shell").querySelector(".pet-interaction-layer"))
+      .toHaveClass("pet-interaction-layer--panel-open");
+  });
+
   it("头像上方常驻显示状态，精力四舍五入为整数百分比", () => {
     useInnerLifeStore.setState({
       current: { emotion: "happy", energy: 42.6 } as CurrentState,
@@ -129,6 +138,43 @@ describe("PetShell 桌宠菜单", () => {
     expect(screen.getByText("窗边的夜色安静下来。")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "返回上一级" }));
     expect(screen.getByRole("region", { name: "选择书目" })).toBeInTheDocument();
+  });
+
+  it("陪读长段落保留在有限高度的纵向滚动区域内", async () => {
+    const longParagraph = "很长的一段正文。".repeat(100);
+    useReaderStore.setState({
+      books: [{
+        id: "book-1",
+        title: "诺斯艾兰",
+        author: "作者",
+        filename: "book.epub",
+        total_paragraphs: 1,
+        user_position: 1,
+        last_read_at: null,
+      }],
+      openBook: vi.fn(async () => {
+        useReaderStore.setState({
+          bookId: "book-1",
+          totalParagraphs: 1,
+          paragraphs: [{
+            id: "p-1",
+            book_id: "book-1",
+            index: 1,
+            text: longParagraph,
+            is_chapter_start: false,
+          }],
+        });
+      }),
+    });
+
+    render(<PetShell night={false} onExpand={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Nyx 头像" }));
+    fireEvent.click(screen.getByRole("button", { name: "读书" }));
+    fireEvent.click(screen.getByRole("button", { name: /诺斯艾兰/ }));
+
+    const content = await screen.findByRole("region", { name: "当前阅读段落" });
+    expect(content).toHaveTextContent(longParagraph);
+    expect(content).toHaveAttribute("tabindex", "0");
   });
 
   it("陪读二级界面可以前后翻页并在书籍边界禁用按钮", async () => {

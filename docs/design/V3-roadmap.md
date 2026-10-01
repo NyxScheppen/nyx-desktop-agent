@@ -8,7 +8,7 @@
 | 项 | 当前状态 | 未来接入点 |
 |---|---|---|
 | `LongTermDesire.linked_values` 消费 | 反思已按四个 `Values` 键回填；现阶段仅持久化，尚未消费 | 用于长期欲望排序、短期欲望 prompt 或活动决策 |
-| `LongTermDesire.strength` | 当前会衰减，但衰减结果未参与排序、prompt 或活动决策 | 将长期欲望强度接入排序、prompt 或决策 |
+| `LongTermDesire.strength` | 已接入周期加压、父对象排序、短期反馈和反思 prompt | 继续观察强度反馈是否需要调参 |
 
 ## 电脑控制
 

@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：66
-- `pytest --collect-only -q`：1109 tests collected
-- 最近一次全量验证：`1108 passed, 1 skipped`（本轮未采集语句覆盖率）
+- `pytest --collect-only -q`：1117 tests collected
+- 最近一次全量验证：`1116 passed, 1 skipped`（本轮未采集语句覆盖率）
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -26,14 +26,14 @@
 | 类型 | `tests/test_types/` | 2 | 枚举穷尽、实体默认值、LLM prompt TypedDict |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、活动历史/委派任务 FIFO 索引、书籍/材料原文记忆 checkpoint 列、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍/材料原文记忆 checkpoint 列、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
 | API/运行时 | `tests/test_api/` | 7 | 组合根、REST、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取 |
 | 记忆 | `tests/test_memory/` | 7 | kind/topics、精确与语义去重、episode 保守去重、原文画像/类别归因/稳定来源 topic、同内容跨来源隔离、来源过滤先于排序、embedding 延迟单次加载、ANN、融合召回、联想图、Facade、通用实体事实抽取/类型与别名索引/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级、durable 活动记忆不持锁等待 embedding |
-| 欲望 | `tests/test_desire/` | 4 | 值机制、加压、生成、类型/action 钉死、满足、重放 |
-| 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、事务回滚 |
-| 活动 | `tests/test_activity/` | 13 | 本地自然日时间线、结果过滤/分页、排期、活动生命周期、委派任务 FIFO/低精力/打断恢复、网页任务 6000 字符 checkpoint、EPUB 与材料跨库模糊选材及分块不结算、无匹配搜索、空来源不沉淀、探索、观察、材料原文沉淀、本地探索读取真实文件、读书恢复、创作结果严格校验、主题/旧作参考、唯一文件名与注册表落盘 |
+| 欲望 | `tests/test_desire/` | 4 | 值机制、行动优先级、strength 缩放加压、系统构造 goal、父长期欲望选择/持久化/反馈、容量裁剪、满足与 durable attempt 重放 |
+| 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、长期欲望数值/文字强度 prompt、事务回滚 |
+| 活动 | `tests/test_activity/` | 13 | 本地自然日时间线、结果过滤/分页、行动优先级排期、父 ID活动传递、活动生命周期、委派任务 FIFO/低精力/打断恢复、网页任务 6000 字符 checkpoint、EPUB 与材料跨库模糊选材及分块不结算、无匹配搜索、探索只追加父长期欲望子主题、观察、材料原文沉淀、本地探索读取真实文件、读书恢复、创作结果严格校验、主题/旧作参考、唯一文件名与注册表落盘 |
 | 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/嵌套块语义/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
@@ -152,15 +152,23 @@
 
 - `test_claim_for_activity_is_single_use`
 - `test_trim_pending_keeps_high_expression_weight`
-- `test_add_long_term_embed_error_is_strict`
-- `test_add_long_term_normalized_name_duplicate_skips`
+- `test_trim_pending_uses_action_priority_and_refunds_parent`
+- `test_add_long_term_subtopics_is_idempotent_and_missing_is_noop`
+- `test_deleting_parent_clears_short_term_and_attempt_links`
 - `test_prepare_long_term_candidates_filters_before_capacity`
 - `test_prepare_long_term_candidates_deduplicates_batch_semantically`
 - `test_add_prepared_long_terms_rejects_snapshot_conflict`
 - `test_apply_value_delta_preserves_concurrent_increments`
 - `test_run_eval_reuses_saved_generation_after_commit_failure`
 - `test_run_eval_same_tick_applies_periodic_pressure_once`
-- `test_parse_desire_pins_goal_action_to_desire_type`
+- `test_pick_parent_long_term_by_strength_then_fifo`
+- `test_run_eval_zero_strength_long_term_has_no_drive`
+- `test_run_eval_zero_strength_pending_does_not_block_same_topic`
+- `test_run_eval_trimmed_new_desire_refunds_parent_without_event`
+- `test_satisfy_reinforces_explicit_parent_only`
+- `test_get_pending_uses_action_priority`
+- `test_run_without_parent_still_persists_knowledge`
+- `test_describe_long_term_strength`
 
 ### 前端桌面采集
 

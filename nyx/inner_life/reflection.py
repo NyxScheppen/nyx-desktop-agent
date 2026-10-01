@@ -66,6 +66,18 @@ _REFLECTION_SYSTEM = (
 )
 
 
+def _describe_long_term_strength(strength: float) -> str:
+    if strength <= 0.0:
+        return "不再提供驱动力"
+    if strength < 0.25:
+        return "略有期待"
+    if strength < 0.5:
+        return "有些希望实现"
+    if strength < 0.8:
+        return "希望实现"
+    return "很希望实现"
+
+
 def _build_reflection_prompt(
     memories: list[Memory],
     personality: Personality,
@@ -77,7 +89,9 @@ def _build_reflection_prompt(
 ) -> str:
     mem_lines = "\n".join(f"- {m.summary}" for m in memories) or "（无）"
     lt_lines = "\n".join(
-        f"- [{lt.type.value}] {lt.name}（进度 {lt.progress:.2f}）" for lt in long_term
+        f"- [{lt.type.value}] {lt.name}（进度 {lt.progress:.2f}，"
+        f"强度 {lt.strength:.2f}（{_describe_long_term_strength(lt.strength)}））"
+        for lt in long_term
     ) or "（无）"
     story_lines = "\n".join(
         f"- {s}" for s in narrative.story[-_STORY_CONTEXT_LIMIT:]
@@ -311,7 +325,7 @@ class Reflection:
     """反思协调器：慢变量（性格/三观/长期欲望/自我叙事）唯一入口。
 
     一轮反思 = 读近期记忆 + 当前慢变量 → 1 次 LLM 产出全部 → 规则回写（clamp）。
-    内部调 MemoryFacade（近期记忆）/ DesireFacade（读历史 + add_long_term）。
+    内部调 MemoryFacade（近期记忆）/ DesireFacade（反思候选预检与提交）。
     """
 
     def __init__(

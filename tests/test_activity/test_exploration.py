@@ -12,7 +12,7 @@ from nyx.eval.evaluator import Evaluator
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
-from nyx.types import Activity, LLMOutput, LongTermDesire, Memory
+from nyx.types import Activity, LLMOutput, Memory
 
 _FINALIZE_JSON = json.dumps({
     "summary": "弄懂了量子退相干的机制",
@@ -92,10 +92,13 @@ class _FakeStore:
 
 class _FakeDesire:
     def __init__(self) -> None:
-        self.added_long_term: list[LongTermDesire] = []
+        self.appended_subtopics: list[tuple[str, list[str]]] = []
 
-    async def add_long_term(self, desire: LongTermDesire) -> None:
-        self.added_long_term.append(desire)
+    async def add_long_term_subtopics(
+        self, desire_id: str, subtopics: list[str]
+    ) -> bool:
+        self.appended_subtopics.append((desire_id, subtopics))
+        return True
 
 
 class _FakeMemory:
@@ -163,6 +166,7 @@ def _activity(progress: dict[str, Any] | None = None) -> Activity:
             "goal": {"topic": "量子"},
             "description": "理解量子退相干",
             "correlation_id": "c1",
+            "parent_long_term_id": "lt1",
         },
         started_at=1000.0,
     )
@@ -198,7 +202,21 @@ async def test_run_won_when_core_discovery() -> None:
     assert result["knowledge"][0]["topic"] == "退相干"
     assert result["strong_new_topics"] == ["量子纠错"]
     assert store.progress_updates[-1]["exploration"]["state"] == "completed"
-    assert desire.added_long_term[0].name == "量子纠错"
+    assert desire.appended_subtopics == [("lt1", ["量子纠错"])]
+    assert memory.remembered[-1][0][0]["topic"] == "退相干"
+
+
+async def test_run_without_parent_still_persists_knowledge() -> None:
+    desire = _FakeDesire()
+    memory = _FakeMemory()
+    expl = _make_exploration(desire=desire, memory=memory)
+    activity = _activity({
+        "goal": {"topic": "量子"},
+        "description": "理解量子退相干",
+        "correlation_id": "c1",
+    })
+    await expl.run(activity)
+    assert desire.appended_subtopics == []
     assert memory.remembered[-1][0][0]["topic"] == "退相干"
 
 
@@ -363,5 +381,5 @@ async def test_resume_sinking_with_sink_done_skips_memory_and_desire() -> None:
     expl = _make_exploration(desire=desire, memory=memory)
     result = await expl.run(activity)
     assert result["outcome"] == "won"
-    assert desire.added_long_term == []
+    assert desire.appended_subtopics == []
     assert memory.remembered == []

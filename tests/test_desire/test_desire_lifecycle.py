@@ -13,11 +13,10 @@ from nyx.db import Database
 from nyx.desire.lifecycle import (
     DesireLifecycle,
     _build_desire_prompt,
-    _most_relevant_long_term,
     _parse_desire,
+    _pick_parent_long_term,
     _pick_topic_seed,
     _subtopic_freshness,
-    _subtopics_for,
 )
 from nyx.desire.store import DesireStore
 from nyx.desire.value import (
@@ -53,7 +52,7 @@ from nyx.types import (
 _DESIRE_JSON = json.dumps(
     {
         "description": "读一段骑士团的历史",
-        "goal": {"action": "read", "count": 3, "topic": "骑士团"},
+        "count": 3,
     }
 )
 
@@ -88,14 +87,17 @@ def _lt(
     type: DesireType,
     subtopics: list[str] | None = None,
     id: str = "lt1",
+    *,
+    strength: float = 0.5,
+    created_at: float = 1000.0,
 ) -> LongTermDesire:
     return LongTermDesire(
         id=id,
-        created_at=1000.0,
+        created_at=created_at,
         type=type,
         name="探索世界",
         description="了解骑士团历史",
-        strength=0.5,
+        strength=strength,
         progress=0.0,
         subtopics=subtopics if subtopics is not None else [],
     )
@@ -208,46 +210,25 @@ async def _running(bus: EventBus) -> AsyncGenerator[None]:
 
 
 def test_parse_desire() -> None:
-    description, goal = _parse_desire(_DESIRE_JSON, DesireType.EXPLORATION)
+    description, count = _parse_desire(_DESIRE_JSON)
     assert description == "读一段骑士团的历史"
-    assert goal == Goal(action=GoalAction.READ, count=3, topic="骑士团")
-    assert _parse_desire(
-        '{"description": "x", "goal": null}', DesireType.REST
-    ) == ("x", None)
+    assert count == 3
+    assert _parse_desire('{"description": "x", "count": 1}') == ("x", 1)
     with pytest.raises(ValueError):
-        _parse_desire('{"goal": null}', DesireType.REST)  # 缺 description
+        _parse_desire('{"count": 1}')  # 缺 description
     with pytest.raises(ValueError):
-        _parse_desire(
-            '{"description": "", "goal": null}', DesireType.REST
-        )  # 空 description
+        _parse_desire('{"description": "", "count": 1}')  # 空 description
     with pytest.raises(ValueError):
-        _parse_desire(
-            '{"description": "x", "goal": {"action": "fly", "count": 1}}',
-            DesireType.EXPLORATION,
-        )
+        _parse_desire('{"description": "x", "count": 0}')
     with pytest.raises(ValueError):
-        _parse_desire(
-            '{"description": "x", "goal": {"action": "read", "count": 0}}',
-            DesireType.EXPLORATION,
-        )
+        _parse_desire('{"description": "x", "count": "3"}')
     with pytest.raises(ValueError):
-        _parse_desire(
-            '{"description": "x", "goal": {"action": "read", "count": "3"}}',
-            DesireType.EXPLORATION,
-        )
-    with pytest.raises(ValueError):
-        _parse_desire(
-            '{"description": "x", "goal": {"action": "read", "count": 1, "topic": 5}}',
-            DesireType.EXPLORATION,
-        )
-    with pytest.raises(ValueError):
-        _parse_desire("[]", DesireType.EXPLORATION)  # 非对象
+        _parse_desire("[]")  # 非对象
 
 
-def test_parse_desire_pins_goal_action_to_desire_type() -> None:
-    raw = '{"description": "写一首诗", "goal": {"action": "read", "count": 1}}'
-    _, goal = _parse_desire(raw, DesireType.CREATION)
-    assert goal is not None and goal.action is GoalAction.WRITE
+def test_parse_desire_ignores_model_owned_goal_fields() -> None:
+    raw = '{"description": "写一首诗", "count": 2, "action": "read", "topic": "x"}'
+    assert _parse_desire(raw) == ("写一首诗", 2)
 
 
 async def test_run_eval_same_tick_applies_periodic_pressure_once(
@@ -263,21 +244,9 @@ async def test_run_eval_same_tick_applies_periodic_pressure_once(
         await lifecycle.run_eval(100.0, event_id="tick-1")
 
         value = await store.get_value(DesireType.CREATION)
-        assert value is not None and value.value == pytest.approx(0.1)
+        assert value is not None and value.value == pytest.approx(0.05)
     finally:
         await database.close()
-
-
-def test_subtopics_for() -> None:
-    lt = _lt(DesireType.EXPLORATION, ["骑士团"])
-    assert _subtopics_for(DesireType.EXPLORATION, [lt]) == ["骑士团"]
-    assert _subtopics_for(DesireType.INTERACTION, [lt]) == []
-    assert _subtopics_for(DesireType.EXPLORATION, [_lt(DesireType.EXPLORATION)]) == []
-
-
-def test_subtopics_for_filters_blank() -> None:
-    lt = _lt(DesireType.EXPLORATION, ["骑士团", "", "  ", "大学朋友"])
-    assert _subtopics_for(DesireType.EXPLORATION, [lt]) == ["骑士团", "大学朋友"]
 
 
 def test_subtopic_freshness_blank_not_wildcard() -> None:
@@ -303,36 +272,21 @@ def test_pick_topic_seed() -> None:
     ) == "死亡"
 
 
-def test_most_relevant_long_term() -> None:
-    a = _lt(DesireType.EXPLORATION, ["骑士团"])
-    b = _lt(DesireType.EXPLORATION, ["大学朋友"])
-    # 无 type 匹配 → None
-    assert _most_relevant_long_term(
-        DesireType.INTERACTION, None, [a, b]
-    ) is None
-    # topic 双向 substring 命中第二条 → 回写第二条
-    assert _most_relevant_long_term(
-        DesireType.EXPLORATION, "大学朋友", [a, b]
-    ) is b
-    # topic 轻微漂移仍命中（"写骑士团同人" 含 "骑士团"）
-    assert _most_relevant_long_term(
-        DesireType.EXPLORATION, "写骑士团同人", [a, b]
-    ) is a
-    # topic=None → 第一个 type 匹配
-    assert _most_relevant_long_term(
-        DesireType.EXPLORATION, None, [a, b]
-    ) is a
-    # 同类型都不命中 → 第一个
-    assert _most_relevant_long_term(
-        DesireType.EXPLORATION, "别的主题", [a, b]
-    ) is a
-
-
-def test_most_relevant_long_term_blank_not_wildcard() -> None:
-    # 空串子主题曾是 substring 通配符（"" in topic 恒 True）→ 应跳过，命中真实子主题
-    a = _lt(DesireType.EXPLORATION, [""])
-    b = _lt(DesireType.EXPLORATION, ["骑士团"])
-    assert _most_relevant_long_term(DesireType.EXPLORATION, "骑士团", [a, b]) is b
+def test_pick_parent_long_term_by_strength_then_fifo() -> None:
+    zero = _lt(DesireType.EXPLORATION, id="zero", strength=0.0)
+    newer = _lt(
+        DesireType.EXPLORATION, id="newer", strength=0.8, created_at=2.0
+    )
+    older_b = _lt(
+        DesireType.EXPLORATION, id="b", strength=0.8, created_at=1.0
+    )
+    older_a = _lt(
+        DesireType.EXPLORATION, id="a", strength=0.8, created_at=1.0
+    )
+    assert _pick_parent_long_term(
+        DesireType.EXPLORATION, [zero, newer, older_b, older_a]
+    ) is older_a
+    assert _pick_parent_long_term(DesireType.INTERACTION, [zero]) is None
 
 
 def test_build_desire_prompt() -> None:
@@ -565,7 +519,8 @@ async def test_run_eval_generates_peak(monkeypatch: pytest.MonkeyPatch) -> None:
         assert desire.status is DesireStatus.PENDING
         assert desire.strength == pytest.approx(0.9)
         assert desire.description == "读一段骑士团的历史"
-        assert desire.goal == Goal(action=GoalAction.OBSERVE, count=3, topic="骑士团")
+        assert desire.goal == Goal(action=GoalAction.OBSERVE, count=3, topic=None)
+        assert desire.parent_long_term_id is None
         assert llm.calls == ["desire"]
         assert [o.type for o in evaluator.evaluated] == ["desire"]
         [generated] = [e for e in events if e.type is EventType.DESIRE_GENERATED]
@@ -612,6 +567,9 @@ async def test_run_eval_reuses_saved_generation_after_commit_failure(
         t0 = 1_000_000.0
         monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
         await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        await store.insert_long_term(_lt(
+            DesireType.INTERACTION, ["旧主题"], id="old", strength=0.5,
+        ))
         original = bus.append_in_transaction
         failed = True
 
@@ -626,8 +584,18 @@ async def test_run_eval_reuses_saved_generation_after_commit_failure(
         with pytest.raises(RuntimeError):
             await lifecycle.run_eval()
         assert llm.calls == ["desire"]
+        old = (await store.list_long_term())[0]
+        old.strength = 0.0
+        await store.update_long_term(old)
+        newer = _lt(
+            DesireType.INTERACTION, ["新主题"], id="new", strength=1.0,
+        )
+        newer.name = "另一个长期欲望"
+        await store.insert_long_term(newer)
         result = await lifecycle.run_eval()
         assert len(result) == 1
+        assert result[0].parent_long_term_id == "old"
+        assert result[0].goal is not None and result[0].goal.topic == "旧主题"
         assert llm.calls == ["desire"]
     finally:
         await database.close()
@@ -662,11 +630,64 @@ async def test_run_eval_long_term_pressure(monkeypatch: pytest.MonkeyPatch) -> N
         await store.insert_long_term(_lt(DesireType.EXPLORATION))
         async with _running(bus):
             result = await lifecycle.run_eval()
-        assert result == []                       # 0.5 + 0.1 = 0.6 < 0.9 未达峰
+        assert result == []                       # 0.5 + 0.1*0.5 = 0.55 < 0.9
         dv = await store.get_value(DesireType.EXPLORATION)
-        assert dv is not None and dv.value == pytest.approx(0.6)
+        assert dv is not None and dv.value == pytest.approx(0.55)
     finally:
         await database.conn.close()
+
+
+async def test_run_eval_trimmed_new_desire_refunds_parent_without_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(
+        store,
+        bus,
+        _FakeLlm(),
+        _FakeEvaluator(),
+        config=DesireConfig(short_term_capacity=1),
+    )
+    events = _subscribe(bus)
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        await store.insert_long_term(_lt(
+            DesireType.INTERACTION, ["骑士团"], strength=0.5,
+        ))
+        existing = _desire("existing", created_at=t0 - 1.0)
+        existing.strength = 1.0
+        await store.add_desire(existing)
+        async with _running(bus):
+            assert await lifecycle.run_eval() == []
+        assert [desire.id for desire in await store.list_pending()] == ["existing"]
+        assert (await store.list_long_term())[0].strength == 1.0
+        assert [
+            event for event in events
+            if event.type is EventType.DESIRE_GENERATED
+        ] == []
+    finally:
+        await database.close()
+
+
+async def test_run_eval_zero_strength_long_term_has_no_drive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.EXPLORATION, 0.5, updated_at=t0))
+        await store.insert_long_term(_lt(
+            DesireType.EXPLORATION, ["骑士团"], strength=0.0,
+        ))
+        assert await lifecycle.run_eval() == []
+        dv = await store.get_value(DesireType.EXPLORATION)
+        assert dv is not None and dv.value == pytest.approx(0.5)
+    finally:
+        await database.close()
 
 
 async def test_run_eval_rest_pressure_when_tired(
@@ -760,8 +781,9 @@ async def test_run_eval_topic_seed(monkeypatch: pytest.MonkeyPatch) -> None:
             result = await lifecycle.run_eval()
         assert "大学朋友" in llm.user_contents[0]   # 骑士团有记忆（做过）→ 取没做过的
         assert "骑士团" not in llm.user_contents[0]
-        # seed 钉死 goal.topic：LLM 返回的「骑士团」被覆盖为 seed「大学朋友」
+        # action/topic/goal 由系统构造，LLM 只提供 description/count。
         assert result[0].goal is not None and result[0].goal.topic == "大学朋友"
+        assert result[0].parent_long_term_id == "lt1"
     finally:
         await database.conn.close()
 
@@ -770,7 +792,7 @@ async def test_run_eval_topic_cleared_without_seed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, bus, database = await _new_stack()
-    llm = _FakeLlm()   # 返回 goal.topic="骑士团"
+    llm = _FakeLlm()
     lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())
     try:
         t0 = 1_000_000.0
@@ -781,16 +803,17 @@ async def test_run_eval_topic_cleared_without_seed(
             result = await lifecycle.run_eval()
         assert len(result) == 1
         assert result[0].goal is not None
-        assert result[0].goal.topic is None   # 无 seed 清空 LLM 漂移 topic
+        assert result[0].goal.topic is None
+        assert result[0].parent_long_term_id is None
     finally:
         await database.conn.close()
 
 
-async def test_run_eval_topic_no_synthesis_goal_none(
+async def test_run_eval_system_always_builds_exploration_goal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, bus, database = await _new_stack()
-    llm = _FakeLlm('{"description": "读骑士小说", "goal": null}')
+    llm = _FakeLlm('{"description": "读骑士小说", "count": 2}')
     lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())
     try:
         t0 = 1_000_000.0
@@ -800,7 +823,7 @@ async def test_run_eval_topic_no_synthesis_goal_none(
         async with _running(bus):
             result = await lifecycle.run_eval()
         assert len(result) == 1
-        assert result[0].goal is None   # 不合成 goal，保持单次满足语义
+        assert result[0].goal == Goal(GoalAction.READ, 2, "骑士团")
     finally:
         await database.conn.close()
 
@@ -817,7 +840,9 @@ async def test_satisfy_goal_met(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
         await store.upsert_value(_dv(DesireType.INTERACTION, 0.5, updated_at=t0))
         await store.insert_long_term(_lt(DesireType.INTERACTION))
-        await store.add_desire(_desire("d1"))
+        desire = _desire("d1")
+        desire.parent_long_term_id = "lt1"
+        await store.add_desire(desire)
         async with _running(bus):
             await lifecycle.satisfy("d1", True)
         d = await store.get_desire("d1")
@@ -827,16 +852,17 @@ async def test_satisfy_goal_met(monkeypatch: pytest.MonkeyPatch) -> None:
         assert dv.expression_weight == pytest.approx(0.7 + WEIGHT_REINFORCE_DELTA)
         lt = (await store.list_long_term())[0]
         assert lt.progress == pytest.approx(0.1)
+        assert lt.strength == pytest.approx(0.0)
         [satisfied] = [e for e in events if e.type is EventType.DESIRE_SATISFIED]
         assert satisfied.content["desire_id"] == "d1"
     finally:
         await database.conn.close()
 
 
-async def test_satisfy_reinforces_most_relevant_long_term(
+async def test_satisfy_reinforces_explicit_parent_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """同类型两条长期欲望 + goal.topic 命中第二条 → 只回写第二条 progress。"""
+    """topic 即使命中另一条，也只按 parent_long_term_id 回写。"""
     store, bus, database = await _new_stack()
     lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
     try:
@@ -850,12 +876,13 @@ async def test_satisfy_reinforces_most_relevant_long_term(
         desire = _desire("d1")
         desire.type = DesireType.EXPLORATION
         desire.goal = Goal(GoalAction.READ, 1, "大学朋友")
+        desire.parent_long_term_id = "lt1"
         await store.add_desire(desire)
         async with _running(bus):
             await lifecycle.satisfy("d1", True)
         by_id = {lt.id: lt for lt in await store.list_long_term()}
-        assert by_id["lt1"].progress == pytest.approx(0.0)   # 未命中，不动
-        assert by_id["lt2"].progress == pytest.approx(0.1)   # 命中，回写
+        assert by_id["lt1"].progress == pytest.approx(0.1)
+        assert by_id["lt2"].progress == pytest.approx(0.0)
     finally:
         await database.conn.close()
 
@@ -1260,7 +1287,7 @@ async def test_run_eval_dedup_same_topic_discards(
     store, bus, database = await _new_stack()
     llm = _FakeLlm(json.dumps({
         "description": "想和用户聊聊，知道ta为什么喜欢我",
-        "goal": None,
+        "count": 1,
     }))
     lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())  # embed=None
     events = _subscribe(bus)
@@ -1292,13 +1319,38 @@ async def test_run_eval_dedup_same_topic_discards(
         await database.conn.close()
 
 
+async def test_run_eval_zero_strength_pending_does_not_block_same_topic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        t0 = 1_000_000.0
+        monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: t0)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.9, updated_at=t0))
+        await store.insert_long_term(_lt(
+            DesireType.INTERACTION, ["用户为什么喜欢尼克斯"]
+        ))
+        existing = _desire("zero")
+        existing.strength = 0.0
+        existing.goal = Goal(
+            GoalAction.OBSERVE, 1, "用户为什么喜欢尼克斯"
+        )
+        await store.add_desire(existing)
+        result = await lifecycle.run_eval()
+        assert len(result) == 1
+        assert result[0].strength > 0.0
+    finally:
+        await database.close()
+
+
 async def test_run_eval_dedup_distinct_topic_keeps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, bus, database = await _new_stack()
     llm = _FakeLlm(json.dumps({
         "description": "想和用户聊聊，知道ta为什么喜欢我",
-        "goal": None,
+        "count": 1,
     }))
     lifecycle = _make_lifecycle(store, bus, llm, _FakeEvaluator())  # embed=None
     events = _subscribe(bus)

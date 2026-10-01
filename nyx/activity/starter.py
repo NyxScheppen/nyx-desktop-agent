@@ -137,6 +137,7 @@ class ActivityStarter:
         progress = _empty_progress()
         if target is not None:
             progress["desire_id"] = target.id
+            progress["parent_long_term_id"] = target.parent_long_term_id
             progress["correlation_id"] = target.id
             progress["description"] = target.description
             if target.goal is not None:

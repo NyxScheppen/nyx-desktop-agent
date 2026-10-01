@@ -18,6 +18,8 @@ function std(
     goal: null,
     retry_count: 0,
     status,
+    goal_progress: 0,
+    parent_long_term_id: null,
   };
 }
 

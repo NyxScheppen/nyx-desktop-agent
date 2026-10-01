@@ -29,7 +29,7 @@ from nyx.types import (
 _DESIRE_JSON = json.dumps(
     {
         "description": "读一段骑士团的历史",
-        "goal": {"action": "read", "count": 3, "topic": "骑士团"},
+        "count": 3,
     }
 )
 
@@ -315,7 +315,7 @@ async def test_get_all_snapshot() -> None:
         await database.conn.close()
 
 
-# ---- satisfy / expire / add_long_term ----
+# ---- satisfy / expire / reflection long-term entry ----
 
 
 async def test_satisfy_expire_delegate() -> None:
@@ -349,103 +349,6 @@ async def test_mark_active_suppressed_delegate() -> None:
         await database.conn.close()
 
 
-async def test_add_long_term_delegates() -> None:
-    store, bus, database = await _new_stack()
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
-    try:
-        lt = _lt(DesireType.EXPLORATION)
-        await facade.add_long_term(lt)
-        assert await store.list_long_term() == [lt]
-    finally:
-        await database.conn.close()
-
-
-async def test_add_long_term_exact_name_duplicate_skips() -> None:
-    store, bus, database = await _new_stack()
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())  # embed=None
-    try:
-        await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
-        await facade.add_long_term(_lt_custom("b", "理解人类", "道德"))
-        assert [d.id for d in await store.list_long_term()] == ["a"]
-    finally:
-        await database.conn.close()
-
-
-async def test_add_long_term_normalized_name_duplicate_skips() -> None:
-    store, bus, database = await _new_stack()
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
-    try:
-        await facade.add_long_term(_lt_custom("a", "  理解   人类 "))
-        await facade.add_long_term(_lt_custom("b", "理解 人类"))
-        assert [d.id for d in await store.list_long_term()] == ["a"]
-    finally:
-        await database.close()
-
-
-async def test_add_long_term_semantic_duplicate_skips() -> None:
-    store, bus, database = await _new_stack()
-    same = _embed_map({"理解人类 痛苦": [1.0, 0.0], "了解人类 痛苦": [1.0, 0.0]})
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator(), embed=same)
-    try:
-        await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
-        await facade.add_long_term(_lt_custom("b", "了解人类", "痛苦"))
-        assert [d.id for d in await store.list_long_term()] == ["a"]
-    finally:
-        await database.conn.close()
-
-
-async def test_add_long_term_semantic_distinct_keeps() -> None:
-    store, bus, database = await _new_stack()
-    embed = _embed_map({"理解人类 痛苦": [1.0, 0.0], "理解道德 责任": [0.0, 1.0]})
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator(), embed=embed)
-    try:
-        await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
-        await facade.add_long_term(_lt_custom("b", "理解道德", "责任"))
-        assert [d.id for d in await store.list_long_term()] == ["a", "b"]
-    finally:
-        await database.conn.close()
-
-
-async def test_add_long_term_capacity_full_skips() -> None:
-    store, bus, database = await _new_stack()
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())  # embed=None
-    try:
-        for i in range(5):
-            await facade.add_long_term(_lt_custom(f"lt{i}", f"话题{i}"))
-        await facade.add_long_term(_lt_custom("lt6", "话题6"))
-        assert [d.id for d in await store.list_long_term()] == [
-            "lt0", "lt1", "lt2", "lt3", "lt4",
-        ]
-    finally:
-        await database.conn.close()
-
-
-async def test_add_long_term_embed_none_exact_only() -> None:
-    store, bus, database = await _new_stack()
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())  # embed=None
-    try:
-        await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
-        await facade.add_long_term(_lt_custom("b", "了解人类", "痛苦"))
-        assert [d.id for d in await store.list_long_term()] == ["a", "b"]
-    finally:
-        await database.conn.close()
-
-
-async def test_add_long_term_embed_error_is_strict() -> None:
-    store, bus, database = await _new_stack()
-
-    async def boom(text: str) -> list[float]:
-        raise RuntimeError("embed down")
-
-    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator(), embed=boom)
-    try:
-        with pytest.raises(RuntimeError):
-            await facade.add_long_term(_lt_custom("a", "理解人类", "痛苦"))
-        assert await store.list_long_term() == []
-    finally:
-        await database.conn.close()
-
-
 async def test_prepare_long_term_candidates_filters_before_capacity() -> None:
     store, bus, database = await _new_stack()
     facade = _make_facade(
@@ -466,6 +369,36 @@ async def test_prepare_long_term_candidates_filters_before_capacity() -> None:
         assert snapshot == (("existing", "理解人类", ""),)
     finally:
         await database.conn.close()
+
+
+async def test_get_pending_uses_action_priority() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        low = _desire("low")
+        low.strength = 0.2
+        high = _desire("high")
+        high.strength = 0.8
+        zero = _desire("zero")
+        zero.strength = 0.0
+        await store.add_desire(low)
+        await store.add_desire(high)
+        await store.add_desire(zero)
+        await store.upsert_value(_dv(DesireType.INTERACTION, 0.0))
+        assert [d.id for d in await facade.get_pending()] == ["high", "low"]
+    finally:
+        await database.close()
+
+
+async def test_add_long_term_subtopics_delegates() -> None:
+    store, bus, database = await _new_stack()
+    facade = _make_facade(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        await store.insert_long_term(_lt(DesireType.EXPLORATION))
+        assert await facade.add_long_term_subtopics("lt1", ["大学朋友"]) is True
+        assert (await store.list_long_term())[0].subtopics == ["骑士团", "大学朋友"]
+    finally:
+        await database.close()
 
 
 async def test_prepare_long_term_candidates_deduplicates_batch_semantically() -> None:

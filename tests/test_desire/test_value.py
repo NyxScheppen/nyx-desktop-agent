@@ -5,6 +5,7 @@ from nyx.desire.value import (
     REFUND_DELTA,
     SUPPRESSION_RAISE_DELTA,
     WEIGHT_REINFORCE_DELTA,
+    action_priority,
     apply_pressure,
     at_peak,
     decay_value,
@@ -27,6 +28,13 @@ def test_apply_pressure() -> None:
     assert apply_pressure(0.3, 0.2) == pytest.approx(0.5)
     assert apply_pressure(0.9, 0.5) == 1.0             # 夹到上限
     assert apply_pressure(0.1, -0.5) == 0.0            # 负 delta 夹到下限
+
+
+def test_action_priority_multiplies_and_clamps() -> None:
+    assert action_priority(0.8, 0.5) == pytest.approx(0.4)
+    assert action_priority(0.0, 1.0) == 0.0
+    assert action_priority(2.0, 2.0) == 1.0
+    assert action_priority(-1.0, 0.5) == 0.0
 
 
 def test_reinforce_weight() -> None:

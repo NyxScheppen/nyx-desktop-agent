@@ -201,6 +201,8 @@ export type ShortTermDesire = {
   goal: Goal | null;
   retry_count: number;
   status: DesireStatus;
+  goal_progress: number;
+  parent_long_term_id: string | null;
 };
 
 export type LongTermDesire = {

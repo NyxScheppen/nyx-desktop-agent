@@ -14,7 +14,7 @@
 
 ## 数据事实
 
-- `short_term_desire` 保存短期欲望和 `PENDING / ACTIVE / SUPPRESSED / SATISFIED / EXPIRED` 状态。
+- `short_term_desire` 保存短期欲望、可空 `parent_long_term_id` 和 `PENDING / ACTIVE / SUPPRESSED / SATISFIED / EXPIRED` 状态。
 - `desire_value` 每种 `DesireType` 一行，包含压力、表达权重、抑制阈值和 `updated_at`。
 - `long_term_desire` 保存长期欲望；`name_normalized` 由规范化名称生成并有唯一索引。
 - `desire_generation_attempt` 保存已解析但正式写入尚未完成的 LLM 结果，提交成功后删除。
@@ -37,11 +37,13 @@ PENDING --retry limit--> EXPIRED
 
 - `OBSERVATION_STATE` 原子增加互动欲压力。
 - `ACTIVITY_END` 按 payload 的 `desire_id`/`goal_met` 结算，并对读书/自由探索增加创造欲压力。
-- `DESIRE_EVAL` 先在短事务内结算衰减和周期压力，并与 `desire_eval_applied` marker 一起提交，再在事务外调用 LLM；同一 tick 重试跳过周期结算但继续生成阶段。
+- `DESIRE_EVAL` 先在短事务内结算衰减和周期压力，并与 `desire_eval_applied` marker 一起提交，再在事务外调用 LLM；每条长期欲望贡献 `0.1 * strength`，strength=0 不提供驱动力；同一 tick 重试跳过周期结算但继续生成阶段。
 - 同一进程的评估调用由 lifecycle 锁串行；最终压力重置使用 `updated_at` 条件，保护评估期间的新压力。
 - 解析成功的 LLM JSON 先进入 generation attempt；正式状态、容量裁剪和 `DESIRE_GENERATED` 在一个事务中提交。
-- goal 的 `action` 不信任 LLM 选择：解析结构合法后按欲望类型固定为探索=`read`、创造=`write`、互动=`observe`，休息欲为 `None`，避免活动类型与结算动作错配。
-- 短期容量溢出时，按类型表达权重降序、创建时间升序保留，低表达权重待消费欲望被裁剪。
+- 系统决定父长期欲望、topic、goal 是否存在和 action；LLM 只生成 description/count。父对象按 strength 降序选择并持久化到短期记录。
+- 待消费与容量裁剪统一按 `short_term.strength * expression_weight` 排序；被容量裁剪的记录按该优先级回灌父 strength，最终满足按同一公式降低父 strength。
+- `strength<=0` 的短期记录仍在全量快照中，但不进入待消费队列或去重候选；长期记录 strength=0 时不加压也不成为父对象。
+- 运行时新增长期欲望的唯一入口是反思；探索只向明确父长期欲望幂等追加子主题。
 - 长期欲望 embedding 是严格前置；embedding 失败不插入，不降级为仅名称去重。
 - 反思批量新增长期欲望走两阶段入口：事务外预检容量/名称/embedding 去重并记录 `id/name/description` 快照，事务内只校验快照和执行受容量/名称保护的插入；快照冲突抛错交给 durable delivery 重试。
 
@@ -50,5 +52,5 @@ PENDING --retry limit--> EXPIRED
 - 活动 starter 在同一数据库事务中 claim 欲望并插入活动；任一步失败都会回滚。
 - 活动完成事件由活动事务产生；欲望消费者用 `(event_id, consumer_id)` effect marker 防重。
 - 欲望满足/淘汰的欲望状态、值强化/回灌、长期进度和终局事件在同一本地事务中提交。
-- 反思事务不得调用会自行开启事务的 `add_long_term`，也不得在持有数据库事务时计算 embedding。
+- 反思在事务外完成长期候选预检与 embedding，事务内只提交已准备候选；运行时没有通用的长期欲望新增入口。
 - 事务提交后的 announce/wake 失败只影响唤醒，不得反向修改已提交的业务事实；总线恢复扫描负责补投递。

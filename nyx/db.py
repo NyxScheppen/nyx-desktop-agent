@@ -672,6 +672,16 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON assigned_task(status, created_at)",
         ],
     ),
+    (
+        32,
+        [
+            "ALTER TABLE short_term_desire ADD COLUMN parent_long_term_id TEXT "
+            "REFERENCES long_term_desire(id) ON DELETE SET NULL",
+            "ALTER TABLE desire_generation_attempt ADD COLUMN "
+            "parent_long_term_id TEXT REFERENCES long_term_desire(id) "
+            "ON DELETE SET NULL",
+        ],
+    ),
 ]
 
 

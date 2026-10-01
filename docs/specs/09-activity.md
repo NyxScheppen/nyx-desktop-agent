@@ -42,7 +42,7 @@
   ```
 
 - [ ] `desire_to_activity` 映射：`EXPLORATION -> READING`、`CREATION -> CREATION`、`REST -> REST`、`INTERACTION -> None`。自由探索是读书活动的运行时升级，不由该纯函数直接决定。
-- [ ] `rank_desires` 按类型级 `expression_weight` 降序，同权按 `created_at` 升序；没有对应 `DesireValue` 的类型按 `0.0` 处理。
+- [ ] `rank_desires` 按 `ShortTermDesire.strength * DesireValue.expression_weight` 降序，同分按 `created_at ASC, id ASC`；没有对应 `DesireValue` 的类型按权重 `0.0` 处理。该公式与 07-desire 容量裁剪完全相同。
 - [ ] `build_schedule` 保持输入顺序，只跳过映射为 `None` 的互动欲；精力低于 `ENERGY_REST_THRESHOLD` 时，在下一项活动前插入 `REST`，直到恢复到阈值之上；`energy_delta.rest <= 0` 时跳过插入，不能死循环。
 - [ ] `format_time_label` 按 `start_hour + block_index * grid_minutes / 60` 计算块起点，使用四舍五入得到分钟，返回 `"HH:MM"`。
 
@@ -284,10 +284,11 @@ class AssignedTask:
   并推进 cursor；崩溃恢复复用 pending，记忆已写但 cursor 未推进时由既有去重吸收重放。
   正文读取失败才回退 snippet；正文与 snippet 都为空白时不调用原文沉淀 LLM、不生成
   finding/knowledge，但该条 cursor 仍正常推进。
-- [ ] `FREE_EXPLORATION` 被打断后恢复同一 activity id，不重复抓取 cursor 之前的结果、不重复成功 tool call、不重复 `add_long_term` 或 `remember_knowledge`。
+- [ ] `FREE_EXPLORATION` 被打断后恢复同一 activity id，不重复抓取 cursor 之前的结果、不重复成功 tool call、不重复追加源长期欲望 subtopics 或 `remember_knowledge`。
 - [ ] `web_enabled=false` 时只调用 `local_search`；联网搜索为空时可回退 local search；单条 `web_fetch` 失败记录失败 tool call 并使用 snippet，不使探索崩溃。
 - [ ] 探索 LLM 调用传递活动 correlation id，`output_type="exploration_finalize"` 的输出完成后紧跟 `evaluator.evaluate`；总结 JSON 非对象时返回可序列化的空结果。
 - [ ] 探索最终结果至少包含 `type`、`outcome`、`summary`、`core_discovery`、`knowledge`、`new_topics`、`strong_new_topics`、`findings`、`tools`。
+- [ ] 活动从短期欲望创建时把 `parent_long_term_id` 复制进 `Activity.progress`；探索终局只把 `strong_new_topics` 作为值得继续的子主题追加到该父长期欲望。父 ID为空或父记录已删除时跳过子主题更新，知识沉淀和活动结算照常；探索不得新增长期欲望。
 
 真实 bad case 的处理边界：
 

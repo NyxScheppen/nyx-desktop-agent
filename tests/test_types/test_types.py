@@ -33,6 +33,7 @@ def test_assigned_task_round_trip_shape() -> None:
 def test_short_term_desire_default_status() -> None:
     desire = ShortTermDesire("", 0.0, DesireType.INTERACTION, 1.0, "", None)
     assert desire.status is DesireStatus.PENDING
+    assert desire.parent_long_term_id is None
 
 
 def test_memory_aspect_default_factory_isolated() -> None:

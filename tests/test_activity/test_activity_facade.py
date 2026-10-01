@@ -58,7 +58,6 @@ from nyx.types import (
     Event,
     Goal,
     LLMOutput,
-    LongTermDesire,
     Memory,
     Personality,
     ReadingProgress,
@@ -117,6 +116,7 @@ def _desire(
     type_: DesireType,
     description: str = "读骑士小说",
     goal: Goal | None = None,
+    parent_long_term_id: str | None = None,
 ) -> ShortTermDesire:
     return ShortTermDesire(
         id=id,
@@ -126,6 +126,7 @@ def _desire(
         description=description,
         goal=goal,
         status=DesireStatus.PENDING,
+        parent_long_term_id=parent_long_term_id,
     )
 
 
@@ -295,7 +296,7 @@ class _FakeDesire:
         self.mark_active_calls: list[str] = []
         self.mark_suppressed_calls: list[str] = []
         self.release_active_calls: list[str] = []
-        self.added_long_term: list[LongTermDesire] = []
+        self.appended_subtopics: list[tuple[str, list[str]]] = []
 
     async def get_pending(self) -> list[ShortTermDesire]:
         return self._pending
@@ -314,8 +315,11 @@ class _FakeDesire:
     async def release_active(self, desire_id: str) -> None:
         self.release_active_calls.append(desire_id)
 
-    async def add_long_term(self, desire: LongTermDesire) -> None:
-        self.added_long_term.append(desire)
+    async def add_long_term_subtopics(
+        self, desire_id: str, subtopics: list[str]
+    ) -> bool:
+        self.appended_subtopics.append((desire_id, subtopics))
+        return True
 
 
 class _FakeMemory:
@@ -798,12 +802,15 @@ async def test_select_activity_exploration() -> None:
     facade, _store, _bus, database = await _new_facade()
     try:
         d = _desire(
-            "d1", DesireType.EXPLORATION, goal=Goal(GoalAction.READ, 3, "骑士团")
+            "d1", DesireType.EXPLORATION,
+            goal=Goal(GoalAction.READ, 3, "骑士团"),
+            parent_long_term_id="lt1",
         )
         act = facade.select_activity([d], _mk_state(80.0))
         assert act is not None
         assert act.type is ActivityType.READING
         assert act.progress["desire_id"] == "d1"
+        assert act.progress["parent_long_term_id"] == "lt1"
         assert act.progress["description"] == d.description
         assert act.progress["goal"] == {
             "action": "read", "count": 3, "topic": "骑士团",
@@ -2181,7 +2188,7 @@ async def test_creation_activity_injects_canon_system(
         await database.conn.close()
 
 
-async def test_exploration_state_machine_writes_long_term_and_knowledge() -> None:
+async def test_exploration_appends_parent_subtopics_and_knowledge() -> None:
     fake_desire = _FakeDesire()
     fake_memory = _FakeMemory()
     facade, _store, _bus, database = await _new_facade(
@@ -2195,10 +2202,11 @@ async def test_exploration_state_machine_writes_long_term_and_knowledge() -> Non
             progress={
                 "goal": {"topic": "量子"},
                 "correlation_id": "c1",
+                "parent_long_term_id": "lt1",
             },
         )
         await facade._start_exploration_run(activity)
-        assert fake_desire.added_long_term[0].name == "量子纠错"
+        assert fake_desire.appended_subtopics == [("lt1", ["量子纠错"])]
         assert fake_memory.remembered[-1][0]["topic"] == "退相干"
         assert activity.progress["exploration"]["state"] == "completed"
     finally:

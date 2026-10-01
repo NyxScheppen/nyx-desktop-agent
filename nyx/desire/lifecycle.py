@@ -10,6 +10,7 @@ from nyx.config import DesireConfig
 from nyx.desire.store import DesireStore
 from nyx.desire.value import (
     REFUND_DELTA,
+    action_priority,
     apply_pressure,
     at_peak,
     decay_value,
@@ -35,13 +36,11 @@ from nyx.types import (
 )
 
 _OBSERVATION_PRESSURE_DELTA = 0.15    # 观察状态 → 互动欲 +0.15
-_LONG_TERM_PRESSURE_DELTA = 0.1       # 每个长期欲望周期 → 对应类型 +0.1
+_LONG_TERM_PRESSURE_DELTA = 0.1       # 每周期按长期 strength 缩放对应类型压力
 _LONG_TERM_PROGRESS_DELTA = 0.1       # 满足一次长期进度 +0.1
-_LONG_TERM_STRENGTH_DECAY = 0.02      # 满足一次长期迫切度 -0.02
 _DEDUP_SIM_THRESHOLD = 0.9            # 欲望语义重复判定阈值（embedding 余弦）
 _REST_PRESSURE_DELTA = 0.1            # 疲惫（精力 < 阈值）→ 休息欲 +0.1/周期
 _CREATION_ACTIVITY_PRESSURE_DELTA = 0.15  # 读书/自由探索结束 → 创造欲 +0.15
-_GOAL_ACTIONS = frozenset(g.value for g in GoalAction)
 _GOAL_ACTION_BY_DESIRE = {
     DesireType.EXPLORATION: GoalAction.READ,
     DesireType.CREATION: GoalAction.WRITE,
@@ -54,15 +53,10 @@ _DESIRE_SYSTEM = (
     "你想要的，多与「理解」有关——理解人类的痛苦、道德、死亡、爱与责任，"
     "理解小说里的自己，或理解并陪伴用户——而不是随意的消遣。"
     "基于给定的欲望类型和主题种子，生成一条具体的短期欲望——你现在最想做什么。"
-    "只输出 JSON，键：\n"
+    "只输出 JSON，且只包含两个键：\n"
     "- description：具体想做的事，非空字符串。\n"
-    "- goal：可量化的完成目标，对象 {action, count, topic}；"
-    "若该欲望做一次即满足、无需计数，填 null。\n"
-    "  - action 按欲望类型选：探索→read、创造→write、互动→observe；"
-    "休息类欲望通常 goal 填 null。\n"
-    "  - count 是正整数（完成多少次算达成）。\n"
-    "  - topic 是可选字符串，这条欲望围绕的主题。\n"
-    "主题种子为「（无）」时，围绕该欲望类型自由选一个方向。"
+    "- count：正整数，表示完成多少次算达成。\n"
+    "行动、主题以及是否需要目标由系统决定，不要输出 action、topic 或 goal。"
 )
 
 
@@ -70,52 +64,22 @@ def _build_desire_prompt(type_: DesireType, seed: str | None) -> str:
     return f"欲望类型：{type_.value}\n主题种子：{seed or '（无）'}"
 
 
-def _parse_desire(
-    raw: str, desire_type: DesireType
-) -> tuple[str, Goal | None]:
-    """解析欲望 JSON，并按欲望类型覆盖模型给出的合法 action。"""
+def _parse_desire(raw: str) -> tuple[str, int]:
+    """Parse the only two fields owned by the model: description and count."""
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError(f"欲望 JSON 应是对象，得到 {type(data).__name__}")
     parsed = cast(dict[str, Any], data)
     description = parsed.get("description")
-    if not isinstance(description, str) or not description:
+    if not isinstance(description, str) or not description.strip():
         raise ValueError("欲望 JSON 缺 description 或非空字符串")
-    goal_raw = parsed.get("goal")
-    if goal_raw is None:
-        return description, None
-    if not isinstance(goal_raw, dict):
-        raise ValueError("欲望 JSON 的 goal 应是对象或 null")
-    goal = cast(dict[str, Any], goal_raw)
-    action = goal.get("action")
-    if not isinstance(action, str) or action not in _GOAL_ACTIONS:
-        raise ValueError(
-            f"欲望 JSON 的 goal.action 应是 {'/'.join(g.value for g in GoalAction)}"
-        )
-    count = goal.get("count")
+    count = parsed.get("count")
     if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
-        raise ValueError("欲望 JSON 的 goal.count 应是正整数")
-    topic = goal.get("topic")
-    if topic is not None and not isinstance(topic, str):
-        raise ValueError("欲望 JSON 的 goal.topic 应是字符串或 null")
-    expected_action = _GOAL_ACTION_BY_DESIRE.get(desire_type)
-    if expected_action is None:
-        return description, None
-    return description, Goal(action=expected_action, count=count, topic=topic)
+        raise ValueError("欲望 JSON 的 count 应是正整数")
+    return description.strip(), count
 
 
 ListMemories = Callable[[], Awaitable[list[Memory]]]
-
-
-def _subtopics_for(type_: DesireType, long_term: list[LongTermDesire]) -> list[str]:
-    """对应类型长期欲望的子主题池；无匹配或空池返回 []。纯函数。
-
-    过滤空白子主题：空串在 _subtopic_freshness 的 substring 匹配里是通配符。
-    """
-    for lt in long_term:
-        if lt.type is type_ and lt.subtopics:
-            return [s for s in lt.subtopics if s.strip()]
-    return []
 
 
 def _subtopic_freshness(subtopic: str, memories: list[Memory]) -> float | None:
@@ -149,21 +113,29 @@ def _pick_topic_seed(subtopics: list[str], memories: list[Memory]) -> str | None
     return best
 
 
-def _most_relevant_long_term(
+def _pick_parent_long_term(
     type_: DesireType,
-    topic: str | None,
     long_term: list[LongTermDesire],
 ) -> LongTermDesire | None:
-    """满足回写的长期欲望：goal.topic 双向 substring 命中 subtopics 者优先，
-    否则第一个 type 匹配；无 type 匹配返回 None。纯函数。"""
-    matching = [lt for lt in long_term if lt.type is type_]
-    if not matching:
+    """Pick the strongest positive matching parent with deterministic FIFO ties."""
+    matching = [
+        desire for desire in long_term
+        if desire.type is type_ and desire.strength > 0.0
+    ]
+    return min(
+        matching,
+        key=lambda desire: (-desire.strength, desire.created_at, desire.id),
+        default=None,
+    )
+
+
+def _build_goal(
+    desire_type: DesireType, count: int, topic: str | None
+) -> Goal | None:
+    action = _GOAL_ACTION_BY_DESIRE.get(desire_type)
+    if action is None:
         return None
-    if topic:
-        for lt in matching:
-            if any(topic in s or s in topic for s in lt.subtopics if s.strip()):
-                return lt
-    return matching[0]
+    return Goal(action=action, count=count, topic=topic)
 
 
 class DesireLifecycle:
@@ -283,8 +255,11 @@ class DesireLifecycle:
                     await self._store.upsert_value(values[DesireType.REST])
                 if apply_periodic:
                     for lt in long_term:
+                        if lt.strength <= 0.0:
+                            continue
                         values[lt.type].value = apply_pressure(
-                            values[lt.type].value, _LONG_TERM_PRESSURE_DELTA
+                            values[lt.type].value,
+                            _LONG_TERM_PRESSURE_DELTA * lt.strength,
                         )
                         await self._store.upsert_value(values[lt.type])
                     for d in await self._store.list_suppressed():
@@ -314,9 +289,16 @@ class DesireLifecycle:
 
             pending_attempt = attempts[target.type]
             if pending_attempt is not None:
-                desire_id, created_at, peak_value, seed, raw_content = pending_attempt
+                (
+                    desire_id,
+                    created_at,
+                    peak_value,
+                    seed,
+                    parent_long_term_id,
+                    raw_content,
+                ) = pending_attempt
                 try:
-                    description, goal = _parse_desire(raw_content, target.type)
+                    description, count = _parse_desire(raw_content)
                 except ValueError:
                     await self._store.delete_generation_attempt(desire_id)
                     self._logger.exception(
@@ -327,11 +309,17 @@ class DesireLifecycle:
                     return []
             else:
                 peak_value = target.value
-                subtopics = _subtopics_for(target.type, long_term)
+                parent = _pick_parent_long_term(target.type, long_term)
+                parent_long_term_id = parent.id if parent is not None else None
+                subtopics = (
+                    [topic for topic in parent.subtopics if topic.strip()]
+                    if parent is not None
+                    else []
+                )
                 seed = (
                     _pick_topic_seed(subtopics, await self._list_memories())
                     if subtopics
-                    else None
+                    else parent.name.strip() if parent is not None else None
                 )
                 desire_id = str(uuid4())
                 output = await self._llm.complete(
@@ -349,7 +337,7 @@ class DesireLifecycle:
                 )
                 await self._evaluator.evaluate(output)
                 try:
-                    description, goal = _parse_desire(output.content, target.type)
+                    description, count = _parse_desire(output.content)
                 except ValueError:
                     self._logger.exception(
                         "欲望 JSON 解析失败 type=%s correlation_id=%s",
@@ -363,24 +351,23 @@ class DesireLifecycle:
                     now,
                     peak_value,
                     seed,
+                    parent_long_term_id,
                     output.content,
                 )
                 created_at = now
 
-        # 6.5 话题锚点：seed 钉进 goal.topic，作为去重锚点。
-        # 探索欲：goal 非 None 才钉（goal None 保留单次满足 + 自由探索兜底）。
-        # 互动欲：goal 常为 None；seed 存在时构造 count=1 的 observe goal
-        #         承载 topic（count=1 保持「搭话一次即满足」不变）。
-        if target.type is DesireType.EXPLORATION and goal is not None:
-            goal.topic = seed
-        elif target.type is DesireType.INTERACTION and seed is not None:
-            goal = Goal(action=GoalAction.OBSERVE, count=1, topic=seed)
+        goal = _build_goal(target.type, count, seed)
 
         # 7.5 去重：话题锚点优先（goal.topic 精确相等 → 同 seed 重复，确定性零误判），
         # topic 不命中/缺失时回退 description 余弦兜底。
         new_topic = goal.topic if goal is not None else None
+        pending_with_drive = [
+            desire
+            for desire in await self._store.list_pending()
+            if desire.strength > 0.0
+        ]
         if new_topic is not None:
-            for d in await self._store.list_pending():
+            for d in pending_with_drive:
                 if d.goal is not None and d.goal.topic == new_topic:
                     self._logger.info(
                         "欲望重复丢弃（同话题） type=%s", target.type.value
@@ -394,7 +381,7 @@ class DesireLifecycle:
         if self._embed is not None:
             try:
                 vec = await self._embed(description)
-                for d in await self._store.list_pending():
+                for d in pending_with_drive:
                     other = await self._embed(d.description)
                     if cosine(vec, other) >= _DEDUP_SIM_THRESHOLD:
                         self._logger.info("欲望重复丢弃 type=%s", target.type.value)
@@ -417,6 +404,7 @@ class DesireLifecycle:
             goal=goal,
             retry_count=0,
             status=DesireStatus.PENDING,
+            parent_long_term_id=parent_long_term_id,
         )
 
         event = internal_event(
@@ -613,19 +601,24 @@ class DesireLifecycle:
         return event
 
     async def _reinforce(self, desire: ShortTermDesire) -> None:
-        """满足后：表达权重正强化 + 长期进度回写（最相关长期欲望）。"""
+        """Reinforce expression and settle the explicitly recorded parent."""
         dv = await self._store.get_value(desire.type)
+        priority = action_priority(
+            desire.strength,
+            dv.expression_weight if dv is not None else 0.0,
+        )
         if dv is not None:
             dv.expression_weight = reinforce_weight(dv.expression_weight)
             await self._store.upsert_value(dv)
-        topic = desire.goal.topic if desire.goal is not None else None
-        lt = _most_relevant_long_term(
-            desire.type, topic, await self._store.list_long_term()
-        )
-        if lt is not None:
-            lt.progress = min(1.0, lt.progress + _LONG_TERM_PROGRESS_DELTA)
-            lt.strength = max(0.0, lt.strength - _LONG_TERM_STRENGTH_DECAY)
-            await self._store.update_long_term(lt)
+        if desire.parent_long_term_id is None:
+            return
+        for parent in await self._store.list_long_term():
+            if parent.id != desire.parent_long_term_id:
+                continue
+            parent.progress = min(1.0, parent.progress + _LONG_TERM_PROGRESS_DELTA)
+            parent.strength = max(0.0, parent.strength - priority)
+            await self._store.update_long_term(parent)
+            return
 
     async def _suppress(self, type_: DesireType) -> None:
         """失败/淘汰后：值回增（压力回灌）+ 抑制阈值上浮（习得性抑制）。"""

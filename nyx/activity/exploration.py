@@ -5,8 +5,6 @@
 """
 import json
 import logging
-import time
-import uuid
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -14,13 +12,12 @@ from urllib.parse import urlparse
 from nyx.activity.store import ActivityStore
 from nyx.config import ExplorationConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import DesireType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.event import SECONDS_PER_HOUR
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade, build_source_topic
 from nyx.tools.registry import ToolRegistry
-from nyx.types import Activity, LongTermDesire
+from nyx.types import Activity
 
 _logger = logging.getLogger(__name__)
 
@@ -92,7 +89,11 @@ class Exploration:
         if checkpoint["state"] == "sinking":
             judged = _checkpoint_judged(checkpoint)
             if not bool(checkpoint["sink_done"]):
-                await self._sink(judged, correlation_id)
+                await self._sink(
+                    judged,
+                    correlation_id,
+                    activity.progress.get("parent_long_term_id"),
+                )
                 checkpoint["sink_done"] = True
             checkpoint["state"] = "completed"
             await self._save_checkpoint(activity, checkpoint)
@@ -264,24 +265,23 @@ class Exploration:
             _logger.exception("探索总结失败 topic=%s", topic)
             return {}
 
-    async def _sink(self, judged: dict[str, Any], correlation_id: str) -> None:
-        """探索终局回写：强烈新兴趣进长期欲望，知识进长期记忆。"""
+    async def _sink(
+        self,
+        judged: dict[str, Any],
+        correlation_id: str,
+        parent_long_term_id: object,
+    ) -> None:
+        """Append strong topics to the explicit parent and persist knowledge."""
         strong = judged.get("strong_new_topics")
-        if isinstance(strong, list):
-            for topic in cast(list[Any], strong):
-                if not isinstance(topic, str) or not topic.strip():
-                    continue
-                await self._desire.add_long_term(
-                    LongTermDesire(
-                        id=str(uuid.uuid4()),
-                        created_at=time.time(),
-                        type=DesireType.EXPLORATION,
-                        name=topic,
-                        description=f"想弄懂「{topic}」",
-                        strength=0.5,
-                        progress=0.0,
-                        subtopics=[],
-                    )
+        if isinstance(parent_long_term_id, str) and isinstance(strong, list):
+            topics = [
+                topic.strip()
+                for topic in cast(list[Any], strong)
+                if isinstance(topic, str) and topic.strip()
+            ]
+            if topics:
+                await self._desire.add_long_term_subtopics(
+                    parent_long_term_id, topics
                 )
         knowledge = judged.get("knowledge")
         if isinstance(knowledge, list):

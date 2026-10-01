@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from nyx import db
 from nyx.desire.store import DesireStore
 from nyx.enums import DesireStatus, DesireType, GoalAction
@@ -14,16 +16,19 @@ def _desire(
     goal: Goal | None = None,
     retry_count: int = 0,
     status: DesireStatus = DesireStatus.PENDING,
+    parent_long_term_id: str | None = None,
+    strength: float = 0.5,
 ) -> ShortTermDesire:
     return ShortTermDesire(
         id=id,
         created_at=created_at,
         type=type,
-        strength=0.5,
+        strength=strength,
         description="读骑士小说",
         goal=goal,
         retry_count=retry_count,
         status=status,
+        parent_long_term_id=parent_long_term_id,
     )
 
 
@@ -57,11 +62,13 @@ async def test_add_get_roundtrip() -> None:
     database = await db.connect(":memory:")
     store = DesireStore(database)
     try:
+        await store.insert_long_term(_lt(DesireType.EXPLORATION))
         desire = _desire(
             "d1",
             goal=Goal(action=GoalAction.READ, count=3, topic="骑士团"),
             retry_count=1,
             status=DesireStatus.ACTIVE,
+            parent_long_term_id="lt1",
         )
         await store.add_desire(desire)
         got = await store.get_desire("d1")
@@ -261,5 +268,66 @@ async def test_trim_pending_keeps_high_expression_weight() -> None:
         )
         assert removed == ["low"]
         assert [d.id for d in await store.list_pending()] == ["high"]
+    finally:
+        await database.close()
+
+
+async def test_trim_pending_uses_action_priority_and_refunds_parent() -> None:
+    database = await db.connect(":memory:")
+    store = DesireStore(database)
+    try:
+        parent = _lt(DesireType.EXPLORATION)
+        parent.strength = 0.2
+        await store.insert_long_term(parent)
+        await store.add_desire(_desire(
+            "older-low", created_at=1.0, type=DesireType.EXPLORATION,
+            strength=0.2, parent_long_term_id="lt1",
+        ))
+        await store.add_desire(_desire(
+            "newer-high", created_at=2.0, type=DesireType.INTERACTION,
+            strength=0.9,
+        ))
+        removed = await store.trim_pending(
+            1,
+            {DesireType.EXPLORATION: 0.5, DesireType.INTERACTION: 0.5},
+        )
+        assert removed == ["older-low"]
+        assert (await store.list_long_term())[0].strength == pytest.approx(0.3)
+    finally:
+        await database.close()
+
+
+async def test_add_long_term_subtopics_is_idempotent_and_missing_is_noop() -> None:
+    database = await db.connect(":memory:")
+    store = DesireStore(database)
+    try:
+        await store.insert_long_term(_lt(DesireType.EXPLORATION))
+        assert await store.add_long_term_subtopics(
+            "lt1", ["城堡", "  新主题  ", "新主题", ""]
+        ) is True
+        assert await store.add_long_term_subtopics("missing", ["x"]) is False
+        assert (await store.list_long_term())[0].subtopics == [
+            "骑士团", "城堡", "新主题",
+        ]
+    finally:
+        await database.close()
+
+
+async def test_deleting_parent_clears_short_term_and_attempt_links() -> None:
+    database = await db.connect(":memory:")
+    store = DesireStore(database)
+    try:
+        await store.insert_long_term(_lt(DesireType.EXPLORATION))
+        await store.add_desire(_desire("d1", parent_long_term_id="lt1"))
+        await store.insert_generation_attempt(
+            "attempt1", DesireType.EXPLORATION, 1.0, 0.9, "骑士团", "lt1",
+            '{"description":"读历史","count":1}',
+        )
+        await database.conn.execute("DELETE FROM long_term_desire WHERE id = 'lt1'")
+        await database.conn.commit()
+        desire = await store.get_desire("d1")
+        attempt = await store.get_generation_attempt(DesireType.EXPLORATION)
+        assert desire is not None and desire.parent_long_term_id is None
+        assert attempt is not None and attempt[4] is None
     finally:
         await database.close()

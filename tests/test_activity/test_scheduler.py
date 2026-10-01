@@ -10,12 +10,14 @@ from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.types import DesireValue, ShortTermDesire
 
 
-def _desire(id: str, type_: DesireType, created_at: float) -> ShortTermDesire:
+def _desire(
+    id: str, type_: DesireType, created_at: float, strength: float = 0.5
+) -> ShortTermDesire:
     return ShortTermDesire(
         id=id,
         created_at=created_at,
         type=type_,
-        strength=0.5,
+        strength=strength,
         description="d",
         goal=None,
     )
@@ -43,15 +45,15 @@ def test_desire_to_activity() -> None:
 # ---- rank_desires ----
 
 def test_rank_desires() -> None:
-    a = _desire("a", DesireType.CREATION, 1.0)
-    b = _desire("b", DesireType.EXPLORATION, 2.0)
-    c = _desire("c", DesireType.REST, 3.0)
+    a = _desire("a", DesireType.CREATION, 1.0, strength=0.9)
+    b = _desire("b", DesireType.EXPLORATION, 2.0, strength=0.6)
+    c = _desire("c", DesireType.REST, 3.0, strength=0.7)
     values = [
         _value(DesireType.CREATION, 0.7),
         _value(DesireType.EXPLORATION, 0.9),
         _value(DesireType.REST, 0.5),
     ]
-    assert [d.id for d in rank_desires([a, b, c], values)] == ["b", "a", "c"]
+    assert [d.id for d in rank_desires([a, b, c], values)] == ["a", "b", "c"]
 
 
 def test_rank_desires_stable_fifo() -> None:
@@ -59,6 +61,13 @@ def test_rank_desires_stable_fifo() -> None:
     b = _desire("b", DesireType.EXPLORATION, 1.0)
     values = [_value(DesireType.EXPLORATION, 0.9)]
     assert [d.id for d in rank_desires([a, b], values)] == ["b", "a"]
+
+
+def test_rank_desires_tie_breaks_by_id() -> None:
+    a = _desire("a", DesireType.EXPLORATION, 1.0)
+    b = _desire("b", DesireType.EXPLORATION, 1.0)
+    values = [_value(DesireType.EXPLORATION, 0.9)]
+    assert [d.id for d in rank_desires([b, a], values)] == ["a", "b"]
 
 
 def test_rank_desires_missing_value_defaults_zero() -> None:
@@ -70,6 +79,11 @@ def test_rank_desires_missing_value_defaults_zero() -> None:
 
 def test_rank_desires_empty() -> None:
     assert rank_desires([], []) == []
+
+
+def test_rank_desires_ignores_zero_strength() -> None:
+    zero = _desire("zero", DesireType.EXPLORATION, 1.0, strength=0.0)
+    assert rank_desires([zero], [_value(DesireType.EXPLORATION, 1.0)]) == []
 
 
 # ---- build_schedule ----

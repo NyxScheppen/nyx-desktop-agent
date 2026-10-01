@@ -35,6 +35,11 @@ def apply_pressure(value: float, delta: float) -> float:
     return _clamp(value + delta, _VALUE_MIN, _VALUE_MAX)
 
 
+def action_priority(strength: float, expression_weight: float) -> float:
+    """行动优先级：短期强度乘类型表达权重，夹到 [0, 1]。"""
+    return _clamp(strength * expression_weight, _VALUE_MIN, _VALUE_MAX)
+
+
 def reinforce_weight(weight: float, delta: float = WEIGHT_REINFORCE_DELTA) -> float:
     """满足后表达权重正强化：weight + delta，夹到 [0, 1]。纯函数。"""
     return _clamp(weight + delta, _WEIGHT_MIN, _WEIGHT_MAX)

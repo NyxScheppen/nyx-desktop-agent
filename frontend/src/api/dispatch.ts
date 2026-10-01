@@ -69,7 +69,7 @@ export function dispatchEvent(e: SseEvent): void {
       // 联想不进对话（对话框只放对话+提问）：后端仍产生，前端静默丢弃。
       return;
     case "reflection_done": {
-      // 反思完成：长期欲望（add_long_term 不发 desire_generated）刷新；
+      // 反思完成：长期欲望更新不发 desire_generated，因此刷新快照；
       // story 真新增才冒气泡（去重跳过则静默刷新，不打扰）。
       void useDesireStore.getState().refresh();
       if (e.story_is_new) {

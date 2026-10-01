@@ -11,10 +11,9 @@
 
 ### 当前实现状态
 
-压力、短期欲望全生命周期、长期欲望候选、`linked_values` 回填、`strength` 衰减/满足回写、
-活动消费和 durable tick 幂等均已实现；当前仍未完成的是把长期欲望的 `linked_values` 与
-`strength` 接入长期排序、短期 prompt 或活动决策。这两个消费入口保留在
-`docs/design/V3-roadmap.md`，不要把“字段已落库”误写成“决策已使用”。
+压力、短期欲望全生命周期、长期欲望候选、`linked_values` 回填、父子溯源、
+`strength` 驱动力与行动优先级、活动消费和 durable tick 幂等均已实现；
+`linked_values` 仍只持久化，尚未接入决策。
 
 ## 用户故事
 
@@ -22,12 +21,12 @@
 
 ## 验收标准
 
-- [ ] `store.py` 含 `DesireStore`（`add_desire` / `get_desire` / `list_pending` / `list_suppressed` / `list_short_term` / `update_desire` / `get_value` / `list_values` / `upsert_value` / `apply_value_delta` / `reset_value_if_unchanged` / `try_mark_eval_applied` / `claim_for_activity` / `trim_pending` / `insert_long_term_if_available` / `insert_long_term` / `list_long_term` / `update_long_term` / 生成尝试 CRUD）+ 序列化 helper（实现见 `nyx/desire/store.py`）
-- [ ] `lifecycle.py` 含 `DesireLifecycle`（`pressure_from_observation` / `pressure_creation` / `satisfy_from_activity_end` / `run_eval` / `satisfy` / `expire` / `mark_active` / `mark_suppressed`）+ `_parse_desire` / `_subtopics_for` / `_subtopic_freshness` / `_pick_topic_seed` / `_most_relevant_long_term` / `_build_desire_prompt`（实现见 `nyx/desire/lifecycle.py`）
-- [ ] `facade.py` 含 `DesireFacade`，公开方法包括：`add_value(source: Event, consumer_id: str | None = None) -> None` / `evaluate(energy: float = 100.0, event_id: str | None = None) -> list[ShortTermDesire]` / `pressure_creation(delta: float) -> None` / `get_pending() -> list[ShortTermDesire]` / `get_all() -> DesireState` / `satisfy(desire_id: str, goal_met: bool) -> None` / `expire(desire_id: str) -> None` / `mark_active(desire_id: str) -> None` / `mark_suppressed(desire_id: str) -> None` / `release_active(desire_id: str) -> None` / `claim_for_activity(desire_id: str) -> bool` / `claim_for_activity_in_transaction(desire_id: str) -> bool` / `add_long_term(desire: LongTermDesire) -> None` / `prepare_long_term_candidates(desires: tuple[LongTermDesire, ...]) -> tuple[tuple[LongTermDesire, ...], LongTermSnapshot]` / `add_prepared_long_terms_in_transaction(desires: tuple[LongTermDesire, ...], snapshot: LongTermSnapshot) -> None`
+- [ ] `store.py` 含 `DesireStore`（`add_desire` / `get_desire` / `list_pending` / `list_suppressed` / `list_short_term` / `update_desire` / `get_value` / `list_values` / `upsert_value` / `apply_value_delta` / `reset_value_if_unchanged` / `try_mark_eval_applied` / `claim_for_activity` / `trim_pending` / `insert_long_term_if_available` / `insert_long_term` / `list_long_term` / `update_long_term` / `add_long_term_subtopics` / 生成尝试 CRUD）+ 序列化 helper（实现见 `nyx/desire/store.py`）
+- [ ] `lifecycle.py` 含 `DesireLifecycle`（`pressure_from_observation` / `pressure_creation` / `satisfy_from_activity_end` / `run_eval` / `satisfy` / `expire` / `mark_active` / `mark_suppressed`）+ `_parse_desire` / `_pick_parent_long_term` / `_subtopic_freshness` / `_pick_topic_seed` / `_build_desire_prompt`（实现见 `nyx/desire/lifecycle.py`）
+- [ ] `facade.py` 含 `DesireFacade`，公开方法包括：`add_value(source: Event, consumer_id: str | None = None) -> None` / `evaluate(energy: float = 100.0, event_id: str | None = None) -> list[ShortTermDesire]` / `pressure_creation(delta: float) -> None` / `get_pending() -> list[ShortTermDesire]` / `get_all() -> DesireState` / `satisfy(desire_id: str, goal_met: bool) -> None` / `expire(desire_id: str) -> None` / `mark_active(desire_id: str) -> None` / `mark_suppressed(desire_id: str) -> None` / `release_active(desire_id: str) -> None` / `claim_for_activity(desire_id: str) -> bool` / `claim_for_activity_in_transaction(desire_id: str) -> bool` / `add_long_term_subtopics(desire_id: str, topics: list[str]) -> bool` / `prepare_long_term_candidates(desires: tuple[LongTermDesire, ...]) -> tuple[tuple[LongTermDesire, ...], LongTermSnapshot]` / `add_prepared_long_terms_in_transaction(desires: tuple[LongTermDesire, ...], snapshot: LongTermSnapshot) -> None`
 - [ ] `add_value` 是**事件入口**（对 tech-ref「加压」注释的精确化）：`OBSERVATION_STATE` → 互动欲加压，`ACTIVITY_END` → 解析满足信号回写；其余类型忽略
 - [ ] `run_eval`：先四类型衰减（`elapsed_days` 来自 `updated_at`）→ 长期欲望周期加压 → 疲惫加压（`energy < ENERGY_REST_THRESHOLD` → 休息欲 +`_REST_PRESSURE_DELTA`）→ 达峰判定（`at_peak and is_expressible`）→ **只生成最迫切的 1 个**（value 最高）→ LLM 生成 → 重置该类型 value → 入队 → 发布 `desire_generated`；无达峰返回 `[]`，非选中类型**保留压力**（不重置）
-- [ ] `_parse_desire(raw, desire_type)` 先校验 LLM 的 goal 结构和 action 枚举，再按欲望类型确定性钉死 action：探索=`read`、创造=`write`、互动=`observe`；休息欲统一返回 `goal=None`。合法但错配的 LLM action 不得进入活动结算链。
+- [ ] `_parse_desire(raw)` 只接受 LLM 负责的非空 `description` 与正整数 `count`；系统另行按欲望类型决定 goal 是否存在，探索=`read`、创造=`write`、互动=`observe`，休息欲固定 `goal=None` 并忽略 count；topic 完全由系统提供。
 - [ ] `satisfy(goal_met=True, goal=None)`：出队（`SATISFIED`）+ 表达权重正强化 + 长期进度回写 + 发布 `desire_satisfied`
 - [ ] `satisfy(goal_met=True, goal 非 None)`：`goal_progress+1` 累计；`>= goal.count` 才满足（出队 + 强化 + 回写 + 发布），否则保持 `PENDING`（累计进度，不重复满足）
 - [ ] `satisfy(goal_met=False)`：`retry_count+1`；`> retry_limit` → 放弃（`EXPIRED` + 值回增 + 抑制阈值上浮 + 发布 `desire_expired`）；否则保持 `PENDING`（`created_at` 不变，`list_pending` 的 `created_at ASC` FIFO 天然靠前，无显式插队动作）
@@ -36,14 +35,14 @@
 - [ ] `mark_suppressed`：`ACTIVE → SUPPRESSED`（活动中断/异常停车，不立即重试），仅 ACTIVE 可转、其余幂等 no-op
 - [ ] `run_eval` 释放：`SUPPRESSED` 欲望其类型仍可表达（`is_expressible`）→ `PENDING` 放回队列；不可表达保持 `SUPPRESSED`
 - [ ] `expire`：`EXPIRED` + 值回增 + 抑制阈值上浮 + 发布 `desire_expired`
-- [ ] `add_long_term(desire)`：名称先规范化（`strip`、`casefold`、连续空白折叠）；容量检查、规范化名称唯一性检查和插入在同一事务内再次确认。embedding 是严格前置：启用 embedding 时，本欲望和候选欲望任一 embedding 失败都直接失败且不插入，不降级为仅名称去重；余弦达到 `_LT_DEDUP_SIM_THRESHOLD` 时跳过。
-- [ ] `prepare_long_term_candidates` 只能在事务外调用；它对整批候选执行与 `add_long_term` 相同的容量、规范化同名和语义去重，并同时过滤候选之间的重复，返回获准候选与基于现有长期欲望 `id/name/description` 的 `LongTermSnapshot`。`embed=None` 时只做确定性名称去重；embedding 启用后任一 embedding 失败则整批预检失败。
+- [ ] `prepare_long_term_candidates` 只能在事务外调用；它对反思产生的整批候选执行容量、规范化同名和语义去重，并同时过滤候选之间的重复，返回获准候选与基于现有长期欲望 `id/name/description` 的 `LongTermSnapshot`。`embed=None` 时只做确定性名称去重；embedding 启用后任一 embedding 失败则整批预检失败。反思是运行时新增长期欲望的唯一入口。
+- [ ] `add_long_term_subtopics(desire_id, topics)` 只允许给已存在的源长期欲望追加去空白、稳定去重后的子主题；父记录不存在或 topics 为空时返回 `False`，不得创建长期欲望或改写其他记录。
 - [ ] `add_prepared_long_terms_in_transaction` 只能在调用方已开启的事务中执行，且不调用 embedding；存在获准候选且当前快照与预检快照不一致时抛 `RuntimeError`，由上层 durable delivery 重算。没有获准候选时直接 no-op，避免无关长期欲望变化阻塞核心反思；快照一致时逐条调用 `insert_long_term_if_available`，最终容量或名称守卫未通过的候选直接跳过，不淘汰已有欲望。
 - [ ] 事件发布遵守「Facade 自己 publish、绝不返回 Event」；事件 `source=INTERNAL`；`desire_satisfied` / `desire_expired` 的 `correlation_id` = `desire.id`
 - [ ] `run_eval` 的 LLM 产出（`output_type="desire"`）后紧跟 `await evaluator.evaluate(output)`（漏记由测试断言兜底）；解析成功的产出先保存到 `desire_generation_attempt`，正式提交失败后的重试必须复用该 JSON，不重复调用 LLM。
 - [ ] `run_eval` 的本地状态使用评估锁和 `updated_at` 条件重置；评估期间发生的新压力不得被旧快照覆盖。
 - [ ] durable tick 传入 `event_id` 时，周期衰减/压力/SUPPRESSED 释放与 `desire_eval_applied` marker 同事务提交；同一 tick 重试继续生成阶段但不重复结算周期状态。兼容直调 `event_id=None` 时每次照常结算。
-- [ ] `run_eval` 生成后按 `DesireConfig.short_term_capacity` 裁剪待消费短期欲望；保留排序为 `expression_weight DESC`、`created_at ASC`，低权重记录被移除。若新记录被裁剪，不发布 `desire_generated`。
+- [ ] `run_eval` 生成后按 `DesireConfig.short_term_capacity` 裁剪待消费短期欲望；行动优先级统一为 `short_term.strength * type.expression_weight`，同分按 `created_at ASC, id ASC`。被容量裁剪的记录在同一事务内按该优先级增加其父长期欲望 strength；若新记录被裁剪，不发布 `desire_generated`。
 - [ ] `pyright` strict 零报错
 
 ## 值机制
@@ -81,11 +80,12 @@
 ### 数值字段与生命周期的关系
 
 - `value` 是压力值，由观察状态、长期欲望周期、疲惫和指定活动事件加压；按 `DesireConfig.value_decay` 衰减；达峰后触发短期欲望生成并在成功提交时重置为 `0`。
-- `expression_weight` 是表达权重，满足一次后正强化；活动系统选择消费对象时使用该字段排序。
+- `expression_weight` 是表达权重，满足一次后正强化；与短期 strength 相乘形成行动优先级。
 - `suppression_threshold` 是习得性抑制阈值，失败或抑制后上浮。初始值 `0.5` 低于默认达峰阈值，因此初始状态下达峰即可表达；多次失败后阈值可能高于达峰阈值，达峰也可能暂不表达。
 - `decay_value` 的 `elapsed_days` 由生命周期根据 `desire_value.updated_at` 计算：`(now - updated_at) / 86400`。每次评估先衰减并结算，再将 `updated_at` 更新为当前时间；两次评估之间不实时下降。
-- 加压增量的来源和具体值由生命周期定义，不由纯函数层猜测：观察 `+0.15`、长期欲望周期 `+0.1`、疲惫 `+0.1`、读书/自由探索结束时创造欲 `+0.15`。
+- 加压增量的来源和具体值由生命周期定义，不由纯函数层猜测：观察 `+0.15`、每条长期欲望周期 `+0.1 * strength`、疲惫 `+0.1`、读书/自由探索结束时创造欲 `+0.15`。`strength=0` 的长期欲望不加压也不参与短期父对象选择。
 - 回增统一调用 `apply_pressure(value, REFUND_DELTA)`，不额外引入回增函数。
+- `action_priority(desire, expression_weight) = desire.strength * expression_weight`，结果夹在 `[0,1]`；待消费排序与容量裁剪必须使用同一公式，同分按 `created_at ASC, id ASC`。
 
 ## 技术方案
 
@@ -94,22 +94,108 @@
 - **公开面**：`from nyx.desire.value import ...`（本 spec 的值机制函数与常量）；`from nyx.desire.store import DesireStore`；`from nyx.desire.lifecycle import DesireLifecycle`；`from nyx.desire.facade import DesireFacade`（不加 `__all__`；序列化 helper 私有）
 - **四层职责**：`DesireFacade`（Facade）→ `DesireLifecycle`（全周期编排）→ `DesireStore`（领域表与恢复 marker CRUD）；`value.py` 是被 lifecycle/store 直接调用的纯函数模块，不新增运行时抽象层。`lifecycle` 由 `facade` 内部构造（共享 store），让 `facade` 只做事件入口 + 读委托
 - **store 锁约定（同 07）**：每个方法一个 `async with self._db.lock` 的 SQL 块；store 方法之间不互相调用对方的持锁方法（`asyncio.Lock` 不可重入）
-- **两个读路径（`get_pending` vs `get_all`）**：tech-ref §5 把它们分开——`get_pending` = 待消费队列（`list_pending`，只含 `PENDING`、`created_at ASC` FIFO），供活动排期/拼 prompt；`get_all` = 全量快照（`short_term` 用 `list_short_term`，含 satisfied/expired 历史、`created_at DESC`），供 `/api/desires` 仪表盘。故 store 要两个 list 方法，`DesireState.short_term` 是「全部」而非「待消费」
+- **两个读路径（`get_pending` vs `get_all`）**：`get_pending` 只含 `PENDING` 且 `strength > 0` 的记录，Facade 结合当前类型表达权重按行动优先级排序，供活动、主动搭话和 prompt 消费；去重也忽略零强度短期记录，避免无驱动力记录阻挡新欲望。`get_all` 返回含终态和零强度记录的完整快照，供 `/api/desires` 仪表盘。
 - **可空 JSON 列（同 07 的 `embedding`）**：`short_term_desire.goal` 是 `Goal | None` ⟺ `goal TEXT` 可空，`None ↔ SQL NULL`（非 `"null"` 字符串）
 - **`add_value` 是事件入口（决策，对 tech-reference 注释的精确化）**：tech-ref 写「活动/对话/长期欲望 加压」，但 ROUTING 里 desire 订阅了 `OBSERVATION_STATE` 和 `ACTIVITY_END` 两个事件——`OBSERVATION_STATE` 是加压、`ACTIVITY_END` 是满足回写（`04-module-bus-system` 的路由与事件语义、ROUTING 注释「满足」）。故 `add_value` 按 `source.type` 派发；组合根用 `bus.subscribe(EventType.OBSERVATION_STATE, facade.add_value)` + `bus.subscribe(EventType.ACTIVITY_END, facade.add_value)` 绑定
 - **`evaluate()` 由 tick 触发**：TICK_ROUTING 的 `DESIRE_EVAL → desire`。runtime 不把完整 Event 传入 Facade，只把 `event.id` 作为 `event_id` 传给 `evaluate()`，用于周期状态幂等；兼容直调可省略。`desire_generated` 的 `correlation_id = desire.id`，不改成 tick correlation。
-- **加压增量（默认值，标注可推翻）**：`_OBSERVATION_PRESSURE_DELTA=0.15`（观察状态→互动欲 +0.15）、`_LONG_TERM_PRESSURE_DELTA=0.1`（每个长期欲望周期→对应类型 +0.1）、`_REST_PRESSURE_DELTA=0.1`（疲惫 `energy < ENERGY_REST_THRESHOLD`→休息欲 +0.1）、`_CREATION_ACTIVITY_PRESSURE_DELTA=0.15`（读书/自由探索结束→创造欲 +0.15）。加压复用本 spec 值机制的 `apply_pressure`
+- **加压增量（默认值，标注可推翻）**：`_OBSERVATION_PRESSURE_DELTA=0.15`、每条长期欲望周期增量 `0.1 * strength`、`_REST_PRESSURE_DELTA=0.1`、`_CREATION_ACTIVITY_PRESSURE_DELTA=0.15`。同类型多条长期欲望累加；strength 为 0 时跳过该条长期压力（周期衰减仍按原规则结算并更新时间戳）。
 - **衰减时机（决策：加 `updated_at` 列，已与用户确认）**：`elapsed_days = (now - updated_at) / 86400`，`decay_value(value, elapsed_days, config.value_decay)`。`updated_at` 记录"最后一次 value 变化"，每次 evaluate 先衰减结算再写回 `updated_at = now`；衰减是单调的，两次 evaluate 之间 value 不实时下降（与 06-memory-system 的 `decay_freshness` 一样属于按访问结算的当前实现限制），相对顺序不破坏
 - **达峰生成（决策：只生成最迫切 1 个，已与用户确认）**：达峰判据 = `at_peak(value, peak) and is_expressible(value, suppression)`（本 spec 值机制的门控组合）；多个达峰类型时 `max(..., key=value)` 取最高者生成 1 个，**只重置选中类型**，其余达峰类型保留压力下次 evaluate 再生成——每次 evaluate 最多 1 次 LLM 调用（原则 1）
 - **去重（decision，可推翻）**：`run_eval` 生成后、入队前两步判定——① **话题锚点优先**：新欲望 `goal.topic` 非 None 时，与 `list_pending()` 各待消费欲望的 `goal.topic` 精确相等即判重复丢弃（确定性、零误判、不依赖 embedding）；② **余弦兜底**：`goal.topic` 缺失（None）或未命中时，用注入的 `EmbedFn`（`memory/retrieval` 的 `build_embed`，与 memory/evaluator 共享同一实例）算新欲望 `description` 的 embedding，与 `list_pending()` 各 description embedding 做 `cosine` 比对，任一 `>= _DEDUP_SIM_THRESHOLD(0.9)` 判语义重复丢弃（不入队、不发布，value 已在重置步骤归零）。`embed=None`（向量层禁用）或 embed 抛异常降级为不去重（best-effort 旁路，同矛盾检测）
-- **主题种子（decision，可推翻）**：`_pick_topic_seed` 按「没做过 / 新鲜度最低」从对应类型长期欲望的子主题池取——先查记忆（注入的 `list_memories` 回调，组合根接 `memory.list_memories`）做 substring 匹配，无命中记忆（= 没做过）最优先，都做过取新鲜度最低者；空池返回 `None`。种子拼进 `_build_desire_prompt` 给 LLM 作生成上下文；**探索欲的 `goal.topic` 由 seed 确定性钉死**——解析后 `goal is not None` 时强制 `goal.topic = seed`（无 seed 则清空为 `None`），杜绝 LLM 漂移主题（如名字撞车）；`goal=None` 时不合成 goal（保持单次满足语义），自由探索由 09-activity 的 topic 非空条件与 `should_explore` 限速规则兜底；**互动欲的 seed 同样承载进 `goal.topic`**——`goal` 常为 None，seed 存在时构造 `Goal(action=OBSERVE, count=1, topic=seed)`（count=1 保持「搭话一次即满足」语义不变），使互动欲也能按话题锚点去重
-- **`strength` 语义**：`ShortTermDesire.strength` = 达峰时的 `value`（生成前保存，值重置后仍保留），供展示/排序
-- **长期进度回写（decision，可推翻）**：满足时回写**最相关**的长期欲望 `progress += 0.1`（夹 `[0,1]`）、`strength -= 0.02`（夹 `[0,1]`）。`_most_relevant_long_term` 按 `goal.topic` 双向 substring 命中 `subtopics` 者优先，无 topic 或都不命中退回第一个 `type` 匹配；无 `type` 匹配返回 `None`（不回写）。当前 `strength` 递减结果仍未被排序、prompt 或活动决策消费；`linked_values` 也只完成候选回填和持久化，两个消费入口 deferred（见 V3-roadmap）。
-- **长期欲望初始化（seed）**：3 个初始集来自 canon §4（硬编码），归组合根启动时 `insert_long_term`（表空才 seed）；四类型 `desire_value` 同样由组合根用 `default_value(t)` 初始化并覆盖 `updated_at=now`。07 只提供 store 原语，不提供 seed 方法；`long_term_capacity` 由 `add_long_term` 消费——长期欲望运行时新增有两个入口（08-inner-life 反思 + 09-activity 探索终局），统一走 `add_long_term` 归口去重 + 容量检查（满不新增，不淘汰）
-- **反思批量接入**：08-inner-life 在事务外调用 `prepare_long_term_candidates`，把获准候选与 `LongTermSnapshot` 放入 `ReflectionPlan`；事务内调用 `add_prepared_long_terms_in_transaction`。该两阶段入口复用 `add_long_term` 的准入规则，不新增 Repository/Service 层；`LongTermSnapshot` 只是 `facade.py` 内公开类型别名，不进入共享 `types.py`。
+- **父长期欲望与主题**：选定达峰类型后，只在同类型、`strength > 0` 的长期欲望中按 `strength DESC, created_at ASC, id ASC` 选父对象。topic 从父对象子主题池按「没做过优先、否则 freshness 最低」选择；子主题池为空则用父名称；没有合格父对象则 topic 和 `parent_long_term_id` 都为 `None`。系统据类型构造 action/topic/goal，LLM 只生成 description/count。
+- **`strength` 语义**：`ShortTermDesire.strength` 是达峰压力快照；`LongTermDesire.strength` 是 `[0,1]` 驱动力。容量裁剪时父 strength 增加 `action_priority`，最终满足时父 strength 减少同一公式并推进 progress。部分 goal 完成、失败、过期、抑制、去重丢弃均不改父 strength；旧数据或父记录缺失时不得猜父对象。
+- **长期欲望初始化与唯一新增入口**：bootstrap 在空表时写 3 条 canon 初始数据；运行时只有 08-inner-life 反思可新增长期欲望。09-activity 探索只能向短期欲望明确记录的父长期欲望追加子主题。
+- **反思批量接入**：08-inner-life 在事务外调用 `prepare_long_term_candidates`，把获准候选与 `LongTermSnapshot` 放入 `ReflectionPlan`；事务内调用 `add_prepared_long_terms_in_transaction`。`LongTermSnapshot` 只包含影响新增去重的 id/name/description，因此并发 strength、progress、subtopics 变化不制造无关冲突。
 - **五态流转（V2，`ACTIVE`/`SUPPRESSED` 纳入）**：`PENDING → ACTIVE` 由 `claim_for_activity` 原子领取；`ACTIVE → SATISFIED | EXPIRED`（满足时从 ACTIVE 释放并结算）；`ACTIVE → SUPPRESSED`；`SUPPRESSED → PENDING`（`run_eval` 里类型仍可表达即释放回队列）。`SUPPRESSED` 可逆、非终态；续做路径恢复同一记录时由活动完成结算，不重复领取。
 - **`activity_end` 的满足信号契约（09-activity 引用）**：`event.content` 含 `desire_id`（`str | None`）与 `goal_met`（`bool | None`）。`satisfy_from_activity_end` 缺任一键或非预期类型即跳过（不抛），因为观察用户/发呆等活动无欲望可满足。额外：`event.content["type"]` 为 `reading` / `free_exploration`（`ActivityType.value`）时，满足逻辑之外再给创造欲加压 `_CREATION_ACTIVITY_PRESSURE_DELTA`（创作活动 `creation` 结束不自循环；`type` 缺失/其他值跳过）
 - **新增 `output_type="desire"`**：`LLMOutput.type` 自由字符串，开放集合新增无冲突
+
+## 对象完整性
+
+### `ShortTermDesire`
+
+**入口清单**
+
+| 入口 | 产生条件 | 写入位置 |
+|---|---|---|
+| `DESIRE_EVAL` | 类型压力达峰且可表达，LLM 的 description/count 合法 | `short_term_desire`；提交前先写 `desire_generation_attempt` |
+| 生成 attempt 恢复 | 上次 LLM 已完成、正式事务失败 | 复用 attempt 的 type、topic、父 ID、原始输出，不重复调用 LLM |
+| DB 迁移 | 升级已有数据库 | 旧短期欲望的 `parent_long_term_id` 为 `NULL` |
+
+**消费者清单**
+
+| 消费者 | 发现方式 | 用途 |
+|---|---|---|
+| Activity starter | `get_pending()` | 按行动优先级选择并原子 claim，父 ID复制到 activity progress |
+| 主动搭话 | `get_pending()` 后筛互动类型 | 按同一优先级选择互动欲望 |
+| expression / inner-life prompt | `CurrentState.active_desires` | 读取已排序待消费欲望 |
+| 欲望结算 | `desire_id` 精确查询 | 按父 ID 回写长期进度和 strength |
+| REST / 前端 | `get_all()` | 展示全量短期历史和父关系 |
+
+**状态迁移表**
+
+| 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
+|---|---|---|---|
+| 不存在 | 生成提交成功且容量保留 | `PENDING` | 写父 ID并发布 `DESIRE_GENERATED` |
+| 不存在 / `PENDING` | 容量裁剪 | 删除 | 同事务按行动优先级增加父 strength；无父则只删除 |
+| `PENDING` | claim 成功 | `ACTIVE` | 与活动插入同事务 |
+| `ACTIVE` | 部分完成 | `PENDING` | 不改父 strength |
+| `ACTIVE/PENDING` | 最终满足 | `SATISFIED` | 同事务降低父 strength、增加父 progress、强化表达权重 |
+| `ACTIVE` | 中断/异常 | `SUPPRESSED` | 不改父 strength |
+| `SUPPRESSED` | 类型恢复可表达 | `PENDING` | 不改父 strength |
+| 非终态 | 超过重试或超时 | `EXPIRED` | 压力回灌和抑制上浮；不改父 strength |
+
+**Bad case 表**
+
+| 情况 | 处理 |
+|---|---|
+| 空 | 无达峰类型返回空；无父长期欲望时父 ID/topic 为 `None`，仍可生成系统 goal |
+| 失败 | LLM/解析失败不入队；正式提交失败保留 attempt，重试复用父 ID/topic |
+| 部分完成 | 只累加 goal_progress，不提前降低父 strength |
+| 乱序 | claim 用条件更新；最终结算在事务内检查终态，旧事件不得覆盖终态 |
+| 重放 | eval marker 防重复周期加压；满足/过期终态幂等；被裁剪记录已删除，不能二次回灌 |
+| 删除 | 父长期欲望删除时外键置空；禁止按类型、topic 或最新记录猜父对象 |
+
+### `LongTermDesire`
+
+**入口清单**
+
+| 入口 | 产生条件 | 写入位置 |
+|---|---|---|
+| bootstrap | 长期欲望表为空 | 3 条 canon 初始数据 |
+| reflection | 反思候选通过结构、容量、名称和语义去重 | `long_term_desire` |
+| exploration | 不适用：探索不得创建长期欲望 | 只对明确父 ID追加 subtopics |
+
+**消费者清单**
+
+| 消费者 | 发现方式 | 用途 |
+|---|---|---|
+| desire eval | 全量读取 | 按 `0.1 * strength` 加压；按 strength 选择短期父对象 |
+| reflection prompt | 全量读取 | 展示名称、进度、数值 strength 和文字强度 |
+| 短期结算/裁剪 | `parent_long_term_id` 精确查询 | 调整 progress/strength |
+| exploration | activity progress 中的父 ID | 幂等追加子主题 |
+| REST / 前端 | `get_all()` | 展示长期欲望状态 |
+
+**状态迁移表**
+
+| 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
+|---|---|---|---|
+| 不存在 | bootstrap 或 reflection 接纳 | 存在 | 初始 strength=0.5、progress=0 |
+| 存在 | 短期满足 | 存在 | strength 减行动优先级、progress +0.1，均夹范围 |
+| 存在 | 子短期被容量裁剪 | 存在 | strength 加行动优先级，夹到 1 |
+| 存在 | 探索产生后续主题 | 存在 | 稳定去重追加 subtopics |
+| strength=0 | 周期评估 | 存在且无驱动力 | 不加压、不被选为新短期父对象 |
+
+**Bad case 表**
+
+| 情况 | 处理 |
+|---|---|
+| 空 | 无长期欲望时仍允许其他压力产生短期欲望，但父 ID/topic 为空 |
+| 失败 | 反思候选失败沿既有 durable retry；子主题写失败使探索活动失败并由 checkpoint 重试 |
+| 部分完成 | 短期 goal 未完成前不调整 strength；探索子主题已写但知识未写时可重放，子主题追加与知识沉淀各自幂等 |
+| 乱序 | strength 反馈与对应的满足/删除处于同一 DB 事务；反思快照不包含 strength/subtopics，避免无关冲突 |
+| 重放 | 满足终态、容量删除和子主题稳定去重分别吸收重放 |
+| 删除 | 当前无公开删除入口；若内部删除，子短期与 attempt 父 ID由外键置空 |
 
 ## 测试要点
 
@@ -124,7 +210,7 @@
     - [ ] `default_value`：四种 `DesireType` 均返回正确类型、`value=0.0`、`expression_weight=0.7`、`suppression_threshold=0.5`、`updated_at=0.0`
     - [ ] 常量边界：`0.0 <= WEIGHT_REINFORCE_DELTA <= SUPPRESSION_RAISE_DELTA`，`REFUND_DELTA > 0`
   - [ ] **store**（`test_desire_store.py`）：
-    - [ ] `add_desire + get_desire` 往返：含 `goal=Goal(READ, 3, "骑士团")`、非默认 `retry_count`/`status` → 各字段全等（`goal` JSON 往返、枚举往返）
+    - [ ] `add_desire + get_desire` 往返：含 `goal=Goal(READ, 3, "骑士团")`、`parent_long_term_id`、非默认 `retry_count`/`status` → 各字段全等
     - [ ] `goal=None` 往返 → `get_desire().goal is None`（SQL NULL 非 `"null"` 字符串）
     - [ ] `list_pending`：造 pending/active/satisfied/expired 各一条 → 只返回 pending，按 `created_at ASC` 排序
     - [ ] `list_suppressed`：造 suppressed 两条（`created_at` 乱序）+ pending/active 各一条 → 只返回 suppressed，按 `created_at ASC` 排序
@@ -133,31 +219,32 @@
     - [ ] `goal_progress` 往返：`add_desire` 带 `goal_progress=2` → `get` 往返；`update_desire` 改 `goal_progress=3` → 再 `get` 验证（goal 精确计数存储层）
     - [ ] `list_values + upsert_value`：`upsert_value` 新建 → `list_values` 返回；同 `type` 再 `upsert_value` 改 `value`/`updated_at`（ON CONFLICT 更新不重复建行）
     - [ ] `insert_long_term + list_long_term + update_long_term`：`subtopics`/`linked_values` JSON 数组往返、`type` 枚举往返；`update_long_term` 改 `progress`/`strength`
+    - [ ] `trim_pending`：按行动优先级保留、同分 FIFO；被删除项按同一优先级增加显式父对象 strength，父缺失时只删除
+    - [ ] `add_long_term_subtopics`：去空白、稳定去重；空输入或父对象不存在返回 `False`
   - [ ] **lifecycle 纯函数**：
-    - [ ] `_parse_desire`：合法 JSON（含 goal）→ `(description, Goal)`；`goal: null` → `(description, None)`；缺 `description` / 空串 → `ValueError`；`goal.action` 非法 → `ValueError`；`count` 非正/非 int → `ValueError`；`topic` 非 str → `ValueError`；JSON 是数组 → `ValueError`
-    - [ ] `_subtopics_for`：有 `type` 匹配且 `subtopics` 非空的长期欲望 → 返回该 `subtopics`（过滤 `""`/空白子主题）；无匹配/空池 → `[]`
+    - [ ] `_parse_desire`：合法 JSON → `(description, count)`；缺失/空白 description、非正整数 count、非对象 JSON → `ValueError`；模型额外输出 action/topic/goal 不进入领域对象
     - [ ] `_subtopic_freshness`：空串/纯空白 → `None`（通配符不做匹配）；非空命中 → 最新 freshness
     - [ ] `_pick_topic_seed`：空池 → `None`；全没做过（无命中记忆）→ 第一个；部分做过 → 取没做过的；都做过 → 取新鲜度最低者
-    - [ ] `_most_relevant_long_term`：无 `type` 匹配 → `None`；`topic` 双向 substring 命中第二条 → 返回第二条；`topic` 轻微漂移仍命中；`topic=None` → 第一个；同类型都不命中 → 第一个
+    - [ ] `_pick_parent_long_term`：只选同类型且 `strength>0`，按 `strength DESC, created_at ASC, id ASC`
     - [ ] `_build_desire_prompt`：含类型 `.value` 与种子；`seed=None` → 含「（无）」
   - [ ] **pressure_from_observation**：互动欲 `value` 由 `x` → `min(1.0, x + 0.15)`；`updated_at` 更新
   - [ ] **pressure_creation**：创造欲 `value` 由 `x` → `min(1.0, x + delta)`（传 `delta=0.2`）；`updated_at` 更新
   - [ ] **satisfy_from_activity_end 活动结束加压**：`content["type"]="reading"` → 满足逻辑外创造欲 +0.15；`content["type"]="free_exploration"` → 创造欲 +0.15；`content["type"]="creation"` → 创造欲不动（不自循环）；`type` 缺失/其他值 → 创造欲不动
   - [ ] **run_eval**：
     - [ ] 四类型都低于 `peak_threshold` → `[]`，无 LLM 调用
-    - [ ] 互动欲达峰（造 `value=0.9`）→ 1 次 LLM 调用（`output_type="desire"`）、`evaluator.evaluate` 被调 1 次（收到该 `LLMOutput`）、返回 1 个 `ShortTermDesire`（`type` 正确、`status is PENDING`、`strength == 0.9`、`description`/`goal` 来自 fixture）、该类型 `value` 重置为 0、发布 `desire_generated`（`content["desire_id"] == desire.id`）
+    - [ ] 互动欲达峰（造 `value=0.9`）→ 1 次 LLM 调用（`output_type="desire"`）、`evaluator.evaluate` 被调 1 次；系统按类型构造 action/goal/topic，模型只提供 description/count；该类型 `value` 重置为 0、发布 `desire_generated`
     - [ ] **只生成最迫切的 1 个**：互动欲 0.95 + 探索欲 0.92 都达峰 → 只生成互动欲；探索欲 `value` 保留 0.92 不重置
-    - [ ] **长期加压**：seed 一个 `type=EXPLORATION` 的长期欲望 → 探索欲 `value` 额外 +0.1
+    - [ ] **长期加压**：每条长期欲望给对应类型增加 `0.1 * strength`；strength=0 不加压、不参与父选择
     - [ ] **疲惫加压**：`run_eval(energy=ENERGY_REST_THRESHOLD - 1)` → 休息欲 `value` +0.1；`run_eval(energy=ENERGY_REST_THRESHOLD)`（不疲惫）→ 休息欲不动
     - [ ] **衰减**：`updated_at` 设为 1 天前 → `value` 衰减 `value_decay × 1`
     - [ ] **抑制门控**：`suppression_threshold=0.95 > value=0.92`（达峰但被抑制）→ 不生成，返回 `[]`
     - [ ] **SUPPRESSED 释放**：SUPPRESSED 欲望其类型 `value=0.6 >= suppression=0.5` → `run_eval` 后该欲望 `status is PENDING`（不新生成）；`value=0.4 < 0.5` → 保持 SUPPRESSED
-    - [ ] **主题种子**：seed 探索型长期欲望（`subtopics=["骑士团", "大学朋友"]`）+ 记忆命中「骑士团」→ LLM 收到的 prompt 含「大学朋友」、不含「骑士团」（没做过优先），且 `goal.topic` 被钉死为「大学朋友」（LLM 返回「骑士团」被覆盖）；无 subtopics（无 seed）→ `goal.topic` 清空为 `None`；有 seed 但 LLM 返回 `goal:null` → 不合成 goal（保持 `None`）
+    - [ ] **父对象与主题**：最强同类型长期欲望成为父对象；优先取未使用/最陈旧子主题，空子主题池用父名称；无合格父时父 ID/topic 为 `None`；attempt 恢复复用原父 ID/topic
     - [ ] **去重**：① 话题锚点——seed 钉进 `goal.topic` 后，与已有 PENDING 的 `goal.topic` 精确相等 → 丢弃（不入队、不发布 `desire_generated`），异 topic → 保留；② 余弦兜底——注入 fake embed（同 description 返回同向量）→ 新欲望与已有 PENDING 语义重复被丢弃；正交向量 → 正常入队；`embed=None` / embed 抛异常 → 不去重
   - [ ] **satisfy**：
-    - [ ] `goal_met=True` → `status is SATISFIED`、表达权重 +0.05、长期进度 +0.1、发布 `desire_satisfied`
+    - [ ] `goal_met=True` → `status is SATISFIED`、表达权重 +0.05、显式父长期进度 +0.1、父 strength 减去强化前的行动优先级、发布 `desire_satisfied`
     - [ ] **goal 精确计数**：`goal.count=3` → 前两次 `goal_met=True` 累计 `goal_progress` 保持 PENDING、不发布；第三次 → SATISFIED + 发布 `desire_satisfied`
-    - [ ] **最相关回写**：同类型两条长期欲望（subtopics 各不同）+ `goal.topic` 命中第二条 → 只回写第二条 progress、第一条不动
+    - [ ] **显式父回写**：topic 即使命中另一条，也只回写 `parent_long_term_id` 指向的父对象；空/失效父 ID不猜测
     - [ ] `goal_met=False` 且 `retry_count <= retry_limit` → `retry_count+1`、`status` 仍 `PENDING`、无事件
     - [ ] `goal_met=False` 且 `retry_count > retry_limit` → `status is EXPIRED`、值回增 `+REFUND_DELTA`、抑制阈值 +0.1、发布 `desire_expired`
   - [ ] **expire**：`status is EXPIRED` + 值回增 + 抑制阈值上浮 + 发布 `desire_expired`
@@ -169,7 +256,7 @@
   - [ ] **facade**（`test_desire_facade.py`）：
     - [ ] `add_value(OBSERVATION_STATE)` → 互动欲加压；`add_value(ACTIVITY_END)`（content 含 `desire_id`+`goal_met`）→ 满足回写；`add_value(ACTIVITY_END)`（缺键/错类型）→ 无操作
     - [ ] `evaluate` / `get_pending` / `get_all` / `satisfy` / `expire` 委托（`get_all` 返回 `DesireState` 三字段非空；`short_term` 含 satisfied 历史、`long_term` 含 seed 的长期欲望）
-    - [ ] `add_long_term(desire)` → `list_long_term` 多一条、字段全等（委托 `insert_long_term`）
+    - [ ] `add_long_term_subtopics(desire_id, topics)` → 只向显式父对象稳定去重追加；空 topics 或父对象不存在返回 `False`
     - [ ] `prepare_long_term_candidates`：先过滤与现有欲望及批内候选的名称/语义重复，再按剩余容量接纳；embedding 严格失败；返回稳定快照
     - [ ] `add_prepared_long_terms_in_transaction`：事务外调用拒绝；事务内快照冲突抛错并不插入；快照一致时使用最终容量/名称守卫插入
     - [ ] `pressure_creation(delta)` 委托 → 创造欲 `value` 加压 `delta`

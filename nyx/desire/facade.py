@@ -5,6 +5,7 @@ from nyx.config import DesireConfig
 from nyx.db import Database
 from nyx.desire.lifecycle import DesireLifecycle, ListMemories
 from nyx.desire.store import DesireStore, normalize_name
+from nyx.desire.value import action_priority
 from nyx.enums import EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
@@ -72,7 +73,31 @@ class DesireFacade:
         await self._lifecycle.pressure_creation(delta)
 
     async def get_pending(self) -> list[ShortTermDesire]:
-        return await self._store.list_pending()
+        pending = [
+            desire
+            for desire in await self._store.list_pending()
+            if desire.strength > 0.0
+        ]
+        weights = {
+            value.type: value.expression_weight
+            for value in await self._store.list_values()
+        }
+        return sorted(
+            pending,
+            key=lambda desire: (
+                -action_priority(
+                    desire.strength, weights.get(desire.type, 0.0)
+                ),
+                desire.created_at,
+                desire.id,
+            ),
+        )
+
+    async def add_long_term_subtopics(
+        self, desire_id: str, subtopics: list[str]
+    ) -> bool:
+        """Append exploration topics only to its explicit long-term parent."""
+        return await self._store.add_long_term_subtopics(desire_id, subtopics)
 
     async def get_all(self) -> DesireState:
         return DesireState(
@@ -111,32 +136,6 @@ class DesireFacade:
 
     async def release_active(self, desire_id: str) -> None:
         await self._lifecycle.release_active(desire_id)
-
-    async def add_long_term(self, desire: LongTermDesire) -> None:
-        """新增长期欲望入口：容量检查 + 精确/语义去重，命中/超容则跳过。
-
-        去重与容量下沉到此处，探索（14）与反思（12）两个调用方统一走；
-        满不新增（不淘汰）。
-        """
-        async with self._long_term_lock:
-            while True:
-                existing = await self._store.list_long_term()
-                accepted, snapshot = await self._prepare_long_term_candidates(
-                    (desire,), existing
-                )
-                if not accepted:
-                    return
-                conflict = False
-                async with self._store.db.transaction():
-                    current = await self._store.list_long_term()
-                    if _long_term_snapshot(current) != snapshot:
-                        conflict = True
-                    else:
-                        await self._store.insert_long_term_if_available(
-                            accepted[0], self._config.long_term_capacity
-                        )
-                if not conflict:
-                    return
 
     async def prepare_long_term_candidates(
         self, desires: tuple[LongTermDesire, ...]

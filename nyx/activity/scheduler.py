@@ -3,6 +3,7 @@
 无 IO、无 DB、无 LLM、无 Facade。09-activity 的 ActivityFacade 消费这些纯函数。
 """
 from nyx.config import ActivityEnergyDelta
+from nyx.desire.value import action_priority
 from nyx.enums import ActivityType, DesireType
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.types import DesireValue, ShortTermDesire
@@ -27,13 +28,19 @@ def rank_desires(
     desires: list[ShortTermDesire],
     values: list[DesireValue],
 ) -> list[ShortTermDesire]:
-    """消费排序：类型级表达权重降序（越愿表达越先消费），同权按 created_at 升序
-    （FIFO 稳定）。
+    """消费排序：行动优先级降序，同分按 created_at、id 升序。
 
     expression_weight 缺省（该类型无 DesireValue 记录）按 0.0 处理。
     """
     weight = {v.type: v.expression_weight for v in values}
-    return sorted(desires, key=lambda d: (-weight.get(d.type, 0.0), d.created_at))
+    return sorted(
+        (desire for desire in desires if desire.strength > 0.0),
+        key=lambda d: (
+            -action_priority(d.strength, weight.get(d.type, 0.0)),
+            d.created_at,
+            d.id,
+        ),
+    )
 
 
 def build_schedule(

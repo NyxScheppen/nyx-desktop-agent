@@ -62,6 +62,8 @@ NOT_NULL_COLUMNS = {
 # Optional 字段对应列必须可空（01-types 的 X | None）
 NULLABLE_COLUMNS = {
     ("short_term_desire", "goal"),
+    ("short_term_desire", "parent_long_term_id"),
+    ("desire_generation_attempt", "parent_long_term_id"),
     ("activity", "ended_at"),
     ("memory", "embedding"),
     ("memory", "content_hash"),   # v6 迁移，旧行 NULL（不去重）
@@ -110,6 +112,19 @@ async def test_migrate_creates_all_tables() -> None:
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
     assert len(names) == 31
+
+
+async def test_parent_long_term_foreign_keys_set_null() -> None:
+    conn = await _migrated_conn()
+    try:
+        for table in ("short_term_desire", "desire_generation_attempt"):
+            cursor = await conn.execute(f"PRAGMA foreign_key_list({table})")
+            rows = await cursor.fetchall()
+            parent = next(row for row in rows if row["from"] == "parent_long_term_id")
+            assert parent["table"] == "long_term_desire"
+            assert parent["on_delete"] == "SET NULL"
+    finally:
+        await conn.close()
 
 
 async def test_migrate_adds_assigned_task_fifo_index() -> None:

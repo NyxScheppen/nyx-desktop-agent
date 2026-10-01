@@ -6,13 +6,13 @@ from contextlib import asynccontextmanager
 import aiosqlite
 
 from nyx.db import Database
-from nyx.desire.value import apply_pressure, default_value
+from nyx.desire.value import action_priority, apply_pressure, default_value
 from nyx.enums import DesireStatus, DesireType, GoalAction
 from nyx.types import DesireValue, Goal, LongTermDesire, ShortTermDesire
 
 _STD_COLS = (
     "id, created_at, type, strength, description, goal, retry_count, "
-    "status, goal_progress"
+    "status, goal_progress, parent_long_term_id"
 )
 _VALUE_COLS = "type, value, expression_weight, suppression_threshold, updated_at"
 _LT_COLS = (
@@ -52,7 +52,7 @@ class DesireStore:
         async with self._operation() as should_commit:
             await self._db.conn.execute(
                 f"INSERT INTO short_term_desire ({_STD_COLS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _std_row(desire),
             )
             if should_commit:
@@ -100,11 +100,12 @@ class DesireStore:
         async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "UPDATE short_term_desire SET type = ?, strength = ?, description = ?, "
-                "goal = ?, retry_count = ?, status = ?, goal_progress = ? WHERE id = ?",
+                "goal = ?, retry_count = ?, status = ?, goal_progress = ?, "
+                "parent_long_term_id = ? WHERE id = ?",
                 (
                     desire.type.value, desire.strength, desire.description,
                     _goal_json(desire.goal), desire.retry_count, desire.status.value,
-                    desire.goal_progress, desire.id,
+                    desire.goal_progress, desire.parent_long_term_id, desire.id,
                 ),
             )
             if should_commit:
@@ -235,7 +236,7 @@ class DesireStore:
     async def trim_pending(
         self, capacity: int, expression_weights: dict[DesireType, float]
     ) -> list[str]:
-        """Keep the highest-expression pending desires within capacity."""
+        """Keep the highest-priority pending desires and refund removed parents."""
         async with self._operation() as should_commit:
             cursor = await self._db.conn.execute(
                 f"SELECT {_STD_COLS} FROM short_term_desire "
@@ -246,13 +247,28 @@ class DesireStore:
             ranked = sorted(
                 (_row_to_std(row) for row in rows),
                 key=lambda desire: (
-                    -expression_weights.get(desire.type, 0.0),
+                    -action_priority(
+                        desire.strength,
+                        expression_weights.get(desire.type, 0.0),
+                    ),
                     desire.created_at,
                     desire.id,
                 ),
             )
-            removed = ranked[capacity:]
+            removed = ranked[max(0, capacity):]
             for desire in removed:
+                if desire.parent_long_term_id is not None:
+                    await self._db.conn.execute(
+                        "UPDATE long_term_desire SET strength = "
+                        "MIN(1.0, MAX(0.0, strength + ?)) WHERE id = ?",
+                        (
+                            action_priority(
+                                desire.strength,
+                                expression_weights.get(desire.type, 0.0),
+                            ),
+                            desire.parent_long_term_id,
+                        ),
+                    )
                 await self._db.conn.execute(
                     "DELETE FROM short_term_desire WHERE id = ?",
                     (desire.id,),
@@ -301,24 +317,30 @@ class DesireStore:
         created_at: float,
         peak_value: float,
         seed: str | None,
+        parent_long_term_id: str | None,
         output_content: str,
     ) -> None:
         async with self._operation() as should_commit:
             await self._db.conn.execute(
                 """INSERT INTO desire_generation_attempt
-                (id, type, created_at, peak_value, seed, output_content)
-                VALUES (?, ?, ?, ?, ?, ?)""",
-                (attempt_id, type_.value, created_at, peak_value, seed, output_content),
+                (id, type, created_at, peak_value, seed, parent_long_term_id,
+                 output_content)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    attempt_id, type_.value, created_at, peak_value, seed,
+                    parent_long_term_id, output_content,
+                ),
             )
             if should_commit:
                 await self._db.conn.commit()
 
     async def get_generation_attempt(
         self, type_: DesireType
-    ) -> tuple[str, float, float, str | None, str] | None:
+    ) -> tuple[str, float, float, str | None, str | None, str] | None:
         async with self._operation():
             cursor = await self._db.conn.execute(
-                """SELECT id, created_at, peak_value, seed, output_content
+                """SELECT id, created_at, peak_value, seed, parent_long_term_id,
+                output_content
                 FROM desire_generation_attempt
                 WHERE type = ? ORDER BY created_at ASC, id ASC LIMIT 1""",
                 (type_.value,),
@@ -331,6 +353,7 @@ class DesireStore:
             float(row["created_at"]),
             float(row["peak_value"]),
             row["seed"],
+            row["parent_long_term_id"],
             str(row["output_content"]),
         )
 
@@ -366,13 +389,43 @@ class DesireStore:
             if should_commit:
                 await self._db.conn.commit()
 
+    async def add_long_term_subtopics(
+        self, desire_id: str, subtopics: list[str]
+    ) -> bool:
+        """Append normalized subtopics once; return False when the parent is gone."""
+        normalized = [topic for raw in subtopics if (topic := raw.strip())]
+        if not normalized:
+            return False
+        async with self._operation() as should_commit:
+            cursor = await self._db.conn.execute(
+                "SELECT subtopics FROM long_term_desire WHERE id = ?",
+                (desire_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return False
+            existing = [str(item) for item in json.loads(row["subtopics"])]
+            known = set(existing)
+            for topic in normalized:
+                if topic not in known:
+                    existing.append(topic)
+                    known.add(topic)
+            await self._db.conn.execute(
+                "UPDATE long_term_desire SET subtopics = ? WHERE id = ?",
+                (json.dumps(existing), desire_id),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+        return True
+
 
 def _std_row(
     d: ShortTermDesire
-) -> tuple[str, float, str, float, str, str | None, int, str, int]:
+) -> tuple[str, float, str, float, str, str | None, int, str, int, str | None]:
     return (
         d.id, d.created_at, d.type.value, d.strength, d.description,
         _goal_json(d.goal), d.retry_count, d.status.value, d.goal_progress,
+        d.parent_long_term_id,
     )
 
 
@@ -393,6 +446,7 @@ def _row_to_std(row: aiosqlite.Row) -> ShortTermDesire:
         retry_count=row["retry_count"],
         status=DesireStatus(row["status"]),
         goal_progress=row["goal_progress"],
+        parent_long_term_id=row["parent_long_term_id"],
     )
 
 

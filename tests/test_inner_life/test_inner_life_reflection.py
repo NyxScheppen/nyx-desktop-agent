@@ -16,6 +16,7 @@ from nyx.inner_life.reflection import (
     _REFLECTION_SYSTEM,
     Reflection,
     _build_reflection_prompt,
+    _describe_long_term_strength,
     _drift_dim,
     _is_duplicate_fragment,
     _parse_reflection,
@@ -284,10 +285,34 @@ def test_build_reflection_prompt() -> None:
     assert "开放性 8.0" in prompt
     assert "尼克斯" in prompt
     assert "探索世界" in prompt
+    assert "强度 0.50（希望实现）" in prompt
     empty = _build_reflection_prompt(
         [], _PERSONALITY, _VALUES, _NARRATIVE, [], _AESTHETIC
     )
     assert "（无）" in empty
+
+
+def test_build_reflection_prompt_describes_zero_strength() -> None:
+    desire = LongTermDesire(
+        id="lt0", created_at=1.0, type=DesireType.EXPLORATION,
+        name="旧愿望", description="d", strength=0.0, progress=0.0,
+        subtopics=[],
+    )
+    prompt = _build_reflection_prompt(
+        [], _PERSONALITY, _VALUES, _NARRATIVE, [desire], _AESTHETIC
+    )
+    assert "强度 0.00（不再提供驱动力）" in prompt
+
+
+@pytest.mark.parametrize(("strength", "description"), [
+    (0.0, "不再提供驱动力"),
+    (0.1, "略有期待"),
+    (0.25, "有些希望实现"),
+    (0.5, "希望实现"),
+    (0.8, "很希望实现"),
+])
+def test_describe_long_term_strength(strength: float, description: str) -> None:
+    assert _describe_long_term_strength(strength) == description
 
 
 def test_build_reflection_prompt_feeds_story() -> None:

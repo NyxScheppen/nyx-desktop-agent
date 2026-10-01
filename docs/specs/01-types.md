@@ -45,6 +45,7 @@
 
 - **明确不做**：不加 `frozen`；`vad_to_category`、Goal 完成判定等纯函数留在各自 spec；`ReplyState`（LangGraph 内部 state）留在 `11-expression`；不在本文件定义枚举或实体的业务流程。
 - **default_factory 约定**：`field(default_factory=list)` 在 pyright strict 下报 `list[Unknown]`（裸 `list` 被推断为 `type[list[Unknown]]`，与字段注解 `list[str]` 不匹配）。故用 `field(default_factory=list[str])`——`list[str]` 作为类型对象可调用、返回空 `list[str]`，运行时等价 `list`，但类型精确、pyright 零报错、无需 ignore 压制。
+- **短期欲望父关系**：`ShortTermDesire.parent_long_term_id: str | None = None` 保存生成它的长期欲望 ID；旧数据、纯类型压力生成和父记录删除后的短期欲望为 `None`，消费者不得按类型或“最新一条”猜测父对象。
 
 ## 测试要点
 

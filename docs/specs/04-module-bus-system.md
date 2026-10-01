@@ -478,8 +478,18 @@ CREATE TABLE desire_generation_attempt (
     created_at REAL NOT NULL,
     peak_value REAL NOT NULL,
     seed TEXT,
+    parent_long_term_id TEXT REFERENCES long_term_desire(id) ON DELETE SET NULL,
     output_content TEXT NOT NULL
 );
+```
+
+`short_term_desire.parent_long_term_id` 同样是可空外键，指向实际生成该短期欲望的
+长期欲望。迁移前旧行保持 `NULL`；父记录删除时置空，结算不得猜测替代父对象。
+
+```sql
+ALTER TABLE short_term_desire
+ADD COLUMN parent_long_term_id TEXT
+REFERENCES long_term_desire(id) ON DELETE SET NULL;
 ```
 
 `desire_eval_applied` 记录某个 durable `DESIRE_EVAL` tick 是否已经结算周期衰减、

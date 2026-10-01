@@ -7,7 +7,7 @@
 ## 元信息
 
 - **前置依赖**：01-types（`CurrentState` / `SelfNarrative` / `Personality` / `Values` / `Aesthetic` / `Event` / `EventType` / `Source` / `EnergyState` / `EmotionCategory` / `ActivityType` / `LongTermDesire` / `ReflectionOutcome`）、02-config（`Config` / `DesireConfig.long_term_capacity`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、`personality` / `value_system` / `aesthetic` / `energy` / `self_narrative` 五表）、06-memory-system（`MemoryFacade.list_memories` / `recent_facts`）、07-desire（`DesireFacade.get_pending` / `get_all` / `prepare_long_term_candidates` / `add_prepared_long_terms_in_transaction` / `pressure_creation`）、09-activity（`ActivityFacade.get_current`）、10-eval（`Evaluator`）**
-- **联动契约**：07-desire 提供 `add_long_term` / `pressure_creation`；04-module-bus-system 提供五张内在生命单行表及事件事务；06-memory-system 提供 `count_new(MemoryKind.READING, since)`；11-expression 消费 `CurrentState.aesthetic`；12-reading-system 产生 `kind='reading'` 记忆。
+- **联动契约**：07-desire 提供反思专用的长期欲望候选预检/事务提交入口及 `pressure_creation`；04-module-bus-system 提供五张内在生命单行表及事件事务；06-memory-system 提供 `count_new(MemoryKind.READING, since)`；11-expression 消费 `CurrentState.aesthetic`；12-reading-system 产生 `kind='reading'` 记忆。
 - **旧设计残留（已与用户确认删除）**：`VADCalibrator` / `AffinityMatrix` 不属于当前实现，本 spec 不实现，只实现 `vad_to_category`（valence/arousal → 8 档标签）。
 
 ## 用户故事
@@ -46,6 +46,7 @@
 - **精力模型**：`value ∈ [0,100]`、`energy_to_state` 五档映射（80/60/40/20 分界）。`ACTIVITY_END` 先做闲置恢复再加 `content.energy_delta`；`get_state` 无事件时也做惰性闲置恢复，并把结算值回写 `energy`。恢复速率 `_ENERGY_RECOVERY_PER_HOUR=5.0`/小时；重启后时间锚点从进程启动时重新开始
 - **`ACTIVITY_END` content 契约（09-activity 引用）**：本 spec 消费两个键——`energy_delta`（`float`，精力变化，缺省 0）与 `desire_id`/`goal_met`（07-desire 已定义，本 spec 不读）。`desire_id`/`goal_met`/`energy_delta` 的完整形状由 09-activity 定义并保持与本 spec + 07 一致
 - **反思 1 次 LLM（决策：已与用户确认）**：`Reflection.prepare` 在事务外拼近期记忆（`list_memories()[:20]` 摘要）+ 有界近期有效事实（`recent_facts()`，独立资料段）+ 当前性格/三观/审美/叙事 + 现有长期欲望，调用一次 LLM，解析后再通过 07-desire 完成长期欲望准入预检，并把获准候选和长期欲望快照写入 `ReflectionPlan`；事实变化不单独发布第二个 `REFLECTION`；`Reflection.apply` 在调用方事务内只执行确定性 SQL 回写。`_parse_reflection` 非法、embedding 失败或提交时快照变化均抛出，让 durable consumer 进入 retry；事务回滚不会撤销已经发生的 LLM/evaluator 调用
+- **长期强度上下文**：反思 prompt 对每条长期欲望同时展示数值 strength 与确定性文字描述：`0=不再提供驱动力`、`(0,0.25)=略有期待`、`[0.25,0.5)=有些希望实现`、`[0.5,0.8)=希望实现`、`[0.8,1]=很希望实现`。描述只辅助 LLM 理解，实际数值更新仍由 07-desire 规则控制。
 - **性格/三观漂移（decision 可推翻）**：`drift_personality` / `drift_values` 纯函数，每维 `base + clamp(delta, -_MAX_DRIFT, +_MAX_DRIFT)` 再 clamp 到 `[1,10]`；`_MAX_DRIFT=0.5`（每轮单维最多 ±0.5，慢漂移）。Big Five/三观范围 1-10（01-types 注释）
 - **自我叙事回写**：`story`/`becoming` 是追加（`[..., 新条目]`）、`self_view` 是合并（`{**旧, **新}`）、`updated_at=now`；`identity` 不变
 - **长期欲望候选与 `linked_values`**：`_parse_reflection` 校验每个候选 `{type, name, description, subtopics, linked_values}`；`linked_values` 只允许 `Values` 的四个精确键 `attitude_to_human` / `ai_identity_acceptance` / `altruism` / `optimism`，允许空数组，重复键按首次出现顺序去重。缺失、`null`、非数组、非字符串元素或未知键都使该候选被跳过；不做别名、大小写或模糊纠正。`_to_long_term` 原样写入去重后的关联键（`strength=0.5`、`progress=0.0`）。反思侧不预先按原始候选顺序截断；07-desire 的批量预检先过滤同名/语义重复，再按剩余容量接纳，避免坏候选或重复候选占用名额。
@@ -53,7 +54,7 @@
 - **原子提交与冲突**：`Reflection.apply` 调 `add_prepared_long_terms_in_transaction`，不再从事务内调用会自行开事务的 `add_long_term`，也不在事务内执行 embedding。有获准候选时，若预检后长期欲望集合发生增删或影响去重的名称/描述变化，则抛 `RuntimeError`，整次本地写入回滚并由 durable delivery 重试；没有获准候选时长期欲望提交 no-op。容量满、同名/语义重复都保留已有欲望，不合并或回填其 `linked_values`。
 - **审美维度**：`Aesthetic` 是四轴 `TypedDict`，每轴范围 `[1,10]`；`drift_aesthetic(base, delta)` 复用 `_drift_dim`，单维每轮最多漂移 `±0.5`。反思中的 `aesthetic_delta` 按 `min(new_reading_count / _AESTHETIC_MIN_READING, 1.0)` 缩放，`_AESTHETIC_MIN_READING=3`；`new_reading_count` 由 `MemoryFacade.count_new(MemoryKind.READING, narrative.updated_at)` 统计 `first_created_at > since` 的记忆，去重强化不算新增。
 - **反思触发创造欲加压（ripple，07-desire 提供 `pressure_creation`）**：`reflect()` 成功后（LLM 产出 + 规则回写完成）调 `desire_facade.pressure_creation(_CREATION_REFLECTION_DELTA)`；`_CREATION_REFLECTION_DELTA=0.2`（决策可推翻，用户定值）。这是「反思 → 想表达的冲动」——创造欲与读书/自由探索结束时按 07-desire 定义的 `_CREATION_ACTIVITY_PRESSURE_DELTA` 加压并列为创造欲的两类压力源；活动结束事件来源契约见 09-activity
-- **`add_long_term` 归 07（ripple）**：`DesireFacade.add_long_term(desire: LongTermDesire) -> None` 做容量检查 + 精确/语义去重后委托 `store.insert_long_term`。反思走 DesireFacade 而非 DesireStore
+- **长期欲望唯一入口**：运行时只有反思能通过 `prepare_long_term_candidates` + `add_prepared_long_terms_in_transaction` 新增长期欲望；bootstrap 初始化不算运行时演化，探索不得新增。
 - **`reflect(correlation_id: str | None = None) -> ReflectionOutcome`**：公开调用先准备再以本地事务提交，并在提交后 announce `REFLECTION_DONE`；`REFLECTION` durable consumer 先检查 effect marker，在事务外完成 prepare，再在同一事务内写 effect marker、慢变量和 `REFLECTION_DONE`，提交后唤醒投递。解析失败或提交失败都会抛出，delivery 进入 retry；不再返回 `None` 表示失败
 - **`apply_event` 是统一事件入口**：`bus.subscribe(OBSERVATION_STATE/DESIRE_SATISFIED/ACTIVITY_END/REFLECTION, facade.apply_event)`（组合根绑定）。`apply_event` 对 4 类事件都做「衰减+偏移」，另按类型分派 `ACTIVITY_END→精力`、`REFLECTION→反思`
 - **`EMOTION_UPDATE` 发布**：每次 `apply_event` 末尾发布（content `{valence, arousal, emotion}`，`emotion` 是 8 档 `.value` 字符串，经 `resolve_emotion` 求得），供前端 SSE；`correlation_id = 触发事件.correlation_id`
@@ -62,7 +63,7 @@
 
 ## 测试要点
 
-- [ ] 单元测试 `tests/test_inner_life/`（`pytest-asyncio`；`db = await connect(":memory:")`；`store = InnerLifeStore(db)`；`reflection = Reflection(store, fake_memory, fake_desire, fake_llm, fake_evaluator, config.desire)`；`facade = InnerLifeFacade(store, fake_activity, fake_desire, fake_memory, bus, fake_llm, fake_evaluator, config)`；fake `LlmClient.complete` 按 `output_type == "reflection"` 返回 fixture JSON 并记录调用、fake `Evaluator.evaluate` 记录调用；fake `ActivityFacade.get_current` / `DesireFacade.get_pending`/`get_all`/`add_long_term` 返回预设；`EventBus` 用真实例 + recording handler，`run()` 作 task 驱动——同 05/09/11 模式）：
+- [ ] 单元测试 `tests/test_inner_life/`（`pytest-asyncio`；`db = await connect(":memory:")`；`store = InnerLifeStore(db)`；`reflection = Reflection(store, fake_memory, fake_desire, fake_llm, fake_evaluator, config.desire)`；`facade = InnerLifeFacade(store, fake_activity, fake_desire, fake_memory, bus, fake_llm, fake_evaluator, config)`；fake `LlmClient.complete` 按 `output_type == "reflection"` 返回 fixture JSON 并记录调用、fake `Evaluator.evaluate` 记录调用；fake `ActivityFacade.get_current` / `DesireFacade.get_pending`/`get_all`/长期候选预检与提交返回预设；`EventBus` 用真实例 + recording handler，`run()` 作 task 驱动——同 05/09/11 模式）：
   - [ ] **emotion 纯函数**（`test_inner_life_emotion.py`，无 DB）：
     - [ ] `clamp_valence` / `clamp_arousal`：越界夹回 `[-1,1]` / `[0,1]`
     - [ ] `decay_emotion`：`elapsed=0` → 不变；`rate=0` → 不变；`elapsed=1/rate` → 衰减到 0；负 valence 也同乘 f（不反向）

@@ -22,7 +22,7 @@
 - 委派任务领取与对应 PENDING activity 插入在同一 `Database.transaction()` 中；任务状态先落 `assigned_task`，再发布无 durable consumer 的 `TASK_UPDATED` 广播事件。广播失败只记日志，不回滚已提交状态，前端还可用 REST 快照恢复。
 - 当前未完全迁移的链仍需谨慎：包含 LLM/文件等不可回滚副作用的路径还不能宣称完整 at-least-once 幂等；`memory.activity_end` 已有本地事务和 effect marker，但其内部 LLM 关系/矛盾判断仍属 best-effort 副作用。`USER_MESSAGE` 重放时若已存在同 correlation 的终局 `SPEAK/ASK` 事件会短路，但中途无终局事件的失败仍会重试。
 - 数据库基础设施已有 `Database.close()`、`Database.transaction()`、锁/SQL 操作超时常量和基础熔断状态；`connect()` 无显式参数或 `NYX_DB` 时优先复用已存在的旧默认 `nyx.db`，否则使用 `data/nyx.db`；非内存路径会先创建父目录；不要新增绕过这些入口的长期连接管理。
-- 欲望系统额外使用 `desire_generation_attempt` 保存 LLM 已解析但尚未正式提交的结果；`long_term_desire.name_normalized` 有唯一索引，数据库迁移和唯一性语义见 `04-module-bus-system.md` 与 `07-desire.md`。
+- 欲望系统额外使用 `desire_generation_attempt` 保存 LLM 已解析但尚未正式提交的结果及父长期欲望；`short_term_desire.parent_long_term_id` 与 attempt 的对应列都是可空外键，父记录删除时置空；`long_term_desire.name_normalized` 有唯一索引。数据库迁移和语义见 `04-module-bus-system.md` 与 `07-desire.md`。
 - 组合根延迟依赖使用显式可空回调和带上下文的 `RuntimeError` 检查，不再使用可变列表下标占位；表达门面先构造、阅读门面后构造时，通过同样的窄回调延迟绑定
   `ReadingFacade.build_reply_context()`，不让两个 Facade 直接循环依赖。总线 supervisor 在
   `run()` 正常返回时结束。

@@ -6,6 +6,7 @@
 
 - `ActivityFacade` 是活动系统唯一门面：除活动生命周期、查询与材料登记外，还提供 `list_tasks`、`assign_web_task`、`assign_book_task` 三个委派任务入口。
 - `ActivityStarter` 负责“空闲时启动什么”：单 task 守卫、查 RUNNING、同日程块 PAUSED 恢复、委派任务领取、欲望排序、跨书库选材和默认活动。
+- 欲望排序使用 `short_term.strength * type.expression_weight`，同分按创建时间 FIFO；活动 progress 保留短期欲望的 `parent_long_term_id`。
 - `ActivityLifecycle` 负责状态转换和副作用：`start`、`complete`、`fail`、`interrupt`，并发布 `activity_start`、`activity_end`、`activity_interrupted`。
 - `ActivityStore` 管理 `activity` 与 `assigned_task` 表，并用 `list_unfinished()` 提供启动恢复候选；`MaterialStore` 只管 `material` 表。Facade 不直接写 SQL。
 - `ReadingActivityRunner` 执行活动系统自己的分块读书；`Exploration` 执行自由探索；`creation.py`、`observe.py`、`screen.py` 提供对应活动的纯函数或旁路能力。
@@ -128,6 +129,7 @@
 - `_App` 首次观察只建立基线，away 起点从 sampled_at 回溯到最后输入时刻；away→online 产生一次性归来，较新的 durable USER_MESSAGE 在表达前也提供 online 证据。水位阻止旧采样/消息倒灌，重新 away 废弃旧归来；SSE 重连重采样，前端请求有超时与乱序保护。归来不强制发言。
 - 昼夜是本地 22:00-06:00，只影响表达与前端视觉，不改变活动能耗或内在生命数值。
 - `IDLE_REFLECTION` 通过组合根注入的 `reflect` 回调执行反思活动；阅读重读触发的反思不走直接调用，而是发布 durable `REFLECTION` 事件。
+- 自由探索不再新增长期欲望；其 `strong_new_topics` 只幂等追加到活动所携带的父长期欲望 subtopics。没有明确父 ID时跳过。
 - `REST` 返回空 result。
 
 ## API 与前端

@@ -1,12 +1,13 @@
 import asyncio
+import logging
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, cast
 
 from nyx.activity.exploration import should_explore
-from nyx.activity.material_store import MaterialStore
 from nyx.activity.scheduler import (
     build_schedule,
     desire_to_activity,
@@ -15,19 +16,18 @@ from nyx.activity.scheduler import (
 )
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
-from nyx.db import Database
 from nyx.desire.facade import DesireFacade
 from nyx.enums import (
     ActivityStatus,
     ActivityType,
-    AssignedTaskStatus,
     AssignedTaskType,
     DesireType,
 )
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
-from nyx.types import Activity, Book, CurrentState, Material, ShortTermDesire
+from nyx.types import Activity, Book, CurrentState, ShortTermDesire
 
 _READING_MATCH_THRESHOLD = 0.6
+_logger = logging.getLogger(__name__)
 
 
 def _normalized_title(value: str) -> str:
@@ -47,38 +47,34 @@ def _reading_match_score(topic: str, candidate: str) -> float:
     return SequenceMatcher(None, query, name).ratio()
 
 
-def best_reading_match(
-    topic: str, materials: list[Material], books: list[Book]
-) -> tuple[Material | None, Book | None]:
-    """Return the best fuzzy filename/title match across both local libraries."""
-    ranked: list[tuple[float, float, int, Material | Book]] = []
-    for material in materials:
-        if material.read_chars >= material.total_chars:
-            continue
-        score = _reading_match_score(topic, material.filename)
-        if score >= _READING_MATCH_THRESHOLD:
-            ranked.append((score, material.created_at, 0, material))
+def best_book_match(topic: str, books: list[Book]) -> Book | None:
+    """Return the best fuzzy title or filename match from readable EPUB books."""
+    ranked: list[tuple[float, float, Book]] = []
     for book in books:
         score = max(
             _reading_match_score(topic, book.title),
             _reading_match_score(topic, book.filename),
         )
         if score >= _READING_MATCH_THRESHOLD:
-            ranked.append((score, book.created_at, 1, book))
+            ranked.append((score, book.created_at, book))
     if not ranked:
-        return None, None
-    _score, _created, kind, selected = max(
-        ranked, key=lambda item: (item[0], item[1], item[2])
-    )
-    if kind == 0:
-        return cast(Material, selected), None
-    return None, cast(Book, selected)
+        return None
+    return max(ranked, key=lambda item: (item[0], item[1]))[2]
 
 
 def schedule_block_id(now: float, grid_minutes: int) -> str:
     """把时间戳映射到日程网格标签。"""
-    block_index = int(now % 86400) // 60 // grid_minutes
+    local_now = datetime.fromtimestamp(now)
+    block_index = (local_now.hour * 60 + local_now.minute) // grid_minutes
     return format_time_label(block_index, grid_minutes, 0.0)
+
+
+def local_day_bounds(now: float) -> tuple[float, float]:
+    """Return local calendar-day bounds for paused-activity recovery."""
+    local_now = datetime.fromtimestamp(now)
+    start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    return start.timestamp(), end.timestamp()
 
 
 def _empty_progress() -> dict[str, Any]:
@@ -86,8 +82,14 @@ def _empty_progress() -> dict[str, Any]:
 
 
 def _harvest_task_exception(task: asyncio.Task[None]) -> None:
-    if not task.cancelled():
-        task.exception()
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        _logger.error(
+            "活动后台任务失败",
+            exc_info=(type(error), error, error.__traceback__),
+        )
 
 
 class ActivityStarter:
@@ -96,17 +98,16 @@ class ActivityStarter:
     def __init__(
         self,
         store: ActivityStore,
-        material_store: MaterialStore,
         desire: DesireFacade,
         get_state: Callable[[], Awaitable[CurrentState]],
         execute: Callable[[Activity], Coroutine[Any, Any, None]],
         config: ActivityConfig,
         exploration_config: ExplorationConfig,
         now: Callable[[], float],
+        start: Callable[[Activity, bool], Awaitable[bool]],
         list_reader_books: Callable[[], Awaitable[list[Book]]] | None = None,
     ) -> None:
         self._store = store
-        self._material_store = material_store
         self._desire = desire
         self._get_state = get_state
         self._execute = execute
@@ -114,6 +115,7 @@ class ActivityStarter:
         self._exploration_config = exploration_config
         self._now = now
         self._list_reader_books = list_reader_books
+        self._start = start
         self._lock = asyncio.Lock()
 
     def select_activity(
@@ -182,25 +184,15 @@ class ActivityStarter:
             current = await self._store.get_current()
             if current is not None and current.status is ActivityStatus.RUNNING:
                 return current_task
-            block_id = schedule_block_id(self._now(), self._config.grid_minutes)
-            resumed = await self._store.get_paused_in_block(block_id)
+            now = self._now()
+            block_id = schedule_block_id(now, self._config.grid_minutes)
+            day_start, day_end = local_day_bounds(now)
+            resumed = await self._store.get_paused_in_block(
+                block_id, day_start, day_end
+            )
             if resumed is not None:
-                resumed_task_id = resumed.progress.get("task_id")
-                if isinstance(resumed_task_id, str):
-                    await self._store.set_task_status(
-                        resumed_task_id,
-                        AssignedTaskStatus.RUNNING,
-                        self._now(),
-                    )
-                if resumed.type is ActivityType.READING:
-                    source = resumed.progress.get("source")
-                    if isinstance(source, str):
-                        material = await self._material_store.get_by_path(source)
-                        if material is not None:
-                            resumed.progress["read_chars"] = material.read_chars
-                            resumed.progress["total_chars"] = material.total_chars
-                resumed.ended_at = None
-                return self._create_task(resumed)
+                if await self._commit_start(resumed, is_new=False):
+                    return self._create_task(resumed)
 
             task = await self._store.get_next_task()
             state = await self._get_state()
@@ -217,7 +209,8 @@ class ActivityStarter:
                         progress=_empty_progress(),
                         started_at=now,
                     )
-                    await self._store.insert(rest)
+                    if not await self._commit_start(rest, is_new=True):
+                        return None
                     return self._create_task(rest)
                 progress = _empty_progress()
                 progress.update(
@@ -243,7 +236,7 @@ class ActivityStarter:
                     progress=progress,
                     started_at=now,
                 )
-                if not await self._store.claim_task_and_insert(task.id, activity, now):
+                if not await self._commit_start(activity, is_new=True):
                     return None
                 return self._create_task(activity)
 
@@ -255,27 +248,15 @@ class ActivityStarter:
             if activity.type is ActivityType.READING:
                 goal = cast(dict[str, Any] | None, activity.progress.get("goal"))
                 topic = goal.get("topic") if goal is not None else None
-                material = None
                 book = None
                 if isinstance(topic, str) and topic:
-                    materials = await self._material_store.list_all()
                     books = (
                         await self._list_reader_books()
                         if self._list_reader_books is not None
                         else []
                     )
-                    material, book = best_reading_match(topic, materials, books)
-                if material is not None:
-                    activity.progress.update(
-                        {
-                            "source": material.path,
-                            "filename": material.filename,
-                            "description": material.filename,
-                            "read_chars": material.read_chars,
-                            "total_chars": material.total_chars,
-                        }
-                    )
-                elif book is not None:
+                    book = best_book_match(topic, books)
+                if book is not None:
                     activity.progress.update(
                         {
                             "book_id": book.id,
@@ -297,30 +278,12 @@ class ActivityStarter:
                         activity.type = ActivityType.FREE_EXPLORATION
                     else:
                         activity = self.default_activity(state)
-            if not await self._insert_claimed(activity):
+            if not await self._commit_start(activity, is_new=True):
                 return None
             return self._create_task(activity)
 
-    async def _insert_claimed(self, activity: Activity) -> bool:
-        """Claim a desire and insert its activity in one local transaction."""
-        desire_id = activity.progress.get("desire_id")
-        claim = getattr(self._desire, "claim_for_activity_in_transaction", None)
-        database_obj = getattr(self._desire, "db", None)
-        if (
-            not isinstance(desire_id, str)
-            or not callable(claim)
-            or database_obj is None
-        ):
-            await self._store.insert(activity)
-            return True
-        claim_fn = cast(Callable[[str], Awaitable[bool]], claim)
-        database = cast(Database, database_obj)
-        async with database.transaction():
-            claimed = await claim_fn(desire_id)
-            if not claimed:
-                return False
-            await self._store.insert(activity)
-        return True
+    async def _commit_start(self, activity: Activity, *, is_new: bool) -> bool:
+        return await self._start(activity, is_new)
 
     def _create_task(self, activity: Activity) -> asyncio.Task[None]:
         task = asyncio.create_task(self._execute(activity))

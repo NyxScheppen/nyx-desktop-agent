@@ -26,7 +26,8 @@
   `web:` / `local:` topic；`remember_knowledge` 把该来源 topic 和知识主题一同写入
   `Memory.topics`。原文记忆的精确与语义去重都保留来源边界，同一句内容来自不同书籍或
   页面时不会折叠成一条；语义 top-1 也在同一来源候选池内选取，不受其它来源更高相似项
-  挤占。
+  挤占。`material:` 只兼容旧库已有记忆；通用文本上传入口已退役，新读书知识只产生
+  `book:` 来源。
 - `digest_source_block()` 一次只处理最多 6000 字符，使用上一版
   `{summary, themes, content_category}` 生成滚动画像和最多 5 条带归因的知识；fiction、
   essay、unknown 不得伪装为无来源的现实事实，也不得把原文第一人称归给用户或 Nyx。

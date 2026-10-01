@@ -37,7 +37,6 @@ from nyx.runtime import (
     vision_loop,
 )
 from nyx.subscriptions import subscribe
-from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Event
 
@@ -56,7 +55,6 @@ _BUS_RECOVERY_STREAK = 3
 _SSE_QUEUE_SIZE = 100
 _CANON_FILES = ("canon.md",)
 _ASK_FILES = ("ask.md",)
-_MAX_UPLOAD_BYTES = 500_000
 _MAX_EPUB_BYTES = 50 * 1024 * 1024
 _TIME_MODULE = time  # compatibility patch target for existing runtime tests
 
@@ -113,8 +111,6 @@ def build_app(app: _App) -> FastAPI:
     return build_api(
         app,
         root_event=_root_event,
-        file_io=file_io,
-        max_upload_bytes=_MAX_UPLOAD_BYTES,
         max_epub_bytes=_MAX_EPUB_BYTES,
         sse_queue_size=_SSE_QUEUE_SIZE,
     )
@@ -180,6 +176,9 @@ async def main() -> None:
         for task in done:
             task.result()
     finally:
+        activity_quiesce = getattr(app.activity, "quiesce", None)
+        if activity_quiesce is not None:
+            await activity_quiesce()
         reading_quiesce = getattr(app.reading, "quiesce", None)
         if reading_quiesce is not None:
             await reading_quiesce()

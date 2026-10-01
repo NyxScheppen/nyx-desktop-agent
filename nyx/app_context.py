@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from nyx.activity.facade import ActivityFacade
-from nyx.activity.material_store import MaterialStore
 from nyx.activity.screen import ScreenObserver, capture_screen
 from nyx.activity.store import ActivityStore
 from nyx.bootstrap import (
@@ -286,7 +285,6 @@ async def build_app_context(
 
     inner_life_store = InnerLifeStore(db)
     activity_store = ActivityStore(db)
-    material_store = MaterialStore(db)
     state_reader: Callable[[], Awaitable[CurrentState]] | None = None
     reflection_runner: (
         Callable[[str | None], Awaitable[ReflectionOutcome | None]] | None
@@ -365,7 +363,6 @@ async def build_app_context(
     )
     activity = ActivityFacade(
         activity_store,
-        material_store,
         bus,
         llm,
         evaluator,

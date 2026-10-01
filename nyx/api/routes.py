@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -42,7 +42,6 @@ from nyx.types import (
     EvalStats,
     Event,
     LlmMessage,
-    Material,
     Memory,
     MemoryFact,
     Paragraph,
@@ -54,7 +53,6 @@ from nyx.types import (
 _MAX_ACTIVITY_RESULTS_OFFSET = 100_000
 
 RootEvent = Callable[[EventType, dict[str, Any]], Event]
-FileIo = Callable[..., Awaitable[dict[str, Any]]]
 
 
 class _ChatPayload(BaseModel):
@@ -163,8 +161,6 @@ def build_app(
     app: _App,
     *,
     root_event: RootEvent,
-    file_io: FileIo,
-    max_upload_bytes: int,
     max_epub_bytes: int,
     sse_queue_size: int,
 ) -> FastAPI:
@@ -304,26 +300,6 @@ def build_app(
             "application/json" if payload.format == "json" else "text/markdown"
         )
         return Response(content=content, media_type=media_type)
-
-    @fast.post("/api/upload")
-    async def api_upload(file: UploadFile = File(...)) -> dict[str, str]:
-        name = Path(file.filename or "upload.txt").name
-        chunks: list[bytes] = []
-        total = 0
-        while chunk := await file.read(1 << 20):
-            total += len(chunk)
-            if total > max_upload_bytes:
-                raise HTTPException(status_code=400, detail="文件过大")
-            chunks.append(chunk)
-        text = b"".join(chunks).decode("utf-8", errors="replace")
-        result = await file_io("write", f"uploads/{name}", text)
-        path = str(result["path"])
-        await app.activity.register_material(path, name, len(text))
-        return {"filename": name, "path": path}
-
-    @fast.get("/api/materials")
-    async def api_materials() -> dict[str, list[Material]]:
-        return {"materials": await app.activity.list_materials()}
 
     @fast.post("/api/books", status_code=201)
     async def api_books(file: UploadFile = File(...)) -> Book:

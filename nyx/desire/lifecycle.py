@@ -489,6 +489,31 @@ class DesireLifecycle:
         """PENDING → ACTIVE：活动开始消费。仅 PENDING 可转，其余幂等 no-op。"""
         await self._store.claim_for_activity(desire_id)
 
+    async def resume_for_activity(self, desire_id: str) -> bool:
+        """Reactivate a desire whose resumable activity was interrupted."""
+        if self._store.db.in_transaction:
+            cursor = await self._store.db.conn.execute(
+                "UPDATE short_term_desire SET status = ? "
+                "WHERE id = ? AND status = ?",
+                (
+                    DesireStatus.ACTIVE.value,
+                    desire_id,
+                    DesireStatus.SUPPRESSED.value,
+                ),
+            )
+            return cursor.rowcount == 1
+        async with self._store.db.transaction():
+            cursor = await self._store.db.conn.execute(
+                "UPDATE short_term_desire SET status = ? "
+                "WHERE id = ? AND status = ?",
+                (
+                    DesireStatus.ACTIVE.value,
+                    desire_id,
+                    DesireStatus.SUPPRESSED.value,
+                ),
+            )
+        return cursor.rowcount == 1
+
     async def claim_for_activity(
         self, desire_id: str, *, in_transaction: bool = False
     ) -> bool:

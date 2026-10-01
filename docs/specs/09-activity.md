@@ -6,8 +6,8 @@
 
 ## 元信息
 
-- **前置依赖**：01-types（`Activity` / `ActivityType` / `ActivityStatus` / `AssignedTask` / `AssignedTaskType` / `AssignedTaskStatus` / `DesireType` / `ShortTermDesire` / `DesireValue` / `CurrentState` / `Event` / `EventType` / `Material`）、02-config（`ActivityConfig` / `ExplorationConfig` / `ActivityEnergyDelta`）、03-llm（`LlmClient.complete` / `VisionClient`）、04-module-bus-system（`activity` / `material` 表、`EventBus` / `internal_event` / tick 路由、组合根、REST、SSE）、05-tools（`ToolRegistry`）、06-memory-system（活动/知识记忆落库）、07-desire（待消费欲望、活动状态接线、满足回写、长期欲望入口）、08-inner-life（状态快照、反思、精力变化）、10-eval（`Evaluator`）、12-reading-system（EPUB 读取入口）
-- **实现文件**：`nyx/activity/scheduler.py`、`nyx/activity/store.py`、`nyx/activity/material_store.py`、`nyx/activity/starter.py`、`nyx/activity/lifecycle.py`、`nyx/activity/facade.py`、`nyx/activity/reading_runner.py`、`nyx/activity/creation.py`、`nyx/activity/llm_result.py`、`nyx/activity/paths.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/screen.py`、`nyx/db.py`、`nyx/api/routes.py`、`nyx/app_context.py`、`frontend/src/api/client.ts`、`frontend/src/stores/activityStore.ts`、`frontend/src/components/panels/ActivityPanel.tsx`、`frontend/src/types/api.ts`
+- **前置依赖**：01-types（`Activity` / `ActivityType` / `ActivityStatus` / `AssignedTask` / `AssignedTaskType` / `AssignedTaskStatus` / `DesireType` / `ShortTermDesire` / `DesireValue` / `CurrentState` / `Event` / `EventType`）、02-config（`ActivityConfig` / `ExplorationConfig` / `ActivityEnergyDelta`）、03-llm（`LlmClient.complete` / `VisionClient`）、04-module-bus-system（`activity` / `assigned_task` 表、`EventBus` / `internal_event` / tick 路由、组合根、REST、SSE）、05-tools（`ToolRegistry`）、06-memory-system（活动/知识记忆落库）、07-desire（待消费欲望、活动状态接线、满足回写、长期欲望入口）、08-inner-life（状态快照、反思、精力变化）、10-eval（`Evaluator`）、12-reading-system（EPUB 读取入口）
+- **实现文件**：`nyx/activity/scheduler.py`、`nyx/activity/store.py`、`nyx/activity/starter.py`、`nyx/activity/lifecycle.py`、`nyx/activity/facade.py`、`nyx/activity/creation.py`、`nyx/activity/llm_result.py`、`nyx/activity/paths.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/screen.py`、`nyx/db.py`、`nyx/api/routes.py`、`nyx/app_context.py`、`frontend/src/api/client.ts`、`frontend/src/stores/activityStore.ts`、`frontend/src/components/panels/ActivityPanel.tsx`、`frontend/src/types/api.ts`
 
 ## 用户故事
 
@@ -48,9 +48,8 @@
 
 ### Facade、生命周期与恢复
 
-- [ ] `ActivityStore` 提供 activity 表 CRUD：`insert`、`get`、`get_current`、`list_running`、`list_unfinished`、`get_paused_in_block`、`get_last_exploration`、`list_schedule`、`list_results`、`update`。
-- [ ] `MaterialStore` 提供 material 表 CRUD：`upsert`、`next_readable`、`find_by_topic`、`get_by_path`、`advance`、`append_fragment`、`get_fragments`、`list_all`。
-- [ ] `ActivityLifecycle` 提供 `recover_stale_running() -> list[Activity]` 与 `interrupt(activity_id: str, by_event: EventType, task: asyncio.Task[None] | None) -> None`；`activity_goal_signal(activity: Activity) -> bool | None` 为其结算辅助函数。
+- [ ] `ActivityStore` 提供 activity 与 assigned task 持久化：`insert`、`get`、`get_current`、`list_running`、`list_unfinished`、`get_paused_in_block`、`get_last_exploration`、`list_schedule`、`list_results`、`update` 以及任务 CRUD/条件领取/恢复协调。
+- [ ] `ActivityLifecycle` 提供 `start(activity: Activity, is_new: bool) -> bool`、`complete(activity: Activity) -> str | None`、`fail(activity: Activity, error: str) -> str | None`、`recover_stale_running() -> list[Activity]` 与 `interrupt(activity_id: str, by_event: EventType, task: asyncio.Task[None] | None) -> str | None`；返回的可空字符串是需要提交后广播快照的关联任务 ID，`activity_goal_signal(activity: Activity) -> bool | None` 为结算辅助函数。
 - [ ] `ActivityFacade` 提供：
 
   ```python
@@ -62,6 +61,7 @@
   ) -> Activity | None: ...
   async def complete_activity(activity: Activity) -> None: ...
   async def interrupt(activity_id: str, by_event: EventType) -> None: ...
+  async def quiesce() -> None: ...
   async def recover_stale_running() -> list[Activity]: ...
   async def get_current() -> Activity | None: ...
   async def get_schedule() -> list[Activity]: ...
@@ -70,12 +70,6 @@
       offset: int = 0,
       activity_type: ActivityType | None = None,
   ) -> list[Activity]: ...
-  async def list_materials() -> list[Material]: ...
-  async def register_material(
-      path: str,
-      filename: str,
-      total_chars: int,
-  ) -> None: ...
   async def list_tasks() -> list[AssignedTask]: ...
   async def assign_web_task(url: str) -> AssignedTask: ...
   async def assign_book_task(
@@ -88,12 +82,14 @@
 - [ ] `SCHEDULE_BLOCK_START`、`DESIRE_GENERATED` 与新建委派任务都进入同一个 `_maybe_start_activity` 启动路径；已有活动时不重复启动。
 - [ ] `get_schedule()` 以运行 Nyx 的电脑系统本地时区计算当天 `00:00`，只返回本地自然日内 `started_at` 不早于该时刻的活动，按 `started_at ASC`；不新增时区配置，不处理前后端分处不同时区。
 - [ ] `get_results()` 返回跨天历史产出并按 `ended_at DESC`；`limit` / `offset` 在 SQL 层分页，`activity_type` 非空时在 SQL 层过滤，不先物化全部记录。数据库迁移为创作历史查询建立 `(status, type, ended_at DESC)` 复合索引。
-- [ ] 有关联欲望的活动先在同一个本地事务中执行 `claim_for_activity(desire_id)`（`PENDING -> ACTIVE`）和活动 `PENDING` 插入；领取失败不创建活动，插入失败回滚领取。后台 task 开始后转 `RUNNING`；活动执行不阻塞 EventBus。
+- [ ] 新活动在一个本地事务中完成来源条件领取（欲望 `PENDING -> ACTIVE` 或任务 `PENDING -> RUNNING`）、activity `RUNNING` 插入和 `ACTIVITY_START` durable event 写入；任一步失败整体回滚。`PENDING` 只作为构造期与旧库恢复兼容状态，不再作为新活动的持久启动中间态。
 - [ ] `activity_start`、`activity_end`、`activity_interrupted` 由活动 Facade/Lifecycle 自己发布，`source=INTERNAL`；事件优先使用活动 `progress["correlation_id"]`，缺失时回退活动 id。
-- [ ] `complete_activity` 将活动置为 `COMPLETED`、写入 `ended_at`，再发布 `activity_end`。执行异常将活动置为 `INCOMPLETE`、写入 `ended_at`、释放/抑制关联欲望并继续抛出异常供后台 task 收割。业务事务提交后 announce/wake 失败不得反向把已完成活动改成 `INCOMPLETE`。
+- [ ] `complete_activity` 将活动、关联任务 `COMPLETED`、`goal_signal=None` 时的欲望释放和 `ACTIVITY_END` 在同一事务提交。执行异常把活动 `INCOMPLETE`、关联欲望 `SUPPRESSED`、关联任务 `FAILED` 与错误文本在同一事务提交，并继续抛出异常供后台 task 收割。业务事务提交后 announce/wake 失败不得反向把已完成活动改成 `INCOMPLETE`。
 - [ ] 进程启动时，组合根在订阅事件前调用 `recover_stale_running()`：遗留 `PENDING` 一律转 `ABANDONED` 并把关联 ACTIVE 欲望释放回 `PENDING`；遗留 `RUNNING` 中 `READING`、`CREATION`、`FREE_EXPLORATION` 转 `PAUSED`，其余转 `ABANDONED`，关联欲望转 `SUPPRESSED`；不发布新的 `activity_interrupted`。
 - [ ] `interrupt` 只处理存在且当前为 `RUNNING` 的目标；取消并等待执行 task 后重读活动状态，再将可续类型置 `PAUSED`，其余置 `ABANDONED`，释放关联的活动占用并发布 `activity_interrupted`。
-- [ ] 可续活动类型固定为 `READING`、`CREATION`、`FREE_EXPLORATION`。同一 `schedule_block_id` 内优先恢复最近的 `PAUSED` 记录，复用原 activity id；跨日程块的旧 `PAUSED` 只留档，不自动恢复。
+- [ ] 可续活动类型固定为 `READING`、`CREATION`、`FREE_EXPLORATION`。只有系统本地同一自然日且同一 `schedule_block_id` 的最近 `PAUSED` 记录可恢复，复用原 activity id；跨日期或跨日程块的旧 `PAUSED` 只留档，不自动恢复。
+- [ ] `schedule_block_id(now, grid_minutes)` 先把时间戳转换为系统本地时间，再按本地小时/分钟向下对齐网格，返回 `"HH:MM"`；不得用 `now % 86400` 推导用户本地时钟。
+- [ ] `quiesce()` 先关闭新活动准入，再取消并等待当前后台 task，随后在共享数据库关闭前按启动恢复规则原子落定遗留活动、欲望和任务；正常关停不发布伪造的用户打断事件。
 
 ### 委派任务数据模型与持久化
 
@@ -158,11 +154,11 @@ class AssignedTask:
 5. 排序后的短期欲望；
 6. 默认观察或发呆反思。
 
-- 领取任务与插入 `PENDING` activity 必须在同一个本地事务内完成。任务活动继续使用 `ActivityType.READING`，并在 `Activity.progress` 保存 `task_id`、任务来源、目标与 `correlation_id=task_id`；不新增任务专用 ActivityType。
+- 领取任务、插入 `RUNNING` activity 与 `ACTIVITY_START` 必须在同一个本地事务内完成。任务活动继续使用 `ActivityType.READING`，并在 `Activity.progress` 保存 `task_id`、任务来源、目标与 `correlation_id=task_id`；不新增任务专用 ActivityType。
 - 创建任务后立即尝试 `_maybe_start_activity()`；已有活动时只入队，不抢占。
-- 任务活动完成后置 `COMPLETED`；执行异常置 `FAILED` 并保存至多 500 字符的错误，不自动重试。
-- 任务活动被打断时任务回到 `PENDING`；同块优先恢复原活动并重新领取，跨块则创建新的 activity 从持久化 checkpoint 继续，旧 `PAUSED` 记录只留档。
-- 启动恢复先执行既有 activity 恢复，再把没有活跃执行者的 `RUNNING` 任务重置为 `PENDING`；不得让进程崩溃永久卡住队列。
+- 任务活动完成后在活动完成事务内置 `COMPLETED`；执行异常在活动失败事务内置 `FAILED` 并保存至多 500 字符的错误，不自动重试。
+- 任务活动被打断时在活动中断事务内回到 `PENDING`；同日同块优先恢复原活动并重新领取，跨块则创建新的 activity 从持久化 checkpoint 继续，旧 `PAUSED` 记录只留档。
+- 启动恢复按关联 activity 调和遗留 `RUNNING` 任务：活动已完成则任务补为 `COMPLETED`，活动失败则任务补为 `FAILED`，可恢复/无执行者则任务回到 `PENDING`；不得把已有完成证据的任务盲目重排执行。
 - 任务状态先落库，再按 04-module-bus-system 发布 `task_updated` 广播；SSE 失败不得回滚任务状态。
 
 ### 网页委派任务
@@ -186,55 +182,13 @@ class AssignedTask:
 
 - [ ] `Activity.progress` 是状态机唯一持久化载体，本轮不新增 activity 子表，也不新增公共 runner 基类。
 - [ ] 每个可续 runner 遵循：先保存安全点，再执行不可逆副作用；副作用完成后立即保存去重锚点；恢复时按锚点跳过已完成步骤；终局 finalize 和 sink 只执行一次。
-- [ ] checkpoint 更新必须经过 `ActivityStore.update`；缺少新 checkpoint 时兼容从既有 activity/material 进度继续。
+- [ ] checkpoint 更新必须经过 `ActivityStore.update`；EPUB 阅读进度与原文沉淀 checkpoint 只由 12-reading-system 的 `books` / `reading_progress` 管理。
 
-#### Reading checkpoint
+#### EPUB reading checkpoint
 
-- [ ] `activity.progress["reading"]` 形状为：
-
-  ```json
-  {
-    "source": "absolute path",
-    "read_from": 0,
-    "read_to": 6000,
-    "fragment_committed": false,
-    "advanced_to": 0,
-    "finalized": false,
-    "note_path": null,
-    "book": null,
-    "note": null,
-    "final_note": null
-  }
-  ```
-
-  `material.memory_state` 另持久化跨 activity 的原文沉淀状态：
-
-  ```json
-  {
-    "processed_to": 0,
-    "profile": {"summary": "", "themes": [], "content_category": "unknown"},
-    "pending": null
-  }
-  ```
-
-- [ ] `ReadingActivityRunner.run(activity, source)` 只读取真实文件的 `[read_chars, read_chars + 6000)`，缺少 `source` 直接失败，禁止让 LLM 凭空编造读书内容。
-- [ ] 单块 LLM 结果先保存 `book`/`note`；随后以本次至多 6000 字符原文更新滚动 profile
-  并提取知识。提取结果先写入 `material.memory_state.pending`，再调用
-  `remember_knowledge`，成功后推进 `processed_to`、采纳 profile 并清空 pending；最后才追加
-  note fragment 和推进 material `read_chars`。恢复时复用 pending，不重复原文提取 LLM。
-- [ ] 未读完整本但成功读完一块时返回 `completed=False`、实际 `read_chars` 与 `total_chars`，并设置 `goal_signal=None`。
+- [ ] 活动系统不保存第二套文件分块 checkpoint。明确委派与探索欲读书统一调用 12-reading-system 的 `read_for_activity()`，其 `reading_progress` 与 `books.memory_state` 是唯一持久恢复来源。
 - [ ] 探索欲命中 EPUB 并由 `read_for_activity(..., target_paragraph=None)` 读完一块但未到
   书末时，同样设置 `goal_signal=None`；这是可续进展，不得按失败增加欲望 retry。
-- [ ] 读到文件末尾时只执行一次 finalize：聚合片段得到 `final_note`，写入
-  `notes/<safe-filename>-<path-hash>.md`，保存 `note_path`/`finalized=true`；知识已随每块
-  沉淀，不再在整本完成后重扫全文。
-- [ ] 中间片段笔记使用 `note`，整本聚合笔记使用 `final_note`；恢复 finalize 必须返回终局笔记，不得把片段笔记当成完整笔记。
-- [ ] 每块最多沉淀 5 条 `{topic, content, source_topic, source_name}`，来源 topic 按材料绝对
-  路径稳定生成。最后不足 6000 字符的块照常沉淀。提取结构非法或记忆写入失败时不得推进
-  `processed_to` / `read_chars`；沿用现有活动失败状态，下一次读同一 material 时重试，
-  不把未沉淀的原文静默标成已读。
-- [ ] 崩溃发生在提取后、记忆写入前时恢复复用 pending；发生在记忆写入后、checkpoint
-  推进前时允许重放 `remember_knowledge`，由既有 kind-scoped 去重保证不新增重复记忆。
 
 #### Creation checkpoint
 
@@ -258,7 +212,7 @@ class AssignedTask:
 
 #### Free exploration checkpoint
 
-- [ ] `Exploration.run(activity) -> dict[str, Any]` 使用显式状态机，状态集合为 `searching`、`reading_results`、`summarizing`、`sinking`、`completed`、`failed`。
+- [ ] `Exploration.run(activity) -> dict[str, Any]` 使用显式状态机，状态集合为 `searching`、`reading_results`、`summarizing`、`sinking`、`completed`。阶段异常由 Activity 生命周期落为 `INCOMPLETE`，不另造不可恢复的 exploration `failed` checkpoint。
 - [ ] `activity.progress["exploration"]` 形状为：
 
   ```json
@@ -276,7 +230,7 @@ class AssignedTask:
   }
   ```
 
-- [ ] `searching` 调用 web 或 local search，并保存结果与工具调用；`reading_results` 从 `cursor` 继续处理最多 3 条结果，每条完成后追加 finding、记录 tool call 并推进 cursor；`summarizing` 调用 LLM 生成判断结果；`sinking` 只执行一次长期欲望与 knowledge 回写；`completed` 构造最终结果。
+- [ ] `searching` 调用 web 或 local search，并保存结果与工具调用；`reading_results` 从 `cursor` 继续处理最多 3 条结果，每条完成后追加 finding、记录 tool call 并推进 cursor；`summarizing` 调用 LLM 生成判断结果；`sinking` 只执行一次父长期欲望子主题追加与 knowledge 回写，不新增长期欲望、不修改其 strength；`completed` 构造最终结果。
 - [ ] web 结果用 `web_fetch` 取正文；local 结果不能只使用搜索 snippet，必须用既有
   `file_io(action="read")` 读取文件。进入 finding / 原文沉淀 prompt 的单条正文最多 6000
   字符，来源分别用 URL / 绝对路径生成 `web:` / `local:` topic。
@@ -294,8 +248,6 @@ class AssignedTask:
 
 | 情况 | 处理 |
 |---|---|
-| 材料原文提取或 knowledge 写入失败 | 不推进 `processed_to` / `read_chars`，活动按既有失败语义结束，后续续读重试 |
-| 材料 knowledge 已写、checkpoint 未推进 | 重放 pending，由同一 `material:` 来源内去重吸收 |
 | web fetch / local file read 失败 | 记录失败 tool call，仅此时回退搜索 snippet |
 | local search 只返回短 snippet | 使用现有 `file_io(read)` 读取真实文件，不能把 snippet 当全文 |
 | 正文与 snippet 都为空白 | 跳过原文沉淀 LLM 与 finding/knowledge，完成该条 cursor 推进 |
@@ -304,17 +256,15 @@ class AssignedTask:
 
 ### 活动类型执行
 
-- [ ] `READING` 可由探索欲或委派任务产生。探索欲带非空 `goal.topic` 时，对 topic、EPUB
-  `title/filename` 与 material `filename` 使用同一归一化：Unicode `casefold`、去扩展名、
-  移除空白、标点和书名号。
+- [ ] `READING` 可由探索欲或委派任务产生。探索欲带非空 `goal.topic` 时，对 topic 与 EPUB
+  `title/filename` 使用同一归一化：Unicode `casefold`、去扩展名、移除空白、标点和书名号。
 - [ ] 统一选材先比较归一化后完全相等，再比较双向包含，最后按
   `difflib.SequenceMatcher` 相似度排序；相似度低于 `0.6` 不算匹配，同分取最近导入项。
-  EPUB 与 material 一起排序，已完成候选不参与。
-- [ ] 命中 EPUB 时经 12-reading-system 的 `read_for_activity` 窄回调执行；命中 material
-  时沿用 `ReadingActivityRunner`。没有匹配时禁止调用 `next_readable()` 或读取最近上传材料；
-  通过 `should_explore` 限速后升级 `FREE_EXPLORATION`。网络关闭时沿用本地搜索配置，不调用
-  web 工具。没有非空 topic 时不能臆测书名，直接走既有默认活动。自动 EPUB 读块返回
-  `completed=False` 时必须显式写 `goal_signal=None`，与 material 分块结算一致。
+  已完成 EPUB 不参与。
+- [ ] 命中 EPUB 时经 12-reading-system 的 `read_for_activity` 窄回调执行。没有匹配时禁止
+  回退到任意“最近一本”；通过 `should_explore` 限速后升级 `FREE_EXPLORATION`。网络关闭时
+  沿用本地搜索配置，不调用 web 工具。没有非空 topic 时不能臆测书名，直接走既有默认活动。
+  自动 EPUB 读块返回 `completed=False` 时必须显式写 `goal_signal=None`。
 - [ ] `CREATION` 执行一次创作 LLM，并通过 `ToolRegistry` 写入 `workspace/creations/<safe-title>-<activity-hash>.md`。
 - [ ] `IDLE_REFLECTION` 调用组合根注入的 `inner_life.reflect`，不自行发布 `REFLECTION` 事件，并把反思摘要放进结果。
 - [ ] `OBSERVE_USER` 读取组合根维护的 presence、窗口标题和可选 screen summary，使用 `build_observation_summary` 生成摘要，运行时不调用 LLM。
@@ -341,7 +291,7 @@ class AssignedTask:
 - [ ] `vision.enabled=true` 时，`ScreenObserver` 周期抓屏并调用 `VisionClient` 描述，失败返回 `None`；屏幕视觉只丰富观察摘要，不改变 presence 判定。
 - [ ] 昼夜边界固定为本地时间 `22:00 <= time < 06:00`；本轮只影响表达上下文和前端视觉，不改变活动选择、活动能耗、情绪或精力数值。
   前后端运行于同一台电脑并使用系统本地时区，不处理远程时区分离；活动时间线也按该系统本地自然日过滤。
-  日程块标签的既有计时语义保持不变，不随表达昼夜感知改变。
+  日程块标签按同一系统本地时钟生成，不随表达昼夜感知改变。
 
 ## `activity_end`、REST 与 SSE 契约
 
@@ -359,7 +309,7 @@ class AssignedTask:
   ```
 
 - [ ] `desire_id`/`goal_met` 由 07-desire 消费，`energy_delta` 由 08-inner-life 消费，`type`/`result` 由记忆系统与前端消费；`reading` 与 `free_exploration` 结束后按 07-desire 规则给创造欲加压。
-- [ ] `GET /api/activity` 返回 `{current, schedule}`；`GET /api/activity/results` 返回历史产出，接受 `limit=1..100`、`offset=0..100000` 与可选且当前仅允许 `creation` 的 `activity_type`，越界查询由 FastAPI 返回 422、不得进入 SQLite；`POST /api/upload` 只注册 material，`GET /api/materials` 返回书库进度。
+- [ ] `GET /api/activity` 返回 `{current, schedule}`；`GET /api/activity/results` 返回历史产出，接受 `limit=1..100`、`offset=0..100000` 与可选且当前仅允许 `creation` 的 `activity_type`，越界查询由 FastAPI 返回 422、不得进入 SQLite。活动系统不提供通用文件上传或 material 列表端点；书籍导入只走 12-reading-system 的 `POST /api/books`。
 - [ ] 委派任务端点固定为：`GET /api/tasks` 按 `created_at DESC` 返回最近任务；`POST /api/tasks/web` 以 `{url}` 创建网页任务并返回 201；`POST /api/tasks/book` 以 `{book_id, target_paragraph}` 创建 EPUB 任务并返回 201。URL 形状错误或目标段越界返回 422，书不存在返回 404，联网关闭返回 409。
 - [ ] `current`、`schedule`、`results` 继续返回现有 `Activity` dataclass；`progress` 中的 checkpoint 作为 JSON 内追加字段，不破坏旧字段。
 - [ ] 活动页用“网页 / 书籍”分段控件创建任务。书籍模式复用 `GET /api/books` 和现有段落窗口 API，目标段号保持 1-based 并限制在 `[1,total_paragraphs]`，展示目标段及前后各一段预览。任务列表至少显示类型、目标、状态、创建时间和失败原因；`task_updated` 触发 activity store 重拉活动、创作和任务快照。
@@ -384,20 +334,85 @@ class AssignedTask:
 | 模糊匹配到多个候选 | 最高分优先，同分取最近导入；不随机选择 |
 | 主题没有本地匹配 | 跳过“读最新”，按限速和联网配置进入探索 |
 
+## 对象完整性
+
+### Activity
+
+**入口清单**
+
+| 入口 | 产生条件 | 写入位置 |
+|---|---|---|
+| 日程 tick / `DESIRE_GENERATED` | 空闲且存在可排程欲望或默认活动 | `activity` + `ACTIVITY_START` 同事务 |
+| 委派任务 | 最早 `PENDING` 任务且精力允许 | `assigned_task` 领取 + `activity` + 事件同事务 |
+| 同日同块恢复 | 存在最近 `PAUSED` 活动 | 原 `activity` 更新为 `RUNNING` |
+| 启动/关闭恢复 | 无内存 task 承接遗留状态 | 原 `activity` 原子转 `PAUSED/ABANDONED` |
+
+**消费者清单**
+
+| 消费者 | 发现方式 | 用途 |
+|---|---|---|
+| Activity runner | 启动后持有 activity | 执行阅读、创作、探索、观察、反思或休息 |
+| 欲望/内在生命/记忆 | durable `ACTIVITY_END` | 结算目标、精力与活动记忆 |
+| REST/SSE/前端 store | current/schedule/results 与活动事件 | 展示当前、时间线及产出 |
+
+**状态迁移表**
+
+| 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
+|---|---|---|---|
+| 构造期 `PENDING` | 来源领取与开始事件事务成功 | `RUNNING` | 事务失败不留下 activity 或 claim |
+| `RUNNING` | runner 成功 | `COMPLETED` | 任务终态与 `ACTIVITY_END` 同事务 |
+| `RUNNING` | runner 异常 | `INCOMPLETE` | 欲望抑制、任务失败同事务 |
+| `RUNNING` | 打断/关闭/崩溃恢复 | `PAUSED/ABANDONED` | 关联状态同事务落定 |
+| `PAUSED` | 同日同块恢复 | `RUNNING` | 复用 activity id 和 checkpoint |
+
+**Bad case 表**
+
+| 情况 | 处理 |
+|---|---|
+| 空 | 无候选生成默认活动；无 topic 不臆测 EPUB |
+| 失败 | 本地事务整体回滚；runner 失败进入 `INCOMPLETE` |
+| 部分完成 | checkpoint 先于不可逆副作用，EPUB 进度由阅读系统单调推进 |
+| 乱序 | 启动锁串行选择；只恢复同日同块最新暂停项 |
+| 重放 | durable consumer effect marker 防重复；runner 按 checkpoint 跳过已完成步骤 |
+| 删除 | EPUB 被删除时任务可见失败；旧 material 未完成活动由迁移退役 |
+
+### AssignedTask
+
+**入口清单**：`POST /api/tasks/web` 与 `POST /api/tasks/book`；启动恢复只修正已有行，不创建新任务。
+
+**消费者清单**：`ActivityStarter` FIFO 选择、网页/EPUB runner、REST 任务列表与前端 activity store。
+
+**状态迁移表**
+
+| 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
+|---|---|---|---|
+| `PENDING` | 与活动原子启动成功 | `RUNNING` | 同事务写 Activity 与开始事件 |
+| `RUNNING` | Activity 完成/失败 | `COMPLETED/FAILED` | 与 Activity 终态同事务 |
+| `RUNNING` | 打断、关闭或可恢复崩溃 | `PENDING` | checkpoint 保留 |
+
+**Bad case 表**：空队列不建活动；失败保存 500 字符错误；部分完成保留 checkpoint；FIFO 消除选择乱序；重复创建活动任务返回已有活跃任务；书删除时失败，不改选其它书。
+
+### Legacy Material
+
+**入口清单**：不再有运行时入口；数据库升级只读取旧 `material`/Activity 行执行退役迁移。
+
+**消费者清单**：运行时代码无消费者；历史已完成 Activity 与既有 `material:` memory 仍可展示/检索。
+
+**状态迁移表**：旧未完成 material Activity 升级时转 `ABANDONED`，关联 `ACTIVE/SUPPRESSED` 欲望回到 `PENDING`，随后删除 `material` 表；已完成 Activity 与记忆不改写。
+
+**Bad case 表**：空表直接删除；迁移失败整体回滚；活动与欲望在同一 migration 事务更新；迁移按 schema version 只执行一次；旧上传文件不删除；数据库行删除后无恢复入口。
+
 ## 测试要点
 
-- [ ] 统一选材纯函数：文件名归一化、完全匹配、双向包含、相似度阈值、已完成过滤与 EPUB/material 跨库排序。
+- [ ] EPUB 选材纯函数：文件名归一化、完全匹配、双向包含、相似度阈值、已完成过滤与同分导入时间排序。
 - [ ] `tests/test_activity/test_scheduler.py`：四种欲望映射、权重排序与 FIFO、缺失值默认 0、空输入、低精力/多次休息、互动欲跳过、非正休息增量防死循环、时间标签与浮点分钟四舍五入。
 - [ ] `tests/test_activity/test_activity_store.py`：activity insert/get 往返、枚举与 progress JSON、current/running/paused/schedule/results 查询、创作过滤与分页、exploration 最近时间、update；DB 测试核对活动历史复合索引。
 - [ ] 委派任务 Store/API：CRUD、FIFO 原子领取、重复目标幂等、完成/失败、启动恢复、迁移索引，以及三个端点的 2xx/404/409/422。
-- [ ] `tests/test_activity/test_material_store.py`：material upsert、按 path 读取最新进度、next readable、topic 选择、fragment 追加与读取。
-- [ ] `tests/test_activity/test_activity_lifecycle.py`：goal 判定、`goal_signal` 覆盖、启动/完成/失败/打断事件、correlation 透传、启动清理与欲望状态回写。
-- [ ] `tests/test_activity/test_activity_facade.py`：空槽默认、欲望映射、精力休息、后台启动、`activity_end` content、读书部分进展的 `goal_met=None`、完整读书满足、创作 checkpoint 恢复、注册表落盘、主题召回与历史创作参考、同块恢复与跨块不恢复、读书知识提取。
+- [ ] `tests/test_activity/test_activity_lifecycle.py`：goal 判定、`goal_signal` 覆盖、原子启动/完成/失败/打断、correlation 透传、启动/关闭恢复与任务/欲望状态回写。
+- [ ] `tests/test_activity/test_activity_facade.py`：空槽默认、欲望映射、精力休息、后台启动、`activity_end` content、读书部分进展的 `goal_met=None`、完整读书满足、创作 checkpoint 恢复、主题召回与历史创作参考、同日同块恢复、跨日/跨块不恢复。
 - [ ] `tests/test_activity/test_llm_result.py` / `test_activity_paths.py`：活动结果非空字符串校验、未知输出类型拒绝、安全文件名长度和同名创作唯一路径。
-- [ ] `tests/test_activity/test_reading_runner.py`：分块读取、fragment/advance 去重、每块知识与
-  profile、pending 恢复、写入后重放去重锚点、末块 flush、恢复返回 `final_note`。
 - [ ] `tests/test_activity/test_exploration.py`：所有探索阶段 checkpoint、local/web 搜索分支、fetch 失败兜底、cursor 恢复、summary 评估、sink 去重、最终结果结构。
-- [ ] 委派与选材集成：任务不抢占、暂停优先、低精力休息、任务优先欲望、网页多块 6000 字符与 pending 恢复、稳定来源 topic、空正文失败、禁网拒绝、EPUB/material 跨库排序、无匹配不读最新并升级搜索。
+- [ ] 委派与选材集成：任务不抢占、暂停优先、低精力休息、任务优先欲望、网页多块 6000 字符与 pending 恢复、稳定来源 topic、空正文失败、禁网拒绝、EPUB-only 排序、无匹配不读最新并升级搜索。
 - [ ] EPUB 自动分块未读完时 `activity_end.goal_met=None` 且释放 ACTIVE 欲望；探索结果
   正文与 snippet 都为空白时不调用 `digest_source_block`。
 - [ ] 前端活动页：网页/EPUB 表单、目标段前后预览、任务状态/失败原因和 `task_updated` 刷新。

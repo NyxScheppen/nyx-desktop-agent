@@ -8,7 +8,7 @@ import pytest
 
 from nyx import db
 
-# 29 张业务表（不含 schema_version）
+# 28 张业务表（不含 schema_version）
 BUSINESS_TABLES = {
     "personality",
     "value_system",
@@ -22,7 +22,6 @@ BUSINESS_TABLES = {
     "long_term_desire",
     "activity",
     "event_log",
-    "material",
     "books",
     "paragraphs",
     "reading_progress",
@@ -111,7 +110,8 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 31
+    assert len(names) == 30
+    assert "material" not in names
 
 
 async def test_parent_long_term_foreign_keys_set_null() -> None:
@@ -141,13 +141,12 @@ async def test_migrate_adds_source_memory_state_columns() -> None:
     conn = await _migrated_conn()
     try:
         columns: dict[str, set[str]] = {}
-        for table in ("books", "material"):
+        for table in ("books",):
             cursor = await conn.execute(f"PRAGMA table_info({table})")
             columns[table] = {row["name"] for row in await cursor.fetchall()}
     finally:
         await conn.close()
     assert "memory_state" in columns["books"]
-    assert "memory_state" in columns["material"]
 
 
 async def test_migrate_adds_paragraph_format_column() -> None:
@@ -505,6 +504,46 @@ async def test_migrate_sets_version_to_max() -> None:
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 
+async def test_material_retirement_handles_missing_source_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = db._MIGRATIONS
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        monkeypatch.setattr(db, "_MIGRATIONS", [m for m in full if m[0] <= 32])
+        await db.migrate(conn)
+        await conn.execute(
+            "INSERT INTO short_term_desire "
+            "(id, created_at, type, strength, description, goal, retry_count, "
+            "status, goal_progress, parent_long_term_id) "
+            "VALUES ('d1', 1, 'exploration', 0.8, '读旧资料', NULL, 0, "
+            "'suppressed', 0, NULL)"
+        )
+        await conn.execute(
+            "INSERT INTO activity "
+            "(id, type, schedule_block_id, status, progress, started_at, ended_at) "
+            "VALUES ('a1', 'reading', '09:00', 'paused', "
+            "'{\"source\":\"old.txt\",\"desire_id\":\"d1\"}', 1, 2)"
+        )
+        await conn.commit()
+        monkeypatch.setattr(db, "_MIGRATIONS", full)
+        await db.migrate(conn)
+        tables = await _table_names(conn)
+        activity = await (
+            await conn.execute("SELECT status FROM activity WHERE id = 'a1'")
+        ).fetchone()
+        desire = await (
+            await conn.execute("SELECT status FROM short_term_desire WHERE id = 'd1'")
+        ).fetchone()
+    finally:
+        await conn.close()
+    assert "material" not in tables
+    assert activity is not None and activity["status"] == "abandoned"
+    assert desire is not None and desire["status"] == "pending"
+
+
 # ---- 可空性对齐 ----
 
 async def test_migrate_not_null_alignment() -> None:
@@ -537,7 +576,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 31
+    assert len(names) == 30
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

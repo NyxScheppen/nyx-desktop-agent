@@ -6,9 +6,9 @@
 
 ## 当前快照
 
-- 后端测试文件：66
-- `pytest --collect-only -q`：1117 tests collected
-- 最近一次全量验证：`1116 passed, 1 skipped`（本轮未采集语句覆盖率）
+- 后端测试文件：64
+- `pytest --collect-only -q`：1102 tests collected
+- 最近一次全量验证：`1101 passed, 1 skipped`（本轮未采集语句覆盖率）
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -26,14 +26,14 @@
 | 类型 | `tests/test_types/` | 2 | 枚举穷尽、实体默认值、LLM prompt TypedDict |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍/材料原文记忆 checkpoint 列、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
-| API/运行时 | `tests/test_api/` | 7 | 组合根、REST、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval prompt 详情、订阅、tick、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
+| API/运行时 | `tests/test_api/` | 5 | 组合根、REST、旧上传端点 404、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval prompt 详情、订阅、tick、活动优先关停、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取 |
 | 记忆 | `tests/test_memory/` | 7 | kind/topics、精确与语义去重、episode 保守去重、原文画像/类别归因/稳定来源 topic、同内容跨来源隔离、来源过滤先于排序、embedding 延迟单次加载、ANN、融合召回、联想图、Facade、通用实体事实抽取/类型与别名索引/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级、durable 活动记忆不持锁等待 embedding |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、行动优先级、strength 缩放加压、系统构造 goal、父长期欲望选择/持久化/反馈、容量裁剪、满足与 durable attempt 重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、长期欲望数值/文字强度 prompt、事务回滚 |
-| 活动 | `tests/test_activity/` | 13 | 本地自然日时间线、结果过滤/分页、行动优先级排期、父 ID活动传递、活动生命周期、委派任务 FIFO/低精力/打断恢复、网页任务 6000 字符 checkpoint、EPUB 与材料跨库模糊选材及分块不结算、无匹配搜索、探索只追加父长期欲望子主题、观察、材料原文沉淀、本地探索读取真实文件、读书恢复、创作结果严格校验、主题/旧作参考、唯一文件名与注册表落盘 |
+| 活动 | `tests/test_activity/` | 11 | 本地自然日时间线、跨日暂停隔离、结果过滤/分页、行动优先级排期、父 ID 活动传递、活动/欲望/任务/事件原子生命周期与故障回滚、委派任务 FIFO/低精力/打断/关闭/崩溃恢复、网页任务 6000 字符 checkpoint、EPUB-only 模糊选材及部分进度不结算、无匹配搜索、探索只追加父长期欲望子主题、观察、本地探索读取真实文件、创作结果严格校验、主题/旧作参考与唯一文件名 |
 | 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/嵌套块语义/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
@@ -127,7 +127,15 @@
 - `test_web_task_sediments_every_6000_character_block`
 - `test_interrupted_assigned_task_returns_to_queue`
 - `test_maybe_start_reading_can_match_uploaded_epub`
-- `test_best_reading_match_does_not_fall_back_to_latest`
+- `test_best_book_match_does_not_fall_back_to_latest`
+- `test_start_activity_rolls_back_when_event_append_fails`
+- `test_fail_activity_rolls_back_when_task_update_fails`
+- `test_recovery_finishes_task_linked_to_completed_activity`
+- `test_quiesce_cancels_runner_and_returns_task_to_queue`
+- `test_quiesce_recovers_even_when_cancel_cleanup_raises`
+- `test_resume_skips_same_block_from_previous_local_day`
+- `test_main_quiesces_activity_before_reading_and_bus_close`
+- `test_material_retirement_handles_missing_source_row`
 - `test_advance_nyx_position_is_monotonic_and_preserves_user_state`
 - `activityPanel.test.tsx`：网页/EPUB 委派、目标段前后预览、任务失败原因展示
 - `stores.test.ts`：普通进度冲突保留服务端更靠前的 Nyx 位置，显式重读仍可回退

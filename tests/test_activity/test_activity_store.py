@@ -82,7 +82,9 @@ async def test_claim_task_and_activity_is_atomic_fifo() -> None:
         pending = await store.get_next_task()
         assert pending is not None
         activity = _activity("a1", progress={"task_id": pending.id})
-        claimed = await store.claim_task_and_insert(pending.id, activity, 3.0)
+        async with database.transaction():
+            claimed = await store.claim_task_for_activity(pending.id, 3.0)
+            await store.insert(activity)
         saved = await store.get_task(pending.id)
     finally:
         await database.conn.close()
@@ -91,16 +93,22 @@ async def test_claim_task_and_activity_is_atomic_fifo() -> None:
     assert saved is not None and saved.status is AssignedTaskStatus.RUNNING
 
 
-async def test_recover_running_tasks_returns_them_to_pending() -> None:
+async def test_running_task_queries_and_status_update_share_transaction() -> None:
     store, database = await _new_store()
     try:
         await store.create_task(_task("t1"))
         activity = _activity("a1", progress={"task_id": "t1"})
-        await store.claim_task_and_insert("t1", activity, 2.0)
-        await store.recover_running_tasks(3.0)
+        async with database.transaction():
+            assert await store.claim_task_for_activity("t1", 2.0)
+            await store.insert(activity)
+            running = await store.list_running_tasks()
+            linked = await store.get_latest_activity_for_task("t1")
+            await store.set_task_status("t1", AssignedTaskStatus.PENDING, 3.0)
         saved = await store.get_task("t1")
     finally:
         await database.conn.close()
+    assert [task.id for task in running] == ["t1"]
+    assert linked is not None and linked.id == "a1"
     assert saved is not None
     assert saved.status is AssignedTaskStatus.PENDING
 
@@ -340,7 +348,7 @@ async def test_get_paused_in_block_latest() -> None:
         await store.insert(
             _activity("other", status=ActivityStatus.PAUSED, schedule_block_id="10:00")
         )
-        got = await store.get_paused_in_block("09:00")
+        got = await store.get_paused_in_block("09:00", 0.0, 3000.0)
         assert got is not None
         assert got.id == "a2"     # 最新一条，且忽略其他块
     finally:
@@ -354,6 +362,32 @@ async def test_get_paused_in_block_none() -> None:
         await store.insert(
             _activity("a1", status=ActivityStatus.COMPLETED, started_at=1000.0)
         )
-        assert await store.get_paused_in_block("09:00") is None
+        assert await store.get_paused_in_block("09:00", 0.0, 3000.0) is None
+    finally:
+        await database.conn.close()
+
+
+async def test_get_paused_in_block_excludes_previous_local_day() -> None:
+    store, database = await _new_store()
+    try:
+        await store.insert(
+            _activity(
+                "yesterday",
+                status=ActivityStatus.PAUSED,
+                schedule_block_id="09:00",
+                started_at=1000.0,
+            )
+        )
+        await store.insert(
+            _activity(
+                "today",
+                status=ActivityStatus.PAUSED,
+                schedule_block_id="09:00",
+                started_at=9000.0,
+            )
+        )
+        got = await store.get_paused_in_block("09:00", 8000.0, 16000.0)
+        assert got is not None
+        assert got.id == "today"
     finally:
         await database.conn.close()

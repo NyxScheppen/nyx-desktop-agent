@@ -34,6 +34,8 @@
 - [ ] `connect()` 的路径优先级为显式参数、`NYX_DB`、已存在的旧默认 `nyx.db`、新默认 `data/nyx.db`；非 `:memory:` 路径连接前创建父目录。
 - [ ] SSE 公共帧携带事件自身的 `timestamp`；实时消息与 `GET /api/events/log` 历史消息使用同一后端时间源。
 - [ ] `POST /api/observe` 先持久化包含 transition 事实的 `OBSERVATION_STATE`，成功后才提交组合根 presence 快照；受理失败不留下半次离开/归来状态。
+- [ ] 活动启动把来源条件领取、`RUNNING` Activity 和 `ACTIVITY_START` 放在一个本地事务；活动完成、失败、中断和恢复分别把 Activity、关联欲望、关联任务及对应 durable event 放在各自单一事务，不能留下终态 Activity 配 `RUNNING` 任务或 `ACTIVE` 欲望。
+- [ ] schema 33 退役通用文件 `material`：旧未完成 material Activity 转 `ABANDONED`、关联欲望释放后删除表；已完成 Activity、既有 memory 与磁盘上传文件保留。
 - [ ] 文档同步：本文件、`tech-reference`、`docs/facts/module-bus-system-facts.md`、`test-inventory.md` 与实现一致。
 
 ## 核心决策
@@ -252,6 +254,7 @@ RUNNING
 
 - 停止 HTTP 新写请求；
 - 停止 tick / vision 新根事件；
+- 先调用 `ActivityFacade.quiesce()`，禁止新活动并取消、等待当前活动落到可恢复状态；
 - 允许只读请求继续或由实现决定快速关闭；
 - 已在执行的 handler 可以继续产生内部事件。
 
@@ -602,12 +605,16 @@ CREATE TABLE eval_prompt (
 - `task_updated` 是委派任务状态快照通知：先持久化任务，再以
   `{task_id, status}`、`correlation_id=task_id` 广播；它没有 durable consumer，
   前端收到后重拉 `/api/tasks`。广播失败不得回滚已经提交的任务状态。
+- `activity_start` 的 activity 状态、来源领取和事件行同事务；`activity_end` 的 activity
+  终态、关联任务终态、必要的欲望释放和事件行同事务。没有 durable event 的活动失败也
+  必须把 Activity、欲望与任务终态放入同一数据库事务。
 
 其它可选调试端点需另写 spec，不在本轮默认新增。
 
 ## 测试要点
 
 - [ ] DB 连接与迁移：已有 `nyx.db` 时继续复用，否则默认创建 `data/nyx.db`；显式嵌套路径自动创建父目录；新库包含 `event_delivery`、`event_effect` 和领域 spec 已定义的辅助表（含 `eval_prompt`）；索引存在；迁移幂等。
+- [ ] material 退役迁移：旧未完成活动与欲望一起迁移、`material` 表删除、已完成活动和旧来源记忆保留，迁移失败整体回滚。
 - [ ] durable publish：publish 后即使不启动 worker，`event_log` 和 delivery 已落库；DB 失败时 publish 抛错且无半截记录。
 - [ ] route expand：每个非空 `RouteSpec` 都创建对应 delivery；空路由事件只落 `event_log` 和 SSE，不创建消费者 delivery。
 - [ ] handler 成功：delivery 从 `pending` 到 `processing` 到 `succeeded`，`completed_at` 写入。
@@ -622,6 +629,7 @@ CREATE TABLE eval_prompt (
 - [ ] wake queue 满：已持久化事件不丢；dispatcher 扫描仍处理 pending。
 - [ ] 数据库熔断：连续 admission 失败后新 publish 快速失败，冷却探测成功后恢复。
 - [ ] drain 成功：停止新输入后，已受理事件完成，worker 停止，DB close 被调用。
+- [ ] 活动关停：当前 activity task 在 EventBus/DB 关闭前被取消并等待，关停期间的新 tick/欲望通知不再启动活动。
 - [ ] drain 超时：未完成 delivery 保留为可恢复状态，关闭流程不做全局 rollback。
 - [ ] supervisor：`EventBus.run()` 正常返回时 supervisor 同步结束，不重入已关闭 bus 或忙循环。
 - [ ] 路由单一来源：`ROUTING`、`TICK_ROUTING`、订阅 handler 和 delivery consumer 集合全部从 `RouteSpec` 派生并一致。

@@ -24,7 +24,6 @@ from nyx.activity.facade import (
     _schedule_block_id,
 )
 from nyx.activity.lifecycle import ActivityLifecycle
-from nyx.activity.material_store import MaterialStore
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, DesireConfig, ExplorationConfig
 from nyx.db import Database
@@ -34,6 +33,7 @@ from nyx.enums import (
     ActivityStatus,
     ActivityType,
     AssignedTaskStatus,
+    AssignedTaskType,
     DesireStatus,
     DesireType,
     EmotionCategory,
@@ -51,6 +51,7 @@ from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
+    AssignedTask,
     Book,
     CurrentState,
     DesireState,
@@ -147,6 +148,23 @@ def _activity(
         if progress is not None
         else {"desire_id": None, "goal": None, "correlation_id": None},
         started_at=started_at,
+    )
+
+
+def _assigned_task(
+    id: str, status: AssignedTaskStatus = AssignedTaskStatus.RUNNING
+) -> AssignedTask:
+    return AssignedTask(
+        id=id,
+        type=AssignedTaskType.WEB,
+        status=status,
+        url=f"https://example.com/{id}",
+        book_id=None,
+        target_paragraph=None,
+        checkpoint={},
+        error=None,
+        created_at=1000.0,
+        updated_at=1000.0,
     )
 
 
@@ -309,6 +327,14 @@ class _FakeDesire:
     async def mark_active(self, desire_id: str) -> None:
         self.mark_active_calls.append(desire_id)
 
+    async def claim_for_activity_in_transaction(self, desire_id: str) -> bool:
+        self.mark_active_calls.append(desire_id)
+        return True
+
+    async def resume_for_activity_in_transaction(self, desire_id: str) -> bool:
+        self.mark_active_calls.append(desire_id)
+        return True
+
     async def mark_suppressed(self, desire_id: str) -> None:
         self.mark_suppressed_calls.append(desire_id)
 
@@ -446,7 +472,6 @@ async def _new_facade(
 ) -> tuple[ActivityFacade, ActivityStore, EventBus, Database]:
     database = await db.connect(":memory:")
     store = ActivityStore(database)
-    material_store = MaterialStore(database)
     bus = EventBus(database)
 
     async def get_state() -> CurrentState:
@@ -454,7 +479,6 @@ async def _new_facade(
 
     facade = ActivityFacade(
         store,
-        material_store,
         bus,
         cast(LlmClient, llm if llm is not None else _FakeLlm()),
         cast(Evaluator, evaluator if evaluator is not None else _FakeEvaluator()),
@@ -637,6 +661,78 @@ async def test_interrupted_assigned_task_returns_to_queue() -> None:
         await database.conn.close()
 
 
+async def test_quiesce_cancels_runner_and_returns_task_to_queue() -> None:
+    tools = _BlockingWebTaskTools()
+    facade, store, bus, database = await _new_facade(
+        tools=tools,
+        exploration_config=ExplorationConfig(web_enabled=True),
+    )
+    try:
+        async with _running(bus):
+            assigned = await facade.assign_web_task("https://example.com/slow")
+            await asyncio.wait_for(tools.started.wait(), timeout=1.0)
+            await facade.quiesce()
+            await facade._maybe_start_activity()
+        activities = await store.list_schedule(0.0)
+        saved = await store.get_task(assigned.id)
+        assert len(activities) == 1
+        assert activities[0].status is ActivityStatus.PAUSED
+        assert saved is not None and saved.status is AssignedTaskStatus.PENDING
+        assert facade._task is not None and facade._task.cancelled()
+    finally:
+        await database.conn.close()
+
+
+async def test_quiesce_recovers_even_when_cancel_cleanup_raises() -> None:
+    facade, store, _bus, database = await _new_facade()
+
+    async def fail_on_cancel() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError as error:
+            raise RuntimeError("cleanup failed") from error
+
+    try:
+        await store.insert(
+            _activity(
+                "a1",
+                type_=ActivityType.CREATION,
+                status=ActivityStatus.RUNNING,
+            )
+        )
+        facade._task = asyncio.create_task(fail_on_cancel())
+        await asyncio.sleep(0)
+
+        await facade.quiesce()
+
+        activity = await store.get("a1")
+        assert activity is not None
+        assert activity.status is ActivityStatus.PAUSED
+    finally:
+        await database.conn.close()
+
+
+async def test_recovery_finishes_task_linked_to_completed_activity() -> None:
+    facade, store, _bus, database = await _new_facade()
+    try:
+        await store.create_task(_assigned_task("t1"))
+        await store.insert(
+            _activity(
+                "a1",
+                status=ActivityStatus.COMPLETED,
+                progress={"task_id": "t1", "correlation_id": "t1"},
+            )
+        )
+
+        recovered = await facade.recover_stale_running()
+
+        task = await store.get_task("t1")
+        assert recovered == []
+        assert task is not None and task.status is AssignedTaskStatus.COMPLETED
+    finally:
+        await database.conn.close()
+
+
 async def test_assigned_book_task_uses_reader_and_completes() -> None:
     book = Book("b1", "诺斯艾兰", "作者", "book.epub", "h", 20, 1.0, 1.0)
     calls: list[tuple[str, int | None, str]] = []
@@ -736,7 +832,7 @@ def test_day_start() -> None:
 
 def test_schedule_block_id_aligns_to_grid() -> None:
     """日程块网格对齐：同网格块内多个 now 返回同标签、跨块/跨小时边界正确进位。"""
-    base = 14 * 3600.0
+    base = datetime(2026, 9, 23, 14, 0).timestamp()
     assert _schedule_block_id(base, 60) == "14:00"
     assert _schedule_block_id(base + 59 * 60, 60) == "14:00"   # 同块内不漂移
     assert _schedule_block_id(base + 60 * 60, 60) == "15:00"   # 跨小时进位
@@ -1174,10 +1270,10 @@ async def test_execute_free_exploration_failure_marks_incomplete(
     """探索启动失败并入 fail-fast：启动异常也标 INCOMPLETE + 释放欲望。"""
     facade, store, bus, database = await _new_facade()
     try:
-        async def boom(activity: Activity) -> None:
+        async def boom(activity: Activity) -> dict[str, Any]:
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(facade, "_start_exploration_run", boom)
+        monkeypatch.setattr(facade._exploration, "run", boom)
         a = _activity(
             "a1",
             type_=ActivityType.FREE_EXPLORATION,
@@ -1193,6 +1289,39 @@ async def test_execute_free_exploration_failure_marks_incomplete(
         assert got.ended_at is not None
         desire = cast(_FakeDesire, facade._desire)
         assert desire.mark_suppressed_calls == ["d1"]
+    finally:
+        await database.conn.close()
+
+
+async def test_exploration_completion_commit_failure_keeps_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, store, bus, database = await _new_facade()
+
+    async def finish(activity: Activity) -> dict[str, Any]:
+        return {"type": "free_exploration", "outcome": "won"}
+
+    async def fail_append(event: Event) -> tuple[str, ...]:
+        if event.type is EventType.ACTIVITY_END:
+            raise RuntimeError("event append failed")
+        return ()
+
+    try:
+        monkeypatch.setattr(facade._exploration, "run", finish)
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        activity = _activity(
+            "a1",
+            type_=ActivityType.FREE_EXPLORATION,
+            status=ActivityStatus.RUNNING,
+        )
+        await store.insert(activity)
+
+        with pytest.raises(RuntimeError, match="event append failed"):
+            await facade._execute(activity)
+
+        got = await store.get("a1")
+        assert got is not None
+        assert (got.status, got.ended_at) == (ActivityStatus.RUNNING, None)
     finally:
         await database.conn.close()
 
@@ -1252,9 +1381,6 @@ async def test_upgrade_to_free_exploration(
         exploration_config=ExplorationConfig(web_enabled=True),
     )
     try:
-        await facade._material_store.upsert(
-            "unrelated.txt", "完全无关.txt", 100, t0
-        )
         async with _running(bus):
             await facade._maybe_start_activity()
             await _await_task(facade)
@@ -1347,8 +1473,14 @@ async def test_complete_activity_rolls_back_when_event_append_fails(
 
     try:
         monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        await store.create_task(_assigned_task("t1"))
         await store.insert(
-            _activity("a1", type_=ActivityType.READING, status=ActivityStatus.RUNNING)
+            _activity(
+                "a1",
+                type_=ActivityType.READING,
+                status=ActivityStatus.RUNNING,
+                progress={"task_id": "t1", "correlation_id": "t1"},
+            )
         )
         running = await store.get("a1")
         assert running is not None
@@ -1357,9 +1489,10 @@ async def test_complete_activity_rolls_back_when_event_append_fails(
             await facade.complete_activity(running)
 
         got = await store.get("a1")
+        task = await store.get_task("t1")
         assert got is not None
-        assert got.status is ActivityStatus.RUNNING
-        assert got.ended_at is None
+        assert (got.status, got.ended_at) == (ActivityStatus.RUNNING, None)
+        assert task is not None and task.status is AssignedTaskStatus.RUNNING
         assert await bus.list_events() == []
     finally:
         await database.conn.close()
@@ -1392,31 +1525,89 @@ async def test_start_activity_rolls_back_when_event_append_fails(
     try:
         monkeypatch.setattr(bus, "append_in_transaction", fail_append)
         await desire_store.add_desire(_desire("d1", DesireType.EXPLORATION))
+        activity = _activity(
+            "a1",
+            type_=ActivityType.READING,
+            status=ActivityStatus.PENDING,
+            progress={
+                "desire_id": "d1",
+                "goal": None,
+                "correlation_id": "c1",
+            },
+        )
+
+        with pytest.raises(RuntimeError):
+            await lifecycle.start(activity, is_new=True)
+
+        got_activity = await store.get("a1")
+        got_desire = await desire_store.get_desire("d1")
+        assert got_activity is None
+        assert got_desire is not None
+        assert got_desire.status is DesireStatus.PENDING
+        assert await bus.list_events() == []
+    finally:
+        await database.conn.close()
+
+
+async def test_fail_activity_rolls_back_when_task_update_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    store = ActivityStore(database)
+    bus = EventBus(database)
+    desire_store = DesireStore(database)
+
+    async def list_memories() -> list[Memory]:
+        return []
+
+    desire = DesireFacade(
+        desire_store,
+        bus,
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        DesireConfig(),
+        list_memories,
+    )
+    lifecycle = ActivityLifecycle(store, bus, desire, ActivityConfig())
+
+    async def fail_task_update(
+        task_id: str,
+        status: AssignedTaskStatus,
+        now: float,
+        error: str | None = None,
+    ) -> AssignedTask | None:
+        raise RuntimeError("task update failed")
+
+    try:
+        active = _desire("d1", DesireType.EXPLORATION)
+        active.status = DesireStatus.ACTIVE
+        await desire_store.add_desire(active)
+        await store.create_task(_assigned_task("t1"))
         await store.insert(
             _activity(
                 "a1",
-                type_=ActivityType.READING,
-                status=ActivityStatus.PENDING,
+                status=ActivityStatus.RUNNING,
                 progress={
                     "desire_id": "d1",
-                    "goal": None,
+                    "task_id": "t1",
                     "correlation_id": "c1",
                 },
             )
         )
-        activity = await store.get("a1")
-        assert activity is not None
+        monkeypatch.setattr(store, "set_task_status", fail_task_update)
 
-        with pytest.raises(RuntimeError):
-            await lifecycle.start(activity)
+        with pytest.raises(RuntimeError, match="task update failed"):
+            await lifecycle.fail(cast(Activity, await store.get("a1")), "boom")
 
         got_activity = await store.get("a1")
         got_desire = await desire_store.get_desire("d1")
-        assert got_activity is not None
-        assert got_activity.status is ActivityStatus.PENDING
-        assert got_desire is not None
-        assert got_desire.status is DesireStatus.PENDING
-        assert await bus.list_events() == []
+        got_task = await store.get_task("t1")
+        assert (
+            got_activity is not None
+            and got_activity.status is ActivityStatus.RUNNING
+        )
+        assert got_desire is not None and got_desire.status is DesireStatus.ACTIVE
+        assert got_task is not None and got_task.status is AssignedTaskStatus.RUNNING
     finally:
         await database.conn.close()
 
@@ -1628,256 +1819,6 @@ async def test_get_results_delegates() -> None:
         await database.conn.close()
 
 
-async def test_reading_completion_aggregates_note(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """读完整本书：最后一块后聚合片段 → 完整笔记落盘 + completed=True。"""
-    t0 = 1_000_000.0
-    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
-    captured: dict[str, Any] = {}
-
-    async def fake_file_io(
-        action: str,
-        path: str,
-        content: str | None = None,
-        write_root: Path = Path("workspace"),
-    ) -> dict[str, Any]:
-        target = tmp_path / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content or "", encoding="utf-8")
-        captured["path"] = path
-        captured["content"] = content
-        return {"path": str(target), "written": len(content or "")}
-
-    monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
-    source = tmp_path / "book.txt"
-    source.write_text("骑士团的历史", encoding="utf-8")  # 6 字符，一块读尽
-    llm = _FakeLlm()
-    memory = _FakeMemory()
-    facade, store, bus, database = await _new_facade(
-        pending=[
-            _desire(
-                "d1", DesireType.EXPLORATION,
-                goal=Goal(GoalAction.READ, 1, "骑士团"),
-            )
-        ],
-        energy=80.0,
-        llm=llm,
-        evaluator=_FakeEvaluator(),
-        memory=memory,
-    )
-    try:
-        await facade.register_material(str(source), "骑士团.txt", 6)
-        async with _running(bus):
-            await facade._maybe_start_activity()
-            await _await_task(facade)
-        acts = await store.list_schedule(0.0)
-        result = acts[0].progress["result"]
-        assert result["completed"] is True
-        assert result["note"] == "完整读书笔记"
-        suffix = _path_hash_suffix(str(source))
-        output = tmp_path / "notes" / f"骑士团.txt-{suffix}.md"
-        assert result["path"] == str(output)
-        assert captured["path"] == f"notes/骑士团.txt-{suffix}.md"
-        assert output.read_text(encoding="utf-8") == "完整读书笔记"
-        assert llm.calls == ["reading", "note"]
-        assert memory.remembered[0][0]["source_topic"].startswith("material:")
-    finally:
-        await database.conn.close()
-
-
-async def test_desire_reading_reads_matching_material(tmp_path: Path) -> None:
-    """探索欲触发：只读文件名匹配的未读材料并推进进度。"""
-    source = tmp_path / "book.txt"
-    source.write_text("甲" * 7000, encoding="utf-8")
-    facade, store, bus, database = await _new_facade(
-        pending=[
-            _desire(
-                "d1", DesireType.EXPLORATION,
-                goal=Goal(GoalAction.READ, 1, "骑士团"),
-            )
-        ],
-        energy=80.0,
-    )
-    try:
-        await facade._material_store.upsert(
-            str(source), "骑士团.txt", 7000, 1000.0
-        )
-        async with _running(bus):
-            await facade._maybe_start_activity()
-            await _await_task(facade)
-        acts = await store.list_schedule(0.0)
-        assert len(acts) == 1
-        assert acts[0].type is ActivityType.READING
-        assert acts[0].progress["source"] == str(source)
-        assert acts[0].progress["read_chars"] == 0
-        assert acts[0].progress["total_chars"] == 7000
-        assert acts[0].progress["result"]["read_chars"] == 6000
-        assert acts[0].progress["result"]["total_chars"] == 7000
-        # 书库进度推进但未读完，下次探索欲会续读
-        mat = await facade._material_store.next_readable()
-        assert mat is not None and mat.read_chars == 6000
-    finally:
-        await database.conn.close()
-
-
-async def test_partial_reading_progress_does_not_retry_desire(tmp_path: Path) -> None:
-    """读一块但未读完整本：activity 完成但欲望不结算，不计失败重试。"""
-    database = await db.connect(":memory:")
-    store = ActivityStore(database)
-    material_store = MaterialStore(database)
-    bus = EventBus(database)
-    desire_store = DesireStore(database)
-
-    async def list_memories() -> list[Memory]:
-        return []
-
-    desire = DesireFacade(
-        desire_store,
-        bus,
-        cast(LlmClient, _FakeLlm()),
-        cast(Evaluator, _FakeEvaluator()),
-        DesireConfig(),
-        list_memories,
-    )
-    source = tmp_path / "book.txt"
-    source.write_text("甲" * 7000, encoding="utf-8")
-    pending = _desire(
-        "d1", DesireType.EXPLORATION, goal=Goal(GoalAction.READ, 1, "骑士团")
-    )
-    await desire_store.add_desire(pending)
-
-    async def get_state() -> CurrentState:
-        return _mk_state(80.0)
-
-    facade = ActivityFacade(
-        store,
-        material_store,
-        bus,
-        cast(LlmClient, _FakeLlm()),
-        cast(Evaluator, _FakeEvaluator()),
-        cast(ToolRegistry, _FakeTools()),
-        desire,
-        cast(MemoryFacade, _FakeMemory()),
-        get_state,
-        _no_reflect,
-        _no_observation,
-        ActivityConfig(),
-        ExplorationConfig(),
-        "测试人格",
-    )
-    try:
-        await material_store.upsert(str(source), "骑士团.txt", 7000, 1000.0)
-        events = _subscribe_activity(bus)
-        bus.subscribe(EventType.ACTIVITY_END, desire.add_value)
-        async with _running(bus):
-            await facade._maybe_start_activity()
-            await _await_task(facade)
-        activity = (await store.list_schedule(0.0))[0]
-        got = await desire_store.get_desire("d1")
-        assert activity.progress["result"]["completed"] is False
-        assert events[-1].content["goal_met"] is None
-        assert got is not None
-        assert got.retry_count == 0
-        assert got.status is DesireStatus.PENDING
-    finally:
-        await database.conn.close()
-
-
-async def test_reading_relays_prior_fragments(tmp_path: Path) -> None:
-    """滚动摘要接力：续读第二块时把「上次读到哪里 + 已读片段笔记」喂给 LLM。"""
-
-    class RecordingLlm(_FakeLlm):
-        def __init__(self) -> None:
-            super().__init__()
-            self.user_contents: list[str] = []
-
-        async def complete(
-            self,
-            messages: list[LlmMessage],
-            *,
-            module: str,
-            output_type: str,
-            correlation_id: str,
-            json_mode: bool = False,
-        ) -> LLMOutput:
-            self.user_contents.append(str(messages[-1]["content"]))
-            return await super().complete(
-                messages, module=module, output_type=output_type,
-                correlation_id=correlation_id, json_mode=json_mode,
-            )
-
-    source = tmp_path / "book.txt"
-    source.write_text("甲" * 13000, encoding="utf-8")  # 两块以上，第二块读不尽
-    llm = RecordingLlm()
-    facade, _store, bus, database = await _new_facade(
-        pending=[
-            _desire(
-                "d1", DesireType.EXPLORATION,
-                goal=Goal(GoalAction.READ, 1, "骑士团"),
-            )
-        ],
-        energy=80.0,
-        llm=llm,
-    )
-    try:
-        await facade._material_store.upsert(
-            str(source), "骑士团.txt", 13000, 1000.0
-        )
-        # 模拟已读完第一块：进度 6000 + 留下一篇片段笔记
-        await facade._material_store.append_fragment(
-            str(source), "上一块的笔记", 1000.0
-        )
-        await facade._material_store.advance(str(source), 6000, 1000.0)
-        async with _running(bus):
-            await facade._maybe_start_activity()
-            await _await_task(facade)
-        # 只发生一次 reading 调用（12000 < 13000 未读完，不聚合）
-        assert llm.calls == ["reading"]
-        user = llm.user_contents[0]
-        assert "上一块的笔记" in user  # 已读片段被带上
-        assert "第 6000 字" in user      # 「上次读到哪里」位置被带上
-        assert "本次新读" in user        # 本次新读块
-    finally:
-        await database.conn.close()
-
-
-async def test_maybe_start_reading_uses_topic(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """读书按 topic 选料：goal.topic 命中 filename 时读那本，而非最近一本。"""
-    t0 = 1_000_000.0
-    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
-    target = tmp_path / "骑士团历史.txt"
-    target.write_text("甲" * 7000, encoding="utf-8")
-    newer = tmp_path / "other.txt"
-    newer.write_text("无关", encoding="utf-8")
-    facade, store, bus, database = await _new_facade(
-        pending=[
-            _desire(
-                "d1", DesireType.EXPLORATION,
-                goal=Goal(GoalAction.READ, 1, "骑士团"),
-            )
-        ],
-        energy=80.0,
-    )
-    try:
-        # target 更早入书库（created_at 更小）；newer 是「最近一本」
-        await facade._material_store.upsert(
-            str(target), "骑士团历史.txt", 7000, t0 - 10
-        )
-        await facade._material_store.upsert(str(newer), "other.txt", 2, t0)
-        async with _running(bus):
-            await facade._maybe_start_activity()
-            await _await_task(facade)
-        acts = await store.list_schedule(0.0)
-        assert len(acts) == 1
-        assert acts[0].progress["source"] == str(target)
-        assert acts[0].progress["filename"] == "骑士团历史.txt"
-    finally:
-        await database.conn.close()
-
-
 async def test_maybe_start_reading_can_match_uploaded_epub() -> None:
     book = Book(
         "b1",
@@ -1946,6 +1887,7 @@ async def test_resume_paused_creation_reruns(
                 "p1",
                 type_=ActivityType.CREATION,
                 status=ActivityStatus.PAUSED,
+                started_at=t0,
                 schedule_block_id=block_id,
                 progress={
                     "desire_id": "d1", "goal": None, "correlation_id": "d1",
@@ -1960,43 +1902,6 @@ async def test_resume_paused_creation_reruns(
         assert [a.id for a in acts] == ["p1"]      # 恢复同一记录，未新建
         assert acts[0].status is ActivityStatus.COMPLETED
         assert len(evaluator.evaluated) == 1
-    finally:
-        await database.conn.close()
-
-
-async def test_resume_paused_reading_refreshes_read_chars(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """读书恢复：read_chars 从 material 层刷新（而非 progress 里的旧值），续读。"""
-    t0 = 1_000_000.0
-    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
-    block_id = _schedule_block_id(t0, 60)
-    source = tmp_path / "book.txt"
-    source.write_text("甲" * 7000, encoding="utf-8")
-    facade, store, bus, database = await _new_facade()
-    try:
-        await facade._material_store.upsert(str(source), "book.txt", 7000, t0)
-        # 模拟已读 6000：material 层进度领先 progress 里的旧 read_chars=0
-        await facade._material_store.advance(str(source), 6000, t0)
-        await store.insert(
-            _activity(
-                "p1",
-                status=ActivityStatus.PAUSED,
-                schedule_block_id=block_id,
-                progress={
-                    "source": str(source), "filename": "book.txt",
-                    "read_chars": 0, "total_chars": 7000,
-                    "correlation_id": "c1",
-                },
-            )
-        )
-        async with _running(bus):
-            await facade._maybe_start_activity()
-            await _await_task(facade)
-        acts = await store.list_schedule(0.0)
-        assert [a.id for a in acts] == ["p1"]
-        assert acts[0].progress["read_chars"] == 6000   # 已刷新到 material 层进度
-        assert acts[0].progress["result"]["read_chars"] == 7000
     finally:
         await database.conn.close()
 
@@ -2020,6 +1925,37 @@ async def test_resume_skips_different_block(
         assert "p1" in ids                         # 旧 PAUSED 保留
         assert len(ids) == 2                       # 新起一个活动
         new = next(a for a in acts if a.id != "p1")
+        assert new.type is ActivityType.OBSERVE_USER
+    finally:
+        await database.conn.close()
+
+
+async def test_resume_skips_same_block_from_previous_local_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 10, 1, 9, 30).timestamp()
+    previous_day = datetime(2026, 9, 30, 9, 30).timestamp()
+    monkeypatch.setattr("nyx.activity.facade.time.time", lambda: now)
+    block_id = _schedule_block_id(now, 60)
+    facade, store, bus, database = await _new_facade(energy=80.0)
+    try:
+        await store.insert(
+            _activity(
+                "old",
+                type_=ActivityType.CREATION,
+                status=ActivityStatus.PAUSED,
+                started_at=previous_day,
+                schedule_block_id=block_id,
+            )
+        )
+        async with _running(bus):
+            await facade._maybe_start_activity()
+            await _await_task(facade)
+
+        activities = await store.list_schedule(0.0)
+        old = next(activity for activity in activities if activity.id == "old")
+        new = next(activity for activity in activities if activity.id != "old")
+        assert old.status is ActivityStatus.PAUSED
         assert new.type is ActivityType.OBSERVE_USER
     finally:
         await database.conn.close()
@@ -2083,40 +2019,6 @@ def test_build_creation_system() -> None:
     assert "写点东西" in sys
     assert "[创作要求]" in sys
     assert "按 JSON 输出" in sys
-
-
-async def test_read_finalizes_without_rescanning_on_empty_chunk(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """已在旧进度读到末尾时只补 finalize，不重新扫描整本原文。"""
-
-    async def fake_file_io(
-        action: str, path: str, content: str | None = None
-    ) -> dict[str, Any]:
-        return {"path": f"workspace/{path}", "written": len(content or "")}
-
-    monkeypatch.setattr("nyx.activity.facade.file_io", fake_file_io)
-    source = tmp_path / "book.txt"
-    source.write_text("甲" * 100, encoding="utf-8")
-    llm = _FakeLlm()
-    memory = _FakeMemory()
-    facade, _store, _bus, database = await _new_facade(llm=llm, memory=memory)
-    try:
-        activity = _activity(
-            "a1",
-            progress={
-                "source": str(source),
-                "filename": "book.txt",
-                "read_chars": 100,
-                "total_chars": 100,
-            },
-        )
-        result = await facade._run_reading_source(activity, str(source))
-        assert result["completed"] is True
-        assert llm.calls == ["note"]
-        assert memory.remembered == []
-    finally:
-        await database.conn.close()
 
 
 async def test_creation_activity_injects_context(
@@ -2205,9 +2107,10 @@ async def test_exploration_appends_parent_subtopics_and_knowledge() -> None:
                 "parent_long_term_id": "lt1",
             },
         )
-        await facade._start_exploration_run(activity)
+        result = await facade._exploration.run(activity)
         assert fake_desire.appended_subtopics == [("lt1", ["量子纠错"])]
         assert fake_memory.remembered[-1][0]["topic"] == "退相干"
         assert activity.progress["exploration"]["state"] == "completed"
+        assert result["outcome"] == "won"
     finally:
         await database.conn.close()

@@ -39,7 +39,6 @@ from nyx.types import (
     EvalRecord,
     EvalStats,
     Event,
-    Material,
     Memory,
     MemoryFact,
 )
@@ -146,8 +145,6 @@ class _FakeMemory:
 
 class _FakeActivity:
     def __init__(self) -> None:
-        self.list_calls = 0
-        self.registered: list[tuple[str, str, int]] = []
         self.result_calls: list[tuple[int, int, ActivityType | None]] = []
         self.tasks: list[AssignedTask] = []
 
@@ -175,21 +172,6 @@ class _FakeActivity:
                 ended_at=2.0,
             )
         ]
-
-    async def list_materials(self) -> list[Material]:
-        self.list_calls += 1
-        return [
-            Material(
-                path="workspace/uploads/a.txt", filename="a.txt",
-                total_chars=100, read_chars=40,
-                created_at=1.0, updated_at=2.0,
-            )
-        ]
-
-    async def register_material(
-        self, path: str, filename: str, total_chars: int
-    ) -> None:
-        self.registered.append((path, filename, total_chars))
 
     async def list_tasks(self) -> list[AssignedTask]:
         return self.tasks
@@ -889,27 +871,11 @@ async def test_observe_invalid_presence_returns_422() -> None:
     assert app.last_presence == "away"  # 校验失败不更新状态
 
 
-async def test_materials_endpoint_returns_progress() -> None:
-    """GET /api/materials：书库进度（read_chars/total_chars），不再是纯文件名。"""
-    fake_activity = _FakeActivity()
+async def test_materials_endpoint_is_removed() -> None:
     app = _app(_mk_state(), _FakeBus(), _FakeMemory())
-    app.activity = cast(ActivityFacade, fake_activity)
     async with _client(app) as client:
         resp = await client.get("/api/materials")
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "materials": [
-            {
-                "path": "workspace/uploads/a.txt",
-                "filename": "a.txt",
-                "total_chars": 100,
-                "read_chars": 40,
-                "created_at": 1.0,
-                "updated_at": 2.0,
-            }
-        ]
-    }
-    assert fake_activity.list_calls == 1
+    assert resp.status_code == 404
 
 
 async def test_eval_recent_endpoint() -> None:
@@ -989,31 +955,11 @@ async def test_eval_total_tokens_endpoint() -> None:
     }
 
 
-async def test_upload_endpoint_registers_material(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """POST /api/upload：只写文件 + 注册书库，不触发读书（无 ACTIVITY_START）。"""
-    async def _fake_file_io(
-        action: str, path: str, content: str | None = None
-    ) -> dict[str, object]:
-        return {"path": f"workspace/{path}", "written": len(content or "")}
-
-    monkeypatch.setattr("nyx.main.file_io", _fake_file_io)
-    fake_activity = _FakeActivity()
-    bus = _FakeBus()
-    app = _app(_mk_state(), bus, _FakeMemory())
-    app.activity = cast(ActivityFacade, fake_activity)
+async def test_upload_endpoint_is_removed() -> None:
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
     async with _client(app) as client:
         resp = await client.post(
             "/api/upload",
             files={"file": ("book.txt", "骑士团的历史".encode("utf-8"), "text/plain")},
         )
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "filename": "book.txt",
-        "path": "workspace/uploads/book.txt",
-    }
-    assert fake_activity.registered == [
-        ("workspace/uploads/book.txt", "book.txt", 6)
-    ]
-    assert bus.published == []
+    assert resp.status_code == 404

@@ -12,15 +12,12 @@ from nyx.activity import lifecycle as _activity_lifecycle
 from nyx.activity import paths as _activity_paths
 from nyx.activity.exploration import Exploration
 from nyx.activity.llm_result import parse_activity_result as _parse_activity_result
-from nyx.activity.material_store import MaterialStore
 from nyx.activity.observe import build_observation_summary
-from nyx.activity.reading_runner import ReadingActivityRunner
 from nyx.activity.starter import ActivityStarter, schedule_block_id
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.desire.facade import DesireFacade
 from nyx.enums import (
-    ActivityStatus,
     ActivityType,
     AssignedTaskStatus,
     AssignedTaskType,
@@ -33,7 +30,6 @@ from nyx.events.bus import EventBus
 from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade, build_source_topic
-from nyx.tools.file_io import file_io
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
@@ -41,7 +37,6 @@ from nyx.types import (
     Book,
     CurrentState,
     Event,
-    Material,
     ReadingProgress,
     ReflectionOutcome,
     ShortTermDesire,
@@ -99,7 +94,6 @@ class ActivityFacade:
     def __init__(
         self,
         store: ActivityStore,
-        material_store: MaterialStore,
         bus: EventBus,
         llm: LlmClient,
         evaluator: Evaluator,
@@ -122,7 +116,6 @@ class ActivityFacade:
         ) = None,
     ) -> None:
         self._store = store
-        self._material_store = material_store
         self._bus = bus
         self._llm = llm
         self._evaluator = evaluator
@@ -147,24 +140,22 @@ class ActivityFacade:
             memory,
             exploration_config,
         )
-        self._reading_runner = ReadingActivityRunner(
-            material_store, llm, evaluator, memory, file_io, store.update
-        )
         self._lifecycle = _activity_lifecycle.ActivityLifecycle(
             store, bus, desire, config
         )
         self._starter = ActivityStarter(
             store,
-            material_store,
             desire,
             get_state,
             self._execute,
             config,
             exploration_config,
             time.time,
+            self._lifecycle.start,
             list_reader_books,
         )
         self._task: asyncio.Task[None] | None = None
+        self._quiescing = False
 
     # ---- 事件入口 ----
 
@@ -188,7 +179,9 @@ class ActivityFacade:
 
     async def complete_activity(self, activity: Activity) -> None:
         """完成：goal 判定 + 收尾 + 发布 activity_end（desire/inner_life 消费）。"""
-        await self._lifecycle.complete(activity)
+        task_id = await self._lifecycle.complete(activity)
+        if task_id is not None:
+            await self._publish_current_task(task_id)
 
     async def interrupt(self, activity_id: str, by_event: EventType) -> None:
         """抢占即暂停：校验目标 RUNNING → cancel 执行 task 并 await 其彻底结束
@@ -196,24 +189,31 @@ class ActivityFacade:
         （可续活动 PAUSED，其余 ABANDONED）+ 发布 activity_interrupted。
 
         执行中的 result 尚未写入，故仅落终态（不持久化部分进度）；
-        读书的 read_chars 已 advance 进 material 层，恢复时从那里续读。
+        可续 runner 的 checkpoint 已经持久化，恢复时从对应领域存储继续。
         """
-        activity = await self._store.get(activity_id)
-        await self._lifecycle.interrupt(activity_id, by_event, self._task)
-        task_id = activity.progress.get("task_id") if activity is not None else None
-        if isinstance(task_id, str):
-            updated = await self._store.get(activity_id)
-            if updated is not None and updated.status in {
-                ActivityStatus.PAUSED,
-                ActivityStatus.ABANDONED,
-            }:
-                await self._set_task_status(task_id, AssignedTaskStatus.PENDING)
+        task_id = await self._lifecycle.interrupt(
+            activity_id, by_event, self._task
+        )
+        if task_id is not None:
+            await self._publish_current_task(task_id)
 
     async def recover_stale_running(self) -> list[Activity]:
         """启动恢复：清理 DB 中没有后台 task 承接的 RUNNING 活动。"""
-        recovered = await self._lifecycle.recover_stale_running()
-        await self._store.recover_running_tasks(time.time())
-        return recovered
+        return await self._lifecycle.recover_stale_running()
+
+    async def quiesce(self) -> None:
+        """Stop admitting work, cancel the runner, and durably settle leftovers."""
+        self._quiescing = True
+        task = self._task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                _logger.exception("活动 runner 取消清理失败，继续执行状态恢复")
+        await self.recover_stale_running()
 
     # ---- 读 ----
 
@@ -231,20 +231,6 @@ class ActivityFacade:
     ) -> list[Activity]:
         """跨天历史产出（读书笔记/探索发现/创作内容），按结束时间倒序。"""
         return await self._store.list_results(limit, offset, activity_type)
-
-    async def list_materials(self) -> list[Material]:
-        """书库全量（含已读进度），供资料面板展示「读到哪了」。"""
-        return await self._material_store.list_all()
-
-    async def register_material(
-        self, path: str, filename: str, total_chars: int
-    ) -> None:
-        """注册一本读物进书库（只登记，不立即读）。
-
-        读书由欲望驱动的 _maybe_start_activity 在活动时按 find_by_topic /
-        next_readable 选书决定读不读；本方法不建活动、不发事件。
-        """
-        await self._material_store.upsert(path, filename, total_chars, time.time())
 
     async def list_tasks(self) -> list[AssignedTask]:
         return await self._store.list_tasks()
@@ -313,40 +299,30 @@ class ActivityFacade:
     # ---- 内部 ----
 
     async def _maybe_start_activity(self) -> None:
+        if self._quiescing:
+            return
         self._task = await self._starter.start_next_if_idle(self._task)
 
     async def _execute(self, activity: Activity) -> None:
-        await self._lifecycle.start(activity)
         task_id = activity.progress.get("task_id")
         if isinstance(task_id, str):
-            await self._set_task_status(task_id, AssignedTaskStatus.RUNNING)
+            await self._publish_current_task(task_id)
         try:
             if activity.type is ActivityType.FREE_EXPLORATION:
-                await self._start_exploration_run(activity)
-                return
-            result = await self._run_activity(activity)
+                result = await self._exploration.run(activity)
+            else:
+                result = await self._run_activity(activity)
         except Exception as error:
             # fail-fast：失败态落库后仍上抛（不吞异常），但活动不卡 RUNNING
-            await self._lifecycle.fail(activity)
-            task_id = activity.progress.get("task_id")
-            if isinstance(task_id, str):
-                await self._set_task_status(
-                    task_id, AssignedTaskStatus.FAILED, str(error)[:500]
-                )
+            failed_task_id = await self._lifecycle.fail(activity, str(error))
+            if failed_task_id is not None:
+                await self._publish_current_task(failed_task_id)
             _logger.exception(
                 "活动执行失败 activity_id=%s type=%s",
                 activity.id,
                 activity.type.value,
             )
             raise
-        activity.progress["result"] = result
-        await self.complete_activity(activity)
-        if isinstance(task_id, str):
-            await self._set_task_status(task_id, AssignedTaskStatus.COMPLETED)
-
-    async def _start_exploration_run(self, activity: Activity) -> None:
-        """探索启动：交给 Exploration 状态机跑完并结算。"""
-        result = await self._exploration.run(activity)
         activity.progress["result"] = result
         await self.complete_activity(activity)
 
@@ -370,18 +346,14 @@ class ActivityFacade:
                 if target is None and result.get("completed") is False:
                     activity.progress["goal_signal"] = None
                 return result
-            source = activity.progress.get("source")
-            if source is None:
-                # READING 必须有真实读物；缺 source 说明上游决策出错，fail-fast
-                raise ValueError("读书活动缺 source：已禁止凭空编造")
-            return await self._run_reading_source(activity, str(source))
+            raise ValueError("读书活动缺 book_id：已禁止凭空编造")
         if t is ActivityType.CREATION:
             return await self._run_creation(activity)
         if t is ActivityType.IDLE_REFLECTION:
             outcome = await self._reflect(_correlation_id(activity))
             return {"summary": outcome.story if outcome is not None else None}
         if t is ActivityType.FREE_EXPLORATION:
-            raise ValueError("自由探索改走 _execute 的 _start_exploration_run 分叉")
+            raise ValueError("自由探索由 _execute 直接调用 Exploration.run")
         if t is ActivityType.OBSERVE_USER:
             obs = await self._get_observation()
             presence = obs.get("presence", "")
@@ -489,6 +461,11 @@ class ActivityFacade:
         if task is not None:
             await self._publish_task_update(task)
 
+    async def _publish_current_task(self, task_id: str) -> None:
+        task = await self._store.get_task(task_id)
+        if task is not None:
+            await self._publish_task_update(task)
+
     async def _publish_task_update(self, task: AssignedTask) -> None:
         try:
             await self._bus.publish(
@@ -585,12 +562,6 @@ class ActivityFacade:
     ) -> None:
         activity.progress["creation"] = checkpoint
         await self._store.update(activity)
-
-    async def _run_reading_source(
-        self, activity: Activity, source: str
-    ) -> dict[str, Any]:
-        """兼容旧内部调用；读书实现位于 `ReadingActivityRunner`。"""
-        return await self._reading_runner.run(activity, source)
 
     async def _run_llm_activity(
         self,

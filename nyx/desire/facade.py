@@ -123,6 +123,9 @@ class DesireFacade:
             desire_id, in_transaction=True
         )
 
+    async def resume_for_activity_in_transaction(self, desire_id: str) -> bool:
+        return await self._lifecycle.resume_for_activity(desire_id)
+
     async def claim_for_interaction(self, desire_id: str) -> bool:
         """Atomically claim a pending interaction desire for initiative."""
         return await self._lifecycle.claim_for_interaction(desire_id)

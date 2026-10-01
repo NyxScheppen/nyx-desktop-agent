@@ -255,6 +255,64 @@ async def test_main_propagates_serve_failure(
         await main()
 
 
+async def test_main_quiesces_activity_before_reading_and_bus_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order: list[str] = []
+
+    class _OrderBus(_BlockingBus):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed = asyncio.Event()
+
+        async def run(self) -> None:
+            await self.closed.wait()
+
+        async def close(self) -> None:
+            order.append("bus_close")
+            self.closed.set()
+
+    class _Activity:
+        async def quiesce(self) -> None:
+            order.append("activity_quiesce")
+
+    class _Reading:
+        async def quiesce(self) -> None:
+            order.append("reading_quiesce")
+
+        async def drain(self) -> None:
+            order.append("reading_drain")
+
+    class _FailServer:
+        def __init__(self, config: object) -> None:
+            pass
+
+        async def serve(self) -> None:
+            raise RuntimeError("stop")
+
+    async def context(config: Config) -> _App:
+        app = _app(_OrderBus())
+        app.activity = cast(ActivityFacade, _Activity())
+        app.reading = cast(ReadingFacade, _Reading())
+        return app
+
+    monkeypatch.setattr("nyx.main.load_config", lambda: Config())
+    monkeypatch.setattr("nyx.main.build_app_context", context)
+    monkeypatch.setattr("nyx.main.build_app", _fake_build_app)
+    monkeypatch.setattr("nyx.main.uvicorn.Config", _fake_uvicorn_config)
+    monkeypatch.setattr("nyx.main.uvicorn.Server", _FailServer)
+
+    with pytest.raises(RuntimeError, match="stop"):
+        await main()
+
+    assert order == [
+        "activity_quiesce",
+        "reading_quiesce",
+        "reading_drain",
+        "bus_close",
+    ]
+
+
 async def test_main_propagates_tick_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

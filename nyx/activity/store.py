@@ -106,7 +106,7 @@ class ActivityStore:
 
     async def list_unfinished(self) -> list[Activity]:
         """Return stale startup candidates in creation order."""
-        async with self._db.lock:
+        async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_COLS} FROM activity "
                 "WHERE status IN ('pending', 'running') "
@@ -115,13 +115,16 @@ class ActivityStore:
             rows = await cursor.fetchall()
         return [_row_to_activity(row) for row in rows]
 
-    async def get_paused_in_block(self, schedule_block_id: str) -> Activity | None:
+    async def get_paused_in_block(
+        self, schedule_block_id: str, day_start: float, day_end: float
+    ) -> Activity | None:
         """当前日程块内最新一条 PAUSED 记录（供恢复）；无则 None。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 f"SELECT {_COLS} FROM activity WHERE status = 'paused' "
-                "AND schedule_block_id = ? ORDER BY started_at DESC LIMIT 1",
-                (schedule_block_id,),
+                "AND schedule_block_id = ? AND started_at >= ? AND started_at < ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (schedule_block_id, day_start, day_end),
             )
             row = await cursor.fetchone()
         return _row_to_activity(row) if row is not None else None
@@ -274,20 +277,14 @@ class ActivityStore:
             row = await cursor.fetchone()
         return _row_to_task(row) if row is not None else None
 
-    async def claim_task_and_insert(
-        self, task_id: str, activity: Activity, now: float
-    ) -> bool:
-        """Atomically claim one pending task and insert its activity."""
-        async with self._db.transaction():
-            cursor = await self._db.conn.execute(
-                "UPDATE assigned_task SET status = 'running', error = NULL, "
-                "updated_at = ? WHERE id = ? AND status = 'pending'",
-                (now, task_id),
-            )
-            if cursor.rowcount != 1:
-                return False
-            await self.insert(activity)
-        return True
+    async def claim_task_for_activity(self, task_id: str, now: float) -> bool:
+        """Claim a pending task inside the caller's activity-start transaction."""
+        cursor = await self._db.conn.execute(
+            "UPDATE assigned_task SET status = 'running', error = NULL, "
+            "updated_at = ? WHERE id = ? AND status = 'pending'",
+            (now, task_id),
+        )
+        return cursor.rowcount == 1
 
     async def save_task(self, task: AssignedTask) -> None:
         async with self._db.lock:
@@ -311,27 +308,41 @@ class ActivityStore:
         now: float,
         error: str | None = None,
     ) -> AssignedTask | None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "UPDATE assigned_task SET status = ?, error = ?, updated_at = ? "
                 "WHERE id = ?",
                 (status.value, error, now, task_id),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
             cursor = await self._db.conn.execute(
                 f"SELECT {_TASK_COLS} FROM assigned_task WHERE id = ?", (task_id,)
             )
             row = await cursor.fetchone()
         return _row_to_task(row) if row is not None else None
 
-    async def recover_running_tasks(self, now: float) -> None:
-        async with self._db.lock:
-            await self._db.conn.execute(
-                "UPDATE assigned_task SET status = 'pending', updated_at = ? "
-                "WHERE status = 'running'",
-                (now,),
+    async def list_running_tasks(self) -> list[AssignedTask]:
+        """List tasks left RUNNING for startup or shutdown recovery."""
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                f"SELECT {_TASK_COLS} FROM assigned_task WHERE status = 'running' "
+                "ORDER BY created_at ASC"
             )
-            await self._db.conn.commit()
+            rows = await cursor.fetchall()
+        return [_row_to_task(row) for row in rows]
+
+    async def get_latest_activity_for_task(self, task_id: str) -> Activity | None:
+        """Return the newest activity durably linked to an assigned task."""
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM activity "
+                "WHERE json_extract(progress, '$.task_id') = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (task_id,),
+            )
+            row = await cursor.fetchone()
+        return _row_to_activity(row) if row is not None else None
 
 
 def _row_to_activity(row: aiosqlite.Row) -> Activity:

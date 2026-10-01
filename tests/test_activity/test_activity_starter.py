@@ -1,37 +1,28 @@
 from typing import cast
 
-from nyx.activity.material_store import MaterialStore
-from nyx.activity.starter import ActivityStarter, best_reading_match
+from nyx.activity.starter import ActivityStarter, best_book_match
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ActivityType, EmotionCategory, EnergyState
+from nyx.enums import ActivityStatus, ActivityType, EmotionCategory, EnergyState
 from nyx.types import (
     Activity,
     Book,
     CurrentState,
     DesireState,
-    Material,
     Personality,
     Values,
 )
 
 
-def test_best_reading_match_compares_epub_and_material_fuzzily() -> None:
-    material = Material("a", "无关资料.txt", 100, 0, 3.0, 3.0)
+def test_best_book_match_uses_title_and_filename() -> None:
     book = Book("b1", "诺斯艾兰", "作者", "诺斯艾兰-新版.epub", "h", 10, 2.0, 2.0)
-    matched_material, matched_book = best_reading_match(
-        "《诺斯艾兰》", [material], [book]
-    )
-    assert matched_material is None
-    assert matched_book is book
+    assert best_book_match("《诺斯艾兰》", [book]) is book
 
 
-def test_best_reading_match_does_not_fall_back_to_latest() -> None:
-    latest = Material("a", "完全无关.txt", 100, 0, 9.0, 9.0)
-    matched_material, matched_book = best_reading_match("量子力学", [latest], [])
-    assert matched_material is None
-    assert matched_book is None
+def test_best_book_match_does_not_fall_back_to_latest() -> None:
+    latest = Book("b1", "完全无关", "作者", "other.epub", "h", 10, 9.0, 9.0)
+    assert best_book_match("量子力学", [latest]) is None
 
 
 class _Store:
@@ -41,7 +32,9 @@ class _Store:
     async def get_current(self) -> None:
         return None
 
-    async def get_paused_in_block(self, block_id: str) -> None:
+    async def get_paused_in_block(
+        self, block_id: str, day_start: float, day_end: float
+    ) -> None:
         return None
 
     async def get_next_task(self) -> None:
@@ -49,10 +42,6 @@ class _Store:
 
     async def insert(self, activity: Activity) -> None:
         self.inserted.append(activity)
-
-
-class _MaterialStore:
-    pass
 
 
 class _Desire:
@@ -112,15 +101,21 @@ async def test_start_next_if_idle_inserts_and_executes_default_activity() -> Non
     async def execute(activity: Activity) -> None:
         executed.append(activity)
 
+    async def start(activity: Activity, is_new: bool) -> bool:
+        assert is_new is True
+        activity.status = ActivityStatus.RUNNING
+        await store.insert(activity)
+        return True
+
     starter = ActivityStarter(
         cast(ActivityStore, store),
-        cast(MaterialStore, _MaterialStore()),
         cast(DesireFacade, _Desire()),
         get_state,
         execute,
         ActivityConfig(),
         ExplorationConfig(),
-        lambda: 1.0,
+        lambda: 1_000_000.0,
+        start,
     )
 
     task = await starter.start_next_if_idle(None)

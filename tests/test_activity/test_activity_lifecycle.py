@@ -1,18 +1,32 @@
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import cast
 
 from nyx.activity.lifecycle import ActivityLifecycle, activity_goal_signal
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ActivityStatus, ActivityType, EventType
+from nyx.enums import ActivityStatus, ActivityType, AssignedTaskStatus, EventType
 from nyx.events.bus import EventBus
-from nyx.types import Activity, Event
+from nyx.types import Activity, AssignedTask, Event
+
+
+class _Database:
+    @asynccontextmanager
+    async def transaction(self) -> AsyncGenerator[None, None]:
+        yield
 
 
 class _Store:
     def __init__(self) -> None:
+        self.db = _Database()
+        self.inserted: list[Activity] = []
         self.updated: list[Activity] = []
         self.activities: dict[str, Activity] = {}
+
+    async def insert(self, activity: Activity) -> None:
+        self.inserted.append(activity)
+        self.activities[activity.id] = activity
 
     async def update(self, activity: Activity) -> None:
         self.updated.append(activity)
@@ -33,12 +47,33 @@ class _Store:
             if activity.status in (ActivityStatus.PENDING, ActivityStatus.RUNNING)
         ]
 
+    async def claim_task_for_activity(self, task_id: str, now: float) -> bool:
+        return True
+
+    async def set_task_status(
+        self,
+        task_id: str,
+        status: AssignedTaskStatus,
+        now: float,
+        error: str | None = None,
+    ) -> AssignedTask | None:
+        return None
+
+    async def list_running_tasks(self) -> list[AssignedTask]:
+        return []
+
+    async def get_latest_activity_for_task(self, task_id: str) -> Activity | None:
+        return None
+
 
 class _Bus:
     def __init__(self) -> None:
         self.events: list[Event] = []
 
-    async def publish(self, event: Event) -> None:
+    async def append_in_transaction(self, event: Event) -> tuple[str, ...]:
+        return ()
+
+    async def announce_committed(self, event: Event) -> None:
         self.events.append(event)
 
 
@@ -50,6 +85,14 @@ class _Desire:
 
     async def mark_active(self, desire_id: str) -> None:
         self.active.append(desire_id)
+
+    async def claim_for_activity_in_transaction(self, desire_id: str) -> bool:
+        self.active.append(desire_id)
+        return True
+
+    async def resume_for_activity_in_transaction(self, desire_id: str) -> bool:
+        self.active.append(desire_id)
+        return True
 
     async def mark_suppressed(self, desire_id: str) -> None:
         self.suppressed.append(desire_id)
@@ -109,10 +152,10 @@ async def test_start_marks_running_and_publishes_event() -> None:
     lifecycle, store, bus, desire = _lifecycle()
     activity = _activity()
 
-    await lifecycle.start(activity)
+    await lifecycle.start(activity, is_new=True)
 
     assert activity.status is ActivityStatus.RUNNING
-    assert store.updated == [activity]
+    assert store.inserted == [activity]
     assert desire.active == ["d1"]
     assert bus.events[0].type is EventType.ACTIVITY_START
     assert bus.events[0].correlation_id == "c1"
@@ -136,7 +179,7 @@ async def test_fail_marks_incomplete_and_suppresses_desire() -> None:
     lifecycle, store, _bus, desire = _lifecycle()
     activity = _activity(ActivityStatus.RUNNING)
 
-    await lifecycle.fail(activity)
+    await lifecycle.fail(activity, "boom")
 
     assert activity.status is ActivityStatus.INCOMPLETE
     assert store.updated == [activity]

@@ -682,6 +682,27 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON DELETE SET NULL",
         ],
     ),
+    (
+        33,
+        [
+            "UPDATE short_term_desire SET status = 'pending' "
+            "WHERE status IN ('active', 'suppressed') AND id IN ("
+            "SELECT json_extract(a.progress, '$.desire_id') FROM activity a "
+            "WHERE a.type = 'reading' "
+            "AND a.status IN ('pending', 'running', 'paused') "
+            "AND json_type(a.progress, '$.source') = 'text' "
+            "AND json_extract(a.progress, '$.book_id') IS NULL "
+            "AND json_extract(a.progress, '$.task_id') IS NULL)",
+            "UPDATE activity SET status = 'abandoned', "
+            "ended_at = COALESCE(ended_at, CAST(strftime('%s', 'now') AS REAL)) "
+            "WHERE type = 'reading' "
+            "AND status IN ('pending', 'running', 'paused') "
+            "AND json_type(progress, '$.source') = 'text' "
+            "AND json_extract(progress, '$.book_id') IS NULL "
+            "AND json_extract(progress, '$.task_id') IS NULL",
+            "DROP TABLE material",
+        ],
+    ),
 ]
 
 

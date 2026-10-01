@@ -19,10 +19,9 @@
 
 ## 范围
 
-阅读系统负责用户陪读书库：EPUB 导入、结构化段落读取、用户/Nyx 双位置进度、阅读冲动、
-Nyx 陪读事件、用户笔记、段内划线、书签、Nyx 批注和章末/整本记忆整合。`material` 活动书库是
-Nyx 自己读的另一套数据，不由本 spec 替代；活动系统只在选材层统一两套书库，并通过本
-Facade 的窄入口读取 EPUB，不复制书籍或段落。
+阅读系统负责唯一书籍库：EPUB 导入、结构化段落读取、用户/Nyx 双位置进度、阅读冲动、
+Nyx 陪读事件、用户笔记、段内划线、书签、Nyx 批注和章末/整本记忆整合。活动系统通过本
+Facade 的窄入口枚举和读取 EPUB，不复制书籍或段落，也不维护第二套通用文件书库。
 
 ## 数据模型
 
@@ -242,11 +241,12 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
 
 ### 最小实施计划
 
-1. 在既有 `books` / `material` 行增加 JSON `memory_state`，不新增来源表、配置项或服务层。
+1. 在 `books` 行使用 JSON `memory_state`，不新增来源表、配置项或服务层；旧 `material`
+   数据源由 09-activity 的退役迁移删除。
 2. 复用 `MemoryFacade` 增加 6000 字符原文整理、稳定 source topic、同源去重与来源内检索；
    knowledge 仍走现有统一持久化和事实抽取尾段。
-3. EPUB 翻页后台累计满块沉淀，章末/书末 flush；材料阅读在推进 `read_chars` 前完成同样的
-   pending checkpoint，网页/本地探索复用现有结果 cursor 保存单条 `source_pending`。
+3. EPUB 翻页后台累计满块沉淀，章末/书末 flush；网页/本地探索复用现有结果 cursor 保存
+   单条 `source_pending`。
 4. 读书提问 attempt 只保留现有 `source_id`；用户回答时回读同书 Top 5 事实正文、完整触发
    段落和书籍画像，并同时注入 FAST/SLOW，不复制第二份原文到 attempt。
 5. 用同名书、全局高分干扰、短回复、超长段落、边界余量和两个崩溃窗口做回归；同步

@@ -50,7 +50,7 @@
 | 阅读器书架与正文窗口 | `list_books()`、`list_paragraphs()` | 展示、翻页、划线、书签和阅读进度 |
 | 阅读整合与表达回复 | 段落查询、`ReadingIntegration`、`build_reply_context()` | 原文沉淀、书籍画像和读书提问回复上下文 |
 | 委派任务 | 精确 `book_id`，执行时调用 `read_for_activity()` | 让 Nyx 读到用户指定段落 |
-| 探索欲选材 | 组合根注入 `list_readable_books()`，命中后调用 `read_for_activity()` | 与 activity material 一起进行文件名/书名模糊匹配并读取约 6000 字符 |
+| 探索欲选材 | 组合根注入 `list_readable_books()`，命中后调用 `read_for_activity()` | 在未完成 EPUB 中按文件名/书名模糊匹配并读取约 6000 字符 |
 
 ### 状态迁移表
 
@@ -75,8 +75,8 @@
 | 乱序 | 进度以 revision 做 CAS；前端和后台冲突时重读服务端状态，普通路径只允许 Nyx 位置前进 |
 | 重放 | 相同正文 hash 幂等定位已有书并由 API 返回 409；原文 pending 重放按 `book:` 来源内去重 |
 | 删除 | 当前没有公开书籍删除 API；若底层删除发生，外键按上表处理，旧活动读取返回书不存在，排队任务进入失败态 |
-| 新消费者 | 活动选材通过 `list_readable_books()` 枚举 `POST /api/books` 产生的全部未完成 EPUB，而不是只看 activity material |
-| 无本地匹配 | 活动系统进入既定搜索/默认路径，不以“最近上传 EPUB 或材料”冒充主题命中 |
+| 新消费者 | 活动选材通过 `list_readable_books()` 枚举 `POST /api/books` 产生的全部未完成 EPUB；这是活动读书的唯一候选库 |
+| 无本地匹配 | 活动系统进入既定搜索/默认路径，不以“最近上传 EPUB”冒充主题命中 |
 
 ## 进度
 

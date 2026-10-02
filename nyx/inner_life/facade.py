@@ -66,6 +66,7 @@ class InnerLifeFacade:
         self._store = store
         self._activity_facade = activity_facade
         self._desire_facade = desire_facade
+        self._memory_facade = memory_facade
         self._bus = bus
         self._reflection = Reflection(
             store, memory_facade, desire_facade, llm, evaluator, config.desire
@@ -83,13 +84,13 @@ class InnerLifeFacade:
         if consumer_id is not None:
             await self._apply_durable_event(event, consumer_id)
             return
-        snapshot: tuple[float, float, float, float] = (
-            self._valence,
-            self._arousal,
-            self._emotion_updated_at,
-            self._energy_updated_at,
-        )
         async with self._store.db.transaction():
+            snapshot: tuple[float, float, float, float] = (
+                self._valence,
+                self._arousal,
+                self._emotion_updated_at,
+                self._energy_updated_at,
+            )
             try:
                 derived_events = await self._apply_event(event, in_transaction=True)
             except BaseException:
@@ -104,23 +105,31 @@ class InnerLifeFacade:
             await self._bus.announce_committed(derived_event)
 
     async def _apply_durable_event(self, event: Event, consumer_id: str) -> None:
-        snapshot: tuple[float, float, float, float] = (
-            self._valence,
-            self._arousal,
-            self._emotion_updated_at,
-            self._energy_updated_at,
-        )
         if await self._bus.has_effect(event.id, consumer_id):
             return
         reflection_plan: ReflectionPlan | None = None
         if event.type is EventType.REFLECTION:
-            reflection_plan = await self._reflection.prepare(event.correlation_id)
+            if not await self._should_process_reflection(event):
+                async with self._store.db.transaction():
+                    await self._bus.try_mark_effect_in_transaction(
+                        event.id, consumer_id
+                    )
+                return
+            reflection_plan = await self._reflection.prepare(
+                event.correlation_id, event.content
+            )
         async with self._store.db.transaction():
             applied = await self._bus.try_mark_effect_in_transaction(
                 event.id, consumer_id
             )
             if not applied:
                 return
+            snapshot: tuple[float, float, float, float] = (
+                self._valence,
+                self._arousal,
+                self._emotion_updated_at,
+                self._energy_updated_at,
+            )
             try:
                 derived_events = await self._apply_event(
                     event,
@@ -137,6 +146,48 @@ class InnerLifeFacade:
                 raise
         for derived_event in derived_events:
             await self._bus.announce_committed(derived_event)
+
+    async def _should_process_reflection(self, event: Event) -> bool:
+        """Recheck queued reflection conditions against the latest narrative."""
+        reason = event.content.get("reason")
+        if reason is None:
+            return True  # Compatibility for direct callers and old durable rows.
+        if reason not in {
+            "periodic",
+            "memory_contradiction",
+            "reading_revisit",
+            "idle_activity",
+        }:
+            raise ValueError(f"未知反思触发原因：{reason!r}")
+        narrative = await self.get_narrative()
+        if event.timestamp <= narrative.updated_at:
+            return False
+        if reason != "periodic":
+            return True
+
+        admitted_revision = event.content.get("narrative_updated_at")
+        min_interval = event.content.get("min_interval")
+        min_new_memories = event.content.get("min_new_memories")
+        if not isinstance(admitted_revision, (int, float)) or isinstance(
+            admitted_revision, bool
+        ):
+            raise ValueError("周期反思缺 narrative_updated_at")
+        if not isinstance(min_interval, (int, float)) or isinstance(
+            min_interval, bool
+        ) or min_interval < 0:
+            raise ValueError("周期反思 min_interval 非法")
+        if not isinstance(min_new_memories, int) or isinstance(
+            min_new_memories, bool
+        ) or min_new_memories < 0:
+            raise ValueError("周期反思 min_new_memories 非法")
+        if narrative.updated_at != float(admitted_revision):
+            return False
+        if time.time() - narrative.updated_at < float(min_interval):
+            return False
+        new_count = await self._memory_facade.count_new(
+            None, narrative.updated_at
+        )
+        return new_count >= min_new_memories
 
     async def _apply_event(
         self,

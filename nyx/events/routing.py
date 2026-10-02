@@ -69,6 +69,12 @@ ROUTE_SPECS: tuple[RouteSpec, ...] = (
         "remember_activity",
     ),
     RouteSpec(
+        EventType.SCENE_MEMORY_REQUESTED,
+        "memory.scene_reply",
+        "memory",
+        "remember_scene",
+    ),
+    RouteSpec(
         EventType.REFLECTION,
         "inner_life.reflection",
         "inner_life",

@@ -703,6 +703,15 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "DROP TABLE material",
         ],
     ),
+    (
+        34,
+        [
+            "ALTER TABLE memory ADD COLUMN freshness_updated_at "
+            "REAL NOT NULL DEFAULT 0",
+            "UPDATE memory SET freshness_updated_at = "
+            "CAST(strftime('%s', 'now') AS REAL)",
+        ],
+    ),
 ]
 
 

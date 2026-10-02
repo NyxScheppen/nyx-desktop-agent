@@ -6,6 +6,9 @@
 
 - 当前系统不是纯“模块只通过总线通信”：EventBus 负责事件受理、`event_log` 持久化、`event_delivery` 投递、SSE 广播和 handler 通知；Facade 之间仍存在直接查询/编排调用。
 - `EventBus.publish(event)` 是 durable admission：根事件必须先持久化 `event_log` 和已注册 consumer 的初始 delivery，commit 成功后才返回；数据库不可用或总线关闭时抛受理错误。
+- `EventBus.publish_many(events)` 将同一业务承诺的多条事件原子受理；任一冲突或失败整批回滚，
+  已回滚行不计入 `persisted_count`，commit 后才广播/唤醒。慢通道最终 `SPEAK/ASK` 与
+  `scene_memory_requested` 使用该边界。
 - `event_log` 表示事件已发生；`event_delivery` 表示某个 `consumer_id` 对该事件的消费状态。不要用 `event_log` 推断消费者已完成。
 - `EventBus.has_effect(event_id, consumer_id)` 可在外部调用前读取已提交 effect；最终幂等仍由事务内 `try_mark_effect_in_transaction` 保证。
 - 投递语义是 at-least-once：消费者可能被重放，因此跨模块副作用必须按 `(event_id, consumer_id)` 幂等。
@@ -18,8 +21,9 @@
 - 内存队列只做唤醒优化，不做事实来源；队列满不能丢失已经持久化的事件。
 - SSE 每连接有界，满时丢最旧保最新；SSE 广播事件事实，不表示消费者完成。
 - `RouteSpec` / `ROUTE_SPECS` 是路由运行时来源；`ROUTING` / `TICK_ROUTING` 是由它派生的兼容视图；`subscriptions.py` 从同一份 route spec 注册 handler。
-- 当前已迁移的事务/幂等链：Activity 来源领取、`RUNNING` 行与 `ACTIVITY_START` 同事务；完成、失败、中断和恢复把 Activity、关联欲望、关联任务与适用的活动事件同事务提交；`DESIRE_EVAL` 的周期压力由 `desire_eval_applied` 防重，生成与 `DESIRE_GENERATED` 同事务提交；`desire.observation_state`、`desire.activity_end`、`inner_life.observation_state`、`inner_life.desire_satisfied`、`inner_life.activity_end`、`memory.activity_end`、`inner_life.reflection` 使用 `(event_id, consumer_id)` effect marker 防重放；`MemoryFacade.record_recall` 的升级和 `MEMORY_PROMOTED` 事件同事务提交。`inner_life.reflection` 的 LLM/解析在事务外完成，成功后的慢变量、effect marker 和 `REFLECTION_DONE` 在同一事务内提交，提交后才唤醒投递。
-- 委派任务与 Activity 的来源领取、终态和恢复均共享本地事务；任务状态提交后再发布无 durable consumer 的 `TASK_UPDATED` 广播事件。广播失败只记日志，不回滚已提交状态，前端还可用 REST 快照恢复。
+- 当前已迁移的事务/幂等链：Activity 来源领取、`RUNNING` 行与 `ACTIVITY_START` 同事务；完成、失败、中断和恢复把 Activity、关联欲望、关联任务与适用的活动事件同事务提交，`IDLE_REFLECTION` 完成时 `ACTIVITY_END` 与普通 `REFLECTION` 也共享该事务；`DESIRE_EVAL` 的周期压力由 `desire_eval_applied` 防重，生成与 `DESIRE_GENERATED` 同事务提交；`desire.observation_state`、`desire.activity_end`、`inner_life.observation_state`、`inner_life.desire_satisfied`、`inner_life.activity_end`、`memory.activity_end`、`memory.scene_reply`、`inner_life.reflection` 使用 `(event_id, consumer_id)` effect marker 防重放；普通新记忆与 `MEMORY_CREATED`、`MemoryFacade.record_recall` 的升级与 `MEMORY_PROMOTED` 分别同事务提交。`inner_life.reflection` 与场景记忆的 LLM/解析在事务外完成，核心状态、effect marker 和终局事件同事务提交，提交后才唤醒投递。
+- 委派任务与 Activity 的来源领取、终态和恢复均共享本地事务；完成、失败或中断事务回滚后，Facade 立即调和失去 runner 的 `RUNNING`，调和失败由下一次准入重试。取消 runner 最多等待 5 秒，超时保持原状态且不重排。
+- 任务状态提交后再发布无 durable consumer 的 `TASK_UPDATED` 广播事件。广播、立即调度或调度后回读失败只记日志，不回滚已提交状态，也不把创建请求改成失败；前端还可用 REST 快照恢复。
 - 当前未完全迁移的链仍需谨慎：包含 LLM/文件等不可回滚副作用的路径还不能宣称完整 at-least-once 幂等；`memory.activity_end` 已有本地事务和 effect marker，但其内部 LLM 关系/矛盾判断仍属 best-effort 副作用。`USER_MESSAGE` 重放时若已存在同 correlation 的终局 `SPEAK/ASK` 事件会短路，但中途无终局事件的失败仍会重试。
 - 数据库基础设施已有 `Database.close()`、`Database.transaction()`、锁/SQL 操作超时常量和基础熔断状态；`connect()` 无显式参数或 `NYX_DB` 时优先复用已存在的旧默认 `nyx.db`，否则使用 `data/nyx.db`；非内存路径会先创建父目录；不要新增绕过这些入口的长期连接管理。
 - 欲望系统额外使用 `desire_generation_attempt` 保存 LLM 已解析但尚未正式提交的结果及父长期欲望；`short_term_desire.parent_long_term_id` 与 attempt 的对应列都是可空外键，父记录删除时置空；`long_term_desire.name_normalized` 有唯一索引。数据库迁移和语义见 `04-module-bus-system.md` 与 `07-desire.md`。
@@ -42,7 +46,8 @@
 - 事件 payload 必须包含消费者完成工作所需的事实，不能依赖另一个消费者“刚好先跑完”。
 - “行为承诺后再做派生副作用”同样适用于主动搭话：欲望先原子 claim，attempt + `INITIATE_CHAT` 提交后才允许打断活动；打断失败不能撤销已提交搭话。
 - 反思检查 tick 只负责门槛判断并 durable publish `REFLECTION`，不直接调用反思逻辑；慢变量更新统一由 `inner_life.reflection` consumer 完成。
-- `inner_life.reflection` 的解析失败会抛异常，delivery 进入 `retry_wait`；事务写入失败也会回滚并重试，不能把失败反思标记为成功。
+- 四个正式 producer 使用同一 `REFLECTION`：周期 `periodic`、记忆矛盾 `memory_contradiction`、阅读重访 `reading_revisit`、闲置活动 `idle_activity`。payload 持久化触发证据；消费时复核事件时效，周期请求还复核叙事 revision、冷却和记忆门槛。已过期请求只写 effect，不产生情感或完成事件。
+- `inner_life.reflection` 的解析失败会抛异常，delivery 进入 `retry_wait`；叙事/长期欲望快照冲突或事务写入失败也会回滚并重试，不能把失败反思标记为成功。
 - 如果两个消费者之间确实有先后依赖，应显式发布后续事件或合并到同一个消费者 FIFO，不依赖订阅顺序。
 
 ## 常用判断

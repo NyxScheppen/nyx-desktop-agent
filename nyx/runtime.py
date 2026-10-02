@@ -155,7 +155,21 @@ async def check_reflect(
     new_count = await app.memory.count_new(None, narrative.updated_at)
     if new_count >= min_new_memories:
         await app.bus.publish(
-            internal_event(EventType.REFLECTION, {}, correlation_id)
+            internal_event(
+                EventType.REFLECTION,
+                {
+                    "reason": "periodic",
+                    "narrative_updated_at": narrative.updated_at,
+                    "min_interval": min_interval,
+                    "min_new_memories": min_new_memories,
+                    "new_memory_count": new_count,
+                    "evidence": (
+                        f"距上次反思已满 {min_interval:g} 秒，期间新增 "
+                        f"{new_count} 条记忆"
+                    ),
+                },
+                correlation_id,
+            )
         )
 
 

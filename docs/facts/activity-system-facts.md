@@ -56,6 +56,7 @@
 - `DESIRE_GENERATED` 事件订阅到 `activity.on_desire_generated`，新欲望出现时也会尝试启动活动。
 - `_maybe_start_activity` 不 await 完整活动，只创建后台 task，避免 EventBus 被 LLM、文件读取或探索链阻塞。
 - 同一进程内唯一活动靠两层守卫：`ActivityStarter._lock` 串行化启动决策，`ActivityFacade._task` 持有唯一后台 runner。
+- 内存 runner 已结束但数据库仍有 `RUNNING` 时，下一次准入先执行恢复调和，再进入选择，避免孤立状态永久阻塞队列。
 - 空闲选择顺序是：当前后台 task / RUNNING、同日同块 PAUSED、低精力 REST、最早 PENDING 委派任务、短期欲望、默认活动。
 - 新活动把欲望/任务条件领取、`RUNNING` Activity 插入和 `ACTIVITY_START` durable event 放在同一 SQLite 事务；构造期 `PENDING` 不作为新活动持久中间态。
 - `ActivityStore.get_current()` 只返回 status 为 `running` 的最新活动；PENDING 不算 current。
@@ -77,12 +78,13 @@
 - app context 启动后会调用 `ActivityFacade.recover_stale_running()`：DB 遗留 PENDING 一律转 `ABANDONED` 并释放关联 ACTIVE desire；遗留 RUNNING 中，`READING` / `CREATION` / `FREE_EXPLORATION` 转 `PAUSED`，瞬时活动转 `ABANDONED`，关联 desire 标 `SUPPRESSED`，不发布新的打断事件。
 - 启动恢复在同一事务处理遗留 Activity、欲望与 RUNNING 任务；任务按最新关联 Activity 终态修复，已完成 Activity 不会被盲目重排。
 - `start` 会条件领取 PENDING desire，恢复时只把 SUPPRESSED desire 重新置 ACTIVE；无 `desire_id` 的默认活动不碰 desire。
-- 正常结束把 Activity `COMPLETED`、关联任务 `COMPLETED`、必要的欲望释放与 `activity_end` 一次提交。
+- 正常结束把 Activity `COMPLETED`、关联任务 `COMPLETED`、必要的欲望释放与 `activity_end` 一次提交；`IDLE_REFLECTION` 还在同一事务追加普通 durable `REFLECTION(reason=idle_activity)`，两条事件提交后分别唤醒。
 - 异常结束把 Activity `INCOMPLETE`、ACTIVE desire `SUPPRESSED`、关联任务 `FAILED` 和错误一次提交；异常继续上抛，由 task done callback 记录。
-- 打断由 `interrupt(activity_id, by_event)` 执行：确认目标存在且 RUNNING，cancel 当前 task，await 结束后重读；若仍 RUNNING，可续类型转 PAUSED，其他类型转 ABANDONED。
+- 完成、失败或中断的收尾事务失败时先整体回滚，Facade 随后调用同一恢复事务调和已经没有 runner 的 `RUNNING`；即时恢复也失败时由下一次准入重试。
+- 打断由 `interrupt(activity_id, by_event)` 执行：确认目标存在且 RUNNING，cancel 当前 task 并最多等待 5 秒，按时结束后重读；若仍 RUNNING，可续类型转 PAUSED，其他类型转 ABANDONED。超时保持原状态且不释放来源，防止旧 runner 与新 runner 并发。
 - 当前可续类型是 `READING`、`CREATION`、`FREE_EXPLORATION`。
 - 打断把 Activity、ACTIVE desire、关联任务 `PENDING` 与 `activity_interrupted` 一次提交。
-- `quiesce()` 关闭新活动准入，取消并等待当前 runner，再按启动恢复规则原子落定遗留状态；主流程在关闭 Reading 与 EventBus 之前调用它。
+- `quiesce()` 关闭新活动准入，取消当前 runner 并最多等待 5 秒；按时结束后按启动恢复规则原子落定遗留状态，超时则保留 `RUNNING` 给 runner 自行结算或下次启动恢复；主流程在关闭 Reading 与 EventBus 之前调用它。
 - `activity_start` / `activity_interrupted` / `activity_end` 都优先使用活动 progress 中的 `correlation_id`，缺失时回退 activity id。
 
 ## 完成与满足
@@ -119,7 +121,7 @@
 - 前端每 30 秒采样，single-flight 保留最新待上报值，成功请求才推进 last-sent，失败下轮重试；WebView 降级只观察窗口内输入，不具有系统级输入感知。
 - `_App` 首次观察只建立基线，away 起点从 sampled_at 回溯到最后输入时刻；away→online 产生一次性归来，较新的 durable USER_MESSAGE 在表达前也提供 online 证据。水位阻止旧采样/消息倒灌，重新 away 废弃旧归来；SSE 重连重采样，前端请求有超时与乱序保护。归来不强制发言。
 - 昼夜是本地 22:00-06:00，只影响表达与前端视觉，不改变活动能耗或内在生命数值。
-- `IDLE_REFLECTION` 通过组合根注入的 `reflect` 回调执行反思活动；阅读重读触发的反思不走直接调用，而是发布 durable `REFLECTION` 事件。
+- `IDLE_REFLECTION` runner 返回空结果，不持有 `reflect` 回调；活动完成时沿普通 durable `REFLECTION` 路线触发反思，载荷保留 `activity_id` 和文字 evidence。阅读重读、记忆矛盾与周期触发也复用同一事件和 consumer。
 - 自由探索不再新增长期欲望；其 `strong_new_topics` 只幂等追加到活动所携带的父长期欲望 subtopics。没有明确父 ID时跳过。
 - `REST` 返回空 result。
 

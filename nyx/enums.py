@@ -15,6 +15,7 @@ class EventType(StrEnum):
     REFLECTION_DONE = "reflection_done"    # 反思完成（仅广播前端：叙事/欲望刷新+气泡）
     MEMORY_CREATED = "memory_created"      # 记忆生成
     MEMORY_PROMOTED = "memory_promoted"    # 记忆升级（短期→长期）
+    SCENE_MEMORY_REQUESTED = "scene_memory_requested"  # 慢回复场景记忆请求
     DESIRE_GENERATED = "desire_generated"  # 欲望产生
     DESIRE_SATISFIED = "desire_satisfied"  # 欲望满足
     DESIRE_EXPIRED = "desire_expired"      # 欲望淘汰

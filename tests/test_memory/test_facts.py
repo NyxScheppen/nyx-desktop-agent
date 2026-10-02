@@ -127,7 +127,7 @@ def test_extract_fact_candidates_keeps_explicit_user_preference() -> None:
     memory = Memory(
         id="m5",
         created_at=100.0,
-        content="我喜欢猫。",
+        content="用户说：我喜欢猫。",
         kind=MemoryKind.EPISODE,
         summary="用户表达偏好",
         freshness=1.0,
@@ -135,6 +135,19 @@ def test_extract_fact_candidates_keeps_explicit_user_preference() -> None:
     )
     facts = extract_fact_candidates(memory)
     assert [(fact.subject, fact.object_value) for fact in facts] == [("用户", "喜欢猫")]
+
+
+def test_extract_fact_candidates_does_not_attribute_nyx_first_person_to_user() -> None:
+    memory = Memory(
+        id="m6",
+        created_at=100.0,
+        content="我是尼克斯，我喜欢古典文学。",
+        kind=MemoryKind.EPISODE,
+        summary="尼克斯谈自己的偏好",
+        freshness=1.0,
+        type=MemoryType.SHORT_TERM,
+    )
+    assert extract_fact_candidates(memory) == []
 
 
 def test_parse_fact_extraction_honors_explicit_relation_mode() -> None:
@@ -362,10 +375,16 @@ async def test_fact_store_resolves_alias_without_scanning_entities() -> None:
             None,
         )
         cursor = await database.conn.execute(
-            "SELECT COUNT(*) FROM memory_entity "
-            "WHERE canonical_name = '尼克斯' AND entity_type = 'agent'"
+            "SELECT COUNT(*) FROM memory_entity WHERE entity_type = 'agent'"
         )
         row = await cursor.fetchone()
+        cursor = await database.conn.execute(
+            "SELECT COUNT(DISTINCT subject_entity_id) FROM memory_fact"
+        )
+        fact_subjects = await cursor.fetchone()
+        facts = await store.search("Nyx", now=200.0)
         assert row is not None and row[0] == 1
+        assert fact_subjects is not None and fact_subjects[0] == 1
+        assert {fact.predicate for fact in facts} == {"喜欢", "擅长"}
     finally:
         await database.close()

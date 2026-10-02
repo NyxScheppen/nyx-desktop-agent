@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1320" viewBox="0 0 1800 1320" role="img" aria-labelledby="title desc">
+  <title id="title">Nyx 记忆与事实生命周期</title>
+  <desc id="desc">展示记忆生成入口、统一持久化、去重强化、短期转长期、事实更新、矛盾反思和错误落点。</desc>
+  <defs>
+    <style>
+      .title { font: 700 32px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #17233c; }
+      .subtitle { font: 400 16px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #526070; }
+      .section { font: 700 19px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #17233c; }
+      .label { font: 700 15px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #17233c; }
+      .body { font: 400 14px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #263343; }
+      .small { font: 400 12px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #526070; }
+      .white { fill: #ffffff; }
+      .panel { fill: #ffffff; stroke: #ccd3dc; stroke-width: 1.5; rx: 8; }
+      .source { fill: #eef4ff; stroke: #4d75b8; stroke-width: 1.5; rx: 6; }
+      .process { fill: #edf8f7; stroke: #2b7c78; stroke-width: 1.5; rx: 6; }
+      .short { fill: #fff7df; stroke: #b27a13; stroke-width: 1.5; rx: 6; }
+      .long { fill: #edf8ef; stroke: #36804b; stroke-width: 1.5; rx: 6; }
+      .fact { fill: #f4effb; stroke: #7650a3; stroke-width: 1.5; rx: 6; }
+      .error { fill: #fff0f0; stroke: #b53b3b; stroke-width: 1.8; rx: 6; }
+      .note { fill: #f6f7f9; stroke: #aab3bf; stroke-width: 1.2; rx: 6; }
+      .arrow { fill: none; stroke: #536274; stroke-width: 2; marker-end: url(#arrow); }
+      .arrow-blue { fill: none; stroke: #3f6faf; stroke-width: 2.2; marker-end: url(#arrow-blue); }
+      .arrow-green { fill: none; stroke: #36804b; stroke-width: 2.2; marker-end: url(#arrow-green); }
+      .arrow-purple { fill: none; stroke: #7650a3; stroke-width: 2.2; marker-end: url(#arrow-purple); }
+      .arrow-red { fill: none; stroke: #b53b3b; stroke-width: 2; stroke-dasharray: 7 5; marker-end: url(#arrow-red); }
+      .dash { fill: none; stroke: #7d8794; stroke-width: 1.6; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#536274"/></marker>
+    <marker id="arrow-blue" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#3f6faf"/></marker>
+    <marker id="arrow-green" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#36804b"/></marker>
+    <marker id="arrow-purple" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#7650a3"/></marker>
+    <marker id="arrow-red" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#b53b3b"/></marker>
+  </defs>
+
+  <rect width="1800" height="1320" fill="#f7f8fa"/>
+  <text x="50" y="55" class="title">Nyx 记忆与事实生命周期</text>
+  <text x="50" y="84" class="subtitle">依据当前源码：蓝色=入口，青色=统一写入，黄色=短期，绿色=长期，紫色=事实，红色=失败落点或剩余限制</text>
+
+  <rect x="35" y="112" width="360" height="670" class="panel"/>
+  <text x="55" y="145" class="section">1. 生成入口</text>
+
+  <rect x="55" y="170" width="320" height="82" class="source"/>
+  <text x="72" y="195" class="label">慢通道对话</text>
+  <text x="72" y="218" class="body">最终回复 + scene request 原子受理</text>
+  <text x="72" y="239" class="small">durable consumer 生成；初始为 SHORT_TERM</text>
+
+  <rect x="55" y="270" width="320" height="92" class="source"/>
+  <text x="72" y="295" class="label">ACTIVITY_END durable consumer</text>
+  <text x="72" y="318" class="small">reading / creation / free_exploration</text>
+  <text x="72" y="339" class="small">真实 result → ACTIVITY / SHORT_TERM</text>
+  <text x="72" y="355" class="small">rest、idle_reflection、空结果跳过</text>
+
+  <rect x="55" y="380" width="320" height="88" class="source"/>
+  <text x="72" y="405" class="label">观察用户</text>
+  <text x="72" y="428" class="body">presence / window_title 快照发生变化</text>
+  <text x="72" y="449" class="small">USER_PROFILE / LONG_TERM；不抽取事实</text>
+
+  <rect x="55" y="486" width="320" height="92" class="source"/>
+  <text x="72" y="511" class="label">阅读、探索、委派任务</text>
+  <text x="72" y="534" class="body">原文 digest → 带来源 topic 的知识点</text>
+  <text x="72" y="555" class="small">KNOWLEDGE / LONG_TERM；批量事实抽取</text>
+  <text x="72" y="571" class="small">book / web / local 来源隔离</text>
+
+  <rect x="55" y="596" width="320" height="78" class="source"/>
+  <text x="72" y="621" class="label">章末 / 整本阅读整合</text>
+  <text x="72" y="644" class="body">reading_note LLM → 长期 READING</text>
+  <text x="72" y="663" class="small">失败保留阅读 buffer，后续边界可重试</text>
+
+  <rect x="55" y="692" width="320" height="70" class="source"/>
+  <text x="72" y="717" class="label">提问超时未回答</text>
+  <text x="72" y="740" class="body">未回答 → 短期 INTERACTION</text>
+
+  <rect x="425" y="112" width="600" height="670" class="panel"/>
+  <text x="445" y="145" class="section">2. 统一持久化 _persist_memory</text>
+
+  <rect x="455" y="170" width="540" height="62" class="process"/>
+  <text x="475" y="195" class="label">构造 Memory</text>
+  <text x="475" y="218" class="body">freshness=1.0，recall_count=0，created_at 固定</text>
+
+  <rect x="455" y="260" width="540" height="74" class="process"/>
+  <text x="475" y="285" class="label">精确去重</text>
+  <text x="475" y="308" class="body">同 kind + 同来源 topic + canonical content hash</text>
+  <text x="475" y="327" class="small">命中 → strengthen 旧记录，不创建新事实/边/事件</text>
+
+  <rect x="455" y="362" width="540" height="92" class="process"/>
+  <text x="475" y="387" class="label">embedding 与语义去重</text>
+  <text x="475" y="410" class="body">同 kind / 来源 top-1：通常 ≥0.95，episode ≥0.985 且 1h 内</text>
+  <text x="475" y="431" class="small">否定、数字、时间锚点必须兼容；命中同样 strengthen</text>
+  <text x="475" y="447" class="small">embedding 失败仅跳过语义去重、语义建边和矛盾门控</text>
+
+  <rect x="455" y="482" width="540" height="80" class="process"/>
+  <text x="475" y="507" class="label">新记录核心写入</text>
+  <text x="475" y="530" class="body">memory INSERT + 事实 apply + CREATED 同事务</text>
+  <text x="475" y="551" class="small">失败整体回滚；只有新记忆进入事实抽取</text>
+
+  <rect x="455" y="590" width="540" height="78" class="process"/>
+  <text x="475" y="615" class="label">写后尾段</text>
+  <text x="475" y="638" class="body">commit/announce → 建边 → 矛盾 → 增量衰减 / 淘汰</text>
+  <text x="475" y="657" class="small">三个提交后尾段逐项隔离，失败不撤销核心记忆</text>
+
+  <rect x="455" y="696" width="540" height="66" class="note"/>
+  <text x="475" y="721" class="label">去重强化 strengthen</text>
+  <text x="475" y="744" class="body">freshness=1.0；recall_count 不变，不升级、不改 created_at</text>
+
+  <path d="M395 447 H440" class="arrow-blue"/>
+  <path d="M725 232 V248" class="arrow"/>
+  <path d="M725 334 V350" class="arrow"/>
+  <path d="M725 454 V470" class="arrow"/>
+  <path d="M725 562 V578" class="arrow"/>
+  <path d="M725 668 V684" class="dash"/>
+
+  <rect x="1055" y="112" width="710" height="670" class="panel"/>
+  <text x="1075" y="145" class="section">3. 存储、召回与转化</text>
+
+  <rect x="1085" y="170" width="310" height="260" class="short"/>
+  <text x="1105" y="198" class="section">SHORT_TERM</text>
+  <text x="1105" y="226" class="body">• 慢通道 search 命中并进入 prompt</text>
+  <text x="1105" y="251" class="body">• record_recall：recall_count + 1</text>
+  <text x="1105" y="276" class="body">• 达 promote_threshold（默认 3）</text>
+  <text x="1105" y="301" class="body">  → type 改为 LONG_TERM</text>
+  <text x="1105" y="326" class="body">  → MEMORY_PROMOTED 同事务提交</text>
+  <text x="1105" y="351" class="body">• 按 freshness_updated_at 增量衰减</text>
+  <text x="1105" y="376" class="body">• 容量 &gt; 100：按低 freshness、</text>
+  <text x="1105" y="399" class="body">  旧 created_at 优先物理删除</text>
+  <text x="1105" y="420" class="small">删除边；事实保留，source_memory_id 置 NULL</text>
+
+  <rect x="1430" y="170" width="305" height="260" class="long"/>
+  <text x="1450" y="198" class="section">LONG_TERM</text>
+  <text x="1450" y="226" class="body">• 画像、知识、读书直接进入</text>
+  <text x="1450" y="251" class="body">• 短期达到召回阈值后进入</text>
+  <text x="1450" y="276" class="body">• 每次 recall 仍然 count + 1</text>
+  <text x="1450" y="301" class="body">• 不重复发布 promoted</text>
+  <text x="1450" y="326" class="body">• freshness 同样衰减</text>
+  <text x="1450" y="351" class="body">• 检索有轻微 type boost</text>
+  <text x="1450" y="376" class="body">• 不参与容量淘汰，无降级路径</text>
+  <text x="1450" y="399" class="small">当前没有长期容量上限或归档</text>
+
+  <path d="M1395 300 H1418" class="arrow-green"/>
+  <text x="1398" y="287" class="small">阈值</text>
+
+  <rect x="1085" y="462" width="650" height="126" class="fact"/>
+  <text x="1105" y="490" class="section">memory_entity / memory_fact（独立时序事实图）</text>
+  <text x="1105" y="518" class="body">functional：同主体+谓词的新状态关闭旧有效期；乱序历史被下一状态截断</text>
+  <text x="1105" y="543" class="body">multi：多个对象并存；同刻互斥 functional 候选删除旧冲突</text>
+  <text x="1105" y="568" class="body">查询只读当前或指定月份有效事实，不增加 recall_count，不触发升级</text>
+
+  <rect x="1085" y="616" width="650" height="126" class="process"/>
+  <text x="1105" y="644" class="section">矛盾 → 反思</text>
+  <text x="1105" y="672" class="body">仅新记忆：全局语义候选 top 5 且 cosine ≥0.6 → contradiction LLM</text>
+  <text x="1105" y="697" class="body">返回候选内 id → 发布 REFLECTION → durable inner_life.reflection</text>
+  <text x="1105" y="722" class="small">反思准备在事务外；慢变量、effect marker、REFLECTION_DONE 原子提交</text>
+
+  <path d="M995 522 H1042 V300 H1072" class="arrow"/>
+  <path d="M995 522 H1042 V525 H1072" class="arrow-purple"/>
+  <path d="M995 629 H1042 V679 H1072" class="arrow"/>
+
+  <rect x="35" y="812" width="1730" height="458" class="panel"/>
+  <text x="55" y="847" class="section">4. 错误落点、恢复措施与剩余限制</text>
+
+  <rect x="55" y="875" width="400" height="112" class="note"/>
+  <text x="75" y="901" class="label">已有降级：生成 / 检索</text>
+  <text x="75" y="925" class="body">• scene LLM / JSON 失败：delivery 退避重试</text>
+  <text x="75" y="948" class="body">• 查询 embedding 失败：退化为 keyword</text>
+  <text x="75" y="971" class="body">• facts 查询失败：返回空集，不阻塞回复</text>
+
+  <rect x="475" y="875" width="400" height="112" class="note"/>
+  <text x="495" y="901" class="label">已有降级：事实 / 矛盾 / 关系边</text>
+  <text x="495" y="925" class="body">• fact_extraction 失败：用保守 fallback</text>
+  <text x="495" y="948" class="body">• fact SQL 失败：回滚事实，保留原记忆</text>
+  <text x="495" y="971" class="body">• 矛盾 / LLM 关系失败：记录日志并跳过</text>
+
+  <rect x="895" y="875" width="400" height="112" class="note"/>
+  <text x="915" y="901" class="label">已有原子性 / 重试</text>
+  <text x="915" y="925" class="body">• recall + promotion + promoted event 同事务</text>
+  <text x="915" y="948" class="small">• 活动/场景：effect + memory + created event 同事务</text>
+  <text x="915" y="971" class="small">• 最终回复 + scene request 原子；失败最多重试 5 次</text>
+
+  <rect x="1315" y="875" width="420" height="112" class="process"/>
+  <text x="1335" y="901" class="label">已修复：核心记忆与创建事件原子</text>
+  <text x="1335" y="925" class="body">普通、活动、场景入口都先提交核心事务</text>
+  <text x="1335" y="948" class="body">建边 / 矛盾 / 衰减失败不再形成假失败</text>
+  <text x="1335" y="971" class="small">announce 失败依靠 event log 恢复 delivery</text>
+
+  <rect x="55" y="1010" width="400" height="112" class="process"/>
+  <text x="75" y="1036" class="label">已修复：别名索引与说话者归因</text>
+  <text x="75" y="1060" class="body">实体合并和查询都走 memory_entity_alias</text>
+  <text x="75" y="1083" class="body">Nyx 第一人称不再确定性归因给用户</text>
+  <text x="75" y="1106" class="small">conversation LLM 用户事实还需明确“用户”锚点</text>
+
+  <rect x="475" y="1010" width="400" height="112" class="process"/>
+  <text x="495" y="1036" class="label">已修复：freshness 增量结算</text>
+  <text x="495" y="1060" class="small">只扣上次锚点到 now；同一时刻重复结算幂等</text>
+  <text x="495" y="1083" class="body">strengthen 重置 freshness 与锚点</text>
+  <text x="495" y="1106" class="small">系统时间回拨不返鲜、不回拨锚点</text>
+
+  <rect x="895" y="1010" width="400" height="112" class="error"/>
+  <text x="915" y="1036" class="label">剩余限制：best-effort 分析不补偿</text>
+  <text x="915" y="1060" class="small">场景核心链已 durable 重试并用 effect 防重放</text>
+  <text x="915" y="1083" class="small">关系边 / 矛盾 / 衰减失败仍只记录日志</text>
+  <text x="915" y="1106" class="small">事实抽取降级为保守 fallback，不自动二次分析</text>
+
+  <rect x="1315" y="1010" width="420" height="112" class="error"/>
+  <text x="1335" y="1036" class="label">缺口 E：长期与实体事实无界增长</text>
+  <text x="1335" y="1060" class="body">LONG_TERM 无容量、归档或降级；事实和实体无清理</text>
+  <text x="1335" y="1083" class="body">短期淘汰后事实仍保留，只丢 source_memory_id</text>
+  <text x="1335" y="1106" class="small">长期运行时数据库规模只增不减</text>
+
+  <rect x="55" y="1150" width="1680" height="86" class="note"/>
+  <text x="75" y="1177" class="label">“消耗”的准确含义</text>
+  <text x="75" y="1201" class="body">记忆被召回不会从库中扣除：短期与长期都会增加 recall_count；只有短期容量溢出会删除记录。事实查询完全只读。</text>
+  <text x="75" y="1224" class="body">当前系统是“真实召回计数 + 去重 freshness 强化 + 增量衰减 + 短期容量淘汰”，不是一次性消费队列。</text>
+
+  <text x="1750" y="1298" text-anchor="end" class="small">Nyx Agent · current implementation audit · 2026-10-02</text>
+</svg>

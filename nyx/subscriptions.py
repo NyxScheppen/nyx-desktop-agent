@@ -40,6 +40,8 @@ def _resolve_handler(app: _App, spec: RouteSpec) -> Handler:
         return lambda event: app.inner_life.apply_event(event, spec.consumer_id)
     if spec.handler_key == "remember_activity":
         return lambda event: app.memory.remember_activity(event, spec.consumer_id)
+    if spec.handler_key == "remember_scene":
+        return lambda event: app.memory.remember_scene(event, spec.consumer_id)
     if spec.handler_key == "apply_reflection":
         return lambda event: app.inner_life.apply_event(event, spec.consumer_id)
 

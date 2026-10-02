@@ -18,7 +18,7 @@ from nyx.config import ExpressionConfig
 from nyx.enums import ContextMode, EventType, InteractionKind, UserIntent
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
-from nyx.events.event import internal_text_event
+from nyx.events.event import internal_event, internal_text_event
 from nyx.expression.classifier import (
     classify_channel,
     is_question,
@@ -35,6 +35,7 @@ from nyx.memory.facts import is_fact_query
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     CurrentState,
+    Event,
     LlmMessage,
     LLMOutput,
     Memory,
@@ -229,7 +230,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         memories = await deps.memory.search(state["message"])
         facts = state["facts"]
+        recalled: set[str] = set()
         for m in memories:
+            if m.id in recalled:
+                continue
+            recalled.add(m.id)
             await deps.memory.record_recall(m.id)   # 慢通道检索命中即记「想起」
         narrative = await deps.inner_life.get_narrative()
         return {
@@ -271,10 +276,26 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             outputs.append(f"{name}: {text}")
         return {"tool_outputs": outputs}
 
-    async def commit_speak(state: ReplyState, speak: str) -> None:
+    def scene_memory_event(state: ReplyState) -> Event:
+        return internal_event(
+            EventType.SCENE_MEMORY_REQUESTED,
+            {
+                "user_message": state["message"],
+                "nyx_think": "\n".join(state["think"]),
+                "nyx_speak": "\n".join(state["speak"]),
+            },
+            state["correlation_id"],
+        )
+
+    async def commit_speak(
+        state: ReplyState, speak: str, followup: Event | None = None
+    ) -> None:
         event = internal_text_event(EventType.SPEAK, speak, state["correlation_id"])
         try:
-            await deps.bus.publish(event)
+            if followup is None:
+                await deps.bus.publish(event)
+            else:
+                await deps.bus.publish_many([event, followup])
         except BaseException as error:
             if state["claimed_return"] is not None:
                 try:
@@ -375,9 +396,13 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 state["correlation_id"],
                 state["correlation_id"],
                 claimed_return=state["claimed_return"],
+                followup_events=[scene_memory_event(state)],
             )
             return {"ask": speak}
-        await commit_speak(state, speak)
+        final_round = state["round"] + 1 >= deps.config.slow_max_rounds
+        await commit_speak(
+            state, speak, scene_memory_event(state) if final_round else None
+        )
         return {"ask": None, "round": state["round"] + 1}
 
     async def record_message(state: ReplyState) -> dict[str, Any]:
@@ -399,17 +424,6 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             )
         return {}
 
-    async def generate_scene_memory(state: ReplyState) -> dict[str, Any]:
-        if state["fallback"]:
-            return {}
-        await deps.memory.create_scene_memory({
-            "correlation_id": state["correlation_id"],
-            "user_message": state["message"],
-            "nyx_think": "\n".join(state["think"]),
-            "nyx_speak": "\n".join(state["speak"]),
-        })
-        return {}
-
     def route_after_classify(state: ReplyState) -> str:
         return "assemble_context" if state["mode"] is ContextMode.SLOW else "respond"
 
@@ -420,11 +434,10 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
 
     def route_after_should_ask(state: ReplyState) -> str:
         if state["ask"] is not None:
-            # 问句：回合结束，也记场景化记忆
-            return "generate_scene_memory"
+            return "record_message"
         if state["round"] < deps.config.slow_max_rounds:
             return "respond"                               # 未到轮数上限，继续下一轮
-        return "generate_scene_memory"                     # 轮满，回合结束
+        return "record_message"                            # 轮满，回合结束
 
     graph = StateGraph(ReplyState)
     graph.add_node("classify_channel", classify)
@@ -433,7 +446,6 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     graph.add_node("respond", respond)
     graph.add_node("should_ask", should_ask)
     graph.add_node("record_message", record_message)
-    graph.add_node("generate_scene_memory", generate_scene_memory)
     graph.set_entry_point("classify_channel")
     graph.add_conditional_edges(
         "classify_channel",
@@ -450,8 +462,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     graph.add_conditional_edges(
         "should_ask",
         route_after_should_ask,
-        {"respond": "respond", "generate_scene_memory": "generate_scene_memory"},
+        {"respond": "respond", "record_message": "record_message"},
     )
-    graph.add_edge("generate_scene_memory", "record_message")
     graph.add_edge("record_message", END)
     return graph.compile()

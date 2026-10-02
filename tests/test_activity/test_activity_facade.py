@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 from nyx import db
+from nyx.activity import lifecycle as _activity_lifecycle
 from nyx.activity.facade import (
     _CREATION_STYLES,
     ActivityFacade,
@@ -62,7 +63,6 @@ from nyx.types import (
     Memory,
     Personality,
     ReadingProgress,
-    ReflectionOutcome,
     ShortTermDesire,
     Values,
 )
@@ -440,10 +440,6 @@ class _BlockingWebTaskTools(_FakeTools):
         return await super().call(name, args)
 
 
-async def _no_reflect(correlation_id: str | None) -> ReflectionOutcome | None:
-    return None
-
-
 async def _no_observation() -> dict[str, str]:
     return {"presence": "away", "window_title": ""}
 
@@ -454,7 +450,6 @@ async def _new_facade(
     energy: float = 80.0,
     llm: _FakeLlm | None = None,
     evaluator: _FakeEvaluator | None = None,
-    reflect: Callable[[str | None], Awaitable[ReflectionOutcome | None]] | None = None,
     get_observation: Callable[[], Awaitable[dict[str, str]]] | None = None,
     desire: _FakeDesire | None = None,
     memory: _FakeMemory | None = None,
@@ -489,7 +484,6 @@ async def _new_facade(
         ),
         cast(MemoryFacade, memory if memory is not None else _FakeMemory()),
         get_state,
-        reflect if reflect is not None else _no_reflect,
         get_observation if get_observation is not None else _no_observation,
         ActivityConfig(),
         exploration_config or ExplorationConfig(),
@@ -661,6 +655,28 @@ async def test_interrupted_assigned_task_returns_to_queue() -> None:
         await database.conn.close()
 
 
+async def test_assignment_survives_post_commit_scheduling_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, store, bus, database = await _new_facade(
+        tools=_WebTaskTools("正文"),
+        exploration_config=ExplorationConfig(web_enabled=True),
+    )
+
+    async def fail_start() -> None:
+        raise RuntimeError("scheduler unavailable")
+
+    monkeypatch.setattr(facade, "_maybe_start_activity", fail_start)
+    try:
+        async with _running(bus):
+            assigned = await facade.assign_web_task("https://example.com/queued")
+        saved = await store.get_task(assigned.id)
+        assert assigned.status is AssignedTaskStatus.PENDING
+        assert saved is not None and saved.status is AssignedTaskStatus.PENDING
+    finally:
+        await database.conn.close()
+
+
 async def test_quiesce_cancels_runner_and_returns_task_to_queue() -> None:
     tools = _BlockingWebTaskTools()
     facade, store, bus, database = await _new_facade(
@@ -709,6 +725,49 @@ async def test_quiesce_recovers_even_when_cancel_cleanup_raises() -> None:
         assert activity is not None
         assert activity.status is ActivityStatus.PAUSED
     finally:
+        await database.conn.close()
+
+
+async def test_quiesce_timeout_leaves_live_runner_durably_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, store, _bus, database = await _new_facade()
+    release = asyncio.Event()
+
+    async def ignore_first_cancel() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    try:
+        await store.create_task(_assigned_task("t1"))
+        await store.insert(
+            _activity(
+                "a1",
+                status=ActivityStatus.RUNNING,
+                progress={"task_id": "t1", "correlation_id": "t1"},
+            )
+        )
+        facade._task = asyncio.create_task(ignore_first_cancel())
+        await asyncio.sleep(0)
+        monkeypatch.setattr(
+            _activity_lifecycle,
+            "_RUNNER_CANCEL_TIMEOUT_SECONDS",
+            0.01,
+            raising=False,
+        )
+
+        await asyncio.wait_for(facade.quiesce(), timeout=0.2)
+
+        activity = await store.get("a1")
+        task = await store.get_task("t1")
+        assert activity is not None and activity.status is ActivityStatus.RUNNING
+        assert task is not None and task.status is AssignedTaskStatus.RUNNING
+    finally:
+        release.set()
+        if facade._task is not None:
+            await asyncio.gather(facade._task, return_exceptions=True)
         await database.conn.close()
 
 
@@ -1107,25 +1166,24 @@ async def test_creation_resume_uses_checkpoint_without_rewriting(
         await database.conn.close()
 
 
-async def test_idle_reflection_result_has_summary(
+async def test_idle_reflection_uses_durable_reflection_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """发呆反思：回带 story 作为 result.summary（不发 REFLECTION 事件）。"""
+    """发呆活动本身无 LLM 副作用，完成事务负责受理 REFLECTION。"""
     t0 = 1_000_000.0
     monkeypatch.setattr("nyx.activity.facade.time.time", lambda: t0)
 
-    async def fake_reflect(correlation_id: str | None) -> ReflectionOutcome | None:
-        return ReflectionOutcome(story="今天的故事", story_is_new=True)
-
-    facade, store, bus, database = await _new_facade(
-        energy=30.0, reflect=fake_reflect
-    )
+    facade, store, bus, database = await _new_facade(energy=30.0)
     try:
         async with _running(bus):
             await facade._maybe_start_activity()
             await _await_task(facade)
         acts = await store.list_schedule(0.0)
-        assert acts[0].progress["result"] == {"summary": "今天的故事"}
+        assert acts[0].progress["result"] == {}
+        events = await bus.list_events(event_type=EventType.REFLECTION)
+        assert len(events) == 1
+        assert events[0].content["reason"] == "idle_activity"
+        assert events[0].content["activity_id"] == acts[0].id
     finally:
         await database.conn.close()
 
@@ -1293,7 +1351,7 @@ async def test_execute_free_exploration_failure_marks_incomplete(
         await database.conn.close()
 
 
-async def test_exploration_completion_commit_failure_keeps_running(
+async def test_exploration_completion_commit_failure_recovers_paused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     facade, store, bus, database = await _new_facade()
@@ -1321,7 +1379,12 @@ async def test_exploration_completion_commit_failure_keeps_running(
 
         got = await store.get("a1")
         assert got is not None
-        assert (got.status, got.ended_at) == (ActivityStatus.RUNNING, None)
+        assert got.status is ActivityStatus.PAUSED
+        assert got.ended_at is not None
+        assert all(
+            event.type is not EventType.ACTIVITY_END
+            for event in await bus.list_events()
+        )
     finally:
         await database.conn.close()
 
@@ -1486,7 +1549,7 @@ async def test_complete_activity_rolls_back_when_event_append_fails(
         assert running is not None
 
         with pytest.raises(RuntimeError):
-            await facade.complete_activity(running)
+            await facade._lifecycle.complete(running)
 
         got = await store.get("a1")
         task = await store.get_task("t1")
@@ -1545,6 +1608,119 @@ async def test_start_activity_rolls_back_when_event_append_fails(
         assert got_desire is not None
         assert got_desire.status is DesireStatus.PENDING
         assert await bus.list_events() == []
+    finally:
+        await database.conn.close()
+
+
+async def test_complete_failure_recovers_orphaned_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, store, bus, database = await _new_facade()
+
+    async def fail_append(event: Event) -> tuple[str, ...]:
+        raise RuntimeError("event append failed")
+
+    try:
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        await store.create_task(_assigned_task("t1"))
+        await store.insert(
+            _activity(
+                "a1",
+                type_=ActivityType.READING,
+                status=ActivityStatus.RUNNING,
+                progress={"task_id": "t1", "correlation_id": "t1"},
+            )
+        )
+        running = await store.get("a1")
+        assert running is not None
+
+        with pytest.raises(RuntimeError, match="event append failed"):
+            await facade.complete_activity(running)
+
+        got = await store.get("a1")
+        task = await store.get_task("t1")
+        assert got is not None and got.status is ActivityStatus.PAUSED
+        assert task is not None and task.status is AssignedTaskStatus.PENDING
+    finally:
+        await database.conn.close()
+
+
+async def test_failed_settlement_recovers_orphaned_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, store, _bus, database = await _new_facade()
+    original_set_status = store.set_task_status
+    failed_once = False
+
+    async def fail_first_terminal_update(
+        task_id: str,
+        status: AssignedTaskStatus,
+        now: float,
+        error: str | None = None,
+    ) -> AssignedTask | None:
+        nonlocal failed_once
+        if status is AssignedTaskStatus.FAILED and not failed_once:
+            failed_once = True
+            raise RuntimeError("task update failed")
+        return await original_set_status(task_id, status, now, error)
+
+    async def fail_run(_activity: Activity) -> dict[str, Any]:
+        raise ValueError("runner failed")
+
+    try:
+        await store.create_task(_assigned_task("t1"))
+        await store.insert(
+            _activity(
+                "a1",
+                status=ActivityStatus.RUNNING,
+                progress={"task_id": "t1", "correlation_id": "t1"},
+            )
+        )
+        running = await store.get("a1")
+        assert running is not None
+        monkeypatch.setattr(store, "set_task_status", fail_first_terminal_update)
+        monkeypatch.setattr(facade, "_run_activity", fail_run)
+
+        with pytest.raises(RuntimeError, match="task update failed"):
+            await facade._execute(running)
+
+        got = await store.get("a1")
+        task = await store.get_task("t1")
+        assert got is not None and got.status is ActivityStatus.PAUSED
+        assert task is not None and task.status is AssignedTaskStatus.PENDING
+    finally:
+        await database.conn.close()
+
+
+async def test_next_admission_recovers_done_runner_before_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, store, _bus, database = await _new_facade()
+
+    async def keep_idle(
+        current_task: asyncio.Task[None] | None,
+    ) -> asyncio.Task[None] | None:
+        return current_task
+
+    try:
+        await store.create_task(_assigned_task("t1"))
+        await store.insert(
+            _activity(
+                "a1",
+                status=ActivityStatus.RUNNING,
+                progress={"task_id": "t1", "correlation_id": "t1"},
+            )
+        )
+        facade._task = asyncio.create_task(asyncio.sleep(0))
+        await facade._task
+        monkeypatch.setattr(facade._starter, "start_next_if_idle", keep_idle)
+
+        await facade._maybe_start_activity()
+
+        activity = await store.get("a1")
+        task = await store.get_task("t1")
+        assert activity is not None and activity.status is ActivityStatus.PAUSED
+        assert task is not None and task.status is AssignedTaskStatus.PENDING
     finally:
         await database.conn.close()
 
@@ -1926,6 +2102,36 @@ async def test_resume_skips_different_block(
         assert len(ids) == 2                       # 新起一个活动
         new = next(a for a in acts if a.id != "p1")
         assert new.type is ActivityType.OBSERVE_USER
+    finally:
+        await database.conn.close()
+
+
+async def test_interrupt_failure_recovers_cancelled_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, store, bus, database = await _new_facade()
+
+    async def fail_append(event: Event) -> tuple[str, ...]:
+        raise RuntimeError("event append failed")
+
+    try:
+        monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        await store.create_task(_assigned_task("t1"))
+        await store.insert(
+            _activity(
+                "a1",
+                status=ActivityStatus.RUNNING,
+                progress={"task_id": "t1", "correlation_id": "t1"},
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="event append failed"):
+            await facade.interrupt("a1", EventType.USER_MESSAGE)
+
+        activity = await store.get("a1")
+        task = await store.get_task("t1")
+        assert activity is not None and activity.status is ActivityStatus.PAUSED
+        assert task is not None and task.status is AssignedTaskStatus.PENDING
     finally:
         await database.conn.close()
 

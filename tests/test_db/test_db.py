@@ -149,6 +149,47 @@ async def test_migrate_adds_source_memory_state_columns() -> None:
     assert "memory_state" in columns["books"]
 
 
+async def test_migrate_adds_memory_freshness_settlement_anchor() -> None:
+    conn = await _migrated_conn()
+    try:
+        cursor = await conn.execute("PRAGMA table_info(memory)")
+        columns = {row["name"]: row for row in await cursor.fetchall()}
+    finally:
+        await conn.close()
+    assert columns["freshness_updated_at"]["notnull"] == 1
+
+
+async def test_freshness_anchor_migration_preserves_existing_freshness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = db._MIGRATIONS
+    monkeypatch.setattr(db, "_MIGRATIONS", [m for m in full if m[0] <= 33])
+    conn = await _migrated_conn()
+    try:
+        await conn.execute(
+            "INSERT INTO memory "
+            "(id, created_at, content, kind, topics, summary, freshness, type, "
+            "recall_count, aspect, embedding, content_hash, first_created_at) "
+            "VALUES ('old', 1.0, 'old', 'episode', '[]', 'old', 0.42, "
+            "'short_term', 0, '[]', NULL, 'hash', 1.0)"
+        )
+        await conn.commit()
+        monkeypatch.setattr(db, "_MIGRATIONS", full)
+
+        await db.migrate(conn)
+
+        row = await (
+            await conn.execute(
+                "SELECT freshness, freshness_updated_at FROM memory WHERE id = 'old'"
+            )
+        ).fetchone()
+        assert row is not None
+        assert row["freshness"] == pytest.approx(0.42)
+        assert row["freshness_updated_at"] > 0
+    finally:
+        await conn.close()
+
+
 async def test_migrate_adds_paragraph_format_column() -> None:
     conn = await _migrated_conn()
     try:

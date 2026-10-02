@@ -93,8 +93,12 @@ reading_context、claimed_return 和 fallback。
   `MemoryFacade.search(message)`，因此“嗯”“我不觉得”等短回复也不会丢失书中语境。
 - SLOW 在回复前执行回溯、记忆检索、recall 记录、自我叙事读取和一次工具判断；回复可连续
   多轮，轮数上限由 `slow_max_rounds` 定义。
-- 慢通道命中问句后注册 `CHAT_ASK`，发布 `ASK`，结束本回合并生成场景记忆；未命中且未达
-  轮数上限时继续续写。
+- 慢通道召回按 memory id 去重记录 recall；相同对象即使由多条召回路径重复返回，同一回合
+  只计一次。
+- 慢通道命中问句后注册 `CHAT_ASK`，把 `ASK` 与 `scene_memory_requested` 原子提交后结束；
+  非问句达到轮数上限时把最终 `SPEAK` 与该请求原子受理。未命中且未达上限时继续续写。
+- 场景记忆请求携带完整 user message、累计 think 和累计 speak，由 `memory.scene_reply`
+  durable consumer 异步生成记忆；回复图不等待 scene LLM。FAST 与 fallback 不产生该请求。
 
 ### Prompt
 
@@ -234,6 +238,8 @@ Nyx：好的，我在这里等着你
 - fallback 事件和历史成功完成后，用户消息处理才算成功；事件/本地持久化失败交由总线
   delivery 重试。相关 correlation 已有终局 SPEAK、ASK 或 fallback 时，重放入口不得再次
   调用 LLM。
+- 最终慢通道回复与 `scene_memory_requested` 的任一写入失败都会回滚同一批受理；不能出现
+  终局 `SPEAK/ASK` 已提交、请求缺失后又被用户消息重放短路的半完成状态。
 
 ## InteractionAttempt
 
@@ -292,6 +298,8 @@ async def latest_created_at(kind: InteractionKind) -> float | None
 ## 普通提问与读书提问
 
 - 普通 FAST/SLOW 回复产生问句时调用 `register_question(..., CHAT_ASK, ...)`。
+- 慢通道普通提问允许向 `register_question` 附带场景请求；attempt、ASK 和请求同事务提交。
+  快通道提问只提交 attempt + ASK。
 - 读书提问生成后必须通过统一 `is_question()` 校验；`QUOTE_QUESTION` 还必须有非空第二行
   quote。正式组合根成功后调用 `commit_reading_question()`，把 attempt、ASK 和
   READING_QUESTION 同事务提交；只对未提供该方法的测试 fake 兼容回退
@@ -347,6 +355,8 @@ async def latest_created_at(kind: InteractionKind) -> float | None
 
 - `runtime.py` 是用户消息、tick、主动搭话和超时的真实入口；`main.py` 同名兼容函数只能委托。
 - 事件持久化、分发、delivery/retry、重放和关停遵循 `04-module-bus-system.md`。
+- `SCENE_MEMORY_REQUESTED` 只由慢通道正常终局产生；前端将它作为 opaque no-op，
+  `memory.scene_reply` 的重试、幂等与 bad case 由 `06-memory-system.md` 定义。
 - 所有 LLM 真实调用可注入 fake；测试重点是通道拓扑、状态转换、事件字段、失败重试、
   重放短路和读书提问关联，不测试生成文本质量。
 - 时间测试覆盖 `05:59/06:00`、`21:59/22:00`、同小时、5/30/120 分钟边界、跨午夜、

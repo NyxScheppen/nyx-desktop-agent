@@ -170,6 +170,29 @@ describe("useSSE", () => {
     expect(dispatch).toHaveBeenNthCalledWith(3, expect.objectContaining({ event: "reading_association", memory_id: "m1" }));
   });
 
+  it("EVENT_TYPES 含场景记忆请求：命名帧被监听并 dispatch", () => {
+    const dispatch = vi.fn();
+    renderHook(() => useSSE(dispatch));
+
+    act(() => {
+      FakeEventSource.instances[0].emit(
+        "scene_memory_requested",
+        JSON.stringify({
+          event_id: "scene-1",
+          correlation_id: "reply-1",
+          timestamp: 4,
+          reply: "今天聊到了海边",
+        }),
+      );
+    });
+
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      event: "scene_memory_requested",
+      event_id: "scene-1",
+      correlation_id: "reply-1",
+    }));
+  });
+
   it("坏 data / 缺字段帧跳过不崩", () => {
     const dispatch = vi.fn();
     renderHook(() => useSSE(dispatch));
@@ -353,6 +376,27 @@ describe("dispatchEvent", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
+  it("scene_memory_requested → no-op，不触发任何 store", () => {
+    const refreshSpies = [
+      vi.spyOn(useInnerLifeStore.getState(), "refreshState").mockResolvedValue(undefined),
+      vi.spyOn(useDesireStore.getState(), "refresh").mockResolvedValue(undefined),
+      vi.spyOn(useActivityStore.getState(), "refresh").mockResolvedValue(undefined),
+      vi.spyOn(useMemoryStore.getState(), "refresh").mockResolvedValue(undefined),
+    ];
+
+    dispatchEvent({
+      event: "scene_memory_requested",
+      event_id: "scene-1",
+      correlation_id: "reply-1",
+      timestamp: 4,
+      reply: "今天聊到了海边",
+    });
+
+    expect(refreshSpies.map((spy) => spy.mock.calls.length)).toEqual([0, 0, 0, 0]);
+    expect(useChatStore.getState().messages).toHaveLength(0);
+    expect(useAnnounceStore.getState().items).toHaveLength(0);
+  });
+
   it("mutter → announceStore（冒气泡，不进 chatStore）", () => {
     dispatchEvent({
       event: "mutter",
@@ -411,6 +455,9 @@ describe("dispatchEvent", () => {
     const desireSpy = vi
       .spyOn(useDesireStore.getState(), "refresh")
       .mockResolvedValue(undefined);
+    const innerLifeSpy = vi
+      .spyOn(useInnerLifeStore.getState(), "refreshState")
+      .mockResolvedValue(undefined);
 
     dispatchEvent({
       event: "reflection_done",
@@ -422,6 +469,7 @@ describe("dispatchEvent", () => {
     });
 
     expect(desireSpy).toHaveBeenCalledTimes(1);
+    expect(innerLifeSpy).toHaveBeenCalledTimes(1);
     expect(useAnnounceStore.getState().items).toHaveLength(1);
     expect(useAnnounceStore.getState().items[0]).toMatchObject({
       kind: "mutter",
@@ -432,6 +480,9 @@ describe("dispatchEvent", () => {
   it("reflection_done（story_is_new=false）→ 静默 refresh 不气泡", () => {
     const desireSpy = vi
       .spyOn(useDesireStore.getState(), "refresh")
+      .mockResolvedValue(undefined);
+    const innerLifeSpy = vi
+      .spyOn(useInnerLifeStore.getState(), "refreshState")
       .mockResolvedValue(undefined);
 
     dispatchEvent({
@@ -444,6 +495,7 @@ describe("dispatchEvent", () => {
     });
 
     expect(desireSpy).toHaveBeenCalledTimes(1);
+    expect(innerLifeSpy).toHaveBeenCalledTimes(1);
     expect(useAnnounceStore.getState().items).toHaveLength(0);
   });
 

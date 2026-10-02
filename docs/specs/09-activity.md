@@ -84,12 +84,12 @@
 - [ ] `get_results()` 返回跨天历史产出并按 `ended_at DESC`；`limit` / `offset` 在 SQL 层分页，`activity_type` 非空时在 SQL 层过滤，不先物化全部记录。数据库迁移为创作历史查询建立 `(status, type, ended_at DESC)` 复合索引。
 - [ ] 新活动在一个本地事务中完成来源条件领取（欲望 `PENDING -> ACTIVE` 或任务 `PENDING -> RUNNING`）、activity `RUNNING` 插入和 `ACTIVITY_START` durable event 写入；任一步失败整体回滚。`PENDING` 只作为构造期与旧库恢复兼容状态，不再作为新活动的持久启动中间态。
 - [ ] `activity_start`、`activity_end`、`activity_interrupted` 由活动 Facade/Lifecycle 自己发布，`source=INTERNAL`；事件优先使用活动 `progress["correlation_id"]`，缺失时回退活动 id。
-- [ ] `complete_activity` 将活动、关联任务 `COMPLETED`、`goal_signal=None` 时的欲望释放和 `ACTIVITY_END` 在同一事务提交。执行异常把活动 `INCOMPLETE`、关联欲望 `SUPPRESSED`、关联任务 `FAILED` 与错误文本在同一事务提交，并继续抛出异常供后台 task 收割。业务事务提交后 announce/wake 失败不得反向把已完成活动改成 `INCOMPLETE`。
+- [ ] `complete_activity` 将活动、关联任务 `COMPLETED`、`goal_signal=None` 时的欲望释放和 `ACTIVITY_END` 在同一事务提交；当活动类型为 `IDLE_REFLECTION` 时，同一事务再追加普通 durable `REFLECTION(reason=idle_activity)`，不新增专用事件。执行异常把活动 `INCOMPLETE`、关联欲望 `SUPPRESSED`、关联任务 `FAILED` 与错误文本在同一事务提交，并继续抛出异常供后台 task 收割。业务事务提交后逐条 announce；announce/wake 失败不得反向把已完成活动改成 `INCOMPLETE`。
 - [ ] 进程启动时，组合根在订阅事件前调用 `recover_stale_running()`：遗留 `PENDING` 一律转 `ABANDONED` 并把关联 ACTIVE 欲望释放回 `PENDING`；遗留 `RUNNING` 中 `READING`、`CREATION`、`FREE_EXPLORATION` 转 `PAUSED`，其余转 `ABANDONED`，关联欲望转 `SUPPRESSED`；不发布新的 `activity_interrupted`。
-- [ ] `interrupt` 只处理存在且当前为 `RUNNING` 的目标；取消并等待执行 task 后重读活动状态，再将可续类型置 `PAUSED`，其余置 `ABANDONED`，释放关联的活动占用并发布 `activity_interrupted`。
+- [ ] `interrupt` 只处理存在且当前为 `RUNNING` 的目标；取消执行 task 并最多等待 5 秒，按时结束后重读活动状态，再将可续类型置 `PAUSED`，其余置 `ABANDONED`，释放关联的活动占用并发布 `activity_interrupted`。超时时保持原状态且不释放来源、不发布事件，避免仍存活的旧 runner 与新 runner 并发执行。
 - [ ] 可续活动类型固定为 `READING`、`CREATION`、`FREE_EXPLORATION`。只有系统本地同一自然日且同一 `schedule_block_id` 的最近 `PAUSED` 记录可恢复，复用原 activity id；跨日期或跨日程块的旧 `PAUSED` 只留档，不自动恢复。
 - [ ] `schedule_block_id(now, grid_minutes)` 先把时间戳转换为系统本地时间，再按本地小时/分钟向下对齐网格，返回 `"HH:MM"`；不得用 `now % 86400` 推导用户本地时钟。
-- [ ] `quiesce()` 先关闭新活动准入，再取消并等待当前后台 task，随后在共享数据库关闭前按启动恢复规则原子落定遗留活动、欲望和任务；正常关停不发布伪造的用户打断事件。
+- [ ] `quiesce()` 先关闭新活动准入，再取消当前后台 task 并最多等待 5 秒；runner 按时结束后，在共享数据库关闭前按启动恢复规则原子落定遗留活动、欲望和任务。超时 runner 保持原 `RUNNING` 状态且不重排，留给其后续自行结算或下次启动恢复；正常关停不发布伪造的用户打断事件。
 
 ### 委派任务数据模型与持久化
 
@@ -160,6 +160,8 @@ class AssignedTask:
 - 任务活动被打断时在活动中断事务内回到 `PENDING`；同日同块优先恢复原活动并重新领取，跨块则创建新的 activity 从持久化 checkpoint 继续，旧 `PAUSED` 记录只留档。
 - 启动恢复按关联 activity 调和遗留 `RUNNING` 任务：活动已完成则任务补为 `COMPLETED`，活动失败则任务补为 `FAILED`，可恢复/无执行者则任务回到 `PENDING`；不得把已有完成证据的任务盲目重排执行。
 - 任务状态先落库，再按 04-module-bus-system 发布 `task_updated` 广播；SSE 失败不得回滚任务状态。
+- 完成、失败或中断的收尾事务失败时先保持原子回滚，再由 Facade 立即执行恢复调和；若恢复也遇到临时故障，下一次准入发现内存 runner 已结束而数据库仍为 `RUNNING` 时必须重试恢复，不能让孤立 `RUNNING` 永久阻塞队列。
+- 创建任务提交成功后，`task_updated`、立即调度和调度后的状态回读都是提交后旁路；旁路失败只记录日志并返回已持久化的任务快照，不得让发布 API 返回假失败。任务插入本身失败仍正常抛错。
 
 ### 网页委派任务
 
@@ -266,7 +268,7 @@ class AssignedTask:
   沿用本地搜索配置，不调用 web 工具。没有非空 topic 时不能臆测书名，直接走既有默认活动。
   自动 EPUB 读块返回 `completed=False` 时必须显式写 `goal_signal=None`。
 - [ ] `CREATION` 执行一次创作 LLM，并通过 `ToolRegistry` 写入 `workspace/creations/<safe-title>-<activity-hash>.md`。
-- [ ] `IDLE_REFLECTION` 调用组合根注入的 `inner_life.reflect`，不自行发布 `REFLECTION` 事件，并把反思摘要放进结果。
+- [ ] `IDLE_REFLECTION` runner 只返回空结果，不直接调用 `inner_life.reflect`；活动成功完成时由 lifecycle 沿传统事件路线追加 `REFLECTION`，载荷为 `{reason: "idle_activity", activity_id, evidence}`，后续统一由 `inner_life.reflection` durable consumer 复核和处理。
 - [ ] `OBSERVE_USER` 读取组合根维护的 presence、窗口标题和可选 screen summary，使用 `build_observation_summary` 生成摘要，运行时不调用 LLM。
 - [ ] `REST` 不调用 LLM，返回空 result。
 - [ ] 空槽默认活动：无欲望或全为互动欲时，精力 `< ENERGY_REST_THRESHOLD` 选择 `IDLE_REFLECTION`，否则选择 `OBSERVE_USER`；默认活动不关联欲望。
@@ -330,6 +332,9 @@ class AssignedTask:
 | 目标已经读过 | 幂等完成，不回退进度、不增加读完次数 |
 | 活动中断或进程崩溃 | 从 checkpoint 重排或恢复，不永久停在 `RUNNING` |
 | 记忆已写但 checkpoint 未推进 | 允许重放，由同一来源内去重吸收 |
+| 完成/失败/中断收尾事务回滚 | 立即恢复调和；恢复仍失败时由下一次准入重试，不遗留无执行者的 `RUNNING` |
+| runner 吞掉取消 | 5 秒后停止等待，保持原状态且不重排，避免双 runner |
+| 任务已提交但立即调度失败 | 返回已持久化任务，保持 `PENDING` 等待后续 tick，不向用户报告发布失败 |
 | 用户与后台同时保存进度 | 12-reading-system 的 revision 冲突合并保证普通路径 Nyx 位置只前进 |
 | 模糊匹配到多个候选 | 最高分优先，同分取最近导入；不随机选择 |
 | 主题没有本地匹配 | 跳过“读最新”，按限速和联网配置进入探索 |
@@ -371,7 +376,7 @@ class AssignedTask:
 |---|---|
 | 空 | 无候选生成默认活动；无 topic 不臆测 EPUB |
 | 失败 | 本地事务整体回滚；runner 失败进入 `INCOMPLETE` |
-| 部分完成 | checkpoint 先于不可逆副作用，EPUB 进度由阅读系统单调推进 |
+| 部分完成 | checkpoint 先于不可逆副作用，EPUB 进度由阅读系统单调推进；闲置活动终态与反思请求同事务，不会只落一边 |
 | 乱序 | 启动锁串行选择；只恢复同日同块最新暂停项 |
 | 重放 | durable consumer effect marker 防重复；runner 按 checkpoint 跳过已完成步骤 |
 | 删除 | EPUB 被删除时任务可见失败；旧 material 未完成活动由迁移退役 |
@@ -389,8 +394,9 @@ class AssignedTask:
 | `PENDING` | 与活动原子启动成功 | `RUNNING` | 同事务写 Activity 与开始事件 |
 | `RUNNING` | Activity 完成/失败 | `COMPLETED/FAILED` | 与 Activity 终态同事务 |
 | `RUNNING` | 打断、关闭或可恢复崩溃 | `PENDING` | checkpoint 保留 |
+| `RUNNING` | 收尾事务回滚且 runner 已结束 | `PENDING` | 恢复调和把 Activity 置 `PAUSED/ABANDONED`；恢复失败由下一次准入重试 |
 
-**Bad case 表**：空队列不建活动；失败保存 500 字符错误；部分完成保留 checkpoint；FIFO 消除选择乱序；重复创建活动任务返回已有活跃任务；书删除时失败，不改选其它书。
+**Bad case 表**：空队列不建活动；失败保存 500 字符错误；部分完成保留 checkpoint；FIFO 消除选择乱序；重复创建活动任务返回已有活跃任务；书删除时失败，不改选其它书；取消超时保持 `RUNNING` 且不重排；提交后调度失败仍返回已持久化任务。
 
 ### Legacy Material
 
@@ -408,11 +414,12 @@ class AssignedTask:
 - [ ] `tests/test_activity/test_scheduler.py`：四种欲望映射、权重排序与 FIFO、缺失值默认 0、空输入、低精力/多次休息、互动欲跳过、非正休息增量防死循环、时间标签与浮点分钟四舍五入。
 - [ ] `tests/test_activity/test_activity_store.py`：activity insert/get 往返、枚举与 progress JSON、current/running/paused/schedule/results 查询、创作过滤与分页、exploration 最近时间、update；DB 测试核对活动历史复合索引。
 - [ ] 委派任务 Store/API：CRUD、FIFO 原子领取、重复目标幂等、完成/失败、启动恢复、迁移索引，以及三个端点的 2xx/404/409/422。
-- [ ] `tests/test_activity/test_activity_lifecycle.py`：goal 判定、`goal_signal` 覆盖、原子启动/完成/失败/打断、correlation 透传、启动/关闭恢复与任务/欲望状态回写。
-- [ ] `tests/test_activity/test_activity_facade.py`：空槽默认、欲望映射、精力休息、后台启动、`activity_end` content、读书部分进展的 `goal_met=None`、完整读书满足、创作 checkpoint 恢复、主题召回与历史创作参考、同日同块恢复、跨日/跨块不恢复。
+- [ ] `tests/test_activity/test_activity_lifecycle.py`：goal 判定、`goal_signal` 覆盖、原子启动/完成/失败/打断、correlation 透传、`IDLE_REFLECTION` 完成时同事务追加普通 durable `REFLECTION`、启动/关闭恢复与任务/欲望状态回写。
+- [ ] `tests/test_activity/test_activity_facade.py`：空槽默认、欲望映射、精力休息、后台启动、idle runner 不直调反思、`activity_end` content、读书部分进展的 `goal_met=None`、完整读书满足、创作 checkpoint 恢复、主题召回与历史创作参考、同日同块恢复、跨日/跨块不恢复。
 - [ ] `tests/test_activity/test_llm_result.py` / `test_activity_paths.py`：活动结果非空字符串校验、未知输出类型拒绝、安全文件名长度和同名创作唯一路径。
 - [ ] `tests/test_activity/test_exploration.py`：所有探索阶段 checkpoint、local/web 搜索分支、fetch 失败兜底、cursor 恢复、summary 评估、sink 去重、最终结果结构。
 - [ ] 委派与选材集成：任务不抢占、暂停优先、低精力休息、任务优先欲望、网页多块 6000 字符与 pending 恢复、稳定来源 topic、空正文失败、禁网拒绝、EPUB-only 排序、无匹配不读最新并升级搜索。
+- [ ] 收尾与发布故障：完成/失败/中断事务失败后调和孤立 `RUNNING`，首次恢复失败后下一次准入重试；取消超时有界返回且不重排；任务提交后的调度/回读失败仍返回成功。
 - [ ] EPUB 自动分块未读完时 `activity_end.goal_met=None` 且释放 ACTIVE 欲望；探索结果
   正文与 snippet 都为空白时不调用 `digest_source_block`。
 - [ ] 前端活动页：网页/EPUB 表单、目标段前后预览、任务状态/失败原因和 `task_updated` 刷新。

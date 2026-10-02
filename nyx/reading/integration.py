@@ -230,7 +230,11 @@ class ReadingIntegration:
                 await self._bus.publish(
                     internal_event(
                         EventType.REFLECTION,
-                        {"reason": "reading_revisit", "book_id": book_id},
+                        {
+                            "reason": "reading_revisit",
+                            "book_id": book_id,
+                            "evidence": summary,
+                        },
                         book_id,
                     )
                 )

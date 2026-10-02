@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import logging
 import time
 from typing import Any
@@ -17,6 +16,7 @@ _RESUMABLE_TYPES = (
     ActivityType.CREATION,
     ActivityType.FREE_EXPLORATION,
 )
+_RUNNER_CANCEL_TIMEOUT_SECONDS = 5.0
 
 _logger = logging.getLogger(__name__)
 
@@ -51,6 +51,26 @@ def activity_goal_signal(activity: Activity) -> bool | None:
 def correlation_id(activity: Activity) -> str:
     """活动事件优先沿用欲望 correlation_id，否则回退活动 id。"""
     return str(activity.progress.get("correlation_id") or activity.id)
+
+
+async def cancel_activity_runner(task: asyncio.Task[None] | None) -> bool:
+    """Cancel a runner without waiting forever for uncooperative cleanup."""
+    if task is None or task.done():
+        return True
+    task.cancel()
+    done, _ = await asyncio.wait(
+        {task}, timeout=_RUNNER_CANCEL_TIMEOUT_SECONDS
+    )
+    if task not in done:
+        _logger.error("活动 runner 取消超时，保留 RUNNING 状态等待恢复")
+        return False
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        _logger.exception("活动 runner 取消清理失败，继续恢复持久状态")
+    return True
 
 
 class ActivityLifecycle:
@@ -142,6 +162,19 @@ class ActivityLifecycle:
             },
             correlation_id(activity),
         )
+        events = [event]
+        if activity.type is ActivityType.IDLE_REFLECTION:
+            events.append(internal_event(
+                EventType.REFLECTION,
+                {
+                    "reason": "idle_activity",
+                    "activity_id": activity.id,
+                    "evidence": (
+                        "低精力闲置活动完成，适合回看已有记忆并归纳新想法"
+                    ),
+                },
+                correlation_id(activity),
+            ))
         try:
             async with self._store.db.transaction():
                 if signal is None and isinstance(desire_id, str):
@@ -151,12 +184,14 @@ class ActivityLifecycle:
                     await self._store.set_task_status(
                         task_id, AssignedTaskStatus.COMPLETED, activity.ended_at
                     )
-                await self._bus.append_in_transaction(event)
+                for committed_event in events:
+                    await self._bus.append_in_transaction(committed_event)
         except BaseException:
             activity.status = previous_status
             activity.ended_at = previous_ended_at
             raise
-        await self._announce(event)
+        for committed_event in events:
+            await self._announce(committed_event)
         return task_id if isinstance(task_id, str) else None
 
     async def fail(self, activity: Activity, error: str) -> str | None:
@@ -232,10 +267,8 @@ class ActivityLifecycle:
         activity = await self._store.get(activity_id)
         if activity is None or activity.status is not ActivityStatus.RUNNING:
             return None
-        if task is not None and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        if not await cancel_activity_runner(task):
+            return None
         activity = await self._store.get(activity_id)
         if activity is None or activity.status is not ActivityStatus.RUNNING:
             return None

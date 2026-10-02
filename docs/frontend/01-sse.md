@@ -61,11 +61,12 @@ type ReadingMutterEvent = SseBase & { event: "reading_mutter"; content: string; 
 type ReadingQuestionEvent = SseBase & { event: "reading_question"; content: string; subtype: QuestionSubtype; book_id: string; paragraph_index: number; selected_text: string | null };
 type ReadingAssociationEvent = SseBase & { event: "reading_association"; memory_id: string; snippet: string; book_id: string; paragraph_index: number };
 
-// 不读字段的事件（前端不解析 payload，宽松兜底）：clock_tick/observation_state/reflection 无消费者；
-// desire/activity/memory 事件只带 id，dispatch 只触发对应快照 store 的 refresh()，同样不读字段。
+// 不读字段的事件（前端不解析 payload，宽松兜底）：clock_tick/observation_state/reflection/
+// scene_memory_requested 无消费者；desire/activity/memory 事件只带 id，dispatch 只触发
+// 对应快照 store 的 refresh()，同样不读字段。
 type OpaqueEvent = SseBase & {
   event: "clock_tick" | "observation_state" | "reflection"
-    | "memory_created" | "memory_promoted"
+    | "memory_created" | "memory_promoted" | "scene_memory_requested"
     | "desire_generated" | "desire_satisfied" | "desire_expired"
     | "activity_start" | "activity_end" | "activity_interrupted";
 } & Record<string, unknown>;
@@ -93,7 +94,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 - **返回**：`ConnectionState`，供 App 显示连接状态（右上角「已连接/重连中」）。
 - **行为**：
   1. `useEffect` 里 `new EventSource(BASE_URL + "/api/events")`，`BASE_URL` 来自统一常量（空 = 相对路径，走 Vite proxy 同源转发到后端 8000）。
-  2. 对 22 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` 和有限数值 `timestamp` → 拼 `SseEvent` → `dispatch`。
+  2. 对 24 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` 和有限数值 `timestamp` → 拼 `SseEvent` → `dispatch`。
   3. `onopen` / `onerror`：更新 `ConnectionState`。`EventSource` 浏览器原生自动重连（`onerror` 时置 `connecting`），后端重启后自动恢复，无需手写重连循环。
   4. cleanup：`source.close()`（防重复挂载泄漏）。
 - **解析失败**：`JSON.parse` 抛错 → `console.error` + 跳过该帧（不崩整个流）；`data` 缺
@@ -125,12 +126,13 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `activity_end` | `activityStore` + `announceStore` | `refresh()` 后按 `activity_id` 找产出并 `announce("activity", …)` | 活动完成 → 重拉快照 + 冒一句产出；创作只冒标题，正文和路径留在产出面板 |
 | `task_updated` | `activityStore` | `refresh()` | 委派任务状态变化 → 重拉活动、创作和任务快照 |
 | `memory_created`/`memory_promoted` | `memoryStore` | `refresh()` | 记忆变化 → 重拉快照（事件只带 `memory_id`） |
-| `reflection_done` | `desireStore` + `announceStore` | `refresh()` +（`story_is_new` 时）`announce("mutter", …)` | 反思完成 → 欲望重拉快照 +（新故事时）立绘旁冒一句 |
+| `scene_memory_requested` | — | — | 后端 durable consumer 的内部工作项；SSE 只接收并静默忽略，不暴露中间态 |
+| `reflection_done` | `desireStore` + `innerLifeStore` + `announceStore` | 两个 store `refresh()` +（`story_is_new` 时）`announce("mutter", …)` | 反思完成 → 欲望与内在状态重拉快照 +（新故事时）立绘旁冒一句 |
 | `reading_mutter` | `announceStore` | `announce("mutter", …)` | 读书碎碎念归悬浮气泡（与全局 mutter 同一渲染路径） |
 | `reading_question`/`reading_association` | `chatStore` | `addReadingTurn(e)` | 读书提问/联想并进对话（永久聊天消息，correlation_id=book_id，不过滤当前书） |
 | `clock_tick`/`observation_state`/`reflection` | — | — | 无消费者 |
 
-> 完整 23 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`task_updated`/`memory_*`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`mutter` 进 `announceStore` 冒立绘旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection` 无消费者（故无 `default` 分支）。
+> 完整 24 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`task_updated`/`memory_created`/`memory_promoted`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`reflection_done` 同时刷新 desire 与 inner-life，避免慢变量已提交但面板仍显示旧值；`mutter` 进 `announceStore` 冒立绘旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection`/`scene_memory_requested` 无消费者（故无 `default` 分支）。
 > **前向兼容边界**：命名事件（带 `event:` 行）若没有匹配的 `addEventListener` 且无 `onmessage`，浏览器会静默丢弃——故后端**新增 EventType 必须同步前端** `EVENT_TYPES` 数组 + `types/api.ts` 判别联合 + 本分发表（monorepo 内本就在同一提交改）。不存在「旧前端自动接住新类型」的兜底。
 
 
@@ -155,6 +157,8 @@ function dispatchEvent(e: SseEvent): void {
       desireStore.refresh(); return;
     case "memory_created": case "memory_promoted":
       memoryStore.refresh(); return;
+    case "scene_memory_requested":
+      return;
     case "activity_start": case "activity_interrupted": case "task_updated":
       activityStore.refresh(); return;
     case "activity_end":
@@ -174,6 +178,7 @@ function dispatchEvent(e: SseEvent): void {
       return chatStore.addReadingTurn(e);
     case "reflection_done":
       void desireStore.refresh();
+      void innerLifeStore.refreshState();
       if (e.story_is_new) {
         const preview = e.story.length > 30 ? `${e.story.slice(0, 30)}…` : e.story;
         announceStore.announce("mutter", `小狐狸我呀，反思了一下：${preview}`);
@@ -215,7 +220,7 @@ announceStore.announce(kind: "mutter" | "activity", text: string): void  // 立�
 - **重连**：`EventSource` 原生重连；`onerror` 置 `connecting`，不手写退避（浏览器默认指数退避）。后端重启期间帧丢失，恢复后靠 `GET /api/state` 重新拉快照对齐（App 层在 `status === "open"` 时触发一次 `refreshState`）。
 - **断线期间的快照**：`innerLifeStore` 的 `CurrentState` 以 `GET /api/state` 快照为准，`emotion_update` 做增量覆盖（valence/arousal/emotion）+ 顺带 `refreshState()` 重拉全量快照（带新能量/性格/三观）；`chatStore` 的历史消息靠 `GET /api/events/log?event_type=speak` 补（核心先行可暂缓，先只展示 SSE 实时的）。
 - **顺序**：SSE 单连接、后端顺序广播（底层模块总线契约「顺序分发」），前端按到达顺序 append，不额外排序。
-- **测试**（`tests/sse.test.ts`）：mock `EventSource`（fake 触发 `onopen`/`onmessage`/`onerror`）→ 断言 `dispatch` 收到保留后端 `timestamp` 的 `SseEvent`、`status` 三态切换、cleanup 调 `close()`、缺失/非法 timestamp 与坏 `data` 帧被跳过不崩。
+- **测试**（`tests/sse.test.ts`）：mock `EventSource`（fake 触发 `onopen`/`onmessage`/`onerror`）→ 断言 `dispatch` 收到保留后端 `timestamp` 的 `SseEvent`、`scene_memory_requested` 已注册且分发为 no-op、`status` 三态切换、cleanup 调 `close()`、缺失/非法 timestamp 与坏 `data` 帧被跳过不崩。
 
 ## 6. App 组合装配（`App.tsx`）
 

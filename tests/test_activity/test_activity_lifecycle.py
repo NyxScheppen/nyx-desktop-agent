@@ -1,7 +1,11 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import cast
 
+import pytest
+
+from nyx.activity import lifecycle as activity_lifecycle
 from nyx.activity.lifecycle import ActivityLifecycle, activity_goal_signal
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig
@@ -69,8 +73,10 @@ class _Store:
 class _Bus:
     def __init__(self) -> None:
         self.events: list[Event] = []
+        self.appended: list[Event] = []
 
     async def append_in_transaction(self, event: Event) -> tuple[str, ...]:
+        self.appended.append(event)
         return ()
 
     async def announce_committed(self, event: Event) -> None:
@@ -175,6 +181,29 @@ async def test_complete_marks_completed_and_publishes_goal_result() -> None:
     assert bus.events[0].content["energy_delta"] == -20
 
 
+async def test_complete_idle_reflection_appends_durable_reflection() -> None:
+    lifecycle, _store, bus, _desire = _lifecycle()
+    activity = _typed_activity("idle", ActivityType.IDLE_REFLECTION)
+    activity.progress["desire_id"] = None
+    activity.progress["result"] = {}
+
+    await lifecycle.complete(activity)
+
+    assert [event.type for event in bus.appended] == [
+        EventType.ACTIVITY_END,
+        EventType.REFLECTION,
+    ]
+    assert bus.appended[1].content == {
+        "reason": "idle_activity",
+        "activity_id": "idle",
+        "evidence": "低精力闲置活动完成，适合回看已有记忆并归纳新想法",
+    }
+    assert [event.type for event in bus.events] == [
+        EventType.ACTIVITY_END,
+        EventType.REFLECTION,
+    ]
+
+
 async def test_fail_marks_incomplete_and_suppresses_desire() -> None:
     lifecycle, store, _bus, desire = _lifecycle()
     activity = _activity(ActivityStatus.RUNNING)
@@ -184,6 +213,38 @@ async def test_fail_marks_incomplete_and_suppresses_desire() -> None:
     assert activity.status is ActivityStatus.INCOMPLETE
     assert store.updated == [activity]
     assert desire.suppressed == ["d1"]
+
+
+async def test_interrupt_timeout_keeps_live_runner_and_activity_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle, store, bus, _desire = _lifecycle()
+    activity = _activity(ActivityStatus.RUNNING)
+    store.activities[activity.id] = activity
+    release = asyncio.Event()
+
+    async def ignore_first_cancel() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    task = asyncio.create_task(ignore_first_cancel())
+    await asyncio.sleep(0)
+    monkeypatch.setattr(
+        activity_lifecycle, "_RUNNER_CANCEL_TIMEOUT_SECONDS", 0.01, raising=False
+    )
+    try:
+        result = await asyncio.wait_for(
+            lifecycle.interrupt(activity.id, EventType.USER_MESSAGE, task),
+            timeout=0.2,
+        )
+        assert result is None
+        assert activity.status is ActivityStatus.RUNNING
+        assert bus.events == []
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_recover_stale_running_pauses_resumable_and_suppresses_desire() -> None:

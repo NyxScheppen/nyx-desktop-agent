@@ -278,7 +278,7 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
 - 整合流程为：snapshot buffer → LLM JSON `{content, summary}` → evaluator →
   `remember_reading` →（重读时）成功受理 `REFLECTION` → 删除已消费 snapshot。
   任何一步失败都保留 snapshot；LLM 期间新增的 buffer 条目不得被删除。
-- `REFLECTION` 只在整合开始前的 `read_count >= 1` 时发布；首读不发布。
+- `REFLECTION` 只在整合开始前的 `read_count >= 1` 时发布；首读不发布。重读事件使用普通 durable payload `{reason: "reading_revisit", book_id, evidence: summary}`，把本轮整合摘要作为触发证据保留；反思 consumer 仍会从旧记忆整体归纳，不把该摘要当作唯一材料。
 - `GET /api/notes/{book_id}`、用户笔记 CRUD、`show-to-nyx` 和
   `check-chapter-boundary` 的错误映射以 `nyx/api/routes.py` 当前实现为准：
   书/笔记不存在 404，输入边界 422，LLM 批注失败返回 200 `null`。

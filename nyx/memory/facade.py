@@ -139,6 +139,7 @@ class _PersistResult:
     memory: Memory
     candidates: list[PersistSemanticHit]
     created: bool
+    created_event: Event | None = None
 
 
 def _new_memory(
@@ -170,19 +171,25 @@ def _new_memory(
 
 def build_source_topic(kind: str, identifier: str) -> str:
     """Build a stable source label that fits the persisted topic bound."""
-    digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:16]
-    return f"{kind}:{digest}"[:24]
+    source_kind = kind.strip()
+    source_identifier = identifier.strip()
+    if f"{source_kind}:" not in _SOURCE_TOPIC_PREFIXES:
+        raise ValueError(f"不支持的记忆来源类型: {kind!r}")
+    if not source_identifier:
+        raise ValueError("记忆来源标识不能为空")
+    digest = hashlib.sha256(source_identifier.encode("utf-8")).hexdigest()[:16]
+    return f"{source_kind}:{digest}"[:24]
 
 
 def _source_topic(memory: Memory) -> str | None:
-    return next(
-        (
-            topic
-            for topic in memory.topics
-            if topic.startswith(_SOURCE_TOPIC_PREFIXES)
-        ),
-        None,
-    )
+    matches = [
+        topic for topic in memory.topics if topic.startswith(_SOURCE_TOPIC_PREFIXES)
+    ]
+    if len(matches) > 1:
+        raise ValueError(f"一条记忆只能有一个来源 topic: {memory.id}")
+    if matches and not matches[0].partition(":")[2]:
+        raise ValueError(f"记忆来源 topic 缺少标识: {matches[0]!r}")
+    return matches[0] if matches else None
 
 
 def _work_title(source_name: str) -> str:
@@ -654,10 +661,9 @@ class MemoryFacade:
         self._logger = logging.getLogger(__name__)
         self._last_observation: tuple[str, str] | None = None  # 「变化才沉淀」快照
 
-    async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
+    async def _prepare_scene_memory(self, reply_context: dict[str, str]) -> Memory:
         """慢通道场景化记忆：LLM 产出 content/kind/topics/summary
-        → 两层去重（命中合并强化，不新建）→ 入短期 → 建边 → 门控矛盾检测 → 淘汰。
-        去重命中时返回已存在的持久化旧记忆。"""
+        并在 durable transaction 之前完成解析。"""
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _SCENE_SYSTEM},
@@ -670,9 +676,68 @@ class MemoryFacade:
         )
         await self._evaluator.evaluate(output)
         content, kind, topics, summary = _parse_scene(output.content)
-        memory = _new_memory(content, kind, summary, MemoryType.SHORT_TERM, topics)
+        return _new_memory(content, kind, summary, MemoryType.SHORT_TERM, topics)
+
+    async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
+        """Generate and persist one scene memory through the direct API."""
+        memory = await self._prepare_scene_memory(reply_context)
         result = await self._persist_memory(memory, reply_context["correlation_id"])
         return result.memory
+
+    async def remember_scene(
+        self, event: Event, consumer_id: str | None = None
+    ) -> None:
+        """Consume a durable slow-reply scene request exactly once."""
+        if event.type is not EventType.SCENE_MEMORY_REQUESTED:
+            raise ValueError(f"场景记忆 consumer 收到错误事件: {event.type.value}")
+        reply_context: dict[str, str] = {"correlation_id": event.correlation_id}
+        for key in ("user_message", "nyx_think", "nyx_speak"):
+            value = event.content.get(key)
+            if not isinstance(value, str):
+                raise ValueError(f"场景记忆请求字段 {key!r} 必须是字符串")
+            reply_context[key] = value
+        if consumer_id is None:
+            await self.create_scene_memory(reply_context)
+            return
+        if await self._bus.has_effect(event.id, consumer_id):
+            return
+
+        memory = await self._prepare_scene_memory(reply_context)
+        await self._prepare_memory_embedding(memory)
+        existing = await self._store.find_by_content(
+            memory.content, memory.kind, _source_topic(memory)
+        )
+        fact_candidates = (
+            await self._prepare_fact_candidates(memory, event.correlation_id)
+            if existing is None
+            else None
+        )
+        async with self._store.db.transaction():
+            applied = await self._bus.try_mark_effect_in_transaction(
+                event.id, consumer_id
+            )
+            if not applied:
+                return
+            result = await self._persist_memory(
+                memory,
+                event.correlation_id,
+                in_transaction=True,
+                defer_best_effort=True,
+                embedding_prepared=True,
+                fact_candidates=fact_candidates,
+            )
+        if result.created_event is not None:
+            try:
+                await self._bus.announce_committed(result.created_event)
+            except Exception:
+                self._logger.exception(
+                    "场景记忆创建事件唤醒失败 correlation_id=%s",
+                    event.correlation_id,
+                )
+        if result.created:
+            await self._run_best_effort_tail(
+                result.memory, result.candidates, event.correlation_id
+            )
 
     async def digest_source_block(
         self,
@@ -761,15 +826,17 @@ class MemoryFacade:
                 self._last_observation = observation_snapshot
                 raise
             if result is not None and result.created:
-                try:
-                    await self._run_best_effort_tail(
-                        result.memory, result.candidates, event.correlation_id
-                    )
-                except Exception:
-                    self._logger.exception(
-                        "活动记忆旁路处理失败 correlation_id=%s",
-                        event.correlation_id,
-                    )
+                if result.created_event is not None:
+                    try:
+                        await self._bus.announce_committed(result.created_event)
+                    except Exception:
+                        self._logger.exception(
+                            "活动记忆创建事件唤醒失败 correlation_id=%s",
+                            event.correlation_id,
+                        )
+                await self._run_best_effort_tail(
+                    result.memory, result.candidates, event.correlation_id
+                )
             return
         await self._remember_activity(event, in_transaction=False)
 
@@ -1065,9 +1132,9 @@ class MemoryFacade:
         1) 精确去重：content 完全相同（哈希命中）→ 合并强化旧记忆，不新建；
         2) 语义去重：embedding 余弦 top-1 ≥ 阈值 → 合并强化最相似旧记忆，不新建。
 
-        命中返回已存在的持久化记忆，否则补 embed → add → 建边 → 门控矛盾检测
-        → 新鲜度衰减/淘汰 → 发 MEMORY_CREATED，返回新记忆。场景/活动/画像/
-        知识记忆复用。"""
+        命中返回已存在的持久化记忆，否则补 embed 后把 memory、事实候选和
+        MEMORY_CREATED 放进核心事务，再逐项执行建边、矛盾检测、衰减/淘汰等
+        best-effort 尾段。场景/活动/画像/知识记忆复用。"""
         now = time.time()
         existing = await self._store.find_by_content(
             memory.content, memory.kind, _source_topic(memory)
@@ -1139,6 +1206,57 @@ class MemoryFacade:
                 source_name=source_name,
                 source_scope=source_scope,
             )
+        event = internal_event(
+            EventType.MEMORY_CREATED, {"memory_id": memory.id}, correlation_id
+        )
+        if in_transaction:
+            result = await self._commit_memory(
+                memory,
+                candidates,
+                event,
+                now,
+                fact_candidates,
+                source_scope,
+            )
+        else:
+            async with self._store.db.transaction():
+                result = await self._commit_memory(
+                    memory,
+                    candidates,
+                    event,
+                    now,
+                    fact_candidates,
+                    source_scope,
+                )
+            if result.created_event is not None:
+                try:
+                    await self._bus.announce_committed(result.created_event)
+                except Exception:
+                    self._logger.exception(
+                        "记忆创建事件唤醒失败 memory_id=%s", result.memory.id
+                    )
+        if result.created and not defer_best_effort:
+            await self._run_best_effort_tail(
+                result.memory, result.candidates, correlation_id
+            )
+        return result
+
+    async def _commit_memory(
+        self,
+        memory: Memory,
+        candidates: list[PersistSemanticHit],
+        event: Event,
+        now: float,
+        fact_candidates: list[FactCandidate] | None,
+        source_scope: str,
+    ) -> _PersistResult:
+        """Commit one memory and its creation event in the caller's transaction."""
+        existing = await self._store.find_by_content(
+            memory.content, memory.kind, _source_topic(memory)
+        )
+        if existing is not None:
+            await self._store.strengthen(existing.id, now)
+            return _PersistResult(await self._persisted_or(existing), [], False)
         await self._store.add(memory)
         if self._fact_store is not None:
             try:
@@ -1150,16 +1268,8 @@ class MemoryFacade:
                 )
             except Exception:
                 self._logger.exception("事实层更新失败 memory_id=%s", memory.id)
-        if not defer_best_effort:
-            await self._run_best_effort_tail(memory, candidates, correlation_id)
-        event = internal_event(
-            EventType.MEMORY_CREATED, {"memory_id": memory.id}, correlation_id
-        )
-        if in_transaction:
-            await self._bus.append_in_transaction(event)
-        else:
-            await self._bus.publish(event)
-        return _PersistResult(memory, candidates, True)
+        await self._bus.append_in_transaction(event)
+        return _PersistResult(memory, candidates, True, event)
 
     async def _prepare_fact_candidates(
         self,
@@ -1203,6 +1313,11 @@ class MemoryFacade:
                 if not (
                     source_scope in {"knowledge", "reading", "activity"}
                     and candidate.subject in {"用户", "我", "本人"}
+                )
+                and not (
+                    source_scope == "conversation"
+                    and candidate.subject == "用户"
+                    and "用户" not in f"{memory.summary}\n{memory.content}"
                 )
             ]
             return _merge_fact_candidates(fallback, extracted)
@@ -1283,9 +1398,18 @@ class MemoryFacade:
         correlation_id: str,
     ) -> None:
         now = time.time()
-        await self._build_edges(memory, candidates, now, correlation_id)
-        await self._detect_contradiction(memory, candidates, correlation_id)
-        await self._decay_and_evict(now)
+        try:
+            await self._build_edges(memory, candidates, now, correlation_id)
+        except Exception:
+            self._logger.exception("记忆建边失败 memory_id=%s", memory.id)
+        try:
+            await self._detect_contradiction(memory, candidates, correlation_id)
+        except Exception:
+            self._logger.exception("记忆矛盾旁路失败 memory_id=%s", memory.id)
+        try:
+            await self._decay_and_evict(now)
+        except Exception:
+            self._logger.exception("记忆衰减淘汰失败 memory_id=%s", memory.id)
 
     async def search(self, query: str) -> list[Memory]:
         return await self._retrieval.search(query)
@@ -1418,9 +1542,24 @@ class MemoryFacade:
             )
             return
         if conflicts_with is not None:
+            conflicting = next(
+                candidate
+                for candidate in contradiction_candidates
+                if candidate.id == conflicts_with
+            )
             event = internal_event(
                 EventType.REFLECTION,
                 {
+                    "reason": "memory_contradiction",
+                    "memory_id": memory.id,
+                    "conflicts_with": conflicts_with,
+                    "evidence": [
+                        {"memory_id": memory.id, "summary": memory.summary},
+                        {
+                            "memory_id": conflicting.id,
+                            "summary": conflicting.summary,
+                        },
+                    ],
                     "summary": (
                         f"场景记忆 {memory.id} 与旧记忆 {conflicts_with} 矛盾，触发反思"
                     )
@@ -1689,20 +1828,11 @@ class MemoryFacade:
 
     async def _decay_and_evict(self, now: float) -> None:
         """新鲜度统一衰减（回写）+ 短期容量淘汰（满则挤掉最新鲜度最低的）。"""
+        await self._store.settle_freshness(now, self._config.freshness_decay)
         memories = await self._store.list_memories()
-        changed: list[Memory] = []
-        for m in memories:
-            decayed = decay_freshness(
-                m.freshness, m.created_at, now, self._config.freshness_decay
-            )
-            if decayed != m.freshness:
-                m.freshness = decayed
-                changed.append(m)
-        if changed:
-            await self._store.update_many(changed)
         short_term = [m for m in memories if m.type is MemoryType.SHORT_TERM]
         if len(short_term) > self._config.short_term_capacity:
-            short_term.sort(key=lambda m: (m.freshness, m.created_at))
+            short_term.sort(key=lambda m: (m.freshness, m.created_at, m.id))
             overflow = len(short_term) - self._config.short_term_capacity
             overflow_ids = [m.id for m in short_term[:overflow]]
             await self._store.delete_many(overflow_ids)

@@ -426,9 +426,82 @@ async def test_strengthen() -> None:
         await store.strengthen("m1", 100.0)
         got = await store.get("m1")
         assert got is not None
-        assert got.recall_count == 1      # 重复写入按设计计入 recall
+        assert got.recall_count == 0      # 重复写入不是慢通道召回
         assert got.freshness == 1.0
         assert got.created_at == 1.0      # created_at 是创建时间，不随强化刷新
+    finally:
+        await db.conn.close()
+
+
+async def test_find_by_content_keeps_sourced_and_unsourced_knowledge_separate() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(
+            _mem(
+                "book",
+                content="相同知识",
+                kind=MemoryKind.KNOWLEDGE,
+                topics=["book:source-1"],
+            )
+        )
+        await store.add(
+            _mem("plain", content="相同知识", kind=MemoryKind.KNOWLEDGE)
+        )
+        sourced = await store.find_by_content(
+            "相同知识", MemoryKind.KNOWLEDGE, "book:source-1"
+        )
+        unsourced = await store.find_by_content("相同知识", MemoryKind.KNOWLEDGE)
+        assert sourced is not None and sourced.id == "book"
+        assert unsourced is not None and unsourced.id == "plain"
+    finally:
+        await db.conn.close()
+
+
+async def test_settle_freshness_is_incremental_and_same_time_idempotent() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("m1", created_at=100.0, freshness=1.0))
+        await store.settle_freshness(100.0 + 5 * 86400.0, 0.01)
+        await store.settle_freshness(100.0 + 5 * 86400.0, 0.01)
+        halfway = await store.get("m1")
+        await store.settle_freshness(100.0 + 10 * 86400.0, 0.01)
+        settled = await store.get("m1")
+
+        assert halfway is not None and halfway.freshness == pytest.approx(0.95)
+        assert settled is not None and settled.freshness == pytest.approx(0.90)
+    finally:
+        await db.conn.close()
+
+
+async def test_settle_freshness_ignores_clock_rollback() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("m1", created_at=100.0, freshness=1.0))
+        await store.settle_freshness(200.0, 0.01)
+        before = await store.get("m1")
+        await store.settle_freshness(150.0, 0.01)
+        after = await store.get("m1")
+
+        assert before is not None and after is not None
+        assert after.freshness == before.freshness
+    finally:
+        await db.conn.close()
+
+
+async def test_strengthen_restarts_freshness_clock() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("m1", created_at=100.0, freshness=0.5))
+        await store.strengthen("m1", 100.0 + 10 * 86400.0)
+        await store.settle_freshness(100.0 + 11 * 86400.0, 0.01)
+        got = await store.get("m1")
+
+        assert got is not None and got.freshness == pytest.approx(0.99)
+        assert got.recall_count == 0
     finally:
         await db.conn.close()
 

@@ -155,7 +155,7 @@
   不逐条写入数据库。
 - 章末或整本边界创建后台整合任务；同一本书同一时间只有一个整合任务。
 - 整合 snapshot 先调用 LLM、评估、解析 JSON，再 `remember_reading`；重读时还要成功
-  受理 `REFLECTION` 事件。所有必需步骤成功后才删除 snapshot，失败保留供再次边界
+  受理 `REFLECTION(reason=reading_revisit)`，事件保留 `book_id` 与本轮 summary evidence。所有必需步骤成功后才删除 snapshot，失败保留供再次边界
   调用重试。
 - prompt 中整合材料总长度限制为 12000 字符。
 - `BOOK_FINISHED` 的读完计数先同步提交，buffer 为空或整合失败都不回滚读完事实。

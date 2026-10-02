@@ -63,12 +63,19 @@ class _FakeExpression:
 class _FakeMemory:
     def __init__(self) -> None:
         self.remembered: list[Event] = []
+        self.scenes: list[Event] = []
 
     async def remember_activity(
         self, event: Event, consumer_id: str | None = None
     ) -> None:
         del consumer_id
         self.remembered.append(event)
+
+    async def remember_scene(
+        self, event: Event, consumer_id: str | None = None
+    ) -> None:
+        del consumer_id
+        self.scenes.append(event)
 
 
 def _content(event_type: EventType) -> dict[str, str]:
@@ -124,6 +131,7 @@ async def test_subscription_consistency() -> None:
     assert len(desire.added) == 2
     assert len(activity.generated) == 1
     assert len(memory.remembered) == 1
+    assert len(memory.scenes) == 1
 
 
 async def test_user_message_replay_skips_after_reply_event_exists() -> None:

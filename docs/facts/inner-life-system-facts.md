@@ -59,13 +59,15 @@
 - 没有 `consumer_id` 的兼容调用：在本地事务里执行状态变化并把派生事件写入事务；事务失败时恢复情感值和两个时间锚点快照；提交后再 `announce_committed`。
 - 带 `consumer_id` 的 durable 调用：
   1. 先检查 `event_effect`；
-  2. `REFLECTION` 的外部读取、LLM、eval、JSON 解析在事务外执行；
-  3. 在同一本地事务中原子写 effect marker、状态变化和派生事件；
-  4. 异常时恢复进程内情感/时间快照，让数据库事务回滚；
-  5. 提交后唤醒派生事件。
+  2. `REFLECTION` 先复核事件是否已被更新叙事覆盖；周期触发还复核 admission revision、冷却和新增记忆门槛；过期请求只写 effect marker；
+  3. 有效 `REFLECTION` 的外部读取、LLM、eval、JSON 解析在事务外执行，完整 `event.content` 作为触发上下文传入；
+  4. 在同一本地事务中原子写 effect marker、状态变化和派生事件；
+  5. 异常时恢复进程内情感/时间快照，让数据库事务回滚；
+  6. 提交后唤醒派生事件。
 - effect marker 使用 `(event.id, consumer_id)`，同一 durable 事件重复投递不会重复增加情感、扣精力或重复写反思结果。
+- 进程内情感/时间锚点快照在获得数据库事务锁后、应用本事件前采集。反思的事务外 prepare 期间若另一事件已成功提交，后续反思失败不会用 prepare 前旧值覆盖它。
 - 派生事件通过 `append_in_transaction` 进入 `event_log`；提交后的广播失败不撤销已提交本地状态，后续恢复依赖总线投递/扫描机制。
-- 每次情感事件最终会产生一个 `EMOTION_UPDATE`，载荷含 `valence`、`arousal`、最终 `emotion` 字符串，事件来源为 `INTERNAL`，沿用触发事件的 `correlation_id`。
+- 每次实际应用的情感事件最终会产生一个 `EMOTION_UPDATE`，载荷含 `valence`、`arousal`、最终 `emotion` 字符串，事件来源为 `INTERNAL`，沿用触发事件的 `correlation_id`；过期并跳过的反思不产生情感事件。
 
 ## 惰性状态
 
@@ -83,16 +85,16 @@
 
 ## 反思
 
-`Reflection` 是慢变量的唯一写入口，当前一次反思只调用一次 LLM；事实变化不额外触发第二次反思：
+`Reflection` 是慢变量的唯一写入口，当前一次反思只调用一次 LLM。语义是回看旧记忆、归纳反复出现的模式/变化/联系，再从旧材料形成有依据的新点子；记忆矛盾仍可触发反思，但触发证据只解释“为何此刻反思”，不要求围绕矛盾求解。事实变化不额外触发第二次反思：
 
-1. 事务外读取最近最多 20 条记忆、五类慢变量、当前长期欲望；
-2. 构造反思 prompt（近期事实以独立资料段注入）；
+1. 事务外读取全部记忆后按 `(created_at, id)` 降序取最近 20 条，并读取五类慢变量、当前长期欲望；
+2. 构造反思 prompt（近期事实以独立资料段注入，触发原因/证据受条数和字符上限约束）；
 3. 调 `LlmClient.complete(module='inner_life', output_type='reflection', json_mode=True)`；
 4. 紧跟 `Evaluator.evaluate`；
 5. 解析并校验 story、becoming、self_view、三类 delta、长期欲望候选；
 6. 计算漂移、叙事去重、按新阅读数缩放审美漂移；
 7. 在事务外通过 DesireFacade 批量预检长期欲望容量、名称和 embedding 去重，并记录长期欲望快照；
-8. 在本地事务内写 personality、values、aesthetic、narrative，以预检计划确定性写长期欲望，并给创造欲加压；
+8. 在本地事务内先比较 `self_narrative.updated_at`，再写 personality、values、aesthetic、narrative，以预检计划确定性写长期欲望，并给创造欲加压；
 9. 同一事务追加 `REFLECTION_DONE`，提交后广播。
 
 当前规则：
@@ -101,12 +103,14 @@
 - story/becoming 使用字符相似度阈值 `0.9` 去重；story 去重后返回 `story_is_new=False`，becoming 重复则不追加。
 - `self_view` 合并旧对象和新对象；`identity` 不变；`updated_at` 使用本轮时间。
 - 审美漂移按 `count_new(MemoryKind.READING, narrative.updated_at)` / `3` 缩放，上限为 1。
-- 长期欲望候选必须带 `linked_values`，只允许四个 `Values` 精确键；空数组合法，重复键稳定去重，非法关联键会使该候选被跳过。
+- `story` / `becoming` 去首尾空白后必须非空；JSON 非有限常量与非有限漂移值拒绝。
+- 长期欲望候选类型只允许 `exploration` / `interaction`；必须带 `linked_values`，只允许四个 `Values` 精确键；空数组合法，重复键稳定去重，非法类型或关联键会使该候选被跳过。
 - 候选先做结构过滤，再由欲望 Facade 按容量和名称/语义去重接纳，重复或坏候选不占后继有效候选的容量名额。
 - 单个候选非法只记日志并跳过；核心反思字段仍可提交。`long_term_desires` 缺失/`null` 按空数组，字段非数组则整次失败。
-- 长期欲望 embedding 失败或预检后快照变化会使整次提交失败并回滚，交由 durable delivery 重试；事务内不执行 embedding，也不嵌套开启欲望事务。
+- 长期欲望 embedding 失败、预检后长期欲望快照变化或叙事 revision 变化会使整次提交失败并回滚，交由 durable delivery 重试；事务内不执行 embedding，也不嵌套开启欲望事务。
 - 反思 JSON 非法、LLM 失败、eval 失败或本地事务失败都会抛出，不会写成功 effect，供 durable delivery 重试。
 - 事务回滚不会撤销已经发生的 LLM/eval 调用，所以重试依靠 effect marker 和后续幂等写入。
+- 正式触发统一使用普通 durable `REFLECTION`：`periodic`、`memory_contradiction`、`reading_revisit`、`idle_activity`。原始 payload 持久化在 `event_log`；`IDLE_REFLECTION` 不直接调用 `reflect()`，而是在活动完成事务中与 `ACTIVITY_END` 一起追加该请求。
 
 ## 当前限制与导航
 

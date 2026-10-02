@@ -17,7 +17,7 @@
 - `nyx/expression/pipeline.py`
   - 定义 `ReplyState`、`ReplyDeps`、回复图和回复 JSON 解析。
   - 图节点为 `classify_channel`、`assemble_context`、`use_tools`、`respond`、
-    `should_ask`、`generate_scene_memory`、`record_message`。
+    `should_ask`、`record_message`。
 - `nyx/expression/prompt.py`
   - 纯函数拼装 system/user prompt、慢通道回溯上下文和人格自然语言指令。
 - `nyx/expression/classifier.py`
@@ -49,11 +49,12 @@
 - 慢通道执行：
   - `build_backtrack_context()` 重新截断历史；
   - `MemoryFacade.search(message)` 返回的命中全部放入 prompt，并立即逐条
-    `record_recall(memory.id)`；
+    按 memory id 去重后 `record_recall(memory.id)`；
   - 取得自我叙事；
   - 先有一轮工具判断，工具结果截断后进入回复 prompt；
   - `respond` 最多继续到 `slow_max_rounds`，问句会提前结束；
-  - 最后生成场景记忆，之后记录会话 history。
+  - 最终 `SPEAK/ASK` 与自包含的 `scene_memory_requested` 在同一本地事务受理，随后记录
+    history；场景 LLM 由 `memory.scene_reply` durable consumer 异步完成。
 - 每轮 `respond` 一次 LLM 调用同时生成 JSON 的 `think` 和 `speak`，解析后分别评估并分别
   发布文本事件；两条评估记录共享 call_id、token 和最终 prompt。后续轮次使用累积的前轮
   think/speak，任务改为续写。

@@ -171,6 +171,18 @@ class InnerLifeStore:
             updated_at=row["updated_at"],
         )
 
+    async def assert_narrative_updated_at(self, expected: float) -> None:
+        """Fail when another reflection changed the slow-variable revision."""
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT updated_at FROM self_narrative WHERE id = 'self'"
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("inner_life 单行表未初始化（组合根必须先 seed）")
+        if row["updated_at"] != expected:
+            raise RuntimeError("反思慢变量快照已变化，请重新准备")
+
     async def upsert_narrative(self, n: SelfNarrative) -> None:
         async with self._operation() as should_commit:
             await self._db.conn.execute(

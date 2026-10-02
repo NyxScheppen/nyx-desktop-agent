@@ -151,6 +151,7 @@ type OpaqueEventType =
   | "reflection"
   | "memory_created"
   | "memory_promoted"
+  | "scene_memory_requested"
   | "desire_generated"
   | "desire_satisfied"
   | "desire_expired"

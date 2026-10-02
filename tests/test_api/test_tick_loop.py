@@ -478,6 +478,14 @@ async def test_check_reflect_triggers(monkeypatch: pytest.MonkeyPatch) -> None:
     await _check_reflect(app, "cid")
     assert [event.type for event in bus.published] == [EventType.REFLECTION]
     assert bus.published[0].correlation_id == "cid"
+    assert bus.published[0].content == {
+        "reason": "periodic",
+        "narrative_updated_at": narrative.updated_at,
+        "min_interval": _REFLECT_MIN_INTERVAL,
+        "min_new_memories": _REFLECT_MIN_NEW_MEMORIES,
+        "new_memory_count": _REFLECT_MIN_NEW_MEMORIES,
+        "evidence": "距上次反思已满 21600 秒，期间新增 3 条记忆",
+    }
 
 
 async def test_check_reflect_uses_first_creation_count(

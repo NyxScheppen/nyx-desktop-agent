@@ -35,6 +35,7 @@
 - [ ] SSE 公共帧携带事件自身的 `timestamp`；实时消息与 `GET /api/events/log` 历史消息使用同一后端时间源。
 - [ ] `POST /api/observe` 先持久化包含 transition 事实的 `OBSERVATION_STATE`，成功后才提交组合根 presence 快照；受理失败不留下半次离开/归来状态。
 - [ ] 活动启动把来源条件领取、`RUNNING` Activity 和 `ACTIVITY_START` 放在一个本地事务；活动完成、失败、中断和恢复分别把 Activity、关联欲望、关联任务及对应 durable event 放在各自单一事务，不能留下终态 Activity 配 `RUNNING` 任务或 `ACTIVE` 欲望。
+- [ ] 活动收尾事务失败先整体回滚，再调和已经失去内存 runner 的 `RUNNING`；调和失败由下一次活动准入重试。取消 runner 最多等待 5 秒，超时不重排仍存活的工作。
 - [ ] schema 33 退役通用文件 `material`：旧未完成 material Activity 转 `ABANDONED`、关联欲望释放后删除表；已完成 Activity、既有 memory 与磁盘上传文件保留。
 - [ ] 文档同步：本文件、`tech-reference`、`docs/facts/module-bus-system-facts.md`、`test-inventory.md` 与实现一致。
 
@@ -183,7 +184,12 @@ await bus.publish(event)
   commit
 ```
 
-`EventBus.publish(event)` 用于根事件和无需绑定其它模块状态事务的事件。对“状态变更 + 后续事件”的生产者，EventBus 必须提供一个可在当前事务内写入事件行的内部 API，或由明确的事务 outbox 机制完成。该 API 不提交事务，由调用方事务统一 commit。
+`EventBus.publish(event)` 用于根事件和无需绑定其它模块状态事务的事件。
+`EventBus.publish_many(events)` 把同一业务承诺的多条事件原子受理：任一事件 id 冲突或写入失败，
+整批回滚，运行时 `persisted_count` 也不得把已回滚行计为恢复进展；commit 后才逐条广播/唤醒。
+对“状态变更 + 后续事件”的生产者，EventBus 必须提供
+`append_in_transaction(event)` 在当前事务内写入事件行，或由明确的事务 outbox 机制完成；
+该 API 不提交事务，由调用方统一 commit。
 
 delivery expander 扫描已提交但尚未完全展开的事件，并按 `RouteSpec` 幂等创建 delivery。
 
@@ -308,6 +314,7 @@ inner_life.desire_satisfied
 desire.activity_end
 inner_life.activity_end
 memory.activity_end
+memory.scene_reply
 inner_life.reflection
 activity.schedule_block_start
 desire.desire_eval
@@ -315,6 +322,17 @@ expression.mutter_check
 expression.initiate_chat_check
 inner_life.reflection_check
 ```
+
+`REFLECTION` 只有一个正式 consumer：`inner_life.reflection`。producer 统一使用同一事件类型和以下 `reason`，不得为闲置活动另建事件：
+
+| reason | producer | 必需触发证据 |
+|---|---|---|
+| `periodic` | `runtime.check_reflect` | `narrative_updated_at`、`min_interval`、`min_new_memories`、admission 时 `new_memory_count`、文字 `evidence` |
+| `memory_contradiction` | `MemoryFacade._detect_contradiction` | `memory_id`、`conflicts_with`、新旧记忆 id/summary 结构化 `evidence` |
+| `reading_revisit` | `ReadingIntegration.integrate` | `book_id`、本轮整合 summary `evidence` |
+| `idle_activity` | `ActivityLifecycle.complete` | `activity_id`、文字 `evidence`；与 `ACTIVITY_END` 同事务追加 |
+
+payload 原样保存在 `event_log` 并传给反思 prompt。consumer 在外部 LLM 前复核：正式请求时间不晚于当前 `self_narrative.updated_at` 时只写 effect；周期请求还校验 admission revision、冷却和当前新增记忆门槛。有效请求在事务外准备，在同一事务提交 effect、慢变量和 `REFLECTION_DONE`；提交时叙事 revision 或长期欲望快照冲突则整体回滚并重试。缺少 `reason` 的旧 durable 行按兼容路径处理，未知 reason 失败重试。
 
 订阅 API：
 
@@ -605,9 +623,14 @@ CREATE TABLE eval_prompt (
 - `task_updated` 是委派任务状态快照通知：先持久化任务，再以
   `{task_id, status}`、`correlation_id=task_id` 广播；它没有 durable consumer，
   前端收到后重拉 `/api/tasks`。广播失败不得回滚已经提交的任务状态。
+- 委派任务一旦提交，后续状态广播、立即调度和调度后回读失败都不得把创建请求改成失败；
+  返回已提交快照，任务保持可由后续 tick 发现。只有任务写入本身失败才使创建请求失败。
 - `activity_start` 的 activity 状态、来源领取和事件行同事务；`activity_end` 的 activity
   终态、关联任务终态、必要的欲望释放和事件行同事务。没有 durable event 的活动失败也
   必须把 Activity、欲望与任务终态放入同一数据库事务。
+- 完成、失败或中断事务回滚后，Facade 立即调用活动恢复调和；如果数据库故障仍在，下一次
+  准入在启动新工作前再次调和已结束内存 runner 对应的 `RUNNING`。取消等待超过 5 秒时旧
+  runner 仍可能执行，因此保持原状态且不释放来源，交给 runner 自行结算或下次进程恢复。
 
 其它可选调试端点需另写 spec，不在本轮默认新增。
 
@@ -616,6 +639,9 @@ CREATE TABLE eval_prompt (
 - [ ] DB 连接与迁移：已有 `nyx.db` 时继续复用，否则默认创建 `data/nyx.db`；显式嵌套路径自动创建父目录；新库包含 `event_delivery`、`event_effect` 和领域 spec 已定义的辅助表（含 `eval_prompt`）；索引存在；迁移幂等。
 - [ ] material 退役迁移：旧未完成活动与欲望一起迁移、`material` 表删除、已完成活动和旧来源记忆保留，迁移失败整体回滚。
 - [ ] durable publish：publish 后即使不启动 worker，`event_log` 和 delivery 已落库；DB 失败时 publish 抛错且无半截记录。
+- [ ] durable batch：`publish_many` 中任一事件冲突/失败时整批回滚且不虚增
+  `persisted_count`；慢通道最终
+  `SPEAK/ASK` 与 `scene_memory_requested` 不会分裂。
 - [ ] route expand：每个非空 `RouteSpec` 都创建对应 delivery；空路由事件只落 `event_log` 和 SSE，不创建消费者 delivery。
 - [ ] handler 成功：delivery 从 `pending` 到 `processing` 到 `succeeded`，`completed_at` 写入。
 - [ ] 成功状态提交失败：同一 worker 只重试 effect/delivery finalize，不重新调用 handler，也不阻塞后续事件；关停时保留 processing 供 lease 恢复。

@@ -350,6 +350,51 @@ async def test_success_finalization_retries_without_blocking_consumer(
         await _close(bus)
 
 
+async def test_publish_many_rolls_back_all_events_on_conflict() -> None:
+    bus = await _new_bus()
+    try:
+        existing = _make_event(id="existing", content={"text": "old"})
+        await bus.publish(existing)
+        persisted_before = bus.persisted_count
+        first = _make_event(id="first")
+        conflict = _make_event(id="existing", content={"text": "new"})
+
+        with pytest.raises(EventAdmissionError):
+            await bus.publish_many([first, conflict])
+
+        assert await bus.is_durable(first.id) is False
+        assert bus.persisted_count == persisted_before
+        [persisted] = await bus.list_events(event_type=EventType.THINK)
+        assert persisted == existing
+    finally:
+        await _close(bus)
+
+
+async def test_publish_many_cancellation_rolls_back_count_and_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = await _new_bus()
+    original_append = bus.append_in_transaction
+    calls = 0
+
+    async def cancel_second(event: Event) -> tuple[str, ...]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise asyncio.CancelledError
+        return await original_append(event)
+
+    try:
+        monkeypatch.setattr(bus, "append_in_transaction", cancel_second)
+        with pytest.raises(asyncio.CancelledError):
+            await bus.publish_many([_make_event(id="first"), _make_event(id="second")])
+
+        assert bus.persisted_count == 0
+        assert await bus.list_events(event_type=EventType.THINK) == []
+    finally:
+        await _close(bus)
+
+
 async def test_failure_finalization_retries_without_wedging_delivery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -7,12 +7,12 @@
 ## 当前快照
 
 - 后端测试文件：64
-- `pytest --collect-only -q`：1102 tests collected
-- 最近一次全量验证：`1101 passed, 1 skipped`（本轮未采集语句覆盖率）
+- `pytest --collect-only -q`：1143 tests collected
+- 最近一次全量验证：`1142 passed, 1 skipped`（本轮未采集语句覆盖率）
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：`23 files / 326 passed`。
+- 最近一次前端全量验证：`23 files / 328 passed`。
 - Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；Debug/Release 均通过编译检查。
 - 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；前端只在后端 ready 后启动。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
@@ -23,19 +23,19 @@
 
 | 系统 | 测试目录 | 文件数 | 主要覆盖 |
 |---|---|---:|---|
-| 类型 | `tests/test_types/` | 2 | 枚举穷尽、实体默认值、LLM prompt TypedDict |
+| 类型 | `tests/test_types/` | 2 | 枚举穷尽、后端 EventType 与前端 SSE 监听器同步、实体默认值、LLM prompt TypedDict |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
-| 事件总线 | `tests/test_event/` | 3 | durable admission、投递状态、重试、FIFO、SSE |
+| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、记忆 freshness 结算锚点保值迁移、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| 事件总线 | `tests/test_event/` | 3 | durable admission、批量事件原子受理、投递状态、重试、FIFO、SSE |
 | API/运行时 | `tests/test_api/` | 5 | 组合根、REST、旧上传端点 404、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval prompt 详情、订阅、tick、活动优先关停、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取 |
-| 记忆 | `tests/test_memory/` | 7 | kind/topics、精确与语义去重、episode 保守去重、原文画像/类别归因/稳定来源 topic、同内容跨来源隔离、来源过滤先于排序、embedding 延迟单次加载、ANN、融合召回、联想图、Facade、通用实体事实抽取/类型与别名索引/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级、durable 活动记忆不持锁等待 embedding |
+| 记忆 | `tests/test_memory/` | 7 | kind/单一受控来源 topic、精确与语义去重、同内容有来源/无来源隔离、去重强化不增加真实召回、真实召回升级、freshness 增量结算/回拨、episode 保守去重、原文画像/类别归因、来源过滤先于排序、embedding 延迟单次加载、ANN、融合召回、联想图、场景/活动 durable 重试与重放幂等、核心事务回滚、通用实体事实抽取/类型与别名索引/说话者归因/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级 |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、行动优先级、strength 缩放加压、系统构造 goal、父长期欲望选择/持久化/反馈、容量裁剪、满足与 durable attempt 重放 |
-| 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、反思、长期欲望数值/文字强度 prompt、事务回滚 |
-| 活动 | `tests/test_activity/` | 11 | 本地自然日时间线、跨日暂停隔离、结果过滤/分页、行动优先级排期、父 ID 活动传递、活动/欲望/任务/事件原子生命周期与故障回滚、委派任务 FIFO/低精力/打断/关闭/崩溃恢复、网页任务 6000 字符 checkpoint、EPUB-only 模糊选材及部分进度不结算、无匹配搜索、探索只追加父长期欲望子主题、观察、本地探索读取真实文件、创作结果严格校验、主题/旧作参考与唯一文件名 |
-| 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、回复、搭话、碎碎念、durable interaction attempt、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
-| 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/嵌套块语义/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、整合和后台生命周期 |
+| 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、旧记忆归纳式反思、触发 evidence 注入、消费条件复核、慢变量 CAS、非有限数/候选类型边界、长期欲望数值/文字强度 prompt、事务回滚 |
+| 活动 | `tests/test_activity/` | 11 | 本地自然日时间线、跨日暂停隔离、结果过滤/分页、行动优先级排期、父 ID 活动传递、活动/欲望/任务/事件原子生命周期与故障回滚、`IDLE_REFLECTION` durable 请求原子追加、收尾失败同进程恢复与下一次准入重试、有界取消、任务提交后调度失败仍成功、委派任务 FIFO/低精力/打断/关闭/崩溃恢复、网页任务 6000 字符 checkpoint、EPUB-only 模糊选材及部分进度不结算、无匹配搜索、探索只追加父长期欲望子主题、观察、本地探索读取真实文件、创作结果严格校验、主题/旧作参考与唯一文件名 |
+| 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、最终回复与场景请求批量受理、同轮记忆 id 去重召回、回复、搭话、碎碎念、durable interaction attempt、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
+| 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/嵌套块语义/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、重读反思证据、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
 | 发布工具 | `tests/test_release_tools.py` | 1 | 六处版本一致性、tag 校验、冻结制品布局、REST/SSE smoke、stdin EOF 回收、占位 key、workflow 权限/依赖/Action SHA 与锁文件 |
 
@@ -43,7 +43,7 @@
 
 | 范围 | 测试目录 | 主要覆盖 |
 |---|---|---|
-| REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、委派任务端点与 `task_updated` 分发、创作过滤/分页参数、记忆搜索/事实快照端点、开发/打包共享 base URL、eval prompt 懒加载端点、取消信号、错误、事件解析 |
+| REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、委派任务端点与 `task_updated` 分发、创作过滤/分页参数、记忆搜索/事实快照端点、开发/打包共享 base URL、eval prompt 懒加载端点、取消信号、错误、事件解析、`scene_memory_requested` 监听与 no-op 分发、`reflection_done` 同时刷新欲望与内在状态 |
 | 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts`, `activityPanel.test.tsx`, `creationPanel.test.tsx` | Zustand、委派网页/EPUB 表单与段落预览、任务状态/失败原因、普通进度冲突合并与显式重读回退、书签切书乱序回包隔离、创作分批追加与刷新竞态、创作正文折叠/加载更多、记忆搜索与事实图独立降级、eval prompt 逐行缓存/重试、历史/SSE 去重与因果排序、非法帧不改变等待/未读状态、活跃度、异常原生采样、请求超时/取消、网络结果不确定 |
 | 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、设置、评估面板展开详情与安全文本渲染 |
 | 记忆面板 | `memoryPanel.test.tsx` | 关键词查询提交、事实图实体关系渲染、事实加载失败降级 |
@@ -64,6 +64,8 @@
 - `test_success_finalization_retries_without_blocking_consumer`
 - `test_failure_finalization_retries_without_wedging_delivery`
 - `test_effect_marker_skips_duplicate_handler_replay`
+- `test_publish_many_rolls_back_all_events_on_conflict`
+- `test_publish_many_cancellation_rolls_back_count_and_events`
 - `test_user_message_replay_skips_after_reply_event_exists`
 - `test_attempt_insert_rolls_back_with_outer_transaction`
 - `test_concurrent_reply_claims_only_claim_once`
@@ -88,9 +90,18 @@
 - `test_run_embedding_failure_preserves_all_reflection_state`
 - `test_run_commit_failure_rolls_back_long_term_and_slow_variables`
 - `test_apply_snapshot_conflict_rolls_back_reflection`
+- `test_apply_slow_variable_conflict_rolls_back_reflection`
+- `test_stale_periodic_reflection_is_consumed_without_running_llm`
+- `test_periodic_reflection_rechecks_memory_threshold_at_consumption`
+- `test_reflection_trigger_evidence_reaches_prompt`
+- `test_reflection_failure_preserves_event_applied_during_prepare`
 - `test_integrate_revisit_publishes_reflection_event`
 - `test_integrate_keeps_buffer_when_reflection_admission_fails`
 - `test_record_recall_rolls_back_when_promoted_event_append_fails`
+- `test_scene_memory_rolls_back_when_created_event_append_fails`
+- `test_remember_scene_replay_is_idempotent`
+- `test_remember_scene_failure_keeps_effect_unapplied`
+- `test_remember_scene_rolls_back_memory_and_effect_on_event_append_failure`
 
 ### 记忆、活动和用户路径
 
@@ -110,6 +121,14 @@
 - `test_digest_source_block_updates_profile_and_attributes_fiction`
 - `test_same_knowledge_from_two_books_keeps_both_source_scopes`
 - `test_source_semantic_dedup_ranks_only_within_same_source`
+- `test_find_by_content_keeps_sourced_and_unsourced_knowledge_separate`
+- `test_repeated_writes_do_not_promote_but_real_recalls_do`
+- `test_reply_slow_records_each_memory_id_once_per_turn`
+- `test_settle_freshness_is_incremental_and_same_time_idempotent`
+- `test_settle_freshness_ignores_clock_rollback`
+- `test_strengthen_restarts_freshness_clock`
+- `test_extract_fact_candidates_does_not_attribute_nyx_first_person_to_user`
+- `test_scene_first_person_fact_is_not_attributed_to_user`
 - `test_search_filters_source_before_ranking`
 - `test_each_chunk_persists_profile_and_source_before_advancing`
 - `test_pending_digest_is_reused_without_second_extraction`
@@ -133,6 +152,15 @@
 - `test_recovery_finishes_task_linked_to_completed_activity`
 - `test_quiesce_cancels_runner_and_returns_task_to_queue`
 - `test_quiesce_recovers_even_when_cancel_cleanup_raises`
+- `test_quiesce_timeout_leaves_live_runner_durably_running`
+- `test_interrupt_timeout_keeps_live_runner_and_activity_running`
+- `test_complete_failure_recovers_orphaned_task`
+- `test_failed_settlement_recovers_orphaned_task`
+- `test_interrupt_failure_recovers_cancelled_task`
+- `test_next_admission_recovers_done_runner_before_selection`
+- `test_assignment_survives_post_commit_scheduling_failure`
+- `test_complete_idle_reflection_appends_durable_reflection`
+- `test_idle_reflection_uses_durable_reflection_route`
 - `test_resume_skips_same_block_from_previous_local_day`
 - `test_main_quiesces_activity_before_reading_and_bus_close`
 - `test_material_retirement_handles_missing_source_row`
@@ -215,7 +243,7 @@
 - `test_last_dialogue_anchor_skips_current_and_incomplete_turns`
 - `test_reply_recovers_overnight_dialogue_from_durable_log`
 - `test_reply_fallback_releases_return_context`
-- `test_return_is_consumed_when_normal_reply_precedes_failure`
+- `test_return_is_consumed_when_normal_reply_precedes_later_failure`
 - `test_stale_observation_cannot_overwrite_user_online`
 - `test_observation_and_message_are_serialized_without_false_return`
 - `test_clock_rollback_rebuilds_presence_baseline_without_return`

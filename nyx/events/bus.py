@@ -3,7 +3,7 @@ import json
 import logging
 import time
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -213,6 +213,46 @@ class EventBus:
             self._broadcast(event)
         for consumer_id in consumer_ids:
             self._wake(consumer_id)
+
+    async def publish_many(self, events: Sequence[Event]) -> None:
+        """Durably admit several events in one local transaction."""
+        batch = tuple(events)
+        if not batch:
+            return
+        if self._closed or self._db.is_closed:
+            raise EventBusClosedError("事件总线不接受新事件")
+        if not self._accepting and any(
+            event.source is not Source.INTERNAL for event in batch
+        ):
+            raise EventBusClosedError("事件总线不接受新事件")
+        if self._db.failure_state == "open":
+            raise EventAdmissionError("数据库熔断中，事件未受理")
+
+        admitted: list[tuple[Event, bool, tuple[str, ...]]] = []
+        try:
+            async with self._db.transaction():
+                for event in batch:
+                    inserted = not await self.is_durable(event.id)
+                    consumer_ids = await self.append_in_transaction(event)
+                    admitted.append((event, inserted, consumer_ids))
+        except asyncio.CancelledError:
+            self.persisted_count -= sum(inserted for _, inserted, _ in admitted)
+            raise
+        except Exception as error:
+            self.persisted_count -= sum(inserted for _, inserted, _ in admitted)
+            self._db.record_failure()
+            raise EventAdmissionError("事件批量持久化失败，事件未受理") from error
+        else:
+            self._db.record_success()
+
+        for event, inserted, consumer_ids in admitted:
+            if inserted:
+                self._queue.track(len(consumer_ids))
+                if consumer_ids:
+                    self._compat_pending[event.id] = len(consumer_ids)
+                self._broadcast(event)
+            for consumer_id in consumer_ids:
+                self._wake(consumer_id)
 
     async def run(self) -> None:
         """Recover durable deliveries, then keep workers alive until stopped."""

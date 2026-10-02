@@ -209,9 +209,15 @@ class _FakeInnerLife:
 class _FakeBus:
     def __init__(self) -> None:
         self.published: list[Event] = []
+        self.batches: list[list[Event]] = []
 
     async def publish(self, event: Event) -> None:
         self.published.append(event)
+
+    async def publish_many(self, events: list[Event]) -> None:
+        batch = list(events)
+        self.batches.append(batch)
+        self.published.extend(batch)
 
     async def is_durable(self, event_id: str) -> bool:
         return any(event.id == event_id for event in self.published)
@@ -389,47 +395,20 @@ def _event(
 # ---- reply ----
 
 
-@pytest.mark.parametrize("failure", ["scene", "second_round", "cancel"])
-async def test_return_is_consumed_when_normal_reply_precedes_failure(
-    failure: str,
-) -> None:
-    scene_entered = asyncio.Event()
-
-    class _SceneFailure(_FakeMemory):
-        async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
-            if failure == "cancel":
-                scene_entered.set()
-                await asyncio.Event().wait()
-            if failure == "scene":
-                raise RuntimeError("scene failure")
-            return await super().create_scene_memory(reply_context)
-
+async def test_return_is_consumed_when_normal_reply_precedes_later_failure() -> None:
     class _LaterFailure(_FakeLlm):
         async def complete(
             self, messages: list[LlmMessage], **kwargs: Any
         ) -> LLMOutput:
-            if (
-                failure == "second_round"
-                and kwargs["output_type"] == "reply" and self._speak_n
-            ):
+            if kwargs["output_type"] == "reply" and self._speak_n:
                 raise RuntimeError("later round failure")
             return await super().complete(messages, **kwargs)
 
     returns = _ReturnState()
     facade, _llm, _eval, _memory, _inner, bus = _new_facade(
-        llm=_LaterFailure(), memory=_SceneFailure(), return_state=returns,
+        llm=_LaterFailure(), return_state=returns,
     )
-    if failure == "second_round":
-        await facade.reply("为什么" * 30 + "？", "partial")
-    elif failure == "cancel":
-        task = asyncio.create_task(facade.reply("为什么" * 30 + "？", "partial"))
-        await asyncio.wait_for(scene_entered.wait(), timeout=1.0)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-    else:
-        with pytest.raises(RuntimeError):
-            await facade.reply("为什么" * 30 + "？", "partial")
+    await facade.reply("为什么" * 30 + "？", "partial")
 
     assert any(e.type is EventType.SPEAK for e in bus.published)
     assert returns.finished == 1
@@ -626,14 +605,26 @@ async def test_reply_slow_non_question() -> None:
     )
     await facade.reply("在吗", "corr-slow")
     assert [t for t, _m, _c in llm.calls] == ["tool"] + ["reply"] * 3
-    assert [e.type for e in bus.published] == [EventType.THINK, EventType.SPEAK] * 3
+    assert [e.type for e in bus.published] == [
+        EventType.THINK,
+        EventType.SPEAK,
+        EventType.THINK,
+        EventType.SPEAK,
+        EventType.THINK,
+        EventType.SPEAK,
+        EventType.SCENE_MEMORY_REQUESTED,
+    ]
     assert memory.search_calls == 1
-    assert len(memory.scene_memories) == 1
-    scene = memory.scene_memories[0]
+    assert memory.scene_memories == []
+    scene = bus.published[-1].content
     assert (scene["nyx_think"], scene["nyx_speak"]) == (
         "想法1\n想法2\n想法3",
         "回答1\n回答2\n回答3",
     )
+    assert [event.type for event in bus.batches[-1]] == [
+        EventType.SPEAK,
+        EventType.SCENE_MEMORY_REQUESTED,
+    ]
 
 
 async def test_reply_slow_question() -> None:
@@ -642,8 +633,12 @@ async def test_reply_slow_question() -> None:
     )
     await facade.reply("在吗", "corr-q")
     assert [t for t, _m, _c in llm.calls] == ["tool", "reply"]
-    assert [e.type for e in bus.published] == [EventType.THINK, EventType.ASK]
-    assert len(memory.scene_memories) == 1
+    assert [e.type for e in bus.published] == [
+        EventType.THINK,
+        EventType.ASK,
+        EventType.SCENE_MEMORY_REQUESTED,
+    ]
+    assert memory.scene_memories == []
 
 
 async def test_reply_slow_tool_executes_and_flows_into_prompt() -> None:
@@ -742,6 +737,25 @@ async def test_reply_slow_records_recall() -> None:
     )
     await facade.reply("在吗", "corr-recall")
     assert memory.recalled == ["m1", "m2"]
+
+
+async def test_reply_slow_records_each_memory_id_once_per_turn() -> None:
+    memory = _FakeMemory()
+    repeated = Memory(
+        id="same",
+        created_at=0.0,
+        content="same",
+        kind=MemoryKind.EPISODE,
+        summary="same",
+        freshness=1.0,
+        type=MemoryType.SHORT_TERM,
+    )
+    memory.search_results = [repeated, repeated]
+    facade, *_ = _new_facade(energy=100.0, arousal=0.0, memory=memory)
+
+    await facade.reply("在吗", "corr-recall-once")
+
+    assert memory.recalled == ["same"]
 
 
 async def test_reply_ask_guidance_slow_only() -> None:

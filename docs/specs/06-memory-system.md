@@ -12,7 +12,7 @@
 ## 系统边界
 
 - `MemoryFacade.search(query: str) -> list[Memory]` 是表达慢通道唯一检索入口；表达层不直接调 store/retrieval。
-- 慢通道 `assemble_context` 会把 `MemoryFacade.search(message)` 返回的全部记忆放进 prompt，并立即逐条 `record_recall(memory.id)`。
+- 慢通道 `assemble_context` 会把 `MemoryFacade.search(message)` 返回的全部记忆放进 prompt，并在同一回合按 memory id 去重后立即 `record_recall(memory.id)`。
 - 快通道不检索记忆、不 `record_recall`、不生成场景化记忆。
 - `Memory` 字段是 `id`、`created_at`、`content`、`kind`、`topics`、`summary`、`freshness`、`type`、`recall_count`、`aspect`、`embedding`、`sources`。
 - `MemoryType` 取值是 `SHORT_TERM="short_term"`、`LONG_TERM="long_term"`。
@@ -22,7 +22,7 @@
 - `MemoryRetrieval` 负责检索编排；它只读 store 和 ANN，不写 DB、不发布事件。
 - 组合根调用 `build_embed(model_name)` 只创建异步 embed 闭包；`SentenceTransformer` 延迟到首次实际编码时在工作线程加载，并发首次调用通过锁只构造一个模型，避免模型加载阻塞后端端口监听。加载或编码异常继续向既有调用方传播，由各调用方按原契约决定严格失败或 best-effort 降级。
 - `MemoryGraph` 从 `MemoryEdge` 列表构建无向图；它不读 DB，只做图扩散和聚类，但必须接收完整 `memory_ids` 才能处理孤立节点。
-- `MemoryFacade._persist_memory` 负责统一写入、去重、建边、矛盾检测、衰减/淘汰和 `memory_created` 事件；store 只提供原子 CRUD。
+- `MemoryFacade._persist_memory` 负责统一写入和去重；新 `memory`、事实 apply 与 `memory_created` 在同一本地事务提交。提交后的建边、矛盾检测、衰减/淘汰逐项 best-effort 隔离；store 只提供原子 CRUD。
 
 ## 用户故事
 
@@ -125,6 +125,9 @@ topics 联想约束：
   `material:<digest>`、`web:<digest>`、`local:<digest>`；digest 来自稳定标识
   （`book_id`、绝对路径或 URL），整体不超过 topics 的 24 字符上限。标题仅用于展示，
   不参与来源隔离，因此同名书不会串线。
+- 一条记忆最多包含一个 `book:` / `material:` / `web:` / `local:` 来源 topic；多个来源、
+  不支持的来源 kind 或空来源标识直接拒绝。无来源记忆只与无来源记忆精确/语义去重，不能
+  命中任意带来源记忆。
 - `remember_knowledge` 接受 item 内可选的 `source_topic` / `source_name`；
   `source_topic` 与知识主题一起进入现有 `Memory.topics`，仍复用统一去重和事实抽取尾段，
   不新增来源表或第二套事实写入路径。
@@ -137,7 +140,10 @@ topics 联想约束：
 - `observe_user` 生成的 `USER_PROFILE` 仅表示前台观察，不参与事实抽取；窗口标题、摘要或
   presence 字段中的文本不能伪造用户偏好或状态事实。其他显式用户画像仍需通过主语锚点。
 - 实体以规范化名称 + `entity_type` 唯一；aliases 用于 Nyx/Nyx 夏本/尼克斯等别名合并，
-  同名异类实体不合并。
+  同名异类实体不合并。实体合并与事实搜索都查询 `memory_entity_alias` 索引，不扫描
+  `memory_entity.aliases` JSON。
+- conversation 事实候选只有在记忆正文或摘要明确出现“用户”时才允许 LLM 产出
+  `subject="用户"`；Nyx 第一人称“我”不能被归成用户事实。
 - `mode="functional"` 明确表示单值关系，即使谓词尚未进入内置白名单也不能降级为多值；
   缺省 mode 才按谓词白名单推断。
 - 单值谓词（就业状态、当前职业、居住地、当前公司等）只关闭更早且仍有效的旧事实；
@@ -200,6 +206,7 @@ class MemoryStore:
     async def delete_many(self, ids: list[str]) -> None: ...
     async def record_recall(self, memory_id: str, promote_threshold: int) -> bool: ...
     async def strengthen(self, memory_id: str, now: float) -> None: ...
+    async def settle_freshness(self, now: float, rate: float) -> None: ...
     async def count_new(self, kind: MemoryKind | None, since: float) -> int: ...
     async def search_keywords(
         self,
@@ -230,7 +237,10 @@ Store 规则：
 - `created_at` 是创建时间，`update_many` / `strengthen` / `record_recall` 都不改；`count_new(kind, since)` 只看 `first_created_at > since`。
 - `list_memories` 按 `kind` / `type` 过滤，按 `freshness DESC, created_at DESC` 排序，`limit` 有值时截断。
 - `record_recall` 在一个锁块里执行 `recall_count+1` 和短期达阈值升级长期；升级时返回 `True`，长期记忆不重复升级。
-- `strengthen` 表示重复写入/语义去重命中旧记忆：`recall_count+1`、`freshness=1.0`，但不升级、不发布事件。
+- `strengthen` 表示重复写入/语义去重命中旧记忆：只把 `freshness=1.0` 并把
+  `freshness_updated_at=now`；不增加 `recall_count`、不升级、不发布事件。
+- `settle_freshness` 只扣 `freshness_updated_at -> now` 的增量时间并更新锚点；同一时刻重复
+  结算幂等，系统时间回拨时不增加 freshness、也不把锚点回拨。
 - `delete_many` 在同一锁块里级联删记忆及 incident typed edges。
 - `memory_edge` 主键是 `(from_id, to_id, kind)`；`upsert_edge` canonicalize 为 `from_id < to_id` 后写库，同 pair 不同 kind 可共存。
 - `list_edge_degrees` 按无向 incident typed degree 统计，边方向不表达语义方向。
@@ -422,6 +432,7 @@ async def search(
 
 ```python
 async def create_scene_memory(reply_context: dict[str, str]) -> Memory: ...
+async def remember_scene(event: Event, consumer_id: str | None = None) -> None: ...
 async def remember_activity(event: Event, consumer_id: str | None = None) -> None: ...
 async def remember_user_profile(
     content: str,
@@ -467,7 +478,10 @@ async def export(fmt: str) -> str: ...
 
 Facade 规则：
 
-- `create_scene_memory` 只在慢通道回合末调用，LLM 调用 1 次（`json_mode=True`、`module="memory"`、`output_type="scene_memory"`）生成 `{content, kind, topics, summary}` 后复用 `_persist_memory`。
+- `create_scene_memory` 保留为直接调用/测试入口：LLM 调用 1 次（`json_mode=True`、
+  `module="memory"`、`output_type="scene_memory"`）生成 `{content, kind, topics, summary}` 后
+  复用 `_persist_memory`。正式慢通道通过 `scene_memory_requested` durable event 调用
+  `remember_scene`，不在回复图内同步等待 scene LLM。
 - 活动、读书、知识、用户画像、未答记录入口都复用 `_persist_memory` 的入库尾段，
   不绕过建边、矛盾检测、衰减/淘汰和事件。确定性入口不调用 scene-memory LLM；知识点
   批量事实抽取合并为一次 `fact_extraction` 调用后再逐条复用尾段。
@@ -482,6 +496,10 @@ Facade 规则：
 - `search_source` 使用来源过滤后的候选集做排序；这些命中作为读书即时上下文，不调用
   `record_recall`，不改变普通 `search` 的慢通道升级语义。
 - `remember_activity(event, consumer_id=None)` 是 `ACTIVITY_END` 的记忆消费者；RouteSpec 注册时传 `consumer_id="memory.activity_end"`。durable 路径在同一本地事务内写 `event_effect`、记忆状态和 `memory_created` 事件，事务外才运行 embedding/关系边/矛盾检测/衰减等旁路；旁路失败不撤销已提交核心记忆，重放时已应用则 no-op。普通直接调用不传 `consumer_id`，保留旧调用面。
+- `remember_scene(event, consumer_id="memory.scene_reply")` 在事务外完成 scene LLM、eval、
+  JSON 解析、embedding 与事实候选准备；事务内提交 `event_effect`、记忆/强化、事实 apply 和
+  `memory_created`。LLM/解析或核心事务失败抛出并由 delivery 重试；已提交重放 no-op；建边、
+  矛盾和衰减仍是提交后 best-effort。
 - `record_recall(memory_id)` 只表示“进入慢通道 prompt 后被想起”：委托 store 加一；短期达阈值时发布 `memory_promoted`，长期不重复发布。升级和 `memory_promoted` 事件行在同一本地事务提交，commit 后再 `announce_committed`。
 - `export("json")` 输出 JSON 数组；`export("md")` 输出 Markdown；非法格式抛 `ValueError`；导出不包含 `Memory.sources`。
 - Facade 自己发布 `memory_created` / `memory_promoted` / `reflection` 事件，返回值只返回数据对象或 `None`，不返回 `Event` 给调用方发布。
@@ -631,7 +649,9 @@ _CONTRADICTION_SIM_THRESHOLD = 0.6
 2. 如果 `memory.embedding is None` 且 `embed` 可用，调用 `embed(memory.content)` 补 embedding。
 3. 如果新记忆有 embedding，一次读取全部旧记忆并构建一个 `AnnIndex`；先用 `allowed_ids` 限定同 kind、同 source topic 查询去重候选（无 source topic 的普通记忆只和同样无 source topic 的记忆去重），未命中去重时再复用同一 index 查询全局候选。两次查询都受 `_PERSIST_SEMANTIC_CANDIDATE_K` 约束，并在候选内计算精确 cosine，得到 `PersistSemanticHit(memory, cosine)` 列表。
 4. 如果候选 top-1 达到 kind 对应阈值，并且否定极性、数字集合、显式时间锚点均兼容，则 `strengthen(top.memory.id, now)` 并返回持久化旧记忆；`episode` 还要求创建时间差不超过一小时。
-5. 未命中去重时才 `store.add(memory)`，随后建边、矛盾检测、衰减/淘汰、发布 `memory_created`。
+5. 未命中去重时，在一个事务中执行 `store.add(memory)`、事实 apply 与
+   `append_in_transaction(memory_created)`；commit 后 announce，再逐项运行建边、矛盾检测、
+   衰减/淘汰。announce 或旁路失败不撤销核心提交，也不把调用结果伪装成未提交。
 
 规则：
 
@@ -642,6 +662,7 @@ _CONTRADICTION_SIM_THRESHOLD = 0.6
 - `_detect_contradiction(memory, candidates, correlation_id)` 只接收 `PersistSemanticHit`，不再接收旧 `scored`。
 - 矛盾检测候选取 `candidates[:_CONTRADICTION_CANDIDATE_K]` 中 `cosine >= _CONTRADICTION_SIM_THRESHOLD` 的记忆。
 - 无候选或全低于阈值时不调用 LLM。
+- LLM 返回已知冲突 id 时发布普通 durable `REFLECTION`，载荷固定包含 `reason="memory_contradiction"`、新记忆 `memory_id`、旧记忆 `conflicts_with`，以及两项 `{memory_id, summary}` 结构化 `evidence`；兼容 `summary` 字段继续保留。证据用于解释触发时刻，反思核心仍是从全部旧记忆归纳模式和新点子。
 - 矛盾 LLM 失败、JSON 解析失败、返回未知 id 时只记录日志并跳过矛盾触发的 reflection，不回滚已入库记忆；这只适用于 memory 的矛盾检测旁路，不改变 `inner_life.reflection` durable consumer 对反思自身解析/提交失败的 retry 语义。
 - 去重命中旧记忆时不建边、不矛盾检测、不发布 `memory_created`，保持事实表的 strengthen 语义。
 
@@ -867,6 +888,8 @@ prune_priority = edge.weight * prune_kind_weight
 - 主键从 `(from_id, to_id)` 改为 `(from_id, to_id, kind)`。
 - 新增 `memory_entity_alias(entity_id, alias, entity_type)`，主键为 `(entity_id, alias)`，
   并以 `(alias, entity_type)` 建索引；迁移从既有 `memory_entity.aliases` JSON 回填。
+- schema 34 为 `memory` 新增 `freshness_updated_at REAL NOT NULL`。旧库迁移保留现有
+  freshness，并把迁移时刻设为后续增量衰减锚点；新记忆以 `created_at` 为锚点。
 - 迁移旧边：端点 canonicalize 后全部视为 `kind='semantic'`，`created_at=0.0`，方向相反重复边合并。
 - 不新增 `memory_cluster` 表。
 - 不新增配置项；候选数、权重、度数上限先作为模块常量，避免未请求的配置膨胀。
@@ -896,17 +919,59 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 - [ ] keyword LIKE：多个 token 分别匹配；summary/content 命中集合正确；空 token 返回空；`limit <= 0` 返回空；token 多次出现只计一次；LIKE 特殊字符被 escape；返回按命中排序并截断到 limit。
 - [ ] 融合排序：vector 强但 keyword 弱、keyword 强但 vector 弱、二者都强三类样本按公式稳定排序；`direct_limit=5` 只返回 5 条 direct。
 - [ ] 召回顺序：先 direct，再 association；association 不重复 direct seed；最终数量 `<= direct_limit + association_limit`。
-- [ ] `_persist_memory`：content hash 命中优先；bounded semantic candidate top-1 达到 kind 阈值且通过事实冲突门控时 strengthen 旧记忆；未命中才 add/build edges/detect contradiction/publish；矛盾检测只取 top5 且 cosine `>=0.6`。
+- [ ] `_persist_memory`：content hash 命中优先；bounded semantic candidate top-1 达到 kind 阈值且通过事实冲突门控时 strengthen 旧记忆；未命中才 add/build edges/detect contradiction/publish；矛盾检测只取 top5 且 cosine `>=0.6`，命中时 `REFLECTION` 保留新旧记忆 id 和 summary 证据。
 - [ ] `MemoryGraph.associate(depth=2)`：二跳可达，按边权/跳数/kind 权重排序，多路径取最高分，seed score 参与计算；同 pair 多 kind 作为 typed edges 分别扩散；`AssociationHit.kinds` 记录最佳路径。
 - [ ] 边 schema：`MemoryEdge.kind` / `created_at` 序列化与反序列化；同一 canonical pair 不同 kind 可共存；方向相反同 kind 被 canonicalize 为同一边；旧边迁移后 kind 为 `semantic`。
 - [ ] 建边：语义、实体、关键词、时间边分别可被构造；语义边复用 persist semantic candidates；LLM 关系边只对 top5 候选调用；`none` 不写边；LLM 失败不阻塞持久化。
 - [ ] 度数控制：每 kind 最多 4 条，总有效度最多 16；新节点和触达旧节点都会剪枝；剪枝通过 `delete_edges` 删除完整三元键。
 - [ ] 聚类：`MemoryGraph(edges, memory_ids=...)` 下 Louvain/greedy fallback 均返回稳定 `memory_id -> cluster_id`；孤立节点保留；temporal 边低权重不主导聚类。
-- [ ] 表达慢通道：`MemoryFacade.search` 返回 direct + association 后，`assemble_context` 对全部返回记忆逐条 `record_recall`。
+- [ ] 表达慢通道：`MemoryFacade.search` 返回 direct + association 后，`assemble_context` 按 id
+  去重记录 recall；最终 `SPEAK/ASK` 与 `scene_memory_requested` 原子受理，快通道/fallback 不发请求。
 - [ ] 事实回归：观察窗口标题不产偏好事实；未知谓词的显式 functional/multi 模式保持；别名
   命中走别名索引；批量知识点只调用一次 `fact_extraction` 且来源 Memory 正确映射，失败仍落库。
 - [ ] 原文沉淀：类别白名单和 fiction/essay/unknown 归因正确；source topic 不超 24 字符；
   同名不同 `book_id` 不共享候选；`search_source` 先过滤来源再排序并最多返回 5 条。
+
+## SceneMemoryRequest 对象完整性
+
+`scene_memory_requested` 是慢通道正常终局后的 durable 派生对象，payload 自包含
+`user_message`、完整 `nyx_think`、完整 `nyx_speak`，correlation 沿用用户消息。
+
+**入口清单**
+
+| 入口 | 产生条件 | 写入位置 |
+|---|---|---|
+| 慢通道最终非问句 | 达到轮数上限 | 与最终 `SPEAK` 同事务写 `event_log` |
+| 慢通道问句 | 注册 `CHAT_ASK` | 与 attempt、最终 `ASK` 同事务写 `event_log` |
+| API / 迁移 / 后台任务 | 不适用；不允许其它入口伪造正常回复场景 | 不适用 |
+
+**消费者清单**
+
+| 消费者 | 发现方式 | 用途 |
+|---|---|---|
+| `memory.scene_reply` | `RouteSpec` durable delivery | 生成、去重并提交场景记忆 |
+| 事件日志 / SSE | 按 event type 展开；前端将其视为 opaque no-op | 溯源，不触发 UI 状态 |
+
+**状态迁移表**
+
+| 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
+|---|---|---|---|
+| 不存在 | 慢通道正常终局 | `pending` delivery | 与终局事件原子受理，不能只留终局事件 |
+| `pending/retry_wait` | consumer 领取 | `processing` | LLM/eval/解析失败抛出并退避重试 |
+| `processing` | 核心事务提交 | `succeeded` | effect + memory/强化 + created event 原子提交 |
+| `processing` | 超过最大重试 | `dead_letter` | 不写 effect，不伪造场景记忆成功 |
+| 已有 effect | 重放 | `succeeded` | no-op，不重复 LLM、strengthen 或创建 |
+
+**Bad case 表**
+
+| 情况 | 处理 |
+|---|---|
+| 空 | payload 字段非字符串即失败；合法空 think 可保留，producer 仍提供完整字段 |
+| 失败 | LLM/eval/JSON/核心 SQL 失败进入 retry；提交后 announce/边/矛盾/衰减失败只记日志 |
+| 部分完成 | 最终回复+请求原子受理；effect+memory+created event 原子提交，事务失败整体回滚 |
+| 乱序 | payload 自包含；同 consumer FIFO，不依赖 THINK/SPEAK consumer 的完成顺序 |
+| 重放 | `(event_id, "memory.scene_reply")` effect 命中后 no-op |
+| 删除 | 无请求删除 API；短期记忆后续淘汰不删除请求/effect，也不重新消费 |
 
 ## 完成定义
 

@@ -41,6 +41,8 @@ export function dispatchEvent(e: SseEvent): void {
     case "memory_promoted":
       useMemoryStore.getState().refresh();
       return;
+    case "scene_memory_requested":
+      return;
     case "activity_start":
     case "activity_interrupted":
     case "task_updated":
@@ -69,9 +71,10 @@ export function dispatchEvent(e: SseEvent): void {
       // 联想不进对话（对话框只放对话+提问）：后端仍产生，前端静默丢弃。
       return;
     case "reflection_done": {
-      // 反思完成：长期欲望更新不发 desire_generated，因此刷新快照；
+      // 反思完成：慢变量与长期欲望都可能变化，因此刷新两个快照；
       // story 真新增才冒气泡（去重跳过则静默刷新，不打扰）。
       void useDesireStore.getState().refresh();
+      void useInnerLifeStore.getState().refreshState();
       if (e.story_is_new) {
         const preview =
           e.story.length > 30 ? `${e.story.slice(0, 30)}…` : e.story;

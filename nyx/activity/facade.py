@@ -38,7 +38,6 @@ from nyx.types import (
     CurrentState,
     Event,
     ReadingProgress,
-    ReflectionOutcome,
     ShortTermDesire,
 )
 
@@ -101,7 +100,6 @@ class ActivityFacade:
         desire: DesireFacade,
         memory: MemoryFacade,
         get_state: Callable[[], Awaitable[CurrentState]],
-        reflect: Callable[[str | None], Awaitable[ReflectionOutcome | None]],
         get_observation: Callable[[], Awaitable[dict[str, str]]],
         config: ActivityConfig,
         exploration_config: ExplorationConfig,
@@ -123,7 +121,6 @@ class ActivityFacade:
         self._desire = desire
         self._memory = memory
         self._get_state = get_state
-        self._reflect = reflect
         self._get_observation = get_observation
         self._config = config
         self._canon = canon
@@ -179,7 +176,11 @@ class ActivityFacade:
 
     async def complete_activity(self, activity: Activity) -> None:
         """完成：goal 判定 + 收尾 + 发布 activity_end（desire/inner_life 消费）。"""
-        task_id = await self._lifecycle.complete(activity)
+        try:
+            task_id = await self._lifecycle.complete(activity)
+        except BaseException:
+            await self._recover_after_lifecycle_error(activity.id)
+            raise
         if task_id is not None:
             await self._publish_current_task(task_id)
 
@@ -191,9 +192,13 @@ class ActivityFacade:
         执行中的 result 尚未写入，故仅落终态（不持久化部分进度）；
         可续 runner 的 checkpoint 已经持久化，恢复时从对应领域存储继续。
         """
-        task_id = await self._lifecycle.interrupt(
-            activity_id, by_event, self._task
-        )
+        try:
+            task_id = await self._lifecycle.interrupt(
+                activity_id, by_event, self._task
+            )
+        except BaseException:
+            await self._recover_after_lifecycle_error(activity_id)
+            raise
         if task_id is not None:
             await self._publish_current_task(task_id)
 
@@ -205,14 +210,8 @@ class ActivityFacade:
         """Stop admitting work, cancel the runner, and durably settle leftovers."""
         self._quiescing = True
         task = self._task
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                _logger.exception("活动 runner 取消清理失败，继续执行状态恢复")
+        if not await _activity_lifecycle.cancel_activity_runner(task):
+            return
         await self.recover_stale_running()
 
     # ---- 读 ----
@@ -256,9 +255,7 @@ class ActivityFacade:
                 updated_at=now,
             )
         )
-        await self._publish_task_update(task)
-        await self._maybe_start_activity()
-        return await self._require_task(task.id)
+        return await self._finish_assignment(task)
 
     async def assign_book_task(
         self, book_id: str, target_paragraph: int
@@ -291,16 +288,15 @@ class ActivityFacade:
                 updated_at=now,
             )
         )
-        await self._publish_task_update(task)
-        if task.status is AssignedTaskStatus.PENDING:
-            await self._maybe_start_activity()
-        return await self._require_task(task.id)
+        return await self._finish_assignment(task)
 
     # ---- 内部 ----
 
     async def _maybe_start_activity(self) -> None:
         if self._quiescing:
             return
+        if self._task is not None and self._task.done():
+            await self.recover_stale_running()
         self._task = await self._starter.start_next_if_idle(self._task)
 
     async def _execute(self, activity: Activity) -> None:
@@ -314,7 +310,11 @@ class ActivityFacade:
                 result = await self._run_activity(activity)
         except Exception as error:
             # fail-fast：失败态落库后仍上抛（不吞异常），但活动不卡 RUNNING
-            failed_task_id = await self._lifecycle.fail(activity, str(error))
+            try:
+                failed_task_id = await self._lifecycle.fail(activity, str(error))
+            except BaseException:
+                await self._recover_after_lifecycle_error(activity.id)
+                raise
             if failed_task_id is not None:
                 await self._publish_current_task(failed_task_id)
             _logger.exception(
@@ -350,8 +350,7 @@ class ActivityFacade:
         if t is ActivityType.CREATION:
             return await self._run_creation(activity)
         if t is ActivityType.IDLE_REFLECTION:
-            outcome = await self._reflect(_correlation_id(activity))
-            return {"summary": outcome.story if outcome is not None else None}
+            return {}
         if t is ActivityType.FREE_EXPLORATION:
             raise ValueError("自由探索由 _execute 直接调用 Exploration.run")
         if t is ActivityType.OBSERVE_USER:
@@ -448,6 +447,31 @@ class ActivityFacade:
         if task is None:
             raise ValueError(f"任务不存在：{task_id}")
         return task
+
+    async def _finish_assignment(self, task: AssignedTask) -> AssignedTask:
+        """Return a durable assignment even when post-commit admission fails."""
+        await self._publish_task_update(task)
+        if task.status is not AssignedTaskStatus.PENDING:
+            return task
+        try:
+            await self._maybe_start_activity()
+            current = await self._store.get_task(task.id)
+            return current if current is not None else task
+        except Exception:
+            _logger.exception(
+                "委派任务已提交，但立即调度失败 task_id=%s", task.id
+            )
+            return task
+
+    async def _recover_after_lifecycle_error(self, activity_id: str) -> None:
+        """Best-effort reconciliation after an atomic lifecycle rollback."""
+        try:
+            await self.recover_stale_running()
+        except Exception:
+            _logger.exception(
+                "活动收尾失败且即时恢复失败，等待下次准入重试 activity_id=%s",
+                activity_id,
+            )
 
     async def _set_task_status(
         self,

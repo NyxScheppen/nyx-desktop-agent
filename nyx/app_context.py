@@ -41,7 +41,7 @@ from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
-from nyx.types import Book, CurrentState, Event, ReadingProgress, ReflectionOutcome
+from nyx.types import Book, CurrentState, Event, ReadingProgress
 
 
 @dataclass
@@ -286,9 +286,6 @@ async def build_app_context(
     inner_life_store = InnerLifeStore(db)
     activity_store = ActivityStore(db)
     state_reader: Callable[[], Awaitable[CurrentState]] | None = None
-    reflection_runner: (
-        Callable[[str | None], Awaitable[ReflectionOutcome | None]] | None
-    ) = None
     reading_context_reader: Callable[[str, str], Awaitable[str]] | None = None
     reading_owner: ReadingFacade | None = None
     observation_reader: Callable[[], Awaitable[dict[str, str]]] | None = None
@@ -298,11 +295,6 @@ async def build_app_context(
         if state_reader is None:
             raise RuntimeError("inner_life state reader 尚未绑定")
         return await state_reader()
-
-    async def reflect(correlation_id: str | None) -> ReflectionOutcome | None:
-        if reflection_runner is None:
-            raise RuntimeError("inner_life reflection runner 尚未绑定")
-        return await reflection_runner(correlation_id)
 
     async def get_observation() -> dict[str, str]:
         if observation_reader is None:
@@ -370,7 +362,6 @@ async def build_app_context(
         desire,
         memory,
         get_state,
-        reflect,
         get_observation,
         config.activity,
         config.exploration,
@@ -385,7 +376,6 @@ async def build_app_context(
         inner_life_store, activity, desire, memory, bus, llm, evaluator, config
     )
     state_reader = inner_life.get_state
-    reflection_runner = inner_life.reflect
 
     await seed_inner_life(inner_life_store)
     await seed_desire(desire_store)

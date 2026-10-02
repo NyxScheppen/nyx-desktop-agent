@@ -15,8 +15,11 @@ _MEMORY_COLS = (
     "id, created_at, content, kind, topics, summary, freshness, "
     "type, recall_count, aspect, embedding"
 )
-# INSERT 用：比 SELECT 多 content_hash + first_created_at（store 派生，Memory 不承载）
-_MEMORY_INSERT_COLS = _MEMORY_COLS + ", content_hash, first_created_at"
+# INSERT 用：store 派生列不进入公开 Memory。
+_MEMORY_INSERT_COLS = (
+    _MEMORY_COLS + ", content_hash, first_created_at, freshness_updated_at"
+)
+_SOURCE_TOPIC_PREFIXES = ("book:", "material:", "web:", "local:")
 
 
 @dataclass
@@ -62,9 +65,9 @@ class MemoryStore:
         async with self._operation() as should_commit:
             await self._db.conn.execute(
                 f"INSERT INTO memory ({_MEMORY_INSERT_COLS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (*_memory_row(memory), hash_content(memory.content),
-                 memory.created_at),
+                 memory.created_at, memory.created_at),
             )
             if should_commit:
                 await self._db.conn.commit()
@@ -84,15 +87,24 @@ class MemoryStore:
         required_topic: str | None = None,
     ) -> Memory | None:
         """在同一 kind 内按 content 精确哈希查重。"""
-        topic_clause = (
-            " AND EXISTS (SELECT 1 FROM json_each(memory.topics) "
-            "WHERE json_each.value = ?)"
-            if required_topic is not None
-            else ""
-        )
+        if required_topic is not None:
+            topic_clause = (
+                " AND EXISTS (SELECT 1 FROM json_each(memory.topics) "
+                "WHERE json_each.value = ?)"
+            )
+        else:
+            source_checks = " OR ".join(
+                "json_each.value LIKE ?" for _ in _SOURCE_TOPIC_PREFIXES
+            )
+            topic_clause = (
+                " AND NOT EXISTS (SELECT 1 FROM json_each(memory.topics) WHERE "
+                f"{source_checks})"
+            )
         params: tuple[str, ...] = (kind.value, hash_content(content))
         if required_topic is not None:
             params = (*params, required_topic)
+        else:
+            params = (*params, *(f"{prefix}%" for prefix in _SOURCE_TOPIC_PREFIXES))
         async with self._operation():
             cursor = await self._db.conn.execute(
                 f"SELECT {_MEMORY_COLS} FROM memory "
@@ -210,17 +222,27 @@ class MemoryStore:
         return int(row[0]) if row is not None else 0
 
     async def strengthen(self, memory_id: str, now: float) -> None:
-        """重复写入合并强化：freshness 重置、recall_count+1。
+        """重复写入合并强化：freshness 重置，不冒充慢通道召回。
 
-        created_at 是创建时间，不随强化刷新；升级仍只由 record_recall 的
-        promote_threshold 原子路径负责。
+        created_at 是创建时间，不随强化刷新；freshness 从强化时刻重新衰减。
         """
-        del now
         async with self._operation() as should_commit:
             await self._db.conn.execute(
-                "UPDATE memory SET freshness = 1.0, recall_count = recall_count + 1 "
+                "UPDATE memory SET freshness = 1.0, freshness_updated_at = ? "
                 "WHERE id = ?",
-                (memory_id,),
+                (now, memory_id),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+
+    async def settle_freshness(self, now: float, rate: float) -> None:
+        """Apply only elapsed freshness decay since the prior settlement."""
+        async with self._operation() as should_commit:
+            await self._db.conn.execute(
+                "UPDATE memory SET freshness = MAX(0.0, freshness - ? * "
+                "((? - freshness_updated_at) / 86400.0)), "
+                "freshness_updated_at = ? WHERE freshness_updated_at < ?",
+                (rate, now, now, now),
             )
             if should_commit:
                 await self._db.conn.commit()

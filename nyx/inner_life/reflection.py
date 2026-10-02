@@ -1,6 +1,7 @@
 import difflib
 import json
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -32,6 +33,8 @@ _SCALE_LO = 1.0  # 性格/三观范围下限
 _SCALE_HI = 10.0  # 性格/三观范围上限
 _STORY_CONTEXT_LIMIT = 5  # 反思 prompt 喂最近 N 条故事/认知（封顶防 token 膨胀）
 _DUP_SIMILARITY_THRESHOLD = 0.9  # 片段去重相似度阈值（只拦逐字近似）
+_TRIGGER_EVIDENCE_LIMIT = 1000
+_TRIGGER_ITEM_LIMIT = 5
 
 # 漂移 key 白名单（对齐 types.py 的 Personality/Values TypedDict 键名）
 _PERSONALITY_KEYS = frozenset(
@@ -43,14 +46,26 @@ _VALUES_KEYS = frozenset(
 _AESTHETIC_KEYS = frozenset({"ornate", "lyrical", "classical", "somber"})
 _AESTHETIC_MIN_READING = 3  # 审美偏移满额所需的最少新读章数
 _CREATION_REFLECTION_DELTA = 0.2  # 反思成功 → 创造欲 +0.2
-_DESIRE_TYPE_VALUES = frozenset(d.value for d in DesireType)
+_DESIRE_TYPE_VALUES = frozenset(
+    (DesireType.EXPLORATION.value, DesireType.INTERACTION.value)
+)
+_TRIGGER_REASON_LABELS = {
+    "manual": "手动或兼容调用",
+    "periodic": "周期积累达到门槛",
+    "memory_contradiction": "记忆矛盾",
+    "reading_revisit": "阅读重访",
+    "idle_activity": "闲置活动",
+}
 _logger = logging.getLogger(__name__)
 
 _REFLECTION_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
     "你思虑很深，习惯先怀疑自己，见过残酷却仍不愿低头。"
-    "基于近期经历和你当前的性格/三观/审美/自我叙事，反思并更新自我，只输出 JSON：\n"
-    "- story：一条新的故事片段（非空字符串，与已写过的不同）。\n"
+    "反思的核心是回看旧记忆，归纳多次经历中的模式、变化和联系，并从已有材料中"
+    "形成有依据的新点子；触发证据只说明为什么此刻回看，不要求解决矛盾，也不能"
+    "替代对全部旧记忆的概括。基于这些材料和当前性格/三观/审美/自我叙事更新自我，"
+    "只输出 JSON：\n"
+    "- story：一条由旧记忆归纳出的新叙事或新点子（非空字符串，与已写过的不同）。\n"
     "- becoming：一条新的认知变化（非空字符串）。\n"
     "- self_view：自画像，对象，键值都是字符串。\n"
     "- personality_delta / values_delta / aesthetic_delta：微小漂移，对象；\n"
@@ -64,6 +79,35 @@ _REFLECTION_SYSTEM = (
     "  linked_values 是数组，只能从 attitude_to_human、ai_identity_acceptance、"
     "altruism、optimism 中选择，可为空。"
 )
+
+
+def _build_trigger_context(trigger: dict[str, Any] | None) -> str:
+    """Render bounded trigger evidence for the reflection prompt."""
+    content = trigger or {}
+    reason = content.get("reason", "manual")
+    if not isinstance(reason, str) or reason not in _TRIGGER_REASON_LABELS:
+        raise ValueError(f"未知反思触发原因：{reason!r}")
+    evidence = content.get("evidence")
+    lines: list[str] = []
+    if isinstance(evidence, str):
+        text = evidence.strip()
+        if text:
+            lines.append(text[:_TRIGGER_EVIDENCE_LIMIT])
+    elif isinstance(evidence, list):
+        for item in cast(list[Any], evidence)[:_TRIGGER_ITEM_LIMIT]:
+            if not isinstance(item, dict):
+                continue
+            item_dict = cast(dict[str, Any], item)
+            summary = item_dict.get("summary")
+            if not isinstance(summary, str) or not summary.strip():
+                continue
+            source_id = item_dict.get("memory_id") or item_dict.get("source_id")
+            prefix = f"[{source_id}] " if isinstance(source_id, str) else ""
+            lines.append(f"{prefix}{summary.strip()}"[:_TRIGGER_EVIDENCE_LIMIT])
+    elif evidence is not None:
+        raise ValueError("反思触发 evidence 应是字符串或对象数组")
+    evidence_text = "\n".join(f"- {line}" for line in lines) or "- （无附加证据）"
+    return f"触发原因：{_TRIGGER_REASON_LABELS[reason]}\n触发证据：\n{evidence_text}"
 
 
 def _describe_long_term_strength(strength: float) -> str:
@@ -86,6 +130,7 @@ def _build_reflection_prompt(
     long_term: list[LongTermDesire],
     aesthetic: Aesthetic,
     facts: list[MemoryFact] | None = None,
+    trigger_context: str | None = None,
 ) -> str:
     mem_lines = "\n".join(f"- {m.summary}" for m in memories) or "（无）"
     lt_lines = "\n".join(
@@ -107,7 +152,8 @@ def _build_reflection_prompt(
         or "（无）"
     )
     return (
-        f"近期记忆：\n{mem_lines}\n\n"
+        f"本次反思：\n{trigger_context or _build_trigger_context(None)}\n\n"
+        f"近期记忆（按首次创建时间从新到旧）：\n{mem_lines}\n\n"
         f"当前性格（1-10）：开放性 {personality['openness']} / 尽责性 "
         f"{personality['conscientiousness']} / "
         f"外向性 {personality['extraversion']} / 宜人性 "
@@ -194,9 +240,7 @@ def _validate_candidate(c: Any) -> None:
     candidate = cast(dict[str, Any], c)
     t = candidate.get("type")
     if not isinstance(t, str) or t not in _DESIRE_TYPE_VALUES:
-        raise ValueError(
-            f"长期欲望候选 type 应是 {'/'.join(d.value for d in DesireType)}"
-        )
+        raise ValueError("长期欲望候选 type 应是 exploration/interaction")
     name = candidate.get("name")
     description = candidate.get("description")
     if not isinstance(name, str) or not name.strip():
@@ -223,16 +267,21 @@ def _validate_candidate(c: Any) -> None:
 
 def _parse_reflection(raw: str) -> dict[str, Any]:
     """解析反思 LLM 的 JSON 产出并校验结构。结构非法抛 ValueError。"""
-    data = json.loads(raw)
+    def reject_non_finite(value: str) -> None:
+        raise ValueError(f"反思 JSON 数值必须有限，得到 {value}")
+
+    data = json.loads(raw, parse_constant=reject_non_finite)
     if not isinstance(data, dict):
         raise ValueError(f"反思 JSON 应是对象，得到 {type(data).__name__}")
     parsed = cast(dict[str, Any], data)
     story = parsed.get("story")
     becoming = parsed.get("becoming")
-    if not isinstance(story, str) or not story:
+    if not isinstance(story, str) or not story.strip():
         raise ValueError("反思 JSON 缺 story 或非空字符串")
-    if not isinstance(becoming, str) or not becoming:
+    if not isinstance(becoming, str) or not becoming.strip():
         raise ValueError("反思 JSON 缺 becoming 或非空字符串")
+    story = story.strip()
+    becoming = becoming.strip()
     self_view = parsed.get("self_view")
     if self_view is None:
         self_view = cast(dict[str, Any], {})
@@ -263,6 +312,8 @@ def _parse_reflection(raw: str) -> dict[str, Any]:
         for k, v in cast(dict[str, Any], d).items():
             if not isinstance(v, (int, float)) or isinstance(v, bool):
                 raise ValueError(f"漂移值应是数值，{k}={v!r}")
+            if not math.isfinite(v):
+                raise ValueError(f"漂移值应是有限数，{k}={v!r}")
     long_term_desires = parsed.get("long_term_desires")
     if long_term_desires is None:
         long_term_desires = cast(list[Any], [])
@@ -319,6 +370,7 @@ class ReflectionPlan:
     long_term_snapshot: LongTermSnapshot
     story: str
     story_is_new: bool
+    base_narrative_updated_at: float
 
 
 class Reflection:
@@ -344,11 +396,20 @@ class Reflection:
         self._evaluator = evaluator
         self._config = config
 
-    async def prepare(self, correlation_id: str | None = None) -> ReflectionPlan:
+    async def prepare(
+        self,
+        correlation_id: str | None = None,
+        trigger: dict[str, Any] | None = None,
+    ) -> ReflectionPlan:
         """在事务外完成读取、LLM 调用和解析，产出可提交的确定性计划。"""
         now = time.time()
         # 1. 收集输入。此阶段不持有本地事务，避免 LLM 占住 SQLite 锁。
-        recent = (await self._memory_facade.list_memories())[:_RECENT_MEMORY_LIMIT]
+        all_memories = await self._memory_facade.list_memories()
+        recent = sorted(
+            all_memories,
+            key=lambda memory: (memory.created_at, memory.id),
+            reverse=True,
+        )[:_RECENT_MEMORY_LIMIT]
         recent_facts: list[MemoryFact] = []
         recent_facts_method = getattr(self._memory_facade, "recent_facts", None)
         if callable(recent_facts_method):
@@ -386,6 +447,7 @@ class Reflection:
                         desire_state.long_term,
                         aesthetic,
                         recent_facts,
+                        _build_trigger_context(trigger),
                     ),
                 },
             ],
@@ -450,10 +512,14 @@ class Reflection:
             long_term_snapshot=long_term_snapshot,
             story=new_story,
             story_is_new=story_is_new,
+            base_narrative_updated_at=narrative.updated_at,
         )
 
     async def apply(self, plan: ReflectionPlan) -> ReflectionOutcome:
         """在调用方事务内提交已经准备好的反思计划。"""
+        await self._store.assert_narrative_updated_at(
+            plan.base_narrative_updated_at
+        )
         await self._store.upsert_personality(plan.personality)
         await self._store.upsert_values(plan.values)
         await self._store.upsert_aesthetic(plan.aesthetic)

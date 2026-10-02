@@ -118,6 +118,7 @@ class ExpressionFacade:
         correlation_id: str,
         *,
         claimed_return: dict[str, float] | None = None,
+        followup_events: list[Event] | None = None,
     ) -> str:
         """Persist a question attempt and its canonical ASK atomically."""
         attempt_id = str(uuid4())
@@ -132,7 +133,9 @@ class ExpressionFacade:
             expires_at=now + self._config.ask_timeout,
         )
         event = _ask_event(text, attempt_id, correlation_id, kind)
-        await self._commit_attempt_event(attempt, event, claimed_return)
+        await self._commit_attempt_events(
+            attempt, [event, *(followup_events or [])], claimed_return
+        )
         return attempt_id
 
     async def _commit_attempt_event(
@@ -148,18 +151,17 @@ class ExpressionFacade:
     ) -> None:
         """Commit one interaction attempt and all durable events atomically."""
         if self._interaction_store is None:
-            for event in events:
-                try:
-                    await self._bus.publish(event)
-                except BaseException as error:
-                    if claimed_return is not None:
-                        try:
-                            committed = await self._bus.is_durable(event.id)
-                        except Exception:
-                            raise error
-                        if committed:
-                            self._finish_return_claim(claimed_return)
-                    raise
+            try:
+                await self._bus.publish_many(events)
+            except BaseException as error:
+                if claimed_return is not None:
+                    try:
+                        committed = await self._bus.is_durable(events[0].id)
+                    except Exception:
+                        raise error
+                    if committed:
+                        self._finish_return_claim(claimed_return)
+                raise
             self._finish_return_claim(claimed_return)
             return
         try:

@@ -118,6 +118,11 @@ async def test_integrate_revisit_publishes_reflection_event() -> None:
     assert len(bus.published) == 1
     assert bus.published[0].type is EventType.REFLECTION
     assert bus.published[0].correlation_id == "book-1"
+    assert bus.published[0].content == {
+        "reason": "reading_revisit",
+        "book_id": "book-1",
+        "evidence": "章末",
+    }
 
 
 async def test_integrate_keeps_buffer_when_reflection_admission_fails() -> None:

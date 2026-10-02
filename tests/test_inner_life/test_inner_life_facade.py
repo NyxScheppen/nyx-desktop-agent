@@ -88,6 +88,7 @@ class _FakeLlm:
         self._response = response
         self.calls: list[str] = []
         self.correlation_ids: list[str] = []
+        self.user_contents: list[str] = []
 
     async def complete(
         self,
@@ -100,6 +101,7 @@ class _FakeLlm:
     ) -> LLMOutput:
         self.calls.append(output_type)
         self.correlation_ids.append(correlation_id)
+        self.user_contents.append(messages[-1]["content"])
         return LLMOutput(
             module=module,
             type=output_type,
@@ -461,6 +463,127 @@ async def test_reflection_event_rolls_back_slow_variables_when_event_append_fail
             )
             row = await cursor.fetchone()
             assert row is not None and row[0] == 0
+    finally:
+        await database.close()
+
+
+async def test_reflection_failure_preserves_event_applied_during_prepare(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = 1_000_000.0
+    monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: t0)
+    facade, store, bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
+    try:
+        await _seed(store)
+        await store.upsert_narrative(_NARRATIVE)
+        root = _event(EventType.REFLECTION, "reflection")
+        await bus.publish(root)
+        original_prepare = facade._reflection.prepare
+        original_append = bus.append_in_transaction
+
+        async def prepare_after_event(
+            correlation_id: str | None = None,
+            trigger: dict[str, Any] | None = None,
+        ) -> Any:
+            await facade.apply_event(
+                _event(EventType.DESIRE_SATISFIED, "during-prepare")
+            )
+            return await original_prepare(correlation_id, trigger)
+
+        async def fail_reflection_done(event: Event) -> tuple[str, ...]:
+            if event.type is EventType.REFLECTION_DONE:
+                raise RuntimeError("reflection event append failed")
+            return await original_append(event)
+
+        monkeypatch.setattr(facade._reflection, "prepare", prepare_after_event)
+        monkeypatch.setattr(bus, "append_in_transaction", fail_reflection_done)
+
+        with pytest.raises(RuntimeError, match="reflection event append failed"):
+            await facade.apply_event(root, "inner_life.reflection")
+
+        assert facade._valence == pytest.approx(0.2)
+        assert facade._arousal == pytest.approx(0.1)
+    finally:
+        await database.close()
+
+
+async def test_stale_periodic_reflection_is_consumed_without_running_llm() -> None:
+    llm = _FakeLlm()
+    facade, store, bus, database = await _new_facade(llm, _FakeEvaluator())
+    try:
+        await _seed(store)
+        await store.upsert_narrative(_NARRATIVE)
+        root = _event(EventType.REFLECTION, "c1", {
+            "reason": "periodic",
+            "narrative_updated_at": 900.0,
+            "min_interval": 1.0,
+            "min_new_memories": 1,
+            "new_memory_count": 3,
+            "evidence": "周期门槛已满足",
+        })
+        root.timestamp = 2000.0
+        await bus.publish(root)
+
+        await facade.apply_event(root, "inner_life.reflection")
+
+        assert llm.calls == []
+        assert await bus.has_effect(root.id, "inner_life.reflection") is True
+        assert await bus.list_events(event_type=EventType.REFLECTION_DONE) == []
+    finally:
+        await database.close()
+
+
+async def test_periodic_reflection_rechecks_memory_threshold_at_consumption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nyx.inner_life.facade.time.time", lambda: 10_000.0)
+    llm = _FakeLlm()
+    facade, store, bus, database = await _new_facade(llm, _FakeEvaluator())
+    try:
+        await _seed(store)
+        await store.upsert_narrative(_NARRATIVE)
+        root = _event(EventType.REFLECTION, "c1", {
+            "reason": "periodic",
+            "narrative_updated_at": _NARRATIVE.updated_at,
+            "min_interval": 1.0,
+            "min_new_memories": 1,
+            "new_memory_count": 3,
+            "evidence": "周期门槛已满足",
+        })
+        root.timestamp = 2000.0
+        await bus.publish(root)
+
+        await facade.apply_event(root, "inner_life.reflection")
+
+        assert llm.calls == []
+        assert await bus.has_effect(root.id, "inner_life.reflection") is True
+    finally:
+        await database.close()
+
+
+async def test_reflection_trigger_evidence_reaches_prompt() -> None:
+    llm = _FakeLlm()
+    facade, store, bus, database = await _new_facade(llm, _FakeEvaluator())
+    try:
+        await _seed(store)
+        await store.upsert_narrative(_NARRATIVE)
+        root = _event(EventType.REFLECTION, "c1", {
+            "reason": "memory_contradiction",
+            "memory_id": "new",
+            "conflicts_with": "old",
+            "evidence": [
+                {"memory_id": "new", "summary": "现在喜欢猫"},
+                {"memory_id": "old", "summary": "以前不喜欢猫"},
+            ],
+        })
+        root.timestamp = 2000.0
+        await bus.publish(root)
+
+        await facade.apply_event(root, "inner_life.reflection")
+
+        assert "触发原因：记忆矛盾" in llm.user_contents[0]
+        assert "现在喜欢猫" in llm.user_contents[0]
+        assert "以前不喜欢猫" in llm.user_contents[0]
     finally:
         await database.close()
 

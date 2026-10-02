@@ -285,7 +285,7 @@ def _has_user_anchor(text: str, position: int) -> bool:
         + 1
     )
     prefix = text[clause_start:position]
-    return bool(re.search(r"(?:我|用户|我的|本人)", prefix))
+    return "用户" in prefix
 
 
 def _fact_terms(text: str) -> set[str]:
@@ -420,7 +420,10 @@ class MemoryFactStore:
             "s.canonical_name LIKE ? ESCAPE '\\' "
             "OR f.predicate LIKE ? ESCAPE '\\' "
             "OR COALESCE(o.canonical_name, f.object_value) LIKE ? ESCAPE '\\' "
-            "OR s.aliases LIKE ? ESCAPE '\\' OR o.aliases LIKE ? ESCAPE '\\'"
+            "OR EXISTS (SELECT 1 FROM memory_entity_alias sa "
+            "WHERE sa.entity_id = s.id AND sa.alias LIKE ? ESCAPE '\\') "
+            "OR EXISTS (SELECT 1 FROM memory_entity_alias oa "
+            "WHERE oa.entity_id = o.id AND oa.alias LIKE ? ESCAPE '\\')"
             for _ in patterns
         )
         direct_params = [value for pattern in patterns for value in (pattern,) * 5]
@@ -523,6 +526,7 @@ class MemoryFactStore:
                 "WHERE a.alias = ? AND a.entity_type = ? LIMIT 1",
                 (normalized, type_name),
             )
+            row = await cursor.fetchone()
         if row is not None:
             current = json.loads(row["aliases"] or "[]")
             merged = list(dict.fromkeys([*current, *normalized_aliases]))[:8]

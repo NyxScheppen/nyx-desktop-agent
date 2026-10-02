@@ -95,6 +95,7 @@ class _FakeLlm:
         self._response = response
         self.calls: list[str] = []
         self.correlation_ids: list[str] = []
+        self.user_contents: list[str] = []
 
     async def complete(
         self,
@@ -107,6 +108,7 @@ class _FakeLlm:
     ) -> LLMOutput:
         self.calls.append(output_type)
         self.correlation_ids.append(correlation_id)
+        self.user_contents.append(messages[-1]["content"])
         return LLMOutput(
             module=module,
             type=output_type,
@@ -338,6 +340,13 @@ def test_reflection_system_prompt_mentions_json() -> None:
     assert "JSON" in _REFLECTION_SYSTEM
 
 
+def test_reflection_system_prompt_synthesizes_old_memories_into_new_ideas() -> None:
+    assert "旧记忆" in _REFLECTION_SYSTEM
+    assert "归纳" in _REFLECTION_SYSTEM
+    assert "新点子" in _REFLECTION_SYSTEM
+    assert "不要求解决矛盾" in _REFLECTION_SYSTEM
+
+
 def test_parse_reflection_ok() -> None:
     parsed = _parse_reflection(_REFLECTION_JSON)
     assert parsed["story"] == "今天对用户了解更多"
@@ -350,6 +359,23 @@ def test_parse_reflection_ok() -> None:
 def test_parse_reflection_missing_story() -> None:
     with pytest.raises(ValueError):
         _parse_reflection('{"becoming": "x"}')
+
+
+@pytest.mark.parametrize("field", ["story", "becoming"])
+def test_parse_reflection_rejects_blank_core_text(field: str) -> None:
+    payload = {"story": "s", "becoming": "b", field: "   "}
+    with pytest.raises(ValueError):
+        _parse_reflection(json.dumps(payload))
+
+
+@pytest.mark.parametrize("non_finite", ["NaN", "Infinity", "-Infinity"])
+def test_parse_reflection_rejects_non_finite_drift(non_finite: str) -> None:
+    raw = (
+        '{"story":"s","becoming":"b",'
+        f'"personality_delta":{{"openness":{non_finite}}}}}'
+    )
+    with pytest.raises(ValueError, match="有限"):
+        _parse_reflection(raw)
 
 
 def test_parse_reflection_bad_types() -> None:
@@ -469,6 +495,17 @@ def test_validate_candidate() -> None:
     )
 
 
+@pytest.mark.parametrize("type_", ["creation", "rest"])
+def test_validate_candidate_rejects_non_reflection_desire_types(type_: str) -> None:
+    with pytest.raises(ValueError, match="exploration/interaction"):
+        _validate_candidate(
+            {
+                "type": type_, "name": "n", "description": "d",
+                "subtopics": [], "linked_values": [],
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "linked_values",
     [None, "optimism", [1], ["hope"], ["Optimism"]],
@@ -554,6 +591,60 @@ def test_is_duplicate_fragment() -> None:
 
 
 # ---- reflection.run ----
+
+
+async def test_prepare_includes_trigger_evidence_and_uses_creation_recency() -> None:
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    old = Memory(
+        id="old",
+        created_at=100.0,
+        content="旧内容",
+        kind=MemoryKind.EPISODE,
+        summary="高新鲜度旧记忆",
+        freshness=1.0,
+        type=MemoryType.LONG_TERM,
+    )
+    new = Memory(
+        id="new",
+        created_at=200.0,
+        content="新内容",
+        kind=MemoryKind.EPISODE,
+        summary="低新鲜度新记忆",
+        freshness=0.1,
+        type=MemoryType.SHORT_TERM,
+    )
+    llm = _FakeLlm()
+    reflection = _make_reflection(
+        store,
+        llm,
+        _FakeEvaluator(),
+        _FakeMemoryFacade([old, new]),
+        _FakeDesireFacade(),
+    )
+    try:
+        await _seed(store)
+        await reflection.prepare(
+            "cid",
+            {
+                "reason": "memory_contradiction",
+                "memory_id": "new",
+                "conflicts_with": "old",
+                "evidence": [
+                    {"memory_id": "new", "summary": "低新鲜度新记忆"},
+                    {"memory_id": "old", "summary": "高新鲜度旧记忆"},
+                ],
+            },
+        )
+        prompt = llm.user_contents[0]
+        assert "触发原因：记忆矛盾" in prompt
+        assert "低新鲜度新记忆" in prompt
+        recent_section = prompt.split("近期记忆（按首次创建时间从新到旧）：", 1)[1]
+        assert recent_section.index("低新鲜度新记忆") < recent_section.index(
+            "高新鲜度旧记忆"
+        )
+    finally:
+        await database.conn.close()
 
 
 async def test_run_writes_back() -> None:
@@ -966,6 +1057,38 @@ async def test_apply_snapshot_conflict_rolls_back_reflection() -> None:
         assert await store.get_personality() == _PERSONALITY
         assert [d.id for d in await desire_store.list_long_term()] == ["external"]
         assert await desire_store.get_value(DesireType.CREATION) is None
+    finally:
+        await database.conn.close()
+
+
+async def test_apply_slow_variable_conflict_rolls_back_reflection() -> None:
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    llm = _FakeLlm()
+    desire = _FakeDesireFacade()
+    reflection = _make_reflection(
+        store, llm, _FakeEvaluator(), _FakeMemoryFacade(), desire
+    )
+    try:
+        await _seed(store)
+        plan = await reflection.prepare("cid")
+        await store.upsert_narrative(SelfNarrative(
+            identity=_NARRATIVE.identity,
+            story=[*_NARRATIVE.story, "另一轮先提交"],
+            self_view=_NARRATIVE.self_view,
+            becoming=_NARRATIVE.becoming,
+            updated_at=2000.0,
+        ))
+
+        with pytest.raises(RuntimeError, match="慢变量快照"):
+            async with database.transaction():
+                await reflection.apply(plan)
+
+        narrative = await store.get_narrative()
+        assert narrative is not None
+        assert narrative.story == ["初始故事", "另一轮先提交"]
+        assert await store.get_personality() == _PERSONALITY
+        assert desire.pressured == []
     finally:
         await database.conn.close()
 

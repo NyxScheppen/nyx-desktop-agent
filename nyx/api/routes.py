@@ -163,6 +163,7 @@ def build_app(
     root_event: RootEvent,
     max_epub_bytes: int,
     sse_queue_size: int,
+    launch_nonce: str | None,
 ) -> FastAPI:
     """Build the FastAPI application around an assembled app context."""
     fast = FastAPI(title="Nyx Agent")
@@ -184,6 +185,10 @@ def build_app(
     @fast.get("/api/state")
     async def api_state() -> CurrentState:
         return await app.inner_life.get_state()
+
+    @fast.get("/api/ready")
+    async def api_ready() -> dict[str, str | None]:
+        return {"service": "nyx-agent", "launch_nonce": launch_nonce}
 
     @fast.post("/api/chat")
     async def api_chat(payload: _ChatPayload) -> dict[str, str]:

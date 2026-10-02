@@ -112,7 +112,7 @@ flowchart TB
 python dev.py        # 同时拉起后端(8000) + 前端 Vite(5173)，Ctrl+C 退出
 ```
 
-Windows 用户也可以直接双击项目根目录的 `start_nyx.bat` 启动；脚本会优先使用项目 `.venv`，并检查 Python/uvicorn、Node.js/npm 与前端依赖。重启时 launcher 会用原子 lock 串行化流程，先关闭自己记录或在 8000 上发现的旧 Nyx backend；若端口由未知进程占用则拒绝启动。仅在常规 Python 环境不可用时尝试 `.runtime` 依赖，不混入可用的 `.venv`。启动失败时窗口会保持打开，方便直接查看错误。看到 `Checking npm` 后应继续显示 `Starting backend` 与前后端日志；浏览器访问 `http://localhost:5173` 测试，Ctrl+C 停止服务。
+Windows 用户也可以直接双击项目根目录的 `start_nyx.bat` 启动；脚本会优先使用项目 `.venv`，并检查 Python/uvicorn、Node.js/npm 与前端依赖。重启时 launcher 会用原子 lock 串行化流程，先关闭自己记录或在 8000 上发现的旧 Nyx backend；若端口由未知进程占用则拒绝启动。启动后还会用本次随机 nonce 校验 `/api/ready` 的 Nyx 服务标识与实例身份，仅在 owned backend 仍存活且身份匹配时启动前端。仅在常规 Python 环境不可用时尝试 `.runtime` 依赖，不混入可用的 `.venv`。启动失败时窗口会保持打开，方便直接查看错误。看到 `Checking npm` 后应继续显示 `Starting backend` 与前后端日志；浏览器访问 `http://localhost:5173` 测试，Ctrl+C 停止服务。
 
 桌面端 debug 可直接双击项目根目录的 `start_nyx_desktop.bat`，或在 PowerShell 执行：
 
@@ -162,7 +162,7 @@ cd frontend
 npm run tauri build
 ```
 
-构建会下载官方本地 embedding 模型，并冻结 Python 后端、公开 `config.yaml` 和 `nyx/prompts/`，不包含 `.env`。桌面包只启动并管理自己的后端，API Key 由运行环境提供；检测到旧 Nyx 启动器时会先结束其进程树再接管，未知程序占用 `8000` 时拒绝启动，不连接未知服务。关闭桌面应用会通过 stdin 管道通知后端退出，超时后仅回收自己启动的进程。各平台打包 REST/SSE smoke 验收未全部完成，不将开发验收等同于可发布。
+构建会下载官方本地 embedding 模型，并冻结 Python 后端、公开 `config.yaml` 和 `nyx/prompts/`，不包含 `.env`。桌面包只启动并管理自己的后端，API Key 由运行环境提供；检测到旧 Nyx 启动器时会先结束其进程树再接管，未知程序占用 `8000` 时拒绝启动。sidecar 启动后必须通过固定 Nyx 服务标识与本次随机 nonce 的 `/api/ready` 身份握手，不能仅凭端口可连接确认后端。关闭桌面应用会通过 stdin 管道通知后端退出，超时后仅回收自己启动的进程。各平台打包 REST/SSE smoke 验收未全部完成，不将开发验收等同于可发布。
 
 ### 后端
 

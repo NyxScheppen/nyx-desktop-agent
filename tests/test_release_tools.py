@@ -1,4 +1,5 @@
 """CI/CD release-tool regressions."""
+# pyright: reportPrivateUsage=false
 
 import json
 import re
@@ -14,6 +15,8 @@ import yaml
 from scripts.check_release_version import VersionError, validate_versions
 from scripts.smoke_release import (
     SmokeError,
+    _wait_until_ready,
+    check_backend_identity,
     check_json_endpoint,
     check_sse_endpoint,
     release_binaries,
@@ -90,6 +93,55 @@ def test_check_json_endpoint_validates_top_level_type(
         check_json_endpoint("http://127.0.0.1:8000/api/events/log", list)
 
 
+def test_check_backend_identity_requires_service_and_launch_nonce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.status = 200
+    response.read.return_value = json.dumps({
+        "service": "nyx-agent", "launch_nonce": "wrong",
+    }).encode()
+    connection = MagicMock()
+    connection.return_value.getresponse.return_value = response
+    monkeypatch.setattr("scripts.smoke_release.HTTPConnection", connection)
+
+    with pytest.raises(SmokeError, match="identity mismatch"):
+        check_backend_identity("expected")
+
+
+def test_check_backend_identity_rejects_oversized_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.status = 200
+    response.read.return_value = b"x" * ((1 << 12) + 1)
+    connection = MagicMock()
+    connection.return_value.getresponse.return_value = response
+    monkeypatch.setattr("scripts.smoke_release.HTTPConnection", connection)
+
+    with pytest.raises(SmokeError, match="response exceeds"):
+        check_backend_identity("expected")
+
+
+def test_release_ready_fails_if_owned_process_exits_after_identity_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = MagicMock()
+    process.poll.side_effect = [None, 9]
+
+    def identity_matches(_launch_nonce: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "scripts.smoke_release.check_backend_identity", identity_matches
+    )
+
+    with pytest.raises(SmokeError, match="code=9"):
+        _wait_until_ready(process, timeout=1, launch_nonce="nonce")
+
+
 def test_check_sse_endpoint_requires_event_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -137,7 +189,11 @@ def test_run_smoke_uses_nonsecret_placeholder_key(
     def return_zero(*args: object) -> int:
         return 0
 
+    def fixed_token_hex(_nbytes: int) -> str:
+        return "nonce"
+
     monkeypatch.setattr("scripts.smoke_release.subprocess.Popen", start_process)
+    monkeypatch.setattr("scripts.smoke_release.secrets.token_hex", fixed_token_hex)
     monkeypatch.setattr("scripts.smoke_release._port_is_open", lambda: False)
     monkeypatch.setattr("scripts.smoke_release._wait_until_ready", no_op)
     monkeypatch.setattr("scripts.smoke_release.check_json_endpoint", no_op)
@@ -147,6 +203,7 @@ def test_run_smoke_uses_nonsecret_placeholder_key(
     run_smoke(release_dir, tmp_path / "backend.log", timeout=1)
 
     assert captured_env["DEEPSEEK_API_KEY"] == "ci-release-smoke-placeholder"
+    assert captured_env["NYX_LAUNCH_NONCE"] == "nonce"
 
 
 def test_ci_workflow_has_quality_package_and_tag_release_gates() -> None:

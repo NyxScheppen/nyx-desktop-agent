@@ -1,14 +1,75 @@
 """Launcher lifecycle and resource packaging regressions."""
 # pyright: reportPrivateUsage=false
 
+import json
 import threading
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import dev
 import nyx.main as entry
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"not-json",
+        json.dumps({"service": "other", "launch_nonce": "nonce"}).encode(),
+        json.dumps({"service": "nyx-agent", "launch_nonce": "other"}).encode(),
+        json.dumps({"service": "nyx-agent"}).encode(),
+        b"x" * 4097,
+    ],
+)
+def test_backend_identity_rejects_invalid_or_unowned_response(payload: bytes) -> None:
+    assert not dev._backend_identity_matches(payload, "nonce")
+
+
+def test_backend_identity_accepts_exact_service_and_nonce() -> None:
+    payload = json.dumps({
+        "service": "nyx-agent", "launch_nonce": "nonce",
+    }).encode()
+
+    assert dev._backend_identity_matches(payload, "nonce")
+
+
+def test_backend_identity_probe_rejects_http_failure() -> None:
+    with patch.object(dev, "HTTPConnection") as connection:
+        connection.return_value.request.side_effect = OSError("reset")
+        assert not dev._probe_backend_identity("nonce")
+    connection.return_value.close.assert_called_once()
+
+
+def test_backend_identity_probe_rejects_non_ok_status() -> None:
+    response = MagicMock(status=201)
+    with patch.object(dev, "HTTPConnection") as connection:
+        connection.return_value.getresponse.return_value = response
+        assert not dev._probe_backend_identity("nonce")
+
+
+def test_backend_ready_waits_past_connectable_wrong_identity() -> None:
+    process = MagicMock()
+    process.poll.return_value = None
+    with (
+        patch.object(
+            dev, "_probe_backend_identity", side_effect=[False, True]
+        ) as probe,
+        patch.object(dev.time, "sleep"),
+    ):
+        dev._wait_for_backend_ready(process, "nonce")
+
+    assert probe.call_count == 2
+    probe.assert_called_with("nonce")
+
+
+def test_backend_ready_fails_if_owned_process_exits_after_identity_match() -> None:
+    process = MagicMock(returncode=9)
+    process.poll.side_effect = [None, 9]
+    with patch.object(dev, "_probe_backend_identity", return_value=True):
+        with pytest.raises(RuntimeError, match="code=9"):
+            dev._wait_for_backend_ready(process, "nonce")
 
 
 def test_occupied_backend_port_refuses_before_secret_distribution(
@@ -52,7 +113,7 @@ def test_launcher_waits_for_backend_ready_before_starting_frontend(
 ) -> None:
     """The frontend must not start while the backend is still booting."""
     ready = threading.Event()
-    spawned: list[tuple[str, bool]] = []
+    spawned: list[tuple[str, bool, str | None]] = []
 
     class FakeProcess:
         def __init__(self, pid: int, exit_code: int | None) -> None:
@@ -65,15 +126,19 @@ def test_launcher_waits_for_backend_ready_before_starting_frontend(
     backend = FakeProcess(101, None)
     frontend = FakeProcess(102, 1)
 
-    def fake_popen(command: list[str], **_: object) -> FakeProcess:
+    def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
+        raw_env = kwargs.get("env")
+        env = cast(dict[str, str], raw_env) if isinstance(raw_env, dict) else None
+        nonce = env.get("NYX_LAUNCH_NONCE") if env is not None else None
         if command[1:] == ["-m", "nyx.main"]:
-            spawned.append(("backend", ready.is_set()))
+            spawned.append(("backend", ready.is_set(), nonce))
             threading.Timer(0.05, ready.set).start()
             return backend
-        spawned.append(("frontend", ready.is_set()))
+        spawned.append(("frontend", ready.is_set(), nonce))
         return frontend
 
-    def wait_for_ready(_proc: object) -> None:
+    def wait_for_ready(_proc: object, nonce: str) -> None:
+        assert nonce == "generated-nonce"
         ready.wait(1)
 
     with (
@@ -84,6 +149,7 @@ def test_launcher_waits_for_backend_ready_before_starting_frontend(
         patch.object(dev, "_stop_legacy_launchers"),
         patch.object(dev, "_stop_previous_backend"),
         patch.object(dev, "_ensure_backend_port_free"),
+        patch.object(dev.secrets, "token_hex", return_value="generated-nonce"),
         patch.object(dev, "_wait_for_backend_ready", side_effect=wait_for_ready),
         patch.object(dev, "_stop"),
         patch.object(dev.subprocess, "Popen", side_effect=fake_popen),
@@ -91,7 +157,10 @@ def test_launcher_waits_for_backend_ready_before_starting_frontend(
         with pytest.raises(SystemExit, match="1"):
             dev.main()
 
-    assert spawned == [("backend", False), ("frontend", True)]
+    assert spawned == [
+        ("backend", False, "generated-nonce"),
+        ("frontend", True, None),
+    ]
 
 
 def test_launcher_lock_replaces_live_owner_before_restart(tmp_path: Path) -> None:

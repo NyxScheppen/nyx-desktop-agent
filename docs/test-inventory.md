@@ -7,14 +7,15 @@
 ## 当前快照
 
 - 后端测试文件：64
-- `pytest --collect-only -q`：1143 tests collected
-- 最近一次全量验证：`1142 passed, 1 skipped`（本轮未采集语句覆盖率）
+- `pytest --collect-only -q`：1158 tests collected
+- 最近一次全量验证：`1157 passed, 1 skipped`（本轮未采集语句覆盖率）
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
 - 最近一次前端全量验证：`23 files / 328 passed`。
-- Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；Debug/Release 均通过编译检查。
-- 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；前端只在后端 ready 后启动。
+- Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；ready 响应必须同时匹配固定 Nyx 服务标识、本次启动 nonce 和响应大小上限；Debug/Release 均通过编译检查。
+- 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；普通 TCP、错误 HTTP 状态、非法/过大 JSON、错误服务标识或 nonce 均不能触发前端启动；身份匹配后 owned backend 仍须存活。
+- 启动身份 API 回归：`test_ready_endpoint_returns_owned_instance_identity`、`test_ready_endpoint_keeps_manual_start_compatible`；release smoke 使用同一 nonce 握手且拒绝身份不匹配、过大响应和探测后进程退出。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
 - 前端测试覆盖通用 API、SSE、状态、聊天、阅读、设置和桌面 presence。
 - SSE 回归：初次连接失败保持 `connecting`，同一连接恢复后转为 `open`，不把启动期失败误报为 `closed`。

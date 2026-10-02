@@ -4,7 +4,9 @@
 Ctrl+C 或任一子进程退出时，关闭本 launcher 的全部子进程后退出；不参与打包。
 """
 
+import json
 import os
+import secrets
 import shutil
 import signal
 import socket
@@ -12,6 +14,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from http.client import HTTPConnection, HTTPException
 from pathlib import Path
 from typing import cast
 
@@ -20,6 +23,9 @@ FRONTEND = ROOT / "frontend"
 _BACKEND_ADDRESS = ("127.0.0.1", 8000)
 _BACKEND_STARTUP_TIMEOUT = 120.0
 _BACKEND_PROBE_TIMEOUT = 0.2
+_BACKEND_IDENTITY_MAX_BYTES = 1 << 12
+_BACKEND_SERVICE = "nyx-agent"
+_LAUNCH_NONCE_ENV = "NYX_LAUNCH_NONCE"
 _BACKEND_PID_FILE = ROOT / ".nyx-backend.pid"
 _LAUNCH_LOCK_FILE = ROOT / ".nyx-launcher.lock"
 
@@ -55,21 +61,59 @@ def _ensure_backend_port_free() -> None:
         sys.exit(1)
 
 
-def _wait_for_backend_ready(proc: subprocess.Popen[bytes]) -> None:
-    """Wait until the owned backend accepts loopback connections."""
+def _backend_identity_matches(body: bytes, launch_nonce: str) -> bool:
+    """Return whether a bounded response identifies this launched backend."""
+    if len(body) > _BACKEND_IDENTITY_MAX_BYTES:
+        return False
+    try:
+        raw_payload = cast(object, json.loads(body))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(raw_payload, dict):
+        return False
+    payload = cast(dict[str, object], raw_payload)
+    return (
+        payload.get("service") == _BACKEND_SERVICE
+        and payload.get("launch_nonce") == launch_nonce
+    )
+
+
+def _probe_backend_identity(launch_nonce: str) -> bool:
+    connection = HTTPConnection(
+        *_BACKEND_ADDRESS, timeout=_BACKEND_PROBE_TIMEOUT
+    )
+    try:
+        connection.request("GET", "/api/ready")
+        response = connection.getresponse()
+        if response.status != 200:
+            return False
+        body = response.read(_BACKEND_IDENTITY_MAX_BYTES + 1)
+    except (OSError, HTTPException):
+        return False
+    finally:
+        connection.close()
+    return _backend_identity_matches(body, launch_nonce)
+
+
+def _wait_for_backend_ready(
+    proc: subprocess.Popen[bytes], launch_nonce: str
+) -> None:
+    """Wait until the owned backend proves its per-launch identity."""
     deadline = time.monotonic() + _BACKEND_STARTUP_TIMEOUT
     while time.monotonic() < deadline:
-        if proc.poll() is not None:
+        code = proc.poll()
+        if code is not None:
             raise RuntimeError(
-                f"backend exited before becoming ready (code={proc.returncode})"
+                f"backend exited before becoming ready (code={code})"
             )
-        try:
-            with socket.create_connection(
-                _BACKEND_ADDRESS, timeout=_BACKEND_PROBE_TIMEOUT
-            ):
+        if _probe_backend_identity(launch_nonce):
+            code = proc.poll()
+            if code is None:
                 return
-        except OSError:
-            time.sleep(_BACKEND_PROBE_TIMEOUT)
+            raise RuntimeError(
+                f"backend exited before becoming ready (code={code})"
+            )
+        time.sleep(_BACKEND_PROBE_TIMEOUT)
     raise RuntimeError("backend did not become ready before the startup timeout")
 
 
@@ -354,13 +398,16 @@ def main() -> None:
         _stop_previous_backend()
         _ensure_backend_port_free()
         launch_env = os.environ.copy()
+        launch_env.pop(_LAUNCH_NONCE_ENV, None)
+        launch_nonce = secrets.token_hex(32)
+        backend_env = launch_env | {_LAUNCH_NONCE_ENV: launch_nonce}
         procs: list[subprocess.Popen[bytes]] = []
         names = ["backend(8000)", "desktop" if desktop else "frontend(5173)"]
         failed = False
         print(f"[dev] 一键启动：{' + '.join(names)}，Ctrl+C 退出")
         try:
             backend = subprocess.Popen(
-                [sys.executable, "-m", "nyx.main"], cwd=ROOT, env=launch_env,
+                [sys.executable, "-m", "nyx.main"], cwd=ROOT, env=backend_env,
             )
             procs.append(backend)
             backend_pid = cast(object, backend.pid)
@@ -368,7 +415,7 @@ def main() -> None:
                 _remember_backend(backend_pid)
             print("[dev] 后端启动中，等待 8000 端口就绪…")
             try:
-                _wait_for_backend_ready(backend)
+                _wait_for_backend_ready(backend, launch_nonce)
             except RuntimeError as exc:
                 print(f"[dev] 后端未就绪：{exc}")
                 failed = True

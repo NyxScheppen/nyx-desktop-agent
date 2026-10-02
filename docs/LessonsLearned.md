@@ -211,6 +211,31 @@ backend，再做 127.0.0.1:8000 预绑定检查；占用时不创建 backend 或
 owner 不存在时回收 stale lock，未知程序占用端口时仍拒绝启动。
 **影响的文件/决策**：`dev.py`、`.gitignore`、`tests/test_launcher.py`
 
+### 2026-10-02: 后端 ready 必须绑定本次 owned process 身份
+
+**来源**：开发 launcher 与发布版 Tauri 壳在启动后只要能连接 `127.0.0.1:8000`
+就判定后端 ready。端口预检查与后端 bind 之间仍有竞态：未知进程若抢先监听，launcher
+会把它误认作 Nyx 并继续启动前端，而真正的 owned backend 随后因 bind 失败退出。
+**教训**：端口可连接只能证明存在 listener，不能证明服务类型，更不能证明 listener 属于本次
+启动的子进程。启动前端所需的 ready 条件必须同时包含应用身份、单次实例身份和 owned child
+存活状态。
+**怎么做**：launcher 每次生成随机 nonce，只注入其后端子进程；后端 `/api/ready` 返回固定
+服务标识和启动时捕获的 nonce。开发 launcher、Tauri 壳与 release smoke 使用固定 loopback
+HTTP 请求、短超时和响应上限校验两者，拒绝重定向，并在身份匹配后再次检查 child。nonce
+不写日志、不持久化，也不传给前端进程。
+**影响的文件/决策**：`dev.py`、`nyx/main.py`、`nyx/api/routes.py`、
+`frontend/src-tauri/src/lib.rs`、`scripts/smoke_release.py`
+
+### 2026-10-02: Tauri release-only 路径必须单独编译
+
+**来源**：后端身份握手的随机 nonce 生成函数只在 `not(debug_assertions)` 下参与编译；
+`cargo test --lib` 与普通 `cargo check` 均通过，但 Release 编译发现 `getrandom::Error`
+不能由 `?` 自动转换为入口返回的 `Box<dyn Error>`。
+**教训**：Debug 单测无法替代 Release 条件编译检查。修改 `cfg(not(debug_assertions))` 下的
+sidecar 启动、路径或清理代码时，必须同时执行 `cargo check --release --locked`；跨错误类型边界
+要显式映射为调用方契约接受的错误类型。
+**影响的文件/决策**：`frontend/src-tauri/src/lib.rs`、CI/本地质量门
+
 ### 2026-09-19: Windows venv wrapper 不能被 launcher 当成旧实例杀掉
 
 **来源**：双击 `start_nyx.bat` 时启动器无日志直接退出并留下 `.nyx-launcher.lock`；真实进程树

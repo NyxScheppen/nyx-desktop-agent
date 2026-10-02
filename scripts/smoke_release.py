@@ -3,18 +3,23 @@
 import argparse
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
 import tempfile
 import time
+from http.client import HTTPConnection, HTTPException
 from pathlib import Path
+from typing import cast
 from urllib.error import URLError
 from urllib.request import urlopen
 
 _BASE_URL = "http://127.0.0.1:8000"
 _MAX_RESPONSE_BYTES = 1 << 20
+_MAX_IDENTITY_BYTES = 1 << 12
 _REQUEST_TIMEOUT = 5.0
+_LAUNCH_NONCE_ENV = "NYX_LAUNCH_NONCE"
 
 
 class SmokeError(RuntimeError):
@@ -43,6 +48,33 @@ def check_json_endpoint(url: str, expected_type: type[object]) -> None:
         raise SmokeError(f"{url} did not return valid JSON") from error
     if not isinstance(payload, expected_type):
         raise SmokeError(f"{url} expected {expected_type.__name__}")
+
+
+def check_backend_identity(launch_nonce: str) -> None:
+    """Require the ready endpoint to identify this exact sidecar instance."""
+    url = f"{_BASE_URL}/api/ready"
+    connection = HTTPConnection("127.0.0.1", 8000, timeout=_REQUEST_TIMEOUT)
+    try:
+        connection.request("GET", "/api/ready")
+        response = connection.getresponse()
+        if response.status != 200:
+            raise SmokeError(f"{url} returned HTTP {response.status}")
+        body = response.read(_MAX_IDENTITY_BYTES + 1)
+    finally:
+        connection.close()
+    if len(body) > _MAX_IDENTITY_BYTES:
+        raise SmokeError(f"{url} response exceeds {_MAX_IDENTITY_BYTES} bytes")
+    try:
+        raw_payload = cast(object, json.loads(body))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SmokeError(f"{url} did not return valid JSON") from error
+    if not isinstance(raw_payload, dict):
+        raise SmokeError(f"{url} identity mismatch")
+    payload = cast(dict[str, object], raw_payload)
+    if payload.get("service") != "nyx-agent":
+        raise SmokeError(f"{url} identity mismatch")
+    if payload.get("launch_nonce") != launch_nonce:
+        raise SmokeError(f"{url} identity mismatch")
 
 
 def check_sse_endpoint(url: str) -> None:
@@ -75,7 +107,9 @@ def _port_is_open() -> bool:
         return False
 
 
-def _wait_until_ready(process: subprocess.Popen[bytes], timeout: float) -> None:
+def _wait_until_ready(
+    process: subprocess.Popen[bytes], timeout: float, launch_nonce: str
+) -> None:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
     while time.monotonic() < deadline:
@@ -83,11 +117,15 @@ def _wait_until_ready(process: subprocess.Popen[bytes], timeout: float) -> None:
         if code is not None:
             raise SmokeError(f"packaged backend exited during startup (code={code})")
         try:
-            check_json_endpoint(f"{_BASE_URL}/api/state", dict)
-            return
-        except (OSError, URLError, SmokeError) as error:
+            check_backend_identity(launch_nonce)
+        except (OSError, HTTPException, URLError, SmokeError) as error:
             last_error = error
             time.sleep(0.2)
+            continue
+        code = process.poll()
+        if code is not None:
+            raise SmokeError(f"packaged backend exited during startup (code={code})")
+        return
     raise SmokeError(f"packaged backend did not become ready: {last_error}")
 
 
@@ -98,6 +136,8 @@ def run_smoke(release_dir: Path, log_path: Path, timeout: float) -> None:
         raise SmokeError("port 8000 is already occupied")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
+    launch_nonce = secrets.token_hex(32)
+    env[_LAUNCH_NONCE_ENV] = launch_nonce
     env["DEEPSEEK_API_KEY"] = "ci-release-smoke-placeholder"
     succeeded = False
     process: subprocess.Popen[bytes] | None = None
@@ -113,7 +153,7 @@ def run_smoke(release_dir: Path, log_path: Path, timeout: float) -> None:
                 stderr=subprocess.STDOUT,
             )
             try:
-                _wait_until_ready(process, timeout)
+                _wait_until_ready(process, timeout, launch_nonce)
                 check_json_endpoint(f"{_BASE_URL}/api/events/log", list)
                 check_sse_endpoint(f"{_BASE_URL}/api/events")
                 if stop_with_stdin_eof(process) != 0:

@@ -9,6 +9,69 @@ use tauri::Manager;
 const BACKEND_ADDRESS: &str = "127.0.0.1:8000";
 #[cfg(not(debug_assertions))]
 const BACKEND_STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
+#[cfg(not(debug_assertions))]
+const BACKEND_READY_URL: &str = "http://127.0.0.1:8000/api/ready";
+#[cfg(any(test, not(debug_assertions)))]
+const BACKEND_IDENTITY_MAX_BYTES: usize = 1 << 12;
+#[cfg(not(debug_assertions))]
+const LAUNCH_NONCE_ENV: &str = "NYX_LAUNCH_NONCE";
+
+#[cfg(any(test, not(debug_assertions)))]
+#[derive(serde::Deserialize)]
+struct BackendIdentity {
+    service: String,
+    launch_nonce: Option<String>,
+}
+
+#[cfg(any(test, not(debug_assertions)))]
+fn backend_identity_matches(body: &[u8], launch_nonce: &str) -> bool {
+    if body.len() > BACKEND_IDENTITY_MAX_BYTES {
+        return false;
+    }
+    serde_json::from_slice::<BackendIdentity>(body).is_ok_and(|identity| {
+        identity.service == "nyx-agent" && identity.launch_nonce.as_deref() == Some(launch_nonce)
+    })
+}
+
+#[cfg(not(debug_assertions))]
+fn generate_launch_nonce() -> Result<String, std::io::Error> {
+    use std::fmt::Write as _;
+
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|error| {
+        std::io::Error::other(format!("failed to generate launch nonce: {error}"))
+    })?;
+    let mut nonce = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut nonce, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(nonce)
+}
+
+#[cfg(not(debug_assertions))]
+fn probe_backend_identity(client: &reqwest::blocking::Client, launch_nonce: &str) -> bool {
+    use std::io::Read as _;
+
+    let response = match client.get(BACKEND_READY_URL).send() {
+        Ok(response) if response.status() == reqwest::StatusCode::OK => response,
+        _ => return false,
+    };
+    if response
+        .content_length()
+        .is_some_and(|length| length > BACKEND_IDENTITY_MAX_BYTES as u64)
+    {
+        return false;
+    }
+    let mut body = Vec::with_capacity(BACKEND_IDENTITY_MAX_BYTES);
+    if response
+        .take(BACKEND_IDENTITY_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut body)
+        .is_err()
+    {
+        return false;
+    }
+    backend_identity_matches(&body, launch_nonce)
+}
 
 #[cfg(any(test, not(debug_assertions)))]
 fn packaged_backend_path(executable: &Path) -> Result<PathBuf, &'static str> {
@@ -36,9 +99,16 @@ fn start_packaged_backend(
     let data = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data)?;
     let log = std::fs::File::create(data.join("backend.log"))?;
+    let launch_nonce = generate_launch_nonce()?;
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_millis(200))
+        .timeout(Duration::from_millis(200))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
     let mut command = Command::new(packaged_backend_path(&executable)?);
     command
         .current_dir(data)
+        .env(LAUNCH_NONCE_ENV, &launch_nonce)
         .stdin(Stdio::piped())
         .stdout(log.try_clone()?)
         .stderr(log);
@@ -54,8 +124,11 @@ fn start_packaged_backend(
         if child.try_wait()?.is_some() {
             return Err("Packaged backend failed; see backend.log".into());
         }
-        if TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok() {
-            return Ok(child);
+        if probe_backend_identity(&client, &launch_nonce) {
+            if child.try_wait()?.is_none() {
+                return Ok(child);
+            }
+            return Err("Packaged backend exited after readiness check; see backend.log".into());
         }
         if Instant::now() > deadline {
             drop(child.stdin.take());
@@ -127,7 +200,7 @@ fn sample_presence() -> Result<(u64, String), String> {
 mod tests {
     use std::path::Path;
 
-    use super::packaged_backend_path;
+    use super::{backend_identity_matches, packaged_backend_path, BACKEND_IDENTITY_MAX_BYTES};
 
     #[test]
     fn packaged_backend_is_a_sibling_of_the_desktop_executable() {
@@ -137,6 +210,27 @@ mod tests {
             packaged_backend_path(app).unwrap(),
             Path::new("C:/Program Files/Nyx/nyx-backend.exe"),
         );
+    }
+
+    #[test]
+    fn backend_identity_requires_exact_service_and_launch_nonce() {
+        assert!(backend_identity_matches(
+            br#"{"service":"nyx-agent","launch_nonce":"nonce"}"#,
+            "nonce",
+        ));
+        assert!(!backend_identity_matches(
+            br#"{"service":"nyx-agent","launch_nonce":"other"}"#,
+            "nonce",
+        ));
+        assert!(!backend_identity_matches(
+            br#"{"service":"other","launch_nonce":"nonce"}"#,
+            "nonce",
+        ));
+        assert!(!backend_identity_matches(b"not-json", "nonce"));
+        assert!(!backend_identity_matches(
+            &vec![b'x'; BACKEND_IDENTITY_MAX_BYTES + 1],
+            "nonce",
+        ));
     }
 }
 

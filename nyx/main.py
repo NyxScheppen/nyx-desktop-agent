@@ -56,6 +56,7 @@ _SSE_QUEUE_SIZE = 100
 _CANON_FILES = ("canon.md",)
 _ASK_FILES = ("ask.md",)
 _MAX_EPUB_BYTES = 50 * 1024 * 1024
+_LAUNCH_NONCE_ENV = "NYX_LAUNCH_NONCE"
 _TIME_MODULE = time  # compatibility patch target for existing runtime tests
 
 
@@ -113,6 +114,7 @@ def build_app(app: _App) -> FastAPI:
         root_event=_root_event,
         max_epub_bytes=_MAX_EPUB_BYTES,
         sse_queue_size=_SSE_QUEUE_SIZE,
+        launch_nonce=os.environ.get(_LAUNCH_NONCE_ENV) or None,
     )
 
 

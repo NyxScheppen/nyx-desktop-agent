@@ -278,6 +278,28 @@ async def test_state_endpoint() -> None:
     }
 
 
+async def test_ready_endpoint_returns_owned_instance_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NYX_LAUNCH_NONCE", "launch-nonce")
+    async with _client(_app(_mk_state(), _FakeBus(), _FakeMemory())) as client:
+        resp = await client.get("/api/ready")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"service": "nyx-agent", "launch_nonce": "launch-nonce"}
+
+
+async def test_ready_endpoint_keeps_manual_start_compatible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NYX_LAUNCH_NONCE", raising=False)
+    async with _client(_app(_mk_state(), _FakeBus(), _FakeMemory())) as client:
+        resp = await client.get("/api/ready")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"service": "nyx-agent", "launch_nonce": None}
+
+
 async def test_chat_endpoint() -> None:
     bus = _FakeBus()
     async with _client(_app(_mk_state(), bus, _FakeMemory())) as client:

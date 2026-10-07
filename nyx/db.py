@@ -712,6 +712,18 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "CAST(strftime('%s', 'now') AS REAL)",
         ],
     ),
+    (
+        35,
+        [
+            """CREATE TABLE memory_recall_use (
+                user_event_id TEXT NOT NULL,
+                memory_id TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
+                PRIMARY KEY (user_event_id, memory_id)
+            )""",
+            "UPDATE expression_interaction_attempt SET status = 'waiting' "
+            "WHERE status = 'claimed' AND answer_event_id IS NULL",
+        ],
+    ),
 ]
 
 

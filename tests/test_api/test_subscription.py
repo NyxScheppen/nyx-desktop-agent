@@ -7,7 +7,7 @@ from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
 from nyx.db import connect
 from nyx.desire.facade import DesireFacade
-from nyx.enums import EventType, Source
+from nyx.enums import ActivityStatus, ActivityType, EventType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
@@ -17,7 +17,7 @@ from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import _App, _root_event, _subscribe
 from nyx.memory.facade import MemoryFacade
 from nyx.reading.facade import ReadingFacade
-from nyx.types import Event
+from nyx.types import Activity, ActivityContext, Event
 
 
 class _FakeInnerLife:
@@ -58,6 +58,39 @@ class _FakeExpression:
         if self.app is not None:
             self.return_seen_at_reply = self.app.pending_return
         self.replied.append((msg, correlation_id))
+
+
+class _ActivityAwareExpression:
+    def __init__(self) -> None:
+        self.contexts: list[ActivityContext] = []
+
+    async def reply(
+        self,
+        msg: str,
+        correlation_id: str,
+        reply_to: str | None = None,
+        *,
+        activity_context: ActivityContext | None = None,
+    ) -> None:
+        del msg, correlation_id, reply_to
+        assert activity_context is not None
+        self.contexts.append(activity_context)
+
+
+class _InterruptingActivity:
+    def __init__(self, current: Activity, *, fail_interrupt: bool) -> None:
+        self.current = current
+        self.fail_interrupt = fail_interrupt
+        self.interrupted: list[str] = []
+
+    async def get_current(self) -> Activity:
+        return self.current
+
+    async def interrupt(self, activity_id: str, by_event: EventType) -> None:
+        del by_event
+        self.interrupted.append(activity_id)
+        if self.fail_interrupt:
+            raise RuntimeError("interrupt failed")
 
 
 class _FakeMemory:
@@ -231,6 +264,45 @@ async def test_user_message_marks_away_user_returned_before_reply() -> None:
     }
     assert app.pending_return is first_return
     assert expression.replied == [("我回来了", "user-return")]
+    await database.close()
+
+
+async def test_user_message_preserves_activity_evidence_when_interrupt_fails() -> None:
+    database = await connect(":memory:")
+    bus = EventBus(database)
+    activity = Activity(
+        id="activity-1",
+        type=ActivityType.READING,
+        schedule_block_id="block-1",
+        status=ActivityStatus.RUNNING,
+        progress={"description": "读书"},
+        started_at=1.0,
+    )
+    activity_facade = _InterruptingActivity(activity, fail_interrupt=True)
+    expression = _ActivityAwareExpression()
+    app = _App(
+        bus=bus,
+        inner_life=cast(InnerLifeFacade, _FakeInnerLife()),
+        desire=cast(DesireFacade, _FakeDesire()),
+        memory=cast(MemoryFacade, _FakeMemory()),
+        activity=cast(ActivityFacade, activity_facade),
+        expression=cast(ExpressionFacade, expression),
+        reading=cast(ReadingFacade, object()),
+        evaluator=cast(Evaluator, object()),
+        eval_store=cast(EvalStore, object()),
+        config=Config(),
+    )
+    event = _root_event(EventType.USER_MESSAGE, {"message": "继续"})
+
+    from nyx.runtime import on_user_message
+
+    await on_user_message(app, event)
+
+    assert activity_facade.interrupted == ["activity-1"]
+    assert len(expression.contexts) == 1
+    context = expression.contexts[0]
+    assert context.interrupted is activity
+    assert context.current is activity
     await database.close()
 
 

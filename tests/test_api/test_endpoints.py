@@ -314,6 +314,15 @@ async def test_chat_endpoint() -> None:
     assert data["event_id"] == event.id
 
 
+@pytest.mark.parametrize("message", ["", "   ", "x" * 12001, 1, True, None])
+async def test_chat_rejects_invalid_message(message: object) -> None:
+    bus = _FakeBus()
+    async with _client(_app(_mk_state(), bus, _FakeMemory())) as client:
+        resp = await client.post("/api/chat", json={"message": message})
+    assert resp.status_code == 422
+    assert bus.published == []
+
+
 async def test_memories_endpoint() -> None:
     memory = _FakeMemory()
     async with _client(_app(_mk_state(), _FakeBus(), memory)) as client:

@@ -28,6 +28,9 @@
 - **枚举清单**：包含 `MemoryKind`、`AssignedTaskType` 与 `AssignedTaskStatus`；成员与领域语义以 `nyx/enums.py` 及对应业务 spec 为准。
 - **实体清单**：除既有事件、记忆、欲望、活动、内在生命、表达、工具/eval 与 EPUB 陪读实体外，委派任务包含 `AssignedTask`；完整字段形状以 `nyx/types.py` 为准。旧通用文件书库的 `Material` 已退役，不再是跨模块领域对象。
 - **消息 TypedDict**：`LlmMessage` 固定为 `role: Literal["system", "user", "assistant"]` + `content: str`；`nyx.llm.client` 导入并继续公开该名字。
+- **活动表达类型**：`ActivityContext` 是一次表达回合的运行时快照，包含打断前捕获的
+  `interrupted`、打断后重新采样的 `current` 和 `observed_at`；`Message` 可选保存
+  `activity_id`、`activity_type`、`activity_summary`，用于历史归属展示，不作为新的活动状态来源。
 - **记忆类型字段**：`Memory.kind` 使用 `MemoryKind`，`Memory.topics` 为受限主题列表；`Memory.sources` 的类型与默认值由本文件定义，检索来源、持久化和 API 语义由 `06-memory-system` 定义。
 
 ### 嵌套 dict 字段的边界（哪些收 TypedDict / 哪些留 `dict[str, Any]`）

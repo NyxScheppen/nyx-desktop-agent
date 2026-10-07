@@ -187,6 +187,11 @@ await bus.publish(event)
 `EventBus.publish(event)` 用于根事件和无需绑定其它模块状态事务的事件。
 `EventBus.publish_many(events)` 把同一业务承诺的多条事件原子受理：任一事件 id 冲突或写入失败，
 整批回滚，运行时 `persisted_count` 也不得把已回滚行计为恢复进展；commit 后才逐条广播/唤醒。
+回滚补偿必须扣除本事务实际增加的数量，不得把计数恢复为事务前的绝对值，以免覆盖事务释放锁
+后其它发布增加的计数。
+表达回复把本回合全部正常 THINK/SPEAK、终局 ASK（如有）、InteractionAttempt 状态和慢通道
+`scene_memory_requested` 放在同一本地事务；生成期间不得提前发布正常文本。fallback 只提交一条
+fallback SPEAK，并与被回答 attempt 的完成状态共享事务。
 对“状态变更 + 后续事件”的生产者，EventBus 必须提供
 `append_in_transaction(event)` 在当前事务内写入事件行，或由明确的事务 outbox 机制完成；
 该 API 不提交事务，由调用方统一 commit。
@@ -529,7 +534,8 @@ CREATE TABLE desire_eval_applied (
 `expression_interaction_attempt` 是表达系统的 durable 领域状态，不替代
 `event_delivery`。它记录一次提问/主动搭话是否已被用户回答或已超时结算；状态转换必须用
 条件更新。attempt 与对应的 `ASK` 或 `INITIATE_CHAT` 事件在同一本地事务中提交，
-事务提交后才调用 `announce_committed`。
+事务提交后才调用 `announce_committed`。用户消息领取时把 `answer_event_id` 作为 owner 写入
+CLAIMED；同 owner 可恢复，其他事件不能抢占或释放。回复终局与 CLAIMED -> ANSWERED 共享事务。
 
 ```sql
 CREATE TABLE expression_interaction_attempt (
@@ -550,6 +556,21 @@ CREATE TABLE expression_interaction_attempt (
 索引为 `(status, expires_at)`、`(status, created_at)` 和 `(correlation_id)`。
 它与总线 delivery 的恢复职责不同：delivery 负责消费者投递，attempt 负责表达领域内的
 claim/answer/expire 幂等。
+
+### 记忆召回使用标记
+
+schema 35 新增 `memory_recall_use`，只用于把真实慢通道召回按用户事件幂等化：
+
+```sql
+CREATE TABLE memory_recall_use (
+    user_event_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_event_id, memory_id)
+);
+```
+
+首次插入 marker、`memory.recall_count + 1`、短期升级和可选 `MEMORY_PROMOTED` 事件必须在同一
+事务；复合主键冲突是重放 no-op，未知/已删除 memory 不创建 marker。
 
 ### eval prompt 辅助表
 
@@ -588,7 +609,9 @@ CREATE TABLE eval_prompt (
 
 现有写入口语义会变化：
 
-- `POST /api/chat`：只有 durable admission 成功才返回 `{event_id}`；失败返回 503/429。
+- `POST /api/chat`：`message` 必须是严格字符串、去除首尾空白后非空且不超过 12000
+  字符；非法输入返回 422。只有 durable admission 成功才返回 `{event_id}`；失败返回
+  503/429。
 - `POST /api/observe`：请求体为 `{presence, window_title, idle_seconds, sampled_at}`；两项
   数值必须是严格的有限非负数（不接受字符串和布尔值），idle_seconds <= sampled_at，
   sampled_at 为客户端开始采样时的 epoch 秒，不晚于后端接收时间；标题最多 512 字符。
@@ -636,11 +659,11 @@ CREATE TABLE eval_prompt (
 
 ## 测试要点
 
-- [ ] DB 连接与迁移：已有 `nyx.db` 时继续复用，否则默认创建 `data/nyx.db`；显式嵌套路径自动创建父目录；新库包含 `event_delivery`、`event_effect` 和领域 spec 已定义的辅助表（含 `eval_prompt`）；索引存在；迁移幂等。
+- [ ] DB 连接与迁移：已有 `nyx.db` 时继续复用，否则默认创建 `data/nyx.db`；显式嵌套路径自动创建父目录；新库包含 `event_delivery`、`event_effect` 和领域 spec 已定义的辅助表（含 `eval_prompt`、`memory_recall_use`）；索引存在；迁移幂等。
 - [ ] material 退役迁移：旧未完成活动与欲望一起迁移、`material` 表删除、已完成活动和旧来源记忆保留，迁移失败整体回滚。
 - [ ] durable publish：publish 后即使不启动 worker，`event_log` 和 delivery 已落库；DB 失败时 publish 抛错且无半截记录。
 - [ ] durable batch：`publish_many` 中任一事件冲突/失败时整批回滚且不虚增
-  `persisted_count`；慢通道最终
+  `persisted_count`；快慢通道在生成完成前没有正常文本，慢通道全部文本、最终
   `SPEAK/ASK` 与 `scene_memory_requested` 不会分裂。
 - [ ] route expand：每个非空 `RouteSpec` 都创建对应 delivery；空路由事件只落 `event_log` 和 SSE，不创建消费者 delivery。
 - [ ] handler 成功：delivery 从 `pending` 到 `processing` 到 `succeeded`，`completed_at` 写入。

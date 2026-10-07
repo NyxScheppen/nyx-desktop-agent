@@ -7,8 +7,10 @@
 - 当前系统不是纯“模块只通过总线通信”：EventBus 负责事件受理、`event_log` 持久化、`event_delivery` 投递、SSE 广播和 handler 通知；Facade 之间仍存在直接查询/编排调用。
 - `EventBus.publish(event)` 是 durable admission：根事件必须先持久化 `event_log` 和已注册 consumer 的初始 delivery，commit 成功后才返回；数据库不可用或总线关闭时抛受理错误。
 - `EventBus.publish_many(events)` 将同一业务承诺的多条事件原子受理；任一冲突或失败整批回滚，
-  已回滚行不计入 `persisted_count`，commit 后才广播/唤醒。慢通道最终 `SPEAK/ASK` 与
-  `scene_memory_requested` 使用该边界。
+  已回滚行不计入 `persisted_count`，commit 后才广播/唤醒。快慢回复的全部正常文本只在终局
+  一次提交；慢通道再与 `SPEAK/ASK`、`scene_memory_requested` 使用同一边界。
+- 外部领域事务调用 `append_in_transaction()` 后失败时，`persisted_count` 按本事务实际新增数
+  补偿，不恢复绝对快照，避免覆盖事务释放锁后其它发布增加的计数。
 - `event_log` 表示事件已发生；`event_delivery` 表示某个 `consumer_id` 对该事件的消费状态。不要用 `event_log` 推断消费者已完成。
 - `EventBus.has_effect(event_id, consumer_id)` 可在外部调用前读取已提交 effect；最终幂等仍由事务内 `try_mark_effect_in_transaction` 保证。
 - 投递语义是 at-least-once：消费者可能被重放，因此跨模块副作用必须按 `(event_id, consumer_id)` 幂等。
@@ -21,7 +23,7 @@
 - 内存队列只做唤醒优化，不做事实来源；队列满不能丢失已经持久化的事件。
 - SSE 每连接有界，满时丢最旧保最新；SSE 广播事件事实，不表示消费者完成。
 - `RouteSpec` / `ROUTE_SPECS` 是路由运行时来源；`ROUTING` / `TICK_ROUTING` 是由它派生的兼容视图；`subscriptions.py` 从同一份 route spec 注册 handler。
-- 当前已迁移的事务/幂等链：Activity 来源领取、`RUNNING` 行与 `ACTIVITY_START` 同事务；完成、失败、中断和恢复把 Activity、关联欲望、关联任务与适用的活动事件同事务提交，`IDLE_REFLECTION` 完成时 `ACTIVITY_END` 与普通 `REFLECTION` 也共享该事务；`DESIRE_EVAL` 的周期压力由 `desire_eval_applied` 防重，生成与 `DESIRE_GENERATED` 同事务提交；`desire.observation_state`、`desire.activity_end`、`inner_life.observation_state`、`inner_life.desire_satisfied`、`inner_life.activity_end`、`memory.activity_end`、`memory.scene_reply`、`inner_life.reflection` 使用 `(event_id, consumer_id)` effect marker 防重放；普通新记忆与 `MEMORY_CREATED`、`MemoryFacade.record_recall` 的升级与 `MEMORY_PROMOTED` 分别同事务提交。`inner_life.reflection` 与场景记忆的 LLM/解析在事务外完成，核心状态、effect marker 和终局事件同事务提交，提交后才唤醒投递。
+- 当前已迁移的事务/幂等链：Activity 来源领取、`RUNNING` 行与 `ACTIVITY_START` 同事务；完成、失败、中断和恢复把 Activity、关联欲望、关联任务与适用的活动事件同事务提交，`IDLE_REFLECTION` 完成时 `ACTIVITY_END` 与普通 `REFLECTION` 也共享该事务；`DESIRE_EVAL` 的周期压力由 `desire_eval_applied` 防重，生成与 `DESIRE_GENERATED` 同事务提交；`desire.observation_state`、`desire.activity_end`、`inner_life.observation_state`、`inner_life.desire_satisfied`、`inner_life.activity_end`、`memory.activity_end`、`memory.scene_reply`、`inner_life.reflection` 使用 `(event_id, consumer_id)` effect marker 防重放；普通新记忆与 `MEMORY_CREATED` 同事务；真实 recall 以 `(user_event_id, memory_id)` marker 防重，并与计数、升级和 `MEMORY_PROMOTED` 同事务。`inner_life.reflection` 与场景记忆的 LLM/解析在事务外完成，核心状态、effect marker 和终局事件同事务提交，提交后才唤醒投递。
 - 委派任务与 Activity 的来源领取、终态和恢复均共享本地事务；完成、失败或中断事务回滚后，Facade 立即调和失去 runner 的 `RUNNING`，调和失败由下一次准入重试。取消 runner 最多等待 5 秒，超时保持原状态且不重排。
 - 任务状态提交后再发布无 durable consumer 的 `TASK_UPDATED` 广播事件。广播、立即调度或调度后回读失败只记日志，不回滚已提交状态，也不把创建请求改成失败；前端还可用 REST 快照恢复。
 - 当前未完全迁移的链仍需谨慎：包含 LLM/文件等不可回滚副作用的路径还不能宣称完整 at-least-once 幂等；`memory.activity_end` 已有本地事务和 effect marker，但其内部 LLM 关系/矛盾判断仍属 best-effort 副作用。`USER_MESSAGE` 重放时若已存在同 correlation 的终局 `SPEAK/ASK` 事件会短路，但中途无终局事件的失败仍会重试。
@@ -30,7 +32,7 @@
 - 组合根延迟依赖使用显式可空回调和带上下文的 `RuntimeError` 检查，不再使用可变列表下标占位；表达门面先构造、阅读门面后构造时，通过同样的窄回调延迟绑定
   `ReadingFacade.build_reply_context()`，不让两个 Facade 直接循环依赖。总线 supervisor 在
   `run()` 正常返回时结束。
-- 表达系统额外使用 `expression_interaction_attempt` 持久化等待用户回应和主动行为承诺；attempt 与 `ASK`/`INITIATE_CHAT` 事件通过 `Database.transaction()` + `EventBus.append_in_transaction()` 同事务提交，提交后再 announce 唤醒消费者。
+- 表达系统额外使用 `expression_interaction_attempt` 持久化等待用户回应和主动行为承诺；attempt 与 `ASK`/`INITIATE_CHAT` 事件通过 `Database.transaction()` + `EventBus.append_in_transaction()` 同事务提交。用户领取时 `answer_event_id` 作为 claim owner，同 owner 可恢复；ANSWERED 与回复终局同事务，提交后再 announce 唤醒消费者。
 - 表达系统的 fallback `SPEAK` 是正常终局事件：解析/评估失败不会吞掉为成功，fallback 发布失败会让用户消息 consumer 进入总线重试；同 correlation 已有终局 SPEAK/ASK 时重放应短路。
 - 关停采用有界 drain：先停止新输入，再等待已受理事件和 delivery 完成；超时保留未完成投递，下次启动恢复，不做伪全局回滚。
 - 当前 `_App` 是组合根内部 dataclass，也承担运行期状态容器；不要把 `_App` 传入 Facade。

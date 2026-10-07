@@ -8,12 +8,19 @@ import random
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
+from typing import cast
 from uuid import uuid4
 
 from nyx.activity.facade import ActivityFacade
 from nyx.config import ExpressionConfig
 from nyx.desire.facade import DesireFacade
-from nyx.enums import ContextMode, EventType, InteractionKind, MemoryKind
+from nyx.enums import (
+    ContextMode,
+    EventType,
+    InteractionKind,
+    InteractionStatus,
+    MemoryKind,
+)
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
@@ -28,13 +35,25 @@ from nyx.expression.mutter import (
     pick_mutter_template,
 )
 from nyx.expression.pipeline import ReplyDeps, ReplyState, build_reply_graph
-from nyx.expression.prompt import build_system_prompt, build_temporal_block
+from nyx.expression.prompt import (
+    activity_summary,
+    build_system_prompt,
+    build_temporal_block,
+)
 from nyx.expression.store import ExpressionInteractionStore
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
-from nyx.types import CurrentState, Event, InteractionAttempt, Message, ShortTermDesire
+from nyx.types import (
+    Activity,
+    ActivityContext,
+    CurrentState,
+    Event,
+    InteractionAttempt,
+    Message,
+    ShortTermDesire,
+)
 
 
 class ExpressionFacade:
@@ -106,7 +125,7 @@ class ExpressionFacade:
                 tools=tools,
                 knowledge_boundary=knowledge_boundary,
                 register_question=self.register_question,
-                finish_return=self._finish_return_claim,
+                commit_reply_events=self._commit_reply_events,
             )
         )
 
@@ -118,7 +137,9 @@ class ExpressionFacade:
         correlation_id: str,
         *,
         claimed_return: dict[str, float] | None = None,
+        preceding_events: list[Event] | None = None,
         followup_events: list[Event] | None = None,
+        answered_attempt: InteractionAttempt | None = None,
     ) -> str:
         """Persist a question attempt and its canonical ASK atomically."""
         attempt_id = str(uuid4())
@@ -134,7 +155,10 @@ class ExpressionFacade:
         )
         event = _ask_event(text, attempt_id, correlation_id, kind)
         await self._commit_attempt_events(
-            attempt, [event, *(followup_events or [])], claimed_return
+            attempt,
+            [*(preceding_events or []), event, *(followup_events or [])],
+            claimed_return,
+            answered_attempt,
         )
         return attempt_id
 
@@ -148,6 +172,7 @@ class ExpressionFacade:
     async def _commit_attempt_events(
         self, attempt: InteractionAttempt, events: list[Event],
         claimed_return: dict[str, float] | None = None,
+        answered_attempt: InteractionAttempt | None = None,
     ) -> None:
         """Commit one interaction attempt and all durable events atomically."""
         if self._interaction_store is None:
@@ -164,19 +189,97 @@ class ExpressionFacade:
                 raise
             self._finish_return_claim(claimed_return)
             return
+        appended_count = 0
         try:
             async with self._interaction_store.db.transaction():
                 await self._interaction_store.create(attempt)
+                if answered_attempt is not None and not (
+                    await self._interaction_store.finish_answer(
+                        answered_attempt.id,
+                        answered_attempt.answer_event_id or "",
+                    )
+                ):
+                    raise RuntimeError("被回答的 interaction attempt 无法完成")
                 for event in events:
-                    await self._bus.append_in_transaction(event)
+                    persisted_before = self._bus.persisted_count
+                    try:
+                        await self._bus.append_in_transaction(event)
+                    finally:
+                        appended_count += (
+                            self._bus.persisted_count - persisted_before
+                        )
         except BaseException as error:
-            if claimed_return is not None:
-                try:
-                    committed = await self._bus.is_durable(events[0].id)
-                except Exception:
-                    raise error
-                if committed:
-                    self._finish_return_claim(claimed_return)
+            try:
+                committed = await self._bus.is_durable(events[0].id)
+            except Exception:
+                raise error
+            if not committed:
+                self._bus.persisted_count -= appended_count
+            elif claimed_return is not None:
+                self._finish_return_claim(claimed_return)
+            raise
+        self._finish_return_claim(claimed_return)
+        for event in events:
+            await self._bus.announce_committed(event)
+
+    async def _commit_reply_events(
+        self,
+        events: list[Event],
+        answered_attempt: InteractionAttempt | None,
+        claimed_return: dict[str, float] | None,
+    ) -> None:
+        """Atomically finish an answered attempt and admit one reply batch."""
+        if not events:
+            raise ValueError("回复终局批次不能为空")
+        terminal = next(
+            (
+                event
+                for event in reversed(events)
+                if event.type in (EventType.SPEAK, EventType.ASK)
+            ),
+            events[-1],
+        )
+        if self._interaction_store is None:
+            try:
+                await self._bus.publish_many(events)
+            except BaseException as error:
+                if claimed_return is not None:
+                    try:
+                        committed = await self._bus.is_durable(terminal.id)
+                    except Exception:
+                        raise error
+                    if committed:
+                        self._finish_return_claim(claimed_return)
+                raise
+            self._finish_return_claim(claimed_return)
+            return
+        appended_count = 0
+        try:
+            async with self._interaction_store.db.transaction():
+                if answered_attempt is not None and not (
+                    await self._interaction_store.finish_answer(
+                        answered_attempt.id,
+                        answered_attempt.answer_event_id or "",
+                    )
+                ):
+                    raise RuntimeError("被回答的 interaction attempt 无法完成")
+                for event in events:
+                    persisted_before = self._bus.persisted_count
+                    try:
+                        await self._bus.append_in_transaction(event)
+                    finally:
+                        appended_count += (
+                            self._bus.persisted_count - persisted_before
+                        )
+        except BaseException as error:
+            try:
+                committed = await self._bus.is_durable(terminal.id)
+            except Exception:
+                raise error
+            if not committed:
+                self._bus.persisted_count -= appended_count
+            elif claimed_return is not None:
+                self._finish_return_claim(claimed_return)
             raise
         self._finish_return_claim(claimed_return)
         for event in events:
@@ -218,22 +321,20 @@ class ExpressionFacade:
     async def answer_waiting(
         self, reply_event_id: str, reply_to: str | None = None
     ) -> InteractionAttempt | None:
-        """Atomically claim and finish at most one waiting interaction."""
+        """Claim at most one interaction for this user event."""
         if self._interaction_store is None:
             return None
         attempt = await self._interaction_store.claim_reply(reply_event_id, reply_to)
         if attempt is None:
             return None
         try:
-            if attempt.kind is InteractionKind.INITIATE_CHAT:
-                await self._desire.satisfy(attempt.source_id, True)
-            if not await self._interaction_store.finish_answer(
-                attempt.id, reply_event_id
+            if (
+                attempt.kind is InteractionKind.INITIATE_CHAT
+                and attempt.status is InteractionStatus.CLAIMED
             ):
-                await self._interaction_store.release_claim(attempt.id)
-                return None
+                await self._desire.satisfy(attempt.source_id, True)
         except BaseException:
-            await self._interaction_store.release_claim(attempt.id)
+            await self._interaction_store.release_claim(attempt.id, reply_event_id)
             raise
         return attempt
 
@@ -307,14 +408,33 @@ class ExpressionFacade:
         if self._release_return is not None:
             self._release_return(claim)
 
+    async def _activity_context(
+        self, context: ActivityContext | None = None
+    ) -> ActivityContext:
+        if context is not None:
+            return context
+        reader = getattr(self._activity, "get_current", None)
+        if callable(reader):
+            typed_reader = cast(Callable[[], Awaitable[Activity | None]], reader)
+            current = await typed_reader()
+        else:
+            current = None
+        return ActivityContext(
+            current=current,
+            interrupted=None,
+            observed_at=time.time(),
+        )
+
     async def reply(
         self,
         msg: str,
         correlation_id: str,
         reply_to: str | None = None,
+        activity_context: ActivityContext | None = None,
     ) -> None:
         """完整回复流程：跑 LangGraph 图，内部发布 think/speak/ask。"""
         claimed_return = self._claim_pending_return()
+        answered: InteractionAttempt | None = None
         now = time.time()
         try:
             # 用户说话 = 回应了之前的问句/搭话；清等待状态（不判断是否真在答）。
@@ -335,6 +455,7 @@ class ExpressionFacade:
                     await self._desire.satisfy(self._pending_chat_desire_id, True)
                 self._pending_chat_desire_id = None
             state = await self._inner_life.get_state()
+            activity_context = await self._activity_context(activity_context)
             temporal_context = await self._temporal_context(
                 now, correlation_id, claimed_return
             )
@@ -358,6 +479,8 @@ class ExpressionFacade:
                 "intent": classify_user_intent(msg),
                 "temporal_context": temporal_context,
                 "reading_context": reading_context,
+                "activity_context": activity_context,
+                "answered_attempt": answered,
                 "claimed_return": claimed_return,
                 "fallback": False,
             }
@@ -372,6 +495,10 @@ class ExpressionFacade:
             if result["fallback"]:
                 self._release_return_claim(claimed_return)
         except BaseException:
+            if answered is not None and self._interaction_store is not None:
+                await self._interaction_store.release_claim(
+                    answered.id, correlation_id
+                )
             self._release_return_claim(claimed_return)
             raise
 
@@ -386,6 +513,7 @@ class ExpressionFacade:
             str(uuid4()) if self._interaction_store is not None else desire.id
         )
         try:
+            activity_context = await self._activity_context()
             temporal_context = await self._temporal_context(
                 started_at, correlation_id, claimed_return
             )
@@ -395,6 +523,7 @@ class ExpressionFacade:
                 ask_guidance=self._ask_guidance,
                 knowledge_boundary=self._knowledge_boundary,
                 temporal_context=temporal_context,
+                activity_context=activity_context,
             )
             user = (
                 f"你想主动和用户说点什么。基于这个念头：{desire.description}。"
@@ -431,7 +560,26 @@ class ExpressionFacade:
             event.content["desire_id"] = desire.id
             await self._commit_attempt_event(attempt, event, claimed_return)
             self._history.append(
-                Message(role="nyx", content=output.content, timestamp=time.time())
+                Message(
+                    role="nyx",
+                    content=output.content,
+                    timestamp=time.time(),
+                    activity_id=(
+                        activity_context.current.id
+                        if activity_context.current is not None
+                        else None
+                    ),
+                    activity_type=(
+                        activity_context.current.type
+                        if activity_context.current is not None
+                        else None
+                    ),
+                    activity_summary=(
+                        activity_summary(activity_context.current)
+                        if activity_context.current is not None
+                        else None
+                    ),
+                )
             )
             if self._interaction_store is None:
                 self._pending_chat_desire_id = desire.id
@@ -454,13 +602,14 @@ class ExpressionFacade:
             return
         claimed_return: dict[str, float] | None = None
         try:
+            activity_context = await self._activity_context()
             if random.random() < _LLM_MUTTER_RATE:
                 claimed_return = self._claim_pending_return()
                 temporal_context = await self._temporal_context(
                     time.time(), correlation_id, claimed_return
                 )
                 text = await self._mutter_wander(
-                    state, correlation_id, temporal_context
+                    state, correlation_id, temporal_context, activity_context
                 )
                 if text is None:
                     self._release_return_claim(claimed_return)
@@ -498,6 +647,7 @@ class ExpressionFacade:
         state: CurrentState,
         correlation_id: str,
         temporal_context: str,
+        activity_context: ActivityContext,
     ) -> str | None:
         """LLM 即兴碎碎念（低频走神）：一句自然口语，可停顿/离题；空则回退模板。"""
         system = build_system_prompt(
@@ -505,6 +655,7 @@ class ExpressionFacade:
             state,
             knowledge_boundary=self._knowledge_boundary,
             temporal_context=temporal_context,
+            activity_context=activity_context,
         )
         user = (
             "你闲下来了，心里冒出一句碎碎念。说一句自然、口语的话，"

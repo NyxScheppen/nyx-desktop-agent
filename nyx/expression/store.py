@@ -64,8 +64,38 @@ class ExpressionInteractionStore:
         self, reply_event_id: str, reply_to: str | None = None
     ) -> InteractionAttempt | None:
         async with self._operation() as should_commit:
+            if reply_to is None:
+                cursor = await self._db.conn.execute(
+                    "SELECT * FROM expression_interaction_attempt "
+                    "WHERE answer_event_id = ? AND status IN (?, ?) "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1",
+                    (
+                        reply_event_id,
+                        InteractionStatus.CLAIMED.value,
+                        InteractionStatus.ANSWERED.value,
+                    ),
+                )
+                owned = await cursor.fetchone()
+                if owned is not None:
+                    return _row_to_attempt(owned)
             if reply_to is not None:
                 target = reply_to
+                cursor = await self._db.conn.execute(
+                    "SELECT * FROM expression_interaction_attempt WHERE id = ?",
+                    (target,),
+                )
+                selected = await cursor.fetchone()
+                if selected is None:
+                    return None
+                if (
+                    selected["answer_event_id"] == reply_event_id
+                    and selected["status"]
+                    in (
+                        InteractionStatus.CLAIMED.value,
+                        InteractionStatus.ANSWERED.value,
+                    )
+                ):
+                    return _row_to_attempt(selected)
             else:
                 cursor = await self._db.conn.execute(
                     "SELECT id FROM expression_interaction_attempt "
@@ -77,10 +107,12 @@ class ExpressionInteractionStore:
             if target is None:
                 return None
             cursor = await self._db.conn.execute(
-                "UPDATE expression_interaction_attempt SET status = ? "
+                "UPDATE expression_interaction_attempt "
+                "SET status = ?, answer_event_id = ? "
                 "WHERE id = ? AND status = ?",
                 (
                     InteractionStatus.CLAIMED.value,
+                    reply_event_id,
                     target,
                     InteractionStatus.WAITING.value,
                 ),
@@ -133,24 +165,36 @@ class ExpressionInteractionStore:
             cursor = await self._db.conn.execute(
                 "UPDATE expression_interaction_attempt SET status = ?, "
                 "answered_at = ?, answer_event_id = ? "
-                "WHERE id = ? AND status = ?",
+                "WHERE id = ? AND status = ? AND answer_event_id = ?",
                 (
                     InteractionStatus.ANSWERED.value,
                     time.time(),
                     reply_event_id,
                     attempt_id,
                     InteractionStatus.CLAIMED.value,
+                    reply_event_id,
                 ),
             )
             if should_commit:
                 await self._db.conn.commit()
-        return cursor.rowcount == 1
+            if cursor.rowcount == 1:
+                return True
+            cursor = await self._db.conn.execute(
+                "SELECT 1 FROM expression_interaction_attempt "
+                "WHERE id = ? AND status = ? AND answer_event_id = ?",
+                (
+                    attempt_id,
+                    InteractionStatus.ANSWERED.value,
+                    reply_event_id,
+                ),
+            )
+            return await cursor.fetchone() is not None
 
     async def finish_expired(self, attempt_id: str) -> bool:
         async with self._operation() as should_commit:
             cursor = await self._db.conn.execute(
                 "UPDATE expression_interaction_attempt SET status = ? "
-                "WHERE id = ? AND status = ?",
+                "WHERE id = ? AND status = ? AND answer_event_id IS NULL",
                 (
                     InteractionStatus.EXPIRED.value,
                     attempt_id,
@@ -161,16 +205,27 @@ class ExpressionInteractionStore:
                 await self._db.conn.commit()
         return cursor.rowcount == 1
 
-    async def release_claim(self, attempt_id: str) -> bool:
+    async def release_claim(
+        self, attempt_id: str, reply_event_id: str | None = None
+    ) -> bool:
         async with self._operation() as should_commit:
+            owner_clause = (
+                "answer_event_id IS NULL"
+                if reply_event_id is None
+                else "answer_event_id = ?"
+            )
+            params: tuple[object, ...] = (
+                InteractionStatus.WAITING.value,
+                attempt_id,
+                InteractionStatus.CLAIMED.value,
+            )
+            if reply_event_id is not None:
+                params += (reply_event_id,)
             cursor = await self._db.conn.execute(
-                "UPDATE expression_interaction_attempt SET status = ? "
-                "WHERE id = ? AND status = ?",
-                (
-                    InteractionStatus.WAITING.value,
-                    attempt_id,
-                    InteractionStatus.CLAIMED.value,
-                ),
+                "UPDATE expression_interaction_attempt "
+                "SET status = ?, answer_event_id = NULL "
+                f"WHERE id = ? AND status = ? AND {owner_clause}",
+                params,
             )
             if should_commit:
                 await self._db.conn.commit()

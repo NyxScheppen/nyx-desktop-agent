@@ -30,12 +30,15 @@ async def test_attempt_state_transitions_are_conditional() -> None:
         await store.create(_attempt("a1"))
         claimed = await store.claim_reply("reply-1")
         assert claimed is not None and claimed.status is InteractionStatus.CLAIMED
+        assert claimed.answer_event_id == "reply-1"
         assert await store.claim_reply("reply-2") is None
         assert await store.finish_answer("a1", "reply-1") is True
         assert await store.finish_answer("a1", "reply-2") is False
         got = await store.get("a1")
         assert got is not None and got.status is InteractionStatus.ANSWERED
         assert got.answer_event_id == "reply-1"
+        replay = await store.claim_reply("reply-1")
+        assert replay is not None and replay.status is InteractionStatus.ANSWERED
     finally:
         await database.close()
 
@@ -50,6 +53,22 @@ async def test_concurrent_reply_claims_only_claim_once() -> None:
             store.claim_reply("reply-2"),
         )
         assert sum(result is not None for result in results) == 1
+    finally:
+        await database.close()
+
+
+async def test_claim_owner_recovery_and_release_are_owner_scoped() -> None:
+    database = await db.connect(":memory:")
+    store = ExpressionInteractionStore(database)
+    try:
+        await store.create(_attempt("a1"))
+        first = await store.claim_reply("reply-1")
+        replay = await store.claim_reply("reply-1")
+        assert first is not None and replay is not None and replay.id == "a1"
+        assert await store.release_claim("a1", "reply-2") is False
+        assert await store.release_claim("a1", "reply-1") is True
+        released = await store.get("a1")
+        assert released is not None and released.answer_event_id is None
     finally:
         await database.close()
 

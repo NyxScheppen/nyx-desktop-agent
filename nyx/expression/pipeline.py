@@ -1,10 +1,11 @@
-# pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false
+# pyright: reportMissingTypeStubs=false, reportPrivateUsage=false, reportUnknownMemberType=false
 # langgraph 类型标注松散：add_node/compile/ainvoke 返回部分未知、graph.state 缺 stub
 """回复流程 LangGraph 图：快慢通道 + 多轮 think/speak + 场景化记忆。
 
 节点为闭包，依赖经 ReplyDeps 注入。
 """
 import json
+import logging
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -24,9 +25,15 @@ from nyx.expression.classifier import (
     is_question,
 )
 from nyx.expression.prompt import (
+    _MATERIAL_ITEM_MAX_CHARS,
+    _READING_BLOCK_MAX_CHARS,
+    _TOOL_OUTPUT_MAX_ITEMS,
+    activity_summary,
+    bound_material_block,
     build_backtrack_context,
     build_system_prompt,
     build_user_prompt,
+    select_prompt_memories,
 )
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
@@ -34,8 +41,11 @@ from nyx.memory.facade import MemoryFacade
 from nyx.memory.facts import is_fact_query
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
+    Activity,
+    ActivityContext,
     CurrentState,
     Event,
+    InteractionAttempt,
     LlmMessage,
     LLMOutput,
     Memory,
@@ -50,11 +60,16 @@ def _ask_guidance_for(mode: ContextMode, ask_guidance: str | None) -> str | None
     return ask_guidance if mode is ContextMode.SLOW else None
 
 
+def _message_activity(context: ActivityContext) -> Activity | None:
+    """Choose the most recent observed activity for history attribution."""
+    return context.current if context.current is not None else context.interrupted
+
+
 class ReplyState(TypedDict):
     message: str
     mode: ContextMode
     context: list[Message]       # 回溯上下文（facade 入口填，快慢一致；不含当前消息）
-    memories: list[Memory]       # 检索到的记忆
+    memories: list[Memory]       # 预算筛选后实际进入 prompt 的记忆
     facts: list[MemoryFact]       # 当前有效事实（与原始记忆隔离）
     state: CurrentState          # 当前状态快照
     narrative: SelfNarrative | None   # 慢通道 assemble 填充，快通道恒 None
@@ -69,6 +84,8 @@ class ReplyState(TypedDict):
     intent: UserIntent
     temporal_context: str
     reading_context: str
+    activity_context: ActivityContext
+    answered_attempt: InteractionAttempt | None
     claimed_return: dict[str, float] | None
     fallback: bool
 
@@ -87,7 +104,7 @@ class ReplyDeps:
     tools: ToolRegistry                  # use_tools 节点查资料（慢通道）
     knowledge_boundary: str | None
     register_question: Any
-    finish_return: Callable[[dict[str, float] | None], None]
+    commit_reply_events: Any
 
 
 # 一轮 think+speak 一次生成：先写内心活动（think），再写说出口的话（speak），
@@ -113,7 +130,8 @@ _USE_TOOLS_TASK = (
     "本次回复若需要查询资料，就调用相应工具；"
     "若不需要查询，就不要调用任何工具。"
 )
-_TOOL_OUTPUT_MAX_CHARS = 4000  # 单条工具结果注入 prompt 的字符上限（decision，可推翻）
+_TOOL_DECISION_FAILED = "本轮没有获得工具查询结果；不要声称已经查询或验证。"
+_LOGGER = logging.getLogger(__name__)
 
 
 def _is_question(text: str) -> bool:
@@ -189,7 +207,9 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         return "\n\n".join(
             part
             for part in (
-                state["reading_context"],
+                bound_material_block(
+                    state["reading_context"], _READING_BLOCK_MAX_CHARS
+                ),
                 build_user_prompt(state["message"], state["context"]),
             )
             if part
@@ -228,14 +248,16 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             deps.config.context_time_gap,
             deps.config.max_context_len,
         )
-        memories = await deps.memory.search(state["message"])
+        memories = select_prompt_memories(
+            await deps.memory.search(state["message"])
+        )
         facts = state["facts"]
         recalled: set[str] = set()
         for m in memories:
             if m.id in recalled:
                 continue
             recalled.add(m.id)
-            await deps.memory.record_recall(m.id)   # 慢通道检索命中即记「想起」
+            await deps.memory.record_recall(m.id, state["correlation_id"])
         narrative = await deps.inner_life.get_narrative()
         return {
             "context": context, "memories": memories, "facts": facts,
@@ -252,25 +274,35 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             knowledge_boundary=deps.knowledge_boundary,
             intent=state["intent"],
             temporal_context=state["temporal_context"],
+            activity_context=state["activity_context"],
         )
         user = user_prompt(state) + "\n" + _USE_TOOLS_TASK
-        output = await deps.llm.complete(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            module="expression",
-            output_type="tool",
-            correlation_id=state["correlation_id"],
-            tools=deps.tools.schema(),
-        )
-        await deps.evaluator.evaluate(output)
+        try:
+            output = await deps.llm.complete(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                module="expression",
+                output_type="tool",
+                correlation_id=state["correlation_id"],
+                tools=deps.tools.schema(),
+            )
+            await deps.evaluator.evaluate(output)
+        except Exception:
+            _LOGGER.exception(
+                "工具判断失败 correlation_id=%s", state["correlation_id"]
+            )
+            return {"tool_outputs": [_TOOL_DECISION_FAILED]}
         outputs: list[str] = []
-        for tc in output.tool_calls:
+        for tc in output.tool_calls[:_TOOL_OUTPUT_MAX_ITEMS]:
             name = tc.get("name", "")
             args = tc.get("args", {})
             try:
                 result = await deps.tools.call(name, args)
                 text = json.dumps(result, ensure_ascii=False)
-                if len(text) > _TOOL_OUTPUT_MAX_CHARS:
-                    text = text[:_TOOL_OUTPUT_MAX_CHARS] + "…"
+                if len(text) > _MATERIAL_ITEM_MAX_CHARS:
+                    text = text[: _MATERIAL_ITEM_MAX_CHARS - 1] + "…"
             except Exception:  # 工具执行失败不崩回复（best-effort 豁免）
                 text = f"工具 {name} 执行失败"
             outputs.append(f"{name}: {text}")
@@ -287,25 +319,29 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             state["correlation_id"],
         )
 
-    async def commit_speak(
-        state: ReplyState, speak: str, followup: Event | None = None
-    ) -> None:
-        event = internal_text_event(EventType.SPEAK, speak, state["correlation_id"])
-        try:
-            if followup is None:
-                await deps.bus.publish(event)
-            else:
-                await deps.bus.publish_many([event, followup])
-        except BaseException as error:
-            if state["claimed_return"] is not None:
-                try:
-                    committed = await deps.bus.is_durable(event.id)
-                except Exception:
-                    raise error
-                if committed:
-                    deps.finish_return(state["claimed_return"])
-            raise
-        deps.finish_return(state["claimed_return"])
+    def text_events(
+        state: ReplyState,
+        think: list[str],
+        speak: list[str],
+        *,
+        omit_final_speak: bool = False,
+    ) -> list[Event]:
+        events: list[Event] = []
+        final_index = len(speak) - 1
+        for index, (thought, spoken) in enumerate(zip(think, speak)):
+            if thought:
+                events.append(
+                    internal_text_event(
+                        EventType.THINK, thought, state["correlation_id"]
+                    )
+                )
+            if not (omit_final_speak and index == final_index):
+                events.append(
+                    internal_text_event(
+                        EventType.SPEAK, spoken, state["correlation_id"]
+                    )
+                )
+        return events
 
     async def respond(state: ReplyState) -> dict[str, Any]:
         system = build_system_prompt(
@@ -316,6 +352,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             knowledge_boundary=deps.knowledge_boundary,
             intent=state["intent"],
             temporal_context=state["temporal_context"],
+            activity_context=state["activity_context"],
         )
         user = user_prompt(state)
         # 前几轮 think/speak（等长）
@@ -362,15 +399,14 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             )
             event.content["response_kind"] = "fallback"
             event.content["attempt_id"] = None
-            await deps.bus.publish(event)
+            await deps.commit_reply_events(
+                [event], state["answered_attempt"], None
+            )
             return {
-                "speak": state["speak"] + [fallback],
+                "think": [],
+                "speak": [fallback],
                 "fallback": True,
             }
-        if think:
-            await deps.bus.publish(
-                internal_text_event(EventType.THINK, think, state["correlation_id"])
-            )
         new_think = state["think"] + [think]
         new_speak = state["speak"] + [speak]
         if state["mode"] is ContextMode.FAST:
@@ -382,9 +418,17 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     state["correlation_id"],
                     state["correlation_id"],
                     claimed_return=state["claimed_return"],
+                    preceding_events=text_events(
+                        state, new_think, new_speak, omit_final_speak=True
+                    ),
+                    answered_attempt=state["answered_attempt"],
                 )
                 return {"think": new_think, "speak": new_speak, "ask": speak}
-            await commit_speak(state, speak)
+            await deps.commit_reply_events(
+                text_events(state, new_think, new_speak),
+                state["answered_attempt"],
+                state["claimed_return"],
+            )
         return {"think": new_think, "speak": new_speak}
 
     async def should_ask(state: ReplyState) -> dict[str, Any]:
@@ -396,21 +440,46 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 state["correlation_id"],
                 state["correlation_id"],
                 claimed_return=state["claimed_return"],
+                preceding_events=text_events(
+                    state,
+                    state["think"],
+                    state["speak"],
+                    omit_final_speak=True,
+                ),
                 followup_events=[scene_memory_event(state)],
+                answered_attempt=state["answered_attempt"],
             )
             return {"ask": speak}
         final_round = state["round"] + 1 >= deps.config.slow_max_rounds
-        await commit_speak(
-            state, speak, scene_memory_event(state) if final_round else None
-        )
+        if final_round:
+            await deps.commit_reply_events(
+                [
+                    *text_events(state, state["think"], state["speak"]),
+                    scene_memory_event(state),
+                ],
+                state["answered_attempt"],
+                state["claimed_return"],
+            )
         return {"ask": None, "round": state["round"] + 1}
 
     async def record_message(state: ReplyState) -> dict[str, Any]:
         # 回合末按序落历史：先用户消息、后 Nyx 消息（多轮拼接）。
         # 下一轮 reply 的 assemble 从这里回溯。
         now = time.time()
+        observed_activity = _message_activity(state["activity_context"])
         deps.history.append(
-            Message(role="user", content=state["message"], timestamp=now)
+            Message(
+                role="user",
+                content=state["message"],
+                timestamp=now,
+                activity_id=(observed_activity.id if observed_activity else None),
+                activity_type=(observed_activity.type if observed_activity else None),
+                activity_summary=(
+                    activity_summary(observed_activity)
+                    if observed_activity is not None
+                    else None
+                ),
+            )
         )
         nyx_text = "\n".join(state["speak"])
         if nyx_text:
@@ -420,6 +489,15 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     content=nyx_text,
                     timestamp=now,
                     fast=(state["mode"] is ContextMode.FAST),
+                    activity_id=(observed_activity.id if observed_activity else None),
+                    activity_type=(
+                        observed_activity.type if observed_activity else None
+                    ),
+                    activity_summary=(
+                        activity_summary(observed_activity)
+                        if observed_activity is not None
+                        else None
+                    ),
                 )
             )
         return {}

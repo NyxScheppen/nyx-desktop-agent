@@ -4,6 +4,7 @@ from datetime import datetime
 import pytest
 
 from nyx.enums import (
+    ActivityStatus,
     ActivityType,
     DesireType,
     EmotionCategory,
@@ -12,9 +13,13 @@ from nyx.enums import (
     MemoryType,
 )
 from nyx.expression.prompt import (
+    _FACT_BLOCK_MAX_CHARS,
+    _HISTORY_BLOCK_MAX_CHARS,
+    _MATERIAL_ITEM_MAX_CHARS,
+    _MEMORY_BLOCK_MAX_CHARS,
+    _TOOL_BLOCK_MAX_CHARS,
     _desires_block,
     _memory_block,
-    _no_char_overlap,
     _state_block,
     build_backtrack_context,
     build_system_prompt,
@@ -24,6 +29,8 @@ from nyx.expression.prompt import (
     describe_local_time,
 )
 from nyx.types import (
+    Activity,
+    ActivityContext,
     Aesthetic,
     CurrentState,
     Memory,
@@ -117,6 +124,69 @@ def test_build_system_prompt_base() -> None:
     assert _CANON in result
     assert "[自我认知]" not in result
     assert "[相关记忆]" not in result
+
+
+def test_build_system_prompt_renders_observed_activity_only() -> None:
+    current = Activity(
+        id="activity-current",
+        type=ActivityType.READING,
+        schedule_block_id="block-1",
+        status=ActivityStatus.RUNNING,
+        progress={
+            "description": "正在读一本书",
+            "goal": {"action": "read", "count": 2, "topic": "孤独与城市"},
+            "target_paragraph": 7,
+        },
+        started_at=1.0,
+    )
+    result = build_system_prompt(
+        _CANON,
+        _state(),
+        activity_context=ActivityContext(
+            current=current, interrupted=None, observed_at=2.0
+        ),
+    )
+    assert "[本轮活动事实]" in result
+    assert "描述=正在读一本书" in result
+    assert "动作=read" in result
+    assert "次数=2" in result
+    assert "主题=孤独与城市" in result
+    assert "目标段落=7" in result
+
+
+def test_activity_context_does_not_infer_pause_or_missing_progress() -> None:
+    interrupted = Activity(
+        id="activity-1",
+        type=ActivityType.CREATION,
+        schedule_block_id="block-1",
+        status=ActivityStatus.RUNNING,
+        progress={"untrusted": "ignored"},
+        started_at=1.0,
+    )
+    result = build_system_prompt(
+        _CANON,
+        _state(),
+        activity_context=ActivityContext(
+            current=None, interrupted=interrupted, observed_at=2.0
+        ),
+    )
+    assert "刚才被打断的活动：类型=creation；状态=running" in result
+    assert "不能据此判断刚才的活动已暂停、已完成或已失败" in result
+    assert "untrusted" not in result
+
+
+def test_history_activity_fact_is_secondary_to_current_context() -> None:
+    history = [
+        Message(
+            role="user",
+            content="刚才读到这里",
+            timestamp=1.0,
+            activity_summary="类型=reading；状态=paused；目标段落=4",
+        )
+    ]
+    result = build_user_prompt("继续", history)
+    assert "历史活动事实：类型=reading；状态=paused；目标段落=4" in result
+    assert "[本次消息]\n继续" in result
 
 
 def test_build_system_prompt_optional_blocks() -> None:
@@ -230,6 +300,71 @@ def test_build_system_prompt_no_tool_outputs() -> None:
     assert "[工具查询结果]" not in result
 
 
+@pytest.mark.parametrize("overflow", [0, 1])
+def test_memory_budget_keeps_only_complete_entries(overflow: int) -> None:
+    leading = [_memory(summary="x" * 3000) for _ in range(5)]
+    header_size = len(_memory_block([]))
+    remaining = _MEMORY_BLOCK_MAX_CHARS - header_size - 5 * 2001 - 1
+    label = "- 你了解到用户："
+    tail = "BOUNDARY" + "y" * (remaining - len(label) - len("BOUNDARY") + overflow)
+
+    rendered = _memory_block([*leading, _memory(summary=tail)])
+
+    assert len(rendered) <= _MEMORY_BLOCK_MAX_CHARS
+    if overflow:
+        assert "BOUNDARY" not in rendered
+        assert rendered.count("\n- ") == 5
+    else:
+        assert rendered.endswith(label + tail)
+        assert len(rendered) == _MEMORY_BLOCK_MAX_CHARS
+
+
+def test_dynamic_prompt_blocks_are_bounded() -> None:
+    memories = [
+        _memory(summary=f"memory-{index}-" + "x" * 3000 + "TAIL")
+        for index in range(10)
+    ]
+    facts = [
+        MemoryFact(
+            f"f{index}", "用户", "描述", "y" * 3000 + "TAIL",
+            100.0, None, None, 100.0,
+        )
+        for index in range(10)
+    ]
+    tools = [f"tool-{index}: " + "z" * 3000 + "TAIL" for index in range(10)]
+
+    result = build_system_prompt(
+        _CANON, _state(), memories=memories, facts=facts, tool_outputs=tools
+    )
+    memory_block = result.split("[相关记忆]", 1)[1].split("[相关事实]", 1)[0]
+    fact_block = result.split("[相关事实]", 1)[1].split("[工具查询结果]", 1)[0]
+    tool_block = result.split("[工具查询结果]", 1)[1]
+
+    assert len(memory_block) <= _MEMORY_BLOCK_MAX_CHARS + 100
+    assert len(fact_block) <= _FACT_BLOCK_MAX_CHARS + 100
+    assert len(tool_block) <= _TOOL_BLOCK_MAX_CHARS + 100
+    assert "tool-5" not in tool_block and "TAIL" not in result
+
+
+def test_history_items_and_total_block_are_bounded() -> None:
+    context = [
+        Message(
+            role="user",
+            content=f"history-{index}-" + "x" * 3000 + "TAIL",
+            timestamp=float(index),
+        )
+        for index in range(10)
+    ]
+
+    result = build_user_prompt("current", context)
+    history = result.split("[对话历史]\n", 1)[1].split("[本次消息]", 1)[0]
+
+    assert len(history) <= _HISTORY_BLOCK_MAX_CHARS + 1
+    assert "TAIL" not in history
+    assert "x" * (_MATERIAL_ITEM_MAX_CHARS + 1) not in history
+    assert "history-9" in history and "history-0" not in history
+
+
 # ---- 回溯上下文截断 ----
 
 
@@ -271,12 +406,12 @@ def test_backtrack_fast_nyx_skipped_continues() -> None:
     assert [m.content for m in result] == ["我爬山很开心"]
 
 
-def test_backtrack_zero_overlap_stops() -> None:
+def test_backtrack_zero_overlap_keeps_semantic_history() -> None:
     history = [Message(role="user", content="天气不错", timestamp=1.0)]
     result = build_backtrack_context(
         "量子力学", history, now=1.0, time_gap=3600.0, max_len=20
     )
-    assert result == []
+    assert [m.content for m in result] == ["天气不错"]
 
 
 def test_backtrack_short_message_skips_overlap_stop() -> None:
@@ -294,12 +429,6 @@ def test_backtrack_relevant_continues() -> None:
         "今天天气如何", history, now=1.0, time_gap=3600.0, max_len=20
     )
     assert [m.content for m in result] == ["天气不错"]
-
-
-def test_no_char_overlap() -> None:
-    assert _no_char_overlap("量子", "天气") is True
-    assert _no_char_overlap("天气", "天气不错") is False
-    assert _no_char_overlap("你 好", "你好") is False  # 空白忽略
 
 
 # ---- 时间与重逢上下文 ----

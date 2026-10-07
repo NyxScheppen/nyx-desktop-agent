@@ -12,7 +12,9 @@
 ## 系统边界
 
 - `MemoryFacade.search(query: str) -> list[Memory]` 是表达慢通道唯一检索入口；表达层不直接调 store/retrieval。
-- 慢通道 `assemble_context` 会把 `MemoryFacade.search(message)` 返回的全部记忆放进 prompt，并在同一回合按 memory id 去重后立即 `record_recall(memory.id)`。
+- 慢通道 `assemble_context` 对 `MemoryFacade.search(message)` 返回的记忆按表达预算选择
+  可完整展示的排序前缀，只对入选记忆在同一回合按 memory id 去重后调用
+  `record_recall(memory.id, user_event_id)`；预算落选不计数、不晋升。
 - 快通道不检索记忆、不 `record_recall`、不生成场景化记忆。
 - `Memory` 字段是 `id`、`created_at`、`content`、`kind`、`topics`、`summary`、`freshness`、`type`、`recall_count`、`aspect`、`embedding`、`sources`。
 - `MemoryType` 取值是 `SHORT_TERM="short_term"`、`LONG_TERM="long_term"`。
@@ -170,7 +172,8 @@ topics 联想约束：
 - [ ] 如果调用方传 `direct_limit=5`，直接召回最多 5 条，联想只从这 5 条出发，最终返回最多 `5 + association_limit` 条。
 - [ ] 只有直接召回结果作为联想 seed；联想图扩散 2 跳，按关联分数排序、去重、限量追加。
 - [ ] 直接召回和联想召回都返回 `Memory`；`sources` 按实际来源包含 `vector`、`keyword`、`association`。
-- [ ] 进入慢通道 prompt 的全部返回记忆仍立即 `record_recall`。
+- [ ] 只有经表达预算筛选、实际进入慢通道 prompt 的记忆立即按用户事件调用
+  `record_recall`；同一用户事件重放不重复计数或升级，预算落选记忆不计数。
 - [ ] `memory_edge` 支持边类型：同一记忆对可有多条不同 `kind` 的边。
 - [ ] 建边使用语义、实体、关键词、时间、LLM 关系五类信号；每个节点有最大度数约束。
 - [ ] `_persist_memory` 同 kind 内先 content hash 精确去重，再 bounded semantic candidates 内 top-1 cosine `>= 0.95` 去重；episode 使用 `0.985` 且创建时间差不超过一小时。
@@ -204,7 +207,9 @@ class MemoryStore:
     ) -> list[Memory]: ...
     async def update_many(self, memories: list[Memory]) -> None: ...
     async def delete_many(self, ids: list[str]) -> None: ...
-    async def record_recall(self, memory_id: str, promote_threshold: int) -> bool: ...
+    async def record_recall(
+        self, memory_id: str, user_event_id: str, promote_threshold: int
+    ) -> bool: ...
     async def strengthen(self, memory_id: str, now: float) -> None: ...
     async def settle_freshness(self, now: float, rate: float) -> None: ...
     async def count_new(self, kind: MemoryKind | None, since: float) -> int: ...
@@ -466,7 +471,7 @@ async def search_source(
 ) -> list[Memory]: ...
 async def search_facts(query: str) -> list[MemoryFact]: ...
 async def recent_facts(limit: int = 32) -> list[MemoryFact]: ...
-async def record_recall(memory_id: str) -> None: ...
+async def record_recall(memory_id: str, user_event_id: str) -> None: ...
 async def list_memories(
     kind: MemoryKind | None = None,
     type: MemoryType | None = None,
@@ -500,7 +505,10 @@ Facade 规则：
   JSON 解析、embedding 与事实候选准备；事务内提交 `event_effect`、记忆/强化、事实 apply 和
   `memory_created`。LLM/解析或核心事务失败抛出并由 delivery 重试；已提交重放 no-op；建边、
   矛盾和衰减仍是提交后 best-effort。
-- `record_recall(memory_id)` 只表示“进入慢通道 prompt 后被想起”：委托 store 加一；短期达阈值时发布 `memory_promoted`，长期不重复发布。升级和 `memory_promoted` 事件行在同一本地事务提交，commit 后再 `announce_committed`。
+- `record_recall(memory_id, user_event_id)` 只表示“进入慢通道 prompt 后被想起”：先以
+  `(user_event_id, memory_id)` 写 `memory_recall_use`，只有首次写入才加一；短期达阈值时发布
+  `memory_promoted`，长期不重复发布。marker、计数、升级和可选 `memory_promoted` 事件行在同一
+  本地事务提交，commit 后再 `announce_committed`。
 - `export("json")` 输出 JSON 数组；`export("md")` 输出 Markdown；非法格式抛 `ValueError`；导出不包含 `Memory.sources`。
 - Facade 自己发布 `memory_created` / `memory_promoted` / `reflection` 事件，返回值只返回数据对象或 `None`，不返回 `Event` 给调用方发布。
 
@@ -890,6 +898,8 @@ prune_priority = edge.weight * prune_kind_weight
   并以 `(alias, entity_type)` 建索引；迁移从既有 `memory_entity.aliases` JSON 回填。
 - schema 34 为 `memory` 新增 `freshness_updated_at REAL NOT NULL`。旧库迁移保留现有
   freshness，并把迁移时刻设为后续增量衰减锚点；新记忆以 `created_at` 为锚点。
+- schema 35 新增 `memory_recall_use(user_event_id, memory_id)`，复合主键防止同一用户事件重试
+  重复增加 recall；`memory_id` 外键使用 `ON DELETE CASCADE`，不保留悬空使用标记。
 - 迁移旧边：端点 canonicalize 后全部视为 `kind='semantic'`，`created_at=0.0`，方向相反重复边合并。
 - 不新增 `memory_cluster` 表。
 - 不新增配置项；候选数、权重、度数上限先作为模块常量，避免未请求的配置膨胀。
@@ -925,8 +935,9 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 - [ ] 建边：语义、实体、关键词、时间边分别可被构造；语义边复用 persist semantic candidates；LLM 关系边只对 top5 候选调用；`none` 不写边；LLM 失败不阻塞持久化。
 - [ ] 度数控制：每 kind 最多 4 条，总有效度最多 16；新节点和触达旧节点都会剪枝；剪枝通过 `delete_edges` 删除完整三元键。
 - [ ] 聚类：`MemoryGraph(edges, memory_ids=...)` 下 Louvain/greedy fallback 均返回稳定 `memory_id -> cluster_id`；孤立节点保留；temporal 边低权重不主导聚类。
-- [ ] 表达慢通道：`MemoryFacade.search` 返回 direct + association 后，`assemble_context` 按 id
-  去重记录 recall；最终 `SPEAK/ASK` 与 `scene_memory_requested` 原子受理，快通道/fallback 不发请求。
+- [ ] 表达慢通道：`MemoryFacade.search` 返回 direct + association 后，`assemble_context` 先按
+  prompt 预算选择完整条目前缀，再按 id 去重并按 user event 幂等记录 recall；最终全部正常文本、`SPEAK/ASK` 与
+  `scene_memory_requested` 原子受理，快通道/fallback 不发请求。
 - [ ] 事实回归：观察窗口标题不产偏好事实；未知谓词的显式 functional/multi 模式保持；别名
   命中走别名索引；批量知识点只调用一次 `fact_extraction` 且来源 Memory 正确映射，失败仍落库。
 - [ ] 原文沉淀：类别白名单和 fiction/essay/unknown 归因正确；source topic 不超 24 字符；
@@ -972,6 +983,47 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 | 乱序 | payload 自包含；同 consumer FIFO，不依赖 THINK/SPEAK consumer 的完成顺序 |
 | 重放 | `(event_id, "memory.scene_reply")` effect 命中后 no-op |
 | 删除 | 无请求删除 API；短期记忆后续淘汰不删除请求/effect，也不重新消费 |
+
+## MemoryRecallUse 对象完整性
+
+`memory_recall_use` 是“某个用户事件已经把某条记忆计为真实召回”的 durable marker，不新增
+公开 dataclass，也不进入 API。
+
+**入口清单**
+
+| 入口 | 产生条件 | 写入位置 |
+|---|---|---|
+| 表达慢通道 `assemble_context` | 记忆实际进入本轮 prompt | `memory_recall_use`；同事务更新 memory |
+| 快通道 / `search_source` / 事实召回 | 不适用；这些路径不计真实召回 | 不写入 |
+| API / 迁移 / 后台任务 | 迁移只建空表，不造使用记录 | 不适用 |
+
+**消费者清单**
+
+| 消费者 | 发现方式 | 用途 |
+|---|---|---|
+| `MemoryStore.record_recall` | 复合主键插入结果 | 决定是否增加 `recall_count` 与升级 |
+| 调试/迁移 | 直接 SQL；无公开 API | 验证幂等和级联清理 |
+| 其它 Facade / LLM / 前端 | 不适用；不暴露 marker | 不适用 |
+
+**状态迁移表**
+
+| 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
+|---|---|---|---|
+| 不存在 | memory 存在且首次 recall | 已应用 | marker + count + 可选升级/事件原子提交 |
+| 不存在 | memory 已删除/不存在 | 不存在 | no-op，不创建悬空 marker |
+| 已应用 | 同 user event 重放 | 已应用 | no-op，不重复计数或升级事件 |
+| 已应用 | memory 被删除/淘汰 | 不存在 | 外键级联删除 marker |
+
+**Bad case 表**
+
+| 情况 | 处理 |
+|---|---|
+| 空 | 空或未知 memory id 不写 marker、不加计数；user event id 必须是非空调用上下文 |
+| 失败 | marker、计数、升级或事件 append 任一步失败整体回滚 |
+| 部分完成 | 单一数据库事务禁止只有 marker 或只有计数 |
+| 乱序 | 每个 `(user_event_id, memory_id)` 独立；不同事件正常各计一次 |
+| 重放 | 复合主键冲突视为已应用并返回 no-op |
+| 删除 | memory 删除时 `ON DELETE CASCADE` 清理 marker；不反向降低历史 recall_count |
 
 ## 完成定义
 

@@ -1443,19 +1443,39 @@ class MemoryFacade:
             self._logger.exception("近期事实读取失败")
             return []
 
-    async def record_recall(self, memory_id: str) -> None:
-        """记录一次「想起」：recall_count+1；
-        短期满 promote_threshold 次升级长期并发布 memory_promoted。"""
+    async def record_recall(self, memory_id: str, user_event_id: str) -> None:
+        """按用户事件幂等记录一次真实「想起」并处理短期升级。"""
+        if not user_event_id:
+            raise ValueError("user_event_id 不能为空")
         event: Event | None = None
-        async with self._store.db.transaction():
-            promoted = await self._store.record_recall(
-                memory_id, self._config.promote_threshold
-            )
-            if promoted:
-                event = internal_event(
-                    EventType.MEMORY_PROMOTED, {"memory_id": memory_id}, memory_id
+        appended_count = 0
+        try:
+            async with self._store.db.transaction():
+                promoted = await self._store.record_recall(
+                    memory_id, user_event_id, self._config.promote_threshold
                 )
-                await self._bus.append_in_transaction(event)
+                if promoted:
+                    event = internal_event(
+                        EventType.MEMORY_PROMOTED,
+                        {"memory_id": memory_id},
+                        user_event_id,
+                    )
+                    persisted_before = self._bus.persisted_count
+                    try:
+                        await self._bus.append_in_transaction(event)
+                    finally:
+                        appended_count += (
+                            self._bus.persisted_count - persisted_before
+                        )
+        except BaseException as error:
+            if event is not None:
+                try:
+                    committed = await self._bus.is_durable(event.id)
+                except Exception:
+                    raise error
+                if not committed:
+                    self._bus.persisted_count -= appended_count
+            raise
         if event is not None:
             await self._bus.announce_committed(event)
 

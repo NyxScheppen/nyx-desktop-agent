@@ -13,9 +13,15 @@
 
 ## 计数语义
 
-- `record_recall(memory_id)` 表示这条记忆进入慢通道 prompt：`recall_count+1`，短期达到阈值后升级长期并发布 `memory_promoted`。升级和 `memory_promoted` 事件行同事务提交，失败一起回滚。
-- 慢通道 `assemble_context` 会把 `MemoryFacade.search(message)` 返回的全部命中放进 prompt，
-  并按 memory id 去重后调用 `record_recall`；同一回合同 id 只计一次。
+- `record_recall(memory_id, user_event_id)` 表示这条记忆进入慢通道 prompt；
+  `memory_recall_use` 用复合主键保证同一用户事件重放不重复计数。首次使用才令
+  `recall_count+1`，短期达到阈值后升级长期并发布 `memory_promoted`。marker、计数、升级和
+  事件行同事务提交，失败一起回滚；事务内事件追加造成的运行时持久计数按实际增量补偿，
+  不覆盖其它发布的计数；memory 删除时 marker 级联清理。
+- 慢通道 `assemble_context` 用 `select_prompt_memories` 从搜索结果选择可完整放入 prompt
+  预算的排序前缀，渲染共用同一规则；只对入选项按 memory id 去重调用 `record_recall`。
+  单条行最多 2000 字符，含标题和换行的记忆块最多 12000 字符；放不下的尾条整条省略，
+  不计数、不晋升。同一回合同 id 只计一次，同一用户事件重试也不重复计数。
 - 快通道不检索记忆，不调用 `record_recall`，不生成场景化记忆。
 - `strengthen(memory_id, now)` 表示重复写入/语义去重命中旧记忆：只重置
   `freshness=1.0` 和衰减锚点；不增加 `recall_count`、不刷新 `created_at`、不触发升级、

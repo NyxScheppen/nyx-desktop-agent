@@ -266,21 +266,35 @@ async def test_record_recall_atomic() -> None:
     try:
         await store.add(_mem("m1"))
         # 未达阈值：加一 + 不升型，返回 False
-        assert await store.record_recall("m1", promote_threshold=3) is False
-        assert await store.record_recall("m1", promote_threshold=3) is False
+        assert await store.record_recall("m1", "event-1", promote_threshold=3) is False
+        assert await store.record_recall("m1", "event-2", promote_threshold=3) is False
         got = await store.get("m1")
         assert got is not None
         assert got.recall_count == 2 and got.type is MemoryType.SHORT_TERM
         # 达阈值：升长期，返回 True
-        assert await store.record_recall("m1", promote_threshold=3) is True
+        assert await store.record_recall("m1", "event-3", promote_threshold=3) is True
         got = await store.get("m1")
         assert got is not None and got.type is MemoryType.LONG_TERM
         # 已长期：只递增、不再升型，返回 False
-        assert await store.record_recall("m1", promote_threshold=3) is False
+        assert await store.record_recall("m1", "event-4", promote_threshold=3) is False
         got = await store.get("m1")
         assert got is not None and got.recall_count == 4
     finally:
         await db.conn.close()
+
+
+async def test_record_recall_same_user_event_is_idempotent() -> None:
+    database = await connect(":memory:")
+    store = MemoryStore(database)
+    try:
+        await store.add(_mem("m1"))
+        assert await store.record_recall("m1", "same-event", 2) is False
+        assert await store.record_recall("m1", "same-event", 2) is False
+        got = await store.get("m1")
+        assert got is not None
+        assert (got.recall_count, got.type) == (1, MemoryType.SHORT_TERM)
+    finally:
+        await database.close()
 
 
 async def test_search_keywords_returns_field_hits_ordered_and_capped() -> None:

@@ -13,7 +13,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.routing import Match
 
@@ -56,7 +56,14 @@ RootEvent = Callable[[EventType, dict[str, Any]], Event]
 
 
 class _ChatPayload(BaseModel):
-    message: str
+    message: str = Field(..., min_length=1, max_length=12000, strict=True)
+
+    @field_validator("message")
+    @classmethod
+    def reject_blank_message(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("message must contain non-whitespace text")
+        return value
 
 
 class _ExportPayload(BaseModel):

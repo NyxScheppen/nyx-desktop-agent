@@ -1,5 +1,6 @@
 """应用后台运行循环：tick、EventBus 监督与屏幕视觉采样。"""
 import asyncio
+import inspect
 import logging
 import time
 import uuid
@@ -9,7 +10,7 @@ from typing import Any, cast
 from nyx.enums import ActivityStatus, DesireType, EventType, Source, TickType
 from nyx.events.event import internal_event
 from nyx.expression.mutter import should_initiate_chat
-from nyx.types import Event
+from nyx.types import ActivityContext, Event
 
 DEFAULT_REFLECT_MIN_INTERVAL = 21600.0
 DEFAULT_REFLECT_MIN_NEW_MEMORIES = 3
@@ -39,15 +40,58 @@ async def on_user_message(app: Any, event: Event) -> None:
         return
     await app.record_user_online(event.timestamp)
     current = await app.activity.get_current()
-    if current is not None and current.status is ActivityStatus.RUNNING:
-        await app.activity.interrupt(current.id, EventType.USER_MESSAGE)
+    interrupted = (
+        current
+        if current is not None and current.status is ActivityStatus.RUNNING
+        else None
+    )
+    if interrupted is not None:
+        try:
+            await app.activity.interrupt(interrupted.id, EventType.USER_MESSAGE)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "用户消息打断活动失败，表达上下文不得声称已暂停 activity_id=%s",
+                interrupted.id,
+            )
+    after_interrupt = await app.activity.get_current()
+    activity_context = ActivityContext(
+        current=after_interrupt,
+        interrupted=interrupted,
+        observed_at=time.time(),
+    )
     reply_to = event.content.get("reply_to")
-    if isinstance(reply_to, str):
-        await app.expression.reply(
-            event.content["message"], event.correlation_id, reply_to
+    reply_method = app.expression.reply
+    supports_context = False
+    try:
+        signature = inspect.signature(reply_method)
+        supports_context = (
+            "activity_context" in signature.parameters
+            or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
         )
+    except (TypeError, ValueError):
+        supports_context = True
+    if isinstance(reply_to, str):
+        if supports_context:
+            await reply_method(
+                event.content["message"],
+                event.correlation_id,
+                reply_to,
+                activity_context=activity_context,
+            )
+        else:
+            await reply_method(event.content["message"], event.correlation_id, reply_to)
     else:
-        await app.expression.reply(event.content["message"], event.correlation_id)
+        if supports_context:
+            await reply_method(
+                event.content["message"],
+                event.correlation_id,
+                activity_context=activity_context,
+            )
+        else:
+            await reply_method(event.content["message"], event.correlation_id)
 
 
 async def on_schedule_block_start(app: Any, event: Event) -> None:

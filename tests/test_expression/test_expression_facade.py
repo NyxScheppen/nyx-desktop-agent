@@ -25,7 +25,7 @@ from nyx.enums import (
     Source,
 )
 from nyx.eval.evaluator import Evaluator
-from nyx.events.bus import EventBus
+from nyx.events.bus import EventAdmissionError, EventBus
 from nyx.expression.facade import ExpressionFacade
 from nyx.expression.mutter import _MUTTER_SKELETONS, MutterCategory
 from nyx.expression.store import ExpressionInteractionStore
@@ -149,7 +149,7 @@ class _FakeMemory:
         self.scene_memories: list[dict[str, str]] = []
         self.no_answers: list[str] = []
         self.search_results: list[Memory] = []
-        self.recalled: list[str] = []
+        self.recalled: list[tuple[str, str]] = []
         self.recent_memories: list[Memory] = []
         self.user_profile: list[Memory] = []
 
@@ -174,8 +174,8 @@ class _FakeMemory:
         )
         return list(source[:limit]) if limit is not None else list(source)
 
-    async def record_recall(self, memory_id: str) -> None:
-        self.recalled.append(memory_id)
+    async def record_recall(self, memory_id: str, user_event_id: str) -> None:
+        self.recalled.append((memory_id, user_event_id))
 
     async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
         self.scene_memories.append(reply_context)
@@ -395,7 +395,7 @@ def _event(
 # ---- reply ----
 
 
-async def test_return_is_consumed_when_normal_reply_precedes_later_failure() -> None:
+async def test_later_round_failure_discards_buffered_normal_events() -> None:
     class _LaterFailure(_FakeLlm):
         async def complete(
             self, messages: list[LlmMessage], **kwargs: Any
@@ -410,10 +410,10 @@ async def test_return_is_consumed_when_normal_reply_precedes_later_failure() -> 
     )
     await facade.reply("为什么" * 30 + "？", "partial")
 
-    assert any(e.type is EventType.SPEAK for e in bus.published)
-    assert returns.finished == 1
-    assert returns.pending is None
-    assert returns.released == 0
+    assert [e.type for e in bus.published] == [EventType.SPEAK]
+    assert bus.published[0].content["response_kind"] == "fallback"
+    assert returns.finished == 0
+    assert returns.released == 1
 
 
 async def test_last_dialogue_anchor_skips_current_and_incomplete_turns() -> None:
@@ -503,6 +503,9 @@ async def test_reply_fast() -> None:
     assert memory.fact_search_calls == 0
     assert memory.scene_memories == []
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.SPEAK]
+    assert [[e.type for e in batch] for batch in bus.batches] == [
+        [EventType.THINK, EventType.SPEAK]
+    ]
 
 
 async def test_reply_fast_searches_facts_for_fact_query() -> None:
@@ -537,15 +540,14 @@ async def test_reply_cancelled_at_publish_return_does_not_restore_durable_claim(
         energy=20.0, arousal=0.9, return_state=returns
     )
     committed = asyncio.Event()
-    original = bus.publish
+    original = bus.publish_many
 
-    async def publish_then_pause(event: Event) -> None:
-        await original(event)
-        if event.type is EventType.SPEAK:
-            committed.set()
-            await asyncio.Event().wait()
+    async def publish_then_pause(events: list[Event]) -> None:
+        await original(events)
+        committed.set()
+        await asyncio.Event().wait()
 
-    monkeypatch.setattr(bus, "publish", publish_then_pause)
+    monkeypatch.setattr(bus, "publish_many", publish_then_pause)
     task = asyncio.create_task(facade.reply("哦", "commit-cancel"))
     await asyncio.wait_for(committed.wait(), 1.0)
     task.cancel()
@@ -622,9 +624,150 @@ async def test_reply_slow_non_question() -> None:
         "回答1\n回答2\n回答3",
     )
     assert [event.type for event in bus.batches[-1]] == [
+        EventType.THINK,
+        EventType.SPEAK,
+        EventType.THINK,
+        EventType.SPEAK,
+        EventType.THINK,
         EventType.SPEAK,
         EventType.SCENE_MEMORY_REQUESTED,
     ]
+
+
+async def test_reply_slow_publishes_nothing_until_generation_finishes() -> None:
+    class _ObservingLlm(_FakeLlm):
+        bus: _FakeBus | None = None
+
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any
+        ) -> LLMOutput:
+            if kwargs["output_type"] == "reply":
+                assert self.bus is not None and self.bus.published == []
+            return await super().complete(messages, **kwargs)
+
+    llm = _ObservingLlm()
+    facade, _llm, _eval, _memory, _inner, bus = _new_facade(
+        energy=100.0, arousal=0.0, llm=llm
+    )
+    llm.bus = bus
+
+    await facade.reply("在吗", "corr-buffered")
+
+    assert len(bus.batches) == 1
+
+
+async def test_reply_batch_failure_leaves_no_partial_text_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    bus = EventBus(database)
+    facade, *_ = _new_facade(energy=20.0, arousal=0.9)
+    facade._bus = bus
+    original = bus.append_in_transaction
+    calls = 0
+
+    async def fail_second(event: Event) -> tuple[str, ...]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("second event failed")
+        return await original(event)
+
+    monkeypatch.setattr(bus, "append_in_transaction", fail_second)
+    try:
+        with pytest.raises(EventAdmissionError):
+            await facade.reply("哦", "corr-batch-fail")
+        assert await bus.list_events(correlation_id="corr-batch-fail") == []
+    finally:
+        await database.close()
+
+
+async def test_reply_attempt_batch_failure_rolls_back_state_and_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    store = ExpressionInteractionStore(database)
+    await store.create(
+        InteractionAttempt(
+            id="reading-batch-fail",
+            kind=InteractionKind.READING_QUESTION,
+            source_id="book-1:9",
+            correlation_id="book-1:9",
+            text="你怎么看？",
+            created_at=1.0,
+            expires_at=time.time() + 1000.0,
+        )
+    )
+    bus = EventBus(database)
+
+    async def read_context(_source: str, _query: str) -> str:
+        return "context"
+
+    facade, *_ = _new_facade(
+        energy=20.0,
+        arousal=0.9,
+        interaction_store=store,
+        reading_context_reader=read_context,
+    )
+    facade._bus = bus
+    original = bus.append_in_transaction
+    original_is_durable = bus.is_durable
+    calls = 0
+
+    async def fail_second(event: Event) -> tuple[str, ...]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("second event failed")
+        return await original(event)
+
+    async def count_other_publish_then_check(event_id: str) -> bool:
+        bus.persisted_count += 1
+        return await original_is_durable(event_id)
+
+    monkeypatch.setattr(bus, "append_in_transaction", fail_second)
+    monkeypatch.setattr(bus, "is_durable", count_other_publish_then_check)
+    try:
+        with pytest.raises(RuntimeError, match="second event failed"):
+            await facade.reply("嗯", "reply-batch-fail")
+        attempt = await store.get("reading-batch-fail")
+        assert attempt is not None and attempt.status is InteractionStatus.WAITING
+        assert await bus.list_events(correlation_id="reply-batch-fail") == []
+        assert bus.persisted_count == 1
+    finally:
+        await database.close()
+
+
+async def test_question_batch_rollback_preserves_other_persisted_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    store = ExpressionInteractionStore(database)
+    bus = EventBus(database)
+    facade, *_ = _new_facade(interaction_store=store)
+    facade._bus = bus
+    original_append = bus.append_in_transaction
+    original_is_durable = bus.is_durable
+
+    async def append_then_fail(event: Event) -> tuple[str, ...]:
+        await original_append(event)
+        raise RuntimeError("append failed")
+
+    async def count_other_publish_then_check(event_id: str) -> bool:
+        bus.persisted_count += 1
+        return await original_is_durable(event_id)
+
+    monkeypatch.setattr(bus, "append_in_transaction", append_then_fail)
+    monkeypatch.setattr(bus, "is_durable", count_other_publish_then_check)
+    try:
+        with pytest.raises(RuntimeError, match="append failed"):
+            await facade.register_question(
+                "在吗？", InteractionKind.CHAT_ASK, "u", "corr-question-fail"
+            )
+        assert await bus.list_events(correlation_id="corr-question-fail") == []
+        assert bus.persisted_count == 1
+    finally:
+        await database.close()
 
 
 async def test_reply_slow_question() -> None:
@@ -674,6 +817,27 @@ async def test_reply_slow_no_tool_calls() -> None:
     think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
     assert "[工具查询结果]" not in think_system
     assert [t for t, _m, _c in llm.calls][0] == "tool"
+
+
+async def test_reply_slow_tool_decision_failure_continues_without_tools() -> None:
+    class _ToolDecisionFailure(_FakeLlm):
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any
+        ) -> LLMOutput:
+            if kwargs["output_type"] == "tool":
+                self.calls.append(("tool", messages, kwargs["correlation_id"]))
+                raise RuntimeError("tool decision failed")
+            return await super().complete(messages, **kwargs)
+
+    facade, llm, _evaluator, _memory, _inner_life, bus = _new_facade(
+        energy=100.0, arousal=0.0, llm=_ToolDecisionFailure()
+    )
+
+    await facade.reply("在吗", "corr-tool-decision-fail")
+
+    reply_system = next(m[0]["content"] for t, m, _c in llm.calls if t == "reply")
+    assert "本轮没有获得工具查询结果" in reply_system
+    assert all(e.content.get("response_kind") != "fallback" for e in bus.published)
 
 
 async def test_reply_slow_tool_failure_fallback() -> None:
@@ -736,7 +900,9 @@ async def test_reply_slow_records_recall() -> None:
         energy=100.0, arousal=0.0, memory=memory
     )
     await facade.reply("在吗", "corr-recall")
-    assert memory.recalled == ["m1", "m2"]
+    assert memory.recalled == [
+        ("m1", "corr-recall"), ("m2", "corr-recall")
+    ]
 
 
 async def test_reply_slow_records_each_memory_id_once_per_turn() -> None:
@@ -755,7 +921,57 @@ async def test_reply_slow_records_each_memory_id_once_per_turn() -> None:
 
     await facade.reply("在吗", "corr-recall-once")
 
-    assert memory.recalled == ["same"]
+    assert memory.recalled == [("same", "corr-recall-once")]
+
+
+@pytest.mark.parametrize("mixed_lengths", [False, True])
+async def test_reply_slow_counts_only_memories_visible_in_prompt(
+    mixed_lengths: bool,
+) -> None:
+    memory = _FakeMemory()
+    candidates = [
+        Memory(
+            id=f"m{index}",
+            created_at=0.0,
+            content=f"MEMORY_{index:02d}_" + "x" * (
+                20 if mixed_lengths and index % 2 == 0 else 3000
+            ),
+            kind=MemoryKind.EPISODE,
+            summary="",
+            freshness=1.0,
+            type=MemoryType.SHORT_TERM,
+        )
+        for index in range(30)
+    ]
+    memory.search_results = [candidates[0], *candidates]
+    facade, llm, *_ = _new_facade(energy=100.0, arousal=0.0, memory=memory)
+
+    await facade.reply("在吗", "corr-budget")
+
+    systems = [messages[0]["content"] for _, messages, _ in llm.calls]
+    visible = [
+        (m.id, "corr-budget") for index, m in enumerate(candidates)
+        if f"MEMORY_{index:02d}_" in systems[0]
+    ]
+    assert 0 < len(visible) < len(candidates)
+    assert memory.recalled == visible
+    assert all(
+        [f"MEMORY_{index:02d}_" in system for index in range(30)]
+        == [f"MEMORY_{index:02d}_" in systems[0] for index in range(30)]
+        for system in systems
+    )
+
+
+async def test_reply_slow_empty_memory_search_does_not_count_recall() -> None:
+    memory = _FakeMemory()
+    facade, llm, *_ = _new_facade(energy=100.0, arousal=0.0, memory=memory)
+
+    await facade.reply("在吗", "corr-empty-budget")
+
+    assert memory.recalled == []
+    assert all(
+        "[相关记忆]" not in messages[0]["content"] for _, messages, _ in llm.calls
+    )
 
 
 async def test_reply_ask_guidance_slow_only() -> None:
@@ -1347,12 +1563,52 @@ async def test_reading_question_reply_injects_context_on_fast_short_reply() -> N
             interaction_store=store,
             reading_context_reader=read_context,
         )
+        facade._bus = EventBus(database)
         await facade.reply("嗯", "reply-1")
         reply_call = next(call for call in llm.calls if call[0] == "reply")
     finally:
         await database.close()
     assert calls == [("book-1:7", "你觉得她为什么没有离开？\n嗯")]
     assert "[读书上下文]" in _user_content(reply_call[1])
+
+
+async def test_reading_question_same_event_recovers_claimed_context() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = ExpressionInteractionStore(database)
+        await store.create(
+            InteractionAttempt(
+                id="reading-retry",
+                kind=InteractionKind.READING_QUESTION,
+                source_id="book-1:8",
+                correlation_id="book-1:8",
+                text="你怎么看这一段？",
+                created_at=1.0,
+                expires_at=time.time() + 1000.0,
+            )
+        )
+        assert await store.claim_reply("reply-retry") is not None
+        calls: list[str] = []
+
+        async def read_context(source_id: str, query: str) -> str:
+            calls.append(f"{source_id}|{query}")
+            return "[读书上下文]\n原段落：仍然存在。"
+
+        facade, llm, *_ = _new_facade(
+            energy=20.0,
+            arousal=0.9,
+            interaction_store=store,
+            reading_context_reader=read_context,
+        )
+        facade._bus = EventBus(database)
+        await facade.reply("嗯", "reply-retry")
+        attempt = await store.get("reading-retry")
+        reply_call = next(call for call in llm.calls if call[0] == "reply")
+        assert calls == ["book-1:8|你怎么看这一段？\n嗯"]
+        assert "[读书上下文]" in _user_content(reply_call[1])
+        assert attempt is not None and attempt.status is InteractionStatus.ANSWERED
+    finally:
+        await database.close()
 
 
 async def test_initiate_chat_sets_pending_desire() -> None:

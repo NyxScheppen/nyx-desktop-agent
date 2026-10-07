@@ -174,13 +174,25 @@ class MemoryStore:
             if should_commit:
                 await self._db.conn.commit()
 
-    async def record_recall(self, memory_id: str, promote_threshold: int) -> bool:
-        """原子：recall_count+1；短期且达阈值则升长期（单锁，避免跨方法竞态）。
+    async def record_recall(
+        self, memory_id: str, user_event_id: str, promote_threshold: int
+    ) -> bool:
+        """原子记录事件级召回；首次使用才计数并按阈值升级。
 
         返回是否升级（供 facade 发 memory_promoted）。阈值由 facade 传入——
-        策略仍在 facade，store 只提供「加一 + 条件升型」原语。
+        策略仍在 facade，store 只提供「幂等 marker + 加一 + 条件升型」原语。
         """
         async with self._operation() as should_commit:
+            marker = await self._db.conn.execute(
+                "INSERT OR IGNORE INTO memory_recall_use "
+                "(user_event_id, memory_id) "
+                "SELECT ?, id FROM memory WHERE id = ?",
+                (user_event_id, memory_id),
+            )
+            if marker.rowcount != 1:
+                if should_commit:
+                    await self._db.conn.commit()
+                return False
             await self._db.conn.execute(
                 "UPDATE memory SET recall_count = recall_count + 1 WHERE id = ?",
                 (memory_id,),

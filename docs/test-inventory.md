@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：64
-- `pytest --collect-only -q`：1158 tests collected
-- 最近一次全量验证：`1157 passed, 1 skipped`（本轮未采集语句覆盖率）
+- `pytest --collect-only -q`：1184 tests collected
+- 最近一次全量验证：`1183 passed, 1 skipped`（本轮未采集语句覆盖率）
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -27,15 +27,15 @@
 | 类型 | `tests/test_types/` | 2 | 枚举穷尽、后端 EventType 与前端 SSE 监听器同步、实体默认值、LLM prompt TypedDict |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、记忆 freshness 结算锚点保值迁移、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、记忆 freshness 结算锚点保值迁移、recall 使用标记复合主键/级联删除、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、批量事件原子受理、投递状态、重试、FIFO、SSE |
-| API/运行时 | `tests/test_api/` | 5 | 组合根、REST、旧上传端点 404、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval prompt 详情、订阅、tick、活动优先关停、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
+| API/运行时 | `tests/test_api/` | 5 | 组合根、REST、聊天非空/12000 字符边界、旧上传端点 404、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval prompt 详情、订阅、用户消息活动快照/打断失败证据、tick、活动优先关停、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取 |
-| 记忆 | `tests/test_memory/` | 7 | kind/单一受控来源 topic、精确与语义去重、同内容有来源/无来源隔离、去重强化不增加真实召回、真实召回升级、freshness 增量结算/回拨、episode 保守去重、原文画像/类别归因、来源过滤先于排序、embedding 延迟单次加载、ANN、融合召回、联想图、场景/活动 durable 重试与重放幂等、核心事务回滚、通用实体事实抽取/类型与别名索引/说话者归因/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级 |
+| 记忆 | `tests/test_memory/` | 7 | kind/单一受控来源 topic、精确与语义去重、同内容有来源/无来源隔离、去重强化不增加真实召回、真实召回按 user event 幂等并升级、升级事务回滚按增量补偿事件计数、freshness 增量结算/回拨、episode 保守去重、原文画像/类别归因、来源过滤先于排序、embedding 延迟单次加载、ANN、融合召回、联想图、场景/活动 durable 重试与重放幂等、核心事务回滚、通用实体事实抽取/类型与别名索引/说话者归因/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级 |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、行动优先级、strength 缩放加压、系统构造 goal、父长期欲望选择/持久化/反馈、容量裁剪、满足与 durable attempt 重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、旧记忆归纳式反思、触发 evidence 注入、消费条件复核、慢变量 CAS、非有限数/候选类型边界、长期欲望数值/文字强度 prompt、事务回滚 |
 | 活动 | `tests/test_activity/` | 11 | 本地自然日时间线、跨日暂停隔离、结果过滤/分页、行动优先级排期、父 ID 活动传递、活动/欲望/任务/事件原子生命周期与故障回滚、`IDLE_REFLECTION` durable 请求原子追加、收尾失败同进程恢复与下一次准入重试、有界取消、任务提交后调度失败仍成功、委派任务 FIFO/低精力/打断/关闭/崩溃恢复、网页任务 6000 字符 checkpoint、EPUB-only 模糊选材及部分进度不结算、无匹配搜索、探索只追加父长期欲望子主题、观察、本地探索读取真实文件、创作结果严格校验、主题/旧作参考与唯一文件名 |
-| 表达 | `tests/test_expression/` | 6 | prompt、快慢通道、最终回复与场景请求批量受理、同轮记忆 id 去重召回、回复、搭话、碎碎念、durable interaction attempt、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
+| 表达 | `tests/test_expression/` | 6 | prompt 动态资料预算、活动事实/历史归属与终态措辞、快慢通道正常文本终局原子批次及回滚增量计数补偿、场景请求、同轮记忆 id 去重召回、工具判断失败降级、回复、搭话、碎碎念、durable interaction attempt owner/重放、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/嵌套块语义/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、重读反思证据、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据 |
 | 发布工具 | `tests/test_release_tools.py` | 1 | 六处版本一致性、tag 校验、冻结制品布局、REST/SSE smoke、stdin EOF 回收、占位 key、workflow 权限/依赖/Action SHA 与锁文件 |
@@ -99,6 +99,7 @@
 - `test_integrate_revisit_publishes_reflection_event`
 - `test_integrate_keeps_buffer_when_reflection_admission_fails`
 - `test_record_recall_rolls_back_when_promoted_event_append_fails`
+- `test_record_recall_same_user_event_is_idempotent`
 - `test_scene_memory_rolls_back_when_created_event_append_fails`
 - `test_remember_scene_replay_is_idempotent`
 - `test_remember_scene_failure_keeps_effect_unapplied`
@@ -125,6 +126,20 @@
 - `test_find_by_content_keeps_sourced_and_unsourced_knowledge_separate`
 - `test_repeated_writes_do_not_promote_but_real_recalls_do`
 - `test_reply_slow_records_each_memory_id_once_per_turn`
+- `test_reply_slow_publishes_nothing_until_generation_finishes`
+- `test_reply_batch_failure_leaves_no_partial_text_events`
+- `test_reply_attempt_batch_failure_rolls_back_state_and_count`
+- `test_claim_owner_recovery_and_release_are_owner_scoped`
+- `test_reading_question_same_event_recovers_claimed_context`
+- `test_reply_slow_tool_decision_failure_continues_without_tools`
+- `test_dynamic_prompt_blocks_are_bounded`
+- `test_memory_budget_keeps_only_complete_entries`（恰好边界 / 超一字符不展示尾条）
+- `test_reply_slow_counts_only_memories_visible_in_prompt`（长条 / 长短混合 / 重复 id）
+- `test_reply_slow_empty_memory_search_does_not_count_recall`
+- `test_build_system_prompt_renders_observed_activity_only`
+- `test_activity_context_does_not_infer_pause_or_missing_progress`
+- `test_history_activity_fact_is_secondary_to_current_context`
+- `test_chat_rejects_blank_or_oversized_message`
 - `test_settle_freshness_is_incremental_and_same_time_idempotent`
 - `test_settle_freshness_ignores_clock_rollback`
 - `test_strengthen_restarts_freshness_clock`
@@ -264,6 +279,7 @@
 - `test_observe_admission_failure_preserves_presence_snapshot`
 - `test_release_old_return_claim_does_not_overwrite_new_return`
 - `test_user_message_marks_away_user_returned_before_reply`
+- `test_user_message_preserves_activity_evidence_when_interrupt_fails`
 - `test_first_user_message_only_establishes_presence_baseline`
 - `test_sse_frame_uses_backend_event_timestamp`
 - `app.test.tsx`：无 SSE/用户操作跨 06:00/22:00，根主题、顶栏时钟和 Avatar 同步

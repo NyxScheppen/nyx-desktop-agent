@@ -1154,7 +1154,7 @@ async def test_record_recall_below_threshold() -> None:
     events = _subscribe(bus)
     try:
         async with _running(bus):
-            await facade.record_recall("m1")
+            await facade.record_recall("m1", "event-1")
         memory = await store.get("m1")
         assert memory is not None
         assert memory.recall_count == 1
@@ -1175,7 +1175,7 @@ async def test_record_recall_promotes() -> None:
     events = _subscribe(bus)
     try:
         async with _running(bus):
-            await facade.record_recall("m1")
+            await facade.record_recall("m1", "event-1")
         memory = await store.get("m1")
         assert memory is not None
         assert memory.type is MemoryType.LONG_TERM
@@ -1197,19 +1197,33 @@ async def test_record_recall_rolls_back_when_promoted_event_append_fails(
     facade = _make_facade(
         store, bus, llm, evaluator, config=MemoryConfig(promote_threshold=1)
     )
+    original_append = bus.append_in_transaction
+    original_is_durable = bus.is_durable
 
-    async def fail_append(_: Event) -> tuple[str, ...]:
+    async def fail_append(event: Event) -> tuple[str, ...]:
+        await original_append(event)
         raise RuntimeError("append failed")
+
+    async def count_other_publish_then_check(event_id: str) -> bool:
+        bus.persisted_count += 1
+        return await original_is_durable(event_id)
 
     try:
         monkeypatch.setattr(bus, "append_in_transaction", fail_append)
+        monkeypatch.setattr(bus, "is_durable", count_other_publish_then_check)
         with pytest.raises(RuntimeError, match="append failed"):
-            await facade.record_recall("m1")
+            await facade.record_recall("m1", "event-1")
 
         memory = await store.get("m1")
         assert memory is not None
         assert memory.type is MemoryType.SHORT_TERM
         assert memory.recall_count == 0
+        marker = await database.conn.execute_fetchall(
+            "SELECT * FROM memory_recall_use WHERE user_event_id = ?",
+            ("event-1",),
+        )
+        assert marker == []
+        assert bus.persisted_count == 1
     finally:
         await database.conn.close()
 
@@ -1228,7 +1242,7 @@ async def test_record_recall_long_term_no_repromote() -> None:
     events = _subscribe(bus)
     try:
         async with _running(bus):
-            await facade.record_recall("m1")
+            await facade.record_recall("m1", "event-1")
         memory = await store.get("m1")
         assert memory is not None
         assert memory.type is MemoryType.LONG_TERM
@@ -1249,7 +1263,10 @@ async def test_record_recall_concurrent_single_promote() -> None:
     events = _subscribe(bus)
     try:
         async with _running(bus):
-            await asyncio.gather(facade.record_recall("m1"), facade.record_recall("m1"))
+            await asyncio.gather(
+                facade.record_recall("m1", "event-1"),
+                facade.record_recall("m1", "event-2"),
+            )
         memory = await store.get("m1")
         assert memory is not None
         assert memory.recall_count == 2  # 两次加一不丢计数
@@ -1464,8 +1481,8 @@ async def test_repeated_writes_do_not_promote_but_real_recalls_do() -> None:
             MemoryType.SHORT_TERM,
         )
 
-        for _ in range(3):
-            await facade.record_recall(memory.id)
+        for index in range(3):
+            await facade.record_recall(memory.id, f"event-{index}")
         after_recalls = await store.get(memory.id)
         assert after_recalls is not None
         assert (after_recalls.recall_count, after_recalls.type) == (

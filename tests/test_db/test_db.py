@@ -8,7 +8,7 @@ import pytest
 
 from nyx import db
 
-# 28 张业务表（不含 schema_version）
+# 29 张业务表（不含 schema_version）
 BUSINESS_TABLES = {
     "personality",
     "value_system",
@@ -17,6 +17,7 @@ BUSINESS_TABLES = {
     "aesthetic",
     "memory",
     "memory_edge",
+    "memory_recall_use",
     "short_term_desire",
     "desire_value",
     "long_term_desire",
@@ -110,7 +111,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 30
+    assert len(names) == 31
     assert "material" not in names
 
 
@@ -157,6 +158,29 @@ async def test_migrate_adds_memory_freshness_settlement_anchor() -> None:
     finally:
         await conn.close()
     assert columns["freshness_updated_at"]["notnull"] == 1
+
+
+async def test_memory_recall_use_schema_and_cascade() -> None:
+    conn = await _migrated_conn()
+    try:
+        columns = await (
+            await conn.execute("PRAGMA table_info(memory_recall_use)")
+        ).fetchall()
+        foreign_keys = await (
+            await conn.execute("PRAGMA foreign_key_list(memory_recall_use)")
+        ).fetchall()
+    finally:
+        await conn.close()
+    assert {row["name"]: row["pk"] for row in columns} == {
+        "user_event_id": 1,
+        "memory_id": 2,
+    }
+    assert any(
+        row["table"] == "memory"
+        and row["from"] == "memory_id"
+        and row["on_delete"] == "CASCADE"
+        for row in foreign_keys
+    )
 
 
 async def test_freshness_anchor_migration_preserves_existing_freshness(
@@ -545,6 +569,38 @@ async def test_migrate_sets_version_to_max() -> None:
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 
+async def test_migrate_35_releases_claimed_attempt_without_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = db._MIGRATIONS
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        monkeypatch.setattr(db, "_MIGRATIONS", [m for m in full if m[0] <= 34])
+        await db.migrate(conn)
+        await conn.execute(
+            "INSERT INTO expression_interaction_attempt "
+            "(id, kind, source_id, correlation_id, text, created_at, expires_at, "
+            "status, answered_at, answer_event_id, failure_reason) VALUES "
+            "('legacy-claim', 'chat_ask', 'u', 'c', '在吗', 1, 2, "
+            "'claimed', NULL, NULL, NULL)"
+        )
+        await conn.commit()
+        monkeypatch.setattr(db, "_MIGRATIONS", full)
+        await db.migrate(conn)
+        row = await (
+            await conn.execute(
+                "SELECT status, answer_event_id FROM expression_interaction_attempt "
+                "WHERE id = 'legacy-claim'"
+            )
+        ).fetchone()
+    finally:
+        await conn.close()
+    assert row is not None and row["status"] == "waiting"
+    assert row["answer_event_id"] is None
+
+
 async def test_material_retirement_handles_missing_source_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -617,7 +673,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 30
+    assert len(names) == 31
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

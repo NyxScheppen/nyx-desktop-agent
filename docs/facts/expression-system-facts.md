@@ -30,31 +30,40 @@
   - 执行读书碎碎念、读书提问和记忆联想；提问复用 `ExpressionFacade.register_question()`，
     提问/联想复用 `record_proactive_turn()` 进入表达历史。
 - `nyx/runtime.py`
-  - 是用户消息、tick、主动搭话、反思和总线监督的实际运行入口。
+  - 是用户消息、tick、主动搭话、反思和总线监督的实际运行入口；用户消息会在回复前
+    采样并尝试打断当前活动，把打断前/后的 `ActivityContext` 传给表达层。
 - `nyx/app_context.py`
   - 读取 `nyx/prompts/canon.md`、`nyx/prompts/ask.md` 和 `nyx/prompts/knowledge-boundary.md`，
     按依赖顺序装配表达与阅读门面。
 
 ## 普通回复
 
-- `ExpressionFacade.reply(msg, correlation_id, reply_to=None)` 先尝试原子关联一个等待中的
-  interaction attempt，再取得 `InnerLifeFacade.get_state()` 并调用回复图。
+- `ExpressionFacade.reply(msg, correlation_id, reply_to=None, activity_context=None)` 先尝试
+  原子关联一个等待中的 interaction attempt，再取得 `InnerLifeFacade.get_state()` 并调用
+  回复图；未注入上下文时才从活动门面读取当前快照。
 - 当前用户消息不在内存 history 中；它只在 `build_user_prompt()` 的 `[本次消息]` 段出现。
 - history 是 `deque[Message]`，容量为 `ExpressionConfig.max_context_len`。回合结束时先追加
   user，再追加 Nyx 将多轮 speak 用换行拼接后的内容。
+- `build_system_prompt()` 的 `[本轮活动事实]` 只读取本轮 `ActivityContext` 已采样的类型、状态
+  和白名单进度字段。打断前活动和打断后当前活动分别展示；仍为 `RUNNING` 或二次采样为空时
+  不声称已暂停、完成或失败。
+- user/Nyx history 条目可带活动 ID、类型和有界摘要；`build_user_prompt()` 将其作为
+  “历史活动事实”附在对应消息后，旧条目没有元数据时不增加内容。
 - 快通道只执行一次 `respond`：
   - 不调用记忆检索、场景记忆或工具；
-  - 仍发布 think（非空）和 speak；
+  - think（非空）和 speak/ask 先缓存，生成完成后作为一个终局批次提交；
   - speak 是问句时仍注册 `CHAT_ASK` 并发布 canonical `ASK`。
 - 慢通道执行：
   - `build_backtrack_context()` 重新截断历史；
-  - `MemoryFacade.search(message)` 返回的命中全部放入 prompt，并立即逐条
-    按 memory id 去重后 `record_recall(memory.id)`；
+  - `MemoryFacade.search(message)` 返回值经 `select_prompt_memories` 选择预算内可完整展示
+    的排序前缀；渲染复用相同规则，放不下的尾条整条省略，仅入选项按 memory id 去重后以
+    user event id 调用 `record_recall(memory.id, user_event_id)`，重放不重复计数；
   - 取得自我叙事；
   - 先有一轮工具判断，工具结果截断后进入回复 prompt；
   - `respond` 最多继续到 `slow_max_rounds`，问句会提前结束；
-  - 最终 `SPEAK/ASK` 与自包含的 `scene_memory_requested` 在同一本地事务受理，随后记录
-    history；场景 LLM 由 `memory.scene_reply` durable consumer 异步完成。
+  - 所有轮次的正常 THINK/SPEAK、最终 `SPEAK/ASK` 与自包含的
+    `scene_memory_requested` 在同一本地事务受理，随后记录 history；生成中途没有正常文本
+    对外可见，场景 LLM 由 `memory.scene_reply` durable consumer 异步完成。
 - 每轮 `respond` 一次 LLM 调用同时生成 JSON 的 `think` 和 `speak`，解析后分别评估并分别
   发布文本事件；两条评估记录共享 call_id、token 和最终 prompt。后续轮次使用累积的前轮
   think/speak，任务改为续写。
@@ -81,11 +90,14 @@
   只是倾向而非硬规则。
 - `nyx/prompts/knowledge-boundary.md` 是启动时读取的静态指导，约束熟悉领域、推理复杂度、
   不确定性表达、澄清和工具失败行为。
+- 用户消息最多 12000 字符且不能只含空白；动态资料单项最多 2000 字符，历史、记忆、事实、
+  阅读和工具块各有固定总预算，工具最多 5 项/8000 字符。工具判断 LLM/evaluator 失败时以
+  明确的“未获得工具结果”事实降级继续回复。
 - `classify_user_intent()` 不调 LLM、不访问 DB，只返回 `UserIntent`；结果仅作为 think
   prompt 参考，不改变通道路由或直接触发副作用。
 - `is_question()` 是普通回复和读书提问共用的唯一问句判断实现。
-- 慢通道回溯从新到旧检查长度、时间间隔和字符重叠；`Message.fast=True` 的 Nyx 快通道消息
-  会被跳过，但会继续向更早 history 回溯。
+- 慢通道回溯从新到旧只检查数量和相邻时间间隔；不再用字符交集猜语义相关性。
+  `Message.fast=True` 的 Nyx 快通道消息会被跳过，但会继续向更早 history 回溯。
 
 ## 时间与归来
 
@@ -111,16 +123,19 @@
 - 表为 `expression_interaction_attempt`，包含 `id`、kind/source/correlation、文本、创建/过期
   时间、状态、回答事件和失败原因，并有超时、创建时间、correlation 索引。
 - 普通提问和读书提问通过 `register_question()` 产生 attempt + `ASK`。
-- 用户回复读书提问时，`answer_waiting()` 返回完成的 `READING_QUESTION` attempt；`reply()`
+- 用户回复读书提问时，`answer_waiting()` 返回当前事件领取或恢复的 `READING_QUESTION`
+  attempt；`reply()`
   通过组合根注入的阅读回调，按 `source_id` 回读触发段落和书籍画像，并用“原问题 + 用户
   回复”检索该书来源内 Top 5；knowledge 层注入事实 `content`，不用主题型 `summary`
   替代。所得三层只读材料会同时进入 FAST/SLOW，因此“嗯”等短回复也不会脱离刚才读到
   的内容。
 - `runtime.on_user_message()` 先检查同 correlation 的 `SPEAK`/`ASK` 终局事件，再按
   `reply_to` 或最新 WAITING attempt 原子关联至多一条等待项。
-- durable store 存在时，用户回复和超时都使用 `WAITING -> CLAIMED` 条件更新，再完成为
-  `ANSWERED` 或 `EXPIRED`。主动搭话回复先满足互动欲，再写 `ANSWERED`；任一步失败会释放
-  claim 并保留 delivery 重试机会。
+- durable store 存在时，用户回复领取把 `answer_event_id` 写为 owner；同 owner 重放可恢复
+  CLAIMED/ANSWERED，其他事件不能抢占。被回答 attempt 与回复终局事件同事务完成为
+  ANSWERED；终局前失败按 owner 释放并清空 id。超时仍使用无 owner 的条件领取。
+- schema 35 升级会把历史上无 `answer_event_id` 的 CLAIMED 恢复为 WAITING；带 owner 的新领取
+  保持原状，由同 owner 重放恢复。
 - durable store 未注入时，兼容路径仍使用 `_waiting_user`、`_pending_chat_desire_id` 等
   进程内状态；这条路径重启后不具备 durable 恢复能力。
 

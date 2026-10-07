@@ -168,6 +168,19 @@ class Activity:
 
 
 @dataclass
+class ActivityContext:
+    """活动事实快照，供一次表达回合使用。
+
+    ``interrupted`` 是用户消息处理前捕获的活动；``current`` 是打断处理后
+    重新采样的当前活动。两者都只作为证据，不代表 LLM 可以推断未记录的进度。
+    """
+
+    current: Activity | None
+    interrupted: Activity | None
+    observed_at: float
+
+
+@dataclass
 class AssignedTask:
     id: str
     type: AssignedTaskType
@@ -325,6 +338,10 @@ class Message:
     timestamp: float
     # True = 快通道 Nyx 回复（回溯截断时跳过）；用户消息恒 False
     fast: bool = False
+    # 生成该历史条目时的活动归属；None 表示旧数据或非活动回合。
+    activity_id: str | None = None
+    activity_type: ActivityType | None = None
+    activity_summary: str | None = None
 
 
 @dataclass

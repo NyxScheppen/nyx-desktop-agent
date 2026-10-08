@@ -608,23 +608,27 @@ describe("api/client eval", () => {
     completion_tokens: 2,
   };
 
-  it("getEvalRecent：GET /api/eval/recent?limit=5、解析 EvalRecord[]", async () => {
+  it("getEvalRecent：GET /api/eval/recent 分页参数、解析 EvalRecord[]", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse([record]));
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await getEvalRecent();
 
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/eval/recent?limit=5");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/eval/recent?limit=5&offset=0",
+    );
     expect(res).toEqual([record]);
   });
 
-  it("getEvalRecent：显式 limit 拼进 query", async () => {
+  it("getEvalRecent：显式 limit 和 offset 拼进 query", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
     vi.stubGlobal("fetch", fetchMock);
 
-    await getEvalRecent(3);
+    await getEvalRecent(3, 20);
 
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/eval/recent?limit=3");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/eval/recent?limit=3&offset=20",
+    );
   });
 
   it("getEvalTotalTokens：GET /api/eval/total_tokens、解析 EvalStats", async () => {

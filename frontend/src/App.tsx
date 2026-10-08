@@ -9,6 +9,7 @@ import SettingsView from "./components/layout/SettingsView";
 import ActivityPanel from "./components/panels/ActivityPanel";
 import CreationPanel from "./components/panels/CreationPanel";
 import DesiresPanel from "./components/panels/DesiresPanel";
+import EvalPanel from "./components/panels/EvalPanel";
 import MemoryPanel from "./components/panels/MemoryPanel";
 import BookshelfView from "./components/reading/BookshelfView";
 import ReaderView from "./components/reading/ReaderView";
@@ -41,7 +42,7 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
 };
 
 // 装配：顶栏（标题+连接状态）+ 左栏常驻对话 + 中间内容区 + 底部导航
-// （RightDock 切换中间视图：内在状态 / 欲望 / 活动 / 创作 / 记忆 / 读书）+ 设置弹层。
+// （RightDock 切换中间视图：内在状态 / 欲望 / 活动 / 创作 / 记忆 / 读书 / 评估）+ 设置弹层。
 // useSSE 只挂一次；可拖拽头像圆圈（Avatar）常驻窗口右下，碎碎念气泡随它头顶冒出。
 export default function App() {
   const status = useSSE(dispatchEvent);
@@ -161,6 +162,7 @@ export default function App() {
                   {view === "activity" && <ActivityPanel />}
                   {view === "creation" && <CreationPanel />}
                   {view === "memory" && <MemoryPanel />}
+                  {view === "eval" && <EvalPanel />}
                   {view === "reading" && (bookId === null ? <BookshelfView /> : <ReaderView />)}
                 </div>
               </section>

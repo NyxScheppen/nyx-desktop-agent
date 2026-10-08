@@ -51,6 +51,7 @@ from nyx.types import (
 )
 
 _MAX_ACTIVITY_RESULTS_OFFSET = 100_000
+_MAX_EVAL_OFFSET = 100_000
 
 RootEvent = Callable[[EventType, dict[str, Any]], Event]
 
@@ -280,8 +281,9 @@ def build_app(
     @fast.get("/api/eval/recent")
     async def api_eval_recent(
         limit: int = Query(5, ge=1, le=100),
+        offset: int = Query(0, ge=0, le=_MAX_EVAL_OFFSET),
     ) -> list[EvalRecord]:
-        return await app.eval_store.list_recent(limit)
+        return await app.eval_store.list_recent(limit, offset)
 
     @fast.get("/api/eval/total_tokens")
     async def api_eval_total_tokens() -> EvalStats:

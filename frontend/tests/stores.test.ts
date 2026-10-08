@@ -775,7 +775,7 @@ describe("evalStore", () => {
     });
   });
 
-  it("refresh：并行 getEvalRecent + getEvalTotalTokens → records/stats 落 store", async () => {
+  it("refresh：分页加载所有记录并读取总 token", async () => {
     const records = [
       {
         id: "e1", created_at: 1, call_id: "c1", module: "expression",
@@ -798,7 +798,9 @@ describe("evalStore", () => {
     await useEvalStore.getState().refresh();
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/eval/recent?limit=5");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/eval/recent?limit=20&offset=0",
+    );
     expect(fetchMock.mock.calls[1][0]).toBe("/api/eval/total_tokens");
     expect(useEvalStore.getState().records).toEqual(records);
     expect(useEvalStore.getState().stats).toEqual(stats);
@@ -813,6 +815,35 @@ describe("evalStore", () => {
     expect(useEvalStore.getState().error).toBe("fetch failed");
     expect(useEvalStore.getState().records).toBeNull();
     expect(useEvalStore.getState().stats).toBeNull();
+  });
+
+  it("refresh：满页继续请求下一页，直到不足一页", async () => {
+    const record = {
+      id: "e1", created_at: 1, call_id: "c1", module: "expression",
+      output_type: "speak", model: "m", correlation_id: "k",
+      ooc_keyword: 1, ooc_embed: null, prompt_tokens: 5, completion_tokens: 2,
+    } as const;
+    const firstPage = Array.from({ length: 20 }, (_, index) => ({
+      ...record,
+      id: `e${index}`,
+    }));
+    const lastPage = [{ ...record, id: "last" }];
+    const stats = { total_tokens: 10, prompt_tokens: 7, completion_tokens: 3 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(firstPage))
+      .mockResolvedValueOnce(jsonResponse(lastPage))
+      .mockResolvedValueOnce(jsonResponse(stats));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useEvalStore.getState().refresh();
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/eval/recent?limit=20&offset=0",
+      "/api/eval/recent?limit=20&offset=20",
+      "/api/eval/total_tokens",
+    ]);
+    expect(useEvalStore.getState().records).toHaveLength(20 + 1);
   });
 
   it("loadPrompt：按记录加载并缓存成功结果", async () => {

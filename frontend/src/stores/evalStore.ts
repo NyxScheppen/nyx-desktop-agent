@@ -2,8 +2,10 @@ import { create } from "zustand";
 import { getEvalPrompt, getEvalRecent, getEvalTotalTokens } from "../api/client";
 import type { EvalRecord, EvalStats, LlmPromptMessage } from "../types/api";
 
-// eval 记账面板（10-eval）：最近 5 条 LLM 调用 + 总 token。
-// 设置弹层打开时 mount 触发 refresh，拉 REST 快照；无 SSE 事件驱动（低频面板）。
+const EVAL_PAGE_SIZE = 20;
+
+// eval 记账页面：所有历史 LLM 调用分页加载 + 总 token。
+// 页面 mount 触发 refresh，拉 REST 快照；无 SSE 事件驱动（低频面板）。
 type EvalStoreState = {
   records: EvalRecord[] | null;
   stats: EvalStats | null;
@@ -33,10 +35,16 @@ export const useEvalStore = create<EvalStoreState>((set, get) => {
       promptErrors: {},
     });
     try {
-      const [records, stats] = await Promise.all([
-        getEvalRecent(5),
-        getEvalTotalTokens(),
-      ]);
+      const records: EvalRecord[] = [];
+      let offset = 0;
+      while (true) {
+        const page = await getEvalRecent(EVAL_PAGE_SIZE, offset);
+        if (request !== requestGeneration) return;
+        records.push(...page);
+        if (page.length < EVAL_PAGE_SIZE) break;
+        offset += EVAL_PAGE_SIZE;
+      }
+      const stats = await getEvalTotalTokens();
       if (request !== requestGeneration) return;
       set({
         records,

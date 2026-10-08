@@ -268,7 +268,7 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 
 ## 7. `evalStore`
 
-- `refresh()` 并行读取最近 5 条评估记录和累计 token；每次刷新清空 prompt 详情缓存。
+- `refresh()` 按 20 条一页递增 offset 读取全部历史评估记录，再读取累计 token；每次刷新清空 prompt 详情缓存。请求世代保护会丢弃旧刷新响应。
 - `loadPrompt(recordId)` 只在用户展开记录时请求；成功结果（含 `null` 和空数组）按 record id 缓存，重复展开不重取。
 - loading/error 均按 record id 隔离；失败不写成功缓存，下一次展开或“重试”可重新请求。请求返回时若该记录已不在当前 recent 列表，丢弃晚到结果。
 - `EvalPanel` 用原生 `<details>/<summary>` 展开，按 role 显示转义后的 `<pre>` 文本；长 prompt 在固定最大高度内滚动，不截断内容。
@@ -283,5 +283,5 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 - **`settingsStore`**：`setTint`/`setImage` 独立落 store 可并存；`reset()` 回 null。
 - **`announceStore`**：`announce` 追加临时气泡（kind/text 落 store、id 唯一）；`dismiss` 摘除指定 id 其余保留；`advanceTimersByTime(ANNOUNCE_DURATION[kind])` 到时自动 dismiss。
 - **`readerStore`（06 + 07）**：`loadBooks` 落 books；`openBook` mock getProgress+getBookParagraphs → 会话态 + totalParagraphs、nyx<user 时 startCatchup；`syncPosition` 前翻 putProgress+evaluateImpulse、回翻不评估，冲突重试保留服务端更靠前的 Nyx 位置，显式重读允许回退；`applyProgressEvent` 覆盖完整服务端快照但过滤异书、旧/重复 revision 和 Nyx 回退；`paginate` 真分页纯函数（贪心封页/空/溢出/GAP_PX）；追赶循环 fake timers 推进/收尾/clearTimeout 不叠加；`loadNotes`/`addNote`（unshift 归一）/`updateNote`（保留 annotations）/`deleteNote`/`showToNyx`（append 不重拉、null 不 append）。
-- **`evalStore`**：refresh 清详情；展开后逐 id 加载、成功缓存、失败可重试、旧记录 `null` 与真实空数组区分；面板安全渲染 Unicode/换行/HTML 字面文本。
+- **`evalStore`**：refresh 分页读取全部记录并清详情；展开后逐 id 加载、成功缓存、失败可重试、旧记录 `null` 与真实空数组区分；面板安全渲染 Unicode/换行/HTML 字面文本。
 - 全部 mock fetch/无真实后端；验证管道正确（事件走对 store、字段零映射），不验证视觉。

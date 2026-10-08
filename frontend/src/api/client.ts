@@ -286,8 +286,10 @@ export async function deleteBookmark(id: string): Promise<void> {
 
 // ---- eval 记账（10-eval，06-settings-panel §7）----
 
-export async function getEvalRecent(limit = 5): Promise<EvalRecord[]> {
-  return request<EvalRecord[]>(`${BASE_URL}/api/eval/recent?limit=${limit}`);
+export async function getEvalRecent(limit = 5, offset = 0): Promise<EvalRecord[]> {
+  return request<EvalRecord[]>(
+    `${BASE_URL}/api/eval/recent?limit=${limit}&offset=${offset}`,
+  );
 }
 
 export async function getEvalTotalTokens(): Promise<EvalStats> {

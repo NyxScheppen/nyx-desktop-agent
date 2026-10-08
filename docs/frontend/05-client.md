@@ -19,7 +19,7 @@ async function getRecentFacts(limit = 64): Promise<MemoryFact[]>                
 async function getActivity(): Promise<ActivitySnapshot>                          // GET /api/activity
 async function getActivityResults(params?): Promise<Activity[]>                  // GET /api/activity/results?limit=&offset=&activity_type=creation
 async function getEventsLog(params?): Promise<BackendEvent[]>                    // GET /api/events/log?limit=&event_type=&correlation_id=
-async function getEvalRecent(limit = 5): Promise<EvalRecord[]>                   // GET /api/eval/recent?limit=
+async function getEvalRecent(limit = 5, offset = 0): Promise<EvalRecord[]>      // GET /api/eval/recent?limit=&offset=
 async function getEvalTotalTokens(): Promise<EvalStats>                          // GET /api/eval/total_tokens
 async function getEvalPrompt(recordId: string): Promise<LlmPromptMessage[] | null> // GET /api/eval/{recordId}/prompt，cache:no-store
 

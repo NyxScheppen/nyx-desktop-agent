@@ -41,6 +41,18 @@ async def test_insert_and_list_recent_order() -> None:
         await database.conn.close()
 
 
+async def test_list_recent_supports_offset() -> None:
+    database = await db.connect(":memory:")
+    store = EvalStore(database)
+    try:
+        await store.insert(_rec("a", "call-1", created_at=100.0))
+        await store.insert(_rec("b", "call-2", created_at=200.0))
+        rows = await store.list_recent(1, 1)
+        assert [r.id for r in rows] == ["a"]
+    finally:
+        await database.conn.close()
+
+
 async def test_prompt_round_trip_is_shared_by_call_id() -> None:
     database = await db.connect(":memory:")
     store = EvalStore(database)

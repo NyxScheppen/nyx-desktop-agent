@@ -242,7 +242,7 @@ def _client(app: _App) -> AsyncClient:
 
 class _FakeEvalStore:
     def __init__(self) -> None:
-        self.recent_calls: list[int] = []
+        self.recent_calls: list[tuple[int, int]] = []
         self.records: list[EvalRecord] = []
         self.stats = EvalStats(
             total_tokens=42, prompt_tokens=30, completion_tokens=12,
@@ -250,8 +250,8 @@ class _FakeEvalStore:
         self.prompts: dict[str, tuple[bool, list[dict[str, str]] | None]] = {}
         self.prompt_error: ValueError | None = None
 
-    async def list_recent(self, limit: int = 5) -> list[EvalRecord]:
-        self.recent_calls.append(limit)
+    async def list_recent(self, limit: int = 5, offset: int = 0) -> list[EvalRecord]:
+        self.recent_calls.append((limit, offset))
         return self.records
 
     async def total_tokens(self) -> EvalStats:
@@ -923,7 +923,7 @@ async def test_eval_recent_endpoint() -> None:
     async with _client(app) as client:
         resp = await client.get("/api/eval/recent", params={"limit": 3})
     assert resp.status_code == 200
-    assert store.recent_calls == [3]
+    assert store.recent_calls == [(3, 0)]
     assert resp.json()[0]["call_id"] == "c1"
 
 
@@ -934,6 +934,29 @@ async def test_eval_recent_rejects_out_of_range_limit(limit: int) -> None:
     app.eval_store = cast(EvalStore, store)
     async with _client(app) as client:
         resp = await client.get("/api/eval/recent", params={"limit": limit})
+    assert resp.status_code == 422
+    assert store.recent_calls == []
+
+
+async def test_eval_recent_accepts_offset() -> None:
+    store = _FakeEvalStore()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.eval_store = cast(EvalStore, store)
+    async with _client(app) as client:
+        resp = await client.get(
+            "/api/eval/recent", params={"limit": 20, "offset": 40},
+        )
+    assert resp.status_code == 200
+    assert store.recent_calls == [(20, 40)]
+
+
+@pytest.mark.parametrize("offset", [-1, 100_001])
+async def test_eval_recent_rejects_out_of_range_offset(offset: int) -> None:
+    store = _FakeEvalStore()
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.eval_store = cast(EvalStore, store)
+    async with _client(app) as client:
+        resp = await client.get("/api/eval/recent", params={"offset": offset})
     assert resp.status_code == 422
     assert store.recent_calls == []
 

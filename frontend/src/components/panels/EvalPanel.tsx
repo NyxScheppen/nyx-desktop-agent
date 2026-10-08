@@ -60,7 +60,7 @@ function EvalRecordItem({ record }: { record: EvalRecord }) {
   );
 }
 
-// LLM 调用 / token 面板（10-eval）：总 token + 最近 5 条调用（类型 + OOC 分 + token）。
+// LLM 调用 / token 面板（10-eval）：总 token + 全部历史调用（类型 + OOC 分 + token）。
 export default function EvalPanel() {
   const records = useEvalStore((s) => s.records);
   const stats = useEvalStore((s) => s.stats);

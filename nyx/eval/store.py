@@ -49,12 +49,14 @@ class EvalStore:
                 _row(record),
             )
 
-    async def list_recent(self, limit: int = 5) -> list[EvalRecord]:
+    async def list_recent(
+        self, limit: int = 5, offset: int = 0,
+    ) -> list[EvalRecord]:
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 f"SELECT {_COLS} FROM eval_log "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (limit,),
+                "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
             )
             rows = await cursor.fetchall()
         return [_row_to_record(r) for r in rows]

@@ -6,11 +6,11 @@
 ## 元信息
 
 - **前置依赖**：03-llm（`LlmClient.complete`）、01-types（`LLMOutput`）、04-module-bus-system（版本化迁移与 REST 薄封装）、11-expression（respond 节点 think/speak 拆分 + `_voice_output`）
-- **实现文件**：`nyx/llm/client.py`、`nyx/types.py`、`nyx/eval/evaluator.py`、`nyx/eval/store.py`、`nyx/db.py`、`nyx/api/routes.py`；前端 `api/client.ts`、`types/api.ts`、`stores/evalStore.ts`、`components/panels/EvalPanel.tsx`
+- **实现文件**：`nyx/llm/client.py`、`nyx/types.py`、`nyx/eval/evaluator.py`、`nyx/eval/store.py`、`nyx/db.py`、`nyx/api/routes.py`；前端 `api/client.ts`、`types/api.ts`、`stores/evalStore.ts`、`components/panels/EvalPanel.tsx`、`App.tsx`、`components/shell/RightDock.tsx`
 
 ## 用户故事
 
-> 作为 Nyx 的开发者，我想在最近的 eval 记录上展开查看当次组装完成的最终 prompt，以便定位上下文、记忆和人格设定是怎样进入模型请求的。
+> 作为 Nyx 的开发者，我想在独立评估页面查询全部历史 eval 记录，并逐条展开查看当次组装完成的最终 prompt，以便定位上下文、记忆和人格设定是怎样进入模型请求的。
 
 ## 验收标准
 
@@ -19,8 +19,9 @@
 - [ ] `Evaluator.evaluate()` 每次调用写一条 `eval_log` 记录（best-effort，落库失败不重抛）
 - [ ] `EvalStore` 原子写 `eval_log` + `eval_prompt`；同 `call_id` 的 think/speak 只保存一份 prompt
 - [ ] 迁移 v21 建 `eval_prompt`，旧 eval 记录保持可读但 prompt 为 unavailable
-- [ ] recent 的 `limit` 范围为 1..100，响应不包含 prompt；详情端点按 record id 懒加载并返回 `messages | null`
+- [ ] recent 的 `limit` 范围为 1..100、`offset` 范围为 0..100000，响应不包含 prompt；详情端点按 record id 懒加载并返回 `messages | null`
 - [ ] 前端 think/speak 继续分两行；每行可独立展开，逐记录加载、缓存、报错和重试
+- [ ] 前端评估作为独立视图提供；刷新时以 20 条为一页读取全部历史记录，prompt 仍只在展开单条记录时读取
 
 ## 技术方案
 
@@ -29,7 +30,7 @@
 - **`LLMOutput` / `_voice_output`**：`prompt_messages` 默认 `None` 兼容旧 mock；真实 client 即使收到空消息列表也写 `[]`。respond 拆出的 think/speak 原样透传同一快照、token 与 call_id。
 - **`EvalStore`**：
   - `insert(record, prompt_messages=None) -> None`：在一个 `Database.transaction()` 中 `INSERT OR IGNORE eval_prompt` 后写 `eval_log`
-  - `list_recent(limit=5) -> list[EvalRecord]`（`ORDER BY created_at DESC, id DESC`，不读取 prompt）
+  - `list_recent(limit=5, offset=0) -> list[EvalRecord]`（`ORDER BY created_at DESC, id DESC`，不读取 prompt；按稳定排序分页）
   - `get_prompt(record_id) -> tuple[bool, list[LlmMessage] | None]`：首项区分记录不存在；次项 `None` 表示旧记录未保存
   - `total_tokens() -> EvalStats`（对 `eval_log` 按 `call_id` 分组后求和——同 `call_id` 的 think/speak 只计一次，避免 reply 双计）
   - JSON 解码必须验证顶层 list、role 枚举和字符串 content；损坏数据不能作为任意结构返回。
@@ -37,12 +38,22 @@
 - **`Evaluator` 落库（`nyx/eval/evaluator.py`）**：`__init__` 增注入 `store: EvalStore | None = None`。`evaluate()` 重构为「先算 OOC 关键词分 +（voice 且有 embed 时）embedding 分，再统一落一条记录」——`store` 为 `None` 或 `insert` 抛异常时降级为日志、不重抛（best-effort 旁路，同 eval 现有豁免约定）。docstring 由「不再落库、不再计 token、不再返回报告」改为「写 eval_log，best-effort」。
 - **数据变更**：v13 的 `eval_log` 仍不存输出 `content`；v21 新增 `eval_prompt`，按真实 call 去重保存输入 prompt。
 - **API 端点（04-module-bus-system，main.py 薄封装）**：
-  - `GET /api/eval/recent?limit=5` → `list[EvalRecord]`（`app.eval_store.list_recent(limit)`）
+  - `GET /api/eval/recent?limit=5&offset=0` → `list[EvalRecord]`（`limit` 范围 1..100，`offset` 范围 0..100000；`app.eval_store.list_recent(limit, offset)`）
   - `GET /api/eval/total_tokens` → `EvalStats`（`app.eval_store.total_tokens()`）
   - `GET /api/eval/{record_id}/prompt` → `list[LlmMessage] | null`；不存在 404、损坏 500、成功响应 `Cache-Control: no-store`
   - `_App` 增 `eval_store: EvalStore`；`build_app_context` 构造 `eval_store = EvalStore(db)`、`evaluator = Evaluator(embed, eval_store)`。
 - **类型（01-types）**：`EvalRecord`（`id`/`created_at`/`call_id`/`module`/`output_type`/`model`/`correlation_id`/`ooc_keyword`/`ooc_embed`/`prompt_tokens`/`completion_tokens`）、`EvalStats`（`total_tokens`/`prompt_tokens`/`completion_tokens`）。字段名 = 前端 JSON 键（snake_case 零映射，README §4）。
-- **前端**：`evalStore` 用 record-id keyed maps 管理 prompt/loading/error，成功结果缓存、失败可重试、晚到旧记录结果丢弃。`EvalPanel` 用原生 `<details>/<summary>`，React 文本节点 + `<pre>` 渲染，不使用 HTML 注入；长内容内部滚动且不截断。
+- **前端**：`RightDock` 提供独立评估视图入口，`App` 在主内容区渲染 `EvalPanel`，设置弹层不再包含评估。`evalStore.refresh()` 以 20 条为一页递增 offset 读取所有历史记录，再读取累计 token；用请求世代丢弃过期刷新。prompt/loading/error 仍由 record-id keyed maps 管理，成功结果缓存、失败可重试、晚到旧记录结果丢弃。`EvalPanel` 用原生 `<details>/<summary>`，React 文本节点 + `<pre>` 渲染，不使用 HTML 注入；长内容内部滚动且不截断。
+
+### 对象完整性：EvalRecord 与关联 prompt
+
+**入口清单**：EvalRecord 仅由 `Evaluator.evaluate()` 写入 `eval_log`，prompt 按 `call_id` 写入 `eval_prompt`；本次改动不增加写入口。读取入口为 `GET /api/eval/recent?limit=&offset=` 分页读取记录，以及 `GET /api/eval/{record_id}/prompt` 按需读取该记录关联 prompt。
+
+**消费者清单**：独立评估页面的 `evalStore` 遍历分页记录并显示 token/OOC 元数据；`EvalPanel` 只在展开某一记录时调用详情端点并缓存该记录的结果。列表响应不携带 prompt。
+
+**状态迁移**：持久状态仍只有 `eval_log` 记录和按 call_id 去重的 `eval_prompt`；读取分页及 prompt 展开不改变持久状态。前端刷新状态由未加载/加载中转为完整记录快照，刷新失败保留旧记录并显示错误；单条 prompt 由未加载转为加载、成功缓存（包括 unavailable `null` 或空数组），或失败后允许重试。
+
+**Bad case**：空列表显示无记录；最后一页不足 20 条时结束，恰好满 20 条时再读下一页（可能为空）；越界 limit/offset 返回 422；刷新期间旧请求结果丢弃；prompt 不存在或旧记录未保存时按既有 404/`null` 契约处理，损坏数据返回 500；部分分页请求失败时显示错误，不把不完整结果当作成功快照；乱序由稳定排序和 offset 分页保持；重放读取无副作用；删除不适用，因为本功能不新增删除入口，现有 Eval 数据无用户删除 API。
 
 ### `eval_log` 表（迁移 v13）
 
@@ -78,8 +89,9 @@ CREATE TABLE eval_prompt (
 - [ ] `tests/test_expression/test_pipeline.py`：`_voice_output` 透传 prompt/token/call_id。
 - [ ] `tests/test_eval/test_eval_store.py`：JSON 往返、think/speak 只存一份、旧/空/缺失区分、损坏拒绝、token 去重。
 - [ ] 集成测试 `tests/test_eval/test_evaluator.py`（新，Mock embed + fake/真 store）：`evaluate`（`store` 有值）写一条记录、`ooc_keyword`/`ooc_embed`/token 字段正确；`store=None` 不写不崩；`store.insert` 抛异常降级不重抛。
-- [ ] `tests/test_api/test_endpoints.py`：detail 成功/null/404/损坏、no-store、recent limit 边界。
-- [ ] 前端：client URL/cache；store 逐行缓存与失败重试；EvalPanel 展开、状态区分、Unicode/换行及 HTML 字面安全渲染。
+- [ ] `tests/test_api/test_endpoints.py`：detail 成功/null/404/损坏、no-store、recent limit 和 offset 边界及 offset 传递。
+- [ ] `tests/test_eval/test_eval_store.py`：recent offset 保持稳定排序且不读取 prompt。
+- [ ] 前端：client URL/cache；store 全页与末页分页加载、逐行 prompt 缓存与失败重试；独立导航入口及设置中移除 EvalPanel；EvalPanel 展开、状态区分、Unicode/换行及 HTML 字面安全渲染。
 - 不测 LLM 文本质量 / OOC 分数大小；验证管道正确（token 抽对、落库对、去重对、端点走对），不验证「分打得好不好」。
 
 ## 完成定义

@@ -17,4 +17,19 @@ describe("RightDock", () => {
 
     expect(onSwitch).toHaveBeenCalledWith("creation");
   });
+
+  it("评估入口切换到 eval 视图", () => {
+    const onSwitch = vi.fn();
+    render(
+      <RightDock
+        view="activity"
+        onSwitch={onSwitch}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "评估" }));
+
+    expect(onSwitch).toHaveBeenCalledWith("eval");
+  });
 });

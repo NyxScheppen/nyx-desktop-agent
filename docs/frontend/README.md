@@ -135,7 +135,7 @@ frontend/
         Modal.tsx            # 通用弹层容器
         SettingsView.tsx     # 设置弹层（字体大小 + 圆圈背景 + 圆圈大小 + 背景外观）
       shell/
-        RightDock.tsx        # 底部导航：读书|内在|欲望|活动|创作|记忆 + 设置入口
+        RightDock.tsx        # 底部导航：读书|内在|欲望|活动|创作|记忆|评估 + 设置入口
         StatusBar.tsx        # 左栏顶部状态条（心情/精力条/现在状态）
     assets/
       expressions/          # 8 情绪表情图（EmotionCategory 1:1，方形 1080×1080）

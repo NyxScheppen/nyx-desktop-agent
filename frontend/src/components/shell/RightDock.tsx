@@ -5,7 +5,8 @@ export type View =
   | "activity"
   | "creation"
   | "memory"
-  | "reading";
+  | "reading"
+  | "eval";
 
 type RightDockProps = {
   view: View; // 当前视图，用于高亮激活入口
@@ -14,7 +15,7 @@ type RightDockProps = {
 };
 
 // 底部工具条（中间内容区下方，常驻不随切视图消失）：
-// 内在状态 / 欲望 / 活动 / 创作 / 记忆 / 读书 + 设置。
+// 内在状态 / 欲望 / 活动 / 创作 / 记忆 / 读书 / 评估 + 设置。
 const ENTRIES: readonly { label: string; view: View }[] = [
   { label: "内在状态", view: "inner" },
   { label: "欲望", view: "desire" },
@@ -22,6 +23,7 @@ const ENTRIES: readonly { label: string; view: View }[] = [
   { label: "创作", view: "creation" },
   { label: "记忆", view: "memory" },
   { label: "读书", view: "reading" },
+  { label: "评估", view: "eval" },
 ];
 
 export default function RightDock({ view, onSwitch, onOpenSettings }: RightDockProps) {

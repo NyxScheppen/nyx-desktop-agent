@@ -26,6 +26,7 @@ class EventType(StrEnum):
     READING_MUTTER = "reading_mutter"      # 陪读碎碎念（12-reading-system）
     READING_QUESTION = "reading_question"  # 陪读提问
     READING_ASSOCIATION = "reading_association"  # 陪读联想
+    READING_PROGRESS = "reading_progress"  # 陪读进度同步
 
 
 class Source(StrEnum):

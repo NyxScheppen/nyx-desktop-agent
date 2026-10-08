@@ -13,9 +13,10 @@ from collections.abc import Coroutine
 from typing import Any, cast
 
 from nyx.desire.facade import DesireFacade
-from nyx.enums import BoundaryResult, DesireType, ReadingBehavior
+from nyx.enums import BoundaryResult, DesireType, EventType, ReadingBehavior
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import internal_event
 from nyx.expression.facade import ExpressionFacade
 from nyx.expression.prompt import build_system_prompt
 from nyx.inner_life.facade import InnerLifeFacade
@@ -144,6 +145,7 @@ class ReadingFacade:
         self._memory = memory
         self._llm = llm
         self._evaluator = evaluator
+        self._bus = bus
         self._canon = canon
         self._logger = logging.getLogger(__name__)
         # 冷却时间戳是唯一内存态（per 进程，重启清零），用单调钟 time.monotonic
@@ -242,9 +244,11 @@ class ReadingFacade:
             or nyx_position > book.total_paragraphs
         ):
             raise ValueError("段落越界")
-        return await self._store.upsert_progress(
+        progress = await self._store.upsert_progress(
             book_id, user_position, nyx_position, reading_speed, expected_revision
         )
+        await self._publish_progress(progress, correlation_id=book_id)
+        return progress
 
     async def read_for_activity(
         self,
@@ -289,11 +293,38 @@ class ReadingFacade:
         boundary = await self.check_chapter_boundary(book_id, target_paragraph)
         if boundary is BoundaryResult.BOOK_FINISHED:
             advanced = await self.get_progress(book_id)
+        else:
+            await self._publish_progress(advanced, correlation_id=correlation_id)
         return {
             "book": book.title,
             "target_paragraph": advanced.nyx_position,
             "completed": target_paragraph >= book.total_paragraphs,
         }
+
+    async def _publish_progress(
+        self, progress: ReadingProgress, *, correlation_id: str
+    ) -> None:
+        """Broadcast committed progress; persistence remains authoritative."""
+        event = internal_event(
+            EventType.READING_PROGRESS,
+            {
+                "book_id": progress.book_id,
+                "user_position": progress.user_position,
+                "nyx_position": progress.nyx_position,
+                "reading_speed": progress.reading_speed,
+                "read_count": progress.read_count,
+                "revision": progress.revision,
+            },
+            correlation_id,
+        )
+        try:
+            await self._bus.publish(event)
+        except Exception:
+            self._logger.exception(
+                "阅读进度已持久化但广播失败 book_id=%s revision=%s",
+                progress.book_id,
+                progress.revision,
+            )
 
     async def _activity_read_target(self, book: Book, start: int) -> int:
         """Choose a paragraph endpoint containing roughly one source block."""
@@ -766,7 +797,10 @@ class ReadingFacade:
             return result
         pre_read_count = progress.read_count if progress is not None else 0
         if result is BoundaryResult.BOOK_FINISHED:
-            await self._store.increment_read_count(book_id, book.total_paragraphs)
+            completed = await self._store.increment_read_count(
+                book_id, book.total_paragraphs
+            )
+            await self._publish_progress(completed, correlation_id=book_id)
             self._finished_books.add(book_id)
         else:
             self._finished_books.discard(book_id)

@@ -5,6 +5,7 @@ import { useChatStore } from "../stores/chatStore";
 import { useDesireStore } from "../stores/desireStore";
 import { useInnerLifeStore } from "../stores/innerLifeStore";
 import { useMemoryStore } from "../stores/memoryStore";
+import { useReaderStore } from "../stores/readerStore";
 import type { SseEvent } from "../types/api";
 
 // 事件 → store 路由（01-sse §4.1）。
@@ -70,6 +71,8 @@ export function dispatchEvent(e: SseEvent): void {
     case "reading_association":
       // 联想不进对话（对话框只放对话+提问）：后端仍产生，前端静默丢弃。
       return;
+    case "reading_progress":
+      return useReaderStore.getState().applyProgressEvent(e);
     case "reflection_done": {
       // 反思完成：慢变量与长期欲望都可能变化，因此刷新两个快照；
       // story 真新增才冒气泡（去重跳过则静默刷新，不打扰）。

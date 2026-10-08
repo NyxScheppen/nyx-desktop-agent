@@ -239,14 +239,14 @@ describe("api/client", () => {
     expect(res).toEqual([]);
   });
 
-  it("getEventsLog：limit/event_type/correlation_id 拼进 query", async () => {
+  it("getEventsLog：limit/event_type/correlation_id/after 拼进 query", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
     vi.stubGlobal("fetch", fetchMock);
 
-    await getEventsLog({ limit: 20, event_type: "speak", correlation_id: "c1" });
+    await getEventsLog({ limit: 20, event_type: "speak", correlation_id: "c1", after: "e0" });
 
     expect(fetchMock.mock.calls[0][0]).toBe(
-      "/api/events/log?limit=20&event_type=speak&correlation_id=c1",
+      "/api/events/log?limit=20&event_type=speak&correlation_id=c1&after=e0",
     );
   });
 

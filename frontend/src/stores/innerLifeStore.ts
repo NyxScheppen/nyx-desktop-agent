@@ -10,21 +10,25 @@ type InnerLifeState = {
   updateEmotion: (e: EmotionUpdateEvent) => void;
 };
 
-export const useInnerLifeStore = create<InnerLifeState>((set) => ({
-  current: null,
-  error: null,
-  refreshState: async () => {
-    set({ error: null });
-    try {
-      const current = await getState();
-      set({ current });
-    } catch (err) {
-      set({
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  },
-  updateEmotion: (e) => {
+export const useInnerLifeStore = create<InnerLifeState>((set) => {
+  let requestGeneration = 0;
+  return {
+    current: null,
+    error: null,
+    refreshState: async () => {
+      const request = ++requestGeneration;
+      set({ error: null });
+      try {
+        const current = await getState();
+        if (request === requestGeneration) set({ current });
+      } catch (err) {
+        if (request === requestGeneration) {
+          set({ error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    },
+    updateEmotion: (e) => {
+      requestGeneration += 1;
     const { valence, arousal, emotion } = e;
     if (
       typeof valence !== "number" ||
@@ -45,5 +49,6 @@ export const useInnerLifeStore = create<InnerLifeState>((set) => ({
         },
       };
     });
-  },
-}));
+    },
+  };
+});

@@ -19,6 +19,7 @@ import type {
   BookListItem,
   Bookmark,
   Paragraph,
+  ReadingProgressEvent,
   UserNoteWithAnnotations,
 } from "../types/api";
 
@@ -59,6 +60,7 @@ type ReaderState = {
   startCatchup: () => void;
   stopCatchup: () => void;
   advanceNyx: () => void;
+  applyProgressEvent: (e: ReadingProgressEvent) => void;
   reread: () => Promise<void>;
   loadNotes: () => Promise<void>;
   addNote: (p: {
@@ -485,6 +487,27 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         nyx_position: next,
         reading_speed: readingSpeed,
         }, get, set, () => isCurrent(session, bookId));
+      }
+    },
+
+    applyProgressEvent: (e) => {
+      const current = get();
+      if (
+        current.bookId !== e.book_id ||
+        e.revision <= current.progressRevision ||
+        e.nyx_position < current.nyxPosition
+      ) {
+        return;
+      }
+      set({
+        nyxPosition: e.nyx_position,
+        readCount: e.read_count,
+        progressRevision: e.revision,
+      });
+      if (e.nyx_position < current.userPosition) {
+        get().startCatchup();
+      } else {
+        get().stopCatchup();
       }
     },
 

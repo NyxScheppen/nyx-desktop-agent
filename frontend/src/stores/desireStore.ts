@@ -9,18 +9,22 @@ type DesireStoreState = {
   refresh: () => Promise<void>;
 };
 
-export const useDesireStore = create<DesireStoreState>((set) => ({
-  data: null,
-  error: null,
-  refresh: async () => {
-    set({ error: null });
-    try {
-      const data = await getDesires();
-      set({ data });
-    } catch (err) {
-      set({
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  },
-}));
+export const useDesireStore = create<DesireStoreState>((set) => {
+  let requestGeneration = 0;
+  return {
+    data: null,
+    error: null,
+    refresh: async () => {
+      const request = ++requestGeneration;
+      set({ error: null });
+      try {
+        const data = await getDesires();
+        if (request === requestGeneration) set({ data });
+      } catch (err) {
+        if (request === requestGeneration) {
+          set({ error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    },
+  };
+});

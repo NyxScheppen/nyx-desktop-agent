@@ -139,12 +139,14 @@ export async function getEventsLog(params?: {
   limit?: number;
   event_type?: string;
   correlation_id?: string;
+  after?: string;
 }): Promise<BackendEvent[]> {
   const sp = new URLSearchParams();
   if (params?.limit !== undefined) sp.set("limit", String(params.limit));
   if (params?.event_type !== undefined) sp.set("event_type", params.event_type);
   if (params?.correlation_id !== undefined)
     sp.set("correlation_id", params.correlation_id);
+  if (params?.after !== undefined) sp.set("after", params.after);
   const qs = sp.toString();
   return request<BackendEvent[]>(`${BASE_URL}/api/events/log${qs ? `?${qs}` : ""}`);
 }

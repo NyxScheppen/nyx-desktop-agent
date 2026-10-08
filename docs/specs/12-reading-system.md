@@ -145,6 +145,21 @@ ReadingFacade.read_for_activity(
 进度，再以最新 revision 重试。除显式“重读”外，重试的 `nyx_position` 必须取本地与
 服务器较大值并更新本地状态，不能以旧快照覆盖活动后台已经推进的 Nyx 位置。
 
+### 进度同步事件
+
+后端在 `save_progress` 或后台 `advance_nyx_position` 成功持久化完整进度后，发布
+`READING_PROGRESS`。事件 payload 固定包含
+`book_id/user_position/nyx_position/reading_speed/read_count/revision`，并通过既有
+`GET /api/events` SSE 广播；它是状态快照通知，不表示阅读器已经消费或完成其它事件。
+
+- 只有持久化成功后才构造并广播事件；广播失败只记录日志，不回滚已提交的
+  `reading_progress`。
+- 前端只在当前书匹配、`revision` 严格新于本地且 `nyx_position` 不回退时应用快照；
+  异书、重复/旧 revision 和 Nyx 位置回退都丢弃。应用后按服务端位置启动或停止追赶，
+  不覆盖本地尚未提交的 `user_position`。
+- 事件可能与用户写入、活动读取和 SSE 重连乱序到达；revision 是唯一的进度顺序依据，
+  不以事件到达时间或浏览器接收时间作决定。
+
 活动系统读取 EPUB 时只调用 `read_for_activity`：明确任务读到指定目标；探索欲匹配书籍
 时读取约一个 6000 字符段落范围。该入口复用原文沉淀，成功后才单调推进 Nyx 位置，
 保留用户位置、阅读速度和读完次数，不触发陪读冲动、主动提问、联想或用户翻页语义。
@@ -371,6 +386,8 @@ QUOTE_QUESTION 必须严格两行，第二行是实际发送的截断原文中�
 - API 测试覆盖 2xx/404/409/422/500 语义；前端测试覆盖 revision 写队列、缓存缺失
   时刷新书架、划线检索、书签切换、切书后旧书签回包丢弃，以及定位保存进度但不补发
   冲动。
+- 进度同步测试覆盖 `READING_PROGRESS` 完整字段、持久化成功后广播、广播失败不回滚，
+  以及前端异书/旧 revision/重复 revision/Nyx 回退过滤和追赶控制。
 - 阅读器使用受控结构渲染标题、正文、加粗、斜体、引用、列表与预格式文本；版心限制
   行宽。富文本、字号或窗口变化后沿用实测真分页。单段高于视口时该页允许局部纵向
   滚动，不能用 `overflow:hidden` 裁掉正文。重叠划线与行内格式按排序端点扫描生成原子

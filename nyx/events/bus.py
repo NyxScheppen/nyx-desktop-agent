@@ -359,9 +359,10 @@ class EventBus:
         limit: int = 100,
         event_type: EventType | None = None,
         correlation_id: str | None = None,
+        after: str | None = None,
     ) -> list[Event]:
         clauses: list[str] = []
-        params: list[str | int] = []
+        params: list[str | int | float] = []
         if event_type is not None:
             clauses.append("type = ?")
             params.append(event_type.value)
@@ -369,12 +370,29 @@ class EventBus:
             clauses.append("correlation_id = ?")
             params.append(correlation_id)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(limit)
-        sql = (
-            "SELECT id, timestamp, source, type, content, correlation_id "
-            f"FROM event_log{where} ORDER BY timestamp DESC, id LIMIT ?"
-        )
         async with self._db.lock:
+            order = "DESC"
+            if after is not None:
+                cursor = await self._db.conn.execute(
+                    "SELECT timestamp FROM event_log WHERE id = ?", (after,)
+                )
+                cursor_row = await cursor.fetchone()
+                if cursor_row is not None:
+                    timestamp = float(cursor_row["timestamp"])
+                    clauses.append(
+                        "(timestamp > ? OR (timestamp = ? AND id > ?))"
+                    )
+                    params.extend((timestamp, timestamp, after))
+                # Unknown cursors intentionally replay the oldest bounded page. A
+                # client can recover from a stale/expired Last-Event-ID without
+                # silently assuming that its cursor was valid.
+                order = "ASC"
+            where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.append(limit)
+            sql = (
+                "SELECT id, timestamp, source, type, content, correlation_id "
+                f"FROM event_log{where} ORDER BY timestamp {order}, id ASC LIMIT ?"
+            )
             cursor = await self._db.conn.execute(sql, params)
             rows = await cursor.fetchall()
         return [_row_to_event(row) for row in rows]

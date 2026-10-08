@@ -3,9 +3,9 @@
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -273,8 +273,9 @@ def build_app(
         limit: int = 100,
         event_type: EventType | None = None,
         correlation_id: str | None = None,
+        after: str | None = None,
     ) -> list[Event]:
-        return await app.bus.list_events(limit, event_type, correlation_id)
+        return await app.bus.list_events(limit, event_type, correlation_id, after)
 
     @fast.get("/api/eval/recent")
     async def api_eval_recent(
@@ -505,14 +506,29 @@ def build_app(
         return {"event_id": event.id}
 
     @fast.get("/api/events")
-    async def api_events() -> StreamingResponse:
+    async def api_events(
+        request: Request = cast(Request, None),
+    ) -> StreamingResponse:
         queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=sse_queue_size)
         app.bus.add_sse_sink(queue)
+        last_event_id = request.headers.get("last-event-id") if request else None
+        list_events = getattr(app.bus, "list_events", None)
+        replay: list[Event] = []
+        if callable(list_events):
+            load_replay = cast(
+                Callable[..., Awaitable[list[Event]]],
+                list_events,
+            )
+            replay = await load_replay(limit=1000, after=last_event_id)
 
         async def generate():
             try:
+                pending = iter(replay)
                 while True:
-                    event = await queue.get()
+                    try:
+                        event = next(pending)
+                    except StopIteration:
+                        event = await queue.get()
                     data = {
                         **event.content,
                         "event_id": event.id,
@@ -520,7 +536,10 @@ def build_app(
                         "timestamp": event.timestamp,
                     }
                     payload = json.dumps(data, ensure_ascii=False, default=str)
-                    yield f"event: {event.type.value}\ndata: {payload}\n\n"
+                    yield (
+                        f"id: {event.id}\nevent: {event.type.value}\n"
+                        f"data: {payload}\n\n"
+                    )
             finally:
                 app.bus.remove_sse_sink(queue)
 

@@ -1,13 +1,13 @@
 # 阅读事件（读书反应 + 笔记/划线/书签）
 
-> 前端「陪伴读书」的**行为与标记层**：订阅 `reading_mutter`/`reading_question`/`reading_association` 三个 SSE 事件——读书碎碎念归悬浮气泡、提问/联想并进对话；阅读页提供段内划线、当前书划线搜索、书签和持久定位，笔记面板继续负责普通用户笔记 CRUD + 「给尼克斯看」批注。Nyx 的章末整合记忆不在此上屏（落 memory）。
+> 前端「陪伴读书」的**行为与标记层**：订阅 `reading_mutter`/`reading_question`/`reading_association`/`reading_progress` 四个 SSE 事件——读书碎碎念归悬浮气泡、提问/联想并进对话、进度快照同步到阅读页；阅读页提供段内划线、当前书划线搜索、书签和持久定位，笔记面板继续负责普通用户笔记 CRUD + 「给尼克斯看」批注。Nyx 的章末整合记忆不在此上屏（落 memory）。
 > 范围：`components/reading/{ReaderView,NotePanel}.tsx` + `components/chat/MessageBubble.tsx` + `stores/readerStore.ts` + `api/client.ts` + `api/dispatch.ts` + `hooks/useSSE.ts`。
-> 对齐后端：`12-reading-system`（3 个 `READING_*` 事件、笔记 CRUD/批注/章末整合端点）。
+> 对齐后端：`12-reading-system`（4 个 `READING_*` 事件、笔记 CRUD/批注/章末整合端点）。
 > 反向修订阅读系统：`show-to-nyx` 端点返回体从 `{annotation_id, content}` 改为完整 `Annotation`（`{id, user_note_id, content, created_at}`）——前端 append 完整对象，不造 `created_at`。
 
-## 1. 新 SSE 事件（后端 12-reading-system 定义，前端增补三型）
+## 1. 新 SSE 事件（后端 12-reading-system 定义，前端增补四型）
 
-后端 12-reading-system 在 `EventType` 追加 `READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION`，经既有 `GET /api/events` 广播。`data` 形状（01-sse §1 约定：`{event_id, correlation_id} + content`；`correlation_id` = `book_id`，按书归组）：
+后端 12-reading-system 在 `EventType` 追加 `READING_MUTTER`/`READING_QUESTION`/`READING_ASSOCIATION`/`READING_PROGRESS`，经既有 `GET /api/events` 广播。`data` 形状（01-sse §1 约定：`{event_id, correlation_id, timestamp} + content`；`correlation_id` = `book_id`，按书归组）：
 
 ```
 event: reading_mutter
@@ -47,7 +47,28 @@ type ReadingAssociationEvent = SseBase & {
 };
 ```
 
-- 三型并入 `SseEvent` 判别联合；`hooks/useSSE.ts` 的 `EVENT_TYPES` 数组同步加三值（01-sse §4 前向兼容边界：新增 EventType 必须同步 `EVENT_TYPES` + 判别联合 + 分发表）。
+- 四型并入 `SseEvent` 判别联合；`hooks/useSSE.ts` 的 `EVENT_TYPES` 数组同步加四值（01-sse §4 前向兼容边界：新增 EventType 必须同步 `EVENT_TYPES` + 判别联合 + 分发表）。
+
+### 阅读进度快照事件
+
+`reading_progress` 是后台阅读、其它窗口或重连回放使用的第四个阅读事件，不进入聊天或
+阅读反应 buffer。帧字段为：
+
+```typescript
+type ReadingProgressEvent = SseBase & {
+  event: "reading_progress";
+  book_id: string;
+  user_position: number;
+  nyx_position: number;
+  reading_speed: number;
+  read_count: number;
+  revision: number;
+};
+```
+
+`dispatchEvent` 路由到 `readerStore.applyProgressEvent`。store 只应用当前书、严格高于本地
+`progressRevision` 且 `nyx_position` 不回退的快照；异书、重复/旧 revision 和 Nyx 回退直接
+丢弃。应用后按 Nyx 是否落后控制追赶，不覆盖本地未提交的 `userPosition`。
 
 ## 2. 读书反应：并进对话 / 悬浮气泡（08 §2/§3）
 
@@ -174,4 +195,4 @@ async function deleteBookmark(id: string): Promise<void>                        
 - `client`（`tests/api.test.ts` 增补）：笔记选区 offset 与三个书签函数的端点/方法/请求体键。
 - 组件（`tests/notePanel.test.tsx`）：NotePanel 渲染 content/selected_text/批注、composer 提交 `addNote`、空白禁用、「给尼克斯看」/「删除」/「编辑」按钮 wiring（编辑态保存 → `updateNote`（trim）、取消退出不调、空白保存禁用）。
 - `ReaderView`（`tests/readerView.test.tsx`）：结构化标题/加粗/已有划线、划线过滤与持久定位、同段跨格式选区的 UTF-16 offset、跨段拒绝、书签列表定位。
-- 不依赖真实后端；验证管道正确（事件走对 store、笔记 CRUD 对），不验证视觉。
+- 不依赖真实后端；验证管道正确（事件走对 store、进度快照过滤、笔记 CRUD 对），不验证视觉。

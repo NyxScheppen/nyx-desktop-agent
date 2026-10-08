@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { BASE_URL } from "../api/client";
-import { isValidTimestamp } from "../lib/time";
-import type { ConnectionState, SseEvent } from "../types/api";
+import { parseSseEvent, type ConnectionState, type SseEvent } from "../types/api";
 
 // 后端 enums.py EventType 的 24 个 snake_case 值。
 // 命名事件（带 event: 行）只能按类型 addEventListener 收到，onmessage 收不到。
@@ -32,7 +31,10 @@ const EVENT_TYPES = [
   "reading_mutter",
   "reading_question",
   "reading_association",
+  "reading_progress",
 ];
+
+const MAX_SEEN_EVENT_IDS = 4096;
 
 export function useSSE(dispatch: (e: SseEvent) => void): ConnectionState {
   const [status, setStatus] = useState<ConnectionState>("connecting");
@@ -43,6 +45,7 @@ export function useSSE(dispatch: (e: SseEvent) => void): ConnectionState {
     // old cleanup cannot leave the UI showing a stale "closed" state.
     setStatus("connecting");
     const source = new EventSource(`${BASE_URL}/api/events`);
+    const seenEventIds = new Set<string>();
 
     const onEvent = (type: string) => (event: MessageEvent) => {
       try {
@@ -51,18 +54,18 @@ export function useSSE(dispatch: (e: SseEvent) => void): ConnectionState {
           console.error("SSE 帧 data 非对象，跳过", event.data);
           return;
         }
-        const rec = data as Record<string, unknown>;
-        if (
-          typeof rec.event_id !== "string" ||
-          typeof rec.correlation_id !== "string" ||
-          !isValidTimestamp(rec.timestamp)
-        ) {
-          console.error("SSE 帧公共头非法，跳过", event.data);
+        const parsed = parseSseEvent(type, data);
+        if (parsed === null) {
+          console.error("SSE 帧结构非法，跳过", event.data);
           return;
         }
-        // 信任边界：帧头已校验，其余键形状交给 store action 运行时收窄；
-        // 判别联合只兜编译期契约（键名错位在此放行，store 里拦）。
-        dispatch({ ...rec, event: type } as unknown as SseEvent);
+        if (seenEventIds.has(parsed.event_id)) return;
+        seenEventIds.add(parsed.event_id);
+        if (seenEventIds.size > MAX_SEEN_EVENT_IDS) {
+          const oldest = seenEventIds.values().next().value;
+          if (typeof oldest === "string") seenEventIds.delete(oldest);
+        }
+        dispatch(parsed);
       } catch (err) {
         console.error("SSE 帧解析失败，跳过", event.data, err);
       }

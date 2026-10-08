@@ -99,6 +99,10 @@
 - 普通翻页走 `syncPosition` 并只为实际前进段落评估冲动；从历史划线或书签定位走
   `jumpToPosition`，同样持久化位置、按需重拉窗口和恢复 Nyx 追赶，但不为跨过的段落
   补发冲动。
+- 进度持久化成功后由 `ReadingFacade` 广播 `READING_PROGRESS` 快照，字段为
+  `book_id/user_position/nyx_position/reading_speed/read_count/revision`。广播失败只记日志，
+  不回滚已经提交的进度；前端按当前书、严格递增 revision 和 Nyx 单调性应用，异书、重复/
+  旧 revision 或 Nyx 回退事件丢弃，并据此控制追赶，不覆盖本地用户位置。
 
 ## 阅读冲动与陪读输出
 

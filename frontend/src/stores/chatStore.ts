@@ -91,6 +91,8 @@ let replyTimer: ReturnType<typeof setTimeout> | null = null;
 // 待回复消息的 event_id（= postChat 返回值 = user_message id = 回复帧 correlation_id）。
 // 与 replyTimer 一样放 module-level，不进 store state；addSpeak/addAsk 按 correlation_id 匹配后才清 timer。
 let pendingId: string | null = null;
+let sendInFlight = false;
+const earlyReplies = new Map<string, TextEvent<"speak"> | TextEvent<"ask">>();
 
 function clearReplyTimer(): void {
   if (replyTimer !== null) {
@@ -135,6 +137,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       clearReplyTimer();
       pendingId = null;
       set({ isReplying: false, sendError: null });
+    } else if (pendingId === null && sendInFlight) {
+      // HTTP 响应可能晚于 SSE 回复；先缓存 correlation，成功返回后再匹配。
+      earlyReplies.set(e.correlation_id, e);
     }
     append(e, "nyx", e.event);
   };
@@ -152,7 +157,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     addInitiateChat: (e) => {
       if (append(e, "nyx", "initiate_chat")) set({ unreadProactive: true });
     },
-    // 读书提问并进对话（08 §2.2）：correlation_id = book_id（后端用 book_id 当 correlation_id），
+    // 读书提问并进对话（08 §2.2）：保留后端事件的原始 correlation_id，
     // 不过滤当前书（永久聊天消息，关书后仍留转录）；文本字段非 string 丢弃（复用 append 收窄）。
     addReadingTurn: (e) => {
       if (typeof e.content !== "string" || !isValidTimestamp(e.timestamp)) return;
@@ -161,7 +166,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         role: "nyx",
         kind: "reading_question",
         content: e.content,
-        correlation_id: e.book_id,
+        correlation_id: e.correlation_id,
         timestamp: e.timestamp,
         subtype: e.subtype,
         selectedText: e.selected_text,
@@ -207,11 +212,20 @@ export const useChatStore = create<ChatState>((set, get) => {
       // 串行锁要同步上：get() 同步读 store（非 React 订阅），在 await postChat 之前置 isReplying=true。
       // 否则网络往返窗口内 isReplying 仍 false，双击/连击可并发第二次发送、覆盖 pendingId。
       if (get().isReplying) return false;
+      sendInFlight = true;
       set({ isReplying: true, sendError: null, unreadProactive: false });
       try {
         const { event_id } = await postChat(text);
+        sendInFlight = false;
         pendingId = event_id; // 回复帧 correlation_id 与此匹配（后端 user_message 沿它溯源）
         clearReplyTimer();
+        if (earlyReplies.delete(event_id)) {
+          pendingId = null;
+          earlyReplies.clear();
+          set({ isReplying: false, sendError: null });
+          return true;
+        }
+        earlyReplies.clear();
         replyTimer = setTimeout(() => {
           replyTimer = null;
           // 不清 pendingId：迟到回复仍需能匹配并清 sendError
@@ -219,6 +233,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         }, REPLY_TIMEOUT_MS);
         return true;
       } catch (err) {
+        sendInFlight = false;
+        earlyReplies.clear();
         // 锁已提前上，失败须复位 isReplying（原先 isReplying 在 await 后才置、catch 无需复位）
         set({ isReplying: false, sendError: err instanceof Error ? err.message : String(err) });
         return false;
@@ -227,6 +243,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     reset: () => {
       clearReplyTimer(); // 新会话：取消残留 timer + 复位 isReplying/sendError（防假超时）
       pendingId = null;
+      sendInFlight = false;
+      earlyReplies.clear();
       set({ messages: [], isReplying: false, sendError: null, typedIds: {}, unreadProactive: false });
     },
   };

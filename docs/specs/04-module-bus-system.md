@@ -32,7 +32,9 @@
 - [ ] 组合根导入环被拆除：`app_context` 只装配，不导入 `subscriptions`；`subscriptions` 不导入 `main`；runtime handler 编排在 `runtime.py` 或等价运行期模块。
 - [ ] `Database` 提供幂等 `close()`；组合根构造失败和应用退出都会关闭连接。
 - [ ] `connect()` 的路径优先级为显式参数、`NYX_DB`、已存在的旧默认 `nyx.db`、新默认 `data/nyx.db`；非 `:memory:` 路径连接前创建父目录。
-- [ ] SSE 公共帧携带事件自身的 `timestamp`；实时消息与 `GET /api/events/log` 历史消息使用同一后端时间源。
+- [ ] SSE 公共帧携带事件自身的 `timestamp` 和标准 `id:` 游标；实时消息与
+  `GET /api/events/log` 历史消息使用同一后端时间源，断线重连按 `Last-Event-ID`
+  回放。
 - [ ] `POST /api/observe` 先持久化包含 transition 事实的 `OBSERVATION_STATE`，成功后才提交组合根 presence 快照；受理失败不留下半次离开/归来状态。
 - [ ] 活动启动把来源条件领取、`RUNNING` Activity 和 `ACTIVITY_START` 放在一个本地事务；活动完成、失败、中断和恢复分别把 Activity、关联欲望、关联任务及对应 durable event 放在各自单一事务，不能留下终态 Activity 配 `RUNNING` 任务或 `ACTIVE` 欲望。
 - [ ] 活动收尾事务失败先整体回滚，再调和已经失去内存 runner 的 `RUNNING`；调和失败由下一次活动准入重试。取消 runner 最多等待 5 秒，超时不重排仍存活的工作。
@@ -647,6 +649,14 @@ CREATE TABLE eval_prompt (
   `Event.timestamp` 的 epoch 秒，不使用浏览器接收时刻代替。
   生产方不得使用三个公共键；序列化时公共头覆盖同名 content 键。必填 timestamp 是
   monorepo 线协议，后端和前端必须同批发布，不支持新前端连接缺少该字段的旧后端。
+- `GET /api/events` 每帧另外发送 `id: <event_id>`。连接请求带 `Last-Event-ID` 时，服务端
+  在注册实时 sink 后读取最多 1000 条历史事件：已知游标只返回严格位于
+  `(timestamp, id)` 之后的事件并按升序发送；未知或已过期游标返回最早的一页有界事件，避免把
+  无法验证的游标当成“已全部同步”。历史回放与实时 sink 注册之间允许有重叠，前端必须按
+  `event_id` 去重；去重只影响显示，不改变 `event_log` 或 delivery 事实。
+- `GET /api/events/log` 的 `after` 参数使用同一游标规则。未提供 `after` 时保持管理查询的
+  默认倒序；提供已知或未知 `after` 时均按 `(timestamp, id)` 升序返回，最多返回 `limit` 条。
+  游标只用于事件日志回放，不表示对应消费者已经完成。
 - `task_updated` 是委派任务状态快照通知：先持久化任务，再以
   `{task_id, status}`、`correlation_id=task_id` 广播；它没有 durable consumer，
   前端收到后重拉 `/api/tasks`。广播失败不得回滚已经提交的任务状态。
@@ -689,7 +699,9 @@ CREATE TABLE eval_prompt (
 - [ ] 导入环回归：`api.routes`、`app_context`、`subscriptions`、`main` 不再形成循环导入。
 - [ ] observe 原子性：首次采样只产生 `initial`；`away -> online` 含离开时长；event admission 失败时组合根 presence/归来快照完全不变。
 - [ ] 用户消息在线证据：away 后立即收到 durable `USER_MESSAGE` 时，在 expression 前产生一次归来上下文；随后 online observation 不重复产生归来，handler 重放也不重复。
-- [ ] SSE 时间：实时帧含原始 `Event.timestamp`，并与事件日志中的同一事件时间一致；缺失/非法公共字段在前端被丢弃。
+- [ ] SSE 时间与回放：实时帧含原始 `Event.timestamp`、`id:` 与事件日志中的同一事件时间一致；
+  `Last-Event-ID`/`after` 已知、未知和并列时间戳游标按契约回放；前端按 `event_id` 去重并丢弃
+  缺失/非法公共字段。
 - [ ] 文档同步：`docs/test-inventory.md` 更新为当前测试快照。
 
 ## 完成定义

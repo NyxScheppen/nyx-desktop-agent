@@ -10,12 +10,14 @@ import { useChatStore } from "../src/stores/chatStore";
 import { useDesireStore } from "../src/stores/desireStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
+import { useReaderStore } from "../src/stores/readerStore";
 import { isEmotionCategory } from "../src/types/api";
 import type {
   ActivitySnapshot,
   CurrentState,
   ReadingAssociationEvent,
   ReadingMutterEvent,
+  ReadingProgressEvent,
   ReadingQuestionEvent,
 } from "../src/types/api";
 
@@ -143,6 +145,60 @@ describe("useSSE", () => {
     });
   });
 
+  it("同一 event_id 的回放/实时重叠帧只 dispatch 一次", () => {
+    const dispatch = vi.fn();
+    renderHook(() => useSSE(dispatch));
+    const source = FakeEventSource.instances[0];
+    const frame = JSON.stringify({
+      event_id: "replayed",
+      correlation_id: "c1",
+      timestamp: 123.5,
+      content: "你好",
+    });
+
+    act(() => {
+      source.emit("speak", frame);
+      source.emit("speak", frame);
+    });
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reading_progress 合法帧通过，非法进度字段被丢弃", () => {
+    const dispatch = vi.fn();
+    renderHook(() => useSSE(dispatch));
+    const source = FakeEventSource.instances[0];
+    const valid = {
+      event_id: "progress-1",
+      correlation_id: "b1",
+      timestamp: 10,
+      book_id: "b1",
+      user_position: 8,
+      nyx_position: 5,
+      reading_speed: 50,
+      read_count: 1,
+      revision: 4,
+    };
+
+    act(() => {
+      source.emit("reading_progress", JSON.stringify(valid));
+      source.emit(
+        "reading_progress",
+        JSON.stringify({ ...valid, event_id: "progress-bad", revision: -1 }),
+      );
+      source.emit(
+        "reading_progress",
+        JSON.stringify({ ...valid, event_id: "progress-bad-2", reading_speed: 0 }),
+      );
+    });
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith({
+      event: "reading_progress",
+      ...valid,
+    });
+  });
+
   it("EVENT_TYPES 含三型阅读事件：reading_mutter/question/association 帧被监听并 dispatch", () => {
     const dispatch = vi.fn();
     renderHook(() => useSSE(dispatch));
@@ -230,6 +286,7 @@ describe("dispatchEvent", () => {
     useActivityStore.setState({ data: null, error: null });
     useMemoryStore.setState({ data: null, error: null });
     useAnnounceStore.setState({ items: [] });
+    useReaderStore.getState().stopCatchup();
   });
 
   it("speak → chatStore（kind=speak）", () => {
@@ -543,6 +600,28 @@ describe("dispatchEvent", () => {
     expect(addReadingTurnSpy).toHaveBeenNthCalledWith(1, question);
     expect(useAnnounceStore.getState().items).toHaveLength(1);
     expect(useAnnounceStore.getState().items[0]).toMatchObject({ kind: "mutter", text: "妙" });
+  });
+
+  it("reading_progress → readerStore.applyProgressEvent", () => {
+    const applySpy = vi
+      .spyOn(useReaderStore.getState(), "applyProgressEvent")
+      .mockImplementation(() => {});
+    const event: ReadingProgressEvent = {
+      event: "reading_progress",
+      event_id: "p1",
+      correlation_id: "b1",
+      timestamp: 1,
+      book_id: "b1",
+      user_position: 8,
+      nyx_position: 5,
+      reading_speed: 50,
+      read_count: 1,
+      revision: 4,
+    };
+
+    dispatchEvent(event);
+
+    expect(applySpy).toHaveBeenCalledWith(event);
   });
 });
 

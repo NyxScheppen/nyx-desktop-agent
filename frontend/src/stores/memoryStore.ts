@@ -17,39 +17,49 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export const useMemoryStore = create<MemoryStoreState>((set, get) => ({
-  data: null,
-  facts: null,
-  query: "",
-  error: null,
-  factsError: null,
-  refresh: async () => {
-    const query = get().query.trim();
-    set({ error: null, factsError: null });
-    const memoryRequest = query === "" ? getMemories() : getMemorySearch(query);
-    const [memoryResult, factsResult] = await Promise.allSettled([
-      memoryRequest,
-      getRecentFacts(),
-    ]);
-    if (memoryResult.status === "fulfilled") {
-      set({ data: memoryResult.value, error: null });
-    } else {
-      set({ error: errorMessage(memoryResult.reason) });
-    }
-    if (factsResult.status === "fulfilled") {
-      set({ facts: factsResult.value, factsError: null });
-    } else {
-      set({ factsError: errorMessage(factsResult.reason) });
-    }
-  },
-  search: async (query: string) => {
-    const normalized = query.trim();
-    set({ query: normalized, error: null });
-    try {
-      const data = normalized === "" ? await getMemories() : await getMemorySearch(normalized);
-      set({ data, error: null });
-    } catch (err) {
-      set({ error: errorMessage(err) });
-    }
-  },
-}));
+export const useMemoryStore = create<MemoryStoreState>((set, get) => {
+  let requestGeneration = 0;
+  return {
+    data: null,
+    facts: null,
+    query: "",
+    error: null,
+    factsError: null,
+    refresh: async () => {
+      const request = ++requestGeneration;
+      const query = get().query.trim();
+      set({ error: null, factsError: null });
+      const memoryRequest = query === "" ? getMemories() : getMemorySearch(query);
+      const [memoryResult, factsResult] = await Promise.allSettled([
+        memoryRequest,
+        getRecentFacts(),
+      ]);
+      if (request !== requestGeneration || get().query.trim() !== query) return;
+      if (memoryResult.status === "fulfilled") {
+        set({ data: memoryResult.value, error: null });
+      } else {
+        set({ error: errorMessage(memoryResult.reason) });
+      }
+      if (factsResult.status === "fulfilled") {
+        set({ facts: factsResult.value, factsError: null });
+      } else {
+        set({ factsError: errorMessage(factsResult.reason) });
+      }
+    },
+    search: async (query: string) => {
+      const normalized = query.trim();
+      const request = ++requestGeneration;
+      set({ query: normalized, error: null });
+      try {
+        const data = normalized === "" ? await getMemories() : await getMemorySearch(normalized);
+        if (request === requestGeneration && get().query === normalized) {
+          set({ data, error: null });
+        }
+      } catch (err) {
+        if (request === requestGeneration && get().query === normalized) {
+          set({ error: errorMessage(err) });
+        }
+      }
+    },
+  };
+});

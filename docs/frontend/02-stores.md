@@ -224,6 +224,7 @@ type ReaderState = {
   nyxPosition: number;              // Nyx 读到第几段（1-based）
   readingSpeed: number;             // 字符/秒（10–200）
   readCount: number;                // 读完几遍（>=1 可重读）
+  progressRevision: number;         // 后端 CAS 版本；只接受严格更新的服务端快照
   notes: UserNoteWithAnnotations[]; // 当前书用户笔记（含批注）
   notesError: string | null;
 };
@@ -241,6 +242,7 @@ setReadingSpeed(speed: number): Promise<void>
 startCatchup(): void                       // setTimeout 秒级推进；段落未加载/过短兜底 1s
 stopCatchup(): void
 advanceNyx(): void                         // nyxPosition += 1（不超 userPosition）；收尾时落库 nyx_position
+applyProgressEvent(e: ReadingProgressEvent): void // SSE 快照：当前书 + revision/位置单调才应用
 reread(): Promise<void>                    // 复位 userPosition/nyxPosition=1（read_count 不碰）
 
 // —— 07：笔记 ——
@@ -255,6 +257,10 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 
 - **派生态不落 store**：`nyxStatusOf(bookId, nyxPosition, userPosition)` 纯函数派生 `idle/reading/waiting`，ReaderView 用它展示 Nyx 正在追赶或等待；`catchupDurationMs` / `computeWindow` / `paginate`（真分页，08 §5.1）同为可测纯函数（06）。
 - **追赶循环秒级**：`startCatchup` 用 module-level `catchupTimer`，`catchupDurationMs = clamp(字数/速度, 1, 30) 秒`；`advanceNyx` 不超 `userPosition`，追上后落库 `nyx_position`（否则重载读到陈旧落后值会重追、重放 BOOK_FINISHED → read_count 重复 ++）。
+- **进度 SSE 增量**：`reading_progress` 携带完整进度快照。`applyProgressEvent` 只接受当前
+  `bookId`、严格大于 `progressRevision` 且不让 `nyxPosition` 回退的事件；异书、重复/旧
+  revision 和回退快照直接丢弃。应用后根据 Nyx 是否落后启动或停止追赶，保留本地尚未提交的
+  `userPosition`，避免后台/其它窗口的进度覆盖用户正在拖动的状态。
 - **读书 turn 迁出气泡流**：`reading_question`/`reading_association` 并进 `chatStore`（`addReadingTurn`），不再进 `readerStore`；`reading_mutter` 走 `announceStore`。readerStore 只留书架/进度/追赶/笔记。
 - **笔记「给尼克斯看」本地 append**：`showToNyx` 成功把完整 `Annotation` append 到该 note（不整表重拉避免抖动）；LLM 空/失败回 `null` 不 append；失败静默记 `notesError`。用户笔记与 Nyx 章末整合记忆严格分离（后者落 memory 不上屏）。
 - **书签请求按书隔离**：`loadBookmarks` 捕获发起时的 `bookId`，成功或失败回包仅在该书
@@ -276,6 +282,6 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 - **`isReady`（串行逐字纯函数）**：每条 nyx 文本消息等「同 `correlation_id` 且在其之前」的 nyx 文本消息都打完（入 `typedIds`）才就绪；无前置 nyx 文本 → 直接就绪；`preloaded` nyx 文本与 user 消息 → 恒就绪；不同 `correlation_id` 的 nyx 文本不阻塞。
 - **`settingsStore`**：`setTint`/`setImage` 独立落 store 可并存；`reset()` 回 null。
 - **`announceStore`**：`announce` 追加临时气泡（kind/text 落 store、id 唯一）；`dismiss` 摘除指定 id 其余保留；`advanceTimersByTime(ANNOUNCE_DURATION[kind])` 到时自动 dismiss。
-- **`readerStore`（06 + 07）**：`loadBooks` 落 books；`openBook` mock getProgress+getBookParagraphs → 会话态 + totalParagraphs、nyx<user 时 startCatchup；`syncPosition` 前翻 putProgress+evaluateImpulse、回翻不评估，冲突重试保留服务端更靠前的 Nyx 位置，显式重读允许回退；`paginate` 真分页纯函数（贪心封页/空/溢出/GAP_PX）；追赶循环 fake timers 推进/收尾/clearTimeout 不叠加；`loadNotes`/`addNote`（unshift 归一）/`updateNote`（保留 annotations）/`deleteNote`/`showToNyx`（append 不重拉、null 不 append）。
+- **`readerStore`（06 + 07）**：`loadBooks` 落 books；`openBook` mock getProgress+getBookParagraphs → 会话态 + totalParagraphs、nyx<user 时 startCatchup；`syncPosition` 前翻 putProgress+evaluateImpulse、回翻不评估，冲突重试保留服务端更靠前的 Nyx 位置，显式重读允许回退；`applyProgressEvent` 覆盖完整服务端快照但过滤异书、旧/重复 revision 和 Nyx 回退；`paginate` 真分页纯函数（贪心封页/空/溢出/GAP_PX）；追赶循环 fake timers 推进/收尾/clearTimeout 不叠加；`loadNotes`/`addNote`（unshift 归一）/`updateNote`（保留 annotations）/`deleteNote`/`showToNyx`（append 不重拉、null 不 append）。
 - **`evalStore`**：refresh 清详情；展开后逐 id 加载、成功缓存、失败可重试、旧记录 `null` 与真实空数组区分；面板安全渲染 Unicode/换行/HTML 字面文本。
 - 全部 mock fetch/无真实后端；验证管道正确（事件走对 store、字段零映射），不验证视觉。

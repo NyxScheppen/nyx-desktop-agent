@@ -22,6 +22,7 @@ import type {
   CurrentState,
   MemoryFact,
   Paragraph,
+  ReadingProgressEvent,
 } from "../src/types/api";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
@@ -1694,6 +1695,60 @@ describe("readerStore", () => {
     useReaderStore.getState().startCatchup();
 
     expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it("applyProgressEvent：忽略异书、旧 revision 和 Nyx 位置回退，接受新快照并控制追赶", () => {
+    useReaderStore.setState({
+      bookId: "b1",
+      totalParagraphs: 120,
+      paragraphs: [para(2, "b".repeat(100)), para(3, "c".repeat(100))],
+      windowFrom: 1,
+      userPosition: 5,
+      nyxPosition: 2,
+      readingSpeed: 50,
+      readCount: 0,
+      progressRevision: 3,
+    });
+    const apply = (overrides: Partial<ReadingProgressEvent>): void => {
+      useReaderStore.getState().applyProgressEvent({
+        event: "reading_progress",
+        event_id: "progress",
+        correlation_id: "b1",
+        timestamp: 1,
+        book_id: "b1",
+        user_position: 5,
+        nyx_position: 2,
+        reading_speed: 50,
+        read_count: 0,
+        revision: 3,
+        ...overrides,
+      });
+    };
+
+    apply({ book_id: "other", revision: 4, nyx_position: 4 });
+    apply({ revision: 3, nyx_position: 4 });
+    apply({ revision: 4, nyx_position: 1 });
+    expect(useReaderStore.getState()).toMatchObject({
+      nyxPosition: 2,
+      readCount: 0,
+      progressRevision: 3,
+    });
+
+    apply({ revision: 4, nyx_position: 3, read_count: 1 });
+    expect(useReaderStore.getState()).toMatchObject({
+      nyxPosition: 3,
+      readCount: 1,
+      progressRevision: 4,
+    });
+    expect(vi.getTimerCount()).toBe(1);
+
+    apply({ revision: 5, nyx_position: 5, read_count: 1 });
+    expect(useReaderStore.getState()).toMatchObject({
+      nyxPosition: 5,
+      progressRevision: 5,
+      userPosition: 5,
+    });
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("stopCatchup：clearTimeout 后再 advance 不推进", () => {

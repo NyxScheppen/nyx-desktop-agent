@@ -20,6 +20,8 @@ import { formatCurrentTime, timePhaseAt } from "./lib/time";
 import { useActivityStore } from "./stores/activityStore";
 import { useChatStore } from "./stores/chatStore";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
+import { useDesireStore } from "./stores/desireStore";
+import { useMemoryStore } from "./stores/memoryStore";
 import { useReaderStore } from "./stores/readerStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import { applyDesktopMode, isTauriRuntime, type DesktopMode } from "./lib/desktopWindow";
@@ -45,6 +47,8 @@ export default function App() {
   const status = useSSE(dispatchEvent);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
   const refreshActivity = useActivityStore((s) => s.refresh);
+  const refreshDesires = useDesireStore((s) => s.refresh);
+  const refreshMemories = useMemoryStore((s) => s.refresh);
   usePresence(status);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [desktopMode, setDesktopMode] = useState<DesktopMode>(() =>
@@ -88,9 +92,11 @@ export default function App() {
     if (status === "open") {
       refreshState();
       void refreshActivity();
+      void refreshDesires();
+      void refreshMemories();
       void loadHistory();
     }
-  }, [status, refreshState, refreshActivity, loadHistory]);
+  }, [status, refreshState, refreshActivity, refreshDesires, refreshMemories, loadHistory]);
 
   // 背景：有图以图铺底（cover）；无图有色调作纯色；默认羊皮纸（--parchment）。
   const bgStyle: CSSProperties = {};

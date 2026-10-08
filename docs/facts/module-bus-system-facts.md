@@ -5,6 +5,7 @@
 ## 当前实现事实
 
 - 当前系统不是纯“模块只通过总线通信”：EventBus 负责事件受理、`event_log` 持久化、`event_delivery` 投递、SSE 广播和 handler 通知；Facade 之间仍存在直接查询/编排调用。
+- 当前 `EventType` 有 25 个成员；阅读进度同步使用 `READING_PROGRESS`，不是新的消费者路由。
 - `EventBus.publish(event)` 是 durable admission：根事件必须先持久化 `event_log` 和已注册 consumer 的初始 delivery，commit 成功后才返回；数据库不可用或总线关闭时抛受理错误。
 - `EventBus.publish_many(events)` 将同一业务承诺的多条事件原子受理；任一冲突或失败整批回滚，
   已回滚行不计入 `persisted_count`，commit 后才广播/唤醒。快慢回复的全部正常文本只在终局
@@ -38,7 +39,9 @@
 - 当前 `_App` 是组合根内部 dataclass，也承担运行期状态容器；不要把 `_App` 传入 Facade。
 - `/api/observe` 要求严格有限非负的 idle_seconds/sampled_at、一致的 presence 和最多 512 字符标题；采样不能晚于接收时间。presence_lock 串行化观察与消息，采样水位拒绝旧观察（409，不投递）和旧消息；durable publish 后才更新内存，未提交失败保留旧状态。publish 返回前取消时 is_durable 核实已提交观察并完成快照，再传播取消。锁内系统时钟回拨重建基线，不以旧事件创建时间推断回拨。
 - 归来 pending/claimed 是进程内一次性事实，只含 returned_at/away_duration_seconds，通过同步回调注入 ExpressionFacade；领取在首次 await 前，finish/release 比对同一对象。正常终局提交立即消费，后续失败不能恢复；重新 away 清空旧 pending/claimed。重启初次观察不补造归来。
-- SSE 公共头固定包含 `event_id`、`correlation_id`、后端 `Event.timestamp`，公共头覆盖同名 content 键。前端拒绝非法 timestamp，实时与历史均保留后端时间，不使用浏览器接收时间。
+- SSE 公共头固定包含 `event_id`、`correlation_id`、后端 `Event.timestamp`，并在帧中发送标准 `id:` 游标；公共头覆盖同名 content 键。前端拒绝非法 timestamp，实时与历史均保留后端时间，不使用浏览器接收时间。
+- `GET /api/events` 先注册实时 sink，再按 `Last-Event-ID` 回放最多 1000 条：已知游标只返回 `(timestamp, id)` 严格更晚的事件；未知或过期游标返回最早的一页有界事件。历史与实时之间允许重叠，前端按 `event_id` 去重。
+- `GET /api/events/log` 的 `after` 使用同一游标和并列时间戳排序规则；省略 `after` 时仍使用管理查询的倒序。
 - eval 的完整应用层 prompt 由 `eval_prompt` 按 `call_id` 永久明文保存；think/speak 两条 `eval_log` 共用一份。recent 列表不返回 prompt，详情通过精确 record id 懒加载，语义以 `10-eval.md` 为准。
 
 ## 模块边界

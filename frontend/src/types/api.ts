@@ -145,6 +145,17 @@ export type ReadingAssociationEvent = SseBase & {
   paragraph_index: number;
 };
 
+/** 后台/其他窗口写入后的阅读进度广播；revision 是服务端单调 CAS 版本。 */
+export type ReadingProgressEvent = SseBase & {
+  event: "reading_progress";
+  book_id: string;
+  user_position: number;
+  nyx_position: number;
+  reading_speed: number;
+  read_count: number;
+  revision: number;
+};
+
 type OpaqueEventType =
   | "clock_tick"
   | "observation_state"
@@ -174,9 +185,116 @@ export type SseEvent =
   | ReadingMutterEvent
   | ReadingQuestionEvent
   | ReadingAssociationEvent
+  | ReadingProgressEvent
   | OpaqueEvent;
 
 export type ConnectionState = "connecting" | "open" | "closed";
+
+const OPAQUE_EVENT_TYPES = new Set<OpaqueEventType>([
+  "clock_tick",
+  "observation_state",
+  "reflection",
+  "memory_created",
+  "memory_promoted",
+  "scene_memory_requested",
+  "desire_generated",
+  "desire_satisfied",
+  "desire_expired",
+  "activity_start",
+  "activity_end",
+  "activity_interrupted",
+  "task_updated",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return isFiniteNumber(value) && Number.isInteger(value) && value >= 1;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return isFiniteNumber(value) && Number.isInteger(value) && value >= 0;
+}
+
+function isQuestionSubtype(value: unknown): value is QuestionSubtype {
+  return (
+    value === "question_knowledge" ||
+    value === "question_personal" ||
+    value === "question_reflective" ||
+    value === "quote_question"
+  );
+}
+
+/** SSE 信任边界：只把结构完整的业务帧交给 store，非法载荷直接跳过。 */
+export function parseSseEvent(type: string, data: unknown): SseEvent | null {
+  if (!isRecord(data)) return null;
+  const { event_id, correlation_id, timestamp } = data;
+  if (
+    typeof event_id !== "string" ||
+    typeof correlation_id !== "string" ||
+    !isFiniteNumber(timestamp) ||
+    !Number.isFinite(new Date(timestamp * 1000).getTime())
+  ) {
+    return null;
+  }
+  const base = { event_id, correlation_id, timestamp };
+  if (["speak", "ask", "think", "mutter", "initiate_chat"].includes(type)) {
+    return typeof data.content === "string"
+      ? ({ ...base, event: type, content: data.content } as SseEvent)
+      : null;
+  }
+  if (type === "user_message") {
+    return typeof data.message === "string"
+      ? ({ ...base, event: type, message: data.message } as UserMessageEvent)
+      : null;
+  }
+  if (type === "emotion_update") {
+    return isFiniteNumber(data.valence) &&
+      isFiniteNumber(data.arousal) &&
+      isEmotionCategory(data.emotion)
+      ? ({ ...base, event: type, valence: data.valence, arousal: data.arousal, emotion: data.emotion } as EmotionUpdateEvent)
+      : null;
+  }
+  if (type === "reflection_done") {
+    return typeof data.story === "string" && typeof data.story_is_new === "boolean"
+      ? ({ ...base, event: type, story: data.story, story_is_new: data.story_is_new } as ReflectionDoneEvent)
+      : null;
+  }
+  if (type === "reading_mutter") {
+    return typeof data.content === "string" && typeof data.book_id === "string" && isPositiveInteger(data.paragraph_index)
+      ? ({ ...base, event: type, content: data.content, book_id: data.book_id, paragraph_index: data.paragraph_index } as ReadingMutterEvent)
+      : null;
+  }
+  if (type === "reading_question") {
+    return typeof data.content === "string" && isQuestionSubtype(data.subtype) &&
+      typeof data.book_id === "string" && isPositiveInteger(data.paragraph_index) &&
+      (data.selected_text === null || typeof data.selected_text === "string")
+      ? ({ ...base, event: type, content: data.content, subtype: data.subtype, book_id: data.book_id, paragraph_index: data.paragraph_index, selected_text: data.selected_text } as ReadingQuestionEvent)
+      : null;
+  }
+  if (type === "reading_association") {
+    return typeof data.memory_id === "string" && typeof data.snippet === "string" &&
+      typeof data.book_id === "string" && isPositiveInteger(data.paragraph_index)
+      ? ({ ...base, event: type, memory_id: data.memory_id, snippet: data.snippet, book_id: data.book_id, paragraph_index: data.paragraph_index } as ReadingAssociationEvent)
+      : null;
+  }
+  if (type === "reading_progress") {
+    return typeof data.book_id === "string" && isPositiveInteger(data.user_position) &&
+      isPositiveInteger(data.nyx_position) && isPositiveInteger(data.reading_speed) &&
+      isNonNegativeInteger(data.read_count) && isNonNegativeInteger(data.revision)
+      ? ({ ...base, event: type, book_id: data.book_id, user_position: data.user_position, nyx_position: data.nyx_position, reading_speed: data.reading_speed, read_count: data.read_count, revision: data.revision } as ReadingProgressEvent)
+      : null;
+  }
+  return OPAQUE_EVENT_TYPES.has(type as OpaqueEventType)
+    ? ({ ...base, event: type } as OpaqueEvent)
+    : null;
+}
 
 // ---- 欲望（07-desire / nyx/types.py DesireState）----
 export type DesireType = "interaction" | "exploration" | "creation" | "rest";

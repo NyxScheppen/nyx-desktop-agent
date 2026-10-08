@@ -9,6 +9,7 @@
 
 - 端点：`GET /api/events`（SSE，tech-ref §4）。
 - 每个事件一条；`event:` 行 = `EventType` 成员值（小写 snake_case，如 `speak` / `emotion_update` / `activity_end`）。
+- 每帧同时发送标准 `id: <event_id>`；浏览器重连时会带 `Last-Event-ID`，后端据此回放断线期间的事件。
 - `data:` 行 = **`event.content` 展开 + `event_id` + `correlation_id` + `timestamp`**：
 
 ```
@@ -60,6 +61,7 @@ type ReflectionDoneEvent = SseBase & {
 type ReadingMutterEvent = SseBase & { event: "reading_mutter"; content: string; book_id: string; paragraph_index: number };
 type ReadingQuestionEvent = SseBase & { event: "reading_question"; content: string; subtype: QuestionSubtype; book_id: string; paragraph_index: number; selected_text: string | null };
 type ReadingAssociationEvent = SseBase & { event: "reading_association"; memory_id: string; snippet: string; book_id: string; paragraph_index: number };
+type ReadingProgressEvent = SseBase & { event: "reading_progress"; book_id: string; user_position: number; nyx_position: number; reading_speed: number; read_count: number; revision: number };
 
 // 不读字段的事件（前端不解析 payload，宽松兜底）：clock_tick/observation_state/reflection/
 // scene_memory_requested 无消费者；desire/activity/memory 事件只带 id，dispatch 只触发
@@ -75,7 +77,7 @@ type SseEvent =
   | TextEvent<"speak"> | TextEvent<"ask"> | TextEvent<"think">
   | TextEvent<"mutter"> | TextEvent<"initiate_chat">
   | UserMessageEvent | EmotionUpdateEvent | ReflectionDoneEvent
-  | ReadingMutterEvent | ReadingQuestionEvent | ReadingAssociationEvent
+  | ReadingMutterEvent | ReadingQuestionEvent | ReadingAssociationEvent | ReadingProgressEvent
   | OpaqueEvent;
 
 type ConnectionState = "connecting" | "open" | "closed";
@@ -94,7 +96,7 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 - **返回**：`ConnectionState`，供 App 显示连接状态（右上角「已连接/重连中」）。
 - **行为**：
   1. `useEffect` 里 `new EventSource(BASE_URL + "/api/events")`，`BASE_URL` 来自统一常量（空 = 相对路径，走 Vite proxy 同源转发到后端 8000）。
-  2. 对 24 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验 `event_id`/`correlation_id` 和有限数值 `timestamp` → 拼 `SseEvent` → `dispatch`。
+  2. 对 25 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验公共字段和事件载荷 → 按连接内 `event_id` 去重 → 拼 `SseEvent` → `dispatch`。
   3. `onopen` / `onerror`：更新 `ConnectionState`。`EventSource` 浏览器原生自动重连（`onerror` 时置 `connecting`），后端重启后自动恢复，无需手写重连循环。
   4. cleanup：`source.close()`（防重复挂载泄漏）。
 - **解析失败**：`JSON.parse` 抛错 → `console.error` + 跳过该帧（不崩整个流）；`data` 缺
@@ -130,9 +132,10 @@ function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
 | `reflection_done` | `desireStore` + `innerLifeStore` + `announceStore` | 两个 store `refresh()` +（`story_is_new` 时）`announce("mutter", …)` | 反思完成 → 欲望与内在状态重拉快照 +（新故事时）立绘旁冒一句 |
 | `reading_mutter` | `announceStore` | `announce("mutter", …)` | 读书碎碎念归悬浮气泡（与全局 mutter 同一渲染路径） |
 | `reading_question`/`reading_association` | `chatStore` | `addReadingTurn(e)` | 读书提问/联想并进对话（永久聊天消息，correlation_id=book_id，不过滤当前书） |
+| `reading_progress` | `readerStore` | `applyProgressEvent(e)` | 后台/其它窗口写入的完整进度快照；按当前书和 revision/位置单调性过滤 |
 | `clock_tick`/`observation_state`/`reflection` | — | — | 无消费者 |
 
-> 完整 24 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`task_updated`/`memory_created`/`memory_promoted`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`reflection_done` 同时刷新 desire 与 inner-life，避免慢变量已提交但面板仍显示旧值；`mutter` 进 `announceStore` 冒立绘旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection`/`scene_memory_requested` 无消费者（故无 `default` 分支）。
+> 完整 25 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`task_updated`/`memory_created`/`memory_promoted`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`reflection_done` 同时刷新 desire 与 inner-life，避免慢变量已提交但面板仍显示旧值；`reading_progress` 只更新当前书的 readerStore 增量状态；`mutter` 进 `announceStore` 冒立绘旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection`/`scene_memory_requested` 无消费者（故无 `default` 分支）。
 > **前向兼容边界**：命名事件（带 `event:` 行）若没有匹配的 `addEventListener` 且无 `onmessage`，浏览器会静默丢弃——故后端**新增 EventType 必须同步前端** `EVENT_TYPES` 数组 + `types/api.ts` 判别联合 + 本分发表（monorepo 内本就在同一提交改）。不存在「旧前端自动接住新类型」的兜底。
 
 
@@ -217,9 +220,9 @@ announceStore.announce(kind: "mutter" | "activity", text: string): void  // 立�
 
 ## 5. 容错与边界
 
-- **重连**：`EventSource` 原生重连；`onerror` 置 `connecting`，不手写退避（浏览器默认指数退避）。后端重启期间帧丢失，恢复后靠 `GET /api/state` 重新拉快照对齐（App 层在 `status === "open"` 时触发一次 `refreshState`）。
+- **重连与回放**：`EventSource` 原生重连；`onerror` 置 `connecting`，不手写退避（浏览器默认指数退避）。每帧的 `id:` 让浏览器自动发送 `Last-Event-ID`，后端回放已知游标之后的事件；未知/过期游标返回最早的一页有界事件。历史回放与实时 sink 允许重叠，因此 hook 按 `event_id` 去重。
 - **断线期间的快照**：`innerLifeStore` 的 `CurrentState` 以 `GET /api/state` 快照为准，`emotion_update` 做增量覆盖（valence/arousal/emotion）+ 顺带 `refreshState()` 重拉全量快照（带新能量/性格/三观）；`chatStore` 的历史消息靠 `GET /api/events/log?event_type=speak` 补（核心先行可暂缓，先只展示 SSE 实时的）。
-- **顺序**：SSE 单连接、后端顺序广播（底层模块总线契约「顺序分发」），前端按到达顺序 append，不额外排序。
+- **顺序**：SSE 单连接、后端顺序广播；事件日志回放按 `(timestamp, id)` 升序，前端按 `event_id` 去重。进度快照另按书籍 `revision` 和 Nyx 位置过滤，不以到达时间覆盖本地状态。
 - **测试**（`tests/sse.test.ts`）：mock `EventSource`（fake 触发 `onopen`/`onmessage`/`onerror`）→ 断言 `dispatch` 收到保留后端 `timestamp` 的 `SseEvent`、`scene_memory_requested` 已注册且分发为 no-op、`status` 三态切换、cleanup 调 `close()`、缺失/非法 timestamp 与坏 `data` 帧被跳过不崩。
 
 ## 6. App 组合装配（`App.tsx`）

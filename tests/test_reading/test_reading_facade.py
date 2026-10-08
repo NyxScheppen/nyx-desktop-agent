@@ -439,6 +439,49 @@ async def test_read_for_activity_sediments_and_only_advances_nyx(
     assert progress.revision == initial.revision + 1
 
 
+async def test_save_progress_publishes_committed_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, bus, _, _ = await _impulse_facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=False)]
+    )
+    try:
+        book = await facade.import_book("book.epub", b"epub")
+        progress = await facade.save_progress(book.id, 1, 1, 80, 0)
+    finally:
+        await database.conn.close()
+    [event] = [e for e in bus.published if e.type is EventType.READING_PROGRESS]
+    assert event.correlation_id == book.id
+    assert event.content == {
+        "book_id": book.id,
+        "user_position": progress.user_position,
+        "nyx_position": progress.nyx_position,
+        "reading_speed": progress.reading_speed,
+        "read_count": progress.read_count,
+        "revision": progress.revision,
+    }
+
+
+async def test_read_for_activity_book_finish_publishes_final_read_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, bus, _, _ = await _impulse_facade(
+        monkeypatch, [Segment(text="正文", is_chapter_start=True)]
+    )
+    try:
+        book = await facade.import_book("book.epub", b"epub")
+        result = await facade.read_for_activity(book.id, 1, "activity-1")
+        progress = await facade.get_progress(book.id)
+    finally:
+        await database.conn.close()
+    events = [e for e in bus.published if e.type is EventType.READING_PROGRESS]
+    assert result["completed"] is True
+    assert progress.read_count == 1
+    assert len(events) == 1
+    assert events[0].content["read_count"] == 1
+    assert events[0].content["revision"] == progress.revision
+
+
 async def test_import_book_duplicate_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1479,6 +1522,23 @@ async def test_book_finished_increments_read_count_even_with_empty_buffer(
         await database.conn.close()
     assert result is BoundaryResult.BOOK_FINISHED
     assert progress is not None and progress.read_count == 1
+
+
+async def test_book_finished_broadcasts_incremented_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, bus, *_ = await _note_facade(
+        monkeypatch, [Segment(text="第一章", is_chapter_start=True)]
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        await _check_and_drain(facade, book.id, 1)
+    finally:
+        await database.conn.close()
+    events = [e for e in bus.published if e.type is EventType.READING_PROGRESS]
+    assert len(events) == 1
+    assert events[0].content["read_count"] == 1
+    assert events[0].content["nyx_position"] == 1
 
 
 async def test_book_finished_increments_read_count_even_when_integrate_fails(

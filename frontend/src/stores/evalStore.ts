@@ -15,7 +15,9 @@ type EvalStoreState = {
   loadPrompt: (recordId: string) => Promise<void>;
 };
 
-export const useEvalStore = create<EvalStoreState>((set, get) => ({
+export const useEvalStore = create<EvalStoreState>((set, get) => {
+  let requestGeneration = 0;
+  return {
   records: null,
   stats: null,
   error: null,
@@ -23,6 +25,7 @@ export const useEvalStore = create<EvalStoreState>((set, get) => ({
   promptLoading: {},
   promptErrors: {},
   refresh: async () => {
+    const request = ++requestGeneration;
     set({
       error: null,
       prompts: {},
@@ -34,6 +37,7 @@ export const useEvalStore = create<EvalStoreState>((set, get) => ({
         getEvalRecent(5),
         getEvalTotalTokens(),
       ]);
+      if (request !== requestGeneration) return;
       set({
         records,
         stats,
@@ -42,12 +46,13 @@ export const useEvalStore = create<EvalStoreState>((set, get) => ({
         promptErrors: {},
       });
     } catch (err) {
-      set({
+      if (request === requestGeneration) set({
         error: err instanceof Error ? err.message : String(err),
       });
     }
   },
   loadPrompt: async (recordId: string) => {
+    const request = requestGeneration;
     const current = get();
     if (
       Object.hasOwn(current.prompts, recordId)
@@ -65,13 +70,13 @@ export const useEvalStore = create<EvalStoreState>((set, get) => ({
     });
     try {
       const prompt = await getEvalPrompt(recordId);
-      if (!get().records?.some((record) => record.id === recordId)) return;
+      if (request !== requestGeneration || !get().records?.some((record) => record.id === recordId)) return;
       set((state) => ({
         prompts: { ...state.prompts, [recordId]: prompt },
         promptLoading: { ...state.promptLoading, [recordId]: false },
       }));
     } catch (err) {
-      if (!get().records?.some((record) => record.id === recordId)) return;
+      if (request !== requestGeneration || !get().records?.some((record) => record.id === recordId)) return;
       set((state) => ({
         promptLoading: { ...state.promptLoading, [recordId]: false },
         promptErrors: {
@@ -81,4 +86,5 @@ export const useEvalStore = create<EvalStoreState>((set, get) => ({
       }));
     }
   },
-}));
+  };
+});

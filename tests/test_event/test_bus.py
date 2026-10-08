@@ -193,6 +193,31 @@ async def test_same_timestamp_has_stable_id_tiebreak() -> None:
         await _close(bus)
 
 
+async def test_list_events_after_returns_newer_events_in_replay_order() -> None:
+    bus = await _new_bus()
+    try:
+        await bus.publish(_make_event(id="a", timestamp=1.0))
+        await bus.publish(_make_event(id="b", timestamp=2.0))
+        await bus.publish(_make_event(id="c", timestamp=3.0))
+
+        assert [e.id for e in await bus.list_events(after="b")] == ["c"]
+    finally:
+        await _close(bus)
+
+
+async def test_list_events_unknown_cursor_replays_oldest_bounded_page() -> None:
+    bus = await _new_bus()
+    try:
+        await bus.publish(_make_event(id="b", timestamp=2.0))
+        await bus.publish(_make_event(id="a", timestamp=1.0))
+
+        assert [e.id for e in await bus.list_events(limit=1, after="expired")] == [
+            "a"
+        ]
+    finally:
+        await _close(bus)
+
+
 async def test_sse_sink_add_remove_and_backpressure() -> None:
     bus = await _new_bus()
     try:

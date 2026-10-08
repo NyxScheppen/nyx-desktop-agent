@@ -7,8 +7,8 @@
 ## 当前快照
 
 - 后端测试文件：64
-- `pytest --collect-only -q`：1184 tests collected
-- 最近一次全量验证：`1183 passed, 1 skipped`（本轮未采集语句覆盖率）
+- `pytest --collect-only -q`：1199 tests collected
+- 最近一次全量验证：`1198 passed, 1 skipped`（本轮未采集语句覆盖率）
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -160,6 +160,8 @@
 - `test_migrate_adds_source_memory_state_columns`
 - `test_assigned_task_does_not_preempt_running_activity`
 - `test_web_task_sediments_every_6000_character_block`
+- `test_web_task_evidence_failure_replays_without_duplicate_memory`
+- `test_web_task_checkpoint_failure_rolls_back_reading_evidence`
 - `test_interrupted_assigned_task_returns_to_queue`
 - `test_maybe_start_reading_can_match_uploaded_epub`
 - `test_best_book_match_does_not_fall_back_to_latest`

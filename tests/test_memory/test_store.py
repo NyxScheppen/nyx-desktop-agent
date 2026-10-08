@@ -283,6 +283,34 @@ async def test_record_recall_atomic() -> None:
         await db.conn.close()
 
 
+async def test_reading_evidence_replay_and_transactional_consumption() -> None:
+    database = await connect(":memory:")
+    store = MemoryStore(database)
+    try:
+        await store.record_reading_evidence("web:one", "one", "source", "0:6")
+        await store.record_reading_evidence("web:one", "one", "source", "0:6")
+        pending = await store.pending_reading_evidence()
+        assert len(pending) == 1
+        with pytest.raises(RuntimeError):
+            async with database.transaction():
+                await store.consume_reading_evidence([pending[0].id])
+                raise RuntimeError("rollback")
+        assert await store.pending_reading_evidence() == pending
+        await store.record_reading_evidence("web:two", "two", "late", "0:4")
+        async with database.transaction():
+            await store.consume_reading_evidence([pending[0].id])
+        remaining = await store.pending_reading_evidence()
+        assert [row.content for row in remaining] == ["late"]
+        with pytest.raises(RuntimeError):
+            async with database.transaction():
+                await store.consume_reading_evidence([pending[0].id])
+        await store.record_reading_evidence("web:one", "one", "source", "0:6")
+        remaining = await store.pending_reading_evidence()
+        assert [row.content for row in remaining] == ["late"]
+    finally:
+        await database.close()
+
+
 async def test_record_recall_same_user_event_is_idempotent() -> None:
     database = await connect(":memory:")
     store = MemoryStore(database)

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import NotePanel from "../src/components/reading/NotePanel";
 import { useReaderStore } from "../src/stores/readerStore";
@@ -38,7 +38,7 @@ describe("NotePanel 笔记面板", () => {
   });
 
   it("composer 提交 → addNote（book_id + content）", () => {
-    const addSpy = vi.spyOn(useReaderStore.getState(), "addNote").mockResolvedValue();
+    const addSpy = vi.spyOn(useReaderStore.getState(), "addNote").mockResolvedValue(true);
 
     render(<NotePanel onClose={() => {}} />);
     fireEvent.change(screen.getByPlaceholderText("记点什么…"), {
@@ -69,8 +69,8 @@ describe("NotePanel 笔记面板", () => {
         },
       ],
     });
-    const showSpy = vi.spyOn(useReaderStore.getState(), "showToNyx").mockResolvedValue();
-    const delSpy = vi.spyOn(useReaderStore.getState(), "deleteNote").mockResolvedValue();
+    const showSpy = vi.spyOn(useReaderStore.getState(), "showToNyx").mockResolvedValue(true);
+    const delSpy = vi.spyOn(useReaderStore.getState(), "deleteNote").mockResolvedValue(true);
 
     render(<NotePanel onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "给尼克斯看" }));
@@ -80,7 +80,7 @@ describe("NotePanel 笔记面板", () => {
     expect(delSpy).toHaveBeenCalledWith("n1");
   });
 
-  it("点「编辑」进入编辑态，保存 → updateNote(trim 后内容) + 退出编辑态", () => {
+  it("点「编辑」进入编辑态，保存 → updateNote(trim 后内容) + 退出编辑态", async () => {
     useReaderStore.setState({
       notes: [
         {
@@ -95,7 +95,7 @@ describe("NotePanel 笔记面板", () => {
         },
       ],
     });
-    const updSpy = vi.spyOn(useReaderStore.getState(), "updateNote").mockResolvedValue();
+    const updSpy = vi.spyOn(useReaderStore.getState(), "updateNote").mockResolvedValue(true);
 
     render(<NotePanel onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "编辑" }));
@@ -107,7 +107,9 @@ describe("NotePanel 笔记面板", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
     expect(updSpy).toHaveBeenCalledWith("n1", "改后");
-    expect(screen.getByRole("button", { name: "编辑" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "编辑" })).toBeInTheDocument(),
+    );
   });
 
   it("取消 → 退出编辑态、不调 updateNote", () => {
@@ -125,7 +127,7 @@ describe("NotePanel 笔记面板", () => {
         },
       ],
     });
-    const updSpy = vi.spyOn(useReaderStore.getState(), "updateNote").mockResolvedValue();
+    const updSpy = vi.spyOn(useReaderStore.getState(), "updateNote").mockResolvedValue(true);
 
     render(<NotePanel onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "编辑" }));

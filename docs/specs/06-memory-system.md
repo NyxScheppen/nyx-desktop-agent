@@ -11,6 +11,14 @@
 
 ## 系统边界
 
+- `remember_reading(content, summary, correlation_id, source_name=None, *, source_topic=None)`
+  将可选稳定来源 topic 写入 topics，与 knowledge 使用相同来源隔离去重；旧无来源调用
+  保持无来源，不猜测来源。EPUB 整合传真实书名和 `build_source_topic("book", book_id)`。
+- 阅读证据复用 MemoryStore，独立于 Memory、事实和 recall：
+  `record_reading_evidence(source_topic, source_name, content, block_key, *, book_id=None)`、
+  `pending_reading_evidence(limit=3)`、`consume_reading_evidence(ids)`。写入固定 hash id，
+  消费必须在调用方事务内、逐行确认未消费；对象完整性以 12-reading-system 为准。
+
 - `MemoryFacade.search(query: str) -> list[Memory]` 是表达慢通道唯一检索入口；表达层不直接调 store/retrieval。
 - 慢通道 `assemble_context` 对 `MemoryFacade.search(message)` 返回的记忆按表达预算选择
   可完整展示的排序前缀，只对入选记忆在同一回合按 memory id 去重后调用

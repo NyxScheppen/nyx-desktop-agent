@@ -105,7 +105,7 @@
 ## 活动执行
 
 - `READING` 必须来自真实 EPUB `book_id` 或委派网页任务；缺少二者会 `raise ValueError`，防止凭空编造读书内容。
-- 明确网页任务只调用 `web_fetch`，正文按 6000 字符块沉淀 knowledge 和滚动 profile；checkpoint 以 pending 两阶段提交，失败或空正文把任务置为 FAILED。
+- 明确网页任务只调用 `web_fetch`，正文按 6000 字符块沉淀 knowledge、原文证据和滚动 profile；knowledge 先独立幂等写入，随后证据与 cursor/profile/pending 在同一事务提交。写失败保留 pending，重放由来源内去重吸收；旧 pending 缺原文时不从新抓取页面伪造证据。抓取失败或空正文把任务置为 FAILED。
 - EPUB 委派任务与探索欲命中的 EPUB 都调用 `ReadingFacade.read_for_activity()`：复用原文沉淀、只单调推进 Nyx 进度，不修改用户进度，也不触发陪读冲动、提问或联想。
 - `CREATION` 按 goal topic/描述融合召回最多 3 条相关 knowledge/历史创作，连同当前观察、情绪、精力、审美和 canon 调用 LLM；`title/content` 必须是非空字符串。文件经 `ToolRegistry` 写入 `workspace/creations/<safe-title>-<activity-hash>.md`，标题 stem 最长 96 字符，同名活动不覆盖；同路径同内容写入幂等。进度写在 `activity.progress["creation"]`，恢复时复用 style / LLM 结果 / 文件路径。
 - `FREE_EXPLORATION` 由 `Exploration.run(activity)` 执行显式 checkpoint 状态机：`searching -> reading_results -> summarizing -> sinking -> completed`。进度写在 `activity.progress["exploration"]`，恢复时从 cursor 继续抓取结果；`sink_done=true` 时不重复新增长期欲望或 knowledge 记忆。

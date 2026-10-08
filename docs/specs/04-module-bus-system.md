@@ -37,6 +37,10 @@
 - [ ] 活动启动把来源条件领取、`RUNNING` Activity 和 `ACTIVITY_START` 放在一个本地事务；活动完成、失败、中断和恢复分别把 Activity、关联欲望、关联任务及对应 durable event 放在各自单一事务，不能留下终态 Activity 配 `RUNNING` 任务或 `ACTIVE` 欲望。
 - [ ] 活动收尾事务失败先整体回滚，再调和已经失去内存 runner 的 `RUNNING`；调和失败由下一次活动准入重试。取消 runner 最多等待 5 秒，超时不重排仍存活的工作。
 - [ ] schema 33 退役通用文件 `material`：旧未完成 material Activity 转 `ABANDONED`、关联欲望释放后删除表；已完成 Activity、既有 memory 与磁盘上传文件保留。
+- [ ] schema 36 新建 `reading_evidence`：主键 id，来源 topic/name、最多 6000 字符正文、
+  created_at、可空 consumed_at，以及可空 book_id（引用 books，删除级联）。待消费索引按
+  created_at/id 排序。原文证据与阅读检查点同事务提交；反思消费与慢变量/effect 同事务，
+  已消费或已删除的证据令事务失败并重试，不新增事件。对象完整性见 12-reading-system。
 - [ ] 文档同步：本文件、`tech-reference`、`docs/facts/module-bus-system-facts.md`、`test-inventory.md` 与实现一致。
 
 ## 核心决策

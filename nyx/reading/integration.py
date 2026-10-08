@@ -118,6 +118,11 @@ class ReadingIntegration:
                         "cursor": cursor,
                         "profile": next_profile,
                         "knowledge": items,
+                        "source_text": text,
+                        "source_name": book.title,
+                        "block_key": json.dumps(
+                            [state.get("cursor", {}), cursor], sort_keys=True
+                        ),
                     }
                     state["pending"] = pending
                     await self._store.update_memory_state(book_id, state)
@@ -147,13 +152,35 @@ class ReadingIntegration:
         )
         if items:
             await self._memory.remember_knowledge(items, correlation_id)
-        raw_cursor = pending.get("cursor")
-        raw_profile = pending.get("profile")
-        state["cursor"] = raw_cursor if isinstance(raw_cursor, dict) else {}
-        state["profile"] = raw_profile if isinstance(raw_profile, dict) else {}
-        state["pending"] = None
         if self._store is not None:
-            await self._store.update_memory_state(book_id, state)
+            raw_cursor = pending.get("cursor")
+            raw_profile = pending.get("profile")
+            committed_state = {
+                **state,
+                "cursor": (
+                    cast(dict[str, Any], raw_cursor)
+                    if isinstance(raw_cursor, dict)
+                    else {}
+                ),
+                "profile": (
+                    cast(dict[str, Any], raw_profile)
+                    if isinstance(raw_profile, dict)
+                    else {}
+                ),
+                "pending": None,
+            }
+            async with self._store.db.transaction():
+                source_text = pending.get("source_text")
+                block_key = pending.get("block_key")
+                source_name = pending.get("source_name")
+                if (isinstance(source_text, str) and isinstance(block_key, str)
+                        and isinstance(source_name, str)):
+                    await self._memory.record_reading_evidence(
+                        build_source_topic("book", book_id), source_name,
+                        source_text, block_key, book_id=book_id,
+                    )
+                await self._store.update_memory_state(book_id, committed_state)
+            state.update(committed_state)
 
     async def _next_source_block(
         self,
@@ -200,17 +227,34 @@ class ReadingIntegration:
         self, book_id: str, result: BoundaryResult, pre_read_count: int
     ) -> None:
         """Persist one buffer snapshot, preserving it when integration fails."""
+        lock = self._source_locks.setdefault(book_id, asyncio.Lock())
+        async with lock:
+            await self._integrate(book_id, result, pre_read_count)
+
+    async def _integrate(
+        self, book_id: str, result: BoundaryResult, pre_read_count: int
+    ) -> None:
         entries = list(self.buffer.get(book_id, []))
         if not entries:
             return
         try:
-            lines = [
-                f"[{entry.source}] 第{entry.paragraph_index}段：{entry.content}"
-                for entry in entries
-            ]
+            lines: list[str] = []
+            consumed: list[tuple[NyxBufferEntry, int]] = []
+            remaining = _INTEGRATION_PROMPT_MAX_CHARS
+            for entry in entries:
+                prefix = f"[{entry.source}] 第{entry.paragraph_index}段："
+                available = remaining - len(prefix) - (1 if lines else 0)
+                if available <= 0:
+                    break
+                fragment = entry.content[:available]
+                lines.append(prefix + fragment)
+                consumed.append((entry, len(fragment)))
+                remaining -= len(prefix) + len(fragment) + (1 if len(lines) > 1 else 0)
+                if len(fragment) < len(entry.content):
+                    break
             user = (
                 "这是你陪读这一章/本书时冒出的碎碎念和提问：\n\n"
-                + "\n".join(lines)[:_INTEGRATION_PROMPT_MAX_CHARS]
+                + "\n".join(lines)
                 + "\n\n整理成一条第一人称的读书记忆。"
             )
             output = await self._llm.complete(
@@ -225,7 +269,12 @@ class ReadingIntegration:
             )
             await self._evaluator.evaluate(output)
             content, summary = parse_reading_note(output.content)
-            await self._memory.remember_reading(content, summary, book_id)
+            book = await self._store.find_book(book_id) if self._store else None
+            await self._memory.remember_reading(
+                content, summary, book_id,
+                source_name=book.title if book else None,
+                source_topic=build_source_topic("book", book_id),
+            )
             if pre_read_count >= 1:
                 await self._bus.publish(
                     internal_event(
@@ -240,7 +289,14 @@ class ReadingIntegration:
                 )
             current = self.buffer.get(book_id)
             if current is not None:
-                del current[: len(entries)]
+                for entry, count in consumed:
+                    for index, candidate in enumerate(current):
+                        if candidate is entry:
+                            if count == len(entry.content):
+                                del current[index]
+                            else:
+                                entry.content = entry.content[count:]
+                            break
         except Exception:
             self._logger.exception(
                 "读书记忆整合失败 book_id=%s result=%s", book_id, result.value

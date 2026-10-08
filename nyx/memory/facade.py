@@ -23,7 +23,7 @@ from nyx.memory.facts import (
 )
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, extract_keywords
 from nyx.memory.store import MemoryStore
-from nyx.types import Event, Memory, MemoryEdge, MemoryFact
+from nyx.types import Event, Memory, MemoryEdge, MemoryFact, ReadingEvidence
 
 _SCENE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -1086,6 +1086,8 @@ class MemoryFacade:
         summary: str,
         correlation_id: str,
         source_name: str | None = None,
+        *,
+        source_topic: str | None = None,
     ) -> None:
         """读书记忆：章末/整本整合产物落成一条长期 reading 记忆。
 
@@ -1093,7 +1095,10 @@ class MemoryFacade:
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。
         type=LONG_TERM 使其豁免短期淘汰，读书记忆不随时间冲掉。
         """
-        memory = _new_memory(content, MemoryKind.READING, summary, MemoryType.LONG_TERM)
+        memory = _new_memory(
+            content, MemoryKind.READING, summary, MemoryType.LONG_TERM,
+            [source_topic] if source_topic else [],
+        )
         await self._persist_memory(
             memory,
             correlation_id,
@@ -1490,6 +1495,23 @@ class MemoryFacade:
     async def count_new(self, kind: MemoryKind | None, since: float) -> int:
         """计数「首次创建晚于 since 的 kind 记忆」（轻量，不物化整行/embedding）。"""
         return await self._store.count_new(kind, since)
+
+    async def record_reading_evidence(
+        self, source_topic: str, source_name: str, content: str, block_key: str,
+        *, book_id: str | None = None,
+    ) -> None:
+        """Record a bounded source block independently from extracted knowledge."""
+        await self._store.record_reading_evidence(
+            source_topic, source_name, content, block_key, book_id=book_id
+        )
+
+    async def pending_reading_evidence(self, limit: int = 3) -> list[ReadingEvidence]:
+        """Read the oldest unconsumed source blocks for aesthetic reflection."""
+        return await self._store.pending_reading_evidence(limit)
+
+    async def consume_reading_evidence(self, ids: list[str]) -> None:
+        """Consume only the prepared blocks in the shared reflection transaction."""
+        await self._store.consume_reading_evidence(ids)
 
     async def _persisted_or(self, fallback: Memory) -> Memory:
         persisted = await self._store.get(fallback.id)

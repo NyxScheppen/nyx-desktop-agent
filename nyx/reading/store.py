@@ -11,6 +11,8 @@ books 再批量插 paragraphs（`executemany`），任一失败整体回滚，�
 
 import json
 import time
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import Any, cast
 from uuid import uuid4
 
@@ -65,6 +67,19 @@ class ReadingStore:
 
     def __init__(self, db: Database) -> None:
         self._db = db
+
+    @property
+    def db(self) -> Database:
+        """Return the shared database for source-checkpoint transactions."""
+        return self._db
+
+    @asynccontextmanager
+    async def _operation(self) -> AsyncGenerator[bool, None]:
+        if self._db.in_transaction:
+            yield False
+            return
+        async with self._db.lock:
+            yield True
 
     async def insert_book_with_paragraphs(
         self,
@@ -216,12 +231,15 @@ class ReadingStore:
         self, book_id: str, state: dict[str, Any]
     ) -> None:
         """Persist one book's source-memory checkpoint."""
-        async with self._db.lock:
-            await self._db.conn.execute(
+        async with self._operation() as should_commit:
+            cursor = await self._db.conn.execute(
                 "UPDATE books SET memory_state = ?, updated_at = ? WHERE id = ?",
                 (json.dumps(state, ensure_ascii=False), time.time(), book_id),
             )
-            await self._db.conn.commit()
+            if cursor.rowcount != 1:
+                raise RuntimeError("阅读检查点所属书籍已删除")
+            if should_commit:
+                await self._db.conn.commit()
 
     async def get_progress(self, book_id: str) -> ReadingProgress | None:
         """读进度单行；无记录返回 None（默认值由 facade 补）。"""
@@ -464,16 +482,21 @@ class ReadingStore:
             await self._db.conn.commit()
             return cursor.rowcount > 0
 
-    async def insert_annotation(self, user_note_id: str, content: str) -> Annotation:
+    async def insert_annotation(
+        self, user_note_id: str, content: str
+    ) -> Annotation | None:
         """插一条 Nyx 批注；id/created_at 在写路径内生成。"""
         async with self._db.lock:
             ann_id = str(uuid4())
             now = time.time()
-            await self._db.conn.execute(
-                f"INSERT INTO annotations ({_ANN_COLS}) VALUES (?, ?, ?, ?)",
-                (ann_id, user_note_id, content, now),
+            cursor = await self._db.conn.execute(
+                f"INSERT INTO annotations ({_ANN_COLS}) "
+                "SELECT ?, id, ?, ? FROM user_notes WHERE id = ?",
+                (ann_id, content, now, user_note_id),
             )
             await self._db.conn.commit()
+            if cursor.rowcount != 1:
+                return None
             return Annotation(
                 id=ann_id, user_note_id=user_note_id, content=content, created_at=now,
             )

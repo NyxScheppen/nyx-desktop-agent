@@ -55,7 +55,17 @@
 - **反思输出边界**：`story` / `becoming` 去首尾空白后必须非空；JSON 常量 `NaN` / `Infinity` / `-Infinity` 拒绝；所有漂移必须是有限数。未知漂移键或错误字段类型使整次反思失败，单个长期欲望候选非法则只跳过该候选。
 - **候选级兜底**：`long_term_desires` 缺失或 `null` 按空数组；字段本身非数组则整次反思失败。单个候选的基础字段或 `linked_values` 非法时只记录并跳过该候选，其他候选和核心慢变量仍可提交；全部候选非法时仍提交核心反思。未知额外字段忽略。
 - **原子提交与冲突**：`Reflection.apply` 调 `add_prepared_long_terms_in_transaction`，不再从事务内调用会自行开事务的 `add_long_term`，也不在事务内执行 embedding。有获准候选时，若预检后长期欲望集合发生增删或影响去重的名称/描述变化，则抛 `RuntimeError`，整次本地写入回滚并由 durable delivery 重试；没有获准候选时长期欲望提交 no-op。容量满、同名/语义重复都保留已有欲望，不合并或回填其 `linked_values`。情感与时间锚点的回滚快照必须在获得数据库事务锁后、应用本事件前采集；不得在反思 prepare/LLM 前采集，避免失败回滚覆盖准备期间已成功提交的其他事件。
-- **审美维度**：`Aesthetic` 是四轴 `TypedDict`，每轴范围 `[1,10]`；`drift_aesthetic(base, delta)` 复用 `_drift_dim`，单维每轮最多漂移 `±0.5`。反思中的 `aesthetic_delta` 按 `min(new_reading_count / _AESTHETIC_MIN_READING, 1.0)` 缩放，`_AESTHETIC_MIN_READING=3`；`new_reading_count` 由 `MemoryFacade.count_new(MemoryKind.READING, narrative.updated_at)` 统计 `first_created_at > since` 的记忆，去重强化不算新增。
+- **审美维度**：`Aesthetic` 四轴范围 `[1,10]`，单维每轮最多漂移 `±0.5`。
+  普通反思不决定审美；有未消费阅读证据时额外调用一次统一 LLM
+  (`output_type="aesthetic_reflection"`)，只提供当前审美和最多三条各 6000 字符的
+  阅读证据（稳定 id、来源、原文），不注入对话/观察/活动摘要。JSON 为
+  `{aesthetic_delta, evidence:[{id, quote}]}`；非零漂移必须引用本轮 id 和非空原文
+  连续子串；非法/非有限漂移、伪造引用或调用失败时审美不变、证据保留，其他反思
+  可以提交。有效零漂移可消费本轮证据。先 clamp delta 到 ±0.5，再按
+  `min(actual_input_chars / 18000, 1)` 缩放，避免超大模型输出绕过阅读量限制。
+  `ReflectionPlan` 保存实际入 prompt 的 evidence ids；apply 在同一反思事务内
+  复核并消费这些行，冲突/删除/SQL 失败回滚全部反思。晚到证据不使用叙事时间戳过滤。
+  阅读证据入口、状态、重放与删除契约见 12-reading-system「阅读证据对象完整性」。
 - **反思触发创造欲加压（ripple，07-desire 提供 `pressure_creation`）**：`reflect()` 成功后（LLM 产出 + 规则回写完成）调 `desire_facade.pressure_creation(_CREATION_REFLECTION_DELTA)`；`_CREATION_REFLECTION_DELTA=0.2`（决策可推翻，用户定值）。这是「反思 → 想表达的冲动」——创造欲与读书/自由探索结束时按 07-desire 定义的 `_CREATION_ACTIVITY_PRESSURE_DELTA` 加压并列为创造欲的两类压力源；活动结束事件来源契约见 09-activity
 - **长期欲望唯一入口**：运行时只有反思能通过 `prepare_long_term_candidates` + `add_prepared_long_terms_in_transaction` 新增长期欲望；bootstrap 初始化不算运行时演化，探索不得新增。
 - **`reflect(correlation_id: str | None = None) -> ReflectionOutcome`**：公开调用先准备再以本地事务提交，并在提交后 announce `REFLECTION_DONE`；`REFLECTION` durable consumer 先检查 effect marker，在事务外完成 prepare，再在同一事务内写 effect marker、慢变量和 `REFLECTION_DONE`，提交后唤醒投递。解析失败或提交失败都会抛出，delivery 进入 retry；不再返回 `None` 表示失败

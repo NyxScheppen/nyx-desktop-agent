@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from nyx.config import DesireConfig
 from nyx.desire.facade import DesireFacade, LongTermSnapshot
-from nyx.enums import DesireType, MemoryKind
+from nyx.enums import DesireType
 from nyx.eval.evaluator import Evaluator
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
@@ -21,6 +21,7 @@ from nyx.types import (
     Memory,
     MemoryFact,
     Personality,
+    ReadingEvidence,
     ReflectionOutcome,
     SelfNarrative,
     Values,
@@ -44,7 +45,8 @@ _VALUES_KEYS = frozenset(
     {"attitude_to_human", "ai_identity_acceptance", "altruism", "optimism"}
 )
 _AESTHETIC_KEYS = frozenset({"ornate", "lyrical", "classical", "somber"})
-_AESTHETIC_MIN_READING = 3  # 审美偏移满额所需的最少新读章数
+_AESTHETIC_MAX_EVIDENCE = 3
+_AESTHETIC_MAX_CHARS = 18000
 _CREATION_REFLECTION_DELTA = 0.2  # 反思成功 → 创造欲 +0.2
 _DESIRE_TYPE_VALUES = frozenset(
     (DesireType.EXPLORATION.value, DesireType.INTERACTION.value)
@@ -68,10 +70,10 @@ _REFLECTION_SYSTEM = (
     "- story：一条由旧记忆归纳出的新叙事或新点子（非空字符串，与已写过的不同）。\n"
     "- becoming：一条新的认知变化（非空字符串）。\n"
     "- self_view：自画像，对象，键值都是字符串。\n"
-    "- personality_delta / values_delta / aesthetic_delta：微小漂移，对象；\n"
+    "- personality_delta / values_delta：微小漂移，对象；\n"
     "  键分别为 openness/conscientiousness/extraversion/agreeableness/neuroticism、\n"
-    "  attitude_to_human/ai_identity_acceptance/altruism/optimism、\n"
-    "  ornate/lyrical/classical/somber；值都是 [-0.5, 0.5] 的漂移。\n"
+    "  attitude_to_human/ai_identity_acceptance/altruism/optimism；值都是 "
+    "[-0.5, 0.5] 的漂移。\n"
     "- long_term_desires：数组（可为空），元素 "
     "{type, name, description, subtopics, linked_values}；\n"
     "  仅当某主题反复出现且未满足时提出，type 只能用 exploration 或 interaction；\n"
@@ -79,6 +81,66 @@ _REFLECTION_SYSTEM = (
     "  linked_values 是数组，只能从 attitude_to_human、ai_identity_acceptance、"
     "altruism、optimism 中选择，可为空。"
 )
+
+_AESTHETIC_SYSTEM = (
+    "你是尼克斯的审美反思器。只根据给出的原文片段和当前审美，"
+    "概括原文带来的审美变化。只输出 JSON：aesthetic_delta（对象，键为 "
+    "ornate/lyrical/classical/somber，值为有限数）和 evidence（数组，每项为 "
+    "{id, quote}）。quote 必须逐字摘自对应片段；没有可靠依据时输出零漂移和空数组。"
+)
+
+
+def _build_aesthetic_prompt(
+    evidence: list[ReadingEvidence], aesthetic: Aesthetic
+) -> str:
+    blocks = "\n\n".join(
+        f"[id={item.id} source={item.source_name}]\n{item.content}"
+        for item in evidence
+    )
+    return (
+        f"当前审美：华丽 {aesthetic['ornate']} / 抒情 {aesthetic['lyrical']} / "
+        f"古典 {aesthetic['classical']} / 沉重 {aesthetic['somber']}\n\n"
+        f"原文片段：\n{blocks}"
+    )
+
+
+def _parse_aesthetic_reflection(
+    raw: str,
+) -> tuple[dict[str, float], list[dict[str, str]]]:
+    def reject_non_finite(value: str) -> None:
+        raise ValueError(f"审美 JSON 数值必须有限，得到 {value}")
+
+    data = json.loads(raw, parse_constant=reject_non_finite)
+    if not isinstance(data, dict):
+        raise ValueError("审美 JSON 应是对象")
+    parsed = cast(dict[str, Any], data)
+    raw_delta = parsed.get("aesthetic_delta", {})
+    if not isinstance(raw_delta, dict):
+        raise ValueError("审美漂移应是对象")
+    delta: dict[str, float] = {}
+    for key, value in cast(dict[Any, Any], raw_delta).items():
+        if key not in _AESTHETIC_KEYS:
+            raise ValueError(f"未知审美维度：{key!r}")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError("审美漂移值应是数值")
+        if not math.isfinite(value):
+            raise ValueError("审美漂移值应是有限数")
+        delta[key] = float(value)
+    raw_evidence = parsed.get("evidence", [])
+    if not isinstance(raw_evidence, list):
+        raise ValueError("审美 evidence 应是数组")
+    references: list[dict[str, str]] = []
+    for item in cast(list[Any], raw_evidence):
+        if not isinstance(item, dict):
+            raise ValueError("审美 evidence 元素应是对象")
+        entry = cast(dict[str, Any], item)
+        evidence_id, quote = entry.get("id"), entry.get("quote")
+        if not isinstance(evidence_id, str) or not evidence_id.strip():
+            raise ValueError("审美 evidence 缺 id")
+        if not isinstance(quote, str) or not quote.strip():
+            raise ValueError("审美 evidence 缺非空 quote")
+        references.append({"id": evidence_id, "quote": quote})
+    return delta, references
 
 
 def _build_trigger_context(trigger: dict[str, Any] | None) -> str:
@@ -371,6 +433,7 @@ class ReflectionPlan:
     story: str
     story_is_new: bool
     base_narrative_updated_at: float
+    reading_evidence_ids: tuple[str, ...] = ()
 
 
 class Reflection:
@@ -405,6 +468,9 @@ class Reflection:
         now = time.time()
         # 1. 收集输入。此阶段不持有本地事务，避免 LLM 占住 SQLite 锁。
         all_memories = await self._memory_facade.list_memories()
+        pending_evidence = await self._memory_facade.pending_reading_evidence(
+            _AESTHETIC_MAX_EVIDENCE
+        )
         recent = sorted(
             all_memories,
             key=lambda memory: (memory.created_at, memory.id),
@@ -459,6 +525,58 @@ class Reflection:
         await self._evaluator.evaluate(output)
         parsed = _parse_reflection(output.content)
 
+        aesthetic_result = aesthetic
+        evidence_ids: tuple[str, ...] = ()
+        if pending_evidence:
+            try:
+                aesthetic_output = await self._llm.complete(
+                    [
+                        {"role": "system", "content": _AESTHETIC_SYSTEM},
+                        {
+                            "role": "user",
+                            "content": _build_aesthetic_prompt(
+                                pending_evidence, aesthetic
+                            ),
+                        },
+                    ],
+                    module="inner_life",
+                    output_type="aesthetic_reflection",
+                    correlation_id=correlation_id or str(uuid4()),
+                    json_mode=True,
+                )
+                await self._evaluator.evaluate(aesthetic_output)
+                raw_delta, references = _parse_aesthetic_reflection(
+                    aesthetic_output.content
+                )
+                evidence_by_id = {item.id: item for item in pending_evidence}
+                referenced_ids: list[str] = []
+                for reference in references:
+                    item = evidence_by_id.get(reference["id"])
+                    if item is None or reference["quote"] not in item.content:
+                        raise ValueError("审美 evidence 引用不属于本次原文")
+                    if item.id not in referenced_ids:
+                        referenced_ids.append(item.id)
+                if (
+                    any(value != 0.0 for value in raw_delta.values())
+                    and not referenced_ids
+                ):
+                    raise ValueError("非零审美漂移必须有原文引用")
+                chars = sum(len(item.content) for item in pending_evidence)
+                scale = min(chars / _AESTHETIC_MAX_CHARS, 1.0)
+                clamped = {
+                    key: max(-_MAX_DRIFT, min(_MAX_DRIFT, value))
+                    for key, value in raw_delta.items()
+                }
+                aesthetic_result = drift_aesthetic(
+                    aesthetic,
+                    {key: value * scale for key, value in clamped.items()},
+                )
+                evidence_ids = tuple(
+                    referenced_ids or [item.id for item in pending_evidence]
+                )
+            except Exception:
+                _logger.exception("审美独立反思失败，保留原文证据待重试")
+
         # 3. 在事务外计算最终写入值，事务内只执行确定性写入。
         new_story = parsed["story"]
         new_becoming = parsed["becoming"]
@@ -467,17 +585,7 @@ class Reflection:
             personality, parsed["personality_delta"]
         )
         new_values = drift_values(values, parsed["values_delta"])
-        # 审美偏移按「上次反思后新读章数」缩放：读得越多，漂移越接近满额
-        # （不读书则 scale=0，审美不动——读书是审美演化的唯一动力源）。
-        # 计数走 count_new（first_created_at 锚点）：strengthen 不刷新创建时间，
-        # 纯重读/去重强化不污染「是否新增」。
-        new_chapters = await self._memory_facade.count_new(
-            MemoryKind.READING, narrative.updated_at
-        )
-        scale = min(new_chapters / _AESTHETIC_MIN_READING, 1.0)
-        aesthetic_delta = cast(dict[str, float], parsed["aesthetic_delta"])
-        scaled_delta = {k: v * scale for k, v in aesthetic_delta.items()}
-        new_aesthetic = drift_aesthetic(aesthetic, scaled_delta)
+        new_aesthetic = aesthetic_result
         new_narrative = SelfNarrative(
             identity=narrative.identity,
             story=(
@@ -513,6 +621,7 @@ class Reflection:
             story=new_story,
             story_is_new=story_is_new,
             base_narrative_updated_at=narrative.updated_at,
+            reading_evidence_ids=evidence_ids,
         )
 
     async def apply(self, plan: ReflectionPlan) -> ReflectionOutcome:
@@ -520,6 +629,10 @@ class Reflection:
         await self._store.assert_narrative_updated_at(
             plan.base_narrative_updated_at
         )
+        if plan.reading_evidence_ids:
+            await self._memory_facade.consume_reading_evidence(
+                list(plan.reading_evidence_ids)
+            )
         await self._store.upsert_personality(plan.personality)
         await self._store.upsert_values(plan.values)
         await self._store.upsert_aesthetic(plan.aesthetic)

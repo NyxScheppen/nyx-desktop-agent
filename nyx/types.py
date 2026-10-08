@@ -78,6 +78,15 @@ class Memory:
     sources: list[SearchMode] = field(default_factory=list[SearchMode])  # 检索来源层
 
 
+@dataclass(frozen=True)
+class ReadingEvidence:
+    id: str
+    source_topic: str
+    source_name: str
+    content: str
+    created_at: float
+
+
 @dataclass
 class MemoryEdge:
     from_id: str

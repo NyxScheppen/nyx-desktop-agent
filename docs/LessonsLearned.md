@@ -754,6 +754,13 @@ Top N 再过滤来源，也会被其它来源的高分候选挤空，最终表�
 **怎么做**：先完成事务外计算；获得串行化本地写入的事务锁后，紧邻本事件应用前采集内存快照。失败只恢复该锁区间内的变化，并用“准备期间另一事件成功、当前事件随后失败”的测试验证。
 **影响的文件/决策**：`InnerLifeFacade.apply_event`、durable 反思回滚、进程内情感状态。
 
+### 2026-10-08: 跨对象 checkpoint 必须和证据副作用共享提交边界
+
+**来源**：网页阅读任务把来源证据写入嵌套 SQLite 事务，且旧回归只用内存 fake，未覆盖真实 MemoryFacade。
+**教训**：knowledge、来源证据和任务 cursor 属于不同持久对象。把一个对象的 facade 方法直接放进外层事务，若它另行开启事务会报错；把证据与 cursor 分开提交则会留下重放时无法判断的部分状态。
+**怎么做**：先明确每个持久化对象的提交点。允许 knowledge 先独立幂等提交；随后将证据写入与 checkpoint 前进放进同一事务。用真实共享 SQLite/MemoryFacade 验证证据失败、checkpoint 保存失败、重放和跨任务去重，不只用 fake 验证调用顺序。
+**影响的文件/决策**：`nyx/activity/facade.py` 网页任务 checkpoint、`MemoryStore.record_reading_evidence`、09-activity 契约及网页任务回归。
+
 ## 模板（条目格式）
 
 ```

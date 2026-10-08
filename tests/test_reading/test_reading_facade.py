@@ -131,6 +131,12 @@ class _FakeDesire:
 
 
 class _FakeMemory:
+    async def record_reading_evidence(
+        self, source_topic: str, source_name: str, content: str,
+        block_key: str, *, book_id: str | None = None,
+    ) -> None:
+        pass
+
     def __init__(self, results: list[Memory]) -> None:
         self._results = results
         self.search_calls = 0
@@ -142,7 +148,8 @@ class _FakeMemory:
         return list(self._results)
 
     async def remember_reading(
-        self, content: str, summary: str, correlation_id: str
+        self, content: str, summary: str, correlation_id: str,
+        source_name: str | None = None, *, source_topic: str | None = None,
     ) -> None:
         self.remembered.append((content, summary, correlation_id))
 
@@ -829,7 +836,7 @@ async def test_evaluate_paragraph_associate_searches_and_broadcasts(
 async def test_evaluate_paragraph_quote_question_splits_lines(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    llm = _FakeLlm({"quote_question": "这段为什么重要？\n因为生命的意义。"})
+    llm = _FakeLlm({"quote_question": "这段为什么重要？\n生命的意义是什么？"})
     facade, database, bus, _, _ = await _impulse_facade(
         monkeypatch,
         [Segment(text=_RICH_TEXT, is_chapter_start=False)],
@@ -849,7 +856,7 @@ async def test_evaluate_paragraph_quote_question_splits_lines(
     ]
     assert len(quote) == 1
     assert quote[0].content["content"] == "这段为什么重要？"
-    assert quote[0].content["selected_text"] == "因为生命的意义。"
+    assert quote[0].content["selected_text"] == "生命的意义是什么？"
 
 
 async def test_evaluate_paragraph_quote_question_single_line_is_rejected(
@@ -909,7 +916,7 @@ async def test_associate_reading_none_search_skips_without_raise() -> None:
 async def test_question_reading_records_proactive_turn() -> None:
     # 提问触发：record_proactive_turn 记问题正文（quote_question 的
     # selected_text 不进历史）
-    llm = _FakeLlm({"quote_question": "这段为什么重要？\n因为生命的意义。"})
+    llm = _FakeLlm({"quote_question": "这段为什么重要？\n生命的意义是什么？"})
     bus = _FakeBus()
     expr = _FakeExpression()
     database = await db.connect(":memory:")
@@ -1228,6 +1235,24 @@ async def test_show_to_nyx_writes_annotation_with_paragraph(
     assert ("reading_annotation", note.id) in fake_llm.calls
     assert len(evaluator.evaluated) == 1
     assert "独特原文段落" in fake_llm.messages[0][1]["content"]
+
+
+async def test_show_to_nyx_propagates_storage_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, database, *_ = await _note_facade(
+        monkeypatch, [Segment(text="source", is_chapter_start=False)],
+        llm=_FakeLlm({"reading_annotation": "annotation"}),
+    )
+    try:
+        book = await facade.import_book("a.epub", b"x")
+        note = await facade.add_user_note(book.id, None, "note", None)
+        await database.conn.execute("DROP TABLE annotations")
+        await database.conn.commit()
+        with pytest.raises(Exception, match="no such table"):
+            await facade.show_to_nyx(note.id)
+    finally:
+        await database.close()
 
 
 async def test_show_to_nyx_book_deleted_reads_note_only(

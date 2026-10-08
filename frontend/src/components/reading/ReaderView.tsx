@@ -361,7 +361,7 @@ export default function ReaderView() {
 
   const saveHighlight = async () => {
     if (selection === null || bookId === null) return;
-    await addNote({
+    const saved = await addNote({
       book_id: bookId,
       paragraph_id: selection.paragraphId,
       content: "",
@@ -369,8 +369,10 @@ export default function ReaderView() {
       selection_start: selection.start,
       selection_end: selection.end,
     });
-    setSelection(null);
-    window.getSelection()?.removeAllRanges();
+    if (saved) {
+      setSelection(null);
+      window.getSelection()?.removeAllRanges();
+    }
   };
 
   const visitHighlight = async (

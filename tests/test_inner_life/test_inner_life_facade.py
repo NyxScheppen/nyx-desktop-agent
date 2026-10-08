@@ -36,6 +36,7 @@ from nyx.types import (
     LongTermDesire,
     Memory,
     Personality,
+    ReadingEvidence,
     SelfNarrative,
     ShortTermDesire,
     Values,
@@ -151,6 +152,10 @@ class _FakeDesireFacade:
 
 
 class _FakeMemoryFacade:
+    def __init__(self, evidence: list[ReadingEvidence] | None = None) -> None:
+        self.evidence = evidence if evidence is not None else []
+        self.consumed_evidence: list[str] = []
+
     async def list_memories(
         self, kind: MemoryKind | None = None
     ) -> list[Memory]:
@@ -160,6 +165,12 @@ class _FakeMemoryFacade:
     async def count_new(self, kind: MemoryKind | None, since: float) -> int:
         del kind, since
         return 0
+
+    async def pending_reading_evidence(self, limit: int = 3) -> list[ReadingEvidence]:
+        return self.evidence[:limit]
+
+    async def consume_reading_evidence(self, ids: list[str]) -> None:
+        self.consumed_evidence.extend(ids)
 
 
 async def _seed(store: InnerLifeStore) -> None:

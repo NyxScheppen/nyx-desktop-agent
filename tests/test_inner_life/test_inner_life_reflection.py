@@ -29,6 +29,7 @@ from nyx.inner_life.reflection import (
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
+from nyx.memory.store import MemoryStore
 from nyx.types import (
     Aesthetic,
     DesireState,
@@ -36,6 +37,7 @@ from nyx.types import (
     LongTermDesire,
     Memory,
     Personality,
+    ReadingEvidence,
     SelfNarrative,
     Values,
 )
@@ -96,6 +98,7 @@ class _FakeLlm:
         self.calls: list[str] = []
         self.correlation_ids: list[str] = []
         self.user_contents: list[str] = []
+        self.aesthetic_response: str | None = None
 
     async def complete(
         self,
@@ -113,7 +116,12 @@ class _FakeLlm:
             module=module,
             type=output_type,
             model="fake",
-            content=self._response,
+            content=(
+                self.aesthetic_response
+                if output_type == "aesthetic_reflection"
+                and self.aesthetic_response is not None
+                else self._response
+            ),
             correlation_id=correlation_id,
         )
 
@@ -129,6 +137,16 @@ class _FakeEvaluator:
 class _FakeMemoryFacade:
     def __init__(self, memories: list[Memory] | None = None) -> None:
         self._memories = memories if memories is not None else []
+        self.evidence_store: MemoryStore | None = None
+
+    async def pending_reading_evidence(self, limit: int = 3) -> list[ReadingEvidence]:
+        if self.evidence_store is None:
+            return []
+        return await self.evidence_store.pending_reading_evidence(limit)
+
+    async def consume_reading_evidence(self, ids: tuple[str, ...]) -> None:
+        assert self.evidence_store is not None
+        await self.evidence_store.consume_reading_evidence(list(ids))
 
     async def list_memories(
         self,
@@ -1130,7 +1148,7 @@ async def test_run_unseeded_raises() -> None:
         await database.conn.close()
 
 
-# ---- 审美维度：阅读量缩放漂移 ----
+# ---- 审美维度：独立原文证据与事务消费 ----
 
 def _reading_memory(
     created_at: float, kind: MemoryKind = MemoryKind.READING
@@ -1149,6 +1167,8 @@ def _reading_memory(
 async def _run_and_get_aesthetic(
     memories: list[Memory],
     aesthetic_delta: dict[str, float],
+    blocks: int = 0,
+    reference: str = "valid",
 ) -> Aesthetic | None:
     """跑一轮反思（固定 aesthetic_delta），返回落库后的审美值。"""
     response = json.dumps(
@@ -1165,8 +1185,23 @@ async def _run_and_get_aesthetic(
     database = await db.connect(":memory:")
     store = InnerLifeStore(database)
     llm = _FakeLlm(response)
+    memory = _FakeMemoryFacade(memories)
+    memory.evidence_store = MemoryStore(database)
+    for i in range(blocks):
+        await memory.evidence_store.record_reading_evidence(
+            "source:book:test", "test", "原" * 6000, str(i)
+        )
+    evidence = await memory.pending_reading_evidence()
+    llm.aesthetic_response = json.dumps({
+        "aesthetic_delta": aesthetic_delta,
+        "evidence": [
+            {"id": e.id if reference != "unknown" else "unknown",
+             "quote": "原" if reference != "fake" else "伪造"}
+            for e in evidence
+        ] if reference != "missing" else [],
+    })
     reflection = _make_reflection(
-        store, llm, _FakeEvaluator(), _FakeMemoryFacade(memories), _FakeDesireFacade()
+        store, llm, _FakeEvaluator(), memory, _FakeDesireFacade()
     )
     try:
         await _seed(store)
@@ -1183,7 +1218,7 @@ async def test_run_aesthetic_zero_reading_unchanged() -> None:
 
 async def test_run_aesthetic_one_reading_scaled_third() -> None:
     a = await _run_and_get_aesthetic(
-        [_reading_memory(2000.0)], {"ornate": 0.3, "somber": -0.3}
+        [], {"ornate": 0.3, "somber": -0.3}, blocks=1
     )
     assert a is not None
     assert a["ornate"] == pytest.approx(7.1)  # 7 + 0.3/3
@@ -1193,8 +1228,7 @@ async def test_run_aesthetic_one_reading_scaled_third() -> None:
 
 
 async def test_run_aesthetic_three_reading_full() -> None:
-    memories = [_reading_memory(2000.0 + i) for i in range(3)]
-    a = await _run_and_get_aesthetic(memories, {"ornate": 0.3})
+    a = await _run_and_get_aesthetic([], {"ornate": 0.3}, blocks=3)
     assert a is not None
     assert a["ornate"] == pytest.approx(7.3)  # 7 + 0.3 满额
 
@@ -1204,3 +1238,62 @@ async def test_run_aesthetic_ignores_non_reading() -> None:
         [_reading_memory(2000.0, kind=MemoryKind.USER_PROFILE)], {"ornate": 0.3}
     )
     assert a == _AESTHETIC  # user_profile 不计入新读章数
+
+
+@pytest.mark.parametrize("reference", ["fake", "unknown", "missing"])
+async def test_aesthetic_invalid_source_reference_preserves_evidence(
+    reference: str,
+) -> None:
+    assert await _run_and_get_aesthetic(
+        [], {"ornate": 0.5}, blocks=1, reference=reference
+    ) == _AESTHETIC
+
+
+async def test_aesthetic_clamps_before_character_scaling() -> None:
+    a = await _run_and_get_aesthetic([], {"ornate": 9.0}, blocks=1)
+    assert a is not None
+    assert a["ornate"] == pytest.approx(7 + 0.5 / 3)
+
+
+async def test_aesthetic_consumption_rolls_back_with_slow_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    memory = _FakeMemoryFacade()
+    memory.evidence_store = MemoryStore(database)
+    llm = _FakeLlm()
+    try:
+        await _seed(store)
+        await memory.evidence_store.record_reading_evidence(
+            "source:book:test", "test", "原" * 6000, "one"
+        )
+        evidence = await memory.pending_reading_evidence()
+        llm.aesthetic_response = json.dumps({
+            "aesthetic_delta": {"ornate": 0.3},
+            "evidence": [{"id": evidence[0].id, "quote": "原"}],
+        })
+        reflection = _make_reflection(
+            store, llm, _FakeEvaluator(), memory, _FakeDesireFacade()
+        )
+        plan = await reflection.prepare("trace")
+
+        async def fail_write(value: Personality) -> None:
+            raise RuntimeError("write failed")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "upsert_personality", fail_write)
+            with pytest.raises(RuntimeError, match="write failed"):
+                async with database.transaction():
+                    await reflection.apply(plan)
+        assert await memory.pending_reading_evidence() == evidence
+        assert await store.get_aesthetic() == _AESTHETIC
+        await memory.evidence_store.record_reading_evidence(
+            "source:book:test", "test", "新", "late"
+        )
+        async with database.transaction():
+            await reflection.apply(plan)
+        assert [e.content for e in await memory.pending_reading_evidence()] == ["新"]
+        assert "trace" == llm.correlation_ids[-1]
+    finally:
+        await database.conn.close()

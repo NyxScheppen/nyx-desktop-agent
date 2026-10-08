@@ -528,6 +528,7 @@ async def test_list_annotations_for_notes_sorted_desc(
         empty = await store.list_annotations_for_notes([])
     finally:
         await database.conn.close()
+    assert a1 is not None and a2 is not None and a3 is not None
     assert [a.id for a in anns] == [a3.id, a2.id, a1.id]  # 新在前（全局降序）
     assert empty == []
 

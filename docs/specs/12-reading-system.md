@@ -285,6 +285,56 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
 
 ## 生命周期
 
+## 阅读证据对象完整性
+
+阅读暴露证据与知识/主观记忆分开保存，复用 `MemoryFacade` / `MemoryStore`，
+不新增服务层。`ReadingEvidence` 是不可变快照，含 id、source_topic、source_name、
+content、created_at；每条正文最多 6000 字符。schema 36 新建 `reading_evidence`。
+
+**入口清单**
+
+| 入口 | 产生条件 | 写入位置 |
+|---|---|---|
+| `ReadingIntegration.sediment` | EPUB 原文块成功沉淀，即使 knowledge 为空 | pending 保留原文证据；证据与 cursor 同事务提交 |
+| `ActivityFacade._run_web_task` | 明确的网页阅读任务块成功沉淀 | task pending 保留证据；证据与 checkpoint 同事务提交 |
+| pending 恢复 | 新版 pending 带完整证据 | 同一来源、块定位和正文 hash 生成固定 id，重复插入 no-op |
+
+旧 pending 缺原文时不猜测补证据；旧库不追补阅读量。自由探索不写阅读证据。
+
+**消费者清单**
+
+| 消费者 | 发现方式 | 用途 |
+|---|---|---|
+| `Reflection.prepare` | `MemoryFacade.pending_reading_evidence(limit=3)`，按 created_at/id 升序 | 独立审美 prompt；不以知识点数量或主观输出次数计量 |
+| `Reflection.apply` | plan 的 evidence ids | 在反思事务内复核存在且未消费，并标记消费 |
+
+**状态迁移表**
+
+| 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
+|---|---|---|---|
+| 不存在 | 原文沉淀与证据 checkpoint 提交成功 | 未消费 | 写固定 id；失败回滚证据与 checkpoint |
+| 未消费 | 独立审美结果有效且反思提交成功 | 已消费 | consumed_at 与慢变量/effect 同事务写入 |
+| 未消费 | LLM/解析/引用失败 | 未消费 | 审美不变，其他反思可提交 |
+| 任意 | EPUB 来源书删除 | 不存在 | book_id 外键 CASCADE；在途反思提交失败并重试 |
+
+**Bad case 表**
+
+| 情况 | 处理 |
+|---|---|
+| 空 | 空原文不记录；无证据不调用审美 LLM；空 knowledge 不影响证据 |
+| 失败 | 证据存储错误传播；审美调用失败保留证据 |
+| 部分完成 | 只提交成功的块；只消费实际入 prompt 的最多三块，后续块留到下轮 |
+| 乱序 | 晚到块不按叙事时间戳跳过；按未消费行发现；提交复核防并发消费 |
+| 重放 | 固定 id 幂等；重读相同来源/范围/正文不重复增加阅读量 |
+| 删除 | EPUB 随书删除；网页无公开来源删除入口，可随本地 DB 清理；不引用已删除证据 |
+
+主观整合按实际发送的条目/字符范围消费，12000 字符外的尾部保留；
+等待期间 buffer 满额淘汰后新增的条目不因旧 snapshot 长度被删。
+`remember_reading` 使用基于 book_id 的稳定来源 topic 与真实书名；旧未知来源不回填。
+QUOTE_QUESTION 必须严格两行，第二行是实际发送的截断原文中的非空连续子串。
+存储/状态读取错误不能降级为批注 `null`；仅 LLM/eval 失败或空批注返回 `null`，
+等待期间笔记删除返回 404。
+
 - 服务器停止接收新请求后，必须先调用 `ReadingFacade.quiesce()`，再取消 tick/观察等
   循环，随后调用 `ReadingFacade.drain()`，最后关闭 EventBus 和共享 DB。
 - drain 超时会取消剩余阅读后台任务；未完成的 buffer 保留在进程内并由后续边界或重启

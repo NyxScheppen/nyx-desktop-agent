@@ -168,8 +168,10 @@ class AssignedTask:
 - 创建时只接受带主机名的 `http` / `https` URL；`exploration.web_enabled=false` 时返回冲突且不创建任务。
 - 执行只调用现有 `web_fetch`，不先搜索；继续复用逐跳公网校验、重定向限制、15 秒请求超时和 20 万字符正文上限。
 - 空正文、非公网地址、下载或解析失败都使任务 `FAILED`，不得沉淀 snippet 或伪正文。
-- `checkpoint` 保存 `cursor/profile/pending`。正文从 cursor 起每次最多 6000 字符调用 `MemoryFacade.digest_source_block`；先保存 pending，再写 knowledge，最后推进 cursor、采纳 profile 并清 pending。
-- knowledge 使用稳定的 `web:<normalized-url>` 来源 topic；`source_name` 使用 URL。记忆写入后、cursor 推进前崩溃时允许重放，由同一来源内去重吸收。
+- `checkpoint` 保存 `cursor/profile/pending`。pending 至少包含下一 cursor、滚动 profile、knowledge 列表，以及该块的 `source_text/source_name/block_key`；网页正文从 cursor 起每次最多 6000 字符调用 `MemoryFacade.digest_source_block`。
+- 每块先持久化 pending，再调用 `remember_knowledge`。knowledge 可能逐条提交；其失败时 cursor 不推进且 pending 保留，重放由同一来源内去重补齐已写条目。
+- knowledge 写入后，在一个 `Database.transaction()` 内写 `reading_evidence`、推进 cursor、采纳 profile 并清除 pending。证据写入或 checkpoint 保存失败时，证据和 checkpoint 一起回滚；knowledge 允许已存在，重放必须幂等。
+- knowledge 使用稳定的 `web:<normalized-url>` 来源 topic；`source_name` 使用 URL。旧版本已落盘的 pending 可能没有原文证据字段；恢复时仍按已存 knowledge 幂等写入并推进 checkpoint，不从重新抓取的页面伪造旧证据。
 - 网页任务读完整个已抽取正文；它不改变自动自由探索“每条搜索结果最多读取 6000 字符”的既有语义。
 
 ### Goal 结算
@@ -332,6 +334,9 @@ class AssignedTask:
 | 目标已经读过 | 幂等完成，不回退进度、不增加读完次数 |
 | 活动中断或进程崩溃 | 从 checkpoint 重排或恢复，不永久停在 `RUNNING` |
 | 记忆已写但 checkpoint 未推进 | 允许重放，由同一来源内去重吸收 |
+| knowledge 批次中途失败 | 已提交 knowledge 保留；pending 保留、cursor 不推进；重放按来源内去重补齐 |
+| 证据插入或 checkpoint 保存失败 | 同事务回滚证据与 cursor/profile/pending 更新；已提交 knowledge 保留并可幂等重放 |
+| 旧 pending 没有原文证据字段 | 不从新抓取正文重建旧证据；按原 pending 写 knowledge 并推进，不伪造来源快照 |
 | 完成/失败/中断收尾事务回滚 | 立即恢复调和；恢复仍失败时由下一次准入重试，不遗留无执行者的 `RUNNING` |
 | runner 吞掉取消 | 5 秒后停止等待，保持原状态且不重排，避免双 runner |
 | 任务已提交但立即调度失败 | 返回已持久化任务，保持 `PENDING` 等待后续 tick，不向用户报告发布失败 |
@@ -396,7 +401,7 @@ class AssignedTask:
 | `RUNNING` | 打断、关闭或可恢复崩溃 | `PENDING` | checkpoint 保留 |
 | `RUNNING` | 收尾事务回滚且 runner 已结束 | `PENDING` | 恢复调和把 Activity 置 `PAUSED/ABANDONED`；恢复失败由下一次准入重试 |
 
-**Bad case 表**：空队列不建活动；失败保存 500 字符错误；部分完成保留 checkpoint；FIFO 消除选择乱序；重复创建活动任务返回已有活跃任务；书删除时失败，不改选其它书；取消超时保持 `RUNNING` 且不重排；提交后调度失败仍返回已持久化任务。
+**Bad case 表**：空队列不建活动；失败保存 500 字符错误；部分完成保留 checkpoint；FIFO 消除选择乱序；重复创建活动任务返回已有活跃任务；书删除时失败，不改选其它书；取消超时保持 `RUNNING` 且不重排；网页 knowledge 部分提交后通过来源去重补齐；网页证据与 checkpoint 在同一事务中回滚；旧 pending 不用变化后的页面重建证据；提交后调度失败仍返回已持久化任务。
 
 ### Legacy Material
 

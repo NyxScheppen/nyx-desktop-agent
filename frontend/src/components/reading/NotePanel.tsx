@@ -21,13 +21,14 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     void loadNotes();
-  }, [loadNotes]);
+  }, [bookId, loadNotes]);
 
-  const submit = () => {
-    const content = draft.trim();
+  const submit = async () => {
+    const rawDraft = draft;
+    const content = rawDraft.trim();
     if (content === "" || bookId === null) return;
-    void addNote({ book_id: bookId, content });
-    setDraft("");
+    const saved = await addNote({ book_id: bookId, content });
+    if (saved && draft === rawDraft) setDraft("");
   };
 
   const startEdit = (id: string, content: string) => {
@@ -40,13 +41,17 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
     setEditDraft("");
   };
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (editingId === null) return;
-    const content = editDraft.trim();
+    const id = editingId;
+    const rawDraft = editDraft;
+    const content = rawDraft.trim();
     if (content === "") return;
-    void updateNote(editingId, content);
-    setEditingId(null);
-    setEditDraft("");
+    const saved = await updateNote(id, content);
+    if (saved && editingId === id && editDraft === rawDraft) {
+      setEditingId(null);
+      setEditDraft("");
+    }
   };
 
   return (

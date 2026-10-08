@@ -1,6 +1,8 @@
 # pyright: reportPrivateUsage=false
 from typing import cast
 
+import pytest
+
 from nyx.enums import EmotionCategory, EnergyState, EventType, ReadingBehavior
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
@@ -12,6 +14,9 @@ from nyx.types import CurrentState, Event, LLMOutput, Personality, Values
 
 
 class _Llm:
+    def __init__(self, response: str = "为什么这句话重要？") -> None:
+        self.response = response
+
     async def complete(
         self,
         messages: list[LlmMessage],
@@ -26,7 +31,7 @@ class _Llm:
             module=module,
             type=output_type,
             model="fake",
-            content="为什么这句话重要？",
+            content=self.response,
             correlation_id=correlation_id,
         )
 
@@ -114,3 +119,27 @@ async def test_dispatch_question_publishes_and_records_output() -> None:
     assert [event.type for event in bus.events] == [EventType.READING_QUESTION]
     assert recorded == [("book-1", 3, "为什么这句话重要？", "question")]
     assert expression.turns == ["为什么这句话重要？"]
+
+
+@pytest.mark.parametrize("response", [
+    "为什么？\n不存在的原文", "为什么？\n原文\n额外一行",
+    "为什么？\n尾部", "为什么？\n   ",
+])
+async def test_quote_question_rejects_unverifiable_quote(response: str) -> None:
+    bus = _Bus()
+    recorded: list[str] = []
+
+    async def record(book: str, index: int, content: str, source: str) -> None:
+        recorded.append(content)
+
+    companion = ReadingCompanion(
+        cast(LlmClient, _Llm(response)), cast(Evaluator, _Evaluator()),
+        cast(EventBus, bus), cast(MemoryFacade, _Memory()),
+        cast(ExpressionFacade, _Expression()), "canon", record,
+    )
+    await companion.dispatch(
+        "book", 1, "原文" + "a" * 6000 + "尾部",
+        [ReadingBehavior.QUOTE_QUESTION], False, _state(),
+    )
+    assert bus.events == []
+    assert recorded == []

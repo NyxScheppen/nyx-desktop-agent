@@ -158,10 +158,12 @@ class ReadingCompanion:
             if not raw:
                 return False
             if behavior is ReadingBehavior.QUOTE_QUESTION:
-                content, _, quote = raw.partition("\n")
-                content = content.strip()
-                selected_text = quote.strip()
-                if not selected_text:
+                lines = raw.splitlines()
+                if len(lines) != 2:
+                    return False
+                content = lines[0].strip()
+                selected_text = lines[1].strip()
+                if not selected_text or selected_text not in text[:6000]:
                     return False
             else:
                 content = raw

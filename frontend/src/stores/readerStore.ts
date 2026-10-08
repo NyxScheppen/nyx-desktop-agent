@@ -68,10 +68,10 @@ type ReaderState = {
     selected_text?: string | null;
     selection_start?: number | null;
     selection_end?: number | null;
-  }) => Promise<void>;
-  updateNote: (id: string, content: string) => Promise<void>;
-  deleteNote: (id: string) => Promise<void>;
-  showToNyx: (noteId: string) => Promise<void>;
+  }) => Promise<boolean>;
+  updateNote: (id: string, content: string) => Promise<boolean>;
+  deleteNote: (id: string) => Promise<boolean>;
+  showToNyx: (noteId: string) => Promise<boolean>;
   loadBookmarks: () => Promise<void>;
   toggleBookmark: (paragraphId: string) => Promise<void>;
 };
@@ -89,11 +89,13 @@ function clearCatchupTimer(): void {
 }
 
 function enqueueImpulse(
+  session: number,
   bookId: string,
   paragraphIndex: number,
   lastParagraphIndex: number,
 ): Promise<void> {
-  const previous = impulseQueues.get(bookId);
+  const key = session + ":" + bookId;
+  const previous = impulseQueues.get(key);
   const run = () =>
     evaluateImpulse(bookId, paragraphIndex, lastParagraphIndex).then(
       () => undefined,
@@ -101,13 +103,14 @@ function enqueueImpulse(
   const next =
     previous === undefined ? run() : previous.catch(() => {}).then(run);
   const tracked = next.finally(() => {
-    if (impulseQueues.get(bookId) === tracked) impulseQueues.delete(bookId);
+    if (impulseQueues.get(key) === tracked) impulseQueues.delete(key);
   });
-  impulseQueues.set(bookId, tracked);
+  impulseQueues.set(key, tracked);
   return tracked;
 }
 
 function enqueueProgress(
+  session: number,
   bookId: string,
   payload: {
     user_position: number;
@@ -116,11 +119,13 @@ function enqueueProgress(
   },
   get: () => ReaderState,
   set: (state: Partial<ReaderState>) => void,
+  isCurrent: () => boolean,
   allowNyxRewind = false,
 ): Promise<void> {
-  const previous = progressQueues.get(bookId);
+  const key = session + ":" + bookId;
+  const previous = progressQueues.get(key);
   const run = async (): Promise<void> => {
-    if (get().bookId !== bookId) return;
+    if (!isCurrent() || get().bookId !== bookId) return;
     const current = get();
     const desiredNyxPosition = allowNyxRewind
       ? payload.nyx_position
@@ -131,7 +136,7 @@ function enqueueProgress(
         nyx_position: desiredNyxPosition,
         expected_revision: current.progressRevision,
       });
-      if (get().bookId === bookId) {
+      if (isCurrent() && get().bookId === bookId) {
         set({
           nyxPosition: allowNyxRewind
             ? result.nyx_position
@@ -146,7 +151,7 @@ function enqueueProgress(
         const retryNyxPosition = allowNyxRewind
           ? payload.nyx_position
           : Math.max(desiredNyxPosition, fresh.nyx_position, get().nyxPosition);
-        if (get().bookId === bookId) {
+        if (isCurrent() && get().bookId === bookId) {
           set({
             nyxPosition: allowNyxRewind
               ? get().nyxPosition
@@ -160,7 +165,7 @@ function enqueueProgress(
           nyx_position: retryNyxPosition,
           expected_revision: fresh.revision,
         });
-        if (get().bookId === bookId) {
+        if (isCurrent() && get().bookId === bookId) {
           set({
             nyxPosition: allowNyxRewind
               ? retry.nyx_position
@@ -176,9 +181,9 @@ function enqueueProgress(
   };
   const next = previous === undefined ? run() : previous.catch(() => {}).then(run);
   const tracked = next.finally(() => {
-    if (progressQueues.get(bookId) === tracked) progressQueues.delete(bookId);
+    if (progressQueues.get(key) === tracked) progressQueues.delete(key);
   });
-  progressQueues.set(bookId, tracked);
+  progressQueues.set(key, tracked);
   return tracked;
 }
 
@@ -246,19 +251,47 @@ function needsWindowRefresh(userPosition: number, windowFrom: number): boolean {
 }
 
 export const useReaderStore = create<ReaderState>((set, get) => {
+  let sessionGeneration = 0;
+  let notesRequestRevision = 0;
+  let bookmarksRequestRevision = 0;
+  const noteQueues = new Map<string, Promise<unknown>>();
+  const bookmarkQueues = new Map<string, Promise<unknown>>();
+
+  const isCurrent = (session: number, bookId: string): boolean =>
+    sessionGeneration === session && get().bookId === bookId;
+
+  const enqueueOperation = <T>(
+    queues: Map<string, Promise<unknown>>,
+    key: string,
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    const previous = queues.get(key);
+    const next =
+      previous === undefined
+        ? operation()
+        : previous.catch(() => undefined).then(operation);
+    const tracked = next.finally(() => {
+      if (queues.get(key) === tracked) queues.delete(key);
+    });
+    queues.set(key, tracked);
+    return tracked;
+  };
+
   const fetchWindow = async (
+    session: number,
     bookId: string,
     userPosition: number,
     total: number,
     centered: boolean,
   ): Promise<void> => {
+    if (!isCurrent(session, bookId)) return;
     if (total <= 0) {
       set({ paragraphs: [], windowFrom: 0 });
       return;
     }
     const { from, to } = computeWindow(userPosition, total, centered);
     const paragraphs = await getBookParagraphs(bookId, from, to);
-    set({ paragraphs, windowFrom: from });
+    if (isCurrent(session, bookId)) set({ paragraphs, windowFrom: from });
   };
 
   return {
@@ -289,21 +322,30 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     },
 
     openBook: async (bookId) => {
+      const session = ++sessionGeneration;
+      get().stopCatchup();
       try {
         let book = get().books.find((b) => b.id === bookId);
         if (book === undefined || book.total_paragraphs <= 0) {
           const books = await getBooks();
+          if (sessionGeneration !== session) return;
           set({ books });
           book = books.find((b) => b.id === bookId);
         }
         const total = book?.total_paragraphs ?? 0;
+        if (sessionGeneration !== session) return;
         set({
           bookId,
           totalParagraphs: total,
           booksError: null,
           progressRevision: 0,
+          notes: [],
+          notesError: null,
+          bookmarks: [],
+          bookmarksError: null,
         });
         const progress = await getProgress(bookId);
+        if (!isCurrent(session, bookId)) return;
         const userPosition = progress.user_position;
         const nyxPosition = progress.nyx_position;
         set({
@@ -311,16 +353,21 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           nyxPosition,
           readingSpeed: progress.reading_speed,
           readCount: progress.read_count,
-        progressRevision: progress.revision ?? 0,
+          progressRevision: progress.revision ?? 0,
         });
-        await fetchWindow(bookId, userPosition, total, false);
-        if (nyxPosition < userPosition) get().startCatchup();
+        await fetchWindow(session, bookId, userPosition, total, false);
+        if (isCurrent(session, bookId) && nyxPosition < userPosition) {
+          get().startCatchup();
+        }
       } catch (err) {
-        set({ booksError: err instanceof Error ? err.message : String(err) });
+        if (sessionGeneration === session) {
+          set({ booksError: err instanceof Error ? err.message : String(err) });
+        }
       }
     },
 
     closeBook: () => {
+      sessionGeneration += 1;
       get().stopCatchup();
       set({
         bookId: null,
@@ -339,60 +386,68 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     },
 
     syncPosition: async (next) => {
+      const session = sessionGeneration;
       const { bookId, totalParagraphs, userPosition } = get();
       if (bookId === null || totalParagraphs <= 0) return;
       const clamped = Math.min(totalParagraphs, Math.max(1, next));
       if (clamped === userPosition) return;
       set({ userPosition: clamped });
       const { nyxPosition, readingSpeed } = get();
+      if (!isCurrent(session, bookId)) return;
       // 进度持久化后写：fire-and-forget，失败静默、下次翻页重写覆盖。
-      await enqueueProgress(bookId, {
+      await enqueueProgress(session, bookId, {
         user_position: clamped,
         nyx_position: nyxPosition,
         reading_speed: readingSpeed,
-      }, get, set);
+      }, get, set, () => isCurrent(session, bookId));
+      if (!isCurrent(session, bookId)) return;
       // 前翻逐段补发冲动（整屏翻一次跨 N 段，逐段 evaluate 保住每段都有机会触发；
       // 后翻不评估，双保险；正文后端自取，不传 text）。
       if (clamped > userPosition) {
         const impulseTasks: Promise<void>[] = [];
         for (let i = userPosition + 1; i <= clamped; i += 1) {
-          impulseTasks.push(enqueueImpulse(bookId, i, i - 1));
+          impulseTasks.push(enqueueImpulse(session, bookId, i, i - 1));
         }
         await Promise.all(impulseTasks);
       }
+      if (!isCurrent(session, bookId)) return;
       if (needsWindowRefresh(clamped, get().windowFrom)) {
-        await fetchWindow(bookId, clamped, totalParagraphs, false);
+        await fetchWindow(session, bookId, clamped, totalParagraphs, false);
       }
-      get().startCatchup();
+      if (isCurrent(session, bookId)) get().startCatchup();
     },
 
     jumpToPosition: async (next) => {
+      const session = sessionGeneration;
       const { bookId, totalParagraphs, userPosition } = get();
       if (bookId === null || totalParagraphs <= 0) return;
       const clamped = Math.min(totalParagraphs, Math.max(1, next));
       if (clamped === userPosition) return;
       set({ userPosition: clamped });
       const { nyxPosition, readingSpeed } = get();
-      await enqueueProgress(bookId, {
+      if (!isCurrent(session, bookId)) return;
+      await enqueueProgress(session, bookId, {
         user_position: clamped,
         nyx_position: nyxPosition,
         reading_speed: readingSpeed,
-      }, get, set);
+      }, get, set, () => isCurrent(session, bookId));
+      if (!isCurrent(session, bookId)) return;
       if (needsWindowRefresh(clamped, get().windowFrom)) {
-        await fetchWindow(bookId, clamped, totalParagraphs, false);
+        await fetchWindow(session, bookId, clamped, totalParagraphs, false);
       }
-      get().startCatchup();
+      if (isCurrent(session, bookId)) get().startCatchup();
     },
 
     setReadingSpeed: async (speed) => {
+      const session = sessionGeneration;
       const { bookId, userPosition, nyxPosition } = get();
       if (bookId === null) return;
       set({ readingSpeed: speed });
-      await enqueueProgress(bookId, {
+      await enqueueProgress(session, bookId, {
         user_position: userPosition,
         nyx_position: nyxPosition,
         reading_speed: speed,
-      }, get, set);
+      }, get, set, () => isCurrent(session, bookId));
     },
 
     startCatchup: () => {
@@ -411,6 +466,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
 
     advanceNyx: () => {
       clearCatchupTimer();
+      const session = sessionGeneration;
       const { bookId, nyxPosition, userPosition } = get();
       if (bookId === null) return;
       const next = Math.min(nyxPosition + 1, userPosition); // 不超车
@@ -424,123 +480,231 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         // 落库，否则重载后读到陈旧落后值会重追、重放 BOOK_FINISHED——12-reading-system 幂等靠进程内
         // _finished_books，重启即丢 → read_count 重复 ++ 且误触 reflect。
         const readingSpeed = get().readingSpeed;
-      void enqueueProgress(bookId, {
+      void enqueueProgress(session, bookId, {
         user_position: userPosition,
         nyx_position: next,
         reading_speed: readingSpeed,
-        }, get, set);
+        }, get, set, () => isCurrent(session, bookId));
       }
     },
 
     reread: async () => {
+      const session = sessionGeneration;
       const { bookId, totalParagraphs, readingSpeed } = get();
       if (bookId === null) return;
       get().stopCatchup();
       set({ userPosition: 1, nyxPosition: 1 });
       // read_count 后端不碰（保持 >=1）；只复位进度。
-      await enqueueProgress(bookId, {
+      await enqueueProgress(session, bookId, {
         user_position: 1,
         nyx_position: 1,
         reading_speed: readingSpeed,
-      }, get, set, true);
-      await fetchWindow(bookId, 1, totalParagraphs, false);
+      }, get, set, () => isCurrent(session, bookId), true);
+      if (!isCurrent(session, bookId)) return;
+      await fetchWindow(session, bookId, 1, totalParagraphs, false);
     },
 
     loadNotes: async () => {
       const { bookId } = get();
       if (bookId === null) return;
-      set({ notesError: null });
-      try {
-        const notes = await getNotes(bookId);
-        set({ notes });
-      } catch (err) {
-        set({ notesError: err instanceof Error ? err.message : String(err) });
-      }
+      const session = sessionGeneration;
+      const request = ++notesRequestRevision;
+      const key = session + ":" + bookId;
+      await enqueueOperation(noteQueues, key, async () => {
+        if (!isCurrent(session, bookId)) return;
+        set({ notesError: null });
+        try {
+          const notes = await getNotes(bookId);
+          if (
+            isCurrent(session, bookId) &&
+            request === notesRequestRevision
+          ) {
+            set({ notes });
+          }
+        } catch (err) {
+          if (
+            isCurrent(session, bookId) &&
+            request === notesRequestRevision
+          ) {
+            set({
+              notesError: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      });
     },
 
     // POST 返回裸 UserNote（7 键无 annotations），归一成 UserNoteWithAnnotations 再 unshift。
     addNote: async (p) => {
-      try {
-        const note = await createUserNote(p);
-        set({ notes: [{ ...note, annotations: [] }, ...get().notes] });
-      } catch (err) {
-        set({ notesError: err instanceof Error ? err.message : String(err) });
-      }
+      const session = sessionGeneration;
+      const bookId = get().bookId;
+      if (bookId === null || p.book_id !== bookId) return false;
+      notesRequestRevision += 1;
+      return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
+        if (!isCurrent(session, bookId)) return false;
+        try {
+          const note = await createUserNote(p);
+          if (!isCurrent(session, bookId)) return false;
+          set({ notes: [{ ...note, annotations: [] }, ...get().notes] });
+          return true;
+        } catch (err) {
+          if (isCurrent(session, bookId)) {
+            set({ notesError: err instanceof Error ? err.message : String(err) });
+          }
+          return false;
+        }
+      });
     },
 
     // PUT 覆盖 7 键、保留原有 annotations（后端不回批注，整表重拉代价高）。
     updateNote: async (id, content) => {
-      try {
-        const note = await updateUserNote(id, content);
-        set({
-          notes: get().notes.map((n) =>
-            n.id === id ? { ...note, annotations: n.annotations } : n,
-          ),
-        });
-      } catch (err) {
-        set({ notesError: err instanceof Error ? err.message : String(err) });
-      }
+      const session = sessionGeneration;
+      const bookId = get().bookId;
+      if (bookId === null) return false;
+      notesRequestRevision += 1;
+      return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
+        if (!isCurrent(session, bookId)) return false;
+        try {
+          const note = await updateUserNote(id, content);
+          if (!isCurrent(session, bookId)) return false;
+          set({
+            notes: get().notes.map((n) =>
+              n.id === id ? { ...note, annotations: n.annotations } : n,
+            ),
+          });
+          return true;
+        } catch (err) {
+          if (isCurrent(session, bookId)) {
+            set({ notesError: err instanceof Error ? err.message : String(err) });
+          }
+          return false;
+        }
+      });
     },
 
     deleteNote: async (id) => {
-      try {
-        await deleteUserNote(id);
-        set({ notes: get().notes.filter((n) => n.id !== id) });
-      } catch (err) {
-        set({ notesError: err instanceof Error ? err.message : String(err) });
-      }
+      const session = sessionGeneration;
+      const bookId = get().bookId;
+      if (bookId === null) return false;
+      notesRequestRevision += 1;
+      return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
+        if (!isCurrent(session, bookId)) return false;
+        try {
+          await deleteUserNote(id);
+          if (!isCurrent(session, bookId)) return false;
+          set({ notes: get().notes.filter((n) => n.id !== id) });
+          return true;
+        } catch (err) {
+          if (isCurrent(session, bookId)) {
+            set({ notesError: err instanceof Error ? err.message : String(err) });
+          }
+          return false;
+        }
+      });
     },
 
     // 成功后 annotations append 完整 Annotation（不整表重拉）；LLM 空回 null 不 append。
     showToNyx: async (noteId) => {
-      try {
-        const ann = await showNoteToNyx(noteId);
-        if (ann === null) return;
-        set({
-          notes: get().notes.map((n) =>
-            n.id === noteId ? { ...n, annotations: [...n.annotations, ann] } : n,
-          ),
-        });
-      } catch (err) {
-        set({ notesError: err instanceof Error ? err.message : String(err) });
-      }
+      const session = sessionGeneration;
+      const bookId = get().bookId;
+      if (bookId === null) return false;
+      notesRequestRevision += 1;
+      return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
+        if (!isCurrent(session, bookId)) return false;
+        try {
+          const ann = await showNoteToNyx(noteId);
+          if (!isCurrent(session, bookId)) return false;
+          if (ann !== null) {
+            set({
+              notes: get().notes.map((n) =>
+                n.id === noteId
+                  ? { ...n, annotations: [...n.annotations, ann] }
+                  : n,
+              ),
+            });
+          }
+          return true;
+        } catch (err) {
+          if (isCurrent(session, bookId)) {
+            set({ notesError: err instanceof Error ? err.message : String(err) });
+          }
+          return false;
+        }
+      });
     },
 
     loadBookmarks: async () => {
       const { bookId } = get();
       if (bookId === null) return;
-      set({ bookmarksError: null });
-      try {
-        const bookmarks = await getBookmarks(bookId);
-        if (get().bookId === bookId) set({ bookmarks });
-      } catch (err) {
-        if (get().bookId === bookId) {
-          set({ bookmarksError: err instanceof Error ? err.message : String(err) });
+      const session = sessionGeneration;
+      const request = ++bookmarksRequestRevision;
+      const key = session + ":" + bookId;
+      await enqueueOperation(bookmarkQueues, key, async () => {
+        if (!isCurrent(session, bookId)) return;
+        set({ bookmarksError: null });
+        try {
+          const bookmarks = await getBookmarks(bookId);
+          if (
+            isCurrent(session, bookId) &&
+            request === bookmarksRequestRevision
+          ) {
+            set({ bookmarks });
+          }
+        } catch (err) {
+          if (
+            isCurrent(session, bookId) &&
+            request === bookmarksRequestRevision
+          ) {
+            set({
+              bookmarksError: err instanceof Error ? err.message : String(err),
+            });
+          }
         }
-      }
+      });
     },
 
     toggleBookmark: async (paragraphId) => {
-      const { bookId, bookmarks } = get();
+      const session = sessionGeneration;
+      const { bookId } = get();
       if (bookId === null) return;
-      const existing = bookmarks.find((item) => item.paragraph_id === paragraphId);
-      try {
-        if (existing !== undefined) {
-          await deleteBookmark(existing.id);
-          set({
-            bookmarks: get().bookmarks.filter((item) => item.id !== existing.id),
-          });
-          return;
+      bookmarksRequestRevision += 1;
+      return enqueueOperation(
+        bookmarkQueues,
+        session + ":" + bookId,
+        async () => {
+          if (!isCurrent(session, bookId)) return;
+          const existing = get().bookmarks.find(
+            (item) => item.paragraph_id === paragraphId,
+          );
+          try {
+            if (existing !== undefined) {
+              await deleteBookmark(existing.id);
+              if (isCurrent(session, bookId)) {
+                set({
+                  bookmarks: get().bookmarks.filter(
+                    (item) => item.id !== existing.id,
+                  ),
+                });
+              }
+              return;
+            }
+            const bookmark = await createBookmark(bookId, paragraphId);
+            if (isCurrent(session, bookId)) {
+              set({
+                bookmarks: [...get().bookmarks, bookmark].sort(
+                  (a, b) => a.paragraph_index - b.paragraph_index,
+                ),
+              });
+            }
+          } catch (err) {
+            if (isCurrent(session, bookId)) {
+              set({
+                bookmarksError: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
         }
-        const bookmark = await createBookmark(bookId, paragraphId);
-        set({
-          bookmarks: [...get().bookmarks, bookmark].sort(
-            (a, b) => a.paragraph_index - b.paragraph_index,
-          ),
-        });
-      } catch (err) {
-        set({ bookmarksError: err instanceof Error ? err.message : String(err) });
-      }
+      );
     },
   };
 });

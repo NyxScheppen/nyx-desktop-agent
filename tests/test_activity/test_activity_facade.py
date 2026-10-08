@@ -26,7 +26,7 @@ from nyx.activity.facade import (
 )
 from nyx.activity.lifecycle import ActivityLifecycle
 from nyx.activity.store import ActivityStore
-from nyx.config import ActivityConfig, DesireConfig, ExplorationConfig
+from nyx.config import ActivityConfig, DesireConfig, ExplorationConfig, MemoryConfig
 from nyx.db import Database
 from nyx.desire.facade import DesireFacade
 from nyx.desire.store import DesireStore
@@ -49,6 +49,8 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
+from nyx.memory.retrieval import MemoryRetrieval
+from nyx.memory.store import MemoryStore
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
@@ -189,6 +191,14 @@ class _FakeLlm:
             "creation": _CREATION_JSON,
             "exploration_plan": _PLAN_JSON,
             "note": _NOTE_JSON,
+            "source_digest": json.dumps(
+                {
+                    "summary": "摘要",
+                    "themes": [],
+                    "content_category": "unknown",
+                    "points": [{"topic": "主题", "content": "知识点"}],
+                }
+            ),
         }.get(output_type, "{}")
         return LLMOutput(
             module=module,
@@ -353,6 +363,7 @@ class _FakeMemory:
         self.remembered: list[list[dict[str, str]]] = []
         self.remembered_correlation_ids: list[str] = []
         self.digested_blocks: list[tuple[str, str, str]] = []
+        self.recorded_evidence: list[tuple[str, str, str, str]] = []
         self.knowledge: list[Memory] = []
         self.search_queries: list[str] = []
 
@@ -373,6 +384,15 @@ class _FakeMemory:
     ) -> None:
         self.remembered.append(items)
         self.remembered_correlation_ids.append(correlation_id)
+
+    async def record_reading_evidence(
+        self,
+        source_topic: str,
+        source_name: str,
+        content: str,
+        block_key: str,
+    ) -> None:
+        self.recorded_evidence.append((source_topic, source_name, content, block_key))
 
     async def digest_source_block(
         self,
@@ -611,6 +631,181 @@ async def test_web_task_sediments_every_6000_character_block() -> None:
         assert saved.status is AssignedTaskStatus.COMPLETED
     finally:
         await database.conn.close()
+
+
+async def test_web_task_evidence_failure_replays_without_duplicate_memory() -> None:
+    class _FailingEvidenceMemory:
+        def __init__(self, memory: MemoryFacade) -> None:
+            self.memory = memory
+            self.evidence_attempts = 0
+
+        async def digest_source_block(
+            self,
+            text: str,
+            source_name: str,
+            correlation_id: str,
+            *,
+            profile: dict[str, object] | None = None,
+        ) -> tuple[dict[str, object], list[dict[str, str]]]:
+            del text, source_name, correlation_id, profile
+            return {"summary": "摘要"}, [{"topic": "主题", "content": "知识点"}]
+
+        async def remember_knowledge(
+            self, items: list[dict[str, str]], correlation_id: str
+        ) -> None:
+            await self.memory.remember_knowledge(items, correlation_id)
+
+        async def record_reading_evidence(
+            self,
+            source_topic: str,
+            source_name: str,
+            content: str,
+            block_key: str,
+        ) -> None:
+            self.evidence_attempts += 1
+            if self.evidence_attempts == 1:
+                raise RuntimeError("evidence store unavailable")
+            await self.memory.record_reading_evidence(
+                source_topic, source_name, content, block_key
+            )
+
+    database = await db.connect(":memory:")
+    store = ActivityStore(database)
+    bus = EventBus(database)
+    memory_store = MemoryStore(database)
+    persisted_memory = MemoryFacade(
+        memory_store,
+        MemoryRetrieval(memory_store, None),
+        bus,
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        MemoryConfig(),
+    )
+    memory = _FailingEvidenceMemory(persisted_memory)
+
+    async def get_state() -> CurrentState:
+        return _mk_state(80.0)
+
+    facade = ActivityFacade(
+        store,
+        bus,
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        cast(ToolRegistry, _WebTaskTools("正文")),
+        cast(DesireFacade, _FakeDesire()),
+        cast(MemoryFacade, memory),
+        get_state,
+        _no_observation,
+        ActivityConfig(),
+        ExplorationConfig(web_enabled=True),
+        "测试人格",
+    )
+    try:
+        async with _running(bus):
+            assigned = await facade.assign_web_task("https://example.com/rollback")
+            with pytest.raises(RuntimeError, match="evidence store unavailable"):
+                await _await_task(facade)
+
+            failed = await store.get_task(assigned.id)
+            memories = await memory_store.list_memories(kind=MemoryKind.KNOWLEDGE)
+            assert failed is not None and failed.status is AssignedTaskStatus.FAILED
+            assert failed.checkpoint.get("cursor", 0) == 0
+            assert failed.checkpoint["pending"] is not None
+            assert len(memories) == 1
+
+            retried = await facade.assign_web_task("https://example.com/rollback")
+            assert retried.id != assigned.id
+            await _await_task(facade)
+
+        completed = await store.get_task(retried.id)
+        memories = await memory_store.list_memories(kind=MemoryKind.KNOWLEDGE)
+        evidence = await memory_store.pending_reading_evidence()
+        assert completed is not None
+        assert completed.status is AssignedTaskStatus.COMPLETED
+        assert completed.checkpoint["cursor"] == len("正文")
+        assert len(memories) == 1
+        assert len(evidence) == 1
+    finally:
+        await database.close()
+
+
+async def test_web_task_checkpoint_failure_rolls_back_reading_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    store = ActivityStore(database)
+    bus = EventBus(database)
+    memory_store = MemoryStore(database)
+    memory = MemoryFacade(
+        memory_store,
+        MemoryRetrieval(memory_store, None),
+        bus,
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        MemoryConfig(),
+    )
+    save_task = store.save_task
+    failed_checkpoint = False
+
+    async def fail_checkpoint_once(task: AssignedTask) -> None:
+        nonlocal failed_checkpoint
+        if (
+            task.checkpoint.get("pending") is None
+            and task.checkpoint.get("cursor") == 2
+        ):
+            if not failed_checkpoint:
+                failed_checkpoint = True
+                raise RuntimeError("checkpoint store unavailable")
+        await save_task(task)
+
+    monkeypatch.setattr(store, "save_task", fail_checkpoint_once)
+
+    async def get_state() -> CurrentState:
+        return _mk_state(80.0)
+
+    facade = ActivityFacade(
+        store,
+        bus,
+        cast(LlmClient, _FakeLlm()),
+        cast(Evaluator, _FakeEvaluator()),
+        cast(ToolRegistry, _WebTaskTools("正文")),
+        cast(DesireFacade, _FakeDesire()),
+        memory,
+        get_state,
+        _no_observation,
+        ActivityConfig(),
+        ExplorationConfig(web_enabled=True),
+        "测试人格",
+    )
+    try:
+        async with _running(bus):
+            assigned = await facade.assign_web_task("https://example.com/checkpoint")
+            with pytest.raises(RuntimeError, match="checkpoint store unavailable"):
+                await _await_task(facade)
+
+            failed = await store.get_task(assigned.id)
+            evidence = await memory_store.pending_reading_evidence()
+            memories = await memory_store.list_memories(kind=MemoryKind.KNOWLEDGE)
+            assert failed is not None and failed.status is AssignedTaskStatus.FAILED
+            assert failed.checkpoint.get("cursor", 0) == 0
+            assert failed.checkpoint["pending"] is not None
+            assert evidence == []
+            assert len(memories) == 1
+
+            retried = await facade.assign_web_task("https://example.com/checkpoint")
+            assert retried.id != assigned.id
+            await _await_task(facade)
+
+        completed = await store.get_task(retried.id)
+        evidence = await memory_store.pending_reading_evidence()
+        memories = await memory_store.list_memories(kind=MemoryKind.KNOWLEDGE)
+        assert completed is not None
+        assert completed.status is AssignedTaskStatus.COMPLETED
+        assert completed.checkpoint["cursor"] == len("正文")
+        assert len(evidence) == 1
+        assert len(memories) == 1
+    finally:
+        await database.close()
 
 
 async def test_empty_web_task_fails_without_memory() -> None:

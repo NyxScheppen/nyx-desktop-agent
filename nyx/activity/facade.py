@@ -404,6 +404,9 @@ class ActivityFacade:
                     "cursor": cursor + len(block),
                     "profile": next_profile,
                     "knowledge": items,
+                    "source_text": block,
+                    "source_name": task.url,
+                    "block_key": f"{cursor}:{len(block)}",
                 }
                 task.checkpoint["pending"] = pending
                 task.updated_at = time.time()
@@ -418,16 +421,37 @@ class ActivityFacade:
                 if isinstance(raw_items, list)
                 else []
             )
+            source_text = pending.get("source_text")
+            source_name = pending.get("source_name")
+            block_key = pending.get("block_key")
+            next_cursor = pending.get("cursor")
+            next_profile = pending.get("profile")
+            next_cursor_value = next_cursor if isinstance(next_cursor, int) else cursor
+            next_profile_value: dict[str, object] = (
+                cast(dict[str, object], next_profile)
+                if isinstance(next_profile, dict)
+                else {}
+            )
             if items:
                 await self._memory.remember_knowledge(items, task.id)
-            next_cursor = pending.get("cursor")
-            cursor = next_cursor if isinstance(next_cursor, int) else cursor
-            profile = pending.get("profile")
-            task.checkpoint["cursor"] = cursor
-            task.checkpoint["profile"] = profile if isinstance(profile, dict) else {}
-            task.checkpoint["pending"] = None
-            task.updated_at = time.time()
-            await self._store.save_task(task)
+            async with self._store.db.transaction():
+                if (
+                    isinstance(source_text, str)
+                    and isinstance(source_name, str)
+                    and isinstance(block_key, str)
+                ):
+                    await self._memory.record_reading_evidence(
+                        build_source_topic("web", task.url),
+                        source_name,
+                        source_text,
+                        block_key,
+                    )
+                task.checkpoint["cursor"] = next_cursor_value
+                task.checkpoint["profile"] = next_profile_value
+                task.checkpoint["pending"] = None
+                task.updated_at = time.time()
+                await self._store.save_task(task)
+            cursor = next_cursor_value
         profile_raw = task.checkpoint.get("profile")
         profile = (
             cast(dict[str, object], profile_raw)

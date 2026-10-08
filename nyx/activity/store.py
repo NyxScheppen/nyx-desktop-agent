@@ -287,7 +287,7 @@ class ActivityStore:
         return cursor.rowcount == 1
 
     async def save_task(self, task: AssignedTask) -> None:
-        async with self._db.lock:
+        async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "UPDATE assigned_task SET status = ?, checkpoint = ?, error = ?, "
                 "updated_at = ? WHERE id = ?",
@@ -299,7 +299,8 @@ class ActivityStore:
                     task.id,
                 ),
             )
-            await self._db.conn.commit()
+            if should_commit:
+                await self._db.conn.commit()
 
     async def set_task_status(
         self,

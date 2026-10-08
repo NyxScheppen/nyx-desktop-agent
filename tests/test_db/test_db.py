@@ -111,7 +111,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 31
+    assert len(names) == 32
     assert "material" not in names
 
 
@@ -277,6 +277,7 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_memory_entity_alias_lookup",
         "idx_activity_results",
         "idx_assigned_task_status_created",
+        "idx_reading_evidence_pending",
     }
 
 
@@ -673,7 +674,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 31
+    assert len(names) == 32
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

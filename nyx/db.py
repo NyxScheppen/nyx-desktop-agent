@@ -724,6 +724,22 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "WHERE status = 'claimed' AND answer_event_id IS NULL",
         ],
     ),
+    (
+        36,
+        [
+            """CREATE TABLE reading_evidence (
+                id TEXT PRIMARY KEY,
+                source_topic TEXT NOT NULL,
+                source_name TEXT NOT NULL,
+                content TEXT NOT NULL CHECK(length(content) BETWEEN 1 AND 6000),
+                created_at REAL NOT NULL,
+                consumed_at REAL,
+                book_id TEXT REFERENCES books(id) ON DELETE CASCADE
+            )""",
+            "CREATE INDEX idx_reading_evidence_pending "
+            "ON reading_evidence(created_at, id) WHERE consumed_at IS NULL",
+        ],
+    ),
 ]
 
 

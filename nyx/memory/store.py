@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ import aiosqlite
 
 from nyx.db import Database
 from nyx.enums import MemoryEdgeKind, MemoryKind, MemoryType
-from nyx.types import Memory, MemoryEdge
+from nyx.types import Memory, MemoryEdge, ReadingEvidence
 
 _MEMORY_COLS = (
     "id, created_at, content, kind, topics, summary, freshness, "
@@ -246,6 +247,65 @@ class MemoryStore:
             )
             if should_commit:
                 await self._db.conn.commit()
+
+    async def record_reading_evidence(
+        self,
+        source_topic: str,
+        source_name: str,
+        content: str,
+        block_key: str,
+        *,
+        book_id: str | None = None,
+    ) -> None:
+        """Persist exact source exposure once, including pending replay."""
+        if not content.strip():
+            return
+        if not source_topic or len(content) > 6000:
+            raise ValueError("阅读证据需要来源且正文不能超过 6000 字符")
+        key = json.dumps([source_topic, block_key, content], ensure_ascii=False)
+        evidence_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        async with self._operation() as should_commit:
+            await self._db.conn.execute(
+                "INSERT INTO reading_evidence "
+                "(id, source_topic, source_name, content, created_at, book_id) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+                (evidence_id, source_topic, source_name, content, time.time(), book_id),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+
+    async def pending_reading_evidence(self, limit: int = 3) -> list[ReadingEvidence]:
+        """Return bounded oldest unconsumed source snapshots."""
+        if not 1 <= limit <= 3:
+            raise ValueError("阅读证据 limit 必须在 [1, 3]")
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT id, source_topic, source_name, content, created_at "
+                "FROM reading_evidence WHERE consumed_at IS NULL "
+                "ORDER BY created_at, id LIMIT ?", (limit,),
+            )
+            rows = await cursor.fetchall()
+        return [ReadingEvidence(
+            id=row["id"], source_topic=row["source_topic"],
+            source_name=row["source_name"], content=row["content"],
+            created_at=row["created_at"],
+        ) for row in rows]
+
+    async def consume_reading_evidence(self, ids: list[str]) -> None:
+        """Consume a prepared snapshot inside the caller's reflection transaction."""
+        if not self._db.in_transaction:
+            raise RuntimeError("阅读证据消费必须处于反思事务内")
+        unique_ids = list(dict.fromkeys(ids))
+        if not unique_ids:
+            return
+        placeholders = ",".join("?" for _ in unique_ids)
+        cursor = await self._db.conn.execute(
+            "UPDATE reading_evidence SET consumed_at = ? "
+            f"WHERE consumed_at IS NULL AND id IN ({placeholders})",
+            (time.time(), *unique_ids),
+        )
+        if cursor.rowcount != len(unique_ids):
+            raise RuntimeError("阅读证据已删除或已消费，需要重新准备反思")
 
     async def settle_freshness(self, now: float, rate: float) -> None:
         """Apply only elapsed freshness decay since the prior settlement."""

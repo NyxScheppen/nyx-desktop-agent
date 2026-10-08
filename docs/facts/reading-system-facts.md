@@ -129,6 +129,8 @@
 - `books.memory_state` 保存 cursor、滚动 profile 和 pending。每块先生成 profile 与最多 5
   条知识，再保存 pending、写带 `book:` topic 的 knowledge，最后推进 cursor 并清 pending；
   崩溃恢复重放 pending，统一来源内去重吸收重复。
+- 网页委派阅读由 `ActivityFacade._run_web_task()` 执行，按 `web:` 来源写 knowledge；来源原文证据
+  与网页任务 checkpoint 在同一 SQLite 事务提交。旧任务 pending 缺少原文时不从重新抓取的网页补造证据。
 - `read_for_activity()` 从持久化 Nyx 位置读到明确目标，或为普通探索选择约 6000 字符的
   下一块；它以 `flush=True` 复用同一原文沉淀管道，成功后才单调推进 Nyx 位置，不写陪读 buffer。
 - profile 包含滚动摘要、最多 5 个主题和固定内容类别。fiction/essay/unknown 使用来源归因，

@@ -1,4 +1,7 @@
+import asyncio
 from typing import cast
+
+import pytest
 
 from nyx import db
 from nyx.enums import BoundaryResult, EventType
@@ -13,6 +16,10 @@ from nyx.types import Event, LLMOutput
 
 
 class _Llm:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release: asyncio.Event | None = None
+
     async def complete(
         self,
         messages: list[LlmMessage],
@@ -23,6 +30,9 @@ class _Llm:
         json_mode: bool = False,
         tools: list[dict[str, object]] | None = None,
     ) -> LLMOutput:
+        self.started.set()
+        if self.release is not None:
+            await self.release.wait()
         return LLMOutput(
             module=module,
             type=output_type,
@@ -44,7 +54,8 @@ class _Memory:
         self.knowledge: list[list[dict[str, str]]] = []
 
     async def remember_reading(
-        self, content: str, summary: str, correlation_id: str
+        self, content: str, summary: str, correlation_id: str,
+        source_name: str | None = None, *, source_topic: str | None = None,
     ) -> None:
         self.remembered.append((content, summary, correlation_id))
 
@@ -71,6 +82,12 @@ class _Memory:
         self, items: list[dict[str, str]], correlation_id: str
     ) -> None:
         self.knowledge.append(items)
+
+    async def record_reading_evidence(
+        self, source_topic: str, source_name: str, content: str, block_key: str,
+        *, book_id: str | None = None,
+    ) -> None:
+        return None
 
 
 class _Bus:
@@ -214,3 +231,30 @@ async def test_sediment_reuses_pending_without_digest_call() -> None:
     assert memory.digest_calls == 0
     assert len(memory.knowledge) == 1
     assert state["pending"] is None
+
+
+@pytest.mark.parametrize("evict", [False, True])
+async def test_integrate_only_consumes_supplied_entries(evict: bool) -> None:
+    llm = _Llm()
+    llm.release = asyncio.Event()
+    integration = ReadingIntegration(
+        cast(LlmClient, llm), cast(Evaluator, _Evaluator()),
+        cast(MemoryFacade, _Memory()), cast(EventBus, _Bus()),
+    )
+    await integration.record("book", 1, "a" * 12001, "mutter")
+    await integration.record("book", 2, "not supplied", "question")
+    task = asyncio.create_task(
+        integration.integrate("book", BoundaryResult.CHAPTER_END, 0)
+    )
+    await llm.started.wait()
+    for i in range(100 if evict else 1):
+        await integration.record("book", i + 3, "new", "mutter")
+    llm.release.set()
+    await task
+    contents = [entry.content for entry in integration.buffer["book"]]
+    assert contents[-1] == "new"
+    if evict:
+        assert len(contents) == 100
+    else:
+        assert "not supplied" in contents
+        assert 0 < len(contents[0]) < 12001

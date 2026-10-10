@@ -56,12 +56,11 @@
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_types/`：
-  - [ ] 23 个枚举**穷尽断言**（防漏成员/多成员/改值）：`EXPECTED` 硬编码每个枚举的完整值集合，`{m.value for m in X} == expected` 逐枚举比对（EXPECTED 字典与枚举成员同源，随 `nyx/enums.py` 维护）
-  - [ ] 命名约定断言 `all(m.value == m.name.lower() for m in X)`（值 = 成员名小写，防手滑改值）
-  - [ ] `json.dumps(EventType.USER_MESSAGE) == '"user_message"'`（StrEnum 可直接序列化）
+  - [ ] 后端 `EventType` 与前端 SSE 监听事件集合一致，防止新增事件无法被接收
   - [ ] `ShortTermDesire("", 0.0, DesireType.INTERACTION, 1.0, "", None).status is DesireStatus.PENDING`
   - [ ] `Memory("", 0.0, "", "", "", 1.0, MemoryType.SHORT_TERM).aspect` 两次实例化互不共享（`default_factory` 隔离）
-  - [ ] 4 个 TypedDict 用 `get_type_hints` 断言键集合完整：`Personality` / `Values` / `Aesthetic` / `LlmMessage`
+  - [ ] `UserNote.annotations` 和 `LongTermDesire.linked_values` 的可变默认值在实例间隔离
+- 类型字段和枚举声明由源码与 `pyright` 检查；不在测试中复写完整声明或验证标准库序列化。枚举的业务语义在对应消费者、持久化和 API 行为测试中验证。
 - [ ] 集成测试：无（纯声明，无管道）
 - [ ] E2E 测试：无
 

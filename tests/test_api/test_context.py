@@ -39,7 +39,8 @@ def test_root_event_explicit_internal() -> None:
 
 def test_load_canon_reads_canon_file(tmp_path: Path) -> None:
     (tmp_path / "canon.md").write_text("canon", encoding="utf-8")
-    assert _load_canon(tmp_path) == "canon"
+    (tmp_path / "character-reference.md").write_text("reference", encoding="utf-8")
+    assert _load_canon(tmp_path) == "canon\n\nreference"
 
 
 def test_load_canon_missing_file_fails(tmp_path: Path) -> None:

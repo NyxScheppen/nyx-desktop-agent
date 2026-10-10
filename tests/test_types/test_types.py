@@ -1,33 +1,15 @@
-from typing import get_type_hints
-
 from nyx.enums import (
-    AssignedTaskStatus,
-    AssignedTaskType,
     DesireStatus,
     DesireType,
     MemoryKind,
     MemoryType,
 )
 from nyx.types import (
-    Aesthetic,
-    AssignedTask,
-    LlmMessage,
     LongTermDesire,
     Memory,
-    Personality,
     ShortTermDesire,
     UserNote,
-    Values,
 )
-
-
-def test_assigned_task_round_trip_shape() -> None:
-    task = AssignedTask(
-        "t1", AssignedTaskType.BOOK, AssignedTaskStatus.PENDING,
-        None, "b1", 42, {}, None, 1.0, 1.0,
-    )
-    assert task.book_id == "b1"
-    assert task.target_paragraph == 42
 
 
 def test_short_term_desire_default_status() -> None:
@@ -56,23 +38,3 @@ def test_long_term_desire_linked_values_default_factory_isolated() -> None:
     second = LongTermDesire("", 0.0, DesireType.INTERACTION, "", "", 1.0, 0.0, [])
     first.linked_values.append("x")
     assert second.linked_values == []
-
-
-def test_typed_dict_keys() -> None:
-    assert set(get_type_hints(Personality)) == {
-        "openness",
-        "conscientiousness",
-        "extraversion",
-        "agreeableness",
-        "neuroticism",
-    }
-    assert set(get_type_hints(Values)) == {
-        "attitude_to_human",
-        "ai_identity_acceptance",
-        "altruism",
-        "optimism",
-    }
-    assert set(get_type_hints(Aesthetic)) == {
-        "ornate", "lyrical", "classical", "somber",
-    }
-    assert set(get_type_hints(LlmMessage)) == {"role", "content"}

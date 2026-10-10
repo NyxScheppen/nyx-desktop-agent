@@ -41,7 +41,7 @@
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_llm/`：
-  - [ ] `_to_lc` 纯函数：`system`→`SystemMessage`、`user`→`HumanMessage`、`assistant`→`AIMessage`，`content` 透传；非法 role → `ValueError`
+  - [ ] `_to_lc` 非法 role → `ValueError`；合法角色转换由 `complete` 的有序消息测试覆盖，不重复测试内部转换结果
   - [ ] `complete`（注入 fake `BaseChatModel`：`ainvoke` 返回预设 `AIMessage`，记录消息与 kwargs）：
     - [ ] `module`/`type`/`correlation_id`/`content` 正确回填进 `LLMOutput`
     - [ ] `model` 回填：`LlmClient(fake, model_name="test-model")` → `LLMOutput.model == "test-model"`
@@ -49,6 +49,7 @@
     - [ ] `tools` 非空 → 传给模型的 kwargs 含 `tools`；空/None → 不含
     - [ ] fake 返回带 `tool_calls` 的 `AIMessage`（pydantic ToolCall 有 `model_dump`）→ `LLMOutput.tool_calls` 正确解析出 name/args；无 `tool_calls` → `[]`
     - [ ] `messages` 顺序与内容按原序透传（fake 记录收到的 LangChain 消息）
+    - [ ] 三种合法角色对应正确的 LangChain 消息类型；token 从 usage metadata 读取，缺失时使用 response metadata 或零值，由公开调用结果验证
     - [ ] `prompt_messages` 保留 Unicode/换行且与输入解除可变别名，`LLMOutput.__repr__` 不暴露 prompt
     - [ ] 非文本 content（fake 返回 `content=list`）→ `RuntimeError`（不是 `str(list)` 的 repr 垃圾）
   - [ ] `resolve_base_url` 纯函数：显式 `base_url` 优先 / 已知 provider 命中 / 未知 provider 返回 `None`

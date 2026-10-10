@@ -17,7 +17,6 @@ from nyx.config import ConfigError, LlmConfig
 from nyx.llm.client import (
     LlmClient,
     LlmMessage,
-    _extract_tokens,
     _to_lc,
     resolve_base_url,
 )
@@ -81,34 +80,12 @@ def _complete(client: LlmClient, **kwargs: Any) -> LLMOutput:
 # ---- _to_lc ----
 
 
-def test_to_lc_system() -> None:
-    msg = _to_lc({"role": "system", "content": "hi"})
-    assert isinstance(msg, SystemMessage)
-    assert msg.content == "hi"
-
-
-def test_to_lc_user() -> None:
-    assert isinstance(_to_lc({"role": "user", "content": "x"}), HumanMessage)
-
-
-def test_to_lc_assistant() -> None:
-    assert isinstance(_to_lc({"role": "assistant", "content": "x"}), AIMessage)
-
-
 def test_to_lc_invalid_role() -> None:
     with pytest.raises(ValueError):
         _to_lc(cast(LlmMessage, {"role": "invalid", "content": "x"}))
 
 
 # ---- _extract_tokens ----
-
-
-def test_extract_tokens_usage_metadata() -> None:
-    msg = AIMessage(
-        content="x",
-        usage_metadata={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
-    )
-    assert _extract_tokens(msg) == (7, 3)
 
 
 def test_extract_tokens_response_metadata_fallback() -> None:
@@ -120,11 +97,9 @@ def test_extract_tokens_response_metadata_fallback() -> None:
             }
         },
     )
-    assert _extract_tokens(msg) == (11, 4)
-
-
-def test_extract_tokens_absent_zero() -> None:
-    assert _extract_tokens(AIMessage(content="x")) == (0, 0)
+    client, _ = _client(msg)
+    out = _complete(client)
+    assert (out.prompt_tokens, out.completion_tokens) == (11, 4)
 
 
 # ---- complete ----
@@ -185,25 +160,20 @@ def test_complete_tool_calls_parsed() -> None:
     assert out.tool_calls[0]["args"] == {"q": "骑士"}
 
 
-def test_complete_no_tools_empty() -> None:
-    client, _ = _client(AIMessage(content="hi"))
-    assert _complete(client).tool_calls == []
-
-
 def test_complete_messages_passthrough() -> None:
     client, fake = _client(AIMessage(content="hi"))
     messages: list[LlmMessage] = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "a"},
     ]
     asyncio.run(
         client.complete(messages, module="t", output_type="o", correlation_id="c")
     )
-    assert len(fake._recorded_messages) == 2
-    assert isinstance(fake._recorded_messages[0], SystemMessage)
-    assert isinstance(fake._recorded_messages[1], HumanMessage)
-    assert fake._recorded_messages[0].content == "sys"
-    assert fake._recorded_messages[1].content == "q"
+    assert [type(message) for message in fake._recorded_messages] == [
+        SystemMessage, HumanMessage, AIMessage,
+    ]
+    assert [message.content for message in fake._recorded_messages] == ["sys", "q", "a"]
 
 
 async def test_complete_concurrent_first_calls_build_model_once() -> None:
@@ -277,6 +247,7 @@ def test_complete_no_usage_zero_tokens() -> None:
     out = _complete(client)
     assert out.prompt_tokens == 0
     assert out.completion_tokens == 0
+    assert out.tool_calls == []
     assert out.call_id != ""           # 无 usage 仍生成 call_id
 
 

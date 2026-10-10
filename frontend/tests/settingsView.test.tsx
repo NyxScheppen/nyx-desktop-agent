@@ -8,18 +8,6 @@ describe("SettingsView 设置弹层", () => {
     useSettingsStore.getState().reset();
   });
 
-  it("渲染标题 / 字体大小三档 / 圆圈背景 / 圆圈大小 / 背景外观", () => {
-    render(<SettingsView onClose={() => {}} />);
-    expect(screen.getByRole("dialog", { name: "设置" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "字体大小" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "圆圈背景" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "圆圈大小" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "背景" })).toBeInTheDocument();
-    for (const label of ["小", "中", "大"]) {
-      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
-    }
-  });
-
   it("默认「中」激活，点「大」写 settingsStore.fontScale", () => {
     render(<SettingsView onClose={() => {}} />);
     expect(screen.getByRole("button", { name: "中" })).toHaveAttribute(

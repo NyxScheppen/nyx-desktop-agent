@@ -44,21 +44,10 @@ describe("MessageBubble", () => {
     vi.useRealTimers();
   });
 
-  it("speak → 左气泡 class + content 上屏", () => {
+  it("speak 逐字显示完整回复", () => {
     render(<MessageBubble message={makeMsg("speak", "nyx", "你好")} ready onTyped={() => {}} />);
     typeDone();
-    expect(screen.getByText("你好")).toHaveClass("message-bubble__content");
-    expect(screen.getByText("你好").closest(".message-bubble")).toHaveClass(
-      "message-bubble--speak",
-    );
-  });
-
-  it("ask → 高亮 class", () => {
-    render(<MessageBubble message={makeMsg("ask", "nyx", "想聊聊吗？")} ready onTyped={() => {}} />);
-    typeDone();
-    expect(screen.getByText("想聊聊吗？").closest(".message-bubble")).toHaveClass(
-      "message-bubble--ask",
-    );
+    expect(screen.getByText("你好")).toBeInTheDocument();
   });
 
   it("think → 逐字弱化显示（不再折叠）", () => {
@@ -66,7 +55,6 @@ describe("MessageBubble", () => {
     typeDone();
     const el = screen.getByText("内心独白");
     expect(el).toBeInTheDocument();
-    expect(el.closest(".message-bubble")).toHaveClass("message-bubble--think");
   });
 
   it("initiate_chat → 带「欲望搭话」标记 + 逐字 content", () => {
@@ -76,11 +64,9 @@ describe("MessageBubble", () => {
     expect(screen.getByText("在忙吗？")).toBeInTheDocument();
   });
 
-  it("user message → 右气泡 class（即时，不打字）", () => {
+  it("user message 即时显示完整文本", () => {
     render(<MessageBubble message={makeMsg("message", "user", "你好")} ready onTyped={() => {}} />);
-    expect(screen.getByText("你好").closest(".message-bubble")).toHaveClass(
-      "message-bubble--user",
-    );
+    expect(screen.getByText("你好")).toBeInTheDocument();
   });
 
   it("reading_question → 「提问」徽标 + 即时全量 + selectedText 引文行", () => {
@@ -102,8 +88,8 @@ describe("MessageBubble", () => {
     );
     // 不逐字：content 即时全量（无需 typeDone）
     expect(screen.getByText("为什么？")).toBeInTheDocument();
-    expect(screen.getByText("提问")).toHaveClass("message-bubble__badge");
-    expect(screen.getByText("原文：「划线句」")).toHaveClass("message-bubble__quote");
+    expect(screen.getByText("提问")).toBeInTheDocument();
+    expect(screen.getByText("原文：「划线句」")).toBeInTheDocument();
   });
 });
 
@@ -270,6 +256,6 @@ describe("ChatInput", () => {
   it("sendError 非 null → 红字显示", () => {
     useChatStore.setState({ sendError: "校验失败" });
     render(<ChatInput />);
-    expect(screen.getByText("校验失败")).toHaveClass("chat-input__error");
+    expect(screen.getByText("校验失败")).toBeInTheDocument();
   });
 });

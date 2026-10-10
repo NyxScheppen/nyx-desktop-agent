@@ -20,6 +20,7 @@ import type {
   ProgressInput,
   UserNote,
   UserNoteWithAnnotations,
+  PendingQuestion,
 } from "../types/api";
 
 // Development uses Vite proxy; packaged REST and SSE share the loopback endpoint.
@@ -47,11 +48,37 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function postChat(message: string): Promise<{ event_id: string }> {
+export async function postChat(
+  message: string,
+  replyTo?: string,
+): Promise<{ event_id: string }> {
+  const body: { message: string; reply_to?: string } = { message };
+  if (replyTo !== undefined) body.reply_to = replyTo;
   return request<{ event_id: string }>(`${BASE_URL}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getPendingQuestions(): Promise<{
+  server_now: number;
+  questions: PendingQuestion[];
+}> {
+  return request<{ server_now: number; questions: PendingQuestion[] }>(
+    `${BASE_URL}/api/questions/pending`,
+  );
+}
+
+export async function pauseQuestion(attemptId: string): Promise<PendingQuestion> {
+  return request<PendingQuestion>(`${BASE_URL}/api/questions/${encodeURIComponent(attemptId)}/pause`, {
+    method: "POST",
+  });
+}
+
+export async function resumeQuestion(attemptId: string): Promise<PendingQuestion> {
+  return request<PendingQuestion>(`${BASE_URL}/api/questions/${encodeURIComponent(attemptId)}/resume`, {
+    method: "POST",
   });
 }
 

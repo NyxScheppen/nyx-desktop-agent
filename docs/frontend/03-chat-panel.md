@@ -24,12 +24,16 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 ```
 用户输入 → 点发送
   → chatStore.sendMessage(text)
-      ├─ POST /api/chat {message: text}   （client.ts）
+      ├─ POST /api/chat {message: text, reply_to?: attempt_id}   （client.ts）
       ├─ 成功：isReplying = true（按钮转「…」，输入框清空）
       └─ 失败：sendError = "…"（红字挂在 ChatInput 下方，下次 sendMessage 成功自动清空，不阻断重试）
   → 后端 publish USER_MESSAGE → SSE user_message 回显 → chatStore.addUserMessage（上屏）
   → 后端 ExpressionFacade.reply() 产 speak/think/ask → SSE → chatStore.addSpeak/addThink/addAsk（上屏）
   → addSpeak/addAsk 置 isReplying=false（回复交付，按钮恢复）
+
+提问气泡按 `attempt_id` 合并 ASK 与 READING_QUESTION；只有一个等待提问时自动绑定，多个等待项
+要求用户先点选目标。气泡显示服务端校正后的剩余时间，并可暂停/继续；用户发送成功后目标 attempt
+进入 `claimed`，不再作为下一条消息的候选。
 ```
 
 - **去重**：无——SSE 是消息唯一来源，`sendMessage` 不本地 append（02-stores §1 决策），故无「乐观 + 回显」重复问题。

@@ -1,8 +1,16 @@
 import { create } from "zustand";
-import { getEventsLog, postChat } from "../api/client";
+import {
+  getEventsLog,
+  getPendingQuestions,
+  pauseQuestion,
+  postChat,
+  resumeQuestion,
+} from "../api/client";
 import { isValidTimestamp } from "../lib/time";
 import type {
   BackendEvent,
+  PendingQuestion,
+  QuestionStatus,
   QuestionSubtype,
   ReadingQuestionEvent,
   TextEvent,
@@ -23,6 +31,10 @@ export type ChatMessage = {
   // 读书 turn 专属（kind==="reading_question" 才有 subtype/selectedText）
   subtype?: QuestionSubtype;
   selectedText?: string | null;
+  attempt_id?: string;
+  expires_at?: number;
+  paused_at?: number | null;
+  question_status?: QuestionStatus;
 };
 
 type ChatState = {
@@ -31,12 +43,17 @@ type ChatState = {
   sendError: string | null;
   typedIds: Record<string, true>; // 已逐字打完的 think id（speak/ask 等其同 correlation_id 的 think 打完才开打）
   unreadProactive: boolean; // 搭话（initiate_chat）未读：头像红点，用户点徽标/发消息即清
+  replyTargetId: string | null;
+  serverTimeOffset: number;
   addUserMessage: (e: UserMessageEvent) => void;
   addSpeak: (e: TextEvent<"speak">) => void;
   addAsk: (e: TextEvent<"ask">) => void;
   addThink: (e: TextEvent<"think">) => void;
   addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
   addReadingTurn: (e: ReadingQuestionEvent) => void;
+  selectQuestion: (attemptId: string | null) => void;
+  pauseQuestion: (attemptId: string) => Promise<boolean>;
+  resumeQuestion: (attemptId: string) => Promise<boolean>;
   clearUnreadProactive: () => void;
   markTyped: (id: string) => void;
   loadHistory: () => Promise<void>; // 挂载时回填 GET /api/events/log 的历史消息（preloaded，不逐字）
@@ -61,6 +78,62 @@ function compareMessages(a: ChatMessage, b: ChatMessage): number {
     || a.id.localeCompare(b.id);
 }
 
+function questionPriority(message: ChatMessage): number {
+  return message.kind === "reading_question" ? 2 : message.kind === "ask" ? 1 : 0;
+}
+
+function mergeMessages(messages: ChatMessage[]): ChatMessage[] {
+  const byId = new Map<string, ChatMessage>();
+  for (const message of messages) byId.set(message.id, message);
+  const selectedByAttempt = new Map<string, ChatMessage>();
+  for (const message of byId.values()) {
+    if (message.attempt_id === undefined) continue;
+    const previous = selectedByAttempt.get(message.attempt_id);
+    if (previous === undefined || questionPriority(message) >= questionPriority(previous)) {
+      selectedByAttempt.set(message.attempt_id, message);
+    }
+  }
+  const hiddenIds = new Set<string>();
+  for (const [attemptId, selected] of selectedByAttempt) {
+    for (const message of byId.values()) {
+      if (message.attempt_id === attemptId && message.id !== selected.id) hiddenIds.add(message.id);
+    }
+  }
+  return [...byId.values()]
+    .filter((message) => !hiddenIds.has(message.id))
+    .sort(compareMessages);
+}
+
+function updateQuestion(
+  messages: ChatMessage[],
+  question: PendingQuestion,
+): ChatMessage[] {
+  return messages.map((message) =>
+    message.attempt_id === question.attempt_id
+      ? {
+          ...message,
+          expires_at: question.expires_at,
+          paused_at: question.paused_at,
+          question_status: question.status,
+        }
+      : message,
+  );
+}
+
+function closeMissingHistoricalQuestions(
+  messages: ChatMessage[],
+  pendingIds: Set<string>,
+): ChatMessage[] {
+  return messages.map((message) =>
+    message.preloaded === true &&
+      message.attempt_id !== undefined &&
+      message.question_status === "waiting" &&
+      !pendingIds.has(message.attempt_id)
+      ? { ...message, question_status: "answered" }
+      : message,
+  );
+}
+
 // BackendEvent（event_log）→ ChatMessage：user_message 读 content.message、文本事件读 content.content。
 // 字段非 string 则丢弃（与 append 一致的收窄校验，01-sse §4.1）。
 function toChatMessage(e: BackendEvent): ChatMessage | null {
@@ -81,6 +154,11 @@ function toChatMessage(e: BackendEvent): ChatMessage | null {
     msg.subtype = e.content.subtype as QuestionSubtype;
     msg.selectedText = e.content.selected_text as string | null;
   }
+  if (typeof e.content.attempt_id === "string") {
+    msg.attempt_id = e.content.attempt_id;
+    msg.question_status = "waiting";
+  }
+  if (typeof e.content.expires_at === "number") msg.expires_at = e.content.expires_at;
   return msg;
 }
 
@@ -122,9 +200,16 @@ export const useChatStore = create<ChatState>((set, get) => {
       correlation_id: e.correlation_id,
       timestamp: e.timestamp,
     };
+    if ("attempt_id" in e && typeof e.attempt_id === "string") {
+      msg.attempt_id = e.attempt_id;
+      msg.question_status = "waiting";
+    }
+    if ("expires_at" in e && typeof e.expires_at === "number") {
+      msg.expires_at = e.expires_at;
+    }
     if (get().messages.some((message) => message.id === msg.id)) return false;
     set((s) => ({
-      messages: [...s.messages, msg].sort(compareMessages),
+      messages: mergeMessages([...s.messages, msg]),
     }));
     return true;
   };
@@ -150,6 +235,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     sendError: null,
     typedIds: {},
     unreadProactive: false,
+    replyTargetId: null,
+    serverTimeOffset: 0,
     addUserMessage: (e) => append(e, "user", "message"),
     addSpeak: (e) => finishReply(e),
     addAsk: (e) => finishReply(e),
@@ -171,9 +258,41 @@ export const useChatStore = create<ChatState>((set, get) => {
         subtype: e.subtype,
         selectedText: e.selected_text,
       };
-      set((s) => s.messages.some((message) => message.id === e.event_id) ? {} : ({
-        messages: [...s.messages, message].sort(compareMessages),
-      }));
+      if (e.attempt_id !== undefined) {
+        message.attempt_id = e.attempt_id;
+        message.question_status = "waiting";
+      }
+      if (e.expires_at !== undefined) message.expires_at = e.expires_at;
+      set((s) => s.messages.some((item) => item.id === e.event_id)
+        ? {}
+        : { messages: mergeMessages([...s.messages, message]) });
+    },
+    selectQuestion: (attemptId) => set({ replyTargetId: attemptId }),
+    pauseQuestion: async (attemptId) => {
+      try {
+        const question = await pauseQuestion(attemptId);
+        set((s) => ({
+          serverTimeOffset: question.server_now - Date.now() / 1000,
+          messages: updateQuestion(s.messages, question),
+        }));
+        return true;
+      } catch (err) {
+        console.error("暂停提问失败", err);
+        return false;
+      }
+    },
+    resumeQuestion: async (attemptId) => {
+      try {
+        const question = await resumeQuestion(attemptId);
+        set((s) => ({
+          serverTimeOffset: question.server_now - Date.now() / 1000,
+          messages: updateQuestion(s.messages, question),
+        }));
+        return true;
+      } catch (err) {
+        console.error("恢复提问失败", err);
+        return false;
+      }
     },
     clearUnreadProactive: () => set({ unreadProactive: false }),
     markTyped: (id) => set((s) => ({ typedIds: { ...s.typedIds, [id]: true } })),
@@ -200,10 +319,26 @@ export const useChatStore = create<ChatState>((set, get) => {
           if (fresh.length === 0) return {};
           // 重连可能回填比现有消息更新的事实；合并后统一排序。
           return {
-            messages: [...s.messages, ...fresh].sort(compareMessages),
+            messages: mergeMessages([...s.messages, ...fresh]),
             typedIds: { ...s.typedIds, ...thinkIds },
           };
         });
+        try {
+          const pending = await getPendingQuestions();
+          if (!pending || !Array.isArray(pending.questions)) return;
+          set((s) => ({
+            serverTimeOffset: pending.server_now - Date.now() / 1000,
+            messages: closeMissingHistoricalQuestions(
+              pending.questions.reduce(
+                (messages, question) => updateQuestion(messages, question),
+                s.messages,
+              ),
+              new Set(pending.questions.map((question) => question.attempt_id)),
+            ),
+          }));
+        } catch (err) {
+          console.error("加载待回答提问失败", err);
+        }
       } catch (err) {
         console.error("加载聊天历史失败", err);
       }
@@ -215,14 +350,30 @@ export const useChatStore = create<ChatState>((set, get) => {
       sendInFlight = true;
       set({ isReplying: true, sendError: null, unreadProactive: false });
       try {
-        const { event_id } = await postChat(text);
+        const candidates = get().messages.filter(
+          (message) => message.attempt_id !== undefined && message.question_status === "waiting",
+        );
+        const replyTo = get().replyTargetId ?? (
+          candidates.length === 1 ? candidates[0].attempt_id : undefined
+        );
+        const { event_id } = await postChat(text, replyTo);
         sendInFlight = false;
+        if (replyTo !== undefined) {
+          set((s) => ({
+            messages: s.messages.map((message) =>
+              message.attempt_id === replyTo
+                ? { ...message, question_status: "claimed" }
+                : message,
+            ),
+          }));
+        }
         pendingId = event_id; // 回复帧 correlation_id 与此匹配（后端 user_message 沿它溯源）
         clearReplyTimer();
         if (earlyReplies.delete(event_id)) {
           pendingId = null;
           earlyReplies.clear();
           set({ isReplying: false, sendError: null });
+          set({ replyTargetId: null });
           return true;
         }
         earlyReplies.clear();
@@ -231,6 +382,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           // 不清 pendingId：迟到回复仍需能匹配并清 sendError
           set({ isReplying: false, sendError: "回复超时" });
         }, REPLY_TIMEOUT_MS);
+        set({ replyTargetId: null });
         return true;
       } catch (err) {
         sendInFlight = false;
@@ -245,7 +397,15 @@ export const useChatStore = create<ChatState>((set, get) => {
       pendingId = null;
       sendInFlight = false;
       earlyReplies.clear();
-      set({ messages: [], isReplying: false, sendError: null, typedIds: {}, unreadProactive: false });
+      set({
+        messages: [],
+        isReplying: false,
+        sendError: null,
+        typedIds: {},
+        unreadProactive: false,
+        replyTargetId: null,
+        serverTimeOffset: 0,
+      });
     },
   };
 });

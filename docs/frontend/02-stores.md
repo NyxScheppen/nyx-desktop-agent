@@ -46,6 +46,10 @@ type ChatMessage = {
   preloaded?: boolean;        // 历史回填消息：渲染时不逐字（loadHistory 写入）
   subtype?: QuestionSubtype;         // kind==="reading_question" 才有（提问四子型）
   selectedText?: string | null;      // reading_question 引文
+  attempt_id?: string;               // ASK/READING_QUESTION 的共享等待 attempt
+  expires_at?: number;               // 提问计时终点（epoch 秒）
+  paused_at?: number | null;          // 非空：计时暂停
+  question_status?: QuestionStatus;
 };
 
 type ChatState = {
@@ -53,7 +57,8 @@ type ChatState = {
   isReplying: boolean;        // 发消息后等待回复中
   sendError: string | null;
   typedIds: Record<string, true>;  // 已逐字打完的 nyx 文本 id（后一条同 correlation_id 的 nyx 文本等其打完才开打）
-  replyTo: string | null;
+  replyTargetId: string | null;    // 当前选中的等待提问；reset 同时清空
+  serverTimeOffset: number;        // 服务端时间 - 浏览器时间（计时显示校正）
 };
 ```
 
@@ -68,13 +73,16 @@ addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}
 addThink(e: TextEvent<"think">): void                // {role:"nyx", kind:"think"}
 addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initiate_chat"}
 addReadingTurn(e: ReadingQuestionEvent): void  // {role:"nyx",kind:"reading_question"}; subtype/selectedText 落字段
+pauseQuestion(attemptId: string): Promise<boolean>  // POST /api/questions/{id}/pause
+resumeQuestion(attemptId: string): Promise<boolean> // POST /api/questions/{id}/resume
+selectQuestion(attemptId: string | null): void // 选择或取消提问回复
 sendMessage(text: string): Promise<boolean>  // 内部调 client.postChat；成功 true，失败/忙 false
                                           // 成功：pendingId = 返回的 event_id + isReplying=true + sendError=null + 起 60s 超时 timer
-                                          // postChat throw → catch → sendError = e.message（isReplying 未置，无需复位）
+                                          // 唯一等待提问自动附加 reply_to；多个等待项需先 selectQuestion；成功后目标标记 claimed
+                                          // postChat throw → catch → sendError = e.message 并复位 isReplying
 markTyped(id: string): void              // 把 nyx 文本 id 写入 typedIds（逐字 done 时调，解锁其后同 correlation_id 的下一条 nyx 文本）
 loadHistory(): Promise<void>             // 并行 GET /api/events/log（文本事件，含 reading_question）→ 合并去重排序；新增历史 preloaded:true；历史 think 入 typedIds；失败 best-effort 不抛
 reset(): void                            // 新会话全清：clearTimeout(replyTimer) + messages/isReplying/sendError/typedIds 复位
-setReplyTo(attemptId: string | null): void // 选择或取消提问回复；reset 同时清空
 ```
 
 ### 关键决策
@@ -87,6 +95,12 @@ setReplyTo(attemptId: string | null): void // 选择或取消提问回复；rese
   非法帧在任何等待/未读副作用前丢弃；重复主动消息也不能重新点亮已读标记。
   每条 `ChatMessage.timestamp` 必须复制 SSE 的后端 `Event.timestamp`。历史回填复制
   `BackendEvent.timestamp`，因此重连/重启前后使用同一来源；禁止用 `Date.now()` 替代事件时间。
+- **提问归并与回复归属**：同一 `attempt_id` 的 `ASK` 与 `READING_QUESTION` 只显示一条，优先
+  保留读书事件的展示字段。历史回填后调用 pending 快照恢复计时状态；只有一个等待提问时发送
+  自动带 `reply_to`，多个等待提问必须由用户选择，不能按最新项猜测。暂停状态显示剩余时长，
+  恢复后继续倒计时。历史中不在 pending 快照里的 attempt 关闭本地 waiting 状态；只有
+  `question_status === "waiting"` 的提问气泡显示计时和暂停/继续操作，用户发送成功后目标先标记
+  `claimed`，避免下一条消息继续携带旧 `reply_to`。
 
 ## 2. `innerLifeStore`
 

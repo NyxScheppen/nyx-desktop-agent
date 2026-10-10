@@ -1,6 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useTypewriter } from "../../hooks/useTypewriter";
-import type { ChatMessage } from "../../stores/chatStore";
+import { useChatStore, type ChatMessage } from "../../stores/chatStore";
 
 type MessageBubbleProps = {
   message: ChatMessage;
@@ -27,13 +27,39 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
   const text = isNyxText ? (typewrite ? displayed : content) : content;
   // 等待期（ready=false）不显示光标：光标只在逐字进行时闪
   const showCursor = typewrite && ready && !done;
+  const selectQuestion = useChatStore((s) => s.selectQuestion);
+  const pauseQuestion = useChatStore((s) => s.pauseQuestion);
+  const resumeQuestion = useChatStore((s) => s.resumeQuestion);
+  const serverTimeOffset = useChatStore((s) => s.serverTimeOffset);
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  const isQuestion = message.attempt_id !== undefined &&
+    (kind === "ask" || kind === "reading_question") &&
+    message.question_status === "waiting";
+
+  useEffect(() => {
+    if (!isQuestion || message.paused_at !== null && message.paused_at !== undefined) return;
+    const timer = window.setInterval(() => setNow(Date.now() / 1000), 250);
+    return () => window.clearInterval(timer);
+  }, [isQuestion, message.paused_at]);
+
+  const remaining = isQuestion && message.expires_at !== undefined
+    ? Math.max(
+        0,
+        message.paused_at !== null && message.paused_at !== undefined
+          ? message.expires_at - message.paused_at
+          : message.expires_at - now - serverTimeOffset,
+      )
+    : null;
 
   useEffect(() => {
     if (typewrite && done) onTyped(message.id);
   }, [typewrite, done, message.id, onTyped]);
 
   return (
-    <div className={`message-bubble message-bubble--${role} message-bubble--${kind}`}>
+    <div
+      className={`message-bubble message-bubble--${role} message-bubble--${kind}`}
+      onClick={isQuestion ? () => selectQuestion(message.attempt_id ?? null) : undefined}
+    >
       {kind === "initiate_chat" && <span className="message-bubble__badge">欲望搭话</span>}
       {kind === "reading_question" && <span className="message-bubble__badge">提问</span>}
       <span className="message-bubble__content">
@@ -42,6 +68,27 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
       </span>
       {kind === "reading_question" && message.selectedText && (
         <p className="message-bubble__quote">原文：「{message.selectedText}」</p>
+      )}
+      {isQuestion && remaining !== null && (
+        <span className="message-bubble__timer">
+          {remaining > 0 ? `剩余 ${Math.ceil(remaining)} 秒` : "等待超时确认"}
+          {message.paused_at !== null && message.paused_at !== undefined && "（已暂停）"}
+        </span>
+      )}
+      {isQuestion && message.attempt_id !== undefined && (
+        <button
+          type="button"
+          className="message-bubble__question-action"
+          disabled={remaining === 0}
+          onClick={(event) => {
+            event.stopPropagation();
+            void (message.paused_at !== null && message.paused_at !== undefined
+              ? resumeQuestion(message.attempt_id as string)
+              : pauseQuestion(message.attempt_id as string));
+          }}
+        >
+          {message.paused_at !== null && message.paused_at !== undefined ? "继续计时" : "暂停计时"}
+        </button>
       )}
     </div>
   );

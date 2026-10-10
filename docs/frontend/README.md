@@ -66,7 +66,7 @@
 {"event_id": "…", "correlation_id": "…", "timestamp": 1789603200.0, **event.content}
 ```
 
-- 核心先行用到的端点：`GET /api/state`（`CurrentState` 快照）、`POST /api/chat`（发消息，返回 `{event_id}`，回复走 SSE）、`POST /api/observe`（活跃度上报 `{presence, window_title, idle_seconds, sampled_at}`，返回 `{event_id}`，见 §2）、`GET /api/events`（SSE）。
+- 核心先行用到的端点：`GET /api/state`（`CurrentState` 快照）、`POST /api/chat`（发消息，返回 `{event_id}`，可附 `reply_to` 精确绑定提问，回复走 SSE）、`GET /api/questions/pending` 与提问 pause/resume 端点（恢复聊天提问计时）、`POST /api/observe`（活跃度上报 `{presence, window_title, idle_seconds, sampled_at}`，返回 `{event_id}`，见 §2）、`GET /api/events`（SSE）。
 
 ## 4. 目录结构
 
@@ -175,6 +175,7 @@ frontend/
 - SSE：`tests/sse.test.ts` 用 mock `EventSource` 验证 `useSSE` 的事件解析 + 分发给 store。
 - stores：`tests/stores.test.ts` 验证每个 store 的 action 纯逻辑（不依赖真实网络）。
 - 测试不依赖真实后端/真实桌面；验证管道正确性（事件走对 store、类型解析正确），不验证视觉样式。
+- 同一行为优先保留能观察最终结果的用例，删除重复的内部转换、静态声明和仅检查 CSS 类名/容器存在的测试；事件接线、可变默认值隔离、持久化、失败恢复、幂等和乱序回归必须保留。
 
 ## 7. 文档索引
 

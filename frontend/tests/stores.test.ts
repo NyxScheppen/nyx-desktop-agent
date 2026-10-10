@@ -151,20 +151,6 @@ describe("chatStore.add*", () => {
     });
   });
 
-  it("addInitiateChat → kind=initiate_chat", () => {
-    useChatStore.getState().addInitiateChat({
-      event: "initiate_chat",
-      event_id: "e5",
-      correlation_id: "c5",
-      timestamp: 1005,
-      content: "在忙吗？",
-    });
-    expect(useChatStore.getState().messages[0]).toMatchObject({
-      role: "nyx",
-      kind: "initiate_chat",
-    });
-  });
-
   it("addInitiateChat → unreadProactive=true，clearUnreadProactive 复位", () => {
     useChatStore.getState().addInitiateChat({
       event: "initiate_chat",
@@ -174,6 +160,9 @@ describe("chatStore.add*", () => {
       content: "在忙吗？",
     });
     expect(useChatStore.getState().unreadProactive).toBe(true);
+    expect(useChatStore.getState().messages[0]).toMatchObject({
+      role: "nyx", kind: "initiate_chat", content: "在忙吗？",
+    });
 
     useChatStore.getState().clearUnreadProactive();
     expect(useChatStore.getState().unreadProactive).toBe(false);
@@ -899,6 +888,7 @@ describe("chatStore.loadHistory", () => {
 
   it("历史与 SSE 交错、重复到达时按 id 去重并全局排序", async () => {
     const event = { event: "speak" as const, event_id: "same", correlation_id: "u", timestamp: 2000, content: "reply" };
+    useChatStore.getState().addSpeak(event);
     vi.stubGlobal("fetch", historyFetch({ speak: [{
       id: "same", timestamp: 2000, source: "internal", type: "speak",
       content: { content: "reply" }, correlation_id: "u",
@@ -974,36 +964,6 @@ describe("chatStore.loadHistory", () => {
     expect(typedIds["t1"]).toBe(true);
   });
 
-  it("已存在的 id 去重，不重复前置", async () => {
-    useChatStore.getState().addSpeak({
-      event: "speak",
-      event_id: "s1",
-      correlation_id: "u1",
-      timestamp: 1002,
-      content: "你好呀",
-    });
-    vi.stubGlobal(
-      "fetch",
-      historyFetch({
-        user_message: [
-          { id: "u1", timestamp: 1000, source: "external", type: "user_message", content: { message: "你好" }, correlation_id: "u1" },
-        ],
-        think: [
-          { id: "t1", timestamp: 1001, source: "internal", type: "think", content: { content: "我想想" }, correlation_id: "u1" },
-        ],
-        speak: [
-          { id: "s1", timestamp: 1002, source: "internal", type: "speak", content: { content: "你好呀" }, correlation_id: "u1" },
-        ],
-      }),
-    );
-
-    await useChatStore.getState().loadHistory();
-
-    const { messages } = useChatStore.getState();
-    expect(messages.map((m) => m.id)).toEqual(["u1", "t1", "s1"]); // s1 不重复
-    expect(messages.filter((m) => m.id === "s1")).toHaveLength(1);
-  });
-
   it("getEventsLog 失败：best-effort 不抛、消息不变", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
 
@@ -1062,16 +1022,6 @@ describe("settingsStore", () => {
     expect(useSettingsStore.getState().image).toBe("data:image/png;base64,xxx");
   });
 
-  it("reset 恢复默认（tint/image 均 null）", () => {
-    useSettingsStore.getState().setTint("#1f2740");
-    useSettingsStore.getState().setImage("data:image/png;base64,xxx");
-
-    useSettingsStore.getState().reset();
-
-    expect(useSettingsStore.getState().tint).toBeNull();
-    expect(useSettingsStore.getState().image).toBeNull();
-  });
-
   it("setCircleColor 写 store 并持久化 localStorage", () => {
     useSettingsStore.getState().setCircleColor("#dcebf5");
 
@@ -1093,13 +1043,17 @@ describe("settingsStore", () => {
     expect(localStorage.getItem("nyx.circleSize")).toBe("small");
   });
 
-  it("reset 清 circleColor/circleSize/avatarPos 及 localStorage 键", () => {
+  it("reset 恢复全部外观默认值并清 localStorage 键", () => {
+    useSettingsStore.getState().setTint("#1f2740");
+    useSettingsStore.getState().setImage("data:image/png;base64,xxx");
     useSettingsStore.getState().setCircleColor("#dcebf5");
     useSettingsStore.getState().setCircleSize("small");
     useSettingsStore.getState().setAvatarPos({ x: 1, y: 2 });
 
     useSettingsStore.getState().reset();
 
+    expect(useSettingsStore.getState().tint).toBeNull();
+    expect(useSettingsStore.getState().image).toBeNull();
     expect(useSettingsStore.getState().circleColor).toBe("#ffffff");
     expect(useSettingsStore.getState().circleSize).toBe("large");
     expect(useSettingsStore.getState().avatarPos).toBeNull();

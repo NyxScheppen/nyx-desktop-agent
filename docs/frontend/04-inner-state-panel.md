@@ -57,5 +57,5 @@ InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 in
 
 ## 7. 测试（`tests/stores.test.ts` 已覆盖数据层）
 
-- 组件层（React Testing Library）轻测：`EnergyBar` 按 `energy`/`energy_state` 渲染中文文案、`EmotionSprite` 按 `emotion` 选图文件名、`BigFiveChart`/`ValuesChart` 按 personality/values 渲染双端语义（低端词/高端词，不做数值断言）、`InnerStatePanel` 在 `current=null` 时整体占位不崩（§6 守卫在面板层，不渲染子组件），非空时保留顶部和三段指标布局容器。
+- 组件层（React Testing Library）：`EmotionSprite` 按 `emotion` 选图并禁用原生图片拖拽；`InnerStatePanel` 验证未连接占位、非空状态的精力/性格/三观/审美展示和连接错误。情绪图验证分类标签与后端一致。静态子组件展示不重复测试，CSS 布局容器不作为行为断言。
 - 图表坐标/像素不做断言（README §6）。

@@ -88,6 +88,20 @@ export type TextEvent<T extends TextEventType> = SseBase & {
   content: string;
   kind?: "chat_ask" | "reading_question" | "initiate_chat";
   attempt_id?: string;
+  expires_at?: number;
+};
+
+export type QuestionStatus = "waiting" | "claimed" | "answered" | "expired" | "failed";
+
+export type PendingQuestion = {
+  attempt_id: string;
+  kind: "chat_ask" | "reading_question" | "initiate_chat";
+  text: string;
+  created_at: number;
+  expires_at: number;
+  status: QuestionStatus;
+  paused_at: number | null;
+  server_now: number;
 };
 
 /** 用户消息回显：后端 main.py 裸 {"message": string}（非 internal_text_event，键名不同）。 */
@@ -134,6 +148,8 @@ export type ReadingQuestionEvent = SseBase & {
   book_id: string;
   paragraph_index: number;
   selected_text: string | null;
+  attempt_id?: string;
+  expires_at?: number;
 };
 
 /** 记忆联想（每个命中记忆一条）：snippet 为 summary/content 截断 ~80 字。 */
@@ -246,7 +262,13 @@ export function parseSseEvent(type: string, data: unknown): SseEvent | null {
   const base = { event_id, correlation_id, timestamp };
   if (["speak", "ask", "think", "mutter", "initiate_chat"].includes(type)) {
     return typeof data.content === "string"
-      ? ({ ...base, event: type, content: data.content } as SseEvent)
+      ? ({
+          ...base,
+          event: type,
+          content: data.content,
+          ...(typeof data.attempt_id === "string" ? { attempt_id: data.attempt_id } : {}),
+          ...(isFiniteNumber(data.expires_at) ? { expires_at: data.expires_at } : {}),
+        } as SseEvent)
       : null;
   }
   if (type === "user_message") {
@@ -275,7 +297,17 @@ export function parseSseEvent(type: string, data: unknown): SseEvent | null {
     return typeof data.content === "string" && isQuestionSubtype(data.subtype) &&
       typeof data.book_id === "string" && isPositiveInteger(data.paragraph_index) &&
       (data.selected_text === null || typeof data.selected_text === "string")
-      ? ({ ...base, event: type, content: data.content, subtype: data.subtype, book_id: data.book_id, paragraph_index: data.paragraph_index, selected_text: data.selected_text } as ReadingQuestionEvent)
+      ? ({
+          ...base,
+          event: type,
+          content: data.content,
+          subtype: data.subtype,
+          book_id: data.book_id,
+          paragraph_index: data.paragraph_index,
+          selected_text: data.selected_text,
+          ...(typeof data.attempt_id === "string" ? { attempt_id: data.attempt_id } : {}),
+          ...(isFiniteNumber(data.expires_at) ? { expires_at: data.expires_at } : {}),
+        } as ReadingQuestionEvent)
       : null;
   }
   if (type === "reading_association") {

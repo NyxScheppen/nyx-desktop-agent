@@ -359,6 +359,30 @@ body:has(.app--pet) {
   color: var(--ink-soft);
 }
 
+.message-bubble__timer {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.75rem;
+  opacity: 0.72;
+}
+
+.message-bubble__question-action {
+  margin-top: 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.75rem;
+  opacity: 0.8;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.message-bubble__question-action:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 /* 读书 turn 的记忆标（08 §2.5）：轻量非交互标记 */
 .message-bubble__memory {
   display: inline-block;

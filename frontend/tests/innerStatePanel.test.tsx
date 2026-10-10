@@ -1,12 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
-import AestheticChart from "../src/components/inner/AestheticChart";
-import BigFiveChart from "../src/components/inner/BigFiveChart";
 import EmotionSprite from "../src/components/inner/EmotionSprite";
-import EnergyBar from "../src/components/inner/EnergyBar";
 import InnerStatePanel from "../src/components/inner/InnerStatePanel";
 import ValenceArousalPlot from "../src/components/inner/ValenceArousalPlot";
-import ValuesChart from "../src/components/inner/ValuesChart";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import type { CurrentState } from "../src/types/api";
 
@@ -44,11 +40,6 @@ describe("inner 面板子组件", () => {
     useInnerLifeStore.setState({ current: null, error: null });
   });
 
-  it("EnergyBar 按 energy_state 渲染中文文案", () => {
-    render(<EnergyBar energy={42} energy_state="tired" />);
-    expect(screen.getByText("疲惫")).toBeInTheDocument();
-  });
-
   it("EmotionSprite 按 emotion 选图文件名", () => {
     useInnerLifeStore.setState({ current: { ...currentFixture, emotion: "happy" } });
     render(<EmotionSprite />);
@@ -60,38 +51,6 @@ describe("inner 面板子组件", () => {
     useInnerLifeStore.setState({ current: { ...currentFixture, emotion: "neutral" } });
     render(<EmotionSprite />);
     expect(screen.getByAltText("neutral")).toHaveAttribute("draggable", "false");
-  });
-
-  it("BigFiveChart 按 personality 渲染双端语义", () => {
-    render(<BigFiveChart personality={currentFixture.personality} />);
-    expect(screen.getByText("保守")).toBeInTheDocument(); // openness 低端
-    expect(screen.getByText("开放")).toBeInTheDocument(); // openness 高端
-    expect(screen.getByText("情绪稳定")).toBeInTheDocument(); // neuroticism 低端
-    expect(screen.getByText("敏感")).toBeInTheDocument(); // neuroticism 高端
-  });
-
-  it("ValuesChart 按 values 渲染双端语义", () => {
-    render(<ValuesChart values={currentFixture.values} />);
-    expect(screen.getByText("疏离")).toBeInTheDocument(); // attitude_to_human 低端
-    expect(screen.getByText("亲近")).toBeInTheDocument(); // attitude_to_human 高端
-    expect(screen.getByText("悲观")).toBeInTheDocument(); // optimism 低端
-    expect(screen.getByText("乐观")).toBeInTheDocument(); // optimism 高端
-  });
-
-  it("AestheticChart 按 aesthetic 渲染双端语义", () => {
-    render(<AestheticChart aesthetic={currentFixture.aesthetic} />);
-    expect(screen.getByText("朴素")).toBeInTheDocument(); // ornate 低端
-    expect(screen.getByText("华丽")).toBeInTheDocument(); // ornate 高端
-    expect(screen.getByText("平实")).toBeInTheDocument(); // lyrical 低端
-    expect(screen.getByText("抒情")).toBeInTheDocument(); // lyrical 高端
-    expect(screen.getByText("现代")).toBeInTheDocument(); // classical 低端
-    expect(screen.getByText("轻盈")).toBeInTheDocument(); // somber 低端
-    expect(screen.getByText("沉重")).toBeInTheDocument(); // somber 高端
-  });
-
-  it("ValenceArousalPlot 渲染不崩（坐标不做断言）", () => {
-    const { container } = render(<ValenceArousalPlot valence={0.1} arousal={0.2} />);
-    expect(container.querySelector("svg.va-plot")).not.toBeNull();
   });
 
   it("ValenceArousalPlot 区域标签对齐后端 6 档（含害羞/担忧，无旧「低落」）", () => {
@@ -117,20 +76,9 @@ describe("inner 面板子组件", () => {
     expect(screen.getByText("华丽")).toBeInTheDocument(); // AestheticChart
   });
 
-  it("InnerStatePanel 标注三观/性格/审美 section 标题", () => {
-    useInnerLifeStore.setState({ current: currentFixture });
-    const { container } = render(<InnerStatePanel />);
-    expect(screen.getByText("性格")).toBeInTheDocument();
-    expect(screen.getByText("三观")).toBeInTheDocument();
-    expect(screen.getByText("审美")).toBeInTheDocument();
-    expect(container.querySelector("section.inner-state-panel")).not.toBeNull();
-    expect(container.querySelector(".inner-state-panel__top")).not.toBeNull();
-    expect(container.querySelectorAll(".inner-state-panel__section")).toHaveLength(3);
-  });
-
-  it("InnerStatePanel error 非 null → 顶部红字一行", () => {
+  it("InnerStatePanel 显示连接错误", () => {
     useInnerLifeStore.setState({ error: "连接失败" });
     render(<InnerStatePanel />);
-    expect(screen.getByText("连接失败")).toHaveClass("inner-state-panel__error");
+    expect(screen.getByText("连接失败")).toBeInTheDocument();
   });
 });

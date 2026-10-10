@@ -22,13 +22,16 @@ import {
   getMemorySearch,
   getRecentFacts,
   getNotes,
+  getPendingQuestions,
   getProgress,
   getState,
   getTasks,
   importBook,
   postChat,
   postObserve,
+  pauseQuestion,
   putProgress,
+  resumeQuestion,
   showNoteToNyx,
   updateUserNote,
 } from "../src/api/client";
@@ -104,6 +107,49 @@ describe("api/client", () => {
       body: JSON.stringify({ message: "你好" }),
     });
     expect(res).toEqual({ event_id: "e1" });
+  });
+
+  it("postChat：有目标提问时附加 reply_to", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ event_id: "e2" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postChat("回答", "attempt-1");
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      message: "回答",
+      reply_to: "attempt-1",
+    });
+  });
+
+  it("提问 pending/pause/resume 端点使用正确的路径和方法", async () => {
+    const question = {
+      attempt_id: "attempt-1",
+      kind: "chat_ask",
+      text: "问题？",
+      created_at: 10,
+      expires_at: 20,
+      status: "waiting",
+      paused_at: null,
+      server_now: 11,
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ server_now: 11, questions: [question] }))
+      .mockResolvedValueOnce(jsonResponse({ ...question, paused_at: 12 }))
+      .mockResolvedValueOnce(jsonResponse({ ...question, expires_at: 20, paused_at: null }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getPendingQuestions()).resolves.toEqual({
+      server_now: 11,
+      questions: [question],
+    });
+    await expect(pauseQuestion("attempt/1")).resolves.toMatchObject({ paused_at: 12 });
+    await expect(resumeQuestion("attempt/1")).resolves.toMatchObject({ paused_at: null });
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+      ["/api/questions/pending", undefined],
+      ["/api/questions/attempt%2F1/pause", "POST"],
+      ["/api/questions/attempt%2F1/resume", "POST"],
+    ]);
   });
 
   it("getState：GET /api/state、解析 CurrentState", async () => {

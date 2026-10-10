@@ -9,7 +9,10 @@
 ```typescript
 const BASE_URL = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
 
-async function postChat(message: string): Promise<{ event_id: string }> // POST /api/chat
+async function postChat(message: string, replyTo?: string): Promise<{ event_id: string }> // POST /api/chat
+async function getPendingQuestions(): Promise<{ server_now: number; questions: PendingQuestion[] }> // GET /api/questions/pending
+async function pauseQuestion(attemptId: string): Promise<PendingQuestion> // POST /api/questions/{id}/pause
+async function resumeQuestion(attemptId: string): Promise<PendingQuestion> // POST /api/questions/{id}/resume
 async function getState(): Promise<CurrentState>                                 // GET /api/state
 async function postObserve(observation: PresenceObservation, signal?: AbortSignal): Promise<{ event_id: string }>  // POST /api/observe
 async function getDesires(): Promise<DesireState>                                // GET /api/desires
@@ -41,7 +44,7 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 
 ```
 
-- 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message}`、`postObserve` 发 `{presence, window_title, idle_seconds, sampled_at}`，PresenceObservation 定义在 types/api.ts。signal 透传 fetch；409 表示过期采样，422 表示非法输入。
+- 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message}`，有明确提问归属时附加 `reply_to`；`postObserve` 发 `{presence, window_title, idle_seconds, sampled_at}`，PresenceObservation 定义在 types/api.ts。signal 透传 fetch；409 表示过期采样，422 表示非法输入。
 - **请求头**：`Content-Type: application/json`（FastAPI + Pydantic 体，错头会 422）。
 - 返回值直接 JSON 反序列化后上抛给调用方，**不包裹** `{ok, data}`。
 
@@ -63,7 +66,8 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 ## 4. 测试（`tests/api.test.ts`）
 
 - 每个函数 mock `fetch`，断言请求 URL/method/请求体键 + 响应解析：
-  - `postChat`：请求 `POST /api/chat`、body `{message}` → 返回 `{event_id}` 解析正确。
+  - `postChat`：请求 `POST /api/chat`、body `{message}` 或附加 `reply_to` → 返回 `{event_id}` 解析正确。
+  - `getPendingQuestions` / `pauseQuestion` / `resumeQuestion`：请求提问快照和计时控制端点，解析 `server_now`、attempt 状态与暂停字段。
   - `getState`：`GET /api/state` → 返回 `CurrentState` 解析正确。
   - `getMemories` / `getMemorySearch`：分别请求 `/api/memories` 与 URL 编码后的
     `/api/memories/search?q=`。

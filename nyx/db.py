@@ -740,6 +740,14 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON reading_evidence(created_at, id) WHERE consumed_at IS NULL",
         ],
     ),
+    (
+        37,
+        [
+            "ALTER TABLE expression_interaction_attempt ADD COLUMN paused_at REAL",
+            "CREATE INDEX idx_expression_attempt_waiting_paused "
+            "ON expression_interaction_attempt(status, paused_at, expires_at)",
+        ],
+    ),
 ]
 
 

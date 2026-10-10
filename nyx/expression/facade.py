@@ -36,7 +36,9 @@ from nyx.expression.mutter import (
 )
 from nyx.expression.pipeline import ReplyDeps, ReplyState, build_reply_graph
 from nyx.expression.prompt import (
+    MUTTER_WANDER_TASK,
     activity_summary,
+    build_initiate_chat_prompt,
     build_system_prompt,
     build_temporal_block,
 )
@@ -153,7 +155,9 @@ class ExpressionFacade:
             created_at=now,
             expires_at=now + self._config.ask_timeout,
         )
-        event = _ask_event(text, attempt_id, correlation_id, kind)
+        event = _ask_event(
+            text, attempt_id, correlation_id, kind, attempt.expires_at
+        )
         await self._commit_attempt_events(
             attempt,
             [*(preceding_events or []), event, *(followup_events or [])],
@@ -305,14 +309,22 @@ class ExpressionFacade:
             expires_at=now + self._config.ask_timeout,
         )
         ask = _ask_event(
-            text, attempt_id, correlation_id, InteractionKind.READING_QUESTION
+            text,
+            attempt_id,
+            correlation_id,
+            InteractionKind.READING_QUESTION,
+            attempt.expires_at,
         )
         reading = Event(
             id=str(uuid4()),
             timestamp=now,
             source=ask.source,
             type=EventType.READING_QUESTION,
-            content={**event_content, "attempt_id": attempt_id},
+            content={
+                **event_content,
+                "attempt_id": attempt_id,
+                "expires_at": attempt.expires_at,
+            },
             correlation_id=correlation_id,
         )
         await self._commit_attempt_events(attempt, [ask, reading])
@@ -337,6 +349,32 @@ class ExpressionFacade:
             await self._interaction_store.release_claim(attempt.id, reply_event_id)
             raise
         return attempt
+
+    async def pending_questions(self) -> list[InteractionAttempt]:
+        """Return durable unanswered prompts for restoring the chat UI."""
+        if self._interaction_store is None:
+            return []
+        return await self._interaction_store.list_waiting()
+
+    async def pause_question(
+        self, attempt_id: str, now: float | None = None
+    ) -> InteractionAttempt | None:
+        """Pause one waiting prompt while preserving its remaining duration."""
+        if self._interaction_store is None:
+            return None
+        return await self._interaction_store.pause(
+            attempt_id, time.time() if now is None else now
+        )
+
+    async def resume_question(
+        self, attempt_id: str, now: float | None = None
+    ) -> InteractionAttempt | None:
+        """Resume one paused prompt and restore its remaining duration."""
+        if self._interaction_store is None:
+            return None
+        return await self._interaction_store.resume(
+            attempt_id, time.time() if now is None else now
+        )
 
     async def latest_initiate_chat_at(self) -> float | None:
         """Return the latest durable proactive-chat commitment time."""
@@ -471,6 +509,7 @@ class ExpressionFacade:
                 "narrative": None,
                 "think": [],
                 "speak": [],
+                "needs_continuation": False,
                 "ask": None,
                 "round": 0,
                 "correlation_id": correlation_id,
@@ -525,10 +564,7 @@ class ExpressionFacade:
                 temporal_context=temporal_context,
                 activity_context=activity_context,
             )
-            user = (
-                f"你想主动和用户说点什么。基于这个念头：{desire.description}。"
-                "说一句自然的开场白。"
-            )
+            user = build_initiate_chat_prompt(desire.description)
             output = await self._llm.complete(
                 [
                     {"role": "system", "content": system},
@@ -656,11 +692,9 @@ class ExpressionFacade:
             knowledge_boundary=self._knowledge_boundary,
             temporal_context=temporal_context,
             activity_context=activity_context,
+            allow_wander=True,
         )
-        user = (
-            "你闲下来了，心里冒出一句碎碎念。说一句自然、口语的话，"
-            "可以有点走神或停顿，一两句就好，别太正式。"
-        )
+        user = MUTTER_WANDER_TASK
         output = await self._llm.complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             module="expression",
@@ -742,8 +776,10 @@ def _ask_event(
     attempt_id: str,
     correlation_id: str,
     kind: InteractionKind,
+    expires_at: float,
 ):
     event = internal_text_event(EventType.ASK, text, correlation_id)
     event.content["attempt_id"] = attempt_id
     event.content["kind"] = kind.value
+    event.content["expires_at"] = expires_at
     return event

@@ -73,14 +73,33 @@ async def test_claim_owner_recovery_and_release_are_owner_scoped() -> None:
         await database.close()
 
 
-async def test_latest_waiting_claim_prefers_newest_created_at() -> None:
+async def test_multiple_waiting_claims_require_explicit_reply_target() -> None:
     database = await db.connect(":memory:")
     store = ExpressionInteractionStore(database)
     try:
         await store.create(_attempt("old", created_at=1.0))
         await store.create(_attempt("new", created_at=2.0))
-        claimed = await store.claim_reply("reply-1")
-        assert claimed is not None and claimed.id == "new"
+        assert await store.claim_reply("reply-1") is None
+        claimed = await store.claim_reply("reply-2", "old")
+        assert claimed is not None and claimed.id == "old"
+    finally:
+        await database.close()
+
+
+async def test_paused_waiting_claim_is_not_expired_until_resumed() -> None:
+    database = await db.connect(":memory:")
+    store = ExpressionInteractionStore(database)
+    try:
+        await store.create(_attempt("a1", expires_at=10.0))
+        paused = await store.pause("a1", 5.0)
+        assert paused is not None and paused.paused_at == 5.0
+        assert await store.claim_expired(10.0) is None
+        resumed = await store.resume("a1", 20.0)
+        assert resumed is not None and resumed.paused_at is None
+        assert resumed.expires_at == 25.0
+        assert await store.claim_expired(24.9) is None
+        expired = await store.claim_expired(25.0)
+        assert expired is not None and expired.id == "a1"
     finally:
         await database.close()
 

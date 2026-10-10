@@ -34,6 +34,7 @@
   `ReadingFacade.build_reply_context()`，不让两个 Facade 直接循环依赖。总线 supervisor 在
   `run()` 正常返回时结束。
 - 表达系统额外使用 `expression_interaction_attempt` 持久化等待用户回应和主动行为承诺；attempt 与 `ASK`/`INITIATE_CHAT` 事件通过 `Database.transaction()` + `EventBus.append_in_transaction()` 同事务提交。用户领取时 `answer_event_id` 作为 claim owner，同 owner 可恢复；ANSWERED 与回复终局同事务，提交后再 announce 唤醒消费者。
+- 表达系统提供 `GET /api/questions/pending` 读取仍在等待的 attempt 和服务端当前时间，`POST /api/questions/{attempt_id}/pause` 与 `/resume` 通过条件更新暂停/恢复计时；这些辅助端点不发布 EventBus 事件。暂停项保留 `paused_at`，不参与超时领取；恢复时按暂停时剩余时长重算 `expires_at`。用户消息若带 `reply_to` 只绑定指定 attempt；未带时仅有一个等待项才自动绑定，多个等待项不猜测。
 - 表达系统的 fallback `SPEAK` 是正常终局事件：解析/评估失败不会吞掉为成功，fallback 发布失败会让用户消息 consumer 进入总线重试；同 correlation 已有终局 SPEAK/ASK 时重放应短路。
 - 关停采用有界 drain：先停止新输入，再等待已受理事件和 delivery 完成；超时保留未完成投递，下次启动恢复，不做伪全局回滚。
 - 当前 `_App` 是组合根内部 dataclass，也承担运行期状态容器；不要把 `_App` 传入 Facade。

@@ -34,15 +34,30 @@ def test_rounds_block_two() -> None:
 
 
 def test_parse_reply_valid() -> None:
-    assert _parse_reply('{"think": " 想法 ", "speak": " 你好 "}') == ("想法", "你好")
+    assert _parse_reply(
+        '{"think": " 想法 ", "speak": " 你好 "}'
+    ) == ("想法", "你好", False)
+
+
+def test_parse_reply_reads_continuation_flag() -> None:
+    assert _parse_reply(
+        '{"think": "想法", "speak": "你好", "needs_continuation": true}'
+    ) == ("想法", "你好", True)
+
+
+@pytest.mark.parametrize("flag", ['"true"', "1", "null", "{}"])
+def test_parse_reply_invalid_continuation_flag_finishes(flag: str) -> None:
+    assert _parse_reply(
+        '{"speak": "你好", "needs_continuation": ' + flag + "}"
+    ) == ("", "你好", False)
 
 
 def test_parse_reply_missing_think_defaults_empty() -> None:
-    assert _parse_reply('{"speak": "你好"}') == ("", "你好")
+    assert _parse_reply('{"speak": "你好"}') == ("", "你好", False)
 
 
 def test_parse_reply_non_string_think_defaults_empty() -> None:
-    assert _parse_reply('{"think": 123, "speak": "你好"}') == ("", "你好")
+    assert _parse_reply('{"think": 123, "speak": "你好"}') == ("", "你好", False)
 
 
 def test_parse_reply_missing_speak_raises() -> None:

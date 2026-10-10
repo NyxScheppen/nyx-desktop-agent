@@ -32,8 +32,9 @@ class ExpressionInteractionStore:
             await self._db.conn.execute(
                 "INSERT INTO expression_interaction_attempt "
                 "(id, kind, source_id, correlation_id, text, created_at, "
-                "expires_at, status, answered_at, answer_event_id, failure_reason) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "expires_at, status, answered_at, answer_event_id, "
+                "failure_reason, paused_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     attempt.id,
                     attempt.kind.value,
@@ -46,6 +47,7 @@ class ExpressionInteractionStore:
                     attempt.answered_at,
                     attempt.answer_event_id,
                     attempt.failure_reason,
+                    attempt.paused_at,
                 ),
             )
             if should_commit:
@@ -99,11 +101,11 @@ class ExpressionInteractionStore:
             else:
                 cursor = await self._db.conn.execute(
                     "SELECT id FROM expression_interaction_attempt "
-                    "WHERE status = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+                    "WHERE status = ? ORDER BY created_at DESC, id DESC LIMIT 2",
                     (InteractionStatus.WAITING.value,),
                 )
-                row = await cursor.fetchone()
-                target = row["id"] if row is not None else None
+                rows = list(await cursor.fetchall())
+                target = rows[0]["id"] if len(rows) == 1 else None
             if target is None:
                 return None
             cursor = await self._db.conn.execute(
@@ -133,6 +135,7 @@ class ExpressionInteractionStore:
             cursor = await self._db.conn.execute(
                 "SELECT id FROM expression_interaction_attempt "
                 "WHERE status = ? AND expires_at <= ? "
+                "AND paused_at IS NULL "
                 "ORDER BY expires_at ASC, id ASC LIMIT 1",
                 (InteractionStatus.WAITING.value, now),
             )
@@ -205,6 +208,66 @@ class ExpressionInteractionStore:
                 await self._db.conn.commit()
         return cursor.rowcount == 1
 
+    async def list_waiting(self) -> list[InteractionAttempt]:
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM expression_interaction_attempt "
+                "WHERE status = ? ORDER BY created_at ASC, id ASC",
+                (InteractionStatus.WAITING.value,),
+            )
+            rows = await cursor.fetchall()
+        return [_row_to_attempt(row) for row in rows]
+
+    async def pause(self, attempt_id: str, now: float) -> InteractionAttempt | None:
+        async with self._operation() as should_commit:
+            cursor = await self._db.conn.execute(
+                "UPDATE expression_interaction_attempt SET paused_at = ? "
+                "WHERE id = ? AND status = ? AND paused_at IS NULL "
+                "AND expires_at > ?",
+                (now, attempt_id, InteractionStatus.WAITING.value, now),
+            )
+            if cursor.rowcount == 1 and should_commit:
+                await self._db.conn.commit()
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM expression_interaction_attempt WHERE id = ?",
+                (attempt_id,),
+            )
+            row = await cursor.fetchone()
+        return _row_to_attempt(row) if row is not None else None
+
+    async def resume(self, attempt_id: str, now: float) -> InteractionAttempt | None:
+        async with self._operation() as should_commit:
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM expression_interaction_attempt WHERE id = ?",
+                (attempt_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None or row["status"] != InteractionStatus.WAITING.value:
+                return _row_to_attempt(row) if row is not None else None
+            paused_at = row["paused_at"]
+            if paused_at is None:
+                return _row_to_attempt(row)
+            remaining = max(0.0, float(row["expires_at"]) - float(paused_at))
+            cursor = await self._db.conn.execute(
+                "UPDATE expression_interaction_attempt "
+                "SET expires_at = ?, paused_at = NULL "
+                "WHERE id = ? AND status = ? AND paused_at = ?",
+                (
+                    now + remaining,
+                    attempt_id,
+                    InteractionStatus.WAITING.value,
+                    paused_at,
+                ),
+            )
+            if cursor.rowcount == 1 and should_commit:
+                await self._db.conn.commit()
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM expression_interaction_attempt WHERE id = ?",
+                (attempt_id,),
+            )
+            row = await cursor.fetchone()
+        return _row_to_attempt(row) if row is not None else None
+
     async def release_claim(
         self, attempt_id: str, reply_event_id: str | None = None
     ) -> bool:
@@ -256,4 +319,5 @@ def _row_to_attempt(row: aiosqlite.Row) -> InteractionAttempt:
         answered_at=row["answered_at"],
         answer_event_id=row["answer_event_id"],
         failure_reason=row["failure_reason"],
+        paused_at=row["paused_at"],
     )

@@ -268,6 +268,7 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_long_term_desire_name_normalized",
         "idx_desire_generation_attempt_type",
         "idx_expression_attempt_status_expiry",
+        "idx_expression_attempt_waiting_paused",
         "idx_expression_attempt_status_created",
         "idx_expression_attempt_correlation",
         "idx_memory_fact_subject",

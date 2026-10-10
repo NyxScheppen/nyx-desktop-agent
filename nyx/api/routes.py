@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -41,6 +42,7 @@ from nyx.types import (
     EvalRecord,
     EvalStats,
     Event,
+    InteractionAttempt,
     LlmMessage,
     Memory,
     MemoryFact,
@@ -56,8 +58,24 @@ _MAX_EVAL_OFFSET = 100_000
 RootEvent = Callable[[EventType, dict[str, Any]], Event]
 
 
+def _question_payload(
+    attempt: InteractionAttempt, server_now: float | None = None
+) -> dict[str, Any]:
+    return {
+        "attempt_id": attempt.id,
+        "kind": attempt.kind.value,
+        "text": attempt.text,
+        "created_at": attempt.created_at,
+        "expires_at": attempt.expires_at,
+        "status": attempt.status.value,
+        "paused_at": attempt.paused_at,
+        "server_now": time.time() if server_now is None else server_now,
+    }
+
+
 class _ChatPayload(BaseModel):
     message: str = Field(..., min_length=1, max_length=12000, strict=True)
+    reply_to: str | None = Field(default=None, min_length=1, strict=True)
 
     @field_validator("message")
     @classmethod
@@ -200,12 +218,41 @@ def build_app(
 
     @fast.post("/api/chat")
     async def api_chat(payload: _ChatPayload) -> dict[str, str]:
-        event = root_event(EventType.USER_MESSAGE, {"message": payload.message})
+        content: dict[str, Any] = {"message": payload.message}
+        if payload.reply_to is not None:
+            content["reply_to"] = payload.reply_to
+        event = root_event(EventType.USER_MESSAGE, content)
         try:
             await app.bus.publish(event)
         except EventAdmissionError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         return {"event_id": event.id}
+
+    @fast.get("/api/questions/pending")
+    async def api_pending_questions() -> dict[str, Any]:
+        attempts = await app.expression.pending_questions()
+        return {
+            "server_now": time.time(),
+            "questions": [_question_payload(attempt) for attempt in attempts],
+        }
+
+    @fast.post("/api/questions/{attempt_id}/pause")
+    async def api_pause_question(attempt_id: str) -> dict[str, Any]:
+        attempt = await app.expression.pause_question(attempt_id)
+        if attempt is None:
+            raise HTTPException(status_code=404, detail="提问不存在")
+        if attempt.status.value != "waiting" or attempt.paused_at is None:
+            raise HTTPException(status_code=409, detail="提问当前不可暂停")
+        return _question_payload(attempt)
+
+    @fast.post("/api/questions/{attempt_id}/resume")
+    async def api_resume_question(attempt_id: str) -> dict[str, Any]:
+        attempt = await app.expression.resume_question(attempt_id)
+        if attempt is None:
+            raise HTTPException(status_code=404, detail="提问不存在")
+        if attempt.status.value != "waiting" or attempt.paused_at is not None:
+            raise HTTPException(status_code=409, detail="提问当前不可恢复")
+        return _question_payload(attempt)
 
     @fast.get("/api/memories")
     async def api_memories(

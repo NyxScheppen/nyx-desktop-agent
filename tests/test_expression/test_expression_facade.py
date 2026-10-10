@@ -94,11 +94,13 @@ class _FakeLlm:
         speak_override: str | None = None,
         chat_content: str = "你好呀。",
         tool_calls: list[dict[str, Any]] | None = None,
+        needs_continuation: bool = True,
     ) -> None:
         self.calls: list[tuple[str, list[LlmMessage], str]] = []
         self._speak_override = speak_override
         self._chat_content = chat_content
         self._tool_calls = list(tool_calls) if tool_calls is not None else []
+        self._needs_continuation = needs_continuation
         self._think_n = 0
         self._speak_n = 0
 
@@ -121,7 +123,14 @@ class _FakeLlm:
             else:
                 self._speak_n += 1
                 speak = f"回答{self._speak_n}"
-            content = json.dumps({"think": think, "speak": speak}, ensure_ascii=False)
+            content = json.dumps(
+                {
+                    "think": think,
+                    "speak": speak,
+                    "needs_continuation": self._needs_continuation,
+                },
+                ensure_ascii=False,
+            )
         else:
             content = self._chat_content
         return LLMOutput(
@@ -634,6 +643,21 @@ async def test_reply_slow_non_question() -> None:
     ]
 
 
+async def test_reply_slow_defaults_to_one_complete_response() -> None:
+    facade, llm, _evaluator, _memory, _inner_life, bus = _new_facade(
+        energy=100.0,
+        arousal=0.0,
+        llm=_FakeLlm(needs_continuation=False),
+    )
+    await facade.reply("在吗", "corr-one")
+    assert [t for t, _m, _c in llm.calls] == ["tool", "reply"]
+    assert [event.type for event in bus.published] == [
+        EventType.THINK,
+        EventType.SPEAK,
+        EventType.SCENE_MEMORY_REQUESTED,
+    ]
+
+
 async def test_reply_slow_publishes_nothing_until_generation_finishes() -> None:
     class _ObservingLlm(_FakeLlm):
         bus: _FakeBus | None = None
@@ -1012,9 +1036,10 @@ async def test_slow_channel_progressive() -> None:
     reply_calls = [m for t, m, _c in llm.calls if t == "reply"]
     first = _user_content(reply_calls[0])
     second = _user_content(reply_calls[1])
-    assert "说出口的第一句话" in first
-    assert "往下说一句" not in first
-    assert "往下说一句" in second
+    assert '"needs_continuation": false' in first
+    assert '"needs_continuation": false' in second
+    assert '"speak": "完整回复"' in first
+    assert '"speak": "必要的补充"' in second
 
 
 async def test_current_message_not_duplicated() -> None:

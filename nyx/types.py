@@ -366,6 +366,7 @@ class InteractionAttempt:
     answered_at: float | None = None
     answer_event_id: str | None = None
     failure_reason: str | None = None
+    paused_at: float | None = None
 
 
 # ---- 工具 / eval ----

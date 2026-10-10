@@ -33,7 +33,8 @@
   - 是用户消息、tick、主动搭话、反思和总线监督的实际运行入口；用户消息会在回复前
     采样并尝试打断当前活动，把打断前/后的 `ActivityContext` 传给表达层。
 - `nyx/app_context.py`
-  - 读取 `nyx/prompts/canon.md`、`nyx/prompts/ask.md` 和 `nyx/prompts/knowledge-boundary.md`，
+  - 读取 `nyx/prompts/canon.md`、`nyx/prompts/character-reference.md`、
+    `nyx/prompts/ask.md` 和 `nyx/prompts/knowledge-boundary.md`，
     按依赖顺序装配表达与阅读门面。
 
 ## 普通回复
@@ -84,8 +85,20 @@
 
 ## Prompt 与分类
 
-- `build_system_prompt()` 由 canon、人格自然语言倾向、当前状态、当前欲望组成；可选加入
+- `build_system_prompt()` 由 canon、人格与三观自然语言倾向、当前状态、当前欲望组成；可选加入
   ask guidance、自我叙事、记忆、工具结果、知识边界和轻量意图参考。
+- 回复、工具判断、主动搭话和走神的任务指令集中在 `nyx/expression/prompt.py`；流程模块只
+  负责选择通道、调用 LLM 和提交事件。
+- canon 与独立小说人物参考均作为角色参考；人物经历不作为 Nyx 的现实记忆。人格和审美
+  倾向按 `<5`、`=5`、`>5` 三档提供行为说明；审美当前值位于 `[当前状态]`，不再提供词语
+  参考；think prompt 的 user 层只保留 JSON 输出契约，角色内心推理表现由 canon 约束。
+- 情感状态保留英文枚举，同时附中文含义，例如 `happy（开心）`、`sad（难过）`。
+- 工具结果、当前欲望、记忆与历史均标为资料而非指令；当前消息单独位于 `[本次消息]`。
+  走神指导由 `allow_wander` 显式启用，目前仅 mutter wander 调用传入 true。
+- 慢通道回复 JSON 可含 `needs_continuation`；缺失/非法按 false，一般回复一次完成，仅显式
+  续写时继续，并受问句和 `slow_max_rounds` 限制。
+- 记忆 prompt 展示创建时间、内容来源、有效期和检索来源；未知内容来源/有效期展示为未标注，
+  不修改 `Memory` 对象或持久 schema。
 - Big Five、三观和审美数值仍在结构化状态段保留；人格指令另将数值映射为自然语言，且声明
   只是倾向而非硬规则。
 - `nyx/prompts/knowledge-boundary.md` 是启动时读取的静态指导，约束熟悉领域、推理复杂度、
@@ -130,10 +143,13 @@
   替代。所得三层只读材料会同时进入 FAST/SLOW，因此“嗯”等短回复也不会脱离刚才读到
   的内容。
 - `runtime.on_user_message()` 先检查同 correlation 的 `SPEAK`/`ASK` 终局事件，再按
-  `reply_to` 或最新 WAITING attempt 原子关联至多一条等待项。
+  `reply_to` 精确关联；未提供时仅在恰好一个 WAITING attempt 时关联，多个等待项不猜测。
 - durable store 存在时，用户回复领取把 `answer_event_id` 写为 owner；同 owner 重放可恢复
   CLAIMED/ANSWERED，其他事件不能抢占。被回答 attempt 与回复终局事件同事务完成为
   ANSWERED；终局前失败按 owner 释放并清空 id。超时仍使用无 owner 的条件领取。
+- `paused_at` 非空表示用户暂停提问计时；暂停项保留 WAITING 且不参与超时领取，恢复时按暂停
+  时剩余时长重算 `expires_at`。`GET /api/questions/pending`、`POST .../{attempt_id}/pause`
+  和 `resume` 供前端恢复及控制计时。
 - schema 35 升级会把历史上无 `answer_event_id` 的 CLAIMED 恢复为 WAITING；带 owner 的新领取
   保持原状，由同 owner 重放恢复。
 - durable store 未注入时，兼容路径仍使用 `_waiting_user`、`_pending_chat_desire_id` 等
@@ -154,8 +170,9 @@
 
 - `ReadingCompanion.question()` 先校验非空和 `is_question()`；quote 类型还要求第二行引用。
 - 正式组合根下，成功提问通过 `commit_reading_question()` 把 attempt、canonical `ASK` 和
-  展示用 `READING_QUESTION` 放在同一本地事务中；后者载荷包含 `attempt_id`、书籍/段落、
-  subtype 和可选 `selected_text`。只在兼容未提供该方法的 fake 时退回分步路径。
+  展示用 `READING_QUESTION` 放在同一本地事务中；两者共享 `attempt_id` 和 `expires_at`，前端
+  按 attempt 合并成一条提问气泡。后者载荷还包含书籍/段落、subtype 和可选 `selected_text`。
+  只在兼容未提供该方法的 fake 时退回分步路径。
 - `ReadingCompanion.associate()` 对记忆检索结果最多取 3 条，每条广播
   `READING_ASSOCIATION`，并把 80 字 snippet 追加到表达 history。
 - 读书提问只把问题正文追加到 history，不把 quote 的 `selected_text` 追加；读书 mutter

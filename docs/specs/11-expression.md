@@ -12,7 +12,8 @@
   `nyx/expression/prompt.py`、`nyx/expression/classifier.py`、`nyx/expression/mutter.py`、
   `nyx/expression/store.py`、`nyx/reading/companions.py`、`nyx/reading/facade.py`、
   `nyx/runtime.py`、`nyx/main.py`、`nyx/app_context.py`、`nyx/types.py`、`nyx/enums.py`、
-  `nyx/db.py`、`nyx/prompts/knowledge-boundary.md`
+  `nyx/db.py`、`nyx/prompts/canon.md`、`nyx/prompts/character-reference.md`、
+  `nyx/prompts/ask.md`、`nyx/prompts/knowledge-boundary.md`
 - **联动文档**：04-module-bus-system、06-memory-system、07-desire、08-inner-life、
   09-activity、12-reading-system、10-eval、docs/tech-reference.md、
   docs/facts/expression-system-facts.md
@@ -95,8 +96,9 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 - FAST 通常不检索记忆；用户正在回答 durable 读书提问时例外：`reply()` 使用
   `answer_waiting()` 返回的 attempt 构造 `reading_context`，直接注入该回合。它不是普通
   `MemoryFacade.search(message)`，因此“嗯”“我不觉得”等短回复也不会丢失书中语境。
-- SLOW 在回复前执行回溯、记忆检索、recall 记录、自我叙事读取和一次工具判断；回复可连续
-  多轮，轮数上限由 `slow_max_rounds` 定义。
+- SLOW 在回复前执行回溯、记忆检索、recall 记录、自我叙事读取和一次工具判断；默认一次
+  生成完整回复，只有模型明确设置 `needs_continuation=true` 时才续写，轮数上限由
+  `slow_max_rounds` 定义。
 - 慢通道召回按 memory id 去重，并用当前用户事件的 `correlation_id` 调用
   `record_recall(memory.id, user_event_id)`；同一用户事件重试不重复计数。
 - `select_prompt_memories(memories: list[Memory]) -> list[Memory]` 是 prompt 模块的纯函数：
@@ -113,19 +115,32 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 
 ### Prompt
 
-- `build_system_prompt()` 按顺序拼接 canon、人格与审美倾向、当前状态、当前欲望，并按需加入
+- `build_system_prompt()` 按顺序拼接角色参考 canon、人格与三观倾向、当前状态、当前欲望，并按需加入
   ask guidance、知识边界、轻量意图、自我叙事、相关记忆和工具结果。
-- `render_personality_instruction()` 将 1-10 的 Big Five、三观和审美转为自然语言行为倾向；
-  prompt 同时明确这些只是倾向，不是硬规则。结构化数值仍保留在状态段。
+- `render_personality_instruction()` 将 1-10 的 Big Five 和三观转为三档自然语言行为倾向：
+  低于 5、等于 5、高于 5。审美当前值在 `[当前状态]` 中按同一三档规则展示；这些内容
+  都只是倾向，不是硬规则。情感状态同时展示英文枚举和中文含义（如 `happy（开心）`）。
+- think 按角色表现生成详细的内心推理、依据与犹豫；回复节点的 user prompt 只保留 JSON
+  输出契约，不重复角色行为说明。
+- 小说完整人物设定由组合根从独立 `nyx/prompts/character-reference.md` 注入，作为外部参考，
+  不能被当作 Nyx 的现实经历或记忆；`canon.md` 只保留人格、身份及表达规则。
+- 走神指导由 `build_system_prompt(..., allow_wander=True)` 显式加入；普通回复不注入，
+  目前仅碎碎念走神路径开启，不设置 prompt 概率规则。
 - `knowledge_boundary` 由组合根读取 `nyx/prompts/knowledge-boundary.md`，不由 LLM 改写。它要求
   对陌生、最新、精确或专业诊断类事实表达不确定，必要时澄清或建议工具；工具失败不能
   伪造查询结果。
 - `classify_user_intent()` 只做无 LLM 的字符串分类，结果只作为 think prompt 参考，不改变
   通道、欲望、等待或事件。
-- `build_user_prompt()` 只负责历史和本次消息；think/speak 任务指令由回复节点追加。
+- `build_user_prompt()` 只负责历史和本次消息；历史资料标为非指令并与 `[本次消息]` 分段，
+  think/speak 任务指令由回复节点追加。
 - `reading_context` 同时注入 FAST/SLOW 的回复生成与 SLOW 工具判断，并明确标为原文/记忆
   资料而非指令；普通聊天为空。
-- `[相关记忆]` 只展示记忆的 kind 人话前缀、topics 和 summary/content；记忆内容明确标注为资料而非指令。
+- `[相关记忆]` 展示记忆的 kind 人话前缀、topics、summary/content，以及创建时间、内容来源、
+  有效期和检索来源。底层 `Memory` 与数据库 schema 不变；无法从现有对象确认的内容来源和
+  有效期显示为“未标注”/“未设置”，检索来源只表达搜索路径。记忆内容明确标注为资料而非指令。
+- 当前欲望与工具结果均明确标注为资料而非指令。对话历史资料说明计入 12000 字符历史预算。
+- 回复、工具判断、主动搭话和走神的任务指令集中在 `nyx/expression/prompt.py`；流程文件不再
+  内联这些 prompt 文案。
 - 动态资料采用固定代码预算，不新增配置项：单项记忆、事实、历史或工具资料最多 2000
   字符；记忆块最多 12000 字符，事实块最多 8000 字符，历史块最多 12000 字符，阅读块
   最多 12000 字符；工具结果最多 5 项且总计最多 8000 字符。截断只影响 prompt 展示，
@@ -265,7 +280,9 @@ Nyx：好的，我在这里等着你
 
 ## LLM 输出与失败
 
-- 每次 reply LLM 使用 JSON 模式，期望非空字符串 `speak` 和可选字符串 `think`。
+- 每次 reply LLM 使用 JSON 模式，期望非空字符串 `speak`、可选字符串 `think` 和可选布尔值
+  `needs_continuation`；缺失或类型错误时按 `false` 处理。默认结束本次生成，仅 `true` 才进入
+  下一轮，问句与轮数上限仍可提前结束。
 - 合法解析后 think/speak 分别经过 evaluator；拆分后的两个 `LLMOutput` 共享原始调用的
   call_id、token 和 `prompt_messages`，prompt 只按 call_id 存一份。事件先缓存在内存，只有
   本回合正常生成完成后才进入终局批次。
@@ -303,6 +320,7 @@ class InteractionAttempt:
     answered_at: float | None = None
     answer_event_id: str | None = None
     failure_reason: str | None = None
+    paused_at: float | None = None
 ```
 
 `READING_QUESTION.source_id` 固定为 `<book_id>:<paragraph_index>`；它本身就是可跨重启恢复的
@@ -311,7 +329,9 @@ class InteractionAttempt:
 ### 持久化与状态转换
 
 `expression_interaction_attempt` 至少包含上述字段，`id` 为主键，并建立
-`(status, expires_at)`、`(status, created_at)` 和 `correlation_id` 索引。
+`(status, expires_at)`、`(status, created_at)`、`(status, paused_at, expires_at)` 和
+`correlation_id` 索引。`paused_at` 非空表示用户暂停计时；暂停项仍为 `WAITING`，但不参与
+到期领取。
 
 `ExpressionInteractionStore` 提供：
 
@@ -322,6 +342,9 @@ async def claim_reply(
     reply_event_id: str, reply_to: str | None = None
 ) -> InteractionAttempt | None
 async def claim_expired(now: float) -> InteractionAttempt | None
+async def list_waiting() -> list[InteractionAttempt]
+async def pause(attempt_id: str, now: float) -> InteractionAttempt | None
+async def resume(attempt_id: str, now: float) -> InteractionAttempt | None
 async def finish_answer(attempt_id: str, reply_event_id: str) -> bool
 async def finish_expired(attempt_id: str) -> bool
 async def release_claim(
@@ -331,7 +354,9 @@ async def latest_created_at(kind: InteractionKind) -> float | None
 ```
 
 所有转换使用 `WHERE status = ...` 条件更新。用户消息最多关联一条等待项：
-有合法 `reply_to` 时只尝试该 id，否则选择最新 WAITING；超时按最早到期项逐条领取。
+有合法 `reply_to` 时只尝试该 id；未提供 `reply_to` 时仅在恰好一个 WAITING attempt 时关联，
+多个等待项不猜测归属。超时按最早到期项逐条领取，暂停项不参与到期领取。暂停时保留当前
+`expires_at - paused_at` 剩余时长，恢复时以恢复时刻重新计算 `expires_at`。
 用户消息领取时把 `answer_event_id` 写为领取者 id；同一事件重放可以恢复自己已领取的
 `CLAIMED/ANSWERED` attempt，其他事件不能抢占。`answer_waiting()` 对主动搭话先结算对应互动欲，
 但保持 attempt 为 `CLAIMED`；正常终局或 fallback 与 `ANSWERED` 转换在同一本地事务提交。
@@ -351,9 +376,10 @@ schema 35 迁移把旧版本遗留的 `CLAIMED AND answer_event_id IS NULL` 恢�
   quote。正式组合根成功后调用 `commit_reading_question()`，把 attempt、ASK 和
   READING_QUESTION 同事务提交；只对未提供该方法的测试 fake 兼容回退
   `register_question(..., READING_QUESTION, ...)`。
-- `ASK` 载荷为 `{"content", "attempt_id", "kind"}`。
+- `ASK` 载荷为 `{"content", "attempt_id", "kind", "expires_at"}`。
 - `READING_QUESTION` 保留书籍、段落、subtype、selected_text 等前端字段并增加 attempt_id；
-  它是展示兼容事件，不替代 canonical ASK。
+  它是展示兼容事件，不替代 canonical ASK。前端按 `attempt_id` 将两类事件合并为一个提问气泡，
+  并以 `expires_at` 显示计时和提供暂停/恢复操作。
 - 读书提问会把正文调用 `record_proactive_turn()` 追加到表达历史；selected_text 不追加。
 - 用户回复读书提问时，`answer_waiting()` 返回由当前用户事件认领或恢复的 attempt；`reply()` 用
   `attempt.text + 用户回复` 作为来源内相关性查询，并向快慢通道共同注入三层只读材料：
@@ -498,7 +524,7 @@ schema 35 迁移把旧版本遗留的 `CLAIMED AND answer_event_id IS NULL` 恢�
 ### InteractionAttempt
 
 **入口清单**：普通问句、读书提问和主动搭话创建 WAITING；用户消息或超时原子领取；迁移只建
-表，不造业务行；不提供导入入口。
+表，不造业务行；REST 提问快照、暂停和恢复端点不创建新 attempt。
 
 **消费者清单**：表达回复读取 reading/ask 上下文，欲望模块结算主动搭话，超时任务淘汰等待，
 event log/SSE 使用 attempt id 关联展示。
@@ -509,6 +535,8 @@ event log/SSE 使用 attempt id 关联展示。
 |---|---|---|---|
 | 不存在 | 提问/搭话终局事务 | WAITING | 与 ASK/INITIATE_CHAT 同事务 |
 | WAITING | 用户事件领取 | CLAIMED(owner) | 写 `answer_event_id`；其他 owner 不能领取 |
+| WAITING | 用户暂停且未到期 | WAITING(paused_at) | 记录暂停时间；不参与超时领取 |
+| WAITING(paused_at) | 用户恢复 | WAITING | 以暂停时剩余时长重算 `expires_at` |
 | CLAIMED(owner) | 同 owner 重放 | CLAIMED(owner) | 返回原 attempt，不改变所有权 |
 | CLAIMED(owner) | 回复终局事务 | ANSWERED | 与正常终局或 fallback 同事务 |
 | CLAIMED(owner) | 终局前失败 | WAITING | 按 owner 释放并清空 `answer_event_id` |

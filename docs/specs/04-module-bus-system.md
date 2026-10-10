@@ -608,6 +608,12 @@ CREATE TABLE eval_prompt (
 
 现有 JSON 请求体和无副作用 GET 约定保持不变。
 
+表达系统的等待提问辅助端点由表达契约定义，EventBus 只负责其事件的持久化与广播：
+`GET /api/questions/pending` 返回仍在等待的 attempt 及服务端当前时间；
+`POST /api/questions/{attempt_id}/pause` 暂停未到期提问的计时；
+`POST /api/questions/{attempt_id}/resume` 按暂停时剩余时长恢复计时。它们不直接发布事件，
+状态仍由 `expression_interaction_attempt` 的条件更新维护。
+
 - `GET /api/eval/recent?limit=N` 的 `N` 限制为 1..100，且列表不携带 prompt；
 - `GET /api/eval/total_tokens` 返回按 `call_id` 去重的累计 token；
 - `GET /api/eval/{record_id}/prompt` 精确查询一行对应的共享 prompt，旧记录返回 `null`、

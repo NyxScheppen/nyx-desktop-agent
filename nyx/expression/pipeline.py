@@ -28,6 +28,10 @@ from nyx.expression.prompt import (
     _MATERIAL_ITEM_MAX_CHARS,
     _READING_BLOCK_MAX_CHARS,
     _TOOL_OUTPUT_MAX_ITEMS,
+    RESPOND_TASK,
+    RESPOND_TASK_CONTINUE,
+    TOOL_DECISION_FAILED,
+    USE_TOOLS_TASK,
     activity_summary,
     bound_material_block,
     build_backtrack_context,
@@ -76,6 +80,7 @@ class ReplyState(TypedDict):
     # 累积：每轮 think/speak 追加（11-expression，tech-ref §6.1 ripple）
     think: list[str]
     speak: list[str]
+    needs_continuation: bool
     ask: str | None
     round: int                   # 已完成 think/speak 的轮数（≤ slow_max_rounds）
     correlation_id: str          # 本次 reply 溯源（11-expression，按 09-activity 对齐）
@@ -107,30 +112,6 @@ class ReplyDeps:
     commit_reply_events: Any
 
 
-# 一轮 think+speak 一次生成：先写内心活动（think），再写说出口的话（speak），
-# JSON 结构化输出（json_mode），解析后仍分开发 THINK/SPEAK/ASK 事件。
-_RESPOND_TASK = (
-    "（分两栏：think 写内心独白，speak 写说出口的话。"
-    "think 只写你此刻心里的念头——感受、犹豫、还没成形的心事，"
-    "用第一人称「我」，不称呼用户、不用完整通顺的句子、不用「她」或「尼克斯」称呼自己；"
-    "think 不要写出你打算对用户说出口的那句话（也不要是它的改写），那句话只属于 speak。"
-    "speak 写你真正对用户说出口的第一句话，不用一次把话说完。"
-    '以 JSON 输出，形如 {"think": "内心独白", "speak": "说出口的话"}。）'
-)
-_RESPOND_TASK_CONTINUE = (
-    "（接着上一轮，分两栏：think 写内心独白，speak 写说出口的话。"
-    "think 再往深里想一层你的念头——新的感受或犹豫，不要复述之前想过的，"
-    "继续第一人称「我」，"
-    "不要写出你打算继续对用户说的话（也不要是它的改写）；"
-    "speak 接着你上面已经说出口的话往下说一句——补充、解释或往深里说，不要重复。"
-    '以 JSON 输出，形如 {"think": "内心独白", "speak": "说出口的话"}。）'
-)
-_USE_TOOLS_TASK = (
-    "你可以调用工具查询信息（本地搜索、读写文件、联网搜索）。"
-    "本次回复若需要查询资料，就调用相应工具；"
-    "若不需要查询，就不要调用任何工具。"
-)
-_TOOL_DECISION_FAILED = "本轮没有获得工具查询结果；不要声称已经查询或验证。"
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -153,8 +134,8 @@ def _rounds_block(think: list[str], speak: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _parse_reply(raw: str) -> tuple[str, str]:
-    """解析 respond 节点 JSON 产出 → (think, speak)。结构非法抛 ValueError。
+def _parse_reply(raw: str) -> tuple[str, str, bool]:
+    """解析 respond 节点 JSON 产出 → (think, speak, needs_continuation)。
 
     think 缺/非字符串归空；speak 缺/空/非字符串抛 ValueError（回复必须有话说）。
     """
@@ -168,7 +149,10 @@ def _parse_reply(raw: str) -> tuple[str, str]:
         raise ValueError("respond JSON 缺 speak 或非空字符串")
     if not isinstance(think, str):
         think = ""
-    return think.strip(), speak.strip()
+    continuation = parsed.get("needs_continuation", False)
+    if not isinstance(continuation, bool):
+        continuation = False
+    return think.strip(), speak.strip(), continuation
 
 
 def _voice_output(output: LLMOutput, type_: str, content: str) -> LLMOutput:
@@ -276,7 +260,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             temporal_context=state["temporal_context"],
             activity_context=state["activity_context"],
         )
-        user = user_prompt(state) + "\n" + _USE_TOOLS_TASK
+        user = user_prompt(state) + "\n" + USE_TOOLS_TASK
         try:
             output = await deps.llm.complete(
                 [
@@ -293,7 +277,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             _LOGGER.exception(
                 "工具判断失败 correlation_id=%s", state["correlation_id"]
             )
-            return {"tool_outputs": [_TOOL_DECISION_FAILED]}
+            return {"tool_outputs": [TOOL_DECISION_FAILED]}
         outputs: list[str] = []
         for tc in output.tool_calls[:_TOOL_OUTPUT_MAX_ITEMS]:
             name = tc.get("name", "")
@@ -357,7 +341,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         user = user_prompt(state)
         # 前几轮 think/speak（等长）
         prior = _rounds_block(state["think"], state["speak"])
-        task = _RESPOND_TASK_CONTINUE if state["speak"] else _RESPOND_TASK
+        task = RESPOND_TASK_CONTINUE if state["speak"] else RESPOND_TASK
         user = "\n".join(p for p in (prior, user, task) if p)
         try:
             output = await deps.llm.complete(
@@ -371,7 +355,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 json_mode=True,
             )
             try:
-                think, speak = _parse_reply(output.content)
+                think, speak, needs_continuation = _parse_reply(output.content)
             except ValueError:
                 retry_user = (
                     user
@@ -389,7 +373,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     correlation_id=state["correlation_id"],
                     json_mode=True,
                 )
-                think, speak = _parse_reply(output.content)
+                think, speak, needs_continuation = _parse_reply(output.content)
             await deps.evaluator.evaluate(_voice_output(output, "think", think))
             await deps.evaluator.evaluate(_voice_output(output, "speak", speak))
         except Exception:
@@ -405,6 +389,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             return {
                 "think": [],
                 "speak": [fallback],
+                "needs_continuation": False,
                 "fallback": True,
             }
         new_think = state["think"] + [think]
@@ -423,13 +408,22 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     ),
                     answered_attempt=state["answered_attempt"],
                 )
-                return {"think": new_think, "speak": new_speak, "ask": speak}
+                return {
+                    "think": new_think,
+                    "speak": new_speak,
+                    "needs_continuation": False,
+                    "ask": speak,
+                }
             await deps.commit_reply_events(
                 text_events(state, new_think, new_speak),
                 state["answered_attempt"],
                 state["claimed_return"],
             )
-        return {"think": new_think, "speak": new_speak}
+        return {
+            "think": new_think,
+            "speak": new_speak,
+            "needs_continuation": needs_continuation,
+        }
 
     async def should_ask(state: ReplyState) -> dict[str, Any]:
         speak = state["speak"][-1]
@@ -451,7 +445,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             )
             return {"ask": speak}
         final_round = state["round"] + 1 >= deps.config.slow_max_rounds
-        if final_round:
+        if not state["needs_continuation"] or final_round:
             await deps.commit_reply_events(
                 [
                     *text_events(state, state["think"], state["speak"]),
@@ -513,7 +507,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     def route_after_should_ask(state: ReplyState) -> str:
         if state["ask"] is not None:
             return "record_message"
-        if state["round"] < deps.config.slow_max_rounds:
+        if state["needs_continuation"] and state["round"] < deps.config.slow_max_rounds:
             return "respond"                               # 未到轮数上限，继续下一轮
         return "record_message"                            # 轮满，回合结束
 

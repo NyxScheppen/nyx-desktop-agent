@@ -5,7 +5,7 @@ export default function CharacterSelect() {
   const switching = useCharacterStore((s) => s.switching);
   const select = useCharacterStore((s) => s.select);
   if (!registry) return null;
-  return <select aria-label="当前角色" value={registry.current_id} disabled={switching}
+  return <select className="character-select" aria-label="当前角色" value={registry.current_id} disabled={switching}
     onChange={(event) => void select(event.target.value)}>
     {registry.characters.filter((role) => role.status !== "ARCHIVED").map((role) =>
       <option key={role.id} value={role.id} disabled={role.status !== "RUNNING"}>

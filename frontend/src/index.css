@@ -1259,8 +1259,61 @@ body:has(.app--pet) {
   font-size: 0.82rem;
 }
 
-.bg-panel__btn:hover {
+.bg-panel__btn:hover:not(:disabled) {
   background: var(--parchment-deep);
+}
+
+.bg-panel__btn:focus-visible,
+.character-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.bg-panel__btn:disabled,
+.character-select:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.character-select {
+  min-width: 0;
+  max-width: 100%;
+  padding: .3rem .5rem;
+  border: 1px solid var(--ink-soft);
+  border-radius: .4rem;
+  background: var(--parchment);
+  color: var(--ink);
+  font: inherit;
+  font-size: .82rem;
+  cursor: pointer;
+}
+
+.character-select:hover:not(:disabled) {
+  background: var(--parchment-deep);
+}
+
+.character-manager__toolbar,
+.character-manager__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .4rem;
+}
+
+.character-manager__row {
+  margin-top: .65rem;
+  padding-top: .65rem;
+  border-top: 1px solid var(--gold);
+  color: var(--ink);
+  font-size: .82rem;
+}
+
+.character-manager__row p {
+  margin: .35rem 0;
+}
+
+.character-manager__actions {
+  margin-top: .35rem;
 }
 
 /* ===== 内在状态面板 ===== */
@@ -2171,6 +2224,20 @@ h6.reader-block--heading {
   pointer-events: auto;
   transform: translate(-50%, -50%);
   transition: transform .16s ease, background .16s ease;
+}
+
+.pet-fan-menu > .character-select {
+  position: absolute;
+  top: 27px;
+  left: 0;
+  width: 74px;
+  padding: .25rem .3rem;
+  border-color: var(--gold);
+  border-radius: 999px;
+  background: rgba(255, 250, 240, .98);
+  box-shadow: 0 8px 18px rgba(48, 30, 15, .2);
+  font-size: 10px;
+  pointer-events: auto;
 }
 
 .pet-fan-menu__item:hover {

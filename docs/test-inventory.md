@@ -12,7 +12,7 @@
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 本轮前端全量验证：336 passed（25 个测试文件）。
+- 本轮前端全量验证：338 passed（25 个测试文件）。
 - Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；ready 响应必须同时匹配固定 Nyx 服务标识、本次启动 nonce 和响应大小上限；Debug/Release 均通过编译检查。
 - 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；普通 TCP、错误 HTTP 状态、非法/过大 JSON、错误服务标识或 nonce 均不能触发前端启动；身份匹配后 owned backend 仍须存活。
 - 启动身份 API 回归：`test_ready_endpoint_returns_owned_instance_identity`、`test_ready_endpoint_keeps_manual_start_compatible`；release smoke 使用同一 nonce 握手且拒绝身份不匹配、过大响应和探测后进程退出。
@@ -35,7 +35,7 @@
 | 欲望 | `tests/test_desire/` | 4 | 值机制、行动优先级、strength 缩放加压、系统构造 goal、父长期欲望选择/持久化/反馈、容量裁剪、满足与 durable attempt 重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、旧记忆归纳式反思、触发 evidence 注入、消费条件复核、慢变量 CAS、非有限数/候选类型边界、长期欲望数值/文字强度 prompt、事务回滚 |
 | 活动 | `tests/test_activity/` | 11 | 本地自然日时间线、跨日暂停隔离、结果过滤/分页、行动优先级排期、父 ID 活动传递、活动/欲望/任务/事件原子生命周期与故障回滚、`IDLE_REFLECTION` durable 请求原子追加、收尾失败同进程恢复与下一次准入重试、有界取消、任务提交后调度失败仍成功、委派任务 FIFO/低精力/打断/关闭/崩溃恢复、网页任务 6000 字符 checkpoint、EPUB-only 模糊选材及部分进度不结算、无匹配搜索、探索只追加父长期欲望子主题、观察、本地探索读取真实文件、创作结果严格校验、主题/旧作参考与唯一文件名 |
-| 表达 | `tests/test_expression/` | 6 | prompt 动态资料预算/历史指令边界/记忆展示元数据/走神显式开关、人格与审美三档倾向及中文情感标签、活动事实/历史归属与终态措辞、慢通道默认单轮及显式续写、快慢通道正常文本终局原子批次及回滚增量计数补偿、场景请求、同轮记忆 id 去重召回、工具判断失败降级、回复、搭话、碎碎念、durable interaction attempt owner/重放/多等待项显式归属/暂停恢复超时、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
+| 表达 | `tests/test_expression/` | 6 | prompt 动态资料预算/历史指令边界/记忆展示元数据/走神显式开关、人格与审美三档倾向及中文情感标签、活动事实/历史归属与终态措辞、慢通道默认单轮及显式续写、快慢通道正常文本终局原子批次及回滚增量计数补偿、场景请求、同轮记忆 id 去重召回、工具判断失败降级、回复、搭话等待事件的 attempt/过期时间、碎碎念、durable interaction attempt owner/重放/多等待项显式归属/暂停恢复超时、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/嵌套块语义/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进及 `reading_progress` 广播、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、重读反思证据、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据、recent offset 分页 |
 | 发布工具 | `tests/test_release_tools.py` | 1 | 六处版本一致性、tag 校验、冻结制品布局、REST/SSE smoke、stdin EOF 回收、占位 key、workflow 权限/依赖/Action SHA 与锁文件 |
@@ -46,8 +46,8 @@
 | 范围 | 测试目录 | 主要覆盖 |
 |---|---|---|
 | REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、委派任务端点与 `task_updated` 分发、创作过滤/分页参数、记忆搜索/事实快照端点、开发/打包共享 base URL、eval recent 分页参数与 prompt 懒加载端点、取消信号、错误、事件解析、SSE `id`/`Last-Event-ID` 回放游标、按 `event_id` 去重、`reading_progress` 帧校验与分发、`scene_memory_requested` 监听与 no-op 分发、`reflection_done` 同时刷新欲望与内在状态 |
-| 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts`, `activityPanel.test.tsx`, `creationPanel.test.tsx` | Zustand、委派网页/EPUB 表单与段落预览、任务状态/失败原因、普通进度冲突合并与显式重读回退、阅读进度快照的异书/旧 revision/Nyx 回退过滤、书签切书乱序回包隔离、创作分批追加与刷新竞态、创作正文折叠/加载更多、记忆搜索与事实图独立降级、eval store 分页加载历史记录及逐行 prompt 缓存/重试、历史/SSE 去重与因果排序、非法帧不改变等待/未读状态、活跃度、异常原生采样、请求超时/取消、网络结果不确定 |
-| 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、设置中不再嵌入评估面板、独立评估页面逐条展开详情与安全文本渲染 |
+| 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts`, `activityPanel.test.tsx`, `creationPanel.test.tsx` | Zustand、主动搭话等待字段落消息、委派网页/EPUB 表单与段落预览、任务状态/失败原因、普通进度冲突合并与显式重读回退、阅读进度快照的异书/旧 revision/Nyx 回退过滤、书签切书乱序回包隔离、创作分批追加与刷新竞态、创作正文折叠/加载更多、记忆搜索与事实图独立降级、eval store 分页加载历史记录及逐行 prompt 缓存/重试、历史/SSE 去重与因果排序、非法帧不改变等待/未读状态、活跃度、异常原生采样、请求超时/取消、网络结果不确定 |
+| 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、主动搭话等待倒计时、设置中不再嵌入评估面板、角色卡导入按钮打开文件选择并提交卡包、独立评估页面逐条展开详情与安全文本渲染 |
 | 记忆面板 | `memoryPanel.test.tsx` | 关键词查询提交、事实图实体关系渲染、事实加载失败降级 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 未连接/有数据/错误状态展示、情绪选图与拖拽隔离、情绪分类标签、欲望终态过滤、中文标签命中与未知值回退 |
 | 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 真分页与长段可达、受控富文本、UTF-16 同段划线、重叠划线线性端点读取、跨段拒绝、划线查询/删除/定位、书签定位、普通笔记和章节交互 |

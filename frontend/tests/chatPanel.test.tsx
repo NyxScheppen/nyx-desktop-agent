@@ -64,6 +64,28 @@ describe("MessageBubble", () => {
     expect(screen.getByText("在忙吗？")).toBeInTheDocument();
   });
 
+  it("等待中的 initiate_chat 显示服务端校正倒计时", () => {
+    vi.setSystemTime(new Date("2026-10-12T08:00:00Z"));
+    useChatStore.setState({ serverTimeOffset: 0 });
+    render(
+      <MessageBubble
+        message={{
+          ...makeMsg("initiate_chat", "nyx", "在忙吗？"),
+          preloaded: true,
+          attempt_id: "attempt-chat",
+          expires_at: Date.now() / 1000 + 10,
+          question_status: "waiting",
+        }}
+        ready
+        onTyped={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("剩余 10 秒")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1000));
+    expect(screen.getByText("剩余 9 秒")).toBeInTheDocument();
+  });
+
   it("user message 即时显示完整文本", () => {
     render(<MessageBubble message={makeMsg("message", "user", "你好")} ready onTyped={() => {}} />);
     expect(screen.getByText("你好")).toBeInTheDocument();

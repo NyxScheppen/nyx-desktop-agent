@@ -378,6 +378,8 @@ schema 35 迁移把旧版本遗留的 `CLAIMED AND answer_event_id IS NULL` 恢�
   READING_QUESTION 同事务提交；只对未提供该方法的测试 fake 兼容回退
   `register_question(..., READING_QUESTION, ...)`。
 - `ASK` 载荷为 `{"content", "attempt_id", "kind", "expires_at"}`。
+- `INITIATE_CHAT` 载荷为 `{"content", "attempt_id", "desire_id", "expires_at"}`；
+  `expires_at` 与同事务写入的 attempt 一致，供前端实时显示等待回应倒计时。
 - `READING_QUESTION` 保留书籍、段落、subtype、selected_text 等前端字段并增加 attempt_id；
   它是展示兼容事件，不替代 canonical ASK。前端按 `attempt_id` 将两类事件合并为一个提问气泡，
   并以 `expires_at` 显示计时和提供暂停/恢复操作。
@@ -560,7 +562,8 @@ event log/SSE 使用 attempt id 关联展示。
   `DesireFacade.claim_for_interaction()` 原子领取。
 - 只有领取成功者调用 LLM。生成/evaluator 在事务外进行；空输出释放领取并返回 False。
 - 非空输出后，在同一本地事务中写入 `InteractionAttempt(INITIATE_CHAT)` 和
-  `INITIATE_CHAT` 事件；事务提交后才打断活动。
+  `INITIATE_CHAT` 事件；事件携带同一 attempt 的 `attempt_id` 和 `expires_at`，事务提交后
+  才打断活动。
 - 活动打断失败是待补偿副作用，不撤销已提交主动搭话；补偿必须复用已持久化文本，不能
   重复生成。
 - 用户回复通过 attempt 满足对应欲望；超时调用 `DesireFacade.expire()`。

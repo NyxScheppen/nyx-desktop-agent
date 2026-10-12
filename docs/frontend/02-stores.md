@@ -54,8 +54,8 @@ type ChatMessage = {
   preloaded?: boolean;        // 历史回填消息：渲染时不逐字（loadHistory 写入）
   subtype?: QuestionSubtype;         // kind==="reading_question" 才有（提问四子型）
   selectedText?: string | null;      // reading_question 引文
-  attempt_id?: string;               // ASK/READING_QUESTION 的共享等待 attempt
-  expires_at?: number;               // 提问计时终点（epoch 秒）
+  attempt_id?: string;               // ASK/READING_QUESTION/INITIATE_CHAT 的等待 attempt
+  expires_at?: number;               // 等待回应计时终点（epoch 秒）
   paused_at?: number | null;          // 非空：计时暂停
   question_status?: QuestionStatus;
 };
@@ -79,7 +79,7 @@ addUserMessage(e: UserMessageEvent): void            // SSE user_message 回显�
 addSpeak(e: TextEvent<"speak">): void                // {role:"nyx", kind:"speak"}；correlation_id === pendingId 时才 clearTimeout(replyTimer) + isReplying=false + sendError=null
 addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}；correlation_id === pendingId 时才 clearTimeout(replyTimer) + isReplying=false + sendError=null
 addThink(e: TextEvent<"think">): void                // {role:"nyx", kind:"think"}
-addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initiate_chat"}
+addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initiate_chat"}；保留 attempt_id/expires_at
 addReadingTurn(e: ReadingQuestionEvent): void  // {role:"nyx",kind:"reading_question"}; subtype/selectedText 落字段
 pauseQuestion(attemptId: string): Promise<boolean>  // POST /api/questions/{id}/pause
 resumeQuestion(attemptId: string): Promise<boolean> // POST /api/questions/{id}/resume
@@ -109,6 +109,9 @@ reset(): void                            // 新会话全清：clearTimeout(reply
   恢复后继续倒计时。历史中不在 pending 快照里的 attempt 关闭本地 waiting 状态；只有
   `question_status === "waiting"` 的提问气泡显示计时和暂停/继续操作，用户发送成功后目标先标记
   `claimed`，避免下一条消息继续携带旧 `reply_to`。
+- **主动搭话计时**：实时 `INITIATE_CHAT` 的 `attempt_id`/`expires_at` 原样进入消息；等待状态的
+  气泡复用提问的服务端时间校正与“剩余 N 秒/等待超时确认”显示，但不增加暂停/继续按钮。
+  重连和角色恢复时仍由历史事件与 pending 快照补齐状态；旧事件缺字段时不显示虚假倒计时。
 
 ## 2. `innerLifeStore`
 
@@ -297,7 +300,7 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 
 ## 8. 测试（`tests/stores.test.ts`）
 
-- **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addInitiateChat`/`addUserMessage`/`addReadingTurn` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id/timestamp）且 append」；`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
+- **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addInitiateChat`/`addUserMessage`/`addReadingTurn` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id/timestamp）且 append」；主动搭话还保留 `attempt_id`/`expires_at`/waiting 状态。`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
 - **chatStore.loadHistory**：新旧消息统一按 `timestamp` 稳定升序 + `preloaded=true` + 历史 think 入 `typedIds`；与实时消息按 id 去重；非法时间戳丢弃；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
 - **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
 - **两个快照 store**：`desireStore` 断言 `refresh()` 请求对端点 + `data` 落 store；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`+`getTasks`（fetch 恰 3 次）并验证任务创建回写；`desireStore.refresh()` 失败 → `error` + `data` 保持 null。

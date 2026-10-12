@@ -34,6 +34,9 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 提问气泡按 `attempt_id` 合并 ASK 与 READING_QUESTION；只有一个等待提问时自动绑定，多个等待项
 要求用户先点选目标。气泡显示服务端校正后的剩余时间，并可暂停/继续；用户发送成功后目标 attempt
 进入 `claimed`，不再作为下一条消息的候选。
+
+主动搭话使用同一等待 attempt：实时事件携带 `attempt_id`/`expires_at`，气泡显示服务端校正后的
+“剩余 N 秒”，到零后显示“等待超时确认”。主动搭话只显示计时，不增加暂停/继续按钮。
 ```
 
 - **去重**：无——SSE 是消息唯一来源，`sendMessage` 不本地 append（02-stores §1 决策），故无「乐观 + 回显」重复问题。
@@ -47,7 +50,7 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 | `nyx` | `speak` | 左气泡，纯文本 | 主回复，正常展示 |
 | `nyx` | `ask` | 左气泡，高亮/带问句样式 | 问句，等待用户回应 |
 | `nyx` | `think` | 灰色斜体小字，逐字显示 | 内心话，弱化展示（useTypewriter 逐字，后端 THINK 先于 SPEAK 到达） |
-| `nyx` | `initiate_chat` | 左气泡，带「欲望搭话」徽标 | 主动搭话 |
+| `nyx` | `initiate_chat` | 左气泡，带「欲望搭话」徽标 + 等待回应倒计时 | 主动搭话 |
 | `nyx` | `reading_question` | 左气泡，带「提问」徽标 + 划线引文，即时全量 | 读书提问并进对话（不逐字，不进打字机） |
 
 - **打字机（`useTypewriter`）**：nyx 文本消息（`speak`/`ask`/`think`/`initiate_chat`，即 `isNyxText` 白名单）逐字显示，纯渲染层 hook（`hooks/useTypewriter.ts`），不改 store——消息仍完整 append，仅控制「显示到第几个字」；未打完时挂 `.cursor-blink` 光标。`useTypewriter(text, speed, ready)` 加第三参 `ready`：false 时不启动（`displayed=""`、`done=false`、无光标），转 true 才从 0 逐字。**reading 两 kind 不进 `isNyxText`/`NYX_TEXT_KINDS` 白名单**：即时全量渲染、不进打字机串行门。
@@ -86,7 +89,7 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 
 ## 5. 测试（`tests/` 并入 stores/api 测试）
 
-- `MessageBubble`：按 `kind` 渲染正确（`speak` 正常 / `think` 灰色斜体逐字 / `ask` 高亮）；nyx 文本消息须先 `advanceTimersByTime`（fake timers）打完字再断言完整文案——React Testing Library 断言关键 class/文案。
+- `MessageBubble`：按 `kind` 渲染正确（`speak` 正常 / `think` 灰色斜体逐字 / `ask` 高亮）；等待中的 `initiate_chat` 使用 fake system time 断言实时倒计时；nyx 文本消息须先 `advanceTimersByTime`（fake timers）打完字再断言完整文案——React Testing Library 断言关键 class/文案。
 - `MessageList`：全部消息按序渲染、无历史折叠（`typeDone` 推进 fake timers 后两条都上屏，无历史按钮）；全部气泡渲染即存在（串行门控只延迟内容不延迟挂载）；串行逐字：内心话先打完、对话才开打（未推进 timer 两者皆空，`typeDone` 后串行完整上屏）；`isReady` 全串行逐字门控纯函数在 stores.test.ts 覆盖。
 - 时间显示：fake system time 覆盖列表首条、同 correlation、同日 29:59/30:00、跨午夜、
   今天/昨天/更早标签；历史回填与实时消息在相同 epoch 下渲染完全一致。

@@ -158,10 +158,13 @@ describe("chatStore.add*", () => {
       correlation_id: "c5b",
       timestamp: 1006,
       content: "在忙吗？",
+      attempt_id: "attempt-chat",
+      expires_at: 1066,
     });
     expect(useChatStore.getState().unreadProactive).toBe(true);
     expect(useChatStore.getState().messages[0]).toMatchObject({
       role: "nyx", kind: "initiate_chat", content: "在忙吗？",
+      attempt_id: "attempt-chat", expires_at: 1066, question_status: "waiting",
     });
 
     useChatStore.getState().clearUnreadProactive();

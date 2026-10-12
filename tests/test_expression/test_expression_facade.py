@@ -1359,6 +1359,8 @@ async def test_initiate_chat_non_empty() -> None:
     assert len(bus.published) == 1
     assert bus.published[0].type is EventType.INITIATE_CHAT
     assert bus.published[0].correlation_id == "d1"
+    assert isinstance(bus.published[0].content["attempt_id"], str)
+    assert bus.published[0].content["expires_at"] > bus.published[0].timestamp
     assert [t for t, _m, _c in llm.calls] == ["initiate_chat"]
     assert "[主动提问指导]" in llm.calls[0][1][0]["content"]
     assert "[时间与重逢上下文]" in llm.calls[0][1][0]["content"]

@@ -32,17 +32,20 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
   const resumeQuestion = useChatStore((s) => s.resumeQuestion);
   const serverTimeOffset = useChatStore((s) => s.serverTimeOffset);
   const [now, setNow] = useState(() => Date.now() / 1000);
-  const isQuestion = message.attempt_id !== undefined &&
-    (kind === "ask" || kind === "reading_question") &&
+  const isWaitingInteraction = message.attempt_id !== undefined &&
     message.question_status === "waiting";
+  const isQuestion = isWaitingInteraction &&
+    (kind === "ask" || kind === "reading_question");
+  const isTimedInteraction = isWaitingInteraction &&
+    (kind === "ask" || kind === "reading_question" || kind === "initiate_chat");
 
   useEffect(() => {
-    if (!isQuestion || message.paused_at !== null && message.paused_at !== undefined) return;
+    if (!isTimedInteraction || message.paused_at !== null && message.paused_at !== undefined) return;
     const timer = window.setInterval(() => setNow(Date.now() / 1000), 250);
     return () => window.clearInterval(timer);
-  }, [isQuestion, message.paused_at]);
+  }, [isTimedInteraction, message.paused_at]);
 
-  const remaining = isQuestion && message.expires_at !== undefined
+  const remaining = isTimedInteraction && message.expires_at !== undefined
     ? Math.max(
         0,
         message.paused_at !== null && message.paused_at !== undefined
@@ -69,7 +72,7 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
       {kind === "reading_question" && message.selectedText && (
         <p className="message-bubble__quote">原文：「{message.selectedText}」</p>
       )}
-      {isQuestion && remaining !== null && (
+      {isTimedInteraction && remaining !== null && (
         <span className="message-bubble__timer">
           {remaining > 0 ? `剩余 ${Math.ceil(remaining)} 秒` : "等待超时确认"}
           {message.paused_at !== null && message.paused_at !== undefined && "（已暂停）"}

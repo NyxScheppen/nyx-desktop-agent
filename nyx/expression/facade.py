@@ -586,6 +586,7 @@ class ExpressionFacade:
                 EventType.INITIATE_CHAT, output.content, correlation_id
             )
             event.content["attempt_id"] = attempt_id
+            event.content["expires_at"] = attempt.expires_at
             event.content["desire_id"] = desire.id
             await self._commit_attempt_event(attempt, event, claimed_return)
             self._history.append(

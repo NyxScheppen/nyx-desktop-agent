@@ -162,7 +162,8 @@
 - `runtime.check_initiate_chat()` 从 pending desire 找 interaction 欲望，检查在线/忙状态、
   精力和冷却，然后调用 `DesireFacade.claim_for_interaction()` 原子领取。
 - 领取后才调用 `ExpressionFacade.initiate_chat()`；LLM/evaluator 在事务外完成。
-- 非空开场白成功后，attempt 与 `INITIATE_CHAT` 在一个本地事务中提交，随后才尝试打断活动。
+- 非空开场白成功后，attempt 与 `INITIATE_CHAT` 在一个本地事务中提交；事件携带同一
+  `attempt_id` 和 `expires_at` 供前端实时计时，随后才尝试打断活动。
 - 活动打断失败不会撤销已提交搭话；当前实现记录日志，依赖后续补偿。
 - 用户回答主动搭话时满足对应欲望；超时则 expire。
 - durable store 模式下，主动搭话冷却从最近成功 attempt 的创建时间派生；兼容路径回退到

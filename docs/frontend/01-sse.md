@@ -23,7 +23,9 @@ data: {"character_id":"nyx","event_id":"…","correlation_id":"…","timestamp":
   帧的时刻替代。`content` 的键不得与四个公共键冲突。
 - `timestamp` 是必填线协议字段，前后端必须同批发布；新前端不会接收缺少该字段的旧后端帧。
 - 各事件 `content` 形状由生产方 spec 定义，核心先行只依赖四个：
-  - `speak` / `ask` / `mutter` / `initiate_chat` → `{content: string}`
+  - `speak` / `mutter` → `{content: string}`
+  - `ask` → `{content: string, attempt_id: string, kind: string, expires_at: number}`
+  - `initiate_chat` → `{content: string, attempt_id: string, desire_id: string, expires_at: number}`
   - `think` → `{content: string}`（内心话，仅日志/聊天区灰色展示）
   - `emotion_update` → `{valence, arousal, emotion}`（08-inner-life 定义）
   - `user_message` → `{message: string}`（main.py 裸载荷，非 internal_text_event，键名与文本事件不同）
@@ -42,7 +44,13 @@ type SseBase = {
 };
 
 type TextEventType = "speak" | "ask" | "think" | "mutter" | "initiate_chat";
-type TextEvent<T extends TextEventType> = SseBase & { event: T; content: string };
+type TextEvent<T extends TextEventType> = SseBase & {
+  event: T;
+  content: string;
+  kind?: "chat_ask" | "reading_question" | "initiate_chat";
+  attempt_id?: string;
+  expires_at?: number;
+};
 
 type UserMessageEvent = SseBase & { event: "user_message"; message: string };
 
@@ -122,7 +130,7 @@ function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string; gener
 | `ask` | `chatStore` | `addAsk` | 聊天区 Nyx 问句 |
 | `think` | `chatStore` | `addThink` | 内心话（灰色斜体逐字展示） |
 | `mutter` | `announceStore` | `announce("mutter", …)` | 碎碎念（立绘旁淡出气泡，不再进聊天记录） |
-| `initiate_chat` | `chatStore` | `addInitiateChat` | 搭话 |
+| `initiate_chat` | `chatStore` | `addInitiateChat` | 搭话；保留 attempt 与过期时间供气泡倒计时 |
 | `emotion_update` | `innerLifeStore` | `updateEmotion` + `refreshState()` | 更新 valence/arousal/emotion（增量）+ 重拉全量快照带新能量/性格/三观（载荷只带情绪，不随帧下发） |
 | `user_message` | `chatStore` | `addUserMessage` | 用户消息回显（发消息后 SSE 回播） |
 | `desire_generated`/`desire_satisfied`/`desire_expired` | `desireStore` | `refresh()` | 欲望变化 → 重拉快照（事件只带 `desire_id`） |
@@ -203,7 +211,7 @@ chatStore.addSpeak(e: TextEvent<"speak">): void            // e.content → Chat
 chatStore.addAsk(e: TextEvent<"ask">): void                // kind:"ask"
 chatStore.addThink(e: TextEvent<"think">): void            // kind:"think"
 chatStore.addReadingTurn(e: ReadingQuestionEvent | ReadingAssociationEvent): void  // 读书提问/联想并进对话（correlation_id=book_id，不过滤当前书）
-chatStore.addInitiateChat(e: TextEvent<"initiate_chat">): void // kind:"initiate_chat"
+chatStore.addInitiateChat(e: TextEvent<"initiate_chat">): void // kind:"initiate_chat" + 等待倒计时字段
 chatStore.addUserMessage(e: UserMessageEvent): void        // 读 e.message → {kind:"message", role:"user"}
 innerLifeStore.updateEmotion(e: EmotionUpdateEvent): void  // 覆盖 current 的 valence/arousal/emotion（emotion 走 isEmotionCategory 收窄）
 desireStore.refresh(): Promise<void>                       // desire_* → 重拉快照（事件只带 desire_id，fire-and-forget）

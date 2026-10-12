@@ -1316,6 +1316,26 @@ body:has(.app--pet) {
   margin-top: .35rem;
 }
 
+.character-manager__form {
+  display: grid;
+  gap: .4rem;
+  margin-top: .65rem;
+}
+
+.character-manager__form input:not([type="file"]),
+.character-manager__form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: .35rem .5rem;
+  border: 1px solid var(--ink-soft);
+  border-radius: .4rem;
+  background: var(--parchment);
+  color: var(--ink);
+  font: inherit;
+}
+
+.character-manager__form textarea { min-height: 4rem; resize: vertical; }
+
 /* ===== 内在状态面板 ===== */
 .inner-state-panel {
   flex: 1 1 auto;

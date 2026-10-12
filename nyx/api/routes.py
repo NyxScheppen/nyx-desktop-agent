@@ -1,4 +1,5 @@
 """FastAPI 请求模型与 REST/SSE 路由注册。"""
+
 # pyright: reportPrivateUsage=false, reportUnusedFunction=false
 import asyncio
 import json
@@ -12,15 +13,17 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.base import RequestResponseEndpoint
-from starlette.routing import Match
+from starlette.routing import Match, Mount
+from starlette.types import Receive, Scope, Send
 
 from nyx.activity.facade import WebTasksDisabledError
 from nyx.activity.observe import classify_presence
-from nyx.app_context import _App
+from nyx.app_context import _App, _Host
+from nyx.character_cards import MAX_CARD_BYTES, load_card
 from nyx.enums import ActivityType, BoundaryResult, EventType, MemoryKind, MemoryType
 from nyx.events.bus import EventAdmissionError
 from nyx.reading.facade import (
@@ -56,6 +59,21 @@ _MAX_ACTIVITY_RESULTS_OFFSET = 100_000
 _MAX_EVAL_OFFSET = 100_000
 
 RootEvent = Callable[[EventType, dict[str, Any]], Event]
+
+
+async def _validation_error(request: Request, error: Exception) -> JSONResponse:
+    assert isinstance(error, RequestValidationError)
+    if request.url.path != "/api/observe":
+        return await request_validation_exception_handler(request, error)
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": [
+                {key: item[key] for key in ("loc", "msg", "type")}
+                for item in error.errors()
+            ],
+        },
+    )
 
 
 def _question_payload(
@@ -176,9 +194,7 @@ class _BookTaskPayload(BaseModel):
 def sanitize_filename(name: str) -> str:
     """Remove path, control, and HTML-dangerous characters from an upload name."""
     cleaned = "".join(
-        char
-        for char in Path(name).name
-        if char.isprintable() and char not in '<>"'
+        char for char in Path(name).name if char.isprintable() and char not in '<>"'
     )
     return cleaned[:255] or "book.epub"
 
@@ -201,12 +217,15 @@ def build_app(
         if request.url.path != "/api/observe":
             return await request_validation_exception_handler(request, error)
         # Rejected input may contain NaN/Infinity, which JSONResponse cannot encode.
-        return JSONResponse(status_code=422, content={
-            "detail": [
-                {key: item[key] for key in ("loc", "msg", "type")}
-                for item in error.errors()
-            ],
-        })
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [
+                    {key: item[key] for key in ("loc", "msg", "type")}
+                    for item in error.errors()
+                ],
+            },
+        )
 
     @fast.get("/api/state")
     async def api_state() -> CurrentState:
@@ -223,8 +242,10 @@ def build_app(
             content["reply_to"] = payload.reply_to
         event = root_event(EventType.USER_MESSAGE, content)
         try:
+            if app.host is not None:
+                await app.host.online_before_chat(app.character_id, f"chat:{event.id}")
             await app.bus.publish(event)
-        except EventAdmissionError as error:
+        except (EventAdmissionError, RuntimeError) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         return {"event_id": event.id}
 
@@ -287,9 +308,7 @@ def build_app(
         offset: int = Query(0, ge=0, le=_MAX_ACTIVITY_RESULTS_OFFSET),
         activity_type: Literal["creation"] | None = None,
     ) -> list[Activity]:
-        selected_type = (
-            ActivityType.CREATION if activity_type == "creation" else None
-        )
+        selected_type = ActivityType.CREATION if activity_type == "creation" else None
         return await app.activity.get_results(limit, offset, selected_type)
 
     @fast.get("/api/tasks")
@@ -323,6 +342,11 @@ def build_app(
         correlation_id: str | None = None,
         after: str | None = None,
     ) -> list[Event]:
+        if app.host is not None and after is not None:
+            prefix = app.character_id + ":"
+            if not after.startswith(prefix):
+                raise HTTPException(409, "事件游标不属于该角色")
+            after = after[len(prefix) :]
         return await app.bus.list_events(limit, event_type, correlation_id, after)
 
     @fast.get("/api/eval/recent")
@@ -338,7 +362,8 @@ def build_app(
 
     @fast.get("/api/eval/{record_id}/prompt")
     async def api_eval_prompt(
-        record_id: str, response: Response,
+        record_id: str,
+        response: Response,
     ) -> list[LlmMessage] | None:
         response.headers["Cache-Control"] = "no-store"
         try:
@@ -358,9 +383,7 @@ def build_app(
     @fast.post("/api/export")
     async def api_export(payload: _ExportPayload) -> Response:
         content = await app.memory.export(payload.format)
-        media_type = (
-            "application/json" if payload.format == "json" else "text/markdown"
-        )
+        media_type = "application/json" if payload.format == "json" else "text/markdown"
         return Response(content=content, media_type=media_type)
 
     @fast.post("/api/books", status_code=201)
@@ -504,9 +527,7 @@ def build_app(
     @fast.post("/api/bookmarks", status_code=201)
     async def api_add_bookmark(payload: _BookmarkPayload) -> Bookmark:
         try:
-            return await app.reading.add_bookmark(
-                payload.book_id, payload.paragraph_id
-            )
+            return await app.reading.add_bookmark(payload.book_id, payload.paragraph_id)
         except BookNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
@@ -559,8 +580,13 @@ def build_app(
         request: Request = cast(Request, None),
     ) -> StreamingResponse:
         queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=sse_queue_size)
-        app.bus.add_sse_sink(queue)
         last_event_id = request.headers.get("last-event-id") if request else None
+        if app.host is not None and last_event_id:
+            prefix = app.character_id + ":"
+            if not last_event_id.startswith(prefix):
+                raise HTTPException(409, "SSE 游标不属于该角色")
+            last_event_id = last_event_id[len(prefix) :]
+        app.bus.add_sse_sink(queue)
         list_events = getattr(app.bus, "list_events", None)
         replay: list[Event] = []
         if callable(list_events):
@@ -568,7 +594,11 @@ def build_app(
                 Callable[..., Awaitable[list[Event]]],
                 list_events,
             )
-            replay = await load_replay(limit=1000, after=last_event_id)
+            try:
+                replay = await load_replay(limit=1000, after=last_event_id)
+            except BaseException:
+                app.bus.remove_sse_sink(queue)
+                raise
 
         async def generate():
             try:
@@ -583,16 +613,25 @@ def build_app(
                         "event_id": event.id,
                         "correlation_id": event.correlation_id,
                         "timestamp": event.timestamp,
+                        "character_id": app.character_id,
                     }
                     payload = json.dumps(data, ensure_ascii=False, default=str)
                     yield (
-                        f"id: {event.id}\nevent: {event.type.value}\n"
+                        f"id: {app.character_id + ':' if app.host else ''}{event.id}\n"
+                        f"event: {event.type.value}\n"
                         f"data: {payload}\n\n"
                     )
             finally:
                 app.bus.remove_sse_sink(queue)
 
         return StreamingResponse(generate(), media_type="text/event-stream")
+
+    install_local_guard(fast)
+    return fast
+
+
+def install_local_guard(fast: FastAPI) -> None:
+    """Apply the same localhost and origin guard to host and bound role APIs."""
 
     trusted_origins = frozenset(
         (
@@ -655,7 +694,8 @@ def build_app(
             (
                 item
                 for item in fast.routes
-                if isinstance(item, APIRoute) and item.matches(scope)[0] is Match.FULL
+                if isinstance(item, (APIRoute, Mount))
+                and item.matches(scope)[0] is Match.FULL
             ),
             None,
         )
@@ -670,7 +710,7 @@ def build_app(
             if (
                 origin not in trusted_origins
                 or route is None
-                or headers - {"content-type"}
+                or headers - {"content-type", "x-nyx-selection-revision"}
                 or method not in {"GET", "POST", "PUT", "DELETE"}
             ):
                 return reject(403, "origin_forbidden")
@@ -678,9 +718,18 @@ def build_app(
                 status_code=204,
                 headers={
                     "Access-Control-Allow-Methods": ", ".join(
-                        sorted(route.methods | {"OPTIONS"})
+                        sorted(
+                            (
+                                route.methods
+                                if isinstance(route, APIRoute)
+                                else {"GET", "POST", "PUT", "DELETE"}
+                            )
+                            | {"OPTIONS"}
+                        )
                     ),
-                    "Access-Control-Allow-Headers": "Content-Type",
+                    "Access-Control-Allow-Headers": (
+                        "Content-Type, X-Nyx-Selection-Revision"
+                    ),
                 },
             )
             if request.headers.get("access-control-request-private-network") == "true":
@@ -690,7 +739,7 @@ def build_app(
             if (
                 response is None
                 and request.method in ("POST", "PUT", "DELETE")
-                and route
+                and isinstance(route, APIRoute)
             ):
                 content_type = request.headers.get("content-type", "")
                 media = content_type.split(";", 1)[0].strip().lower()
@@ -713,4 +762,215 @@ def build_app(
             response.headers["Vary"] = f"{vary}, Origin" if vary else "Origin"
         return response
 
+
+class _SelectionPayload(BaseModel):
+    character_id: str = Field(min_length=1, strict=True)
+
+
+class _HostObservePayload(_ObservePayload):
+    sample_id: str = Field(min_length=1, max_length=200, strict=True)
+    character_id: str | None = None
+    selection_revision: int | None = Field(default=None, ge=0)
+
+
+def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
+    """Route each request to a fixed runtime, including legacy Nyx aliases."""
+    fast = FastAPI(title="Nyx Agent")
+    fast.add_exception_handler(RequestValidationError, _validation_error)
+    bound: dict[str, tuple[_App, FastAPI]] = {}
+
+    @fast.get("/api/ready")
+    async def ready() -> dict[str, str | None]:
+        return {"service": "nyx-agent", "launch_nonce": launch_nonce}
+
+    @fast.get("/api/characters")
+    async def characters() -> dict[str, Any]:
+        async with host.database.lock:
+            errors = await (
+                await host.database.conn.execute(
+                    "SELECT character_id, error FROM presence_delivery WHERE "
+                    "status='pending' AND attempts>=5 ORDER BY sequence"
+                )
+            ).fetchall()
+        sync_errors = {row["character_id"]: row["error"] for row in errors}
+        result: list[dict[str, Any]] = []
+        for record in host.records.values():
+            assets: dict[str, str] = {}
+            try:
+                assets = load_card(Path(record["card_path"])).manifest.assets
+            except (ValueError, OSError):
+                pass  # Failed installations still need a manageable registry entry.
+            result.append(
+                {key: record[key] for key in ("id", "name", "status", "error")}
+                | {
+                    "assets": {
+                        key: f"/api/characters/{record['id']}/assets/{key}"
+                        for key in assets
+                    },
+                    "sync_error": sync_errors.get(record["id"]),
+                }
+            )
+        return {
+            "characters": result,
+            "current_id": host.current_id,
+            "selection_revision": host.revision,
+            "limit": 4,
+        }
+
+    @fast.put("/api/characters/current")
+    async def select(payload: _SelectionPayload) -> dict[str, Any]:
+        try:
+            revision = await host.select(payload.character_id)
+        except KeyError as error:
+            raise HTTPException(404, "角色不存在") from error
+        except ValueError as error:
+            raise HTTPException(503, str(error)) from error
+        return {"current_id": host.current_id, "selection_revision": revision}
+
+    def spawn_start(identity: str) -> None:
+        task = asyncio.create_task(host.start(identity))
+        host.background.add(task)
+        task.add_done_callback(host.background.discard)
+
+    @fast.post("/api/characters", status_code=202)
+    async def register(file: UploadFile = File(...)) -> dict[str, Any]:
+        if not file.filename or Path(file.filename).suffix.lower() not in (
+            ".nyxcard",
+            ".zip",
+        ):
+            raise HTTPException(422, "请上传 .nyxcard 或 .zip 卡包")
+        try:
+            record = await host.register(await file.read(MAX_CARD_BYTES + 1))
+        except ValueError as error:
+            raise HTTPException(
+                409 if "四个" in str(error) or "已存在" in str(error) else 422,
+                str(error),
+            ) from error
+        if record["status"] == "STARTING":
+            spawn_start(record["id"])
+        return {key: record[key] for key in ("id", "name", "status", "error")}
+
+    def known(identity: str) -> None:
+        if identity not in host.records:
+            raise HTTPException(404, "角色不存在")
+
+    @fast.delete("/api/characters/{identity}", status_code=202)
+    async def unload(identity: str) -> dict[str, str]:
+        known(identity)
+        try:
+            await host.unload(identity)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        return {"status": host.records[identity]["status"]}
+
+    @fast.post("/api/characters/{identity}/restore", status_code=202)
+    async def restore(identity: str) -> dict[str, str]:
+        known(identity)
+        try:
+            await host.restore(identity, start=False)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        spawn_start(identity)
+        return {"status": "STARTING"}
+
+    @fast.post("/api/characters/{identity}/retry-start", status_code=202)
+    async def retry(identity: str) -> dict[str, str]:
+        known(identity)
+        try:
+            await host.retry_start(identity)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        spawn_start(identity)
+        return {"status": "STARTING"}
+
+    @fast.get("/api/characters/{identity}/assets/{key}")
+    async def asset(identity: str, key: str) -> FileResponse:
+        known(identity)
+        directory = Path(host.records[identity]["card_path"])
+        try:
+            card = load_card(directory)
+        except (ValueError, OSError) as error:
+            raise HTTPException(503, "角色图片不可用") from error
+        if key not in card.manifest.assets:
+            raise HTTPException(404, "角色没有该图片")
+        return FileResponse(directory / card.manifest.assets[key])
+
+    @fast.post("/api/observe")
+    async def observe(payload: _HostObservePayload) -> dict[str, Any]:
+        if payload.sampled_at > time.time():
+            raise HTTPException(422, "sampled_at is in the future")
+        try:
+            sequence = await host.observe(payload.model_dump())
+        except Exception as error:
+            raise HTTPException(503, "在线状态未受理") from error
+        return {"sequence": sequence, "event_id": f"presence:{sequence}"}
+
+    async def dispatch(scope: Scope, receive: Receive, send: Send) -> None:
+        path = scope["path"]
+        if path.startswith("/api/characters/"):
+            parts = path[len("/api/characters/") :].split("/", 1)
+            identity = parts[0]
+            relative = "/api/" + (parts[1] if len(parts) == 2 else "")
+        else:
+            identity, relative = "nyx", path
+        if relative == "/api/observe":
+            await JSONResponse({"detail": "观察须通过宿主入口提交"}, status_code=404)(
+                scope, receive, send
+            )
+            return
+        record = host.records.get(identity)
+        app = host.apps.get(identity)
+        response: Response | None = None
+        if record is None:
+            response = JSONResponse({"detail": "角色不存在"}, status_code=404)
+        elif record["status"] != "RUNNING" or app is None:
+            response = JSONResponse({"detail": "角色不可运行"}, status_code=503)
+        elif scope["method"] in ("POST", "PUT", "DELETE"):
+            headers = dict(scope["headers"])
+            expected = str(host.revision).encode()
+            # Legacy writes retain compatibility when Nyx is selected.
+            stale = identity != host.current_id or (
+                path.startswith("/api/characters/")
+                and headers.get(b"x-nyx-selection-revision") != expected
+            )
+            if stale:
+                response = JSONResponse({"detail": "角色选择已变化"}, status_code=409)
+        if response is not None:
+            await response(scope, receive, send)
+            return
+        assert app is not None
+        if identity not in bound or bound[identity][0] is not app:
+            from nyx.runtime import root_event
+
+            bound[identity] = (
+                app,
+                build_app(
+                    app,
+                    root_event=root_event,
+                    max_epub_bytes=50 * 1024 * 1024,
+                    sse_queue_size=100,
+                    launch_nonce=launch_nonce,
+                ),
+            )
+        task = asyncio.current_task()
+        if task is not None:
+            host.requests[identity].add(task)
+        try:
+            await bound[identity][1](
+                {
+                    **scope,
+                    "path": relative,
+                    "raw_path": relative.encode(),
+                    "root_path": "",
+                },
+                receive,
+                send,
+            )
+        finally:
+            if task is not None:
+                host.requests[identity].discard(task)
+
+    fast.mount("/api/characters", dispatch)
+    fast.mount("/api", dispatch)
+    install_local_guard(fast)
     return fast

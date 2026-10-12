@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { importBook } from "../../api/client";
+import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import { useReaderStore } from "../../stores/readerStore";
 import Panel from "../layout/Panel";
 
@@ -18,16 +19,18 @@ export default function BookshelfView() {
   }, [loadBooks]);
 
   const onImport = async (file: File) => {
+    const scope = captureScope();
     setImporting(true);
     setImportError(null);
     try {
       await importBook(file);
+      if (!isScopeCurrent(scope)) return;
       await loadBooks(); // 刷新书架
     } catch (err) {
       // 409 重复 / 400 非 epub·超限 / 500 解析失败均走统一 throw（05-client §2）
-      setImportError(err instanceof Error ? err.message : String(err));
+      if (isScopeCurrent(scope)) setImportError(err instanceof Error ? err.message : String(err));
     } finally {
-      setImporting(false);
+      if (isScopeCurrent(scope)) setImporting(false);
     }
   };
 

@@ -6,13 +6,13 @@
 
 ## 当前快照
 
-- 后端测试文件：64
-- `pytest --collect-only -q`：1209 tests collected
-- 本轮全量验证：1208 passed, 1 skipped（未采集语句覆盖率）
+- 后端测试文件：66
+- `pytest --collect-only -q`：1249 tests collected
+- 本轮全量验证：1248 passed, 1 skipped（未采集语句覆盖率）
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 本轮前端全量验证：322 passed（23 个测试文件）。
+- 本轮前端全量验证：336 passed（25 个测试文件）。
 - Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；ready 响应必须同时匹配固定 Nyx 服务标识、本次启动 nonce 和响应大小上限；Debug/Release 均通过编译检查。
 - 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；普通 TCP、错误 HTTP 状态、非法/过大 JSON、错误服务标识或 nonce 均不能触发前端启动；身份匹配后 owned backend 仍须存活。
 - 启动身份 API 回归：`test_ready_endpoint_returns_owned_instance_identity`、`test_ready_endpoint_keeps_manual_start_compatible`；release smoke 使用同一 nonce 握手且拒绝身份不匹配、过大响应和探测后进程退出。
@@ -39,6 +39,7 @@
 | 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/嵌套块语义/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进及 `reading_progress` 广播、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、重读反思证据、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据、recent offset 分页 |
 | 发布工具 | `tests/test_release_tools.py` | 1 | 六处版本一致性、tag 校验、冻结制品布局、REST/SSE smoke、stdin EOF 回收、占位 key、workflow 权限/依赖/Action SHA 与锁文件 |
+| 角色卡与宿主 | `tests/test_character_cards.py`, `tests/test_character_host.py` | 2 | 卡包安全校验、旧存档一次初始化、并发四角色限额、切换归属、独立文件边界、presence 部分失败/FIFO/确认与重启恢复、失效角色隔离、晚启动 runner、安装取消、停止超时保留 worker/数据库、宿主完整关停及恢复基线 |
 
 ## 前端覆盖
 
@@ -50,6 +51,8 @@
 | 记忆面板 | `memoryPanel.test.tsx` | 关键词查询提交、事实图实体关系渲染、事实加载失败降级 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 未连接/有数据/错误状态展示、情绪选图与拖拽隔离、情绪分类标签、欲望终态过滤、中文标签命中与未知值回退 |
 | 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 真分页与长段可达、受控富文本、UTF-16 同段划线、重叠划线线性端点读取、跨段拒绝、划线查询/删除/定位、书签定位、普通笔记和章节交互 |
+| 角色与请求归属 | `characterScope.test.ts`, `characterStore.test.ts` | scoped URL/选择 revision、A→B→A 旧回调隔离、请求取消、角色切换/卸载/恢复与草稿、切换中 registry 轮询防回退；presence/SSE 测试覆盖公共采样独立于当前连接和私有样本归属 |
+| 角色形象 | `avatar.test.tsx` | 卡片图片使用匿名 CORS 通过桌面本地访问校验；无图片角色显示名称占位 |
 | 视觉与通用 UI | `avatar.test.tsx`, `app.test.tsx`, `rightDock.test.tsx`, `desktopWindow.test.ts`, `petShell.test.tsx`, `time.test.ts`, `useTypewriter.test.tsx` | 创作页/评估页导航入口、统一分钟时钟、休眠恢复校时、昼夜/头像、完整端与桌宠态拖动模式隔离、桌宠双击后重新挂载完整内容、桌宠点击/拖动阈值与窗口层级、聊天/读书子面板靠右停靠标记、头像东西南北四项入口/内心摘要/可修改设置入口、状态气泡、桌宠陪读长段滚动与翻页边界、非法时间标签边界、打字机 |
 
 ## 关键回归清单
@@ -58,6 +61,14 @@
 
 ### 总线、事务与重放
 
+- `test_connect_cancelled_during_migration_closes_connection`
+- `test_unload_drain_timeout_keeps_worker_until_accepted_work_finishes`
+- `test_host_close_waits_for_timed_out_delivery_then_closes_databases`
+- `test_fatal_role_failure_preserves_other_role_and_releases_stopped_lease`
+- `test_presence_partial_failure_keeps_per_role_order`
+- `test_restart_replays_pending_presence_without_skipping_away`
+- `test_restore_syncs_presence_without_rewriting_historical_return`
+- `test_unload_waits_for_runner_started_by_admitted_request`
 - `test_publish_is_durable_before_return`
 - `test_publish_failure_does_not_return_event_id`
 - `test_handler_failure_retries_only_failed_consumer`

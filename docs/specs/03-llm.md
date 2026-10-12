@@ -38,6 +38,12 @@
 - **类型收窄（质量门驱动）**：`from_config` 里 `api_key` 用 `SecretStr(api_key)` 包装——langchain-openai 的 `api_key` 别名类型是 `SecretStr | Callable | None`，plain `str` 不满足 pyright strict，`SecretStr` 顺带让密钥不进 repr/日志
 - **配置边界**：`provider`、`model`、endpoint、超时、重试、温度和密钥环境变量名的字段、默认值、类型校验由 `02-config` 定义；本 spec 只定义这些值如何构造客户端以及如何影响调用。
 
+## 多角色调用边界
+
+宿主构造一个延迟加载的 SDK 资源，`LlmClient.fork()` 为每个角色建立独立调用入口和 FIFO 锁；模型只构造一次。每角色最多一个进行中的主 LLM 调用，四个角色最多四个。等待或取消只涉及本角色的锁，SDK 的 timeout/max_retries 保持原配置，不增加业务层网络重试。
+
+主动调用在获得本角色锁、真正调用 SDK 前再次检查当前角色资格；不再有资格时抛 `InitiationSkipped`，调用方跳过此次主动行为，不计欲望失败。已开始的调用及其输出仍归原角色；prompt、eval 和 token 记录不共享。完整宿主边界见 [14-character-cards](14-character-cards.md)。
+
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_llm/`：

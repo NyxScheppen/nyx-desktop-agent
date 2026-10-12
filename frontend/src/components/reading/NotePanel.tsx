@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
+import { captureScope, isScopeCurrent } from "../../api/characterScope";
+import { useCharacterStore } from "../../stores/characterStore";
 import { useReaderStore } from "../../stores/readerStore";
 import Modal from "../layout/Modal";
 
 // 笔记面板（07 §3）：覆盖层打开，NoteComposer（新建）+ NoteList（列表）。
 // 只展示用户笔记 + 「给尼克斯看」批注；Nyx 章末整合笔记落 memory 不上屏。
 export default function NotePanel({ onClose }: { onClose: () => void }) {
+  const name = useCharacterStore((s) => s.registry?.characters.find((r) => r.id === s.registry?.current_id)?.name ?? "尼克斯");
   const bookId = useReaderStore((s) => s.bookId);
   const notes = useReaderStore((s) => s.notes);
   const notesError = useReaderStore((s) => s.notesError);
@@ -24,11 +27,12 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
   }, [bookId, loadNotes]);
 
   const submit = async () => {
+    const scope = captureScope();
     const rawDraft = draft;
     const content = rawDraft.trim();
     if (content === "" || bookId === null) return;
     const saved = await addNote({ book_id: bookId, content });
-    if (saved && draft === rawDraft) setDraft("");
+    if (saved && isScopeCurrent(scope) && draft === rawDraft) setDraft("");
   };
 
   const startEdit = (id: string, content: string) => {
@@ -42,13 +46,14 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
   };
 
   const saveEdit = async () => {
+    const scope = captureScope();
     if (editingId === null) return;
     const id = editingId;
     const rawDraft = editDraft;
     const content = rawDraft.trim();
     if (content === "") return;
     const saved = await updateNote(id, content);
-    if (saved && editingId === id && editDraft === rawDraft) {
+    if (saved && isScopeCurrent(scope) && editingId === id && editDraft === rawDraft) {
       setEditingId(null);
       setEditDraft("");
     }
@@ -127,7 +132,7 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
                       className="reading-btn"
                       onClick={() => void showToNyx(n.id)}
                     >
-                      给尼克斯看
+                      给{name}看
                     </button>
                     <button
                       type="button"

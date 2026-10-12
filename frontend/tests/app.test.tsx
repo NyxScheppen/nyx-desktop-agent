@@ -11,6 +11,18 @@ vi.mock("../src/lib/desktopWindow", () => desktopWindowMocks);
 
 vi.mock("../src/hooks/useSSE", () => ({ useSSE: () => "closed" }));
 vi.mock("../src/hooks/usePresence", () => ({ usePresence: () => undefined }));
+vi.mock("../src/stores/characterStore", () => {
+  const state = {
+    registry: { current_id: "nyx", selection_revision: 0, limit: 4,
+      characters: [{ id: "nyx", name: "Nyx", status: "RUNNING", assets: {}, error: null }] },
+    generation: 0, switching: false, error: null,
+    initialize: vi.fn(), refresh: vi.fn(), select: vi.fn(),
+  };
+  return { useCharacterStore: Object.assign(
+    (selector: (s: typeof state) => unknown) => selector(state),
+    { getState: () => state },
+  ) };
+});
 vi.mock("../src/stores/activityStore", () => ({
   useActivityStore: (selector: (state: { refresh: () => Promise<void> }) => unknown) =>
     selector({ refresh: vi.fn() }),

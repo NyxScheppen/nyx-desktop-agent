@@ -1,3 +1,4 @@
+import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import { getState } from "../api/client";
 import { isEmotionCategory } from "../types/api";
@@ -16,14 +17,18 @@ export const useInnerLifeStore = create<InnerLifeState>((set) => {
     current: null,
     error: null,
     refreshState: async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       const request = ++requestGeneration;
-      set({ error: null });
+      commit({ error: null });
       try {
         const current = await getState();
-        if (request === requestGeneration) set({ current });
+      if (!isScopeCurrent(scope)) return;
+        if (request === requestGeneration) commit({ current });
       } catch (err) {
+      if (!isScopeCurrent(scope)) return;
         if (request === requestGeneration) {
-          set({ error: err instanceof Error ? err.message : String(err) });
+          commit({ error: err instanceof Error ? err.message : String(err) });
         }
       }
     },

@@ -28,9 +28,12 @@ def test_backend_identity_rejects_invalid_or_unowned_response(payload: bytes) ->
 
 
 def test_backend_identity_accepts_exact_service_and_nonce() -> None:
-    payload = json.dumps({
-        "service": "nyx-agent", "launch_nonce": "nonce",
-    }).encode()
+    payload = json.dumps(
+        {
+            "service": "nyx-agent",
+            "launch_nonce": "nonce",
+        }
+    ).encode()
 
     assert dev._backend_identity_matches(payload, "nonce")
 
@@ -245,10 +248,14 @@ def test_launcher_stops_legacy_launchers(tmp_path: Path) -> None:
     ):
         dev._stop_legacy_launchers()
     assert run.call_args_list == [
-        ((["taskkill", "/PID", "1234", "/T", "/F"],),
-         {"capture_output": True, "check": False}),
-        ((["taskkill", "/PID", "5678", "/T", "/F"],),
-         {"capture_output": True, "check": False}),
+        (
+            (["taskkill", "/PID", "1234", "/T", "/F"],),
+            {"capture_output": True, "check": False},
+        ),
+        (
+            (["taskkill", "/PID", "5678", "/T", "/F"],),
+            {"capture_output": True, "check": False},
+        ),
     ]
 
 
@@ -282,10 +289,14 @@ def test_launcher_stops_legacy_backend_without_pid_file(tmp_path: Path) -> None:
     ):
         dev._stop_previous_backend()
     assert run.call_args_list == [
-        ((["taskkill", "/PID", "1234", "/T", "/F"],),
-         {"capture_output": True, "check": False}),
-        ((["taskkill", "/PID", "5678", "/T", "/F"],),
-         {"capture_output": True, "check": False}),
+        (
+            (["taskkill", "/PID", "1234", "/T", "/F"],),
+            {"capture_output": True, "check": False},
+        ),
+        (
+            (["taskkill", "/PID", "5678", "/T", "/F"],),
+            {"capture_output": True, "check": False},
+        ),
     ]
 
 
@@ -300,7 +311,8 @@ def test_launcher_scan_excludes_current_process_ancestors() -> None:
 
 
 async def test_packaged_entry_resolves_resources_without_launch_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from unittest.mock import AsyncMock
 
@@ -310,7 +322,7 @@ async def test_packaged_entry_resolves_resources_without_launch_directory(
     monkeypatch.delenv("NYX_CONFIG", raising=False)
     monkeypatch.delenv("NYX_CANON_DIR", raising=False)
     build = AsyncMock(side_effect=RuntimeError("stop before runtime"))
-    monkeypatch.setattr(entry, "build_app_context", build)
+    monkeypatch.setattr(entry._Host, "open", build)
     with pytest.raises(RuntimeError, match="stop before runtime"):
         await entry.main()
     config = build.call_args.args[0]
@@ -319,21 +331,24 @@ async def test_packaged_entry_resolves_resources_without_launch_directory(
 
 
 def test_sidecar_build_bundles_only_public_resources(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import huggingface_hub
 
     monkeypatch.setattr(dev, "ROOT", tmp_path)
     monkeypatch.setattr(dev.sys, "argv", ["dev.py", "--build-sidecar"])
     monkeypatch.setattr(
-        huggingface_hub, "snapshot_download",
+        huggingface_hub,
+        "snapshot_download",
         MagicMock(return_value=str(tmp_path / "model")),
     )
     process = MagicMock(stdout="x86_64-pc-windows-msvc\n")
     with (
         patch.object(dev.subprocess, "run", return_value=process) as run,
         patch.object(
-            dev.subprocess, "Popen",
+            dev.subprocess,
+            "Popen",
             side_effect=AssertionError("no services during build"),
         ),
         patch.object(dev.shutil, "copy2") as copy,
@@ -342,6 +357,7 @@ def test_sidecar_build_bundles_only_public_resources(
     command = run.call_args_list[-1].args[0]
     assert command[:3] == [dev.sys.executable, "-m", "PyInstaller"]
     assert f"{tmp_path / 'nyx' / 'prompts'};nyx/prompts" in command
+    assert f"{tmp_path / 'nyx' / 'cards'};nyx/cards" in command
     assert not any(".env" in argument for argument in command)
     assert "x86_64-pc-windows-msvc" in str(copy.call_args.args[1])
 

@@ -89,6 +89,9 @@ def _mk_state(energy: float, arousal: float) -> CurrentState:
 
 
 class _FakeLlm:
+    def can_initiate(self) -> bool:
+        return True
+
     def __init__(
         self,
         speak_override: str | None = None,
@@ -1080,7 +1083,7 @@ async def test_history_fast_channel() -> None:
         [m for t, m, _c in llm.calls if t == "reply"][0]
     )
     assert "用户：哦" in first_think
-    assert "Nyx：回答1" in first_think
+    assert "你：回答1" in first_think
 
 
 async def test_record_message_marks_fast() -> None:
@@ -1116,7 +1119,7 @@ async def test_reply_slow_backtrack_skips_fast_nyx() -> None:
     await facade.reply("你喜欢爬山吗", "corr-bt")
     think_user = _user_content([m for t, m, _c in llm.calls if t == "reply"][0])
     assert "用户：我上周去爬山了" in think_user
-    assert "Nyx：嗯嗯" not in think_user
+    assert "你：嗯嗯" not in think_user
 
 
 async def test_reading_turn_slow_backtrack_preserved() -> None:
@@ -1129,7 +1132,7 @@ async def test_reading_turn_slow_backtrack_preserved() -> None:
     facade.record_proactive_turn("她刚才问：你觉得自由是什么")
     await facade.reply("自由很虚无", "corr-bt")
     think_user = _user_content([m for t, m, _c in llm.calls if t == "reply"][0])
-    assert "Nyx：她刚才问：你觉得自由是什么" in think_user
+    assert "你：她刚才问：你觉得自由是什么" in think_user
 
 
 # ---- mutter ----

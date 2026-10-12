@@ -8,7 +8,7 @@ import pytest
 
 from nyx import db
 
-# 29 张业务表（不含 schema_version）
+# 角色数据库的业务表（不含 schema_version / SQLite 内部表）。
 BUSINESS_TABLES = {
     "personality",
     "value_system",
@@ -40,6 +40,8 @@ BUSINESS_TABLES = {
     "memory_entity_alias",
     "memory_fact",
     "assigned_task",
+    "character_initialization",
+    "presence_checkpoint",
 }
 
 # 非 Optional 字段对应列必须 NOT NULL（01-types 契约）
@@ -66,7 +68,7 @@ NULLABLE_COLUMNS = {
     ("desire_generation_attempt", "parent_long_term_id"),
     ("activity", "ended_at"),
     ("memory", "embedding"),
-    ("memory", "content_hash"),   # v6 迁移，旧行 NULL（不去重）
+    ("memory", "content_hash"),  # v6 迁移，旧行 NULL（不去重）
     ("user_notes", "book_id"),
     ("user_notes", "paragraph_id"),
     ("user_notes", "selected_text"),
@@ -103,6 +105,38 @@ async def _version(conn: aiosqlite.Connection) -> int:
 
 # ---- migrate：全新建库 ----
 
+
+async def test_connect_cancelled_during_migration_closes_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = asyncio.Event()
+    connections: list[aiosqlite.Connection] = []
+
+    async def blocked_migrate(
+        conn: aiosqlite.Connection,
+        *,
+        migrations: list[tuple[int, list[str]]] | None = None,
+    ) -> None:
+        connections.append(conn)
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(db, "migrate", blocked_migrate)
+    task = asyncio.create_task(db.connect(":memory:"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(ValueError, match="no active connection"):
+            await connections[0].execute("SELECT 1")
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        for conn in connections:
+            await conn.close()
+
+
 async def test_migrate_creates_all_tables() -> None:
     conn = await _migrated_conn()
     try:
@@ -111,7 +145,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 32
+    assert len(names) == 34
     assert "material" not in names
 
 
@@ -222,7 +256,7 @@ async def test_migrate_adds_paragraph_format_column() -> None:
     finally:
         await conn.close()
     assert columns["format_json"]["notnull"] == 1
-    assert columns["format_json"]["dflt_value"] == "'{\"blocks\":[],\"marks\":[]}'"
+    assert columns["format_json"]["dflt_value"] == '\'{"blocks":[],"marks":[]}\''
 
 
 async def test_migrate_adds_highlight_offsets_and_bookmarks() -> None:
@@ -234,16 +268,12 @@ async def test_migrate_adds_highlight_offsets_and_bookmarks() -> None:
         bookmark_rows = await (
             await conn.execute("PRAGMA table_info(bookmarks)")
         ).fetchall()
-        note_columns = {
-            row["name"] for row in note_rows
-        }
+        note_columns = {row["name"] for row in note_rows}
         bookmark_columns = {row["name"] for row in bookmark_rows}
     finally:
         await conn.close()
     assert {"selection_start", "selection_end"} <= note_columns
-    assert bookmark_columns == {
-        "id", "book_id", "paragraph_id", "created_at"
-    }
+    assert bookmark_columns == {"id", "book_id", "paragraph_id", "created_at"}
 
 
 async def test_migrate_creates_expected_indexes() -> None:
@@ -320,9 +350,12 @@ async def test_memory_edge_schema_typed_and_canonical() -> None:
         cols = await (await conn.execute("PRAGMA table_info(memory_edge)")).fetchall()
         pk = {r["name"]: r["pk"] for r in cols}
         notnull = {r["name"]: r["notnull"] for r in cols}
-        ddl = await (await conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_edge'"
-        )).fetchone()
+        ddl = await (
+            await conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND "
+                "name='memory_edge'"
+            )
+        ).fetchone()
     finally:
         await conn.close()
     assert pk == {
@@ -431,19 +464,19 @@ async def test_memory_edge_migration_canonicalizes_reverse_edges(
                 (mid, mid, mid),
             )
         await conn.execute(
-            "INSERT INTO memory_edge (from_id, to_id, weight) "
-            "VALUES ('a', 'b', 0.4)"
+            "INSERT INTO memory_edge (from_id, to_id, weight) VALUES ('a', 'b', 0.4)"
         )
         await conn.execute(
-            "INSERT INTO memory_edge (from_id, to_id, weight) "
-            "VALUES ('b', 'a', 0.9)"
+            "INSERT INTO memory_edge (from_id, to_id, weight) VALUES ('b', 'a', 0.9)"
         )
         await conn.commit()
         monkeypatch.setattr(db, "_MIGRATIONS", [m for m in full if m[0] <= 14])
         await db.migrate(conn)
-        rows = await (await conn.execute(
-            "SELECT from_id, to_id, kind, weight, created_at FROM memory_edge"
-        )).fetchall()
+        rows = await (
+            await conn.execute(
+                "SELECT from_id, to_id, kind, weight, created_at FROM memory_edge"
+            )
+        ).fetchall()
     finally:
         await conn.close()
     assert [
@@ -477,12 +510,12 @@ async def test_memory_kind_migration_clears_legacy_memory(
         await conn.commit()
         monkeypatch.setattr(db, "_MIGRATIONS", full)
         await db.migrate(conn)
-        memory_row = await (await conn.execute(
-            "SELECT COUNT(*) AS count FROM memory"
-        )).fetchone()
-        edge_row = await (await conn.execute(
-            "SELECT COUNT(*) AS count FROM memory_edge"
-        )).fetchone()
+        memory_row = await (
+            await conn.execute("SELECT COUNT(*) AS count FROM memory")
+        ).fetchone()
+        edge_row = await (
+            await conn.execute("SELECT COUNT(*) AS count FROM memory_edge")
+        ).fetchone()
         assert memory_row is not None
         assert edge_row is not None
         memory_count = cast(int, memory_row["count"])
@@ -526,9 +559,7 @@ async def test_removed_browsing_data_is_cleaned_from_previous_schema(
             "VALUES ('old-attempt', 'browsing_question', 'page', 'page', 'old', "
             "1.0, 2.0, 'waiting')"
         )
-        await conn.execute(
-            "CREATE TABLE browsing_session (id TEXT PRIMARY KEY)"
-        )
+        await conn.execute("CREATE TABLE browsing_session (id TEXT PRIMARY KEY)")
         await conn.execute(
             "CREATE TABLE browsing_page ("
             "id TEXT PRIMARY KEY, session_id TEXT REFERENCES browsing_session(id))"
@@ -624,7 +655,7 @@ async def test_material_retirement_handles_missing_source_row(
             "INSERT INTO activity "
             "(id, type, schedule_block_id, status, progress, started_at, ended_at) "
             "VALUES ('a1', 'reading', '09:00', 'paused', "
-            "'{\"source\":\"old.txt\",\"desire_id\":\"d1\"}', 1, 2)"
+            '\'{"source":"old.txt","desire_id":"d1"}\', 1, 2)'
         )
         await conn.commit()
         monkeypatch.setattr(db, "_MIGRATIONS", full)
@@ -644,6 +675,7 @@ async def test_material_retirement_handles_missing_source_row(
 
 
 # ---- 可空性对齐 ----
+
 
 async def test_migrate_not_null_alignment() -> None:
     conn = await _migrated_conn()
@@ -665,6 +697,7 @@ async def test_migrate_nullable_alignment() -> None:
 
 # ---- 幂等 / 版本门控 / 原子回滚 ----
 
+
 async def test_migrate_idempotent() -> None:
     conn = await _migrated_conn()
     names: set[str] = set()
@@ -675,7 +708,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 32
+    assert len(names) == 34
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 
@@ -753,6 +786,7 @@ async def test_migrate_atomic_rollback(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---- connect：pragma / row_factory / lock ----
+
 
 async def test_connect_returns_database(tmp_path: Path) -> None:
     db_path = tmp_path / "test.db"
@@ -851,7 +885,11 @@ async def test_connect_closes_conn_on_migrate_failure(
     async def fake_connect(path: str) -> _SpyConn:
         return spy
 
-    async def boom(conn: aiosqlite.Connection) -> None:
+    async def boom(
+        conn: aiosqlite.Connection,
+        *,
+        migrations: list[tuple[int, list[str]]] | None = None,
+    ) -> None:
         raise aiosqlite.Error("迁移失败")
 
     monkeypatch.setattr(db.aiosqlite, "connect", fake_connect)

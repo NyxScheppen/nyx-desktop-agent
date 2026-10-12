@@ -1,4 +1,5 @@
 """陪读输出缓冲与章末记忆整合。"""
+
 import asyncio
 import json
 import logging
@@ -19,9 +20,8 @@ _INTEGRATION_PROMPT_MAX_CHARS = 12000
 _SOURCE_BLOCK_CHARS = 6000
 
 _READING_NOTE_SYSTEM = (
-    "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
-    "你温柔克制、思虑很深。把下面这些你陪读时冒出的碎碎念和提问，"
-    "整理成一条第一人称读书记忆（尼克斯视角）：你读到了什么、心里留下了什么、"
+    "遵循角色设定，把下面这些你陪读时冒出的碎碎念和提问，"
+    "整理成一条第一人称读书记忆：你读到了什么、心里留下了什么、"
     "哪里让你停了一下，而不是复述原文或罗列要点。"
     "只输出 JSON，键：content（正文）、summary（一句话总结），两者都是非空字符串。"
 )
@@ -61,12 +61,14 @@ class ReadingIntegration:
         memory: MemoryFacade,
         bus: EventBus,
         store: ReadingStore | None = None,
+        canon: str = "",
     ) -> None:
         self._llm = llm
         self._evaluator = evaluator
         self._memory = memory
         self._bus = bus
         self._store = store
+        self._canon = canon
         self._logger = logging.getLogger(__name__)
         self.buffer: dict[str, list[NyxBufferEntry]] = {}
         self._source_locks: dict[str, asyncio.Lock] = {}
@@ -173,11 +175,17 @@ class ReadingIntegration:
                 source_text = pending.get("source_text")
                 block_key = pending.get("block_key")
                 source_name = pending.get("source_name")
-                if (isinstance(source_text, str) and isinstance(block_key, str)
-                        and isinstance(source_name, str)):
+                if (
+                    isinstance(source_text, str)
+                    and isinstance(block_key, str)
+                    and isinstance(source_name, str)
+                ):
                     await self._memory.record_reading_evidence(
-                        build_source_topic("book", book_id), source_name,
-                        source_text, block_key, book_id=book_id,
+                        build_source_topic("book", book_id),
+                        source_name,
+                        source_text,
+                        block_key,
+                        book_id=book_id,
                     )
                 await self._store.update_memory_state(book_id, committed_state)
             state.update(committed_state)
@@ -193,9 +201,7 @@ class ReadingIntegration:
             return None
         raw_cursor = state.get("cursor")
         cursor = (
-            cast(dict[str, Any], raw_cursor)
-            if isinstance(raw_cursor, dict)
-            else {}
+            cast(dict[str, Any], raw_cursor) if isinstance(raw_cursor, dict) else {}
         )
         paragraph_index = max(1, _as_int(cursor.get("paragraph_index"), 1))
         char_offset = max(0, _as_int(cursor.get("char_offset"), 0))
@@ -259,7 +265,10 @@ class ReadingIntegration:
             )
             output = await self._llm.complete(
                 [
-                    {"role": "system", "content": _READING_NOTE_SYSTEM},
+                    {
+                        "role": "system",
+                        "content": self._canon + "\n\n" + _READING_NOTE_SYSTEM,
+                    },
                     {"role": "user", "content": user},
                 ],
                 module="reading",
@@ -271,7 +280,9 @@ class ReadingIntegration:
             content, summary = parse_reading_note(output.content)
             book = await self._store.find_book(book_id) if self._store else None
             await self._memory.remember_reading(
-                content, summary, book_id,
+                content,
+                summary,
+                book_id,
                 source_name=book.title if book else None,
                 source_topic=build_source_topic("book", book_id),
             )

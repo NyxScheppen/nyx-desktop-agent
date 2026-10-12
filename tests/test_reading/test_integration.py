@@ -19,6 +19,7 @@ class _Llm:
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.release: asyncio.Event | None = None
+        self.system_contents: list[str] = []
 
     async def complete(
         self,
@@ -31,6 +32,7 @@ class _Llm:
         tools: list[dict[str, object]] | None = None,
     ) -> LLMOutput:
         self.started.set()
+        self.system_contents.append(messages[0]["content"])
         if self.release is not None:
             await self.release.wait()
         return LLMOutput(
@@ -54,8 +56,13 @@ class _Memory:
         self.knowledge: list[list[dict[str, str]]] = []
 
     async def remember_reading(
-        self, content: str, summary: str, correlation_id: str,
-        source_name: str | None = None, *, source_topic: str | None = None,
+        self,
+        content: str,
+        summary: str,
+        correlation_id: str,
+        source_name: str | None = None,
+        *,
+        source_topic: str | None = None,
     ) -> None:
         self.remembered.append((content, summary, correlation_id))
 
@@ -84,8 +91,13 @@ class _Memory:
         self.knowledge.append(items)
 
     async def record_reading_evidence(
-        self, source_topic: str, source_name: str, content: str, block_key: str,
-        *, book_id: str | None = None,
+        self,
+        source_topic: str,
+        source_name: str,
+        content: str,
+        block_key: str,
+        *,
+        book_id: str | None = None,
     ) -> None:
         return None
 
@@ -238,8 +250,10 @@ async def test_integrate_only_consumes_supplied_entries(evict: bool) -> None:
     llm = _Llm()
     llm.release = asyncio.Event()
     integration = ReadingIntegration(
-        cast(LlmClient, llm), cast(Evaluator, _Evaluator()),
-        cast(MemoryFacade, _Memory()), cast(EventBus, _Bus()),
+        cast(LlmClient, llm),
+        cast(Evaluator, _Evaluator()),
+        cast(MemoryFacade, _Memory()),
+        cast(EventBus, _Bus()),
     )
     await integration.record("book", 1, "a" * 12001, "mutter")
     await integration.record("book", 2, "not supplied", "question")
@@ -258,3 +272,18 @@ async def test_integrate_only_consumes_supplied_entries(evict: bool) -> None:
     else:
         assert "not supplied" in contents
         assert 0 < len(contents[0]) < 12001
+
+
+async def test_reading_note_uses_card_identity() -> None:
+    llm = _Llm()
+    integration = ReadingIntegration(
+        cast(LlmClient, llm),
+        cast(Evaluator, _Evaluator()),
+        cast(MemoryFacade, _Memory()),
+        cast(EventBus, _Bus()),
+        canon="你是 Alice，说话直接活泼。",
+    )
+    await integration.record("book-1", 2, "我喜欢这一段", "mutter")
+    await integration.integrate("book-1", BoundaryResult.CHAPTER_END, 0)
+    assert "Alice，说话直接活泼" in llm.system_contents[0]
+    assert "尼克斯" not in llm.system_contents[0]

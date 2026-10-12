@@ -40,7 +40,8 @@
 - **长段落**：陪读正文保留 `148px` 固定高度以维持 `560×520` 窗口几何，内容溢出时仅可聚焦的正文区域 `overflow-y: auto`，不截断原文，也不让整张卡片越出窗口。
 - **后端生命周期**：开发 launcher 与发布版 Rust 壳在端口预检查通过后分别生成 256-bit 随机 nonce，通过仅对子进程可见的 `NYX_LAUNCH_NONCE` 环境变量启动后端。`GET /api/ready` 返回 `{"service": "nyx-agent", "launch_nonce": string | null}`；launcher 使用有界、带超时的 HTTP 响应读取，严格校验固定服务标识、本次 nonce 和 owned child 存活状态后才判定就绪。未携带 nonce 的手动后端仍可运行并返回 `null`，但不能被带 nonce 的 launcher 认作本次实例。nonce 不写日志、不持久化、不进入事件总线。发布版持有 child handle 直到 Tauri `Exit`，Python 冻结入口以 stdin EOF 作为父进程退出信号；Debug Tauri 跳过 sidecar 流程，继续复用 `dev.py --desktop` 已验证的后端。
 - **主动气泡**：当前状态气泡常驻 Avatar 头顶；陪读小面板读取 `announceStore.items` 的最新项；非陪读面板仍由 `AnnounceLayer` 显示在头像上方。
-- **不变更**：除新增只读启动身份端点 `/api/ready` 外，既有后端业务 API、SSE 事件、数据库、聊天历史、阅读进度和完整桌面端导航均不改变。
+- **角色入口**：完整端标题区和桌宠菜单复用 `CharacterSelect`；设置复用 `CharacterManager`，支持导入、卸载保留存档、恢复和失败重试。角色切换与归属遵循 [14-character-cards](14-character-cards.md)，桌宠/完整态仍复用当前角色 Store。
+- **角色形象**：名称、头像与表情来自当前角色卡；没有图片显示名称占位。图片使用匿名 CORS 请求，让桌面 WebView 携带受信任 Origin，通过现有本地访问校验。字体、背景、头像尺寸和窗口位置仍为全局外观设置。
 
 ## 对象完整性
 

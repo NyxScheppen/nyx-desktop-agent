@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   checkChapterBoundary,
+  changeCharacter,
+  getCharacters,
+  importCharacter,
+  selectCharacter,
   createBookTask,
   createBookmark,
   createUserNote,
@@ -39,6 +43,39 @@ import {
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
 }
+
+describe("角色管理 API", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("读取注册表并显式切换角色", async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ current_id: "alice" }));
+    vi.stubGlobal("fetch", fetch);
+    await getCharacters();
+    await selectCharacter("alice");
+    expect(fetch.mock.calls[0][0]).toBe("/api/characters");
+    expect(fetch.mock.calls[1]).toEqual(["/api/characters/current", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ character_id: "alice" }),
+    }]);
+  });
+  it("上传卡包并执行卸载、恢复、失败重试", async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ id: "alice" }));
+    vi.stubGlobal("fetch", fetch);
+    const file = new File(["card"], "alice.nyxcard");
+    await importCharacter(file);
+    await changeCharacter("alice", "unload");
+    await changeCharacter("alice", "restore");
+    await changeCharacter("alice", "retry-start");
+    expect(fetch.mock.calls.map(([url, init]) => [url, init.method])).toEqual([
+      ["/api/characters", "POST"], ["/api/characters/alice", "DELETE"],
+      ["/api/characters/alice/restore", "POST"], ["/api/characters/alice/retry-start", "POST"],
+    ]);
+    expect((fetch.mock.calls[0][1].body as FormData).get("file")).toBe(file);
+  });
+  it("卸载失败向界面报告错误", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ detail: "当前角色不能卸载" }, false, 409)));
+    await expect(changeCharacter("alice", "unload")).rejects.toThrow("当前角色不能卸载");
+  });
+});
 
 const snapshot = {
   valence: 0.1,

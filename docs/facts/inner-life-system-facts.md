@@ -13,7 +13,7 @@
 - 共享类型：`nyx/types.py` 的 `CurrentState`、`SelfNarrative`、`Personality`、`Values`、`Aesthetic`、`ReflectionOutcome`
 - 事件与数据库：`nyx/events/`、`nyx/db.py`
 - 组合根：`nyx/app_context.py` 构造并注入 activity、desire、memory、bus、LLM、eval
-- 启动 seed：`nyx/bootstrap.py:seed_inner_life`
+- 启动初始化：`nyx/bootstrap.py:initialize_character`；初始慢变量来自角色卡，marker 与初始数据同事务。
 
 依赖方向是 `InnerLifeFacade -> Reflection -> InnerLifeStore`。`Reflection` 不反向 import Facade，避免循环依赖。Facade 还读取 `ActivityFacade` 的当前活动、`DesireFacade` 的待处理欲望，反思读取 `MemoryFacade` 的近期记忆、近期有效事实和阅读计数。
 
@@ -31,7 +31,7 @@
 
 `InnerLifeStore` 的每个 CRUD 方法在一个 `db.lock` SQL 块内运行。若调用时数据库已经处在 `Database.transaction()` 中，store 不自行提交；否则该方法自己提交。store 方法不互相嵌套持锁调用。
 
-未 seed 的单行表读取返回 `None`。Facade 的状态、叙事和情感事件路径遇到缺失 seed 会抛 `RuntimeError`，不会默默使用默认值。组合根启动时用 `seed_inner_life` 对空表补入初始值。
+未 seed 的单行表读取返回 `None`。Facade 的状态、叙事和情感事件路径遇到缺失 seed 会抛 `RuntimeError`，不会默默使用默认值。组合根启动时由 `initialize_character` 对缺失单例补入卡片初值；已有成长数据不覆盖，每个角色独立保存。
 
 ## 情感
 

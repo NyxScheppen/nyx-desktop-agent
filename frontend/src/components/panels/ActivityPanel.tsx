@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import { getBookParagraphs } from "../../api/client";
 import { formatResult } from "../../lib/activityResult";
 import {
@@ -80,6 +81,7 @@ export default function ActivityPanel() {
       return;
     }
     let active = true;
+    const scope = captureScope();
     setPreviewError(null);
     void getBookParagraphs(
       selectedBook.id,
@@ -87,10 +89,10 @@ export default function ActivityPanel() {
       Math.min(selectedBook.total_paragraphs, targetParagraph + 1),
     )
       .then((paragraphs) => {
-        if (active) setPreview(paragraphs);
+        if (active && isScopeCurrent(scope)) setPreview(paragraphs);
       })
       .catch((reason: unknown) => {
-        if (!active) return;
+        if (!active || !isScopeCurrent(scope)) return;
         setPreview([]);
         setPreviewError(reason instanceof Error ? reason.message : String(reason));
       });
@@ -107,6 +109,7 @@ export default function ActivityPanel() {
 
   const submitTask = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const scope = captureScope();
     setFormError(null);
     if (mode === "web") {
       const value = url.trim();
@@ -114,7 +117,7 @@ export default function ActivityPanel() {
         setFormError("请输入网页地址");
         return;
       }
-      if (await assignWebTask(value)) setUrl("");
+      if (await assignWebTask(value) && isScopeCurrent(scope)) setUrl("");
       return;
     }
     if (selectedBook === null || !targetIsValid) {

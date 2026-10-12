@@ -1,5 +1,6 @@
 import { useSettingsStore } from "../../stores/settingsStore";
 import BackgroundPanel from "../panels/BackgroundPanel";
+import CharacterManager from "./CharacterManager";
 import Modal from "./Modal";
 import Panel from "./Panel";
 
@@ -40,6 +41,7 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
 
   return (
     <Modal title="设置" onClose={onClose}>
+      <CharacterManager />
       <Panel title="字体大小">
         <div className="font-scale">
           {FONT_OPTIONS.map(([key, label]) => (

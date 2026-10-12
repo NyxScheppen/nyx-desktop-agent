@@ -4,6 +4,7 @@ import AnnounceLayer from "../AnnounceLayer";
 import { isTauriRuntime, startNativeWindowDrag } from "../../lib/desktopWindow";
 import EmotionSprite from "./EmotionSprite";
 import { useChatStore } from "../../stores/chatStore";
+import { useCharacterStore } from "../../stores/characterStore";
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import { useSettingsStore, type AvatarPos, type CircleSize } from "../../stores/settingsStore";
 
@@ -50,6 +51,7 @@ export default function Avatar({
   onActivate,
   onDoubleClick,
 }: AvatarProps) {
+  const name = useCharacterStore((s) => s.registry?.characters.find((r) => r.id === s.registry?.current_id)?.name ?? "Nyx");
   const emotion = useInnerLifeStore((s) => s.current?.emotion);
   const unreadProactive = useChatStore((s) => s.unreadProactive);
   const clearUnreadProactive = useChatStore((s) => s.clearUnreadProactive);
@@ -161,7 +163,7 @@ export default function Avatar({
     <div
       className="avatar-circle"
       style={style}
-      title="Nyx 头像"
+      title={`${name} 头像`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={(e) => finishDrag(e.clientX, e.clientY)}

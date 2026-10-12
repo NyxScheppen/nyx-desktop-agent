@@ -5,6 +5,14 @@
 > 快速事实摘要见 `docs/facts/module-bus-system-facts.md`。
 > 本文件只定义运行时基础设施和模块通信边界，不定义共享类型、配置字段、LLM 调用细节或业务模块内部规则。
 
+## 多角色宿主与归属
+
+组合根由 `_Host` 管理最多四个独立 `_App`。每个角色拥有 Database、EventBus、Facade、工作目录、delivery/attempt/effect、熔断与后台任务；宿主只共享 SDK、embedding、唯一屏幕观察器及公共 presence。请求准入捕获 `_App`，后续执行不再查询当前选择。完整卡片、生命周期、对象审计和 API 见 [14-character-cards](14-character-cards.md)。
+
+宿主数据库使用独立迁移清单，保存注册/当前选择/selection_revision/presence_current/presence_delivery；角色迁移增加一次初始化标记与观察 checkpoint。公共观察先在宿主事务受理，再按每角色 FIFO 补投；角色事件、水位、归来计算快照同事务提交，确认丢失不能重复制造 returned。重试时使用原受理的时钟判定。恢复基线只更新 checkpoint，不改旧事件 ID 或内容。下文单角色观察辅助方法仍用于兼容入口；宿主路径以本节和 14 的持久化语义为准。
+
+`EventBus.run()` 监督消费者异常退出，恢复投递也在任务清理的 try/finally 范围内；`_has_effect` 失败必须通知本角色 supervisor，不能留下表面运行、实际无消费者的总线。
+
 ## 元信息
 
 - **前置依赖**：01-types（`Event` / `EventType` / `Source` / `TickType`）。组合根装配时使用 02-config 和 03-llm；本文件不依赖任何业务系统 spec。
@@ -31,7 +39,7 @@
 - [ ] 路由声明和运行时订阅由同一份 `RouteSpec` 派生；启动时校验声明、handler、delivery consumer 一致。
 - [ ] 组合根导入环被拆除：`app_context` 只装配，不导入 `subscriptions`；`subscriptions` 不导入 `main`；runtime handler 编排在 `runtime.py` 或等价运行期模块。
 - [ ] `Database` 提供幂等 `close()`；组合根构造失败和应用退出都会关闭连接。
-- [ ] `connect()` 的路径优先级为显式参数、`NYX_DB`、已存在的旧默认 `nyx.db`、新默认 `data/nyx.db`；非 `:memory:` 路径连接前创建父目录。
+- [ ] `connect()` 的路径优先级为显式参数、`NYX_DB`、已存在的旧默认 `nyx.db`、新默认 `data/nyx.db`；非 `:memory:` 路径连接前创建父目录。迁移失败或启动取消时关闭尚未返回的连接并重抛，不能留下未被运行时登记的 SQLite 线程。
 - [ ] SSE 公共帧携带事件自身的 `timestamp` 和标准 `id:` 游标；实时消息与
   `GET /api/events/log` 历史消息使用同一后端时间源，断线重连按 `Last-Event-ID`
   回放。
@@ -282,13 +290,13 @@ RUNNING
 - 等待已到期 delivery 进入 `succeeded` 或 `dead_letter`；
 - 不等待未来很久才到 `available_at` 的 retry，只要求它已持久化。
 
-超时：
+超时与最终收尾：
 
-- 取消 worker；
-- 未完成 `processing` 依赖 lease 恢复；
-- `pending` / `retry_wait` 保留；
-- 下次启动恢复；
-- 不做全局 rollback。
+- `EventBus.drain()` 只在成功后请求 worker 停止；超时返回 false，已受理 handler 继续运行。
+- 普通角色卸载保持 STOPPING、数据库和名额，宿主继续重试收尾；旧实例结束前不能重开。
+- 宿主退出停止新输入、并行停止各角色，超时后继续等待和收尾，全部角色连接关闭后才关闭宿主连接并返回；保留原注册状态以便重启。既有桌面父进程退出期限仍可终止无法合作的整个后端。
+- 已确认该实例全部 writer/worker 结束后，将其残留 `processing` 释放为 `pending` 并清空 lease，允许立即重试或恢复；进程崩溃仍按 lease 到期恢复。
+- `pending` / `retry_wait` 保留，不做全局 rollback。底层独立 `EventBus.close()` 的强制取消仍须等待任务回收，不能作为运行中卸载的成功依据。
 
 ### 路由与订阅
 
@@ -624,7 +632,7 @@ CREATE TABLE eval_prompt (
 - `POST /api/chat`：`message` 必须是严格字符串、去除首尾空白后非空且不超过 12000
   字符；非法输入返回 422。只有 durable admission 成功才返回 `{event_id}`；失败返回
   503/429。
-- `POST /api/observe`：请求体为 `{presence, window_title, idle_seconds, sampled_at}`；两项
+- `POST /api/observe`：宿主请求体必须携带稳定 `sample_id`，可选采样归属 `character_id`/`selection_revision`；成功表示宿主持久受理，返回稳定 `{event_id}`；重复 sample_id 返回原受理结果。基础字段为 `{presence, window_title, idle_seconds, sampled_at}`；两项
   数值必须是严格的有限非负数（不接受字符串和布尔值），idle_seconds <= sampled_at，
   sampled_at 为客户端开始采样时的 epoch 秒，不晚于后端接收时间；标题最多 512 字符。
   presence 必须与 30 秒/300 秒 idle 阈值一致；非法输入返回 422。过期/重复采样返回 409，
@@ -650,12 +658,12 @@ CREATE TABLE eval_prompt (
   `initial` 只表示建立基线；`returned` 只用于已经建立基线后的 `away -> online`。
   `away_duration_seconds` 只在 `returned` 时非空。已有 desire/inner-life consumer 可以忽略
   新增字段，不能依赖其它 consumer 的执行顺序。
-- SSE 仍广播事件本身，不代表所有消费者完成。所有 SSE `data` 公共字段固定为
-  `{event_id, correlation_id, timestamp}`，其余字段来自 `event.content`；其中 `timestamp` 是
+- SSE 仍广播事件本身，不代表所有消费者完成。角色接口 `/api/characters/{id}/events` 的公共字段为
+  `{character_id, event_id, correlation_id, timestamp}`，其余字段来自 `event.content`；其中 `timestamp` 是
   `Event.timestamp` 的 epoch 秒，不使用浏览器接收时刻代替。
-  生产方不得使用三个公共键；序列化时公共头覆盖同名 content 键。必填 timestamp 是
+  生产方不得使用公共键；序列化时公共头覆盖同名 content 键。必填 timestamp 是
   monorepo 线协议，后端和前端必须同批发布，不支持新前端连接缺少该字段的旧后端。
-- `GET /api/events` 每帧另外发送 `id: <event_id>`。连接请求带 `Last-Event-ID` 时，服务端
+- SSE 每帧另外发送 `id: <character_id>:<event_id>`；跨角色游标返回 409，固定 Nyx 的旧 `/api/events` 同样使用 `nyx:<event_id>`。仅独立 `build_app` 测试辅助入口保留纯事件 ID。连接请求带 `Last-Event-ID` 时，服务端
   在注册实时 sink 后读取最多 1000 条历史事件：已知游标只返回严格位于
   `(timestamp, id)` 之后的事件并按升序发送；未知或已过期游标返回最早的一页有界事件，避免把
   无法验证的游标当成“已全部同步”。历史回放与实时 sink 注册之间允许有重叠，前端必须按
@@ -699,7 +707,7 @@ CREATE TABLE eval_prompt (
 - [ ] 数据库熔断：连续 admission 失败后新 publish 快速失败，冷却探测成功后恢复。
 - [ ] drain 成功：停止新输入后，已受理事件完成，worker 停止，DB close 被调用。
 - [ ] 活动关停：当前 activity task 在 EventBus/DB 关闭前被取消并等待，关停期间的新 tick/欲望通知不再启动活动。
-- [ ] drain 超时：未完成 delivery 保留为可恢复状态，关闭流程不做全局 rollback。
+- [ ] drain 超时：普通卸载保留 STOPPING、活 worker 和 DB；宿主 close 持续收尾，writer 结束后释放残留 lease 再关闭连接，不做全局 rollback。
 - [ ] supervisor：`EventBus.run()` 正常返回时 supervisor 同步结束，不重入已关闭 bus 或忙循环。
 - [ ] 路由单一来源：`ROUTING`、`TICK_ROUTING`、订阅 handler 和 delivery consumer 集合全部从 `RouteSpec` 派生并一致。
 - [ ] 导入环回归：`api.routes`、`app_context`、`subscriptions`、`main` 不再形成循环导入。

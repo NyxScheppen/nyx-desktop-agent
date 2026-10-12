@@ -85,7 +85,7 @@ def _selection_matches(
     if end * 2 > len(encoded):
         return False
     try:
-        selected = encoded[start * 2:end * 2].decode("utf-16-le")
+        selected = encoded[start * 2 : end * 2].decode("utf-16-le")
     except UnicodeDecodeError:
         return False
     return selected == selected_text
@@ -155,7 +155,9 @@ class ReadingFacade:
         self._question_cooldown_at = 0.0
         self._question_pending = False
         self._mutter_at = 0.0
-        self._integration = ReadingIntegration(llm, evaluator, memory, bus, store)
+        self._integration = ReadingIntegration(
+            llm, evaluator, memory, bus, store, canon
+        )
         self._nyx_buffer = self._integration.buffer
         self._companion = ReadingCompanion(
             llm, evaluator, bus, memory, expression, canon, self.record_nyx_output
@@ -287,9 +289,7 @@ class ReadingFacade:
             flush=True,
             correlation_id=correlation_id,
         )
-        advanced = await self._store.advance_nyx_position(
-            book_id, target_paragraph
-        )
+        advanced = await self._store.advance_nyx_position(book_id, target_paragraph)
         boundary = await self.check_chapter_boundary(book_id, target_paragraph)
         if boundary is BoundaryResult.BOOK_FINISHED:
             advanced = await self.get_progress(book_id)
@@ -367,9 +367,7 @@ class ReadingFacade:
             return []
         text = paragraphs[0].text
         self._spawn_background(
-            self._integration.sediment(
-                book_id, paragraph_index, flush=False
-            )
+            self._integration.sediment(book_id, paragraph_index, flush=False)
         )
 
         state = await self._inner_life.get_state()
@@ -487,9 +485,7 @@ class ReadingFacade:
         behavior: ReadingBehavior,
         state: CurrentState,
     ) -> None:
-        await self._companion.question(
-            book_id, paragraph_index, text, behavior, state
-        )
+        await self._companion.question(book_id, paragraph_index, text, behavior, state)
 
     async def _associate_reading(
         self, book_id: str, paragraph_index: int, text: str
@@ -521,9 +517,7 @@ class ReadingFacade:
         has_range = selection_start is not None and selection_end is not None
         if (selection_start is None) != (selection_end is None):
             raise ValueError("划线范围必须同时提供起止位置")
-        if not content and (
-            paragraph_id is None or not selected_text or not has_range
-        ):
+        if not content and (paragraph_id is None or not selected_text or not has_range):
             raise ValueError("空笔记必须包含有效划线")
         if paragraph_id is not None:
             paragraph = await self._store.get_paragraph(paragraph_id)
@@ -589,9 +583,7 @@ class ReadingFacade:
             raise BookNotFoundError(book_id)
         return await self._store.list_bookmarks(book_id)
 
-    async def add_bookmark(
-        self, book_id: str, paragraph_id: str
-    ) -> Bookmark:
+    async def add_bookmark(self, book_id: str, paragraph_id: str) -> Bookmark:
         """同书同段幂等新增书签。"""
         if await self._store.find_book(book_id) is None:
             raise BookNotFoundError(book_id)
@@ -691,9 +683,7 @@ class ReadingFacade:
         state = await self._store.get_memory_state(book_id)
         raw_profile = state.get("profile")
         profile = (
-            cast(dict[str, Any], raw_profile)
-            if isinstance(raw_profile, dict)
-            else {}
+            cast(dict[str, Any], raw_profile) if isinstance(raw_profile, dict) else {}
         )
         memories = await self._memory.search_source(
             query, build_source_topic("book", book_id), limit=5
@@ -768,9 +758,11 @@ class ReadingFacade:
         progress = await self._store.get_progress(book_id)
         if result is BoundaryResult.BOOK_FINISHED and (
             book_id in self._finished_books
-            or (progress is not None
+            or (
+                progress is not None
                 and progress.nyx_position >= book.total_paragraphs
-                and progress.read_count >= 1)
+                and progress.read_count >= 1
+            )
         ):
             # 同一次读完不重复 ++；首次整合失败时仍允许用保留的 buffer
             # 重试，但沿用首次 ++ 前的 read_count，避免误发重读反思。
@@ -778,9 +770,8 @@ class ReadingFacade:
             source_pending = await self._source_memory_pending(
                 book_id, book.total_paragraphs
             )
-            if (
-                book_id not in self._integration_tasks
-                and (self._nyx_buffer.get(book_id) or source_pending)
+            if book_id not in self._integration_tasks and (
+                self._nyx_buffer.get(book_id) or source_pending
             ):
                 pre_read_count = max((progress.read_count - 1), 0) if progress else 0
                 task = self._spawn_background(
@@ -791,8 +782,9 @@ class ReadingFacade:
                 if task is not None:
                     self._integration_tasks[book_id] = task
                     task.add_done_callback(
-                        lambda _task, book_id=book_id:
-                        self._integration_tasks.pop(book_id, None)
+                        lambda _task, book_id=book_id: self._integration_tasks.pop(
+                            book_id, None
+                        )
                     )
             return result
         pre_read_count = progress.read_count if progress is not None else 0
@@ -806,21 +798,18 @@ class ReadingFacade:
             self._finished_books.discard(book_id)
         if book_id not in self._integration_tasks:
             task = self._spawn_background(
-                self._integrate_buffer(
-                    book_id, result, pre_read_count, nyx_position
-                )
+                self._integrate_buffer(book_id, result, pre_read_count, nyx_position)
             )
             if task is not None:
                 self._integration_tasks[book_id] = task
                 task.add_done_callback(
-                    lambda _task, book_id=book_id:
-                    self._integration_tasks.pop(book_id, None)
+                    lambda _task, book_id=book_id: self._integration_tasks.pop(
+                        book_id, None
+                    )
                 )
         return result
 
-    async def _source_memory_pending(
-        self, book_id: str, total_paragraphs: int
-    ) -> bool:
+    async def _source_memory_pending(self, book_id: str, total_paragraphs: int) -> bool:
         state = await self._store.get_memory_state(book_id)
         if isinstance(state.get("pending"), dict):
             return True
@@ -849,13 +838,9 @@ class ReadingFacade:
         期间新 append 的条目不吞掉，留给下一轮。
         """
         try:
-            await self._integration.sediment(
-                book_id, through_paragraph, flush=True
-            )
+            await self._integration.sediment(book_id, through_paragraph, flush=True)
         except Exception:
-            self._logger.exception(
-                "阅读原文边界沉淀失败 book_id=%s", book_id
-            )
+            self._logger.exception("阅读原文边界沉淀失败 book_id=%s", book_id)
         await self._integration.integrate(book_id, result, pre_read_count)
 
     async def quiesce(self) -> None:

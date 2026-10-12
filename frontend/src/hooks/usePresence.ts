@@ -1,3 +1,4 @@
+import { captureScope } from "../api/characterScope";
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { postObserve } from "../api/client";
@@ -11,6 +12,9 @@ type PresenceSnapshot = {
   windowTitle: string;
   idleMs: number;
   sampledAt: number;
+  sampleId: string;
+  characterId?: string;
+  selectionRevision?: number;
 };
 
 export function classifyPresence(idleMs: number): Presence {
@@ -20,17 +24,19 @@ export function classifyPresence(idleMs: number): Presence {
 }
 
 function sameSnapshot(a: PresenceSnapshot | null, b: PresenceSnapshot): boolean {
-  return a?.presence === b.presence && a.windowTitle === b.windowTitle &&
+  return a?.characterId === b.characterId && a?.selectionRevision === b.selectionRevision && a?.presence === b.presence && a.windowTitle === b.windowTitle &&
     b.sampledAt >= a.sampledAt;
 }
 
 export function usePresence(connection: ConnectionState): void {
   const lastWebInputAt = useRef(performance.now());
+  const wake = useRef<() => void>(() => {});
+  useEffect(() => { if (connection === "open") wake.current(); }, [connection]);
 
   useEffect(() => {
     let disposed = false;
     let sending = false;
-    let pending: PresenceSnapshot | null = null;
+    const pending: PresenceSnapshot[] = [];
     let lastSent: PresenceSnapshot | null = null;
     let sampleSequence = 0;
     let controller: AbortController | null = null;
@@ -40,20 +46,13 @@ export function usePresence(connection: ConnectionState): void {
     };
     window.addEventListener("keydown", onInput);
     window.addEventListener("mousemove", onInput);
-    if (connection !== "open") {
-      return () => {
-        window.removeEventListener("keydown", onInput);
-        window.removeEventListener("mousemove", onInput);
-      };
-    }
 
     const flush = async () => {
       if (sending) return;
       sending = true;
-      while (!disposed && pending !== null) {
-        const next = pending;
-        pending = null;
-        if (sameSnapshot(lastSent, next)) continue;
+      while (!disposed && pending.length > 0) {
+        const next = pending[0];
+        if (sameSnapshot(lastSent, next)) { pending.shift(); continue; }
         controller = new AbortController();
         const signal = controller.signal;
         let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -62,6 +61,9 @@ export function usePresence(connection: ConnectionState): void {
           // Race also releases single-flight if a transport fails to settle on abort.
           await Promise.race([
             postObserve({
+              sample_id: next.sampleId,
+              character_id: next.characterId,
+              selection_revision: next.selectionRevision,
               presence: next.presence,
               window_title: next.windowTitle,
               idle_seconds: next.idleMs / 1000,
@@ -79,25 +81,27 @@ export function usePresence(connection: ConnectionState): void {
         } catch (err) {
           if (!disposed) console.error("presence 上报失败", err);
           lastSent = null;
-          if (pending === null) pending = next;
           break;
         } finally {
           clearTimeout(timeout);
           if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
           controller = null;
         }
+        pending.shift();
         lastSent = next;
       }
       sending = false;
     };
 
     const enqueue = (snapshot: PresenceSnapshot) => {
-      if (!sending && sameSnapshot(lastSent, snapshot) && pending === null) return;
-      pending = snapshot;
+      if (sameSnapshot(pending[pending.length - 1] ?? lastSent, snapshot)) { void flush(); return; }
+      pending.push(snapshot);
       void flush();
     };
 
     const sample = async () => {
+      if (pending.length >= 64) { void flush(); return; }
+      const scope = captureScope();
       const sequence = ++sampleSequence;
       const now = Date.now();
       const sampledMonotonic = performance.now();
@@ -121,6 +125,9 @@ export function usePresence(connection: ConnectionState): void {
       }
       if (disposed || sequence !== sampleSequence) return;
       enqueue({
+        sampleId: crypto.randomUUID(),
+        characterId: scope?.id,
+        selectionRevision: scope?.revision,
         presence: classifyPresence(idleMs),
         windowTitle: Array.from(windowTitle).slice(0, 512).join(""),
         idleMs,
@@ -128,6 +135,7 @@ export function usePresence(connection: ConnectionState): void {
       });
     };
 
+    wake.current = () => { lastSent = null; void flush(); void sample(); };
     void sample();
     const timer = setInterval(() => void sample(), OBSERVE_INTERVAL_MS);
     const onFocus = () => void sample();
@@ -139,6 +147,7 @@ export function usePresence(connection: ConnectionState): void {
 
     return () => {
       disposed = true;
+      wake.current = () => {};
       controller?.abort();
       window.removeEventListener("keydown", onInput);
       window.removeEventListener("mousemove", onInput);
@@ -146,5 +155,5 @@ export function usePresence(connection: ConnectionState): void {
       document.removeEventListener("visibilitychange", onVisible);
       clearInterval(timer);
     };
-  }, [connection]);
+  }, []);
 }

@@ -1,4 +1,5 @@
 """Nyx 服务入口与兼容导出。"""
+
 # pyright: reportPrivateUsage=false, reportUnusedFunction=false
 import asyncio
 import os
@@ -14,6 +15,7 @@ from fastapi import FastAPI
 from nyx.api.routes import build_app as build_api
 from nyx.app_context import (
     _App,
+    _Host,
     build_tools,
 )
 from nyx.app_context import (
@@ -31,6 +33,8 @@ from nyx.enums import EventType, Source
 from nyx.inner_life.store import InnerLifeStore
 from nyx.runtime import (
     check_reflect,
+    host_presence_loop,
+    host_vision_loop,
     root_event,
     supervise_bus,
     tick_loop,
@@ -156,8 +160,19 @@ async def main() -> None:
             config.embedding.model = str(resources / "embedding-model")
     else:
         config = load_config()
-    app = await build_app_context(config)
-    server = uvicorn.Server(uvicorn.Config(build_app(app), host=_HOST, port=_PORT))
+    from nyx.api.routes import build_host_app
+
+    host = await _Host.open(config, Path.cwd())
+    server = uvicorn.Server(
+        uvicorn.Config(
+            build_host_app(
+                host, launch_nonce=os.environ.get(_LAUNCH_NONCE_ENV) or None
+            ),
+            host=_HOST,
+            port=_PORT,
+        )
+    )
+
     def watch_parent() -> None:
         # The owned pipe reaches EOF even if the desktop process crashes.
         sys.stdin.buffer.read(1)
@@ -165,41 +180,25 @@ async def main() -> None:
 
     if frozen:
         threading.Thread(target=watch_parent, daemon=True).start()
-    bus_task = asyncio.create_task(_supervise_bus(app))
+    for identity, record in host.records.items():
+        if record["status"] == "RUNNING":
+            host.activate(identity)
     tasks: set[asyncio.Task[Any]] = {
         asyncio.create_task(server.serve()),
-        bus_task,
-        asyncio.create_task(_tick_loop(app)),
+        asyncio.create_task(host_presence_loop(host)),
     }
-    if app.screen_observer is not None:
-        tasks.add(asyncio.create_task(_vision_loop(app)))
+    if config.vision.enabled:
+        tasks.add(asyncio.create_task(host_vision_loop(host)))
     try:
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             task.result()
     finally:
-        activity_quiesce = getattr(app.activity, "quiesce", None)
-        if activity_quiesce is not None:
-            await activity_quiesce()
-        reading_quiesce = getattr(app.reading, "quiesce", None)
-        if reading_quiesce is not None:
-            await reading_quiesce()
         for task in tasks:
-            if task is not bus_task and not task.done():
+            if not task.done():
                 task.cancel()
-        await asyncio.gather(
-            *(task for task in tasks if task is not bus_task),
-            return_exceptions=True,
-        )
-        reading_drain = getattr(app.reading, "drain", None)
-        if reading_drain is not None:
-            await reading_drain()
-        close_bus = getattr(app.bus, "close", None)
-        if close_bus is None:
-            bus_task.cancel()
-        else:
-            await close_bus()
-        await asyncio.gather(bus_task, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await host.close()
 
 
 def _run_with_reload() -> None:

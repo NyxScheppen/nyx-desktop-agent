@@ -26,6 +26,7 @@
 | 表达 | [`11-expression.md`](specs/11-expression.md) | [`expression-system-facts.md`](facts/expression-system-facts.md) | `nyx/expression/`、`nyx/reading/companions.py`、`nyx/prompts/knowledge-boundary.md` |
 | 阅读 | [`12-reading-system.md`](specs/12-reading-system.md)；表达侧读书交互归 11 | [`reading-system-facts.md`](facts/reading-system-facts.md) | `nyx/reading/` |
 | 桌宠窗口与轻量入口 | [`13-desktop-pet.md`](specs/13-desktop-pet.md) | — | `frontend/src/components/desktop/`, `frontend/src/lib/desktopWindow.ts`, `frontend/src-tauri/tauri.conf.json` |
+| 角色卡与多角色运行 | [`14-character-cards.md`](specs/14-character-cards.md) | [`character-cards-facts.md`](facts/character-cards-facts.md) | `nyx/character_cards.py`, `nyx/cards/nyx/`, `nyx/app_context.py`, `nyx/runtime.py` |
 
 ### 时间感知与离开归来导航
 
@@ -37,6 +38,7 @@
 | 职责 | 入口 |
 |---|---|
 | 组合根与 Facade 装配 | `nyx/app_context.py` |
+| 角色卡校验与一次初始化 | `nyx/character_cards.py`, `nyx/bootstrap.py` |
 | 应用启动、seed、REST/SSE 绑定 | `nyx/main.py`, `nyx/api/routes.py` |
 | tick、总线监督、视觉循环 | `nyx/runtime.py` |
 | 事件订阅注册 | `nyx/subscriptions.py` |
@@ -61,6 +63,7 @@
 | 职责 | 入口 |
 |---|---|
 | REST 请求 | `frontend/src/api/client.ts` |
+| 角色切换、请求 scope 与管理入口 | `frontend/src/api/characterScope.ts`, `frontend/src/stores/characterStore.ts`, `frontend/src/components/layout/CharacterSelect.tsx`, `CharacterManager.tsx` |
 | SSE 连接与事件分发 | `frontend/src/hooks/useSSE.ts` |
 | 桌面 presence 采集 | `frontend/src/hooks/usePresence.ts`, `frontend/src-tauri/src/lib.rs` |
 | API 类型 | `frontend/src/types/api.ts` |

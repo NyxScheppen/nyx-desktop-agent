@@ -27,6 +27,12 @@
 - **导航**：`RightDock` 的 `ENTRIES` 删「聊天」一项（`{label:"聊天", view:null}`），剩 `读书|内在|欲望|活动|记忆` 五个，只切中间。`RightDock` `grid-column:2; grid-row:2`。
 - **反冗余**：删除 `ScrollArea.tsx`（聊天舞台）与 `MutterCard.tsx`（碎碎念卡片）两个被替代组件 + `mutterStore.ts`（§3）。
 
+### 角色切换补充
+
+完整端标题区和桌宠菜单提供 `CharacterSelect`，设置弹层提供 `CharacterManager` 和四角色额度、状态、导入/卸载/恢复/重试。名称及头像来自角色卡，没有图片使用名称占位；全局字体、背景与窗口外观沿用 `settingsStore`。
+
+领域 Store 只展示当前角色；切换清理旧展示、等待、通知和阅读临时缓冲，恢复按角色保存的草稿与最近书籍。全部异步结果核对角色及本地切换代数，覆盖 A→B→A；具体契约见 [14-character-cards](../specs/14-character-cards.md)、[Store](02-stores.md) 与 [API client](05-client.md)。
+
 ### 1.1 共享时钟与昼夜视觉
 
 - `App` 持有唯一的本地 `Date` 时钟：首次 timeout 对齐下一分钟边界，之后每分钟更新，

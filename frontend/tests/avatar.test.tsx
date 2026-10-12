@@ -1,6 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Avatar, { clampAvatarPos } from "../src/components/inner/Avatar";
+import EmotionSprite from "../src/components/inner/EmotionSprite";
+import { useCharacterStore } from "../src/stores/characterStore";
 import { useChatStore } from "../src/stores/chatStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
@@ -48,6 +50,26 @@ describe("Avatar 红点通知", () => {
 });
 
 describe("Avatar 桌宠入口", () => {
+  it("uses an anonymous CORS request for card images and a name placeholder for a role without assets", () => {
+    const registry = { current_id: "alice", selection_revision: 1, limit: 4,
+      characters: [{ id: "alice", name: "Alice", status: "RUNNING" as const,
+        error: null, sync_error: null, assets: { neutral: "/api/characters/alice/assets/neutral" } }] };
+    useCharacterStore.setState({ registry });
+    const view = render(<EmotionSprite emotion="neutral" />);
+    try {
+      const picture = screen.getByRole("img", { name: "neutral" });
+      expect(picture).toHaveAttribute("src", "/api/characters/alice/assets/neutral");
+      expect(picture).toHaveAttribute("crossorigin", "anonymous");
+      act(() => useCharacterStore.setState({ registry: { ...registry,
+        characters: [{ ...registry.characters[0], assets: {} }] } }));
+      expect(screen.queryByRole("img")).not.toBeInTheDocument();
+      expect(screen.getByText("Alice")).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      useCharacterStore.setState({ registry: null });
+    }
+  });
+
   it("单击和双击分别触发菜单与完整桌面端回调", () => {
     const onActivate = vi.fn();
     const onDoubleClick = vi.fn();

@@ -14,13 +14,15 @@ from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, LLMOutput, Memory
 
-_FINALIZE_JSON = json.dumps({
-    "summary": "弄懂了量子退相干的机制",
-    "core_discovery": "退相干是量子系统与环境纠缠导致的表观坍缩",
-    "knowledge": [{"topic": "退相干", "content": "环境纠缠抹去相干性"}],
-    "strong_new_topics": ["量子纠错"],
-    "casual_new_topics": ["退火算法"],
-})
+_FINALIZE_JSON = json.dumps(
+    {
+        "summary": "弄懂了量子退相干的机制",
+        "core_discovery": "退相干是量子系统与环境纠缠导致的表观坍缩",
+        "knowledge": [{"topic": "退相干", "content": "环境纠缠抹去相干性"}],
+        "strong_new_topics": ["量子纠错"],
+        "casual_new_topics": ["退火算法"],
+    }
+)
 
 
 class _FakeLlm:
@@ -29,6 +31,7 @@ class _FakeLlm:
         self.calls: list[str] = []
         self.correlation_ids: list[str] = []
         self.user_contents: list[str] = []
+        self.system_contents: list[str] = []
 
     async def complete(
         self,
@@ -42,6 +45,7 @@ class _FakeLlm:
         self.calls.append(output_type)
         self.correlation_ids.append(correlation_id)
         self.user_contents.append(messages[1]["content"])
+        self.system_contents.append(messages[0]["content"])
         return LLMOutput(
             module=module,
             type=output_type,
@@ -70,8 +74,13 @@ class _FakeTools:
             # 真实 local_search 返回 {path, snippet}（无 title/url）
             return [{"path": "C:/notes/量子.txt", "snippet": "环境纠缠"}]
         if name == "web_search":
-            return [{"title": "量子退相干", "url": "https://example.com/a",
-                     "snippet": "环境纠缠"}]
+            return [
+                {
+                    "title": "量子退相干",
+                    "url": "https://example.com/a",
+                    "snippet": "环境纠缠",
+                }
+            ]
         if name == "web_fetch":
             if self._fetch_raises:
                 raise RuntimeError("download fail")
@@ -210,11 +219,13 @@ async def test_run_without_parent_still_persists_knowledge() -> None:
     desire = _FakeDesire()
     memory = _FakeMemory()
     expl = _make_exploration(desire=desire, memory=memory)
-    activity = _activity({
-        "goal": {"topic": "量子"},
-        "description": "理解量子退相干",
-        "correlation_id": "c1",
-    })
+    activity = _activity(
+        {
+            "goal": {"topic": "量子"},
+            "description": "理解量子退相干",
+            "correlation_id": "c1",
+        }
+    )
     await expl.run(activity)
     assert desire.appended_subtopics == []
     assert memory.remembered[-1][0][0]["topic"] == "退相干"
@@ -271,11 +282,13 @@ async def test_run_empty_source_skips_memory_digest() -> None:
         async def call(self, name: str, args: dict[str, Any]) -> Any:
             self.calls.append((name, args))
             if name == "web_search":
-                return [{
-                    "title": "空页面",
-                    "url": "https://example.com/empty",
-                    "snippet": "",
-                }]
+                return [
+                    {
+                        "title": "空页面",
+                        "url": "https://example.com/empty",
+                        "snippet": "",
+                    }
+                ]
             if name == "web_fetch":
                 return {"text": "", "url": args["url"]}
             return []
@@ -310,9 +323,12 @@ async def test_summarize_injects_related_memories() -> None:
     async def search(_topic: str) -> list[Memory]:
         return [
             Memory(
-                id="m1", created_at=1.0, content="旧认知",
+                id="m1",
+                created_at=1.0,
+                content="旧认知",
                 kind=MemoryKind.KNOWLEDGE,
-                summary="之前想过退相干", freshness=1.0,
+                summary="之前想过退相干",
+                freshness=1.0,
                 type=MemoryType.SHORT_TERM,
             )
         ]
@@ -327,35 +343,43 @@ async def test_summarize_injects_related_memories() -> None:
 
 async def test_resume_reading_results_continues_from_cursor() -> None:
     tools = _FakeTools()
-    activity = _activity({
-        "goal": {"topic": "量子"},
-        "correlation_id": "c1",
-        "exploration": {
-            "state": "reading_results",
-            "topic": "量子",
-            "raw_results": [
-                {"title": "已读", "url": "https://example.com/old", "snippet": "旧"},
-                {"title": "新读", "url": "https://example.com/new", "snippet": "新"},
-            ],
-            "cursor": 1,
-            "findings": ["已读：旧正文"],
-            "tool_calls": [
-                {
-                    "name": "web_fetch",
-                    "args": {"url": "https://example.com/old"},
-                    "ok": True,
-                }
-            ],
-            "summary_done": False,
-            "judged": None,
-            "sink_done": False,
-        },
-    })
+    activity = _activity(
+        {
+            "goal": {"topic": "量子"},
+            "correlation_id": "c1",
+            "exploration": {
+                "state": "reading_results",
+                "topic": "量子",
+                "raw_results": [
+                    {
+                        "title": "已读",
+                        "url": "https://example.com/old",
+                        "snippet": "旧",
+                    },
+                    {
+                        "title": "新读",
+                        "url": "https://example.com/new",
+                        "snippet": "新",
+                    },
+                ],
+                "cursor": 1,
+                "findings": ["已读：旧正文"],
+                "tool_calls": [
+                    {
+                        "name": "web_fetch",
+                        "args": {"url": "https://example.com/old"},
+                        "ok": True,
+                    }
+                ],
+                "summary_done": False,
+                "judged": None,
+                "sink_done": False,
+            },
+        }
+    )
     expl = _make_exploration(tools=tools, web_enabled=True)
     result = await expl.run(activity)
-    fetched_urls = [
-        args["url"] for name, args in tools.calls if name == "web_fetch"
-    ]
+    fetched_urls = [args["url"] for name, args in tools.calls if name == "web_fetch"]
     assert fetched_urls == ["https://example.com/new"]
     assert result["findings"][0] == "已读：旧正文"
 
@@ -363,23 +387,42 @@ async def test_resume_reading_results_continues_from_cursor() -> None:
 async def test_resume_sinking_with_sink_done_skips_memory_and_desire() -> None:
     desire = _FakeDesire()
     memory = _FakeMemory()
-    activity = _activity({
-        "goal": {"topic": "量子"},
-        "correlation_id": "c1",
-        "exploration": {
-            "state": "sinking",
-            "topic": "量子",
-            "raw_results": [],
-            "cursor": 0,
-            "findings": ["量子：正文"],
-            "tool_calls": [],
-            "summary_done": True,
-            "judged": json.loads(_FINALIZE_JSON),
-            "sink_done": True,
-        },
-    })
+    activity = _activity(
+        {
+            "goal": {"topic": "量子"},
+            "correlation_id": "c1",
+            "exploration": {
+                "state": "sinking",
+                "topic": "量子",
+                "raw_results": [],
+                "cursor": 0,
+                "findings": ["量子：正文"],
+                "tool_calls": [],
+                "summary_done": True,
+                "judged": json.loads(_FINALIZE_JSON),
+                "sink_done": True,
+            },
+        }
+    )
     expl = _make_exploration(desire=desire, memory=memory)
     result = await expl.run(activity)
     assert result["outcome"] == "won"
     assert desire.appended_subtopics == []
     assert memory.remembered == []
+
+
+async def test_exploration_uses_card_identity() -> None:
+    llm = _FakeLlm()
+    exploration = Exploration(
+        cast(LlmClient, llm),
+        cast(Evaluator, _FakeEvaluator()),
+        cast(ToolRegistry, _FakeTools()),
+        cast(ActivityStore, _FakeStore()),
+        cast(DesireFacade, _FakeDesire()),
+        cast(MemoryFacade, _FakeMemory()),
+        ExplorationConfig(),
+        canon="你是 Alice，说话直接活泼。",
+    )
+    await exploration.run(_activity())
+    assert "Alice，说话直接活泼" in llm.system_contents[0]
+    assert "尼克斯" not in llm.system_contents[0]

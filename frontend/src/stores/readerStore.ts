@@ -1,3 +1,4 @@
+import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import {
   checkChapterBoundary,
@@ -97,11 +98,11 @@ function enqueueImpulse(
   lastParagraphIndex: number,
 ): Promise<void> {
   const key = session + ":" + bookId;
+  const scope = captureScope();
   const previous = impulseQueues.get(key);
-  const run = () =>
-    evaluateImpulse(bookId, paragraphIndex, lastParagraphIndex).then(
-      () => undefined,
-    );
+  const run = () => isScopeCurrent(scope)
+    ? evaluateImpulse(bookId, paragraphIndex, lastParagraphIndex).then(() => undefined)
+    : Promise.resolve();
   const next =
     previous === undefined ? run() : previous.catch(() => {}).then(run);
   const tracked = next.finally(() => {
@@ -127,6 +128,8 @@ function enqueueProgress(
   const key = session + ":" + bookId;
   const previous = progressQueues.get(key);
   const run = async (): Promise<void> => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
     if (!isCurrent() || get().bookId !== bookId) return;
     const current = get();
     const desiredNyxPosition = allowNyxRewind
@@ -138,8 +141,9 @@ function enqueueProgress(
         nyx_position: desiredNyxPosition,
         expected_revision: current.progressRevision,
       });
+      if (!isScopeCurrent(scope)) return;
       if (isCurrent() && get().bookId === bookId) {
-        set({
+        commit({
           nyxPosition: allowNyxRewind
             ? result.nyx_position
             : Math.max(get().nyxPosition, result.nyx_position),
@@ -148,13 +152,16 @@ function enqueueProgress(
         });
       }
     } catch {
+      if (!isScopeCurrent(scope)) return;
       try {
         const fresh = await getProgress(bookId);
+      if (!isScopeCurrent(scope)) return;
+        if (!isCurrent() || get().bookId !== bookId) return;
         const retryNyxPosition = allowNyxRewind
           ? payload.nyx_position
           : Math.max(desiredNyxPosition, fresh.nyx_position, get().nyxPosition);
         if (isCurrent() && get().bookId === bookId) {
-          set({
+          commit({
             nyxPosition: allowNyxRewind
               ? get().nyxPosition
               : Math.max(get().nyxPosition, fresh.nyx_position),
@@ -167,8 +174,9 @@ function enqueueProgress(
           nyx_position: retryNyxPosition,
           expected_revision: fresh.revision,
         });
+      if (!isScopeCurrent(scope)) return;
         if (isCurrent() && get().bookId === bookId) {
-          set({
+          commit({
             nyxPosition: allowNyxRewind
               ? retry.nyx_position
               : Math.max(get().nyxPosition, retry.nyx_position),
@@ -177,6 +185,7 @@ function enqueueProgress(
           });
         }
       } catch {
+      if (!isScopeCurrent(scope)) return;
         // 下一次用户动作会再次尝试写入。
       }
     }
@@ -286,14 +295,17 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     total: number,
     centered: boolean,
   ): Promise<void> => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
     if (!isCurrent(session, bookId)) return;
     if (total <= 0) {
-      set({ paragraphs: [], windowFrom: 0 });
+      commit({ paragraphs: [], windowFrom: 0 });
       return;
     }
     const { from, to } = computeWindow(userPosition, total, centered);
     const paragraphs = await getBookParagraphs(bookId, from, to);
-    if (isCurrent(session, bookId)) set({ paragraphs, windowFrom: from });
+      if (!isScopeCurrent(scope)) return;
+    if (isCurrent(session, bookId)) commit({ paragraphs, windowFrom: from });
   };
 
   return {
@@ -314,29 +326,36 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     bookmarksError: null,
 
     loadBooks: async () => {
-      set({ booksError: null });
+      const scope = captureScope();
+      const commit = scopedSetter(set);
+      commit({ booksError: null });
       try {
         const books = await getBooks();
-        set({ books });
+      if (!isScopeCurrent(scope)) return;
+        commit({ books });
       } catch (err) {
-        set({ booksError: err instanceof Error ? err.message : String(err) });
+      if (!isScopeCurrent(scope)) return;
+        commit({ booksError: err instanceof Error ? err.message : String(err) });
       }
     },
 
     openBook: async (bookId) => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       const session = ++sessionGeneration;
       get().stopCatchup();
       try {
         let book = get().books.find((b) => b.id === bookId);
         if (book === undefined || book.total_paragraphs <= 0) {
           const books = await getBooks();
+      if (!isScopeCurrent(scope)) return;
           if (sessionGeneration !== session) return;
-          set({ books });
+          commit({ books });
           book = books.find((b) => b.id === bookId);
         }
         const total = book?.total_paragraphs ?? 0;
         if (sessionGeneration !== session) return;
-        set({
+        commit({
           bookId,
           totalParagraphs: total,
           booksError: null,
@@ -347,10 +366,11 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           bookmarksError: null,
         });
         const progress = await getProgress(bookId);
+      if (!isScopeCurrent(scope)) return;
         if (!isCurrent(session, bookId)) return;
         const userPosition = progress.user_position;
         const nyxPosition = progress.nyx_position;
-        set({
+        commit({
           userPosition,
           nyxPosition,
           readingSpeed: progress.reading_speed,
@@ -358,12 +378,14 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           progressRevision: progress.revision ?? 0,
         });
         await fetchWindow(session, bookId, userPosition, total, false);
+      if (!isScopeCurrent(scope)) return;
         if (isCurrent(session, bookId) && nyxPosition < userPosition) {
           get().startCatchup();
         }
       } catch (err) {
+      if (!isScopeCurrent(scope)) return;
         if (sessionGeneration === session) {
-          set({ booksError: err instanceof Error ? err.message : String(err) });
+          commit({ booksError: err instanceof Error ? err.message : String(err) });
         }
       }
     },
@@ -388,12 +410,14 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     },
 
     syncPosition: async (next) => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       const session = sessionGeneration;
       const { bookId, totalParagraphs, userPosition } = get();
       if (bookId === null || totalParagraphs <= 0) return;
       const clamped = Math.min(totalParagraphs, Math.max(1, next));
       if (clamped === userPosition) return;
-      set({ userPosition: clamped });
+      commit({ userPosition: clamped });
       const { nyxPosition, readingSpeed } = get();
       if (!isCurrent(session, bookId)) return;
       // 进度持久化后写：fire-and-forget，失败静默、下次翻页重写覆盖。
@@ -402,6 +426,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         nyx_position: nyxPosition,
         reading_speed: readingSpeed,
       }, get, set, () => isCurrent(session, bookId));
+      if (!isScopeCurrent(scope)) return;
       if (!isCurrent(session, bookId)) return;
       // 前翻逐段补发冲动（整屏翻一次跨 N 段，逐段 evaluate 保住每段都有机会触发；
       // 后翻不评估，双保险；正文后端自取，不传 text）。
@@ -411,21 +436,25 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           impulseTasks.push(enqueueImpulse(session, bookId, i, i - 1));
         }
         await Promise.all(impulseTasks);
+      if (!isScopeCurrent(scope)) return;
       }
       if (!isCurrent(session, bookId)) return;
       if (needsWindowRefresh(clamped, get().windowFrom)) {
         await fetchWindow(session, bookId, clamped, totalParagraphs, false);
+      if (!isScopeCurrent(scope)) return;
       }
       if (isCurrent(session, bookId)) get().startCatchup();
     },
 
     jumpToPosition: async (next) => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       const session = sessionGeneration;
       const { bookId, totalParagraphs, userPosition } = get();
       if (bookId === null || totalParagraphs <= 0) return;
       const clamped = Math.min(totalParagraphs, Math.max(1, next));
       if (clamped === userPosition) return;
-      set({ userPosition: clamped });
+      commit({ userPosition: clamped });
       const { nyxPosition, readingSpeed } = get();
       if (!isCurrent(session, bookId)) return;
       await enqueueProgress(session, bookId, {
@@ -433,23 +462,28 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         nyx_position: nyxPosition,
         reading_speed: readingSpeed,
       }, get, set, () => isCurrent(session, bookId));
+      if (!isScopeCurrent(scope)) return;
       if (!isCurrent(session, bookId)) return;
       if (needsWindowRefresh(clamped, get().windowFrom)) {
         await fetchWindow(session, bookId, clamped, totalParagraphs, false);
+      if (!isScopeCurrent(scope)) return;
       }
       if (isCurrent(session, bookId)) get().startCatchup();
     },
 
     setReadingSpeed: async (speed) => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       const session = sessionGeneration;
       const { bookId, userPosition, nyxPosition } = get();
       if (bookId === null) return;
-      set({ readingSpeed: speed });
+      commit({ readingSpeed: speed });
       await enqueueProgress(session, bookId, {
         user_position: userPosition,
         nyx_position: nyxPosition,
         reading_speed: speed,
       }, get, set, () => isCurrent(session, bookId));
+      if (!isScopeCurrent(scope)) return;
     },
 
     startCatchup: () => {
@@ -459,7 +493,11 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const para = paragraphs.find((p) => p.index === nyxPosition);
       const len = para?.text.length ?? 0;
       const durMs = len > 0 ? catchupDurationMs(len, readingSpeed) : MIN_CATCHUP_SEC * 1000;
-      catchupTimer = setTimeout(() => get().advanceNyx(), durMs);
+      const scope = captureScope();
+      const session = sessionGeneration;
+      catchupTimer = setTimeout(() => {
+        if (isScopeCurrent(scope) && isCurrent(session, bookId)) get().advanceNyx();
+      }, durMs);
     },
 
     stopCatchup: () => {
@@ -512,49 +550,59 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     },
 
     reread: async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       const session = sessionGeneration;
       const { bookId, totalParagraphs, readingSpeed } = get();
       if (bookId === null) return;
       get().stopCatchup();
-      set({ userPosition: 1, nyxPosition: 1 });
+      commit({ userPosition: 1, nyxPosition: 1 });
       // read_count 后端不碰（保持 >=1）；只复位进度。
       await enqueueProgress(session, bookId, {
         user_position: 1,
         nyx_position: 1,
         reading_speed: readingSpeed,
       }, get, set, () => isCurrent(session, bookId), true);
+      if (!isScopeCurrent(scope)) return;
       if (!isCurrent(session, bookId)) return;
       await fetchWindow(session, bookId, 1, totalParagraphs, false);
+      if (!isScopeCurrent(scope)) return;
     },
 
     loadNotes: async () => {
+      const scope = captureScope();
       const { bookId } = get();
       if (bookId === null) return;
       const session = sessionGeneration;
       const request = ++notesRequestRevision;
       const key = session + ":" + bookId;
       await enqueueOperation(noteQueues, key, async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
         if (!isCurrent(session, bookId)) return;
-        set({ notesError: null });
+        commit({ notesError: null });
         try {
           const notes = await getNotes(bookId);
+      if (!isScopeCurrent(scope)) return;
           if (
             isCurrent(session, bookId) &&
             request === notesRequestRevision
           ) {
-            set({ notes });
+            commit({ notes });
           }
         } catch (err) {
+      if (!isScopeCurrent(scope)) return;
           if (
             isCurrent(session, bookId) &&
             request === notesRequestRevision
           ) {
-            set({
+            commit({
               notesError: err instanceof Error ? err.message : String(err),
             });
           }
         }
       });
+      if (!isScopeCurrent(scope)) return;
     },
 
     // POST 返回裸 UserNote（7 键无 annotations），归一成 UserNoteWithAnnotations 再 unshift。
@@ -564,15 +612,19 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       if (bookId === null || p.book_id !== bookId) return false;
       notesRequestRevision += 1;
       return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
         if (!isCurrent(session, bookId)) return false;
         try {
           const note = await createUserNote(p);
+      if (!isScopeCurrent(scope)) return false;
           if (!isCurrent(session, bookId)) return false;
-          set({ notes: [{ ...note, annotations: [] }, ...get().notes] });
+          commit({ notes: [{ ...note, annotations: [] }, ...get().notes] });
           return true;
         } catch (err) {
+      if (!isScopeCurrent(scope)) return false;
           if (isCurrent(session, bookId)) {
-            set({ notesError: err instanceof Error ? err.message : String(err) });
+            commit({ notesError: err instanceof Error ? err.message : String(err) });
           }
           return false;
         }
@@ -586,19 +638,23 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       if (bookId === null) return false;
       notesRequestRevision += 1;
       return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
         if (!isCurrent(session, bookId)) return false;
         try {
           const note = await updateUserNote(id, content);
+      if (!isScopeCurrent(scope)) return false;
           if (!isCurrent(session, bookId)) return false;
-          set({
+          commit({
             notes: get().notes.map((n) =>
               n.id === id ? { ...note, annotations: n.annotations } : n,
             ),
           });
           return true;
         } catch (err) {
+      if (!isScopeCurrent(scope)) return false;
           if (isCurrent(session, bookId)) {
-            set({ notesError: err instanceof Error ? err.message : String(err) });
+            commit({ notesError: err instanceof Error ? err.message : String(err) });
           }
           return false;
         }
@@ -611,15 +667,19 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       if (bookId === null) return false;
       notesRequestRevision += 1;
       return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
         if (!isCurrent(session, bookId)) return false;
         try {
           await deleteUserNote(id);
+      if (!isScopeCurrent(scope)) return false;
           if (!isCurrent(session, bookId)) return false;
-          set({ notes: get().notes.filter((n) => n.id !== id) });
+          commit({ notes: get().notes.filter((n) => n.id !== id) });
           return true;
         } catch (err) {
+      if (!isScopeCurrent(scope)) return false;
           if (isCurrent(session, bookId)) {
-            set({ notesError: err instanceof Error ? err.message : String(err) });
+            commit({ notesError: err instanceof Error ? err.message : String(err) });
           }
           return false;
         }
@@ -633,12 +693,15 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       if (bookId === null) return false;
       notesRequestRevision += 1;
       return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
         if (!isCurrent(session, bookId)) return false;
         try {
           const ann = await showNoteToNyx(noteId);
+      if (!isScopeCurrent(scope)) return false;
           if (!isCurrent(session, bookId)) return false;
           if (ann !== null) {
-            set({
+            commit({
               notes: get().notes.map((n) =>
                 n.id === noteId
                   ? { ...n, annotations: [...n.annotations, ann] }
@@ -648,8 +711,9 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           }
           return true;
         } catch (err) {
+      if (!isScopeCurrent(scope)) return false;
           if (isCurrent(session, bookId)) {
-            set({ notesError: err instanceof Error ? err.message : String(err) });
+            commit({ notesError: err instanceof Error ? err.message : String(err) });
           }
           return false;
         }
@@ -657,33 +721,39 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     },
 
     loadBookmarks: async () => {
+      const scope = captureScope();
       const { bookId } = get();
       if (bookId === null) return;
       const session = sessionGeneration;
       const request = ++bookmarksRequestRevision;
       const key = session + ":" + bookId;
       await enqueueOperation(bookmarkQueues, key, async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
         if (!isCurrent(session, bookId)) return;
-        set({ bookmarksError: null });
+        commit({ bookmarksError: null });
         try {
           const bookmarks = await getBookmarks(bookId);
+      if (!isScopeCurrent(scope)) return;
           if (
             isCurrent(session, bookId) &&
             request === bookmarksRequestRevision
           ) {
-            set({ bookmarks });
+            commit({ bookmarks });
           }
         } catch (err) {
+      if (!isScopeCurrent(scope)) return;
           if (
             isCurrent(session, bookId) &&
             request === bookmarksRequestRevision
           ) {
-            set({
+            commit({
               bookmarksError: err instanceof Error ? err.message : String(err),
             });
           }
         }
       });
+      if (!isScopeCurrent(scope)) return;
     },
 
     toggleBookmark: async (paragraphId) => {
@@ -695,6 +765,8 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         bookmarkQueues,
         session + ":" + bookId,
         async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
           if (!isCurrent(session, bookId)) return;
           const existing = get().bookmarks.find(
             (item) => item.paragraph_id === paragraphId,
@@ -702,8 +774,9 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           try {
             if (existing !== undefined) {
               await deleteBookmark(existing.id);
+      if (!isScopeCurrent(scope)) return;
               if (isCurrent(session, bookId)) {
-                set({
+                commit({
                   bookmarks: get().bookmarks.filter(
                     (item) => item.id !== existing.id,
                   ),
@@ -712,16 +785,18 @@ export const useReaderStore = create<ReaderState>((set, get) => {
               return;
             }
             const bookmark = await createBookmark(bookId, paragraphId);
+      if (!isScopeCurrent(scope)) return;
             if (isCurrent(session, bookId)) {
-              set({
+              commit({
                 bookmarks: [...get().bookmarks, bookmark].sort(
                   (a, b) => a.paragraph_index - b.paragraph_index,
                 ),
               });
             }
           } catch (err) {
+      if (!isScopeCurrent(scope)) return;
             if (isCurrent(session, bookId)) {
-              set({
+              commit({
                 bookmarksError: err instanceof Error ? err.message : String(err),
               });
             }

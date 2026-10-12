@@ -81,6 +81,48 @@ async def _close(bus: EventBus) -> None:
     await bus._db.close()
 
 
+async def test_worker_effect_failure_reaches_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = await _new_bus()
+
+    async def handler(event: Event) -> None:
+        pass
+
+    async def broken_effect(event_id: str, consumer_id: str) -> bool:
+        raise RuntimeError("effect lookup failed")
+
+    bus.subscribe(EventType.THINK, handler)
+    monkeypatch.setattr(bus, "_has_effect", broken_effect)
+    await bus.publish(_make_event())
+    task = asyncio.create_task(bus.run())
+    try:
+        with pytest.raises(RuntimeError, match="effect lookup failed"):
+            await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+        assert not bus._running
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await _close(bus)
+
+
+async def test_recovery_failure_clears_running_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = await _new_bus()
+
+    async def broken_recovery() -> None:
+        raise RuntimeError("recovery failed")
+
+    monkeypatch.setattr(bus, "recover_deliveries", broken_recovery)
+    try:
+        with pytest.raises(RuntimeError, match="recovery failed"):
+            await bus.run()
+        assert not bus._running
+    finally:
+        await _close(bus)
+
+
 async def test_publish_is_durable_before_return() -> None:
     bus = await _new_bus()
     try:
@@ -164,21 +206,15 @@ async def test_list_events_filter_sort_and_limit() -> None:
     bus = await _new_bus()
     try:
         await bus.publish(_make_event(id="a", timestamp=1.0))
-        await bus.publish(
-            _make_event(id="b", timestamp=2.0, type_=EventType.SPEAK)
-        )
+        await bus.publish(_make_event(id="b", timestamp=2.0, type_=EventType.SPEAK))
         await bus.publish(_make_event(id="c", timestamp=3.0, correlation_id="c-2"))
 
         assert [e.id for e in await bus.list_events()] == ["c", "b", "a"]
         assert [e.id for e in await bus.list_events(limit=2)] == ["c", "b"]
-        assert [
-            e.id
-            for e in await bus.list_events(event_type=EventType.SPEAK)
-        ] == ["b"]
-        assert [
-            e.id
-            for e in await bus.list_events(correlation_id="c-2")
-        ] == ["c"]
+        assert [e.id for e in await bus.list_events(event_type=EventType.SPEAK)] == [
+            "b"
+        ]
+        assert [e.id for e in await bus.list_events(correlation_id="c-2")] == ["c"]
     finally:
         await _close(bus)
 
@@ -211,9 +247,7 @@ async def test_list_events_unknown_cursor_replays_oldest_bounded_page() -> None:
         await bus.publish(_make_event(id="b", timestamp=2.0))
         await bus.publish(_make_event(id="a", timestamp=1.0))
 
-        assert [e.id for e in await bus.list_events(limit=1, after="expired")] == [
-            "a"
-        ]
+        assert [e.id for e in await bus.list_events(limit=1, after="expired")] == ["a"]
     finally:
         await _close(bus)
 
@@ -275,6 +309,7 @@ async def test_handler_failure_retries_only_failed_consumer(
 async def test_delivery_failure_is_recovered_after_expired_lease() -> None:
     bus = await _new_bus()
     try:
+
         async def handler(event: Event) -> None:
             return None
 
@@ -470,6 +505,7 @@ async def test_publish_failure_does_not_return_event_id(
 ) -> None:
     bus = await _new_bus()
     try:
+
         async def bad_commit() -> None:
             raise RuntimeError("disk full")
 

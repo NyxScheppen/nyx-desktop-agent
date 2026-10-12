@@ -31,7 +31,7 @@ export default function CreationPanel() {
       {creations === null ? (
         "等待核心服务连接…"
       ) : creations.length === 0 ? (
-        <p className="panel-item">尼克斯还没有完成创作</p>
+        <p className="panel-item">当前角色还没有完成创作</p>
       ) : (
         <ul className="outputs__list">
           {creations.map((activity) => {

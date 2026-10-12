@@ -88,7 +88,9 @@ async def test_tick_loop_emits_four_clock_ticks(
 
     assert [e.type for e in bus.published] == [EventType.CLOCK_TICK] * 4
     assert {e.content["tick_type"] for e in bus.published} == {
-        "schedule_block_start", "desire_eval", "mutter_check",
+        "schedule_block_start",
+        "desire_eval",
+        "mutter_check",
         "initiate_chat_check",
     }
     assert all(e.source is Source.INTERNAL for e in bus.published)
@@ -196,36 +198,11 @@ async def test_supervise_bus_breaks_on_flapping(
 
 # ---- main() 竞速：任一先完成者异常传播 ----
 
-class _BlockingBus:
-    """run()/serve 永阻塞（供 main() 竞速测试），publish 无操作。"""
 
-    def __init__(self) -> None:
-        self.persisted_count = 0
-        self.published: list[Event] = []
-
-    async def run(self) -> None:
-        await asyncio.Event().wait()  # 永不返回
-
-    async def publish(self, event: Event) -> None:
-        self.published.append(event)
-
-
-async def _fake_context(config: Config) -> _App:
-    return _app(_BlockingBus())
-
-
-class _BlockServer:
-    """serve() 永阻塞，供 main() 竞速测试（非 serve 先完成）。"""
-
-    def __init__(self, config: object) -> None:
-        pass
-
-    async def serve(self) -> None:
-        await asyncio.Event().wait()  # 永不返回
-
-
-def _fake_build_app(app: _App) -> object:
-    return object()
+def _fake_host() -> MagicMock:
+    host = MagicMock(records={}, apps={}, stopping={}, presence_tasks={})
+    host.close = AsyncMock()
+    return host
 
 
 def _fake_uvicorn_config(*args: object, **kwargs: object) -> object:
@@ -235,103 +212,38 @@ def _fake_uvicorn_config(*args: object, **kwargs: object) -> object:
 async def test_main_propagates_serve_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _FailServer:
-        def __init__(self, config: object) -> None:
-            pass
-
-        async def serve(self) -> None:
-            # 用 RuntimeError 而非 SystemExit：后者是 BaseException，asyncio 会经
-            # Handle._run 直接重抛出事件循环，绕开 main() 的 task.result() 重抛路径
-            # 无法被 pytest.raises 干净断言。
-            raise RuntimeError("port in use")
-
-    monkeypatch.setattr("nyx.main.load_config", lambda: Config())
-    monkeypatch.setattr("nyx.main.build_app_context", _fake_context)
-    monkeypatch.setattr("nyx.main.build_app", _fake_build_app)
-    monkeypatch.setattr("nyx.main.uvicorn.Config", _fake_uvicorn_config)
-    monkeypatch.setattr("nyx.main.uvicorn.Server", _FailServer)
-
-    with pytest.raises(RuntimeError):
+    server = MagicMock()
+    server.serve = AsyncMock(side_effect=RuntimeError("port in use"))
+    host = _fake_host()
+    monkeypatch.setattr(entry, "load_config", lambda: Config())
+    monkeypatch.setattr(entry._Host, "open", AsyncMock(return_value=host))
+    monkeypatch.setattr(entry.uvicorn, "Config", _fake_uvicorn_config)
+    monkeypatch.setattr(entry.uvicorn, "Server", MagicMock(return_value=server))
+    with pytest.raises(RuntimeError, match="port in use"):
         await main()
+    host.close.assert_awaited_once()
 
 
-async def test_main_quiesces_activity_before_reading_and_bus_close(
+async def test_main_activates_only_running_roles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    order: list[str] = []
-
-    class _OrderBus(_BlockingBus):
-        def __init__(self) -> None:
-            super().__init__()
-            self.closed = asyncio.Event()
-
-        async def run(self) -> None:
-            await self.closed.wait()
-
-        async def close(self) -> None:
-            order.append("bus_close")
-            self.closed.set()
-
-    class _Activity:
-        async def quiesce(self) -> None:
-            order.append("activity_quiesce")
-
-    class _Reading:
-        async def quiesce(self) -> None:
-            order.append("reading_quiesce")
-
-        async def drain(self) -> None:
-            order.append("reading_drain")
-
-    class _FailServer:
-        def __init__(self, config: object) -> None:
-            pass
-
-        async def serve(self) -> None:
-            raise RuntimeError("stop")
-
-    async def context(config: Config) -> _App:
-        app = _app(_OrderBus())
-        app.activity = cast(ActivityFacade, _Activity())
-        app.reading = cast(ReadingFacade, _Reading())
-        return app
-
-    monkeypatch.setattr("nyx.main.load_config", lambda: Config())
-    monkeypatch.setattr("nyx.main.build_app_context", context)
-    monkeypatch.setattr("nyx.main.build_app", _fake_build_app)
-    monkeypatch.setattr("nyx.main.uvicorn.Config", _fake_uvicorn_config)
-    monkeypatch.setattr("nyx.main.uvicorn.Server", _FailServer)
-
+    host = _fake_host()
+    host.records = {"nyx": {"status": "RUNNING"}, "alice": {"status": "FAILED"}}
+    server = MagicMock()
+    server.serve = AsyncMock(side_effect=RuntimeError("stop"))
+    monkeypatch.setattr(entry, "load_config", lambda: Config())
+    monkeypatch.setattr(entry._Host, "open", AsyncMock(return_value=host))
+    monkeypatch.setattr(entry.uvicorn, "Config", _fake_uvicorn_config)
+    monkeypatch.setattr(entry.uvicorn, "Server", MagicMock(return_value=server))
     with pytest.raises(RuntimeError, match="stop"):
         await main()
-
-    assert order == [
-        "activity_quiesce",
-        "reading_quiesce",
-        "reading_drain",
-        "bus_close",
-    ]
-
-
-async def test_main_propagates_tick_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def boom_tick(_app: _App) -> None:
-        raise RuntimeError("tick broken")
-
-    monkeypatch.setattr("nyx.main.load_config", lambda: Config())
-    monkeypatch.setattr("nyx.main.build_app_context", _fake_context)
-    monkeypatch.setattr("nyx.main.build_app", _fake_build_app)
-    monkeypatch.setattr("nyx.main.uvicorn.Config", _fake_uvicorn_config)
-    monkeypatch.setattr("nyx.main.uvicorn.Server", _BlockServer)
-    monkeypatch.setattr("nyx.main._tick_loop", boom_tick)
-
-    with pytest.raises(RuntimeError):
-        await main()
+    host.activate.assert_called_once_with("nyx")
+    host.close.assert_awaited_once()
 
 
 async def test_frozen_parent_pipe_eof_requests_exit_without_blocking_shutdown(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def frozen_config(_path: str) -> Config:
         return Config()
@@ -348,8 +260,7 @@ async def test_frozen_parent_pipe_eof_requests_exit_without_blocking_shutdown(
     monkeypatch.setattr(entry.sys, "stdin", MagicMock(buffer=io.BytesIO()))
     monkeypatch.setenv("NYX_CANON_DIR", str(tmp_path))
     monkeypatch.setattr(entry, "load_config", frozen_config)
-    monkeypatch.setattr(entry, "build_app_context", _fake_context)
-    monkeypatch.setattr(entry, "build_app", _fake_build_app)
+    monkeypatch.setattr(entry._Host, "open", AsyncMock(return_value=_fake_host()))
     monkeypatch.setattr(entry.uvicorn, "Config", _fake_uvicorn_config)
     monkeypatch.setattr(entry.uvicorn, "Server", frozen_server)
     with pytest.MonkeyPatch.context() as watcher:
@@ -372,11 +283,13 @@ async def test_first_tick_starts_activity_not_mutter_or_chat(
         await _tick_loop(app)
 
     assert [e.content["tick_type"] for e in bus.published] == [
-        "schedule_block_start", "desire_eval",
+        "schedule_block_start",
+        "desire_eval",
     ]
 
 
 # ---- _check_reflect：反思检查三分支 ----
+
 
 class _FakeInnerLife:
     def __init__(self, narrative: SelfNarrative) -> None:
@@ -384,6 +297,7 @@ class _FakeInnerLife:
 
     async def get_narrative(self) -> SelfNarrative:
         return self._narrative
+
 
 class _FakeMemory:
     def __init__(
@@ -404,9 +318,13 @@ class _FakeMemory:
 
 def _memory(created_at: float) -> Memory:
     return Memory(
-        id=f"m{created_at}", created_at=created_at, content="c",
+        id=f"m{created_at}",
+        created_at=created_at,
+        content="c",
         kind=MemoryKind.USER_PROFILE,
-        summary="s", freshness=1.0, type=MemoryType.SHORT_TERM,
+        summary="s",
+        freshness=1.0,
+        type=MemoryType.SHORT_TERM,
     )
 
 
@@ -439,7 +357,10 @@ async def test_check_reflect_skips_within_cooldown(
     now = 1_000_000.0
     monkeypatch.setattr("nyx.main.time.time", lambda: now)
     narrative = SelfNarrative(
-        identity="尼克斯", story=[], self_view={}, becoming=[],
+        identity="尼克斯",
+        story=[],
+        self_view={},
+        becoming=[],
         updated_at=now - 100.0,  # 距上次反思仅 100s < 冷却
     )
     memories = [_memory(now - 50.0) for _ in range(_REFLECT_MIN_NEW_MEMORIES)]
@@ -454,7 +375,10 @@ async def test_check_reflect_skips_below_new_memory_threshold(
     now = 1_000_000.0
     monkeypatch.setattr("nyx.main.time.time", lambda: now)
     narrative = SelfNarrative(
-        identity="尼克斯", story=[], self_view={}, becoming=[],
+        identity="尼克斯",
+        story=[],
+        self_view={},
+        becoming=[],
         updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,  # 已过冷却
     )
     memories = [_memory(narrative.updated_at + 100.0) for _ in range(2)]
@@ -467,12 +391,14 @@ async def test_check_reflect_triggers(monkeypatch: pytest.MonkeyPatch) -> None:
     now = 1_000_000.0
     monkeypatch.setattr("nyx.main.time.time", lambda: now)
     narrative = SelfNarrative(
-        identity="尼克斯", story=[], self_view={}, becoming=[],
+        identity="尼克斯",
+        story=[],
+        self_view={},
+        becoming=[],
         updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,  # 已过冷却
     )
     memories = [
-        _memory(narrative.updated_at + 100.0)
-        for _ in range(_REFLECT_MIN_NEW_MEMORIES)
+        _memory(narrative.updated_at + 100.0) for _ in range(_REFLECT_MIN_NEW_MEMORIES)
     ]
     app, _inner_life, bus = _reflect_app(narrative, memories)
     await _check_reflect(app, "cid")
@@ -494,16 +420,16 @@ async def test_check_reflect_uses_first_creation_count(
     now = 1_000_000.0
     monkeypatch.setattr("nyx.main.time.time", lambda: now)
     narrative = SelfNarrative(
-        identity="尼克斯", story=[], self_view={}, becoming=[],
+        identity="尼克斯",
+        story=[],
+        self_view={},
+        becoming=[],
         updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,
     )
     memories = [
-        _memory(narrative.updated_at + 100.0)
-        for _ in range(_REFLECT_MIN_NEW_MEMORIES)
+        _memory(narrative.updated_at + 100.0) for _ in range(_REFLECT_MIN_NEW_MEMORIES)
     ]
-    app, _inner_life, bus = _reflect_app(
-        narrative, memories, count_new_result=0
-    )
+    app, _inner_life, bus = _reflect_app(narrative, memories, count_new_result=0)
 
     await _check_reflect(app, "cid")
 

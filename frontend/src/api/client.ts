@@ -1,3 +1,4 @@
+import { scopedRequest } from "./characterScope";
 import type {
   Activity,
   ActivitySnapshot,
@@ -42,9 +43,17 @@ async function assertOk(res: Response): Promise<void> {
   throw new Error(message || `HTTP ${res.status}`); // 空串兜底：防 UI if(sendError) 误判为无错误
 }
 
+async function checkedFetch(url: string, init?: RequestInit): Promise<Response> {
+  const scoped = scopedRequest(url, init);
+  try {
+    const res = await fetch(scoped.url, scoped.init);
+    await assertOk(res);
+    return res;
+  } finally { scoped.release(); }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
-  await assertOk(res);
+  const res = await checkedFetch(url, init);
   return (await res.json()) as T;
 }
 
@@ -278,7 +287,7 @@ export async function updateUserNote(id: string, content: string): Promise<UserN
 
 // 204 No Content：无 body，走 request() 会 res.json() 抛，这里直接 fetch + assertOk。
 export async function deleteUserNote(id: string): Promise<void> {
-  const res = await fetch(`${BASE_URL}/api/notes/user/${id}`, { method: "DELETE" });
+  const res = await checkedFetch(`${BASE_URL}/api/notes/user/${id}`, { method: "DELETE" });
   await assertOk(res);
 }
 
@@ -305,7 +314,7 @@ export async function createBookmark(
 }
 
 export async function deleteBookmark(id: string): Promise<void> {
-  const res = await fetch(`${BASE_URL}/api/bookmarks/${id}`, {
+  const res = await checkedFetch(`${BASE_URL}/api/bookmarks/${id}`, {
     method: "DELETE",
   });
   await assertOk(res);
@@ -330,4 +339,30 @@ export async function getEvalPrompt(
     `${BASE_URL}/api/eval/${encodeURIComponent(recordId)}/prompt`,
     { cache: "no-store" },
   );
+}
+
+export type CharacterRecord = {
+  id: string; name: string;
+  status: "STARTING" | "RUNNING" | "FAILED" | "STOPPING" | "ARCHIVED";
+  error: string | null; sync_error: string | null; assets: Record<string, string>;
+};
+export type CharacterRegistry = {
+  characters: CharacterRecord[]; current_id: string; selection_revision: number; limit: number;
+};
+export function getCharacters(): Promise<CharacterRegistry> {
+  return request(`${BASE_URL}/api/characters`);
+}
+export function selectCharacter(id: string): Promise<{ current_id: string; selection_revision: number }> {
+  return request(`${BASE_URL}/api/characters/current`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ character_id: id }),
+  });
+}
+export function importCharacter(file: File): Promise<CharacterRecord> {
+  const body = new FormData(); body.append("file", file);
+  return request(`${BASE_URL}/api/characters`, { method: "POST", body });
+}
+export async function changeCharacter(id: string, operation: "unload" | "restore" | "retry-start"): Promise<void> {
+  await checkedFetch(`${BASE_URL}/api/characters/${encodeURIComponent(id)}${operation === "unload" ? "" : "/" + operation}`, {
+    method: operation === "unload" ? "DELETE" : "POST",
+  });
 }

@@ -50,25 +50,27 @@
   ```
 - **原生采样**：Windows Tauri `sample_presence()` 返回系统最后输入距今 `idle_ms` 与真实前台窗口标题；Rust 不应用 30 秒/5 分钟阈值。浏览器降级监听 `keydown`/`mousemove` 推导 idle，标题固定为空。
 - **窗口标题**：只丰富观察内容，不参与 online/busy/away 判定；因此即使前台标题非空，空闲满 5 分钟仍为 away。
-- **节奏**：`usePresence(connection)` 在 open 时每 30 秒采样，focus/恢复可见时也立即采样；presence 或标题变化时调用 `client.postObserve(observation, signal)`，包含采样开始时的 sampled_at。每次 SSE open 重新采样并清空 last-sent；请求 10 秒超时取消，失败后清空 last-sent（响应丢失不能证明服务端未提交），下次采样重试，卸载取消请求。同一 effect 单请求在途，保留最新待上报值，采样序号防乱序；原生非法值走 WebView fallback，标题限制 512 字符。
+- **节奏**：采样独立于当前角色 SSE，每 30 秒采样，focus/恢复可见和 SSE open 时立即采样。每条携带稳定 sample_id、采样时角色 ID/revision 与 sampled_at。单请求在途，10 秒超时取消；失败保留有界 FIFO 队首及相同 sample_id，下次采样先重试，不以新 online 覆盖失败 away。队列最多 64，满时暂停采样；恢复后继续。切换不产生假 away，当前角色 FAILED/断线仍同步后台角色。原生非法值走 WebView fallback，标题限制 512 字符。
 
 ## 3. 数据流（双通道）
 
 | 通道 | 用途 | 端点 |
 |---|---|---|
 | REST | 初始快照 + 发消息 + 历史查询 + 导出 | 15 个端点（tech-ref §4） |
-| SSE | 实时**全部事件** | `GET /api/events` |
+| SSE | 当前角色实时事件 | `GET /api/characters/{id}/events` |
 
 - **SSE 是主通道**：后端广播全部事件，前端按 `event` 类型增量更新面板；REST 只做进页面时的初始快照 + 用户主动动作（发消息/导出）。事件语义见 `docs/specs/04-module-bus-system.md`。
 - SSE `data` 统一形状（tech-ref §4）：
 
 ```json
-{"event_id": "…", "correlation_id": "…", "timestamp": 1789603200.0, **event.content}
+{"character_id": "nyx", "event_id": "…", "correlation_id": "…", "timestamp": 1789603200.0, **event.content}
 ```
 
 - 核心先行用到的端点：`GET /api/state`（`CurrentState` 快照）、`POST /api/chat`（发消息，返回 `{event_id}`，可附 `reply_to` 精确绑定提问，回复走 SSE）、`GET /api/questions/pending` 与提问 pause/resume 端点（恢复聊天提问计时）、`POST /api/observe`（活跃度上报 `{presence, window_title, idle_seconds, sampled_at}`，返回 `{event_id}`，见 §2）、`GET /api/events`（SSE）。
 
 ## 4. 目录结构
+
+角色入口：`api/characterScope.ts` 固定请求归属，`stores/characterStore.ts` 串行切换和重置展示，`components/layout/CharacterSelect.tsx` 与 `CharacterManager.tsx` 提供标题/桌宠选择和设置管理。业务端点自动加角色命名空间；以下旧路径均为业务后缀，`/api/observe` 保持宿主入口。详见 [14-character-cards](../specs/14-character-cards.md)。
 
 ```
 frontend/

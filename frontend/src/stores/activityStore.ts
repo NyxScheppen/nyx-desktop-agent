@@ -1,3 +1,4 @@
+import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import {
   createBookTask,
@@ -44,8 +45,10 @@ export const useActivityStore = create<ActivityStoreState>((set, get) => ({
   resultsLoading: false,
   hasMoreResults: false,
   refresh: async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
     const generation = ++resultsGeneration;
-    set({ error: null, resultsLoading: true });
+    commit({ error: null, resultsLoading: true });
     try {
       const [data, results, tasks] = await Promise.all([
         getActivity(),
@@ -56,8 +59,9 @@ export const useActivityStore = create<ActivityStoreState>((set, get) => ({
         }),
         getTasks(),
       ]);
+      if (!isScopeCurrent(scope)) return;
       if (generation !== resultsGeneration) return;
-      set({
+      commit({
         data,
         results: results.slice(0, RESULTS_PAGE_SIZE),
         tasks,
@@ -65,46 +69,55 @@ export const useActivityStore = create<ActivityStoreState>((set, get) => ({
         resultsLoading: false,
       });
     } catch (err) {
+      if (!isScopeCurrent(scope)) return;
       if (generation !== resultsGeneration) return;
-      set({
+      commit({
         error: err instanceof Error ? err.message : String(err),
         resultsLoading: false,
       });
     }
   },
   loadMoreResults: async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
     const { results, resultsLoading, hasMoreResults } = get();
     if (results === null || resultsLoading || !hasMoreResults) return;
     const generation = resultsGeneration;
-    set({ resultsLoading: true, error: null });
+    commit({ resultsLoading: true, error: null });
     try {
       const next = await getActivityResults({
         limit: RESULTS_PAGE_SIZE + 1,
         offset: results.length,
         activity_type: "creation",
       });
+      if (!isScopeCurrent(scope)) return;
       if (generation !== resultsGeneration || get().results !== results) return;
-      set({
+      commit({
         results: [...results, ...next.slice(0, RESULTS_PAGE_SIZE)],
         hasMoreResults: next.length > RESULTS_PAGE_SIZE,
         resultsLoading: false,
       });
     } catch (err) {
+      if (!isScopeCurrent(scope)) return;
       if (generation !== resultsGeneration || get().results !== results) return;
-      set({
+      commit({
         error: err instanceof Error ? err.message : String(err),
         resultsLoading: false,
       });
     }
   },
   createWebTask: async (url) => {
-    set({ creatingTask: true, taskError: null });
+      const scope = captureScope();
+      const commit = scopedSetter(set);
+    commit({ creatingTask: true, taskError: null });
     try {
       const task = await createWebTask(url);
-      set({ tasks: withTask(get().tasks, task), creatingTask: false });
+      if (!isScopeCurrent(scope)) return false;
+      commit({ tasks: withTask(get().tasks, task), creatingTask: false });
       return true;
     } catch (err) {
-      set({
+      if (!isScopeCurrent(scope)) return false;
+      commit({
         taskError: err instanceof Error ? err.message : String(err),
         creatingTask: false,
       });
@@ -112,13 +125,17 @@ export const useActivityStore = create<ActivityStoreState>((set, get) => ({
     }
   },
   createBookTask: async (bookId, targetParagraph) => {
-    set({ creatingTask: true, taskError: null });
+      const scope = captureScope();
+      const commit = scopedSetter(set);
+    commit({ creatingTask: true, taskError: null });
     try {
       const task = await createBookTask(bookId, targetParagraph);
-      set({ tasks: withTask(get().tasks, task), creatingTask: false });
+      if (!isScopeCurrent(scope)) return false;
+      commit({ tasks: withTask(get().tasks, task), creatingTask: false });
       return true;
     } catch (err) {
-      set({
+      if (!isScopeCurrent(scope)) return false;
+      commit({
         taskError: err instanceof Error ? err.message : String(err),
         creatingTask: false,
       });

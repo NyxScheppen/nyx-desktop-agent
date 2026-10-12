@@ -7,19 +7,20 @@
 
 ## 1. 端点与帧格式
 
-- 端点：`GET /api/events`（SSE，tech-ref §4）。
+- 端点：`GET /api/characters/{id}/events`（SSE，tech-ref §4）；旧 `/api/events` 固定为 Nyx 兼容入口。
 - 每个事件一条；`event:` 行 = `EventType` 成员值（小写 snake_case，如 `speak` / `emotion_update` / `activity_end`）。
-- 每帧同时发送标准 `id: <event_id>`；浏览器重连时会带 `Last-Event-ID`，后端据此回放断线期间的事件。
-- `data:` 行 = **`event.content` 展开 + `event_id` + `correlation_id` + `timestamp`**：
+- 每帧同时发送标准 `id: <character_id>:<event_id>`；浏览器重连时会带 `Last-Event-ID`，后端据此回放断线期间的事件。跨角色游标返回 409，旧 Nyx 别名同样使用组合游标。
+- `data:` 行 = **`event.content` 展开 + `character_id` + `event_id` + `correlation_id` + `timestamp`**：
 
 ```
 event: speak
-data: {"event_id":"…","correlation_id":"…","timestamp":1789603200.0,"content":"…"}
+id: nyx:…
+data: {"character_id":"nyx","event_id":"…","correlation_id":"…","timestamp":1789603200.0,"content":"…"}
 ```
 
-- `data` 的键 = `{event_id, correlation_id, timestamp}` + `event.content` 的键。`timestamp`
+- `data` 的键 = `{character_id, event_id, correlation_id, timestamp}` + `event.content` 的键。`timestamp`
   是后端 `Event.timestamp` 的 epoch 秒，实时消息与事件日志使用同一时间源；禁止用浏览器收到
-  帧的时刻替代。`content` 的键不得与三个公共键冲突。
+  帧的时刻替代。`content` 的键不得与四个公共键冲突。
 - `timestamp` 是必填线协议字段，前后端必须同批发布；新前端不会接收缺少该字段的旧后端帧。
 - 各事件 `content` 形状由生产方 spec 定义，核心先行只依赖四个：
   - `speak` / `ask` / `mutter` / `initiate_chat` → `{content: string}`
@@ -34,6 +35,7 @@ data: {"event_id":"…","correlation_id":"…","timestamp":1789603200.0,"content
 
 /** SSE 帧：按 event 值判别联合——键名错位在编译期即拦。 */
 type SseBase = {
+  character_id?: string;   // 宿主必发；独立单角色测试辅助帧兼容可选
   event_id: string;        // 事件唯一 id
   correlation_id: string;  // 溯源：上游 correlation_id（根事件 = 自身 id）
   timestamp: number;       // Event.timestamp，epoch 秒
@@ -89,13 +91,13 @@ type ConnectionState = "connecting" | "open" | "closed";
 
 ```typescript
 // hooks/useSSE.ts
-function useSSE(dispatch: (e: SseEvent) => void): ConnectionState;
+function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string; generation: number } | null): ConnectionState;
 ```
 
 - **入参**：`dispatch` —— 每个解析成功的帧调用一次，由调用方（App 层）决定路由到哪个 store（分发表见 §4）。
 - **返回**：`ConnectionState`，供 App 显示连接状态（右上角「已连接/重连中」）。
 - **行为**：
-  1. `useEffect` 里 `new EventSource(BASE_URL + "/api/events")`，`BASE_URL` 来自统一常量（空 = 相对路径，走 Vite proxy 同源转发到后端 8000）。
+  1. `useEffect` 为 selection 建立角色命名空间 EventSource；selection=null 不连接，省略只用于旧辅助调用。`BASE_URL` 来自统一常量。选择 ID 或本地 generation 改变时关闭旧连接；每个回调核对原 scope，帧的 character_id 也必须匹配。
   2. 对 25 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验公共字段和事件载荷 → 按连接内 `event_id` 去重 → 拼 `SseEvent` → `dispatch`。
   3. `onopen` / `onerror`：更新 `ConnectionState`。`EventSource` 浏览器原生自动重连（`onerror` 时置 `connecting`），后端重启后自动恢复，无需手写重连循环。
   4. cleanup：`source.close()`（防重复挂载泄漏）。

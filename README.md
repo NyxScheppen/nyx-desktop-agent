@@ -19,6 +19,13 @@
 
 ## ✨ 功能特性
 
+### 🎭 角色卡与多角色陪伴
+
+- **最多四个角色同时运行**（包含默认 Nyx）：标题区或桌宠菜单即时切换；切走后仍继续自己的活动、欲望和反思。
+- **独立存档**：聊天、记忆、人格成长、任务、书库和阅读进度按角色保存。用户操作交给当前角色，已受理工作保持原归属。
+- **角色管理**：设置中导入原生 `.nyxcard` / `.zip`，查看启动错误、重试、卸载和恢复；卸载保留存档。
+- **观察边界**：共享在线/忙碌/离开状态；窗口标题、屏幕摘要和新的主动表达仅属于当前角色。
+
 ### 💬 对话与表达
 
 - **快慢双通道回复**：快通道即时响应、只思考一轮；慢通道完整拼装——回溯上下文、检索相关记忆、生成场景化记忆，再经多轮「内心 → 说出口」递进续写。
@@ -99,6 +106,8 @@ flowchart TB
 
 六个 Facade 不直接互调，全部通过 `EventBus` 解耦；三个外部输入（用户消息、时钟 tick、观察状态）经组合根 `publish` 进总线，产出统一广播给前端。
 
+上图表示单个角色的运行框架。宿主管理当前选择、角色生命周期和共享观察；每个角色拥有独立 SQLite、EventBus、Facade 和工作目录，共享模型资源。重试与故障恢复按角色处理。
+
 ## 🚀 快速开始
 
 ### 环境
@@ -162,7 +171,7 @@ cd frontend
 npm run tauri build
 ```
 
-构建会下载官方本地 embedding 模型，并冻结 Python 后端、公开 `config.yaml` 和 `nyx/prompts/`，不包含 `.env`。桌面包只启动并管理自己的后端，API Key 由运行环境提供；检测到旧 Nyx 启动器时会先结束其进程树再接管，未知程序占用 `8000` 时拒绝启动。sidecar 启动后必须通过固定 Nyx 服务标识与本次随机 nonce 的 `/api/ready` 身份握手，不能仅凭端口可连接确认后端。关闭桌面应用会通过 stdin 管道通知后端退出，超时后仅回收自己启动的进程。各平台打包 REST/SSE smoke 验收未全部完成，不将开发验收等同于可发布。
+构建会下载官方本地 embedding 模型，并冻结 Python 后端、公开 `config.yaml`、`nyx/prompts/` 和内置 `nyx/cards/`，不包含 `.env`。桌面包只启动并管理自己的后端，API Key 由运行环境提供；检测到旧 Nyx 启动器时会先结束其进程树再接管，未知程序占用 `8000` 时拒绝启动。sidecar 启动后必须通过固定 Nyx 服务标识与本次随机 nonce 的 `/api/ready` 身份握手，不能仅凭端口可连接确认后端。关闭桌面应用会通过 stdin 管道通知后端退出，超时后仅回收自己启动的进程。各平台打包 REST/SSE smoke 验收未全部完成，不将开发验收等同于可发布。
 
 ### 后端
 
@@ -188,13 +197,21 @@ npm run tauri dev  # 桌面壳（Tauri v2）
 
 `config.yaml` 按块组织（`llm` / `embedding` / `memory` / `desire` / `activity` / `expression` / `exploration` / `vision`），Facade 从配置装配，改配置不用改代码。
 
+### 制作与导入角色卡
+
+复制 `nyx/cards/nyx/` 作为模板，修改 `card.yaml` 的 `id`、`name`、初始人格及 `identity`，并改写 `canon.md`。ID 必须是稳定的小写标识，不能与已有角色重复。长期欲望可设为 `long_term_desires: []`；不使用图片时设 `assets: {}` 并移除资产目录，界面会显示角色名称占位。
+
+将这些文件直接压到 ZIP 根目录（不要多套一层文件夹），命名为 `.nyxcard` 或 `.zip`，在设置的「角色管理」导入。必需文件为 `card.yaml` 和非空 `canon.md`；`character-reference.md`、`ask.md`、`assets/` 可选。压缩包和解压总量分别限 50 MiB；首版不支持 SillyTavern 卡、原地更新卡片或复制存档。字段与校验规则见 [角色卡契约](docs/specs/14-character-cards.md)。
+
+默认 Nyx 保留原数据库和工作目录；新角色保存到 `data/characters/<id>/`，宿主索引为 `data/characters/host.db`。卸载只停止运行并释放名额，再次恢复沿用存档；初始人格和欲望只写入一次，不覆盖成长。
+
 ## 🛠 技术栈
 
 | 层 | 技术 |
 |---|---|
 | 后端 | Python 3.11+ · FastAPI · LangGraph · SQLite（aiosqlite）· sentence-transformers |
 | 前端 | React 18 · TypeScript（strict）· Zustand · Vite · Tauri v2 |
-| 质检 | ruff · pyright · pytest（1060 项通过）· Vitest（305 项通过） |
+| 质检 | ruff · pyright · pytest（1248 项通过，1 项跳过）· Vitest（336 项通过） |
 
 ## 📖 文档
 

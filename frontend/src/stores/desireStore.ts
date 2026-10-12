@@ -1,3 +1,4 @@
+import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import { getDesires } from "../api/client";
 import type { DesireState } from "../types/api";
@@ -15,14 +16,18 @@ export const useDesireStore = create<DesireStoreState>((set) => {
     data: null,
     error: null,
     refresh: async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       const request = ++requestGeneration;
-      set({ error: null });
+      commit({ error: null });
       try {
         const data = await getDesires();
-        if (request === requestGeneration) set({ data });
+      if (!isScopeCurrent(scope)) return;
+        if (request === requestGeneration) commit({ data });
       } catch (err) {
+      if (!isScopeCurrent(scope)) return;
         if (request === requestGeneration) {
-          set({ error: err instanceof Error ? err.message : String(err) });
+          commit({ error: err instanceof Error ? err.message : String(err) });
         }
       }
     },

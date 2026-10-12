@@ -12,13 +12,15 @@
   `nyx/expression/prompt.py`、`nyx/expression/classifier.py`、`nyx/expression/mutter.py`、
   `nyx/expression/store.py`、`nyx/reading/companions.py`、`nyx/reading/facade.py`、
   `nyx/runtime.py`、`nyx/main.py`、`nyx/app_context.py`、`nyx/types.py`、`nyx/enums.py`、
-  `nyx/db.py`、`nyx/prompts/canon.md`、`nyx/prompts/character-reference.md`、
-  `nyx/prompts/ask.md`、`nyx/prompts/knowledge-boundary.md`
+  `nyx/db.py`、`nyx/cards/nyx/canon.md`、`nyx/cards/nyx/character-reference.md`、
+  `nyx/cards/nyx/ask.md`、`nyx/prompts/knowledge-boundary.md`
 - **联动文档**：04-module-bus-system、06-memory-system、07-desire、08-inner-life、
   09-activity、12-reading-system、10-eval、docs/tech-reference.md、
   docs/facts/expression-system-facts.md
 
 ## 系统边界
+
+每角色独立保存表达历史、attempt、等待计时、回复 fallback 与 eval。canon、人物参考和 ask 来自所属卡片；历史助手标签使用中性的“你：”，避免把新角色叫成 Nyx。主动搭话、碎碎念、陪读主动提问在实际 SDK 准入（模板路径在提交前）检查当前资格；排队后切走则跳过且不计欲望失败，已开始的产出留在原角色。普通已受理回复不因切换取消。角色选择和前端代数见 [14](14-character-cards.md)。
 
 - `ExpressionFacade` 是表达侧唯一门面，负责回复、主动搭话、碎碎念、交互等待和表达历史。
 - `pipeline.py` 负责回复图；prompt/classifier/mutter 模块中的纯函数不访问数据库、不调用
@@ -122,8 +124,7 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
   都只是倾向，不是硬规则。情感状态同时展示英文枚举和中文含义（如 `happy（开心）`）。
 - think 按角色表现生成详细的内心推理、依据与犹豫；回复节点的 user prompt 只保留 JSON
   输出契约，不重复角色行为说明。
-- 小说完整人物设定由组合根从独立 `nyx/prompts/character-reference.md` 注入，作为外部参考，
-  不能被当作 Nyx 的现实经历或记忆；`canon.md` 只保留人格、身份及表达规则。
+- 人物参考由组合根从所属卡片可选的 `character-reference.md` 注入（默认 `nyx/cards/nyx/character-reference.md`），作为外部参考，不能被当作角色的现实经历或记忆；`canon.md` 保留人格、身份及表达风格，输出结构和通用知识边界留在框架。
 - 走神指导由 `build_system_prompt(..., allow_wander=True)` 显式加入；普通回复不注入，
   目前仅碎碎念走神路径开启，不设置 prompt 概率规则。
 - `knowledge_boundary` 由组合根读取 `nyx/prompts/knowledge-boundary.md`，不由 LLM 改写。它要求

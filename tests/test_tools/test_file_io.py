@@ -1,9 +1,36 @@
+import asyncio
+import threading
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 from nyx.tools.file_io import file_io
+
+
+async def test_cancel_write_waits_for_actual_disk_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, release = threading.Event(), threading.Event()
+    original = Path.write_text
+
+    def slow_write(path: Path, data: str, **kwargs: object) -> int:
+        started.set()
+        release.wait(5)
+        return original(path, data, encoding="utf-8")
+
+    monkeypatch.setattr(Path, "write_text", slow_write)
+    task = asyncio.create_task(file_io("write", "late.txt", "old", tmp_path))
+    try:
+        await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert (tmp_path / "late.txt").read_text(encoding="utf-8") == "old"
 
 
 class _TrackingReader(BytesIO):
@@ -123,3 +150,29 @@ async def test_list(tmp_path: Path) -> None:
 async def test_unknown_action() -> None:
     with pytest.raises(ValueError):
         await file_io("delete", "x")
+
+
+def test_process_shutdown_finishes_thread_write(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    script = """
+import asyncio, time
+from pathlib import Path
+from nyx.tools.file_io import file_io
+original = Path.write_text
+def slow(self, *args, **kwargs):
+    time.sleep(0.2)
+    return original(self, *args, **kwargs)
+Path.write_text = slow
+async def main():
+    root = Path(__import__('sys').argv[1])
+    asyncio.create_task(file_io('write', 'done.txt', 'saved', write_root=root))
+    await asyncio.sleep(0.05)
+asyncio.run(main())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)], timeout=5, capture_output=True
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert (tmp_path / "done.txt").read_text(encoding="utf-8") == "saved"

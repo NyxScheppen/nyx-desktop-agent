@@ -4,6 +4,7 @@
 
 事件统一 publish，LLM 产出统一 evaluate。
 """
+
 import random
 import time
 from collections import deque
@@ -44,7 +45,7 @@ from nyx.expression.prompt import (
 )
 from nyx.expression.store import ExpressionInteractionStore
 from nyx.inner_life.facade import InnerLifeFacade
-from nyx.llm.client import LlmClient
+from nyx.llm.client import InitiationSkipped, LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
@@ -80,9 +81,7 @@ class ExpressionFacade:
         claim_return: Callable[[], dict[str, float] | None] | None = None,
         finish_return: Callable[[dict[str, float] | None], None] | None = None,
         release_return: Callable[[dict[str, float] | None], None] | None = None,
-        reading_context_reader: (
-            Callable[[str, str], Awaitable[str]] | None
-        ) = None,
+        reading_context_reader: (Callable[[str, str], Awaitable[str]] | None) = None,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -155,9 +154,7 @@ class ExpressionFacade:
             created_at=now,
             expires_at=now + self._config.ask_timeout,
         )
-        event = _ask_event(
-            text, attempt_id, correlation_id, kind, attempt.expires_at
-        )
+        event = _ask_event(text, attempt_id, correlation_id, kind, attempt.expires_at)
         await self._commit_attempt_events(
             attempt,
             [*(preceding_events or []), event, *(followup_events or [])],
@@ -167,14 +164,18 @@ class ExpressionFacade:
         return attempt_id
 
     async def _commit_attempt_event(
-        self, attempt: InteractionAttempt, event: Event,
+        self,
+        attempt: InteractionAttempt,
+        event: Event,
         claimed_return: dict[str, float] | None = None,
     ) -> None:
         """Commit an interaction row and its event as one local transaction."""
         await self._commit_attempt_events(attempt, [event], claimed_return)
 
     async def _commit_attempt_events(
-        self, attempt: InteractionAttempt, events: list[Event],
+        self,
+        attempt: InteractionAttempt,
+        events: list[Event],
         claimed_return: dict[str, float] | None = None,
         answered_attempt: InteractionAttempt | None = None,
     ) -> None:
@@ -209,9 +210,7 @@ class ExpressionFacade:
                     try:
                         await self._bus.append_in_transaction(event)
                     finally:
-                        appended_count += (
-                            self._bus.persisted_count - persisted_before
-                        )
+                        appended_count += self._bus.persisted_count - persisted_before
         except BaseException as error:
             try:
                 committed = await self._bus.is_durable(events[0].id)
@@ -272,9 +271,7 @@ class ExpressionFacade:
                     try:
                         await self._bus.append_in_transaction(event)
                     finally:
-                        appended_count += (
-                            self._bus.persisted_count - persisted_before
-                        )
+                        appended_count += self._bus.persisted_count - persisted_before
         except BaseException as error:
             try:
                 committed = await self._bus.is_durable(terminal.id)
@@ -415,9 +412,7 @@ class ExpressionFacade:
             if not isinstance(content, str):
                 continue
             return (
-                Message(
-                    role="user", content=message, timestamp=user_event.timestamp
-                ),
+                Message(role="user", content=message, timestamp=user_event.timestamp),
                 Message(role="nyx", content=content, timestamp=terminal.timestamp),
             )
         return None
@@ -502,7 +497,7 @@ class ExpressionFacade:
                 "mode": ContextMode.FAST,
                 # 朴素回溯最近 max_context_len 条（快通道用，不含当前消息）；
                 # 慢通道在 assemble 重截断。
-                "context": list(self._history)[-self._config.max_context_len:],
+                "context": list(self._history)[-self._config.max_context_len :],
                 "memories": [],
                 "facts": [],
                 "state": state,
@@ -535,9 +530,7 @@ class ExpressionFacade:
                 self._release_return_claim(claimed_return)
         except BaseException:
             if answered is not None and self._interaction_store is not None:
-                await self._interaction_store.release_claim(
-                    answered.id, correlation_id
-                )
+                await self._interaction_store.release_claim(answered.id, correlation_id)
             self._release_return_claim(claimed_return)
             raise
 
@@ -621,6 +614,9 @@ class ExpressionFacade:
                 self._pending_chat_desire_id = desire.id
                 self._chat_at = time.time()
             return True
+        except InitiationSkipped:
+            self._release_return_claim(claimed_return)
+            return False
         except BaseException:
             self._release_return_claim(claimed_return)
             raise
@@ -637,6 +633,7 @@ class ExpressionFacade:
         if random.random() >= _MUTTER_RATE:
             return
         claimed_return: dict[str, float] | None = None
+        generated = False
         try:
             activity_context = await self._activity_context()
             if random.random() < _LLM_MUTTER_RATE:
@@ -647,6 +644,7 @@ class ExpressionFacade:
                 text = await self._mutter_wander(
                     state, correlation_id, temporal_context, activity_context
                 )
+                generated = True
                 if text is None:
                     self._release_return_claim(claimed_return)
                     claimed_return = None
@@ -659,6 +657,8 @@ class ExpressionFacade:
                 text = await self._mutter_text(category, state)
             if text is None or text in self._mutter_seen:
                 self._release_return_claim(claimed_return)
+                return
+            if not generated and not self._llm.can_initiate():
                 return
             event = internal_text_event(EventType.MUTTER, text, correlation_id)
             try:
@@ -674,6 +674,8 @@ class ExpressionFacade:
                 raise
             self._mutter_seen.append(text)
             self._finish_return_claim(claimed_return)
+        except InitiationSkipped:
+            self._release_return_claim(claimed_return)
         except BaseException:
             self._release_return_claim(claimed_return)
             raise

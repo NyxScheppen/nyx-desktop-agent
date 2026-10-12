@@ -6,6 +6,8 @@
 
 ## 模块与职责
 
+角色身份、canon、可选 reference 和 ask 方向来自角色卡；内置 Nyx 位于 `nyx/cards/nyx/`。每个角色独立等待 attempt、回复历史、LLM FIFO 锁和 eval；当前角色资格在实际开始主动表达前复查，跳过不计欲望失败。已开始的表达完成到原角色，历史 assistant 使用中性“你”标签。结构/工具协议/知识边界仍由框架提供。
+
 - `nyx/expression/facade.py`
   - `ExpressionFacade` 是表达系统门面，编排普通回复、主动搭话、碎碎念、交互等待和
     读书主动产出的历史接线。

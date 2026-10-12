@@ -23,6 +23,54 @@ from nyx.llm.client import (
 from nyx.types import LLMOutput
 
 
+async def test_role_lock_serializes_one_role_without_blocking_another() -> None:
+    entered: list[str] = []
+    release = asyncio.Event()
+
+    class Controlled(FakeChatModel):
+        def __init__(self, response: AIMessage) -> None:
+            super().__init__(response)
+
+        async def ainvoke(
+            self,
+            input: Any,
+            config: Any = None,
+            *,
+            stop: list[str] | None = None,
+            **kwargs: Any,
+        ) -> AIMessage:
+            entered.append(input[0].content)
+            await release.wait()
+            return AIMessage(content="ok")
+
+    shared = LlmClient(Controlled(AIMessage(content="ok")), "fake")
+    a, b = shared.fork(), shared.fork()
+
+    async def call(client: LlmClient, text: str) -> LLMOutput:
+        return await client.complete(
+            [{"role": "user", "content": text}],
+            module="test",
+            output_type="reply",
+            correlation_id=text,
+        )
+
+    tasks = [
+        asyncio.create_task(call(a, "a1")),
+        asyncio.create_task(call(a, "a2")),
+        asyncio.create_task(call(b, "b")),
+    ]
+    try:
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert entered == ["a1", "b"]
+        release.set()
+        await asyncio.gather(*tasks)
+        assert entered == ["a1", "b", "a2"]
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 class FakeChatModel(BaseChatModel):
     """记录调用、返回预设响应的 fake model，测试不触网。"""
 
@@ -93,7 +141,9 @@ def test_extract_tokens_response_metadata_fallback() -> None:
         content="x",
         response_metadata={
             "token_usage": {
-                "prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15,
+                "prompt_tokens": 11,
+                "completion_tokens": 4,
+                "total_tokens": 15,
             }
         },
     )
@@ -171,7 +221,9 @@ def test_complete_messages_passthrough() -> None:
         client.complete(messages, module="t", output_type="o", correlation_id="c")
     )
     assert [type(message) for message in fake._recorded_messages] == [
-        SystemMessage, HumanMessage, AIMessage,
+        SystemMessage,
+        HumanMessage,
+        AIMessage,
     ]
     assert [message.content for message in fake._recorded_messages] == ["sys", "q", "a"]
 
@@ -239,7 +291,7 @@ def test_complete_extracts_tokens_and_call_id() -> None:
     out = _complete(client)
     assert out.prompt_tokens == 5
     assert out.completion_tokens == 3
-    assert out.call_id != ""           # 每次调用生成唯一 id
+    assert out.call_id != ""  # 每次调用生成唯一 id
 
 
 def test_complete_no_usage_zero_tokens() -> None:
@@ -248,7 +300,7 @@ def test_complete_no_usage_zero_tokens() -> None:
     assert out.prompt_tokens == 0
     assert out.completion_tokens == 0
     assert out.tool_calls == []
-    assert out.call_id != ""           # 无 usage 仍生成 call_id
+    assert out.call_id != ""  # 无 usage 仍生成 call_id
 
 
 # ---- from_config ----
@@ -256,7 +308,9 @@ def test_complete_no_usage_zero_tokens() -> None:
 
 def test_resolve_base_url() -> None:
     # 显式覆盖优先 / 已知 provider 命中 / 未知 provider 返回 None
-    assert resolve_base_url("deepseek", "http://localhost:1/v1") == "http://localhost:1/v1"
+    assert (
+        resolve_base_url("deepseek", "http://localhost:1/v1") == "http://localhost:1/v1"
+    )
     assert resolve_base_url("openai", None) == "https://api.openai.com/v1"
     assert resolve_base_url("claude", None) is None
 
@@ -291,9 +345,7 @@ def test_from_config_known_provider(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_from_config_base_url_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    client = LlmClient.from_config(
-        LlmConfig(base_url="http://localhost:11434/v1")
-    )
+    client = LlmClient.from_config(LlmConfig(base_url="http://localhost:11434/v1"))
     assert client._model_name == "deepseek-chat"
 
 
@@ -330,3 +382,27 @@ def test_from_config_passes_temperature(
     assert captured == {}
     client._get_model()
     assert captured["temperature"] == 1.2
+
+
+async def test_queued_initiation_checks_foreground_when_lock_is_acquired() -> None:
+    import asyncio
+
+    from nyx.llm.client import InitiationSkipped
+
+    client = LlmClient(None, "fake")
+    selected = True
+    client.can_initiate = lambda: selected
+    await client._call_lock.acquire()
+    task = asyncio.create_task(
+        client.complete(
+            [],
+            module="expression",
+            output_type="initiate_chat",
+            correlation_id="a",
+        )
+    )
+    await asyncio.sleep(0)
+    selected = False
+    client._call_lock.release()
+    with pytest.raises(InitiationSkipped):
+        await task

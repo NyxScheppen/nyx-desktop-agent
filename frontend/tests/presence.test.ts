@@ -119,7 +119,7 @@ describe("usePresence", () => {
     expect(postObserve).toHaveBeenCalledTimes(2);
   });
 
-  it("single-flight 在旧请求完成后只发送最新待上报快照", async () => {
+  it("single-flight 按 FIFO 保留每次状态迁移", async () => {
     let finishFirst!: (value: { event_id: string }) => void;
     vi.mocked(postObserve)
       .mockReturnValueOnce(new Promise((resolve) => {
@@ -141,7 +141,8 @@ describe("usePresence", () => {
       await Promise.resolve();
     });
 
-    expect(postObserve).toHaveBeenCalledTimes(2);
+    expect(postObserve).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(postObserve).mock.calls[1][0].presence).toBe("busy");
     expect(postObserve).toHaveBeenLastCalledWith(expect.objectContaining({ presence: "away", window_title: "C", idle_seconds: 300 }), expect.any(AbortSignal));
   });
 
@@ -176,6 +177,24 @@ describe("usePresence", () => {
     rerender({ status: "open" });
     await act(async () => Promise.resolve());
     expect(vi.mocked(postObserve).mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it("当前角色 SSE 断开时仍向宿主报告完整在线迁移", async () => {
+    let idle = 0;
+    vi.mocked(invoke).mockImplementation(async () => [idle, "Editor"]);
+    const { rerender } = renderHook(
+      ({ status }: { status: ConnectionState }) => usePresence(status),
+      { initialProps: { status: "open" as ConnectionState } },
+    );
+    await act(async () => Promise.resolve());
+    rerender({ status: "connecting" });
+    await act(async () => Promise.resolve());
+    idle = 400_000;
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    idle = 0;
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(vi.mocked(postObserve).mock.calls.map(([body]) => body.presence))
+      .toEqual(["online", "away", "online"]);
   });
 
   it("原生采样乱序完成时丢弃旧结果", async () => {
@@ -267,7 +286,9 @@ describe("usePresence", () => {
     await act(async () => { fireEvent.focus(window); });
     await act(async () => { failB(new Error("response lost after server committed")); });
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
-    expect(postObserve).toHaveBeenCalledTimes(3);
-    expect(vi.mocked(postObserve).mock.calls[2][0].window_title).toBe("A");
+    expect(postObserve).toHaveBeenCalledTimes(4);
+    const calls = vi.mocked(postObserve).mock.calls;
+    expect(calls[2][0].sample_id).toBe(calls[1][0].sample_id);
+    expect(calls[3][0].window_title).toBe("A");
   });
 });

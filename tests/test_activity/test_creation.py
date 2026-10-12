@@ -135,3 +135,10 @@ def test_build_creation_system_injects_state_and_voice() -> None:
     assert "输出前" in sys
     assert "[创作要求]" in sys
     assert "按 JSON 输出" in sys
+
+
+def test_creation_uses_card_voice_instead_of_fixed_nyx_identity() -> None:
+    prompt = build_creation_system("你是 Alice，说话直接活泼。", _state())
+    assert "Alice，说话直接活泼" in prompt
+    assert "尼克斯" not in prompt
+    assert "羞涩" not in prompt

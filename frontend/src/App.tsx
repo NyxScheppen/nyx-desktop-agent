@@ -1,3 +1,5 @@
+import { useCharacterStore } from "./stores/characterStore";
+import CharacterSelect from "./components/layout/CharacterSelect";
 import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import ChatInput from "./components/chat/ChatInput";
@@ -45,7 +47,18 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
 // （RightDock 切换中间视图：内在状态 / 欲望 / 活动 / 创作 / 记忆 / 读书 / 评估）+ 设置弹层。
 // useSSE 只挂一次；可拖拽头像圆圈（Avatar）常驻窗口右下，碎碎念气泡随它头顶冒出。
 export default function App() {
-  const status = useSSE(dispatchEvent);
+  const registry = useCharacterStore((s) => s.registry);
+  const generation = useCharacterStore((s) => s.generation);
+  const switching = useCharacterStore((s) => s.switching);
+  const characterError = useCharacterStore((s) => s.error);
+  const selected = registry?.characters.find((role) => role.id === registry.current_id);
+  const ready = selected?.status === "RUNNING" && !switching;
+  const status = useSSE(dispatchEvent, ready && selected ? { id: selected.id, generation } : null);
+  useEffect(() => { void useCharacterStore.getState().initialize(); }, []);
+  useEffect(() => {
+    const timer = setInterval(() => void useCharacterStore.getState().refresh(), 2000);
+    return () => clearInterval(timer);
+  }, []);
   const refreshState = useInnerLifeStore((s) => s.refreshState);
   const refreshActivity = useActivityStore((s) => s.refresh);
   const refreshDesires = useDesireStore((s) => s.refresh);
@@ -90,14 +103,14 @@ export default function App() {
   // SSE 恢复连接后重拉快照 + 回填聊天历史（断线期间 emotion_update/消息可能丢失；
   // loadHistory 按 event_id 去重，重复调用不产生重复气泡）。
   useEffect(() => {
-    if (status === "open") {
+    if (status === "open" && ready) {
       refreshState();
       void refreshActivity();
       void refreshDesires();
       void refreshMemories();
       void loadHistory();
     }
-  }, [status, refreshState, refreshActivity, refreshDesires, refreshMemories, loadHistory]);
+  }, [status, generation, ready, refreshState, refreshActivity, refreshDesires, refreshMemories, loadHistory]);
 
   // 背景：有图以图铺底（cover）；无图有色调作纯色；默认羊皮纸（--parchment）。
   const bgStyle: CSSProperties = {};
@@ -139,7 +152,7 @@ export default function App() {
       {desktopMode === "full" && (
         <>
           <header className="app-topbar">
-            <span className="scene-title">✦ Nyx ✦</span>
+            <span className="scene-title">✦ {selected?.name ?? "Nyx Agent"} ✦ <CharacterSelect /></span>
             <div className="topbar-right">
               <time className="current-time" dateTime={now.toISOString()}>
                 {formatCurrentTime(now)}
@@ -148,7 +161,7 @@ export default function App() {
             </div>
           </header>
 
-          <main className="game-shell" style={shellStyle}>
+          {ready && <main key={generation} className="game-shell" style={shellStyle}>
             <div className="left-dock">
               <StatusBar />
               <MessageList messages={messages} now={now} />
@@ -168,13 +181,18 @@ export default function App() {
               </section>
             </div>
             <RightDock view={view} onSwitch={setView} onOpenSettings={() => setSettingsOpen(true)} />
-          </main>
+          </main>}
         </>
       )}
 
+      {!ready && <div role="status">
+        <CharacterSelect />
+        <p>{characterError ?? selected?.error ?? (switching ? "正在切换角色…" : "等待角色启动…")}</p>
+        <button onClick={() => setSettingsOpen(true)}>角色管理与设置</button>
+      </div>}
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
-      {desktopMode === "pet" ? (
-        <PetShell
+      {ready && (desktopMode === "pet" ? (
+        <PetShell key={generation}
           night={timePhase === "night"}
           onExpand={enterFullDesktop}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -185,7 +203,7 @@ export default function App() {
           useNativeWindowDrag={false}
           onDoubleClick={enterPetMode}
         />
-      )}
+      ))}
     </div>
   );
 }

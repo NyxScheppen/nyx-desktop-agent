@@ -1,3 +1,4 @@
+import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import {
   createElement,
   Fragment,
@@ -361,6 +362,7 @@ export default function ReaderView() {
 
   const saveHighlight = async () => {
     if (selection === null || bookId === null) return;
+    const scope = captureScope();
     const saved = await addNote({
       book_id: bookId,
       paragraph_id: selection.paragraphId,
@@ -369,7 +371,7 @@ export default function ReaderView() {
       selection_start: selection.start,
       selection_end: selection.end,
     });
-    if (saved) {
+    if (saved && isScopeCurrent(scope)) {
       setSelection(null);
       window.getSelection()?.removeAllRanges();
     }

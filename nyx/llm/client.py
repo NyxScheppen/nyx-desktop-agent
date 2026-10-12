@@ -49,7 +49,7 @@ def _to_lc(m: LlmMessage) -> BaseMessage:
         return HumanMessage(content=m["content"])
     if role == "assistant":
         return AIMessage(content=m["content"])
-    raise ValueError(f"未知消息角色 {role!r}")   # 静态 Literal 已挡，此为运行期防御
+    raise ValueError(f"未知消息角色 {role!r}")  # 静态 Literal 已挡，此为运行期防御
 
 
 # 内置 provider → OpenAI 兼容 base_url；不在表内者配 llm.base_url 覆盖
@@ -74,6 +74,10 @@ def ChatOpenAI(**kwargs: Any) -> BaseChatModel:
     return LangChainChatOpenAI(**kwargs)
 
 
+class InitiationSkipped(Exception):
+    """A queued proactive turn lost foreground admission before its SDK call."""
+
+
 class LlmClient:
     """全项目唯一 LLM 出口。持有 LangChain model 与 model 名，负责调用。"""
 
@@ -87,6 +91,8 @@ class LlmClient:
         self._model_name = model_name
         self._model_factory = model_factory
         self._model_lock = threading.Lock()
+        self._call_lock = asyncio.Lock()
+        self.can_initiate: Callable[[], bool] = lambda: True
         # 显式传，不依赖 LangChain 的 model_name 属性（fake 未必有）
 
     @classmethod
@@ -100,6 +106,7 @@ class LlmClient:
         api_key = os.environ.get(config.api_key_env)
         if not api_key:
             raise ConfigError(f"环境变量 {config.api_key_env} 未设置")
+
         def create_model() -> BaseChatModel:
             from pydantic import SecretStr
 
@@ -117,12 +124,17 @@ class LlmClient:
     def _get_model(self) -> BaseChatModel:
         if self._model is not None:
             return self._model
+
         with self._model_lock:
             if self._model is None:
                 if self._model_factory is None:
                     raise RuntimeError("LLM client 未配置 model factory")
                 self._model = self._model_factory()
             return self._model
+
+    def fork(self) -> "LlmClient":
+        """Share the lazy SDK model, while keeping a role-local FIFO call lock."""
+        return LlmClient(self._model, self._model_name, self._get_model)
 
     async def complete(
         self,
@@ -143,12 +155,26 @@ class LlmClient:
             kwargs["response_format"] = {"type": "json_object"}
         if tools:
             kwargs["tools"] = tools  # OpenAI 兼容 function calling 工具定义
-        model = self._model
-        if model is None:
-            model = await asyncio.to_thread(self._get_model)
-        response = await model.ainvoke(
-            [_to_lc(message) for message in prompt_messages], **kwargs
-        )
+        async with self._call_lock:
+            proactive = output_type in {
+                "initiate_chat",
+                "mutter_wander",
+                "reading_mutter",
+                "question_knowledge",
+                "question_personal",
+                "question_reflective",
+                "quote_question",
+            }
+            if proactive and not self.can_initiate():
+                raise InitiationSkipped()
+            model = self._model
+            if model is None:
+                model = await asyncio.to_thread(self._get_model)
+            if proactive and not self.can_initiate():
+                raise InitiationSkipped()
+            response = await model.ainvoke(
+                [_to_lc(message) for message in prompt_messages], **kwargs
+            )
         content = response.content
         if not isinstance(content, str):
             raise RuntimeError(f"期望文本 content，得到 {type(content).__name__}")

@@ -116,6 +116,12 @@
 | 重放 | `(event_id, "inner_life.reflection")` effect marker 保证已提交请求 no-op；CAS 防两个并发 plan 静默覆盖慢变量 |
 | 删除 | 没有单独删除反思请求 API；event/delivery 按总线保留策略管理。关联记忆被淘汰时，持久化 evidence 仍保留触发时摘要，prompt 的主材料使用消费时仍存在的旧记忆 |
 
+## 角色初始化与存档归属
+
+`bootstrap.initialize_card(db, card)` 从角色卡读取初始 personality、values、aesthetic 和 identity；精力初值仍为框架的 100/energetic。默认 Nyx 保留原有数值。缺失单例与一次初始化标记在同一事务提交；已有值保留，恢复不回写初始人格或自我叙事。兼容 `seed_inner_life`/`seed_desire` 委托同一入口。
+
+每个 `_App` 独立持有 InnerLifeFacade、情感内存、反思锚点和持久化表；切换不重建这些对象，后台继续演化。入口、状态恢复和异常边界见 [14](14-character-cards.md)。
+
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_inner_life/`（`pytest-asyncio`；`db = await connect(":memory:")`；`store = InnerLifeStore(db)`；`reflection = Reflection(store, fake_memory, fake_desire, fake_llm, fake_evaluator, config.desire)`；`facade = InnerLifeFacade(store, fake_activity, fake_desire, fake_memory, bus, fake_llm, fake_evaluator, config)`；fake `LlmClient.complete` 按 `output_type == "reflection"` 返回 fixture JSON 并记录调用、fake `Evaluator.evaluate` 记录调用；fake `ActivityFacade.get_current` / `DesireFacade.get_pending`/`get_all`/长期候选预检与提交返回预设；`EventBus` 用真实例 + recording handler，`run()` 作 task 驱动——同 05/09/11 模式）：
@@ -171,5 +177,5 @@
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
 - [ ] **联动已同步**：07-desire 的长期欲望入口、04-module-bus-system 的五张单行表、06-memory-system 的 `count_new`、11-expression 的审美 prompt、12-reading-system 的 `kind='reading'` 记忆均按当前源码接线
-- [ ] 组合根：`InnerLifeStore(db)` → `InnerLifeFacade(store, activity_facade, desire_facade, memory_facade, bus, llm, evaluator, config)`；启动时 seed 五张单行表（personality 8/8/2/6/7、values 8/6/9/5、aesthetic、energy=100/energetic、self_narrative 初始 identity）；订阅 `OBSERVATION_STATE`/`DESIRE_SATISFIED`/`ACTIVITY_END`/`REFLECTION` 到 `facade.apply_event`
+- [ ] 每角色组合根：`InnerLifeStore(db)` → `InnerLifeFacade(store, activity_facade, desire_facade, memory_facade, bus, llm, evaluator, config)`；一次初始化五张单行表（默认 Nyx personality 8/8/2/6/7、values 8/6/9/5；其他角色从卡片读取，energy=100/energetic）；订阅 `OBSERVATION_STATE`/`DESIRE_SATISFIED`/`ACTIVITY_END`/`REFLECTION` 到 `facade.apply_event`
 - [ ] 09-activity 的 `activity_end` content 契约（`energy_delta`）与本 spec §技术方案一致；11-expression 拼 prompt 用 `InnerLifeFacade.get_state()`

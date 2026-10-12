@@ -24,6 +24,9 @@ export function isEmotionCategory(v: unknown): v is EmotionCategory {
 export type EnergyState = "energetic" | "okay" | "tired" | "exhausted" | "drained";
 
 export type PresenceObservation = {
+  sample_id?: string;
+  character_id?: string;
+  selection_revision?: number;
   presence: Presence;
   window_title: string;
   idle_seconds: number;

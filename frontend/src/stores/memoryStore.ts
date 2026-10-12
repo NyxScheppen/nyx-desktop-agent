@@ -1,3 +1,4 @@
+import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import { getMemories, getMemorySearch, getRecentFacts } from "../api/client";
 import type { Memory, MemoryFact } from "../types/api";
@@ -26,38 +27,45 @@ export const useMemoryStore = create<MemoryStoreState>((set, get) => {
     error: null,
     factsError: null,
     refresh: async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       const request = ++requestGeneration;
       const query = get().query.trim();
-      set({ error: null, factsError: null });
+      commit({ error: null, factsError: null });
       const memoryRequest = query === "" ? getMemories() : getMemorySearch(query);
       const [memoryResult, factsResult] = await Promise.allSettled([
         memoryRequest,
         getRecentFacts(),
       ]);
+      if (!isScopeCurrent(scope)) return;
       if (request !== requestGeneration || get().query.trim() !== query) return;
       if (memoryResult.status === "fulfilled") {
-        set({ data: memoryResult.value, error: null });
+        commit({ data: memoryResult.value, error: null });
       } else {
-        set({ error: errorMessage(memoryResult.reason) });
+        commit({ error: errorMessage(memoryResult.reason) });
       }
       if (factsResult.status === "fulfilled") {
-        set({ facts: factsResult.value, factsError: null });
+        commit({ facts: factsResult.value, factsError: null });
       } else {
-        set({ factsError: errorMessage(factsResult.reason) });
+        commit({ factsError: errorMessage(factsResult.reason) });
       }
     },
     search: async (query: string) => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       const normalized = query.trim();
       const request = ++requestGeneration;
-      set({ query: normalized, error: null });
+      commit({ query: normalized, error: null });
       try {
         const data = normalized === "" ? await getMemories() : await getMemorySearch(normalized);
+      if (!isScopeCurrent(scope)) return;
         if (request === requestGeneration && get().query === normalized) {
-          set({ data, error: null });
+          commit({ data, error: null });
         }
       } catch (err) {
+      if (!isScopeCurrent(scope)) return;
         if (request === requestGeneration && get().query === normalized) {
-          set({ error: errorMessage(err) });
+          commit({ error: errorMessage(err) });
         }
       }
     },

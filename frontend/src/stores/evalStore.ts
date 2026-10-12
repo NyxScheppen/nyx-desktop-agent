@@ -1,3 +1,4 @@
+import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import { getEvalPrompt, getEvalRecent, getEvalTotalTokens } from "../api/client";
 import type { EvalRecord, EvalStats, LlmPromptMessage } from "../types/api";
@@ -27,8 +28,10 @@ export const useEvalStore = create<EvalStoreState>((set, get) => {
   promptLoading: {},
   promptErrors: {},
   refresh: async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
     const request = ++requestGeneration;
-    set({
+    commit({
       error: null,
       prompts: {},
       promptLoading: {},
@@ -39,14 +42,16 @@ export const useEvalStore = create<EvalStoreState>((set, get) => {
       let offset = 0;
       while (true) {
         const page = await getEvalRecent(EVAL_PAGE_SIZE, offset);
+      if (!isScopeCurrent(scope)) return;
         if (request !== requestGeneration) return;
         records.push(...page);
         if (page.length < EVAL_PAGE_SIZE) break;
         offset += EVAL_PAGE_SIZE;
       }
       const stats = await getEvalTotalTokens();
+      if (!isScopeCurrent(scope)) return;
       if (request !== requestGeneration) return;
-      set({
+      commit({
         records,
         stats,
         prompts: {},
@@ -54,12 +59,15 @@ export const useEvalStore = create<EvalStoreState>((set, get) => {
         promptErrors: {},
       });
     } catch (err) {
-      if (request === requestGeneration) set({
+      if (!isScopeCurrent(scope)) return;
+      if (request === requestGeneration) commit({
         error: err instanceof Error ? err.message : String(err),
       });
     }
   },
   loadPrompt: async (recordId: string) => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
     const request = requestGeneration;
     const current = get();
     if (
@@ -68,7 +76,7 @@ export const useEvalStore = create<EvalStoreState>((set, get) => {
     ) {
       return;
     }
-    set((state) => {
+    commit((state) => {
       const promptErrors = { ...state.promptErrors };
       delete promptErrors[recordId];
       return {
@@ -78,14 +86,16 @@ export const useEvalStore = create<EvalStoreState>((set, get) => {
     });
     try {
       const prompt = await getEvalPrompt(recordId);
+      if (!isScopeCurrent(scope)) return;
       if (request !== requestGeneration || !get().records?.some((record) => record.id === recordId)) return;
-      set((state) => ({
+      commit((state) => ({
         prompts: { ...state.prompts, [recordId]: prompt },
         promptLoading: { ...state.promptLoading, [recordId]: false },
       }));
     } catch (err) {
+      if (!isScopeCurrent(scope)) return;
       if (request !== requestGeneration || !get().records?.some((record) => record.id === recordId)) return;
-      set((state) => ({
+      commit((state) => ({
         promptLoading: { ...state.promptLoading, [recordId]: false },
         promptErrors: {
           ...state.promptErrors,

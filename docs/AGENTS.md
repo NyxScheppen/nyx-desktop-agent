@@ -10,6 +10,7 @@
 
 | 工作范围 | 先读事实摘要 | 再读唯一完整契约 |
 |---|---|---|
+| 角色卡、角色注册/切换/卸载、多角色归属与共享观察 | `docs/facts/character-cards-facts.md` | `docs/specs/14-character-cards.md` |
 | 记忆系统、记忆相邻功能 | `docs/facts/memory-system-facts.md` | `docs/specs/06-memory-system.md` |
 | 活动、欲望消费、活动打断/恢复、自由探索、活动书库、活动时间线、`activity_*` 事件 | `docs/facts/activity-system-facts.md` | `docs/specs/09-activity.md` |
 | 欲望产生、压力、消费、满足/淘汰、`desire_*` 事件 | `docs/facts/desire-system-facts.md` | `docs/specs/07-desire.md` |

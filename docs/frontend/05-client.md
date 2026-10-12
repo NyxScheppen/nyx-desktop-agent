@@ -6,6 +6,10 @@
 
 ## 1. 函数签名 + 端点映射
 
+下表 `/api/...` 业务路径是原有后缀。绑定角色后 `characterScope.scopedRequest` 将其改写为 `/api/characters/{id}/...`，写操作附 `X-Nyx-Selection-Revision`；GET 的 AbortController 在切换时取消。宿主 `/api/characters` 管理、`/api/observe` 和 `/api/ready` 不改写。无 scope 的旧辅助调用保留 Nyx 别名。
+
+角色管理函数：`getCharacters`（GET 列表）、`importCharacter`（POST 卡包 FormData）、`selectCharacter`（PUT current）、`changeCharacter`（DELETE id 或 POST restore/retry-start）、`characterAssetUrl`（GET id/assets/key）。签名以 client.ts 为准。
+
 ```typescript
 const BASE_URL = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
 
@@ -44,7 +48,7 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 
 ```
 
-- 请求体键名 = 后端 tech-ref §4 请求体键（snake_case 零映射）：`postChat` 发 `{message}`，有明确提问归属时附加 `reply_to`；`postObserve` 发 `{presence, window_title, idle_seconds, sampled_at}`，PresenceObservation 定义在 types/api.ts。signal 透传 fetch；409 表示过期采样，422 表示非法输入。
+- 请求体键名 = 后端 JSON 键（snake_case 零映射）：`postChat` 发 `{message}`，有明确提问归属时附加 `reply_to`；`postObserve` 必须带稳定 `sample_id`，其余为 `{presence, window_title, idle_seconds, sampled_at}` 与可选 `character_id/selection_revision`。PresenceObservation 定义在 types/api.ts，signal 透传 fetch。重试保留相同 sample_id；409 表示过期/冲突采样，422 表示非法输入。
 - **请求头**：`Content-Type: application/json`（FastAPI + Pydantic 体，错头会 422）。
 - 返回值直接 JSON 反序列化后上抛给调用方，**不包裹** `{ok, data}`。
 
@@ -52,10 +56,11 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 ## 2. 错误契约（统一）
 
 - **成功返回数据、失败 throw**。所有函数：fetch 网络错误（`TypeError`）与非 2xx 响应（读 body 错误信息后 `throw new Error(...)`）都上抛——**不返回 `{ok:false}`、不返回 null**。调用方自行 try/catch：
+- 角色业务入口：未知 ID 404、选择版本过期 409、不可运行 503；不回退到当前角色或 Nyx。准入后的写请求即使切换，也继续交给原角色。
 - **非 2xx 错误体形状**：后端是 FastAPI，错误体 = 默认 `{"detail": str}`（组合根未自定义错误响应）。client 读 `body.detail`，防御式兜底 `body.detail ?? body.error ?? JSON.stringify(body)`——任何形状都出非空 message，不 `undefined`。
   - `sendMessage`：catch → `sendError = e.message`（02-stores §1；失败时 `isReplying` 本就 false——成功才置 true，无需复位）。
   - `refreshState`：catch → `error = e.message`、`loading=false`（02-stores §2）。
-  - `usePresence`：catch → `console.error` + 静默（下次采样重试，不上屏，README §2）。
+  - `usePresence`：catch → `console.error` + 静默；原 FIFO 队首保留同一 sample_id，后续采样先重试队首，不被新状态覆盖（README §2）。
 
 ## 3. 边界
 

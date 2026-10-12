@@ -4,6 +4,12 @@
 > `docs/facts/activity-system-facts.md` 只是供无关代码查阅的事实摘要，不替代本文件；摘要与本文件不一致时，以本文件为准，并同步修正摘要。
 > spec 只定义契约（签名、语义与决策），不内联完整代码；实现以 `nyx/activity/` 源文件为准。
 
+## 多角色运行边界
+
+活动、委派任务、来源领取、checkpoint、runner 和工作目录均归具体 `_App`；受理后不再按当前选择查找运行时。切换不暂停活动，后台继续调度和超时维护。所有角色接收公共 online/busy/away，只有当前角色读取窗口标题和屏幕摘要；主动搭话和碎碎念在实际开始前检查当前资格，跳过不算欲望失败。创作、探索与阅读的身份上下文从所属角色卡注入。
+
+角色内统一选材继续枚举既有活动来源与上传书库，不跨角色查询；文件工具排除宿主及其他角色内部目录。卸载停止新活动并等待旧 runner 和实际文件线程结束，超时保留 STOPPING、数据库和名额；完整契约见 [14](14-character-cards.md)。
+
 ## 元信息
 
 - **前置依赖**：01-types（`Activity` / `ActivityType` / `ActivityStatus` / `AssignedTask` / `AssignedTaskType` / `AssignedTaskStatus` / `DesireType` / `ShortTermDesire` / `DesireValue` / `CurrentState` / `Event` / `EventType`）、02-config（`ActivityConfig` / `ExplorationConfig` / `ActivityEnergyDelta`）、03-llm（`LlmClient.complete` / `VisionClient`）、04-module-bus-system（`activity` / `assigned_task` 表、`EventBus` / `internal_event` / tick 路由、组合根、REST、SSE）、05-tools（`ToolRegistry`）、06-memory-system（活动/知识记忆落库）、07-desire（待消费欲望、活动状态接线、满足回写、长期欲望入口）、08-inner-life（状态快照、反思、精力变化）、10-eval（`Evaluator`）、12-reading-system（EPUB 读取入口）

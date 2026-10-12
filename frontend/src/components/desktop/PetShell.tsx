@@ -1,3 +1,6 @@
+import CharacterSelect from "../layout/CharacterSelect";
+import { captureScope, isScopeCurrent } from "../../api/characterScope";
+import { useCharacterStore } from "../../stores/characterStore";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { activityStatusText } from "../../lib/activityResult";
 import { EMOTION_LABELS } from "../../lib/labels";
@@ -18,7 +21,8 @@ type PetShellProps = {
 };
 
 function FloatingInput({ placeholder }: { placeholder: string }) {
-  const [text, setText] = useState("");
+  const text = useCharacterStore((s) => s.drafts[s.registry?.current_id ?? "nyx"] ?? "");
+  const setText = useCharacterStore((s) => s.setDraft);
   const isReplying = useChatStore((s) => s.isReplying);
   const sendMessage = useChatStore((s) => s.sendMessage);
 
@@ -27,8 +31,9 @@ function FloatingInput({ placeholder }: { placeholder: string }) {
     if (isReplying) return;
     const value = text.trim();
     if (value === "") return;
+    const scope = captureScope();
     void sendMessage(value).then((sent) => {
-      if (sent) setText("");
+      if (sent && isScopeCurrent(scope) && useCharacterStore.getState().drafts[scope?.id ?? "nyx"] === value) setText("");
     });
   };
 
@@ -64,7 +69,7 @@ function ChatPanel({ onBack }: { onBack: () => void }) {
     <section className="pet-panel pet-panel--chat" aria-label="聊天">
       <PanelBack onBack={onBack} />
       <div className="pet-dialogue">
-        <span className="pet-dialogue__name">Nyx</span>
+        <span className="pet-dialogue__name"><CurrentName /></span>
         {lastNyx?.content ?? "今天过得怎么样？"}
       </div>
       <FloatingInput placeholder="输入一句话……" />
@@ -82,7 +87,7 @@ function BooksPanel({ books, onBack, onSelect }: {
       <PanelBack onBack={onBack} />
       <PanelCard>
         <h2 className="pet-panel__title">选择书目</h2>
-        <p className="pet-panel__text">选择一本书，Nyx 会陪你一起读。</p>
+        <p className="pet-panel__text">选择一本书，<CurrentName /> 会陪你一起读。</p>
         {books.length === 0 ? (
           <p className="pet-panel__muted">书架空空如也，请在完整桌面端导入 EPUB。</p>
         ) : (
@@ -128,7 +133,7 @@ function ReadingPanel({ onBack }: { onBack: () => void }) {
         </div>
         <div className="pet-reading-progress">
           <span>你读到：第 {userPosition} 段</span>
-          <span>Nyx 读到：第 {nyxPosition} 段</span>
+          <span><CurrentName /> 读到：第 {nyxPosition} 段</span>
         </div>
         <div className="pet-reading-actions">
           <button
@@ -182,6 +187,10 @@ function InnerPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
+function CurrentName() {
+  return useCharacterStore((s) => s.registry?.characters.find((r) => r.id === s.registry?.current_id)?.name ?? "Nyx");
+}
+
 export default function PetShell({ night, onExpand, onOpenSettings }: PetShellProps) {
   const [panel, setPanel] = useState<PetPanel | null>(null);
   const books = useReaderStore((s) => s.books);
@@ -197,8 +206,9 @@ export default function PetShell({ night, onExpand, onOpenSettings }: PetShellPr
 
   const toggleFan = () => setPanel((currentPanel) => currentPanel === "fan" ? null : "fan");
   const selectBook = async (id: string) => {
+    const scope = captureScope();
     await openBook(id);
-    setPanel("reading");
+    if (isScopeCurrent(scope)) setPanel("reading");
   };
   const mood = current === null ? "未知" : EMOTION_LABELS[current.emotion];
   const status = activityStatusText(activity?.current ?? null);
@@ -227,7 +237,8 @@ export default function PetShell({ night, onExpand, onOpenSettings }: PetShellPr
         </div>
 
         {panel === "fan" && (
-          <nav className="pet-fan-menu" aria-label="Nyx 功能菜单">
+          <nav className="pet-fan-menu" aria-label="角色功能菜单">
+            <CharacterSelect />
             <button type="button" className="pet-fan-menu__item pet-fan-menu__item--chat" onClick={() => setPanel("chat")}>聊天</button>
             <button type="button" className="pet-fan-menu__item pet-fan-menu__item--reading" onClick={() => setPanel("books")}>读书</button>
             <button type="button" className="pet-fan-menu__item pet-fan-menu__item--inner" onClick={() => setPanel("inner")}>内心</button>

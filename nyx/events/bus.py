@@ -5,7 +5,7 @@ import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import aiosqlite
 
@@ -83,9 +83,7 @@ class EventBus:
         self._queue = _CompatibilityQueue()
         self._compat_pending: dict[str, int] = {}
         self._sse_sinks: list[asyncio.Queue[Event]] = []
-        self._wake_queue: asyncio.Queue[str] = asyncio.Queue(
-            maxsize=_WAKE_QUEUE_SIZE
-        )
+        self._wake_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=_WAKE_QUEUE_SIZE)
         self._wake_events: dict[str, asyncio.Event] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
         self._stop_event = asyncio.Event()
@@ -260,16 +258,33 @@ class EventBus:
             return
         self._running = True
         self._stop_event.clear()
-        await self.recover_deliveries()
-        for consumer_id in self._handlers:
-            self._start_worker(consumer_id)
-            self._wake_events[consumer_id].set()
-        dispatcher = asyncio.create_task(self._dispatch_wakes())
+        dispatcher: asyncio.Task[None] | None = None
+        stopped: asyncio.Task[bool] | None = None
         try:
-            await self._stop_event.wait()
+            await self.recover_deliveries()
+            for consumer_id in self._handlers:
+                self._start_worker(consumer_id)
+                self._wake_events[consumer_id].set()
+            dispatcher = asyncio.create_task(self._dispatch_wakes())
+            stopped = asyncio.create_task(self._stop_event.wait())
+            while not self._stop_event.is_set():
+                done, _ = await asyncio.wait(
+                    [stopped, dispatcher, *self._workers.values()],
+                    timeout=_SCAN_INTERVAL_SECONDS,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not self._stop_event.is_set():
+                    for task in done:
+                        if task is dispatcher or task in self._workers.values():
+                            task.result()
+                            raise RuntimeError("事件消费者意外退出")
         finally:
-            dispatcher.cancel()
-            await asyncio.gather(dispatcher, return_exceptions=True)
+            auxiliary: list[asyncio.Task[Any]] = [
+                task for task in (dispatcher, stopped) if task is not None
+            ]
+            for task in auxiliary:
+                task.cancel()
+            await asyncio.gather(*auxiliary, return_exceptions=True)
             await self._stop_workers(cancel=True)
             self._running = False
 
@@ -287,8 +302,7 @@ class EventBus:
         except asyncio.TimeoutError:
             self._logger.warning("事件总线 drain 超时，未完成 delivery 保留待恢复")
             return False
-        finally:
-            self._stop_event.set()
+        self._stop_event.set()
         return True
 
     async def stop(self) -> None:
@@ -379,9 +393,7 @@ class EventBus:
                 cursor_row = await cursor.fetchone()
                 if cursor_row is not None:
                     timestamp = float(cursor_row["timestamp"])
-                    clauses.append(
-                        "(timestamp > ? OR (timestamp = ? AND id > ?))"
-                    )
+                    clauses.append("(timestamp > ? OR (timestamp = ? AND id > ?))")
                     params.extend((timestamp, timestamp, after))
                 # Unknown cursors intentionally replay the oldest bounded page. A
                 # client can recover from a stale/expired Last-Event-ID without
@@ -478,8 +490,7 @@ class EventBus:
             ),
         )
         existing = await self._db.conn.execute(
-            "SELECT content, source, type, correlation_id "
-            "FROM event_log WHERE id = ?",
+            "SELECT content, source, type, correlation_id FROM event_log WHERE id = ?",
             (event.id,),
         )
         row = await existing.fetchone()
@@ -638,9 +649,7 @@ class EventBus:
             except asyncio.TimeoutError:
                 pass
 
-    async def _claim_next(
-        self, consumer_id: str
-    ) -> tuple[Event, int] | None:
+    async def _claim_next(self, consumer_id: str) -> tuple[Event, int] | None:
         now = time.time()
         async with self._db.lock:
             try:

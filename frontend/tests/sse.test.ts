@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BASE_URL } from "../src/api/client";
+import { bindScope } from "../src/api/characterScope";
 import { dispatchEvent } from "../src/api/dispatch";
 import { useSSE } from "../src/hooks/useSSE";
 import { useActivityStore } from "../src/stores/activityStore";
@@ -54,11 +55,25 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  bindScope(null);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("useSSE", () => {
+  it("closes old role streams and ignores their queued callbacks", () => {
+    const dispatch = vi.fn();
+    bindScope({ id: "alice", revision: 1 });
+    const { rerender } = renderHook(({ id, generation }) => useSSE(dispatch, { id, generation }),
+      { initialProps: { id: "alice", generation: 1 } });
+    const old = FakeEventSource.instances[0];
+    bindScope({ id: "bob", revision: 2 });
+    rerender({ id: "bob", generation: 2 });
+    act(() => old.emit("speak", JSON.stringify({ character_id: "alice", event_id: "old",
+      correlation_id: "old", timestamp: 100, content: "old" })));
+    expect(old.closed).toBe(true);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
   it("有限但超出 Date 范围的时间戳被拒绝", () => {
     const dispatch = vi.fn();
     renderHook(() => useSSE(dispatch));

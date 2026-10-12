@@ -1,3 +1,4 @@
+import { captureScope, isScopeCurrent } from "../api/characterScope";
 import { useEffect, useState } from "react";
 import { BASE_URL } from "../api/client";
 import { parseSseEvent, type ConnectionState, type SseEvent } from "../types/api";
@@ -36,24 +37,31 @@ const EVENT_TYPES = [
 
 const MAX_SEEN_EVENT_IDS = 4096;
 
-export function useSSE(dispatch: (e: SseEvent) => void): ConnectionState {
+export function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string; generation: number } | null): ConnectionState {
   const [status, setStatus] = useState<ConnectionState>("connecting");
 
   useEffect(() => {
     // An HMR/StrictMode effect replacement runs cleanup before the new source
     // opens; publish the replacement's connecting state immediately so the
     // old cleanup cannot leave the UI showing a stale "closed" state.
+    if (selection === null) { setStatus("closed"); return; }
+    let disposed = false;
+    const scope = captureScope();
     setStatus("connecting");
-    const source = new EventSource(`${BASE_URL}/api/events`);
+    const source = new EventSource(selection
+      ? `${BASE_URL}/api/characters/${encodeURIComponent(selection.id)}/events`
+      : `${BASE_URL}/api/events`);
     const seenEventIds = new Set<string>();
 
     const onEvent = (type: string) => (event: MessageEvent) => {
+      if (disposed || !isScopeCurrent(scope)) return;
       try {
         const data: unknown = JSON.parse(event.data);
         if (typeof data !== "object" || data === null) {
           console.error("SSE 帧 data 非对象，跳过", event.data);
           return;
         }
+        if (selection && (data as Record<string, unknown>).character_id !== selection.id) return;
         const parsed = parseSseEvent(type, data);
         if (parsed === null) {
           console.error("SSE 帧结构非法，跳过", event.data);
@@ -71,17 +79,18 @@ export function useSSE(dispatch: (e: SseEvent) => void): ConnectionState {
       }
     };
 
-    source.onopen = () => setStatus("open");
-    source.onerror = () => setStatus("connecting");
+    source.onopen = () => { if (!disposed && isScopeCurrent(scope)) setStatus("open"); };
+    source.onerror = () => { if (!disposed && isScopeCurrent(scope)) setStatus("connecting"); };
     for (const type of EVENT_TYPES) {
       source.addEventListener(type, onEvent(type));
     }
 
     return () => {
+      disposed = true;
       source.close();
       setStatus("closed");
     };
-  }, [dispatch]);
+  }, [dispatch, selection?.id, selection?.generation, selection === null]);
 
   return status;
 }

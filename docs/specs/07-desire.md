@@ -104,7 +104,7 @@
 - **去重（decision，可推翻）**：`run_eval` 生成后、入队前两步判定——① **话题锚点优先**：新欲望 `goal.topic` 非 None 时，与 `list_pending()` 各待消费欲望的 `goal.topic` 精确相等即判重复丢弃（确定性、零误判、不依赖 embedding）；② **余弦兜底**：`goal.topic` 缺失（None）或未命中时，用注入的 `EmbedFn`（`memory/retrieval` 的 `build_embed`，与 memory/evaluator 共享同一实例）算新欲望 `description` 的 embedding，与 `list_pending()` 各 description embedding 做 `cosine` 比对，任一 `>= _DEDUP_SIM_THRESHOLD(0.9)` 判语义重复丢弃（不入队、不发布，value 已在重置步骤归零）。`embed=None`（向量层禁用）或 embed 抛异常降级为不去重（best-effort 旁路，同矛盾检测）
 - **父长期欲望与主题**：选定达峰类型后，只在同类型、`strength > 0` 的长期欲望中按 `strength DESC, created_at ASC, id ASC` 选父对象。topic 从父对象子主题池按「没做过优先、否则 freshness 最低」选择；子主题池为空则用父名称；没有合格父对象则 topic 和 `parent_long_term_id` 都为 `None`。系统据类型构造 action/topic/goal，LLM 只生成 description/count。
 - **`strength` 语义**：`ShortTermDesire.strength` 是达峰压力快照；`LongTermDesire.strength` 是 `[0,1]` 驱动力。容量裁剪时父 strength 增加 `action_priority`，最终满足时父 strength 减少同一公式并推进 progress。部分 goal 完成、失败、过期、抑制、去重丢弃均不改父 strength；旧数据或父记录缺失时不得猜父对象。
-- **长期欲望初始化与唯一新增入口**：bootstrap 在空表时写 3 条 canon 初始数据；运行时只有 08-inner-life 反思可新增长期欲望。09-activity 探索只能向短期欲望明确记录的父长期欲望追加子主题。
+- **长期欲望初始化与唯一新增入口**：bootstrap 的 `initialize_card()` 仅为全新角色存档写入角色卡的初始列表，默认 Nyx 为原有三条；数据与 `character_initialization` 标记同事务提交。已有存档即使长期欲望为空也不重新灌入，切换、重启和恢复不覆盖成长。运行时只有 08-inner-life 反思可新增长期欲望。09-activity 探索只能向短期欲望明确记录的父长期欲望追加子主题。多角色归属见 [14](14-character-cards.md)。
 - **反思批量接入**：08-inner-life 在事务外调用 `prepare_long_term_candidates`，把获准候选与 `LongTermSnapshot` 放入 `ReflectionPlan`；事务内调用 `add_prepared_long_terms_in_transaction`。`LongTermSnapshot` 只包含影响新增去重的 id/name/description，因此并发 strength、progress、subtopics 变化不制造无关冲突。
 - **五态流转（V2，`ACTIVE`/`SUPPRESSED` 纳入）**：`PENDING → ACTIVE` 由 `claim_for_activity` 原子领取；`ACTIVE → SATISFIED | EXPIRED`（满足时从 ACTIVE 释放并结算）；`ACTIVE → SUPPRESSED`；`SUPPRESSED → PENDING`（`run_eval` 里类型仍可表达即释放回队列）。`SUPPRESSED` 可逆、非终态；续做路径恢复同一记录时由活动完成结算，不重复领取。
 - **`activity_end` 的满足信号契约（09-activity 引用）**：`event.content` 含 `desire_id`（`str | None`）与 `goal_met`（`bool | None`）。`satisfy_from_activity_end` 缺任一键或非预期类型即跳过（不抛），因为观察用户/发呆等活动无欲望可满足。额外：`event.content["type"]` 为 `reading` / `free_exploration`（`ActivityType.value`）时，满足逻辑之外再给创造欲加压 `_CREATION_ACTIVITY_PRESSURE_DELTA`（创作活动 `creation` 结束不自循环；`type` 缺失/其他值跳过）
@@ -162,7 +162,7 @@
 
 | 入口 | 产生条件 | 写入位置 |
 |---|---|---|
-| bootstrap | 长期欲望表为空 | 3 条 canon 初始数据 |
+| bootstrap | 全新存档且无初始化标记 | 角色卡初始列表，可为空；Nyx 默认三条 |
 | reflection | 反思候选通过结构、容量、名称和语义去重 | `long_term_desire` |
 | exploration | 不适用：探索不得创建长期欲望 | 只对明确父 ID追加 subtopics |
 
@@ -270,5 +270,5 @@
 - [ ] `pyright` 零报错
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
-- [ ] 组合根：`DesireStore(db)` → `DesireFacade(store, bus, llm, evaluator, config.desire, lambda: memory.list_memories(), embed)`；启动时 seed 四类型 `desire_value`（`default_value(t)` + `updated_at=now`）与 3 个初始长期欲望（canon §4，表空才 seed）；订阅 `OBSERVATION_STATE`/`ACTIVITY_END` 到 `facade.add_value`，CLOCK_TICK 的 `DESIRE_EVAL` 分发到 `facade.evaluate()`
+- [ ] 每角色组合根：`DesireStore(db)` → `DesireFacade(store, bus, llm, evaluator, config.desire, lambda: memory.list_memories(), embed)`；初始化补齐四类型 `desire_value`（`default_value(t)` + `updated_at=now`），全新存档一次写入卡片长期欲望；订阅 `OBSERVATION_STATE`/`ACTIVITY_END` 到 `facade.add_value`，CLOCK_TICK 的 `DESIRE_EVAL` 分发到 `facade.evaluate()`。所有 retry_count、attempt、effect 和压力仅在本角色数据库内结算。
 - [ ] 09-activity 消费欲望走 `get_pending()`；09-activity 的 `activity_end` content 契约（`desire_id`/`goal_met`）与本 spec §技术方案一致；11-expression 搭话：用户回复时 `satisfy` 该互动欲（消费闭环）

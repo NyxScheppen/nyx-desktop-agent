@@ -1,3 +1,5 @@
+import { BASE_URL } from "../../api/client";
+import { useCharacterStore } from "../../stores/characterStore";
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import type { EmotionCategory } from "../../types/api";
 
@@ -17,15 +19,18 @@ type EmotionSpriteProps = {
 // emotion 传入则覆盖（临时情绪）；current === null 且未传 emotion 时返回 null，不崩（03 §3）。
 export default function EmotionSprite({ size = "large", emotion }: EmotionSpriteProps) {
   const current = useInnerLifeStore((s) => s.current?.emotion);
+  const role = useCharacterStore((s) => s.registry?.characters.find((role) => role.id === s.registry?.current_id));
   const resolved = emotion ?? current;
-  if (resolved === undefined) return null;
-  const src = SPRITES[`../../assets/expressions/${resolved}.png`];
-  if (src === undefined) return null;
+  if (resolved === undefined && !role) return null;
+  const asset = role?.assets[resolved ?? "neutral"] ?? role?.assets.avatar;
+  const src = role ? (asset ? BASE_URL + asset : undefined) : SPRITES[`../../assets/expressions/${resolved}.png`];
+  if (src === undefined) return <span className={`emotion-sprite emotion-sprite--${size}`}>{role?.name}</span>;
   return (
     <img
       className={`emotion-sprite emotion-sprite--${size}`}
       src={src}
-      alt={resolved}
+      crossOrigin="anonymous"
+      alt={resolved ?? role?.name}
       draggable={false}
     />
   );

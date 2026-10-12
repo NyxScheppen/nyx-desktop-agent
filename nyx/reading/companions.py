@@ -1,4 +1,5 @@
 """陪读行为执行：碎碎念、提问与记忆联想。"""
+
 import logging
 from collections.abc import Awaitable, Callable
 from typing import cast
@@ -10,7 +11,7 @@ from nyx.events.event import internal_event
 from nyx.expression.classifier import is_question
 from nyx.expression.facade import ExpressionFacade
 from nyx.expression.prompt import build_system_prompt
-from nyx.llm.client import LlmClient
+from nyx.llm.client import InitiationSkipped, LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.types import CurrentState
 
@@ -120,6 +121,8 @@ class ReadingCompanion:
                 )
             )
             await self._record_output(book_id, paragraph_index, content, "mutter")
+        except InitiationSkipped:
+            return
         except Exception:
             self._logger.exception(
                 "陪读碎碎念失败 book_id=%s paragraph_index=%d",
@@ -223,6 +226,8 @@ class ReadingCompanion:
             await self._record_output(book_id, paragraph_index, content, "question")
             self._expression.record_proactive_turn(content)
             return committed
+        except InitiationSkipped:
+            return False
         except Exception:
             self._logger.exception(
                 "陪读提问失败 behavior=%s book_id=%s paragraph_index=%d",
@@ -232,9 +237,7 @@ class ReadingCompanion:
             )
             return committed
 
-    async def associate(
-        self, book_id: str, paragraph_index: int, text: str
-    ) -> None:
+    async def associate(self, book_id: str, paragraph_index: int, text: str) -> None:
         """Publish up to three memories associated with the paragraph."""
         try:
             memories = await self._memory.search(text)

@@ -104,6 +104,7 @@ class Database:
             self._transaction_state.reset(marker)
             self.lock.release()
 
+
 # 迁移列表：每项 (version, [单条 SQL])。升序；已应用（≤ schema_version）的跳过。
 _MIGRATIONS: list[tuple[int, list[str]]] = [
     (
@@ -344,7 +345,6 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             # eval 可观测（10-eval）：LLM 调用 + token 记账。
             # 不存 content 原文（数据最小化）。
             # call_id 一次 complete() 唯一，think/speak 共享（总 token 去重锚点）。
-
             """CREATE TABLE eval_log (
                 id TEXT PRIMARY KEY,
                 created_at REAL NOT NULL,
@@ -636,7 +636,7 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
         29,
         [
             "ALTER TABLE paragraphs ADD COLUMN format_json TEXT NOT NULL "
-            "DEFAULT '{\"blocks\":[],\"marks\":[]}'",
+            'DEFAULT \'{"blocks":[],"marks":[]}\'',
         ],
     ),
     (
@@ -748,19 +748,37 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON expression_interaction_attempt(status, paused_at, expires_at)",
         ],
     ),
+    (
+        38,
+        [
+            "CREATE TABLE character_initialization (id TEXT PRIMARY KEY)",
+            "CREATE TABLE presence_checkpoint (id TEXT PRIMARY KEY, "
+            "sequence INTEGER NOT NULL, snapshot TEXT NOT NULL)",
+        ],
+    ),
 ]
 
 
-async def connect(path: str | None = None) -> Database:
+def resolve_db_path(path: str | None = None) -> str:
+    """Resolve legacy defaults without moving existing saves."""
+    return (
+        path
+        or os.environ.get("NYX_DB")
+        or (_LEGACY_DB_PATH if Path(_LEGACY_DB_PATH).is_file() else DEFAULT_DB_PATH)
+    )
+
+
+async def connect(
+    path: str | None = None,
+    *,
+    migrations: list[tuple[int, list[str]]] | None = None,
+) -> Database:
     """打开（或创建）SQLite：设 pragma + row_factory，跑迁移，返回 conn+lock 捆绑。
 
     path 优先级：显式参数 > NYX_DB env > 旧默认 nyx.db（若存在）
     > 新默认 data/nyx.db。
     """
-    override = path or os.environ.get("NYX_DB")
-    resolved = override or (
-        _LEGACY_DB_PATH if Path(_LEGACY_DB_PATH).is_file() else DEFAULT_DB_PATH
-    )
+    resolved = resolve_db_path(path)
     if resolved != ":memory:":
         Path(resolved).parent.mkdir(parents=True, exist_ok=True)
     conn = await aiosqlite.connect(resolved)
@@ -768,17 +786,19 @@ async def connect(path: str | None = None) -> Database:
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA foreign_keys = ON")  # FK 完整性（SQLite 默认关）
         await conn.execute("PRAGMA journal_mode = WAL")  # 崩溃安全 + 读写不互斥
-        await conn.execute(
-            f"PRAGMA busy_timeout = {int(DB_OPERATION_TIMEOUT * 1000)}"
-        )
-        await migrate(conn)
-    except Exception:
-        await conn.close()  # 迁移失败：关连接避免泄漏，原异常上抛
+        await conn.execute(f"PRAGMA busy_timeout = {int(DB_OPERATION_TIMEOUT * 1000)}")
+        await migrate(conn, migrations=migrations)
+    except BaseException:
+        await conn.close()  # 迁移失败或启动取消：关闭未交付给宿主的连接。
         raise
     return Database(conn=conn, lock=asyncio.Lock())
 
 
-async def migrate(conn: aiosqlite.Connection) -> None:
+async def migrate(
+    conn: aiosqlite.Connection,
+    *,
+    migrations: list[tuple[int, list[str]]] | None = None,
+) -> None:
     """版本化迁移：schema_version 单行记录当前版本，逐版本套用未应用的迁移。
 
     每版本一个事务（BEGIN/COMMIT/ROLLBACK）：失败整体回滚、版本不推进，
@@ -795,7 +815,7 @@ async def migrate(conn: aiosqlite.Connection) -> None:
         current = 0
     else:
         current = int(row[0])
-    for version, statements in _MIGRATIONS:
+    for version, statements in _MIGRATIONS if migrations is None else migrations:
         if version <= current:
             continue
         await conn.execute("BEGIN")

@@ -6,14 +6,15 @@
 
 ## 模块与装配
 
+书籍、进度、笔记、阅读缓冲和后台任务按角色独立；API 准入后固定运行时。前端重试捕获角色 scope、书籍、会话与原 payload，切换后未发送重试停止；已受理工作在原角色完成。角色内 EPUB 与活动材料继续统一发现，后台角色不开始新的陪读主动提问。
+
 - 阅读源码位于 `nyx/reading/`，核心入口是 `ReadingFacade`。
 - 组合根在 `nyx/app_context.py` 构造 `ReadingStore`、`ReadingFacade` 并注入：
   `InnerLifeFacade`、`DesireFacade`、`MemoryFacade`、`LlmClient`、`Evaluator`、
   `EventBus`、canon 和 `ExpressionFacade`。
 - `ReadingFacade` 还持有 `ReadingCompanion` 和 `ReadingIntegration`。
 - 组合根以窄回调向活动系统暴露未完成 EPUB 列表、单书查询、进度查询和 `read_for_activity()`；活动系统不直接访问阅读表。
-- `nyx/main.py` 关停时先停止阅读后台任务接收，再等待阅读任务 `drain()`，最后关闭总线；
-  总线最终关闭共享数据库。
+- `nyx/runtime.py:stop_character` 按角色停止阅读后台准入并等待 `drain()`；全部生产者、runner 和总线 worker 结束后才关闭该角色数据库。超时保留 STOPPING，不影响其他角色。
 
 ## 内容导入
 

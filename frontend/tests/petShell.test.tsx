@@ -4,6 +4,7 @@ import PetShell from "../src/components/desktop/PetShell";
 import { useActivityStore } from "../src/stores/activityStore";
 import { useReaderStore } from "../src/stores/readerStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
+import { useCharacterStore } from "../src/stores/characterStore";
 import type { CurrentState } from "../src/types/api";
 
 vi.mock("../src/components/inner/Avatar", () => ({
@@ -24,6 +25,7 @@ vi.mock("../src/components/inner/Avatar", () => ({
 }));
 
 beforeEach(() => {
+  useCharacterStore.setState({ registry: null });
   useInnerLifeStore.setState({ current: null, error: null });
   useActivityStore.setState({ data: null, results: null, error: null });
   useReaderStore.setState({
@@ -36,6 +38,16 @@ beforeEach(() => {
 });
 
 describe("PetShell 桌宠菜单", () => {
+  it("在主菜单提供角色切换入口", () => {
+    useCharacterStore.setState({ registry: {
+      current_id: "alice", selection_revision: 1, limit: 4,
+      characters: [{ id: "alice", name: "Alice", status: "RUNNING", assets: {}, error: null, sync_error: null }],
+    } });
+    render(<PetShell night={false} onExpand={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Nyx 头像" }));
+    expect(screen.getByRole("combobox", { name: "当前角色" })).toHaveValue("alice");
+    useCharacterStore.setState({ registry: null });
+  });
   it("头像点击在半月菜单展开与收起之间切换", () => {
     render(<PetShell night={false} onExpand={vi.fn()} />);
     const avatar = screen.getByRole("button", { name: "Nyx 头像" });

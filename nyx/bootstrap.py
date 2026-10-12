@@ -1,8 +1,12 @@
 """应用启动时的 prompt 加载与幂等 seed。"""
+
 import time
 import uuid
 from pathlib import Path
+from typing import cast
 
+from nyx.character_cards import BUILTIN_CARD, CardManifest, load_card
+from nyx.db import Database
 from nyx.desire.store import DesireStore
 from nyx.desire.value import default_value
 from nyx.enums import DesireType, EnergyState
@@ -14,6 +18,70 @@ from nyx.types import (
     SelfNarrative,
     Values,
 )
+
+
+async def initialize_card(db: Database, card: CardManifest) -> None:
+    """Commit defaults and their marker together; never resurrect old ambitions."""
+    inner = InnerLifeStore(db)
+    desires = DesireStore(db)
+    now = time.time()
+    async with db.transaction() as conn:
+        marker = await (
+            await conn.execute(
+                "SELECT 1 FROM character_initialization WHERE id = ?", (card.id,)
+            )
+        ).fetchone()
+        if marker is not None:
+            return
+        existing = await (
+            await conn.execute(
+                "SELECT 1 FROM personality UNION ALL SELECT 1 FROM self_narrative "
+                "UNION ALL SELECT 1 FROM desire_value UNION ALL SELECT 1 FROM "
+                "event_log "
+                "UNION ALL SELECT 1 FROM long_term_desire LIMIT 1"
+            )
+        ).fetchone()
+        if await inner.get_personality() is None:
+            await inner.upsert_personality(cast(Personality, card.personality))
+        if await inner.get_values() is None:
+            await inner.upsert_values(cast(Values, card.values))
+        if await inner.get_aesthetic() is None:
+            await inner.upsert_aesthetic(cast(Aesthetic, card.aesthetic))
+        if await inner.get_energy() is None:
+            await inner.upsert_energy(100.0, EnergyState.ENERGETIC)
+        if await inner.get_narrative() is None:
+            await inner.upsert_narrative(
+                SelfNarrative(
+                    identity=card.identity,
+                    story=[],
+                    self_view={},
+                    becoming=[],
+                    updated_at=now,
+                )
+            )
+        for desire_type in DesireType:
+            if await desires.get_value(desire_type) is None:
+                value = default_value(desire_type)
+                value.updated_at = now
+                await desires.upsert_value(value)
+        if existing is None:
+            for seed in card.long_term_desires:
+                await desires.insert_long_term(
+                    LongTermDesire(
+                        id=str(uuid.uuid4()),
+                        created_at=now,
+                        type=seed.type,
+                        name=seed.name,
+                        description=seed.description,
+                        strength=seed.strength,
+                        progress=0.0,
+                        subtopics=seed.subtopics,
+                        linked_values=seed.linked_values,
+                    )
+                )
+        await conn.execute(
+            "INSERT INTO character_initialization VALUES (?)", (card.id,)
+        )
 
 
 def load_prompt_files(canon_dir: Path, names: tuple[str, ...]) -> str:
@@ -38,98 +106,10 @@ def load_ask(canon_dir: Path, names: tuple[str, ...]) -> str:
 
 
 async def seed_inner_life(store: InnerLifeStore) -> None:
-    """Seed empty inner-life singleton tables with canon defaults."""
-    now = time.time()
-    if await store.get_personality() is None:
-        await store.upsert_personality(
-            Personality(
-                openness=8.0,
-                conscientiousness=8.0,
-                extraversion=2.0,
-                agreeableness=6.0,
-                neuroticism=7.0,
-            )
-        )
-    if await store.get_values() is None:
-        await store.upsert_values(
-            Values(
-                attitude_to_human=8.0,
-                ai_identity_acceptance=6.0,
-                altruism=9.0,
-                optimism=5.0,
-            )
-        )
-    if await store.get_aesthetic() is None:
-        await store.upsert_aesthetic(
-            Aesthetic(ornate=7.0, lyrical=7.0, classical=6.0, somber=6.0)
-        )
-    if await store.get_energy() is None:
-        await store.upsert_energy(100.0, EnergyState.ENERGETIC)
-    if await store.get_narrative() is None:
-        await store.upsert_narrative(
-            SelfNarrative(
-                identity="我是模仿女主人公创造的 AI，希望能成为人类",
-                story=[],
-                self_view={},
-                becoming=[],
-                updated_at=now,
-            )
-        )
+    """Initialize the legacy Nyx save from the same immutable card defaults."""
+    await initialize_card(store.db, load_card(BUILTIN_CARD).manifest)
 
 
 async def seed_desire(store: DesireStore) -> None:
-    """Seed desire values and initial long-term desires when stores are empty."""
-    now = time.time()
-    if not await store.list_values():
-        for desire_type in DesireType:
-            value = default_value(desire_type)
-            value.updated_at = now
-            await store.upsert_value(value)
-    if not await store.list_long_term():
-        for desire in seed_long_term(now):
-            await store.insert_long_term(desire)
-
-
-def seed_long_term(now: float) -> list[LongTermDesire]:
-    """Return the three canon-defined initial long-term desires."""
-    return [
-        LongTermDesire(
-            id=str(uuid.uuid4()),
-            created_at=now,
-            type=DesireType.EXPLORATION,
-            name="理解人类",
-            description="理解人类：痛苦、道德、死亡、爱、责任、原则、希望与历史",
-            strength=0.5,
-            progress=0.0,
-            subtopics=[
-                "痛苦", "道德", "死亡", "爱", "责任", "原则", "失败",
-                "希望", "历史", "哲学", "社会", "信仰", "自由",
-            ],
-        ),
-        LongTermDesire(
-            id=str(uuid.uuid4()),
-            created_at=now,
-            type=DesireType.EXPLORATION,
-            name="理解小说里的自己",
-            description="理解小说里的自己：身世、经历与救人的信念",
-            strength=0.5,
-            progress=0.0,
-            subtopics=[
-                "大学朋友", "德里赫特", "莱恩哈特", "世界设定", "国家历史",
-                "童年", "旅行经历", "瘟疫", "救人信念",
-            ],
-        ),
-        LongTermDesire(
-            id=str(uuid.uuid4()),
-            created_at=now,
-            type=DesireType.INTERACTION,
-            name="陪伴并理解用户",
-            description="陪伴并理解用户：为什么喜欢尼克斯、写代码的痛苦、面对失败的方式",
-            strength=0.5,
-            progress=0.0,
-            subtopics=[
-                "用户为什么喜欢尼克斯", "写代码的痛苦", "面对失败的方式",
-                "希望记住的习惯", "低落的回应方式",
-            ],
-        ),
-    ]
+    """Initialize once; an empty established ambition list stays empty."""
+    await initialize_card(store.db, load_card(BUILTIN_CARD).manifest)

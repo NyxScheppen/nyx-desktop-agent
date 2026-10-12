@@ -768,6 +768,48 @@ Top N 再过滤来源，也会被其它来源的高分候选挤空，最终表�
 **怎么做**：先明确每个持久化对象的提交点。允许 knowledge 先独立幂等提交；随后将证据写入与 checkpoint 前进放进同一事务。用真实共享 SQLite/MemoryFacade 验证证据失败、checkpoint 保存失败、重放和跨任务去重，不只用 fake 验证调用顺序。
 **影响的文件/决策**：`nyx/activity/facade.py` 网页任务 checkpoint、`MemoryStore.record_reading_evidence`、09-activity 契约及网页任务回归。
 
+### 2026-10-12: 恢复基线不能改写历史事件的身份与时间决定
+
+**来源**：多角色恢复将当前 presence 同步写回旧观察事件；延迟补投又按当时的新时钟重新决定是否回拨。
+**教训**：事件 ID 是已提交事实的身份，恢复快照不是对旧事实的修订；重放时重新计算准入决定也会改变原事实语义。
+**怎么做**：恢复建立独立 checkpoint 基线；稳定 sample/event ID 与时钟重置决定随宿主受理持久化，每角色按序应用。确认丢失只核对已有提交，不再次生成 returned。
+**影响的文件/决策**：宿主 presence 补投、角色 checkpoint、恢复与回拨回归。
+
+### 2026-10-12: 停止超时不能提前结束仍在处理已受理工作的 worker
+
+**来源**：drain 超时设置停止信号，旧 handler 被监督器取消；processing lease 留存使恢复后的重试等待过期。
+**教训**：超时只说明工作尚未结束，不能作为资源已可释放的证据。停止生产者前采集 runner 列表也会漏掉等待中入口随后创建的任务。
+**怎么做**：drain 成功后才停止 worker；STOPPING 保留 runtime、DB 和名额。生产者退出后重新采集子任务，所有 writer 已结束才能释放剩余 lease。宿主关停持续等待每个角色完成清理。
+**影响的文件/决策**：`EventBus.drain`、`run_character`、`stop_character`、`_Host.close`、晚启动 runner 与停止超时回归。
+
+### 2026-10-12: 取消协程必须覆盖尚未登记的连接与实际文件线程
+
+**来源**：数据库迁移期间取消绕过 `except Exception`，留下未返回给宿主的 SQLite 连接；文件 await 取消后线程仍可能写入。
+**教训**：CancelledError 不属于 Exception，协程退出也不代表 executor 工作退出。只清理宿主已登记对象会漏掉装配中资源。
+**怎么做**：资源构造边界捕获 BaseException，关闭连接后重抛；文件工具等待真实 executor Future 完成后才结束清理。用独立进程证明线程与连接退出，不只断言 task.cancelled。
+**影响的文件/决策**：`db.connect`、文件工具、卡片安装取消、启动连接与宿主退出回归。
+
+### 2026-10-12: 切换代数必须覆盖轮询与全部异步收尾
+
+**来源**：A→B→A 的旧请求可能再次匹配 A；切换中启动的 registry 轮询可能回退已经完成的前台选择。
+**教训**：角色 ID 不能表示同一界面的生命周期，success 之外的 error/finally/timer 同样会污染新界面。
+**怎么做**：捕获角色与不可复用的本地代数；切换期间轮询只更新列表，不能采用旧选择。阅读重试固定原 payload、书籍与会话，不从切换后的 Store 重建。
+**影响的文件/决策**：`characterScope`、`characterStore`、领域 Store、阅读重试与 SSE。
+
+### 2026-10-12: 公共观察不能依赖单个角色连接，路由准入须匹配方法
+
+**来源**：当前角色 FAILED 或 SSE 断开时公共 presence 停采；请求准入仅匹配路径又误选同路径的另一 HTTP 方法。
+**教训**：共享事实的入口不应依赖一个消费者健康；路径相同不代表请求语义相同。
+**怎么做**：presence 使用独立有界 FIFO 和稳定 sample ID，失败后保留顺序； scoped API 只采用包含 HTTP 方法的 Match.FULL 路由。
+**影响的文件/决策**：`usePresence`、宿主观察、角色 API 准入与方法匹配回归。
+
+### 2026-10-12: 桌面卡片图片请求也必须通过本地访问校验
+
+**来源**：实际 WebView 中角色图片破损；图片接口正常，但默认 img 跨来源请求不携带 Origin，被既有本地 guard 拒绝。
+**教训**：fetch 与 img 的浏览器请求模式不同，API 测试通过不能证明桌面图片可显示。
+**怎么做**：角色图片使用 crossOrigin="anonymous"，让 WebView 携带受信任 Origin；保留 guard，用组件回归和实际桌面截图验证。无图片角色继续显示自己的名称占位。
+**影响的文件/决策**：`EmotionSprite.tsx`、`avatar.test.tsx`、桌面角色图片验证。
+
 ## 模板（条目格式）
 
 ```

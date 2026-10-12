@@ -3,6 +3,7 @@
 
 砍掉逐层地牢游戏层（FloorNode/决策支/托管/下楼），只保留「搜 → 读 → 总结」这条线。
 """
+
 import json
 import logging
 from pathlib import Path
@@ -47,6 +48,7 @@ class Exploration:
         desire: DesireFacade,
         memory: MemoryFacade,
         exploration_config: ExplorationConfig,
+        canon: str = "",
     ) -> None:
         self._llm = llm
         self._evaluator = evaluator
@@ -55,6 +57,7 @@ class Exploration:
         self._desire = desire
         self._memory = memory
         self._web_enabled = exploration_config.web_enabled
+        self._canon = canon
 
     async def run(self, activity: Activity) -> dict[str, Any]:
         """跑完一次探索状态机，并把 checkpoint 写入 activity.progress。
@@ -167,9 +170,7 @@ class Exploration:
         source_identifier = url or path
         try:
             if url:
-                fetched = await self._call_tool(
-                    "web_fetch", {"url": url}, tool_calls
-                )
+                fetched = await self._call_tool("web_fetch", {"url": url}, tool_calls)
                 if isinstance(fetched, dict):
                     text = cast(dict[str, Any], fetched).get("text")
                     if isinstance(text, str) and text.strip():
@@ -212,9 +213,7 @@ class Exploration:
             tool_calls.append({"name": name, "args": args, "ok": False})
             raise
 
-    async def _search(
-        self, topic: str, tool_calls: list[dict[str, Any]]
-    ) -> list[Any]:
+    async def _search(self, topic: str, tool_calls: list[dict[str, Any]]) -> list[Any]:
         """联网搜索 → 本地搜索兜底；禁用联网时直落本地。"""
         if self._web_enabled:
             res = await self._call_tool("web_search", {"query": topic}, tool_calls)
@@ -244,12 +243,21 @@ class Exploration:
         try:
             output = await self._llm.complete(
                 [
-                    {"role": "system", "content": _EXPLORATION_FINALIZE_SYSTEM},
-                    {"role": "user", "content": json.dumps({
-                        "seed_topic": topic,
-                        "findings": findings,
-                        "related_memories": related,
-                    }, ensure_ascii=False)},
+                    {
+                        "role": "system",
+                        "content": self._canon + "\n\n" + _EXPLORATION_FINALIZE_SYSTEM,
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "seed_topic": topic,
+                                "findings": findings,
+                                "related_memories": related,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
                 ],
                 module="activity",
                 output_type="exploration_finalize",
@@ -280,9 +288,7 @@ class Exploration:
                 if isinstance(topic, str) and topic.strip()
             ]
             if topics:
-                await self._desire.add_long_term_subtopics(
-                    parent_long_term_id, topics
-                )
+                await self._desire.add_long_term_subtopics(parent_long_term_id, topics)
         knowledge = judged.get("knowledge")
         if isinstance(knowledge, list):
             items: list[dict[str, str]] = []
@@ -435,9 +441,7 @@ def _result_from_checkpoint(checkpoint: dict[str, Any]) -> dict[str, Any]:
         "summary": str(judged.get("summary") or topic),
         "core_discovery": core_discovery,
         "knowledge": (
-            judged["knowledge"]
-            if isinstance(judged.get("knowledge"), list)
-            else []
+            judged["knowledge"] if isinstance(judged.get("knowledge"), list) else []
         ),
         "new_topics": (
             judged["casual_new_topics"]
@@ -455,8 +459,7 @@ def _result_from_checkpoint(checkpoint: dict[str, Any]) -> dict[str, Any]:
 
 
 _EXPLORATION_FINALIZE_SYSTEM = (
-    "你是尼克斯，一个住在用户电脑里的 AI 同伴，"
-    "温柔克制、思虑很深，想真正弄懂一件事的来龙去脉。"
+    "遵循角色设定，认真理解资料的来龙去脉。"
     "你刚针对一个种子话题做了一场探索：搜索资料、读了几条发现（标题+正文），"
     "现在要结算这场探索，判断有没有挖到核心发现、哪些新话题值得继续追。"
     "给你的「相关记忆」是你之前对类似话题已经知道/想过的东西，"

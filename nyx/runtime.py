@@ -1,16 +1,21 @@
 """应用后台运行循环：tick、EventBus 监督与屏幕视觉采样。"""
+
+# pyright: reportPrivateUsage=false
 import asyncio
 import inspect
 import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from nyx.enums import ActivityStatus, DesireType, EventType, Source, TickType
 from nyx.events.event import internal_event
 from nyx.expression.mutter import should_initiate_chat
 from nyx.types import ActivityContext, Event
+
+if TYPE_CHECKING:
+    from nyx.app_context import _Host
 
 DEFAULT_REFLECT_MIN_INTERVAL = 21600.0
 DEFAULT_REFLECT_MIN_NEW_MEMORIES = 3
@@ -38,7 +43,8 @@ async def on_user_message(app: Any, event: Event) -> None:
     previous = await app.bus.list_events(correlation_id=event.correlation_id)
     if any(item.type in (EventType.SPEAK, EventType.ASK) for item in previous):
         return
-    await app.record_user_online(event.timestamp)
+    if getattr(app, "host", None) is None:
+        await app.record_user_online(event.timestamp)
     current = await app.activity.get_current()
     interrupted = (
         current
@@ -64,12 +70,9 @@ async def on_user_message(app: Any, event: Event) -> None:
     supports_context = False
     try:
         signature = inspect.signature(reply_method)
-        supports_context = (
-            "activity_context" in signature.parameters
-            or any(
-                parameter.kind is inspect.Parameter.VAR_KEYWORD
-                for parameter in signature.parameters.values()
-            )
+        supports_context = "activity_context" in signature.parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
         )
     except (TypeError, ValueError):
         supports_context = True
@@ -110,9 +113,10 @@ async def on_desire_eval(app: Any, event: Event) -> None:
 async def on_mutter_check(app: Any, event: Event) -> None:
     """Consume a mutter check tick."""
     _require_tick(event, TickType.MUTTER_CHECK)
-    await app.expression.mutter(
-        await app.inner_life.get_state(), event.correlation_id
-    )
+    state = await app.inner_life.get_state()
+    if callable(getattr(app, "can_initiate", None)) and not app.can_initiate():
+        return
+    await app.expression.mutter(state, event.correlation_id)
 
 
 async def on_initiate_chat_check(app: Any, event: Event) -> None:
@@ -154,6 +158,14 @@ async def check_initiate_chat(app: Any) -> None:
     )
     claimed = await claim(interaction.id) if callable(claim) else True
     if not claimed:
+        return
+    if callable(getattr(app, "can_initiate", None)) and not app.can_initiate():
+        release = cast(
+            Callable[[str], Awaitable[bool]] | None,
+            getattr(app.desire, "release_interaction_claim", None),
+        )
+        if callable(release):
+            await release(interaction.id)
         return
     try:
         committed = await app.expression.initiate_chat(interaction, state)
@@ -220,9 +232,7 @@ async def check_reflect(
 def _require_tick(event: Event, expected: TickType) -> None:
     actual = event.content.get("tick_type")
     if actual != expected.value:
-        raise ValueError(
-            f"tick consumer {expected.value!r} received {actual!r}"
-        )
+        raise ValueError(f"tick consumer {expected.value!r} received {actual!r}")
 
 
 async def tick_loop(
@@ -241,37 +251,47 @@ async def tick_loop(
     while True:
         now = time.time()
         if now - last_block >= grid:
-            await app.bus.publish(root_event_factory(
-                EventType.CLOCK_TICK,
-                {"tick_type": TickType.SCHEDULE_BLOCK_START.value},
-                Source.INTERNAL,
-            ))
-            await app.bus.publish(root_event_factory(
-                EventType.CLOCK_TICK,
-                {"tick_type": TickType.DESIRE_EVAL.value},
-                Source.INTERNAL,
-            ))
+            await app.bus.publish(
+                root_event_factory(
+                    EventType.CLOCK_TICK,
+                    {"tick_type": TickType.SCHEDULE_BLOCK_START.value},
+                    Source.INTERNAL,
+                )
+            )
+            await app.bus.publish(
+                root_event_factory(
+                    EventType.CLOCK_TICK,
+                    {"tick_type": TickType.DESIRE_EVAL.value},
+                    Source.INTERNAL,
+                )
+            )
             last_block = now
         if now - last_mutter >= mutter_check_interval:
-            await app.bus.publish(root_event_factory(
-                EventType.CLOCK_TICK,
-                {"tick_type": TickType.MUTTER_CHECK.value},
-                Source.INTERNAL,
-            ))
+            await app.bus.publish(
+                root_event_factory(
+                    EventType.CLOCK_TICK,
+                    {"tick_type": TickType.MUTTER_CHECK.value},
+                    Source.INTERNAL,
+                )
+            )
             last_mutter = now
         if now - last_chat >= initiate_chat_interval:
-            await app.bus.publish(root_event_factory(
-                EventType.CLOCK_TICK,
-                {"tick_type": TickType.INITIATE_CHAT_CHECK.value},
-                Source.INTERNAL,
-            ))
+            await app.bus.publish(
+                root_event_factory(
+                    EventType.CLOCK_TICK,
+                    {"tick_type": TickType.INITIATE_CHAT_CHECK.value},
+                    Source.INTERNAL,
+                )
+            )
             last_chat = now
         if now - last_reflect >= reflect_check_interval:
-            await app.bus.publish(root_event_factory(
-                EventType.CLOCK_TICK,
-                {"tick_type": TickType.REFLECTION_CHECK.value},
-                Source.INTERNAL,
-            ))
+            await app.bus.publish(
+                root_event_factory(
+                    EventType.CLOCK_TICK,
+                    {"tick_type": TickType.REFLECTION_CHECK.value},
+                    Source.INTERNAL,
+                )
+            )
             last_reflect = now
         await app.expression.check_timeouts(now)
         await asyncio.sleep(tick_interval)
@@ -303,12 +323,14 @@ async def supervise_bus(
             failures += 1
             if failures >= max_failures:
                 logging.getLogger(__name__).critical(
-                    "总线连续 %d 次异常，判定致命，终止进程", failures
+                    "角色总线连续 %d 次异常，停止该运行时", failures
                 )
                 raise
             logging.getLogger(__name__).exception(
                 "总线 run() 异常终止，%.1fs 后重启（第 %d/%d 次）",
-                delay, failures, max_failures,
+                delay,
+                failures,
+                max_failures,
             )
             await asyncio.sleep(delay)
             delay = min(delay * 2.0, backoff_max)
@@ -316,9 +338,172 @@ async def supervise_bus(
 
 async def vision_loop(app: Any) -> None:
     """Run the optional screen observer and update the app's latest summary."""
+
     def update(summary: str) -> None:
         app.last_screen_summary = summary
 
     observer = app.screen_observer
     if observer is not None:
         await observer.run(update)
+
+
+async def run_character(host: "_Host", identity: str) -> None:
+    """A fatal role loop closes admission for this role, without exiting the host."""
+    app = host.apps[identity]
+    tasks = [
+        asyncio.create_task(
+            supervise_bus(
+                app,
+                backoff_base=1,
+                backoff_max=30,
+                max_failures=8,
+                recovery_streak=3,
+            )
+        ),
+        asyncio.create_task(
+            tick_loop(
+                app,
+                tick_interval=60,
+                mutter_check_interval=150,
+                initiate_chat_interval=300,
+                reflect_check_interval=3600,
+            )
+        ),
+    ]
+    app.tick_task = tasks[1]
+    try:
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        stopping = host.closing or host.records[identity]["status"] == "STOPPING"
+        for task in done:
+            if stopping and task is tasks[1] and task.cancelled():
+                continue
+            task.result()
+        if stopping:
+            # Stopping the clock must leave accepted deliveries alive for drain.
+            await tasks[0]
+        elif host.records[identity]["status"] == "RUNNING":
+            raise RuntimeError("角色后台循环意外结束")
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        record = dict(host.records[identity])
+        if record["status"] == "RUNNING":
+            record.update(status="FAILED", error=str(error))
+            await host.save_record(record)
+        await app.reading.quiesce()
+        await app.activity.quiesce()
+        logging.getLogger(__name__).exception("角色运行失败 character_id=%s", identity)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def stop_character(host: "_Host", identity: str) -> bool:
+    """Bounded stop; never close a DB underneath a cancellation-resistant writer."""
+    app = host.apps[identity]
+    if app.tick_task is not None:
+        app.tick_task.cancel()
+        _, pending = await asyncio.wait([app.tick_task], timeout=5)
+        if pending:
+            return False
+    await app.reading.quiesce()
+    await app.activity.quiesce()
+    live = set(host.requests.get(identity, set())) | set(app.reading._background_tasks)
+    if app.activity._task is not None:
+        live.add(app.activity._task)
+    live = {task for task in live if not task.done()}
+    if live:
+        _, pending = await asyncio.wait(live, timeout=10)
+        for task in pending:
+            task.cancel()
+        if pending:
+            _, pending = await asyncio.wait(pending, timeout=5)
+            if pending:
+                return False
+    await app.bus.quiesce()
+    if app.bus._running and not await app.bus.drain(timeout=15):
+        return False
+    lifecycle = host.lifecycle.get(identity)
+    if lifecycle is not None and not lifecycle.done():
+        lifecycle.cancel()
+        _, pending = await asyncio.wait([lifecycle], timeout=5)
+        if pending:
+            return False
+    # A cancelled consumer can still have a handler unwinding.
+    if any(not task.done() for task in app.bus._workers.values()):
+        return False
+    # Admitted requests/handlers can create a runner after the first snapshot.
+    # Their producers have now stopped; collect and settle their final children.
+    await app.reading.quiesce()
+    await app.activity.quiesce()
+    children = set(app.reading._background_tasks)
+    if app.activity._task is not None:
+        children.add(app.activity._task)
+    children = {task for task in children if not task.done()}
+    for task in children:
+        task.cancel()
+    if children:
+        _, pending = await asyncio.wait(children, timeout=5)
+        if pending:
+            return False
+    # This instance has no remaining writers. Unlike a process crash, its old
+    # processing leases can be released now, before an immediate restore.
+    assert app.database is not None
+    async with app.database.transaction() as conn:
+        await conn.execute(
+            "UPDATE event_delivery SET status='pending', started_at=NULL, "
+            "lease_until=NULL WHERE status='processing'"
+        )
+    return True
+
+
+async def host_presence_loop(host: "_Host") -> None:
+    """Fanout recipients independently and finish interrupted unloads."""
+    while True:
+        for identity in list(host.apps):
+            if host.records[identity]["status"] == "RUNNING":
+                previous = host.presence_tasks.get(identity)
+                if previous is None or previous.done():
+                    if previous is not None and not previous.cancelled():
+                        try:
+                            previous.result()
+                        except Exception:
+                            logging.getLogger(__name__).exception(
+                                "在线补投任务失败 character_id=%s", identity
+                            )
+                    host.presence_tasks[identity] = asyncio.create_task(
+                        host.flush_presence(identity)
+                    )
+        for identity in list(host.records):
+            if host.records[identity]["status"] == "STOPPING":
+                previous = host.stopping.get(identity)
+                if previous is None or previous.done():
+                    if previous is not None and not previous.cancelled():
+                        try:
+                            previous.result()
+                        except Exception:
+                            logging.getLogger(__name__).exception(
+                                "角色停止任务失败 character_id=%s", identity
+                            )
+                    host.stopping[identity] = asyncio.create_task(host.unload(identity))
+        await asyncio.sleep(0.5)
+
+
+async def host_vision_loop(host: "_Host") -> None:
+    """Discard a screen result if selection changed during generation."""
+    from nyx.activity.screen import ScreenObserver, capture_screen
+    from nyx.llm.vision import VisionClient
+
+    vision = VisionClient.from_config(host.config.vision)
+    observer = ScreenObserver(
+        capture_screen, vision.describe, host.config.vision.interval_seconds
+    )
+    while True:
+        identity, revision = host.current_id, host.revision
+        summary = await observer.sample_once()
+        if summary and (identity, revision) == (host.current_id, host.revision):
+            app = host.apps.get(identity)
+            if app is not None and app.can_initiate():
+                app.last_screen_summary = summary
+        await asyncio.sleep(host.config.vision.interval_seconds)

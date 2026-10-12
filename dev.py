@@ -79,9 +79,7 @@ def _backend_identity_matches(body: bytes, launch_nonce: str) -> bool:
 
 
 def _probe_backend_identity(launch_nonce: str) -> bool:
-    connection = HTTPConnection(
-        *_BACKEND_ADDRESS, timeout=_BACKEND_PROBE_TIMEOUT
-    )
+    connection = HTTPConnection(*_BACKEND_ADDRESS, timeout=_BACKEND_PROBE_TIMEOUT)
     try:
         connection.request("GET", "/api/ready")
         response = connection.getresponse()
@@ -95,24 +93,18 @@ def _probe_backend_identity(launch_nonce: str) -> bool:
     return _backend_identity_matches(body, launch_nonce)
 
 
-def _wait_for_backend_ready(
-    proc: subprocess.Popen[bytes], launch_nonce: str
-) -> None:
+def _wait_for_backend_ready(proc: subprocess.Popen[bytes], launch_nonce: str) -> None:
     """Wait until the owned backend proves its per-launch identity."""
     deadline = time.monotonic() + _BACKEND_STARTUP_TIMEOUT
     while time.monotonic() < deadline:
         code = proc.poll()
         if code is not None:
-            raise RuntimeError(
-                f"backend exited before becoming ready (code={code})"
-            )
+            raise RuntimeError(f"backend exited before becoming ready (code={code})")
         if _probe_backend_identity(launch_nonce):
             code = proc.poll()
             if code is None:
                 return
-            raise RuntimeError(
-                f"backend exited before becoming ready (code={code})"
-            )
+            raise RuntimeError(f"backend exited before becoming ready (code={code})")
         time.sleep(_BACKEND_PROBE_TIMEOUT)
     raise RuntimeError("backend did not become ready before the startup timeout")
 
@@ -167,7 +159,7 @@ def _find_launcher_pids() -> list[int]:
         "Get-CimInstance Win32_Process | Where-Object "
         "{ $_.Name -match 'python' -and "
         "$_.CommandLine -match '(^|[\\\" ])dev\\.py([\\\" ]|$)' } | "
-        "ForEach-Object { \"$($_.ProcessId),$($_.ParentProcessId)\" }"
+        'ForEach-Object { "$($_.ProcessId),$($_.ParentProcessId)" }'
     )
     result = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", query],
@@ -238,8 +230,7 @@ def _acquire_launcher_lock() -> int:
                 else:
                     os.kill(owner_pid, signal.SIGTERM)
                 while (
-                    _launcher_process_matches(owner_pid)
-                    and time.monotonic() < deadline
+                    _launcher_process_matches(owner_pid) and time.monotonic() < deadline
                 ):
                     time.sleep(0.05)
                 if _launcher_process_matches(owner_pid):
@@ -345,7 +336,9 @@ def main() -> None:
 
         target = subprocess.run(
             ["rustc", "--print", "host-tuple"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         download = cast(
             Callable[..., str], getattr(huggingface_hub, "snapshot_download")
@@ -357,20 +350,46 @@ def main() -> None:
         output = ROOT / "build" / "sidecar"
         separator = ";" if os.name == "nt" else ":"
         command = [
-            sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir",
-            "--name", "nyx-backend", "--distpath", str(output),
-            "--workpath", str(ROOT / "build" / "pyinstaller"),
-            "--specpath", str(ROOT / "build"), "--paths", str(ROOT),
-            "--add-data", f"{ROOT / 'config.yaml'}{separator}.",
-            "--add-data", f"{ROOT / 'nyx' / 'prompts'}{separator}nyx/prompts",
-            "--add-data", f"{model}{separator}embedding-model",
-            "--collect-submodules", "sentence_transformers",
-            "--copy-metadata", "sentence-transformers",
-            "--collect-submodules", "transformers.models.bert",
+            sys.executable,
+            "-m",
+            "PyInstaller",
+            "--noconfirm",
+            "--onedir",
+            "--name",
+            "nyx-backend",
+            "--distpath",
+            str(output),
+            "--workpath",
+            str(ROOT / "build" / "pyinstaller"),
+            "--specpath",
+            str(ROOT / "build"),
+            "--paths",
+            str(ROOT),
+            "--add-data",
+            f"{ROOT / 'config.yaml'}{separator}.",
+            "--add-data",
+            f"{ROOT / 'nyx' / 'prompts'}{separator}nyx/prompts",
+            "--add-data",
+            f"{ROOT / 'nyx' / 'cards'}{separator}nyx/cards",
+            "--add-data",
+            f"{model}{separator}embedding-model",
+            "--collect-submodules",
+            "sentence_transformers",
+            "--copy-metadata",
+            "sentence-transformers",
+            "--collect-submodules",
+            "transformers.models.bert",
         ]
         for module in (
-            "tensorflow", "jax", "matplotlib", "IPython", "pytest",
-            "torchvision", "torchaudio", "cv2", "tkinter",
+            "tensorflow",
+            "jax",
+            "matplotlib",
+            "IPython",
+            "pytest",
+            "torchvision",
+            "torchaudio",
+            "cv2",
+            "tkinter",
         ):
             command.extend(["--exclude-module", module])
         command.append(str(ROOT / "nyx" / "main.py"))
@@ -407,7 +426,9 @@ def main() -> None:
         print(f"[dev] 一键启动：{' + '.join(names)}，Ctrl+C 退出")
         try:
             backend = subprocess.Popen(
-                [sys.executable, "-m", "nyx.main"], cwd=ROOT, env=backend_env,
+                [sys.executable, "-m", "nyx.main"],
+                cwd=ROOT,
+                env=backend_env,
             )
             procs.append(backend)
             backend_pid = cast(object, backend.pid)
@@ -420,10 +441,15 @@ def main() -> None:
                 print(f"[dev] 后端未就绪：{exc}")
                 failed = True
             else:
-                procs.append(subprocess.Popen(
-                    [npm, "run", "tauri", "dev"] if desktop else [npm, "run", "dev"],
-                    cwd=FRONTEND, env=launch_env,
-                ))
+                procs.append(
+                    subprocess.Popen(
+                        [npm, "run", "tauri", "dev"]
+                        if desktop
+                        else [npm, "run", "dev"],
+                        cwd=FRONTEND,
+                        env=launch_env,
+                    )
+                )
                 while True:
                     for name, proc in zip(names, procs):
                         code = proc.poll()

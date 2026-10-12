@@ -58,6 +58,7 @@ _logger = logging.getLogger(__name__)
 class WebTasksDisabledError(ValueError):
     """Explicit web tasks are unavailable while networking is disabled."""
 
+
 def _day_start(now: float) -> float:
     """Return the Unix timestamp for midnight in the system local timezone."""
     local_now = datetime.fromtimestamp(now)
@@ -136,6 +137,7 @@ class ActivityFacade:
             desire,
             memory,
             exploration_config,
+            canon,
         )
         self._lifecycle = _activity_lifecycle.ActivityLifecycle(
             store, bus, desire, config
@@ -193,9 +195,7 @@ class ActivityFacade:
         可续 runner 的 checkpoint 已经持久化，恢复时从对应领域存储继续。
         """
         try:
-            task_id = await self._lifecycle.interrupt(
-                activity_id, by_event, self._task
-            )
+            task_id = await self._lifecycle.interrupt(activity_id, by_event, self._task)
         except BaseException:
             await self._recover_after_lifecycle_error(activity_id)
             raise
@@ -386,7 +386,7 @@ class ActivityFacade:
             if isinstance(pending_raw, dict):
                 pending = cast(dict[str, Any], pending_raw)
             else:
-                block = text[cursor:cursor + 6000]
+                block = text[cursor : cursor + 6000]
                 profile_raw = task.checkpoint.get("profile")
                 profile = (
                     cast(dict[str, object], profile_raw)
@@ -482,9 +482,7 @@ class ActivityFacade:
             current = await self._store.get_task(task.id)
             return current if current is not None else task
         except Exception:
-            _logger.exception(
-                "委派任务已提交，但立即调度失败 task_id=%s", task.id
-            )
+            _logger.exception("委派任务已提交，但立即调度失败 task_id=%s", task.id)
             return task
 
     async def _recover_after_lifecycle_error(self, activity_id: str) -> None:
@@ -503,9 +501,7 @@ class ActivityFacade:
         status: AssignedTaskStatus,
         error: str | None = None,
     ) -> None:
-        task = await self._store.set_task_status(
-            task_id, status, time.time(), error
-        )
+        task = await self._store.set_task_status(task_id, status, time.time(), error)
         if task is not None:
             await self._publish_task_update(task)
 
@@ -549,9 +545,7 @@ class ActivityFacade:
                 )
                 seen = {memory.id for memory in references}
                 references.extend(
-                    memory
-                    for memory in fresh_knowledge
-                    if memory.id not in seen
+                    memory for memory in fresh_knowledge if memory.id not in seen
                 )
                 references = references[:3]
             obs = await self._get_observation()
@@ -624,7 +618,10 @@ class ActivityFacade:
             user_msg += f"\n{context_label}：\n{extra_context}"
         output = await self._llm.complete(
             [
-                {"role": "system", "content": system or _ACTIVITY_SYSTEM},
+                {
+                    "role": "system",
+                    "content": system or self._canon + "\n\n" + _ACTIVITY_SYSTEM,
+                },
                 {"role": "user", "content": user_msg},
             ],
             module="activity",
@@ -637,7 +634,7 @@ class ActivityFacade:
 
 
 _ACTIVITY_SYSTEM = (
-    "你是尼克斯，正在读书。只输出 JSON，键："
+    "你正在读书，遵循角色设定。只输出 JSON，键："
     "book（书名，非空字符串）、note（本次读书笔记，非空字符串）。"
     "note 自然承接已读片段，不重复概括已读部分、只续写本次新读内容；"
     "note 正文里不要写「上次读到第 X 字」这类位置字样。"

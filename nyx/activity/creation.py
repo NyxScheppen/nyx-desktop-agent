@@ -3,7 +3,7 @@ from typing import Any, cast
 
 from nyx.types import Activity, CurrentState, Memory
 
-KNOWLEDGE_REF_CHARS = 80   # 创作知识参考单条截断字符数（decision，可推翻）
+KNOWLEDGE_REF_CHARS = 80  # 创作知识参考单条截断字符数（decision，可推翻）
 CREATION_STYLES = ("日记体", "随笔", "微型小说", "散文诗", "书信体", "观察笔记")
 
 
@@ -38,8 +38,7 @@ def build_creation_context(
         parts.append(f"主题：{topic}")
     if references:
         refs = "\n".join(
-            f"- {m.summary}：{m.content[:KNOWLEDGE_REF_CHARS]}"
-            for m in references[:3]
+            f"- {m.summary}：{m.content[:KNOWLEDGE_REF_CHARS]}" for m in references[:3]
         )
         parts.append(f"参考记忆（知识或旧作，可借鉴，勿编造）：\n{refs}")
     window = observation.get("window_title", "").strip()
@@ -66,7 +65,7 @@ def build_creation_system(canon: str, state: CurrentState) -> str:
     )
     voice = (
         "[创作要求]\n"
-        "以尼克斯的说话风格写：温柔克制安静真诚、带一点羞涩犹豫停顿、偶尔轻微自我修正，"
+        "按角色设定中的说话风格写，"
         "不要客服腔、不要堆砌华丽词藻，让文字有你的情绪底色。"
         "遵循给定风格与此刻审美，可借鉴参考记忆，但绝不编造不存在的知识；"
         "当前屏幕灵感只作启发，勿照搬。按 JSON 输出 {title, content}。"

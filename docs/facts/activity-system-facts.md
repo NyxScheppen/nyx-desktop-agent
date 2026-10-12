@@ -4,6 +4,9 @@
 
 ## 模块边界
 
+- 每个角色独立 ActivityFacade、任务/材料/阅读书库、runner 和工作目录；切换后后台继续，已受理任务保留原归属。只有当前角色可开始新的主动表达；切走后窗口/屏幕当前缓存清空，公共 presence 继续同步。
+- 普通卸载先停生产者，再重新收集可能晚创建的 runner；取消/drain 超时保留 STOPPING、数据库和名额。文件 executor 的实际线程完成前不能视为 runner 已收尾。
+
 - `ActivityFacade` 是活动系统唯一门面：提供活动生命周期、查询、`list_tasks`、`assign_web_task`、`assign_book_task` 和受控关闭入口。
 - `ActivityStarter` 负责“空闲时启动什么”：单 task 守卫、查 RUNNING、同日同块 PAUSED 恢复、委派任务领取、欲望排序、EPUB 选材和默认活动。
 - 欲望排序使用 `short_term.strength * type.expression_weight`，同分按创建时间 FIFO；活动 progress 保留短期欲望的 `parent_long_term_id`。

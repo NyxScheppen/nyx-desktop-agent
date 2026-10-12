@@ -10,7 +10,7 @@
 - `nyx/desire/lifecycle.py`：压力、衰减、达峰生成、满足、淘汰和状态流转。
 - `nyx/desire/facade.py`：事件入口、读快照、活动 claim 和长期欲望新增。
 - `nyx/desire/value.py`：纯数值函数；不在 lifecycle 中重复实现。
-- `nyx/bootstrap.py`：四类压力值和三条初始长期欲望的幂等 seed。
+- `nyx/bootstrap.py`：`initialize_character` 将四类压力、角色卡初始慢变量和长期欲望与一次初始化 marker 原子提交。已有存档的空长期欲望表不重新 seed；Nyx 新存档仍使用内置卡原三条欲望。
 
 ## 数据事实
 

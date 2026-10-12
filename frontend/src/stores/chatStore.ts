@@ -1,3 +1,4 @@
+import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import {
   getEventsLog,
@@ -269,27 +270,35 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
     selectQuestion: (attemptId) => set({ replyTargetId: attemptId }),
     pauseQuestion: async (attemptId) => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       try {
         const question = await pauseQuestion(attemptId);
-        set((s) => ({
+      if (!isScopeCurrent(scope)) return false;
+        commit((s) => ({
           serverTimeOffset: question.server_now - Date.now() / 1000,
           messages: updateQuestion(s.messages, question),
         }));
         return true;
       } catch (err) {
+      if (!isScopeCurrent(scope)) return false;
         console.error("暂停提问失败", err);
         return false;
       }
     },
     resumeQuestion: async (attemptId) => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       try {
         const question = await resumeQuestion(attemptId);
-        set((s) => ({
+      if (!isScopeCurrent(scope)) return false;
+        commit((s) => ({
           serverTimeOffset: question.server_now - Date.now() / 1000,
           messages: updateQuestion(s.messages, question),
         }));
         return true;
       } catch (err) {
+      if (!isScopeCurrent(scope)) return false;
         console.error("恢复提问失败", err);
         return false;
       }
@@ -297,14 +306,17 @@ export const useChatStore = create<ChatState>((set, get) => {
     clearUnreadProactive: () => set({ unreadProactive: false }),
     markTyped: (id) => set((s) => ({ typedIds: { ...s.typedIds, [id]: true } })),
     loadHistory: async () => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       // 每类型并行拉取，合并后按时间升序（旧→新，历史在前）。getEventsLog 失败即整组放弃
       // （与 snapshot store 一致：loadHistory 是 best-effort，不阻塞实时 SSE）。
       try {
         const byType = await Promise.all(
           HISTORY_TYPES.map((t) => getEventsLog({ event_type: t, limit: HISTORY_LIMIT })),
         );
+      if (!isScopeCurrent(scope)) return;
         const merged = byType.flat().sort((a, b) => a.timestamp - b.timestamp);
-        set((s) => {
+        commit((s) => {
           const existing = new Set(s.messages.map((m) => m.id));
           const fresh: ChatMessage[] = [];
           const thinkIds: Record<string, true> = {};
@@ -325,8 +337,9 @@ export const useChatStore = create<ChatState>((set, get) => {
         });
         try {
           const pending = await getPendingQuestions();
+      if (!isScopeCurrent(scope)) return;
           if (!pending || !Array.isArray(pending.questions)) return;
-          set((s) => ({
+          commit((s) => ({
             serverTimeOffset: pending.server_now - Date.now() / 1000,
             messages: closeMissingHistoricalQuestions(
               pending.questions.reduce(
@@ -337,18 +350,22 @@ export const useChatStore = create<ChatState>((set, get) => {
             ),
           }));
         } catch (err) {
+      if (!isScopeCurrent(scope)) return;
           console.error("加载待回答提问失败", err);
         }
       } catch (err) {
+      if (!isScopeCurrent(scope)) return;
         console.error("加载聊天历史失败", err);
       }
     },
     sendMessage: async (text) => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
       // 串行锁要同步上：get() 同步读 store（非 React 订阅），在 await postChat 之前置 isReplying=true。
       // 否则网络往返窗口内 isReplying 仍 false，双击/连击可并发第二次发送、覆盖 pendingId。
       if (get().isReplying) return false;
       sendInFlight = true;
-      set({ isReplying: true, sendError: null, unreadProactive: false });
+      commit({ isReplying: true, sendError: null, unreadProactive: false });
       try {
         const candidates = get().messages.filter(
           (message) => message.attempt_id !== undefined && message.question_status === "waiting",
@@ -357,9 +374,10 @@ export const useChatStore = create<ChatState>((set, get) => {
           candidates.length === 1 ? candidates[0].attempt_id : undefined
         );
         const { event_id } = await postChat(text, replyTo);
+      if (!isScopeCurrent(scope)) return false;
         sendInFlight = false;
         if (replyTo !== undefined) {
-          set((s) => ({
+          commit((s) => ({
             messages: s.messages.map((message) =>
               message.attempt_id === replyTo
                 ? { ...message, question_status: "claimed" }
@@ -372,8 +390,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         if (earlyReplies.delete(event_id)) {
           pendingId = null;
           earlyReplies.clear();
-          set({ isReplying: false, sendError: null });
-          set({ replyTargetId: null });
+          commit({ isReplying: false, sendError: null });
+          commit({ replyTargetId: null });
           return true;
         }
         earlyReplies.clear();
@@ -382,13 +400,14 @@ export const useChatStore = create<ChatState>((set, get) => {
           // 不清 pendingId：迟到回复仍需能匹配并清 sendError
           set({ isReplying: false, sendError: "回复超时" });
         }, REPLY_TIMEOUT_MS);
-        set({ replyTargetId: null });
+        commit({ replyTargetId: null });
         return true;
       } catch (err) {
+      if (!isScopeCurrent(scope)) return false;
         sendInFlight = false;
         earlyReplies.clear();
         // 锁已提前上，失败须复位 isReplying（原先 isReplying 在 await 后才置、catch 无需复位）
-        set({ isReplying: false, sendError: err instanceof Error ? err.message : String(err) });
+        commit({ isReplying: false, sendError: err instanceof Error ? err.message : String(err) });
         return false;
       }
     },

@@ -18,7 +18,7 @@
 - 失败重放只针对失败消费者；已成功消费者不重复执行。
 - 每个稳定 `consumer_id` 对应独立 FIFO worker；同一消费者内按事件时间/id 顺序执行，不同消费者不互相阻塞。
 - handler 状态流转：`pending -> processing -> succeeded`；失败进入 `retry_wait`，超过上限进入 `dead_letter`。
-- handler 完成后的成功或失败状态 finalize 提交失败时，worker 原地重试 finalize，不重复调用 handler；关停后仍未完成的 processing 依赖下次启动 lease 恢复。
+- handler 完成后的成功或失败状态 finalize 提交失败时，worker 原地重试 finalize，不重复调用 handler；崩溃遗留 processing 依赖 lease 恢复。证明旧 worker/runner 全部结束的干净停止会立即释放残留 processing，避免挂载后永久阻塞 FIFO。
 - `processing` 带 `lease_until`；进程崩溃后租约过期的投递会恢复为 `pending`。
 - `EventBus.recover_deliveries()` 会恢复过期 `processing`、到期 `retry_wait`，并为已有 `event_log` 补齐当前已注册 consumer 的缺失 delivery。
 - 内存队列只做唤醒优化，不做事实来源；队列满不能丢失已经持久化的事件。
@@ -28,7 +28,7 @@
 - 委派任务与 Activity 的来源领取、终态和恢复均共享本地事务；完成、失败或中断事务回滚后，Facade 立即调和失去 runner 的 `RUNNING`，调和失败由下一次准入重试。取消 runner 最多等待 5 秒，超时保持原状态且不重排。
 - 任务状态提交后再发布无 durable consumer 的 `TASK_UPDATED` 广播事件。广播、立即调度或调度后回读失败只记日志，不回滚已提交状态，也不把创建请求改成失败；前端还可用 REST 快照恢复。
 - 当前未完全迁移的链仍需谨慎：包含 LLM/文件等不可回滚副作用的路径还不能宣称完整 at-least-once 幂等；`memory.activity_end` 已有本地事务和 effect marker，但其内部 LLM 关系/矛盾判断仍属 best-effort 副作用。`USER_MESSAGE` 重放时若已存在同 correlation 的终局 `SPEAK/ASK` 事件会短路，但中途无终局事件的失败仍会重试。
-- 数据库基础设施已有 `Database.close()`、`Database.transaction()`、锁/SQL 操作超时常量和基础熔断状态；`connect()` 无显式参数或 `NYX_DB` 时优先复用已存在的旧默认 `nyx.db`，否则使用 `data/nyx.db`；非内存路径会先创建父目录；不要新增绕过这些入口的长期连接管理。
+- 数据库基础设施已有 `Database.close()`、`Database.transaction()`、锁/SQL 操作超时常量和基础熔断状态；`connect()` 无显式参数或 `NYX_DB` 时优先复用已存在的旧默认 `nyx.db`，否则使用 `data/nyx.db`；非内存路径会先创建父目录。迁移失败或取消时捕获 BaseException，关闭尚未交给宿主的连接后重抛；不要新增绕过这些入口的长期连接管理。
 - 欲望系统额外使用 `desire_generation_attempt` 保存 LLM 已解析但尚未正式提交的结果及父长期欲望；`short_term_desire.parent_long_term_id` 与 attempt 的对应列都是可空外键，父记录删除时置空；`long_term_desire.name_normalized` 有唯一索引。数据库迁移和语义见 `04-module-bus-system.md` 与 `07-desire.md`。
 - 组合根延迟依赖使用显式可空回调和带上下文的 `RuntimeError` 检查，不再使用可变列表下标占位；表达门面先构造、阅读门面后构造时，通过同样的窄回调延迟绑定
   `ReadingFacade.build_reply_context()`，不让两个 Facade 直接循环依赖。总线 supervisor 在
@@ -36,7 +36,7 @@
 - 表达系统额外使用 `expression_interaction_attempt` 持久化等待用户回应和主动行为承诺；attempt 与 `ASK`/`INITIATE_CHAT` 事件通过 `Database.transaction()` + `EventBus.append_in_transaction()` 同事务提交。用户领取时 `answer_event_id` 作为 claim owner，同 owner 可恢复；ANSWERED 与回复终局同事务，提交后再 announce 唤醒消费者。
 - 表达系统提供 `GET /api/questions/pending` 读取仍在等待的 attempt 和服务端当前时间，`POST /api/questions/{attempt_id}/pause` 与 `/resume` 通过条件更新暂停/恢复计时；这些辅助端点不发布 EventBus 事件。暂停项保留 `paused_at`，不参与超时领取；恢复时按暂停时剩余时长重算 `expires_at`。用户消息若带 `reply_to` 只绑定指定 attempt；未带时仅有一个等待项才自动绑定，多个等待项不猜测。
 - 表达系统的 fallback `SPEAK` 是正常终局事件：解析/评估失败不会吞掉为成功，fallback 发布失败会让用户消息 consumer 进入总线重试；同 correlation 已有终局 SPEAK/ASK 时重放应短路。
-- 关停采用有界 drain：先停止新输入，再等待已受理事件和 delivery 完成；超时保留未完成投递，下次启动恢复，不做伪全局回滚。
+- 普通卸载采用有界 drain，超时不停止活 worker，保留 STOPPING/DB/名额，由宿主继续收尾；宿主 close 则保持事件循环存活，反复收尾全部角色，连接全部关闭后才返回，避免 aiosqlite 线程阻止进程退出。既有桌面父进程退出期限仍可终止无法合作的后端。
 - 当前 `_App` 是组合根内部 dataclass，也承担运行期状态容器；不要把 `_App` 传入 Facade。
 - `/api/observe` 要求严格有限非负的 idle_seconds/sampled_at、一致的 presence 和最多 512 字符标题；采样不能晚于接收时间。presence_lock 串行化观察与消息，采样水位拒绝旧观察（409，不投递）和旧消息；durable publish 后才更新内存，未提交失败保留旧状态。publish 返回前取消时 is_durable 核实已提交观察并完成快照，再传播取消。锁内系统时钟回拨重建基线，不以旧事件创建时间推断回拨。
 - 归来 pending/claimed 是进程内一次性事实，只含 returned_at/away_duration_seconds，通过同步回调注入 ExpressionFacade；领取在首次 await 前，finish/release 比对同一对象。正常终局提交立即消费，后续失败不能恢复；重新 away 清空旧 pending/claimed。重启初次观察不补造归来。
@@ -46,6 +46,11 @@
 - eval 的完整应用层 prompt 由 `eval_prompt` 按 `call_id` 永久明文保存；think/speak 两条 `eval_log` 共用一份。recent 列表不返回 prompt，详情通过精确 record id 懒加载，语义以 `10-eval.md` 为准。
 
 ## 模块边界
+
+- `_Host` 是注册、当前选择、共享模型/embedding/屏幕观察和 durable presence 的宿主；每个角色独立 `_App`/Database/EventBus/Facade/工作目录、熔断和恢复预算，切换不重建运行时。
+- 宿主 `/api/observe` 要求稳定 sample_id，先保存事实和接收者，再按每角色 FIFO 独立补投；角色事件/顺序水位/转换快照同事务。重试复用原时钟判定；恢复基线不改历史事件身份。
+- 角色业务路径为 `/api/characters/{id}/…`，写请求准入检查 selection revision 后捕获运行时。SSE 带 character_id，游标为 `id:event_id`（Nyx 兼容别名同样使用组合游标）。下文未带命名空间的路径是角色业务后缀。
+- `EventBus.run()` 监督意外退出的 consumer worker，恢复阶段也在 finally 清理范围内；只重启所属角色，不改变五次 delivery 和 finalize-only 语义。
 
 - 允许 Facade 之间做只读查询：当前状态、待处理欲望、记忆、当前活动、运行期观察快照。
 - 跨模块写副作用必须通过事件：例如 `ACTIVITY_END` 导致 desire、inner_life、memory 三方更新。

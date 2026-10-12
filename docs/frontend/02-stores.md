@@ -6,6 +6,14 @@
 
 ## 0. 共享类型（`types/api.ts` 节选）
 
+### 角色归属与切换
+
+现有领域 Store 只保存当前角色的展示快照。`characterStore` 保存注册列表、当前 ID、服务端 selection revision、切换状态/错误和本地 generation；`characterScope` 在 action 入口捕获不可变 scope，所有 success/error/finally/timer/retry 核对同一 scope。A→B→A 的旧 A 回调也失效。
+
+切换串行执行：失效旧 scope/取消读请求，关闭旧 SSE，重置领域展示、回复等待、通知和阅读会话；PUT 成功后绑定新 scope、加载历史/快照、恢复角色草稿与最近书籍/阅读位置。失败重新查询实际选择并恢复。后台轮询在切换中不采用旧选择。无聊天或任务 POST 自动网络重试。
+
+阅读冲突重试固定原角色、书籍、session 与 payload；切换后不能从新 Store 拼装旧请求。全局 settings 保留，草稿和最近书籍按角色保存。完整生命周期契约见 [14-character-cards](../specs/14-character-cards.md)。
+
 ```typescript
 // 情绪/精力/活动枚举值：与后端 StrEnum 值一致（snake_case）
 type EmotionCategory = "neutral" | "happy" | "sad" | "angry" | "worried" | "shy" | "sleepy" | "thinking";

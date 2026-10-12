@@ -17,7 +17,7 @@
 
 ## 卡包
 
-入口为 `.nyxcard` 或 `.zip`，根目录必须有 `card.yaml` 和非空 `canon.md`，可选 `character-reference.md`、`ask.md`、`assets/`。
+入口为 `.nyxcard` 或 `.zip`，根目录必须有 `card.yaml` 和非空 `canon.md`，可选 `character-reference.md`、`ask.md`、`assets/`。设置页也提供结构化新建表单，填写 ID、名称、身份设定和三组初始数值，可附加头像/表情图片；后端将其生成同样的标准卡包后走注册流程。
 压缩文件和实际解压总量分别不超过 50 MiB；重复路径（含大小写等价）、绝对路径、越界、链接、未知根文件和无效图片拒绝。
 
 `card.yaml` 只允许以下字段：
@@ -81,7 +81,7 @@ Nyx 数值、三条初始欲望、设定、专属提问方向和八种表情迁�
 
 ## API
 
-宿主：`GET/POST /api/characters`、`PUT /api/characters/current`、`POST /api/characters/{id}/retry-start`、`DELETE /api/characters/{id}`、`POST /api/characters/{id}/restore`、`GET /api/characters/{id}/assets/{key}`、`POST /api/observe`。
+宿主：`GET/POST /api/characters`、`POST /api/characters/create`、`PUT /api/characters/current`、`POST /api/characters/{id}/retry-start`、`DELETE /api/characters/{id}`、`POST /api/characters/{id}/restore`、`GET /api/characters/{id}/assets/{key}`、`POST /api/observe`。`/create` 接受 multipart 的 JSON `payload` 与可选 `images`，图片字段名为头像或表情键。
 现有业务接口复用在 `/api/characters/{id}/…`；不增加一套领域实现。
 写操作必须带 `X-Nyx-Selection-Revision`，准入捕获 runtime 引用；旧选择 409、未知 ID 404、不可运行 503。已受理请求继续在原角色完成。
 原 `/api/...` 是固定 Nyx 的兼容入口，写入仅在 Nyx 为当前时接受；ready 保持服务身份和 nonce。

@@ -256,6 +256,26 @@ def read_package(data: bytes) -> CharacterCard:
     return _validate(files)
 
 
+def build_package(
+    manifest: dict[str, Any], canon: str, assets: dict[str, bytes]
+) -> bytes:
+    """Build and validate a standard card archive from structured form data."""
+    files: dict[str, bytes] = {
+        "card.yaml": yaml.safe_dump(
+            manifest, allow_unicode=True, sort_keys=False
+        ).encode("utf-8"),
+        "canon.md": canon.encode("utf-8"),
+    }
+    for key, payload in assets.items():
+        files[f"assets/{key}"] = payload
+    _validate(files)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in files.items():
+            archive.writestr(name, payload)
+    return output.getvalue()
+
+
 def load_card(directory: Path) -> CharacterCard:
     """Read a fixed installed snapshot (or the packaged built-in Nyx card)."""
     files: dict[str, bytes] = {}

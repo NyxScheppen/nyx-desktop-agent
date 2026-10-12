@@ -75,4 +75,23 @@ describe("SettingsView 设置弹层", () => {
       act(() => useCharacterStore.setState({ import: originalImport }));
     }
   });
+
+  it("新建角色表单提交文字设定和图片", () => {
+    const originalCreate = useCharacterStore.getState().create;
+    const create = vi.fn(async () => {});
+    useCharacterStore.setState({ create });
+    try {
+      const { getByRole, getByPlaceholderText, container } = render(<SettingsView onClose={() => {}} />);
+      fireEvent.click(getByRole("button", { name: "新建角色" }));
+      fireEvent.change(getByPlaceholderText("角色 ID"), { target: { value: "alice" } });
+      fireEvent.change(getByPlaceholderText("角色名称"), { target: { value: "Alice" } });
+      fireEvent.change(getByPlaceholderText("身份设定"), { target: { value: "一位新角色" } });
+      const image = new File(["image"], "avatar.png", { type: "image/png" });
+      fireEvent.change(container.querySelector<HTMLInputElement>('input[type="file"][accept="image/*"]')!, { target: { files: [image] } });
+      fireEvent.click(getByRole("button", { name: "创建角色" }));
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ id: "alice", name: "Alice", identity: "一位新角色" }), [image]);
+    } finally {
+      act(() => useCharacterStore.setState({ create: originalCreate }));
+    }
+  });
 });

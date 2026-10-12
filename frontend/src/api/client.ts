@@ -361,6 +361,16 @@ export function importCharacter(file: File): Promise<CharacterRecord> {
   const body = new FormData(); body.append("file", file);
   return request(`${BASE_URL}/api/characters`, { method: "POST", body });
 }
+export type CreateCharacterPayload = {
+  id: string; name: string; identity: string;
+  personality: Record<string, number>; values: Record<string, number>; aesthetic: Record<string, number>;
+};
+export function createCharacter(payload: CreateCharacterPayload, images: File[]): Promise<CharacterRecord> {
+  const body = new FormData();
+  body.append("payload", JSON.stringify(payload));
+  for (const image of images) body.append("images", image, image.name);
+  return request(`${BASE_URL}/api/characters/create`, { method: "POST", body });
+}
 export async function changeCharacter(id: string, operation: "unload" | "restore" | "retry-start"): Promise<void> {
   await checkedFetch(`${BASE_URL}/api/characters/${encodeURIComponent(id)}${operation === "unload" ? "" : "/" + operation}`, {
     method: operation === "unload" ? "DELETE" : "POST",

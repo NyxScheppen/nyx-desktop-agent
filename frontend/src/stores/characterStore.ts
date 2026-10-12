@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { changeCharacter, getCharacters, importCharacter, selectCharacter, type CharacterRegistry } from "../api/client";
+import { changeCharacter, createCharacter, getCharacters, importCharacter, selectCharacter, type CharacterRegistry, type CreateCharacterPayload } from "../api/client";
 import { bindScope, captureScope, invalidateScope } from "../api/characterScope";
 import { useActivityStore } from "./activityStore";
 import { useAnnounceStore } from "./announceStore";
@@ -20,6 +20,7 @@ type CharacterState = {
   refresh: () => Promise<void>;
   select: (id: string) => Promise<void>;
   import: (file: File) => Promise<void>;
+  create: (payload: CreateCharacterPayload, images: File[]) => Promise<void>;
   change: (id: string, operation: "unload" | "restore" | "retry-start") => Promise<void>;
   setDraft: (text: string) => void;
 };
@@ -130,6 +131,10 @@ export const useCharacterStore = create<CharacterState>((set, get) => {
     import: async (file) => {
       try { await importCharacter(file); await get().refresh(); }
       catch (error) { set({ error: String(error) }); }
+    },
+    create: async (payload, images) => {
+      try { await createCharacter(payload, images); await get().refresh(); }
+      catch (error) { set({ error: String(error) }); throw error; }
     },
     change: async (id, operation) => {
       try {

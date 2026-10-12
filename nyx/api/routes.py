@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.routing import Match, Mount
 from starlette.types import Receive, Scope, Send
@@ -23,7 +23,7 @@ from starlette.types import Receive, Scope, Send
 from nyx.activity.facade import WebTasksDisabledError
 from nyx.activity.observe import classify_presence
 from nyx.app_context import _App, _Host
-from nyx.character_cards import MAX_CARD_BYTES, load_card
+from nyx.character_cards import MAX_CARD_BYTES, build_package, load_card
 from nyx.enums import ActivityType, BoundaryResult, EventType, MemoryKind, MemoryType
 from nyx.events.bus import EventAdmissionError
 from nyx.reading.facade import (
@@ -767,6 +767,16 @@ class _SelectionPayload(BaseModel):
     character_id: str = Field(min_length=1, strict=True)
 
 
+class _CreateCharacterPayload(BaseModel):
+    schema_version: int = 1
+    id: str
+    name: str
+    identity: str
+    personality: dict[str, float]
+    values: dict[str, float]
+    aesthetic: dict[str, float]
+
+
 class _HostObservePayload(_ObservePayload):
     sample_id: str = Field(min_length=1, max_length=200, strict=True)
     character_id: str | None = None
@@ -846,6 +856,39 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
                 409 if "四个" in str(error) or "已存在" in str(error) else 422,
                 str(error),
             ) from error
+        if record["status"] == "STARTING":
+            spawn_start(record["id"])
+        return {key: record[key] for key in ("id", "name", "status", "error")}
+
+    @fast.post("/api/characters/create", status_code=202)
+    async def create_character(
+        payload: str = Form(...),
+        images: list[UploadFile] = File(default=[]),
+    ) -> dict[str, Any]:
+        try:
+            values = _CreateCharacterPayload.model_validate_json(payload)
+            image_files: dict[str, bytes] = {}
+            image_paths: dict[str, str] = {}
+            allowed = {
+                "avatar", "neutral", "happy", "sad", "angry", "worried", "shy",
+                "sleepy", "thinking",
+            }
+            for image in images:
+                if not image.filename:
+                    raise ValueError("图片文件名不能为空")
+                key, dot, suffix = image.filename.rpartition(".")
+                if not dot or key not in allowed or not suffix:
+                    raise ValueError("图片名必须是 avatar 或表情键")
+                image_files[f"{key}.{suffix}"] = await image.read(MAX_CARD_BYTES + 1)
+                image_paths[key] = f"assets/{key}.{suffix}"
+            manifest = values.model_dump()
+            manifest["assets"] = image_paths
+            package = await asyncio.to_thread(
+                build_package, manifest, values.identity, image_files
+            )
+            record = await host.register(package)
+        except (ValueError, ValidationError) as error:
+            raise HTTPException(422, str(error)) from error
         if record["status"] == "STARTING":
             spawn_start(record["id"])
         return {key: record[key] for key in ("id", "name", "status", "error")}

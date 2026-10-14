@@ -38,6 +38,7 @@ afterEach(() => {
 
 describe("MessageBubble", () => {
   beforeEach(() => {
+    useChatStore.getState().reset();
     vi.useFakeTimers();
   });
   afterEach(() => {
@@ -48,6 +49,48 @@ describe("MessageBubble", () => {
     render(<MessageBubble message={makeMsg("speak", "nyx", "你好")} ready onTyped={() => {}} />);
     typeDone();
     expect(screen.getByText("你好")).toBeInTheDocument();
+  });
+
+  it("首次打完后重新挂载同一消息，立即显示全文", () => {
+    const message = makeMsg("speak", "nyx", "只播放一次");
+    const first = render(<MessageBubble message={message} ready onTyped={() => {}} />);
+    expect(screen.queryByText("只播放一次")).not.toBeInTheDocument();
+    typeDone();
+    first.unmount();
+
+    render(<MessageBubble message={message} ready onTyped={() => {}} />);
+    expect(screen.getByText("只播放一次")).toBeInTheDocument();
+    expect(document.querySelector(".cursor-blink")).not.toBeInTheDocument();
+  });
+
+  it("首次播放中途关闭后重新挂载，立即显示全文并解锁后续消息", () => {
+    const message = makeMsg("think", "nyx", "尚未播完的内心话");
+    const onTyped = vi.fn();
+    const first = render(<MessageBubble message={message} ready onTyped={onTyped} />);
+    act(() => vi.advanceTimersByTime(35));
+    expect(screen.queryByText("尚未播完的内心话")).not.toBeInTheDocument();
+    expect(useChatStore.getState().seenIds[message.id]).toBe(true);
+    first.unmount();
+
+    render(<MessageBubble message={message} ready onTyped={onTyped} />);
+    expect(screen.getByText("尚未播完的内心话")).toBeInTheDocument();
+    expect(onTyped).toHaveBeenCalledWith(message.id);
+  });
+
+  it("尚未 ready 的消息不记作已显示，角色 reset 清除已看记录", () => {
+    const message = makeMsg("speak", "nyx", "等待前句");
+    const waiting = render(<MessageBubble message={message} ready={false} onTyped={() => {}} />);
+    expect(useChatStore.getState().seenIds[message.id]).toBeUndefined();
+    waiting.unmount();
+
+    const first = render(<MessageBubble message={message} ready onTyped={() => {}} />);
+    expect(screen.queryByText("等待前句")).not.toBeInTheDocument();
+    expect(useChatStore.getState().seenIds[message.id]).toBe(true);
+    first.unmount();
+    useChatStore.getState().reset();
+
+    render(<MessageBubble message={message} ready onTyped={() => {}} />);
+    expect(screen.queryByText("等待前句")).not.toBeInTheDocument();
   });
 
   it("think → 逐字弱化显示（不再折叠）", () => {
@@ -188,6 +231,24 @@ describe("MessageList", () => {
     // think 打完 → markTyped → speak 就绪，两条都完整上屏
     expect(screen.getByText("内心话")).toBeInTheDocument();
     expect(screen.getByText("对话话")).toBeInTheDocument();
+  });
+
+  it("中途重新打开：已开始的内心话直接完成，未开始的对话仍逐字", () => {
+    const messages = [
+      makeMsg("think", "nyx", "先说内心话"),
+      makeMsg("speak", "nyx", "随后再说话"),
+    ];
+    const first = render(<MessageList messages={messages} />);
+    act(() => vi.advanceTimersByTime(35));
+    expect(useChatStore.getState().seenIds[messages[0].id]).toBe(true);
+    expect(useChatStore.getState().seenIds[messages[1].id]).toBeUndefined();
+    first.unmount();
+
+    render(<MessageList messages={messages} />);
+    expect(screen.getByText("先说内心话")).toBeInTheDocument();
+    expect(screen.queryByText("随后再说话")).not.toBeInTheDocument();
+    typeDone();
+    expect(screen.getByText("随后再说话")).toBeInTheDocument();
   });
 });
 

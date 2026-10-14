@@ -65,6 +65,7 @@ type ChatState = {
   isReplying: boolean;        // 发消息后等待回复中
   sendError: string | null;
   typedIds: Record<string, true>;  // 已逐字打完的 nyx 文本 id（后一条同 correlation_id 的 nyx 文本等其打完才开打）
+  seenIds: Record<string, true>;   // 本角色本次前端会话中已开始显示的 nyx 文本 id；重新挂载时不再逐字
   replyTargetId: string | null;    // 当前选中的等待提问；reset 同时清空
   serverTimeOffset: number;        // 服务端时间 - 浏览器时间（计时显示校正）
 };
@@ -89,8 +90,9 @@ sendMessage(text: string): Promise<boolean>  // 内部调 client.postChat；成�
                                           // 唯一等待提问自动附加 reply_to；多个等待项需先 selectQuestion；成功后目标标记 claimed
                                           // postChat throw → catch → sendError = e.message 并复位 isReplying
 markTyped(id: string): void              // 把 nyx 文本 id 写入 typedIds（逐字 done 时调，解锁其后同 correlation_id 的下一条 nyx 文本）
+markSeen(id: string): void               // 正文首次 ready、实际开始显示时按 event_id 记入 seenIds；不提前解锁后续消息
 loadHistory(): Promise<void>             // 并行 GET /api/events/log（文本事件，含 reading_question）→ 合并去重排序；新增历史 preloaded:true；历史 think 入 typedIds；失败 best-effort 不抛
-reset(): void                            // 新会话全清：clearTimeout(replyTimer) + messages/isReplying/sendError/typedIds 复位
+reset(): void                            // 新会话全清：clearTimeout(replyTimer) + messages/isReplying/sendError/typedIds/seenIds 复位
 ```
 
 ### 关键决策
@@ -104,9 +106,9 @@ reset(): void                            // 新会话全清：clearTimeout(reply
   每条 `ChatMessage.timestamp` 必须复制 SSE 的后端 `Event.timestamp`。历史回填复制
   `BackendEvent.timestamp`，因此重连/重启前后使用同一来源；禁止用 `Date.now()` 替代事件时间。
 - **提问归并与回复归属**：同一 `attempt_id` 的 `ASK` 与 `READING_QUESTION` 只显示一条，优先
-  保留读书事件的展示字段。历史回填后调用 pending 快照恢复计时状态；只有一个等待提问时发送
-  自动带 `reply_to`，多个等待提问必须由用户选择，不能按最新项猜测。暂停状态显示剩余时长，
-  恢复后继续倒计时。历史中不在 pending 快照里的 attempt 关闭本地 waiting 状态；只有
+  保留读书事件的展示字段。历史回填后调用 pending 快照恢复计时状态；只有一个等待交互时发送
+  自动带 `reply_to`，多个等待交互必须由用户选择，否则不发送并显示错误。暂停状态显示剩余时长，
+  恢复后继续倒计时。所有不在 pending 快照里的 attempt 关闭本地 waiting 状态；只有
   `question_status === "waiting"` 的提问气泡显示计时和暂停/继续操作，用户发送成功后目标先标记
   `claimed`，避免下一条消息继续携带旧 `reply_to`。
 - **主动搭话计时**：实时 `INITIATE_CHAT` 的 `attempt_id`/`expires_at` 原样进入消息；等待状态的
@@ -301,7 +303,7 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 ## 8. 测试（`tests/stores.test.ts`）
 
 - **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addInitiateChat`/`addUserMessage`/`addReadingTurn` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id/timestamp）且 append」；主动搭话还保留 `attempt_id`/`expires_at`/waiting 状态。`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
-- **chatStore.loadHistory**：新旧消息统一按 `timestamp` 稳定升序 + `preloaded=true` + 历史 think 入 `typedIds`；与实时消息按 id 去重；非法时间戳丢弃；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped` 标记 + `reset` 清 `typedIds`。
+- **chatStore.loadHistory**：新旧消息统一按 `timestamp` 稳定升序 + `preloaded=true` + 历史 think 入 `typedIds`；与实时消息按 id 去重；非法时间戳丢弃；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped`/`markSeen` 标记 + `reset` 清两种播放状态。
 - **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
 - **两个快照 store**：`desireStore` 断言 `refresh()` 请求对端点 + `data` 落 store；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`+`getTasks`（fetch 恰 3 次）并验证任务创建回写；`desireStore.refresh()` 失败 → `error` + `data` 保持 null。
 - **`isReady`（串行逐字纯函数）**：每条 nyx 文本消息等「同 `correlation_id` 且在其之前」的 nyx 文本消息都打完（入 `typedIds`）才就绪；无前置 nyx 文本 → 直接就绪；`preloaded` nyx 文本与 user 消息 → 恒就绪；不同 `correlation_id` 的 nyx 文本不阻塞。

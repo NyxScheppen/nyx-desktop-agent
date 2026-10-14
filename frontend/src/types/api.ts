@@ -576,6 +576,12 @@ export type BackendEvent = {
   correlation_id: string;
 };
 
+export type ExpressionHistory = {
+  all: BackendEvent[];
+  mutter: BackendEvent[];
+  initiate_chat: BackendEvent[];
+};
+
 // ---- eval 记账（10-eval / nyx/types.py EvalRecord/EvalStats）----
 export type EvalRecord = {
   id: string;

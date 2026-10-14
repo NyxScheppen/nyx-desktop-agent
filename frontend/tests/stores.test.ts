@@ -238,6 +238,38 @@ describe("chatStore.sendMessage", () => {
     resetChat();
   });
 
+  it("回复主动搭话后结束对应计时", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ event_id: "reply-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    useChatStore.getState().addInitiateChat({
+      event: "initiate_chat", event_id: "chat-1", correlation_id: "desire-1",
+      timestamp: 1000, content: "在忙吗？", attempt_id: "attempt-1", expires_at: 1060,
+    });
+
+    await useChatStore.getState().sendMessage("不忙");
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      message: "不忙", reply_to: "attempt-1",
+    });
+    expect(useChatStore.getState().messages[0].question_status).toBe("claimed");
+  });
+
+  it("多个待回答项时须选择目标", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    useChatStore.getState().addInitiateChat({
+      event: "initiate_chat", event_id: "chat-1", correlation_id: "desire-1",
+      timestamp: 1000, content: "在忙吗？", attempt_id: "attempt-1", expires_at: 1060,
+    });
+    useChatStore.getState().addAsk({
+      event: "ask", event_id: "ask-1", correlation_id: "user-1",
+      timestamp: 1001, content: "想聊聊吗？", attempt_id: "attempt-2", expires_at: 1061,
+    });
+
+    expect(await useChatStore.getState().sendMessage("好呀")).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("成功：POST /api/chat + isReplying=true + sendError=null", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ event_id: "e1" }));
     vi.stubGlobal("fetch", fetchMock);
@@ -889,6 +921,22 @@ describe("chatStore.loadHistory", () => {
     });
   }
 
+  it("没有新历史时也用 pending 快照结束旧计时", async () => {
+    useChatStore.getState().addInitiateChat({
+      event: "initiate_chat", event_id: "chat-1", correlation_id: "desire-1",
+      timestamp: 1000, content: "在忙吗？", attempt_id: "attempt-1", expires_at: 1060,
+    });
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(jsonResponse(url.includes("/api/questions/pending")
+        ? { questions: [], server_now: 1001 }
+        : [])),
+    ));
+
+    await useChatStore.getState().loadHistory();
+
+    expect(useChatStore.getState().messages[0].question_status).toBe("answered");
+  });
+
   it("历史与 SSE 交错、重复到达时按 id 去重并全局排序", async () => {
     const event = { event: "speak" as const, event_id: "same", correlation_id: "u", timestamp: 2000, content: "reply" };
     useChatStore.getState().addSpeak(event);
@@ -974,12 +1022,15 @@ describe("chatStore.loadHistory", () => {
     expect(useChatStore.getState().messages).toHaveLength(0);
   });
 
-  it("markTyped 标记 + reset 清 typedIds", () => {
+  it("markTyped/markSeen 标记 + reset 清角色内播放状态", () => {
     useChatStore.getState().markTyped("x");
+    useChatStore.getState().markSeen("x");
     expect(useChatStore.getState().typedIds["x"]).toBe(true);
+    expect(useChatStore.getState().seenIds["x"]).toBe(true);
 
     useChatStore.getState().reset();
     expect(useChatStore.getState().typedIds).toEqual({});
+    expect(useChatStore.getState().seenIds).toEqual({});
   });
 
   it("loadHistory：reading_question 历史回填（content.content + 回填字段）", async () => {

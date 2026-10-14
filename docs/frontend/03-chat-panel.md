@@ -31,7 +31,7 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
   → 后端 ExpressionFacade.reply() 产 speak/think/ask → SSE → chatStore.addSpeak/addThink/addAsk（上屏）
   → addSpeak/addAsk 置 isReplying=false（回复交付，按钮恢复）
 
-提问气泡按 `attempt_id` 合并 ASK 与 READING_QUESTION；只有一个等待提问时自动绑定，多个等待项
+提问气泡按 `attempt_id` 合并 ASK 与 READING_QUESTION；只有一个等待交互时自动绑定，多个等待项
 要求用户先点选目标。气泡显示服务端校正后的剩余时间，并可暂停/继续；用户发送成功后目标 attempt
 进入 `claimed`，不再作为下一条消息的候选。
 
@@ -54,7 +54,7 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 | `nyx` | `reading_question` | 左气泡，带「提问」徽标 + 划线引文，即时全量 | 读书提问并进对话（不逐字，不进打字机） |
 
 - **打字机（`useTypewriter`）**：nyx 文本消息（`speak`/`ask`/`think`/`initiate_chat`，即 `isNyxText` 白名单）逐字显示，纯渲染层 hook（`hooks/useTypewriter.ts`），不改 store——消息仍完整 append，仅控制「显示到第几个字」；未打完时挂 `.cursor-blink` 光标。`useTypewriter(text, speed, ready)` 加第三参 `ready`：false 时不启动（`displayed=""`、`done=false`、无光标），转 true 才从 0 逐字。**reading 两 kind 不进 `isNyxText`/`NYX_TEXT_KINDS` 白名单**：即时全量渲染、不进打字机串行门。
-- **微信式全量 + 全串行逐字（视觉改造 §4）**：`MessageList` 全部消息按序渲染，每条非 `preloaded` 的 nyx 文本消息都逐字（`MessageBubble` 内部 `isNyxText && !preloaded` 判定走 `useTypewriter`），用户消息与读书 turn 即时全量；每条消息不打完也已在 DOM；后端 SSE 顺序 THINK 先于 SPEAK（11-expression），故「内心话气泡」天然排在「发言气泡」之上；随内容增长同步滚到底——`MessageList` 用 `MutationObserver` 观察滚动容器自身 DOM 变化（新消息 `childList` + 打字机逐字 `characterData` 都触发），但仅当用户已在底部才跟随（上滑看历史不被逐字拉回底，回到底部恢复跟随）；故打字过程中页面跟着她的话往下滚（滚动条隐藏）。
+- **微信式全量 + 全串行逐字（视觉改造 §4）**：`MessageList` 全部消息按序渲染，每条非 `preloaded`、且本角色本次前端会话尚未显示过的 nyx 文本消息逐字（`MessageBubble` 按 event ID 查询 `seenIds`）；用户消息与读书 turn 即时全量。消息正文首次 `ready`、实际开始显示时记入 `seenIds`，本次挂载继续打完；再次挂载即使上次中途关闭也直接显示全文，并补记 `typedIds` 解锁后续同回合消息。`ready=false` 的等待气泡虽已挂载但不能提前记为已看；角色 `reset()` 清空记录。`seenIds` 不持久化，重新启动后 `loadHistory()` 回填的 `preloaded` 历史直接显示全文。后端 SSE 顺序 THINK 先于 SPEAK（11-expression），故「内心话气泡」天然排在「发言气泡」之上；随内容增长同步滚到底——`MessageList` 用 `MutationObserver` 观察滚动容器自身 DOM 变化（新消息 `childList` + 打字机逐字 `characterData` 都触发），但仅当用户已在底部才跟随（上滑看历史不被逐字拉回底，回到底部恢复跟随）。
 - **串行逐字（内心话 → 对话，不并发）**：`MessageList` 对每条消息算 `ready = isReady(message, index, messages, typedIds)`（纯函数，导出供测试）——每条 nyx 文本消息需等「同 `correlation_id` 且在其之前的所有 nyx 文本消息」都已入 `typedIds` 才就绪；逐字 `done` 时经 `onTyped → markTyped` 写入 `typedIds`。故内心话气泡先完整逐字打完，对话气泡才开始逐字（等待期 `displayed=""`、无光标），而非两条并发一起显示。`preloaded` 历史消息与用户消息恒就绪。
 - **明线时间分隔**：`shouldShowTimeDivider(current, previous)` 为纯函数。列表首条必显示；与上一条
   不同本地自然日时显示；同日相隔至少 30 分钟时显示；同一 `correlation_id` 内的
@@ -89,8 +89,8 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 
 ## 5. 测试（`tests/` 并入 stores/api 测试）
 
-- `MessageBubble`：按 `kind` 渲染正确（`speak` 正常 / `think` 灰色斜体逐字 / `ask` 高亮）；等待中的 `initiate_chat` 使用 fake system time 断言实时倒计时；nyx 文本消息须先 `advanceTimersByTime`（fake timers）打完字再断言完整文案——React Testing Library 断言关键 class/文案。
-- `MessageList`：全部消息按序渲染、无历史折叠（`typeDone` 推进 fake timers 后两条都上屏，无历史按钮）；全部气泡渲染即存在（串行门控只延迟内容不延迟挂载）；串行逐字：内心话先打完、对话才开打（未推进 timer 两者皆空，`typeDone` 后串行完整上屏）；`isReady` 全串行逐字门控纯函数在 stores.test.ts 覆盖。
+- `MessageBubble`：按 `kind` 渲染正确（`speak` 正常 / `think` 灰色斜体逐字 / `ask` 高亮）；等待中的 `initiate_chat` 使用 fake system time 断言实时倒计时；首次逐字、播放完或中途关闭再挂载直接全文、未 ready 不记已看、角色 reset 隔离。
+- `MessageList`：全部消息按序渲染、无历史折叠（`typeDone` 推进 fake timers 后两条都上屏，无历史按钮）；全部气泡渲染即存在（串行门控只延迟内容不延迟挂载）；串行逐字：内心话先打完、对话才开打；中途重新挂载时已开始的内心话直接完成、未开始的对话仍逐字；`isReady` 全串行逐字门控纯函数在 stores.test.ts 覆盖。
 - 时间显示：fake system time 覆盖列表首条、同 correlation、同日 29:59/30:00、跨午夜、
   今天/昨天/更早标签；历史回填与实时消息在相同 epoch 下渲染完全一致。
   隔夜验收沿用 [表达契约](../specs/11-expression.md) 的 19:00→次日 08:00 场景：两组消息前

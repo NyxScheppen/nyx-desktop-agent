@@ -12,6 +12,7 @@ import type {
   DesireState,
   EvalRecord,
   EvalStats,
+  ExpressionHistory,
   LlmPromptMessage,
   Memory,
   MemoryFact,
@@ -185,6 +186,10 @@ export async function getEventsLog(params?: {
   if (params?.after !== undefined) sp.set("after", params.after);
   const qs = sp.toString();
   return request<BackendEvent[]>(`${BASE_URL}/api/events/log${qs ? `?${qs}` : ""}`);
+}
+
+export async function getExpressionHistory(limit = 100): Promise<ExpressionHistory> {
+  return request<ExpressionHistory>(`${BASE_URL}/api/expression/history?limit=${limit}`);
 }
 
 // ---- 阅读（12-reading-system，docs/frontend/06-reading-panel.md §6）----

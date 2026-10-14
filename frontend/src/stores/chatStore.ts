@@ -43,6 +43,7 @@ type ChatState = {
   isReplying: boolean; // 发消息后等待回复中
   sendError: string | null;
   typedIds: Record<string, true>; // 已逐字打完的 think id（speak/ask 等其同 correlation_id 的 think 打完才开打）
+  seenIds: Record<string, true>; // 本角色本次前端会话中已开始显示的 nyx 文本 id
   unreadProactive: boolean; // 搭话（initiate_chat）未读：头像红点，用户点徽标/发消息即清
   replyTargetId: string | null;
   serverTimeOffset: number;
@@ -57,6 +58,7 @@ type ChatState = {
   resumeQuestion: (attemptId: string) => Promise<boolean>;
   clearUnreadProactive: () => void;
   markTyped: (id: string) => void;
+  markSeen: (id: string) => void;
   loadHistory: () => Promise<void>; // 挂载时回填 GET /api/events/log 的历史消息（preloaded，不逐字）
   sendMessage: (text: string) => Promise<boolean>; // 成功才清输入框
   reset: () => void;
@@ -126,8 +128,7 @@ function closeMissingHistoricalQuestions(
   pendingIds: Set<string>,
 ): ChatMessage[] {
   return messages.map((message) =>
-    message.preloaded === true &&
-      message.attempt_id !== undefined &&
+    message.attempt_id !== undefined &&
       message.question_status === "waiting" &&
       !pendingIds.has(message.attempt_id)
       ? { ...message, question_status: "answered" }
@@ -235,6 +236,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     isReplying: false,
     sendError: null,
     typedIds: {},
+    seenIds: {},
     unreadProactive: false,
     replyTargetId: null,
     serverTimeOffset: 0,
@@ -305,6 +307,9 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
     clearUnreadProactive: () => set({ unreadProactive: false }),
     markTyped: (id) => set((s) => ({ typedIds: { ...s.typedIds, [id]: true } })),
+    markSeen: (id) => set((s) => s.seenIds[id]
+      ? s
+      : { seenIds: { ...s.seenIds, [id]: true } }),
     loadHistory: async () => {
       const scope = captureScope();
       const commit = scopedSetter(set);
@@ -328,7 +333,6 @@ export const useChatStore = create<ChatState>((set, get) => {
             fresh.push(msg);
             if (msg.kind === "think") thinkIds[msg.id] = true;
           }
-          if (fresh.length === 0) return {};
           // 重连可能回填比现有消息更新的事实；合并后统一排序。
           return {
             messages: mergeMessages([...s.messages, ...fresh]),
@@ -361,15 +365,19 @@ export const useChatStore = create<ChatState>((set, get) => {
     sendMessage: async (text) => {
       const scope = captureScope();
       const commit = scopedSetter(set);
+      const candidates = get().messages.filter(
+        (message) => message.attempt_id !== undefined && message.question_status === "waiting",
+      );
+      if (candidates.length > 1 && get().replyTargetId === null) {
+        commit({ sendError: "有多个待回复的问题，请先选择要回复的那一条" });
+        return false;
+      }
       // 串行锁要同步上：get() 同步读 store（非 React 订阅），在 await postChat 之前置 isReplying=true。
       // 否则网络往返窗口内 isReplying 仍 false，双击/连击可并发第二次发送、覆盖 pendingId。
       if (get().isReplying) return false;
       sendInFlight = true;
       commit({ isReplying: true, sendError: null, unreadProactive: false });
       try {
-        const candidates = get().messages.filter(
-          (message) => message.attempt_id !== undefined && message.question_status === "waiting",
-        );
         const replyTo = get().replyTargetId ?? (
           candidates.length === 1 ? candidates[0].attempt_id : undefined
         );
@@ -421,6 +429,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         isReplying: false,
         sendError: null,
         typedIds: {},
+        seenIds: {},
         unreadProactive: false,
         replyTargetId: null,
         serverTimeOffset: 0,

@@ -6,7 +6,8 @@ export type View =
   | "creation"
   | "memory"
   | "reading"
-  | "eval";
+  | "eval"
+  | "history";
 
 type RightDockProps = {
   view: View; // 当前视图，用于高亮激活入口
@@ -24,6 +25,7 @@ const ENTRIES: readonly { label: string; view: View }[] = [
   { label: "记忆", view: "memory" },
   { label: "读书", view: "reading" },
   { label: "评估", view: "eval" },
+  { label: "历史", view: "history" },
 ];
 
 export default function RightDock({ view, onSwitch, onOpenSettings }: RightDockProps) {

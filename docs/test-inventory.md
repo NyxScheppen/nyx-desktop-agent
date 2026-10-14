@@ -6,13 +6,13 @@
 
 ## 当前快照
 
-- 后端测试文件：66
-- `pytest --collect-only -q`：1249 tests collected
-- 本轮全量验证：1248 passed, 1 skipped（未采集语句覆盖率）
+- 后端测试文件：67
+- `pytest --collect-only -q`：1274 tests collected
+- 本轮后端全量验证：1273 passed，1 skipped。
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 本轮前端全量验证：339 passed（25 个测试文件）。
+- 本轮前端全量验证：346 passed（25 个测试文件）。
 - Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；ready 响应必须同时匹配固定 Nyx 服务标识、本次启动 nonce 和响应大小上限；Debug/Release 均通过编译检查。
 - 桌面 launcher 回归：原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；普通 TCP、错误 HTTP 状态、非法/过大 JSON、错误服务标识或 nonce 均不能触发前端启动；身份匹配后 owned backend 仍须存活。
 - 启动身份 API 回归：`test_ready_endpoint_returns_owned_instance_identity`、`test_ready_endpoint_keeps_manual_start_compatible`；release smoke 使用同一 nonce 握手且拒绝身份不匹配、过大响应和探测后进程退出。
@@ -27,15 +27,15 @@
 | 类型 | `tests/test_types/` | 2 | 后端 EventType 与前端 SSE 监听器同步、欲望初始状态、记忆/笔记/长期欲望可变默认值隔离 |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、记忆 freshness 结算锚点保值迁移、recall 使用标记复合主键/级联删除、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、批量事件原子受理、投递状态、重试、FIFO、按 `(timestamp, id)` 回放游标、SSE |
 | API/运行时 | `tests/test_api/` | 5 | 组合根、REST、聊天非空/12000 字符边界、旧上传端点 404、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval recent offset 分页与边界及 prompt 详情、订阅、用户消息活动快照/打断失败证据、tick、活动优先关停、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 5 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取 |
-| 记忆 | `tests/test_memory/` | 7 | kind/单一受控来源 topic、精确与语义去重、同内容有来源/无来源隔离、去重强化不增加真实召回、真实召回按 user event 幂等并升级、升级事务回滚按增量补偿事件计数、freshness 增量结算/回拨、episode 保守去重、原文画像/类别归因、来源过滤先于排序、embedding 延迟单次加载、ANN、融合召回、联想图、场景/活动 durable 重试与重放幂等、核心事务回滚、通用实体事实抽取/类型与别名索引/说话者归因/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级 |
+| 记忆 | `tests/test_memory/` | 7 | kind/单一受控来源 topic、精确与语义去重、同内容有来源/无来源隔离、去重强化不增加真实召回、真实召回按 user event 幂等并升级、升级事务回滚按增量补偿事件计数、freshness 增量结算/回拨、episode 保守去重、原文画像/类别归因、来源过滤先于排序、embedding 延迟单次加载、ANN、带向量/关键词相关性门槛的融合召回、联想图、场景/活动 durable 重试与重放幂等、核心事务回滚、通用实体事实抽取/类型与别名索引/说话者归因/极性/多值关系、有效期替代/幂等/冲突折叠/来源过滤/有界召回、观察窗口防伪造事实、知识批量抽取与降级 |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、行动优先级、strength 缩放加压、系统构造 goal、父长期欲望选择/持久化/反馈、容量裁剪、满足与 durable attempt 重放 |
 | 内在生命 | `tests/test_inner_life/` | 4 | 情感、精力、旧记忆归纳式反思、触发 evidence 注入、消费条件复核、慢变量 CAS、非有限数/候选类型边界、长期欲望数值/文字强度 prompt、事务回滚 |
 | 活动 | `tests/test_activity/` | 11 | 本地自然日时间线、跨日暂停隔离、结果过滤/分页、行动优先级排期、父 ID 活动传递、活动/欲望/任务/事件原子生命周期与故障回滚、`IDLE_REFLECTION` durable 请求原子追加、收尾失败同进程恢复与下一次准入重试、有界取消、任务提交后调度失败仍成功、委派任务 FIFO/低精力/打断/关闭/崩溃恢复、网页任务 6000 字符 checkpoint、EPUB-only 模糊选材及部分进度不结算、无匹配搜索、探索只追加父长期欲望子主题、观察、本地探索读取真实文件、创作结果严格校验、主题/旧作参考与唯一文件名 |
-| 表达 | `tests/test_expression/` | 6 | prompt 动态资料预算/历史指令边界/记忆展示元数据/走神显式开关、人格与审美三档倾向及中文情感标签、活动事实/历史归属与终态措辞、慢通道默认单轮及显式续写、快慢通道正常文本终局原子批次及回滚增量计数补偿、场景请求、同轮记忆 id 去重召回、工具判断失败降级、回复、搭话等待事件的 attempt/过期时间、碎碎念、durable interaction attempt owner/重放/多等待项显式归属/暂停恢复超时、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
+| 表达 | `tests/test_expression/` | 6 | prompt 动态资料预算/历史指令边界/记忆展示元数据/走神显式开关、人格与审美三档倾向及中文情感标签、活动事实/历史归属与终态措辞、慢通道时间/话题回溯与短回复检索词继承、慢通道默认单轮及显式续写、快慢通道正常文本终局原子批次及回滚增量计数补偿、场景请求、同轮记忆 id 去重召回、工具判断失败降级、回复、搭话等待事件的 attempt/过期时间、碎碎念、durable interaction attempt owner/重放/多等待项显式归属/暂停恢复超时、读书提问短回复三层上下文、时间/对话锚点/归来消费 |
 | 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/嵌套块语义/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进及 `reading_progress` 广播、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、重读反思证据、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据、recent offset 分页 |
 | 发布工具 | `tests/test_release_tools.py` | 1 | 六处版本一致性、tag 校验、冻结制品布局、REST/SSE smoke、stdin EOF 回收、占位 key、workflow 权限/依赖/Action SHA 与锁文件 |
@@ -47,7 +47,7 @@
 |---|---|---|
 | REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、委派任务端点与 `task_updated` 分发、创作过滤/分页参数、记忆搜索/事实快照端点、开发/打包共享 base URL、eval recent 分页参数与 prompt 懒加载端点、取消信号、错误、事件解析、SSE `id`/`Last-Event-ID` 回放游标、按 `event_id` 去重、`reading_progress` 帧校验与分发、`scene_memory_requested` 监听与 no-op 分发、`reflection_done` 同时刷新欲望与内在状态 |
 | 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts`, `activityPanel.test.tsx`, `creationPanel.test.tsx` | Zustand、主动搭话等待字段落消息、委派网页/EPUB 表单与段落预览、任务状态/失败原因、普通进度冲突合并与显式重读回退、阅读进度快照的异书/旧 revision/Nyx 回退过滤、书签切书乱序回包隔离、创作分批追加与刷新竞态、创作正文折叠/加载更多、记忆搜索与事实图独立降级、eval store 分页加载历史记录及逐行 prompt 缓存/重试、历史/SSE 去重与因果排序、非法帧不改变等待/未读状态、活跃度、异常原生采样、请求超时/取消、网络结果不确定 |
-| 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、主动搭话等待倒计时、角色卡导入与新建表单提交、设置中不再嵌入评估面板、独立评估页面逐条展开详情与安全文本渲染 |
+| 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、主动搭话等待倒计时、消息首次逐字与重新挂载即时显示、未 ready 不提前记已看、同回合播放顺序、角色重置隔离、角色卡导入与新建表单提交、设置中不再嵌入评估面板、独立评估页面逐条展开详情与安全文本渲染 |
 | 记忆面板 | `memoryPanel.test.tsx` | 关键词查询提交、事实图实体关系渲染、事实加载失败降级 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 未连接/有数据/错误状态展示、情绪选图与拖拽隔离、情绪分类标签、欲望终态过滤、中文标签命中与未知值回退 |
 | 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 真分页与长段可达、受控富文本、UTF-16 同段划线、重叠划线线性端点读取、跨段拒绝、划线查询/删除/定位、书签定位、普通笔记和章节交互 |
@@ -119,6 +119,10 @@
 ### 记忆、活动和用户路径
 
 - `test_search_fuses_vector_keyword_and_limits_direct_then_association`
+- `test_search_rejects_weak_vector_and_keyword_matches`
+- `test_backtrack_does_not_keep_unrelated_latest_nyx_reply`
+- `test_reply_slow_short_answer_searches_recent_topic_not_old_topic`
+- `test_packaged_entry_resolves_resources_without_launch_directory`
 - `test_build_embed_loads_model_lazily_once`
 - `test_fact_store_replaces_old_valid_fact_and_keeps_history`
 - `test_memory_facts_endpoint`、`memoryPanel.test.tsx`：事实快照 API、实体关系图与事实独立降级
@@ -237,6 +241,8 @@
 
 ### 前端桌面采集
 
+- `expressionHistoryStore` / `ExpressionHistoryPanel`：表达历史、碎碎念和主动搭话查询展示
+
 - `presence.test.ts`：Tauri 空闲毫秒/前台标题采样、三态边界、浏览器降级与时钟跳变、失败重试、single-flight A/B/A、采样乱序、Unicode 截断、超时/卸载取消和重连同步
 - `readerView.test.tsx`：阅读位置和 Nyx 追赶/等待派生态展示、结构化标题/粗体/已有划线、当前书划线搜索、UTF-16 同段选区、跨段拒绝，以及划线/书签持久定位
 - `stores.test.ts`：旧书书签请求成功或失败晚到时，均不得覆盖当前书状态
@@ -298,6 +304,8 @@
 - `app.test.tsx`：无 SSE/用户操作跨 06:00/22:00，根主题、顶栏时钟和 Avatar 同步
 
 ## 维护规则
+
+- `tests/test_memory/test_segments.py` 覆盖宽松续接、明确转题、原文保留与段链、真实召回幂等晋升、短期容量淘汰只退出索引、新鲜度排序及超过最近 200 条后长期段仍可检索；表达测试覆盖独立区块和预算内段计数；记忆 Facade 覆盖空闲定时判定、事实网与续接后旧事实关闭，运行时测试覆盖独立计时器；数据库迁移覆盖 schema 42。
 
 - 测试行为不写入本表；需要查看断言时直接打开对应 `tests/` 文件。
 - 测试文件移动或新增系统时，更新上面的文件数和覆盖表。

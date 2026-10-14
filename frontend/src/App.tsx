@@ -12,6 +12,7 @@ import ActivityPanel from "./components/panels/ActivityPanel";
 import CreationPanel from "./components/panels/CreationPanel";
 import DesiresPanel from "./components/panels/DesiresPanel";
 import EvalPanel from "./components/panels/EvalPanel";
+import ExpressionHistoryPanel from "./components/panels/ExpressionHistoryPanel";
 import MemoryPanel from "./components/panels/MemoryPanel";
 import BookshelfView from "./components/reading/BookshelfView";
 import ReaderView from "./components/reading/ReaderView";
@@ -176,6 +177,7 @@ export default function App() {
                   {view === "creation" && <CreationPanel />}
                   {view === "memory" && <MemoryPanel />}
                   {view === "eval" && <EvalPanel />}
+                  {view === "history" && <ExpressionHistoryPanel />}
                   {view === "reading" && (bookId === null ? <BookshelfView /> : <ReaderView />)}
                 </div>
               </section>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTypewriter } from "../../hooks/useTypewriter";
 import { useChatStore, type ChatMessage } from "../../stores/chatStore";
 
@@ -21,8 +21,11 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
     kind === "think" ||
     kind === "initiate_chat";
   const preloaded = message.preloaded === true;
-  // 非 preloaded 的 nyx 文本才逐字，其余即时全量显示
-  const typewrite = isNyxText && !preloaded;
+  const seen = useChatStore((s) => s.seenIds[message.id] === true);
+  const markSeen = useChatStore((s) => s.markSeen);
+  // 首次挂载的判定固定到本次挂载：标记已看不应打断正在播放的文字。
+  const playOnThisMount = useRef(!seen);
+  const typewrite = isNyxText && !preloaded && playOnThisMount.current;
   const { displayed, done } = useTypewriter(typewrite ? content : "", 35, ready);
   const text = isNyxText ? (typewrite ? displayed : content) : content;
   // 等待期（ready=false）不显示光标：光标只在逐字进行时闪
@@ -38,6 +41,7 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
     (kind === "ask" || kind === "reading_question");
   const isTimedInteraction = isWaitingInteraction &&
     (kind === "ask" || kind === "reading_question" || kind === "initiate_chat");
+  const canSelectInteraction = isTimedInteraction;
 
   useEffect(() => {
     if (!isTimedInteraction || message.paused_at !== null && message.paused_at !== undefined) return;
@@ -55,13 +59,19 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
     : null;
 
   useEffect(() => {
-    if (typewrite && done) onTyped(message.id);
-  }, [typewrite, done, message.id, onTyped]);
+    if (typewrite && ready) markSeen(message.id);
+  }, [typewrite, ready, message.id, markSeen]);
+
+  useEffect(() => {
+    if ((typewrite && done) || (isNyxText && !preloaded && !playOnThisMount.current && ready)) {
+      onTyped(message.id);
+    }
+  }, [typewrite, done, isNyxText, preloaded, ready, message.id, onTyped]);
 
   return (
     <div
       className={`message-bubble message-bubble--${role} message-bubble--${kind}`}
-      onClick={isQuestion ? () => selectQuestion(message.attempt_id ?? null) : undefined}
+      onClick={canSelectInteraction ? () => selectQuestion(message.attempt_id ?? null) : undefined}
     >
       {kind === "initiate_chat" && <span className="message-bubble__badge">欲望搭话</span>}
       {kind === "reading_question" && <span className="message-bubble__badge">提问</span>}

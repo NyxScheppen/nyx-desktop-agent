@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import io
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -31,6 +32,7 @@ from nyx.main import (
 )
 from nyx.memory.facade import MemoryFacade
 from nyx.reading.facade import ReadingFacade
+from nyx.runtime import check_initiate_chat, memory_loop
 from nyx.types import Event, Memory, SelfNarrative
 
 
@@ -55,6 +57,20 @@ class _FakeExpression:
 
 async def _stop(*_args: object) -> None:
     raise _StopLoop()
+
+
+async def test_waiting_question_blocks_desire_initiate_chat() -> None:
+    expression = SimpleNamespace(
+        pending_questions=AsyncMock(return_value=[object()]),
+        initiate_chat=AsyncMock(),
+    )
+    desire = SimpleNamespace(get_pending=AsyncMock())
+    app = SimpleNamespace(expression=expression, desire=desire)
+
+    await check_initiate_chat(app)
+
+    desire.get_pending.assert_not_awaited()
+    expression.initiate_chat.assert_not_awaited()
 
 
 def _app(bus: object, *, grid_minutes: int = 0) -> _App:
@@ -94,6 +110,23 @@ async def test_tick_loop_emits_four_clock_ticks(
         "initiate_chat_check",
     }
     assert all(e.source is Source.INTERNAL for e in bus.published)
+
+
+async def test_memory_loop_uses_its_own_timer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = SimpleNamespace(maintain_conversation_segments=AsyncMock())
+    app = SimpleNamespace(memory=memory)
+    async def tick(_interval: float) -> None:
+        if memory.maintain_conversation_segments.await_count:
+            raise _StopLoop()
+
+    monkeypatch.setattr("nyx.runtime.asyncio.sleep", tick)
+
+    with pytest.raises(_StopLoop):
+        await memory_loop(app, interval=60.0)
+
+    memory.maintain_conversation_segments.assert_awaited_once()
 
 
 class _FlakyBus:

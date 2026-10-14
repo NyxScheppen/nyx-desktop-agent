@@ -10,7 +10,7 @@ import aiosqlite
 
 from nyx.db import Database
 from nyx.enums import MemoryEdgeKind, MemoryKind, MemoryType
-from nyx.types import Memory, MemoryEdge, ReadingEvidence
+from nyx.types import ConversationSegment, Memory, MemoryEdge, ReadingEvidence
 
 _MEMORY_COLS = (
     "id, created_at, content, kind, topics, summary, freshness, "
@@ -28,6 +28,39 @@ class KeywordSearchHit:
     memory_id: str
     summary_tokens: list[str]
     content_tokens: list[str]
+
+
+def _segment_from_row(row: aiosqlite.Row) -> ConversationSegment:
+    embedding = row["embedding"]
+    return ConversationSegment(
+        id=row["id"],
+        previous_id=row["previous_id"],
+        started_at=row["started_at"],
+        ended_at=row["ended_at"],
+        raw_event_ids=list(json.loads(row["raw_event_ids"])),
+        raw_content=row["raw_content"],
+        summary=row["summary"],
+        topics=list(json.loads(row["topics"])),
+        embedding=list(json.loads(embedding)) if embedding else None,
+        importance=row["importance"],
+        long_term=bool(row["long_term"]),
+        evaluated_at=(
+            float(row["evaluated_at"])
+            if row["evaluated_at"] is not None
+            else None
+        ),
+        evaluation_reason=str(row["evaluation_reason"] or ""),
+        evidence_event_ids=list(json.loads(row["evidence_event_ids"] or "[]")),
+        freshness=float(row["freshness"]),
+        freshness_updated_at=float(row["freshness_updated_at"]),
+        recall_count=int(row["recall_count"]),
+        active=bool(row["active"]),
+        facts_extracted_at=(
+            float(row["facts_extracted_at"])
+            if row["facts_extracted_at"] is not None else None
+        ),
+        fact_scope=str(row["fact_scope"]),
+    )
 
 
 def hash_content(content: str) -> str:
@@ -53,6 +86,204 @@ class MemoryStore:
         """Return the shared database for local transaction orchestration."""
         return self._db
 
+    async def latest_conversation_segment(self) -> ConversationSegment | None:
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM conversation_segment "
+                "ORDER BY ended_at DESC, id DESC LIMIT 1"
+            )
+            row = await cursor.fetchone()
+        return _segment_from_row(row) if row is not None else None
+
+    async def get_conversation_segment(
+        self, segment_id: str
+    ) -> ConversationSegment | None:
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM conversation_segment WHERE id=?", (segment_id,)
+            )
+            row = await cursor.fetchone()
+        return _segment_from_row(row) if row is not None else None
+
+    async def list_conversation_segments(
+        self, limit: int | None = 200, *, active_only: bool = False
+    ) -> list[ConversationSegment]:
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM conversation_segment "
+                + ("WHERE active = 1 " if active_only else "")
+                + "ORDER BY ended_at DESC, id DESC "
+                + ("LIMIT ?" if limit is not None else ""),
+                (max(1, min(limit, 200)),) if limit is not None else (),
+            )
+            rows = await cursor.fetchall()
+        return [_segment_from_row(row) for row in rows]
+
+    async def list_pending_conversation_segments(
+        self, before: float, limit: int = 20, *, include_facts: bool = True
+    ) -> list[ConversationSegment]:
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM conversation_segment WHERE ended_at<=? "
+                + (
+                    "AND (evaluated_at IS NULL OR facts_extracted_at IS NULL) "
+                    if include_facts else "AND evaluated_at IS NULL "
+                )
+                + "ORDER BY ended_at ASC, id ASC LIMIT ?",
+                (before, limit),
+            )
+            rows = await cursor.fetchall()
+        return [_segment_from_row(row) for row in rows]
+
+    async def add_conversation_segment(self, segment: ConversationSegment) -> None:
+        async with self._operation() as should_commit:
+            await self._db.conn.execute(
+                "INSERT INTO conversation_segment "
+                "(id, previous_id, started_at, ended_at, raw_event_ids, raw_content, "
+                "summary, topics, embedding, importance, long_term, evaluated_at, "
+                "evaluation_reason, evidence_event_ids, freshness, "
+                "freshness_updated_at, recall_count, active, facts_extracted_at, "
+                "fact_scope) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    segment.id,
+                    segment.previous_id,
+                    segment.started_at,
+                    segment.ended_at,
+                    json.dumps(segment.raw_event_ids, ensure_ascii=False),
+                    segment.raw_content,
+                    segment.summary,
+                    json.dumps(segment.topics, ensure_ascii=False),
+                    (
+                        json.dumps(segment.embedding)
+                        if segment.embedding is not None
+                        else None
+                    ),
+                    segment.importance,
+                    int(segment.long_term),
+                    segment.evaluated_at,
+                    segment.evaluation_reason,
+                    json.dumps(segment.evidence_event_ids, ensure_ascii=False),
+                    segment.freshness,
+                    segment.freshness_updated_at or segment.ended_at,
+                    segment.recall_count,
+                    int(segment.active),
+                    segment.facts_extracted_at,
+                    segment.fact_scope,
+                ),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+
+    async def update_conversation_segment(self, segment: ConversationSegment) -> None:
+        async with self._operation() as should_commit:
+            await self._db.conn.execute(
+                "UPDATE conversation_segment SET ended_at=?, raw_event_ids=?, "
+                "raw_content=?, summary=?, topics=?, embedding=?, "
+                "importance=?, long_term=?, evaluated_at=?, evaluation_reason=?, "
+                "evidence_event_ids=?, freshness=?, freshness_updated_at=?, "
+                "recall_count=?, active=?, facts_extracted_at=?, fact_scope=? "
+                "WHERE id=?",
+                (
+                    segment.ended_at,
+                    json.dumps(segment.raw_event_ids, ensure_ascii=False),
+                    segment.raw_content,
+                    segment.summary,
+                    json.dumps(segment.topics, ensure_ascii=False),
+                    (
+                        json.dumps(segment.embedding)
+                        if segment.embedding is not None
+                        else None
+                    ),
+                    segment.importance,
+                    int(segment.long_term),
+                    segment.evaluated_at,
+                    segment.evaluation_reason,
+                    json.dumps(segment.evidence_event_ids, ensure_ascii=False),
+                    segment.freshness,
+                    segment.freshness_updated_at,
+                    segment.recall_count,
+                    int(segment.active),
+                    segment.facts_extracted_at,
+                    segment.fact_scope,
+                    segment.id,
+                ),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+
+    async def add_segment_evidence(
+        self, segment_id: str, evidence_segment_id: str
+    ) -> None:
+        async with self._operation() as should_commit:
+            await self._db.conn.execute(
+                "INSERT OR IGNORE INTO conversation_segment_evidence "
+                "(segment_id, evidence_segment_id, relation, created_at) "
+                "VALUES (?, ?, 'supports', ?)",
+                (segment_id, evidence_segment_id, time.time()),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+
+    async def clear_segment_evidence(self, segment_id: str) -> None:
+        async with self._operation() as should_commit:
+            await self._db.conn.execute(
+                "DELETE FROM conversation_segment_evidence WHERE segment_id=?",
+                (segment_id,),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+
+    async def record_segment_recall(
+        self, segment_id: str, user_event_id: str, promote_threshold: int
+    ) -> bool:
+        async with self._operation() as should_commit:
+            marker = await self._db.conn.execute(
+                "INSERT OR IGNORE INTO conversation_segment_recall_use "
+                "(user_event_id, segment_id) SELECT ?, id FROM conversation_segment "
+                "WHERE id=? AND active=1",
+                (user_event_id, segment_id),
+            )
+            if marker.rowcount != 1:
+                if should_commit:
+                    await self._db.conn.commit()
+                return False
+            await self._db.conn.execute(
+                "UPDATE conversation_segment SET recall_count=recall_count+1 "
+                "WHERE id=?", (segment_id,)
+            )
+            cursor = await self._db.conn.execute(
+                "UPDATE conversation_segment SET long_term=1 WHERE id=? "
+                "AND long_term=0 AND recall_count>=?",
+                (segment_id, promote_threshold),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+            return cursor.rowcount == 1
+
+    async def settle_segment_freshness(self, now: float, rate: float) -> None:
+        async with self._operation() as should_commit:
+            await self._db.conn.execute(
+                "UPDATE conversation_segment SET freshness=MAX(0.0, freshness-?*"
+                "((?-freshness_updated_at)/86400.0)), freshness_updated_at=? "
+                "WHERE active=1 AND long_term=0 AND freshness_updated_at<?",
+                (rate, now, now, now),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+
+    async def evict_short_segments(self, capacity: int) -> None:
+        async with self._operation() as should_commit:
+            await self._db.conn.execute(
+                "UPDATE conversation_segment SET active=0 WHERE id IN ("
+                "SELECT id FROM conversation_segment WHERE active=1 AND long_term=0 "
+                "ORDER BY freshness DESC, ended_at DESC, id ASC "
+                "LIMIT -1 OFFSET ?) ",
+                (capacity,),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+
     @asynccontextmanager
     async def _operation(self) -> AsyncGenerator[bool, None]:
         """Yield whether this method owns the commit for its SQL block."""
@@ -60,7 +291,11 @@ class MemoryStore:
             yield False
             return
         async with self._db.lock:
-            yield True
+            try:
+                yield True
+            except BaseException:
+                await self._db.conn.rollback()
+                raise
 
     async def add(self, memory: Memory) -> None:
         async with self._operation() as should_commit:

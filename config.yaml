@@ -6,7 +6,7 @@ llm:
   # base_url: http://localhost:11434/v1   # 可选：覆盖/自定义 endpoint
 
 embedding:
-  model: all-MiniLM-L6-v2     # 本地 sentence-transformers
+  model: BAAI/bge-small-zh-v1.5  # 本地中文 sentence-transformers
 
 memory:
   short_term_capacity: 100    # 容量上限

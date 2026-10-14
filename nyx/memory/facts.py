@@ -69,6 +69,13 @@ def is_fact_query(query: str) -> bool:
     return bool(query.strip()) and _FACT_QUERY_HINT_RE.search(query) is not None
 
 
+def is_knowledge_query(query: str) -> bool:
+    """仅明确要求检索资料时开放知识事实，普通提及不算授权。"""
+    source = re.search(r"书|作者|人物|资料|读过|小说|文章|网页|知识库", query)
+    request = re.search(r"什么|哪些|是谁|讲了|介绍|总结|查|告诉我|想知道|\?|？", query)
+    return source is not None and request is not None
+
+
 _FACT_MEMORY_KINDS = {
     MemoryKind.EPISODE,
     MemoryKind.USER_PROFILE,
@@ -326,7 +333,11 @@ class MemoryFactStore:
             yield True
 
     async def apply(
-        self, candidates: list[FactCandidate], source_memory_id: str | None
+        self,
+        candidates: list[FactCandidate],
+        source_memory_id: str | None,
+        scope: str = "conversation",
+        source_segment_id: str | None = None,
     ) -> None:
         if not candidates:
             return
@@ -354,6 +365,7 @@ class MemoryFactStore:
                         candidate.object_value,
                         candidate.valid_from,
                         candidate.polarity,
+                        scope,
                     )
                     if duplicate:
                         continue
@@ -364,9 +376,10 @@ class MemoryFactStore:
                             candidate.valid_from,
                             object_id,
                             candidate.polarity,
+                            scope,
                         )
                         await self._close_replaced(
-                            subject_id, candidate.predicate, candidate.valid_from
+                            subject_id, candidate.predicate, candidate.valid_from, scope
                         )
                     valid_until = candidate.valid_until
                     if not candidate.multi_valued:
@@ -375,13 +388,14 @@ class MemoryFactStore:
                             candidate.predicate,
                             candidate.valid_from,
                             candidate.valid_until,
+                            scope,
                         )
                     await self._db.conn.execute(
                         "INSERT INTO memory_fact ("
                         "id, subject_entity_id, predicate, object_entity_id, "
                         "object_value, source_memory_id, valid_from, valid_until, "
-                        "created_at, polarity"
-                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "created_at, polarity, scope, source_segment_id"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             str(uuid4()),
                             subject_id,
@@ -393,6 +407,12 @@ class MemoryFactStore:
                             valid_until,
                             time.time(),
                             candidate.polarity,
+                            (
+                                scope
+                                if scope in {"profile", "conversation", "knowledge"}
+                                else "conversation"
+                            ),
+                            source_segment_id,
                         ),
                     )
                 if should_commit:
@@ -407,6 +427,16 @@ class MemoryFactStore:
                     await self._db.conn.rollback()
                 raise
 
+    async def close_segment_facts(self, segment_id: str, now: float) -> None:
+        async with self._operation() as should_commit:
+            await self._db.conn.execute(
+                "UPDATE memory_fact SET valid_until=? WHERE source_segment_id=? "
+                "AND valid_from<? AND (valid_until IS NULL OR valid_until>?)",
+                (now, segment_id, now, now),
+            )
+            if should_commit:
+                await self._db.conn.commit()
+
     async def search(self, query: str, now: float | None = None) -> list[MemoryFact]:
         if not query.strip():
             return []
@@ -416,6 +446,13 @@ class MemoryFactStore:
         if not terms:
             return []
         patterns = [f"%{_escape_like(term)}%" for term in terms]
+        knowledge_query = is_knowledge_query(query)
+        allowed_scopes = (
+            ("knowledge",)
+            if knowledge_query
+            else ("profile", "conversation")
+        )
+        scope_placeholders = ", ".join("?" for _ in allowed_scopes)
         direct_where = " OR ".join(
             "s.canonical_name LIKE ? ESCAPE '\\' "
             "OR f.predicate LIKE ? ESCAPE '\\' "
@@ -431,18 +468,19 @@ class MemoryFactStore:
             cursor = await self._db.conn.execute(
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
                 "COALESCE(o.canonical_name, f.object_value) AS object_value, "
-                "f.valid_from, f.valid_until, f.source_memory_id, "
-                "f.created_at, f.polarity, s.entity_type AS subject_type, "
+                "f.valid_from, f.valid_until, f.source_memory_id, f.source_segment_id, "
+                "f.created_at, f.polarity, f.scope, s.entity_type AS subject_type, "
                 "o.entity_type AS object_type, "
                 "f.subject_entity_id, f.object_entity_id "
                 "FROM memory_fact f "
                 "JOIN memory_entity s ON s.id = f.subject_entity_id "
                 "LEFT JOIN memory_entity o ON o.id = f.object_entity_id "
-                "WHERE f.valid_from <= ? AND "
+                "WHERE f.scope IN (" + scope_placeholders + ") "
+                "AND f.valid_from <= ? AND "
                 "(f.valid_until IS NULL OR f.valid_until > ?) AND ("
                 + direct_where
                 + ") ORDER BY f.valid_from DESC, f.created_at DESC, f.id LIMIT ?",
-                (at, at, *direct_params, _FACT_RECALL_LIMIT),
+                (*allowed_scopes, at, at, *direct_params, _FACT_RECALL_LIMIT),
             )
             direct_rows = await cursor.fetchall()
             entity_ids: set[str] = set()
@@ -458,18 +496,19 @@ class MemoryFactStore:
             cursor = await self._db.conn.execute(
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
                 "COALESCE(o.canonical_name, f.object_value) AS object_value, "
-                "f.valid_from, f.valid_until, f.source_memory_id, "
-                "f.created_at, f.polarity, s.entity_type AS subject_type, "
+                "f.valid_from, f.valid_until, f.source_memory_id, f.source_segment_id, "
+                "f.created_at, f.polarity, f.scope, s.entity_type AS subject_type, "
                 "o.entity_type AS object_type "
                 "FROM memory_fact f "
                 "JOIN memory_entity s ON s.id = f.subject_entity_id "
                 "LEFT JOIN memory_entity o ON o.id = f.object_entity_id "
-                "WHERE f.valid_from <= ? AND "
+                "WHERE f.scope IN (" + scope_placeholders + ") "
+                "AND f.valid_from <= ? AND "
                 "(f.valid_until IS NULL OR f.valid_until > ?) AND ("
                 f"f.subject_entity_id IN ({placeholders}) OR "
                 f"f.object_entity_id IN ({placeholders})) "
                 "ORDER BY f.valid_from DESC, f.created_at DESC, f.id LIMIT ?",
-                (at, at, *ids, *ids, _FACT_RECALL_LIMIT),
+                (*allowed_scopes, at, at, *ids, *ids, _FACT_RECALL_LIMIT),
             )
             selected = await cursor.fetchall()
         return [_row_to_fact(row) for row in selected]
@@ -486,8 +525,8 @@ class MemoryFactStore:
             cursor = await self._db.conn.execute(
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
                 "COALESCE(o.canonical_name, f.object_value) AS object_value, "
-                "f.valid_from, f.valid_until, f.source_memory_id, "
-                "f.created_at, f.polarity, s.entity_type AS subject_type, "
+                "f.valid_from, f.valid_until, f.source_memory_id, f.source_segment_id, "
+                "f.created_at, f.polarity, f.scope, s.entity_type AS subject_type, "
                 "o.entity_type AS object_type "
                 "FROM memory_fact f "
                 "JOIN memory_entity s ON s.id = f.subject_entity_id "
@@ -572,12 +611,16 @@ class MemoryFactStore:
         object_value: str,
         valid_from: float,
         polarity: int,
+        scope: str,
     ) -> bool:
         cursor = await self._db.conn.execute(
             "SELECT 1 FROM memory_fact WHERE subject_entity_id = ? AND predicate = ? "
             "AND object_entity_id = ? AND object_value = ? AND valid_from = ? "
-            "AND polarity = ? LIMIT 1",
-            (subject_id, predicate, object_id, object_value, valid_from, polarity),
+            "AND polarity = ? AND scope = ? LIMIT 1",
+            (
+                subject_id, predicate, object_id, object_value,
+                valid_from, polarity, scope,
+            ),
         )
         return await cursor.fetchone() is not None
 
@@ -588,27 +631,30 @@ class MemoryFactStore:
         valid_from: float,
         object_id: str,
         polarity: int,
+        scope: str,
     ) -> None:
         await self._db.conn.execute(
             "DELETE FROM memory_fact WHERE subject_entity_id = ? "
-            "AND predicate = ? AND valid_from = ? AND object_entity_id != ?",
-            (subject_id, predicate, valid_from, object_id),
+            "AND predicate = ? AND valid_from = ? AND object_entity_id != ? "
+            "AND scope = ?",
+            (subject_id, predicate, valid_from, object_id, scope),
         )
         await self._db.conn.execute(
             "DELETE FROM memory_fact WHERE subject_entity_id = ? "
             "AND predicate = ? AND valid_from = ? AND object_entity_id = ? "
-            "AND polarity != ?",
-            (subject_id, predicate, valid_from, object_id, polarity),
+            "AND polarity != ? AND scope = ?",
+            (subject_id, predicate, valid_from, object_id, polarity, scope),
         )
 
     async def _close_replaced(
-        self, subject_id: str, predicate: str, valid_from: float
+        self, subject_id: str, predicate: str, valid_from: float, scope: str
     ) -> None:
         await self._db.conn.execute(
             "UPDATE memory_fact SET valid_until = ? "
             "WHERE subject_entity_id = ? AND predicate = ? "
-            "AND valid_from < ? AND (valid_until IS NULL OR valid_until > ?)",
-            (valid_from, subject_id, predicate, valid_from, valid_from),
+            "AND valid_from < ? AND (valid_until IS NULL OR valid_until > ?) "
+            "AND scope = ?",
+            (valid_from, subject_id, predicate, valid_from, valid_from, scope),
         )
 
     async def _next_fact_start(
@@ -617,12 +663,14 @@ class MemoryFactStore:
         predicate: str,
         valid_from: float,
         valid_until: float | None,
+        scope: str,
     ) -> float | None:
         """Bound a late-arriving historical fact before the next known state."""
         cursor = await self._db.conn.execute(
             "SELECT MIN(valid_from) AS next_start FROM memory_fact "
-            "WHERE subject_entity_id = ? AND predicate = ? AND valid_from > ?",
-            (subject_id, predicate, valid_from),
+            "WHERE subject_entity_id = ? AND predicate = ? AND valid_from > ? "
+            "AND scope = ?",
+            (subject_id, predicate, valid_from, scope),
         )
         row = await cursor.fetchone()
         next_start = float(row["next_start"]) if row and row["next_start"] else None
@@ -648,6 +696,12 @@ def _row_to_fact(row: aiosqlite.Row) -> MemoryFact:
             if row["source_memory_id"] is not None
             else None
         ),
+        source_segment_id=(
+            str(row["source_segment_id"])
+            if "source_segment_id" in row.keys()
+            and row["source_segment_id"] is not None
+            else None
+        ),
         created_at=float(row["created_at"]),
         polarity=int(row["polarity"]) if "polarity" in row.keys() else 1,
         subject_type=(
@@ -659,6 +713,11 @@ def _row_to_fact(row: aiosqlite.Row) -> MemoryFact:
             str(row["object_type"])
             if "object_type" in row.keys() and row["object_type"] is not None
             else "concept"
+        ),
+        scope=(
+            str(row["scope"])
+            if "scope" in row.keys() and row["scope"] is not None
+            else "conversation"
         ),
     )
 

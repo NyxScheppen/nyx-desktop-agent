@@ -78,6 +78,7 @@
 - 数据库文件默认由 `nyx/db.py` 决定；表结构、迁移和关闭语义见 `04-module-bus-system.md`。
 - schema 35 的 `memory_recall_use` 只为慢通道真实召回提供事件级幂等；对象生命周期与删除语义
   见 `06-memory-system.md`，不作为公开 API 对象。
+- schema 42 的 `conversation_segment_recall_use` 独立记录新版段真实入选；段的新鲜度衰减、活跃索引淘汰和事实来源由 `nyx/memory/` 管理，运行时使用独立记忆计时器。
 - 后端测试入口为 `tests/`；按系统分目录，覆盖索引见 [`test-inventory.md`](test-inventory.md)。
 - 前端测试入口为 `frontend/tests/`，运行 `npm test`；构建检查运行 `npm run build`。
 - 发现索引与源码不一致时，以源码和对应完整 spec 为准，并在同一变更中修正索引。

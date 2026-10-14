@@ -19,7 +19,7 @@ from nyx.config import ExpressionConfig
 from nyx.enums import ContextMode, EventType, InteractionKind, UserIntent
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
-from nyx.events.event import internal_event, internal_text_event
+from nyx.events.event import internal_text_event
 from nyx.expression.classifier import (
     classify_channel,
     is_question,
@@ -35,9 +35,9 @@ from nyx.expression.prompt import (
     activity_summary,
     bound_material_block,
     build_backtrack_context,
+    build_conversation_segments_prompt,
     build_system_prompt,
     build_user_prompt,
-    select_prompt_memories,
 )
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
@@ -73,6 +73,7 @@ class ReplyState(TypedDict):
     message: str
     mode: ContextMode
     context: list[Message]       # 回溯上下文（facade 入口填，快慢一致；不含当前消息）
+    conversation_segments: list[str]  # 独立历史段，不伪装成 Message
     memories: list[Memory]       # 预算筛选后实际进入 prompt 的记忆
     facts: list[MemoryFact]       # 当前有效事实（与原始记忆隔离）
     state: CurrentState          # 当前状态快照
@@ -194,6 +195,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 bound_material_block(
                     state["reading_context"], _READING_BLOCK_MAX_CHARS
                 ),
+                build_conversation_segments_prompt(state["conversation_segments"]),
                 build_user_prompt(state["message"], state["context"]),
             )
             if part
@@ -228,23 +230,44 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         context = build_backtrack_context(
             state["message"],
             list(deps.history),
-            time.time(),
-            deps.config.context_time_gap,
             deps.config.max_context_len,
         )
-        memories = select_prompt_memories(
-            await deps.memory.search(state["message"])
-        )
+        prior_turns = [m.content[:120] for m in context[-3:]]
+        query = "\n".join([*prior_turns, state["message"]])[-300:]
+        segment_search = getattr(deps.memory, "search_conversation_segments", None)
+        recalled_segments: list[str] = []
+        if callable(segment_search):
+            segment_fn = cast(
+                Callable[[str, int], Awaitable[list[Any]]], segment_search
+            )
+            segments = await segment_fn(query, 20)
+            recall_segment = getattr(
+                deps.memory, "record_conversation_segment_recall", None
+            )
+            rendered = ""
+            context_contents = {item.content for item in context}
+            for segment in segments:
+                if segment.raw_content in context_contents:
+                    continue
+                candidate = [*recalled_segments, segment.raw_content]
+                next_rendered = build_conversation_segments_prompt(candidate)
+                if next_rendered == rendered:
+                    break
+                recalled_segments.append(segment.raw_content)
+                rendered = next_rendered
+                if callable(recall_segment):
+                    recall_fn = cast(
+                        Callable[[str, str], Awaitable[None]], recall_segment
+                    )
+                    await recall_fn(segment.id, state["correlation_id"])
+        # 普通聊天只召回连续对话段原文；阅读/网页知识不进入这里，
+        # 旧的场景 Memory 也不再作为聊天记忆来源。
+        memories: list[Memory] = []
         facts = state["facts"]
-        recalled: set[str] = set()
-        for m in memories:
-            if m.id in recalled:
-                continue
-            recalled.add(m.id)
-            await deps.memory.record_recall(m.id, state["correlation_id"])
         narrative = await deps.inner_life.get_narrative()
         return {
-            "context": context, "memories": memories, "facts": facts,
+            "context": context, "conversation_segments": recalled_segments,
+            "memories": memories, "facts": facts,
             "narrative": narrative,
         }
 
@@ -291,17 +314,6 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 text = f"工具 {name} 执行失败"
             outputs.append(f"{name}: {text}")
         return {"tool_outputs": outputs}
-
-    def scene_memory_event(state: ReplyState) -> Event:
-        return internal_event(
-            EventType.SCENE_MEMORY_REQUESTED,
-            {
-                "user_message": state["message"],
-                "nyx_think": "\n".join(state["think"]),
-                "nyx_speak": "\n".join(state["speak"]),
-            },
-            state["correlation_id"],
-        )
 
     def text_events(
         state: ReplyState,
@@ -440,7 +452,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     state["speak"],
                     omit_final_speak=True,
                 ),
-                followup_events=[scene_memory_event(state)],
+                followup_events=[],
                 answered_attempt=state["answered_attempt"],
             )
             return {"ask": speak}
@@ -449,7 +461,6 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             await deps.commit_reply_events(
                 [
                     *text_events(state, state["think"], state["speak"]),
-                    scene_memory_event(state),
                 ],
                 state["answered_attempt"],
                 state["claimed_return"],
@@ -461,6 +472,15 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         # 下一轮 reply 的 assemble 从这里回溯。
         now = time.time()
         observed_activity = _message_activity(state["activity_context"])
+        append_segment = getattr(deps.memory, "append_conversation_turn", None)
+        append_fn: Callable[[str, str, float], Awaitable[None]] | None = None
+        if callable(append_segment):
+            append_fn = cast(
+                Callable[[str, str, float], Awaitable[None]], append_segment
+            )
+            await append_fn(
+                f"{state['correlation_id']}:user", state["message"], now
+            )
         deps.history.append(
             Message(
                 role="user",
@@ -477,6 +497,10 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         nyx_text = "\n".join(state["speak"])
         if nyx_text:
+            if append_fn is not None:
+                await append_fn(
+                    f"{state['correlation_id']}:nyx", nyx_text, now
+                )
             deps.history.append(
                 Message(
                     role="nyx",

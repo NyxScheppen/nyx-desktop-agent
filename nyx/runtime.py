@@ -133,6 +133,12 @@ async def on_reflection_check(app: Any, event: Event) -> None:
 
 async def check_initiate_chat(app: Any) -> None:
     """Start a desire-driven chat when presence and energy permit it."""
+    pending_method = cast(
+        Callable[[], Awaitable[list[Any]]] | None,
+        getattr(app.expression, "pending_questions", None),
+    )
+    if callable(pending_method) and await pending_method():
+        return
     desires = await app.desire.get_pending()
     interaction = next(
         (desire for desire in desires if desire.type is DesireType.INTERACTION), None
@@ -297,6 +303,18 @@ async def tick_loop(
         await asyncio.sleep(tick_interval)
 
 
+async def memory_loop(app: Any, *, interval: float = 60.0) -> None:
+    """Settle conversation memory independently of chat and clock ticks."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await app.memory.maintain_conversation_segments()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger(__name__).exception("对话记忆定时维护失败")
+
+
 async def supervise_bus(
     app: Any,
     *,
@@ -369,13 +387,15 @@ async def run_character(host: "_Host", identity: str) -> None:
                 reflect_check_interval=3600,
             )
         ),
+        asyncio.create_task(memory_loop(app)),
     ]
     app.tick_task = tasks[1]
+    app.memory_task = tasks[2]
     try:
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         stopping = host.closing or host.records[identity]["status"] == "STOPPING"
         for task in done:
-            if stopping and task is tasks[1] and task.cancelled():
+            if stopping and task in (tasks[1], tasks[2]) and task.cancelled():
                 continue
             task.result()
         if stopping:
@@ -405,6 +425,11 @@ async def stop_character(host: "_Host", identity: str) -> bool:
     if app.tick_task is not None:
         app.tick_task.cancel()
         _, pending = await asyncio.wait([app.tick_task], timeout=5)
+        if pending:
+            return False
+    if app.memory_task is not None:
+        app.memory_task.cancel()
+        _, pending = await asyncio.wait([app.memory_task], timeout=5)
         if pending:
             return False
     await app.reading.quiesce()

@@ -33,6 +33,22 @@ async def test_fact_store_replaces_old_valid_fact_and_keeps_history() -> None:
         await database.close()
 
 
+async def test_knowledge_fact_requires_explicit_source_question() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = MemoryFactStore(database)
+        await store.apply(
+            [FactCandidate("《鱼火锅之书》", "讨论主题", "汉代制度", 100.0, None)],
+            None,
+            scope="knowledge",
+        )
+        assert await store.search("我读过鱼火锅之书", now=200.0) == []
+        facts = await store.search("这本鱼火锅之书讲了什么？", now=200.0)
+        assert [fact.scope for fact in facts] == ["knowledge"]
+    finally:
+        await database.close()
+
+
 async def test_fact_store_duplicate_is_idempotent() -> None:
     database = await db.connect(":memory:")
     try:

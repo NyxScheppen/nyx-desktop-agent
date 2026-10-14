@@ -756,6 +756,77 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "sequence INTEGER NOT NULL, snapshot TEXT NOT NULL)",
         ],
     ),
+    (
+        39,
+        [
+            """CREATE TABLE conversation_segment (
+                id TEXT PRIMARY KEY,
+                previous_id TEXT REFERENCES conversation_segment(id) ON DELETE SET NULL,
+                started_at REAL NOT NULL,
+                ended_at REAL NOT NULL,
+                raw_event_ids TEXT NOT NULL,
+                raw_content TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                topics TEXT NOT NULL DEFAULT '[]',
+                embedding TEXT,
+                importance TEXT NOT NULL DEFAULT 'normal',
+                long_term INTEGER NOT NULL DEFAULT 0
+            )""",
+            "CREATE INDEX idx_conversation_segment_time "
+            "ON conversation_segment(ended_at, id)",
+        ],
+    ),
+    (
+        40,
+        [
+            "ALTER TABLE memory_fact ADD COLUMN scope TEXT NOT NULL DEFAULT "
+            "'conversation'"
+        ],
+    ),
+    (
+        41,
+        [
+            "ALTER TABLE conversation_segment ADD COLUMN evaluated_at REAL",
+            "ALTER TABLE conversation_segment ADD COLUMN evaluation_reason "
+            "TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE conversation_segment ADD COLUMN evidence_event_ids "
+            "TEXT NOT NULL DEFAULT '[]'",
+            "CREATE TABLE conversation_segment_evidence ("
+            "segment_id TEXT NOT NULL REFERENCES conversation_segment(id) "
+            "ON DELETE CASCADE, "
+            "evidence_segment_id TEXT NOT NULL REFERENCES conversation_segment(id) "
+            "ON DELETE CASCADE, "
+            "relation TEXT NOT NULL DEFAULT 'supports', "
+            "created_at REAL NOT NULL, "
+            "PRIMARY KEY(segment_id, evidence_segment_id, relation))",
+        ],
+    ),
+    (
+        42,
+        [
+            "ALTER TABLE conversation_segment ADD COLUMN freshness "
+            "REAL NOT NULL DEFAULT 1.0",
+            "ALTER TABLE conversation_segment ADD COLUMN freshness_updated_at "
+            "REAL NOT NULL DEFAULT 0.0",
+            "UPDATE conversation_segment SET freshness_updated_at = "
+            "CAST(strftime('%s', 'now') AS REAL)",
+            "ALTER TABLE conversation_segment ADD COLUMN recall_count "
+            "INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE conversation_segment ADD COLUMN active "
+            "INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE conversation_segment ADD COLUMN facts_extracted_at REAL",
+            "ALTER TABLE conversation_segment ADD COLUMN fact_scope "
+            "TEXT NOT NULL DEFAULT 'conversation'",
+            "CREATE TABLE conversation_segment_recall_use ("
+            "user_event_id TEXT NOT NULL, segment_id TEXT NOT NULL "
+            "REFERENCES conversation_segment(id) ON DELETE CASCADE, "
+            "PRIMARY KEY(user_event_id, segment_id))",
+            "ALTER TABLE memory_fact ADD COLUMN source_segment_id TEXT "
+            "REFERENCES conversation_segment(id) ON DELETE SET NULL",
+            "CREATE INDEX idx_memory_fact_source_segment "
+            "ON memory_fact(source_segment_id)",
+        ],
+    ),
 ]
 
 

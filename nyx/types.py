@@ -61,6 +61,15 @@ class Event:
     correlation_id: str  # 上游 Event.correlation_id（根事件 = 自身 id）
 
 
+@dataclass
+class ExpressionHistory:
+    """持久化表达事件的前端查询投影。"""
+
+    all: list[Event]
+    mutter: list[Event]
+    initiate_chat: list[Event]
+
+
 # ---- 记忆 ----
 @dataclass
 class Memory:
@@ -76,6 +85,32 @@ class Memory:
     aspect: list[str] = field(default_factory=list[str])  # 仅 user_profile 画像，可多值
     embedding: list[float] | None = None  # 向量检索用，未嵌入为 None
     sources: list[SearchMode] = field(default_factory=list[SearchMode])  # 检索来源层
+
+
+@dataclass
+class ConversationSegment:
+    """连续对话段：原始轮次是主体，摘要与向量只作索引。"""
+
+    id: str
+    previous_id: str | None
+    started_at: float
+    ended_at: float
+    raw_event_ids: list[str]
+    raw_content: str
+    summary: str = ""
+    topics: list[str] = field(default_factory=list[str])
+    embedding: list[float] | None = None
+    importance: str = "normal"
+    long_term: bool = False
+    evaluated_at: float | None = None
+    evaluation_reason: str = ""
+    evidence_event_ids: list[str] = field(default_factory=list[str])
+    freshness: float = 1.0
+    freshness_updated_at: float = 0.0
+    recall_count: int = 0
+    active: bool = True
+    facts_extracted_at: float | None = None
+    fact_scope: str = "conversation"
 
 
 @dataclass(frozen=True)
@@ -111,6 +146,8 @@ class MemoryFact:
     polarity: int = 1
     subject_type: str = "person"
     object_type: str = "concept"
+    scope: str = "conversation"
+    source_segment_id: str | None = None
 
 
 # ---- 欲望 ----

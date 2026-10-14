@@ -344,7 +344,7 @@ def main() -> None:
             Callable[..., str], getattr(huggingface_hub, "snapshot_download")
         )
         model = download(
-            repo_id="sentence-transformers/all-MiniLM-L6-v2",
+            repo_id="BAAI/bge-small-zh-v1.5",
             allow_patterns=["*.json", "*.txt", "model.safetensors"],
         )
         output = ROOT / "build" / "sidecar"

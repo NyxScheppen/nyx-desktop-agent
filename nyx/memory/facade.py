@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -22,8 +23,16 @@ from nyx.memory.facts import (
     parse_fact_extraction,
 )
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, extract_keywords
+from nyx.memory.segments import append_turn, search_segments, should_continue
 from nyx.memory.store import MemoryStore
-from nyx.types import Event, Memory, MemoryEdge, MemoryFact, ReadingEvidence
+from nyx.types import (
+    ConversationSegment,
+    Event,
+    Memory,
+    MemoryEdge,
+    MemoryFact,
+    ReadingEvidence,
+)
 
 _SCENE_SYSTEM = (
     "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
@@ -33,6 +42,16 @@ _SCENE_SYSTEM = (
     "kind（episode/user_profile/knowledge/reading/activity/interaction）、"
     "topics（最多 5 个主题字符串）、summary（一句话总结），"
     "content、kind、summary 非空；topics 可以为空数组。"
+)
+
+_SEGMENT_EVALUATION_SYSTEM = (
+    "你是对话记忆判定器。只根据用户原话判断这段对话是否值得长期保留。"
+    "重要经历（重大事件、持续影响用户的处境）单段即可长期；普通偏好只有在不同对话段重复出现时才长期。"
+    "不要把尼克斯的话、摘要或外部资料当作用户事实。只输出 JSON："
+    "importance（low/normal/high）、long_term（布尔）、memory_kind（episode/user_profile/conversation）、"
+    "summary（不超过120字）、topics（最多8个字符串）、evidence_event_ids（只能来自输入）、"
+    "evidence_segment_ids（仅列出确实表达同一用户偏好的历史段 ID）、reason。"
+    "不确定时 importance=normal、long_term=false。"
 )
 
 _FACT_EXTRACTION_SYSTEM = (
@@ -316,6 +335,58 @@ def _parse_scene(raw: str) -> tuple[str, MemoryKind, list[str], str]:
     if not isinstance(summary, str) or not summary:
         raise ValueError("场景记忆 JSON 缺 summary 或非空字符串")
     return content, kind, _normalize_topics(raw_topics), summary
+
+
+def _parse_segment_evaluation(
+    raw: str, segment: ConversationSegment
+) -> tuple[str, bool, str, str, list[str], str, list[str], list[str]]:
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("对话段判定 JSON 应为对象")
+    parsed = cast(dict[str, Any], data)
+    importance = parsed.get("importance", "normal")
+    if importance not in {"low", "normal", "high"}:
+        importance = "normal"
+    long_term = parsed.get("long_term", False)
+    if not isinstance(long_term, bool):
+        long_term = False
+    kind = parsed.get("memory_kind", "conversation")
+    if kind not in {"episode", "user_profile", "conversation"}:
+        kind = "conversation"
+    summary = parsed.get("summary", segment.summary)
+    if not isinstance(summary, str) or not summary.strip():
+        summary = segment.summary or segment.raw_content[:120]
+    topics = parsed.get("topics", [])
+    if not isinstance(topics, list):
+        topics = []
+    event_ids: object = parsed.get("evidence_event_ids", [])
+    valid_ids = set(segment.raw_event_ids)
+    if not isinstance(event_ids, list):
+        event_ids = []
+    raw_topics = cast(list[object], topics)
+    reason = parsed.get("reason", "")
+    if not isinstance(reason, str):
+        reason = ""
+    evidence = [
+        item for item in cast(list[object], event_ids)
+        if isinstance(item, str) and item in valid_ids and item.endswith(":user")
+    ]
+    raw_segment_ids: object = parsed.get("evidence_segment_ids", [])
+    segment_ids = (
+        [item for item in cast(list[object], raw_segment_ids) if isinstance(item, str)]
+        if isinstance(raw_segment_ids, list)
+        else []
+    )
+    return (
+        importance,
+        long_term,
+        kind,
+        summary.strip()[:120],
+        _normalize_topics(raw_topics),
+        reason.strip()[:240],
+        evidence,
+        segment_ids,
+    )
 
 
 def _build_scene_prompt(ctx: dict[str, str]) -> str:
@@ -660,6 +731,200 @@ class MemoryFacade:
         self._fact_store = fact_store
         self._logger = logging.getLogger(__name__)
         self._last_observation: tuple[str, str] | None = None  # 「变化才沉淀」快照
+        self._segment_lock = asyncio.Lock()
+
+    async def append_conversation_turn(
+        self, event_id: str, content: str, timestamp: float | None = None
+    ) -> None:
+        """保存原始对话轮次并宽松地并入当前对话段。"""
+        async with self._segment_lock:
+            latest = await self._store.latest_conversation_segment()
+            now = time.time() if timestamp is None else timestamp
+            if (
+                latest is not None
+                and not event_id.endswith(":nyx")
+                and not should_continue(latest, content, now)
+            ):
+                await self._evaluate_conversation_segment(latest)
+            await append_turn(
+                self._store,
+                event_id=event_id,
+                content=content,
+                timestamp=timestamp,
+                embed=self._embed,
+                promote_threshold=self._config.promote_threshold,
+            )
+            await self._maintain_segment_capacity(now)
+
+    async def evaluate_conversation_segment(
+        self, segment: ConversationSegment
+    ) -> ConversationSegment:
+        """在段结束时判定重要度；LLM 失败则保留安全的普通短期默认值。"""
+        async with self._segment_lock:
+            current = await self._store.get_conversation_segment(segment.id)
+            if current is None:
+                return segment
+            return await self._evaluate_conversation_segment(current)
+
+    async def _evaluate_conversation_segment(
+        self, segment: ConversationSegment
+    ) -> ConversationSegment:
+        if segment.evaluated_at is not None:
+            await self._extract_segment_facts(segment)
+            return segment
+        kind = "conversation"
+        corroborating: list[ConversationSegment] = []
+        prior = await self._store.list_conversation_segments(50)
+        prior_text = "\n".join(
+            f"{item.id}: {item.raw_content[:500]}"
+            for item in prior
+            if item.id != segment.id
+        )
+        prompt = (
+            f"段 ID：{segment.id}\n"
+            f"事件 ID：{json.dumps(segment.raw_event_ids, ensure_ascii=False)}\n"
+            f"对话原文：\n{segment.raw_content[:12000]}\n"
+            f"其他历史段索引：\n{prior_text[:5000]}"
+        )
+        try:
+            output = await self._llm.complete(
+                [
+                    {"role": "system", "content": _SEGMENT_EVALUATION_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                module="memory",
+                output_type="conversation_segment_evaluation",
+                correlation_id=segment.id,
+                json_mode=True,
+            )
+            await self._evaluator.evaluate(output)
+            (
+                importance, long_term, kind, summary, topics, reason, evidence,
+                evidence_segment_ids,
+            ) = _parse_segment_evaluation(output.content, segment)
+            corroborating = [
+                item for item in prior
+                if item.id != segment.id and item.id in evidence_segment_ids
+            ]
+            if kind == "user_profile":
+                long_term = bool(corroborating and evidence)
+            elif kind == "episode":
+                long_term = bool(importance == "high" and evidence)
+            else:
+                long_term = False
+            segment.importance = importance
+            segment.long_term = long_term or (
+                segment.recall_count >= self._config.promote_threshold
+            )
+            segment.fact_scope = "profile" if kind == "user_profile" else "conversation"
+            segment.summary = summary
+            if topics:
+                segment.topics = topics
+            segment.evaluated_at = time.time()
+            segment.evaluation_reason = reason
+            segment.evidence_event_ids = evidence
+        except Exception:
+            self._logger.exception("对话段重要度判定失败 segment_id=%s", segment.id)
+        await self._store.update_conversation_segment(segment)
+        if segment.long_term and kind == "user_profile":
+            for item in corroborating[:8]:
+                await self._store.add_segment_evidence(segment.id, item.id)
+        await self._extract_segment_facts(segment)
+        return segment
+
+    async def _extract_segment_facts(self, segment: ConversationSegment) -> None:
+        if (
+            self._fact_store is None or segment.evaluated_at is None
+            or segment.facts_extracted_at is not None
+        ):
+            return
+        candidates: list[FactCandidate] = []
+        try:
+            if "用户：" in segment.raw_content:
+                output = await self._llm.complete(
+                    [
+                        {"role": "system", "content": _FACT_EXTRACTION_SYSTEM},
+                        {"role": "user", "content": (
+                            "来源范围：对话段；只抽取用户原话明确说出的事实。"
+                            "尼克斯的发言不是用户事实；引文不是现实事实。\n"
+                            f"原文：\n{segment.raw_content[:12000]}"
+                        )},
+                    ],
+                    module="memory", output_type="fact_extraction",
+                    correlation_id=segment.id, json_mode=True,
+                )
+                await self._evaluator.evaluate(output)
+                fact_output: object = json.loads(output.content)
+                if not isinstance(fact_output, dict) or not isinstance(
+                    cast(dict[str, object], fact_output).get("facts"), list
+                ):
+                    raise ValueError("对话段事实抽取 JSON 缺少 facts 数组")
+                parsed = parse_fact_extraction(
+                    output.content,
+                    valid_from=segment.ended_at,
+                    source_scope="conversation",
+                )
+                candidates = parsed.facts
+            async with self._store.db.transaction():
+                await self._fact_store.close_segment_facts(
+                    segment.id, segment.ended_at
+                )
+                profile = [
+                    item for item in candidates
+                    if segment.fact_scope == "profile" and item.subject == "用户"
+                ]
+                conversation = [item for item in candidates if item not in profile]
+                await self._fact_store.apply(
+                    profile, None, "profile", source_segment_id=segment.id
+                )
+                await self._fact_store.apply(
+                    conversation, None, "conversation", source_segment_id=segment.id
+                )
+                segment.facts_extracted_at = time.time()
+                await self._store.update_conversation_segment(segment)
+        except Exception:
+            self._logger.exception("对话段事实抽取失败 segment_id=%s", segment.id)
+
+    async def _maintain_segment_capacity(self, now: float) -> None:
+        await self._store.settle_segment_freshness(
+            now, self._config.freshness_decay
+        )
+        await self._store.evict_short_segments(self._config.short_term_capacity)
+
+    async def maintain_conversation_segments(self, now: float | None = None) -> None:
+        """独立计时器入口：空闲段判定、事实补写及短期衰减淘汰。"""
+        current = time.time() if now is None else now
+        async with self._segment_lock:
+            pending = await self._store.list_pending_conversation_segments(
+                current - 4 * 60 * 60,
+                include_facts=self._fact_store is not None,
+            )
+            for segment in pending:
+                await self._evaluate_conversation_segment(segment)
+            await self._maintain_segment_capacity(current)
+
+    async def finalize_conversation_segment(self) -> None:
+        """在关闭或长时间空闲时评估当前未结段。"""
+        async with self._segment_lock:
+            latest = await self._store.latest_conversation_segment()
+            if latest is not None:
+                await self._evaluate_conversation_segment(latest)
+
+    async def search_conversation_segments(
+        self, query: str, limit: int = 20
+    ) -> list[ConversationSegment]:
+        return await search_segments(self._store, query, limit, self._embed)
+
+    async def record_conversation_segment_recall(
+        self, segment_id: str, user_event_id: str
+    ) -> None:
+        """Only a segment actually rendered in the slow prompt counts."""
+        if not user_event_id:
+            raise ValueError("user_event_id 不能为空")
+        async with self._segment_lock:
+            await self._store.record_segment_recall(
+                segment_id, user_event_id, self._config.promote_threshold
+            )
 
     async def _prepare_scene_memory(self, reply_context: dict[str, str]) -> Memory:
         """慢通道场景化记忆：LLM 产出 content/kind/topics/summary
@@ -1270,6 +1535,11 @@ class MemoryFacade:
                     if fact_candidates is not None
                     else extract_fact_candidates(memory, source_scope=source_scope),
                     memory.id,
+                    "profile" if source_scope == "user_observation" else (
+                        "knowledge"
+                        if source_scope in {"knowledge", "reading", "activity"}
+                        else "conversation"
+                    ),
                 )
             except Exception:
                 self._logger.exception("事实层更新失败 memory_id=%s", memory.id)

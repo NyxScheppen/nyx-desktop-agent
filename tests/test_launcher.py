@@ -338,11 +338,8 @@ def test_sidecar_build_bundles_only_public_resources(
 
     monkeypatch.setattr(dev, "ROOT", tmp_path)
     monkeypatch.setattr(dev.sys, "argv", ["dev.py", "--build-sidecar"])
-    monkeypatch.setattr(
-        huggingface_hub,
-        "snapshot_download",
-        MagicMock(return_value=str(tmp_path / "model")),
-    )
+    download = MagicMock(return_value=str(tmp_path / "model"))
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", download)
     process = MagicMock(stdout="x86_64-pc-windows-msvc\n")
     with (
         patch.object(dev.subprocess, "run", return_value=process) as run,
@@ -355,6 +352,7 @@ def test_sidecar_build_bundles_only_public_resources(
     ):
         dev.main()
     command = run.call_args_list[-1].args[0]
+    assert download.call_args.kwargs["repo_id"] == "BAAI/bge-small-zh-v1.5"
     assert command[:3] == [dev.sys.executable, "-m", "PyInstaller"]
     assert f"{tmp_path / 'nyx' / 'prompts'};nyx/prompts" in command
     assert f"{tmp_path / 'nyx' / 'cards'};nyx/cards" in command

@@ -60,6 +60,8 @@
 | `vision.base_url` | 非 `None` 时非空 `str` |
 | `vision.interval_seconds` | `int > 0` |
 
+默认值采用本地中文句向量模型 `BAAI/bge-small-zh-v1.5`；变更模型时，既有不同维度或模型空间的记忆向量不能直接复用。
+
 ## 测试要点
 
 - [ ] 单元测试 `tests/test_config/`：

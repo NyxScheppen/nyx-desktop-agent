@@ -4,6 +4,9 @@
 
 ## 时间字段
 
+- `conversation_segment` 保存对话原文及段链；摘要、主题和 embedding 是可重建索引，不替代原文。时间近、主题相接或短确认语默认续接，明确转题才切段。
+- 慢通道查询在全部活跃 conversation segment 中单独排序，最多带入 20 段原文；旧长期段不因超过最近 200 条而消失，外部书籍/网页知识不通过该入口召回。
+
 - `Memory.created_at` 是创建时间，不随 `update_many`、`strengthen`、`record_recall` 改动。
 - DB 列 `memory.first_created_at` 是首次创建锚点，INSERT 时等于 `created_at`，旧行迁移时回填为当时的 `created_at`。
 - DB 列 `memory.freshness_updated_at` 是 freshness 增量结算锚点；新行等于 `created_at`，
@@ -52,6 +55,7 @@
 ## 检索与前端
 
 - `MemoryRetrieval.search` 流程是整句 embedding ANN 候选 + keyword LIKE 候选融合评分 -> direct top N -> 2 跳 association 追加；`direct_limit` 只限制直接召回，`association_limit` 只限制联想追加。
+- 默认中文模型为 `BAAI/bge-small-zh-v1.5`；向量直接召回要求原始 cosine ≥ 0.45，纯关键词直接召回要求 keyword score ≥ 0.45。未过门槛的候选不能靠 freshness 填满直接召回名额；旧模型向量须随测试库归档或重建。
 - `MemoryFacade.search_source(query, source_topic, limit=5)` 先按来源 topic 过滤全部候选，
   再执行 direct 融合排序，且不追加跨来源 association；读书提问回复用它取同一本书的
   Top 5，不能先取全局 Top N 再过滤。
@@ -84,6 +88,15 @@
 - 事实不会进入 `Memory[]`，不会调用 `record_recall`；快慢通道都可把事实放入独立的 `[相关事实]` prompt 段。
 - 事实不单独发布反思事件；反思准备阶段读取有界近期有效事实，注入独立的 `[近期事实变化]` 段，避免普通记忆矛盾与事实变化各反思一次。
 - 记忆矛盾仍可触发普通 durable `REFLECTION(reason=memory_contradiction)`；payload 保留新旧记忆 id 和两项 `{memory_id, summary}` 结构化 evidence。证据只说明触发原因，反思 consumer 会把它与当前仍存在的近期旧记忆一并送入“归纳模式并形成新点子”的 prompt。
+
+### 连续对话段与事实作用域
+
+- schema 40 为 `memory_fact` 增加 `scope`，区分用户画像、对话事实和资料知识；普通表达组装改为召回 `conversation_segment` 原文，不再调用旧 Memory 检索和 recall 升级。
+- schema 41 为对话段增加判定时间、原因和原话事件 ID，并新增跨段证据表。明确断段、长期空闲后再次查询及角色卸载可触发判定；普通偏好需 LLM 指认另一历史段，重要经历需高重要度和用户原话证据。
+- 对话段检索已接入中文 embedding，纯向量命中需 cosine ≥ 0.45；聊天端不再产生旧场景记忆请求。
+- schema 42 为段增加 freshness/结算锚点、活跃召回资格、召回次数、事实抽取时间与 scope，并新增事件级段召回标记；旧段默认活跃且原文不变。独立记忆计时器每分钟检查满四小时的待判段及事实补写，并结算短期段衰减和容量淘汰；freshness 参与活跃召回排序。淘汰只取消召回资格，原文与事实保留。
+- 对话段真实进入慢通道独立 prompt 区块后才按 `(user_event_id, segment_id)` 计数，达到既有阈值可独立于 LLM 判定晋升；预算落选、快通道和重放不计。段追加新轮次会重置判定并刷新新鲜度，但不清除历史召回计数。
+- 对话段判定后从原文抽取明确事实，`memory_fact.source_segment_id` 提供溯源；画像段的用户主体事实进入 `profile`，其余明确对话事实进入 `conversation`，阅读/网页资料仍在 `knowledge`，不同 scope 的单值事实不会互相关闭。重新抽取前关闭该段的旧事实；事实失败不丢原文。
 
 ## 活动记忆
 

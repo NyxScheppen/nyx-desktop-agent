@@ -33,6 +33,7 @@
 - [ ] 每个稳定 `consumer_id` 有独立 FIFO worker；同一消费者内按事件顺序执行，不同消费者之间不互相阻塞。
 - [ ] 至少一次投递配套幂等：跨模块写副作用按 `(event_id, consumer_id)` 防重。
 - [ ] 进程启动会恢复过期 `processing`、到期 `retry_wait` 和缺失 delivery 的已落库事件。
+- [ ] 组合根创建表达门面后、启动角色运行逻辑前，从 durable 表达事件恢复最近 20 条对话 history；恢复失败记录日志并以空 history 继续。
 - [ ] 内存队列有界且只作为唤醒优化；队列满不丢失已经持久化的业务事件。
 - [ ] 数据库锁等待和 SQL/commit 有超时；连续失败进入熔断，熔断期间新写请求快速失败。
 - [ ] 关停按 `RUNNING -> QUIESCING -> DRAINING -> CLOSED` 执行；drain 超时保留未完成 delivery，下次启动恢复，不做全局回滚。
@@ -585,6 +586,8 @@ CREATE TABLE memory_recall_use (
 
 首次插入 marker、`memory.recall_count + 1`、短期升级和可选 `MEMORY_PROMOTED` 事件必须在同一
 事务；复合主键冲突是重放 no-op，未知/已删除 memory 不创建 marker。
+
+schema 42 另增 `conversation_segment_recall_use(user_event_id, segment_id)` 复合主键，供新版对话段的慢通道真实入选计数；它不复用旧 `memory_recall_use`，不新增事件路由。每角色独立记忆维护任务定期检查空闲段、结算衰减与容量，卸载时先取消并等待任务再关闭数据库。`memory_fact.source_segment_id` 可空并在来源段物理删除时置空；普通容量淘汰不删除段。
 
 ### eval prompt 辅助表
 

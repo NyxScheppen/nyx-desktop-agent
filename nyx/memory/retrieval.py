@@ -18,6 +18,8 @@ _RECALL_VECTOR_CANDIDATE_K = 80
 _RECALL_KEYWORD_CANDIDATE_K = 80
 _TOPIC_BUCKET_LIMIT = 8
 _TOPIC_ASSOCIATION_LIMIT = 5
+_MIN_RECALL_COSINE = 0.45
+_MIN_RECALL_KEYWORD_SCORE = 0.45
 _STOP_WORDS = {
     "这个",
     "那个",
@@ -260,6 +262,8 @@ class MemoryRetrieval:
         index = await self._ann_index(memories)
         scores: dict[str, float] = {}
         for candidate in index.query(query_vec, _RECALL_VECTOR_CANDIDATE_K):
+            if candidate.cosine < _MIN_RECALL_COSINE:
+                continue
             scores[candidate.memory_id] = max(
                 0.0, min(1.0, (candidate.cosine + 1.0) / 2.0)
             )
@@ -282,6 +286,10 @@ class MemoryRetrieval:
             keyword_score = _keyword_score(
                 keyword_hits.get(memory_id), query_token_count
             )
+            vector_match = memory_id in vector_scores
+            keyword_match = keyword_score >= _MIN_RECALL_KEYWORD_SCORE
+            if not vector_match and not keyword_match:
+                continue
             type_boost = 1.0 if memory.type is MemoryType.LONG_TERM else 0.5
             score = (
                 0.65 * vector_score
@@ -290,9 +298,9 @@ class MemoryRetrieval:
                 + 0.03 * type_boost
             )
             sources: list[SearchMode] = []
-            if memory_id in vector_scores:
+            if vector_match:
                 sources.append(SearchMode.VECTOR)
-            if memory_id in keyword_hits:
+            if keyword_match:
                 sources.append(SearchMode.KEYWORD)
             ranked.append(
                 RankedMemory(

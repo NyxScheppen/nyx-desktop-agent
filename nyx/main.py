@@ -156,7 +156,7 @@ async def main() -> None:
         config = load_config(
             os.environ.get("NYX_CONFIG") or str(resources / "config.yaml")
         )
-        if config.embedding.model == "all-MiniLM-L6-v2":
+        if config.embedding.model == "BAAI/bge-small-zh-v1.5":
             config.embedding.model = str(resources / "embedding-model")
     else:
         config = load_config()

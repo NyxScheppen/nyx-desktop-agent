@@ -5,11 +5,17 @@
 ## 元信息
 
 - **前置依赖**：01-types（`Memory` / `MemoryEdge` / `MemoryKind` / `MemoryType` / `MemoryEdgeKind` / `SearchMode` / `Event` / `EventType` / `Source`）、02-config（`MemoryConfig` / `EmbeddingConfig`）、03-llm（`LlmClient.complete`）、04-module-bus-system（`Database`、`EventBus`、组合根注入 / REST 薄封装及相关 DDL）、11-expression（慢通道召回与 `record_recall` 时机）、10-eval（`Evaluator`）。
-- **实现文件**：`nyx/memory/ann.py`、`nyx/memory/retrieval.py`、`nyx/memory/graph.py`、`nyx/memory/store.py`、`nyx/memory/facts.py`、`nyx/memory/facade.py`、`nyx/types.py`、`nyx/enums.py`、`nyx/db.py`
+- **实现文件**：`nyx/memory/ann.py`、`nyx/memory/retrieval.py`、`nyx/memory/graph.py`、`nyx/memory/segments.py`、`nyx/memory/store.py`、`nyx/memory/facts.py`、`nyx/memory/facade.py`、`nyx/expression/pipeline.py`、`nyx/runtime.py`、`nyx/types.py`、`nyx/enums.py`、`nyx/db.py`
 - **关联文档**：`docs/facts/memory-system-facts.md`、`docs/specs/01-types.md`、`docs/specs/04-module-bus-system.md`、`docs/specs/11-expression.md`、`docs/tech-reference.md`、`docs/test-inventory.md`
 - **测试文件**：`tests/test_memory/test_ann.py`、`tests/test_memory/test_retrieval.py`、`tests/test_memory/test_graph.py`、`tests/test_memory/test_store.py`、`tests/test_memory/test_facade.py`、`tests/test_db/test_db.py`、`tests/test_expression/test_expression_facade.py`
 
 ## 系统边界
+
+### 新的对话段语义
+
+`conversation_segment` 是对话记忆的主体：每个段永久保存原始轮次及事件 ID，`summary`、`topics`、`embedding` 只作索引。段之间以 `previous_id` 串联；新轮次按时间、主题重合和明确转题信号宽松续接，短确认语直接继承上一段。读书/网页内容不写入对话段。
+
+现有 `Memory` 写入口在迁移期间保留为资料知识和兼容接口；聊天对话段不再依赖“进入 prompt 次数”定义记忆内容。慢通道召回最多取 20 个对话段候选，并将命中段的原文带入上下文；读书/网页知识不进入该候选集。
 
 - `remember_reading(content, summary, correlation_id, source_name=None, *, source_topic=None)`
   将可选稳定来源 topic 写入 topics，与 knowledge 使用相同来源隔离去重；旧无来源调用
@@ -19,10 +25,8 @@
   `pending_reading_evidence(limit=3)`、`consume_reading_evidence(ids)`。写入固定 hash id，
   消费必须在调用方事务内、逐行确认未消费；对象完整性以 12-reading-system 为准。
 
-- `MemoryFacade.search(query: str) -> list[Memory]` 是表达慢通道唯一检索入口；表达层不直接调 store/retrieval。
-- 慢通道 `assemble_context` 对 `MemoryFacade.search(message)` 返回的记忆按表达预算选择
-  可完整展示的排序前缀，只对入选记忆在同一回合按 memory id 去重后调用
-  `record_recall(memory.id, user_event_id)`；预算落选不计数、不晋升。
+- `MemoryFacade.search(query: str) -> list[Memory]` 保留给旧 Memory 兼容入口和非普通聊天调用；表达层普通慢通道改用 `search_conversation_segments`，不直接调 store/retrieval。
+- 慢通道 `assemble_context` 的 query 由当前消息和 11-expression 规定的近期回溯构成；最多检索 20 个活跃对话段，只对实际渲染进独立 prompt 区块的段按用户事件调用 `record_conversation_segment_recall`；预算落选不计数、不晋升。
 - 快通道不检索记忆、不 `record_recall`、不生成场景化记忆。
 - `Memory` 字段是 `id`、`created_at`、`content`、`kind`、`topics`、`summary`、`freshness`、`type`、`recall_count`、`aspect`、`embedding`、`sources`。
 - `MemoryType` 取值是 `SHORT_TERM="short_term"`、`LONG_TERM="long_term"`。
@@ -493,8 +497,8 @@ Facade 规则：
 
 - `create_scene_memory` 保留为直接调用/测试入口：LLM 调用 1 次（`json_mode=True`、
   `module="memory"`、`output_type="scene_memory"`）生成 `{content, kind, topics, summary}` 后
-  复用 `_persist_memory`。正式慢通道通过 `scene_memory_requested` durable event 调用
-  `remember_scene`，不在回复图内同步等待 scene LLM。
+  复用 `_persist_memory`。新聊天慢通道不再发 `scene_memory_requested`；旧事件仍由
+  `remember_scene` 兼容重放。
 - 活动、读书、知识、用户画像、未答记录入口都复用 `_persist_memory` 的入库尾段，
   不绕过建边、矛盾检测、衰减/淘汰和事件。确定性入口不调用 scene-memory LLM；知识点
   批量事实抽取合并为一次 `fact_extraction` 调用后再逐条复用尾段。
@@ -533,10 +537,12 @@ _RECALL_KEYWORD_CANDIDATE_K = 80
 
 1. `query_vec = await embed(query)`。`embed is None` 或 embedding 失败时，`query_vec=None`，跳过 ANN，只走 keyword。
 2. `AnnIndex.query(query_vec, candidate_k=_RECALL_VECTOR_CANDIDATE_K)` 返回 ANN 候选 id 和 cosine；只对这些候选计算精确 vector score。
+   原始 cosine 小于 `0.45` 的候选不得进入直接召回；新库使用中文模型 `BAAI/bge-small-zh-v1.5`，旧模型向量不混用。
 3. `extract_keywords(query)` 后调
    `store.search_keywords(tokens, limit=_RECALL_KEYWORD_CANDIDATE_K, required_topic=required_topic)`，
    得到 keyword 候选；普通检索的 `required_topic=None`。
 4. 合并候选，算 `RankedMemory.score`，取 `direct_limit`，再把 direct 分数传给 `MemoryGraph.associate`。
+   没有合格向量命中的 keyword 候选，`keyword_score` 必须至少 `0.45`；低覆盖关键词不得单靠 freshness 进入 direct。embedding 不可用时仍允许高覆盖 keyword 检索。
 
 融合公式：
 
@@ -559,8 +565,8 @@ score = 0.65 * vector_score
 
 `sources` 标注：
 
-- ANN 候选加入 `SearchMode.VECTOR`。
-- keyword 候选加入 `SearchMode.KEYWORD`。
+- 过 cosine 门槛的 ANN 候选加入 `SearchMode.VECTOR`。
+- 过 keyword 门槛的 keyword 候选加入 `SearchMode.KEYWORD`。
 - association 追加结果加入 `SearchMode.ASSOCIATION`。
 - direct 同时命中 ANN 和 keyword 时 sources 顺序为 `[SearchMode.VECTOR, SearchMode.KEYWORD]`。
 - association 结果如果原本不是 direct，不继承 seed sources，只标 `[SearchMode.ASSOCIATION]`。
@@ -943,9 +949,8 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 - [ ] 建边：语义、实体、关键词、时间边分别可被构造；语义边复用 persist semantic candidates；LLM 关系边只对 top5 候选调用；`none` 不写边；LLM 失败不阻塞持久化。
 - [ ] 度数控制：每 kind 最多 4 条，总有效度最多 16；新节点和触达旧节点都会剪枝；剪枝通过 `delete_edges` 删除完整三元键。
 - [ ] 聚类：`MemoryGraph(edges, memory_ids=...)` 下 Louvain/greedy fallback 均返回稳定 `memory_id -> cluster_id`；孤立节点保留；temporal 边低权重不主导聚类。
-- [ ] 表达慢通道：`MemoryFacade.search` 返回 direct + association 后，`assemble_context` 先按
-  prompt 预算选择完整条目前缀，再按 id 去重并按 user event 幂等记录 recall；最终全部正常文本、`SPEAK/ASK` 与
-  `scene_memory_requested` 原子受理，快通道/fallback 不发请求。
+- [ ] 表达慢通道：`assemble_context` 召回连续对话段原文，不调用旧 `MemoryFacade.search`
+  或 `record_recall`；最终正常文本与 `SPEAK/ASK` 原子受理，不新发场景记忆请求。
 - [ ] 事实回归：观察窗口标题不产偏好事实；未知谓词的显式 functional/multi 模式保持；别名
   命中走别名索引；批量知识点只调用一次 `fact_extraction` 且来源 Memory 正确映射，失败仍落库。
 - [ ] 原文沉淀：类别白名单和 fiction/essay/unknown 归因正确；source topic 不超 24 字符；
@@ -1032,6 +1037,59 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 | 乱序 | 每个 `(user_event_id, memory_id)` 独立；不同事件正常各计一次 |
 | 重放 | 复合主键冲突视为已应用并返回 no-op |
 | 删除 | memory 删除时 `ON DELETE CASCADE` 清理 marker；不反向降低历史 recall_count |
+
+### 连续对话段与事实作用域
+
+- `conversation_segment` 保存连续对话段原文；摘要、主题和 embedding 仅作索引，`previous_id` 形成段链。
+- 段结束或角色卸载时由 `conversation_segment_evaluation` 一次判定重要度与长期标记；`evaluated_at` 保证未改变的段不重复判定，追加轮次后重新待判。
+- 判定保存原因与用户原话事件 ID；普通偏好须由 LLM 指向另一个历史段作为复证，重要经历须为高重要度且有用户原话证据。跨段关系存于 `conversation_segment_evidence`。
+- 对话段检索从全部活跃段中使用中文 embedding 与主题词混合排序；无主题重合时 cosine 至少 0.45，最多返回 20 段原文。旧长期段不因最近段超过 200 条而退出候选集；普通聊天不再发 `scene_memory_requested`。
+- 普通聊天只召回对话段原文和用户/对话事实，资料知识需用户明确询问。
+- `memory_fact.scope` 区分 `profile`、`conversation`、`knowledge`，资料事实不会自动进入用户画像。
+
+### 对话段生命周期与对象完整性
+
+对话段原文和事件 ID 永久保留。独立于表达 tick 的每角色记忆计时器在运行期间检查最近段：末轮后满四小时且仍待判时主动判定；每次检查也结算短期段的新鲜度并按 `memory.short_term_capacity` 淘汰溢出段。新鲜度按 `memory.freshness_decay` 每日线性下降，参与活跃段召回排序，不因重复结算或时钟回拨返鲜。淘汰仅令段退出活跃召回，不删除原文、索引字段、证据链或事实。长期段不参与容量淘汰；短期段真实进入慢通道最终 prompt 满 `memory.promote_threshold` 次也可晋升，和 LLM 重要性判定是独立通道。召回以 `(user_event_id, segment_id)` 幂等计数；检索候选或预算落选不计数，快通道不计数。已淘汰段不因旧事件重放复活。
+
+段评估成功后仅从用户原话抽取明确事实：画像段中以用户为主体的事实进入 `profile`，其余明确对话事实进入 `conversation`；Nyx 自述、引文及阅读/网页资料不得写作用户事实。事实以可空 `source_segment_id` 追溯段，与旧 `source_memory_id` 二选一；事实的有效起点为段末轮时间，而非晚到的抽取时间。段新增轮次后重评时，旧版段事实在新的段末轮时间关闭，再应用新版候选；抽取失败不阻断原文或重要性判定。旧库段默认活跃、初始新鲜度为 1，既有长期标记和原文不变。
+
+**入口清单**
+
+| 对象 | 入口 | 持久位置 |
+|---|---|---|
+| 对话段 | 用户/Nyx 轮次、旧库迁移恢复；独立计时器只改变判定与生命周期 | `conversation_segment` |
+| 段事实 | 成功判定后的明确用户原话 | `memory_fact.source_segment_id` |
+| 段召回标记 | 慢通道最终 prompt 实际入选 | `conversation_segment_recall_use` |
+
+**消费者清单**
+
+| 对象 | 消费者 | 用途 |
+|---|---|---|
+| 对话段 | 段判定、检索、表达 prompt、计时器 | 原文证据与活跃召回 |
+| 段事实 | 事实检索、反思、前端事实图 | 与旧 Memory 事实统一查询，按 scope 隔离 |
+| 段召回标记 | 段计数/晋升、迁移与诊断 | 幂等保护；不进入 LLM/API |
+
+**状态迁移表**
+
+| 当前状态 | 条件 | 下一状态 | 副作用/失败落点 |
+|---|---|---|---|
+| 不存在 | 新轮次 | 活跃短期待判 | 写原文和事件 ID |
+| 待判 | 明确切段、四小时空闲、卸载 | 已判活跃短期或长期 | LLM 失败保留待判；事实失败仅记录 |
+| 已判 | 新轮次续接 | 待判 | 原文追加、判定失效；历史召回数不清零 |
+| 活跃短期 | 实际召回达阈值或 LLM 判长期 | 活跃长期 | 标记、计数、晋升同事务 |
+| 活跃短期 | 容量溢出且排名最低 | 已淘汰 | 只退出召回，不删原文/事实 |
+| 已淘汰 | 重放旧召回 | 已淘汰 | 不计数、不复活 |
+
+**Bad case 表**
+
+| 情况 | 处理 |
+|---|---|
+| 空 | 空段不抽事实；空召回列表不计数 |
+| 失败 | LLM/事实失败保留原文并可重试；数据库事务失败不留下半个计数 |
+| 部分完成 | 原文先持久化；判定与事实独立，事实来源可追溯 |
+| 乱序 | 旧轮次/旧计时结果不能覆盖已追加的新版段 |
+| 重放 | 同事件同段只计一次；已判且未变的段不重复抽取 |
+| 删除 | 容量淘汰不删除原文；无新增单段物理删除入口 |
 
 ## 完成定义
 

@@ -35,9 +35,11 @@
   `run()` 正常返回时结束。
 - 表达系统额外使用 `expression_interaction_attempt` 持久化等待用户回应和主动行为承诺；attempt 与 `ASK`/`INITIATE_CHAT` 事件通过 `Database.transaction()` + `EventBus.append_in_transaction()` 同事务提交。用户领取时 `answer_event_id` 作为 claim owner，同 owner 可恢复；ANSWERED 与回复终局同事务，提交后再 announce 唤醒消费者。
 - 表达系统提供 `GET /api/questions/pending` 读取仍在等待的 attempt 和服务端当前时间，`POST /api/questions/{attempt_id}/pause` 与 `/resume` 通过条件更新暂停/恢复计时；这些辅助端点不发布 EventBus 事件。暂停项保留 `paused_at`，不参与超时领取；恢复时按暂停时剩余时长重算 `expires_at`。用户消息若带 `reply_to` 只绑定指定 attempt；未带时仅有一个等待项才自动绑定，多个等待项不猜测。
+- 运行时在欲望搭话准入前读取 waiting attempts；存在待回答交互时跳过本轮搭话。组合根创建表达门面后从各类型 durable 表达事件恢复有界 history，再启动角色运行逻辑。
 - 表达系统的 fallback `SPEAK` 是正常终局事件：解析/评估失败不会吞掉为成功，fallback 发布失败会让用户消息 consumer 进入总线重试；同 correlation 已有终局 SPEAK/ASK 时重放应短路。
 - 普通卸载采用有界 drain，超时不停止活 worker，保留 STOPPING/DB/名额，由宿主继续收尾；宿主 close 则保持事件循环存活，反复收尾全部角色，连接全部关闭后才返回，避免 aiosqlite 线程阻止进程退出。既有桌面父进程退出期限仍可终止无法合作的后端。
 - 当前 `_App` 是组合根内部 dataclass，也承担运行期状态容器；不要把 `_App` 传入 Facade。
+- 每角色另外运行独立的记忆维护循环（60 秒检查），与现有 CLOCK_TICK 分开；卸载时先取消并等待该循环，再关闭数据库。schema 42 新增对话段召回标记和事实来源列，不新增 EventBus 路由。
 - `/api/observe` 要求严格有限非负的 idle_seconds/sampled_at、一致的 presence 和最多 512 字符标题；采样不能晚于接收时间。presence_lock 串行化观察与消息，采样水位拒绝旧观察（409，不投递）和旧消息；durable publish 后才更新内存，未提交失败保留旧状态。publish 返回前取消时 is_durable 核实已提交观察并完成快照，再传播取消。锁内系统时钟回拨重建基线，不以旧事件创建时间推断回拨。
 - 归来 pending/claimed 是进程内一次性事实，只含 returned_at/away_duration_seconds，通过同步回调注入 ExpressionFacade；领取在首次 await 前，finish/release 比对同一对象。正常终局提交立即消费，后续失败不能恢复；重新 away 清空旧 pending/claimed。重启初次观察不补造归来。
 - SSE 公共头固定包含 `event_id`、`correlation_id`、后端 `Event.timestamp`，并在帧中发送标准 `id:` 游标；公共头覆盖同名 content 键。前端拒绝非法 timestamp，实时与历史均保留后端时间，不使用浏览器接收时间。

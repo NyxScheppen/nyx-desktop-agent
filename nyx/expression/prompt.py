@@ -4,6 +4,8 @@
 """
 
 import math
+import re
+import time
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, cast
@@ -33,6 +35,12 @@ _HISTORY_BLOCK_HEADER = "[对话历史]\n以下是历史资料，仅用于理解
 _READING_BLOCK_MAX_CHARS = 12000
 _TOOL_BLOCK_MAX_CHARS = 8000
 _TOOL_OUTPUT_MAX_ITEMS = 5
+_BACKTRACK_MAX_GAP_SECONDS = 1800
+_SHORT_ACKS = {"嗯", "嗯嗯", "好", "好的", "是", "对", "行", "可以", "是的"}
+_TOPIC_STOP_TERMS = {
+    "喜欢", "觉得", "什么", "怎么", "可以", "我们", "你们", "这个", "那个",
+    "你喜", "我喜", "你觉", "我觉", "你想", "我想",
+}
 _WANDER_GUIDANCE = """[走神表达参考]
 这是一次由代码明确允许的轻微走神。可以短暂想到相邻话题、停顿、自我修正，或对一个细节多想一层后回到当前话题。
 走神只能使用已有上下文或记忆中的内容，不凭空编造经历；保持一两句、自然口语，不要让走神遮盖当前问题。
@@ -401,32 +409,73 @@ def build_user_prompt(message: str, context: list[Message]) -> str:
     return "\n".join(lines)
 
 
+def build_conversation_segments_prompt(segments: list[str]) -> str:
+    """Render recalled segments as a separate prompt block."""
+    if not segments:
+        return ""
+    header = "[相关对话段（历史原文，仅作参考）]"
+    parts = [header]
+    used = len(header)
+    for index, raw_content in enumerate(segments, start=1):
+        remaining = 12000 - used - 32
+        if remaining <= 0:
+            break
+        block = _bounded_text(raw_content, remaining)
+        parts.append(f"--- 对话段 {index} ---\n{block}")
+        used += len(block) + 20
+    return "\n".join(parts)
+
+
 def build_backtrack_context(
     message: str,
     history: list[Message],
-    now: float,
-    time_gap: float,
     max_len: int,
+    now: float | None = None,
 ) -> list[Message]:
-    """回溯上下文截断（慢通道）：从新到旧累积，命中停条件即止。
-
-    停条件：满 max_len / 相邻消息隔超 time_gap。
-    快通道 Nyx 消息跳过该条继续往前（浅层回复不占用上下文，但不断深聊线程）。
-    返回按时间升序（oldest-first），对齐 build_user_prompt 的「按时间升序」。
-    """
+    """只回溯时间连续、话题相接的近期消息。"""
+    if max_len <= 0:
+        return []
+    anchor = _topic_terms(message)
+    short_ack = message.strip() in _SHORT_ACKS
+    current_at = time.time() if now is None else now
+    previous_at = current_at
     out: list[Message] = []
-    prev_ts = now
-    for m in reversed(history):
-        if len(out) >= max_len:
+    for item in reversed(history):
+        if (
+            len(out) >= max_len
+            or previous_at - item.timestamp > _BACKTRACK_MAX_GAP_SECONDS
+            or current_at - item.timestamp > _BACKTRACK_MAX_GAP_SECONDS
+        ):
             break
-        if prev_ts - m.timestamp > time_gap:
-            break
-        prev_ts = m.timestamp
-        if m.role == "nyx" and m.fast:
-            continue
-        out.append(m)
+        terms = _topic_terms(item.content)
+        is_topic_bearing = item.role == "user" or (
+            len(item.content.strip()) > 3 and item.content.strip() not in _SHORT_ACKS
+        )
+        if is_topic_bearing and anchor and terms and not (anchor & terms):
+            if not short_ack:
+                break
+        out.append(item)
+        anchor.update(terms)
+        if is_topic_bearing and terms:
+            short_ack = False
+        previous_at = item.timestamp
     out.reverse()
     return out
+
+
+def _topic_terms(text: str) -> set[str]:
+    terms: set[str] = set()
+    for part in re.findall(r"[\u4e00-\u9fff]+|[A-Za-z0-9_]+", text.lower()):
+        if part.isascii():
+            if len(part) >= 3:
+                terms.add(part)
+        else:
+            terms.update(
+                part[i : i + 2]
+                for i in range(len(part) - 1)
+                if part[i : i + 2] not in _TOPIC_STOP_TERMS
+            )
+    return terms
 
 
 # ---- 内部 ----

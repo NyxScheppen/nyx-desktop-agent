@@ -5,6 +5,8 @@
 事件统一 publish，LLM 产出统一 evaluate。
 """
 
+import asyncio
+import logging
 import random
 import time
 from collections import deque
@@ -53,9 +55,20 @@ from nyx.types import (
     ActivityContext,
     CurrentState,
     Event,
+    ExpressionHistory,
     InteractionAttempt,
     Message,
     ShortTermDesire,
+)
+
+_LOGGER = logging.getLogger(__name__)
+_RESTORABLE_HISTORY_EVENTS = (
+    EventType.USER_MESSAGE,
+    EventType.SPEAK,
+    EventType.ASK,
+    EventType.INITIATE_CHAT,
+    EventType.READING_QUESTION,
+    EventType.READING_ASSOCIATION,
 )
 
 
@@ -101,6 +114,7 @@ class ExpressionFacade:
         self._release_return = release_return
         self._reading_context_reader = reading_context_reader
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
+        self._history_restored = False
         self._last_slow_at = 0.0
         # 待用户回应状态：问句（wait_user）与搭话（被忽略回灌）各一组。
         self._waiting_user = False
@@ -353,6 +367,76 @@ class ExpressionFacade:
             return []
         return await self._interaction_store.list_waiting()
 
+    async def restore_history(self) -> None:
+        """Restore the bounded expression history from the durable event log."""
+        if self._history_restored:
+            return
+        self._history_restored = True
+        try:
+            events: list[Event] = []
+            for event_type in _RESTORABLE_HISTORY_EVENTS:
+                events.extend(await self._bus.list_events(
+                    limit=self._config.max_context_len, event_type=event_type,
+                ))
+            events.sort(key=lambda event: (event.timestamp, event.id))
+
+            users: dict[str, Event] = {}
+            outputs: dict[str, list[Event]] = {}
+            standalone: list[Event] = []
+            for event in events:
+                if event.type is EventType.USER_MESSAGE:
+                    if isinstance(event.content.get("message"), str):
+                        users.setdefault(event.correlation_id, event)
+                elif event.type in (EventType.SPEAK, EventType.ASK):
+                    if isinstance(event.content.get("content"), str):
+                        outputs.setdefault(event.correlation_id, []).append(event)
+                elif event.type in (
+                    EventType.INITIATE_CHAT,
+                    EventType.READING_QUESTION,
+                    EventType.READING_ASSOCIATION,
+                ):
+                    standalone.append(event)
+
+            restored: list[Message] = []
+            for correlation_id, user_event in users.items():
+                restored.append(
+                    Message(
+                        role="user",
+                        content=cast(str, user_event.content["message"]),
+                        timestamp=user_event.timestamp,
+                    )
+                )
+                turn_outputs = outputs.get(correlation_id, [])
+                if turn_outputs:
+                    restored.append(
+                        Message(
+                            role="nyx",
+                            content="\n".join(
+                                cast(str, event.content["content"])
+                                for event in turn_outputs
+                            ),
+                            timestamp=turn_outputs[-1].timestamp,
+                        )
+                    )
+
+            for event in standalone:
+                key = (
+                    "snippet"
+                    if event.type is EventType.READING_ASSOCIATION
+                    else "content"
+                )
+                content = event.content.get(key)
+                if isinstance(content, str):
+                    restored.append(
+                        Message(role="nyx", content=content, timestamp=event.timestamp)
+                    )
+
+            restored.sort(key=lambda message: message.timestamp)
+            self._history.clear()
+            self._history.extend(restored[-self._config.max_context_len :])
+        except Exception:
+            _LOGGER.exception("恢复表达历史失败，将使用空历史继续启动")
+
     async def pause_question(
         self, attempt_id: str, now: float | None = None
     ) -> InteractionAttempt | None:
@@ -379,6 +463,59 @@ class ExpressionFacade:
             return None
         return await self._interaction_store.latest_created_at(
             InteractionKind.INITIATE_CHAT
+        )
+
+    async def expression_history(self, limit: int = 100) -> ExpressionHistory:
+        """Return durable expression events grouped for the history panel."""
+        all_types = (
+            EventType.USER_MESSAGE,
+            EventType.THINK,
+            EventType.SPEAK,
+            EventType.ASK,
+            EventType.MUTTER,
+            EventType.INITIATE_CHAT,
+            EventType.READING_MUTTER,
+            EventType.READING_QUESTION,
+            EventType.READING_ASSOCIATION,
+        )
+        grouped = await asyncio.gather(
+            *(
+                self._bus.list_events(limit=limit, event_type=event_type)
+                for event_type in all_types
+            )
+        )
+        def valid(event: Event) -> bool:
+            if event.type is EventType.USER_MESSAGE:
+                key = "message"
+            elif event.type is EventType.READING_ASSOCIATION:
+                key = "snippet"
+            else:
+                key = "content"
+            return isinstance(event.content.get(key), str) and bool(event.content[key])
+
+        by_type = {
+            event_type: sorted(
+                [event for event in events if valid(event)],
+                key=lambda event: (event.timestamp, event.id),
+                reverse=True,
+            )[:limit]
+            for event_type, events in zip(all_types, grouped, strict=True)
+        }
+        all_events = sorted(
+            (event for events in by_type.values() for event in events),
+            key=lambda event: (event.timestamp, event.id),
+            reverse=True,
+        )[:limit]
+        mutter = sorted(
+            by_type[EventType.MUTTER] + by_type[EventType.READING_MUTTER],
+            key=lambda event: (event.timestamp, event.id),
+            reverse=True,
+        )[:limit]
+        initiate_chat = by_type[EventType.INITIATE_CHAT]
+        return ExpressionHistory(
+            all=all_events,
+            mutter=mutter,
+            initiate_chat=initiate_chat,
         )
 
     async def _last_dialogue_anchor(
@@ -498,6 +635,7 @@ class ExpressionFacade:
                 # 朴素回溯最近 max_context_len 条（快通道用，不含当前消息）；
                 # 慢通道在 assemble 重截断。
                 "context": list(self._history)[-self._config.max_context_len :],
+                "conversation_segments": [],
                 "memories": [],
                 "facts": [],
                 "state": state,

@@ -22,12 +22,15 @@
     `should_ask`、`record_message`。
 - `nyx/expression/prompt.py`
   - 纯函数拼装 system/user prompt、慢通道回溯上下文和人格自然语言指令。
+- 召回的 `conversation_segment` 以独立 `[相关对话段（历史原文，仅作参考）]` user-prompt 区块注入，不加入当前会话 `Message` 历史。
+- 慢通道仅对真正进入该区块预算的段按当前用户事件幂等记录召回；检索候选未展示不计，仍不调用旧 `MemoryFacade.record_recall`。
 - `nyx/expression/classifier.py`
   - 纯函数实现快慢通道评分、唯一问句识别 `is_question()` 和轻量意图识别。
 - `nyx/expression/mutter.py`
   - 碎碎念类别、模板、数据清洗、主动搭话触发条件等纯函数。
 - `nyx/expression/store.py`
   - 持久化 `expression_interaction_attempt`，所有状态转换使用条件更新。
+  - `ExpressionFacade.expression_history()` 从 durable event log 聚合对话、碎碎念和主动搭话记录，供 REST/前端历史面板查询。
 - `nyx/reading/companions.py`
   - 执行读书碎碎念、读书提问和记忆联想；提问复用 `ExpressionFacade.register_question()`，
     提问/联想复用 `record_proactive_turn()` 进入表达历史。
@@ -58,15 +61,11 @@
   - speak 是问句时仍注册 `CHAT_ASK` 并发布 canonical `ASK`。
 - 慢通道执行：
   - `build_backtrack_context()` 重新截断历史；
-  - `MemoryFacade.search(message)` 返回值经 `select_prompt_memories` 选择预算内可完整展示
-    的排序前缀；渲染复用相同规则，放不下的尾条整条省略，仅入选项按 memory id 去重后以
-    user event id 调用 `record_recall(memory.id, user_event_id)`，重放不重复计数；
+  - 对截断后的近期对话构造 query，召回 `conversation_segment`；命中段以独立历史原文区块注入，不加入当前 `Message` 历史，也不调用旧 `MemoryFacade.search`/`record_recall`；
   - 取得自我叙事；
   - 先有一轮工具判断，工具结果截断后进入回复 prompt；
   - `respond` 最多继续到 `slow_max_rounds`，问句会提前结束；
-  - 所有轮次的正常 THINK/SPEAK、最终 `SPEAK/ASK` 与自包含的
-    `scene_memory_requested` 在同一本地事务受理，随后记录 history；生成中途没有正常文本
-    对外可见，场景 LLM 由 `memory.scene_reply` durable consumer 异步完成。
+  - 所有轮次的正常 THINK/SPEAK、最终 `SPEAK/ASK` 在同一本地事务受理，随后记录 history；生成中途没有正常文本对外可见。
 - 每轮 `respond` 一次 LLM 调用同时生成 JSON 的 `think` 和 `speak`，解析后分别评估并分别
   发布文本事件；两条评估记录共享 call_id、token 和最终 prompt。后续轮次使用累积的前轮
   think/speak，任务改为续写。
@@ -111,8 +110,10 @@
 - `classify_user_intent()` 不调 LLM、不访问 DB，只返回 `UserIntent`；结果仅作为 think
   prompt 参考，不改变通道路由或直接触发副作用。
 - `is_question()` 是普通回复和读书提问共用的唯一问句判断实现。
-- 慢通道回溯从新到旧只检查数量和相邻时间间隔；不再用字符交集猜语义相关性。
-  `Message.fast=True` 的 Nyx 快通道消息会被跳过，但会继续向更早 history 回溯。
+- 慢通道回溯至多取最近 `max_context_len` 条 history；相邻间隔或总跨度超过 30 分钟、明确换话题时截断，短确认语继承最近一段。保留 `Message.fast=True` 的 Nyx 消息；记忆查询合并最近至多 3 条截取后消息与当前消息，总长不超过 300 字符。
+- ExpressionFacade 启动后从 durable `event_log` 恢复最近 `max_context_len` 条表达历史；恢复
+  是幂等的，无法解析的事件跳过并记录日志。等待中的 interaction attempt 仍由独立的
+  `ExpressionInteractionStore` 恢复，供前端重新计算计时器。
 
 ## 时间与归来
 

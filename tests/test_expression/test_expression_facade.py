@@ -35,6 +35,7 @@ from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
+    ConversationSegment,
     CurrentState,
     Event,
     InteractionAttempt,
@@ -157,16 +158,20 @@ class _FakeEvaluator:
 class _FakeMemory:
     def __init__(self) -> None:
         self.search_calls = 0
+        self.search_queries: list[str] = []
         self.fact_search_calls = 0
         self.scene_memories: list[dict[str, str]] = []
         self.no_answers: list[str] = []
         self.search_results: list[Memory] = []
         self.recalled: list[tuple[str, str]] = []
+        self.segment_results: list[ConversationSegment] = []
+        self.segment_recalled: list[tuple[str, str]] = []
         self.recent_memories: list[Memory] = []
         self.user_profile: list[Memory] = []
 
     async def search(self, query: str) -> list[Memory]:
         self.search_calls += 1
+        self.search_queries.append(query)
         return list(self.search_results)
 
     async def search_facts(self, query: str) -> list[object]:
@@ -188,6 +193,16 @@ class _FakeMemory:
 
     async def record_recall(self, memory_id: str, user_event_id: str) -> None:
         self.recalled.append((memory_id, user_event_id))
+
+    async def search_conversation_segments(
+        self, query: str, limit: int = 20
+    ) -> list[ConversationSegment]:
+        return self.segment_results[:limit]
+
+    async def record_conversation_segment_recall(
+        self, segment_id: str, user_event_id: str
+    ) -> None:
+        self.segment_recalled.append((segment_id, user_event_id))
 
     async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
         self.scene_memories.append(reply_context)
@@ -626,15 +641,9 @@ async def test_reply_slow_non_question() -> None:
         EventType.SPEAK,
         EventType.THINK,
         EventType.SPEAK,
-        EventType.SCENE_MEMORY_REQUESTED,
     ]
-    assert memory.search_calls == 1
+    assert memory.search_calls == 0
     assert memory.scene_memories == []
-    scene = bus.published[-1].content
-    assert (scene["nyx_think"], scene["nyx_speak"]) == (
-        "想法1\n想法2\n想法3",
-        "回答1\n回答2\n回答3",
-    )
     assert [event.type for event in bus.batches[-1]] == [
         EventType.THINK,
         EventType.SPEAK,
@@ -642,7 +651,6 @@ async def test_reply_slow_non_question() -> None:
         EventType.SPEAK,
         EventType.THINK,
         EventType.SPEAK,
-        EventType.SCENE_MEMORY_REQUESTED,
     ]
 
 
@@ -657,7 +665,6 @@ async def test_reply_slow_defaults_to_one_complete_response() -> None:
     assert [event.type for event in bus.published] == [
         EventType.THINK,
         EventType.SPEAK,
-        EventType.SCENE_MEMORY_REQUESTED,
     ]
 
 
@@ -806,7 +813,6 @@ async def test_reply_slow_question() -> None:
     assert [e.type for e in bus.published] == [
         EventType.THINK,
         EventType.ASK,
-        EventType.SCENE_MEMORY_REQUESTED,
     ]
     assert memory.scene_memories == []
 
@@ -927,9 +933,31 @@ async def test_reply_slow_records_recall() -> None:
         energy=100.0, arousal=0.0, memory=memory
     )
     await facade.reply("在吗", "corr-recall")
-    assert memory.recalled == [
-        ("m1", "corr-recall"), ("m2", "corr-recall")
+    assert memory.recalled == []
+
+
+async def test_reply_counts_only_segments_rendered_in_prompt() -> None:
+    memory = _FakeMemory()
+    memory.segment_results = [
+        ConversationSegment(
+            id=f"s{index}", previous_id=None, started_at=1.0, ended_at=1.0,
+            raw_event_ids=[f"e{index}"],
+            raw_content=f"用户：SEGMENT_{index:02d}_" + "x" * 2500,
+        )
+        for index in range(10)
     ]
+    facade, llm, *_ = _new_facade(energy=100.0, arousal=0.0, memory=memory)
+
+    await facade.reply("在吗", "corr-segments")
+
+    first_prompt = llm.calls[0][1][-1]["content"]
+    visible = [
+        (segment.id, "corr-segments")
+        for index, segment in enumerate(memory.segment_results)
+        if f"SEGMENT_{index:02d}_" in first_prompt
+    ]
+    assert visible
+    assert memory.segment_recalled == visible
 
 
 async def test_reply_slow_records_each_memory_id_once_per_turn() -> None:
@@ -948,7 +976,7 @@ async def test_reply_slow_records_each_memory_id_once_per_turn() -> None:
 
     await facade.reply("在吗", "corr-recall-once")
 
-    assert memory.recalled == [("same", "corr-recall-once")]
+    assert memory.recalled == []
 
 
 @pytest.mark.parametrize("mixed_lengths", [False, True])
@@ -980,7 +1008,7 @@ async def test_reply_slow_counts_only_memories_visible_in_prompt(
         (m.id, "corr-budget") for index, m in enumerate(candidates)
         if f"MEMORY_{index:02d}_" in systems[0]
     ]
-    assert 0 < len(visible) < len(candidates)
+    assert len(visible) == 0
     assert memory.recalled == visible
     assert all(
         [f"MEMORY_{index:02d}_" in system for index in range(30)]
@@ -1105,7 +1133,7 @@ def test_record_proactive_turn_appends_to_history() -> None:
     assert facade._history[-1].fast is False
 
 
-async def test_reply_slow_backtrack_skips_fast_nyx() -> None:
+async def test_reply_slow_backtrack_keeps_fast_nyx() -> None:
     # 慢通道回溯：跳过快通道 nyx 消息、保留相关用户消息（端到端接线）
     facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
         energy=100.0, arousal=0.0
@@ -1119,7 +1147,21 @@ async def test_reply_slow_backtrack_skips_fast_nyx() -> None:
     await facade.reply("你喜欢爬山吗", "corr-bt")
     think_user = _user_content([m for t, m, _c in llm.calls if t == "reply"][0])
     assert "用户：我上周去爬山了" in think_user
-    assert "你：嗯嗯" not in think_user
+    assert "你：嗯嗯" in think_user
+
+
+async def test_reply_slow_short_answer_searches_recent_topic_not_old_topic() -> None:
+    facade, _llm, _evaluator, memory, _inner_life, _bus = _new_facade(
+        energy=100.0, arousal=0.0
+    )
+    facade._config.slow_threshold = 0.0
+    old = time.time() - 3600
+    facade._history.append(Message(role="user", content="聊聊汉代制度", timestamp=old))
+    facade._history.append(
+        Message(role="nyx", content="你想吃鱼火锅吗", timestamp=time.time())
+    )
+    await facade.reply("嗯", "corr-short-topic")
+    assert memory.search_queries == []
 
 
 async def test_reading_turn_slow_backtrack_preserved() -> None:
@@ -1499,6 +1541,38 @@ async def test_initiate_chat_appends_history() -> None:
     await facade.initiate_chat(_desire(), _mk_state(80.0, 0.0))
     assert [m.role for m in facade._history] == ["nyx"]
     assert facade._history[0].content == "你在忙吗？"
+
+
+async def test_restore_history_rehydrates_recent_messages_and_is_idempotent() -> None:
+    facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade()
+    bus.published.extend(
+        [
+            Event(
+                id="u1", timestamp=1.0, source=Source.EXTERNAL,
+                type=EventType.USER_MESSAGE, content={"message": "昨天的事"},
+                correlation_id="c1",
+            ),
+            Event(
+                id="s1", timestamp=2.0, source=Source.INTERNAL,
+                type=EventType.SPEAK, content={"content": "我记得"},
+                correlation_id="c1",
+            ),
+            Event(
+                id="i1", timestamp=3.0, source=Source.INTERNAL,
+                type=EventType.INITIATE_CHAT, content={"content": "后来呢？"},
+                correlation_id="i1",
+            ),
+        ]
+    )
+
+    await facade.restore_history()
+    await facade.restore_history()
+
+    assert [(message.role, message.content) for message in facade._history] == [
+        ("user", "昨天的事"),
+        ("nyx", "我记得"),
+        ("nyx", "后来呢？"),
+    ]
 
 
 # ---- wait_user / 搭话被忽略回灌（V2 表达交互闭环） ----

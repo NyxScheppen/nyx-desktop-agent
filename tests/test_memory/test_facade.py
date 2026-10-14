@@ -1826,7 +1826,7 @@ async def test_generic_fact_graph_does_not_attribute_knowledge_to_user() -> None
             [{"topic": "《百年孤独》", "content": "书中人物奥雷里亚诺"}],
             "corr-1",
         )
-        facts = await facade.search_facts("百年孤独 人物")
+        facts = await facade.search_facts("《百年孤独》的人物是谁？")
         assert [(fact.subject, fact.object_value) for fact in facts] == [
             ("《百年孤独》", "奥雷里亚诺")
         ]
@@ -2040,3 +2040,166 @@ def test_activity_memory_fields_free_exploration_new_shape() -> None:
     assert activity_type == "free_exploration"
     assert "退相干" in content
     assert "抹去相干性" in summary
+
+
+@pytest.mark.asyncio
+async def test_important_episode_is_evaluated_once_with_user_evidence() -> None:
+    store, bus, database = await _new_stack()
+    try:
+        llm = _FakeLlm({
+            "conversation_segment_evaluation": json.dumps({
+                "importance": "high", "long_term": True,
+                "memory_kind": "episode", "summary": "一次重要经历",
+                "topics": ["经历"], "evidence_event_ids": ["turn:user"],
+                "reason": "用户明确描述了重要经历",
+            })
+        })
+        facade = _make_facade(store, bus, llm, _FakeEvaluator())
+        await facade.append_conversation_turn("turn:user", "我经历了一件重要的事", 1.0)
+        await facade.finalize_conversation_segment()
+        await facade.finalize_conversation_segment()
+        segment = await store.latest_conversation_segment()
+        assert segment is not None and segment.long_term
+        assert segment.evidence_event_ids == ["turn:user"]
+        assert llm.calls == ["conversation_segment_evaluation"]
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_preference_requires_another_segment_named_by_llm() -> None:
+    store, bus, database = await _new_stack()
+    try:
+        llm = _FakeLlm({
+            "conversation_segment_evaluation": json.dumps({
+                "importance": "normal", "long_term": True,
+                "memory_kind": "user_profile", "summary": "喜欢鱼火锅",
+                "topics": ["鱼火锅"], "evidence_event_ids": ["first:user"],
+                "evidence_segment_ids": [], "reason": "偏好",
+            })
+        })
+        facade = _make_facade(store, bus, llm, _FakeEvaluator())
+        await facade.append_conversation_turn("first:user", "我喜欢鱼火锅", 1.0)
+        await facade.finalize_conversation_segment()
+        first = await store.latest_conversation_segment()
+        assert first is not None and not first.long_term
+        await facade.append_conversation_turn(
+            "second:user", "对了，我还喜欢鱼火锅", 2.0
+        )
+        llm._responses["conversation_segment_evaluation"] = json.dumps({
+            "importance": "normal", "long_term": True,
+            "memory_kind": "user_profile", "summary": "喜欢鱼火锅",
+            "topics": ["鱼火锅"], "evidence_event_ids": ["second:user"],
+            "evidence_segment_ids": [first.id], "reason": "跨段重复表达",
+        })
+        await facade.finalize_conversation_segment()
+        second = await store.latest_conversation_segment()
+        assert second is not None and second.long_term
+        assert second.previous_id == first.id
+        row = await (
+            await database.conn.execute(
+                "SELECT evidence_segment_id FROM conversation_segment_evidence "
+                "WHERE segment_id=?", (second.id,)
+            )
+        ).fetchone()
+        assert row is not None and row[0] == first.id
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_idle_maintenance_evaluates_and_extracts_segment_facts() -> None:
+    store, bus, database = await _new_stack()
+    try:
+        llm = _FakeLlm({
+            "conversation_segment_evaluation": json.dumps({
+                "importance": "normal", "long_term": False,
+                "memory_kind": "user_profile", "summary": "用户喜欢鱼火锅",
+                "topics": ["鱼火锅"], "evidence_event_ids": ["turn:user"],
+                "reason": "明确偏好",
+            }),
+            "fact_extraction": json.dumps({"facts": [{
+                "subject": "用户", "subject_type": "person",
+                "predicate": "喜欢", "object": "鱼火锅",
+                "object_type": "concept", "mode": "multi",
+            }]}),
+        })
+        facade = _make_facade(
+            store, bus, llm, _FakeEvaluator(), fact_store=MemoryFactStore(database)
+        )
+        await facade.append_conversation_turn("turn:user", "我喜欢鱼火锅", 1.0)
+        await facade.maintain_conversation_segments(now=4 * 3600 + 2.0)
+        segment = await store.latest_conversation_segment()
+        assert segment is not None and segment.evaluated_at is not None
+        facts = await facade.search_facts("鱼火锅")
+        assert [(fact.scope, fact.source_segment_id) for fact in facts] == [
+            ("profile", segment.id)
+        ]
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_appended_segment_closes_old_facts_before_reextraction() -> None:
+    store, bus, database = await _new_stack()
+    try:
+        llm = _FakeLlm({
+            "conversation_segment_evaluation": json.dumps({
+                "memory_kind": "user_profile", "summary": "用户喜欢火锅",
+                "evidence_event_ids": ["first:user"],
+            }),
+            "fact_extraction": json.dumps({"facts": [{
+                "subject": "用户", "predicate": "喜欢", "object": "鱼火锅",
+                "mode": "multi",
+            }]}),
+        })
+        facade = _make_facade(
+            store, bus, llm, _FakeEvaluator(), fact_store=MemoryFactStore(database)
+        )
+        await facade.append_conversation_turn("first:user", "我喜欢鱼火锅", 1.0)
+        await facade.finalize_conversation_segment()
+        llm._responses["fact_extraction"] = json.dumps({"facts": [{
+            "subject": "用户", "predicate": "喜欢", "object": "牛肉火锅",
+            "mode": "multi",
+        }]})
+        await facade.append_conversation_turn("second:user", "嗯，也喜欢牛肉火锅", 2.0)
+        await facade.finalize_conversation_segment()
+        cursor = await database.conn.execute(
+            "SELECT object_value, valid_from, valid_until FROM memory_fact "
+            "ORDER BY valid_from"
+        )
+        rows = await cursor.fetchall()
+        assert [(row["object_value"], row["valid_from"], row["valid_until"])
+                for row in rows] == [("鱼火锅", 1.0, 2.0), ("牛肉火锅", 2.0, None)]
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_segment_fact_output_remains_retryable() -> None:
+    store, bus, database = await _new_stack()
+    try:
+        llm = _FakeLlm({
+            "conversation_segment_evaluation": json.dumps({
+                "memory_kind": "conversation", "summary": "谈到鱼火锅",
+            }),
+            "fact_extraction": "not-json",
+        })
+        facade = _make_facade(
+            store, bus, llm, _FakeEvaluator(), fact_store=MemoryFactStore(database)
+        )
+        await facade.append_conversation_turn("turn:user", "我喜欢鱼火锅", 1.0)
+        await facade.finalize_conversation_segment()
+        segment = await store.latest_conversation_segment()
+        assert segment is not None and segment.facts_extracted_at is None
+        llm._responses["fact_extraction"] = json.dumps({"facts": [{
+            "subject": "用户", "predicate": "喜欢", "object": "鱼火锅",
+        }]})
+
+        await facade.maintain_conversation_segments(now=4 * 3600 + 2.0)
+
+        saved = await store.latest_conversation_segment()
+        assert saved is not None and saved.facts_extracted_at is not None
+        assert len(await facade.search_facts("鱼火锅")) == 1
+    finally:
+        await database.close()

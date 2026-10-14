@@ -45,6 +45,7 @@ from nyx.types import (
     EvalRecord,
     EvalStats,
     Event,
+    ExpressionHistory,
     InteractionAttempt,
     LlmMessage,
     Memory,
@@ -348,6 +349,12 @@ def build_app(
                 raise HTTPException(409, "事件游标不属于该角色")
             after = after[len(prefix) :]
         return await app.bus.list_events(limit, event_type, correlation_id, after)
+
+    @fast.get("/api/expression/history")
+    async def api_expression_history(
+        limit: int = Query(100, ge=1, le=5000),
+    ) -> ExpressionHistory:
+        return await app.expression.expression_history(limit)
 
     @fast.get("/api/eval/recent")
     async def api_eval_recent(

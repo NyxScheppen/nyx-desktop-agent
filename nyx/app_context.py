@@ -96,6 +96,7 @@ class _App:
     character_id: str = "nyx"
     host: _Host | None = field(default=None, repr=False)
     tick_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    memory_task: asyncio.Task[None] | None = field(default=None, repr=False)
 
     def can_initiate(self) -> bool:
         """Admission uses the selected runtime; admitted work keeps its owner."""
@@ -519,6 +520,7 @@ async def build_app_context(
             release_return=release_return,
             reading_context_reader=read_reading_context,
         )
+        await expression.restore_history()
         reading = ReadingFacade(
             ReadingStore(db),
             inner_life,
@@ -1093,6 +1095,14 @@ class _Host:
                 return
             try:
                 await app.bus.stop()
+                try:
+                    await asyncio.wait_for(
+                        app.memory.finalize_conversation_segment(), timeout=5
+                    )
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "角色卸载时对话段收尾失败 character_id=%s", identity
+                    )
                 assert app.database is not None
                 await app.database.close()
                 self.apps.pop(identity)

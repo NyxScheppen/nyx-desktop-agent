@@ -2,6 +2,13 @@
 
 > Nyx Agent 项目经验教训汇总。每次踩坑后追加条目，格式见底部模板。
 
+### 2026-10-13: pending 快照不能依赖新增历史消息
+
+**来源**：主动搭话回复后计时器状态同步。
+**教训**：前端重连时，即使事件历史没有新增消息，等待项也可能已在后端完成或过期；在“无新历史”分支提前返回会留下继续计时的旧状态。
+**怎么做**：每次成功读取历史后仍获取 pending 快照，对所有本地 waiting attempt 做状态校正，并用无新增历史的回归测试保护。
+**影响的文件/决策**：`frontend/src/stores/chatStore.ts`、主动搭话计时器恢复测试。
+
 ### 2026-10-09: 测试应覆盖消费行为，避免复制声明
 
 **来源**：测试精简时发现枚举值表、TypedDict 字段表与静态 UI/CSS 断言重复声明；LLM 角色转换和 token 提取同时在内部 helper 与公开调用路径重复验证。
@@ -141,6 +148,7 @@
 查找路径和测试断言；测试应断言实际公开资源目录，不能扩大成整个源码包。
 **怎么做**：用同一相对路径 `nyx/prompts` 串起 package-data、PyInstaller `--add-data`
 和 `_MEIPASS` 查找，并让 launcher 回归精确匹配该目录。
+**补充（2026-10-13）**：更换 embedding 默认模型时，还须同步 sidecar 下载的 repo_id 与冻结入口的默认模型名判断；只改配置会让安装包继续带旧模型，冻结入口也不会改用包内目录。
 **影响的文件/决策**：`dev.py`、`nyx/main.py`、`nyx/app_context.py`、
 `pyproject.toml`、`tests/test_launcher.py`。
 
@@ -809,6 +817,13 @@ Top N 再过滤来源，也会被其它来源的高分候选挤空，最终表�
 **教训**：fetch 与 img 的浏览器请求模式不同，API 测试通过不能证明桌面图片可显示。
 **怎么做**：角色图片使用 crossOrigin="anonymous"，让 WebView 携带受信任 Origin；保留 guard，用组件回归和实际桌面截图验证。无图片角色继续显示自己的名称占位。
 **影响的文件/决策**：`EmotionSprite.tsx`、`avatar.test.tsx`、桌面角色图片验证。
+
+### 2026-10-14: 周期任务取消时必须回滚未提交的 SQLite 写入
+
+**来源**：独立记忆计时器加入后，角色关停测试暴露 `cannot start a transaction within a transaction`。
+**教训**：持有数据库锁不等于异常时自动结束隐式事务；取消可能发生在 SQL 执行与 commit 之间。
+**怎么做**：拥有提交权的存取方法在 `BaseException`（含取消）时显式 rollback；新增后台任务应先等待首次周期，并在关闭数据库前取消且等待任务结束。
+**影响的文件/决策**：`MemoryStore._operation`、角色记忆计时器及关停回归。
 
 ## 模板（条目格式）
 

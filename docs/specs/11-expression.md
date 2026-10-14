@@ -101,19 +101,12 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 - SLOW 在回复前执行回溯、记忆检索、recall 记录、自我叙事读取和一次工具判断；默认一次
   生成完整回复，只有模型明确设置 `needs_continuation=true` 时才续写，轮数上限由
   `slow_max_rounds` 定义。
-- 慢通道召回按 memory id 去重，并用当前用户事件的 `correlation_id` 调用
-  `record_recall(memory.id, user_event_id)`；同一用户事件重试不重复计数。
-- `select_prompt_memories(memories: list[Memory]) -> list[Memory]` 是 prompt 模块的纯函数：
-  按搜索排序选择可完整放入 12000 字符记忆块的前缀（预算含标题与换行），单条完整展示行
-  最多 2000 字符，超长行先截断；遇到首个放不下的条目停止，不截断尾条来填满剩余空间。
-  `assemble_context` 与记忆段渲染共用此规则；只对入选记忆去重记录 recall，工具判断和
-  后续各轮回复使用同一入选集合。空集合不记录；落选记忆不增加计数、不触发晋升。
+- 普通慢通道不调用旧 Memory 的 `record_recall`；仅对实际进入独立历史段 prompt 区块的段调用 `record_conversation_segment_recall(segment.id, correlation_id)`。同一用户事件重试不重复计数，超过 12000 字符区块预算而未渲染的段不计数，快通道不计数。工具判断和后续各轮回复使用同一入选集合。
 - FAST 和 SLOW 的正常 THINK/SPEAK 都先缓存在 `ReplyState`，生成完成前不发布任何正常文本
   事件。FAST 一轮结束后原子提交全部文本；SLOW 命中问句或达到轮数上限后，按生成顺序把
-  全部 THINK/SPEAK、终局 ASK（如有）和 `scene_memory_requested` 作为一个终局批次提交。
+  全部 THINK/SPEAK 与终局 ASK（如有）作为一个终局批次提交；聊天不再生成 `scene_memory_requested`。
   问句最后一段只生成 ASK，不重复生成同内容 SPEAK。未命中且未达上限时只继续续写。
-- 场景记忆请求携带完整 user message、累计 think 和累计 speak，由 `memory.scene_reply`
-  durable consumer 异步生成记忆；回复图不等待 scene LLM。FAST 与 fallback 不产生该请求。
+- 历史 `scene_memory_requested` 仍可由 durable consumer 重放处理；新聊天不再产生请求。
 
 ### Prompt
 
@@ -160,11 +153,15 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 ### 回溯与历史
 
 - history 是 `deque[Message]`，容量由 `max_context_len` 限制；当前消息在回合末才追加。
-- 快通道取最近 history；慢通道使用 `build_backtrack_context()` 从新到旧截断，只在达到容量
-  或相邻时间间隔超过 `context_time_gap` 时停止。字面字符没有交集不能证明语义无关，不再作为
-  截断条件。
-- 快通道 Nyx 消息标记 `fast=True`，慢通道回溯跳过该条并继续向前；读书主动 turn 默认
-  `fast=False`。
+- 启动时 ExpressionFacade 从 durable `event_log` 回填最近 `max_context_len` 条可解析的
+  `USER_MESSAGE`、`SPEAK`、`ASK`、`INITIATE_CHAT`、`READING_QUESTION` 和
+  `READING_ASSOCIATION` 表达历史；同一 correlation 的多轮 speak 合并成一个 Nyx turn。
+  恢复只运行一次，失败时记录日志并以空 history 启动；不会恢复 THINK 等非对话事件。
+- 快通道取最近 history；慢通道使用 `build_backtrack_context()` 至多取最近
+  `max_context_len` 条，超过 30 分钟的相邻间隔或总时间跨度、明确无共同话题的用户消息即停止；短确认语先继承最近上下文。保留 `fast=True` 的 Nyx 消息。
+- 慢通道记忆查询由截取后的最近至多 3 条历史消息（每条至多 120 字符）与当前消息组成，总长至多 300 字符；因此简短回复可沿用上一句提及的主题，不把陈旧或不相关历史送进 embedding。
+- 快通道 Nyx 消息仍标记 `fast=True`；该标记描述生成通道，不再决定慢通道历史是否保留。
+  读书主动 turn 默认 `fast=False`。
 - 回合结束按 user 后 Nyx 顺序追加；Nyx 多轮 speak 用换行拼成一个 history turn。
 - 带活动快照的 user/Nyx history 条目保存活动 ID、类型和有界摘要；历史条目在 user prompt
   中以“历史活动事实”作为次级资料，不覆盖本轮 `[本轮活动事实]`。旧条目没有活动元数据时
@@ -222,7 +219,7 @@ async def _temporal_context(
 - 沉默时长的确定性自然语言为：`<5 分钟` 不描述重逢；`5-30 分钟` 为“用户有一会儿没有和你说话了”；
   `30 分钟-2 小时` 为“已经有一阵子没有说话了”；`>=2 小时` 为“用户已经很久没有和你说话了”。
   跨自然日额外描述“昨天 + 上次时段”或“X 天前”；短暂跨午夜只描述跨日，不夸大离开时长。
-- 正常 history 仍遵循现有容量、相关性和 `context_time_gap` 截断，不为隔夜连续性放宽。
+- 正常 history 固定遵循容量上限，不因跨小时或跨自然日而截断。
   表达门面另从 durable `event_log` 查询最近 20 条 `USER_MESSAGE` 候选，跳过当前
   correlation 和没有终局输出的 correlation，选择最新一个包含 `SPEAK` 或 `ASK` 的完整回合。
   该回合最后一个 `SPEAK/ASK` 与用户消息构成 `last_dialogue_anchor`；不包含 `THINK`。
@@ -294,7 +291,7 @@ Nyx：好的，我在这里等着你
 - fallback 事件和历史成功完成后，用户消息处理才算成功；事件/本地持久化失败交由总线
   delivery 重试。相关 correlation 已有终局 SPEAK、ASK 或 fallback 时，重放入口不得再次
   调用 LLM。
-- 任意正常文本、attempt 状态、终局事件或 `scene_memory_requested` 的写入失败都会回滚同一
+- 任意正常文本、attempt 状态或终局事件的写入失败都会回滚同一
   批受理；不能留下半轮 THINK/SPEAK，也不能出现终局 `SPEAK/ASK` 已提交、请求缺失后又被
   用户消息重放短路的半完成状态。后续轮生成失败时只提交固定 fallback，不提交先前缓存的
   正常文本。
@@ -456,13 +453,13 @@ schema 35 迁移把旧版本遗留的 `CLAIMED AND answer_event_id IS NULL` 恢�
 | `initiate_chat` | 非空搭话提交成功 | history deque，复制本次 current |
 | `record_proactive_turn` | 阅读提问/联想等主动文本 | history deque；旧入口无活动归属 |
 | `_last_dialogue_anchor` | 从 durable 事件重建完整对话时间锚点 | 临时 Message 对；旧事件无活动归属，不回填 history |
-| 迁移、导入、重启恢复 | 不适用：Message history 不持久化，durable 事件仅重建时间锚点 | 无新增表或事件字段 |
+| `restore_history` | 启动时读取 durable 表达事件 | 有界 history deque；旧事件无活动归属，无新增表或字段 |
 
 **消费者清单**
 
 | 消费者 | 发现方式 | 用途 |
 |---|---|---|
-| FAST 上下文 / SLOW 回溯 | history deque | 最近消息及按时间截断的对话上下文 |
+| FAST 上下文 / SLOW 回溯 | history deque | 最近 `max_context_len` 条对话上下文 |
 | `build_user_prompt` | context 参数 | activity_summary 作为次级历史事实，与本轮活动事实分开 |
 | 时间与重逢上下文 | durable 事件重建的对话锚点 | 只消费角色、正文、时间；不要求活动归属 |
 
@@ -471,7 +468,8 @@ schema 35 迁移把旧版本遗留的 `CLAIMED AND answer_event_id IS NULL` 恢�
 | 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
 |---|---|---|---|
 | 无消息 | 回合/搭话提交成功或主动文本写入 | 内存历史消息 | 活动归属为当时事实，旧入口字段为 None |
-| 内存历史消息 | 超出 deque 容量或进程退出 | 淘汰 | 不恢复 history；durable 事件仍可重建时间锚点 |
+| 内存历史消息 | 超出 deque 容量 | 淘汰 | 最近表达事件仍可在下一次启动时恢复 |
+| 进程重启 | `restore_history` 读取 durable 表达事件 | 最近 20 条内存历史消息 | 恢复失败时记录日志并以空历史启动 |
 | 无消息 | 事件查询取得完整对话 | 临时时间锚点 | 不补造活动元数据，不修改 history |
 
 **Bad case 表**
@@ -479,11 +477,11 @@ schema 35 迁移把旧版本遗留的 `CLAIMED AND answer_event_id IS NULL` 恢�
 | 情况 | 处理 |
 |---|---|
 | 空 | 活动字段允许 None；没有历史时直接使用当前消息 |
-| 失败 | 回合终局提交失败不进入 record_message；历史写入不提供持久化承诺 |
+| 失败 | 回合终局提交失败不进入 record_message；启动恢复失败时记录日志并以空历史继续 |
 | 部分完成 | 有界 deque 可淘汰更早的半回合；完整时间锚点只接受完整对话 |
 | 乱序 | history 按写入顺序消费；历史摘要不能覆盖本轮活动事实 |
-| 重放 | 不新增 history 持久化或去重机制；durable 终局重放短路，不重复写历史 |
-| 删除 | 活动删除不改写历史摘要；history 淘汰和重启清空，不新增单条删除 API |
+| 重放 | 启动恢复只运行一次；durable 终局重放短路，不重复写历史 |
+| 删除 | 活动删除不改写历史摘要；history 淘汰后可从最近 durable 事件恢复，不新增单条删除 API |
 
 ### 回复终局批次
 
@@ -501,7 +499,7 @@ schema 35 迁移把旧版本遗留的 `CLAIMED AND answer_event_id IS NULL` 恢�
 | 消费者 | 发现方式 | 用途 |
 |---|---|---|
 | 前端 SSE / 历史查询 | 按 correlation 和事件顺序读取 | 展示多段气泡与终局状态 |
-| `memory.scene_reply` | SLOW 批次中的 durable request | 异步生成场景记忆 |
+| `memory.scene_reply` | 仅历史 durable request | 兼容重放旧场景记忆 |
 | runtime 重放门控 | 查询同 correlation 的 SPEAK/ASK | 已有终局时短路 LLM 重放 |
 
 **状态迁移表**
@@ -558,7 +556,8 @@ event log/SSE 使用 attempt id 关联展示。
 
 ## 主动搭话
 
-- runtime 先检查 pending interaction desire、presence、busy、energy 和冷却，再通过
+- runtime 先检查是否已有 waiting interaction attempt；若有则跳过本轮搭话。否则检查
+  pending interaction desire、presence、busy、energy 和冷却，再通过
   `DesireFacade.claim_for_interaction()` 原子领取。
 - 只有领取成功者调用 LLM。生成/evaluator 在事务外进行；空输出释放领取并返回 False。
 - 非空输出后，在同一本地事务中写入 `InteractionAttempt(INITIATE_CHAT)` 和
@@ -578,12 +577,33 @@ event log/SSE 使用 attempt id 关联展示。
 - 碎碎念事件为 `MUTTER`，不进入对话 history。
 - `should_initiate_chat()` 是纯函数，只判定触发条件；真正搭话由 runtime + facade 完成。
 
+## 表达历史查询
+
+表达历史查询面向前端提供持久化表达事件的分类视图，不新增存储。查询从
+`event_log` 读取以下事件：对话历史包含 `USER_MESSAGE`、`THINK`、`SPEAK`、`ASK`、
+`READING_QUESTION`、`READING_ASSOCIATION`；碎碎念包含 `MUTTER`、`READING_MUTTER`；
+主动搭话包含 `INITIATE_CHAT`。每个分类按 `timestamp DESC` 返回，`limit` 对每个分类
+分别生效，默认 100，最大 5000。载荷缺失正文的事件仍保留在原始事件日志，但不进入分类结果。
+
+### 对象完整性
+
+**ExpressionHistory** 是只读查询投影，不新增持久化状态。
+
+**入口清单**：现有表达、读书和主动行为事件写入 `event_log`；不新增写入口。
+
+**消费者清单**：表达历史 REST 端点和前端历史面板；不改变回复上下文、SSE 或事件分发。
+
+**状态迁移表**：不适用，查询不改变事件状态。
+
+**Bad case 表**：空分类返回空数组；事件载荷无法提供合法正文时跳过该分类项；事件乱序由
+查询排序修正；重复查询不写入数据；删除遵循既有 event log 生命周期。
+
 ## 运行时、事件和测试
 
 - `runtime.py` 是用户消息、tick、主动搭话和超时的真实入口；`main.py` 同名兼容函数只能委托。
 - 事件持久化、分发、delivery/retry、重放和关停遵循 `04-module-bus-system.md`。
-- `SCENE_MEMORY_REQUESTED` 只由慢通道正常终局产生；前端将它作为 opaque no-op，
-  `memory.scene_reply` 的重试、幂等与 bad case 由 `06-memory-system.md` 定义。
+- 新聊天不再产生 `SCENE_MEMORY_REQUESTED`；前端对历史事件仍作为 opaque no-op，
+  `memory.scene_reply` 的历史重放、幂等与 bad case 由 `06-memory-system.md` 定义。
 - 所有 LLM 真实调用可注入 fake；测试重点是通道拓扑、状态转换、事件字段、失败重试、
   重放短路和读书提问关联，不测试生成文本质量。
 - 时间测试覆盖 `05:59/06:00`、`21:59/22:00`、同小时、5/30/120 分钟边界、跨午夜、
@@ -600,3 +620,4 @@ event log/SSE 使用 attempt id 关联展示。
 - 若涉及总线、事务、事件投递或数据库迁移，必须同时同步 `docs/specs/04-module-bus-system.md`
   及其事实摘要；若要改变已有契约语义，先询问用户。
 - 运行 `ruff check`、`pyright` 和 `pytest`；修改测试后同步 `docs/test-inventory.md`。
+ - user prompt 中 `[相关对话段（历史原文，仅作参考）]` 是独立区块，不再伪装成 `Message(role="user")`；它位于当前会话历史之前，`[本次消息]` 始终最后。

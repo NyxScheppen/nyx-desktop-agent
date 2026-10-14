@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1120" viewBox="0 0 1600 1120" role="img" aria-labelledby="title desc">
+  <title id="title">Nyx 记忆系统核心链路</title>
+  <desc id="desc">从对话原文写入、对话段切分、索引和事实网络，到聊天召回、长期记忆和遗忘的总体流程图。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#526070"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2b6cb0"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2f855a"/>
+    </marker>
+    <style>
+      .title { font: 600 30px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #1f2937; }
+      .lane-title { font: 600 19px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #334155; }
+      .node-title { font: 600 17px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #1f2937; }
+      .text { font: 400 14px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #475569; }
+      .small { font: 400 13px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #64748b; }
+      .box { stroke-width: 2; rx: 14; }
+      .arrow { fill: none; stroke: #526070; stroke-width: 2.5; marker-end: url(#arrow); }
+      .arrow-blue { fill: none; stroke: #2b6cb0; stroke-width: 2.5; marker-end: url(#arrow-blue); }
+      .arrow-green { fill: none; stroke: #2f855a; stroke-width: 2.5; marker-end: url(#arrow-green); }
+      .dashed { stroke-dasharray: 8 7; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1120" fill="#f8fafc"/>
+  <text x="60" y="58" class="title">Nyx 记忆系统核心链路</text>
+  <text x="60" y="88" class="text">原始对话是主体；摘要、主题和 embedding 只负责索引；事实网与对话段分开消费。</text>
+
+  <!-- Main lifecycle lane -->
+  <rect x="40" y="120" width="1520" height="380" rx="20" fill="#eef4fb" stroke="#c9d9ed"/>
+  <text x="65" y="153" class="lane-title">一、对话写入与记忆提取</text>
+
+  <rect x="70" y="190" width="205" height="112" class="box" fill="#ffffff" stroke="#7c8da6"/>
+  <text x="172" y="222" text-anchor="middle" class="node-title">用户消息 / Nyx 回复</text>
+  <text x="172" y="250" text-anchor="middle" class="text">每轮保存原始事件</text>
+  <text x="172" y="275" text-anchor="middle" class="small">user / nyx event_id</text>
+
+  <rect x="330" y="180" width="230" height="132" class="box" fill="#e8f1ff" stroke="#4a78a8"/>
+  <text x="445" y="213" text-anchor="middle" class="node-title">连续对话段</text>
+  <text x="445" y="242" text-anchor="middle" class="text">时间 + 主题宽松续接</text>
+  <text x="445" y="267" text-anchor="middle" class="text">明确转题词才切段</text>
+  <text x="445" y="292" text-anchor="middle" class="small">previous_id 形成段链</text>
+
+  <rect x="620" y="180" width="250" height="132" class="box" fill="#fff9e8" stroke="#c59b35"/>
+  <text x="745" y="213" text-anchor="middle" class="node-title">段级 LLM 判定</text>
+  <text x="745" y="242" text-anchor="middle" class="text">importance / memory_kind</text>
+  <text x="745" y="267" text-anchor="middle" class="text">用户证据 / 复证段 ID</text>
+  <text x="745" y="292" text-anchor="middle" class="small">切段、空闲、卸载时触发</text>
+
+  <rect x="930" y="180" width="260" height="132" class="box" fill="#e8f7ef" stroke="#4b956c"/>
+  <text x="1060" y="213" text-anchor="middle" class="node-title">短期 / 长期状态</text>
+  <text x="1060" y="242" text-anchor="middle" class="text">普通偏好：跨段复证</text>
+  <text x="1060" y="267" text-anchor="middle" class="text">重要经历：单段可长期</text>
+  <text x="1060" y="292" text-anchor="middle" class="small">evaluated_at 防重复判定</text>
+
+  <rect x="1250" y="180" width="270" height="132" class="box" fill="#ffffff" stroke="#7c8da6"/>
+  <text x="1385" y="213" text-anchor="middle" class="node-title">原文持久保存</text>
+  <text x="1385" y="242" text-anchor="middle" class="text">raw_content 是记忆主体</text>
+  <text x="1385" y="267" text-anchor="middle" class="text">摘要 / 主题作辅助索引</text>
+  <text x="1385" y="292" text-anchor="middle" class="small">不生成旧聊天 Memory</text>
+
+  <path d="M275 246 H330" class="arrow"/>
+  <path d="M560 246 H620" class="arrow"/>
+  <path d="M870 246 H930" class="arrow-green"/>
+  <path d="M1190 246 H1250" class="arrow-green"/>
+
+  <!-- Index and fact lane -->
+  <rect x="40" y="530" width="1520" height="250" rx="20" fill="#f4f1fb" stroke="#d7cbed"/>
+  <text x="65" y="563" class="lane-title">二、建立索引与事实网络</text>
+
+  <rect x="95" y="600" width="315" height="112" class="box" fill="#ffffff" stroke="#8064a2"/>
+  <text x="252" y="632" text-anchor="middle" class="node-title">对话段索引</text>
+  <text x="252" y="660" text-anchor="middle" class="text">summary / topics</text>
+  <text x="252" y="685" text-anchor="middle" class="text">中文 embedding</text>
+
+  <rect x="470" y="600" width="315" height="112" class="box" fill="#ffffff" stroke="#8064a2"/>
+  <text x="627" y="632" text-anchor="middle" class="node-title">三类事实网</text>
+  <text x="627" y="660" text-anchor="middle" class="text">profile · conversation · knowledge</text>
+  <text x="627" y="685" text-anchor="middle" class="text">由旧 Memory 抽取，段尚未接入</text>
+
+  <rect x="845" y="600" width="315" height="112" class="box" fill="#ffffff" stroke="#8064a2"/>
+  <text x="1002" y="632" text-anchor="middle" class="node-title">跨段证据链</text>
+  <text x="1002" y="660" text-anchor="middle" class="text">conversation_segment_evidence</text>
+  <text x="1002" y="685" text-anchor="middle" class="text">普通偏好复证依据</text>
+
+  <rect x="1220" y="600" width="270" height="112" class="box" fill="#ffffff" stroke="#8064a2"/>
+  <text x="1355" y="632" text-anchor="middle" class="node-title">资料隔离</text>
+  <text x="1355" y="660" text-anchor="middle" class="text">knowledge 默认不召回</text>
+  <text x="1355" y="685" text-anchor="middle" class="text">用户明确询问才开放</text>
+
+  <path d="M1385 312 V420 H252 V600" class="arrow-blue"/>
+  <path d="M1060 312 V420 H1002 V600" class="arrow-green"/>
+
+  <!-- Recall lane -->
+  <rect x="40" y="810" width="1520" height="250" rx="20" fill="#eef8f5" stroke="#c4e3d6"/>
+  <text x="65" y="843" class="lane-title">三、聊天召回与遗忘</text>
+
+  <rect x="85" y="880" width="260" height="112" class="box" fill="#ffffff" stroke="#4b956c"/>
+  <text x="215" y="912" text-anchor="middle" class="node-title">当前聊天上下文</text>
+  <text x="215" y="940" text-anchor="middle" class="text">时间连续 + 话题相接</text>
+  <text x="215" y="965" text-anchor="middle" class="small">最多 max_context_len 条</text>
+
+  <rect x="405" y="880" width="270" height="112" class="box" fill="#e8f1ff" stroke="#4a78a8"/>
+  <text x="540" y="912" text-anchor="middle" class="node-title">慢通道检索 query</text>
+  <text x="540" y="940" text-anchor="middle" class="text">最近最多 3 条 + 当前消息</text>
+  <text x="540" y="965" text-anchor="middle" class="small">总长约 300 字符</text>
+
+  <rect x="735" y="880" width="300" height="112" class="box" fill="#ffffff" stroke="#4a78a8"/>
+  <text x="885" y="912" text-anchor="middle" class="node-title">召回门槛</text>
+  <text x="885" y="940" text-anchor="middle" class="text">主题重合 或 cosine ≥ 0.45</text>
+  <text x="885" y="965" text-anchor="middle" class="small">最多 20 个对话段</text>
+
+  <rect x="1095" y="880" width="220" height="112" class="box" fill="#ffffff" stroke="#4b956c"/>
+  <text x="1205" y="912" text-anchor="middle" class="node-title">独立 Prompt 区块</text>
+  <text x="1205" y="940" text-anchor="middle" class="text">相关对话段原文</text>
+  <text x="1205" y="965" text-anchor="middle" class="small">不伪装成当前用户消息</text>
+
+  <rect x="1375" y="880" width="135" height="112" class="box" fill="#fff1f1" stroke="#b85c5c"/>
+  <text x="1442" y="912" text-anchor="middle" class="node-title">旧 Memory</text>
+  <text x="1442" y="940" text-anchor="middle" class="text">衰减 / 淘汰</text>
+  <text x="1442" y="965" text-anchor="middle" class="small">不作用于对话段</text>
+
+  <path d="M345 936 H405" class="arrow"/>
+  <path d="M675 936 H735" class="arrow-blue"/>
+  <path d="M1035 936 H1095" class="arrow-blue"/>
+  <path d="M1442 880 V780 H627 V712" class="arrow dashed"/>
+  <text x="995" y="798" class="small">旧链路：短期 Memory 实际使用达到阈值后晋升长期；未晋升者衰减 / 容量淘汰</text>
+
+  <text x="75" y="1095" class="small">注意：对话段目前没有自动遗忘/淘汰；段级判定尚未把事实写入事实网。旧 Memory 的衰减淘汰是另一条兼容链路。</text>
+</svg>

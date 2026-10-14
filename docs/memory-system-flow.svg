@@ -27,7 +27,7 @@
 
   <rect width="1600" height="1120" fill="#f8fafc"/>
   <text x="60" y="58" class="title">Nyx 记忆系统核心链路</text>
-  <text x="60" y="88" class="text">原始对话是主体；摘要、主题和 embedding 只负责索引；事实网与对话段分开消费。</text>
+  <text x="60" y="88" class="text">原始对话是主体；摘要、主题和 embedding 只负责索引；事实网按作用域保存并参与受控召回。</text>
 
   <!-- Main lifecycle lane -->
   <rect x="40" y="120" width="1520" height="380" rx="20" fill="#eef4fb" stroke="#c9d9ed"/>
@@ -78,8 +78,8 @@
 
   <rect x="470" y="600" width="315" height="112" class="box" fill="#ffffff" stroke="#8064a2"/>
   <text x="627" y="632" text-anchor="middle" class="node-title">三类事实网</text>
-  <text x="627" y="660" text-anchor="middle" class="text">profile · conversation · knowledge</text>
-  <text x="627" y="685" text-anchor="middle" class="text">由旧 Memory 抽取，段尚未接入</text>
+  <text x="627" y="660" text-anchor="middle" class="text">段级事实抽取后按 scope 分流</text>
+  <text x="627" y="685" text-anchor="middle" class="text">profile · conversation · knowledge</text>
 
   <rect x="845" y="600" width="315" height="112" class="box" fill="#ffffff" stroke="#8064a2"/>
   <text x="1002" y="632" text-anchor="middle" class="node-title">跨段证据链</text>
@@ -93,6 +93,8 @@
 
   <path d="M1385 312 V420 H252 V600" class="arrow-blue"/>
   <path d="M1060 312 V420 H1002 V600" class="arrow-green"/>
+  <path d="M745 312 V500 H627 V600" class="arrow-green"/>
+  <text x="760" y="486" class="small">评估后抽取用户原话事实</text>
 
   <!-- Recall lane -->
   <rect x="40" y="810" width="1520" height="250" rx="20" fill="#eef8f5" stroke="#c4e3d6"/>
@@ -119,15 +121,16 @@
   <text x="1205" y="965" text-anchor="middle" class="small">不伪装成当前用户消息</text>
 
   <rect x="1375" y="880" width="135" height="112" class="box" fill="#fff1f1" stroke="#b85c5c"/>
-  <text x="1442" y="912" text-anchor="middle" class="node-title">旧 Memory</text>
+  <text x="1442" y="912" text-anchor="middle" class="node-title">维护计时器</text>
   <text x="1442" y="940" text-anchor="middle" class="text">衰减 / 淘汰</text>
-  <text x="1442" y="965" text-anchor="middle" class="small">不作用于对话段</text>
+  <text x="1442" y="965" text-anchor="middle" class="small">每分钟独立运行</text>
 
   <path d="M345 936 H405" class="arrow"/>
   <path d="M675 936 H735" class="arrow-blue"/>
   <path d="M1035 936 H1095" class="arrow-blue"/>
-  <path d="M1442 880 V780 H627 V712" class="arrow dashed"/>
-  <text x="995" y="798" class="small">旧链路：短期 Memory 实际使用达到阈值后晋升长期；未晋升者衰减 / 容量淘汰</text>
+  <path d="M1442 880 V780 H1002 V712" class="arrow dashed"/>
+  <text x="1030" y="798" class="small">段 freshness 每日衰减；短期段超容量只退出活跃召回</text>
 
-  <text x="75" y="1095" class="small">注意：对话段目前没有自动遗忘/淘汰；段级判定尚未把事实写入事实网。旧 Memory 的衰减淘汰是另一条兼容链路。</text>
+  <rect x="70" y="1075" width="1440" height="25" rx="8" fill="#fff7ed" stroke="#f0c48a"/>
+  <text x="790" y="1093" text-anchor="middle" class="small">遗忘不是删除：短期段按 freshness 与容量取消 active；原文、段链、证据和事实永久保留。长期段与 profile 事实不参加短期淘汰。</text>
 </svg>

@@ -435,12 +435,15 @@ async def search(
     query: str,
     direct_limit: int = 20,
     association_limit: int = 10,
+    required_topic: str | None = None,
+    kind: MemoryKind | None = None,
 ) -> list[Memory]
 ```
 
 - 空白 query 返回 `[]`。
 - `direct_limit <= 0` 时直接召回为空，联想也为空，返回 `[]`。
 - `association_limit <= 0` 时只返回 direct。
+- `kind` 非空时，在 Memory 列表、关键词 SQL 和联想边的候选阶段限制类别；不得先按全类别截断再过滤。
 - 返回顺序固定为 direct ranked results 在前，association ranked results 在后。
 
 ### facade 签名
@@ -477,12 +480,12 @@ async def remember_reading(
     source_name: str | None = None,
 ) -> None: ...
 async def record_no_answer(question: str, correlation_id: str) -> None: ...
-async def search(query: str) -> list[Memory]: ...
+async def search(query: str, kind: MemoryKind | None = None) -> list[Memory]: ...
 async def search_source(
     query: str, source_topic: str, limit: int = 5
 ) -> list[Memory]: ...
 async def search_facts(query: str) -> list[MemoryFact]: ...
-async def recent_facts(limit: int = 32) -> list[MemoryFact]: ...
+async def recent_facts(limit: int = 32, scope: str | None = None) -> list[MemoryFact]: ...
 async def record_recall(memory_id: str, user_event_id: str) -> None: ...
 async def list_memories(
     kind: MemoryKind | None = None,
@@ -502,7 +505,8 @@ Facade 规则：
 - 活动、读书、知识、用户画像、未答记录入口都复用 `_persist_memory` 的入库尾段，
   不绕过建边、矛盾检测、衰减/淘汰和事件。确定性入口不调用 scene-memory LLM；知识点
   批量事实抽取合并为一次 `fact_extraction` 调用后再逐条复用尾段。
-- `search(query)` 纯委托 `MemoryRetrieval.search(query)`，对表达层不暴露 `direct_limit` / `association_limit` 参数。
+- `browser_survey` 活动完成时，`result.summary` 写入活动记忆 content，`result.url` 写入 summary；步骤数和原始结果文本继续保留在活动/任务快照中。
+- `search(query, kind=None)` 委托 `MemoryRetrieval.search(query, kind=kind)`；表达层省略类别时沿用全类别检索，不暴露 `direct_limit` / `association_limit` 参数。
 - `digest_source_block` 每次只接收至多 6000 字符的原文和上一版 profile，输出新的
   `{summary, themes, content_category}` 与 0-5 条知识点；类别只允许 `fiction`、
   `nonfiction`、`essay`、`poetry`、`drama`、`reference`、`unknown`，非法值按
@@ -926,14 +930,14 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 
 记忆相关 REST 端点：
 
-- `GET /api/memories` 返回 `Memory[]` 快照。
-- `GET /api/memories/search?q=...` 返回复用现有混合召回的 `Memory[]`；`sources` 会体现
+- `GET /api/memories?kind=...` 返回 `Memory[]` 快照；`kind` 可省略，传入时只返回对应 `MemoryKind`。
+- `GET /api/memories/search?q=...&kind=...` 返回复用现有混合召回的 `Memory[]`；`kind` 可省略，传入时在向量、关键词和联想候选阶段按类别筛选，`sources` 会体现
   `vector` / `keyword` / `association`。
-- `GET /api/memories/facts?limit=64` 返回最多 64 条当前有效 `MemoryFact[]`，供前端事实图
-  使用。`limit` 范围为 `0..64`；事实读取失败由 Facade 降级为空集，不阻塞记忆功能。
+- `GET /api/memories/facts?limit=64&scope=profile|conversation|knowledge` 返回指定作用域中最多 64 条当前有效 `MemoryFact[]`，供前端事实图使用。`scope` 可省略以兼容原有混合快照；传入时必须先在 SQL 中按作用域过滤，再应用 `limit`。`limit` 范围为 `0..64`；事实读取失败由 Facade 降级为空集，不阻塞记忆功能。
 
-事实图与普通记忆列表在前端保持两个独立视图；事实不会混入 `Memory[]`，记忆搜索也不会改变
-事实图数据。
+前端将记忆列表与画像、对话、知识三张事实图分别展示。记忆类别选择支持全部与六种 `MemoryKind`，并作用于列表和当前关键词检索；记忆搜索不改变事实图数据。类别或事实图切换时，旧请求不能覆盖新选择；角色切换后旧角色响应不能进入当前 store。
+
+**对象完整性审计（本次只增加读取条件与前端消费者）**：`Memory` 的现有创建、导入、恢复和删除入口不变，现有表达、活动、阅读、反思消费者继续使用默认全类别检索；API 与前端列表新增可选类别消费者。`MemoryFact` 的现有抽取、迁移、重放、关闭和删除入口不变，既有事实检索、反思消费者继续使用原行为；前端新增按 scope 读取。两种对象的持久状态与状态迁移不变，因此无新增持久状态迁移。空类别结果显示空列表/空图；接口失败仅显示对应区域错误；记忆与事实请求部分完成时各自保留成功结果；乱序/角色切换响应由请求代次与角色 scope 拦截；重放仍按原有幂等规则；删除后的快照不显示已删除记忆或失效事实。
 
 ## 测试要点
 

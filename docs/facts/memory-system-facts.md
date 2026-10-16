@@ -64,6 +64,7 @@
 - `extract_keywords` 的 CJK 规则按 `docs/specs/06-memory-system.md` 契约执行：长度 2-8 的连续 CJK 片段直接保留，长 CJK 片段只做 2 字/3 字滑窗；不做隐藏边界字符剥离，也不在长片段内部按停用词预拆。
 - `Memory.sources` 是瞬态检索来源：`keyword`、`vector`、`association`。它不落库、不进 prompt、不进导出，但 REST `Memory[]` 会序列化给前端。
 - `list_memories` 返回库内快照，通常 `sources=[]`；`search` 返回的命中带 sources。
+- 记忆面板可按六种 `MemoryKind` 筛选列表和关键词搜索；类别过滤进入列表 SQL、关键词 SQL 和混合检索候选集，联想不会跨到其他类别。
 
 ## 事实层
 
@@ -77,7 +78,7 @@
 - `MemoryFact` REST/前端展示同时带 `subject_type`、`object_type`，前端用“类型 + canonical name”
   区分同名异类实体。
 - 查询只围绕命中的实体返回全部当前有效事实；事实召回失败降级为空集。
-- `GET /api/memories/facts?limit=64` 为前端事实图提供有界当前有效事实快照；它不进入
+- `GET /api/memories/facts?limit=64&scope=...` 在 SQL 截断前按 `profile`、`conversation` 或 `knowledge` 筛选，为前端三张独立事实图各提供有界当前有效快照；省略 scope 保留原混合读取。它不进入
   `Memory[]`，也不调用 `record_recall`。
 - 查询包含明确月份时按该月份的有效事实召回，否则按当前时间过滤。
 - 单值谓词（就业状态、当前职业、居住地、当前公司等）按有效时间关闭旧事实；多值谓词（书中人物、主题、作者、影响等）同一时间保留多个对象；`polarity` 区分正/负关系。
@@ -103,3 +104,4 @@
 - `reading` 活动记忆：`result.note` 作 content，`result.book` 作 summary，kind=`activity`。
 - `creation` 活动记忆：`result.content` 作 content，`result.title` 作 summary，kind=`activity`。
 - `free_exploration` 活动记忆：`result.summary` 作 content，`result.core_discovery` 作 summary，kind=`activity`。`findings`/`knowledge` 可存在于活动结果，但不是活动记忆的主字段。
+- `browser_survey` 活动记忆：`result.summary` 作 content，`result.url` 作 summary，kind=`activity`；步骤数和原始结果文本继续留在活动/任务快照中。

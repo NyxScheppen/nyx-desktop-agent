@@ -13,13 +13,15 @@
 ## 元信息
 
 - **前置依赖**：01-types（`Activity` / `ActivityType` / `ActivityStatus` / `AssignedTask` / `AssignedTaskType` / `AssignedTaskStatus` / `DesireType` / `ShortTermDesire` / `DesireValue` / `CurrentState` / `Event` / `EventType`）、02-config（`ActivityConfig` / `ExplorationConfig` / `ActivityEnergyDelta`）、03-llm（`LlmClient.complete` / `VisionClient`）、04-module-bus-system（`activity` / `assigned_task` 表、`EventBus` / `internal_event` / tick 路由、组合根、REST、SSE）、05-tools（`ToolRegistry`）、06-memory-system（活动/知识记忆落库）、07-desire（待消费欲望、活动状态接线、满足回写、长期欲望入口）、08-inner-life（状态快照、反思、精力变化）、10-eval（`Evaluator`）、12-reading-system（EPUB 读取入口）
-- **实现文件**：`nyx/activity/scheduler.py`、`nyx/activity/store.py`、`nyx/activity/starter.py`、`nyx/activity/lifecycle.py`、`nyx/activity/facade.py`、`nyx/activity/creation.py`、`nyx/activity/llm_result.py`、`nyx/activity/paths.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/screen.py`、`nyx/db.py`、`nyx/api/routes.py`、`nyx/app_context.py`、`frontend/src/api/client.ts`、`frontend/src/stores/activityStore.ts`、`frontend/src/components/panels/ActivityPanel.tsx`、`frontend/src/types/api.ts`
+- **实现文件**：`nyx/activity/scheduler.py`、`nyx/activity/store.py`、`nyx/activity/starter.py`、`nyx/activity/lifecycle.py`、`nyx/activity/facade.py`、`nyx/activity/browser_survey.py`、`nyx/activity/creation.py`、`nyx/activity/llm_result.py`、`nyx/activity/paths.py`、`nyx/activity/exploration.py`、`nyx/activity/observe.py`、`nyx/activity/screen.py`、`nyx/db.py`、`nyx/api/routes.py`、`nyx/app_context.py`、`frontend/src/api/client.ts`、`frontend/src/stores/activityStore.ts`、`frontend/src/components/panels/ActivityPanel.tsx`、`frontend/src/types/api.ts`
 
 ## 用户故事
 
 > 作为 Nyx 系统的开发者，我想让活动系统把欲望从「生成」推进到「消费、执行、结算或恢复」，并把活动进度、打断原因和产出广播给前端，以便欲望闭环、活动时间线和可续工作都能稳定运行。
 
 > 作为用户，我想把明确网页或书架中的 EPUB 阅读目标交给 Nyx，让任务进入她自己的活动选择并留下事实记忆，以便我私下读得更快时她能正式追上，也能阅读我指定的内容。
+
+> 作为用户，我想把公开网页问卷交给 Nyx，让她按自己的设定在浏览器中逐题选择，并在完成后看到结果。
 
 > 作为 Nyx，我想在探索欲出现时按主题找到真正相关的本地读物；只有匹配不到时才去探索网络，以免用“最近上传但无关”的材料假装满足探索欲。
 
@@ -85,7 +87,7 @@
   ```
 
 - [ ] `select_activity` 是同步纯决策：无欲望或全为互动欲时返回 `None`；精力不足时返回无欲望关联的 `REST`；否则返回第一个可排程欲望映射出的活动，并在 `progress` 保存 `desire_id`、`goal`、`correlation_id`、`description`。
-- [ ] `SCHEDULE_BLOCK_START`、`DESIRE_GENERATED` 与新建委派任务都进入同一个 `_maybe_start_activity` 启动路径；已有活动时不重复启动。
+  - [ ] `SCHEDULE_BLOCK_START`、`DESIRE_GENERATED` 与对话工具创建的委派任务都进入同一个 `_maybe_start_activity` 启动路径；已有活动时不重复启动。
 - [ ] `get_schedule()` 以运行 Nyx 的电脑系统本地时区计算当天 `00:00`，只返回本地自然日内 `started_at` 不早于该时刻的活动，按 `started_at ASC`；不新增时区配置，不处理前后端分处不同时区。
 - [ ] `get_results()` 返回跨天历史产出并按 `ended_at DESC`；`limit` / `offset` 在 SQL 层分页，`activity_type` 非空时在 SQL 层过滤，不先物化全部记录。数据库迁移为创作历史查询建立 `(status, type, ended_at DESC)` 复合索引。
 - [ ] 新活动在一个本地事务中完成来源条件领取（欲望 `PENDING -> ACTIVE` 或任务 `PENDING -> RUNNING`）、activity `RUNNING` 插入和 `ACTIVITY_START` durable event 写入；任一步失败整体回滚。`PENDING` 只作为构造期与旧库恢复兼容状态，不再作为新活动的持久启动中间态。
@@ -103,6 +105,8 @@
 class AssignedTaskType(StrEnum):
     WEB = "web"
     BOOK = "book"
+    BROWSER_SURVEY = "browser_survey"
+      CREATION = "creation"
 
 class AssignedTaskStatus(StrEnum):
     PENDING = "pending"
@@ -124,7 +128,7 @@ class AssignedTask:
     updated_at: float
 ```
 
-- `WEB` 只设置 `url`；`BOOK` 只设置 `book_id/target_paragraph`。本轮不增加任务标题、优先级、定时、截止时间、重复规则、编辑、拖动排序或插件式任务载荷。
+- `WEB` 与 `BROWSER_SURVEY` 只设置 `url`；`BOOK` 只设置 `book_id/target_paragraph`。浏览器问卷与正文抓取独立，不能改动 `WEB` 的抓取语义。
 - `ActivityStore` 除 activity CRUD 外，还负责委派任务的创建、查询、FIFO 领取、checkpoint、状态更新和启动恢复；不新增 Repository/Service/Manager。
 - 同一类型、同一目标已有 `PENDING/RUNNING` 任务时，创建操作幂等返回最早的原任务。
 - `assigned_task` 表和 FIFO 索引为：
@@ -160,7 +164,7 @@ class AssignedTask:
 5. 排序后的短期欲望；
 6. 默认观察或发呆反思。
 
-- 领取任务、插入 `RUNNING` activity 与 `ACTIVITY_START` 必须在同一个本地事务内完成。任务活动继续使用 `ActivityType.READING`，并在 `Activity.progress` 保存 `task_id`、任务来源、目标与 `correlation_id=task_id`；不新增任务专用 ActivityType。
+- 领取任务、插入 `RUNNING` activity 与 `ACTIVITY_START` 必须在同一个本地事务内完成。网页正文与书籍任务继续使用 `ActivityType.READING`；浏览器问卷使用 `ActivityType.BROWSER_SURVEY`。均在 `Activity.progress` 保存 `task_id`、任务来源、目标与 `correlation_id=task_id`。
 - 创建任务后立即尝试 `_maybe_start_activity()`；已有活动时只入队，不抢占。
 - 任务活动完成后在活动完成事务内置 `COMPLETED`；执行异常在活动失败事务内置 `FAILED` 并保存至多 500 字符的错误，不自动重试。
 - 任务活动被打断时在活动中断事务内回到 `PENDING`；同日同块优先恢复原活动并重新领取，跨块则创建新的 activity 从持久化 checkpoint 继续，旧 `PAUSED` 记录只留档。
@@ -179,6 +183,42 @@ class AssignedTask:
 - knowledge 写入后，在一个 `Database.transaction()` 内写 `reading_evidence`、推进 cursor、采纳 profile 并清除 pending。证据写入或 checkpoint 保存失败时，证据和 checkpoint 一起回滚；knowledge 允许已存在，重放必须幂等。
 - knowledge 使用稳定的 `web:<normalized-url>` 来源 topic；`source_name` 使用 URL。旧版本已落盘的 pending 可能没有原文证据字段；恢复时仍按已存 knowledge 幂等写入并推进 checkpoint，不从重新抓取的页面伪造旧证据。
 - 网页任务读完整个已抽取正文；它不改变自动自由探索“每条搜索结果最多读取 6000 字符”的既有语义。
+
+### 浏览器问卷委派任务
+
+- `BROWSER_SURVEY` 创建时只接受带主机名的 HTTP(S) URL，执行前及浏览器请求时逐条校验公网地址；非公网任务失败。仅在 `exploration.web_enabled=true` 时创建。表达工具 `browser_survey` 与 `POST /api/tasks/browser-survey` 是创建入口；同类型同 URL 的 `PENDING/RUNNING` 任务幂等返回原任务。
+- 用户指定的网页阅读、书籍阅读和创作分别由表达工具 `web_task`、`book_task`、`creation_task` 受理；它们与活动页/API 共用同一 `ActivityFacade` 任务入口，不在表达层复制 runner 逻辑。
+- 任务使用独立的 `ActivityType.BROWSER_SURVEY`，不触发阅读完成的副作用。队列、领取、`task_updated`、活动生命周期和前端任务快照沿用现有通路。活动能量变化为 0，不新增配置项。
+- Playwright 在可见浏览器窗口中读取题目与可点击选项；LLM 按角色 canon 决定每一步。只允许公开站点资源，最多执行 100 次点击；登录、验证码、无法识别题目或结果时失败并报告，不猜测。
+- `AssignedTask.checkpoint` 保存已确认的点击步数（包括进入问卷的导航点击）和最终结果；完成时活动结果与任务 checkpoint 都可供前端展示。浏览器会话是临时状态，进程重启或中断后已发生的外部点击不可安全重放，因此将未完成的浏览器问卷任务置为 `FAILED`，不自动重新排队。
+
+**对象完整性：浏览器问卷任务**
+
+| 入口 | 产生条件 | 写入位置 |
+|---|---|---|
+| 表达工具、REST | 用户明确提供公开问卷 URL | `assigned_task` |
+| 启动恢复 | 旧任务为 `RUNNING` | 原任务转 `FAILED`，不创建新任务 |
+
+| 消费者 | 发现方式 | 用途 |
+|---|---|---|
+| ActivityStarter / runner | FIFO `PENDING` 查询与关联 activity | 逐题操作 |
+| REST / 前端 activity store | `/api/tasks`、`task_updated` | 展示状态、结果和失败原因 |
+
+| 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
+|---|---|---|---|
+| `PENDING` | FIFO 领取 | `RUNNING` | 同事务创建活动 |
+| `RUNNING` | 识别到最终结果 | `COMPLETED` | 同事务保存活动结果；展示问卷结果 |
+| `RUNNING` | 页面、LLM、点击失败或中断 | `FAILED` | 保留已确认步数及错误；不重放点击 |
+| `RUNNING` | 进程重启 | `FAILED` | 不恢复浏览器会话 |
+
+| 情况 | 处理 |
+|---|---|
+| 空 | URL、题目或选项为空时拒绝或失败 |
+| 失败 | 记录至多 500 字错误，显示在任务列表 |
+| 部分完成 | 保留已确认答题次数，标记失败 |
+| 乱序 | 单 runner 串行点击，任务状态由活动事务原子更新 |
+| 重放 | 运行中同 URL 幂等；中断/重启后不重放外部点击 |
+| 删除 | 当前无任务删除入口；历史结果随数据库删除流程清除 |
 
 ### Goal 结算
 
@@ -322,7 +362,7 @@ class AssignedTask:
 - [ ] `GET /api/activity` 返回 `{current, schedule}`；`GET /api/activity/results` 返回历史产出，接受 `limit=1..100`、`offset=0..100000` 与可选且当前仅允许 `creation` 的 `activity_type`，越界查询由 FastAPI 返回 422、不得进入 SQLite。活动系统不提供通用文件上传或 material 列表端点；书籍导入只走 12-reading-system 的 `POST /api/books`。
 - [ ] 委派任务端点固定为：`GET /api/tasks` 按 `created_at DESC` 返回最近任务；`POST /api/tasks/web` 以 `{url}` 创建网页任务并返回 201；`POST /api/tasks/book` 以 `{book_id, target_paragraph}` 创建 EPUB 任务并返回 201。URL 形状错误或目标段越界返回 422，书不存在返回 404，联网关闭返回 409。
 - [ ] `current`、`schedule`、`results` 继续返回现有 `Activity` dataclass；`progress` 中的 checkpoint 作为 JSON 内追加字段，不破坏旧字段。
-- [ ] 活动页用“网页 / 书籍”分段控件创建任务。书籍模式复用 `GET /api/books` 和现有段落窗口 API，目标段号保持 1-based 并限制在 `[1,total_paragraphs]`，展示目标段及前后各一段预览。任务列表至少显示类型、目标、状态、创建时间和失败原因；`task_updated` 触发 activity store 重拉活动、创作和任务快照。
+- [ ] 活动页用“网页 / 书籍 / 网页问卷”分段控件创建任务。书籍模式复用 `GET /api/books` 和现有段落窗口 API，目标段号保持 1-based 并限制在 `[1,total_paragraphs]`，展示目标段及前后各一段预览。任务列表至少显示类型、目标、状态、创建时间、问卷完成摘要和失败原因；`task_updated` 触发 activity store 重拉活动、创作和任务快照。
 - [ ] 前端活动页的产出区只显示最近 12 条已完成创作的标题与本地时间，不显示正文、读书或探索产出；独立“创作”页复用同一 store，按 12 条一批加载历史创作，正文默认折叠，展开后显示完整正文与落盘路径。
 - [ ] `activityStore` 为创作结果请求维护内部世代；`refresh()` 开始后，先前分页请求的成功或失败结果都必须丢弃，不得追加到或覆盖较新的首页快照、错误与 loading 状态。
 - [ ] 活动生命周期 SSE 事件保持 `activity_start`、`activity_end`、`activity_interrupted`；委派任务另用 `task_updated` 快照通知。统一 payload 为 `event.content` 展开并附 `event_id`、`correlation_id`、后端 `timestamp`，公共头按 04-module-bus-system 定义。

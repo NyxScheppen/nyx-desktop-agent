@@ -119,7 +119,7 @@ toggleBookmark(paragraphId: string): Promise<void> // 当前段已有则删，�
 - **定位不等于阅读**：划线/书签点击调用 `jumpToPosition`，正式更新并持久化 `userPosition`、按需重拉窗口并恢复追赶，但不调用 `evaluateImpulse`；普通逐段翻页仍走 `syncPosition`。
 - **重叠划线端点扫描**：`ReaderView.renderRange` 先汇总格式/划线起止事件并排序，再维护
   active 计数生成原子区间；不在每个区间对全部划线执行 `filter/find`。
-- **真分页 + 高亮定位**（08 §5）：正文 `overflow:hidden` 无滚动；`paginate` 纯函数按段实测高度贪心分页，「上一页/下一页」逐段移动、`syncPosition(userPosition ± 1)`（复用「前翻逐段补发 evaluateImpulse + putProgress + 窗口重拉 + startCatchup」管线）；当前段 `--current` 高亮、Nyx 段 `--nyx` 🦊 标记（`userPosition` 即当前读到段，计数/高亮不漂移）。
+- **真分页 + 高亮定位**（08 §5）：正文 `overflow:hidden` 无滚动，`.reader-text` 允许文字选择以便拖选划线；`paginate` 纯函数按段实测高度贪心分页，「上一页/下一页」逐段移动、`syncPosition(userPosition ± 1)`（复用「前翻逐段补发 evaluateImpulse + putProgress + 窗口重拉 + startCatchup」管线）；当前段 `--current` 高亮、Nyx 段 `--nyx` 🦊 标记（`userPosition` 即当前读到段，计数/高亮不漂移）。
 - **正文后端唯一来源**：`evaluateImpulse` 只传 `{book_id, paragraph_index, last_paragraph_index}`（不传 `paragraph_text`），正文后端自取（12-reading-system 决策）。
 - **「读完」「重读」是前端动作**：`userPosition == total_paragraphs` 时显示「读完」（UI 确认，无后端调用）；`Progress.read_count >= 1` 时显示「重读」（`reread()` = `putProgress({user_position:1, nyx_position:1, reading_speed})` 复位）。后端「读完」标记是 `read_count`（12-reading-system 的整本读完自动 `++`），前端不额外写 finished；重读触发反思全在后端 12-reading-system，前端只需复位进度。
 - **`totalParagraphs` 来自书架列表项**：后端 `GET /api/progress` 不回 total、段落窗口只回窗口内段，故唯一现成来源是 `BookListItem.total_paragraphs`；`openBook` 用 `books.find(b => b.id === bookId)` 落 `readerStore.totalParagraphs`。**前置 `books` 已加载**（书架点书天然已 `loadBooks`；深链/刷新先 `loadBooks` 再 `openBook`），否则 `totalParagraphs=0`、clamp 失效——`syncPosition` 需 `totalParagraphs>0` 守卫，0 时不推进。

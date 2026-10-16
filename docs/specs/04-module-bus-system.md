@@ -677,6 +677,7 @@ CREATE TABLE eval_prompt (
 - `task_updated` 是委派任务状态快照通知：先持久化任务，再以
   `{task_id, status}`、`correlation_id=task_id` 广播；它没有 durable consumer，
   前端收到后重拉 `/api/tasks`。广播失败不得回滚已经提交的任务状态。
+- `POST /api/tasks/browser-survey` 经当前角色 ActivityFacade 受理公开问卷 URL；组合根在活动门面构造后注册表达工具 `browser_survey`。活动运行期间普通用户消息与主动搭话不打断该问卷，结果由任务快照及 `activity_end` 广播；关停或异常中断不自动重放浏览器点击。
 - 委派任务一旦提交，后续状态广播、立即调度和调度后回读失败都不得把创建请求改成失败；
   返回已提交快照，任务保持可由后续 tick 发现。只有任务写入本身失败才使创建请求失败。
 - `activity_start` 的 activity 状态、来源领取和事件行同事务；`activity_end` 的 activity

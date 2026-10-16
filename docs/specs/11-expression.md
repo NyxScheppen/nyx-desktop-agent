@@ -93,6 +93,7 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 
 - `classify_channel()` 使用消息长度、问句、情绪词、精力/唤醒度、距上次慢通道时间五个因子；
   得分大于等于 `slow_threshold` 为 `SLOW`，否则为 `FAST`。
+- 消息同时包含 HTTP(S) URL 和“问卷”“测试题”或“答题”时直接使用 SLOW，以保证用户明确安排网页问卷时能进入工具判断。`browser_survey` 只受理后台任务，表达回复只能确认受理，不得声称已得到结果；完成结果由活动任务快照和 `activity_end` 展示。
 - FAST 只执行一次回复生成，不检索记忆、不调用工具、不生成场景记忆；仍必须交付 THINK
   （非空时）和 SPEAK。
 - FAST 通常不检索记忆；用户正在回答 durable 读书提问时例外：`reply()` 使用
@@ -117,7 +118,7 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
   都只是倾向，不是硬规则。情感状态同时展示英文枚举和中文含义（如 `happy（开心）`）。
 - think 按角色表现生成详细的内心推理、依据与犹豫；回复节点的 user prompt 只保留 JSON
   输出契约，不重复角色行为说明。
-- 人物参考由组合根从所属卡片可选的 `character-reference.md` 注入（默认 `nyx/cards/nyx/character-reference.md`），作为外部参考，不能被当作角色的现实经历或记忆；`canon.md` 保留人格、身份及表达风格，输出结构和通用知识边界留在框架。
+- 人物参考由组合根从所属卡片可选的 `character-reference.md` 注入（默认 `nyx/cards/nyx/character-reference.md`），作为外部参考，不能被当作角色的现实经历或记忆；`canon.md` 保留人格、身份及表达风格，内置 Nyx 的身份句标注中文名“尼克斯”，输出结构和通用知识边界留在框架。
 - 走神指导由 `build_system_prompt(..., allow_wander=True)` 显式加入；普通回复不注入，
   目前仅碎碎念走神路径开启，不设置 prompt 概率规则。
 - `knowledge_boundary` 由组合根读取 `nyx/prompts/knowledge-boundary.md`，不由 LLM 改写。它要求

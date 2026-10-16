@@ -32,6 +32,7 @@
 - **类型标注**：`_build` 用 `Any`（`dc: Any, raw: Any -> Any`）而非泛型 `_T`——`dataclasses.Field.type` 与 `yaml.safe_load` 都返回 `Any`，pyright strict 下 `type[_T]` 不满足 `DataclassInstance` 协议、返回类型无法静态验证。用 `Any` + `cast(dict[str, Any], raw)` 诚实承认反射构造是动态的，不假装类型精确。
 - **缺文件即报错**：`config.yaml` 缺失 → `ConfigError`（错误可溯源；"用全默认值"的场景由「缺键」覆盖，不靠「缺文件」）
 - **分段清单（8 个 dataclass）**：顶层 `Config` 聚合 8 段——`LlmConfig` / `EmbeddingConfig` / `MemoryConfig` / `DesireConfig` / `ActivityConfig`（含 `ActivityEnergyDelta`：reading/creation/free_exploration/observe_user/idle_reflection/rest 6 键能量增减）/ `ExpressionConfig` / `ExplorationConfig` / `VisionConfig`。字段、默认值和校验属于本 spec；LLM/视觉客户端如何消费这些配置由 `03-llm` 定义。
+- `browser_survey` 是用户委派的浏览器操作，能量变化固定为 0，不增加 `ActivityEnergyDelta` 配置键；其任务语义见 09-activity。
 
 **校验规则表**（`validate_config` 实现与此逐条对应）：
 

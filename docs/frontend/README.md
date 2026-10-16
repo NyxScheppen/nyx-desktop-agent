@@ -100,7 +100,7 @@ frontend/
       innerLifeStore.ts      # 内在状态：CurrentState 快照
       desireStore.ts         # 欲望：DesireState 快照（快照 store）
       activityStore.ts       # 活动：ActivitySnapshot + 创作 results + 委派任务快照/创建
-      memoryStore.ts         # 记忆 + 事实图：Memory/MemoryFact 快照、关键词查询 + SSE memory_*
+      memoryStore.ts         # 记忆分类检索 + 三种独立事实图：Memory/MemoryFact 快照 + SSE memory_*
       readerStore.ts         # 阅读：书架/进度/段落/追赶/笔记 + paginate 真分页纯函数
       settingsStore.ts       # 背景外观：tint/image/fontScale + 圆圈底色/尺寸/位置 circleColor/circleSize/avatarPos（后三者持久化 localStorage）
       announceStore.ts       # 立绘旁临时气泡：items/announce/dismiss（纯前端呈现，无后端）
@@ -124,9 +124,9 @@ frontend/
       panels/
         BackgroundPanel.tsx  # 背景外观（预设色调/自定义取色/上传背景图/恢复默认）
         DesiresPanel.tsx     # 欲望面板（GET /api/desires + SSE desire_*）
-        ActivityPanel.tsx    # 委派网页/EPUB 阅读 + 任务状态 + 今日时间线/创作摘要
+        ActivityPanel.tsx    # 委派网页/EPUB 阅读与浏览器问卷 + 任务状态 + 今日时间线/创作摘要
         CreationPanel.tsx    # 历史创作：正文折叠 + 12 条一批加载更多
-        MemoryPanel.tsx      # 记忆/事实图面板（搜索 + GET /api/memories/facts + SSE memory_*）
+        MemoryPanel.tsx      # 记忆类别检索/画像、对话、知识事实图面板
         FactGraph.tsx         # 手写 SVG 实体关系图（不引入图表依赖）
       reading/
         BookshelfView.tsx    # 书架（GET /api/books + 导入 EPUB）
@@ -164,7 +164,7 @@ frontend/
 | 聊天区 | ✅ 实现（03-chat-panel） | `POST /api/chat` + SSE `speak`/`think`/`ask` | 左栏常驻（`div.left-dock`：`components/chat/MessageList.tsx` + `ChatInput.tsx`） |
 | 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | `components/inner/InnerStatePanel.tsx`（`view==="inner"`） |
 | 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | `components/panels/DesiresPanel.tsx`（`view==="desire"`） |
-| 活动与委派任务 | ✅ 实现 | `GET /api/activity`、`GET/POST /api/tasks*` + SSE `activity_*`/`task_updated` | `components/panels/ActivityPanel.tsx`（`view==="activity"`） |
+| 活动与委派任务 | ✅ 实现 | `GET /api/activity`、`GET/POST /api/tasks*`（含浏览器问卷）+ SSE `activity_*`/`task_updated` | `components/panels/ActivityPanel.tsx`（`view==="activity"`） |
 | 创作 | ✅ 实现 | `GET /api/activity/results?activity_type=creation&limit=&offset=` | `components/panels/CreationPanel.tsx`（`view==="creation"`） |
 | 记忆面板 | ✅ 实现 | `GET /api/memories`、`GET /api/memories/search`、`GET /api/memories/facts` + SSE `memory_*` | `components/panels/MemoryPanel.tsx` + `FactGraph.tsx`（`view==="memory"`） |
 | 读书 | ✅ 实现（06/07） | `GET /api/books` + 进度/段落/笔记端点 | `components/reading/BookshelfView.tsx` + `ReaderView.tsx`（`view==="reading"`） |

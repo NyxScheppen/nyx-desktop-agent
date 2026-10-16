@@ -8,6 +8,7 @@
 - 普通卸载先停生产者，再重新收集可能晚创建的 runner；取消/drain 超时保留 STOPPING、数据库和名额。文件 executor 的实际线程完成前不能视为 runner 已收尾。
 
 - `ActivityFacade` 是活动系统唯一门面：提供活动生命周期、查询、`list_tasks`、`assign_web_task`、`assign_book_task` 和受控关闭入口。
+- 公开网页问卷由 `assign_browser_survey_task` 创建独立 `BROWSER_SURVEY` 任务与活动；Playwright 可见浏览器逐步操作，任务 checkpoint 记录已确认步数与结果。重启或中断使未完成任务失败，不重放已点击的外部页面。
 - `ActivityStarter` 负责“空闲时启动什么”：单 task 守卫、查 RUNNING、同日同块 PAUSED 恢复、委派任务领取、欲望排序、EPUB 选材和默认活动。
 - 欲望排序使用 `short_term.strength * type.expression_weight`，同分按创建时间 FIFO；活动 progress 保留短期欲望的 `parent_long_term_id`。
 - `ActivityLifecycle` 负责状态转换和副作用：`start`、`complete`、`fail`、`interrupt` 与启动/关闭恢复；Activity、来源领取、关联欲望/任务和 durable event 按一次状态迁移放在同一 SQLite 事务。
@@ -133,6 +134,7 @@
 - `GET /api/activity` 返回 `{current, schedule}`，分别来自 `ActivityFacade.get_current()` 与 `get_schedule()`。
 - `GET /api/activity/results` 返回已完成且带产出的活动，按 `ended_at DESC`；`limit=1..100`、`offset=0..100000` 在 SQL 层分页，可用 `activity_type=creation` 只取创作，越界参数返回 422。省略类型参数时保持返回 `reading`、`free_exploration`、`creation` 的兼容行为；`activity(status, type, ended_at DESC)` 复合索引支撑创作历史查询。
 - `GET /api/tasks` 返回任务快照；`POST /api/tasks/web` 和 `/api/tasks/book` 创建网页/EPUB 任务。活动页提供网页/书籍分段表单、目标段前后预览及任务状态/失败原因。
+- `POST /api/tasks/browser-survey` 创建浏览器问卷任务；表达工具 `browser_survey` 也经同一 Facade 受理。活动页可安排问卷并展示结果摘要，`activity_end` 冒泡提示结果。
 - 前端活动页的产出区只列最近 12 条创作标题摘要；独立“创作”页按 12 条一批加载，正文默认折叠，展开后显示完整正文与文件路径。
 - `activityStore.refresh()` 会推进创作结果请求世代；更早发出的“加载更多”响应或错误不得改写刷新后的首页、错误或 loading 状态。
 - 通用文本上传和 material 列表接口已删除；读物只从 `POST /api/books` 导入 EPUB。历史 `workspace/uploads/` 文件不由迁移自动删除。
@@ -142,5 +144,6 @@
 
 - EPUB 活动的“有进度但没读完整本”是 `goal_met=None`，不按失败重试。
 - 进程重启后的遗留 RUNNING 已由 app context 启动清理，不会永久阻塞新活动。
+- 浏览器问卷的外部点击不具备幂等重放条件；中断/重启后的遗留 RUNNING 任务转 FAILED，保留已确认步数与错误。
 - `goal None -> True` 是当前代码语义；可续 runner 可用 `progress["goal_signal"]` 覆盖本次 `activity_end.goal_met`。
 - 可续活动 checkpoint / resume / finalize 契约由各 runner 负责，打断只负责状态切换。

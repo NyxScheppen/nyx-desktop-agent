@@ -6,7 +6,9 @@
 
 ## 模块与职责
 
-角色身份、canon、可选 reference 和 ask 方向来自角色卡；内置 Nyx 位于 `nyx/cards/nyx/`。每个角色独立等待 attempt、回复历史、LLM FIFO 锁和 eval；当前角色资格在实际开始主动表达前复查，跳过不计欲望失败。已开始的表达完成到原角色，历史 assistant 使用中性“你”标签。结构/工具协议/知识边界仍由框架提供。
+明确含 URL 的问卷/答题委托直接走慢通道，使一次工具判断可调用 `browser_survey` 受理后台任务；回复只报告已受理，最终结果由活动页展示。
+
+角色身份、canon、可选 reference 和 ask 方向来自角色卡；内置 Nyx 位于 `nyx/cards/nyx/`，身份句将 Nyx 标注为“中文：尼克斯”。每个角色独立等待 attempt、回复历史、LLM FIFO 锁和 eval；当前角色资格在实际开始主动表达前复查，跳过不计欲望失败。已开始的表达完成到原角色，历史 assistant 使用中性“你”标签。结构/工具协议/知识边界仍由框架提供。
 
 - `nyx/expression/facade.py`
   - `ExpressionFacade` 是表达系统门面，编排普通回复、主动搭话、碎碎念、交互等待和

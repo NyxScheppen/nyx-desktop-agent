@@ -49,6 +49,8 @@
 
 ## 模块边界
 
+组合根在 ActivityFacade 构造后注册 `browser_survey` 表达工具；`POST /api/tasks/browser-survey` 与该工具共享活动任务入口。问卷运行中普通用户消息和主动搭话不会打断浏览器会话；关停或其他中断后任务失败，不重放已点击的选项。
+
 - `_Host` 是注册、当前选择、共享模型/embedding/屏幕观察和 durable presence 的宿主；每个角色独立 `_App`/Database/EventBus/Facade/工作目录、熔断和恢复预算，切换不重建运行时。
 - 宿主 `/api/observe` 要求稳定 sample_id，先保存事实和接收者，再按每角色 FIFO 独立补投；角色事件/顺序水位/转换快照同事务。重试复用原时钟判定；恢复基线不改历史事件身份。
 - 角色业务路径为 `/api/characters/{id}/…`，写请求准入检查 selection revision 后捕获运行时。SSE 带 character_id，游标为 `id:event_id`（Nyx 兼容别名同样使用组合游标）。下文未带命名空间的路径是角色业务后缀。

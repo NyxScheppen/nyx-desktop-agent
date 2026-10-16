@@ -150,16 +150,18 @@ type MemoryStoreState = {
   data: Memory[] | null;
   facts: MemoryFact[] | null;
   query: string;
+  kind: MemoryKind | null;
+  factScope: FactScope;
   error: string | null;
   factsError: string | null;
   refresh(): Promise<void>;
-  search(query: string): Promise<void>;
+  search(query: string, kind?: MemoryKind | null): Promise<void>;
+  selectFactScope(scope: FactScope): Promise<void>;
 };
 ```
 
-`refresh()` 并行加载当前查询对应的记忆列表和最多 64 条当前有效事实；事实请求失败只设置
-`factsError`，不清空或阻塞 `data`。`search()` 只更新记忆列表，事实图保持隔离；空查询恢复
-`GET /api/memories`。`memory_created` / `memory_promoted` 的 SSE 分发仍只调用一次
+`refresh()` 并行加载当前类别与查询对应的记忆列表，以及当前事实 scope 中最多 64 条有效事实；事实请求失败只设置
+`factsError`，不清空或阻塞 `data`。`search()` 只更新记忆列表，事实图保持隔离；空查询恢复当前类别列表。`selectFactScope()` 清空旧图并请求所选作用域。两类请求各自用代次保护晚到回包。`memory_created` / `memory_promoted` 的 SSE 分发仍只调用一次
 `refresh()`，从而同时刷新记忆和事实图。
 
 ```typescript
@@ -181,6 +183,7 @@ type ActivityStoreState = {
 refresh(): Promise<void>          // 时间线 + 最近 12 条创作 + 任务快照
 loadMoreResults(): Promise<void>  // offset=results.length，追加下一批 12 条
 createWebTask(url): Promise<boolean>
+createBrowserSurveyTask(url): Promise<boolean>
 createBookTask(bookId, targetParagraph): Promise<boolean>
 ```
 

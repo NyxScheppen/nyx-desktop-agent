@@ -1,8 +1,8 @@
 # 工具系统
 
-> 范围：`tools/registry.py`（`ToolRegistry`：register / call / schema）、`tools/local_search.py`、`tools/web_search.py`、`tools/file_io.py`、`tools/web_fetch.py`（四个内置工具）。
-> 纯基础设施 spec：只做「工具注册 + 工具执行 + 四个内置工具」，不含 Facade、不含 API、不含 LangGraph 工具绑定（那是 09-activity 与 11-expression 的活）。
-> spec 只定义契约（签名 + 语义 + 决策）；实现以 `nyx/tools/registry.py` / `nyx/tools/local_search.py` / `nyx/tools/web_search.py` / `nyx/tools/file_io.py` / `nyx/tools/web_fetch.py` 源文件为准。LangGraph 工具绑定仍由 11-expression 负责。
+> 范围：`tools/registry.py`（`ToolRegistry`：register / call / schema）、基础工具，以及统一的用户活动任务工具。
+> 纯基础设施 spec：定义工具注册、执行、四个既有内置工具及浏览器问卷受理工具；活动执行与 API 归 09-activity。LangGraph 工具绑定仍由 11-expression 负责。
+> spec 只定义契约（签名 + 语义 + 决策）；实现以 `nyx/tools/` 源文件为准。
 
 ## 元信息
 
@@ -23,11 +23,13 @@
 - [ ] 四个工具返回 JSON 可序列化数据（`dict` / `list` / `str`，不返回 domain dataclass）
 - [ ] `web_search` 的 opt-in 由组合根（底层模块总线契约）按 `config.exploration.web_enabled` 决定是否注册；05-tools 本身不读 config
 - [ ] `web_fetch` 抓网页正文（httpx GET + trafilatura 抽正文）→ 返回 `{"text", "url"}` 纯正文（不写盘、不发事件，供探索直接消化）；抓取失败/空正文返回 `{"error": ...}`（best-effort 不崩）
+- [ ] `browser_survey` 只在联网开启、ActivityFacade 已装配后注册；handler 接收用户指定 URL，调用 `assign_browser_survey_task`，返回 `{task_id,status,url}`，不在工具调用期间逐题浏览。
+- [ ] `web_task` 与 `browser_survey` 只在联网开启时注册；`book_task` 与 `creation_task` 始终注册。四者都只负责受理任务，实际执行统一进入 ActivityFacade 的任务队列。
 - [ ] `pyright` strict 零报错
 
 ## 技术方案
 
-- **新文件**：`nyx/tools/registry.py`、`nyx/tools/local_search.py`、`nyx/tools/web_search.py`、`nyx/tools/file_io.py`、`nyx/tools/web_fetch.py`（无 Facade、无 API、无数据变更）
+- **实现文件**：`nyx/tools/registry.py`、`nyx/tools/local_search.py`、`nyx/tools/web_search.py`、`nyx/tools/file_io.py`、`nyx/tools/web_fetch.py`、`nyx/tools/browser_survey.py`。问卷任务的持久化与 API 归 09-activity。
 - **库**：`httpx` + `lxml`（抓 `cn.bing.com` 结果页，大陆可达，替代原 ddgs 多引擎聚合——后者在大陆全被墙、慢失败 42s）。`web_search` 用 `httpx.get` 抓 Bing、`lxml.html` 解析 `li.b_algo`（标题/链接在 `h2/a`、摘要在 `p`）→ `[{title, url, snippet}]`；依赖新增 `lxml`（pyproject，此前经 trafilatura 传递引入）；其余为标准库（`asyncio` / `pathlib` / `os` / `string` / `logging`）
 - **公开面**：`from nyx.tools.registry import ToolRegistry`；`from nyx.tools.local_search import build_local_search_tool, search_local`；`from nyx.tools.web_search import build_web_search_tool`；`from nyx.tools.file_io import build_file_io_tool, file_io`；`from nyx.tools.web_fetch import build_web_fetch_tool, fetch_url`（不加 `__all__`）
 - **handler 调用约定**：`call(name, args)` 用 `await handler(**args)` 把 `args` dict 解包为关键字实参；`Tool.schema` 的键 = handler 形参名（如 `{query}` → `handler(query=...)`）。参数不匹配时 `TypeError` 上抛（handler 签名兜底，不额外校验 schema）
@@ -42,6 +44,7 @@
 - **`local_search` 范围**：缺省搜**全盘**（`full_disk_roots()`：Windows 枚举存在的盘符、POSIX 根 `/`），同时排除与 `file_io` 相同的内部目录；`.txt` / `.md` 文本，大小写不敏感子串匹配，返回 `[{path, snippet}]`。`roots` 参数可收窄（探索链传 `[workspace]`、测试传 `[tmp_path]`）。与记忆检索（06-memory-system）是两码事——本工具搜**文件**，不搜记忆表
 - **全盘遍历用 `os.walk` + `onerror` 跳过无权限目录**：`rglob` 在无权限目录（Windows `System Volume Information` 等）会抛 `PermissionError`；`os.walk(root, onerror=...)` 跳过不可读目录继续走。注意全盘搜索慢（冷跑可能分钟级），探索链若要收窄用 `roots` 参数；结果截断到 `_MAX_RESULTS`（50）、单文件超 `_MAX_FILE_BYTES`（1MiB）跳过（界内存/耗时兜底，不做超时——`to_thread` 无法干净中断 os.walk 线程）
 - **注入非全局**：`ToolRegistry` 是普通类，组合根实例化 + 注入活动 Facade 与表达 Facade（同 EventBus 约定），无模块级单例
+- **用户活动任务工具**：`build_activity_task_tools(...)` 集中构造网页阅读、书籍阅读、创作和浏览器问卷四个工具；实际执行统一进入 09-activity 的后台 runner，工具调用本身只返回任务快照。
 
 ## 测试要点
 

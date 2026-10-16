@@ -221,14 +221,27 @@ class ActivityStarter:
                         "description": task.url or task.book_id,
                     }
                 )
-                if task.type is AssignedTaskType.WEB:
+                if task.type in (
+                    AssignedTaskType.WEB,
+                    AssignedTaskType.BROWSER_SURVEY,
+                ):
                     progress["url"] = task.url
-                else:
+                elif task.type is AssignedTaskType.BOOK:
                     progress["book_id"] = task.book_id
                     progress["target_paragraph"] = task.target_paragraph
+                else:
+                    progress["description"] = task.checkpoint.get("description", "")
                 activity = Activity(
                     id=str(uuid.uuid4()),
-                    type=ActivityType.READING,
+                    type=(
+                        ActivityType.BROWSER_SURVEY
+                        if task.type is AssignedTaskType.BROWSER_SURVEY
+                        else (
+                            ActivityType.CREATION
+                            if task.type is AssignedTaskType.CREATION
+                            else ActivityType.READING
+                        )
+                    ),
                     schedule_block_id=schedule_block_id(
                         now, self._config.grid_minutes
                     ),

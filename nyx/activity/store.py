@@ -211,15 +211,15 @@ class ActivityStore:
     async def create_task(self, task: AssignedTask) -> AssignedTask:
         """Insert a task, returning an equivalent active task when one exists."""
         async with self._db.lock:
-            if task.type is AssignedTaskType.WEB:
+            if task.type in (AssignedTaskType.WEB, AssignedTaskType.BROWSER_SURVEY):
                 cursor = await self._db.conn.execute(
                     f"SELECT {_TASK_COLS} FROM assigned_task "
-                    "WHERE type = 'web' AND url = ? "
+                    "WHERE type = ? AND url = ? "
                     "AND status IN ('pending', 'running') "
                     "ORDER BY created_at ASC LIMIT 1",
-                    (task.url,),
+                    (task.type.value, task.url),
                 )
-            else:
+            elif task.type is AssignedTaskType.BOOK:
                 cursor = await self._db.conn.execute(
                     f"SELECT {_TASK_COLS} FROM assigned_task "
                     "WHERE type = 'book' AND book_id = ? AND target_paragraph = ? "
@@ -227,7 +227,22 @@ class ActivityStore:
                     "ORDER BY created_at ASC LIMIT 1",
                     (task.book_id, task.target_paragraph),
                 )
-            existing = await cursor.fetchone()
+            else:
+                cursor = await self._db.conn.execute(
+                    f"SELECT {_TASK_COLS} FROM assigned_task "
+                    "WHERE type = ? AND status IN ('pending', 'running') "
+                    "ORDER BY created_at ASC",
+                    (task.type.value,),
+                )
+                for row in await cursor.fetchall():
+                    existing_task = _row_to_task(row)
+                    if (
+                        existing_task.checkpoint.get("description")
+                        == task.checkpoint.get("description")
+                    ):
+                        return existing_task
+                cursor = None
+            existing = await cursor.fetchone() if cursor is not None else None
             if existing is not None:
                 return _row_to_task(existing)
             await self._db.conn.execute(

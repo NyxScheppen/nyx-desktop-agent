@@ -90,6 +90,7 @@ class DesireType(StrEnum):
 
 class ActivityType(StrEnum):
     READING = "reading"                    # 读书
+    BROWSER_SURVEY = "browser_survey"      # 浏览器问卷
     FREE_EXPLORATION = "free_exploration"  # 自由探索
     CREATION = "creation"                  # 创作
     OBSERVE_USER = "observe_user"          # 观察用户
@@ -100,6 +101,8 @@ class ActivityType(StrEnum):
 class AssignedTaskType(StrEnum):
     WEB = "web"
     BOOK = "book"
+    BROWSER_SURVEY = "browser_survey"
+    CREATION = "creation"
 
 
 class MemoryType(StrEnum):

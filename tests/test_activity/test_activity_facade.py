@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+import nyx.activity.facade as activity_facade_module
 from nyx import db
 from nyx.activity import lifecycle as _activity_lifecycle
 from nyx.activity.facade import (
@@ -547,6 +548,59 @@ async def _await_task(facade: ActivityFacade) -> None:
     task = facade._task
     assert task is not None
     await task
+
+
+async def test_browser_survey_task_persists_result_and_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_survey(
+        url: str,
+        canon: str,
+        llm: LlmClient,
+        task_id: str,
+        save_progress: Callable[[int], Awaitable[None]],
+    ) -> dict[str, Any]:
+        await save_progress(3)
+        return {"url": url, "summary": "我的结果", "steps": 3}
+
+    monkeypatch.setattr(activity_facade_module, "run_browser_survey", fake_survey)
+    facade, store, _bus, database = await _new_facade(
+        exploration_config=ExplorationConfig(web_enabled=True)
+    )
+    try:
+        assigned = await facade.assign_browser_survey_task("https://example.com/quiz")
+        await _await_task(facade)
+        saved = await store.get_task(assigned.id)
+        activity = await store.get_latest_activity_for_task(assigned.id)
+    finally:
+        await database.conn.close()
+    assert saved is not None and saved.status is AssignedTaskStatus.COMPLETED
+    assert saved.checkpoint["steps"] == 3
+    assert activity is not None and activity.type is ActivityType.BROWSER_SURVEY
+    assert activity.progress["result"]["summary"] == "我的结果"
+
+
+async def test_browser_survey_recovery_does_not_replay_clicks() -> None:
+    facade, store, _bus, database = await _new_facade(
+        exploration_config=ExplorationConfig(web_enabled=True)
+    )
+    task = _assigned_task("survey")
+    task.type = AssignedTaskType.BROWSER_SURVEY
+    task.checkpoint = {"steps": 3}
+    activity = _activity(
+        "survey-activity", ActivityType.BROWSER_SURVEY, ActivityStatus.RUNNING,
+        progress={"task_id": task.id},
+    )
+    try:
+        await store.create_task(task)
+        await store.insert(activity)
+        await facade.recover_stale_running()
+        saved = await store.get_task(task.id)
+    finally:
+        await database.conn.close()
+    assert saved is not None and saved.status is AssignedTaskStatus.FAILED
+    assert saved.checkpoint["steps"] == 3
+    assert saved.error is not None and "未自动重做" in saved.error
 
 
 async def test_assigned_task_does_not_preempt_running_activity() -> None:
@@ -1322,6 +1376,30 @@ async def test_creation_result_has_path(
             )
         ]
         assert output.read_text(encoding="utf-8") == "今天也努力了"
+    finally:
+        await database.conn.close()
+
+
+async def test_assigned_creation_task_uses_activity_queue_and_description() -> None:
+    facade, store, bus, database = await _new_facade(
+        llm=_FakeLlm(), evaluator=_FakeEvaluator(), tools=_FakeTools()
+    )
+    try:
+        events = _subscribe_activity(bus)
+        async with _running(bus):
+            assigned = await facade.assign_creation_task("写一段关于雨的随笔")
+            await _await_task(facade)
+
+        saved = await store.get_task(assigned.id)
+        starts = [event for event in events if event.type is EventType.ACTIVITY_START]
+        activities = await store.list_schedule(0.0)
+        assert saved is not None and saved.status is AssignedTaskStatus.COMPLETED
+        assert saved.checkpoint["description"] == "写一段关于雨的随笔"
+        assert starts[0].content["type"] == ActivityType.CREATION.value
+        assert any(
+            activity.progress.get("description") == "写一段关于雨的随笔"
+            for activity in activities
+        )
     finally:
         await database.conn.close()
 

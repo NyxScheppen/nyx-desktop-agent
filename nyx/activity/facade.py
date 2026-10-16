@@ -10,10 +10,11 @@ from urllib.parse import urlsplit
 from nyx.activity import creation as _creation
 from nyx.activity import lifecycle as _activity_lifecycle
 from nyx.activity import paths as _activity_paths
+from nyx.activity.browser_survey import run_browser_survey
 from nyx.activity.exploration import Exploration
 from nyx.activity.llm_result import parse_activity_result as _parse_activity_result
 from nyx.activity.observe import build_observation_summary
-from nyx.activity.starter import ActivityStarter, schedule_block_id
+from nyx.activity.starter import ActivityStarter, best_book_match, schedule_block_id
 from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.desire.facade import DesireFacade
@@ -126,6 +127,7 @@ class ActivityFacade:
         self._config = config
         self._canon = canon
         self._read_reader_book = read_reader_book
+        self._list_reader_books = list_reader_books
         self._get_reader_book = get_reader_book
         self._get_reader_progress = get_reader_progress
         self._web_enabled = exploration_config.web_enabled
@@ -257,6 +259,30 @@ class ActivityFacade:
         )
         return await self._finish_assignment(task)
 
+    async def assign_browser_survey_task(self, url: str) -> AssignedTask:
+        """Queue a public questionnaire for a visible browser session."""
+        if not self._web_enabled:
+            raise WebTasksDisabledError("联网探索已关闭")
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("只支持 HTTP(S) URL")
+        now = time.time()
+        task = await self._store.create_task(
+            AssignedTask(
+                id=str(uuid.uuid4()),
+                type=AssignedTaskType.BROWSER_SURVEY,
+                status=AssignedTaskStatus.PENDING,
+                url=url,
+                book_id=None,
+                target_paragraph=None,
+                checkpoint={},
+                error=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        return await self._finish_assignment(task)
+
     async def assign_book_task(
         self, book_id: str, target_paragraph: int
     ) -> AssignedTask:
@@ -289,6 +315,39 @@ class ActivityFacade:
             )
         )
         return await self._finish_assignment(task)
+
+    async def assign_creation_task(self, description: str) -> AssignedTask:
+        """Queue a user-requested creation activity."""
+        description = description.strip()
+        if not description:
+            raise ValueError("创作主题不能为空")
+        now = time.time()
+        task = await self._store.create_task(
+            AssignedTask(
+                id=str(uuid.uuid4()),
+                type=AssignedTaskType.CREATION,
+                status=AssignedTaskStatus.PENDING,
+                url=None,
+                book_id=None,
+                target_paragraph=None,
+                checkpoint={"description": description[:500]},
+                error=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        return await self._finish_assignment(task)
+
+    async def assign_book_task_by_title(
+        self, title: str, target_paragraph: int
+    ) -> AssignedTask:
+        """Resolve a user-facing book title before using the task pipeline."""
+        if self._list_reader_books is None:
+            raise RuntimeError("reading facade 尚未绑定")
+        book = best_book_match(title, await self._list_reader_books())
+        if book is None:
+            raise ValueError(f"书库中没有匹配的书：{title}")
+        return await self.assign_book_task(book.id, target_paragraph)
 
     # ---- 内部 ----
 
@@ -328,6 +387,26 @@ class ActivityFacade:
 
     async def _run_activity(self, activity: Activity) -> dict[str, Any]:
         t = activity.type
+        if t is ActivityType.BROWSER_SURVEY:
+            task_id = activity.progress.get("task_id")
+            if not isinstance(task_id, str):
+                raise ValueError("浏览器问卷活动缺任务 ID")
+            task = await self._require_task(task_id)
+            if task.type is not AssignedTaskType.BROWSER_SURVEY or task.url is None:
+                raise ValueError("浏览器问卷任务缺 URL")
+
+            async def save_progress(steps: int) -> None:
+                task.checkpoint["steps"] = steps
+                task.updated_at = time.time()
+                await self._store.save_task(task)
+
+            result = await run_browser_survey(
+                task.url, self._canon, self._llm, task.id, save_progress
+            )
+            task.checkpoint["result"] = result
+            task.updated_at = time.time()
+            await self._store.save_task(task)
+            return result
         if t is ActivityType.READING:
             task_id = activity.progress.get("task_id")
             if isinstance(task_id, str):

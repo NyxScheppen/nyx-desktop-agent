@@ -72,6 +72,21 @@ async def test_create_task_is_idempotent_while_active() -> None:
     assert [task.id for task in tasks] == ["t1"]
 
 
+async def test_browser_survey_deduplicates_only_its_own_type() -> None:
+    store, database = await _new_store()
+    try:
+        await store.create_task(_task("web"))
+        survey = _task("survey")
+        survey.type = AssignedTaskType.BROWSER_SURVEY
+        first = await store.create_task(survey)
+        repeated = _task("repeated")
+        repeated.type = AssignedTaskType.BROWSER_SURVEY
+        second = await store.create_task(repeated)
+    finally:
+        await database.conn.close()
+    assert first.id == second.id == "survey"
+
+
 async def test_claim_task_and_activity_is_atomic_fifo() -> None:
     store, database = await _new_store()
     try:

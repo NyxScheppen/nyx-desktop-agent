@@ -42,6 +42,7 @@ from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
 from nyx.reading.facade import ReadingFacade
 from nyx.reading.store import ReadingStore
+from nyx.tools.activity_tasks import build_activity_task_tools
 from nyx.tools.file_io import build_file_io_tool
 from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
@@ -494,6 +495,17 @@ async def build_app_context(
             get_reader_progress,
         )
         await activity.recover_stale_running()
+        task_tools = build_activity_task_tools(
+            activity.assign_web_task,
+            activity.assign_book_task_by_title,
+            activity.assign_creation_task,
+            activity.assign_browser_survey_task,
+        )
+        if config.exploration.web_enabled:
+            tools.register(task_tools[0])
+            tools.register(task_tools[3])
+        tools.register(task_tools[1])
+        tools.register(task_tools[2])
         inner_life = InnerLifeFacade(
             inner_life_store, activity, desire, memory, bus, llm, evaluator, config
         )

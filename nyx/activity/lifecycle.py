@@ -155,8 +155,10 @@ class ActivityLifecycle:
                 "type": activity.type.value,
                 "desire_id": desire_id,
                 "goal_met": signal,
-                "energy_delta": getattr(
-                    self._config.energy_delta, activity.type.value
+                "energy_delta": (
+                    0
+                    if activity.type is ActivityType.BROWSER_SURVEY
+                    else getattr(self._config.energy_delta, activity.type.value)
                 ),
                 "result": result,
             },
@@ -243,18 +245,39 @@ class ActivityLifecycle:
                 task_id = activity.progress.get("task_id")
                 if isinstance(task_id, str):
                     await self._store.set_task_status(
-                        task_id, AssignedTaskStatus.PENDING, recovered_at
+                        task_id,
+                        (
+                            AssignedTaskStatus.FAILED
+                            if activity.type is ActivityType.BROWSER_SURVEY
+                            else AssignedTaskStatus.PENDING
+                        ),
+                        recovered_at,
+                        (
+                            "浏览器会话已中断，问卷未自动重做"
+                            if activity.type is ActivityType.BROWSER_SURVEY
+                            else None
+                        ),
                     )
                 recovered.append(activity)
             for task in await self._store.list_running_tasks():
                 linked = await self._store.get_latest_activity_for_task(task.id)
                 if linked is not None and linked.status is ActivityStatus.COMPLETED:
                     status = AssignedTaskStatus.COMPLETED
+                elif task.type.value == "browser_survey":
+                    status = AssignedTaskStatus.FAILED
                 elif linked is not None and linked.status is ActivityStatus.INCOMPLETE:
                     status = AssignedTaskStatus.FAILED
                 else:
                     status = AssignedTaskStatus.PENDING
-                await self._store.set_task_status(task.id, status, recovered_at)
+                await self._store.set_task_status(
+                    task.id, status, recovered_at,
+                    "浏览器会话已中断，问卷未自动重做"
+                    if (
+                        task.type.value == "browser_survey"
+                        and status is AssignedTaskStatus.FAILED
+                    )
+                    else None,
+                )
         return recovered
 
     async def interrupt(
@@ -291,7 +314,18 @@ class ActivityLifecycle:
                 await self._desire.mark_suppressed(desire_id)
             if isinstance(task_id, str):
                 await self._store.set_task_status(
-                    task_id, AssignedTaskStatus.PENDING, activity.ended_at
+                    task_id,
+                    (
+                        AssignedTaskStatus.FAILED
+                        if activity.type is ActivityType.BROWSER_SURVEY
+                        else AssignedTaskStatus.PENDING
+                    ),
+                    activity.ended_at,
+                    (
+                        "浏览器会话已中断，问卷未自动重做"
+                        if activity.type is ActivityType.BROWSER_SURVEY
+                        else None
+                    ),
                 )
             await self._bus.append_in_transaction(event)
         await self._announce(event)

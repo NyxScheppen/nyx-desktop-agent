@@ -9,7 +9,14 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
-from nyx.enums import ActivityStatus, DesireType, EventType, Source, TickType
+from nyx.enums import (
+    ActivityStatus,
+    ActivityType,
+    DesireType,
+    EventType,
+    Source,
+    TickType,
+)
 from nyx.events.event import internal_event
 from nyx.expression.mutter import should_initiate_chat
 from nyx.types import ActivityContext, Event
@@ -48,7 +55,11 @@ async def on_user_message(app: Any, event: Event) -> None:
     current = await app.activity.get_current()
     interrupted = (
         current
-        if current is not None and current.status is ActivityStatus.RUNNING
+        if (
+            current is not None
+            and current.status is ActivityStatus.RUNNING
+            and current.type is not ActivityType.BROWSER_SURVEY
+        )
         else None
     )
     if interrupted is not None:
@@ -192,7 +203,11 @@ async def check_initiate_chat(app: Any) -> None:
             await release(interaction.id)
         return
     current = await app.activity.get_current()
-    if current is not None and current.status is ActivityStatus.RUNNING:
+    if (
+        current is not None
+        and current.status is ActivityStatus.RUNNING
+        and current.type is not ActivityType.BROWSER_SURVEY
+    ):
         try:
             await app.activity.interrupt(current.id, EventType.INITIATE_CHAT)
         except Exception:

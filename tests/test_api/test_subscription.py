@@ -306,6 +306,43 @@ async def test_user_message_preserves_activity_evidence_when_interrupt_fails() -
     await database.close()
 
 
+async def test_user_message_does_not_interrupt_browser_survey() -> None:
+    database = await connect(":memory:")
+    bus = EventBus(database)
+    activity = Activity(
+        id="survey-activity",
+        type=ActivityType.BROWSER_SURVEY,
+        schedule_block_id="block-1",
+        status=ActivityStatus.RUNNING,
+        progress={"description": "问卷"},
+        started_at=1.0,
+    )
+    activity_facade = _InterruptingActivity(activity, fail_interrupt=False)
+    expression = _ActivityAwareExpression()
+    app = _App(
+        bus=bus,
+        inner_life=cast(InnerLifeFacade, _FakeInnerLife()),
+        desire=cast(DesireFacade, _FakeDesire()),
+        memory=cast(MemoryFacade, _FakeMemory()),
+        activity=cast(ActivityFacade, activity_facade),
+        expression=cast(ExpressionFacade, expression),
+        reading=cast(ReadingFacade, object()),
+        evaluator=cast(Evaluator, object()),
+        eval_store=cast(EvalStore, object()),
+        config=Config(),
+    )
+
+    from nyx.runtime import on_user_message
+
+    await on_user_message(
+        app, _root_event(EventType.USER_MESSAGE, {"message": "进度呢"})
+    )
+    assert activity_facade.interrupted == []
+    assert expression.contexts[0].current is activity
+    assert expression.contexts[0].interrupted is None
+    await database.close()
+
+
 async def test_first_user_message_only_establishes_presence_baseline() -> None:
     database = await connect(":memory:")
     bus = EventBus(database)

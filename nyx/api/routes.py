@@ -283,14 +283,17 @@ def build_app(
         return await app.memory.list_memories(kind, type)
 
     @fast.get("/api/memories/search")
-    async def api_memory_search(q: str) -> list[Memory]:
-        return await app.memory.search(q)
+    async def api_memory_search(
+        q: str, kind: MemoryKind | None = None
+    ) -> list[Memory]:
+        return await app.memory.search(q, kind)
 
     @fast.get("/api/memories/facts")
     async def api_memory_facts(
         limit: int = Query(64, ge=0, le=64),
+        scope: Literal["profile", "conversation", "knowledge"] | None = None,
     ) -> list[MemoryFact]:
-        return await app.memory.recent_facts(limit)
+        return await app.memory.recent_facts(limit, scope)
 
     @fast.get("/api/desires")
     async def api_desires() -> DesireState:
@@ -320,6 +323,15 @@ def build_app(
     async def api_assign_web_task(payload: _WebTaskPayload) -> AssignedTask:
         try:
             return await app.activity.assign_web_task(payload.url)
+        except WebTasksDisabledError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @fast.post("/api/tasks/browser-survey", status_code=201)
+    async def api_assign_browser_survey_task(payload: _WebTaskPayload) -> AssignedTask:
+        try:
+            return await app.activity.assign_browser_survey_task(payload.url)
         except WebTasksDisabledError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except ValueError as error:

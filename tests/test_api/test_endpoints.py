@@ -114,8 +114,8 @@ class _FakeMemory:
     def __init__(self) -> None:
         self.list_calls: list[tuple[MemoryKind | None, MemoryType | None]] = []
         self.export_calls: list[str] = []
-        self.search_calls: list[str] = []
-        self.recent_facts_calls: list[int] = []
+        self.search_calls: list[tuple[str, MemoryKind | None]] = []
+        self.recent_facts_calls: list[tuple[int, str | None]] = []
 
     async def list_memories(
         self, kind: MemoryKind | None = None, type: MemoryType | None = None
@@ -123,12 +123,14 @@ class _FakeMemory:
         self.list_calls.append((kind, type))
         return [_mem()]
 
-    async def search(self, query: str) -> list[Memory]:
-        self.search_calls.append(query)
+    async def search(self, query: str, kind: MemoryKind | None = None) -> list[Memory]:
+        self.search_calls.append((query, kind))
         return [_mem()]
 
-    async def recent_facts(self, limit: int = 32) -> list[MemoryFact]:
-        self.recent_facts_calls.append(limit)
+    async def recent_facts(
+        self, limit: int = 32, scope: str | None = None
+    ) -> list[MemoryFact]:
+        self.recent_facts_calls.append((limit, scope))
         return [
             MemoryFact(
                 "f1", "用户", "就业状态", "已工作", 100.0, None, "m1", 100.0,
@@ -179,6 +181,14 @@ class _FakeActivity:
     async def assign_web_task(self, url: str) -> AssignedTask:
         task = AssignedTask(
             "tw", AssignedTaskType.WEB, AssignedTaskStatus.PENDING,
+            url, None, None, {}, None, 1.0, 1.0,
+        )
+        self.tasks.append(task)
+        return task
+
+    async def assign_browser_survey_task(self, url: str) -> AssignedTask:
+        task = AssignedTask(
+            "ts", AssignedTaskType.BROWSER_SURVEY, AssignedTaskStatus.PENDING,
             url, None, None, {}, None, 1.0, 1.0,
         )
         self.tasks.append(task)
@@ -338,20 +348,24 @@ async def test_memories_endpoint() -> None:
 async def test_memory_search_endpoint() -> None:
     memory = _FakeMemory()
     async with _client(_app(_mk_state(), _FakeBus(), memory)) as client:
-        resp = await client.get("/api/memories/search", params={"q": "猫"})
+        resp = await client.get(
+            "/api/memories/search", params={"q": "猫", "kind": "reading"}
+        )
     assert resp.status_code == 200
     assert [m["type"] for m in resp.json()] == ["short_term"]
-    assert memory.search_calls == ["猫"]
+    assert memory.search_calls == [("猫", MemoryKind.READING)]
 
 
 async def test_memory_facts_endpoint() -> None:
     memory = _FakeMemory()
     async with _client(_app(_mk_state(), _FakeBus(), memory)) as client:
-        resp = await client.get("/api/memories/facts", params={"limit": 5})
+        resp = await client.get(
+            "/api/memories/facts", params={"limit": 5, "scope": "profile"}
+        )
     assert resp.status_code == 200
     assert resp.json()[0]["subject_type"] == "person"
     assert resp.json()[0]["object_type"] == "concept"
-    assert memory.recent_facts_calls == [5]
+    assert memory.recent_facts_calls == [(5, "profile")]
 
 
 async def test_activity_results_endpoint_filters_and_paginates() -> None:
@@ -376,13 +390,17 @@ async def test_tasks_endpoints_create_and_list() -> None:
         web = await client.post(
             "/api/tasks/web", json={"url": "https://example.com/article"}
         )
+        survey = await client.post(
+            "/api/tasks/browser-survey", json={"url": "https://example.com/quiz"}
+        )
         book = await client.post(
             "/api/tasks/book", json={"book_id": "b1", "target_paragraph": 12}
         )
         listed = await client.get("/api/tasks")
     assert web.status_code == 201
+    assert survey.status_code == 201
     assert book.status_code == 201
-    assert [item["id"] for item in listed.json()] == ["tw", "tb"]
+    assert [item["id"] for item in listed.json()] == ["tw", "ts", "tb"]
 
 
 async def test_web_task_rejects_non_http_url() -> None:

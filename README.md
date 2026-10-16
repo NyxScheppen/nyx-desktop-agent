@@ -123,6 +123,8 @@ python dev.py        # 同时拉起后端(8000) + 前端 Vite(5173)，Ctrl+C 退
 
 Windows 用户也可以直接双击项目根目录的 `start_nyx.bat` 启动；脚本会优先使用项目 `.venv`，并检查 Python/uvicorn、Node.js/npm 与前端依赖。重启时 launcher 会用原子 lock 串行化流程，先关闭自己记录或在 8000 上发现的旧 Nyx backend；若端口由未知进程占用则拒绝启动。启动后还会用本次随机 nonce 校验 `/api/ready` 的 Nyx 服务标识与实例身份，仅在 owned backend 仍存活且身份匹配时启动前端。仅在常规 Python 环境不可用时尝试 `.runtime` 依赖，不混入可用的 `.venv`。启动失败时窗口会保持打开，方便直接查看错误。看到 `Checking npm` 后应继续显示 `Starting backend` 与前后端日志；浏览器访问 `http://localhost:5173` 测试，Ctrl+C 停止服务。
 
+`python dev.py`、`start_nyx.bat` 和 `start_nyx_desktop.bat` 都在开发模式下监测 `nyx/` 与现有 `config.yaml` 的改动并重启后端；前端由 Vite 热更新，桌面端通过 Tauri 的开发模式复用同一 Vite 服务。关闭启动器仍会清理它启动的进程。
+
 桌面端 debug 可直接双击项目根目录的 `start_nyx_desktop.bat`，或在 PowerShell 执行：
 
 ```powershell
@@ -237,6 +239,8 @@ uv run --no-sync python -m pytest -q --cov=nyx --cov-report=term-missing --cov-f
 ```
 
 三项必须全绿。测试不依赖真实 LLM 或已安装桌面端；LLM 使用 mock，文件测试使用临时路径。
+
+网页问卷任务使用 Playwright 打开可见浏览器。Windows 优先使用已安装的 Microsoft Edge；其他系统或未安装 Edge 时，先运行 `uv run playwright install chromium`。在设置中开启联网探索后，可在活动页提交公开问卷 URL，或在聊天中让 Nyx 填写。任务完成结果保存在活动页；登录与验证码页面不自动填写。
 
 ## 📋 功能边界
 

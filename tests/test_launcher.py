@@ -111,12 +111,14 @@ def test_occupied_backend_port_refuses_plain_launcher(tmp_path: Path) -> None:
     spawn.assert_not_called()
 
 
+@pytest.mark.parametrize("desktop", [False, True])
 def test_launcher_waits_for_backend_ready_before_starting_frontend(
     tmp_path: Path,
+    desktop: bool,
 ) -> None:
     """The frontend must not start while the backend is still booting."""
     ready = threading.Event()
-    spawned: list[tuple[str, bool, str | None]] = []
+    spawned: list[tuple[str, bool, str | None, list[str]]] = []
 
     class FakeProcess:
         def __init__(self, pid: int, exit_code: int | None) -> None:
@@ -133,11 +135,11 @@ def test_launcher_waits_for_backend_ready_before_starting_frontend(
         raw_env = kwargs.get("env")
         env = cast(dict[str, str], raw_env) if isinstance(raw_env, dict) else None
         nonce = env.get("NYX_LAUNCH_NONCE") if env is not None else None
-        if command[1:] == ["-m", "nyx.main"]:
-            spawned.append(("backend", ready.is_set(), nonce))
+        if command[1:] == ["-m", "nyx.main", "--reload"]:
+            spawned.append(("backend", ready.is_set(), nonce, command))
             threading.Timer(0.05, ready.set).start()
             return backend
-        spawned.append(("frontend", ready.is_set(), nonce))
+        spawned.append(("frontend", ready.is_set(), nonce, command))
         return frontend
 
     def wait_for_ready(_proc: object, nonce: str) -> None:
@@ -145,7 +147,9 @@ def test_launcher_waits_for_backend_ready_before_starting_frontend(
         ready.wait(1)
 
     with (
-        patch.object(dev.sys, "argv", ["dev.py"]),
+        patch.object(
+            dev.sys, "argv", ["dev.py", "--desktop"] if desktop else ["dev.py"]
+        ),
         patch.object(dev.shutil, "which", return_value="npm"),
         patch.object(dev, "_BACKEND_PID_FILE", tmp_path / "backend.pid"),
         patch.object(dev, "_LAUNCH_LOCK_FILE", tmp_path / "launcher.lock"),
@@ -161,8 +165,18 @@ def test_launcher_waits_for_backend_ready_before_starting_frontend(
             dev.main()
 
     assert spawned == [
-        ("backend", False, "generated-nonce"),
-        ("frontend", True, None),
+        (
+            "backend",
+            False,
+            "generated-nonce",
+            [dev.sys.executable, "-m", "nyx.main", "--reload"],
+        ),
+        (
+            "frontend",
+            True,
+            None,
+            ["npm", "run", "tauri", "dev"] if desktop else ["npm", "run", "dev"],
+        ),
     ]
 
 

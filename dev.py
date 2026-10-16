@@ -379,6 +379,8 @@ def main() -> None:
             "sentence-transformers",
             "--collect-submodules",
             "transformers.models.bert",
+            "--collect-all",
+            "playwright",
         ]
         for module in (
             "tensorflow",
@@ -426,7 +428,7 @@ def main() -> None:
         print(f"[dev] 一键启动：{' + '.join(names)}，Ctrl+C 退出")
         try:
             backend = subprocess.Popen(
-                [sys.executable, "-m", "nyx.main"],
+                [sys.executable, "-m", "nyx.main", "--reload"],
                 cwd=ROOT,
                 env=backend_env,
             )

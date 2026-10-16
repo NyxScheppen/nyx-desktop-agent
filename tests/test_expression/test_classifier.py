@@ -69,6 +69,19 @@ def test_classify_channel() -> None:
     assert classify_channel("哦", fast_state, 60.0, 0.0, 0.5) == ContextMode.FAST
 
 
+def test_explicit_survey_url_uses_tool_channel() -> None:
+    state = _state(energy=0.0, arousal=1.0)
+    assert classify_channel(
+        "去 https://8valuescn.pages.dev/ 做问卷", state, 60.0, 0.0, 0.5
+    ) is ContextMode.SLOW
+
+
+def test_explicit_activity_requests_use_tool_channel() -> None:
+    state = _state(energy=0.0, arousal=1.0)
+    for message in ("读到第 20 段", "写一篇关于雨的随笔", "打开网页看看这篇文章"):
+        assert classify_channel(message, state, 60.0, 0.0, 0.5) is ContextMode.SLOW
+
+
 def test_emotion_words_no_single_char_false_positive() -> None:
     # 单字「累」「烦」曾是子串误判源：同长度中性词对比，「积累」「麻烦」不触发情感
     mid = _state(energy=50.0, arousal=0.5)

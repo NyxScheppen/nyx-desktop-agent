@@ -102,6 +102,17 @@ def classify_channel(
     threshold: float,
 ) -> ContextMode:
     """判定快/慢通道：slow_score ≥ threshold → 慢，否则快。"""
+    explicit_task = any(
+        word in message for word in ("网页", "网站", "问卷", "测试题", "答题")
+    ) and (
+        bool(re.search(r"https?://\S+", message))
+        or any(word in message for word in ("做", "看", "打开", "填写"))
+    )
+    explicit_task = explicit_task or any(
+        word in message for word in ("读书", "阅读", "读到第", "写一篇", "创作", "写点")
+    )
+    if explicit_task:
+        return ContextMode.SLOW
     return (
         ContextMode.SLOW
         if slow_score(message, state, now, last_slow_at) >= threshold

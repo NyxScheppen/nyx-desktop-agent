@@ -13,9 +13,11 @@ import type {
   EvalRecord,
   EvalStats,
   ExpressionHistory,
+  FactScope,
   LlmPromptMessage,
   Memory,
   MemoryFact,
+  MemoryKind,
   Paragraph,
   PresenceObservation,
   Progress,
@@ -112,18 +114,20 @@ export async function getDesires(): Promise<DesireState> {
   return request<DesireState>(`${BASE_URL}/api/desires`);
 }
 
-export async function getMemories(): Promise<Memory[]> {
-  return request<Memory[]>(`${BASE_URL}/api/memories`);
+export async function getMemories(kind: MemoryKind | null = null): Promise<Memory[]> {
+  const params = kind === null ? "" : `?kind=${kind}`;
+  return request<Memory[]>(`${BASE_URL}/api/memories${params}`);
 }
 
-export async function getMemorySearch(query: string): Promise<Memory[]> {
+export async function getMemorySearch(query: string, kind: MemoryKind | null = null): Promise<Memory[]> {
   const params = new URLSearchParams({ q: query });
+  if (kind !== null) params.set("kind", kind);
   return request<Memory[]>(`${BASE_URL}/api/memories/search?${params.toString()}`);
 }
 
-export async function getRecentFacts(limit = 64): Promise<MemoryFact[]> {
+export async function getRecentFacts(limit = 64, scope: FactScope = "profile"): Promise<MemoryFact[]> {
   const bounded = Math.max(0, Math.min(64, Math.floor(limit)));
-  return request<MemoryFact[]>(`${BASE_URL}/api/memories/facts?limit=${bounded}`);
+  return request<MemoryFact[]>(`${BASE_URL}/api/memories/facts?limit=${bounded}&scope=${scope}`);
 }
 
 export async function getActivity(): Promise<ActivitySnapshot> {
@@ -152,6 +156,14 @@ export async function getTasks(): Promise<AssignedTask[]> {
 
 export async function createWebTask(url: string): Promise<AssignedTask> {
   return request<AssignedTask>(`${BASE_URL}/api/tasks/web`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+}
+
+export async function createBrowserSurveyTask(url: string): Promise<AssignedTask> {
+  return request<AssignedTask>(`${BASE_URL}/api/tasks/browser-survey`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url }),

@@ -1,18 +1,36 @@
 import { FormEvent, useEffect, useState } from "react";
 import { MEMORY_TYPE_LABELS } from "../../lib/labels";
 import { useMemoryStore } from "../../stores/memoryStore";
+import type { FactScope, MemoryKind } from "../../types/api";
 import Panel from "../layout/Panel";
 import FactGraph from "./FactGraph";
+
+const FACT_VIEWS: { scope: FactScope; label: string }[] = [
+  { scope: "profile", label: "画像事实" },
+  { scope: "conversation", label: "对话事实" },
+  { scope: "knowledge", label: "知识事实" },
+];
+const MEMORY_KINDS: { kind: MemoryKind; label: string }[] = [
+  { kind: "episode", label: "经历" },
+  { kind: "user_profile", label: "用户画像" },
+  { kind: "knowledge", label: "知识" },
+  { kind: "reading", label: "阅读" },
+  { kind: "activity", label: "活动" },
+  { kind: "interaction", label: "互动" },
+];
 
 // 记忆面板：记忆列表/关键词查询与独立的当前事实关系图。
 export default function MemoryPanel() {
   const data = useMemoryStore((s) => s.data);
   const facts = useMemoryStore((s) => s.facts);
   const query = useMemoryStore((s) => s.query);
+  const kind = useMemoryStore((s) => s.kind);
+  const factScope = useMemoryStore((s) => s.factScope);
   const error = useMemoryStore((s) => s.error);
   const factsError = useMemoryStore((s) => s.factsError);
   const refresh = useMemoryStore((s) => s.refresh);
   const search = useMemoryStore((s) => s.search);
+  const selectFactScope = useMemoryStore((s) => s.selectFactScope);
   const [activeView, setActiveView] = useState<"memories" | "facts">("memories");
   const [input, setInput] = useState(query);
 
@@ -37,15 +55,21 @@ export default function MemoryPanel() {
         >
           记忆
         </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeView === "facts"}
-          className={activeView === "facts" ? "panel-tab panel-tab--active" : "panel-tab"}
-          onClick={() => setActiveView("facts")}
-        >
-          事实图
-        </button>
+        {FACT_VIEWS.map(({ scope, label }) => (
+          <button
+            key={scope}
+            type="button"
+            role="tab"
+            aria-selected={activeView === "facts" && factScope === scope}
+            className={activeView === "facts" && factScope === scope ? "panel-tab panel-tab--active" : "panel-tab"}
+            onClick={() => {
+              setActiveView("facts");
+              void selectFactScope(scope);
+            }}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       {activeView === "facts" ? (
@@ -53,6 +77,19 @@ export default function MemoryPanel() {
       ) : (
         <>
           <form className="panel-toolbar memory-search" onSubmit={submitSearch}>
+            <label className="memory-search__label" htmlFor="memory-kind-select">类别</label>
+            <select
+              id="memory-kind-select"
+              className="panel-input memory-search__kind"
+              aria-label="记忆类别"
+              value={kind ?? ""}
+              onChange={(event) => void search(query, event.target.value === "" ? null : event.target.value as MemoryKind)}
+            >
+              <option value="">全部</option>
+              {MEMORY_KINDS.map(({ kind: value, label }) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
             <label className="memory-search__label" htmlFor="memory-search-input">
               关键词
             </label>

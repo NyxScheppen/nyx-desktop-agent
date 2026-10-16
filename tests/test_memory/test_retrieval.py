@@ -33,12 +33,13 @@ def _mem(
     type: MemoryType = MemoryType.SHORT_TERM,
     embedding: list[float] | None = None,
     topics: list[str] | None = None,
+    kind: MemoryKind = MemoryKind.EPISODE,
 ) -> Memory:
     return Memory(
         id=id,
         created_at=created_at,
         content=content,
-        kind=MemoryKind.EPISODE,
+        kind=kind,
         summary=summary,
         freshness=freshness,
         type=type,
@@ -114,6 +115,41 @@ async def test_search_filters_source_before_ranking() -> None:
     finally:
         await database.close()
     assert [memory.id for memory in result] == ["target"]
+
+
+async def test_search_filters_kind_before_keyword_candidates() -> None:
+    database = await connect(":memory:")
+    store = MemoryStore(database)
+    retrieval = MemoryRetrieval(store)
+    try:
+        await store.add(_mem("episode", content="量子", summary="量子"))
+        await store.add(
+            _mem("reading", content="量子", summary="量子", kind=MemoryKind.READING)
+        )
+        result = await retrieval.search(
+            "量子", association_limit=0, kind=MemoryKind.READING
+        )
+        assert [memory.id for memory in result] == ["reading"]
+    finally:
+        await database.close()
+
+
+async def test_search_filters_kind_before_association_limit() -> None:
+    database = await connect(":memory:")
+    store = MemoryStore(database)
+    retrieval = MemoryRetrieval(store)
+    try:
+        await store.add(_mem("seed", content="alpha", kind=MemoryKind.READING))
+        await store.add(_mem("same", content="不同", kind=MemoryKind.READING))
+        await store.add(_mem("other", content="无关"))
+        await store.upsert_edge("seed", "same", MemoryEdgeKind.SEMANTIC, 0.5, 1.0)
+        await store.upsert_edge("seed", "other", MemoryEdgeKind.SEMANTIC, 1.0, 1.0)
+        result = await retrieval.search(
+            "alpha", association_limit=1, kind=MemoryKind.READING
+        )
+        assert [memory.id for memory in result] == ["seed", "same"]
+    finally:
+        await database.close()
 
 
 def test_cosine() -> None:

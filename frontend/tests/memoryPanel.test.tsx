@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MemoryPanel from "../src/components/panels/MemoryPanel";
 import { useMemoryStore } from "../src/stores/memoryStore";
@@ -9,10 +9,13 @@ describe("MemoryPanel", () => {
       data: [],
       facts: [],
       query: "",
+      kind: null,
+      factScope: "profile",
       error: null,
       factsError: null,
       refresh: vi.fn().mockResolvedValue(undefined),
       search: vi.fn().mockResolvedValue(undefined),
+      selectFactScope: vi.fn().mockResolvedValue(undefined),
     });
   });
 
@@ -48,12 +51,14 @@ describe("MemoryPanel", () => {
           source_memory_id: "m1",
           created_at: 100,
           polarity: 1,
+          scope: "profile",
+          source_segment_id: null,
         },
       ],
     });
     render(<MemoryPanel />);
 
-    fireEvent.click(screen.getByRole("tab", { name: "事实图" }));
+    fireEvent.click(screen.getByRole("tab", { name: "画像事实" }));
 
     expect(screen.getByRole("img", { name: /事实关系图/ })).toBeInTheDocument();
     expect(screen.getByText("尼克斯")).toBeInTheDocument();
@@ -65,9 +70,35 @@ describe("MemoryPanel", () => {
     useMemoryStore.setState({ facts: null, factsError: "事实暂时无法加载" });
     render(<MemoryPanel />);
 
-    fireEvent.click(screen.getByRole("tab", { name: "事实图" }));
+    fireEvent.click(screen.getByRole("tab", { name: "画像事实" }));
 
     expect(screen.getByText("事实暂时无法加载")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "记忆" })).toBeInTheDocument();
+  });
+
+  it("三种事实图分开选择，类别选择用于记忆检索", () => {
+    const search = vi.fn().mockResolvedValue(undefined);
+    const selectFactScope = vi.fn().mockResolvedValue(undefined);
+    useMemoryStore.setState({ search, selectFactScope, query: "猫" });
+    render(<MemoryPanel />);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "记忆类别" }), {
+      target: { value: "reading" },
+    });
+    expect(search).toHaveBeenCalledWith("猫", "reading");
+    fireEvent.click(screen.getByRole("tab", { name: "知识事实" }));
+    expect(selectFactScope).toHaveBeenCalledWith("knowledge");
+    expect(screen.getByRole("tab", { name: "对话事实" })).toBeInTheDocument();
+  });
+
+  it("角色重置事实作用域后，标签跟随当前图", () => {
+    useMemoryStore.setState({ factScope: "knowledge" });
+    render(<MemoryPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: "知识事实" }));
+    expect(screen.getByRole("tab", { name: "知识事实" })).toHaveAttribute("aria-selected", "true");
+
+    act(() => useMemoryStore.setState({ factScope: "profile", facts: [] }));
+    expect(screen.getByRole("tab", { name: "画像事实" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "知识事实" })).toHaveAttribute("aria-selected", "false");
   });
 });

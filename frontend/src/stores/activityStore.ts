@@ -2,6 +2,7 @@ import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScop
 import { create } from "zustand";
 import {
   createBookTask,
+  createBrowserSurveyTask,
   createWebTask,
   getActivity,
   getActivityResults,
@@ -26,6 +27,7 @@ type ActivityStoreState = {
   refresh: () => Promise<void>;
   loadMoreResults: () => Promise<void>;
   createWebTask: (url: string) => Promise<boolean>;
+  createBrowserSurveyTask: (url: string) => Promise<boolean>;
   createBookTask: (bookId: string, targetParagraph: number) => Promise<boolean>;
 };
 
@@ -112,6 +114,24 @@ export const useActivityStore = create<ActivityStoreState>((set, get) => ({
     commit({ creatingTask: true, taskError: null });
     try {
       const task = await createWebTask(url);
+      if (!isScopeCurrent(scope)) return false;
+      commit({ tasks: withTask(get().tasks, task), creatingTask: false });
+      return true;
+    } catch (err) {
+      if (!isScopeCurrent(scope)) return false;
+      commit({
+        taskError: err instanceof Error ? err.message : String(err),
+        creatingTask: false,
+      });
+      return false;
+    }
+  },
+  createBrowserSurveyTask: async (url) => {
+    const scope = captureScope();
+    const commit = scopedSetter(set);
+    commit({ creatingTask: true, taskError: null });
+    try {
+      const task = await createBrowserSurveyTask(url);
       if (!isScopeCurrent(scope)) return false;
       commit({ tasks: withTask(get().tasks, task), creatingTask: false });
       return true;

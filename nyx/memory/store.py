@@ -559,6 +559,7 @@ class MemoryStore:
         tokens: list[str],
         limit: int,
         required_topic: str | None = None,
+        kind: MemoryKind | None = None,
     ) -> dict[str, KeywordSearchHit]:
         if not tokens or limit <= 0:
             return {}
@@ -578,6 +579,9 @@ class MemoryStore:
                 params: tuple[str, ...] = (pattern, pattern, pattern, pattern)
                 if required_topic is not None:
                     params = (*params, required_topic)
+                kind_clause = " AND kind = ?" if kind is not None else ""
+                if kind is not None:
+                    params = (*params, kind.value)
                 cursor = await self._db.conn.execute(
                     "SELECT id, freshness, created_at, "
                     "summary LIKE ? ESCAPE '\\' AS summary_hit, "
@@ -585,7 +589,7 @@ class MemoryStore:
                     "FROM memory "
                     "WHERE (summary LIKE ? ESCAPE '\\' "
                     "OR content LIKE ? ESCAPE '\\')"
-                    f"{topic_clause}",
+                    f"{topic_clause}{kind_clause}",
                     params,
                 )
                 rows = await cursor.fetchall()

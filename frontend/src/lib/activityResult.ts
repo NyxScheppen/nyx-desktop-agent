@@ -21,6 +21,8 @@ export function activityStatusText(a: Activity | null): string {
   switch (a.type) {
     case "reading":
       return subject !== null ? `在读《${subject}》` : "在读书";
+    case "browser_survey":
+      return subject !== null ? `在填写问卷：${subject}` : "在填写问卷";
     case "free_exploration":
       return subject !== null ? `在探索「${subject}」` : "在探索";
     case "creation":
@@ -40,6 +42,9 @@ export function formatResult(a: Activity): string | null {
   const result = a.progress.result;
   if (typeof result !== "object" || result === null) return null;
   const r = result as Record<string, unknown>;
+  if (a.type === "browser_survey") {
+    return typeof r.summary === "string" && r.summary.length > 0 ? r.summary : null;
+  }
   if (a.type === "reading") {
     const parts: string[] = [];
     if (typeof r.book === "string") parts.push(r.book);
@@ -75,6 +80,9 @@ export function formatOutputBody(a: Activity): string | null {
   const result = a.progress.result;
   if (typeof result !== "object" || result === null) return null;
   const r = result as Record<string, unknown>;
+  if (a.type === "browser_survey") {
+    return typeof r.result_text === "string" ? r.result_text : null;
+  }
   if (a.type === "reading") {
     return typeof r.note === "string" && r.note.length > 0 ? r.note : null;
   }
@@ -144,6 +152,7 @@ export function formatTools(a: Activity): string | null {
 // 完成后「主动冒一句」的前缀：只有会产出 result 的三类活动。
 const ANNOUNCE_PREFIX: Partial<Record<ActivityType, string>> = {
   reading: "读完啦：",
+  browser_survey: "问卷结果：",
   creation: "创作完成：",
   free_exploration: "探索收获：",
 };

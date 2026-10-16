@@ -54,6 +54,7 @@ export const MEMORY_TYPE_LABELS: Record<MemoryType, string> = {
 
 export const ACTIVITY_TYPE_LABELS: Record<ActivityType, string> = {
   reading: "阅读",
+    browser_survey: "填写问卷",
   free_exploration: "自由探索",
   creation: "创作",
   observe_user: "观察用户",
@@ -72,7 +73,7 @@ export const ACTIVITY_STATUS_LABELS: Record<ActivityStatus, string> = {
 
 export const ASSIGNED_TASK_STATUS_LABELS: Record<AssignedTaskStatus, string> = {
   pending: "排队中",
-  running: "阅读中",
+    running: "进行中",
   completed: "已完成",
   failed: "失败",
 };

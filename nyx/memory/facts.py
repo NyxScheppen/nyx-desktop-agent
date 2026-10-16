@@ -514,7 +514,7 @@ class MemoryFactStore:
         return [_row_to_fact(row) for row in selected]
 
     async def recent(
-        self, limit: int = 32, now: float | None = None
+        self, limit: int = 32, now: float | None = None, scope: str | None = None
     ) -> list[MemoryFact]:
         """Return a bounded snapshot of currently valid facts for reflection."""
         at = time.time() if now is None else now
@@ -533,8 +533,9 @@ class MemoryFactStore:
                 "LEFT JOIN memory_entity o ON o.id = f.object_entity_id "
                 "WHERE f.valid_from <= ? AND "
                 "(f.valid_until IS NULL OR f.valid_until > ?) "
-                "ORDER BY f.created_at DESC, f.valid_from DESC, f.id LIMIT ?",
-                (at, at, bounded),
+                + ("AND f.scope = ? " if scope is not None else "")
+                + "ORDER BY f.created_at DESC, f.valid_from DESC, f.id LIMIT ?",
+                (at, at, scope, bounded) if scope is not None else (at, at, bounded),
             )
             rows = await cursor.fetchall()
         return [_row_to_fact(row) for row in rows]

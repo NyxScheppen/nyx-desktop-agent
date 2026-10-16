@@ -9,6 +9,7 @@ import {
   createBookmark,
   createUserNote,
   createWebTask,
+  createBrowserSurveyTask,
   deleteBookmark,
   deleteUserNote,
   evaluateImpulse,
@@ -217,13 +218,22 @@ describe("api/client", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("/api/memories/search?q=%E7%8C%AB+%E5%96%9C%E6%AC%A2");
   });
 
+  it("记忆类别参数传给列表和搜索 API", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    await getMemories("reading");
+    await getMemorySearch("猫", "reading");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories?kind=reading");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/memories/search?q=%E7%8C%AB&kind=reading");
+  });
+
   it("getRecentFacts：GET /api/memories/facts 带有界 limit", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
     vi.stubGlobal("fetch", fetchMock);
 
     await getRecentFacts(64);
 
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories/facts?limit=64");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/memories/facts?limit=64&scope=profile");
   });
 
   it("postObserve：POST /api/observe、body 含 idle_seconds、解析 {event_id}", async () => {
@@ -333,7 +343,7 @@ describe("api/client", () => {
     );
   });
 
-  it("任务 API：列表、网页与书籍创建使用约定端点和载荷", async () => {
+  it("任务 API：列表、网页、问卷与书籍创建使用约定端点和载荷", async () => {
     const task = {
       id: "t1",
       type: "web",
@@ -350,6 +360,7 @@ describe("api/client", () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse([task]))
       .mockResolvedValueOnce(jsonResponse(task))
+      .mockResolvedValueOnce(jsonResponse({ ...task, type: "browser_survey" }))
       .mockResolvedValueOnce(
         jsonResponse({
           ...task,
@@ -364,6 +375,7 @@ describe("api/client", () => {
 
     await getTasks();
     await createWebTask("https://example.com");
+    await createBrowserSurveyTask("https://example.com/quiz");
     await createBookTask("b1", 12);
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/tasks");
@@ -375,6 +387,13 @@ describe("api/client", () => {
       }),
     ]);
     expect(fetchMock.mock.calls[2]).toEqual([
+      "/api/tasks/browser-survey",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ url: "https://example.com/quiz" }),
+      }),
+    ]);
+    expect(fetchMock.mock.calls[3]).toEqual([
       "/api/tasks/book",
       expect.objectContaining({
         method: "POST",

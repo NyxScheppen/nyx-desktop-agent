@@ -395,6 +395,7 @@ export type MemoryKind =
   | "reading"
   | "activity"
   | "interaction";
+export type FactScope = "profile" | "conversation" | "knowledge";
 
 export type Memory = {
   id: string;
@@ -421,11 +422,14 @@ export type MemoryFact = {
   source_memory_id: string | null;
   created_at: number;
   polarity: number;
+  scope: FactScope;
+  source_segment_id: string | null;
 };
 
 // ---- 活动（09-activity / nyx/types.py Activity）----
 export type ActivityType =
   | "reading"
+  | "browser_survey"
   | "free_exploration"
   | "creation"
   | "observe_user"
@@ -454,7 +458,7 @@ export type ActivitySnapshot = {
   schedule: Activity[];
 };
 
-export type AssignedTaskType = "web" | "book";
+export type AssignedTaskType = "web" | "book" | "browser_survey" | "creation";
 export type AssignedTaskStatus = "pending" | "running" | "completed" | "failed";
 
 export type AssignedTask = {

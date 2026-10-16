@@ -668,6 +668,8 @@ def _activity_memory_fields(
         content_key, summary_key = "content", "title"
     elif activity_type == "free_exploration":
         content_key, summary_key = "summary", "core_discovery"
+    elif activity_type == "browser_survey":
+        content_key, summary_key = "summary", "url"
     else:
         return None
     content = _join_list(parsed.get(content_key))
@@ -1047,7 +1049,7 @@ class MemoryFacade:
     ) -> None:
         """活动记忆：把 activity_end.result 落成一条短期记忆（无场景 LLM）。
 
-        只写读书/创作/探索三类有产出的活动；rest/idle_reflection（result 空或
+        只写读书/创作/探索/网页问卷四类有产出的活动；rest/idle_reflection（result 空或
         类型不匹配）跳过。observe_user 走「画像沉淀」分支（见 _sediment_observation）。
         入库管线与 create_scene_memory 相同
         （embed → 建边 → 门控矛盾检测 → 淘汰），只缺开头的 LLM 场景构建。
@@ -1686,8 +1688,10 @@ class MemoryFacade:
         except Exception:
             self._logger.exception("记忆衰减淘汰失败 memory_id=%s", memory.id)
 
-    async def search(self, query: str) -> list[Memory]:
-        return await self._retrieval.search(query)
+    async def search(
+        self, query: str, kind: MemoryKind | None = None
+    ) -> list[Memory]:
+        return await self._retrieval.search(query, kind=kind)
 
     async def search_source(
         self, query: str, source_topic: str, limit: int = 5
@@ -1709,11 +1713,13 @@ class MemoryFacade:
             self._logger.exception("事实层召回失败")
             return []
 
-    async def recent_facts(self, limit: int = 32) -> list[MemoryFact]:
+    async def recent_facts(
+        self, limit: int = 32, scope: str | None = None
+    ) -> list[MemoryFact]:
         if self._fact_store is None:
             return []
         try:
-            return await self._fact_store.recent(limit)
+            return await self._fact_store.recent(limit, scope=scope)
         except Exception:
             self._logger.exception("近期事实读取失败")
             return []

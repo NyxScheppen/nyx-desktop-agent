@@ -501,6 +501,8 @@ describe("desireStore / activityStore", () => {
       data: null,
       facts: null,
       query: "",
+      kind: null,
+      factScope: "profile",
       error: null,
       factsError: null,
     });
@@ -715,7 +717,7 @@ describe("desireStore / activityStore", () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/memories");
     expect(useMemoryStore.getState().data).toEqual(fixture);
-    expect(fetchMock.mock.calls[1][0]).toBe("/api/memories/facts?limit=64");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/memories/facts?limit=64&scope=profile");
     expect(useMemoryStore.getState().facts).toEqual([]);
   });
 
@@ -760,6 +762,8 @@ describe("desireStore / activityStore", () => {
       source_memory_id: null,
       created_at: 1,
       polarity: 1,
+      scope: "profile",
+      source_segment_id: null,
     };
     useMemoryStore.setState({ facts: [fact] });
     const fixture = [{ id: "m2", summary: "搜索结果" }];
@@ -784,6 +788,40 @@ describe("desireStore / activityStore", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("/api/memories");
     expect(useMemoryStore.getState().query).toBe("");
     expect(useMemoryStore.getState().data).toEqual(fixture);
+  });
+
+  it("memoryStore.search：类别切换时旧请求不能覆盖新结果", async () => {
+    let resolveOld!: (value: Response) => void;
+    const oldRequest = new Promise<Response>((resolve) => { resolveOld = resolve; });
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(oldRequest)
+      .mockResolvedValueOnce(jsonResponse([{ id: "reading" }]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const old = useMemoryStore.getState().search("量子", "episode");
+    await useMemoryStore.getState().search("量子", "reading");
+    resolveOld(jsonResponse([{ id: "episode" }]));
+    await old;
+
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/memories/search?q=%E9%87%8F%E5%AD%90&kind=reading");
+    expect(useMemoryStore.getState().data).toEqual([{ id: "reading" }]);
+  });
+
+  it("memoryStore.selectFactScope：晚到的旧图不能覆盖当前图", async () => {
+    let resolveOld!: (value: Response) => void;
+    const oldRequest = new Promise<Response>((resolve) => { resolveOld = resolve; });
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(oldRequest)
+      .mockResolvedValueOnce(jsonResponse([{ id: "knowledge", scope: "knowledge" }]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const old = useMemoryStore.getState().selectFactScope("conversation");
+    await useMemoryStore.getState().selectFactScope("knowledge");
+    resolveOld(jsonResponse([{ id: "conversation", scope: "conversation" }]));
+    await old;
+
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/memories/facts?limit=64&scope=knowledge");
+    expect(useMemoryStore.getState().facts).toEqual([{ id: "knowledge", scope: "knowledge" }]);
   });
 });
 

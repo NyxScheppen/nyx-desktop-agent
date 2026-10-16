@@ -123,4 +123,26 @@ describe("ActivityPanel", () => {
     expect(screen.getByText("失败")).toBeInTheDocument();
     expect(screen.getByText("正文抓取失败")).toBeInTheDocument();
   });
+
+  it("网页问卷可提交，完成后显示结果", async () => {
+    const create = vi.spyOn(useActivityStore.getState(), "createBrowserSurveyTask")
+      .mockResolvedValue(true);
+    useActivityStore.setState({
+      tasks: [{
+        id: "survey", type: "browser_survey", status: "completed",
+        url: "https://example.com/quiz", book_id: null,
+        target_paragraph: null,
+        checkpoint: { result: { summary: "我的结果" } },
+        error: null, created_at: 1, updated_at: 2,
+      }],
+    });
+    render(<ActivityPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "网页问卷" }));
+    fireEvent.change(screen.getByPlaceholderText("https://"), {
+      target: { value: "https://example.com/quiz" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "安排问卷" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith("https://example.com/quiz"));
+    expect(screen.getByText("我的结果")).toBeInTheDocument();
+  });
 });

@@ -1100,6 +1100,12 @@ body:has(.app--pet) {
   flex: 1;
 }
 
+.memory-search__kind {
+  width: auto;
+  max-width: 6rem;
+  flex: 0 0 auto;
+}
+
 .fact-graph {
   display: flex;
   flex-direction: column;
@@ -1823,6 +1829,7 @@ body:has(.app--pet) {
   min-width: 0;
   overflow: hidden; /* 真分页：无滚动条、无滚轮（08 §5） */
   position: relative;
+  user-select: text;
 }
 
 .reader-text__pages {

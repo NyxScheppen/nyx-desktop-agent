@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import cast
 
-from nyx.enums import MemoryType, SearchMode
+from nyx.enums import MemoryKind, MemoryType, SearchMode
 from nyx.memory.ann import AnnIndex, ann_fingerprint
 from nyx.memory.graph import AssociationHit, MemoryGraph
 from nyx.memory.store import KeywordSearchHit, MemoryStore
@@ -140,13 +140,14 @@ class MemoryRetrieval:
         direct_limit: int = 20,
         association_limit: int = 10,
         required_topic: str | None = None,
+        kind: MemoryKind | None = None,
     ) -> list[Memory]:
         if not query.strip():
             return []
         if direct_limit <= 0:
             return []
 
-        all_memories = await self._store.list_memories()
+        all_memories = await self._store.list_memories(kind=kind)
         if required_topic is not None:
             all_memories = [
                 memory
@@ -161,6 +162,7 @@ class MemoryRetrieval:
             tokens,
             _RECALL_KEYWORD_CANDIDATE_K,
             required_topic=required_topic,
+            kind=kind,
         )
         direct_ranked = self._rank_direct(
             by_id, vector_scores, keyword_hits, len(tokens)
@@ -173,6 +175,11 @@ class MemoryRetrieval:
 
         seeds = {ranked.memory.id: ranked.score for ranked in direct_ranked}
         edges = await self._store.list_edges()
+        if kind is not None:
+            edges = [
+                edge for edge in edges
+                if edge.from_id in by_id and edge.to_id in by_id
+            ]
         association_hits = MemoryGraph(edges).associate(
             seeds,
             depth=2,

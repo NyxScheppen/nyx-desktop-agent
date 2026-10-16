@@ -143,7 +143,7 @@ class _FakeRetrieval:
         self._result = result
         self.queries: list[str] = []
 
-    async def search(self, query: str) -> list[Memory]:
+    async def search(self, query: str, kind: MemoryKind | None = None) -> list[Memory]:
         self.queries.append(query)
         return self._result
 
@@ -1605,7 +1605,7 @@ async def test_remember_activity_observation_snapshot_rolls_back_on_failure(
         await database.conn.close()
 
 
-async def test_remember_activity_creation_and_exploration() -> None:
+async def test_remember_activity_creation_exploration_and_browser_survey() -> None:
     store, bus, database = await _new_stack()
     llm = _FakeLlm()
     evaluator = _FakeEvaluator()
@@ -1621,11 +1621,25 @@ async def test_remember_activity_creation_and_exploration() -> None:
                     {"summary": "s1", "core_discovery": "cd1"},
                 )
             )
+            await facade.remember_activity(
+                _activity_event(
+                    "browser_survey",
+                    {
+                        "summary": "经济：社会主义 76.3%；最接近匹配：自由社会主义。",
+                        "url": "https://8valuescn.pages.dev/results?e=76.3",
+                        "steps": 72,
+                    },
+                )
+            )
         by_topic = {m.topics[0]: m for m in await facade.list_memories()}
         assert by_topic["creation"].content == "正文"
         assert by_topic["creation"].summary == "标题"
         assert by_topic["free_exploration"].content == "s1"
         assert by_topic["free_exploration"].summary == "cd1"
+        assert by_topic["browser_survey"].content.startswith("经济：社会主义")
+        assert by_topic["browser_survey"].summary.startswith(
+            "https://8valuescn.pages.dev/results"
+        )
         assert set(llm.calls) <= {"memory_relation"}
     finally:
         await database.conn.close()

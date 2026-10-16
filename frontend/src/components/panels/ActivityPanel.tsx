@@ -18,6 +18,9 @@ function timeLabel(ts: number): string {
 
 function taskTarget(task: AssignedTask, books: BookListItem[]): string {
   if (task.type === "web") return task.url ?? "网页";
+  if (task.type === "browser_survey") {
+    return `网页问卷 · ${task.url ?? "未知地址"}`;
+  }
   const book = books.find((item) => item.id === task.book_id);
   const name = book?.title ?? task.book_id ?? "已删除书籍";
   return task.target_paragraph === null
@@ -34,12 +37,13 @@ export default function ActivityPanel() {
   const creatingTask = useActivityStore((state) => state.creatingTask);
   const refresh = useActivityStore((state) => state.refresh);
   const assignWebTask = useActivityStore((state) => state.createWebTask);
+  const assignBrowserSurveyTask = useActivityStore((state) => state.createBrowserSurveyTask);
   const assignBookTask = useActivityStore((state) => state.createBookTask);
   const books = useReaderStore((state) => state.books);
   const booksError = useReaderStore((state) => state.booksError);
   const loadBooks = useReaderStore((state) => state.loadBooks);
 
-  const [mode, setMode] = useState<"web" | "book">("web");
+  const [mode, setMode] = useState<"web" | "book" | "browser_survey">("web");
   const [url, setUrl] = useState("");
   const [bookId, setBookId] = useState("");
   const [target, setTarget] = useState("1");
@@ -111,13 +115,16 @@ export default function ActivityPanel() {
     event.preventDefault();
     const scope = captureScope();
     setFormError(null);
-    if (mode === "web") {
+    if (mode === "web" || mode === "browser_survey") {
       const value = url.trim();
       if (value.length === 0) {
         setFormError("请输入网页地址");
         return;
       }
-      if (await assignWebTask(value) && isScopeCurrent(scope)) setUrl("");
+      const created = mode === "web"
+        ? await assignWebTask(value)
+        : await assignBrowserSurveyTask(value);
+      if (created && isScopeCurrent(scope)) setUrl("");
       return;
     }
     if (selectedBook === null || !targetIsValid) {
@@ -162,10 +169,22 @@ export default function ActivityPanel() {
             >
               书籍
             </button>
+            <button
+              type="button"
+              className={
+                mode === "browser_survey"
+                  ? "task-mode__button task-mode__button--active"
+                  : "task-mode__button"
+              }
+              aria-pressed={mode === "browser_survey"}
+              onClick={() => setMode("browser_survey")}
+            >
+              网页问卷
+            </button>
           </div>
         </div>
         <form className="task-form" onSubmit={(event) => void submitTask(event)}>
-          {mode === "web" ? (
+          {mode !== "book" ? (
             <label className="task-field">
               <span>网页地址</span>
               <input
@@ -234,7 +253,7 @@ export default function ActivityPanel() {
             className="task-submit"
             disabled={creatingTask || (mode === "book" && !targetIsValid)}
           >
-            {creatingTask ? "安排中…" : "安排阅读"}
+            {creatingTask ? "安排中…" : mode === "browser_survey" ? "安排问卷" : "安排阅读"}
           </button>
         </form>
       </section>
@@ -259,6 +278,11 @@ export default function ActivityPanel() {
                 {task.error !== null && (
                   <p className="error-text">{task.error}</p>
                 )}
+                {task.type === "browser_survey" &&
+                  task.status === "completed" &&
+                  typeof (task.checkpoint.result as Record<string, unknown> | undefined)?.summary === "string" && (
+                    <p>{String((task.checkpoint.result as Record<string, unknown>).summary)}</p>
+                  )}
               </li>
             ))}
           </ul>

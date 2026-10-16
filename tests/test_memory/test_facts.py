@@ -49,6 +49,35 @@ async def test_knowledge_fact_requires_explicit_source_question() -> None:
         await database.close()
 
 
+async def test_recent_facts_filters_scope_before_limit() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = MemoryFactStore(database)
+        await store.apply(
+            [FactCandidate("用户", "喜欢", "茶", 100.0, None)], None,
+            scope="profile",
+        )
+        await store.apply(
+            [FactCandidate("尼克斯", "读过", "书", 200.0, None)], None,
+            scope="conversation",
+        )
+        await store.apply(
+            [FactCandidate("资料", "主题", "历史", 300.0, None)], None,
+            scope="knowledge",
+        )
+        for scope, expected in (
+            ("profile", "茶"),
+            ("conversation", "书"),
+            ("knowledge", "历史"),
+        ):
+            facts = await store.recent(limit=1, now=400.0, scope=scope)
+            assert [(fact.scope, fact.object_value) for fact in facts] == [
+                (scope, expected)
+            ]
+    finally:
+        await database.close()
+
+
 async def test_fact_store_duplicate_is_idempotent() -> None:
     database = await db.connect(":memory:")
     try:

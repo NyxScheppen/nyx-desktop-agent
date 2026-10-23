@@ -8,7 +8,7 @@
 
 - 后端测试文件：69
 - `pytest --collect-only -q`：1290 tests collected
-- 本轮后端全量验证：1289 passed，1 skipped。
+- 本轮后端全量验证：1288 passed，1 failed，1 skipped；失败为 `test_unload_drain_timeout_keeps_worker_until_accepted_work_finishes`（角色卸载/事件排空路径，本轮改动未涉及）。
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`

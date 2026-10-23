@@ -16,13 +16,21 @@ _QUESTION_WORDS = (
 _REQUEST_WORDS = ("请", "帮我", "告诉我", "解释", "推荐", "写一份", "怎么做")
 _DISCUSSION_TERMS = (
     "为什么", "如何", "怎么", "背景", "辨析", "比较", "观点", "历史",
-    "原理", "定义",
+    "原理", "定义", "什么", "哪",
 )
 _DISCUSSION_REQUEST_RE = re.compile(
     r"^(?:请|帮我|给我|解释|说明|分析|比较|辨析|介绍|讲讲|谈谈|说说|"
     r"告诉我|梳理|评价|解读|阐述)"
 )
-_DISCUSSION_OPEN_RE = re.compile(r"(?:讨论|聊聊)(?:一下|下)?[\s：:，,]*\S+")
+_DISCUSSION_OPEN_RE = re.compile(
+    r"(?:讨论|聊聊)(?:一下|下)?[\s：:，,]*"
+)
+_DISCUSSION_NEGATION_RE = re.compile(
+    r"(?:不(?:(?:太|怎么|是很)?(?:需要|打算|准备|愿意|想|要|用|必|希望))?"
+    r"(?:再)?(?:讨论|聊聊)"
+    r"|无需(?:再)?(?:讨论|聊聊)|没必要(?:再)?(?:讨论|聊聊)"
+    r"|别(?:再)?(?:讨论|聊聊)|(?:禁止|拒绝)(?:再)?(?:讨论|聊聊))"
+)
 _CASUAL_QUESTION_RE = re.compile(
     r"(?:怎么样|怎么了|怎么啦|咋样|咋了|好吗|还好吗)[？?！!。]*$"
 )
@@ -93,18 +101,30 @@ def should_load_discussion(message: str) -> bool:
     normalized = " ".join(message.strip().split())
     if not normalized:
         return False
-    if "不讨论" not in normalized and _DISCUSSION_OPEN_RE.search(normalized):
-        return True
-    if _CASUAL_QUESTION_RE.search(normalized) and not any(
-        term in normalized for term in _DISCUSSION_TERMS if term != "怎么"
-    ):
-        return False
-    if not any(term in normalized for term in _DISCUSSION_TERMS):
-        return False
-    return (
-        is_question(normalized)
-        or _DISCUSSION_REQUEST_RE.search(normalized) is not None
-    )
+    for clause in re.split(r"[，,。！？!?；;\n]", normalized):
+        if _DISCUSSION_NEGATION_RE.search(clause):
+            continue
+        opening = _DISCUSSION_OPEN_RE.search(clause)
+        if opening and clause[opening.end():].strip(
+            " \t\r\n：:，,、。！？!?；;吗呢吧呀哦嘛啊啦好行可以不"
+        ):
+            return True
+        if _CASUAL_QUESTION_RE.search(clause) and not any(
+            term in clause for term in _DISCUSSION_TERMS if term != "怎么"
+        ):
+            continue
+        if not any(term in clause for term in _DISCUSSION_TERMS):
+            continue
+        has_embedded_question_word = any(
+            word in clause for word in _QUESTION_WORDS
+        )
+        if (
+            is_question(clause)
+            or has_embedded_question_word
+            or _DISCUSSION_REQUEST_RE.search(clause) is not None
+        ):
+            return True
+    return False
 
 
 def slow_score(

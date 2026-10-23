@@ -257,6 +257,22 @@ describe("ChatInput", () => {
     useChatStore.getState().reset();
   });
 
+  it("讨论模式控件在自动、讨论、陪伴三态间切换", () => {
+    render(<ChatInput />);
+
+    expect(useChatStore.getState().discussionMode).toBeNull();
+    expect(screen.getByRole("button", { name: "自动" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "讨论" }));
+    expect(useChatStore.getState().discussionMode).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "陪伴" }));
+    expect(useChatStore.getState().discussionMode).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "自动" }));
+    expect(useChatStore.getState().discussionMode).toBeNull();
+  });
+
   it("点发送 → 触发 sendMessage(trimmed) 且成功清空", async () => {
     const sendSpy = vi
       .spyOn(useChatStore.getState(), "sendMessage")
@@ -329,7 +345,7 @@ describe("ChatInput", () => {
     render(<ChatInput />);
     const input = screen.getByPlaceholderText("对 Nyx 说…");
     fireEvent.change(input, { target: { value: "想发但被锁" } }); // 填非空，确保只有 isReplying 守卫能拦
-    const btn = screen.getByRole("button");
+    const btn = screen.getByRole("button", { name: "…" });
     expect(btn).toBeDisabled();
     expect(btn).toHaveTextContent("…");
     fireEvent.keyDown(input, { key: "Enter" });

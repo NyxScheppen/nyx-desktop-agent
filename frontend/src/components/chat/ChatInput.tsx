@@ -11,6 +11,8 @@ export default function ChatInput() {
   const isReplying = useChatStore((s) => s.isReplying);
   const sendError = useChatStore((s) => s.sendError);
   const sendMessage = useChatStore((s) => s.sendMessage);
+  const discussionMode = useChatStore((s) => s.discussionMode);
+  const setDiscussionMode = useChatStore((s) => s.setDiscussionMode);
 
   const submit = () => {
     if (isReplying) return;
@@ -26,6 +28,32 @@ export default function ChatInput() {
 
   return (
     <div className="chat-input">
+      <div className="chat-input__mode" role="group" aria-label="讨论模式">
+        <button
+          type="button"
+          className="chat-input__mode-option"
+          aria-pressed={discussionMode === null}
+          onClick={() => setDiscussionMode(null)}
+        >
+          自动
+        </button>
+        <button
+          type="button"
+          className="chat-input__mode-option"
+          aria-pressed={discussionMode === true}
+          onClick={() => setDiscussionMode(true)}
+        >
+          讨论
+        </button>
+        <button
+          type="button"
+          className="chat-input__mode-option"
+          aria-pressed={discussionMode === false}
+          onClick={() => setDiscussionMode(false)}
+        >
+          陪伴
+        </button>
+      </div>
       <input
         className="chat-input__field"
         value={text}

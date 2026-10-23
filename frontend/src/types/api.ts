@@ -35,6 +35,12 @@ export type PresenceObservation = {
 
 export type Presence = "online" | "away" | "busy";
 
+export interface ChatRequest {
+  message: string;
+  discussion?: boolean | null;
+  reply_to?: string;
+}
+
 export type Personality = {
   openness: number;
   conscientiousness: number;

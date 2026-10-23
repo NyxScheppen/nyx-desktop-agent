@@ -17,7 +17,7 @@
 - [ ] `registry.py` 含 `ToolRegistry`（`register` / `call` / `schema`）（实现见 `nyx/tools/registry.py`）
 - [ ] 四个工具模块各含 `build_*_tool()` 工厂 + 对应 handler（实现见 `nyx/tools/local_search.py` / `web_search.py` / `file_io.py` / `web_fetch.py`）
 - [ ] `register` 重名 → `ValueError`；`call` 用 `handler(**args)` 调 handler；`call` 未注册名 → `KeyError`
-- [ ] `schema()` 返回 `[{"type":"function","function":{name, description, parameters}}]`，按注册序
+- [ ] `schema(names: Iterable[str] | None = None)` 返回 `[{"type":"function","function":{name, description, parameters}}]`；省略 names 按注册序，指定 names 按传入顺序筛选，未注册名抛 `KeyError`
 - [ ] `file_io` 的 `write` 越界（`../` 或绝对路径逃逸 `write_root`）→ `ValueError`；目标已存在且 UTF-8 内容相同时不重复写盘并返回相同 `written`，判等时分块读取旧文件；`read` / `list` 不受写目录限制
 - [ ] `local_search` 缺省搜全盘（`full_disk_roots()`），`roots` 参数可收窄；遍历跳过无权限目录不崩
 - [ ] 四个工具返回 JSON 可序列化数据（`dict` / `list` / `str`，不返回 domain dataclass）
@@ -34,7 +34,7 @@
 - **公开面**：`from nyx.tools.registry import ToolRegistry`；`from nyx.tools.local_search import build_local_search_tool, search_local`；`from nyx.tools.web_search import build_web_search_tool`；`from nyx.tools.file_io import build_file_io_tool, file_io`；`from nyx.tools.web_fetch import build_web_fetch_tool, fetch_url`（不加 `__all__`）
 - **handler 调用约定**：`call(name, args)` 用 `await handler(**args)` 把 `args` dict 解包为关键字实参；`Tool.schema` 的键 = handler 形参名（如 `{query}` → `handler(query=...)`）。参数不匹配时 `TypeError` 上抛（handler 签名兜底，不额外校验 schema）
 - **不校验 args 与 schema**：不引入 JSON schema validator（新依赖 + 复杂度）；schema 是给 LLM 的契约，handler 签名是给运行时的契约
-- **`Tool.schema` vs `schema()`**：`Tool.schema` 存**参数** JSON schema（`{"type":"object","properties":…,"required":[…]}`）；`ToolRegistry.schema()` 把它包成 OpenAI 兼容 function calling 格式 `[{"type":"function","function":{name, description, parameters}}]`，按注册序输出（`LlmClient.complete` 原样透传给 API，不二次包装）
+- **`Tool.schema` vs `schema()`**：`Tool.schema` 存**参数** JSON schema（`{"type":"object","properties":…,"required":[…]}`）；`ToolRegistry.schema(names: Iterable[str] | None = None)` 把它包成 OpenAI 兼容 function calling 格式 `[{"type":"function","function":{name, description, parameters}}]`。`None` 按注册序返回全部；指定 names 按其顺序返回子集，任一名称未注册则抛 `KeyError`（`LlmClient.complete` 原样透传给 API，不二次包装）。表达侧另按当前技能过滤并复核执行授权，见 [15](15-discussion-partner.md)。
 - **重复注册 → `ValueError`**：fail-fast 抓组合根的布线 bug（重复注册同名工具）；`register` 不静默覆盖
 - **结果 JSON 可序列化**：工具返回 `dict` / `list` / `str`，不返回 domain dataclass——结果要进 09-activity / 11-expression 的 LLM 上下文
 - **全 async + 不阻塞事件循环**：fs / network 是阻塞 I/O，用 `asyncio.to_thread` 包一层（CLAUDE.md「I/O 操作用 async def」+ 不卡 SSE 广播）

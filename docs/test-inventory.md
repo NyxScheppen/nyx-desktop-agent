@@ -8,16 +8,19 @@
 
 - 后端测试文件：69
 - `pytest --collect-only -q`：1290 tests collected
-- 本轮后端全量验证：1288 passed，1 failed，1 skipped；失败为 `test_unload_drain_timeout_keeps_worker_until_accepted_work_finishes`（角色卸载/事件排空路径，本轮改动未涉及）。
+- 本轮后端全量验证：1289 passed，1 skipped（P1，2026-10-23）。
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 本轮前端全量验证：352 passed（25 个测试文件）。
+- 本轮前端全量验证：357 passed（25 个测试文件）。
 - Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；ready 响应必须同时匹配固定 Nyx 服务标识、本次启动 nonce 和响应大小上限；Debug/Release 均通过编译检查。
 - 桌面 launcher 回归：普通与桌面入口均以 `--reload` 启动后端，且只在后端就绪后启动对应前端；原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；普通 TCP、错误 HTTP 状态、非法/过大 JSON、错误服务标识或 nonce 均不能触发前端启动；身份匹配后 owned backend 仍须存活。
 - 启动身份 API 回归：`test_ready_endpoint_returns_owned_instance_identity`、`test_ready_endpoint_keeps_manual_start_compatible`；release smoke 使用同一 nonce 握手且拒绝身份不匹配、过大响应和探测后进程退出。
 - 冻结后端生命周期：父管道 EOF 请求正常退出；daemon watcher 不阻塞服务失败后的关停。
 - 前端测试覆盖通用 API、SSE、状态、聊天、阅读、设置和桌面 presence。
+- 讨论三态回归：API client 透传 null/true/false，chatStore 保存并发送模式、reset 恢复自动，ChatInput 按钮选择与 `aria-pressed` 状态。
+- P1 agent HTTP/SSE E2E：11 个场景全部通过，覆盖自动陪伴/拒绝讨论、自动讨论、强制开关、普通慢通道保留原检索/工具、三工具授权与 scope 隔离、结果回注、越权拦截、工具失败、重复调用及 4 轮/5 项上限，另验证非法 discussion 返回 422、真实段召回计数。
+  使用真实 FastAPI/EventBus/内存 SQLite 与脚本化 LLM/embedding；验证流程和 prompt 接线，不代表真实模型讨论风格或引用质量已验收。单项 2000/总块 8000 字符上限经源码核对，未单独做 HTTP 场景。
 - SSE 回归：初次连接失败保持 `connecting`，同一连接恢复后转为 `open`，不把启动期失败误报为 `closed`。
 - 对话活动工具回归：网页阅读、书籍阅读、创作和浏览器问卷统一受理，任务进入同一活动队列；浏览器问卷覆盖同 URL 幂等、模拟页面点击与结果、重启不重做已点击题目、运行中聊天不打断、活动页结果展示。
 

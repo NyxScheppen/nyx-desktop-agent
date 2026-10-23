@@ -24,7 +24,7 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 ```
 用户输入 → 点发送
   → chatStore.sendMessage(text)
-      ├─ POST /api/chat {message: text, reply_to?: attempt_id}   （client.ts）
+      ├─ POST /api/chat {message: text, reply_to?: attempt_id, discussion: boolean | null}   （client.ts）
       ├─ 成功：isReplying = true（按钮转「…」，输入框清空）
       └─ 失败：sendError = "…"（红字挂在 ChatInput 下方，下次 sendMessage 成功自动清空，不阻断重试）
   → 后端 publish USER_MESSAGE → SSE user_message 回显 → chatStore.addUserMessage（上屏）
@@ -41,6 +41,10 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 
 - **去重**：无——SSE 是消息唯一来源，`sendMessage` 不本地 append（02-stores §1 决策），故无「乐观 + 回显」重复问题。
 - **超时兜底**：`sendMessage` 后 60s 未收到 `speak`/`ask` → 置 `isReplying=false` + `sendError="回复超时"`（LLM 卡死/后端异常时防转圈）。
+
+`ChatInput` 上方提供“自动 / 讨论 / 陪伴”三态按钮，绑定 `chatStore.discussionMode`，
+分别设置 null / true / false，并用 `aria-pressed` 表达当前选择；默认和角色 reset 后均为自动。
+发送使用当前模式，讨论强制慢通道，陪伴禁用讨论技能但仍可按原评分进入普通慢通道。
 
 ## 3. `MessageBubble` 渲染（按 role/kind）
 
@@ -96,5 +100,5 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
   隔夜验收沿用 [表达契约](../specs/11-expression.md) 的 19:00→次日 08:00 场景：两组消息前
   分别显示对应时间，前端重启或重连回填后保留相同事件时间；不改变气泡宽度、串行逐字或
   滚动跟随行为。
-- `ChatInput`：`isReplying=true` 禁用发送；回车/点发送触发 `sendMessage`（mock store action）。
+- `ChatInput`：`isReplying=true` 禁用发送；回车/点发送触发 `sendMessage`（mock store action）；三态按钮更新当前选择，API/store 回归覆盖 null/true/false 透传及 reset。
 - 视觉样式不做断言（README §6 测试约定）。

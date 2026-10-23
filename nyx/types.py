@@ -407,6 +407,13 @@ class InteractionAttempt:
 
 
 # ---- 工具 / eval ----
+@dataclass(frozen=True)
+class Skill:
+    name: str
+    system_fragment: str
+    tool_names: tuple[str, ...]
+
+
 @dataclass
 class Tool:
     name: str

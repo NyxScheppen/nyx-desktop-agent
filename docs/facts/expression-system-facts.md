@@ -6,7 +6,7 @@
 
 ## 模块与职责
 
-明确含 URL 的问卷/答题委托直接走慢通道，使一次工具判断可调用 `browser_survey` 受理后台任务；回复只报告已受理，最终结果由活动页展示。
+明确含 URL 的问卷/答题委托直接走慢通道，使工具判断可调用 `browser_survey` 受理后台任务；回复只报告已受理，最终结果由活动页展示。
 
 角色身份、canon、可选 reference 和 ask 方向来自角色卡；内置 Nyx 位于 `nyx/cards/nyx/`，身份句将 Nyx 标注为“中文：尼克斯”。每个角色独立等待 attempt、回复历史、LLM FIFO 锁和 eval；当前角色资格在实际开始主动表达前复查，跳过不计欲望失败。已开始的表达完成到原角色，历史 assistant 使用中性“你”标签。结构/工具协议/知识边界仍由框架提供。
 
@@ -46,9 +46,13 @@
 
 ## 普通回复
 
-- `ExpressionFacade.reply(msg, correlation_id, reply_to=None, activity_context=None)` 先尝试
+- `ExpressionFacade.reply(msg, correlation_id, reply_to=None, activity_context=None, discussion=None)` 先尝试
   原子关联一个等待中的 interaction attempt，再取得 `InnerLifeFacade.get_state()` 并调用
   回复图；未注入上下文时才从活动门面读取当前快照。
+- `discussion` 为 true 时强制加载技能，为 false 时禁用，为 null/省略时调用
+  `should_load_discussion()`。技能加载即强制慢通道；普通陪聊或明确拒绝讨论不自动加载。
+- 组合根从 `nyx/prompts/skills/discussion.json` 加载 frozen `Skill`，启动时校验片段长度、
+  名称唯一和工具授权。base prompt 不含讨论范式或引用纪律；仅加载技能的回合注入该片段。
 - 当前用户消息不在内存 history 中；它只在 `build_user_prompt()` 的 `[本次消息]` 段出现。
 - history 是 `deque[Message]`，容量为 `ExpressionConfig.max_context_len`。回合结束时先追加
   user，再追加 Nyx 将多轮 speak 用换行拼接后的内容。
@@ -63,11 +67,14 @@
   - speak 是问句时仍注册 `CHAT_ASK` 并发布 canonical `ASK`。
 - 慢通道执行：
   - `build_backtrack_context()` 重新截断历史；
-  - 对截断后的近期对话构造 query，召回 `conversation_segment`；命中段以独立历史原文区块注入，不加入当前 `Message` 历史，也不调用旧 `MemoryFacade.search`/`record_recall`；
+  - 非讨论模式对截断后的近期对话构造 query，召回 `conversation_segment`；命中段以独立历史原文区块注入，不加入当前 `Message` 历史，也不调用旧 `MemoryFacade.search`/`record_recall`；讨论模式关闭隐式事实和段召回，改用能力工具；
   - 取得自我叙事；
-  - 先有一轮工具判断，工具结果截断后进入回复 prompt；
+  - 最多 4 轮工具判断，累计工具结果以文本进入下一轮判断和最终回复；最多 5 项，单项 JSON 至多 2000 字符，工具块至多 8000 字符。同名同参数不重复执行，工具失败降级为失败文本；
   - `respond` 最多继续到 `slow_max_rounds`，问句会提前结束；
   - 所有轮次的正常 THINK/SPEAK、最终 `SPEAK/ASK` 在同一本地事务受理，随后记录 history；生成中途没有正常文本对外可见。
+- 讨论模式仅授权 `memory_recall`、`knowledge_search`、`deep_research`，执行时再次核对；普通慢通道排除这三项且保留原工具。
+  `memory_recall` 仅返回 profile/conversation 事实与对话段；完整段 JSON 真正进入最终回复 prompt 才幂等计召回。
+  P1 的 `knowledge_search` 只返回 knowledge 事实（`source_chunk_id=null`、`chunks=[]`）；证据块属于 P2，`deep_research` 当前明确返回尚未启用，真实研究属于 P3。
 - 每轮 `respond` 一次 LLM 调用同时生成 JSON 的 `think` 和 `speak`，解析后分别评估并分别
   发布文本事件；两条评估记录共享 call_id、token 和最终 prompt。后续轮次使用累积的前轮
   think/speak，任务改为续写。

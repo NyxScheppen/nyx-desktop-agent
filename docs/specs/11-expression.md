@@ -40,6 +40,7 @@ class ExpressionFacade:
         correlation_id: str,
         reply_to: str | None = None,
         activity_context: ActivityContext | None = None,
+        discussion: bool | None = None,
     ) -> None: ...
     async def initiate_chat(
         self, desire: ShortTermDesire, state: CurrentState
@@ -71,6 +72,9 @@ class ExpressionFacade:
 ask guidance、`ExpressionConfig`、tools，以及可选 durable interaction store、knowledge
 boundary 文本、运行时 observation reader 和一次性归来上下文的 claim/finish/release 回调。
 组合根负责读取 prompt 文件并注入；`_App` 本身不得传入 Facade。
+可选 `skills: Mapping[str, Skill] | None` 注入启动时加载的声明式技能；讨论技能契约见
+[15-discussion-partner](15-discussion-partner.md)。`discussion=None` 自动判断，`True` 强制加载，
+`False` 禁用讨论技能；禁用后仍按原评分选择快慢通道。
 
 时间相关的可选构造参数固定为：
 
@@ -87,7 +91,8 @@ release_return: Callable[[dict[str, float] | None], None] | None = None
 
 `ReplyState` 至少包含 message、mode、context、memories、state、narrative、think、speak、
 ask、round、correlation_id、last_slow_at、tool_outputs、intent、temporal_context、
-reading_context、activity_context、answered_attempt、claimed_return 和 fallback。
+reading_context、activity_context、answered_attempt、claimed_return 和 fallback，另含
+`skill: Skill | None` 和 `tool_recall_candidates: list[tuple[str, str]]`。
 
 ### 通道
 
@@ -99,10 +104,17 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 - FAST 通常不检索记忆；用户正在回答 durable 读书提问时例外：`reply()` 使用
   `answer_waiting()` 返回的 attempt 构造 `reading_context`，直接注入该回合。它不是普通
   `MemoryFacade.search(message)`，因此“嗯”“我不觉得”等短回复也不会丢失书中语境。
-- SLOW 在回复前执行回溯、记忆检索、recall 记录、自我叙事读取和一次工具判断；默认一次
+- 讨论技能由手动开关或 `should_load_discussion()` 自动命中时强制 SLOW；普通陪聊和明确拒绝讨论不自动加载。
+- SLOW 在回复前执行回溯、自我叙事读取和最多 4 轮工具判断；非讨论模式保留隐式事实与对话段检索，
+  讨论模式关闭这两类隐式注入，改用能力工具。默认一次
   生成完整回复，只有模型明确设置 `needs_continuation=true` 时才续写，轮数上限由
   `slow_max_rounds` 定义。
 - 普通慢通道不调用旧 Memory 的 `record_recall`；仅对实际进入独立历史段 prompt 区块的段调用 `record_conversation_segment_recall(segment.id, correlation_id)`。同一用户事件重试不重复计数，超过 12000 字符区块预算而未渲染的段不计数，快通道不计数。工具判断和后续各轮回复使用同一入选集合。
+- 讨论模式只暴露技能授权的 `memory_recall`、`knowledge_search`、`deep_research`，执行前再次核对授权；
+  普通慢通道保留既有工具但排除这三项。工具结果以有界文本回注下一轮判断和最终回复，
+  同名同参数调用不重复执行；无调用、无新调用或预算用尽即结束，工具失败保留失败文本并继续回复。
+- `memory_recall` 的段仅在完整段 JSON 实际进入最终 `respond` prompt 时记录真实召回，
+  沿用用户事件/段 ID 的 durable 幂等标记；被截断的段与只检索未展示的段不计数。
 - FAST 和 SLOW 的正常 THINK/SPEAK 都先缓存在 `ReplyState`，生成完成前不发布任何正常文本
   事件。FAST 一轮结束后原子提交全部文本；SLOW 命中问句或达到轮数上限后，按生成顺序把
   全部 THINK/SPEAK 与终局 ASK（如有）作为一个终局批次提交；聊天不再生成 `scene_memory_requested`。
@@ -113,6 +125,8 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 
 - `build_system_prompt()` 按顺序拼接角色参考 canon、人格与三观倾向、当前状态、当前欲望，并按需加入
   ask guidance、知识边界、轻量意图、自我叙事、相关记忆和工具结果。
+- 默认 base prompt 不含讨论范式、引用纪律或讨论工具授权；可选 `discussion_fragment` 来自
+  启动加载的 `nyx/prompts/skills/discussion.json`，仅当前回合已加载技能时注入，canon 优先。
 - `render_personality_instruction()` 将 1-10 的 Big Five 和三观转为三档自然语言行为倾向：
   低于 5、等于 5、高于 5。审美当前值在 `[当前状态]` 中按同一三档规则展示；这些内容
   都只是倾向，不是硬规则。情感状态同时展示英文枚举和中文含义（如 `happy（开心）`）。

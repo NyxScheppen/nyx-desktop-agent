@@ -1703,12 +1703,14 @@ class MemoryFacade:
             required_topic=source_topic,
         )
 
-    async def search_facts(self, query: str) -> list[MemoryFact]:
+    async def search_facts(
+        self, query: str, scope: str | None = None
+    ) -> list[MemoryFact]:
         """召回查询命中实体关联的当前有效事实；失败时返回空集。"""
         if self._fact_store is None:
             return []
         try:
-            return await self._fact_store.search(query)
+            return await self._fact_store.search(query, scope=scope)
         except Exception:
             self._logger.exception("事实层召回失败")
             return []

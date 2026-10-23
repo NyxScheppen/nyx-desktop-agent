@@ -1,5 +1,6 @@
 """应用启动时的 prompt 加载与幂等 seed。"""
 
+import json
 import time
 import uuid
 from pathlib import Path
@@ -11,11 +12,13 @@ from nyx.desire.store import DesireStore
 from nyx.desire.value import default_value
 from nyx.enums import DesireType, EnergyState
 from nyx.inner_life.store import InnerLifeStore
+from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Aesthetic,
     LongTermDesire,
     Personality,
     SelfNarrative,
+    Skill,
     Values,
 )
 
@@ -103,6 +106,41 @@ def load_canon(canon_dir: Path, names: tuple[str, ...]) -> str:
 def load_ask(canon_dir: Path, names: tuple[str, ...]) -> str:
     """Load the guidance for proactive questions."""
     return load_prompt_files(canon_dir, names)
+
+
+def load_skills(skills_dir: Path, registry: ToolRegistry) -> dict[str, Skill]:
+    """Load declarative skills and reject invalid tool grants at startup."""
+    if not skills_dir.is_dir():
+        raise FileNotFoundError(f"skill 目录缺失：{skills_dir}")
+    skills: dict[str, Skill] = {}
+    for path in sorted(skills_dir.glob("*.json")):
+        raw: object = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError(f"skill 格式错误：{path}")
+        data = cast(dict[str, object], raw)
+        name = data.get("name")
+        fragment = data.get("system_fragment")
+        names = data.get("tool_names")
+        if (
+            not isinstance(name, str) or not name
+            or not isinstance(fragment, str) or not fragment.strip()
+            or len(fragment) > 1500
+            or not isinstance(names, list)
+            or not names
+            or any(
+                not isinstance(item, str) or not item
+                for item in cast(list[object], names)
+            )
+        ):
+            raise ValueError(f"skill 字段无效：{path}")
+        if name in skills:
+            raise ValueError(f"skill 名称重复：{name}")
+        tool_names = tuple(cast(list[str], names))
+        registry.schema(tool_names)
+        skills[name] = Skill(name, fragment, tool_names)
+    if "discussion" not in skills:
+        raise ValueError(f"缺少 discussion skill：{skills_dir}")
+    return skills
 
 
 async def seed_inner_life(store: InnerLifeStore) -> None:

@@ -437,7 +437,9 @@ class MemoryFactStore:
             if should_commit:
                 await self._db.conn.commit()
 
-    async def search(self, query: str, now: float | None = None) -> list[MemoryFact]:
+    async def search(
+        self, query: str, now: float | None = None, scope: str | None = None
+    ) -> list[MemoryFact]:
         if not query.strip():
             return []
         fallback = time.time() if now is None else now
@@ -448,9 +450,9 @@ class MemoryFactStore:
         patterns = [f"%{_escape_like(term)}%" for term in terms]
         knowledge_query = is_knowledge_query(query)
         allowed_scopes = (
-            ("knowledge",)
-            if knowledge_query
-            else ("profile", "conversation")
+            (scope,)
+            if scope is not None
+            else (("knowledge",) if knowledge_query else ("profile", "conversation"))
         )
         scope_placeholders = ", ".join("?" for _ in allowed_scopes)
         direct_where = " OR ".join(

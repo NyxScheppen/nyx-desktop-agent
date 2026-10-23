@@ -95,6 +95,7 @@ def _question_payload(
 class _ChatPayload(BaseModel):
     message: str = Field(..., min_length=1, max_length=12000, strict=True)
     reply_to: str | None = Field(default=None, min_length=1, strict=True)
+    discussion: bool | None = Field(default=None, strict=True)
 
     @field_validator("message")
     @classmethod
@@ -238,7 +239,10 @@ def build_app(
 
     @fast.post("/api/chat")
     async def api_chat(payload: _ChatPayload) -> dict[str, str]:
-        content: dict[str, Any] = {"message": payload.message}
+        content: dict[str, Any] = {
+            "message": payload.message,
+            "discussion": payload.discussion,
+        }
         if payload.reply_to is not None:
             content["reply_to"] = payload.reply_to
         event = root_event(EventType.USER_MESSAGE, content)

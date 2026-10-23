@@ -21,6 +21,7 @@ from nyx.bootstrap import (
     load_ask,
     load_canon,
     load_prompt_files,
+    load_skills,
 )
 from nyx.character_cards import BUILTIN_CARD, load_card, read_package
 from nyx.config import Config
@@ -48,7 +49,7 @@ from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
-from nyx.types import Book, CurrentState, Event, ReadingProgress
+from nyx.types import Book, CurrentState, Event, ReadingProgress, Tool
 
 _PRESENCE_FIELDS = (
     "last_presence",
@@ -506,6 +507,87 @@ async def build_app_context(
             tools.register(task_tools[3])
         tools.register(task_tools[1])
         tools.register(task_tools[2])
+
+        async def memory_recall(query: str, top_k: int = 8) -> dict[str, Any]:
+            segments = await memory.search_conversation_segments(
+                query, max(1, min(top_k, 8))
+            )
+            facts = await memory.search_facts(query, scope="profile")
+            facts += await memory.search_facts(query, scope="conversation")
+            return {
+                "segments": [
+                    {
+                        "segment_id": segment.id,
+                        "content": segment.raw_content,
+                        "importance": segment.importance,
+                        "freshness": segment.freshness,
+                    }
+                    for segment in segments
+                ],
+                "facts": [
+                    {
+                        "subject": fact.subject,
+                        "predicate": fact.predicate,
+                        "object_value": fact.object_value,
+                        "scope": fact.scope,
+                        "source_segment_id": fact.source_segment_id,
+                    }
+                    for fact in facts
+                ],
+            }
+
+        async def knowledge_search(query: str, top_k: int = 5) -> dict[str, Any]:
+            facts = await memory.search_facts(query, scope="knowledge")
+            return {
+                "facts": [
+                    {
+                        "subject": fact.subject,
+                        "predicate": fact.predicate,
+                        "object_value": fact.object_value,
+                        "source_chunk_id": None,
+                    }
+                    for fact in facts[: max(1, min(top_k, 5))]
+                ],
+                "chunks": [],
+            }
+
+        async def deep_research(query: str) -> dict[str, Any]:
+            return {"report": [], "ingested": [], "error": "深度研究尚未启用"}
+
+        tools.register(Tool(
+            "memory_recall",
+            "召回相关对话段原文和用户/关系事实；"
+            "结果带 segment_id 或 source_segment_id 供引用。",
+            {"type": "object", "properties": {
+                "query": {"type": "string", "description": "要回忆的主题或问题"},
+                "top_k": {
+                    "type": "integer",
+                    "description": "返回对话段条数上限",
+                    "default": 8,
+                },
+            }, "required": ["query"]},
+            memory_recall,
+        ))
+        tools.register(Tool(
+            "knowledge_search",
+            "检索知识事实；证据块原文与 source_chunk_id 溯源将在知识库阶段启用。",
+            {"type": "object", "properties": {
+                "query": {"type": "string", "description": "要检索的知识主题"},
+                "top_k": {
+                    "type": "integer", "description": "返回事实条数上限", "default": 5,
+                },
+            }, "required": ["query"]},
+            knowledge_search,
+        ))
+        tools.register(Tool(
+            "deep_research",
+            "深度研究尚未启用；当前返回明确的不可用结果。",
+            {"type": "object", "properties": {
+                "query": {"type": "string", "description": "要深挖的问题"},
+            }, "required": ["query"]},
+            deep_research,
+        ))
+        skills = load_skills(prompt_dir / "skills", tools)
         inner_life = InnerLifeFacade(
             inner_life_store, activity, desire, memory, bus, llm, evaluator, config
         )
@@ -524,6 +606,7 @@ async def build_app_context(
             ask,
             config.expression,
             tools,
+            skills=skills,
             interaction_store=ExpressionInteractionStore(db),
             knowledge_boundary=knowledge_boundary,
             observation_reader=get_observation,

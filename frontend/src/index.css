@@ -495,6 +495,29 @@ body:has(.app--pet) {
   background: var(--parchment);
 }
 
+.chat-input__mode {
+  display: flex;
+  flex-basis: 100%;
+  gap: 0.25rem;
+}
+
+.chat-input__mode-option {
+  min-width: 4.5rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--ink-soft);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: inherit;
+}
+
+.chat-input__mode-option[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--parchment);
+}
+
 .chat-input__field {
   flex: 1;
   min-width: 0;

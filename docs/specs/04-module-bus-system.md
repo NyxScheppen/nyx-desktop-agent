@@ -417,6 +417,11 @@ CLOCK_TICK + REFLECTION_CHECK     -> inner_life.reflection_check
 未绑定的必要依赖抛出带上下文的 `RuntimeError`，可选的阅读上下文在绑定前返回空串。不得使用
 `holder[0]` 形式的可变列表占位，也不得为 ExpressionFacade 与 ReadingFacade 增加直接循环依赖。
 
+讨论能力在 memory facade 构建后注册 `memory_recall`、`knowledge_search`、`deep_research`，
+随后调用 `bootstrap.load_skills(skills_dir, registry)`，校验声明名称、片段和工具授权后注入表达门面；
+目录缺失、声明非法、重名或工具未注册均拒绝启动。P1 不新增表、迁移或事件类型；
+知识证据块和真实深度研究分别属于 [15](15-discussion-partner.md) 的 P2、P3。
+
 组合根同时保存 presence 的进程内运行时快照：是否已经建立基线、当前/上一个 presence、
 presence 变化时间、离开起点、最近一次归来时间与离开时长，以及尚未被自然表达消费的归来事实。
 这些字段不进入 `CurrentState`、不新增数据库表；进程重启后的跨时段连续性由持久化
@@ -635,6 +640,9 @@ CREATE TABLE eval_prompt (
 - `POST /api/chat`：`message` 必须是严格字符串、去除首尾空白后非空且不超过 12000
   字符；非法输入返回 422。只有 durable admission 成功才返回 `{event_id}`；失败返回
   503/429。
+  可选 `discussion` 只接受严格布尔值或 null：true 强制讨论，false 禁用讨论，null/省略自动判断；
+  字符串、数字等返回 422。该值随 `USER_MESSAGE` 保存到 event log，runtime 原样传给
+  `ExpressionFacade.reply()`；旧事件缺失该字段按 null 处理，重放保留原三态语义。
 - `POST /api/observe`：宿主请求体必须携带稳定 `sample_id`，可选采样归属 `character_id`/`selection_revision`；成功表示宿主持久受理，返回稳定 `{event_id}`；重复 sample_id 返回原受理结果。基础字段为 `{presence, window_title, idle_seconds, sampled_at}`；两项
   数值必须是严格的有限非负数（不接受字符串和布尔值），idle_seconds <= sampled_at，
   sampled_at 为客户端开始采样时的 epoch 秒，不晚于后端接收时间；标题最多 512 字符。

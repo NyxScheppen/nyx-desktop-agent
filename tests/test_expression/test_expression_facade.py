@@ -2,6 +2,7 @@
 import asyncio
 import json
 import time
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any, cast
 
@@ -291,8 +292,19 @@ class _FakeTools:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.results: dict[str, Any] = {}
 
-    def schema(self) -> list[dict[str, Any]]:
-        return [{"name": "local_search", "description": "search", "parameters": {}}]
+    def schema(
+        self, names: Iterable[str] | None = None
+    ) -> list[dict[str, Any]]:
+        schemas: list[dict[str, Any]] = [
+            {"type": "function", "function": {
+                "name": name, "description": name, "parameters": {},
+            }}
+            for name in ("local_search", "file_io")
+        ]
+        return (
+            schemas if names is None
+            else [schema for schema in schemas if schema["function"]["name"] in names]
+        )
 
     async def call(self, name: str, args: dict[str, Any]) -> Any:
         self.calls.append((name, args))

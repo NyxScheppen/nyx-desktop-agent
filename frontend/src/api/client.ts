@@ -8,6 +8,7 @@ import type {
   Book,
   BookListItem,
   Bookmark,
+  ChatRequest,
   CurrentState,
   DesireState,
   EvalRecord,
@@ -63,9 +64,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export async function postChat(
   message: string,
   replyTo?: string,
+  discussion?: boolean | null,
 ): Promise<{ event_id: string }> {
-  const body: { message: string; reply_to?: string } = { message };
+  const body: ChatRequest = { message };
   if (replyTo !== undefined) body.reply_to = replyTo;
+  if (discussion !== undefined) body.discussion = discussion;
   return request<{ event_id: string }>(`${BASE_URL}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

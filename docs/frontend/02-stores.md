@@ -64,6 +64,7 @@ type ChatState = {
   messages: ChatMessage[];
   isReplying: boolean;        // 发消息后等待回复中
   sendError: string | null;
+  discussionMode: boolean | null; // null 自动（默认），true 讨论，false 陪伴；reset 恢复 null
   typedIds: Record<string, true>;  // 已逐字打完的 nyx 文本 id（后一条同 correlation_id 的 nyx 文本等其打完才开打）
   seenIds: Record<string, true>;   // 本角色本次前端会话中已开始显示的 nyx 文本 id；重新挂载时不再逐字
   replyTargetId: string | null;    // 当前选中的等待提问；reset 同时清空
@@ -85,7 +86,8 @@ addReadingTurn(e: ReadingQuestionEvent): void  // {role:"nyx",kind:"reading_ques
 pauseQuestion(attemptId: string): Promise<boolean>  // POST /api/questions/{id}/pause
 resumeQuestion(attemptId: string): Promise<boolean> // POST /api/questions/{id}/resume
 selectQuestion(attemptId: string | null): void // 选择或取消提问回复
-sendMessage(text: string): Promise<boolean>  // 内部调 client.postChat；成功 true，失败/忙 false
+setDiscussionMode(mode: boolean | null): void // 选择本角色当前会话的讨论模式
+sendMessage(text: string): Promise<boolean>  // 内部调 client.postChat，带当前 discussionMode；成功 true，失败/忙 false
                                           // 成功：pendingId = 返回的 event_id + isReplying=true + sendError=null + 起 60s 超时 timer
                                           // 唯一等待提问自动附加 reply_to；多个等待项需先 selectQuestion；成功后目标标记 claimed
                                           // postChat throw → catch → sendError = e.message 并复位 isReplying
@@ -96,6 +98,9 @@ reset(): void                            // 新会话全清：clearTimeout(reply
 ```
 
 ### 关键决策
+
+- **讨论三态**：`discussionMode` 默认 null；发送时作为 `ChatRequest.discussion` 传给后端，
+  不以真假值合并 null/false。`reset()` 同时恢复自动模式；切换模式只影响后续发送。
 
 - **SSE 是聊天消息的唯一来源**：`sendMessage` 只 `POST`（拿 `{event_id}` 后 `isReplying=true`），**不本地 append**。用户消息靠 SSE `user_message` 回显上屏（localhost 往返 ~10ms，视觉无延迟）。好处：无「乐观消息 + SSE 回显」的**去重/替换**复杂度；`correlation_id` 沿事件一路一致，追溯无分歧（原则 5）。
 - **isReplying 生命周期 + 60s 超时（必须取消）+ correlation 匹配**：`sendMessage` 成功时**存 `postChat` 返回的 `event_id` 到 module-level `pendingId`**（该 id = 后端 `user_message` 事件 id = 回复帧的 `correlation_id`），置 `isReplying=true` + `sendError=null` 并起 60s 超时 timer（`setTimeout`，回调置 `isReplying=false` + `sendError="回复超时"`、**不清 pendingId**——迟到回复仍需能匹配清 sendError）；`addSpeak`/`addAsk` 收到回复时**先判 `e.correlation_id === pendingId`**——匹配才 `clearTimeout` 取消 timer + 置 `isReplying=false` + `sendError=null`，非匹配（搭话等别的发言）只 append 不动生命周期。`think` 不结束回复（后必跟 `speak`）。`timer`/`pendingId` 都放 module-level（`let replyTimer`/`let pendingId`，**不进 store state**——store 状态须可序列化）。缺取消机制 = 真 bug：10s 收到回复，60s 时 timer 照样触发假「回复超时」。

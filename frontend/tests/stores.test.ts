@@ -70,6 +70,19 @@ afterEach(() => {
 describe("chatStore.add*", () => {
   beforeEach(resetChat);
 
+  it("sendMessage：使用当前 discussionMode 构造聊天请求", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ event_id: "e1" }));
+    vi.stubGlobal("fetch", fetchMock);
+    useChatStore.getState().setDiscussionMode(true);
+
+    await useChatStore.getState().sendMessage("讨论这个问题");
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      message: "讨论这个问题",
+      discussion: true,
+    });
+  });
+
   it.each(["content", "timestamp"])("非法 %s 的回复帧不能提前结束等待", async (field) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ event_id: "pending" })));
     await useChatStore.getState().sendMessage("hello");
@@ -249,7 +262,7 @@ describe("chatStore.sendMessage", () => {
     await useChatStore.getState().sendMessage("不忙");
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      message: "不忙", reply_to: "attempt-1",
+      message: "不忙", reply_to: "attempt-1", discussion: null,
     });
     expect(useChatStore.getState().messages[0].question_status).toBe("claimed");
   });
@@ -280,7 +293,7 @@ describe("chatStore.sendMessage", () => {
     expect(url).toBe("/api/chat");
     expect(init).toMatchObject({
       method: "POST",
-      body: JSON.stringify({ message: "你好" }),
+      body: JSON.stringify({ message: "你好", discussion: null }),
     });
     expect(useChatStore.getState().isReplying).toBe(true);
     expect(useChatStore.getState().sendError).toBeNull();

@@ -122,4 +122,10 @@
 - P0 implementation and specification acceptance completed.
 - P0 review findings fixed: companionship/negation no longer trigger discussion; knowledge questions without punctuation trigger discussion and the slow path.
 - P0 follow-up verification: isolated HTTP/SSE E2E passed; expression tests passed; full backend suite has one reproduced failure in the unrelated character-unload drain path (`1288 passed, 1 failed, 1 skipped`).
-- P1 is paused pending explicit user approval.
+- P1 implementation was explicitly approved by the user and is complete.
+- P1 contract and engineering reviews completed; contracts, facts, frontend docs, and test inventory synchronized.
+- P1 verification: ruff check . passed; pyright reported 0 errors; backend 1289 passed / 1 skipped; frontend 357 passed across 25 files; TypeScript/Vite production build passed.
+- P1 agent HTTP/SSE E2E: 11 scenarios passed plus strict discussion payload validation. Verified automatic/forced modes, ordinary slow-path retrieval/tool compatibility, scope isolation, bounded multi-round reinjection, authorization checks, failed tools, duplicate calls, round/item limits, and durable segment recall counts.
+- E2E used scripted LLM/embedding with real HTTP/SSE, EventBus, and isolated SQLite. Real-model discussion style and citation quality remain unverified; 2000/8000-character limits were source-reviewed.
+- P1 knowledge_search currently returns knowledge facts and empty chunks; source_chunk_id remains null until P2. deep_research returns an explicit unavailable result until P3.
+- P2 has not started. Wait for explicit user approval before beginning P2.

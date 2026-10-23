@@ -27,6 +27,10 @@
 | 阅读 | [`12-reading-system.md`](specs/12-reading-system.md)；表达侧读书交互归 11 | [`reading-system-facts.md`](facts/reading-system-facts.md) | `nyx/reading/` |
 | 桌宠窗口与轻量入口 | [`13-desktop-pet.md`](specs/13-desktop-pet.md) | — | `frontend/src/components/desktop/`, `frontend/src/lib/desktopWindow.ts`, `frontend/src-tauri/tauri.conf.json` |
 | 角色卡与多角色运行 | [`14-character-cards.md`](specs/14-character-cards.md) | [`character-cards-facts.md`](facts/character-cards-facts.md) | `nyx/character_cards.py`, `nyx/cards/nyx/`, `nyx/app_context.py`, `nyx/runtime.py` |
+| 讨论伙伴 | [`15-discussion-partner.md`](specs/15-discussion-partner.md) | [`expression-system-facts.md`](facts/expression-system-facts.md)、[`memory-system-facts.md`](facts/memory-system-facts.md) | `nyx/prompts/skills/`, `nyx/bootstrap.py`, `nyx/app_context.py`, `nyx/expression/`, `frontend/src/components/chat/ChatInput.tsx` |
+
+讨论伙伴当前完成 P1：声明式技能、三态开关和有界工具回注；P2 知识证据块/手动投喂、
+P3 真实深度研究、P4 批注反馈待分阶段实现。
 
 ### 时间感知与离开归来导航
 

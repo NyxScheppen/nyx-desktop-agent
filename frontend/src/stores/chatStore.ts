@@ -40,6 +40,7 @@ export type ChatMessage = {
 
 type ChatState = {
   messages: ChatMessage[];
+  discussionMode: boolean | null;
   isReplying: boolean; // 发消息后等待回复中
   sendError: string | null;
   typedIds: Record<string, true>; // 已逐字打完的 think id（speak/ask 等其同 correlation_id 的 think 打完才开打）
@@ -53,6 +54,7 @@ type ChatState = {
   addThink: (e: TextEvent<"think">) => void;
   addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
   addReadingTurn: (e: ReadingQuestionEvent) => void;
+  setDiscussionMode: (mode: boolean | null) => void;
   selectQuestion: (attemptId: string | null) => void;
   pauseQuestion: (attemptId: string) => Promise<boolean>;
   resumeQuestion: (attemptId: string) => Promise<boolean>;
@@ -233,6 +235,7 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   return {
     messages: [],
+    discussionMode: null,
     isReplying: false,
     sendError: null,
     typedIds: {},
@@ -270,6 +273,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         ? {}
         : { messages: mergeMessages([...s.messages, message]) });
     },
+    setDiscussionMode: (mode) => set({ discussionMode: mode }),
     selectQuestion: (attemptId) => set({ replyTargetId: attemptId }),
     pauseQuestion: async (attemptId) => {
       const scope = captureScope();
@@ -381,7 +385,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         const replyTo = get().replyTargetId ?? (
           candidates.length === 1 ? candidates[0].attempt_id : undefined
         );
-        const { event_id } = await postChat(text, replyTo);
+        const { event_id } = await postChat(text, replyTo, get().discussionMode);
       if (!isScopeCurrent(scope)) return false;
         sendInFlight = false;
         if (replyTo !== undefined) {
@@ -426,6 +430,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       earlyReplies.clear();
       set({
         messages: [],
+        discussionMode: null,
         isReplying: false,
         sendError: null,
         typedIds: {},

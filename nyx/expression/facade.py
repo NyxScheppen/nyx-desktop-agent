@@ -27,7 +27,7 @@ from nyx.enums import (
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
-from nyx.expression.classifier import classify_user_intent
+from nyx.expression.classifier import classify_user_intent, should_load_discussion
 from nyx.expression.mutter import (
     _LLM_MUTTER_RATE,
     _MUTTER_RATE,
@@ -59,6 +59,7 @@ from nyx.types import (
     InteractionAttempt,
     Message,
     ShortTermDesire,
+    Skill,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -95,6 +96,7 @@ class ExpressionFacade:
         finish_return: Callable[[dict[str, float] | None], None] | None = None,
         release_return: Callable[[dict[str, float] | None], None] | None = None,
         reading_context_reader: (Callable[[str, str], Awaitable[str]] | None) = None,
+        skills: Mapping[str, Skill] | None = None,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -113,6 +115,7 @@ class ExpressionFacade:
         self._finish_return = finish_return
         self._release_return = release_return
         self._reading_context_reader = reading_context_reader
+        self._skills = skills or {}
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._history_restored = False
         self._last_slow_at = 0.0
@@ -601,6 +604,7 @@ class ExpressionFacade:
         correlation_id: str,
         reply_to: str | None = None,
         activity_context: ActivityContext | None = None,
+        discussion: bool | None = None,
     ) -> None:
         """完整回复流程：跑 LangGraph 图，内部发布 think/speak/ask。"""
         claimed_return = self._claim_pending_return()
@@ -631,6 +635,13 @@ class ExpressionFacade:
             )
             initial: ReplyState = {
                 "message": msg,
+                "skill": (
+                    self._skills.get("discussion")
+                    if discussion is True or (
+                        discussion is None and should_load_discussion(msg)
+                    )
+                    else None
+                ),
                 "mode": ContextMode.FAST,
                 # 朴素回溯最近 max_context_len 条（快通道用，不含当前消息）；
                 # 慢通道在 assemble 重截断。
@@ -648,6 +659,7 @@ class ExpressionFacade:
                 "correlation_id": correlation_id,
                 "last_slow_at": self._last_slow_at,
                 "tool_outputs": [],
+                "tool_recall_candidates": [],
                 "intent": classify_user_intent(msg),
                 "temporal_context": temporal_context,
                 "reading_context": reading_context,

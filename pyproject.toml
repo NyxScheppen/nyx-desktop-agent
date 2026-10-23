@@ -60,4 +60,4 @@ reportUnusedClass = true
 include = ["nyx*"]
 
 [tool.setuptools.package-data]
-nyx = ["prompts/*.md", "cards/nyx/*.yaml", "cards/nyx/*.md", "cards/nyx/assets/*"]
+nyx = ["prompts/*.md", "prompts/skills/*.json", "cards/nyx/*.yaml", "cards/nyx/*.md", "cards/nyx/assets/*"]

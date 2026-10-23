@@ -166,13 +166,18 @@ topics 联想约束：
 - `polarity` 区分喜欢/不喜欢、相信/不相信等否定关系；历史事实乱序写入时只按有效时间
   重新计算区间，不错误关闭未来事实。
 - 事实抽取、事实召回失败只记录日志并降级为空结果，不回滚原始记忆或阻断回复。
-- `search_facts(query)` 只返回查询命中的实体所关联的全部当前有效事实；事实命中不调用
+- `search_facts(query, scope=None)` 只返回查询命中的实体所关联的全部当前有效事实；事实命中不调用
   `record_recall`，也不影响短期记忆升级。
 - 普通闲聊在表达层先经过事实查询提示词门控；实际查询在 SQL 中先过滤实体、别名、
   关系或宾语，再按命中实体展开有效事实，单次召回最多 64 条，不全表物化。
 - 查询包含明确的 `YYYY年M月`、`M月` 或中文月份时，以该月份中点作为有效性判断时间；
   没有历史时间时使用当前时间。
-- 快通道与慢通道都可注入 `[相关事实]`；慢通道另行注入 `[相关记忆]`，两者保持隔离。
+- `scope=None` 保留原有知识意图判定；显式 scope 在 SQL 候选筛选及实体展开前生效。
+  非讨论快慢通道可注入 `[相关事实]`，非讨论慢通道另行召回对话段原文。
+- 讨论模式关闭隐式事实/对话段注入：`memory_recall` 分别读取 `profile`、`conversation`
+  事实及对话段，`knowledge_search` 只读取 `knowledge`；段真正进入最终回复 prompt 后沿用
+  `record_conversation_segment_recall` 幂等计数。P1 的知识检索只返回事实，证据块及
+  `source_chunk_id` 溯源在 [15](15-discussion-partner.md) 的 P2 实现。
 - 事实变化本身不单独发布 `REFLECTION`；反思准备阶段读取有界的近期有效事实并以
   `[近期事实变化]` 独立注入现有反思 prompt，避免同一记忆同时触发两次反思。
 
@@ -484,7 +489,7 @@ async def search(query: str, kind: MemoryKind | None = None) -> list[Memory]: ..
 async def search_source(
     query: str, source_topic: str, limit: int = 5
 ) -> list[Memory]: ...
-async def search_facts(query: str) -> list[MemoryFact]: ...
+async def search_facts(query: str, scope: str | None = None) -> list[MemoryFact]: ...
 async def recent_facts(limit: int = 32, scope: str | None = None) -> list[MemoryFact]: ...
 async def record_recall(memory_id: str, user_event_id: str) -> None: ...
 async def list_memories(

@@ -79,14 +79,23 @@ async def on_user_message(app: Any, event: Event) -> None:
     reply_to = event.content.get("reply_to")
     reply_method = app.expression.reply
     supports_context = False
+    supports_discussion = False
     try:
         signature = inspect.signature(reply_method)
-        supports_context = "activity_context" in signature.parameters or any(
+        supports_kwargs = any(
             parameter.kind is inspect.Parameter.VAR_KEYWORD
             for parameter in signature.parameters.values()
         )
+        supports_context = "activity_context" in signature.parameters or supports_kwargs
+        supports_discussion = "discussion" in signature.parameters or supports_kwargs
     except (TypeError, ValueError):
         supports_context = True
+        supports_discussion = True
+    discussion = event.content.get("discussion")
+    discussion_kwargs = (
+        {"discussion": discussion}
+        if isinstance(discussion, bool) and supports_discussion else {}
+    )
     if isinstance(reply_to, str):
         if supports_context:
             await reply_method(
@@ -94,18 +103,26 @@ async def on_user_message(app: Any, event: Event) -> None:
                 event.correlation_id,
                 reply_to,
                 activity_context=activity_context,
+                **discussion_kwargs,
             )
         else:
-            await reply_method(event.content["message"], event.correlation_id, reply_to)
+            await reply_method(
+                event.content["message"], event.correlation_id, reply_to,
+                **discussion_kwargs,
+            )
     else:
         if supports_context:
             await reply_method(
                 event.content["message"],
                 event.correlation_id,
                 activity_context=activity_context,
+                **discussion_kwargs,
             )
         else:
-            await reply_method(event.content["message"], event.correlation_id)
+            await reply_method(
+                event.content["message"], event.correlation_id,
+                **discussion_kwargs,
+            )
 
 
 async def on_schedule_block_start(app: Any, event: Event) -> None:

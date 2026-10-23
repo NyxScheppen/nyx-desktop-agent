@@ -159,6 +159,18 @@ describe("api/client", () => {
     });
   });
 
+  it.each([null, true, false])("postChat：发送 discussion=%s", async (discussion) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ event_id: "e3" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postChat("问题", undefined, discussion);
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      message: "问题",
+      discussion,
+    });
+  });
+
   it("提问 pending/pause/resume 端点使用正确的路径和方法", async () => {
     const question = {
       attempt_id: "attempt-1",

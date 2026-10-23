@@ -86,7 +86,10 @@
   记忆正文/摘要明确出现“用户”，避免书中人物、引用和 Nyx 第一人称自述误归因给用户；
   旧就业/偏好规则作为 fallback。
 - 表达层先做事实查询提示词门控；store 先 SQL 筛选实体/别名/谓词/宾语，再按实体展开，单次最多 64 条。
-- 事实不会进入 `Memory[]`，不会调用 `record_recall`；快慢通道都可把事实放入独立的 `[相关事实]` prompt 段。
+- 事实不会进入 `Memory[]`，不会调用 `record_recall`；非讨论快慢通道都可把事实放入独立的 `[相关事实]` prompt 段。
+- `search_facts(query, scope=None)` 支持显式作用域；None 保留原知识意图判断，显式 scope 在 SQL 筛选及实体展开前应用。
+  讨论模式用 `memory_recall` 读取 profile/conversation 事实与对话段，用 `knowledge_search` 读取 knowledge 事实，关闭原隐式注入。
+  完整段 JSON 进入最终回复 prompt 才沿用现有段召回 marker 计数；P1 尚无知识证据块检索及 `source_chunk_id` 溯源，它们属于 P2。
 - 事实不单独发布反思事件；反思准备阶段读取有界近期有效事实，注入独立的 `[近期事实变化]` 段，避免普通记忆矛盾与事实变化各反思一次。
 - 记忆矛盾仍可触发普通 durable `REFLECTION(reason=memory_contradiction)`；payload 保留新旧记忆 id 和两项 `{memory_id, summary}` 结构化 evidence。证据只说明触发原因，反思 consumer 会把它与当前仍存在的近期旧记忆一并送入“归纳模式并形成新点子”的 prompt。
 

@@ -37,7 +37,7 @@ from nyx.expression.store import ExpressionInteractionStore
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
-from nyx.memory.facade import MemoryFacade
+from nyx.memory.facade import MemoryFacade, build_source_topic
 from nyx.memory.facts import MemoryFactStore
 from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
@@ -346,6 +346,7 @@ def build_tools(
     *,
     workspace: Path = Path("workspace"),
     blocked: list[Path] | tuple[Path, ...] = (),
+    ingest: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
 ) -> ToolRegistry:
     """Register always-on local tools and opt-in web tools."""
     tools = ToolRegistry()
@@ -353,7 +354,7 @@ def build_tools(
     tools.register(build_file_io_tool(workspace, blocked=blocked))
     if config.exploration.web_enabled:
         tools.register(build_web_search_tool())
-        tools.register(build_web_fetch_tool())
+        tools.register(build_web_fetch_tool(ingest=ingest))
     return tools
 
 
@@ -370,12 +371,6 @@ async def build_app_context(
     try:
         llm = host.llm.fork() if host else LlmClient.from_config(config.llm)
         bus = EventBus(db)
-        tools = build_tools(
-            config,
-            workspace=Path(character["workspace"]) if character else Path("workspace"),
-            blocked=host.blocked_paths(character["id"]) if host and character else (),
-        )
-
         memory_store = MemoryStore(db)
         fact_store = MemoryFactStore(db)
         embed = host.embed if host else build_embed(config.embedding.model)
@@ -391,6 +386,18 @@ async def build_app_context(
             config.memory,
             embed,
             fact_store,
+        )
+
+        async def ingest_web(text: str, url: str) -> dict[str, Any]:
+            return await memory.ingest_source(
+                text, build_source_topic("web", url), url, url, location=url
+            )
+
+        tools = build_tools(
+            config,
+            workspace=Path(character["workspace"]) if character else Path("workspace"),
+            ingest=ingest_web,
+            blocked=host.blocked_paths(character["id"]) if host and character else (),
         )
 
         desire_store = DesireStore(db)
@@ -494,6 +501,10 @@ async def build_app_context(
             read_reader_book,
             get_reader_book,
             get_reader_progress,
+            fetch_source=(
+                build_web_fetch_tool().handler
+                if config.exploration.web_enabled else None
+            ),
         )
         await activity.recover_stale_running()
         task_tools = build_activity_task_tools(
@@ -537,19 +548,7 @@ async def build_app_context(
             }
 
         async def knowledge_search(query: str, top_k: int = 5) -> dict[str, Any]:
-            facts = await memory.search_facts(query, scope="knowledge")
-            return {
-                "facts": [
-                    {
-                        "subject": fact.subject,
-                        "predicate": fact.predicate,
-                        "object_value": fact.object_value,
-                        "source_chunk_id": None,
-                    }
-                    for fact in facts[: max(1, min(top_k, 5))]
-                ],
-                "chunks": [],
-            }
+            return await memory.search_knowledge(query, top_k)
 
         async def deep_research(query: str) -> dict[str, Any]:
             return {"report": [], "ingested": [], "error": "深度研究尚未启用"}
@@ -570,7 +569,7 @@ async def build_app_context(
         ))
         tools.register(Tool(
             "knowledge_search",
-            "检索知识事实；证据块原文与 source_chunk_id 溯源将在知识库阶段启用。",
+            "检索知识事实与证据块原文，返回 source_chunk_id 溯源供逐条引用。",
             {"type": "object", "properties": {
                 "query": {"type": "string", "description": "要检索的知识主题"},
                 "top_k": {

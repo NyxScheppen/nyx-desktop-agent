@@ -131,11 +131,14 @@
 - 前进到新段落时，阅读后台任务还会调用 `ReadingIntegration.sediment()`；同一本书用
   per-book lock 串行。原文累计到 6000 字符立即沉淀，章末/书末 flush 余量；超长单段用
   `{paragraph_index, char_offset}` cursor 拆块，段落表中的原文不拆改。
-- `books.memory_state` 保存 cursor、滚动 profile 和 pending。每块先生成 profile 与最多 5
-  条知识，再保存 pending、写带 `book:` topic 的 knowledge，最后推进 cursor 并清 pending；
-  崩溃恢复重放 pending，统一来源内去重吸收重复。
-- 网页委派阅读由 `ActivityFacade._run_web_task()` 执行，按 `web:` 来源写 knowledge；来源原文证据
-  与网页任务 checkpoint 在同一 SQLite 事务提交。旧任务 pending 缺少原文时不从重新抓取的网页补造证据。
+- `books.memory_state` 保存 cursor、滚动 profile 和 pending。每块先保存不可变原文 pending，
+  再独立提交 chunk；digest 读取已存块，生成 profile 与最多 5 条知识，并保存提取结果和
+  chunk ID，然后写带 `book:` topic / `source_chunk_id` 的 knowledge。最后同事务推进 cursor/profile
+  并清 pending，成功后才更新内存；后续失败保留已有证据/知识，重放复用快照及提取结果。
+- 网页委派阅读由 `ActivityFacade._run_web_task()` 执行，按 `web:` 来源复用相同持久阶段。
+  旧已提取 pending 缺 chunk ID 时保持 NULL，即使留有原文也不猜测链接或重新摘要。
+- 通用 `reading_evidence` 同时供 `knowledge_search` 和既有反思消费者使用；反思标记
+  consumed 后仍可检索，NULL 向量块只能通过知识事实关联返回。
 - `read_for_activity()` 从持久化 Nyx 位置读到明确目标，或为普通探索选择约 6000 字符的
   下一块；它以 `flush=True` 复用同一原文沉淀管道，成功后才单调推进 Nyx 位置，不写陪读 buffer。
 - profile 包含滚动摘要、最多 5 个主题和固定内容类别。fiction/essay/unknown 使用来源归因，
@@ -174,7 +177,8 @@
 - 当前阅读表由 `nyx/db.py` 的 v7-v10、v18 和 v28-v30 迁移建立/升级；v18 增加
   `reading_progress.revision`，v28 为 `books` 增加内部 `memory_state` checkpoint，
   v29 增加段落格式 JSON，v30 增加划线 offset 和书签表。v31 的 `assigned_task.book_id`
-  外键指向 `books`，删除书后置空并由任务执行显式失败。
+  外键指向 `books`，删除书后置空并由任务执行显式失败。v43 为证据块增加可空 location/embedding，
+  为事实增加可空 source_chunk_id（删除块 SET NULL），不回填旧向量或来源关联。
 - 后端阅读测试位于 `tests/test_reading/`，API 契约测试位于
   `tests/test_api/test_reading_api.py`；前端阅读测试主要位于
   `frontend/tests/stores.test.ts`、`frontend/tests/api.test.ts`、

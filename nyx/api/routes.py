@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -26,6 +27,7 @@ from nyx.app_context import _App, _Host
 from nyx.character_cards import MAX_CARD_BYTES, build_package, load_card
 from nyx.enums import ActivityType, BoundaryResult, EventType, MemoryKind, MemoryType
 from nyx.events.bus import EventAdmissionError
+from nyx.memory.facade import build_source_topic
 from nyx.reading.facade import (
     BookmarkNotFoundError,
     BookNotFoundError,
@@ -33,6 +35,7 @@ from nyx.reading.facade import (
     NoteNotFoundError,
 )
 from nyx.reading.store import ProgressConflictError
+from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.types import (
     Activity,
     Annotation,
@@ -107,6 +110,17 @@ class _ChatPayload(BaseModel):
 
 class _ExportPayload(BaseModel):
     format: str
+
+
+class _KnowledgeSourcePayload(BaseModel):
+    text: str | None = Field(default=None, max_length=200_000, strict=True)
+    url: str | None = Field(default=None, max_length=2048, strict=True)
+
+    @model_validator(mode="after")
+    def require_source(self) -> "_KnowledgeSourcePayload":
+        if not ((self.text and self.text.strip()) or (self.url and self.url.strip())):
+            raise ValueError("请提供文本或 URL")
+        return self
 
 
 class _ObservePayload(BaseModel):
@@ -236,6 +250,46 @@ def build_app(
     @fast.get("/api/ready")
     async def api_ready() -> dict[str, str | None]:
         return {"service": "nyx-agent", "launch_nonce": launch_nonce}
+
+    @fast.post("/api/knowledge/sources")
+    async def api_knowledge_source(payload: _KnowledgeSourcePayload) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "created_memories": 0, "created_facts": 0, "chunks": [],
+        }
+        errors: list[str] = []
+        ingestions: list[dict[str, Any]] = []
+        if payload.text and payload.text.strip():
+            ingestions.append(await app.memory.ingest_source(
+                payload.text, build_source_topic("local", payload.text),
+                "手动文本", str(uuid.uuid4()),
+            ))
+        if payload.url and payload.url.strip():
+            if not app.config.exploration.web_enabled:
+                errors.append("联网未开启")
+            else:
+                url = payload.url.strip()
+                fetched = await build_web_fetch_tool().handler(url=url)
+                text = fetched.get("text")
+                if isinstance(text, str) and text.strip():
+                    ingestions.append(await app.memory.ingest_source(
+                        text, build_source_topic("web", url), url,
+                        str(uuid.uuid4()), location=url,
+                    ))
+                else:
+                    errors.append("网页正文抓取失败或为空，请检查 URL")
+        for ingestion in ingestions:
+            for key in ("created_memories", "created_facts"):
+                result[key] += ingestion.get(key, 0)
+            result["chunks"].extend(ingestion.get("chunks", []))
+            errors.extend(ingestion.get("errors", []))
+        if errors:
+            if not result["chunks"]:
+                raise HTTPException(
+                    status_code=409 if errors == ["联网未开启"] else 400,
+                    detail="；".join(errors),
+                )
+            result["errors"] = errors
+        return result
 
     @fast.post("/api/chat")
     async def api_chat(payload: _ChatPayload) -> dict[str, str]:

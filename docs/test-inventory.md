@@ -8,11 +8,14 @@
 
 - 后端测试文件：69
 - `pytest --collect-only -q`：1290 tests collected
-- 本轮后端全量验证：1289 passed，1 skipped（P1，2026-10-23）。
+- 本轮后端验证（P2，2026-10-23）：排除既有卸载超时用例后 1288 passed，1 skipped，1 deselected。
+  首次全量 4 failed / 1285 passed / 1 skipped；3 处夹具修正后阅读/反思相关 135 项通过。
+  `test_unload_drain_timeout_keeps_worker_until_accepted_work_finishes` 在独立 P1 提交快照也超过 75s，
+  当前全量质量门未全绿；未修改该宿主用例或其生产逻辑。
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 本轮前端全量验证：357 passed（25 个测试文件）。
+- 本轮前端全量验证：361 passed（25 个测试文件）；TypeScript/Vite 生产构建通过。
 - Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；ready 响应必须同时匹配固定 Nyx 服务标识、本次启动 nonce 和响应大小上限；Debug/Release 均通过编译检查。
 - 桌面 launcher 回归：普通与桌面入口均以 `--reload` 启动后端，且只在后端就绪后启动对应前端；原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；普通 TCP、错误 HTTP 状态、非法/过大 JSON、错误服务标识或 nonce 均不能触发前端启动；身份匹配后 owned backend 仍须存活。
 - 启动身份 API 回归：`test_ready_endpoint_returns_owned_instance_identity`、`test_ready_endpoint_keeps_manual_start_compatible`；release smoke 使用同一 nonce 握手且拒绝身份不匹配、过大响应和探测后进程退出。
@@ -22,6 +25,15 @@
 - P1 agent HTTP/SSE E2E：11 个场景全部通过，覆盖自动陪伴/拒绝讨论、自动讨论、强制开关、普通慢通道保留原检索/工具、三工具授权与 scope 隔离、结果回注、越权拦截、工具失败、重复调用及 4 轮/5 项上限，另验证非法 discussion 返回 422、真实段召回计数。
   使用真实 FastAPI/EventBus/内存 SQLite 与脚本化 LLM/embedding；验证流程和 prompt 接线，不代表真实模型讨论风格或引用质量已验收。单项 2000/总块 8000 字符上限经源码核对，未单独做 HTTP 场景。
 - SSE 回归：初次连接失败保持 `connecting`，同一连接恢复后转为 `open`，不把启动期失败误报为 `closed`。
+- P2 agent E2E：8 组摄入/检索场景和 4 组故障恢复场景通过，覆盖 42→43 迁移与删除 SET NULL、
+  手动 text/url 与双输入、实际新增计数/重试、registered fetch 单次摄入、摄入→工具→HTTP/SSE 来源回复、
+  非法/空/关闭联网/SSRF/畸形域名与部分成功、chunk 去重/关联/消费/NULL 向量及完整 JSON 预算，
+  EPUB/web/exploration 各持久阶段失败重放与旧 pending 不猜测关联。另验证关闭联网的 raw fetch 装配与恢复。
+  最后修正后重跑 8 组 HTTP/SSE 场景通过；两条真实 DB 探针验证关键词低覆盖排除/高覆盖与向量命中、
+  重试沿用已存来源名和正文。定向既有回归：记忆 113 项、API/fetch 20 项通过。
+  使用真实 FastAPI/EventBus/隔离 SQLite 和脚本化 LLM/embedding；无新增 pytest 单测，真实模型引用质量待验收。
+- P2 既有夹具同步：阅读 fake 支持显式 chunk ID，checkpoint 失败保留已提交证据；反思三块夹具
+  使用不同原文，避免被来源内精确去重合为一块。
 - 对话活动工具回归：网页阅读、书籍阅读、创作和浏览器问卷统一受理，任务进入同一活动队列；浏览器问卷覆盖同 URL 幂等、模拟页面点击与结果、重启不重做已点击题目、运行中聊天不打断、活动页结果展示。
 
 ## 后端覆盖
@@ -51,7 +63,7 @@
 |---|---|---|
 | REST/SSE | `frontend/tests/api.test.ts`, `sse.test.ts` | 请求封装、委派任务端点与 `task_updated` 分发、创作过滤/分页参数、记忆类别/事实作用域端点、开发/打包共享 base URL、eval recent 分页参数与 prompt 懒加载端点、取消信号、错误、事件解析、SSE `id`/`Last-Event-ID` 回放游标、按 `event_id` 去重、`reading_progress` 帧校验与分发、`scene_memory_requested` 监听与 no-op 分发、`reflection_done` 同时刷新欲望与内在状态 |
 | 状态与交互 | `frontend/tests/stores.test.ts`, `presence.test.ts`, `activityResult.test.ts`, `activityPanel.test.tsx`, `creationPanel.test.tsx` | Zustand、主动搭话等待字段落消息、委派网页/EPUB 表单与段落预览、任务状态/失败原因、普通进度冲突合并与显式重读回退、阅读进度快照的异书/旧 revision/Nyx 回退过滤、书签切书乱序回包隔离、创作分批追加与刷新竞态、创作正文折叠/加载更多、记忆搜索与事实图独立降级、eval store 分页加载历史记录及逐行 prompt 缓存/重试、历史/SSE 去重与因果排序、非法帧不改变等待/未读状态、活跃度、异常原生采样、请求超时/取消、网络结果不确定 |
-| 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、时间分隔、主动搭话等待倒计时、消息首次逐字与重新挂载即时显示、未 ready 不提前记已看、同回合播放顺序、角色重置隔离、角色卡导入与新建表单提交、设置中不再嵌入评估面板、独立评估页面逐条展开详情与安全文本渲染 |
+| 聊天与设置 | `chatPanel.test.tsx`, `settingsView.test.tsx`, `evalPanel.test.tsx` | 用户输入、知识投喂成功/部分成功重试/角色切换旧响应隔离、时间分隔、主动搭话等待倒计时、消息首次逐字与重新挂载即时显示、未 ready 不提前记已看、同回合播放顺序、角色重置隔离、角色卡导入与新建表单提交、设置中不再嵌入评估面板、独立评估页面逐条展开详情与安全文本渲染 |
 | 记忆面板 | `memoryPanel.test.tsx` | 关键词查询提交、六类记忆筛选、三种事实图独立选择、实体关系渲染、事实加载失败降级 |
 | 内在状态与欲望 | `innerStatePanel.test.tsx`, `desiresPanel.test.tsx`, `labels.test.ts` | 未连接/有数据/错误状态展示、情绪选图与拖拽隔离、情绪分类标签、欲望终态过滤、中文标签命中与未知值回退 |
 | 阅读 | `readerView.test.tsx`, `notePanel.test.tsx` | 真分页与长段可达、受控富文本、UTF-16 同段划线、重叠划线线性端点读取、跨段拒绝、划线查询/删除/定位、书签定位、普通笔记和章节交互 |
@@ -181,7 +193,7 @@
 - `test_assigned_task_does_not_preempt_running_activity`
 - `test_web_task_sediments_every_6000_character_block`
 - `test_web_task_evidence_failure_replays_without_duplicate_memory`
-- `test_web_task_checkpoint_failure_rolls_back_reading_evidence`
+- `test_web_task_checkpoint_failure_preserves_reading_evidence`
 - `test_interrupted_assigned_task_returns_to_queue`
 - `test_maybe_start_reading_can_match_uploaded_epub`
 - `test_best_book_match_does_not_fall_back_to_latest`

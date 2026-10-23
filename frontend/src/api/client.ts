@@ -19,6 +19,8 @@ import type {
   Memory,
   MemoryFact,
   MemoryKind,
+  KnowledgeSourceRequest,
+  KnowledgeSourceResult,
   Paragraph,
   PresenceObservation,
   Progress,
@@ -70,6 +72,14 @@ export async function postChat(
   if (replyTo !== undefined) body.reply_to = replyTo;
   if (discussion !== undefined) body.discussion = discussion;
   return request<{ event_id: string }>(`${BASE_URL}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function postKnowledgeSource(body: KnowledgeSourceRequest): Promise<KnowledgeSourceResult> {
+  return request<KnowledgeSourceResult>(`${BASE_URL}/api/knowledge/sources`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

@@ -22,7 +22,7 @@
 - [ ] `local_search` 缺省搜全盘（`full_disk_roots()`），`roots` 参数可收窄；遍历跳过无权限目录不崩
 - [ ] 四个工具返回 JSON 可序列化数据（`dict` / `list` / `str`，不返回 domain dataclass）
 - [ ] `web_search` 的 opt-in 由组合根（底层模块总线契约）按 `config.exploration.web_enabled` 决定是否注册；05-tools 本身不读 config
-- [ ] `web_fetch` 抓网页正文（httpx GET + trafilatura 抽正文）→ 返回 `{"text", "url"}` 纯正文（不写盘、不发事件，供探索直接消化）；抓取失败/空正文返回 `{"error": ...}`（best-effort 不崩）
+- [ ] `web_fetch` 抓网页正文（httpx GET + trafilatura 抽正文）→ 返回 `{"text", "url"}`；注册工具注入摄入回调时另带 `ingestion` 结果。抓取失败/空正文返回 `{"error": ...}`，不触发摄入。
 - [ ] `browser_survey` 只在联网开启、ActivityFacade 已装配后注册；handler 接收用户指定 URL，调用 `assign_browser_survey_task`，返回 `{task_id,status,url}`，不在工具调用期间逐题浏览。
 - [ ] `web_task` 与 `browser_survey` 只在联网开启时注册；`book_task` 与 `creation_task` 始终注册。四者都只负责受理任务，实际执行统一进入 ActivityFacade 的任务队列。
 - [ ] `pyright` strict 零报错
@@ -39,7 +39,7 @@
 - **结果 JSON 可序列化**：工具返回 `dict` / `list` / `str`，不返回 domain dataclass——结果要进 09-activity / 11-expression 的 LLM 上下文
 - **全 async + 不阻塞事件循环**：fs / network 是阻塞 I/O，用 `asyncio.to_thread` 包一层（CLAUDE.md「I/O 操作用 async def」+ 不卡 SSE 广播）
 - **`web_search` opt-in 归组合根**：05-tools 只提供 `build_web_search_tool()`；`main.py`（底层模块总线契约）读 `config.exploration.web_enabled`，true 才注册。未注册 → 不出现在 `schema()` 里，LLM 不可见、`call` 报 `KeyError`
-- **`web_fetch` 抓正文（纯抓取，不落盘不触发读书）**：`fetch_url(url)`（httpx GET + trafilatura 抽正文，失败/空返 `""`，`asyncio.to_thread` 不阻塞事件循环）→ `build_web_fetch_tool()` 返回 `{"text", "url"}` 纯正文（正文超 `_MAX_DOWNLOAD_CHARS`（20 万）截断），供 09-activity 探索直接消化。不再写 `uploads/`、不再发 `USER_MATERIAL`（读书由欲望驱动从书库选书，见 09-activity）。依赖新增 `trafilatura`（pyproject）
+- **`web_fetch` 抓取与摄入**：`fetch_url(url)` 是原始抓取，httpx GET + trafilatura 抽正文，失败/空返 `""`，`asyncio.to_thread` 不阻塞事件循环，正文上限 20 万字符。逐跳公网校验、重定向限制与超时继续适用；非法 URL 或重定向地址按抓取失败处理。工厂签名为 `build_web_fetch_tool(*, ingest: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None) -> Tool`。省略回调返回纯 `{"text", "url"}`；组合根注册的工具注入知识摄入，正文抓取成功后调用一次并返回 `ingestion`。网页任务/探索注入原始 handler，由自己的 checkpoint 沉淀，避免重复 digest。摄入复用 06/15 的去重与部分成功语义，不写 `uploads/`、不发 `USER_MATERIAL`。
 - **`file_io` 角色边界**：`write` 限定角色自己的 `write_root`；`read` / `list` 可访问普通用户文件，但拒绝宿主数据库及其他角色的数据库、卡片和工作目录。路径经 `.resolve()` 校验，链接不能绕过内部目录限制；列目录过滤禁止项。完整边界见 14-character-cards，不构建操作系统沙箱。同路径已有 UTF-8 文件且内容相同时直接返回长度，不调用 `write_text`，让 activity checkpoint 在“文件已写、标记未提交”的恢复窗口保持效果幂等；旧文件按固定大小分块判等，不整文件读入内存。取消协程后仍等待实际文件线程结束，避免卸载关闭 DB 后旧写入继续运行。
 - **`local_search` 范围**：缺省搜**全盘**（`full_disk_roots()`：Windows 枚举存在的盘符、POSIX 根 `/`），同时排除与 `file_io` 相同的内部目录；`.txt` / `.md` 文本，大小写不敏感子串匹配，返回 `[{path, snippet}]`。`roots` 参数可收窄（探索链传 `[workspace]`、测试传 `[tmp_path]`）。与记忆检索（06-memory-system）是两码事——本工具搜**文件**，不搜记忆表
 - **全盘遍历用 `os.walk` + `onerror` 跳过无权限目录**：`rglob` 在无权限目录（Windows `System Volume Information` 等）会抛 `PermissionError`；`os.walk(root, onerror=...)` 跳过不可读目录继续走。注意全盘搜索慢（冷跑可能分钟级），探索链若要收窄用 `roots` 参数；结果截断到 `_MAX_RESULTS`（50）、单文件超 `_MAX_FILE_BYTES`（1MiB）跳过（界内存/耗时兜底，不做超时——`to_thread` 无法干净中断 os.walk 线程）
@@ -77,7 +77,7 @@
     - [ ] 未知 `action` → `ValueError`
   - [ ] **web_fetch**（`test_web_fetch.py`，monkeypatch `fetch_url`/`file_io` + fake bus）：
     - [ ] `_fetch_url_sync`：monkeypatch `httpx.get` 抛异常 → 返回 `""`（best-effort 不冒泡）
-    - [ ] `build_web_fetch_tool().handler(url)`：返回 `{"text": "正文内容", "url": ...}` 纯正文（不写盘、不发事件）
+    - [ ] `build_web_fetch_tool().handler(url)`：未注入摄入时返回纯正文；注册后的摄入路径由 15 的 agent E2E 验证
     - [ ] 抓取空正文 → 返回 `{"error": ...}`
     - [ ] 不触真实网络
 - [ ] 集成测试：无（工具是基础设施，无 Facade 管道；真实绑定归 组合根）

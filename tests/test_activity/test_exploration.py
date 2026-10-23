@@ -120,9 +120,16 @@ class _FakeMemory:
         return self.knowledge
 
     async def remember_knowledge(
-        self, items: list[dict[str, str]], correlation_id: str
+        self, items: list[dict[str, str]], correlation_id: str,
+        *, source_chunk_id: str | None = None,
     ) -> None:
         self.remembered.append((items, correlation_id))
+
+    async def record_reading_evidence(
+        self, source_topic: str, source_name: str, content: str, block_key: str,
+        *, location: str | None = None,
+    ) -> str | None:
+        return "test-chunk"
 
     async def digest_source_block(
         self,
@@ -132,6 +139,7 @@ class _FakeMemory:
         *,
         author: str = "",
         profile: dict[str, object] | None = None,
+        source_chunk_id: str | None = None,
     ) -> tuple[dict[str, object], list[dict[str, str]]]:
         self.digested.append((source_name, text))
         return (

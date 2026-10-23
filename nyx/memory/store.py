@@ -491,23 +491,62 @@ class MemoryStore:
         block_key: str,
         *,
         book_id: str | None = None,
-    ) -> None:
+        location: str | None = None,
+        embedding: list[float] | None = None,
+    ) -> str | None:
         """Persist exact source exposure once, including pending replay."""
         if not content.strip():
-            return
+            return None
         if not source_topic or len(content) > 6000:
             raise ValueError("阅读证据需要来源且正文不能超过 6000 字符")
         key = json.dumps([source_topic, block_key, content], ensure_ascii=False)
         evidence_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
         async with self._operation() as should_commit:
+            cursor = await self._db.conn.execute(
+                "SELECT id FROM reading_evidence WHERE source_topic=? AND content=? "
+                "ORDER BY created_at, id LIMIT 1", (source_topic, content),
+            )
+            existing = await cursor.fetchone()
+            if existing is not None:
+                return str(existing["id"])
             await self._db.conn.execute(
                 "INSERT INTO reading_evidence "
-                "(id, source_topic, source_name, content, created_at, book_id) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
-                (evidence_id, source_topic, source_name, content, time.time(), book_id),
+                "(id, source_topic, source_name, content, created_at, book_id, "
+                "location, embedding) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO NOTHING",
+                (evidence_id, source_topic, source_name, content, time.time(), book_id,
+                 location, json.dumps(embedding) if embedding is not None else None),
             )
             if should_commit:
                 await self._db.conn.commit()
+        return evidence_id
+
+    async def list_knowledge_chunks(
+        self, *, source_topic: str | None = None, ids: list[str] | None = None,
+    ) -> list[ReadingEvidence]:
+        if ids == []:
+            return []
+        clauses: list[str] = []
+        params: list[str] = []
+        if source_topic is not None:
+            clauses.append("source_topic=?")
+            params.append(source_topic)
+        if ids is not None:
+            clauses.append("id IN (" + ",".join("?" for _ in ids) + ")")
+            params.extend(ids)
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM reading_evidence"
+                + (" WHERE " + " AND ".join(clauses) if clauses else "")
+                + " ORDER BY created_at, id", params,
+            )
+            rows = await cursor.fetchall()
+        return [ReadingEvidence(
+            id=row["id"], source_topic=row["source_topic"],
+            source_name=row["source_name"], content=row["content"],
+            created_at=row["created_at"], location=row["location"],
+            embedding=json.loads(row["embedding"]) if row["embedding"] else None,
+        ) for row in rows]
 
     async def pending_reading_evidence(self, limit: int = 3) -> list[ReadingEvidence]:
         """Return bounded oldest unconsumed source snapshots."""
@@ -515,7 +554,8 @@ class MemoryStore:
             raise ValueError("阅读证据 limit 必须在 [1, 3]")
         async with self._operation():
             cursor = await self._db.conn.execute(
-                "SELECT id, source_topic, source_name, content, created_at "
+                "SELECT id, source_topic, source_name, content, created_at, "
+                "location, embedding "
                 "FROM reading_evidence WHERE consumed_at IS NULL "
                 "ORDER BY created_at, id LIMIT ?", (limit,),
             )
@@ -524,6 +564,8 @@ class MemoryStore:
             id=row["id"], source_topic=row["source_topic"],
             source_name=row["source_name"], content=row["content"],
             created_at=row["created_at"],
+            location=row["location"],
+            embedding=json.loads(row["embedding"]) if row["embedding"] else None,
         ) for row in rows]
 
     async def consume_reading_evidence(self, ids: list[str]) -> None:

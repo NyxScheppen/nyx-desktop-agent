@@ -52,7 +52,7 @@ describe("MemoryPanel", () => {
           created_at: 100,
           polarity: 1,
           scope: "profile",
-          source_segment_id: null,
+          source_segment_id: null, source_chunk_id: null,
         },
       ],
     });

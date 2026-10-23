@@ -120,6 +120,8 @@ class ReadingEvidence:
     source_name: str
     content: str
     created_at: float
+    location: str | None = None
+    embedding: list[float] | None = None
 
 
 @dataclass
@@ -148,6 +150,7 @@ class MemoryFact:
     object_type: str = "concept"
     scope: str = "conversation"
     source_segment_id: str | None = None
+    source_chunk_id: str | None = None
 
 
 # ---- 欲望 ----

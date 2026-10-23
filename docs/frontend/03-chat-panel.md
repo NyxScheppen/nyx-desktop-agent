@@ -1,7 +1,7 @@
 # 聊天面板（`components/chat/`）
 
 > 核心面板之一：消息列表 + 输入框。用户发消息 → `POST /api/chat` → SSE 回显 + `speak`/`think`/`ask` 上屏。
-> 范围：`components/chat/{MessageList,MessageBubble,ChatInput}.tsx` 的组件树、发消息流程、Nyx 产出渲染，以及 `lib/time.ts` 的共享时间纯函数。
+> 范围：`components/chat/{MessageList,MessageBubble,ChatInput,KnowledgeFeed}.tsx` 的组件树、发消息/知识投喂流程、Nyx 产出渲染，以及 `lib/time.ts` 的共享时间纯函数。
 >
 > **`ChatPanel` 已拆散**：容器职责迁到 App 精简装配——`MessageList` → 左栏常驻对话（`div.left-dock`）、`ChatInput` → 左栏底部输入框。本 spec 保留 `MessageList`/`MessageBubble`/`ChatInput` 的组件契约（复用不重写），不再描述 `ChatPanel` 容器。
 
@@ -14,6 +14,7 @@ MessageList                # 微信式全量列表：全部消息按序渲染，
 └─ MessageBubble           # 单条：按 role/kind 渲染，nyx 文本走 useTypewriter 逐字（见 §3）
 ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用发送按钮（输入框可预打下一句）——现挂左栏底部
 └─ sendError               # 红字，挂在 ChatInput 下方，读 chatStore.sendError
+KnowledgeFeed              # ChatInput 后方的可折叠“投喂知识”表单，随角色世代重新挂载
 ```
 
 - `ChatPanel`：`useChatStore(s => s.messages)` 订阅；`useSSE` 不在此（SSE 挂 App 层，见 01-sse §4，`ChatPanel` 只消费 store）。
@@ -45,6 +46,15 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
 `ChatInput` 上方提供“自动 / 讨论 / 陪伴”三态按钮，绑定 `chatStore.discussionMode`，
 分别设置 null / true / false，并用 `aria-pressed` 表达当前选择；默认和角色 reset 后均为自动。
 发送使用当前模式，讨论强制慢通道，陪伴禁用讨论技能但仍可按原评分进入普通慢通道。
+
+### 知识投喂（P2）
+
+- `KnowledgeFeed` 放在 ChatInput 后，默认折叠。文本域最多 200000 字符，URL 最多 2048；
+  至少一项非空才可提交，允许同时填写。调用 `postKnowledgeSource`，不经聊天消息或 SSE 回显。
+- 提交时禁用输入和按钮并显示“正在摄入…”；成功显示“已进知识库”及实际新增知识/事实数，清空输入。
+  `errors` 非空表示部分摄入，显示已保存原文块数和失败原因，保留输入便于重试；请求失败显示错误。
+- 组件置于 App 按角色世代设置 key 的子树中。提交捕获 character scope/revision，成功、catch、
+  finally 都校验当前 scope，切换后的旧响应不能清空新角色草稿或改写提示/提交状态。
 
 ## 3. `MessageBubble` 渲染（按 role/kind）
 
@@ -101,4 +111,5 @@ ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用�
   分别显示对应时间，前端重启或重连回填后保留相同事件时间；不改变气泡宽度、串行逐字或
   滚动跟随行为。
 - `ChatInput`：`isReplying=true` 禁用发送；回车/点发送触发 `sendMessage`（mock store action）；三态按钮更新当前选择，API/store 回归覆盖 null/true/false 透传及 reset。
+- `KnowledgeFeed`：成功提示与实际计数、部分成功保留草稿并可重试、角色切换后旧成功/失败响应隔离；API 测试覆盖 scoped URL、selection revision 与部分结果透传。
 - 视觉样式不做断言（README §6 测试约定）。

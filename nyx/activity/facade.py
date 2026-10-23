@@ -3,6 +3,8 @@ import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, cast
 from urllib.parse import urlsplit
@@ -114,6 +116,8 @@ class ActivityFacade:
         get_reader_progress: (
             Callable[[str], Awaitable[ReadingProgress]] | None
         ) = None,
+        *,
+        fetch_source: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self._store = store
         self._bus = bus
@@ -131,6 +135,7 @@ class ActivityFacade:
         self._get_reader_book = get_reader_book
         self._get_reader_progress = get_reader_progress
         self._web_enabled = exploration_config.web_enabled
+        self._fetch_source = fetch_source
         self._exploration = Exploration(
             llm,
             evaluator,
@@ -140,6 +145,7 @@ class ActivityFacade:
             memory,
             exploration_config,
             canon,
+            fetch_source=fetch_source,
         )
         self._lifecycle = _activity_lifecycle.ActivityLifecycle(
             store, bus, desire, config
@@ -452,85 +458,96 @@ class ActivityFacade:
     async def _run_web_task(self, task: AssignedTask) -> dict[str, Any]:
         if task.url is None:
             raise ValueError("网页任务缺 URL")
-        fetched = await self._tools.call("web_fetch", {"url": task.url})
-        if not isinstance(fetched, dict):
-            raise ValueError("网页正文抓取失败")
-        text = cast(dict[str, Any], fetched).get("text")
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("网页正文抓取失败或为空")
-        cursor_raw = task.checkpoint.get("cursor", 0)
+        checkpoint = deepcopy(task.checkpoint)
+
+        async def save() -> None:
+            candidate = replace(
+                task, checkpoint=deepcopy(checkpoint), updated_at=time.time()
+            )
+            async with self._store.db.transaction():
+                await self._store.save_task(candidate)
+            task.checkpoint = deepcopy(checkpoint)
+            task.updated_at = candidate.updated_at
+
+        text = checkpoint.get("source_text")
+        # Legacy pending is replayed before fetching any new source.
+        cursor_raw = checkpoint.get("cursor", 0)
         cursor = cursor_raw if isinstance(cursor_raw, int) else 0
-        while cursor < len(text):
-            pending_raw = task.checkpoint.get("pending")
+        while True:
+            pending_raw = checkpoint.get("pending")
             if isinstance(pending_raw, dict):
                 pending = cast(dict[str, Any], pending_raw)
             else:
+                if not isinstance(text, str):
+                    fetched = (
+                        await self._fetch_source(url=task.url)
+                        if self._fetch_source is not None
+                        else await self._tools.call("web_fetch", {"url": task.url})
+                    )
+                    if not isinstance(fetched, dict):
+                        raise ValueError("网页正文抓取失败")
+                    text = cast(dict[str, Any], fetched).get("text")
+                    if not isinstance(text, str) or not text.strip():
+                        raise ValueError("网页正文抓取失败或为空")
+                    text = text[:200_000]
+                    checkpoint["source_text"] = text
+                    await save()
+                if cursor >= len(text):
+                    break
                 block = text[cursor : cursor + 6000]
-                profile_raw = task.checkpoint.get("profile")
-                profile = (
-                    cast(dict[str, object], profile_raw)
-                    if isinstance(profile_raw, dict)
-                    else None
-                )
-                next_profile, items = await self._memory.digest_source_block(
-                    block, task.url, task.id, profile=profile
-                )
-                source_topic = build_source_topic("web", task.url)
-                for item in items:
-                    item["source_topic"] = source_topic
-                    item["source_name"] = task.url
-                pending = {
+                pending: dict[str, Any] = {
                     "cursor": cursor + len(block),
-                    "profile": next_profile,
-                    "knowledge": items,
                     "source_text": block,
                     "source_name": task.url,
                     "block_key": f"{cursor}:{len(block)}",
                 }
-                task.checkpoint["pending"] = pending
-                task.updated_at = time.time()
-                await self._store.save_task(task)
+                checkpoint["pending"] = pending
+                await save()
+            source_text = pending.get("source_text")
+            chunk_id: str | None = None
+            if isinstance(source_text, str) and source_text.strip():
+                chunk_id = await self._memory.record_reading_evidence(
+                    build_source_topic("web", task.url), task.url, source_text,
+                    str(pending.get("block_key", "")), location=task.url,
+                )
+                if "knowledge" not in pending:
+                    profile_raw = checkpoint.get("profile")
+                    profile = (
+                        cast(dict[str, object], profile_raw)
+                        if isinstance(profile_raw, dict) else None
+                    )
+                    next_profile, items = await self._memory.digest_source_block(
+                        source_text, task.url, task.id, profile=profile,
+                        source_chunk_id=chunk_id,
+                    )
+                    for item in items:
+                        item["source_topic"] = build_source_topic("web", task.url)
+                        item["source_name"] = task.url
+                    pending.update(
+                        profile=next_profile, knowledge=items, source_chunk_id=chunk_id
+                    )
+                    await save()
+                else:
+                    saved_chunk = pending.get("source_chunk_id")
+                    chunk_id = saved_chunk if isinstance(saved_chunk, str) else None
             raw_items = pending.get("knowledge", [])
             items = (
-                [
-                    cast(dict[str, str], item)
-                    for item in cast(list[object], raw_items)
-                    if isinstance(item, dict)
-                ]
-                if isinstance(raw_items, list)
-                else []
-            )
-            source_text = pending.get("source_text")
-            source_name = pending.get("source_name")
-            block_key = pending.get("block_key")
-            next_cursor = pending.get("cursor")
-            next_profile = pending.get("profile")
-            next_cursor_value = next_cursor if isinstance(next_cursor, int) else cursor
-            next_profile_value: dict[str, object] = (
-                cast(dict[str, object], next_profile)
-                if isinstance(next_profile, dict)
-                else {}
+                [cast(dict[str, str], item) for item in cast(list[object], raw_items)
+                 if isinstance(item, dict)]
+                if isinstance(raw_items, list) else []
             )
             if items:
-                await self._memory.remember_knowledge(items, task.id)
-            async with self._store.db.transaction():
-                if (
-                    isinstance(source_text, str)
-                    and isinstance(source_name, str)
-                    and isinstance(block_key, str)
-                ):
-                    await self._memory.record_reading_evidence(
-                        build_source_topic("web", task.url),
-                        source_name,
-                        source_text,
-                        block_key,
-                    )
-                task.checkpoint["cursor"] = next_cursor_value
-                task.checkpoint["profile"] = next_profile_value
-                task.checkpoint["pending"] = None
-                task.updated_at = time.time()
-                await self._store.save_task(task)
-            cursor = next_cursor_value
+                await self._memory.remember_knowledge(
+                    items, task.id, source_chunk_id=chunk_id
+                )
+            next_cursor = pending.get("cursor")
+            if not isinstance(next_cursor, int) or next_cursor <= cursor:
+                raise ValueError("网页 checkpoint cursor 未前进")
+            checkpoint.update(
+                cursor=next_cursor, profile=pending.get("profile"), pending=None
+            )
+            await save()
+            cursor = next_cursor
         profile_raw = task.checkpoint.get("profile")
         profile = (
             cast(dict[str, object], profile_raw)

@@ -23,6 +23,7 @@ import { useSSE } from "./hooks/useSSE";
 import { formatCurrentTime, timePhaseAt } from "./lib/time";
 import { useActivityStore } from "./stores/activityStore";
 import { useChatStore } from "./stores/chatStore";
+import { KnowledgeFeed } from "./components/chat/KnowledgeFeed";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
 import { useDesireStore } from "./stores/desireStore";
 import { useMemoryStore } from "./stores/memoryStore";
@@ -167,6 +168,7 @@ export default function App() {
               <StatusBar />
               <MessageList messages={messages} now={now} />
               <ChatInput />
+              <KnowledgeFeed />
             </div>
             <div className="game-main">
               <section className="side-panel">

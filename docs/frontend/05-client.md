@@ -23,6 +23,7 @@ async function getDesires(): Promise<DesireState>                               
 async function getMemories(kind: MemoryKind | null = null): Promise<Memory[]>     // GET /api/memories?kind=
 async function getMemorySearch(query: string, kind: MemoryKind | null = null): Promise<Memory[]> // GET /api/memories/search?q=&kind=
 async function getRecentFacts(limit = 64, scope: FactScope = "profile"): Promise<MemoryFact[]> // GET /api/memories/facts?limit=&scope=
+async function postKnowledgeSource(body: KnowledgeSourceRequest): Promise<KnowledgeSourceResult> // POST /api/knowledge/sources
 async function getActivity(): Promise<ActivitySnapshot>                          // GET /api/activity
 async function getActivityResults(params?): Promise<Activity[]>                  // GET /api/activity/results?limit=&offset=&activity_type=creation
 async function getEventsLog(params?): Promise<BackendEvent[]>                    // GET /api/events/log?limit=&event_type=&correlation_id=
@@ -53,6 +54,25 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 - 返回值直接 JSON 反序列化后上抛给调用方，**不包裹** `{ok, data}`。
 
 
+### 知识摄入类型与结果（P2）
+
+```typescript
+type KnowledgeSourceRequest = { text?: string; url?: string };
+type KnowledgeChunk = {
+  chunk_id: string; source_topic: string; source_name: string;
+  location: string | null; content: string;
+};
+type KnowledgeSourceResult = {
+  created_memories: number; created_facts: number; chunks: KnowledgeChunk[]; errors?: string[];
+};
+```
+
+`postKnowledgeSource` 按普通角色写请求附 selection revision。text/url 必须为字符串，长度分别
+≤ 200000 / 2048，至少一项非空；支持两项并存。成功返回本次实际新增数与保存的原文块，重复
+摄入可返回零新增。存在已保存块时，部分失败以 200 + `errors` 返回；没有保存块时，联网关闭
+返回 409，其余抓取/摄入失败返回 400；请求校验失败返回 422。前端收到 200 后仍须检查 errors。
+`MemoryFact.source_chunk_id` 是可空证据块 ID；旧事实保持 null，P2 不增加原文详情请求。
+
 ## 2. 错误契约（统一）
 
 - **成功返回数据、失败 throw**。所有函数：fetch 网络错误（`TypeError`）与非 2xx 响应（读 body 错误信息后 `throw new Error(...)`）都上抛——**不返回 `{ok:false}`、不返回 null**。调用方自行 try/catch：
@@ -77,6 +97,7 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
   - `getMemories` / `getMemorySearch`：分别请求 `/api/memories` 与 URL 编码后的
     `/api/memories/search?q=`；传入类别时附加 `kind`。
   - `getRecentFacts`：请求 `/api/memories/facts?limit=&scope=`，limit 在 client 侧限制到 `0..64`。
+  - `postKnowledgeSource`：按角色 URL/selection revision 发送 text/url，原样返回计数、chunks 与部分成功 errors。
   - `postObserve`：`POST /api/observe`、body `{presence, window_title, idle_seconds, sampled_at}` + signal → 返回 `{event_id}` 解析正确。
   - `getDesires`：`GET /api/desires` → `DesireState` 解析正确。
   - `getActivity`：`GET /api/activity` → `ActivitySnapshot` 解析正确。

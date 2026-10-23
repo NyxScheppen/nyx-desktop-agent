@@ -338,9 +338,11 @@ class MemoryFactStore:
         source_memory_id: str | None,
         scope: str = "conversation",
         source_segment_id: str | None = None,
-    ) -> None:
+        source_chunk_id: str | None = None,
+    ) -> int:
         if not candidates:
-            return
+            return 0
+        created = 0
         async with self._operation() as should_commit:
             savepoint = f"facts_{uuid4().hex}"
             if not should_commit:
@@ -394,8 +396,9 @@ class MemoryFactStore:
                         "INSERT INTO memory_fact ("
                         "id, subject_entity_id, predicate, object_entity_id, "
                         "object_value, source_memory_id, valid_from, valid_until, "
-                        "created_at, polarity, scope, source_segment_id"
-                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "created_at, polarity, scope, source_segment_id, "
+                        "source_chunk_id"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             str(uuid4()),
                             subject_id,
@@ -413,8 +416,10 @@ class MemoryFactStore:
                                 else "conversation"
                             ),
                             source_segment_id,
+                            source_chunk_id,
                         ),
                     )
+                    created += 1
                 if should_commit:
                     await self._db.conn.commit()
                 else:
@@ -426,6 +431,8 @@ class MemoryFactStore:
                 else:
                     await self._db.conn.rollback()
                 raise
+
+        return created
 
     async def close_segment_facts(self, segment_id: str, now: float) -> None:
         async with self._operation() as should_commit:
@@ -470,7 +477,8 @@ class MemoryFactStore:
             cursor = await self._db.conn.execute(
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
                 "COALESCE(o.canonical_name, f.object_value) AS object_value, "
-                "f.valid_from, f.valid_until, f.source_memory_id, f.source_segment_id, "
+                "f.valid_from, f.valid_until, f.source_memory_id, "
+                "f.source_segment_id, f.source_chunk_id, "
                 "f.created_at, f.polarity, f.scope, s.entity_type AS subject_type, "
                 "o.entity_type AS object_type, "
                 "f.subject_entity_id, f.object_entity_id "
@@ -498,7 +506,8 @@ class MemoryFactStore:
             cursor = await self._db.conn.execute(
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
                 "COALESCE(o.canonical_name, f.object_value) AS object_value, "
-                "f.valid_from, f.valid_until, f.source_memory_id, f.source_segment_id, "
+                "f.valid_from, f.valid_until, f.source_memory_id, "
+                "f.source_segment_id, f.source_chunk_id, "
                 "f.created_at, f.polarity, f.scope, s.entity_type AS subject_type, "
                 "o.entity_type AS object_type "
                 "FROM memory_fact f "
@@ -527,7 +536,8 @@ class MemoryFactStore:
             cursor = await self._db.conn.execute(
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
                 "COALESCE(o.canonical_name, f.object_value) AS object_value, "
-                "f.valid_from, f.valid_until, f.source_memory_id, f.source_segment_id, "
+                "f.valid_from, f.valid_until, f.source_memory_id, "
+                "f.source_segment_id, f.source_chunk_id, "
                 "f.created_at, f.polarity, f.scope, s.entity_type AS subject_type, "
                 "o.entity_type AS object_type "
                 "FROM memory_fact f "
@@ -704,6 +714,9 @@ def _row_to_fact(row: aiosqlite.Row) -> MemoryFact:
             if "source_segment_id" in row.keys()
             and row["source_segment_id"] is not None
             else None
+        ),
+        source_chunk_id=(
+            str(row["source_chunk_id"]) if row["source_chunk_id"] is not None else None
         ),
         created_at=float(row["created_at"]),
         polarity=int(row["polarity"]) if "polarity" in row.keys() else 1,

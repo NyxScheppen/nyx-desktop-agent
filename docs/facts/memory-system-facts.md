@@ -40,8 +40,8 @@
   `web:` / `local:` topic；`remember_knowledge` 把该来源 topic 和知识主题一同写入
   `Memory.topics`。原文记忆的精确与语义去重都保留来源边界，同一句内容来自不同书籍或
   页面时不会折叠成一条；语义 top-1 也在同一来源候选池内选取，不受其它来源更高相似项
-  挤占。`material:` 只兼容旧库已有记忆；通用文本上传入口已退役，新读书知识只产生
-  `book:` 来源。
+  挤占。`material:` 只兼容旧库已有记忆；旧活动材料上传入口已退役，EPUB 产生 `book:`，
+  P2 手动文本/URL 和网页摄入产生 `local:` / `web:` 来源。
 - 每条 Memory 最多一个来源 topic；多个来源、不支持的来源 kind 或空标识直接拒绝。
   无来源记忆只和无来源候选去重，不会精确命中任意带来源记忆。
 - `digest_source_block()` 一次只处理最多 6000 字符，使用上一版
@@ -89,7 +89,7 @@
 - 事实不会进入 `Memory[]`，不会调用 `record_recall`；非讨论快慢通道都可把事实放入独立的 `[相关事实]` prompt 段。
 - `search_facts(query, scope=None)` 支持显式作用域；None 保留原知识意图判断，显式 scope 在 SQL 筛选及实体展开前应用。
   讨论模式用 `memory_recall` 读取 profile/conversation 事实与对话段，用 `knowledge_search` 读取 knowledge 事实，关闭原隐式注入。
-  完整段 JSON 进入最终回复 prompt 才沿用现有段召回 marker 计数；P1 尚无知识证据块检索及 `source_chunk_id` 溯源，它们属于 P2。
+  完整段 JSON 进入最终回复 prompt 才沿用现有段召回 marker 计数；P2 的知识工具另返回原文证据块及可空 `source_chunk_id`，不增加对话段召回计数。
 - 事实不单独发布反思事件；反思准备阶段读取有界近期有效事实，注入独立的 `[近期事实变化]` 段，避免普通记忆矛盾与事实变化各反思一次。
 - 记忆矛盾仍可触发普通 durable `REFLECTION(reason=memory_contradiction)`；payload 保留新旧记忆 id 和两项 `{memory_id, summary}` 结构化 evidence。证据只说明触发原因，反思 consumer 会把它与当前仍存在的近期旧记忆一并送入“归纳模式并形成新点子”的 prompt。
 
@@ -101,6 +101,27 @@
 - schema 42 为段增加 freshness/结算锚点、活跃召回资格、召回次数、事实抽取时间与 scope，并新增事件级段召回标记；旧段默认活跃且原文不变。独立记忆计时器每分钟检查满四小时的待判段及事实补写，并结算短期段衰减和容量淘汰；freshness 参与活跃召回排序。淘汰只取消召回资格，原文与事实保留。
 - 对话段真实进入慢通道独立 prompt 区块后才按 `(user_event_id, segment_id)` 计数，达到既有阈值可独立于 LLM 判定晋升；预算落选、快通道和重放不计。段追加新轮次会重置判定并刷新新鲜度，但不清除历史召回计数。
 - 对话段判定后从原文抽取明确事实，`memory_fact.source_segment_id` 提供溯源；画像段的用户主体事实进入 `profile`，其余明确对话事实进入 `conversation`，阅读/网页资料仍在 `knowledge`，不同 scope 的单值事实不会互相关闭。重新抽取前关闭该段的旧事实；事实失败不丢原文。
+
+## 双层知识与摄入（P2）
+
+- schema 43 为 `reading_evidence` 增加可空 `location` / JSON `embedding`，为
+  `memory_fact` 增加 `source_chunk_id` 外键，删除块时 SET NULL；旧数据不补算向量、不猜测来源。
+- `MemoryFacade.ingest_source` 将原文分为最多 6000 字符的块，先提交 chunk，再摘要并调用
+  `remember_knowledge(..., source_chunk_id=...)`。其返回值和 API 的 `created_memories` /
+  `created_facts` 是本次实际新增数，重复命中为零，已有事实保留原来源。
+- chunk 精确/语义去重限定同来源；语义 cosine ≥ 0.95，并保护数字、时间与否定差异。
+  digest 按 chunk ID 读取已存原文及来源，避免语义命中后用另一份正文生成证据关联。
+- `search_knowledge` 仅查 knowledge 事实，合并其关联块和相关向量/关键词块，ID 去重。
+  直接块候选要求非空向量，且 cosine 或关键词覆盖率 ≥ 0.45；NULL 向量只能由事实关联带出，不用最新块兜底。
+  每块正文 ≤ 2000 字符，整个 chunks JSON 数组（含来源元数据）≤ 12000 字符。
+- `consumed_at` 只控制既有反思消费者，已消费块仍能检索。手动和网页原文同样可被反思消费；
+  活动总结继续经 `remember_activity` 保存，不冒充原文证据。
+- EPUB/网页任务/探索先存原文 pending，依次提交 chunk、提取结果和显式 chunk ID、knowledge，
+  最后同事务推进 cursor/profile 并清 pending。失败保留已提交阶段；旧已提取 pending 无 ID 时保持 NULL。
+- 事实抽取/存储沿用 best-effort：失败保留 chunk/Memory，可能没有事实行；重复 Memory
+  不补抽事实，因此不承诺失败重试必然补齐事实。事实批次 SQL 失败由 savepoint 回滚。
+- 手动 `POST /api/knowledge/sources` 支持 text/url；注册的 `web_fetch` 摄入正文，checkpoint
+  阅读器使用不重复摘要的 raw fetch。网络关闭时不注入 raw fetch，恢复旧任务也遵守开关。
 
 ## 活动记忆
 

@@ -109,14 +109,15 @@
 ## 活动执行
 
 - `READING` 必须来自真实 EPUB `book_id` 或委派网页任务；缺少二者会 `raise ValueError`，防止凭空编造读书内容。
-- 明确网页任务只调用 `web_fetch`，正文按 6000 字符块沉淀 knowledge、原文证据和滚动 profile；knowledge 先独立幂等写入，随后证据与 cursor/profile/pending 在同一事务提交。写失败保留 pending，重放由来源内去重吸收；旧 pending 缺原文时不从新抓取页面伪造证据。抓取失败或空正文把任务置为 FAILED。
+- 明确网页任务使用 raw `web_fetch`，正文快照最多 200000 字符，按 6000 字符块沉淀。先保存原文 pending，再独立提交 chunk、保存提取结果和 chunk ID、幂等写 knowledge，最后同事务推进 cursor/profile 并清 pending；提交成功后才更新内存快照。后续失败不回滚已有证据/知识，恢复不重新抓取已存正文。旧已提取 pending 缺 chunk ID 时不猜测关联；抓取失败或空正文把任务置为 FAILED。关闭联网时不注入 raw fetch，旧任务也不能绕过开关抓网。
 - EPUB 委派任务与探索欲命中的 EPUB 都调用 `ReadingFacade.read_for_activity()`：复用原文沉淀、只单调推进 Nyx 进度，不修改用户进度，也不触发陪读冲动、提问或联想。
 - `CREATION` 按 goal topic/描述融合召回最多 3 条相关 knowledge/历史创作，连同当前观察、情绪、精力、审美和 canon 调用 LLM；`title/content` 必须是非空字符串。文件经 `ToolRegistry` 写入 `workspace/creations/<safe-title>-<activity-hash>.md`，标题 stem 最长 96 字符，同名活动不覆盖；同路径同内容写入幂等。进度写在 `activity.progress["creation"]`，恢复时复用 style / LLM 结果 / 文件路径。
 - `FREE_EXPLORATION` 由 `Exploration.run(activity)` 执行显式 checkpoint 状态机：`searching -> reading_results -> summarizing -> sinking -> completed`。进度写在 `activity.progress["exploration"]`，恢复时从 cursor 继续抓取结果；`sink_done=true` 时不重复新增长期欲望或 knowledge 记忆。
 - 探索的 web 结果先用 `web_fetch` 读取正文，本地结果先用 `file_io(read)` 读取文件，失败才
   回退 snippet；每条正文最多取 6000 字符进入 finding 和原文沉淀。URL/路径生成稳定的
-  `web:` / `local:` topic；`source_pending` 在写 knowledge 前落 activity checkpoint，写完
-  才推进 cursor，因此恢复不会重复抓取或丢失来源知识。正文和 snippet 都为空白时跳过
+  `web:` / `local:` topic；先将原文保存到 `source_pending`，再提交 chunk、保存提取结果和
+  chunk ID、写 knowledge，最后推进 cursor 并清 pending。失败保留已提交阶段，恢复复用快照；
+  旧已提取 pending 无 ID 时不补造关联。snippet 明确归因为“搜索摘要”。正文和 snippet 都为空白时跳过
   `digest_source_block` 与 finding/knowledge，但 cursor 继续推进。
 - `OBSERVE_USER` 读取组合根维护的 `last_presence`、`last_window_title`、`last_screen_summary`，用纯函数拼 summary。
 - `classify_presence(idle_seconds)` 的边界为 `<30` 秒 online、`30-300` 秒 busy、`>=300` 秒 away，窗口标题不参与三态判定。

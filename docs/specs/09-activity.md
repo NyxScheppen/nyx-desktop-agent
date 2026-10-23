@@ -178,10 +178,10 @@ class AssignedTask:
 - 创建时只接受带主机名的 `http` / `https` URL；`exploration.web_enabled=false` 时返回冲突且不创建任务。
 - 执行只调用现有 `web_fetch`，不先搜索；继续复用逐跳公网校验、重定向限制、15 秒请求超时和 20 万字符正文上限。
 - 空正文、非公网地址、下载或解析失败都使任务 `FAILED`，不得沉淀 snippet 或伪正文。
-- `checkpoint` 保存 `cursor/profile/pending`。pending 至少包含下一 cursor、滚动 profile、knowledge 列表，以及该块的 `source_text/source_name/block_key`；网页正文从 cursor 起每次最多 6000 字符调用 `MemoryFacade.digest_source_block`。
-- 每块先持久化 pending，再调用 `remember_knowledge`。knowledge 可能逐条提交；其失败时 cursor 不推进且 pending 保留，重放由同一来源内去重补齐已写条目。
-- knowledge 写入后，在一个 `Database.transaction()` 内写 `reading_evidence`、推进 cursor、采纳 profile 并清除 pending。证据写入或 checkpoint 保存失败时，证据和 checkpoint 一起回滚；knowledge 允许已存在，重放必须幂等。
-- knowledge 使用稳定的 `web:<normalized-url>` 来源 topic；`source_name` 使用 URL。旧版本已落盘的 pending 可能没有原文证据字段；恢复时仍按已存 knowledge 幂等写入并推进 checkpoint，不从重新抓取的页面伪造旧证据。
+- `checkpoint` 保存 `cursor/profile/pending/source_text`；顶层 source_text 是首次抓取的完整有界快照，恢复不重新抓取。每块 pending 先保存下一 cursor 与 `source_text/source_name/block_key`，再幂等提交证据块，之后提取并保存 profile/knowledge，写入带 `source_chunk_id` 的知识。
+- knowledge 可能逐条提交；失败时 cursor 不推进且 pending 保留，重放由同一来源内去重补齐已写条目。已完成的提取不重复调用 LLM。
+- 最后在 `Database.transaction()` 内推进 cursor、采纳 profile、清除 pending；提交成功后才更新内存任务快照。后续阶段失败保留已提交证据/knowledge 和旧 cursor/pending。这是 P2 批准的分阶段持久化边界，替代旧的证据与 cursor 一起回滚语义。
+- knowledge 使用 `build_source_topic("web", url)` 的稳定哈希来源 topic；`source_name` 使用 URL。digest 绑定已保存的 chunk 快照，提取结果与 `source_chunk_id` 一起保存。旧 pending 已有 knowledge 却无该 ID 时保持 NULL，即使带原文也不猜测关联；恢复不从重新抓取的页面伪造旧证据。
 - 网页任务读完整个已抽取正文；它不改变自动自由探索“每条搜索结果最多读取 6000 字符”的既有语义。
 
 ### 浏览器问卷委派任务
@@ -284,10 +284,9 @@ class AssignedTask:
 - [ ] web 结果用 `web_fetch` 取正文；local 结果不能只使用搜索 snippet，必须用既有
   `file_io(action="read")` 读取文件。进入 finding / 原文沉淀 prompt 的单条正文最多 6000
   字符，来源分别用 URL / 绝对路径生成 `web:` / `local:` topic。
-- [ ] 每条搜索结果的 `{finding, knowledge}` 先保存在 `source_pending`，再写 knowledge
-  并推进 cursor；崩溃恢复复用 pending，记忆已写但 cursor 未推进时由既有去重吸收重放。
+- [ ] 每条搜索结果先将原文、来源与 finding 保存在 `source_pending`，提交证据块后按已存 chunk 快照提取，并将 knowledge 与 `source_chunk_id` 一起保存，再写知识、推进 cursor。崩溃恢复复用原文与已完成提取；已提交证据/知识不随后续 checkpoint 失败回滚。旧 pending 已有提取却缺 chunk ID 时保持 NULL，即使有原文也不猜测关联。
   正文读取失败才回退 snippet；正文与 snippet 都为空白时不调用原文沉淀 LLM、不生成
-  finding/knowledge，但该条 cursor 仍正常推进。
+  finding/knowledge，但该条 cursor 仍正常推进。snippet 回退必须在来源名与定位中标明“搜索摘要”。checkpoint 保存成功后才更新 activity.progress；原始 fetch handler 由组合根注入，避免注册工具再次摄入。
 - [ ] `FREE_EXPLORATION` 被打断后恢复同一 activity id，不重复抓取 cursor 之前的结果、不重复成功 tool call、不重复追加源长期欲望 subtopics 或 `remember_knowledge`。
 - [ ] `web_enabled=false` 时只调用 `local_search`；联网搜索为空时可回退 local search；单条 `web_fetch` 失败记录失败 tool call 并使用 snippet，不使探索崩溃。
 - [ ] 探索 LLM 调用传递活动 correlation id，`output_type="exploration_finalize"` 的输出完成后紧跟 `evaluator.evaluate`；总结 JSON 非对象时返回可序列化的空结果。
@@ -381,7 +380,7 @@ class AssignedTask:
 | 活动中断或进程崩溃 | 从 checkpoint 重排或恢复，不永久停在 `RUNNING` |
 | 记忆已写但 checkpoint 未推进 | 允许重放，由同一来源内去重吸收 |
 | knowledge 批次中途失败 | 已提交 knowledge 保留；pending 保留、cursor 不推进；重放按来源内去重补齐 |
-| 证据插入或 checkpoint 保存失败 | 同事务回滚证据与 cursor/profile/pending 更新；已提交 knowledge 保留并可幂等重放 |
+| 证据插入或 checkpoint 保存失败 | 失败阶段不推进 cursor；已提交证据/knowledge 保留，旧 pending 幂等重放；最终 cursor/profile/pending 更新单独原子提交 |
 | 旧 pending 没有原文证据字段 | 不从新抓取正文重建旧证据；按原 pending 写 knowledge 并推进，不伪造来源快照 |
 | 完成/失败/中断收尾事务回滚 | 立即恢复调和；恢复仍失败时由下一次准入重试，不遗留无执行者的 `RUNNING` |
 | runner 吞掉取消 | 5 秒后停止等待，保持原状态且不重排，避免双 runner |
@@ -447,7 +446,7 @@ class AssignedTask:
 | `RUNNING` | 打断、关闭或可恢复崩溃 | `PENDING` | checkpoint 保留 |
 | `RUNNING` | 收尾事务回滚且 runner 已结束 | `PENDING` | 恢复调和把 Activity 置 `PAUSED/ABANDONED`；恢复失败由下一次准入重试 |
 
-**Bad case 表**：空队列不建活动；失败保存 500 字符错误；部分完成保留 checkpoint；FIFO 消除选择乱序；重复创建活动任务返回已有活跃任务；书删除时失败，不改选其它书；取消超时保持 `RUNNING` 且不重排；网页 knowledge 部分提交后通过来源去重补齐；网页证据与 checkpoint 在同一事务中回滚；旧 pending 不用变化后的页面重建证据；提交后调度失败仍返回已持久化任务。
+**Bad case 表**：空队列不建活动；失败保存 500 字符错误；部分完成保留 checkpoint；FIFO 消除选择乱序；重复创建活动任务返回已有活跃任务；书删除时失败，不改选其它书；取消超时保持 `RUNNING` 且不重排；网页证据/knowledge 分阶段幂等提交，最终 checkpoint 失败不撤销已提交来源；旧 pending 不用变化后的页面重建证据或猜测 chunk 关联；提交后调度失败仍返回已持久化任务。
 
 ### Legacy Material
 

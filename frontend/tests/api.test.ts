@@ -33,6 +33,7 @@ import {
   getTasks,
   importBook,
   postChat,
+  postKnowledgeSource,
   postObserve,
   pauseQuestion,
   putProgress,
@@ -40,10 +41,27 @@ import {
   showNoteToNyx,
   updateUserNote,
 } from "../src/api/client";
+import { bindScope } from "../src/api/characterScope";
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
 }
+
+describe("知识摄入 API", () => {
+  afterEach(() => { bindScope(null); vi.unstubAllGlobals(); });
+  it("绑定角色与 revision，透传文本/URL、实际数量及部分失败", async () => {
+    bindScope({ id: "alice", revision: 7 });
+    const result = { created_memories: 1, created_facts: 0, chunks: [], errors: ["网页抓取失败"] };
+    const fetch = vi.fn().mockResolvedValue(jsonResponse(result));
+    vi.stubGlobal("fetch", fetch);
+    expect(await postKnowledgeSource({ text: "原文", url: "https://example.com" })).toEqual(result);
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe("/api/characters/alice/knowledge/sources");
+    expect(init.method).toBe("POST");
+    expect(init.headers.get("X-Nyx-Selection-Revision")).toBe("7");
+    expect(JSON.parse(init.body)).toEqual({ text: "原文", url: "https://example.com" });
+  });
+});
 
 describe("角色管理 API", () => {
   afterEach(() => vi.unstubAllGlobals());

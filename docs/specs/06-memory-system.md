@@ -11,6 +11,53 @@
 
 ## 系统边界
 
+### P2 通用证据与溯源契约
+
+`ReadingEvidence` 是通用 knowledge_chunk 的物理快照，新增可空 `location`、`embedding`；
+`MemoryFact.source_chunk_id` 只接受调用方明确传入的块 ID，不回填旧数据。
+`remember_knowledge(items, correlation_id, source_name=None, *, source_chunk_id=None)`
+返回本次实际插入的 `{created_memories, created_facts}`；重复事实保留原溯源。
+`MemoryFactStore.apply(..., source_segment_id=None, source_chunk_id=None)` 返回实际插入数。
+`record_reading_evidence(..., book_id=None, location=None)` 返回块 ID 或空值；先同来源精确、
+再以既有 EmbedFn/AnnIndex、cosine≥0.95 去重。embedding 失败保留 NULL，原文不丢失。
+`list_knowledge_chunks(*, source_topic=None, ids=None)` 包含已消费块。
+`ingest_source(text, source_topic, source_name, correlation_id, *, location=None)` 按 6000 字符
+分块，先写块再 digest、补来源再 remember；返回实际创建计数、chunks 和可选 errors。
+`search_knowledge(query, top_k=5)` 强制 knowledge facts，合并事实关联块与有 embedding 的
+语义/关键词块；cosine 或关键词覆盖率至少 0.45，单块正文≤2000，整个 chunks JSON 数组（含来源元数据、
+括号和转义）≤12000 字符，按 ID 去重，无最新记录兜底。NULL 向量块只通过命中事实的显式关联带出。
+传入 `source_chunk_id` 的 digest 必须回读该块的已存正文和来源名；语义去重命中后不能用新正文
+提取知识再挂到旧块。知识事实沿用既有 best-effort 抽取/apply：失败可留下原文和记忆而没有事实，
+重复记忆不会自动补抽事实，创建计数不承诺每块都生成事实。
+
+**对象完整性**
+
+| 对象 | 入口 | 消费者 |
+|---|---|---|
+| chunk | EPUB、网页任务、探索、手动 text/URL、注册 web_fetch、pending 重放、v43 迁移 | knowledge_search、事实溯源、既有 Reflection.prepare/apply |
+| source_chunk_id | remember_knowledge→持久化→fact apply、v43 可空列 | fact search/recent、REST/TS、knowledge_search |
+
+| 当前状态 | 条件 | 下一状态及失败落点 |
+|---|---|---|
+| 无快照 | checkpoint 阅读取得正文 | 原文 pending 持久化；失败不推进 cursor |
+| 原文 pending | 幂等写 chunk，再 digest | 提取结果 pending；失败保留原文与已写 chunk |
+| 提取结果 pending | remember_knowledge 成功 | knowledge 已提交；失败允许重试 |
+| knowledge 已提交 | cursor/profile/pending 最终事务成功 | cursor 前进、pending 清空；失败保留旧 cursor/pending，chunk/knowledge 不回滚 |
+| chunk 未消费 | 反思提交 | consumed_at 更新；仍可检索 |
+| chunk 存在 | 删除（EPUB 随书级联） | chunk 删除，事实 FK SET NULL |
+
+| Bad case | 行为 |
+|---|---|
+| 空 | 不创建；无匹配返回空 |
+| 失败 | embedding best effort；digest/knowledge 失败保留证据并明确报告错误；checkpoint 可恢复 |
+| 部分完成 | 计数只含本次成功插入，返回已保存块与错误；不依赖全局计数差 |
+| 乱序 | chunk 无顺序要求；cursor 最终提交前不前进 |
+| 重放 | 同源精确/语义去重；复用 pending 原文和提取结果；旧 pending 无原文不猜补证据 |
+| 删除 | chunk 删除不删事实；旧事实保持 NULL，重复事实不改写既有来源 |
+
+P2 将原先证据与最终 cursor 一起回滚的语义替换为以上持久阶段；chunk 可先于任务完成被检索。
+`consumed_at` 仅限制反思消费；新增通用原文也进入既有反思消费者。
+
 ### 新的对话段语义
 
 `conversation_segment` 是对话记忆的主体：每个段永久保存原始轮次及事件 ID，`summary`、`topics`、`embedding` 只作索引。段之间以 `previous_id` 串联；新轮次按时间、主题重合和明确转题信号宽松续接，短确认语直接继承上一段。读书/网页内容不写入对话段。
@@ -21,7 +68,7 @@
   将可选稳定来源 topic 写入 topics，与 knowledge 使用相同来源隔离去重；旧无来源调用
   保持无来源，不猜测来源。EPUB 整合传真实书名和 `build_source_topic("book", book_id)`。
 - 阅读证据复用 MemoryStore，独立于 Memory、事实和 recall：
-  `record_reading_evidence(source_topic, source_name, content, block_key, *, book_id=None)`、
+  `record_reading_evidence(source_topic, source_name, content, block_key, *, book_id=None, location=None)`、
   `pending_reading_evidence(limit=3)`、`consume_reading_evidence(ids)`。写入固定 hash id，
   消费必须在调用方事务内、逐行确认未消费；对象完整性以 12-reading-system 为准。
 
@@ -469,7 +516,9 @@ async def remember_knowledge(
     items: list[dict[str, str]],
     correlation_id: str,
     source_name: str | None = None,
-) -> None: ...
+    *,
+    source_chunk_id: str | None = None,
+) -> dict[str, int]: ...
 async def digest_source_block(
     text: str,
     source_name: str,
@@ -477,7 +526,13 @@ async def digest_source_block(
     *,
     author: str = "",
     profile: dict[str, object] | None = None,
+    source_chunk_id: str | None = None,
 ) -> tuple[dict[str, object], list[dict[str, str]]]: ...
+async def ingest_source(
+    text: str, source_topic: str, source_name: str, correlation_id: str,
+    *, location: str | None = None,
+) -> dict[str, Any]: ...
+async def search_knowledge(query: str, top_k: int = 5) -> dict[str, Any]: ...
 async def remember_reading(
     content: str,
     summary: str,

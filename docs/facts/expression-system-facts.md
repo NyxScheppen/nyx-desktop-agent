@@ -74,7 +74,8 @@
   - 所有轮次的正常 THINK/SPEAK、最终 `SPEAK/ASK` 在同一本地事务受理，随后记录 history；生成中途没有正常文本对外可见。
 - 讨论模式仅授权 `memory_recall`、`knowledge_search`、`deep_research`，执行时再次核对；普通慢通道排除这三项且保留原工具。
   `memory_recall` 仅返回 profile/conversation 事实与对话段；完整段 JSON 真正进入最终回复 prompt 才幂等计召回。
-  P1 的 `knowledge_search` 只返回 knowledge 事实（`source_chunk_id=null`、`chunks=[]`）；证据块属于 P2，`deep_research` 当前明确返回尚未启用，真实研究属于 P3。
+  `knowledge_search` 返回 knowledge 事实、可空 `source_chunk_id` 及原文证据块，合并事实关联与相关块并按 ID 去重；不计对话段召回。
+  `deep_research` 当前明确返回尚未启用，真实研究属于 P3。
 - 每轮 `respond` 一次 LLM 调用同时生成 JSON 的 `think` 和 `speak`，解析后分别评估并分别
   发布文本事件；两条评估记录共享 call_id、token 和最终 prompt。后续轮次使用累积的前轮
   think/speak，任务改为续写。

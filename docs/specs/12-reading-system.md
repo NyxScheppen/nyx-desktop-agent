@@ -231,9 +231,10 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
 - 每块使用上一 profile + 本块原文生成新 profile 和最多 5 条知识；profile 为
   `{summary, themes, content_category}`，类别固定为
   `fiction/nonfiction/essay/poetry/drama/reference/unknown`。
-- 顺序固定为：生成结果 -> 持久化 `pending` -> `remember_knowledge` -> 推进 cursor、采纳
-  profile、清空 pending。提取/解析失败不推进 cursor；记忆写入后崩溃则重放 pending，
+- 顺序固定为：持久化原文 `pending` -> 幂等提交证据块 -> 生成并保存提取结果 -> 带 `source_chunk_id` 调用 `remember_knowledge` -> 同事务推进 cursor、采纳
+  profile、清空 pending。后续阶段失败保留证据块和旧 cursor/pending；提取/解析失败不推进 cursor；记忆写入后崩溃则重放 pending，
   由统一记忆去重吸收，不增加第二套幂等表。
+- digest 绑定已保存的 chunk 快照，提取结果与 `source_chunk_id` 一并保存。旧 pending 已有 knowledge 却无该 ID 时，不根据原文补猜关联；重试保留 NULL。最终状态提交后才更新内存快照。
 - fiction 事实归于作品/人物/虚构世界；essay 归于作者主张；nonfiction/reference 可成为
   领域知识；unknown 保守注明来源。书中第一人称不得归于用户/Nyx。
 - 重读已经越过 cursor 的段落不重复沉淀；同名书按 `book_id` 来源 topic 隔离。重复章末
@@ -304,17 +305,18 @@ buffer。读取系统在兼容未提供该方法的 fake 时可以退回旧路�
 
 阅读暴露证据与知识/主观记忆分开保存，复用 `MemoryFacade` / `MemoryStore`，
 不新增服务层。`ReadingEvidence` 是不可变快照，含 id、source_topic、source_name、
-content、created_at；每条正文最多 6000 字符。schema 36 新建 `reading_evidence`。
+content、created_at、consumed_at、book_id；每条正文最多 6000 字符。schema 36 新建 `reading_evidence`，schema 43 增加可空 location/embedding，并允许 `memory_fact.source_chunk_id` 显式关联。
 
 **入口清单**
 
 | 入口 | 产生条件 | 写入位置 |
 |---|---|---|
-| `ReadingIntegration.sediment` | EPUB 原文块成功沉淀，即使 knowledge 为空 | pending 保留原文证据；证据与 cursor 同事务提交 |
-| `ActivityFacade._run_web_task` | 明确的网页阅读任务块成功沉淀 | task pending 保留证据；证据与 checkpoint 同事务提交 |
+| `ReadingIntegration.sediment` | EPUB 原文块准备完成，即使 knowledge 为空 | 原文 pending 先落盘，证据先于提取提交，最终 cursor/profile/pending 同事务提交 |
+| `ActivityFacade._run_web_task` | 明确的网页阅读任务块准备完成 | 完整页面快照与块 pending 持久化，证据先于提取提交，恢复不重新抓取 |
+| 探索、手动文本/URL、注册 web_fetch | 获得真实原文（探索摘要显式标明） | 共用通用证据路径；详见 06/15 |
 | pending 恢复 | 新版 pending 带完整证据 | 同一来源、块定位和正文 hash 生成固定 id，重复插入 no-op |
 
-旧 pending 缺原文时不猜测补证据；旧库不追补阅读量。自由探索不写阅读证据。
+旧 pending 缺原文时不补造证据；已提取 pending 缺 chunk ID 时不猜测关联。旧库不追补阅读量或向量。P2 起通用证据统一参加反思消费；consumed_at 不影响知识检索。
 
 **消费者清单**
 
@@ -322,12 +324,13 @@ content、created_at；每条正文最多 6000 字符。schema 36 新建 `readin
 |---|---|---|
 | `Reflection.prepare` | `MemoryFacade.pending_reading_evidence(limit=3)`，按 created_at/id 升序 | 独立审美 prompt；不以知识点数量或主观输出次数计量 |
 | `Reflection.apply` | plan 的 evidence ids | 在反思事务内复核存在且未消费，并标记消费 |
+| `knowledge_search` / 知识事实 | chunk 向量/关键词与显式 source_chunk_id | 通用知识检索与溯源，含已消费块；NULL 向量块仅由事实关联带出 |
 
 **状态迁移表**
 
 | 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
 |---|---|---|---|
-| 不存在 | 原文沉淀与证据 checkpoint 提交成功 | 未消费 | 写固定 id；失败回滚证据与 checkpoint |
+| 不存在 | 原文 pending 后证据提交成功 | 未消费 | 写固定 id；后续提取/知识/checkpoint 失败保留证据，旧 cursor/pending 可重放 |
 | 未消费 | 独立审美结果有效且反思提交成功 | 已消费 | consumed_at 与慢变量/effect 同事务写入 |
 | 未消费 | LLM/解析/引用失败 | 未消费 | 审美不变，其他反思可提交 |
 | 任意 | EPUB 来源书删除 | 不存在 | book_id 外键 CASCADE；在途反思提交失败并重试 |
@@ -341,7 +344,7 @@ content、created_at；每条正文最多 6000 字符。schema 36 新建 `readin
 | 部分完成 | 只提交成功的块；只消费实际入 prompt 的最多三块，后续块留到下轮 |
 | 乱序 | 晚到块不按叙事时间戳跳过；按未消费行发现；提交复核防并发消费 |
 | 重放 | 固定 id 幂等；重读相同来源/范围/正文不重复增加阅读量 |
-| 删除 | EPUB 随书删除；网页无公开来源删除入口，可随本地 DB 清理；不引用已删除证据 |
+| 删除 | EPUB 随书删除；网页无公开来源删除入口，可随本地 DB 清理；事实 source_chunk_id SET NULL，事实本身保留；不引用已删除证据 |
 
 主观整合按实际发送的条目/字符范围消费，12000 字符外的尾部保留；
 等待期间 buffer 满额淘汰后新增的条目不因旧 snapshot 长度被删。

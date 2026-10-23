@@ -99,29 +99,11 @@ class ReadingIntegration:
                     if block is None:
                         return
                     text, cursor = block
-                    raw_profile = state.get("profile")
-                    profile = (
-                        cast(dict[str, object], raw_profile)
-                        if isinstance(raw_profile, dict)
-                        else None
-                    )
-                    next_profile, items = await self._memory.digest_source_block(
-                        text,
-                        book.title,
-                        correlation_id or book_id,
-                        author=book.author,
-                        profile=profile,
-                    )
-                    source_topic = build_source_topic("book", book_id)
-                    for item in items:
-                        item["source_topic"] = source_topic
-                        item["source_name"] = book.title
                     pending = {
                         "cursor": cursor,
-                        "profile": next_profile,
-                        "knowledge": items,
                         "source_text": text,
                         "source_name": book.title,
+                        "author": book.author,
                         "block_key": json.dumps(
                             [state.get("cursor", {}), cursor], sort_keys=True
                         ),
@@ -142,6 +124,35 @@ class ReadingIntegration:
         pending: dict[str, Any],
         correlation_id: str,
     ) -> None:
+        chunk_id: str | None = None
+        source_text = pending.get("source_text")
+        source_name = str(pending.get("source_name", book_id))
+        if isinstance(source_text, str) and source_text.strip():
+            chunk_id = await self._memory.record_reading_evidence(
+                build_source_topic("book", book_id), source_name, source_text,
+                str(pending.get("block_key", "")), book_id=book_id,
+                location=f"{source_name} {pending.get('block_key', '')}",
+            )
+            if "knowledge" not in pending:
+                raw_profile = state.get("profile")
+                profile, knowledge = await self._memory.digest_source_block(
+                    source_text, source_name, correlation_id,
+                    author=str(pending.get("author", "")),
+                    source_chunk_id=chunk_id,
+                    profile=cast(dict[str, object], raw_profile)
+                    if isinstance(raw_profile, dict) else None,
+                )
+                for item in knowledge:
+                    item["source_topic"] = build_source_topic("book", book_id)
+                    item["source_name"] = source_name
+                pending.update(
+                    profile=profile, knowledge=knowledge, source_chunk_id=chunk_id
+                )
+                if self._store is not None:
+                    await self._store.update_memory_state(book_id, state)
+            else:
+                saved_chunk = pending.get("source_chunk_id")
+                chunk_id = saved_chunk if isinstance(saved_chunk, str) else None
         raw_items = pending.get("knowledge", [])
         items = (
             [
@@ -153,7 +164,9 @@ class ReadingIntegration:
             else []
         )
         if items:
-            await self._memory.remember_knowledge(items, correlation_id)
+            await self._memory.remember_knowledge(
+                items, correlation_id, source_chunk_id=chunk_id
+            )
         if self._store is not None:
             raw_cursor = pending.get("cursor")
             raw_profile = pending.get("profile")
@@ -172,21 +185,6 @@ class ReadingIntegration:
                 "pending": None,
             }
             async with self._store.db.transaction():
-                source_text = pending.get("source_text")
-                block_key = pending.get("block_key")
-                source_name = pending.get("source_name")
-                if (
-                    isinstance(source_text, str)
-                    and isinstance(block_key, str)
-                    and isinstance(source_name, str)
-                ):
-                    await self._memory.record_reading_evidence(
-                        build_source_topic("book", book_id),
-                        source_name,
-                        source_text,
-                        block_key,
-                        book_id=book_id,
-                    )
                 await self._store.update_memory_state(book_id, committed_state)
             state.update(committed_state)
 

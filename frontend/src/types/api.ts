@@ -430,6 +430,22 @@ export type MemoryFact = {
   polarity: number;
   scope: FactScope;
   source_segment_id: string | null;
+  source_chunk_id: string | null;
+};
+
+export type KnowledgeSourceRequest = { text?: string; url?: string };
+export type KnowledgeChunk = {
+  chunk_id: string;
+  source_topic: string;
+  source_name: string;
+  location: string | null;
+  content: string;
+};
+export type KnowledgeSourceResult = {
+  created_memories: number;
+  created_facts: number;
+  chunks: KnowledgeChunk[];
+  errors?: string[];
 };
 
 // ---- 活动（09-activity / nyx/types.py Activity）----

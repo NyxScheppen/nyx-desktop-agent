@@ -6,6 +6,9 @@
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -49,6 +52,8 @@ class Exploration:
         memory: MemoryFacade,
         exploration_config: ExplorationConfig,
         canon: str = "",
+        *,
+        fetch_source: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self._llm = llm
         self._evaluator = evaluator
@@ -58,6 +63,7 @@ class Exploration:
         self._memory = memory
         self._web_enabled = exploration_config.web_enabled
         self._canon = canon
+        self._fetch_source = fetch_source
 
     async def run(self, activity: Activity) -> dict[str, Any]:
         """跑完一次探索状态机，并把 checkpoint 写入 activity.progress。
@@ -120,12 +126,34 @@ class Exploration:
                     path,
                     snippet,
                     cursor,
-                    _correlation_id(activity),
                     tool_calls,
                 )
                 checkpoint["source_pending"] = pending
                 await self._save_checkpoint(activity, checkpoint)
             pending_map = cast(dict[str, Any], pending)
+            chunk_id: str | None = None
+            source_text = pending_map.get("source_text")
+            if isinstance(source_text, str) and source_text.strip():
+                source_topic = str(pending_map["source_topic"])
+                source_name = str(pending_map["source_name"])
+                chunk_id = await self._memory.record_reading_evidence(
+                    source_topic, source_name, source_text, str(cursor),
+                    location=str(pending_map["location"]),
+                )
+                if "knowledge" not in pending_map:
+                    _profile, extracted = await self._memory.digest_source_block(
+                        source_text, source_name, _correlation_id(activity),
+                        source_chunk_id=chunk_id,
+                    )
+                    for item in extracted:
+                        item["source_topic"] = source_topic
+                        item["source_name"] = source_name
+                    pending_map["knowledge"] = extracted
+                    pending_map["source_chunk_id"] = chunk_id
+                    await self._save_checkpoint(activity, checkpoint)
+                else:
+                    saved_chunk = pending_map.get("source_chunk_id")
+                    chunk_id = saved_chunk if isinstance(saved_chunk, str) else None
             raw_knowledge = pending_map.get("knowledge", [])
             knowledge = (
                 [
@@ -138,7 +166,7 @@ class Exploration:
             )
             if knowledge:
                 await self._memory.remember_knowledge(
-                    knowledge, _correlation_id(activity)
+                    knowledge, _correlation_id(activity), source_chunk_id=chunk_id
                 )
             finding = pending_map.get("finding")
             if isinstance(finding, str) and finding:
@@ -160,7 +188,6 @@ class Exploration:
         path: str,
         snippet: str,
         cursor: int,
-        correlation_id: str,
         tool_calls: list[dict[str, Any]],
     ) -> dict[str, Any]:
         if not name:
@@ -168,6 +195,7 @@ class Exploration:
         content = snippet
         source_kind = "web" if url else "local"
         source_identifier = url or path
+        used_snippet = True
         try:
             if url:
                 fetched = await self._call_tool("web_fetch", {"url": url}, tool_calls)
@@ -175,6 +203,7 @@ class Exploration:
                     text = cast(dict[str, Any], fetched).get("text")
                     if isinstance(text, str) and text.strip():
                         content = text
+                        used_snippet = False
             elif path:
                 read = await self._call_tool(
                     "file_io", {"action": "read", "path": path}, tool_calls
@@ -183,22 +212,22 @@ class Exploration:
                     text = cast(dict[str, Any], read).get("content")
                     if isinstance(text, str) and text.strip():
                         content = text
+                        used_snippet = False
         except Exception:
-            pass
+            _logger.exception("探索正文读取失败，使用搜索摘要 source=%s", name)
         bounded = content[:_SOURCE_TEXT_MAX_CHARS]
         if not bounded.strip():
             return {"cursor": cursor, "finding": "", "knowledge": []}
-        _profile, items = await self._memory.digest_source_block(
-            bounded, name, correlation_id
-        )
         source_topic = build_source_topic(source_kind, source_identifier or name)
-        for item in items:
-            item["source_topic"] = source_topic
-            item["source_name"] = name
+        source_name = f"{name}（搜索摘要）" if used_snippet else name
         return {
             "cursor": cursor,
-            "finding": f"{name}：{bounded}",
-            "knowledge": items,
+            "finding": f"{source_name}：{bounded}",
+            "source_text": bounded,
+            "source_name": source_name,
+            "source_topic": source_topic,
+            "location": (url or path or name)
+            + ("（搜索摘要）" if used_snippet else ""),
         }
 
     async def _call_tool(
@@ -206,7 +235,11 @@ class Exploration:
     ) -> Any:
         """调用工具并就地记录 {name, args, ok}；失败记 ok=False 后上抛。"""
         try:
-            result = await self._tools.call(name, args)
+            result = (
+                await self._fetch_source(**args)
+                if name == "web_fetch" and self._fetch_source is not None
+                else await self._tools.call(name, args)
+            )
             tool_calls.append({"name": name, "args": args, "ok": True})
             return result
         except Exception:
@@ -310,8 +343,9 @@ class Exploration:
     async def _save_checkpoint(
         self, activity: Activity, checkpoint: dict[str, Any]
     ) -> None:
-        activity.progress["exploration"] = checkpoint
-        await self._store.update(activity)
+        progress = {**activity.progress, "exploration": deepcopy(checkpoint)}
+        await self._store.update(replace(activity, progress=progress))
+        activity.progress = progress
 
 
 def _result_parts(result: Any) -> tuple[str, str, str, str]:

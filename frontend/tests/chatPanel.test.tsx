@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ChatInput from "../src/components/chat/ChatInput";
 import MessageBubble from "../src/components/chat/MessageBubble";
 import MessageList from "../src/components/chat/MessageList";
+import { KnowledgeFeed } from "../src/components/chat/KnowledgeFeed";
+import { bindScope } from "../src/api/characterScope";
 import { useChatStore, type ChatMessage } from "../src/stores/chatStore";
 
 let msgSeq = 0; // 自增保证 id 唯一，避免同 kind 两条消息撞 React key
@@ -34,6 +36,43 @@ function typeDone() {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("KnowledgeFeed", () => {
+  afterEach(() => bindScope(null));
+  it("显示真实新增数量、失败与重试状态", async () => {
+    bindScope({ id: "alice", revision: 1 });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ created_memories: 1, created_facts: 2, chunks: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ created_memories: 0, created_facts: 0, chunks: [{}], errors: ["消化失败"] }) });
+    vi.stubGlobal("fetch", fetch);
+    render(<KnowledgeFeed />);
+    fireEvent.change(screen.getByLabelText("知识文本"), { target: { value: "原始记录" } });
+    fireEvent.click(screen.getByText("进知识库"));
+    expect(screen.getByText("正在摄入…")).toBeDisabled();
+    expect(await screen.findByRole("status")).toHaveTextContent("已进知识库 · 新增 1 条知识、2 条事实");
+    fireEvent.change(screen.getByLabelText("知识文本"), { target: { value: "失败原文" } });
+    fireEvent.click(screen.getByText("进知识库"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("部分摄入未完成");
+    expect(screen.getByLabelText("知识文本")).toHaveValue("失败原文");
+  });
+  it.each([true, false])("角色切换后忽略旧请求的成功或失败: %s", async (ok) => {
+    bindScope({ id: "alice", revision: 1 });
+    let finish!: (value: unknown) => void;
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise((resolve) => { finish = resolve; })));
+    const view = render(<KnowledgeFeed key="alice" />);
+    fireEvent.change(screen.getByLabelText("知识文本"), { target: { value: "Alice 的原文" } });
+    fireEvent.click(screen.getByText("进知识库"));
+    bindScope({ id: "bob", revision: 2 });
+    view.rerender(<KnowledgeFeed key="bob" />);
+    await act(async () => finish({ ok, json: async () => ok
+      ? { created_memories: 1, created_facts: 1, chunks: [] }
+      : { detail: "旧角色失败" } }));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByLabelText("知识文本")).toHaveValue("");
+    expect(screen.getByText("进知识库")).toBeDisabled();
+  });
 });
 
 describe("MessageBubble", () => {

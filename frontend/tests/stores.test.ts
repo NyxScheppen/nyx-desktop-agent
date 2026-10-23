@@ -776,7 +776,7 @@ describe("desireStore / activityStore", () => {
       created_at: 1,
       polarity: 1,
       scope: "profile",
-      source_segment_id: null,
+      source_segment_id: null, source_chunk_id: null,
     };
     useMemoryStore.setState({ facts: [fact] });
     const fixture = [{ id: "m2", summary: "搜索结果" }];

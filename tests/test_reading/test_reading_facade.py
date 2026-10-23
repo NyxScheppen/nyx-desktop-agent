@@ -134,8 +134,9 @@ class _FakeMemory:
     async def record_reading_evidence(
         self, source_topic: str, source_name: str, content: str,
         block_key: str, *, book_id: str | None = None,
-    ) -> None:
-        pass
+        location: str | None = None,
+    ) -> str:
+        return block_key
 
     def __init__(self, results: list[Memory]) -> None:
         self._results = results
@@ -161,6 +162,7 @@ class _FakeMemory:
         *,
         author: str = "",
         profile: dict[str, object] | None = None,
+        source_chunk_id: str | None = None,
     ) -> tuple[dict[str, object], list[dict[str, str]]]:
         return (
             {
@@ -172,7 +174,8 @@ class _FakeMemory:
         )
 
     async def remember_knowledge(
-        self, items: list[dict[str, str]], correlation_id: str
+        self, items: list[dict[str, str]], correlation_id: str,
+        *, source_chunk_id: str | None = None,
     ) -> None:
         return None
 

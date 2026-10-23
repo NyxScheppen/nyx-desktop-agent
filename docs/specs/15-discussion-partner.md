@@ -25,12 +25,12 @@
 - [x] 讨论 skill 加载（`discussion===true`，或 `null` 且意图命中）即强制慢通道，覆盖 `classify_channel` 快慢判定。
 - [x] 讨论 skill 授权 `memory_recall` / `knowledge_search` / `deep_research` 三工具，每个都有完整 function-calling `description` + `parameters`（JSON Schema）与返回 JSON 结构（§4）。
 - [x] 讨论 skill 由声明式 JSON 文件定义（`nyx/prompts/skills/discussion.json`），启动时加载并校验 fail-fast。
-- [ ] 知识库双层：证据块（物理表 `reading_evidence`，契约名 `knowledge_chunk`）+ `memory_fact(scope=knowledge)` + `source_chunk_id` 溯源。
-- [ ] 手动投喂 `POST /api/knowledge/sources`（`text`/`url`）落库并可检索。
-- [ ] 工具调取到的网页一律落知识库，进库前两层去重（同 kind + 同 source_topic 边界内）。
+- [x] 知识库双层：证据块（物理表 `reading_evidence`，契约名 `knowledge_chunk`）+ `memory_fact(scope=knowledge)` + `source_chunk_id` 溯源。
+- [x] 手动投喂 `POST /api/knowledge/sources`（`text`/`url`）落库并可检索。
+- [x] 工具调取到的网页一律落知识库，进库前两层去重（同 kind + 同 source_topic 边界内）。
 - [ ] deep research 抓取后判断是否深挖（自适应），受预算约束；抓取原文与综合结论都落知识库。
 - [ ] 批注回发进入下一轮上下文，并持久化为反馈；`reply_event_id` = 被批注 SPEAK 事件的 `event_id`。
-- [ ] 验证采用 agent 可驱动的端到端场景，不新增 pytest 单测。
+- [x] 验证采用 agent 可驱动的端到端场景，不新增 pytest 单测（P0–P2；P3/P4 场景待各阶段）。
 
 ## 技术方案
 
@@ -144,7 +144,7 @@ for round in 1..MAX_TOOL_ROUNDS(≤4):
 
 ### 4. 能力工具契约
 
-工具沿用 `Tool` dataclass（`nyx/types.py:411`：`name/description/schema/handler`）与 `ToolRegistry.register`。三个讨论工具（`memory_recall`/`knowledge_search`/`deep_research`）**在 `memory` facade 构建之后注册**（`nyx/app_context.py` 里 memory 建好后、activity task tools 注册附近，约 `app_context.py:498-508`），**不在 `build_tools`**（`build_tools` 在 memory 之前、签名只有 `config/workspace/blocked`，拿不到 `memory`/`llm`）。见 §4.0 与 §7.1。
+工具沿用 `Tool` dataclass（`name/description/schema/handler`）与 `ToolRegistry.register`。P2 组合根先构建 `MemoryFacade`，再调用 `build_tools(config, *, workspace=..., blocked=..., ingest=...)`，向注册的网页工具注入摄入回调。三个讨论工具（`memory_recall`/`knowledge_search`/`deep_research`）仍在组合根中、activity task tools 附近单独注册。checkpoint 阅读器仅在 `web_enabled` 时注入无摄入回调的 raw fetch，关闭联网后恢复旧任务也不得抓网。见 §4.0 与 §7.1。
 
 #### 4.0 工具授权执行机制（tool_names → complete(tools=…) 的接线）
 
@@ -222,7 +222,7 @@ Tool(
 }
 ```
 
-- 语义：事实仅 `scope=knowledge`。`MemoryFactStore.search` 现按 query 动态切 scope（`is_knowledge_query(query)` 为真 → `("knowledge",)`，否则 `("profile","conversation")`，`facts.py:449-454`），并非硬编码三元组；`knowledge_search` 仍需**强制只取 knowledge scope**（加 scope 过滤参数，或返回后按 `fact.scope=="knowledge"` 过滤）。证据块走新增的 `knowledge_chunk.embedding` 语义检索；事实→证据块经 `source_chunk_id` 联表补齐。chunk 单条 ≤2000 字、块 ≤12000 字。
+- 语义：事实仅 `scope=knowledge`，工具显式指定 scope，不依赖默认知识意图判断。证据块走 `knowledge_chunk.embedding` 语义检索；事实→证据块经 `source_chunk_id` 补齐。chunk 单条正文 ≤2000 字符；整个 chunks JSON 数组（含来源元数据）≤12000 字符。
 
 #### 4.3 `deep_research`
 
@@ -258,10 +258,10 @@ Tool(
 
 ### 5. 数据模型变更
 
-当前 schema 版本 42（`nyx/db.py` `_MIGRATIONS` 末尾），新增迁移 v43+（编号依实施顺序顺延）：
+P2 已落地 schema 43（`nyx/db.py` `_MIGRATIONS`）；后续阶段迁移编号依实施顺序顺延：
 
 - **泛化 `reading_evidence` 为通用证据块（物理表名保留）**：证据块表名**不重命名**——`reading_evidence` 保留，避免 SQLite create-new + copy + drop 带来的 books FK/索引迁移风险（遵循外科手术式修改）。**契约名/概念名用 `knowledge_chunk`（证据块），物理表名仍是 `reading_evidence`**。v43 加两列：
-  - `location TEXT NULL`：book 来源填"书名 + 段定位"，web/local 来源填 URL。
+  - `location TEXT NULL`：book 来源填“书名 + 段定位”，web 来源填 URL，本地文件填绝对路径，手动文本可为 NULL。
   - `embedding TEXT NULL`：证据块向量（JSON 数组文本），供 `knowledge_search` 语义检索；与 `conversation_segment.embedding` 同存储格式。
   - 现有列不变：`id TEXT PRIMARY KEY`（sha256 hex，非自增）、`source_topic`、`source_name`、`content(≤6000)`、`created_at`、`consumed_at`、`book_id`（可空，web/local 为 NULL）。现有 `idx_reading_evidence_pending` 索引保留；`source_topic` 无独立索引、检索按 `source_topic` 等值过滤即可（可补建）。
 - **`memory_fact.source_chunk_id`**：`ALTER TABLE memory_fact ADD COLUMN source_chunk_id TEXT REFERENCES reading_evidence(id) ON DELETE SET NULL`（**TEXT，不是 INTEGER**——`reading_evidence.id` 是 sha256 hex 文本）。
@@ -273,11 +273,11 @@ Tool(
 
 ### 6. 知识库摄入（5 路径）
 
-统一走 `digest_source_block` → `remember_knowledge`（+ 证据块），来源 topic 由 `build_source_topic(kind, identifier)` 生成（`nyx/memory/facade.py:191`，`_SOURCE_TOPIC_PREFIXES=("book:","material:","web:","local:")`）：
+真实来源统一先幂等提交证据块，再 `digest_source_block(..., source_chunk_id=chunk_id)` → `remember_knowledge(..., source_chunk_id=chunk_id)`。digest 使用已保存的 chunk 快照（包括去重命中的旧快照）。来源 topic 由 `build_source_topic(kind, identifier)` 生成（`_SOURCE_TOPIC_PREFIXES=("book:","material:","web:","local:")`）：
 
 1. 陪读 EPUB → `book:<id>`（现有，`nyx/reading/integration.py`）。
 2. 联网/探索（activity）→ `web:<url-hash>`（现有）。
-3. 活动 → `activity`（现有，`remember_activity`）。
+3. 活动摘要继续走 `remember_activity`、kind=`activity`；摘要不冒充外部原文，不额外制造来源证据块。
 4. **手动投喂**：文本 → `local:<sha256-16hex>`；URL → `web:<url-hash>`（先 `web_fetch` 再 digest）。
 5. **工具调取的网页**：deep research / 工具 fetch 结果，一律落库（`web:` + 两层去重）。
 
@@ -285,9 +285,13 @@ Tool(
 
 **`remember_knowledge` 签名对齐（`facade.py:1296-1301`）**：第三参是 `source_name`，**不是 `source_topic`**。`source_topic`/`source_name` 是**每 item 的字段**（`remember_knowledge` 读 `item["source_topic"]`、`item["source_name"]`，`facade.py:1321,1328`），而 `digest_source_block` 返回的 points 只有 `{topic, content}`（`_parse_source_digest`，`facade.py:236-282`，**不带 source_topic/source_name**）。故摄入方必须在 digest 后、`remember_knowledge` 前给每个 item 补 `item["source_topic"]` 与 `item["source_name"]`，**不把 source_topic 当第三参传**（否则会错绑到 source_name，导致知识记忆 topics 缺来源 topic，§6 去重边界与溯源失效）。
 
-手动投喂端点：`POST /api/knowledge/sources`，载荷 `{text?: string, url?: string}`（至少一项），返回 `{created_memories, created_facts, chunks}`。URL 路径：`web_fetch` 取正文 → `digest_source_block` → 给 items 补 `source_topic`/`source_name` → `remember_knowledge`；文本路径直接 digest。
+手动投喂端点：`POST /api/knowledge/sources`，载荷 `{text?: string, url?: string}`，严格字符串，text≤200000、url≤2048，至少一项非空白；两项同时给出则分别处理。返回 `{created_memories, created_facts, chunks, errors}`，计数只含本次实际新增行。文本使用稳定哈希 `local:` 来源；URL 受联网开关和既有 SSRF 校验约束。两条路径都先存块再提取、归因、写知识。部分块成功则 200 并携带 errors；无块且仅因联网关闭失败则 409，其余无块失败为 400；请求类型/长度/空白校验为 422。
 
-**两层去重边界（对齐实现）**：去重**不是全局的**，而是在**同 kind + 同 `source_topic`** 边界内做（`_persist_memory` 的 `find_by_content(content, kind, source_topic)` 精确哈希 + `same_kind_ids` 语义候选集）。阈值：语义 `cosine ≥ _DEDUP_SIM_THRESHOLD = 0.95`（knowledge 属非 EPISODE，走 0.95；`_EPISODE_DEDUP_SIM_THRESHOLD = 0.985` 只作用于 EPISODE 记忆，与知识无关）。spec 中"两层去重"均指此边界。
+EPUB、网页任务和探索先持久化不可变的原文 pending，再保存证据块，提取后将 knowledge/profile 与该次 `source_chunk_id` 一并保存；重试复用原文和已完成提取。最后同事务推进 cursor/profile、清 pending，成功后才更新内存任务快照。后续失败不撤销已提交的证据/知识。旧 pending 已有提取结果却缺少 chunk ID 时，不根据其原文或新抓取内容猜测关联。该边界已获 P2 用户批准，替代 09/12 的旧证据与最终 cursor 同回滚约定。
+
+组合根先建立 memory，再注册带摄入回调的模型可见 `web_fetch`；checkpoint 阅读器注入原始 fetch 并自行按块摄入，避免重复提取。`remember_knowledge` 返回本次 `{created_memories, created_facts}`；事实抽取/存储沿用既有 best-effort 边界，来源块和原始记忆保留，失败不保证自动补齐缺失事实（见 06）。
+
+**两层去重边界（对齐实现）**：证据块由 `record_reading_evidence` 在同 `source_topic` 内精确内容/语义去重；语义阈值 0.95，并保守区分数字、时间和否定差异。知识 Memory 由 `_persist_memory` 在同 kind + 同 `source_topic` 内精确哈希/语义去重，阈值同为 0.95；EPISODE 的 0.985 不作用于知识。不同来源的相同内容保留各自归属，重复事实保留既有来源链接。
 
 ### 7. deep research（自适应深挖 + 落库）
 
@@ -296,7 +300,7 @@ Tool(
 `deep_research` 是 `Tool`，其 handler **没有** `ToolRegistry` 引用（`ToolRegistry.call` 是外层驱动的，`Tool` 实现里不持有 registry）。因此 `deep_research` 的 handler 通过**构造注入**拿到下位工具的 handler：
 
 - `nyx/research/` 模块暴露纯编排函数 `async def run_research(query: str, *, search, fetch, llm, ingest, budget) -> dict`，其中 `search`/`fetch` 是**注入的 callable**（对 `web_search`/`web_fetch` 的 `.handler`）。
-- `build_deep_research_tool(*, search, fetch, llm, ingest, ...) -> Tool` 在 `nyx/app_context.py` 里 **`memory` facade 构建之后**注册（`build_tools` 早于 memory、且签名无 `memory`/`llm`，接不了 ingest 依赖）。注册点与 activity task tools 同段（约 `app_context.py:498-508`），此时 `memory`/`llm`/`tools` 均就绪：把 `web_search`/`web_fetch` 的 `.handler`（`web_enabled` 时）注入 `build_deep_research_tool`，再 `tools.register(...)`。**`deep_research` 常驻注册**（无论 `web_enabled`），web 关闭时注入空 handler → 工具降级返回"联网没开"。**不在 research 内部 import registry，也不在 handler 里回头调 registry**（避免自引用循环，保持可单测）。
+- `build_deep_research_tool(*, search, fetch, llm, ingest, ...) -> Tool` 在 `nyx/app_context.py` 里 **`memory` facade 构建之后**单独构造并注册。注册点与 activity task tools 同段，此时 `memory`/`llm`/`tools` 均就绪：把 `web_search`/`web_fetch` 的 `.handler`（`web_enabled` 时）注入 `build_deep_research_tool`，再 `tools.register(...)`。**`deep_research` 常驻注册**（无论 `web_enabled`），web 关闭时注入空 handler → 工具降级返回"联网没开"。**不在 research 内部 import registry，也不在 handler 里回头调 registry**（避免自引用循环，保持可单测）。
 
 `search`/`fetch` 的返回沿用现有工具形状：`search(query) -> list[{title,url,snippet}]`（`web_search.py`）；`fetch(url) -> {text,url} | {error}`（`web_fetch.py`）。
 
@@ -430,15 +434,16 @@ Tool(
 | 消费者 | 发现方式 | 用途 |
 |---|---|---|
 | `knowledge_search` 工具 | `source_topic` + `embedding` 语义检索 | 回答讨论问题、提供原文证据 |
-| 陪读提问回复 | `search_source`（读系统既有路径，`MemoryRetrieval.search`） | 取同书 Top 5 原文 |
+| 陪读提问回复 | `search_source`（读系统既有路径，`MemoryRetrieval.search`） | 取同书 Top 5 knowledge Memory；该入口不直接返回 chunk |
 | `memory_fact.source_chunk_id` | 外键溯源 | 事实 → 原文证据 |
+| 既有反思审美消费者 | `pending_reading_evidence`，含 EPUB/web/local 通用来源 | 验证原文引用后与慢变量同事务标记 consumed_at |
 
 **状态迁移表**
 
 | 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
 |---|---|---|---|
-| 新建 | 摄入成功 | 可检索（`embedding` 已建） | 去重命中则并入旧 chunk，不新建 |
-| 可检索 | `consumed_at` 标记 | 已消费 | 不删除，仍可溯源 |
+| 新建 | 原文提交成功 | 已保存（embedding 可为 NULL） | 去重命中复用旧 chunk；NULL 向量只通过事实关联带出 |
+| 已保存 | `consumed_at` 标记 | 已消费 | 不删除，仍参与知识检索与溯源 |
 | 可检索 | 手动删除证据块 | 已删除 | `memory_fact.source_chunk_id` SET NULL，事实保留 |
 
 **Bad case 表**
@@ -446,10 +451,10 @@ Tool(
 | 情况 | 处理 |
 |---|---|
 | 空 | 无内容不落 chunk，返回空；不适用"最新一条"兜底 |
-| 失败 | digest/embedding 失败记日志，不阻塞原始调用返回 |
+| 失败 | embedding 失败保存 NULL；digest 失败保留已提交块，API 报 errors，checkpoint 入口保留 pending 并传播错误供重试 |
 | 部分完成 | 部分 chunk 落库、部分失败：返回已落库清单 + 失败项 |
 | 乱序 | 不适用（chunk 无顺序依赖） |
-| 重放 | `_persist_memory` 两层去重保证不重复建 chunk |
+| 重放 | `record_reading_evidence` 来源内两层去重复用 chunk；知识 Memory 另经 `_persist_memory` 去重 |
 | 删除 | SET NULL 不级联删事实 |
 
 ### `memory_fact.source_chunk_id`（知识事实溯源字段）
@@ -466,13 +471,13 @@ Tool(
 | 消费者 | 发现方式 | 用途 |
 |---|---|---|
 | `knowledge_search` 工具 | 事实查询 join chunk | 事实 + 原文一起返回 |
-| 前端事实图 | `GET /api/memories/facts?scope=knowledge` | 展示溯源 |
+| 前端事实图数据 | `GET /api/memories/facts?scope=knowledge` | 接收可空来源 ID；P2 不新增原文详情 UI |
 
 **状态迁移表**
 
 | 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
 |---|---|---|---|
-| NULL | 新知识命中证据块 | 指向 chunk | 无 |
+| 尚无事实行 | 新知识携带显式 chunk ID 并成功插入事实 | 指向 chunk | 旧行不补填；重复事实保留原链接 |
 | 指向 chunk | chunk 删除 | NULL | 事实保留 |
 
 **Bad case 表**
@@ -480,8 +485,8 @@ Tool(
 | 情况 | 处理 |
 |---|---|
 | 空 | 无证据块的旧事实保持 NULL |
-| 失败 | 写入失败留 NULL，不阻塞摄入 |
-| 部分完成 | 逐条写入，成功的保留、失败的 NULL |
+| 失败 | 事实存储失败可能没有新事实行，不将其描述为已存在的 NULL 行；保留来源/记忆 |
+| 部分完成 | 已成功的事实保留，失败项不保证建行；原有链接不被覆盖 |
 | 乱序 | 不适用 |
 | 重放 | 幂等（同事实同 chunk） |
 | 删除 | chunk 删除 → SET NULL，事实保留 |
@@ -557,7 +562,7 @@ export interface KnowledgeSourceRequest {
 
 - [ ] **讨论触发**：`POST /api/chat {message:"为什么斯大林当时要提出这个理论？", discussion:null}` → 回复含来源引用 + 讨论风格（纠正隐含前提/拆层/点悖论）。
 - [ ] **手动开关**：同一问题 `discussion:false` → 不走讨论范式；`discussion:true` → 强制走。
-- [ ] **手动投喂**：`POST /api/knowledge/sources {text:"…"}` → `GET /api/memories/facts?scope=knowledge` 可检索到；URL 投喂同理（联网开启时）。
+- [x] **手动投喂**：`POST /api/knowledge/sources {text:"…"}` → `GET /api/memories/facts?scope=knowledge` 可检索到；URL 投喂同理（联网开启时）。
 - [ ] **deep research**：讨论问题触发 `deep_research` → 回复带引用；`GET /api/memories/facts?scope=knowledge` 出现抓取原文 + 结论的事实/证据块（原文与结论都进）。
 - [ ] **批注回发**：`POST /api/chat {message, annotation:{reply_event_id, quote, comment}}` → 下一轮回复/画像事实反映批注。
 
@@ -565,7 +570,7 @@ export interface KnowledgeSourceRequest {
 
 - [x] `ruff check` 零报错
 - [x] `pyright` 零报错
-- [x] 既有 pytest 套件不回归（本次不新增单测）
+- [ ] 既有 pytest 套件全绿（P2 排除已在 P1 快照复现的卸载超时后 1288 passed / 1 skipped / 1 deselected，尚不能标记全绿）
 - [ ] E2E 场景由 agent 逐条跑通（见「测试要点」）
 - [x] 同步 `docs/specs/06-memory-system.md`、`docs/specs/11-expression.md`、`docs/facts/*`、`docs/tech-reference.md`
 - [ ] 用户能看见/感知到这个变化
@@ -586,5 +591,23 @@ export interface KnowledgeSourceRequest {
   4 轮/5 项上限及段召回计数；非法 discussion 返回 422。2000/8000 字符上限经源码核对。
 - `ruff check .`、`pyright`、前端构建通过；后端 1289 passed / 1 skipped，前端 357 passed。
 - LLM/embedding 为脚本化替身，验证流程而非真实模型讨论风格/引用质量，整体讨论触发场景仍保留待验收。
-- P1 的知识工具返回 knowledge 事实及空 chunks，`source_chunk_id=null`；P2 才接证据块。
-  deep_research 明确返回尚未启用，真实研究属于 P3；P2–P4 尚未开始。
+- P1 验收时的知识工具只返回 knowledge 事实及空 chunks，`source_chunk_id=null`；该历史状态现已由 P2 扩展。
+  deep_research 明确返回尚未启用，真实研究属于 P3。
+
+### P2 验收记录（2026-10-23，用户已授权提交）
+
+- 双层知识与溯源：schema 42→43 保留旧数据/NULL，删除 chunk 后事实 SET NULL；来源内精确、
+  语义及并发去重，数字/否定保护、已存原文摘要、consumed 与 NULL 向量检索边界均通过 agent E2E。
+- 手动与工具摄入：文本、URL、两者并存、实际新增计数及幂等重试通过；空/类型错误 422、关闭联网、
+  SSRF、空正文、畸形 URL 与部分失败均覆盖。注册 fetch 只摄入一次；摄入→知识工具→HTTP/SSE 回复可带来源。
+- 恢复：EPUB、网页任务、探索的 raw pending / extracted pending / 最终保存失败窗口均用真实共享
+  SQLite 重放验证；保留已提交证据/知识、复用快照、不猜测旧 pending 关联。通用块接入既有反思，活动总结保留原路径。
+- 前端入口、成功/部分成功重试和角色切换晚到响应隔离通过；全文 chunks JSON 预算包含元数据。
+- 8 组摄入/检索 HTTP/SSE E2E 与 4 组故障恢复 E2E 通过。使用脚本化 LLM/embedding，
+  真实模型讨论风格与引用质量仍未验收；事实 best-effort 失败和重复 Memory 不补抽限制见 §6。
+- 最后修正后 8 组 HTTP/SSE 场景重跑通过；另以真实 DB 探针先红后绿验证 0.45 关键词门槛、
+  独立向量命中，以及重试时正文/来源名/块关联同属已存快照。定向记忆 113 项、API/fetch 20 项通过。
+- Ruff/Pyright、前端 361 项（25 文件）及生产构建通过。后端首次全量 4 failed / 1285 passed /
+  1 skipped，其中 3 项为已修正的旧夹具；相关阅读/反思 135 项通过。余下卸载超时在独立 P1
+  提交快照同样复现，排除该用例后 1288 passed / 1 skipped / 1 deselected。全量质量门保留未通过状态。
+- 用户已在收到上述验收结果及质量门限制后授权提交 P2；P3/P4 尚未开始，仍待单独审批。

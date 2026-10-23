@@ -1,6 +1,8 @@
 import asyncio
 import ipaddress
+import logging
 import socket
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -27,12 +29,15 @@ def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 def _is_safe_url(url: str) -> bool:
     """SSRF 护栏：仅允许公网 http(s)，主机名解析出的每个 IP 都必须是公网地址。"""
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return False
     try:
         infos = socket.getaddrinfo(parsed.hostname, None, type=socket.SOCK_STREAM)
-    except socket.gaierror:
+    except (socket.gaierror, UnicodeError):
         return False
     for info in infos:
         try:
@@ -60,7 +65,10 @@ def _fetch_url_sync(url: str) -> str:
             location = resp.headers.get("location")
             if not location:
                 return ""
-            url = urljoin(url, location)
+            try:
+                url = urljoin(url, location)
+            except ValueError:
+                return ""
             continue
         try:
             resp.raise_for_status()
@@ -76,8 +84,10 @@ async def fetch_url(url: str) -> str:
     return await asyncio.to_thread(_fetch_url_sync, url)
 
 
-def build_web_fetch_tool() -> Tool:
-    """抓取网页正文为纯文本，供探索消化（不落盘、不触发读书）。"""
+def build_web_fetch_tool(
+    *, ingest: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+) -> Tool:
+    """抓取正文；注册工具注入摄入回调，checkpoint 阅读器使用原始 handler。"""
 
     async def handler(url: str) -> dict[str, Any]:
         text = await fetch_url(url)
@@ -85,7 +95,14 @@ def build_web_fetch_tool() -> Tool:
             return {"error": "正文抓取失败或为空"}
         if len(text) > _MAX_DOWNLOAD_CHARS:
             text = text[:_MAX_DOWNLOAD_CHARS]
-        return {"text": text, "url": url}
+        result: dict[str, Any] = {"text": text, "url": url}
+        if ingest is not None:
+            try:
+                result["ingestion"] = await ingest(text, url)
+            except Exception:
+                logging.getLogger(__name__).exception("网页知识摄入失败 url=%s", url)
+                result["ingestion"] = {"errors": ["网页已抓取，知识摄入未完成"]}
+        return result
 
     return Tool(
         name="web_fetch",

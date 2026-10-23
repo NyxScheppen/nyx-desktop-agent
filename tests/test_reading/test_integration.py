@@ -74,6 +74,7 @@ class _Memory:
         *,
         author: str = "",
         profile: dict[str, object] | None = None,
+        source_chunk_id: str | None = None,
     ) -> tuple[dict[str, object], list[dict[str, str]]]:
         self.digest_calls += 1
         return (
@@ -86,7 +87,8 @@ class _Memory:
         )
 
     async def remember_knowledge(
-        self, items: list[dict[str, str]], correlation_id: str
+        self, items: list[dict[str, str]], correlation_id: str,
+        *, source_chunk_id: str | None = None,
     ) -> None:
         self.knowledge.append(items)
 
@@ -98,6 +100,7 @@ class _Memory:
         block_key: str,
         *,
         book_id: str | None = None,
+        location: str | None = None,
     ) -> None:
         return None
 

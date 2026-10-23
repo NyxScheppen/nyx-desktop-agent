@@ -22,7 +22,13 @@ from nyx.memory.facts import (
     extract_fact_candidates,
     parse_fact_extraction,
 )
-from nyx.memory.retrieval import EmbedFn, MemoryRetrieval, extract_keywords
+from nyx.memory.retrieval import (
+    _MIN_RECALL_COSINE,  # pyright: ignore[reportPrivateUsage]
+    _MIN_RECALL_KEYWORD_SCORE,  # pyright: ignore[reportPrivateUsage]
+    EmbedFn,
+    MemoryRetrieval,
+    extract_keywords,
+)
 from nyx.memory.segments import append_turn, search_segments, should_continue
 from nyx.memory.store import MemoryStore
 from nyx.types import (
@@ -159,6 +165,7 @@ class _PersistResult:
     candidates: list[PersistSemanticHit]
     created: bool
     created_event: Event | None = None
+    created_facts: int = 0
 
 
 def _new_memory(
@@ -185,6 +192,15 @@ def _new_memory(
         recall_count=0,
         aspect=aspect if aspect is not None else [],
         embedding=None,
+    )
+
+
+def _chunk_memory(chunk: ReadingEvidence) -> Memory:
+    """Adapt source snapshots to the existing ANN index."""
+    return Memory(
+        id=chunk.id, created_at=chunk.created_at, content=chunk.content,
+        kind=MemoryKind.KNOWLEDGE, summary=chunk.source_name, freshness=1.0,
+        type=MemoryType.LONG_TERM, embedding=chunk.embedding,
     )
 
 
@@ -734,6 +750,7 @@ class MemoryFacade:
         self._logger = logging.getLogger(__name__)
         self._last_observation: tuple[str, str] | None = None  # 「变化才沉淀」快照
         self._segment_lock = asyncio.Lock()
+        self._chunk_lock = asyncio.Lock()
 
     async def append_conversation_turn(
         self, event_id: str, content: str, timestamp: float | None = None
@@ -1014,8 +1031,14 @@ class MemoryFacade:
         *,
         author: str = "",
         profile: dict[str, object] | None = None,
+        source_chunk_id: str | None = None,
     ) -> tuple[dict[str, object], list[dict[str, str]]]:
         """Update a rolling source profile and extract attributed knowledge."""
+        if source_chunk_id is not None:
+            chunks = await self._store.list_knowledge_chunks(ids=[source_chunk_id])
+            if not chunks:
+                raise ValueError("知识消化所引用的证据块不存在")
+            text, source_name = chunks[0].content, chunks[0].source_name
         if len(text) > _SOURCE_DIGEST_MAX_CHARS:
             raise ValueError("原文沉淀块不能超过 6000 字符")
         previous = profile or {
@@ -1298,7 +1321,9 @@ class MemoryFacade:
         items: list[dict[str, str]],
         correlation_id: str,
         source_name: str | None = None,
-    ) -> None:
+        *,
+        source_chunk_id: str | None = None,
+    ) -> dict[str, int]:
         """读书提取的客观知识点入长期记忆（kind=knowledge，正文确定性拼好）。
 
         items 每项 {topic, content}；content 空则跳过。复用 _persist_memory
@@ -1330,14 +1355,15 @@ class MemoryFacade:
             )
 
         if not entries:
-            return
+            return {"created_memories": 0, "created_facts": 0}
+        counts = {"created_memories": 0, "created_facts": 0}
         batch_facts: list[list[FactCandidate]] | None = None
         if self._fact_store is not None and len(entries) > 1:
             batch_facts = await self._prepare_fact_candidates_batch(
                 entries, correlation_id
             )
         for index, (memory, memory_source_name) in enumerate(entries):
-            await self._persist_memory(
+            result = await self._persist_memory(
                 memory,
                 correlation_id,
                 fact_candidates=(
@@ -1345,7 +1371,11 @@ class MemoryFacade:
                 ),
                 source_name=memory_source_name,
                 source_scope="knowledge",
+                source_chunk_id=source_chunk_id,
             )
+            counts["created_memories"] += int(result.created)
+            counts["created_facts"] += result.created_facts
+        return counts
 
     async def remember_reading(
         self,
@@ -1398,6 +1428,7 @@ class MemoryFacade:
         fact_candidates: list[FactCandidate] | None = None,
         source_name: str | None = None,
         source_scope: str = "conversation",
+        source_chunk_id: str | None = None,
     ) -> _PersistResult:
         """已构建 Memory 的共用入库尾段，带两层去重：
 
@@ -1489,6 +1520,7 @@ class MemoryFacade:
                 now,
                 fact_candidates,
                 source_scope,
+                source_chunk_id,
             )
         else:
             async with self._store.db.transaction():
@@ -1499,6 +1531,7 @@ class MemoryFacade:
                     now,
                     fact_candidates,
                     source_scope,
+                    source_chunk_id,
                 )
             if result.created_event is not None:
                 try:
@@ -1521,6 +1554,7 @@ class MemoryFacade:
         now: float,
         fact_candidates: list[FactCandidate] | None,
         source_scope: str,
+        source_chunk_id: str | None = None,
     ) -> _PersistResult:
         """Commit one memory and its creation event in the caller's transaction."""
         existing = await self._store.find_by_content(
@@ -1530,9 +1564,10 @@ class MemoryFacade:
             await self._store.strengthen(existing.id, now)
             return _PersistResult(await self._persisted_or(existing), [], False)
         await self._store.add(memory)
+        created_facts = 0
         if self._fact_store is not None:
             try:
-                await self._fact_store.apply(
+                created_facts = await self._fact_store.apply(
                     fact_candidates
                     if fact_candidates is not None
                     else extract_fact_candidates(memory, source_scope=source_scope),
@@ -1542,11 +1577,12 @@ class MemoryFacade:
                         if source_scope in {"knowledge", "reading", "activity"}
                         else "conversation"
                     ),
+                    source_chunk_id=source_chunk_id,
                 )
             except Exception:
                 self._logger.exception("事实层更新失败 memory_id=%s", memory.id)
         await self._bus.append_in_transaction(event)
-        return _PersistResult(memory, candidates, True, event)
+        return _PersistResult(memory, candidates, True, event, created_facts)
 
     async def _prepare_fact_candidates(
         self,
@@ -1776,12 +1812,143 @@ class MemoryFacade:
 
     async def record_reading_evidence(
         self, source_topic: str, source_name: str, content: str, block_key: str,
-        *, book_id: str | None = None,
-    ) -> None:
+        *, book_id: str | None = None, location: str | None = None,
+    ) -> str | None:
         """Record a bounded source block independently from extracted knowledge."""
-        await self._store.record_reading_evidence(
-            source_topic, source_name, content, block_key, book_id=book_id
-        )
+        if not content.strip():
+            return None
+        if not source_topic or len(content) > _SOURCE_DIGEST_MAX_CHARS:
+            raise ValueError("证据块需要来源且正文不能超过 6000 字符")
+        async with self._chunk_lock:
+            chunks = await self._store.list_knowledge_chunks(source_topic=source_topic)
+            for chunk in chunks:
+                if chunk.content == content:
+                    return chunk.id
+            embedding: list[float] | None = None
+            if self._embed is not None:
+                try:
+                    embedding = await self._embed(content)
+                except Exception:
+                    self._logger.exception(
+                        "证据块 embedding 失败 source=%s", source_topic
+                    )
+            if embedding is not None:
+                index = AnnIndex.build([_chunk_memory(chunk) for chunk in chunks])
+                candidates = index.query(embedding, _PERSIST_SEMANTIC_CANDIDATE_K)
+                by_id = {chunk.id: chunk for chunk in chunks}
+                if candidates and candidates[0].cosine >= _DEDUP_SIM_THRESHOLD:
+                    candidate = by_id[candidates[0].memory_id]
+                    incoming = _new_memory(
+                        content, MemoryKind.KNOWLEDGE, source_name, MemoryType.LONG_TERM
+                    )
+                    if _semantic_dedup_compatible(incoming, _chunk_memory(candidate)):
+                        return candidate.id
+            return await self._store.record_reading_evidence(
+                source_topic, source_name, content, block_key, book_id=book_id,
+                location=location, embedding=embedding,
+            )
+
+    async def ingest_source(
+        self, text: str, source_topic: str, source_name: str, correlation_id: str,
+        *, location: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist source text first and report actual inserts and partial failures."""
+        result: dict[str, Any] = {
+            "created_memories": 0, "created_facts": 0, "chunks": [],
+        }
+        chunks: list[dict[str, Any]] = []
+        errors: list[str] = []
+        profile: dict[str, object] | None = None
+        for offset in range(0, len(text), _SOURCE_DIGEST_MAX_CHARS):
+            block = text[offset:offset + _SOURCE_DIGEST_MAX_CHARS]
+            try:
+                chunk_id = await self.record_reading_evidence(
+                    source_topic, source_name, block, str(offset), location=location
+                )
+                if chunk_id is None:
+                    continue
+                stored = await self._store.list_knowledge_chunks(ids=[chunk_id])
+                if not stored:
+                    raise ValueError("知识摄入所引用的证据块不存在")
+                chunk = stored[0]
+                if all(item["chunk_id"] != chunk_id for item in chunks):
+                    chunks.append({
+                        "chunk_id": chunk.id, "source_topic": chunk.source_topic,
+                        "source_name": chunk.source_name, "location": chunk.location,
+                        "content": chunk.content[:2000],
+                    })
+                # If semantic dedup selected an earlier snapshot, extract that snapshot.
+                profile, items = await self.digest_source_block(
+                    chunk.content, chunk.source_name, correlation_id, profile=profile,
+                    source_chunk_id=chunk_id,
+                )
+                for item in items:
+                    item["source_topic"] = chunk.source_topic
+                    item["source_name"] = chunk.source_name
+                    counts = await self.remember_knowledge(
+                        [item], correlation_id, chunk.source_name,
+                        source_chunk_id=chunk_id,
+                    )
+                    for key in ("created_memories", "created_facts"):
+                        result[key] += counts[key]
+            except Exception:
+                self._logger.exception(
+                    "知识摄入失败 source=%s offset=%s", source_topic, offset
+                )
+                errors.append(f"{source_name} 第 {offset // 6000 + 1} 块摄入未完成")
+        result["chunks"] = chunks
+        if errors:
+            result["errors"] = errors
+        return result
+
+    async def search_knowledge(self, query: str, top_k: int = 5) -> dict[str, Any]:
+        """Combine knowledge facts, their explicit sources and relevant raw chunks."""
+        if not query.strip():
+            return {"facts": [], "chunks": []}
+        limit = max(1, min(top_k, 5))
+        facts = (await self.search_facts(query, scope="knowledge"))[:limit]
+        chunks = await self._store.list_knowledge_chunks()
+        scores: dict[str, float] = {}
+        eligible = [chunk for chunk in chunks if chunk.embedding is not None]
+        tokens = extract_keywords(query)
+        for chunk in eligible:
+            haystack = f"{chunk.source_name}\n{chunk.content}".lower()
+            hits = sum(token.lower() in haystack for token in tokens)
+            keyword_score = hits / max(1, len(tokens))
+            if keyword_score >= _MIN_RECALL_KEYWORD_SCORE:
+                scores[chunk.id] = keyword_score
+        if self._embed is not None:
+            try:
+                vector = await self._embed(query)
+                index = AnnIndex.build([_chunk_memory(chunk) for chunk in eligible])
+                for candidate in index.query(vector, _PERSIST_SEMANTIC_CANDIDATE_K):
+                    if candidate.cosine >= _MIN_RECALL_COSINE:
+                        scores[candidate.memory_id] = max(
+                            scores.get(candidate.memory_id, 0), candidate.cosine
+                        )
+            except Exception:
+                self._logger.exception("知识证据检索 embedding 失败")
+        selected = list(dict.fromkeys(
+            [fact.source_chunk_id for fact in facts if fact.source_chunk_id]
+            + sorted(scores, key=lambda chunk_id: (-scores[chunk_id], chunk_id))[:limit]
+        ))
+        by_id = {chunk.id: chunk for chunk in chunks}
+        output: list[dict[str, Any]] = []
+        for chunk_id in selected:
+            chunk = by_id.get(chunk_id)
+            if chunk is None:
+                continue
+            payload = {
+                "chunk_id": chunk.id, "source_topic": chunk.source_topic,
+                "source_name": chunk.source_name, "location": chunk.location,
+                "content": chunk.content[:2000],
+            }
+            if len(json.dumps([*output, payload], ensure_ascii=False)) <= 12000:
+                output.append(payload)
+        return {"facts": [{
+            "subject": fact.subject, "predicate": fact.predicate,
+            "object_value": fact.object_value, "source_chunk_id": fact.source_chunk_id,
+        } for fact in facts], "chunks": output}
 
     async def pending_reading_evidence(self, limit: int = 3) -> list[ReadingEvidence]:
         """Read the oldest unconsumed source blocks for aesthetic reflection."""

@@ -33,8 +33,11 @@
   `activity_id`、`activity_type`、`activity_summary`，用于历史归属展示，不作为新的活动状态来源。
 - **记忆类型字段**：`Memory.kind` 使用 `MemoryKind`，`Memory.topics` 为受限主题列表；`Memory.sources` 的类型与默认值由本文件定义，检索来源、持久化和 API 语义由 `06-memory-system` 定义。
 - **阅读证据**：`ReadingEvidence` 是 frozen dataclass，字段为 `id: str`、
-  `source_topic: str`、`source_name: str`、`content: str`、`created_at: float`。
-  它是原文快照，不是记忆；消费状态与 book_id 只在存储层保存，生命周期见 12-reading-system。
+  `source_topic: str`、`source_name: str`、`content: str`、`created_at: float`，以及
+  可空的 `location: str | None`、`embedding: list[float] | None`。它也是通用
+  knowledge_chunk 原文快照；消费状态与 book_id 只在存储层保存，生命周期见 06/12/15。
+- **知识事实溯源**：`MemoryFact.source_chunk_id: str | None = None` 只保存摄入方明确传入的
+  原文块 ID。schema 43 不回填旧事实；来源块删除时外键置空，事实保留。
 
 ### 嵌套 dict 字段的边界（哪些收 TypedDict / 哪些留 `dict[str, Any]`）
 

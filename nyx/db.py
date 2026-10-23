@@ -827,6 +827,15 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON memory_fact(source_segment_id)",
         ],
     ),
+    (
+        43,
+        [
+            "ALTER TABLE reading_evidence ADD COLUMN location TEXT",
+            "ALTER TABLE reading_evidence ADD COLUMN embedding TEXT",
+            "ALTER TABLE memory_fact ADD COLUMN source_chunk_id TEXT "
+            "REFERENCES reading_evidence(id) ON DELETE SET NULL",
+        ],
+    ),
 ]
 
 

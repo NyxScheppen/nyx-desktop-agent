@@ -420,7 +420,13 @@ CLOCK_TICK + REFLECTION_CHECK     -> inner_life.reflection_check
 讨论能力在 memory facade 构建后注册 `memory_recall`、`knowledge_search`、`deep_research`，
 随后调用 `bootstrap.load_skills(skills_dir, registry)`，校验声明名称、片段和工具授权后注入表达门面；
 目录缺失、声明非法、重名或工具未注册均拒绝启动。P1 不新增表、迁移或事件类型；
-知识证据块和真实深度研究分别属于 [15](15-discussion-partner.md) 的 P2、P3。
+P2 在 schema 43 实现通用知识证据块与事实溯源；真实深度研究仍属于 [15](15-discussion-partner.md) 的 P3。
+
+P2 组合根先构建 memory，再给注册的 `web_fetch` 注入 `memory.ingest_source` 闭包。
+网页任务与探索持有未注入摄入的原始 fetch handler，由各自 checkpoint 管理分块摄入，
+避免同一次抓取被重复提取。`knowledge_search` 委托 `MemoryFacade.search_knowledge`。
+`POST /api/knowledge/sources` 使用既有角色准入与选择 revision，直接调用当前角色 memory；
+摄入继续使用已有 `memory_created`，不新增 EventBus 事件或 delivery 路由。
 
 组合根同时保存 presence 的进程内运行时快照：是否已经建立基线、当前/上一个 presence、
 presence 变化时间、离开起点、最近一次归来时间与离开时长，以及尚未被自然表达消费的归来事实。
@@ -593,6 +599,10 @@ CREATE TABLE memory_recall_use (
 事务；复合主键冲突是重放 no-op，未知/已删除 memory 不创建 marker。
 
 schema 42 另增 `conversation_segment_recall_use(user_event_id, segment_id)` 复合主键，供新版对话段的慢通道真实入选计数；它不复用旧 `memory_recall_use`，不新增事件路由。每角色独立记忆维护任务定期检查空闲段、结算衰减与容量，卸载时先取消并等待任务再关闭数据库。`memory_fact.source_segment_id` 可空并在来源段物理删除时置空；普通容量淘汰不删除段。
+
+schema 43 保留物理表 `reading_evidence`，增加可空 `location`、JSON 文本 `embedding`，
+并增加 `memory_fact.source_chunk_id TEXT REFERENCES reading_evidence(id) ON DELETE SET NULL`。
+旧行保持 NULL，不猜测来源或补算向量；块删除保留事实。分阶段摄入与恢复契约见 06/09/12/15。
 
 ### eval prompt 辅助表
 

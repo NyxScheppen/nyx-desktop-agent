@@ -381,7 +381,8 @@ class _FakeMemory:
         return self.knowledge
 
     async def remember_knowledge(
-        self, items: list[dict[str, str]], correlation_id: str
+        self, items: list[dict[str, str]], correlation_id: str,
+        *, source_chunk_id: str | None = None,
     ) -> None:
         self.remembered.append(items)
         self.remembered_correlation_ids.append(correlation_id)
@@ -392,6 +393,7 @@ class _FakeMemory:
         source_name: str,
         content: str,
         block_key: str,
+        *, location: str | None = None,
     ) -> None:
         self.recorded_evidence.append((source_topic, source_name, content, block_key))
 
@@ -403,6 +405,7 @@ class _FakeMemory:
         *,
         author: str = "",
         profile: dict[str, object] | None = None,
+        source_chunk_id: str | None = None,
     ) -> tuple[dict[str, object], list[dict[str, str]]]:
         self.digested_blocks.append((text, source_name, correlation_id))
         return (
@@ -700,14 +703,18 @@ async def test_web_task_evidence_failure_replays_without_duplicate_memory() -> N
             correlation_id: str,
             *,
             profile: dict[str, object] | None = None,
+        source_chunk_id: str | None = None,
         ) -> tuple[dict[str, object], list[dict[str, str]]]:
             del text, source_name, correlation_id, profile
             return {"summary": "摘要"}, [{"topic": "主题", "content": "知识点"}]
 
         async def remember_knowledge(
-            self, items: list[dict[str, str]], correlation_id: str
+            self, items: list[dict[str, str]], correlation_id: str,
+        *, source_chunk_id: str | None = None,
         ) -> None:
-            await self.memory.remember_knowledge(items, correlation_id)
+            await self.memory.remember_knowledge(
+                items, correlation_id, source_chunk_id=source_chunk_id
+            )
 
         async def record_reading_evidence(
             self,
@@ -715,12 +722,13 @@ async def test_web_task_evidence_failure_replays_without_duplicate_memory() -> N
             source_name: str,
             content: str,
             block_key: str,
-        ) -> None:
+            *, location: str | None = None,
+        ) -> str | None:
             self.evidence_attempts += 1
             if self.evidence_attempts == 1:
                 raise RuntimeError("evidence store unavailable")
-            await self.memory.record_reading_evidence(
-                source_topic, source_name, content, block_key
+            return await self.memory.record_reading_evidence(
+                source_topic, source_name, content, block_key, location=location
             )
 
     database = await db.connect(":memory:")
@@ -765,7 +773,7 @@ async def test_web_task_evidence_failure_replays_without_duplicate_memory() -> N
             assert failed is not None and failed.status is AssignedTaskStatus.FAILED
             assert failed.checkpoint.get("cursor", 0) == 0
             assert failed.checkpoint["pending"] is not None
-            assert len(memories) == 1
+            assert len(memories) == 0
 
             retried = await facade.assign_web_task("https://example.com/rollback")
             assert retried.id != assigned.id
@@ -783,7 +791,7 @@ async def test_web_task_evidence_failure_replays_without_duplicate_memory() -> N
         await database.close()
 
 
-async def test_web_task_checkpoint_failure_rolls_back_reading_evidence(
+async def test_web_task_checkpoint_failure_preserves_reading_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database = await db.connect(":memory:")
@@ -843,7 +851,7 @@ async def test_web_task_checkpoint_failure_rolls_back_reading_evidence(
             assert failed is not None and failed.status is AssignedTaskStatus.FAILED
             assert failed.checkpoint.get("cursor", 0) == 0
             assert failed.checkpoint["pending"] is not None
-            assert evidence == []
+            assert len(evidence) == 1
             assert len(memories) == 1
 
             retried = await facade.assign_web_task("https://example.com/checkpoint")

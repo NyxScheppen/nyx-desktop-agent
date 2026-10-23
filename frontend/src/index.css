@@ -2509,3 +2509,13 @@ h6.reader-block--heading {
   font-weight: 600;
   text-align: right;
 }
+
+/* 手动投喂知识 */
+.knowledge-feed { padding: 8px 12px; border-top: 1px solid var(--gold); font-size: 0.85em; }
+.knowledge-feed summary { cursor: pointer; }
+.knowledge-feed form, .knowledge-feed label { display: flex; flex-direction: column; gap: 6px; }
+.knowledge-feed form { padding-top: 8px; }
+.knowledge-feed textarea { min-height: 72px; resize: vertical; max-height: 180px; }
+.knowledge-feed input, .knowledge-feed textarea { width: 100%; box-sizing: border-box; font: inherit; }
+.knowledge-feed p { margin: 4px 0; overflow-wrap: anywhere; }
+.knowledge-feed [role="alert"] { color: var(--danger, #a33); }

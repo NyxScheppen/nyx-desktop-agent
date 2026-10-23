@@ -1189,7 +1189,7 @@ async def _run_and_get_aesthetic(
     memory.evidence_store = MemoryStore(database)
     for i in range(blocks):
         await memory.evidence_store.record_reading_evidence(
-            "source:book:test", "test", "原" * 6000, str(i)
+            "source:book:test", "test", "原" * 5999 + str(i), str(i)
         )
     evidence = await memory.pending_reading_evidence()
     llm.aesthetic_response = json.dumps({

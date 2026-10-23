@@ -14,6 +14,18 @@ _QUESTION_WORDS = (
     "怎么", "怎么样", "为什么", "什么", "如何", "哪", "是否", "能否", "可否",
 )
 _REQUEST_WORDS = ("请", "帮我", "告诉我", "解释", "推荐", "写一份", "怎么做")
+_DISCUSSION_TERMS = (
+    "为什么", "如何", "怎么", "背景", "辨析", "比较", "观点", "历史",
+    "原理", "定义",
+)
+_DISCUSSION_REQUEST_RE = re.compile(
+    r"^(?:请|帮我|给我|解释|说明|分析|比较|辨析|介绍|讲讲|谈谈|说说|"
+    r"告诉我|梳理|评价|解读|阐述)"
+)
+_DISCUSSION_OPEN_RE = re.compile(r"(?:讨论|聊聊)(?:一下|下)?[\s：:，,]*\S+")
+_CASUAL_QUESTION_RE = re.compile(
+    r"(?:怎么样|怎么了|怎么啦|咋样|咋了|好吗|还好吗)[？?！!。]*$"
+)
 _EMOTIONAL_WORDS = (
     "难过", "伤心", "生气", "愤怒", "开心", "高兴", "焦虑", "担心",
     "害怕", "委屈", "烦躁", "疲惫", "孤独", "崩溃", "压力",
@@ -70,6 +82,29 @@ def classify_user_intent(text: str) -> UserIntent:
     if len(normalized) >= 2:
         return UserIntent.SHARING
     return UserIntent.UNKNOWN
+
+
+def should_load_discussion(message: str) -> bool:
+    """Return whether a message is an explicit knowledge/discussion request.
+
+    This is deliberately conservative: discussion guidance is only added when
+    a discussion cue is paired with a question or an imperative request.
+    """
+    normalized = " ".join(message.strip().split())
+    if not normalized:
+        return False
+    if "不讨论" not in normalized and _DISCUSSION_OPEN_RE.search(normalized):
+        return True
+    if _CASUAL_QUESTION_RE.search(normalized) and not any(
+        term in normalized for term in _DISCUSSION_TERMS if term != "怎么"
+    ):
+        return False
+    if not any(term in normalized for term in _DISCUSSION_TERMS):
+        return False
+    return (
+        is_question(normalized)
+        or _DISCUSSION_REQUEST_RE.search(normalized) is not None
+    )
 
 
 def slow_score(

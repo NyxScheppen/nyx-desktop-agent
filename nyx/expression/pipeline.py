@@ -23,11 +23,13 @@ from nyx.events.event import internal_text_event
 from nyx.expression.classifier import (
     classify_channel,
     is_question,
+    should_load_discussion,
 )
 from nyx.expression.prompt import (
     _MATERIAL_ITEM_MAX_CHARS,
     _READING_BLOCK_MAX_CHARS,
     _TOOL_OUTPUT_MAX_ITEMS,
+    DISCUSSION_FRAGMENT,
     RESPOND_TASK,
     RESPOND_TASK_CONTINUE,
     TOOL_DECISION_FAILED,
@@ -214,13 +216,16 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             return []
 
     async def classify(state: ReplyState) -> dict[str, Any]:
-        mode = classify_channel(
-            state["message"],
-            state["state"],
-            time.time(),
-            state["last_slow_at"],
-            deps.config.slow_threshold,
-        )
+        if should_load_discussion(state["message"]):
+            mode = ContextMode.SLOW
+        else:
+            mode = classify_channel(
+                state["message"],
+                state["state"],
+                time.time(),
+                state["last_slow_at"],
+                deps.config.slow_threshold,
+            )
         facts = await search_facts(state["message"])
         return {"mode": mode, "facts": facts}
 
@@ -280,6 +285,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             knowledge_boundary=deps.knowledge_boundary,
             intent=state["intent"],
+            discussion_fragment=(
+                DISCUSSION_FRAGMENT
+                if should_load_discussion(state["message"])
+                else None
+            ),
             temporal_context=state["temporal_context"],
             activity_context=state["activity_context"],
         )
@@ -347,6 +357,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             tool_outputs=state["tool_outputs"],
             knowledge_boundary=deps.knowledge_boundary,
             intent=state["intent"],
+            discussion_fragment=(
+                DISCUSSION_FRAGMENT
+                if should_load_discussion(state["message"])
+                else None
+            ),
             temporal_context=state["temporal_context"],
             activity_context=state["activity_context"],
         )

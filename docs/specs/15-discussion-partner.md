@@ -28,9 +28,9 @@
 - [x] 知识库双层：证据块（物理表 `reading_evidence`，契约名 `knowledge_chunk`）+ `memory_fact(scope=knowledge)` + `source_chunk_id` 溯源。
 - [x] 手动投喂 `POST /api/knowledge/sources`（`text`/`url`）落库并可检索。
 - [x] 工具调取到的网页一律落知识库，进库前两层去重（同 kind + 同 source_topic 边界内）。
-- [ ] deep research 抓取后判断是否深挖（自适应），受预算约束；抓取原文与综合结论都落知识库。
+- [x] deep research 抓取后判断是否深挖（自适应），受预算约束；抓取原文与综合结论都落知识库。
 - [ ] 批注回发进入下一轮上下文，并持久化为反馈；`reply_event_id` = 被批注 SPEAK 事件的 `event_id`。
-- [x] 验证采用 agent 可驱动的端到端场景，不新增 pytest 单测（P0–P2；P3/P4 场景待各阶段）。
+- [x] 验证采用 agent 可驱动的端到端场景，不新增 pytest 单测（P0–P3 管道验收完成；真实模型质量未验收，既有全量质量门限制见阶段记录；P4 待审批）。
 
 ## 技术方案
 
@@ -301,10 +301,12 @@ EPUB、网页任务和探索先持久化不可变的原文 pending，再保存�
 
 `deep_research` 是 `Tool`，其 handler **没有** `ToolRegistry` 引用（`ToolRegistry.call` 是外层驱动的，`Tool` 实现里不持有 registry）。因此 `deep_research` 的 handler 通过**构造注入**拿到下位工具的 handler：
 
-- `nyx/research/` 模块暴露纯编排函数 `async def run_research(query: str, *, search, fetch, llm, ingest, budget) -> dict`，其中 `search`/`fetch` 是**注入的 callable**（对 `web_search`/`web_fetch` 的 `.handler`）。
+- `nyx/research/` 模块暴露纯编排函数 `async def run_research(query: str, *, search, fetch, llm, ingest, budget=None, evaluator=None) -> dict`，其中 `search`/`fetch` 是**注入的 callable**（对 `web_search`/`web_fetch` 的 `.handler`）。`ingest` 接受 06 定义的可选 `committed_chunks` 累计参数。
 - `build_deep_research_tool(*, search, fetch, llm, ingest, ...) -> Tool` 在 `nyx/app_context.py` 里 **`memory` facade 构建之后**单独构造并注册。注册点与 activity task tools 同段，此时 `memory`/`llm`/`tools` 均就绪：把 `web_search`/`web_fetch` 的 `.handler`（`web_enabled` 时）注入 `build_deep_research_tool`，再 `tools.register(...)`。**`deep_research` 常驻注册**（无论 `web_enabled`），web 关闭时注入空 handler → 工具降级返回"联网没开"。**不在 research 内部 import registry，也不在 handler 里回头调 registry**（避免自引用循环，保持可单测）。
 
 `search`/`fetch` 的返回沿用现有工具形状：`search(query) -> list[{title,url,snippet}]`（`web_search.py`）；`fetch(url) -> {text,url} | {error}`（`web_fetch.py`）。
+
+`run_research` 与 `build_deep_research_tool` 的可选 `evaluator: Evaluator | None = None` 由生产组合根注入已有 Evaluator；直接脚本调用可省略。每次成功取得研究 LLMOutput 后、JSON 解析前调用 evaluate，非法 JSON 同样记账。评估失败只记日志、不影响有效研究输出；取消继续传播，评估等待纳入总时限。研究五阶段复用现有 eval 历史、token 与 prompt 查询，不增加存储对象。
 
 #### 7.2 流程（有界 + 自适应）
 
@@ -322,6 +324,36 @@ EPUB、网页任务和探索先持久化不可变的原文 pending，再保存�
    - **结论层**：综合报告全文 → 写证据块（`content=报告≤6000`、`source_topic=web:<sha256-16hex(query)>`、`source_name=deep_research`、`location=query`、`embedding` 补算）→ `remember_knowledge` → knowledge Memory + `memory_fact(scope=knowledge, source_chunk_id=报告 chunk_id)`，使"这次深挖的结论"可被 `knowledge_search` 检索。**返回给 respond 的是精简摘要（≤2000 字），全文结论只落库、不回传**。
 
 预算：子问题 ≤4、来源 ≤6、深挖 ≤2（`max_depth=2`）、每源 ≤6000、报告全文 ≤6000（证据块 CHECK 上限）、respond 面摘要 ≤2000（`_MATERIAL_ITEM_MAX_CHARS`）、总时长 ≤120s。降级：联网未开启→明说"联网没开"；搜索/抓取失败→用已有结果并标注"仅基于 X 个来源"；超时→返回已完成部分，不假装查全。
+
+#### P3 对象完整性与执行边界
+
+实现文件：`nyx/research/__init__.py`（编排及工具构造），`nyx/app_context.py`（构造注入）。budget 是单次调用的字典，仅允许向下收紧硬上限；默认 `max_depth=2`、`max_sources=6`、`max_sub_queries=4`、`seconds=120`。深度含首轮，子问题总数含后续新问题；达到预算即停止继续发现。无新配置/表/任务对象。
+
+| 对象 | 入口 | 消费者 |
+|---|---|---|
+| 原文、完整结论 chunk 与知识事实 | discussion 工具调用 -> raw fetch -> ingest_source；结论使用 query 身份单独摄入 | 既有 knowledge_search、事实检索/REST、reflection；所有既有来源仍走 P2 统一路径 |
+| 临时研究报告与入库回执 | run_research、工具 handler | use_tools 回注和 respond；不新增事件或前端状态 |
+
+| 当前状态 | 条件 | 下一状态 / 副作用 / 失败落点 |
+|---|---|---|
+| 未开始 | 联网开启且问题非空 | 有界拆解/搜索/抓取；关闭则返回“联网没开”，无 LLM/摄入 |
+| 抓取完成 | 原文非空 | 原文至多 6000 字符进入既有摄入；已提交块/知识保留，摄入错误显式披露 |
+| 有证据 | 深挖判断、提取和综合完成 | 校验引用后，全文至多 6000 字符、精简报告与完整返回 JSON 至多 2000；全文结论另行摄入 |
+| 任意运行阶段 | 超时/外部取消 | 超时返回已完成部分及限制说明；外部取消向上传播；研究编排不继续调用 LLM/摄入，也不自动恢复。既有 raw handler 的同步只读 HTTP 线程可能在取消等待后继续至其自身网络超时 |
+| 已结束 | 再次调用 | 重新研究，原文/结论沿用来源内去重；无持久研究状态可恢复 |
+
+| Bad case | 行为 |
+|---|---|
+| 空、搜索/抓取失败 | 空报告或已完成部分，说明“仅基于 X 个来源”；snippet 不冒充原文 |
+| 部分完成、预算耗尽 | 所有 await 包括摄入受总时限约束；保留已完成报告/证据，未综合时仅展示标为未完成的原文摘句 |
+| 乱序、重复 URL、重放 | 按首次发现顺序限量，URL 每次最多抓取一次；每个入库回执使用实际插入标记 `dedup=new|hit` |
+| 无效 JSON、伪造 URL/quote | 忽略非法结构；引用必须是抓取正文的非空连续子串且 URL 匹配，综合和压缩后再次校验；不以模型常识补结论 |
+| 超长报告/工具块余量不足 | LLM 压缩，仍超限则仅保留完整条目并注明未完成；最终回注也保留完整 JSON，绝不截断 JSON 或 citation |
+| 删除 | 不新增删除流程；chunk 删除/来源级联与事实 SET NULL 沿用 06；临时报告随调用结束释放 |
+
+原文与结论沿用 ingest_source；其 chunks 增加兼容字段 `dedup`（逐次插入回执，不靠全库计数或时间推断）。研究传入 `committed_chunks`，后续摘要/事实抽取取消仍返回已确认且符合预算的回执。SQLite 已提交但 await 尚未确认时不猜测 new/hit；摄入中断明确提示“入库回执可能不完整，请按来源查询或重试”，不越过时限补查。研究返回只含精简报告、精简入库回执和来源数/完成限制 notice，预算计算整个默认 JSON 序列化结果。已完成全文结论不因精简报告省略条目而丢失。结构校验不等于真实模型语义质量验收，后者须另行注明。
+
+**P3 功能验收完成（2026-10-24，用户已授权提交）**：5 组临时验收（含真实 HTTP/SSE）、5 组边界及 6 组补充实库验收通过。用户已批准回执累计器、评估注入与提交确认窗口边界；原有超时漏报及研究未记账的红探针均已转绿。来源预算、最终 JSON、原文/结论归因与检索/重放、四类摄入中断、确认窗口/重试、五阶段 eval/token/prompt、非法 JSON 记账及 eval 失败隔离均验证。两路代码审查无剩余代码问题。现有后端排除已知宿主 drain 超时用例后 1288 passed / 1 skipped / 1 deselected，Ruff/Pyright 通过；全量质量门仍未全绿。使用脚本化 LLM/网络与真实隔离 SQLite/EventBus，真实模型语义质量未验收。用户已授权提交 P3 并开始 P4 调查，P4 实施计划待审。
 
 ### 8. 批注回发 + 反馈
 
@@ -565,7 +597,7 @@ export interface KnowledgeSourceRequest {
 - [ ] **讨论触发**：`POST /api/chat {message:"为什么斯大林当时要提出这个理论？", discussion:null}` → 回复含来源引用 + 讨论风格（纠正隐含前提/拆层/点悖论）。
 - [ ] **手动开关**：同一问题 `discussion:false` → 不走讨论范式；`discussion:true` → 强制走。
 - [x] **手动投喂**：`POST /api/knowledge/sources {text:"…"}` → `GET /api/memories/facts?scope=knowledge` 可检索到；URL 投喂同理（联网开启时）。
-- [ ] **deep research**：讨论问题触发 `deep_research` → 回复带引用；`GET /api/memories/facts?scope=knowledge` 出现抓取原文 + 结论的事实/证据块（原文与结论都进）。
+- [x] **deep research**：讨论问题触发 `deep_research` → 回复带引用；`GET /api/memories/facts?scope=knowledge` 出现抓取原文 + 结论的事实/证据块（原文与结论都进）。
 - [ ] **批注回发**：`POST /api/chat {message, annotation:{reply_event_id, quote, comment}}` → 下一轮回复/画像事实反映批注。
 
 ## 完成定义
@@ -621,4 +653,12 @@ export interface KnowledgeSourceRequest {
 - 11 个失败窗口及关闭/重开数据库后的恢复均通过，覆盖快照写入/提交、pending 保存/提交、证据、摘要、提取保存/提交、部分 knowledge 写入和最终 cursor 保存/提交。已提交正文不重新抓取；未提交快照允许重抓。旧已提取 pending 不重复摘要、不猜测关联。
 - 44→45 迁移、原子失败回滚、幂等、任务/数据库隔离、首次写入不覆盖、删除 CASCADE、长度校验及取消/外层事务回滚通过。审查补验 NUL 后正文无损、中文/emoji 字符截断和含 NUL 的超长值拒绝；使用 Python JSON 解码/切片及入口长度校验，避免 SQLite 字符串函数的 NUL 边界。既有 DB 表快照同步，未新增 pytest 测试。
 - 既有活动/DB 回归 210 passed；后端排除既有卸载超时用例后 1288 passed / 1 skipped / 1 deselected。该用例本轮单独复跑仍以 TimeoutError 失败，全量质量门保留未通过。Ruff/Pyright 通过；本步未重跑 HTTP/SSE、前端或真实模型质量场景。
-- 工程规范审查通过；规格审查在 NUL 边界修正后通过，并独立复验真实 SQLite 迁移与长度边界。本步未提交，等待用户审批；P3/P4 尚未开始。
+- 工程规范审查通过；规格审查在 NUL 边界修正后通过，并独立复验真实 SQLite 迁移与长度边界。此步骤随后按用户授权提交为 `34d201f`，并进入 P3；P4 待审批。
+
+### P3 深度研究验收（2026-10-24，用户已授权提交）
+
+- 原文与完整结论进入既有知识双层存储，事实显式归因；脚本化自适应新增问题、精确引文、统一搜索、重复 URL 与幂等重放通过。真实 HTTP/SSE 验证讨论工具到带来源回复链路。
+- 5 组基础验收、5 组预算/超时/失败/长文本边界及 6 组补充验收通过；未新增 pytest 测试。总时限内保留已确认回执；未确认提交明示不完整，通过来源查询及重试发现 `hit`。同步只读网络线程可能在取消等待后自然结束，研究不继续推进。
+- 补充实库验收覆盖原文/结论的 digest 和事实抽取四类中断、提交确认窗口、累计器去重/旧项保留/失败提交/外层回滚、生产 Evaluator 注入、五类调用 token/call_id/完整 prompt、非法 JSON 记账、eval 失败隔离与取消时限。
+- Ruff/Pyright 通过；既有全后端排除已知宿主 drain 超时用例后 1288 passed / 1 skipped / 1 deselected（125.79s）。该用例已在先前未改提交快照复现，全量质量门仍未通过，未改宿主行为。
+- 工程规范与规格审查通过，文档已同步；验证采用脚本化 LLM/网络，真实模型语义及讨论质量未验收。用户已授权提交 P3 并开始 P4 调查，P4 实施计划待审。

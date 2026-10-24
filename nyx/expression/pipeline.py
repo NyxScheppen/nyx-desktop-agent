@@ -364,6 +364,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 )
                 if remaining <= len(name) + 3:
                     break
+                if name == "deep_research" and len(text) + len(name) + 2 > remaining:
+                    break
                 rendered = f"{name}: {text}"[:remaining]
                 outputs.append(rendered)
                 if name == "memory_recall" and isinstance(result, dict):

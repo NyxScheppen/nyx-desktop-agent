@@ -502,6 +502,7 @@ class MemoryStore:
         book_id: str | None = None,
         location: str | None = None,
         embedding: list[float] | None = None,
+        created_ids: set[str] | None = None,
     ) -> str | None:
         """Persist exact source exposure once, including pending replay."""
         if not content.strip():
@@ -520,7 +521,7 @@ class MemoryStore:
             existing = await cursor.fetchone()
             if existing is not None:
                 return str(existing["id"])
-            await self._db.conn.execute(
+            inserted = await self._db.conn.execute(
                 "INSERT INTO reading_evidence "
                 "(id, source_topic, source_name, content, created_at, book_id, "
                 "location, embedding, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
@@ -531,6 +532,8 @@ class MemoryStore:
             )
             if should_commit:
                 await self._db.conn.commit()
+            if inserted.rowcount == 1 and created_ids is not None:
+                created_ids.add(evidence_id)
         return evidence_id
 
     async def find_knowledge_chunk(

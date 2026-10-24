@@ -5,7 +5,7 @@
 ## 当前实现事实
 
 - 聊天的 `discussion` 是严格 bool/null 三态：true 强制讨论、false 禁用讨论、null/省略自动；随 USER_MESSAGE 持久化并经 runtime 传给表达层，旧事件缺失按 null 重放。
-- 组合根在 memory 构建后注册三个讨论能力工具，再由 `bootstrap.load_skills` 读取 JSON、校验名称/片段/已注册工具并注入表达门面；坏声明或缺失技能拒绝启动。P2 已增加 schema 43 的证据块 location/embedding 与事实 source_chunk_id；真实深度研究仍属 P3，无新增事件类型。
+- 组合根在 memory 构建后注册三个讨论能力工具，再由 `bootstrap.load_skills` 读取 JSON、校验名称/片段/已注册工具并注入表达门面；坏声明或缺失技能拒绝启动。P2 已增加 schema 43 的证据块 location/embedding 与事实 source_chunk_id。P3 `deep_research` 注入原始 search/fetch、共享 llm、memory 摄入与已有 Evaluator；研究输出解析前进入既有 token/调用历史/prompt 记录，失败隔离且等待纳入研究时限。关闭联网用空 handler 显式降级，工具仍注册，无新增事件类型、API 或持久任务。
 - memory 先于工具装配：注册的 `web_fetch` 注入摄入回调，checkpoint 阅读器仅在 web_enabled 时注入 raw fetch，避免重复摘要及恢复时绕过联网开关。`knowledge_search` 统一调用 MemoryFacade 双层检索。
 - `POST /api/knowledge/sources` 复用角色写请求准入和 selection revision，不新增持久事件种类；各块先提交证据，再生成知识。阅读/探索通过原文及提取 pending 恢复，最终 cursor/profile/清 pending 原子提交；不再要求证据随最终 cursor 回滚。
 - schema 45 在同一迁移事务中将旧 WEB checkpoint 顶层字符串 source_text 搬到 `assigned_task_source`，移除原字段并推进版本；失败回滚。网页正文按任务 ID 首次提交一次，任务删除时 CASCADE，后续进度只写 cursor/profile/当前块 pending。抓取仍在事务外，不新增 API 或事件路由。

@@ -420,7 +420,11 @@ CLOCK_TICK + REFLECTION_CHECK     -> inner_life.reflection_check
 讨论能力在 memory facade 构建后注册 `memory_recall`、`knowledge_search`、`deep_research`，
 随后调用 `bootstrap.load_skills(skills_dir, registry)`，校验声明名称、片段和工具授权后注入表达门面；
 目录缺失、声明非法、重名或工具未注册均拒绝启动。P1 不新增表、迁移或事件类型；
-P2 在 schema 43 实现通用知识证据块与事实溯源；真实深度研究仍属于 [15](15-discussion-partner.md) 的 P3。
+P2 在 schema 43 实现通用知识证据块与事实溯源；P3 的真实深度研究由 `nyx/research/`
+编排，完整契约见 [15 §7](15-discussion-partner.md)。组合根注入原始 search/fetch、统一 llm
+和 `memory.ingest_source` 及已有 Evaluator；联网关闭则注入空 handler，工具仍注册且显式降级。
+研究各阶段取得 LLMOutput 后、解析前进入既有 eval 历史/token/prompt 路径，记录失败隔离，等待纳入研究时限。
+研究不新增事件、表、API 或持久任务，只通过既有摄入产生原文/结论知识及已有 memory_created。
 
 P2 组合根先构建 memory，再给注册的 `web_fetch` 注入 `memory.ingest_source` 闭包。
 网页任务与探索持有未注入摄入的原始 fetch handler，由各自 checkpoint 管理分块摄入，

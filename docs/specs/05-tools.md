@@ -45,6 +45,11 @@
 - **全盘遍历用 `os.walk` + `onerror` 跳过无权限目录**：`rglob` 在无权限目录（Windows `System Volume Information` 等）会抛 `PermissionError`；`os.walk(root, onerror=...)` 跳过不可读目录继续走。注意全盘搜索慢（冷跑可能分钟级），探索链若要收窄用 `roots` 参数；结果截断到 `_MAX_RESULTS`（50）、单文件超 `_MAX_FILE_BYTES`（1MiB）跳过（界内存/耗时兜底，不做超时——`to_thread` 无法干净中断 os.walk 线程）
 - **注入非全局**：`ToolRegistry` 是普通类，组合根实例化 + 注入活动 Facade 与表达 Facade（同 EventBus 约定），无模块级单例
 - **用户活动任务工具**：`build_activity_task_tools(...)` 集中构造网页阅读、书籍阅读、创作和浏览器问卷四个工具；实际执行统一进入 09-activity 的后台 runner，工具调用本身只返回任务快照。
+- **讨论研究工具**：`nyx/research/__init__.py` 提供 `run_research` 与 `build_deep_research_tool`，
+  组合根始终注册 `deep_research(query)`；关闭联网时注入空 search/fetch，直接返回“联网没开”。
+  开启时注入原始 search/fetch、统一 LlmClient、`memory.ingest_source` 与已有 Evaluator，不持有 registry，
+  不重复使用已自动摄入的 fetch。自适应深挖、原文/全文结论摄入、引用校验、超时及预算以
+  [15 §7](15-discussion-partner.md) 为完整契约；工具只返回 JSON 摘要/入库回执/限制说明。
 
 ## 测试要点
 

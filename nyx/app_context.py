@@ -43,6 +43,7 @@ from nyx.memory.retrieval import MemoryRetrieval, build_embed
 from nyx.memory.store import MemoryStore
 from nyx.reading.facade import ReadingFacade
 from nyx.reading.store import ReadingStore
+from nyx.research import build_deep_research_tool
 from nyx.tools.activity_tasks import build_activity_task_tools
 from nyx.tools.file_io import build_file_io_tool
 from nyx.tools.local_search import build_local_search_tool
@@ -550,9 +551,6 @@ async def build_app_context(
         async def knowledge_search(query: str, top_k: int = 5) -> dict[str, Any]:
             return await memory.search_knowledge(query, top_k)
 
-        async def deep_research(query: str) -> dict[str, Any]:
-            return {"report": [], "ingested": [], "error": "深度研究尚未启用"}
-
         tools.register(Tool(
             "memory_recall",
             "召回相关对话段原文和用户/关系事实；"
@@ -578,13 +576,12 @@ async def build_app_context(
             }, "required": ["query"]},
             knowledge_search,
         ))
-        tools.register(Tool(
-            "deep_research",
-            "深度研究尚未启用；当前返回明确的不可用结果。",
-            {"type": "object", "properties": {
-                "query": {"type": "string", "description": "要深挖的问题"},
-            }, "required": ["query"]},
-            deep_research,
+        tools.register(build_deep_research_tool(
+            search=(build_web_search_tool().handler
+                    if config.exploration.web_enabled else None),
+            fetch=(build_web_fetch_tool().handler
+                   if config.exploration.web_enabled else None),
+            llm=llm, ingest=memory.ingest_source, evaluator=evaluator,
         ))
         skills = load_skills(prompt_dir / "skills", tools)
         inner_life = InnerLifeFacade(

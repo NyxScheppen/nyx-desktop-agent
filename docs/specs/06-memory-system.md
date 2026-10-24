@@ -22,11 +22,20 @@
 `ingest_source` 先为同一块全部 items 填入已存来源，再一次调用 `remember_knowledge`；
 每块独立累计，在成功或异常收尾时汇总，避免批次部分提交后漏报创建数。
 `MemoryFactStore.apply(..., source_segment_id=None, source_chunk_id=None)` 返回实际插入数。
-`record_reading_evidence(..., book_id=None, location=None)` 返回块 ID 或空值；先同来源精确、
+`record_reading_evidence(..., book_id=None, location=None, created_ids=None)` 返回块 ID 或空值；先同来源精确、
 再以既有 EmbedFn/AnnIndex、cosine≥0.95 去重。embedding 失败保留 NULL，原文不丢失。
+Facade 与 Store 的可选 `created_ids: set[str]` 仅在本次 INSERT 实际新增后加入 ID；
+精确/语义命中不加入。独立写入在 commit 成功后记录；调用方持有外层事务时为事务内插入记录，
+外层回滚须一并丢弃该次集合，不能作为提交回执。旧调用可省略；返回值保持不变。
 `list_knowledge_chunks(*, source_topic=None, ids=None)` 包含已消费块。
-`ingest_source(text, source_topic, source_name, correlation_id, *, location=None)` 按 6000 字符
+`ingest_source(text, source_topic, source_name, correlation_id, *, location=None, committed_chunks=None)` 按 6000 字符
 分块，先写块再 digest、补来源再 remember；返回实际创建计数、chunks 和可选 errors。
+每个 chunk 增加 `dedup=new|hit`，由本块独立 `created_ids` 判定，不用全库计数或时间推断。
+可选 `committed_chunks` 在块写入/去重成功返回后、下一个 await 前，按 ID 去重追加
+`{chunk_id, source_topic, dedup}`，保留调用方已有内容；后续 digest/事实抽取中断不丢确认回执。
+外层事务内的回执是暂存结果，调用方回滚时必须丢弃。SQLite 已提交但 await 尚未确认时的取消
+无法断言 new/hit；研究明确提示回执可能不完整，使用既有来源查询或幂等重试发现，不越过时限补查。
+P3 的研究原文与完整结论也调用该入口，来源身份及临时报告边界见 15 §7。
 `search_knowledge(query, top_k=5)` 强制 knowledge facts，合并事实关联块与有 embedding 的
 语义/关键词块；cosine 或关键词覆盖率至少 0.45，单块正文≤2000，整个 chunks JSON 数组（含来源元数据、
 括号和转义）≤12000 字符，按 ID 去重，无最新记录兜底。NULL 向量块只通过命中事实的显式关联带出。
@@ -38,7 +47,7 @@
 
 | 对象 | 入口 | 消费者 |
 |---|---|---|
-| chunk | EPUB、网页任务、探索、手动 text/URL、注册 web_fetch、pending 重放、v43 迁移 | knowledge_search、事实溯源、既有 Reflection.prepare/apply |
+| chunk | EPUB、网页任务、探索、手动 text/URL、注册 web_fetch、deep_research 原文/结论、pending 重放、v43 迁移 | knowledge_search、事实溯源、既有 Reflection.prepare/apply |
 | source_chunk_id | remember_knowledge→持久化→fact apply、v43 可空列 | fact search/recent、REST/TS、knowledge_search |
 
 | 当前状态 | 条件 | 下一状态及失败落点 |
@@ -72,7 +81,7 @@ P2 将原先证据与最终 cursor 一起回滚的语义替换为以上持久阶
   将可选稳定来源 topic 写入 topics，与 knowledge 使用相同来源隔离去重；旧无来源调用
   保持无来源，不猜测来源。EPUB 整合传真实书名和 `build_source_topic("book", book_id)`。
 - 阅读证据复用 MemoryStore，独立于 Memory、事实和 recall：
-  `record_reading_evidence(source_topic, source_name, content, block_key, *, book_id=None, location=None)`、
+  `record_reading_evidence(source_topic, source_name, content, block_key, *, book_id=None, location=None, created_ids=None)`、
   `pending_reading_evidence(limit=3)`、`consume_reading_evidence(ids)`。写入固定 hash id，
   消费必须在调用方事务内、逐行确认未消费；对象完整性以 12-reading-system 为准。
 
@@ -537,6 +546,7 @@ async def digest_source_block(
 async def ingest_source(
     text: str, source_topic: str, source_name: str, correlation_id: str,
     *, location: str | None = None,
+    committed_chunks: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]: ...
 async def search_knowledge(query: str, top_k: int = 5) -> dict[str, Any]: ...
 async def remember_reading(

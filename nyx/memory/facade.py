@@ -1899,6 +1899,7 @@ class MemoryFacade:
     async def record_reading_evidence(
         self, source_topic: str, source_name: str, content: str, block_key: str,
         *, book_id: str | None = None, location: str | None = None,
+        created_ids: set[str] | None = None,
     ) -> str | None:
         """Record a bounded source block independently from extracted knowledge."""
         if not content.strip():
@@ -1932,12 +1933,13 @@ class MemoryFacade:
                         return candidate.id
             return await self._store.record_reading_evidence(
                 source_topic, source_name, content, block_key, book_id=book_id,
-                location=location, embedding=embedding,
+                location=location, embedding=embedding, created_ids=created_ids,
             )
 
     async def ingest_source(
         self, text: str, source_topic: str, source_name: str, correlation_id: str,
         *, location: str | None = None,
+        committed_chunks: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Persist source text first and report actual inserts and partial failures."""
         result: dict[str, Any] = {
@@ -1949,12 +1951,21 @@ class MemoryFacade:
         for offset in range(0, len(text), _SOURCE_DIGEST_MAX_CHARS):
             block = text[offset:offset + _SOURCE_DIGEST_MAX_CHARS]
             counts: dict[str, int] = {}
+            created_ids: set[str] = set()
             try:
                 chunk_id = await self.record_reading_evidence(
-                    source_topic, source_name, block, str(offset), location=location
+                    source_topic, source_name, block, str(offset), location=location,
+                    created_ids=created_ids,
                 )
                 if chunk_id is None:
                     continue
+                if committed_chunks is not None and all(
+                    item["chunk_id"] != chunk_id for item in committed_chunks
+                ):
+                    committed_chunks.append({
+                        "chunk_id": chunk_id, "source_topic": source_topic,
+                        "dedup": "new" if chunk_id in created_ids else "hit",
+                    })
                 stored = await self._store.list_knowledge_chunks(ids=[chunk_id])
                 if not stored:
                     raise ValueError("知识摄入所引用的证据块不存在")
@@ -1964,6 +1975,7 @@ class MemoryFacade:
                         "chunk_id": chunk.id, "source_topic": chunk.source_topic,
                         "source_name": chunk.source_name, "location": chunk.location,
                         "content": chunk.content[:2000],
+                        "dedup": "new" if chunk_id in created_ids else "hit",
                     })
                 # If semantic dedup selected an earlier snapshot, extract that snapshot.
                 profile, items = await self.digest_source_block(

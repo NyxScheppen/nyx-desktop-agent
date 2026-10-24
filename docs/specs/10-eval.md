@@ -37,6 +37,7 @@
 - **保留与隐私**：prompt 可能包含用户文本、记忆、canon、历史和工具结果；按产品决策在本地 SQLite 永久明文保存，不裁剪、不加密、不做保留期配置。prompt 不进入 `EvalRecord` 和 recent 响应，避免列表批量暴露及 think/speak 重复存储。
 - **`Evaluator` 落库（`nyx/eval/evaluator.py`）**：`__init__` 增注入 `store: EvalStore | None = None`。`evaluate()` 重构为「先算 OOC 关键词分 +（voice 且有 embed 时）embedding 分，再统一落一条记录」——`store` 为 `None` 或 `insert` 抛异常时降级为日志、不重抛（best-effort 旁路，同 eval 现有豁免约定）。docstring 由「不再落库、不再计 token、不再返回报告」改为「写 eval_log，best-effort」。
 - **数据变更**：v13 的 `eval_log` 仍不存输出 `content`；v21 新增 `eval_prompt`，按真实 call 去重保存输入 prompt。
+- **研究调用（15-discussion-partner）**：生产组合根将已有 Evaluator 注入研究工具；`research_plan`、`research_deepen`、`research_evidence`、`research_synthesis`、`research_compress` 成功取得 LLMOutput 后、JSON 解析前沿用 evaluate，包含非法 JSON 输出。复用已有 EvalRecord、token 和 prompt 查询；失败 best-effort 隔离，取消传播并纳入研究时限。没有新增表、字段或持久状态；重放使用新的 call_id，删除和查询边界不变。
 - **API 端点（04-module-bus-system，main.py 薄封装）**：
   - `GET /api/eval/recent?limit=5&offset=0` → `list[EvalRecord]`（`limit` 范围 1..100，`offset` 范围 0..100000；`app.eval_store.list_recent(limit, offset)`）
   - `GET /api/eval/total_tokens` → `EvalStats`（`app.eval_store.total_tokens()`）

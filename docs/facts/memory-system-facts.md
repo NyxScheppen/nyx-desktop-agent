@@ -115,6 +115,12 @@
   `created_facts` 是本次实际新增数，重复命中为零，已有事实保留原来源。
 - chunk 精确/语义去重限定同来源；语义 cosine ≥ 0.95，并保护数字、时间与否定差异。
   digest 按 chunk ID 读取已存原文及来源，避免语义命中后用另一份正文生成证据关联。
+  Facade/Store 的 `record_reading_evidence` 可选 `created_ids` 集合只记实际新增，独立写入
+  commit 后加入；外层事务回滚需丢弃集合。`ingest_source.chunks` 据此返回 `dedup=new|hit`。
+  `ingest_source` 可选 `committed_chunks` 在写入确认后、后续 await 前按 ID 追加精简回执，
+  保留已有项，供研究超时返回；外层事务回滚须丢弃暂存回执。提交完成但 await 未确认的取消
+  明示回执可能不完整，依靠来源查询/幂等重试发现，不猜测插入标记或超时后补查。
+  P3 研究原文和完整结论走同一入口，事实分别指向各自 chunk，沿用检索/反思/删除消费者。
 - schema 44 回填原文 UTF-8 SHA-256，并增加来源/hash/时间/ID 复合索引，精确查重仍核对全文。
   Store 写入同时维护 hash；直接 SQL 导入/修复正文须提供相同 hash。ID-only 变更日志由 INSERT、
   检索字段 UPDATE、DELETE/级联触发器同事务记录，`consumed_at` 更新不产生日志。

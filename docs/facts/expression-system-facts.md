@@ -75,7 +75,10 @@
 - 讨论模式仅授权 `memory_recall`、`knowledge_search`、`deep_research`，执行时再次核对；普通慢通道排除这三项且保留原工具。
   `memory_recall` 仅返回 profile/conversation 事实与对话段；完整段 JSON 真正进入最终回复 prompt 才幂等计召回。
   `knowledge_search` 返回 knowledge 事实、可空 `source_chunk_id` 及原文证据块，合并事实关联与相关块并按 ID 去重；不计对话段召回。
-  `deep_research` 当前明确返回尚未启用，真实研究属于 P3。
+  `deep_research` 已接入 P3 有界自适应研究，保存原文与完整结论，回注精简报告、准确入库回执和
+  来源数/限制说明；关闭联网直接返回“联网没开”。引用在提取、综合和压缩后按抓取正文校验。
+  研究返回整个 JSON 至多 1960 字符；pipeline 与最终 prompt 都整项保留，余量不足时省略，
+  不切断 JSON/citations，最终工具块包括标题和前缀仍至多 8000 字符。
 - 每轮 `respond` 一次 LLM 调用同时生成 JSON 的 `think` 和 `speak`，解析后分别评估并分别
   发布文本事件；两条评估记录共享 call_id、token 和最终 prompt。后续轮次使用累积的前轮
   think/speak，任务改为续写。

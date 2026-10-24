@@ -46,9 +46,13 @@
 
 ## 普通回复
 
-- `ExpressionFacade.reply(msg, correlation_id, reply_to=None, activity_context=None, discussion=None)` 先尝试
+- `ExpressionFacade.reply(msg, correlation_id, reply_to=None, activity_context=None, discussion=None, annotation=None)` 在无批注时先尝试
   原子关联一个等待中的 interaction attempt，再取得 `InnerLifeFacade.get_state()` 并调用
   回复图；未注入上下文时才从活动门面读取当前快照。
+- `ReplyAnnotation` 保存原始 `reply_event_id/quote/comment`；Chat API 验证当前角色精确 SPEAK 和连续原文，
+  durable USER_MESSAGE → runtime → ReplyState → 共有 user prompt 全程传递。FAST、SLOW、工具判断和续写
+  都包含 `[对上轮回复的批注]`；quote 标明是 Nyx 旧回复数据，不当作指令或用户事实。
+  批注本身不强制讨论/慢通道，也不 claim 或清除 waiting 问题；普通消息仍沿用旧绑定规则。
 - `discussion` 为 true 时强制加载技能，为 false 时禁用，为 null/省略时调用
   `should_load_discussion()`。技能加载即强制慢通道；普通陪聊或明确拒绝讨论不自动加载。
 - 组合根从 `nyx/prompts/skills/discussion.json` 加载 frozen `Skill`，启动时校验片段长度、

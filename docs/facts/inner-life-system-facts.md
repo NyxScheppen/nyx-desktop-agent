@@ -110,7 +110,10 @@
 - 长期欲望 embedding 失败、预检后长期欲望快照变化或叙事 revision 变化会使整次提交失败并回滚，交由 durable delivery 重试；事务内不执行 embedding，也不嵌套开启欲望事务。
 - 反思 JSON 非法、LLM 失败、eval 失败或本地事务失败都会抛出，不会写成功 effect，供 durable delivery 重试。
 - 事务回滚不会撤销已经发生的 LLM/eval 调用，所以重试依靠 effect marker 和后续幂等写入。
-- 正式触发统一使用普通 durable `REFLECTION`：`periodic`、`memory_contradiction`、`reading_revisit`、`idle_activity`。原始 payload 持久化在 `event_log`；`IDLE_REFLECTION` 不直接调用 `reflect()`，而是在活动完成事务中与 `ACTIVITY_END` 一起追加该请求。
+- 正式触发统一使用普通 durable `REFLECTION`：`periodic`、`memory_contradiction`、`annotation_correction`、`reading_revisit`、`idle_activity`。原始 payload 持久化在 `event_log`；`IDLE_REFLECTION` 不直接调用 `reflect()`，而是在活动完成事务中与 `ACTIVITY_END` 一起追加该请求。
+- 批注纠错由 memory.annotation_feedback 的 LLM 严格 bool 判定触发；evidence 携带反馈 event ID 和
+  有界 quote/comment 摘要，展示标签为“用户批注纠错”。沿用 narrative.updated_at 过期检查、事务外准备、
+  慢变量 revision CAS、effect 与 REFLECTION_DONE；反思失败独立重试，不撤销已记录反馈或阻断回复。
 
 ## 当前限制与导航
 

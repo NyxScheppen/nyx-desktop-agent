@@ -2,6 +2,25 @@
 
 > 本文件是给“无关代码但会碰到记忆事实”的快速摘要，例如表达慢通道、反思触发、读书/活动落记忆、前端 `Memory` 类型。完整记忆系统契约在 `docs/specs/06-memory-system.md`；修改 `nyx/memory/` 或记忆契约时必须先读完整 spec，并同步更新本摘要。
 
+## 回复批注反馈（P4）
+
+- schema46 新增 `annotation_feedback`，旧阅读 `annotations` 表保持原用途。原始
+  `(reply_event_id, comment)` 为 UNIQUE 键，不 trim；同键不同 quote 保留首次快照。
+  表不设锚点级联 FK、不回填历史、不新增删除 API，随角色数据库生命周期处理。
+- `has_annotation_feedback` 查询持久状态；`record_annotation_feedback(event, consumer_id)`
+  由独立 USER_MESSAGE 路由消费，把行、canonical ANNOTATION_FEEDBACK 和 effect 原子提交。
+  无批注旧消息不产生反馈；回复已终局仍能恢复录入。提交后回执只证明记录完成。
+- `apply_annotation_feedback(event, consumer_id)` 先查 effect，再复用 fact_extraction LLM/parser
+  与 Evaluator。顶层 facts 必须数组、is_correction 必须严格 bool；最多处理32个原始候选。
+  只允许 asserted=true、subject=用户的 profile/conversation；conversation 谓词仅“回复反馈”。
+  quote 只是旧回复定位材料，只从 comment 提取用户自身明确表达，不写 knowledge、Memory 或证据块。
+- LLM/eval 在事务外。LLM/JSON 失败日志并完成 best-effort 消费，不猜事实、不无限重放；
+  eval 在解析前记账，坏 JSON 同样可查 token/history/prompt，eval 故障不丢有效候选，取消传播。
+  事实 apply、可选 REFLECTION、effect 在同事务，SQL/append/effect/commit 失败全回滚后 delivery 重试。
+- 严格 is_correction=true 即使 facts 为空也产生 reason=annotation_correction 的 REFLECTION；
+  evidence.source_id 为反馈事件 ID，quote/comment 摘要合计≤1000字符。反思失败独立恢复，
+  不撤销反馈回执；成功 effect 重放跳过 LLM，批注不直接修改慢变量。
+
 ## 时间字段
 
 - `conversation_segment` 保存对话原文及段链；摘要、主题和 embedding 是可重建索引，不替代原文。时间近、主题相接或短确认语默认续接，明确转题才切段。

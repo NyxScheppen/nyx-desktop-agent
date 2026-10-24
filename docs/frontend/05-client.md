@@ -13,7 +13,7 @@
 ```typescript
 const BASE_URL = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
 
-async function postChat(message: string, replyTo?: string): Promise<{ event_id: string }> // POST /api/chat
+async function postChat(message: string, replyTo?: string, discussion?: boolean | null, annotation?: ReplyAnnotation): Promise<{ event_id: string; annotation_persistence?: "recorded" | "pending" }> // POST /api/chat
 async function getPendingQuestions(): Promise<{ server_now: number; questions: PendingQuestion[] }> // GET /api/questions/pending
 async function pauseQuestion(attemptId: string): Promise<PendingQuestion> // POST /api/questions/{id}/pause
 async function resumeQuestion(attemptId: string): Promise<PendingQuestion> // POST /api/questions/{id}/resume
@@ -53,6 +53,13 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 - **请求头**：`Content-Type: application/json`（FastAPI + Pydantic 体，错头会 422）。
 - 返回值直接 JSON 反序列化后上抛给调用方，**不包裹** `{ok, data}`。
 
+`postChat` 保留可选 discussion 的 null/true/false，末尾可选 annotation 为
+`{reply_event_id, quote, comment}`。批注请求使用 `message=comment`，与 reply_to 互斥。
+三个字段必须非空白严格字符串，ID 长1–128，quote/comment 各1–2000个 Unicode 字符，保留原样。
+未知/跨角色锚点404，非 SPEAK/非连续原文/字段或互斥校验422，锚点查证或受理失败503。
+带批注时可返回 annotation_persistence：仅查证反馈行存在为 recorded，否则 pending；反馈状态
+查询失败也可成功受理并返回 pending。普通聊天无此可选字段。记录不等于事实更新完成。
+
 
 ### 知识摄入类型与结果（P2）
 
@@ -91,7 +98,8 @@ type KnowledgeSourceResult = {
 ## 4. 测试（`tests/api.test.ts`）
 
 - 每个函数 mock `fetch`，断言请求 URL/method/请求体键 + 响应解析：
-  - `postChat`：请求 `POST /api/chat`、body `{message}` 或附加 `reply_to` → 返回 `{event_id}` 解析正确。
+  - `postChat`：请求 `POST /api/chat`，保留 message/reply_to、discussion 三态和完整 annotation；
+    解析 event_id 与可选 recorded/pending，普通请求不添加 annotation。
   - `getPendingQuestions` / `pauseQuestion` / `resumeQuestion`：请求提问快照和计时控制端点，解析 `server_now`、attempt 状态与暂停字段。
   - `getState`：`GET /api/state` → 返回 `CurrentState` 解析正确。
   - `getMemories` / `getMemorySearch`：分别请求 `/api/memories` 与 URL 编码后的

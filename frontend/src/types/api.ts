@@ -35,10 +35,25 @@ export type PresenceObservation = {
 
 export type Presence = "online" | "away" | "busy";
 
+export interface ReplyAnnotation {
+  reply_event_id: string;
+  quote: string;
+  comment: string;
+}
+
+export function isReplyAnnotation(value: unknown): value is ReplyAnnotation {
+  if (typeof value !== "object" || value === null) return false;
+  const item = value as Record<string, unknown>;
+  return ([ ["reply_event_id", 128], ["quote", 2000], ["comment", 2000] ] as const)
+    .every(([key, limit]) => typeof item[key] === "string" &&
+      item[key].trim().length > 0 && Array.from(item[key]).length <= limit);
+}
+
 export interface ChatRequest {
   message: string;
   discussion?: boolean | null;
   reply_to?: string;
+  annotation?: ReplyAnnotation;
 }
 
 export type Personality = {
@@ -117,6 +132,12 @@ export type PendingQuestion = {
 export type UserMessageEvent = SseBase & {
   event: "user_message";
   message: string;
+  annotation?: ReplyAnnotation;
+};
+
+export type AnnotationFeedbackEvent = SseBase & ReplyAnnotation & {
+  event: "annotation_feedback";
+  user_event_id: string;
 };
 
 /** 情感更新帧（08-inner-life）：{valence, arousal, emotion}。 */
@@ -205,6 +226,7 @@ export type SseEvent =
   | TextEvent<"mutter">
   | TextEvent<"initiate_chat">
   | UserMessageEvent
+  | AnnotationFeedbackEvent
   | EmotionUpdateEvent
   | ReflectionDoneEvent
   | ReadingMutterEvent
@@ -281,8 +303,17 @@ export function parseSseEvent(type: string, data: unknown): SseEvent | null {
       : null;
   }
   if (type === "user_message") {
+    if (data.annotation != null && !isReplyAnnotation(data.annotation)) return null;
     return typeof data.message === "string"
-      ? ({ ...base, event: type, message: data.message } as UserMessageEvent)
+      ? ({ ...base, event: type, message: data.message,
+          ...(isReplyAnnotation(data.annotation) ? { annotation: data.annotation } : {}),
+        } as UserMessageEvent)
+      : null;
+  }
+  if (type === "annotation_feedback") {
+    return isReplyAnnotation(data) && typeof data.user_event_id === "string"
+      ? { ...base, event: type, reply_event_id: data.reply_event_id,
+          quote: data.quote, comment: data.comment, user_event_id: data.user_event_id }
       : null;
   }
   if (type === "emotion_update") {

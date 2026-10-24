@@ -155,6 +155,7 @@ class InnerLifeFacade:
         if reason not in {
             "periodic",
             "memory_contradiction",
+            "annotation_correction",
             "reading_revisit",
             "idle_activity",
         }:

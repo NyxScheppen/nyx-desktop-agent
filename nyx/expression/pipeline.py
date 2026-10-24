@@ -57,6 +57,7 @@ from nyx.types import (
     Memory,
     MemoryFact,
     Message,
+    ReplyAnnotation,
     SelfNarrative,
     Skill,
 )
@@ -79,6 +80,7 @@ def _message_activity(context: ActivityContext) -> Activity | None:
 
 class ReplyState(TypedDict):
     message: str
+    annotation: ReplyAnnotation | None
     skill: Skill | None
     mode: ContextMode
     context: list[Message]       # 回溯上下文（facade 入口填，快慢一致；不含当前消息）
@@ -206,7 +208,9 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     state["reading_context"], _READING_BLOCK_MAX_CHARS
                 ),
                 build_conversation_segments_prompt(state["conversation_segments"]),
-                build_user_prompt(state["message"], state["context"]),
+                build_user_prompt(
+                    state["message"], state["context"], state.get("annotation")
+                ),
             )
             if part
         )

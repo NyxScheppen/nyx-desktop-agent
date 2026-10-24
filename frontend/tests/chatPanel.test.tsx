@@ -76,6 +76,37 @@ describe("KnowledgeFeed", () => {
 });
 
 describe("MessageBubble", () => {
+  it("完整 SPEAK 的单条选区保留原文，跨气泡选择拒绝", () => {
+    const a = { ...makeMsg("speak", "nyx", "中文🙂 原文"), preloaded: true };
+    const b = { ...makeMsg("speak", "nyx", "另一条"), preloaded: true };
+    render(<><MessageBubble message={a} ready onTyped={() => {}} /><MessageBubble message={b} ready onTyped={() => {}} /></>);
+    const first = screen.getByText(a.content);
+    const second = screen.getByText(b.content);
+    const range = document.createRange();
+    range.setStart(first.firstChild!, 0); range.setEnd(first.firstChild!, 4);
+    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    fireEvent.click(first);
+    expect(useChatStore.getState().annotationDraft?.quote).toBe("中文🙂");
+    useChatStore.getState().cancelAnnotation();
+    range.setEnd(second.firstChild!, 2);
+    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    fireEvent.click(first);
+    expect(useChatStore.getState().annotationDraft).toBeNull();
+    window.getSelection()!.removeAllRanges();
+  });
+  it("打字未完及 ASK 不批注；长全文提示选区而不截断", () => {
+    const message = makeMsg("speak", "nyx", "未完成");
+    const view = render(<MessageBubble message={message} ready onTyped={() => {}} />);
+    fireEvent.click(view.container.querySelector(".message-bubble__content")!);
+    expect(useChatStore.getState().annotationDraft).toBeNull();
+    view.rerender(<MessageBubble message={{ ...makeMsg("ask", "nyx", "问题"), preloaded: true }} ready onTyped={() => {}} />);
+    fireEvent.click(screen.getByText("问题"));
+    expect(useChatStore.getState().annotationDraft).toBeNull();
+    view.rerender(<MessageBubble message={{ ...makeMsg("speak", "nyx", "🙂".repeat(2001)), preloaded: true }} ready onTyped={() => {}} />);
+    fireEvent.click(view.container.querySelector(".message-bubble__content")!);
+    expect(useChatStore.getState().annotationDraft).toBeNull();
+    expect(useChatStore.getState().sendError).toContain("选择片段");
+  });
   beforeEach(() => {
     useChatStore.getState().reset();
     vi.useFakeTimers();
@@ -294,6 +325,31 @@ describe("MessageList", () => {
 describe("ChatInput", () => {
   beforeEach(() => {
     useChatStore.getState().reset();
+  });
+
+  it("选择回复、编辑批注并发送，保留普通草稿且仅在回执后显示已记录", async () => {
+    const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ event_id: "annotation-user", annotation_persistence: "pending" }) });
+    vi.stubGlobal("fetch", fetch);
+    const message = { ...makeMsg("speak", "nyx", "原文🙂"), preloaded: true };
+    render(<><MessageBubble message={message} ready onTyped={() => {}} /><ChatInput /><MessageList messages={useChatStore.getState().messages} /></>);
+    const input = screen.getByPlaceholderText("对 Nyx 说…");
+    fireEvent.change(input, { target: { value: "普通草稿" } });
+    window.getSelection()!.removeAllRanges();
+    fireEvent.click(screen.getByText(message.content));
+    expect(screen.getByRole("button", { name: "发送批注" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("对回复的批注"), { target: { value: " 请先说明不确定性🙂 " } });
+    const annotation = { reply_event_id: message.id, quote: message.content, comment: " 请先说明不确定性🙂 " };
+    fireEvent.click(screen.getByRole("button", { name: "发送批注" }));
+    await waitFor(() => expect(screen.queryByLabelText("对回复的批注")).toBeNull());
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ message: annotation.comment, discussion: null, annotation });
+    expect(input).toHaveValue("普通草稿");
+    const user: ChatMessage = { id: "annotation-user", kind: "message", role: "user", content: annotation.comment, annotation, correlation_id: "annotation-user", timestamp: 2 };
+    const view = render(<MessageBubble message={user} ready onTyped={() => {}} />);
+    expect(screen.getByText("反馈持久化待确认")).toBeInTheDocument();
+    act(() => useChatStore.getState().addAnnotationFeedback({ ...annotation, event: "annotation_feedback", event_id: "receipt", user_event_id: user.id, correlation_id: user.id, timestamp: 3 }));
+    expect(screen.getByText("反馈已记录")).toBeInTheDocument();
+    view.unmount();
+    act(() => useChatStore.getState().reset());
   });
 
   it("讨论模式控件在自动、讨论、陪伴三态间切换", () => {

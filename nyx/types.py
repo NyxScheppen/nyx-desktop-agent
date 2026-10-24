@@ -49,6 +49,12 @@ class LlmMessage(TypedDict):
     content: str
 
 
+class ReplyAnnotation(TypedDict):
+    reply_event_id: str
+    quote: str
+    comment: str
+
+
 # ---- 事件 ----
 @dataclass
 class Event:

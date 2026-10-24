@@ -62,6 +62,90 @@ function resetChat() {
   useChatStore.getState().reset(); // 复用 reset()：全清 messages/isReplying/sendError + 清 module 级 pendingId/replyTimer
 }
 
+describe("chatStore 批注", () => {
+  beforeEach(resetChat);
+  const annotation = { reply_event_id: "old", quote: "原文🙂", comment: " 请说明不确定性 " };
+  function draft() {
+    useChatStore.getState().beginAnnotation(annotation.reply_event_id, annotation.quote);
+    useChatStore.getState().updateComment(annotation.comment);
+  }
+  it("共用发送锁、绕过 waiting 绑定，早到回执不会被 pending 降级", async () => {
+    let finish!: (value: Response) => void;
+    const fetch = vi.fn((_url: string, _init?: RequestInit) => new Promise<Response>((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetch);
+    useChatStore.setState({ replyTargetId: "waiting", messages: [{ id: "q", role: "nyx", kind: "ask", content: "?", correlation_id: "q", timestamp: 1, attempt_id: "waiting", question_status: "waiting" }] });
+    draft();
+    const sending = useChatStore.getState().sendAnnotation();
+    expect(await useChatStore.getState().sendMessage("另一句")).toBe(false);
+    expect(JSON.parse(fetch.mock.calls[0][1]!.body as string)).toEqual({ message: annotation.comment, discussion: null, annotation });
+    useChatStore.getState().addAnnotationFeedback({ ...annotation, user_event_id: "u", event_id: "f", correlation_id: "u", timestamp: 2, event: "annotation_feedback" });
+    useChatStore.getState().addSpeak({ event: "speak", event_id: "s", correlation_id: "u", timestamp: 3, content: "收到" });
+    finish(jsonResponse({ event_id: "u", annotation_persistence: "pending" }));
+    expect(await sending).toBe(true);
+    expect(useChatStore.getState().annotationPersistence[JSON.stringify(["old", annotation.comment])]).toBe("recorded");
+    expect(useChatStore.getState().messages.find((m) => m.id === "q")?.question_status).toBe("waiting");
+    expect(useChatStore.getState().isReplying).toBe(false);
+    expect(useChatStore.getState().annotationDraft).toBeNull();
+  });
+  it.each([404, 422, 503])("失败 %s 保留原始草稿", async (status) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ detail: "批注失败" }, false, status)));
+    draft();
+    expect(await useChatStore.getState().sendAnnotation()).toBe(false);
+    expect(useChatStore.getState().annotationDraft).toEqual(annotation);
+    expect(useChatStore.getState().sendError).toBe("批注失败");
+  });
+  it("成功不清除发送期间编辑的草稿；reset 清空回执", async () => {
+    let finish!: (value: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
+    draft();
+    const sending = useChatStore.getState().sendAnnotation();
+    useChatStore.getState().updateComment("下一条批注");
+    finish(jsonResponse({ event_id: "u", annotation_persistence: "recorded" }));
+    await sending;
+    expect(useChatStore.getState().annotationDraft?.comment).toBe("下一条批注");
+    useChatStore.getState().reset();
+    expect(useChatStore.getState().annotationDraft).toBeNull();
+    expect(useChatStore.getState().annotationPersistence).toEqual({});
+  });
+  it("历史回执早于用户消息仍恢复 recorded，回执不渲染成聊天", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("questions/pending")) return jsonResponse({ server_now: 10, questions: [] });
+      const type = new URL(url, "http://local").searchParams.get("event_type");
+      return jsonResponse(type === "annotation_feedback" ? [{ id: "f", type, timestamp: 1, correlation_id: "u", content: { ...annotation, user_event_id: "u" } }]
+        : type === "user_message" ? [{ id: "u", type, timestamp: 2, correlation_id: "u", content: { message: annotation.comment, annotation } }] : []);
+    }));
+    await useChatStore.getState().loadHistory();
+    expect(useChatStore.getState().messages).toHaveLength(1);
+    expect(useChatStore.getState().messages[0].annotation).toEqual(annotation);
+    expect(useChatStore.getState().annotationPersistence[JSON.stringify(["old", annotation.comment])]).toBe("recorded");
+  });
+  it.each(["events", "pending"])("reset 后忽略迟到的历史 %s 请求", async (stage) => {
+    let finish!: (value: Response) => void;
+    let started!: () => void;
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      const pending = url.includes("questions/pending");
+      const type = new URL(url, "http://local").searchParams.get("event_type");
+      if ((stage === "pending" && pending) || (stage === "events" && type === "annotation_feedback")) {
+        started();
+        return new Promise<Response>((resolve) => { finish = resolve; });
+      }
+      return Promise.resolve(jsonResponse(pending ? { server_now: 10, questions: [] } : []));
+    }));
+    const loading = useChatStore.getState().loadHistory();
+    await waiting;
+    resetChat();
+    finish(jsonResponse(stage === "pending" ? { server_now: 10, questions: [] } : [{
+      id: "f", type: "annotation_feedback", timestamp: 1, correlation_id: "u",
+      content: { ...annotation, user_event_id: "u" },
+    }]));
+    await loading;
+    expect(useChatStore.getState().annotationPersistence).toEqual({});
+    expect(useChatStore.getState().messages).toEqual([]);
+    expect(useChatStore.getState().serverTimeOffset).toBe(0);
+  });
+});
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();

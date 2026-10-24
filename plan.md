@@ -206,22 +206,227 @@ Validation: turn both real-SQLite red probes green; pause during digest, fact ex
 - Final backend regression excluding only the previously reproduced host unload-drain baseline: 1288 passed / 1 skipped / 1 deselected in 125.79s. Ruff/Pyright passed. The complete pytest quality gate remains unmet because the baseline case is excluded; no host behavior changed.
 - Standards and Spec code reviews found no remaining code findings; stale approval text has been synchronized. Contracts/facts/index/inventory/LessonsLearned updated. Scripted LLM/network with real SQLite/EventBus/HTTP/SSE verifies plumbing, not real-model semantic/discussion quality.
 - The user approved committing P3 and starting P4 on 2026-10-24. P4 begins with read-only investigation and a detailed implementation plan for approval under the root review rule.
+- P3 was committed as `f12ffda` (`feat(research): add bounded deep research with knowledge provenance`). No P4 implementation is included in that commit.
 
 ## P4 - Annotation Feedback
 
-### Scope
+### Requirement, Approval State and Execution
 
-- Add the `annotation` request payload.
-- Inject annotation context into prompts.
-- Add `annotation_feedback` persistence and `ANNOTATION_FEEDBACK` events.
-- Feed annotation feedback into the fact/reflection intermediary.
-- Add frontend selection, annotation, and send interactions.
+- **Goal:** 用户选择当前角色的一条 SPEAK 回复，引用其中片段并发送批注；本轮回复能看到批注，反馈另行持久化，经 LLM 中介更新画像/对话事实，纠错进入现有反思链路。
+- **Spec:** `docs/specs/15-discussion-partner.md` 第 8 节、批注对象完整性、前端契约和批注 E2E；共享契约沿用 specs 01/04/06/08/11。
+- **Architecture:** 复用当前 Chat API、ExpressionFacade、MemoryFacade/Store、FactStore 和 durable EventBus。增加两条独立消费路由，避免反馈抽取等待阻塞表达，也避免回复终局短路丢失尚未记录的反馈。
+- **Tech stack:** 现有 Python/FastAPI/SQLite/LangGraph 和 React/TypeScript/Zustand；不增加依赖、配置项、服务层或新源文件。
+- **Approval:** P3 已按授权提交为 f12ffda；用户已明确批准本节完整 P4 实施方案。4.1–4.5 实现、文档同步与验收完成，用户已在收到验收报告后明确授权提交 P4。
+- 批准后在本会话按以下检查点顺序执行，执行方式采用 `superpowers:executing-plans`。每个检查点先红后绿；P4 完整验收后报告并等待用户审批，不自动提交。
+- 本节同时提交新增类型、签名、schema、路由、反思 reason 和持久回执语义供审批，避免实施时隐式扩大契约。若这些关键决定变化，先更新本计划重新审核。
 
-### Audit and Expected Files
+### Key Assumptions and Contract Supplements for Approval
 
-- Audit `nyx/api/routes.py`, `nyx/db.py`, expression/memory/event flow, and frontend chat types/client/store/components.
-- Use SPEAK `event_id` as the annotation anchor.
-- Cover missing selection, stale event IDs, empty annotations, and duplicate submissions.
+1. `annotation` 是可选的本轮用户输入。无该字段时保留现有 prompt、讨论三态、问题绑定和发送行为；批注本身不强制讨论模式或慢通道。
+2. 锚点必须是当前角色库中精确 ID 对应的 SPEAK；不是“最新回复”。`quote` 必须是该 SPEAK 正文中的连续原文片段，保留原样，不裁切、不改写。历史 SPEAK 也可以批注。
+3. 三个嵌套字段均为严格字符串、禁止全空白：`reply_event_id` 长度 1–128，`quote` 和 `comment` 各 1–2000 个 Unicode 字符。前端按相同字符计数限制。缺字段、错误类型、空白或超长返回 422；未知/跨角色 ID 返回 404；非 SPEAK、引用不匹配及同时传 `annotation`/`reply_to` 返回 422。无法查证锚点或受理事件失败沿用 503，不降级猜测锚点。
+4. 批注不会回答另一条 waiting 问题：前端发送时跳过隐式/显式 reply_to，后端在批注分支跳过 `answer_waiting`。普通聊天仍沿用旧绑定规则；不改变 waiting 的暂停、超时或恢复策略。
+5. 去重键严格使用原始 `(reply_event_id, comment)`，不 trim 后判等。同键不同 quote 时第一条已记录快照保留；每次新请求的 quote 仍需通过锚点校验。反馈记录和中介幂等；用户再次发送消息仍是独立聊天回合，不承诺 HTTP 重试只产生一次回复。
+6. **“记录”与“学到事实”分开。** API 对带批注的成功受理增加 `annotation_persistence: "recorded" | "pending"`。只有已查证存在反馈行才返回 recorded；首次请求通常 pending，查反馈状态失败也只记日志并返回 pending。`ANNOTATION_FEEDBACK` 的提交后 SSE 回执把 UI 升为“反馈已记录”，不表示事实抽取或反思已完成。
+7. 录入故障走现有 delivery 的至多 5 次尝试及 dead_letter，不引入永久重试器。重启恢复未完成 delivery；达到 dead_letter 后保持待确认，用户可按同键再次发送以重试。丢回执只显示未确认；重载查询既有事件日志，或同键发送时确认，绝不把超时当作已保存。
+8. LLM 调用、JSON 解析失败是 best-effort：保留已记录反馈、记日志并结束该次中介，不做正则/确定性事实或纠错兜底。事实 SQL 或派生事件提交失败则回滚整次中介事务并交 delivery 重试。外部 LLM/eval 均在事务外；取消不吞掉。反馈旁路故障与回复隔离；全库不可用仍受既有受理/终局持久化边界约束。
+9. 批注不直接写 `knowledge` 事实、Memory 知识或证据块，不把引用当作外部真相；复用 profile/conversation 的已有查询、去重及时间语义。只记录用户明确表达的自身信息或对回复的反馈。反思保留既有时间过期检查、CAS、effect 和 REFLECTION_DONE 机制。
+
+### Object Integrity Audit
+
+| 对象 | 入口与写入 | 消费者与发现 | 状态、失败、恢复、删除 |
+|---|---|---|---|
+| ReplyAnnotation | Chat API 校验；USER_MESSAGE 保留完整已受理快照；重放复用该快照 | runtime → reply → ReplyState → build_user_prompt；前端用户消息投影 | 无批注无变化；无效输入不受理；锚点仅精确查询；不新增单独删除；之后原事件不可用也不改写已受理快照 |
+| annotation_feedback | 独立 USER_MESSAGE 消费者；schema 46 新表 | 同键状态查询；ANNOTATION_FEEDBACK 中介；前端提交回执 | 未记录 → 同事务记录行/事件/effect；失败回滚后重试；同键只一个 canonical 事件；不做历史回填；无独立删除功能，随角色数据库既有生命周期处理 |
+| 反馈派生事实 | ANNOTATION_FEEDBACK → 统一 fact_extraction → FactStore.apply | 现有 profile/conversation 查询、表达检索和事实 API | LLM 失败保留原反馈且不猜测；成功候选/REFLECTION/effect 原子提交；重放成功 effect 不重复抽取；沿用事实时间/去重/删除语义，不增加反馈专属事实来源列 |
+| 纠错 REFLECTION | 中介严格 bool 判定为纠错后派生，携带反馈 event ID 和有界原文/批注摘要 | 现有 inner_life.reflection；状态与 REFLECTION_DONE 的旧消费者 | 新 reason annotation_correction；原有过期/CAS/事务/effect 规则；失败由反思 delivery 恢复，不回滚已记录反馈，不直接改慢变量 |
+| annotationDraft 与回执状态 | 单条 SPEAK 选区/点击；发送前捕获角色代数与完整草稿 | ChatInput、MessageBubble、chatStore、SSE dispatch、history | 草稿 → 发送 → pending/recorded；录入成功与回复成功分别处理；失败保留草稿；成功仅清理同代且未编辑的草稿；切换/reset 清空，旧回包不能污染新角色 |
+
+| Bad case | 决定与验收目标 |
+|---|---|
+| 空 | annotation 缺失/null 沿用普通聊天；字段缺失、全空白、无选中回复或空批注拒绝发送/422 |
+| 失败 | 锚点查证失败不受理；反馈单独录入失败仍能回复且 UI 待确认；LLM/eval 失败隔离，事实 SQL 失败不得留半套事实/effect/反思 |
+| 部分完成 | 回复已终局但反馈未记录，独立 recording delivery 仍可恢复；反馈已记录但中介失败不撤销回执；回执只证明记录，不能宣称学会 |
+| 乱序 | 回执可早于 POST 响应或 USER_MESSAGE SSE，按原始键合并且 recorded 不降为 pending；前端按角色代数拦截迟到成功、失败及 timer |
+| 重放 | 同键串行/并发请求只有一行/一个反馈事件/一次成功中介；事务失败可重试，已有 effect 跳过 LLM；无批注旧 USER_MESSAGE 消费为 no-op |
+| 删除 | 不增加批注删除 API；表不设会因锚点清理而级联删除反馈的 FK，保留 quote 快照；事实和角色删除沿用既有路径 |
+
+### Interfaces, Schema and Event Chain
+
+以下均为本计划明确提请批准的接口；普通调用方可省略新增可选参数。`ReplyAnnotation` 同样用于前后端数据形状，不增加通用封装。
+
+```python
+class ReplyAnnotation(TypedDict):
+    reply_event_id: str
+    quote: str
+    comment: str
+
+# EventBus：按 event_log 主键精确读取，复用现有 Event 行映射。
+async def get_event(self, event_id: str) -> Event | None: ...
+
+# MemoryStore：find 返回 canonical ANNOTATION_FEEDBACK 的 event_id；record 参加外层事务。
+async def find_annotation_feedback(self, reply_event_id: str, comment: str) -> str | None: ...
+async def record_annotation_feedback(self, event: Event) -> bool: ...
+
+# MemoryFacade：API 只经门面查询；两个 handler 由 subscriptions 绑定 consumer_id。
+async def has_annotation_feedback(self, reply_event_id: str, comment: str) -> bool: ...
+async def record_annotation_feedback(self, event: Event, consumer_id: str) -> None: ...
+async def apply_annotation_feedback(self, event: Event, consumer_id: str) -> None: ...
+
+# 保留 reply 的全部原参数，在末尾加 annotation=None；ReplyState 增加同类型可选字段。
+async def reply(self, msg: str, correlation_id: str, reply_to: str | None = None,
+                activity_context: ActivityContext | None = None,
+                discussion: bool | None = None,
+                annotation: ReplyAnnotation | None = None) -> None: ...
+def build_user_prompt(message: str, context: list[Message],
+                      annotation: ReplyAnnotation | None = None) -> str: ...
+```
+
+上述为接口签名。`_AnnotationPayload` 是 routes 内与现有 `_ChatPayload` 同风格的私有 Pydantic 输入模型；其字段/限制按上节执行，`_ChatPayload.annotation` 默认 None。
+
+```sql
+CREATE TABLE annotation_feedback (
+    event_id TEXT PRIMARY KEY,
+    reply_event_id TEXT NOT NULL,
+    quote TEXT NOT NULL,
+    comment TEXT NOT NULL,
+    user_event_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    UNIQUE(reply_event_id, comment)
+);
+```
+
+- `event_id` 为 canonical ANNOTATION_FEEDBACK 的 ID；`user_event_id` 是首次记录它的 USER_MESSAGE ID；created_at 使用 canonical 事件时间。不增加 FK、独立 status/retry 表或 hash 索引；UNIQUE 自带索引服务精确键查找。迁移 45 → 46，已有 `annotations` 阅读笔记表保持原用途。
+- `EventType.ANNOTATION_FEEDBACK` 的值为 `annotation_feedback`，content 为 `{reply_event_id, quote, comment, user_event_id}`；沿用首次 USER_MESSAGE 的 correlation_id，SSE 继续使用已有 event_id，不增加锚点字段。
+
+```text
+POST /api/chat → USER_MESSAGE（完整 annotation 快照）
+  ├─ expression.user_message → 注入批注 → 正常回复
+  └─ memory.annotation_recording → 行 + ANNOTATION_FEEDBACK + recording effect（同事务）
+       └─ memory.annotation_feedback → LLM（事务外）
+            → profile/conversation 事实 + 可选 REFLECTION + mediation effect（同事务）
+                 └─ inner_life.reflection → 既有反思链路
+```
+
+- 只在 `ROUTE_SPECS` 增加 `USER_MESSAGE / memory.annotation_recording / record_annotation_feedback` 和 `ANNOTATION_FEEDBACK / memory.annotation_feedback / apply_annotation_feedback`，subscriptions 解析它们；兼容 ROUTING 由源表派生。
+- recording 先排除无批注/已有 effect；事务内重新确认 effect，以 UNIQUE 插入行，只有实际新增才 append canonical 事件，同时写 effect。提交后 announce；缺失唤醒由既有扫描恢复。重复键不重建事件、不覆盖第一份快照。
+- mediation 先查 effect，再调用 LLM；事务内再次检查并原子应用候选/append 纠错反思/写 effect。并发成功副作用唯一；失败回滚 effect。LLM best-effort 跳过也完成本次消费，避免无限付费重放；不把它标成事实更新成功。
+
+### LLM Mediation Contract
+
+复用 `_FACT_EXTRACTION_SYSTEM`、`parse_fact_extraction`、`LlmClient.complete(module="memory", output_type="fact_extraction", json_mode=True)` 及现有 Evaluator。仅本批注调用附加严格的来源规则与以下输出扩展，不修改普通事实抽取形状或 FactCandidate。
+
+```json
+{
+  "entities": [],
+  "facts": [
+    {"scope":"profile","subject":"用户","subject_type":"person","predicate":"回复偏好","object":"希望先说明不确定性","asserted":true,"mode":"multi","polarity":1},
+    {"scope":"conversation","subject":"用户","subject_type":"person","predicate":"回复反馈","object":"认为这次回答过于肯定","asserted":true,"mode":"multi","polarity":1}
+  ],
+  "is_correction": true
+}
+```
+
+- prompt 用结构化输入分别标记 quote（Nyx 旧回复，仅供定位）和 comment（用户反馈）；要求只从 comment 的明确用户表达抽取，外部知识纠错只能记为“用户认为/指出某回复有误”。
+- 顶层必须有 facts 数组与严格 bool 的 is_correction，非法 JSON/形状整次跳过并日志。逐项 scope 只允许 profile/conversation，asserted 必须 true；按 scope 拆组后复用 `parse_fact_extraction(source_scope="quoted")` 的数量、名称和关系模式约束。
+- 代码再次限制候选 subject 为“用户”；conversation 谓词仅允许“回复反馈”。未知 scope、外部主体、未断言候选丢弃。profile 仅接收用户自身的明确属性/偏好。绝不调用 knowledge 摄入/词法 fallback；语义归因质量仍需单独说明真实模型是否验收。
+- 对两组候选分别 `FactStore.apply(candidates, None, "profile" | "conversation")`，valid_from 使用反馈事件时间；不创建新的 Memory 或伪造 source_memory_id/source_chunk_id。
+- is_correction=true 时即使 facts 为空也 append 一个 REFLECTION；reason=`annotation_correction`，evidence 沿用既有 `{source_id, summary}`（source_id=反馈 event_id，summary 总计≤1000 字符，含 quote/comment）。不直接改人格/叙事；false 不触发。补齐 inner_life reason 白名单及展示标签。
+- LLM 成功输出在解析前进入 Evaluator，非法 JSON 同样记账；eval 失败只记日志，不丢有效候选，取消继续传播。
+
+### Implementation Checkpoints and Acceptance
+
+#### 4.1 — 输入、锚点和完整 prompt 传递
+
+**Files:** `nyx/types.py`、`nyx/api/routes.py`、`nyx/events/bus.py`、`nyx/runtime.py`、`nyx/expression/{facade,pipeline,prompt}.py`；同步 specs 01/04/11/15 及 expression/bus facts。
+
+- [x] **Red:** 仓库外临时 E2E driver 构造真实隔离 SQLite/EventBus/FastAPI，发布已知 SPEAK 后 POST 批注；断言受理 USER_MESSAGE 携带完整快照、捕获的表达 LLM user prompt 含 `[对上轮回复的批注]`、quote/comment。当前代码缺少快照/上下文，必须观察到失败。
+- [x] **Green:** 增加上节输入模型和精确 get_event；校验成功后 annotation 跟随 durable USER_MESSAGE 进入 runtime/reply/ReplyState；在共有 user_prompt 调用点传给 build_user_prompt。历史为空也包含批注块；引用按数据展示，不作为 system 指令。保留 runtime 的签名兼容与回复终局短路，反馈另由 4.2 路由处理。
+- [x] **验收:** FAST、SLOW、讨论工具判断/最终回复及续写 prompt 均保留批注；无 annotation 的 prompt 与原行为一致。覆盖未知/跨角色/非 SPEAK、引用拼接或篡改、空白、错类型、超长、中文/emoji、旧历史 SPEAK、annotation+reply_to；有 waiting 问题时批注不 claim 它，普通回复仍能回答。
+- [x] **检查:** 数据和签名文档先同步再写实现；只验证当前已交付的上下文能力，不把尚未实现的回执/中介当完成。
+
+#### 4.2 — 持久记录、独立消费和可确认回执
+
+**Files:** `nyx/db.py`、`nyx/enums.py`、`nyx/memory/{store,facade}.py`、`nyx/events/routing.py`、`nyx/subscriptions.py`、`nyx/api/routes.py`；同步 specs 01/04/06/15 与 memory/bus facts。
+
+- [x] **Red:** 临时 driver 发送相同键的两次/并发批注，查 SQL 行、事件及 effect；暂停 recording 后先完成 SPEAK，重启恢复。当前无表/独立路由/回执，断言失败。
+- [x] **Green:** 增加原子 schema46 迁移、Store 和 Facade 的查询/recording 接口及 recording 路由，按上节事务算法落库。此检查点只注册 recording；4.3 实现中介 handler 后再注册 mediation 路由。API 只附加只读已记录/pending 状态，不等待消费者，反馈状态查询单独失败不拒绝已通过锚点验证的聊天。
+- [x] **验收:** 45 库升级数据/旧阅读批注不丢失；迁移注入错误时表/version 一起回滚。相同键、不同 quote、并发键及跨角色隔离符合定义；每键仅一行/一个事件。行插入、事件 append、effect 和 commit 逐处失败均不留半套状态；重试/重启恢复。回复已终局不妨碍 recording；无批注消息 no-op；反馈数据库单点注入失败时表达仍输出且回执状态 pending。
+- [x] **检查:** 已 recorded 同键请求能返回 recorded；dead_letter 不伪称可无限自愈。4.2/4.3 在同一 P4 变更内配齐后才作最终运行验收，不发布中间状态。
+
+#### 4.3 — 反馈事实与纠错反思
+
+**Files:** `nyx/memory/facade.py`、`nyx/inner_life/{facade,reflection}.py`；同步 specs 06/08/15 与 memory/inner-life facts；复用 FactStore/parser，不改其通用签名。
+
+- [x] **Red:** 临时 driver 用脚本化 fact_extraction 分别输出用户偏好、纠错、称赞及带外部实体/knowledge scope 的候选，断言只有允许的 profile/conversation 事实且纠错有 REFLECTION。当前无中介，断言失败。
+- [x] **Green:** 实现 apply_annotation_feedback 的 JSON 校验/过滤、事务外 LLM/eval、事务内事实/反思/effect，再注册 mediation 路由及 subscriptions handler；补 annotation_correction reason 与证据标签，保留旧反思准备/提交/CAS/过期规则。
+- [x] **验收:** 用户偏好可经已有事实 API 查询；批评写成用户反馈而非世界真相。原 quote 里的断言、外部主体、unknown scope、缺 asserted 不入事实；不创建知识事实/Memory/证据块。true/false/空 facts/非 bool/坏 JSON/LLM 异常均按契约处理。eval 的 token、调用历史、最终 prompt 可查，eval 故障不影响有效输出；取消不被吞掉。
+- [x] **检查:** SQL apply、REFLECTION append、effect、commit 分别注入失败，验证全回滚且 delivery 可重试；成功重放不重复调用 LLM/事实/反思。故意遗漏 recording 提交后 announce，重启/扫描仍处理 durable feedback delivery。反思失败不影响反馈记录和回复；独立恢复、REFLECTION_DONE 和过期事件行为可观测。分别说明记录、候选提交、反思完成三个结果。
+
+#### 4.4 — 单条 SPEAK 批注 UI 与发送状态
+
+**Files:** `frontend/src/types/api.ts`、`frontend/src/api/{client,dispatch}.ts`、`frontend/src/hooks/useSSE.ts`、`frontend/src/stores/chatStore.ts`、`frontend/src/components/chat/{MessageBubble,ChatInput}.tsx`、`frontend/src/index.css`；现有测试 `frontend/tests/{api,stores,sse,characterScope}.test.ts` 和 `frontend/tests/chatPanel.test.tsx`；同步 frontend 01/02/03/05 和 test-inventory。
+
+```ts
+export interface ReplyAnnotation {
+  reply_event_id: string;
+  quote: string;
+  comment: string;
+}
+// ChatRequest 增加 annotation?: ReplyAnnotation，保留 message/reply_to/discussion。
+// postChat 的前三个参数不变，在末尾加 annotation?: ReplyAnnotation。
+// 返回 {event_id: string; annotation_persistence?: "recorded" | "pending"}。
+// ChatMessage 增加 annotation?: ReplyAnnotation，供用户消息投影/历史和 quote 展示。
+annotationDraft: ReplyAnnotation | null;
+annotationPersistence: Record<string, "pending" | "recorded">;
+beginAnnotation(event_id: string, quote: string): void;
+updateComment(text: string): void;
+cancelAnnotation(): void;
+sendAnnotation(): Promise<boolean>;
+```
+
+- [x] **Red:** 先在上述现有 frontend 测试中覆盖 SPEAK 选择→编辑→发送 payload；回执先到、请求晚回；A→B→A 后旧请求/失败不清新草稿；现有代码缺少 action/界面/解析，观察失败。
+- [x] **Green:** MessageBubble 只允许已完整显示的 SPEAK 进入批注。原生选区必须完全属于同一正文 span；无选区点击可预填整条≤2000字符的回复，更长时提示选择片段，不静默截断。跨气泡选区不选取；ASK/THINK/读书问题不进入批注。ChatInput 内显示引用、comment 文本域、取消/发送；不增加组件抽象。
+- [x] **Green:** sendMessage/sendAnnotation 共用现有发送锁、reply tracker、earlyReplies、超时和角色代数保护。sendAnnotation 使用 `message=comment` 加完整 annotation，并沿用 discussionMode；只跳过 waiting 绑定，普通输入草稿保留。失败保留批注，成功仅清掉同代且完全未编辑的原草稿；新编辑/新选择不被旧请求清掉。
+- [x] **Green:** SSE 注册 annotation_feedback，parser 保留 USER_MESSAGE.annotation，dispatch 按键 `JSON.stringify([reply_event_id, comment])` 合并持久回执。发送前建立本地键，回执先到也不丢失；POST 的 pending 不能覆盖 recorded。用户批注消息显示引用和“反馈持久化待确认”/“反馈已记录”；不宣称画像已更新。
+- [x] **验收:** 普通聊天、讨论三态、等待问题选择、双击锁、类型打字机与历史回填不回归。reset/角色切换清空草稿和本地回执状态。loadHistory 同时读既有 annotation_feedback 事件，按键恢复已确认状态，缺回执保守 pending；乱序到来的历史不能降级已确认状态。API 422/404/503 可见且草稿保留；同键 canonical 回执能确认所有对应消息。
+
+#### 4.5 — 完整 E2E、同步文档和阶段验收
+
+**Files:** 上述实现文件；`docs/specs/{01-types,04-module-bus-system,06-memory-system,08-inner-life,11-expression,15-discussion-partner}.md`、`docs/facts/{memory-system,expression-system,module-bus-system,inner-life-system}-facts.md`、`docs/frontend/{01-sse,02-stores,03-chat-panel,05-client}.md`、`docs/tech-reference.md`、`docs/test-inventory.md`、`docs/LessonsLearned.md` 和本计划。既有后端测试只有在枚举/路由/schema/调用签名断言确因本次契约变化需要同步时修改，不新增 pytest 单测；允许同步的范围为 `tests/test_db/test_db.py`、`tests/test_event/{test_routing,test_event,test_bus}.py` 和 `tests/test_api/{test_subscription,test_endpoints,test_context,test_tick_loop}.py`。
+
+- [x] **端到端主线:** 启动隔离真实 HTTP/SSE 后端，以脚本化 LLM/embedding 驱动“收 SPEAK → 选原文 → POST 批注 → 同轮 prompt 与回复 → 持久回执 → profile/conversation 事实 API → 纠错 REFLECTION/REFLECTION_DONE”。临时 driver 保存在仓库外，记录可复现命令、断言结果与失败窗口；不使用真实用户数据。
+- [x] **故障主线:** 重跑 4.1–4.4 的输入、事务、幂等、重启、乱序、角色隔离及 LLM 故障场景；对比 annotation_feedback/event_log/event_delivery/event_effect/memory_fact 和前端可见状态。单独验证反馈旁路不直接写知识，普通讨论工具仍按已有授权工作。
+- [x] **质量门:** 先查 LessonsLearned，运行 `ruff check .`、`pyright`、`python -m pytest`；前端运行 `npm test -- --run` 和 `npm run build`。若全量再次出现已知宿主 unload-drain 失败，单列失败结果并只为定位该基线补跑排除该例的回归，不能把全量标记通过，也不扩大到宿主修复。
+- [x] **Review:** 按 code-review skill 做规范与 spec 两轴审查；核对所有新增对象入口/消费者、事务重放、签名、来源边界、前后端事件集合、测试快照和新增教训。不触碰用户现有 CLAUDE.md 改动、两份已删除设计文档和 data/；本次不修改工程规则。
+- [x] **验收报告:** 逐条列出 spec15 批注验收项、HTTP/SSE/实库证据、前端测试构建、完整质量门结果。脚本化 LLM 只证明流程和结构；真实模型对批注的理解与学习质量是否另行验收要明确说明。报告后等待用户审批，不自动提交。
+
+### Alternatives and Plan Self-review
+
+- 选择独立 durable recording + mediation 两消费者：若录入仅挂在 expression.user_message，回复终局后的重放短路会跳过未完成反馈；若在 Chat API 同步抽取，则增加响应等待并把反馈失败耦合到聊天受理。
+- pending/recorded 复用既有 event_log/SSE/history；不新增状态端点、轮询器或重试任务。事实不新增来源外键；原始反馈证据留在表和 canonical 事件中。
+- 自审覆盖：输入/锚点/prompt 对应 4.1；表/事件/录入失败/幂等对应 4.2；中介/知识边界/纠错反思对应 4.3；选择/草稿/回执/角色隔离对应 4.4；主线 E2E/现有回归/文档与质量门对应 4.5。
+- 自审一致性：唯一事件名 annotation_feedback；去重、查询、前端回执都使用同一原始键；三个可选 annotation 参数与前端字段一致；不把 recorded 当作事实更新完成；无未决定的数据对象、接口或状态分支。
+
+**P4 审核状态（2026-10-24）**：用户已明确批准以上完整实施方案；4.1–4.5 已完成，用户已在收到验收报告后明确授权提交。
+
+### P4 Acceptance Results（2026-10-24，用户已授权提交）
+
+- **4.1 输入与上下文：通过。** 真实 HTTP/SSE 验证完整批注快照随 USER_MESSAGE 持久化并进入同轮表达 prompt；FAST、SLOW、讨论工具判断/最终回复/续写均保留引用与评论。严格类型、非空/Unicode 长度、精确 SPEAK 锚点、连续原文、互斥 reply_to 和 404/422/503 边界通过；跨角色锚点用隔离数据库验证。批注不强制讨论通道，也不认领 waiting，后续普通回复仍能回答原问题。
+- **4.2 持久记录与回执：通过。** schema45→46 保留旧阅读笔记/批注（含中文/emoji）；迁移失败回滚。原始键并发去重、首次快照、每键唯一行/事件、录入行/事件/effect/提交四处失败与恢复通过。表达终局后仍独立录入，丢失 announce 后扫描/重启恢复；同键重放返回 recorded。录入连续5次失败进入 dead_letter 时，聊天仍回复且回执 pending，未伪称已记录或无限自愈。
+- **4.3 反馈事实与反思：通过。** 现有事实 API 可查 profile/conversation 候选；仅保留明确用户归因，conversation 限制为“回复反馈”，不直接写知识事实、Memory 或证据块。true/false/空事实/非法 JSON/非 bool、LLM/eval 故障、取消及四处事务失败/重试通过。实际 eval HTTP 验证合法/非法 JSON 的 token、调用历史和完整 prompt；纠错 REFLECTION 的证据、失败隔离/恢复、REFLECTION_DONE 和过期 no-op 通过。
+- **4.4 前端：通过。** 既有5个文件新增15项测试，覆盖单条已完成 SPEAK 选区/长文限制、编辑/发送/错误保留、共享发送锁、waiting 旁路、回执先到/recorded 不降级、历史恢复和角色/reset 隔离。规格审查发现 loadHistory 仅检查角色 scope 后，补充本地 generation 守卫；events/pending 两个 await 阶段回归均先红后绿。UI 通过组件/store 测试验收，未另做真实浏览器人工操作验收。
+- **4.5 E2E 与质量门：通过。** 仓库外临时驱动完成真实 SQLite/EventBus/FastAPI 的3组 HTTP/SSE 主线、5组边界、4组补充与回滚计数探针。完整后端 **1289 passed / 1 skipped（120.38s）**，未排除用例，历史宿主 unload-drain 失败本次未复现；前端 **376 passed / 25文件**，TypeScript/Vite 生产构建、Ruff、Pyright（0 errors / 0 warnings）通过。工程规范审查无发现，规格审查的历史恢复问题已修复并验证；相关契约、事实、前端文档、测试快照和教训已同步。
+- **验收边界：** LLM/外部输出使用脚本化替身，验证流程、结构和故障边界；真实模型对批注的理解、学习效果以及讨论风格/引用质量仍未验收，spec15 总体 E2E 对应项保留未完成。P3 已提交 `f12ffda`；用户已在收到上述验收结果和限制后授权提交 P4。
+
+本机临时驱动复现命令（文件在仓库外，不随代码提交）：
+
+```powershell
+python $env:TEMP\nyx-p4-acceptance.py
+python $env:TEMP\nyx-p4-boundaries.py
+python $env:TEMP\nyx-p4-counter.py
+python $env:TEMP\nyx-p4-extra.py
+```
 
 ## Cross-phase Verification
 
@@ -249,4 +454,4 @@ Validation: turn both real-SQLite red probes green; pause during digest, fact ex
 - P2 backend: first full run 4 failed / 1285 passed / 1 skipped; three old fixtures were corrected and 135 reading/reflection tests passed. The remaining host unload-drain test also hung in an independent unchanged P1 commit snapshot (over 75s). Excluding only that test, 1288 passed / 1 skipped / 1 deselected. The full-suite quality gate is not all green; no host behavior was changed.
 - Fact extraction/storage remains best-effort: raw chunks and Memory survive failure, but duplicate Memory does not retry missing facts. This inherited limitation is explicit in specifications 06/15.
 - The user explicitly authorized committing P2 after the acceptance report disclosed the known quality-gate limitation, and authorized starting P3 on 2026-10-24.
-- P2 performance follow-up steps 1, 2 and 3 are committed as 6e64bd6, 1668230 and 34d201f. The user explicitly approved the P3 supplemental signatures and commit-confirmation boundary on 2026-10-24. P3 implementation and functional acceptance are complete with the quality-gate limitation above disclosed. The user authorized committing P3 and starting P4 investigation; P4 implementation awaits its detailed plan approval.
+- P2 performance follow-up steps 1, 2 and 3 are committed as 6e64bd6, 1668230 and 34d201f. The user explicitly approved the P3 supplemental signatures and commit-confirmation boundary on 2026-10-24. P3 is committed as f12ffda. The detailed P4 plan was approved; P4 implementation and the 4.1–4.5 acceptance above are complete, with the real-model quality limitation disclosed. The current full backend run passes without exclusions. The user explicitly authorized committing P4 after receiving the acceptance report.

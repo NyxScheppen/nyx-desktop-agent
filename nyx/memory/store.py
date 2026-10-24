@@ -10,7 +10,7 @@ import aiosqlite
 
 from nyx.db import Database
 from nyx.enums import MemoryEdgeKind, MemoryKind, MemoryType
-from nyx.types import ConversationSegment, Memory, MemoryEdge, ReadingEvidence
+from nyx.types import ConversationSegment, Event, Memory, MemoryEdge, ReadingEvidence
 
 _MEMORY_COLS = (
     "id, created_at, content, kind, topics, summary, freshness, "
@@ -94,6 +94,32 @@ class MemoryStore:
     def db(self) -> Database:
         """Return the shared database for local transaction orchestration."""
         return self._db
+
+    async def find_annotation_feedback(
+        self, reply_event_id: str, comment: str
+    ) -> str | None:
+        """Find the canonical receipt using the exact original feedback key."""
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT event_id FROM annotation_feedback "
+                "WHERE reply_event_id = ? AND comment = ?",
+                (reply_event_id, comment),
+            )
+            row = await cursor.fetchone()
+        return str(row["event_id"]) if row is not None else None
+
+    async def record_annotation_feedback(self, event: Event) -> bool:
+        """Join the caller's transaction so row, event and effect commit together."""
+        if not self._db.in_transaction:
+            raise RuntimeError("批注记录必须加入外层事务")
+        cursor = await self._db.conn.execute(
+            "INSERT OR IGNORE INTO annotation_feedback "
+            "(event_id, reply_event_id, quote, comment, user_event_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (event.id, event.content["reply_event_id"], event.content["quote"],
+             event.content["comment"], event.content["user_event_id"], event.timestamp),
+        )
+        return cursor.rowcount == 1
 
     async def latest_conversation_segment(self) -> ConversationSegment | None:
         async with self._operation():

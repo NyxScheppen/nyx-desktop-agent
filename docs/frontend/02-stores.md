@@ -58,6 +58,7 @@ type ChatMessage = {
   expires_at?: number;               // 等待回应计时终点（epoch 秒）
   paused_at?: number | null;          // 非空：计时暂停
   question_status?: QuestionStatus;
+  annotation?: ReplyAnnotation;      // 用户批注消息保留原始锚点、引用与评论
 };
 
 type ChatState = {
@@ -65,6 +66,8 @@ type ChatState = {
   isReplying: boolean;        // 发消息后等待回复中
   sendError: string | null;
   discussionMode: boolean | null; // null 自动（默认），true 讨论，false 陪伴；reset 恢复 null
+  annotationDraft: ReplyAnnotation | null;
+  annotationPersistence: Record<string, "pending" | "recorded">; // 原始 [reply_event_id, comment] JSON 键
   typedIds: Record<string, true>;  // 已逐字打完的 nyx 文本 id（后一条同 correlation_id 的 nyx 文本等其打完才开打）
   seenIds: Record<string, true>;   // 本角色本次前端会话中已开始显示的 nyx 文本 id；重新挂载时不再逐字
   replyTargetId: string | null;    // 当前选中的等待提问；reset 同时清空
@@ -78,6 +81,7 @@ type ChatState = {
 
 ```typescript
 addUserMessage(e: UserMessageEvent): void            // SSE user_message 回显（读 e.message）→ {role:"user", kind:"message"}
+addAnnotationFeedback(e: AnnotationFeedbackEvent): void // 合并已记录回执，不 append 聊天消息
 addSpeak(e: TextEvent<"speak">): void                // {role:"nyx", kind:"speak"}；correlation_id === pendingId 时才 clearTimeout(replyTimer) + isReplying=false + sendError=null
 addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}；correlation_id === pendingId 时才 clearTimeout(replyTimer) + isReplying=false + sendError=null
 addThink(e: TextEvent<"think">): void                // {role:"nyx", kind:"think"}
@@ -87,20 +91,34 @@ pauseQuestion(attemptId: string): Promise<boolean>  // POST /api/questions/{id}/
 resumeQuestion(attemptId: string): Promise<boolean> // POST /api/questions/{id}/resume
 selectQuestion(attemptId: string | null): void // 选择或取消提问回复
 setDiscussionMode(mode: boolean | null): void // 选择本角色当前会话的讨论模式
+beginAnnotation(eventId: string, quote: string): void // 仅已有 SPEAK 的连续原文，保留原样
+updateComment(text: string): void
+cancelAnnotation(): void
+sendAnnotation(): Promise<boolean> // message=comment，附完整 annotation/discussion，跳过 reply_to
 sendMessage(text: string): Promise<boolean>  // 内部调 client.postChat，带当前 discussionMode；成功 true，失败/忙 false
                                           // 成功：pendingId = 返回的 event_id + isReplying=true + sendError=null + 起 60s 超时 timer
                                           // 唯一等待提问自动附加 reply_to；多个等待项需先 selectQuestion；成功后目标标记 claimed
                                           // postChat throw → catch → sendError = e.message 并复位 isReplying
 markTyped(id: string): void              // 把 nyx 文本 id 写入 typedIds（逐字 done 时调，解锁其后同 correlation_id 的下一条 nyx 文本）
 markSeen(id: string): void               // 正文首次 ready、实际开始显示时按 event_id 记入 seenIds；不提前解锁后续消息
-loadHistory(): Promise<void>             // 并行 GET /api/events/log（文本事件，含 reading_question）→ 合并去重排序；新增历史 preloaded:true；历史 think 入 typedIds；失败 best-effort 不抛
-reset(): void                            // 新会话全清：clearTimeout(replyTimer) + messages/isReplying/sendError/typedIds/seenIds 复位
+loadHistory(): Promise<void>             // 并行查询六类文本及 annotation_feedback，合并消息/持久回执，再取 pending 快照；失败 best-effort
+reset(): void                            // 递增本地 generation，取消 timer，清空消息/回复/打字机/批注草稿及回执状态
 ```
 
 ### 关键决策
 
 - **讨论三态**：`discussionMode` 默认 null；发送时作为 `ChatRequest.discussion` 传给后端，
   不以真假值合并 null/false。`reset()` 同时恢复自动模式；切换模式只影响后续发送。
+
+- **批注发送与回执**：`sendMessage`/`sendAnnotation` 共用发送锁、pending tracker、提前到达回复集合
+  和 60s timer。批注保留普通输入草稿与已选提问，只跳过本次 waiting 绑定；失败保留批注，成功仅
+  清掉捕获时同一草稿对象，发送中编辑或新选引用不会被清掉。键为原始
+  `JSON.stringify([reply_event_id, comment])`，不 trim。发送前建立 pending，SSE 与历史回执只提升
+  recorded；POST 的 pending 和晚到历史不得降级。canonical 回执确认所有同键用户消息，表示
+  “反馈已记录”，不表示事实更新或反思完成。无回执保守显示“反馈持久化待确认”。
+- **本地 reset 与异步历史**：发送、timer 和 `loadHistory` 同时捕获角色 scope 与本地 generation。
+  每次 await 后，包括事件查询、pending 快照的成功与 catch 分支，均核对两者；独立 reset 即使
+  未切角色也使旧历史、回执与 serverTimeOffset 回包失效。角色切换/reset 清空批注和本地回执。
 
 - **SSE 是聊天消息的唯一来源**：`sendMessage` 只 `POST`（拿 `{event_id}` 后 `isReplying=true`），**不本地 append**。用户消息靠 SSE `user_message` 回显上屏（localhost 往返 ~10ms，视觉无延迟）。好处：无「乐观消息 + SSE 回显」的**去重/替换**复杂度；`correlation_id` 沿事件一路一致，追溯无分歧（原则 5）。
 - **isReplying 生命周期 + 60s 超时（必须取消）+ correlation 匹配**：`sendMessage` 成功时**存 `postChat` 返回的 `event_id` 到 module-level `pendingId`**（该 id = 后端 `user_message` 事件 id = 回复帧的 `correlation_id`），置 `isReplying=true` + `sendError=null` 并起 60s 超时 timer（`setTimeout`，回调置 `isReplying=false` + `sendError="回复超时"`、**不清 pendingId**——迟到回复仍需能匹配清 sendError）；`addSpeak`/`addAsk` 收到回复时**先判 `e.correlation_id === pendingId`**——匹配才 `clearTimeout` 取消 timer + 置 `isReplying=false` + `sendError=null`，非匹配（搭话等别的发言）只 append 不动生命周期。`think` 不结束回复（后必跟 `speak`）。`timer`/`pendingId` 都放 module-level（`let replyTimer`/`let pendingId`，**不进 store state**——store 状态须可序列化）。缺取消机制 = 真 bug：10s 收到回复，60s 时 timer 照样触发假「回复超时」。

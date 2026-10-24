@@ -11,7 +11,16 @@
 - schema 45 在同一迁移事务中将旧 WEB checkpoint 顶层字符串 source_text 搬到 `assigned_task_source`，移除原字段并推进版本；失败回滚。网页正文按任务 ID 首次提交一次，任务删除时 CASCADE，后续进度只写 cursor/profile/当前块 pending。抓取仍在事务外，不新增 API 或事件路由。
 
 - 当前系统不是纯“模块只通过总线通信”：EventBus 负责事件受理、`event_log` 持久化、`event_delivery` 投递、SSE 广播和 handler 通知；Facade 之间仍存在直接查询/编排调用。
-- 当前 `EventType` 有 25 个成员；阅读进度同步使用 `READING_PROGRESS`，不是新的消费者路由。
+- 当前 `EventType` 有 26 个成员；阅读进度同步使用 `READING_PROGRESS`，不是新的消费者路由。
+- P4 增加 `USER_MESSAGE / memory.annotation_recording` 和
+  `ANNOTATION_FEEDBACK / memory.annotation_feedback` 两条独立 durable 路由。表达终局短路不跳过录入；
+  recording 将 schema46 `annotation_feedback` 行、canonical 反馈事件和 effect 同事务提交。
+  mediation 在事务外完成 LLM/eval，在事务内提交受限事实、可选纠错 REFLECTION 和 effect。
+  两处 append 回滚均按实际增量补偿 `persisted_count`；提交后 announce 丢失可由扫描恢复。
+  无批注旧消息 no-op；失败沿用最多5次投递与 dead_letter，不增加无限重试器。
+- Chat API 的 `annotation_persistence=recorded|pending` 只确认反馈行；SSE 的 `annotation_feedback`
+  也只表示已记录，不代表事实或反思完成。锚点经 `EventBus.get_event(event_id)` 精确读取当前角色库，
+  不选择最新回复；已受理快照重放不重查锚点。
 - `EventBus.publish(event)` 是 durable admission：根事件必须先持久化 `event_log` 和已注册 consumer 的初始 delivery，commit 成功后才返回；数据库不可用或总线关闭时抛受理错误。
 - `EventBus.publish_many(events)` 将同一业务承诺的多条事件原子受理；任一冲突或失败整批回滚，
   已回滚行不计入 `persisted_count`，commit 后才广播/唤醒。快慢回复的全部正常文本只在终局

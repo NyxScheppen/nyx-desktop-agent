@@ -55,6 +55,7 @@ from nyx.types import (
     MemoryFact,
     Paragraph,
     ReadingProgress,
+    ReplyAnnotation,
     SelfNarrative,
     UserNote,
 )
@@ -95,10 +96,30 @@ def _question_payload(
     }
 
 
+class _AnnotationPayload(BaseModel):
+    reply_event_id: str = Field(..., min_length=1, max_length=128, strict=True)
+    quote: str = Field(..., min_length=1, max_length=2000, strict=True)
+    comment: str = Field(..., min_length=1, max_length=2000, strict=True)
+
+    @field_validator("reply_event_id", "quote", "comment")
+    @classmethod
+    def reject_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("annotation fields must contain non-whitespace text")
+        return value
+
+
 class _ChatPayload(BaseModel):
     message: str = Field(..., min_length=1, max_length=12000, strict=True)
     reply_to: str | None = Field(default=None, min_length=1, strict=True)
     discussion: bool | None = Field(default=None, strict=True)
+    annotation: _AnnotationPayload | None = None
+
+    @model_validator(mode="after")
+    def validate_annotation(self) -> "_ChatPayload":
+        if self.annotation is not None and self.reply_to is not None:
+            raise ValueError("annotation cannot be combined with reply_to")
+        return self
 
     @field_validator("message")
     @classmethod
@@ -299,6 +320,24 @@ def build_app(
         }
         if payload.reply_to is not None:
             content["reply_to"] = payload.reply_to
+        if payload.annotation is not None:
+            annotation = cast(ReplyAnnotation, payload.annotation.model_dump())
+            try:
+                anchor = await app.bus.get_event(annotation["reply_event_id"])
+            except Exception as error:
+                logging.getLogger(__name__).exception("批注锚点查询失败")
+                raise HTTPException(
+                    status_code=503, detail="批注锚点查询失败"
+                ) from error
+            if anchor is None:
+                raise HTTPException(status_code=404, detail="被批注的回复不存在")
+            if anchor.type is not EventType.SPEAK or not isinstance(
+                anchor.content.get("content"), str
+            ) or annotation["quote"] not in anchor.content["content"]:
+                raise HTTPException(
+                    status_code=422, detail="批注必须引用所选 SPEAK 的连续原文"
+                )
+            content["annotation"] = annotation
         event = root_event(EventType.USER_MESSAGE, content)
         try:
             if app.host is not None:
@@ -306,7 +345,17 @@ def build_app(
             await app.bus.publish(event)
         except (EventAdmissionError, RuntimeError) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
-        return {"event_id": event.id}
+        result = {"event_id": event.id}
+        if payload.annotation is not None:
+            recorded = False
+            try:
+                recorded = await app.memory.has_annotation_feedback(
+                    payload.annotation.reply_event_id, payload.annotation.comment
+                )
+            except Exception:
+                logging.getLogger(__name__).exception("批注回执查询失败，保持待确认")
+            result["annotation_persistence"] = "recorded" if recorded else "pending"
+        return result
 
     @fast.get("/api/questions/pending")
     async def api_pending_questions() -> dict[str, Any]:

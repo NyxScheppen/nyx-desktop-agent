@@ -80,6 +80,7 @@ async def on_user_message(app: Any, event: Event) -> None:
     reply_method = app.expression.reply
     supports_context = False
     supports_discussion = False
+    supports_annotation = False
     try:
         signature = inspect.signature(reply_method)
         supports_kwargs = any(
@@ -88,14 +89,19 @@ async def on_user_message(app: Any, event: Event) -> None:
         )
         supports_context = "activity_context" in signature.parameters or supports_kwargs
         supports_discussion = "discussion" in signature.parameters or supports_kwargs
+        supports_annotation = "annotation" in signature.parameters or supports_kwargs
     except (TypeError, ValueError):
         supports_context = True
         supports_discussion = True
+        supports_annotation = True
     discussion = event.content.get("discussion")
-    discussion_kwargs = (
+    discussion_kwargs: dict[str, Any] = (
         {"discussion": discussion}
         if isinstance(discussion, bool) and supports_discussion else {}
     )
+    annotation = event.content.get("annotation")
+    if isinstance(annotation, dict) and supports_annotation:
+        discussion_kwargs["annotation"] = annotation
     if isinstance(reply_to, str):
         if supports_context:
             await reply_method(

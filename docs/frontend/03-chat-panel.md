@@ -47,6 +47,18 @@ KnowledgeFeed              # ChatInput 后方的可折叠“投喂知识”表�
 分别设置 null / true / false，并用 `aria-pressed` 表达当前选择；默认和角色 reset 后均为自动。
 发送使用当前模式，讨论强制慢通道，陪伴禁用讨论技能但仍可按原评分进入普通慢通道。
 
+### 回复批注（P4）
+
+- 仅完整显示后的 SPEAK 气泡提供“批注”。原生选区须完整位于同一正文 span；跨气泡或跨正文
+  选区拒绝。无选区时使用≤2000个 Unicode 字符的整条原文，更长回复提示先选择片段，不截断。
+- ChatInput 内显示引用、评论文本域、Unicode 字符数、取消和发送。quote/comment 各1–2000字符，
+  评论全空白不可发；保留原始文本。普通输入与选中的等待问题保留，批注独立调用
+  `sendAnnotation()`，请求为 `{message: comment, annotation, discussion}`，不带 reply_to。
+- 两种发送共享锁和等待回复流程；发送中可编辑批注，成功只清掉未修改的原草稿，失败保留草稿并
+  显示错误（包括422/404/503）。reset/切换清空批注，旧请求不能清新草稿。
+- SSE 用户批注气泡显示旧回复引用及“反馈持久化待确认”/“反馈已记录”。记录状态来自 POST 的
+  可确认结果或 annotation_feedback 回执；后者不单独生成气泡，不表示画像已更新。
+
 ### 知识投喂（P2）
 
 - `KnowledgeFeed` 放在 ChatInput 后，默认折叠。文本域最多 200000 字符，URL 最多 2048；
@@ -97,7 +109,7 @@ KnowledgeFeed              # ChatInput 后方的可折叠“投喂知识”表�
   消息标签与分隔规则见 §3。`MessageList` 接收 `messages: ChatMessage[]` 和可选 `now: Date`，
   isValidTimestamp 检查有限数值与 Date 范围；formatMessageTime 的非法输入返回“时间未知”。
   App 注入共享时钟；独立使用时才以当前本地时间作默认值，不新增时间 store。
-- **历史加载（`loadHistory()`）**：进页面并行 `GET /api/events/log`（`user_message`/`speak`/`ask`/`think`/`initiate_chat`/`reading_question` 六类，各 `limit=5000`）回填历史消息，`preloaded:true`（不逐字），与已有消息合并后全局按 `timestamp` 升序、按 `id` 去重；非法 timestamp 丢弃。历史 think 一并入 `typedIds` 视为已打完，不阻塞实时 speak/ask。历史在 SSE 前后到达都不重复、不错序。
+- **历史加载（`loadHistory()`）**：进页面并行 `GET /api/events/log`（`user_message`/`speak`/`ask`/`think`/`initiate_chat`/`reading_question`/`annotation_feedback` 七类，各 `limit=5000`）。前六类回填历史消息，`preloaded:true`（不逐字），与已有消息合并后全局按 `timestamp` 升序、按 `id` 去重；非法 timestamp 丢弃。反馈事件只恢复已记录状态。历史 think 一并入 `typedIds` 视为已打完，不阻塞实时 speak/ask。历史在 SSE 前后到达都不重复、不错序，不降级已确认回执；事件查询及后续 pending 快照的迟到成功/失败均核对角色 scope 与本地 reset generation。
 - **`initiate_chat`/读书 turn 无用户消息对齐**：它们 `correlation_id` 指向 desire tick / book_id，不在用户消息链上——渲染按到达顺序插在列表里，不强行对齐到某条用户消息。
 - **长文本**：气泡 `max-width` + 自动换行；`think` 逐字弱化展示（灰色斜体小字），不再折叠。
 
@@ -112,4 +124,7 @@ KnowledgeFeed              # ChatInput 后方的可折叠“投喂知识”表�
   滚动跟随行为。
 - `ChatInput`：`isReplying=true` 禁用发送；回车/点发送触发 `sendMessage`（mock store action）；三态按钮更新当前选择，API/store 回归覆盖 null/true/false 透传及 reset。
 - `KnowledgeFeed`：成功提示与实际计数、部分成功保留草稿并可重试、角色切换后旧成功/失败响应隔离；API 测试覆盖 scoped URL、selection revision 与部分结果透传。
+- 批注：SPEAK 原文选区/完整显示限制、长引用提示、编辑发送/取消、payload、错误保留草稿；
+  store/SSE 回归覆盖回执先到与 POST pending 不降级、历史恢复、同键确认、reset 两个 await 阶段
+  的迟到历史失效，以及 A→B→A 旧成功/失败不污染草稿。
 - 视觉样式不做断言（README §6 测试约定）。

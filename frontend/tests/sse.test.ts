@@ -61,6 +61,20 @@ afterEach(() => {
 });
 
 describe("useSSE", () => {
+  it("保留用户批注；独立回执先到也能确认，非法批注帧丢弃", () => {
+    useChatStore.getState().reset();
+    renderHook(() => useSSE(dispatchEvent));
+    const source = FakeEventSource.instances[0];
+    const annotation = { reply_event_id: "old", quote: "原文🙂", comment: "反馈" };
+    const base = { correlation_id: "u", timestamp: 1 };
+    act(() => {
+      source.emit("annotation_feedback", JSON.stringify({ ...base, event_id: "f", ...annotation, user_event_id: "u" }));
+      source.emit("user_message", JSON.stringify({ ...base, event_id: "u", message: "反馈", annotation }));
+      source.emit("annotation_feedback", JSON.stringify({ ...base, event_id: "bad", ...annotation, comment: 123, user_event_id: "u" }));
+    });
+    expect(useChatStore.getState().messages[0].annotation).toEqual(annotation);
+    expect(useChatStore.getState().annotationPersistence[JSON.stringify(["old", "反馈"])]).toBe("recorded");
+  });
   it("closes old role streams and ignores their queued callbacks", () => {
     const dispatch = vi.fn();
     bindScope({ id: "alice", revision: 1 });

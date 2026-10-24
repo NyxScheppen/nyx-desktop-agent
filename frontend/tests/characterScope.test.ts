@@ -6,6 +6,26 @@ import { useReaderStore } from "../src/stores/readerStore";
 
 afterEach(() => { bindScope(null); vi.unstubAllGlobals(); });
 
+it.each([true, false])("A→B→A 忽略旧批注成功/失败: %s", async (ok) => {
+  let finish!: (value: Response) => void;
+  vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
+  bindScope({ id: "alice", revision: 1 });
+  useChatStore.getState().reset();
+  useChatStore.getState().beginAnnotation("old", "旧引用");
+  useChatStore.getState().updateComment("旧批注");
+  const sending = useChatStore.getState().sendAnnotation();
+  bindScope({ id: "bob", revision: 2 });
+  useChatStore.getState().reset();
+  bindScope({ id: "alice", revision: 3 });
+  useChatStore.getState().beginAnnotation("new", "新引用");
+  useChatStore.getState().updateComment("新批注");
+  finish({ ok, status: ok ? 200 : 503, json: async () => ok ? { event_id: "old", annotation_persistence: "recorded" } : { detail: "旧失败" } } as Response);
+  expect(await sending).toBe(false);
+  expect(useChatStore.getState().annotationDraft?.comment).toBe("新批注");
+  expect(useChatStore.getState().annotationPersistence).toEqual({});
+  expect(useChatStore.getState().sendError).toBeNull();
+});
+
 it("invalidates old callbacks even after A to B to A", () => {
   bindScope({ id: "alice", revision: 1 });
   const old = captureScope();

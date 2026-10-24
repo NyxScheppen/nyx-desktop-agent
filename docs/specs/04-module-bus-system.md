@@ -759,3 +759,8 @@ CREATE TABLE eval_prompt (
 - [ ] `pyright` 零报错。
 - [ ] `pytest` 全绿或用户确认的范围测试全绿。
 - [ ] `docs/test-inventory.md` 已同步测试清单。
+
+
+## P4 批注契约补充（已批准）
+
+EventBus 增加 `async get_event(event_id: str) -> Event | None`，按当前库主键精确读并复用行映射。ROUTE_SPECS 新增 USER_MESSAGE/memory.annotation_recording/record_annotation_feedback 和 ANNOTATION_FEEDBACK/memory.annotation_feedback/apply_annotation_feedback；subscriptions 传 consumer_id。录入独立于 expression 终局短路；row/event/effect 同事务，提交后 announce；中介 LLM 在事务外，facts/REFLECTION/effect 同事务。API 锚点404/422/503、完整 snapshot、pending/recorded 与对象完整审计见 15 的“批注反馈”。无批注旧事件 no-op，新路由从既有日志恢复；沿用5次重试/dead_letter，丢唤醒可扫描恢复。

@@ -55,6 +55,7 @@ _TRIGGER_REASON_LABELS = {
     "manual": "手动或兼容调用",
     "periodic": "周期积累达到门槛",
     "memory_contradiction": "记忆矛盾",
+    "annotation_correction": "用户批注纠错",
     "reading_revisit": "阅读重访",
     "idle_activity": "闲置活动",
 }

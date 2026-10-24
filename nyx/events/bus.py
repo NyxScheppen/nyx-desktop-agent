@@ -368,6 +368,16 @@ class EventBus:
                 await self._db.conn.rollback()
                 raise
 
+    async def get_event(self, event_id: str) -> Event | None:
+        """Read an exact anchor from this character's durable event log."""
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT id, timestamp, source, type, content, correlation_id "
+                "FROM event_log WHERE id = ?", (event_id,)
+            )
+            row = await cursor.fetchone()
+        return _row_to_event(row) if row is not None else None
+
     async def list_events(
         self,
         limit: int = 100,

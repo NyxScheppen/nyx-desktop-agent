@@ -33,6 +33,11 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
   const selectQuestion = useChatStore((s) => s.selectQuestion);
   const pauseQuestion = useChatStore((s) => s.pauseQuestion);
   const resumeQuestion = useChatStore((s) => s.resumeQuestion);
+  const beginAnnotation = useChatStore((s) => s.beginAnnotation);
+  const annotationStatus = useChatStore((s) => message.annotation
+    ? s.annotationPersistence[JSON.stringify([message.annotation.reply_event_id, message.annotation.comment])]
+    : undefined);
+  const contentRef = useRef<HTMLSpanElement>(null);
   const serverTimeOffset = useChatStore((s) => s.serverTimeOffset);
   const [now, setNow] = useState(() => Date.now() / 1000);
   const isWaitingInteraction = message.attempt_id !== undefined &&
@@ -75,10 +80,32 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
     >
       {kind === "initiate_chat" && <span className="message-bubble__badge">欲望搭话</span>}
       {kind === "reading_question" && <span className="message-bubble__badge">提问</span>}
-      <span className="message-bubble__content">
+      <span
+        ref={contentRef}
+        className="message-bubble__content"
+        title={kind === "speak" ? "选择片段或点击全文来批注" : undefined}
+        onClick={kind === "speak" && ready && (!typewrite || done) ? () => {
+          const selection = window.getSelection();
+          if (selection && !selection.isCollapsed) {
+            if (selection.rangeCount !== 1) return;
+            const range = selection.getRangeAt(0);
+            if (!contentRef.current?.contains(range.startContainer) ||
+                !contentRef.current.contains(range.endContainer)) return;
+            beginAnnotation(message.id, selection.toString());
+          } else {
+            beginAnnotation(message.id, content);
+          }
+        } : undefined}
+      >
         {text}
         {showCursor && <span className="cursor-blink" />}
       </span>
+      {message.annotation && (
+        <div className="message-bubble__annotation">
+          <blockquote>{message.annotation.quote}</blockquote>
+          <small>{annotationStatus === "recorded" ? "反馈已记录" : "反馈持久化待确认"}</small>
+        </div>
+      )}
       {kind === "reading_question" && message.selectedText && (
         <p className="message-bubble__quote">原文：「{message.selectedText}」</p>
       )}

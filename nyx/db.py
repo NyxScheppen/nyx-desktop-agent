@@ -879,6 +879,16 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "WHERE id IN (SELECT task_id FROM assigned_task_source)",
         ],
     ),
+    (
+        46,
+        [
+            "CREATE TABLE annotation_feedback ("
+            "event_id TEXT PRIMARY KEY, reply_event_id TEXT NOT NULL, "
+            "quote TEXT NOT NULL, comment TEXT NOT NULL, "
+            "user_event_id TEXT NOT NULL, created_at REAL NOT NULL, "
+            "UNIQUE(reply_event_id, comment))",
+        ],
+    ),
 ]
 
 

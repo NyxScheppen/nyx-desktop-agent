@@ -13,6 +13,10 @@ export default function ChatInput() {
   const sendMessage = useChatStore((s) => s.sendMessage);
   const discussionMode = useChatStore((s) => s.discussionMode);
   const setDiscussionMode = useChatStore((s) => s.setDiscussionMode);
+  const annotation = useChatStore((s) => s.annotationDraft);
+  const updateComment = useChatStore((s) => s.updateComment);
+  const cancelAnnotation = useChatStore((s) => s.cancelAnnotation);
+  const sendAnnotation = useChatStore((s) => s.sendAnnotation);
 
   const submit = () => {
     if (isReplying) return;
@@ -54,6 +58,21 @@ export default function ChatInput() {
           陪伴
         </button>
       </div>
+      {annotation && (
+        <div className="chat-input__annotation">
+          <blockquote>{annotation.quote}</blockquote>
+          <textarea
+            aria-label="对回复的批注"
+            value={annotation.comment}
+            onChange={(event) => updateComment(event.target.value)}
+            placeholder="写下你的看法、偏好或纠正…"
+          />
+          <small>{Array.from(annotation.comment).length}/2000</small>
+          <button type="button" onClick={cancelAnnotation}>取消批注</button>
+          <button type="button" disabled={isReplying || !annotation.comment.trim() || Array.from(annotation.comment).length > 2000}
+            onClick={() => { void sendAnnotation(); }}>发送批注</button>
+        </div>
+      )}
       <input
         className="chat-input__field"
         value={text}

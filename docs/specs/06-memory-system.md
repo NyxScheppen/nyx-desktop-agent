@@ -1202,3 +1202,8 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 - [ ] `pyright` 零报错。
 - [ ] `pytest` 全绿。
 - [ ] `docs/facts/memory-system-facts.md`、相关 spec、`docs/tech-reference.md`、`docs/test-inventory.md` 与本文件保持同步；如果实现需要改变既有文档语义，先询问用户确认。
+
+
+## P4 批注契约补充（已批准）
+
+schema46 新表 annotation_feedback(event_id TEXT PRIMARY KEY, reply_event_id TEXT NOT NULL, quote TEXT NOT NULL, comment TEXT NOT NULL, user_event_id TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE(reply_event_id,comment))；无 FK/回填/独立删除，不混用阅读 annotations。MemoryStore: async find_annotation_feedback(reply_event_id: str, comment: str) -> str | None；async record_annotation_feedback(event: Event) -> bool（加入外层事务，返回实际插入）。MemoryFacade: async has_annotation_feedback(reply_event_id: str, comment: str) -> bool；async record_annotation_feedback(event: Event, consumer_id: str) -> None；async apply_annotation_feedback(event: Event, consumer_id: str) -> None。入口/消费者/迁移/bad case 与中介 JSON/来源过滤完整定义见 15“批注反馈”及 LLM Mediation Contract。复用 fact_extraction/parser 的 quoted asserted 路径，只写用户 profile/回复反馈 conversation；无词法 fallback，不创建知识/Memory/chunk。

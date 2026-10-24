@@ -9,6 +9,7 @@ import type {
   BookListItem,
   Bookmark,
   ChatRequest,
+  ReplyAnnotation,
   CurrentState,
   DesireState,
   EvalRecord,
@@ -67,11 +68,13 @@ export async function postChat(
   message: string,
   replyTo?: string,
   discussion?: boolean | null,
-): Promise<{ event_id: string }> {
+  annotation?: ReplyAnnotation,
+): Promise<{ event_id: string; annotation_persistence?: "recorded" | "pending" }> {
   const body: ChatRequest = { message };
   if (replyTo !== undefined) body.reply_to = replyTo;
   if (discussion !== undefined) body.discussion = discussion;
-  return request<{ event_id: string }>(`${BASE_URL}/api/chat`, {
+  if (annotation !== undefined) body.annotation = annotation;
+  return request(`${BASE_URL}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

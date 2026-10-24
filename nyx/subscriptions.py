@@ -22,6 +22,14 @@ def subscribe(app: _App) -> None:
 
 
 def _resolve_handler(app: _App, spec: RouteSpec) -> Handler:
+    if spec.handler_key == "apply_annotation_feedback":
+        return lambda event: app.memory.apply_annotation_feedback(
+            event, spec.consumer_id
+        )
+    if spec.handler_key == "record_annotation_feedback":
+        return lambda event: app.memory.record_annotation_feedback(
+            event, spec.consumer_id
+        )
     if spec.handler_key == "on_user_message":
         from nyx.runtime import on_user_message
 

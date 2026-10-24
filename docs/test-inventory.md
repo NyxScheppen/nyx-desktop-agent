@@ -8,16 +8,14 @@
 
 - 后端测试文件：69
 - `pytest --collect-only -q`：1290 tests collected
-- 本轮后端验证（P3 功能验收完成，用户已授权提交，2026-10-24）：
-  全后端排除既有宿主卸载 drain 超时用例后 1288 passed / 1 skipped / 1 deselected。
-  该用例在前一性能步骤单独复跑仍以 TimeoutError 失败，全量质量门未通过。
-  补充接口实施后全后端结果为 1288 passed / 1 skipped / 1 deselected（125.79s）；
-  此前来源预算修复后定向既有回归 575 passed / 1 skipped；
-  Ruff/Pyright 与 diff 空白检查通过。P3 未新增或修改 pytest 测试。
+- 本轮后端验证（P4，2026-10-24）：完整 `python -m pytest` 为
+  1289 passed / 1 skipped（120.38s），未排除任何用例；历史宿主 unload-drain 失败本次未复现。
+  Ruff 通过，Pyright 0 errors / 0 warnings。未新增后端 pytest 文件或函数，仅同步
+  `tests/test_db/test_db.py` 的 schema46 表集合及计数断言。
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：361 passed（25 个测试文件）；TypeScript/Vite 生产构建通过。本步未修改前端，未重跑。
+- 最近一次前端全量验证：376 passed（25 个测试文件）；`npm run build` 的 TypeScript/Vite 生产构建通过。
 - Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；ready 响应必须同时匹配固定 Nyx 服务标识、本次启动 nonce 和响应大小上限；Debug/Release 均通过编译检查。
 - 桌面 launcher 回归：普通与桌面入口均以 `--reload` 启动后端，且只在后端就绪后启动对应前端；原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；普通 TCP、错误 HTTP 状态、非法/过大 JSON、错误服务标识或 nonce 均不能触发前端启动；身份匹配后 owned backend 仍须存活。
 - 启动身份 API 回归：`test_ready_endpoint_returns_owned_instance_identity`、`test_ready_endpoint_keeps_manual_start_compatible`；release smoke 使用同一 nonce 握手且拒绝身份不匹配、过大响应和探测后进程退出。
@@ -27,6 +25,16 @@
 - P1 agent HTTP/SSE E2E：11 个场景全部通过，覆盖自动陪伴/拒绝讨论、自动讨论、强制开关、普通慢通道保留原检索/工具、三工具授权与 scope 隔离、结果回注、越权拦截、工具失败、重复调用及 4 轮/5 项上限，另验证非法 discussion 返回 422、真实段召回计数。
   使用真实 FastAPI/EventBus/内存 SQLite 与脚本化 LLM/embedding；验证流程和 prompt 接线，不代表真实模型讨论风格或引用质量已验收。单项 2000/总块 8000 字符上限经源码核对，未单独做 HTTP 场景。
 - SSE 回归：初次连接失败保持 `connecting`，同一连接恢复后转为 `open`，不把启动期失败误报为 `closed`。
+- P4 临时验收：真实 HTTP/SSE 的3组主线、5组实库边界、4组补充边界及回滚计数探针通过。
+  覆盖 schema45→46 与迁移回滚/旧阅读批注保留、严格输入/精确 SPEAK 锚点/原文与 Unicode、
+  FAST/SLOW/讨论工具/续写 prompt、waiting 隔离、同原始键并发/第一快照、录入和中介各四处事务
+  失败/重试、表达终局后的独立录入恢复、丢 announce 的扫描/重启、事实过滤/无知识写入、
+  坏 JSON/严格 bool/LLM/eval/取消、eval HTTP 的 token/history/prompt、纠错反思失败/恢复/DONE/过期，
+  以及录入连续5次失败进入 dead_letter 时回复仍输出且回执 pending。跨角色锚点用隔离数据库验证。
+  使用仓库外临时驱动、真实 SQLite/EventBus/FastAPI 与脚本化 LLM；未验收真实模型语义质量。
+- P4 前端在既有5个文件新增15项测试：API 完整 payload/回执、SSE 解析/分发、单 SPEAK 选区及
+  长文本限制、编辑发送、失败保留、waiting 旁路、同键回执先到/不降级与历史恢复、角色/reset 隔离。
+  包含 `reset 后忽略迟到的历史 %s 请求` 的 events/pending 两个 await 阶段回归。
 - P3 临时验收：5 组通过，含自适应新增问题、精确出处校验、原文与结论事实归因/检索/重放、
   关闭联网及空/失败/非法结构降级、超时部分结果和取消传播、最终 prompt 完整 JSON、真实 HTTP/SSE。
   另 5 组边界通过，覆盖硬上限及向下收紧、每个等待阶段超时、模型/网络/摄入失败、
@@ -75,7 +83,7 @@
 | 类型 | `tests/test_types/` | 2 | 后端 EventType 与前端 SSE 监听器同步、欲望初始状态、记忆/笔记/长期欲望可变默认值隔离 |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移与 schema 45 表/索引快照、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移与 schema 46 表/索引快照、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、批量事件原子受理、投递状态、重试、FIFO、按 `(timestamp, id)` 回放游标、SSE |
 | API/运行时 | `tests/test_api/` | 5 | 组合根、REST、记忆搜索类别与事实作用域参数、聊天非空/12000 字符边界、旧上传端点 404、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval recent offset 分页与边界及 prompt 详情、订阅、用户消息活动快照/打断失败证据、tick、活动优先关停、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 6 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取、统一网页/书籍/创作/浏览器问卷任务工具 |

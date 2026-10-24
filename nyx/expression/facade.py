@@ -58,6 +58,7 @@ from nyx.types import (
     ExpressionHistory,
     InteractionAttempt,
     Message,
+    ReplyAnnotation,
     ShortTermDesire,
     Skill,
 )
@@ -605,6 +606,7 @@ class ExpressionFacade:
         reply_to: str | None = None,
         activity_context: ActivityContext | None = None,
         discussion: bool | None = None,
+        annotation: ReplyAnnotation | None = None,
     ) -> None:
         """完整回复流程：跑 LangGraph 图，内部发布 think/speak/ask。"""
         claimed_return = self._claim_pending_return()
@@ -612,7 +614,8 @@ class ExpressionFacade:
         now = time.time()
         try:
             # 用户说话 = 回应了之前的问句/搭话；清等待状态（不判断是否真在答）。
-            answered = await self.answer_waiting(correlation_id, reply_to)
+            if annotation is None:
+                answered = await self.answer_waiting(correlation_id, reply_to)
             reading_context = ""
             if (
                 answered is not None
@@ -622,7 +625,7 @@ class ExpressionFacade:
                 reading_context = await self._reading_context_reader(
                     answered.source_id, f"{answered.text}\n{msg}"
                 )
-            if self._interaction_store is None:
+            if self._interaction_store is None and annotation is None:
                 self._waiting_user = False
                 self._ask_cid = None
                 if self._pending_chat_desire_id is not None:
@@ -635,6 +638,7 @@ class ExpressionFacade:
             )
             initial: ReplyState = {
                 "message": msg,
+                "annotation": annotation,
                 "skill": (
                     self._skills.get("discussion")
                     if discussion is True or (

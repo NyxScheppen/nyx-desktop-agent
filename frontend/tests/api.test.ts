@@ -47,6 +47,16 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return { ok, status, json: async () => body } as Response;
 }
 
+it("批注 API 保留原文与原始批注并返回持久状态", async () => {
+  const annotation = { reply_event_id: "old", quote: "中文🙂", comment: " 请谨慎 " };
+  const fetch = vi.fn().mockResolvedValue(jsonResponse({ event_id: "u", annotation_persistence: "pending" }));
+  vi.stubGlobal("fetch", fetch);
+  expect(await postChat(annotation.comment, undefined, false, annotation)).toEqual({
+    event_id: "u", annotation_persistence: "pending",
+  });
+  expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ message: annotation.comment, discussion: false, annotation });
+});
+
 describe("知识摄入 API", () => {
   afterEach(() => { bindScope(null); vi.unstubAllGlobals(); });
   it("绑定角色与 revision，透传文本/URL、实际数量及部分失败", async () => {

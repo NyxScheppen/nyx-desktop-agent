@@ -26,6 +26,8 @@ export function dispatchEvent(e: SseEvent): void {
       return useChatStore.getState().addInitiateChat(e);
     case "user_message":
       return useChatStore.getState().addUserMessage(e);
+    case "annotation_feedback":
+      return useChatStore.getState().addAnnotationFeedback(e);
     case "emotion_update":
       // 载荷只带 {valence, arousal, emotion}（08-inner-life），能量/性格/三观/审美不随帧下发；
       // 而 emotion_update 恰好在能量(ACTIVITY_END)/性格三观审美(REFLECTION)可能变化的那一刻发出，

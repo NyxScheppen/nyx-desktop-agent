@@ -28,7 +28,8 @@ data: {"character_id":"nyx","event_id":"…","correlation_id":"…","timestamp":
   - `initiate_chat` → `{content: string, attempt_id: string, desire_id: string, expires_at: number}`
   - `think` → `{content: string}`（内心话，仅日志/聊天区灰色展示）
   - `emotion_update` → `{valence, arousal, emotion}`（08-inner-life 定义）
-  - `user_message` → `{message: string}`（main.py 裸载荷，非 internal_text_event，键名与文本事件不同）
+  - `user_message` → `{message: string, annotation?: ReplyAnnotation}`（键名与文本事件不同）
+  - `annotation_feedback` → `{reply_event_id, quote, comment, user_event_id}`（批注持久回执）
 
 ## 2. TS 类型
 
@@ -52,7 +53,12 @@ type TextEvent<T extends TextEventType> = SseBase & {
   expires_at?: number;
 };
 
-type UserMessageEvent = SseBase & { event: "user_message"; message: string };
+type ReplyAnnotation = { reply_event_id: string; quote: string; comment: string };
+type UserMessageEvent = SseBase & { event: "user_message"; message: string; annotation?: ReplyAnnotation };
+type AnnotationFeedbackEvent = SseBase & ReplyAnnotation & {
+  event: "annotation_feedback";
+  user_event_id: string;
+};
 
 type EmotionUpdateEvent = SseBase & {
   event: "emotion_update";
@@ -86,7 +92,7 @@ type OpaqueEvent = SseBase & {
 type SseEvent =
   | TextEvent<"speak"> | TextEvent<"ask"> | TextEvent<"think">
   | TextEvent<"mutter"> | TextEvent<"initiate_chat">
-  | UserMessageEvent | EmotionUpdateEvent | ReflectionDoneEvent
+  | UserMessageEvent | AnnotationFeedbackEvent | EmotionUpdateEvent | ReflectionDoneEvent
   | ReadingMutterEvent | ReadingQuestionEvent | ReadingAssociationEvent | ReadingProgressEvent
   | OpaqueEvent;
 
@@ -106,12 +112,15 @@ function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string; gener
 - **返回**：`ConnectionState`，供 App 显示连接状态（右上角「已连接/重连中」）。
 - **行为**：
   1. `useEffect` 为 selection 建立角色命名空间 EventSource；selection=null 不连接，省略只用于旧辅助调用。`BASE_URL` 来自统一常量。选择 ID 或本地 generation 改变时关闭旧连接；每个回调核对原 scope，帧的 character_id 也必须匹配。
-  2. 对 25 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验公共字段和事件载荷 → 按连接内 `event_id` 去重 → 拼 `SseEvent` → `dispatch`。
+  2. 对 26 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验公共字段和事件载荷 → 按连接内 `event_id` 去重 → 拼 `SseEvent` → `dispatch`。
   3. `onopen` / `onerror`：更新 `ConnectionState`。`EventSource` 浏览器原生自动重连（`onerror` 时置 `connecting`），后端重启后自动恢复，无需手写重连循环。
   4. cleanup：`source.close()`（防重复挂载泄漏）。
 - **解析失败**：`JSON.parse` 抛错 → `console.error` + 跳过该帧（不崩整个流）；`data` 缺
   `event_id`/`correlation_id`、`timestamp` 缺失/非有限数值或超出 Date 可表示范围时同样跳过；
   timestamp 使用 lib/time.ts 的 isValidTimestamp 共用校验（防御，正常不触发）。
+- `user_message.annotation` 存在时由共享 `isReplyAnnotation` 校验；`annotation_feedback` 同样校验
+  三个字段及非空 `user_event_id`。ID 长度 1–128，quote/comment 各 1–2000 个 Unicode 字符，
+  均为非空白字符串，保留原始内容；非法批注帧不进入 store。
 - **`ConnectionState` 三态触发点**：
   - 初始态 = `connecting`（挂载即 `new EventSource`）。
   - `onopen` → `open`；`onerror` → `connecting`（EventSource 原生自动重连中）。
@@ -133,6 +142,7 @@ function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string; gener
 | `initiate_chat` | `chatStore` | `addInitiateChat` | 搭话；保留 attempt 与过期时间供气泡倒计时 |
 | `emotion_update` | `innerLifeStore` | `updateEmotion` + `refreshState()` | 更新 valence/arousal/emotion（增量）+ 重拉全量快照带新能量/性格/三观（载荷只带情绪，不随帧下发） |
 | `user_message` | `chatStore` | `addUserMessage` | 用户消息回显（发消息后 SSE 回播） |
+| `annotation_feedback` | `chatStore` | `addAnnotationFeedback` | 按原始键确认持久记录，不生成聊天气泡 |
 | `desire_generated`/`desire_satisfied`/`desire_expired` | `desireStore` | `refresh()` | 欲望变化 → 重拉快照（事件只带 `desire_id`） |
 | `activity_start`/`activity_interrupted` | `activityStore` | `refresh()` | 活动开始/抢占 → 重拉快照（事件只带 `activity_id`） |
 | `activity_end` | `activityStore` + `announceStore` | `refresh()` 后按 `activity_id` 找产出并 `announce("activity", …)` | 活动完成 → 重拉快照 + 冒一句产出；创作只冒标题，正文和路径留在产出面板 |
@@ -145,7 +155,7 @@ function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string; gener
 | `reading_progress` | `readerStore` | `applyProgressEvent(e)` | 后台/其它窗口写入的完整进度快照；按当前书和 revision/位置单调性过滤 |
 | `clock_tick`/`observation_state`/`reflection` | — | — | 无消费者 |
 
-> 完整 25 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`task_updated`/`memory_created`/`memory_promoted`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`reflection_done` 同时刷新 desire 与 inner-life，避免慢变量已提交但面板仍显示旧值；`reading_progress` 只更新当前书的 readerStore 增量状态；`mutter` 进 `announceStore` 冒立绘旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection`/`scene_memory_requested` 无消费者（故无 `default` 分支）。
+> 完整 26 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`task_updated`/`memory_created`/`memory_promoted`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`reflection_done` 同时刷新 desire 与 inner-life，避免慢变量已提交但面板仍显示旧值；`reading_progress` 只更新当前书的 readerStore 增量状态；`mutter` 进 `announceStore` 冒立绘旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection`/`scene_memory_requested` 无消费者（故无 `default` 分支）。
 > **前向兼容边界**：命名事件（带 `event:` 行）若没有匹配的 `addEventListener` 且无 `onmessage`，浏览器会静默丢弃——故后端**新增 EventType 必须同步前端** `EVENT_TYPES` 数组 + `types/api.ts` 判别联合 + 本分发表（monorepo 内本就在同一提交改）。不存在「旧前端自动接住新类型」的兜底。
 
 
@@ -162,6 +172,7 @@ function dispatchEvent(e: SseEvent): void {
       return announceStore.announce("mutter", e.content);
     case "initiate_chat": return chatStore.addInitiateChat(e);
     case "user_message": return chatStore.addUserMessage(e);
+    case "annotation_feedback": return chatStore.addAnnotationFeedback(e);
     case "emotion_update":
       innerLifeStore.updateEmotion(e);
       void innerLifeStore.refreshState(); // 能量/性格/三观不随帧下发，重拉全量
@@ -213,6 +224,7 @@ chatStore.addThink(e: TextEvent<"think">): void            // kind:"think"
 chatStore.addReadingTurn(e: ReadingQuestionEvent | ReadingAssociationEvent): void  // 读书提问/联想并进对话（correlation_id=book_id，不过滤当前书）
 chatStore.addInitiateChat(e: TextEvent<"initiate_chat">): void // kind:"initiate_chat" + 等待倒计时字段
 chatStore.addUserMessage(e: UserMessageEvent): void        // 读 e.message → {kind:"message", role:"user"}
+chatStore.addAnnotationFeedback(e: AnnotationFeedbackEvent): void // 按 reply_event_id/comment 确认 recorded
 innerLifeStore.updateEmotion(e: EmotionUpdateEvent): void  // 覆盖 current 的 valence/arousal/emotion（emotion 走 isEmotionCategory 收窄）
 desireStore.refresh(): Promise<void>                       // desire_* → 重拉快照（事件只带 desire_id，fire-and-forget）
 memoryStore.refresh(): Promise<void>                       // memory_created/promoted → 重拉快照（事件只带 memory_id）

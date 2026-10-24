@@ -41,6 +41,7 @@ class ExpressionFacade:
         reply_to: str | None = None,
         activity_context: ActivityContext | None = None,
         discussion: bool | None = None,
+        annotation: ReplyAnnotation | None = None,
     ) -> None: ...
     async def initiate_chat(
         self, desire: ShortTermDesire, state: CurrentState
@@ -640,3 +641,8 @@ event log/SSE 使用 attempt id 关联展示。
   及其事实摘要；若要改变已有契约语义，先询问用户。
 - 运行 `ruff check`、`pyright` 和 `pytest`；修改测试后同步 `docs/test-inventory.md`。
  - user prompt 中 `[相关对话段（历史原文，仅作参考）]` 是独立区块，不再伪装成 `Message(role="user")`；它位于当前会话历史之前，`[本次消息]` 始终最后。
+
+
+## P4 批注契约补充（已批准）
+
+reply 在末尾增加可选 `annotation: ReplyAnnotation | None = None`；ReplyState 保存同类型字段。`build_user_prompt(message: str, context: list[Message], annotation: ReplyAnnotation | None = None) -> str` 增加含原文/批注的数据块；空历史也有效。共享 user_prompt 传递给所有节点；无批注返回原有 prompt。批注跳过 answer_waiting 与旧等待清理，不强制讨论/慢通道；runtime 保留签名兼容。完整快照沿 USER_MESSAGE 重放，不重新校验旧锚点。入口、全部消费者、状态和六类 bad case 见15“批注反馈”。

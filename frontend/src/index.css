@@ -2519,3 +2519,26 @@ h6.reader-block--heading {
 .knowledge-feed input, .knowledge-feed textarea { width: 100%; box-sizing: border-box; font: inherit; }
 .knowledge-feed p { margin: 4px 0; overflow-wrap: anywhere; }
 .knowledge-feed [role="alert"] { color: var(--danger, #a33); }
+/* 回复批注保留原文与普通输入草稿。 */
+.chat-input__annotation {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-color, #c9bfaf);
+  border-radius: 8px;
+}
+.chat-input__annotation blockquote,
+.message-bubble__annotation blockquote {
+  margin: 0 0 6px;
+  padding-left: 10px;
+  border-left: 2px solid currentColor;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 140px;
+  overflow-y: auto;
+  width: 100%;
+}
+.chat-input__annotation textarea { width: 100%; min-height: 64px; }
+.message-bubble__annotation { margin-top: 8px; font-size: 0.85em; opacity: 0.85; }

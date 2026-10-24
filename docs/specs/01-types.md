@@ -75,3 +75,8 @@
 - [ ] `pytest` 全绿
 - [ ] `test-inventory.md` 已更新
 - [ ] 后续 spec（04-module-bus-system 起）引用本 spec 的枚举/实体，形成单一事实来源
+
+
+## P4 批注契约补充（已批准）
+
+新增 `ReplyAnnotation(TypedDict)`：reply_event_id、quote、comment 均 str。EventType 增加 ANNOTATION_FEEDBACK="annotation_feedback"；content={reply_event_id,quote,comment,user_event_id}，correlation_id 沿用首次用户事件。完整入口/消费者/状态与六类 bad case 见 15 的“批注反馈”：API/历史重放生产快照，表达/记忆/前端消费，不新增删除或历史回填。

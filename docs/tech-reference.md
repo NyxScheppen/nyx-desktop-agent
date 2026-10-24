@@ -31,7 +31,12 @@
 
 讨论伙伴 P1/P2 已完成；P2 性能修复第 3 步已按授权提交为 `34d201f`，P3 深度研究功能验收完成，未提交、待用户阶段审批。
 验收证据及质量门限制见 [阶段记录](specs/15-discussion-partner.md) 与 [测试快照](test-inventory.md)。
-P3 研究编排与工具构造见 `nyx/research/__init__.py`，装配见 `nyx/app_context.py`；P4 批注反馈待审批实施。
+P3 研究编排与工具构造见 `nyx/research/__init__.py`，装配见 `nyx/app_context.py`。
+P4 批注输入/锚点校验见 `nyx/api/routes.py`；prompt 传递见 `nyx/expression/{facade,pipeline,prompt}.py`；
+schema46 表与双 durable 路由见 `nyx/db.py`、`nyx/events/routing.py`、`nyx/subscriptions.py`。
+反馈录入/中介见 `nyx/memory/{store,facade}.py`，纠错反思见 `nyx/inner_life/`；
+批注选择、编辑、回执与角色代数保护见 `frontend/src/components/chat/{MessageBubble,ChatInput}.tsx`
+和 `frontend/src/stores/chatStore.ts`，完整契约见 [讨论伙伴](specs/15-discussion-partner.md)。
 
 P2 性能修复的增量证据索引与同块事实批量抽取见 `nyx/memory/{ann,store,facade}.py` 和
 [记忆契约](specs/06-memory-system.md)；网页任务正文快照（schema 45）见

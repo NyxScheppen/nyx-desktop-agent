@@ -28,6 +28,7 @@ BUSINESS_TABLES = {
     "reading_progress",
     "user_notes",
     "annotations",
+    "annotation_feedback",
     "bookmarks",
     "eval_log",
     "eval_prompt",
@@ -150,7 +151,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 40
+    assert len(names) == 41
     assert "material" not in names
 
 
@@ -716,7 +717,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 40
+    assert len(names) == 41
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

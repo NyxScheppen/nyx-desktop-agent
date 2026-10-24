@@ -179,3 +179,8 @@
 - [ ] **联动已同步**：07-desire 的长期欲望入口、04-module-bus-system 的五张单行表、06-memory-system 的 `count_new`、11-expression 的审美 prompt、12-reading-system 的 `kind='reading'` 记忆均按当前源码接线
 - [ ] 每角色组合根：`InnerLifeStore(db)` → `InnerLifeFacade(store, activity_facade, desire_facade, memory_facade, bus, llm, evaluator, config)`；一次初始化五张单行表（默认 Nyx personality 8/8/2/6/7、values 8/6/9/5；其他角色从卡片读取，energy=100/energetic）；订阅 `OBSERVATION_STATE`/`DESIRE_SATISFIED`/`ACTIVITY_END`/`REFLECTION` 到 `facade.apply_event`
 - [ ] 09-activity 的 `activity_end` content 契约（`energy_delta`）与本 spec §技术方案一致；11-expression 拼 prompt 用 `InnerLifeFacade.get_state()`
+
+
+## P4 批注契约补充（已批准）
+
+REFLECTION reason 新增 annotation_correction，展示标签“用户批注纠错”。入口仅为 memory.annotation_feedback 严格 is_correction=true 输出（facts 可为空）；消费者沿用 inner_life.reflection。evidence={source_id: canonical反馈event_id, summary: quote/comment合计≤1000字符}。保留原过期、CAS、effect、REFLECTION_DONE 和失败独立重试；不直接修改慢变量。空/非法输出不触发，重放 effect 幂等；反馈已记录不代表反思完成；角色删除沿用旧路径。完整审计见15“批注反馈”。

@@ -21,6 +21,18 @@ class RouteSpec:
 # are derived compatibility views used by docs, diagnostics, and existing callers.
 ROUTE_SPECS: tuple[RouteSpec, ...] = (
     RouteSpec(
+        EventType.ANNOTATION_FEEDBACK,
+        "memory.annotation_feedback",
+        "memory",
+        "apply_annotation_feedback",
+    ),
+    RouteSpec(
+        EventType.USER_MESSAGE,
+        "memory.annotation_recording",
+        "memory",
+        "record_annotation_feedback",
+    ),
+    RouteSpec(
         EventType.USER_MESSAGE,
         "expression.user_message",
         "expression",

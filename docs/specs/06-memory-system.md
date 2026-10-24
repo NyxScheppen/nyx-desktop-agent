@@ -15,8 +15,12 @@
 
 `ReadingEvidence` 是通用 knowledge_chunk 的物理快照，新增可空 `location`、`embedding`；
 `MemoryFact.source_chunk_id` 只接受调用方明确传入的块 ID，不回填旧数据。
-`remember_knowledge(items, correlation_id, source_name=None, *, source_chunk_id=None)`
+`remember_knowledge(items, correlation_id, source_name=None, *, source_chunk_id=None, created_counts=None)`
 返回本次实际插入的 `{created_memories, created_facts}`；重复事实保留原溯源。
+可选 `created_counts: dict[str, int]` 是调用方持有的累计器，每条记忆持久化成功后按实际新增数
+累加；不重置已有值，返回值仍只统计本次调用。中途失败继续抛错，已提交项的累计值保留。
+`ingest_source` 先为同一块全部 items 填入已存来源，再一次调用 `remember_knowledge`；
+每块独立累计，在成功或异常收尾时汇总，避免批次部分提交后漏报创建数。
 `MemoryFactStore.apply(..., source_segment_id=None, source_chunk_id=None)` 返回实际插入数。
 `record_reading_evidence(..., book_id=None, location=None)` 返回块 ID 或空值；先同来源精确、
 再以既有 EmbedFn/AnnIndex、cosine≥0.95 去重。embedding 失败保留 NULL，原文不丢失。
@@ -175,12 +179,13 @@ topics 联想约束：
   `(canonical_name, entity_type)`；迁移保留已有实体、事实和 source memory 外键。
 - schema 26 增加 `memory_entity_alias` 规范化别名表，以 `(alias, entity_type)` 做索引；
   `memory_entity.aliases` JSON 仍作为导出兼容快照，但实体合并不再扫描同类型实体全集。
-- 每条新语义记忆成功落库后 best-effort 调用统一 `LlmClient` 的
-  `output_type="fact_extraction"` 抽取实体和关系；精确/语义去重命中不重复抽取。
+- 事实抽取 best-effort 调用统一 `LlmClient` 的 `output_type="fact_extraction"`
+  抽取实体和关系；未预备候选的单条路径在精确/语义去重后、持久化事务前抽取，去重命中跳过。
   抽取失败、非法 JSON 或事实 SQL 失败只记录日志并降级，不阻断原始 `Memory`。
 - 一次 `remember_knowledge` 批量写入多个知识点时，事实抽取合并为一次 LLM 调用；每条
-  fact 必须带 `memory_index`，解析后按最终 `source_memory_id` 分发。批量解析失败时逐条
-  使用确定性 fallback，所有原始知识记忆仍然落库。
+  fact 必须带 `memory_index`，解析后按最终 `source_memory_id` 分发。批量预抽取发生在逐条
+  去重前，重放仍可能调用一次 LLM；重复 Memory 不再写事实，也不补齐此前缺失的事实。
+  批量解析失败时逐条使用确定性 fallback，所有原始知识记忆仍然落库。
 - 外部原文沉淀的 knowledge 记忆必须带一个稳定来源 topic。来源 topic 由
   `build_source_topic(kind, identifier)` 生成，形如 `book:<digest>`、
   `material:<digest>`、`web:<digest>`、`local:<digest>`；digest 来自稳定标识
@@ -518,6 +523,7 @@ async def remember_knowledge(
     source_name: str | None = None,
     *,
     source_chunk_id: str | None = None,
+    created_counts: dict[str, int] | None = None,
 ) -> dict[str, int]: ...
 async def digest_source_block(
     text: str,

@@ -70,10 +70,10 @@
 
 - `memory_entity` / `memory_fact` 独立于 `memory` / `memory_edge`，是通用实体关系图，不只保存用户事实；实体类型覆盖 person/agent/book/character/place/organization/concept 等。
 - schema 25 已迁移实体唯一键为 `(canonical_name, entity_type)`，并为事实增加 `polarity`；已有事实和来源外键保留。schema 26 增加 `memory_entity_alias` 及 `(alias, entity_type)` 索引，并从旧 aliases JSON 回填。
-- 新语义记忆成功落库后由 `LlmClient(output_type="fact_extraction")` best-effort 更新事实；精确或语义去重命中不重复抽取。LLM/JSON/事实 SQL 失败只记日志，不阻塞原始记忆。
+- 事实抽取由 `LlmClient(output_type="fact_extraction")` best-effort 完成；未预备候选的单条路径在精确/语义去重后、持久化事务前抽取，去重命中跳过。LLM/JSON/事实 SQL 失败只记日志，不阻塞原始记忆。
 - `memory_entity` 以规范化名称 + `entity_type` 唯一，实体合并和查询都走别名索引表，
   Nyx/Nyx 夏本/尼克斯等别名不会重复建实体；同名异类不合并，旧 `aliases` JSON 只作快照。
-- `remember_knowledge` 批量输入多个知识点时只调用一次 fact_extraction，输出用 `memory_index` 映射回各条 Memory；批量调用失败逐条 fallback，原始记忆仍落库。
+- `remember_knowledge` 批量输入多个知识点时在逐条去重前调用一次 fact_extraction，输出用 `memory_index` 映射回各条 Memory；重放仍可能调用一次 LLM，重复 Memory 不再写事实，也不补齐缺失事实。批量调用失败逐条使用确定性 fallback，原始记忆仍落库。
 - `observe_user` 生成的 `USER_PROFILE` 不参与事实抽取，窗口标题和摘要不能制造用户偏好或状态事实；显式 functional 模式优先于谓词白名单。
 - `MemoryFact` REST/前端展示同时带 `subject_type`、`object_type`，前端用“类型 + canonical name”
   区分同名异类实体。
@@ -107,7 +107,11 @@
 - schema 43 为 `reading_evidence` 增加可空 `location` / JSON `embedding`，为
   `memory_fact` 增加 `source_chunk_id` 外键，删除块时 SET NULL；旧数据不补算向量、不猜测来源。
 - `MemoryFacade.ingest_source` 将原文分为最多 6000 字符的块，先提交 chunk，再摘要并调用
-  `remember_knowledge(..., source_chunk_id=...)`。其返回值和 API 的 `created_memories` /
+  `remember_knowledge(items, ..., source_chunk_id=...)`；先给同一块的全部知识点补已存来源，
+  每块一次批量调用，多个知识点只做一次事实抽取。可选 `created_counts` 累计器在每条
+  持久化成功后累加；摄入路径在异常收尾时也汇总，保留中途失败前已提交的数量。
+  返回值仍是该次调用的新增数，累计器不重置旧值；异常继续抛出，记忆逐条提交。
+  其返回值和 API 的 `created_memories` /
   `created_facts` 是本次实际新增数，重复命中为零，已有事实保留原来源。
 - chunk 精确/语义去重限定同来源；语义 cosine ≥ 0.95，并保护数字、时间与否定差异。
   digest 按 chunk ID 读取已存原文及来源，避免语义命中后用另一份正文生成证据关联。

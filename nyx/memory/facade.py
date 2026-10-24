@@ -1402,12 +1402,14 @@ class MemoryFacade:
         source_name: str | None = None,
         *,
         source_chunk_id: str | None = None,
+        created_counts: dict[str, int] | None = None,
     ) -> dict[str, int]:
         """读书提取的客观知识点入长期记忆（kind=knowledge，正文确定性拼好）。
 
         items 每项 {topic, content}；content 空则跳过。复用 _persist_memory
         入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM 使其
         豁免短期淘汰，知识点不随时间冲掉，供创作时检索参考（list_memories）。
+        created_counts 可累计已提交项，供调用方在中途失败时仍准确汇报新增数。
         """
         entries: list[tuple[Memory, str | None]] = []
         for item in items:
@@ -1452,8 +1454,13 @@ class MemoryFacade:
                 source_scope="knowledge",
                 source_chunk_id=source_chunk_id,
             )
-            counts["created_memories"] += int(result.created)
-            counts["created_facts"] += result.created_facts
+            for key, count in (
+                ("created_memories", int(result.created)),
+                ("created_facts", result.created_facts),
+            ):
+                counts[key] += count
+                if created_counts is not None:
+                    created_counts[key] = created_counts.get(key, 0) + count
         return counts
 
     async def remember_reading(
@@ -1941,6 +1948,7 @@ class MemoryFacade:
         profile: dict[str, object] | None = None
         for offset in range(0, len(text), _SOURCE_DIGEST_MAX_CHARS):
             block = text[offset:offset + _SOURCE_DIGEST_MAX_CHARS]
+            counts: dict[str, int] = {}
             try:
                 chunk_id = await self.record_reading_evidence(
                     source_topic, source_name, block, str(offset), location=location
@@ -1965,17 +1973,18 @@ class MemoryFacade:
                 for item in items:
                     item["source_topic"] = chunk.source_topic
                     item["source_name"] = chunk.source_name
-                    counts = await self.remember_knowledge(
-                        [item], correlation_id, chunk.source_name,
-                        source_chunk_id=chunk_id,
-                    )
-                    for key in ("created_memories", "created_facts"):
-                        result[key] += counts[key]
+                await self.remember_knowledge(
+                    items, correlation_id, chunk.source_name,
+                    source_chunk_id=chunk_id, created_counts=counts,
+                )
             except Exception:
                 self._logger.exception(
                     "知识摄入失败 source=%s offset=%s", source_topic, offset
                 )
                 errors.append(f"{source_name} 第 {offset // 6000 + 1} 块摄入未完成")
+            finally:
+                for key in ("created_memories", "created_facts"):
+                    result[key] += counts.get(key, 0)
         result["chunks"] = chunks
         if errors:
             result["errors"] = errors

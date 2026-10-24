@@ -659,6 +659,26 @@ score = 0.65 * vector_score
 - `matched_unique_token_count = len(set(summary_tokens) | set(content_tokens))`。
 - store 不计算 keyword score；score 只在 retrieval 中计算。
 
+## P2 证据索引与性能契约
+
+- schema 44 增加 `reading_evidence.content_hash`（原始 UTF-8 SHA-256，不归一化），回填旧块，并建 `(source_topic, content_hash, created_at, id)` 索引。精确查重仍校验完整原文；不改变 chunk ID 或来源边界。生产写入统一由 Store 计算 hash；块正文在现有 API 中不可变，直接 SQL 导入或修复正文时须同步写入原文 hash。
+- `knowledge_chunk_change(seq INTEGER PRIMARY KEY AUTOINCREMENT, chunk_id TEXT NOT NULL)` 是仅含 ID 的派生变更日志。证据 INSERT、DELETE（含 books 级联）、检索字段 UPDATE 的触发器与原操作同事务写日志；仅 consumed_at 变化不更新索引。日志不保存正文/向量。
+- Store `knowledge_chunk_changes(after: int | None) -> tuple[int, list[ReadingEvidence], list[str]]` 在同一 SQLite 读取快照返回版本、变更的当前行和删除 ID；after=None 是冷加载。增量大小取决于上次同步后的变更数量，未分批截断；派生日志保留，不在本步骤设计清理策略。`find_knowledge_chunk(source_topic: str, content: str) -> str | None` 使用原文哈希索引查重。每个 Facade 持有自己的原文映射、全局及同源 ANN、二字子串倒排索引，首次使用加载一次，以后只同步日志中的变更块。
+- 调用方事务中的索引视图临时构建并丢弃，不更新常驻缓存或版本；回滚不得泄漏到后续查询。异常同步使缓存失效，下一次从 SQLite 重建。重启同样重建；不同角色/数据库/Facade 不共享状态。
+- ANN 桶及关键词 posting 用有序段增量合并，新增不重新排序全部旧块。ANN 按需合并桶中 ID，达到 candidate_k 停止；newest 候选顺序提前维护。分来源 ANN 在候选截断前隔离来源。同一 Facade 内同维度 ANN 共享不可变随机投影；删空来源时移除其 ANN，删空 ANN 重置维度和平面，后续新增向量按自身维度重新初始化。
+- 关键词每个查询 token 用最稀有二字子串 posting 取最多 200 个候选，再对原始 `source_name + '\n' + content` 做完整 token 子串校验及既有 0.45 覆盖率过滤；向量也最多 200 个候选。候选检索是近似检索，密集命中不承诺穷举全库最优；不降低相关性门槛、不回退到无关最新证据。NULL embedding 不进入直接候选。
+
+**对象完整性：派生证据索引**
+
+| 项目 | 契约 |
+|---|---|
+| 入口 | EPUB、网页任务、探索、手动摄入、模型 fetch 均复用原 chunk 写入口；迁移回填 hash，触发器记录所有 SQL 写入/级联 |
+| 消费者 | knowledge_search、同来源语义查重；反思和事实来源外键继续读权威表 |
+| 冷状态 → 就绪 | 首次查询读取已存块并建索引；失败不发布部分缓存 |
+| 就绪 → 更新 | 读取已提交变更 ID，移除旧条目并添加当前行；仅同步成功才推进版本 |
+| 删除/回滚/重放 | 删除移除所有派生条目和已空来源 ANN；空 ANN 恢复未初始化状态；回滚无持久日志且临时视图丢弃；重复写入无重复 posting |
+| 空/失败/部分完成/乱序 | 空库返回空；同步失败失效重建；部分摄入只发现已提交块；以日志序号同步，与原文顺序无关 |
+
 ## ANN 契约
 
 新增 `nyx/memory/ann.py`：
@@ -687,6 +707,9 @@ class AnnIndex:
         *,
         allowed_ids: set[str] | None = None,
     ) -> list[AnnCandidate]: ...
+
+    def add(self, memory: Memory) -> None: ...
+    def remove(self, memory_id: str) -> None: ...
 ```
 
 规则：
@@ -701,6 +724,8 @@ class AnnIndex:
 - `allowed_ids` 不是 `None` 时，同桶、Hamming 邻桶和 newest fallback 都先排除集合外 id，再应用 `candidate_k`；空集合表示没有候选，不能先截断全局 top-K 再过滤。
 - 最后只对候选集计算精确 cosine，并按 `cosine DESC, memory.created_at DESC, memory.id ASC` 排序。
 - `candidate_k <= 0` 返回 `[]`。
+- `add/remove` 增量维护桶、ID 映射和预排序 newest 候选；同 ID 替换、重复删除幂等。空索引由首个 add 初始化维度和平面，维度不匹配不加入。共享有序段辅助函数位于 ann.py，供 ANN 和证据 posting 使用，不引入新的服务层。
+- 最后一条索引记忆移除后清除旧维度、桶和平面；后续 add 可选择新维度。证据索引通过同一 Facade 的投影缓存让相同维度的全局/来源 ANN 引用同一不可变平面组；其他 Facade 不共享缓存。
 
 `MemoryRetrieval` 缓存 ANN index，并用 fingerprint 判断失效：
 

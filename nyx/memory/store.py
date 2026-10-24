@@ -70,6 +70,15 @@ def hash_content(content: str) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _chunk_from_row(row: aiosqlite.Row) -> ReadingEvidence:
+    return ReadingEvidence(
+        id=row["id"], source_topic=row["source_topic"],
+        source_name=row["source_name"], content=row["content"],
+        created_at=row["created_at"], location=row["location"],
+        embedding=json.loads(row["embedding"]) if row["embedding"] else None,
+    )
+
+
 class MemoryStore:
     """memory / memory_edge 两表的 SQLite 存取 + 行↔dataclass 序列化。
 
@@ -503,8 +512,10 @@ class MemoryStore:
         evidence_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
         async with self._operation() as should_commit:
             cursor = await self._db.conn.execute(
-                "SELECT id FROM reading_evidence WHERE source_topic=? AND content=? "
-                "ORDER BY created_at, id LIMIT 1", (source_topic, content),
+                "SELECT id FROM reading_evidence WHERE source_topic=? "
+                "AND content_hash=? AND content=? ORDER BY created_at, id LIMIT 1",
+                (source_topic, hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                 content),
             )
             existing = await cursor.fetchone()
             if existing is not None:
@@ -512,14 +523,63 @@ class MemoryStore:
             await self._db.conn.execute(
                 "INSERT INTO reading_evidence "
                 "(id, source_topic, source_name, content, created_at, book_id, "
-                "location, embedding) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "location, embedding, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(id) DO NOTHING",
                 (evidence_id, source_topic, source_name, content, time.time(), book_id,
-                 location, json.dumps(embedding) if embedding is not None else None),
+                 location, json.dumps(embedding) if embedding is not None else None,
+                 hashlib.sha256(content.encode("utf-8")).hexdigest()),
             )
             if should_commit:
                 await self._db.conn.commit()
         return evidence_id
+
+    async def find_knowledge_chunk(
+        self, source_topic: str, content: str,
+    ) -> str | None:
+        """Find the earliest exact raw-text match through its source/hash index."""
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT id FROM reading_evidence WHERE source_topic=? "
+                "AND content_hash=? AND content=? ORDER BY created_at, id LIMIT 1",
+                (source_topic, hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                 content),
+            )
+            row = await cursor.fetchone()
+        return str(row["id"]) if row is not None else None
+
+    async def knowledge_chunk_changes(
+        self, after: int | None,
+    ) -> tuple[int, list[ReadingEvidence], list[str]]:
+        """Read a cold snapshot or changed current rows and deleted IDs atomically."""
+        async with self._operation() as should_commit:
+            if should_commit:
+                await self._db.conn.execute("BEGIN")
+            cursor = await self._db.conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM knowledge_chunk_change"
+            )
+            row = await cursor.fetchone()
+            version = int(row[0]) if row is not None else 0
+            if after is None:
+                cursor = await self._db.conn.execute(
+                    "SELECT * FROM reading_evidence ORDER BY created_at, id"
+                )
+            else:
+                cursor = await self._db.conn.execute(
+                    "SELECT delta.chunk_id AS changed_id, evidence.* FROM "
+                    "(SELECT DISTINCT chunk_id FROM knowledge_chunk_change "
+                    "WHERE seq > ? AND seq <= ?) AS delta "
+                    "LEFT JOIN reading_evidence AS evidence "
+                    "ON evidence.id=delta.chunk_id",
+                    (after, version),
+                )
+            rows = await cursor.fetchall()
+            if should_commit:
+                await self._db.conn.commit()
+        return (
+            version,
+            [_chunk_from_row(row) for row in rows if row["id"] is not None],
+            [str(row["changed_id"]) for row in rows if row["id"] is None],
+        )
 
     async def list_knowledge_chunks(
         self, *, source_topic: str | None = None, ids: list[str] | None = None,
@@ -541,12 +601,7 @@ class MemoryStore:
                 + " ORDER BY created_at, id", params,
             )
             rows = await cursor.fetchall()
-        return [ReadingEvidence(
-            id=row["id"], source_topic=row["source_topic"],
-            source_name=row["source_name"], content=row["content"],
-            created_at=row["created_at"], location=row["location"],
-            embedding=json.loads(row["embedding"]) if row["embedding"] else None,
-        ) for row in rows]
+        return [_chunk_from_row(row) for row in rows]
 
     async def pending_reading_evidence(self, limit: int = 3) -> list[ReadingEvidence]:
         """Return bounded oldest unconsumed source snapshots."""

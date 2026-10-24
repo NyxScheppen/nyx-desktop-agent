@@ -112,6 +112,28 @@
 - Recommended: chunk-first durable stages with source-snapshot replay, following specification 15. This changes the old checkpoint boundary but reuses existing persistence and pending mechanisms.
 - Rejected: hold a single outer transaction across chunk, digest, knowledge and cursor. Existing memory persistence opens its own transactions; avoiding nesting would require broader transaction/event changes and could hold the DB lock across LLM/embedding I/O.
 
+## P2 Performance Follow-up (approved 2026-10-23)
+
+- The user approved the three-step fix plan after read-only probes confirmed all four findings. Execute one step per approval gate; P3 remains unapproved.
+- Baseline: three searches over 1000 chunks each load 1000 rows and build ANN; 30 inserts reload 435 previous rows/build 30 indexes; five digest items invoke five singleton batches; a 200000-character web task writes 103 checkpoints containing 20600000 full-body characters.
+- Preserve provenance, source-local dedup, numeric/time/negation guards, NULL-vector rules, reflection consumption and serialized output budgets.
+
+1. **Chunk search/dedup (current step).** Maintain per-facade incremental global/source ANN and substring postings; use bounded candidate queries, indexed raw-content hashes and a transactional SQLite ID-only change journal. Cold start loads once; committed insert/update/delete/cascade changes synchronize incrementally. Transaction-local queries use a disposable view so rollback cannot contaminate the resident cache. Keep indexes isolated by facade/database. Sorted runs avoid shifting or sorting every existing ID on insertion/query. Verify 1000/10000 chunks, dense buckets, common keywords, incremental writes, source isolation, substring thresholds, deletion, rollback, restart and linked NULL vectors. Stop after acceptance.
+2. **Fact batching (pending step approval).** Fill source metadata then call existing remember_knowledge(items) once per raw block. Verify one batch extraction for five items, actual counts, attribution and partial failure/retry.
+3. **Web snapshots (pending step approval).** Add an immutable task-source snapshot table with task FK CASCADE, atomically migrate legacy source_text, retain bounded checkpoint/pending and all existing durable stages. Verify a single full-body save for 200000 characters, changed remote text, restart and failure replay. This explicitly amends specification 09's no-activity-subtable constraint.
+
+- Object audit: all five existing ingestion paths and store replay feed the same chunk index; consumers remain knowledge search and source-local dedup. The derived journal/cache carries no new user-facing state or fallback. Empty/missing chunks produce no candidates; failed transactions roll back journal entries; duplicate writes keep IDs; deletion evicts derived entries and leaves fact FK SET NULL. Cold restart reconstructs from SQLite.
+- Files: step 1 nyx/db.py, nyx/memory/{ann,store,facade}.py; later steps activity/{store,facade}.py. Synchronize specifications 06/09/15 as affected, corresponding facts, LessonsLearned, plan and verification inventory. No new service layer/configuration/frontend change.
+- Verification: temporary agent drivers with isolated real SQLite and scripted embeddings/LLM, existing relevant regressions, Ruff/Pyright each step; full backend suite at final step. Preserve and report the previously reproduced host unload-drain limitation.
+
+### Step 1 Acceptance (2026-10-24)
+
+- Implemented schema 44 raw-hash exact lookup and transactional ID change journal, resident global/source ANN and substring postings, incremental writes/deletes and isolated transaction-local views. No changes to fact batching or web checkpoints in this step.
+- Temporary real-SQLite driver: 1000 and 10000 chunks each produced 0 warm evidence rows, 0 ANN builds and 2991 merged candidate visits across 3 searches. Each 30-write run inserted 30 chunks and synchronized only 30 rows without an ANN rebuild. Timings were approximately 0.022s/0.027s for the 3 warm queries and are indicative, not a latency guarantee.
+- Passed 90 reference comparisons against HEAD's original ANN candidate/order behavior and incremental removal/reinsert; same-dimension projection sharing across sources, empty-source eviction and ANN dimension reset after deleting its last item; source isolation beyond the global candidate cap; raw exact/semantic replay and numeric/time/negation guards; keyword coverage/NULL-linked evidence/consumed evidence; update/delete/cascade/SET NULL; rollback and sequence reuse; transaction commit, synchronization failure recovery, facade/database isolation, 43-to-44 migration and indexed EXPLAIN; restart/cross-connection updates, lock-order concurrency and serialized output budgets.
+- Existing affected regressions: initial 3 failures were stale table/index snapshots; after synchronizing existing assertions and fixing review findings, the full affected set was rerun together: 972 passed. No new pytest tests. Ruff/Pyright and diff whitespace checks passed. Full backend/HTTP-SSE/real-model quality were not rerun in this step; previous host unload-drain limitation remains as recorded below.
+- Contracts 06/15, memory facts, LessonsLearned and test inventory synchronized. The specification and standards reviews found an empty-ANN dimension bug and repeated per-source projection allocation; both were reproduced, fixed and rechecked. Stop here for the user's approval before step 2; no commit authorized this round.
+
 ## P3 - Deep Research
 
 ### Scope
@@ -168,3 +190,4 @@
 - P2 backend: first full run 4 failed / 1285 passed / 1 skipped; three old fixtures were corrected and 135 reading/reflection tests passed. The remaining host unload-drain test also hung in an independent unchanged P1 commit snapshot (over 75s). Excluding only that test, 1288 passed / 1 skipped / 1 deselected. The full-suite quality gate is not all green; no host behavior was changed.
 - Fact extraction/storage remains best-effort: raw chunks and Memory survive failure, but duplicate Memory does not retry missing facts. This inherited limitation is explicit in specifications 06/15.
 - The user explicitly authorized committing P2 after the acceptance report disclosed the known quality-gate limitation. P3 remains unapproved; wait for a separate user instruction before starting it.
+- P2 performance follow-up step 1 is implemented and verified as recorded above. Await user approval before step 2 (fact batching); step 3 and P3 remain unapproved. Current follow-up changes are uncommitted.

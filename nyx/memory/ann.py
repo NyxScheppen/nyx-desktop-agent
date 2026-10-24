@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import bisect
+import heapq
 import math
 import random
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from itertools import combinations
+from typing import TypeVar
 
 from nyx.types import Memory
 
@@ -14,22 +18,58 @@ class AnnCandidate:
     cosine: float
 
 
+_T = TypeVar("_T", str, tuple[float, str])
+Projection = tuple[tuple[tuple[float, ...], ...], ...]
+
+
+def add_sorted_run(runs: list[list[_T]], item: _T) -> None:
+    """Insert one item using binary-carry merges instead of shifting a large list."""
+    carry = [item]
+    level = 0
+    while True:
+        if level == len(runs):
+            runs.append(carry)
+            return
+        if not runs[level]:
+            runs[level] = carry
+            return
+        carry = list(heapq.merge(runs[level], carry))
+        runs[level] = []
+        level += 1
+
+
+def discard_sorted_run(runs: list[list[_T]], item: _T) -> None:
+    """Remove an item from every occupied sorted run; deletion is off the hot path."""
+    for run in runs:
+        position = bisect.bisect_left(run, item)
+        if position < len(run) and run[position] == item:
+            run.pop(position)
+
+
+def _merge_runs(runs: list[list[_T]]) -> Iterator[_T]:
+    return heapq.merge(*(run for run in runs if run))
+
+
 class AnnIndex:
-    """Deterministic random-projection LSH index for memory embeddings."""
+    """Deterministic random-projection LSH index with incremental updates."""
 
     def __init__(
         self,
-        dimension: int | None,
-        planes_by_table: list[list[list[float]]],
-        buckets: list[dict[int, list[str]]],
-        memories_by_id: dict[str, Memory],
-        indexed_memories: list[Memory],
+        *,
+        planes: int = 16,
+        tables: int = 4,
+        seed: int = 0,
+        projection_cache: dict[int, Projection] | None = None,
     ) -> None:
-        self._dimension = dimension
-        self._planes_by_table = planes_by_table
-        self._buckets = buckets
-        self._memories_by_id = memories_by_id
-        self._indexed_memories = indexed_memories
+        self._dimension: int | None = None
+        self._planes_by_table: Projection = ()
+        self._buckets: list[dict[int, list[list[str]]]] = []
+        self._memories_by_id: dict[str, Memory] = {}
+        self._newest_runs: list[list[tuple[float, str]]] = []
+        self._planes = planes
+        self._tables = tables
+        self._seed = seed
+        self._projection_cache = projection_cache
 
     @classmethod
     def build(
@@ -39,46 +79,78 @@ class AnnIndex:
         planes: int = 16,
         tables: int = 4,
         seed: int = 0,
+        projection_cache: dict[int, Projection] | None = None,
     ) -> AnnIndex:
-        """Build an index from memories that share the first embedding dimension."""
-        dimension = _first_embedding_dimension(memories)
-        if dimension is None or planes <= 0 or tables <= 0:
-            return cls(None, [], [], {}, [])
-
-        indexed_memories = [
-            memory
-            for memory in memories
-            if memory.embedding is not None and len(memory.embedding) == dimension
-        ]
-        rng = random.Random(seed)
-        planes_by_table = [
-            [
-                [rng.gauss(0.0, 1.0) for _ in range(dimension)]
-                for _ in range(planes)
-            ]
-            for _ in range(tables)
-        ]
-        buckets: list[dict[int, list[str]]] = [{} for _ in range(tables)]
-        for memory in indexed_memories:
-            embedding = memory.embedding
-            if embedding is None:
-                continue
-            for table_index, table_planes in enumerate(planes_by_table):
-                bucket_key = _hash_with_planes(embedding, table_planes)
-                buckets[table_index].setdefault(bucket_key, []).append(memory.id)
-
-        for table in buckets:
-            for memory_ids in table.values():
-                memory_ids.sort()
-
-        memories_by_id = {memory.id: memory for memory in indexed_memories}
-        return cls(
-            dimension,
-            planes_by_table,
-            buckets,
-            memories_by_id,
-            indexed_memories,
+        """Build an index from memories sharing the first embedding dimension."""
+        index = cls(
+            planes=planes, tables=tables, seed=seed,
+            projection_cache=projection_cache,
         )
+        for memory in memories:
+            index.add(memory)
+        return index
+
+    def _initialize_planes(self, dimension: int) -> None:
+        projection = (
+            self._projection_cache.get(dimension)
+            if self._projection_cache is not None else None
+        )
+        if projection is None:
+            rng = random.Random(self._seed)
+            projection = tuple(
+                tuple(
+                    tuple(rng.gauss(0.0, 1.0) for _ in range(dimension))
+                    for _ in range(self._planes)
+                )
+                for _ in range(self._tables)
+            )
+            if self._projection_cache is not None:
+                self._projection_cache[dimension] = projection
+        self._planes_by_table = projection
+        self._buckets = [
+            dict[int, list[list[str]]]() for _ in range(self._tables)
+        ]
+
+    def add(self, memory: Memory) -> None:
+        """Add or replace an eligible memory in the index."""
+        self.remove(memory.id)
+        embedding = memory.embedding
+        if embedding is None or self._planes <= 0 or self._tables <= 0:
+            return
+        if self._dimension is None:
+            self._dimension = len(embedding)
+            self._initialize_planes(self._dimension)
+        if len(embedding) != self._dimension:
+            return
+        self._memories_by_id[memory.id] = memory
+        add_sorted_run(self._newest_runs, (-memory.created_at, memory.id))
+        for table_index, table_planes in enumerate(self._planes_by_table):
+            bucket_key = _hash_with_planes(embedding, table_planes)
+            runs = self._buckets[table_index].setdefault(bucket_key, [])
+            add_sorted_run(runs, memory.id)
+
+    def remove(self, memory_id: str) -> None:
+        """Remove a memory; repeated removal is harmless."""
+        memory = self._memories_by_id.pop(memory_id, None)
+        if memory is None:
+            return
+        discard_sorted_run(self._newest_runs, (-memory.created_at, memory.id))
+        embedding = memory.embedding
+        if embedding is None or self._dimension is None:
+            return
+        for table_index, table_planes in enumerate(self._planes_by_table):
+            bucket_key = _hash_with_planes(embedding, table_planes)
+            runs = self._buckets[table_index].get(bucket_key)
+            if runs is not None:
+                discard_sorted_run(runs, memory.id)
+        if not self._memories_by_id:
+            self._dimension = None
+            self._planes_by_table = ()
+            self._buckets = []
+            self._newest_runs = []
+
+    def __len__(self) -> int:
+        return len(self._memories_by_id)
 
     def query(
         self,
@@ -94,45 +166,34 @@ class AnnIndex:
             or len(vector) != self._dimension
         ):
             return []
-
         candidate_ids: list[str] = []
         seen: set[str] = set()
         query_hashes = [
             _hash_with_planes(vector, table_planes)
             for table_planes in self._planes_by_table
         ]
-
         for radius in (0, 1, 2):
-            layer_ids: set[str] = set()
+            layer_runs: list[list[str]] = []
             for table_index, query_hash in enumerate(query_hashes):
                 for bucket_key in _hamming_neighbors(
                     query_hash, radius, self._plane_count
                 ):
-                    layer_ids.update(self._buckets[table_index].get(bucket_key, []))
-            if allowed_ids is not None:
-                layer_ids.intersection_update(allowed_ids)
-            self._append_candidates(candidate_ids, seen, sorted(layer_ids), candidate_k)
+                    layer_runs.extend(self._buckets[table_index].get(bucket_key, []))
+            self._append_candidates(
+                candidate_ids, seen, _merge_runs(layer_runs), candidate_k, allowed_ids,
+            )
             if len(candidate_ids) >= candidate_k:
                 break
-
         if len(candidate_ids) < candidate_k:
-            newest_ids = [
-                memory.id
-                for memory in sorted(
-                    self._indexed_memories,
-                    key=lambda memory: (-memory.created_at, memory.id),
-                )
-                if allowed_ids is None or memory.id in allowed_ids
-            ]
-            self._append_candidates(candidate_ids, seen, newest_ids, candidate_k)
-
+            self._append_candidates(
+                candidate_ids, seen,
+                (memory_id for _, memory_id in _merge_runs(self._newest_runs)),
+                candidate_k, allowed_ids,
+            )
         candidates = [
             AnnCandidate(
                 memory_id,
-                _cosine(
-                    vector,
-                    self._memories_by_id[memory_id].embedding or [],
-                ),
+                _cosine(vector, self._memories_by_id[memory_id].embedding or []),
             )
             for memory_id in candidate_ids
         ]
@@ -155,11 +216,14 @@ class AnnIndex:
     def _append_candidates(
         candidate_ids: list[str],
         seen: set[str],
-        memory_ids: list[str],
+        memory_ids: Iterator[str],
         candidate_k: int,
+        allowed_ids: set[str] | None,
     ) -> None:
         for memory_id in memory_ids:
-            if memory_id in seen:
+            if memory_id in seen or (
+                allowed_ids is not None and memory_id not in allowed_ids
+            ):
                 continue
             seen.add(memory_id)
             candidate_ids.append(memory_id)
@@ -179,14 +243,7 @@ def ann_fingerprint(memories: list[Memory]) -> tuple[tuple[str, float, int], ...
     )
 
 
-def _first_embedding_dimension(memories: list[Memory]) -> int | None:
-    for memory in memories:
-        if memory.embedding is not None:
-            return len(memory.embedding)
-    return None
-
-
-def _hash_with_planes(vector: list[float], planes: list[list[float]]) -> int:
+def _hash_with_planes(vector: list[float], planes: Sequence[Sequence[float]]) -> int:
     value = 0
     for index, plane in enumerate(planes):
         dot = sum(x * y for x, y in zip(vector, plane))

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -8,6 +9,11 @@ from pathlib import Path
 from time import monotonic
 
 import aiosqlite
+
+
+def _raw_sha256(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
 
 DEFAULT_DB_PATH = "data/nyx.db"
 _LEGACY_DB_PATH = "nyx.db"
@@ -836,6 +842,26 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "REFERENCES reading_evidence(id) ON DELETE SET NULL",
         ],
     ),
+    (
+        44,
+        [
+            "ALTER TABLE reading_evidence ADD COLUMN content_hash TEXT NOT NULL "
+            "DEFAULT ''",
+            "UPDATE reading_evidence SET content_hash = nyx_raw_sha256(content)",
+            "CREATE INDEX idx_reading_evidence_exact ON reading_evidence "
+            "(source_topic, content_hash, created_at, id)",
+            "CREATE TABLE knowledge_chunk_change ("
+            "seq INTEGER PRIMARY KEY AUTOINCREMENT, chunk_id TEXT NOT NULL)",
+            "CREATE TRIGGER knowledge_chunk_insert AFTER INSERT ON reading_evidence "
+            "BEGIN INSERT INTO knowledge_chunk_change(chunk_id) VALUES (NEW.id); END",
+            "CREATE TRIGGER knowledge_chunk_delete AFTER DELETE ON reading_evidence "
+            "BEGIN INSERT INTO knowledge_chunk_change(chunk_id) VALUES (OLD.id); END",
+            "CREATE TRIGGER knowledge_chunk_update AFTER UPDATE OF "
+            "source_topic, source_name, content, location, embedding, created_at "
+            "ON reading_evidence BEGIN INSERT INTO knowledge_chunk_change(chunk_id) "
+            "VALUES (NEW.id); END",
+        ],
+    ),
 ]
 
 
@@ -898,6 +924,11 @@ async def migrate(
     for version, statements in _MIGRATIONS if migrations is None else migrations:
         if version <= current:
             continue
+        if version == 44:
+            await conn.create_function(  # pyright: ignore[reportUnknownMemberType]
+                "nyx_raw_sha256", 1, _raw_sha256,
+                deterministic=True,
+            )
         await conn.execute("BEGIN")
         try:
             for stmt in statements:

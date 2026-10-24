@@ -258,17 +258,17 @@ Tool(
 
 ### 5. 数据模型变更
 
-P2 已落地 schema 43（`nyx/db.py` `_MIGRATIONS`）；后续阶段迁移编号依实施顺序顺延：
+P2 已落地 schema 43，性能修复第 1 步增加 schema 44（`nyx/db.py` `_MIGRATIONS`）；后续阶段迁移编号依实施顺序顺延：
 
 - **泛化 `reading_evidence` 为通用证据块（物理表名保留）**：证据块表名**不重命名**——`reading_evidence` 保留，避免 SQLite create-new + copy + drop 带来的 books FK/索引迁移风险（遵循外科手术式修改）。**契约名/概念名用 `knowledge_chunk`（证据块），物理表名仍是 `reading_evidence`**。v43 加两列：
   - `location TEXT NULL`：book 来源填“书名 + 段定位”，web 来源填 URL，本地文件填绝对路径，手动文本可为 NULL。
   - `embedding TEXT NULL`：证据块向量（JSON 数组文本），供 `knowledge_search` 语义检索；与 `conversation_segment.embedding` 同存储格式。
-  - 现有列不变：`id TEXT PRIMARY KEY`（sha256 hex，非自增）、`source_topic`、`source_name`、`content(≤6000)`、`created_at`、`consumed_at`、`book_id`（可空，web/local 为 NULL）。现有 `idx_reading_evidence_pending` 索引保留；`source_topic` 无独立索引、检索按 `source_topic` 等值过滤即可（可补建）。
+  - 现有列不变：`id TEXT PRIMARY KEY`（sha256 hex，非自增）、`source_topic`、`source_name`、`content(≤6000)`、`created_at`、`consumed_at`、`book_id`（可空，web/local 为 NULL）。现有 `idx_reading_evidence_pending` 索引保留；v44 增加原文 `content_hash` 及 `(source_topic, content_hash, created_at, id)` 索引，供同来源精确查重。
 - **`memory_fact.source_chunk_id`**：`ALTER TABLE memory_fact ADD COLUMN source_chunk_id TEXT REFERENCES reading_evidence(id) ON DELETE SET NULL`（**TEXT，不是 INTEGER**——`reading_evidence.id` 是 sha256 hex 文本）。
   - **不回填**：现有知识事实与 `reading_evidence` 之间**没有持久化关联**——知识是 `digest_source_block` 抽取后的蒸馏事实（`memory_fact` 只挂 `source_memory_id`→`memory`，`memory.topics` 有 `source_topic`），`reading_evidence` 也不记 `memory_id`；且同一 `source_topic`（如 `book:<id>`）下有多条证据块，按 content 或 source_topic 都无法可靠定位到具体哪条。故 `source_chunk_id` **只前向填充**（新增摄入路径写入时赋值），既有行保持 NULL（回填"匹配不上留 NULL"没有可靠 join key，不做猜测式回填）。
   - 删除证据块 → SET NULL，事实保留（不级联删事实）。
 
-- **证据块 embedding 管线（chunk 向量检索契约）**：chunk embedding 用**现有 `EmbedFn`**（`build_embed(config.embedding.model)`，sentence-transformers，已在 `MemoryFacade` 以 `embed` 注入，与 memory 同源，见 `nyx/memory/retrieval.py`）。**写证据块时**计算并存 `reading_evidence.embedding`（JSON 数组文本，与 `Memory.embedding` 同存储格式）。`knowledge_search` 检索时 `embed(query)` → `AnnIndex.build(含 embedding 的 chunks)`（复用 `nyx/memory/ann.py`，仿 `MemoryRetrieval._ann_index`/`_vector_scores`，`_MIN_RECALL_COSINE` 过滤），叠加 chunk `content`/`source_name` 关键词过滤（`MemoryStore.search_keywords` 模式）。迁移前旧 chunk `embedding IS NULL`，不参与向量检索，仅能经 `source_chunk_id` 被事实带出。
+- **证据块 embedding 管线（chunk 向量检索契约）**：chunk embedding 用**现有 `EmbedFn`**（`build_embed(config.embedding.model)`，sentence-transformers，已在 `MemoryFacade` 以 `embed` 注入，与 memory 同源，见 `nyx/memory/retrieval.py`）。**写证据块时**计算并存 `reading_evidence.embedding`（JSON 数组文本，与 `Memory.embedding` 同存储格式）。v44 由 Facade 常驻全局/来源 ANN 和二字子串 posting，冷加载一次，按同事务 ID 变更日志同步新增/更新/删除；同维度索引在 Facade 内共享不可变投影，删空来源释放其索引，空 ANN 可按下一条向量维度重新初始化。检索时 `embed(query)` → 同步后的 ANN 候选查询及关键词候选校验，保留 0.45 相关性门槛、每 token/向量各最多 200 个候选及既有输出预算。调用方事务内使用临时视图，回滚不污染常驻索引；密集候选检索是近似的，不保证穷举全库最优。索引生命周期、精确查重与异常恢复以 **06-memory-system「P2 证据索引与性能契约」**为准。旧 chunk `embedding IS NULL` 不进入直接候选，仅能经 `source_chunk_id` 被事实带出。
 - **`source_chunk_id` 穿透签名**：一次 `remember_knowledge` 对应一个证据块（一次 digest 产出的 items 同源），所以 `source_chunk_id` 是**每次调用的统一值、作为 `apply` 参数透传**（与 `source_segment_id` 同一机制），**不进 `FactCandidate`**（`FactCandidate` 是 per-fact，`facts.py:48-53`，无需加字段）。需动四处：①`remember_knowledge(items, correlation_id, source_name=None, *, source_chunk_id: str | None = None)`；②`_persist_memory(..., source_chunk_id=...)` → `_commit_memory(..., source_chunk_id=...)`；③`_fact_store.apply(candidates, source_memory_id, scope, source_segment_id=None, source_chunk_id=None)`（`facts.py:335`）INSERT 列清单加 `source_chunk_id`（`facts.py:393-398`）；④`MemoryFact` 读回：`search`/`recent` 的 SELECT 列清单与 `_row_to_fact`（`facts.py:690-710`）加 `source_chunk_id` 列。调用顺序：先写证据块拿 `chunk_id` → `digest_source_block` → 给 items 补 `source_topic`/`source_name` → `remember_knowledge(items, ..., source_chunk_id=chunk_id)`。
 
 ### 6. 知识库摄入（5 路径）

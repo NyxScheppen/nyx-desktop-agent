@@ -1,11 +1,14 @@
 import asyncio
 import hashlib
+import heapq
 import json
 import logging
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from itertools import islice
 from typing import Any, cast
 from uuid import uuid4
 
@@ -15,7 +18,7 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.llm.client import LlmClient
-from nyx.memory.ann import AnnIndex
+from nyx.memory.ann import AnnIndex, Projection, add_sorted_run, discard_sorted_run
 from nyx.memory.facts import (
     FactCandidate,
     MemoryFactStore,
@@ -202,6 +205,17 @@ def _chunk_memory(chunk: ReadingEvidence) -> Memory:
         kind=MemoryKind.KNOWLEDGE, summary=chunk.source_name, freshness=1.0,
         type=MemoryType.LONG_TERM, embedding=chunk.embedding,
     )
+
+
+def _text_grams(text: str) -> set[str]:
+    lowered = text.lower()
+    return {lowered[index:index + 2] for index in range(len(lowered) - 1)}
+
+
+_ChunkIndexes = tuple[
+    dict[str, ReadingEvidence], AnnIndex, dict[str, AnnIndex],
+    dict[str, list[list[str]]], dict[int, Projection],
+]
 
 
 def build_source_topic(kind: str, identifier: str) -> str:
@@ -751,6 +765,71 @@ class MemoryFacade:
         self._last_observation: tuple[str, str] | None = None  # 「变化才沉淀」快照
         self._segment_lock = asyncio.Lock()
         self._chunk_lock = asyncio.Lock()
+        self._chunk_indexes: _ChunkIndexes | None = None
+        self._chunk_version: int | None = None
+
+    @asynccontextmanager
+    async def _chunk_view(self) -> AsyncGenerator[_ChunkIndexes]:
+        """Isolate transaction-local views from the committed resident indexes."""
+        if self._store.db.in_transaction:
+            # Do not wait for the chunk lock while holding the shared DB lock.
+            yield await self._sync_chunk_indexes(transient=True)
+            return
+        async with self._chunk_lock:
+            yield await self._sync_chunk_indexes(transient=False)
+
+    async def _sync_chunk_indexes(self, *, transient: bool) -> _ChunkIndexes:
+        """Apply evidence changes, publishing a version only after full success."""
+        try:
+            indexes = None if transient else self._chunk_indexes
+            version, changed, deleted = await self._store.knowledge_chunk_changes(
+                None if indexes is None else self._chunk_version,
+            )
+            if indexes is None:
+                projections: dict[int, Projection] = {}
+                indexes = (
+                    dict[str, ReadingEvidence](),
+                    AnnIndex(projection_cache=projections),
+                    dict[str, AnnIndex](), dict[str, list[list[str]]](),
+                    projections,
+                )
+            by_id, index, sources, postings, projections = indexes
+            for chunk_id in [*deleted, *(chunk.id for chunk in changed)]:
+                old = by_id.pop(chunk_id, None)
+                if old is None or old.embedding is None:
+                    continue
+                index.remove(chunk_id)
+                source_index = sources[old.source_topic]
+                source_index.remove(chunk_id)
+                if len(source_index) == 0:
+                    del sources[old.source_topic]
+                for gram in _text_grams(f"{old.source_name}\n{old.content}"):
+                    runs = postings[gram]
+                    discard_sorted_run(runs, chunk_id)
+                    if not any(runs):
+                        del postings[gram]
+            for chunk in changed:
+                by_id[chunk.id] = chunk
+                if chunk.embedding is None:
+                    continue
+                memory = _chunk_memory(chunk)
+                index.add(memory)
+                source_index = sources.get(chunk.source_topic)
+                if source_index is None:
+                    source_index = AnnIndex(projection_cache=projections)
+                    sources[chunk.source_topic] = source_index
+                source_index.add(memory)
+                for gram in _text_grams(f"{chunk.source_name}\n{chunk.content}"):
+                    add_sorted_run(postings.setdefault(gram, []), chunk.id)
+            if not transient:
+                self._chunk_indexes = indexes
+                self._chunk_version = version
+            return indexes
+        except BaseException:
+            if not transient:
+                self._chunk_indexes = None
+                self._chunk_version = None
+            raise
 
     async def append_conversation_turn(
         self, event_id: str, content: str, timestamp: float | None = None
@@ -1819,11 +1898,10 @@ class MemoryFacade:
             return None
         if not source_topic or len(content) > _SOURCE_DIGEST_MAX_CHARS:
             raise ValueError("证据块需要来源且正文不能超过 6000 字符")
-        async with self._chunk_lock:
-            chunks = await self._store.list_knowledge_chunks(source_topic=source_topic)
-            for chunk in chunks:
-                if chunk.content == content:
-                    return chunk.id
+        async with self._chunk_view() as (by_id, _, source_indexes, _postings, _):
+            existing_id = await self._store.find_knowledge_chunk(source_topic, content)
+            if existing_id is not None:
+                return existing_id
             embedding: list[float] | None = None
             if self._embed is not None:
                 try:
@@ -1833,9 +1911,11 @@ class MemoryFacade:
                         "证据块 embedding 失败 source=%s", source_topic
                     )
             if embedding is not None:
-                index = AnnIndex.build([_chunk_memory(chunk) for chunk in chunks])
-                candidates = index.query(embedding, _PERSIST_SEMANTIC_CANDIDATE_K)
-                by_id = {chunk.id: chunk for chunk in chunks}
+                index = source_indexes.get(source_topic)
+                candidates = (
+                    index.query(embedding, _PERSIST_SEMANTIC_CANDIDATE_K)
+                    if index is not None else []
+                )
                 if candidates and candidates[0].cosine >= _DEDUP_SIM_THRESHOLD:
                     candidate = by_id[candidates[0].memory_id]
                     incoming = _new_memory(
@@ -1907,44 +1987,58 @@ class MemoryFacade:
             return {"facts": [], "chunks": []}
         limit = max(1, min(top_k, 5))
         facts = (await self.search_facts(query, scope="knowledge"))[:limit]
-        chunks = await self._store.list_knowledge_chunks()
-        scores: dict[str, float] = {}
-        eligible = [chunk for chunk in chunks if chunk.embedding is not None]
-        tokens = extract_keywords(query)
-        for chunk in eligible:
-            haystack = f"{chunk.source_name}\n{chunk.content}".lower()
-            hits = sum(token.lower() in haystack for token in tokens)
-            keyword_score = hits / max(1, len(tokens))
-            if keyword_score >= _MIN_RECALL_KEYWORD_SCORE:
-                scores[chunk.id] = keyword_score
+        vector: list[float] | None = None
         if self._embed is not None:
             try:
                 vector = await self._embed(query)
-                index = AnnIndex.build([_chunk_memory(chunk) for chunk in eligible])
-                for candidate in index.query(vector, _PERSIST_SEMANTIC_CANDIDATE_K):
+            except Exception:
+                self._logger.exception("知识证据检索 embedding 失败")
+        scores: dict[str, float] = {}
+        tokens = extract_keywords(query)
+        async with self._chunk_view() as (by_id, index, _sources, postings, _):
+            candidate_ids: set[str] = set()
+            for token in tokens:
+                grams = _text_grams(token)
+                empty_runs: list[list[str]] = []
+                posting = min(
+                    (postings.get(gram, []) for gram in grams),
+                    key=lambda runs: sum(len(run) for run in runs),
+                    default=empty_runs,
+                )
+                candidate_ids.update(islice(heapq.merge(*posting), 200))
+            for chunk_id in candidate_ids:
+                chunk = by_id[chunk_id]
+                haystack = f"{chunk.source_name}\n{chunk.content}".lower()
+                hits = sum(token.lower() in haystack for token in tokens)
+                keyword_score = hits / max(1, len(tokens))
+                if keyword_score >= _MIN_RECALL_KEYWORD_SCORE:
+                    scores[chunk.id] = keyword_score
+            if vector is not None:
+                for candidate in index.query(
+                    vector, _PERSIST_SEMANTIC_CANDIDATE_K,
+                ):
                     if candidate.cosine >= _MIN_RECALL_COSINE:
                         scores[candidate.memory_id] = max(
                             scores.get(candidate.memory_id, 0), candidate.cosine
                         )
-            except Exception:
-                self._logger.exception("知识证据检索 embedding 失败")
-        selected = list(dict.fromkeys(
-            [fact.source_chunk_id for fact in facts if fact.source_chunk_id]
-            + sorted(scores, key=lambda chunk_id: (-scores[chunk_id], chunk_id))[:limit]
-        ))
-        by_id = {chunk.id: chunk for chunk in chunks}
-        output: list[dict[str, Any]] = []
-        for chunk_id in selected:
-            chunk = by_id.get(chunk_id)
-            if chunk is None:
-                continue
-            payload = {
-                "chunk_id": chunk.id, "source_topic": chunk.source_topic,
-                "source_name": chunk.source_name, "location": chunk.location,
-                "content": chunk.content[:2000],
-            }
-            if len(json.dumps([*output, payload], ensure_ascii=False)) <= 12000:
-                output.append(payload)
+            selected = list(dict.fromkeys(
+                [fact.source_chunk_id for fact in facts if fact.source_chunk_id]
+                + sorted(
+                    scores, key=lambda chunk_id: (-scores[chunk_id], chunk_id),
+                )[:limit]
+            ))
+            output: list[dict[str, Any]] = []
+            for chunk_id in selected:
+                chunk = by_id.get(chunk_id)
+                if chunk is None:
+                    continue
+                payload = {
+                    "chunk_id": chunk.id, "source_topic": chunk.source_topic,
+                    "source_name": chunk.source_name, "location": chunk.location,
+                    "content": chunk.content[:2000],
+                }
+                if len(json.dumps([*output, payload], ensure_ascii=False)) <= 12000:
+                    output.append(payload)
         return {"facts": [{
             "subject": fact.subject, "predicate": fact.predicate,
             "object_value": fact.object_value, "source_chunk_id": fact.source_chunk_id,

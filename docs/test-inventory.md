@@ -8,10 +8,11 @@
 
 - 后端测试文件：69
 - `pytest --collect-only -q`：1290 tests collected
-- 本轮后端验证（P2，2026-10-23）：排除既有卸载超时用例后 1288 passed，1 skipped，1 deselected。
-  首次全量 4 failed / 1285 passed / 1 skipped；3 处夹具修正后阅读/反思相关 135 项通过。
-  `test_unload_drain_timeout_keeps_worker_until_accepted_work_finishes` 在独立 P1 提交快照也超过 75s，
-  当前全量质量门未全绿；未修改该宿主用例或其生产逻辑。
+- 本轮后端验证（P2 性能修复第 1 步，2026-10-24）：记忆/阅读/活动/DB/API/表达/内在生命
+  审查修复和 DB 快照同步后，972 项受影响的既有回归整批复跑通过。
+  首次受影响套件为 969 passed / 3 failed，失败均是 schema 44 对应的旧表数/索引快照断言；
+  本轮未新增测试。Ruff/Pyright 通过。未重跑全后端；既有宿主卸载 drain 超时限制仍保留，
+  上次 P2 全量排除该用例为 1288 passed / 1 skipped / 1 deselected，不能视作本轮全量结果。
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -31,6 +32,14 @@
   EPUB/web/exploration 各持久阶段失败重放与旧 pending 不猜测关联。另验证关闭联网的 raw fetch 装配与恢复。
   最后修正后重跑 8 组 HTTP/SSE 场景通过；两条真实 DB 探针验证关键词低覆盖排除/高覆盖与向量命中、
   重试沿用已存来源名和正文。定向既有回归：记忆 113 项、API/fetch 20 项通过。
+- P2 性能第 1 步的临时真实 SQLite 验收：1000/10000 块预热后各 3 次查询均读取 0 条正文、
+  重建 0 次 ANN、候选遍历量均为 2991；各新增 30 块只同步 30 行，未重建索引。
+  90 次与修改前 ANN 的候选/排序比较、增量移除/重插、同维度来源共享投影、空来源移除、
+  空 ANN 切换维度、来源候选隔离、数字/时间/否定保护、
+  关键词门槛、NULL 向量关联、消费、增量更新/删除、回滚及日志序号复用、同步失败恢复、
+  43→44 原文 hash 迁移/索引查询计划、书籍级联与事实 SET NULL、跨连接提交、重启和锁顺序均通过；
+  完整 chunks JSON ≤12000、正文 ≤2000 的预算通过。驱动在仓库外，使用脚本化 embedding/事实查询，
+  是检索/持久化验收，不代表本轮重新验证 HTTP/SSE 或真实模型质量。
   使用真实 FastAPI/EventBus/隔离 SQLite 和脚本化 LLM/embedding；无新增 pytest 单测，真实模型引用质量待验收。
 - P2 既有夹具同步：阅读 fake 支持显式 chunk ID，checkpoint 失败保留已提交证据；反思三块夹具
   使用不同原文，避免被来源内精确去重合为一块。
@@ -43,7 +52,7 @@
 | 类型 | `tests/test_types/` | 2 | 后端 EventType 与前端 SSE 监听器同步、欲望初始状态、记忆/笔记/长期欲望可变默认值隔离 |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移与 schema 44 表/索引快照、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、批量事件原子受理、投递状态、重试、FIFO、按 `(timestamp, id)` 回放游标、SSE |
 | API/运行时 | `tests/test_api/` | 5 | 组合根、REST、记忆搜索类别与事实作用域参数、聊天非空/12000 字符边界、旧上传端点 404、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval recent offset 分页与边界及 prompt 详情、订阅、用户消息活动快照/打断失败证据、tick、活动优先关停、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 6 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取、统一网页/书籍/创作/浏览器问卷任务工具 |

@@ -8,6 +8,7 @@
 - 组合根在 memory 构建后注册三个讨论能力工具，再由 `bootstrap.load_skills` 读取 JSON、校验名称/片段/已注册工具并注入表达门面；坏声明或缺失技能拒绝启动。P2 已增加 schema 43 的证据块 location/embedding 与事实 source_chunk_id；真实深度研究仍属 P3，无新增事件类型。
 - memory 先于工具装配：注册的 `web_fetch` 注入摄入回调，checkpoint 阅读器仅在 web_enabled 时注入 raw fetch，避免重复摘要及恢复时绕过联网开关。`knowledge_search` 统一调用 MemoryFacade 双层检索。
 - `POST /api/knowledge/sources` 复用角色写请求准入和 selection revision，不新增持久事件种类；各块先提交证据，再生成知识。阅读/探索通过原文及提取 pending 恢复，最终 cursor/profile/清 pending 原子提交；不再要求证据随最终 cursor 回滚。
+- schema 45 在同一迁移事务中将旧 WEB checkpoint 顶层字符串 source_text 搬到 `assigned_task_source`，移除原字段并推进版本；失败回滚。网页正文按任务 ID 首次提交一次，任务删除时 CASCADE，后续进度只写 cursor/profile/当前块 pending。抓取仍在事务外，不新增 API 或事件路由。
 
 - 当前系统不是纯“模块只通过总线通信”：EventBus 负责事件受理、`event_log` 持久化、`event_delivery` 投递、SSE 广播和 handler 通知；Facade 之间仍存在直接查询/编排调用。
 - 当前 `EventType` 有 25 个成员；阅读进度同步使用 `READING_PROGRESS`，不是新的消费者路由。

@@ -40,6 +40,7 @@ BUSINESS_TABLES = {
     "memory_entity_alias",
     "memory_fact",
     "assigned_task",
+    "assigned_task_source",
     "character_initialization",
     "presence_checkpoint",
     "conversation_segment",
@@ -149,7 +150,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 39
+    assert len(names) == 40
     assert "material" not in names
 
 
@@ -715,7 +716,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 39
+    assert len(names) == 40
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

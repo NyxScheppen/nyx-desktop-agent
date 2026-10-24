@@ -258,7 +258,7 @@ Tool(
 
 ### 5. 数据模型变更
 
-P2 已落地 schema 43，性能修复第 1 步增加 schema 44（`nyx/db.py` `_MIGRATIONS`）；后续阶段迁移编号依实施顺序顺延：
+P2 已落地 schema 43，性能修复第 1 步增加 schema 44，第 3 步增加 schema 45（`nyx/db.py` `_MIGRATIONS`）；后续阶段迁移编号依实施顺序顺延：
 
 - **泛化 `reading_evidence` 为通用证据块（物理表名保留）**：证据块表名**不重命名**——`reading_evidence` 保留，避免 SQLite create-new + copy + drop 带来的 books FK/索引迁移风险（遵循外科手术式修改）。**契约名/概念名用 `knowledge_chunk`（证据块），物理表名仍是 `reading_evidence`**。v43 加两列：
   - `location TEXT NULL`：book 来源填“书名 + 段定位”，web 来源填 URL，本地文件填绝对路径，手动文本可为 NULL。
@@ -288,6 +288,8 @@ P2 已落地 schema 43，性能修复第 1 步增加 schema 44（`nyx/db.py` `_M
 手动投喂端点：`POST /api/knowledge/sources`，载荷 `{text?: string, url?: string}`，严格字符串，text≤200000、url≤2048，至少一项非空白；两项同时给出则分别处理。返回 `{created_memories, created_facts, chunks, errors}`，计数只含本次实际新增行。文本使用稳定哈希 `local:` 来源；URL 受联网开关和既有 SSRF 校验约束。两条路径都先存块再提取、归因、写知识。部分块成功则 200 并携带 errors；无块且仅因联网关闭失败则 409，其余无块失败为 400；请求类型/长度/空白校验为 422。
 
 EPUB、网页任务和探索先持久化不可变的原文 pending，再保存证据块，提取后将 knowledge/profile 与该次 `source_chunk_id` 一并保存；重试复用原文和已完成提取。最后同事务推进 cursor/profile、清 pending，成功后才更新内存任务快照。后续失败不撤销已提交的证据/知识。旧 pending 已有提取结果却缺少 chunk ID 时，不根据其原文或新抓取内容猜测关联。该边界已获 P2 用户批准，替代 09/12 的旧证据与最终 cursor 同回滚约定。
+
+网页任务的完整正文（至多 200000 字符）只在私有 `assigned_task_source` 按任务 ID 首次提交一次，checkpoint 仅保留 cursor/profile/当前块 pending（其中原文至多 6000 字符）。schema 45 在同一迁移事务中搬移旧 WEB checkpoint 的顶层字符串 source_text 并移除原字段；其他字段与非 WEB 任务不变。已提交快照在重启和失败后复用，不按 URL 与其他任务共享，不被变化后的远端覆盖，随任务删除级联清理。旧 pending 仍优先重放；完整对象、空值及事务边界见 **09-activity「网页任务正文快照」**。
 
 组合根先建立 memory，再注册带摄入回调的模型可见 `web_fetch`；checkpoint 阅读器注入原始 fetch 并自行按块摄入，避免重复提取。`ingest_source` 为同一原文块的全部 items 填入已存来源后，一次调用 `remember_knowledge(items)`，多个知识点合并为一次事实抽取，不跨块混合 `source_chunk_id`。`remember_knowledge` 返回本次 `{created_memories, created_facts}`，可选 `created_counts` 累计器在每条持久化成功后更新；摄入路径即使在批次中途捕获异常，也汇总已提交数量，不用全局表计数差。记忆仍逐条提交，失败继续抛错，重试依靠既有去重。事实抽取/存储沿用既有 best-effort 边界，来源块和原始记忆保留，失败不保证自动补齐缺失事实（见 06）。
 
@@ -611,3 +613,12 @@ export interface KnowledgeSourceRequest {
   1 skipped，其中 3 项为已修正的旧夹具；相关阅读/反思 135 项通过。余下卸载超时在独立 P1
   提交快照同样复现，排除该用例后 1288 passed / 1 skipped / 1 deselected。全量质量门保留未通过状态。
 - 用户已在收到上述验收结果及质量门限制后授权提交 P2；P3/P4 尚未开始，仍待单独审批。
+
+### P2 性能修复第 3 步验收（2026-10-24，待用户审批）
+
+- 第 2 步已按用户指令提交为 `1668230`；本步仅拆分网页任务正文快照，保持原有分块持久阶段。
+- 临时真实 SQLite/ActivityFacade/MemoryFacade/EventBus 管道验收：200000 字符、34 块，完整正文写入一次；102 次 checkpoint 更新的最大长度为 6570 字符。原基线为 103 次 checkpoint 共重复携带 20600000 字符完整正文；6570 是脚本化输出下的实测值，并非任意模型输出的总长度保证。
+- 11 个失败窗口及关闭/重开数据库后的恢复均通过，覆盖快照写入/提交、pending 保存/提交、证据、摘要、提取保存/提交、部分 knowledge 写入和最终 cursor 保存/提交。已提交正文不重新抓取；未提交快照允许重抓。旧已提取 pending 不重复摘要、不猜测关联。
+- 44→45 迁移、原子失败回滚、幂等、任务/数据库隔离、首次写入不覆盖、删除 CASCADE、长度校验及取消/外层事务回滚通过。审查补验 NUL 后正文无损、中文/emoji 字符截断和含 NUL 的超长值拒绝；使用 Python JSON 解码/切片及入口长度校验，避免 SQLite 字符串函数的 NUL 边界。既有 DB 表快照同步，未新增 pytest 测试。
+- 既有活动/DB 回归 210 passed；后端排除既有卸载超时用例后 1288 passed / 1 skipped / 1 deselected。该用例本轮单独复跑仍以 TimeoutError 失败，全量质量门保留未通过。Ruff/Pyright 通过；本步未重跑 HTTP/SSE、前端或真实模型质量场景。
+- 工程规范审查通过；规格审查在 NUL 边界修正后通过，并独立复验真实 SQLite 迁移与长度边界。本步未提交，等待用户审批；P3/P4 尚未开始。

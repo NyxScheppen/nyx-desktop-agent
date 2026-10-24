@@ -21,7 +21,7 @@ _TASK_COLS = (
 
 
 class ActivityStore:
-    """activity 表单表 CRUD。
+    """活动、委派任务及任务正文快照 CRUD。
 
     所有读写都 `async with self._db.lock:` 串行化（同 05/07/11）。
     """
@@ -300,6 +300,41 @@ class ActivityStore:
             (now, task_id),
         )
         return cursor.rowcount == 1
+
+    async def get_task_source(self, task_id: str) -> str | None:
+        """Read only this task's immutable source, without loading task lists."""
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT content FROM assigned_task_source WHERE task_id = ?",
+                (task_id,),
+            )
+            row = await cursor.fetchone()
+        return row["content"] if row is not None else None
+
+    async def save_task_source(self, task_id: str, content: str) -> str:
+        """Keep the first committed source so replay cannot change its evidence."""
+        if len(content) > 200_000:
+            raise ValueError("网页正文快照超出 200000 字符")
+        async with self._operation() as should_commit:
+            try:
+                await self._db.conn.execute(
+                    "INSERT INTO assigned_task_source(task_id, content) VALUES (?, ?) "
+                    "ON CONFLICT(task_id) DO NOTHING",
+                    (task_id, content),
+                )
+                cursor = await self._db.conn.execute(
+                    "SELECT content FROM assigned_task_source WHERE task_id = ?",
+                    (task_id,),
+                )
+                row = await cursor.fetchone()
+                assert row is not None
+                if should_commit:
+                    await self._db.conn.commit()
+            except BaseException:
+                if should_commit:
+                    await self._db.conn.rollback()
+                raise
+        return row["content"]
 
     async def save_task(self, task: AssignedTask) -> None:
         async with self._operation() as should_commit:

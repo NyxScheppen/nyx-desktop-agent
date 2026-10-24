@@ -604,6 +604,12 @@ schema 43 保留物理表 `reading_evidence`，增加可空 `location`、JSON �
 并增加 `memory_fact.source_chunk_id TEXT REFERENCES reading_evidence(id) ON DELETE SET NULL`。
 旧行保持 NULL，不猜测来源或补算向量；块删除保留事实。分阶段摄入与恢复契约见 06/09/12/15。
 
+schema 45 增加私有 `assigned_task_source` 网页正文快照表，以任务 ID 为主键、外键指向
+`assigned_task(id) ON DELETE CASCADE`。同一 migration 事务建表、搬移旧 WEB checkpoint
+顶层字符串 `source_text`、移除该字段并推进版本；失败全部回滚。正文最多 200000 字符，
+首次写入后不覆盖，后续 checkpoint 只保存进度与当前块 pending。网络抓取在事务外完成，
+快照先提交再处理分块；不新增事件或 API，完整对象与恢复契约见 09-activity。
+
 ### eval prompt 辅助表
 
 `eval_prompt` 由 `10-eval.md` 定义，按真实 LLM `call_id` 保存应用层最终消息。它不是事件

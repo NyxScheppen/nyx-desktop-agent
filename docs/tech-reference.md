@@ -29,9 +29,13 @@
 | 角色卡与多角色运行 | [`14-character-cards.md`](specs/14-character-cards.md) | [`character-cards-facts.md`](facts/character-cards-facts.md) | `nyx/character_cards.py`, `nyx/cards/nyx/`, `nyx/app_context.py`, `nyx/runtime.py` |
 | 讨论伙伴 | [`15-discussion-partner.md`](specs/15-discussion-partner.md) | [`expression-system-facts.md`](facts/expression-system-facts.md)、[`memory-system-facts.md`](facts/memory-system-facts.md) | `nyx/prompts/skills/`, `nyx/bootstrap.py`, `nyx/app_context.py`, `nyx/expression/`, `nyx/memory/`, `nyx/api/routes.py`, `frontend/src/components/chat/{ChatInput,KnowledgeFeed}.tsx` |
 
-讨论伙伴 P1 已完成；P2 知识证据块/手动投喂和统一摄入已实现，验收证据及质量门限制见
-[阶段记录](specs/15-discussion-partner.md) 与 [测试快照](test-inventory.md)，等待用户审批。
+讨论伙伴 P1 已完成；P2 知识证据块/手动投喂和统一摄入已按授权提交，性能修复第 3 步待用户审批。
+验收证据及质量门限制见 [阶段记录](specs/15-discussion-partner.md) 与 [测试快照](test-inventory.md)。
 P3 真实深度研究、P4 批注反馈待分阶段实现。
+
+P2 性能修复的增量证据索引与同块事实批量抽取见 `nyx/memory/{ann,store,facade}.py` 和
+[记忆契约](specs/06-memory-system.md)；网页任务正文快照（schema 45）见
+`nyx/db.py`、`nyx/activity/{store,facade}.py` 与 [活动契约](specs/09-activity.md)。
 
 ### 时间感知与离开归来导航
 

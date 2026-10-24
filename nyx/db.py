@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -862,6 +863,22 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "VALUES (NEW.id); END",
         ],
     ),
+    (
+        45,
+        [
+            "CREATE TABLE assigned_task_source ("
+            "task_id TEXT PRIMARY KEY NOT NULL "
+            "REFERENCES assigned_task(id) ON DELETE CASCADE, "
+            "content TEXT NOT NULL CHECK(length(content) <= 200000))",
+            "INSERT INTO assigned_task_source(task_id, content) "
+            "SELECT id, nyx_task_source_snapshot(checkpoint) "
+            "FROM assigned_task WHERE type = 'web' "
+            "AND json_type(checkpoint, '$.source_text') = 'text'",
+            "UPDATE assigned_task SET checkpoint = "
+            "json_remove(checkpoint, '$.source_text') "
+            "WHERE id IN (SELECT task_id FROM assigned_task_source)",
+        ],
+    ),
 ]
 
 
@@ -927,6 +944,16 @@ async def migrate(
         if version == 44:
             await conn.create_function(  # pyright: ignore[reportUnknownMemberType]
                 "nyx_raw_sha256", 1, _raw_sha256,
+                deterministic=True,
+            )
+        if version == 45:
+            # SQLite text functions stop at NUL; match Python checkpoint decoding.
+            def task_source_snapshot(checkpoint: str) -> str:
+                source: str = json.loads(checkpoint)["source_text"]
+                return source[:200_000]
+
+            await conn.create_function(  # pyright: ignore[reportUnknownMemberType]
+                "nyx_task_source_snapshot", 1, task_source_snapshot,
                 deterministic=True,
             )
         await conn.execute("BEGIN")

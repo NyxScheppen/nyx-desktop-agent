@@ -8,18 +8,14 @@
 
 - 后端测试文件：69
 - `pytest --collect-only -q`：1290 tests collected
-- 本轮后端验证（P2 性能修复第 2 步，2026-10-24）：记忆系统 190 项，API 端点/网页抓取/
-  阅读集成/活动 277 项，共 467 项既有回归通过；Ruff/Pyright 通过，未新增或改动 pytest 测试。
-  全后端留待第 3 步最终验收，既有宿主卸载 drain 超时限制仍保留。
-- 第 1 步后端验证（2026-10-24）：记忆/阅读/活动/DB/API/表达/内在生命
-  审查修复和 DB 快照同步后，972 项受影响的既有回归整批复跑通过。
-  首次受影响套件为 969 passed / 3 failed，失败均是 schema 44 对应的旧表数/索引快照断言；
-  本轮未新增测试。Ruff/Pyright 通过。未重跑全后端；既有宿主卸载 drain 超时限制仍保留，
-  上次 P2 全量排除该用例为 1288 passed / 1 skipped / 1 deselected，不能视作本轮全量结果。
+- 本轮后端验证（P2 性能修复第 3 步，2026-10-24）：活动/DB 210 项既有回归通过；
+  全后端排除既有宿主卸载 drain 超时用例后 1288 passed / 1 skipped / 1 deselected。
+  该用例本轮单独复跑仍以 TimeoutError 失败，全量质量门未通过。Ruff/Pyright 通过。
+  schema 45 仅同步既有 DB 表数/表集合断言，未新增 pytest 测试。
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 本轮前端全量验证：361 passed（25 个测试文件）；TypeScript/Vite 生产构建通过。
+- 最近一次前端全量验证：361 passed（25 个测试文件）；TypeScript/Vite 生产构建通过。本步未修改前端，未重跑。
 - Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；ready 响应必须同时匹配固定 Nyx 服务标识、本次启动 nonce 和响应大小上限；Debug/Release 均通过编译检查。
 - 桌面 launcher 回归：普通与桌面入口均以 `--reload` 启动后端，且只在后端就绪后启动对应前端；原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；普通 TCP、错误 HTTP 状态、非法/过大 JSON、错误服务标识或 nonce 均不能触发前端启动；身份匹配后 owned backend 仍须存活。
 - 启动身份 API 回归：`test_ready_endpoint_returns_owned_instance_identity`、`test_ready_endpoint_keeps_manual_start_compatible`；release smoke 使用同一 nonce 握手且拒绝身份不匹配、过大响应和探测后进程退出。
@@ -47,7 +43,15 @@
   实际新增 5/5，来源名/topic/chunk 与 memory_index 归因正确。覆盖空/单条、跨块隔离、
   来源隔离、已存来源重放、digest 部分失败重试、批量抽取失败 fallback、事实存储失败、
   第三条核心写入失败返回 2/2 后重试新增 3/3，以及累计器已有值、空/重复项、无事实存储。
-  驱动在仓库外，使用真实 EventBus/隔离 SQLite 与脚本化 LLM；本轮未重跑 HTTP/SSE 或真实模型质量。
+  驱动在仓库外，使用真实 EventBus/隔离 SQLite 与脚本化 LLM；该步未重跑 HTTP/SSE 或真实模型质量。
+- P2 性能第 3 步的临时真实 SQLite 验收：200000 字符、34 块仅保存一次完整正文；
+  102 次 checkpoint 更新在脚本化输出下最大 6570 字符。11 个失败窗口均在关闭/重开数据库、
+  远端正文变化后验证恢复，覆盖快照/pending/提取/最终游标保存与提交、证据、摘要和部分知识。
+  44→45 迁移、原子回滚、空/超长/非字符串旧值、NUL 后正文无损、中文/emoji 字符截断、
+  含 NUL 超长值拒绝、首写不覆盖、任务/数据库隔离、CASCADE、
+  长度校验、取消与事务回滚、旧 pending 优先重放且不猜测关联均通过。
+  驱动在仓库外，使用真实 ActivityFacade/MemoryFacade/FactStore/EventBus 与脚本化 LLM；
+  本步未重跑 HTTP/SSE 或真实模型质量。
 - P2 既有夹具同步：阅读 fake 支持显式 chunk ID，checkpoint 失败保留已提交证据；反思三块夹具
   使用不同原文，避免被来源内精确去重合为一块。
 - 对话活动工具回归：网页阅读、书籍阅读、创作和浏览器问卷统一受理，任务进入同一活动队列；浏览器问卷覆盖同 URL 幂等、模拟页面点击与结果、重启不重做已点击题目、运行中聊天不打断、活动页结果展示。
@@ -59,7 +63,7 @@
 | 类型 | `tests/test_types/` | 2 | 后端 EventType 与前端 SSE 监听器同步、欲望初始状态、记忆/笔记/长期欲望可变默认值隔离 |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移与 schema 44 表/索引快照、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、迁移与 schema 45 表/索引快照、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、批量事件原子受理、投递状态、重试、FIFO、按 `(timestamp, id)` 回放游标、SSE |
 | API/运行时 | `tests/test_api/` | 5 | 组合根、REST、记忆搜索类别与事实作用域参数、聊天非空/12000 字符边界、旧上传端点 404、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval recent offset 分页与边界及 prompt 详情、订阅、用户消息活动快照/打断失败证据、tick、活动优先关停、恢复重放、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 6 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取、统一网页/书籍/创作/浏览器问卷任务工具 |

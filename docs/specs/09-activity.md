@@ -152,6 +152,8 @@ class AssignedTask:
   ```
 
 - 删除已安排书籍后 `book_id` 置空；执行时任务明确失败，不保留无法验证归属的目标。
+- schema 45 增加 `assigned_task_source(task_id TEXT PRIMARY KEY NOT NULL REFERENCES assigned_task(id) ON DELETE CASCADE, content TEXT NOT NULL CHECK(length(content) <= 200000))`。仅网页 runner 使用：`ActivityStore.get_task_source(task_id: str) -> str | None` 读取；`save_task_source(task_id: str, content: str) -> str` 首次写入后返回已存正文，冲突不覆盖，复用调用方事务，独立调用失败时回滚自己的写入。写入口先按 Python 字符数拒绝超过 200000 的内容（ValueError），避免 SQLite length 遇 NUL 少计。正文不进入任务列表/checkpoint。
+- 升级在同一 migration 事务中搬移所有状态 WEB 任务的顶层字符串 `source_text`（最多 200000 字符），随后只删除该顶层字段；cursor/profile/pending 与其他任务不改。迁移回调按 Python JSON 解码并切片，保留 NUL 后原文与 Unicode 字符边界。旧空字符串保留为空快照，维持旧 cursor 到末尾的行为；非字符串不搬移。
 
 ### 委派任务选择与生命周期
 
@@ -178,7 +180,7 @@ class AssignedTask:
 - 创建时只接受带主机名的 `http` / `https` URL；`exploration.web_enabled=false` 时返回冲突且不创建任务。
 - 执行只调用现有 `web_fetch`，不先搜索；继续复用逐跳公网校验、重定向限制、15 秒请求超时和 20 万字符正文上限。
 - 空正文、非公网地址、下载或解析失败都使任务 `FAILED`，不得沉淀 snippet 或伪正文。
-- `checkpoint` 保存 `cursor/profile/pending/source_text`；顶层 source_text 是首次抓取的完整有界快照，恢复不重新抓取。每块 pending 先保存下一 cursor 与 `source_text/source_name/block_key`，再幂等提交证据块，之后提取并保存 profile/knowledge，写入带 `source_chunk_id` 的知识。
+- `checkpoint` 保存 `cursor/profile/pending`；首次抓取的完整有界正文只在 `assigned_task_source` 提交一次，按任务 ID 恢复且不重新抓取。正文先提交再处理分块；每块 pending 先保存下一 cursor 与至多 6000 字符的 `source_text/source_name/block_key`，再幂等提交证据块，之后提取并保存 profile/knowledge，写入带 `source_chunk_id` 的知识。已有旧 pending 优先重放，缺少完整快照时仍只在 pending 完成后按原行为抓取。
 - knowledge 可能逐条提交；失败时 cursor 不推进且 pending 保留，重放由同一来源内去重补齐已写条目。已完成的提取不重复调用 LLM。
 - 最后在 `Database.transaction()` 内推进 cursor、采纳 profile、清除 pending；提交成功后才更新内存任务快照。后续阶段失败保留已提交证据/knowledge 和旧 cursor/pending。这是 P2 批准的分阶段持久化边界，替代旧的证据与 cursor 一起回滚语义。
 - knowledge 使用 `build_source_topic("web", url)` 的稳定哈希来源 topic；`source_name` 使用 URL。digest 绑定已保存的 chunk 快照，提取结果与 `source_chunk_id` 一起保存。旧 pending 已有 knowledge 却无该 ID 时保持 NULL，即使带原文也不猜测关联；恢复不从重新抓取的页面伪造旧证据。
@@ -230,7 +232,7 @@ class AssignedTask:
 
 ### 可续执行与 checkpoint
 
-- [ ] `Activity.progress` 是状态机唯一持久化载体，本轮不新增 activity 子表，也不新增公共 runner 基类。
+- [ ] `Activity.progress` 是探索状态机唯一持久化载体，不新增探索子表或公共 runner 基类；网页委派正文例外使用 schema 45 的任务快照表，不把正文混入 Activity.progress。
 - [ ] 每个可续 runner 遵循：先保存安全点，再执行不可逆副作用；副作用完成后立即保存去重锚点；恢复时按锚点跳过已完成步骤；终局 finalize 和 sink 只执行一次。
 - [ ] checkpoint 更新必须经过 `ActivityStore.update`；EPUB 阅读进度与原文沉淀 checkpoint 只由 12-reading-system 的 `books` / `reading_progress` 管理。
 
@@ -447,6 +449,31 @@ class AssignedTask:
 | `RUNNING` | 收尾事务回滚且 runner 已结束 | `PENDING` | 恢复调和把 Activity 置 `PAUSED/ABANDONED`；恢复失败由下一次准入重试 |
 
 **Bad case 表**：空队列不建活动；失败保存 500 字符错误；部分完成保留 checkpoint；FIFO 消除选择乱序；重复创建活动任务返回已有活跃任务；书删除时失败，不改选其它书；取消超时保持 `RUNNING` 且不重排；网页证据/knowledge 分阶段幂等提交，最终 checkpoint 失败不撤销已提交来源；旧 pending 不用变化后的页面重建证据或猜测 chunk 关联；提交后调度失败仍返回已持久化任务。
+
+### 网页任务正文快照
+
+**入口清单**：网页 runner 首次有效抓取（事务外联网、事务内存快照）；schema 45 从旧 WEB checkpoint 搬移。不新增 API、事件或公开领域类。
+
+**消费者清单**：同一网页 runner 按 task_id 精确读取并按 cursor 分块；REST/SSE 仅展示原任务进度，不查询正文。知识检索和反思仍只消费 reading_evidence，不直接消费本表。
+
+**状态迁移表**
+
+| 当前状态 | 条件 | 下一状态 | 副作用 / 失败落点 |
+|---|---|---|---|
+| 无快照 | 首次抓取或迁移事务提交 | 已保存 | 抓取失败不写；事务失败回滚，迁移保留原 checkpoint 和版本 |
+| 已保存 | 分块、打断、失败、重启或任务完成 | 已保存 | 不重写正文；按旧 cursor/pending 恢复，后续阶段失败不撤销快照 |
+| 已保存 | 删除所属 task / 角色数据库 | 删除 | task 外键 CASCADE；不按 URL 转交给其他任务 |
+
+**Bad case 表**
+
+| 情况 | 处理 |
+|---|---|
+| 空 | 新抓取空白拒绝；旧空字符串保持旧行为；非字符串 checkpoint 不搬移 |
+| 失败 | 快照提交失败可再次抓取；提交后失败使用已存正文，不用变化后的远端覆盖 |
+| 部分完成 | 保留正文及当前块 pending，知识与 cursor 的既有持久阶段不变 |
+| 乱序 | 主键首次写入胜出，冲突返回原正文；不同任务/数据库严格隔离 |
+| 重放 | 同 task 复用快照，提取 pending 不重复摘要，旧 pending 无 chunk ID 不猜测关联 |
+| 删除 | 随任务级联删除；任务完成/失败不提前删除，保留恢复依据 |
 
 ### Legacy Material
 

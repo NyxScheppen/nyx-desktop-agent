@@ -12,7 +12,7 @@
 - `ActivityStarter` 负责“空闲时启动什么”：单 task 守卫、查 RUNNING、同日同块 PAUSED 恢复、委派任务领取、欲望排序、EPUB 选材和默认活动。
 - 欲望排序使用 `short_term.strength * type.expression_weight`，同分按创建时间 FIFO；活动 progress 保留短期欲望的 `parent_long_term_id`。
 - `ActivityLifecycle` 负责状态转换和副作用：`start`、`complete`、`fail`、`interrupt` 与启动/关闭恢复；Activity、来源领取、关联欲望/任务和 durable event 按一次状态迁移放在同一 SQLite 事务。
-- `ActivityStore` 只管理 `activity` 与 `assigned_task` 表，并提供外层事务可复用的条件领取、状态更新与恢复查询。Facade 不直接写 SQL。
+- `ActivityStore` 管理 `activity`、`assigned_task` 与私有网页正文表 `assigned_task_source`，并提供外层事务可复用的条件领取、状态更新与恢复查询。Facade 不直接写 SQL。
 - `Exploration` 执行自由探索；`creation.py`、`observe.py`、`screen.py` 提供对应活动的纯函数或旁路能力。
 - `reading/` 的 `books` / `paragraphs` / `reading_progress` 是唯一读书库。活动通过 Reading Facade 的窄回调枚举和读取 EPUB，不复制书籍数据。
 
@@ -109,7 +109,7 @@
 ## 活动执行
 
 - `READING` 必须来自真实 EPUB `book_id` 或委派网页任务；缺少二者会 `raise ValueError`，防止凭空编造读书内容。
-- 明确网页任务使用 raw `web_fetch`，正文快照最多 200000 字符，按 6000 字符块沉淀。先保存原文 pending，再独立提交 chunk、保存提取结果和 chunk ID、幂等写 knowledge，最后同事务推进 cursor/profile 并清 pending；提交成功后才更新内存快照。后续失败不回滚已有证据/知识，恢复不重新抓取已存正文。旧已提取 pending 缺 chunk ID 时不猜测关联；抓取失败或空正文把任务置为 FAILED。关闭联网时不注入 raw fetch，旧任务也不能绕过开关抓网。
+- 明确网页任务使用 raw `web_fetch`，正文快照最多 200000 字符，在 `assigned_task_source` 按任务 ID 首次提交一次，任务删除时级联删除；进度保存和任务列表不再携带完整正文。schema 45 原子搬移旧 WEB checkpoint 的顶层字符串 source_text，保留 cursor/profile/pending。runner 按 6000 字符块沉淀：先保存原文 pending，再独立提交 chunk、保存提取结果和 chunk ID、幂等写 knowledge，最后同事务推进 cursor/profile 并清 pending；提交成功后才更新内存快照。后续失败不回滚已有证据/知识，恢复不重新抓取已存正文。旧已提取 pending 缺 chunk ID 时不猜测关联；抓取失败或空正文把任务置为 FAILED。关闭联网时不注入 raw fetch，旧任务也不能绕过开关抓网。
 - EPUB 委派任务与探索欲命中的 EPUB 都调用 `ReadingFacade.read_for_activity()`：复用原文沉淀、只单调推进 Nyx 进度，不修改用户进度，也不触发陪读冲动、提问或联想。
 - `CREATION` 按 goal topic/描述融合召回最多 3 条相关 knowledge/历史创作，连同当前观察、情绪、精力、审美和 canon 调用 LLM；`title/content` 必须是非空字符串。文件经 `ToolRegistry` 写入 `workspace/creations/<safe-title>-<activity-hash>.md`，标题 stem 最长 96 字符，同名活动不覆盖；同路径同内容写入幂等。进度写在 `activity.progress["creation"]`，恢复时复用 style / LLM 结果 / 文件路径。
 - `FREE_EXPLORATION` 由 `Exploration.run(activity)` 执行显式 checkpoint 状态机：`searching -> reading_results -> summarizing -> sinking -> completed`。进度写在 `activity.progress["exploration"]`，恢复时从 cursor 继续抓取结果；`sink_done=true` 时不重复新增长期欲望或 knowledge 记忆。

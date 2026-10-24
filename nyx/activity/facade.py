@@ -469,7 +469,7 @@ class ActivityFacade:
             task.checkpoint = deepcopy(checkpoint)
             task.updated_at = candidate.updated_at
 
-        text = checkpoint.get("source_text")
+        text = await self._store.get_task_source(task.id)
         # Legacy pending is replayed before fetching any new source.
         cursor_raw = checkpoint.get("cursor", 0)
         cursor = cursor_raw if isinstance(cursor_raw, int) else 0
@@ -490,8 +490,8 @@ class ActivityFacade:
                     if not isinstance(text, str) or not text.strip():
                         raise ValueError("网页正文抓取失败或为空")
                     text = text[:200_000]
-                    checkpoint["source_text"] = text
-                    await save()
+                    async with self._store.db.transaction():
+                        text = await self._store.save_task_source(task.id, text)
                 if cursor >= len(text):
                     break
                 block = text[cursor : cursor + 6000]

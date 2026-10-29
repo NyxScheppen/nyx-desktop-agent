@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from dataclasses import asdict
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 from uuid import uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -18,6 +18,7 @@ from nyx.expression.prompt import (
     _MATERIAL_ITEM_MAX_CHARS,
     _TOOL_BLOCK_MAX_CHARS,
     _TOOL_OUTPUT_MAX_ITEMS,
+    PLAN_REVIEW_TASK,
     PLAN_TASK,
     TOOL_DECISION_FAILED,
     _memory_block,
@@ -55,6 +56,7 @@ class ToolState(TypedDict):
     notices: list[str]
     outputs: list[str]
     recall_candidates: dict[str, str]
+    plan_review: NotRequired[dict[str, Any]]
 
 
 def _parse_plan(raw: str) -> Plan | None:
@@ -96,9 +98,32 @@ def execution_feedback(state: ToolState) -> str:
         for record in reversed(list(state["records"].values()))
     ]
     text = "\n".join(state["notices"][-5:])
+    if state["replans"]:
+        text += "\n[规划状态]\n" + json.dumps({
+            "replans": state["replans"],
+            "remaining_replans": _MAX_REPLANS - state["replans"],
+        }, ensure_ascii=False)
+        if state["replan_reason"] is not None:
+            text += "\n已受理重规划，正在生成新计划。"
+        elif state["plan"] is not None:
+            text += "\n已完成重规划，当前计划已替代旧计划；之前的 replan 决策已处理。"
+        else:
+            text += "\n重规划未取得合法计划，已降级无计划执行。"
     if records:
         text += "\n[实际调用步骤状态]\n" + json.dumps(records, ensure_ascii=False)
     return bound_material_block(text.strip(), _TOOL_BLOCK_MAX_CHARS // 2)
+
+
+def _needs_plan_review(state: ToolState) -> bool:
+    latest = next(reversed(state["records"].values()), None)
+    return (
+        state["plan"] is not None and latest is not None
+        and latest["status"] == "exhausted"
+        and state.get("plan_review", {}).get("step") != latest["step"]
+        and state["replan_reason"] is None
+        and state["rounds"] < _MAX_TOOL_ROUNDS
+        and len(state["outputs"]) < _TOOL_OUTPUT_MAX_ITEMS
+    )
 
 
 def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
@@ -142,6 +167,9 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         }
 
     async def decide(state: ToolState) -> dict[str, Any]:
+        # Older checkpoints may resume directly at this node after exhaustion.
+        if _needs_plan_review(state):
+            return {"calls": []}
         user = state["user"] + "\n" + state["task"]
         if state["plan"] is not None:
             user += "\n[当前计划]\n" + json.dumps(state["plan"], ensure_ascii=False)
@@ -175,7 +203,68 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             "replan_reason": None, "notices": notices,
         }
 
+    async def review_plan(state: ToolState) -> dict[str, Any]:
+        current = cast(dict[str, Any], state["plan"])
+        latest = next(reversed(state["records"].values()))
+        user = (
+            state["user"] + "\n" + PLAN_REVIEW_TASK
+            + "\n[当前计划]\n" + json.dumps(current, ensure_ascii=False)
+            + "\n" + _tool_outputs_block(state["outputs"], execution_feedback(state))
+            + f"\n剩余预算：工具判断{_MAX_TOOL_ROUNDS - state['rounds']}轮，"
+            + f"结果{_TOOL_OUTPUT_MAX_ITEMS - len(state['outputs'])}项，"
+            + f"重规划{_MAX_REPLANS - state['replans']}次。"
+        )
+        review: dict[str, Any] = {
+            "step": latest["step"], "action": "stop", "next_step": None,
+            "reason": "计划决策失败，停止新工具调用；已有结果仍可使用。",
+        }
+        try:
+            output = await deps.llm.complete(
+                [{"role": "system", "content": state["system"]},
+                 {"role": "user", "content": user}],
+                module="expression", output_type="tool", json_mode=True,
+                correlation_id=state["correlation_id"],
+            )
+            await deps.evaluator.evaluate(output)
+            data: Any = json.loads(output.content)
+            if not isinstance(data, dict):
+                raise ValueError("计划决策必须是 JSON 对象")
+            decision = cast(dict[str, Any], data)
+            action, reason, step = (
+                decision.get("action"), decision.get("reason"),
+                decision.get("next_step"),
+            )
+            if (
+                action not in ("continue", "replan", "stop")
+                or not isinstance(reason, str) or not reason.strip()
+                or (action == "continue" and (
+                    type(step) is not int or not 1 <= step <= len(current["steps"])
+                ))
+            ):
+                raise ValueError("计划决策动作、原因或步骤无效")
+            review.update(
+                action=action, reason=reason.strip()[:1000],
+                next_step=step if action == "continue" else None,
+            )
+        except Exception:
+            _LOGGER.exception("计划决策失败 correlation_id=%s", state["correlation_id"])
+        return {
+            "plan_review": review, "calls": [], "cursor": 0,
+            "replan_reason": review["reason"] if review["action"] == "replan" else None,
+            "notices": [*state["notices"],
+                        "[计划决策] " + json.dumps(review, ensure_ascii=False)],
+        }
+
     def select_call(state: ToolState) -> dict[str, Any]:
+        if _needs_plan_review(state):
+            notices = list(state["notices"])
+            remaining = state["calls"][state["cursor"]:]
+            if remaining:
+                notices.append(
+                    "以下调用未执行：耗尽后必须先完成计划决策。"
+                    + json.dumps(remaining, ensure_ascii=False)
+                )
+            return {"pending": None, "calls": [], "cursor": 0, "notices": notices}
         cursor = state["cursor"]
         notices = list(state["notices"])
         reason = state["replan_reason"]
@@ -359,6 +448,8 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             return "begin_attempt"
         if state["replan_reason"] is not None:
             return "replan"
+        if _needs_plan_review(state):
+            return "review_plan"
         return "decide" if state["rounds"] < _MAX_TOOL_ROUNDS else END
 
     def replan(state: ToolState) -> dict[str, Any]:
@@ -370,7 +461,15 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         return {"replans": state["replans"] + 1}
 
     def after_decide(state: ToolState) -> str:
+        if _needs_plan_review(state):
+            return "review_plan"
         return "select_call" if state["calls"] else END
+
+    def after_review(state: ToolState) -> str:
+        action = state.get("plan_review", {})["action"]
+        if action == "replan":
+            return "replan"
+        return "decide" if action == "continue" else END
 
     def after_execute(state: ToolState) -> str:
         pending = cast(dict[str, Any], state["pending"])
@@ -382,6 +481,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
     graph = StateGraph(ToolState)
     graph.add_node("plan", plan)
     graph.add_node("decide", decide)
+    graph.add_node("review_plan", review_plan)
     graph.add_node("select_call", select_call)
     graph.add_node("begin_attempt", begin_attempt)
     graph.add_node("execute", execute)
@@ -390,6 +490,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
     graph.set_entry_point("plan")
     graph.add_edge("plan", "decide")
     graph.add_conditional_edges("decide", after_decide)
+    graph.add_conditional_edges("review_plan", after_review)
     graph.add_conditional_edges("select_call", after_batch)
     graph.add_edge("begin_attempt", "execute")
     graph.add_conditional_edges("execute", after_execute)

@@ -24,6 +24,10 @@
     `should_ask`、`record_message`。
   - `use_tools` 内部运行持久 LangGraph 工具子图（`tool_pipeline.py`）：先 JSON Plan/PlanStep，再最多4轮判断；允许一次 replan，保留结果、
     去重及预算。计划非法/空/调用失败退回无计划执行，伪工具 replan 不进入公开注册表。
+  - 合法计划的只读调用耗尽且仍有预算时，先经 `review_plan` 输出 continue/replan/stop，
+    continue 指向原计划步骤，replan 进入既有重规划节点；决策与原因随 checkpoint 保存，
+    恢复不重复决策。旧 checkpoint 缺字段时补做；空结果、无计划和 uncertain 不进入该节点。
+    重规划后反馈明确计划已更新、已用/剩余次数，避免把旧决策再次执行。
   - 初次规划、重规划和慢回复注入 LESSON，重规划/回复刷新召回以使用本轮刚产生的失败经验；
     快回复不召回。只读工具错误最多尝试3次，耗尽后学习并交回模型；副作用未确认进入 uncertain，不自动重放或沉淀失败；空结果不重试、直接学习。实际调用记录 log_id/correlation_id/call_id，
     只有回注结果后才 mark_adopted，预算丢弃仍保留 adopted=0。

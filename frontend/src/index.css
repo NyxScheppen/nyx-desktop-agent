@@ -76,12 +76,12 @@ body:has(.app--pet) {
   --gold: #8f7431;
 }
 
-/* 背景层：无图无色时默认羊皮纸（image/tint 内联样式由 App 注入覆盖） */
+/* 背景层：默认主题底纹（image/tint 内联样式由 App 注入覆盖） */
 .app-bg {
   position: fixed;
   inset: 0;
   z-index: 0;
-  background: var(--ground, var(--parchment));
+  background: var(--ground-texture, var(--ground, var(--parchment)));
 }
 
 /* 背景图 + 色调并存时的半透明滤镜：图铺底（.app-bg 内联），此层盖一层色调 */
@@ -2928,7 +2928,7 @@ button.right-dock__seal:hover { background: #fff3d219; }
   padding: 24px 27px 28px;
   overflow: auto;
   border: 0;
-  background: var(--ground-texture);
+  background: transparent;
 }
 
 .app--full .conversation-column,
@@ -2946,7 +2946,7 @@ button.right-dock__seal:hover { background: #fff3d219; }
   margin-left: var(--navw);
   width: calc(100% - var(--navw));
   padding: 20px 27px 28px;
-  background: var(--ground-texture);
+  background: transparent;
   transition: grid-template-columns 340ms ease, column-gap 340ms ease;
 }
 .app--full .game-shell--chat.game-shell--reader-open { grid-template-columns: minmax(0, 3fr) minmax(0, 7fr); column-gap: var(--page-gap); }

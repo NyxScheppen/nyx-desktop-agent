@@ -7,7 +7,15 @@
 ## 当前快照
 
 - 后端测试文件：69
-- 后端测试：1321项（包含参数化实例），69个文件。
+- 后端测试：1333项（包含参数化实例），69个文件。
+- 本轮后端验证（耗尽后计划决策，2026-10-29）：完整 `python -m pytest -q` 为
+  1332 passed / 1 skipped，未排除任何用例，耗时241.44s，退出码0；Ruff、Pyright 零错误。
+  既有表达测试文件新增12项参数化实例，覆盖 continue/replan/stop、非法决策停止、
+  决策持久恢复/旧 checkpoint 补做、一次重规划上限，以及空结果/uncertain/预算边界。
+  重规划后的模型输入包含已用/剩余次数与旧决策已处理的事实。
+- 本轮 P3 真实模型受控验收：无备用固定初始计划5/5先重规划再查新版，已有备用路径3/3继续，
+  全空搜索2/2如实结束。后续决策、重规划和回复均使用 `deepseek-chat`（temperature=0.8）；
+  工具资料/错误为合成夹具，10轮事件交付成功。无备用场景仅初始计划固定，不代表全流程真实规划。
 - 本轮后端验证（副作用重放修复，2026-10-29）：完整 `python -m pytest -q` 为
   1320 passed / 1 skipped，未排除任何用例，耗时156.42s，退出码0；Ruff、Pyright 零错误。
   在既有文件新增9项确定性回归，覆盖副作用失败转 uncertain 并暂停同批后续调用、
@@ -17,17 +25,17 @@
 - 副作用双进程恢复探针：18项检查通过，覆盖执行副作用后强制退出、结果回执保存后
   checkpoint 提交前强制退出，以及旧 checkpoint 恢复；均验证副作用只执行一次、
   复用结果或报告 uncertain、不重新规划、真实 EventBus 保存 SPEAK、checkpoint 与回执终局清理。
-  使用隔离磁盘 SQLite 与脚本化 LLM，驱动在仓库外；本次未重跑真实模型 replan 效果。
+  使用隔离磁盘 SQLite 与脚本化 LLM，临时驱动与测试库已清理；真实模型 replan 效果见本轮 P3 验收。
 - 既有只读双进程恢复探针：强制退出后由新进程恢复的6项检查通过，已成功搜索只执行一次、
   失败文件调用累计3次、原参数与次数保留、不重新规划、真实 EventBus 保存 SPEAK、终局清理。
-  使用隔离磁盘 SQLite 与脚本化 LLM，驱动在仓库外；本次未重跑真实模型 replan 效果。
+  使用隔离磁盘 SQLite 与脚本化 LLM，临时驱动与测试库已清理；真实模型 replan 效果见本轮 P3 验收。
 - 工具升级临时 E2E：真实 HTTP/SSE、EventBus、内存 SQLite 与脚本化 LLM/embedding 的33项检查通过。
   覆盖多步规划、非法/空/失败规划降级、一次重规划/第二次停止、同轮公开工具优先、跨计划去重、
   新经验进入重规划与慢回复、授权/调用记账 JOIN、预算丢弃 adopted=0、快通道旁路、四种空值、
   技术失败不反思、相似向量下不同失败主题隔离、三次纠正/事实立即应用/真实叙事更新、effect重放、
   空主题兜底、沉淀/反思提交失败保留计数及重试、长topic显示截断后的身份隔离、观测失败与取消、
   v46→48数据保留及幂等。
-  驱动位于仓库外临时目录；真实模型效果记录单列于 `docs/eval/README.md`。
+  临时驱动与轨迹已清理；真实模型效果记录单列于 `docs/eval/README.md`。
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
@@ -166,6 +174,11 @@
 - `test_explicit_tool_error_retries_but_empty_result_does_not`
 - `test_unauthorized_tool_is_explained_to_next_decision`
 - `test_exhausted_call_returns_control_before_remaining_batch`
+- `test_exhausted_plan_requires_review_before_next_tool`（三种动作及重规划完成状态回注）
+- `test_invalid_plan_review_stops_without_new_tool`
+- `test_plan_review_survives_database_reopen_without_repeating_failure`（新/旧 checkpoint）
+- `test_plan_review_respects_replan_limit`
+- `test_plan_review_does_not_replace_other_tool_boundaries`（empty/uncertain/预算）
 - `test_tool_replan_keeps_results_and_explains_second_replan_limit`
 - `test_side_effect_error_is_uncertain_and_stops_remaining_batch`
 - `test_side_effect_receipt_recovers_without_reexecuting`（执行中/已完成/旧 checkpoint，以及重启后关闭工具）

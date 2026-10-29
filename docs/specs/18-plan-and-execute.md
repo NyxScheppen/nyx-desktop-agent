@@ -79,6 +79,7 @@ class Plan:
 - execute 遍历 `tool_calls` 时，若 `name == "replan"`：不执行任何 handler，标记重规划。
 - 重规划：先检查已重规划次数 `< _MAX_REPLANS`，满足时计数 +1，回到 plan 步骤（prompt 带
   「上次计划 + 已执行结果 + replan reason」）重出计划，重置 execute 轮次；否则结束 execute 进 respond。
+- 只读调用耗尽后的结构化计划决策选择 `replan` 时，也进入同一重规划节点，遵守相同上限。
 
 ### 常量
 
@@ -101,7 +102,7 @@ schema49 增加官方 AsyncSqliteSaver 使用的 `checkpoints`、`writes` 表，
 | 入口 | 产生条件 | 写入位置 |
 |---|---|---|
 | plan 步骤 LLM 产出 | 慢通道进入 use_tools | 工具子图 checkpoint |
-| 重规划再产出 | execute 中 LLM 调 `replan` 且未超限 | 工具子图 checkpoint（覆盖计划，保留调用记录） |
+| 重规划再产出 | execute 中 LLM 调 `replan` 或耗尽后计划决策选择 replan，且未超限 | 工具子图 checkpoint（覆盖计划，保留调用记录） |
 
 **消费者清单**
 
@@ -118,6 +119,9 @@ schema49 增加官方 AsyncSqliteSaver 使用的 `checkpoints`、`writes` 表，
 | 无计划 | plan 解析失败/空 steps | 无计划直接 execute | 降级，不阻断 |
 | 有计划 | execute 中 LLM 调 `replan` 且 `replan<1` | 重新 plan（重规划） | 带上次计划+结果重出 |
 | 有计划 | execute 中 LLM 调 `replan` 且 `replan≥1` | 结束 execute | 忽略 replan，进 respond |
+| 有计划 | 耗尽后的计划决策为 continue | 继续 execute | 保留计划与已有调用，下一步指向原计划步骤 |
+| 有计划 | 耗尽后的计划决策为 replan | 既有 replan 节点 | 同样执行一次上限，保留结果和去重记录 |
+| 有计划 | 耗尽后的计划决策为 stop 或失败 | 结束 execute | 将原因和已有结果回注 respond |
 
 **Bad case 表**
 
@@ -143,6 +147,37 @@ schema49 增加官方 AsyncSqliteSaver 使用的 `checkpoints`、`writes` 表，
 - 计划已有备用步骤时继续原计划；原计划整体失效才调用 `replan(reason)`；无可行路径或预算耗尽时如实结束。执行与重规划 prompt 都带当前计划、调用步骤状态和跳过说明。
 - 原参数持久保存；prompt 展示仍受有界预算约束，超长资料截断必须标明。`deep_research` 的结果 JSON 保持完整。
 - 工具副作用与 checkpoint 不能跨存储原子提交；执行回执负责阻止结果未确认的副作用被自动重放，规则见下节。
+
+### 耗尽后的计划决策（2026-10-29 已批准）
+
+- 已有合法计划、只读调用重试耗尽且仍有判断/结果预算时，必须先完成一次 JSON 计划决策，
+  再允许新的工具判断；不能直接把临时想到的路线当作原计划的备用步骤。
+- 决策复用 `LlmClient.complete(..., output_type="tool", json_mode=True)` 和既有 eval，
+  不暴露能力工具。输入包含原计划、实际调用状态/原参数/错误、已有结果及剩余预算。
+  输出为 `{"action":"continue|replan|stop","reason":"原因","next_step":整数或null}`。
+- `continue` 必须指向原计划中仍可执行的步骤（1 起算），只有原计划已有的备用步骤才能直接续跑；
+  原计划整体失效、无备用步骤但仍可另找方案时选 `replan`，先进入既有重规划节点再查询。
+  无可行路径或任务已完成选 `stop`。代码校验动作、非空原因和步骤范围，语义选择由 LLM 判断。
+- 每个新耗尽调用最多完成一次该决策；不额外消耗四轮工具判断预算，不重置调用/结果预算。
+  一次 replan 上限仍由既有节点执行；超过上限如实结束。预算耗尽不增加决策调用。
+- 重规划后的反馈必须说明新计划已生成、已用/剩余 replan 次数；旧决策是已处理的历史，
+  不能让模型把它误当成仍需执行的重规划请求。
+- 非法 JSON、非法动作/步骤、空原因或决策调用失败时，停止新工具调用，并向最终回复解释
+  “计划决策失败”；保留已经取得的结果。无计划、空结果与副作用 uncertain 沿用原有语义。
+
+**计划决策 checkpoint 完整性**
+
+| 项目 | 契约 |
+|---|---|
+| 入口 | 既有工具子图中，合法计划的只读调用耗尽后进入 `review_plan`；旧 checkpoint 缺少决策时在继续判断/选调用前补做 |
+| 消费者 | 子图路由读取 `ToolState.plan_review`；后续判断、重规划及回复从反馈读取决策及原因 |
+| 状态 | 未决策→continue/replan/stop；保存耗尽调用编号、动作、原因和原计划步骤号，节点完成后同步 checkpoint |
+| 空 | 无计划/无耗尽调用不适用；旧 checkpoint 缺字段视为尚未决策 |
+| 失败 | 决策失败结束工具阶段并解释；checkpoint 写失败继续由原 durable delivery 恢复 |
+| 部分完成 | 保留之前结果、去重记录和累计重试次数；决策不证明任何 done_condition 已满足 |
+| 乱序 | 决策前不执行新工具；continue/replan 的后续节点只在决策持久完成后运行 |
+| 重放 | 同一耗尽调用复用已保存决策；恢复不重新读取失败文件或重做已完成决策 |
+| 删除 | 随现有 correlation checkpoint 在回复终局后清理；不新增表、API 或公开工具 |
 
 ### 副作用执行回执（2026-10-29 已批准补充）
 

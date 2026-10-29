@@ -1294,6 +1294,225 @@ async def test_exhausted_call_returns_control_before_remaining_batch() -> None:
     assert "未执行" in decisions[1] and "local_search" in decisions[1]
 
 
+class _PlanReviewLlm(_FakeLlm):
+    def __init__(self, action: str) -> None:
+        super().__init__(needs_continuation=False)
+        self.review = json.dumps({
+            "action": action, "reason": "旧资料撤回，按计划状态选择后续路径",
+            "next_step": 2 if action == "continue" else None,
+        }, ensure_ascii=False)
+        self.tool_rounds = 0
+
+    async def complete(
+        self, messages: list[LlmMessage], **kwargs: Any,
+    ) -> LLMOutput:
+        self._tool_calls = []
+        if kwargs["output_type"] == "tool" and not kwargs.get("json_mode"):
+            self._tool_calls = [{
+                "name": "file_io", "args": {"action": "read", "path": "old.txt"},
+            }] if self.tool_rounds == 0 else [{
+                "name": "local_search", "args": {"query": "replacement"},
+            }] if self.tool_rounds == 1 else []
+            self.tool_rounds += 1
+        output = await super().complete(messages, **kwargs)
+        if kwargs["output_type"] == "plan":
+            output.content = json.dumps({"goal": "核验资料", "steps": [
+                {"text": "读取旧资料", "expected_tool": "file_io",
+                 "done_condition": "取得正文"},
+                {"text": "旧资料不可用时搜索替代资料", "expected_tool": "local_search",
+                 "done_condition": "取得可用依据"},
+            ]}, ensure_ascii=False)
+        elif kwargs["output_type"] == "tool" and kwargs.get("json_mode"):
+            output.content = self.review
+        return output
+
+
+@pytest.mark.parametrize("action", ["continue", "replan", "stop"])
+async def test_exhausted_plan_requires_review_before_next_tool(action: str) -> None:
+    tools = _FakeTools()
+    tools.results["file_io"] = {"error": "old.txt withdrawn"}
+    tools.results["local_search"] = ["replacement evidence"]
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=tools, llm=_PlanReviewLlm(action),
+    )
+    await facade.reply("在吗", "review-" + action)
+    reviews = [messages[-1]["content"] for kind, messages, _ in llm.calls
+               if kind == "tool" and "[失败后计划决策]" in messages[-1]["content"]]
+    assert len(reviews) == 1
+    assert all(text in reviews[0] for text in (
+        "old.txt withdrawn", '"attempts": 3', '"status": "exhausted"',
+        '"path": "old.txt"', "[当前计划]",
+    ))
+    assert [name for name, _ in tools.calls] == ["file_io"] * 3 + (
+        [] if action == "stop" else ["local_search"]
+    )
+    assert sum(kind == "plan" for kind, _, _ in llm.calls) == (
+        2 if action == "replan" else 1
+    )
+    if action == "replan":
+        resumed = [messages[-1]["content"] for kind, messages, _ in llm.calls
+                   if kind == "tool"][-2]
+        assert '"replans": 1' in resumed and '"remaining_replans": 0' in resumed
+
+
+@pytest.mark.parametrize("review", [
+    "not json", '{"action":"continue","reason":"fallback","next_step":99}',
+    '{"action":"replan","reason":""}',
+])
+async def test_invalid_plan_review_stops_without_new_tool(review: str) -> None:
+    tools = _FakeTools()
+    tools.results["file_io"] = {"error": "withdrawn"}
+    llm = _PlanReviewLlm("continue")
+    llm.review = review
+    facade, *_ = _new_facade(energy=100.0, tools=tools, llm=llm)
+    await facade.reply("在吗", "invalid-review")
+    system = next(messages[0]["content"] for kind, messages, _ in llm.calls
+                  if kind == "reply")
+    assert [name for name, _ in tools.calls] == ["file_io"] * 3
+    assert "计划决策失败" in system
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_plan_review_survives_database_reopen_without_repeating_failure(
+    tmp_path: Path, legacy: bool,
+) -> None:
+    waiting = asyncio.Event()
+
+    class _CancelAfterReview(_PlanReviewLlm):
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any,
+        ) -> LLMOutput:
+            if (
+                kwargs["output_type"] == "tool" and not kwargs.get("json_mode")
+                and self.tool_rounds == 1
+            ):
+                waiting.set()
+                await asyncio.Event().wait()
+            return await super().complete(messages, **kwargs)
+
+    calls: list[str] = []
+
+    async def read(action: str, path: str) -> dict[str, str]:
+        calls.append("file_io")
+        return {"error": "withdrawn"}
+
+    async def search(query: str) -> list[str]:
+        calls.append("local_search")
+        return ["replacement evidence"]
+
+    path = str(tmp_path / "review.db")
+    database = await db.connect(path)
+    try:
+        tools = ToolRegistry(ToolCallStore(database))
+        tools.register(Tool("file_io", "read", {}, read))
+        tools.register(Tool("local_search", "search", {}, search))
+        facade, *_ = _new_facade(
+            energy=100.0, tools=cast(Any, tools), llm=_CancelAfterReview("continue"),
+            checkpointer=database.checkpointer,
+        )
+        task = asyncio.create_task(facade.reply("在吗", "resume-review"))
+        try:
+            await asyncio.wait_for(waiting.wait(), timeout=10)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        saver = cast(BaseCheckpointSaver[str], database.checkpointer)
+        saved = await saver.aget_tuple({
+            "configurable": {"thread_id": "resume-review"},
+        })
+        assert saved is not None and saved.checkpoint["channel_values"][
+            "plan_review"
+        ]["action"] == "continue"
+        if legacy:
+            saved.checkpoint["channel_values"].pop("plan_review")
+            await saver.aput(saved.config, saved.checkpoint, saved.metadata, {})
+    finally:
+        await database.close()
+
+    database = await db.connect(path)
+    try:
+        tools = ToolRegistry(ToolCallStore(database))
+        tools.register(Tool("file_io", "read", {}, read))
+        tools.register(Tool("local_search", "search", {}, search))
+        llm = _PlanReviewLlm("continue" if legacy else "stop")
+        llm.tool_rounds = 1
+        facade, *_ = _new_facade(
+            energy=0.0, tools=cast(Any, tools), llm=llm,
+            checkpointer=database.checkpointer,
+        )
+        await facade.reply("在吗", "resume-review")
+        assert calls == ["file_io"] * 3 + ["local_search"]
+        assert not any(kind == "plan" for kind, _, _ in llm.calls)
+        assert any("[失败后计划决策]" in messages[-1]["content"]
+                   for _, messages, _ in llm.calls) is legacy
+    finally:
+        await database.close()
+
+
+async def test_plan_review_respects_replan_limit() -> None:
+    class _TwoFailures(_PlanReviewLlm):
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any,
+        ) -> LLMOutput:
+            output = await super().complete(messages, **kwargs)
+            if (
+                kwargs["output_type"] == "tool" and not kwargs.get("json_mode")
+                and self.tool_rounds == 2
+            ):
+                output.tool_calls = [{
+                    "name": "file_io", "args": {"action": "read", "path": "new.txt"},
+                }]
+            return output
+
+    tools = _FakeTools()
+    tools.results["file_io"] = {"error": "withdrawn"}
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=tools, llm=_TwoFailures("replan"),
+    )
+    await facade.reply("在吗", "review-limit")
+    system = next(messages[0]["content"] for kind, messages, _ in llm.calls
+                  if kind == "reply")
+    assert len(tools.calls) == 6
+    assert sum(kind == "plan" for kind, _, _ in llm.calls) == 2
+    assert "跳过 replan" in system
+
+
+@pytest.mark.parametrize("case", ["empty", "uncertain", "budget"])
+async def test_plan_review_does_not_replace_other_tool_boundaries(case: str) -> None:
+    class _BoundaryLlm(_PlanReviewLlm):
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any,
+        ) -> LLMOutput:
+            output = await super().complete(messages, **kwargs)
+            if kwargs["output_type"] == "tool" and not kwargs.get("json_mode"):
+                if case == "uncertain" and self.tool_rounds == 1:
+                    output.tool_calls[0]["args"]["action"] = "write"
+                elif case == "budget":
+                    output.tool_calls = [{
+                        "name": "local_search",
+                        "args": {"query": str(self.tool_rounds)},
+                    }] if self.tool_rounds < 4 else [{
+                        "name": "file_io",
+                        "args": {"action": "read", "path": "old.txt"},
+                    }]
+            return output
+
+    tools = _FakeTools()
+    if case != "empty":
+        tools.results["file_io"] = {"error": "unavailable"}
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=tools, llm=_BoundaryLlm("replan"),
+    )
+    await facade.reply("在吗", "review-boundary-" + case)
+    assert not any("[失败后计划决策]" in messages[-1]["content"]
+                   for _, messages, _ in llm.calls)
+    assert sum(name == "file_io" for name, _ in tools.calls) == (
+        3 if case == "budget" else 1
+    )
+    assert sum(kind == "plan" for kind, _, _ in llm.calls) == 1
+
+
 async def test_tool_replan_keeps_results_and_explains_second_replan_limit() -> None:
     class _ReplanningLlm(_FakeLlm):
         async def complete(

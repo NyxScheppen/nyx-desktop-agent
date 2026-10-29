@@ -118,6 +118,10 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 - 讨论模式只暴露技能授权的 `memory_recall`、`knowledge_search`、`deep_research`，执行前再次核对授权；
   普通慢通道保留既有工具但排除这三项。工具结果以有界文本回注下一轮判断和最终回复，
   已完成/已耗尽次数的同名同参数模型请求不重复执行，并明确解释跳过原因；只含重复请求时仍允许下一轮决策，直到判断轮数上限。只读工具异常或显式错误先暂停后续工具并重试，耗尽后交回模型；副作用结果未确认时进入 uncertain 停批，不自动重做；无调用或预算用尽后如实回复。
+- 已有合法计划的只读调用耗尽且仍有预算时，先完成一次结构化 continue/replan/stop 决策，
+  再允许新工具调用。continue 指明原计划仍可执行的步骤；临时新路线必须先重规划。
+  决策随工具 checkpoint 保存和恢复，失败则解释并停止；新计划生成后明确反馈重规划已完成及剩余次数。
+  空结果、无计划和 uncertain 保持既有语义，详见 [18](18-plan-and-execute.md)。
 - `memory_recall` 的段仅在完整段 JSON 实际进入最终 `respond` prompt 时记录真实召回，
   沿用用户事件/段 ID 的 durable 幂等标记；被截断的段与只检索未展示的段不计数。
 - FAST 和 SLOW 的正常 THINK/SPEAK 都先缓存在 `ReplyState`，生成完成前不发布任何正常文本

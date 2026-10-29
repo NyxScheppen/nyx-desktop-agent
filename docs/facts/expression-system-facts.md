@@ -22,6 +22,11 @@
   - 定义 `ReplyState`、`ReplyDeps`、回复图和回复 JSON 解析。
   - 图节点为 `classify_channel`、`assemble_context`、`use_tools`、`respond`、
     `should_ask`、`record_message`。
+  - `use_tools` 内部运行持久 LangGraph 工具子图（`tool_pipeline.py`）：先 JSON Plan/PlanStep，再最多4轮判断；允许一次 replan，保留结果、
+    去重及预算。计划非法/空/调用失败退回无计划执行，伪工具 replan 不进入公开注册表。
+  - 初次规划、重规划和慢回复注入 LESSON，重规划/回复刷新召回以使用本轮刚产生的失败经验；
+    快回复不召回。只读工具错误最多尝试3次，耗尽后学习并交回模型；副作用未确认进入 uncertain，不自动重放或沉淀失败；空结果不重试、直接学习。实际调用记录 log_id/correlation_id/call_id，
+    只有回注结果后才 mark_adopted，预算丢弃仍保留 adopted=0。
 - `nyx/expression/prompt.py`
   - 纯函数拼装 system/user prompt、慢通道回溯上下文和人格自然语言指令。
 - 召回的 `conversation_segment` 以独立 `[相关对话段（历史原文，仅作参考）]` user-prompt 区块注入，不加入当前会话 `Message` 历史。
@@ -73,7 +78,7 @@
   - `build_backtrack_context()` 重新截断历史；
   - 非讨论模式对截断后的近期对话构造 query，召回 `conversation_segment`；命中段以独立历史原文区块注入，不加入当前 `Message` 历史，也不调用旧 `MemoryFacade.search`/`record_recall`；讨论模式关闭隐式事实和段召回，改用能力工具；
   - 取得自我叙事；
-  - 最多 4 轮工具判断，累计工具结果以文本进入下一轮判断和最终回复；最多 5 项，单项 JSON 至多 2000 字符，工具块至多 8000 字符。同名同参数不重复执行，工具失败降级为失败文本；
+  - 最多 4 轮工具判断，累计工具结果以文本进入下一轮判断和最终回复；最多 5 项，单项 JSON 至多 2000 字符，工具块至多 8000 字符。已完成/耗尽次数的同名同参数模型请求去重并解释，自动重试不去重；失败反馈保留参数、状态和错误，耗尽后同批剩余调用不执行；
   - `respond` 最多继续到 `slow_max_rounds`，问句会提前结束；
   - 所有轮次的正常 THINK/SPEAK、最终 `SPEAK/ASK` 在同一本地事务受理，随后记录 history；生成中途没有正常文本对外可见。
 - 讨论模式仅授权 `memory_recall`、`knowledge_search`、`deep_research`，执行时再次核对；普通慢通道排除这三项且保留原工具。
@@ -90,6 +95,8 @@
   `internal_text_event()` 包装为 `{"content": ...}`。
 
 ## 回复失败
+
+- 工具子图按 correlation 在角色 SQLite 保存原计划、调用参数、尝试次数和实际步骤状态；只读错误最多尝试3次，间隔1/2秒，耗尽后才交回模型，后续同批调用标为未执行。已有工具 checkpoint 强制慢通道续跑；工具状态和跳过原因通过 tool_feedback 进入决策及回复，仍受8000字符工具块总预算约束。schema50 的 tool_execution 在执行前可靠领取、执行后完整保存结果，恢复复用结果；副作用 running/error 转 uncertain 停批，旧 checkpoint 同样处理，回执错误向上抛。终局提交并删除 checkpoint 后清理回执，重启补清已完成残留。
 
 - JSON 非法、顶层不是对象、`speak` 缺失/为空、LLM 异常或 evaluator 异常都不会被当成合法
   回复。

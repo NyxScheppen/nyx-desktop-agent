@@ -2,6 +2,7 @@ import { useRef, useState, type FormEvent } from "react";
 import { useCharacterStore } from "../../stores/characterStore";
 import CharacterSelect from "./CharacterSelect";
 import Panel from "./Panel";
+import nyxCanon from "../../../../nyx/cards/nyx/canon.md?raw";
 
 export default function CharacterManager() {
   const { registry, error, import: importCard, create, change, refresh } = useCharacterStore();
@@ -47,5 +48,9 @@ export default function CharacterManager() {
         </>}
       </div>
     </div>)}
+    {registry?.current_id === "nyx" && <div className="character-manager__canon">
+      <h3>尼克斯 · 初始人设</h3>
+      <pre>{nyxCanon}</pre>
+    </div>}
   </Panel>;
 }

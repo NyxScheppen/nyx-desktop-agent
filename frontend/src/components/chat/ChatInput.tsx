@@ -32,32 +32,18 @@ export default function ChatInput() {
 
   return (
     <div className="chat-input">
-      <div className="chat-input__mode" role="group" aria-label="讨论模式">
-        <button
-          type="button"
-          className="chat-input__mode-option"
-          aria-pressed={discussionMode === null}
-          onClick={() => setDiscussionMode(null)}
+      <label className="chat-input__mode">
+        <span>讨论模式</span>
+        <select
+          aria-label="讨论模式"
+          value={discussionMode === true ? "on" : discussionMode === false ? "off" : "auto"}
+          onChange={(event) => setDiscussionMode(event.target.value === "on" ? true : event.target.value === "off" ? false : null)}
         >
-          自动
-        </button>
-        <button
-          type="button"
-          className="chat-input__mode-option"
-          aria-pressed={discussionMode === true}
-          onClick={() => setDiscussionMode(true)}
-        >
-          讨论
-        </button>
-        <button
-          type="button"
-          className="chat-input__mode-option"
-          aria-pressed={discussionMode === false}
-          onClick={() => setDiscussionMode(false)}
-        >
-          陪伴
-        </button>
-      </div>
+          <option value="auto">自动</option>
+          <option value="on">开启</option>
+          <option value="off">关闭</option>
+        </select>
+      </label>
       {annotation && (
         <div className="chat-input__annotation">
           <blockquote>{annotation.quote}</blockquote>

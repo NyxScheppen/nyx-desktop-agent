@@ -84,12 +84,32 @@ describe("ReaderView 位置高亮（真分页）", () => {
     expect(byText("二")?.className).not.toContain("reader-text__para--nyx");
   });
 
-  it("侧栏已拆：笔记入口在 footer、header 显示她/你读到第几段", () => {
+  it("阅读抽屉仅改变宽度时重新测量分页", () => {
+    let resize = () => {};
+    let width = 400;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resize = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(250);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => width);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(() => width === 400 ? 80 : 160);
+    const { container } = render(<ReaderView />);
+    expect(container.querySelector(".reader__page-number")).toHaveTextContent("2 / 3");
+    act(() => { width = 240; resize(); });
+    expect(container.querySelector(".reader__page-number")).toHaveTextContent("3 / 6");
+    vi.restoreAllMocks();
+  });
+
+  it("阅读工具在 footer 纵向展开，header 显示双方进度", () => {
     render(<ReaderView />);
     expect(document.querySelector(".reader-sidebar")).toBeNull(); // 侧栏已拆
     expect(screen.getByRole("button", { name: "上一页" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "下一页" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "笔记" })).toBeInTheDocument(); // 笔记入口在 footer
+    expect(screen.queryByRole("button", { name: "笔记" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "阅读工具" }));
+    expect(screen.getByRole("button", { name: "笔记" })).toBeInTheDocument();
     const pos = document.querySelector(".reader__pos")?.textContent;
     expect(pos).toContain("她在等你");
     expect(pos).toContain("她读到第 5 段");
@@ -248,6 +268,7 @@ describe("ReaderView 位置高亮（真分页）", () => {
     });
     render(<ReaderView />);
 
+    fireEvent.click(screen.getByRole("button", { name: "阅读工具" }));
     fireEvent.click(screen.getByRole("button", { name: "划线" }));
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索划线" }), {
       target: { value: "月光" },
@@ -315,6 +336,7 @@ describe("ReaderView 位置高亮（真分页）", () => {
     });
     render(<ReaderView />);
 
+    fireEvent.click(screen.getByRole("button", { name: "阅读工具" }));
     fireEvent.click(screen.getByRole("button", { name: "书签" }));
     fireEvent.click(screen.getByText("远处的第四段"));
 

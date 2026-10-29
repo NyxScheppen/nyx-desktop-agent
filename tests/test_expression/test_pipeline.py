@@ -3,11 +3,33 @@ import pytest
 
 from nyx.expression.pipeline import (
     _is_question,
+    _parse_plan,
     _parse_reply,
     _rounds_block,
     _voice_output,
 )
 from nyx.types import LLMOutput
+
+
+def test_parse_plan_preserves_steps_and_optional_tool() -> None:
+    plan = _parse_plan(
+        '{"goal":"查资料","steps":[{"text":"搜索","expected_tool":"search",'
+        '"done_condition":"获得来源"},{"text":"对比","done_condition":"结论明确"}]}'
+    )
+    assert plan is not None and plan.goal == "查资料"
+    assert [(s.text, s.expected_tool, s.done_condition) for s in plan.steps] == [
+        ("搜索", "search", "获得来源"), ("对比", None, "结论明确"),
+    ]
+
+
+@pytest.mark.parametrize("raw", [
+    "not json", "[]", '{"goal":"空","steps":[]}',
+    '{"goal":"坏步骤","steps":[null]}',
+    '{"goal":"缺字段","steps":[{"text":"搜索"}]}',
+    '{"goal":"坏类型","steps":[{"text":3,"done_condition":"完成"}]}',
+])
+def test_parse_plan_invalid_returns_none(raw: str) -> None:
+    assert _parse_plan(raw) is None
 
 
 def test_is_question() -> None:

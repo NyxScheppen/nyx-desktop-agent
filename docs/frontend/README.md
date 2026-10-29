@@ -2,7 +2,7 @@
 
 > React 前端，跑在 Tauri 薄壳里，通过 localhost HTTP/SSE 连接 Python 核心服务。
 > 本文档集是前端实现索引：技术栈、目录结构、store 划分、SSE 数据流、面板边界和当前实现状态。后端契约以 `docs/specs/` 为准，具体实现以 `frontend/` 源文件为准。
-> 范围：聊天面板 + 内在状态面板 + SSE 数据流 + 面板骨架，以及后续补齐的欲望/活动两个面板（均已落地）。
+> 范围：书页式完整窗口、聊天与阅读抽屉、内在/欲望/活动/任务/创作/记忆/知识库/评估/历史页面，以及保留原交互的桌宠小窗。
 
 ## 1. 技术栈
 
@@ -16,7 +16,7 @@
 | 桌面壳 | Tauri v2（透明桌宠窗口 + 完整 WebView） | `docs/specs/13-desktop-pet.md` |
 | 通信 | SSE over localhost（实时）+ REST（快照） | `docs/specs/04-module-bus-system.md` / `docs/tech-reference.md` |
 
-> 托盘菜单和系统通知仍未定义；当前已落地桌宠窗口行为：Tauri 启动为透明、无边框、普通非置顶的小窗口（其他应用激活时自然位于其后），头像拖动会移动整个窗口，双击头像切换完整桌面端，完整端再次双击头像收回。
+> 托盘菜单和系统通知仍未定义；Tauri 启动为透明、无边框、普通非置顶的小窗口，头像拖动会移动整个窗口，双击头像展开完整端，完整端使用左侧导航底部印章按钮收回桌宠。
 
 ## 2. 进程边界
 
@@ -80,7 +80,7 @@ frontend/
   index.html
   src/
     main.tsx                 # React 入口，挂载 App
-    App.tsx                  # 精简装配：顶栏（标题/本地时钟/连接状态）+ 昼夜根状态 + 左栏常驻对话 + 中间内容区 + 底部导航 + 可拖拽头像圆圈
+    App.tsx                  # 昼夜状态、顶格左侧图标导航、聊天与阅读抽屉/页面、桌宠模式
     types/
       api.ts                 # 后端契约 TS 镜像（Event/CurrentState/EmotionCategory/…）
     lib/
@@ -107,7 +107,7 @@ frontend/
     components/
       desktop/
         PetShell.tsx          # 头像东西南北四点入口、聊天/选书/陪读小面板与状态气泡
-      AnnounceLayer.tsx      # 头像圆圈头顶淡出气泡层（读 announceStore，嵌套在 Avatar 内）
+      AnnounceLayer.tsx      # 桌宠头像上方/完整窗口右下角的临时气泡
       chat/
         MessageList.tsx
         MessageBubble.tsx
@@ -124,9 +124,9 @@ frontend/
       panels/
         BackgroundPanel.tsx  # 背景外观（预设色调/自定义取色/上传背景图/恢复默认）
         DesiresPanel.tsx     # 欲望面板（GET /api/desires + SSE desire_*）
-        ActivityPanel.tsx    # 委派网页/EPUB 阅读与浏览器问卷 + 任务状态 + 今日时间线/创作摘要
-        CreationPanel.tsx    # 历史创作：正文折叠 + 12 条一批加载更多
-        MemoryPanel.tsx      # 记忆类别检索/画像、对话、知识事实图面板
+        ActivityPanel.tsx    # 活动页：当天 U 形时间线；任务页：委派表单/五条分页/侧边详情
+        CreationPanel.tsx    # 创作书架、正文和活动来源，12 条一批加载更多
+        MemoryPanel.tsx      # 普通记忆/知识库分区检索、五条分页及各作用域事实图
         FactGraph.tsx         # 手写 SVG 实体关系图（不引入图表依赖）
       reading/
         BookshelfView.tsx    # 书架（GET /api/books + 导入 EPUB）
@@ -135,10 +135,10 @@ frontend/
       layout/
         Panel.tsx            # 通用面板容器
         Modal.tsx            # 通用弹层容器
-        SettingsView.tsx     # 设置弹层（字体大小 + 圆圈背景 + 圆圈大小 + 背景外观）
+        SettingsView.tsx     # 完整端设置页/桌宠设置弹层：左侧外观 + 右侧角色管理和真实 canon
       shell/
-        RightDock.tsx        # 底部导航：读书|内在|欲望|活动|创作|记忆|评估 + 设置入口
-        StatusBar.tsx        # 左栏顶部状态条（心情/精力条/现在状态）
+        RightDock.tsx        # 左侧图标导航，含任务/记忆/历史及设置入口、桌宠返回印章
+        StatusBar.tsx        # 既有状态条组件，完整窗口不再挂载
     assets/
       expressions/          # 8 情绪表情图（EmotionCategory 1:1，方形 1080×1080）
   tests/
@@ -157,17 +157,18 @@ frontend/
 
 ## 5. 面板去向（精简装配）
 
-08 布局重构后精简为：顶栏（标题 `✦ Nyx ✦` + 本地日期/星期/时间 + 连接状态）｜左栏常驻对话（`div.left-dock`：`StatusBar` + `MessageList` + `ChatInput` 竖排）｜中间内容区（`div.game-main`：`side-panel` 按 `view` 切内在/欲望/活动/创作/记忆/读书）｜底部导航（`RightDock`：读书|内在|欲望|活动|创作|记忆 + 设置）｜可拖拽头像圆圈（`Avatar`，`position:fixed` 右下角，碎碎念气泡随圆圈头顶冒）。App 每分钟刷新本地时钟，在 06:00/22:00 切换 day/night 根状态；夜间视觉只改变 CSS 变量、遮罩与头像默认显示，不修改内在生命数值。枚举值一律经 `lib/labels.ts` 转中文上屏（如 `exploration → 发现`），未知键回退原值。
+完整端采用「双开本 / 编年史」外观：移除原型预览顶栏，左侧导航顶格，底部印章按钮返回桌宠；窗口风格在设置页切换；左侧为图标导航；默认聊天页可展开右侧阅读抽屉，阅读/聊天为 7:3。其他模块独立呈现，切换不清空领域 store；完整端不挂载浮动 Avatar。内在保留紧凑数值卡，欲望/记忆/历史/评估/任务使用检索与分页，创作使用书架。App 每分钟更新时钟，在 06:00/22:00 切换昼夜视觉；不改变后端内在状态。页面及翻页动效遵循减少动态效果偏好。枚举值经 `lib/labels.ts` 转中文，未知键回退原值。
 
 | 面板 | 状态 | 数据源 | 组件落点 |
 |---|---|---|---|
-| 聊天区 | ✅ 实现（03-chat-panel） | `POST /api/chat` + SSE `speak`/`think`/`ask` | 左栏常驻（`div.left-dock`：`components/chat/MessageList.tsx` + `ChatInput.tsx`） |
+| 聊天区 | ✅ 实现（03-chat-panel） | `POST /api/chat` + SSE `speak`/`think`/`ask` | 默认聊天页：`MessageList.tsx` + `ChatInput.tsx` |
 | 内在状态面板 | ✅ 实现（04-inner-state-panel） | `GET /api/state` + SSE `emotion_update` | `components/inner/InnerStatePanel.tsx`（`view==="inner"`） |
 | 欲望面板 | ✅ 实现 | `GET /api/desires` + SSE `desire_*` | `components/panels/DesiresPanel.tsx`（`view==="desire"`） |
-| 活动与委派任务 | ✅ 实现 | `GET /api/activity`、`GET/POST /api/tasks*`（含浏览器问卷）+ SSE `activity_*`/`task_updated` | `components/panels/ActivityPanel.tsx`（`view==="activity"`） |
+| 活动与委派任务 | ✅ 实现 | `GET /api/activity`、`GET/POST /api/tasks*`（含浏览器问卷）+ SSE `activity_*`/`task_updated` | `ActivityPanel.tsx`，分别为活动页和任务页 |
 | 创作 | ✅ 实现 | `GET /api/activity/results?activity_type=creation&limit=&offset=` | `components/panels/CreationPanel.tsx`（`view==="creation"`） |
 | 记忆面板 | ✅ 实现 | `GET /api/memories`、`GET /api/memories/search`、`GET /api/memories/facts` + SSE `memory_*` | `components/panels/MemoryPanel.tsx` + `FactGraph.tsx`（`view==="memory"`） |
-| 读书 | ✅ 实现（06/07） | `GET /api/books` + 进度/段落/笔记端点 | `components/reading/BookshelfView.tsx` + `ReaderView.tsx`（`view==="reading"`） |
+| 知识库 | ✅ 基于现有数据 | 知识类别记忆与知识作用域事实 | `MemoryPanel.tsx`（记忆页右上角切换知识库）+ `FactGraph.tsx` |
+| 读书 | ✅ 实现（06/07） | `GET /api/books` + 进度/段落/笔记端点 | 聊天右侧抽屉：`BookshelfView.tsx` + `ReaderView.tsx` |
 | 背景外观 | ✅ 实现 | 无（纯前端 `settingsStore`） | `components/layout/SettingsView.tsx`（复用 `components/panels/BackgroundPanel.tsx`） |
 | 桌宠模式 | ✅ 实现 | Tauri 窗口配置 + 纯前端 UI 状态 | `components/desktop/PetShell.tsx`、`lib/desktopWindow.ts` |
 

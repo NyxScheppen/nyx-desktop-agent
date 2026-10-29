@@ -35,18 +35,15 @@ describe("CreationPanel", () => {
 
   afterEach(() => vi.restoreAllMocks());
 
-  it("创作正文默认折叠，并提供加载更多", () => {
+  it("书架点击作品查看正文和活动来源，可以返回并加载更多", () => {
     render(<CreationPanel />);
 
-    const summary = screen.getByText("窗边的夜色");
-    const details = summary.closest("details");
-    const body = screen.getByText("完整正文");
-    expect(details).not.toHaveAttribute("open");
-    expect(body).not.toBeVisible();
-
-    fireEvent.click(summary);
-    expect(details).toHaveAttribute("open");
-    expect(body).toBeVisible();
+    expect(screen.queryByText("完整正文")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /窗边的夜色/ }));
+    expect(screen.getByText("完整正文")).toBeVisible();
+    expect(screen.getByText("来自创作活动 · creation-1")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "← 返回书架" }));
+    expect(screen.queryByText("完整正文")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
     expect(useActivityStore.getState().loadMoreResults).toHaveBeenCalledTimes(1);

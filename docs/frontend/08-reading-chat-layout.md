@@ -1,6 +1,6 @@
-# 08 阅读 × 聊天统一布局（左栏常驻对话 + 真分页 + 桌宠窗口 + 碎碎念浮泡）
+# 08 书页式完整窗口（聊天与阅读抽屉 + 真分页 + 桌宠窗口）
 
-> 前端「陪伴感」重构：聊天从中间舞台挪到**左栏常驻**（读书/看面板时都能聊）；读书改**真分页**（取消滚动）；立绘做**可拖拽头像圆圈**（白底可换底色，碎碎念头顶冒）；碎碎念改**悬浮气泡**；读书提问/联想**并进对话**。
+> 完整窗口采用「双开本 / 编年史」两套硬边羊皮纸外观：左侧图标导航切换页面，聊天右侧可拉开阅读抽屉。桌宠小窗的头像、菜单和陪读交互保留；完整窗口通过左侧导航底部印章按钮返回桌宠。读书提问与联想继续并进同一聊天记录。
 > 对齐后端：`11-expression`（读书提问/联想进表达 history，回复可引用）。
 
 > **行号是定位锚，不是指令**：本文行号只用于快速定位；落点以**符号名 + 变量名**为准。
@@ -8,38 +8,37 @@
 
 ## 1. 布局重构（App 装配 + 复用既有组件，不造新组件）
 
-`.game-shell` 由「左状态条 + 中间书卷区 + 底部输入框/工具条」改为「**左栏对话 + 中间内容区**」。**复用** `StatusBar` + `MessageList` + `ChatInput` 三个既有组件竖排成左栏，不新增 `LeftChatDock`（反冗余）。
+`App` 装配顶格左侧导航和主页面，不保留原型预览顶栏。默认进入聊天，`MessageList`、`ChatInput` 复用原来的 store 和 API；知识投喂入口收在记忆页的知识库内。完整端不挂载浮动头像或独立状态条。
 
 ```
-┌───────────────┬──────────────────────────────────────────┐
-│ 左栏对话       │   中间内容区（game-main，position:relative）│
-│  StatusBar(瘦)│   · view==="reading" → ReaderView/书架      │
-│  MessageList  │   · 其余 → 内在/欲望/活动/记忆面板            │
-│  (滚动)        │   · 右下角：可拖拽头像圆圈（§4，position:fixed 浮窗） │
-│  ChatInput(扁)│   底部：导航（读书|内在|欲望|活动|记忆）       │
-└───────────────┴──────────────────────────────────────────┘
+┌──────┬──────────────────────┬───────────────────┐
+│ 导航 │ 聊天记录 / 输入框      │ 阅读抽屉（可收起） │
+│ 图标 │          30%          │       70%         │
+│      ├──────────────────────┴───────────────────┤
+│      │ 或：内在 / 欲望 / 活动 / 任务 / 创作等页面 │
+└──────┴──────────────────────────────────────────┘
 ```
 
-- **栅格改两行**：`.game-shell` `grid-template-columns: 340px minmax(0,1fr)`（左栏宽 **340px** 不变）；`grid-template-rows: minmax(0,1fr) auto`（**删第 3 行**，ChatInput 不再占右栏底部行）。
-- **左栏**（新 `div.left-dock`，`grid-column:1; grid-row:1/span 2`，`display:flex; flex-direction:column; gap:12px`）：`StatusBar`（瘦身，见下）→ `MessageList`（`flex:1`，滚动，占满中段）→ `ChatInput`（底部，`flex-shrink:0`）。聊天**全局唯一**，常驻不随切视图消失。
-- **`StatusBar` 瘦身**：删掉 `<Avatar />`（立绘迁到 §4 圆圈）与「✦ Nyx ✦」名字（聊天区被挤，名字占顶栏标题位即可），只留 `status-bar__info`（心情/精力/现在状态）；组件内不再 import `Avatar`/`EmotionSprite`（清 orphan）。
-- **中间**（`.game-main`，`grid-column:2; grid-row:1; position:relative`）：`view` 类型删 `null`（聊天不再是可切换视图）；默认 `view = "reading"`（开应用即书架 + 左栏常驻对话）。`ScrollArea`（原聊天舞台）删除。
-- **导航**：`RightDock` 的 `ENTRIES` 删「聊天」一项（`{label:"聊天", view:null}`），剩 `读书|内在|欲望|活动|记忆` 五个，只切中间。`RightDock` `grid-column:2; grid-row:2`。
-- **反冗余**：删除 `ScrollArea.tsx`（聊天舞台）与 `MutterCard.tsx`（碎碎念卡片）两个被替代组件 + `mutterStore.ts`（§3）。
+- **栅格**：主区高度受窗口约束，使用 `minmax(0,1fr)` 和可收缩的 flex 子项。阅读抽屉与聊天按阅读/聊天 `7:3` 分配；聊天内滚动，输入框保持可达；阅读抽屉宽度过渡时重新测量分页。
+- **导航**：`RightDock` 保留文件名，展示左侧图标入口，以 title/aria-label 标识聊天、内在、欲望、活动、任务、创作、记忆、评估、历史和设置；知识库在记忆页右上角切换，Tauri 完整窗口底部印章用于收回桌宠。
+- **阅读**：聊天卡片外的上方按钮展开/收起右侧抽屉，并显示书页展开动效；未选书时显示书架与 EPUB 导入，选书后显示 `ReaderView`。关闭抽屉不清空阅读进度。
+- **页面**：内在左上显示心情图，右侧按精力、性格、审美、三观堆叠，四块等宽并保留数值；欲望显示顶部压力横条、搜索和期限/类别筛选；记忆、历史、评估和任务使用五条分页；普通记忆在分页与空态判断前排除知识类别，知识库列表只展示知识类别。知识库复用真实知识记忆与知识事实图，内部独立投喂页提供文本和 URL 摄入，未提供通用文件上传接口；活动提供历史日期选择，创作采用书架，任务记录与安排任务分开，网页/书籍/网页问卷三种表单上下排列为三排，每排占满宽度。
+- **外观**：只在完整窗口应用两套书页布局；双开本采用红棕导航（`#6c342c`）、暖羊皮纸（`#f6e8c9`）和相连书脊，编年史采用深绿导航（`#223633`）、浅羊皮纸（`#ede2c0`）、横线纹理及 18px 页间隙，风格仅从设置切换；隐藏滚动条但保留滚动和键盘操作，页面切换及阅读翻页使用短暂动效，并遵循 `prefers-reduced-motion`。
+- **设置**：完整窗口中作为左侧导航的普通页面展示，桌宠和角色尚未就绪时保留弹层入口；左侧窄栏外观、右侧角色管理；内置 Nyx 的初始人设直接展示 `nyx/cards/nyx/canon.md`，不使用原型占位文案。导入、创建、卸载、恢复和重试继续走已有角色接口。
 
 ### 角色切换补充
 
-完整端标题区和桌宠菜单提供 `CharacterSelect`，设置弹层提供 `CharacterManager` 和四角色额度、状态、导入/卸载/恢复/重试。名称及头像来自角色卡，没有图片使用名称占位；全局字体、背景与窗口外观沿用 `settingsStore`。
+桌宠菜单提供 `CharacterSelect`；完整端从设置的 `CharacterManager` 管理和选择角色，完整窗口设置页（桌宠中为设置弹层）提供角色管理和四角色额度、状态、导入/卸载/恢复/重试。名称及头像来自角色卡，没有图片使用名称占位；全局字体、背景与窗口外观沿用 `settingsStore`。
 
 领域 Store 只展示当前角色；切换清理旧展示、等待、通知和阅读临时缓冲，恢复按角色保存的草稿与最近书籍。全部异步结果核对角色及本地切换代数，覆盖 A→B→A；具体契约见 [14-character-cards](../specs/14-character-cards.md)、[Store](02-stores.md) 与 [API client](05-client.md)。
 
 ### 1.1 共享时钟与昼夜视觉
 
 - `App` 持有唯一的本地 `Date` 时钟：首次 timeout 对齐下一分钟边界，之后每分钟更新，
-  focus/恢复可见时立即校时并重新对齐分钟，卸载时清理 timeout 与监听器。顶栏显示日期、星期和 `HH:mm`，时间纯函数签名见
+  focus/恢复可见时立即校时并重新对齐分钟，卸载时清理 timeout 与监听器。完整端不额外显示顶栏时钟；时钟用于消息时间分隔和昼夜相位，时间纯函数签名见
   [聊天面板契约](03-chat-panel.md)。不新增依赖、配置或 Zustand store。
 - 根节点设置 `data-time-phase="day|night"`；同一个时钟作为 `MessageList.now`，同一昼夜
-  相位作为 `Avatar.night`。本地 06:00/22:00 自动切换，不等待 SSE、用户输入或状态刷新。
+  相位作为桌宠 `Avatar.night`。本地 06:00/22:00 自动切换，不等待 SSE、用户输入或状态刷新。
 - 夜间通过 CSS 变量与半透明遮罩改变背景、面板、边框和文本对比，不替换用户自定义图片
   或色调，不增加影响布局尺寸的昼夜元素；只改变显示，不修改后端情绪、精力或活动数值。
 - 前后端在同一台电脑运行，共用系统本地时区；不处理远程服务时区分离。
@@ -113,17 +112,17 @@ case "reading_mutter":
 - `dispatch.ts` 两处归入 `announceStore`：`mutter` case 改 `useAnnounceStore.getState().announce("mutter", e.content)`（删 `useMutterStore` import 与 `addMutter` 调用）；`reading_mutter`（§2.3）同样 `announce("mutter", e.content)`。
 - **`reflection_done` 不动**：已 `announce("mutter", …)`（`dispatch.ts` 现 73-86），与 mutter/reading_mutter **共享 `announce` 的 `"mutter"` kind**——`"mutter"` kind 语义统一为「Nyx 轻声自语/反思的瞬时气泡」，三者同一渲染路径，无冲突。
 - **删** `mutterStore.ts` + `MutterCard.tsx`（碎碎念不再有「最近几条卡片」，改为瞬时气泡几秒淡出）。
-- `AnnounceLayer` **重新定位**：从「头像旁」（`.announce-layer` `left:16px; bottom:64px`）移到「头像圆圈头顶上方」并**嵌套进 `Avatar` 圆圈内**（随圆圈拖拽走）——`.announce-layer` 改 `position:absolute; left:50%; bottom:calc(100% + 8px); transform:translateX(-50%); align-items:center`（气泡居中、贴着圆圈头顶）。`ANNOUNCE_DURATION.mutter = 4000` 不变；`announceStore` 本体不动（`announce`/`dismiss`/`ANNOUNCE_DURATION` 已够用）。
+- `AnnounceLayer` 在桌宠态继续跟随头像，完整端挂载在右下角独立提示层。`ANNOUNCE_DURATION.mutter = 4000` 与 `announceStore` 的事件处理不变。
 
 ## 4. 可拖拽头像圆圈（白底可换底色 + 拖拽 + 头顶气泡）
 
-`Avatar` 改成**可拖拽圆形头像**：`position:fixed` 浮在窗口右下角，`EmotionSprite` 头部裁进圆圈，可拖到窗口任意处、位置/底色/尺寸存 localStorage；碎碎念气泡（`AnnounceLayer`）嵌套在圆圈内、头顶冒出随圆圈走。
+`Avatar` 只在桌宠小窗挂载：`EmotionSprite` 裁进圆圈，位置/底色/尺寸存 localStorage；碎碎念气泡跟随头像。完整端不放浮动头像，避免覆盖抽屉工具。
 
-- **结构**：`App.tsx` 直接挂 `<Avatar night={timePhase === "night"} />`（不再包 `.avatar-overlay`）；`AnnounceLayer` 移到 `Avatar` 内部（气泡跟随圆圈），`App` 不再单独挂 `<AnnounceLayer />`。顶栏「设置」按钮删除，设置入口迁到 `RightDock`（底部导航新增「设置」项）。
+- **结构**：`App` 在桌宠模式挂载 `PetShell`，由其组合 Avatar 和轻量菜单；完整端在右下角独立提示层挂载 `AnnounceLayer`，设置入口位于左侧导航。
 - **昼夜输入**：`Avatar` 必须接收 `night: boolean`，不在 render 中自行读取 `new Date()`。
   夜间默认显示 sleepy，白天显示当前情绪；默认显示不写回 innerLifeStore。
 - **`Avatar.tsx` 重写**：白底圆形（`backgroundColor = settingsStore.circleColor`，默认 `#ffffff`）；`position:fixed; right:24px; bottom:24px; border-radius:50%`，`width/height` 内联自 `settingsStore.circleSize` 三档（`CIRCLE_SIZES`：小 96 / 中 120 / 大 144，默认大），内层 `.avatar-circle__face` `overflow:hidden` + `EmotionSprite size="circle"`（`object-fit:cover` 方形表情图撑满不裁，图源 `assets/expressions/`）。位置记忆 `avatarPos` 非 null 时内联 `left/top` 覆盖默认右下角。表情图 `<img>` 加 `draggable={false}`、`.emotion-sprite--circle` 加 `pointer-events:none`，防浏览器原生图片拖拽抢占圆圈拖拽。
-- **拖拽**：`onPointerDown/Move/Up/Cancel` + `setPointerCapture`；浏览器回退时 `getBoundingClientRect()` 记录起点，位移超 `DRAG_THRESHOLD=3` 判定为拖拽；拖拽中本地 `dragPos` 渲染、松手才 `setAvatarPos` 提交（一次 localStorage 写）。只有桌宠层显式传入 `useNativeWindowDrag` 且运行于 Tauri 时才调用原生 `startDragging()`；完整端保持窗口内头像拖动。`clampAvatarPos` 把浏览器回退坐标夹回视口内。
+- **拖拽**：`onPointerDown/Move/Up/Cancel` + `setPointerCapture`；浏览器回退时 `getBoundingClientRect()` 记录起点，位移超 `DRAG_THRESHOLD=3` 判定为拖拽；拖拽中本地 `dragPos` 渲染、松手才 `setAvatarPos` 提交（一次 localStorage 写）。只有桌宠层显式传入 `useNativeWindowDrag` 且运行于 Tauri 时才调用原生 `startDragging()`；完整端不挂载头像。`clampAvatarPos` 把浏览器回退坐标夹回视口内。
 - **桌宠入口**：单击头像由 `PetShell` 打开半月菜单；双击头像切换完整桌面端。红点通知（`.avatar-notice`）仍为纯红点（`aria-label="小狐狸我有话对你说"`），点击 `stopPropagation` 清除 `unreadProactive`。
 - **持久化**：`settingsStore` 新增 `circleColor`/`circleSize`/`avatarPos` + 对应 setter，读写 localStorage（键 `nyx.circleColor`/`nyx.circleSize`/`nyx.avatarPos`），不可用时静默降级；`reset()` 一并清这三个键。`EmotionSprite` 的 `size` 变体删 `portrait`、增 `circle`（`portrait` 无调用方，清 orphan）。
 - **设置项**：`SettingsView` 新增「圆圈背景」面板（预设白/浅粉/浅蓝/浅绿/浅橙/淡紫 + 自定义取色），复用 `.bg-panel` 色块；预设名与「背景色调」预设（樱粉/晨蓝/…）错开，避免测试按名选色歧义。另新增「圆圈大小」三档（小/中/大，复用 `.font-scale__opt` 按钮，aria-label 用「圆圈小/中/大」与字体三档错开）。
@@ -149,13 +148,13 @@ export function paginate(
 ### 5.2 测量触发（重测重分页）
 
 - **量哪个元素**：每段 `<article>` 的 `offsetHeight`（内部可含标题、正文、引用、列表和 pre）。用现有 `paraRefs`（`ref` 回填 `Map<number, HTMLElement>`，键 = `p.index`）。单段设置视口内 `max-height` 与 `overflow-y:auto`，分页测到的是稳定的可视高度。
-- **`viewportHeight`**：`.reader-text` 容器 `clientHeight`，由 `ResizeObserver` 维护成组件 state。
-- **重测时机**：`useLayoutEffect` 依赖 `[paragraphs, notes, fontScale, viewportHeight, windowFrom]`——任一变化重测全部段高 + 重分页。覆盖正文/划线变化、字号变化、窗口 resize 和换书/窗口重拉。
+- **视口**：`.reader-text` 容器的 `clientHeight` 和 `clientWidth` 均由 `ResizeObserver` 维护为组件 state。
+- **重测时机**：`useLayoutEffect` 依赖正文、笔记、字号、视口高度、视口宽度和段落窗口起点——任一变化重测全部段高并重新分页；高度不变但宽度收窄时也不能沿用旧页数。
 
 ### 5.3 状态归属（持久态 vs 瞬态）
 
 - **持久态（`readerStore`）**：`userPosition` = **读到第 xx 段**（逐段移动的光标位置，非页首段），唯一落库（`putProgress` 已有）。不新增 store 字段。
-- **瞬态（`ReaderView` 组件 state）**：`pageIndex`（当前页序号，0-based）、`heights`（段高 Map）、`pages`（`paginate` 结果）、`viewportHeight`。这些是 DOM 测量派生值，**不入 store**（store 状态须可序列化，DOM 高度不是）。
+- **瞬态（`ReaderView` 组件 state）**：当前页、实测段高、分页结果、视口宽高和翻页动效状态。这些 DOM 派生值不入 store。
 - **`pageIndex` 从 `userPosition` 反推**：`pageIndex = pages.findIndex(p => p.includes(userPosition))`，找不到 → `0`；再 `clamp [0, pages.length-1]`。`userPosition` 是唯一事实来源，重分页后靠它找回页序，不丢位置。
 
 ### 5.4 翻页映射
@@ -178,7 +177,7 @@ export function paginate(
 
 - `01-sse.md`：分发表 `reading_question`/`reading_association` 改路由 `chatStore.addReadingTurn`；`reading_mutter` → `announceStore`；`mutter` → `announceStore`（原 mutterStore）；`reflection_done` 保持 `announce("mutter")`。
 - `02-stores.md`：`chatStore` 增 `addReadingTurn` + `ChatMessage` 扩 `reading_*` kind 与 `subtype/selectedText/memoryId`；`readerStore` 删 `impulseBubbles`/`addReadingBubble`/`ReadingBubble`/`ReadingBubbleKind`；`mutterStore` 条目删除。
-- `03-chat-panel.md`：聊天主区从「中间舞台」改「左栏常驻」；`ScrollArea` 删除；`MessageBubble.isNyxText` 与 `MessageList.NYX_TEXT_KINDS` 明确**不加** reading 两 kind（即时渲染）。
+- `03-chat-panel.md`：聊天主区独立成页，右侧按需展开阅读抽屉；`ScrollArea` 删除；`MessageBubble.isNyxText` 与 `MessageList.NYX_TEXT_KINDS` 明确**不加** reading 两 kind（即时渲染）。
 - `06-reading-panel.md`：§5「滚动容器 + onScroll」改「真分页」（`paginate` + 测量/重测/翻页契约）；`ReaderSidebar` 拆解（进度→header、气泡迁走、笔记→footer）；`readerStore` 删 `turnPage`（本 spec 已由 `syncPosition` 语义承载，§5.4 直接调 `syncPosition`）。
 - `07-reading-events.md`：§2「冲动气泡（ReaderSidebar）」改「并进对话/悬浮气泡」。
 - `types/api.ts`：**不改**（`ReadingQuestionEvent`/`ReadingAssociationEvent`/`ReadingMutterEvent`/`QuestionSubtype` 已存在；`ChatMessage` 在 `chatStore.ts` 非此文件）。
@@ -193,19 +192,19 @@ export function paginate(
 - `readerStore`：删 `addReadingBubble` 相关断言；`syncPosition` 逐段路径保持（前翻逐段补发、后翻不评估）。
 - `tests/app.test.tsx`：fake timers 覆盖下一分钟更新及无需外部操作跨 06:00/22:00，根主题与
   Avatar 同相位；`tests/time.test.ts` 覆盖昼夜边界、时钟/消息标签及时间分隔。
-  桌面和窄窗口人工检查顶栏/时间分隔不遮挡，自定义背景在夜间遮罩下仍保留。
+  桌面和窄窗口人工检查导航、阅读按钮和时间分隔不遮挡，自定义背景在夜间遮罩下仍保留。
 
 ## 8. 桌宠模式（`components/desktop/PetShell.tsx`）
 
 - Tauri 启动窗口为透明、无边框、普通非置顶的小窗口（`560×520`；其他应用激活时自然位于其后）；浏览器开发环境仍直接显示完整端，便于测试。菜单态头像水平居中，聊天/读书/内心等左展子面板打开时，交互层增加统一的 panel-open 标记并把头像改为距右侧 `24px`，保证最宽 `350px` 阅读面板完整留在窗口内；返回菜单后恢复居中。
-- `App` 维护 `DesktopMode = "pet" | "full"`：桌宠态隐藏完整布局，只渲染可拖拽 `Avatar` 与 `PetShell`；双击头像进入完整端，完整端再次双击头像收回桌宠。
+- `App` 维护 `DesktopMode = "pet" | "full"`：桌宠态只渲染 `PetShell` 及其 Avatar；双击头像进入完整端，完整端左侧导航底部的「收回桌宠」印章按钮返回小窗。
 - 桌宠菜单包含「聊天」「读书」「内心」「设置」四个入口，四项以头像中心为基准正东南西北排列；状态仍在头像头顶以被动摘要显示。
 - 聊天小界面是无外框的一行 Galgame 对话 + 悬空输入框；读书先选书，再显示扁平主动对话气泡、正文、你/Nyx 段落标记和悬空输入框；选书页与陪读页都保留顶部无文字返回箭头 `→`。
 - 陪读正文下方提供「上一页」「下一页」两个轻量按钮，调用 `readerStore.syncPosition(userPosition ± 1)` 逐段移动进度；到达首段或末段时禁用对应按钮，避免桌宠态只能读当前段而无法继续。正文区域保持 `148px` 高，单段过长时在区域内纵向滚动，既不裁掉原文，也不撑破固定桌宠窗口。
 - 「内心」入口显示情绪、精力、当前活动和简短感受摘要；「设置」入口回调打开现有 `SettingsView`，直接修改 `settingsStore`，不复制设置写入逻辑。
 - 桌宠小界面不复制业务逻辑：聊天复用 `chatStore.sendMessage`，读书复用 `readerStore.loadBooks/openBook` 与 `readerStore.syncPosition`；双击头像是唯一进入完整端的入口。
 - 发布版 Tauri 由 Rust 壳启动同目录的 `nyx-backend` sidecar，并在 `127.0.0.1:8000` 可连接后完成 setup；日志和工作目录使用 Tauri app data，退出时关闭 sidecar stdin 触发 Python 优雅停止。Debug 版仍由 `dev.py --desktop` 启动后端，避免重复进程。
-- `Avatar` 仅在收到 `useNativeWindowDrag` 且运行于 Tauri 时，在 pointer down 超过阈值后调用原生 `startDragging()`；桌宠层传入该标记，完整桌面端显式关闭，避免拖动完整端头像时带动整个窗口。浏览器回退到现有 CSS 拖拽和 `avatarPos` 持久化。
+- `Avatar` 仅在收到 `useNativeWindowDrag` 且运行于 Tauri 时，在 pointer down 超过阈值后调用原生 `startDragging()`；桌宠层传入该标记，完整端不挂载 Avatar。浏览器回退到现有 CSS 拖拽和 `avatarPos` 持久化。
 
 ## 完成定义
 

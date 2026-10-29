@@ -95,6 +95,31 @@ class MemoryStore:
         """Return the shared database for local transaction orchestration."""
         return self._db
 
+    async def bump_lesson_signal(self, topic: str, kind: str) -> int:
+        """Count the current correction without creating a memory yet."""
+        async with self._operation() as should_commit:
+            cursor = await self._db.conn.execute(
+                "INSERT INTO lesson_signal(topic, kind, count, last_at) "
+                "VALUES (?, ?, 1, ?) ON CONFLICT(topic) DO UPDATE SET "
+                "count = count + 1, last_at = excluded.last_at RETURNING count",
+                (topic, kind, time.time()),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            if should_commit:
+                await self._db.conn.commit()
+        assert row is not None
+        return int(row["count"])
+
+    async def clear_lesson_signal(self, topic: str) -> None:
+        """Reset only after the promoted lesson and reflection are accepted."""
+        async with self._operation() as should_commit:
+            await self._db.conn.execute(
+                "DELETE FROM lesson_signal WHERE topic = ?", (topic,)
+            )
+            if should_commit:
+                await self._db.conn.commit()
+
     async def find_annotation_feedback(
         self, reply_event_id: str, comment: str
     ) -> str | None:

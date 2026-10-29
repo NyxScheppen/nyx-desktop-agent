@@ -6,6 +6,8 @@ import { create } from "zustand";
 
 type FontScale = "small" | "medium" | "large";
 
+export type LayoutStyle = "folio" | "chronicle";
+
 /** 头像圆圈尺寸三档（小/中/大），像素值见 Avatar.tsx 的 CIRCLE_SIZES。 */
 export type CircleSize = "small" | "medium" | "large";
 
@@ -17,6 +19,11 @@ const DEFAULT_CIRCLE_SIZE: CircleSize = "large";
 const CIRCLE_COLOR_KEY = "nyx.circleColor";
 const AVATAR_POS_KEY = "nyx.avatarPos";
 const CIRCLE_SIZE_KEY = "nyx.circleSize";
+const LAYOUT_STYLE_KEY = "nyx.layoutStyle";
+
+function parseLayoutStyle(raw: string | null): LayoutStyle {
+  return raw === "chronicle" ? "chronicle" : "folio";
+}
 
 /** 纯函数：localStorage 原始串 → AvatarPos；坏 JSON / 缺 x/y / 非有限数 → null。 */
 export function parseAvatarPos(raw: string | null): AvatarPos | null {
@@ -71,12 +78,14 @@ type SettingsState = {
   circleColor: string;
   circleSize: CircleSize;
   avatarPos: AvatarPos | null;
+  layoutStyle: LayoutStyle;
   setTint: (tint: string | null) => void;
   setImage: (image: string | null) => void;
   setFontScale: (fontScale: FontScale) => void;
   setCircleColor: (circleColor: string) => void;
   setCircleSize: (circleSize: CircleSize) => void;
   setAvatarPos: (avatarPos: AvatarPos) => void;
+  setLayoutStyle: (layoutStyle: LayoutStyle) => void;
   reset: () => void;
 };
 
@@ -87,6 +96,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   circleColor: readLocal(CIRCLE_COLOR_KEY) ?? DEFAULT_CIRCLE_COLOR,
   circleSize: parseCircleSize(readLocal(CIRCLE_SIZE_KEY)),
   avatarPos: parseAvatarPos(readLocal(AVATAR_POS_KEY)),
+  layoutStyle: parseLayoutStyle(readLocal(LAYOUT_STYLE_KEY)),
   setTint: (tint) => set({ tint }),
   setImage: (image) => set({ image }),
   setFontScale: (fontScale) => set({ fontScale }),
@@ -102,10 +112,15 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     writeLocal(AVATAR_POS_KEY, JSON.stringify(avatarPos));
     set({ avatarPos });
   },
+  setLayoutStyle: (layoutStyle) => {
+    writeLocal(LAYOUT_STYLE_KEY, layoutStyle);
+    set({ layoutStyle });
+  },
   reset: () => {
     removeLocal(CIRCLE_COLOR_KEY);
     removeLocal(CIRCLE_SIZE_KEY);
     removeLocal(AVATAR_POS_KEY);
+    removeLocal(LAYOUT_STYLE_KEY);
     set({
       tint: null,
       image: null,
@@ -113,6 +128,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       circleColor: DEFAULT_CIRCLE_COLOR,
       circleSize: DEFAULT_CIRCLE_SIZE,
       avatarPos: null,
+      layoutStyle: "folio",
     });
   },
 }));

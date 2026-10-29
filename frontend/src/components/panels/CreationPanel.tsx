@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   formatOutputBody,
   formatOutputPath,
@@ -18,12 +18,14 @@ export default function CreationPanel() {
   const hasMore = useActivityStore((state) => state.hasMoreResults);
   const refresh = useActivityStore((state) => state.refresh);
   const loadMore = useActivityStore((state) => state.loadMoreResults);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
   const creations = results?.filter((activity) => activity.type === "creation") ?? null;
+  const selected = creations?.find((activity) => activity.id === selectedId);
 
   return (
     <Panel title="创作">
@@ -32,29 +34,28 @@ export default function CreationPanel() {
         "等待核心服务连接…"
       ) : creations.length === 0 ? (
         <p className="panel-item">当前角色还没有完成创作</p>
+      ) : selected !== undefined ? (
+        <article className="creation-detail">
+          <button type="button" className="reader-tool" onClick={() => setSelectedId(null)}>← 返回书架</button>
+          <h3>{formatResult(selected)}</h3>
+          <time>{dateTimeLabel(selected.ended_at ?? selected.started_at)}</time>
+          <p className="panel-item__meta">来自创作活动 · {selected.id}</p>
+          <div className="creation-record__body">{formatOutputBody(selected)}</div>
+          {formatOutputPath(selected) !== null && <p className="panel-item__meta" title={formatOutputPath(selected) ?? undefined}>来源：{formatOutputPath(selected)}</p>}
+        </article>
       ) : (
-        <ul className="outputs__list">
+        <ul className="creation-shelf">
           {creations.map((activity) => {
             const title = formatResult(activity);
             const body = formatOutputBody(activity);
-            const path = formatOutputPath(activity);
             if (title === null || body === null) return null;
             return (
-              <li key={activity.id} className="panel-item creation-record">
-                <details>
-                  <summary className="creation-record__summary">
-                    <span className="panel-item__main">{title}</span>
-                    <span className="panel-item__meta">
-                      {dateTimeLabel(activity.ended_at ?? activity.started_at)}
-                    </span>
-                  </summary>
-                  <div className="creation-record__body">{body}</div>
-                  {path !== null && (
-                    <div className="panel-item__meta creation-record__path" title={path}>
-                      {path}
-                    </div>
-                  )}
-                </details>
+              <li key={activity.id} className="creation-shelf__item">
+                <button type="button" onClick={() => setSelectedId(activity.id)}>
+                  <span className="creation-shelf__monogram" aria-hidden="true">{title.charAt(0)}</span>
+                  <span className="panel-item__main">{title}</span>
+                  <span className="panel-item__meta">{dateTimeLabel(activity.ended_at ?? activity.started_at)}</span>
+                </button>
               </li>
             );
           })}

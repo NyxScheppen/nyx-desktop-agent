@@ -31,6 +31,15 @@ export default function ExpressionHistoryPanel() {
   const error = useExpressionHistoryStore((state) => state.error);
   const refresh = useExpressionHistoryStore((state) => state.refresh);
   const [tab, setTab] = useState<"all" | "mutter" | "initiate_chat">("all");
+  const [conversationOnly, setConversationOnly] = useState(false);
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
+  const events = (data?.[tab] ?? []).filter((event) =>
+    (!conversationOnly || ["user_message", "speak", "ask", "reading_question", "initiate_chat"].includes(event.type)) &&
+    content(event).toLowerCase().includes(query.trim().toLowerCase())
+  );
+  const pages = Math.max(1, Math.ceil(events.length / 5));
+  const currentPage = Math.min(page, pages - 1);
   useEffect(() => { void refresh(); }, [refresh]);
   return (
     <Panel title="表达历史">
@@ -38,13 +47,22 @@ export default function ExpressionHistoryPanel() {
         {(["all", "mutter", "initiate_chat"] as const).map((key) => (
           <button key={key} type="button" role="tab" aria-selected={tab === key}
             className={tab === key ? "panel-tab panel-tab--active" : "panel-tab"}
-            onClick={() => setTab(key)}>
+            onClick={() => { setTab(key); setPage(0); }}>
             {key === "all" ? "全部历史" : key === "mutter" ? "碎碎念" : "主动搭话"}
           </button>
         ))}
       </div>
+      <div className="panel-toolbar">
+        <input className="panel-input" aria-label="搜索表达历史" placeholder="搜索历史…" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} />
+        <label className="history-conversation-filter"><input type="checkbox" checked={conversationOnly} onChange={(event) => { setConversationOnly(event.target.checked); setPage(0); }} />仅对话</label>
+      </div>
       {error !== null && <p className="error-text">{error}</p>}
-      {data === null ? "等待核心服务连接…" : <EventList events={data[tab]} />}
+      {data === null ? "等待核心服务连接…" : <EventList events={events.slice(currentPage * 5, currentPage * 5 + 5)} />}
+      {data !== null && events.length > 0 && <div className="ledger-pagination">
+        <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一页</button>
+        <span>{currentPage + 1} / {pages}</span>
+        <button type="button" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>下一页</button>
+      </div>}
     </Panel>
   );
 }

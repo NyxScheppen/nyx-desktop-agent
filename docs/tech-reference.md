@@ -28,6 +28,9 @@
 | 桌宠窗口与轻量入口 | [`13-desktop-pet.md`](specs/13-desktop-pet.md) | — | `frontend/src/components/desktop/`, `frontend/src/lib/desktopWindow.ts`, `frontend/src-tauri/tauri.conf.json` |
 | 角色卡与多角色运行 | [`14-character-cards.md`](specs/14-character-cards.md) | [`character-cards-facts.md`](facts/character-cards-facts.md) | `nyx/character_cards.py`, `nyx/cards/nyx/`, `nyx/app_context.py`, `nyx/runtime.py` |
 | 讨论伙伴 | [`15-discussion-partner.md`](specs/15-discussion-partner.md) | [`expression-system-facts.md`](facts/expression-system-facts.md)、[`memory-system-facts.md`](facts/memory-system-facts.md) | `nyx/prompts/skills/`, `nyx/bootstrap.py`, `nyx/app_context.py`, `nyx/research/`, `nyx/expression/`, `nyx/memory/`, `nyx/api/routes.py`, `frontend/src/components/chat/{ChatInput,KnowledgeFeed}.tsx` |
+| 工具调用观测 | [`17-tool-call-observation.md`](specs/17-tool-call-observation.md) | — | `nyx/tools/{registry,tool_call_store}.py`, `nyx/db.py` |
+| 规划与执行 | [`18-plan-and-execute.md`](specs/18-plan-and-execute.md) | [`expression-system-facts.md`](facts/expression-system-facts.md) | `nyx/types.py`（Plan/PlanStep）, `nyx/expression/{pipeline,tool_pipeline,prompt}.py` |
+| 失败经验 | [`19-failure-reflection.md`](specs/19-failure-reflection.md) | [`memory-system-facts.md`](facts/memory-system-facts.md) | `nyx/enums.py`（LESSON）, `nyx/memory/{facade,store}.py`, `nyx/eval/evaluator.py`, `nyx/app_context.py` |
 
 讨论伙伴 P1/P2 已完成；P2 性能修复第 3 步已按授权提交为 `34d201f`，P3 深度研究功能验收完成，未提交、待用户阶段审批。
 验收证据及质量门限制见 [阶段记录](specs/15-discussion-partner.md) 与 [测试快照](test-inventory.md)。
@@ -90,6 +93,8 @@ P2 性能修复的增量证据索引与同块事实批量抽取见 `nyx/memory/{
 ## 数据与测试
 
 - 数据库文件默认由 `nyx/db.py` 决定；表结构、迁移和关闭语义见 `04-module-bus-system.md`。
+- schema47/48 增加 `tool_call_log`/`lesson_signal` 两表，schema49 增加 `checkpoints`/`writes`，schema50 增加临时 `tool_execution`，当前共43张业务及基础设施表（SQLite表总数46）。
+  工具观测和经验阈值分别见17/19；跨失败主题去重边界及提交后学习语义也由19定义。
 - schema 35 的 `memory_recall_use` 只为慢通道真实召回提供事件级幂等；对象生命周期与删除语义
   见 `06-memory-system.md`，不作为公开 API 对象。
 - schema 42 的 `conversation_segment_recall_use` 独立记录新版段真实入选；段的新鲜度衰减、活跃索引淘汰和事实来源由 `nyx/memory/` 管理，运行时使用独立记忆计时器。

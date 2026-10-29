@@ -4,7 +4,7 @@ import CharacterManager from "./CharacterManager";
 import Modal from "./Modal";
 import Panel from "./Panel";
 
-// 设置弹层：字体大小 + 背景外观（色调/背景图）+ 圆圈背景（可拖拽头像底色）+ 圆圈大小（三档）。
+// 设置页面（桌宠保留弹层入口）：字体大小 + 背景外观（色调/背景图）+ 圆圈背景（可拖拽头像底色）+ 圆圈大小（三档）。
 // 复用 BackgroundPanel（纯前端 settingsStore）；圆圈底色单独一组预设（名称与色调预设错开，避免测试按名选色歧义）。
 const FONT_OPTIONS = [
   ["small", "小"],
@@ -28,7 +28,7 @@ const CIRCLE_COLOR_PRESETS: readonly { name: string; hex: string }[] = [
 ];
 
 type SettingsViewProps = {
-  onClose: () => void;
+  onClose?: () => void;
 };
 
 export default function SettingsView({ onClose }: SettingsViewProps) {
@@ -38,10 +38,13 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
   const setCircleColor = useSettingsStore((s) => s.setCircleColor);
   const circleSize = useSettingsStore((s) => s.circleSize);
   const setCircleSize = useSettingsStore((s) => s.setCircleSize);
+  const layoutStyle = useSettingsStore((s) => s.layoutStyle);
+  const setLayoutStyle = useSettingsStore((s) => s.setLayoutStyle);
 
-  return (
-    <Modal title="设置" onClose={onClose}>
-      <CharacterManager />
+  const content = (
+      <div className="settings-layout">
+      <section className="settings-appearance" aria-label="外观">
+      <h2>外观</h2>
       <Panel title="字体大小">
         <div className="font-scale">
           {FONT_OPTIONS.map(([key, label]) => (
@@ -57,6 +60,12 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
               {label}
             </button>
           ))}
+        </div>
+      </Panel>
+      <Panel title="窗口风格">
+        <div className="style-switch" role="group" aria-label="窗口风格">
+          <button type="button" aria-pressed={layoutStyle === "folio"} onClick={() => setLayoutStyle("folio")}>双开本</button>
+          <button type="button" aria-pressed={layoutStyle === "chronicle"} onClick={() => setLayoutStyle("chronicle")}>编年史</button>
         </div>
       </Panel>
       <Panel title="圆圈背景">
@@ -108,6 +117,14 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
         </div>
       </Panel>
       <BackgroundPanel />
-    </Modal>
+      </section>
+      <CharacterManager />
+      </div>
+  );
+
+  return onClose ? (
+    <Modal title="设置" onClose={onClose}>{content}</Modal>
+  ) : (
+    <section className="settings-page" aria-label="设置">{content}</section>
   );
 }

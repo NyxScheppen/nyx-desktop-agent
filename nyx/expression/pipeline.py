@@ -12,11 +12,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, TypedDict, cast
 
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from nyx.config import ExpressionConfig
-from nyx.enums import ContextMode, EventType, InteractionKind, UserIntent
+from nyx.enums import ContextMode, EventType, InteractionKind, MemoryKind, UserIntent
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
@@ -25,14 +27,10 @@ from nyx.expression.classifier import (
     is_question,
 )
 from nyx.expression.prompt import (
-    _MATERIAL_ITEM_MAX_CHARS,
     _READING_BLOCK_MAX_CHARS,
-    _TOOL_BLOCK_MAX_CHARS,
-    _TOOL_OUTPUT_MAX_ITEMS,
     DISCUSSION_USE_TOOLS_TASK,
     RESPOND_TASK,
     RESPOND_TASK_CONTINUE,
-    TOOL_DECISION_FAILED,
     USE_TOOLS_TASK,
     activity_summary,
     bound_material_block,
@@ -41,6 +39,12 @@ from nyx.expression.prompt import (
     build_system_prompt,
     build_user_prompt,
 )
+from nyx.expression.tool_pipeline import (
+    ToolState,
+    build_tool_graph,
+    execution_feedback,
+)
+from nyx.expression.tool_pipeline import _parse_plan as _parse_plan
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
@@ -65,7 +69,6 @@ from nyx.types import (
 _DISCUSSION_TOOL_NAMES = frozenset(
     ("memory_recall", "knowledge_search", "deep_research")
 )
-_MAX_TOOL_ROUNDS = 4
 
 
 def _ask_guidance_for(mode: ContextMode, ask_guidance: str | None) -> str | None:
@@ -97,6 +100,7 @@ class ReplyState(TypedDict):
     round: int                   # 已完成 think/speak 的轮数（≤ slow_max_rounds）
     correlation_id: str          # 本次 reply 溯源（11-expression，按 09-activity 对齐）
     last_slow_at: float          # 上次慢通道时间（facade 维护，每 reply 入 state）
+    tool_feedback: str
     tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
     tool_recall_candidates: list[tuple[str, str]]
     intent: UserIntent
@@ -123,6 +127,7 @@ class ReplyDeps:
     knowledge_boundary: str | None
     register_question: Any
     commit_reply_events: Any
+    checkpointer: BaseCheckpointSaver[str] | None = None
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -227,8 +232,20 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         except Exception:
             return []
 
+    async def search_lessons(query: str) -> list[Memory]:
+        try:
+            return await deps.memory.search(query, kind=MemoryKind.LESSON)
+        except Exception:
+            _LOGGER.exception("经验召回失败")
+            return []
+
     async def classify(state: ReplyState) -> dict[str, Any]:
-        if state.get("skill") is not None:
+        saved = (
+            await deps.checkpointer.aget_tuple({
+                "configurable": {"thread_id": state["correlation_id"]},
+            }) if deps.checkpointer is not None else None
+        )
+        if saved is not None or state.get("skill") is not None:
             mode = ContextMode.SLOW
         else:
             mode = classify_channel(
@@ -282,7 +299,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     await recall_fn(segment.id, state["correlation_id"])
         # 普通聊天只召回连续对话段原文；阅读/网页知识不进入这里，
         # 旧的场景 Memory 也不再作为聊天记忆来源。
-        memories: list[Memory] = []
+        memories = await search_lessons(query)
         facts = state["facts"]
         narrative = await deps.inner_life.get_narrative()
         return {
@@ -291,110 +308,52 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             "narrative": narrative,
         }
 
+    tool_graph = build_tool_graph(deps)
+
     async def use_tools(state: ReplyState) -> dict[str, Any]:
-        # 慢通道按本轮授权工具反复查询，结果以有界文本回注给下一轮判断。
         skill = state.get("skill")
-        system = build_system_prompt(
-            deps.canon, state["state"], state["narrative"], state["memories"],
-            facts=state["facts"],
-            ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
-            knowledge_boundary=deps.knowledge_boundary,
-            intent=state["intent"],
-            discussion_fragment=skill.system_fragment if skill else None,
-            temporal_context=state["temporal_context"],
-            activity_context=state["activity_context"],
-        )
-        if skill is None:
-            tool_schemas = [
-                schema for schema in deps.tools.schema()
-                if schema["function"]["name"] not in _DISCUSSION_TOOL_NAMES
-            ]
-            task = USE_TOOLS_TASK
+        config: RunnableConfig = {
+            "configurable": {"thread_id": state["correlation_id"]},
+            "recursion_limit": 200,
+        }
+        snapshot = await tool_graph.aget_state(config)
+        if snapshot.values:
+            result = (
+                await tool_graph.ainvoke(None, config, durability="sync")
+                if snapshot.next else snapshot.values
+            )
         else:
-            tool_schemas = deps.tools.schema(skill.tool_names)
-            task = DISCUSSION_USE_TOOLS_TASK
-        allowed = {schema["function"]["name"] for schema in tool_schemas}
-        user = user_prompt(state) + "\n" + task
-        outputs: list[str] = []
-        recall_candidates: dict[str, str] = {}
-        seen_calls: set[tuple[str, str]] = set()
-        for _ in range(_MAX_TOOL_ROUNDS):
-            try:
-                output = await deps.llm.complete(
-                    [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user + "\n\n" + "\n".join(outputs)},
-                    ],
-                    module="expression",
-                    output_type="tool",
-                    correlation_id=state["correlation_id"],
-                    tools=tool_schemas,
-                )
-                await deps.evaluator.evaluate(output)
-            except Exception:
-                _LOGGER.exception(
-                    "工具判断失败 correlation_id=%s", state["correlation_id"]
-                )
-                return {
-                    "tool_outputs": outputs or [TOOL_DECISION_FAILED],
-                    "tool_recall_candidates": list(recall_candidates.items()),
-                }
-            if not output.tool_calls:
-                break
-            executed = False
-            for tc in output.tool_calls[:_TOOL_OUTPUT_MAX_ITEMS]:
-                if len(outputs) >= _TOOL_OUTPUT_MAX_ITEMS:
-                    break
-                name = tc.get("name", "")
-                args = tc.get("args", {})
-                if name not in allowed:
-                    continue
-                call_key = (name, json.dumps(args, ensure_ascii=False, sort_keys=True))
-                if call_key in seen_calls:
-                    continue
-                seen_calls.add(call_key)
-                executed = True
-                result: Any = None
-                try:
-                    result = await deps.tools.call(name, args)
-                    text = json.dumps(result, ensure_ascii=False)
-                    if len(text) > _MATERIAL_ITEM_MAX_CHARS:
-                        text = text[: _MATERIAL_ITEM_MAX_CHARS - 1] + "…"
-                except Exception:  # 能力工具是 best-effort 旁路
-                    text = f"工具 {name} 执行失败"
-                remaining = (
-                    _TOOL_BLOCK_MAX_CHARS - len("\n".join(outputs))
-                    - (1 if outputs else 0)
-                )
-                if remaining <= len(name) + 3:
-                    break
-                if name == "deep_research" and len(text) + len(name) + 2 > remaining:
-                    break
-                rendered = f"{name}: {text}"[:remaining]
-                outputs.append(rendered)
-                if name == "memory_recall" and isinstance(result, dict):
-                    recall_result = cast(dict[str, object], result)
-                    raw_segments = recall_result.get("segments", [])
-                    if isinstance(raw_segments, list):
-                        for entry in cast(list[object], raw_segments):
-                            if not isinstance(entry, dict):
-                                continue
-                            segment = cast(dict[str, object], entry)
-                            segment_id = segment.get("segment_id")
-                            if not isinstance(segment_id, str):
-                                continue
-                            recall_candidates[segment_id] = (
-                                json.dumps(segment, ensure_ascii=False)
-                            )
-            if (
-                not executed
-                or len(outputs) >= _TOOL_OUTPUT_MAX_ITEMS
-                or len("\n".join(outputs)) >= _TOOL_BLOCK_MAX_CHARS
-            ):
-                break
+            schemas = (
+                deps.tools.schema(skill.tool_names) if skill else [
+                    schema for schema in deps.tools.schema()
+                    if schema["function"]["name"] not in _DISCUSSION_TOOL_NAMES
+                ]
+            )
+            initial: ToolState = {
+                "correlation_id": state["correlation_id"], "query": state["message"],
+                "system": build_system_prompt(
+                    deps.canon, state["state"], state["narrative"], state["memories"],
+                    facts=state["facts"],
+                    ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
+                    knowledge_boundary=deps.knowledge_boundary,
+                    intent=state["intent"],
+                    discussion_fragment=skill.system_fragment if skill else None,
+                    temporal_context=state["temporal_context"],
+                    activity_context=state["activity_context"],
+                ),
+                "user": user_prompt(state),
+                "task": DISCUSSION_USE_TOOLS_TASK if skill else USE_TOOLS_TASK,
+                "schemas": schemas, "plan": None, "rounds": 0, "replans": 0,
+                "replan_reason": None, "calls": [], "call_id": None, "cursor": 0,
+                "pending": None, "records": {}, "notices": [], "outputs": [],
+                "recall_candidates": {},
+            }
+            result = await tool_graph.ainvoke(initial, config, durability="sync")
+        saved_state = cast(ToolState, result)
         return {
-            "tool_outputs": outputs,
-            "tool_recall_candidates": list(recall_candidates.items()),
+            "tool_outputs": saved_state["outputs"],
+            "tool_feedback": execution_feedback(saved_state),
+            "tool_recall_candidates": list(saved_state["recall_candidates"].items()),
         }
 
     def text_events(
@@ -423,11 +382,16 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
 
     async def respond(state: ReplyState) -> dict[str, Any]:
         skill = state.get("skill")
+        memories = (
+            await search_lessons(state["message"])
+            if state["mode"] is ContextMode.SLOW else state["memories"]
+        )
         system = build_system_prompt(
-            deps.canon, state["state"], state["narrative"], state["memories"],
+            deps.canon, state["state"], state["narrative"], memories,
             facts=state["facts"],
             ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             tool_outputs=state["tool_outputs"],
+            tool_feedback=state.get("tool_feedback", ""),
             knowledge_boundary=deps.knowledge_boundary,
             intent=state["intent"],
             discussion_fragment=skill.system_fragment if skill else None,

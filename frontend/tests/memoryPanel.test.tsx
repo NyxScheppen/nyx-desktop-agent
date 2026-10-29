@@ -23,7 +23,33 @@ describe("MemoryPanel", () => {
     vi.restoreAllMocks();
   });
 
-  it("关键词查询：提交后调用 store search", async () => {
+  it("普通记忆先排除知识条目再分页，知识库只显示知识", () => {
+    const memories = Array.from({ length: 6 }, (_, index) => ({
+      id: `m${index}`, created_at: 1, content: `经历正文${index}`,
+      kind: "episode" as const, topics: [], summary: `经历${index}`,
+      freshness: 1, type: "long_term" as const, recall_count: 0, sources: [],
+    }));
+    const knowledge = { ...memories[0], id: "k1", kind: "knowledge" as const,
+      summary: "知识标题", content: "知识正文" };
+    useMemoryStore.setState({ data: [knowledge, ...memories] });
+    render(<MemoryPanel />);
+
+    expect(screen.queryByText("知识标题")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(5);
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText("经历5")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "知识库" }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText("知识标题")).toBeInTheDocument();
+    act(() => useMemoryStore.setState({ data: [knowledge] }));
+    fireEvent.click(screen.getByRole("tab", { name: "普通记忆" }));
+    expect(screen.getByText("暂无记忆")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "下一页" })).not.toBeInTheDocument();
+  });
+
+  it("普通记忆关键词查询：提交后调用 store search", async () => {
     const search = vi.fn().mockResolvedValue(undefined);
     useMemoryStore.setState({ search });
     render(<MemoryPanel />);
@@ -33,10 +59,10 @@ describe("MemoryPanel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "查询" }));
 
-    await waitFor(() => expect(search).toHaveBeenCalledWith("猫"));
+    await waitFor(() => expect(search).toHaveBeenCalledWith("猫", null));
   });
 
-  it("事实图：用实体节点和关系边展示当前事实", () => {
+  it("事实图：用实体节点和关系边展示当前画像事实", () => {
     useMemoryStore.setState({
       facts: [
         {
@@ -66,6 +92,40 @@ describe("MemoryPanel", () => {
     expect(screen.getByText("喜欢")).toBeInTheDocument();
   });
 
+  it("知识库模式固定知识检索并提供事实网", async () => {
+    const search = vi.fn().mockResolvedValue(undefined);
+    const selectFactScope = vi.fn().mockResolvedValue(undefined);
+    useMemoryStore.setState({ search, selectFactScope });
+    render(<MemoryPanel />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "知识库" }));
+    expect(search).toHaveBeenCalledWith("", "knowledge");
+    expect(screen.queryByRole("combobox", { name: "记忆类别" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "事实网" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "事实网" }));
+    expect(selectFactScope).toHaveBeenCalledWith("knowledge");
+    fireEvent.click(screen.getByRole("tab", { name: "知识条目" }));
+
+    fireEvent.change(screen.getByRole("textbox", { name: "知识库关键词" }), {
+      target: { value: "历史" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "查询" }));
+    expect(search).toHaveBeenLastCalledWith("历史", "knowledge");
+  });
+
+  it("切回普通记忆保持统一搜索，不显示类别筛选", async () => {
+    const search = vi.fn().mockResolvedValue(undefined);
+    useMemoryStore.setState({ search });
+    render(<MemoryPanel />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "知识库" }));
+    fireEvent.click(screen.getByRole("tab", { name: "普通记忆" }));
+
+    expect(search).toHaveBeenLastCalledWith("", null);
+    expect(screen.queryByRole("combobox", { name: "记忆类别" })).not.toBeInTheDocument();
+  });
+
   it("事实加载失败：图区域显示错误但面板仍可切换", () => {
     useMemoryStore.setState({ facts: null, factsError: "事实暂时无法加载" });
     render(<MemoryPanel />);
@@ -73,32 +133,18 @@ describe("MemoryPanel", () => {
     fireEvent.click(screen.getByRole("tab", { name: "画像事实" }));
 
     expect(screen.getByText("事实暂时无法加载")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "记忆" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "普通记忆" })).toBeInTheDocument();
   });
 
-  it("三种事实图分开选择，类别选择用于记忆检索", () => {
-    const search = vi.fn().mockResolvedValue(undefined);
+  it("角色重置事实作用域后，画像事实标签跟随当前图", () => {
     const selectFactScope = vi.fn().mockResolvedValue(undefined);
-    useMemoryStore.setState({ search, selectFactScope, query: "猫" });
+    useMemoryStore.setState({ factScope: "conversation", selectFactScope });
     render(<MemoryPanel />);
-
-    fireEvent.change(screen.getByRole("combobox", { name: "记忆类别" }), {
-      target: { value: "reading" },
-    });
-    expect(search).toHaveBeenCalledWith("猫", "reading");
-    fireEvent.click(screen.getByRole("tab", { name: "知识事实" }));
-    expect(selectFactScope).toHaveBeenCalledWith("knowledge");
-    expect(screen.getByRole("tab", { name: "对话事实" })).toBeInTheDocument();
-  });
-
-  it("角色重置事实作用域后，标签跟随当前图", () => {
-    useMemoryStore.setState({ factScope: "knowledge" });
-    render(<MemoryPanel />);
-    fireEvent.click(screen.getByRole("tab", { name: "知识事实" }));
-    expect(screen.getByRole("tab", { name: "知识事实" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("tab", { name: "对话事实" }));
+    expect(screen.getByRole("tab", { name: "对话事实" })).toHaveAttribute("aria-selected", "true");
 
     act(() => useMemoryStore.setState({ factScope: "profile", facts: [] }));
     expect(screen.getByRole("tab", { name: "画像事实" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("tab", { name: "知识事实" })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByRole("tab", { name: "对话事实" })).toHaveAttribute("aria-selected", "false");
   });
 });

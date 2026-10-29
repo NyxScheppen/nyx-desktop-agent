@@ -21,21 +21,21 @@ export default function InnerStatePanel() {
         <div className="inner-state-panel__body">
           <div className="inner-state-panel__top">
             <ValenceArousalPlot valence={current.valence} arousal={current.arousal} />
-            <EnergyBar energy={current.energy} energy_state={current.energy_state} />
-          </div>
-          <div className="inner-state-panel__charts">
-            <section className="inner-state-panel__section">
-              <h3 className="panel-section-title">性格</h3>
-              <BigFiveChart personality={current.personality} />
-            </section>
-            <section className="inner-state-panel__section">
-              <h3 className="panel-section-title">三观</h3>
-              <ValuesChart values={current.values} />
-            </section>
-            <section className="inner-state-panel__section">
-              <h3 className="panel-section-title">审美</h3>
-              <AestheticChart aesthetic={current.aesthetic} />
-            </section>
+            <div className="inner-state-panel__top-side">
+              <EnergyBar energy={current.energy} energy_state={current.energy_state} />
+              <section className="inner-state-panel__section">
+                <h3 className="panel-section-title">性格</h3>
+                <BigFiveChart personality={current.personality} />
+              </section>
+              <section className="inner-state-panel__section">
+                <h3 className="panel-section-title">审美</h3>
+                <AestheticChart aesthetic={current.aesthetic} />
+              </section>
+              <section className="inner-state-panel__section">
+                <h3 className="panel-section-title">三观</h3>
+                <ValuesChart values={current.values} />
+              </section>
+            </div>
           </div>
         </div>
       )}

@@ -363,8 +363,8 @@ class AssignedTask:
 - [ ] `GET /api/activity` 返回 `{current, schedule}`；`GET /api/activity/results` 返回历史产出，接受 `limit=1..100`、`offset=0..100000` 与可选且当前仅允许 `creation` 的 `activity_type`，越界查询由 FastAPI 返回 422、不得进入 SQLite。活动系统不提供通用文件上传或 material 列表端点；书籍导入只走 12-reading-system 的 `POST /api/books`。
 - [ ] 委派任务端点固定为：`GET /api/tasks` 按 `created_at DESC` 返回最近任务；`POST /api/tasks/web` 以 `{url}` 创建网页任务并返回 201；`POST /api/tasks/book` 以 `{book_id, target_paragraph}` 创建 EPUB 任务并返回 201。URL 形状错误或目标段越界返回 422，书不存在返回 404，联网关闭返回 409。
 - [ ] `current`、`schedule`、`results` 继续返回现有 `Activity` dataclass；`progress` 中的 checkpoint 作为 JSON 内追加字段，不破坏旧字段。
-- [ ] 活动页用“网页 / 书籍 / 网页问卷”分段控件创建任务。书籍模式复用 `GET /api/books` 和现有段落窗口 API，目标段号保持 1-based 并限制在 `[1,total_paragraphs]`，展示目标段及前后各一段预览。任务列表至少显示类型、目标、状态、创建时间、问卷完成摘要和失败原因；`task_updated` 触发 activity store 重拉活动、创作和任务快照。
-- [ ] 前端活动页的产出区只显示最近 12 条已完成创作的标题与本地时间，不显示正文、读书或探索产出；独立“创作”页复用同一 store，按 12 条一批加载历史创作，正文默认折叠，展开后显示完整正文与落盘路径。
+- [ ] 独立任务页用“网页 / 书籍 / 网页问卷”分段控件创建任务。书籍模式复用 `GET /api/books` 和现有段落窗口 API，目标段号保持 1-based 并限制在 `[1,total_paragraphs]`，展示目标段及前后各一段预览。任务列表显示类型、目标、状态、创建时间、问卷完成摘要和失败原因；每页五条、可检索并打开侧边详情。`task_updated` 触发 activity store 重拉活动、创作和任务快照。
+- [ ] 活动页展示后端提供的当天时间线，按每列约三条、上下交替的 U 形排列，支持拖动和键盘横向浏览；不另造历史日期数据或单独的当前活动卡片。独立“创作”页复用同一 store，以书架选择作品、展开正文与活动来源，按 12 条一批加载历史创作。
 - [ ] `activityStore` 为创作结果请求维护内部世代；`refresh()` 开始后，先前分页请求的成功或失败结果都必须丢弃，不得追加到或覆盖较新的首页快照、错误与 loading 状态。
 - [ ] 活动生命周期 SSE 事件保持 `activity_start`、`activity_end`、`activity_interrupted`；委派任务另用 `task_updated` 快照通知。统一 payload 为 `event.content` 展开并附 `event_id`、`correlation_id`、后端 `timestamp`，公共头按 04-module-bus-system 定义。
 
@@ -499,7 +499,7 @@ class AssignedTask:
 - [ ] 收尾与发布故障：完成/失败/中断事务失败后调和孤立 `RUNNING`，首次恢复失败后下一次准入重试；取消超时有界返回且不重排；任务提交后的调度/回读失败仍返回成功。
 - [ ] EPUB 自动分块未读完时 `activity_end.goal_met=None` 且释放 ACTIVE 欲望；探索结果
   正文与 snippet 都为空白时不调用 `digest_source_block`。
-- [ ] 前端活动页：网页/EPUB 表单、目标段前后预览、任务状态/失败原因和 `task_updated` 刷新。
+- [ ] 前端任务页：网页/EPUB 表单、目标段前后预览、任务状态/失败原因、五条分页及 `task_updated` 刷新；活动页验证当天时间线。
 - [ ] `tests/test_activity/test_observe.py`：presence 的 30 秒/5 分钟边界、窗口标题不参与判定，以及观察摘要四种组合。
 - [ ] `tests/test_activity/test_screen.py`：抓屏/视觉描述成功路径及 best-effort 失败路径。
 - [ ] 前端 presence 测试：首次采样非归来、非空窗口标题仍可在 5 分钟后 away、失败 POST 会重试、旧请求不会覆盖新快照、`away -> online` 携带离开时长。

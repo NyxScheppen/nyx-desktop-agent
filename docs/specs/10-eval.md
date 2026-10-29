@@ -17,6 +17,9 @@
 - [ ] `LLMOutput` 除 token/call_id 外包含 `prompt_messages: list[LlmMessage] | None`，不进入 repr
 - [ ] `LlmClient.complete()` 在 `ainvoke` 前复制有序 role/content，并用同一快照调用模型和回填输出
 - [ ] `Evaluator.evaluate()` 每次调用写一条 `eval_log` 记录（best-effort，落库失败不重抛）
+- [ ] 可选 `on_failure` 在关键词或 embedding 命中 OOC 时每次 evaluate 最多回调一次；
+  传 `("ooc", "ooc:{module}", "表达偏离人设", correlation_id)`，异常只记日志、取消传播。
+  组合根接入 [19](19-failure-reflection.md) 的经验沉淀；不触发内心反思。
 - [ ] `EvalStore` 原子写 `eval_log` + `eval_prompt`；同 `call_id` 的 think/speak 只保存一份 prompt
 - [ ] 迁移 v21 建 `eval_prompt`，旧 eval 记录保持可读但 prompt 为 unavailable
 - [ ] recent 的 `limit` 范围为 1..100、`offset` 范围为 0..100000，响应不包含 prompt；详情端点按 record id 懒加载并返回 `messages | null`
@@ -24,6 +27,10 @@
 - [ ] 前端评估作为独立视图提供；刷新时以 20 条为一页读取全部历史记录，prompt 仍只在展开单条记录时读取
 
 ## 技术方案
+
+- `Evaluator(embed=None, store=None, on_failure=None)` 的回调类型为
+  `Callable[[str, str, str, str], Awaitable[None]] | None`。先完成既有记账再发信号；
+  `output_type="plan"` 同样记账，结构化计划仍跳过 embedding OOC。
 
 - **token 抽取（03-llm）**：`complete()` 里 `response = await self._model.ainvoke(...)` 后用纯函数 `_extract_tokens(response) -> tuple[int, int]` 抽 `(prompt_tokens, completion_tokens)`——优先 `response.usage_metadata`（`input_tokens`/`output_tokens`，langchain-core 1.5.5 规范字段），回退 `response.response_metadata["token_usage"]`（`prompt_tokens`/`completion_tokens`，OpenAI 兼容 provider），皆无则 `(0, 0)`。`call_id = str(uuid.uuid4())` 每次调用生成。三者随 `LLMOutput` 返回（保持 `json_mode`/`tools`/`tool_calls` 既有行为不变）。
 - **最终 prompt 定义**：仅指 `LlmClient.complete()` 传给 `ainvoke` 的 `system/user/assistant` 有序消息。`tools`、`response_format`、provider 隐式字段、LangChain 内部重试和 `VisionClient` 不在本契约内。调用失败时没有 `LLMOutput`，不新增 eval 行。

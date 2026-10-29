@@ -1,12 +1,15 @@
 # pyright: reportPrivateUsage=false
 import asyncio
 import json
+import sqlite3
 import time
 from collections.abc import Iterable
 from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from nyx import db
 from nyx.activity.facade import ActivityFacade
@@ -34,6 +37,7 @@ from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
 from nyx.tools.registry import ToolRegistry
+from nyx.tools.tool_call_store import ToolCallStore
 from nyx.types import (
     Activity,
     ConversationSegment,
@@ -46,6 +50,7 @@ from nyx.types import (
     Personality,
     SelfNarrative,
     ShortTermDesire,
+    Tool,
     Values,
 )
 
@@ -136,6 +141,8 @@ class _FakeLlm:
                 },
                 ensure_ascii=False,
             )
+        elif output_type == "plan":
+            content = '{"goal":"普通回复","steps":[]}'
         else:
             content = self._chat_content
         return LLMOutput(
@@ -170,7 +177,11 @@ class _FakeMemory:
         self.recent_memories: list[Memory] = []
         self.user_profile: list[Memory] = []
 
-    async def search(self, query: str) -> list[Memory]:
+    async def search(
+        self, query: str, kind: MemoryKind | None = None
+    ) -> list[Memory]:
+        if kind is MemoryKind.LESSON:
+            return []
         self.search_calls += 1
         self.search_queries.append(query)
         return list(self.search_results)
@@ -219,6 +230,11 @@ class _FakeMemory:
 
     async def record_no_answer(self, question: str, correlation_id: str) -> None:
         self.no_answers.append(question)
+
+    async def record_failure_signal(
+        self, kind: str, topic: str, summary: str, correlation_id: str | None = None
+    ) -> None:
+        pass
 
 
 class _FakeInnerLife:
@@ -306,9 +322,27 @@ class _FakeTools:
             else [schema for schema in schemas if schema["function"]["name"] in names]
         )
 
-    async def call(self, name: str, args: dict[str, Any]) -> Any:
+    async def call(
+        self, name: str, args: dict[str, Any], **kwargs: Any
+    ) -> Any:
         self.calls.append((name, args))
         return self.results.get(name, [])
+
+    async def mark_adopted(self, log_id: str) -> None:
+        pass
+
+    async def start_execution(
+        self, log_id: str, correlation_id: str,
+    ) -> dict[str, Any] | None:
+        return None
+
+    async def finish_execution(
+        self, log_id: str, result: Any, error: str | None,
+    ) -> None:
+        pass
+
+    async def clear_executions(self, correlation_id: str) -> None:
+        pass
 
 
 class _ReturnState:
@@ -361,6 +395,7 @@ def _new_facade(
     interaction_store: ExpressionInteractionStore | None = None,
     return_state: _ReturnState | None = None,
     reading_context_reader: Any = None,
+    checkpointer: BaseCheckpointSaver[str] | None = None,
 ) -> tuple[
     ExpressionFacade,
     _FakeLlm,
@@ -399,6 +434,7 @@ def _new_facade(
         finish_return=(return_state.finish if return_state is not None else None),
         release_return=(return_state.release if return_state is not None else None),
         reading_context_reader=reading_context_reader,
+        checkpointer=checkpointer,
     )
     return facade, fake_llm, evaluator, memory, inner_life, bus
 
@@ -645,7 +681,7 @@ async def test_reply_slow_non_question() -> None:
         energy=100.0, arousal=0.0
     )
     await facade.reply("在吗", "corr-slow")
-    assert [t for t, _m, _c in llm.calls] == ["tool"] + ["reply"] * 3
+    assert [t for t, _m, _c in llm.calls] == ["plan", "tool"] + ["reply"] * 3
     assert [e.type for e in bus.published] == [
         EventType.THINK,
         EventType.SPEAK,
@@ -673,7 +709,7 @@ async def test_reply_slow_defaults_to_one_complete_response() -> None:
         llm=_FakeLlm(needs_continuation=False),
     )
     await facade.reply("在吗", "corr-one")
-    assert [t for t, _m, _c in llm.calls] == ["tool", "reply"]
+    assert [t for t, _m, _c in llm.calls] == ["plan", "tool", "reply"]
     assert [event.type for event in bus.published] == [
         EventType.THINK,
         EventType.SPEAK,
@@ -821,7 +857,7 @@ async def test_reply_slow_question() -> None:
         energy=100.0, arousal=0.0, llm=_FakeLlm(speak_override="你还好吗？")
     )
     await facade.reply("在吗", "corr-q")
-    assert [t for t, _m, _c in llm.calls] == ["tool", "reply"]
+    assert [t for t, _m, _c in llm.calls] == ["plan", "tool", "reply"]
     assert [e.type for e in bus.published] == [
         EventType.THINK,
         EventType.ASK,
@@ -839,7 +875,7 @@ async def test_reply_slow_tool_executes_and_flows_into_prompt() -> None:
         tools=tools,
     )
     await facade.reply("在吗", "corr-tool")
-    assert [t for t, _m, _c in llm.calls][0] == "tool"
+    assert [t for t, _m, _c in llm.calls][0] == "plan"
     assert tools.calls == [("local_search", {"q": "骑士"})]
     tool_system = llm.calls[0][1][0]["content"]
     think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
@@ -861,7 +897,7 @@ async def test_reply_slow_no_tool_calls() -> None:
     await facade.reply("在吗", "corr-empty")
     think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
     assert "[工具查询结果]" not in think_system
-    assert [t for t, _m, _c in llm.calls][0] == "tool"
+    assert [t for t, _m, _c in llm.calls][0] == "plan"
 
 
 async def test_reply_slow_tool_decision_failure_continues_without_tools() -> None:
@@ -887,18 +923,402 @@ async def test_reply_slow_tool_decision_failure_continues_without_tools() -> Non
 
 async def test_reply_slow_tool_failure_fallback() -> None:
     class _BoomTools(_FakeTools):
-        async def call(self, name: str, args: dict[str, Any]) -> Any:
+        async def call(self, name: str, args: dict[str, Any], **kwargs: Any) -> Any:
             raise RuntimeError("boom")
 
     facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
         energy=100.0,
         arousal=0.0,
-        llm=_FakeLlm(tool_calls=[{"name": "file_io", "args": {}}]),
+        llm=_FakeLlm(tool_calls=[{
+            "name": "file_io", "args": {"action": "read", "path": "notes.txt"},
+        }]),
         tools=_BoomTools(),
     )
     await facade.reply("在吗", "corr-boom")
     think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
     assert "工具 file_io 执行失败" in think_system
+
+
+async def test_tool_retry_reaches_success_before_next_model_decision() -> None:
+    class _FlakyTools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any], **kwargs: Any) -> Any:
+            self.calls.append((name, args))
+            if len(self.calls) < 3:
+                raise OSError("temporarily unavailable")
+            return {"content": "recovered content"}
+
+    tools = _FlakyTools()
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=tools,
+        llm=_FakeLlm(tool_calls=[{
+            "name": "file_io", "args": {"action": "read", "path": "notes.txt"},
+        }]),
+    )
+    await facade.reply("在吗", "retry-success")
+    decisions = [messages for kind, messages, _ in llm.calls if kind == "tool"]
+    assert len(tools.calls) == 3
+    assert "recovered content" in decisions[1][-1]["content"]
+    assert '"attempts": 3' in decisions[1][-1]["content"]
+
+
+async def test_side_effect_error_is_uncertain_and_stops_remaining_batch() -> None:
+    database = await db.connect(":memory:")
+    effects: list[str] = []
+
+    async def write(path: str) -> None:
+        effects.append(path)
+        raise OSError("confirmation lost after write")
+
+    async def search(query: str) -> None:
+        effects.append(query)
+
+    class _DecidingLlm(_FakeLlm):
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any,
+        ) -> LLMOutput:
+            if kwargs["output_type"] == "tool":
+                count = sum(kind == "tool" for kind, _, _ in self.calls)
+                if count == 1:
+                    self._tool_calls = [{
+                        "name": "file_io", "args": {"path": "note.txt"},
+                    }]
+                elif count > 1:
+                    self._tool_calls = []
+            return await super().complete(messages, **kwargs)
+
+    tools = ToolRegistry(ToolCallStore(database))
+    tools.register(Tool("file_io", "write", {}, write))
+    tools.register(Tool("local_search", "search", {}, search))
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=cast(Any, tools), checkpointer=database.checkpointer,
+        llm=_DecidingLlm(tool_calls=[
+            {"name": "file_io", "args": {"path": "note.txt"}},
+            {"name": "local_search", "args": {"query": "must not run"}},
+        ]),
+    )
+    try:
+        await facade.reply("在吗", "uncertain-write")
+        decisions = [messages[-1]["content"] for kind, messages, _ in llm.calls
+                     if kind == "tool"]
+        assert effects == ["note.txt"]
+        assert all(text in decisions[1] for text in (
+            '"status": "uncertain"', "confirmation lost", "note.txt", "未执行",
+        ))
+        assert "结果未确认" in decisions[2] and "跳过" in decisions[2]
+        rows = await (await database.conn.execute(
+            "SELECT * FROM tool_execution"
+        )).fetchall()
+        assert not rows
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("outcome", [
+    "running", "success", "legacy", "success_disabled", "running_disabled",
+])
+async def test_side_effect_receipt_recovers_without_reexecuting(
+    tmp_path: Path, outcome: str,
+) -> None:
+    completed = outcome.startswith("success")
+    effects = tmp_path / "effects.txt"
+    entered = asyncio.Event()
+
+    async def write(path: str) -> dict[str, Any]:
+        with effects.open("a", encoding="utf-8") as stream:
+            stream.write(path + "\n")
+        if not completed:
+            entered.set()
+            await asyncio.Event().wait()
+        return {"task_id": "original-task", "content": "全" * 3000}
+
+    class _InterruptedRegistry(ToolRegistry):
+        async def finish_execution(
+            self, log_id: str, result: Any, error: str | None,
+        ) -> None:
+            await super().finish_execution(log_id, result, error)
+            if completed:
+                entered.set()
+                await asyncio.Event().wait()
+
+    path = str(tmp_path / "role.db")
+    database = await db.connect(path)
+    try:
+        tools = _InterruptedRegistry(ToolCallStore(database))
+        tools.register(Tool("creation_task", "create", {}, write))
+        facade, *_ = _new_facade(
+            energy=100.0, tools=cast(Any, tools), checkpointer=database.checkpointer,
+            llm=_FakeLlm(tool_calls=[{
+                "name": "creation_task", "args": {"path": "original"},
+            }]),
+        )
+        task = asyncio.create_task(facade.reply("在吗", "effect-resume"))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            if outcome == "legacy":
+                saver = cast(BaseCheckpointSaver[str], database.checkpointer)
+                saved = await saver.aget_tuple({
+                    "configurable": {"thread_id": "effect-resume"},
+                })
+                assert saved is not None
+                pending = cast(
+                    dict[str, Any], saved.checkpoint["channel_values"]["pending"],
+                )
+                pending.pop("receipt_required")
+                await saver.aput(saved.config, saved.checkpoint, saved.metadata, {})
+                await tools.clear_executions("effect-resume")
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    finally:
+        await database.close()
+
+    database = await db.connect(path)
+    try:
+        tools = ToolRegistry(ToolCallStore(database))
+        if not outcome.endswith("disabled"):
+            tools.register(Tool("creation_task", "create", {}, write))
+        facade, llm, *_ = _new_facade(
+            energy=0.0, tools=cast(Any, tools), checkpointer=database.checkpointer,
+            llm=_FakeLlm(),
+        )
+        await asyncio.wait_for(facade.reply("在吗", "effect-resume"), timeout=5)
+        decision = next(messages[-1]["content"] for kind, messages, _ in llm.calls
+                        if kind == "tool")
+        assert effects.read_text(encoding="utf-8") == "original\n"
+        assert ("original-task" if completed else '"status": "uncertain"') in decision
+        rows = await (await database.conn.execute(
+            "SELECT * FROM tool_execution"
+        )).fetchall()
+        assert not rows
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("stage", ["INSERT", "UPDATE"])
+async def test_receipt_storage_failure_propagates_without_repeating_effect(
+    tmp_path: Path, stage: str,
+) -> None:
+    database = await db.connect(":memory:")
+    target = tmp_path / "effects.txt"
+
+    async def write(path: str) -> dict[str, str]:
+        with target.open("a", encoding="utf-8") as stream:
+            stream.write(path + "\n")
+        return {"task_id": "original"}
+
+    tools = ToolRegistry(ToolCallStore(database))
+    tools.register(Tool("creation_task", "create", {}, write))
+    try:
+        await database.conn.execute(
+            f"CREATE TRIGGER reject_receipt BEFORE {stage} ON tool_execution "
+            "BEGIN SELECT RAISE(FAIL, 'receipt unavailable'); END"
+        )
+        await database.conn.commit()
+        facade, *_ = _new_facade(
+            energy=100.0, tools=cast(Any, tools), checkpointer=database.checkpointer,
+            llm=_FakeLlm(tool_calls=[{
+                "name": "creation_task", "args": {"path": "only-once"},
+            }]),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="receipt unavailable"):
+            await facade.reply("在吗", "receipt-failure")
+        assert target.exists() is (stage == "UPDATE")
+        await database.conn.execute("DROP TRIGGER reject_receipt")
+        await database.conn.commit()
+        await facade.reply("在吗", "receipt-failure")
+        assert target.read_text(encoding="utf-8") == "only-once\n"
+    finally:
+        await database.close()
+
+
+async def test_exhausted_tool_reports_error_parameters_and_duplicate_reason() -> None:
+    class _FailedTools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any], **kwargs: Any) -> Any:
+            self.calls.append((name, args))
+            raise FileNotFoundError("notes.txt is missing")
+
+    tools = _FailedTools()
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=tools,
+        llm=_FakeLlm(tool_calls=[{
+            "name": "file_io", "args": {"action": "read", "path": "notes.txt"},
+        }]),
+    )
+    await facade.reply("在吗", "retry-exhausted")
+    decisions = [messages[-1]["content"] for kind, messages, _ in llm.calls
+                 if kind == "tool"]
+    assert len(tools.calls) == 3
+    assert len(decisions) >= 3
+    assert all(text in decisions[1] for text in (
+        "notes.txt is missing", '"path": "notes.txt"', '"status": "exhausted"',
+    ))
+    assert "跳过" in decisions[2] and "重试次数" in decisions[2]
+
+
+async def test_tool_checkpoint_resumes_failed_call_after_database_reopens(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _RecoveringTools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any], **kwargs: Any) -> Any:
+            calls.append((name, args))
+            if name == "file_io" and sum(n == "file_io" for n, _ in calls) < 3:
+                raise OSError("disk temporarily unavailable")
+            return {"content": name + " completed"}
+
+    batch = [
+        {"name": "local_search", "args": {"query": "notes"}},
+        {"name": "file_io", "args": {"action": "read", "path": "notes.txt"}},
+    ]
+    path = str(tmp_path / "role.db")
+    database = await db.connect(path)
+    try:
+        facade, *_ = _new_facade(
+            energy=100.0, tools=_RecoveringTools(),
+            llm=_FakeLlm(tool_calls=batch), checkpointer=database.checkpointer,
+        )
+        task = asyncio.create_task(facade.reply("在吗", "recover-tool"))
+        try:
+            saver = cast(BaseCheckpointSaver[str], database.checkpointer)
+            async with asyncio.timeout(5):
+                while True:
+                    saved = await saver.aget_tuple({
+                        "configurable": {"thread_id": "recover-tool"},
+                    })
+                    values = saved.checkpoint["channel_values"] if saved else {}
+                    pending = values.get("pending")
+                    if (
+                        isinstance(pending, dict)
+                        and cast(dict[str, Any], pending).get("status") == "retry_wait"
+                    ):
+                        break
+                    await asyncio.sleep(0.01)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    finally:
+        await database.close()
+
+    database = await db.connect(path)
+    try:
+        # Low energy would normally choose FAST; saved work must still resume.
+        facade, llm, *_ = _new_facade(
+            energy=0.0, tools=_RecoveringTools(),
+            llm=_FakeLlm(tool_calls=batch), checkpointer=database.checkpointer,
+        )
+        await facade.reply("在吗", "recover-tool")
+        resumed = next(messages[-1]["content"] for kind, messages, _ in llm.calls
+                       if kind == "tool")
+        assert [name for name, _ in calls] == [
+            "local_search", "file_io", "file_io", "file_io",
+        ]
+        assert all(
+            args == batch[1]["args"] for name, args in calls if name == "file_io"
+        )
+        assert '"attempts": 3' in resumed and "local_search completed" in resumed
+        saver = cast(BaseCheckpointSaver[str], database.checkpointer)
+        assert await saver.aget_tuple({
+            "configurable": {"thread_id": "recover-tool"},
+        }) is None
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("result, attempts", [({"error": "unavailable"}, 3), ([], 1)])
+async def test_explicit_tool_error_retries_but_empty_result_does_not(
+    result: Any, attempts: int,
+) -> None:
+    tools = _FakeTools()
+    tools.results["local_search"] = result
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=tools,
+        llm=_FakeLlm(tool_calls=[{"name": "local_search", "args": {"query": "notes"}}]),
+    )
+    await facade.reply("在吗", "explicit-error-or-empty")
+    decisions = [messages[-1]["content"] for kind, messages, _ in llm.calls
+                 if kind == "tool"]
+    assert len(tools.calls) == attempts
+    assert ("unavailable" if attempts == 3 else '"status": "empty"') in decisions[1]
+
+
+async def test_unauthorized_tool_is_explained_to_next_decision() -> None:
+    tools = _FakeTools()
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=tools,
+        llm=_FakeLlm(tool_calls=[{"name": "not_allowed", "args": {}}]),
+    )
+    await facade.reply("在吗", "unauthorized-tool")
+    decisions = [messages[-1]["content"] for kind, messages, _ in llm.calls
+                 if kind == "tool"]
+    assert not tools.calls
+    assert "跳过 not_allowed" in decisions[1] and "未授权" in decisions[1]
+
+
+async def test_exhausted_call_returns_control_before_remaining_batch() -> None:
+    class _StopAfterFailure(_FakeLlm):
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any,
+        ) -> LLMOutput:
+            if kwargs["output_type"] == "tool" and any(
+                kind == "tool" for kind, _, _ in self.calls
+            ):
+                self._tool_calls = []
+            return await super().complete(messages, **kwargs)
+
+    class _FailedTools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any], **kwargs: Any) -> Any:
+            self.calls.append((name, args))
+            if name == "file_io":
+                raise OSError("cannot read original path")
+            return ["replacement"]
+
+    tools = _FailedTools()
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=tools,
+        llm=_StopAfterFailure(tool_calls=[
+            {"name": "file_io", "args": {"action": "read", "path": "notes.txt"}},
+            {"name": "local_search", "args": {"query": "replacement"}},
+        ]),
+    )
+    await facade.reply("在吗", "failed-batch")
+    decisions = [messages[-1]["content"] for kind, messages, _ in llm.calls
+                 if kind == "tool"]
+    assert [name for name, _ in tools.calls] == ["file_io"] * 3
+    assert "未执行" in decisions[1] and "local_search" in decisions[1]
+
+
+async def test_tool_replan_keeps_results_and_explains_second_replan_limit() -> None:
+    class _ReplanningLlm(_FakeLlm):
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any,
+        ) -> LLMOutput:
+            if kwargs["output_type"] == "tool":
+                count = sum(kind == "tool" for kind, _, _ in self.calls)
+                self._tool_calls = [{
+                    "name": "local_search" if count % 2 == 0 else "replan",
+                    "args": {"query": str(count)} if count % 2 == 0
+                    else {"reason": "current plan is invalid"},
+                }]
+            return await super().complete(messages, **kwargs)
+
+    tools = _FakeTools()
+    tools.results["local_search"] = ["saved result"]
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=tools, llm=_ReplanningLlm(),
+    )
+    await facade.reply("在吗", "replan-limit")
+    system = next(messages[0]["content"] for kind, messages, _ in llm.calls
+                  if kind == "reply")
+    assert sum(kind == "plan" for kind, _, _ in llm.calls) == 2
+    assert [args for _, args in tools.calls] == [{"query": "0"}, {"query": "2"}]
+    assert "saved result" in system and "跳过 replan" in system
 
 
 async def test_reply_slow_tool_output_truncated() -> None:

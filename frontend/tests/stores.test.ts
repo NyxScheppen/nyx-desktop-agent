@@ -1966,6 +1966,29 @@ describe("readerStore", () => {
   });
 
   // ---- 笔记（07 §3） ----
+  it("笔记加载期间保存新划线，不丢弃此前已保存的划线", async () => {
+    useReaderStore.setState({ bookId: "b1" });
+    const saved = { id: "saved", book_id: "b1", paragraph_id: "p1",
+      paragraph_index: 1, content: "", selected_text: "旧划线",
+      selection_start: 0, selection_end: 3, created_at: 1, updated_at: 1,
+      annotations: [] };
+    const added = { ...saved, id: "added", selected_text: "新划线" };
+    let resolveLoad!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveLoad = resolve; }))
+      .mockResolvedValueOnce(jsonResponse(added)));
+
+    const loading = useReaderStore.getState().loadNotes();
+    const saving = useReaderStore.getState().addNote({
+      book_id: "b1", paragraph_id: "p1", content: "", selected_text: "新划线",
+      selection_start: 0, selection_end: 3,
+    });
+    resolveLoad(jsonResponse([saved]));
+    await loading;
+    expect(await saving).toBe(true);
+    expect(useReaderStore.getState().notes.map((note) => note.id)).toEqual(["added", "saved"]);
+  });
+
   it("loadNotes：GET /api/notes/{bookId} → notes 落 store", async () => {
     useReaderStore.setState({ bookId: "b1" });
     const fixture = [

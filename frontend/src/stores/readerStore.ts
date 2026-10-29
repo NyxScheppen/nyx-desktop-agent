@@ -574,6 +574,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const { bookId } = get();
       if (bookId === null) return;
       const session = sessionGeneration;
+      // 笔记读写共用串行队列；后续写操作不能作废它依赖的读取快照。
       const request = ++notesRequestRevision;
       const key = session + ":" + bookId;
       await enqueueOperation(noteQueues, key, async () => {
@@ -610,7 +611,6 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const session = sessionGeneration;
       const bookId = get().bookId;
       if (bookId === null || p.book_id !== bookId) return false;
-      notesRequestRevision += 1;
       return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
       const scope = captureScope();
       const commit = scopedSetter(set);
@@ -636,7 +636,6 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const session = sessionGeneration;
       const bookId = get().bookId;
       if (bookId === null) return false;
-      notesRequestRevision += 1;
       return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
       const scope = captureScope();
       const commit = scopedSetter(set);
@@ -665,7 +664,6 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const session = sessionGeneration;
       const bookId = get().bookId;
       if (bookId === null) return false;
-      notesRequestRevision += 1;
       return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
       const scope = captureScope();
       const commit = scopedSetter(set);
@@ -691,7 +689,6 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const session = sessionGeneration;
       const bookId = get().bookId;
       if (bookId === null) return false;
-      notesRequestRevision += 1;
       return enqueueOperation(noteQueues, session + ":" + bookId, async () => {
       const scope = captureScope();
       const commit = scopedSetter(set);

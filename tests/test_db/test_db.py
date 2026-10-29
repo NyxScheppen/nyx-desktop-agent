@@ -1,12 +1,16 @@
 # pyright: reportPrivateUsage=false
 import asyncio
+import sqlite3
+import threading
 from pathlib import Path
 from typing import cast
 
 import aiosqlite
 import pytest
+from langgraph.checkpoint.base import BaseCheckpointSaver, empty_checkpoint
 
 from nyx import db
+from nyx.tools.tool_call_store import ToolCallStore
 
 # 角色数据库的业务表（不含 schema_version / SQLite 内部表）。
 BUSINESS_TABLES = {
@@ -32,6 +36,11 @@ BUSINESS_TABLES = {
     "bookmarks",
     "eval_log",
     "eval_prompt",
+    "tool_call_log",
+    "tool_execution",
+    "lesson_signal",
+    "checkpoints",
+    "writes",
     "event_delivery",
     "event_effect",
     "desire_generation_attempt",
@@ -143,6 +152,52 @@ async def test_connect_cancelled_during_migration_closes_connection(
             await conn.close()
 
 
+async def test_connect_cancelled_during_checkpoint_open_closes_both_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    connections: list[aiosqlite.Connection] = []
+    original = aiosqlite.connect
+
+    def delayed_connect(*args: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = original(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+        connections.append(conn)
+        if len(connections) == 2:
+            connector = conn._connector
+
+            def open_after_release() -> sqlite3.Connection:
+                loop.call_soon_threadsafe(entered.set)
+                release.wait(timeout=5)
+                return connector()
+
+            conn._connector = open_after_release
+        return conn
+
+    monkeypatch.setattr(aiosqlite, "connect", delayed_connect)
+    task = asyncio.create_task(db.connect(str(tmp_path / "role.db")))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        for conn in connections:
+            await asyncio.to_thread(conn.join, 1)
+            assert not conn.is_alive()
+            with pytest.raises(ValueError, match="no active connection"):
+                await conn.execute("SELECT 1")
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        for conn in connections:
+            await conn.close()
+
+
 async def test_migrate_creates_all_tables() -> None:
     conn = await _migrated_conn()
     try:
@@ -151,8 +206,52 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 41
+    assert len(names) == 46
     assert "material" not in names
+
+
+@pytest.mark.parametrize("terminal_type", ["speak", "ask"])
+async def test_connect_cleans_terminal_tool_checkpoint_but_keeps_unfinished(
+    tmp_path: Path, terminal_type: str,
+) -> None:
+    path = str(tmp_path / "role.db")
+    database = await db.connect(path)
+    try:
+        saver = cast(BaseCheckpointSaver[str], database.checkpointer)
+        for thread in ("finished", "unfinished"):
+            await ToolCallStore(database).start_execution(thread, thread)
+            config = await saver.aput(
+                {"configurable": {"thread_id": thread, "checkpoint_ns": ""}},
+                empty_checkpoint(), {"source": "input", "step": -1}, {},
+            )
+            await saver.aput_writes(config, [("pending", "retry_wait")], "tool-task")
+        async with database.transaction() as conn:
+            await conn.execute(
+                "INSERT INTO event_log VALUES (?, 1, 'internal', ?, '{}', 'finished')",
+                ("terminal-reply", terminal_type),
+            )
+    finally:
+        await database.close()
+
+    database = await db.connect(path)
+    try:
+        saver = cast(BaseCheckpointSaver[str], database.checkpointer)
+        assert await saver.aget_tuple({
+            "configurable": {"thread_id": "finished"},
+        }) is None
+        assert await saver.aget_tuple({
+            "configurable": {"thread_id": "unfinished"},
+        }) is not None
+        rows = await (await database.conn.execute(
+            "SELECT thread_id, count(*) AS n FROM writes GROUP BY thread_id"
+        )).fetchall()
+        assert {row["thread_id"]: row["n"] for row in rows} == {"unfinished": 1}
+        receipts = await (await database.conn.execute(
+            "SELECT correlation_id FROM tool_execution"
+        )).fetchall()
+        assert [row["correlation_id"] for row in receipts] == ["unfinished"]
+    finally:
+        await database.close()
 
 
 async def test_parent_long_term_foreign_keys_set_null() -> None:
@@ -318,6 +417,10 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_reading_evidence_exact",
         "idx_conversation_segment_time",
         "idx_memory_fact_source_segment",
+        "idx_tool_call_log_created",
+        "idx_tool_call_log_correlation",
+        "idx_tool_call_log_call",
+        "idx_tool_execution_correlation",
     }
 
 
@@ -717,7 +820,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 41
+    assert len(names) == 46
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 
@@ -805,7 +908,7 @@ async def test_connect_returns_database(tmp_path: Path) -> None:
         fk = await (await database.conn.execute("PRAGMA foreign_keys")).fetchone()
         x = await (await database.conn.execute("SELECT 1 AS x")).fetchone()
     finally:
-        await database.conn.close()
+        await database.close()
     assert db_path.exists()
     assert journal is not None and journal["journal_mode"] == "wal"
     assert fk is not None and int(fk["foreign_keys"]) == 1
@@ -816,14 +919,14 @@ async def test_connect_returns_database(tmp_path: Path) -> None:
 async def test_connect_explicit_path_priority(tmp_path: Path) -> None:
     a = tmp_path / "a.db"
     database = await db.connect(str(a))
-    await database.conn.close()
+    await database.close()
     assert a.exists()
 
 
 async def test_connect_creates_parent_directory(tmp_path: Path) -> None:
     nested = tmp_path / "data" / "nyx.db"
     database = await db.connect(str(nested))
-    await database.conn.close()
+    await database.close()
     assert nested.exists()
 
 
@@ -833,7 +936,7 @@ async def test_connect_env_override(
     env_db = tmp_path / "env.db"
     monkeypatch.setenv("NYX_DB", str(env_db))
     database = await db.connect()
-    await database.conn.close()
+    await database.close()
     assert env_db.exists()
 
 
@@ -843,7 +946,7 @@ async def test_connect_default_path(
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("NYX_DB", raising=False)
     database = await db.connect()
-    await database.conn.close()
+    await database.close()
     assert (tmp_path / "data" / "nyx.db").exists()
 
 
@@ -863,7 +966,7 @@ async def test_connect_reuses_legacy_default_database(
     row = await (
         await database.conn.execute("SELECT value FROM legacy_marker")
     ).fetchone()
-    await database.conn.close()
+    await database.close()
 
     assert row is not None and row["value"] == "preserved"
     assert not (tmp_path / "data" / "nyx.db").exists()

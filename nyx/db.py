@@ -10,6 +10,9 @@ from pathlib import Path
 from time import monotonic
 
 import aiosqlite
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 
 def _raw_sha256(content: str) -> str:
@@ -37,6 +40,7 @@ class Database:
     operation_timeout: float = DB_OPERATION_TIMEOUT
     failure_threshold: int = DB_FAILURE_THRESHOLD
     cooldown_seconds: float = DB_COOLDOWN_SECONDS
+    checkpointer: BaseCheckpointSaver[str] | None = None
     _closed: bool = False
     _failure_state: str = "closed"
     _consecutive_failures: int = 0
@@ -52,6 +56,8 @@ class Database:
         """Close the shared connection once; repeated shutdown is a no-op."""
         if self._closed:
             return
+        if isinstance(self.checkpointer, AsyncSqliteSaver):
+            await self.checkpointer.conn.close()
         await self.conn.close()
         self._closed = True
 
@@ -889,6 +895,52 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "UNIQUE(reply_event_id, comment))",
         ],
     ),
+    (
+        47,
+        [
+            "CREATE TABLE tool_call_log ("
+            "id TEXT PRIMARY KEY, created_at REAL NOT NULL, correlation_id TEXT, "
+            "call_id TEXT, tool_name TEXT NOT NULL, args_json TEXT NOT NULL, "
+            "status TEXT NOT NULL, duration_ms REAL NOT NULL, result_json TEXT, "
+            "error TEXT, adopted INTEGER NOT NULL DEFAULT 0)",
+            "CREATE INDEX idx_tool_call_log_created ON tool_call_log(created_at)",
+            "CREATE INDEX idx_tool_call_log_correlation "
+            "ON tool_call_log(correlation_id)",
+            "CREATE INDEX idx_tool_call_log_call ON tool_call_log(call_id)",
+        ],
+    ),
+    (
+        48,
+        [
+            "CREATE TABLE lesson_signal ("
+            "topic TEXT PRIMARY KEY, kind TEXT NOT NULL, "
+            "count INTEGER NOT NULL DEFAULT 0, last_at REAL NOT NULL)",
+        ],
+    ),
+    (
+        49,
+        [
+            "CREATE TABLE checkpoints (thread_id TEXT NOT NULL, "
+            "checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, "
+            "parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, "
+            "PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))",
+            "CREATE TABLE writes (thread_id TEXT NOT NULL, "
+            "checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, "
+            "task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, "
+            "type TEXT, value BLOB, "
+            "PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))",
+        ],
+    ),
+    (
+        50,
+        [
+            "CREATE TABLE tool_execution (id TEXT PRIMARY KEY, "
+            "correlation_id TEXT NOT NULL, status TEXT NOT NULL, "
+            "result_json TEXT, error TEXT)",
+            "CREATE INDEX idx_tool_execution_correlation "
+            "ON tool_execution(correlation_id)",
+        ],
+    ),
 ]
 
 
@@ -915,16 +967,48 @@ async def connect(
     if resolved != ":memory:":
         Path(resolved).parent.mkdir(parents=True, exist_ok=True)
     conn = await aiosqlite.connect(resolved)
+    checkpoint_conn: aiosqlite.Connection | None = None
+    checkpointer: BaseCheckpointSaver[str] | None = None
     try:
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA foreign_keys = ON")  # FK 完整性（SQLite 默认关）
         await conn.execute("PRAGMA journal_mode = WAL")  # 崩溃安全 + 读写不互斥
         await conn.execute(f"PRAGMA busy_timeout = {int(DB_OPERATION_TIMEOUT * 1000)}")
         await migrate(conn, migrations=migrations)
+        if migrations is None and resolved == ":memory:":
+            checkpointer = InMemorySaver()
+        elif migrations is None:
+            # The saver commits independently; it must not share a transaction
+            # with business stores on the primary connection.
+            checkpoint_conn = aiosqlite.connect(resolved, timeout=DB_OPERATION_TIMEOUT)
+            # aiosqlite 0.20 can leak its worker when opening is cancelled.
+            # Keep acquisition alive until the outer cleanup can close it.
+            opening = asyncio.ensure_future(checkpoint_conn)
+            cancelled: asyncio.CancelledError | None = None
+            while True:
+                try:
+                    await asyncio.shield(opening)
+                    break
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+            if cancelled is not None:
+                raise cancelled
+            checkpointer = AsyncSqliteSaver(checkpoint_conn)
+            # A crash may occur after the reply commits but before cleanup.
+            for table in ("writes", "checkpoints", "tool_execution"):
+                key = "correlation_id" if table == "tool_execution" else "thread_id"
+                await conn.execute(
+                    f"DELETE FROM {table} WHERE {key} IN "
+                    "(SELECT correlation_id FROM event_log "
+                    "WHERE type IN ('speak', 'ask'))"
+                )
+            await conn.commit()
     except BaseException:
+        if checkpoint_conn is not None:
+            await checkpoint_conn.close()
         await conn.close()  # 迁移失败或启动取消：关闭未交付给宿主的连接。
         raise
-    return Database(conn=conn, lock=asyncio.Lock())
+    return Database(conn=conn, lock=asyncio.Lock(), checkpointer=checkpointer)
 
 
 async def migrate(

@@ -4,8 +4,8 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
 import ChatInput from "./components/chat/ChatInput";
 import MessageList from "./components/chat/MessageList";
-import Avatar from "./components/inner/Avatar";
 import PetShell from "./components/desktop/PetShell";
+import AnnounceLayer from "./components/AnnounceLayer";
 import InnerStatePanel from "./components/inner/InnerStatePanel";
 import SettingsView from "./components/layout/SettingsView";
 import ActivityPanel from "./components/panels/ActivityPanel";
@@ -17,26 +17,17 @@ import MemoryPanel from "./components/panels/MemoryPanel";
 import BookshelfView from "./components/reading/BookshelfView";
 import ReaderView from "./components/reading/ReaderView";
 import RightDock, { type View } from "./components/shell/RightDock";
-import StatusBar from "./components/shell/StatusBar";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
-import { formatCurrentTime, timePhaseAt } from "./lib/time";
+import { timePhaseAt } from "./lib/time";
 import { useActivityStore } from "./stores/activityStore";
 import { useChatStore } from "./stores/chatStore";
-import { KnowledgeFeed } from "./components/chat/KnowledgeFeed";
 import { useInnerLifeStore } from "./stores/innerLifeStore";
 import { useDesireStore } from "./stores/desireStore";
 import { useMemoryStore } from "./stores/memoryStore";
 import { useReaderStore } from "./stores/readerStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import { applyDesktopMode, isTauriRuntime, type DesktopMode } from "./lib/desktopWindow";
-import type { ConnectionState } from "./types/api";
-
-const CONNECTION_LABEL: Record<ConnectionState, string> = {
-  connecting: "重连中",
-  open: "已连接",
-  closed: "已断开",
-};
 
 // 字体大小档 → --text-scale 数值（04 书卷风 §4）。
 const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
@@ -45,9 +36,7 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
   large: 1.12,
 };
 
-// 装配：顶栏（标题+连接状态）+ 左栏常驻对话 + 中间内容区 + 底部导航
-// （RightDock 切换中间视图：内在状态 / 欲望 / 活动 / 创作 / 记忆 / 读书 / 评估）+ 设置弹层。
-// useSSE 只挂一次；可拖拽头像圆圈（Avatar）常驻窗口右下，碎碎念气泡随它头顶冒出。
+// 装配：左侧图标导航 + 聊天/模块书页 + 设置弹层；useSSE 只挂一次。
 export default function App() {
   const registry = useCharacterStore((s) => s.registry);
   const generation = useCharacterStore((s) => s.generation);
@@ -70,14 +59,15 @@ export default function App() {
   const [desktopMode, setDesktopMode] = useState<DesktopMode>(() =>
     isTauriRuntime() ? "pet" : "full",
   );
-  // 中间内容区当前视图：默认 reading（书架/阅读页）；其余 = 对应面板（RightDock 底部按钮切换）
-  const [view, setView] = useState<View>("reading");
+  const [view, setView] = useState<View>("chat");
+  const [readerOpen, setReaderOpen] = useState(false);
   const bookId = useReaderStore((s) => s.bookId);
   const messages = useChatStore((s) => s.messages);
   const loadHistory = useChatStore((s) => s.loadHistory);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
   const fontScale = useSettingsStore((s) => s.fontScale);
+  const layoutStyle = useSettingsStore((s) => s.layoutStyle ?? "folio");
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
@@ -138,54 +128,75 @@ export default function App() {
     setDesktopMode("full");
   };
 
-  const enterPetMode = () => {
-    setSettingsOpen(false);
-    setDesktopMode("pet");
-  };
-
   return (
-    <div className={`app app--${desktopMode}`} data-time-phase={timePhase}>
+    <div className={`app app--${desktopMode} app--${layoutStyle}`} data-time-phase={timePhase}>
       <div className="app-bg" aria-hidden="true" style={bgStyle} />
       {tint !== null && image !== null && (
         <div className="app-bg-tint" aria-hidden="true" style={{ backgroundColor: tint }} />
       )}
       <div className="app-time-overlay" aria-hidden="true" />
-
       {desktopMode === "full" && (
         <>
-          <header className="app-topbar">
-            <span className="scene-title">✦ {selected?.name ?? "Nyx Agent"} ✦ <CharacterSelect /></span>
-            <div className="topbar-right">
-              <time className="current-time" dateTime={now.toISOString()}>
-                {formatCurrentTime(now)}
-              </time>
-              <span className="connection-state">{CONNECTION_LABEL[status]}</span>
-            </div>
-          </header>
-
-          {ready && <main key={generation} className="game-shell" style={shellStyle}>
-            <div className="left-dock">
-              <StatusBar />
-              <MessageList messages={messages} now={now} />
-              <ChatInput />
-              <KnowledgeFeed />
-            </div>
-            <div className="game-main">
-              <section className="side-panel">
-                <div className="side-panel__body">
-                  {view === "inner" && <InnerStatePanel />}
-                  {view === "desire" && <DesiresPanel />}
-                  {view === "activity" && <ActivityPanel />}
-                  {view === "creation" && <CreationPanel />}
-                  {view === "memory" && <MemoryPanel />}
-                  {view === "eval" && <EvalPanel />}
-                  {view === "history" && <ExpressionHistoryPanel />}
-                  {view === "reading" && (bookId === null ? <BookshelfView /> : <ReaderView />)}
+          {ready && <main
+            key={generation}
+            className={`game-shell game-shell--${view === "chat" ? "chat" : "page"}${readerOpen ? " game-shell--reader-open" : ""}`}
+            style={shellStyle}
+          >
+            <aside className="app-nav" aria-label="主导航">
+              <RightDock
+                view={view}
+                onSwitch={(nextView) => {
+                  setView(nextView);
+                  setReaderOpen(false);
+                }}
+                onOpenSettings={() => {
+                  setView("settings");
+                  setReaderOpen(false);
+                }}
+                onReturnToPet={isTauriRuntime() ? () => {
+                  setSettingsOpen(false);
+                  setDesktopMode("pet");
+                } : undefined}
+              />
+            </aside>
+            {view === "chat" ? (
+              <>
+                <div className="conversation-heading">
+                    <button
+                      type="button"
+                      className="reader-toggle"
+                      aria-expanded={readerOpen}
+                      onClick={() => setReaderOpen((open) => !open)}
+                    >
+                      开始阅读
+                    </button>
                 </div>
+                <section className="conversation-column" aria-label="对话">
+                  <MessageList messages={messages} now={now} />
+                  <ChatInput />
+                </section>
+                <section className="reader-drawer" aria-label="阅读区">
+                  <div className="reader-drawer__body">
+                    {readerOpen && <span className="reader-opening-turn" aria-hidden="true" />}
+                    {readerOpen && (bookId === null ? <BookshelfView /> : <ReaderView />)}
+                  </div>
+                </section>
+              </>
+            ) : (
+              <section className="page-content" aria-label="页面内容">
+                {view === "inner" && <InnerStatePanel />}
+                {view === "desire" && <DesiresPanel />}
+                {view === "activity" && <ActivityPanel />}
+                {(view === "task-compose" || view === "tasks") && <ActivityPanel view="tasks" />}
+                {view === "creation" && <CreationPanel />}
+                {view === "memory" && <MemoryPanel />}
+                {view === "eval" && <EvalPanel />}
+                {view === "history" && <ExpressionHistoryPanel />}
+                {view === "settings" && <SettingsView />}
               </section>
-            </div>
-            <RightDock view={view} onSwitch={setView} onOpenSettings={() => setSettingsOpen(true)} />
+            )}
           </main>}
+          {ready && <div className="full-announcements"><AnnounceLayer /></div>}
         </>
       )}
 
@@ -195,19 +206,13 @@ export default function App() {
         <button onClick={() => setSettingsOpen(true)}>角色管理与设置</button>
       </div>}
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
-      {ready && (desktopMode === "pet" ? (
+      {ready && desktopMode === "pet" && (
         <PetShell key={generation}
           night={timePhase === "night"}
           onExpand={enterFullDesktop}
           onOpenSettings={() => setSettingsOpen(true)}
         />
-      ) : (
-        <Avatar
-          night={timePhase === "night"}
-          useNativeWindowDrag={false}
-          onDoubleClick={enterPetMode}
-        />
-      ))}
+      )}
     </div>
   );
 }

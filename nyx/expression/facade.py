@@ -14,6 +14,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import cast
 from uuid import uuid4
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import InMemorySaver
+
 from nyx.activity.facade import ActivityFacade
 from nyx.config import ExpressionConfig
 from nyx.desire.facade import DesireFacade
@@ -98,11 +101,13 @@ class ExpressionFacade:
         release_return: Callable[[dict[str, float] | None], None] | None = None,
         reading_context_reader: (Callable[[str, str], Awaitable[str]] | None) = None,
         skills: Mapping[str, Skill] | None = None,
+        checkpointer: BaseCheckpointSaver[str] | None = None,
     ) -> None:
         self._bus = bus
         self._llm = llm
         self._evaluator = evaluator
         self._memory = memory
+        self._tools = tools
         self._activity = activity
         self._desire = desire
         self._inner_life = inner_life
@@ -117,6 +122,7 @@ class ExpressionFacade:
         self._release_return = release_return
         self._reading_context_reader = reading_context_reader
         self._skills = skills or {}
+        self._checkpointer = checkpointer or InMemorySaver()
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._history_restored = False
         self._last_slow_at = 0.0
@@ -145,6 +151,7 @@ class ExpressionFacade:
                 knowledge_boundary=knowledge_boundary,
                 register_question=self.register_question,
                 commit_reply_events=self._commit_reply_events,
+                checkpointer=self._checkpointer,
             )
         )
 
@@ -663,6 +670,7 @@ class ExpressionFacade:
                 "correlation_id": correlation_id,
                 "last_slow_at": self._last_slow_at,
                 "tool_outputs": [],
+                "tool_feedback": "",
                 "tool_recall_candidates": [],
                 "intent": classify_user_intent(msg),
                 "temporal_context": temporal_context,
@@ -682,6 +690,11 @@ class ExpressionFacade:
                 self._ask_cid = correlation_id
             if result["fallback"]:
                 self._release_return_claim(claimed_return)
+            try:
+                await self._checkpointer.adelete_thread(correlation_id)
+                await self._tools.clear_executions(correlation_id)
+            except Exception:
+                _LOGGER.exception("回复终局后的工具 checkpoint 清理失败")
         except BaseException:
             if answered is not None and self._interaction_store is not None:
                 await self._interaction_store.release_claim(answered.id, correlation_id)

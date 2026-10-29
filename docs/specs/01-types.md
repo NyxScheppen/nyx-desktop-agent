@@ -1,6 +1,6 @@
 # 枚举 + 实体类型
 
-> 范围：`nyx/enums.py`（23 个 `StrEnum`）、`nyx/types.py`（4 个 TypedDict + 34 个 dataclass）。
+> 范围：`nyx/enums.py`（23 个 `StrEnum`）、`nyx/types.py`（4 个 TypedDict + 36 个 dataclass）。
 > 纯声明 spec：只定义类型，不含函数、不含序列化 helper、不含 DDL。
 > spec 只定义契约（签名 + 语义 + 决策）；枚举成员与 dataclass 字段以 `nyx/enums.py` / `nyx/types.py` 源文件为准。
 
@@ -15,7 +15,7 @@
 ## 验收标准
 
 - [ ] `enums.py` 含 23 个 `StrEnum`，成员与源文件一致（实现见 `nyx/enums.py`）
-- [ ] `types.py` 含 4 个 TypedDict + 34 个 dataclass，字段与源文件一致（实现见 `nyx/types.py`）
+- [ ] `types.py` 含 4 个 TypedDict + 36 个 dataclass，字段与源文件一致（实现见 `nyx/types.py`）
 - [ ] 所有枚举 `.value` 为小写 snake_case 字符串，可直接 `json.dumps` / 存 SQLite
 - [ ] 固定键字段用 TypedDict、异构载荷用 `dict[str, Any]`（边界见「嵌套 dict 字段的边界」表）；仅不可变快照及技能声明使用 `frozen`
 - [ ] `pyright` strict 下零报错：无 implicit Any、无 `str` 赋给枚举成员的默认值告警
@@ -53,6 +53,9 @@
 | `SelfNarrative.self_view` | `dict[str, str]`（普通 dict） | 键是开放的自画像维度，但值类型统一 str |
 
 - **讨论技能**：`Skill` 是 frozen dataclass，字段为 `name: str`、`system_fragment: str`、`tool_names: tuple[str, ...]`；启动时从 JSON 加载并注入表达层，不持久化，完整契约见 [15](15-discussion-partner.md)。
+- **工具计划**：`PlanStep(text: str, expected_tool: str | None, done_condition: str)` 与
+  `Plan(goal: str, steps: list[PlanStep])` 是单次回复内的 dataclass，不持久化、不进入 ReplyState；
+  生命周期和降级见 [18](18-plan-and-execute.md)。`MemoryKind.LESSON="lesson"` 的生产与消费见 [19](19-failure-reflection.md)。
 - **明确不做**：不为其他可变领域对象增加 `frozen`；`vad_to_category`、Goal 完成判定等纯函数留在各自 spec；`ReplyState`（LangGraph 内部 state）留在 `11-expression`；不在本文件定义枚举或实体的业务流程。
 - **default_factory 约定**：`field(default_factory=list)` 在 pyright strict 下报 `list[Unknown]`（裸 `list` 被推断为 `type[list[Unknown]]`，与字段注解 `list[str]` 不匹配）。故用 `field(default_factory=list[str])`——`list[str]` 作为类型对象可调用、返回空 `list[str]`，运行时等价 `list`，但类型精确、pyright 零报错、无需 ignore 压制。
 - **短期欲望父关系**：`ShortTermDesire.parent_long_term_id: str | None = None` 保存生成它的长期欲望 ID；旧数据、纯类型压力生成和父记录删除后的短期欲望为 `None`，消费者不得按类型或“最新一条”猜测父对象。

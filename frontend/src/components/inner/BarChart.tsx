@@ -20,6 +20,7 @@ export default function BarChart({ keys, data, poles }: BarChartProps) {
               <span className="bar-chart__dot" style={{ left: `${pct}%` }} />
             </div>
             <span className="bar-chart__pole bar-chart__pole--high">{pole.high}</span>
+            <span className="bar-chart__value">{(data[key] ?? 0).toFixed(1)}</span>
           </div>
         );
       })}

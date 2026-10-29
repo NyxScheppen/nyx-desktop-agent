@@ -114,7 +114,14 @@ class MemoryKind(StrEnum):
     READING = "reading"
     ACTIVITY = "activity"
     INTERACTION = "interaction"
+    LESSON = "lesson"
 ```
+
+`LESSON="lesson"` 为失败策略经验，完整生产、计数与对象审计见 [19](19-failure-reflection.md)。
+`record_failure_signal(kind, topic, summary, correlation_id=None, *, evidence=None)` 当场处理工具失败/OOC，
+同类用户纠正累计三次才写长期经验并触发纠错反思。复用核心入库、embedding、去重与 MEMORY_CREATED，
+不提取用户事实、不运行关系/矛盾反思旁路；语义候选用含完整 topic 的固定 summary 限定，
+防止不同失败主题因相似模板误合并。topics 仍遵守既有显示长度限制。
 
 `kind` 表示记忆的来源/生命周期语义；`topics` 只表示主题，不参与权限判断。
 
@@ -136,7 +143,9 @@ class MemoryKind(StrEnum):
 
 direct retrieval 保持 vector + keyword + freshness + type 的现有融合；association 先由 typed graph 提供，再通过受限的非持久化 topics 桶旁路补充；不创建标签两两持久化边。
 
-prompt 的 `[相关记忆]` 每条只展示人话化 kind、topics 和 summary（缺失时 content）：
+prompt 的 `[相关记忆]` 每条展示人话化 kind、topics 和 summary（缺失时 content）；
+LESSON 展示 content，保留具体失败原因。慢通道只通过 `search(kind=LESSON)` 注入策略经验，
+不恢复旧场景记忆召回或短期 recall 晋升：
 
 ```text
 - 你知道｜记忆系统：长期记忆需要稳定性。
@@ -1036,7 +1045,7 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
   `vector` / `keyword` / `association`。
 - `GET /api/memories/facts?limit=64&scope=profile|conversation|knowledge` 返回指定作用域中最多 64 条当前有效 `MemoryFact[]`，供前端事实图使用。`scope` 可省略以兼容原有混合快照；传入时必须先在 SQL 中按作用域过滤，再应用 `limit`。`limit` 范围为 `0..64`；事实读取失败由 Facade 降级为空集，不阻塞记忆功能。
 
-前端将记忆列表与画像、对话、知识三张事实图分别展示。记忆类别选择支持全部与六种 `MemoryKind`，并作用于列表和当前关键词检索；记忆搜索不改变事实图数据。类别或事实图切换时，旧请求不能覆盖新选择；角色切换后旧角色响应不能进入当前 store。
+前端通过记忆页右上角切换普通记忆与知识库。普通记忆列表在分页和空态判断前排除 `kind=knowledge`，知识库列表只展示该类别；每页五条，不提供类别下拉框。普通记忆查询保留默认全类别 API 语义，在展示层排除知识；知识库查询显式传入 `kind=knowledge`。普通区提供画像与对话事实图，知识库提供知识事实网及独立投喂子页。记忆搜索不改变事实图数据。模式或事实图切换时，旧请求不能覆盖新选择；角色切换后旧角色响应不能进入当前 store。
 
 **对象完整性审计（本次只增加读取条件与前端消费者）**：`Memory` 的现有创建、导入、恢复和删除入口不变，现有表达、活动、阅读、反思消费者继续使用默认全类别检索；API 与前端列表新增可选类别消费者。`MemoryFact` 的现有抽取、迁移、重放、关闭和删除入口不变，既有事实检索、反思消费者继续使用原行为；前端新增按 scope 读取。两种对象的持久状态与状态迁移不变，因此无新增持久状态迁移。空类别结果显示空列表/空图；接口失败仅显示对应区域错误；记忆与事实请求部分完成时各自保留成功结果；乱序/角色切换响应由请求代次与角色 scope 拦截；重放仍按原有幂等规则；删除后的快照不显示已删除记忆或失效事实。
 

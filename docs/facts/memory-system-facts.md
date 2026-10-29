@@ -13,13 +13,23 @@
 - `apply_annotation_feedback(event, consumer_id)` 先查 effect，再复用 fact_extraction LLM/parser
   与 Evaluator。顶层 facts 必须数组、is_correction 必须严格 bool；最多处理32个原始候选。
   只允许 asserted=true、subject=用户的 profile/conversation；conversation 谓词仅“回复反馈”。
-  quote 只是旧回复定位材料，只从 comment 提取用户自身明确表达，不写 knowledge、Memory 或证据块。
+  quote 只是旧回复定位材料，只从 comment 提取用户自身明确表达；事实中介不写 knowledge、Memory 或证据块。
 - LLM/eval 在事务外。LLM/JSON 失败日志并完成 best-effort 消费，不猜事实、不无限重放；
   eval 在解析前记账，坏 JSON 同样可查 token/history/prompt，eval 故障不丢有效候选，取消传播。
-  事实 apply、可选 REFLECTION、effect 在同事务，SQL/append/effect/commit 失败全回滚后 delivery 重试。
-- 严格 is_correction=true 即使 facts 为空也产生 reason=annotation_correction 的 REFLECTION；
-  evidence.source_id 为反馈事件 ID，quote/comment 摘要合计≤1000字符。反思失败独立恢复，
-  不撤销反馈回执；成功 effect 重放跳过 LLM，批注不直接修改慢变量。
+  事实 apply、effect 在同事务，SQL/effect/commit 失败全回滚后 delivery 重试。
+- 严格 is_correction=true 在事实提交后按 correction_topic 计数，缺失/空主题兜底 user_correction；
+  同类三次才写长期 LESSON 与 reason=annotation_correction 的 REFLECTION。计数先提交，
+  LESSON 成功后反思/清除计数同事务。学习 best-effort，提交与信号间中断可丢该次学习；
+  已完成 effect 重放不补信号。evidence.source_id 为反馈事件 ID，quote/comment 摘要≤1000字符。
+  反思失败独立恢复，不撤销反馈回执，批注不直接修改慢变量。
+
+## 失败策略经验（19）
+
+- `record_failure_signal` 对 tool_error/tool_empty/ooc 当场沉淀，只有 user_correction 使用 schema48
+  `lesson_signal`。经验 kind=LESSON、type=LONG_TERM，复用核心入库/去重/事件，不抽用户事实、
+  不运行建边/矛盾反思旁路。固定 summary 含完整 topic，语义候选先限同主题，避免跨失败误合并。
+- 经验经既有记忆 REST/前端列表展示；初次规划、重规划及慢回复召回 LESSON，展示完整 content。
+  技术失败不触发内心反思；正式经验保持既有长期记忆生命周期。
 
 ## 时间字段
 
@@ -83,7 +93,7 @@
 - `extract_keywords` 的 CJK 规则按 `docs/specs/06-memory-system.md` 契约执行：长度 2-8 的连续 CJK 片段直接保留，长 CJK 片段只做 2 字/3 字滑窗；不做隐藏边界字符剥离，也不在长片段内部按停用词预拆。
 - `Memory.sources` 是瞬态检索来源：`keyword`、`vector`、`association`。它不落库、不进 prompt、不进导出，但 REST `Memory[]` 会序列化给前端。
 - `list_memories` 返回库内快照，通常 `sources=[]`；`search` 返回的命中带 sources。
-- 记忆面板可按六种 `MemoryKind` 筛选列表和关键词搜索；类别过滤进入列表 SQL、关键词 SQL 和混合检索候选集，联想不会跨到其他类别。
+- 记忆 REST 支持受控 `MemoryKind`（含 LESSON）筛选列表和关键词搜索；类别过滤进入列表 SQL、关键词 SQL 和混合检索候选集，联想不会跨到其他类别。
 
 ## 事实层
 

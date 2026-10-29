@@ -48,6 +48,7 @@ from nyx.tools.activity_tasks import build_activity_task_tools
 from nyx.tools.file_io import build_file_io_tool
 from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
+from nyx.tools.tool_call_store import ToolCallStore
 from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
 from nyx.types import Book, CurrentState, Event, ReadingProgress, Tool
@@ -348,9 +349,10 @@ def build_tools(
     workspace: Path = Path("workspace"),
     blocked: list[Path] | tuple[Path, ...] = (),
     ingest: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+    store: ToolCallStore | None = None,
 ) -> ToolRegistry:
     """Register always-on local tools and opt-in web tools."""
-    tools = ToolRegistry()
+    tools = ToolRegistry(store)
     tools.register(build_local_search_tool(blocked=blocked))
     tools.register(build_file_io_tool(workspace, blocked=blocked))
     if config.exploration.web_enabled:
@@ -376,7 +378,13 @@ async def build_app_context(
         fact_store = MemoryFactStore(db)
         embed = host.embed if host else build_embed(config.embedding.model)
         eval_store = EvalStore(db)
-        evaluator = Evaluator(embed, eval_store)
+
+        async def on_failure(
+            kind: str, topic: str, summary: str, correlation_id: str
+        ) -> None:
+            await memory.record_failure_signal(kind, topic, summary, correlation_id)
+
+        evaluator = Evaluator(embed, eval_store, on_failure)
         retrieval = MemoryRetrieval(memory_store, embed)
         memory = MemoryFacade(
             memory_store,
@@ -398,6 +406,7 @@ async def build_app_context(
             config,
             workspace=Path(character["workspace"]) if character else Path("workspace"),
             ingest=ingest_web,
+            store=ToolCallStore(db),
             blocked=host.blocked_paths(character["id"]) if host and character else (),
         )
 
@@ -610,6 +619,7 @@ async def build_app_context(
             finish_return=finish_return,
             release_return=release_return,
             reading_context_reader=read_reading_context,
+            checkpointer=db.checkpointer,
         )
         await expression.restore_history()
         reading = ReadingFacade(

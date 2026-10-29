@@ -50,10 +50,12 @@ describe("ActivityPanel", () => {
     vi.unstubAllGlobals();
   });
 
-  it("产出区只显示创作标题摘要，不显示正文或其他活动产出", () => {
+  it("活动默认显示当天时间线，任务和作品有独立页面", () => {
     render(<ActivityPanel />);
 
-    expect(screen.getByText("夜色")).toBeInTheDocument();
+    expect(screen.getByText("今天还没有活动记录")).toBeInTheDocument();
+    expect(screen.queryByText("安排任务")).not.toBeInTheDocument();
+    expect(screen.queryByText("夜色")).not.toBeInTheDocument();
     expect(screen.queryByText("创作正文")).not.toBeInTheDocument();
     expect(screen.queryByText("读书标题")).not.toBeInTheDocument();
     expect(screen.queryByText("读书笔记")).not.toBeInTheDocument();
@@ -89,8 +91,8 @@ describe("ActivityPanel", () => {
       } as Response),
     );
 
-    render(<ActivityPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "书籍" }));
+    render(<ActivityPanel view="tasks" />);
+    fireEvent.click(screen.getByRole("tab", { name: "安排任务" }));
 
     await waitFor(() => expect(screen.getByText("目标段")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "安排阅读" }));
@@ -118,10 +120,14 @@ describe("ActivityPanel", () => {
       ],
     });
 
-    render(<ActivityPanel />);
+    render(<ActivityPanel view="tasks" />);
 
     expect(screen.getByText("失败")).toBeInTheDocument();
     expect(screen.getByText("正文抓取失败")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看任务 https://example.com/article" }));
+    expect(screen.getByLabelText("任务详情")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "关闭任务详情" }));
+    expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
   });
 
   it("网页问卷可提交，完成后显示结果", async () => {
@@ -136,13 +142,17 @@ describe("ActivityPanel", () => {
         error: null, created_at: 1, updated_at: 2,
       }],
     });
-    render(<ActivityPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "网页问卷" }));
-    fireEvent.change(screen.getByPlaceholderText("https://"), {
+    render(<ActivityPanel view="tasks" />);
+    expect(screen.queryByText("我的结果")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看任务 网页问卷 · https://example.com/quiz" }));
+    fireEvent.click(screen.getByRole("tab", { name: "安排任务" }));
+    fireEvent.change(screen.getAllByPlaceholderText("https://")[1], {
       target: { value: "https://example.com/quiz" },
     });
     fireEvent.click(screen.getByRole("button", { name: "安排问卷" }));
     await waitFor(() => expect(create).toHaveBeenCalledWith("https://example.com/quiz"));
+    fireEvent.click(screen.getByRole("tab", { name: "任务记录" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看任务 网页问卷 · https://example.com/quiz" }));
     expect(screen.getByText("我的结果")).toBeInTheDocument();
   });
 });

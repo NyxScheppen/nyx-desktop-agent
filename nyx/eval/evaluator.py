@@ -6,6 +6,7 @@
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 
 from nyx.eval.ooc_embed import build_baseline, is_voice_type, ooc_embed_score
 from nyx.eval.rules import ooc_score
@@ -30,10 +31,12 @@ class Evaluator:
         self,
         embed: EmbedFn | None = None,
         store: EvalStore | None = None,
+        on_failure: Callable[[str, str, str, str], Awaitable[None]] | None = None,
     ) -> None:
         self._embed = embed          # None = embedding 档关闭（仅关键词）
         self._baseline: list[list[float]] | None = None   # 语料向量惰性缓存
         self._store = store          # None = 不落库（测试/无库）
+        self._on_failure = on_failure
 
     async def evaluate(self, output: LLMOutput) -> None:
         """算 OOC、告警，并写一条 `eval_log`（best-effort）。"""
@@ -60,6 +63,17 @@ class Evaluator:
                 )
         if self._store is not None:
             await self._record(self._store, output, keyword, embed_s)
+        if self._on_failure is not None and (
+            keyword < 1.0
+            or (embed_s is not None and embed_s < self._EMBED_WARN_THRESHOLD)
+        ):
+            try:
+                await self._on_failure(
+                    "ooc", f"ooc:{output.module}", "表达偏离人设",
+                    output.correlation_id,
+                )
+            except Exception:
+                _logger.exception("OOC 失败信号记录失败 module=%s", output.module)
 
     async def _record(
         self,

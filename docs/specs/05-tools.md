@@ -33,6 +33,10 @@
 - **库**：`httpx` + `lxml`（抓 `cn.bing.com` 结果页，大陆可达，替代原 ddgs 多引擎聚合——后者在大陆全被墙、慢失败 42s）。`web_search` 用 `httpx.get` 抓 Bing、`lxml.html` 解析 `li.b_algo`（标题/链接在 `h2/a`、摘要在 `p`）→ `[{title, url, snippet}]`；依赖新增 `lxml`（pyproject，此前经 trafilatura 传递引入）；其余为标准库（`asyncio` / `pathlib` / `os` / `string` / `logging`）
 - **公开面**：`from nyx.tools.registry import ToolRegistry`；`from nyx.tools.local_search import build_local_search_tool, search_local`；`from nyx.tools.web_search import build_web_search_tool`；`from nyx.tools.file_io import build_file_io_tool, file_io`；`from nyx.tools.web_fetch import build_web_fetch_tool, fetch_url`（不加 `__all__`）
 - **handler 调用约定**：`call(name, args)` 用 `await handler(**args)` 把 `args` dict 解包为关键字实参；`Tool.schema` 的键 = handler 形参名（如 `{query}` → `handler(query=...)`）。参数不匹配时 `TypeError` 上抛（handler 签名兜底，不额外校验 schema）
+- **调用观测**：[17](17-tool-call-observation.md) 增加 `ToolCallStore`、可选构造参数 `store`，
+  `call(..., *, correlation_id=None, call_id=None, log_id=None)` 与 `mark_adopted(log_id)`。
+  观测 best-effort，保留 handler 返回值、异常及取消；`replan` 仅表达内部伪工具，不注册或公开。
+- **表达恢复回执**：[18](18-plan-and-execute.md) 在现有 Registry/ToolCallStore 增加 `start_execution`、`finish_execution`、`clear_executions`。表达子图围绕 call 可靠保存临时完整结果；回执错误传播，已保存结果复用。仅 `local_search`/`web_search`/`memory_recall`/`knowledge_search`、file_io read/list 可在结果未确认时重跑；其它副作用进入 uncertain 交回模型。直接 call 的既有调用约定及 best-effort 观测不变。
 - **不校验 args 与 schema**：不引入 JSON schema validator（新依赖 + 复杂度）；schema 是给 LLM 的契约，handler 签名是给运行时的契约
 - **`Tool.schema` vs `schema()`**：`Tool.schema` 存**参数** JSON schema（`{"type":"object","properties":…,"required":[…]}`）；`ToolRegistry.schema(names: Iterable[str] | None = None)` 把它包成 OpenAI 兼容 function calling 格式 `[{"type":"function","function":{name, description, parameters}}]`。`None` 按注册序返回全部；指定 names 按其顺序返回子集，任一名称未注册则抛 `KeyError`（`LlmClient.complete` 原样透传给 API，不二次包装）。表达侧另按当前技能过滤并复核执行授权，见 [15](15-discussion-partner.md)。
 - **重复注册 → `ValueError`**：fail-fast 抓组合根的布线 bug（重复注册同名工具）；`register` 不静默覆盖

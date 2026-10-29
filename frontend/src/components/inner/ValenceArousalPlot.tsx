@@ -4,9 +4,9 @@
 // 覆盖，不进象限）：开心/生气/担忧/悲伤/害羞/平静。标签质心与散点共用同一 (v,a)→(x,y) 映射，几何一致。
 import { EMOTION_LABELS } from "../../lib/labels";
 
-const W = 220;
-const H = 160;
-const PAD = 24;
+const W = 360;
+const H = 260;
+const PAD = 30;
 
 type ValenceArousalPlotProps = {
   valence: number;

@@ -54,8 +54,8 @@ describe("EvalPanel LLM 调用 / token 面板", () => {
     expect(screen.getByText("总 token")).toBeInTheDocument();
     expect(screen.getByText(/14（prompt 10 \/ completion 4）/)).toBeInTheDocument();
     // output_type → 中文（OUTPUT_TYPE_LABELS）
-    expect(screen.getByText("对外")).toBeInTheDocument();
-    expect(screen.getByText("内心")).toBeInTheDocument();
+    expect(screen.getByText("对外", { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText("内心", { selector: "span" })).toBeInTheDocument();
     // OOC 分 + token 消耗
     expect(screen.getByText(/OOC 1\.00/)).toBeInTheDocument();
     expect(screen.getByText(/OOC 0\.80/)).toBeInTheDocument();
@@ -97,7 +97,7 @@ describe("EvalPanel LLM 调用 / token 面板", () => {
       loadPrompt,
     });
     const { container } = render(<EvalPanel />);
-    const summary = screen.getByText("对外").closest("summary");
+    const summary = screen.getByText("对外", { selector: "span" }).closest("summary");
     expect(summary).not.toBeNull();
 
     const details = summary?.closest("details") as HTMLDetailsElement;
@@ -131,5 +131,18 @@ describe("EvalPanel LLM 调用 / token 面板", () => {
     expect(screen.getByText("prompt 为空")).toBeInTheDocument();
     expect(screen.getByText("正在加载 prompt…")).toBeInTheDocument();
     expect(screen.getByText("fetch failed")).toBeInTheDocument();
+  });
+
+  it("每页五条，查询或类型筛选后回到首页", () => {
+    useEvalStore.setState({ records: Array.from({ length: 6 }, (_, i) => ({ ...rec(`e${i}`, i === 5 ? "think" : "speak", 1), model: `model-${i}` })), stats: null, error: null });
+    const { container } = render(<EvalPanel />);
+    expect(container.querySelectorAll(".eval-record")).toHaveLength(5);
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(container.querySelectorAll(".eval-record")).toHaveLength(1);
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索调用记录" }), { target: { value: "model-5" } });
+    expect(screen.getByText("1 / 1")).toBeInTheDocument();
+    expect(screen.getByText("内心", { selector: "span" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "调用类型" }), { target: { value: "speak" } });
+    expect(screen.getByText("没有匹配的调用记录")).toBeInTheDocument();
   });
 });

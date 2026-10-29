@@ -237,10 +237,12 @@ export default function ReaderView() {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const paraRefs = useRef<Map<number, HTMLElement>>(new Map());
   const [viewportHeight, setViewportHeight] = useState(0);
+  const [viewportWidth, setViewportWidth] = useState(0);
   const [pages, setPages] = useState<number[][]>([]);
   const [pageIndex, setPageIndex] = useState(0);
   const [noteOpen, setNoteOpen] = useState(false);
   const [markPanel, setMarkPanel] = useState<MarkPanel>(null);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selection, setSelection] = useState<SelectionDraft | null>(null);
   const [focusedHighlightId, setFocusedHighlightId] = useState<string | null>(
@@ -258,7 +260,10 @@ export default function ReaderView() {
   useLayoutEffect(() => {
     const element = viewportRef.current;
     if (element === null) return;
-    const update = () => setViewportHeight(element.clientHeight);
+    const update = () => {
+      setViewportHeight(element.clientHeight);
+      setViewportWidth(element.clientWidth);
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(element);
@@ -267,7 +272,7 @@ export default function ReaderView() {
 
   useLayoutEffect(() => {
     setPages(paginate(paragraphs, measureHeight, viewportHeight));
-  }, [paragraphs, notes, fontScale, viewportHeight, windowFrom]);
+  }, [paragraphs, notes, fontScale, viewportHeight, viewportWidth, windowFrom]);
 
   useLayoutEffect(() => {
     if (pages.length === 0) return;
@@ -487,6 +492,7 @@ export default function ReaderView() {
               );
             })}
           </div>
+          <span key={pageIndex} className="reader-page-turn" aria-hidden="true" />
           {selection !== null && (
             <div
               className="reader-selection"
@@ -527,36 +533,22 @@ export default function ReaderView() {
           →
         </button>
         <div className="reader__footer-spacer" />
-        <button
-          type="button"
-          className="reader-tool"
-          onClick={() => setMarkPanel("highlights")}
-        >
-          划线
-        </button>
-        <button
-          type="button"
-          className="reader-tool"
-          onClick={() => setMarkPanel("bookmarks")}
-        >
-          书签
-        </button>
-        {readCount >= 1 && (
-          <button
-            type="button"
-            className="reader-tool"
-            onClick={() => void reread()}
-          >
-            重读
-          </button>
-        )}
-        <button
-          type="button"
-          className="reader-tool"
-          onClick={() => setNoteOpen(true)}
-        >
-          笔记
-        </button>
+        <div className="reader-tools" onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) setToolsOpen(false);
+        }} onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setToolsOpen(false);
+            event.currentTarget.querySelector("button")?.focus();
+          }
+        }}>
+          <button type="button" className="reader-tool reader-tool--icon" aria-label="阅读工具" title="阅读工具" aria-expanded={toolsOpen} onClick={() => setToolsOpen((open) => !open)}>⋮</button>
+          {toolsOpen && <div className="reader-tools__menu">
+            <button type="button" onClick={() => { setMarkPanel("highlights"); setToolsOpen(false); }}>划线</button>
+            <button type="button" onClick={() => { setMarkPanel("bookmarks"); setToolsOpen(false); }}>书签</button>
+            {readCount >= 1 && <button type="button" onClick={() => { void reread(); setToolsOpen(false); }}>重读</button>}
+            <button type="button" onClick={() => { setNoteOpen(true); setToolsOpen(false); }}>笔记</button>
+          </div>}
+        </div>
       </footer>
 
       {noteOpen && <NotePanel onClose={() => setNoteOpen(false)} />}

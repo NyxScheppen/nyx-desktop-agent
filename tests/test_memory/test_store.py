@@ -68,6 +68,31 @@ async def test_add_get_roundtrip() -> None:
         await db.conn.close()
 
 
+async def test_lesson_signal_counts_topics_and_clears() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        assert await store.bump_lesson_signal(
+            "user_correction:语气", "user_correction"
+        ) == 1
+        assert await store.bump_lesson_signal(
+            "user_correction:语气", "user_correction"
+        ) == 2
+        assert await store.bump_lesson_signal(
+            "user_correction:引用", "user_correction"
+        ) == 1
+        await store.clear_lesson_signal("user_correction:语气")
+        assert await store.bump_lesson_signal(
+            "user_correction:语气", "user_correction"
+        ) == 1
+        row = await (await db.conn.execute(
+            "SELECT count FROM lesson_signal WHERE topic = 'user_correction:引用'"
+        )).fetchone()
+        assert row is not None and row["count"] == 1
+    finally:
+        await db.close()
+
+
 async def test_add_get_embedding_none() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)

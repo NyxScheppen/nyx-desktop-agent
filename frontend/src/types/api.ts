@@ -431,7 +431,8 @@ export type MemoryKind =
   | "knowledge"
   | "reading"
   | "activity"
-  | "interaction";
+  | "interaction"
+  | "lesson";
 export type FactScope = "profile" | "conversation" | "knowledge";
 
 export type Memory = {

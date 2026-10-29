@@ -352,19 +352,17 @@ describe("ChatInput", () => {
     act(() => useChatStore.getState().reset());
   });
 
-  it("讨论模式控件在自动、讨论、陪伴三态间切换", () => {
+  it("讨论模式通过下拉框切换自动、开启和关闭", () => {
     render(<ChatInput />);
 
     expect(useChatStore.getState().discussionMode).toBeNull();
-    expect(screen.getByRole("button", { name: "自动" })).toHaveAttribute("aria-pressed", "true");
-
-    fireEvent.click(screen.getByRole("button", { name: "讨论" }));
+    const select = screen.getByRole("combobox", { name: "讨论模式" });
+    expect(select).toHaveValue("auto");
+    fireEvent.change(select, { target: { value: "on" } });
     expect(useChatStore.getState().discussionMode).toBe(true);
-
-    fireEvent.click(screen.getByRole("button", { name: "陪伴" }));
+    fireEvent.change(select, { target: { value: "off" } });
     expect(useChatStore.getState().discussionMode).toBe(false);
-
-    fireEvent.click(screen.getByRole("button", { name: "自动" }));
+    fireEvent.change(select, { target: { value: "auto" } });
     expect(useChatStore.getState().discussionMode).toBeNull();
   });
 

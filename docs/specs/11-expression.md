@@ -106,14 +106,18 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
   `answer_waiting()` 返回的 attempt 构造 `reading_context`，直接注入该回合。它不是普通
   `MemoryFacade.search(message)`，因此“嗯”“我不觉得”等短回复也不会丢失书中语境。
 - 讨论技能由手动开关或 `should_load_discussion()` 自动命中时强制 SLOW；普通陪聊和明确拒绝讨论不自动加载。
-- SLOW 在回复前执行回溯、自我叙事读取和最多 4 轮工具判断；非讨论模式保留隐式事实与对话段检索，
+- SLOW 在回复前执行回溯、自我叙事读取和 plan → execute；每份计划最多 4 轮工具判断，
+  最多一次 replan，保留跨计划结果、去重和预算。非法/空/失败计划降级原 ReAct；完整契约见 [18](18-plan-and-execute.md)。非讨论模式保留隐式事实与对话段检索，
   讨论模式关闭这两类隐式注入，改用能力工具。默认一次
   生成完整回复，只有模型明确设置 `needs_continuation=true` 时才续写，轮数上限由
   `slow_max_rounds` 定义。
 - 普通慢通道不调用旧 Memory 的 `record_recall`；仅对实际进入独立历史段 prompt 区块的段调用 `record_conversation_segment_recall(segment.id, correlation_id)`。同一用户事件重试不重复计数，超过 12000 字符区块预算而未渲染的段不计数，快通道不计数。工具判断和后续各轮回复使用同一入选集合。
+- 初次规划、重规划与慢通道回复注入 `search(kind=LESSON)` 的经验；重规划和回复刷新查询，
+  可使用本轮工具刚产生的经验。快通道不召回经验。只读工具重试耗尽/空结果经 [19](19-failure-reflection.md)
+  采集学习，未确认副作用不学习为已确认失败；每次实际执行按 [17](17-tool-call-observation.md) 记录观测，结果回注后标记采纳。
 - 讨论模式只暴露技能授权的 `memory_recall`、`knowledge_search`、`deep_research`，执行前再次核对授权；
   普通慢通道保留既有工具但排除这三项。工具结果以有界文本回注下一轮判断和最终回复，
-  同名同参数调用不重复执行；无调用、无新调用或预算用尽即结束，工具失败保留失败文本并继续回复。
+  已完成/已耗尽次数的同名同参数模型请求不重复执行，并明确解释跳过原因；只含重复请求时仍允许下一轮决策，直到判断轮数上限。只读工具异常或显式错误先暂停后续工具并重试，耗尽后交回模型；副作用结果未确认时进入 uncertain 停批，不自动重做；无调用或预算用尽后如实回复。
 - `memory_recall` 的段仅在完整段 JSON 实际进入最终 `respond` prompt 时记录真实召回，
   沿用用户事件/段 ID 的 durable 幂等标记；被截断的段与只检索未展示的段不计数。
 - FAST 和 SLOW 的正常 THINK/SPEAK 都先缓存在 `ReplyState`，生成完成前不发布任何正常文本
@@ -162,6 +166,9 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 - 工具判断 LLM 或 evaluator 失败时降级为无工具回复，并向后续回复 prompt 注入
   “本轮没有获得工具查询结果”的有界事实；实际工具执行失败仍以失败结果文本进入同一预算，
   不得伪造查询成功。
+
+- `ReplyState.tool_feedback` 保存工具子图返回的实际调用步骤状态和跳过说明，与结果共同计入8000字符工具块预算；状态优先保留、至多4000字符，超长资料明确截断。调用编号、参数、尝试次数、错误及终态用于决策，不代表自然语言计划完成条件已经满足。
+- `ExpressionFacade` 接受可选 `checkpointer: BaseCheckpointSaver[str] | None = None`，组合根注入角色库的 saver。存在同 correlation 工具 checkpoint 时强制慢通道，恢复子图原节点；外层状态仍重新采样，不重建已完成的工具调用。终局回复提交后清理该 thread，清理失败记日志，启动补清；工具子图完整状态/重试语义见18。
 - `build_system_prompt()` 在人格/状态段之后加入 `[时间与重逢上下文]`。该段由纯函数根据
   注入的 epoch、本地日历、持久化对话锚点和运行时 observation 生成；LLM 不负责自行计算
   时间差、判断跨日或猜测用户离开期间的行为。

@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { postKnowledgeSource } from "../../api/client";
 import { captureScope, isScopeCurrent } from "../../api/characterScope";
+import Panel from "../layout/Panel";
 
-export function KnowledgeFeed() {
+export function KnowledgeFeed({ embedded = false }: { embedded?: boolean }) {
   const [text, setText] = useState("");
   const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -34,9 +35,8 @@ export function KnowledgeFeed() {
     }
   }
 
-  return (
-    <details className="knowledge-feed">
-      <summary>投喂知识</summary>
+  const content = (
+      <div className="knowledge-feed">
       <form onSubmit={(event) => void submit(event)}>
         <label>文本<textarea aria-label="知识文本" maxLength={200000} value={text}
           onChange={(event) => setText(event.target.value)} disabled={submitting} /></label>
@@ -48,6 +48,12 @@ export function KnowledgeFeed() {
         {message && <p role="status">{message}</p>}
         {error && <p role="alert">{error}</p>}
       </form>
-    </details>
+      </div>
+  );
+  if (embedded) return content;
+  return (
+    <Panel title="投喂知识" className="knowledge-feed-panel">
+      {content}
+    </Panel>
   );
 }

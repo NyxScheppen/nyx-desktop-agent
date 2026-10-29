@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import DesiresPanel from "../src/components/panels/DesiresPanel";
 import { useDesireStore } from "../src/stores/desireStore";
@@ -77,5 +77,20 @@ describe("DesiresPanel 短期欲望过滤终态", () => {
     });
     render(<DesiresPanel />);
     expect(screen.queryByText("短期欲望")).not.toBeInTheDocument();
+  });
+
+  it("每页五条，搜索和长期筛选回到首页，压力条保留", () => {
+    useDesireStore.setState({ data: { ...mixed, short_term: Array.from({ length: 6 }, (_, i) => std(`s${i}`, `想法${i}`, "pending")) } });
+    const { container } = render(<DesiresPanel />);
+    expect(container.querySelectorAll(".panel-list > li")).toHaveLength(5);
+    expect(container.querySelector("meter")).toHaveAttribute("value", "0.5");
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(screen.getByText(/想法5/)).toBeInTheDocument();
+    expect(screen.queryByText(/想法0/)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索欲望" }), { target: { value: "想法0" } });
+    expect(screen.getByText("1 / 1")).toBeInTheDocument();
+    expect(screen.getByText(/想法0/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^长期$/ }));
+    expect(screen.getByText("暂无符合条件的欲望")).toBeInTheDocument();
   });
 });

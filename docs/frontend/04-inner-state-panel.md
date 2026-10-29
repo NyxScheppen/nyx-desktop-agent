@@ -8,17 +8,17 @@
 
 ```
 InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 innerLifeStore.current
-├─ inner-state-panel__top       # VAD 图 + 精力条，顶部并排
-│  ├─ ValenceArousalPlot        # 二维散点图：x=valence, y=arousal
-│  └─ EnergyBar                 # 精力条 + energy_state 文案
-└─ inner-state-panel__charts    # 性格/三观两列，审美占整行
-   ├─ BigFiveChart              # 五维双端量表（openness..neuroticism）
-   ├─ ValuesChart               # 三观四维（attitude_to_human..optimism）
-   └─ AestheticChart            # 审美四维
+└─ inner-state-panel__top       # 左上情绪图 + 右侧等宽指标列
+   ├─ ValenceArousalPlot        # 二维散点图：x=valence, y=arousal
+   └─ inner-state-panel__top-side
+      ├─ EnergyBar             # 精力条 + energy_state 文案
+      ├─ BigFiveChart          # 五维双端量表（openness..neuroticism）
+      ├─ AestheticChart        # 审美四维
+      └─ ValuesChart           # 三观四维（attitude_to_human..optimism）
 ```
 
 - `InnerStatePanel`：`useInnerLifeStore(s => s.current)`；`current === null` 时显示「加载中/未连接」；`error` 非 null 时在面板顶部红字一行显示（同 03 ChatInput 的 sendError）。
-- 内在状态主体使用宽松的两列布局，放大标题、图表、量表文字和控件并充分使用常规桌面窗口的可用空间；审美整行在桌面端为右下角头像预留空间；窄屏回退为单列并取消头像留白，避免语义标签被挤压。布局只调整展示，不改变 `CurrentState` 或 store。
+- 内在状态左上显示情绪图，右侧按精力、性格、审美、三观依次堆叠，四块宽度对齐并保留数值；完整端不为头像预留空间。窄屏回退为单列，避免语义标签被挤压。布局只调整展示，不改变 `CurrentState` 或 store。
 - 面板容器填满外围 `side-panel` 的可用高度，内容仍从顶部排列；窄屏布局只改变内部列数，不改变面板尺寸，纵向空间不足时由 `panel-body` 局部滚动保证全部指标可达。
 - 各子组件只收**它需要的字段**作 props（如 `ValenceArousalPlot` 收 `{valence, arousal}`），不传整个 `CurrentState`，减少重渲染（简单，非过度抽象——每子组件确实独立消费）。
 
@@ -34,7 +34,7 @@ InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 in
 - 二维散点：x 轴 `valence ∈ [-1, 1]`（左负右正），y 轴 `arousal ∈ [0, 1]`（下低上高）。单点 + 十字虚线标出当前值。
 - 用 `<canvas>` 或轻量 SVG 手绘（核心先行不引图表库——单点定位图，canvas 足够，避免新依赖）。**不引 recharts/d3**（未请求的复杂度）。
 - 语义对齐 `docs/specs/08-inner-life.md`：`valence` 正负 = 情绪正负，`arousal` 高低 = 激活度；图上轻标注 6 档象限区（开心/害羞/悲伤/生气/担忧/平静），经 `EMOTION_LABELS` 与后端 `vad_to_category` 的 6 分类一一对应（右上下=开心/害羞、左上中下=生气/担忧/悲伤、中央带=平静），纯视觉辅助。
-- 主视觉展示：桌面及窄屏布局中 `va-plot` 的面板内最大宽度为 `17rem`。
+- 主视觉展示：完整窗口中 `va-plot` 最大宽度为 `38rem`，高度为 `clamp(190px, 42vh, 310px)`；宽度随所在列收缩。
 
 ## 4. 精力条（`EnergyBar`）
 
@@ -43,7 +43,7 @@ InnerStatePanel                 # 面板容器（layout/Panel 包裹），读 in
 
 ## 5. Big Five 与三观（`BigFiveChart` / `ValuesChart`）
 
-- **Big Five**：五维 `1-10`（`openness`/`conscientiousness`/`extraversion`/`agreeableness`/`neuroticism`），**双端量表**——每行 = 低分端词 + 滑块圆点 + 高分端词（视觉改造：去数值，用两端语义 + 圆点位置表达，不再显示 1-10 数字）。
+- **Big Five**：五维 `1-10`（`openness`/`conscientiousness`/`extraversion`/`agreeableness`/`neuroticism`），**双端量表**——每行 = 低分端词 + 滑块圆点 + 高分端词，完整窗口同时显示具体数值。
 - **三观**：四维 `1-10`（`attitude_to_human`/`ai_identity_acceptance`/`altruism`/`optimism`），同款双端量表。
 - 两者共享内部 `BarChart`（收 `keys: readonly string[]` + `data: Record<string, number>` + `poles: Record<string, {low, high}>`，值 `(v-1)/9 → 0-100%` 映射圆点位置并钳回 `[0,100]`）；`BigFiveChart`/`ValuesChart` 只传各自的 keys 数组 + 数据对象 + `poles`，不重复渲染逻辑。
 - **双端语义经 `lib/labels.ts`**：`BigFiveChart` 传 `PERSONALITY_POLES`（`openness→{保守,开放}` …）、`ValuesChart` 传 `VALUES_POLES`（`attitude_to_human→{疏离,亲近}` …）；`BarChart` 渲染 `poles[key] ?? {low:key, high:key}`，未知键回退键名原值。

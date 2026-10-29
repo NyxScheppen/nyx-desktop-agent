@@ -534,7 +534,7 @@ EPUB、网页任务和探索先持久化不可变的原文 pending，再保存�
 | ReplyAnnotation / Chat API | 严格字符串；ID 1–128、quote/comment 各 1–2000 Unicode 字符且非空白；不修剪原始值。annotation 缺失/null 为普通聊天；与 reply_to 共存 422 | 受理的 USER_MESSAGE 保存完整快照；重放不重查锚点 |
 | 锚点 | EventBus.get_event 按当前角色 event_log 主键精确读 SPEAK；历史 SPEAK 可用，quote 必须为 content 的连续原文；未知/跨角色 404，非 SPEAK/篡改 422，查询或受理失败 503 | 不新增锚点字段，不回退到最新回复 |
 | annotation_feedback | USER_MESSAGE 独立 memory.annotation_recording 消费者，普通旧消息 no-op | schema46 表 + canonical ANNOTATION_FEEDBACK + recording effect 同事务 |
-| 反馈事实 / 纠错反思 | canonical 反馈由 memory.annotation_feedback 消费；LLM/eval 在事务外，SQL/REFLECTION/effect 在同事务 | profile/conversation facts；reason=annotation_correction 的既有 REFLECTION |
+| 反馈事实 / 纠错反思 | canonical 反馈由 memory.annotation_feedback 消费；LLM/eval 在事务外，SQL/facts effect 在同事务；correction 经 record_failure_signal 阈值触发反射 | profile/conversation facts；reason=annotation_correction 反射达阈值触发（19） |
 | 前端草稿/回执 | 完整显示的单条 SPEAK 原生选区或点击；POST/SSE/history 合并回执 | 角色代数内的 annotationDraft / annotationPersistence，切换/reset 清空 |
 
 **消费者清单**
@@ -544,7 +544,7 @@ EPUB、网页任务和探索先持久化不可变的原文 pending，再保存�
 | runtime → reply → ReplyState → build_user_prompt | 从 durable USER_MESSAGE 传完整 annotation；FAST/SLOW/工具判断/续写均含 `[对上轮回复的批注]`，空历史也包含；不强制讨论或慢通道，批注不 claim waiting 问题 |
 | recording / mediation | 独立 durable 路由，表达终局短路不影响反馈恢复；同键只建一个 canonical 事件；成功 effect 重放跳过 LLM |
 | FactStore / 事实 API | 仅用户自身明确偏好/属性进 profile，conversation 只允许 subject=用户、predicate=回复反馈；quoted asserted 守卫；不写知识/Memory/chunk |
-| inner_life.reflection | 仅 LLM 严格 bool is_correction=true 才产生，空 facts 同样有效；保留过期/CAS/effect，失败独立重试 |
+| inner_life.reflection | is_correction=true 且同类纠正（correction_topic 聚类）达阈值才产生；保留过期/CAS/effect，失败独立重试 |
 | 前端 parser/dispatch/chatStore/ChatInput/MessageBubble | 按原始 JSON.stringify([reply_event_id,comment]) 合并回执，history 同步读反馈事件；只显示记录状态 |
 
 **状态迁移表**
@@ -562,7 +562,7 @@ EPUB、网页任务和探索先持久化不可变的原文 pending，再保存�
 
 | 情况 | 处理 |
 |---|---|
-| 空 | 缺失/null annotation 兼容普通行为；字段缺失/空白/错类型/超长 422；空 facts 可仅反思 |
+| 空 | 缺失/null annotation 兼容普通行为；字段缺失/空白/错类型/超长 422；空 facts 仍记纠正信号（阈值沉淀） |
 | 失败 | 锚点失败不受理；录入失败仍回复、UI 待确认；LLM/eval best-effort；SQL/append/effect/commit 失败全回滚 |
 | 部分完成 | 已有终局回复仍独立恢复录入；记录成功不代表事实/反思完成；丢 announce 由扫描/重启恢复 |
 | 乱序 | 回执可先于 POST/USER_MESSAGE；同键合并，晚 pending 不降级 recorded；角色 ABA 代数保护 |
@@ -622,13 +622,17 @@ POST /api/chat → USER_MESSAGE（完整 annotation 快照）
   ├─ expression.user_message → 注入批注 → 正常回复
   └─ memory.annotation_recording → 行 + ANNOTATION_FEEDBACK + recording effect（同事务）
        └─ memory.annotation_feedback → LLM（事务外）
-            → profile/conversation 事实 + 可选 REFLECTION + mediation effect（同事务）
-                 └─ inner_life.reflection → 既有反思链路
+            → profile/conversation 事实 + mediation effect（同事务）
+            → 提交后 best-effort 用户纠正计数（19）
+                 └─ 同类三次 → LESSON + REFLECTION → 既有反思链路
 ```
 
 - 只在 `ROUTE_SPECS` 增加 `USER_MESSAGE / memory.annotation_recording / record_annotation_feedback` 和 `ANNOTATION_FEEDBACK / memory.annotation_feedback / apply_annotation_feedback`，subscriptions 解析它们；兼容 ROUTING 由源表派生。
 - recording 先排除无批注/已有 effect；事务内重新确认 effect，以 UNIQUE 插入行，只有实际新增才 append canonical 事件，同时写 effect。提交后 announce；缺失唤醒由既有扫描恢复。重复键不重建事件、不覆盖第一份快照。
-- mediation 先查 effect，再调用 LLM；事务内再次检查并原子应用候选/append 纠错反思/写 effect。并发成功副作用唯一；失败回滚 effect。LLM best-effort 跳过也完成本次消费，避免无限付费重放；不把它标成事实更新成功。
+- mediation 先查 effect，再调用 LLM；事务内再次检查并原子应用候选/写 effect。并发成功副作用唯一；失败回滚 effect。LLM best-effort 跳过也完成本次消费，避免无限付费重放；不把它标成事实更新成功。
+- 事实事务提交后才发送纠错学习信号，避免嵌套事务和锁内 embedding。该旁路 best-effort，
+  提交与学习之间中断可能丢信号；已完成 effect 重放不补发。达到三次后先沉淀 LESSON，
+  再将 REFLECTION 与清除计数放同一事务；失败保留计数，完整语义见 19。
 
 ### LLM Mediation Contract
 
@@ -641,15 +645,16 @@ POST /api/chat → USER_MESSAGE（完整 annotation 快照）
     {"scope":"profile","subject":"用户","subject_type":"person","predicate":"回复偏好","object":"希望先说明不确定性","asserted":true,"mode":"multi","polarity":1},
     {"scope":"conversation","subject":"用户","subject_type":"person","predicate":"回复反馈","object":"认为这次回答过于肯定","asserted":true,"mode":"multi","polarity":1}
   ],
-  "is_correction": true
+  "is_correction": true,
+  "correction_topic": "对「XX」的回答过于肯定"
 }
 ```
 
 - prompt 用结构化输入分别标记 quote（Nyx 旧回复，仅供定位）和 comment（用户反馈）；要求只从 comment 的明确用户表达抽取，外部知识纠错只能记为“用户认为/指出某回复有误”。
-- 顶层必须有 facts 数组与严格 bool 的 is_correction，非法 JSON/形状整次跳过并日志。逐项 scope 只允许 profile/conversation，asserted 必须 true；按 scope 拆组后复用 `parse_fact_extraction(source_scope="quoted")` 的数量、名称和关系模式约束。
+- 顶层必须有 facts 数组与严格 bool 的 is_correction，非法 JSON/形状整次跳过并日志。is_correction=true 时额外输出 `correction_topic`（一句话概括纠正主题，供失败反思按主题聚类）；缺失/空兜底 `user_correction`。逐项 scope 只允许 profile/conversation，asserted 必须 true；按 scope 拆组后复用 `parse_fact_extraction(source_scope="quoted")` 的数量、名称和关系模式约束。
 - 代码再次限制候选 subject 为“用户”；conversation 谓词仅允许“回复反馈”。未知 scope、外部主体、未断言候选丢弃。profile 仅接收用户自身的明确属性/偏好。绝不调用 knowledge 摄入/词法 fallback；语义归因质量仍需单独说明真实模型是否验收。
 - 对两组候选分别 `FactStore.apply(candidates, None, "profile" | "conversation")`，valid_from 使用反馈事件时间；不创建新的 Memory 或伪造 source_memory_id/source_chunk_id。
-- is_correction=true 时即使 facts 为空也 append 一个 REFLECTION；reason=`annotation_correction`，evidence 沿用既有 `{source_id, summary}`（source_id=反馈 event_id，summary 总计≤1000 字符，含 quote/comment）。不直接改人格/叙事；false 不触发。补齐 inner_life reason 白名单及展示标签。
+- is_correction=true 时不再当场 append REFLECTION，改为调 `MemoryFacade.record_failure_signal("user_correction", "user_correction:{correction_topic}", …)`（19-failure-reflection）：按 correction_topic 聚类计数，达阈值才沉淀 `MemoryKind.LESSON` + 触发 `reason=annotation_correction` 反射（evidence 沿用 `{source_id, summary}`，source_id=反馈 event_id，summary 总计≤1000 字符，含 quote/comment）。facts 仍当场 apply；false 不触发。补齐 inner_life reason 白名单及展示标签。
 - LLM 成功输出在解析前进入 Evaluator，非法 JSON 同样记账；eval 失败只记日志，不丢有效候选，取消继续传播。
 
 

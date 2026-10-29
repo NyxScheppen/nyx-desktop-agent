@@ -763,4 +763,22 @@ CREATE TABLE eval_prompt (
 
 ## P4 批注契约补充（已批准）
 
-EventBus 增加 `async get_event(event_id: str) -> Event | None`，按当前库主键精确读并复用行映射。ROUTE_SPECS 新增 USER_MESSAGE/memory.annotation_recording/record_annotation_feedback 和 ANNOTATION_FEEDBACK/memory.annotation_feedback/apply_annotation_feedback；subscriptions 传 consumer_id。录入独立于 expression 终局短路；row/event/effect 同事务，提交后 announce；中介 LLM 在事务外，facts/REFLECTION/effect 同事务。API 锚点404/422/503、完整 snapshot、pending/recorded 与对象完整审计见 15 的“批注反馈”。无批注旧事件 no-op，新路由从既有日志恢复；沿用5次重试/dead_letter，丢唤醒可扫描恢复。
+EventBus 增加 `async get_event(event_id: str) -> Event | None`，按当前库主键精确读并复用行映射。ROUTE_SPECS 新增 USER_MESSAGE/memory.annotation_recording/record_annotation_feedback 和 ANNOTATION_FEEDBACK/memory.annotation_feedback/apply_annotation_feedback；subscriptions 传 consumer_id。录入独立于 expression 终局短路；row/event/effect 同事务，提交后 announce；中介 LLM 在事务外，facts/effect 同事务。API 锚点404/422/503、完整 snapshot、pending/recorded 与对象完整审计见 15 的“批注反馈”。无批注旧事件 no-op，新路由从既有日志恢复；沿用5次重试/dead_letter，丢唤醒可扫描恢复。
+
+## 工具观测与失败学习（17—19）
+
+- schema47 新增 `tool_call_log` 与时间/correlation/call 三索引；schema48 新增 `lesson_signal`。
+  schema49 增加工具 checkpoint 的 `checkpoints` / `writes`，schema50 另增临时 tool_execution，当前共43张业务及基础设施表（SQLite表总数46）；旧行不回填，不增加 API 或事件路由；完整 DDL/对象生命周期见17—19。
+- 组合根给共享 ToolRegistry 注入 ToolCallStore，Evaluator 注入调用 MemoryFacade 的 OOC 回调。
+- 批注事实/effect 提交后才执行 best-effort 学习；提交与信号之间中断会丢该次学习，
+  已完成 effect 重放不补发。计数先提交；达到阈值且 LESSON 成功后，纠错 REFLECTION 与计数清除
+  同事务，再 announce。失败保留计数，取消继续传播；不在批注事务内调用 embedding/记忆入库。
+
+### 工具 checkpoint 生命周期
+
+- `Database.checkpointer` 为可空 `BaseCheckpointSaver[str]`。角色磁盘库使用官方 `AsyncSqliteSaver`，其独立连接指向同一角色 SQLite 文件；连接由 `connect()` 装配，打开过程受 shield 保护，取消时等待取得句柄后清理并传播取消；构造失败时关闭，`Database.close()` 在业务连接之前关闭，避免 saver commit 干扰业务事务。`:memory:` 使用无额外连接的 InMemorySaver；自定义迁移的宿主库不创建 saver。
+- schema49 的官方表：`checkpoints` 主键 `(thread_id, checkpoint_ns, checkpoint_id)`，含 parent_checkpoint_id/type/checkpoint/metadata；`writes` 主键 `(thread_id, checkpoint_ns, checkpoint_id, task_id, idx)`，含 channel/type/value。字段类型与锁定版本 `langgraph-checkpoint-sqlite==3.1.1` 一致；由版本迁移创建，saver setup 幂等。
+- 表达子图 thread_id 使用原 correlation_id，节点同步提交 checkpoint。已持久化的 USER_MESSAGE 按既有 delivery 租约/重试机制恢复，不新增消费者或第二套后台调度；有工具 checkpoint 的消息不能因重新分类为 FAST 而绕过恢复。
+- 回复终局 SPEAK/ASK（含 fallback）提交后才清理该 thread；启动删除已有终局事件对应的 checkpoints/writes，未完成 thread 保留。删除角色库同时删除这些表，不新增独立存档文件。
+- checkpoint 或执行回执写入失败向上传播，不把它当工具 best-effort 错误。schema50 的 `tool_execution(id PRIMARY KEY, correlation_id NOT NULL, status NOT NULL, result_json, error)` 保存完整临时结果，按 correlation_id 建索引；由现有 ToolCallStore 写入。先提交 running 才执行，结果保存后才确认图节点；已有结果复用，未确认副作用进入 uncertain 停批，不盲目重放，完整契约见18。
+- 回执与 checkpoint 在终局 SPEAK/ASK 提交后清理（先删除 checkpoint，再删回执）；启动补清已终局 correlation 的回执，未完成项保留。无新增长期连接、API 或后台消费者。

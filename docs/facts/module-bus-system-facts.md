@@ -12,11 +12,16 @@
 
 - 当前系统不是纯“模块只通过总线通信”：EventBus 负责事件受理、`event_log` 持久化、`event_delivery` 投递、SSE 广播和 handler 通知；Facade 之间仍存在直接查询/编排调用。
 - 当前 `EventType` 有 26 个成员；阅读进度同步使用 `READING_PROGRESS`，不是新的消费者路由。
+- schema47/48 增加 `tool_call_log`（三索引）和 `lesson_signal`，schema49 增加工具 checkpoint 两表，schema50 增加临时 tool_execution 回执，业务及基础设施表合计43张（SQLite表总数46）。
+  ToolRegistry 的观测独立提交、失败不改变工具结果；Evaluator 的 OOC 回调经组合根接到记忆经验入口，
+  不增加事件路由，技术失败不触发内心反思。
+- 表达子图围绕工具调用可靠领取并完成 tool_execution 回执；完整临时结果用于恢复，回执读写错误传播，独立于 best-effort 观测。恢复复用成功结果，未确认副作用进入 uncertain 停批；终局 checkpoint 删除后清理回执，启动补清终局残留。
 - P4 增加 `USER_MESSAGE / memory.annotation_recording` 和
   `ANNOTATION_FEEDBACK / memory.annotation_feedback` 两条独立 durable 路由。表达终局短路不跳过录入；
   recording 将 schema46 `annotation_feedback` 行、canonical 反馈事件和 effect 同事务提交。
-  mediation 在事务外完成 LLM/eval，在事务内提交受限事实、可选纠错 REFLECTION 和 effect。
-  两处 append 回滚均按实际增量补偿 `persisted_count`；提交后 announce 丢失可由扫描恢复。
+  mediation 在事务外完成 LLM/eval，在事务内提交受限事实和 effect；提交后才发 best-effort 学习信号。
+  同类三次纠错且经验沉淀成功后，REFLECTION/清除计数同事务；提交与信号间中断可丢学习，
+  effect 重放不补发。append 回滚按实际增量补偿 `persisted_count`；提交后 announce 丢失可由扫描恢复。
   无批注旧消息 no-op；失败沿用最多5次投递与 dead_letter，不增加无限重试器。
 - Chat API 的 `annotation_persistence=recorded|pending` 只确认反馈行；SSE 的 `annotation_feedback`
   也只表示已记录，不代表事实或反思完成。锚点经 `EventBus.get_event(event_id)` 精确读取当前角色库，
@@ -63,6 +68,8 @@
 - eval 的完整应用层 prompt 由 `eval_prompt` 按 `call_id` 永久明文保存；think/speak 两条 `eval_log` 共用一份。recent 列表不返回 prompt，详情通过精确 record id 懒加载，语义以 `10-eval.md` 为准。
 
 ## 模块边界
+
+- 角色磁盘库在 `connect()` 内建立独立的 AsyncSqliteSaver 连接，受 shield 保护的打开过程完成后才能传播取消并清理；Database.close 同时关闭 saver 和业务连接。内存库使用 InMemorySaver，宿主库无 saver。工具子图按原 correlation 恢复；启动补清已 SPEAK/ASK 的 checkpoint，未完成项由既有 USER_MESSAGE delivery 恢复。
 
 组合根在 ActivityFacade 构造后注册 `browser_survey` 表达工具；`POST /api/tasks/browser-survey` 与该工具共享活动任务入口。问卷运行中普通用户消息和主动搭话不会打断浏览器会话；关停或其他中断后任务失败，不重放已点击的选项。
 

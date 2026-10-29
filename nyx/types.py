@@ -416,6 +416,19 @@ class InteractionAttempt:
 
 
 # ---- 工具 / eval ----
+@dataclass
+class PlanStep:
+    text: str
+    expected_tool: str | None
+    done_condition: str
+
+
+@dataclass
+class Plan:
+    goal: str
+    steps: list[PlanStep]
+
+
 @dataclass(frozen=True)
 class Skill:
     name: str

@@ -4,9 +4,11 @@
 import asyncio
 import json
 import logging
+import os
+import secrets
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
@@ -705,35 +707,19 @@ def build_app(
     async def api_events(
         request: Request = cast(Request, None),
     ) -> StreamingResponse:
-        queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=sse_queue_size)
         last_event_id = request.headers.get("last-event-id") if request else None
         if app.host is not None and last_event_id:
             prefix = app.character_id + ":"
             if not last_event_id.startswith(prefix):
                 raise HTTPException(409, "SSE 游标不属于该角色")
             last_event_id = last_event_id[len(prefix) :]
-        app.bus.add_sse_sink(queue)
-        list_events = getattr(app.bus, "list_events", None)
-        replay: list[Event] = []
-        if callable(list_events):
-            load_replay = cast(
-                Callable[..., Awaitable[list[Event]]],
-                list_events,
-            )
+        async def generate() -> AsyncGenerator[str, None]:
+            stream = app.bus.stream_events(last_event_id, sse_queue_size)
             try:
-                replay = await load_replay(limit=1000, after=last_event_id)
-            except BaseException:
-                app.bus.remove_sse_sink(queue)
-                raise
-
-        async def generate():
-            try:
-                pending = iter(replay)
-                while True:
-                    try:
-                        event = next(pending)
-                    except StopIteration:
-                        event = await queue.get()
+                async for event in stream:
+                    if event is None:
+                        yield ": keepalive\n\n"
+                        continue
                     data = {
                         **event.content,
                         "event_id": event.id,
@@ -748,22 +734,37 @@ def build_app(
                         f"data: {payload}\n\n"
                     )
             finally:
-                app.bus.remove_sse_sink(queue)
+                await stream.aclose()
 
-        return StreamingResponse(generate(), media_type="text/event-stream")
+        return StreamingResponse(generate(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+        })
 
-    install_local_guard(fast)
+    install_local_guard(fast, app.host)
     return fast
 
 
-def install_local_guard(fast: FastAPI) -> None:
+def install_local_guard(fast: FastAPI, host: _Host | None = None) -> None:
     """Apply the same localhost and origin guard to host and bound role APIs."""
 
+    token = os.environ.get("NYX_AUTH_TOKEN", "")
+    public_origin = os.environ.get("NYX_PUBLIC_ORIGIN", "")
+    if public_origin:
+        parsed_origin = urlsplit(public_origin)
+        if (
+            parsed_origin.scheme != "https" or not parsed_origin.hostname
+            or parsed_origin.username or parsed_origin.password
+            or parsed_origin.path or parsed_origin.query or parsed_origin.fragment
+        ):
+            raise ValueError("NYX_PUBLIC_ORIGIN must be an HTTPS origin")
+        if not token:
+            raise ValueError("NYX_PUBLIC_ORIGIN requires NYX_AUTH_TOKEN")
     trusted_origins = frozenset(
         (
             "http://localhost:5173",
             "http://tauri.localhost",
             "tauri://localhost",
+            *([public_origin] if public_origin else []),
         )
     )
 
@@ -788,15 +789,15 @@ def install_local_guard(fast: FastAPI) -> None:
             )
 
         try:
-            host = urlsplit("http://" + request.headers.get("host", ""))
+            request_host = urlsplit("http://" + request.headers.get("host", ""))
             valid_host = (
-                host.hostname in ("localhost", "127.0.0.1", "::1")
-                and host.port == 8000
-                and not host.username
-                and not host.password
-                and not host.path
-                and not host.query
-                and not host.fragment
+                request_host.hostname in ("localhost", "127.0.0.1", "::1")
+                and request_host.port == 8000
+                and not request_host.username
+                and not request_host.password
+                and not request_host.path
+                and not request_host.query
+                and not request_host.fragment
             )
         except ValueError:
             valid_host = False
@@ -836,7 +837,10 @@ def install_local_guard(fast: FastAPI) -> None:
             if (
                 origin not in trusted_origins
                 or route is None
-                or headers - {"content-type", "x-nyx-selection-revision"}
+                or headers - {
+                    "content-type", "x-nyx-selection-revision",
+                    "authorization", "last-event-id",
+                }
                 or method not in {"GET", "POST", "PUT", "DELETE"}
             ):
                 return reject(403, "origin_forbidden")
@@ -854,14 +858,37 @@ def install_local_guard(fast: FastAPI) -> None:
                         )
                     ),
                     "Access-Control-Allow-Headers": (
-                        "Content-Type, X-Nyx-Selection-Revision"
+                        "Content-Type, X-Nyx-Selection-Revision, "
+                        "Authorization, Last-Event-ID"
                     ),
                 },
             )
             if request.headers.get("access-control-request-private-network") == "true":
                 response.headers["Access-Control-Allow-Private-Network"] = "true"
         else:
-            response = None
+            presented = request.headers.get("authorization", "")
+            root_authorized = bool(token) and secrets.compare_digest(
+                presented.encode(), f"Bearer {token}".encode()
+            )
+            device_authorized = False
+            if token and not root_authorized and host is not None:
+                device_authorized = await host.authenticate_device(
+                    presented.removeprefix("Bearer ").strip()
+                    if presented.startswith("Bearer ") else ""
+                )
+            request.state.nyx_auth = "root" if root_authorized else (
+                "device" if device_authorized else ""
+            )
+            if (
+                token and request.url.path not in ("/api/ready", "/api/devices/pair")
+                and not (root_authorized or device_authorized)
+            ):
+                response = JSONResponse(
+                    status_code=401, content={"detail": "Authentication required"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            else:
+                response = None
             if (
                 response is None
                 and request.method in ("POST", "PUT", "DELETE")
@@ -882,7 +909,7 @@ def install_local_guard(fast: FastAPI) -> None:
                     response = reject(415, "unsupported_media_type")
             if response is None:
                 response = await call_next(request)
-        if origin in trusted_origins:
+        if origin is not None and origin in trusted_origins:
             response.headers["Access-Control-Allow-Origin"] = origin
             vary = response.headers.get("Vary")
             response.headers["Vary"] = f"{vary}, Origin" if vary else "Origin"
@@ -891,6 +918,22 @@ def install_local_guard(fast: FastAPI) -> None:
 
 class _SelectionPayload(BaseModel):
     character_id: str = Field(min_length=1, strict=True)
+
+
+class _PairingPayload(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80, strict=True)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("name must contain non-whitespace text")
+        return name
+
+
+class _PairPayload(_PairingPayload):
+    code: str = Field(..., min_length=1, max_length=64, strict=True)
 
 
 class _CreateCharacterPayload(BaseModel):
@@ -918,6 +961,44 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
     @fast.get("/api/ready")
     async def ready() -> dict[str, str | None]:
         return {"service": "nyx-agent", "launch_nonce": launch_nonce}
+
+    @fast.post("/api/devices/pairing")
+    async def create_pairing(
+        payload: _PairingPayload, request: Request
+    ) -> dict[str, Any]:
+        if not os.environ.get("NYX_AUTH_TOKEN"):
+            raise HTTPException(404, "Device pairing is disabled")
+        if request.state.nyx_auth != "root":
+            raise HTTPException(403, "Root authentication required")
+        code, expires_at = await host.create_pairing_code(payload.name)
+        return {"code": code, "expires_at": expires_at}
+
+    @fast.post("/api/devices/pair")
+    async def pair_device(payload: _PairPayload) -> dict[str, str]:
+        if not os.environ.get("NYX_AUTH_TOKEN"):
+            raise HTTPException(404, "Device pairing is disabled")
+        result = await host.redeem_pairing_code(payload.code, payload.name)
+        if result is None:
+            raise HTTPException(401, "Invalid pairing code")
+        device_id, access_token = result
+        return {"device_id": device_id, "access_token": access_token}
+
+    @fast.get("/api/devices")
+    async def devices(request: Request) -> list[dict[str, Any]]:
+        if not os.environ.get("NYX_AUTH_TOKEN"):
+            raise HTTPException(404, "Device pairing is disabled")
+        if request.state.nyx_auth != "root":
+            raise HTTPException(403, "Root authentication required")
+        return await host.list_devices()
+
+    @fast.delete("/api/devices/{device_id}")
+    async def revoke_device(device_id: str, request: Request) -> None:
+        if not os.environ.get("NYX_AUTH_TOKEN"):
+            raise HTTPException(404, "Device pairing is disabled")
+        if request.state.nyx_auth != "root":
+            raise HTTPException(403, "Root authentication required")
+        if not await host.revoke_device(device_id):
+            raise HTTPException(404, "Device not found")
 
     @fast.get("/api/characters")
     async def characters() -> dict[str, Any]:
@@ -1141,5 +1222,5 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
 
     fast.mount("/api/characters", dispatch)
     fast.mount("/api", dispatch)
-    install_local_guard(fast)
+    install_local_guard(fast, host)
     return fast

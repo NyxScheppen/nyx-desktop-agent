@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -84,6 +85,16 @@ class VisionConfig:
 
 
 @dataclass
+class OneBotConfig:
+    enabled: bool = False
+    ws_url: str = "ws://127.0.0.1:3001"
+    access_token_env: str = "ONEBOT_ACCESS_TOKEN"
+    self_id: int = 0
+    owner_id: int = 0
+    character_id: str = "nyx"
+
+
+@dataclass
 class Config:
     llm: LlmConfig = field(default_factory=LlmConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
@@ -93,6 +104,7 @@ class Config:
     expression: ExpressionConfig = field(default_factory=ExpressionConfig)
     exploration: ExplorationConfig = field(default_factory=ExplorationConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
+    onebot: OneBotConfig = field(default_factory=OneBotConfig)
 
 
 def _build(dc: Any, raw: Any) -> Any:
@@ -213,6 +225,28 @@ def validate_config(cfg: Config) -> None:
     _pos_num(cfg.expression.chat_ignore_timeout, "expression.chat_ignore_timeout")
     _flag(cfg.exploration.web_enabled, "exploration.web_enabled")   # bool
     _flag(cfg.vision.enabled, "vision.enabled")
+    _flag(cfg.onebot.enabled, "onebot.enabled")
+    if cfg.onebot.enabled:
+        _pos_int(cfg.onebot.self_id, "onebot.self_id")
+        _pos_int(cfg.onebot.owner_id, "onebot.owner_id")
+        if cfg.onebot.self_id == cfg.onebot.owner_id:
+            raise ConfigError("onebot.owner_id 不能是机器人自己")
+        _nonempty(cfg.onebot.character_id, "onebot.character_id")
+        _nonempty(cfg.onebot.access_token_env, "onebot.access_token_env")
+        _nonempty(cfg.onebot.ws_url, "onebot.ws_url")
+        try:
+            url = urlsplit(cfg.onebot.ws_url)
+            valid = (
+                url.scheme in ("ws", "wss")
+                and url.hostname in ("127.0.0.1", "localhost", "::1")
+                and url.username is None and url.password is None
+                and not url.query and not url.fragment
+                and (url.port is None or url.port > 0)
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ConfigError("onebot.ws_url 必须是本机 WebSocket 地址且不含凭证")
 
     # energy_delta 6 键全为 int（可为负）
     for name, v in vars(cfg.activity.energy_delta).items():

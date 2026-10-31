@@ -1,4 +1,7 @@
 import { useCharacterStore } from "./stores/characterStore";
+import { useConnectionStore } from "./stores/connectionStore";
+import { invalidateScope } from "./api/characterScope";
+import { pairDevice } from "./api/client";
 import CharacterSelect from "./components/layout/CharacterSelect";
 import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent } from "./api/dispatch";
@@ -38,6 +41,47 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
 
 // 装配：左侧图标导航 + 聊天/模块书页 + 设置弹层；useSSE 只挂一次。
 export default function App() {
+  const required = useConnectionStore((s) => s.required);
+  const [token, setToken] = useState("");
+  const [code, setCode] = useState("");
+  const [deviceName, setDeviceName] = useState("手机");
+  const [pairing, setPairing] = useState(false);
+  const [error, setError] = useState("");
+  if (!required) return <ConnectedApp />;
+  return <form className="connection-screen" onSubmit={(event) => {
+    event.preventDefault();
+    setError("");
+    if (pairing) {
+      void pairDevice(code.trim(), deviceName.trim()).then(({ access_token }) => {
+        useConnectionStore.getState().setToken(access_token);
+        setCode("");
+      }).catch((reason: unknown) => {
+        setError(reason instanceof Error ? reason.message : "配对失败");
+      });
+    } else {
+      useConnectionStore.getState().setToken(token);
+      setToken("");
+    }
+  }}>
+    <div className="connection-screen__form">
+      <h1>连接 Nyx</h1>
+      {pairing ? <>
+        <label>配对码<input inputMode="text" autoComplete="off" value={code} required
+          onChange={(event) => setCode(event.target.value)} /></label>
+        <label>设备名称<input autoComplete="off" value={deviceName} required
+          onChange={(event) => setDeviceName(event.target.value)} /></label>
+      </> : <label>访问凭证<input type="password" autoComplete="off" value={token} required
+        onChange={(event) => setToken(event.target.value)} /></label>}
+      {error && <p role="alert">{error}</p>}
+      <button type="submit">连接</button>
+      <button type="button" onClick={() => { setPairing(!pairing); setError(""); }}>
+        {pairing ? "使用访问凭证" : "使用配对码"}
+      </button>
+    </div>
+  </form>;
+}
+
+function ConnectedApp() {
   const registry = useCharacterStore((s) => s.registry);
   const generation = useCharacterStore((s) => s.generation);
   const switching = useCharacterStore((s) => s.switching);
@@ -45,7 +89,10 @@ export default function App() {
   const selected = registry?.characters.find((role) => role.id === registry.current_id);
   const ready = selected?.status === "RUNNING" && !switching;
   const status = useSSE(dispatchEvent, ready && selected ? { id: selected.id, generation } : null);
-  useEffect(() => { void useCharacterStore.getState().initialize(); }, []);
+  useEffect(() => {
+    void useCharacterStore.getState().initialize();
+    return () => invalidateScope();
+  }, []);
   useEffect(() => {
     const timer = setInterval(() => void useCharacterStore.getState().refresh(), 2000);
     return () => clearInterval(timer);

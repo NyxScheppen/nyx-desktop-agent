@@ -1,4 +1,6 @@
 import { scopedRequest } from "./characterScope";
+import { isTauriRuntime } from "../lib/desktopWindow";
+import { useConnectionStore } from "../stores/connectionStore";
 import type {
   Activity,
   ActivitySnapshot,
@@ -32,7 +34,7 @@ import type {
 } from "../types/api";
 
 // Development uses Vite proxy; packaged REST and SSE share the loopback endpoint.
-export const BASE_URL = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
+export const BASE_URL = import.meta.env.DEV || !isTauriRuntime() ? "" : "http://127.0.0.1:8000";
 
 // 统一错误契约（05-client §2）：成功返回数据、失败 throw，不包裹 {ok, data}。
 // fetch 网络错误（TypeError）自然上抛不吞；非 2xx 读 body.detail ?? body.error ?? JSON.stringify(body)，
@@ -52,11 +54,25 @@ async function assertOk(res: Response): Promise<void> {
 
 async function checkedFetch(url: string, init?: RequestInit): Promise<Response> {
   const scoped = scopedRequest(url, init);
+  const token = useConnectionStore.getState().token;
+  if (token) {
+    const headers = new Headers(scoped.init.headers);
+    headers.set("Authorization", `Bearer ${token}`);
+    scoped.init = { ...scoped.init, headers };
+  }
   try {
     const res = await fetch(scoped.url, scoped.init);
+    if (res.status === 401 && useConnectionStore.getState().token === token) {
+      useConnectionStore.setState({ required: true });
+    }
     await assertOk(res);
     return res;
   } finally { scoped.release(); }
+}
+
+export async function getCharacterAsset(path: string, signal: AbortSignal): Promise<Blob> {
+  const res = await checkedFetch(`${BASE_URL}${path}`, { signal });
+  return res.blob();
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -384,6 +400,36 @@ export type CharacterRegistry = {
 };
 export function getCharacters(): Promise<CharacterRegistry> {
   return request(`${BASE_URL}/api/characters`);
+}
+export function pairDevice(code: string, name: string): Promise<{
+  device_id: string; access_token: string;
+}> {
+  return fetch(`${BASE_URL}/api/devices/pair`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, name }),
+  }).then(async (res) => {
+    await assertOk(res);
+    return res.json() as Promise<{ device_id: string; access_token: string }>;
+  });
+}
+export function createPairingCode(name: string): Promise<{
+  code: string; expires_at: number;
+}> {
+  return request(`${BASE_URL}/api/devices/pairing`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+export type DeviceRecord = {
+  id: string; name: string; created_at: number; revoked_at: number | null;
+};
+export function getDevices(): Promise<DeviceRecord[]> {
+  return request(`${BASE_URL}/api/devices`);
+}
+export function revokeDevice(id: string): Promise<void> {
+  return checkedFetch(`${BASE_URL}/api/devices/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  }).then(() => undefined);
 }
 export function selectCharacter(id: string): Promise<{ current_id: string; selection_revision: number }> {
   return request(`${BASE_URL}/api/characters/current`, {

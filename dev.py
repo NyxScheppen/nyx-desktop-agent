@@ -365,6 +365,8 @@ def main() -> None:
             str(ROOT / "build"),
             "--paths",
             str(ROOT),
+            "--paths",
+            str(ROOT / "packages" / "nyx-harness"),
             "--add-data",
             f"{ROOT / 'config.yaml'}{separator}.",
             "--add-data",

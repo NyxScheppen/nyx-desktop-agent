@@ -30,9 +30,9 @@ if not defined PYTHON if exist "%~dp0.runtime" (
     call :find_python python
 )
 if not defined PYTHON (
-    echo [Nyx] No usable Python with uvicorn was found.
+    echo [Nyx] No usable Python with uvicorn and nyx_harness was found.
     echo [Nyx] The project environment may be broken or dependencies are missing.
-    echo [Nyx] Run: python -m pip install -e .
+    echo [Nyx] Run: python -m pip install -e ./packages/nyx-harness -e .
     goto :failed
 )
 echo [Nyx] Python: %PYTHON%
@@ -74,7 +74,7 @@ goto :finished
 
 :find_python
 set "CANDIDATE=%~1"
-"%CANDIDATE%" -c "import uvicorn" >nul 2>&1
+"%CANDIDATE%" -c "import uvicorn, nyx_harness" >nul 2>&1
 if not errorlevel 1 set "PYTHON=%CANDIDATE%"
 exit /b 0
 

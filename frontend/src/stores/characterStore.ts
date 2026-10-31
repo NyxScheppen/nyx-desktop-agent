@@ -9,6 +9,7 @@ import { useEvalStore } from "./evalStore";
 import { useInnerLifeStore } from "./innerLifeStore";
 import { useMemoryStore } from "./memoryStore";
 import { useReaderStore } from "./readerStore";
+import { useConnectionStore } from "./connectionStore";
 
 type CharacterState = {
   registry: CharacterRegistry | null;
@@ -89,9 +90,12 @@ export const useCharacterStore = create<CharacterState>((set, get) => {
     refresh: async () => {
       if (get().switching) return;
       const request = ++refreshRevision;
+      const token = useConnectionStore.getState().token;
       try {
         const registry = await getCharacters();
-        if (request === refreshRevision && !get().switching) {
+        if (request === refreshRevision && !get().switching &&
+            token === useConnectionStore.getState().token &&
+            !useConnectionStore.getState().required) {
           const changed = adopt(registry);
           set({ error: null });
           if (changed && registry.characters.some((r) => r.id === registry.current_id && r.status === "RUNNING")) {
@@ -99,12 +103,14 @@ export const useCharacterStore = create<CharacterState>((set, get) => {
           }
         }
       } catch (error) {
-        if (request === refreshRevision) set({ error: String(error) });
+        if (request === refreshRevision && token === useConnectionStore.getState().token &&
+            !useConnectionStore.getState().required) set({ error: String(error) });
       }
     },
     select: (id) => {
       const run = async () => {
         if (get().registry?.current_id === id && captureScope() !== null) return;
+        const token = useConnectionStore.getState().token;
         const previous = captureScope();
         const bookId = useReaderStore.getState().bookId;
         if (previous && bookId) lastBooks[previous.id] = bookId;
@@ -118,8 +124,14 @@ export const useCharacterStore = create<CharacterState>((set, get) => {
           set({ error: String(error) });
         }
         try {
-          adopt(await getCharacters());
-          await restoreBook();
+          const registry = await getCharacters();
+          if (token === useConnectionStore.getState().token &&
+              !useConnectionStore.getState().required) {
+            adopt(registry);
+            await restoreBook();
+          } else {
+            set({ switching: false });
+          }
         } catch (error) {
           // No trustworthy selection: keep business requests blocked until refresh succeeds.
           set({ switching: false, error: String(error) });

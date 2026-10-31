@@ -3,55 +3,51 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
 import os
+import secrets
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.screen import ScreenObserver, capture_screen
-from nyx.activity.store import ActivityStore
 from nyx.bootstrap import (
-    initialize_card,
     load_ask,
     load_canon,
     load_prompt_files,
-    load_skills,
 )
 from nyx.character_cards import BUILTIN_CARD, load_card, read_package
 from nyx.config import Config
 from nyx.db import Database, connect, resolve_db_path
 from nyx.desire.facade import DesireFacade
-from nyx.desire.store import DesireStore
 from nyx.enums import EventType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
-from nyx.expression.store import ExpressionInteractionStore
 from nyx.inner_life.facade import InnerLifeFacade
-from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
-from nyx.memory.facade import MemoryFacade, build_source_topic
-from nyx.memory.facts import MemoryFactStore
-from nyx.memory.retrieval import MemoryRetrieval, build_embed
-from nyx.memory.store import MemoryStore
+from nyx.memory.facade import MemoryFacade
+from nyx.memory.retrieval import build_embed
+from nyx.plugins import build_plugins, default_plugins, start_plugins
 from nyx.reading.facade import ReadingFacade
-from nyx.reading.store import ReadingStore
-from nyx.research import build_deep_research_tool
-from nyx.tools.activity_tasks import build_activity_task_tools
 from nyx.tools.file_io import build_file_io_tool
 from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.tool_call_store import ToolCallStore
 from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.tools.web_search import build_web_search_tool
-from nyx.types import Book, CurrentState, Event, ReadingProgress, Tool
+from nyx.transports import TransportAdapter
+from nyx.transports.onebot import OneBotAdapter
+from nyx.types import Event
 
 _PRESENCE_FIELDS = (
     "last_presence",
@@ -101,11 +97,16 @@ class _App:
     host: _Host | None = field(default=None, repr=False)
     tick_task: asyncio.Task[None] | None = field(default=None, repr=False)
     memory_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    transport: TransportAdapter | None = field(default=None, repr=False)
+    transport_task: asyncio.Task[None] | None = field(default=None, repr=False)
 
     def can_initiate(self) -> bool:
         """Admission uses the selected runtime; admitted work keeps its owner."""
         return self.host is None or (
-            self.host.current_id == self.character_id
+            (self.host.current_id == self.character_id or (
+                self.config.onebot.enabled
+                and self.config.onebot.character_id == self.character_id
+            ))
             and self.host.records[self.character_id]["status"] == "RUNNING"
         )
 
@@ -374,115 +375,8 @@ async def build_app_context(
     try:
         llm = host.llm.fork() if host else LlmClient.from_config(config.llm)
         bus = EventBus(db)
-        memory_store = MemoryStore(db)
-        fact_store = MemoryFactStore(db)
         embed = host.embed if host else build_embed(config.embedding.model)
         eval_store = EvalStore(db)
-
-        async def on_failure(
-            kind: str, topic: str, summary: str, correlation_id: str
-        ) -> None:
-            await memory.record_failure_signal(kind, topic, summary, correlation_id)
-
-        evaluator = Evaluator(embed, eval_store, on_failure)
-        retrieval = MemoryRetrieval(memory_store, embed)
-        memory = MemoryFacade(
-            memory_store,
-            retrieval,
-            bus,
-            llm,
-            evaluator,
-            config.memory,
-            embed,
-            fact_store,
-        )
-
-        async def ingest_web(text: str, url: str) -> dict[str, Any]:
-            return await memory.ingest_source(
-                text, build_source_topic("web", url), url, url, location=url
-            )
-
-        tools = build_tools(
-            config,
-            workspace=Path(character["workspace"]) if character else Path("workspace"),
-            ingest=ingest_web,
-            store=ToolCallStore(db),
-            blocked=host.blocked_paths(character["id"]) if host and character else (),
-        )
-
-        desire_store = DesireStore(db)
-        desire = DesireFacade(
-            desire_store,
-            bus,
-            llm,
-            evaluator,
-            config.desire,
-            lambda: memory.list_memories(),
-            embed,
-        )
-
-        inner_life_store = InnerLifeStore(db)
-        activity_store = ActivityStore(db)
-        state_reader: Callable[[], Awaitable[CurrentState]] | None = None
-        reading_context_reader: Callable[[str, str], Awaitable[str]] | None = None
-        reading_owner: ReadingFacade | None = None
-        observation_reader: Callable[[], Awaitable[dict[str, str]]] | None = None
-        return_context_owner: _App | None = None
-
-        async def get_state() -> CurrentState:
-            if state_reader is None:
-                raise RuntimeError("inner_life state reader 尚未绑定")
-            return await state_reader()
-
-        async def get_observation() -> dict[str, str]:
-            if observation_reader is None:
-                raise RuntimeError("runtime observation reader 尚未绑定")
-            return await observation_reader()
-
-        def claim_return() -> dict[str, float] | None:
-            if return_context_owner is None:
-                raise RuntimeError("runtime return context 尚未绑定")
-            return return_context_owner.claim_return_context()
-
-        def finish_return(claim: dict[str, float] | None) -> None:
-            if return_context_owner is None:
-                raise RuntimeError("runtime return context 尚未绑定")
-            return_context_owner.finish_return_context(claim)
-
-        def release_return(claim: dict[str, float] | None) -> None:
-            if return_context_owner is None:
-                raise RuntimeError("runtime return context 尚未绑定")
-            return_context_owner.release_return_context(claim)
-
-        async def read_reading_context(source_id: str, query: str) -> str:
-            if reading_context_reader is None:
-                return ""
-            return await reading_context_reader(source_id, query)
-
-        async def list_reader_books() -> list[Book]:
-            if reading_owner is None:
-                raise RuntimeError("reading facade 尚未绑定")
-            return await reading_owner.list_readable_books()
-
-        async def read_reader_book(
-            book_id: str, target_paragraph: int | None, correlation_id: str
-        ) -> dict[str, Any]:
-            if reading_owner is None:
-                raise RuntimeError("reading facade 尚未绑定")
-            return await reading_owner.read_for_activity(
-                book_id, target_paragraph, correlation_id
-            )
-
-        async def get_reader_book(book_id: str) -> Book:
-            if reading_owner is None:
-                raise RuntimeError("reading facade 尚未绑定")
-            return await reading_owner.get_book(book_id)
-
-        async def get_reader_progress(book_id: str) -> ReadingProgress:
-            if reading_owner is None:
-                raise RuntimeError("reading facade 尚未绑定")
-            return await reading_owner.get_progress(book_id)
-
         prompt_dir = Path(
             os.environ.get("NYX_CANON_DIR", Path(__file__).parent / "prompts")
         )
@@ -491,176 +385,60 @@ async def build_app_context(
             if character
             else load_card(BUILTIN_CARD)
         )
-        canon = card.canon if character else load_canon(prompt_dir, canon_files)
-        ask = card.ask if character else load_ask(prompt_dir, ask_files)
-        knowledge_boundary = load_prompt_files(prompt_dir, ("knowledge-boundary.md",))
-        activity = ActivityFacade(
-            activity_store,
-            bus,
-            llm,
-            evaluator,
-            tools,
-            desire,
-            memory,
-            get_state,
-            get_observation,
-            config.activity,
-            config.exploration,
-            canon,
-            list_reader_books,
-            read_reader_book,
-            get_reader_book,
-            get_reader_progress,
-            fetch_source=(
-                build_web_fetch_tool().handler
-                if config.exploration.web_enabled else None
+        capabilities: dict[str, object] = {
+            "db": db,
+            "bus": bus,
+            "llm": llm,
+            "embed": embed,
+            "eval_store": eval_store,
+            "config": config,
+            "card": card,
+            "prompt_dir": prompt_dir,
+            "canon": card.canon if character else load_canon(prompt_dir, canon_files),
+            "ask": card.ask if character else load_ask(prompt_dir, ask_files),
+            "knowledge_boundary": load_prompt_files(
+                prompt_dir, ("knowledge-boundary.md",)
             ),
-        )
-        await activity.recover_stale_running()
-        task_tools = build_activity_task_tools(
-            activity.assign_web_task,
-            activity.assign_book_task_by_title,
-            activity.assign_creation_task,
-            activity.assign_browser_survey_task,
-        )
-        if config.exploration.web_enabled:
-            tools.register(task_tools[0])
-            tools.register(task_tools[3])
-        tools.register(task_tools[1])
-        tools.register(task_tools[2])
-
-        async def memory_recall(query: str, top_k: int = 8) -> dict[str, Any]:
-            segments = await memory.search_conversation_segments(
-                query, max(1, min(top_k, 8))
-            )
-            facts = await memory.search_facts(query, scope="profile")
-            facts += await memory.search_facts(query, scope="conversation")
-            return {
-                "segments": [
-                    {
-                        "segment_id": segment.id,
-                        "content": segment.raw_content,
-                        "importance": segment.importance,
-                        "freshness": segment.freshness,
-                    }
-                    for segment in segments
-                ],
-                "facts": [
-                    {
-                        "subject": fact.subject,
-                        "predicate": fact.predicate,
-                        "object_value": fact.object_value,
-                        "scope": fact.scope,
-                        "source_segment_id": fact.source_segment_id,
-                    }
-                    for fact in facts
-                ],
-            }
-
-        async def knowledge_search(query: str, top_k: int = 5) -> dict[str, Any]:
-            return await memory.search_knowledge(query, top_k)
-
-        tools.register(Tool(
-            "memory_recall",
-            "召回相关对话段原文和用户/关系事实；"
-            "结果带 segment_id 或 source_segment_id 供引用。",
-            {"type": "object", "properties": {
-                "query": {"type": "string", "description": "要回忆的主题或问题"},
-                "top_k": {
-                    "type": "integer",
-                    "description": "返回对话段条数上限",
-                    "default": 8,
-                },
-            }, "required": ["query"]},
-            memory_recall,
-        ))
-        tools.register(Tool(
-            "knowledge_search",
-            "检索知识事实与证据块原文，返回 source_chunk_id 溯源供逐条引用。",
-            {"type": "object", "properties": {
-                "query": {"type": "string", "description": "要检索的知识主题"},
-                "top_k": {
-                    "type": "integer", "description": "返回事实条数上限", "default": 5,
-                },
-            }, "required": ["query"]},
-            knowledge_search,
-        ))
-        tools.register(build_deep_research_tool(
-            search=(build_web_search_tool().handler
-                    if config.exploration.web_enabled else None),
-            fetch=(build_web_fetch_tool().handler
-                   if config.exploration.web_enabled else None),
-            llm=llm, ingest=memory.ingest_source, evaluator=evaluator,
-        ))
-        skills = load_skills(prompt_dir / "skills", tools)
-        inner_life = InnerLifeFacade(
-            inner_life_store, activity, desire, memory, bus, llm, evaluator, config
-        )
-        state_reader = inner_life.get_state
-
-        await initialize_card(db, card.manifest)
-        expression = ExpressionFacade(
-            bus,
-            llm,
-            evaluator,
-            memory,
-            activity,
-            desire,
-            inner_life,
-            canon,
-            ask,
-            config.expression,
-            tools,
-            skills=skills,
-            interaction_store=ExpressionInteractionStore(db),
-            knowledge_boundary=knowledge_boundary,
-            observation_reader=get_observation,
-            claim_return=claim_return,
-            finish_return=finish_return,
-            release_return=release_return,
-            reading_context_reader=read_reading_context,
-            checkpointer=db.checkpointer,
-        )
-        await expression.restore_history()
-        reading = ReadingFacade(
-            ReadingStore(db),
-            inner_life,
-            desire,
-            memory,
-            llm,
-            evaluator,
-            bus,
-            canon,
-            expression,
-        )
-        reading_owner = reading
-        reading_context_reader = reading.build_reply_context
+            "build_tools": partial(
+                build_tools,
+                config,
+                workspace=(
+                    Path(character["workspace"]) if character else Path("workspace")
+                ),
+                store=ToolCallStore(db),
+                blocked=(
+                    host.blocked_paths(character["id"]) if host and character else ()
+                ),
+            ),
+        }
+        plugins = default_plugins()
+        await build_plugins(plugins, capabilities)
         app = _App(
             bus,
-            inner_life,
-            desire,
-            memory,
-            activity,
-            expression,
-            reading,
-            evaluator,
+            cast(InnerLifeFacade, capabilities["inner_life"]),
+            cast(DesireFacade, capabilities["desire"]),
+            cast(MemoryFacade, capabilities["memory"]),
+            cast(ActivityFacade, capabilities["activity"]),
+            cast(ExpressionFacade, capabilities["expression"]),
+            cast(ReadingFacade, capabilities["reading"]),
+            cast(Evaluator, capabilities["evaluator"]),
             eval_store,
             config,
             database=db,
             host=host,
             character_id=card.manifest.id,
         )
-        return_context_owner = app
+        capabilities.update({
+            "observation_reader": partial(_read_observation, app),
+            "claim_return": app.claim_return_context,
+            "finish_return": app.finish_return_context,
+            "release_return": app.release_return_context,
+        })
         llm.can_initiate = app.can_initiate
-
-        async def read_observation() -> dict[str, str]:
-            return {
-                "presence": app.last_presence,
-                "window_title": app.last_window_title,
-                "screen_summary": app.last_screen_summary,
-            }
-
-        observation_reader = read_observation
+        if config.onebot.enabled and config.onebot.character_id == app.character_id:
+            app.transport = OneBotAdapter(app)
+            await app.transport.outbox.initialize()
+        await start_plugins(plugins, capabilities)
         if config.vision.enabled and host is None:
             from nyx.llm.vision import VisionClient
 
@@ -672,6 +450,14 @@ async def build_app_context(
     except BaseException:
         await db.close()
         raise
+
+
+async def _read_observation(app: _App) -> dict[str, str]:
+    return {
+        "presence": app.last_presence,
+        "window_title": app.last_window_title,
+        "screen_summary": app.last_screen_summary,
+    }
 
 
 _HOST_MIGRATIONS: list[tuple[int, list[str]]] = [
@@ -701,6 +487,15 @@ _HOST_MIGRATIONS: list[tuple[int, list[str]]] = [
             "json_extract(payload, '$.sampled_at') FROM presence_samples "
             "ORDER BY json_extract(payload, '$.sampled_at') DESC, sequence "
             "DESC LIMIT 1",
+        ],
+    ),
+    (
+        2,
+        [
+            "CREATE TABLE pairing_code (id TEXT PRIMARY KEY, code_hash TEXT UNIQUE "
+            "NOT NULL, name TEXT NOT NULL, expires_at REAL NOT NULL)",
+            "CREATE TABLE device_token (id TEXT PRIMARY KEY, token_hash TEXT UNIQUE "
+            "NOT NULL, name TEXT NOT NULL, created_at REAL NOT NULL, revoked_at REAL)",
         ],
     ),
 ]
@@ -800,6 +595,79 @@ class _Host:
                 (record["id"], json.dumps(snapshot)),
             )
         self.records[record["id"]] = snapshot
+
+    @staticmethod
+    def _credential_hash(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    async def create_pairing_code(self, name: str) -> tuple[str, float]:
+        """Create a short-lived pairing code without storing its plaintext."""
+        now = time.time()
+        expires_at = now + 600.0
+        code = secrets.token_urlsafe(16)
+        async with self.database.transaction() as conn:
+            await conn.execute("DELETE FROM pairing_code WHERE expires_at <= ?", (now,))
+            await conn.execute(
+                "INSERT INTO pairing_code VALUES (?, ?, ?, ?)",
+                (str(uuid.uuid4()), self._credential_hash(code), name, expires_at),
+            )
+        return code, expires_at
+
+    async def redeem_pairing_code(self, code: str, name: str) -> tuple[str, str] | None:
+        """Atomically consume a pairing code and issue a device token."""
+        now = time.time()
+        token = secrets.token_urlsafe(32)
+        device_id = str(uuid.uuid4())
+        async with self.database.transaction() as conn:
+            await conn.execute("DELETE FROM pairing_code WHERE expires_at <= ?", (now,))
+            row = await (
+                await conn.execute(
+                    "SELECT id FROM pairing_code WHERE code_hash=? AND expires_at > ?",
+                    (self._credential_hash(code), now),
+                )
+            ).fetchone()
+            if row is None:
+                return None
+            deleted = await conn.execute(
+                "DELETE FROM pairing_code WHERE id=?", (row["id"],)
+            )
+            if deleted.rowcount != 1:
+                return None
+            await conn.execute(
+                "INSERT INTO device_token VALUES (?, ?, ?, ?, NULL)",
+                (device_id, self._credential_hash(token), name, now),
+            )
+        return device_id, token
+
+    async def authenticate_device(self, token: str) -> bool:
+        """Check a non-revoked device token by its stored digest."""
+        async with self.database.lock:
+            row = await (
+                await self.database.conn.execute(
+                    "SELECT id FROM device_token WHERE token_hash=? "
+                    "AND revoked_at IS NULL",
+                    (self._credential_hash(token),),
+                )
+            ).fetchone()
+        return row is not None
+
+    async def list_devices(self) -> list[dict[str, Any]]:
+        async with self.database.lock:
+            rows = await (
+                await self.database.conn.execute(
+                    "SELECT id, name, created_at, revoked_at FROM device_token "
+                    "ORDER BY created_at, id"
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def revoke_device(self, device_id: str) -> bool:
+        async with self.database.transaction() as conn:
+            cursor = await conn.execute(
+                "UPDATE device_token SET revoked_at=COALESCE(revoked_at, ?) WHERE id=?",
+                (time.time(), device_id),
+            )
+        return cursor.rowcount == 1
 
     def blocked_paths(self, identity: str) -> list[Path]:
         """Protect internal saves; allow this role's card and workspace."""

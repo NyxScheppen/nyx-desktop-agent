@@ -6,6 +6,12 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
+[manifest]
+members = [
+    "nyx-agent",
+    "nyx-harness",
+]
+
 [[package]]
 name = "aiosqlite"
 version = "0.22.1"
@@ -1676,6 +1682,7 @@ dependencies = [
     { name = "langgraph-checkpoint-sqlite" },
     { name = "lxml" },
     { name = "networkx" },
+    { name = "nyx-harness" },
     { name = "pillow" },
     { name = "playwright" },
     { name = "pydantic" },
@@ -1686,6 +1693,7 @@ dependencies = [
     { name = "trafilatura" },
     { name = "uvicorn" },
     { name = "watchfiles" },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -1711,6 +1719,7 @@ requires-dist = [
     { name = "langgraph-checkpoint-sqlite", specifier = "==3.1.1" },
     { name = "lxml", specifier = ">=4.9" },
     { name = "networkx", specifier = "==3.6.1" },
+    { name = "nyx-harness", editable = "packages/nyx-harness" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "playwright", specifier = ">=1.57,<2" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -1727,8 +1736,14 @@ requires-dist = [
     { name = "trafilatura", specifier = ">=2.0.0" },
     { name = "uvicorn", specifier = "==0.34.0" },
     { name = "watchfiles", specifier = ">=0.13" },
+    { name = "websockets", specifier = ">=15,<17" },
 ]
 provides-extras = ["dev", "desktop-build"]
+
+[[package]]
+name = "nyx-harness"
+version = "0.1.0"
+source = { editable = "packages/nyx-harness" }
 
 [[package]]
 name = "openai"

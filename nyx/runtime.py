@@ -429,11 +429,14 @@ async def run_character(host: "_Host", identity: str) -> None:
     ]
     app.tick_task = tasks[1]
     app.memory_task = tasks[2]
+    if app.transport is not None:
+        app.transport_task = asyncio.create_task(app.transport.run())
+        tasks.append(app.transport_task)
     try:
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         stopping = host.closing or host.records[identity]["status"] == "STOPPING"
         for task in done:
-            if stopping and task in (tasks[1], tasks[2]) and task.cancelled():
+            if stopping and task is not tasks[0] and task.cancelled():
                 continue
             task.result()
         if stopping:
@@ -460,6 +463,13 @@ async def run_character(host: "_Host", identity: str) -> None:
 async def stop_character(host: "_Host", identity: str) -> bool:
     """Bounded stop; never close a DB underneath a cancellation-resistant writer."""
     app = host.apps[identity]
+    if app.transport is not None:
+        await app.transport.quiesce()
+    if app.transport_task is not None:
+        app.transport_task.cancel()
+        _, pending = await asyncio.wait([app.transport_task], timeout=5)
+        if pending:
+            return False
     if app.tick_task is not None:
         app.tick_task.cancel()
         _, pending = await asyncio.wait([app.tick_task], timeout=5)

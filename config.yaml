@@ -44,3 +44,11 @@ vision:
   model: llava                # 本地视觉模型 tag（换成实际 pull 的，如 qwen2-vl）
   # base_url: http://localhost:11434/v1   # 可选：覆盖视觉 endpoint
   interval_seconds: 60        # 抓屏周期（秒）
+
+onebot:
+  enabled: true
+  ws_url: ws://127.0.0.1:3001  # NapCat/LLOneBot 正向 WebSocket
+  access_token_env: ONEBOT_ACCESS_TOKEN
+  self_id: 3976995810                 # 机器人 QQ，启用前填写
+  owner_id: 43686425                # 你的 QQ，仅接受此用户私聊
+  character_id: nyx

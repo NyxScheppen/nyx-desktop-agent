@@ -1,0 +1,26 @@
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+}
+
+# 本机：后端与Caddy进程都设置NYX_PUBLIC_ORIGIN=https://localhost:8443和相同的NYX_AUTH_TOKEN；使用内部CA。
+# Caddy不自动安装CA信任。接入真实域名时删除tls internal，让Caddy申请公开证书。
+{$NYX_PUBLIC_ORIGIN} {
+	tls internal
+	@ready path /api/ready /api/ready/*
+	handle @ready {
+		respond 404
+	}
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8000 {
+			header_up Host 127.0.0.1:8000
+			flush_interval -1
+		}
+	}
+	handle {
+		root * frontend/dist
+		try_files {path} /index.html
+		file_server
+	}
+}

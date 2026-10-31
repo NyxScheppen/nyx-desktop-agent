@@ -1,8 +1,11 @@
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useConnectionStore } from "../../stores/connectionStore";
 import BackgroundPanel from "../panels/BackgroundPanel";
 import CharacterManager from "./CharacterManager";
 import Modal from "./Modal";
 import Panel from "./Panel";
+import { createPairingCode, getDevices, revokeDevice, type DeviceRecord } from "../../api/client";
+import { useEffect, useState } from "react";
 
 // 设置页面（桌宠保留弹层入口）：字体大小 + 背景外观（色调/背景图）+ 圆圈背景（可拖拽头像底色）+ 圆圈大小（三档）。
 // 复用 BackgroundPanel（纯前端 settingsStore）；圆圈底色单独一组预设（名称与色调预设错开，避免测试按名选色歧义）。
@@ -32,6 +35,11 @@ type SettingsViewProps = {
 };
 
 export default function SettingsView({ onClose }: SettingsViewProps) {
+  const token = useConnectionStore((s) => s.token);
+  const [devices, setDevices] = useState<DeviceRecord[]>([]);
+  const [pairCode, setPairCode] = useState("");
+  const [deviceName, setDeviceName] = useState("");
+  const [deviceError, setDeviceError] = useState("");
   const fontScale = useSettingsStore((s) => s.fontScale);
   const setFontScale = useSettingsStore((s) => s.setFontScale);
   const circleColor = useSettingsStore((s) => s.circleColor);
@@ -41,10 +49,44 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
   const layoutStyle = useSettingsStore((s) => s.layoutStyle);
   const setLayoutStyle = useSettingsStore((s) => s.setLayoutStyle);
 
+  useEffect(() => {
+    if (!token) return;
+    void getDevices().then(setDevices).catch(() => setDevices([]));
+  }, [token]);
+
+  async function issuePairingCode() {
+    setDeviceError("");
+    try {
+      const result = await createPairingCode(deviceName.trim());
+      setPairCode(result.code);
+    } catch (error) {
+      setDeviceError(error instanceof Error ? error.message : "配对码创建失败");
+    }
+  }
+
+  async function removeDevice(id: string) {
+    await revokeDevice(id);
+    setDevices((current) => current.map((device) => device.id === id
+      ? { ...device, revoked_at: device.revoked_at ?? Date.now() / 1000 }
+      : device));
+  }
+
   const content = (
       <div className="settings-layout">
       <section className="settings-appearance" aria-label="外观">
       <h2>外观</h2>
+      {token && <Panel title="连接">
+        <button onClick={() => useConnectionStore.getState().clearToken()}>清除访问凭证</button>
+        <label>新设备名称<input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} /></label>
+        <button type="button" onClick={() => void issuePairingCode()}>生成手机配对码</button>
+        {pairCode && <p role="status">配对码：{pairCode}</p>}
+        {deviceError && <p role="alert">{deviceError}</p>}
+        <ul aria-label="已配对设备">
+          {devices.map((device) => <li key={device.id}>
+            {device.name}{device.revoked_at ? "（已撤销）" : <button type="button" onClick={() => void removeDevice(device.id)}>撤销</button>}
+          </li>)}
+        </ul>
+      </Panel>}
       <Panel title="字体大小">
         <div className="font-scale">
           {FONT_OPTIONS.map(([key, label]) => (

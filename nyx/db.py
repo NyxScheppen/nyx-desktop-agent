@@ -941,6 +941,21 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON tool_execution(correlation_id)",
         ],
     ),
+    (
+        51,
+        [
+            "CREATE TABLE transport_checkpoint (transport TEXT PRIMARY KEY, "
+            "scan_rowid INTEGER NOT NULL, sent_rowid INTEGER NOT NULL)",
+            "CREATE TABLE transport_outbox (transport TEXT NOT NULL, "
+            "event_id TEXT NOT NULL REFERENCES event_log(id) ON DELETE CASCADE, "
+            "event_rowid INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', "
+            "attempts INTEGER NOT NULL DEFAULT 0, "
+            "available_at REAL NOT NULL DEFAULT 0, lease_until REAL, "
+            "last_error TEXT, PRIMARY KEY(transport, event_id))",
+            "CREATE INDEX idx_transport_outbox_order "
+            "ON transport_outbox(transport, event_rowid) WHERE status != 'sent'",
+        ],
+    ),
 ]
 
 

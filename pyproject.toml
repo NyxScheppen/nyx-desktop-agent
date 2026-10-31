@@ -14,6 +14,7 @@ dependencies = [
     "langgraph-checkpoint-sqlite==3.1.1",
     "lxml>=4.9",
     "networkx==3.6.1",
+    "nyx-harness",
     "pillow>=10.0.0",
     "playwright>=1.57,<2",
     "pydantic>=2.0",
@@ -23,6 +24,7 @@ dependencies = [
     "trafilatura>=2.0.0",
     "uvicorn==0.34.0",
     "watchfiles>=0.13",
+    "websockets>=15,<17",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +40,7 @@ desktop-build = ["pyinstaller==6.19.0"]
 [tool.ruff]
 target-version = "py311"
 line-length = 88
+extend-exclude = ["scripts/e2e"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
@@ -47,12 +50,13 @@ known-first-party = ["nyx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "packages/nyx-harness"]
 asyncio_mode = "auto"
 
 [tool.pyright]
 pythonVersion = "3.11"
-exclude = ["build", "frontend/src-tauri/target", "**/node_modules", "**/__pycache__", ".venv", ".runtime", ".claude"]
+extraPaths = ["packages/nyx-harness"]
+exclude = ["build", "frontend/src-tauri/target", "**/node_modules", "**/__pycache__", ".venv", ".runtime", ".claude", "scripts/e2e/**"]
 typeCheckingMode = "strict"
 reportUnusedFunction = true
 reportUnusedClass = true
@@ -62,3 +66,11 @@ include = ["nyx*"]
 
 [tool.setuptools.package-data]
 nyx = ["prompts/*.md", "prompts/skills/*.json", "cards/nyx/*.yaml", "cards/nyx/*.md", "cards/nyx/assets/*"]
+
+[tool.uv.workspace]
+members = [
+    "packages/nyx-harness",
+]
+
+[tool.uv.sources]
+nyx-harness = { workspace = true, editable = true }

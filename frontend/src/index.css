@@ -1488,6 +1488,40 @@ body:has(.app--pet) {
 .modal:has(.settings-layout) { max-width: min(68rem, 96vw); }
 .modal__body:has(.settings-layout) { display: block; }
 .settings-page { width: 100%; min-height: 0; overflow: auto; }
+.connection-screen {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 1.25rem;
+  background: var(--parchment);
+}
+.connection-screen__form {
+  display: grid;
+  gap: 1rem;
+  width: min(100%, 26rem);
+  padding: 1.5rem;
+  border: 2px double var(--gold);
+  background: var(--parchment);
+}
+.connection-screen__form h1 { margin: 0; font-size: 1.4rem; }
+.connection-screen__form label { display: grid; gap: .4rem; color: var(--ink-soft); }
+.connection-screen__form input {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: .5rem .6rem;
+  border: 1px solid var(--ink-soft);
+  background: var(--parchment);
+  color: var(--ink);
+  font: inherit;
+}
+.connection-screen__form button {
+  min-height: 2.5rem;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--parchment);
+  font: inherit;
+  cursor: pointer;
+}
 .settings-layout {
   display: grid;
   grid-template-columns: minmax(14rem, 1fr) minmax(0, 2fr);

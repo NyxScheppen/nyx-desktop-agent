@@ -1,4 +1,6 @@
-import { BASE_URL } from "../../api/client";
+import { useEffect, useState } from "react";
+import { BASE_URL, getCharacterAsset } from "../../api/client";
+import { useConnectionStore } from "../../stores/connectionStore";
 import { useCharacterStore } from "../../stores/characterStore";
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import type { EmotionCategory } from "../../types/api";
@@ -20,10 +22,28 @@ type EmotionSpriteProps = {
 export default function EmotionSprite({ size = "large", emotion }: EmotionSpriteProps) {
   const current = useInnerLifeStore((s) => s.current?.emotion);
   const role = useCharacterStore((s) => s.registry?.characters.find((role) => role.id === s.registry?.current_id));
+  const token = useConnectionStore((s) => s.token);
   const resolved = emotion ?? current;
-  if (resolved === undefined && !role) return null;
   const asset = role?.assets[resolved ?? "neutral"] ?? role?.assets.avatar;
-  const src = role ? (asset ? BASE_URL + asset : undefined) : SPRITES[`../../assets/expressions/${resolved}.png`];
+  const [image, setImage] = useState<{ asset: string; token: string; url: string } | null>(null);
+  useEffect(() => {
+    if (!asset || !token) return;
+    const controller = new AbortController();
+    let url: string | undefined;
+    void getCharacterAsset(asset, controller.signal).then((blob) => {
+      if (controller.signal.aborted) return;
+      url = URL.createObjectURL(blob);
+      setImage({ asset, token, url });
+    }).catch(() => { /* Missing/failed images retain the role name. */ });
+    return () => {
+      controller.abort();
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [asset, token]);
+  if (resolved === undefined && !role) return null;
+  const src = role ? (asset ? (token
+    ? (image?.asset === asset && image.token === token ? image.url : undefined)
+    : BASE_URL + asset) : undefined) : SPRITES[`../../assets/expressions/${resolved}.png`];
   if (src === undefined) return <span className={`emotion-sprite emotion-sprite--${size}`}>{role?.name}</span>;
   return (
     <img

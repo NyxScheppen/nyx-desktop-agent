@@ -3,7 +3,7 @@ import json
 import logging
 import time
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -181,6 +181,47 @@ class EventBus:
     def remove_sse_sink(self, sink: asyncio.Queue[Event]) -> None:
         if sink in self._sse_sinks:
             self._sse_sinks.remove(sink)
+
+    async def stream_events(
+        self, after: str | None, queue_size: int
+    ) -> AsyncGenerator[Event | None, None]:
+        """Read committed events independently; notifications only wake the reader."""
+        queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=queue_size)
+        self.add_sse_sink(queue)
+        try:
+            async with self._db.lock:
+                if after is None:
+                    cursor = await self._db.conn.execute(
+                        "SELECT rowid FROM event_log ORDER BY rowid DESC "
+                        "LIMIT 1 OFFSET 999"
+                    )
+                else:
+                    cursor = await self._db.conn.execute(
+                        "SELECT rowid FROM event_log WHERE id=?", (after,)
+                    )
+                row = await cursor.fetchone()
+                position = int(row[0]) if row is not None else 0
+                if after is None and position:
+                    position -= 1
+            while True:
+                async with self._db.lock:
+                    cursor = await self._db.conn.execute(
+                        "SELECT rowid, id, timestamp, source, type, content, "
+                        "correlation_id FROM event_log WHERE rowid>? "
+                        "ORDER BY rowid LIMIT 1000", (position,)
+                    )
+                    rows = await cursor.fetchall()
+                for row in rows:
+                    position = int(row[0])
+                    yield _row_to_event(row)
+                if rows:
+                    continue
+                try:
+                    await asyncio.wait_for(queue.get(), timeout=15.0)
+                except TimeoutError:
+                    yield None
+        finally:
+            self.remove_sse_sink(queue)
 
     async def publish(self, event: Event) -> None:
         """Durably admit an event before returning to the caller."""

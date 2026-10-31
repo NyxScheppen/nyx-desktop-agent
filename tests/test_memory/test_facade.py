@@ -1410,6 +1410,58 @@ async def test_remember_scene_rolls_back_memory_and_effect_on_event_append_failu
         await database.close()
 
 
+async def test_annotation_explicit_topic_stabilizes_correction_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm(
+        {
+            "fact_extraction": json.dumps(
+                {
+                    "entities": [],
+                    "facts": [],
+                    "is_correction": True,
+                    "correction_topic": "模型改写的主题",
+                },
+                ensure_ascii=False,
+            )
+        }
+    )
+    facade = _make_facade(store, bus, llm, _FakeEvaluator())
+    captured: list[tuple[str, str]] = []
+
+    async def capture(
+        kind: str,
+        topic: str,
+        summary: str,
+        correlation_id: str | None = None,
+        *,
+        evidence: list[dict[str, str]] | None = None,
+    ) -> None:
+        captured.append((kind, topic))
+
+    monkeypatch.setattr(facade, "record_failure_signal", capture)
+    event = Event(
+        id="annotation-topic-1",
+        timestamp=1000.0,
+        source=Source.INTERNAL,
+        type=EventType.ANNOTATION_FEEDBACK,
+        content={
+            "quote": "旧回复",
+            "comment": "【来源不确定性】请明确区分已证实和推测。",
+        },
+        correlation_id="annotation-corr-1",
+    )
+    try:
+        await bus.publish(event)
+        await facade.apply_annotation_feedback(event, "memory.annotation_feedback")
+        assert captured == [
+            ("user_correction", "user_correction:来源不确定性")
+        ]
+    finally:
+        await database.close()
+
+
 async def test_remember_activity_reading() -> None:
     store, bus, database = await _new_stack()
     llm = _FakeLlm()

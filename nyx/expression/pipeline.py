@@ -31,6 +31,7 @@ from nyx.expression.prompt import (
     DISCUSSION_USE_TOOLS_TASK,
     RESPOND_TASK,
     RESPOND_TASK_CONTINUE,
+    TOOL_REPLY_GUIDANCE,
     USE_TOOLS_TASK,
     activity_summary,
     bound_material_block,
@@ -398,6 +399,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             temporal_context=state["temporal_context"],
             activity_context=state["activity_context"],
         )
+        if state["tool_outputs"] or state.get("tool_feedback"):
+            system += "\n\n" + TOOL_REPLY_GUIDANCE
         user = user_prompt(state)
         # 前几轮 think/speak（等长）
         prior = _rounds_block(state["think"], state["speak"])

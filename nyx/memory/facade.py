@@ -1033,6 +1033,11 @@ class MemoryFacade:
             raw_topic = data.get("correction_topic")
             if isinstance(raw_topic, str) and raw_topic.strip():
                 correction_topic = raw_topic.strip()
+            comment = cast(str, event.content["comment"])
+            if comment.startswith("【") and "】" in comment:
+                explicit_topic = comment[1 : comment.index("】")].strip()
+                if explicit_topic:
+                    correction_topic = explicit_topic
             raw_items = [
                 cast(dict[str, Any], item)
                 for item in cast(list[Any], data["facts"])[:32]

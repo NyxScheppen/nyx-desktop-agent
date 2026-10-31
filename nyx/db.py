@@ -8,12 +8,82 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import aiosqlite
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from psycopg import AsyncConnection
+from psycopg.rows import dict_row
+
+
+def _qmark_to_pyformat(sql: str) -> str:
+    """Convert SQLite qmark parameters while leaving quoted text untouched."""
+    output: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if quote is not None:
+            output.append(char)
+            if char == quote:
+                if index + 1 < len(sql) and sql[index + 1] == quote:
+                    output.append(sql[index + 1])
+                    index += 1
+                else:
+                    quote = None
+            index += 1
+            continue
+        if char in ("'", '"'):
+            quote = char
+            output.append(char)
+        elif char == "?":
+            output.append("%s")
+        else:
+            output.append(char)
+        index += 1
+    return "".join(output)
+
+
+class PostgresConnection:
+    """Small DB-API surface shared by stores during PostgreSQL migration."""
+
+    def __init__(self, raw: Any) -> None:
+        self._raw = raw
+
+    async def execute(
+        self, sql: str, parameters: tuple[Any, ...] | list[Any] | None = None
+    ) -> Any:
+        statement = _qmark_to_pyformat(sql)
+        if parameters is None:
+            return await self._raw.execute(statement)
+        return await self._raw.execute(statement, parameters)
+
+    async def executemany(
+        self, sql: str, parameters: list[tuple[Any, ...]]
+    ) -> Any:
+        cursor = self._raw.cursor()
+        await cursor.executemany(_qmark_to_pyformat(sql), parameters)
+        return cursor
+
+    async def commit(self) -> None:
+        await self._raw.commit()
+
+    async def rollback(self) -> None:
+        await self._raw.rollback()
+
+    async def close(self) -> None:
+        await self._raw.close()
+
+
+async def connect_postgres(url: str) -> PostgresConnection:
+    """Open one PostgreSQL connection with dictionary rows."""
+    raw: Any = await AsyncConnection.connect(  # pyright: ignore[reportUnknownMemberType]
+        url, row_factory=cast(Any, dict_row)
+    )
+    return PostgresConnection(raw)
 
 
 def _raw_sha256(content: str) -> str:

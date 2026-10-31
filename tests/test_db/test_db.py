@@ -88,6 +88,54 @@ def test_resolve_postgres_url_rejects_other_schemes_without_echoing_secret(
         db.resolve_postgres_url()
     assert "secret" not in str(error.value)
 
+
+def test_qmark_to_pyformat_preserves_quoted_question_marks() -> None:
+    sql = "SELECT '?' AS literal, \"?\" AS identifier WHERE id=? AND note='??'"
+    assert db._qmark_to_pyformat(sql) == (
+        "SELECT '?' AS literal, \"?\" AS identifier WHERE id=%s AND note='??'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_postgres_connection_translates_execute_and_forwards_lifecycle() -> None:
+    class _Raw:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+            self.executemany_calls: list[tuple[str, object]] = []
+            self.committed = False
+            self.rolled_back = False
+            self.closed = False
+
+        async def execute(self, sql: str, parameters: object = None) -> object:
+            self.calls.append((sql, parameters))
+            return "cursor"
+
+        def cursor(self) -> "_Raw":
+            return self
+
+        async def executemany(self, sql: str, parameters: object) -> None:
+            self.executemany_calls.append((sql, parameters))
+
+        async def commit(self) -> None:
+            self.committed = True
+
+        async def rollback(self) -> None:
+            self.rolled_back = True
+
+        async def close(self) -> None:
+            self.closed = True
+
+    raw = _Raw()
+    connection = db.PostgresConnection(raw)  # type: ignore[arg-type]
+    assert await connection.execute("SELECT ?", (1,)) == "cursor"
+    await connection.executemany("INSERT INTO t VALUES (?)", [(1,), (2,)])
+    await connection.commit()
+    await connection.rollback()
+    await connection.close()
+    assert raw.calls == [("SELECT %s", (1,))]
+    assert raw.executemany_calls == [("INSERT INTO t VALUES (%s)", [(1,), (2,)])]
+    assert raw.committed and raw.rolled_back and raw.closed
+
 # 非 Optional 字段对应列必须 NOT NULL（01-types 契约）
 NOT_NULL_COLUMNS = {
     ("memory", "aspect"),

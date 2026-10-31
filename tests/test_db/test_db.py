@@ -131,7 +131,8 @@ def test_postgres_migrations_translate_sqlite_types_and_triggers() -> None:
         statement for statements in migrations.values() for statement in statements
     )
 
-    assert "checkpoint BYTEA" in schema_sql
+    assert "CREATE TABLE checkpoints" not in schema_sql
+    assert "CREATE TABLE writes" not in schema_sql
     assert "seq BIGSERIAL PRIMARY KEY" in schema_sql
     assert "CREATE TRIGGER knowledge_chunk_insert AFTER INSERT ON" in schema_sql
     assert "CREATE TRIGGER knowledge_chunk_delete AFTER DELETE ON" in schema_sql

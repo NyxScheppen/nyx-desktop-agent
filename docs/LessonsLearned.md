@@ -1032,6 +1032,13 @@ Top N 再过滤来源，也会被其它来源的高分候选挤空，最终表�
 **怎么做**：连接页先完成配对兑换并保存会话凭证，再初始化角色注册表；用实际连接页回归覆盖请求头、兑换成功和认证失败。
 **影响的文件/决策**：`frontend/src/api/client.ts`、`App.tsx`、手机配对登录回归。
 
+### 2026-11-01: PostgreSQL checkpoint 不能复用 SQLite 表名
+
+**来源**：Railway PostgreSQL 接入的 schema 编译与官方 LangGraph saver 初始化。
+**教训**：同名的 `checkpoints` / `writes` 表并不代表不同后端布局兼容；PostgreSQL saver 使用 `checkpoint_blobs`、`checkpoint_writes` 和 JSONB 列，`IF NOT EXISTS` 会把错误的预建表静默保留下来。
+**怎么做**：让 PostgreSQL schema 编译跳过 SQLite checkpoint 表，交给锁定版本的 `AsyncPostgresSaver.setup()` 创建；验证 setup 迁移表和 saver 关闭路径，不能只检查业务表名存在。
+**影响的文件/决策**：`nyx/db.py`、`docs/specs/25-hosted-storage-and-postgresql.md`、`docs/facts/module-bus-system-facts.md`。
+
 ### 2026-10-30: 本地拆包必须同步所有安装入口
 
 **来源**：uv workspace 能解析独立 harness，但普通 pip 不读取 uv.sources，原启动脚本只检查 uvicorn，旧环境会延迟到启动才报缺包。

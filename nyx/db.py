@@ -106,6 +106,10 @@ def postgres_migrations(
     for kind, _, statement in rows:
         if kind == "trigger":
             continue
+        if kind == "table" and statement.startswith(
+            ("CREATE TABLE checkpoints ", "CREATE TABLE writes ")
+        ):
+            continue
         assert statement is not None
         postgres.append(
             re.sub(r"\bBLOB\b", "BYTEA", statement, flags=re.IGNORECASE)

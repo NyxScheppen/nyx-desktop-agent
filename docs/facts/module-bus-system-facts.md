@@ -20,7 +20,7 @@
 
 - 当前系统不是纯“模块只通过总线通信”：EventBus 负责事件受理、`event_log` 持久化、`event_delivery` 投递、SSE 广播和 handler 通知；Facade 之间仍存在直接查询/编排调用。
 - 当前 `EventType` 有 26 个成员；阅读进度同步使用 `READING_PROGRESS`，不是新的消费者路由。
-- schema47/48 增加 `tool_call_log`（三索引）和 `lesson_signal`，schema49 增加工具 checkpoint 两表，schema50 增加临时 tool_execution 回执，schema51增加传输两表，schema52增加 `event_log.event_seq`，业务及基础设施表合计45张（SQLite表总数48）。
+- schema47/48 增加 `tool_call_log`（三索引）和 `lesson_signal`，schema49 增加工具 checkpoint 两表，schema50 增加临时 tool_execution 回执，schema51增加传输两表，schema52增加 `event_log.event_seq`，业务及基础设施表合计45张（SQLite表总数48）。PostgreSQL 角色库由官方 `AsyncPostgresSaver` 创建其 `checkpoint_migrations`、`checkpoints`、`checkpoint_blobs`、`checkpoint_writes` 表，不复用 SQLite 的 `writes` 结构。
   ToolRegistry 的观测独立提交、失败不改变工具结果；Evaluator 的 OOC 回调经组合根接到记忆经验入口，
   不增加事件路由，技术失败不触发内心反思。
 - 表达子图围绕工具调用可靠领取并完成 tool_execution 回执；完整临时结果用于恢复，回执读写错误传播，独立于 best-effort 观测。恢复复用成功结果，未确认副作用进入 uncertain 停批；终局 checkpoint 删除后清理回执，启动补清终局残留。

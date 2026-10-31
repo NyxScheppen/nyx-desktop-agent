@@ -41,6 +41,7 @@
 - `<id>` 必须来自已校验的角色卡 ID；创建 schema 使用参数化/安全标识符 API，不拼接任意外部标识符。
 - schema 使用现有宿主/角色各自的迁移版本，不能把宿主表混入任一角色 schema。
 - PostgreSQL 角色连接设定其 schema 的 `search_path`；同一事务不跨 schema 写入，继续保持 04 定义的本地事务 + durable event 模型。
+- PostgreSQL 角色 checkpoint 表由锁定版本的官方 `AsyncPostgresSaver.setup()` 创建和迁移，使用其 `checkpoint_migrations`、`checkpoints`、`checkpoint_blobs`、`checkpoint_writes` 布局；通用 schema 编译器不得预建同名但 SQLite 类型/列不兼容的 `checkpoints` 或 `writes` 表。SQLite 仍由 schema 49 创建 `checkpoints` / `writes` 并使用 `AsyncSqliteSaver`。
 
 ### 持久文件
 

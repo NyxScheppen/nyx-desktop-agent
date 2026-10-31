@@ -101,6 +101,33 @@ def test_qmark_to_pyformat_preserves_quoted_question_marks() -> None:
     )
 
 
+def test_postgres_migrations_keep_schema_and_skip_existing_data_work() -> None:
+    migrations = dict(db.postgres_migrations())
+    schema_sql = "\n".join(
+        statement for statements in migrations.values() for statement in statements
+    )
+
+    assert "CREATE TABLE personality" in schema_sql
+    assert "event_seq INTEGER" in schema_sql
+    assert "UPDATE event_log SET event_seq = rowid" not in schema_sql
+    assert "json_each" not in schema_sql
+    assert "nyx_raw_sha256" not in schema_sql
+
+
+def test_postgres_migrations_translate_sqlite_types_and_triggers() -> None:
+    migrations = dict(db.postgres_migrations())
+    schema_sql = "\n".join(
+        statement for statements in migrations.values() for statement in statements
+    )
+
+    assert "checkpoint BYTEA" in schema_sql
+    assert "seq BIGSERIAL PRIMARY KEY" in schema_sql
+    assert "CREATE TRIGGER knowledge_chunk_insert AFTER INSERT ON" in schema_sql
+    assert "CREATE TRIGGER knowledge_chunk_delete AFTER DELETE ON" in schema_sql
+    assert "CREATE TRIGGER knowledge_chunk_update AFTER UPDATE OF" in schema_sql
+    assert "EXECUTE FUNCTION nyx_record_knowledge_chunk_change()" in schema_sql
+
+
 @pytest.mark.asyncio
 async def test_postgres_connection_translates_execute_and_forwards_lifecycle() -> None:
     class _Raw:

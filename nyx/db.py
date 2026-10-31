@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -59,6 +60,61 @@ def _sqlite_sql_to_postgres(sql: str) -> str:
             flags=re.IGNORECASE,
         ).rstrip().removesuffix(";") + " ON CONFLICT DO NOTHING"
     return statement
+
+
+def postgres_migrations() -> list[tuple[int, list[str]]]:
+    """Compile the current schema for an empty PostgreSQL database."""
+    sqlite = sqlite3.connect(":memory:")
+    sqlite.create_function("nyx_raw_sha256", 1, _raw_sha256, deterministic=True)
+    def task_source_snapshot(checkpoint: str) -> str:
+        source: str = json.loads(checkpoint)["source_text"]
+        return source[:200_000]
+
+    sqlite.create_function(
+        "nyx_task_source_snapshot", 1, task_source_snapshot, deterministic=True
+    )
+    try:
+        for _, statements in _MIGRATIONS:
+            for statement in statements:
+                sqlite.execute(statement)
+        rows = sqlite.execute(
+            "SELECT type, name, sql FROM sqlite_master "
+            "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' "
+            "ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, "
+            "name"
+        ).fetchall()
+    finally:
+        sqlite.close()
+
+    postgres: list[str] = []
+    for kind, _, statement in rows:
+        if kind == "trigger":
+            continue
+        assert statement is not None
+        postgres.append(
+            re.sub(r"\bBLOB\b", "BYTEA", statement, flags=re.IGNORECASE)
+            .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+        )
+    postgres.extend(
+        [
+            "CREATE OR REPLACE FUNCTION nyx_record_knowledge_chunk_change() "
+            "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO "
+            "knowledge_chunk_change(chunk_id) VALUES "
+            "(CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END); "
+            "RETURN NULL; END $$",
+            "CREATE TRIGGER knowledge_chunk_insert AFTER INSERT ON "
+            "reading_evidence FOR EACH ROW EXECUTE FUNCTION "
+            "nyx_record_knowledge_chunk_change()",
+            "CREATE TRIGGER knowledge_chunk_delete AFTER DELETE ON "
+            "reading_evidence FOR EACH ROW EXECUTE FUNCTION "
+            "nyx_record_knowledge_chunk_change()",
+            "CREATE TRIGGER knowledge_chunk_update AFTER UPDATE OF source_topic, "
+            "source_name, content, location, embedding, created_at ON "
+            "reading_evidence FOR EACH ROW EXECUTE FUNCTION "
+            "nyx_record_knowledge_chunk_change()",
+        ]
+    )
+    return [(max(version for version, _ in _MIGRATIONS), postgres)]
 
 
 class PostgresConnection:

@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 import aiosqlite
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
@@ -259,7 +260,7 @@ class Database:
         """Close the shared connection once; repeated shutdown is a no-op."""
         if self._closed:
             return
-        if isinstance(self.checkpointer, AsyncSqliteSaver):
+        if isinstance(self.checkpointer, (AsyncSqliteSaver, AsyncPostgresSaver)):
             await self.checkpointer.conn.close()
         await self.conn.close()
         self._closed = True
@@ -1195,15 +1196,33 @@ async def connect(
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", schema):
             raise ValueError("PostgreSQL schema 名称非法")
         conn = await connect_postgres(postgres_url)
+        checkpoint_raw: Any | None = None
         try:
             quoted_schema = '"' + schema.replace('"', '""') + '"'
             await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {quoted_schema}")
             await conn.execute(f"SET search_path TO {quoted_schema}")
             await migrate_postgres(conn, migrations=migrations)
+            checkpointer: BaseCheckpointSaver[str] | None = None
+            if migrations is None:
+                checkpoint_raw = await AsyncConnection.connect(
+                    postgres_url,
+                    autocommit=True,
+                    prepare_threshold=0,
+                    row_factory=cast(Any, dict_row),
+                )
+                await checkpoint_raw.execute(f"SET search_path TO {quoted_schema}")
+                checkpointer = AsyncPostgresSaver(conn=checkpoint_raw)
+                await checkpointer.setup()
         except BaseException:
+            if checkpoint_raw is not None:
+                await checkpoint_raw.close()
             await conn.close()
             raise
-        return Database(conn=conn, lock=asyncio.Lock())
+        return Database(
+            conn=conn,
+            lock=asyncio.Lock(),
+            checkpointer=checkpointer,
+        )
 
     resolved = resolve_db_path(path)
     if resolved != ":memory:":

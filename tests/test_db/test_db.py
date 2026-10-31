@@ -233,6 +233,61 @@ async def test_connect_uses_postgres_schema_and_closes_on_migration_failure(
 
 
 @pytest.mark.asyncio
+async def test_connect_postgres_initializes_independent_checkpoint_saver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Raw:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.calls: list[str] = []
+            self.closed = False
+
+        async def execute(self, sql: str, parameters: object = None) -> None:
+            self.calls.append(sql)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    business_raw = _Raw("business")
+    checkpoint_raw = _Raw("checkpoint")
+    business = db.PostgresConnection(business_raw)  # type: ignore[arg-type]
+
+    async def fake_connect(url: str) -> db.PostgresConnection:
+        return business
+
+    async def fake_migrate(
+        conn: db.PostgresConnection,
+        *,
+        migrations: list[tuple[int, list[str]]] | None = None,
+    ) -> None:
+        return None
+
+    class _AsyncConnection:
+        @staticmethod
+        async def connect(*args: object, **kwargs: object) -> _Raw:
+            return checkpoint_raw
+
+    class _Saver:
+        def __init__(self, conn: _Raw) -> None:
+            self.conn = conn
+
+        async def setup(self) -> None:
+            self.conn.calls.append("setup")
+
+    monkeypatch.setenv("NYX_DATABASE_URL", "postgresql://nyx:secret@localhost/nyx")
+    monkeypatch.setattr(db, "connect_postgres", fake_connect)
+    monkeypatch.setattr(db, "migrate_postgres", fake_migrate)
+    monkeypatch.setattr(db, "AsyncConnection", _AsyncConnection)
+    monkeypatch.setattr(db, "AsyncPostgresSaver", _Saver)
+
+    database = await db.connect(schema="character_nyx")
+    assert database.checkpointer is not None
+    assert checkpoint_raw.calls == ['SET search_path TO "character_nyx"', "setup"]
+    await database.close()
+    assert business_raw.closed and checkpoint_raw.closed
+
+
+@pytest.mark.asyncio
 async def test_postgres_connection_translates_execute_and_forwards_lifecycle() -> None:
     class _Raw:
         def __init__(self) -> None:

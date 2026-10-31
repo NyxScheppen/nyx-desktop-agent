@@ -94,6 +94,11 @@ def test_qmark_to_pyformat_preserves_quoted_question_marks() -> None:
     assert db._qmark_to_pyformat(sql) == (
         "SELECT '?' AS literal, \"?\" AS identifier WHERE id=%s AND note='??'"
     )
+    assert db._sqlite_sql_to_postgres(
+        "INSERT OR IGNORE INTO event_effect (event_id) VALUES (?)"
+    ) == (
+        "INSERT INTO event_effect (event_id) VALUES (%s) ON CONFLICT DO NOTHING"
+    )
 
 
 @pytest.mark.asyncio
@@ -128,11 +133,15 @@ async def test_postgres_connection_translates_execute_and_forwards_lifecycle() -
     raw = _Raw()
     connection = db.PostgresConnection(raw)  # type: ignore[arg-type]
     assert await connection.execute("SELECT ?", (1,)) == "cursor"
+    await connection.execute("INSERT OR IGNORE INTO t VALUES (?)", (1,))
     await connection.executemany("INSERT INTO t VALUES (?)", [(1,), (2,)])
     await connection.commit()
     await connection.rollback()
     await connection.close()
-    assert raw.calls == [("SELECT %s", (1,))]
+    assert raw.calls == [
+        ("SELECT %s", (1,)),
+        ("INSERT INTO t VALUES (%s) ON CONFLICT DO NOTHING", (1,)),
+    ]
     assert raw.executemany_calls == [("INSERT INTO t VALUES (%s)", [(1,), (2,)])]
     assert raw.committed and raw.rolled_back and raw.closed
 

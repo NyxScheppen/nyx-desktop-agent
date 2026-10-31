@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -47,6 +48,19 @@ def _qmark_to_pyformat(sql: str) -> str:
     return "".join(output)
 
 
+def _sqlite_sql_to_postgres(sql: str) -> str:
+    statement = _qmark_to_pyformat(sql)
+    if re.match(r"\s*INSERT\s+OR\s+IGNORE\s+INTO\b", statement, re.IGNORECASE):
+        statement = re.sub(
+            r"INSERT\s+OR\s+IGNORE\s+INTO\b",
+            "INSERT INTO",
+            statement,
+            count=1,
+            flags=re.IGNORECASE,
+        ).rstrip().removesuffix(";") + " ON CONFLICT DO NOTHING"
+    return statement
+
+
 class PostgresConnection:
     """Small DB-API surface shared by stores during PostgreSQL migration."""
 
@@ -56,7 +70,7 @@ class PostgresConnection:
     async def execute(
         self, sql: str, parameters: tuple[Any, ...] | list[Any] | None = None
     ) -> Any:
-        statement = _qmark_to_pyformat(sql)
+        statement = _sqlite_sql_to_postgres(sql)
         if parameters is None:
             return await self._raw.execute(statement)
         return await self._raw.execute(statement, parameters)
@@ -65,7 +79,7 @@ class PostgresConnection:
         self, sql: str, parameters: list[tuple[Any, ...]]
     ) -> Any:
         cursor = self._raw.cursor()
-        await cursor.executemany(_qmark_to_pyformat(sql), parameters)
+        await cursor.executemany(_sqlite_sql_to_postgres(sql), parameters)
         return cursor
 
     async def commit(self) -> None:

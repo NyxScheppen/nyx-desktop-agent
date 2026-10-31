@@ -1,9 +1,9 @@
-# 插件化 Harness 架构（讨论稿）
+# 插件化 Harness 架构（概念与决策）
 
-> 状态：**DRAFT 讨论稿**。本文不是完整契约 spec，不修改任何源码、也不改变既有 spec 语义。
-> 定稿后按 `docs/specs/` 模板拆成正式契约（含对象完整性审计与验收标准），并同步改写
-> `04-module-bus-system` / `05-tools` / `13-desktop-pet` / `14-character-cards` 及安全共识。
-> 目标读者是参与架构讨论的人，不是交付验收。
+> 状态：**已定决策 D1–D13，概念层文档**。本文只保留概念、动机与决策，不定义契约签名。
+> 契约（FacadePlugin / PluginContext / 装配器 / TransportAdapter 的签名 + 语义 + 对象完整性审计）
+> 见 `docs/specs/20-plugin-harness.md`。本文不改源码、不定义实现。
+> 目标读者是参与架构讨论的人；交付验收以 spec 为准。
 
 ## 1. 动机与目标
 
@@ -63,63 +63,36 @@ D5 + D7 合并理解：QQ、手机、桌面、未来电子宠物都是「同一�
 RouteSpec）+ `runtime.py` 的 tick/监督已经覆盖大半，**不重造**。本重构只在第 2 层之上加一层
 「插件身份 + 依赖装配」，并把散落在 `app_context.py` 的手工装配收敛成契约。
 
-## 4. FacadePlugin 契约（候选签名）
+## 4. FacadePlugin（概念）
 
-> 最终签名在正式 spec 定。这里的意图是：把 `app_context.build_app_context()` 里十几个
-> late-bound 闭包（`state_reader` / `observation_reader` / `reading_context_reader` /
-> `claim_return` / `memory_recall` …），以及散在各 Facade 的 `start/restore/quiesce`，
-> 统一成一个可声明、可校验的接口，替代现在的「跑到一半抛 `RuntimeError("尚未绑定")`」。
+把 `app_context.build_app_context()` 里十几个 late-bound 闭包（`state_reader` /
+`observation_reader` / `reading_context_reader` / `claim_return` / `memory_recall` …）以及散在各
+Facade 的 `start/restore/quiesce`，统一成一个可声明、可校验的插件接口，替代「跑到一半抛
+`RuntimeError("尚未绑定")`」。核心两点：
 
-```python
-class FacadePlugin(Protocol):
-    name: str                            # "memory" | "desire" | ...
-    provides: tuple[str, ...]            # 本插件暴露的能力名，如 ("memory", "facts")
-    requires: tuple[str, ...]            # 依赖的能力名，如 ("bus", "llm", "evaluator")
+- **依赖声明**：插件声明 `provides`（暴露什么）/ `requires`（强依赖）/ `optional`（弱依赖）；
+  装配器读声明做拓扑排序 + 弱依赖注入，缺依赖启动即 fail fast。
+- **循环依赖**：靠「声明 provide + 运行时惰性解析」断开（D11 / O4）。现状有三处环——
+  `expression ↔ reading`、`activity ↔ inner_life`、`evaluator ↔ memory`——都由一条 `optional`
+  弱边闭合，正是 04 契约里那些闭包在干的事，只是从手写变成框架保证。
 
-    def tools(self) -> list[Tool]: ...   # tool 面：给 agent 调用的能力（现有 ToolRegistry 语义）
-    def routes(self) -> list[RouteSpec]: ...  # lifecycle 面：事件订阅，复用 04 的 RouteSpec 单一来源
-    async def start(self, ctx: PluginContext) -> None: ...  # 装配后、跑 loop 前（restore/recover）
-    async def quiesce(self) -> None: ...                    # 关停收尾（reading/activity 已有）
-```
+完整签名（`FacadePlugin` Protocol、`PluginContext`）见 `docs/specs/20-plugin-harness.md`。
 
-装配器读 `provides/requires` 做拓扑排序；缺依赖 → 启动即 fail fast（而不是运行到一半才炸）。
-**循环依赖**（现状唯一的一对：expression ↔ reading）靠「声明 provide + 运行时惰性解析」断开，
-这正是 04 契约里那些闭包在干的事，只是从手写变成框架保证。
+## 5. 传输适配器（概念）
 
-`PluginContext` 提供能力解析，形如：
-
-```python
-ctx.get("memory")          # -> MemoryFacade（同步引用，装配期已解析）
-await ctx.get_state()      # -> CurrentState（异步能力，对应现在 get_state 闭包）
-```
-
-设计约束（沿用 04 既有边界）：`_App` 仍是组合根内部对象，不传入 Facade；不允许 `holder[0]`
-式可变占位；不新增 Facade 之外的抽象层。**本层只替换装配方式，不改变任何业务行为。**
-
-## 5. 传输适配器契约（候选签名）
-
-统一模型：**所有输入 = 某处采集 → 传输适配器 → `Source.EXTERNAL` 事件 → 单脑**。
-这使桌面 presence、QQ 消息、手机消息、电子宠物传感器全部同构。
-
-```python
-class TransportAdapter(Protocol):
-    name: str                                    # "desktop-sse" | "onebot" | "mobile-ws" | ...
-
-    # 入向：外部事实 -> 已存在的事件构造（USER_MESSAGE / OBSERVATION_STATE ...）
-    async def on_external(self, payload: dict) -> None: ...
-
-    # 出向：内部事件 -> 外部通道（SPEAK / ASK / THINK / mutter ...）
-    async def emit(self, event: Event) -> None: ...
-```
+统一模型：**所有输入 = 某处采集 → 传输适配器 → `Source.EXTERNAL` 事件 → 单脑**。这使桌面
+presence、QQ 消息、手机消息、电子宠物传感器全部同构。
 
 - 入向复用现有 `EventBus.publish` / `POST /api/observe` 的 durable admission 语义（04 已有）。
-- **出向需要 per-adapter 的「已确认发送游标」**：QQ/手机是推送型（非拉取），投递也是 at-least-once，
-  重连后要能续发不重发。心智与现有 `event_delivery` / `presence_delivery` 的
+- **出向需要 per-adapter 的「已确认发送游标」**：QQ/手机是推送型（非拉取），投递也是
+  at-least-once，重连后要能续发不重发。心智与现有 `event_delivery` / `presence_delivery` 的
   per-recipient + lease + retry 一致，只是 recipient 从「角色内 consumer」扩展为「外部 transport」。
 
 第一个实现是 **OneBot adapter**（QQ）：连 NapCat / LLOneBot，QQ 私聊消息 → `USER_MESSAGE`
-（`Source.EXTERNAL`），`SPEAK/ASK` 事件 → 主动发 QQ 消息。**Nyx 不是 NoneBot 插件**——
-我们不引入 NoneBot2 作为宿主，只实现 OneBot 协议这一条适配器，避免两套插件框架打架。
+（`Source.EXTERNAL`），`SPEAK/ASK` 事件 → 主动发 QQ 消息。**Nyx 不是 NoneBot 插件**——不引入
+NoneBot2 作为宿主，只实现 OneBot 协议这一条适配器，避免两套插件框架打架。
+
+完整签名（`TransportAdapter` Protocol）见 `docs/specs/20-plugin-harness.md`（阶段 2 边界）。
 
 ## 6. 事件分发模型演进
 
@@ -160,10 +133,11 @@ D6（租服务器自托管）正面顶到现有安全共识「本地 SQLite、�
 | 1 | 纯重构：FacadePlugin 契约 + 装配器，收敛 `app_context` 手工装配 | **零行为变化**：现有 `pytest` 全绿 + E2E 通过 |
 | 2 | 传输适配器抽象 + 第一个 OneBot adapter（QQ） | 本地连 NapCat，QQ 消息↔脑 往返；不重复发消息 |
 | 3 | 多 client 事件游标 + 认证（token + TLS） | 两个 reader 各自断线重连不丢不重 |
-| 4 | 云端部署（租服务器）+ 手机端接入 + SQLite→Postgres 迁移 | 手机与桌面共享同一记忆/欲望/状态；Postgres 成为云端事实来源 |
+| 4 | 每设备 token/配对码、云端部署、手机端接入、SQLite→Postgres 迁移 | 设备配对契约见23；手机与桌面共享状态；Postgres 成为云端事实来源。剩余事项见 [统一待办清单](../TODO.md) |
 | 5 | harness 框架化：抽 1/2/4/5 层为独立包，Nyx 作为角色+域插件挂载；按需上 MCP / supervisor | 第二个角色卡在 harness 上跑通 |
 
-阶段 1 是收益最大、风险最低的一步：只改装配，不改行为，用全绿测试做安全网。
+阶段 1 是收益最大、风险最低的一步：只改装配，不改行为，用全绿测试做安全网。阶段 1 的实现契约
+与对象完整性审计见 `docs/specs/20-plugin-harness.md`。
 
 ## 9. 决策归档（原开放问题，已全部关闭）
 

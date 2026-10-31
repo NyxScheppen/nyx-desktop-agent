@@ -713,8 +713,7 @@ flowchart LR
 | 想了解的内容 | 阅读入口 |
 |---|---|
 | 当前功能的理论全景 | 本文 |
-| 未实现方向 | `docs/design/V3-roadmap.md` |
-| 作品集与交付优化路线 | `docs/design/portfolio-optimization.md` |
+| 未完成事项与后续决策 | [统一待办清单](../TODO.md) |
 | CI/CD 流水线设计 | `docs/design/ci-cd.md` |
 | 每个领域的签名、状态、阈值和事务语义 | `docs/specs/` 对应完整 spec |
 | 当前源码已经做到什么 | `docs/facts/` 对应事实摘要 |

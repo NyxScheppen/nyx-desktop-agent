@@ -10,8 +10,10 @@
 
 角色管理函数：`getCharacters`（GET 列表）、`importCharacter`（POST 卡包 FormData）、`selectCharacter`（PUT current）、`changeCharacter`（DELETE id 或 POST restore/retry-start）、`characterAssetUrl`（GET id/assets/key）。签名以 client.ts 为准。
 
+阶段四首个切片沿用同源浏览器入口：连接页可用一次性配对码兑换设备 Bearer 令牌；设置页可由根凭证生成配对码并撤销设备。
+
 ```typescript
-const BASE_URL = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
+const BASE_URL = import.meta.env.DEV || !isTauriRuntime() ? "" : "http://127.0.0.1:8000";
 
 async function postChat(message: string, replyTo?: string, discussion?: boolean | null, annotation?: ReplyAnnotation): Promise<{ event_id: string; annotation_persistence?: "recorded" | "pending" }> // POST /api/chat
 async function getPendingQuestions(): Promise<{ server_now: number; questions: PendingQuestion[] }> // GET /api/questions/pending
@@ -51,6 +53,7 @@ async function checkChapterBoundary(bookId: string, nyxPosition: number): Promis
 
 - 请求体键名 = 后端 JSON 键（snake_case 零映射）：`postChat` 发 `{message}`，有明确提问归属时附加 `reply_to`；`postObserve` 必须带稳定 `sample_id`，其余为 `{presence, window_title, idle_seconds, sampled_at}` 与可选 `character_id/selection_revision`。PresenceObservation 定义在 types/api.ts，signal 透传 fetch。重试保留相同 sample_id；409 表示过期/冲突采样，422 表示非法输入。
 - **请求头**：`Content-Type: application/json`（FastAPI + Pydantic 体，错头会 422）。
+- 当 `NYX_AUTH_TOKEN` 启用时，所有 REST 请求通过内存/sessionStorage 凭证发送 `Authorization: Bearer`；401 进入凭证输入。角色图片使用同一认证 fetch 取得 blob URL，并在角色、凭证或组件生命周期结束时撤销 URL。
 - 返回值直接 JSON 反序列化后上抛给调用方，**不包裹** `{ok, data}`。
 
 `postChat` 保留可选 discussion 的 null/true/false，末尾可选 annotation 为

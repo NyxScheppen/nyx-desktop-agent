@@ -84,6 +84,9 @@
   - 取得自我叙事；
   - 最多 4 轮工具判断，累计工具结果以文本进入下一轮判断和最终回复；最多 5 项，单项 JSON 至多 2000 字符，工具块至多 8000 字符。已完成/耗尽次数的同名同参数模型请求去重并解释，自动重试不去重；失败反馈保留参数、状态和错误，耗尽后同批剩余调用不执行；
   - `respond` 最多继续到 `slow_max_rounds`，问句会提前结束；
+  - 有工具结果或反馈的 `respond` 在 system 末尾追加 `TOOL_REPLY_GUIDANCE`，续写与 JSON 重试复用；
+    执行叙述仅据本轮调用记录和结果，查询词引用完整参数、先后按step；候选策略和历史建议
+    不作已执行证据，不把本轮说成上次，也不补写截断细节。
   - 所有轮次的正常 THINK/SPEAK、最终 `SPEAK/ASK` 在同一本地事务受理，随后记录 history；生成中途没有正常文本对外可见。
 - 讨论模式仅授权 `memory_recall`、`knowledge_search`、`deep_research`，执行时再次核对；普通慢通道排除这三项且保留原工具。
   `memory_recall` 仅返回 profile/conversation 事实与对话段；完整段 JSON 真正进入最终回复 prompt 才幂等计召回。

@@ -1,6 +1,6 @@
 # 配置加载
 
-> 范围：`nyx/config.py`（`Config` + 8 个分段 dataclass + `load_config()` + `validate_config()` + `ConfigError`）+ `config.yaml`。
+> 范围：`nyx/config.py`（`Config` + 9 个分段 dataclass + `load_config()` + `validate_config()` + `ConfigError`）+ `config.yaml`。
 > 纯配置 spec：只做加载与校验，不含 Facade、不含 DDL、不含 API。
 > spec 只定义契约（分段 + 字段约束 + 加载/校验语义）；字段与默认值以 `config.yaml` / `nyx/config.py` 源文件为准。
 > 本文件只定义配置值本身；配置如何被 LLM 客户端使用由 `03-llm` 定义，组合根如何装配由 `04-module-bus-system` 定义。
@@ -15,7 +15,7 @@
 
 ## 验收标准
 
-- [ ] `config.py` 含 `Config` + 8 个分段 dataclass + `ActivityEnergyDelta`，字段与源文件一致（实现见 `nyx/config.py`）
+- [ ] `config.py` 含 `Config` + 9 个分段 dataclass + `ActivityEnergyDelta`，字段与源文件一致（实现见 `nyx/config.py`）
 - [ ] `load_config()` 同步返回 `Config`；缺键填默认值、未知键（含嵌套 `energy_delta` 内部）报 `ConfigError`
 - [ ] `config.activity.energy_delta` 是 `ActivityEnergyDelta` 实例（不是裸 dict），`config.activity.energy_delta.reading` 点号访问成立
 - [ ] `validate_config()` 是纯函数，逐字段校验，非法报 `ConfigError`
@@ -31,7 +31,7 @@
 - **递归构造**：`_build` 看到字段类型是 dataclass 就递归构造，所以 `energy_delta` 会变成 `ActivityEnergyDelta`
 - **类型标注**：`_build` 用 `Any`（`dc: Any, raw: Any -> Any`）而非泛型 `_T`——`dataclasses.Field.type` 与 `yaml.safe_load` 都返回 `Any`，pyright strict 下 `type[_T]` 不满足 `DataclassInstance` 协议、返回类型无法静态验证。用 `Any` + `cast(dict[str, Any], raw)` 诚实承认反射构造是动态的，不假装类型精确。
 - **缺文件即报错**：`config.yaml` 缺失 → `ConfigError`（错误可溯源；"用全默认值"的场景由「缺键」覆盖，不靠「缺文件」）
-- **分段清单（8 个 dataclass）**：顶层 `Config` 聚合 8 段——`LlmConfig` / `EmbeddingConfig` / `MemoryConfig` / `DesireConfig` / `ActivityConfig`（含 `ActivityEnergyDelta`：reading/creation/free_exploration/observe_user/idle_reflection/rest 6 键能量增减）/ `ExpressionConfig` / `ExplorationConfig` / `VisionConfig`。字段、默认值和校验属于本 spec；LLM/视觉客户端如何消费这些配置由 `03-llm` 定义。
+- **分段清单（9 个 dataclass）**：顶层 `Config` 聚合 `LlmConfig` / `EmbeddingConfig` / `MemoryConfig` / `DesireConfig` / `ActivityConfig`（含 `ActivityEnergyDelta` 六键）/ `ExpressionConfig` / `ExplorationConfig` / `VisionConfig` / `OneBotConfig`。LLM/视觉客户端消费语义见03，OneBot消费语义见21。
 - `browser_survey` 是用户委派的浏览器操作，能量变化固定为 0，不增加 `ActivityEnergyDelta` 配置键；其任务语义见 09-activity。
 
 **校验规则表**（`validate_config` 实现与此逐条对应）：
@@ -60,6 +60,12 @@
 | `vision.provider` / `vision.model` / `vision.api_key_env` | 非空 `str` |
 | `vision.base_url` | 非 `None` 时非空 `str` |
 | `vision.interval_seconds` | `int > 0` |
+| `onebot.enabled` | bool，默认false |
+| `onebot.self_id` / `onebot.owner_id` | 启用时不同的正整数（非bool）；默认0，启用前填写 |
+| `onebot.ws_url` | 启用时仅loopback ws/wss，禁止URL凭证/query/fragment；默认ws://127.0.0.1:3001 |
+| `onebot.access_token_env` / `onebot.character_id` | 启用时非空str，默认ONEBOT_ACCESS_TOKEN / nyx；token由适配器构造时从环境读取 |
+
+NYX_AUTH_TOKEN 与 NYX_PUBLIC_ORIGIN 是 HTTP/TLS 入口的进程环境变量，不属于 YAML Config；其认证及 HTTPS 语义由 docs/specs/22-multi-client-transport.md 定义。
 
 默认值采用本地中文句向量模型 `BAAI/bge-small-zh-v1.5`；变更模型时，既有不同维度或模型空间的记忆向量不能直接复用。
 

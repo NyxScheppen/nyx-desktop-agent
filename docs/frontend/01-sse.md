@@ -1,15 +1,15 @@
 # SSE 数据流（`hooks/useSSE.ts`）
 
 > 前端实时数据的**主通道**。后端广播全部事件；事件持久化、路由和广播语义见
-> `docs/specs/04-module-bus-system.md`。本 spec 定义 `useSSE` hook 契约、SSE 帧格式、
+> `docs/specs/04-module-bus-system.md`。本 spec 定义 `useSSE` fetch reader 契约、SSE 帧格式、
 > 事件→store 分发表、重连容错。
 > 范围：`hooks/useSSE.ts` + `api/client.ts` 里的 SSE 相关部分。
 
 ## 1. 端点与帧格式
 
-- 端点：`GET /api/characters/{id}/events`（SSE，tech-ref §4）；旧 `/api/events` 固定为 Nyx 兼容入口。
+- 端点：`GET /api/characters/{id}/events`（SSE，tech-ref §4）；旧 `/api/events` 固定为 Nyx 兼容入口。认证及多reader游标契约见 `docs/specs/22-multi-client-transport.md`。
 - 每个事件一条；`event:` 行 = `EventType` 成员值（小写 snake_case，如 `speak` / `emotion_update` / `activity_end`）。
-- 每帧同时发送标准 `id: <character_id>:<event_id>`；浏览器重连时会带 `Last-Event-ID`，后端据此回放断线期间的事件。跨角色游标返回 409，旧 Nyx 别名同样使用组合游标。
+- 每帧同时发送标准 `id: <character_id>:<event_id>`；fetch reader 重连时带最后完整帧的 `Last-Event-ID`，后端据此回放断线期间的事件。跨角色游标返回 409，旧 Nyx 别名同样使用组合游标。
 - `data:` 行 = **`event.content` 展开 + `character_id` + `event_id` + `correlation_id` + `timestamp`**：
 
 ```
@@ -111,10 +111,10 @@ function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string; gener
 - **入参**：`dispatch` —— 每个解析成功的帧调用一次，由调用方（App 层）决定路由到哪个 store（分发表见 §4）。
 - **返回**：`ConnectionState`，供 App 显示连接状态（右上角「已连接/重连中」）。
 - **行为**：
-  1. `useEffect` 为 selection 建立角色命名空间 EventSource；selection=null 不连接，省略只用于旧辅助调用。`BASE_URL` 来自统一常量。选择 ID 或本地 generation 改变时关闭旧连接；每个回调核对原 scope，帧的 character_id 也必须匹配。
-  2. 对 26 个 `EVENT_TYPES` 逐个 `addEventListener(type, …)`（后端每条带 `event:` 行，命名事件只能按类型监听，`onmessage` 收不到）→ `JSON.parse(e.data)` → 校验公共字段和事件载荷 → 按连接内 `event_id` 去重 → 拼 `SseEvent` → `dispatch`。
-  3. `onopen` / `onerror`：更新 `ConnectionState`。`EventSource` 浏览器原生自动重连（`onerror` 时置 `connecting`），后端重启后自动恢复，无需手写重连循环。
-  4. cleanup：`source.close()`（防重复挂载泄漏）。
+  1. `useEffect` 为 selection 建立角色命名空间 fetch reader；selection=null 不连接，省略只用于旧辅助调用。`BASE_URL` 来自统一常量。选择 ID、本地 generation 或 token 改变时取消旧连接；每个回调核对原 scope，帧的 character_id 也必须匹配。
+  2. 使用 `ReadableStream` 解析 UTF-8、CRLF、注释、多行 data 和同块多帧；只以完整帧推进游标，按 `event_id` 去重后校验公共字段和事件载荷并 `dispatch`。
+  3. 网络失败或 EOF 置 `connecting`，等待1秒后用最后完整帧的 `Last-Event-ID` 重连；401 停止重连并要求重新输入凭证。
+  4. cleanup：abort reader、取消等待和释放连接（防重复挂载泄漏）。
 - **解析失败**：`JSON.parse` 抛错 → `console.error` + 跳过该帧（不崩整个流）；`data` 缺
   `event_id`/`correlation_id`、`timestamp` 缺失/非有限数值或超出 Date 可表示范围时同样跳过；
   timestamp 使用 lib/time.ts 的 isValidTimestamp 共用校验（防御，正常不触发）。
@@ -122,10 +122,8 @@ function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string; gener
   三个字段及非空 `user_event_id`。ID 长度 1–128，quote/comment 各 1–2000 个 Unicode 字符，
   均为非空白字符串，保留原始内容；非法批注帧不进入 store。
 - **`ConnectionState` 三态触发点**：
-  - 初始态 = `connecting`（挂载即 `new EventSource`）。
-  - `onopen` → `open`；`onerror` → `connecting`（EventSource 原生自动重连中）。
-  - cleanup（组件卸载）→ `closed`（`source.close()` 后置，生命周期结束不再重连）。
-  - 无「后端主动关闭 → closed」场景：后端关流触发 `onerror` 走自动重连，不进 `closed`。
+  - 初始态 = `connecting`（挂载即发起 fetch）。
+  - HTTP成功并取得流 → `open`；网络失败/EOF → `connecting`；401或cleanup → `closed`。
 
 > 命名 `useSSE` 为 CLAUDE.md 前端规范点名；`BASE_URL` 抽到 `api/client.ts` 导出，SSE 与 REST 共用。
 
@@ -156,7 +154,7 @@ function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string; gener
 | `clock_tick`/`observation_state`/`reflection` | — | — | 无消费者 |
 
 > 完整 26 类见 `01-types.md` 的 `EventType`。`switch` 按类型路由：文本/情绪事件走 chatStore/innerLifeStore，`desire_*`/`activity_*`/`task_updated`/`memory_created`/`memory_promoted`/`reflection_done` 触发对应快照 store 的 `refresh()`（fire-and-forget）；`reflection_done` 同时刷新 desire 与 inner-life，避免慢变量已提交但面板仍显示旧值；`reading_progress` 只更新当前书的 readerStore 增量状态；`mutter` 进 `announceStore` 冒立绘旁气泡、`activity_end` 完成后按 `activity_id` 找产出冒一句（`announceStore`）、`reflection_done` 的 `story_is_new=true` 额外 `announce("mutter", …)` 冒一句，`clock_tick`/`observation_state`/`reflection`/`scene_memory_requested` 无消费者（故无 `default` 分支）。
-> **前向兼容边界**：命名事件（带 `event:` 行）若没有匹配的 `addEventListener` 且无 `onmessage`，浏览器会静默丢弃——故后端**新增 EventType 必须同步前端** `EVENT_TYPES` 数组 + `types/api.ts` 判别联合 + 本分发表（monorepo 内本就在同一提交改）。不存在「旧前端自动接住新类型」的兜底。
+> **前向兼容边界**：fetch parser 只把 `event:` 行匹配到 `EVENT_TYPES` 的帧交给分发——故后端**新增 EventType 必须同步前端** `EVENT_TYPES` 数组 + `types/api.ts` 判别联合 + 本分发表（monorepo 内本就在同一提交改）。不存在「旧前端自动接住新类型」的兜底。
 
 
 ### 4.1 分发函数（含类型收窄）
@@ -242,10 +240,10 @@ announceStore.announce(kind: "mutter" | "activity", text: string): void  // 立�
 
 ## 5. 容错与边界
 
-- **重连与回放**：`EventSource` 原生重连；`onerror` 置 `connecting`，不手写退避（浏览器默认指数退避）。每帧的 `id:` 让浏览器自动发送 `Last-Event-ID`，后端回放已知游标之后的事件；未知/过期游标返回最早的一页有界事件。历史回放与实时 sink 允许重叠，因此 hook 按 `event_id` 去重。
+- **重连与回放**：fetch 网络失败或 EOF 后等待1秒，手动带最后完整帧 `Last-Event-ID` 重连；后端回放已知游标之后的事件，未知游标从开头分页恢复。历史回放与实时 reader 允许重叠，因此 hook 按 `event_id` 去重。401 不再重连。
 - **断线期间的快照**：`innerLifeStore` 的 `CurrentState` 以 `GET /api/state` 快照为准，`emotion_update` 做增量覆盖（valence/arousal/emotion）+ 顺带 `refreshState()` 重拉全量快照（带新能量/性格/三观）；`chatStore` 的历史消息靠 `GET /api/events/log?event_type=speak` 补（核心先行可暂缓，先只展示 SSE 实时的）。
 - **顺序**：SSE 单连接、后端顺序广播；事件日志回放按 `(timestamp, id)` 升序，前端按 `event_id` 去重。进度快照另按书籍 `revision` 和 Nyx 位置过滤，不以到达时间覆盖本地状态。
-- **测试**（`tests/sse.test.ts`）：mock `EventSource`（fake 触发 `onopen`/`onmessage`/`onerror`）→ 断言 `dispatch` 收到保留后端 `timestamp` 的 `SseEvent`、`scene_memory_requested` 已注册且分发为 no-op、`status` 三态切换、cleanup 调 `close()`、缺失/非法 timestamp 与坏 `data` 帧被跳过不崩。
+- **测试**（`tests/sse.test.ts`、`tests/connection.test.tsx`）：mock `ReadableStream` 分块输入 → 断言 UTF-8/CRLF、多帧、游标续传、401停止、取消、Bearer、缺失/非法 timestamp 与坏 data 帧被跳过不崩。
 
 ## 6. App 组合装配（`App.tsx`）
 

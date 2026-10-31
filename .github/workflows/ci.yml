@@ -42,9 +42,11 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --extra dev
       - name: Ruff
-        run: uv run --no-sync python -m ruff check nyx/ tests/ scripts/
+        run: uv run --no-sync python -m ruff check nyx/ packages/ tests/ scripts/
       - name: Pyright
-        run: uv run --no-sync python -m pyright nyx/ tests/ scripts/
+        run: uv run --no-sync python -m pyright nyx/ packages/ tests/ scripts/
+      - name: Historical E2E acceptance
+        run: uv run --no-sync python scripts/run_e2e.py --timeout 300
       - name: Pytest with coverage
         run: >-
           uv run --no-sync python -m pytest -q

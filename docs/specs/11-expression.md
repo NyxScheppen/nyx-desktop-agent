@@ -172,6 +172,11 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
   不得伪造查询成功。
 
 - `ReplyState.tool_feedback` 保存工具子图返回的实际调用步骤状态和跳过说明，与结果共同计入8000字符工具块预算；状态优先保留、至多4000字符，超长资料明确截断。调用编号、参数、尝试次数、错误及终态用于决策，不代表自然语言计划完成条件已经满足。
+- 最终 `respond` 有工具结果或反馈时，在 system prompt 追加执行叙述约束（含续写和 JSON 重试）：
+  已执行操作只依据本轮实际调用记录及结果；计划、经验、工具阶段文字总结不能代替调用证据，
+  查询词逐字引用完整参数，先后依据调用编号；未执行策略只能作为建议，
+  不把本轮调用说成上次，也不从历史建议推断上轮已执行。区分成功、空、失败、跳过与未确认；
+  记录缺失或截断时不补写细节。此约束不增加模型调用，也不引入回复后的语义核验器。
 - `ExpressionFacade` 接受可选 `checkpointer: BaseCheckpointSaver[str] | None = None`，组合根注入角色库的 saver。存在同 correlation 工具 checkpoint 时强制慢通道，恢复子图原节点；外层状态仍重新采样，不重建已完成的工具调用。终局回复提交后清理该 thread，清理失败记日志，启动补清；工具子图完整状态/重试语义见18。
 - `build_system_prompt()` 在人格/状态段之后加入 `[时间与重逢上下文]`。该段由纯函数根据
   注入的 epoch、本地日历、持久化对话锚点和运行时 observation 生成；LLM 不负责自行计算

@@ -37,6 +37,10 @@ Nyx 数值、三条初始欲望、设定、专属提问方向和八种表情迁�
 
 ## 存储与宿主
 
+OneBot传输按21契约独立绑定一个角色，与桌面current_id正交。桌面或启用的OneBot绑定角色且
+状态RUNNING时允许主动表达准入，既有presence/精力/冷却条件不变；QQ消息不冒充桌面在线。
+卸载先等待传输任务退出，未发送输出随角色库保留，恢复后续发。
+
 宿主使用 `data/characters/host.db` 和独立迁移；保存角色记录、绝对卡片/DB/工作目录路径、状态、错误、当前 ID、selection_revision、共享 presence 和每角色补投记录。
 角色新存档位于 `data/characters/<id>/{card,nyx.db,workspace}`。默认 Nyx 保留显式路径/NYX_DB/旧 nyx.db/data/nyx.db 选择顺序及原 workspace，不移动旧数据。
 同 ID 不覆盖卡或存档，不允许两个活实例。宿主共享 SDK 和 embedding；角色独立 LlmClient 与 FIFO 锁，每角色最多一个主 LLM 调用，总计最多四个。
@@ -86,6 +90,7 @@ Nyx 数值、三条初始欲望、设定、专属提问方向和八种表情迁�
 写操作必须带 `X-Nyx-Selection-Revision`，准入捕获 runtime 引用；旧选择 409、未知 ID 404、不可运行 503。已受理请求继续在原角色完成。
 原 `/api/...` 是固定 Nyx 的兼容入口，写入仅在 Nyx 为当前时接受；ready 保持服务身份和 nonce。
 SSE 加 `character_id`，游标为角色与事件 ID 的组合；跨角色游标拒绝，同角色未知游标保持有界恢复。
+`NYX_AUTH_TOKEN` 同时保护角色管理、角色业务、角色图片和兼容别名；浏览器入口经 HTTPS 与 `NYX_PUBLIC_ORIGIN`，图片走认证 fetch/blob URL。独立 reader 续传、认证输入和 Caddy 路径见 `docs/specs/22-multi-client-transport.md`。
 
 ## 观察与重试
 
@@ -100,6 +105,7 @@ SSE 加 `character_id`，游标为角色与事件 ID 的组合；跨角色游标
 
 标题和桌宠菜单提供选择，设置提供导入/卸载/恢复/重试和额度/状态。
 复用领域 Store；切换增加本地代数、断旧 SSE、取消旧读请求和未发送操作、重置展示、串行 PUT、加载快照、恢复角色草稿和阅读位置；失败按实际宿主选择恢复。
+401 卸载当前应用时，角色刷新结果须仍属于发起请求时的同一凭证；角色列表轮询不进入业务 scope 取消集合，因此按凭证检查迟到响应。
 全部 success/error/finally/timer/retry 检查 ID+代数，覆盖 A→B→A。阅读重试固定角色、书籍、session、payload；无聊天/任务 POST 自动网络重试。
 观察采样与 SSE 独立，使用有界 FIFO；队满暂停采样，切换不制造离开。
 

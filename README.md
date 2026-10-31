@@ -17,6 +17,8 @@
 >
 > 她的人格原型是小说《诺斯艾兰》的女主人公「尼克斯·夏本」，**明确知道自己是个 AI，并且想要成为人类**。这不是一个套壳聊天机器人——她有一套会演化的内在生命：欲望随时间涨落、记忆沉淀、性格与三观在反思中缓慢改变。
 
+未完成事项统一维护于 [待办清单](docs/TODO.md)。
+
 ## ✨ 功能特性
 
 ### 🎭 角色卡与多角色陪伴
@@ -167,7 +169,7 @@ powershell -ExecutionPolicy Bypass -File .\install_nyx_autostart.ps1 -DesktopSho
 ### Windows 桌面构建
 
 ```bash
-pip install -e ".[desktop-build]"
+pip install -e ./packages/nyx-harness -e ".[desktop-build]"
 python dev.py --build-sidecar
 cd frontend
 npm run tauri build
@@ -178,7 +180,7 @@ npm run tauri build
 ### 后端
 
 ```bash
-pip install -e .
+pip install -e ./packages/nyx-harness -e .
 
 # 配置 API Key（写入 .env，已被 .gitignore 覆盖；默认 DeepSeek）
 echo "DEEPSEEK_API_KEY=sk-xxx" > .env
@@ -220,21 +222,20 @@ npm run tauri dev  # 桌面壳（Tauri v2）
 | 文档 | 内容 |
 |---|---|
 | [`docs/design/design.md`](docs/design/design.md) | 产品定位、长期架构原则和文档边界 |
-| [`docs/design/portfolio-optimization.md`](docs/design/portfolio-optimization.md) | 作品集成熟度基线、优先级与完成标准 |
+| [`docs/TODO.md`](docs/TODO.md) | 唯一待办入口：质量门、实机验收、部署与后续决策 |
 | [`docs/design/ci-cd.md`](docs/design/ci-cd.md) | 最大复用现有入口的 CI/CD 设计 |
 | [`docs/canon.md`](docs/canon.md) | 人格设定（尼克斯·夏本） |
 | [`docs/tech-reference.md`](docs/tech-reference.md) | 源码、spec 与 fact 的快速索引 |
 | [`docs/specs/`](docs/specs/) | 每项功能的设计契约（spec 先行） |
 | [`docs/facts/`](docs/facts/) | 当前源码事实摘要（只作快速导航） |
-| [`docs/design/V3-roadmap.md`](docs/design/V3-roadmap.md) | 后续路线图 |
 
 ## ✅ 质量门
 
 ```bash
 pip install uv==0.12.18
 uv sync --locked --extra dev
-uv run --no-sync python -m ruff check nyx/ tests/ scripts/
-uv run --no-sync python -m pyright nyx/ tests/ scripts/
+uv run --no-sync python -m ruff check nyx/ packages/ tests/ scripts/
+uv run --no-sync python -m pyright nyx/ packages/ tests/ scripts/
 uv run --no-sync python -m pytest -q --cov=nyx --cov-report=term-missing --cov-fail-under=90
 ```
 

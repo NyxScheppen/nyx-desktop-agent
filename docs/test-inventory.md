@@ -6,8 +6,39 @@
 
 ## 当前快照
 
-- 后端测试文件：69
-- 后端测试：1333项（包含参数化实例），69个文件。
+- 后端测试文件：74
+- 后端测试：1403项（包含参数化实例），74个文件；最近全量1401 passed / 1 skipped（最终运行399.04s）。
+- 阶段五覆盖率：仅仓库内pytest整体87%；合并15个外部验收驱动后Nyx91.09%、含独立包91.13%，核心100%。CI已显式运行历史 E2E；90%覆盖率门槛缺口仍见 [统一待办清单](TODO.md)。
+- 阶段五：`tests/test_harness.py` 4项独立核心回归与原插件10项；`tests/test_character_host.py` 新增第二角色真实 HTTP/SSE 注册、身份 prompt、聊天隔离和卸载恢复。wheel/sdist 与隔离安装通过；发布工具回归验证 CI 的 Ruff/Pyright 同时检查独立 packages；launcher 构建回归验证 PyInstaller 显式包含独立包路径。
+- 历史 E2E 统一入口：`scripts/run_e2e.py` 按稳定顺序运行仓库内 P1-P4、插件 HTTP/SSE 及持久化/边界驱动；`tests/test_e2e_acceptance.py` 参数化复用同一集合，故意失败的红探针排除。CI 后端质量 job 显式运行该入口。
+- 前端测试：391项，26个文件；阶段三新增 fetch SSE、Bearer、凭证输入/清除、认证图片和凭证迟到响应隔离回归；阶段四覆盖设备 API 与配对登录。
+- 阶段三质量门（2026-10-30）：后端全量 1375 passed / 1 skipped（1376项）；Ruff/Pyright零错误。前端全量 389 passed，生产构建通过。
+- 阶段三真实本机 HTTPS：临时 Caddy 内部 CA 显式信任，通过同源页面、Chrome 登录、REST/SSE/图片 Bearer、非法 Origin、预检、`/api/ready` 阻断、1005 条提交序双 reader 续传、旧时间戳和 sink 回收；未写入系统证书库或真实数据。
+- 阶段四设备配对切片（2026-10-30）：后端全量 1378 passed / 1 skipped；Ruff/Pyright 零错误。前端全量 391 passed，生产构建通过。新增真实 SQLite/API 回归覆盖配对码摘要、单次兑换、过期、撤销、凭证权限和关闭认证时端点禁用；真实服务器/公网与手机验收见 [统一待办清单](TODO.md)。
+- 阶段2及QQ内心话最终质量门（2026-10-30）：全量1364 passed / 1 skipped（190.91s），未排除用例，退出码0；
+  Ruff/Pyright零错误，git diff --check通过。传输/数据库51项、更新后的OneBot/停止边界14项通过。
+  桌面脚本化HTTP/SSE E2E复跑40帧通过；规范审查通过，契约审查发现的并发异常覆盖已修复并复核。
+  host.close测试仅阻塞期保留20ms drain，释放后恢复原预算，保留2秒完成与数据库关闭断言。
+- OneBot阶段2新增tests/test_transports两文件13项，配置5项、宿主端到端1项和拒绝取消传输1项。
+  覆盖首次跳历史、日志提交序/FIFO/退避、磁盘lease与recipient隔离、扫描/确认事务回滚、
+  私聊过滤/转义/入向去重、echo匹配/断线续发、网络与DB超时分离、并发网络失败不盖过DB错误。
+  真实SQLite/宿主/表达管道+本地模拟OneBot WS的私聊、独立角色绑定、卸载恢复通过；用户已确认真实QQ往返。
+  取消打开DB测试兼容aiosqlite0.20/0.22线程结构，仍验证真实worker退出和连接关闭。
+- QQ内心话扩展沿用既有测试，覆盖THINK首次跳历史、FIFO/退避、磁盘恢复、断线重发及发送时单次前缀。
+  真实宿主/表达链+本地模拟WS验证“💭 内心话→正文”的独立消息顺序，恢复后两条均不重发；
+  修正宿主embedding夹具为异步回调，与生产await接口一致。相关35项回归通过，未新增测试数量。
+- 最终回复执行证据回归（2026-10-30）：`test_expression_facade.py` 新增2项参数化实例，
+  验证本轮完整查询参数和执行叙述约束进入首次回复、续写及JSON重试；无工具结果/反馈不注入。
+  宿主卸载测试只在handler阻塞时缩短drain预算，释放后恢复原预算，保留两秒归档和succeeded断言；
+  连续5次真实宿主探针通过。真实模型最终回复3个受控样本的观察与限制见 `docs/eval/README.md`。
+- 批注纠错回归补充显式 `【主题】` 聚类键优先级，防止真实模型漏填或改写主题导致三次纠正无法累计。
+- 插件装配阶段1（2026-10-29）：新增 `tests/test_plugins.py` 的10项确定性回归，覆盖稳定拓扑、
+  能力别名、缺失/自环/强环、弱环、必要弱依赖在所有 start 前校验、只读声明视图及完整17条路由等价。
+  新旧装配联网开关两种配置的完整工具schema/顺序、技能、初始状态、表结构及弱回调基线一致。
+  仓库外脚本化 LLM/embedding、真实HTTP/SSE/EventBus/内存SQLite验收通过，覆盖快回复、
+  两步读取、天气降级、空结果/耗尽学习、一次重规划、三次纠正后真实反思管道，共40帧SSE。
+  真实模型另跑同组路径，共43帧SSE，无dead-letter；当时发现的R1查询叙述失真及后续修复复测
+  见 `docs/eval/README.md`。
 - 本轮后端验证（耗尽后计划决策，2026-10-29）：完整 `python -m pytest -q` 为
   1332 passed / 1 skipped，未排除任何用例，耗时241.44s，退出码0；Ruff、Pyright 零错误。
   既有表达测试文件新增12项参数化实例，覆盖 continue/replan/stop、非法决策停止、
@@ -39,7 +70,7 @@
 - 后端运行：`pytest -q`
 - 前端测试目录：`frontend/tests/`
 - 前端运行：`cd frontend; npm test`
-- 最近一次前端全量验证：391 passed（25 个测试文件）；`npm run build` 的 TypeScript/Vite 生产构建通过。覆盖完整窗口默认聊天、阅读抽屉、知识库作用域、知识库内投喂、阅读宽度重分页及完整窗口返回桌宠/临时提示归属回归。
+- 最近一次前端全量验证：391 passed（26 个测试文件）；`npm run build` 的 TypeScript/Vite 生产构建通过。覆盖完整窗口默认聊天、阅读抽屉、知识库作用域、知识库内投喂、阅读宽度重分页及完整窗口返回桌宠/临时提示归属回归。
 - Tauri 壳回归：发布版 sidecar 路径与桌面可执行文件同目录；ready 响应必须同时匹配固定 Nyx 服务标识、本次启动 nonce 和响应大小上限；Debug/Release 均通过编译检查。
 - 桌面 launcher 回归：普通与桌面入口均以 `--reload` 启动后端，且只在后端就绪后启动对应前端；原子 lock 防止并发启动；重启会等待并接管旧 launcher/backend；排除 venv wrapper 父进程，避免启动器自杀；未知程序占用 8000 时不创建进程；普通 TCP、错误 HTTP 状态、非法/过大 JSON、错误服务标识或 nonce 均不能触发前端启动；身份匹配后 owned backend 仍须存活。
 - 启动身份 API 回归：`test_ready_endpoint_returns_owned_instance_identity`、`test_ready_endpoint_keeps_manual_start_compatible`；release smoke 使用同一 nonce 握手且拒绝身份不匹配、过大响应和探测后进程退出。
@@ -119,7 +150,7 @@
 | 阅读 | `tests/test_reading/` | 7 | EPUB 受控结构/嵌套块语义/UTF-16 offset/脚本样式过滤、进度 CAS 与后台单调推进及 `reading_progress` 广播、活动阅读不触发陪读冲动、原文 6000 字符/超长段落/余量 flush、pending 恢复、来源内 Top 5 与书籍画像、笔记/划线/书签、重读反思证据、整合和后台生命周期 |
 | 评估 | `tests/test_eval/` | 4 | OOC、embedding、记账、token、prompt 去重持久化与损坏数据、recent offset 分页 |
 | 发布工具 | `tests/test_release_tools.py` | 1 | 六处版本一致性、tag 校验、冻结制品布局、REST/SSE smoke、stdin EOF 回收、占位 key、workflow 权限/依赖/Action SHA 与锁文件 |
-| 角色卡与宿主 | `tests/test_character_cards.py`, `tests/test_character_host.py` | 2 | 卡包安全校验、旧存档一次初始化、并发四角色限额、切换归属、独立文件边界、presence 部分失败/FIFO/确认与重启恢复、失效角色隔离、晚启动 runner、安装取消、停止超时保留 worker/数据库、宿主完整关停及恢复基线 |
+| 角色卡与宿主 | `tests/test_character_cards.py`, `tests/test_character_host.py` | 2 | 卡包安全校验、旧存档一次初始化、并发四角色限额、切换归属、独立文件边界、presence 部分失败/FIFO/确认与重启恢复、设备配对一次兑换/过期/撤销和摘要存储、失效角色隔离、晚启动 runner、安装取消、停止超时保留 worker/数据库、宿主完整关停及恢复基线 |
 
 ## 前端覆盖
 

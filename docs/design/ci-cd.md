@@ -1,7 +1,7 @@
 # CI/CD 设计
 
 > 本文记录 Nyx Agent 已实现的持续集成与持续交付方案，不改变产品契约。
-> 作品集层面的目标和排期见 [`portfolio-optimization.md`](portfolio-optimization.md)。
+> 未完成事项与后续决策统一见 [待办清单](../TODO.md)。
 
 实现入口为 `.github/workflows/ci.yml`。2026-09-25 已在 Windows 本地完成锁文件安装校验、
 全部质量门、sidecar/Tauri MSI 与 NSIS 构建以及冻结制品 smoke；GitHub 分支保护仍需在仓库设置中启用。
@@ -21,9 +21,10 @@
 | 能力 | 现有入口 | 流水线用途 |
 |---|---|---|
 | Python 包与运行依赖 | `pyproject.toml` | 创建后端测试和 sidecar 构建环境 |
-| 后端静态检查 | `python -m ruff check nyx/ tests/ scripts/` | PR 必过 |
-| 后端类型检查 | `python -m pyright nyx/ tests/ scripts/` | PR 必过 |
+| 后端静态检查 | `python -m ruff check nyx/ packages/ tests/ scripts/` | PR 必过 |
+| 后端类型检查 | `python -m pyright nyx/ packages/ tests/ scripts/` | PR 必过 |
 | 后端测试 | `python -m pytest -q` | PR 必过；增加覆盖率参数而不改测试入口 |
+| 历史 E2E 验收 | `python scripts/run_e2e.py --timeout 300` | PR 必过；运行 P1-P4 与插件 HTTP/SSE 驱动 |
 | 前端依赖锁 | `frontend/package-lock.json` | `npm ci` 可复现安装 |
 | 前端测试 | `npm test -- --run` | PR 必过 |
 | TypeScript/Vite 构建 | `npm run build` | PR 必过 |
@@ -71,18 +72,19 @@ workflow 复制安装和构建逻辑。
 
 运行环境为 `windows-latest` + Python 3.11，匹配首发平台和项目最低 Python 版本。
 
-目标命令：
+目标命令（历史 E2E 驱动由 pytest 与显式 runner 执行，因其是临时迁移脚本风格而从静态 lint/typecheck 排除）：
 
 ```powershell
 uv sync --locked --extra dev
-uv run python -m ruff check nyx/ tests/ scripts/
-uv run python -m pyright nyx/ tests/ scripts/
+uv run python -m ruff check nyx/ packages/ tests/ scripts/
+uv run python -m pyright nyx/ packages/ tests/ scripts/
 uv run python -m pytest -q --cov=nyx --cov-report=term-missing --cov-fail-under=90
+uv run python scripts/run_e2e.py --timeout 300
 ```
 
 现有 `pyproject.toml` 已增加 `dev` optional dependencies，并提交 `uv.lock`。`uv` 只承担
-锁定和安装，不替换 setuptools 包定义，也不废弃 README 中现有的 `pip install -e .` 使用方式。
-当前实测覆盖率为 91.71%，初始阈值定为 90%；提高阈值必须以关键路径收益为依据。
+锁定和安装，不替换 setuptools 包定义，也不废弃 README 中同时安装 harness 与应用的本地 pip 使用方式。
+CI 阈值保持90%。阶段五本机 pytest 全量1383 passed / 1 skipped，但仅仓库内 pytest 覆盖率为87%；历史仓库外验收未纳入该统计。不能将测试全绿当作覆盖率门已通过；最新覆盖结果见 [测试快照](../test-inventory.md)，剩余接入事项见 [待办清单](../TODO.md)。
 
 ### 2. `frontend-desktop-quality`
 
@@ -111,7 +113,8 @@ npm ci
 npm run tauri build
 ```
 
-复用 `dev.py` 中已有的模型下载、PyInstaller 排除项、资源打包和 Rust target 后缀处理；Tauri
+复用 `dev.py` 中已有的模型下载、PyInstaller 排除项、资源打包和 Rust target 后缀处理。
+独立 `nyx-harness` 的源码目录显式加入 PyInstaller `--paths`，避免 editable 安装在冻结分析时漏包。Tauri
 继续从 `build/sidecar/nyx-backend` 取得 external binary。Hugging Face 模型缓存、npm 缓存、uv 缓存
 和 Cargo 缓存使用锁文件作为 key，但缓存命中不能替代锁文件校验。
 
@@ -178,6 +181,7 @@ Rust 生命周期测试与 Tauri build 覆盖桌面壳接线。交互式 WebView
 4. 已实现版本检查与阻断式 `release-smoke`，本地真实冻结制品验证通过。
 5. 已实现 `vX.Y.Z` draft release 路径；首次 tag 线上预演尚未执行。
 6. 许可证、CSP 和代码签名仍属后续决策，未把 draft 流程升级为自动公开。
+7. 历史 P1-P4 与插件验收由 `scripts/run_e2e.py` 接入 CI；故意失败的红探针不纳入统一成功集合。
 
 ## 完成定义
 

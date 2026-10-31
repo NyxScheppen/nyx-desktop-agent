@@ -188,7 +188,7 @@ async function deleteBookmark(id: string): Promise<void>                        
 
 ## 6. 测试（`tests/` 并入 api/sse/stores 测试）
 
-- `useSSE`/分派（`tests/sse.test.ts` 增补）：mock `EventSource` 派发三型帧 → `dispatch` 路由 `reading_question`/`reading_association` 到 `chatStore.addReadingTurn`、`reading_mutter` 到 `announceStore.announce("mutter")`；`EVENT_TYPES` 含三值（缺则帧被静默丢弃，01-sse §4）。
+- `useSSE`/分派（`tests/sse.test.ts` 增补）：mock fetch SSE 帧派发三型事件 → `dispatch` 路由 `reading_question`/`reading_association` 到 `chatStore.addReadingTurn`、`reading_mutter` 到 `announceStore.announce("mutter")`；`EVENT_TYPES` 含三值（缺则帧被静默丢弃，01-sse §4）。
 - `chatStore.addReadingTurn`（`tests/stores.test.ts` 增补）：question → `kind==="reading_question"` + `subtype`/`selectedText` 落对、association → `kind==="reading_association"` + `memoryId`/`content=e.snippet` 落对；两条都 `correlation_id===book_id`；文本字段非 string 丢弃。
 - `readerStore` 笔记：`loadNotes` 落 `notes`；`addNote` unshift 归一 `annotations: []`；`updateNote` 覆盖返回字段并保留 annotations；`deleteNote` 移除；`showToNyx` 成功后 `annotations` append 返回的完整 `Annotation`（不整表重拉）。
 - `readerStore` 书签：加载、添加、取消更新当前书列表；`jumpToPosition` 保存位置、重拉窗口且不请求冲动端点。

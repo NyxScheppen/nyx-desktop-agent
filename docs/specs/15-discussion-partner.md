@@ -651,7 +651,7 @@ POST /api/chat → USER_MESSAGE（完整 annotation 快照）
 ```
 
 - prompt 用结构化输入分别标记 quote（Nyx 旧回复，仅供定位）和 comment（用户反馈）；要求只从 comment 的明确用户表达抽取，外部知识纠错只能记为“用户认为/指出某回复有误”。
-- 顶层必须有 facts 数组与严格 bool 的 is_correction，非法 JSON/形状整次跳过并日志。is_correction=true 时额外输出 `correction_topic`（一句话概括纠正主题，供失败反思按主题聚类）；缺失/空兜底 `user_correction`。逐项 scope 只允许 profile/conversation，asserted 必须 true；按 scope 拆组后复用 `parse_fact_extraction(source_scope="quoted")` 的数量、名称和关系模式约束。
+- 顶层必须有 facts 数组与严格 bool 的 is_correction，非法 JSON/形状整次跳过并日志。is_correction=true 时额外输出 `correction_topic`（一句话概括纠正主题，供失败反思按主题聚类）；缺失/空兜底 `user_correction`。若 comment 以 `【主题】` 开头，代码以括号内非空文本作为聚类主题，优先于模型输出，避免同一显式主题因模型漏填或改写而分散；否则使用模型主题。逐项 scope 只允许 profile/conversation，asserted 必须 true；按 scope 拆组后复用 `parse_fact_extraction(source_scope="quoted")` 的数量、名称和关系模式约束。
 - 代码再次限制候选 subject 为“用户”；conversation 谓词仅允许“回复反馈”。未知 scope、外部主体、未断言候选丢弃。profile 仅接收用户自身的明确属性/偏好。绝不调用 knowledge 摄入/词法 fallback；语义归因质量仍需单独说明真实模型是否验收。
 - 对两组候选分别 `FactStore.apply(candidates, None, "profile" | "conversation")`，valid_from 使用反馈事件时间；不创建新的 Memory 或伪造 source_memory_id/source_chunk_id。
 - is_correction=true 时不再当场 append REFLECTION，改为调 `MemoryFacade.record_failure_signal("user_correction", "user_correction:{correction_topic}", …)`（19-failure-reflection）：按 correction_topic 聚类计数，达阈值才沉淀 `MemoryKind.LESSON` + 触发 `reason=annotation_correction` 反射（evidence 沿用 `{source_id, summary}`，source_id=反馈 event_id，summary 总计≤1000 字符，含 quote/comment）。facts 仍当场 apply；false 不触发。补齐 inner_life reason 白名单及展示标签。
@@ -768,11 +768,11 @@ export interface KnowledgeSourceRequest {
 - **输入与同轮表达：** 真实 HTTP/SSE 验证 POST → durable USER_MESSAGE 完整快照 → 同轮 prompt/回复。严格输入、精确 SPEAK/连续原文锚点、404/422/503、中文/emoji 长度及 reply_to 互斥通过；FAST/SLOW/讨论工具/续写 prompt 均保留批注，未强制讨论或认领 waiting。跨角色锚点用隔离数据库验证。
 - **记录与回执：** schema45→46 保留旧阅读笔记/批注，迁移失败原子回滚；原始键并发去重、第一快照、唯一行/事件、录入四处事务失败与重试通过。表达终局后独立录入、丢 announce 后扫描/重启恢复和 recorded 重放通过；连续5次录入失败进入 dead_letter，聊天仍回复且回执 pending。
 - **事实与纠错反思：** profile/conversation 事实通过既有 API 查询；外部主体、unknown scope、未 asserted 候选过滤，反馈旁路不写知识事实、Memory 或证据块。true/false/空事实/坏 JSON/非 bool、LLM/eval 故障、取消、四处事务失败/重放通过。eval HTTP 可查合法/非法 JSON 调用的 token/history/完整 prompt；纠错 REFLECTION 的失败隔离、恢复、REFLECTION_DONE 和过期 no-op 通过。
-- **前端：** SPEAK 选择/长文限制、批注编辑/发送、失败保留、waiting 旁路、回执先到/不降级、历史回填、角色/reset 隔离通过既有文件中的15项新增测试。规格审查发现并修复 loadHistory 的本地 generation 缺口，两个 await 阶段均先红后绿；未另做真实浏览器人工操作验收。
+- **前端：** SPEAK 选择/长文限制、批注编辑/发送、失败保留、waiting 旁路、回执先到/不降级、历史回填、角色/reset 隔离通过既有文件中的15项新增测试。规格审查发现并修复 loadHistory 的本地 generation 缺口，两个 await 阶段均先红后绿；2026-10-31 又用现有聊天记录完成真实浏览器人工验收，确认批注发送、后续回复、回执显示与刷新恢复。
 - **总体验证：** 仓库外临时驱动的3组真实 HTTP/SSE 主线、5组实库边界、4组补充及回滚计数探针通过。Ruff、Pyright（0 errors / 0 warnings）、前端376项（25文件）及 TypeScript/Vite 构建通过；完整后端1289 passed / 1 skipped（120.38s），未排除用例，历史宿主 unload-drain 失败本次未复现。工程规范审查通过，规格审查问题修复后验证通过；未新增后端 pytest 文件或函数，仅同步 schema46 的旧断言。
 - **边界与状态：** 脚本化 LLM 证明流程、结构及恢复边界；真实模型对批注的理解/学习与讨论风格/引用质量仍未验收，总体 E2E 对应项保留待验收。P3 已提交 `f12ffda`；P4 实现及文档已完成，用户已在收到上述验收结果和限制后授权提交。
 
-本机复现命令（临时驱动不进入仓库，具体检查点见 `plan.md` 的 P4 验收记录）：
+本机复现命令（临时驱动不进入仓库，具体检查点见上方 P4 验收记录；正式入口接入见 [统一待办清单](../TODO.md)）：
 
 ```powershell
 python $env:TEMP\nyx-p4-acceptance.py

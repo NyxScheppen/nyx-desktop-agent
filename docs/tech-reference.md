@@ -4,6 +4,7 @@
 > 业务契约以 `docs/specs/` 中对应的唯一完整 spec 为准；当前实现以 `nyx/` 源码为准。
 > 无关代码需要快速了解模块边界时，优先查对应的 `docs/facts/*-system-facts.md`。
 > 合并多个旧 spec 后保留该领域原主编号；旧子 spec 编号不再作为引用使用。
+> 未完成事项与后续决策统一维护于 [待办清单](TODO.md)。
 
 ## 契约入口
 
@@ -15,6 +16,7 @@
 |---|---|---|---|
 | 类型 | [`01-types.md`](specs/01-types.md) | — | `nyx/types.py`, `nyx/enums.py` |
 | 配置 | [`02-config.md`](specs/02-config.md) | — | `nyx/config.py` |
+| OneBot私聊 | [`21-onebot-transport.md`](specs/21-onebot-transport.md) | 总线/角色事实摘要 | `nyx/transports/`；配置步骤见契约文末 |
 | LLM | [`03-llm.md`](specs/03-llm.md) | — | `nyx/llm/` |
 | 模块与事件总线 | [`04-module-bus-system.md`](specs/04-module-bus-system.md) | [`module-bus-system-facts.md`](facts/module-bus-system-facts.md) | `nyx/db.py`, `nyx/events/`, `nyx/runtime.py` |
 | 工具 | [`05-tools.md`](specs/05-tools.md) | — | `nyx/tools/` |
@@ -31,8 +33,12 @@
 | 工具调用观测 | [`17-tool-call-observation.md`](specs/17-tool-call-observation.md) | — | `nyx/tools/{registry,tool_call_store}.py`, `nyx/db.py` |
 | 规划与执行 | [`18-plan-and-execute.md`](specs/18-plan-and-execute.md) | [`expression-system-facts.md`](facts/expression-system-facts.md) | `nyx/types.py`（Plan/PlanStep）, `nyx/expression/{pipeline,tool_pipeline,prompt}.py` |
 | 失败经验 | [`19-failure-reflection.md`](specs/19-failure-reflection.md) | [`memory-system-facts.md`](facts/memory-system-facts.md) | `nyx/enums.py`（LESSON）, `nyx/memory/{facade,store}.py`, `nyx/eval/evaluator.py`, `nyx/app_context.py` |
+| 插件装配 | [`20-plugin-harness.md`](specs/20-plugin-harness.md) | [`module-bus-system-facts.md`](facts/module-bus-system-facts.md) | `nyx/plugins.py`, `nyx/app_context.py`, `nyx/subscriptions.py` |
+| 多客户端续传与 HTTPS 认证 | [`22-multi-client-transport.md`](specs/22-multi-client-transport.md) | [`module-bus-system-facts.md`](facts/module-bus-system-facts.md)、[`character-cards-facts.md`](facts/character-cards-facts.md) | `nyx/events/bus.py`, `nyx/api/routes.py`, `frontend/src/hooks/useSSE.ts`, `frontend/src/api/client.ts`, `frontend/src/stores/connectionStore.ts`, `Caddyfile` |
+| 设备配对与访问凭证 | [`23-device-pairing.md`](specs/23-device-pairing.md) | [`character-cards-facts.md`](facts/character-cards-facts.md) | `nyx/app_context.py`, `nyx/api/routes.py`, `frontend/src/api/client.ts`, `frontend/src/App.tsx`, `frontend/src/components/layout/SettingsView.tsx` |
+| 独立 harness 装配核心 | [`24-harness-framework.md`](specs/24-harness-framework.md) | [`module-bus-system-facts.md`](facts/module-bus-system-facts.md) | `packages/nyx-harness/nyx_harness/core.py`, `nyx/plugins.py` |
 
-讨论伙伴 P1/P2 已完成；P2 性能修复第 3 步已按授权提交为 `34d201f`，P3 深度研究功能验收完成，未提交、待用户阶段审批。
+讨论伙伴 P1–P4 的代码与管道验收已完成；真实模型讨论、引用与批注效果等剩余验收见 [统一待办清单](TODO.md)。
 验收证据及质量门限制见 [阶段记录](specs/15-discussion-partner.md) 与 [测试快照](test-inventory.md)。
 P3 研究编排与工具构造见 `nyx/research/__init__.py`，装配见 `nyx/app_context.py`。
 P4 批注输入/锚点校验见 `nyx/api/routes.py`；prompt 传递见 `nyx/expression/{facade,pipeline,prompt}.py`；
@@ -55,6 +61,8 @@ P2 性能修复的增量证据索引与同块事实批量抽取见 `nyx/memory/{
 | 职责 | 入口 |
 |---|---|
 | 组合根与 Facade 装配 | `nyx/app_context.py` |
+| 通用 PluginContext、稳定拓扑、构建与启动前弱能力校验 | `packages/nyx-harness/nyx_harness/core.py`，契约 [24](specs/24-harness-framework.md) |
+| Nyx FacadePlugin、领域工厂、业务回调、工具与路由声明 | `nyx/plugins.py` |
 | 角色卡校验与一次初始化 | `nyx/character_cards.py`, `nyx/bootstrap.py` |
 | 应用启动、seed、REST/SSE 绑定 | `nyx/main.py`, `nyx/api/routes.py` |
 | tick、总线监督、视觉循环 | `nyx/runtime.py` |

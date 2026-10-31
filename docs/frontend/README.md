@@ -175,7 +175,7 @@ frontend/
 ## 6. 测试约定
 
 - CLAUDE.md：「所有 API 端点必须有测试」→ `tests/api.test.ts` 覆盖 `client.ts` 的每个端点（mock fetch，断言请求 URL/方法/响应解析）。
-- SSE：`tests/sse.test.ts` 用 mock `EventSource` 验证 `useSSE` 的事件解析 + 分发给 store。
+- SSE：`tests/sse.test.ts` 与 `tests/connection.test.tsx` 用 mock `ReadableStream` 验证 `useSSE` 的分块解析、Bearer、续传和分发给 store。
 - stores：`tests/stores.test.ts` 验证每个 store 的 action 纯逻辑（不依赖真实网络）。
 - 测试不依赖真实后端/真实桌面；验证管道正确性（事件走对 store、类型解析正确），不验证视觉样式。
 - 同一行为优先保留能观察最终结果的用例，删除重复的内部转换、静态声明和仅检查 CSS 类名/容器存在的测试；事件接线、可变默认值隔离、持久化、失败恢复、幂等和乱序回归必须保留。
@@ -185,7 +185,7 @@ frontend/
 | 文件 | 覆盖 |
 |---|---|
 | `README.md` | 本文（总览） |
-| `01-sse.md` | `useSSE` hook、EventSource 对接、data 形状、EventType→store 分发表、重连容错 |
+| `01-sse.md` | `useSSE` fetch reader、data 形状、EventType→store 分发表、重连容错 |
 | `02-stores.md` | `chatStore` / `innerLifeStore` / 快照 store 的 state 形状 + actions |
 | `03-chat-panel.md` | 聊天面板组件树、发消息流程、speak/think/ask 渲染、共享时间纯函数与时间分隔 |
 | `04-inner-state-panel.md` | 内在状态面板组件树、valence-arousal 图、精力条、情绪 sprite、Big Five/三观 |

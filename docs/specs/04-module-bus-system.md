@@ -7,6 +7,12 @@
 
 ## 多角色宿主与归属
 
+阶段2的OneBot私聊按配置绑定角色，入向复用USER_MESSAGE/EXTERNAL durable admission，
+不调用桌面online_before_chat，不更改桌面选择。出向从event_log提交顺序扫描THINK/SPEAK/ASK，
+schema51独立transport_outbox/checkpoint原子入队和确认，不使用SSE队列或event_delivery充当发送队列。
+角色装配在start hooks前初始化首次扫描起点；runtime把传输任务纳入角色监督，普通网络错误内部重连，
+DB错误传播。停止时先取消并等待传输writer，超时保留DB，随后沿用原drain；详细对象审计见21契约。
+
 组合根由 `_Host` 管理最多四个独立 `_App`。每个角色拥有 Database、EventBus、Facade、工作目录、delivery/attempt/effect、熔断与后台任务；宿主只共享 SDK、embedding、唯一屏幕观察器及公共 presence。请求准入捕获 `_App`，后续执行不再查询当前选择。完整卡片、生命周期、对象审计和 API 见 [14-character-cards](14-character-cards.md)。
 
 宿主数据库使用独立迁移清单，保存注册/当前选择/selection_revision/presence_current/presence_delivery；角色迁移增加一次初始化标记与观察 checkpoint。公共观察先在宿主事务受理，再按每角色 FIFO 补投；角色事件、水位、归来计算快照同事务提交，确认丢失不能重复制造 returned。重试时使用原受理的时钟判定。恢复基线只更新 checkpoint，不改旧事件 ID 或内容。下文单角色观察辅助方法仍用于兼容入口；宿主路径以本节和 14 的持久化语义为准。
@@ -413,9 +419,13 @@ CLOCK_TICK + REFLECTION_CHECK     -> inner_life.reflection_check
 - `api.routes` 只依赖可测试的 app/context 类型，不参与订阅；
 - `_App` 只作为组合根内部对象，不传入 Facade。
 
-组合根使用可检查闭包延迟绑定 inner-life、runtime observation 和读书提问回复上下文回调；
-未绑定的必要依赖抛出带上下文的 `RuntimeError`，可选的阅读上下文在绑定前返回空串。不得使用
-`holder[0]` 形式的可变列表占位，也不得为 ExpressionFacade 与 ReadingFacade 增加直接循环依赖。
+组合根的装配声明、稳定强依赖拓扑序及弱能力注入遵循 [20-plugin-harness](20-plugin-harness.md)。
+通用能力上下文和装配执行由独立 `nyx-harness` 包提供，边界见 [24-harness-framework](24-harness-framework.md)。
+`nyx/plugins.py` 使用 `PluginContext` 绑定 Nyx 窄回调，替代手工 late-bound 闭包；全部必要弱依赖在 start 前统一校验，
+缺失抛出 `RuntimeError`，可选的阅读上下文在绑定前返回空串。不得使用 `holder[0]` 形式的
+可变列表占位，也不得为 ExpressionFacade 与 ReadingFacade 增加直接循环依赖。
+插件声明汇总的17条完整 RouteSpec 必须与 `routing.ROUTE_SPECS` 相等；后者继续作为 delivery
+与订阅顺序的运行时来源。handler 表由同一插件声明生成，不再在 subscriptions 中另写分支。
 
 讨论能力在 memory facade 构建后注册 `memory_recall`、`knowledge_search`、`deep_research`，
 随后调用 `bootstrap.load_skills(skills_dir, registry)`，校验声明名称、片段和工具授权后注入表达门面；
@@ -464,7 +474,7 @@ await 前移走 pending，同一时刻至多一个 claimed；finish/release 只�
 正常表达在终局事件成功提交时立即消费；后续失败或取消不得恢复已消费事实。失败释放时
 只有不存在较新的 pending 才恢复旧值，不得覆盖生成期间的新归来。重新进入 away 时
 废弃 pending 和 claimed，旧表达的 release 不得复活已经失效的归来。
-这些同步方法通过闭包注入表达门面，不新增状态类或抽象层；重启清空内存状态，不从旧观察
+这些同步方法通过 PluginContext 窄回调注入表达门面，不新增归来状态类；重启清空内存状态，不从旧观察
 事件补造 pending return。
 
 ## 数据变更
@@ -694,11 +704,7 @@ CREATE TABLE eval_prompt (
   `Event.timestamp` 的 epoch 秒，不使用浏览器接收时刻代替。
   生产方不得使用公共键；序列化时公共头覆盖同名 content 键。必填 timestamp 是
   monorepo 线协议，后端和前端必须同批发布，不支持新前端连接缺少该字段的旧后端。
-- SSE 每帧另外发送 `id: <character_id>:<event_id>`；跨角色游标返回 409，固定 Nyx 的旧 `/api/events` 同样使用 `nyx:<event_id>`。仅独立 `build_app` 测试辅助入口保留纯事件 ID。连接请求带 `Last-Event-ID` 时，服务端
-  在注册实时 sink 后读取最多 1000 条历史事件：已知游标只返回严格位于
-  `(timestamp, id)` 之后的事件并按升序发送；未知或已过期游标返回最早的一页有界事件，避免把
-  无法验证的游标当成“已全部同步”。历史回放与实时 sink 注册之间允许有重叠，前端必须按
-  `event_id` 去重；去重只影响显示，不改变 `event_log` 或 delivery 事实。
+- SSE 每帧另外发送 `id: <character_id>:<event_id>`；跨角色游标返回 409，固定 Nyx 的旧 `/api/events` 同样使用 `nyx:<event_id>`。仅独立 `build_app` 测试辅助入口保留纯事件 ID。`EventBus.stream_events(after, queue_size)` 为每个 reader 独立扫描 `event_log.rowid` 提交序，每页最多1000条；无游标只发最近1000条，已知游标从其后继续，未知游标从日志开头分页恢复。广播队列只作唤醒，队满不丢已提交日志；空闲15秒补扫并发送注释心跳。前端必须按完整帧推进游标并按 `event_id` 去重。
 - `GET /api/events/log` 的 `after` 参数使用同一游标规则。未提供 `after` 时保持管理查询的
   默认倒序；提供已知或未知 `after` 时均按 `(timestamp, id)` 升序返回，最多返回 `limit` 条。
   游标只用于事件日志回放，不表示对应消费者已经完成。
@@ -768,7 +774,7 @@ EventBus 增加 `async get_event(event_id: str) -> Event | None`，按当前库�
 ## 工具观测与失败学习（17—19）
 
 - schema47 新增 `tool_call_log` 与时间/correlation/call 三索引；schema48 新增 `lesson_signal`。
-  schema49 增加工具 checkpoint 的 `checkpoints` / `writes`，schema50 另增临时 tool_execution，当前共43张业务及基础设施表（SQLite表总数46）；旧行不回填，不增加 API 或事件路由；完整 DDL/对象生命周期见17—19。
+  schema49 增加工具 checkpoint 的 `checkpoints` / `writes`，schema50 另增临时 tool_execution，schema51增加传输两表，当前共45张业务及基础设施表（SQLite表总数48）；旧行不回填，不增加 API 或事件路由；工具完整 DDL/对象生命周期见17—19，传输见21。
 - 组合根给共享 ToolRegistry 注入 ToolCallStore，Evaluator 注入调用 MemoryFacade 的 OOC 回调。
 - 批注事实/effect 提交后才执行 best-effort 学习；提交与信号之间中断会丢该次学习，
   已完成 effect 重放不补发。计数先提交；达到阈值且 LESSON 成功后，纠错 REFLECTION 与计数清除

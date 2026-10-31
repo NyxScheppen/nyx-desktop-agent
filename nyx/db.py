@@ -156,6 +156,34 @@ async def connect_postgres(url: str) -> PostgresConnection:
     return PostgresConnection(raw)
 
 
+async def migrate_postgres(conn: PostgresConnection) -> None:
+    """Initialize the current schema in the connection's selected PostgreSQL schema."""
+    await conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+    )
+    cursor = await conn.execute("SELECT version FROM schema_version")
+    row = await cursor.fetchone()
+    if row is None:
+        await conn.execute("INSERT INTO schema_version (version) VALUES (0)")
+        current = 0
+    else:
+        current = int(row["version"])
+    await conn.commit()
+
+    for version, statements in postgres_migrations():
+        if version <= current:
+            continue
+        await conn.execute("BEGIN")
+        try:
+            for statement in statements:
+                await conn.execute(statement)
+            await conn.execute("UPDATE schema_version SET version = ?", (version,))
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
+
+
 def _raw_sha256(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 

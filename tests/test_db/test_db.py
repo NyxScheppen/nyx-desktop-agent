@@ -129,6 +129,50 @@ def test_postgres_migrations_translate_sqlite_types_and_triggers() -> None:
 
 
 @pytest.mark.asyncio
+async def test_migrate_postgres_initializes_schema_and_rolls_back_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Raw:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.commits = 0
+            self.rollbacks = 0
+            self.fail = False
+
+        async def execute(self, sql: str, parameters: object = None) -> "_Raw":
+            self.calls.append(sql)
+            if self.fail and sql == "CREATE TABLE broken (id TEXT PRIMARY KEY)":
+                raise RuntimeError("broken migration")
+            return self
+
+        async def fetchone(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            self.commits += 1
+
+        async def rollback(self) -> None:
+            self.rollbacks += 1
+
+    monkeypatch.setattr(
+        db,
+        "postgres_migrations",
+        lambda: [(1, ["CREATE TABLE broken (id TEXT PRIMARY KEY)"])],
+    )
+    raw = _Raw()
+    raw.fail = True
+    connection = db.PostgresConnection(raw)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="broken migration"):
+        await db.migrate_postgres(connection)
+    assert raw.calls[:3] == [
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)",
+        "SELECT version FROM schema_version",
+        "INSERT INTO schema_version (version) VALUES (0)",
+    ]
+    assert raw.rollbacks == 1
+
+
+@pytest.mark.asyncio
 async def test_postgres_connection_translates_execute_and_forwards_lifecycle() -> None:
     class _Raw:
         def __init__(self) -> None:

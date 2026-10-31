@@ -7,7 +7,7 @@
 ## 当前快照
 
 - 后端测试文件：74
-- 后端测试：1423项（包含参数化实例），74个文件；最近全量1401 passed / 1 skipped（最终运行399.04s）；本轮新增 PostgreSQL URL、Railway `$PORT`、event_seq 回填、PostgreSQL 占位符适配、新库 schema 编译、迁移回滚、连接清理和 checkpoint saver 初始化校验20项，待下一次全量回归。
+- 后端测试：1423项（包含参数化实例），74个文件；最近全量1401 passed / 1 skipped（最终运行399.04s）；本轮新增 PostgreSQL URL、Railway `$PORT`、event_seq 回填、PostgreSQL 占位符/JSON 查询适配、新库 schema 编译、迁移回滚、连接清理和 checkpoint saver 初始化校验20项，待下一次全量回归。
 - 阶段五覆盖率：仅仓库内pytest整体87%；合并15个外部验收驱动后Nyx91.09%、含独立包91.13%，核心100%。CI已显式运行历史 E2E；90%覆盖率门槛缺口仍见 [统一待办清单](TODO.md)。
 - 阶段五：`tests/test_harness.py` 4项独立核心回归与原插件10项；`tests/test_character_host.py` 新增第二角色真实 HTTP/SSE 注册、身份 prompt、聊天隔离和卸载恢复。wheel/sdist 与隔离安装通过；发布工具回归验证 CI 的 Ruff/Pyright 同时检查独立 packages；launcher 构建回归验证 PyInstaller 显式包含独立包路径。
 - 历史 E2E 统一入口：`scripts/run_e2e.py` 按稳定顺序运行仓库内 P1-P4、插件 HTTP/SSE 及持久化/边界驱动；`tests/test_e2e_acceptance.py` 参数化复用同一集合，故意失败的红探针排除。CI 后端质量 job 显式运行该入口。

@@ -52,6 +52,16 @@ def _qmark_to_pyformat(sql: str) -> str:
 
 def _sqlite_sql_to_postgres(sql: str) -> str:
     statement = _qmark_to_pyformat(sql)
+    statement = statement.replace(
+        "json_each(memory.topics)",
+        "jsonb_array_elements_text(memory.topics::jsonb) AS memory_topics",
+    ).replace("json_each.value", "memory_topics.value")
+    statement = re.sub(
+        r"json_extract\(progress,\s*'\$\.task_id'\)",
+        "(progress::jsonb ->> 'task_id')",
+        statement,
+        flags=re.IGNORECASE,
+    )
     if re.match(r"\s*INSERT\s+OR\s+IGNORE\s+INTO\b", statement, re.IGNORECASE):
         statement = re.sub(
             r"INSERT\s+OR\s+IGNORE\s+INTO\b",

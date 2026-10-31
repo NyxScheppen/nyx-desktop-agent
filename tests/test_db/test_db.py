@@ -99,6 +99,17 @@ def test_qmark_to_pyformat_preserves_quoted_question_marks() -> None:
     ) == (
         "INSERT INTO event_effect (event_id) VALUES (%s) ON CONFLICT DO NOTHING"
     )
+    assert db._sqlite_sql_to_postgres(
+        "SELECT 1 FROM memory, json_each(memory.topics) "
+        "WHERE json_each.value = ?"
+    ) == (
+        "SELECT 1 FROM memory, "
+        "jsonb_array_elements_text(memory.topics::jsonb) AS memory_topics "
+        "WHERE memory_topics.value = %s"
+    )
+    assert db._sqlite_sql_to_postgres(
+        "SELECT id FROM activity WHERE json_extract(progress, '$.task_id') = ?"
+    ) == "SELECT id FROM activity WHERE (progress::jsonb ->> 'task_id') = %s"
 
 
 def test_postgres_migrations_keep_schema_and_skip_existing_data_work() -> None:

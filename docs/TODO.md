@@ -7,13 +7,15 @@
 
 - [ ] **手机 QQ 内心话展示确认。** 真实手机观察“💭 内心话”独立消息及正文顺序。真实 QQ 私聊往返已由用户确认；本项只补内心话展示体验，模拟 OneBot 验收已通过。依据：[OneBot 契约](specs/21-onebot-transport.md)、[效果记录](eval/README.md)。
 
-## 云端部署与手机跨网（原阶段四剩余项）
+## 云端部署与手机跨网（Railway 路线）
 
-- [ ] **PostgreSQL 迁移。** 先完成角色库/宿主库完整契约、SQLite SQL 兼容审计、迁移与回滚方案，再实现并验证 PostgreSQL 成为云端事实来源。当前仍为 SQLite。依据：[架构路线](design/plugin-harness-architecture.md)、[设备配对范围](specs/23-device-pairing.md)。
-- [ ] **自托管服务器。** 选择并开通服务器，确定服务运行方式与 PostgreSQL 连接配置，实际部署并验证启动恢复；当前没有真实服务器环境。
+- [x] **云端存储契约与 PostgreSQL 边界。** 已确定 Railway 应用 + 托管 PostgreSQL + `/app/data` 持久化卷、本地 SQLite 保留、host/character schema 隔离、迁移和备份边界。依据：[托管存储契约](specs/25-hosted-storage-and-postgresql.md)。
+- [ ] **PostgreSQL 兼容实现。** 完成双后端数据库入口、迁移、checkpoint、事件序列和设备配对的 PostgreSQL 实现与集成测试。依据：[托管存储契约](specs/25-hosted-storage-and-postgresql.md)。
+- [ ] **SQLite → PostgreSQL 迁移工具。** 完成只读预检、一次性导入、行数/主键/事件顺序校验、失败清理和源数据保留。依据：[托管存储契约](specs/25-hosted-storage-and-postgresql.md)。
+- [ ] **Railway 应用部署。** 创建 Docker 镜像和 Compose 本地复现，配置 Railway 托管 PostgreSQL、Volume、`$PORT`、Secrets 和启动恢复；当前没有真实 Railway 项目环境。
 - [ ] **公网域名与 TLS。** 配置真实域名、DNS、HTTPS 证书，验证手机蜂窝网络访问。本机 Caddy 内部 CA 验收已通过，公网入口尚未验收。依据：[多客户端与 HTTPS 契约](specs/22-multi-client-transport.md)。
 - [ ] **真实手机浏览器跨网验收。** 完成配对、REST/消息往返、SSE 断线续传、凭证撤销，并验证桌面与手机共享角色状态。依据：[设备配对契约](specs/23-device-pairing.md)。
-- [ ] **生产备份与恢复演练。** 验证 PostgreSQL 备份可恢复，明确上传文件、书籍、角色卡的云端存储和恢复策略。
+- [ ] **生产备份与恢复演练。** 同时备份 PostgreSQL 和 `/app/data` Volume，验证多角色、角色卡、workspace、书籍和凭证撤销状态可恢复。依据：[托管存储契约](specs/25-hosted-storage-and-postgresql.md)。
 
 ## CI/CD 与公开发布
 

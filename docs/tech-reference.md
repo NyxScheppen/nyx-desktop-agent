@@ -37,6 +37,7 @@
 | 多客户端续传与 HTTPS 认证 | [`22-multi-client-transport.md`](specs/22-multi-client-transport.md) | [`module-bus-system-facts.md`](facts/module-bus-system-facts.md)、[`character-cards-facts.md`](facts/character-cards-facts.md) | `nyx/events/bus.py`, `nyx/api/routes.py`, `frontend/src/hooks/useSSE.ts`, `frontend/src/api/client.ts`, `frontend/src/stores/connectionStore.ts`, `Caddyfile` |
 | 设备配对与访问凭证 | [`23-device-pairing.md`](specs/23-device-pairing.md) | [`character-cards-facts.md`](facts/character-cards-facts.md) | `nyx/app_context.py`, `nyx/api/routes.py`, `frontend/src/api/client.ts`, `frontend/src/App.tsx`, `frontend/src/components/layout/SettingsView.tsx` |
 | 独立 harness 装配核心 | [`24-harness-framework.md`](specs/24-harness-framework.md) | [`module-bus-system-facts.md`](facts/module-bus-system-facts.md) | `packages/nyx-harness/nyx_harness/core.py`, `nyx/plugins.py` |
+| Railway 托管与 PostgreSQL 存储 | [`25-hosted-storage-and-postgresql.md`](specs/25-hosted-storage-and-postgresql.md) | — | `nyx/db.py`, `nyx/app_context.py`, `nyx/main.py`, `scripts/migrate_sqlite_to_postgres.py`, `Dockerfile`, `docker-compose.yml` |
 
 讨论伙伴 P1–P4 的代码与管道验收已完成；真实模型讨论、引用与批注效果等剩余验收见 [统一待办清单](TODO.md)。
 验收证据及质量门限制见 [阶段记录](specs/15-discussion-partner.md) 与 [测试快照](test-inventory.md)。

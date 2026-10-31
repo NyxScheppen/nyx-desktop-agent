@@ -23,14 +23,16 @@
 | D3 | 能力暴露 | tool 面与 lifecycle 面显式分开；lifecycle 垫在工具层之下 |
 | D4 | 多外部接口 | 真实需求（多存在平台），不算过度设计 |
 | D5 | QQ 接入 | 把 Nyx 接进 QQ——QQ 是她多个存在面之一 |
-| D6 | 云端托管 | 租服务器自托管（数据在用户租的服务器，非第三方 SaaS） |
+| D6 | 云端托管 | Railway 应用 + 托管 Postgres + 持久化卷（数据在用户控制的 Railway 项目） |
 | D7 | 拓扑 | 单脑多感官：一个核心实例，多传输接入 |
-| D8 | 云端数据层 | Postgres（云端事实来源；本地开发/测试形态阶段 4 再定） |
+| D8 | 云端数据层 | Railway 托管 Postgres（云端事实来源）；本地开发/测试继续 SQLite |
 | D9 | 桌面采集 | 桌面 app 降级为本地 presence 采集 agent，并入统一传输适配器模型 |
 | D10 | 公网认证 | TLS + 根 token（`NYX_AUTH_TOKEN`）+ 每设备 token + 配对码；OneBot 走 `access_token`；不引入账户 |
 | D11 | 依赖装配 | 依赖分两档（`requires` 强 / `optional` 弱）；两阶段：强依赖拓扑排序 + 可选能力注入 |
 | D12 | 角色×传输 | 正交两维；MVP 单角色多传输；前台角色 per-transport，不做全局前台状态 |
 | D13 | 出向投递 | 独立 `transport_outbox` 表 + per-transport 游标；出向至少一次，MVP 接受极端单次重复 |
+
+D14：云端使用 Railway 应用、托管 PostgreSQL 和挂载到 `/app/data` 的持久化卷；同一 PostgreSQL 数据库以 `host` 与 `character_<id>` schema 保持宿主/角色隔离。Docker Compose 用于本地 PostgreSQL 验收，不替代 Railway 部署配置。契约见 [25-hosted-storage-and-postgresql](../specs/25-hosted-storage-and-postgresql.md)。
 
 D5 + D7 合并理解：QQ、手机、桌面、未来电子宠物都是「同一个脑」的感官/存在面，彼此平级，
 共享同一套记忆/欲望/内在生命/活动状态。没有哪个是「主」，也没有哪个是「外部附属」。
@@ -105,11 +107,12 @@ NoneBot2 作为宿主，只实现 OneBot 协议这一条适配器，避免两套
 
 ## 7. 安全共识需要改写的条款
 
-D6（租服务器自托管）正面顶到现有安全共识「本地 SQLite、不上传用户数据到第三方、不做
-用户认证/多账户」。**定稿前必须重写这几条**，不能含糊：
+D6（Railway 托管）改变了“数据只在本地 SQLite”的部署假设，但仍保持单用户和基础安全边界。
+用户已明确授权将 Nyx 数据存入其自己的 Railway 项目；这不是 Nyx 代运营的第三方 SaaS。以下条款必须明确：
 
-1. **数据位置**：对话/记忆/欲望等从本地迁到自托管服务器。存储引擎已定 **Postgres**（D8）。
-   现有 SQLite 迁移清单如何映射到 Postgres、本地开发/测试的存储形态，留待阶段 4 的 spec 定。
+1. **数据位置**：对话/记忆/欲望等从本地迁到用户控制的 Railway 项目。存储引擎为
+   Railway 托管 **Postgres**（D8），角色卡、书籍和 workspace 放在 Railway Volume；本地开发/测试继续 SQLite。
+   SQLite 到 Postgres 的映射、迁移和备份契约见 [25](../specs/25-hosted-storage-and-postgresql.md)。
 2. **公网暴露与认证**：SSE/REST 从 localhost 变公网。**已定（D10）**：
    - **TLS 强制**：反向代理（Caddy/Nginx + Let's Encrypt）终止 TLS，公网只走 HTTPS。
    - **根凭证**：一个从环境变量注入的强随机 token（`NYX_AUTH_TOKEN`，与现有 LLM key 同源同
@@ -133,7 +136,7 @@ D6（租服务器自托管）正面顶到现有安全共识「本地 SQLite、�
 | 1 | 纯重构：FacadePlugin 契约 + 装配器，收敛 `app_context` 手工装配 | **零行为变化**：现有 `pytest` 全绿 + E2E 通过 |
 | 2 | 传输适配器抽象 + 第一个 OneBot adapter（QQ） | 本地连 NapCat，QQ 消息↔脑 往返；不重复发消息 |
 | 3 | 多 client 事件游标 + 认证（token + TLS） | 两个 reader 各自断线重连不丢不重 |
-| 4 | 每设备 token/配对码、云端部署、手机端接入、SQLite→Postgres 迁移 | 设备配对契约见23；手机与桌面共享状态；Postgres 成为云端事实来源。剩余事项见 [统一待办清单](../TODO.md) |
+| 4 | 每设备 token/配对码、Railway 云端部署、手机端接入、SQLite→Postgres 迁移 | 设备配对契约见23；手机与桌面共享状态；Postgres 成为云端事实来源。剩余事项见 [统一待办清单](../TODO.md) |
 | 5 | harness 框架化：抽 1/2/4/5 层为独立包，Nyx 作为角色+域插件挂载；按需上 MCP / supervisor | 第二个角色卡在 harness 上跑通 |
 
 阶段 1 是收益最大、风险最低的一步：只改装配，不改行为，用全绿测试做安全网。阶段 1 的实现契约

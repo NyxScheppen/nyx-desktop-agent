@@ -10,6 +10,7 @@
 - `nyx/character_cards.py` 负责原生 YAML/Markdown/图片 ZIP 校验与固定卡片快照；内置卡位于 `nyx/cards/nyx/`。压缩及解压量分别限 50 MiB，无新增第三方依赖。
 - `nyx/app_context.py:_Host` 管理最多四个注册角色和当前选择；STARTING/FAILED/STOPPING 占名额，ARCHIVED 保留文件但不自动运行。每角色复用独立 `_App`，共享延迟 SDK/embedding 和唯一屏幕观察器。
 - 宿主 `data/characters/host.db` 独立迁移；新角色位于 `data/characters/<id>/`。旧 Nyx 使用解析后的原 DB/workspace，不迁移旧文件，其他角色显式指定路径。
+- `NYX_DATABASE_URL` 非空时宿主连接使用 PostgreSQL `host` schema，角色连接使用 `character_<id>` schema；为空仍按原路径使用 SQLite。角色 checkpoint 使用独立官方 PostgreSQL saver 连接，host 不创建 saver；本地 SQLite 生命周期不变。
 - 阶段四首个切片在宿主库保存配对码摘要和设备令牌摘要；配对码一次性、十分钟过期，设备令牌可由根凭证撤销，未撤销设备令牌可访问既有 API。
 - `nyx/bootstrap.py:initialize_character` 原子登记一次初始化；重启/恢复不覆盖成长，也不复活已清空的长期欲望。
 - `nyx/runtime.py` 按角色运行、监督和停止；切换不重建。卸载超时保留实例/连接/名额；干净停止全部 writer 后释放残留 processing lease。宿主 close 持续收尾后关闭全部连接。

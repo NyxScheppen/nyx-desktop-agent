@@ -1,6 +1,6 @@
 # 统一待办清单
 
-> 更新：2026-10-31。此文件是唯一待办入口，合并原讨论伙伴、工具升级、插件阶段 1–5 和阶段四临时清单的剩余事项。
+> 更新：2026-11-01。此文件是唯一待办入口，合并原讨论伙伴、工具升级、插件阶段 1–5 和阶段四临时清单的剩余事项。
 > 已完成的代码与回归不重复列入；正式契约中的验收条目仍作为规范保留。以下事项尚未完成，不表示已批准全部实施；后续实现按项目规则单独审核。
 
 ## 近期验证与质量门
@@ -12,7 +12,7 @@
 - [x] **云端存储契约与 PostgreSQL 边界。** 已确定 Railway 应用 + 托管 PostgreSQL + `/app/data` 持久化卷、本地 SQLite 保留、host/character schema 隔离、迁移和备份边界。依据：[托管存储契约](specs/25-hosted-storage-and-postgresql.md)。
 - [ ] **PostgreSQL 兼容实现。** 完成双后端数据库入口、迁移、checkpoint、事件序列和设备配对的 PostgreSQL 实现与集成测试。依据：[托管存储契约](specs/25-hosted-storage-and-postgresql.md)。
 - [ ] **SQLite → PostgreSQL 迁移工具。** 完成只读预检、一次性导入、行数/主键/事件顺序校验、失败清理和源数据保留。依据：[托管存储契约](specs/25-hosted-storage-and-postgresql.md)。
-- [ ] **Railway 应用部署。** 创建 Docker 镜像和 Compose 本地复现，配置 Railway 托管 PostgreSQL、Volume、`$PORT`、Secrets 和启动恢复；当前没有真实 Railway 项目环境。
+- [x] **Railway 应用制品。** Dockerfile、Compose、本地 PostgreSQL、Volume、`$PORT`、健康检查和 secret 强制注入已完成；真实 Railway 项目部署、托管 PostgreSQL/Volume 和启动恢复仍待线上环境。
 - [ ] **公网域名与 TLS。** 配置真实域名、DNS、HTTPS 证书，验证手机蜂窝网络访问。本机 Caddy 内部 CA 验收已通过，公网入口尚未验收。依据：[多客户端与 HTTPS 契约](specs/22-multi-client-transport.md)。
 - [ ] **真实手机浏览器跨网验收。** 完成配对、REST/消息往返、SSE 断线续传、凭证撤销，并验证桌面与手机共享角色状态。依据：[设备配对契约](specs/23-device-pairing.md)。
 - [ ] **生产备份与恢复演练。** 同时备份 PostgreSQL 和 `/app/data` Volume，验证多角色、角色卡、workspace、书籍和凭证撤销状态可恢复。依据：[托管存储契约](specs/25-hosted-storage-and-postgresql.md)。

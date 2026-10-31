@@ -62,10 +62,15 @@ def _sqlite_sql_to_postgres(sql: str) -> str:
     return statement
 
 
-def postgres_migrations() -> list[tuple[int, list[str]]]:
+def postgres_migrations(
+    migrations: list[tuple[int, list[str]]] | None = None,
+) -> list[tuple[int, list[str]]]:
     """Compile the current schema for an empty PostgreSQL database."""
+    source = _MIGRATIONS if migrations is None else migrations
     sqlite = sqlite3.connect(":memory:")
-    sqlite.create_function("nyx_raw_sha256", 1, _raw_sha256, deterministic=True)
+    if migrations is None:
+        sqlite.create_function("nyx_raw_sha256", 1, _raw_sha256, deterministic=True)
+
     def task_source_snapshot(checkpoint: str) -> str:
         source: str = json.loads(checkpoint)["source_text"]
         return source[:200_000]
@@ -74,7 +79,7 @@ def postgres_migrations() -> list[tuple[int, list[str]]]:
         "nyx_task_source_snapshot", 1, task_source_snapshot, deterministic=True
     )
     try:
-        for _, statements in _MIGRATIONS:
+        for _, statements in source:
             for statement in statements:
                 sqlite.execute(statement)
         rows = sqlite.execute(
@@ -95,26 +100,27 @@ def postgres_migrations() -> list[tuple[int, list[str]]]:
             re.sub(r"\bBLOB\b", "BYTEA", statement, flags=re.IGNORECASE)
             .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
         )
-    postgres.extend(
-        [
-            "CREATE OR REPLACE FUNCTION nyx_record_knowledge_chunk_change() "
-            "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO "
-            "knowledge_chunk_change(chunk_id) VALUES "
-            "(CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END); "
-            "RETURN NULL; END $$",
-            "CREATE TRIGGER knowledge_chunk_insert AFTER INSERT ON "
-            "reading_evidence FOR EACH ROW EXECUTE FUNCTION "
-            "nyx_record_knowledge_chunk_change()",
-            "CREATE TRIGGER knowledge_chunk_delete AFTER DELETE ON "
-            "reading_evidence FOR EACH ROW EXECUTE FUNCTION "
-            "nyx_record_knowledge_chunk_change()",
-            "CREATE TRIGGER knowledge_chunk_update AFTER UPDATE OF source_topic, "
-            "source_name, content, location, embedding, created_at ON "
-            "reading_evidence FOR EACH ROW EXECUTE FUNCTION "
-            "nyx_record_knowledge_chunk_change()",
-        ]
-    )
-    return [(max(version for version, _ in _MIGRATIONS), postgres)]
+    if migrations is None:
+        postgres.extend(
+            [
+                "CREATE OR REPLACE FUNCTION nyx_record_knowledge_chunk_change() "
+                "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO "
+                "knowledge_chunk_change(chunk_id) VALUES "
+                "(CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END); "
+                "RETURN NULL; END $$",
+                "CREATE TRIGGER knowledge_chunk_insert AFTER INSERT ON "
+                "reading_evidence FOR EACH ROW EXECUTE FUNCTION "
+                "nyx_record_knowledge_chunk_change()",
+                "CREATE TRIGGER knowledge_chunk_delete AFTER DELETE ON "
+                "reading_evidence FOR EACH ROW EXECUTE FUNCTION "
+                "nyx_record_knowledge_chunk_change()",
+                "CREATE TRIGGER knowledge_chunk_update AFTER UPDATE OF source_topic, "
+                "source_name, content, location, embedding, created_at ON "
+                "reading_evidence FOR EACH ROW EXECUTE FUNCTION "
+                "nyx_record_knowledge_chunk_change()",
+            ]
+        )
+    return [(max(version for version, _ in source), postgres)]
 
 
 class PostgresConnection:
@@ -156,7 +162,11 @@ async def connect_postgres(url: str) -> PostgresConnection:
     return PostgresConnection(raw)
 
 
-async def migrate_postgres(conn: PostgresConnection) -> None:
+async def migrate_postgres(
+    conn: PostgresConnection,
+    *,
+    migrations: list[tuple[int, list[str]]] | None = None,
+) -> None:
     """Initialize the current schema in the connection's selected PostgreSQL schema."""
     await conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
@@ -170,7 +180,7 @@ async def migrate_postgres(conn: PostgresConnection) -> None:
         current = int(row["version"])
     await conn.commit()
 
-    for version, statements in postgres_migrations():
+    for version, statements in postgres_migrations(migrations):
         if version <= current:
             continue
         await conn.execute("BEGIN")

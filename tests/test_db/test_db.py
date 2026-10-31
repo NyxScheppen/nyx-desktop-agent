@@ -128,6 +128,21 @@ def test_postgres_migrations_translate_sqlite_types_and_triggers() -> None:
     assert "EXECUTE FUNCTION nyx_record_knowledge_chunk_change()" in schema_sql
 
 
+def test_postgres_migrations_compile_custom_host_schema() -> None:
+    migrations = db.postgres_migrations(
+        [
+            (1, ["CREATE TABLE characters (id TEXT PRIMARY KEY)"]),
+            (2, ["INSERT INTO characters VALUES ('nyx')"]),
+        ]
+    )
+    schema_sql = "\n".join(migrations[0][1])
+
+    assert migrations[0][0] == 2
+    assert "CREATE TABLE characters" in schema_sql
+    assert "nyx" not in schema_sql
+    assert "knowledge_chunk" not in schema_sql
+
+
 @pytest.mark.asyncio
 async def test_migrate_postgres_initializes_schema_and_rolls_back_failures(
     monkeypatch: pytest.MonkeyPatch,
@@ -154,11 +169,12 @@ async def test_migrate_postgres_initializes_schema_and_rolls_back_failures(
         async def rollback(self) -> None:
             self.rollbacks += 1
 
-    monkeypatch.setattr(
-        db,
-        "postgres_migrations",
-        lambda: [(1, ["CREATE TABLE broken (id TEXT PRIMARY KEY)"])],
-    )
+    def fake_postgres_migrations(
+        _migrations: list[tuple[int, list[str]]] | None = None,
+    ) -> list[tuple[int, list[str]]]:
+        return [(1, ["CREATE TABLE broken (id TEXT PRIMARY KEY)"])]
+
+    monkeypatch.setattr(db, "postgres_migrations", fake_postgres_migrations)
     raw = _Raw()
     raw.fail = True
     connection = db.PostgresConnection(raw)  # type: ignore[arg-type]

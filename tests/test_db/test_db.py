@@ -61,6 +61,33 @@ BUSINESS_TABLES = {
     "knowledge_chunk_change",
 }
 
+
+def test_resolve_postgres_url_keeps_sqlite_as_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NYX_DATABASE_URL", raising=False)
+    assert db.resolve_postgres_url() is None
+    monkeypatch.setenv("NYX_DATABASE_URL", "")
+    assert db.resolve_postgres_url() is None
+
+
+@pytest.mark.parametrize("scheme", ["postgres://", "postgresql://"])
+def test_resolve_postgres_url_accepts_postgres_urls(
+    monkeypatch: pytest.MonkeyPatch, scheme: str
+) -> None:
+    url = f"{scheme}nyx:secret@localhost/nyx"
+    monkeypatch.setenv("NYX_DATABASE_URL", url)
+    assert db.resolve_postgres_url() == url
+
+
+def test_resolve_postgres_url_rejects_other_schemes_without_echoing_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NYX_DATABASE_URL", "mysql://nyx:secret@localhost/nyx")
+    with pytest.raises(ValueError, match="NYX_DATABASE_URL") as error:
+        db.resolve_postgres_url()
+    assert "secret" not in str(error.value)
+
 # 非 Optional 字段对应列必须 NOT NULL（01-types 契约）
 NOT_NULL_COLUMNS = {
     ("memory", "aspect"),

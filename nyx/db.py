@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
+from urllib.parse import urlsplit
 
 import aiosqlite
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -25,6 +26,25 @@ DB_LOCK_TIMEOUT = 3.0
 DB_OPERATION_TIMEOUT = 3.0
 DB_FAILURE_THRESHOLD = 5
 DB_COOLDOWN_SECONDS = 5.0
+
+
+def resolve_postgres_url() -> str | None:
+    """Return the configured PostgreSQL URL without exposing it in validation errors."""
+    value = os.environ.get("NYX_DATABASE_URL")
+    if not value:
+        return None
+    try:
+        parsed = urlsplit(value)
+        valid = (
+            parsed.scheme in ("postgres", "postgresql")
+            and parsed.hostname is not None
+            and parsed.path not in ("", "/")
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError("NYX_DATABASE_URL must be a PostgreSQL URL")
+    return value
 
 
 @dataclass

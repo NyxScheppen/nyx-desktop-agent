@@ -976,6 +976,14 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON transport_outbox(transport, event_rowid) WHERE status != 'sent'",
         ],
     ),
+    (
+        52,
+        [
+            "ALTER TABLE event_log ADD COLUMN event_seq INTEGER",
+            "UPDATE event_log SET event_seq = rowid WHERE event_seq IS NULL",
+            "CREATE UNIQUE INDEX idx_event_log_event_seq ON event_log(event_seq)",
+        ],
+    ),
 ]
 
 

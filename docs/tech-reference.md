@@ -102,7 +102,7 @@ P2 性能修复的增量证据索引与同块事实批量抽取见 `nyx/memory/{
 ## 数据与测试
 
 - 数据库文件默认由 `nyx/db.py` 决定；表结构、迁移和关闭语义见 `04-module-bus-system.md`。
-- schema47/48 增加 `tool_call_log`/`lesson_signal` 两表，schema49 增加 `checkpoints`/`writes`，schema50 增加临时 `tool_execution`，当前共43张业务及基础设施表（SQLite表总数46）。
+- schema47/48 增加 `tool_call_log`/`lesson_signal` 两表，schema49 增加 `checkpoints`/`writes`，schema50 增加临时 `tool_execution`，schema51 增加传输 outbox 两表，schema52 增加显式 `event_log.event_seq`（SQLite表总数48）。
   工具观测和经验阈值分别见17/19；跨失败主题去重边界及提交后学习语义也由19定义。
 - schema 35 的 `memory_recall_use` 只为慢通道真实召回提供事件级幂等；对象生命周期与删除语义
   见 `06-memory-system.md`，不作为公开 API 对象。

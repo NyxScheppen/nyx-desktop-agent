@@ -241,6 +241,30 @@ async def test_migrate_creates_all_tables() -> None:
     assert "material" not in names
 
 
+async def test_migration_backfills_event_sequence_from_sqlite_rowid() -> None:
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    try:
+        await db.migrate(conn, migrations=db._MIGRATIONS[:-1])
+        for event_id in ("event-a", "event-b"):
+            await conn.execute(
+                "INSERT INTO event_log "
+                "(id, timestamp, source, type, content, correlation_id) "
+                "VALUES (?, 1, 'internal', 'speak', '{}', 'turn')",
+                (event_id,),
+            )
+        await conn.commit()
+        await db.migrate(conn)
+        rows = await (
+            await conn.execute("SELECT id, event_seq FROM event_log ORDER BY event_seq")
+        ).fetchall()
+    finally:
+        await conn.close()
+    assert [(row["id"], row["event_seq"]) for row in rows] == [
+        ("event-a", 1), ("event-b", 2),
+    ]
+
+
 @pytest.mark.parametrize("terminal_type", ["speak", "ask"])
 async def test_connect_cleans_terminal_tool_checkpoint_but_keeps_unfinished(
     tmp_path: Path, terminal_type: str,
@@ -258,7 +282,9 @@ async def test_connect_cleans_terminal_tool_checkpoint_but_keeps_unfinished(
             await saver.aput_writes(config, [("pending", "retry_wait")], "tool-task")
         async with database.transaction() as conn:
             await conn.execute(
-                "INSERT INTO event_log VALUES (?, 1, 'internal', ?, '{}', 'finished')",
+                "INSERT INTO event_log "
+                "(id, timestamp, source, type, content, correlation_id) "
+                "VALUES (?, 1, 'internal', ?, '{}', 'finished')",
                 ("terminal-reply", terminal_type),
             )
     finally:
@@ -426,6 +452,7 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_memory_kind_hash",
         "idx_memory_type",
         "idx_event_log_corr",
+        "idx_event_log_event_seq",
         "idx_memory_content_hash",
         "idx_books_content_hash",
         "idx_eval_log_created",

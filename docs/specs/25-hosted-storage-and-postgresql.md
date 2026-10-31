@@ -17,7 +17,7 @@
 - [ ] PostgreSQL 的宿主数据及每个角色的数据在同一数据库的独立 schema 中隔离；每个角色仍使用自己的连接、事务边界和 lifecycle。
 - [ ] PostgreSQL 与 SQLite 对领域查询、排序、事务回滚、幂等、投递重放、关闭语义提供相同可观察结果。
 - [ ] PostgreSQL 模式支持 LangGraph checkpoint、tool execution receipt 和 transport outbox 的恢复。
-- [ ] 事件 SSE 顺序仍为 durable admission 顺序；PostgreSQL 使用稳定序列键，不依赖 `ctid` 或无序查询。
+- [ ] 事件 SSE 顺序仍为 durable admission 顺序；schema 52 的 `event_log.event_seq` 是 SQLite 与 PostgreSQL 共用的稳定序列键，不依赖 `rowid`、`ctid` 或无序查询。
 - [ ] 角色文件继续使用 `data/characters/<id>/{card,workspace}`；内置 Nyx 资源只读，其他持久文件位于 `/app/data` Volume。
 - [ ] SQLite 到 PostgreSQL 的一次性迁移可重复预检；实际导入失败不修改或删除源 SQLite/文件。
 - [ ] Docker Compose 启动应用和 PostgreSQL，停止/重建容器后数据保留在 volume；Railway 使用相同镜像、托管 PostgreSQL 与挂载到 `/app/data` 的 volume。
@@ -61,7 +61,7 @@
 
 1. 预检发现 host SQLite、所有已登记角色 SQLite、schema 版本和角色文件目录；只读，不改源。
 2. 目标只允许为空的 host/character schema。已有目标数据时停止，不覆盖、不合并。
-3. 按源 schema 的外键依赖顺序导入；SQLite rowid 语义映射为显式稳定序列字段，event_log 顺序保持一致。
+3. 按源 schema 的外键依赖顺序导入；SQLite `rowid` 语义映射到 schema 52 的 `event_log.event_seq`，event_log 顺序保持一致。
 4. 同步复制角色卡与持久文件到目标 `/app/data` 相对布局；不删除源文件。
 5. 校验每个表的行数、主键集合、event_log 顺序、schema 版本、角色注册路径映射及 device token hash。
 6. 所有 schema 和文件校验通过后才写出成功报告。失败时删除本次创建的目标 schema/新复制文件，源数据保持原状；不能在失败时留下可启动的半迁移目标。

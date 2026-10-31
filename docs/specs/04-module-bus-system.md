@@ -704,7 +704,7 @@ CREATE TABLE eval_prompt (
   `Event.timestamp` 的 epoch 秒，不使用浏览器接收时刻代替。
   生产方不得使用公共键；序列化时公共头覆盖同名 content 键。必填 timestamp 是
   monorepo 线协议，后端和前端必须同批发布，不支持新前端连接缺少该字段的旧后端。
-- SSE 每帧另外发送 `id: <character_id>:<event_id>`；跨角色游标返回 409，固定 Nyx 的旧 `/api/events` 同样使用 `nyx:<event_id>`。仅独立 `build_app` 测试辅助入口保留纯事件 ID。`EventBus.stream_events(after, queue_size)` 为每个 reader 独立扫描 `event_log.rowid` 提交序，每页最多1000条；无游标只发最近1000条，已知游标从其后继续，未知游标从日志开头分页恢复。广播队列只作唤醒，队满不丢已提交日志；空闲15秒补扫并发送注释心跳。前端必须按完整帧推进游标并按 `event_id` 去重。
+- SSE 每帧另外发送 `id: <character_id>:<event_id>`；跨角色游标返回 409，固定 Nyx 的旧 `/api/events` 同样使用 `nyx:<event_id>`。仅独立 `build_app` 测试辅助入口保留纯事件 ID。`EventBus.stream_events(after, queue_size)` 为每个 reader 独立扫描 `event_log.event_seq` 提交序，每页最多1000条；无游标只发最近1000条，已知游标从其后继续，未知游标从日志开头分页恢复。`event_seq` 由 durable admission 在事务中分配，迁移时按 SQLite rowid 回填，不作为公开游标。广播队列只作唤醒，队满不丢已提交日志；空闲15秒补扫并发送注释心跳。前端必须按完整帧推进游标并按 `event_id` 去重。
 - `GET /api/events/log` 的 `after` 参数使用同一游标规则。未提供 `after` 时保持管理查询的
   默认倒序；提供已知或未知 `after` 时均按 `(timestamp, id)` 升序返回，最多返回 `limit` 条。
   游标只用于事件日志回放，不表示对应消费者已经完成。
@@ -774,7 +774,7 @@ EventBus 增加 `async get_event(event_id: str) -> Event | None`，按当前库�
 ## 工具观测与失败学习（17—19）
 
 - schema47 新增 `tool_call_log` 与时间/correlation/call 三索引；schema48 新增 `lesson_signal`。
-  schema49 增加工具 checkpoint 的 `checkpoints` / `writes`，schema50 另增临时 tool_execution，schema51增加传输两表，当前共45张业务及基础设施表（SQLite表总数48）；旧行不回填，不增加 API 或事件路由；工具完整 DDL/对象生命周期见17—19，传输见21。
+  schema49 增加工具 checkpoint 的 `checkpoints` / `writes`，schema50 另增临时 tool_execution，schema51增加传输两表，schema52为 event_log 增加 event_seq，当前共45张业务及基础设施表（SQLite表总数48）；不增加 API 或事件路由；工具完整 DDL/对象生命周期见17—19，传输见21。
 - 组合根给共享 ToolRegistry 注入 ToolCallStore，Evaluator 注入调用 MemoryFacade 的 OOC 回调。
 - 批注事实/effect 提交后才执行 best-effort 学习；提交与信号之间中断会丢该次学习，
   已完成 effect 重放不补发。计数先提交；达到阈值且 LESSON 成功后，纠错 REFLECTION 与计数清除

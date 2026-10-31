@@ -13,8 +13,8 @@
 ## 事件流契约
 
 `EventBus.stream_events(after: str | None, queue_size: int) -> AsyncIterator[Event | None]`
-是SSE的日志读取入口。每个迭代器独立保存位置，按`event_log.rowid`升序分页（每页1000）。
-`rowid`只作当前库内排序，不作为公开游标；帧仍用`character_id:event_id`，时间仍取事件本身。
+是SSE的日志读取入口。每个迭代器独立保存位置，按`event_log.event_seq`升序分页（每页1000）。
+`event_seq`只作数据库内排序，不作为公开游标；帧仍用`character_id:event_id`，时间仍取事件本身。
 首次无游标取最近1000条、按提交序发送；已知游标从对应行之后持续读；未知游标从日志开头分页恢复。
 跨角色游标409。管理查询`list_events`及`/events/log`保留既有时间排序契约。
 队列只作唤醒，丢提示不丢日志；空闲至多15秒补扫，并发送SSE注释心跳。

@@ -192,27 +192,27 @@ class EventBus:
             async with self._db.lock:
                 if after is None:
                     cursor = await self._db.conn.execute(
-                        "SELECT rowid FROM event_log ORDER BY rowid DESC "
+                        "SELECT event_seq FROM event_log ORDER BY event_seq DESC "
                         "LIMIT 1 OFFSET 999"
                     )
                 else:
                     cursor = await self._db.conn.execute(
-                        "SELECT rowid FROM event_log WHERE id=?", (after,)
+                        "SELECT event_seq FROM event_log WHERE id=?", (after,)
                     )
                 row = await cursor.fetchone()
-                position = int(row[0]) if row is not None else 0
+                position = int(row["event_seq"]) if row is not None else 0
                 if after is None and position:
                     position -= 1
             while True:
                 async with self._db.lock:
                     cursor = await self._db.conn.execute(
-                        "SELECT rowid, id, timestamp, source, type, content, "
-                        "correlation_id FROM event_log WHERE rowid>? "
-                        "ORDER BY rowid LIMIT 1000", (position,)
+                        "SELECT event_seq, id, timestamp, source, type, content, "
+                        "correlation_id FROM event_log WHERE event_seq>? "
+                        "ORDER BY event_seq LIMIT 1000", (position,)
                     )
                     rows = await cursor.fetchall()
                 for row in rows:
-                    position = int(row[0])
+                    position = int(row["event_seq"])
                     yield _row_to_event(row)
                 if rows:
                     continue
@@ -472,11 +472,17 @@ class EventBus:
                 self._db.lock.acquire(), timeout=self._db.lock_timeout
             )
             lock_acquired = True
+            sequence_cursor = await self._execute_locked(
+                "SELECT COALESCE(MAX(event_seq), 0) + 1 AS event_seq FROM event_log"
+            )
+            sequence_row = await sequence_cursor.fetchone()
+            assert sequence_row is not None
             insert_cursor = await self._execute_locked(
                 """INSERT OR IGNORE INTO event_log
-                (id, timestamp, source, type, content, correlation_id)
-                VALUES (?, ?, ?, ?, ?, ?)""",
+                (event_seq, id, timestamp, source, type, content, correlation_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
+                    sequence_row["event_seq"],
                     event.id,
                     event.timestamp,
                     event.source.value,
@@ -527,11 +533,17 @@ class EventBus:
             event.content, default=str, allow_nan=False, ensure_ascii=False
         )
         specs = self._matching_specs(event)
+        sequence_cursor = await self._db.conn.execute(
+            "SELECT COALESCE(MAX(event_seq), 0) + 1 AS event_seq FROM event_log"
+        )
+        sequence_row = await sequence_cursor.fetchone()
+        assert sequence_row is not None
         cursor = await self._db.conn.execute(
             """INSERT OR IGNORE INTO event_log
-            (id, timestamp, source, type, content, correlation_id)
-            VALUES (?, ?, ?, ?, ?, ?)""",
+            (event_seq, id, timestamp, source, type, content, correlation_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
+                sequence_row["event_seq"],
                 event.id,
                 event.timestamp,
                 event.source.value,

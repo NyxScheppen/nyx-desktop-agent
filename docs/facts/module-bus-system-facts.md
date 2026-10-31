@@ -7,8 +7,8 @@
 - 阶段五将受声明限制的能力上下文、稳定拓扑、构建与启动校验移至独立 `packages/nyx-harness`；Nyx 业务回调、Facade 工厂、工具和17条路由仍在 `nyx/plugins.py`，总线与宿主行为不变，完整边界见24契约。
 
 - OneBot正向WebSocket仅接指定账号私聊；稳定USER_MESSAGE根ID复用总线去重，不改桌面选择/presence。
-  schema51增加transport_outbox/checkpoint两表（共45张业务/基础设施表，SQLite总48）；
-  首次装配从日志末尾起步，按rowid扫描THINK/SPEAK/ASK入队/echo确认分别与游标同事务。
+  schema51增加transport_outbox/checkpoint两表（共45张业务/基础设施表，SQLite总48）；schema52为 event_log 增加显式 event_seq，替代运行时依赖 SQLite rowid。
+  首次装配从日志末尾起步，按event_seq扫描THINK/SPEAK/ASK入队/echo确认分别与游标同事务。
   THINK发送时添加“💭 内心话”前缀，事件原文/游标不改，已扫描历史不补发。发送至少一次，断线续发。
   传输任务随角色监督和停止，网络错误重连，DB错误传播；writer未退出不关库。详见21契约。
 
@@ -20,7 +20,7 @@
 
 - 当前系统不是纯“模块只通过总线通信”：EventBus 负责事件受理、`event_log` 持久化、`event_delivery` 投递、SSE 广播和 handler 通知；Facade 之间仍存在直接查询/编排调用。
 - 当前 `EventType` 有 26 个成员；阅读进度同步使用 `READING_PROGRESS`，不是新的消费者路由。
-- schema47/48 增加 `tool_call_log`（三索引）和 `lesson_signal`，schema49 增加工具 checkpoint 两表，schema50 增加临时 tool_execution 回执，schema51增加传输两表，业务及基础设施表合计45张（SQLite表总数48）。
+- schema47/48 增加 `tool_call_log`（三索引）和 `lesson_signal`，schema49 增加工具 checkpoint 两表，schema50 增加临时 tool_execution 回执，schema51增加传输两表，schema52增加 `event_log.event_seq`，业务及基础设施表合计45张（SQLite表总数48）。
   ToolRegistry 的观测独立提交、失败不改变工具结果；Evaluator 的 OOC 回调经组合根接到记忆经验入口，
   不增加事件路由，技术失败不触发内心反思。
 - 表达子图围绕工具调用可靠领取并完成 tool_execution 回执；完整临时结果用于恢复，回执读写错误传播，独立于 best-effort 观测。恢复复用成功结果，未确认副作用进入 uncertain 停批；终局 checkpoint 删除后清理回执，启动补清终局残留。
@@ -50,7 +50,7 @@
 - `processing` 带 `lease_until`；进程崩溃后租约过期的投递会恢复为 `pending`。
 - `EventBus.recover_deliveries()` 会恢复过期 `processing`、到期 `retry_wait`，并为已有 `event_log` 补齐当前已注册 consumer 的缺失 delivery。
 - 内存队列只做唤醒优化，不做事实来源；队列满不能丢失已经持久化的事件。
-- durable consumer 的通知队列有界、队满丢唤醒提示但已提交日志不丢；每个 SSE reader 独立按 event_log.rowid 提交序扫描、每页1000条，首次取最近一页，游标未知时自开头分页。读取队列只唤醒 reader，15秒补扫一次；帧游标仍为 character_id:event_id，timestamp 仍是事件原始时间。详见22契约。
+- durable consumer 的通知队列有界、队满丢唤醒提示但已提交日志不丢；每个 SSE reader 独立按 event_log.event_seq 提交序扫描、每页1000条，首次取最近一页，游标未知时自开头分页。读取队列只唤醒 reader，15秒补扫一次；帧游标仍为 character_id:event_id，timestamp 仍是事件原始时间。详见22契约。
 - `RouteSpec` / `ROUTE_SPECS` 是路由运行时来源；`ROUTING` / `TICK_ROUTING` 是由它派生的兼容视图。
   `nyx/plugins.py` 集中声明七个域组件与 tools 的依赖、工具、路由和生命周期，完整契约见 spec 20。
   装配时校验插件路由与现有17条完整 RouteSpec 相等；`subscriptions.py` 从同一插件声明绑定 handler，

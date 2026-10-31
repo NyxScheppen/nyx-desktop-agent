@@ -20,7 +20,7 @@ class TransportOutbox:
         async with self._db.transaction() as conn:
             await conn.execute(
                 "INSERT OR IGNORE INTO transport_checkpoint "
-                "SELECT ?, COALESCE(MAX(rowid), 0), COALESCE(MAX(rowid), 0) "
+                "SELECT ?, COALESCE(MAX(event_seq), 0), COALESCE(MAX(event_seq), 0) "
                 "FROM event_log",
                 (self._transport,),
             )
@@ -31,9 +31,10 @@ class TransportOutbox:
             rows = list(
                 await (
                     await conn.execute(
-                        "SELECT rowid AS sequence, id, type, content FROM event_log "
-                        "WHERE rowid > (SELECT scan_rowid FROM transport_checkpoint "
-                        "WHERE transport=?) ORDER BY rowid LIMIT 100",
+                        "SELECT event_seq AS sequence, id, type, content "
+                        "FROM event_log WHERE event_seq > "
+                        "(SELECT scan_rowid FROM transport_checkpoint "
+                        "WHERE transport=?) ORDER BY event_seq LIMIT 100",
                         (self._transport,),
                     )
                 ).fetchall()

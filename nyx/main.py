@@ -44,8 +44,8 @@ from nyx.subscriptions import subscribe
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Event
 
-_HOST = "127.0.0.1"
-_PORT = 8000
+_LOCAL_HOST = "127.0.0.1"
+_LOCAL_PORT = 8000
 _TICK_INTERVAL = 60.0
 _MUTTER_CHECK_INTERVAL = 150.0
 _INITIATE_CHAT_INTERVAL = 300.0
@@ -62,6 +62,20 @@ _ASK_FILES = ("ask.md",)
 _MAX_EPUB_BYTES = 50 * 1024 * 1024
 _LAUNCH_NONCE_ENV = "NYX_LAUNCH_NONCE"
 _TIME_MODULE = time  # compatibility patch target for existing runtime tests
+
+
+def _server_bind() -> tuple[str, int]:
+    """Use Railway's injected port only when running in a hosted container."""
+    raw_port = os.environ.get("PORT")
+    if not raw_port:
+        return _LOCAL_HOST, _LOCAL_PORT
+    try:
+        port = int(raw_port)
+    except ValueError as error:
+        raise ValueError("PORT must be an integer between 1 and 65535") from error
+    if not 1 <= port <= 65535:
+        raise ValueError("PORT must be an integer between 1 and 65535")
+    return "0.0.0.0", port
 
 
 def _root_event(
@@ -162,14 +176,15 @@ async def main() -> None:
         config = load_config()
     from nyx.api.routes import build_host_app
 
+    server_host, server_port = _server_bind()
     host = await _Host.open(config, Path.cwd())
     server = uvicorn.Server(
         uvicorn.Config(
             build_host_app(
                 host, launch_nonce=os.environ.get(_LAUNCH_NONCE_ENV) or None
             ),
-            host=_HOST,
-            port=_PORT,
+            host=server_host,
+            port=server_port,
         )
     )
 

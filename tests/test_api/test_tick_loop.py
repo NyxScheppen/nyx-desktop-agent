@@ -274,6 +274,60 @@ async def test_main_activates_only_running_roles(
     host.close.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    ("configured_port", "expected_host", "expected_port"),
+    [(None, "127.0.0.1", 8000), ("9090", "0.0.0.0", 9090)],
+)
+async def test_main_uses_platform_port_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_port: str | None,
+    expected_host: str,
+    expected_port: int,
+) -> None:
+    server = MagicMock()
+    server.serve = AsyncMock(side_effect=RuntimeError("stop"))
+    host = _fake_host()
+    config_args: dict[str, object] = {}
+
+    def capture_config(*args: object, **kwargs: object) -> object:
+        config_args.update(kwargs)
+        return object()
+
+    if configured_port is None:
+        monkeypatch.delenv("PORT", raising=False)
+    else:
+        monkeypatch.setenv("PORT", configured_port)
+    monkeypatch.setattr(entry, "load_config", lambda: Config())
+    monkeypatch.setattr(entry._Host, "open", AsyncMock(return_value=host))
+    monkeypatch.setattr(entry.uvicorn, "Config", capture_config)
+    monkeypatch.setattr(entry.uvicorn, "Server", MagicMock(return_value=server))
+    with pytest.raises(RuntimeError, match="stop"):
+        await main()
+    assert config_args["host"] == expected_host
+    assert config_args["port"] == expected_port
+
+
+@pytest.mark.parametrize("value", ["0", "65536", "not-a-port"])
+def test_server_bind_rejects_invalid_platform_port(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("PORT", value)
+    with pytest.raises(ValueError, match="PORT"):
+        entry._server_bind()
+
+
+async def test_main_rejects_invalid_platform_port_before_opening_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PORT", "not-a-port")
+    monkeypatch.setattr(entry, "load_config", lambda: Config())
+    open_host = AsyncMock()
+    monkeypatch.setattr(entry._Host, "open", open_host)
+    with pytest.raises(ValueError, match="PORT"):
+        await main()
+    open_host.assert_not_awaited()
+
+
 async def test_frozen_parent_pipe_eof_requests_exit_without_blocking_shutdown(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

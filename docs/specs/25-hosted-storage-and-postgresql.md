@@ -9,7 +9,7 @@
 
 ## 用户故事
 
-> 作为 Nyx 的维护者，我想用 Railway 部署多角色宿主，以托管 PostgreSQL 保存宿主和角色状态、持久化卷保存角色文件，使手机、QQ 和桌面客户端共享同一份可恢复状态。
+> 作为 Nyx 的维护者，我想用 Railway 部署多角色宿主，以托管 PostgreSQL 保存宿主和角色状态、持久化卷保存角色卡及 workspace 文件，使手机、QQ 和桌面客户端共享同一份可恢复状态。
 
 ## 验收标准
 
@@ -48,12 +48,12 @@
 
 - 角色卡快照及图片资源：`data/characters/<id>/card/`。
 - 角色 workspace：`data/characters/<id>/workspace/`。
-- 阅读系统和活动产生的持久文件；具体相对路径仍由 09、12 和 14 定义。
+- 阅读/活动产生的持久文件（仅限现有流程确实写入磁盘的文件）；具体相对路径仍由 09、12 和 14 定义。
 - 本地 SQLite 文件仅用于 SQLite 模式，不会在 PostgreSQL 模式作为运行时事实来源。
 
 应用镜像内的 `nyx/cards/nyx/` 是只读内置资源，不复制到 Volume；首次运行生成的 Nyx 注册记录仍保存于 host schema，legacy workspace 仍遵守 14 的既有路径语义。
 
-不得写入 Volume：临时上传缓冲、日志、LLM/OneBot 凭证和运行时缓存。EPUB 解析后的结构化书籍内容仍在角色 schema；原始上传文件若由现有阅读/活动流程持久保存，则放在该角色数据目录并纳入卷备份。
+不得写入 Volume：EPUB 原始上传内容、临时上传缓冲、日志、LLM/OneBot 凭证和运行时缓存。EPUB 在内存中解析，书籍与段落内容保存在角色 schema；创作产物保存在角色 workspace。
 
 ## SQLite 到 PostgreSQL 迁移
 
@@ -86,7 +86,7 @@
 | 入口 | 消费者 | PostgreSQL 位置 | Volume 内容 |
 |---|---|---|---|
 | 聊天、记忆、欲望、内在生命、反思、活动、评估 | 对应 Facade/Store、Prompt、后台 runner、API | `character_<id>` 下现有迁移定义的表 | 活动创建的持久 workspace 文件 |
-| EPUB 上传、划线、书签、笔记、阅读进度 | ReadingFacade、阅读 API、活动选材和陪读上下文 | 书籍与阅读表 | 需要持久保存的原始书籍文件 |
+| EPUB 上传、划线、书签、笔记、阅读进度 | ReadingFacade、阅读 API、活动选材和陪读上下文 | 书籍、段落与阅读表 | 原始 EPUB 不落盘；不适用 |
 | durable event admission、handler delivery、effect marker | EventBus、消费者 worker、SSE reader | `event_log`、`event_delivery`、`event_effect` | 不适用 |
 | LangGraph 回复、工具执行、OneBot 输出 | expression、tool pipeline、transport supervisor | `checkpoints`、`writes`、`tool_execution`、`transport_*` | 不适用 |
 | 角色卡/头像读取和 workspace 文件读写 | 角色装配、Prompt、资产 API、文件工具 | host 的角色路径记录 | `card/`、`workspace/` |
@@ -129,5 +129,5 @@
 - [ ] 迁移测试覆盖空目标、重复预检、目标冲突、导入失败清理、主键/事件顺序/凭证摘要校验及源文件不变。
 - [ ] Compose 测试覆盖健康启动、服务重启和容器重建后的数据库与文件持久性。
 - [ ] Railway 部署验证 `$PORT`、PostgreSQL URL、Volume、HTTPS origin 和多角色共享状态。
-- [ ] 备份恢复覆盖数据库与 Volume，并验证配对撤销状态、角色资产和阅读文件。
+- [ ] 备份恢复覆盖数据库与 Volume，并验证配对撤销状态、角色资产、workspace 和阅读记录。
 - [ ] `ruff check`、`pyright`、全量 `pytest`、前端测试、生产构建及完整 E2E。

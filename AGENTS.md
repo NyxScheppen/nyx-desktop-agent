@@ -81,7 +81,7 @@ Nyx Agent 是一个住在用户电脑里的桌面 AI 同伴（"同租者"）。�
 
 - API Key 绝不硬编码，不提交真实 Key。
 - 数据最小化，只存功能必需的数据。
-- 不上传用户数据到任何第三方；LLM 请求走 HTTPS。用户显式启用的 OneBot 私聊仅向配置的本人 QQ 发送角色 THINK/SPEAK/ASK 文本，经本机 NapCat/LLOneBot 转发。
+- 默认不上传用户数据到第三方；只有用户明确选择托管平台时，才将运行所需数据存入用户指定的项目。LLM 请求走 HTTPS。用户显式启用的 OneBot 私聊仅向配置的本人 QQ 发送角色 THINK/SPEAK/ASK 文本，经配置的 NapCat/LLOneBot 转发。
 - 本机 HTTPS 浏览器入口可用单一根 Bearer 凭证保护 API；不涵盖多账户、端到端加密或企业级审计日志。
 
 ### 通用质量门

@@ -228,8 +228,8 @@ def test_ci_workflow_has_quality_package_and_tag_release_gates() -> None:
     assert workflow["jobs"]["package-windows"]["env"]["HF_HOME"] == (
         "${{ runner.temp }}\\huggingface"
     )
-    assert "ruff check nyx/ tests/ scripts/" in workflow_text
-    assert "pyright nyx/ tests/ scripts/" in workflow_text
+    assert "ruff check nyx/ packages/ tests/ scripts/" in workflow_text
+    assert "pyright nyx/ packages/ tests/ scripts/" in workflow_text
     assert "python scripts/smoke_release.py" in workflow_text
     assert "SHA256SUMS.txt" in workflow_text
     assert "--draft" in workflow_text

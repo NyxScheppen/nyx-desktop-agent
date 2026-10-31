@@ -14,6 +14,8 @@ from nyx.tools.tool_call_store import ToolCallStore
 
 # 角色数据库的业务表（不含 schema_version / SQLite 内部表）。
 BUSINESS_TABLES = {
+    "transport_checkpoint",
+    "transport_outbox",
     "personality",
     "value_system",
     "energy",
@@ -186,8 +188,10 @@ async def test_connect_cancelled_during_checkpoint_open_closes_both_workers(
         with pytest.raises(asyncio.CancelledError):
             await task
         for conn in connections:
-            await asyncio.to_thread(conn.join, 1)
-            assert not conn.is_alive()
+            # 0.20 uses Connection as Thread; 0.22 owns a separate worker.
+            worker = cast(threading.Thread, getattr(conn, "_thread", conn))
+            await asyncio.to_thread(worker.join, 1)
+            assert not worker.is_alive()
             with pytest.raises(ValueError, match="no active connection"):
                 await conn.execute("SELECT 1")
     finally:
@@ -206,7 +210,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 46
+    assert len(names) == 48
     assert "material" not in names
 
 
@@ -421,6 +425,7 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_tool_call_log_correlation",
         "idx_tool_call_log_call",
         "idx_tool_execution_correlation",
+        "idx_transport_outbox_order",
     }
 
 
@@ -820,7 +825,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 46
+    assert len(names) == 48
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

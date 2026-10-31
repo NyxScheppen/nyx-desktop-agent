@@ -1,8 +1,9 @@
 # pyright: reportPrivateUsage=false
 import asyncio
 import importlib
+import json
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,195 @@ from nyx.enums import EventType
 from nyx.types import Activity, CurrentState
 
 
+async def test_onebot_character_lifecycle_and_private_reply(
+    tmp_path: Path, resources: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from websockets.asyncio.server import ServerConnection, serve
+
+    from nyx.app_context import _Host
+    from nyx.llm.client import LlmClient, LlmMessage
+    from nyx.types import LLMOutput
+    from tests.test_character_cards import package
+
+    async def complete(
+        self: LlmClient, messages: list[LlmMessage], *, module: str,
+        output_type: str, correlation_id: str, json_mode: bool = False,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMOutput:
+        text = '{"think":"私聊","speak":"私聊回复","needs_continuation":false}'
+        if output_type == "plan":
+            text = '{"goal":"回复","steps":[]}'
+        elif output_type != "reply":
+            text = "{}"
+        return LLMOutput(module=module, type=output_type, model="fixture",
+                         content=text, correlation_id=correlation_id)
+
+    monkeypatch.setattr(LlmClient, "complete", complete)
+    monkeypatch.setenv("ONEBOT_ACCESS_TOKEN", "fixture-token")
+    config = Config()
+    config.onebot.enabled = True
+    config.onebot.self_id, config.onebot.owner_id = 123, 456
+    config.onebot.character_id = "alice"
+    reply = asyncio.Event()
+    text_messages: list[str] = []
+
+    async def server(ws: ServerConnection) -> None:
+        async for raw in ws:
+            request = json.loads(raw)
+            if request["action"] == "get_login_info":
+                await ws.send(json.dumps({"status": "ok", "retcode": 0,
+                    "data": {"user_id": 123}, "echo": request["echo"]}))
+                payload = {"post_type": "message", "message_type": "private",
+                    "self_id": 123, "user_id": 456, "message_id": 7,
+                    "time": int(time.time()), "message": [
+                        {"type": "text", "data": {"text": "你好"}},
+                    ]}
+                await ws.send(json.dumps(payload))
+                await ws.send(json.dumps(payload))
+            else:
+                text_messages.append(request["params"]["message"][0]["data"]["text"])
+                await ws.send(json.dumps({"status": "ok", "retcode": 0,
+                    "data": {"message_id": 8}, "echo": request["echo"]}))
+                if text_messages[-1] == "私聊回复":
+                    reply.set()
+
+    async with serve(server, "127.0.0.1", 0) as socket:
+        port = list(socket.sockets)[0].getsockname()[1]
+        config.onebot.ws_url = f"ws://127.0.0.1:{port}"
+        host = await _Host.open(config, tmp_path)
+        try:
+            await host.register(package())
+            await host.start("alice")
+            await asyncio.wait_for(reply.wait(), 15)
+            app = host.apps["alice"]
+            assert host.current_id == "nyx" and app.can_initiate()
+            assert text_messages == ["💭 内心话\n私聊", "私聊回复"]
+            events = await app.bus.list_events(event_type=EventType.USER_MESSAGE)
+            assert len(events) == 1 and events[0].id == "onebot:123:7"
+            assert app.database is not None
+            async with asyncio.timeout(5):
+                while True:
+                    async with app.database.lock:
+                        row = await (await app.database.conn.execute(
+                            "SELECT COUNT(*) AS pending FROM transport_outbox "
+                            "WHERE status!='sent'"
+                        )).fetchone()
+                    if row is not None and row["pending"] == 0:
+                        break
+                    await asyncio.sleep(0.02)
+            await host.unload("alice")
+            assert host.records["alice"]["status"] == "ARCHIVED"
+            assert app.database is not None and app.database.is_closed
+            await host.restore("alice")
+            await asyncio.sleep(0.7)
+            assert text_messages == ["💭 内心话\n私聊", "私聊回复"]
+        finally:
+            await host.close()
+
+
+async def test_second_character_runs_through_harness_and_keeps_isolated_state(
+    tmp_path: Path,
+    resources: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import socket
+
+    import httpx
+    import uvicorn
+
+    from nyx import runtime
+    from nyx.api.routes import build_host_app
+    from nyx.app_context import _Host
+    from nyx.llm.client import LlmClient, LlmMessage
+    from nyx.types import LLMOutput
+    from tests.test_character_cards import package
+
+    prompts: list[str] = []
+
+    async def complete(
+        self: LlmClient, messages: list[LlmMessage], *, module: str,
+        output_type: str, correlation_id: str, json_mode: bool = False,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMOutput:
+        text = "{}"
+        if output_type == "reply":
+            prompts.append(str(messages))
+            text = ('{"think":"Alice在想","speak":"Alice收到",'
+                    '"needs_continuation":false}')
+        elif output_type == "plan":
+            text = '{"goal":"回复","steps":[]}'
+        elif output_type == "fact_extraction":
+            text = '{"facts":[]}'
+        return LLMOutput(module=module, type=output_type, model="fixture",
+                         content=text, correlation_id=correlation_id)
+
+    async def tick(app: Any, **kwargs: Any) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(LlmClient, "complete", complete)
+    monkeypatch.setattr(runtime, "tick_loop", tick)
+    monkeypatch.delenv("NYX_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("NYX_PUBLIC_ORIGIN", raising=False)
+    host = await _Host.open(Config(), tmp_path)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(
+        build_host_app(host, launch_nonce=None), lifespan="off", log_level="error",
+        ws="none",
+    ))
+    serving = asyncio.create_task(server.serve(sockets=[listener]))
+    try:
+        async with asyncio.timeout(5):
+            while not server.started:
+                await asyncio.sleep(0.01)
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{port}", headers={"Host": "127.0.0.1:8000"},
+            trust_env=False,
+        ) as client:
+            registered = await client.post("/api/characters", files={
+                "file": ("alice.nyxcard", package(), "application/zip")
+            })
+            assert registered.status_code == 202, registered.text
+            async with asyncio.timeout(15):
+                while host.records["alice"]["status"] == "STARTING":
+                    await asyncio.sleep(0.01)
+            selection = await client.put(
+                "/api/characters/current", json={"character_id": "alice"}
+            )
+            revision = str(selection.json()["selection_revision"])
+            accepted = await client.post("/api/characters/alice/chat",
+                json={"message": "你好", "discussion": False},
+                headers={"X-Nyx-Selection-Revision": revision})
+            assert accepted.status_code == 200
+            async with asyncio.timeout(15):
+                async with client.stream("GET", "/api/characters/alice/events") as sse:
+                    event_type = ""
+                    async for line in sse.aiter_lines():
+                        if line.startswith("event: "):
+                            event_type = line[7:]
+                        elif event_type == "speak" and line.startswith("data: "):
+                            payload = json.loads(line[6:])
+                            assert payload["character_id"] == "alice"
+                            assert payload["content"] == "Alice收到"
+                            break
+            assert prompts and all("你是 Alice。" in prompt for prompt in prompts)
+            assert await host.apps["nyx"].bus.list_events(
+                event_type=EventType.USER_MESSAGE
+            ) == []
+            await client.put("/api/characters/current", json={"character_id": "nyx"})
+            await host.unload("alice")
+            await host.restore("alice", run=False)
+            assert len(await host.apps["alice"].bus.list_events(
+                event_type=EventType.SPEAK
+            )) == 1
+    finally:
+        server.should_exit = True
+        await serving
+        listener.close()
+        await host.close()
+
+
 @pytest.fixture
 def resources(monkeypatch: pytest.MonkeyPatch) -> None:
     from nyx import app_context
@@ -21,8 +211,8 @@ def resources(monkeypatch: pytest.MonkeyPatch) -> None:
     def client(cls: type[LlmClient], config: LlmConfig) -> LlmClient:
         return LlmClient(None, "fake")
 
-    def embed(model: str) -> Callable[[str], list[float]]:
-        def encode(text: str) -> list[float]:
+    def embed(model: str) -> Callable[[str], Awaitable[list[float]]]:
+        async def encode(text: str) -> list[float]:
             return [1.0, 0.0]
 
         return encode
@@ -59,10 +249,12 @@ async def test_role_task_failure_does_not_end_host_loop(
         await host.close()
 
 
+@pytest.mark.parametrize("task_name", ["tick_task", "transport_task"])
 async def test_unload_retains_runtime_when_tick_ignores_cancellation(
     tmp_path: Path,
     resources: None,
     monkeypatch: pytest.MonkeyPatch,
+    task_name: str,
 ) -> None:
     from nyx.app_context import _Host
     from tests.test_character_cards import package
@@ -86,7 +278,8 @@ async def test_unload_retains_runtime_when_tick_ignores_cancellation(
     await host.register(package())
     await host.start("alice", run=False)
     app = host.apps["alice"]
-    app.tick_task = asyncio.create_task(stubborn())
+    producer = asyncio.create_task(stubborn())
+    setattr(app, task_name, producer)
     await entered.wait()
     monkeypatch.setattr(asyncio, "wait", bounded_wait)
     stop = asyncio.create_task(host.unload("alice"))
@@ -98,7 +291,7 @@ async def test_unload_retains_runtime_when_tick_ignores_cancellation(
         assert app.database is not None and not app.database._closed
     finally:
         release.set()
-        await app.tick_task
+        await producer
         await stop
         await host.close()
 
@@ -127,7 +320,7 @@ async def test_unload_drain_timeout_keeps_worker_until_accepted_work_finishes(
         await release.wait()
 
     async def drain(bus: EventBus, timeout: float = 15) -> bool:
-        return await original_drain(bus, timeout=0.02)
+        return await original_drain(bus, timeout=timeout if release.is_set() else 0.02)
 
     monkeypatch.setattr(runtime, "tick_loop", tick)
     monkeypatch.setattr(EventBus, "drain", drain)
@@ -189,7 +382,9 @@ async def test_host_close_waits_for_timed_out_delivery_then_closes_databases(
         await release.wait()
 
     async def drain(bus: EventBus, timeout: float = 15) -> bool:
-        result = await original_drain(bus, timeout=0.02)
+        result = await original_drain(
+            bus, timeout=timeout if release.is_set() else 0.02,
+        )
         if not result:
             timed_out.set()
         return result
@@ -458,6 +653,147 @@ async def test_concurrent_import_limit_and_restore_save(
         assert (await host.apps["alice"].inner_life.get_state()).personality[
             "openness"
         ] == 9
+    finally:
+        await host.close()
+
+
+async def test_root_token_guards_host_role_asset_and_alias(
+    tmp_path: Path, resources: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from nyx.api.routes import build_host_app
+    from nyx.app_context import _Host
+
+    monkeypatch.setenv("NYX_AUTH_TOKEN", "fixture-root-token")
+    monkeypatch.setenv("NYX_PUBLIC_ORIGIN", "https://localhost:8443")
+    host = await _Host.open(Config(), tmp_path)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=build_host_app(host, launch_nonce=None)),
+            base_url="http://127.0.0.1:8000",
+        ) as client:
+            for path in (
+                "/api/characters", "/api/characters/nyx/state",
+                "/api/characters/nyx/assets/neutral", "/api/state",
+            ):
+                assert (await client.get(path)).status_code == 401
+                assert (await client.get(path, headers={
+                    "Authorization": "Bearer wrong",
+                })).status_code == 401
+                assert (await client.get(path, headers={
+                    "Authorization": "Bearer fixture-root-token",
+                    "Origin": "https://localhost:8443",
+                })).status_code == 200
+            assert (await client.get("/api/characters/nyx/events")).status_code == 401
+            assert (await client.get("/api/characters", headers={
+                "Authorization": "Bearer fixture-root-token",
+                "Origin": "https://other.example",
+            })).status_code == 403
+    finally:
+        await host.close()
+
+
+async def test_device_pairing_is_one_time_and_revocable(
+    tmp_path: Path, resources: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from nyx.api.routes import build_host_app
+    from nyx.app_context import _Host
+
+    monkeypatch.setenv("NYX_AUTH_TOKEN", "fixture-root-token")
+    monkeypatch.setenv("NYX_PUBLIC_ORIGIN", "https://localhost:8443")
+    host = await _Host.open(Config(), tmp_path)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=build_host_app(host, launch_nonce=None)),
+            base_url="http://127.0.0.1:8000",
+        ) as client:
+            root = {"Authorization": "Bearer fixture-root-token"}
+            created = await client.post(
+                "/api/devices/pairing", json={"name": "手机"}, headers=root
+            )
+            assert created.status_code == 200
+            code = created.json()["code"]
+            async with host.database.lock:
+                row = await (
+                    await host.database.conn.execute(
+                        "SELECT code_hash FROM pairing_code"
+                    )
+                ).fetchone()
+            assert row is not None and code not in row["code_hash"]
+            paired = await client.post(
+                "/api/devices/pair", json={"code": code, "name": "手机"}
+            )
+            assert paired.status_code == 200
+            device = paired.json()["access_token"]
+            assert (await client.get(
+                "/api/state", headers={"Authorization": f"Bearer {device}"}
+            )).status_code == 200
+            assert (await client.post(
+                "/api/devices/pair", json={"code": code, "name": "再次"}
+            )).status_code == 401
+            listed = await client.get("/api/devices", headers=root)
+            assert listed.status_code == 200
+            assert listed.json()[0]["name"] == "手机"
+            device_id = listed.json()[0]["id"]
+            assert (await client.delete(
+                f"/api/devices/{device_id}", headers=root
+            )).status_code == 200
+            assert (await client.get(
+                "/api/state", headers={"Authorization": f"Bearer {device}"}
+            )).status_code == 401
+            assert (await client.get(
+                "/api/devices", headers={"Authorization": f"Bearer {device}"}
+            )).status_code == 401
+    finally:
+        await host.close()
+
+
+async def test_device_pairing_is_disabled_without_root_token(
+    tmp_path: Path, resources: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from nyx.api.routes import build_host_app
+    from nyx.app_context import _Host
+
+    monkeypatch.delenv("NYX_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("NYX_PUBLIC_ORIGIN", raising=False)
+    host = await _Host.open(Config(), tmp_path)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=build_host_app(host, launch_nonce=None)),
+            base_url="http://127.0.0.1:8000",
+        ) as client:
+            assert (await client.post(
+                "/api/devices/pairing", json={"name": "手机"}
+            )).status_code == 404
+            assert (await client.post(
+                "/api/devices/pair", json={"code": "unknown", "name": "手机"}
+            )).status_code == 404
+    finally:
+        await host.close()
+
+
+async def test_expired_pairing_code_cannot_issue_a_device(
+    tmp_path: Path,
+) -> None:
+    from nyx.app_context import _Host
+
+    host = await _Host.open(Config(), tmp_path)
+    try:
+        code, _ = await host.create_pairing_code("phone")
+        async with host.database.transaction() as conn:
+            await conn.execute("UPDATE pairing_code SET expires_at=0")
+        assert await host.redeem_pairing_code(code, "phone") is None
+        async with host.database.lock:
+            count = await (
+                await host.database.conn.execute("SELECT count(*) FROM device_token")
+            ).fetchone()
+        assert count is not None
+        assert count[0] == 0
     finally:
         await host.close()
 

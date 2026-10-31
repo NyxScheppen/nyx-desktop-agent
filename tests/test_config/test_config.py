@@ -24,6 +24,29 @@ def test_validate_config_accepts_defaults() -> None:
     validate_config(Config())
 
 
+@pytest.mark.parametrize("url", [
+    "ws://example.com:3001", "http://127.0.0.1:3001",
+    "ws://secret@localhost:3001", "ws://localhost:3001?token=secret",
+])
+def test_onebot_rejects_nonlocal_or_embedded_credentials(url: str) -> None:
+    cfg = Config()
+    cfg.onebot.enabled = True
+    cfg.onebot.self_id, cfg.onebot.owner_id = 123, 456
+    cfg.onebot.ws_url = url
+    with pytest.raises(ConfigError, match="onebot.ws_url"):
+        validate_config(cfg)
+
+
+def test_onebot_requires_distinct_accounts_when_enabled() -> None:
+    cfg = Config()
+    cfg.onebot.enabled = True
+    with pytest.raises(ConfigError, match="onebot.self_id"):
+        validate_config(cfg)
+    cfg.onebot.self_id = cfg.onebot.owner_id = 123
+    with pytest.raises(ConfigError, match="onebot.owner_id"):
+        validate_config(cfg)
+
+
 def test_validate_config_accepts_temperature_bounds() -> None:
     for t in (0.0, 2.0):
         cfg = Config()

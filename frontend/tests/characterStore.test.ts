@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { useCharacterStore } from "../src/stores/characterStore";
 import { captureScope, bindScope } from "../src/api/characterScope";
+import { useConnectionStore } from "../src/stores/connectionStore";
 
 afterEach(() => { vi.unstubAllGlobals(); bindScope(null); localStorage.clear(); });
 
@@ -67,4 +68,49 @@ it("does not adopt a stale registry poll started during a switch", async () => {
   await refresh;
   expect(captureScope()?.id).toBe("alice");
   expect(useCharacterStore.getState().registry?.selection_revision).toBe(1);
+});
+
+it("does not adopt a registry response from a credential that was rejected", async () => {
+  useCharacterStore.setState(useCharacterStore.getInitialState());
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  useConnectionStore.setState({ token: "old-token", required: false });
+  vi.stubGlobal("fetch", vi.fn(async () => {
+    await pending;
+    return new Response(JSON.stringify({ current_id: "alice", selection_revision: 1,
+      characters: [{ id: "alice", name: "Alice", status: "RUNNING", assets: {}, error: null }],
+    }));
+  }));
+  const refresh = useCharacterStore.getState().initialize();
+  useConnectionStore.setState({ required: true });
+  release();
+  await refresh;
+  expect(useCharacterStore.getState().registry).toBeNull();
+  expect(captureScope()).toBeNull();
+});
+
+it("does not adopt a selection response after its credential is rejected", async () => {
+  useCharacterStore.setState(useCharacterStore.getInitialState());
+  useConnectionStore.setState({ token: "old-token", required: false });
+  let registryCalls = 0;
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (url.endsWith("/current")) return new Response("{}");
+    registryCalls += 1;
+    if (registryCalls === 2) await pending;
+    const current = registryCalls === 1 ? "nyx" : "alice";
+    return new Response(JSON.stringify({ current_id: current, selection_revision: registryCalls - 1,
+      characters: [current].map((id) => ({ id, name: id, status: "RUNNING", assets: {}, error: null })),
+    }));
+  }));
+  await useCharacterStore.getState().initialize();
+  const selection = useCharacterStore.getState().select("alice");
+  await vi.waitFor(() => expect(registryCalls).toBe(2));
+  useConnectionStore.setState({ required: true });
+  release();
+  await selection;
+  expect(useCharacterStore.getState().registry?.current_id).toBe("nyx");
+  expect(useCharacterStore.getState().switching).toBe(false);
+  expect(captureScope()).toBeNull();
 });

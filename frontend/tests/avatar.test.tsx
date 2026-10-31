@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Avatar, { clampAvatarPos } from "../src/components/inner/Avatar";
 import EmotionSprite from "../src/components/inner/EmotionSprite";
 import { useCharacterStore } from "../src/stores/characterStore";
+import { useConnectionStore } from "../src/stores/connectionStore";
 import { useChatStore } from "../src/stores/chatStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useSettingsStore } from "../src/stores/settingsStore";
@@ -50,6 +51,29 @@ describe("Avatar 红点通知", () => {
 });
 
 describe("Avatar 桌宠入口", () => {
+  it("loads protected card images with Bearer and revokes the blob on unmount", async () => {
+    useConnectionStore.setState({ token: "asset-token", required: false });
+    useCharacterStore.setState({ registry: { current_id: "alice", selection_revision: 1, limit: 4,
+      characters: [{ id: "alice", name: "Alice", status: "RUNNING", error: null, sync_error: null,
+        assets: { neutral: "/api/characters/alice/assets/neutral" } }] } });
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(new Blob(["image"])));
+    vi.stubGlobal("fetch", fetch);
+    const create = vi.fn(() => "blob:protected-image");
+    const revoke = vi.fn();
+    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke }));
+    const view = render(<EmotionSprite emotion="neutral" />);
+    try {
+      await waitFor(() => expect(screen.getByRole("img")).toHaveAttribute("src", "blob:protected-image"));
+      expect(new Headers(fetch.mock.calls[0][1]?.headers).get("Authorization")).toBe("Bearer asset-token");
+      view.unmount();
+      expect(revoke).toHaveBeenCalledWith("blob:protected-image");
+    } finally {
+      view.unmount();
+      useCharacterStore.setState({ registry: null });
+      useConnectionStore.setState({ token: "", required: false });
+      vi.unstubAllGlobals();
+    }
+  });
   it("uses an anonymous CORS request for card images and a name placeholder for a role without assets", () => {
     const registry = { current_id: "alice", selection_revision: 1, limit: 4,
       characters: [{ id: "alice", name: "Alice", status: "RUNNING" as const,

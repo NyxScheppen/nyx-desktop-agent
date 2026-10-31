@@ -101,6 +101,19 @@ class _FakeBus:
     def remove_sse_sink(self, sink: asyncio.Queue[Event]) -> None:
         self.sinks.remove(sink)
 
+    async def stream_events(
+        self, after: str | None, queue_size: int
+    ) -> AsyncGenerator[Event | None, None]:
+        queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=queue_size)
+        self.add_sse_sink(queue)
+        try:
+            for event in self.published:
+                yield event
+            while True:
+                yield await queue.get()
+        finally:
+            self.remove_sse_sink(queue)
+
 
 class _FakeInnerLife:
     def __init__(self, state: CurrentState) -> None:
@@ -308,6 +321,52 @@ async def test_ready_endpoint_keeps_manual_start_compatible(
 
     assert resp.status_code == 200
     assert resp.json() == {"service": "nyx-agent", "launch_nonce": None}
+
+
+async def test_token_guard_protects_business_routes_and_allows_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NYX_AUTH_TOKEN", "test-root-token")
+    monkeypatch.setenv("NYX_PUBLIC_ORIGIN", "https://localhost:8443")
+    async with _client(_app(_mk_state(), _FakeBus(), _FakeMemory())) as client:
+        missing = await client.get("/api/state")
+        wrong = await client.get("/api/state", headers={
+            "Authorization": "Bearer wrong",
+        })
+        accepted = await client.get("/api/state", headers={
+            "Authorization": "Bearer test-root-token", "Origin": "https://localhost:8443",
+        })
+        ready = await client.get("/api/ready")
+        preflight = await client.options("/api/events", headers={
+            "Origin": "https://localhost:8443", "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization,last-event-id",
+        })
+    assert [missing.status_code, wrong.status_code, accepted.status_code] == [
+        401, 401, 200,
+    ]
+    assert ready.status_code == 200
+    assert preflight.status_code == 204
+
+
+def test_public_origin_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NYX_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("NYX_PUBLIC_ORIGIN", "https://localhost:8443")
+    with pytest.raises(ValueError, match="NYX_AUTH_TOKEN"):
+        build_app(_app(_mk_state(), _FakeBus(), _FakeMemory()))
+
+
+@pytest.mark.parametrize("origin", [
+    "http://localhost:8443", "https://localhost:8443/",
+    "https://user:pass@localhost:8443", "https://localhost:8443?x=1",
+    "https://localhost:8443#fragment", "https://",
+])
+def test_public_origin_rejects_non_origin_values(
+    origin: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NYX_AUTH_TOKEN", "test-root-token")
+    monkeypatch.setenv("NYX_PUBLIC_ORIGIN", origin)
+    with pytest.raises(ValueError, match="HTTPS origin"):
+        build_app(_app(_mk_state(), _FakeBus(), _FakeMemory()))
 
 
 async def test_chat_endpoint() -> None:

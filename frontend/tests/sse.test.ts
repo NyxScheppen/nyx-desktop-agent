@@ -1,7 +1,5 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
-import { StrictMode } from "react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BASE_URL } from "../src/api/client";
 import { bindScope } from "../src/api/characterScope";
 import { dispatchEvent } from "../src/api/dispatch";
 import { useSSE } from "../src/hooks/useSSE";
@@ -22,288 +20,89 @@ import type {
   ReadingQuestionEvent,
 } from "../src/types/api";
 
-// —— fake EventSource（jsdom 无原生实现，需 stub）——
-class FakeEventSource {
-  static instances: FakeEventSource[] = [];
-  url: string;
-  onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  closed = false;
-  private handlers = new Map<string, Array<(e: MessageEvent) => void>>();
-
-  constructor(url: string) {
-    this.url = url;
-    FakeEventSource.instances.push(this);
-  }
-  addEventListener(type: string, handler: (e: MessageEvent) => void) {
-    const list = this.handlers.get(type) ?? [];
-    list.push(handler);
-    this.handlers.set(type, list);
-  }
-  close() {
-    this.closed = true;
-  }
-  emit(type: string, data: string) {
-    const ev = { data } as MessageEvent;
-    for (const h of this.handlers.get(type) ?? []) h(ev);
-  }
-}
-
+let controller: ReadableStreamDefaultController<Uint8Array>;
+let signal: AbortSignal;
+const dispatch = vi.fn();
+const emit = (type: string, data: unknown) => controller.enqueue(new TextEncoder().encode(
+  `event: ${type}\ndata: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`,
+));
 beforeEach(() => {
-  FakeEventSource.instances = [];
-  vi.stubGlobal("EventSource", FakeEventSource);
+  dispatch.mockClear();
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+    signal = init.signal as AbortSignal;
+    return new Response(new ReadableStream<Uint8Array>({
+      start(next) { controller = next; },
+    }), { headers: { "Content-Type": "text/event-stream" } });
+  }));
 });
-
 afterEach(() => {
+  cleanup();
   bindScope(null);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("useSSE", () => {
-  it("保留用户批注；独立回执先到也能确认，非法批注帧丢弃", () => {
-    useChatStore.getState().reset();
-    renderHook(() => useSSE(dispatchEvent));
-    const source = FakeEventSource.instances[0];
-    const annotation = { reply_event_id: "old", quote: "原文🙂", comment: "反馈" };
-    const base = { correlation_id: "u", timestamp: 1 };
-    act(() => {
-      source.emit("annotation_feedback", JSON.stringify({ ...base, event_id: "f", ...annotation, user_event_id: "u" }));
-      source.emit("user_message", JSON.stringify({ ...base, event_id: "u", message: "反馈", annotation }));
-      source.emit("annotation_feedback", JSON.stringify({ ...base, event_id: "bad", ...annotation, comment: 123, user_event_id: "u" }));
+  it("opens a stream, deduplicates named frames and cancels on unmount", async () => {
+    const view = renderHook(() => useSSE(dispatch));
+    expect(view.result.current).toBe("connecting");
+    await act(async () => {
+      const frame = { event_id: "a", correlation_id: "c", timestamp: 123.5, content: "你好" };
+      emit("speak", frame); emit("speak", frame);
     });
-    expect(useChatStore.getState().messages[0].annotation).toEqual(annotation);
-    expect(useChatStore.getState().annotationPersistence[JSON.stringify(["old", "反馈"])]).toBe("recorded");
+    expect(view.result.current).toBe("open");
+    expect(dispatch.mock.calls.map(([event]) => event)).toEqual([
+      { event: "speak", event_id: "a", correlation_id: "c", timestamp: 123.5, content: "你好" },
+    ]);
+    view.unmount();
+    expect(signal.aborted).toBe(true);
   });
-  it("closes old role streams and ignores their queued callbacks", () => {
-    const dispatch = vi.fn();
+
+  it("rejects invalid data and timestamps while continuing the stream", async () => {
+    renderHook(() => useSSE(dispatch));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    await act(async () => {
+      emit("speak", "not-json");
+      for (const timestamp of [undefined, null, "x", 1e308]) {
+        emit("speak", { event_id: "bad", correlation_id: "c", timestamp, content: "x" });
+      }
+      emit("speak", { event_id: "ok", correlation_id: "c", timestamp: 1, content: "ok" });
+    });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch.mock.calls[0][0].event_id).toBe("ok");
+    expect(error).toHaveBeenCalled();
+  });
+
+  it("keeps annotation receipts and all reading event types", async () => {
+    renderHook(() => useSSE(dispatch));
+    const base = { event_id: "a", correlation_id: "c", timestamp: 1 };
+    await act(async () => {
+      emit("annotation_feedback", { ...base, reply_event_id: "old", quote: "原文🙂", comment: "反馈", user_event_id: "u" });
+      emit("reading_progress", { ...base, event_id: "b", book_id: "book", user_position: 8, nyx_position: 5, reading_speed: 50, read_count: 1, revision: 4 });
+      emit("reading_mutter", { ...base, event_id: "c", content: "妙", book_id: "book", paragraph_index: 2 });
+      emit("reading_question", { ...base, event_id: "d", content: "?", subtype: "question_reflective", book_id: "book", paragraph_index: 3, selected_text: null });
+      emit("reading_association", { ...base, event_id: "e", memory_id: "m", snippet: "片段", book_id: "book", paragraph_index: 4 });
+      emit("scene_memory_requested", { ...base, event_id: "f", reply: "海边" });
+    });
+    expect(dispatch.mock.calls.map(([event]) => event.event)).toEqual([
+      "annotation_feedback", "reading_progress", "reading_mutter", "reading_question", "reading_association", "scene_memory_requested",
+    ]);
+  });
+
+  it("closes old role streams and ignores their late frames", async () => {
     bindScope({ id: "alice", revision: 1 });
-    const { rerender } = renderHook(({ id, generation }) => useSSE(dispatch, { id, generation }),
+    const view = renderHook(({ id, generation }) => useSSE(dispatch, { id, generation }),
       { initialProps: { id: "alice", generation: 1 } });
-    const old = FakeEventSource.instances[0];
+    await act(async () => {});
+    const oldSignal = signal;
     bindScope({ id: "bob", revision: 2 });
-    rerender({ id: "bob", generation: 2 });
-    act(() => old.emit("speak", JSON.stringify({ character_id: "alice", event_id: "old",
-      correlation_id: "old", timestamp: 100, content: "old" })));
-    expect(old.closed).toBe(true);
-    expect(dispatch).not.toHaveBeenCalled();
-  });
-  it("有限但超出 Date 范围的时间戳被拒绝", () => {
-    const dispatch = vi.fn();
-    renderHook(() => useSSE(dispatch));
-    act(() => FakeEventSource.instances[0].emit("speak", JSON.stringify({
-      event_id: "huge", correlation_id: "huge", timestamp: 1e308, content: "bad",
-    })));
-    expect(dispatch).not.toHaveBeenCalled();
-  });
-  it("挂载即 new EventSource(/api/events)，初始 connecting", () => {
-    const dispatch = vi.fn();
-    const { result } = renderHook(() => useSSE(dispatch));
-
-    expect(FakeEventSource.instances).toHaveLength(1);
-    expect(FakeEventSource.instances[0].url).toBe(`${BASE_URL}/api/events`);
-    expect(result.current).toBe("connecting");
-  });
-
-  it("onopen → open，onerror → connecting", () => {
-    const dispatch = vi.fn();
-    const { result } = renderHook(() => useSSE(dispatch));
-    const source = FakeEventSource.instances[0];
-
-    act(() => source.onopen?.());
-    expect(result.current).toBe("open");
-
-    act(() => source.onerror?.());
-    expect(result.current).toBe("connecting");
-  });
-
-  it("初次连接失败仍保持 connecting，随后同一 EventSource 恢复为 open", () => {
-    const dispatch = vi.fn();
-    const { result } = renderHook(() => useSSE(dispatch));
-    const source = FakeEventSource.instances[0];
-
-    act(() => source.onerror?.());
-    expect(result.current).toBe("connecting");
-
-    act(() => source.onopen?.());
-    expect(result.current).toBe("open");
-  });
-
-  it("StrictMode 的开发期 effect 重放不会把活动连接留在 closed", () => {
-    const dispatch = vi.fn();
-    const { result } = renderHook(() => useSSE(dispatch), { wrapper: StrictMode });
-    const source = FakeEventSource.instances.at(-1);
-
-    expect(source).toBeDefined();
-    act(() => source?.onopen?.());
-    expect(result.current).toBe("open");
-  });
-
-  it("effect 被替换时，旧连接 cleanup 不会把新连接状态留在 closed", () => {
-    const firstDispatch = vi.fn();
-    const secondDispatch = vi.fn();
-    const { result, rerender } = renderHook(
-      ({ dispatch }) => useSSE(dispatch),
-      { initialProps: { dispatch: firstDispatch } },
-    );
-
-    act(() => rerender({ dispatch: secondDispatch }));
-
-    expect(result.current).toBe("connecting");
-    expect(FakeEventSource.instances).toHaveLength(2);
-  });
-
-  it("命名帧解析正确并 dispatch", () => {
-    const dispatch = vi.fn();
-    renderHook(() => useSSE(dispatch));
-    const source = FakeEventSource.instances[0];
-
-    act(() => {
-      source.emit(
-        "speak",
-        JSON.stringify({ event_id: "e1", correlation_id: "c1", timestamp: 123.5, content: "你好" }),
-      );
+    view.rerender({ id: "bob", generation: 2 });
+    await act(async () => {
+      emit("speak", { character_id: "alice", event_id: "late", correlation_id: "c", timestamp: 1, content: "late" });
+      emit("speak", { character_id: "bob", event_id: "new", correlation_id: "c", timestamp: 1, content: "new" });
     });
-
-    expect(dispatch).toHaveBeenCalledWith({
-      event: "speak",
-      event_id: "e1",
-      correlation_id: "c1",
-      timestamp: 123.5,
-      content: "你好",
-    });
-  });
-
-  it("同一 event_id 的回放/实时重叠帧只 dispatch 一次", () => {
-    const dispatch = vi.fn();
-    renderHook(() => useSSE(dispatch));
-    const source = FakeEventSource.instances[0];
-    const frame = JSON.stringify({
-      event_id: "replayed",
-      correlation_id: "c1",
-      timestamp: 123.5,
-      content: "你好",
-    });
-
-    act(() => {
-      source.emit("speak", frame);
-      source.emit("speak", frame);
-    });
-
-    expect(dispatch).toHaveBeenCalledTimes(1);
-  });
-
-  it("reading_progress 合法帧通过，非法进度字段被丢弃", () => {
-    const dispatch = vi.fn();
-    renderHook(() => useSSE(dispatch));
-    const source = FakeEventSource.instances[0];
-    const valid = {
-      event_id: "progress-1",
-      correlation_id: "b1",
-      timestamp: 10,
-      book_id: "b1",
-      user_position: 8,
-      nyx_position: 5,
-      reading_speed: 50,
-      read_count: 1,
-      revision: 4,
-    };
-
-    act(() => {
-      source.emit("reading_progress", JSON.stringify(valid));
-      source.emit(
-        "reading_progress",
-        JSON.stringify({ ...valid, event_id: "progress-bad", revision: -1 }),
-      );
-      source.emit(
-        "reading_progress",
-        JSON.stringify({ ...valid, event_id: "progress-bad-2", reading_speed: 0 }),
-      );
-    });
-
-    expect(dispatch).toHaveBeenCalledTimes(1);
-    expect(dispatch).toHaveBeenCalledWith({
-      event: "reading_progress",
-      ...valid,
-    });
-  });
-
-  it("EVENT_TYPES 含三型阅读事件：reading_mutter/question/association 帧被监听并 dispatch", () => {
-    const dispatch = vi.fn();
-    renderHook(() => useSSE(dispatch));
-    const source = FakeEventSource.instances[0];
-
-    act(() => {
-      source.emit(
-        "reading_mutter",
-        JSON.stringify({ event_id: "e1", correlation_id: "b1", timestamp: 1, content: "妙", book_id: "b1", paragraph_index: 2 }),
-      );
-      source.emit(
-        "reading_question",
-        JSON.stringify({ event_id: "e2", correlation_id: "b1", timestamp: 2, content: "?", subtype: "question_reflective", book_id: "b1", paragraph_index: 3, selected_text: null }),
-      );
-      source.emit(
-        "reading_association",
-        JSON.stringify({ event_id: "e3", correlation_id: "b1", timestamp: 3, memory_id: "m1", snippet: "片段", book_id: "b1", paragraph_index: 4 }),
-      );
-    });
-
-    // 缺任一值则该型帧被浏览器静默丢弃（addEventListener 未注册），dispatch 不会被调。
-    expect(dispatch).toHaveBeenCalledTimes(3);
-    expect(dispatch).toHaveBeenNthCalledWith(1, expect.objectContaining({ event: "reading_mutter", book_id: "b1" }));
-    expect(dispatch).toHaveBeenNthCalledWith(2, expect.objectContaining({ event: "reading_question", subtype: "question_reflective" }));
-    expect(dispatch).toHaveBeenNthCalledWith(3, expect.objectContaining({ event: "reading_association", memory_id: "m1" }));
-  });
-
-  it("EVENT_TYPES 含场景记忆请求：命名帧被监听并 dispatch", () => {
-    const dispatch = vi.fn();
-    renderHook(() => useSSE(dispatch));
-
-    act(() => {
-      FakeEventSource.instances[0].emit(
-        "scene_memory_requested",
-        JSON.stringify({
-          event_id: "scene-1",
-          correlation_id: "reply-1",
-          timestamp: 4,
-          reply: "今天聊到了海边",
-        }),
-      );
-    });
-
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
-      event: "scene_memory_requested",
-      event_id: "scene-1",
-      correlation_id: "reply-1",
-    }));
-  });
-
-  it("坏 data / 缺字段帧跳过不崩", () => {
-    const dispatch = vi.fn();
-    renderHook(() => useSSE(dispatch));
-    const source = FakeEventSource.instances[0];
-
-    act(() => source.emit("speak", "not-json")); // 非法 JSON
-    act(() => source.emit("speak", JSON.stringify({ content: "x" }))); // 缺公共头
-    act(() => source.emit("speak", JSON.stringify({ event_id: "bad", correlation_id: "c", timestamp: "x", content: "x" })));
-    act(() => source.emit("speak", JSON.stringify({ event_id: "bad2", correlation_id: "c", timestamp: null, content: "x" })));
-    act(() =>
-      source.emit(
-        "speak",
-        JSON.stringify({ event_id: "e1", correlation_id: "c1", timestamp: 1, content: "ok" }),
-      ),
-    );
-
-    expect(dispatch).toHaveBeenCalledTimes(1); // 仅正常帧通过
-  });
-
-  it("unmount 调 close()", () => {
-    const dispatch = vi.fn();
-    const { unmount } = renderHook(() => useSSE(dispatch));
-    const source = FakeEventSource.instances[0];
-
-    unmount();
-    expect(source.closed).toBe(true);
+    expect(oldSignal.aborted).toBe(true);
+    expect(dispatch.mock.calls.map(([event]) => event.event_id)).toEqual(["new"]);
   });
 });
 

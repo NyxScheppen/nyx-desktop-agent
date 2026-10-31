@@ -4,7 +4,7 @@ import contextlib
 import json
 import uuid
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -264,6 +264,53 @@ async def test_sse_sink_add_remove_and_backpressure() -> None:
         await bus.publish(_make_event(id="b"))
         assert sink1.empty()
         assert sink2.get_nowait().id == "b"
+    finally:
+        await _close(bus)
+
+
+async def test_stream_readers_resume_independently_in_commit_order() -> None:
+    bus = await _new_bus()
+    try:
+        await bus.publish(_make_event(id="a", timestamp=10.0))
+        await bus.publish(_make_event(id="b", timestamp=5.0))
+        first = bus.stream_events(after="a", queue_size=1)
+        second = bus.stream_events(after="a", queue_size=1)
+        try:
+            assert cast(Event, await anext(first)).id == "b"
+            assert cast(Event, await anext(second)).id == "b"
+            for identity in ("c", "d", "e"):
+                await bus.publish(_make_event(id=identity, timestamp=1.0))
+            assert [cast(Event, await anext(first)).id for _ in range(3)] == [
+                "c", "d", "e",
+            ]
+            assert [cast(Event, await anext(second)).id for _ in range(3)] == [
+                "c", "d", "e",
+            ]
+        finally:
+            await first.aclose()
+            await second.aclose()
+        assert bus._sse_sinks == []
+    finally:
+        await _close(bus)
+
+
+async def test_stream_unknown_cursor_recovers_all_pages() -> None:
+    bus = await _new_bus()
+    try:
+        events = [_make_event(id=f"e{i}", timestamp=1.0) for i in range(1005)]
+        await bus.publish_many(events)
+        stream = bus.stream_events(after="missing", queue_size=1)
+        try:
+            assert [cast(Event, await anext(stream)).id for _ in range(1005)] == [
+                event.id for event in events
+            ]
+        finally:
+            await stream.aclose()
+        recent = bus.stream_events(after=None, queue_size=1)
+        try:
+            assert cast(Event, await anext(recent)).id == "e5"
+        finally:
+            await recent.aclose()
     finally:
         await _close(bus)
 

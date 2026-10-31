@@ -6,6 +6,10 @@ import {
   importCharacter,
   selectCharacter,
   createBookTask,
+  createPairingCode,
+  pairDevice,
+  getDevices,
+  revokeDevice,
   createBookmark,
   createUserNote,
   createWebTask,
@@ -106,6 +110,27 @@ describe("角色管理 API", () => {
   });
 });
 
+describe("设备配对 API", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("用一次性配对码兑换设备凭证，并允许根凭证管理设备", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ device_id: "d1", access_token: "device-secret" }))
+      .mockResolvedValueOnce(jsonResponse({ code: "pair-code", expires_at: 100 }))
+      .mockResolvedValueOnce(jsonResponse([{ id: "d1", name: "手机", created_at: 1, revoked_at: null }]))
+      .mockResolvedValueOnce(jsonResponse(null));
+    vi.stubGlobal("fetch", fetch);
+    expect(await pairDevice("pair-code", "手机")).toEqual({
+      device_id: "d1", access_token: "device-secret",
+    });
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ code: "pair-code", name: "手机" });
+    expect(await createPairingCode("手机")).toEqual({ code: "pair-code", expires_at: 100 });
+    expect(await getDevices()).toHaveLength(1);
+    await revokeDevice("d1");
+    expect(fetch.mock.calls[3][0]).toBe("/api/devices/d1");
+    expect(fetch.mock.calls[3][1].method).toBe("DELETE");
+  });
+});
+
 const snapshot = {
   valence: 0.1,
   arousal: 0.2,
@@ -147,16 +172,18 @@ describe("api/client", () => {
     await postChat("你好");
     expect(JSON.parse(mock.mock.calls[0][1].body)).toEqual({ message: "你好" });
   });
-  it.each([true, false])("DEV=%s selects the shared REST/SSE base", async (dev) => {
+  it.each([[true, false], [false, false], [false, true]])("DEV=%s, Tauri=%s selects the shared REST/SSE base", async (dev, tauri) => {
     vi.stubEnv("DEV", dev);
+    if (tauri) Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
     vi.resetModules();
     const client = await import("../src/api/client");
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(snapshot));
     vi.stubGlobal("fetch", fetchMock);
-    const base = dev ? "" : "http://127.0.0.1:8000";
+    const base = dev || !tauri ? "" : "http://127.0.0.1:8000";
     expect(client.BASE_URL).toBe(base);
     await client.getState();
     expect(fetchMock.mock.calls[0][0]).toBe(`${base}/api/state`);
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
   });
 
   it("postChat：POST /api/chat、body {message}、解析 {event_id}", async () => {

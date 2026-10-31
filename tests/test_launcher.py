@@ -368,6 +368,9 @@ def test_sidecar_build_bundles_only_public_resources(
     command = run.call_args_list[-1].args[0]
     assert download.call_args.kwargs["repo_id"] == "BAAI/bge-small-zh-v1.5"
     assert command[:3] == [dev.sys.executable, "-m", "PyInstaller"]
+    assert [
+        command[i + 1] for i, argument in enumerate(command) if argument == "--paths"
+    ] == [str(tmp_path), str(tmp_path / "packages" / "nyx-harness")]
     assert f"{tmp_path / 'nyx' / 'prompts'};nyx/prompts" in command
     assert f"{tmp_path / 'nyx' / 'cards'};nyx/cards" in command
     assert not any(".env" in argument for argument in command)

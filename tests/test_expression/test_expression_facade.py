@@ -890,6 +890,45 @@ async def test_reply_slow_tool_executes_and_flows_into_prompt() -> None:
     assert "local_search" in think_system
 
 
+@pytest.mark.parametrize("retry_json", [False, True])
+async def test_tool_reply_grounds_execution_claims_in_current_call_records(
+    retry_json: bool,
+) -> None:
+    class _ReplyLlm(_FakeLlm):
+        failed = False
+
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any,
+        ) -> LLMOutput:
+            output = await super().complete(messages, **kwargs)
+            if retry_json and kwargs["output_type"] == "reply" and not self.failed:
+                self.failed = True
+                output.content = "invalid JSON"
+            return output
+
+    queries = ["MissingSyntheticGuide", "Missing Synthetic Guide", "SyntheticGuide"]
+    tools = _FakeTools()
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=tools,
+        llm=_ReplyLlm(tool_calls=[
+            {"name": "local_search", "args": {"query": query}} for query in queries
+        ]),
+    )
+    await facade.reply(
+        "再找一次缺失资料好吗？", "grounded-tool-reply", discussion=False,
+    )
+    replies = [messages for kind, messages, _ in llm.calls if kind == "reply"]
+    assert tools.calls == [("local_search", {"query": query}) for query in queries]
+    assert len(replies) >= 2 and "必要的补充" in replies[-1][-1]["content"]
+    for messages in replies:
+        system = messages[0]["content"]
+        assert all(f'"query": "{query}"' in system for query in queries)
+        assert all(rule in system for rule in (
+            "本轮[实际调用步骤状态]", "未执行的策略只能作为建议",
+            "不得把本轮调用说成上次",
+        ))
+
+
 async def test_reply_slow_no_tool_calls() -> None:
     facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
         energy=100.0, arousal=0.0
@@ -897,6 +936,7 @@ async def test_reply_slow_no_tool_calls() -> None:
     await facade.reply("在吗", "corr-empty")
     think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
     assert "[工具查询结果]" not in think_system
+    assert "[工具执行叙述约束]" not in think_system
     assert [t for t, _m, _c in llm.calls][0] == "plan"
 
 

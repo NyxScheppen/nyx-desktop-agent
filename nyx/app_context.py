@@ -167,8 +167,9 @@ class _App:
                 if sequence and self.database is not None:
                     async with self.database.transaction() as conn:
                         await conn.execute(
-                            "INSERT OR REPLACE INTO presence_checkpoint VALUES "
-                            "('self', ?, ?)",
+                            "INSERT INTO presence_checkpoint VALUES ('self', ?, ?) "
+                            "ON CONFLICT(id) DO UPDATE SET "
+                            "sequence=excluded.sequence, snapshot=excluded.snapshot",
                             (sequence, json.dumps(before)),
                         )
                 return False
@@ -251,8 +252,9 @@ class _App:
                         await self.bus.append_in_transaction(event)
                         appended = not existed
                         await conn.execute(
-                            "INSERT OR REPLACE INTO presence_checkpoint VALUES "
-                            "('self', ?, ?)",
+                            "INSERT INTO presence_checkpoint VALUES ('self', ?, ?) "
+                            "ON CONFLICT(id) DO UPDATE SET "
+                            "sequence=excluded.sequence, snapshot=excluded.snapshot",
                             (sequence, json.dumps(snapshot)),
                         )
                 else:
@@ -596,7 +598,8 @@ class _Host:
         snapshot = dict(record)
         async with self.database.transaction() as conn:
             await conn.execute(
-                "INSERT OR REPLACE INTO characters VALUES (?, ?)",
+                "INSERT INTO characters VALUES (?, ?) ON CONFLICT(id) DO UPDATE "
+                "SET record=excluded.record",
                 (record["id"], json.dumps(snapshot)),
             )
         self.records[record["id"]] = snapshot
@@ -924,16 +927,20 @@ class _Host:
                 )
                 payload.update(_presence_accepted=accepted, _clock_reset=clock_reset)
                 cursor = await conn.execute(
-                    "INSERT INTO presence_samples(sample_id, payload) VALUES (?, ?)",
+                    "INSERT INTO presence_samples(sample_id, payload) VALUES (?, ?) "
+                    "RETURNING sequence",
                     (payload["sample_id"], json.dumps(payload)),
                 )
-                sequence = cursor.lastrowid
+                inserted = await cursor.fetchone()
+                assert inserted is not None
+                sequence = inserted["sequence"]
                 assert sequence is not None
                 if accepted:
                     public = dict(payload, window_title="")
                     await conn.execute(
-                        "INSERT OR REPLACE INTO presence_current VALUES ('self', "
-                        "?, ?, ?)",
+                        "INSERT INTO presence_current VALUES ('self', ?, ?, ?) "
+                        "ON CONFLICT(id) DO UPDATE SET sequence=excluded.sequence, "
+                        "payload=excluded.payload, received_at=excluded.received_at",
                         (sequence, json.dumps(public), received_at),
                     )
                 for identity, record in self.records.items():

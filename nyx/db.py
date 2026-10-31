@@ -4,7 +4,7 @@ import json
 import os
 import re
 import sqlite3
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -130,7 +130,9 @@ class PostgresConnection:
         self._raw = raw
 
     async def execute(
-        self, sql: str, parameters: tuple[Any, ...] | list[Any] | None = None
+        self,
+        sql: str,
+        parameters: tuple[Any, ...] | list[Any] | Mapping[str, Any] | None = None,
     ) -> Any:
         statement = _sqlite_sql_to_postgres(sql)
         if parameters is None:
@@ -152,6 +154,9 @@ class PostgresConnection:
 
     async def close(self) -> None:
         await self._raw.close()
+
+
+Connection = aiosqlite.Connection | PostgresConnection
 
 
 async def connect_postgres(url: str) -> PostgresConnection:
@@ -232,7 +237,7 @@ class Database:
     conn 全项目共享；lock 串行化并发访问（同一连接不能并发 execute/commit）。
     """
 
-    conn: aiosqlite.Connection
+    conn: Connection
     lock: asyncio.Lock
     lock_timeout: float = DB_LOCK_TIMEOUT
     operation_timeout: float = DB_OPERATION_TIMEOUT
@@ -291,7 +296,7 @@ class Database:
         return self._transaction_state.get()
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator[aiosqlite.Connection, None]:
+    async def transaction(self) -> AsyncGenerator[Connection, None]:
         """Run one bounded local transaction under the shared DB lock."""
         if self.in_transaction:
             raise RuntimeError("不允许嵌套 Database.transaction()")
@@ -1178,12 +1183,28 @@ async def connect(
     path: str | None = None,
     *,
     migrations: list[tuple[int, list[str]]] | None = None,
+    schema: str = "public",
 ) -> Database:
     """打开（或创建）SQLite：设 pragma + row_factory，跑迁移，返回 conn+lock 捆绑。
 
     path 优先级：显式参数 > NYX_DB env > 旧默认 nyx.db（若存在）
     > 新默认 data/nyx.db。
     """
+    postgres_url = resolve_postgres_url()
+    if postgres_url is not None:
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", schema):
+            raise ValueError("PostgreSQL schema 名称非法")
+        conn = await connect_postgres(postgres_url)
+        try:
+            quoted_schema = '"' + schema.replace('"', '""') + '"'
+            await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {quoted_schema}")
+            await conn.execute(f"SET search_path TO {quoted_schema}")
+            await migrate_postgres(conn, migrations=migrations)
+        except BaseException:
+            await conn.close()
+            raise
+        return Database(conn=conn, lock=asyncio.Lock())
+
     resolved = resolve_db_path(path)
     if resolved != ":memory:":
         Path(resolved).parent.mkdir(parents=True, exist_ok=True)

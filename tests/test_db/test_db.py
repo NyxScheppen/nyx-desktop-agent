@@ -189,6 +189,50 @@ async def test_migrate_postgres_initializes_schema_and_rolls_back_failures(
 
 
 @pytest.mark.asyncio
+async def test_connect_uses_postgres_schema_and_closes_on_migration_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Raw:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.closed = False
+
+        async def execute(self, sql: str, parameters: object = None) -> None:
+            self.calls.append(sql)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    raw = _Raw()
+    connection = db.PostgresConnection(raw)  # type: ignore[arg-type]
+    migrated: list[tuple[db.PostgresConnection, object]] = []
+
+    async def fake_connect(url: str) -> db.PostgresConnection:
+        assert url == "postgresql://nyx:secret@localhost/nyx"
+        return connection
+
+    async def fake_migrate(
+        conn: db.PostgresConnection,
+        *,
+        migrations: list[tuple[int, list[str]]] | None = None,
+    ) -> None:
+        migrated.append((conn, migrations))
+        raise RuntimeError("migration failed")
+
+    monkeypatch.setenv("NYX_DATABASE_URL", "postgresql://nyx:secret@localhost/nyx")
+    monkeypatch.setattr(db, "connect_postgres", fake_connect)
+    monkeypatch.setattr(db, "migrate_postgres", fake_migrate)
+    with pytest.raises(RuntimeError, match="migration failed"):
+        await db.connect("ignored.sqlite", schema="character_nyx")
+    assert raw.calls == [
+        'CREATE SCHEMA IF NOT EXISTS "character_nyx"',
+        'SET search_path TO "character_nyx"',
+    ]
+    assert migrated == [(connection, None)]
+    assert raw.closed
+
+
+@pytest.mark.asyncio
 async def test_postgres_connection_translates_execute_and_forwards_lifecycle() -> None:
     class _Raw:
         def __init__(self) -> None:

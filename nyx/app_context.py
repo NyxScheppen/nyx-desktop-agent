@@ -371,7 +371,10 @@ async def build_app_context(
     character: dict[str, Any] | None = None,
 ) -> _App:
     """Build stores and facades in dependency order, then seed local state."""
-    db: Database = await connect(character["db_path"] if character else None)
+    db: Database = await connect(
+        character["db_path"] if character else None,
+        schema=f"character_{character['id']}" if character else "public",
+    )
     try:
         llm = host.llm.fork() if host else LlmClient.from_config(config.llm)
         bus = EventBus(db)
@@ -527,7 +530,9 @@ class _Host:
     async def open(cls, config: Config, root: Path) -> _Host:
         """Load registry, retain legacy Nyx paths and recover registered saves."""
         db = await connect(
-            str(root / "data/characters/host.db"), migrations=_HOST_MIGRATIONS
+            str(root / "data/characters/host.db"),
+            migrations=_HOST_MIGRATIONS,
+            schema="host",
         )
         host: _Host | None = None
         try:

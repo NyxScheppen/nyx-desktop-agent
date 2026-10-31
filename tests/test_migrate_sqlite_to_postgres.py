@@ -106,3 +106,14 @@ def test_foreign_key_table_order_rejects_a_dependency_cycle(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="foreign key cycle"):
         foreign_key_table_order(connection)
     connection.close()
+
+
+def test_foreign_key_table_order_allows_self_referential_rows(tmp_path: Path) -> None:
+    connection = sqlite3.connect(tmp_path / "self-reference.db")
+    connection.execute(
+        "CREATE TABLE segment (id TEXT PRIMARY KEY, previous_id TEXT "
+        "REFERENCES segment(id))"
+    )
+
+    assert foreign_key_table_order(connection) == ["segment"]
+    connection.close()

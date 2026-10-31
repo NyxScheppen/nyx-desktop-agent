@@ -128,7 +128,7 @@ def foreign_key_table_order(connection: sqlite3.Connection) -> list[str]:
             for row in connection.execute(
                 f'PRAGMA foreign_key_list("{table.replace(chr(34), chr(34) * 2)}")'
             ).fetchall()
-            if str(row[2]) in tables
+            if str(row[2]) in tables and str(row[2]) != table
         }
         for table in tables
     }
@@ -257,10 +257,6 @@ def _copy_character_files(
         shutil.copytree(source_path, target_path)
 
 
-def _drop_schema(connection: Any, schema: str) -> None:
-    connection.execute(f"DROP SCHEMA IF EXISTS {_quote_identifier(schema)} CASCADE")
-
-
 def _create_schema(
     connection: Any, schema: str, migrations: list[tuple[int, list[str]]]
 ) -> None:
@@ -274,6 +270,10 @@ def _create_schema(
     connection.execute("INSERT INTO schema_version (version) VALUES (%s)", (version,))
 
 
+def _drop_schema(connection: Any, schema: str) -> None:
+    connection.execute(f"DROP SCHEMA IF EXISTS {_quote_identifier(schema)} CASCADE")
+
+
 def _copy_table(
     source: sqlite3.Connection,
     target: Any,
@@ -281,7 +281,7 @@ def _copy_table(
     table: str,
     *,
     event_sequence: bool = False,
-) -> tuple[int, list[tuple[Any, ...]]]:
+) -> int:
     source_columns = _sqlite_columns(source, table)
     target_columns = _target_table_columns(target, schema, table)
     if not target_columns:
@@ -290,26 +290,27 @@ def _copy_table(
     if event_sequence and "event_seq" not in columns:
         columns.append("event_seq")
     select_columns = ", ".join(_quote_identifier(column) for column in source_columns)
-    rows = source.execute(
+    cursor = source.execute(
         f'SELECT rowid, {select_columns} FROM "{table.replace(chr(34), chr(34) * 2)}" '
         "ORDER BY rowid"
-    ).fetchall()
+    )
     positions = {column: index + 1 for index, column in enumerate(source_columns)}
-    values: list[tuple[Any, ...]] = []
-    for row in rows:
-        values.append(
+    target_ref = f"{_quote_identifier(schema)}.{_quote_identifier(table)}"
+    column_sql = ", ".join(_quote_identifier(column) for column in columns)
+    placeholders = ", ".join(["%s"] * len(columns))
+    count = 0
+    while rows := cursor.fetchmany(500):
+        values = [
             tuple(
                 row[positions[column]] if column in positions else row[0]
                 for column in columns
             )
-        )
-    target_ref = f"{_quote_identifier(schema)}.{_quote_identifier(table)}"
-    column_sql = ", ".join(_quote_identifier(column) for column in columns)
-    placeholders = ", ".join(["%s"] * len(columns))
-    if values:
+            for row in rows
+        ]
         target.cursor().executemany(
             f"INSERT INTO {target_ref} ({column_sql}) VALUES ({placeholders})", values
         )
+        count += len(values)
     sequence = (
         source.execute(
             "SELECT seq FROM sqlite_sequence WHERE name=?", (table,)
@@ -331,12 +332,12 @@ def _copy_table(
                     "SELECT setval(%s::regclass, %s, true)",
                     (sequence_name, int(sequence[0])),
                 )
-    return len(values), values
+    return count
 
 
 def _validate_schema_version(target: Any, schema: str, expected: int) -> None:
     row = target.execute(
-        f'SELECT version FROM "{schema}".schema_version ORDER BY ctid DESC LIMIT 1'
+        f'SELECT version FROM "{schema}".schema_version LIMIT 1'
     ).fetchone()
     if row is None or int(row[0]) != expected:
         raise ValueError(f"schema version mismatch for {schema}")
@@ -483,7 +484,7 @@ def import_source(source: Path, target_root: Path, database_url: str) -> dict[st
                     )
                     count = len(values)
                 else:
-                    count, _ = _copy_table(host_source, target, "host", table)
+                    count = _copy_table(host_source, target, "host", table)
                 _validate_table(host_source, target, "host", table, count)
                 row_counts.setdefault("host", {})[table] = count
             _validate_host_records(host_source, target, target_root)
@@ -512,7 +513,7 @@ def import_source(source: Path, target_root: Path, database_url: str) -> dict[st
                 for table in foreign_key_table_order(character_source):
                     if table == "schema_version":
                         continue
-                    count, _ = _copy_table(
+                    count = _copy_table(
                         character_source,
                         target,
                         schema,

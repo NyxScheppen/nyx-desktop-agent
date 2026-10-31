@@ -5,9 +5,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any, cast
+
+import psycopg
+
+from nyx.app_context import _HOST_MIGRATIONS  # pyright: ignore[reportPrivateUsage]
+from nyx.db import (
+    _MIGRATIONS,  # pyright: ignore[reportPrivateUsage]
+    postgres_migrations,
+)
+
+_SKIPPED_TABLES = {"checkpoints", "writes"}
 
 
 def _data_root(source: Path) -> Path:
@@ -32,9 +44,7 @@ def _inspect_database(path: Path) -> dict[str, Any]:
         tables = {
             str(row["name"]): int(
                 connection.execute(
-                    'SELECT COUNT(*) FROM "'
-                    + str(row["name"]).replace('"', '""')
-                    + '"'
+                    'SELECT COUNT(*) FROM "' + str(row["name"]).replace('"', '""') + '"'
                 ).fetchone()[0]
             )
             for row in connection.execute(
@@ -103,14 +113,478 @@ def inspect_source(source: Path) -> dict[str, Any]:
     return {"data_root": str(data_root), "host": host, "characters": characters}
 
 
+def foreign_key_table_order(connection: sqlite3.Connection) -> list[str]:
+    tables = [
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        if str(row[0]) not in _SKIPPED_TABLES
+    ]
+    dependencies = {
+        table: {
+            str(row[2])
+            for row in connection.execute(
+                f'PRAGMA foreign_key_list("{table.replace(chr(34), chr(34) * 2)}")'
+            ).fetchall()
+            if str(row[2]) in tables
+        }
+        for table in tables
+    }
+    ordered: list[str] = []
+    remaining = set(tables)
+    while remaining:
+        ready = sorted(
+            table for table in remaining if not dependencies[table] & remaining
+        )
+        if not ready:
+            raise ValueError("foreign key cycle in SQLite schema")
+        ordered.extend(ready)
+        remaining.difference_update(ready)
+    return ordered
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _sqlite_columns(connection: sqlite3.Connection, table: str) -> list[str]:
+    return [
+        str(row[1])
+        for row in connection.execute(
+            f'PRAGMA table_info("{table.replace(chr(34), chr(34) * 2)}")'
+        ).fetchall()
+    ]
+
+
+def _sqlite_primary_key(connection: sqlite3.Connection, table: str) -> list[str]:
+    return [
+        str(row[1])
+        for row in sorted(
+            connection.execute(
+                f'PRAGMA table_info("{table.replace(chr(34), chr(34) * 2)}")'
+            ).fetchall(),
+            key=lambda row: int(row[5]),
+        )
+        if int(row[5]) > 0
+    ]
+
+
+def _target_table_columns(connection: Any, schema: str, table: str) -> list[str]:
+    rows = connection.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position",
+        (schema, table),
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _target_table_names(connection: Any, schema: str) -> list[str]:
+    rows = connection.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema=%s AND table_type='BASE TABLE' ORDER BY table_name",
+        (schema,),
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _target_schema_is_empty(connection: Any, schema: str) -> bool:
+    row = connection.execute(
+        "SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n "
+        "ON n.oid=c.relnamespace WHERE n.nspname=%s) OR EXISTS "
+        "(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+        "WHERE n.nspname=%s) OR EXISTS (SELECT 1 FROM pg_type t "
+        "JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname=%s)",
+        (schema, schema, schema),
+    ).fetchone()
+    return not bool(row[0])
+
+
+def _target_schema_exists(connection: Any, schema: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM information_schema.schemata WHERE schema_name=%s",
+        (schema,),
+    ).fetchone()
+    return row is not None
+
+
+def _schema_name(character_id: str) -> str:
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", character_id):
+        raise ValueError(
+            f"character id cannot become a PostgreSQL schema: {character_id}"
+        )
+    return f"character_{character_id}"
+
+
+def _rewrite_character_record(
+    record: dict[str, Any], target_root: Path
+) -> dict[str, Any]:
+    character_id = str(record["id"])
+    base = target_root / "characters" / character_id
+    rewritten = dict(record)
+    rewritten.update(
+        {
+            "db_path": str(base / f"{character_id}.db"),
+            "card_path": str(base / "card"),
+            "workspace": str(base / "workspace"),
+        }
+    )
+    return rewritten
+
+
+def _copy_character_files(
+    source_record: dict[str, Any], target_root: Path, copied: list[Path]
+) -> None:
+    character_id = str(source_record["id"])
+    destination = target_root / "characters" / character_id
+    if not destination.exists():
+        destination.mkdir(parents=True, exist_ok=True)
+        copied.append(destination)
+    for field, child in (("card_path", "card"), ("workspace", "workspace")):
+        source_value = source_record.get(field)
+        if not isinstance(source_value, str):
+            continue
+        source_path = Path(source_value)
+        if not source_path.is_dir():
+            raise ValueError(f"registered character {field} is missing: {source_path}")
+        target_path = destination / child
+        if target_path.exists():
+            if source_path.resolve() == target_path.resolve():
+                continue
+            raise ValueError(f"migration target already contains {target_path}")
+        copied.append(target_path)
+        shutil.copytree(source_path, target_path)
+
+
+def _drop_schema(connection: Any, schema: str) -> None:
+    connection.execute(f"DROP SCHEMA IF EXISTS {_quote_identifier(schema)} CASCADE")
+
+
+def _create_schema(
+    connection: Any, schema: str, migrations: list[tuple[int, list[str]]]
+) -> None:
+    connection.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier(schema)}")
+    connection.execute(f"SET search_path TO {_quote_identifier(schema)}")
+    for statement in migrations[0][1]:
+        connection.execute(statement)
+    source = _HOST_MIGRATIONS if schema == "host" else _MIGRATIONS
+    version = max(version for version, _ in source)
+    connection.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    connection.execute("INSERT INTO schema_version (version) VALUES (%s)", (version,))
+
+
+def _copy_table(
+    source: sqlite3.Connection,
+    target: Any,
+    schema: str,
+    table: str,
+    *,
+    event_sequence: bool = False,
+) -> tuple[int, list[tuple[Any, ...]]]:
+    source_columns = _sqlite_columns(source, table)
+    target_columns = _target_table_columns(target, schema, table)
+    if not target_columns:
+        raise ValueError(f"target schema is missing table {schema}.{table}")
+    columns = [column for column in source_columns if column in target_columns]
+    if event_sequence and "event_seq" not in columns:
+        columns.append("event_seq")
+    select_columns = ", ".join(_quote_identifier(column) for column in source_columns)
+    rows = source.execute(
+        f'SELECT rowid, {select_columns} FROM "{table.replace(chr(34), chr(34) * 2)}" '
+        "ORDER BY rowid"
+    ).fetchall()
+    positions = {column: index + 1 for index, column in enumerate(source_columns)}
+    values: list[tuple[Any, ...]] = []
+    for row in rows:
+        values.append(
+            tuple(
+                row[positions[column]] if column in positions else row[0]
+                for column in columns
+            )
+        )
+    target_ref = f"{_quote_identifier(schema)}.{_quote_identifier(table)}"
+    column_sql = ", ".join(_quote_identifier(column) for column in columns)
+    placeholders = ", ".join(["%s"] * len(columns))
+    if values:
+        target.cursor().executemany(
+            f"INSERT INTO {target_ref} ({column_sql}) VALUES ({placeholders})", values
+        )
+    sequence = (
+        source.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name=?", (table,)
+        ).fetchone()
+        if source.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='sqlite_sequence'"
+        ).fetchone()
+        else None
+    )
+    if sequence is not None:
+        primary_key = _sqlite_primary_key(source, table)
+        if primary_key:
+            sequence_name = target.execute(
+                "SELECT pg_get_serial_sequence(%s, %s)",
+                (f"{schema}.{table}", primary_key[0]),
+            ).fetchone()[0]
+            if sequence_name:
+                target.execute(
+                    "SELECT setval(%s::regclass, %s, true)",
+                    (sequence_name, int(sequence[0])),
+                )
+    return len(values), values
+
+
+def _validate_schema_version(target: Any, schema: str, expected: int) -> None:
+    row = target.execute(
+        f'SELECT version FROM "{schema}".schema_version ORDER BY ctid DESC LIMIT 1'
+    ).fetchone()
+    if row is None or int(row[0]) != expected:
+        raise ValueError(f"schema version mismatch for {schema}")
+
+
+def _validate_table(
+    source: sqlite3.Connection,
+    target: Any,
+    schema: str,
+    table: str,
+    source_count: int,
+) -> None:
+    target_ref = f"{_quote_identifier(schema)}.{_quote_identifier(table)}"
+    count = int(target.execute(f"SELECT COUNT(*) FROM {target_ref}").fetchone()[0])
+    if count != source_count:
+        raise ValueError(
+            f"row count mismatch for {schema}.{table}: {source_count} != {count}"
+        )
+    primary_key = _sqlite_primary_key(source, table)
+    if not primary_key:
+        return
+    columns = ", ".join(_quote_identifier(column) for column in primary_key)
+    source_keys = {
+        tuple(row)
+        for row in source.execute(
+            f'SELECT {columns} FROM "{table.replace(chr(34), chr(34) * 2)}"'
+        ).fetchall()
+    }
+    target_keys = {
+        tuple(row)
+        for row in target.execute(f"SELECT {columns} FROM {target_ref}").fetchall()
+    }
+    if source_keys != target_keys:
+        raise ValueError(f"primary key mismatch for {schema}.{table}")
+
+
+def _validate_event_order(source: sqlite3.Connection, target: Any, schema: str) -> None:
+    order_column = (
+        "event_seq" if "event_seq" in _sqlite_columns(source, "event_log") else "rowid"
+    )
+    source_rows = source.execute(
+        f"SELECT {order_column}, id FROM event_log ORDER BY {order_column}"
+    ).fetchall()
+    target_rows = target.execute(
+        f"SELECT event_seq, id FROM {_quote_identifier(schema)}.event_log "
+        "ORDER BY event_seq"
+    ).fetchall()
+    expected = [(int(row[0]), str(row[1])) for row in source_rows]
+    actual = [(int(row[0]), str(row[1])) for row in target_rows]
+    if expected != actual:
+        raise ValueError(f"event_log order mismatch for {schema}")
+
+
+def _validate_host_records(
+    source: sqlite3.Connection, target: Any, target_root: Path
+) -> None:
+    rows = source.execute("SELECT id, record FROM characters ORDER BY id").fetchall()
+    for row in rows:
+        identity = str(row[0])
+        expected = _rewrite_character_record(json.loads(row[1]), target_root)
+        actual_row = target.execute(
+            'SELECT record FROM "host".characters WHERE id=%s', (identity,)
+        ).fetchone()
+        if actual_row is None or json.loads(actual_row[0]) != expected:
+            raise ValueError(f"host character path mapping mismatch: {identity}")
+    for table, digest in (
+        ("device_token", "token_hash"),
+        ("pairing_code", "code_hash"),
+    ):
+        if table not in _target_table_names(target, "host"):
+            continue
+        source_rows = source.execute(
+            f'SELECT id, "{digest}" FROM "{table}" ORDER BY id'
+        ).fetchall()
+        target_rows = target.execute(
+            f'SELECT id, "{digest}" FROM "host"."{table}" ORDER BY id'
+        ).fetchall()
+        if [tuple(row) for row in source_rows] != [tuple(row) for row in target_rows]:
+            raise ValueError(f"credential hash mismatch for host.{table}")
+
+
+def import_source(source: Path, target_root: Path, database_url: str) -> dict[str, Any]:
+    """Import a read-only SQLite snapshot into empty PostgreSQL schemas."""
+    manifest = inspect_source(source)
+    data_root = Path(manifest["data_root"])
+    target_root = target_root.resolve()
+    target_root.mkdir(parents=True, exist_ok=True)
+    target = psycopg.connect(database_url)
+    prepared_schemas: list[str] = []
+    copied: list[Path] = []
+    row_counts: dict[str, dict[str, int]] = {}
+    try:
+        schemas = ["host"] + [
+            _schema_name(str(item["id"])) for item in manifest["characters"]
+        ]
+        if int(manifest["host"]["version"]) != 2:
+            raise ValueError("host SQLite schema must be version 2 before migration")
+        for schema in schemas:
+            if _target_schema_exists(target, schema) and not _target_schema_is_empty(
+                target, schema
+            ):
+                raise ValueError(f"migration target schema is not empty: {schema}")
+        for item in manifest["characters"]:
+            if int(item["database"]["version"]) not in (51, 52):
+                raise ValueError(
+                    f"character {item['id']} SQLite schema must be version 51 or 52"
+                )
+        host_migrations = postgres_migrations(_HOST_MIGRATIONS)
+        character_migrations = postgres_migrations(_MIGRATIONS)
+        for schema, migrations in (
+            ("host", host_migrations),
+            *zip(schemas[1:], [character_migrations] * len(schemas[1:])),
+        ):
+            _create_schema(target, schema, migrations)
+            prepared_schemas.append(schema)
+
+        host_path = data_root / "characters" / "host.db"
+        host_source = sqlite3.connect(
+            f"{host_path.resolve().as_uri()}?mode=ro", uri=True
+        )
+        try:
+            for table in foreign_key_table_order(host_source):
+                if table == "schema_version":
+                    continue
+                if table == "characters":
+                    rows = host_source.execute(
+                        "SELECT id, record FROM characters ORDER BY rowid"
+                    ).fetchall()
+                    values = [
+                        (
+                            str(row[0]),
+                            json.dumps(
+                                _rewrite_character_record(
+                                    json.loads(row[1]), target_root
+                                )
+                            ),
+                        )
+                        for row in rows
+                    ]
+                    target.cursor().executemany(
+                        'INSERT INTO "host"."characters" '
+                        '("id", "record") VALUES (%s, %s)',
+                        values,
+                    )
+                    count = len(values)
+                else:
+                    count, _ = _copy_table(host_source, target, "host", table)
+                _validate_table(host_source, target, "host", table, count)
+                row_counts.setdefault("host", {})[table] = count
+            _validate_host_records(host_source, target, target_root)
+            _validate_schema_version(target, "host", 2)
+        finally:
+            host_source.close()
+
+        for item in manifest["characters"]:
+            character_id = str(item["id"])
+            schema = _schema_name(character_id)
+            source_path = Path(item["database"]["path"])
+            character_source = sqlite3.connect(
+                f"{source_path.resolve().as_uri()}?mode=ro", uri=True
+            )
+            try:
+                for table in _SKIPPED_TABLES:
+                    if table in item["database"]["tables"] and int(
+                        character_source.execute(
+                            f'SELECT COUNT(*) FROM "{table}"'
+                        ).fetchone()[0]
+                    ):
+                        raise ValueError(
+                            f"character {character_id} has non-empty {table}; "
+                            "finish pending workflows before migration"
+                        )
+                for table in foreign_key_table_order(character_source):
+                    if table == "schema_version":
+                        continue
+                    count, _ = _copy_table(
+                        character_source,
+                        target,
+                        schema,
+                        table,
+                        event_sequence=table == "event_log",
+                    )
+                    _validate_table(character_source, target, schema, table, count)
+                    row_counts.setdefault(schema, {})[table] = count
+                _validate_event_order(character_source, target, schema)
+                _validate_schema_version(target, schema, 52)
+            finally:
+                character_source.close()
+            _copy_character_files({**item, "id": character_id}, target_root, copied)
+        target.commit()
+    except BaseException:
+        target.rollback()
+        for schema in reversed(prepared_schemas):
+            _drop_schema(target, schema)
+        target.commit()
+        for path in reversed(copied):
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists():
+                path.unlink()
+        raise
+    finally:
+        target.close()
+    return {
+        "target_data_root": str(target_root),
+        "schemas": schemas,
+        "rows": row_counts,
+        "source": str(data_root),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--database-url-env", default="NYX_DATABASE_URL")
+    parser.add_argument(
+        "--inspect-only",
+        action="store_true",
+        help="print the source manifest without importing it",
+    )
+    parser.add_argument(
+        "--import",
+        dest="run_import",
+        action="store_true",
+        help="import the source snapshot into PostgreSQL",
+    )
+    parser.add_argument(
+        "--target-data-root",
+        type=Path,
+        help="destination /app/data-compatible root for the import",
+    )
     args = parser.parse_args()
-    if not os.environ.get(args.database_url_env):
+    if not args.run_import or args.inspect_only:
+        print(json.dumps(inspect_source(args.source), ensure_ascii=False, indent=2))
+        return 0
+    database_url = os.environ.get(args.database_url_env)
+    if not database_url:
         parser.error(f"{args.database_url_env} is not set")
-    print(json.dumps(inspect_source(args.source), ensure_ascii=False, indent=2))
+    if args.target_data_root is None:
+        parser.error("--target-data-root is required with --import")
+    target_root = args.target_data_root
+    print(
+        json.dumps(
+            import_source(args.source, target_root, database_url),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

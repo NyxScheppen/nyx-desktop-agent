@@ -58,7 +58,10 @@
 
 ## SQLite 到 PostgreSQL 迁移
 
-迁移入口：`python -m scripts.migrate_sqlite_to_postgres --source <data-root> --database-url-env NYX_DATABASE_URL`。
+迁移预检入口：`python -m scripts.migrate_sqlite_to_postgres --source <data-root>`；预检只读并输出
+host/角色数据库、版本、行数和文件目录。实际导入必须显式使用
+`--import --target-data-root <data-root>`，并通过 `NYX_DATABASE_URL`（或
+`--database-url-env` 指定的环境变量）提供目标 PostgreSQL URL。
 
 1. 预检发现 host SQLite、所有已登记角色 SQLite、schema 版本和角色文件目录；只读，不改源。
 2. 目标只允许为空的 host/character schema。已有目标数据时停止，不覆盖、不合并。
@@ -67,6 +70,10 @@
 5. 校验每个表的行数、主键集合、event_log 顺序、schema 版本、角色注册路径映射及 device token hash。
 6. 所有 schema 和文件校验通过后才写出成功报告。失败时删除本次创建的目标 schema/新复制文件，源数据保持原状；不能在失败时留下可启动的半迁移目标。
 7. 迁移完成后通过设置 `NYX_DATABASE_URL` 显式切换运行时。回退时先停止写入并保留 PostgreSQL；恢复旧 SQLite 只代表切回迁移前快照，迁移后新增的云端写入不会自动回灌。
+
+导入器当前接受 host schema 2 和角色 schema 51/52；schema 51 的 `event_log.rowid`
+会显式映射为目标 schema 52 的 `event_seq`。非空 SQLite checkpoint 表暂不导入，导入器会拒绝
+继续，避免把 SQLite saver 布局静默写入 PostgreSQL 官方 saver 表。
 
 迁移工具不得导出 token 原文；凭证表只搬运摘要。PostgreSQL URL 通过指定环境变量名读取，报告仅记录目标 schema 和校验结果，不输出连接凭证。
 

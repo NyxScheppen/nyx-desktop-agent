@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.migrate_sqlite_to_postgres import inspect_source
+from scripts.migrate_sqlite_to_postgres import foreign_key_table_order, inspect_source
 
 
 def _database(path: Path, version: int, rows: int = 0) -> None:
@@ -74,3 +74,35 @@ def test_inspect_source_rejects_missing_registered_character_database(
 
     with pytest.raises(ValueError, match="alice"):
         inspect_source(data)
+
+
+def test_foreign_key_table_order_imports_parent_before_child(tmp_path: Path) -> None:
+    path = tmp_path / "dependencies.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        "CREATE TABLE parent (id TEXT PRIMARY KEY);"
+        "CREATE TABLE child (id TEXT PRIMARY KEY, parent_id TEXT "
+        "REFERENCES parent(id));"
+        "CREATE TABLE child_note (id TEXT PRIMARY KEY, child_id TEXT "
+        "REFERENCES child(id));"
+    )
+
+    order = foreign_key_table_order(connection)
+
+    assert order.index("parent") < order.index("child")
+    assert order.index("child") < order.index("child_note")
+    connection.close()
+
+
+def test_foreign_key_table_order_rejects_a_dependency_cycle(tmp_path: Path) -> None:
+    connection = sqlite3.connect(tmp_path / "cycle.db")
+    connection.executescript(
+        "CREATE TABLE first (id TEXT PRIMARY KEY, second_id TEXT "
+        "REFERENCES second(id));"
+        "CREATE TABLE second (id TEXT PRIMARY KEY, first_id TEXT "
+        "REFERENCES first(id));"
+    )
+
+    with pytest.raises(ValueError, match="foreign key cycle"):
+        foreign_key_table_order(connection)
+    connection.close()

@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nyx}
+      POSTGRES_USER: ${POSTGRES_USER:-nyx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nyx-local-only}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  nyx:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 8000
+      NYX_DATABASE_URL: postgresql://${POSTGRES_USER:-nyx}:${POSTGRES_PASSWORD:-nyx-local-only}@postgres:5432/${POSTGRES_DB:-nyx}
+      NYX_AUTH_TOKEN: ${NYX_AUTH_TOKEN:?Set NYX_AUTH_TOKEN in .env}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    ports:
+      - "${NYX_PORT:-8000}:8000"
+    volumes:
+      - nyx_data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/app/.venv/bin/python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ready', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+volumes:
+  postgres_data:
+  nyx_data:

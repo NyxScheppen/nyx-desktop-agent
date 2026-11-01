@@ -270,10 +270,6 @@ def _create_schema(
     connection.execute("INSERT INTO schema_version (version) VALUES (%s)", (version,))
 
 
-def _drop_schema(connection: Any, schema: str) -> None:
-    connection.execute(f"DROP SCHEMA IF EXISTS {_quote_identifier(schema)} CASCADE")
-
-
 def _copy_table(
     source: sqlite3.Connection,
     target: Any,
@@ -426,7 +422,6 @@ def import_source(source: Path, target_root: Path, database_url: str) -> dict[st
     target_root = target_root.resolve()
     target_root.mkdir(parents=True, exist_ok=True)
     target = psycopg.connect(database_url)
-    prepared_schemas: list[str] = []
     copied: list[Path] = []
     row_counts: dict[str, dict[str, int]] = {}
     try:
@@ -452,7 +447,6 @@ def import_source(source: Path, target_root: Path, database_url: str) -> dict[st
             *zip(schemas[1:], [character_migrations] * len(schemas[1:])),
         ):
             _create_schema(target, schema, migrations)
-            prepared_schemas.append(schema)
 
         host_path = data_root / "characters" / "host.db"
         host_source = sqlite3.connect(
@@ -530,9 +524,6 @@ def import_source(source: Path, target_root: Path, database_url: str) -> dict[st
         target.commit()
     except BaseException:
         target.rollback()
-        for schema in reversed(prepared_schemas):
-            _drop_schema(target, schema)
-        target.commit()
         for path in reversed(copied):
             if path.is_dir():
                 shutil.rmtree(path)

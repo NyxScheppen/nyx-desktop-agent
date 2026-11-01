@@ -125,6 +125,10 @@ _KEYWORD_THRESHOLD = 0.25
 _TEMPORAL_WINDOW_SECONDS = 86400.0
 _CONTENT_PREVIEW_CHARS = 60
 _NEGATION_WORDS = ("不", "没", "别", "讨厌", "恨", "拒绝", "否认", "放弃", "再也不")
+_ENGLISH_NEGATION_RE = re.compile(
+    r"\b(?:no|not|never|without|doesn't|don't|didn't|isn't|aren't|won't|can't)\b",
+    re.IGNORECASE,
+)
 _NUMBER_RE = re.compile(r"(?<![A-Za-z0-9_])\d+(?:\.\d+)?(?![A-Za-z0-9_])")
 _TIME_ANCHOR_RE = re.compile(
     r"今天|明天|后天|昨天|前天|今晚|今早|今晨|"
@@ -483,7 +487,9 @@ def _merge_fact_candidates(
 def _has_negation(text: str) -> bool:
     """新记忆正文是否含否定/转折锚点
     （软信号，非判定：命中则矛盾 prompt 提示重点核对）。纯函数。"""
-    return any(w in text for w in _NEGATION_WORDS)
+    return any(w in text for w in _NEGATION_WORDS) or bool(
+        _ENGLISH_NEGATION_RE.search(text)
+    )
 
 
 def _semantic_dedup_compatible(new: Memory, old: Memory) -> bool:

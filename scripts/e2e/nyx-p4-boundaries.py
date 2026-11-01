@@ -44,10 +44,10 @@ async def migration():
   assert (await (await d.conn.execute('SELECT max(version) FROM schema_version')).fetchone())[0]==45
   assert await (await d.conn.execute("SELECT name FROM sqlite_master WHERE name='annotation_feedback'")).fetchone() is None
   await db.migrate(d.conn)
-  assert (await (await d.conn.execute('SELECT max(version) FROM schema_version')).fetchone())[0]==51
+  assert (await (await d.conn.execute('SELECT max(version) FROM schema_version')).fetchone())[0]==52
   assert before==[tuple(x) for x in await (await d.conn.execute('SELECT * FROM annotations')).fetchall()]
  finally:await d.close()
- print('PASS schema45->51, migration rollback, existing reading table preserved',flush=True)
+ print('PASS schema45->52, migration rollback, existing reading table preserved',flush=True)
 async def inputs():
  app,fake=await new();other,_=await new()
  try:

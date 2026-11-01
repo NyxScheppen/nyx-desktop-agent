@@ -794,7 +794,7 @@ _CONTRADICTION_SIM_THRESHOLD = 0.6
 - 同 kind 语义去重与全局建边/矛盾候选复用同一个 ANN index；未命中去重后的全局 `PersistSemanticHit` 同时供语义建边和矛盾检测使用，不再创建旧的无界 `scored` 全表列表，也不重复构建 index。
 - `_PERSIST_SEMANTIC_CANDIDATE_K` 是持久化语义候选上限；它不受聊天召回的 `direct_limit` / `association_limit` 影响。
 - `embed is None`、embedding 失败、ANN index 为空或维度不一致时，语义去重与矛盾检测跳过；content hash 去重仍生效。
-- 语义去重的确定性冲突门控宁可漏合并也不误合并：否定极性不同、数字集合不同或显式时间锚点不同均视为不兼容，继续创建新记忆。
+- 语义去重的确定性冲突门控宁可漏合并也不误合并：否定极性不同、数字集合不同或显式时间锚点不同均视为不兼容，继续创建新记忆。否定检测覆盖既有中文词项及英文常见否定词的独立单词形式，不把 `notable` 等词内部子串当作否定。
 - `_detect_contradiction(memory, candidates, correlation_id)` 只接收 `PersistSemanticHit`，不再接收旧 `scored`。
 - 矛盾检测候选取 `candidates[:_CONTRADICTION_CANDIDATE_K]` 中 `cosine >= _CONTRADICTION_SIM_THRESHOLD` 的记忆。
 - 无候选或全低于阈值时不调用 LLM。

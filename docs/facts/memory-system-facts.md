@@ -142,7 +142,7 @@
   返回值仍是该次调用的新增数，累计器不重置旧值；异常继续抛出，记忆逐条提交。
   其返回值和 API 的 `created_memories` /
   `created_facts` 是本次实际新增数，重复命中为零，已有事实保留原来源。
-- chunk 精确/语义去重限定同来源；语义 cosine ≥ 0.95，并保护数字、时间与否定差异。
+- chunk 精确/语义去重限定同来源；语义 cosine ≥ 0.95，并保护数字、时间与中英文否定差异。
   digest 按 chunk ID 读取已存原文及来源，避免语义命中后用另一份正文生成证据关联。
   Facade/Store 的 `record_reading_evidence` 可选 `created_ids` 集合只记实际新增，独立写入
   commit 后加入；外层事务回滚需丢弃集合。`ingest_source.chunks` 据此返回 `dedup=new|hit`。

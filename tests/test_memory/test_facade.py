@@ -438,6 +438,8 @@ def test_build_scene_prompt() -> None:
 
 def test_has_negation() -> None:
     assert _has_negation("我不喜欢猫") is True
+    assert _has_negation("The model does not expand") is True
+    assert _has_negation("The model expands") is False
     assert _has_negation("我喜欢猫") is False
 
 

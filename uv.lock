@@ -488,6 +488,18 @@ wheels = [
 ]
 
 [[package]]
+name = "ebooklib"
+version = "0.21"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "lxml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fc/d8/a7ec6e06014057918bd58d1495af2e9c4e21cf14c93d10c625e905a8285d/ebooklib-0.21.tar.gz", hash = "sha256:fa815d544f722321c9fd31d8957473b2617027d3091431aa690d6dd93f785222", size = 148682, upload-time = "2026-11-01T14:08:59.06Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/15/72/5dde31a7b988f13ea158936e10bf82e7f6c1763201b325774ea93a0cf8ff/ebooklib-0.21-py3-none-any.whl", hash = "sha256:8cb417bed66567210661e6ef203f6310f394ad4a282f385a07320cbc09906c30", size = 52543, upload-time = "2026-11-01T14:08:57.524Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.115.6"
 source = { registry = "https://pypi.org/simple" }
@@ -1689,6 +1701,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiosqlite" },
+    { name = "ebooklib" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "langchain-core" },
@@ -1728,6 +1741,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "ebooklib", specifier = ">=0.20" },
     { name = "fastapi", specifier = "==0.115.6" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "langchain-core", specifier = "==1.5.5" },

@@ -1109,6 +1109,13 @@ Top N 再过滤来源，也会被其它来源的高分候选挤空，最终表�
 **怎么做**：统一 E2E runner 和 pytest 参数入口显式清空认证/数据库变量，并保留生产服务自身的 `.env`。
 **影响的文件/决策**：`scripts/run_e2e.py`、`tests/test_e2e_acceptance.py`。
 
+### 2026-11-03: FastAPI 推断响应模型时要检查完整路由集合
+
+**来源**：Railway 生产验收先后发现 `/api/state` 和 `/api/eval/{record_id}/prompt` 的非 Pydantic 返回类型导致请求期应用构建失败。
+**教训**：单独修复首个无效返回注解后，后续路由仍可能在每次请求时重新构建应用并触发同类错误。
+**怎么做**：为 FastAPI 无法推断响应模型的路由显式设置 `response_model=None`；验证完整 `build_app()` 路由注册和多个不同 API，而不只验证故障路由。
+**影响的文件/决策**：`nyx/api/routes.py`、FastAPI 路由构建及云端 API 验收。
+
 ### 2026-11-03: 云端 HTTPS origin 必须同时进入 Host 校验
 
 **来源**：Railway 公网域名验收时 `/api/ready` 返回 `invalid_host`。

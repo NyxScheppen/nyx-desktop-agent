@@ -488,7 +488,7 @@ def build_app(
     async def api_eval_total_tokens() -> EvalStats:
         return await app.eval_store.total_tokens()
 
-    @fast.get("/api/eval/{record_id}/prompt")
+    @fast.get("/api/eval/{record_id}/prompt", response_model=None)
     async def api_eval_prompt(
         record_id: str,
         response: Response,

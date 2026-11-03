@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.migrate_sqlite_to_postgres import foreign_key_table_order, inspect_source
+from scripts.migrate_sqlite_to_postgres import (
+    _copy_character_files,  # pyright: ignore[reportPrivateUsage]
+    _rewrite_character_record,  # pyright: ignore[reportPrivateUsage]
+    foreign_key_table_order,
+    inspect_source,
+)
 
 
 def _database(path: Path, version: int, rows: int = 0) -> None:
@@ -74,6 +79,26 @@ def test_inspect_source_rejects_missing_registered_character_database(
 
     with pytest.raises(ValueError, match="alice"):
         inspect_source(data)
+
+
+def test_migration_keeps_builtin_nyx_card_in_the_image(tmp_path: Path) -> None:
+    builtin_card = Path(__file__).parents[1] / "nyx" / "cards" / "nyx"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target_root = tmp_path / "target"
+    record = {
+        "id": "nyx",
+        "card_path": str(builtin_card),
+        "workspace": str(workspace),
+    }
+
+    rewritten = _rewrite_character_record(record, target_root)
+    copied: list[Path] = []
+    _copy_character_files(record, target_root, copied)
+
+    assert rewritten["card_path"] == str(builtin_card)
+    assert not (target_root / "characters" / "nyx" / "card").exists()
+    assert (target_root / "characters" / "nyx" / "workspace").is_dir()
 
 
 def test_foreign_key_table_order_imports_parent_before_child(tmp_path: Path) -> None:

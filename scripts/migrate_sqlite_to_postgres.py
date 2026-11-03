@@ -217,16 +217,24 @@ def _schema_name(character_id: str) -> str:
     return f"character_{character_id}"
 
 
+def _is_builtin_nyx_card(character_id: str, card_path: Path) -> bool:
+    builtin_nyx_card = Path(__file__).resolve().parents[1] / "nyx" / "cards" / "nyx"
+    return character_id == "nyx" and card_path.resolve() == builtin_nyx_card
+
+
 def _rewrite_character_record(
     record: dict[str, Any], target_root: Path
 ) -> dict[str, Any]:
     character_id = str(record["id"])
     base = target_root / "characters" / character_id
     rewritten = dict(record)
+    card_path = Path(str(record.get("card_path", "")))
     rewritten.update(
         {
             "db_path": str(base / f"{character_id}.db"),
-            "card_path": str(base / "card"),
+            "card_path": str(card_path)
+            if _is_builtin_nyx_card(character_id, card_path)
+            else str(base / "card"),
             "workspace": str(base / "workspace"),
         }
     )
@@ -246,6 +254,10 @@ def _copy_character_files(
         if not isinstance(source_value, str):
             continue
         source_path = Path(source_value)
+        if field == "card_path" and _is_builtin_nyx_card(
+            character_id, source_path
+        ):
+            continue
         if not source_path.is_dir():
             raise ValueError(f"registered character {field} is missing: {source_path}")
         target_path = destination / child

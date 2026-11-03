@@ -10,6 +10,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY packages/nyx-harness ./packages/nyx-harness
 COPY nyx ./nyx
+COPY scripts/migrate_sqlite_to_postgres.py ./scripts/
 
 RUN pip install --no-cache-dir uv \
     && uv sync --locked --no-dev --no-editable \

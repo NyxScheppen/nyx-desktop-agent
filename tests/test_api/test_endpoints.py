@@ -348,6 +348,29 @@ async def test_token_guard_protects_business_routes_and_allows_preflight(
     assert preflight.status_code == 204
 
 
+async def test_token_guard_accepts_public_origin_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NYX_AUTH_TOKEN", "test-root-token")
+    monkeypatch.setenv("NYX_PUBLIC_ORIGIN", "https://nyx.example.com")
+    async with _client(_app(_mk_state(), _FakeBus(), _FakeMemory())) as client:
+        state = await client.get(
+            "/api/state",
+            headers={
+                "Host": "nyx.example.com",
+                "Authorization": "Bearer test-root-token",
+            },
+        )
+        ready = await client.get("/api/ready", headers={"Host": "nyx.example.com"})
+        wrong_host = await client.get(
+            "/api/ready", headers={"Host": "other.example.com"}
+        )
+
+    assert state.status_code == 200
+    assert ready.status_code == 400
+    assert wrong_host.status_code == 400
+
+
 def test_public_origin_requires_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("NYX_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("NYX_PUBLIC_ORIGIN", "https://localhost:8443")

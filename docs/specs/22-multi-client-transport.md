@@ -31,6 +31,7 @@
 - 所有`/api`业务入口（含导出、上传、角色资产、命名空间和旧别名）要求Bearer头；
   `/api/ready`保留本地launcher身份握手，Caddy拒绝代理此路径。预检不要求token，严格限制Origin、方法和头。
 - 保留现有Host/Origin/Content-Type校验；新增Origin只接受配置值。
+  配置`NYX_PUBLIC_ORIGIN`时，`/api`的Host还须匹配该origin的主机和端口；未配置时继续只接受本机`localhost:8000`。
   Caddy覆盖转发Host为127.0.0.1:8000，不向公网暴露8000；HTTPS入口不代理ready。
 - 前端浏览器生产构建与API同源；Tauri生产构建仍连接回环地址。REST与SSE携带Authorization；
   角色图片通过认证fetch取得blob URL，切换/卸载释放，不把token放入URL、构建变量或日志。

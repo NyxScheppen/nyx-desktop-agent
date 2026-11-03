@@ -749,6 +749,8 @@ def install_local_guard(fast: FastAPI, host: _Host | None = None) -> None:
 
     token = os.environ.get("NYX_AUTH_TOKEN", "")
     public_origin = os.environ.get("NYX_PUBLIC_ORIGIN", "")
+    public_host: str | None = None
+    public_port: int | None = None
     if public_origin:
         parsed_origin = urlsplit(public_origin)
         if (
@@ -759,6 +761,8 @@ def install_local_guard(fast: FastAPI, host: _Host | None = None) -> None:
             raise ValueError("NYX_PUBLIC_ORIGIN must be an HTTPS origin")
         if not token:
             raise ValueError("NYX_PUBLIC_ORIGIN requires NYX_AUTH_TOKEN")
+        public_host = parsed_origin.hostname
+        public_port = parsed_origin.port if parsed_origin.port is not None else 443
     trusted_origins = frozenset(
         (
             "http://localhost:5173",
@@ -790,6 +794,18 @@ def install_local_guard(fast: FastAPI, host: _Host | None = None) -> None:
 
         try:
             request_host = urlsplit("http://" + request.headers.get("host", ""))
+            public_request = (
+                public_host is not None
+                and public_port is not None
+                and request_host.hostname == public_host
+                and (request_host.port if request_host.port is not None else 443)
+                == public_port
+                and not request_host.username
+                and not request_host.password
+                and not request_host.path
+                and not request_host.query
+                and not request_host.fragment
+            )
             valid_host = (
                 request_host.hostname in ("localhost", "127.0.0.1", "::1")
                 and request_host.port == 8000
@@ -799,9 +815,11 @@ def install_local_guard(fast: FastAPI, host: _Host | None = None) -> None:
                 and not request_host.query
                 and not request_host.fragment
             )
+            valid_host = valid_host or public_request
         except ValueError:
+            public_request = False
             valid_host = False
-        if not valid_host:
+        if not valid_host or (public_request and request.url.path == "/api/ready"):
             return reject(400, "invalid_host")
         if origin is not None and origin not in trusted_origins:
             return reject(403, "origin_forbidden")

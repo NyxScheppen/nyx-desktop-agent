@@ -88,7 +88,7 @@
 - `_Host` 是注册、当前选择、共享模型/embedding/屏幕观察和 durable presence 的宿主；每个角色独立 `_App`/Database/EventBus/Facade/工作目录、熔断和恢复预算，切换不重建运行时。
 - 宿主 `/api/observe` 要求稳定 sample_id，先保存事实和接收者，再按每角色 FIFO 独立补投；角色事件/顺序水位/转换快照同事务。重试复用原时钟判定；恢复基线不改历史事件身份。
 - 角色业务路径为 `/api/characters/{id}/…`，写请求准入检查 selection revision 后捕获运行时。SSE 带 character_id，游标为 `id:event_id`（Nyx 兼容别名同样使用组合游标）。下文未带命名空间的路径是角色业务后缀。
-- 可选 NYX_AUTH_TOKEN 在宿主和角色 guard 保护 REST、SSE 与角色图片；NYX_PUBLIC_ORIGIN 仅接受 HTTPS origin，且要求设置 token。/api/ready 仅供本地 launcher，根 Caddyfile 不代理该路由。阶段三契约见22。
+- 可选 NYX_AUTH_TOKEN 在宿主和角色 guard 保护 REST、SSE 与角色图片；NYX_PUBLIC_ORIGIN 仅接受 HTTPS origin，且要求设置 token。配置公网 origin 时，/api Host 必须匹配其主机与端口；未配置时仅接受本机 localhost:8000。/api/ready 仅供本地 launcher，根 Caddyfile 不代理该路由。阶段三契约见22。
 - `EventBus.run()` 监督意外退出的 consumer worker，恢复阶段也在 finally 清理范围内；只重启所属角色，不改变五次 delivery 和 finalize-only 语义。
 
 - 允许 Facade 之间做只读查询：当前状态、待处理欲望、记忆、当前活动、运行期观察快照。

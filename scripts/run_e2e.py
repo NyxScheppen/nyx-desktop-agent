@@ -26,6 +26,10 @@ def main() -> int:
     if not scripts:
         parser.error("no acceptance drivers found")
     env = os.environ.copy()
+    # Historical drivers build isolated in-memory apps without API auth.
+    env["NYX_AUTH_TOKEN"] = ""
+    env["NYX_DATABASE_URL"] = ""
+    env.pop("NYX_PUBLIC_ORIGIN", None)
     package_path = str(root / "packages" / "nyx-harness")
     env["PYTHONPATH"] = os.pathsep.join(
         part for part in (package_path, env.get("PYTHONPATH")) if part

@@ -7,10 +7,10 @@
 ## 当前快照
 
 - 后端测试文件：76
-- 后端测试：1429项（包含参数化实例），76个文件；最近全量1428 passed / 1 skipped（462.00s）；本轮新增 PostgreSQL URL、Railway `$PORT`、event_seq 回填、PostgreSQL 占位符/JSON 查询适配、新库 schema 编译、迁移回滚、连接清理、checkpoint saver 初始化、容器配置和 SQLite→PostgreSQL 迁移源只读发现、外键排序及自引用校验；统一 E2E 已同步 schema 52 迁移边界。
+- 后端测试：1432项（包含参数化实例），76个文件；最近全量1432 passed / 1 skipped（325.41s）；本轮覆盖 PostgreSQL URL、Railway `$PORT` 与公网 Host、公网 ready 隔离、event_seq 回填、PostgreSQL 占位符/JSON 查询适配、新库 schema 编译、迁移回滚、连接清理、checkpoint saver 初始化、autocommit/标量函数转换、容器配置和 SQLite→PostgreSQL 迁移源只读发现、正式角色迁移函数、外键排序、自引用校验及 SQLite REAL 精度映射；统一 E2E 18 个验收驱动全部通过。
 - 阶段五覆盖率：仅仓库内pytest整体87%；合并15个外部验收驱动后Nyx91.09%、含独立包91.13%，核心100%。CI已显式运行历史 E2E；90%覆盖率门槛缺口仍见 [统一待办清单](TODO.md)。
 - 阶段五：`tests/test_harness.py` 4项独立核心回归与原插件10项；`tests/test_character_host.py` 新增第二角色真实 HTTP/SSE 注册、身份 prompt、聊天隔离和卸载恢复。wheel/sdist 与隔离安装通过；发布工具回归验证 CI 的 Ruff/Pyright 同时检查独立 packages；launcher 构建回归验证 PyInstaller 显式包含独立包路径。
-- 历史 E2E 统一入口：`scripts/run_e2e.py` 按稳定顺序运行仓库内 P1-P4、插件 HTTP/SSE 及持久化/边界驱动；`tests/test_e2e_acceptance.py` 参数化复用同一集合，故意失败的红探针排除。CI 后端质量 job 显式运行该入口。
+- 历史 E2E 统一入口：`scripts/run_e2e.py` 按稳定顺序运行仓库内 P1-P4、插件 HTTP/SSE 及持久化/边界驱动；`tests/test_e2e_acceptance.py` 参数化复用同一集合，故意失败的红探针排除；两个入口隔离 `.env` 的部署认证变量，保持独立内存应用语义。CI 后端质量 job 显式运行该入口。
 - 前端测试：391项，26个文件；阶段三新增 fetch SSE、Bearer、凭证输入/清除、认证图片和凭证迟到响应隔离回归；阶段四覆盖设备 API 与配对登录。
 - 阶段三质量门（2026-10-30）：后端全量 1375 passed / 1 skipped（1376项）；Ruff/Pyright零错误。前端全量 389 passed，生产构建通过。
 - 阶段三真实本机 HTTPS：临时 Caddy 内部 CA 显式信任，通过同源页面、Chrome 登录、REST/SSE/图片 Bearer、非法 Origin、预检、`/api/ready` 阻断、1005 条提交序双 reader 续传、旧时间戳和 sink 回收；未写入系统证书库或真实数据。
@@ -138,9 +138,9 @@
 | 类型 | `tests/test_types/` | 2 | 后端 EventType 与前端 SSE 监听器同步、欲望初始状态、记忆/笔记/长期欲望可变默认值隔离 |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、SQLite/PostgreSQL URL 选择与无密钥错误、event_seq 从旧 rowid 回填、迁移与 schema52 表/索引快照、工具 checkpoint 与执行回执终局清理及未完成保留、连接打开取消时两个 worker/句柄回收、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、SQLite/PostgreSQL URL 选择与无密钥错误、PostgreSQL autocommit 与标量函数转换、event_seq 从旧 rowid 回填、迁移与 schema52 表/索引快照、PostgreSQL 正式角色 schema 编译、外键依赖排序、自引用校验与 REAL 精度映射、工具 checkpoint 与执行回执终局清理及未完成保留、连接打开取消时两个 worker/句柄回收、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、批量事件原子受理、投递状态、重试、FIFO、按 `(timestamp, id)` 回放游标、SSE |
-| API/运行时 | `tests/test_api/` | 5 | 组合根、REST、记忆搜索类别与事实作用域参数、聊天非空/12000 字符边界、旧上传端点 404、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval recent offset 分页与边界及 prompt 详情、订阅、用户消息活动快照/打断失败证据、tick、活动优先关停、恢复重放、Railway `PORT` 容器监听及非法端口、presence 原子提交、采样新旧顺序、异常输入与归来 |
+| API/运行时 | `tests/test_api/` | 5 | 组合根、REST、记忆搜索类别与事实作用域参数、聊天非空/12000 字符边界、旧上传端点 404、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval recent offset 分页与边界及 prompt 详情、订阅、用户消息活动快照/打断失败证据、tick、活动优先关停、恢复重放、Railway `PORT` 容器监听、公网 Host 白名单及非法端口、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 6 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取、执行回执完整结果持久化与单次领取、统一网页/书籍/创作/浏览器问卷任务工具 |
 | 记忆 | `tests/test_memory/` | 7 | kind/单一受控来源 topic、精确与语义去重、同内容有来源/无来源隔离、去重强化不增加真实召回、真实召回按 user event 幂等并升级、升级事务回滚按增量补偿事件计数、freshness 增量结算/回拨、episode 保守去重、原文画像/类别归因、来源及类别过滤先于排序和联想上限、embedding 延迟单次加载、ANN、带向量/关键词相关性门槛的融合召回、联想图、场景/活动 durable 重试与重放幂等、核心事务回滚、通用实体事实抽取/类型与别名索引/说话者归因/极性/多值关系、有效期替代/幂等/冲突折叠/作用域先筛后截断/有界召回、观察窗口防伪造事实、知识批量抽取与降级 |
 | 欲望 | `tests/test_desire/` | 4 | 值机制、行动优先级、strength 缩放加压、系统构造 goal、父长期欲望选择/持久化/反馈、容量裁剪、满足与 durable attempt 重放 |

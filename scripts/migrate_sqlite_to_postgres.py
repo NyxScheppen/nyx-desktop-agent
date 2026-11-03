@@ -399,11 +399,18 @@ def _validate_host_records(
         ).fetchone()
         if actual_row is None or json.loads(actual_row[0]) != expected:
             raise ValueError(f"host character path mapping mismatch: {identity}")
+    target_tables = set(_target_table_names(target, "host"))
+    source_tables = {
+        str(row[0])
+        for row in source.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
     for table, digest in (
         ("device_token", "token_hash"),
         ("pairing_code", "code_hash"),
     ):
-        if table not in _target_table_names(target, "host"):
+        if table not in source_tables or table not in target_tables:
             continue
         source_rows = source.execute(
             f'SELECT id, "{digest}" FROM "{table}" ORDER BY id'

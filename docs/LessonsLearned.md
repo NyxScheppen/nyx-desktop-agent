@@ -2,6 +2,27 @@
 
 > Nyx Agent 项目经验教训汇总。每次踩坑后追加条目，格式见底部模板。
 
+### 2026-11-01: PostgreSQL 兼容层必须清理隐式事务和 SQLite 标量函数
+
+**来源**：PostgreSQL 角色恢复与 OneBot outbox 验收。
+**教训**：普通查询在 psycopg 默认事务中会留下 `idle in transaction`，阻塞官方 checkpoint saver 的并发索引；SQLite 的 `MAX/MIN(a, b)` 标量写法和位置行下标也不能直接用于 PostgreSQL。
+**怎么做**：业务连接启用 autocommit，显式 `Database.transaction()` 保留原子边界；在 SQL 适配层转换标量 `MAX/MIN`，跨后端聚合结果统一使用具名列。
+**影响的文件/决策**：`nyx/db.py`、`nyx/events/bus.py`、`nyx/memory/store.py`、`nyx/eval/store.py`、PostgreSQL 集成回归。
+
+### 2026-11-01: PostgreSQL schema 编译必须保留外键顺序与 SQLite 数值精度
+
+**来源**：本机真实 SQLite→PostgreSQL 导入首次验收。
+**教训**：SQLite 允许按名称排序后的建表顺序和 `REAL` 32 位落库在 PostgreSQL 中失效；外键表必须先建依赖，双精度时间值不能映射到 PostgreSQL `REAL`。
+**怎么做**：从 SQLite schema 读取表间外键依赖后拓扑排序，SQLite `REAL` 映射到 PostgreSQL `DOUBLE PRECISION`，并用真实事件/事实数据做导入验收。
+**影响的文件/决策**：`nyx/db.py`、PostgreSQL schema 编译回归与迁移验收。
+
+### 2026-11-01: 迁移校验要兼容旧宿主 schema
+
+**来源**：现有 schema 2 host 库导入验收。
+**教训**：目标 schema 已包含新凭证表，不代表旧 SQLite 源也有这些表；校验直接查询源表会把合法旧存档误判为失败。
+**怎么做**：凭证摘要只在源和目标都存在对应表时比较，旧源继续保持可迁移。
+**影响的文件/决策**：`scripts/migrate_sqlite_to_postgres.py` 的 host 记录校验。
+
 ### 2026-10-30: 用户显式标注的纠错主题不能交给模型改写
 
 **来源**：真实模型批注验收中，三条明确同主题的反馈有一条漏掉 `correction_topic`，其余输出不同措辞，未达到同主题累计阈值。
@@ -1059,6 +1080,34 @@ Top N 再过滤来源，也会被其它来源的高分候选挤空，最终表�
 **教训**：数字和时间保护已经是语言无关的，否定保护若只靠单语词表会在英文来源上静默失效。
 **怎么做**：保留中文词项，并用英文单词边界识别常见否定形式；正反英文句、中文句和无否定句都要有回归。
 **影响的文件/决策**：`nyx/memory/facade.py`、`tests/test_memory/test_facade.py`、06 记忆事实摘要。
+
+### 2026-11-02: 锁定生产镜像必须声明全部运行时导入
+
+**来源**：PostgreSQL Docker 启动验收因 EPUB 模块导入失败。
+**教训**：本机环境已有的传递或手动安装依赖，不会自动进入 `uv sync --locked --no-dev` 构建的生产镜像。
+**怎么做**：新增运行时导入时同步检查项目依赖声明与锁文件，并用生产安装模式验证模块可导入。
+**影响的文件/决策**：`pyproject.toml`、`uv.lock`、Docker 镜像构建。
+
+### 2026-11-02: 迁移目标路径必须使用运行时文件系统根
+
+**来源**：Windows 主机导入 PostgreSQL 后在 Linux 容器恢复角色失败。
+**教训**：迁移器会按 `--target-data-root` 写入角色卡和 workspace 路径；主机路径可复制文件，却不能作为容器内记录。
+**怎么做**：导入时把目标根设为运行时挂载点（容器为 `/app/data`），再验收角色重启后的 `RUNNING` 状态。
+**影响的文件/决策**：`scripts/migrate_sqlite_to_postgres.py` 的目标根参数、Compose/Railway 持久化卷验收。
+
+### 2026-11-02: 独立 E2E 必须隔离部署环境变量
+
+**来源**：仓库 `.env` 的 Bearer token 被历史内存 E2E 自动加载，SSE 请求误返回 401。
+**教训**：`nyx` 自动读取 `.env` 时，部署认证配置会改变不依赖网络和认证的脚本化验收语义。
+**怎么做**：统一 E2E runner 和 pytest 参数入口显式清空认证/数据库变量，并保留生产服务自身的 `.env`。
+**影响的文件/决策**：`scripts/run_e2e.py`、`tests/test_e2e_acceptance.py`。
+
+### 2026-11-03: 云端 HTTPS origin 必须同时进入 Host 校验
+
+**来源**：Railway 公网域名验收时 `/api/ready` 返回 `invalid_host`。
+**教训**：`NYX_PUBLIC_ORIGIN` 只加入 Origin 白名单，而 API Host 仍限制为 `localhost:8000`，导致 HTTPS 反向代理可服务静态/OpenAPI 页面但拦截全部 `/api` 请求。
+**怎么做**：配置公网 origin 时，仅放行与其主机和端口匹配的 Host；未配置时保留本机 Host 限制，并用公网域名与未配置域名回归验证。
+**影响的文件/决策**：`nyx/api/routes.py`、`tests/test_api/test_endpoints.py`、阶段三 transport 契约。
 
 ## 模板（条目格式）
 

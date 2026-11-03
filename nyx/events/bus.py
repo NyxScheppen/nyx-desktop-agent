@@ -869,28 +869,28 @@ class EventBus:
         while True:
             async with self._db.lock:
                 cursor = await self._db.conn.execute(
-                    """SELECT COUNT(*)
+                    """SELECT COUNT(*) AS count
                     FROM event_delivery
                     WHERE status IN ('pending', 'processing')
                        OR (status = 'retry_wait' AND available_at <= ?)""",
                     (time.time(),),
                 )
                 row = await cursor.fetchone()
-            if row is not None and int(row[0]) == 0:
+            if row is not None and int(row["count"]) == 0:
                 return
             await asyncio.sleep(_SCAN_INTERVAL_SECONDS)
 
     async def _has_no_ready_deliveries(self) -> bool:
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                """SELECT COUNT(*)
+                """SELECT COUNT(*) AS count
                 FROM event_delivery
                 WHERE status IN ('pending', 'processing')
                    OR (status = 'retry_wait' AND available_at <= ?)""",
                 (time.time(),),
             )
             row = await cursor.fetchone()
-        return row is None or int(row[0]) == 0
+        return row is None or int(row["count"]) == 0
 
     async def _stop_workers(self, cancel: bool = False) -> None:
         tasks = list(self._workers.values())

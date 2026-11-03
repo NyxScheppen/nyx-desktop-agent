@@ -14,6 +14,9 @@ _SCRIPTS = sorted(
     if not script.name.endswith("-red.py")
 )
 _ENV = os.environ.copy()
+_ENV["NYX_AUTH_TOKEN"] = ""
+_ENV["NYX_DATABASE_URL"] = ""
+_ENV.pop("NYX_PUBLIC_ORIGIN", None)
 _ENV["PYTHONPATH"] = os.pathsep.join(
     part
     for part in (

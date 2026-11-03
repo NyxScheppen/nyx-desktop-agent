@@ -1220,10 +1220,11 @@ async def test_record_recall_rolls_back_when_promoted_event_append_fails(
         assert memory is not None
         assert memory.type is MemoryType.SHORT_TERM
         assert memory.recall_count == 0
-        marker = await database.conn.execute_fetchall(
+        marker_cursor = await database.conn.execute(
             "SELECT * FROM memory_recall_use WHERE user_event_id = ?",
             ("event-1",),
         )
+        marker = await marker_cursor.fetchall()
         assert marker == []
         assert bus.persisted_count == 1
     finally:

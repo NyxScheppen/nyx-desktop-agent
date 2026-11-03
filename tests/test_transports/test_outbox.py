@@ -1,7 +1,6 @@
 import time
 from pathlib import Path
 
-import aiosqlite
 import pytest
 
 from nyx.db import connect
@@ -83,7 +82,9 @@ async def test_outbox_recovers_expired_lease_without_resending_confirmed(
         await db.close()
 
 
-async def test_outbox_rolls_back_queue_and_confirmation_with_cursor() -> None:
+async def test_outbox_rolls_back_queue_and_confirmation_with_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from nyx.transports.outbox import TransportOutbox
 
     db = await connect(":memory:")
@@ -92,34 +93,37 @@ async def test_outbox_rolls_back_queue_and_confirmation_with_cursor() -> None:
         await outbox.initialize()
         event = root_event(EventType.SPEAK, {"content": "atomic"})
         await EventBus(db).publish(event)
-        async with db.transaction() as conn:
-            await conn.execute(
-                "CREATE TRIGGER fail_cursor BEFORE UPDATE ON transport_checkpoint "
-                "BEGIN SELECT RAISE(ABORT, 'injected'); END"
-            )
-        with pytest.raises(aiosqlite.IntegrityError, match="injected"):
+
+        original_execute = db.conn.execute
+
+        async def fail_checkpoint_update(
+            sql: str,
+            parameters: tuple[object, ...] | list[object] | None = None,
+        ) -> object:
+            if sql.startswith("UPDATE transport_checkpoint"):
+                raise RuntimeError("injected")
+            return await original_execute(sql, parameters)
+
+        monkeypatch.setattr(db.conn, "execute", fail_checkpoint_update)
+        with pytest.raises(RuntimeError, match="injected"):
             await outbox.scan()
         async with db.lock:
             rows = await (
                 await db.conn.execute("SELECT * FROM transport_outbox")
             ).fetchall()
         assert rows == []
-        async with db.transaction() as conn:
-            await conn.execute("DROP TRIGGER fail_cursor")
+        monkeypatch.setattr(db.conn, "execute", original_execute)
         await outbox.scan()
         await outbox.claim()
-        async with db.transaction() as conn:
-            await conn.execute(
-                "CREATE TRIGGER fail_cursor BEFORE UPDATE ON transport_checkpoint "
-                "BEGIN SELECT RAISE(ABORT, 'injected'); END"
-            )
-        with pytest.raises(aiosqlite.IntegrityError, match="injected"):
+        monkeypatch.setattr(db.conn, "execute", fail_checkpoint_update)
+        with pytest.raises(RuntimeError, match="injected"):
             await outbox.sent(event.id)
         async with db.lock:
             row = await (
                 await db.conn.execute("SELECT status FROM transport_outbox")
             ).fetchone()
         assert row is not None and row["status"] == "processing"
+        monkeypatch.setattr(db.conn, "execute", original_execute)
         await outbox.release()
     finally:
         await db.close()

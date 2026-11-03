@@ -84,15 +84,15 @@ class EvalStore:
         # 因共享同一调用故取值相同），再对分组结果求和。
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                "SELECT COALESCE(SUM(prompt_tokens), 0), "
-                "COALESCE(SUM(completion_tokens), 0) "
+                "SELECT COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens, "
+                "COALESCE(SUM(completion_tokens), 0) AS completion_tokens "
                 "FROM (SELECT call_id, MAX(prompt_tokens) AS prompt_tokens, "
                 "MAX(completion_tokens) AS completion_tokens "
                 "FROM eval_log GROUP BY call_id)"
             )
             row = await cursor.fetchone()
-        prompt = int(row[0]) if row is not None else 0
-        completion = int(row[1]) if row is not None else 0
+        prompt = int(row["prompt_tokens"]) if row is not None else 0
+        completion = int(row["completion_tokens"]) if row is not None else 0
         return EvalStats(
             total_tokens=prompt + completion,
             prompt_tokens=prompt,

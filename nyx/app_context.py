@@ -691,9 +691,11 @@ class _Host:
             if role != identity:
                 roots.extend((Path(record["card_path"]), Path(record["workspace"])))
         # New IDs under the characters directory are blocked even before registration.
-        for directory in (self.root / "data/characters").iterdir():
-            if directory.is_dir() and directory.name != identity:
-                roots.append(directory)
+        characters_root = self.root / "data/characters"
+        if characters_root.is_dir():
+            for directory in characters_root.iterdir():
+                if directory.is_dir() and directory.name != identity:
+                    roots.append(directory)
         boundaries = self.boundaries.setdefault(identity, [])
         boundaries[:] = roots
         return boundaries

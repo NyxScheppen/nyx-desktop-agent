@@ -517,17 +517,17 @@ class MemoryStore:
         async with self._operation():
             if kind is None:
                 cursor = await self._db.conn.execute(
-                    "SELECT COUNT(*) FROM memory WHERE first_created_at > ?",
+                    "SELECT COUNT(*) AS count FROM memory WHERE first_created_at > ?",
                     (since,),
                 )
             else:
                 cursor = await self._db.conn.execute(
-                    "SELECT COUNT(*) FROM memory "
+                    "SELECT COUNT(*) AS count FROM memory "
                     "WHERE kind = ? AND first_created_at > ?",
                     (kind.value, since),
                 )
             row = await cursor.fetchone()
-        return int(row[0]) if row is not None else 0
+        return int(row["count"]) if row is not None else 0
 
     async def strengthen(self, memory_id: str, now: float) -> None:
         """重复写入合并强化：freshness 重置，不冒充慢通道召回。
@@ -609,10 +609,10 @@ class MemoryStore:
             if should_commit:
                 await self._db.conn.execute("BEGIN")
             cursor = await self._db.conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) FROM knowledge_chunk_change"
+                "SELECT COALESCE(MAX(seq), 0) AS seq FROM knowledge_chunk_change"
             )
             row = await cursor.fetchone()
-            version = int(row[0]) if row is not None else 0
+            version = int(row["seq"]) if row is not None else 0
             if after is None:
                 cursor = await self._db.conn.execute(
                     "SELECT * FROM reading_evidence ORDER BY created_at, id"

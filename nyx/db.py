@@ -52,6 +52,8 @@ def _qmark_to_pyformat(sql: str) -> str:
 
 def _sqlite_sql_to_postgres(sql: str) -> str:
     statement = _qmark_to_pyformat(sql)
+    statement = re.sub(r"\bMAX\(\s*(0\.0)\s*,", r"GREATEST(\1,", statement)
+    statement = re.sub(r"\bMIN\(\s*(1\.0)\s*,", r"LEAST(\1,", statement)
     statement = statement.replace(
         "json_each(memory.topics)",
         "jsonb_array_elements_text(memory.topics::jsonb) AS memory_topics",
@@ -78,8 +80,9 @@ def postgres_migrations(
 ) -> list[tuple[int, list[str]]]:
     """Compile the current schema for an empty PostgreSQL database."""
     source = _MIGRATIONS if migrations is None else migrations
+    character_schema = migrations is None or migrations is _MIGRATIONS
     sqlite = sqlite3.connect(":memory:")
-    if migrations is None:
+    if character_schema:
         sqlite.create_function("nyx_raw_sha256", 1, _raw_sha256, deterministic=True)
 
     def task_source_snapshot(checkpoint: str) -> str:
@@ -99,6 +102,34 @@ def postgres_migrations(
             "ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, "
             "name"
         ).fetchall()
+        table_rows = {str(row[1]): row for row in rows if row[0] == "table"}
+        table_names = set(table_rows)
+        dependencies = {
+            table: {
+                str(row[2])
+                for row in sqlite.execute(
+                    f'PRAGMA foreign_key_list("{table.replace(chr(34), chr(34) * 2)}")'
+                ).fetchall()
+                if str(row[2]) in table_names and str(row[2]) != table
+            }
+            for table in table_names
+        }
+        ordered_tables: list[str] = []
+        remaining_tables = set(table_names)
+        while remaining_tables:
+            ready = sorted(
+                table
+                for table in remaining_tables
+                if not dependencies[table] & remaining_tables
+            )
+            if not ready:
+                raise ValueError("foreign key cycle in SQLite schema")
+            ordered_tables.extend(ready)
+            remaining_tables.difference_update(ready)
+        rows = [
+            *(table_rows[table] for table in ordered_tables),
+            *(row for row in rows if row[0] != "table"),
+        ]
     finally:
         sqlite.close()
 
@@ -111,11 +142,16 @@ def postgres_migrations(
         ):
             continue
         assert statement is not None
-        postgres.append(
-            re.sub(r"\bBLOB\b", "BYTEA", statement, flags=re.IGNORECASE)
-            .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+        statement = re.sub(
+            r"\bREAL\b", "DOUBLE PRECISION", statement, flags=re.IGNORECASE
         )
-    if migrations is None:
+        statement = re.sub(r"\bBLOB\b", "BYTEA", statement, flags=re.IGNORECASE)
+        postgres.append(
+            statement.replace(
+                "INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY"
+            )
+        )
+    if character_schema:
         postgres.extend(
             [
                 "CREATE OR REPLACE FUNCTION nyx_record_knowledge_chunk_change() "
@@ -177,7 +213,7 @@ Connection = aiosqlite.Connection | PostgresConnection
 async def connect_postgres(url: str) -> PostgresConnection:
     """Open one PostgreSQL connection with dictionary rows."""
     raw: Any = await AsyncConnection.connect(  # pyright: ignore[reportUnknownMemberType]
-        url, row_factory=cast(Any, dict_row)
+        url, autocommit=True, row_factory=cast(Any, dict_row)
     )
     return PostgresConnection(raw)
 

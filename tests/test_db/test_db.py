@@ -110,6 +110,13 @@ def test_qmark_to_pyformat_preserves_quoted_question_marks() -> None:
     assert db._sqlite_sql_to_postgres(
         "SELECT id FROM activity WHERE json_extract(progress, '$.task_id') = ?"
     ) == "SELECT id FROM activity WHERE (progress::jsonb ->> 'task_id') = %s"
+    assert db._sqlite_sql_to_postgres(
+        "UPDATE memory SET freshness=MAX(0.0, freshness-?), "
+        "strength=MIN(1.0, MAX(0.0, strength+?))"
+    ) == (
+        "UPDATE memory SET freshness=GREATEST(0.0, freshness-%s), "
+        "strength=LEAST(1.0, GREATEST(0.0, strength+%s))"
+    )
 
 
 def test_postgres_migrations_keep_schema_and_skip_existing_data_work() -> None:
@@ -133,11 +140,43 @@ def test_postgres_migrations_translate_sqlite_types_and_triggers() -> None:
 
     assert "CREATE TABLE checkpoints" not in schema_sql
     assert "CREATE TABLE writes" not in schema_sql
+    assert "valid_from DOUBLE PRECISION NOT NULL" in schema_sql
     assert "seq BIGSERIAL PRIMARY KEY" in schema_sql
     assert "CREATE TRIGGER knowledge_chunk_insert AFTER INSERT ON" in schema_sql
     assert "CREATE TRIGGER knowledge_chunk_delete AFTER DELETE ON" in schema_sql
     assert "CREATE TRIGGER knowledge_chunk_update AFTER UPDATE OF" in schema_sql
     assert "EXECUTE FUNCTION nyx_record_knowledge_chunk_change()" in schema_sql
+
+
+def test_postgres_migrations_compile_explicit_character_migrations() -> None:
+    migrations = dict(db.postgres_migrations(db._MIGRATIONS))
+    schema_sql = "\n".join(
+        statement for statements in migrations.values() for statement in statements
+    )
+
+    assert "CREATE TRIGGER knowledge_chunk_insert AFTER INSERT ON" in schema_sql
+
+
+def test_postgres_migrations_preserve_foreign_key_table_order() -> None:
+    statements = db.postgres_migrations(
+        [
+            (
+                1,
+                [
+                    "CREATE TABLE a_child (id TEXT PRIMARY KEY, parent_id TEXT "
+                    "REFERENCES z_parent(id))",
+                    "CREATE TABLE z_parent (id TEXT PRIMARY KEY)",
+                ],
+            )
+        ]
+    )[0][1]
+
+    assert statements.index("CREATE TABLE z_parent (id TEXT PRIMARY KEY)") < (
+        statements.index(
+            "CREATE TABLE a_child (id TEXT PRIMARY KEY, parent_id TEXT "
+            "REFERENCES z_parent(id))"
+        )
+    )
 
 
 def test_postgres_migrations_compile_custom_host_schema() -> None:
@@ -342,6 +381,28 @@ async def test_postgres_connection_translates_execute_and_forwards_lifecycle() -
     ]
     assert raw.executemany_calls == [("INSERT INTO t VALUES (%s)", [(1,), (2,)])]
     assert raw.committed and raw.rolled_back and raw.closed
+
+
+@pytest.mark.asyncio
+async def test_connect_postgres_uses_autocommit_for_standalone_statements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class _Raw:
+        async def close(self) -> None:
+            return None
+
+    class _AsyncConnection:
+        @staticmethod
+        async def connect(url: str, **kwargs: object) -> _Raw:
+            calls.append(kwargs)
+            return _Raw()
+
+    monkeypatch.setattr(db, "AsyncConnection", _AsyncConnection)
+    await db.connect_postgres("postgresql://nyx:secret@localhost/nyx")
+    assert len(calls) == 1 and calls[0]["autocommit"] is True
+
 
 # 非 Optional 字段对应列必须 NOT NULL（01-types 契约）
 NOT_NULL_COLUMNS = {

@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir uv \
     && ln -s /app/data/workspace /app/workspace \
     && chown -R nyx:nyx /app
 
-USER nyx
+USER root
 EXPOSE 8000
 
-CMD ["/app/.venv/bin/python", "-m", "nyx.main"]
+CMD ["sh", "-c", "chown -R nyx:nyx /app/data && exec su -s /bin/sh nyx -c '/app/.venv/bin/python -m nyx.main'"]

@@ -266,7 +266,7 @@ def build_app(
             },
         )
 
-    @fast.get("/api/state")
+    @fast.get("/api/state", response_model=None)
     async def api_state() -> CurrentState:
         return await app.inner_life.get_state()
 

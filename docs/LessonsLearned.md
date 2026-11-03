@@ -2,6 +2,13 @@
 
 > Nyx Agent 项目经验教训汇总。每次踩坑后追加条目，格式见底部模板。
 
+### 2026-11-03: FastAPI 路由返回 dataclass 时需关闭自动响应模型推断
+
+**来源**：Railway 生产验收时 `/api/state` 及复用业务路由请求返回 500。
+**教训**：FastAPI 会把路由返回类型注解当作响应模型；普通 dataclass 不是合法的 Pydantic 响应字段，导致请求期间应用重新构建路由时抛 `FastAPIError`。
+**怎么做**：返回既有 dataclass 的端点显式设置 `response_model=None`，保留 FastAPI 对返回对象的 JSON 编码。
+**影响的文件/决策**：`nyx/api/routes.py` 的 `/api/state` 路由；API 端点与角色宿主回归。
+
 ### 2026-11-01: PostgreSQL 兼容层必须清理隐式事务和 SQLite 标量函数
 
 **来源**：PostgreSQL 角色恢复与 OneBot outbox 验收。

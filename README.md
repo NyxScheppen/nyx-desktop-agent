@@ -183,10 +183,60 @@ npm run tauri build
 pip install -e ./packages/nyx-harness -e .
 
 # 配置 API Key（写入 .env，已被 .gitignore 覆盖；默认 DeepSeek）
-echo "DEEPSEEK_API_KEY=sk-xxx" > .env
+cp .env.example .env
+# 在 .env 中填写 DEEPSEEK_API_KEY；不要把真实值写进命令或提交记录
 
 python -m nyx.main        # 默认监听 8000，加 --reload 自动重启
 ```
+
+### Docker Compose（本地 PostgreSQL）
+
+Compose 会启动 Nyx 和 PostgreSQL，并把数据保存在命名 volume 中。先复制环境模板，
+再在本机生成根 token；不要把 `.env`、数据库密码或任何 API key 提交到 Git：
+
+```bash
+cp .env.example .env
+python -c "from pathlib import Path; import secrets; p=Path('.env'); s=p.read_text(); p.write_text(s.replace('NYX_AUTH_TOKEN=', 'NYX_AUTH_TOKEN=' + secrets.token_urlsafe(32), 1))"
+docker compose up --build
+```
+
+PowerShell 等价写法：
+
+```powershell
+Copy-Item .env.example .env
+$token = python -c "import secrets; print(secrets.token_urlsafe(32))"
+(Get-Content .env) -replace '^NYX_AUTH_TOKEN=.*$', "NYX_AUTH_TOKEN=$token" | Set-Content .env
+docker compose up --build
+```
+
+Compose 要求 `.env` 中提供 `NYX_AUTH_TOKEN`；`DEEPSEEK_API_KEY` 可按需填写。
+应用默认发布在 `http://localhost:8000`，停止时执行 `docker compose down`；需要清除
+本地数据库 volume 时才使用 `docker compose down -v`。
+
+### Railway（生产）
+
+生产部署使用 Railway 应用、托管 PostgreSQL 和挂载到 `/app/data` 的持久化卷。先在
+Railway 项目中创建 PostgreSQL、Nyx 后端和前端服务，再在 Railway Variables/Secrets
+中配置变量；Secret 值只在 Railway 控制台生成或粘贴，不写入仓库：
+
+- 后端：`NYX_DATABASE_URL`（引用 PostgreSQL 提供的连接 URL）、`NYX_AUTH_TOKEN`、
+  `DEEPSEEK_API_KEY`、`NYX_PUBLIC_ORIGIN`（前端 HTTPS 地址）。启用 QQ 时再配置
+  `NYX_ONEBOT_WS_URL` 和 `ONEBOT_ACCESS_TOKEN`。
+- 后端 Volume：挂载到 `/app/data`。
+- 前端：`NYX_BACKEND_URL` 使用 Nyx 后端的 Railway 私网地址（例如
+  `http://<backend-service>.railway.internal:8080`）。前端公开域名作为后端的
+  `NYX_PUBLIC_ORIGIN`，由 Railway 提供 HTTPS。
+
+部署前确认 Railway CLI 已登录并已链接目标项目；从仓库根目录执行：
+
+```bash
+railway up . --service nyx-desktop-agent --environment production
+railway up frontend --path-as-root --service nyx-frontend --environment production
+```
+
+部署后先访问前端公开 URL，再用已授权的客户端验证 `/api/state` 和 SSE `/api/events`。
+不要在终端、提交记录或 README 中输出 `NYX_AUTH_TOKEN`、`DEEPSEEK_API_KEY`、
+`ONEBOT_ACCESS_TOKEN`、PostgreSQL URL 或备份内容。
 
 ### 前端
 

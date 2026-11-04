@@ -8,7 +8,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
-COPY deploy/railway/nyx.config.yaml ./nyx.config.yaml
 COPY packages/nyx-harness ./packages/nyx-harness
 COPY nyx ./nyx
 COPY scripts/migrate_sqlite_to_postgres.py ./scripts/
@@ -19,6 +18,8 @@ RUN pip install --no-cache-dir uv \
     && mkdir -p /app/data/workspace \
     && ln -s /app/data/workspace /app/workspace \
     && chown -R nyx:nyx /app
+
+COPY deploy/railway/nyx.config.yaml ./nyx.config.yaml
 
 USER root
 EXPOSE 8000

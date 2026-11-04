@@ -13,7 +13,7 @@
 - [x] **PostgreSQL 全链路集成验收。** 本机真实 PostgreSQL 已通过 host/角色 schema 导入、运行时连接、checkpoint 初始化、角色装配恢复、presence 重启重放、设备配对、领域事务回滚和 transport outbox 重放；同时修复 PostgreSQL autocommit、标量函数和字典行读取兼容性。依据：[托管存储契约](specs/25-hosted-storage-and-postgresql.md)。
 - [x] **Railway 应用制品。** Dockerfile、Compose、本地 PostgreSQL、Volume、`$PORT`、健康检查和 secret 强制注入已完成；真实 Railway 项目部署、托管 PostgreSQL/Volume 和启动恢复仍待线上环境。
 - [ ] **公网域名与 TLS。** 配置真实域名、DNS、HTTPS 证书，验证手机蜂窝网络访问。本机 Caddy 内部 CA 验收已通过，公网入口尚未验收。依据：[多客户端与 HTTPS 契约](specs/22-multi-client-transport.md)。
-- [ ] **云端 OneBot QQ 通道。** 提供 Railway 可访问的 OneBot v11 正向 WebSocket（建议 `wss://`）及对应 secret；当前生产配置仍为本机 `ws://127.0.0.1:3001`，Railway 容器无法访问本机 NapCat/LLOneBot。接入后仅发送一次“你好”并核对 outbox/手机 QQ 展示。依据：[OneBot 契约](specs/21-onebot-transport.md)。
+- [x] **云端 OneBot QQ 通道。** Railway `napcat` 通过私网 `ws://napcat.railway.internal:3001` 连接 Nyx，配置的 QQ 私聊已完成登录；生产 outbox 真实发送验收仅发送一次“你好”并在 NapCat 日志确认。NapCat 未配置公网域名；临时本机 SSH 隧道和 Railway key 已撤销，临时 `WEBUI_TOKEN` 已删除。依据：[OneBot 契约](specs/21-onebot-transport.md)。
 - [ ] **真实手机浏览器跨网验收。** 完成配对、REST/消息往返、SSE 断线续传、凭证撤销，并验证桌面与手机共享角色状态。依据：[设备配对契约](specs/23-device-pairing.md)。
 - [x] **生产备份与隔离恢复演练。** PostgreSQL 与 `/app/data` 已导出并在隔离副本恢复，outbox 合成事件重放通过；备份位置和校验值记录在 [生产验收记录](eval/README.md#railway-生产备份与恢复演练2026-11-04)。后续备份保管、轮换和正式恢复流程由用户负责。本次未配置 Railway 平台 PITR。依据：[托管存储契约](specs/25-hosted-storage-and-postgresql.md)。
 

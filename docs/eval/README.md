@@ -151,3 +151,11 @@ R1再次请求的回复仍声称尝试了 `Missing`、`Guide`、`Synthetic` 和�
 - `SHA256SUMS.txt` 保存两份归档的 SHA-256；`README.txt` 记有格式、来源与验收范围。两份归档含生产应用数据，用户负责后续保管、轮换及正式恢复流程。
 - 恢复副本上的 `character_nyx` outbox 使用独立合成 transport 完成事件扫描、领取、确认与 checkpoint 推进验证；没有调用 QQ 或发送外部消息。恢复副本和临时 SSH key 已清理，Railway 当前无登记 SSH key。
 - 此次为“可恢复导出 + 隔离副本恢复”演练，不等同于 Railway 平台备份/PITR，也未在生产 schema 中插入或删除记录。
+
+## Railway 云端 OneBot 验收（2026-11-04）
+
+- `napcat` 与 `nyx-desktop-agent` 均为 Online；Nyx 通过 `ws://napcat.railway.internal:3001` 建立 OneBot v11 会话，QQ `3976995810` 与 owner `43686425` 身份校验通过。
+- 统一 E2E 入口 `scripts/run_e2e.py` 的18个验收驱动全部通过；全量 pytest 为 1319 passed、116 个因本机 `.env` 认证变量未按隔离入口运行而返回 401、1 skipped。按项目既有隔离规则重跑的统一 E2E 为最终验收依据。
+- 生产 outbox 通过受保护 `/api/chat` 提交“只回复：你好”的验收输入，NapCat 日志确认仅发送一次“你好。”到 owner；未使用独立第二条 OneBot 连接，避免抢占 Nyx 的唯一会话。
+- 修复 PostgreSQL 方言转换：SQLite 的 `LIMIT -1 OFFSET ?` 在 PostgreSQL 转为 `LIMIT ALL OFFSET %s`；定向 DB 回归65项、Ruff 与 Pyright 均通过。
+- WebUI 仅用于本机 SSH 隧道登录，NapCat 未配置 Railway 公网域名；验收后删除临时 `WEBUI_TOKEN` 并重启 NapCat。镜像会生成默认 WebUI token，但没有公网路由；临时 SSH 隧道已停止，Railway SSH key 已撤销，本机临时 token 与二维码已清空。

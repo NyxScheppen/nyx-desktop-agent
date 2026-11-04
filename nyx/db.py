@@ -52,6 +52,7 @@ def _qmark_to_pyformat(sql: str) -> str:
 
 def _sqlite_sql_to_postgres(sql: str) -> str:
     statement = _qmark_to_pyformat(sql)
+    statement = re.sub(r"\bLIMIT\s+-1\b", "LIMIT ALL", statement)
     statement = re.sub(r"\bMAX\(\s*(0\.0)\s*,", r"GREATEST(\1,", statement)
     statement = re.sub(r"\bMIN\(\s*(1\.0)\s*,", r"LEAST(\1,", statement)
     statement = statement.replace(

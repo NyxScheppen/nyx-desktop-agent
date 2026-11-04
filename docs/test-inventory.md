@@ -138,7 +138,7 @@
 | 类型 | `tests/test_types/` | 2 | 后端 EventType 与前端 SSE 监听器同步、欲望初始状态、记忆/笔记/长期欲望可变默认值隔离 |
 | 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入、Railway 私网 OneBot URL |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
-| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、SQLite/PostgreSQL URL 选择与无密钥错误、PostgreSQL autocommit 与标量函数转换、event_seq 从旧 rowid 回填、迁移与 schema52 表/索引快照、PostgreSQL 正式角色 schema 编译、外键依赖排序、自引用校验与 REAL 精度映射、工具 checkpoint 与执行回执终局清理及未完成保留、连接打开取消时两个 worker/句柄回收、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
+| DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、SQLite/PostgreSQL URL 选择与无密钥错误、PostgreSQL autocommit 与标量函数转换及 SQLite `LIMIT -1` 兼容、event_seq 从旧 rowid 回填、迁移与 schema52 表/索引快照、PostgreSQL 正式角色 schema 编译、外键依赖排序、自引用校验与 REAL 精度映射、工具 checkpoint 与执行回执终局清理及未完成保留、连接打开取消时两个 worker/句柄回收、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、批量事件原子受理、投递状态、重试、FIFO、按 `(timestamp, id)` 回放游标、SSE |
 | API/运行时 | `tests/test_api/` | 5 | 组合根、REST、记忆搜索类别与事实作用域参数、聊天非空/12000 字符边界、旧上传端点 404、委派任务创建/列表及 404/409/422、活动结果过滤/有界分页参数、eval recent offset 分页与边界及 prompt 详情、订阅、用户消息活动快照/打断失败证据、tick、活动优先关停、恢复重放、Railway `PORT` 容器监听、公网 Host 白名单及非法端口、presence 原子提交、采样新旧顺序、异常输入与归来 |
 | 工具 | `tests/test_tools/` | 6 | 文件沙箱、分块判等与同内容幂等写、搜索、工具注册和网络抓取、执行回执完整结果持久化与单次领取、统一网页/书籍/创作/浏览器问卷任务工具 |

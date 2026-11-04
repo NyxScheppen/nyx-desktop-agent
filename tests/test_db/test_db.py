@@ -117,6 +117,9 @@ def test_qmark_to_pyformat_preserves_quoted_question_marks() -> None:
         "UPDATE memory SET freshness=GREATEST(0.0, freshness-%s), "
         "strength=LEAST(1.0, GREATEST(0.0, strength+%s))"
     )
+    assert db._sqlite_sql_to_postgres(
+        "SELECT id FROM conversation_segment LIMIT -1 OFFSET ?"
+    ) == "SELECT id FROM conversation_segment LIMIT ALL OFFSET %s"
 
 
 def test_postgres_migrations_keep_schema_and_skip_existing_data_work() -> None:

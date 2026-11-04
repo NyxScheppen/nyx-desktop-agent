@@ -1151,6 +1151,13 @@ Top N 再过滤来源，也会被其它来源的高分候选挤空，最终表�
 **怎么做**：容器部署测试断言实际入口的属主修复和降权命令，并与 Volume 启动行为保持一致。
 **影响的文件/决策**：`tests/test_deployment.py`、`Dockerfile`、Railway Volume 权限验收。
 
+### 2026-11-04: PostgreSQL 不能直接接受 SQLite 的无上限 LIMIT
+
+**来源**：Railway 生产 PostgreSQL 的记忆维护反复报告 `InvalidRowCountInLimitClause`。
+**教训**：SQLite 用 `LIMIT -1 OFFSET ?` 表示无上限，PostgreSQL 必须使用 `LIMIT ALL`；共享 SQL 需要在已有方言转换层处理这类语法差异。
+**怎么做**：跨后端 SQL 回归覆盖无上限 LIMIT，生产验收同时观察后台维护日志。
+**影响的文件/决策**：`nyx/db.py`、`tests/test_db/test_db.py`。
+
 ## 模板（条目格式）
 
 ```

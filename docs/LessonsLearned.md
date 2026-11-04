@@ -2,6 +2,13 @@
 
 > Nyx Agent 项目经验教训汇总。每次踩坑后追加条目，格式见底部模板。
 
+### 2026-11-04: PostgreSQL 不接受 SQLite 命名占位符
+
+**来源**：Railway 生产工具调用观测写入。
+**教训**：共享存储使用 SQLite 的 `:name` 参数时，PostgreSQL psycopg 会把冒号当作 SQL 语法并报错。
+**怎么做**：跨后端存储使用共享的 qmark SQL，并按 SQL 顺序传位置参数；通过实际 store 到 PostgreSQL 连接适配器的回归验证转换结果。
+**影响的文件/决策**：`nyx/tools/tool_call_store.py`、`tests/test_tools/test_registry.py`。
+
 ### 2026-11-04: Railway SSH CLI 不适合直接回传二进制归档
 
 **来源**：生产 `/app/data` 卷备份首次通过 `railway ssh ... tar -czf -` 回传时，Windows 端收到的 gzip 字节被文本层改写，归档无法解包。

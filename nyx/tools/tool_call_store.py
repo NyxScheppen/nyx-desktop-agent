@@ -54,9 +54,19 @@ class ToolCallStore:
                 "INSERT OR IGNORE INTO tool_call_log "
                 "(id, created_at, correlation_id, call_id, tool_name, args_json, "
                 "status, duration_ms, result_json, error) VALUES "
-                "(:id, :created_at, :correlation_id, :call_id, :tool_name, :args_json, "
-                ":status, :duration_ms, :result_json, :error)",
-                record,
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record["id"],
+                    record["created_at"],
+                    record["correlation_id"],
+                    record["call_id"],
+                    record["tool_name"],
+                    record["args_json"],
+                    record["status"],
+                    record["duration_ms"],
+                    record["result_json"],
+                    record["error"],
+                ),
             )
 
     async def mark_adopted(self, log_id: str) -> None:

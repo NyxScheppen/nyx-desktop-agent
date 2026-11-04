@@ -1,9 +1,10 @@
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
 
-from nyx.db import connect
+from nyx.db import Database, PostgresConnection, connect
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.tool_call_store import ToolCallStore
 from nyx.types import Tool
@@ -156,3 +157,55 @@ async def test_execution_receipt_keeps_full_result_and_claims_once() -> None:
         assert saved["result_json"] == '{"content": "' + "猫" * 3000 + '"}'
     finally:
         await db.close()
+
+
+async def test_tool_call_observation_uses_postgres_parameters() -> None:
+    class _Raw:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        async def execute(self, sql: str, parameters: object = None) -> None:
+            self.calls.append((sql, parameters))
+
+        async def commit(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            return None
+
+    raw = _Raw()
+    database = Database(PostgresConnection(raw), asyncio.Lock())  # type: ignore[arg-type]
+    record = {
+        "id": "log",
+        "created_at": 1.0,
+        "correlation_id": "corr",
+        "call_id": "call",
+        "tool_name": "file_io",
+        "args_json": "{}",
+        "status": "success",
+        "duration_ms": 1.0,
+        "result_json": "{}",
+        "error": None,
+    }
+
+    await ToolCallStore(database).insert(record)
+
+    sql, parameters = raw.calls[1]
+    assert sql == (
+        "INSERT INTO tool_call_log "
+        "(id, created_at, correlation_id, call_id, tool_name, args_json, "
+        "status, duration_ms, result_json, error) VALUES "
+        "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING"
+    )
+    assert parameters == (
+        "log",
+        1.0,
+        "corr",
+        "call",
+        "file_io",
+        "{}",
+        "success",
+        1.0,
+        "{}",
+        None,
+    )

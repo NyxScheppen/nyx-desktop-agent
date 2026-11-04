@@ -7,7 +7,7 @@
 ## 当前快照
 
 - 后端测试文件：76
-- 后端测试：1433项（包含参数化实例），76个文件；最近全量1432 passed / 1 skipped（325.41s）；本轮覆盖 PostgreSQL URL、Railway `$PORT` 与公网 Host、公网 ready 隔离、event_seq 回填、PostgreSQL 占位符/JSON 查询适配、新库 schema 编译、迁移回滚、连接清理、checkpoint saver 初始化、autocommit/标量函数转换、容器配置和 SQLite→PostgreSQL 迁移源只读发现、正式角色迁移函数、内置 Nyx 卡路径保留、外键排序、自引用校验及 SQLite REAL 精度映射；统一 E2E 18 个验收驱动全部通过。
+- 后端测试：1435项（包含参数化实例），76个文件；最近全量1433 passed / 1 skipped；本轮覆盖 PostgreSQL URL、Railway `$PORT` 与公网 Host、公网 ready 隔离、event_seq 回填、PostgreSQL 占位符/JSON 查询适配、新库 schema 编译、迁移回滚、连接清理、checkpoint saver 初始化、autocommit/标量函数转换、容器配置和 SQLite→PostgreSQL 迁移源只读发现、正式角色迁移函数、内置 Nyx 卡路径保留、外键排序、自引用校验及 SQLite REAL 精度映射；OneBot 配置接受 Railway 私网主机并支持环境 URL 覆盖，Docker 镜像携带最小 Railway OneBot 配置且 Compose 保持空配置；Docker 部署回归验证 Railway Volume 权限修复后以 root 修复挂载属主并降权启动；统一 E2E 18 个验收驱动全部通过。
 - 阶段五覆盖率：仅仓库内pytest整体87%；合并15个外部验收驱动后Nyx91.09%、含独立包91.13%，核心100%。CI已显式运行历史 E2E；90%覆盖率门槛缺口仍见 [统一待办清单](TODO.md)。
 - 阶段五：`tests/test_harness.py` 4项独立核心回归与原插件10项；`tests/test_character_host.py` 新增第二角色真实 HTTP/SSE 注册、身份 prompt、聊天隔离和卸载恢复。wheel/sdist 与隔离安装通过；发布工具回归验证 CI 的 Ruff/Pyright 同时检查独立 packages；launcher 构建回归验证 PyInstaller 显式包含独立包路径。
 - 历史 E2E 统一入口：`scripts/run_e2e.py` 按稳定顺序运行仓库内 P1-P4、插件 HTTP/SSE 及持久化/边界驱动；`tests/test_e2e_acceptance.py` 参数化复用同一集合，故意失败的红探针排除；两个入口隔离 `.env` 的部署认证变量，保持独立内存应用语义。CI 后端质量 job 显式运行该入口。
@@ -136,7 +136,7 @@
 | 系统 | 测试目录 | 文件数 | 主要覆盖 |
 |---|---|---:|---|
 | 类型 | `tests/test_types/` | 2 | 后端 EventType 与前端 SSE 监听器同步、欲望初始状态、记忆/笔记/长期欲望可变默认值隔离 |
-| 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入 |
+| 配置 | `tests/test_config/` | 1 | 默认值、嵌套配置、非法输入、Railway 私网 OneBot URL |
 | LLM | `tests/test_llm/` | 2 | 统一客户端、首次调用延迟构造模型及配置透传、视觉客户端、token 元数据、最终 prompt 快照 |
 | DB | `tests/test_db/` | 1 | 新旧默认路径兼容与父目录创建、SQLite/PostgreSQL URL 选择与无密钥错误、PostgreSQL autocommit 与标量函数转换、event_seq 从旧 rowid 回填、迁移与 schema52 表/索引快照、PostgreSQL 正式角色 schema 编译、外键依赖排序、自引用校验与 REAL 精度映射、工具 checkpoint 与执行回执终局清理及未完成保留、连接打开取消时两个 worker/句柄回收、记忆 freshness 结算锚点保值迁移、旧及段级 recall 使用标记/事实段来源迁移、无 owner 的旧 interaction claim 恢复、短期欲望父外键及删除置空、活动历史/委派任务 FIFO 索引、书籍原文记忆 checkpoint 列、旧 material 孤儿活动退役、可空性、旧共同浏览数据清理、eval prompt 表、事务回滚、关闭 |
 | 事件总线 | `tests/test_event/` | 3 | durable admission、批量事件原子受理、投递状态、重试、FIFO、按 `(timestamp, id)` 回放游标、SSE |

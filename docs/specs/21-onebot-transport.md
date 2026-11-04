@@ -12,8 +12,9 @@ NapCat/LLOneBot，不引入NoneBot2、群聊、媒体或QQ切角色命令。
 
 `OneBotConfig`：enabled=False、ws_url="ws://127.0.0.1:3001"、
 access_token_env="ONEBOT_ACCESS_TOKEN"、self_id=0、owner_id=0、character_id="nyx"。
-启用时两QQ号必须是不同正整数；URL仅本机loopback的ws/wss，不允许凭证/query/fragment。
-token仅从环境变量读取，缺失拒绝启动，不记录token。
+启用时两QQ号必须是不同正整数；URL允许本机loopback或 Railway `.railway.internal` 私网主机的
+ws/wss，不允许凭证/query/fragment。`NYX_ONEBOT_WS_URL` 非空时覆盖 YAML 中的 URL，供 Railway
+私网服务地址配置使用。token仅从环境变量读取，缺失拒绝启动，不记录token。
 
 `TransportAdapter` Protocol：name:str；异步方法
 `on_external(payload: dict[str, Any]) -> None`、`emit(event: Event) -> None`、

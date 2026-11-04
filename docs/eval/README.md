@@ -142,3 +142,12 @@ R1再次请求的回复仍声称尝试了 `Missing`、`Guide`、`Synthetic` 和�
 - 覆盖率分开记录：仓库内pytest统计整体87%、独立核心100%；当前CI的90%门尚未满足。外部验收并非CI步骤，剩余接入工作见 [统一待办清单](../TODO.md)，未降低阈值。
 - 补跑上述15个驱动并合并覆盖率后，Nyx为91.09%，含独立包为91.13%，独立核心100%。这是本机pytest与外部E2E的合并结果；现有CI只跑pytest，仍是87%，90%门槛及其接入待办保持不变。临时覆盖率数据库和日志已清理，以上数值保留为本机验收快照。
 - 当前代码冻结后端与Tauri release构建完成，release smoke通过（nonce/API/SSE/stdin EOF/端口释放）。实际修复PyInstaller未发现editable harness源码导致的启动缺包，重建分析清单明确包含包。smoke使用临时 `NYX_CONFIG` 关闭本机OneBot：继承用户已启用配置但没有token会让角色启动失败，503来自该配置条件；未改用户配置或注入真实凭证。
+
+## Railway 生产备份与恢复演练（2026-11-04）
+
+- 备份目录：`D:\nyx-production-backups\20261104-114505`。
+- PostgreSQL 导出：`postgres-railway.dump`，使用 PostgreSQL 18.6 `pg_dump` custom 格式；`pg_restore --list` 可读取目录，并已完整恢复至隔离的本机 PostgreSQL 18.6 实例。
+- 应用卷导出：`app-data.tar.gz`，归档 Railway `/app/data`；在 Linux 容器中解包验证，共29个文件、5,705,825字节。Windows `tar.exe` 对部分Unicode路径解包失败，Linux解包通过。
+- `SHA256SUMS.txt` 保存两份归档的 SHA-256；`README.txt` 记有格式、来源与验收范围。两份归档含生产应用数据，用户负责后续保管、轮换及正式恢复流程。
+- 恢复副本上的 `character_nyx` outbox 使用独立合成 transport 完成事件扫描、领取、确认与 checkpoint 推进验证；没有调用 QQ 或发送外部消息。恢复副本和临时 SSH key 已清理，Railway 当前无登记 SSH key。
+- 此次为“可恢复导出 + 隔离副本恢复”演练，不等同于 Railway 平台备份/PITR，也未在生产 schema 中插入或删除记录。

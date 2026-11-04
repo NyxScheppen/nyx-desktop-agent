@@ -62,7 +62,7 @@
 | `vision.interval_seconds` | `int > 0` |
 | `onebot.enabled` | bool，默认false |
 | `onebot.self_id` / `onebot.owner_id` | 启用时不同的正整数（非bool）；默认0，启用前填写 |
-| `onebot.ws_url` | 启用时仅loopback ws/wss，禁止URL凭证/query/fragment；默认ws://127.0.0.1:3001 |
+| `onebot.ws_url` | 启用时允许 loopback 或 `.railway.internal` 私网主机的 ws/wss；禁止 URL 凭证/query/fragment；默认 ws://127.0.0.1:3001。进程环境 `NYX_ONEBOT_WS_URL` 非空时覆盖该值 |
 | `onebot.access_token_env` / `onebot.character_id` | 启用时非空str，默认ONEBOT_ACCESS_TOKEN / nyx；token由适配器构造时从环境读取 |
 
 NYX_AUTH_TOKEN 与 NYX_PUBLIC_ORIGIN 是 HTTP/TLS 入口的进程环境变量，不属于 YAML Config；其认证及 HTTPS 语义由 docs/specs/22-multi-client-transport.md 定义。

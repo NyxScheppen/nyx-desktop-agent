@@ -37,6 +37,25 @@ def test_onebot_rejects_nonlocal_or_embedded_credentials(url: str) -> None:
         validate_config(cfg)
 
 
+def test_onebot_accepts_railway_private_hostname() -> None:
+    cfg = Config()
+    cfg.onebot.enabled = True
+    cfg.onebot.self_id, cfg.onebot.owner_id = 123, 456
+    cfg.onebot.ws_url = "ws://napcat.railway.internal:3001"
+    validate_config(cfg)
+
+
+def test_load_config_overrides_onebot_ws_url_from_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(
+        tmp_path, "onebot:\n  enabled: true\n  self_id: 123\n  owner_id: 456\n"
+    )
+    monkeypatch.setenv("NYX_ONEBOT_WS_URL", "ws://napcat.railway.internal:3001")
+    cfg = load_config(path)
+    assert cfg.onebot.ws_url == "ws://napcat.railway.internal:3001"
+
+
 def test_onebot_requires_distinct_accounts_when_enabled() -> None:
     cfg = Config()
     cfg.onebot.enabled = True

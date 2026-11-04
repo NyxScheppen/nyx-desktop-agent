@@ -129,6 +129,7 @@ host/角色数据库、版本、行数和文件目录。实际导入必须显式
 - 容器监听 `0.0.0.0:$PORT`。外部 TLS 和 HTTPS 域名由 Railway 提供，`NYX_PUBLIC_ORIGIN` 配置真实 HTTPS origin；不暴露数据库端口。
 - API Key、`NYX_AUTH_TOKEN`、OneBot access token 通过 Railway secrets/Compose 环境注入，不放入镜像、仓库或 volume。
 - OneBot 若启用，云端服务必须能通过私有网络访问配置的 NapCat/LLOneBot；默认 localhost 地址不适用于 Railway。
+- Railway Nyx 镜像携带 `deploy/railway/nyx.config.yaml` 作为仅含生产 OneBot 角色绑定的配置片段；`NYX_CONFIG=/app/nyx.config.yaml` 启用该绑定，`NYX_ONEBOT_WS_URL` 覆盖为 NapCat Railway 私网地址。其他配置继续使用项目默认值。OneBot/QQ 凭证只通过服务 secret 注入；NapCat WebUI 不启用或暴露公网。
 
 ## 测试要点
 

@@ -144,6 +144,9 @@ def load_config(path: str | None = None) -> Config:
         raw = {}
     # 2) 递归构造（未知键/嵌套 dataclass 由 _build 处理）
     cfg = _build(Config, raw)
+    onebot_ws_url = os.environ.get("NYX_ONEBOT_WS_URL")
+    if onebot_ws_url:
+        cfg.onebot.ws_url = onebot_ws_url
     # 3) 范围校验
     validate_config(cfg)
     return cfg
@@ -238,7 +241,13 @@ def validate_config(cfg: Config) -> None:
             url = urlsplit(cfg.onebot.ws_url)
             valid = (
                 url.scheme in ("ws", "wss")
-                and url.hostname in ("127.0.0.1", "localhost", "::1")
+                    and (
+                        url.hostname in ("127.0.0.1", "localhost", "::1")
+                        or (
+                            url.hostname is not None
+                            and url.hostname.endswith(".railway.internal")
+                        )
+                    )
                 and url.username is None and url.password is None
                 and not url.query and not url.fragment
                 and (url.port is None or url.port > 0)

@@ -20,6 +20,7 @@ services:
         condition: service_healthy
     environment:
       PORT: 8000
+      NYX_CONFIG: /dev/null
       NYX_DATABASE_URL: postgresql://${POSTGRES_USER:-nyx}:${POSTGRES_PASSWORD:-nyx-local-only}@postgres:5432/${POSTGRES_DB:-nyx}
       NYX_AUTH_TOKEN: ${NYX_AUTH_TOKEN:?Set NYX_AUTH_TOKEN in .env}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}

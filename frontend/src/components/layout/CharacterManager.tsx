@@ -2,7 +2,7 @@ import { useRef, useState, type FormEvent } from "react";
 import { useCharacterStore } from "../../stores/characterStore";
 import CharacterSelect from "./CharacterSelect";
 import Panel from "./Panel";
-import nyxCanon from "../../../../nyx/cards/nyx/canon.md?raw";
+import nyxCanon from "../../assets/nyx-canon.md?raw";
 
 export default function CharacterManager() {
   const { registry, error, import: importCard, create, change, refresh } = useCharacterStore();

@@ -4,7 +4,7 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, cast
 from uuid import uuid4
 
@@ -12,16 +12,21 @@ import aiosqlite
 
 from nyx.db import Database
 from nyx.enums import MemoryKind
-from nyx.memory.retrieval import extract_keywords
 from nyx.types import Memory, MemoryFact
 
 _MAX_TEXT = 80
 _FACT_RECALL_LIMIT = 64
-_FACT_QUERY_HINT_RE = re.compile(
-    r"工作|求职|投简历|入职|上班|喜欢|不喜欢|讨厌|偏好|状态|职业|公司|"
-    r"生日|年龄|住|家里|六月|七月|八月|九月|十月|十一月|十二月|"
-    r"[1-9一二三四五六七八九十十二]月|哪本书|书中|人物|作者|谁|关于|"
-    r"讨论|讲了什么|主题|尼克斯|Nyx|古典文学|读过"
+_QUERY_FILLER_RE = re.compile(
+    r"早上好[呀啊]?|晚上好[呀啊]?|中午好[呀啊]?|你好[呀啊]?|晚安|"
+    r"你还记得|你记得|还记得|记得|告诉我|什么|哪些|哪个|哪里|哪儿|"
+    r"现在|今天|之前|以前|最近|一下|(?:尼克斯|nyx)[，,、。.!！?？~～\s]+|"
+    r"[，,、。.!！?？~～\s]+(?:尼克斯|nyx)$",
+    re.IGNORECASE,
+)
+_PREDICATE_QUERIES = (
+    (re.compile(r"城市|哪[里儿]|在哪|所在地|居住|住哪"), ("所在地", "居住地", "位置")),
+    (re.compile(r"喜欢|讨厌|偏好|爱吃"), ("喜欢", "讨厌", "偏好", "爱吃")),
+    (re.compile(r"工作|求职|入职|上班|职业|就业"), ("就业", "职业", "工作", "公司")),
 )
 _FACT_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}")
 _MONTH_QUERY_RE = re.compile(
@@ -66,7 +71,24 @@ class FactExtraction:
 
 
 def is_fact_query(query: str) -> bool:
-    return bool(query.strip()) and _FACT_QUERY_HINT_RE.search(query) is not None
+    return bool(_fact_terms(query))
+
+
+def strip_recall_fillers(query: str) -> str:
+    """Remove greetings and vocatives without inventing a retrieval topic."""
+    return _QUERY_FILLER_RE.sub(" ", query.lower())
+
+
+def format_source_time(timestamp: float | None) -> str:
+    """Format an evidence clock; missing or invalid time stays explicitly unknown."""
+    if timestamp is None or isinstance(timestamp, bool):
+        return "未知"
+    try:
+        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat(
+            timespec="seconds"
+        )
+    except (OverflowError, OSError, ValueError):
+        return "未知"
 
 
 def is_knowledge_query(query: str) -> bool:
@@ -296,9 +318,20 @@ def _has_user_anchor(text: str, position: int) -> bool:
 
 
 def _fact_terms(text: str) -> set[str]:
-    terms = set(extract_keywords(text))
-    terms.update(match.group(0).lower() for match in _FACT_TOKEN_RE.finditer(text))
-    return {term for term in terms if term}
+    cleaned = strip_recall_fillers(_MONTH_QUERY_RE.sub(" ", text))
+    terms: set[str] = set()
+    for token in _FACT_TOKEN_RE.findall(cleaned):
+        if token.isascii():
+            terms.add(token)
+        else:
+            terms.update(token[i:i + size] for size in (2, 3)
+                         for i in range(len(token) - size + 1))
+    for pattern, predicates in _PREDICATE_QUERIES:
+        if pattern.search(text):
+            terms.update(predicates)
+    if len(terms) > 1:
+        terms.discard("用户")
+    return terms
 
 
 def _query_time(text: str, fallback: float) -> float:
@@ -454,7 +487,10 @@ class MemoryFactStore:
         terms = _fact_terms(query)
         if not terms:
             return []
-        patterns = [f"%{_escape_like(term)}%" for term in terms]
+        patterns = [
+            f"%{_escape_like(term)}%"
+            for term in sorted(terms, key=lambda term: (-len(term), term))[:64]
+        ]
         knowledge_query = is_knowledge_query(query)
         allowed_scopes = (
             (scope,)
@@ -462,7 +498,7 @@ class MemoryFactStore:
             else (("knowledge",) if knowledge_query else ("profile", "conversation"))
         )
         scope_placeholders = ", ".join("?" for _ in allowed_scopes)
-        direct_where = " OR ".join(
+        conditions = [
             "s.canonical_name LIKE ? ESCAPE '\\' "
             "OR f.predicate LIKE ? ESCAPE '\\' "
             "OR COALESCE(o.canonical_name, f.object_value) LIKE ? ESCAPE '\\' "
@@ -471,8 +507,19 @@ class MemoryFactStore:
             "OR EXISTS (SELECT 1 FROM memory_entity_alias oa "
             "WHERE oa.entity_id = o.id AND oa.alias LIKE ? ESCAPE '\\')"
             for _ in patterns
+        ]
+        direct_where = " OR ".join(conditions)
+        score = " + ".join(
+            f"CASE WHEN ({condition}) THEN 1 ELSE 0 END" for condition in conditions
         )
         direct_params = [value for pattern in patterns for value in (pattern,) * 5]
+        subject_where = ""
+        subject_params: list[str] = []
+        if scope != "knowledge" and not knowledge_query and re.search(
+            r"(?:^|[，,。！!？?\s])我|记得我|知道我|用户", query
+        ):
+            subject_where = " AND s.canonical_name = ?"
+            subject_params = ["用户"]
         async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
@@ -489,37 +536,10 @@ class MemoryFactStore:
                 "AND f.valid_from <= ? AND "
                 "(f.valid_until IS NULL OR f.valid_until > ?) AND ("
                 + direct_where
-                + ") ORDER BY f.valid_from DESC, f.created_at DESC, f.id LIMIT ?",
-                (*allowed_scopes, at, at, *direct_params, _FACT_RECALL_LIMIT),
-            )
-            direct_rows = await cursor.fetchall()
-            entity_ids: set[str] = set()
-            for row in direct_rows:
-                entity_ids.add(row["subject_entity_id"])
-                object_id = row["object_entity_id"]
-                if object_id is not None:
-                    entity_ids.add(object_id)
-            if not entity_ids:
-                return []
-            placeholders = ", ".join("?" for _ in entity_ids)
-            ids = list(entity_ids)
-            cursor = await self._db.conn.execute(
-                "SELECT f.id, s.canonical_name AS subject, f.predicate, "
-                "COALESCE(o.canonical_name, f.object_value) AS object_value, "
-                "f.valid_from, f.valid_until, f.source_memory_id, "
-                "f.source_segment_id, f.source_chunk_id, "
-                "f.created_at, f.polarity, f.scope, s.entity_type AS subject_type, "
-                "o.entity_type AS object_type "
-                "FROM memory_fact f "
-                "JOIN memory_entity s ON s.id = f.subject_entity_id "
-                "LEFT JOIN memory_entity o ON o.id = f.object_entity_id "
-                "WHERE f.scope IN (" + scope_placeholders + ") "
-                "AND f.valid_from <= ? AND "
-                "(f.valid_until IS NULL OR f.valid_until > ?) AND ("
-                f"f.subject_entity_id IN ({placeholders}) OR "
-                f"f.object_entity_id IN ({placeholders})) "
-                "ORDER BY f.valid_from DESC, f.created_at DESC, f.id LIMIT ?",
-                (*allowed_scopes, at, at, *ids, *ids, _FACT_RECALL_LIMIT),
+                + ")" + subject_where + " ORDER BY (" + score + ") DESC, "
+                "f.valid_from DESC, f.created_at DESC, f.id LIMIT ?",
+                (*allowed_scopes, at, at, *direct_params, *subject_params,
+                 *direct_params, _FACT_RECALL_LIMIT),
             )
             selected = await cursor.fetchall()
         return [_row_to_fact(row) for row in selected]

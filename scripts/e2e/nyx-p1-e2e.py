@@ -7,6 +7,7 @@ import sys
 import time
 import uuid
 from collections import defaultdict
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import httpx
@@ -14,6 +15,8 @@ import uvicorn
 
 sys.path.insert(0, str(Path.cwd()))
 from nyx.config import Config
+from nyx.enums import InteractionKind, InteractionStatus
+from nyx.expression.store import ExpressionInteractionStore
 from nyx.main import build_app, build_app_context
 from nyx.memory.facts import FactCandidate, MemoryFactStore
 from nyx.memory.store import MemoryStore
@@ -26,6 +29,7 @@ class FakeLlm:
         self.calls = []
         self.mode = 'none'
         self.rounds = defaultdict(int)
+        self.memory_replay = False
 
     async def complete(self, messages, *, module, output_type, correlation_id, tools=None, **kwargs):
         self.calls.append({'module': module, 'type': output_type, 'cid': correlation_id,
@@ -54,6 +58,17 @@ class FakeLlm:
             content = {'think': '检查资料来源。', 'speak': 'E2E 回复已送达。来源：segment-e2e。', 'needs_continuation': False}
         else:
             content = {'entities': [], 'facts': [], 'summary': 'E2E', 'topics': [], 'importance': 'normal', 'evidence_event_ids': []}
+        if self.memory_replay and output_type == 'fact_extraction':
+            # Fixture responses exercise attribution/persistence, not model text quality.
+            source = messages[-1]['content']
+            content['facts'] = [
+                {'subject': '用户', 'predicate': predicate, 'object': value,
+                 'mode': mode, 'asserted': True}
+                for phrase, predicate, value, mode in [
+                    ('用户：换个话题，我在北京', '当前所在地', '北京', 'functional'),
+                    ('我喜欢米饭', '喜欢', '米饭', 'multi'),
+                ] if phrase in source
+            ]
         return LLMOutput(module=module, type=output_type, model='scripted-e2e',
                          content=json.dumps(content, ensure_ascii=False), correlation_id=correlation_id,
                          tool_calls=calls, call_id=str(uuid.uuid4()), prompt_messages=messages)
@@ -88,6 +103,7 @@ async def main():
     server = uvicorn.Server(uvicorn.Config(build_app(app), log_level='error', lifespan='off'))
     server_task = asyncio.create_task(server.serve(sockets=[sock]))
     rows = []
+    reader = None
     try:
         async with httpx.AsyncClient(base_url=f'http://127.0.0.1:{port}', headers={'Host': '127.0.0.1:8000'}, timeout=20) as client:
             for _ in range(100):
@@ -190,11 +206,74 @@ async def main():
                         assert system.count('deep_research:') == 5
                 invalid = await client.post('/api/chat', json={'message': '嗯', 'discussion': 'true'})
                 assert invalid.status_code == 422
+
+                # Isolated memory replay through HTTP -> bus -> segment/facts -> final prompt.
+                fake.memory_replay = True
+                config.expression.slow_threshold = 99.0
+                with patch.object(app.memory, '_embed', None):
+                    _, source_reply = await send('memory_source',
+                        '换个话题，我在北京，我喜欢米饭。生日那天你陪我走过了低谷。', False)
+                    await asyncio.wait_for(app.bus._wait_until_idle(), 10)
+                    await app.memory.finalize_conversation_segment()
+                    original = await app.bus.get_event(source_reply['cid'])
+                    original_at = datetime.fromtimestamp(original.timestamp, timezone.utc).isoformat(timespec='seconds')
+                    assert original_at in source_reply['messages'][1]['content']
+                    facts = await app.memory.search_facts('我在哪个城市')
+                    assert [(f.predicate, f.object_value) for f in facts] == [('当前所在地', '北京')]
+                    source_segment = await store.get_conversation_segment(facts[0].source_segment_id)
+                    extraction = [c for c in fake.calls if c['type'] == 'fact_extraction'][-1]
+                    assert original_at in extraction['messages'][1]['content']
+                    for threshold, label in [(99.0, 'fast'), (0.0, 'slow')]:
+                        config.expression.slow_threshold = threshold
+                        for question, marker in [('我住哪儿', '北京'), ('我喜欢吃什么', '米饭'),
+                                                 ('还记得生日那天吗', '生日那天你陪我走过了低谷')]:
+                            # Remove the sliding window: this must be durable recall.
+                            app.expression._history.clear()
+                            before = (await store.get_conversation_segment(source_segment.id)).recall_count
+                            _, recalled = await send(f'memory_{label}_{marker}', question, False)
+                            await asyncio.wait_for(app.bus._wait_until_idle(), 10)
+                            user = recalled['messages'][1]['content']
+                            full = '\n'.join(m['content'] for m in recalled['messages'])
+                            assert marker in full
+                            if '生日' in question:
+                                assert '[相关对话段' in user
+                                assert original_at in user and '逐句时间=未知' in user
+                            cid = recalled['cid']
+                            current = await app.bus.get_event(cid)
+                            current_at = datetime.fromtimestamp(current.timestamp, timezone.utc).isoformat(timespec='seconds')
+                            assert f'消息时间={current_at}' in user
+                            saved = await store.get_conversation_segment(source_segment.id)
+                            admitted = source_segment.raw_content[:50] in user
+                            assert saved.recall_count == before + int(admitted)
+                            if admitted:
+                                await app.memory.record_conversation_segment_recall(saved.id, cid)
+                                assert (await store.get_conversation_segment(saved.id)).recall_count == saved.recall_count
+                    app.expression._history.clear()
+                    _, greeting = await send('memory_greeting', '早上好呀，尼克斯', False)
+                    assert '[相关对话段' not in greeting['messages'][1]['content']
+                    assert '[相关事实]' not in greeting['messages'][0]['content']
+                    await asyncio.wait_for(app.bus._wait_until_idle(), 10)
+                    attempt_id = await app.expression.register_question(
+                        '你还好吗？', InteractionKind.CHAT_ASK, 'timeout-source', 'timeout-e2e')
+                    await asyncio.wait_for(app.bus._wait_until_idle(), 10)
+                    interactions = ExpressionInteractionStore(app.database)
+                    attempt = await interactions.get(attempt_id)
+                    before_memory = len(await app.memory.list_memories())
+                    before_facts = len(await MemoryFactStore(app.database).recent())
+                    await app.expression.check_timeouts(attempt.expires_at + 1)
+                    await app.expression.check_timeouts(attempt.expires_at + 2)
+                    assert (await interactions.get(attempt_id)).status is InteractionStatus.EXPIRED
+                    assert len(await app.memory.list_memories()) == before_memory
+                    assert len(await MemoryFactStore(app.database).recent()) == before_facts
+                    print(json.dumps({'memory_timeout': 'PASS', 'new_memories': 0, 'new_facts': 0}), flush=True)
                 reader.cancel()
                 await asyncio.gather(reader, return_exceptions=True)
         print(json.dumps({'result': 'PASS', 'http_sse_scenarios': len(rows), 'strict_boolean_validation': 'PASS',
                           'limitations': 'Scripted LLM and embedding; no real model quality or external network validation.'}, ensure_ascii=False), flush=True)
     finally:
+        if reader is not None:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
         server.should_exit = True
         await asyncio.wait_for(server_task, 10)
         await app.memory.finalize_conversation_segment()

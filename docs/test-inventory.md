@@ -6,9 +6,11 @@
 
 ## 当前快照
 
+- 记忆召回/时间回归：自然位置/偏好问法、显式第一人称归因、带句末标点的寒暄、embedding失败关键词降级、快慢普通经历、原事件/段范围/工具计划时间、超时不写记忆及历史月份查询；另覆盖旧场景未知时间、矛盾/关系创建时间、批注三种原始/处理时钟、材料入库与发布时间、主动搭话欲望时间。P1 HTTP/SSE驱动增加清空滑动历史后的持久化召回、时间标签、段计数重放和超时零新增验收。
+
 - 后端测试文件：76
-- 后端测试：1436项（包含参数化实例），76个文件；最近全量1433 passed / 1 skipped；本轮覆盖 PostgreSQL URL、Railway `$PORT` 与公网 Host、公网 ready 隔离、event_seq 回填、PostgreSQL 占位符/JSON 查询适配、新库 schema 编译、迁移回滚、连接清理、checkpoint saver 初始化、autocommit/标量函数转换、工具观测从存储到 PostgreSQL 占位符适配、容器配置和 SQLite→PostgreSQL 迁移源只读发现、正式角色迁移函数、内置 Nyx 卡路径保留、外键排序、自引用校验及 SQLite REAL 精度映射；OneBot 配置接受 Railway 私网主机并支持环境 URL 覆盖，Docker 镜像携带最小 Railway OneBot 配置且 Compose 保持空配置；Docker 部署回归验证 Railway Volume 权限修复后以 root 修复挂载属主并降权启动；统一 E2E 18 个验收驱动全部通过。
-- 阶段五覆盖率：仅仓库内pytest整体87%；合并15个外部验收驱动后Nyx91.09%、含独立包91.13%，核心100%。CI已显式运行历史 E2E；90%覆盖率门槛缺口仍见 [统一待办清单](TODO.md)。
+- 后端测试：1459项（包含参数化实例），76个文件；最近全量1458 passed / 1 skipped（2026-11-05，437.70s）；本轮覆盖 PostgreSQL URL、Railway `$PORT` 与公网 Host、公网 ready 隔离、event_seq 回填、PostgreSQL 占位符/JSON 查询适配、新库 schema 编译、迁移回滚、连接清理、checkpoint saver 初始化、autocommit/标量函数转换、工具观测从存储到 PostgreSQL 占位符适配、容器配置和 SQLite→PostgreSQL 迁移源只读发现、正式角色迁移函数、内置 Nyx 卡路径保留、外键排序、自引用校验及 SQLite REAL 精度映射；OneBot 配置接受 Railway 私网主机并支持环境 URL 覆盖，Docker 镜像携带最小 Railway OneBot 配置且 Compose 保持空配置；Docker 部署回归验证 Railway Volume 权限修复后以 root 修复挂载属主并降权启动；统一 E2E 18 个验收驱动全部通过。
+- 当前独立pytest覆盖率：86.95%，测试用例全绿，但未达到90%门槛，覆盖率命令退出码1。阶段五历史覆盖率：仅仓库内pytest整体87%；合并15个外部验收驱动后Nyx91.09%、含独立包91.13%，核心100%。CI已显式运行历史 E2E；90%覆盖率门槛缺口仍见 [统一待办清单](TODO.md)。
 - 阶段五：`tests/test_harness.py` 4项独立核心回归与原插件10项；`tests/test_character_host.py` 新增第二角色真实 HTTP/SSE 注册、身份 prompt、聊天隔离和卸载恢复。wheel/sdist 与隔离安装通过；发布工具回归验证 CI 的 Ruff/Pyright 同时检查独立 packages；launcher 构建回归验证 PyInstaller 显式包含独立包路径。
 - 历史 E2E 统一入口：`scripts/run_e2e.py` 按稳定顺序运行仓库内 P1-P4、插件 HTTP/SSE 及持久化/边界驱动；`tests/test_e2e_acceptance.py` 参数化复用同一集合，故意失败的红探针排除；两个入口隔离 `.env` 的部署认证变量，保持独立内存应用语义。CI 后端质量 job 显式运行该入口。
 - 前端测试：391项，26个文件；阶段三新增 fetch SSE、Bearer、凭证输入/清除、认证图片和凭证迟到响应隔离回归；阶段四覆盖设备 API 与配对登录。

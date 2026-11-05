@@ -6,6 +6,21 @@
 
 ## 元信息
 
+> 2026-11 召回/时间修订：普通 FAST/SLOW 都做有界事实与对话段检索，FAST 保留单轮无工具。
+> 最终 `respond` 才记录段召回，规划和预算落选不计；讨论技能授权不变。FAST仍不调用工具或读取自我叙事。
+> `ReplyState` 保留 `ConversationSegment` 对象和时间元数据，不只保存原文字符串。
+> 当前消息时间取 durable USER_MESSAGE，直接调用缺事件则标未知；独立保存本轮采样时间。
+> user prompt 的历史消息、当前消息、引用、阅读资料、前轮生成内容均标时间或范围；
+> 段用 started_at/ended_at，不伪造逐句时间。批注回读原回复事件时间，缺失标未知。
+> 时间以带偏移的 ISO8601 表示（UTC）；运行环境日历仍是环境时间，不能推断用户当地时段。
+> 主动搭话user资料标欲望创建时间；静态任务指令不作为历史资料补造时间。
+> 事实块显示 valid_from/valid_until，Memory创建时间不冒充发生时间；资料原始时间未知明确标记。
+> 标签计入原有字符预算。渲染与选择共用 `select_prompt_segments`，防止计数与实际prompt分离。
+> InteractionAttempt 不增加状态：WAITING→CLAIMED→EXPIRED 只表示等待结束，不证明用户态度，
+> 持久和兼容超时路径都不调用记忆写入；失败释放claim、重放和删除沿用既有规则。
+> 回复上下文是临时对象：来源为durable事件、history、检索和本轮采样，消费者为工具规划与respond；
+> 空/失败/旧数据缺时间标未知，部分预算项省略不计数，乱序按原事件，重放沿用marker，随回合丢弃无需删除迁移。
+
 - **前置依赖**：01-types、02-config、03-llm、04-module-bus-system、05-tools、
   06-memory-system、07-desire、08-inner-life、09-activity、10-eval、12-reading-system
 - **实现文件**：`nyx/expression/facade.py`、`nyx/expression/pipeline.py`、
@@ -93,16 +108,16 @@ release_return: Callable[[dict[str, float] | None], None] | None = None
 `ReplyState` 至少包含 message、mode、context、memories、state、narrative、think、speak、
 ask、round、correlation_id、last_slow_at、tool_outputs、intent、temporal_context、
 reading_context、activity_context、answered_attempt、claimed_return 和 fallback，另含
-`skill: Skill | None` 和 `tool_recall_candidates: list[tuple[str, str]]`。
+`skill: Skill | None`、`tool_recall_candidates: list[tuple[str, str]]`、`message_at: float | None`、`sampled_at: float`、`annotation_at: float | None`、`round_times: list[float]`、`conversation_segments: list[ConversationSegment]`和`facts: list[MemoryFact]`。
 
 ### 通道
 
 - `classify_channel()` 使用消息长度、问句、情绪词、精力/唤醒度、距上次慢通道时间五个因子；
   得分大于等于 `slow_threshold` 为 `SLOW`，否则为 `FAST`。
 - 消息同时包含 HTTP(S) URL 和“问卷”“测试题”或“答题”时直接使用 SLOW，以保证用户明确安排网页问卷时能进入工具判断。`browser_survey` 只受理后台任务，表达回复只能确认受理，不得声称已得到结果；完成结果由活动任务快照和 `activity_end` 展示。
-- FAST 只执行一次回复生成，不检索记忆、不调用工具、不生成场景记忆；仍必须交付 THINK
+- FAST有界召回事实和普通对话段，只执行一次回复生成、不调用工具、不生成场景记忆；仍必须交付 THINK
   （非空时）和 SPEAK。
-- FAST 通常不检索记忆；用户正在回答 durable 读书提问时例外：`reply()` 使用
+- FAST也召回普通对话段；用户正在回答durable读书提问时：`reply()` 使用
   `answer_waiting()` 返回的 attempt 构造 `reading_context`，直接注入该回合。它不是普通
   `MemoryFacade.search(message)`，因此“嗯”“我不觉得”等短回复也不会丢失书中语境。
 - 讨论技能由手动开关或 `should_load_discussion()` 自动命中时强制 SLOW；普通陪聊和明确拒绝讨论不自动加载。
@@ -111,7 +126,7 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
   讨论模式关闭这两类隐式注入，改用能力工具。默认一次
   生成完整回复，只有模型明确设置 `needs_continuation=true` 时才续写，轮数上限由
   `slow_max_rounds` 定义。
-- 普通慢通道不调用旧 Memory 的 `record_recall`；仅对实际进入独立历史段 prompt 区块的段调用 `record_conversation_segment_recall(segment.id, correlation_id)`。同一用户事件重试不重复计数，超过 12000 字符区块预算而未渲染的段不计数，快通道不计数。工具判断和后续各轮回复使用同一入选集合。
+- 普通快慢通道不调用旧Memory的 `record_recall`；仅对实际进入独立历史段 prompt 区块的段调用 `record_conversation_segment_recall(segment.id, correlation_id)`。同一用户事件重试不重复计数，超过 12000 字符区块预算而未渲染的段不计数，FAST/SLOW相同。工具判断和后续各轮回复使用同一入选集合。
 - 初次规划、重规划与慢通道回复注入 `search(kind=LESSON)` 的经验；重规划和回复刷新查询，
   可使用本轮工具刚产生的经验。快通道不召回经验。只读工具重试耗尽/空结果经 [19](19-failure-reflection.md)
   采集学习，未确认副作用不学习为已确认失败；每次实际执行按 [17](17-tool-call-observation.md) 记录观测，结果回注后标记采纳。
@@ -661,4 +676,4 @@ event log/SSE 使用 attempt id 关联展示。
 
 ## P4 批注契约补充（已批准）
 
-reply 在末尾增加可选 `annotation: ReplyAnnotation | None = None`；ReplyState 保存同类型字段。`build_user_prompt(message: str, context: list[Message], annotation: ReplyAnnotation | None = None) -> str` 增加含原文/批注的数据块；空历史也有效。共享 user_prompt 传递给所有节点；无批注返回原有 prompt。批注跳过 answer_waiting 与旧等待清理，不强制讨论/慢通道；runtime 保留签名兼容。完整快照沿 USER_MESSAGE 重放，不重新校验旧锚点。入口、全部消费者、状态和六类 bad case 见15“批注反馈”。
+reply 在末尾增加可选 `annotation: ReplyAnnotation | None = None`；ReplyState 保存同类型字段。`build_user_prompt(message: str, context: list[Message], annotation: ReplyAnnotation | None = None, *, message_at: float | None = None, annotation_at: float | None = None) -> str` 增加含原文/批注的数据块；空历史也有效。共享 user_prompt 传递给所有节点；无批注保留原消息结构并标时间。批注跳过 answer_waiting 与旧等待清理，不强制讨论/慢通道；runtime 保留签名兼容。完整快照沿 USER_MESSAGE 重放，不重新校验旧锚点。入口、全部消费者、状态和六类 bad case 见15“批注反馈”。

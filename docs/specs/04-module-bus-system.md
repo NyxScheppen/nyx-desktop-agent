@@ -571,6 +571,10 @@ CREATE TABLE desire_eval_applied (
 
 ### 表达交互 attempt
 
+2026-11：提问到期只结束等待，不能发布或写入“用户未回答”的记忆/事实/反思。
+回复用`get_event(correlation_id)`读原USER_MESSAGE时间，批注引用读原回复事件时间；
+不新增路由/事件/schema。普通FAST/SLOW段召回均沿用既有事件/段幂等marker，且只在最终回复渲染后计数。
+
 `expression_interaction_attempt` 是表达系统的 durable 领域状态，不替代
 `event_delivery`。它记录一次提问/主动搭话是否已被用户回答或已超时结算；状态转换必须用
 条件更新。attempt 与对应的 `ASK` 或 `INITIATE_CHAT` 事件在同一本地事务中提交，

@@ -1,6 +1,8 @@
 import json
 import time
 
+import pytest
+
 from nyx import db
 from nyx.enums import MemoryKind, MemoryType
 from nyx.memory.facts import (
@@ -10,6 +12,45 @@ from nyx.memory.facts import (
     parse_fact_extraction,
 )
 from nyx.types import Memory
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("你记得我在哪个城市吗", {"北京"}),
+    ("我住哪儿", {"北京"}),
+    ("我喜欢吃什么", {"米饭"}),
+    ("北京冷不冷", {"北京"}),
+    ("早上好呀，尼克斯", set[str]()),
+    ("早上好呀，尼克斯。", set[str]()),
+    ("你好Nyx.", set[str]()),
+    ("尼克斯，我喜欢什么", {"米饭"}),
+])
+async def test_natural_fact_queries_select_relevant_relations(
+    query: str, expected: set[str]
+) -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = MemoryFactStore(database)
+        await store.apply([
+            FactCandidate("用户", "当前所在地", "北京", 1.0, None),
+            FactCandidate("用户", "喜欢", "米饭", 2.0, None),
+            FactCandidate("用户", "信任", "尼克斯", 3.0, None),
+        ], None)
+        assert {f.object_value for f in await store.search(query, now=10)} == expected
+    finally:
+        await database.close()
+
+
+async def test_tell_me_does_not_change_fact_subject_to_user() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = MemoryFactStore(database)
+        await store.apply([
+            FactCandidate("尼克斯", "喜欢", "古典文学", 1.0, None),
+        ], None)
+        facts = await store.search("告诉我尼克斯喜欢什么", now=2.0)
+        assert [fact.object_value for fact in facts] == ["古典文学"]
+    finally:
+        await database.close()
 
 
 async def test_fact_store_replaces_old_valid_fact_and_keeps_history() -> None:

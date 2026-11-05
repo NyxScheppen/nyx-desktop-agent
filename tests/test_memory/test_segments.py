@@ -120,6 +120,42 @@ async def test_recall_promotes_once_per_user_event_and_keeps_raw_text() -> None:
         await database.close()
 
 
+@pytest.mark.parametrize(
+    "greeting", ["早上好呀，尼克斯", "早上好呀，尼克斯。", "你好Nyx."]
+)
+async def test_greeting_does_not_recall_unrelated_episode_by_vector(
+    greeting: str,
+) -> None:
+    database = await connect(":memory:")
+    try:
+        store = MemoryStore(database)
+
+        async def embed(text: str) -> list[float]:
+            return [1.0, 0.0]
+
+        await append_turn(store, event_id="old", content="下班后特别开心", embed=embed)
+        assert await search_segments(store, greeting, embed=embed) == []
+    finally:
+        await database.close()
+
+
+async def test_segment_embedding_failure_keeps_lexical_recall() -> None:
+    database = await connect(":memory:")
+    try:
+        store = MemoryStore(database)
+        segment = await append_turn(
+            store, event_id="old", content="生日那天你陪我走过低谷"
+        )
+
+        async def embed(text: str) -> list[float]:
+            raise RuntimeError("embedding unavailable")
+
+        result = await search_segments(store, "生日那天", embed=embed)
+        assert [item.id for item in result] == [segment.id]
+    finally:
+        await database.close()
+
+
 @pytest.mark.asyncio
 async def test_capacity_evicts_only_short_term_recall_index() -> None:
     database = await connect(":memory:")

@@ -39,6 +39,8 @@ from nyx.expression.prompt import (
     build_conversation_segments_prompt,
     build_system_prompt,
     build_user_prompt,
+    format_prompt_time,
+    select_prompt_segments,
 )
 from nyx.expression.tool_pipeline import (
     ToolState,
@@ -49,11 +51,12 @@ from nyx.expression.tool_pipeline import _parse_plan as _parse_plan
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
-from nyx.memory.facts import is_fact_query
+from nyx.memory.facts import is_fact_query, strip_recall_fillers
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
     ActivityContext,
+    ConversationSegment,
     CurrentState,
     Event,
     InteractionAttempt,
@@ -84,11 +87,15 @@ def _message_activity(context: ActivityContext) -> Activity | None:
 
 class ReplyState(TypedDict):
     message: str
+    message_at: float | None
+    sampled_at: float
+    annotation_at: float | None
+    round_times: list[float]
     annotation: ReplyAnnotation | None
     skill: Skill | None
     mode: ContextMode
     context: list[Message]       # 回溯上下文（facade 入口填，快慢一致；不含当前消息）
-    conversation_segments: list[str]  # 独立历史段，不伪装成 Message
+    conversation_segments: list[ConversationSegment]  # 保留来源时间，不伪装成 Message
     memories: list[Memory]       # 预算筛选后实际进入 prompt 的记忆
     facts: list[MemoryFact]       # 当前有效事实（与原始记忆隔离）
     state: CurrentState          # 当前状态快照
@@ -139,7 +146,9 @@ def _is_question(text: str) -> bool:
     return is_question(text)
 
 
-def _rounds_block(think: list[str], speak: list[str]) -> str:
+def _rounds_block(
+    think: list[str], speak: list[str], timestamps: list[float] | None = None
+) -> str:
     """把前面几轮的 think/speak 拼成 prompt 段（多轮累积式）。空则返回 ""。
 
     调用点保证 think 与 speak 等长（respond 节点在每轮起始时二者同为已完成轮数）。
@@ -148,6 +157,8 @@ def _rounds_block(think: list[str], speak: list[str]) -> str:
         return ""
     lines = ["[本回合前面的思考]"]
     for i, (t, s) in enumerate(zip(think, speak), start=1):
+        at = timestamps[i - 1] if timestamps and i <= len(timestamps) else None
+        lines.append(f"[生成时间={format_prompt_time(at)}]")
         lines.append(f"第{i}轮内心：{t}")
         lines.append(f"第{i}轮对外：{s}")
     return "\n".join(lines)
@@ -211,11 +222,14 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             part
             for part in (
                 bound_material_block(
-                    state["reading_context"], _READING_BLOCK_MAX_CHARS
-                ),
+                    f"[阅读资料原始时间=未知；本轮取用时间={format_prompt_time(state['sampled_at'])}]\n"
+                    + state["reading_context"], _READING_BLOCK_MAX_CHARS
+                ) if state["reading_context"] else "",
                 build_conversation_segments_prompt(state["conversation_segments"]),
                 build_user_prompt(
-                    state["message"], state["context"], state.get("annotation")
+                    state["message"], state["context"], state.get("annotation"),
+                    message_at=state["message_at"],
+                    annotation_at=state["annotation_at"],
                 ),
             )
             if part
@@ -256,53 +270,52 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 state["last_slow_at"],
                 deps.config.slow_threshold,
             )
-        facts = (
-            await search_facts(state["message"])
-            if state.get("skill") is None else []
-        )
-        return {"mode": mode, "facts": facts}
+        return {"mode": mode}
 
     async def assemble(state: ReplyState) -> dict[str, Any]:
-        # 慢通道专属四件事——回溯上下文截断 + 检索记忆/事实 + 取 self-narrative。
-        # context 由 facade 入口朴素填（快通道用），慢通道在此按停条件重截断。
-        context = build_backtrack_context(
+        # 快慢通道共用有界对话召回；工具、经验和自我叙事仍只在慢通道。
+        backtrack = build_backtrack_context(
             state["message"],
             list(deps.history),
             deps.config.max_context_len,
         )
-        prior_turns = [m.content[:120] for m in context[-3:]]
+        context = backtrack if state["mode"] is ContextMode.SLOW else state["context"]
+        prior_turns = [m.content[:120] for m in backtrack[-3:]]
         query = "\n".join([*prior_turns, state["message"]])[-300:]
+        if not strip_recall_fillers(state["message"]).strip(" ，,。.!！?？"):
+            query = ""
         segment_search = getattr(deps.memory, "search_conversation_segments", None)
-        recalled_segments: list[str] = []
+        recalled_segments: list[ConversationSegment] = []
         if state.get("skill") is None and callable(segment_search):
             segment_fn = cast(
                 Callable[[str, int], Awaitable[list[Any]]], segment_search
             )
-            segments = await segment_fn(query, 20)
-            recall_segment = getattr(
-                deps.memory, "record_conversation_segment_recall", None
-            )
-            rendered = ""
-            context_contents = {item.content for item in context}
-            for segment in segments:
-                if segment.raw_content in context_contents:
-                    continue
-                candidate = [*recalled_segments, segment.raw_content]
-                next_rendered = build_conversation_segments_prompt(candidate)
-                if next_rendered == rendered:
-                    break
-                recalled_segments.append(segment.raw_content)
-                rendered = next_rendered
-                if callable(recall_segment):
-                    recall_fn = cast(
-                        Callable[[str, str], Awaitable[None]], recall_segment
-                    )
-                    await recall_fn(segment.id, state["correlation_id"])
+            try:
+                segments = await segment_fn(query, 20)
+                context_text = "\n".join(
+                    f"{'用户' if item.role == 'user' else '尼克斯'}：{item.content}"
+                    for item in context
+                )
+                recalled_segments = select_prompt_segments([
+                    segment for segment in segments
+                    if segment.raw_content and segment.raw_content not in context_text
+                ])
+            except Exception:
+                _LOGGER.exception("对话段召回失败")
         # 普通聊天只召回连续对话段原文；阅读/网页知识不进入这里，
         # 旧的场景 Memory 也不再作为聊天记忆来源。
-        memories = await search_lessons(query)
-        facts = state["facts"]
-        narrative = await deps.inner_life.get_narrative()
+        memories = (
+            await search_lessons(query) if state["mode"] is ContextMode.SLOW else []
+        )
+        fact_query = state["message"] if is_fact_query(state["message"]) else query
+        facts = (
+            await search_facts(fact_query)
+            if state.get("skill") is None else []
+        )
+        narrative = (
+            await deps.inner_life.get_narrative()
+            if state["mode"] is ContextMode.SLOW else None
+        )
         return {
             "context": context, "conversation_segments": recalled_segments,
             "memories": memories, "facts": facts,
@@ -403,10 +416,18 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             system += "\n\n" + TOOL_REPLY_GUIDANCE
         user = user_prompt(state)
         # 前几轮 think/speak（等长）
-        prior = _rounds_block(state["think"], state["speak"])
+        prior = _rounds_block(state["think"], state["speak"], state["round_times"])
         task = RESPOND_TASK_CONTINUE if state["speak"] else RESPOND_TASK
         user = "\n".join(p for p in (prior, user, task) if p)
         try:
+            if not state["speak"]:
+                for segment in state["conversation_segments"]:
+                    try:
+                        await deps.memory.record_conversation_segment_recall(
+                            segment.id, state["correlation_id"]
+                        )
+                    except Exception:
+                        _LOGGER.exception("对话段召回计数失败")
             for segment_id, rendered in state["tool_recall_candidates"]:
                 if rendered not in system:
                     continue
@@ -494,6 +515,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         return {
             "think": new_think,
             "speak": new_speak,
+            "round_times": [*state["round_times"], time.time()],
             "needs_continuation": needs_continuation,
         }
 
@@ -531,6 +553,10 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         # 回合末按序落历史：先用户消息、后 Nyx 消息（多轮拼接）。
         # 下一轮 reply 的 assemble 从这里回溯。
         now = time.time()
+        message_at = (
+            state["message_at"]
+            if state["message_at"] is not None else state["sampled_at"]
+        )
         observed_activity = _message_activity(state["activity_context"])
         append_segment = getattr(deps.memory, "append_conversation_turn", None)
         append_fn: Callable[[str, str, float], Awaitable[None]] | None = None
@@ -539,13 +565,14 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 Callable[[str, str, float], Awaitable[None]], append_segment
             )
             await append_fn(
-                f"{state['correlation_id']}:user", state["message"], now
+                f"{state['correlation_id']}:user", state["message"],
+                message_at,
             )
         deps.history.append(
             Message(
                 role="user",
                 content=state["message"],
-                timestamp=now,
+                timestamp=message_at,
                 activity_id=(observed_activity.id if observed_activity else None),
                 activity_type=(observed_activity.type if observed_activity else None),
                 activity_summary=(
@@ -580,8 +607,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             )
         return {}
 
-    def route_after_classify(state: ReplyState) -> str:
-        return "assemble_context" if state["mode"] is ContextMode.SLOW else "respond"
+    def route_after_assemble(state: ReplyState) -> str:
+        return "use_tools" if state["mode"] is ContextMode.SLOW else "respond"
 
     def route_after_respond(state: ReplyState) -> str:
         if state["fallback"]:
@@ -603,12 +630,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     graph.add_node("should_ask", should_ask)
     graph.add_node("record_message", record_message)
     graph.set_entry_point("classify_channel")
+    graph.add_edge("classify_channel", "assemble_context")
     graph.add_conditional_edges(
-        "classify_channel",
-        route_after_classify,
-        {"assemble_context": "assemble_context", "respond": "respond"},
+        "assemble_context", route_after_assemble,
+        {"use_tools": "use_tools", "respond": "respond"},
     )
-    graph.add_edge("assemble_context", "use_tools")
     graph.add_edge("use_tools", "respond")
     graph.add_conditional_edges(
         "respond",

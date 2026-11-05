@@ -24,6 +24,7 @@ from nyx.expression.prompt import (
     _memory_block,
     _tool_outputs_block,
     bound_material_block,
+    format_prompt_time,
 )
 from nyx.tools.registry import is_read_only_call
 from nyx.types import Plan, PlanStep
@@ -57,6 +58,7 @@ class ToolState(TypedDict):
     outputs: list[str]
     recall_candidates: dict[str, str]
     plan_review: NotRequired[dict[str, Any]]
+    plan_at: NotRequired[float | None]
 
 
 def _parse_plan(raw: str) -> Plan | None:
@@ -92,9 +94,10 @@ def _parse_plan(raw: str) -> Plan | None:
 def execution_feedback(state: ToolState) -> str:
     """Keep actual call status separate from natural-language plan completion."""
     records = [
-        {key: record[key] for key in (
+        {**{key: record[key] for key in (
             "step", "name", "status", "attempts", "errors", "args",
-        )}
+        )}, "尝试开始时间": format_prompt_time(record.get("started_at")),
+         "结果接收时间": format_prompt_time(record.get("received_at"))}
         for record in reversed(list(state["records"].values()))
     ]
     text = "\n".join(state["notices"][-5:])
@@ -143,7 +146,8 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             except Exception:
                 _LOGGER.exception("重规划经验召回失败")
             user += (
-                "\n上次计划：" + json.dumps(state["plan"], ensure_ascii=False)
+                f"\n[计划生成时间={format_prompt_time(state.get('plan_at'))}]\n上次计划："
+                + json.dumps(state["plan"], ensure_ascii=False)
                 + "\n重规划原因：" + state["replan_reason"]
                 + "\n" + _tool_outputs_block(
                     state["outputs"], execution_feedback(state),
@@ -163,6 +167,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             _LOGGER.exception("规划失败 correlation_id=%s", state["correlation_id"])
         return {
             "system": system, "plan": asdict(parsed) if parsed else None,
+            "plan_at": time.time() if parsed else None,
             "replan_reason": None, "rounds": 0,
         }
 
@@ -172,6 +177,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             return {"calls": []}
         user = state["user"] + "\n" + state["task"]
         if state["plan"] is not None:
+            user += f"\n[计划生成时间={format_prompt_time(state.get('plan_at'))}]"
             user += "\n[当前计划]\n" + json.dumps(state["plan"], ensure_ascii=False)
         user += "\n" + _tool_outputs_block(state["outputs"], execution_feedback(state))
         schemas = [*state["schemas"], {
@@ -208,6 +214,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         latest = next(reversed(state["records"].values()))
         user = (
             state["user"] + "\n" + PLAN_REVIEW_TASK
+            + f"\n[计划生成时间={format_prompt_time(state.get('plan_at'))}]"
             + "\n[当前计划]\n" + json.dumps(current, ensure_ascii=False)
             + "\n" + _tool_outputs_block(state["outputs"], execution_feedback(state))
             + f"\n剩余预算：工具判断{_MAX_TOOL_ROUNDS - state['rounds']}轮，"
@@ -325,6 +332,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         pending.update(
             attempts=pending["attempts"] + 1, status="running", log_id=str(uuid4()),
             receipt_required=True,
+            started_at=time.time(),
         )
         return {"pending": pending}
 
@@ -402,6 +410,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
                     if isinstance(entry, dict)
                     and isinstance(entry.get("segment_id"), str)
                 }
+        pending["received_at"] = time.time()
         return {"pending": pending}
 
     async def accept(state: ToolState) -> dict[str, Any]:

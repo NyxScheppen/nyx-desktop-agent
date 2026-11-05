@@ -11,6 +11,32 @@
 
 ## 系统边界
 
+### 对话召回与沉默边界（2026-11 修订）
+
+- 普通聊天 FAST/SLOW 均查询 profile/conversation 事实和活跃对话段；FAST 仍只生成一次回复、不调用工具或读取自我叙事。讨论技能继续只通过授权工具召回。
+- 事实查询不再依赖固定提示词门控。中文短句也取二字/三字片段，位置、偏好、就业常见问法匹配对应谓词；纯寒暄及作为称呼的 Nyx 不作为主题。只返回直接相关事实，取消按命中实体展开全部事实；SQL 按相关性、有效时间、ID 稳定排序后最多64条。
+- 对话段使用近期话题补全短回复；纯寒暄不作向量查询。与上下文原话重合的整段不重复注入。最终回复实际渲染的段才按 `(user_event_id, segment_id)` 计数，FAST/SLOW 相同，检索或规划阶段不计数。
+- `record_no_answer(question, correlation_id)` 仅保留兼容空操作；所有超时路径只结束 attempt/等待，不生成 Memory、事实、记忆事件或反思。历史数据不自动删除。用户主动叙述“我没有回答”仍属于真实用户原话。
+- 抽取明确的“我在北京”为当前所在地，明确居住才使用居住地；仅提北京天气不推断用户位置。时间、说话者和来源范围送入抽取 user prompt，历史原话不补造成当前状态。
+- 旧场景回放的原话/思考/回复无逐条时间时分别标未知；矛盾判断和关系建边标每条记忆创建时间、原始发生时间未知。批注引用和评论按 `reply_event_id` / `user_event_id` 读取原事件时间，与反馈记录时间分开，原事件缺失标未知。材料消化区分块入库时间、原文发布时间和上一版画像时间，后两者无证据时标未知。
+
+**对象完整性补充**
+
+| 对象 | 写入/恢复入口 | 消费者与状态 |
+|---|---|---|
+| ConversationSegment | 原有轮次、事件恢复、维护任务、旧库迁移；不新增写入口 | 普通快慢回复、讨论工具、REST；只读候选→预算入选→最终回复计数→原有晋升；不新增持久状态 |
+| MemoryFact | 原有段/记忆/知识/批注抽取和迁移 | 表达、工具、反思、REST；沿用有效区间和scope，不改变资料授权 |
+| 超时记录 | 不再创建；兼容入口无副作用 | attempt 生命周期保留，旧 Memory 不自动迁移或删除 |
+
+| Bad case | 处理 |
+|---|---|
+| 空 | 无主题/无匹配返回空，不用最近记录兜底 |
+| 失败 | 检索失败降级，原话和回复不因旁路失败丢失；事实抽取可重试 |
+| 部分完成 | 只计最终渲染段，时间标签也计入预算；未知逐条时间只标段范围 |
+| 乱序 | 用户时间取原事件，事实沿用有效区间；不拿抽取时间覆盖发生时间 |
+| 重放 | 沿用事件/段复合marker；相同回合续写不重复计数；超时不写记忆 |
+| 删除 | 原有FK/marker级联语义不变，已删除/淘汰段不复活；旧无时间对象标未知 |
+
 ### P2 通用证据与溯源契约
 
 `ReadingEvidence` 是通用 knowledge_chunk 的物理快照，新增可空 `location`、`embedding`；
@@ -75,7 +101,7 @@ P2 将原先证据与最终 cursor 一起回滚的语义替换为以上持久阶
 
 `conversation_segment` 是对话记忆的主体：每个段永久保存原始轮次及事件 ID，`summary`、`topics`、`embedding` 只作索引。段之间以 `previous_id` 串联；新轮次按时间、主题重合和明确转题信号宽松续接，短确认语直接继承上一段。读书/网页内容不写入对话段。
 
-现有 `Memory` 写入口在迁移期间保留为资料知识和兼容接口；聊天对话段不再依赖“进入 prompt 次数”定义记忆内容。慢通道召回最多取 20 个对话段候选，并将命中段的原文带入上下文；读书/网页知识不进入该候选集。
+现有 `Memory` 写入口在迁移期间保留为资料知识和兼容接口；聊天对话段不再依赖“进入 prompt 次数”定义记忆内容。快慢通道召回最多取20个对话段候选，并将命中段的原文带入上下文；读书/网页知识不进入该候选集。
 
 - `remember_reading(content, summary, correlation_id, source_name=None, *, source_topic=None)`
   将可选稳定来源 topic 写入 topics，与 knowledge 使用相同来源隔离去重；旧无来源调用
@@ -86,8 +112,8 @@ P2 将原先证据与最终 cursor 一起回滚的语义替换为以上持久阶
   消费必须在调用方事务内、逐行确认未消费；对象完整性以 12-reading-system 为准。
 
 - `MemoryFacade.search(query: str) -> list[Memory]` 保留给旧 Memory 兼容入口和非普通聊天调用；表达层普通慢通道改用 `search_conversation_segments`，不直接调 store/retrieval。
-- 慢通道 `assemble_context` 的 query 由当前消息和 11-expression 规定的近期回溯构成；最多检索 20 个活跃对话段，只对实际渲染进独立 prompt 区块的段按用户事件调用 `record_conversation_segment_recall`；预算落选不计数、不晋升。
-- 快通道不检索记忆、不 `record_recall`、不生成场景化记忆。
+- 快慢通道 `assemble_context` 的 query 由当前消息和 11-expression 规定的近期回溯构成；最多检索 20 个活跃对话段，只对实际渲染进独立 prompt 区块的段按用户事件调用 `record_conversation_segment_recall`；预算落选不计数、不晋升。
+- 快通道检索事实和对话段，只计段的实际注入；不调用旧 `record_recall`、不生成场景化记忆。
 - `Memory` 字段是 `id`、`created_at`、`content`、`kind`、`topics`、`summary`、`freshness`、`type`、`recall_count`、`aspect`、`embedding`、`sources`。
 - `MemoryType` 取值是 `SHORT_TERM="short_term"`、`LONG_TERM="long_term"`。
 - `SearchMode` 取值是 `KEYWORD="keyword"`、`VECTOR="vector"`、`ASSOCIATION="association"`。
@@ -129,7 +155,7 @@ class MemoryKind(StrEnum):
 
 - 场景记忆 LLM 输出 `{content, kind, topics, summary}`；非法 kind 或结构拒绝落库。
 - topics 在应用层去空白、去重、截断，非法元素丢弃；空 topics 合法。
-- 活动、用户画像、知识、阅读、未答记录入口使用固定 kind，不调用场景记忆 LLM。
+- 活动、用户画像、知识、阅读入口使用固定 kind；未答兼容入口不写入。上述有效入口，不调用场景记忆 LLM。
 
 ### kind-scoped 去重
 
@@ -236,14 +262,13 @@ topics 联想约束：
 - `polarity` 区分喜欢/不喜欢、相信/不相信等否定关系；历史事实乱序写入时只按有效时间
   重新计算区间，不错误关闭未来事实。
 - 事实抽取、事实召回失败只记录日志并降级为空结果，不回滚原始记忆或阻断回复。
-- `search_facts(query, scope=None)` 只返回查询命中的实体所关联的全部当前有效事实；事实命中不调用
+- `search_facts(query, scope=None)` 只返回直接匹配查询的当前有效事实；事实命中不调用
   `record_recall`，也不影响短期记忆升级。
-- 普通闲聊在表达层先经过事实查询提示词门控；实际查询在 SQL 中先过滤实体、别名、
-  关系或宾语，再按命中实体展开有效事实，单次召回最多 64 条，不全表物化。
+- 普通闲聊去除寒暄与称呼后查询；SQL先过滤实体、别名、谓词或宾语，再按匹配分、有效时间及ID排序，单次最多64条；不按共享实体扩大候选。
 - 查询包含明确的 `YYYY年M月`、`M月` 或中文月份时，以该月份中点作为有效性判断时间；
   没有历史时间时使用当前时间。
-- `scope=None` 保留原有知识意图判定；显式 scope 在 SQL 候选筛选及实体展开前生效。
-  非讨论快慢通道可注入 `[相关事实]`，非讨论慢通道另行召回对话段原文。
+- `scope=None` 保留原有知识意图判定；显式 scope 在 SQL 候选筛选及截断前生效。
+  非讨论快慢通道可注入 `[相关事实]`，非讨论快慢通道另行召回对话段原文。
 - 讨论模式关闭隐式事实/对话段注入：`memory_recall` 分别读取 `profile`、`conversation`
   事实及对话段，`knowledge_search` 只读取 `knowledge`；段真正进入最终回复 prompt 后沿用
   `record_conversation_segment_recall` 幂等计数。P1 的知识检索只返回事实，证据块及
@@ -1163,7 +1188,7 @@ SQLite 不支持直接改主键；迁移需要创建新表、复制旧数据、�
 
 ### 对话段生命周期与对象完整性
 
-对话段原文和事件 ID 永久保留。独立于表达 tick 的每角色记忆计时器在运行期间检查最近段：末轮后满四小时且仍待判时主动判定；每次检查也结算短期段的新鲜度并按 `memory.short_term_capacity` 淘汰溢出段。新鲜度按 `memory.freshness_decay` 每日线性下降，参与活跃段召回排序，不因重复结算或时钟回拨返鲜。淘汰仅令段退出活跃召回，不删除原文、索引字段、证据链或事实。长期段不参与容量淘汰；短期段真实进入慢通道最终 prompt 满 `memory.promote_threshold` 次也可晋升，和 LLM 重要性判定是独立通道。召回以 `(user_event_id, segment_id)` 幂等计数；检索候选或预算落选不计数，快通道不计数。已淘汰段不因旧事件重放复活。
+对话段原文和事件 ID 永久保留。独立于表达 tick 的每角色记忆计时器在运行期间检查最近段：末轮后满四小时且仍待判时主动判定；每次检查也结算短期段的新鲜度并按 `memory.short_term_capacity` 淘汰溢出段。新鲜度按 `memory.freshness_decay` 每日线性下降，参与活跃段召回排序，不因重复结算或时钟回拨返鲜。淘汰仅令段退出活跃召回，不删除原文、索引字段、证据链或事实。长期段不参与容量淘汰；短期段真实进入快慢通道最终回复 prompt 满 `memory.promote_threshold` 次也可晋升，和 LLM 重要性判定是独立通道。召回以 `(user_event_id, segment_id)` 幂等计数；检索候选或预算落选或仅规划展示不计数；快慢通道遵循同一计数规则。已淘汰段不因旧事件重放复活。
 
 段评估成功后仅从用户原话抽取明确事实：画像段中以用户为主体的事实进入 `profile`，其余明确对话事实进入 `conversation`；Nyx 自述、引文及阅读/网页资料不得写作用户事实。事实以可空 `source_segment_id` 追溯段，与旧 `source_memory_id` 二选一；事实的有效起点为段末轮时间，而非晚到的抽取时间。段新增轮次后重评时，旧版段事实在新的段末轮时间关闭，再应用新版候选；抽取失败不阻断原文或重要性判定。旧库段默认活跃、初始新鲜度为 1，既有长期标记和原文不变。
 

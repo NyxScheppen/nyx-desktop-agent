@@ -258,6 +258,9 @@ class _FakeBus:
     async def publish(self, event: Event) -> None:
         self.published.append(event)
 
+    async def get_event(self, event_id: str) -> Event | None:
+        return next((event for event in self.published if event.id == event_id), None)
+
     async def publish_many(self, events: list[Event]) -> None:
         batch = list(events)
         self.batches.append(batch)
@@ -589,6 +592,44 @@ async def test_reply_fast_searches_facts_for_fact_query() -> None:
     )
     await facade.reply("我已经入职了", "corr-fast-fact")
     assert memory.fact_search_calls == 1
+
+
+async def test_tool_plan_information_carries_generation_time() -> None:
+    class _PlannedLlm(_FakeLlm):
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any
+        ) -> LLMOutput:
+            output = await super().complete(messages, **kwargs)
+            if kwargs["output_type"] == "plan":
+                output.content = json.dumps({"goal": "回忆", "steps": [
+                    {"text": "检查记忆", "done_condition": "已有来源"}
+                ]})
+            return output
+
+    facade, llm, *_ = _new_facade(energy=100.0, llm=_PlannedLlm())
+    await facade.reply("为什么" * 30, "plan-clock")
+    user = next(
+        messages[-1]["content"] for kind, messages, _ in llm.calls if kind == "tool"
+    )
+    assert "计划生成时间=" in user and "+00:00" in user
+
+
+@pytest.mark.parametrize("energy, arousal", [(20.0, 0.9), (100.0, 0.0)])
+async def test_reply_recalls_ordinary_episode_with_source_time(
+    energy: float, arousal: float
+) -> None:
+    memory = _FakeMemory()
+    memory.segment_results = [ConversationSegment(
+        id="birthday", previous_id=None, started_at=100.0, ended_at=200.0,
+        raw_event_ids=["old:user"], raw_content="用户：生日那天你陪我走过了低谷。",
+    )]
+    facade, llm, *_ = _new_facade(energy=energy, arousal=arousal, memory=memory)
+    await facade.reply("还记得生日那天吗", "episode-recall")
+    prompt = next(messages[-1]["content"] for kind, messages, _ in llm.calls
+                  if kind == "reply")
+    assert "生日那天你陪我走过了低谷" in prompt
+    assert "1970-01-01T00:01:40+00:00" in prompt
+    assert memory.segment_recalled == [("birthday", "episode-recall")]
 
 
 async def test_reply_fast_uses_temporal_context_and_consumes_return() -> None:
@@ -2083,6 +2124,14 @@ async def test_initiate_chat_empty() -> None:
     assert bus.published == []
 
 
+async def test_initiate_chat_labels_desire_creation_time() -> None:
+    facade, llm, *_ = _new_facade(llm=_FakeLlm(chat_content="你在忙吗？"))
+    desire = _desire()
+    desire.created_at = 1000.0
+    await facade.initiate_chat(desire, _mk_state(80.0, 0.0))
+    assert "欲望创建时间=1970-01-01T00:16:40+00:00" in llm.calls[0][1][-1]["content"]
+
+
 async def test_initiate_chat_non_empty() -> None:
     facade, llm, _evaluator, _memory, _inner_life, bus = _new_facade(
         llm=_FakeLlm(chat_content="你在忙吗？")
@@ -2415,15 +2464,15 @@ async def test_initiate_chat_sets_pending_desire() -> None:
     assert facade._pending_chat_desire_id == "d1"
 
 
-async def test_check_timeouts_records_no_answer() -> None:
-    # wait_user 超时 → 落一条「用户没回答」记忆，清等待态
+async def test_check_timeouts_does_not_record_no_answer() -> None:
+    # wait_user 超时只清等待态，不把沉默解释为用户事实。
     facade, _llm, _evaluator, memory, _inner_life, _bus = _new_facade()
     facade._waiting_user = True
     facade._ask_text = "你还好吗？"
     facade._ask_cid = "corr-ask"
     facade._ask_at = 100.0
     await facade.check_timeouts(100.0 + ExpressionConfig().ask_timeout)
-    assert memory.no_answers == ["你还好吗？"]
+    assert memory.no_answers == []
     assert facade._waiting_user is False
     assert facade._ask_cid is None
 

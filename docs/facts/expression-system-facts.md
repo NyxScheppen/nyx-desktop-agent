@@ -6,6 +6,13 @@
 
 ## 模块与职责
 
+- 普通回复统一经过 `assemble_context`，FAST之后直接respond，SLOW继续工具流程；讨论技能仍禁隐式事实/段召回。
+- 当前消息时间从 `EventBus.get_event(correlation_id)` 取原USER_MESSAGE时间；缺事件为未知。`ReplyState`另存采样时间、引用事件时间、前轮生成时间和完整段对象。
+- user历史每条标消息时间，当前消息、批注原文/批注、阅读资料、前轮生成内容分别标时；对话段显示范围及逐句未知，统一UTC ISO8601。时间标签计入既有资料预算，不改持久原文。
+- 事实块显示有效区间和整理时间；Memory创建时间明确区别发生时间。工具规划/尝试/结果接收时间保存于可选checkpoint字段，旧字段缺失不补造成现在。
+- 主动搭话的user资料标欲望创建时间，不用请求时间代替欲望来源时间。
+- `check_timeouts`只结束等待；不会写“用户未回答”记忆、事实或触发记忆反思。兼容`record_no_answer`为空操作。
+
 明确含 URL 的问卷/答题委托直接走慢通道，使工具判断可调用 `browser_survey` 受理后台任务；回复只报告已受理，最终结果由活动页展示。
 
 角色身份、canon、可选 reference 和 ask 方向来自角色卡；内置 Nyx 位于 `nyx/cards/nyx/`，身份句将 Nyx 标注为“中文：尼克斯”。每个角色独立等待 attempt、回复历史、LLM FIFO 锁和 eval；当前角色资格在实际开始主动表达前复查，跳过不计欲望失败。已开始的表达完成到原角色，历史 assistant 使用中性“你”标签。结构/工具协议/知识边界仍由框架提供。
@@ -34,7 +41,7 @@
 - `nyx/expression/prompt.py`
   - 纯函数拼装 system/user prompt、慢通道回溯上下文和人格自然语言指令。
 - 召回的 `conversation_segment` 以独立 `[相关对话段（历史原文，仅作参考）]` user-prompt 区块注入，不加入当前会话 `Message` 历史。
-- 慢通道仅对真正进入该区块预算的段按当前用户事件幂等记录召回；检索候选未展示不计，仍不调用旧 `MemoryFacade.record_recall`。
+- 快慢通道仅对真正进入最终回复区块预算的段按当前用户事件幂等记录召回；检索候选未展示不计，仍不调用旧 `MemoryFacade.record_recall`。
 - `nyx/expression/classifier.py`
   - 纯函数实现快慢通道评分、唯一问句识别 `is_question()` 和轻量意图识别。
 - `nyx/expression/mutter.py`
@@ -75,7 +82,7 @@
 - user/Nyx history 条目可带活动 ID、类型和有界摘要；`build_user_prompt()` 将其作为
   “历史活动事实”附在对应消息后，旧条目没有元数据时不增加内容。
 - 快通道只执行一次 `respond`：
-  - 不调用记忆检索、场景记忆或工具；
+  - 有界检索普通对话段和事实，不调用旧场景记忆或工具；
   - think（非空）和 speak/ask 先缓存，生成完成后作为一个终局批次提交；
   - speak 是问句时仍注册 `CHAT_ASK` 并发布 canonical `ASK`。
 - 慢通道执行：

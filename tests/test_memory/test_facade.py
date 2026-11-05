@@ -2,7 +2,7 @@
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import cast
 
 import pytest
@@ -24,6 +24,7 @@ from nyx.memory.facade import (
     _content_preview,
     _has_negation,
     _join_list,
+    _memory_relation_prompt,
     _memory_to_dict,
     _memory_to_markdown,
     _parse_contradiction,
@@ -325,6 +326,10 @@ async def test_digest_source_block_updates_profile_and_attributes_fiction() -> N
     assert profile["content_category"] == "fiction"
     assert profile["themes"] == ["成长", "友谊"]
     assert points[0]["content"] == "《魔法学校》中，校长隐瞒了真相"
+    payload = json.loads(llm.user_contents[0])
+    assert payload["source_times"] == {
+        "published_at": "未知", "ingested_at": "未知", "previous_profile_at": "未知"
+    }
 
 
 async def test_remember_knowledge_persists_source_topic() -> None:
@@ -434,6 +439,55 @@ def test_build_scene_prompt() -> None:
     assert "猫很可爱" in prompt  # nyx_speak
     with pytest.raises(KeyError):
         _build_scene_prompt({"user_message": "x"})
+
+
+def test_legacy_scene_marks_missing_source_times_unknown() -> None:
+    assert _build_scene_prompt(_ctx()).count("时间=未知") == 3
+
+
+@pytest.mark.parametrize(
+    "builder", [_build_contradiction_prompt, _memory_relation_prompt]
+)
+def test_memory_comparison_keeps_creation_separate_from_occurrence(
+    builder: Callable[[Memory, list[Memory]], str],
+) -> None:
+    old = _mem("old", None)
+    old.created_at = 2000.0
+    prompt = builder(_mem("new", None), [old])
+    assert "1970-01-01T00:16:40+00:00" in prompt
+    assert "1970-01-01T00:33:20+00:00" in prompt
+    assert prompt.count("原始发生时间=未知") == 2
+
+
+async def test_annotation_prompt_uses_original_events_not_feedback_clock() -> None:
+    store, bus, database = await _new_stack()
+    llm = _FakeLlm({
+        "fact_extraction": '{"entities":[],"facts":[],"is_correction":false}'
+    })
+    facade = _make_facade(store, bus, llm, _FakeEvaluator())
+    try:
+        for event_id, timestamp, kind in [
+            ("quoted", 100.0, EventType.SPEAK),
+            ("comment", 200.0, EventType.USER_MESSAGE),
+        ]:
+            await bus.publish(Event(
+                id=event_id, timestamp=timestamp, source=Source.INTERNAL,
+                type=kind, content={"text": "测试"}, correlation_id="time",
+            ))
+        feedback = Event(
+            id="feedback", timestamp=300.0, source=Source.INTERNAL,
+            type=EventType.ANNOTATION_FEEDBACK, correlation_id="time",
+            content={"quote": "旧回复", "comment": "批注",
+                     "user_event_id": "comment", "reply_event_id": "quoted"},
+        )
+        await bus.publish(feedback)
+        await facade.apply_annotation_feedback(feedback, "memory.annotation_feedback")
+        payload = json.loads(llm.user_contents[0])
+        assert payload["quote_at"] == "1970-01-01T00:01:40+00:00"
+        assert payload["comment_at"] == "1970-01-01T00:03:20+00:00"
+        assert payload["feedback_recorded_at"] == "1970-01-01T00:05:00+00:00"
+    finally:
+        await database.close()
 
 
 def test_has_negation() -> None:
@@ -2086,17 +2140,9 @@ async def test_record_no_answer() -> None:
         async with _running(bus):
             await facade.record_no_answer("你还好吗？", "corr-1")
         memories = await facade.list_memories()
-        assert len(memories) == 1
-        m = memories[0]
-        assert (m.type, m.kind, m.summary) == (
-            MemoryType.SHORT_TERM,
-            MemoryKind.INTERACTION,
-            "用户没有回答我的提问",
-        )
-        assert "你还好吗？" in m.content
-        assert llm.calls == []  # 无 LLM（确定性落库）
-        [created] = [e for e in events if e.type is EventType.MEMORY_CREATED]
-        assert created.content["memory_id"] == m.id
+        assert memories == []
+        assert llm.calls == []
+        assert not [e for e in events if e.type is EventType.MEMORY_CREATED]
     finally:
         await database.conn.close()
 
@@ -2204,6 +2250,7 @@ async def test_idle_maintenance_evaluates_and_extracts_segment_facts() -> None:
         assert [(fact.scope, fact.source_segment_id) for fact in facts] == [
             ("profile", segment.id)
         ]
+        assert all("1970-01-01T00:00:01+00:00" in text for text in llm.user_contents)
     finally:
         await database.close()
 

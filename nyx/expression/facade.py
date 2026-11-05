@@ -47,6 +47,7 @@ from nyx.expression.prompt import (
     build_initiate_chat_prompt,
     build_system_prompt,
     build_temporal_block,
+    format_prompt_time,
 )
 from nyx.expression.store import ExpressionInteractionStore
 from nyx.inner_life.facade import InnerLifeFacade
@@ -620,6 +621,16 @@ class ExpressionFacade:
         answered: InteractionAttempt | None = None
         now = time.time()
         try:
+            user_event = await self._bus.get_event(correlation_id)
+            message_at = (
+                user_event.timestamp
+                if user_event is not None and user_event.type is EventType.USER_MESSAGE
+                else None
+            )
+            quoted_event = (
+                await self._bus.get_event(annotation["reply_event_id"])
+                if annotation is not None else None
+            )
             # 用户说话 = 回应了之前的问句/搭话；清等待状态（不判断是否真在答）。
             if annotation is None:
                 answered = await self.answer_waiting(correlation_id, reply_to)
@@ -645,6 +656,12 @@ class ExpressionFacade:
             )
             initial: ReplyState = {
                 "message": msg,
+                "message_at": message_at,
+                "sampled_at": now,
+                "annotation_at": (
+                    quoted_event.timestamp if quoted_event is not None else None
+                ),
+                "round_times": [],
                 "annotation": annotation,
                 "skill": (
                     self._skills.get("discussion")
@@ -724,7 +741,10 @@ class ExpressionFacade:
                 temporal_context=temporal_context,
                 activity_context=activity_context,
             )
-            user = build_initiate_chat_prompt(desire.description)
+            user = (
+                f"[欲望创建时间={format_prompt_time(desire.created_at)}]\n"
+                + build_initiate_chat_prompt(desire.description)
+            )
             output = await self._llm.complete(
                 [
                     {"role": "system", "content": system},
@@ -910,7 +930,7 @@ class ExpressionFacade:
         return template.format(subject=subject)
 
     async def check_timeouts(self, now: float) -> None:
-        """超时收尾（tick 心跳直呼）：问句无人答 → 记「用户未回答」；
+        """超时收尾（tick 心跳直呼）：问句到期仅结束等待；
         搭话被忽略 → 淘汰该互动欲（expire 内值回灌 +0.3）。"""
         if self._interaction_store is not None:
             while True:
@@ -920,17 +940,12 @@ class ExpressionFacade:
                 try:
                     if attempt.kind is InteractionKind.INITIATE_CHAT:
                         await self._desire.expire(attempt.source_id)
-                    else:
-                        await self._memory.record_no_answer(
-                            attempt.text, attempt.correlation_id
-                        )
                 except Exception:
                     await self._interaction_store.release_claim(attempt.id)
                     raise
                 if not await self._interaction_store.finish_expired(attempt.id):
                     return
         if self._waiting_user and now - self._ask_at >= self._config.ask_timeout:
-            await self._memory.record_no_answer(self._ask_text, self._ask_cid or "")
             self._waiting_user = False
             self._ask_cid = None
         if (

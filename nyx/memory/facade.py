@@ -23,6 +23,7 @@ from nyx.memory.facts import (
     FactCandidate,
     MemoryFactStore,
     extract_fact_candidates,
+    format_source_time,
     parse_fact_extraction,
 )
 from nyx.memory.retrieval import (
@@ -68,6 +69,8 @@ _FACT_EXTRACTION_SYSTEM = (
     "实体类型可用 person、agent、book、character、place、organization、concept、event。"
     "不要把书中人物、引文、示例或尼克斯的自述误归因给用户；主体不明确就跳过。"
     "事实必须是来源明确断言，不要凭常识补全。只输出 JSON："
+    "用户明确说‘我在北京’时提取用户—当前所在地—北京，只有明确居住才写居住地；"
+    "仅谈北京天气不能推断用户位置。时间陈述只描述原话当时，不代表抽取时的现在。"
     "entities 数组元素为 {name,type,aliases}；facts 数组元素为 "
     "{subject,subject_type,predicate,object,object_type,polarity,mode,asserted}。"
     "批量输入时 facts 还必须带 memory_index（从 0 开始）。"
@@ -427,9 +430,9 @@ def _parse_segment_evaluation(
 def _build_scene_prompt(ctx: dict[str, str]) -> str:
     """reply_context → 场景记忆 prompt。纯函数；缺键 KeyError（fail-fast）。"""
     return (
-        f"用户说：{ctx['user_message']}\n"
-        f"你心里想：{ctx['nyx_think']}\n"
-        f"你回答说：{ctx['nyx_speak']}\n"
+        f"[用户原话时间=未知] 用户说：{ctx['user_message']}\n"
+        f"[思考生成时间=未知] 你心里想：{ctx['nyx_think']}\n"
+        f"[回复生成时间=未知] 你回答说：{ctx['nyx_speak']}\n"
     )
 
 
@@ -439,6 +442,7 @@ def _build_fact_extraction_prompt(
     source = source_name or "（无明确外部来源）"
     return (
         f"来源范围：{source_scope}\n来源名称：{source}\n"
+        f"记忆创建时间={format_source_time(memory.created_at)}；原始发生时间=未知\n"
         "主体归因规则：对话中用户明确说的‘我’归为用户；尼克斯明确说的‘我’归为尼克斯；"
         "书名、书中人物、地点、组织和概念必须分别作为实体。引用或书中叙述不是现实主体事实。\n"
         f"记忆类型：{memory.kind.value}\n摘要：{memory.summary}\n正文：{memory.content}"
@@ -457,6 +461,7 @@ def _build_fact_extraction_batch_prompt(
         source = source_name or "（无明确外部来源）"
         sections.append(
             f"记忆索引：{index}\n来源范围：knowledge\n来源名称：{source}\n"
+            f"记忆创建时间={format_source_time(memory.created_at)}；原始发生时间=未知\n"
             f"记忆类型：{memory.kind.value}\n摘要：{memory.summary}\n正文：{memory.content}"
         )
     return "\n\n".join(sections)
@@ -520,10 +525,14 @@ def _content_preview(m: Memory) -> str:
 def _build_contradiction_prompt(memory: Memory, candidates: list[Memory]) -> str:
     """新记忆 + 候选旧记忆（预览）→ 矛盾判断 prompt。纯函数。"""
     lines = [
+        f"新记忆创建时间={format_source_time(memory.created_at)}；原始发生时间=未知",
         f"新记忆：{memory.content}",
         "\n候选旧记忆：",
     ]
-    lines.extend(f"- [{m.id}] {_content_preview(m)}" for m in candidates)
+    lines.extend(
+        f"- [{m.id}] [创建时间={format_source_time(m.created_at)}；原始发生时间=未知] "
+        f"{_content_preview(m)}" for m in candidates
+    )
     if _has_negation(memory.content):
         lines.append("\n提示：新记忆含否定/转折语气，请重点核对是否推翻了某条旧记忆。")
     return "\n".join(lines)
@@ -629,6 +638,7 @@ def _memory_relation_prompt(memory: Memory, candidates: list[Memory]) -> str:
         ),
         "",
         f"新记忆：id={memory.id}",
+        f"创建时间={format_source_time(memory.created_at)}；原始发生时间=未知",
         f"summary={memory.summary}",
         f"kind={memory.kind.value}",
         f"topics={memory.topics}",
@@ -640,6 +650,8 @@ def _memory_relation_prompt(memory: Memory, candidates: list[Memory]) -> str:
         lines.extend(
             [
                 f"- id={candidate.id}",
+                f"  创建时间={format_source_time(candidate.created_at)}；"
+                "原始发生时间=未知",
                 f"  summary={candidate.summary}",
                 f"  kind={candidate.kind.value}",
                 f"  topics={candidate.topics}",
@@ -881,12 +893,15 @@ class MemoryFacade:
         corroborating: list[ConversationSegment] = []
         prior = await self._store.list_conversation_segments(50)
         prior_text = "\n".join(
-            f"{item.id}: {item.raw_content[:500]}"
+            f"{item.id} [发生时间范围={format_source_time(item.started_at)} 至 "
+            f"{format_source_time(item.ended_at)}]: {item.raw_content[:500]}"
             for item in prior
             if item.id != segment.id
         )
         prompt = (
             f"段 ID：{segment.id}\n"
+            f"发生时间范围={format_source_time(segment.started_at)} 至 "
+            f"{format_source_time(segment.ended_at)}；逐句时间=未知\n"
             f"事件 ID：{json.dumps(segment.raw_event_ids, ensure_ascii=False)}\n"
             f"对话原文：\n{segment.raw_content[:12000]}\n"
             f"其他历史段索引：\n{prior_text[:5000]}"
@@ -998,6 +1013,12 @@ class MemoryFacade:
         correction = False
         correction_topic = "user_correction"
         try:
+            user_event_id = event.content.get("user_event_id")
+            reply_event_id = event.content.get("reply_event_id")
+            user_event = (await self._bus.get_event(user_event_id)
+                          if isinstance(user_event_id, str) else None)
+            reply_event = (await self._bus.get_event(reply_event_id)
+                           if isinstance(reply_event_id, str) else None)
             output = await self._llm.complete(
                 [
                     {"role": "system", "content": _FACT_EXTRACTION_SYSTEM + (
@@ -1017,7 +1038,12 @@ class MemoryFacade:
                     )},
                     {"role": "user", "content": json.dumps(
                         {"quote": event.content["quote"],
-                         "comment": event.content["comment"]},
+                         "quote_at": format_source_time(
+                             reply_event.timestamp if reply_event else None),
+                         "comment": event.content["comment"],
+                         "comment_at": format_source_time(
+                             user_event.timestamp if user_event else None),
+                         "feedback_recorded_at": format_source_time(event.timestamp)},
                         ensure_ascii=False,
                     )},
                 ],
@@ -1165,6 +1191,8 @@ class MemoryFacade:
                         {"role": "user", "content": (
                             "来源范围：对话段；只抽取用户原话明确说出的事实。"
                             "尼克斯的发言不是用户事实；引文不是现实事实。\n"
+                            f"发生时间范围={format_source_time(segment.started_at)} 至 "
+                            f"{format_source_time(segment.ended_at)}；逐句时间=未知\n"
                             f"原文：\n{segment.raw_content[:12000]}"
                         )},
                     ],
@@ -1236,7 +1264,7 @@ class MemoryFacade:
     async def record_conversation_segment_recall(
         self, segment_id: str, user_event_id: str
     ) -> None:
-        """Only a segment actually rendered in the slow prompt counts."""
+        """Only a segment actually rendered in the final reply prompt counts."""
         if not user_event_id:
             raise ValueError("user_event_id 不能为空")
         async with self._segment_lock:
@@ -1333,11 +1361,13 @@ class MemoryFacade:
         source_chunk_id: str | None = None,
     ) -> tuple[dict[str, object], list[dict[str, str]]]:
         """Update a rolling source profile and extract attributed knowledge."""
+        ingested_at: float | None = None
         if source_chunk_id is not None:
             chunks = await self._store.list_knowledge_chunks(ids=[source_chunk_id])
             if not chunks:
                 raise ValueError("知识消化所引用的证据块不存在")
             text, source_name = chunks[0].content, chunks[0].source_name
+            ingested_at = chunks[0].created_at
         if len(text) > _SOURCE_DIGEST_MAX_CHARS:
             raise ValueError("原文沉淀块不能超过 6000 字符")
         previous = profile or {
@@ -1348,6 +1378,11 @@ class MemoryFacade:
         user = json.dumps(
             {
                 "source": {"name": source_name, "author": author},
+                "source_times": {
+                    "published_at": "未知",
+                    "ingested_at": format_source_time(ingested_at),
+                    "previous_profile_at": "未知",
+                },
                 "previous_profile": previous,
                 "source_text": text,
             },
@@ -1710,18 +1745,7 @@ class MemoryFacade:
         )
 
     async def record_no_answer(self, question: str, correlation_id: str) -> None:
-        """用户未回答尼克斯的提问：落一条确定性的 SHORT_TERM 记忆（无场景 LLM）。
-
-        问句本身已由慢通道场景化记忆记过，这里只补「没答」这半句；
-        复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。
-        """
-        memory = _new_memory(
-            f"我问了「{question}」，用户没有回答。",
-            MemoryKind.INTERACTION,
-            "用户没有回答我的提问",
-            MemoryType.SHORT_TERM,
-        )
-        await self._persist_memory(memory, correlation_id)
+        """兼容旧调用；沉默不是用户陈述，不生成记忆或事实。"""
 
     async def _persist_memory(
         self,

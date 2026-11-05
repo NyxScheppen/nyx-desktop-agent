@@ -89,6 +89,12 @@ _MAX_REPLANS = 1
 
 ## 数据变更
 
+2026-11 prompt时间补充：ToolState checkpoint可选`plan_at`记录计划生成时间；旧checkpoint缺失标未知。
+pending/records可选`started_at`、`received_at`分别记录本次尝试准备与结果接收时间，不能当作资料发生时间。
+入口仅为既有plan/begin/execute；消费者为既有plan/decide/review及最终执行反馈。无新状态或表。
+空计划不提供生成时间，失败沿用原重试/uncertain；部分完成保留已存时钟，乱序不覆盖来源时间，
+恢复不以当前时间回填旧记录，删除随既有checkpoint/回执清理。标签受既有预算限制。
+
 schema49 增加官方 AsyncSqliteSaver 使用的 `checkpoints`、`writes` 表，schema50 增加临时执行回执 `tool_execution`；计划及执行进度仅保存到本次回复终局提交。工具执行事实仍由 17 的 `tool_call_log` 记录。
 
 ## 对象完整性

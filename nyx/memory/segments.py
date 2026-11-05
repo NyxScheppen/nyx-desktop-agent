@@ -1,15 +1,18 @@
 """对话段判定：宽松连接，明确断开。"""
 
+import logging
 import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from math import sqrt
 
+from nyx.memory.facts import strip_recall_fillers
 from nyx.memory.store import MemoryStore
 from nyx.types import ConversationSegment
 
 EmbedFn = Callable[[str], Awaitable[list[float]]]
+_LOGGER = logging.getLogger(__name__)
 _MAX_GAP_SECONDS = 4 * 60 * 60
 _BREAK_MARKERS = ("换个话题", "另外", "对了", "说到别的", "不聊这个了")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}")
@@ -17,7 +20,7 @@ _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}")
 
 def _terms(text: str) -> set[str]:
     result: set[str] = set()
-    for token in _TOKEN_RE.findall(text.lower()):
+    for token in _TOKEN_RE.findall(strip_recall_fillers(text)):
         if token.isascii():
             result.add(token)
         else:
@@ -95,7 +98,14 @@ async def search_segments(
 ) -> list[ConversationSegment]:
     """按段摘要/原文主题召回，资料知识不在此候选集内。"""
     query_terms = _terms(query)
-    query_embedding = await embed(query) if embed is not None else None
+    if not query_terms:
+        return []
+    query_embedding = None
+    if embed is not None:
+        try:
+            query_embedding = await embed(query)
+        except Exception:
+            _LOGGER.exception("对话段查询向量失败，保留关键词召回")
     segments = await store.list_conversation_segments(None, active_only=True)
     ranked: list[tuple[float, ConversationSegment]] = []
     for segment in segments:

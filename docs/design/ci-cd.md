@@ -57,6 +57,8 @@ workflow 复制安装和构建逻辑。
 `UV_CACHE_DIR` 与打包 job 的 `HF_HOME` 在 checkout 后通过 PowerShell 将 `RUNNER_TEMP`
 下的路径写入 `GITHUB_ENV`，供后续缓存和构建步骤使用；job 级 `env` 不支持 `runner` 上下文。
 工作流静态校验使用 `actionlint .github/workflows/ci.yml`，实际质量门结果仍以 GitHub 运行记录为准。
+2026-11-06 [运行 42149961565](https://github.com/NyxScheppen/nyx-desktop-agent/actions/runs/42149961565)
+已接受修复后的工作流并创建 job，但账户计费锁定使两个质量 job 均未启动任何 step；尚不能确认远端质量门通过。
 
 ## 触发规则
 

@@ -5,6 +5,8 @@
 
 ## 近期验证与质量门
 
+- [ ] **解除 GitHub Actions 账户计费锁定并重跑 CI。** 2026-11-06 [运行 42149961565](https://github.com/NyxScheppen/nyx-desktop-agent/actions/runs/42149961565) 已接受修复后的 workflow 并创建 job，但两个质量 job 均因账户 `billing issue` 未启动任何 step。需账户所有者解除计费锁定后重跑；工作流静态校验通过不等于远端质量门通过。
+
 - [ ] **手机 QQ 内心话展示确认。** 真实手机观察“💭 内心话”独立消息及正文顺序。真实 QQ 私聊往返已由用户确认；本项只补内心话展示体验，模拟 OneBot 验收已通过。依据：[OneBot 契约](specs/21-onebot-transport.md)、[效果记录](eval/README.md)。
 
 ## 云端部署与手机跨网（Railway 路线）

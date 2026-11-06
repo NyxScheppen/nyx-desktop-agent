@@ -1183,8 +1183,8 @@ Top N 再过滤来源，也会被其它来源的高分候选挤空，最终表�
 
 **来源**：发布推送后，GitHub在启动任何job前拒绝既有workflow中的job级env引用`runner.temp`。
 **教训**：本地工具和测试全绿不能证明工作流语法及上下文可用，零job失败也没有测试日志。
-**怎么做**：按工作流键允许的上下文设置运行时路径；远端运行失败先读取Annotations，区分静态校验失败和测试失败，不放宽质量门。
-**影响的文件/决策**：`.github/workflows/ci.yml`；本次仅记录，工作流修复单独列入TODO。
+**怎么做**：在 step 中使用 `RUNNER_TEMP` 并写入 `GITHUB_ENV`，让后续步骤复用缓存路径；用 actionlint 先复现再验证修复。远端运行失败先读取 Annotations，区分静态校验失败和测试失败，不放宽质量门。
+**影响的文件/决策**：`.github/workflows/ci.yml`；后端与打包 job 的缓存路径初始化移至 step。
 
 ## 模板（条目格式）
 

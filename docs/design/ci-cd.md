@@ -54,6 +54,10 @@ flowchart LR
 当前只使用一个 `.github/workflows/ci.yml`，通过 job 条件覆盖三种事件，避免 CI 与 release
 workflow 复制安装和构建逻辑。
 
+`UV_CACHE_DIR` 与打包 job 的 `HF_HOME` 在 checkout 后通过 PowerShell 将 `RUNNER_TEMP`
+下的路径写入 `GITHUB_ENV`，供后续缓存和构建步骤使用；job 级 `env` 不支持 `runner` 上下文。
+工作流静态校验使用 `actionlint .github/workflows/ci.yml`，实际质量门结果仍以 GitHub 运行记录为准。
+
 ## 触发规则
 
 | 事件 | 后端质量门 | 前端/桌面检查 | 打包与 smoke | GitHub Release |

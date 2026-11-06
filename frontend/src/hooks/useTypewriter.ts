@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-// 打字机（03-chat-panel §5）：text 逐字显示，返回可见文本 + 是否打完。
+// 打字机：text 逐字显示，返回可见文本 + 是否打完。
 // 纯渲染层——消息仍完整 append 到 store，这里只控制「显示到第几个字」，
 // 不碰数据流、不碰 isReplying/超时 timer 生命周期。
 // ready=false 时不启动（串行逐字：speak/ask 等前置 think 打完才开打），

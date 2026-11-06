@@ -106,13 +106,13 @@ class ReplyState(TypedDict):
     facts: list[MemoryFact]       # 当前有效事实（与原始记忆隔离）
     state: CurrentState          # 当前状态快照
     narrative: SelfNarrative | None   # 慢通道 assemble 填充，快通道恒 None
-    # 累积：每轮 think/speak 追加（11-expression，tech-ref §6.1 ripple）
+    # 累积：每轮 think/speak 追加
     think: list[str]
     speak: list[str]
     needs_continuation: bool
     ask: str | None
     round: int                   # 已完成 think/speak 的轮数（≤ slow_max_rounds）
-    correlation_id: str          # 本次 reply 溯源（11-expression，按 09-activity 对齐）
+    correlation_id: str          # 本次 reply 溯源
     last_slow_at: float          # 上次慢通道时间（facade 维护，每 reply 入 state）
     tool_feedback: str
     tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
@@ -196,7 +196,7 @@ def _voice_output(output: LLMOutput, type_: str, content: str) -> LLMOutput:
     """用解析出的 think/speak 文本重造 LLMOutput，供 evaluator 分别跑 OOC。
 
     保留 prompt_tokens/completion_tokens/call_id：think/speak 同源一次
-    complete()，eval 记账需沿袭同一调用（token 去重锚点，10-eval）。
+    complete()，eval 记账需沿袭同一调用（token 去重锚点）。
     """
     return LLMOutput(
         module=output.module,

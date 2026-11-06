@@ -47,7 +47,7 @@ class InnerLifeFacade:
     """内在生命门面：apply_event（情感/精力更新）+ reflect（反思协调器）
     + get_state / get_narrative。
 
-    情感在内存（不持久化，契约见 08-inner-life spec）；
+    情感在内存（不持久化）；
     性格/三观/精力/自我叙事走 InnerLifeStore；
     反思在 Reflection（内部构造，共享 store，不反 import facade）。
     """

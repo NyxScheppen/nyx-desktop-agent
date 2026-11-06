@@ -7,7 +7,7 @@ import { parseSseEvent, type ConnectionState, type SseEvent } from "../types/api
 // 后端 enums.py EventType 的 snake_case 值。
 // 命名事件按 event: 行解析；未知类型不会进入分发。
 // 前向兼容边界：后端新增 EventType 必须同步此数组 + types/api.ts 判别联合 +
-// dispatchEvent 分发表，否则新类型帧被浏览器静默丢弃（01-sse §4）。
+// dispatchEvent 分发表，否则新类型帧被浏览器静默丢弃。
 const EVENT_TYPES = [
   "user_message",
   "annotation_feedback",

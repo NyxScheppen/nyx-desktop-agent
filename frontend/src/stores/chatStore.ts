@@ -83,7 +83,7 @@ type ChatState = {
   reset: () => void;
 };
 
-// 历史回填的事件类型（按 03-chat-panel §4）：只拉文本类，其余（emotion_update 等）不进对话。
+// 历史回填的事件类型：只拉文本类，其余（emotion_update 等）不进对话。
 const HISTORY_TYPES = [
   "user_message",
   "speak",
@@ -157,7 +157,7 @@ function closeMissingHistoricalQuestions(
 }
 
 // BackendEvent（event_log）→ ChatMessage：user_message 读 content.message、文本事件读 content.content。
-// 字段非 string 则丢弃（与 append 一致的收窄校验，01-sse §4.1）。
+// 字段非 string 则丢弃（与 append 一致的收窄校验）。
 function toChatMessage(e: BackendEvent): ChatMessage | null {
   if (e.type === "annotation_feedback") return null;
   if ((e.type === "speak" || e.type === "ask") && !hasValidReplyCoverage(e.content, e.correlation_id)) return null;
@@ -249,8 +249,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     refreshWaiting();
     return true;
   };
-  // 文本字段收窄校验后才入消息（01-sse §4.1：不用裸 as，类型错 → 丢弃不崩）。
-  // 用户消息读 message、文本事件读 content（键名不同，见 01-sse §1）。
+  // 文本字段收窄校验后才入消息（不用裸 as，类型错 → 丢弃不崩）。
+  // 用户消息读 message、文本事件读 content（键名不同）。
   const append = (
     e: TextEvent<TextEventType> | UserMessageEvent,
     role: ChatMessage["role"],

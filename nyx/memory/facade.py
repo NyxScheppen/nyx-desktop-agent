@@ -757,7 +757,7 @@ class MemoryFacade:
     """记忆模块门面：场景化记忆创建 + 检索 + 想起升级 + 新鲜度衰减/淘汰 + 导出。
 
     生命周期逻辑（新鲜度衰减、短期→长期升级、容量淘汰）都在这层；
-    纯 CRUD 在 MemoryStore、三层检索在 MemoryRetrieval（06-memory-system）。
+    纯 CRUD 在 MemoryStore、三层检索在 MemoryRetrieval。
     矛盾检测走「embedding 召回门控 + 独立单任务 LLM 调用」，无候选则 0 调用。
     """
 

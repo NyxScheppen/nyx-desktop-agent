@@ -8,7 +8,7 @@ type MessageBubbleProps = {
   onTyped: (id: string) => void; // 逐字打完 → markTyped（供后续消息串行等待）
 };
 
-// 单条气泡按 role/kind 渲染（03-chat-panel §3 + 视觉改造打字机 §4）：
+// 单条气泡按 role/kind 渲染：
 // nyx 文本消息（speak/ask/think/initiate_chat）走 useTypewriter 逐字，打字时末尾闪烁光标；
 // user 消息即时；think 弱化（灰色斜体小字）。
 // preloaded 历史消息直接全量显示不逐字；逐字打完回调 onTyped 标记，后续消息等 ready。

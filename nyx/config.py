@@ -25,7 +25,7 @@ class ActivityEnergyDelta:              # activity.energy_delta：6 键 = Activi
 class LlmConfig:
     provider: str = "deepseek"
     model: str = "deepseek-chat"
-    api_key_env: str = "DEEPSEEK_API_KEY"  # 存环境变量名，key 本体由 03-llm 读
+    api_key_env: str = "DEEPSEEK_API_KEY"  # 存环境变量名，key 本体由 LLM 客户端读
     base_url: str | None = None            # 可选 endpoint 覆盖；缺省查 provider 映射
     timeout: float = 60.0                  # 单次 LLM 请求超时（秒）
     max_retries: int = 2                   # 请求失败重试次数
@@ -76,10 +76,10 @@ class ExplorationConfig:
 
 @dataclass
 class VisionConfig:
-    enabled: bool = False               # 屏幕视觉 opt-in（见 09-activity spec）
+    enabled: bool = False               # 屏幕视觉 opt-in
     provider: str = "ollama"            # 复用 provider→base_url 映射
     model: str = "llava"                # 本地视觉模型 tag（Ollama）
-    api_key_env: str = "DEEPSEEK_API_KEY"  # 存环境变量名，key 本体由 03-llm 读
+    api_key_env: str = "DEEPSEEK_API_KEY"  # 存环境变量名，key 本体由 LLM 客户端读
     base_url: str | None = None         # 可选 endpoint 覆盖；缺省查 provider 映射
     interval_seconds: int = 60          # 抓屏周期（秒）
 

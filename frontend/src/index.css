@@ -1964,7 +1964,7 @@ body:has(.app--pet) {
   }
 }
 
-/* ===== 读书：书架 + 阅读页（06-reading-panel） ===== */
+/* ===== 读书：书架 + 阅读页 ===== */
 .reading-btn {
   padding: 0.3rem 0.7rem;
   border: 1px solid var(--accent);
@@ -2324,7 +2324,7 @@ h6.reader-block--heading {
   }
 }
 
-/* ===== 读书：笔记面板（docs/frontend/07-reading-events.md §3） ===== */
+/* ===== 读书：笔记面板 ===== */
 .note-composer {
   display: flex;
   flex-direction: column;

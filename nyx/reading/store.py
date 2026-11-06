@@ -263,7 +263,7 @@ class ReadingStore:
     ) -> ReadingProgress:
         """按 revision 条件写进度。
 
-        不碰 read_count（重读计数只由 12-reading-system ++）。
+        不碰 read_count（重读计数只由阅读系统 ++）。
         """
         async with self._db.lock:
             now = time.time()

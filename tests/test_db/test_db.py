@@ -407,7 +407,7 @@ async def test_connect_postgres_uses_autocommit_for_standalone_statements(
     assert len(calls) == 1 and calls[0]["autocommit"] is True
 
 
-# 非 Optional 字段对应列必须 NOT NULL（01-types 契约）
+# 非 Optional 字段对应列必须 NOT NULL（对应共享类型）
 NOT_NULL_COLUMNS = {
     ("memory", "aspect"),
     ("long_term_desire", "linked_values"),
@@ -424,7 +424,7 @@ NOT_NULL_COLUMNS = {
     ("eval_prompt", "prompt_json"),
 }
 
-# Optional 字段对应列必须可空（01-types 的 X | None）
+# Optional 字段对应列必须可空（共享类型的 X | None）
 NULLABLE_COLUMNS = {
     ("short_term_desire", "goal"),
     ("short_term_desire", "parent_long_term_id"),

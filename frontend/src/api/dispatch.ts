@@ -8,7 +8,7 @@ import { useMemoryStore } from "../stores/memoryStore";
 import { useReaderStore } from "../stores/readerStore";
 import type { SseEvent } from "../types/api";
 
-// 事件 → store 路由（01-sse §4.1）。
+// 事件 → store 路由。
 // desire/activity 事件只带 id（{"desire_id"}/{"activity_id"}），
 // 面板收到就 refresh() 重拉快照；clock_tick/observation_state/reflection 不路由。
 export function dispatchEvent(e: SseEvent): void {
@@ -29,7 +29,7 @@ export function dispatchEvent(e: SseEvent): void {
     case "annotation_feedback":
       return useChatStore.getState().addAnnotationFeedback(e);
     case "emotion_update":
-      // 载荷只带 {valence, arousal, emotion}（08-inner-life），能量/性格/三观/审美不随帧下发；
+      // 载荷只带 {valence, arousal, emotion}，能量/性格/三观/审美不随帧下发；
       // 而 emotion_update 恰好在能量(ACTIVITY_END)/性格三观审美(REFLECTION)可能变化的那一刻发出，
       // 故顺带 refreshState() 重拉全量快照，带新 EnergyBar/BigFiveChart/ValuesChart/AestheticChart。
       useInnerLifeStore.getState().updateEmotion(e);

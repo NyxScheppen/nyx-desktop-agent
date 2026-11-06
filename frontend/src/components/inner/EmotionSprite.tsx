@@ -5,7 +5,7 @@ import { useCharacterStore } from "../../stores/characterStore";
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import type { EmotionCategory } from "../../types/api";
 
-// 8 情绪 sprite：文件名 = EmotionCategory 值，1:1 映射（04-inner-state-panel §2），无 switch 分支。
+// 8 情绪 sprite：文件名 = EmotionCategory 值，1:1 映射，无 switch 分支。
 // import.meta.glob 免 8 行静态 import；键 = 相对本文件的路径。
 const SPRITES = import.meta.glob("../../assets/expressions/*.png", {
   eager: true,

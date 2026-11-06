@@ -24,8 +24,8 @@ import type {
   UserNoteWithAnnotations,
 } from "../types/api";
 
-// 阅读系统唯一 store（06-reading-panel §3）：书架/进度/段落/追赶循环。
-// 笔记见 docs/frontend/07-reading-events.md，同属本 store（不拆 impulseStore/noteStore）。
+// 阅读系统唯一 store：书架/进度/段落/追赶循环。
+// 笔记同属本 store；概览见 docs/facts/reading-system-facts.md。
 
 export type NyxStatus = "idle" | "reading" | "waiting"; // 派生态，不落 store
 
@@ -79,7 +79,7 @@ type ReaderState = {
   toggleBookmark: (paragraphId: string) => Promise<void>;
 };
 
-// 追赶 timer 放 module-level（不进 store state，同 chatStore 的 replyTimer 约定，02-stores §1）。
+// 追赶 timer 放 module-level（不进 store state，同 chatStore 的 replyTimer 约定）。
 let catchupTimer: ReturnType<typeof setTimeout> | null = null;
 const progressQueues = new Map<string, Promise<void>>();
 const impulseQueues = new Map<string, Promise<void>>();
@@ -216,7 +216,7 @@ export function catchupDurationMs(textLength: number, readingSpeed: number): num
   return sec * 1000;
 }
 
-// 窗口计算：clamp 到 [1, total]（12-reading-system 后端对越界 from/to 返回 422，前端必须先 clamp）。
+// 窗口计算：clamp 到 [1, total]（阅读后端对越界 from/to 返回 422，前端必须先 clamp）。
 // centered=false：窗口从 userPosition 起（当前段在窗口顶）；true：以 userPosition 为中心。
 export function computeWindow(
   userPosition: number,
@@ -517,7 +517,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         get().startCatchup();
       } else {
         // 追赶收尾（追上 userPosition，无「下一次 putProgress」）：把最新 nyx_position
-        // 落库，否则重载后读到陈旧落后值会重追、重放 BOOK_FINISHED——12-reading-system 幂等靠进程内
+        // 落库，否则重载后读到陈旧落后值会重追、重放 BOOK_FINISHED——阅读幂等靠进程内
         // _finished_books，重启即丢 → read_count 重复 ++ 且误触 reflect。
         const readingSpeed = get().readingSpeed;
       void enqueueProgress(session, bookId, {

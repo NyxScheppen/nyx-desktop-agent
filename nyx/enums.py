@@ -24,7 +24,7 @@ class EventType(StrEnum):
     ACTIVITY_END = "activity_end"          # 活动结束
     ACTIVITY_INTERRUPTED = "activity_interrupted"  # 活动打断
     TASK_UPDATED = "task_updated"          # 委派任务状态变化
-    READING_MUTTER = "reading_mutter"      # 陪读碎碎念（12-reading-system）
+    READING_MUTTER = "reading_mutter"      # 陪读碎碎念
     READING_QUESTION = "reading_question"  # 陪读提问
     READING_ASSOCIATION = "reading_association"  # 陪读联想
     READING_PROGRESS = "reading_progress"  # 陪读进度同步
@@ -134,7 +134,7 @@ class MemoryEdgeKind(StrEnum):
     USER_PROFILE_LINK = "user_profile_link"
 
 
-class ReadingDrive(StrEnum):            # 阅读冲动 6 驱动（12-reading-system）
+class ReadingDrive(StrEnum):            # 阅读冲动 6 驱动
     MOTIVATION = "motivation"                       # 动力 → 精力
     CURIOSITY = "curiosity"                         # 好奇 → 探索欲
     BOREDOM = "boredom"                             # 无聊 → 互动欲
@@ -143,7 +143,7 @@ class ReadingDrive(StrEnum):            # 阅读冲动 6 驱动（12-reading-sys
     ASSOCIATIVE_DRIVE = "associative_drive"          # 记忆联想 → 联想密度
 
 
-class ReadingBehavior(StrEnum):         # 阅读冲动 5 复合行为（12-reading-system）
+class ReadingBehavior(StrEnum):         # 阅读冲动 5 复合行为
     QUESTION_KNOWLEDGE = "question_knowledge"        # 知识型提问
     QUESTION_PERSONAL = "question_personal"          # 私人型提问
     QUESTION_REFLECTIVE = "question_reflective"      # 反思型提问
@@ -196,7 +196,7 @@ class GoalAction(StrEnum):
     OBSERVE = "observe"
 
 
-class BoundaryResult(StrEnum):          # 陪读章末/整本读完判定（12-reading-system）
+class BoundaryResult(StrEnum):          # 陪读章末/整本读完判定
     NONE = "none"                       # 非边界
     CHAPTER_END = "chapter_end"         # 章末（下一段是新章标题）
     BOOK_FINISHED = "book_finished"     # 整本读完（nyx_position == total）

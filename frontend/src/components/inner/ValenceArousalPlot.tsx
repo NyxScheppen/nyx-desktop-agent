@@ -1,5 +1,5 @@
 // 二维散点：x=valence[-1,1]（左负右正）、y=arousal[0,1]（下低上高），单点 + 十字虚线标出当前值
-// （04-inner-state-panel §3）。轻量 SVG 手绘，不引图表库；坐标/像素不做测试断言（frontend/README §6）。
+// 轻量 SVG 手绘，不引图表库；坐标/像素不做测试断言。
 // 区域标签对齐后端 nyx/inner_life/emotion.py 的 vad_to_category 6 档（sleepy/thinking 是 resolve_emotion
 // 覆盖，不进象限）：开心/生气/担忧/悲伤/害羞/平静。标签质心与散点共用同一 (v,a)→(x,y) 映射，几何一致。
 import { EMOTION_LABELS } from "../../lib/labels";

@@ -10,7 +10,7 @@ def classify_presence(idle_seconds: float) -> str:
 def build_observation_summary(
     presence: str, window_title: str, screen_summary: str
 ) -> str:
-    """观察摘要（纯函数，屏幕视觉扩展契约见 09-activity spec）：窗口标题优先，
+    """观察摘要（纯函数）：窗口标题优先，
     视觉摘要次之逐段拼接；两者皆空则仅回 presence。"""
     if window_title:
         base = f"用户（{presence}）正在浏览 {window_title}"

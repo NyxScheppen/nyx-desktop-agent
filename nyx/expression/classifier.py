@@ -154,7 +154,7 @@ def should_load_discussion(message: str) -> bool:
 def slow_score(
     message: str, state: CurrentState, now: float, last_slow_at: float
 ) -> float:
-    """慢通道倾向得分 0-1，越高越该走慢通道（契约见 11-expression spec）。
+    """慢通道倾向得分 0-1，越高越该走慢通道。
 
     5 因子（权重和=1）：消息长度 0.25 + 含问句 0.25 + 情感词 0.20
     + 精力/情感 0.15 + 距上次慢通道 0.15。

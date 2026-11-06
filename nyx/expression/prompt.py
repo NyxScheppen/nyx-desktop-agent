@@ -475,7 +475,7 @@ def build_user_prompt(
 ) -> str:
     """拼 user prompt：对话历史（按时间升序的回溯上下文）+ 本次用户消息。
 
-    不含 think/speak 任务指令——那是 11-expression 节点的活
+    不含 think/speak 任务指令——那是 表达节点的活
     （think 说「内心思考」、speak 说「说给用户」）。
     """
     if annotation is not None:

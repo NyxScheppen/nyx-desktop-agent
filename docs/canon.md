@@ -1,8 +1,7 @@
-# Canon：尼克斯·夏本（设计摘要）
+# Canon：尼克斯·夏本（角色设定摘要）
 
-> 本文件是产品设计摘要，不是运行时 prompt。小说人物的完整设定与经历位于
-> `nyx/prompts/character-reference.md`，作为外部参考注入；不能当作 Nyx 的现实记忆。
-> 运行时表达以 `nyx/prompts/canon.md` 的身份与表达约定、动态人格/审美以及当前对话为准。
+> 本文件只概述静态角色设定，不作为系统实现参考。内置角色内容在 `nyx/cards/nyx/`；
+> 小说经历不能当作 Nyx 的现实记忆。实际初值与加载方式查当前角色卡和源码。
 
 ## 1. 身份
 
@@ -29,7 +28,7 @@
 | 利他 ↔ 利己 | 9 | 医生原型、关怀、坚持原则 |
 | 乐观 ↔ 悲观 | 5 | 见过残酷仍不低头，不是天真乐观 |
 
-> 这些是初始值，之后由内在生命的反思缓慢漂移。
+> 这些数值描述角色初始倾向，不代表当前运行状态。
 
 ## 4. 长期欲望初始集
 
@@ -41,8 +40,8 @@
 
 | 文件 | 作用 |
 |---|---|
-| `nyx/prompts/canon.md` | 身份边界、人格底色、表达规则、think/speak 约定 |
-| `nyx/prompts/character-reference.md` | 小说人物的完整外部参考资料 |
-| `nyx/prompts/ask.md` | 慢通道和搭话使用的主动提问指导 |
+| `nyx/cards/nyx/canon.md` | 身份边界、人格底色与表达方向 |
+| `nyx/cards/nyx/character-reference.md` | 小说人物的完整外部参考资料 |
+| `nyx/cards/nyx/ask.md` | 主动提问方向 |
 | `nyx/prompts/knowledge-boundary.md` | 知识边界指导，运行时由代码添加唯一标题 |
 | `nyx/expression/prompt.py` | 动态状态、资料标记、任务指令和表达示例的拼装 |

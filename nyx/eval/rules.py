@@ -15,7 +15,7 @@ _WHITELIST: frozenset[str] = frozenset({
 
 
 def ooc_score(content: str) -> float:
-    """人设贴合度（字段名 ooc 保留，01-types 锁定）：白名单命中加分、
+    """人设贴合度（保留字段名 ooc）：白名单命中加分、
     黑名单命中扣分，[0,1]。
 
     1.0 = 完全贴合（无 OOC），0.0 = 严重 OOC。越高越好。

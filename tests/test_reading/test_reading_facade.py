@@ -1,10 +1,10 @@
 # pyright: reportPrivateUsage=false
 """ReadingFacade 集成测试。
 
-覆盖 12-reading-system 内容导入、进度、冲动引擎和笔记，使用 :memory: + 真 store。
+覆盖 阅读系统 内容导入、进度、冲动引擎和笔记，使用 :memory: + 真 store。
 
 `parse_epub` 用 monkeypatch 注入固定 `EpubResult`（不碰真实 EPUB 字节）。
-12-reading-system 的依赖（inner_life/desire/memory/llm/evaluator/bus）用 duck-typed fake
+阅读系统 的依赖（inner_life/desire/memory/llm/evaluator/bus）用 duck-typed fake
 `cast` 注入；后台分派用 `asyncio.sleep(0)` 跑完（fake 无真 I/O，不悬挂）。
 """
 
@@ -273,7 +273,7 @@ class _NoneSearchMemory(_FakeMemory):
 
 
 class _RaisingLlm(_FakeLlm):
-    """模拟 12-reading-system 整合与批注的 LLM 失败/超时路径。"""
+    """模拟 阅读系统 整合与批注的 LLM 失败/超时路径。"""
 
     async def complete(
         self,
@@ -1031,7 +1031,7 @@ async def _note_facade(
     ReadingFacade, db.Database, _FakeBus, _FakeLlm, _FakeMemory,
     _FakeInnerLife, _FakeEvaluator,
 ]:
-    """构造 12-reading-system 笔记测试栈。
+    """构造 阅读系统 笔记测试栈。
 
     使用真 ReadingStore 并暴露全部 fake，供批注、整合和反思断言。
     """

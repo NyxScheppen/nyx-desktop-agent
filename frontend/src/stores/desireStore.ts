@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { getDesires } from "../api/client";
 import type { DesireState } from "../types/api";
 
-// 欲望面板（README §5）：REST 快照 + SSE desire_* 事件触发 refresh（02-stores 模式）。
+// 欲望面板：REST 快照 + SSE desire_* 事件触发 refresh。
 type DesireStoreState = {
   data: DesireState | null;
   error: string | null;

@@ -1,4 +1,4 @@
-"""eval 记账 store：`eval_log` + `eval_prompt`（10-eval）。
+"""eval 记账 store：`eval_log` + `eval_prompt`。
 
 每次 `evaluate()` 写一条评估记录；完整 prompt 按 call_id 只存一份。
 """

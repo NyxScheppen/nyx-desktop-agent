@@ -27,7 +27,7 @@ export default function BookshelfView() {
       if (!isScopeCurrent(scope)) return;
       await loadBooks(); // 刷新书架
     } catch (err) {
-      // 409 重复 / 400 非 epub·超限 / 500 解析失败均走统一 throw（05-client §2）
+      // 409 重复 / 400 非 epub·超限 / 500 解析失败均走统一 throw
       if (isScopeCurrent(scope)) setImportError(err instanceof Error ? err.message : String(err));
     } finally {
       if (isScopeCurrent(scope)) setImporting(false);

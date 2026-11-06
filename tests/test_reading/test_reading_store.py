@@ -353,7 +353,7 @@ async def test_increment_read_count_creates_default_row() -> None:
     assert result.read_count == 1
     assert row is not None
     assert row["user_position"] == 1  # DDL DEFAULT（未写）
-    assert row["nyx_position"] == 3  # 显式落 total（12-reading-system 跨重启幂等信号）
+    assert row["nyx_position"] == 3  # 显式落 total（阅读跨重启幂等信号）
     assert row["reading_speed"] == 50
 
 

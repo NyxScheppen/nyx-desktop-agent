@@ -38,7 +38,7 @@ import { parseChatPending } from "../types/api";
 // Development uses Vite proxy; packaged REST and SSE share the loopback endpoint.
 export const BASE_URL = import.meta.env.DEV || !isTauriRuntime() ? "" : "http://127.0.0.1:8000";
 
-// 统一错误契约（05-client §2）：成功返回数据、失败 throw，不包裹 {ok, data}。
+// 统一错误处理：成功返回数据、失败 throw，不包裹 {ok, data}。
 // fetch 网络错误（TypeError）自然上抛不吞；非 2xx 读 body.detail ?? body.error ?? JSON.stringify(body)，
 // 兜底保证 Error.message 非空。
 async function assertOk(res: Response): Promise<void> {
@@ -244,7 +244,7 @@ export async function getExpressionHistory(limit = 100): Promise<ExpressionHisto
   return request<ExpressionHistory>(`${BASE_URL}/api/expression/history?limit=${limit}`);
 }
 
-// ---- 阅读（12-reading-system，docs/frontend/06-reading-panel.md §6）----
+// ---- 阅读（概览见 docs/facts/reading-system-facts.md）----
 
 export async function getBooks(): Promise<BookListItem[]> {
   return request<BookListItem[]>(`${BASE_URL}/api/books`);
@@ -298,7 +298,7 @@ export async function evaluateImpulse(
   });
 }
 
-// 章末/整本检测（12-reading-system，07-reading-events §4 定义，06 追赶循环调用）。
+// 章末/整本检测（阅读器追赶循环调用）。
 export async function checkChapterBoundary(
   bookId: string,
   nyxPosition: number,
@@ -313,7 +313,7 @@ export async function checkChapterBoundary(
   );
 }
 
-// ---- 笔记（12-reading-system，07-reading-events §4）----
+// ---- 笔记----
 
 export async function getNotes(bookId: string): Promise<UserNoteWithAnnotations[]> {
   return request<UserNoteWithAnnotations[]>(`${BASE_URL}/api/notes/${bookId}`);
@@ -348,7 +348,7 @@ export async function deleteUserNote(id: string): Promise<void> {
   await assertOk(res);
 }
 
-// 12-reading-system 的 show_to_nyx 在 LLM 空/失败时回 null（200 null，非错误），故返回 Annotation | null。
+// show_to_nyx 在 LLM 空/失败时回 null（200 null，非错误），故返回 Annotation | null。
 export async function showNoteToNyx(noteId: string): Promise<Annotation | null> {
   return request<Annotation | null>(`${BASE_URL}/api/notes/${noteId}/show-to-nyx`, {
     method: "POST",
@@ -377,7 +377,7 @@ export async function deleteBookmark(id: string): Promise<void> {
   await assertOk(res);
 }
 
-// ---- eval 记账（10-eval，06-settings-panel §7）----
+// ---- eval 记账----
 
 export async function getEvalRecent(limit = 5, offset = 0): Promise<EvalRecord[]> {
   return request<EvalRecord[]>(

@@ -122,47 +122,14 @@ flowchart TB
 python dev.py        # 同时拉起后端(8000) + 前端 Vite(5173)，Ctrl+C 退出
 ```
 
-Windows 用户也可以直接双击项目根目录的 `start_nyx.bat` 启动；脚本会优先使用项目 `.venv`，并检查 Python/uvicorn、Node.js/npm 与前端依赖。重启时 launcher 会用原子 lock 串行化流程，先关闭自己记录或在 8000 上发现的旧 Nyx backend；若端口由未知进程占用则拒绝启动。启动后还会用本次随机 nonce 校验 `/api/ready` 的 Nyx 服务标识与实例身份，仅在 owned backend 仍存活且身份匹配时启动前端。仅在常规 Python 环境不可用时尝试 `.runtime` 依赖，不混入可用的 `.venv`。启动失败时窗口会保持打开，方便直接查看错误。看到 `Checking npm` 后应继续显示 `Starting backend` 与前后端日志；浏览器访问 `http://localhost:5173` 测试，Ctrl+C 停止服务。
+启动器会检查旧 Nyx 实例、端口和本次后端身份；未知程序占用 8000 时拒绝启动。浏览器访问 `http://localhost:5173`，Ctrl+C 停止服务。
 
-`python dev.py`、`start_nyx.bat` 和 `start_nyx_desktop.bat` 都在开发模式下监测 `nyx/` 与现有 `config.yaml` 的改动并重启后端；前端由 Vite 热更新，桌面端通过 Tauri 的开发模式复用同一 Vite 服务。关闭启动器仍会清理它启动的进程。
+`python dev.py` 与 `python dev.py --desktop` 在开发模式下监测后端及现有配置变化；前端由 Vite 热更新。关闭启动器会清理它启动的进程。
 
-桌面端 debug 可直接双击项目根目录的 `start_nyx_desktop.bat`，或在 PowerShell 执行：
-
-```powershell
-.\start_nyx_desktop.bat
-```
-
-该入口复用同一套后端端口检查、旧进程清理和退出流程，启动 Tauri 桌面开发窗口；它不使用已打包的 `nyx.exe`。
-
-### Windows 自动启动桌面端
-
-在项目根目录执行一次：
+桌面开发使用：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install_nyx_autostart.ps1
-```
-
-脚本会在当前用户的 Windows 启动文件夹创建 `Nyx Desktop.lnk`，快捷方式直接调用
-`start_nyx.bat --run --desktop --no-pause`，下次登录时以桌面端模式启动，并沿用现有
-launcher 的端口检查与进程清理。移除自动启动：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install_nyx_autostart.ps1 -Uninstall
-```
-
-### Windows 桌面快捷方式
-
-构建桌面端后，在当前用户桌面创建快捷方式：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install_nyx_autostart.ps1 -DesktopShortcut
-```
-
-如果 `frontend\src-tauri\target\release\nyx.exe` 已存在，快捷方式会直接启动构建版；否则会回退到桌面开发模式。
-移除桌面快捷方式：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install_nyx_autostart.ps1 -DesktopShortcut -Uninstall
+python dev.py --desktop
 ```
 
 ### Windows 桌面构建
@@ -285,8 +252,23 @@ uv sync --locked --extra dev
 uv run --no-sync python -m ruff check nyx/ packages/ tests/ scripts/
 uv run --no-sync python -m pyright nyx/ packages/ tests/ scripts/
 uv run --no-sync python scripts/run_e2e.py --timeout 300
-uv run --no-sync python -m pytest -q --cov=nyx --cov-report=term-missing --cov-fail-under=90
+uv run --no-sync python - <<'PY'
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+
+with tempfile.TemporaryDirectory(prefix="nyx-release-check-") as directory:
+    os.environ["COVERAGE_FILE"] = str(Path(directory) / ".coverage")
+    result = pytest.main([
+        "-q", "--cov=nyx", "--cov-report=term-missing", "--cov-fail-under=90",
+    ])
+raise SystemExit(result)
+PY
 ```
+
+验证产生的探针、日志、截图、报告、覆盖数据和临时数据库使用临时目录，成功或失败结束后自动清理，仅归档必要结论；正式构建制品按打包流程保留。冒烟验证失败时在终端显示后端日志末尾。
 
 测试不依赖真实 LLM 或已安装桌面端；LLM 使用 mock，文件测试使用临时路径。覆盖率门槛保持 90%，当前缺口见 [待办清单](docs/TODO.md)。
 

@@ -3,7 +3,7 @@
 
 import json
 import tomllib
-from io import BytesIO
+from io import BufferedWriter, BytesIO
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
@@ -166,8 +166,12 @@ def test_stop_with_stdin_eof_closes_pipe_and_waits() -> None:
     process.kill.assert_not_called()
 
 
-def test_run_smoke_uses_nonsecret_placeholder_key(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("startup_failure", [False, True])
+def test_run_smoke_uses_nonsecret_key_and_cleans_temporary_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    startup_failure: bool,
 ) -> None:
     release_dir = tmp_path / "release"
     release_dir.mkdir()
@@ -179,6 +183,7 @@ def test_run_smoke_uses_nonsecret_placeholder_key(
 
     def start_process(*args: object, **kwargs: object) -> MagicMock:
         captured_env.update(cast(dict[str, str], kwargs["env"]))
+        cast(BufferedWriter, kwargs["stdout"]).write(b"sidecar startup output\n")
         return process
 
     def no_op(*args: object) -> None:
@@ -190,18 +195,28 @@ def test_run_smoke_uses_nonsecret_placeholder_key(
     def fixed_token_hex(_nbytes: int) -> str:
         return "nonce"
 
+    def wait_until_ready(*args: object) -> None:
+        if startup_failure:
+            raise SmokeError("sidecar startup failed")
+
     monkeypatch.setattr("scripts.smoke_release.subprocess.Popen", start_process)
     monkeypatch.setattr("scripts.smoke_release.secrets.token_hex", fixed_token_hex)
     monkeypatch.setattr("scripts.smoke_release._port_is_open", lambda: False)
-    monkeypatch.setattr("scripts.smoke_release._wait_until_ready", no_op)
+    monkeypatch.setattr("scripts.smoke_release._wait_until_ready", wait_until_ready)
     monkeypatch.setattr("scripts.smoke_release.check_json_endpoint", no_op)
     monkeypatch.setattr("scripts.smoke_release.check_sse_endpoint", no_op)
     monkeypatch.setattr("scripts.smoke_release.stop_with_stdin_eof", return_zero)
 
-    run_smoke(release_dir, tmp_path / "backend.log", timeout=1)
+    if startup_failure:
+        with pytest.raises(SmokeError, match="sidecar startup failed"):
+            run_smoke(release_dir, timeout=1)
+        assert "sidecar startup output" in capsys.readouterr().err
+    else:
+        run_smoke(release_dir, timeout=1)
 
     assert captured_env["DEEPSEEK_API_KEY"] == "release-smoke-placeholder"
     assert captured_env["NYX_LAUNCH_NONCE"] == "nonce"
+    assert not Path(captured_env["NYX_DB"]).parent.exists()
 
 
 def test_python_dev_dependencies_are_locked() -> None:

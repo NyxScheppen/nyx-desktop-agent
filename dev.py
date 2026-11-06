@@ -472,8 +472,7 @@ def main() -> None:
             if procs:
                 backend_pid = procs[0].pid
                 _forget_backend(backend_pid)
-        # Preserve a non-zero exit status so wrappers (for example start_nyx.bat)
-        # can report backend/frontend startup failures accurately.
+        # Preserve a non-zero exit status so callers can detect startup failures.
         if failed or any(proc.returncode not in (None, 0) for proc in procs):
             sys.exit(1)
     finally:

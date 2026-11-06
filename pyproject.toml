@@ -59,7 +59,7 @@ asyncio_mode = "auto"
 [tool.pyright]
 pythonVersion = "3.11"
 extraPaths = ["packages/nyx-harness"]
-exclude = ["build", "frontend/src-tauri/target", "**/node_modules", "**/__pycache__", ".venv", ".runtime", ".claude", "scripts/e2e/**"]
+exclude = ["build", "frontend/src-tauri/target", "**/node_modules", "**/__pycache__", ".venv", ".claude", "scripts/e2e/**"]
 typeCheckingMode = "strict"
 reportUnusedFunction = true
 reportUnusedClass = true

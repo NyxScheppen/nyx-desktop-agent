@@ -129,47 +129,54 @@ def _wait_until_ready(
     raise SmokeError(f"packaged backend did not become ready: {last_error}")
 
 
-def run_smoke(release_dir: Path, log_path: Path, timeout: float) -> None:
+def run_smoke(release_dir: Path, timeout: float) -> None:
     """Run the release sidecar and verify API, SSE, and shutdown behavior."""
     _, sidecar = release_binaries(release_dir)
     if _port_is_open():
         raise SmokeError("port 8000 is already occupied")
-    log_path.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     launch_nonce = secrets.token_hex(32)
     env[_LAUNCH_NONCE_ENV] = launch_nonce
     env["DEEPSEEK_API_KEY"] = "release-smoke-placeholder"
-    succeeded = False
-    process: subprocess.Popen[bytes] | None = None
     with tempfile.TemporaryDirectory(prefix="nyx-release-smoke-") as temp:
         env["NYX_DB"] = str(Path(temp) / "nyx.db")
-        with log_path.open("wb") as log:
-            process = subprocess.Popen(
-                [str(sidecar)],
-                cwd=temp,
-                env=env,
-                stdin=subprocess.PIPE,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-            )
+        log_path = Path(temp) / "backend.log"
+        try:
+            with log_path.open("wb") as log:
+                process = subprocess.Popen(
+                    [str(sidecar)],
+                    cwd=temp,
+                    env=env,
+                    stdin=subprocess.PIPE,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                )
+                try:
+                    _wait_until_ready(process, timeout, launch_nonce)
+                    check_json_endpoint(f"{_BASE_URL}/api/events/log", list)
+                    check_sse_endpoint(f"{_BASE_URL}/api/events")
+                    if stop_with_stdin_eof(process) != 0:
+                        raise SmokeError(
+                            "packaged backend returned a non-zero exit code"
+                        )
+                    deadline = time.monotonic() + 5.0
+                    while _port_is_open() and time.monotonic() < deadline:
+                        time.sleep(0.1)
+                    if _port_is_open():
+                        raise SmokeError("port 8000 remained occupied after shutdown")
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait()
+        except (OSError, SmokeError):
             try:
-                _wait_until_ready(process, timeout, launch_nonce)
-                check_json_endpoint(f"{_BASE_URL}/api/events/log", list)
-                check_sse_endpoint(f"{_BASE_URL}/api/events")
-                if stop_with_stdin_eof(process) != 0:
-                    raise SmokeError("packaged backend returned a non-zero exit code")
-                deadline = time.monotonic() + 5.0
-                while _port_is_open() and time.monotonic() < deadline:
-                    time.sleep(0.1)
-                if _port_is_open():
-                    raise SmokeError("port 8000 remained occupied after shutdown")
-                succeeded = True
-            finally:
-                if process.poll() is None:
-                    process.kill()
-                    process.wait()
-    if succeeded:
-        log_path.unlink(missing_ok=True)
+                with log_path.open("rb") as log:
+                    log.seek(0, os.SEEK_END)
+                    log.seek(max(0, log.tell() - 16384))
+                    print(log.read().decode("utf-8", errors="replace"), file=sys.stderr)
+            except OSError as log_error:
+                print(f"could not read backend log: {log_error}", file=sys.stderr)
+            raise
 
 
 def main() -> int:
@@ -180,11 +187,10 @@ def main() -> int:
         type=Path,
         default=root / "frontend/src-tauri/target/release",
     )
-    parser.add_argument("--log-path", type=Path, default=root / "artifacts/backend.log")
     parser.add_argument("--timeout", type=float, default=120.0)
     args = parser.parse_args()
     try:
-        run_smoke(args.release_dir.resolve(), args.log_path.resolve(), args.timeout)
+        run_smoke(args.release_dir.resolve(), args.timeout)
     except (OSError, SmokeError) as error:
         print(f"release smoke failed: {error}", file=sys.stderr)
         return 1

@@ -4,13 +4,13 @@ import logging
 import math
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, cast
 from uuid import uuid4
 
 from nyx.config import DesireConfig
 from nyx.desire.facade import DesireFacade, LongTermSnapshot
-from nyx.enums import DesireType
+from nyx.enums import DesireType, MemoryKind
 from nyx.eval.evaluator import Evaluator
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
@@ -67,6 +67,11 @@ _REFLECTION_SYSTEM = (
     "反思的核心是回看旧记忆，归纳多次经历中的模式、变化和联系，并从已有材料中"
     "形成有依据的新点子；触发证据只说明为什么此刻回看，不要求解决矛盾，也不能"
     "替代对全部旧记忆的概括。基于这些材料和当前性格/三观/审美/自我叙事更新自我，"
+    "这是有依据的自省记录：有原文时 story 中引用至少一句并注明来源 ID；"
+    "输入只是近期抽样，不能据此断言全部记忆或一贯行为。无原文时承认材料不足。"
+    "不能补写原文没有交代的事件、写作背景、感受或动机。"
+    "不要把本次提醒倒推为过去发生过的错误或习惯；既有叙事没写过的个人历史也不能补写。"
+    "推测必须明确说成推测，缺少资料时承认无法判断，不把创作当作事实。"
     "只输出 JSON：\n"
     "- story：一条由旧记忆归纳出的新叙事或新点子（非空字符串，与已写过的不同）。\n"
     "- becoming：一条新的认知变化（非空字符串）。\n"
@@ -95,8 +100,7 @@ def _build_aesthetic_prompt(
     evidence: list[ReadingEvidence], aesthetic: Aesthetic
 ) -> str:
     blocks = "\n\n".join(
-        f"[id={item.id} source={item.source_name}]\n{item.content}"
-        for item in evidence
+        f"[id={item.id} source={item.source_name}]\n{item.content}" for item in evidence
     )
     return (
         f"当前审美：华丽 {aesthetic['ornate']} / 抒情 {aesthetic['lyrical']} / "
@@ -195,18 +199,28 @@ def _build_reflection_prompt(
     facts: list[MemoryFact] | None = None,
     trigger_context: str | None = None,
 ) -> str:
-    mem_lines = "\n".join(f"- {m.summary}" for m in memories) or "（无）"
-    lt_lines = "\n".join(
-        f"- [{lt.type.value}] {lt.name}（进度 {lt.progress:.2f}，"
-        f"强度 {lt.strength:.2f}（{_describe_long_term_strength(lt.strength)}））"
-        for lt in long_term
-    ) or "（无）"
-    story_lines = "\n".join(
-        f"- {s}" for s in narrative.story[-_STORY_CONTEXT_LIMIT:]
-    ) or "（无）"
-    becoming_lines = "\n".join(
-        f"- {b}" for b in narrative.becoming[-_STORY_CONTEXT_LIMIT:]
-    ) or "（无）"
+    mem_lines = (
+        "\n\n".join(
+            f"[记忆 {m.id} · {m.kind.value}] {m.summary}\n原文：{m.content[:2000]}"
+            for m in memories
+        )
+        or "（无）"
+    )
+    lt_lines = (
+        "\n".join(
+            f"- [{lt.type.value}] {lt.name}（进度 {lt.progress:.2f}，"
+            f"强度 {lt.strength:.2f}（{_describe_long_term_strength(lt.strength)}））"
+            for lt in long_term
+        )
+        or "（无）"
+    )
+    story_lines = (
+        "\n".join(f"- {s}" for s in narrative.story[-_STORY_CONTEXT_LIMIT:]) or "（无）"
+    )
+    becoming_lines = (
+        "\n".join(f"- {b}" for b in narrative.becoming[-_STORY_CONTEXT_LIMIT:])
+        or "（无）"
+    )
     fact_lines = (
         "\n".join(
             f"- {fact.subject}｜{fact.predicate}｜{fact.object_value}"
@@ -323,13 +337,13 @@ def _validate_candidate(c: Any) -> None:
     unknown_values = set(cast(list[str], linked_values)) - _VALUES_KEYS
     if unknown_values:
         raise ValueError(
-            f"长期欲望候选 linked_values 含未知维度 "
-            f"{sorted(unknown_values)!r}"
+            f"长期欲望候选 linked_values 含未知维度 {sorted(unknown_values)!r}"
         )
 
 
 def _parse_reflection(raw: str) -> dict[str, Any]:
     """解析反思 LLM 的 JSON 产出并校验结构。结构非法抛 ValueError。"""
+
     def reject_non_finite(value: str) -> None:
         raise ValueError(f"反思 JSON 数值必须有限，得到 {value}")
 
@@ -392,9 +406,9 @@ def _parse_reflection(raw: str) -> dict[str, Any]:
             _logger.warning("反思长期欲望候选非法，已跳过：%r", c)
             continue
         candidate = cast(dict[str, Any], c)
-        candidate["linked_values"] = list(dict.fromkeys(
-            cast(list[str], candidate["linked_values"])
-        ))
+        candidate["linked_values"] = list(
+            dict.fromkeys(cast(list[str], candidate["linked_values"]))
+        )
         valid_candidates.append(candidate)
     return {
         "story": story,
@@ -435,6 +449,8 @@ class ReflectionPlan:
     story_is_new: bool
     base_narrative_updated_at: float
     reading_evidence_ids: tuple[str, ...] = ()
+    record: Memory | None = None
+    correlation_id: str = ""
 
 
 class Reflection:
@@ -473,7 +489,7 @@ class Reflection:
             _AESTHETIC_MAX_EVIDENCE
         )
         recent = sorted(
-            all_memories,
+            [m for m in all_memories if m.kind is not MemoryKind.REFLECTION],
             key=lambda memory: (memory.created_at, memory.id),
             reverse=True,
         )[:_RECENT_MEMORY_LIMIT]
@@ -501,26 +517,33 @@ class Reflection:
             raise RuntimeError("inner_life 单行表未初始化（组合根必须先 seed）")
 
         # 2. 1 次 LLM 产出全部。解析失败必须抛出，让 durable delivery 重试。
+        segments = await self._memory_facade.browse_conversations(limit=6)
+        prompt = _build_reflection_prompt(
+            recent,
+            personality,
+            values,
+            narrative,
+            desire_state.long_term,
+            aesthetic,
+            recent_facts,
+            _build_trigger_context(trigger),
+        )
+        if segments:
+            prompt += "\n\n近期对话原文：\n" + "\n\n".join(
+                f"[对话 {item.id}]\n{item.raw_content[:4000]}" for item in segments
+            )
+        cid = correlation_id or str(uuid4())
         output = await self._llm.complete(
             [
                 {"role": "system", "content": _REFLECTION_SYSTEM},
                 {
                     "role": "user",
-                    "content": _build_reflection_prompt(
-                        recent,
-                        personality,
-                        values,
-                        narrative,
-                        desire_state.long_term,
-                        aesthetic,
-                        recent_facts,
-                        _build_trigger_context(trigger),
-                    ),
+                    "content": prompt,
                 },
             ],
             module="inner_life",
             output_type="reflection",
-            correlation_id=correlation_id or str(uuid4()),
+            correlation_id=cid,
             json_mode=True,
         )
         await self._evaluator.evaluate(output)
@@ -528,7 +551,14 @@ class Reflection:
 
         aesthetic_result = aesthetic
         evidence_ids: tuple[str, ...] = ()
+        aesthetic_record: dict[str, Any] = {
+            "evidence": [asdict(e) for e in pending_evidence]
+        }
         if pending_evidence:
+            aesthetic_record["system"] = _AESTHETIC_SYSTEM
+            aesthetic_record["prompt"] = _build_aesthetic_prompt(
+                pending_evidence, aesthetic
+            )
             try:
                 aesthetic_output = await self._llm.complete(
                     [
@@ -542,8 +572,13 @@ class Reflection:
                     ],
                     module="inner_life",
                     output_type="aesthetic_reflection",
-                    correlation_id=correlation_id or str(uuid4()),
+                    correlation_id=cid,
                     json_mode=True,
+                )
+                aesthetic_record["output"] = aesthetic_output.content
+                aesthetic_record["call_id"] = aesthetic_output.call_id
+                aesthetic_record["prompt"] = _build_aesthetic_prompt(
+                    pending_evidence, aesthetic
                 )
                 await self._evaluator.evaluate(aesthetic_output)
                 raw_delta, references = _parse_aesthetic_reflection(
@@ -575,24 +610,21 @@ class Reflection:
                 evidence_ids = tuple(
                     referenced_ids or [item.id for item in pending_evidence]
                 )
-            except Exception:
+            except Exception as error:
+                aesthetic_record["error"] = str(error)
                 _logger.exception("审美独立反思失败，保留原文证据待重试")
 
         # 3. 在事务外计算最终写入值，事务内只执行确定性写入。
         new_story = parsed["story"]
         new_becoming = parsed["becoming"]
         story_is_new = not _is_duplicate_fragment(new_story, narrative.story)
-        new_personality = drift_personality(
-            personality, parsed["personality_delta"]
-        )
+        new_personality = drift_personality(personality, parsed["personality_delta"])
         new_values = drift_values(values, parsed["values_delta"])
         new_aesthetic = aesthetic_result
         new_narrative = SelfNarrative(
             identity=narrative.identity,
             story=(
-                narrative.story
-                if not story_is_new
-                else [*narrative.story, new_story]
+                narrative.story if not story_is_new else [*narrative.story, new_story]
             ),
             self_view={**narrative.self_view, **parsed["self_view"]},
             becoming=(
@@ -605,13 +637,60 @@ class Reflection:
 
         # 4. 容量/名称/embedding 去重都在事务外完成；事务内仅校验快照并写入。
         candidates = tuple(
-            _to_long_term(candidate, now)
-            for candidate in parsed["long_term_desires"]
+            _to_long_term(candidate, now) for candidate in parsed["long_term_desires"]
         )
-        long_term_desires, long_term_snapshot = (
-            await self._desire_facade.prepare_long_term_candidates(candidates)
-        )
+        (
+            long_term_desires,
+            long_term_snapshot,
+        ) = await self._desire_facade.prepare_long_term_candidates(candidates)
 
+        record = await self._memory_facade.prepare_reflection_record(
+            json.dumps(
+                {
+                    "type": "inner_state_reflection",
+                    "correlation_id": cid,
+                    "trigger": trigger or {"reason": "manual"},
+                    "input": {"system": _REFLECTION_SYSTEM, "prompt": prompt},
+                    "sources": [
+                        {
+                            "id": m.id,
+                            "kind": m.kind.value,
+                            "summary": m.summary,
+                            "content": m.content,
+                        }
+                        for m in recent
+                    ],
+                    "conversations": [
+                        {"id": item.id, "raw_content": item.raw_content}
+                        for item in segments
+                    ],
+                    "output": output.content,
+                    "call_id": output.call_id,
+                    "aesthetic_reflection": aesthetic_record,
+                    "before": {
+                        "personality": personality,
+                        "values": values,
+                        "aesthetic": aesthetic,
+                        "narrative": asdict(narrative),
+                        "desires": asdict(desire_state),
+                    },
+                    "after": {
+                        "personality": new_personality,
+                        "values": new_values,
+                        "aesthetic": new_aesthetic,
+                        "narrative": asdict(new_narrative),
+                        "accepted_long_term_desires": [
+                            asdict(d) for d in long_term_desires
+                        ],
+                        "creation_pressure_delta": _CREATION_REFLECTION_DELTA,
+                    },
+                    "story_is_new": story_is_new,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            f"内在反思：{new_story}",
+        )
         return ReflectionPlan(
             personality=new_personality,
             values=new_values,
@@ -623,13 +702,14 @@ class Reflection:
             story_is_new=story_is_new,
             base_narrative_updated_at=narrative.updated_at,
             reading_evidence_ids=evidence_ids,
+            record=record,
+            correlation_id=cid,
         )
 
     async def apply(self, plan: ReflectionPlan) -> ReflectionOutcome:
         """在调用方事务内提交已经准备好的反思计划。"""
-        await self._store.assert_narrative_updated_at(
-            plan.base_narrative_updated_at
-        )
+        await self._store.assert_narrative_updated_at(plan.base_narrative_updated_at)
+        desires_before = await self._desire_facade.get_all()
         if plan.reading_evidence_ids:
             await self._memory_facade.consume_reading_evidence(
                 list(plan.reading_evidence_ids)
@@ -642,6 +722,17 @@ class Reflection:
             plan.long_term_desires, plan.long_term_snapshot
         )
         await self._desire_facade.pressure_creation(_CREATION_REFLECTION_DELTA)
+        if plan.record is not None:
+            record_data = json.loads(plan.record.content)
+            record_data["before"]["desires"] = asdict(desires_before)
+            record_data["after"]["desires"] = asdict(
+                await self._desire_facade.get_all()
+            )
+            await self._memory_facade.commit_reflection_record(
+                replace(plan.record, content=json.dumps(
+                    record_data, ensure_ascii=False, indent=2
+                )), plan.correlation_id
+            )
         return ReflectionOutcome(story=plan.story, story_is_new=plan.story_is_new)
 
     async def run(self, correlation_id: str | None = None) -> ReflectionOutcome:

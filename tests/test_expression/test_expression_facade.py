@@ -242,7 +242,8 @@ class _FakeMemory:
         self.no_answers.append(question)
 
     async def record_failure_signal(
-        self, kind: str, topic: str, summary: str, correlation_id: str | None = None
+        self, kind: str, topic: str, summary: str, correlation_id: str | None = None,
+        *, evidence: list[dict[str, str]] | None = None,
     ) -> None:
         pass
 
@@ -621,7 +622,7 @@ async def test_tool_plan_information_carries_generation_time() -> None:
     user = next(
         messages[-1]["content"] for kind, messages, _ in llm.calls if kind == "tool"
     )
-    assert "计划生成时间=" in user and "+00:00" in user
+    assert "计划生成时间=" in user and "+08:00" in user
 
 
 @pytest.mark.parametrize("energy, arousal", [(20.0, 0.9), (100.0, 0.0)])
@@ -638,7 +639,7 @@ async def test_reply_recalls_ordinary_episode_with_source_time(
     prompt = next(messages[-1]["content"] for kind, messages, _ in llm.calls
                   if kind == "reply")
     assert "生日那天你陪我走过了低谷" in prompt
-    assert "1970-01-01T00:01:40+00:00" in prompt
+    assert "1970-01-01T08:01:40+08:00" in prompt
     assert memory.segment_recalled == [("birthday", "episode-recall")]
 
 
@@ -2149,7 +2150,7 @@ async def test_initiate_chat_labels_desire_creation_time() -> None:
     desire = _desire()
     desire.created_at = 1000.0
     await facade.initiate_chat(desire, _mk_state(80.0, 0.0))
-    assert "欲望创建时间=1970-01-01T00:16:40+00:00" in llm.calls[0][1][-1]["content"]
+    assert "欲望创建时间=1970-01-01T08:16:40+08:00" in llm.calls[0][1][-1]["content"]
 
 
 async def test_initiate_chat_non_empty() -> None:

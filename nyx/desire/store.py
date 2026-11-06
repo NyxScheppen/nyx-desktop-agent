@@ -6,7 +6,12 @@ from contextlib import asynccontextmanager
 import aiosqlite
 
 from nyx.db import Database
-from nyx.desire.value import action_priority, apply_pressure, default_value
+from nyx.desire.value import (
+    action_priority,
+    apply_pressure,
+    default_value,
+    recover_suppression,
+)
 from nyx.enums import DesireStatus, DesireType, GoalAction
 from nyx.types import DesireValue, Goal, LongTermDesire, ShortTermDesire
 
@@ -164,7 +169,9 @@ class DesireStore:
             else:
                 value = float(row["value"])
                 expression_weight = float(row["expression_weight"])
-                suppression_threshold = float(row["suppression_threshold"])
+                suppression_threshold = recover_suppression(
+                    float(row["suppression_threshold"]), now - float(row["updated_at"])
+                )
             value = apply_pressure(value, delta)
             updated = DesireValue(
                 type=type_,
@@ -178,6 +185,7 @@ class DesireStore:
             await self._db.conn.execute(
                 f"INSERT INTO desire_value ({_VALUE_COLS}) VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(type) DO UPDATE SET value = excluded.value, "
+                "suppression_threshold = excluded.suppression_threshold, "
                 "updated_at = excluded.updated_at",
                 (
                     type_.value,
@@ -197,9 +205,21 @@ class DesireStore:
         """Reset a value only when no concurrent pressure changed its timestamp."""
         async with self._operation() as should_commit:
             cursor = await self._db.conn.execute(
-                "UPDATE desire_value SET value = 0.0, updated_at = ? "
+                "SELECT suppression_threshold FROM desire_value "
                 "WHERE type = ? AND updated_at = ?",
-                (now, type_.value, expected_updated_at),
+                (type_.value, expected_updated_at),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return False
+            threshold = recover_suppression(
+                float(row["suppression_threshold"]), now - expected_updated_at
+            )
+            cursor = await self._db.conn.execute(
+                "UPDATE desire_value SET value = 0.0, suppression_threshold = ?, "
+                "updated_at = ? "
+                "WHERE type = ? AND updated_at = ?",
+                (threshold, now, type_.value, expected_updated_at),
             )
             if should_commit:
                 await self._db.conn.commit()

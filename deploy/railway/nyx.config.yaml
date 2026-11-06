@@ -3,3 +3,6 @@ onebot:
   self_id: 3976995810
   owner_id: 43686425
   character_id: nyx
+
+exploration:
+  web_enabled: true

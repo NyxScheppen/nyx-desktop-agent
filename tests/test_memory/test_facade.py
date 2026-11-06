@@ -454,8 +454,8 @@ def test_memory_comparison_keeps_creation_separate_from_occurrence(
     old = _mem("old", None)
     old.created_at = 2000.0
     prompt = builder(_mem("new", None), [old])
-    assert "1970-01-01T00:16:40+00:00" in prompt
-    assert "1970-01-01T00:33:20+00:00" in prompt
+    assert "1970-01-01T08:16:40+08:00" in prompt
+    assert "1970-01-01T08:33:20+08:00" in prompt
     assert prompt.count("原始发生时间=未知") == 2
 
 
@@ -483,9 +483,9 @@ async def test_annotation_prompt_uses_original_events_not_feedback_clock() -> No
         await bus.publish(feedback)
         await facade.apply_annotation_feedback(feedback, "memory.annotation_feedback")
         payload = json.loads(llm.user_contents[0])
-        assert payload["quote_at"] == "1970-01-01T00:01:40+00:00"
-        assert payload["comment_at"] == "1970-01-01T00:03:20+00:00"
-        assert payload["feedback_recorded_at"] == "1970-01-01T00:05:00+00:00"
+        assert payload["quote_at"] == "1970-01-01T08:01:40+08:00"
+        assert payload["comment_at"] == "1970-01-01T08:03:20+08:00"
+        assert payload["feedback_recorded_at"] == "1970-01-01T08:05:00+08:00"
     finally:
         await database.close()
 
@@ -2250,7 +2250,7 @@ async def test_idle_maintenance_evaluates_and_extracts_segment_facts() -> None:
         assert [(fact.scope, fact.source_segment_id) for fact in facts] == [
             ("profile", segment.id)
         ]
-        assert all("1970-01-01T00:00:01+00:00" in text for text in llm.user_contents)
+        assert all("1970-01-01T08:00:01+08:00" in text for text in llm.user_contents)
     finally:
         await database.close()
 
@@ -2317,5 +2317,38 @@ async def test_invalid_segment_fact_output_remains_retryable() -> None:
         saved = await store.latest_conversation_segment()
         assert saved is not None and saved.facts_extracted_at is not None
         assert len(await facade.search_facts("鱼火锅")) == 1
+    finally:
+        await database.close()
+
+
+async def test_failure_lessons_keep_original_outputs_and_distinct_attempts() -> None:
+    store, bus, database = await _new_stack()
+
+    async def same_embedding(text: str) -> list[float]:
+        return [1.0, 0.0]
+
+    facade = _make_facade(
+        store, bus, _FakeLlm(), _FakeEvaluator(), embed=same_embedding
+    )
+    evaluator = Evaluator(on_failure=facade.record_failure_signal)
+    try:
+        for call_id, original in [("call-a", "作为一个AI，无法回答甲"),
+                                  ("call-b", "作为一个AI，无法回答乙")]:
+            await evaluator.evaluate(LLMOutput(
+                module="expression", type="speak", model="fixture",
+                content=original, correlation_id=call_id, call_id=call_id,
+            ))
+        lessons = await store.list_memories(MemoryKind.LESSON)
+        assert len(lessons) == 2
+        assert any("无法回答甲" in m.content and "call-a" in m.content for m in lessons)
+        assert any("无法回答乙" in m.content and "call-b" in m.content for m in lessons)
+        await facade.record_failure_signal(
+            "tool_error", "tool_error:web_fetch", "抓取失败", "tool-call",
+            evidence=[{
+                "source_id": "tool-log", "summary": "GET https://example.com 原始错误"
+            }],
+        )
+        lessons = await store.list_memories(MemoryKind.LESSON)
+        assert any("原始错误" in m.content and "tool-log" in m.content for m in lessons)
     finally:
         await database.close()

@@ -119,6 +119,7 @@ class MemoryKind(StrEnum):
     ACTIVITY = "activity"
     INTERACTION = "interaction"
     LESSON = "lesson"
+    REFLECTION = "reflection"
 
 
 class MemoryEdgeKind(StrEnum):

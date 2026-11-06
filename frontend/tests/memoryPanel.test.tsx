@@ -8,6 +8,10 @@ describe("MemoryPanel", () => {
     useMemoryStore.setState({
       data: [],
       facts: [],
+      conversations: [],
+      conversationsError: null,
+      conversationsMore: false,
+      conversationsLoading: false,
       query: "",
       kind: null,
       factScope: "profile",
@@ -147,4 +151,41 @@ describe("MemoryPanel", () => {
     expect(screen.getByRole("tab", { name: "画像事实" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "对话事实" })).toHaveAttribute("aria-selected", "false");
   });
+  it("对话原文与内在反思可以独立筛选", () => {
+    useMemoryStore.setState({
+      conversations: [{ id: "dialogue", started_at: 1, ended_at: 2,
+        raw_content: "用户：具体原话\n尼克斯：具体回复", summary: "对话摘要",
+        long_term: true, active: true, recall_count: 0 }],
+      data: [{ id: "reflection", created_at: 3, kind: "reflection", summary: "内在反思标题",
+        content: "反思输入与状态变化", topics: [], freshness: 1, type: "long_term", recall_count: 0, sources: [] }],
+    });
+    render(<MemoryPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /^对话$/ }));
+    expect(screen.getByText("对话摘要")).toBeInTheDocument();
+    expect(screen.queryByText("内在反思标题")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("查看完整原文"));
+    expect(screen.getByText(/用户：具体原话/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /^内在反思$/ }));
+    expect(screen.getByText("内在反思标题")).toBeInTheDocument();
+    expect(screen.queryByText("对话摘要")).not.toBeInTheDocument();
+  });
+
+  it("事实节点可用方向键移动，缩放和重置保持可用", () => {
+    useMemoryStore.setState({ facts: [{ id: "f", subject: "尼克斯", subject_type: "agent",
+      predicate: "阅读", object_value: "诗经", object_type: "book", valid_from: 1,
+      valid_until: null, source_memory_id: "m1", created_at: 1, polarity: 1,
+      scope: "knowledge", source_segment_id: null, source_chunk_id: null }] });
+    render(<MemoryPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: "画像事实" }));
+    const node = screen.getByRole("button", { name: "实体：尼克斯" });
+    const before = node.getAttribute("transform");
+    fireEvent.keyDown(node, { key: "ArrowRight" });
+    expect(node.getAttribute("transform")).not.toBe(before);
+    fireEvent.click(screen.getByRole("button", { name: "放大事实网" }));
+    expect(screen.getByText("125%")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重置视图" }));
+    expect(node.getAttribute("transform")).toBe(before);
+    expect(screen.getByText("100%")).toBeInTheDocument();
+  });
+
 });

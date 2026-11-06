@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false
 import json
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, cast
 
 from nyx.activity.exploration import Exploration, should_explore
@@ -434,3 +435,30 @@ async def test_exploration_uses_card_identity() -> None:
     await exploration.run(_activity())
     assert "Alice，说话直接活泼" in llm.system_contents[0]
     assert "尼克斯" not in llm.system_contents[0]
+
+
+async def test_exploration_excludes_self_sources_in_search_and_old_checkpoint() -> None:
+    prompt = str(Path("nyx/prompts/ask.md").resolve())
+    creation = str(Path("data/characters/nyx/workspace/creations/letter.md").resolve())
+
+    class SelfOnlyTools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any]) -> Any:
+            self.calls.append((name, args))
+            return [{"path": prompt, "snippet": "程序提示词"},
+                    {"path": creation, "snippet": "自己的信"}]
+
+    tools, memory, llm = SelfOnlyTools(), _FakeMemory(), _FakeLlm()
+    exploration = _make_exploration(tools=tools, memory=memory, llm=llm)
+    result = await exploration.run(_activity())
+    assert result["outcome"] == "exhausted" and result["knowledge"] == []
+    assert memory.digested == [] and memory.remembered == [] and llm.calls == []
+    activity = _activity()
+    activity.progress["exploration"] = {
+        "state": "sinking", "topic": "信", "cursor": 1,
+        "raw_results": [{"path": creation}], "findings": ["自己的旧信"],
+        "source_pending": {"source_text": "自己的旧信"},
+        "summary_done": True, "judged": {"knowledge": [{"content": "旧信知识"}]},
+    }
+    await exploration.run(activity)
+    assert memory.digested == [] and memory.remembered == []
+    assert not any(name == "file_io" for name, _args in tools.calls)

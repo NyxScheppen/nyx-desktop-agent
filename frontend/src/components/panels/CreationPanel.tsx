@@ -1,3 +1,4 @@
+import { formatDateTime } from "../../lib/time";
 import { useEffect, useState } from "react";
 import {
   formatOutputBody,
@@ -8,7 +9,7 @@ import { useActivityStore } from "../../stores/activityStore";
 import Panel from "../layout/Panel";
 
 function dateTimeLabel(timestamp: number): string {
-  return new Date(timestamp * 1000).toLocaleString();
+  return formatDateTime(timestamp);
 }
 
 export default function CreationPanel() {

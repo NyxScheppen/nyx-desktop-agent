@@ -24,6 +24,7 @@ from nyx.enums import (
     DesireType,
 )
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
+from nyx.timezone import USER_TIMEZONE
 from nyx.types import Activity, Book, CurrentState, ShortTermDesire
 
 _READING_MATCH_THRESHOLD = 0.6
@@ -64,14 +65,14 @@ def best_book_match(topic: str, books: list[Book]) -> Book | None:
 
 def schedule_block_id(now: float, grid_minutes: int) -> str:
     """把时间戳映射到日程网格标签。"""
-    local_now = datetime.fromtimestamp(now)
+    local_now = datetime.fromtimestamp(now, USER_TIMEZONE)
     block_index = (local_now.hour * 60 + local_now.minute) // grid_minutes
     return format_time_label(block_index, grid_minutes, 0.0)
 
 
 def local_day_bounds(now: float) -> tuple[float, float]:
     """Return local calendar-day bounds for paused-activity recovery."""
-    local_now = datetime.fromtimestamp(now)
+    local_now = datetime.fromtimestamp(now, USER_TIMEZONE)
     start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
     return start.timestamp(), end.timestamp()

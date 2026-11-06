@@ -21,6 +21,7 @@ import type {
   LlmPromptMessage,
   Memory,
   MemoryFact,
+  ConversationMemory,
   MemoryKind,
   KnowledgeSourceRequest,
   KnowledgeSourceResult,
@@ -462,4 +463,9 @@ export async function changeCharacter(id: string, operation: "unload" | "restore
   await checkedFetch(`${BASE_URL}/api/characters/${encodeURIComponent(id)}${operation === "unload" ? "" : "/" + operation}`, {
     method: operation === "unload" ? "DELETE" : "POST",
   });
+}
+
+export function getConversationMemories(query = "", offset = 0): Promise<ConversationMemory[]> {
+  const params = new URLSearchParams({ q: query, offset: String(offset), limit: "100" });
+  return request<ConversationMemory[]>(`${BASE_URL}/api/memories/conversations?${params}`);
 }

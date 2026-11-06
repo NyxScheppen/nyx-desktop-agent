@@ -4,7 +4,7 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, cast
 from uuid import uuid4
 
@@ -12,6 +12,7 @@ import aiosqlite
 
 from nyx.db import Database
 from nyx.enums import MemoryKind
+from nyx.timezone import USER_TIMEZONE
 from nyx.types import Memory, MemoryFact
 
 _MAX_TEXT = 80
@@ -84,7 +85,7 @@ def format_source_time(timestamp: float | None) -> str:
     if timestamp is None or isinstance(timestamp, bool):
         return "未知"
     try:
-        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat(
+        return datetime.fromtimestamp(timestamp, USER_TIMEZONE).isoformat(
             timespec="seconds"
         )
     except (OverflowError, OSError, ValueError):
@@ -339,12 +340,12 @@ def _query_time(text: str, fallback: float) -> float:
     match = _MONTH_QUERY_RE.search(text)
     if match is None:
         return fallback
-    year = int(match.group(1) or datetime.fromtimestamp(fallback).year)
+    year = int(match.group(1) or datetime.fromtimestamp(fallback, USER_TIMEZONE).year)
     raw_month = match.group(2)
     month = int(raw_month) if raw_month.isdigit() else _CHINESE_MONTHS[raw_month]
     if not 1 <= month <= 12:
         return fallback
-    return datetime(year, month, 15).timestamp()
+    return datetime(year, month, 15, tzinfo=USER_TIMEZONE).timestamp()
 
 
 class MemoryFactStore:

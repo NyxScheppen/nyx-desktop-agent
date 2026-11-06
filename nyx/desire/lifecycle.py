@@ -17,6 +17,7 @@ from nyx.desire.value import (
     default_value,
     is_expressible,
     raise_suppression,
+    recover_suppression,
     reinforce_weight,
 )
 from nyx.enums import ActivityType, DesireStatus, DesireType, EventType, GoalAction
@@ -35,11 +36,11 @@ from nyx.types import (
     ShortTermDesire,
 )
 
-_OBSERVATION_PRESSURE_DELTA = 0.15    # 观察状态 → 互动欲 +0.15
-_LONG_TERM_PRESSURE_DELTA = 0.1       # 每周期按长期 strength 缩放对应类型压力
-_LONG_TERM_PROGRESS_DELTA = 0.1       # 满足一次长期进度 +0.1
-_DEDUP_SIM_THRESHOLD = 0.9            # 欲望语义重复判定阈值（embedding 余弦）
-_REST_PRESSURE_DELTA = 0.1            # 疲惫（精力 < 阈值）→ 休息欲 +0.1/周期
+_OBSERVATION_PRESSURE_DELTA = 0.15  # 观察状态 → 互动欲 +0.15
+_LONG_TERM_PRESSURE_DELTA = 0.1  # 每周期按长期 strength 缩放对应类型压力
+_LONG_TERM_PROGRESS_DELTA = 0.1  # 满足一次长期进度 +0.1
+_DEDUP_SIM_THRESHOLD = 0.9  # 欲望语义重复判定阈值（embedding 余弦）
+_REST_PRESSURE_DELTA = 0.1  # 疲惫（精力 < 阈值）→ 休息欲 +0.1/周期
 _CREATION_ACTIVITY_PRESSURE_DELTA = 0.15  # 读书/自由探索结束 → 创造欲 +0.15
 _GOAL_ACTION_BY_DESIRE = {
     DesireType.EXPLORATION: GoalAction.READ,
@@ -246,6 +247,9 @@ class DesireLifecycle:
                         dv.value = decay_value(
                             dv.value, elapsed_days, self._config.value_decay
                         )
+                        dv.suppression_threshold = recover_suppression(
+                            dv.suppression_threshold, now - dv.updated_at
+                        )
                         dv.updated_at = now
                         await self._store.upsert_value(dv)
                 if apply_periodic and energy < ENERGY_REST_THRESHOLD:
@@ -275,9 +279,7 @@ class DesireLifecycle:
                 values[t]
                 for t in DesireType
                 if at_peak(values[t].value, self._config.peak_threshold)
-                and is_expressible(
-                    values[t].value, values[t].suppression_threshold
-                )
+                and is_expressible(values[t].value, values[t].suppression_threshold)
             ]
             pending_types = [t for t in DesireType if attempts[t] is not None]
             if pending_types:
@@ -319,7 +321,9 @@ class DesireLifecycle:
                 seed = (
                     _pick_topic_seed(subtopics, await self._list_memories())
                     if subtopics
-                    else parent.name.strip() if parent is not None else None
+                    else parent.name.strip()
+                    if parent is not None
+                    else None
                 )
                 desire_id = str(uuid4())
                 output = await self._llm.complete(
@@ -651,6 +655,9 @@ class DesireLifecycle:
         if dv is None:
             return
         dv.value = apply_pressure(dv.value, REFUND_DELTA)
-        dv.suppression_threshold = raise_suppression(dv.suppression_threshold)
-        dv.updated_at = time.time()
+        now = time.time()
+        dv.suppression_threshold = raise_suppression(
+            recover_suppression(dv.suppression_threshold, now - dv.updated_at)
+        )
+        dv.updated_at = now
         await self._store.upsert_value(dv)

@@ -778,7 +778,7 @@ async def test_device_pairing_is_disabled_without_root_token(
 
 
 async def test_expired_pairing_code_cannot_issue_a_device(
-    tmp_path: Path,
+    tmp_path: Path, resources: None,
 ) -> None:
     from nyx.app_context import _Host
 

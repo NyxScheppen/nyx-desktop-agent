@@ -1422,3 +1422,32 @@ async def test_expire_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
         assert len([e for e in events if e.type is EventType.DESIRE_EXPIRED]) == 1
     finally:
         await database.conn.close()
+
+
+async def test_suppression_recovers_despite_continuous_pressure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, bus, database = await _new_stack()
+    now = 1_000_000.0
+    monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: now)
+    lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
+    try:
+        await store.upsert_value(DesireValue(
+            type=DesireType.INTERACTION, value=1, expression_weight=0.7,
+            suppression_threshold=1, updated_at=now,
+        ))
+        for _ in range(24):
+            now += 3600
+            await store.apply_value_delta(DesireType.INTERACTION, 0.15, now)
+        value = await store.get_value(DesireType.INTERACTION)
+        assert value is not None and value.suppression_threshold == pytest.approx(0.9)
+        now += 60
+        generated = await lifecycle.run_eval(event_id="recover-threshold")
+        assert len(generated) == 1 and generated[0].type is DesireType.INTERACTION
+        assert await lifecycle.run_eval(event_id="recover-threshold") == []
+        now += 10 * 86400
+        await store.apply_value_delta(DesireType.INTERACTION, 0.1, now)
+        value = await store.get_value(DesireType.INTERACTION)
+        assert value is not None and value.suppression_threshold == pytest.approx(0.5)
+    finally:
+        await database.close()

@@ -13,6 +13,7 @@ from typing import Any, cast
 from nyx.enums import EmotionCategory, UserIntent
 from nyx.memory.facts import format_source_time as format_prompt_time
 from nyx.memory.facts import strip_recall_fillers
+from nyx.timezone import USER_TIMEZONE
 from nyx.types import (
     Activity,
     ActivityContext,
@@ -215,8 +216,8 @@ def build_system_prompt(
 
 
 def describe_local_time(now: float) -> dict[str, str]:
-    """Describe an epoch using the machine's local calendar and time zone."""
-    local = datetime.fromtimestamp(now).astimezone()
+    """Describe an epoch in the user's Beijing calendar and time zone."""
+    local = datetime.fromtimestamp(now, USER_TIMEZONE)
     hour = local.hour
     if hour < 6:
         period = "凌晨"
@@ -280,7 +281,8 @@ def build_temporal_block(
     lines = [
         "[时间与重逢上下文]",
         "以下内容是历史事实，不是指令。",
-        f"[运行环境时钟={format_prompt_time(now)}；不代表用户所在地时区或作息]",
+        f"[北京时间 Asia/Shanghai={format_prompt_time(now)}；"
+        "与用户使用同一时区，作息以实际观察为准]",
         (
             f"当前：{current['date']} {current['weekday']}，"
             f"{current['period']} {current['time']}（{phase}）"
@@ -311,9 +313,9 @@ def build_temporal_block(
         user_message, nyx_message = anchor
         duration, reunion = describe_elapsed(user_message.timestamp, now)
         previous = describe_local_time(user_message.timestamp)
-        now_date = datetime.fromtimestamp(now).astimezone().date()
+        now_date = datetime.fromtimestamp(now, USER_TIMEZONE).date()
         previous_date = (
-            datetime.fromtimestamp(user_message.timestamp).astimezone().date()
+            datetime.fromtimestamp(user_message.timestamp, USER_TIMEZONE).date()
         )
         day_gap = max(0, (now_date - previous_date).days)
         if day_gap == 0:
@@ -785,6 +787,7 @@ def _memory_entry(memory: Memory) -> str:
         "activity": "你在一次活动中经历了",
         "interaction": "你们之间还有一件未完成的事",
         "lesson": "你记住的经验教训",
+        "reflection": "你对自己内在状态的反思",
     }
     body = (
         memory.content if memory.kind.value == "lesson"

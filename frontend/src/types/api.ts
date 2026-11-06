@@ -469,7 +469,8 @@ export type MemoryKind =
   | "reading"
   | "activity"
   | "interaction"
-  | "lesson";
+  | "lesson"
+  | "reflection";
 export type FactScope = "profile" | "conversation" | "knowledge";
 
 export type Memory = {
@@ -483,6 +484,17 @@ export type Memory = {
   type: MemoryType;
   recall_count: number;
   sources: SearchMode[];
+};
+
+export type ConversationMemory = {
+  id: string;
+  started_at: number;
+  ended_at: number;
+  raw_content: string;
+  summary: string;
+  long_term: boolean;
+  active: boolean;
+  recall_count: number;
 };
 
 export type MemoryFact = {

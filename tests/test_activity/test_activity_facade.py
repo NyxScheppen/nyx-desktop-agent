@@ -2578,10 +2578,21 @@ async def test_creation_activity_injects_canon_system(
 
 
 async def test_exploration_appends_parent_subtopics_and_knowledge() -> None:
+    class ExternalSourceTools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any]) -> Any:
+            if name == "local_search":
+                self.calls.append((name, args))
+                return [{
+                    "path": "external/astronomy.txt",
+                    "snippet": "Quantum mechanics describes microscopic systems.",
+                }]
+            return await super().call(name, args)
+
     fake_desire = _FakeDesire()
     fake_memory = _FakeMemory()
     facade, _store, _bus, database = await _new_facade(
-        llm=_ExplorationLlm(), desire=fake_desire, memory=fake_memory
+        llm=_ExplorationLlm(), desire=fake_desire, memory=fake_memory,
+        tools=ExternalSourceTools(),
     )
     try:
         activity = _activity(

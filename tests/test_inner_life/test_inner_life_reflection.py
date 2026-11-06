@@ -32,6 +32,7 @@ from nyx.memory.facade import MemoryFacade
 from nyx.memory.store import MemoryStore
 from nyx.types import (
     Aesthetic,
+    ConversationSegment,
     DesireState,
     LLMOutput,
     LongTermDesire,
@@ -138,6 +139,22 @@ class _FakeMemoryFacade:
     def __init__(self, memories: list[Memory] | None = None) -> None:
         self._memories = memories if memories is not None else []
         self.evidence_store: MemoryStore | None = None
+
+    async def browse_conversations(
+        self, *, limit: int = 6
+    ) -> list[ConversationSegment]:
+        return []
+
+    async def prepare_reflection_record(self, content: str, summary: str) -> Memory:
+        return Memory(
+            id="reflection", created_at=1, content=content, summary=summary,
+            kind=MemoryKind.REFLECTION, type=MemoryType.LONG_TERM, freshness=1,
+        )
+
+    async def commit_reflection_record(
+        self, memory: Memory, correlation_id: str
+    ) -> None:
+        pass
 
     async def pending_reading_evidence(self, limit: int = 3) -> list[ReadingEvidence]:
         if self.evidence_store is None:

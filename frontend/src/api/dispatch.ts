@@ -76,6 +76,7 @@ export function dispatchEvent(e: SseEvent): void {
     case "reading_progress":
       return useReaderStore.getState().applyProgressEvent(e);
     case "reflection_done": {
+      void useMemoryStore.getState().refresh();
       // 反思完成：慢变量与长期欲望都可能变化，因此刷新两个快照；
       // story 真新增才冒气泡（去重跳过则静默刷新，不打扰）。
       void useDesireStore.getState().refresh();

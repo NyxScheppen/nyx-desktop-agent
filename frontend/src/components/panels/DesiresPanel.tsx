@@ -37,15 +37,28 @@ export default function DesiresPanel() {
         "等待核心服务连接…"
       ) : (
         <div className="desire-ledger">
+          <h3>压力</h3>
+          <p className="panel-item__meta">压力积累不代表已经准备行动；抑制阈值会随时间恢复。</p>
           <div className="desire-pressure" aria-label="欲望压力值">
             {data.values.map((value) => (
               <div className="desire-pressure__item" key={value.type}>
                 <span>{DESIRE_TYPE_LABELS[value.type]}</span>
                 <meter min={0} max={1} value={Math.min(1, Math.max(0, value.value))} />
                 <strong>{value.value.toFixed(2)}</strong>
+                <small>抑制阈值 {value.suppression_threshold.toFixed(2)}</small>
               </div>
             ))}
           </div>
+          <h3>准备行动</h3>
+          <div aria-label="准备行动的欲望">
+            {Object.entries(DESIRE_TYPE_LABELS).map(([type, label]) => {
+              const ready = liveShortTerm.filter((d) => d.type === type && d.status === "pending").length;
+              const active = liveShortTerm.filter((d) => d.type === type && d.status === "active").length;
+              return <p key={type}>{label}：{ready > 0 || active > 0 ? `待执行 ${ready} · 正在执行 ${active}` : "尚未形成待执行欲望"}</p>;
+            })}
+          </div>
+          <p className="panel-item__meta">主动搭话还需满足在线、空闲、精力和冷却时间条件。</p>
+          <h3>欲望记录</h3>
           <div className="panel-toolbar">
             <input className="panel-input" aria-label="搜索欲望" placeholder="搜索欲望…" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} />
             <select className="panel-input" aria-label="欲望类别" value={category} onChange={(event) => { setCategory(event.target.value); setPage(0); }}>

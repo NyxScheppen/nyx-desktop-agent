@@ -963,9 +963,11 @@ describe("desireStore / activityStore", () => {
   it("memoryStore.search：类别切换时旧请求不能覆盖新结果", async () => {
     let resolveOld!: (value: Response) => void;
     const oldRequest = new Promise<Response>((resolve) => { resolveOld = resolve; });
-    const fetchMock = vi.fn()
-      .mockReturnValueOnce(oldRequest)
-      .mockResolvedValueOnce(jsonResponse([{ id: "reading" }]));
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/conversations")) return Promise.resolve(jsonResponse([]));
+      if (url.includes("kind=episode")) return oldRequest;
+      return Promise.resolve(jsonResponse([{ id: "reading" }]));
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const old = useMemoryStore.getState().search("量子", "episode");
@@ -973,7 +975,7 @@ describe("desireStore / activityStore", () => {
     resolveOld(jsonResponse([{ id: "episode" }]));
     await old;
 
-    expect(fetchMock.mock.calls[1][0]).toBe("/api/memories/search?q=%E9%87%8F%E5%AD%90&kind=reading");
+    expect(fetchMock.mock.calls[2][0]).toBe("/api/memories/search?q=%E9%87%8F%E5%AD%90&kind=reading");
     expect(useMemoryStore.getState().data).toEqual([{ id: "reading" }]);
   });
 

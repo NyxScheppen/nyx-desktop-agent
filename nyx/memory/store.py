@@ -193,6 +193,41 @@ class MemoryStore:
             rows = await cursor.fetchall()
         return [_segment_from_row(row) for row in rows]
 
+    async def browse_conversations(
+        self,
+        query: str = "",
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        long_term: bool | None = None,
+    ) -> list[ConversationSegment]:
+        """按原文/摘要浏览，包含已退出召回的历史段，不使用向量召回门槛。"""
+        clauses = ["1=1"]
+        params: list[str | int] = []
+        if query.strip():
+            pattern = (
+                "%"
+                + query.strip().replace("!", "!!").replace("%", "!%").replace("_", "!_")
+                + "%"
+            )
+            clauses.append(
+                "(raw_content LIKE ? ESCAPE '!' OR summary LIKE ? ESCAPE '!')"
+            )
+            params.extend([pattern, pattern])
+        if long_term is not None:
+            clauses.append("long_term = ?")
+            params.append(int(long_term))
+        params.extend([max(1, min(limit, 200)), max(0, offset)])
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM conversation_segment WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY ended_at DESC, id DESC LIMIT ? OFFSET ?",
+                tuple(params),
+            )
+            rows = await cursor.fetchall()
+        return [_segment_from_row(row) for row in rows]
+
     async def list_pending_conversation_segments(
         self, before: float, limit: int = 20, *, include_facts: bool = True
     ) -> list[ConversationSegment]:
@@ -533,7 +568,8 @@ class MemoryStore:
         async with self._operation():
             if kind is None:
                 cursor = await self._db.conn.execute(
-                    "SELECT COUNT(*) AS count FROM memory WHERE first_created_at > ?",
+                    "SELECT COUNT(*) AS count FROM memory WHERE first_created_at > ? "
+                    "AND kind != 'reflection'",
                     (since,),
                 )
             else:

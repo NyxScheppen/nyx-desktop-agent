@@ -27,6 +27,8 @@ from nyx.inner_life.facade import InnerLifeFacade
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
+from nyx.memory.retrieval import MemoryRetrieval
+from nyx.memory.store import MemoryStore
 from nyx.types import (
     Activity,
     Aesthetic,
@@ -34,9 +36,7 @@ from nyx.types import (
     Event,
     LLMOutput,
     LongTermDesire,
-    Memory,
     Personality,
-    ReadingEvidence,
     SelfNarrative,
     ShortTermDesire,
     Values,
@@ -151,26 +151,6 @@ class _FakeDesireFacade:
         return None
 
 
-class _FakeMemoryFacade:
-    def __init__(self, evidence: list[ReadingEvidence] | None = None) -> None:
-        self.evidence = evidence if evidence is not None else []
-        self.consumed_evidence: list[str] = []
-
-    async def list_memories(
-        self, kind: MemoryKind | None = None
-    ) -> list[Memory]:
-        del kind
-        return []
-
-    async def count_new(self, kind: MemoryKind | None, since: float) -> int:
-        del kind, since
-        return 0
-
-    async def pending_reading_evidence(self, limit: int = 3) -> list[ReadingEvidence]:
-        return self.evidence[:limit]
-
-    async def consume_reading_evidence(self, ids: list[str]) -> None:
-        self.consumed_evidence.extend(ids)
 
 
 async def _seed(store: InnerLifeStore) -> None:
@@ -193,7 +173,10 @@ async def _new_facade(
         store,
         cast(ActivityFacade, _FakeActivityFacade(activity)),
         cast(DesireFacade, _FakeDesireFacade(pending)),
-        cast(MemoryFacade, _FakeMemoryFacade()),
+        MemoryFacade(
+            MemoryStore(database), MemoryRetrieval(MemoryStore(database)), bus,
+            cast(LlmClient, llm), cast(Evaluator, evaluator), Config().memory,
+        ),
         bus,
         cast(LlmClient, llm),
         cast(Evaluator, evaluator),
@@ -434,6 +417,15 @@ async def test_reflection_event_replay_is_idempotent(
         assert llm.calls == ["reflection"]
         events = await bus.list_events(event_type=EventType.REFLECTION_DONE)
         assert len(events) == 1
+        records = await MemoryStore(database).list_memories(MemoryKind.REFLECTION)
+        assert len(records) == 1
+        record = json.loads(records[0].content)
+        assert record["output"] and record["input"]["prompt"]
+        assert record["before"]["narrative"]["story"] == ["初始故事"]
+        assert record["after"]["narrative"]["story"] == [
+            "初始故事", "今天对用户了解更多"
+        ]
+        assert await MemoryStore(database).count_new(None, 0) == 0
         narrative = await store.get_narrative()
         assert narrative is not None
         assert narrative.story == ["初始故事", "今天对用户了解更多"]
@@ -462,6 +454,7 @@ async def test_reflection_event_rolls_back_slow_variables_when_event_append_fail
 
         narrative = await store.get_narrative()
         assert narrative == _NARRATIVE
+        assert await MemoryStore(database).list_memories(MemoryKind.REFLECTION) == []
         async with database.lock:
             cursor = await database.conn.execute(
                 "SELECT 1 FROM event_effect WHERE event_id = ? AND consumer_id = ?",

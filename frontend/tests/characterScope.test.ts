@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { bindScope, captureScope, invalidateScope, isScopeCurrent } from "../src/api/characterScope";
 import { deleteBookmark, postChat } from "../src/api/client";
 import { useChatStore } from "../src/stores/chatStore";
+import { useMemoryStore } from "../src/stores/memoryStore";
 import { useReaderStore } from "../src/stores/readerStore";
 
 afterEach(() => { bindScope(null); vi.unstubAllGlobals(); });
@@ -75,4 +76,18 @@ it("scopes JSON writes and 204 deletes with the selection revision", async () =>
   for (const [, init] of fetch.mock.calls) {
     expect(new Headers(init.headers).get("X-Nyx-Selection-Revision")).toBe("7");
   }
+});
+
+it("对话记忆迟到回包不能覆盖切换后的角色", async () => {
+  let finish!: (value: Response) => void;
+  vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
+  bindScope({ id: "alice", revision: 1 });
+  useMemoryStore.setState(useMemoryStore.getInitialState());
+  const pending = useMemoryStore.getState().loadConversations();
+  bindScope({ id: "bob", revision: 2 });
+  useMemoryStore.setState(useMemoryStore.getInitialState());
+  finish(new Response(JSON.stringify([{ id: "alice-original" }])));
+  await pending;
+  expect(useMemoryStore.getState().conversations).toBeNull();
+  expect(useMemoryStore.getState().conversationsError).toBeNull();
 });

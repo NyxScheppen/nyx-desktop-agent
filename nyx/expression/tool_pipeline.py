@@ -536,6 +536,8 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             kind = "tool_error" if status == "exhausted" else "tool_empty"
             await deps.memory.record_failure_signal(
                 kind, f"{kind}:{name}", pending["text"], state["correlation_id"],
+                evidence=[{"source_id": str(pending["log_id"]), "summary":
+                    json.dumps(pending, ensure_ascii=False, default=str)}],
             )
         records = {**state["records"], pending["key"]: pending}
         outputs = list(state["outputs"])

@@ -1,12 +1,17 @@
 import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
-import { getMemories, getMemorySearch, getRecentFacts } from "../api/client";
-import type { FactScope, Memory, MemoryFact, MemoryKind } from "../types/api";
+import { getMemories, getMemorySearch, getRecentFacts, getConversationMemories } from "../api/client";
+import type { FactScope, Memory, MemoryFact, MemoryKind, ConversationMemory } from "../types/api";
 
 // 记忆面板 store：记忆/事实 REST 快照 + SSE memory_* 事件触发 refresh。
 type MemoryStoreState = {
   data: Memory[] | null;
   facts: MemoryFact[] | null;
+  conversations: ConversationMemory[] | null;
+  conversationsError: string | null;
+  conversationsMore: boolean;
+  conversationsLoading: boolean;
+  loadConversations: (append?: boolean) => Promise<void>;
   query: string;
   kind: MemoryKind | null;
   factScope: FactScope;
@@ -24,9 +29,33 @@ function errorMessage(err: unknown): string {
 export const useMemoryStore = create<MemoryStoreState>((set, get) => {
   let memoryGeneration = 0;
   let factGeneration = 0;
+  let conversationGeneration = 0;
   return {
     data: null,
     facts: null,
+    conversations: null,
+    conversationsError: null,
+    conversationsMore: false,
+    conversationsLoading: false,
+    loadConversations: async (append = false) => {
+      const scope = captureScope();
+      const commit = scopedSetter(set);
+      const requestId = ++conversationGeneration;
+      const query = get().query;
+      const previous = append ? get().conversations ?? [] : [];
+      commit({ conversationsLoading: true, conversationsError: null });
+      try {
+        const items = await getConversationMemories(query, previous.length);
+        if (!isScopeCurrent(scope) || requestId !== conversationGeneration || get().query !== query) return;
+        commit({ conversations: [...previous, ...items], conversationsMore: items.length === 100 });
+      } catch (error) {
+        if (isScopeCurrent(scope) && requestId === conversationGeneration) {
+          commit({ conversationsError: errorMessage(error) });
+        }
+      } finally {
+        if (isScopeCurrent(scope) && requestId === conversationGeneration) commit({ conversationsLoading: false });
+      }
+    },
     query: "",
     kind: null,
     factScope: "profile",
@@ -42,9 +71,9 @@ export const useMemoryStore = create<MemoryStoreState>((set, get) => {
       const factScope = get().factScope;
       commit({ error: null, factsError: null });
       const memoryRequest = query === "" ? getMemories(kind) : getMemorySearch(query, kind);
+      const factsRequest = getRecentFacts(64, factScope);
       const [memoryResult, factsResult] = await Promise.allSettled([
-        memoryRequest,
-        getRecentFacts(64, factScope),
+        memoryRequest, factsRequest, get().loadConversations(),
       ]);
       if (!isScopeCurrent(scope)) return;
       if (memoryRequestId === memoryGeneration && get().query === query && get().kind === kind) {
@@ -67,9 +96,10 @@ export const useMemoryStore = create<MemoryStoreState>((set, get) => {
       const commit = scopedSetter(set);
       const normalized = query.trim();
       const request = ++memoryGeneration;
-      commit({ query: normalized, kind, data: null, error: null });
+      commit({ query: normalized, kind, data: null, error: null, conversations: null });
       try {
-        const data = normalized === "" ? await getMemories(kind) : await getMemorySearch(normalized, kind);
+        const memoryRequest = normalized === "" ? getMemories(kind) : getMemorySearch(normalized, kind);
+        const [data] = await Promise.all([memoryRequest, get().loadConversations()]);
         if (!isScopeCurrent(scope)) return;
         if (request === memoryGeneration && get().query === normalized && get().kind === kind) {
           commit({ data, error: null });

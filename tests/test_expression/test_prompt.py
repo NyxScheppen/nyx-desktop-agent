@@ -33,6 +33,7 @@ from nyx.expression.prompt import (
     describe_local_time,
     render_personality_instruction,
 )
+from nyx.timezone import USER_TIMEZONE
 from nyx.types import (
     Activity,
     ActivityContext,
@@ -311,8 +312,8 @@ def test_user_history_retains_distinct_event_times() -> None:
         Message(role="user", content="我在北京", timestamp=100.0),
         Message(role="nyx", content="记住了", timestamp=200.0),
     ])
-    assert "1970-01-01T00:01:40+00:00" in result
-    assert "1970-01-01T00:03:20+00:00" in result
+    assert "1970-01-01T08:01:40+08:00" in result
+    assert "1970-01-01T08:03:20+08:00" in result
     assert "消息时间=未知" in result
 
 
@@ -538,7 +539,7 @@ def test_backtrack_does_not_keep_unrelated_latest_nyx_reply() -> None:
 
 
 def _local_timestamp(value: str) -> float:
-    return datetime.fromisoformat(value).astimezone().timestamp()
+    return datetime.fromisoformat(value).replace(tzinfo=USER_TIMEZONE).timestamp()
 
 
 def test_describe_local_time_day_night_boundaries() -> None:
@@ -552,7 +553,7 @@ def test_describe_local_time_day_night_boundaries() -> None:
     assert night["phase"] == "night"
     for hour, period in ((0, "凌晨"), (6, "早上"), (9, "上午"), (12, "中午"),
                          (14, "下午"), (18, "晚上"), (22, "深夜")):
-        timestamp = datetime(2026, 9, 17, hour).astimezone().timestamp()
+        timestamp = datetime(2026, 9, 17, hour, tzinfo=USER_TIMEZONE).timestamp()
         assert describe_local_time(timestamp)["period"] == period
 
 

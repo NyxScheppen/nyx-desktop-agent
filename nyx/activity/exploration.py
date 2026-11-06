@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from nyx.activity.store import ActivityStore
 from nyx.config import ExplorationConfig
 from nyx.desire.facade import DesireFacade
+from nyx.enums import MemoryKind
 from nyx.eval.evaluator import Evaluator
 from nyx.events.event import SECONDS_PER_HOUR
 from nyx.llm.client import LlmClient
@@ -27,6 +28,17 @@ _logger = logging.getLogger(__name__)
 
 _FETCH_COUNT = 3  # 抓正文的检索结果条数（decision，可推翻）
 _SOURCE_TEXT_MAX_CHARS = 6000
+
+
+def _excluded_source(result: Any) -> bool:
+    """自发探索不把程序自身或创作文件当成外部知识来源。"""
+    _name, url, path, _snippet = _result_parts(result)
+    if url or not path:
+        return False
+    resolved = Path(path).resolve()
+    return resolved.is_relative_to(Path(__file__).resolve().parents[1]) or (
+        "creations" in Path(path).parts or "creations" in resolved.parts
+    )
 
 
 def should_explore(last_explored_at: float, rate_limit_hours: int, now: float) -> bool:
@@ -77,6 +89,23 @@ class Exploration:
         correlation_id = _correlation_id(activity)
         if checkpoint["state"] == "completed":
             return _result_from_checkpoint(checkpoint)
+        # 旧版本 checkpoint 可能已经抓取了自身文本；重新读取合法来源。
+        if any(_excluded_source(item) for item in checkpoint["raw_results"]):
+            checkpoint.update(
+                state="reading_results",
+                cursor=0,
+                findings=[],
+                source_pending=None,
+                summary_done=False,
+                judged=None,
+                sink_done=False,
+                raw_results=[
+                    item
+                    for item in checkpoint["raw_results"]
+                    if not _excluded_source(item)
+                ],
+            )
+            await self._save_checkpoint(activity, checkpoint)
         if checkpoint["state"] == "searching":
             tool_calls = cast(list[dict[str, Any]], checkpoint["tool_calls"])
             checkpoint["raw_results"] = await self._search(topic, tool_calls)
@@ -137,12 +166,17 @@ class Exploration:
                 source_topic = str(pending_map["source_topic"])
                 source_name = str(pending_map["source_name"])
                 chunk_id = await self._memory.record_reading_evidence(
-                    source_topic, source_name, source_text, str(cursor),
+                    source_topic,
+                    source_name,
+                    source_text,
+                    str(cursor),
                     location=str(pending_map["location"]),
                 )
                 if "knowledge" not in pending_map:
                     _profile, extracted = await self._memory.digest_source_block(
-                        source_text, source_name, _correlation_id(activity),
+                        source_text,
+                        source_name,
+                        _correlation_id(activity),
                         source_chunk_id=chunk_id,
                     )
                     for item in extracted:
@@ -190,7 +224,7 @@ class Exploration:
         cursor: int,
         tool_calls: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        if not name:
+        if not name or _excluded_source({"path": path, "url": url}):
             return {"cursor": cursor, "finding": "", "knowledge": []}
         content = snippet
         source_kind = "web" if url else "local"
@@ -258,7 +292,7 @@ class Exploration:
             res = await self._call_tool("local_search", {"query": topic}, tool_calls)
         if not isinstance(res, list):
             return []
-        return cast(list[Any], res)
+        return [item for item in cast(list[Any], res) if not _excluded_source(item)]
 
     async def _summarize(
         self, topic: str, findings: list[str], correlation_id: str
@@ -267,10 +301,14 @@ class Exploration:
 
         best-effort：LLM/parse 失败记日志、按空结果走兜底，不重抛。
         """
+        if not findings:
+            return {"summary": "本次未找到可读取的外部资料", "knowledge": []}
         related: list[str] = []
         try:
             memories = await self._memory.search(topic)
-            related = [m.summary for m in memories[:5]]
+            related = [m.summary for m in memories if m.kind is MemoryKind.KNOWLEDGE][
+                :5
+            ]
         except Exception:
             _logger.exception("探索相关记忆检索失败 topic=%s", topic)
         try:

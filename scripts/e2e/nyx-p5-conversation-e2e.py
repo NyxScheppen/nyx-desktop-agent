@@ -498,7 +498,9 @@ async def crash_child(folder, point, postgres):
                 loop.call_soon_threadsafe(model.release.set)
     threading.Thread(target=commands, daemon=True).start()
     async with fixture(folder, model, postgres=postgres, crash=point) as (_, _, port):
-        (folder / "ready.json").write_text(json.dumps({"port": port}), encoding="utf-8")
+        ready_path = folder / "ready.tmp"
+        ready_path.write_text(json.dumps({"port": port}), encoding="utf-8")
+        ready_path.replace(folder / "ready.json")
         await model.entered.wait()
         model.entered.clear()
         model.release.clear()

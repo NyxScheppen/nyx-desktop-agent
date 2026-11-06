@@ -30,12 +30,16 @@ from nyx.eval.store import EvalStore
 from nyx.events.bus import EventAdmissionError, EventBus
 from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
+from nyx.llm.client import LlmClient
 from nyx.main import _App, build_app
 from nyx.memory.facade import MemoryFacade
+from nyx.memory.retrieval import MemoryRetrieval
+from nyx.memory.store import MemoryStore
 from nyx.reading.facade import BookNotFoundError, ReadingFacade
 from nyx.types import (
     Activity,
     AssignedTask,
+    ConversationSegment,
     CurrentState,
     EvalRecord,
     EvalStats,
@@ -1183,3 +1187,45 @@ async def test_upload_endpoint_is_removed() -> None:
             files={"file": ("book.txt", "骑士团的历史".encode("utf-8"), "text/plain")},
         )
     assert resp.status_code == 404
+
+
+async def test_conversation_memory_browsing_preserves_original_and_filters() -> None:
+    database = await connect(":memory:")
+    store = MemoryStore(database)
+    bus = EventBus(database)
+    app = _app(_mk_state(), _FakeBus(), _FakeMemory())
+    app.memory = MemoryFacade(
+        store, MemoryRetrieval(store), bus, cast(LlmClient, object()),
+        cast(Evaluator, object()), Config().memory,
+    )
+    try:
+        originals = ["用户：100% 原文\n尼克斯：第一段", "用户：最新对话"]
+        for index, content in enumerate(originals):
+            await store.add_conversation_segment(ConversationSegment(
+                id=f"segment-{index}", previous_id=None, started_at=float(index),
+                ended_at=float(index + 1), raw_event_ids=[f"event-{index}"],
+                raw_content=content, long_term=index == 0, active=index != 0,
+                embedding=[1.0, 0.0],
+            ))
+        async with _client(app) as client:
+            first = await client.get("/api/memories/conversations", params={"limit": 1})
+            assert first.status_code == 200 and first.json()[0]["id"] == "segment-1"
+            second = await client.get(
+                "/api/memories/conversations", params={"limit": 1, "offset": 1}
+            )
+            assert second.json()[0]["raw_content"] == "用户：100% 原文\n尼克斯：第一段"
+            assert "embedding" not in second.json()[0]
+            found = await client.get(
+                "/api/memories/conversations", params={"q": "100%"}
+            )
+            assert [item["id"] for item in found.json()] == ["segment-0"]
+            retained = await client.get(
+                "/api/memories/conversations", params={"long_term": True}
+            )
+            assert [item["id"] for item in retained.json()] == ["segment-0"]
+            invalid = await client.get(
+                "/api/memories/conversations", params={"limit": 201}
+            )
+            assert invalid.status_code == 422
+    finally:
+        await database.close()

@@ -8,14 +8,14 @@ _VALUE_MAX = 1.0
 # —— 表达权重 expression_weight ——
 _WEIGHT_MIN = 0.0
 _WEIGHT_MAX = 1.0
-_WEIGHT_INIT = 0.7               # 初始表达权重（四类型统一，中性偏高）
-WEIGHT_REINFORCE_DELTA = 0.05    # 满足一次 +0.05（正强化）
+_WEIGHT_INIT = 0.7  # 初始表达权重（四类型统一，中性偏高）
+WEIGHT_REINFORCE_DELTA = 0.05  # 满足一次 +0.05（正强化）
 
 # —— 抑制阈值 suppression_threshold ——
 _SUPPRESSION_MIN = 0.0
 _SUPPRESSION_MAX = 1.0
-_SUPPRESSION_INIT = 0.5          # 初始抑制阈值（< peak=0.9，初始不压抑）
-SUPPRESSION_RAISE_DELTA = 0.1    # 失败/抑制一次 +0.1（习得性抑制）
+_SUPPRESSION_INIT = 0.5  # 初始抑制阈值（< peak=0.9，初始不压抑）
+SUPPRESSION_RAISE_DELTA = 0.1  # 失败/抑制一次 +0.1（习得性抑制）
 
 # —— 回增（放弃/淘汰压力回灌）——
 REFUND_DELTA = 0.3
@@ -72,3 +72,10 @@ def default_value(type_: DesireType) -> DesireValue:
         suppression_threshold=_SUPPRESSION_INIT,
         updated_at=0.0,     # 哨兵：由 11 初始化时覆盖为 now
     )
+
+
+def recover_suppression(threshold: float, elapsed_seconds: float) -> float:
+    """每天恢复 0.1，回到初始基线；所有更新时间的路径都先结算。"""
+    if threshold <= _SUPPRESSION_INIT:
+        return threshold
+    return max(_SUPPRESSION_INIT, threshold - 0.1 * max(0.0, elapsed_seconds) / 86400)

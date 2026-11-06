@@ -69,7 +69,10 @@ class Evaluator:
         ):
             try:
                 await self._on_failure(
-                    "ooc", f"ooc:{output.module}", "表达偏离人设",
+                    "ooc", f"ooc:{output.module}",
+                    f"表达偏离人设\n调用：{output.call_id} · {output.type}\n"
+                    f"评分：keyword={keyword}, embed={embed_s}\n"
+                    f"具体原文：\n{output.content}",
                     output.correlation_id,
                 )
             except Exception:

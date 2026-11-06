@@ -9,6 +9,7 @@ import secrets
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
@@ -427,6 +428,21 @@ def build_app(
         scope: Literal["profile", "conversation", "knowledge"] | None = None,
     ) -> list[MemoryFact]:
         return await app.memory.recent_facts(limit, scope)
+
+    @fast.get("/api/memories/conversations")
+    async def api_memory_conversations(
+        q: str = Query("", max_length=2000),
+        limit: int = Query(100, ge=1, le=200),
+        offset: int = Query(0, ge=0, le=100_000),
+        long_term: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        segments = await app.memory.browse_conversations(
+            q, limit=limit, offset=offset, long_term=long_term
+        )
+        return [
+            {key: value for key, value in asdict(item).items() if key != "embedding"}
+            for item in segments
+        ]
 
     @fast.get("/api/desires")
     async def api_desires() -> DesireState:

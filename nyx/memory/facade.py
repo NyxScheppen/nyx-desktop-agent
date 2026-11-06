@@ -1110,9 +1110,9 @@ class MemoryFacade:
                 evidence=[{
                     "source_id": event.id,
                     "summary": (
-                        f"引用：{event.content['quote'][:450]}\n"
-                        f"用户批注：{event.content['comment'][:530]}"
-                    )[:1000],
+                        f"引用：{event.content['quote']}\n"
+                        f"用户批注：{event.content['comment']}"
+                    ),
                 }],
             )
 
@@ -1136,7 +1136,7 @@ class MemoryFacade:
                 count = await self._store.bump_lesson_signal(topic, kind)
                 if count < _LESSON_PROMOTE_THRESHOLD:
                     return
-            await self._persist_lesson(topic, kind, summary, correlation_id)
+            await self._persist_lesson(topic, kind, summary, correlation_id, evidence)
             if kind != "user_correction":
                 return
             reflection = internal_event(
@@ -1166,10 +1166,13 @@ class MemoryFacade:
             self._logger.exception("失败经验记录失败 kind=%s topic=%s", kind, topic)
 
     async def _persist_lesson(
-        self, topic: str, kind: str, summary: str, correlation_id: str
+        self, topic: str, kind: str, summary: str, correlation_id: str,
+        evidence: list[dict[str, str]] | None = None,
     ) -> None:
+        originals = json.dumps(evidence or [], ensure_ascii=False, indent=2)
         memory = _new_memory(
-            f"教训：{topic} 失败（{kind}）。{summary}", MemoryKind.LESSON,
+            f"教训：{topic} 失败（{kind}）。{summary}\n"
+            f"关联记录：{correlation_id}\n原文证据：\n{originals}", MemoryKind.LESSON,
             f"经验：{topic} 失败", MemoryType.LONG_TERM, [topic],
         )
         # 策略经验不是用户事实，也不因技术失败触发记忆矛盾反思。
@@ -1177,6 +1180,26 @@ class MemoryFacade:
             memory, correlation_id,
             fact_candidates=[], defer_best_effort=True,
         )
+
+    async def prepare_reflection_record(self, content: str, summary: str) -> Memory:
+        """准备完整反思记录；向量计算发生在状态提交事务外。"""
+        memory = _new_memory(
+            content, MemoryKind.REFLECTION, summary, MemoryType.LONG_TERM, ["内在反思"]
+        )
+        if self._embed is not None:
+            memory.embedding = await self._embed(summary)
+        return memory
+
+    async def commit_reflection_record(
+        self, memory: Memory, correlation_id: str
+    ) -> None:
+        """与慢变量共用事务，不作语义合并，不从自省推导外部事实。"""
+        if not self._store.db.in_transaction:
+            raise RuntimeError("反思记忆必须与内在状态一起提交")
+        event = internal_event(
+            EventType.MEMORY_CREATED, {"memory_id": memory.id}, correlation_id
+        )
+        await self._commit_memory(memory, [], event, time.time(), [], "reflection")
 
     async def _extract_segment_facts(self, segment: ConversationSegment) -> None:
         if (
@@ -1796,6 +1819,7 @@ class MemoryFacade:
                 candidate.id
                 for candidate in memories
                 if candidate.kind is memory.kind
+                and memory.kind not in {MemoryKind.LESSON, MemoryKind.REFLECTION}
                 and _source_topic(candidate) == source_topic
                 and (
                     memory.kind is not MemoryKind.LESSON
@@ -1859,16 +1883,30 @@ class MemoryFacade:
                 source_chunk_id,
             )
         else:
-            async with self._store.db.transaction():
-                result = await self._commit_memory(
-                    memory,
-                    candidates,
-                    event,
-                    now,
-                    fact_candidates,
-                    source_scope,
-                    source_chunk_id,
-                )
+            appended_count = 0
+            try:
+                async with self._store.db.transaction():
+                    persisted_before = self._bus.persisted_count
+                    try:
+                        result = await self._commit_memory(
+                            memory,
+                            candidates,
+                            event,
+                            now,
+                            fact_candidates,
+                            source_scope,
+                            source_chunk_id,
+                        )
+                    finally:
+                        appended_count = self._bus.persisted_count - persisted_before
+            except BaseException as error:
+                try:
+                    committed = await self._bus.is_durable(event.id)
+                except Exception:
+                    raise error
+                if not committed:
+                    self._bus.persisted_count -= appended_count
+                raise
             if result.created_event is not None:
                 try:
                     await self._bus.announce_committed(result.created_event)
@@ -2141,6 +2179,14 @@ class MemoryFacade:
         limit: int | None = None,
     ) -> list[Memory]:
         return await self._store.list_memories(kind, type, limit)
+
+    async def browse_conversations(
+        self, query: str = "", *, limit: int = 100, offset: int = 0,
+        long_term: bool | None = None,
+    ) -> list[ConversationSegment]:
+        return await self._store.browse_conversations(
+            query, limit=limit, offset=offset, long_term=long_term
+        )
 
     async def count_new(self, kind: MemoryKind | None, since: float) -> int:
         """计数「首次创建晚于 since 的 kind 记忆」（轻量，不物化整行/embedding）。"""

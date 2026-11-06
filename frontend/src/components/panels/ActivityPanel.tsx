@@ -1,3 +1,4 @@
+import { formatClock, formatDate, formatDateTime } from "../../lib/time";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent } from "react";
 import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import { getActivityResults, getBookParagraphs } from "../../api/client";
@@ -13,7 +14,7 @@ import type { Activity, AssignedTask, BookListItem, Paragraph } from "../../type
 import Panel from "../layout/Panel";
 
 function timeLabel(ts: number): string {
-  return new Date(ts * 1000).toLocaleTimeString();
+  return formatClock(ts);
 }
 
 function taskTarget(task: AssignedTask, books: BookListItem[]): string {
@@ -243,7 +244,7 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
         <button type="button" className="task-detail__close" onClick={() => setSelectedTaskId(null)} aria-label="关闭任务详情">×</button>
         <h3>{taskTarget(selectedTask, books)}</h3>
         <p>{ASSIGNED_TASK_STATUS_LABELS[selectedTask.status]}</p>
-        <p>创建：{new Date(selectedTask.created_at * 1000).toLocaleString()}</p>
+        <p>创建：{formatDateTime(selectedTask.created_at)}</p>
         {selectedTask.error !== null && <p className="error-text">{selectedTask.error}</p>}
         {typeof (selectedTask.checkpoint.result as Record<string, unknown> | undefined)?.summary === "string" && <p>{String((selectedTask.checkpoint.result as Record<string, unknown>).summary)}</p>}
       </aside>}
@@ -251,7 +252,7 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
 
       {view === "activity" && <>
       <div className="activity-day">
-        <div className="activity-day__date"><strong>今天</strong><time>{new Date().toLocaleDateString()}</time></div>
+        <div className="activity-day__date"><strong>今天</strong><time>{formatDate(Date.now() / 1000)}</time></div>
         <button
           type="button"
           className="panel-refresh activity-history-toggle"
@@ -320,7 +321,7 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
         {history.length === 0 ? <p className="panel-item">暂无历史活动</p> : <ul className="panel-list">
           {history.map((activity) => <li key={activity.id} className="panel-item">
             <span className="panel-item__main">{ACTIVITY_TYPE_LABELS[activity.type]} <span className="panel-badge">{ACTIVITY_STATUS_LABELS[activity.status]}</span></span>
-            <span className="panel-item__meta">{new Date(activity.started_at * 1000).toLocaleString()}</span>
+            <span className="panel-item__meta">{formatDateTime(activity.started_at)}</span>
             {formatResult(activity) !== null && <span className="panel-item__meta">{formatResult(activity)}</span>}
           </li>)}
         </ul>}

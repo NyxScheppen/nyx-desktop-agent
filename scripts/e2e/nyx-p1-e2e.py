@@ -7,7 +7,7 @@ import sys
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest.mock import patch
 
 import httpx
@@ -20,6 +20,7 @@ from nyx.expression.store import ExpressionInteractionStore
 from nyx.main import build_app, build_app_context
 from nyx.memory.facts import FactCandidate, MemoryFactStore
 from nyx.memory.store import MemoryStore
+from nyx.timezone import USER_TIMEZONE
 from nyx.types import ConversationSegment, LLMOutput
 
 DISCUSSION = {'memory_recall', 'knowledge_search', 'deep_research'}
@@ -202,10 +203,10 @@ async def main():
                         assert '工具 memory_recall 执行失败' in system
                         assert (await store.get_conversation_segment('segment-e2e')).recall_count == before
                     if mode == 'duplicate':
-                        assert system.count('memory_recall:') == 1
+                        assert system.rsplit('[工具查询结果]', 1)[-1].count('memory_recall:') == 1
                         assert (await store.get_conversation_segment('segment-e2e')).recall_count == before + 1
                     if mode == 'item_limit':
-                        assert system.count('deep_research:') == 5
+                        assert system.rsplit('[工具查询结果]', 1)[-1].count('deep_research:') == 5
                 invalid = await client.post('/api/chat', json={'message': '嗯', 'discussion': 'true'})
                 assert invalid.status_code == 422
 
@@ -218,7 +219,7 @@ async def main():
                     await asyncio.wait_for(app.bus._wait_until_idle(), 10)
                     await app.memory.finalize_conversation_segment()
                     original = await app.bus.get_event(source_reply['cid'])
-                    original_at = datetime.fromtimestamp(original.timestamp, timezone.utc).isoformat(timespec='seconds')
+                    original_at = datetime.fromtimestamp(original.timestamp, USER_TIMEZONE).isoformat(timespec='seconds')
                     assert original_at in source_reply['messages'][1]['content']
                     facts = await app.memory.search_facts('我在哪个城市')
                     assert [(f.predicate, f.object_value) for f in facts] == [('当前所在地', '北京')]
@@ -242,7 +243,7 @@ async def main():
                                 assert original_at in user and '逐句时间=未知' in user
                             cid = recalled['cid']
                             current = await app.bus.get_event(cid)
-                            current_at = datetime.fromtimestamp(current.timestamp, timezone.utc).isoformat(timespec='seconds')
+                            current_at = datetime.fromtimestamp(current.timestamp, USER_TIMEZONE).isoformat(timespec='seconds')
                             assert f'消息时间={current_at}' in user
                             saved = await store.get_conversation_segment(source_segment.id)
                             admitted = source_segment.raw_content[:50] in user

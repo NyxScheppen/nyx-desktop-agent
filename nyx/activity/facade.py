@@ -33,6 +33,7 @@ from nyx.events.bus import EventBus
 from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade, build_source_topic
+from nyx.timezone import USER_TIMEZONE
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
@@ -64,7 +65,7 @@ class WebTasksDisabledError(ValueError):
 
 def _day_start(now: float) -> float:
     """Return the Unix timestamp for midnight in the system local timezone."""
-    local_now = datetime.fromtimestamp(now)
+    local_now = datetime.fromtimestamp(now, USER_TIMEZONE)
     return local_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 

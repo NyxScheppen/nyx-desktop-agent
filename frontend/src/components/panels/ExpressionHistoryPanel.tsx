@@ -1,3 +1,4 @@
+import { formatDateTime } from "../../lib/time";
 import { useEffect, useState } from "react";
 import { useExpressionHistoryStore } from "../../stores/expressionHistoryStore";
 import Panel from "../layout/Panel";
@@ -20,7 +21,7 @@ function EventList({ events }: { events: BackendEvent[] }) {
     <li className="panel-item" key={event.id}>
       <span className="panel-item__main">{content(event)}</span>
       <span className="panel-item__meta">
-        {LABELS[event.type] ?? event.type} · {new Date(event.timestamp * 1000).toLocaleString()}
+        {LABELS[event.type] ?? event.type} · {formatDateTime(event.timestamp)}
       </span>
     </li>
   ))}</ul>;

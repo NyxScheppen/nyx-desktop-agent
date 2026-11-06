@@ -3024,3 +3024,14 @@ button.right-dock__seal:hover { background: #fff3d219; }
 }
 
 @media (prefers-reduced-motion: reduce) { .app--full .game-shell--chat { transition: none; } }
+
+.memory-original { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; max-height: 65vh; overflow: auto; }
+.fact-graph__canvas svg { display: block; touch-action: none; user-select: none; cursor: grab; min-width: 0; }
+.fact-graph__canvas { overflow: hidden; }
+.fact-graph__node { cursor: grab; outline: none; }
+.fact-graph__node circle { fill: var(--accent, #8e80a7); stroke: #b9aac9; stroke-width: 2; }
+.fact-graph__node--selected circle, .fact-graph__node:focus circle { stroke: #f6c77b; stroke-width: 4; }
+.fact-graph__edge path { stroke: #9c91ab; stroke-width: 1.5; }
+.fact-graph__edge--negative path { stroke: #c56b73; stroke-dasharray: 5 4; }
+.fact-graph__edge text, .fact-graph__node text { paint-order: stroke; stroke: var(--parchment); stroke-width: 3px; stroke-linejoin: round; }
+.desire-pressure__item small { grid-column: 1 / -1; opacity: .7; }

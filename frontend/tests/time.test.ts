@@ -9,7 +9,7 @@ import {
 } from "../src/lib/time";
 
 function at(year: number, month: number, day: number, hour: number, minute: number): Date {
-  return new Date(year, month - 1, day, hour, minute, 0, 0);
+  return new Date(Date.UTC(year, month - 1, day, hour - 8, minute, 0, 0));
 }
 
 function message(

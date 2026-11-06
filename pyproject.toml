@@ -16,7 +16,6 @@ dependencies = [
     "langgraph-checkpoint-sqlite==3.1.1",
     "lxml>=4.9",
     "networkx==3.6.1",
-    "nyx-harness",
     "pillow>=10.0.0",
     "playwright>=1.57,<2",
     "psycopg[binary]==3.3.6",
@@ -53,12 +52,11 @@ known-first-party = ["nyx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = [".", "packages/nyx-harness"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 
 [tool.pyright]
 pythonVersion = "3.11"
-extraPaths = ["packages/nyx-harness"]
 exclude = ["build", "frontend/src-tauri/target", "**/node_modules", "**/__pycache__", ".venv", ".claude", "scripts/e2e/**"]
 typeCheckingMode = "strict"
 reportUnusedFunction = true
@@ -69,11 +67,3 @@ include = ["nyx*"]
 
 [tool.setuptools.package-data]
 nyx = ["prompts/*.md", "prompts/skills/*.json", "cards/nyx/*.yaml", "cards/nyx/*.md", "cards/nyx/assets/*"]
-
-[tool.uv.workspace]
-members = [
-    "packages/nyx-harness",
-]
-
-[tool.uv.sources]
-nyx-harness = { workspace = true, editable = true }

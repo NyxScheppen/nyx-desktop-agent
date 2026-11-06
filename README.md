@@ -135,7 +135,7 @@ python dev.py --desktop
 ### Windows 桌面构建
 
 ```bash
-pip install -e ./packages/nyx-harness -e ".[desktop-build]"
+uv sync --locked --extra desktop-build
 python dev.py --build-sidecar
 cd frontend
 npm run tauri build
@@ -146,7 +146,7 @@ npm run tauri build
 ### 后端
 
 ```bash
-pip install -e ./packages/nyx-harness -e .
+uv sync --locked
 
 # 配置 API Key（写入 .env，已被 .gitignore 覆盖；默认 DeepSeek）
 cp .env.example .env
@@ -249,8 +249,8 @@ npm run tauri dev  # 桌面壳（Tauri v2）
 ```bash
 pip install uv==0.12.18
 uv sync --locked --extra dev
-uv run --no-sync python -m ruff check nyx/ packages/ tests/ scripts/
-uv run --no-sync python -m pyright nyx/ packages/ tests/ scripts/
+uv run --no-sync python -m ruff check nyx/ tests/ scripts/
+uv run --no-sync python -m pyright nyx/ tests/ scripts/
 uv run --no-sync python scripts/run_e2e.py --timeout 300
 uv run --no-sync python - <<'PY'
 import os

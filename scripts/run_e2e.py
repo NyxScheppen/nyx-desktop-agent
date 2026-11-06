@@ -30,10 +30,6 @@ def main() -> int:
     env["NYX_AUTH_TOKEN"] = ""
     env["NYX_DATABASE_URL"] = ""
     env.pop("NYX_PUBLIC_ORIGIN", None)
-    package_path = str(root / "packages" / "nyx-harness")
-    env["PYTHONPATH"] = os.pathsep.join(
-        part for part in (package_path, env.get("PYTHONPATH")) if part
-    )
     for script in scripts:
         print(f"==> {script.relative_to(root)}", flush=True)
         result = subprocess.run(

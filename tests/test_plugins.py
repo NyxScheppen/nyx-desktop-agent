@@ -6,8 +6,7 @@ import pytest
 
 
 def test_topological_order_is_stable_and_resolves_capabilities() -> None:
-    from nyx_harness import sort_plugins
-
+    from nyx.harness import sort_plugins
     from nyx.plugins import _Plugin
 
     plugins = (
@@ -26,8 +25,7 @@ def test_topological_order_is_stable_and_resolves_capabilities() -> None:
 def test_invalid_strong_dependencies_fail_before_construction(
     requires: tuple[str, ...],
 ) -> None:
-    from nyx_harness import sort_plugins
-
+    from nyx.harness import sort_plugins
     from nyx.plugins import _Plugin
 
     with pytest.raises(RuntimeError, match="consumer"):
@@ -35,8 +33,7 @@ def test_invalid_strong_dependencies_fail_before_construction(
 
 
 def test_strong_cycle_is_rejected_but_optional_cycle_is_allowed() -> None:
-    from nyx_harness import sort_plugins
-
+    from nyx.harness import sort_plugins
     from nyx.plugins import _Plugin
 
     first = _Plugin("first", _unused, ("first",), ("second",))
@@ -81,7 +78,7 @@ async def test_unbound_optional_prevents_all_start_hooks() -> None:
 
 
 def test_context_only_exposes_declared_capabilities_and_observes_injection() -> None:
-    from nyx_harness import PluginContext
+    from nyx.harness import PluginContext
 
     capabilities: dict[str, object] = {}
     ctx = PluginContext(capabilities, ("reading_context",))
@@ -93,9 +90,8 @@ def test_context_only_exposes_declared_capabilities_and_observes_injection() -> 
 
 
 def test_plugin_routes_equal_all_seventeen_runtime_routes() -> None:
-    from nyx_harness import sort_plugins
-
     from nyx.events.routing import ROUTE_SPECS
+    from nyx.harness import sort_plugins
     from nyx.plugins import default_plugins, validate_routes
 
     plugins = default_plugins()

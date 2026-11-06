@@ -9,17 +9,6 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from nyx_harness import PluginContext
-from nyx_harness.core import (
-    build_plugins as _build_plugins,
-)
-from nyx_harness.core import (
-    start_plugins as _start_plugins,
-)
-from nyx_harness.core import (
-    validate_optional as _validate_optional,
-)
-
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.store import ActivityStore
 from nyx.bootstrap import initialize_card, load_skills
@@ -35,6 +24,10 @@ from nyx.events.bus import EventBus
 from nyx.events.routing import ROUTE_SPECS, RouteSpec
 from nyx.expression.facade import ExpressionFacade
 from nyx.expression.store import ExpressionInteractionStore
+from nyx.harness import PluginContext
+from nyx.harness import build_plugins as _build_plugins
+from nyx.harness import start_plugins as _start_plugins
+from nyx.harness import validate_optional as _validate_optional
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient

@@ -8,7 +8,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
-COPY packages/nyx-harness ./packages/nyx-harness
 COPY nyx ./nyx
 COPY scripts/migrate_sqlite_to_postgres.py ./scripts/
 

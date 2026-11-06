@@ -1,4 +1,4 @@
-"""Dependency assembly for small, in-process agent plugin sets."""
+"""In-process plugin assembly for Nyx."""
 
 from __future__ import annotations
 

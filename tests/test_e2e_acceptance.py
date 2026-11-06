@@ -17,14 +17,6 @@ _ENV = os.environ.copy()
 _ENV["NYX_AUTH_TOKEN"] = ""
 _ENV["NYX_DATABASE_URL"] = ""
 _ENV.pop("NYX_PUBLIC_ORIGIN", None)
-_ENV["PYTHONPATH"] = os.pathsep.join(
-    part
-    for part in (
-        str(_ROOT / "packages" / "nyx-harness"),
-        _ENV.get("PYTHONPATH"),
-    )
-    if part
-)
 
 
 @pytest.mark.parametrize("script", _SCRIPTS, ids=lambda script: script.stem)

@@ -2,7 +2,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import pytest
-from nyx_harness import PluginContext, build_plugins, start_plugins
+
+from nyx.harness import PluginContext, build_plugins, start_plugins
 
 
 @dataclass
@@ -24,7 +25,7 @@ class Component:
         self.started = True
 
 
-async def test_independent_components_bind_before_start_without_nyx() -> None:
+async def test_components_bind_before_start() -> None:
     consumer = Component("consumer", ("consumer",), optional=("provider",))
     provider = Component("provider", ("provider",), requires=("consumer",))
     capabilities: dict[str, object] = {}

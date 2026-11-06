@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -59,6 +60,10 @@ def _sqlite_sql_to_postgres(sql: str) -> str:
         "json_each(memory.topics)",
         "jsonb_array_elements_text(memory.topics::jsonb) AS memory_topics",
     ).replace("json_each.value", "memory_topics.value")
+    statement = statement.replace(
+        "json_each(s.raw_event_ids) AS j",
+        "jsonb_array_elements_text(s.raw_event_ids::jsonb) AS j(value)",
+    )
     statement = re.sub(
         r"json_extract\(progress,\s*'\$\.task_id'\)",
         "(progress::jsonb ->> 'task_id')",
@@ -211,6 +216,26 @@ class PostgresConnection:
 Connection = aiosqlite.Connection | PostgresConnection
 
 
+async def _validate_archive_turns(conn: Connection) -> None:
+    cursor = await conn.execute("SELECT id, raw_event_ids FROM conversation_segment")
+    seen: set[str] = set()
+    duplicates = 0
+    for row in await cursor.fetchall():
+        try:
+            ids: Any = json.loads(row["raw_event_ids"])
+        except json.JSONDecodeError as error:
+            raise ValueError("归档轮次 ID 的 JSON 非法") from error
+        if not isinstance(ids, list) or any(
+            not isinstance(item, str) or not item for item in cast(list[Any], ids)
+        ):
+            raise ValueError("归档轮次 ID 必须是非空字符串 JSON 数组")
+        for identity in cast(list[str], ids):
+            duplicates += identity in seen
+            seen.add(identity)
+    if duplicates:
+        logging.getLogger(__name__).warning("旧归档重复轮次数量=%d", duplicates)
+
+
 async def connect_postgres(url: str) -> PostgresConnection:
     """Open one PostgreSQL connection with dictionary rows."""
     raw: Any = await AsyncConnection.connect(  # pyright: ignore[reportUnknownMemberType]
@@ -237,11 +262,16 @@ async def migrate_postgres(
         current = int(row["version"])
     await conn.commit()
 
-    for version, statements in postgres_migrations(migrations):
+    compiled = postgres_migrations(migrations)
+    if migrations is None and current == 52:
+        compiled = [(53, _MIGRATIONS[-1][1])]
+    for version, statements in compiled:
         if version <= current:
             continue
         await conn.execute("BEGIN")
         try:
+            if migrations is None and current == 52 and version == 53:
+                await _validate_archive_turns(conn)
             for statement in statements:
                 await conn.execute(statement)
             await conn.execute("UPDATE schema_version SET version = ?", (version,))
@@ -1219,6 +1249,18 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE UNIQUE INDEX idx_event_log_event_seq ON event_log(event_seq)",
         ],
     ),
+    (
+        53,
+        [
+            "CREATE TABLE conversation_turn_archive ("
+            "turn_id TEXT PRIMARY KEY NOT NULL CHECK (length(turn_id)>0), "
+            "segment_id TEXT NOT NULL REFERENCES conversation_segment(id) "
+            "ON DELETE CASCADE)",
+            "INSERT INTO conversation_turn_archive (turn_id, segment_id) "
+            "SELECT j.value, MIN(s.id) FROM conversation_segment s, "
+            "json_each(s.raw_event_ids) AS j GROUP BY j.value",
+        ],
+    ),
 ]
 
 
@@ -1364,10 +1406,12 @@ async def migrate(
             )
         await conn.execute("BEGIN")
         try:
+            if version == 53:
+                await _validate_archive_turns(conn)
             for stmt in statements:
                 await conn.execute(stmt)
             await conn.execute("UPDATE schema_version SET version = ?", (version,))
             await conn.commit()
-        except aiosqlite.Error:
+        except BaseException:
             await conn.rollback()
             raise

@@ -1,5 +1,11 @@
 # 记忆系统事实表
 
+## 逐轮归档（26）
+
+- schema53 conversation_turn_archive唯一turn_id与原文段同事务，外键CASCADE；旧库回填所有段（含inactive），旧重复选最小段ID，不清洗旧原文。
+- 重复归档先查索引，跳过embedding/判定/生命周期刷新；提交不明回读确认。embedding在短事务外，提交前核对段快照并保留召回计数。
+- 最新段按previous_id链叶选择；旧来源时间保留，范围取min/max，新鲜度锚点不回拨。
+
 > 本文件是给“无关代码但会碰到记忆事实”的快速摘要，例如表达慢通道、反思触发、读书/活动落记忆、前端 `Memory` 类型。完整记忆系统契约在 `docs/specs/06-memory-system.md`；修改 `nyx/memory/` 或记忆契约时必须先读完整 spec，并同步更新本摘要。
 
 ## 回复批注反馈（P4）

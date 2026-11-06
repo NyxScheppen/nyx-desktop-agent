@@ -31,7 +31,9 @@ import type {
   UserNote,
   UserNoteWithAnnotations,
   PendingQuestion,
+  ChatPendingSnapshot,
 } from "../types/api";
+import { parseChatPending } from "../types/api";
 
 // Development uses Vite proxy; packaged REST and SSE share the loopback endpoint.
 export const BASE_URL = import.meta.env.DEV || !isTauriRuntime() ? "" : "http://127.0.0.1:8000";
@@ -112,6 +114,12 @@ export async function getPendingQuestions(): Promise<{
   return request<{ server_now: number; questions: PendingQuestion[] }>(
     `${BASE_URL}/api/questions/pending`,
   );
+}
+
+export async function getChatPending(): Promise<ChatPendingSnapshot> {
+  const result = parseChatPending(await request<unknown>(`${BASE_URL}/api/chat/pending`));
+  if (result === null) throw new Error("待回复快照格式非法");
+  return result;
 }
 
 export async function pauseQuestion(attemptId: string): Promise<PendingQuestion> {

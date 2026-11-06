@@ -556,7 +556,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 48
+    assert len(names) == 49
     assert "material" not in names
 
 
@@ -564,7 +564,7 @@ async def test_migration_backfills_event_sequence_from_sqlite_rowid() -> None:
     conn = await aiosqlite.connect(":memory:")
     conn.row_factory = aiosqlite.Row
     try:
-        await db.migrate(conn, migrations=db._MIGRATIONS[:-1])
+        await db.migrate(conn, migrations=[m for m in db._MIGRATIONS if m[0] < 52])
         for event_id in ("event-a", "event-b"):
             await conn.execute(
                 "INSERT INTO event_log "
@@ -1198,7 +1198,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 48
+    assert len(names) == 49
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 
@@ -1409,3 +1409,78 @@ async def test_database_close_is_idempotent(
     await database.close()
     assert database.is_closed
     assert close_calls == 1
+async def test_archive_migration_backfills_inactive_and_duplicate_turns() -> None:
+    from nyx import db
+
+    database = await db.connect(
+        ":memory:", migrations=[m for m in db._MIGRATIONS if m[0] <= 52]
+    )
+    try:
+        from nyx.memory.store import MemoryStore
+        from nyx.types import ConversationSegment
+
+        store = MemoryStore(database)
+        for identity in ("z", "a"):
+            await store.add_conversation_segment(
+                ConversationSegment(
+                    id=identity,
+                    previous_id=None,
+                    started_at=1.0,
+                    ended_at=2.0,
+                    raw_event_ids=["u:user", "u:nyx"],
+                    raw_content="原文",
+                    summary="原文",
+                    topics=[],
+                    active=False,
+                )
+            )
+        await db.migrate(cast(aiosqlite.Connection, database.conn))
+        rows = await (
+            await database.conn.execute(
+                "SELECT turn_id, segment_id FROM conversation_turn_archive "
+                "ORDER BY turn_id"
+            )
+        ).fetchall()
+        assert [(r["turn_id"], r["segment_id"]) for r in rows] == [
+            ("u:nyx", "a"),
+            ("u:user", "a"),
+        ]
+        await db.migrate(cast(aiosqlite.Connection, database.conn))
+        assert (
+            len(
+                list(
+                    await (
+                        await database.conn.execute(
+                            "SELECT * FROM conversation_turn_archive"
+                        )
+                    ).fetchall()
+                )
+            )
+            == 2
+        )
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("raw_ids", ["{}", "[1]", '[""]', "invalid"])
+async def test_archive_migration_bad_ids_roll_back(raw_ids: str) -> None:
+    from nyx import db
+
+    database = await db.connect(
+        ":memory:", migrations=[m for m in db._MIGRATIONS if m[0] <= 52]
+    )
+    try:
+        await database.conn.execute(
+            "INSERT INTO conversation_segment (id, started_at, ended_at, "
+            "raw_event_ids, raw_content, summary, topics) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("bad", 1.0, 1.0, raw_ids, "原文", "原文", "[]"),
+        )
+        await database.conn.commit()
+        with pytest.raises(ValueError, match="JSON|轮次|array|数组"):
+            await db.migrate(cast(aiosqlite.Connection, database.conn))
+        row = await (
+            await database.conn.execute("SELECT version FROM schema_version")
+        ).fetchone()
+        assert row is not None and row[0] == 52
+    finally:
+        await database.close()

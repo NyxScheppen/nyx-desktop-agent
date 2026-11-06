@@ -12,6 +12,7 @@ from typing import Any, cast
 
 from nyx.enums import EmotionCategory, UserIntent
 from nyx.memory.facts import format_source_time as format_prompt_time
+from nyx.memory.facts import strip_recall_fillers
 from nyx.types import (
     Activity,
     ActivityContext,
@@ -48,6 +49,23 @@ _WANDER_GUIDANCE = """[走神表达参考]
 这是一次由代码明确允许的轻微走神。可以短暂想到相邻话题、停顿、自我修正，或对一个细节多想一层后回到当前话题。
 走神只能使用已有上下文或记忆中的内容，不凭空编造经历；保持一两句、自然口语，不要让走神遮盖当前问题。
 参考语气："说起来……"、"嗯……我刚才是不是想到别的地方去了。"、"啊，不对，我在说什么……"""
+
+def build_reply_query(messages: Sequence[str], prior: Sequence[str]) -> str:
+    """Give the latest correction first claim on the 300 character budget."""
+    if not strip_recall_fillers("\n".join(messages)).strip(" ，,。.!！?？"):
+        return ""
+    query = ""
+    for text in [*reversed(messages), *(s[:120] for s in reversed(prior[-3:]))]:
+        budget = 300 - len(query) - bool(query)
+        if budget < 3:
+            break
+        if len(text) > budget:
+            head = math.ceil((budget - 1) / 2)
+            tail = (budget - 1) // 2
+            text = text[:head] + "…" + text[-tail:]
+        query += ("\n" if query else "") + text
+    return query
+
 
 RESPOND_TASK = (
     '只输出合法 JSON 对象：{"think": "...", "speak": "完整回复", '

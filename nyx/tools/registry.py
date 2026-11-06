@@ -45,6 +45,12 @@ class ToolRegistry:
             }
         return existing
 
+    async def get_execution(self, log_id: str) -> dict[str, Any] | None:
+        """Read a receipt while replacing input, without starting an old action."""
+        if self._store is not None:
+            return await self._store.get_execution(log_id)
+        return self._executions.get(log_id)
+
     async def finish_execution(
         self, log_id: str, result: Any, error: str | None,
     ) -> None:

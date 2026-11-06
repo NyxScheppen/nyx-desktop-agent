@@ -29,7 +29,7 @@ from nyx.enums import (
     Source,
 )
 from nyx.eval.evaluator import Evaluator
-from nyx.events.bus import EventAdmissionError, EventBus
+from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
 from nyx.expression.mutter import _MUTTER_SKELETONS, MutterCategory
 from nyx.expression.store import ExpressionInteractionStore
@@ -138,6 +138,16 @@ class _FakeLlm:
                     "think": think,
                     "speak": speak,
                     "needs_continuation": self._needs_continuation,
+                },
+                ensure_ascii=False,
+            )
+        elif output_type == "reason":
+            content = json.dumps(
+                {
+                    "summary": "核对约束与已有结果",
+                    "next_action": "answer"
+                    if "[工作摘要" in messages[-1]["content"]
+                    else "tools",
                 },
                 ensure_ascii=False,
             )
@@ -498,7 +508,7 @@ async def test_last_dialogue_anchor_skips_current_and_incomplete_turns() -> None
     facade, _llm, _evaluator, _memory, _inner_life, bus = _new_facade()
     bus.published.extend(
         [
-            _event("u-old", 10.0, EventType.USER_MESSAGE, {"message": "旧问题"}, "old"),
+            _event("old", 10.0, EventType.USER_MESSAGE, {"message": "旧问题"}, "old"),
             _event("t-old", 11.0, EventType.THINK, {"content": "不应引用"}, "old"),
             _event("s-old", 12.0, EventType.SPEAK, {"content": "旧回答"}, "old"),
             _event("a-old", 13.0, EventType.ASK, {"content": "最后追问"}, "old"),
@@ -513,7 +523,7 @@ async def test_last_dialogue_anchor_skips_current_and_incomplete_turns() -> None
 
     assert anchor is not None
     assert (anchor[0].content, anchor[0].timestamp) == ("旧问题", 10.0)
-    assert (anchor[1].content, anchor[1].timestamp) == ("最后追问", 13.0)
+    assert (anchor[1].content, anchor[1].timestamp) == ("旧回答\n最后追问", 13.0)
 
 
 async def test_last_dialogue_anchor_returns_none_without_complete_turn() -> None:
@@ -535,7 +545,7 @@ async def test_reply_recovers_overnight_dialogue_from_durable_log(
         bus = EventBus(database)
         await bus.publish(
             _event(
-                "dinner-user",
+                "dinner",
                 evening,
                 EventType.USER_MESSAGE,
                 {"message": "尼克斯，我去吃饭了"},
@@ -722,22 +732,16 @@ async def test_reply_slow_non_question() -> None:
         energy=100.0, arousal=0.0
     )
     await facade.reply("在吗", "corr-slow")
-    assert [t for t, _m, _c in llm.calls] == ["plan", "tool"] + ["reply"] * 3
+    assert [t for t, _m, _c in llm.calls] == ["reason", "plan", "tool", "reason"] + [
+        "reply"
+    ] * 3
     assert [e.type for e in bus.published] == [
-        EventType.THINK,
-        EventType.SPEAK,
-        EventType.THINK,
-        EventType.SPEAK,
         EventType.THINK,
         EventType.SPEAK,
     ]
     assert memory.search_calls == 0
     assert memory.scene_memories == []
     assert [event.type for event in bus.batches[-1]] == [
-        EventType.THINK,
-        EventType.SPEAK,
-        EventType.THINK,
-        EventType.SPEAK,
         EventType.THINK,
         EventType.SPEAK,
     ]
@@ -750,7 +754,13 @@ async def test_reply_slow_defaults_to_one_complete_response() -> None:
         llm=_FakeLlm(needs_continuation=False),
     )
     await facade.reply("在吗", "corr-one")
-    assert [t for t, _m, _c in llm.calls] == ["plan", "tool", "reply"]
+    assert [t for t, _m, _c in llm.calls] == [
+        "reason",
+        "plan",
+        "tool",
+        "reason",
+        "reply",
+    ]
     assert [event.type for event in bus.published] == [
         EventType.THINK,
         EventType.SPEAK,
@@ -798,7 +808,7 @@ async def test_reply_batch_failure_leaves_no_partial_text_events(
 
     monkeypatch.setattr(bus, "append_in_transaction", fail_second)
     try:
-        with pytest.raises(EventAdmissionError):
+        with pytest.raises(RuntimeError, match="second event failed"):
             await facade.reply("哦", "corr-batch-fail")
         assert await bus.list_events(correlation_id="corr-batch-fail") == []
     finally:
@@ -898,7 +908,13 @@ async def test_reply_slow_question() -> None:
         energy=100.0, arousal=0.0, llm=_FakeLlm(speak_override="你还好吗？")
     )
     await facade.reply("在吗", "corr-q")
-    assert [t for t, _m, _c in llm.calls] == ["plan", "tool", "reply"]
+    assert [t for t, _m, _c in llm.calls] == [
+        "reason",
+        "plan",
+        "tool",
+        "reason",
+        "reply",
+    ]
     assert [e.type for e in bus.published] == [
         EventType.THINK,
         EventType.ASK,
@@ -916,7 +932,7 @@ async def test_reply_slow_tool_executes_and_flows_into_prompt() -> None:
         tools=tools,
     )
     await facade.reply("在吗", "corr-tool")
-    assert [t for t, _m, _c in llm.calls][0] == "plan"
+    assert [t for t, _m, _c in llm.calls][:2] == ["reason", "plan"]
     assert tools.calls == [("local_search", {"q": "骑士"})]
     tool_system = llm.calls[0][1][0]["content"]
     think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
@@ -978,7 +994,7 @@ async def test_reply_slow_no_tool_calls() -> None:
     think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
     assert "[工具查询结果]" not in think_system
     assert "[工具执行叙述约束]" not in think_system
-    assert [t for t, _m, _c in llm.calls][0] == "plan"
+    assert [t for t, _m, _c in llm.calls][:2] == ["reason", "plan"]
 
 
 async def test_reply_slow_tool_decision_failure_continues_without_tools() -> None:
@@ -1166,8 +1182,12 @@ async def test_side_effect_receipt_recovers_without_reexecuting(
             llm=_FakeLlm(),
         )
         await asyncio.wait_for(facade.reply("在吗", "effect-resume"), timeout=5)
-        decision = next(messages[-1]["content"] for kind, messages, _ in llm.calls
-                        if kind == "tool")
+        decision = "\n".join(
+            message["content"]
+            for kind, messages, _ in llm.calls
+            if kind in ("tool", "reply")
+            for message in messages
+        )
         assert effects.read_text(encoding="utf-8") == "original\n"
         assert ("original-task" if completed else '"status": "uncertain"') in decision
         rows = await (await database.conn.execute(
@@ -2288,18 +2308,27 @@ async def test_restore_history_rehydrates_recent_messages_and_is_idempotent() ->
     bus.published.extend(
         [
             Event(
-                id="u1", timestamp=1.0, source=Source.EXTERNAL,
-                type=EventType.USER_MESSAGE, content={"message": "昨天的事"},
-                correlation_id="c1",
+                id="u1",
+                timestamp=1.0,
+                source=Source.EXTERNAL,
+                type=EventType.USER_MESSAGE,
+                content={"message": "昨天的事"},
+                correlation_id="u1",
             ),
             Event(
-                id="s1", timestamp=2.0, source=Source.INTERNAL,
-                type=EventType.SPEAK, content={"content": "我记得"},
-                correlation_id="c1",
+                id="s1",
+                timestamp=2.0,
+                source=Source.INTERNAL,
+                type=EventType.SPEAK,
+                content={"content": "我记得"},
+                correlation_id="u1",
             ),
             Event(
-                id="i1", timestamp=3.0, source=Source.INTERNAL,
-                type=EventType.INITIATE_CHAT, content={"content": "后来呢？"},
+                id="i1",
+                timestamp=3.0,
+                source=Source.INTERNAL,
+                type=EventType.INITIATE_CHAT,
+                content={"content": "后来呢？"},
                 correlation_id="i1",
             ),
         ]
@@ -2501,3 +2530,185 @@ async def test_check_timeouts_expires_ignored_chat() -> None:
     await facade.check_timeouts(100.0 + ExpressionConfig().chat_ignore_timeout)
     assert desire.expired == ["d1"]
     assert facade._pending_chat_desire_id is None
+@pytest.mark.parametrize("reason", ["continue", "invalid", "failure"])
+async def test_reasoning_is_bounded_and_bad_analysis_stops(reason: str) -> None:
+    llm = _FakeLlm(needs_continuation=False)
+    facade, _, evaluator, *_ = _new_facade(
+        llm=llm, energy=100.0, arousal=0.0,
+    )
+    facade._config.slow_threshold = -1
+    complete = llm.complete
+
+    async def controlled(messages: list[LlmMessage], **kwargs: Any) -> LLMOutput:
+        result = await complete(messages, **kwargs)
+        if kwargs["output_type"] == "reason":
+            if reason == "failure":
+                raise ValueError("analysis failed")
+            result.content = (
+                '{"summary":"复核约束","next_action":"continue"}'
+                if reason == "continue" else "invalid"
+            )
+        return result
+
+    llm.complete = controlled  # type: ignore[method-assign]
+    await facade.reply("周末去哪玩？", "reason-budget", discussion=False)
+    kinds = [kind for kind, _, _ in llm.calls]
+    assert kinds.count("reason") == (3 if reason == "continue" else 1)
+    assert kinds.count("reply") == 1 and "tool" not in kinds
+    assert len([e for e in evaluator.evaluated if e.type == "reason"]) == (
+        3 if reason == "continue" else 1 if reason == "invalid" else 0
+    )
+
+
+async def test_direct_history_stays_after_prior_durable_messages() -> None:
+    database = await db.connect(":memory:")
+    bus = EventBus(database)
+    facade, *_ = _new_facade()
+    facade._bus = bus
+    try:
+        for identity in ("old-user", "old-reply", "direct-reply"):
+            await bus.publish(Event(
+                identity, 1.0, Source.INTERNAL, EventType.SPEAK,
+                {"content": identity}, identity,
+            ))
+        facade._history.extend([
+            Message("user", "earlier", 1.0, event_id="old-user"),
+            Message("nyx", "earlier reply", 1.0, event_id="old-reply"),
+        ])
+        await facade._merge_reply_history([
+            Message("user", "direct input", 2.0),
+            Message("nyx", "direct reply", 2.0, event_id="direct-reply"),
+        ])
+        assert [m.content for m in facade._history] == [
+            "earlier", "earlier reply", "direct input", "direct reply",
+        ]
+    finally:
+        await database.close()
+
+
+async def test_durable_reply_absorbs_supplement_during_generation() -> None:
+    from nyx.events.routing import ROUTE_SPECS
+
+    database = await db.connect(":memory:")
+    bus = EventBus(database)
+    facade, llm, _, _, _, _ = _new_facade()
+    facade._bus = bus
+    spec = next(s for s in ROUTE_SPECS if s.consumer_id == "expression.user_message")
+
+    async def handler(event: Event) -> None:
+        pass
+
+    bus.subscribe(spec, handler)
+    root = Event(
+        "u1",
+        10.0,
+        Source.EXTERNAL,
+        EventType.USER_MESSAGE,
+        {"message": "你好", "discussion": False},
+        "u1",
+    )
+    supplement = Event(
+        "u2",
+        1.0,
+        Source.EXTERNAL,
+        EventType.USER_MESSAGE,
+        {"message": "预算三百", "discussion": False},
+        "u2",
+    )
+    original = llm.complete
+
+    async def complete(messages: list[LlmMessage], **kwargs: Any) -> LLMOutput:
+        if len(llm.calls) == 0:
+            await bus.publish(supplement)
+        return await original(messages, **kwargs)
+
+    llm.complete = complete  # type: ignore[method-assign]
+    try:
+        await bus.publish(root)
+        await facade.reply("你好", "u1", discussion=False)
+        outputs = await bus.list_events(event_type=EventType.SPEAK)
+        assert len(outputs) == 1 and outputs[0].content.get("reply_to_event_ids") == [
+            "u1",
+            "u2",
+        ]
+        assert outputs[0].content["reply_complete"] is True
+        assert "预算三百" in llm.calls[-1][1][-1]["content"]
+        assert await bus.has_effect("u2", spec.consumer_id)
+        assert [m.event_id for m in facade._history] == ["u1", "u2", outputs[0].id]
+    finally:
+        await database.close()
+
+
+async def test_tool_result_is_saved_before_yielding_to_supplement() -> None:
+    from nyx.events.routing import ROUTE_SPECS
+
+    database = await db.connect(":memory:")
+    bus = EventBus(database)
+    spec = next(s for s in ROUTE_SPECS if s.consumer_id == "expression.user_message")
+
+    async def handler(event: Event) -> None:
+        pass
+
+    bus.subscribe(spec, handler)
+    supplement = Event(
+        "t2",
+        1.0,
+        Source.EXTERNAL,
+        EventType.USER_MESSAGE,
+        {"message": "取消整个任务，只陪我聊聊", "discussion": False},
+        "t2",
+    )
+
+    class Tools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any], **kwargs: Any) -> Any:
+            result = await super().call(name, args, **kwargs)
+            await bus.publish(supplement)
+            return result
+
+    tools = Tools()
+    llm = _FakeLlm(
+        tool_calls=[
+            {"name": "local_search", "args": {}},
+            {"name": "file_io", "args": {"action": "write"}},
+        ],
+        needs_continuation=False,
+    )
+    facade, *_ = _new_facade(energy=100.0, arousal=0.0, llm=llm, tools=tools)
+    facade._bus = bus
+    original = llm.complete
+
+    async def complete(messages: list[LlmMessage], **kwargs: Any) -> LLMOutput:
+        output = await original(messages, **kwargs)
+        if kwargs["output_type"] == "reason" and any(
+            t == "tool" for t, _, _ in llm.calls
+        ):
+            output.content = (
+                '{"summary":"旧任务已撤回，保留执行事实","next_action":"answer"}'
+            )
+        return output
+
+    llm.complete = complete  # type: ignore[method-assign]
+    try:
+        await bus.publish(
+            Event(
+                "t1",
+                10.0,
+                Source.EXTERNAL,
+                EventType.USER_MESSAGE,
+                {"message": "帮我查文件再写入好吗？", "discussion": False},
+                "t1",
+            )
+        )
+        await facade.reply("帮我查文件再写入好吗？", "t1", discussion=False)
+        assert [name for name, _ in tools.calls] == ["local_search"]
+        terminal = (await bus.list_events(event_type=EventType.SPEAK))[0]
+        assert terminal.content["reply_to_event_ids"] == ["t1", "t2"]
+        reply = next(
+            messages for kind, messages, _ in reversed(llm.calls) if kind == "reply"
+        )
+        assert (
+            "local_search" in reply[0]["content"]
+            and "取消整个任务" in reply[-1]["content"]
+        )
+    finally:
+        await database.close()

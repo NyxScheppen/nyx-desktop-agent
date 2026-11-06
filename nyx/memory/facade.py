@@ -855,6 +855,8 @@ class MemoryFacade:
     ) -> None:
         """保存原始对话轮次并宽松地并入当前对话段。"""
         async with self._segment_lock:
+            if await self._store.archived_conversation_turn(event_id) is not None:
+                return
             latest = await self._store.latest_conversation_segment()
             now = time.time() if timestamp is None else timestamp
             if (

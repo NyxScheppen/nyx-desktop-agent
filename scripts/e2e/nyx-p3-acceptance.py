@@ -21,7 +21,8 @@ class Fake:
         self.calls.append((output_type,messages,kw))
         data=json.loads(messages[-1]['content']) if module=='research' or output_type=='source_digest' else {}
         if output_type==self.pause: await asyncio.Event().wait()
-        if self.mode=='bad' and module=='research': content=[]
+        if output_type=='reason': content={'summary':'核对研究结果。','next_action':'answer' if '[工作摘要' in messages[-1]['content'] else 'tools'}
+        elif self.mode=='bad' and module=='research': content=[]
         elif output_type=='research_plan': content={'sub_queries':['P3Nebula 观测证据','P3Nebula 测量方法']}
         elif output_type=='research_deepen': content={'need_deeper':True,'new_sub_queries':['P3Nebula 校准争议']}
         elif output_type=='research_evidence':

@@ -397,6 +397,7 @@ class Message:
     activity_id: str | None = None
     activity_type: ActivityType | None = None
     activity_summary: str | None = None
+    event_id: str | None = None
 
 
 @dataclass

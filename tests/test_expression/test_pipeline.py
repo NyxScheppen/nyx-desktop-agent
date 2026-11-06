@@ -117,3 +117,39 @@ def test_voice_output_preserves_call_fields() -> None:
     assert out.completion_tokens == 4
     assert out.call_id == "call-9"
     assert out.prompt_messages == [{"role": "user", "content": "你好"}]
+@pytest.mark.parametrize(
+    ("messages", "expected"),
+    [
+        (
+            ["周末去哪玩？", "算了一下，预算三百"],
+            (0, "周末去哪玩？\n\n算了一下，预算三百"),
+        ),
+        (["周六去杭州，预算三百", "改成周日"], (0, "周六去杭州，预算三百\n\n改成周日")),
+        (["旧任务", "取消整个任务，只陪我聊聊"], (1, "取消整个任务，只陪我聊聊")),
+        (["旧任务", "不要取消整个任务"], (0, "旧任务\n\n不要取消整个任务")),
+        (["旧任务", "“取消整个任务”，是引用"], (0, "旧任务\n\n“取消整个任务”，是引用")),
+        (
+            ["旧任务", "取消刚才的任务里的杭州行程"],
+            (0, "旧任务\n\n取消刚才的任务里的杭州行程"),
+        ),
+    ],
+)
+def test_derive_request_preserves_local_corrections(
+    messages: list[str],
+    expected: tuple[int, str],
+) -> None:
+    from nyx.expression.classifier import derive_request_text
+
+    assert derive_request_text(messages) == expected
+
+
+def test_reply_query_keeps_latest_correction_and_both_ends() -> None:
+    from nyx.expression.prompt import build_reply_query
+
+    assert (
+        build_reply_query(["杭州，预算三百", "改成周日"], [])
+        == "改成周日\n杭州，预算三百"
+    )
+    query = build_reply_query(["不要" + "甲" * 400 + "预算二百"], [])
+    assert len(query) == 300 and query.startswith("不要") and query.endswith("预算二百")
+    assert build_reply_query(["你好"], ["旧任务"]) == ""

@@ -5,6 +5,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
 from math import sqrt
 
 from nyx.memory.facts import strip_recall_fillers
@@ -48,45 +49,79 @@ async def append_turn(
     embed: EmbedFn | None = None,
     promote_threshold: int = 3,
 ) -> ConversationSegment:
+    if not event_id:
+        raise ValueError("轮次 ID 不能为空")
+    archived = await store.archived_conversation_turn(event_id)
+    if archived is not None:
+        return archived
     now = time.time() if timestamp is None else timestamp
     speaker = "尼克斯" if event_id.endswith(":nyx") else "用户"
     raw_line = f"{speaker}：{content}"
     latest = await store.latest_conversation_segment()
+    snapshot = asdict(latest) if latest is not None else None
     if latest is not None and latest.active and (
         event_id.endswith(":nyx") or should_continue(latest, content, now)
     ):
-        if latest.evaluated_at is not None:
-            await store.clear_segment_evidence(latest.id)
         latest.evaluated_at = None
         latest.evaluation_reason = ""
         latest.evidence_event_ids = []
         latest.long_term = latest.recall_count >= promote_threshold
         latest.facts_extracted_at = None
         latest.freshness = 1.0
-        latest.freshness_updated_at = now
-        latest.ended_at = now
+        latest.freshness_updated_at = max(latest.freshness_updated_at, now)
+        latest.started_at = min(latest.started_at, now)
+        latest.ended_at = max(latest.ended_at, now)
         latest.raw_event_ids.append(event_id)
         latest.raw_content += "\n" + raw_line
         latest.summary = latest.raw_content[-2000:]
         latest.topics = sorted(set(latest.topics) | _terms(content))[:32]
         if embed is not None:
             latest.embedding = await embed(latest.summary)
-        await store.update_conversation_segment(latest)
-        return latest
-    summary = content[-2000:]
-    embedding = await embed(summary) if embed is not None else None
-    segment = ConversationSegment(
-        id=f"segment-{uuid.uuid4().hex}",
-        previous_id=latest.id if latest is not None else None,
-        started_at=now,
-        ended_at=now,
-        raw_event_ids=[event_id],
-        raw_content=raw_line,
-        summary=summary,
-        topics=sorted(_terms(content))[:32],
-        embedding=embedding,
-    )
-    await store.add_conversation_segment(segment)
+        segment = latest
+    else:
+        summary = content[-2000:]
+        embedding = await embed(summary) if embed is not None else None
+        segment = ConversationSegment(
+            id=f"segment-{uuid.uuid4().hex}",
+            previous_id=latest.id if latest is not None else None,
+            started_at=now,
+            ended_at=now,
+            raw_event_ids=[event_id],
+            raw_content=raw_line,
+            summary=summary,
+            topics=sorted(_terms(content))[:32],
+            embedding=embedding,
+        )
+    try:
+        async with store.db.transaction():
+            archived = await store.archived_conversation_turn(event_id)
+            if archived is not None:
+                return archived
+            current = await store.latest_conversation_segment()
+            current_snapshot = asdict(current) if current is not None else None
+            # Recall counters may change during embedding; preserve those writes.
+            compared = ("recall_count", "long_term")
+            if {k: v for k, v in (snapshot or {}).items() if k not in compared} != {
+                k: v for k, v in (current_snapshot or {}).items() if k not in compared
+            }:
+                raise RuntimeError("对话段准备快照已变化")
+            if current is not None and segment.id == current.id:
+                segment.recall_count = current.recall_count
+                segment.long_term = current.recall_count >= promote_threshold
+                await store.clear_segment_evidence(segment.id)
+                await store.update_conversation_segment(segment)
+            else:
+                await store.add_conversation_segment(segment)
+            await store.db.conn.execute(
+                "INSERT INTO conversation_turn_archive (turn_id, segment_id) "
+                "VALUES (?, ?)",
+                (event_id, segment.id),
+            )
+    except Exception:
+        archived = await store.archived_conversation_turn(event_id)
+        if archived is not None:
+            return archived
+        raise
     return segment
 
 

@@ -1,5 +1,7 @@
 # 枚举 + 实体类型
 
+`Message.event_id: str | None = None` 保存实际事件身份；durable 原话/正式输出/主动产出使用真实 ID，direct 原话和旧消息保持 None，不伪造来源。生命周期见 [26](26-conversation-steering.md)。
+
 > 范围：`nyx/enums.py`（23 个 `StrEnum`）、`nyx/types.py`（4 个 TypedDict + 36 个 dataclass）。
 > 纯声明 spec：只定义类型，不含函数、不含序列化 helper、不含 DDL。
 > spec 只定义契约（签名 + 语义 + 决策）；枚举成员与 dataclass 字段以 `nyx/enums.py` / `nyx/types.py` 源文件为准。

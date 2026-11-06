@@ -10,7 +10,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -18,10 +18,8 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from nyx.config import ExpressionConfig
-from nyx.enums import ContextMode, EventType, InteractionKind, MemoryKind, UserIntent
+from nyx.enums import ContextMode, MemoryKind, UserIntent
 from nyx.eval.evaluator import Evaluator
-from nyx.events.bus import EventBus
-from nyx.events.event import internal_text_event
 from nyx.expression.classifier import (
     classify_channel,
     is_question,
@@ -33,10 +31,10 @@ from nyx.expression.prompt import (
     RESPOND_TASK_CONTINUE,
     TOOL_REPLY_GUIDANCE,
     USE_TOOLS_TASK,
-    activity_summary,
     bound_material_block,
     build_backtrack_context,
     build_conversation_segments_prompt,
+    build_reply_query,
     build_system_prompt,
     build_user_prompt,
     format_prompt_time,
@@ -51,10 +49,9 @@ from nyx.expression.tool_pipeline import _parse_plan as _parse_plan
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
-from nyx.memory.facts import is_fact_query, strip_recall_fillers
+from nyx.memory.facts import is_fact_query
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
-    Activity,
     ActivityContext,
     ConversationSegment,
     CurrentState,
@@ -80,12 +77,21 @@ def _ask_guidance_for(mode: ContextMode, ask_guidance: str | None) -> str | None
     return ask_guidance if mode is ContextMode.SLOW else None
 
 
-def _message_activity(context: ActivityContext) -> Activity | None:
-    """Choose the most recent observed activity for history attribution."""
-    return context.current if context.current is not None else context.interrupted
-
-
 class ReplyState(TypedDict):
+    input_mode: Literal["durable", "direct"]
+    input_events: list[Event]
+    input_revision: int
+    input_closed: bool
+    request_start_index: int
+    retrieval_query: str
+    reasoning_steps: list[dict[str, Any]]
+    reasoning_step_count: int
+    next_action: str
+    draft_revision: int
+    draft_event_ids: list[str]
+    needs_refresh: bool
+    tool_exit_reason: str
+    committed_reply: Event | None
     message: str
     message_at: float | None
     sampled_at: float
@@ -126,15 +132,16 @@ class ReplyDeps:
     evaluator: Evaluator
     memory: MemoryFacade
     inner_life: InnerLifeFacade          # 慢通道 assemble 时取 narrative
-    bus: EventBus
     canon: str
     ask_guidance: str
     config: ExpressionConfig
     history: deque[Message]              # facade 持有的会话历史（跨 reply）
     tools: ToolRegistry                  # use_tools 节点查资料（慢通道）
     knowledge_boundary: str | None
-    register_question: Any
-    commit_reply_events: Any
+    collect_reply_inputs: Callable[[ReplyState], Awaitable[dict[str, Any]]]
+    finalize_user_reply: Callable[[ReplyState], Awaitable[str]]
+    archive_user_reply: Callable[[str, ReplyState | None], Awaitable[None]]
+    has_pending_reply_inputs: Callable[[list[str], str | None], Awaitable[bool]]
     checkpointer: BaseCheckpointSaver[str] | None = None
 
 
@@ -218,26 +225,52 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     """
 
     def user_prompt(state: ReplyState) -> str:
+        if state["input_events"]:
+            current = "\n\n".join(
+                f"[用户输入{i + 1}；原始时间={format_prompt_time(event.timestamp)}；"
+                f"{'已被明确撤回' if i < state['request_start_index'] else '有效请求'}"
+                "]\n"
+                + event.content["message"]
+                for i, event in enumerate(state["input_events"])
+            )
+            current += "\n以上保留原话。以较晚纠正为准；撤回不抹除已执行动作。"
+        else:
+            current = state["message"]
+        summaries = "\n".join(
+            f"[步骤{step['id']}；输入版本{step['input_revision']}；"
+            f"生成时间={format_prompt_time(step['created_at'])}；"
+            + (
+                "当前判断]\n"
+                if step["input_revision"] == state["input_revision"]
+                else "旧输入、需复核]\n"
+            )
+            + step["summary"]
+            for step in state["reasoning_steps"]
+        )
         return "\n\n".join(
             part
             for part in (
                 bound_material_block(
                     f"[阅读资料原始时间=未知；本轮取用时间={format_prompt_time(state['sampled_at'])}]\n"
-                    + state["reading_context"], _READING_BLOCK_MAX_CHARS
-                ) if state["reading_context"] else "",
+                    + state["reading_context"],
+                    _READING_BLOCK_MAX_CHARS,
+                )
+                if state["reading_context"]
+                else "",
                 build_conversation_segments_prompt(state["conversation_segments"]),
                 build_user_prompt(
-                    state["message"], state["context"], state.get("annotation"),
+                    current,
+                    state["context"],
+                    state.get("annotation"),
                     message_at=state["message_at"],
                     annotation_at=state["annotation_at"],
                 ),
+                "[工作摘要，仅为判断，不是执行事实]\n" + summaries if summaries else "",
             )
             if part
         )
 
     async def search_facts(query: str) -> list[MemoryFact]:
-        if not is_fact_query(query):
-            return []
         method = getattr(deps.memory, "search_facts", None)
         if not callable(method):
             return []
@@ -280,10 +313,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             deps.config.max_context_len,
         )
         context = backtrack if state["mode"] is ContextMode.SLOW else state["context"]
-        prior_turns = [m.content[:120] for m in backtrack[-3:]]
-        query = "\n".join([*prior_turns, state["message"]])[-300:]
-        if not strip_recall_fillers(state["message"]).strip(" ，,。.!！?？"):
-            query = ""
+        texts = [e.content["message"] for e in state["input_events"]]
+        query = build_reply_query(
+            texts[state["request_start_index"] :] if texts else [state["message"]],
+            [m.content for m in backtrack[-3:]],
+        )
         segment_search = getattr(deps.memory, "search_conversation_segments", None)
         recalled_segments: list[ConversationSegment] = []
         if state.get("skill") is None and callable(segment_search):
@@ -307,22 +341,112 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         memories = (
             await search_lessons(query) if state["mode"] is ContextMode.SLOW else []
         )
-        fact_query = state["message"] if is_fact_query(state["message"]) else query
         facts = (
-            await search_facts(fact_query)
-            if state.get("skill") is None else []
+            await search_facts(query)
+            if state.get("skill") is None and is_fact_query(state["message"])
+            else []
         )
         narrative = (
             await deps.inner_life.get_narrative()
             if state["mode"] is ContextMode.SLOW else None
         )
         return {
-            "context": context, "conversation_segments": recalled_segments,
-            "memories": memories, "facts": facts,
+            "context": context,
+            "conversation_segments": recalled_segments,
+            "memories": memories,
+            "facts": facts,
             "narrative": narrative,
+            "retrieval_query": query,
         }
 
     tool_graph = build_tool_graph(deps)
+
+    async def pending(state: ReplyState) -> bool:
+        answered = state["answered_attempt"]
+        return not state["input_closed"] and await deps.has_pending_reply_inputs(
+            [e.id for e in state["input_events"]],
+            answered.id if answered else None,
+        )
+
+    async def reason_step(state: ReplyState) -> dict[str, Any]:
+        if await pending(state):
+            return {"needs_refresh": True}
+        count = state["reasoning_step_count"] + 1
+        steps = list(state["reasoning_steps"])
+        action = "answer"
+        try:
+            output = await deps.llm.complete(
+                [
+                    {
+                        "role": "system",
+                        "content": build_system_prompt(
+                            deps.canon,
+                            state["state"],
+                            state["narrative"],
+                            state["memories"],
+                            facts=state["facts"],
+                            tool_outputs=state["tool_outputs"],
+                            tool_feedback=state["tool_feedback"],
+                            ask_guidance=_ask_guidance_for(
+                                state["mode"], deps.ask_guidance
+                            ),
+                            knowledge_boundary=deps.knowledge_boundary,
+                            intent=state["intent"],
+                            temporal_context=state["temporal_context"],
+                            activity_context=state["activity_context"],
+                            discussion_fragment=(
+                                state["skill"].system_fragment
+                                if state["skill"]
+                                else None
+                            ),
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt(state)
+                        + '\n只输出 JSON：{"summary":"当前理解、约束与下一步摘要",'
+                        '"next_action":"continue/tools/answer"}。'
+                        "summary 非空且不超过1000字符。"
+                        "不要输出详尽推理链；工具只能由后续工具子图执行。",
+                    },
+                ],
+                module="expression",
+                output_type="reason",
+                json_mode=True,
+                correlation_id=state["correlation_id"],
+            )
+            await deps.evaluator.evaluate(output)
+            parsed: Any = json.loads(output.content)
+            if not isinstance(parsed, dict):
+                raise ValueError("分析输出不是 JSON 对象")
+            data = cast(dict[str, Any], parsed)
+            if (
+                not isinstance(data.get("summary"), str)
+                or not 1 <= len(data["summary"].strip()) <= 1000
+                or data.get("next_action") not in ("continue", "tools", "answer")
+            ):
+                raise ValueError("分析摘要或动作非法")
+            steps.append(
+                {
+                    "id": count,
+                    "input_revision": state["input_revision"],
+                    "summary": data["summary"].strip(),
+                    "created_at": time.time(),
+                }
+            )
+            action = data["next_action"]
+        except Exception:
+            _LOGGER.exception("分步分析失败，使用原始输入和已确认结果回答")
+        # Durable input/checkpoint failures must never become model fallback.
+        refresh = await pending(state)
+        if count >= 3 and action == "continue":
+            action = "answer"
+        return {
+            "reasoning_step_count": count,
+            "reasoning_steps": steps,
+            "next_action": action,
+            "needs_refresh": refresh,
+        }
 
     async def use_tools(state: ReplyState) -> dict[str, Any]:
         skill = state.get("skill")
@@ -331,74 +455,104 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             "recursion_limit": 200,
         }
         snapshot = await tool_graph.aget_state(config)
+        schemas = (
+            deps.tools.schema(skill.tool_names)
+            if skill
+            else [
+                schema
+                for schema in deps.tools.schema()
+                if schema["function"]["name"] not in _DISCUSSION_TOOL_NAMES
+            ]
+        )
+        answered = state["answered_attempt"]
+        update: dict[str, Any] = {
+            "input_event_ids": [e.id for e in state["input_events"]],
+            "input_revision": state["input_revision"],
+            "input_closed": state["input_closed"],
+            "answered_attempt_id": answered.id if answered else None,
+            "allow_new_actions": state["next_action"] == "tools" and bool(schemas),
+            "query": state["retrieval_query"],
+            "system": build_system_prompt(
+                deps.canon,
+                state["state"],
+                state["narrative"],
+                state["memories"],
+                facts=state["facts"],
+                ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
+                knowledge_boundary=deps.knowledge_boundary,
+                intent=state["intent"],
+                discussion_fragment=skill.system_fragment if skill else None,
+                temporal_context=state["temporal_context"],
+                activity_context=state["activity_context"],
+            ),
+            "user": user_prompt(state),
+            "task": DISCUSSION_USE_TOOLS_TASK if skill else USE_TOOLS_TASK,
+            "schemas": schemas,
+        }
         if snapshot.values:
-            result = (
-                await tool_graph.ainvoke(None, config, durability="sync")
-                if snapshot.next else snapshot.values
+            same = (
+                all(
+                    snapshot.values.get(key) == update[key]
+                    for key in (
+                        "input_event_ids",
+                        "input_closed",
+                        "schemas",
+                        "allow_new_actions",
+                    )
+                )
+                and snapshot.values.get("exit_reason") != "input_pending"
             )
+            if same:
+                result = (
+                    await tool_graph.ainvoke(None, config, durability="sync")
+                    if snapshot.next
+                    else snapshot.values
+                )
+            else:
+                result = await tool_graph.ainvoke(
+                    cast(ToolState, {**snapshot.values, "input_update": update}),
+                    config,
+                    durability="sync",
+                )
         else:
-            schemas = (
-                deps.tools.schema(skill.tool_names) if skill else [
-                    schema for schema in deps.tools.schema()
-                    if schema["function"]["name"] not in _DISCUSSION_TOOL_NAMES
-                ]
+            initial = cast(
+                ToolState,
+                {
+                    **update,
+                    "correlation_id": state["correlation_id"],
+                    "plan": None,
+                    "rounds": 0,
+                    "replans": 0,
+                    "replan_reason": None,
+                    "calls": [],
+                    "call_id": None,
+                    "cursor": 0,
+                    "pending": None,
+                    "records": {},
+                    "notices": [],
+                    "outputs": [],
+                    "recall_candidates": {},
+                    "exit_reason": "complete",
+                },
             )
-            initial: ToolState = {
-                "correlation_id": state["correlation_id"], "query": state["message"],
-                "system": build_system_prompt(
-                    deps.canon, state["state"], state["narrative"], state["memories"],
-                    facts=state["facts"],
-                    ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
-                    knowledge_boundary=deps.knowledge_boundary,
-                    intent=state["intent"],
-                    discussion_fragment=skill.system_fragment if skill else None,
-                    temporal_context=state["temporal_context"],
-                    activity_context=state["activity_context"],
-                ),
-                "user": user_prompt(state),
-                "task": DISCUSSION_USE_TOOLS_TASK if skill else USE_TOOLS_TASK,
-                "schemas": schemas, "plan": None, "rounds": 0, "replans": 0,
-                "replan_reason": None, "calls": [], "call_id": None, "cursor": 0,
-                "pending": None, "records": {}, "notices": [], "outputs": [],
-                "recall_candidates": {},
-            }
             result = await tool_graph.ainvoke(initial, config, durability="sync")
-        saved_state = cast(ToolState, result)
+        saved = cast(ToolState, result)
         return {
-            "tool_outputs": saved_state["outputs"],
-            "tool_feedback": execution_feedback(saved_state),
-            "tool_recall_candidates": list(saved_state["recall_candidates"].items()),
+            "tool_outputs": saved["outputs"],
+            "tool_feedback": execution_feedback(saved),
+            "tool_recall_candidates": list(saved["recall_candidates"].items()),
+            "tool_exit_reason": saved.get("exit_reason", "complete"),
+            "next_action": "after_tools" if update["allow_new_actions"] else "answer",
         }
 
-    def text_events(
-        state: ReplyState,
-        think: list[str],
-        speak: list[str],
-        *,
-        omit_final_speak: bool = False,
-    ) -> list[Event]:
-        events: list[Event] = []
-        final_index = len(speak) - 1
-        for index, (thought, spoken) in enumerate(zip(think, speak)):
-            if thought:
-                events.append(
-                    internal_text_event(
-                        EventType.THINK, thought, state["correlation_id"]
-                    )
-                )
-            if not (omit_final_speak and index == final_index):
-                events.append(
-                    internal_text_event(
-                        EventType.SPEAK, spoken, state["correlation_id"]
-                    )
-                )
-        return events
-
     async def respond(state: ReplyState) -> dict[str, Any]:
+        if await pending(state):
+            return {"needs_refresh": True}
         skill = state.get("skill")
         memories = (
-            await search_lessons(state["message"])
-            if state["mode"] is ContextMode.SLOW else state["memories"]
+            await search_lessons(state["retrieval_query"])
+            if state["mode"] is ContextMode.SLOW
+            else state["memories"]
         )
         system = build_system_prompt(
             deps.canon, state["state"], state["narrative"], memories,
@@ -419,232 +573,158 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         prior = _rounds_block(state["think"], state["speak"], state["round_times"])
         task = RESPOND_TASK_CONTINUE if state["speak"] else RESPOND_TASK
         user = "\n".join(p for p in (prior, user, task) if p)
-        try:
-            if not state["speak"]:
-                for segment in state["conversation_segments"]:
-                    try:
-                        await deps.memory.record_conversation_segment_recall(
-                            segment.id, state["correlation_id"]
-                        )
-                    except Exception:
-                        _LOGGER.exception("对话段召回计数失败")
-            for segment_id, rendered in state["tool_recall_candidates"]:
-                if rendered not in system:
-                    continue
+        if not state["speak"]:
+            for segment in state["conversation_segments"]:
                 try:
                     await deps.memory.record_conversation_segment_recall(
-                        segment_id, state["correlation_id"]
+                        segment.id, state["correlation_id"]
                     )
                 except Exception:
                     _LOGGER.exception("对话段召回计数失败")
-            output = await deps.llm.complete(
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                module="expression",
-                output_type="reply",
-                correlation_id=state["correlation_id"],
-                json_mode=True,
-            )
+        for segment_id, rendered in state["tool_recall_candidates"]:
+            if rendered not in system:
+                continue
             try:
-                think, speak, needs_continuation = _parse_reply(output.content)
-            except ValueError:
-                retry_user = (
-                    user
-                    + "\n上一次输出无法解析。只输出合法 JSON 对象，"
-                    "必须包含非空字符串 speak；"
-                    "不要输出 Markdown、解释或代码围栏。"
+                await deps.memory.record_conversation_segment_recall(
+                    segment_id, state["correlation_id"]
                 )
+            except Exception:
+                _LOGGER.exception("对话段召回计数失败")
+        think, speak, needs_continuation = "", "我刚才有点卡住了，先让我缓一缓。", False
+        fallback = True
+        for _attempt in range(2):
+            # Input I/O is outside the model failure boundary, including parse retries.
+            if await pending(state):
+                return {"needs_refresh": True}
+            try:
                 output = await deps.llm.complete(
                     [
                         {"role": "system", "content": system},
-                        {"role": "user", "content": retry_user},
+                        {"role": "user", "content": user},
                     ],
                     module="expression",
                     output_type="reply",
                     correlation_id=state["correlation_id"],
                     json_mode=True,
                 )
-                think, speak, needs_continuation = _parse_reply(output.content)
-            await deps.evaluator.evaluate(_voice_output(output, "think", think))
-            await deps.evaluator.evaluate(_voice_output(output, "speak", speak))
-        except Exception:
-            fallback = "我刚才有点卡住了，先让我缓一缓。"
-            event = internal_text_event(
-                EventType.SPEAK, fallback, state["correlation_id"]
-            )
-            event.content["response_kind"] = "fallback"
-            event.content["attempt_id"] = None
-            await deps.commit_reply_events(
-                [event], state["answered_attempt"], None
-            )
-            return {
-                "think": [],
-                "speak": [fallback],
-                "needs_continuation": False,
-                "fallback": True,
-            }
-        new_think = state["think"] + [think]
-        new_speak = state["speak"] + [speak]
-        if state["mode"] is ContextMode.FAST:
-            if _is_question(speak):
-                # 快通道绕过 should_ask，问句结尾也落 ask（信号不丢）
-                await deps.register_question(
-                    speak,
-                    InteractionKind.CHAT_ASK,
-                    state["correlation_id"],
-                    state["correlation_id"],
-                    claimed_return=state["claimed_return"],
-                    preceding_events=text_events(
-                        state, new_think, new_speak, omit_final_speak=True
-                    ),
-                    answered_attempt=state["answered_attempt"],
+            except Exception:
+                break
+            try:
+                parsed_reply = _parse_reply(output.content)
+            except ValueError:
+                # Invalid model output still contributes usage records.
+                await deps.evaluator.evaluate(output)
+                user += (
+                    "\n上一次输出无法解析。只输出合法 JSON 对象，"
+                    "必须包含非空字符串 speak；不要输出 Markdown 或代码围栏。"
                 )
-                return {
-                    "think": new_think,
-                    "speak": new_speak,
-                    "needs_continuation": False,
-                    "ask": speak,
-                }
-            await deps.commit_reply_events(
-                text_events(state, new_think, new_speak),
-                state["answered_attempt"],
-                state["claimed_return"],
-            )
+                continue
+            try:
+                await deps.evaluator.evaluate(
+                    _voice_output(output, "think", parsed_reply[0])
+                )
+                await deps.evaluator.evaluate(
+                    _voice_output(output, "speak", parsed_reply[1])
+                )
+            except Exception:
+                break
+            think, speak, needs_continuation = parsed_reply
+            fallback = False
+            break
         return {
-            "think": new_think,
-            "speak": new_speak,
+            "think": [] if fallback else [*state["think"], think],
+            "speak": [speak] if fallback else [*state["speak"], speak],
             "round_times": [*state["round_times"], time.time()],
             "needs_continuation": needs_continuation,
+            "fallback": fallback,
+            "draft_revision": state["input_revision"],
+            "draft_event_ids": [e.id for e in state["input_events"]],
+            "needs_refresh": await pending(state),
         }
 
-    async def should_ask(state: ReplyState) -> dict[str, Any]:
-        speak = state["speak"][-1]
-        if _is_question(speak):
-            await deps.register_question(
-                speak,
-                InteractionKind.CHAT_ASK,
-                state["correlation_id"],
-                state["correlation_id"],
-                claimed_return=state["claimed_return"],
-                preceding_events=text_events(
-                    state,
-                    state["think"],
-                    state["speak"],
-                    omit_final_speak=True,
-                ),
-                followup_events=[],
-                answered_attempt=state["answered_attempt"],
-            )
-            return {"ask": speak}
-        final_round = state["round"] + 1 >= deps.config.slow_max_rounds
-        if not state["needs_continuation"] or final_round:
-            await deps.commit_reply_events(
-                [
-                    *text_events(state, state["think"], state["speak"]),
-                ],
-                state["answered_attempt"],
-                state["claimed_return"],
-            )
-        return {"ask": None, "round": state["round"] + 1}
+    def should_ask(state: ReplyState) -> dict[str, Any]:
+        question = not state["fallback"] and _is_question(state["speak"][-1])
+        return {
+            "ask": "\n".join(state["speak"]) if question else None,
+            "round": state["round"] + 1,
+        }
+
+    async def finalize_reply(state: ReplyState) -> dict[str, Any]:
+        result = await deps.finalize_user_reply(state)
+        return {
+            "needs_refresh": result == "refresh",
+            "committed_reply": state["committed_reply"],
+        }
 
     async def record_message(state: ReplyState) -> dict[str, Any]:
-        # 回合末按序落历史：先用户消息、后 Nyx 消息（多轮拼接）。
-        # 下一轮 reply 的 assemble 从这里回溯。
-        now = time.time()
-        message_at = (
-            state["message_at"]
-            if state["message_at"] is not None else state["sampled_at"]
-        )
-        observed_activity = _message_activity(state["activity_context"])
-        append_segment = getattr(deps.memory, "append_conversation_turn", None)
-        append_fn: Callable[[str, str, float], Awaitable[None]] | None = None
-        if callable(append_segment):
-            append_fn = cast(
-                Callable[[str, str, float], Awaitable[None]], append_segment
-            )
-            await append_fn(
-                f"{state['correlation_id']}:user", state["message"],
-                message_at,
-            )
-        deps.history.append(
-            Message(
-                role="user",
-                content=state["message"],
-                timestamp=message_at,
-                activity_id=(observed_activity.id if observed_activity else None),
-                activity_type=(observed_activity.type if observed_activity else None),
-                activity_summary=(
-                    activity_summary(observed_activity)
-                    if observed_activity is not None
-                    else None
-                ),
-            )
-        )
-        nyx_text = "\n".join(state["speak"])
-        if nyx_text:
-            if append_fn is not None:
-                await append_fn(
-                    f"{state['correlation_id']}:nyx", nyx_text, now
-                )
-            deps.history.append(
-                Message(
-                    role="nyx",
-                    content=nyx_text,
-                    timestamp=now,
-                    fast=(state["mode"] is ContextMode.FAST),
-                    activity_id=(observed_activity.id if observed_activity else None),
-                    activity_type=(
-                        observed_activity.type if observed_activity else None
-                    ),
-                    activity_summary=(
-                        activity_summary(observed_activity)
-                        if observed_activity is not None
-                        else None
-                    ),
-                )
-            )
+        await deps.archive_user_reply(state["correlation_id"], state)
         return {}
 
-    def route_after_assemble(state: ReplyState) -> str:
-        return "use_tools" if state["mode"] is ContextMode.SLOW else "respond"
+    async def route_after_assemble(state: ReplyState) -> str:
+        if await pending(state):
+            return "collect_inputs"
+        if state["fallback"]:
+            return "finalize_reply"
+        if state["mode"] is ContextMode.FAST:
+            return "respond"
+        return (
+            "reason_step"
+            if (
+                state["reasoning_step_count"] < 3
+                and state["reasoning_step_count"] == len(state["reasoning_steps"])
+            )
+            else "use_tools"
+        )
+
+    def route_after_reason(state: ReplyState) -> str:
+        if state["needs_refresh"] or state["next_action"] == "continue":
+            return "collect_inputs"
+        return "use_tools"
+
+    def route_after_tools(state: ReplyState) -> str:
+        if state["tool_exit_reason"] == "input_pending":
+            return "collect_inputs"
+        return "collect_inputs" if state["next_action"] == "after_tools" else "respond"
 
     def route_after_respond(state: ReplyState) -> str:
-        if state["fallback"]:
-            return "record_message"
-        return "record_message" if state["mode"] is ContextMode.FAST else "should_ask"
+        return "collect_inputs" if state["needs_refresh"] else "should_ask"
 
     def route_after_should_ask(state: ReplyState) -> str:
-        if state["ask"] is not None:
-            return "record_message"
-        if state["needs_continuation"] and state["round"] < deps.config.slow_max_rounds:
-            return "respond"                               # 未到轮数上限，继续下一轮
-        return "record_message"                            # 轮满，回合结束
+        if (
+            state["mode"] is ContextMode.SLOW
+            and not state["fallback"]
+            and state["ask"] is None
+            and state["needs_continuation"]
+            and state["round"] < deps.config.slow_max_rounds
+        ):
+            return "respond"
+        return "finalize_reply"
 
     graph = StateGraph(ReplyState)
+
+    async def collect_inputs(state: ReplyState) -> dict[str, Any]:
+        return await deps.collect_reply_inputs(state)
+
+    def route_after_finalize(state: ReplyState) -> str:
+        return "collect_inputs" if state["needs_refresh"] else "record_message"
+
+    graph.add_node("collect_inputs", collect_inputs)
     graph.add_node("classify_channel", classify)
     graph.add_node("assemble_context", assemble)
+    graph.add_node("reason_step", reason_step)
     graph.add_node("use_tools", use_tools)
     graph.add_node("respond", respond)
     graph.add_node("should_ask", should_ask)
+    graph.add_node("finalize_reply", finalize_reply)
     graph.add_node("record_message", record_message)
-    graph.set_entry_point("classify_channel")
+    graph.set_entry_point("collect_inputs")
+    graph.add_edge("collect_inputs", "classify_channel")
     graph.add_edge("classify_channel", "assemble_context")
-    graph.add_conditional_edges(
-        "assemble_context", route_after_assemble,
-        {"use_tools": "use_tools", "respond": "respond"},
-    )
-    graph.add_edge("use_tools", "respond")
-    graph.add_conditional_edges(
-        "respond",
-        route_after_respond,
-        {"record_message": "record_message", "should_ask": "should_ask"},
-    )
-    graph.add_conditional_edges(
-        "should_ask",
-        route_after_should_ask,
-        {"respond": "respond", "record_message": "record_message"},
-    )
+    graph.add_conditional_edges("assemble_context", route_after_assemble)
+    graph.add_conditional_edges("reason_step", route_after_reason)
+    graph.add_conditional_edges("use_tools", route_after_tools)
+    graph.add_conditional_edges("respond", route_after_respond)
+    graph.add_conditional_edges("should_ask", route_after_should_ask)
+    graph.add_conditional_edges("finalize_reply", route_after_finalize)
     graph.add_edge("record_message", END)
     return graph.compile()

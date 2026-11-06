@@ -4,6 +4,7 @@ import logging
 import time
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -411,13 +412,38 @@ class EventBus:
 
     async def get_event(self, event_id: str) -> Event | None:
         """Read an exact anchor from this character's durable event log."""
-        async with self._db.lock:
+        async with nullcontext() if self._db.in_transaction else self._db.lock:
             cursor = await self._db.conn.execute(
                 "SELECT id, timestamp, source, type, content, correlation_id "
                 "FROM event_log WHERE id = ?", (event_id,)
             )
             row = await cursor.fetchone()
         return _row_to_event(row) if row is not None else None
+
+    async def list_pending_after(
+        self, consumer_id: str, event_id: str, *, limit: int = 33
+    ) -> list[Event]:
+        """Read the bounded, unfinished suffix after an exact consumer cursor."""
+        async with nullcontext() if self._db.in_transaction else self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT e.event_seq FROM event_log e JOIN event_delivery d "
+                "ON d.event_id=e.id WHERE e.id=? AND d.consumer_id=?",
+                (event_id, consumer_id),
+            )
+            anchor = await cursor.fetchone()
+            if anchor is None:
+                raise ValueError("pending 游标不属于该 consumer")
+            cursor = await self._db.conn.execute(
+                "SELECT e.id, e.timestamp, e.source, e.type, e.content, "
+                "e.correlation_id FROM event_log e JOIN event_delivery d "
+                "ON d.event_id=e.id WHERE d.consumer_id=? AND e.event_seq>? "
+                "AND d.status NOT IN ('succeeded', 'dead_letter') "
+                "AND NOT EXISTS (SELECT 1 FROM event_effect f WHERE "
+                "f.event_id=e.id AND f.consumer_id=d.consumer_id) "
+                "ORDER BY e.event_seq LIMIT ?",
+                (consumer_id, anchor["event_seq"], max(1, min(limit, 33))),
+            )
+            return [_row_to_event(row) for row in await cursor.fetchall()]
 
     async def list_events(
         self,
@@ -435,7 +461,7 @@ class EventBus:
             clauses.append("correlation_id = ?")
             params.append(correlation_id)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        async with self._db.lock:
+        async with nullcontext() if self._db.in_transaction else self._db.lock:
             order = "DESC"
             if after is not None:
                 cursor = await self._db.conn.execute(
@@ -714,6 +740,17 @@ class EventBus:
 
     async def _claim_next(self, consumer_id: str) -> tuple[Event, int] | None:
         now = time.time()
+        before = (
+            "prior_e.event_seq < e.event_seq"
+            if consumer_id == "expression.user_message"
+            else "(prior_e.timestamp < e.timestamp OR "
+            "(prior_e.timestamp = e.timestamp AND prior_e.id < e.id))"
+        )
+        ordering = (
+            "e.event_seq"
+            if consumer_id == "expression.user_message"
+            else "e.timestamp, e.id"
+        )
         async with self._db.lock:
             try:
                 await self._db.conn.execute(
@@ -724,7 +761,7 @@ class EventBus:
                     (consumer_id, now),
                 )
                 cursor = await self._db.conn.execute(
-                    """SELECT d.event_id, d.attempts,
+                    f"""SELECT d.event_id, d.attempts,
                               e.id, e.timestamp, e.source, e.type,
                               e.content, e.correlation_id
                        FROM event_delivery AS d
@@ -738,13 +775,9 @@ class EventBus:
                              ON prior_e.id = prior_d.event_id
                            WHERE prior_d.consumer_id = d.consumer_id
                              AND prior_d.status NOT IN ('succeeded', 'dead_letter')
-                             AND (
-                               prior_e.timestamp < e.timestamp
-                               OR (prior_e.timestamp = e.timestamp
-                                   AND prior_e.id < e.id)
-                             )
+                             AND {before}
                          )
-                       ORDER BY e.timestamp, e.id
+                       ORDER BY {ordering}
                        LIMIT 1""",
                     (consumer_id, now),
                 )

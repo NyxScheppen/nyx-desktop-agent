@@ -1,5 +1,15 @@
 # 模块与事件总线系统
 
+## 对话续接接线（26）
+
+只有 `expression.user_message` 的领取/前项阻塞按 event_seq 提交序；其他消费者保留 timestamp/id FIFO。
+`list_pending_after(consumer_id, event_id, *, limit=33)` 读取有界未完成且无 effect 的后续事件，排除 dead_letter/已有终局，游标必须是真实投递。
+事务内查询复用已有事务，不重入 DB 锁、不自行提交。表达层负责连续兼容前缀、屏障与容量。
+终局核对、文本、attempt 和补充 effect 同事务；根 effect 仍由 worker 在完整归档后完成。
+重放有终局先修复原文归档，不能重新生成；提交后广播失败不撤销 attempt/claim，不另发 fallback。
+`GET /api/chat/pending` 以及覆盖协议和对象完整性见 [26 §6—9](26-conversation-steering.md)。
+schema53 新增逐轮归档索引，SQLite 当前46张业务及基础设施表、总计49张表；schema52的 event_seq 保持不变。
+
 > 范围：`nyx/events/`、`nyx/subscriptions.py`、`nyx/runtime.py`、`nyx/app_context.py`、`nyx/main.py`、`nyx/db.py` 中与事件持久化、消费者投递、路由注册、DB 生命周期、关停生命周期相关的基础设施。  
 > 本文件是底层模块总线系统的唯一完整契约，统一覆盖 SQLite 生命周期、事件总线、路由订阅、组合根、REST/SSE、恢复重试和关停。
 > 快速事实摘要见 `docs/facts/module-bus-system-facts.md`。
@@ -778,7 +788,7 @@ EventBus 增加 `async get_event(event_id: str) -> Event | None`，按当前库�
 ## 工具观测与失败学习（17—19）
 
 - schema47 新增 `tool_call_log` 与时间/correlation/call 三索引；schema48 新增 `lesson_signal`。
-  schema49 增加工具 checkpoint 的 `checkpoints` / `writes`，schema50 另增临时 tool_execution，schema51增加传输两表，schema52为 event_log 增加 event_seq，当前共45张业务及基础设施表（SQLite表总数48）；不增加 API 或事件路由；工具完整 DDL/对象生命周期见17—19，传输见21。
+  schema49 增加工具 checkpoint 的 `checkpoints` / `writes`，schema50 另增临时 tool_execution，schema51增加传输两表，schema52为 event_log 增加 event_seq，schema53增加逐轮归档索引，当前共46张业务及基础设施表（SQLite表总数49）；不增加 API 或事件路由；工具完整 DDL/对象生命周期见17—19，传输见21。
 - 组合根给共享 ToolRegistry 注入 ToolCallStore，Evaluator 注入调用 MemoryFacade 的 OOC 回调。
 - 批注事实/effect 提交后才执行 best-effort 学习；提交与信号之间中断会丢该次学习，
   已完成 effect 重放不补发。计数先提交；达到阈值且 LESSON 成功后，纠错 REFLECTION 与计数清除

@@ -282,6 +282,35 @@ def _create_schema(
     connection.execute("INSERT INTO schema_version (version) VALUES (%s)", (version,))
 
 
+def _conversation_archive(
+    source: sqlite3.Connection,
+    target: Any,
+    schema: str,
+    *,
+    backfill: bool,
+) -> None:
+    expected: dict[str, str] = {}
+    for segment, raw in source.execute(
+        "SELECT id, raw_event_ids FROM conversation_segment ORDER BY id"
+    ):
+        ids: Any = json.loads(raw)
+        if not isinstance(ids, list) or any(
+            not isinstance(i, str) or not i for i in cast(list[Any], ids)
+        ):
+            raise ValueError("invalid conversation turn IDs")
+        for identity in cast(list[str], ids):
+            expected.setdefault(identity, segment)
+    table = f"{_quote_identifier(schema)}.conversation_turn_archive"
+    if backfill and expected:
+        target.cursor().executemany(
+            f"INSERT INTO {table} (turn_id, segment_id) VALUES (%s, %s)",
+            list(expected.items()),
+        )
+    actual = dict(target.execute(f"SELECT turn_id, segment_id FROM {table}").fetchall())
+    if actual != expected:
+        raise ValueError(f"conversation archive mismatch in {schema}")
+
+
 def _copy_table(
     source: sqlite3.Connection,
     target: Any,
@@ -455,9 +484,9 @@ def import_source(source: Path, target_root: Path, database_url: str) -> dict[st
             ):
                 raise ValueError(f"migration target schema is not empty: {schema}")
         for item in manifest["characters"]:
-            if int(item["database"]["version"]) not in (51, 52):
+            if int(item["database"]["version"]) not in (51, 52, 53):
                 raise ValueError(
-                    f"character {item['id']} SQLite schema must be version 51 or 52"
+                    f"character {item['id']} SQLite schema must be version 51, 52 or 53"
                 )
         host_migrations = postgres_migrations(_HOST_MIGRATIONS)
         character_migrations = postgres_migrations(_MIGRATIONS)
@@ -536,7 +565,13 @@ def import_source(source: Path, target_root: Path, database_url: str) -> dict[st
                     _validate_table(character_source, target, schema, table, count)
                     row_counts.setdefault(schema, {})[table] = count
                 _validate_event_order(character_source, target, schema)
-                _validate_schema_version(target, schema, 52)
+                _conversation_archive(
+                    character_source,
+                    target,
+                    schema,
+                    backfill=int(item["database"]["version"]) < 53,
+                )
+                _validate_schema_version(target, schema, max(v for v, _ in _MIGRATIONS))
             finally:
                 character_source.close()
             _copy_character_files({**item, "id": character_id}, target_root, copied)

@@ -2,13 +2,14 @@ import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScop
 import { create } from "zustand";
 import {
   getEventsLog,
+  getChatPending,
   getPendingQuestions,
   pauseQuestion,
   postChat,
   resumeQuestion,
 } from "../api/client";
 import { isValidTimestamp } from "../lib/time";
-import { isReplyAnnotation } from "../types/api";
+import { hasValidReplyCoverage, isReplyAnnotation } from "../types/api";
 import type {
   AnnotationFeedbackEvent,
   BackendEvent,
@@ -52,7 +53,12 @@ type ChatState = {
   cancelAnnotation: () => void;
   sendAnnotation: () => Promise<boolean>;
   addAnnotationFeedback: (event: AnnotationFeedbackEvent) => void;
-  isReplying: boolean; // 发消息后等待回复中
+  isReplying: boolean;
+  isSending: boolean;
+  generation: number;
+  replyNotice: string | null;
+  pendingReplies: Record<string, { status: "waiting" | "timed_out" | "dead_letter"; deadline: number; version: number }>;
+  pendingTruncated: boolean;
   sendError: string | null;
   typedIds: Record<string, true>; // 已逐字打完的 think id（speak/ask 等其同 correlation_id 的 think 打完才开打）
   seenIds: Record<string, true>; // 本角色本次前端会话中已开始显示的 nyx 文本 id
@@ -154,6 +160,7 @@ function closeMissingHistoricalQuestions(
 // 字段非 string 则丢弃（与 append 一致的收窄校验，01-sse §4.1）。
 function toChatMessage(e: BackendEvent): ChatMessage | null {
   if (e.type === "annotation_feedback") return null;
+  if ((e.type === "speak" || e.type === "ask") && !hasValidReplyCoverage(e.content, e.correlation_id)) return null;
   const isUser = e.type === "user_message";
   const isQuestion = e.type === "reading_question";
   const raw = isUser ? e.content.message : e.content.content;
@@ -180,25 +187,68 @@ function toChatMessage(e: BackendEvent): ChatMessage | null {
   return msg;
 }
 
-// 回复超时兜底（02-stores §1）：60s 未收到 speak/ask 视为超时。
-// timer 引用放 module-level，不进 store state（store 状态须可序列化）。
 const REPLY_TIMEOUT_MS = 60_000;
-let replyTimer: ReturnType<typeof setTimeout> | null = null;
-// 待回复消息的 event_id（= postChat 返回值 = user_message id = 回复帧 correlation_id）。
-// 与 replyTimer 一样放 module-level，不进 store state；addSpeak/addAsk 按 correlation_id 匹配后才清 timer。
-let pendingId: string | null = null;
-let sendInFlight = false;
-const earlyReplies = new Map<string, TextEvent<"speak"> | TextEvent<"ask">>();
-
-function clearReplyTimer(): void {
-  if (replyTimer !== null) {
-    clearTimeout(replyTimer);
-    replyTimer = null;
-  }
-}
 
 export const useChatStore = create<ChatState>((set, get) => {
   let generation = 0;
+  let pendingVersion = 0;
+  let snapshotSequence = 0;
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  const completed = new Set<string>();
+  const knownInputs = new Set<string>();
+  const earlyLegacy = new Set<string>();
+
+  const refreshWaiting = () => {
+    const items = Object.values(get().pendingReplies);
+    set({ isReplying: items.some((item) => item.status === "waiting"),
+      replyNotice: items.some((item) => item.status === "dead_letter") ? "消息处理失败"
+        : items.some((item) => item.status === "timed_out") ? "回复超时，仍在等待处理"
+        : get().pendingTruncated ? "仍有未显示的待回复消息" : null });
+  };
+  const removePending = (id: string) => {
+    clearTimeout(timers.get(id));
+    timers.delete(id);
+    set((s) => {
+      const pendingReplies = { ...s.pendingReplies };
+      delete pendingReplies[id];
+      return { pendingReplies };
+    });
+  };
+  const addPending = (id: string, dead = false) => {
+    knownInputs.add(id);
+    if (completed.has(id)) return;
+    const old = get().pendingReplies[id];
+    const item = { status: dead ? "dead_letter" as const : old?.status ?? "waiting" as const,
+      deadline: old?.deadline ?? performance.now() + REPLY_TIMEOUT_MS, version: ++pendingVersion };
+    set((s) => ({ pendingReplies: { ...s.pendingReplies, [id]: item } }));
+    if (dead) {
+      clearTimeout(timers.get(id)); timers.delete(id);
+    } else if (!timers.has(id) && item.status === "waiting") {
+      const scope = captureScope();
+      const version = generation;
+      const check = () => {
+        if (!isScopeCurrent(scope) || version !== generation) return;
+        const current = get().pendingReplies[id];
+        if (!current || current.status !== "waiting") return;
+        const remaining = current.deadline - performance.now();
+        if (remaining > 0) { timers.set(id, setTimeout(check, remaining)); return; }
+        timers.delete(id);
+        set((s) => ({ pendingReplies: { ...s.pendingReplies,
+          [id]: { ...current, status: "timed_out", version: ++pendingVersion } } }));
+        refreshWaiting();
+      };
+      timers.set(id, setTimeout(check, Math.max(0, item.deadline - performance.now())));
+    }
+    refreshWaiting();
+  };
+  const coverReply = (e: TextEvent<"speak"> | TextEvent<"ask">) => {
+    if (!hasValidReplyCoverage(e, e.correlation_id)) return false;
+    const ids = e.reply_to_event_ids ?? (knownInputs.has(e.correlation_id) ? [e.correlation_id] : []);
+    if (!e.reply_to_event_ids && ids.length === 0 && get().isSending) earlyLegacy.add(e.correlation_id);
+    for (const id of ids) { completed.add(id); removePending(id); }
+    refreshWaiting();
+    return true;
+  };
   // 文本字段收窄校验后才入消息（01-sse §4.1：不用裸 as，类型错 → 丢弃不崩）。
   // 用户消息读 message、文本事件读 content（键名不同，见 01-sse §1）。
   const append = (
@@ -234,18 +284,9 @@ export const useChatStore = create<ChatState>((set, get) => {
     return true;
   };
 
-  // speak/ask 是「会结束回复等待」的产出：correlation_id 匹配本次发送（pendingId）才结束等待，
-  // 非匹配（搭话/碎碎念）只 append 不动生命周期。kind 取 e.event（"speak"/"ask"）。
   const finishReply = (e: TextEvent<"speak"> | TextEvent<"ask">) => {
     if (typeof e.content !== "string" || !isValidTimestamp(e.timestamp)) return;
-    if (e.correlation_id === pendingId) {
-      clearReplyTimer();
-      pendingId = null;
-      set({ isReplying: false, sendError: null });
-    } else if (pendingId === null && sendInFlight) {
-      // HTTP 响应可能晚于 SSE 回复；先缓存 correlation，成功返回后再匹配。
-      earlyReplies.set(e.correlation_id, e);
-    }
+    if (!coverReply(e)) return;
     append(e, "nyx", e.event);
   };
 
@@ -254,28 +295,28 @@ export const useChatStore = create<ChatState>((set, get) => {
     const version = generation;
     const current = () => isScopeCurrent(scope) && version === generation;
     const commit = scopedSetter(set);
+    if (get().isSending) return false;
     const candidates = get().messages.filter(
       (message) => message.attempt_id !== undefined && message.question_status === "waiting",
     );
-    if (!annotation && candidates.length > 1 && get().replyTargetId === null) {
+    const hasPending = Object.values(get().pendingReplies).some((item) => item.status !== "dead_letter");
+    const selected = get().replyTargetId;
+    const discussion = get().discussionMode;
+    if (!annotation && !hasPending && candidates.length > 1 && selected === null) {
       commit({ sendError: "有多个待回复的问题，请先选择要回复的那一条" });
       return false;
     }
-    // 串行锁要同步上：get() 同步读 store（非 React 订阅），在 await postChat 之前置 isReplying=true。
-    // 否则网络往返窗口内 isReplying 仍 false，双击/连击可并发第二次发送、覆盖 pendingId。
-    if (get().isReplying) return false;
+    const replyTo = annotation ? undefined : selected ?? (
+      !hasPending && candidates.length === 1 ? candidates[0].attempt_id : undefined
+    );
     if (annotation) {
       const key = JSON.stringify([annotation.reply_event_id, annotation.comment]);
       set((s) => ({ annotationPersistence: { ...s.annotationPersistence,
         [key]: s.annotationPersistence[key] ?? "pending" } }));
     }
-    sendInFlight = true;
-    commit({ isReplying: true, sendError: null, unreadProactive: false });
+    commit({ isSending: true, sendError: null, unreadProactive: false });
     try {
-      const replyTo = annotation ? undefined : get().replyTargetId ?? (
-        candidates.length === 1 ? candidates[0].attempt_id : undefined
-      );
-      const { event_id, annotation_persistence } = await postChat(text, replyTo, get().discussionMode, annotation);
+      const { event_id, annotation_persistence } = await postChat(text, replyTo, discussion, annotation);
       if (!current()) return false;
       if (annotation) {
         const key = JSON.stringify([annotation.reply_event_id, annotation.comment]);
@@ -286,7 +327,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           annotationDraft: s.annotationDraft === annotation ? null : s.annotationDraft,
         }));
       }
-      sendInFlight = false;
+      commit({ isSending: false });
       if (replyTo !== undefined) {
         commit((s) => ({
           messages: s.messages.map((message) =>
@@ -296,30 +337,18 @@ export const useChatStore = create<ChatState>((set, get) => {
           ),
         }));
       }
-      pendingId = event_id; // 回复帧 correlation_id 与此匹配（后端 user_message 沿它溯源）
-      clearReplyTimer();
-      if (earlyReplies.delete(event_id)) {
-        pendingId = null;
-        earlyReplies.clear();
-        commit({ isReplying: false, sendError: null });
-        if (!annotation) commit({ replyTargetId: null });
-        return true;
-      }
-      earlyReplies.clear();
-      replyTimer = setTimeout(() => {
-        if (!current() || pendingId !== event_id) return;
-        replyTimer = null;
-        // 不清 pendingId：迟到回复仍需能匹配并清 sendError
-        set({ isReplying: false, sendError: "回复超时" });
-      }, REPLY_TIMEOUT_MS);
-      if (!annotation) commit({ replyTargetId: null });
+      if (earlyLegacy.delete(event_id)) completed.add(event_id);
+      addPending(event_id);
+      if (!annotation && get().replyTargetId === selected) commit({ replyTargetId: null });
+      earlyLegacy.clear();
       return true;
     } catch (err) {
       if (!current()) return false;
-      sendInFlight = false;
-      earlyReplies.clear();
-      // 锁已提前上，失败须复位 isReplying（原先 isReplying 在 await 后才置、catch 无需复位）
-      commit({ isReplying: false, sendError: err instanceof Error ? err.message : String(err) });
+      commit({ isSending: false });
+      earlyLegacy.clear();
+      commit({ sendError: err instanceof TypeError
+        ? `提交结果未知，服务端可能已受理：${err.message}`
+        : err instanceof Error ? err.message : String(err) });
       return false;
     }
   };
@@ -329,6 +358,11 @@ export const useChatStore = create<ChatState>((set, get) => {
     annotationDraft: null,
     annotationPersistence: {},
     isReplying: false,
+    isSending: false,
+    generation: 0,
+    replyNotice: null,
+    pendingReplies: {},
+    pendingTruncated: false,
     sendError: null,
     typedIds: {},
     seenIds: {},
@@ -348,7 +382,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       const key = JSON.stringify([event.reply_event_id, event.comment]);
       set((s) => ({ annotationPersistence: { ...s.annotationPersistence, [key]: "recorded" } }));
     },
-    addUserMessage: (e) => append(e, "user", "message"),
+    addUserMessage: (e) => {
+      if (typeof e.message !== "string" || !isValidTimestamp(e.timestamp)) return;
+      append(e, "user", "message");
+      addPending(e.event_id);
+    },
     addSpeak: (e) => finishReply(e),
     addAsk: (e) => finishReply(e),
     addThink: (e) => append(e, "nyx", "think"),
@@ -424,6 +462,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       const version = generation;
       const current = () => isScopeCurrent(scope) && version === generation;
       const commit = scopedSetter(set);
+      const sequence = ++snapshotSequence;
       // 每类型并行拉取，合并后按时间升序（旧→新，历史在前）。getEventsLog 失败即整组放弃
       // （与 snapshot store 一致：loadHistory 是 best-effort，不阻塞实时 SSE）。
       try {
@@ -432,6 +471,14 @@ export const useChatStore = create<ChatState>((set, get) => {
         );
         if (!current()) return;
         const merged = byType.flat().sort((a, b) => a.timestamp - b.timestamp);
+        for (const e of merged) if (e.type === "user_message") knownInputs.add(e.id);
+        for (const e of merged) {
+          if (e.type === "speak" || e.type === "ask") {
+            const reply = { ...e.content, event: e.type, event_id: e.id,
+              correlation_id: e.correlation_id, timestamp: e.timestamp } as TextEvent<"speak"> | TextEvent<"ask">;
+            if (typeof reply.content === "string" && isValidTimestamp(reply.timestamp)) coverReply(reply);
+          }
+        }
         commit((s) => {
           const persistence = { ...s.annotationPersistence };
           for (const event of merged) {
@@ -457,6 +504,24 @@ export const useChatStore = create<ChatState>((set, get) => {
             typedIds: { ...s.typedIds, ...thinkIds },
           };
         });
+        try {
+          if (sequence !== snapshotSequence) return;
+          const baseline = new Map(Object.entries(get().pendingReplies).map(([id, item]) => [id, item.version]));
+          const snapshot = await getChatPending();
+          if (!current() || sequence !== snapshotSequence) return;
+          const present = new Set(snapshot.items.map((item) => item.event_id));
+          if (!snapshot.truncated) {
+            for (const [id, version] of baseline) {
+              if (!present.has(id) && get().pendingReplies[id]?.version === version) removePending(id);
+            }
+          }
+          set({ pendingTruncated: snapshot.truncated });
+          for (const item of snapshot.items) addPending(item.event_id, item.status === "dead_letter");
+          refreshWaiting();
+        } catch (err) {
+          if (!current()) return;
+          console.error("加载待回复消息失败", err);
+        }
         try {
           const pending = await getPendingQuestions();
           if (!current()) return;
@@ -491,16 +556,20 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
     reset: () => {
       generation += 1;
-      clearReplyTimer(); // 新会话：取消残留 timer + 复位 isReplying/sendError（防假超时）
-      pendingId = null;
-      sendInFlight = false;
-      earlyReplies.clear();
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear(); completed.clear(); knownInputs.clear(); earlyLegacy.clear();
+      snapshotSequence += 1;
       set({
         messages: [],
         discussionMode: null,
         annotationDraft: null,
         annotationPersistence: {},
         isReplying: false,
+        isSending: false,
+        generation,
+        replyNotice: null,
+        pendingReplies: {},
+        pendingTruncated: false,
         sendError: null,
         typedIds: {},
         seenIds: {},

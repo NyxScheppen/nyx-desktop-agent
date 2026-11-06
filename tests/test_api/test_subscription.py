@@ -51,6 +51,7 @@ class _FakeActivity:
 class _FakeExpression:
     def __init__(self) -> None:
         self.replied: list[tuple[str, str]] = []
+        self.archived: list[str] = []
         self.app: _App | None = None
         self.return_seen_at_reply: dict[str, float] | None = None
 
@@ -58,6 +59,9 @@ class _FakeExpression:
         if self.app is not None:
             self.return_seen_at_reply = self.app.pending_return
         self.replied.append((msg, correlation_id))
+
+    async def _archive_user_reply(self, event_id: str) -> None:
+        self.archived.append(event_id)
 
 
 class _ActivityAwareExpression:
@@ -200,6 +204,7 @@ async def test_user_message_replay_skips_after_reply_event_exists() -> None:
     await on_user_message(app, event)
 
     assert expression.replied == []
+    assert expression.archived == [event.id]
     await database.close()
 
 

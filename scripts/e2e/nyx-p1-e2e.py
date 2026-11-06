@@ -54,7 +54,9 @@ class FakeLlm:
                 calls = [{'name': 'memory_recall', 'args': {'query': 'E2E'}}]
             elif self.mode == 'item_limit':
                 calls = [{'name': 'deep_research', 'args': {'query': f'E2E item {i}'}} for i in range(8)]
-        if output_type == 'reply':
+        if output_type == 'reason':
+            content = {'summary': '按当前输入与结果继续。', 'next_action': 'answer' if '[工作摘要' in messages[-1]['content'] else 'tools'}
+        elif output_type == 'reply':
             content = {'think': '检查资料来源。', 'speak': 'E2E 回复已送达。来源：segment-e2e。', 'needs_continuation': False}
         else:
             content = {'entities': [], 'facts': [], 'summary': 'E2E', 'topics': [], 'importance': 'normal', 'evidence_event_ids': []}

@@ -1,5 +1,7 @@
 # REST 客户端（`api/client.ts`）
 
+`getChatPending(): Promise<ChatPendingSnapshot>` 调用当前角色 `GET /api/chat/pending`，复用既有鉴权与scope；响应整体校验 server_now、唯一非空event_id、合法时间/status、最多1000项及严格boolean truncated。非法快照抛错，不当作空集合。完整协议见 [26 §7.3](../specs/26-conversation-steering.md)。
+
 > 薄 fetch 封装：端点函数 + 统一错误契约。被 `chatStore`、`innerLifeStore`、`usePresence`、快照 store、`readerStore` 和 `evalStore` 共享。
 > 范围：`api/client.ts` 全部。`BASE_URL` 常量在此定义，SSE 与 REST 共用（01-sse §3）。
 > 对齐后端：前端的基础设施独立成 spec，同底层模块总线系统和 `03-llm` 各自独立。

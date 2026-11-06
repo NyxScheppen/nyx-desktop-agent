@@ -1,5 +1,10 @@
 # SSE 数据流（`hooks/useSSE.ts`）
 
+## 续接终局（26）
+
+SPEAK/ASK 的 `reply_complete: true` 与 `reply_to_event_ids: string[]` 必须同时出现且合法：1—32个唯一非空ID、首项为 correlation_id。半新/损坏协议在解析边界丢弃，不回退为旧终局。两字段都缺失才沿旧 correlation 规则处理；direct/主动输出不伪造覆盖。
+每条 USER_MESSAGE 保留自己的气泡；终局只结束覆盖ID，THINK和无关主动输出不结束等待。完成证据优先于迟到POST与pending快照。详见 [26 §6—7](../specs/26-conversation-steering.md)。
+
 > 前端实时数据的**主通道**。后端广播全部事件；事件持久化、路由和广播语义见
 > `docs/specs/04-module-bus-system.md`。本 spec 定义 `useSSE` fetch reader 契约、SSE 帧格式、
 > 事件→store 分发表、重连容错。

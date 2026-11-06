@@ -1,5 +1,14 @@
 # Zustand Stores（`stores/*.ts`）
 
+## 对话续接状态（26）
+
+`isSending` 只锁一个HTTP提交；`isReplying` 从逐ID `pendingReplies` 的 waiting 状态派生。每项保存本地单调时钟60秒期限、版本和 waiting/timed_out/dead_letter。
+超时与失败通过 `replyNotice` 展示，不清除独立 `sendError`，不代表消息未受理。timed_out仍保留身份以接受迟到终局、避免自动绑定旧问题。
+`loadHistory` 每次校正 GET chat/pending；快照整体校验、请求序号/逐项版本/角色scope/generation阻止迟到覆盖；truncated不按缺席删除。
+同页重连沿用期限，reset取消全部timer并清证据/增代数，重载从快照重新给60秒；历史气泡本身不创建等待。
+发送捕获模式、问题选择、批注；成功只清未被修改的快照。已有等待时不自动绑定另一个旧问题。网络丢回包显示提交结果未知，不自动重发。
+完整状态、坏数据和乱序表见 [26 §7/§9](../specs/26-conversation-steering.md)。
+
 > 每系统一个 store（CLAUDE.md）。现有聊天、内在状态、欲望、活动、记忆、设置、表达气泡、阅读与评估。
 > 范围：`stores/*.ts` 的 state 形状 + actions。
 > 约定：**SSE 是主通道**（01-sse 分发表），store 的增量 action 由 SSE 驱动；REST 只喂初始快照。TS 类型字段名 = 后端 JSON 键（snake_case，零映射）。
@@ -63,7 +72,12 @@ type ChatMessage = {
 
 type ChatState = {
   messages: ChatMessage[];
-  isReplying: boolean;        // 发消息后等待回复中
+  isReplying: boolean;        // 至少一项仍在 waiting
+  isSending: boolean;         // 单个 HTTP 提交在途
+  generation: number;         // reset 使旧回调失效
+  pendingReplies: Record<string, { status: "waiting" | "timed_out" | "dead_letter"; deadline: number; version: number }>;
+  pendingTruncated: boolean;
+  replyNotice: string | null;
   sendError: string | null;
   discussionMode: boolean | null; // null 自动（默认），true 讨论，false 陪伴；reset 恢复 null
   annotationDraft: ReplyAnnotation | null;
@@ -82,8 +96,8 @@ type ChatState = {
 ```typescript
 addUserMessage(e: UserMessageEvent): void            // SSE user_message 回显（读 e.message）→ {role:"user", kind:"message"}
 addAnnotationFeedback(e: AnnotationFeedbackEvent): void // 合并已记录回执，不 append 聊天消息
-addSpeak(e: TextEvent<"speak">): void                // {role:"nyx", kind:"speak"}；correlation_id === pendingId 时才 clearTimeout(replyTimer) + isReplying=false + sendError=null
-addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}；correlation_id === pendingId 时才 clearTimeout(replyTimer) + isReplying=false + sendError=null
+addSpeak(e: TextEvent<"speak">): void                // {role:"nyx", kind:"speak"}；合法覆盖列表逐项完成等待；旧协议仅按 correlation_id 完成一项
+addAsk(e: TextEvent<"ask">): void                    // {role:"nyx", kind:"ask"}；合法覆盖列表逐项完成等待；旧协议仅按 correlation_id 完成一项
 addThink(e: TextEvent<"think">): void                // {role:"nyx", kind:"think"}
 addInitiateChat(e: TextEvent<"initiate_chat">): void // {role:"nyx", kind:"initiate_chat"}；保留 attempt_id/expires_at
 addReadingTurn(e: ReadingQuestionEvent): void  // {role:"nyx",kind:"reading_question"}; subtype/selectedText 落字段
@@ -96,9 +110,9 @@ updateComment(text: string): void
 cancelAnnotation(): void
 sendAnnotation(): Promise<boolean> // message=comment，附完整 annotation/discussion，跳过 reply_to
 sendMessage(text: string): Promise<boolean>  // 内部调 client.postChat，带当前 discussionMode；成功 true，失败/忙 false
-                                          // 成功：pendingId = 返回的 event_id + isReplying=true + sendError=null + 起 60s 超时 timer
-                                          // 唯一等待提问自动附加 reply_to；多个等待项需先 selectQuestion；成功后目标标记 claimed
-                                          // postChat throw → catch → sendError = e.message 并复位 isReplying
+                                          // 成功：按 event_id 建立逐项等待；已有完成证据时不复活 timer
+                                          // 无回复等待时才自动绑定唯一提问；显式选择仍优先，按发送快照提交
+                                          // postChat throw → sendError；finally 只释放 HTTP 锁，保留其他等待
 markTyped(id: string): void              // 把 nyx 文本 id 写入 typedIds（逐字 done 时调，解锁其后同 correlation_id 的下一条 nyx 文本）
 markSeen(id: string): void               // 正文首次 ready、实际开始显示时按 event_id 记入 seenIds；不提前解锁后续消息
 loadHistory(): Promise<void>             // 并行查询六类文本及 annotation_feedback，合并消息/持久回执，再取 pending 快照；失败 best-effort
@@ -120,8 +134,8 @@ reset(): void                            // 递增本地 generation，取消 tim
   每次 await 后，包括事件查询、pending 快照的成功与 catch 分支，均核对两者；独立 reset 即使
   未切角色也使旧历史、回执与 serverTimeOffset 回包失效。角色切换/reset 清空批注和本地回执。
 
-- **SSE 是聊天消息的唯一来源**：`sendMessage` 只 `POST`（拿 `{event_id}` 后 `isReplying=true`），**不本地 append**。用户消息靠 SSE `user_message` 回显上屏（localhost 往返 ~10ms，视觉无延迟）。好处：无「乐观消息 + SSE 回显」的**去重/替换**复杂度；`correlation_id` 沿事件一路一致，追溯无分歧（原则 5）。
-- **isReplying 生命周期 + 60s 超时（必须取消）+ correlation 匹配**：`sendMessage` 成功时**存 `postChat` 返回的 `event_id` 到 module-level `pendingId`**（该 id = 后端 `user_message` 事件 id = 回复帧的 `correlation_id`），置 `isReplying=true` + `sendError=null` 并起 60s 超时 timer（`setTimeout`，回调置 `isReplying=false` + `sendError="回复超时"`、**不清 pendingId**——迟到回复仍需能匹配清 sendError）；`addSpeak`/`addAsk` 收到回复时**先判 `e.correlation_id === pendingId`**——匹配才 `clearTimeout` 取消 timer + 置 `isReplying=false` + `sendError=null`，非匹配（搭话等别的发言）只 append 不动生命周期。`think` 不结束回复（后必跟 `speak`）。`timer`/`pendingId` 都放 module-level（`let replyTimer`/`let pendingId`，**不进 store state**——store 状态须可序列化）。缺取消机制 = 真 bug：10s 收到回复，60s 时 timer 照样触发假「回复超时」。
+- **SSE 是聊天消息的唯一来源**：`sendMessage` 只 `POST`（拿 `{event_id}` 后登记对应等待），**不本地 append**。用户消息靠 SSE `user_message` 回显上屏（localhost 往返 ~10ms，视觉无延迟）。好处：无「乐观消息 + SSE 回显」的**去重/替换**复杂度；`correlation_id` 沿事件一路一致，追溯无分歧（原则 5）。
+- **逐项等待与完成**：期限、快照和乱序规则见本文「对话续接状态」。timer 句柄保存在模块内，store 只保存可序列化状态。THINK 不结束等待；SPEAK/ASK 仅完成实际覆盖项，不清除独立提交错误。
 - **消息顺序与时间戳**：实时与历史都按 id 去重，合并后全局按 timestamp 稳定升序排列，
   相同时按用户消息、think、对外文本排列，同等级按 event id 排列，避免回填令回复先于用户。
   缺失/非有限或 Date 不可表示的时间戳丢弃。
@@ -259,7 +273,7 @@ type AnnounceState = {
 
 ## 6. `readerStore`（阅读：书架/进度/追赶 + 笔记）
 
-> 阅读系统唯一 store（06-reading-panel §3 + 07-reading-events §3 笔记）。追赶 timer 放 module-level（不进 store state，同 chatStore 的 replyTimer 约定）。
+> 阅读系统唯一 store（06-reading-panel §3 + 07-reading-events §3 笔记）。追赶 timer 放 module-level（不进 store state，同 chatStore 的逐项 timer 约定）。
 
 ### state
 
@@ -328,7 +342,7 @@ showToNyx(noteId: string): Promise<void>   // POST show-to-nyx → 返回 Annota
 
 ## 8. 测试（`tests/stores.test.ts`）
 
-- **chatStore**：`addSpeak`/`addAsk`/`addThink`/`addInitiateChat`/`addUserMessage`/`addReadingTurn` 各断言「正确转成 `ChatMessage`（role/kind/content/correlation_id/timestamp）且 append」；主动搭话还保留 `attempt_id`/`expires_at`/waiting 状态。`sendMessage` mock fetch 断言「请求 `/api/chat`、成功置 isReplying + 清 sendError、失败置 sendError」；`addSpeak` 断言 isReplying 复位 + clearTimeout 被调。**60s 超时**（Vitest fake timers）：`sendMessage` 成功后 `vi.advanceTimersByTime(60_000)` → `sendError="回复超时"` + `isReplying=false`；`sendMessage` 后立即 `addSpeak`（correlation 匹配）再 `advanceTimersByTime(60_000)` → **不**触发超时（timer 已取消）。**correlation 匹配**：非匹配 `correlation_id` 的 `addSpeak` 不清 timer（isReplying 保持 true、消息照常上屏）；迟到回复（超时后 correlation 仍匹配）清 sendError。
+- **chatStore**：覆盖事件到消息的字段映射、逐 ID 等待与独立发送锁、60 秒单调期限及迟到终局、合法覆盖与旧协议、非法快照/截断、SSE 先于 POST、快照请求乱序、reset/角色代数隔离，以及发送期间编辑草稿和等待提问绑定。fake timers 验证同页重连不延期、整页重载重新计时、完成后旧 timer 不报超时。
 - **chatStore.loadHistory**：新旧消息统一按 `timestamp` 稳定升序 + `preloaded=true` + 历史 think 入 `typedIds`；与实时消息按 id 去重；非法时间戳丢弃；`getEventsLog` 失败 → best-effort 不抛、消息不变；`markTyped`/`markSeen` 标记 + `reset` 清两种播放状态。
 - **innerLifeStore**：`refreshState` mock fetch 断言 current 被设置；`updateEmotion` 断言只覆盖三字段、`current=null` 时不崩。
 - **两个快照 store**：`desireStore` 断言 `refresh()` 请求对端点 + `data` 落 store；`activityStore.refresh()` 并行 `getActivity`+`getActivityResults`+`getTasks`（fetch 恰 3 次）并验证任务创建回写；`desireStore.refresh()` 失败 → `error` + `data` 保持 null。

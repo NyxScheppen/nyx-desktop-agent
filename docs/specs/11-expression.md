@@ -1,5 +1,20 @@
 # 表达系统
 
+## 对话续接（26，2026-11-05）
+
+续接的跨模块完整契约见 [26-conversation-steering](26-conversation-steering.md)。普通回复图为
+`collect_inputs → classify_channel → assemble_context → reason_step/use_tools/respond → should_ask → finalize_reply → record_message`。
+FAST 跳过分析与工具；SLOW 最多三次 `reason` 调用，失败/非法 JSON 也占次数并停止额外分析。
+工具与分析只产出上下文；只有 finalize 在同一事务核对输入版本、提交最终 THINK 与一份 SPEAK/ASK、attempt 和补充 effect。
+兼容输入按提交序收纳，最多32条/24000字符，首个屏障即封口。完整控制子句才撤回整任务，局部纠正保留其他约束。
+草稿遇到补充失效；fallback 保留失败结果、更新覆盖版本，不反复调用模型。检索统一使用最新纠正优先的300字符 query。
+
+history 的 Message 保存真实 event_id；每条输入分别保留原文和时间，最终正文仅一条。
+终局后先幂等归档全部覆盖输入及正文，再合并有界历史并完成根投递；重放已有终局只补归档。
+启动历史只纳入已交付的用户原话，按覆盖列表回查全部输入，不受最近20条查询窗口限制；旧多条 SPEAK/ASK 合并完整正文。
+主动搭话、阅读提问和联想记录实际事件身份。direct 无根调用保留单消息路径，用户 event_id=None，省略覆盖字段；不承诺自动重放。
+`GET /api/chat/pending` 返回表达消费者的活动等待和 dead_letter，排除 effect/已交付根，活动优先、提交序、最多1000项并显式 truncated。
+
 > 本文件是表达系统唯一完整契约，合并原表达 prompt、表达流程和读书交互契约的表达侧内容。
 > 本 spec 只定义接口、边界和可验证语义；当前实现细节以 `nyx/` 源码为准，快速查阅先读
 > [`docs/facts/expression-system-facts.md`](../facts/expression-system-facts.md)。
@@ -123,10 +138,9 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 - 讨论技能由手动开关或 `should_load_discussion()` 自动命中时强制 SLOW；普通陪聊和明确拒绝讨论不自动加载。
 - SLOW 在回复前执行回溯、自我叙事读取和 plan → execute；每份计划最多 4 轮工具判断，
   最多一次 replan，保留跨计划结果、去重和预算。非法/空/失败计划降级原 ReAct；完整契约见 [18](18-plan-and-execute.md)。非讨论模式保留隐式事实与对话段检索，
-  讨论模式关闭这两类隐式注入，改用能力工具。默认一次
-  生成完整回复，只有模型明确设置 `needs_continuation=true` 时才续写，轮数上限由
-  `slow_max_rounds` 定义。
-- 普通快慢通道不调用旧Memory的 `record_recall`；仅对实际进入独立历史段 prompt 区块的段调用 `record_conversation_segment_recall(segment.id, correlation_id)`。同一用户事件重试不重复计数，超过 12000 字符区块预算而未渲染的段不计数，FAST/SLOW相同。工具判断和后续各轮回复使用同一入选集合。
+  讨论模式关闭这两类隐式注入，改用能力工具。慢通道先执行至多3次内部 reason，
+  按 answer/tools/continue 决策推进；同一输入版本仍可在 `slow_max_rounds` 内续写草稿，终局合并交付一份完整正文，不逐轮对外发布。
+- 普通快慢通道不调用旧Memory的 `record_recall`；仅对实际进入独立历史段 prompt 区块的段调用 `record_conversation_segment_recall(segment.id, correlation_id)`。同一用户事件重试不重复计数，超过 12000 字符区块预算而未渲染的段不计数，FAST/SLOW相同。输入更新后重新派生检索与最终 prompt，只有实际渲染的段计召回。
 - 初次规划、重规划与慢通道回复注入 `search(kind=LESSON)` 的经验；重规划和回复刷新查询，
   可使用本轮工具刚产生的经验。快通道不召回经验。只读工具重试耗尽/空结果经 [19](19-failure-reflection.md)
   采集学习，未确认副作用不学习为已确认失败；每次实际执行按 [17](17-tool-call-observation.md) 记录观测，结果回注后标记采纳。
@@ -140,9 +154,9 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 - `memory_recall` 的段仅在完整段 JSON 实际进入最终 `respond` prompt 时记录真实召回，
   沿用用户事件/段 ID 的 durable 幂等标记；被截断的段与只检索未展示的段不计数。
 - FAST 和 SLOW 的正常 THINK/SPEAK 都先缓存在 `ReplyState`，生成完成前不发布任何正常文本
-  事件。FAST 一轮结束后原子提交全部文本；SLOW 命中问句或达到轮数上限后，按生成顺序把
-  全部 THINK/SPEAK 与终局 ASK（如有）作为一个终局批次提交；聊天不再生成 `scene_memory_requested`。
-  问句最后一段只生成 ASK，不重复生成同内容 SPEAK。未命中且未达上限时只继续续写。
+  事件。finalize 在一次事务中重新核对输入版本，提交最终 THINK（非空时）与一份 SPEAK/ASK、
+  attempt 和补充 effect；问句只生成 ASK，不重复生成同内容 SPEAK。补充使旧草稿失效，
+  fallback 保留失败结果并更新覆盖；聊天不再生成 `scene_memory_requested`。
 - 历史 `scene_memory_requested` 仍可由 durable consumer 重放处理；新聊天不再产生请求。
 
 ### Prompt
@@ -187,7 +201,7 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
   不得伪造查询成功。
 
 - `ReplyState.tool_feedback` 保存工具子图返回的实际调用步骤状态和跳过说明，与结果共同计入8000字符工具块预算；状态优先保留、至多4000字符，超长资料明确截断。调用编号、参数、尝试次数、错误及终态用于决策，不代表自然语言计划完成条件已经满足。
-- 最终 `respond` 有工具结果或反馈时，在 system prompt 追加执行叙述约束（含续写和 JSON 重试）：
+- 最终 `respond` 有工具结果或反馈时，在 system prompt 追加执行叙述约束（含输入更新后的正文和 JSON 重试）：
   已执行操作只依据本轮实际调用记录及结果；计划、经验、工具阶段文字总结不能代替调用证据，
   查询词逐字引用完整参数，先后依据调用编号；未执行策略只能作为建议，
   不把本轮调用说成上次，也不从历史建议推断上轮已执行。区分成功、空、失败、跳过与未确认；
@@ -204,16 +218,16 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
 ### 回溯与历史
 
 - history 是 `deque[Message]`，容量由 `max_context_len` 限制；当前消息在回合末才追加。
-- 启动时 ExpressionFacade 从 durable `event_log` 回填最近 `max_context_len` 条可解析的
-  `USER_MESSAGE`、`SPEAK`、`ASK`、`INITIATE_CHAT`、`READING_QUESTION` 和
-  `READING_ASSOCIATION` 表达历史；同一 correlation 的多轮 speak 合并成一个 Nyx turn。
+- 启动时 ExpressionFacade 从 durable `event_log` 恢复已交付对话及主动表达。新终局按覆盖列表
+  回查全部 `USER_MESSAGE`，不受最近20条候选窗口限制，最后才裁剪至 `max_context_len`；
+  旧协议同一 correlation 的多条 SPEAK/ASK 合并完整正文。
   恢复只运行一次，失败时记录日志并以空 history 启动；不会恢复 THINK 等非对话事件。
 - 快通道取最近 history；慢通道使用 `build_backtrack_context()` 至多取最近
   `max_context_len` 条，超过 30 分钟的相邻间隔或总时间跨度、明确无共同话题的用户消息即停止；短确认语先继承最近上下文。保留 `fast=True` 的 Nyx 消息。
-- 慢通道记忆查询由截取后的最近至多 3 条历史消息（每条至多 120 字符）与当前消息组成，总长至多 300 字符；因此简短回复可沿用上一句提及的主题，不把陈旧或不相关历史送进 embedding。
+- 普通快慢通道的检索 query 先放最新输入及纠正，再放原任务和近期历史，总长至多300个 Unicode 字符；分条完整原话仍进入 prompt，query 截断不截原文。
 - 快通道 Nyx 消息仍标记 `fast=True`；该标记描述生成通道，不再决定慢通道历史是否保留。
   读书主动 turn 默认 `fast=False`。
-- 回合结束按 user 后 Nyx 顺序追加；Nyx 多轮 speak 用换行拼成一个 history turn。
+- 回合结束按受理序合并每条 user 原话及一条最终 Nyx 正文，按真实 event_id 去重并裁剪有界 history。
 - 带活动快照的 user/Nyx history 条目保存活动 ID、类型和有界摘要；历史条目在 user prompt
   中以“历史活动事实”作为次级资料，不覆盖本轮 `[本轮活动事实]`。旧条目没有活动元数据时
   保持原有渲染。
@@ -224,7 +238,7 @@ reading_context、activity_context、answered_attempt、claimed_return 和 fallb
   `RUNNING` 的活动尝试 `interrupt(activity_id, USER_MESSAGE)`，随后再次采样并把两次结果
   组装成 `ActivityContext`。活动不存在、打断失败或二次采样为空都继续回复。
 - 打断失败不会制造“已暂停”事实；表达 prompt 同时保留 `interrupted` 与二次采样的
-  `current`，由后者明确仍在运行或无法确认终态。快通道、慢通道、工具判断和多轮续写复用
+  `current`，由后者明确仍在运行或无法确认终态。快通道、慢通道、工具判断和输入更新后的生成复用
   同一个 `ReplyState.activity_context`。
 - `ExpressionFacade.reply()` 未由运行时注入上下文时才读取 `get_current()` 作为独立快照；
   旧测试 fake 没有该方法按空闲处理，不改变历史消息兼容性。
@@ -305,7 +319,7 @@ async def _temporal_context(
   核实本次正常终局事件是否已落库；已提交则完成 claim 再重抛，不得 release 复活旧归来。
   只有尚未成功提交正常表达时，LLM/evaluator/解析/事件提交失败、空输出和固定 fallback 才 release；同一次回复的多轮 LLM
   调用复用同一 claim，不重复消费。模板碎碎念不使用也不消费归来上下文。
-  一次回复的 FAST/SLOW、工具判断和多轮续写复用同一个 `ReplyState.temporal_context`，
+  一次回复的 FAST/SLOW、工具判断和输入更新后的生成复用同一个 `ReplyState.temporal_context`，
   不因生成期间跨分钟重新计算。近期重复的 mutter 未发布时同样释放 claim；运行时 claim
   的持有、完成和释放边界见 [模块与事件总线契约](04-module-bus-system.md)。
 
@@ -471,7 +485,7 @@ schema 35 迁移把旧版本遗留的 `CLAIMED AND answer_event_id IS NULL` 恢�
 
 | 消费者 | 发现方式 | 用途 |
 |---|---|---|
-| ReplyState / 快慢通道、工具判断、续写 | reply 注入 | 统一本轮活动事实 |
+| ReplyState / 快慢通道、工具判断、正文生成 | reply 注入 | 统一本轮活动事实 |
 | `build_system_prompt` / 主动表达 | 参数注入 | 区分当前、刚才被打断、未知状态 |
 | 回复历史及主动搭话历史写入 | 本轮快照 | 复制活动 id、类型与事实摘要到 Message |
 

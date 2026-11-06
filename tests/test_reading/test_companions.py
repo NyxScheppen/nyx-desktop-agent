@@ -58,7 +58,7 @@ class _Expression:
     def __init__(self) -> None:
         self.turns: list[str] = []
 
-    def record_proactive_turn(self, text: str) -> None:
+    def record_proactive_turn(self, text: str, **kwargs: object) -> None:
         self.turns.append(text)
 
 

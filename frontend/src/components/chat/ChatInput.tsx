@@ -2,13 +2,14 @@ import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import { useCharacterStore } from "../../stores/characterStore";
 import { useChatStore } from "../../stores/chatStore";
 
-// 输入框 + 发送按钮（03 §1/§2）：isReplying 时仅禁用发送按钮（输入框可预打下一句）。
-// 串行锁：回复中 submit 直接返回（memory chat-send-serial-input-lock）。
+// 提交期间防连击；等待回复期间可以继续补充。
 export default function ChatInput() {
   const text = useCharacterStore((s) => s.drafts[s.registry?.current_id ?? "nyx"] ?? "");
   const setText = useCharacterStore((s) => s.setDraft);
   const name = useCharacterStore((s) => s.registry?.characters.find((role) => role.id === s.registry?.current_id)?.name ?? "Nyx");
   const isReplying = useChatStore((s) => s.isReplying);
+  const isSending = useChatStore((s) => s.isSending);
+  const replyNotice = useChatStore((s) => s.replyNotice);
   const sendError = useChatStore((s) => s.sendError);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const discussionMode = useChatStore((s) => s.discussionMode);
@@ -19,14 +20,16 @@ export default function ChatInput() {
   const sendAnnotation = useChatStore((s) => s.sendAnnotation);
 
   const submit = () => {
-    if (isReplying) return;
+    if (isSending) return;
     const trimmed = text.trim();
     if (trimmed === "") return;
     // 成功才清空（03 §2）：失败返回 false 保留原文；且只清「仍是原文」的框，
     // 否则回复期间预打的下一句会被无条件 setText("") 误删。比对 trim 后的值（框里可能还带原始空格）
     const scope = captureScope();
+    const generation = useChatStore.getState().generation;
     void sendMessage(trimmed).then((ok) => {
-      if (ok && isScopeCurrent(scope) && useCharacterStore.getState().drafts[scope?.id ?? "nyx"]?.trim() === trimmed) setText("");
+      if (ok && isScopeCurrent(scope) && generation === useChatStore.getState().generation
+        && useCharacterStore.getState().drafts[scope?.id ?? "nyx"] === text) setText("");
     });
   };
 
@@ -55,7 +58,7 @@ export default function ChatInput() {
           />
           <small>{Array.from(annotation.comment).length}/2000</small>
           <button type="button" onClick={cancelAnnotation}>取消批注</button>
-          <button type="button" disabled={isReplying || !annotation.comment.trim() || Array.from(annotation.comment).length > 2000}
+          <button type="button" disabled={isSending || !annotation.comment.trim() || Array.from(annotation.comment).length > 2000}
             onClick={() => { void sendAnnotation(); }}>发送批注</button>
         </div>
       )}
@@ -72,12 +75,14 @@ export default function ChatInput() {
       <button
         type="button"
         className="chat-input__send"
-        disabled={isReplying}
+        disabled={isSending || !text.trim() || Array.from(text.trim()).length > 12000}
         onClick={submit}
       >
-        {isReplying ? "…" : "发送"}
+        {isSending ? "…" : "发送"}
       </button>
       {sendError !== null && <p className="error-text chat-input__error">{sendError}</p>}
+      {replyNotice !== null && <p className="error-text chat-input__error">{replyNotice}</p>}
+      {isReplying && <small>她正在想，你可以继续说</small>}
     </div>
   );
 }

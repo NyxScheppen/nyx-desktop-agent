@@ -26,6 +26,16 @@ class ToolCallStore:
             )).fetchone()
             return dict(row) if row is not None else None
 
+    async def get_execution(self, log_id: str) -> dict[str, Any] | None:
+        async with self._db.lock:
+            row = await (
+                await self._db.conn.execute(
+                    "SELECT * FROM tool_execution WHERE id = ?",
+                    (log_id,),
+                )
+            ).fetchone()
+            return dict(row) if row is not None else None
+
     async def finish_execution(
         self, log_id: str, result: Any, error: str | None,
     ) -> None:

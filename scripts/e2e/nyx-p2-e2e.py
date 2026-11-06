@@ -35,7 +35,9 @@ class Fake:
     async def complete(self, messages, *, module, output_type, correlation_id, **kwargs):
         self.calls.append((output_type, messages))
         calls = []
-        if output_type == 'source_digest':
+        if output_type == 'reason':
+            content = {'summary': '核对检索结果。', 'next_action': 'answer' if '[工作摘要' in messages[-1]['content'] else 'tools'}
+        elif output_type == 'source_digest':
             if self.fail_digest:
                 raise ValueError('injected digest failure')
             text = json.loads(messages[-1]['content'])['source_text']

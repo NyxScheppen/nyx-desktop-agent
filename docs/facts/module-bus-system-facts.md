@@ -1,5 +1,11 @@
 # 模块与事件总线事实表
 
+## 对话续接（26）
+
+- expression.user_message独用event_seq FIFO，list_pending_after有界读取连续候选；事务内复用现有锁，其他消费者排序不变。
+- finalize在同事务检查版本/真实输入并提交统一正文、attempt、补充effect；根effect仍在完整归档后完成。重放已有终局先补归档，广播故障不重生成。
+- schema53新增conversation_turn_archive；SQLite现46张业务/基础设施表，总49张。GET chat/pending仅查询表达投递，活动优先、1000上限并标truncated。
+
 > 本文件是给“无关代码但会碰到模块通信、事件总线、组合根、DB 生命周期”的快速摘要。底层模块总线系统的唯一完整契约是 `docs/specs/04-module-bus-system.md`；本文件不复制完整 spec。修改 `nyx/events/`、`nyx/subscriptions.py`、`nyx/runtime.py`、`nyx/app_context.py`、`nyx/main.py`、事件相关 DB 表或跨模块副作用前，必须先读完整 spec，并同步更新本摘要。
 
 ## 当前实现事实
@@ -20,7 +26,7 @@
 
 - 当前系统不是纯“模块只通过总线通信”：EventBus 负责事件受理、`event_log` 持久化、`event_delivery` 投递、SSE 广播和 handler 通知；Facade 之间仍存在直接查询/编排调用。
 - 当前 `EventType` 有 26 个成员；阅读进度同步使用 `READING_PROGRESS`，不是新的消费者路由。
-- schema47/48 增加 `tool_call_log`（三索引）和 `lesson_signal`，schema49 增加工具 checkpoint 两表，schema50 增加临时 tool_execution 回执，schema51增加传输两表，schema52增加 `event_log.event_seq`，业务及基础设施表合计45张（SQLite表总数48）。PostgreSQL 角色库由官方 `AsyncPostgresSaver` 创建其 `checkpoint_migrations`、`checkpoints`、`checkpoint_blobs`、`checkpoint_writes` 表，不复用 SQLite 的 `writes` 结构。
+- schema47/48 增加 `tool_call_log`（三索引）和 `lesson_signal`，schema49 增加工具 checkpoint 两表，schema50 增加临时 tool_execution 回执，schema51增加传输两表，schema52增加 `event_log.event_seq`，schema53增加 `conversation_turn_archive`，业务及基础设施表合计46张（SQLite表总数49）。PostgreSQL 角色库由官方 `AsyncPostgresSaver` 创建其 `checkpoint_migrations`、`checkpoints`、`checkpoint_blobs`、`checkpoint_writes` 表，不复用 SQLite 的 `writes` 结构。
   ToolRegistry 的观测独立提交、失败不改变工具结果；Evaluator 的 OOC 回调经组合根接到记忆经验入口，
   不增加事件路由，技术失败不触发内心反思。
 - 表达子图围绕工具调用可靠领取并完成 tool_execution 回执；完整临时结果用于恢复，回执读写错误传播，独立于 best-effort 观测。恢复复用成功结果，未确认副作用进入 uncertain 停批；终局 checkpoint 删除后清理回执，启动补清终局残留。
@@ -37,14 +43,14 @@
 - `EventBus.publish(event)` 是 durable admission：根事件必须先持久化 `event_log` 和已注册 consumer 的初始 delivery，commit 成功后才返回；数据库不可用或总线关闭时抛受理错误。
 - `EventBus.publish_many(events)` 将同一业务承诺的多条事件原子受理；任一冲突或失败整批回滚，
   已回滚行不计入 `persisted_count`，commit 后才广播/唤醒。快慢回复的全部正常文本只在终局
-  一次提交；慢通道再与 `SPEAK/ASK`、`scene_memory_requested` 使用同一边界。
+  一次提交；普通回复再与最终 `SPEAK/ASK`、attempt 和补充 effect 使用同一边界；聊天不再生成 scene_memory_requested。
 - 外部领域事务调用 `append_in_transaction()` 后失败时，`persisted_count` 按本事务实际新增数
   补偿，不恢复绝对快照，避免覆盖事务释放锁后其它发布增加的计数。
 - `event_log` 表示事件已发生；`event_delivery` 表示某个 `consumer_id` 对该事件的消费状态。不要用 `event_log` 推断消费者已完成。
 - `EventBus.has_effect(event_id, consumer_id)` 可在外部调用前读取已提交 effect；最终幂等仍由事务内 `try_mark_effect_in_transaction` 保证。
 - 投递语义是 at-least-once：消费者可能被重放，因此跨模块副作用必须按 `(event_id, consumer_id)` 幂等。
 - 失败重放只针对失败消费者；已成功消费者不重复执行。
-- 每个稳定 `consumer_id` 对应独立 FIFO worker；同一消费者内按事件时间/id 顺序执行，不同消费者不互相阻塞。
+- 每个稳定 `consumer_id` 对应独立 FIFO worker；expression.user_message 按 event_seq，其他消费者按事件时间/id 顺序执行，不同消费者不互相阻塞。
 - handler 状态流转：`pending -> processing -> succeeded`；失败进入 `retry_wait`，超过上限进入 `dead_letter`。
 - handler 完成后的成功或失败状态 finalize 提交失败时，worker 原地重试 finalize，不重复调用 handler；崩溃遗留 processing 依赖 lease 恢复。证明旧 worker/runner 全部结束的干净停止会立即释放残留 processing，避免挂载后永久阻塞 FIFO。
 - `processing` 带 `lease_until`；进程崩溃后租约过期的投递会恢复为 `pending`。

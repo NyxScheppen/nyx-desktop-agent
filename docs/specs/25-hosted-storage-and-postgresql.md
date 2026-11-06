@@ -71,8 +71,8 @@ host/角色数据库、版本、行数和文件目录。实际导入必须显式
 6. 所有 schema 和文件校验通过后才写出成功报告。失败时删除本次创建的目标 schema/新复制文件，源数据保持原状；不能在失败时留下可启动的半迁移目标。
 7. 迁移完成后通过设置 `NYX_DATABASE_URL` 显式切换运行时。回退时先停止写入并保留 PostgreSQL；恢复旧 SQLite 只代表切回迁移前快照，迁移后新增的云端写入不会自动回灌。
 
-导入器当前接受 host schema 2 和角色 schema 51/52；schema 51 的 `event_log.rowid`
-会显式映射为目标 schema 52 的 `event_seq`。非空 SQLite checkpoint 表暂不导入，导入器会拒绝
+导入器当前接受 host schema 2 和角色 schema 51/52/53；目标为当前 schema53。旧源补建逐轮归档索引，新源验证导入映射；schema 51 的 `event_log.rowid`
+会显式映射为目标 schema 53 的 `event_seq`。非空 SQLite checkpoint 表暂不导入，导入器会拒绝
 继续，避免把 SQLite saver 布局静默写入 PostgreSQL 官方 saver 表。
 
 迁移工具不得导出 token 原文；凭证表只搬运摘要。PostgreSQL URL 通过指定环境变量名读取，报告仅记录目标 schema 和校验结果，不输出连接凭证。
@@ -133,7 +133,7 @@ host/角色数据库、版本、行数和文件目录。实际导入必须显式
 
 ## 测试要点
 
-- [ ] SQLite 现有完整测试与 18 个 E2E 驱动保持通过。
+- [ ] SQLite 现有完整测试与 19 个 E2E 驱动保持通过。
 - [ ] PostgreSQL 集成测试覆盖 host/角色 schema 隔离、角色启动恢复、事务回滚、event 顺序、设备配对、checkpoint 和 outbox 重放。
 - [ ] 迁移测试覆盖空目标、重复预检、目标冲突、导入失败清理、主键/事件顺序/凭证摘要校验及源文件不变。
 - [ ] Compose 测试覆盖健康启动、服务重启和容器重建后的数据库与文件持久性。

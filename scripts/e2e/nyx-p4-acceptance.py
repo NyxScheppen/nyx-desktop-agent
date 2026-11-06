@@ -15,7 +15,8 @@ class Fake:
         self.feedback={'entities':[],'facts':[{'scope':'profile','subject':'用户','subject_type':'person','predicate':'回复偏好','object':'希望先说明不确定性','asserted':True,'mode':'multi'},{'scope':'conversation','subject':'用户','subject_type':'person','predicate':'回复反馈','object':'认为这次回答过于肯定','asserted':True,'mode':'multi'}],'is_correction':True}
     async def complete(self,messages,*,module,output_type,correlation_id,**kw):
         self.calls.append((output_type,messages,kw,correlation_id))
-        if output_type=='reply':data={'think':'认真理解批注','speak':'我会先说明不确定性。','needs_continuation':False}
+        if output_type=='reason':data={'summary':'核对批注。','next_action':'answer' if '[工作摘要' in messages[-1]['content'] else 'tools'}
+        elif output_type=='reply':data={'think':'认真理解批注','speak':'我会先说明不确定性。','needs_continuation':False}
         elif output_type=='fact_extraction':data=self.feedback
         elif output_type=='tool':data={}
         elif output_type=='reflection':data={'story':'我会留意用户反馈','becoming':'先说明不确定性','personality_delta':{},'values_delta':{},'long_term_desires':[]}

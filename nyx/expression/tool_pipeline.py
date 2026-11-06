@@ -39,6 +39,13 @@ _MAX_TOOL_ATTEMPTS = 3
 
 
 class ToolState(TypedDict):
+    input_event_ids: NotRequired[list[str]]
+    input_revision: NotRequired[int]
+    input_closed: NotRequired[bool]
+    answered_attempt_id: NotRequired[str | None]
+    allow_new_actions: NotRequired[bool]
+    exit_reason: NotRequired[str]
+    input_update: NotRequired[dict[str, Any] | None]
     correlation_id: str
     query: str
     system: str
@@ -132,11 +139,74 @@ def _needs_plan_review(state: ToolState) -> bool:
 def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
     """Build the existing plan/execute loop with one checkpoint per tool attempt."""
 
+    async def input_pending(state: ToolState) -> bool:
+        return not state.get(
+            "input_closed", False
+        ) and await deps.has_pending_reply_inputs(
+            state.get("input_event_ids", []),
+            state.get("answered_attempt_id"),
+        )
+
+    async def enter(state: ToolState) -> dict[str, Any]:
+        update = state.get("input_update")
+        if update is None:
+            return {"exit_reason": "complete"}
+        pending = dict(state["pending"] or {})
+        changes: dict[str, Any] = {}
+        if pending and pending["attempts"] > 0:
+            status = pending["status"]
+            if status == "running":
+                receipt = await deps.tools.get_execution(pending["log_id"])
+                if receipt is not None and receipt["status"] == "success":
+                    pending = receive_result(
+                        pending, json.loads(receipt["result_json"]), None
+                    )
+                elif not is_read_only_call(pending["name"], pending["args"]):
+                    pending.update(
+                        status="uncertain",
+                        text="旧副作用结果未确认，禁止重放；请先查证。",
+                    )
+                else:
+                    pending = receive_result(
+                        pending,
+                        None,
+                        (receipt["error"] if receipt else None)
+                        or "旧请求未取得可靠结果，等待新版决策。",
+                    )
+            if pending["status"] == "retry_wait":
+                changes["records"] = {**state["records"], pending["key"]: pending}
+            else:
+                changes = await accept(cast(ToolState, {**state, "pending": pending}))
+        return {
+            **changes,
+            **update,
+            "input_update": None,
+            "pending": None,
+            "calls": [],
+            "cursor": 0,
+            "plan": None,
+            "plan_review": {},
+            "replan_reason": None,
+            "exit_reason": "complete",
+        }
+
+    async def after_enter(state: ToolState) -> str:
+        if await input_pending(state):
+            return "yield_input"
+        if (
+            not state.get("allow_new_actions", True)
+            or state["rounds"] >= _MAX_TOOL_ROUNDS
+            or len(state["outputs"]) >= _TOOL_OUTPUT_MAX_ITEMS
+            or any(r["status"] == "uncertain" for r in state["records"].values())
+        ):
+            return "complete"
+        return "plan"
+
     async def plan(state: ToolState) -> dict[str, Any]:
         system = state["system"]
         user = state["user"] + "\n" + PLAN_TASK
         user += "\n授权工具：" + json.dumps(state["schemas"], ensure_ascii=False)
-        if state["replan_reason"] is not None:
+        if state["replan_reason"] is not None or state["records"]:
             try:
                 lessons = await deps.memory.search(
                     state["query"], kind=MemoryKind.LESSON,
@@ -148,9 +218,12 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             user += (
                 f"\n[计划生成时间={format_prompt_time(state.get('plan_at'))}]\n上次计划："
                 + json.dumps(state["plan"], ensure_ascii=False)
-                + "\n重规划原因：" + state["replan_reason"]
-                + "\n" + _tool_outputs_block(
-                    state["outputs"], execution_feedback(state),
+                + "\n重规划原因："
+                + (state["replan_reason"] or "用户输入更新；保留已执行事实和剩余预算。")
+                + "\n"
+                + _tool_outputs_block(
+                    state["outputs"],
+                    execution_feedback(state),
                 )
             )
         parsed = None
@@ -166,9 +239,11 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         except Exception:
             _LOGGER.exception("规划失败 correlation_id=%s", state["correlation_id"])
         return {
-            "system": system, "plan": asdict(parsed) if parsed else None,
+            "system": system,
+            "plan": asdict(parsed) if parsed else None,
             "plan_at": time.time() if parsed else None,
-            "replan_reason": None, "rounds": 0,
+            "replan_reason": None,
+            "rounds": 0 if state["replan_reason"] is not None else state["rounds"],
         }
 
     async def decide(state: ToolState) -> dict[str, Any]:
@@ -199,7 +274,11 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             await deps.evaluator.evaluate(output)
         except Exception:
             _LOGGER.exception("工具判断失败 correlation_id=%s", state["correlation_id"])
-            return {"calls": [], "notices": [*state["notices"], TOOL_DECISION_FAILED]}
+            return {
+                "calls": [],
+                "rounds": state["rounds"] + 1,
+                "notices": [*state["notices"], TOOL_DECISION_FAILED],
+            }
         notices = list(state["notices"])
         if len(output.tool_calls) > _TOOL_OUTPUT_MAX_ITEMS:
             notices.append("跳过本轮第6项及后续调用：超过单轮调用数量上限。")
@@ -292,6 +371,12 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             key = name + ":" + json.dumps(args, ensure_ascii=False, sort_keys=True)
             if key in state["records"]:
                 prior = state["records"][key]
+                if (
+                    prior["status"] == "retry_wait"
+                    and prior["attempts"] < _MAX_TOOL_ATTEMPTS
+                ):
+                    pending = dict(prior)
+                    break
                 why = (
                     "结果未确认，禁止重复副作用" if prior["status"] == "uncertain"
                     else "重试次数已耗尽" if prior["status"] == "exhausted"
@@ -329,6 +414,8 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             return {"pending": pending}
         if pending["status"] == "retry_wait":
             await asyncio.sleep(max(0.0, pending["retry_at"] - time.time()))
+        if await input_pending(state):
+            return {"exit_reason": "input_pending"}
         pending.update(
             attempts=pending["attempts"] + 1, status="running", log_id=str(uuid4()),
             receipt_required=True,
@@ -340,6 +427,25 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         pending = dict(state["pending"] or {})
         name, args = pending["name"], pending["args"]
         read_only = is_read_only_call(name, args)
+        if await input_pending(state):
+            receipt = await deps.tools.get_execution(pending["log_id"])
+            if receipt is not None and receipt["status"] == "success":
+                return {
+                    "pending": receive_result(
+                        pending, json.loads(receipt["result_json"]), None
+                    )
+                }
+            if not read_only:
+                pending.update(
+                    status="uncertain", text="旧副作用结果未确认，禁止重放；请先查证。"
+                )
+                return {"pending": pending}
+            return {
+                "pending": receive_result(
+                    pending, None, "输入已更新，旧请求等待新版决策。"
+                ),
+                "exit_reason": "input_pending",
+            }
         if not pending.get("receipt_required") and not read_only:
             pending.update(
                 status="uncertain",
@@ -370,6 +476,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             # Disabling a tool forbids new execution, not reuse of an outcome
             # already committed before the restart.
             allowed = {schema["function"]["name"] for schema in deps.tools.schema()}
+            allowed &= {schema["function"]["name"] for schema in state["schemas"]}
             if name not in allowed:
                 pending.update(status="skipped", text="跳过：恢复后该工具已不再授权。")
                 return {"pending": pending}
@@ -381,6 +488,15 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             except Exception as exc:  # 取消继续传播，running 回执保留。
                 error = f"{type(exc).__name__}: {exc}"[:1000]
             await deps.tools.finish_execution(pending["log_id"], result, error)
+        return {"pending": receive_result(pending, result, error)}
+
+    def receive_result(
+        pending: dict[str, Any],
+        result: Any,
+        error: str | None,
+    ) -> dict[str, Any]:
+        name = pending["name"]
+        read_only = is_read_only_call(name, pending["args"])
         if error is None:
             if isinstance(result, dict) and result.get("error"):
                 error = str(cast(dict[str, Any], result)["error"])[:1000]
@@ -411,7 +527,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
                     and isinstance(entry.get("segment_id"), str)
                 }
         pending["received_at"] = time.time()
-        return {"pending": pending}
+        return pending
 
     async def accept(state: ToolState) -> dict[str, Any]:
         pending = dict(state["pending"] or {})
@@ -452,14 +568,16 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             "calls": calls, "cursor": cursor,
         }
 
-    def after_batch(state: ToolState) -> str:
+    async def after_batch(state: ToolState) -> str:
+        if await input_pending(state):
+            return "yield_input"
         if state["pending"] is not None:
             return "begin_attempt"
         if state["replan_reason"] is not None:
             return "replan"
         if _needs_plan_review(state):
             return "review_plan"
-        return "decide" if state["rounds"] < _MAX_TOOL_ROUNDS else END
+        return "decide" if state["rounds"] < _MAX_TOOL_ROUNDS else "complete"
 
     def replan(state: ToolState) -> dict[str, Any]:
         if state["replans"] >= _MAX_REPLANS:
@@ -469,25 +587,58 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             }
         return {"replans": state["replans"] + 1}
 
-    def after_decide(state: ToolState) -> str:
+    async def after_decide(state: ToolState) -> str:
+        if await input_pending(state):
+            return "yield_input"
         if _needs_plan_review(state):
             return "review_plan"
-        return "select_call" if state["calls"] else END
+        return "select_call" if state["calls"] else "complete"
 
-    def after_review(state: ToolState) -> str:
+    async def after_review(state: ToolState) -> str:
+        if await input_pending(state):
+            return "yield_input"
         action = state.get("plan_review", {})["action"]
         if action == "replan":
             return "replan"
-        return "decide" if action == "continue" else END
+        return "decide" if action == "continue" else "complete"
 
     def after_execute(state: ToolState) -> str:
+        if state.get("exit_reason") == "input_pending":
+            return "yield_input"
         pending = cast(dict[str, Any], state["pending"])
         return "begin_attempt" if pending["status"] == "retry_wait" else "accept"
 
     def after_replan(state: ToolState) -> str:
-        return "plan" if state["replan_reason"] is not None else END
+        return "plan" if state["replan_reason"] is not None else "complete"
+
+    async def after_plan(state: ToolState) -> str:
+        return "yield_input" if await input_pending(state) else "decide"
+
+    def yield_input(state: ToolState) -> dict[str, Any]:
+        return {"exit_reason": "input_pending"}
+
+    def complete(state: ToolState) -> dict[str, Any]:
+        limit = ""
+        if not state["schemas"]:
+            limit = "当前没有获授权的可用工具。"
+        elif state["rounds"] >= _MAX_TOOL_ROUNDS:
+            limit = "工具判断预算已用尽，使用已有结果回答。"
+        elif len(state["outputs"]) >= _TOOL_OUTPUT_MAX_ITEMS:
+            limit = "工具结果数量预算已用尽。"
+        elif any(r["status"] == "uncertain" for r in state["records"].values()):
+            limit = "已有副作用结果未确认，不再启动新动作。"
+        return {"exit_reason": "complete",
+                "notices": [*state["notices"], limit] if limit else state["notices"]}
+
+    def after_begin(state: ToolState) -> str:
+        return (
+            "yield_input" if state.get("exit_reason") == "input_pending" else "execute"
+        )
 
     graph = StateGraph(ToolState)
+    graph.add_node("enter", enter)
+    graph.add_node("yield_input", yield_input)
+    graph.add_node("complete", complete)
     graph.add_node("plan", plan)
     graph.add_node("decide", decide)
     graph.add_node("review_plan", review_plan)
@@ -496,13 +647,16 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
     graph.add_node("execute", execute)
     graph.add_node("accept", accept)
     graph.add_node("replan", replan)
-    graph.set_entry_point("plan")
-    graph.add_edge("plan", "decide")
+    graph.set_entry_point("enter")
+    graph.add_conditional_edges("enter", after_enter)
+    graph.add_conditional_edges("plan", after_plan)
     graph.add_conditional_edges("decide", after_decide)
     graph.add_conditional_edges("review_plan", after_review)
     graph.add_conditional_edges("select_call", after_batch)
-    graph.add_edge("begin_attempt", "execute")
+    graph.add_conditional_edges("begin_attempt", after_begin)
     graph.add_conditional_edges("execute", after_execute)
     graph.add_edge("accept", "select_call")
     graph.add_conditional_edges("replan", after_replan)
+    graph.add_edge("yield_input", END)
+    graph.add_edge("complete", END)
     return graph.compile(checkpointer=deps.checkpointer or InMemorySaver())

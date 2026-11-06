@@ -11,7 +11,7 @@ import random
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
-from typing import cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -30,7 +30,11 @@ from nyx.enums import (
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_text_event
-from nyx.expression.classifier import classify_user_intent, should_load_discussion
+from nyx.expression.classifier import (
+    classify_user_intent,
+    derive_request_text,
+    should_load_discussion,
+)
 from nyx.expression.mutter import (
     _LLM_MUTTER_RATE,
     _MUTTER_RATE,
@@ -143,18 +147,414 @@ class ExpressionFacade:
                 evaluator=self._evaluator,
                 memory=self._memory,
                 inner_life=self._inner_life,
-                bus=self._bus,
                 canon=self._canon,
                 ask_guidance=self._ask_guidance,
                 config=self._config,
                 history=self._history,
                 tools=tools,
                 knowledge_boundary=knowledge_boundary,
-                register_question=self.register_question,
-                commit_reply_events=self._commit_reply_events,
+                collect_reply_inputs=self._collect_reply_inputs,
+                finalize_user_reply=self._finalize_user_reply,
+                archive_user_reply=self._archive_user_reply,
+                has_pending_reply_inputs=self._has_pending_reply_inputs,
                 checkpointer=self._checkpointer,
             )
         )
+
+    async def _pending_reply_inputs(
+        self,
+        inputs: list[Event],
+        answered_attempt_id: str | None,
+    ) -> tuple[list[Event], bool]:
+        root = inputs[0]
+        size = sum(len(item.content["message"]) for item in inputs)
+        if (
+            root.content.get("annotation") is not None
+            or len(inputs) >= 32
+            or size >= 24000
+        ):
+            return [], True
+        pending = await self._bus.list_pending_after(
+            "expression.user_message",
+            inputs[-1].id,
+            limit=33 - len(inputs),
+        )
+        accepted: list[Event] = []
+        for event in pending:
+            text = event.content.get("message")
+            if event.type is not EventType.USER_MESSAGE or not isinstance(text, str):
+                raise ValueError("补充消息缺少真实用户原文")
+            if (
+                event.content.get("annotation") is not None
+                or event.content.get("discussion") != root.content.get("discussion")
+                or (
+                    event.content.get("reply_to") is not None
+                    and event.content["reply_to"] != answered_attempt_id
+                )
+                or len(inputs) + len(accepted) >= 32
+                or size + len(text) > 24000
+            ):
+                return accepted, True
+            accepted.append(event)
+            size += len(text)
+        return accepted, len(inputs) + len(accepted) >= 32 or size >= 24000
+
+    async def _has_pending_reply_inputs(
+        self,
+        input_event_ids: list[str],
+        answered_attempt_id: str | None,
+    ) -> bool:
+        if not input_event_ids:
+            return False
+        inputs: list[Event] = []
+        for identity in input_event_ids:
+            event = await self._bus.get_event(identity)
+            if event is None or event.type is not EventType.USER_MESSAGE:
+                raise ValueError("回复输入证据已丢失")
+            inputs.append(event)
+        accepted, _ = await self._pending_reply_inputs(inputs, answered_attempt_id)
+        return bool(accepted)
+
+    async def _collect_reply_inputs(self, state: ReplyState) -> dict[str, Any]:
+        inputs = state["input_events"]
+        updates: dict[str, Any] = {"needs_refresh": False}
+        if state["input_mode"] == "durable" and not state["input_closed"]:
+            answered = state["answered_attempt"]
+            accepted, closed = await self._pending_reply_inputs(
+                inputs,
+                answered.id if answered else None,
+            )
+            updates["input_closed"] = closed
+            if accepted:
+                inputs = [*inputs, *accepted]
+                revision = state["input_revision"] + 1
+                updates.update(
+                    input_events=inputs,
+                    input_revision=revision,
+                    think=[],
+                    speak=state["speak"] if state["fallback"] else [],
+                    ask=None,
+                    round=0,
+                    round_times=[],
+                    needs_continuation=False,
+                    draft_revision=revision if state["fallback"] else -1,
+                    draft_event_ids=[e.id for e in inputs] if state["fallback"] else [],
+                    next_action="answer",
+                )
+        texts = (
+            [item.content["message"] for item in inputs]
+            if inputs
+            else [state["message"]]
+        )
+        start, message = derive_request_text(texts)
+        discussion = inputs[0].content.get("discussion") if inputs else None
+        # Direct calls already received their explicit mode at the reply entrance.
+        skill = (
+            state["skill"]
+            if not inputs
+            else (
+                self._skills.get("discussion")
+                if discussion is True
+                or (discussion is None and should_load_discussion(message))
+                else None
+            )
+        )
+        reading = state["reading_context"]
+        answered = state["answered_attempt"]
+        if (
+            inputs
+            and answered is not None
+            and (
+                answered.kind is InteractionKind.READING_QUESTION
+                and self._reading_context_reader is not None
+            )
+        ):
+            reading = await self._reading_context_reader(
+                answered.source_id,
+                f"{answered.text}\n{message}",
+            )
+        return {
+            **updates,
+            "message": message,
+            "request_start_index": start,
+            "intent": classify_user_intent(message),
+            "skill": skill,
+            "reading_context": reading,
+        }
+
+    async def _terminal_user_reply(self, root_event_id: str) -> Event | None:
+        events = await self._bus.list_events(correlation_id=root_event_id)
+        return next(
+            (e for e in events if e.type in (EventType.SPEAK, EventType.ASK)), None
+        )
+
+    async def _delivered_reply_text(self, terminal: Event) -> str:
+        if (
+            "reply_complete" in terminal.content
+            or "reply_to_event_ids" in terminal.content
+        ):
+            return terminal.content["content"]
+        events = await self._bus.list_events(correlation_id=terminal.correlation_id)
+        delivered = sorted(
+            (e for e in events if e.type in (EventType.SPEAK, EventType.ASK)),
+            key=lambda e: (e.timestamp, e.id),
+        )
+        return "\n".join(e.content["content"] for e in delivered)
+
+    async def _covered_reply_inputs(self, terminal: Event) -> list[Event]:
+        complete = terminal.content.get("reply_complete")
+        ids: Any = terminal.content.get("reply_to_event_ids")
+        if (
+            "reply_complete" not in terminal.content
+            and "reply_to_event_ids" not in terminal.content
+        ):
+            ids = [terminal.correlation_id]
+        elif (
+            complete is not True
+            or not isinstance(ids, list)
+            or not 1 <= len(cast(list[Any], ids)) <= 32
+            or any(not isinstance(i, str) or not i for i in cast(list[Any], ids))
+            or len(set(cast(list[Any], ids))) != len(cast(list[Any], ids))
+            or ids[0] != terminal.correlation_id
+        ):
+            raise ValueError("终局覆盖协议非法")
+        inputs: list[Event] = []
+        for identity in cast(list[str], ids):
+            event = await self._bus.get_event(identity)
+            if (
+                event is None
+                or event.type is not EventType.USER_MESSAGE
+                or not isinstance(event.content.get("message"), str)
+            ):
+                raise ValueError("终局覆盖的原始输入缺失或类型非法")
+            inputs.append(event)
+        database = getattr(self._bus, "_db", None)
+        if database is not None:
+            async with database.transaction():
+                cursor = await database.conn.execute(
+                    "SELECT id FROM event_log WHERE id IN ("
+                    + ",".join("?" for _ in inputs)
+                    + ") ORDER BY event_seq",
+                    cast(list[str], ids),
+                )
+                if [row["id"] for row in await cursor.fetchall()] != ids:
+                    raise ValueError("终局覆盖顺序非法")
+        return inputs
+
+    async def _finalize_user_reply(
+        self,
+        state: ReplyState,
+    ) -> Literal["committed", "refresh", "replayed"]:
+        body = "\n".join(state["speak"])
+        if not body:
+            raise ValueError("回复终局正文不能为空")
+        correlation = state["correlation_id"]
+        attempt: InteractionAttempt | None = None
+        if state["ask"] is not None and not state["fallback"]:
+            now = time.time()
+            attempt = InteractionAttempt(
+                id=str(uuid4()),
+                kind=InteractionKind.CHAT_ASK,
+                source_id=correlation,
+                correlation_id=correlation,
+                text=body,
+                created_at=now,
+                expires_at=now + self._config.ask_timeout,
+            )
+            terminal = _ask_event(
+                body, attempt.id, correlation, attempt.kind, attempt.expires_at
+            )
+        else:
+            terminal = internal_text_event(EventType.SPEAK, body, correlation)
+        if state["fallback"]:
+            terminal.content.update(response_kind="fallback", attempt_id=None)
+        durable = state["input_mode"] == "durable"
+        if durable:
+            terminal.content.update(
+                reply_complete=True,
+                reply_to_event_ids=[e.id for e in state["input_events"]],
+            )
+        events: list[Event] = []
+        thought = "\n".join(t for t in state["think"] if t)
+        if thought and not state["fallback"]:
+            events.append(internal_text_event(EventType.THINK, thought, correlation))
+        events.append(terminal)
+        claim = None if state["fallback"] else state["claimed_return"]
+        database = getattr(self._bus, "_db", None)
+        if database is None:
+            if attempt is not None:
+                await self._commit_attempt_events(
+                    attempt, events, claim, state["answered_attempt"]
+                )
+            else:
+                await self._commit_reply_events(
+                    events, state["answered_attempt"], claim
+                )
+            state["committed_reply"] = terminal
+            return "committed"
+        appended = 0
+        try:
+            async with database.transaction():
+                if durable:
+                    existing = await self._terminal_user_reply(correlation)
+                    if existing is not None:
+                        await self._covered_reply_inputs(existing)
+                        state["committed_reply"] = existing
+                        return "replayed"
+                    ids = [e.id for e in state["input_events"]]
+                    if (
+                        state["draft_revision"] != state["input_revision"]
+                        or state["draft_event_ids"] != ids
+                    ):
+                        raise ValueError("终局草稿输入版本不一致")
+                    for original in state["input_events"]:
+                        if await self._bus.get_event(original.id) != original:
+                            raise ValueError("终局原始输入不一致")
+                    if not state["input_closed"]:
+                        answered = state["answered_attempt"]
+                        accepted, closed = await self._pending_reply_inputs(
+                            state["input_events"],
+                            answered.id if answered else None,
+                        )
+                        if accepted:
+                            return "refresh"
+                        state["input_closed"] = closed
+                if self._interaction_store is not None:
+                    if attempt is not None:
+                        await self._interaction_store.create(attempt)
+                    answered = state["answered_attempt"]
+                    if (
+                        answered is not None
+                        and not await self._interaction_store.finish_answer(
+                            answered.id,
+                            answered.answer_event_id or "",
+                        )
+                    ):
+                        raise RuntimeError("被回答的 interaction attempt 无法完成")
+                for event in events:
+                    before = self._bus.persisted_count
+                    try:
+                        await self._bus.append_in_transaction(event)
+                    finally:
+                        appended += self._bus.persisted_count - before
+                if durable:
+                    for event in state["input_events"][1:]:
+                        await self._bus.try_mark_effect_in_transaction(
+                            event.id, "expression.user_message"
+                        )
+        except BaseException as error:
+            try:
+                committed = await self._bus.is_durable(terminal.id)
+            except Exception:
+                raise error
+            if committed:
+                state["committed_reply"] = terminal
+                self._finish_return_claim(claim)
+            else:
+                self._bus.persisted_count -= appended
+            raise
+        state["committed_reply"] = terminal
+        self._finish_return_claim(claim)
+        for event in events:
+            await self._bus.announce_committed(event)
+        return "committed"
+
+    async def _merge_reply_history(self, messages: list[Message]) -> None:
+        by_id = {m.event_id: m for m in self._history if m.event_id is not None}
+        merged = list(self._history)
+        for message in messages:
+            if message.event_id is None or message.event_id not in by_id:
+                merged.append(message)
+                if message.event_id is not None:
+                    by_id[message.event_id] = message
+        database = getattr(self._bus, "_db", None)
+        if database is not None and by_id:
+            async with database.lock:
+                cursor = await database.conn.execute(
+                    "SELECT id, event_seq FROM event_log WHERE id IN ("
+                    + ",".join("?" for _ in by_id)
+                    + ")",
+                    list(by_id),
+                )
+                positions = {r["id"]: r["event_seq"] for r in await cursor.fetchall()}
+            # Direct originals have no event ID; keep them beside their reply.
+            position = max(positions.values(), default=0) + 1
+            ordered: list[tuple[int, Message]] = []
+            for message in reversed(merged):
+                position = positions.get(message.event_id, position)
+                ordered.append((position, message))
+            merged = [m for _, m in sorted(reversed(ordered), key=lambda item: item[0])]
+        self._history.clear()
+        self._history.extend(merged[-self._config.max_context_len :])
+
+    async def _archive_user_reply(
+        self,
+        root_event_id: str,
+        state: ReplyState | None = None,
+    ) -> None:
+        root = await self._bus.get_event(root_event_id)
+        terminal = (
+            state["committed_reply"] if state else None
+        ) or await self._terminal_user_reply(root_event_id)
+        if terminal is None:
+            raise ValueError("归档缺少已提交终局")
+        if root is None:
+            if state is None or state["input_mode"] != "direct":
+                raise ValueError("direct 归档缺少原话 state")
+            users = [
+                Message(
+                    role="user",
+                    content=state["message"],
+                    timestamp=state["message_at"] or state["sampled_at"],
+                )
+            ]
+            keys = [f"{root_event_id}:user"]
+        else:
+            inputs = await self._covered_reply_inputs(terminal)
+            users = [
+                Message(
+                    role="user",
+                    content=e.content["message"],
+                    timestamp=e.timestamp,
+                    event_id=e.id,
+                )
+                for e in inputs
+            ]
+            keys = [f"{e.id}:user" for e in inputs]
+        body = await self._delivered_reply_text(terminal)
+        if not body:
+            raise ValueError("归档终局缺少正文")
+        reply = Message(
+            role="nyx",
+            content=body,
+            timestamp=terminal.timestamp,
+            event_id=terminal.id,
+            fast=state is not None and state["mode"] is ContextMode.FAST,
+        )
+        messages = [*users, reply]
+        if state is not None:
+            activity = (
+                state["activity_context"].current
+                or state["activity_context"].interrupted
+            )
+            if activity is not None:
+                for message in messages:
+                    message.activity_id, message.activity_type = (
+                        activity.id,
+                        activity.type,
+                    )
+                    message.activity_summary = activity_summary(activity)
+        append = getattr(self._memory, "append_conversation_turn", None)
+        if callable(append):
+            append_fn = cast(Callable[[str, str, float], Awaitable[None]], append)
+            for key, message in zip([*keys, f"{root_event_id}:nyx"], messages):
+                await append_fn(key, message.content, message.timestamp)
+        await self._merge_reply_history(messages)
+        try:
+            await self._checkpointer.adelete_thread(root_event_id)
+            await self._tools.clear_executions(root_event_id)
+        except Exception:
+            _LOGGER.exception("回复归档后的工具 checkpoint 清理失败")
 
     async def register_question(
         self,
@@ -351,6 +751,7 @@ class ExpressionFacade:
             correlation_id=correlation_id,
         )
         await self._commit_attempt_events(attempt, [ask, reading])
+        self.record_proactive_turn(text, event=reading)
         return attempt_id
 
     async def answer_waiting(
@@ -390,62 +791,59 @@ class ExpressionFacade:
                 events.extend(await self._bus.list_events(
                     limit=self._config.max_context_len, event_type=event_type,
                 ))
-            events.sort(key=lambda event: (event.timestamp, event.id))
-
-            users: dict[str, Event] = {}
-            outputs: dict[str, list[Event]] = {}
-            standalone: list[Event] = []
+            restored: list[Message] = []
+            seen_roots: set[str] = set()
             for event in events:
-                if event.type is EventType.USER_MESSAGE:
-                    if isinstance(event.content.get("message"), str):
-                        users.setdefault(event.correlation_id, event)
-                elif event.type in (EventType.SPEAK, EventType.ASK):
-                    if isinstance(event.content.get("content"), str):
-                        outputs.setdefault(event.correlation_id, []).append(event)
+                if event.type in (EventType.SPEAK, EventType.ASK):
+                    root = await self._bus.get_event(event.correlation_id)
+                    if root is None or root.type is not EventType.USER_MESSAGE:
+                        continue
+                    if root.id in seen_roots:
+                        continue
+                    seen_roots.add(root.id)
+                    terminal = await self._terminal_user_reply(root.id)
+                    if terminal is None:
+                        continue
+                    inputs = await self._covered_reply_inputs(terminal)
+                    restored.extend(
+                        Message(
+                            role="user",
+                            content=e.content["message"],
+                            timestamp=e.timestamp,
+                            event_id=e.id,
+                        )
+                        for e in inputs
+                    )
+                    restored.append(
+                        Message(
+                            role="nyx",
+                            content=await self._delivered_reply_text(terminal),
+                            timestamp=terminal.timestamp,
+                            event_id=terminal.id,
+                        )
+                    )
                 elif event.type in (
                     EventType.INITIATE_CHAT,
                     EventType.READING_QUESTION,
                     EventType.READING_ASSOCIATION,
                 ):
-                    standalone.append(event)
-
-            restored: list[Message] = []
-            for correlation_id, user_event in users.items():
-                restored.append(
-                    Message(
-                        role="user",
-                        content=cast(str, user_event.content["message"]),
-                        timestamp=user_event.timestamp,
+                    key = (
+                        "snippet"
+                        if event.type is EventType.READING_ASSOCIATION
+                        else "content"
                     )
-                )
-                turn_outputs = outputs.get(correlation_id, [])
-                if turn_outputs:
-                    restored.append(
-                        Message(
-                            role="nyx",
-                            content="\n".join(
-                                cast(str, event.content["content"])
-                                for event in turn_outputs
-                            ),
-                            timestamp=turn_outputs[-1].timestamp,
+                    content = event.content.get(key)
+                    if isinstance(content, str):
+                        restored.append(
+                            Message(
+                                role="nyx",
+                                content=content,
+                                timestamp=event.timestamp,
+                                event_id=event.id,
+                            )
                         )
-                    )
-
-            for event in standalone:
-                key = (
-                    "snippet"
-                    if event.type is EventType.READING_ASSOCIATION
-                    else "content"
-                )
-                content = event.content.get(key)
-                if isinstance(content, str):
-                    restored.append(
-                        Message(role="nyx", content=content, timestamp=event.timestamp)
-                    )
-
             restored.sort(key=lambda message: message.timestamp)
-            self._history.clear()
-            self._history.extend(restored[-self._config.max_context_len :])
+            await self._merge_reply_history(restored)
         except Exception:
             _LOGGER.exception("恢复表达历史失败，将使用空历史继续启动")
 
@@ -534,35 +932,32 @@ class ExpressionFacade:
         self, current_correlation_id: str | None
     ) -> tuple[Message, Message] | None:
         """Return the latest durable user turn with a terminal Nyx response."""
-        candidates = await self._bus.list_events(
-            limit=20, event_type=EventType.USER_MESSAGE
-        )
-        for user_event in candidates:
-            if user_event.correlation_id == current_correlation_id:
+        terminals = [
+            *await self._bus.list_events(limit=20, event_type=EventType.SPEAK),
+            *await self._bus.list_events(limit=20, event_type=EventType.ASK),
+        ]
+        terminals.sort(key=lambda event: event.timestamp, reverse=True)
+        for terminal in terminals:
+            if terminal.correlation_id == current_correlation_id:
                 continue
-            message = user_event.content.get("message")
-            if not isinstance(message, str):
+            root = await self._bus.get_event(terminal.correlation_id)
+            if root is None or root.type is not EventType.USER_MESSAGE:
                 continue
-            turn_events = await self._bus.list_events(
-                correlation_id=user_event.correlation_id
-            )
-            terminal = next(
-                (
-                    event
-                    for event in turn_events
-                    if event.type in (EventType.SPEAK, EventType.ASK)
-                    and isinstance(event.content.get("content"), str)
-                ),
-                None,
-            )
-            if terminal is None:
-                continue
-            content = terminal.content["content"]
-            if not isinstance(content, str):
-                continue
+            inputs = await self._covered_reply_inputs(terminal)
+            latest = inputs[-1]
             return (
-                Message(role="user", content=message, timestamp=user_event.timestamp),
-                Message(role="nyx", content=content, timestamp=terminal.timestamp),
+                Message(
+                    role="user",
+                    content=latest.content["message"],
+                    timestamp=latest.timestamp,
+                    event_id=latest.id,
+                ),
+                Message(
+                    role="nyx",
+                    content=await self._delivered_reply_text(terminal),
+                    timestamp=terminal.timestamp,
+                    event_id=terminal.id,
+                ),
             )
         return None
 
@@ -619,9 +1014,15 @@ class ExpressionFacade:
         """完整回复流程：跑 LangGraph 图，内部发布 think/speak/ask。"""
         claimed_return = self._claim_pending_return()
         answered: InteractionAttempt | None = None
+        initial: ReplyState | None = None
         now = time.time()
         try:
             user_event = await self._bus.get_event(correlation_id)
+            if user_event is not None and user_event.type is not EventType.USER_MESSAGE:
+                raise ValueError("回复根事件不是 USER_MESSAGE")
+            if user_event is not None:
+                msg = user_event.content["message"]
+                discussion = user_event.content.get("discussion")
             message_at = (
                 user_event.timestamp
                 if user_event is not None and user_event.type is EventType.USER_MESSAGE
@@ -654,7 +1055,21 @@ class ExpressionFacade:
             temporal_context = await self._temporal_context(
                 now, correlation_id, claimed_return
             )
-            initial: ReplyState = {
+            initial = {
+                "input_mode": "durable" if user_event is not None else "direct",
+                "input_events": [user_event] if user_event is not None else [],
+                "input_revision": 0,
+                "input_closed": user_event is None,
+                "request_start_index": 0,
+                "retrieval_query": "",
+                "reasoning_steps": [],
+                "reasoning_step_count": 0,
+                "next_action": "answer",
+                "draft_revision": -1,
+                "draft_event_ids": [],
+                "needs_refresh": False,
+                "tool_exit_reason": "complete",
+                "committed_reply": None,
                 "message": msg,
                 "message_at": message_at,
                 "sampled_at": now,
@@ -665,9 +1080,8 @@ class ExpressionFacade:
                 "annotation": annotation,
                 "skill": (
                     self._skills.get("discussion")
-                    if discussion is True or (
-                        discussion is None and should_load_discussion(msg)
-                    )
+                    if discussion is True
+                    or (discussion is None and should_load_discussion(msg))
                     else None
                 ),
                 "mode": ContextMode.FAST,
@@ -697,7 +1111,13 @@ class ExpressionFacade:
                 "claimed_return": claimed_return,
                 "fallback": False,
             }
-            result = await self._graph.ainvoke(initial)
+            result = await self._graph.ainvoke(
+                initial,
+                {
+                    "recursion_limit": 32 * (12 + 2 * self._config.slow_max_rounds)
+                    + 30,
+                },
+            )
             if result["mode"] is ContextMode.SLOW:
                 self._last_slow_at = time.time()
             if result["ask"] is not None and self._interaction_store is None:
@@ -707,15 +1127,18 @@ class ExpressionFacade:
                 self._ask_cid = correlation_id
             if result["fallback"]:
                 self._release_return_claim(claimed_return)
-            try:
-                await self._checkpointer.adelete_thread(correlation_id)
-                await self._tools.clear_executions(correlation_id)
-            except Exception:
-                _LOGGER.exception("回复终局后的工具 checkpoint 清理失败")
         except BaseException:
-            if answered is not None and self._interaction_store is not None:
+            committed = initial is not None and initial["committed_reply"] is not None
+            if not committed:
+                committed = await self._terminal_user_reply(correlation_id) is not None
+            if (
+                not committed
+                and answered is not None
+                and self._interaction_store is not None
+            ):
                 await self._interaction_store.release_claim(answered.id, correlation_id)
-            self._release_return_claim(claimed_return)
+            if not committed:
+                self._release_return_claim(claimed_return)
             raise
 
     async def initiate_chat(self, desire: ShortTermDesire, state: CurrentState) -> bool:
@@ -780,7 +1203,8 @@ class ExpressionFacade:
                 Message(
                     role="nyx",
                     content=output.content,
-                    timestamp=time.time(),
+                    timestamp=event.timestamp,
+                    event_id=event.id,
                     activity_id=(
                         activity_context.current.id
                         if activity_context.current is not None
@@ -809,9 +1233,16 @@ class ExpressionFacade:
             self._release_return_claim(claimed_return)
             raise
 
-    def record_proactive_turn(self, text: str) -> None:
+    def record_proactive_turn(self, text: str, *, event: Event | None = None) -> None:
         """把 Nyx 主动产出（读书提问/联想）追加进会话历史，供后续 reply() 引用。"""
-        self._history.append(Message(role="nyx", content=text, timestamp=time.time()))
+        self._history.append(
+            Message(
+                role="nyx",
+                content=text,
+                timestamp=event.timestamp if event else time.time(),
+                event_id=event.id if event else None,
+            )
+        )
 
     async def mutter(self, state: CurrentState, correlation_id: str) -> None:
         """碎碎念：空闲 + 随机命中才发；低频走 LLM 即兴（走神），否则模板填空。

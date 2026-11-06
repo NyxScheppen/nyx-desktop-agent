@@ -1,10 +1,12 @@
 import json
 import sqlite3
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from scripts.migrate_sqlite_to_postgres import (
+    _conversation_archive,  # pyright: ignore[reportPrivateUsage]
     _copy_character_files,  # pyright: ignore[reportPrivateUsage]
     _rewrite_character_record,  # pyright: ignore[reportPrivateUsage]
     foreign_key_table_order,
@@ -25,13 +27,14 @@ def _database(path: Path, version: int, rows: int = 0) -> None:
     connection.close()
 
 
+@pytest.mark.parametrize("version", [51, 52, 53])
 def test_inspect_source_finds_host_and_registered_character_databases_read_only(
-    tmp_path: Path,
+    tmp_path: Path, version: int,
 ) -> None:
     data = tmp_path / "data"
     host_path = data / "characters" / "host.db"
     character_path = data / "characters" / "nyx" / "nyx.db"
-    _database(character_path, 52, rows=2)
+    _database(character_path, version, rows=2)
     _database(host_path, 2)
     host = sqlite3.connect(host_path)
     host.execute("CREATE TABLE characters (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
@@ -57,9 +60,64 @@ def test_inspect_source_finds_host_and_registered_character_databases_read_only(
 
     assert manifest["host"]["version"] == 2
     assert manifest["characters"][0]["id"] == "nyx"
-    assert manifest["characters"][0]["database"]["version"] == 52
+    assert manifest["characters"][0]["database"]["version"] == version
     assert manifest["characters"][0]["database"]["tables"]["sample"] == 2
     assert {path: path.read_bytes() for path in before} == before
+
+
+@pytest.mark.parametrize("backfill", [True, False])
+def test_import_archive_validates_old_and_new_source_mapping(backfill: bool) -> None:
+    with (
+        sqlite3.connect(":memory:") as source,
+        sqlite3.connect(":memory:") as target_db,
+    ):
+        source.execute(
+            "CREATE TABLE conversation_segment "
+            "(id TEXT PRIMARY KEY, raw_event_ids TEXT, active INTEGER)"
+        )
+        source.executemany(
+            "INSERT INTO conversation_segment VALUES (?, ?, ?)",
+            [("z", '["u:user","u:nyx"]', 1), ("a", '["u:user"]', 0)],
+        )
+        target_db.execute("ATTACH DATABASE ':memory:' AS role")
+        target_db.execute(
+            "CREATE TABLE role.conversation_turn_archive "
+            "(turn_id TEXT PRIMARY KEY, segment_id TEXT)"
+        )
+        expected = [("u:user", "a"), ("u:nyx", "z")]
+        if not backfill:
+            target_db.executemany(
+                "INSERT INTO role.conversation_turn_archive VALUES (?, ?)", expected
+            )
+        target = Mock()
+        target.execute.side_effect = target_db.execute
+
+        def insert(sql: str, rows: list[tuple[str, str]]) -> sqlite3.Cursor:
+            return target_db.executemany(sql.replace("%s", "?"), rows)
+
+        target.cursor.return_value.executemany.side_effect = insert
+        _conversation_archive(source, target, "role", backfill=backfill)
+        assert dict(target_db.execute(
+            "SELECT turn_id, segment_id FROM role.conversation_turn_archive"
+        ).fetchall()) == dict(expected)
+        target_db.execute(
+            "UPDATE role.conversation_turn_archive SET segment_id='wrong'"
+        )
+        with pytest.raises(ValueError, match="archive mismatch"):
+            _conversation_archive(source, target, "role", backfill=False)
+
+
+@pytest.mark.parametrize("raw", ["{}", "[1]", '[""]', "invalid"])
+def test_import_archive_rejects_invalid_turn_ids(raw: str) -> None:
+    with sqlite3.connect(":memory:") as source:
+        source.execute(
+            "CREATE TABLE conversation_segment (id TEXT, raw_event_ids TEXT)"
+        )
+        source.execute("INSERT INTO conversation_segment VALUES ('s', ?)", (raw,))
+        target = Mock()
+        with pytest.raises(ValueError):
+            _conversation_archive(source, target, "role", backfill=True)
+        target.cursor.assert_not_called()
 
 
 def test_inspect_source_rejects_missing_registered_character_database(

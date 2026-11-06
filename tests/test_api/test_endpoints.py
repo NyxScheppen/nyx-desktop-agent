@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 
 from nyx.activity.facade import ActivityFacade, WebTasksDisabledError
 from nyx.config import Config
+from nyx.db import connect
 from nyx.desire.facade import DesireFacade
 from nyx.enums import (
     ActivityStatus,
@@ -404,6 +405,71 @@ async def test_chat_endpoint() -> None:
     assert event.source is Source.EXTERNAL
     assert event.correlation_id == event.id
     assert data["event_id"] == event.id
+
+
+async def test_chat_pending_excludes_completed_and_prioritizes_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nyx.events.routing import ROUTE_SPECS
+
+    monkeypatch.delenv("NYX_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("NYX_PUBLIC_ORIGIN", raising=False)
+    database = await connect(":memory:")
+    bus = EventBus(database)
+
+    async def handler(event: Event) -> None:
+        pass
+
+    bus.subscribe(
+        next(s for s in ROUTE_SPECS if s.consumer_id == "expression.user_message"),
+        handler,
+    )
+    app = _app(_mk_state(), cast(_FakeBus, bus), _FakeMemory())
+    app.database = database
+    try:
+        for identity in ("dead", "active", "effect", "delivered"):
+            await bus.publish(
+                Event(
+                    identity,
+                    1.0,
+                    Source.EXTERNAL,
+                    EventType.USER_MESSAGE,
+                    {"message": identity},
+                    identity,
+                )
+            )
+        async with database.transaction() as conn:
+            await conn.execute(
+                "UPDATE event_delivery SET status = 'dead_letter' "
+                "WHERE event_id = 'dead'"
+            )
+            await bus.try_mark_effect_in_transaction(
+                "effect", "expression.user_message"
+            )
+        await bus.publish(
+            Event(
+                "answer",
+                2.0,
+                Source.INTERNAL,
+                EventType.SPEAK,
+                {
+                    "content": "done",
+                    "reply_complete": True,
+                    "reply_to_event_ids": ["delivered"],
+                },
+                "delivered",
+            )
+        )
+        async with _client(app) as client:
+            response = await client.get("/api/chat/pending")
+        assert response.status_code == 200
+        assert [(i["event_id"], i["status"]) for i in response.json()["items"]] == [
+            ("active", "pending"),
+            ("dead", "dead_letter"),
+        ]
+        assert response.json()["truncated"] is False
+    finally:
+        await database.close()
 
 
 @pytest.mark.parametrize("message", ["", "   ", "x" * 12001, 1, True, None])

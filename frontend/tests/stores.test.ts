@@ -62,6 +62,79 @@ function resetChat() {
   useChatStore.getState().reset(); // 复用 reset()：全清 messages/isReplying/sendError + 清 module 级 pendingId/replyTimer
 }
 
+describe("conversation steering", () => {
+  beforeEach(() => { resetChat(); vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] }); });
+  afterEach(() => { resetChat(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it("allows a second accepted input and completes only covered IDs", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse({ event_id: "u1" }))
+      .mockResolvedValueOnce(jsonResponse({ event_id: "u2" })));
+    expect(await useChatStore.getState().sendMessage("first")).toBe(true);
+    expect(await useChatStore.getState().sendMessage("second")).toBe(true);
+    useChatStore.getState().addSpeak({ event: "speak", event_id: "s1", correlation_id: "u1",
+      timestamp: 1, content: "done", reply_complete: true, reply_to_event_ids: ["u1"] });
+    expect(useChatStore.getState().isReplying).toBe(true);
+    useChatStore.getState().addAsk({ event: "ask", event_id: "s2", correlation_id: "u2",
+      timestamp: 2, content: "done?", reply_complete: true, reply_to_event_ids: ["u2"] });
+    expect(useChatStore.getState().isReplying).toBe(false);
+  });
+
+  it("keeps independent deadlines and does not clear another POST failure", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse({ event_id: "u1" }))
+      .mockResolvedValueOnce(jsonResponse({ event_id: "u2" }))
+      .mockRejectedValueOnce(new Error("network unknown")));
+    await useChatStore.getState().sendMessage("first");
+    vi.advanceTimersByTime(30_000);
+    await useChatStore.getState().sendMessage("second");
+    vi.advanceTimersByTime(30_000);
+    expect(useChatStore.getState().isReplying).toBe(true);
+    expect(useChatStore.getState().pendingReplies.u1.status).toBe("timed_out");
+    await useChatStore.getState().sendMessage("third");
+    useChatStore.getState().addSpeak({ event: "speak", event_id: "s", correlation_id: "u1",
+      timestamp: 1, content: "done", reply_complete: true, reply_to_event_ids: ["u1", "u2"] });
+    expect(useChatStore.getState().sendError).toContain("network unknown");
+    expect(useChatStore.getState().isReplying).toBe(false);
+  });
+
+  it("does not revive a terminal covered ID from a late snapshot", async () => {
+    let finish!: (value: Response) => void;
+    let started!: () => void;
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("chat/pending")) {
+        started(); return new Promise<Response>((resolve) => { finish = resolve; });
+      }
+      return jsonResponse(url.includes("questions/pending") ? { server_now: 1, questions: [] } : []);
+    }));
+    const loading = useChatStore.getState().loadHistory();
+    await waiting;
+    useChatStore.getState().addSpeak({ event: "speak", event_id: "s", correlation_id: "u1",
+      timestamp: 1, content: "done", reply_complete: true, reply_to_event_ids: ["u1"] });
+    finish(jsonResponse({ server_now: 1, items: [{ event_id: "u1", timestamp: 1, status: "processing" }], truncated: false }));
+    await loading;
+    expect(useChatStore.getState().pendingReplies).toEqual({});
+    expect(useChatStore.getState().isReplying).toBe(false);
+  });
+
+  it("reconnect keeps the monotonic deadline; reset starts a new local minute", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => jsonResponse(
+      url.includes("chat/pending") ? { server_now: 1, items: [{ event_id: "old-qq", timestamp: 1, status: "pending" }], truncated: false }
+        : url.includes("questions/pending") ? { server_now: 1, questions: [] } : [],
+    )));
+    await useChatStore.getState().loadHistory();
+    vi.advanceTimersByTime(40_000);
+    await useChatStore.getState().loadHistory();
+    vi.setSystemTime(new Date("2030-01-01"));
+    vi.advanceTimersByTime(20_000);
+    expect(useChatStore.getState().pendingReplies["old-qq"].status).toBe("timed_out");
+    await useChatStore.getState().loadHistory();
+    expect(useChatStore.getState().isReplying).toBe(false);
+    resetChat();
+    await useChatStore.getState().loadHistory();
+    expect(useChatStore.getState().pendingReplies["old-qq"].status).toBe("waiting");
+  });
+});
+
 describe("chatStore 批注", () => {
   beforeEach(resetChat);
   const annotation = { reply_event_id: "old", quote: "原文🙂", comment: " 请说明不确定性 " };
@@ -331,7 +404,7 @@ describe("chatStore.addReadingTurn", () => {
 
 describe("chatStore.sendMessage", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
     resetChat();
   });
 
@@ -388,7 +461,7 @@ describe("chatStore.sendMessage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const first = useChatStore.getState().sendMessage("a"); // 同步置 isReplying=true 后进入 await
-    expect(useChatStore.getState().isReplying).toBe(true); // 锁已同步生效（非 React 异步订阅）
+    expect(useChatStore.getState().isSending).toBe(true); // 锁已同步生效（非 React 异步订阅）
     await useChatStore.getState().sendMessage("b"); // 被 get().isReplying 守卫拦下
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -416,7 +489,7 @@ describe("chatStore.sendMessage", () => {
     vi.advanceTimersByTime(60_000);
 
     expect(useChatStore.getState().isReplying).toBe(false);
-    expect(useChatStore.getState().sendError).toBe("回复超时");
+    expect(useChatStore.getState().replyNotice).toBe("回复超时，仍在等待处理");
   });
 
   it("addSpeak 取消超时：advanceTimersByTime(60_000) 不触发", async () => {
@@ -442,7 +515,7 @@ describe("chatStore.sendMessage", () => {
 
     await useChatStore.getState().sendMessage("hi");
     vi.advanceTimersByTime(60_000);
-    expect(useChatStore.getState().sendError).toBe("回复超时");
+    expect(useChatStore.getState().replyNotice).toBe("回复超时，仍在等待处理");
 
     useChatStore.getState().addSpeak({
       event: "speak",
@@ -473,13 +546,13 @@ describe("chatStore.sendMessage", () => {
     expect(useChatStore.getState().messages).toHaveLength(1); // 但消息照常上屏
 
     vi.advanceTimersByTime(60_000);
-    expect(useChatStore.getState().sendError).toBe("回复超时"); // timer 未被误清
+    expect(useChatStore.getState().replyNotice).toBe("回复超时，仍在等待处理"); // timer 未被误清
   });
 });
 
 describe("chatStore.reset", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
     resetChat();
   });
 
@@ -1350,7 +1423,7 @@ describe("announceStore", () => {
   });
 
   it("到时自动 dismiss（按 kind 时长）", () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
     useAnnounceStore.getState().announce("mutter", "在想你");
 
     vi.advanceTimersByTime(ANNOUNCE_DURATION.mutter);
@@ -1378,7 +1451,7 @@ describe("readerStore", () => {
   });
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
     useReaderStore.getState().stopCatchup();
     useReaderStore.setState({
       books: [],

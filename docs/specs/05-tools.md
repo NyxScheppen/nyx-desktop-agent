@@ -1,5 +1,7 @@
 # 工具系统
 
+`ToolRegistry.get_execution(log_id)` / `ToolCallStore.get_execution(log_id)` 只读查询已存在的执行回执，不领取、不启动调用；用于 [26 §5](26-conversation-steering.md) 输入更新前的核对。未知 ID 返回 None，DB 错误传播。
+
 > 范围：`tools/registry.py`（`ToolRegistry`：register / call / schema）、基础工具，以及统一的用户活动任务工具。
 > 纯基础设施 spec：定义工具注册、执行、四个既有内置工具及浏览器问卷受理工具；活动执行与 API 归 09-activity。LangGraph 工具绑定仍由 11-expression 负责。
 > spec 只定义契约（签名 + 语义 + 决策）；实现以 `nyx/tools/` 源文件为准。

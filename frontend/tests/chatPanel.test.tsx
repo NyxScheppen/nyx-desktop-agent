@@ -430,8 +430,8 @@ describe("ChatInput", () => {
     expect(input).toHaveValue("再见"); // 预打文本不被清
   });
 
-  it("isReplying=true → 发送按钮禁用 + 回车不触发", () => {
-    useChatStore.setState({ isReplying: true });
+  it("isSending=true → 发送按钮禁用 + 回车不触发", () => {
+    useChatStore.setState({ isSending: true });
     const sendSpy = vi
       .spyOn(useChatStore.getState(), "sendMessage")
       .mockResolvedValue(true);

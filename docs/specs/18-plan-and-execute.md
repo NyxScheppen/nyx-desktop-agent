@@ -1,5 +1,13 @@
 # 规划与执行（plan-and-execute）
 
+## 输入更新与交还（26）
+
+外层回复图是输入、版本和授权的唯一写入方。工具子图在安全边界探测补充，返回 `exit_reason=input_pending` 并同步保存 checkpoint，正常出口写 complete。
+同根 input_update 先只读核对旧执行回执，再整组更新输入/schema/allow_new_actions；旧 calls、未执行计划失效，records/outputs/attempts/rounds/replans 保留。
+成功结果复用，已开始而未确认的副作用 uncertain，尚未开始的旧动作不补执行。只读 retry_wait 需新版模型重新选择才使用剩余次数。
+输入/授权相同才续跑旧 snapshot.next；completed snapshot 遇新输入也必须走更新入口。外层选择回答时仅导出已确认事实，不发起新动作。
+完整确定时序、预算与旧 checkpoint 规则见 [26 §5](26-conversation-steering.md)。
+
 > 范围：`nyx/expression/pipeline.py`（回复图接线）、`nyx/expression/tool_pipeline.py`（持久工具子图）、`nyx/expression/prompt.py`（规划与执行 prompt）。
 > 给慢通道工具查询加上「先规划、再执行（ReAct）、计划失效时有限次重规划」的能力，取代「边想边查」。
 > 本 spec 只定义契约（签名 + 语义 + 决策），不内联完整代码；实现以 `nyx/` 源文件为准。
@@ -34,7 +42,7 @@
 
 ### 分层与边界
 
-- 图结构不变：仍是 `classify_channel → assemble_context → use_tools → respond → …`。
+- 外层回复图按26增加收集、分析和统一终局节点；`use_tools` 继续运行本契约的持久子图，在安全点通过 input_pending 交还。
   本次只把 `use_tools` 节点内部从「纯 ReAct」升级为「plan → execute(ReAct) → 有限次重规划」。
 - `use_tools` 内部运行独立 LangGraph 子图；规划、判断、单次调用准备/执行、重试等待和结果接纳形成 checkpoint 边界。外层回复图不持久化。
 

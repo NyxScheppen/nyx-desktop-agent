@@ -208,23 +208,22 @@ class ReadingCompanion:
                     )
                 else:
                     attempt_id = ""
-                await self._bus.publish(
-                    internal_event(
-                        EventType.READING_QUESTION,
-                        {
-                            "content": content,
-                            "subtype": behavior.value,
-                            "book_id": book_id,
-                            "paragraph_index": paragraph_index,
-                            "attempt_id": attempt_id,
-                            "selected_text": selected_text,
-                        },
-                        correlation_id,
-                    )
+                event = internal_event(
+                    EventType.READING_QUESTION,
+                    {
+                        "content": content,
+                        "subtype": behavior.value,
+                        "book_id": book_id,
+                        "paragraph_index": paragraph_index,
+                        "attempt_id": attempt_id,
+                        "selected_text": selected_text,
+                    },
+                    correlation_id,
                 )
+                await self._bus.publish(event)
+                self._expression.record_proactive_turn(content, event=event)
                 committed = True
             await self._record_output(book_id, paragraph_index, content, "question")
-            self._expression.record_proactive_turn(content)
             return committed
         except InitiationSkipped:
             return False
@@ -244,19 +243,18 @@ class ReadingCompanion:
             for memory in memories[:3]:
                 source = memory.summary or memory.content
                 snippet = source[:_ASSOCIATION_SNIPPET_CHARS]
-                await self._bus.publish(
-                    internal_event(
-                        EventType.READING_ASSOCIATION,
-                        {
-                            "memory_id": memory.id,
-                            "snippet": snippet,
-                            "book_id": book_id,
-                            "paragraph_index": paragraph_index,
-                        },
-                        book_id,
-                    )
+                event = internal_event(
+                    EventType.READING_ASSOCIATION,
+                    {
+                        "memory_id": memory.id,
+                        "snippet": snippet,
+                        "book_id": book_id,
+                        "paragraph_index": paragraph_index,
+                    },
+                    book_id,
                 )
-                self._expression.record_proactive_turn(snippet)
+                await self._bus.publish(event)
+                self._expression.record_proactive_turn(snippet, event=event)
         except Exception:
             self._logger.exception(
                 "陪读联想检索失败 book_id=%s paragraph_index=%d",

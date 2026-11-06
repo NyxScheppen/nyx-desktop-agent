@@ -1,5 +1,14 @@
 # 记忆系统（统一规格）
 
+## 逐轮归档（26，schema 53）
+
+`conversation_turn_archive(turn_id TEXT PRIMARY KEY CHECK(length(turn_id)>0), segment_id TEXT NOT NULL REFERENCES conversation_segment(id) ON DELETE CASCADE)`
+与段原文写入同一短事务。归档先查索引（含 inactive），重复调用不追加原文、不刷新段时间/新鲜度/判定，不重新激活。
+embedding 在事务外准备，提交前复核段快照并保留并发召回计数；写入失败全部回滚，提交结果不明时回读索引确认。
+旧库校验 raw_event_ids 为非空字符串数组后覆盖全部段回填；重复轮次选择最小 segment_id，仅记录重复数，不清理旧原文。
+段续接选择 previous_id 链叶，不能用来源时间决定最新提交；时间范围取 min/max、新鲜度锚点不回拨。
+逐项入口、消费者、状态、删除与坏数据规则见 [26 §6.5/§9](26-conversation-steering.md)。
+
 > 本文件是记忆系统的唯一完整规格，覆盖 `nyx/memory/` 的 store / retrieval / graph / facade，以及相关类型、DB、表达慢通道和 API 边界。记忆相邻但不改记忆实现的任务可先读 `docs/facts/memory-system-facts.md` 获取事实摘要；凡改记忆代码、记忆契约或文档，以本文件为完整契约，并同步事实表摘要。
 
 ## 元信息

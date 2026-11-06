@@ -149,8 +149,22 @@ class MemoryStore:
     async def latest_conversation_segment(self) -> ConversationSegment | None:
         async with self._operation():
             cursor = await self._db.conn.execute(
-                "SELECT * FROM conversation_segment "
-                "ORDER BY ended_at DESC, id DESC LIMIT 1"
+                "SELECT s.* FROM conversation_segment s WHERE NOT EXISTS "
+                "(SELECT 1 FROM conversation_segment next WHERE next.previous_id=s.id) "
+                "ORDER BY s.ended_at DESC, s.id DESC LIMIT 1"
+            )
+            row = await cursor.fetchone()
+        return _segment_from_row(row) if row is not None else None
+
+    async def archived_conversation_turn(
+        self, turn_id: str
+    ) -> ConversationSegment | None:
+        """Find the permanent archive identity, including inactive segments."""
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT s.* FROM conversation_turn_archive a "
+                "JOIN conversation_segment s ON s.id=a.segment_id WHERE a.turn_id=?",
+                (turn_id,),
             )
             row = await cursor.fetchone()
         return _segment_from_row(row) if row is not None else None
@@ -238,13 +252,15 @@ class MemoryStore:
     async def update_conversation_segment(self, segment: ConversationSegment) -> None:
         async with self._operation() as should_commit:
             await self._db.conn.execute(
-                "UPDATE conversation_segment SET ended_at=?, raw_event_ids=?, "
+                "UPDATE conversation_segment SET started_at=?, ended_at=?, "
+                "raw_event_ids=?, "
                 "raw_content=?, summary=?, topics=?, embedding=?, "
                 "importance=?, long_term=?, evaluated_at=?, evaluation_reason=?, "
                 "evidence_event_ids=?, freshness=?, freshness_updated_at=?, "
                 "recall_count=?, active=?, facts_extracted_at=?, fact_scope=? "
                 "WHERE id=?",
                 (
+                    segment.started_at,
                     segment.ended_at,
                     json.dumps(segment.raw_event_ids, ensure_ascii=False),
                     segment.raw_content,

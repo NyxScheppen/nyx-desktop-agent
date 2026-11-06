@@ -1,5 +1,7 @@
 # eval 可观测（LLM 调用、token 与最终 prompt）
 
+对话续接的分析调用以 `output_type="reason"` 记录；节点名为 reason_step。先经既有 Evaluator 记录再解析 JSON，非法分析也保留 token/调用/prompt；工作摘要只进入下一次上下文，不发布内部分析事件。预算与失败规则见 [26 §4.2](26-conversation-steering.md)。
+
 > eval 系统记录 OOC/token，并把传给 `ainvoke` 的应用层最终有序消息按 `call_id` 永久明文保存。最近记录接口保持轻量；用户展开某行时才读取完整 prompt。
 > spec 只定义**契约**（签名 + 语义 + 决策），不内联完整代码；代码的唯一事实来源是 `nyx/` 源文件，spec 指向它、不改写它。
 

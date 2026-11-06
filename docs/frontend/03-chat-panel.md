@@ -1,5 +1,12 @@
 # 聊天面板（`components/chat/`）
 
+## 继续补充（26）
+
+输入与批注仅在 isSending 或内容无效时禁用发送；回复等待中显示“她正在想，你可以继续说”，可以连续提交。
+HTTP返回后仅清同角色、同代数且内容仍等于发送前原稿的草稿，输入法确认回车不误发送。
+replyNotice与sendError独立显示；60秒只将对应等待项标timed_out，迟到终局仍可完成，其他消息继续等待。
+终局按实际覆盖ID结束等待，逐字动画不改变服务端回合归属。完整交互与恢复见 [26 §7](../specs/26-conversation-steering.md)。
+
 > 核心面板之一：消息列表 + 输入框。用户发消息 → `POST /api/chat` → SSE 回显 + `speak`/`think`/`ask` 上屏。
 > 范围：`components/chat/{MessageList,MessageBubble,ChatInput,KnowledgeFeed}.tsx` 的组件树、发消息/知识投喂流程、Nyx 产出渲染，以及 `lib/time.ts` 的共享时间纯函数。
 >
@@ -12,7 +19,7 @@
 MessageList                # 微信式全量列表：全部消息按序渲染，最新滚到底，上滑看历史（滚动条隐藏）——现挂左栏（div.left-dock，flex:1 滚动）
 ├─ TimeDivider             # 首条、跨自然日或跨会话间隔时显示后端事件时间
 └─ MessageBubble           # 单条：按 role/kind 渲染，nyx 文本走 useTypewriter 逐字（见 §3）
-ChatInput                  # 输入框 + 发送按钮；isReplying 时仅禁用发送按钮（输入框可预打下一句）——现挂左栏底部
+ChatInput                  # 输入框 + 发送按钮；isSending 时禁用发送按钮，等待回复时可继续提交——现挂左栏底部
 └─ sendError               # 红字，挂在 ChatInput 下方，读 chatStore.sendError
 KnowledgeFeed              # ChatInput 后方的可折叠“投喂知识”表单，随角色世代重新挂载
 ```
@@ -26,13 +33,13 @@ KnowledgeFeed              # ChatInput 后方的可折叠“投喂知识”表�
 用户输入 → 点发送
   → chatStore.sendMessage(text)
       ├─ POST /api/chat {message: text, reply_to?: attempt_id, discussion: boolean | null}   （client.ts）
-      ├─ 成功：isReplying = true（按钮转「…」，输入框清空）
+      ├─ 成功：登记该 ID 的等待，释放 HTTP 锁，仅清未编辑的发送草稿
       └─ 失败：sendError = "…"（红字挂在 ChatInput 下方，下次 sendMessage 成功自动清空，不阻断重试）
   → 后端 publish USER_MESSAGE → SSE user_message 回显 → chatStore.addUserMessage（上屏）
   → 后端 ExpressionFacade.reply() 产 speak/think/ask → SSE → chatStore.addSpeak/addThink/addAsk（上屏）
-  → addSpeak/addAsk 置 isReplying=false（回复交付，按钮恢复）
+  → addSpeak/addAsk 按覆盖 ID 完成等待，isReplying 从剩余 waiting 派生
 
-提问气泡按 `attempt_id` 合并 ASK 与 READING_QUESTION；只有一个等待交互时自动绑定，多个等待项
+提问气泡按 `attempt_id` 合并 ASK 与 READING_QUESTION；没有回复等待且只有一个等待交互时自动绑定，多个等待项
 要求用户先点选目标。气泡显示服务端校正后的剩余时间，并可暂停/继续；用户发送成功后目标 attempt
 进入 `claimed`，不再作为下一条消息的候选。
 
@@ -41,7 +48,7 @@ KnowledgeFeed              # ChatInput 后方的可折叠“投喂知识”表�
 ```
 
 - **去重**：无——SSE 是消息唯一来源，`sendMessage` 不本地 append（02-stores §1 决策），故无「乐观 + 回显」重复问题。
-- **超时兜底**：`sendMessage` 后 60s 未收到 `speak`/`ask` → 置 `isReplying=false` + `sendError="回复超时"`（LLM 卡死/后端异常时防转圈）。
+- **等待提示**：逐项本地 60 秒期限到达后标 timed_out，显示 replyNotice；身份保留，迟到终局仍可完成。sendError 独立保存，超时不自动重发。
 
 `ChatInput` 上方提供“自动 / 讨论 / 陪伴”三态按钮，绑定 `chatStore.discussionMode`，
 分别设置 null / true / false，并用 `aria-pressed` 表达当前选择；默认和角色 reset 后均为自动。
@@ -122,7 +129,7 @@ KnowledgeFeed              # ChatInput 后方的可折叠“投喂知识”表�
   隔夜验收沿用 [表达契约](../specs/11-expression.md) 的 19:00→次日 08:00 场景：两组消息前
   分别显示对应时间，前端重启或重连回填后保留相同事件时间；不改变气泡宽度、串行逐字或
   滚动跟随行为。
-- `ChatInput`：`isReplying=true` 禁用发送；回车/点发送触发 `sendMessage`（mock store action）；三态按钮更新当前选择，API/store 回归覆盖 null/true/false 透传及 reset。
+- `ChatInput`：`isSending=true` 禁用发送；`isReplying=true` 可继续发送并显示补充提示；回车/点发送触发 `sendMessage`（mock store action）；三态按钮更新当前选择，API/store 回归覆盖 null/true/false 透传及 reset。
 - `KnowledgeFeed`：成功提示与实际计数、部分成功保留草稿并可重试、角色切换后旧成功/失败响应隔离；API 测试覆盖 scoped URL、selection revision 与部分结果透传。
 - 批注：SPEAK 原文选区/完整显示限制、长引用提示、编辑发送/取消、payload、错误保留草稿；
   store/SSE 回归覆盖回执先到与 POST pending 不降级、历史恢复、同键确认、reset 两个 await 阶段

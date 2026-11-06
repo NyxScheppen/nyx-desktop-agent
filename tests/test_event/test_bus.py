@@ -15,7 +15,43 @@ from nyx.events.bus import (
     EventBus,
     EventBusClosedError,
 )
+from nyx.events.routing import ROUTE_SPECS
 from nyx.types import Event
+
+
+async def test_reply_pending_inputs_follow_commit_order_and_reuse_transaction() -> None:
+    bus = await _new_bus()
+    try:
+        spec = next(
+            s for s in ROUTE_SPECS if s.consumer_id == "expression.user_message"
+        )
+
+        async def handler(event: Event) -> None:
+            pass
+
+        bus.subscribe(spec, handler)
+        for identity, timestamp in [("root", 100.0), ("later", 1.0), ("last", 100.0)]:
+            await bus.publish(
+                _make_event(
+                    id=identity,
+                    timestamp=timestamp,
+                    type_=EventType.USER_MESSAGE,
+                    correlation_id=identity,
+                    content={"message": identity},
+                )
+            )
+        pending = await bus.list_pending_after(spec.consumer_id, "root", limit=1)
+        assert [item.id for item in pending] == ["later"]
+        async with bus._db.transaction():
+            await bus.try_mark_effect_in_transaction("later", spec.consumer_id)
+            pending = await bus.list_pending_after(spec.consumer_id, "root")
+            assert [item.id for item in pending] == ["last"]
+        claimed = await bus._claim_next(spec.consumer_id)
+        assert claimed is not None and claimed[0].id == "root"
+        with pytest.raises(ValueError, match="cursor|游标"):
+            await bus.list_pending_after(spec.consumer_id, "missing")
+    finally:
+        await _close(bus)
 
 
 def _make_event(

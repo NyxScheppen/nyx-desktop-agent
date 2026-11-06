@@ -113,7 +113,40 @@ export type TextEvent<T extends TextEventType> = SseBase & {
   kind?: "chat_ask" | "reading_question" | "initiate_chat";
   attempt_id?: string;
   expires_at?: number;
+  reply_complete?: true;
+  reply_to_event_ids?: string[];
 };
+
+export type ChatPendingSnapshot = {
+  server_now: number;
+  items: { event_id: string; timestamp: number;
+    status: "pending" | "processing" | "retry_wait" | "dead_letter" }[];
+  truncated: boolean;
+};
+
+export function hasValidReplyCoverage(data: Record<string, unknown>, root: string): boolean {
+  if (!("reply_complete" in data) && !("reply_to_event_ids" in data)) return true;
+  const ids = data.reply_to_event_ids;
+  return data.reply_complete === true && Array.isArray(ids) && ids.length >= 1 && ids.length <= 32
+    && ids.every((id: unknown) => typeof id === "string" && id.length > 0)
+    && new Set(ids).size === ids.length && ids[0] === root;
+}
+
+export function parseChatPending(data: unknown): ChatPendingSnapshot | null {
+  if (!isRecord(data) || !isFiniteNumber(data.server_now)
+    || !Number.isFinite(new Date(data.server_now * 1000).getTime())
+    || typeof data.truncated !== "boolean" || !Array.isArray(data.items) || data.items.length > 1000) return null;
+  const ids = new Set<string>();
+  for (const item of data.items as unknown[]) {
+    if (!isRecord(item) || typeof item.event_id !== "string" || !item.event_id
+      || ids.has(item.event_id) || !isFiniteNumber(item.timestamp)
+      || !Number.isFinite(new Date(item.timestamp * 1000).getTime())
+      || typeof item.status !== "string"
+      || !["pending", "processing", "retry_wait", "dead_letter"].includes(item.status)) return null;
+    ids.add(item.event_id);
+  }
+  return data as ChatPendingSnapshot;
+}
 
 export type QuestionStatus = "waiting" | "claimed" | "answered" | "expired" | "failed";
 
@@ -292,6 +325,7 @@ export function parseSseEvent(type: string, data: unknown): SseEvent | null {
   }
   const base = { event_id, correlation_id, timestamp };
   if (["speak", "ask", "think", "mutter", "initiate_chat"].includes(type)) {
+    if ((type === "speak" || type === "ask") && !hasValidReplyCoverage(data, correlation_id)) return null;
     return typeof data.content === "string"
       ? ({
           ...base,
@@ -299,6 +333,9 @@ export function parseSseEvent(type: string, data: unknown): SseEvent | null {
           content: data.content,
           ...(typeof data.attempt_id === "string" ? { attempt_id: data.attempt_id } : {}),
           ...(isFiniteNumber(data.expires_at) ? { expires_at: data.expires_at } : {}),
+          ...(data.reply_complete === true ? {
+            reply_complete: true, reply_to_event_ids: data.reply_to_event_ids,
+          } : {}),
         } as SseEvent)
       : null;
   }

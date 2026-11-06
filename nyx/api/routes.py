@@ -359,6 +359,30 @@ def build_app(
             result["annotation_persistence"] = "recorded" if recorded else "pending"
         return result
 
+    @fast.get("/api/chat/pending")
+    async def api_chat_pending() -> dict[str, Any]:
+        assert app.database is not None
+        async with app.database.lock:
+            cursor = await app.database.conn.execute(
+                "SELECT e.id AS event_id, e.timestamp, d.status "
+                "FROM event_delivery d JOIN event_log e ON e.id = d.event_id "
+                "WHERE d.consumer_id = 'expression.user_message' "
+                "AND d.status IN "
+                "('pending', 'processing', 'retry_wait', 'dead_letter') "
+                "AND NOT EXISTS (SELECT 1 FROM event_effect f WHERE f.event_id = e.id "
+                "AND f.consumer_id = d.consumer_id) "
+                "AND NOT EXISTS (SELECT 1 FROM event_log reply WHERE "
+                "reply.correlation_id = e.id AND reply.type IN ('speak', 'ask')) "
+                "ORDER BY CASE WHEN d.status = 'dead_letter' THEN 1 ELSE 0 END, "
+                "e.event_seq LIMIT 1001"
+            )
+            rows = list(await cursor.fetchall())
+        return {
+            "server_now": time.time(),
+            "items": [dict(row) for row in rows[:1000]],
+            "truncated": len(rows) > 1000,
+        }
+
     @fast.get("/api/questions/pending")
     async def api_pending_questions() -> dict[str, Any]:
         attempts = await app.expression.pending_questions()

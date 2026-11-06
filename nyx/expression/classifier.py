@@ -1,6 +1,7 @@
 """表达分类纯函数：快慢通道、问句和轻量用户意图。"""
 
 import re
+from collections.abc import Sequence
 
 from nyx.enums import ContextMode, UserIntent
 from nyx.types import CurrentState
@@ -46,6 +47,29 @@ _EMOTION_WORDS = (
     "难过", "伤心", "生气", "愤怒", "开心", "高兴", "焦虑", "担心",
     "害怕", "委屈", "烦躁", "疲惫", "孤独",
 )
+
+
+def derive_request_text(messages: Sequence[str]) -> tuple[int, str]:
+    """Only an exact first control clause replaces the whole request."""
+    controls = {
+        "取消整个任务",
+        "撤回整个任务",
+        "替换整个任务",
+        "取消刚才的任务",
+        "撤回刚才的任务",
+        "取消前面的请求",
+        "撤回前面的请求",
+        "换个话题",
+    }
+    start = 0
+    for index, message in enumerate(messages):
+        first = next(
+            (s.strip() for s in re.split(r"[，,。.!！?？；;\n]", message) if s.strip()),
+            "",
+        )
+        if first in controls:
+            start = index
+    return start, "\n\n".join(messages[start:])
 
 
 def is_question(text: str) -> bool:

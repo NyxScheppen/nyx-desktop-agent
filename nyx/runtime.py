@@ -49,6 +49,7 @@ async def on_user_message(app: Any, event: Event) -> None:
     """Interrupt a running activity, then hand the message to expression."""
     previous = await app.bus.list_events(correlation_id=event.correlation_id)
     if any(item.type in (EventType.SPEAK, EventType.ASK) for item in previous):
+        await app.expression._archive_user_reply(event.id)
         return
     if getattr(app, "host", None) is None:
         await app.record_user_online(event.timestamp)

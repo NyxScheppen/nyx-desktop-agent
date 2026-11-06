@@ -1,12 +1,20 @@
 # 表达系统事实摘要
 
+## 对话续接（26）
+
+- 回复图新增 collect_inputs、reason_step、finalize_reply；分析最多3次，失败计预算，原话分条标时、旧摘要待复核。FAST跳过分析；有效请求/query重新派生，完整控制子句才撤回。
+- 同角色兼容输入按提交序收纳，最多32条/24000字符；首屏障封口。只有finalize提交统一正文、attempt和补充effect；根归档后才完成。
+- 工具input_pending同步交还，input_update只读核对旧回执、保留结果及预算，旧未执行调用失效。
+- 每条原话与最终正文分别按稳定ID归档，重放终局只补缺项；history按真实event_id去重排序并限长，restore回查覆盖的全部原话。主动/阅读产出记录实际ID，direct原话ID为None。
+- pending API排除已交付根/effect，活动优先最多1000项；前端HTTP锁独立，按ID单调60秒等待，迟到完成证据优先。
+
 > 本文只记录当前源码已经实现的事实，供 agent 快速理解模块边界和运行路径。
 > 它不是完整契约；需要修改表达系统时，先读本文，再回到唯一完整契约
 > [`../specs/11-expression.md`](../specs/11-expression.md)，最后以 `nyx/` 源码为准。
 
 ## 模块与职责
 
-- 普通回复统一经过 `assemble_context`，FAST之后直接respond，SLOW继续工具流程；讨论技能仍禁隐式事实/段召回。
+- 普通回复统一经过 `assemble_context`，FAST之后直接respond，SLOW先有界reason再按决策进入工具或respond；讨论技能仍禁隐式事实/段召回。
 - 当前消息时间从 `EventBus.get_event(correlation_id)` 取原USER_MESSAGE时间；缺事件为未知。`ReplyState`另存采样时间、引用事件时间、前轮生成时间和完整段对象。
 - user历史每条标消息时间，当前消息、批注原文/批注、阅读资料、前轮生成内容分别标时；对话段显示范围及逐句未知，统一UTC ISO8601。时间标签计入既有资料预算，不改持久原文。
 - 事实块显示有效区间和整理时间；Memory创建时间明确区别发生时间。工具规划/尝试/结果接收时间保存于可选checkpoint字段，旧字段缺失不补造成现在。
@@ -27,8 +35,8 @@
   - `check_timeouts()` 处理 durable attempt 的超时。
 - `nyx/expression/pipeline.py`
   - 定义 `ReplyState`、`ReplyDeps`、回复图和回复 JSON 解析。
-  - 图节点为 `classify_channel`、`assemble_context`、`use_tools`、`respond`、
-    `should_ask`、`record_message`。
+  - 图节点为 `collect_inputs`、`classify_channel`、`assemble_context`、`reason_step`、
+    `use_tools`、`respond`、`should_ask`、`finalize_reply`、`record_message`。
   - `use_tools` 内部运行持久 LangGraph 工具子图（`tool_pipeline.py`）：先 JSON Plan/PlanStep，再最多4轮判断；允许一次 replan，保留结果、
     去重及预算。计划非法/空/调用失败退回无计划执行，伪工具 replan 不进入公开注册表。
   - 合法计划的只读调用耗尽且仍有预算时，先经 `review_plan` 输出 continue/replan/stop，
@@ -73,9 +81,9 @@
   `should_load_discussion()`。技能加载即强制慢通道；普通陪聊或明确拒绝讨论不自动加载。
 - 组合根从 `nyx/prompts/skills/discussion.json` 加载 frozen `Skill`，启动时校验片段长度、
   名称唯一和工具授权。base prompt 不含讨论范式或引用纪律；仅加载技能的回合注入该片段。
-- 当前用户消息不在内存 history 中；它只在 `build_user_prompt()` 的 `[本次消息]` 段出现。
-- history 是 `deque[Message]`，容量为 `ExpressionConfig.max_context_len`。回合结束时先追加
-  user，再追加 Nyx 将多轮 speak 用换行拼接后的内容。
+- 当前回合输入不预写 history；prompt 中每条原话独立保留 ID、原始时间和原文。
+- history 是 `deque[Message]`，容量为 `ExpressionConfig.max_context_len`。回合结束时按受理序合并
+  全部 user 原话，再合并一条最终 Nyx 正文；真实 event_id 去重，有界 history 不承担归档来源。
 - `build_system_prompt()` 的 `[本轮活动事实]` 只读取本轮 `ActivityContext` 已采样的类型、状态
   和白名单进度字段。打断前活动和打断后当前活动分别展示；仍为 `RUNNING` 或二次采样为空时
   不声称已暂停、完成或失败。
@@ -87,14 +95,14 @@
   - speak 是问句时仍注册 `CHAT_ASK` 并发布 canonical `ASK`。
 - 慢通道执行：
   - `build_backtrack_context()` 重新截断历史；
-  - 非讨论模式对截断后的近期对话构造 query，召回 `conversation_segment`；命中段以独立历史原文区块注入，不加入当前 `Message` 历史，也不调用旧 `MemoryFacade.search`/`record_recall`；讨论模式关闭隐式事实和段召回，改用能力工具；
+  - 非讨论模式以最新输入/纠正优先构造有界 query，召回 `conversation_segment`；命中段以独立历史原文区块注入，不加入当前 `Message` 历史，也不调用旧 `MemoryFacade.search`/`record_recall`；讨论模式关闭隐式事实和段召回，改用能力工具；
   - 取得自我叙事；
   - 最多 4 轮工具判断，累计工具结果以文本进入下一轮判断和最终回复；最多 5 项，单项 JSON 至多 2000 字符，工具块至多 8000 字符。已完成/耗尽次数的同名同参数模型请求去重并解释，自动重试不去重；失败反馈保留参数、状态和错误，耗尽后同批剩余调用不执行；
-  - `respond` 最多继续到 `slow_max_rounds`，问句会提前结束；
+  - 内部 `reason` 最多3次，非法输出或失败计预算；收到补充使旧正文失效，预算不重置；
   - 有工具结果或反馈的 `respond` 在 system 末尾追加 `TOOL_REPLY_GUIDANCE`，续写与 JSON 重试复用；
     执行叙述仅据本轮调用记录和结果，查询词引用完整参数、先后按step；候选策略和历史建议
     不作已执行证据，不把本轮说成上次，也不补写截断细节。
-  - 所有轮次的正常 THINK/SPEAK、最终 `SPEAK/ASK` 在同一本地事务受理，随后记录 history；生成中途没有正常文本对外可见。
+  - 只在 finalize 将最终 THINK 和一份 `SPEAK/ASK` 与 attempt、补充 effect 同事务提交，归档后合并 history；生成中途没有正常文本对外可见。
 - 讨论模式仅授权 `memory_recall`、`knowledge_search`、`deep_research`，执行时再次核对；普通慢通道排除这三项且保留原工具。
   `memory_recall` 仅返回 profile/conversation 事实与对话段；完整段 JSON 真正进入最终回复 prompt 才幂等计召回。
   `knowledge_search` 返回 knowledge 事实、可空 `source_chunk_id` 及原文证据块，合并事实关联与相关块并按 ID 去重；不计对话段召回。
@@ -102,9 +110,8 @@
   来源数/限制说明；关闭联网直接返回“联网没开”。引用在提取、综合和压缩后按抓取正文校验。
   研究返回整个 JSON 至多 1960 字符；pipeline 与最终 prompt 都整项保留，余量不足时省略，
   不切断 JSON/citations，最终工具块包括标题和前缀仍至多 8000 字符。
-- 每轮 `respond` 一次 LLM 调用同时生成 JSON 的 `think` 和 `speak`，解析后分别评估并分别
-  发布文本事件；两条评估记录共享 call_id、token 和最终 prompt。后续轮次使用累积的前轮
-  think/speak，任务改为续写。
+- `respond` 一次 LLM 调用同时生成 JSON 的 `think` 和 `speak`，分别评估后缓存草稿；
+  两条评估记录共享 call_id、token 和最终 prompt。输入更新后重建正文，旧版本摘要标为需复核，不发布中间正文。
 - `THINK`、`SPEAK`、`ASK` 使用同一个上游 `correlation_id`；文本事件载荷由
   `internal_text_event()` 包装为 `{"content": ...}`。
 
@@ -120,7 +127,7 @@
 - fallback 不发布 THINK/ASK，不创建正常等待项，也不生成 scene memory；成功记录进 history
   后本次回复才完成。
 - fallback 的事件发布失败会抛出给上层 delivery/retry；相关 correlation 已有终局事件时，
-  runtime 会在用户消息重放入口短路。
+  runtime 会在用户消息重放入口补齐归档后返回，不重新生成。
 
 ## Prompt 与分类
 
@@ -148,7 +155,7 @@
 - `classify_user_intent()` 不调 LLM、不访问 DB，只返回 `UserIntent`；结果仅作为 think
   prompt 参考，不改变通道路由或直接触发副作用。
 - `is_question()` 是普通回复和读书提问共用的唯一问句判断实现。
-- 慢通道回溯至多取最近 `max_context_len` 条 history；相邻间隔或总跨度超过 30 分钟、明确换话题时截断，短确认语继承最近一段。保留 `Message.fast=True` 的 Nyx 消息；记忆查询合并最近至多 3 条截取后消息与当前消息，总长不超过 300 字符。
+- 慢通道回溯至多取最近 `max_context_len` 条 history；相邻间隔或总跨度超过 30 分钟、明确换话题时截断，短确认语继承最近一段。保留 `Message.fast=True` 的 Nyx 消息；记忆查询以最新输入和纠正优先，补入原任务及近期上下文，总长不超过300个 Unicode 字符。
 - ExpressionFacade 启动后从 durable `event_log` 恢复最近 `max_context_len` 条表达历史；恢复
   是幂等的，无法解析的事件跳过并记录日志。等待中的 interaction attempt 仍由独立的
   `ExpressionInteractionStore` 恢复，供前端重新计算计时器。

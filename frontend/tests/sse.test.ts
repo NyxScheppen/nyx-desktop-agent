@@ -10,7 +10,7 @@ import { useDesireStore } from "../src/stores/desireStore";
 import { useInnerLifeStore } from "../src/stores/innerLifeStore";
 import { useMemoryStore } from "../src/stores/memoryStore";
 import { useReaderStore } from "../src/stores/readerStore";
-import { isEmotionCategory } from "../src/types/api";
+import { isEmotionCategory, parseSseEvent, parseChatPending } from "../src/types/api";
 import type {
   ActivitySnapshot,
   CurrentState,
@@ -21,6 +21,25 @@ import type {
 } from "../src/types/api";
 
 let controller: ReadableStreamDefaultController<Uint8Array>;
+
+describe("reply coverage protocol", () => {
+  it.each([
+    { reply_complete: false, reply_to_event_ids: ["u"] },
+    { reply_complete: true }, { reply_to_event_ids: ["u"] },
+    { reply_complete: true, reply_to_event_ids: [] },
+    { reply_complete: true, reply_to_event_ids: ["u", "u"] },
+    { reply_complete: true, reply_to_event_ids: ["other"] },
+  ])("rejects malformed paired fields before dispatch", (coverage) => {
+    expect(parseSseEvent("speak", { event_id: "s", correlation_id: "u", timestamp: 1, content: "done", ...coverage })).toBeNull();
+  });
+  it("rejects a damaged snapshot as a whole", () => {
+    expect(parseChatPending({ server_now: 1, truncated: false, items: [
+      { event_id: "u", timestamp: 1, status: "pending" },
+      { event_id: "u", timestamp: 1, status: "processing" },
+    ] })).toBeNull();
+    expect(parseChatPending({ server_now: 1, truncated: "false", items: [] })).toBeNull();
+  });
+});
 let signal: AbortSignal;
 const dispatch = vi.fn();
 const emit = (type: string, data: unknown) => controller.enqueue(new TextEncoder().encode(

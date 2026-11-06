@@ -1,5 +1,7 @@
 # pyright: reportPrivateUsage=false
 import json
+import sqlite3
+from unittest.mock import patch
 
 import pytest
 
@@ -53,6 +55,97 @@ async def test_append_turn_keeps_raw_content_and_chain() -> None:
         assert third.raw_content == "用户：对了，汉代制度"
     finally:
         await database.conn.close()
+
+
+async def test_archive_duplicate_does_not_append_or_refresh_segment() -> None:
+    database = await connect(":memory:")
+    try:
+        store = MemoryStore(database)
+        first = await append_turn(
+            store, event_id="u:user", content="鱼火锅", timestamp=10.0
+        )
+        await database.conn.execute(
+            "UPDATE conversation_segment SET active=0 WHERE id=?", (first.id,)
+        )
+        await database.conn.commit()
+        await append_turn(store, event_id="u:user", content="鱼火锅", timestamp=20.0)
+        saved = await store.get_conversation_segment(first.id)
+        assert saved is not None and saved.raw_event_ids == ["u:user"]
+        assert saved.active is False and saved.ended_at == 10.0
+        row = await (
+            await database.conn.execute(
+                "SELECT count(*) AS n FROM conversation_segment"
+            )
+        ).fetchone()
+        assert row is not None and row["n"] == 1
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("table", ["conversation_segment", "conversation_turn_archive"])
+async def test_archive_write_failure_rolls_back_segment_and_index(table: str) -> None:
+    database = await connect(":memory:")
+    try:
+        store = MemoryStore(database)
+        await database.conn.execute(
+            f"CREATE TRIGGER fail_archive BEFORE INSERT ON {table} "
+            "BEGIN SELECT RAISE(ABORT, 'archive write failed'); END"
+        )
+        await database.conn.commit()
+        with pytest.raises(sqlite3.IntegrityError, match="archive write failed"):
+            await append_turn(store, event_id="u:user", content="原话", timestamp=1.0)
+        assert await store.latest_conversation_segment() is None
+        assert await store.archived_conversation_turn("u:user") is None
+        await database.conn.execute("DROP TRIGGER fail_archive")
+        await database.conn.commit()
+        saved = await append_turn(
+            store, event_id="u:user", content="原话", timestamp=1.0
+        )
+        assert saved.raw_event_ids == ["u:user"]
+    finally:
+        await database.close()
+
+
+async def test_archive_uncertain_commit_reuses_committed_index() -> None:
+    database = await connect(":memory:")
+    try:
+        store = MemoryStore(database)
+        commit = database.conn.commit
+
+        async def committed_then_failed() -> None:
+            await commit()
+            raise OSError("commit acknowledgement lost")
+
+        with patch.object(database.conn, "commit", committed_then_failed):
+            first = await append_turn(
+                store, event_id="u:user", content="原话", timestamp=1.0
+            )
+        again = await append_turn(
+            store, event_id="u:user", content="原话", timestamp=2.0
+        )
+        assert again.id == first.id
+        assert again.raw_event_ids == ["u:user"]
+        assert again.ended_at == 1.0
+    finally:
+        await database.close()
+
+
+async def test_old_source_time_keeps_reply_with_the_latest_committed_segment() -> None:
+    database = await connect(":memory:")
+    try:
+        store = MemoryStore(database)
+        await append_turn(store, event_id="a:user", content="杭州旅行", timestamp=100.0)
+        second = await append_turn(
+            store, event_id="b:user", content="换个话题，音乐", timestamp=1.0
+        )
+        reply = await append_turn(
+            store, event_id="b:nyx", content="一起听音乐", timestamp=2.0
+        )
+        assert reply.id == second.id
+        assert reply.raw_event_ids == ["b:user", "b:nyx"]
+        assert (reply.started_at, reply.ended_at) == (1.0, 2.0)
+    finally:
+        await database.close()
 
 
 @pytest.mark.asyncio

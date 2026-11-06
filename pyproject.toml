@@ -55,6 +55,9 @@ testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 
+[tool.coverage.run]
+patch = ["subprocess"]
+
 [tool.pyright]
 pythonVersion = "3.11"
 exclude = ["build", "frontend/src-tauri/target", "**/node_modules", "**/__pycache__", ".venv", ".claude", "scripts/e2e/**"]

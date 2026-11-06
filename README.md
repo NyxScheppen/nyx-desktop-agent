@@ -251,7 +251,7 @@ pip install uv==0.12.18
 uv sync --locked --extra dev
 uv run --no-sync python -m ruff check nyx/ tests/ scripts/
 uv run --no-sync python -m pyright nyx/ tests/ scripts/
-uv run --no-sync python scripts/run_e2e.py --timeout 300
+uv run --no-sync python scripts/run_e2e.py --timeout 600
 uv run --no-sync python - <<'PY'
 import os
 import tempfile

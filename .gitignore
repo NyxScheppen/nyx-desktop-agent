@@ -37,6 +37,7 @@ node_modules/
 
 # 本地测试与构建产物
 .coverage
+.coverage.*
 htmlcov/
 artifacts/
 

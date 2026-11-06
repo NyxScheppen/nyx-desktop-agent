@@ -181,8 +181,16 @@ async def fixture(folder, model, *, fast=False, port=0, postgres=False, crash=No
         server_task = asyncio.create_task(server.serve(sockets=[sock]))
         try:
             async def started():
-                return server.started
-            await until(started)
+                if bus_task is not None and bus_task.done():
+                    bus_task.result()
+                    raise RuntimeError("fixture EventBus stopped before readiness")
+                return server.started and (
+                    bus_task is None or (
+                        app.bus._running
+                        and set(app.bus._workers) == set(app.bus._handlers)
+                    )
+                )
+            await until(started, timeout=30)
             async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{selected_port}", headers={"Host": "127.0.0.1:8000", "X-Nyx-Selection-Revision": str(host.revision)}, timeout=20) as client:
                 yield app, client, selected_port
         finally:
@@ -511,7 +519,8 @@ async def crash_restart(folder, point, postgres):
                     raise AssertionError((folder / "child.log").read_text(encoding="utf-8"))
                 return (folder / "ready.json").exists()
             try:
-                await until(ready, timeout=30)
+                # A cold nested interpreter under coverage can take ~30s to boot.
+                await until(ready, timeout=60)
             except TimeoutError as error:
                 raise AssertionError("child startup timed out: " + (folder / "child.log").read_text(encoding="utf-8")) from error
             port = json.loads((folder / "ready.json").read_text(encoding="utf-8"))["port"]

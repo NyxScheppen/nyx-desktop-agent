@@ -19,7 +19,7 @@ def acceptance_scripts(root: Path) -> list[Path]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--timeout", type=int, default=600)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     scripts = acceptance_scripts(root)

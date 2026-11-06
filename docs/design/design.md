@@ -714,7 +714,7 @@ flowchart LR
 |---|---|
 | 当前功能的理论全景 | 本文 |
 | 未完成事项与后续决策 | [统一待办清单](../TODO.md) |
-| CI/CD 流水线设计 | `docs/design/ci-cd.md` |
+| 本地测试与检查 | [README](../../README.md#-本地测试与检查) |
 | 每个领域的签名、状态、阈值和事务语义 | `docs/specs/` 对应完整 spec |
 | 当前源码已经做到什么 | `docs/facts/` 对应事实摘要 |
 | 源码与测试从哪里找 | `docs/tech-reference.md`、`docs/test-inventory.md` |

@@ -11,10 +11,10 @@
 - 对话续接（26）：覆盖32条/24000字符连续输入与屏障、最新纠正/完整撤回子句、3次分析预算和eval记账、统一终局/ASK/降级、input_pending/input_update、已确认回执复用与uncertain、归档原文/索引原子回滚及提交确认丢失、旧库回填和51/52/53跨库导入、真实ID历史/direct顺序、pending快照和多角色隔离。P5驱动通过真实宿主/磁盘saver/HTTP/SSE与子进程崩溃恢复验证E01—E12；真实PostgreSQL、模型及复杂浏览器状态另行验收通过，真实IME组合输入未验收，详见26验收结论。前端覆盖逐ID等待、单调超时、覆盖协议/损坏快照、POST/SSE乱序、代数隔离及发送草稿快照。
 
 - 后端测试文件：76
-- 后端测试：1493项（包含参数化实例），76个文件；2026-11-06发布复核：非E2E用例1473 passed / 1 skipped（318.67s），19个完整E2E驱动独立通过；孤立依赖清理后表达模块221项通过，见26验收记录；本轮覆盖 PostgreSQL URL、Railway `$PORT` 与公网 Host、公网 ready 隔离、event_seq 回填、PostgreSQL 占位符/JSON 查询适配、新库 schema 编译、迁移回滚、连接清理、checkpoint saver 初始化、autocommit/标量函数转换、工具观测从存储到 PostgreSQL 占位符适配、容器配置和 SQLite→PostgreSQL 迁移源只读发现、正式角色迁移函数、内置 Nyx 卡路径保留、外键排序、自引用校验及 SQLite REAL 精度映射；OneBot 配置接受 Railway 私网主机并支持环境 URL 覆盖，Docker 镜像携带最小 Railway OneBot 配置且 Compose 保持空配置；Docker 部署回归验证 Railway Volume 权限修复后以 root 修复挂载属主并降权启动；统一 E2E 当前19个验收驱动，本次发布前全部复跑通过。
-- 当前独立pytest覆盖率：86.95%，测试用例全绿，但未达到90%门槛，覆盖率命令退出码1。阶段五历史覆盖率：仅仓库内pytest整体87%；合并15个外部验收驱动后Nyx91.09%、含独立包91.13%，核心100%。CI已显式运行历史 E2E；90%覆盖率门槛缺口仍见 [统一待办清单](TODO.md)。
-- 阶段五：`tests/test_harness.py` 4项独立核心回归与原插件10项；`tests/test_character_host.py` 新增第二角色真实 HTTP/SSE 注册、身份 prompt、聊天隔离和卸载恢复。wheel/sdist 与隔离安装通过；发布工具回归验证 CI 的 Ruff/Pyright 同时检查独立 packages；launcher 构建回归验证 PyInstaller 显式包含独立包路径。
-- 历史 E2E 统一入口：`scripts/run_e2e.py` 按稳定顺序运行仓库内 P1-P4、插件 HTTP/SSE 及持久化/边界驱动；`tests/test_e2e_acceptance.py` 参数化复用同一集合，故意失败的红探针排除；两个入口隔离 `.env` 的部署认证变量，保持独立内存应用语义。CI 后端质量 job 显式运行该入口。
+- 后端测试：1492项（包含参数化实例），76个文件；2026-11-06本地复核：非E2E用例1472 passed / 1 skipped（375.95s），19个完整E2E驱动独立通过；孤立依赖清理后表达模块221项通过，见26验收记录；本轮覆盖 PostgreSQL URL、Railway `$PORT` 与公网 Host、公网 ready 隔离、event_seq 回填、PostgreSQL 占位符/JSON 查询适配、新库 schema 编译、迁移回滚、连接清理、checkpoint saver 初始化、autocommit/标量函数转换、工具观测从存储到 PostgreSQL 占位符适配、容器配置和 SQLite→PostgreSQL 迁移源只读发现、正式角色迁移函数、内置 Nyx 卡路径保留、外键排序、自引用校验及 SQLite REAL 精度映射；OneBot 配置接受 Railway 私网主机并支持环境 URL 覆盖，Docker 镜像携带最小 Railway OneBot 配置且 Compose 保持空配置；Docker 部署回归验证 Railway Volume 权限修复后以 root 修复挂载属主并降权启动；统一 E2E 当前19个验收驱动，本次发布前全部复跑通过。
+- 最近一次独立pytest覆盖率：86.95%，测试用例全绿，但未达到90%门槛，覆盖率命令退出码1。阶段五历史覆盖率：仅仓库内pytest整体87%；合并15个外部验收驱动后Nyx91.09%、含独立包91.13%，核心100%。本地90%覆盖率门槛缺口仍见 [统一待办清单](TODO.md)。
+- 阶段五：`tests/test_harness.py` 4项独立核心回归与原插件10项；`tests/test_character_host.py` 新增第二角色真实 HTTP/SSE 注册、身份 prompt、聊天隔离和卸载恢复。wheel/sdist 与隔离安装通过；发布工具回归验证版本一致性、冻结制品 smoke 与开发依赖锁定；launcher 构建回归验证 PyInstaller 显式包含独立包路径。
+- 历史 E2E 统一入口：`scripts/run_e2e.py` 按稳定顺序运行仓库内 P1-P4、插件 HTTP/SSE 及持久化/边界驱动；`tests/test_e2e_acceptance.py` 参数化复用同一集合，故意失败的红探针排除；两个本地入口隔离 `.env` 的部署认证变量，保持独立内存应用语义。
 - 前端测试：402项，26个文件；本轮全量通过且生产构建通过；阶段三新增 fetch SSE、Bearer、凭证输入/清除、认证图片和凭证迟到响应隔离回归；阶段四覆盖设备 API 与配对登录。
 - 阶段三质量门（2026-10-30）：后端全量 1375 passed / 1 skipped（1376项）；Ruff/Pyright零错误。前端全量 389 passed，生产构建通过。
 - 阶段三真实本机 HTTPS：临时 Caddy 内部 CA 显式信任，通过同源页面、Chrome 登录、REST/SSE/图片 Bearer、非法 Origin、预检、`/api/ready` 阻断、1005 条提交序双 reader 续传、旧时间戳和 sink 回收；未写入系统证书库或真实数据。
@@ -389,14 +389,13 @@
 - `petShell.test.tsx`：超长陪读段落在固定高度正文区域内纵向滚动，不再被隐藏裁切
 - `packaged_backend_is_a_sibling_of_the_desktop_executable`
 
-### CI/CD 与发布制品
+### 本地发布工具与制品
 
 - `test_validate_versions_accepts_matching_sources_and_tag`
 - `test_validate_versions_reports_drift`
 - `test_release_binaries_require_desktop_and_sidecar`
 - `test_run_smoke_uses_nonsecret_placeholder_key`
-- `test_ci_workflow_has_quality_package_and_tag_release_gates`
-- `test_ci_actions_are_pinned_and_python_dev_dependencies_are_locked`
+- `test_python_dev_dependencies_are_locked`
 
 ### Eval prompt 可观测
 

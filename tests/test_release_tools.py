@@ -1,8 +1,7 @@
-"""CI/CD release-tool regressions."""
+"""Local release-tool regressions."""
 # pyright: reportPrivateUsage=false
 
 import json
-import re
 import tomllib
 from io import BytesIO
 from pathlib import Path
@@ -10,7 +9,6 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
-import yaml
 
 from scripts.check_release_version import VersionError, validate_versions
 from scripts.smoke_release import (
@@ -202,47 +200,13 @@ def test_run_smoke_uses_nonsecret_placeholder_key(
 
     run_smoke(release_dir, tmp_path / "backend.log", timeout=1)
 
-    assert captured_env["DEEPSEEK_API_KEY"] == "ci-release-smoke-placeholder"
+    assert captured_env["DEEPSEEK_API_KEY"] == "release-smoke-placeholder"
     assert captured_env["NYX_LAUNCH_NONCE"] == "nonce"
 
 
-def test_ci_workflow_has_quality_package_and_tag_release_gates() -> None:
-    workflow_path = _ROOT / ".github/workflows/ci.yml"
-    workflow_text = workflow_path.read_text(encoding="utf-8")
-    workflow = yaml.load(
-        workflow_text, Loader=yaml.BaseLoader
-    )
-
-    assert set(workflow["on"]) == {"pull_request", "push", "workflow_dispatch"}
-    assert set(workflow["jobs"]) == {
-        "backend-quality",
-        "frontend-desktop-quality",
-        "package-windows",
-        "release",
-    }
-    assert set(workflow["jobs"]["package-windows"]["needs"]) == {
-        "backend-quality",
-        "frontend-desktop-quality",
-    }
-    assert workflow["jobs"]["release"]["permissions"] == {"contents": "write"}
-    assert workflow["jobs"]["package-windows"]["env"]["HF_HOME"] == (
-        "${{ runner.temp }}\\huggingface"
-    )
-    assert "ruff check nyx/ packages/ tests/ scripts/" in workflow_text
-    assert "pyright nyx/ packages/ tests/ scripts/" in workflow_text
-    assert "python scripts/smoke_release.py" in workflow_text
-    assert "SHA256SUMS.txt" in workflow_text
-    assert "--draft" in workflow_text
-
-
-def test_ci_actions_are_pinned_and_python_dev_dependencies_are_locked() -> None:
-    workflow = (_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    action_refs = re.findall(r"uses:\s*[^@\s]+@([^\s#]+)", workflow)
+def test_python_dev_dependencies_are_locked() -> None:
     pyproject = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert action_refs and all(
-        re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs
-    )
     assert set(pyproject["project"]["optional-dependencies"]["dev"]) >= {
         "pytest==9.1.0",
         "pytest-asyncio==1.4.0",

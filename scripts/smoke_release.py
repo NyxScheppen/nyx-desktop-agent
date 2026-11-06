@@ -138,7 +138,7 @@ def run_smoke(release_dir: Path, log_path: Path, timeout: float) -> None:
     env = os.environ.copy()
     launch_nonce = secrets.token_hex(32)
     env[_LAUNCH_NONCE_ENV] = launch_nonce
-    env["DEEPSEEK_API_KEY"] = "ci-release-smoke-placeholder"
+    env["DEEPSEEK_API_KEY"] = "release-smoke-placeholder"
     succeeded = False
     process: subprocess.Popen[bytes] | None = None
     with tempfile.TemporaryDirectory(prefix="nyx-release-smoke-") as temp:

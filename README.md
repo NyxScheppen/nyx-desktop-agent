@@ -10,7 +10,6 @@
   <a href="#"><img src="https://img.shields.io/badge/Tauri-v2-FFC131?logo=tauri&logoColor=black" alt="Tauri v2" /></a>
   <a href="#"><img src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white" alt="FastAPI" /></a>
   <a href="#"><img src="https://img.shields.io/badge/LangGraph-orchestration-FF6633" alt="LangGraph" /></a>
-  <a href="https://github.com/NyxScheppen/nyx-desktop-agent/actions/workflows/ci.yml"><img src="https://github.com/NyxScheppen/nyx-desktop-agent/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
 > 一个住在你电脑里的桌面 AI 同伴。她会观察你的状态、记住和你的每一次互动、生出自己想做的事，并在合适的时候主动搭话。
@@ -273,23 +272,36 @@ npm run tauri dev  # 桌面壳（Tauri v2）
 |---|---|
 | [`docs/design/design.md`](docs/design/design.md) | 产品定位、长期架构原则和文档边界 |
 | [`docs/TODO.md`](docs/TODO.md) | 唯一待办入口：质量门、实机验收、部署与后续决策 |
-| [`docs/design/ci-cd.md`](docs/design/ci-cd.md) | 最大复用现有入口的 CI/CD 设计 |
 | [`docs/canon.md`](docs/canon.md) | 人格设定（尼克斯·夏本） |
 | [`docs/tech-reference.md`](docs/tech-reference.md) | 源码、spec 与 fact 的快速索引 |
 | [`docs/specs/`](docs/specs/) | 每项功能的设计契约（spec 先行） |
 | [`docs/facts/`](docs/facts/) | 当前源码事实摘要（只作快速导航） |
 
-## ✅ 质量门
+## ✅ 本地测试与检查
 
 ```bash
 pip install uv==0.12.18
 uv sync --locked --extra dev
 uv run --no-sync python -m ruff check nyx/ packages/ tests/ scripts/
 uv run --no-sync python -m pyright nyx/ packages/ tests/ scripts/
+uv run --no-sync python scripts/run_e2e.py --timeout 300
 uv run --no-sync python -m pytest -q --cov=nyx --cov-report=term-missing --cov-fail-under=90
 ```
 
-三项必须全绿。测试不依赖真实 LLM 或已安装桌面端；LLM 使用 mock，文件测试使用临时路径。
+测试不依赖真实 LLM 或已安装桌面端；LLM 使用 mock，文件测试使用临时路径。覆盖率门槛保持 90%，当前缺口见 [待办清单](docs/TODO.md)。
+
+前端测试与构建在 `frontend/` 中执行：
+
+```bash
+npm ci
+npm test -- --run
+npm run build
+```
+
+桌面壳变更还需在 `frontend/` 中执行 `cargo test --manifest-path src-tauri/Cargo.toml --lib --locked`
+和 `cargo check --manifest-path src-tauri/Cargo.toml --release --locked`。
+手动构建桌面包后，在仓库根执行 `uv run --no-sync python scripts/check_release_version.py`
+和 `uv run --no-sync python scripts/smoke_release.py`，分别验证版本一致性与冻结制品的 REST/SSE、身份握手及退出回收。
 
 网页问卷任务使用 Playwright 打开可见浏览器。Windows 优先使用已安装的 Microsoft Edge；其他系统或未安装 Edge 时，先运行 `uv run playwright install chromium`。在设置中开启联网探索后，可在活动页提交公开问卷 URL，或在聊天中让 Nyx 填写。任务完成结果保存在活动页；登录与验证码页面不自动填写。
 

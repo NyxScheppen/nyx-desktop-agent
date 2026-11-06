@@ -165,5 +165,4 @@ R1再次请求的回复仍声称尝试了 `Missing`、`Guide`、`Synthetic` 和�
 - 代码提交 `75c01ac205e0d508d91e47dece2979005be7822b` 已推送 `main`。后端部署 `4be741de-d3fb-48aa-90e7-b340a96facbe`、前端部署 `a10e45f6-c159-4694-808e-617d45465e52` 均为 SUCCESS/RUNNING；前端由该提交导出的干净目录上传，上传说明含完整 commit。文档归档 push 会再次触发相同应用代码的后端部署，不重复上传前端。
 - 发布前完整19个E2E驱动通过；其余后端1473 passed / 1 skipped（318.67s），移除未使用依赖后表达模块221 passed。Ruff/Pyright、前端402项测试及生产构建通过；规范与spec复核问题已关闭。此前真实模型4项、真实PostgreSQL及复杂浏览器状态验收结论见 [26](../specs/26-conversation-steering.md)。真实IME组合输入仍未验收。
 - 线上入口 `https://nyx-frontend-production.up.railway.app`：首页及JS/CSS均200，匿名characters为401；授权characters、Nyx state、新增chat/pending均200，pending为空且未截断；SSE200、text/event-stream并收到实际帧。部署切换期间一次静态资源读取中断，稳定后重试通过；启动日志无数据库错误或实际Traceback，角色RUNNING。
-- GitHub Actions运行 [42147073991](https://github.com/NyxScheppen/nyx-desktop-agent/actions/runs/42147073991) 在启动任务前失败，页面明确报告既有工作流第27/101/102行job级env不支持`runner.temp`；没有测试job或运行日志。未将本地检查当作远端CI成功，也未改动工作流。修复列入 [TODO](../TODO.md)，既有90%覆盖率缺口仍保留。
 - 未通过生产聊天或QQ外发验证，未改NapCat/Postgres制品，未清空用户数据、上下文或凭证；未新增SSH key。仅使用现有授权凭证完成只读API/SSE检查，不记录凭证或生产消息。按用户要求删除临时测试日志、脚本和前端上传副本，仅保留本节汇总结论。

@@ -62,8 +62,8 @@
 
 **来源**：仓库化历史 E2E 首次统一运行时，缺少默认参数的持久化探针和故意失败的 red probe 被当作独立成功驱动；旧补充脚本还 patch 了已移动的装配符号。
 **教训**：脚本文件名相似不代表可以用同一零参数协议执行；验收入口还必须跟随当前组合根的真实装配位置。
-**怎么做**：辅助探针提供明确的默认聚合模式，故意失败探针从成功集合排除；mock 只 patch 当前生产导入点，并在 CI 入口中完整重跑所有成功场景。
-**影响的文件/决策**：`scripts/run_e2e.py`、`tests/test_e2e_acceptance.py`、历史 P3/P4 驱动及 CI 质量门。
+**怎么做**：辅助探针提供明确的默认聚合模式，故意失败探针从成功集合排除；mock 只 patch 当前生产导入点，并通过本地统一入口完整重跑所有成功场景。
+**影响的文件/决策**：`scripts/run_e2e.py`、`tests/test_e2e_acceptance.py`、历史 P3/P4 驱动及本地质量门。
 
 ### 2026-10-30: 测试替身必须保留生产回调的异步契约
 
@@ -215,8 +215,8 @@
 
 **来源**：旧 sidecar 在源码已改为延迟构造 LLM 后仍于启动期要求 API key，只有重新构建并运行冻结制品才暴露版本陈旧和配置前置条件。
 **教训**：源码、缓存中的旧二进制和最终安装包是三种不同证据；源码回归全绿不能证明当前 commit 的依赖收集、资源路径、启动配置和退出回收在发布制品中有效。
-**怎么做**：发布 job 必须从当前 commit 重建 sidecar 和 Tauri 包，再对冻结 sidecar 执行阻断式 REST/SSE 与生命周期 smoke；无需 LLM 的 smoke 使用固定非机密占位 key，不读取开发机 `.env` 或真实密钥。
-**影响的文件/决策**：`.github/workflows/ci.yml`、`scripts/smoke_release.py`、发布制品验收。
+**怎么做**：本地发布前必须从当前 commit 重建 sidecar 和 Tauri 包，再对冻结 sidecar 执行 REST/SSE 与生命周期 smoke；无需 LLM 的 smoke 使用固定非机密占位 key，不读取开发机 `.env` 或真实密钥。
+**影响的文件/决策**：`scripts/smoke_release.py`、本地发布制品验收。
 
 ### 2026-09-23: 向锚点外展开的桌宠面板必须按整个组合检查窗口边界
 
@@ -386,7 +386,7 @@ HTTP 请求、短超时和响应上限校验两者，拒绝重定向，并在身
 **教训**：Debug 单测无法替代 Release 条件编译检查。修改 `cfg(not(debug_assertions))` 下的
 sidecar 启动、路径或清理代码时，必须同时执行 `cargo check --release --locked`；跨错误类型边界
 要显式映射为调用方契约接受的错误类型。
-**影响的文件/决策**：`frontend/src-tauri/src/lib.rs`、CI/本地质量门
+**影响的文件/决策**：`frontend/src-tauri/src/lib.rs`、本地质量门
 
 ### 2026-09-19: Windows venv wrapper 不能被 launcher 当成旧实例杀掉
 
@@ -1179,14 +1179,12 @@ Top N 再过滤来源，也会被其它来源的高分候选挤空，最终表�
 **怎么做**：受理顺序用 event_seq，段链取叶子、时间范围用 min/max且新鲜度不回拨；终局事务一次提交覆盖与补充 effect，根完成前逐 ID 修复归档。原文与归档索引同事务，提交确认丢失时先重读；故障注入设在根消息受理后，避免误伤准入或 presence。
 **影响的文件/决策**：表达 facade/pipeline、memory segments、runtime、schema53及隔离 E2E。
 
-### 2026-11-06: Actions的上下文必须按所在层级验证
+### 2026-11-06: 删除工程入口时保留独立使用者
 
-**来源**：发布推送后，GitHub在启动任何job前拒绝既有workflow中的job级env引用`runner.temp`。
-**教训**：本地工具和测试全绿不能证明工作流语法及上下文可用，零job失败也没有测试日志。
-**怎么做**：在 step 中使用 `RUNNER_TEMP` 并写入 `GITHUB_ENV`，让后续步骤复用缓存路径；用 actionlint 先复现再验证修复。远端运行失败先读取 Annotations，区分静态校验失败和测试失败，不放宽质量门。
-**影响的文件/决策**：`.github/workflows/ci.yml`；后端与打包 job 的缓存路径初始化移至 step。
-
-2026-11-06 重跑后，workflow 已生成 job，但账户因 `billing issue` 锁定，所有 step 仍未启动。遇到空 step 和缺少日志时应先读 job 注解，区分工作流错误与账户限制；账户限制需要所有者处理，不能通过改代码或放宽质量门解决。
+**来源**：移除远端自动化时，发布工具测试同时包含工作流断言、本地版本校验和制品 smoke。
+**教训**：按文件整删测试或工具会误伤仍有独立用途的本地入口；只删除触发配置也会留下失效断言和文档链接。
+**怎么做**：先核对调用方与文档引用，仅删除专属断言，保留本地工具和开发依赖锁定检查；同步测试索引、操作入口和待办状态。
+**影响的文件/决策**：`tests/test_release_tools.py`、`scripts/smoke_release.py`、README 本地检查及测试索引。
 
 ## 模板（条目格式）
 

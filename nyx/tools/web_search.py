@@ -10,6 +10,7 @@
 import asyncio
 import logging
 from typing import cast
+from xml.etree import ElementTree
 
 import httpx
 from lxml import html
@@ -48,7 +49,7 @@ def _parse_bing(html_text: str) -> list[dict[str, str]]:
 
 
 def _search_web_sync(query: str) -> list[dict[str, str]]:
-    """联网搜索主路径：GET cn.bing.com → 解析；失败/无结果记日志返回空。"""
+    """优先解析 Bing 页面，无结果时读取 RSS；失败如实返回空。"""
     try:
         resp = httpx.get(
             _BING_URL,
@@ -58,11 +59,30 @@ def _search_web_sync(query: str) -> list[dict[str, str]]:
             follow_redirects=True,
         )
         resp.raise_for_status()
+        results = _parse_bing(resp.text)
+        if not results:
+            # 云端可能收到无结果的 HTML；同一搜索服务的 RSS 不依赖页面结构。
+            feed = httpx.get(
+                _BING_URL,
+                params={"q": query, "format": "rss"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=10.0,
+                follow_redirects=True,
+            )
+            feed.raise_for_status()
+            root = ElementTree.fromstring(feed.text)
+            results = [
+                {"title": title, "url": url,
+                 "snippet": item.findtext("description", "")}
+                for item in root.findall("./channel/item")
+                if (title := item.findtext("title", "").strip())
+                and (url := item.findtext("link", "").strip())
+            ]
     except Exception:
         # best-effort：联网失败/超时返回空，不崩回复（use_tools 层另有兜底）
         _logger.warning("联网搜索请求失败 query=%s", query, exc_info=True)
         return []
-    results = _parse_bing(resp.text)[:_MAX_RESULTS]
+    results = results[:_MAX_RESULTS]
     if not results:
         _logger.warning("联网搜索无结果 query=%s", query)
     return results

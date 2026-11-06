@@ -71,3 +71,25 @@ async def test_handler_wires_through_search_sync(
     assert await tool.handler("hello") == [
         {"title": "T", "url": "https://x", "snippet": "S"}
     ]
+
+
+def test_cloud_html_without_results_falls_back_to_rss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter([
+        _Resp("<html><body>Search</body></html>"),
+        _Resp("<rss><channel>"
+              "<item><title>Python &amp; time</title><link>https://python.org/</link>"
+              "<description>External documentation</description></item>"
+              "<item><title>Missing link</title></item>"
+              "</channel></rss>"),
+    ])
+
+    def response(*_args: object, **_kwargs: object) -> _Resp:
+        return next(responses)
+
+    monkeypatch.setattr(web_search.httpx, "get", response)
+    assert web_search._search_web_sync("Python timezone") == [{
+        "title": "Python & time", "url": "https://python.org/",
+        "snippet": "External documentation",
+    }]

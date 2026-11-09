@@ -126,7 +126,7 @@ def load_skills(skills_dir: Path, registry: ToolRegistry) -> dict[str, Skill]:
             or not isinstance(fragment, str) or not fragment.strip()
             or len(fragment) > 1500
             or not isinstance(names, list)
-            or not names
+            or (not names and name != "conversation")
             or any(
                 not isinstance(item, str) or not item
                 for item in cast(list[object], names)

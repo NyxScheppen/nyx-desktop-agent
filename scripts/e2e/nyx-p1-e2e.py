@@ -206,7 +206,11 @@ async def main():
                         assert system.rsplit('[工具查询结果]', 1)[-1].count('memory_recall:') == 1
                         assert (await store.get_conversation_segment('segment-e2e')).recall_count == before + 1
                     if mode == 'item_limit':
-                        assert system.rsplit('[工具查询结果]', 1)[-1].count('deep_research:') == 5
+                        runs=await app.research.store.list_records('research_run')
+                        limited=[r for r in runs if r['question'].startswith('E2E item')]
+                        assert len(limited)==expected_rounds and len(limited)<=5
+                        assert all(r['status']=='failed' for r in limited),limited
+                        assert '执行失败' in system
                 invalid = await client.post('/api/chat', json={'message': '嗯', 'discussion': 'true'})
                 assert invalid.status_code == 422
 

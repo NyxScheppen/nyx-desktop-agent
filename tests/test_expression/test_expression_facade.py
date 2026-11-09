@@ -13,6 +13,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from nyx import db
 from nyx.activity.facade import ActivityFacade
+from nyx.behavior.store import SkillStore
 from nyx.config import ExpressionConfig
 from nyx.desire.facade import DesireFacade
 from nyx.enums import (
@@ -50,6 +51,7 @@ from nyx.types import (
     Personality,
     SelfNarrative,
     ShortTermDesire,
+    Skill,
     Tool,
     Values,
 )
@@ -178,7 +180,6 @@ class _FakeMemory:
         self.search_calls = 0
         self.search_queries: list[str] = []
         self.fact_search_calls = 0
-        self.scene_memories: list[dict[str, str]] = []
         self.no_answers: list[str] = []
         self.search_results: list[Memory] = []
         self.recalled: list[tuple[str, str]] = []
@@ -225,18 +226,6 @@ class _FakeMemory:
         self, segment_id: str, user_event_id: str
     ) -> None:
         self.segment_recalled.append((segment_id, user_event_id))
-
-    async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
-        self.scene_memories.append(reply_context)
-        return Memory(
-            id="mem-1",
-            created_at=0.0,
-            content="",
-            kind=MemoryKind.EPISODE,
-            summary="",
-            freshness=1.0,
-            type=MemoryType.SHORT_TERM,
-        )
 
     async def record_no_answer(self, question: str, correlation_id: str) -> None:
         self.no_answers.append(question)
@@ -590,7 +579,6 @@ async def test_reply_fast() -> None:
     assert len(evaluator.evaluated) == 2
     assert memory.search_calls == 0
     assert memory.fact_search_calls == 0
-    assert memory.scene_memories == []
     assert [e.type for e in bus.published] == [EventType.THINK, EventType.SPEAK]
     assert [[e.type for e in batch] for batch in bus.batches] == [
         [EventType.THINK, EventType.SPEAK]
@@ -741,7 +729,6 @@ async def test_reply_slow_non_question() -> None:
         EventType.SPEAK,
     ]
     assert memory.search_calls == 0
-    assert memory.scene_memories == []
     assert [event.type for event in bus.batches[-1]] == [
         EventType.THINK,
         EventType.SPEAK,
@@ -905,7 +892,7 @@ async def test_question_batch_rollback_preserves_other_persisted_count(
 
 
 async def test_reply_slow_question() -> None:
-    facade, llm, _evaluator, memory, _inner_life, bus = _new_facade(
+    facade, llm, _evaluator, _memory, _inner_life, bus = _new_facade(
         energy=100.0, arousal=0.0, llm=_FakeLlm(speak_override="你还好吗？")
     )
     await facade.reply("在吗", "corr-q")
@@ -920,7 +907,6 @@ async def test_reply_slow_question() -> None:
         EventType.THINK,
         EventType.ASK,
     ]
-    assert memory.scene_memories == []
 
 
 async def test_reply_slow_tool_executes_and_flows_into_prompt() -> None:
@@ -2151,6 +2137,28 @@ async def test_initiate_chat_labels_desire_creation_time() -> None:
     desire.created_at = 1000.0
     await facade.initiate_chat(desire, _mk_state(80.0, 0.0))
     assert "欲望创建时间=1970-01-01T08:16:40+08:00" in llm.calls[0][1][-1]["content"]
+
+
+async def test_initiate_chat_pins_conversation_skill_for_feedback() -> None:
+    database = await db.connect(":memory:")
+    try:
+        skills = SkillStore(database)
+        await skills.seed({
+            "conversation": Skill("conversation", "搭话先接住用户的情境。", ()),
+        })
+        facade, llm, *_ = _new_facade(
+            llm=_FakeLlm(chat_content="你在忙吗？"),
+        )
+        facade._skill_store = skills
+        assert await facade.initiate_chat(_desire(), _mk_state(80.0, 0.0))
+        assert "搭话先接住用户的情境。" in llm.calls[0][1][0]["content"]
+        context = await skills.execution_context("d1")
+        assert context is not None
+        assert context["topic_raw"] == "想聊聊天"
+        assert context["skill_snapshot_raw"]["name"] == "conversation"
+        assert context["skill_snapshot_raw"]["version"] == 1
+    finally:
+        await database.close()
 
 
 async def test_initiate_chat_non_empty() -> None:

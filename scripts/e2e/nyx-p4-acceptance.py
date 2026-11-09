@@ -19,6 +19,7 @@ class Fake:
         elif output_type=='reply':data={'think':'认真理解批注','speak':'我会先说明不确定性。','needs_continuation':False}
         elif output_type=='fact_extraction':data=self.feedback
         elif output_type=='tool':data={}
+        elif output_type=='behavior_reflection':data={'observation':'用户多次要求说明不确定性','cause_analysis':'回复缺少限定条件','effective_strategy':'先说明边界','next_strategy':'先说明不确定性再给结论','applicability':'普通对话','evidence_refs':['feedback','reply'],'skill_change_decision':'update','skill_change_reason':'多次纠正支持调整','proposed_skill_text':'保留角色口吻，先说明证据边界和不确定性，再给出具体结论。'}
         elif output_type=='reflection':data={'story':'我会留意用户反馈','becoming':'先说明不确定性','personality_delta':{},'values_delta':{},'long_term_desires':[]}
         else:data={'content':'E2E','summary':'E2E','topics':[],'importance':'normal','entities':[],'facts':[]}
         return LLMOutput(module=module,type=output_type,model='p4-script',content=json.dumps(data,ensure_ascii=False),correlation_id=correlation_id,call_id=str(uuid.uuid4()),prompt_messages=messages,prompt_tokens=11,completion_tokens=7)
@@ -41,6 +42,7 @@ async def main():
     try:
         while not server.started:await asyncio.sleep(.01)
         anchor=root_event(EventType.SPEAK,{'content':'这是旧回复，结论非常肯定。中文🙂片段。'})
+        await app.behavior.skills.for_execution(anchor.correlation_id,"conversation","原始问题")
         await app.bus.publish(anchor)
         annotation={'reply_event_id':anchor.id,'quote':'结论非常肯定。中文🙂','comment':'我希望先说明不确定性，这个回复过于肯定。'}
         async with httpx.AsyncClient(base_url=f'http://127.0.0.1:{sock.getsockname()[1]}',headers={'Host':'127.0.0.1:8000'},timeout=15) as client:
@@ -78,12 +80,13 @@ async def main():
                         r=await client.get('/api/memories/facts',params={'scope':'profile','limit':64})
                         return [x for x in r.json() if x['predicate']=='回复偏好']
                     assert await until(facts)
-                    async def reflection():return [e for e in await app.bus.list_events(event_type=EventType.REFLECTION) if e.content.get('reason')=='annotation_correction']
+                    async def reflection():return [e for e in await app.bus.list_events(event_type=EventType.BEHAVIOR_REFLECTION)]
                     for index in range(2):
                         prior = root_event(
                             EventType.SPEAK,
                             {'content': f'这是第 {index + 2} 条待纠正回复。'},
                         )
+                        await app.behavior.skills.for_execution(prior.correlation_id,"conversation","原始问题")
                         await app.bus.publish(prior)
                         followup = {
                             'reply_event_id': prior.id,
@@ -108,9 +111,11 @@ async def main():
                             ]
                         await until(followup_feedback)
                     assert await until(reflection)
-                    async def done():return [e for e in await app.bus.list_events(event_type=EventType.REFLECTION_DONE) if e.correlation_id==cid]
+                    async def done():return [r for r in await app.behavior.store.list_records('behavior_reflection') if r['status']=='completed' and r['target_skill']=='conversation']
                     assert await until(done)
-                    print('PASS 4.3 profile facts API, correction REFLECTION and REFLECTION_DONE',flush=True)
+                    assert not await app.bus.list_events(event_type=EventType.REFLECTION)
+                    assert (await app.behavior.skills.load('conversation')).version==2
+                    print('PASS 4.3 profile facts, correction behavior reflection and downstream skill without inner-state reflection',flush=True)
                 finally:
                     reader.cancel();await asyncio.gather(reader,return_exceptions=True)
     finally:

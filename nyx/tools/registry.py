@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 from uuid import uuid4
 
+from nyx.behavior.context import tool_execution_id
 from nyx.tools.tool_call_store import ToolCallStore
 from nyx.types import Tool
 
@@ -95,14 +96,14 @@ class ToolRegistry:
         if tool is None:
             raise KeyError(f"未注册工具：{name!r}")
         if self._store is None:
-            return await tool.handler(**args)
+            return await self._invoke(tool, args, log_id)
         created_at = time.time()
         started = time.perf_counter()
         result: Any = None
         error: str | None = None
         status = "error"
         try:
-            result = await tool.handler(**args)
+            result = await self._invoke(tool, args, log_id)
             status = "success"
             return result
         except BaseException as exc:
@@ -130,6 +131,15 @@ class ToolRegistry:
                 })
             except Exception:
                 _LOGGER.exception("工具观测落库失败 tool=%s", name)
+
+    async def _invoke(
+        self, tool: Tool, args: dict[str, Any], log_id: str | None,
+    ) -> Any:
+        token = tool_execution_id.set(log_id)
+        try:
+            return await tool.handler(**args)
+        finally:
+            tool_execution_id.reset(token)
 
     async def mark_adopted(self, log_id: str) -> None:
         """Observation failure must not change the caller's accepted result."""

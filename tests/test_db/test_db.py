@@ -14,6 +14,11 @@ from nyx.tools.tool_call_store import ToolCallStore
 
 # 角色数据库的业务表（不含 schema_version / SQLite 内部表）。
 BUSINESS_TABLES = {
+    "skill_execution",
+    "skill_revision",
+    "behavior_reflection",
+    "research_run",
+    "research_knowledge_receipt",
     "transport_checkpoint",
     "transport_outbox",
     "personality",
@@ -556,7 +561,7 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 49
+    assert len(names) == 54
     assert "material" not in names
 
 
@@ -767,6 +772,7 @@ async def test_migrate_creates_expected_indexes() -> None:
     finally:
         await conn.close()
     assert names == {
+        "idx_research_correlation",
         "idx_memory_kind",
         "idx_memory_kind_hash",
         "idx_memory_type",
@@ -1198,7 +1204,7 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 49
+    assert len(names) == 54
     assert version == max(v for v, _ in db._MIGRATIONS)
 
 

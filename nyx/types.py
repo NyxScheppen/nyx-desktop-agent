@@ -435,6 +435,7 @@ class Skill:
     name: str
     system_fragment: str
     tool_names: tuple[str, ...]
+    version: int = 1
 
 
 @dataclass

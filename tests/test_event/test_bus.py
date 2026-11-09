@@ -185,6 +185,56 @@ async def test_publish_is_durable_before_return() -> None:
         await _close(bus)
 
 
+@pytest.mark.parametrize("status", ["pending", "processing", "retry_wait"])
+async def test_removed_consumer_does_not_block_drain(status: str) -> None:
+    bus = await _new_bus()
+    received: list[Event] = []
+
+    async def retired_handler(event: Event) -> None:
+        raise AssertionError("removed consumer must not run")
+
+    token = bus.subscribe(EventType.THINK, retired_handler)
+    historical = _make_event(id="historical")
+    await bus.publish(historical)
+    await bus._db.conn.execute(
+        "UPDATE event_delivery SET status=?, available_at=0, lease_until=0",
+        (status,),
+    )
+    await bus._db.conn.commit()
+    restored = EventBus(bus._db)
+
+    async def active_handler(event: Event) -> None:
+        received.append(event)
+
+    restored.subscribe(EventType.SPEAK, active_handler)
+    task: asyncio.Task[None] | None = None
+    try:
+        assert await restored._has_no_ready_deliveries()
+        current = _make_event(id="current", type_=EventType.SPEAK)
+        await restored.publish(current)
+        assert not await restored._has_no_ready_deliveries()
+        task = asyncio.create_task(restored.run())
+        await _wait_delivery(restored, current.id, status="succeeded")
+        assert await restored.drain(timeout=1.0)
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert received == [current]
+        assert await restored.get_event(historical.id) == historical
+        assert token.consumer_id not in restored.consumer_ids
+        assert not await restored.has_effect(historical.id, token.consumer_id)
+        cursor = await bus._db.conn.execute(
+            "SELECT status FROM event_delivery WHERE event_id=? AND consumer_id=?",
+            (historical.id, token.consumer_id),
+        )
+        row = await cursor.fetchone()
+        assert row is not None and row["status"] == "pending"
+    finally:
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await _close(restored)
+
+
 async def test_run_dispatches_and_broadcasts_after_durable_publish() -> None:
     bus = await _new_bus()
     try:

@@ -920,28 +920,23 @@ class EventBus:
             return await cursor.fetchone() is not None
 
     async def _wait_until_idle(self) -> None:
-        while True:
-            async with self._db.lock:
-                cursor = await self._db.conn.execute(
-                    """SELECT COUNT(*) AS count
-                    FROM event_delivery
-                    WHERE status IN ('pending', 'processing')
-                       OR (status = 'retry_wait' AND available_at <= ?)""",
-                    (time.time(),),
-                )
-                row = await cursor.fetchone()
-            if row is not None and int(row["count"]) == 0:
-                return
+        while not await self._has_no_ready_deliveries():
             await asyncio.sleep(_SCAN_INTERVAL_SECONDS)
 
     async def _has_no_ready_deliveries(self) -> bool:
+        # Removed consumers have no worker to finish their historical deliveries.
+        consumer_ids = tuple(self._handlers)
+        if not consumer_ids:
+            return True
+        placeholders = ",".join("?" for _ in consumer_ids)
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                """SELECT COUNT(*) AS count
+                f"""SELECT COUNT(*) AS count
                 FROM event_delivery
-                WHERE status IN ('pending', 'processing')
-                   OR (status = 'retry_wait' AND available_at <= ?)""",
-                (time.time(),),
+                WHERE consumer_id IN ({placeholders})
+                  AND (status IN ('pending', 'processing')
+                       OR (status = 'retry_wait' AND available_at <= ?))""",
+                (*consumer_ids, time.time()),
             )
             row = await cursor.fetchone()
         return row is None or int(row["count"]) == 0

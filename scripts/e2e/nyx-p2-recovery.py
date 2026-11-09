@@ -1,4 +1,4 @@
-import asyncio, importlib.util, json, os, tempfile, uuid
+import asyncio, importlib.util, json, os, sqlite3, tempfile, uuid
 from pathlib import Path
 from unittest.mock import patch
 import sys
@@ -15,6 +15,16 @@ from nyx.types import Activity, AssignedTask, LLMOutput
 
 class Fake(base.Fake):
     async def complete(self,messages,*,module,output_type,correlation_id,**kwargs):
+        if getattr(self,'cancel_digest',False) and output_type=='source_digest':raise asyncio.CancelledError()
+        if output_type.startswith('exploration_'):
+            data=json.loads(messages[-1]['content'])
+            if output_type=='exploration_decide':
+                unread=[i for i,r in enumerate(data['results']) if r['url'] not in data['processed_sources']]
+                value={'action':'read','index':unread[0]} if unread else {'action':'finish','reason':'来源已处理'}
+            elif output_type=='exploration_source_check':value={'relevant':True,'usable':True,'reason':'相关资料'}
+            elif output_type=='exploration_finalize':value={'summary':'P2Nebula stored snapshot','core_discovery':'stored snapshot','report':[{'section':'snapshot','claim':'stored snapshot','citations':[{'quote':data['sources'][0]['source_text_raw'],'source_url':data['sources'][0]['location']}]}]}
+            else:value={'supported':[True]}
+            return LLMOutput(module,output_type,'probe',json.dumps(value),correlation_id)
         if output_type=='fact_extraction':
             return LLMOutput(module=module,type=output_type,model='p2-recovery',correlation_id=correlation_id,
                 content=json.dumps({'facts':[{'subject': 'Source'+correlation_id,'predicate':'value','object':'stored snapshot','mode':'multi'}]}))
@@ -33,7 +43,7 @@ async def main():
     memory=app.memory;store=MemoryStore(app.database);activity_store=app.activity._store;rs=app.reading._store
     results=[]
     try:
-        for kind in ('epub','web','exploration'):
+        for kind in ('epub','web'):
             original='P2Nebula '+kind+' atmosphere appears blue.'
             incoming=original+' A volcano erupted.'
             if kind=='epub':
@@ -53,20 +63,6 @@ async def main():
                 async def state(): return (await activity_store.get_task(task.id)).checkpoint
                 target=activity_store;method='save_task';orig_save=activity_store.save_task
                 def final(args): return args[0].checkpoint.get('pending') is None and args[0].checkpoint.get('cursor',0)>0
-            else:
-                url='https://recovery.example/'+kind
-                activity=Activity(str(uuid.uuid4()),ActivityType.FREE_EXPLORATION,'',ActivityStatus.RUNNING,
-                    {'exploration':{'state':'reading_results','topic':'P2Nebula','raw_results':[{'title':'P2Page','url':url,'snippet':'old snippet'}]}},1)
-                await activity_store.insert(activity)
-                cid=activity.id;topic=build_source_topic('web',url)
-                async def run():
-                    current=await activity_store.get(activity.id)
-                    await app.activity._exploration.run(current)
-                async def state(): return (await activity_store.get(activity.id)).progress['exploration']
-                target=activity_store;method='update';orig_save=activity_store.update
-                def final(args):
-                    cp=args[0].progress['exploration']
-                    return cp.get('source_pending') is None and cp.get('cursor',0)>0
             chunk_id=await memory.record_reading_evidence(topic,'original',original,'preseed')
             fake.fail_digest=True
             with patch('nyx.tools.web_fetch.fetch_url',return_value=incoming) as fetched:
@@ -107,6 +103,35 @@ async def main():
                 await app.reading._integration.sediment(book.id,1,flush=True)
                 assert remember.call_args.kwargs['source_chunk_id'] is None
             assert sum(t=='source_digest' for t,m in fake.calls)==n
+        # Exploration now uses the shared durable graph and atomic knowledge receipt.
+        url='https://recovery.example/exploration';topic=build_source_topic('web',url)
+        original='P2Nebula exploration atmosphere appears blue.';incoming=original+' A volcano erupted.'
+        chunk_id=await memory.record_reading_evidence(topic,'original',original,'preseed')
+        activity=Activity(str(uuid.uuid4()),ActivityType.FREE_EXPLORATION,'',ActivityStatus.RUNNING,{'intent':'P2Nebula','exploration':{'raw_results':[{'title':'P2Page','url':url}]}},1)
+        fake.cancel_digest=True
+        with patch('nyx.tools.web_fetch.fetch_url',return_value=incoming) as fetched:
+            try:await app.research.run_activity(activity,lambda activity: asyncio.sleep(0))
+            except asyncio.CancelledError:pass
+            else:raise AssertionError('cancellation swallowed')
+            run_id='research:activity:'+activity.id
+            record=await app.research.store.get('research_run',run_id)
+            assert record['activity']['progress']['exploration']['source_pending']['source_chunk_id']==chunk_id
+            fake.cancel_digest=False;orig=memory.remember_research_knowledge
+            async def lose_ack(*args,**kwargs):
+                await orig(*args,**kwargs);raise sqlite3.OperationalError('lost commit acknowledgement')
+            with patch.object(memory,'remember_research_knowledge',side_effect=lose_ack):
+                result=await app.research.run_activity(activity,lambda activity: asyncio.sleep(0))
+            assert result['status']=='uncertain',result
+            before=len(await store.list_memories())
+            with patch('nyx.tools.web_fetch.fetch_url',return_value='CHANGED REMOTE SOURCE'):
+                result=await app.research.run_activity(activity,lambda activity: asyncio.sleep(0))
+            assert result['status']=='completed',result
+            assert len(await store.list_memories())==before
+            assert fetched.call_count==1 and len(await store.list_knowledge_chunks(source_topic=topic))==1
+            digests=[json.loads(messages[-1]['content'])['source_text'] for typ,messages in fake.calls if typ=='source_digest']
+            assert digests[-1]==original
+            assert any(f.source_chunk_id==chunk_id for f in await memory.search_facts('Source'+activity.id,scope='knowledge'))
+        print('PASS exploration shared graph interruption, pinned source snapshot, lost-ack receipt and replay provenance',flush=True)
         results.append('legacy_extracted_pending_no_guessed_link_or_redigest')
         print('PASS '+results[-1],flush=True)
         Path(tempfile.gettempdir(),'nyx-p2-recovery-results.json').write_text(json.dumps(results,indent=2),encoding='utf-8')

@@ -516,6 +516,63 @@ def build_app(
             after = after[len(prefix) :]
         return await app.bus.list_events(limit, event_type, correlation_id, after)
 
+    @fast.get("/api/research/runs")
+    async def api_research_runs(
+        limit: int = Query(50, ge=1, le=200),
+        correlation_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if app.research is None:
+            return []
+        return await app.research.store.list_records(
+            "research_run", limit, correlation_id
+        )
+
+    @fast.get("/api/research/runs/{run_id}")
+    async def api_research_run(run_id: str) -> dict[str, Any]:
+        record = await app.research.store.get(
+            "research_run", run_id
+        ) if app.research else None
+        if record is None:
+            raise HTTPException(404, "研究记录不存在")
+        return record
+
+    @fast.get("/api/behavior/reflections")
+    async def api_behavior_reflections(
+        limit: int = Query(50, ge=1, le=200),
+    ) -> list[dict[str, Any]]:
+        if app.behavior is None:
+            return []
+        return await app.behavior.store.list_records("behavior_reflection", limit)
+
+    @fast.post("/api/research/runs/{run_id}/resume")
+    async def api_resume_research(
+        run_id: str, answer: str | None = None,
+    ) -> dict[str, Any]:
+        if app.research is None:
+            raise HTTPException(404, "研究未初始化")
+        try:
+            return await app.research.resume(run_id, answer)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @fast.get("/api/skills/{name}/versions")
+    async def api_skill_versions(name: str) -> list[dict[str, Any]]:
+        if app.behavior is None or name not in {"conversation", "discussion"}:
+            raise HTTPException(404, "skill 不存在")
+        return await app.behavior.skills.history(name)
+
+    @fast.post("/api/research/runs/{run_id}/cancel")
+    async def api_cancel_research(run_id: str) -> dict[str, Any]:
+        if app.research is None:
+            raise HTTPException(404, "研究未初始化")
+        try:
+            result = await app.research.cancel(run_id)
+            if result.get("status") == "cancelled":
+                await app.activity.finish_cancelled_research(run_id)
+            return result
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
     @fast.get("/api/expression/history")
     async def api_expression_history(
         limit: int = Query(100, ge=1, le=5000),

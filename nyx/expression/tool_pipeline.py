@@ -461,7 +461,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         )
         if receipt is not None and receipt["status"] == "success":
             result = json.loads(receipt["result_json"])
-        elif receipt is not None and not read_only:
+        elif receipt is not None and not read_only and name != "deep_research":
             pending.update(
                 status="uncertain",
                 errors=[*pending["errors"], receipt["error"]] if receipt["error"]
@@ -501,14 +501,22 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             if isinstance(result, dict) and result.get("error"):
                 error = str(cast(dict[str, Any], result)["error"])[:1000]
         if error is not None:
+            known_research_failure = (
+                name == "deep_research" and isinstance(result, dict)
+                and bool(cast(dict[str, Any], result).get("run_id"))
+                and cast(dict[str, Any], result).get("status")
+                in {"failed", "cancelled"}
+            )
             pending.update(
-                status="uncertain" if not read_only
+                status="failed" if known_research_failure else
+                "uncertain" if not read_only
                 else "retry_wait" if pending["attempts"] < _MAX_TOOL_ATTEMPTS
                 else "exhausted",
                 errors=[*pending["errors"], error],
                 retry_at=time.time() + pending["attempts"],
                 text=(
-                    f"工具 {name} 执行失败：{error}" if read_only else
+                    f"工具 {name} 执行失败：{error}"
+                    if read_only or known_research_failure else
                     f"工具 {name} 副作用结果未确认，禁止重试，请先查证：{error}"
                 ),
             )
@@ -557,7 +565,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
                 f"跳过 {name} 的结果回注：工具文本预算不足；不能声称已使用该结果。"
             )
         calls, cursor = state["calls"], state["cursor"]
-        if status in ("exhausted", "uncertain"):
+        if status in ("exhausted", "uncertain", "failed"):
             if cursor < len(calls):
                 notices.append(
                     "以下调用未执行：前一步重试耗尽或副作用结果未确认，先交模型重新决策。"

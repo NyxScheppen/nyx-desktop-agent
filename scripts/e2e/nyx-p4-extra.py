@@ -74,28 +74,24 @@ async def reflection_boundary():
    await app.memory.apply_annotation_feedback(prior,b.MED)
   f=await b.feedback(app)
   await app.memory.apply_annotation_feedback(f,b.MED)
-  ref=next(
-   event for event in await app.bus.list_events(event_type=EventType.REFLECTION)
-   if event.content.get('evidence',[{}])[0].get('source_id')==f.id
-  )
-  orig=app.inner_life._reflection.prepare
-  with patch.object(app.inner_life._reflection,'prepare',side_effect=RuntimeError('reflection unavailable')):
-   try:await app.inner_life.apply_event(ref,'inner_life.reflection')
+  ref=(await app.bus.list_events(event_type=EventType.BEHAVIOR_REFLECTION))[0]
+  before=await app.inner_life.get_state()
+  with patch.object(app.behavior,'_reflect',side_effect=RuntimeError('behavior reflection unavailable')):
+   try:await app.behavior.apply_event(ref,app.memory)
    except RuntimeError:pass
    else:raise AssertionError('expected reflection failure')
   assert await app.memory.has_annotation_feedback(f.content['reply_event_id'],f.content['comment'])
-  assert await app.bus.has_effect(f.id,b.MED) and not await app.bus.has_effect(ref.id,'inner_life.reflection')
+  assert await app.bus.has_effect(f.id,b.MED)
+  assert (await app.behavior.skills.load('conversation')).version==1
   await app.expression.reply('你好','reply-independent',discussion=False)
   assert await app.bus.list_events(event_type=EventType.SPEAK,correlation_id='reply-independent')
-  await app.inner_life.apply_event(ref,'inner_life.reflection')
-  assert await app.bus.has_effect(ref.id,'inner_life.reflection')
-  assert await app.bus.list_events(event_type=EventType.REFLECTION_DONE,correlation_id=ref.correlation_id)
-  old=root_event(EventType.REFLECTION,{'reason':'annotation_correction','evidence':[{'source_id':f.id,'summary':'旧反馈'}]});old.timestamp=0.0
-  await app.bus.publish(old);calls=len(fake.calls)
-  await app.inner_life.apply_event(old,'inner_life.reflection')
-  assert await app.bus.has_effect(old.id,'inner_life.reflection') and len(fake.calls)==calls
-  assert not await app.bus.list_events(event_type=EventType.REFLECTION_DONE,correlation_id=old.correlation_id)
-  print('PASS reflection failure isolation, reply, retry/DONE and expired correction no-op',flush=True)
+  await app.behavior.apply_event(ref,app.memory)
+  await app.behavior.apply_event(ref,app.memory)
+  assert (await app.behavior.skills.load('conversation')).version==2
+  assert await app.inner_life.get_state()==before
+  assert not await app.bus.list_events(event_type=EventType.REFLECTION)
+  print('PASS behavior reflection failure isolation, reply, retry/replay and unchanged inner state',flush=True)
+
  finally:await app.database.close()
 
 async def dead_letter():

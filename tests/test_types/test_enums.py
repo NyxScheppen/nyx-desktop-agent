@@ -9,4 +9,8 @@ def test_frontend_sse_listeners_cover_all_event_types() -> None:
     match = re.search(r"const EVENT_TYPES = \[(.*?)\];", source, re.DOTALL)
     assert match is not None
     frontend_types = set(re.findall(r'"([a-z_]+)"', match.group(1)))
-    assert frontend_types == {event_type.value for event_type in EventType}
+    # This legacy value remains readable in old event logs but is no longer emitted.
+    assert frontend_types == {
+        event_type.value for event_type in EventType
+        if event_type != EventType.SCENE_MEMORY_REQUESTED
+    }

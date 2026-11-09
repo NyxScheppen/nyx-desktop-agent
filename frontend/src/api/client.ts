@@ -469,3 +469,20 @@ export function getConversationMemories(query = "", offset = 0): Promise<Convers
   const params = new URLSearchParams({ q: query, offset: String(offset), limit: "100" });
   return request<ConversationMemory[]>(`${BASE_URL}/api/memories/conversations?${params}`);
 }
+
+export async function getResearchRuns(): Promise<import("../stores/behaviorStore").ResearchRun[]> {
+  return request(`${BASE_URL}/api/research/runs`);
+}
+export async function getBehaviorReflections(): Promise<import("../stores/behaviorStore").BehaviorReflection[]> {
+  return request(`${BASE_URL}/api/behavior/reflections`);
+}
+export async function getSkillVersions(name: string): Promise<import("../stores/behaviorStore").SkillVersion[]> {
+  return request(`${BASE_URL}/api/skills/${encodeURIComponent(name)}/versions`);
+}
+export async function resumeResearch(id: string, answer: string): Promise<unknown> {
+  return request(`${BASE_URL}/api/research/runs/${encodeURIComponent(id)}/resume?answer=${encodeURIComponent(answer)}`, { method: "POST" });
+}
+
+export async function cancelResearch(id: string): Promise<unknown> {
+  return request(`${BASE_URL}/api/research/runs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+}

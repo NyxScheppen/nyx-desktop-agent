@@ -29,7 +29,7 @@ NYX_CORPUS: tuple[str, ...] = (
 # 余弦相似度阈值：sim >= 阈值视为完全贴合（1.0），低于则线性衰减（可推翻）。
 _EMBED_SIM_THRESHOLD = 0.7
 
-# 第 2 档只对「voice 类」输出生效——结构化/内部输出（tool/judge/scene_memory/…）
+# 第 2 档只对「voice 类」输出生效——结构化/内部输出（tool/judge/fact_extraction/…）
 # 与语料比对必然低分、污染 ooc，故跳过，维持关键词-only。
 _VOICE_TYPES: frozenset[str] = frozenset({"speak", "initiate_chat", "think"})
 

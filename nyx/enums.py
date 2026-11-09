@@ -13,10 +13,14 @@ class EventType(StrEnum):
     INITIATE_CHAT = "initiate_chat"        # 搭话
     EMOTION_UPDATE = "emotion_update"      # 情感更新
     REFLECTION = "reflection"              # 反思
+    BEHAVIOR_REFLECTION = "behavior_reflection"
+    BEHAVIOR_PROGRESS = "behavior_progress"
+    RESEARCH_PROGRESS = "research_progress"
     REFLECTION_DONE = "reflection_done"    # 反思完成（仅广播前端：叙事/欲望刷新+气泡）
     MEMORY_CREATED = "memory_created"      # 记忆生成
     MEMORY_PROMOTED = "memory_promoted"    # 记忆升级（短期→长期）
-    SCENE_MEMORY_REQUESTED = "scene_memory_requested"  # 慢回复场景记忆请求
+    # 仅保留历史事件日志的反序列化兼容；不再生产或消费。
+    SCENE_MEMORY_REQUESTED = "scene_memory_requested"
     DESIRE_GENERATED = "desire_generated"  # 欲望产生
     DESIRE_SATISFIED = "desire_satisfied"  # 欲望满足
     DESIRE_EXPIRED = "desire_expired"      # 欲望淘汰

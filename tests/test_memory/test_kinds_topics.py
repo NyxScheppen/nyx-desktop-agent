@@ -1,13 +1,10 @@
 # pyright: reportPrivateUsage=false
-import json
-
 import pytest
 
 from nyx.enums import MemoryKind, MemoryType
 from nyx.expression.prompt import _memory_block
 from nyx.memory.facade import (
     _normalize_topics,
-    _parse_scene,
     _semantic_dedup_compatible,
 )
 from nyx.memory.store import hash_content
@@ -31,15 +28,6 @@ def test_topics_are_bounded_and_normalized() -> None:
     assert _normalize_topics([" 信任 ", "信任", "x\ny", "a", "b", "c"]) == [
         "信任", "a", "b", "c"
     ]
-
-
-def test_scene_requires_controlled_kind() -> None:
-    raw = json.dumps(
-        {"content": "c", "kind": "episode", "topics": ["信任"], "summary": "s"}
-    )
-    assert _parse_scene(raw)[1] is MemoryKind.EPISODE
-    with pytest.raises(ValueError):
-        _parse_scene('{"content":"c","kind":"free_text","summary":"s"}')
 
 
 def test_exact_hash_ignores_whitespace_and_basic_punctuation() -> None:

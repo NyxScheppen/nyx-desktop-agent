@@ -18,6 +18,8 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 
 from nyx.activity.facade import ActivityFacade
+from nyx.behavior.context import behavior_context
+from nyx.behavior.store import SkillStore, skill_snapshot
 from nyx.config import ExpressionConfig
 from nyx.desire.facade import DesireFacade
 from nyx.enums import (
@@ -106,6 +108,7 @@ class ExpressionFacade:
         release_return: Callable[[dict[str, float] | None], None] | None = None,
         reading_context_reader: (Callable[[str, str], Awaitable[str]] | None) = None,
         skills: Mapping[str, Skill] | None = None,
+        skill_store: SkillStore | None = None,
         checkpointer: BaseCheckpointSaver[str] | None = None,
     ) -> None:
         self._bus = bus
@@ -127,6 +130,7 @@ class ExpressionFacade:
         self._release_return = release_return
         self._reading_context_reader = reading_context_reader
         self._skills = skills or {}
+        self._skill_store = skill_store
         self._checkpointer = checkpointer or InMemorySaver()
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._history_restored = False
@@ -160,6 +164,16 @@ class ExpressionFacade:
                 checkpointer=self._checkpointer,
             )
         )
+
+    async def _execution_skill(
+        self, correlation_id: str, message: str, discussion: bool | None,
+    ) -> Skill | None:
+        name = "discussion" if discussion is True or (
+            discussion is None and should_load_discussion(message)
+        ) else "conversation"
+        if self._skill_store is not None:
+            return await self._skill_store.for_execution(correlation_id, name, message)
+        return self._skills.get(name)
 
     async def _pending_reply_inputs(
         self,
@@ -253,10 +267,9 @@ class ExpressionFacade:
             state["skill"]
             if not inputs
             else (
-                self._skills.get("discussion")
-                if discussion is True
-                or (discussion is None and should_load_discussion(message))
-                else None
+                await self._execution_skill(
+                    state["correlation_id"], message, discussion
+                )
             )
         )
         reading = state["reading_context"]
@@ -1079,10 +1092,7 @@ class ExpressionFacade:
                 "round_times": [],
                 "annotation": annotation,
                 "skill": (
-                    self._skills.get("discussion")
-                    if discussion is True
-                    or (discussion is None and should_load_discussion(msg))
-                    else None
+                    await self._execution_skill(correlation_id, msg, discussion)
                 ),
                 "mode": ContextMode.FAST,
                 # 朴素回溯最近 max_context_len 条（快通道用，不含当前消息）；
@@ -1111,13 +1121,20 @@ class ExpressionFacade:
                 "claimed_return": claimed_return,
                 "fallback": False,
             }
-            result = await self._graph.ainvoke(
-                initial,
-                {
-                    "recursion_limit": 32 * (12 + 2 * self._config.slow_max_rounds)
-                    + 30,
-                },
-            )
+            selected = initial["skill"]
+            token = behavior_context.set({
+                "scenario": "reply", "correlation_id": correlation_id,
+                "topic_raw": msg,
+                "skill_snapshot_raw": skill_snapshot(selected) if selected else {},
+            } if selected else None)
+            try:
+                result = await self._graph.ainvoke(
+                    initial,
+                    {"recursion_limit": 32 * (12 + 2 * self._config.slow_max_rounds)
+                     + 30},
+                )
+            finally:
+                behavior_context.reset(token)
             if result["mode"] is ContextMode.SLOW:
                 self._last_slow_at = time.time()
             if result["ask"] is not None and self._interaction_store is None:
@@ -1152,6 +1169,9 @@ class ExpressionFacade:
             str(uuid4()) if self._interaction_store is not None else desire.id
         )
         try:
+            skill = await self._execution_skill(
+                correlation_id, desire.description, False,
+            )
             activity_context = await self._activity_context()
             temporal_context = await self._temporal_context(
                 started_at, correlation_id, claimed_return
@@ -1163,6 +1183,7 @@ class ExpressionFacade:
                 knowledge_boundary=self._knowledge_boundary,
                 temporal_context=temporal_context,
                 activity_context=activity_context,
+                discussion_fragment=skill.system_fragment if skill else None,
             )
             user = (
                 f"[欲望创建时间={format_prompt_time(desire.created_at)}]\n"

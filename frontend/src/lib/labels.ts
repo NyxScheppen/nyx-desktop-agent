@@ -88,7 +88,6 @@ export const OUTPUT_TYPE_LABELS: Record<string, string> = {
   mutter_wander: "走神",
   reflection: "反思",
   desire: "欲望",
-  scene_memory: "场景记忆",
   tool: "工具",
 };
 

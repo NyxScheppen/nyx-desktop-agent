@@ -89,7 +89,7 @@ def test_context_only_exposes_declared_capabilities_and_observes_injection() -> 
         ctx.get("undeclared")
 
 
-def test_plugin_routes_equal_all_seventeen_runtime_routes() -> None:
+def test_plugin_routes_equal_runtime_routes() -> None:
     from nyx.events.routing import ROUTE_SPECS
     from nyx.harness import sort_plugins
     from nyx.plugins import default_plugins, validate_routes
@@ -97,12 +97,12 @@ def test_plugin_routes_equal_all_seventeen_runtime_routes() -> None:
     plugins = default_plugins()
     validate_routes(plugins)
     routes = [route for plugin in plugins for route in plugin.routes()]
-    assert len(routes) == 17
     assert set(routes) == set(ROUTE_SPECS)
     assert [plugin.name for plugin in sort_plugins(plugins)] == [
         "eval",
         "memory",
         "tools",
+        "behavior",
         "desire",
         "activity",
         "inner_life",

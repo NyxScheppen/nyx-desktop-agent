@@ -21,6 +21,7 @@ from nyx.activity.store import ActivityStore
 from nyx.config import ActivityConfig, ExplorationConfig
 from nyx.desire.facade import DesireFacade
 from nyx.enums import (
+    ActivityStatus,
     ActivityType,
     AssignedTaskStatus,
     AssignedTaskType,
@@ -33,6 +34,7 @@ from nyx.events.bus import EventBus
 from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade, build_source_topic
+from nyx.research.service import ResearchService
 from nyx.timezone import USER_TIMEZONE
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
@@ -137,6 +139,7 @@ class ActivityFacade:
         self._get_reader_progress = get_reader_progress
         self._web_enabled = exploration_config.web_enabled
         self._fetch_source = fetch_source
+        self.research: ResearchService | None = None
         self._exploration = Exploration(
             llm,
             evaluator,
@@ -165,6 +168,52 @@ class ActivityFacade:
         )
         self._task: asyncio.Task[None] | None = None
         self._quiescing = False
+
+    async def _save_research_progress(self, activity: Activity) -> None:
+        await self._store.update(activity)
+        await self._publish_progress(activity)
+
+    async def finish_cancelled_research(self, run_id: str) -> None:
+        if self.research is None:
+            return
+        record = await self.research.store.get("research_run", run_id)
+        if record is None or record["origin"] != "desire":
+            return
+        activity = await self._store.get(record["activity"]["id"])
+        if activity is None or activity.status in {
+            ActivityStatus.COMPLETED, ActivityStatus.ABANDONED,
+        }:
+            return
+        async with self._store.db.transaction():
+            activity.status = ActivityStatus.ABANDONED
+            activity.ended_at = time.time()
+            activity.progress["result"] = record["result"]
+            await self._store.update(activity)
+            desire_id = activity.progress.get("desire_id")
+            if isinstance(desire_id, str):
+                await self._desire.mark_suppressed(desire_id)
+        await self._publish_progress(activity)
+
+    async def resume_research_activity(
+        self, record: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self._task is not None and not self._task.done():
+            raise ValueError("当前活动仍在执行；补充已保存，稍后可继续")
+        activity = await self._store.get(record["activity"]["id"])
+        if activity is None or activity.status is not ActivityStatus.PAUSED:
+            raise ValueError("活动当前不可恢复")
+        activity.progress = record["activity"]["progress"]
+        if not await self._lifecycle.start(activity, False):
+            raise ValueError("关联欲望当前不可恢复")
+        self._task = asyncio.create_task(self._execute(activity))
+        await self._task
+        if self.research is None:
+            raise RuntimeError("研究执行器未初始化")
+        current = await self.research.store.get("research_run", record["id"])
+        assert current is not None
+        return current.get("result") or {
+            "run_id": record["id"], "status": current["status"],
+        }
 
     # ---- 事件入口 ----
 
@@ -382,7 +431,26 @@ class ActivityFacade:
             await self._publish_current_task(task_id)
         try:
             if activity.type is ActivityType.FREE_EXPLORATION:
-                result = await self._exploration.run(activity)
+                result = (
+                    await self.research.run_activity(
+                        activity, self._save_research_progress
+                    )
+                    if self.research else await self._exploration.run(activity)
+                )
+                if result.get("status") == "cancelled":
+                    await self.finish_cancelled_research(result["run_id"])
+                    return
+                if result.get("status") in {"waiting_user", "uncertain", "paused"}:
+                    await self._store.update(replace(
+                        activity, status=ActivityStatus.PAUSED
+                    ))
+                    return
+                if result.get("error"):
+                    raise ValueError(result["error"])
+                parent = activity.progress.get("parent_long_term_id")
+                strong = result.get("strong_new_topics")
+                if self.research and isinstance(parent, str) and strong:
+                    await self._desire.add_long_term_subtopics(parent, strong)
             else:
                 result = await self._run_activity(activity)
         except Exception as error:

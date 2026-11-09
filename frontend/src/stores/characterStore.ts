@@ -1,3 +1,4 @@
+import { useBehaviorStore } from "./behaviorStore";
 import { create } from "zustand";
 import { changeCharacter, createCharacter, getCharacters, importCharacter, selectCharacter, type CharacterRegistry, type CreateCharacterPayload } from "../api/client";
 import { bindScope, captureScope, invalidateScope } from "../api/characterScope";
@@ -56,6 +57,7 @@ async function restoreBook(): Promise<void> {
 }
 
 function resetDisplays(): void {
+  useBehaviorStore.setState(useBehaviorStore.getInitialState());
   useChatStore.getState().reset();
   useReaderStore.getState().closeBook();
   useReaderStore.setState(useReaderStore.getInitialState());

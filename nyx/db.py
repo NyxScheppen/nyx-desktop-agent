@@ -20,6 +20,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from psycopg import AsyncConnection
+from psycopg import Error as PostgresError
 from psycopg.rows import dict_row
 
 
@@ -263,8 +264,9 @@ async def migrate_postgres(
     await conn.commit()
 
     compiled = postgres_migrations(migrations)
-    if migrations is None and current == 52:
-        compiled = [(53, _MIGRATIONS[-1][1])]
+    if migrations is None and current >= 52:
+        compiled = [(version, statements) for version, statements in _MIGRATIONS
+                    if version > current]
     for version, statements in compiled:
         if version <= current:
             continue
@@ -295,6 +297,15 @@ DB_COOLDOWN_SECONDS = 5.0
 
 class DatabaseLockTimeout(TimeoutError):
     """No transaction has started; retrying lock acquisition is safe."""
+
+
+class DatabaseOperationTimeout(TimeoutError):
+    """A database operation timed out; verify durable receipts before replay."""
+
+
+DATABASE_ERRORS = (
+    sqlite3.Error, PostgresError, DatabaseLockTimeout, DatabaseOperationTimeout,
+)
 
 
 class DatabaseLock(asyncio.Lock):
@@ -436,18 +447,27 @@ class Database:
             ) from error
         marker = self._transaction_state.set(True)
         try:
-            await asyncio.wait_for(
-                self.conn.execute("BEGIN"), timeout=self.operation_timeout
-            )
+            try:
+                await asyncio.wait_for(
+                    self.conn.execute("BEGIN"), timeout=self.operation_timeout
+                )
+            except TimeoutError as error:
+                raise DatabaseOperationTimeout("DB begin timed out") from error
             try:
                 yield self.conn
-                await asyncio.wait_for(
-                    self.conn.commit(), timeout=self.operation_timeout
-                )
+                try:
+                    await asyncio.wait_for(
+                        self.conn.commit(), timeout=self.operation_timeout
+                    )
+                except TimeoutError as error:
+                    raise DatabaseOperationTimeout("DB commit timed out") from error
             except BaseException:
-                await asyncio.wait_for(
-                    self.conn.rollback(), timeout=self.operation_timeout
-                )
+                try:
+                    await asyncio.wait_for(
+                        self.conn.rollback(), timeout=self.operation_timeout
+                    )
+                except TimeoutError as error:
+                    raise DatabaseOperationTimeout("DB rollback timed out") from error
                 raise
         finally:
             self._transaction_state.reset(marker)
@@ -1310,6 +1330,28 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "INSERT INTO conversation_turn_archive (turn_id, segment_id) "
             "SELECT j.value, MIN(s.id) FROM conversation_segment s, "
             "json_each(s.raw_event_ids) AS j GROUP BY j.value",
+        ],
+    ),
+
+    (
+        54,
+        [
+            "CREATE TABLE skill_execution (id TEXT PRIMARY KEY, data TEXT NOT NULL)",
+            "CREATE TABLE research_knowledge_receipt (id TEXT PRIMARY KEY, "
+            "result TEXT NOT NULL)",
+            "CREATE TABLE skill_revision (name TEXT NOT NULL, "
+            "version INTEGER NOT NULL, "
+            "body TEXT NOT NULL, tool_names TEXT NOT NULL, reflection_id TEXT UNIQUE, "
+            "created_at DOUBLE PRECISION NOT NULL, PRIMARY KEY(name, version))",
+            "CREATE TABLE behavior_reflection (id TEXT PRIMARY KEY, "
+            "status TEXT NOT NULL, data TEXT NOT NULL, "
+            "created_at DOUBLE PRECISION NOT NULL, "
+            "updated_at DOUBLE PRECISION NOT NULL)",
+            "CREATE TABLE research_run (id TEXT PRIMARY KEY, origin TEXT NOT NULL, "
+            "correlation_id TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL, "
+            "created_at DOUBLE PRECISION NOT NULL, "
+            "updated_at DOUBLE PRECISION NOT NULL)",
+            "CREATE INDEX idx_research_correlation ON research_run(correlation_id)",
         ],
     ),
 ]

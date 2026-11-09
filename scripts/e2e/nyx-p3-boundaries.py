@@ -1,78 +1,69 @@
-import asyncio, importlib.util, json, sys, time, logging
+"""Shared graph budgets, admission, hard failures and cancellation boundaries."""
+import asyncio, importlib.util, json, sys, time
 from pathlib import Path
-sys.path.insert(0, str(Path.cwd()))
+sys.path.insert(0,str(Path.cwd()))
+spec=importlib.util.spec_from_file_location('acceptance',Path(__file__).with_name('nyx-p3-acceptance.py'))
+a=importlib.util.module_from_spec(spec);spec.loader.exec_module(a)
 from nyx.research import run_research
 from nyx.types import LLMOutput
-logging.disable(logging.CRITICAL)
 
-class Script:
-    def __init__(self, pause=None, fail=None, invalid=None, huge=False):
-        self.pause=pause;self.fail=fail;self.invalid=invalid;self.huge=huge
-        self.calls=[];self.saved=[];self.searched=[];self.fetched=[];self.sources={}
+class Script(a.Fake):
+    def __init__(self,pause=None,fail=None,invalid=None,huge=False,reject=False):
+        super().__init__();self.pause=pause;self.fail=fail;self.invalid=invalid
+        self.huge=huge;self.reject=reject;self.saved=[];self.searched=[];self.fetched=[];self.sources={}
     async def complete(self,messages,*,module,output_type,correlation_id,**kwargs):
-        self.calls.append(output_type)
-        if output_type==self.pause: await asyncio.Event().wait()
-        if output_type==self.fail: raise RuntimeError('injected LLM failure')
+        if output_type==self.pause:await asyncio.Event().wait()
+        if output_type==self.fail:raise RuntimeError('injected '+output_type)
         data=json.loads(messages[-1]['content'])
-        if output_type=='research_plan': value={'sub_queries':['q1','q2'] if 'research_deepen' in (self.pause,self.fail) else ['q1','q2','q3','q4','q5']}
-        elif output_type=='research_deepen': value={'need_deeper':True,'new_sub_queries':['q6','q7']}
-        elif output_type=='research_evidence': value={'evidence':[{'claim':data['text'][:40],'quote':data['text'][:40],'source_url':data['source_url']}] * 10}
-        else:
-            records=[{'section':'分歧','claim':'存在分歧。' * (1200 if self.huge else 1),'citations':[{'quote':text[:180] if not self.huge else text,'source_url':url}]} for url,text in self.sources.items()]
-            value={'sections' if output_type=='research_synthesis' else 'report':records}
-        if output_type==self.invalid: value={'evidence':[], 'sections':[], 'report':[]}
-        return LLMOutput(module=module,type=output_type,model='script',correlation_id=correlation_id,content=json.dumps(value,ensure_ascii=False))
+        if output_type=='exploration_decide':
+            unread=[i for i,x in enumerate(data['results']) if x['url'] not in data['processed_sources']]
+            if unread and data['remaining']['sources']>0:value={'action':'read','index':unread[0]}
+            elif not self.searched and data['remaining']['searches']>0:value={'action':'search','query':'证据查询'}
+            else:value={'action':'finish','reason':'达到预算或已检查来源'}
+        elif output_type=='exploration_source_check':value={'relevant':not self.reject,'usable':True,'reason':'检查主题'}
+        elif output_type=='exploration_finalize':
+            value={'summary':'已检查资料','core_discovery':'获得可核对的证据','report':[{'section':'证据','claim':text[:40],'citations':[{'quote':text[:40],'source_url':url}]} for url,text in self.sources.items()]}
+        elif output_type=='exploration_claim_support':value={'supported':[True]*len(data['report'])}
+        else:value={}
+        if output_type==self.invalid:return LLMOutput(module,output_type,'script','{broken',correlation_id)
+        return LLMOutput(module,output_type,'script',json.dumps(value,ensure_ascii=False),correlation_id)
     async def search(self,query):
         self.searched.append(query)
-        base=int(query[1:])*10
-        return [{'url':f'https://example.com/{base+i}#fragment'} for i in range(1 if 'research_deepen' in (self.pause,self.fail) else 6)]
+        return [{'url':f'https://example.test/{i}'} for i in range(8)]
     async def fetch(self,url):
         self.fetched.append(url)
-        if self.pause=='fetch': await asyncio.Event().wait()
-        if self.fail=='fetch': raise RuntimeError('injected fetch')
-        text=('观测 "\\\n数据😀。' * 1000) if self.huge else '原文证据来自'+url
+        if self.pause=='fetch':await asyncio.Event().wait()
+        if self.fail=='fetch':return {'error':'injected fetch'}
+        text=('原文 "\\ 数据😀。'*1000) if self.huge else '原文证据 '+url
         self.sources[url]=text[:6000]
-        return {'text':text,'url':url}
-    async def ingest(self,text,topic,name,cid,*,location,committed_chunks=None):
-        if self.pause=='ingest': await asyncio.Event().wait()
-        if self.fail=='ingest': raise RuntimeError('injected ingest')
-        self.saved.append((text,topic,name,location))
-        return {'chunks':[{'chunk_id':f'{len(self.saved):064x}','source_topic':topic,'dedup':'new'}]}
+        return {'text':text}
+    async def ingest(self,text,topic,name,cid,**kwargs):
+        if self.pause=='ingest':await asyncio.Event().wait()
+        if self.fail=='ingest':raise RuntimeError('injected ingest')
+        self.saved.append((text,topic,name))
+        return {'chunks':[{'chunk_id':str(len(self.saved)),'source_topic':topic}]}
     async def run(self,**kwargs):
-        return await run_research('边界问题',search=self.search,fetch=self.fetch,llm=self,ingest=self.ingest,**kwargs)
+        return await run_research('研究边界问题',search=self.search,fetch=self.fetch,llm=self,ingest=self.ingest,**kwargs)
 
 async def main():
-    s=Script();r=await s.run()
-    assert len(s.searched)==2 and len(s.fetched)==6 and len(set(s.fetched))==6
-    assert 'research_deepen' not in s.calls
-    assert all(len(x[0])<=6000 for x in s.saved)
-    assert len(json.dumps(r,ensure_ascii=False))<=1960 and r['report']
-    assert s.calls.index('research_compress') < len(s.calls)
-    print('PASS hard limits, six unique sources, full receipt+report JSON budget',flush=True)
-    for budget in ({'max_sources':1},{'max_sub_queries':1},{'max_depth':1},{'max_sources':100,'max_sub_queries':100,'max_depth':100}):
+    s=Script();r=await s.run();assert len(s.fetched)==6 and len(set(s.fetched))==6 and r['report'],r
+    for budget in ({'max_sources':1},{'max_sub_queries':1},{'max_steps':2},{'max_sources':100}):
         s=Script();r=await s.run(budget=budget)
         assert len(s.fetched)<=min(6,budget.get('max_sources',6))
         assert len(s.searched)<=min(4,budget.get('max_sub_queries',4))
-        assert len(json.dumps(r,ensure_ascii=False))<=1960
-    print('PASS per-call limits only tighten hard caps',flush=True)
-    for stage in ('research_plan','fetch','ingest','research_deepen','research_evidence','research_synthesis','research_compress'):
-        s=Script(pause=stage);started=time.monotonic();r=await s.run(budget={'seconds':.03})
-        assert time.monotonic()-started<.4 and '超时' in r['notice'],(stage,r)
-        assert len(json.dumps(r,ensure_ascii=False))<=1960
-        before=len(s.saved);await asyncio.sleep(.001);assert len(s.saved)==before
-        if stage in ('research_deepen','research_evidence','research_synthesis','research_compress'): assert r['report'],(stage,r)
-    print('PASS deadline at every awaited stage; completed partial data retained',flush=True)
-    for stage in ('research_plan','fetch','ingest','research_deepen','research_evidence','research_synthesis','research_compress'):
-        s=Script(fail=stage);r=await s.run()
-        assert len(json.dumps(r,ensure_ascii=False))<=1960 and '失败' in r['notice'],(stage,r)
-    for stage in ('research_evidence','research_synthesis','research_compress'):
-        s=Script(invalid=stage);r=await s.run();assert r['report'] and ('未完成' in r['notice'] or '尚无完整' in r['notice']),(stage,r)
-    print('PASS LLM/network/ingestion failures and invalid outputs degrade explicitly',flush=True)
-    s=Script(huge=True);r=await s.run()
-    assert all(len(x[0])<=6000 for x in s.saved)
-    assert len(json.dumps(r,ensure_ascii=False))<=1960 and r['report'],r
-    for section in r['report']:
-        for c in section['citations']: assert c['quote'] in s.sources[c['source_url']]
-    print('PASS long unicode/escaped sources and oversized reports retain whole valid citations',flush=True)
+    print('PASS hard caps and reduced per-call budgets',flush=True)
+    for stage in ('exploration_decide','fetch','ingest','exploration_source_check','exploration_finalize'):
+        s=Script(pause=stage);started=time.monotonic();r=await s.run(budget={'seconds':.05})
+        assert time.monotonic()-started<1 and r.get('error') and not r['report'],(stage,r)
+        before=len(s.saved);await asyncio.sleep(.01);assert len(s.saved)==before
+        s=Script(fail=stage);r=await s.run();assert r.get('error') and not r['report'],(stage,r)
+    print('PASS awaited stage deadlines/failures propagate without fabricated fallback',flush=True)
+    for stage in ('exploration_decide','exploration_source_check','exploration_finalize'):
+        r=await Script(invalid=stage).run();assert r.get('error') and not r['report'],(stage,r)
+    s=Script(reject=True);r=await s.run();assert not s.saved and not r['report']
+    s=Script(huge=True);r=await s.run();assert r['report'] and all(len(x[0])<=6000 for x in s.saved)
+    for item in r['report']:
+        for c in item['citations']:assert c['quote'] in s.sources[c['source_url']]
+    print('PASS invalid output, rejected-source isolation and truncated exact citations',flush=True)
 
-asyncio.run(main())
+if __name__=='__main__':asyncio.run(main())

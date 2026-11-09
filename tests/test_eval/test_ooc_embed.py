@@ -45,4 +45,4 @@ def test_is_voice_type() -> None:
     assert is_voice_type("think")
     assert not is_voice_type("tool")
     assert not is_voice_type("judge")
-    assert not is_voice_type("scene_memory")
+    assert not is_voice_type("fact_extraction")

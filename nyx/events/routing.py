@@ -21,6 +21,9 @@ class RouteSpec:
 # are derived compatibility views used by docs, diagnostics, and existing callers.
 ROUTE_SPECS: tuple[RouteSpec, ...] = (
     RouteSpec(
+        EventType.BEHAVIOR_REFLECTION, "behavior.reflect", "behavior", "reflect",
+    ),
+    RouteSpec(
         EventType.ANNOTATION_FEEDBACK,
         "memory.annotation_feedback",
         "memory",
@@ -79,12 +82,6 @@ ROUTE_SPECS: tuple[RouteSpec, ...] = (
         "memory.activity_end",
         "memory",
         "remember_activity",
-    ),
-    RouteSpec(
-        EventType.SCENE_MEMORY_REQUESTED,
-        "memory.scene_reply",
-        "memory",
-        "remember_scene",
     ),
     RouteSpec(
         EventType.REFLECTION,

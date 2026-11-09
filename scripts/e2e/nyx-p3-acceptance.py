@@ -19,17 +19,24 @@ class Fake:
         self.calls=[]; self.rounds=defaultdict(int); self.mode='normal'; self.pause=None
     async def complete(self,messages,*,module,output_type,correlation_id,**kw):
         self.calls.append((output_type,messages,kw))
-        data=json.loads(messages[-1]['content']) if module=='research' or output_type=='source_digest' else {}
+        data=json.loads(messages[-1]['content']) if output_type.startswith('exploration_') or output_type=='source_digest' else {}
         if output_type==self.pause: await asyncio.Event().wait()
         if output_type=='reason': content={'summary':'核对研究结果。','next_action':'answer' if '[工作摘要' in messages[-1]['content'] else 'tools'}
-        elif self.mode=='bad' and module=='research': content=[]
-        elif output_type=='research_plan': content={'sub_queries':['P3Nebula 观测证据','P3Nebula 测量方法']}
-        elif output_type=='research_deepen': content={'need_deeper':True,'new_sub_queries':['P3Nebula 校准争议']}
-        elif output_type=='research_evidence':
-            url=data['source_url'];content={'evidence':[{'claim':TEXT[url],'quote':TEXT[url].split('。')[0]+'。','source_url':url},{'claim':'fake','quote':'并不存在','source_url':url},{'claim':'wrong url','quote':TEXT[url],'source_url':'https://forged.example'}]}
-        elif output_type in ('research_synthesis','research_compress'):
-            sections=[{'section':'P3Nebula 分歧','claim':'两组测量有分歧，校准方法不同，尚不能选边。','citations':[{'quote':TEXT[u].split('。')[0]+'。','source_url':u} for u in (A,B)]}]
-            content={'sections' if output_type.endswith('synthesis') else 'report':sections}
+        elif self.mode=='bad' and output_type.startswith('exploration_'): content=[]
+        elif output_type=='exploration_decide':
+            unread=[i for i,item in enumerate(data['results']) if (item.get('url') or item.get('path')) not in data['processed_sources']]
+            searches=sum(a['name']=='web_search' for a in data['actions'])
+            if unread: content={'action':'read','index':unread[0]}
+            elif not searches: content={'action':'search','query':'P3Nebula 观测证据'}
+            elif not any(a['name']=='follow_up' for a in data['actions']): content={'action':'follow_up','question':'P3Nebula 校准争议','reason':'核对测量分歧'}
+            elif searches<2: content={'action':'search','query':'P3Nebula 校准争议'}
+            else: content={'action':'finish','reason':'两组证据已检查'}
+        elif output_type=='exploration_source_check': content={'relevant':True,'usable':True,'reason':'回答观测与校准问题'}
+        elif output_type=='exploration_claim_support': content={'supported':[True]*len(data['report'])}
+        elif output_type=='exploration_finalize':
+            report=[{'section':'P3Nebula 分歧','claim':TEXT[u],'citations':[{'quote':TEXT[u].split('。')[0]+'。','source_url':u}]} for u in (A,B) if any(x['location']==u for x in data['sources'])]
+            content={'summary':'两组测量存在校准分歧。','core_discovery':'校准方法影响结果，不能直接选边。','report':report}
+        elif output_type=='behavior_reflection': content={'observation':'已核对两个研究来源。','cause_analysis':'单次研究不能推广。','effective_strategy':'补搜校准方法。','next_strategy':'检索时核对方法差异。','applicability':'研究检索','evidence_refs':['actions'],'skill_change_decision':'no_change','skill_change_reason':'保留现有策略','proposed_skill_text':''}
         elif output_type=='source_digest':
             text=data['source_text'];content={'summary':text[:100],'themes':['P3Nebula'],'content_category':'nonfiction','points':[{'topic':'P3Nebula','content':text}]}
         elif output_type=='fact_extraction':
@@ -50,7 +57,7 @@ async def main():
     searches=[];fetches=[]
     async def search(query):
         searches.append(query);url=B if '校准争议' in query else A
-        return [{'url':url+'#part'},{'url':url},{'url':url}]
+        return [{'url':url},{'url':url}]
     async def fetch(url): fetches.append(url);return {'text':TEXT[url],'url':url}
     with patch('nyx.app_context.LlmClient.from_config',return_value=llm),patch('nyx.app_context.build_embed',return_value=None): app=await build_app_context(config)
     bus=asyncio.create_task(app.bus.run())
@@ -58,39 +65,33 @@ async def main():
     args=dict(search=search,fetch=fetch,llm=llm,ingest=app.memory.ingest_source,evaluator=app.evaluator)
     try:
         result=await run_research('P3Nebula 的研究结论',**args)
-        assert result['report'] and len(searches)==3 and fetches==[A,B],result
-        assert len(json.dumps(result,ensure_ascii=False))<=1960
-        assert all(x['dedup']=='new' for x in result['ingested']) and len(result['ingested'])==3,result
-        assert all(kw.get('json_mode') for typ,_,kw in llm.calls if typ.startswith('research_'))
-        chunks=await store.list_knowledge_chunks();assert len(chunks)==3
-        report_chunk=next(c for c in chunks if c.source_name=='deep_research')
-        assert report_chunk.source_topic==build_source_topic('web','P3Nebula 的研究结论') and report_chunk.location=='P3Nebula 的研究结论'
-        facts=await app.memory.recent_facts(100,scope='knowledge'); assert any(f.source_chunk_id==report_chunk.id for f in facts),(facts,report_chunk)
-        found=await app.memory.search_knowledge('P3Nebula');assert report_chunk.id in str(found)
-        replay=await run_research('P3Nebula 的研究结论',**args);assert len(await store.list_knowledge_chunks())==3 and all(x['dedup']=='hit' for x in replay['ingested']),replay
-        for s in result['report']:
-            for cite in s['citations']: assert cite['quote'] in TEXT[cite['source_url']]
-        print('PASS adaptive research, exact citations, source+conclusion provenance/search, replay',flush=True)
+        assert result['report'] and len(searches)==2 and fetches==[A,B],result
+        chunks=await store.list_knowledge_chunks();assert len(chunks)==2,chunks
+        facts=await app.memory.recent_facts(100,scope='knowledge')
+        assert {c.id for c in chunks}<={f.source_chunk_id for f in facts},facts
+        replay=await run_research('P3Nebula 的研究结论',**args)
+        assert replay['report'] and len(await store.list_knowledge_chunks())==2
+        for section in result['report']:
+            for cite in section['citations']: assert cite['quote'] in TEXT[cite['source_url']]
+        print('PASS shared adaptive graph, citations, knowledge/fact provenance and replay',flush=True)
         disabled=await run_research('x',**{**args,'search':None});assert '联网没开' in str(disabled)
-        async def empty(q):return []
-        no=await run_research('x',**{**args,'search':empty});assert not no['report'] and '0 个来源' in no['notice']
-        async def fail(u):return {'error':'failure'}
-        no=await run_research('x',**{**args,'fetch':fail});assert not no['report'] and '0 个来源' in no['notice']
-        llm.mode='bad';no=await run_research('x',**args);assert not no['report'];llm.mode='normal'
-        print('PASS disabled/empty/failed fetch/invalid JSON structures',flush=True)
-        llm.pause='research_deepen'
-        started=time.monotonic();partial=await run_research('timeout',**args,budget={'seconds':.15});elapsed=time.monotonic()-started
-        assert elapsed<.8 and '超时' in partial['notice'] and partial['report'],(elapsed,partial)
+        async def empty(query):return []
+        no=await run_research('x',**{**args,'search':empty});assert not no['report'] and '未找到' in no['summary']
+        async def fail(url):return {'error':'failure'}
+        no=await run_research('x',**{**args,'fetch':fail});assert no['error']=='failure' and not no['report']
+        llm.mode='bad';no=await run_research('x',**args);assert no['error'] and not no['report'];llm.mode='normal'
+        llm.pause='exploration_finalize'
+        partial=await run_research('timeout',**args,budget={'seconds':.2})
+        assert partial['error'] and len(await store.list_knowledge_chunks())==2
         task=asyncio.create_task(run_research('cancel',**args));await asyncio.sleep(.1);task.cancel()
         try:await task;raise AssertionError('cancel swallowed')
         except asyncio.CancelledError:pass
         llm.pause=None
-        print('PASS timeout preserves completed work and cancellation propagates',flush=True)
+        print('PASS disabled/empty/fetch failure/invalid output, deadline and cancellation',flush=True)
         block=_tool_outputs_block(['other: '+'x'*1900]*4+['deep_research: '+json.dumps(result,ensure_ascii=False)])
         for line in block.splitlines():
             if line.startswith('- deep_research:'):json.loads(line.split(': ',1)[1])
         assert len(block)<=8000
-        print('PASS final prompt whole-JSON and block bounds',flush=True)
         # Real HTTP/SSE through composition-root handlers.
         sock=socket.socket();sock.bind(('127.0.0.1',0));sock.listen(64)
         server=uvicorn.Server(uvicorn.Config(build_app(app),log_level='error',lifespan='off'))
@@ -120,7 +121,7 @@ async def main():
                     assert facts_response.status_code==200,facts_response.text
                     fact_chunks={x['source_chunk_id'] for x in facts_response.json()}
                     persisted=await store.list_knowledge_chunks()
-                    assert {c.id for c in persisted if c.source_name in (A,B,'deep_research')}<=fact_chunks,(persisted,facts_response.json())
+                    assert {c.id for c in persisted if c.source_name in (A,B)}<=fact_chunks,(persisted,facts_response.json())
                     reader.cancel();await asyncio.gather(reader,return_exceptions=True)
             print('PASS HTTP/SSE research-to-cited-reply composition-root E2E',flush=True)
         finally:

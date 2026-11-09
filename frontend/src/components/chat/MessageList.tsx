@@ -3,6 +3,8 @@ import { formatMessageTime, shouldShowTimeDivider } from "../../lib/time";
 import { useChatStore } from "../../stores/chatStore";
 import type { ChatMessage } from "../../stores/chatStore";
 import MessageBubble from "./MessageBubble";
+import { useBehaviorStore } from "../../stores/behaviorStore";
+import { ResearchTrace } from "../panels/BehaviorPanel";
 
 type MessageListProps = {
   messages: ChatMessage[];
@@ -43,6 +45,7 @@ export function isReady(
 export default function MessageList({ messages, now = new Date() }: MessageListProps) {
   const typedIds = useChatStore((s) => s.typedIds);
   const markTyped = useChatStore((s) => s.markTyped);
+  const runs = useBehaviorStore((s) => s.runs);
   const listRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
 
@@ -82,6 +85,8 @@ export default function MessageList({ messages, now = new Date() }: MessageListP
             ready={isReady(m, i, messages, typedIds)}
             onTyped={markTyped}
           />
+          {m.role === "user" && runs.filter((run) => run.correlation_id === m.correlation_id)
+            .map((run) => <ResearchTrace key={run.id} run={run} />)}
         </Fragment>
       ))}
     </div>

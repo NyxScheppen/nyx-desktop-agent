@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bindScope } from "../src/api/characterScope";
 import { dispatchEvent, synchronizeAfterReplay } from "../src/api/dispatch";
 import { useSSE } from "../src/hooks/useSSE";
+import { useBehaviorStore } from "../src/stores/behaviorStore";
 import { useActivityStore } from "../src/stores/activityStore";
 import { useAnnounceStore } from "../src/stores/announceStore";
 import { useChatStore } from "../src/stores/chatStore";
@@ -69,6 +70,7 @@ describe("useSSE", () => {
       vi.spyOn(useDesireStore.getState(), "refresh").mockResolvedValue(),
       vi.spyOn(useActivityStore.getState(), "refresh").mockResolvedValue(),
       vi.spyOn(useChatStore.getState(), "loadHistory").mockResolvedValue(),
+      vi.spyOn(useBehaviorStore.getState(), "refresh").mockResolvedValue(),
     ];
     const announce = vi.spyOn(useAnnounceStore.getState(), "announce");
     renderHook(() => useSSE(dispatchEvent, undefined, synchronizeAfterReplay));
@@ -149,10 +151,9 @@ describe("useSSE", () => {
       emit("reading_mutter", { ...base, event_id: "c", content: "妙", book_id: "book", paragraph_index: 2 });
       emit("reading_question", { ...base, event_id: "d", content: "?", subtype: "question_reflective", book_id: "book", paragraph_index: 3, selected_text: null });
       emit("reading_association", { ...base, event_id: "e", memory_id: "m", snippet: "片段", book_id: "book", paragraph_index: 4 });
-      emit("scene_memory_requested", { ...base, event_id: "f", reply: "海边" });
     });
     expect(dispatch.mock.calls.map(([event]) => event.event)).toEqual([
-      "annotation_feedback", "reading_progress", "reading_mutter", "reading_question", "reading_association", "scene_memory_requested",
+      "annotation_feedback", "reading_progress", "reading_mutter", "reading_question", "reading_association",
     ]);
   });
 
@@ -326,27 +327,6 @@ describe("dispatchEvent", () => {
     });
 
     expect(spy).toHaveBeenCalledTimes(1);
-  });
-
-  it("scene_memory_requested → no-op，不触发任何 store", () => {
-    const refreshSpies = [
-      vi.spyOn(useInnerLifeStore.getState(), "refreshState").mockResolvedValue(undefined),
-      vi.spyOn(useDesireStore.getState(), "refresh").mockResolvedValue(undefined),
-      vi.spyOn(useActivityStore.getState(), "refresh").mockResolvedValue(undefined),
-      vi.spyOn(useMemoryStore.getState(), "refresh").mockResolvedValue(undefined),
-    ];
-
-    dispatchEvent({
-      event: "scene_memory_requested",
-      event_id: "scene-1",
-      correlation_id: "reply-1",
-      timestamp: 4,
-      reply: "今天聊到了海边",
-    });
-
-    expect(refreshSpies.map((spy) => spy.mock.calls.length)).toEqual([0, 0, 0, 0]);
-    expect(useChatStore.getState().messages).toHaveLength(0);
-    expect(useAnnounceStore.getState().items).toHaveLength(0);
   });
 
   it("mutter → announceStore（冒气泡，不进 chatStore）", () => {

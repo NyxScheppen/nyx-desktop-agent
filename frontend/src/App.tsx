@@ -1,3 +1,4 @@
+import BehaviorPanel from "./components/panels/BehaviorPanel";
 import { useCharacterStore } from "./stores/characterStore";
 import { useConnectionStore } from "./stores/connectionStore";
 import { invalidateScope } from "./api/characterScope";
@@ -220,6 +221,7 @@ function ConnectedApp() {
                 {view === "creation" && <CreationPanel />}
                 {view === "memory" && <MemoryPanel />}
                 {view === "eval" && <EvalPanel />}
+                {view === "behavior" && <BehaviorPanel />}
                 {view === "history" && <ExpressionHistoryPanel />}
                 {view === "settings" && <SettingsView />}
               </section>

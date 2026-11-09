@@ -1,3 +1,4 @@
+import { useBehaviorStore } from "../stores/behaviorStore";
 import { activityAnnouncement } from "../lib/activityResult";
 import { useActivityStore } from "../stores/activityStore";
 import { useAnnounceStore } from "../stores/announceStore";
@@ -10,6 +11,7 @@ import type { SseEvent } from "../types/api";
 import { captureScope, isScopeCurrent } from "./characterScope";
 
 export function synchronizeAfterReplay(): void {
+  void useBehaviorStore.getState().refresh();
   void useInnerLifeStore.getState().refreshState();
   void useActivityStore.getState().refresh();
   void useDesireStore.getState().refresh();
@@ -26,6 +28,11 @@ export function dispatchEvent(e: SseEvent, replaying = false): void {
   if (replaying && !["speak", "ask", "think", "initiate_chat", "user_message",
     "annotation_feedback", "reading_question", "reading_progress"].includes(e.event)) return;
   switch (e.event) {
+    case "behavior_reflection":
+    case "behavior_progress":
+    case "research_progress":
+      void useBehaviorStore.getState().refresh();
+      return;
     case "speak":
       return useChatStore.getState().addSpeak(e);
     case "ask":
@@ -56,8 +63,6 @@ export function dispatchEvent(e: SseEvent, replaying = false): void {
     case "memory_created":
     case "memory_promoted":
       useMemoryStore.getState().refresh();
-      return;
-    case "scene_memory_requested":
       return;
     case "activity_start":
     case "activity_progress":

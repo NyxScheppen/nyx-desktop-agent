@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.store import ActivityStore
+from nyx.behavior.service import BehaviorService
+from nyx.behavior.store import BehaviorStore, SkillStore
 from nyx.bootstrap import initialize_card, load_skills
 from nyx.character_cards import CharacterCard
 from nyx.config import Config
@@ -38,6 +40,7 @@ from nyx.memory.store import MemoryStore
 from nyx.reading.facade import ReadingFacade
 from nyx.reading.store import ReadingStore
 from nyx.research import build_deep_research_tool
+from nyx.research.service import ResearchService
 from nyx.runtime import (
     on_desire_eval,
     on_initiate_chat_check,
@@ -49,7 +52,6 @@ from nyx.runtime import (
 from nyx.tools.activity_tasks import build_activity_task_tools
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_fetch import build_web_fetch_tool
-from nyx.tools.web_search import build_web_search_tool
 from nyx.types import Book, CurrentState, Event, ReadingProgress, Tool
 
 if TYPE_CHECKING:
@@ -274,9 +276,47 @@ async def _build_desire(ctx: PluginContext) -> Mapping[str, object]:
     }
 
 
+async def _build_behavior(ctx: PluginContext) -> Mapping[str, object]:
+    db = cast(Database, ctx.get("db"))
+    tools = cast(ToolRegistry, ctx.get("tools"))
+    config = cast(Config, ctx.get("config"))
+    # Skill grants are validated after activity/memory tools register in expression.
+    baseline_tools = ToolRegistry()
+    for name in ("memory_recall", "knowledge_search", "deep_research"):
+        baseline_tools.register(Tool(name, name, {}, _unavailable_skill_tool))
+    skills = SkillStore(db)
+    await skills.seed(load_skills(
+        cast(Path, ctx.get("prompt_dir")) / "skills", baseline_tools
+    ))
+    behavior = BehaviorService(
+        BehaviorStore(db), skills, cast(EventBus, ctx.get("bus")),
+        cast(LlmClient, ctx.get("llm")), cast(Evaluator, ctx.get("evaluator")),
+    )
+    memory = cast(MemoryFacade, ctx.get("memory"))
+    memory.behavior = behavior
+    research = ResearchService(
+        behavior.store, skills, behavior, memory, tools,
+        cast(LlmClient, ctx.get("llm")), cast(Evaluator, ctx.get("evaluator")),
+        config.exploration, cast(str, ctx.get("canon")),
+        build_web_fetch_tool().handler if config.exploration.web_enabled else None,
+    )
+    await research.recover()
+    return {"behavior": behavior, "research": research, "skills": skills}
+
+
+async def _unavailable_skill_tool(**_kwargs: Any) -> None:
+    raise RuntimeError("仅用于 skill 授权校验")
+
+
+async def _apply_behavior_event(app: _App, event: Event) -> None:
+    if app.behavior is None:
+        raise RuntimeError("行为反思未初始化")
+    await app.behavior.apply_event(event, app.memory)
+
+
 async def _build_activity(ctx: PluginContext) -> Mapping[str, object]:
     config = cast(Config, ctx.get("config"))
-    return {
+    result = {
         "activity": ActivityFacade(
             ActivityStore(cast(Database, ctx.get("db"))),
             cast(EventBus, ctx.get("bus")),
@@ -301,6 +341,11 @@ async def _build_activity(ctx: PluginContext) -> Mapping[str, object]:
             ),
         )
     }
+    result["activity"].research = cast(ResearchService, ctx.get("research"))
+    result["activity"].research.resume_activity = (
+        result["activity"].resume_research_activity
+    )
+    return result
 
 
 def _activity_tools(ctx: PluginContext) -> list[Tool]:
@@ -320,7 +365,6 @@ def _activity_tools(ctx: PluginContext) -> list[Tool]:
 
 def _memory_tools(ctx: PluginContext) -> list[Tool]:
     memory = cast(MemoryFacade, ctx.get("memory"))
-    config = cast(Config, ctx.get("config"))
 
     async def memory_recall(query: str, top_k: int = 8) -> dict[str, Any]:
         segments = await memory.search_conversation_segments(
@@ -389,21 +433,6 @@ def _memory_tools(ctx: PluginContext) -> list[Tool]:
             },
             knowledge_search,
         ),
-        build_deep_research_tool(
-            search=(
-                build_web_search_tool().handler
-                if config.exploration.web_enabled
-                else None
-            ),
-            fetch=(
-                build_web_fetch_tool().handler
-                if config.exploration.web_enabled
-                else None
-            ),
-            llm=cast(LlmClient, ctx.get("llm")),
-            ingest=memory.ingest_source,
-            evaluator=cast(Evaluator, ctx.get("evaluator")),
-        ),
     ]
 
 
@@ -429,6 +458,9 @@ async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
         *cast(list[Tool], ctx.get("memory_tools")),
     ):
         tools.register(tool)
+    tools.register(build_deep_research_tool(
+        runner=cast(ResearchService, ctx.get("research")).deep_research
+    ))
     skills = load_skills(cast(Path, ctx.get("prompt_dir")) / "skills", tools)
     await initialize_card(db, cast(CharacterCard, ctx.get("card")).manifest)
     return {
@@ -445,6 +477,7 @@ async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
             cast(Config, ctx.get("config")).expression,
             tools,
             skills=skills,
+            skill_store=cast(SkillStore, ctx.get("skills")),
             interaction_store=ExpressionInteractionStore(db),
             knowledge_boundary=cast(str, ctx.get("knowledge_boundary")),
             observation_reader=partial(_get_observation, ctx),
@@ -532,20 +565,17 @@ def default_plugins() -> tuple[_Plugin, ...]:
                         event, "memory.activity_end"
                     ),
                 ),
-                (
-                    RouteSpec(
-                        EventType.SCENE_MEMORY_REQUESTED,
-                        "memory.scene_reply",
-                        "memory",
-                        "remember_scene",
-                    ),
-                    lambda app, event: app.memory.remember_scene(
-                        event, "memory.scene_reply"
-                    ),
-                ),
             ),
         ),
         _Plugin("tools", _build_tools, ("tools",), ("memory",)),
+        _Plugin(
+            "behavior", _build_behavior, ("behavior", "research", "skills"),
+            ("memory", "tools", "evaluator"),
+            route_bindings=((
+                RouteSpec(EventType.BEHAVIOR_REFLECTION, "behavior.reflect",
+                          "behavior", "reflect"), _apply_behavior_event,
+            ),),
+        ),
         _Plugin(
             "desire",
             _build_desire,
@@ -590,7 +620,7 @@ def default_plugins() -> tuple[_Plugin, ...]:
             "activity",
             _build_activity,
             ("activity", "activity_tools"),
-            ("tools", "desire", "memory", "evaluator"),
+            ("tools", "desire", "memory", "evaluator", "research"),
             ("state_reader", "observation_reader", "reading"),
             tool_factory=_activity_tools,
             starter=_start_activity,
@@ -672,6 +702,8 @@ def default_plugins() -> tuple[_Plugin, ...]:
                 "evaluator",
                 "activity_tools",
                 "memory_tools",
+                "skills",
+                "research",
             ),
             (
                 "observation_reader",

@@ -12,6 +12,7 @@ from itertools import islice
 from typing import Any, cast
 from uuid import uuid4
 
+from nyx.behavior.service import BehaviorService
 from nyx.config import MemoryConfig
 from nyx.enums import EventType, MemoryEdgeKind, MemoryKind, MemoryType
 from nyx.eval.evaluator import Evaluator
@@ -42,16 +43,6 @@ from nyx.types import (
     MemoryEdge,
     MemoryFact,
     ReadingEvidence,
-)
-
-_SCENE_SYSTEM = (
-    "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
-    "你温柔、克制、思虑很深，关怀他人，也习惯先怀疑自己。"
-    "把下面这段对话写成一条第一人称场景记忆（尼克斯视角）：用户说了什么、你内心怎么想、最后说了什么。"
-    "只输出 JSON，键：content（正文）、"
-    "kind（episode/user_profile/knowledge/reading/activity/interaction）、"
-    "topics（最多 5 个主题字符串）、summary（一句话总结），"
-    "content、kind、summary 非空；topics 可以为空数组。"
 )
 
 _SEGMENT_EVALUATION_SYSTEM = (
@@ -346,35 +337,6 @@ def _normalize_topics(topics: Sequence[object]) -> list[str]:
     return result
 
 
-def _parse_scene(raw: str) -> tuple[str, MemoryKind, list[str], str]:
-    """解析场景记忆 LLM 的 JSON 产出 → (content, kind, topics, summary)；
-    结构非法抛 ValueError。"""
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise ValueError(f"场景记忆 JSON 应是对象，得到 {type(data).__name__}")
-    parsed = cast(dict[str, Any], data)
-    content = parsed.get("content")
-    kind_value = parsed.get("kind")
-    topics = parsed.get("topics", [])
-    summary = parsed.get("summary")
-    if not isinstance(content, str) or not content:
-        raise ValueError("场景记忆 JSON 缺 content 或非空字符串")
-    if not isinstance(kind_value, str):
-        raise ValueError("场景记忆 JSON 缺 kind")
-    try:
-        kind = MemoryKind(kind_value)
-    except ValueError as exc:
-        raise ValueError("场景记忆 JSON 的 kind 非法") from exc
-    if not isinstance(topics, list):
-        raise ValueError("场景记忆 JSON 的 topics 必须是字符串数组")
-    raw_topics = cast(list[object], topics)
-    if any(not isinstance(topic, str) for topic in raw_topics):
-        raise ValueError("场景记忆 JSON 的 topics 必须是字符串数组")
-    if not isinstance(summary, str) or not summary:
-        raise ValueError("场景记忆 JSON 缺 summary 或非空字符串")
-    return content, kind, _normalize_topics(raw_topics), summary
-
-
 def _parse_segment_evaluation(
     raw: str, segment: ConversationSegment
 ) -> tuple[str, bool, str, str, list[str], str, list[str], list[str]]:
@@ -424,15 +386,6 @@ def _parse_segment_evaluation(
         reason.strip()[:240],
         evidence,
         segment_ids,
-    )
-
-
-def _build_scene_prompt(ctx: dict[str, str]) -> str:
-    """reply_context → 场景记忆 prompt。纯函数；缺键 KeyError（fail-fast）。"""
-    return (
-        f"[用户原话时间=未知] 用户说：{ctx['user_message']}\n"
-        f"[思考生成时间=未知] 你心里想：{ctx['nyx_think']}\n"
-        f"[回复生成时间=未知] 你回答说：{ctx['nyx_speak']}\n"
     )
 
 
@@ -754,7 +707,7 @@ def _memory_to_markdown(m: Memory) -> str:
 
 
 class MemoryFacade:
-    """记忆模块门面：场景化记忆创建 + 检索 + 想起升级 + 新鲜度衰减/淘汰 + 导出。
+    """记忆模块门面：对话段与事实管理、记忆入库、检索、生命周期和导出。
 
     生命周期逻辑（新鲜度衰减、短期→长期升级、容量淘汰）都在这层；
     纯 CRUD 在 MemoryStore、三层检索在 MemoryRetrieval。
@@ -786,6 +739,7 @@ class MemoryFacade:
         self._chunk_lock = asyncio.Lock()
         self._chunk_indexes: _ChunkIndexes | None = None
         self._chunk_version: int | None = None
+        self.behavior: BehaviorService | None = None
 
     @asynccontextmanager
     async def _chunk_view(self) -> AsyncGenerator[_ChunkIndexes]:
@@ -1014,6 +968,7 @@ class MemoryFacade:
         candidates: dict[str, list[FactCandidate]] = {"profile": [], "conversation": []}
         correction = False
         correction_topic = "user_correction"
+        reply_event: Event | None = None
         try:
             user_event_id = event.content.get("user_event_id")
             reply_event_id = event.content.get("reply_event_id")
@@ -1095,15 +1050,56 @@ class MemoryFacade:
             candidates = {"profile": [], "conversation": []}
             correction = False
 
-        async with self._store.db.transaction():
-            if not await self._bus.try_mark_effect_in_transaction(
-                event.id, consumer_id
-            ):
-                return
-            if self._fact_store is not None:
-                for scope, facts in candidates.items():
-                    await self._fact_store.apply(facts, None, scope)
-        if correction:
+        behavior_event: Event | None = None
+        skill_context = None
+        if correction and self.behavior and reply_event:
+            skill_context = await self.behavior.skills.execution_context(
+                reply_event.correlation_id
+            )
+        persisted_before = self._bus.persisted_count
+        try:
+            async with self._store.db.transaction():
+                if not await self._bus.try_mark_effect_in_transaction(
+                    event.id, consumer_id
+                ):
+                    return
+                if self._fact_store is not None:
+                    for scope, facts in candidates.items():
+                        await self._fact_store.apply(facts, None, scope)
+                if correction and self.behavior and skill_context:
+                    topic = (
+                        f"user_correction:{skill_context['skill_snapshot_raw']['name']}:"
+                        f"{correction_topic}"
+                    )
+                    count = await self._store.bump_lesson_signal(
+                        topic, "user_correction"
+                    )
+                    if count >= _LESSON_PROMOTE_THRESHOLD:
+                        cid = (reply_event.correlation_id
+                               if reply_event else event.correlation_id)
+                        behavior_event = await self.behavior.submit(
+                            f"correction:{event.id}",
+                            skill_context["skill_snapshot_raw"]["name"],
+                            {**skill_context, "trigger_type": "user_correction",
+                             "assistant_output_raw": (
+                                 reply_event.content.get("content", "")
+                                 if reply_event else event.content["quote"]
+                             ),
+                             "user_feedback_raw": event.content["comment"],
+                             "quoted_reply_raw": event.content["quote"],
+                             "signal_ids": [event.id],
+                             "occurred_at": event.timestamp,
+                             "evidence_ids": ["feedback", "reply", "skill"]},
+                            cid, in_transaction=True,
+                        )
+                        await self._store.clear_lesson_signal(topic)
+        except BaseException:
+            if not await self._bus.has_effect(event.id, consumer_id):
+                self._bus.persisted_count = persisted_before
+            raise
+        if behavior_event is not None:
+            await self._bus.announce_committed(behavior_event)
+        if correction and self.behavior is None:
             await self.record_failure_signal(
                 "user_correction", f"user_correction:{correction_topic}",
                 "用户纠正了回复", event.correlation_id,
@@ -1136,6 +1132,13 @@ class MemoryFacade:
                 count = await self._store.bump_lesson_signal(topic, kind)
                 if count < _LESSON_PROMOTE_THRESHOLD:
                     return
+            if self.behavior is not None:
+                await self.behavior.record_signal(
+                    kind, topic, summary, correlation_id, evidence
+                )
+                if kind == "user_correction":
+                    await self._store.clear_lesson_signal(topic)
+                return
             await self._persist_lesson(topic, kind, summary, correlation_id, evidence)
             if kind != "user_correction":
                 return
@@ -1189,6 +1192,28 @@ class MemoryFacade:
         if self._embed is not None:
             memory.embedding = await self._embed(summary)
         return memory
+
+    async def prepare_behavior_experience(
+        self, reflection_id: str, content: str, summary: str,
+    ) -> Memory:
+        memory = _new_memory(
+            content, MemoryKind.LESSON, summary, MemoryType.LONG_TERM,
+            ["行为经验"],
+        )
+        memory.id = f"experience:{reflection_id}"
+        if self._embed is not None:
+            memory.embedding = await self._embed(summary)
+        return memory
+
+    async def commit_behavior_experience(
+        self, memory: Memory, correlation_id: str,
+    ) -> None:
+        if not self._store.db.in_transaction:
+            raise RuntimeError("行为经验必须与行为反思共用事务")
+        event = internal_event(
+            EventType.MEMORY_CREATED, {"memory_id": memory.id}, correlation_id
+        )
+        await self._commit_memory(memory, [], event, time.time(), [], "behavior")
 
     async def commit_reflection_record(
         self, memory: Memory, correlation_id: str
@@ -1297,84 +1322,6 @@ class MemoryFacade:
                 segment_id, user_event_id, self._config.promote_threshold
             )
 
-    async def _prepare_scene_memory(self, reply_context: dict[str, str]) -> Memory:
-        """慢通道场景化记忆：LLM 产出 content/kind/topics/summary
-        并在 durable transaction 之前完成解析。"""
-        output = await self._llm.complete(
-            [
-                {"role": "system", "content": _SCENE_SYSTEM},
-                {"role": "user", "content": _build_scene_prompt(reply_context)},
-            ],
-            module="memory",
-            output_type="scene_memory",
-            correlation_id=reply_context["correlation_id"],
-            json_mode=True,
-        )
-        await self._evaluator.evaluate(output)
-        content, kind, topics, summary = _parse_scene(output.content)
-        return _new_memory(content, kind, summary, MemoryType.SHORT_TERM, topics)
-
-    async def create_scene_memory(self, reply_context: dict[str, str]) -> Memory:
-        """Generate and persist one scene memory through the direct API."""
-        memory = await self._prepare_scene_memory(reply_context)
-        result = await self._persist_memory(memory, reply_context["correlation_id"])
-        return result.memory
-
-    async def remember_scene(
-        self, event: Event, consumer_id: str | None = None
-    ) -> None:
-        """Consume a durable slow-reply scene request exactly once."""
-        if event.type is not EventType.SCENE_MEMORY_REQUESTED:
-            raise ValueError(f"场景记忆 consumer 收到错误事件: {event.type.value}")
-        reply_context: dict[str, str] = {"correlation_id": event.correlation_id}
-        for key in ("user_message", "nyx_think", "nyx_speak"):
-            value = event.content.get(key)
-            if not isinstance(value, str):
-                raise ValueError(f"场景记忆请求字段 {key!r} 必须是字符串")
-            reply_context[key] = value
-        if consumer_id is None:
-            await self.create_scene_memory(reply_context)
-            return
-        if await self._bus.has_effect(event.id, consumer_id):
-            return
-
-        memory = await self._prepare_scene_memory(reply_context)
-        await self._prepare_memory_embedding(memory)
-        existing = await self._store.find_by_content(
-            memory.content, memory.kind, _source_topic(memory)
-        )
-        fact_candidates = (
-            await self._prepare_fact_candidates(memory, event.correlation_id)
-            if existing is None
-            else None
-        )
-        async with self._store.db.transaction():
-            applied = await self._bus.try_mark_effect_in_transaction(
-                event.id, consumer_id
-            )
-            if not applied:
-                return
-            result = await self._persist_memory(
-                memory,
-                event.correlation_id,
-                in_transaction=True,
-                defer_best_effort=True,
-                embedding_prepared=True,
-                fact_candidates=fact_candidates,
-            )
-        if result.created_event is not None:
-            try:
-                await self._bus.announce_committed(result.created_event)
-            except Exception:
-                self._logger.exception(
-                    "场景记忆创建事件唤醒失败 correlation_id=%s",
-                    event.correlation_id,
-                )
-        if result.created:
-            await self._run_best_effort_tail(
-                result.memory, result.candidates, event.correlation_id
-            )
-
     async def digest_source_block(
         self,
         text: str,
@@ -1429,12 +1376,11 @@ class MemoryFacade:
     async def remember_activity(
         self, event: Event, consumer_id: str | None = None
     ) -> None:
-        """活动记忆：把 activity_end.result 落成一条短期记忆（无场景 LLM）。
+        """活动记忆：把 activity_end.result 落成一条短期记忆。
 
         只写读书/创作/探索/网页问卷四类有产出的活动；rest/idle_reflection（result 空或
         类型不匹配）跳过。observe_user 走「画像沉淀」分支（见 _sediment_observation）。
-        入库管线与 create_scene_memory 相同
-        （embed → 建边 → 门控矛盾检测 → 淘汰），只缺开头的 LLM 场景构建。
+        复用通用入库管线：embed → 建边 → 门控矛盾检测 → 淘汰。
         """
         if consumer_id is not None:
             observation_snapshot = self._last_observation
@@ -1641,7 +1587,7 @@ class MemoryFacade:
     ) -> None:
         """用户画像记忆：把观察到的用户状态落成一条长期 user_profile 记忆。
 
-        无场景 LLM（content/summary/aspects 由调用方确定性拼好，贴「禁编造」）；
+        content/summary/aspects 由调用方确定性拼好，贴「禁编造」；
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。type=LONG_TERM
         使其豁免短期淘汰（_decay_and_evict 只淘汰短期），画像不随时间冲掉。
         """
@@ -1743,6 +1689,68 @@ class MemoryFacade:
                     created_counts[key] = created_counts.get(key, 0) + count
         return counts
 
+    async def remember_research_knowledge(
+        self, receipt_id: str, items: list[dict[str, str]],
+        correlation_id: str, source_chunk_id: str | None,
+    ) -> dict[str, int]:
+        """Prepare outside the transaction; commit facts and receipt together."""
+        async with self._store.db.lock:
+            cursor = await self._store.db.conn.execute(
+                "SELECT result FROM research_knowledge_receipt WHERE id=?",
+                (receipt_id,),
+            )
+            prior = await cursor.fetchone()
+        if prior is not None:
+            return cast(dict[str, int], json.loads(prior["result"]))
+        entries: list[tuple[Memory, list[FactCandidate]]] = []
+        for item in items:
+            content = item.get("content", "").strip()
+            if not content:
+                continue
+            topic = item.get("topic", "")
+            memory = _new_memory(
+                content, MemoryKind.KNOWLEDGE,
+                topic or content[:_SUMMARY_MAX_CHARS], MemoryType.LONG_TERM,
+                [value for value in (item.get("source_topic"), topic) if value],
+            )
+            if self._embed is not None:
+                memory.embedding = await self._embed(content)
+            facts = await self._prepare_fact_candidates(
+                memory, correlation_id, source_name=item.get("source_name"),
+                source_scope="knowledge",
+            ) if self._fact_store is not None else []
+            entries.append((memory, facts))
+        counts = {"created_memories": 0, "created_facts": 0}
+        events: list[Event] = []
+        async with self._store.db.transaction():
+            cursor = await self._store.db.conn.execute(
+                "SELECT result FROM research_knowledge_receipt WHERE id=?",
+                (receipt_id,),
+            )
+            prior = await cursor.fetchone()
+            if prior is not None:
+                return cast(dict[str, int], json.loads(prior["result"]))
+            for memory, facts in entries:
+                event = internal_event(
+                    EventType.MEMORY_CREATED, {"memory_id": memory.id},
+                    correlation_id,
+                )
+                result = await self._commit_memory(
+                    memory, [], event, time.time(), facts, "knowledge",
+                    source_chunk_id,
+                )
+                counts["created_memories"] += int(result.created)
+                counts["created_facts"] += result.created_facts
+                if result.created_event is not None:
+                    events.append(result.created_event)
+            await self._store.db.conn.execute(
+                "INSERT INTO research_knowledge_receipt(id,result) VALUES (?,?)",
+                (receipt_id, json.dumps(counts)),
+            )
+        for event in events:
+            await self._bus.announce_committed(event)
+        return counts
+
     async def remember_reading(
         self,
         content: str,
@@ -1754,7 +1762,7 @@ class MemoryFacade:
     ) -> None:
         """读书记忆：章末/整本整合产物落成一条长期 reading 记忆。
 
-        无场景 LLM（content/summary 由阅读整合流程拼好，这里只入库）；
+        content/summary 由阅读整合流程拼好，这里只入库；
         复用同一入库尾段（embed → 建边 → 门控矛盾检测 → 淘汰）。
         type=LONG_TERM 使其豁免短期淘汰，读书记忆不随时间冲掉。
         """
@@ -1792,7 +1800,7 @@ class MemoryFacade:
 
         命中返回已存在的持久化记忆，否则补 embed 后把 memory、事实候选和
         MEMORY_CREATED 放进核心事务，再逐项执行建边、矛盾检测、衰减/淘汰等
-        best-effort 尾段。场景/活动/画像/知识记忆复用。"""
+        best-effort 尾段。活动/画像/知识记忆复用。"""
         now = time.time()
         existing = await self._store.find_by_content(
             memory.content, memory.kind, _source_topic(memory)
@@ -2462,7 +2470,7 @@ class MemoryFacade:
                         },
                     ],
                     "summary": (
-                        f"场景记忆 {memory.id} 与旧记忆 {conflicts_with} 矛盾，触发反思"
+                        f"记忆 {memory.id} 与旧记忆 {conflicts_with} 矛盾，触发反思"
                     )
                 },
                 correlation_id,

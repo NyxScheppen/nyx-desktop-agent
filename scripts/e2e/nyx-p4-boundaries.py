@@ -25,7 +25,9 @@ async def publish(app,kind,content):
 async def user(app,comment=None,quote='quote',anchor='anchor'):
  return await publish(app,EventType.USER_MESSAGE,{'message':'feedback','annotation':{'reply_event_id':anchor,'quote':quote,'comment':comment or str(uuid.uuid4())}})
 async def feedback(app):
- u=await user(app);await app.memory.record_annotation_feedback(u,REC)
+ anchor=await publish(app,EventType.SPEAK,{'content':'quote'})
+ await app.behavior.skills.for_execution(anchor.correlation_id,'conversation','原始问题')
+ u=await user(app,anchor=anchor.id);await app.memory.record_annotation_feedback(u,REC)
  events=await app.bus.list_events(event_type=EventType.ANNOTATION_FEEDBACK)
  return next(e for e in events if e.content.get('user_event_id')==u.id)
 async def migration():
@@ -44,10 +46,10 @@ async def migration():
   assert (await (await d.conn.execute('SELECT max(version) FROM schema_version')).fetchone())[0]==45
   assert await (await d.conn.execute("SELECT name FROM sqlite_master WHERE name='annotation_feedback'")).fetchone() is None
   await db.migrate(d.conn)
-  assert (await (await d.conn.execute('SELECT max(version) FROM schema_version')).fetchone())[0]==53
+  assert (await (await d.conn.execute('SELECT max(version) FROM schema_version')).fetchone())[0]==max(v for v,_ in db._MIGRATIONS)
   assert before==[tuple(x) for x in await (await d.conn.execute('SELECT * FROM annotations')).fetchall()]
  finally:await d.close()
- print('PASS schema45->53, migration rollback, existing reading table preserved',flush=True)
+ print('PASS schema45->current, migration rollback, existing reading table preserved',flush=True)
 async def inputs():
  app,fake=await new();other,_=await new()
  try:
@@ -142,11 +144,6 @@ async def mediation():
     raised=False
     try:await app.memory.apply_annotation_feedback(f,MED)
     except RuntimeError:raised=True
-   if stage=='append':
-    assert not raised
-    assert [await count(app,x) for x in ['memory_fact','event_log','event_effect']]==[before[0]+2,before[1],before[2]+1],stage
-    assert app.bus.persisted_count==pc
-    continue
    assert raised,stage
    assert [await count(app,x) for x in ['memory_fact','event_log','event_effect']]==before,stage
    assert app.bus.persisted_count==pc,stage
@@ -159,7 +156,9 @@ async def recovery():
   for _ in range(2):
    prior=await feedback(app)
    await app.memory.apply_annotation_feedback(prior,MED)
-  u=await user(app)
+  anchor=await publish(app,EventType.SPEAK,{'content':'quote'})
+  await app.behavior.skills.for_execution(anchor.correlation_id,'conversation','原始问题')
+  u=await user(app,anchor=anchor.id)
   # Complete expression first, leave independent recording delivery unprocessed.
   from nyx.runtime import on_user_message
   await on_user_message(app,u)
@@ -175,7 +174,7 @@ async def recovery():
   worker=asyncio.create_task(app.bus.run())
   try:
    await p4.until(lambda:app.bus.has_effect(f.id,MED))
-   async def done():return await app.bus.list_events(event_type=EventType.REFLECTION_DONE,correlation_id=u.correlation_id)
+   async def done():return [r for r in await app.behavior.store.list_records('behavior_reflection') if r['status']=='completed']
    assert await p4.until(done)
    assert await count(app,'annotation_feedback')==3
   finally:worker.cancel();await asyncio.gather(worker,return_exceptions=True);await app.database.close()

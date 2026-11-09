@@ -19,6 +19,7 @@ from typing import Any, cast
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.screen import ScreenObserver, capture_screen
+from nyx.behavior.service import BehaviorService
 from nyx.bootstrap import (
     load_ask,
     load_canon,
@@ -39,6 +40,7 @@ from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import build_embed
 from nyx.plugins import build_plugins, default_plugins, start_plugins
 from nyx.reading.facade import ReadingFacade
+from nyx.research.service import ResearchService
 from nyx.tools.file_io import build_file_io_tool
 from nyx.tools.local_search import build_local_search_tool
 from nyx.tools.registry import ToolRegistry
@@ -93,6 +95,8 @@ class _App:
     presence_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     screen_observer: ScreenObserver | None = None
     database: Database | None = None
+    behavior: BehaviorService | None = None
+    research: ResearchService | None = None
     character_id: str = "nyx"
     host: _Host | None = field(default=None, repr=False)
     tick_task: asyncio.Task[None] | None = field(default=None, repr=False)
@@ -430,6 +434,8 @@ async def build_app_context(
             eval_store,
             config,
             database=db,
+            behavior=cast(BehaviorService, capabilities["behavior"]),
+            research=cast(ResearchService, capabilities["research"]),
             host=host,
             character_id=card.manifest.id,
         )

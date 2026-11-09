@@ -238,10 +238,12 @@ export type ReadingProgressEvent = SseBase & {
 type OpaqueEventType =
   | "clock_tick"
   | "observation_state"
+  | "behavior_reflection"
+  | "behavior_progress"
+  | "research_progress"
   | "reflection"
   | "memory_created"
   | "memory_promoted"
-  | "scene_memory_requested"
   | "desire_generated"
   | "desire_satisfied"
   | "desire_expired"
@@ -275,9 +277,11 @@ const OPAQUE_EVENT_TYPES = new Set<OpaqueEventType>([
   "clock_tick",
   "observation_state",
   "reflection",
+  "behavior_reflection",
+  "behavior_progress",
+  "research_progress",
   "memory_created",
   "memory_promoted",
-  "scene_memory_requested",
   "desire_generated",
   "desire_satisfied",
   "desire_expired",
@@ -472,6 +476,9 @@ export type MemoryKind =
   | "activity"
   | "interaction"
   | "lesson"
+  | "behavior_reflection"
+  | "behavior_progress"
+  | "research_progress"
   | "reflection";
 export type FactScope = "profile" | "conversation" | "knowledge";
 

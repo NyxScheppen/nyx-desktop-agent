@@ -7,6 +7,7 @@ export type View =
   | "tasks"
   | "creation"
   | "memory"
+  | "behavior"
   | "eval"
   | "history"
   | "settings";
@@ -26,6 +27,7 @@ const ENTRIES: readonly { label: string; icon: string; view: View }[] = [
   { label: "任务", icon: "▣", view: "tasks" },
   { label: "创作", icon: "✎", view: "creation" },
   { label: "记忆", icon: "▤", view: "memory" },
+  { label: "研究与行为反思", icon: "⌘", view: "behavior" },
   { label: "评估", icon: "⌁", view: "eval" },
   { label: "历史", icon: "↺", view: "history" },
 ];

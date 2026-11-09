@@ -8,6 +8,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 
+from nyx.behavior.context import behavior_context
 from nyx.eval.ooc_embed import build_baseline, is_voice_type, ooc_embed_score
 from nyx.eval.rules import ooc_score
 from nyx.eval.store import EvalStore
@@ -67,6 +68,14 @@ class Evaluator:
             keyword < 1.0
             or (embed_s is not None and embed_s < self._EMBED_WARN_THRESHOLD)
         ):
+            context = behavior_context.get()
+            token = behavior_context.set({
+                **(context or {}), "output_module": output.module,
+                "output_type": output.type,
+                "assistant_output_raw": output.content,
+                "call_id": output.call_id,
+                "scores": {"keyword": keyword, "embed": embed_s},
+            })
             try:
                 await self._on_failure(
                     "ooc", f"ooc:{output.module}",
@@ -77,6 +86,8 @@ class Evaluator:
                 )
             except Exception:
                 _logger.exception("OOC 失败信号记录失败 module=%s", output.module)
+            finally:
+                behavior_context.reset(token)
 
     async def _record(
         self,

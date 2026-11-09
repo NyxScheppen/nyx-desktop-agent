@@ -56,15 +56,16 @@ async def main(mode):
             async def search(query):return [{'url':a.A}]
             async def fetch(url):return {'text':a.TEXT[url],'url':url}
             if mode=='timeout':llm.pause='source_digest'
-            result=await run_research('P3Nebula',search=search,fetch=fetch,llm=llm,ingest=app.memory.ingest_source,evaluator=app.evaluator,budget={'seconds':.2} if mode=='timeout' else None)
+            result=await run_research('P3Nebula',search=search,fetch=fetch,llm=llm,ingest=app.memory.ingest_source,evaluator=app.evaluator,budget={'seconds':.4} if mode=='timeout' else None)
             if mode=='timeout':
                 chunks=await store.list_knowledge_chunks()
                 print('persisted_chunks=',len(chunks),'receipts=',result['ingested'],flush=True)
-                assert {x.id for x in chunks}=={x['chunk_id'] for x in result['ingested']},result
+                assert chunks and result.get('error') and not result['report'],result
+                pending=result['checkpoint']['source_pending'];assert pending['source_chunk_id'] in {x.id for x in chunks}
             else:
                 records=await app.eval_store.list_recent(100)
-                stages={typ for typ,_,_ in llm.calls if typ.startswith('research_')}
-                recorded={r.output_type for r in records if r.module=='research'}
+                stages={typ for typ,_,_ in llm.calls if typ.startswith('exploration_')}
+                recorded={r.output_type for r in records if r.module=='activity'}
                 print('research stages=',sorted(stages),'recorded=',sorted(recorded),flush=True)
                 assert stages==recorded,(stages,recorded)
     finally:

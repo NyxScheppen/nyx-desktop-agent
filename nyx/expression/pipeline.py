@@ -1,6 +1,6 @@
 # pyright: reportMissingTypeStubs=false, reportPrivateUsage=false, reportUnknownMemberType=false
 # langgraph 类型标注松散：add_node/compile/ainvoke 返回部分未知、graph.state 缺 stub
-"""回复流程 LangGraph 图：快慢通道 + 多轮 think/speak + 场景化记忆。
+"""回复流程 LangGraph 图：快慢通道、多轮 think/speak 与记忆上下文召回。
 
 节点为闭包，依赖经 ReplyDeps 注入。
 """
@@ -75,6 +75,11 @@ _DISCUSSION_TOOL_NAMES = frozenset(
 def _ask_guidance_for(mode: ContextMode, ask_guidance: str | None) -> str | None:
     """仅慢通道注入 ask_guidance；快通道（speak 快速分支）不注入。"""
     return ask_guidance if mode is ContextMode.SLOW else None
+
+
+def _discussion(state: "ReplyState") -> bool:
+    skill = state.get("skill")
+    return skill is not None and skill.name == "discussion"
 
 
 class ReplyState(TypedDict):
@@ -293,7 +298,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 "configurable": {"thread_id": state["correlation_id"]},
             }) if deps.checkpointer is not None else None
         )
-        if saved is not None or state.get("skill") is not None:
+        if saved is not None or _discussion(state):
             mode = ContextMode.SLOW
         else:
             mode = classify_channel(
@@ -320,7 +325,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         segment_search = getattr(deps.memory, "search_conversation_segments", None)
         recalled_segments: list[ConversationSegment] = []
-        if state.get("skill") is None and callable(segment_search):
+        if not _discussion(state) and callable(segment_search):
             segment_fn = cast(
                 Callable[[str, int], Awaitable[list[Any]]], segment_search
             )
@@ -336,14 +341,13 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 ])
             except Exception:
                 _LOGGER.exception("对话段召回失败")
-        # 普通聊天只召回连续对话段原文；阅读/网页知识不进入这里，
-        # 旧的场景 Memory 也不再作为聊天记忆来源。
+        # 普通聊天召回连续对话段原文；阅读/网页知识走专门的知识检索。
         memories = (
             await search_lessons(query) if state["mode"] is ContextMode.SLOW else []
         )
         facts = (
             await search_facts(query)
-            if state.get("skill") is None and is_fact_query(state["message"])
+            if not _discussion(state) and is_fact_query(state["message"])
             else []
         )
         narrative = (
@@ -457,7 +461,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         snapshot = await tool_graph.aget_state(config)
         schemas = (
             deps.tools.schema(skill.tool_names)
-            if skill
+            if skill and skill.name == "discussion"
             else [
                 schema
                 for schema in deps.tools.schema()
@@ -486,7 +490,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 activity_context=state["activity_context"],
             ),
             "user": user_prompt(state),
-            "task": DISCUSSION_USE_TOOLS_TASK if skill else USE_TOOLS_TASK,
+            "task": (DISCUSSION_USE_TOOLS_TASK
+                     if skill and skill.name == "discussion" else USE_TOOLS_TASK),
             "schemas": schemas,
         }
         if snapshot.values:

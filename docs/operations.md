@@ -77,6 +77,8 @@ uv run --no-sync python scripts/smoke_release.py
 
 ## OneBot 私聊
 
+Windows 本地 NapCat 的安装包和运行文件统一放在 `runtime/napcat/`，该目录不提交 Git，也不进入 Docker 构建上下文。已有 Shell 包在 `runtime/napcat/NapCat.52230.Shell/` 中，进入该目录运行 `napcat.bat` 启动。
+
 1. 安装并登录 NapCat/LLOneBot，启用 OneBot v11 正向 WebSocket 与消息数组格式；本机示例监听 `127.0.0.1:3001`，设置 `access_token`。
 2. 在本机 `.env` 中设置相同的 `ONEBOT_ACCESS_TOKEN`。
 3. 在 `config.yaml` 的 `onebot` 中启用连接，填写机器人 `self_id`、本人 `owner_id`、已注册的 `character_id` 与服务地址；不要提交私人配置或凭证。

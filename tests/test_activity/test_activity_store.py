@@ -37,6 +37,39 @@ async def _new_store() -> tuple[ActivityStore, Database]:
     return ActivityStore(database), database
 
 
+async def test_exploration_history_retains_failures_without_raw_pages() -> None:
+    store, database = await _new_store()
+    try:
+        await store.insert(_activity(
+            "exhausted", type_=ActivityType.FREE_EXPLORATION,
+            status=ActivityStatus.COMPLETED, progress={
+                "description": "旧的具体问题", "goal": {"topic": "痛苦"},
+                "result": {"summary": "发现分歧", "core_discovery": ""},
+            },
+        ))
+        await store.insert(_activity(
+            "failed", type_=ActivityType.FREE_EXPLORATION,
+            status=ActivityStatus.INCOMPLETE, progress={
+                "intent": "新的具体问题", "description": "已搜索",
+                "exploration": {
+                    "failure_reason": "403", "unresolved_questions": ["尚待核实"],
+                    "raw_results": [{"text": "不能进入生成上下文的整页内容"}],
+                },
+            },
+        ))
+        rows = {
+            row["activity_id"]: row for row in await store.list_exploration_history()
+        }
+        assert rows["exhausted"]["summary"] == "发现分歧"
+        assert rows["exhausted"]["failure_reason"] == "未知"
+        assert rows["failed"]["question"] == "新的具体问题"
+        assert rows["failed"]["failure_reason"] == "403"
+        assert rows["failed"]["unresolved_questions"] == ["尚待核实"]
+        assert "raw_results" not in str(rows)
+    finally:
+        await database.conn.close()
+
+
 def _task(
     id: str,
     *,

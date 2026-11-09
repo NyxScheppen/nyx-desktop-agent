@@ -246,6 +246,7 @@ type OpaqueEventType =
   | "desire_satisfied"
   | "desire_expired"
   | "activity_start"
+  | "activity_progress"
   | "activity_end"
   | "activity_interrupted"
   | "task_updated";
@@ -281,6 +282,7 @@ const OPAQUE_EVENT_TYPES = new Set<OpaqueEventType>([
   "desire_satisfied",
   "desire_expired",
   "activity_start",
+  "activity_progress",
   "activity_end",
   "activity_interrupted",
   "task_updated",

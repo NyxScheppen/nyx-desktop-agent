@@ -61,8 +61,20 @@ _DESIRE_SYSTEM = (
 )
 
 
-def _build_desire_prompt(type_: DesireType, seed: str | None) -> str:
-    return f"欲望类型：{type_.value}\n主题种子：{seed or '（无）'}"
+def _build_desire_prompt(
+    type_: DesireType, seed: str | None,
+    history: list[dict[str, Any]] | None = None,
+) -> str:
+    prompt = f"欲望类型：{type_.value}\n主题种子：{seed or '（无）'}"
+    if type_ is DesireType.EXPLORATION:
+        prompt += (
+            "\n请接着历史结论、失败原因和待解决问题往下拓展。"
+            "description 写成这次要研究的具体问题，指出新的缺口；"
+            "不要重复已完成的问题，不要仅改写措辞，也不要声称已经采取行动。"
+            "历史字段未知就保持未知，不编造过去的结论。\n相关历史探索："
+            + json.dumps(history or [], ensure_ascii=False)
+        )
+    return prompt
 
 
 def _parse_desire(raw: str) -> tuple[str, int]:
@@ -81,6 +93,7 @@ def _parse_desire(raw: str) -> tuple[str, int]:
 
 
 ListMemories = Callable[[], Awaitable[list[Memory]]]
+ListExplorations = Callable[[], Awaitable[list[dict[str, Any]]]]
 
 
 def _subtopic_freshness(subtopic: str, memories: list[Memory]) -> float | None:
@@ -95,23 +108,22 @@ def _subtopic_freshness(subtopic: str, memories: list[Memory]) -> float | None:
     return max(hits) if hits else None
 
 
-def _pick_topic_seed(subtopics: list[str], memories: list[Memory]) -> str | None:
+def _pick_topic_seed(
+    subtopics: list[str], memories: list[Memory],
+    history: list[dict[str, Any]] | None = None,
+) -> str | None:
     """按「没做过 / 新鲜度最低」取种子：没做过最优先，都做过取新鲜度最低者。纯函数。"""
     if not subtopics:
         return None
-    best = subtopics[0]
-    best_freshness = _subtopic_freshness(best, memories)
-    for subtopic in subtopics[1:]:
-        freshness = _subtopic_freshness(subtopic, memories)
-        if freshness is None and best_freshness is not None:
-            best, best_freshness = subtopic, freshness
-        elif (
-            freshness is not None
-            and best_freshness is not None
-            and freshness < best_freshness
-        ):
-            best, best_freshness = subtopic, freshness
-    return best
+    def rank(topic: str) -> tuple[float, int, float]:
+        freshness = _subtopic_freshness(topic, memories)
+        hits = [item for item in history or [] if item.get("seed_topic") == topic]
+        return (
+            freshness if freshness is not None else -1.0,
+            len(hits), max((float(item["started_at"]) for item in hits), default=0),
+        )
+
+    return min(subtopics, key=rank)
 
 
 def _pick_parent_long_term(
@@ -154,6 +166,7 @@ class DesireLifecycle:
         config: DesireConfig,
         list_memories: ListMemories,
         embed: EmbedFn | None = None,
+        list_explorations: ListExplorations | None = None,
     ) -> None:
         self._store = store
         self._bus = bus
@@ -162,6 +175,7 @@ class DesireLifecycle:
         self._config = config
         self._list_memories = list_memories
         self._embed = embed
+        self._list_explorations = list_explorations
         self._logger = logging.getLogger(__name__)
         self._eval_lock = asyncio.Lock()
 
@@ -290,6 +304,11 @@ class DesireLifecycle:
                 return []
 
             pending_attempt = attempts[target.type]
+            history = (
+                await self._list_explorations()
+                if target.type is DesireType.EXPLORATION
+                and self._list_explorations is not None else []
+            )
             if pending_attempt is not None:
                 (
                     desire_id,
@@ -319,19 +338,22 @@ class DesireLifecycle:
                     else []
                 )
                 seed = (
-                    _pick_topic_seed(subtopics, await self._list_memories())
+                    _pick_topic_seed(subtopics, await self._list_memories(), history)
                     if subtopics
                     else parent.name.strip()
                     if parent is not None
                     else None
                 )
                 desire_id = str(uuid4())
+                related_history = await self._related_history(seed, history)
                 output = await self._llm.complete(
                     [
                         {"role": "system", "content": _DESIRE_SYSTEM},
                         {
                             "role": "user",
-                            "content": _build_desire_prompt(target.type, seed),
+                            "content": _build_desire_prompt(
+                                target.type, seed, related_history
+                            ),
                         },
                     ],
                     module="desire",
@@ -362,15 +384,29 @@ class DesireLifecycle:
 
         goal = _build_goal(target.type, count, seed)
 
-        # 7.5 去重：话题锚点优先（goal.topic 精确相等 → 同 seed 重复，确定性零误判），
-        # topic 不命中/缺失时回退 description 余弦兜底。
+        # Exploration compares concrete questions; a broad seed is not a duplicate.
         new_topic = goal.topic if goal is not None else None
         pending_with_drive = [
             desire
             for desire in await self._store.list_pending()
             if desire.strength > 0.0
         ]
-        if new_topic is not None:
+        historical_questions: list[str] = []
+        if target.type is DesireType.EXPLORATION:
+            desires = await self._store.list_short_term()
+            expired = {d.id for d in desires if d.status is DesireStatus.EXPIRED}
+            pending_with_drive = [
+                d for d in desires if d.type is DesireType.EXPLORATION
+                and d.status in {
+                    DesireStatus.PENDING, DesireStatus.ACTIVE, DesireStatus.SUPPRESSED,
+                } and d.strength > 0
+            ]
+            historical_questions = [
+                str(item["question"]) for item in history
+                if item["status"] == "completed"
+                and item.get("desire_id") not in expired and item.get("question")
+            ]
+        if new_topic is not None and target.type is not DesireType.EXPLORATION:
             for d in pending_with_drive:
                 if d.goal is not None and d.goal.topic == new_topic:
                     self._logger.info(
@@ -382,21 +418,26 @@ class DesireLifecycle:
                         )
                         await self._store.delete_generation_attempt(desire_id)
                     return []
-        if self._embed is not None:
+        questions = [d.description for d in pending_with_drive] + historical_questions
+        duplicate = description.strip() in {q.strip() for q in questions}
+        if self._embed is not None and not duplicate:
             try:
                 vec = await self._embed(description)
-                for d in pending_with_drive:
-                    other = await self._embed(d.description)
+                for question in questions:
+                    other = await self._embed(question)
                     if cosine(vec, other) >= _DEDUP_SIM_THRESHOLD:
-                        self._logger.info("欲望重复丢弃 type=%s", target.type.value)
-                        async with self._store.db.transaction():
-                            await self._store.reset_value_if_unchanged(
-                                target.type, target.updated_at, now
-                            )
-                            await self._store.delete_generation_attempt(desire_id)
-                        return []
+                        duplicate = True
+                        break
             except Exception:
                 self._logger.exception("欲望去重 embedding 失败，跳过去重")
+        if duplicate:
+            self._logger.info("欲望重复丢弃 type=%s", target.type.value)
+            async with self._store.db.transaction():
+                await self._store.reset_value_if_unchanged(
+                    target.type, target.updated_at, now
+                )
+                await self._store.delete_generation_attempt(desire_id)
+            return []
 
         # 8. 入队
         desire = ShortTermDesire(
@@ -432,6 +473,21 @@ class DesireLifecycle:
             return []
         await self._bus.announce_committed(event)
         return [desire]
+
+    async def _related_history(
+        self, seed: str | None, history: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Sample relevant outcomes without limiting the history dedup examines."""
+        scored: list[tuple[float, dict[str, Any]]] = []
+        vector = await self._embed(seed) if self._embed and seed and history else None
+        for item in history:
+            score = 1.0 if item.get("seed_topic") == seed else 0.0
+            if vector is not None and self._embed is not None:
+                score += cosine(vector, await self._embed(str(item["question"])))
+            if score > 0.35:
+                scored.append((score, item))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [item for _score, item in scored[:5]]
 
     async def satisfy(
         self, desire_id: str, goal_met: bool, *, in_transaction: bool = False

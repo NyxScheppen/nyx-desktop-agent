@@ -24,6 +24,7 @@ export function activityStatusText(a: Activity | null): string {
     case "browser_survey":
       return subject !== null ? `在填写问卷：${subject}` : "在填写问卷";
     case "free_exploration":
+      if (typeof a.progress.intent === "string" && subject !== null) return subject;
       return subject !== null ? `在探索「${subject}」` : "在探索";
     case "creation":
       return subject !== null ? `在创作：${subject}` : "在创作";
@@ -120,7 +121,7 @@ function formatToolCall(name: string, args: Record<string, unknown>): string | n
     case "web_fetch":
       return `抓取网页 ${typeof args.url === "string" ? args.url : ""}`;
     case "file_io":
-      return `写文件 ${typeof args.path === "string" ? args.path : ""}`;
+      return `${args.action === "read" ? "读" : "写"}文件 ${typeof args.path === "string" ? args.path : ""}`;
     default:
       return name.length > 0 ? name : null;
   }
@@ -128,7 +129,44 @@ function formatToolCall(name: string, args: Record<string, unknown>): string | n
 
 /** 产出面板工具轨迹：result.tools（数组）→ 「联网搜索「X」 → 抓取网页 Y」；无 tools 返回 null。 */
 export function formatTools(a: Activity): string | null {
-  if (a.status !== "completed") return null;
+  const exploration = a.progress.exploration;
+  if (typeof exploration === "object" && exploration !== null) {
+    const checkpoint = exploration as Record<string, unknown>;
+    if (Array.isArray(checkpoint.actions)) {
+      const lines: string[] = [];
+      const labels: Record<string, string> = {
+        select_topic: "选题", rewrite: "改写问题", follow_up: "追问",
+        source_check: "资料判断", read: "读取资料", search: "搜索",
+        digest_source: "消化入库", finalize: "总结", finish: "结束搜索",
+      };
+      for (const raw of checkpoint.actions) {
+        if (typeof raw !== "object" || raw === null) continue;
+        const action = raw as Record<string, unknown>;
+        const name = typeof action.name === "string" ? action.name : "";
+        const args = typeof action.args === "object" && action.args !== null
+          ? action.args as Record<string, unknown> : {};
+        const label = labels[name] ?? formatToolCall(name, args);
+        if (label === null) continue;
+        const state = action.status === "running" ? "进行中"
+          : action.status === "interrupted" ? "已中断"
+          : action.status === "rejected" ? "未采用"
+          : action.ok === false ? "失败" : "完成";
+        const parts = [typeof action.text === "string" ? action.text : "",
+          typeof action.location === "string" ? action.location : "",
+          typeof action.result === "string" ? action.result : "",
+          typeof action.reason === "string" ? action.reason : ""].filter(Boolean);
+        lines.push(`${label}（${state}）${parts.length ? `：${parts.join(" · ")}` : ""}`);
+      }
+      const reason = checkpoint.failure_reason || checkpoint.stop_reason;
+      if (typeof reason === "string" && reason) lines.push(`结束原因：${reason}`);
+      if (Array.isArray(checkpoint.unresolved_questions)) {
+        for (const question of checkpoint.unresolved_questions) {
+          if (typeof question === "string" && question) lines.push(`待解决：${question}`);
+        }
+      }
+      return lines.length ? lines.join("\n") : null;
+    }
+  }
   const result = a.progress.result;
   if (typeof result !== "object" || result === null) return null;
   const r = result as Record<string, unknown>;

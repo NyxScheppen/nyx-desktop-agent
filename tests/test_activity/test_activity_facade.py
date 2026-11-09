@@ -201,6 +201,18 @@ class _FakeLlm:
                 }
             ),
         }.get(output_type, "{}")
+        if output_type == "exploration_decide":
+            data = json.loads(messages[1]["content"])
+            unread = [i for i, hit in enumerate(data["results"])
+                      if (hit.get("url") or hit.get("path"))
+                      not in data["processed_sources"]]
+            content = json.dumps(
+                {"action": "read", "index": unread[0]} if unread else
+                {"action": "search", "query": data["question"]}
+                if data["remaining"]["searches"] == 4 else {"action": "finish"}
+            )
+        elif output_type == "exploration_source_check":
+            content = json.dumps({"relevant": True, "usable": True, "reason": "相关"})
         return LLMOutput(
             module=module,
             type=output_type,
@@ -1731,7 +1743,7 @@ async def test_upgrade_to_free_exploration(
         acts = await store.list_schedule(0.0)
         assert len(acts) == 1
         assert acts[0].type is ActivityType.FREE_EXPLORATION
-        assert tools.calls[0] == ("web_search", {"query": "骑士团"})
+        assert tools.calls[0] == ("web_search", {"query": "读骑士小说"})
     finally:
         await database.conn.close()
 
@@ -2586,6 +2598,9 @@ async def test_exploration_appends_parent_subtopics_and_knowledge() -> None:
                     "path": "external/astronomy.txt",
                     "snippet": "Quantum mechanics describes microscopic systems.",
                 }]
+            if name == "file_io" and args.get("action") == "read":
+                self.calls.append((name, args))
+                return {"content": "Quantum mechanics describes microscopic systems."}
             return await super().call(name, args)
 
     fake_desire = _FakeDesire()
@@ -2607,7 +2622,7 @@ async def test_exploration_appends_parent_subtopics_and_knowledge() -> None:
         )
         result = await facade._exploration.run(activity)
         assert fake_desire.appended_subtopics == [("lt1", ["量子纠错"])]
-        assert fake_memory.remembered[-1][0]["topic"] == "退相干"
+        assert fake_memory.remembered[-1][0]["source_topic"].startswith("local:")
         assert activity.progress["exploration"]["state"] == "completed"
         assert result["outcome"] == "won"
     finally:

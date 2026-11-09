@@ -21,6 +21,7 @@ class EventType(StrEnum):
     DESIRE_SATISFIED = "desire_satisfied"  # 欲望满足
     DESIRE_EXPIRED = "desire_expired"      # 欲望淘汰
     ACTIVITY_START = "activity_start"      # 活动开始
+    ACTIVITY_PROGRESS = "activity_progress"  # 已提交的活动进度变化
     ACTIVITY_END = "activity_end"          # 活动结束
     ACTIVITY_INTERRUPTED = "activity_interrupted"  # 活动打断
     TASK_UPDATED = "task_updated"          # 委派任务状态变化

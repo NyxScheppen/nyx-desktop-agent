@@ -2,7 +2,7 @@ import { formatClock, formatDate, formatDateTime } from "../../lib/time";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent } from "react";
 import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import { getActivityResults, getBookParagraphs } from "../../api/client";
-import { formatResult } from "../../lib/activityResult";
+import { activitySubject, formatResult, formatTools } from "../../lib/activityResult";
 import {
   ACTIVITY_STATUS_LABELS,
   ACTIVITY_TYPE_LABELS,
@@ -15,6 +15,17 @@ import Panel from "../layout/Panel";
 
 function timeLabel(ts: number): string {
   return formatClock(ts);
+}
+
+function ExplorationTrace({ activity, onOpen }: { activity: Activity; onOpen: () => void }) {
+  if (activity.type !== "free_exploration") return null;
+  const trace = formatTools(activity);
+  const subject = activitySubject(activity);
+  return <>
+    {subject && <span className="panel-item__meta">{subject}</span>}
+    {typeof activity.progress.error === "string" && <span role="status">{activity.progress.error}</span>}
+    {trace && <button type="button" onClick={onOpen}>探索过程</button>}
+  </>;
 }
 
 function taskTarget(task: AssignedTask, books: BookListItem[]): string {
@@ -58,6 +69,7 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
   const [history, setHistory] = useState<Activity[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [selectedExplorationId, setSelectedExplorationId] = useState<string | null>(null);
   const timelineRef = useRef<HTMLUListElement>(null);
   const dragOrigin = useRef<{ x: number; scroll: number } | null>(null);
 
@@ -148,6 +160,7 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
   };
 
   const timeline = data === null ? [] : [...data.schedule];
+  const selectedExploration = [...timeline, ...(history ?? [])].find((activity) => activity.id === selectedExplorationId);
   const selectedTask = tasks?.find((task) => task.id === selectedTaskId);
   const filteredTasks = (tasks ?? []).filter((task) => taskTarget(task, books).toLowerCase().includes(taskQuery.trim().toLowerCase()));
   const taskPages = Math.max(1, Math.ceil(filteredTasks.length / 5));
@@ -279,7 +292,7 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
       ) : (
         <ul className="timeline" ref={timelineRef} tabIndex={0} aria-label="今天的活动时间线"
           onKeyDown={(event) => { if (event.key === "ArrowRight" || event.key === "ArrowLeft") { event.preventDefault(); event.currentTarget.scrollBy({ left: event.key === "ArrowRight" ? 180 : -180, behavior: "smooth" }); } }}
-          onPointerDown={(event) => { if (event.button !== 0) return; dragOrigin.current = { x: event.clientX, scroll: event.currentTarget.scrollLeft }; event.currentTarget.setPointerCapture(event.pointerId); }}
+          onPointerDown={(event) => { if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button, details, a, input"))) return; dragOrigin.current = { x: event.clientX, scroll: event.currentTarget.scrollLeft }; event.currentTarget.setPointerCapture(event.pointerId); }}
           onPointerMove={dragTimeline}
           onPointerUp={() => { dragOrigin.current = null; }}
           onPointerCancel={() => { dragOrigin.current = null; }}
@@ -310,12 +323,18 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
                   {result !== null && (
                     <span className="panel-item__meta timeline__result">{result}</span>
                   )}
+                  <ExplorationTrace activity={activity} onOpen={() => setSelectedExplorationId(activity.id)} />
                 </div>
               </li>
             );
           })}
         </ul>
       )}
+      {selectedExploration && <section className="activity-history" aria-label="探索过程">
+        <button type="button" className="panel-refresh" onClick={() => setSelectedExplorationId(null)}>关闭探索过程</button>
+        <h3>探索过程</h3>
+        <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", font: "inherit" }}>{formatTools(selectedExploration)}</pre>
+      </section>}
       {showHistory && history !== null && <section className="activity-history" aria-label="历史活动记录">
         <h3>历史活动记录</h3>
         {history.length === 0 ? <p className="panel-item">暂无历史活动</p> : <ul className="panel-list">
@@ -323,6 +342,7 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
             <span className="panel-item__main">{ACTIVITY_TYPE_LABELS[activity.type]} <span className="panel-badge">{ACTIVITY_STATUS_LABELS[activity.status]}</span></span>
             <span className="panel-item__meta">{formatDateTime(activity.started_at)}</span>
             {formatResult(activity) !== null && <span className="panel-item__meta">{formatResult(activity)}</span>}
+            <ExplorationTrace activity={activity} onOpen={() => setSelectedExplorationId(activity.id)} />
           </li>)}
         </ul>}
       </section>}

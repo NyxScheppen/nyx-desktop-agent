@@ -60,6 +60,7 @@ export function dispatchEvent(e: SseEvent, replaying = false): void {
     case "scene_memory_requested":
       return;
     case "activity_start":
+    case "activity_progress":
     case "activity_interrupted":
     case "task_updated":
       useActivityStore.getState().refresh();

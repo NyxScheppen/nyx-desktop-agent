@@ -3,7 +3,7 @@ import asyncio
 import contextlib
 import json
 from collections.abc import AsyncGenerator
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -159,9 +159,13 @@ def _make_lifecycle(
     config: DesireConfig | None = None,
     memories: list[Memory] | None = None,
     embed: EmbedFn | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> DesireLifecycle:
     async def list_memories() -> list[Memory]:
         return memories if memories is not None else []
+
+    async def list_explorations() -> list[dict[str, Any]]:
+        return history or []
 
     return DesireLifecycle(
         store,
@@ -171,6 +175,7 @@ def _make_lifecycle(
         config if config is not None else DesireConfig(),
         list_memories,
         embed,
+        list_explorations if history is not None else None,
     )
 
 
@@ -294,6 +299,53 @@ def test_build_desire_prompt() -> None:
     assert "exploration" in prompt
     assert "骑士团" in prompt
     assert "（无）" in _build_desire_prompt(DesireType.REST, None)
+
+
+@pytest.mark.parametrize(
+    ("status", "description", "accepted"),
+    [
+        (DesireStatus.SATISFIED, "读一段骑士团的历史", False),
+        (DesireStatus.EXPIRED, "读一段骑士团的历史", True),
+        (DesireStatus.SATISFIED, "骑士团如何参与城市治理", True),
+        (DesireStatus.SATISFIED, "想再了解骑士团的历史沿革", False),
+    ],
+)
+async def test_completed_exploration_dedup_and_expired_retry(
+    status: DesireStatus, description: str, accepted: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nyx.desire.lifecycle.time.time", lambda: 1000.0)
+    store, bus, database = await _new_stack()
+    old = _desire("old")
+    old.type = DesireType.EXPLORATION
+    old.description = "读一段骑士团的历史"
+    old.status = status
+    history: list[dict[str, Any]] = [{
+        "activity_id": "a-old", "desire_id": old.id, "status": "completed",
+        "seed_topic": "骑士团", "question": old.description, "started_at": 1.0,
+        "summary": "已了解骑士团的宗教起源", "failure_reason": "缺少城市史资料",
+        "unresolved_questions": ["如何参与城市治理"],
+    }]
+    llm = _FakeLlm(json.dumps({"description": description, "count": 1}))
+    async def embed(text: str) -> list[float]:
+        return [0.0, 1.0] if text == "骑士团如何参与城市治理" else [1.0, 0.0]
+
+    lifecycle = _make_lifecycle(
+        store, bus, llm, _FakeEvaluator(), history=history, embed=embed,
+    )
+    try:
+        await store.add_desire(old)
+        await store.insert_long_term(_lt(DesireType.EXPLORATION, ["骑士团"]))
+        await store.upsert_value(_dv(DesireType.EXPLORATION, 1.0))
+        async with _running(bus):
+            result = await lifecycle.run_eval()
+        assert bool(result) is accepted
+        prompt = llm.user_contents[0]
+        assert "宗教起源" in prompt and "缺少城市史资料" in prompt
+        assert "如何参与城市治理" in prompt and "接着" in prompt
+        assert _pick_topic_seed(["骑士团", "死亡"], [], history) == "死亡"
+    finally:
+        await database.conn.close()
 
 
 # ---- pressure_from_observation ----

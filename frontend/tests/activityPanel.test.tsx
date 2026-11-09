@@ -61,6 +61,29 @@ describe("ActivityPanel", () => {
     expect(screen.queryByText("读书笔记")).not.toBeInTheDocument();
   });
 
+  it.each(["running", "paused", "incomplete"] as const)("%s 探索显示行动、追问和失败原因", (status) => {
+    const exploration: Activity = {
+      ...result("explore", "free_exploration", "", ""), status,
+      progress: {
+        description: "已搜索具体问题", intent: "最初问题",
+        exploration: {
+          actions: [
+            { name: "select_topic", text: "最初问题", ok: true },
+            { name: "follow_up", text: "证据还有什么缺口", ok: true },
+            { name: "web_fetch", args: { url: "https://example.com/source" }, ok: false, reason: "403" },
+          ],
+          failure_reason: "正文抓取失败", unresolved_questions: ["尚待核实的问题"],
+        },
+      },
+    };
+    useActivityStore.setState({ data: { current: status === "running" ? exploration : null, schedule: [exploration] } });
+    render(<ActivityPanel />);
+    fireEvent.click(screen.getByText("探索过程"));
+    expect(screen.getByText("已搜索具体问题")).toBeInTheDocument();
+    expect(screen.getByText(/证据还有什么缺口/)).toHaveTextContent("https://example.com/source");
+    expect(screen.getByText(/正文抓取失败/)).toHaveTextContent("尚待核实的问题");
+  });
+
   it("书籍任务显示目标前后文并提交已选段落", async () => {
     const create = vi
       .spyOn(useActivityStore.getState(), "createBookTask")

@@ -147,6 +147,7 @@ class ActivityFacade:
             exploration_config,
             canon,
             fetch_source=fetch_source,
+            notify_progress=self._publish_progress,
         )
         self._lifecycle = _activity_lifecycle.ActivityLifecycle(
             store, bus, desire, config
@@ -166,6 +167,16 @@ class ActivityFacade:
         self._quiescing = False
 
     # ---- 事件入口 ----
+
+    async def _publish_progress(self, activity: Activity) -> None:
+        """Notify snapshots after the checkpoint commit, without completion effects."""
+        try:
+            await self._bus.publish(internal_event(
+                EventType.ACTIVITY_PROGRESS, {"activity_id": activity.id},
+                _correlation_id(activity),
+            ))
+        except Exception:
+            _logger.exception("活动进度广播失败 activity_id=%s", activity.id)
 
     async def on_tick(self, tick_type: TickType) -> None:
         """SCHEDULE_BLOCK_START：日程块开始，有空闲就消费欲望。"""

@@ -269,6 +269,7 @@ async def _build_desire(ctx: PluginContext) -> Mapping[str, object]:
             cast(Config, ctx.get("config")).desire,
             memory.list_memories,
             cast(EmbedFn, ctx.get("embed")),
+            ActivityStore(cast(Database, ctx.get("db"))).list_exploration_history,
         )
     }
 

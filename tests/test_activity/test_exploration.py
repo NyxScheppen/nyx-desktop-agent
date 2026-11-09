@@ -1,8 +1,11 @@
 # pyright: reportPrivateUsage=false
+import asyncio
 import json
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
+
+import pytest
 
 from nyx.activity.exploration import Exploration, should_explore
 from nyx.activity.store import ActivityStore
@@ -47,11 +50,25 @@ class _FakeLlm:
         self.correlation_ids.append(correlation_id)
         self.user_contents.append(messages[1]["content"])
         self.system_contents.append(messages[0]["content"])
+        content = self._content
+        if output_type == "exploration_decide":
+            data = json.loads(messages[1]["content"])
+            unread = [i for i, hit in enumerate(data["results"])
+                      if (hit.get("url") or hit.get("path"))
+                      not in data["processed_sources"]]
+            decision = (
+                {"action": "read", "index": unread[0]} if unread else
+                {"action": "search", "query": data["question"]}
+                if data["remaining"]["searches"] == 4 else {"action": "finish"}
+            )
+            content = json.dumps(decision)
+        elif output_type == "exploration_source_check":
+            content = json.dumps({"relevant": True, "usable": True, "reason": "相关"})
         return LLMOutput(
             module=module,
             type=output_type,
             model="fake",
-            content=self._content,
+            content=content,
             correlation_id=correlation_id,
         )
 
@@ -116,6 +133,7 @@ class _FakeMemory:
         self.knowledge: list[Memory] = []
         self.remembered: list[tuple[list[dict[str, str]], str]] = []
         self.digested: list[tuple[str, str]] = []
+        self.evidence: list[str] = []
 
     async def search(self, query: str) -> list[Memory]:
         return self.knowledge
@@ -130,6 +148,7 @@ class _FakeMemory:
         self, source_topic: str, source_name: str, content: str, block_key: str,
         *, location: str | None = None,
     ) -> str | None:
+        self.evidence.append(content)
         return "test-chunk"
 
     async def digest_source_block(
@@ -217,11 +236,12 @@ async def test_run_won_when_core_discovery() -> None:
     assert result["type"] == "free_exploration"
     assert result["outcome"] == "won"
     assert result["core_discovery"] != ""
-    assert result["knowledge"][0]["topic"] == "退相干"
+    assert result["knowledge"][0]["topic"] == "来源知识"
     assert result["strong_new_topics"] == ["量子纠错"]
     assert store.progress_updates[-1]["exploration"]["state"] == "completed"
     assert desire.appended_subtopics == [("lt1", ["量子纠错"])]
-    assert memory.remembered[-1][0][0]["topic"] == "退相干"
+    assert memory.remembered[-1][0][0]["topic"] == "来源知识"
+    assert len(memory.remembered) == 1  # Finalization does not ingest again.
 
 
 async def test_run_without_parent_still_persists_knowledge() -> None:
@@ -237,7 +257,7 @@ async def test_run_without_parent_still_persists_knowledge() -> None:
     )
     await expl.run(activity)
     assert desire.appended_subtopics == []
-    assert memory.remembered[-1][0][0]["topic"] == "退相干"
+    assert memory.remembered[-1][0][0]["topic"] == "来源知识"
 
 
 async def test_run_web_disabled_uses_local_search() -> None:
@@ -277,13 +297,19 @@ async def test_run_web_enabled_uses_web_search() -> None:
     assert tools.calls[0][0] == "web_search"
 
 
-async def test_run_fetch_failure_falls_back_to_snippet() -> None:
+async def test_run_fetch_failure_stops_without_ingestion() -> None:
     tools = _FakeTools(fetch_raises=True)
-    expl = _make_exploration(tools=tools, web_enabled=True)
-    result = await expl.run(_activity())
-    # web_fetch 抛错 → snippet 兜底，findings 仍有一条
-    assert len(result["findings"]) == 1
-    assert "环境纠缠" in result["findings"][0]
+    memory = _FakeMemory()
+    activity = _activity()
+    expl = _make_exploration(tools=tools, web_enabled=True, memory=memory)
+    with pytest.raises(RuntimeError, match="download fail"):
+        await expl.run(activity)
+    checkpoint = activity.progress["exploration"]
+    assert checkpoint["state"] == "failed"
+    assert checkpoint["tool_calls"][-1]["ok"] is False
+    assert checkpoint["findings"] == []
+    assert memory.digested == [] and memory.remembered == []
+    assert "已读取" not in activity.progress["description"]
 
 
 async def test_run_empty_source_skips_memory_digest() -> None:
@@ -303,12 +329,13 @@ async def test_run_empty_source_skips_memory_digest() -> None:
             return []
 
     memory = _FakeMemory()
-    result = await _make_exploration(
-        tools=EmptySourceTools(), web_enabled=True, memory=memory
-    ).run(_activity())
+    with pytest.raises(ValueError, match="正文"):
+        await _make_exploration(
+            tools=EmptySourceTools(), web_enabled=True, memory=memory
+        ).run(_activity())
 
     assert memory.digested == []
-    assert result["findings"] == []
+    assert memory.remembered == []
 
 
 async def test_run_exhausted_when_no_core_discovery() -> None:
@@ -319,13 +346,14 @@ async def test_run_exhausted_when_no_core_discovery() -> None:
     assert result["core_discovery"] == ""
 
 
-async def test_run_llm_failure_returns_defaults() -> None:
+async def test_run_llm_failure_retains_evidence_and_marks_failure() -> None:
     llm = _FakeLlm(content="不是 JSON")
     expl = _make_exploration(llm=llm, web_enabled=True)
-    result = await expl.run(_activity())
-    assert result["outcome"] == "exhausted"
-    assert result["knowledge"] == []
-    assert result["strong_new_topics"] == []
+    activity = _activity()
+    with pytest.raises(ValueError):
+        await expl.run(activity)
+    assert activity.progress["exploration"]["state"] == "failed"
+    assert activity.progress["exploration"]["findings"]
 
 
 async def test_summarize_injects_related_memories() -> None:
@@ -347,10 +375,10 @@ async def test_summarize_injects_related_memories() -> None:
     memory.knowledge = await search("量子")
     expl = _make_exploration(llm=llm, web_enabled=False, memory=memory)
     await expl.run(_activity())
-    assert "之前想过退相干" in llm.user_contents[0]
+    assert "之前想过退相干" in llm.user_contents[-1]
 
 
-async def test_resume_reading_results_continues_from_cursor() -> None:
+async def test_legacy_resume_rechecks_sources_without_admission_receipts() -> None:
     tools = _FakeTools()
     activity = _activity(
         {
@@ -389,8 +417,9 @@ async def test_resume_reading_results_continues_from_cursor() -> None:
     expl = _make_exploration(tools=tools, web_enabled=True)
     result = await expl.run(activity)
     fetched_urls = [args["url"] for name, args in tools.calls if name == "web_fetch"]
-    assert fetched_urls == ["https://example.com/new"]
-    assert result["findings"][0] == "已读：旧正文"
+    assert fetched_urls[:2] == ["https://example.com/old", "https://example.com/new"]
+    assert fetched_urls.count("https://example.com/old") == 1
+    assert "旧正文" not in result["findings"][0]
 
 
 async def test_resume_sinking_with_sink_done_skips_memory_and_desire() -> None:
@@ -451,7 +480,8 @@ async def test_exploration_excludes_self_sources_in_search_and_old_checkpoint() 
     exploration = _make_exploration(tools=tools, memory=memory, llm=llm)
     result = await exploration.run(_activity())
     assert result["outcome"] == "exhausted" and result["knowledge"] == []
-    assert memory.digested == [] and memory.remembered == [] and llm.calls == []
+    assert memory.digested == [] and memory.remembered == []
+    assert "exploration_finalize" not in llm.calls
     activity = _activity()
     activity.progress["exploration"] = {
         "state": "sinking", "topic": "信", "cursor": 1,
@@ -462,3 +492,195 @@ async def test_exploration_excludes_self_sources_in_search_and_old_checkpoint() 
     await exploration.run(activity)
     assert memory.digested == [] and memory.remembered == []
     assert not any(name == "file_io" for name, _args in tools.calls)
+
+
+async def test_reject_then_rewrite_and_follow_up_only_ingests_accepted_pages() -> None:
+    class EvidenceTools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any]) -> Any:
+            self.calls.append((name, args))
+            if name == "web_search":
+                return [{"title": args["query"], "url": f'https://example.com/{len(self.calls)}'}]
+            return {"text": "偏题广告" if len(self.calls) == 2 else "相关原文证据"}
+
+    class EvidenceLlm(_FakeLlm):
+        def __init__(self) -> None:
+            super().__init__()
+            self.decisions = iter([
+                {"action": "search", "query": "理解量子退相干"},
+                {"action": "read", "index": 0},
+                {"action": "rewrite", "question": "环境怎样抑制相干性"},
+                {"action": "search", "query": "环境 退相干 机制"},
+                {"action": "read", "index": 1},
+                {"action": "follow_up", "question": "退相干为何不等于坍缩"},
+                {"action": "search", "query": "退相干 坍缩 区别"},
+                {"action": "read", "index": 2},
+                {"action": "finish", "unresolved_questions": ["量子纠错如何保相干"]},
+            ])
+
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any,
+        ) -> LLMOutput:
+            output = await super().complete(messages, **kwargs)
+            if kwargs["output_type"] == "exploration_decide":
+                output.content = json.dumps(next(self.decisions), ensure_ascii=False)
+            elif kwargs["output_type"] == "exploration_source_check":
+                relevant = "偏题广告" not in messages[1]["content"]
+                output.content = json.dumps({
+                    "relevant": relevant, "usable": relevant, "reason": "资料准入",
+                })
+            return output
+
+    tools, memory, store = EvidenceTools(), _FakeMemory(), _FakeStore()
+    activity = _activity()
+    result = await _make_exploration(
+        tools=tools, memory=memory, store=store, llm=EvidenceLlm(), web_enabled=True,
+    ).run(activity)
+    assert len(memory.evidence) == len(memory.digested) == len(memory.remembered) == 2
+    assert all("偏题广告" not in text for text in memory.evidence)
+    assert len(result["knowledge"]) == 2
+    assert [args["query"] for name, args in tools.calls if name == "web_search"] == [
+        "理解量子退相干", "环境 退相干 机制", "退相干 坍缩 区别",
+    ]
+    assert "follow_up" in [action["name"] for action in result["actions"]]
+    assert result["unresolved_questions"] == ["量子纠错如何保相干"]
+    for progress in store.progress_updates:
+        if progress["description"].startswith("已读取网页"):
+            assert any(
+                call.get("ok") is True and call["name"] == "web_fetch"
+                for call in progress["exploration"]["tool_calls"]
+            )
+
+
+@pytest.mark.parametrize("payload", [{"error": "403 拒绝访问"}, {"text": ""}])
+async def test_fetch_business_failures_stop_even_with_a_good_snippet(
+    payload: dict[str, str],
+) -> None:
+    class ErrorTools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any]) -> Any:
+            if name == "web_fetch":
+                self.calls.append((name, args))
+                return payload
+            return await super().call(name, args)
+
+    activity, memory = _activity(), _FakeMemory()
+    with pytest.raises(ValueError):
+        await _make_exploration(
+            tools=ErrorTools(), memory=memory, web_enabled=True,
+        ).run(activity)
+    assert memory.evidence == memory.remembered == []
+    assert activity.progress["exploration"]["tool_calls"][-1]["ok"] is False
+
+
+async def test_cancel_during_digest_resumes_admitted_source_without_refetch() -> None:
+    class InterruptedMemory(_FakeMemory):
+        interrupted = False
+
+        async def digest_source_block(
+            self, text: str, source_name: str, correlation_id: str, **kwargs: Any,
+        ) -> tuple[dict[str, object], list[dict[str, str]]]:
+            if not self.interrupted:
+                self.interrupted = True
+                raise asyncio.CancelledError
+            return await super().digest_source_block(
+                text, source_name, correlation_id, **kwargs,
+            )
+
+    tools, memory, llm = _FakeTools(), InterruptedMemory(), _FakeLlm()
+    exploration = _make_exploration(
+        tools=tools, memory=memory, llm=llm, web_enabled=True,
+    )
+    activity = _activity()
+    with pytest.raises(asyncio.CancelledError):
+        await exploration.run(activity)
+    saved = activity.progress["exploration"]
+    assert saved["source_pending"]["assessment"]["relevant"] is True
+    assert saved["sources"] == saved["searches"] == 1
+    result = await exploration.run(activity)
+    assert result["outcome"] == "won"
+    assert [name for name, _ in tools.calls] == ["web_search", "web_fetch"]
+    assert len(memory.evidence) == len(memory.remembered) == 1
+    assert llm.calls.count("exploration_source_check") == 1
+    assert activity.progress["exploration"]["sources"] == 1
+
+
+async def test_repeated_decisions_stop_at_durable_step_budget() -> None:
+    class RepeatingLlm(_FakeLlm):
+        async def complete(
+            self, messages: list[LlmMessage], **kwargs: Any,
+        ) -> LLMOutput:
+            output = await super().complete(messages, **kwargs)
+            if kwargs["output_type"] == "exploration_decide":
+                output.content = '{"action":"search","query":"重复词"}'
+            return output
+
+    tools, activity = _FakeTools(), _activity()
+    result = await _make_exploration(tools=tools, llm=RepeatingLlm()).run(activity)
+    assert len(tools.calls) == 1
+    assert activity.progress["exploration"]["steps"] == 12
+    assert "预算" in result["stop_reason"]
+    assert result["outcome"] == "exhausted"
+    assert result["unresolved_questions"]
+
+
+async def test_partial_ingestion_survives_a_later_source_failure() -> None:
+    class PartialTools(_FakeTools):
+        async def call(self, name: str, args: dict[str, Any]) -> Any:
+            if name == "web_search":
+                self.calls.append((name, args))
+                return [{"title": "可读来源", "url": "https://example.com/a"},
+                        {"title": "失败来源", "url": "https://example.com/b"}]
+            if name == "web_fetch" and args["url"].endswith("/b"):
+                self.calls.append((name, args))
+                return {"error": "403"}
+            return await super().call(name, args)
+
+    memory, activity = _FakeMemory(), _activity()
+    with pytest.raises(ValueError, match="403"):
+        await _make_exploration(
+            tools=PartialTools(), memory=memory, web_enabled=True,
+        ).run(activity)
+    assert len(memory.remembered) == len(memory.evidence) == 1
+    assert len(activity.progress["exploration"]["knowledge"]) == 1
+    assert activity.progress["exploration"]["state"] == "failed"
+
+
+async def test_resumed_elapsed_budget_stops_before_more_tools() -> None:
+    tools, activity = _FakeTools(), _activity()
+    activity.progress["exploration"] = {
+        "version": 2, "state": "deciding", "elapsed_seconds": 120.0,
+        "searches": 3, "sources": 2, "steps": 7,
+    }
+    with pytest.raises(TimeoutError, match="时间预算"):
+        await _make_exploration(tools=tools).run(activity)
+    assert tools.calls == []
+    assert activity.progress["exploration"]["searches"] == 3
+    assert "时间预算" in str(activity.progress["exploration"]["failure_reason"])
+
+
+@pytest.mark.parametrize("interrupted_tool", ["web_search", "web_fetch"])
+async def test_cancelled_tool_resumes_the_pending_action_once(
+    interrupted_tool: str,
+) -> None:
+    class InterruptedTools(_FakeTools):
+        interrupted = False
+
+        async def call(self, name: str, args: dict[str, Any]) -> Any:
+            if name == interrupted_tool and not self.interrupted:
+                self.interrupted = True
+                self.calls.append((name, args))
+                raise asyncio.CancelledError
+            return await super().call(name, args)
+
+    tools, memory, activity = InterruptedTools(), _FakeMemory(), _activity()
+    exploration = _make_exploration(tools=tools, memory=memory, web_enabled=True)
+    with pytest.raises(asyncio.CancelledError):
+        await exploration.run(activity)
+    # A process restart serializes the checkpoint, losing shared dict references.
+    activity.progress = json.loads(json.dumps(activity.progress))
+    result = await exploration.run(activity)
+    assert result["outcome"] == "won"
+    assert len(memory.evidence) == len(memory.remembered) == 1
+    assert activity.progress["exploration"]["searches"] == 1
+    assert activity.progress["exploration"]["sources"] == 1
+    assert [name for name, _ in tools.calls].count(interrupted_tool) == 2
+    assert not any(action.get("status") == "rejected" for action in result["actions"])

@@ -200,10 +200,16 @@ class ActivityLifecycle:
         """进入 INCOMPLETE，并把消费中的欲望改为 SUPPRESSED。"""
         previous_status = activity.status
         previous_ended_at = activity.ended_at
+        previous_progress = activity.progress
+        activity.progress = {**activity.progress, "error": error[:1000]}
         activity.status = ActivityStatus.INCOMPLETE
         activity.ended_at = time.time()
         desire_id = activity.progress.get("desire_id")
         task_id = activity.progress.get("task_id")
+        event = internal_event(
+            EventType.ACTIVITY_PROGRESS, {"activity_id": activity.id},
+            correlation_id(activity),
+        )
         try:
             async with self._store.db.transaction():
                 await self._store.update(activity)
@@ -216,10 +222,13 @@ class ActivityLifecycle:
                         activity.ended_at,
                         error[:500],
                     )
+                await self._bus.append_in_transaction(event)
         except BaseException:
             activity.status = previous_status
             activity.ended_at = previous_ended_at
+            activity.progress = previous_progress
             raise
+        await self._announce(event)
         return task_id if isinstance(task_id, str) else None
 
     async def recover_stale_running(self) -> list[Activity]:

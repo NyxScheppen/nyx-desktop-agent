@@ -1,6 +1,7 @@
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any, cast
 
 import aiosqlite
 
@@ -138,6 +139,50 @@ class ActivityStore:
             )
             row = await cursor.fetchone()
         return row["t"] if row is not None and row["t"] is not None else 0.0
+
+    async def list_exploration_history(self) -> list[dict[str, Any]]:
+        """Project actual outcomes, including failed runs absent from activity memory.
+
+        Keep every completed question for dedup; callers bound prompt samples.
+        Raw pages and tool payloads never enter the generation context.
+        """
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                f"SELECT {_COLS} FROM activity WHERE type = 'free_exploration' "
+                "AND status IN ('completed', 'incomplete') "
+                "ORDER BY started_at DESC"
+            )
+            rows = await cursor.fetchall()
+        history: list[dict[str, Any]] = []
+        for row in rows:
+            activity = _row_to_activity(row)
+            progress = activity.progress
+            raw = progress.get("exploration", {})
+            exploration = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
+            raw_result = progress.get("result", exploration.get("judged", {}))
+            result = (
+                cast(dict[str, Any], raw_result)
+                if isinstance(raw_result, dict) else {}
+            )
+            raw_goal = progress.get("goal", {})
+            goal = cast(dict[str, Any], raw_goal) if isinstance(raw_goal, dict) else {}
+            history.append({
+                "activity_id": activity.id,
+                "desire_id": progress.get("desire_id"),
+                "status": activity.status.value,
+                "started_at": activity.started_at,
+                "seed_topic": goal.get("topic", exploration.get("topic", "")),
+                "question": exploration.get("initial_question")
+                or progress.get("intent") or progress.get("description")
+                or exploration.get("topic", ""),
+                "summary": str(result.get("summary", ""))[:1500],
+                "core_discovery": str(result.get("core_discovery", ""))[:1500],
+                "failure_reason": exploration.get("failure_reason")
+                or result.get("failure_reason") or progress.get("error") or "未知",
+                "unresolved_questions": result.get("unresolved_questions")
+                or exploration.get("unresolved_questions", []),
+            })
+        return history
 
     async def list_schedule(self, start: float) -> list[Activity]:
         """今日已产生记录（started_at >= start），按 started_at ASC。"""

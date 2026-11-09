@@ -3,7 +3,7 @@ import logging
 
 from nyx.config import DesireConfig
 from nyx.db import Database
-from nyx.desire.lifecycle import DesireLifecycle, ListMemories
+from nyx.desire.lifecycle import DesireLifecycle, ListExplorations, ListMemories
 from nyx.desire.store import DesireStore, normalize_name
 from nyx.desire.value import action_priority
 from nyx.enums import EventType
@@ -39,6 +39,7 @@ class DesireFacade:
         config: DesireConfig,
         list_memories: ListMemories,
         embed: EmbedFn | None = None,
+        list_explorations: ListExplorations | None = None,
     ) -> None:
         self._store = store
         self._config = config
@@ -46,7 +47,7 @@ class DesireFacade:
         self._logger = logging.getLogger(__name__)
         self._long_term_lock = asyncio.Lock()
         self._lifecycle = DesireLifecycle(
-            store, bus, llm, evaluator, config, list_memories, embed
+            store, bus, llm, evaluator, config, list_memories, embed, list_explorations
         )
 
     @property

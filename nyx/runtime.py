@@ -450,7 +450,7 @@ async def run_character(host: "_Host", identity: str) -> None:
     except Exception as error:
         record = dict(host.records[identity])
         if record["status"] == "RUNNING":
-            record.update(status="FAILED", error=str(error))
+            record.update(status="FAILED", error=f"{type(error).__name__}: {error}")
             await host.save_record(record)
         await app.reading.quiesce()
         await app.activity.quiesce()

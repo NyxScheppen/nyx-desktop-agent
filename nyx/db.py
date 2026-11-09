@@ -11,7 +11,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 import aiosqlite
@@ -293,6 +293,43 @@ DB_FAILURE_THRESHOLD = 5
 DB_COOLDOWN_SECONDS = 5.0
 
 
+class DatabaseLockTimeout(TimeoutError):
+    """No transaction has started; retrying lock acquisition is safe."""
+
+
+class DatabaseLock(asyncio.Lock):
+    """Report long shared-connection holders without logging SQL or data."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.owner = "unknown"
+        self.acquired_at = 0.0
+
+    async def acquire(self) -> Literal[True]:
+        started = monotonic()
+        await super().acquire()
+        task = asyncio.current_task()
+        self.owner = (
+            f"{task.get_name()}:{getattr(task.get_coro(), '__qualname__', 'unknown')}"
+            if task else "unknown"
+        )
+        self.acquired_at = monotonic()
+        if self.acquired_at - started >= 1:
+            logging.getLogger(__name__).warning(
+                "DB lock waited %.2fs; owner=%s", self.acquired_at - started, self.owner
+            )
+        return True
+
+    def release(self) -> None:
+        held = monotonic() - self.acquired_at
+        if self.locked() and held >= 1:
+            logging.getLogger(__name__).warning(
+                "DB lock held %.2fs; owner=%s", held, self.owner
+            )
+        super().release()
+        self.owner = "unknown"
+
+
 def resolve_postgres_url() -> str | None:
     """Return the configured PostgreSQL URL without exposing it in validation errors."""
     value = os.environ.get("NYX_DATABASE_URL")
@@ -382,7 +419,21 @@ class Database:
         """Run one bounded local transaction under the shared DB lock."""
         if self.in_transaction:
             raise RuntimeError("不允许嵌套 Database.transaction()")
-        await asyncio.wait_for(self.lock.acquire(), timeout=self.lock_timeout)
+        try:
+            async with asyncio.timeout(self.lock_timeout):
+                await self.lock.acquire()
+        except TimeoutError as error:
+            owner = (
+                self.lock.owner if isinstance(self.lock, DatabaseLock) else "unknown"
+            )
+            logging.getLogger(__name__).warning(
+                "DB transaction lock timeout after %.2fs; holder=%s",
+                self.lock_timeout, owner,
+            )
+            raise DatabaseLockTimeout(
+                f"DB lock acquisition exceeded {self.lock_timeout:.2f}s "
+                f"(holder={owner})"
+            ) from error
         marker = self._transaction_state.set(True)
         try:
             await asyncio.wait_for(
@@ -1313,7 +1364,7 @@ async def connect(
             raise
         return Database(
             conn=conn,
-            lock=asyncio.Lock(),
+            lock=DatabaseLock(),
             checkpointer=checkpointer,
         )
 
@@ -1362,7 +1413,7 @@ async def connect(
             await checkpoint_conn.close()
         await conn.close()  # 迁移失败或启动取消：关闭未交付给宿主的连接。
         raise
-    return Database(conn=conn, lock=asyncio.Lock(), checkpointer=checkpointer)
+    return Database(conn=conn, lock=DatabaseLock(), checkpointer=checkpointer)
 
 
 async def migrate(

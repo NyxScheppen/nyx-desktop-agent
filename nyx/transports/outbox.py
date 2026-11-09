@@ -121,11 +121,13 @@ class TransportOutbox:
                 (time.time() + delay, error, self._transport, event_id),
             )
 
-    async def release(self) -> None:
+    async def release(self, *, exclude_event_id: str | None = None) -> None:
         """Release leases after this recipient's sending worker has stopped."""
         async with self._db.transaction() as conn:
             await conn.execute(
                 "UPDATE transport_outbox SET status='pending', lease_until=NULL "
-                "WHERE transport=? AND status='processing'",
-                (self._transport,),
+                "WHERE transport=? AND status='processing'"
+                + (" AND event_id<>?" if exclude_event_id is not None else ""),
+                (self._transport, exclude_event_id)
+                if exclude_event_id is not None else (self._transport,),
             )

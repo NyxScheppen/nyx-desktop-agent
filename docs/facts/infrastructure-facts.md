@@ -22,4 +22,5 @@
 - 浏览器和桌面通过 REST/SSE 接入；`nyx/transports/onebot.py` 通过 OneBot v11 正向 WebSocket 连接 NapCat/LLOneBot。
 - OneBot 仅接指定账号私聊，向配置的本人 QQ 发送角色 THINK/SPEAK/ASK；THINK 带“💭 内心话”前缀。出向队列持久保存并在重连后续发。
 - OneBot 出向是至少一次，极端崩溃窗口可能重复一次；它与浏览器 SSE 使用不同的投递路径。
+- OneBot 对进入事务前的锁等待超时按阶段退避重试；发送成功后只重试确认，连接重建保留待确认状态。退出清理有界，未释放队列由租约恢复；SQL 执行和提交失败仍按真实故障上报。共享锁记录慢等待、慢持锁及任务来源。
 - 根凭证、设备配对及 HTTPS 入口由现有宿主/API/前端配合；操作见 [本地操作](../operations.md)、[线上操作](../deployment.md)。

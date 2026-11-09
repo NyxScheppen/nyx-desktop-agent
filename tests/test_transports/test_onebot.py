@@ -9,7 +9,7 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from nyx.app_context import _App
 from nyx.config import Config
-from nyx.db import connect
+from nyx.db import DatabaseLockTimeout, connect
 from nyx.enums import EventType
 from nyx.events.bus import EventBus
 from nyx.runtime import root_event
@@ -141,6 +141,142 @@ async def test_onebot_database_timeout_is_not_a_network_retry(
                 await adapter.quiesce()
                 await asyncio.gather(runner, return_exceptions=True)
     finally:
+        await db.close()
+
+
+@pytest.mark.parametrize("phase", ["scan", "claim", "sent", "sent_reconnect"])
+async def test_onebot_recovers_lock_contention_without_resending(
+    phase: str, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from nyx.transports.onebot import OneBotAdapter
+
+    db = await connect(":memory:")
+    db.lock_timeout = 0.01
+    monkeypatch.setenv("ONEBOT_ACCESS_TOKEN", "fixture-token")
+    adapter = OneBotAdapter(_minimal_app(EventBus(db), Config()))
+    await adapter.outbox.initialize()
+    event = root_event(EventType.SPEAK, {"content": "once"})
+    await adapter._app.bus.publish(event)
+    locked, confirmed = asyncio.Event(), asyncio.Event()
+    sends: list[str] = []
+    operation_name = "sent" if phase == "sent_reconnect" else phase
+    operation = getattr(adapter.outbox, operation_name)
+    first = True
+
+    async def contested(*args: Any) -> Any:
+        nonlocal first
+        if first:
+            first = False
+            await db.lock.acquire()
+            locked.set()
+        result = await operation(*args)
+        if operation_name == "sent":
+            confirmed.set()
+        return result
+
+    async def emit(event: Any) -> None:
+        sends.append(event.id)
+
+    monkeypatch.setattr(adapter.outbox, operation_name, contested)
+    monkeypatch.setattr(adapter, "emit", emit)
+    if operation_name != "sent":
+        original_sent = adapter.outbox.sent
+
+        async def sent(event_id: str) -> None:
+            await original_sent(event_id)
+            confirmed.set()
+
+        monkeypatch.setattr(adapter.outbox, "sent", sent)
+    sender = asyncio.create_task(adapter._send())
+    try:
+        await asyncio.wait_for(locked.wait(), 2)
+        # Wait until an actual lock acquisition has timed out and entered backoff.
+        async with asyncio.timeout(2):
+            while "OneBot DB lock retry" not in caplog.text:
+                await asyncio.sleep(0.01)
+        assert not sender.done()
+        if phase == "sent_reconnect":
+            sender.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await sender
+            await adapter._release()  # Bounded even while the database is locked.
+        db.lock.release()
+        if phase == "sent_reconnect":
+            sender = asyncio.create_task(adapter._send())
+        await asyncio.wait_for(confirmed.wait(), 3)
+        assert sends == [event.id]
+        async with db.lock:
+            row = await (await db.conn.execute(
+                "SELECT status FROM transport_outbox WHERE event_id=?", (event.id,)
+            )).fetchone()
+        assert row is not None and row["status"] == "sent"
+    finally:
+        sender.cancel()
+        await asyncio.gather(sender, return_exceptions=True)
+        if db.lock.locked():
+            db.lock.release()
+        await db.close()
+
+
+async def test_transaction_lock_timeout_is_distinct_and_cancellable() -> None:
+    db = await connect(":memory:")
+    db.lock_timeout = 0.01
+    try:
+        async with db.lock:
+            with pytest.raises(DatabaseLockTimeout, match="DB lock acquisition"):
+                async with db.transaction():
+                    pytest.fail("must not enter transaction")
+            waiter = asyncio.create_task(db.lock.acquire())
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+        async with db.transaction() as conn:
+            await conn.execute("SELECT 1")
+    finally:
+        await db.close()
+
+
+async def test_onebot_retries_failed_send_state_without_hiding_network_failure(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    from nyx.transports.onebot import OneBotAdapter, OneBotError
+
+    db = await connect(":memory:")
+    db.lock_timeout = 0.01
+    monkeypatch.setenv("ONEBOT_ACCESS_TOKEN", "fixture-token")
+    adapter = OneBotAdapter(_minimal_app(EventBus(db), Config()))
+    await adapter.outbox.initialize()
+    event = root_event(EventType.SPEAK, {"content": "retry later"})
+    await adapter._app.bus.publish(event)
+    locked = asyncio.Event()
+
+    async def disconnected(event: Any) -> None:
+        await db.lock.acquire()
+        locked.set()
+        raise OneBotError("disconnected")
+
+    monkeypatch.setattr(adapter, "emit", disconnected)
+    sender = asyncio.create_task(adapter._send())
+    try:
+        await asyncio.wait_for(locked.wait(), 2)
+        async with asyncio.timeout(2):
+            while "phase=retry" not in caplog.text:
+                await asyncio.sleep(0.01)
+        db.lock.release()
+        with pytest.raises(OneBotError, match="disconnected"):
+            await asyncio.wait_for(asyncio.shield(sender), 3)
+        row = await (await db.conn.execute(
+            "SELECT status, lease_until FROM transport_outbox WHERE event_id=?",
+            (event.id,),
+        )).fetchone()
+        assert row is not None and row["status"] == "pending"
+        assert row["lease_until"] is None
+    finally:
+        sender.cancel()
+        await asyncio.gather(sender, return_exceptions=True)
+        if db.lock.locked():
+            db.lock.release()
         await db.close()
 
 

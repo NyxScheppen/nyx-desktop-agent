@@ -8,12 +8,15 @@ import json
 import logging
 import os
 import uuid
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Awaitable, Callable
+from functools import partial
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
 from nyx.config import ConfigError
+from nyx.db import DatabaseLockTimeout
 from nyx.enums import EventType, Source
 from nyx.transports.outbox import TransportOutbox
 from nyx.types import Event
@@ -22,6 +25,7 @@ if TYPE_CHECKING:
     from nyx.app_context import _App
 
 _LOGGER = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 class OneBotError(RuntimeError):
@@ -45,6 +49,7 @@ class OneBotAdapter:
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._task: asyncio.Task[None] | None = None
         self._accepting = True
+        self._confirmed_event_id: str | None = None
 
     async def on_external(self, payload: dict[str, Any]) -> None:
         """Admit only the configured user's private plain text, with stable IDs."""
@@ -178,19 +183,53 @@ class OneBotAdapter:
             elif "post_type" in payload:
                 await self.on_external(payload)
 
+    async def _retry_lock(
+        self, phase: str, operation: Callable[[], Awaitable[_T]]
+    ) -> _T:
+        attempt = 0
+        while True:
+            try:
+                return await operation()
+            except DatabaseLockTimeout:
+                delay = min(2 ** min(attempt, 5), 30)
+                attempt += 1
+                _LOGGER.warning(
+                    "OneBot DB lock retry: phase=%s attempt=%d wait=%ds",
+                    phase, attempt, delay,
+                )
+                await asyncio.sleep(delay)
+
+    async def _confirm_sent(self) -> None:
+        event_id = self._confirmed_event_id
+        if event_id is not None:
+            await self._retry_lock("sent", lambda: self.outbox.sent(event_id))
+            self._confirmed_event_id = None
+
+    async def _release(self) -> None:
+        # Shutdown must be bounded. An unreleased row recovers through its lease.
+        try:
+            await self.outbox.release(exclude_event_id=self._confirmed_event_id)
+        except DatabaseLockTimeout:
+            _LOGGER.warning("OneBot lease cleanup deferred to expiry: DB lock timeout")
+
     async def _send(self) -> None:
         while True:
-            await self.outbox.scan()
-            event = await self.outbox.claim()
+            # Survives receiver failure/reconnect while confirmation was blocked.
+            await self._confirm_sent()
+            await self._retry_lock("scan", self.outbox.scan)
+            event = await self._retry_lock("claim", self.outbox.claim)
             if event is None:
                 await asyncio.sleep(0.25)
                 continue
             try:
                 await self.emit(event)
             except OneBotError as error:
-                await self.outbox.retry(event.id, type(error).__name__)
+                await self._retry_lock(
+                    "retry", partial(self.outbox.retry, event.id, type(error).__name__)
+                )
                 raise
-            await self.outbox.sent(event.id)
+            self._confirmed_event_id = event.id
+            await self._confirm_sent()
 
     async def _session(self) -> None:
         receiver = asyncio.create_task(self._receive())
@@ -215,10 +254,10 @@ class OneBotAdapter:
             receiver.cancel()
             sender.cancel()
             results = await asyncio.gather(receiver, sender, return_exceptions=True)
-            await self.outbox.release()
             for future in self._pending.values():
                 future.cancel()
             self._pending.clear()
+            await self._release()
         errors = [result for result in results if isinstance(result, Exception)]
         for error in errors:
             if not isinstance(error, OneBotError):
@@ -261,7 +300,15 @@ class OneBotAdapter:
                 delay = min(delay * 2, 30)
         finally:
             self._accepting = False
-            await self.outbox.release()
+            if self._confirmed_event_id is not None:
+                try:
+                    await self.outbox.sent(self._confirmed_event_id)
+                    self._confirmed_event_id = None
+                except DatabaseLockTimeout:
+                    _LOGGER.warning(
+                        "OneBot sent confirmation deferred: DB lock timeout"
+                    )
+            await self._release()
 
     async def quiesce(self) -> None:
         """Close admission; runtime awaits the run task before database closure."""

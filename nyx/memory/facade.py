@@ -2177,8 +2177,11 @@ class MemoryFacade:
         kind: MemoryKind | None = None,
         type: MemoryType | None = None,
         limit: int | None = None,
+        *, include_embedding: bool = True,
     ) -> list[Memory]:
-        return await self._store.list_memories(kind, type, limit)
+        return await self._store.list_memories(
+            kind, type, limit, include_embedding=include_embedding
+        )
 
     async def browse_conversations(
         self, query: str = "", *, limit: int = 100, offset: int = 0,

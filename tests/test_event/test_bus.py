@@ -351,6 +351,28 @@ async def test_stream_unknown_cursor_recovers_all_pages() -> None:
         await _close(bus)
 
 
+async def test_stream_replay_boundary_is_finite_with_concurrent_events() -> None:
+    from nyx.events.bus import ReplayComplete
+
+    bus = await _new_bus()
+    stream = bus.stream_events(None, 1, replay_boundary=True)
+    try:
+        # Empty history still produces a boundary.
+        assert isinstance(await anext(stream), ReplayComplete)
+        await stream.aclose()
+        await bus.publish_many([_make_event(id=f"old{i}") for i in range(1005)])
+        stream = bus.stream_events(None, 1, replay_boundary=True)
+        assert cast(Event, await anext(stream)).id == "old5"
+        await bus.publish(_make_event(id="during-replay"))
+        for i in range(6, 1005):
+            assert cast(Event, await anext(stream)).id == f"old{i}"
+        assert isinstance(await anext(stream), ReplayComplete)
+        assert cast(Event, await anext(stream)).id == "during-replay"
+    finally:
+        await stream.aclose()
+        await _close(bus)
+
+
 async def test_handler_failure_retries_only_failed_consumer(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

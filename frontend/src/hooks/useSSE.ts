@@ -39,7 +39,11 @@ const EVENT_TYPES = [
 
 const MAX_SEEN_EVENT_IDS = 4096;
 
-export function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string; generation: number } | null): ConnectionState {
+export function useSSE(
+  dispatch: (e: SseEvent, replaying?: boolean) => void,
+  selection?: { id: string; generation: number } | null,
+  onReplayComplete?: () => void,
+): ConnectionState {
   const [status, setStatus] = useState<ConnectionState>("connecting");
 
   const token = useConnectionStore((s) => s.token);
@@ -56,6 +60,7 @@ export function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string
     let cursor = "";
     setStatus("connecting");
     const seenEventIds = new Set<string>();
+    let replaying = true;
 
     const onEvent = (type: string, text: string) => {
       if (disposed || !isScopeCurrent(scope)) return;
@@ -66,6 +71,15 @@ export function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string
           return;
         }
         if (selection && (data as Record<string, unknown>).character_id !== selection.id) return;
+        if (type === "replay_complete") {
+          const boundary = (data as Record<string, unknown>).event_seq;
+          if (!Number.isSafeInteger(boundary) || (boundary as number) < 0) return;
+          if (replaying) {
+            replaying = false;
+            onReplayComplete?.();
+          }
+          return;
+        }
         const parsed = parseSseEvent(type, data);
         if (parsed === null) {
           console.error("SSE 帧结构非法，跳过", text);
@@ -77,7 +91,7 @@ export function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string
           const oldest = seenEventIds.values().next().value;
           if (typeof oldest === "string") seenEventIds.delete(oldest);
         }
-        dispatch(parsed);
+        dispatch(parsed, replaying);
       } catch (err) {
         console.error("SSE 帧解析失败，跳过", text, err);
       }
@@ -85,6 +99,7 @@ export function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string
 
     const connect = async () => {
       while (active()) {
+        replaying = true;
         try {
           const headers = new Headers();
           if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -122,7 +137,7 @@ export function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string
               if (line === "") {
                 if (data.length) {
                   if (id !== undefined) cursor = id;
-                  if (EVENT_TYPES.includes(type)) onEvent(type, data.join("\n"));
+                  if (EVENT_TYPES.includes(type) || type === "replay_complete") onEvent(type, data.join("\n"));
                 }
                 type = ""; id = undefined; data = [];
               } else if (!line.startsWith(":")) {
@@ -159,7 +174,7 @@ export function useSSE(dispatch: (e: SseEvent) => void, selection?: { id: string
       stopWaiting();
       setStatus("closed");
     };
-  }, [dispatch, selection?.id, selection?.generation, selection === null, token]);
+  }, [dispatch, selection?.id, selection?.generation, selection === null, token, onReplayComplete]);
 
   return status;
 }

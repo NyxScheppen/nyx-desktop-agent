@@ -1,3 +1,4 @@
+import { coalescedRefresh } from "../api/coalescedRefresh";
 import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import { getDesires } from "../api/client";
@@ -15,7 +16,7 @@ export const useDesireStore = create<DesireStoreState>((set) => {
   return {
     data: null,
     error: null,
-    refresh: async () => {
+    refresh: coalescedRefresh(async () => {
       const scope = captureScope();
       const commit = scopedSetter(set);
       const request = ++requestGeneration;
@@ -30,6 +31,6 @@ export const useDesireStore = create<DesireStoreState>((set) => {
           commit({ error: err instanceof Error ? err.message : String(err) });
         }
       }
-    },
+    }),
   };
 });

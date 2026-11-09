@@ -93,6 +93,22 @@ async def test_lesson_signal_counts_topics_and_clears() -> None:
         await db.close()
 
 
+async def test_display_list_does_not_read_or_mutate_embeddings() -> None:
+    db = await connect(":memory:")
+    store = MemoryStore(db)
+    try:
+        await store.add(_mem("display", embedding=[0.1, 0.2]))
+        displayed = await store.list_memories(include_embedding=False)
+        assert displayed[0].embedding is None
+        assert (await store.list_memories())[0].embedding == [0.1, 0.2]
+        # A malformed stored vector cannot break display reads: SQL projects it out.
+        async with db.transaction() as conn:
+            await conn.execute("UPDATE memory SET embedding='invalid-vector'")
+        assert (await store.list_memories(include_embedding=False))[0].id == "display"
+    finally:
+        await db.close()
+
+
 async def test_add_get_embedding_none() -> None:
     db = await connect(":memory:")
     store = MemoryStore(db)

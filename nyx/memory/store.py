@@ -466,6 +466,7 @@ class MemoryStore:
         kind: MemoryKind | None = None,
         type: MemoryType | None = None,
         limit: int | None = None,
+        *, include_embedding: bool = True,
     ) -> list[Memory]:
         clauses: list[str] = []
         params: list[str] = []
@@ -476,8 +477,11 @@ class MemoryStore:
             clauses.append("type = ?")
             params.append(type.value)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        columns = _MEMORY_COLS if include_embedding else _MEMORY_COLS.replace(
+            ", embedding", ", NULL AS embedding"
+        )
         sql = (
-            f"SELECT {_MEMORY_COLS} FROM memory{where} "
+            f"SELECT {columns} FROM memory{where} "
             "ORDER BY freshness DESC, created_at DESC"
         )
         if limit is not None:

@@ -1,3 +1,4 @@
+import { coalescedRefresh } from "../api/coalescedRefresh";
 import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import {
@@ -46,13 +47,13 @@ export const useActivityStore = create<ActivityStoreState>((set, get) => ({
   creatingTask: false,
   resultsLoading: false,
   hasMoreResults: false,
-  refresh: async () => {
+  refresh: coalescedRefresh(async () => {
       const scope = captureScope();
       const commit = scopedSetter(set);
     const generation = ++resultsGeneration;
     commit({ error: null, resultsLoading: true });
     try {
-      const [data, results, tasks] = await Promise.all([
+      const requests = [
         getActivity(),
         getActivityResults({
           limit: RESULTS_PAGE_SIZE + 1,
@@ -60,7 +61,11 @@ export const useActivityStore = create<ActivityStoreState>((set, get) => ({
           activity_type: "creation",
         }),
         getTasks(),
-      ]);
+      ] as const;
+      // A failed endpoint must not release the module's single-flight slot while
+      // its other requests are still running.
+      await Promise.allSettled(requests);
+      const [data, results, tasks] = await Promise.all(requests);
       if (!isScopeCurrent(scope)) return;
       if (generation !== resultsGeneration) return;
       commit({
@@ -78,7 +83,7 @@ export const useActivityStore = create<ActivityStoreState>((set, get) => ({
         resultsLoading: false,
       });
     }
-  },
+  }),
   loadMoreResults: async () => {
       const scope = captureScope();
       const commit = scopedSetter(set);

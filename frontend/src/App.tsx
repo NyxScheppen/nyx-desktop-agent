@@ -4,7 +4,7 @@ import { invalidateScope } from "./api/characterScope";
 import { pairDevice } from "./api/client";
 import CharacterSelect from "./components/layout/CharacterSelect";
 import { useEffect, useState, type CSSProperties } from "react";
-import { dispatchEvent } from "./api/dispatch";
+import { dispatchEvent, synchronizeAfterReplay } from "./api/dispatch";
 import ChatInput from "./components/chat/ChatInput";
 import MessageList from "./components/chat/MessageList";
 import PetShell from "./components/desktop/PetShell";
@@ -23,11 +23,7 @@ import RightDock, { type View } from "./components/shell/RightDock";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
 import { timePhaseAt } from "./lib/time";
-import { useActivityStore } from "./stores/activityStore";
 import { useChatStore } from "./stores/chatStore";
-import { useInnerLifeStore } from "./stores/innerLifeStore";
-import { useDesireStore } from "./stores/desireStore";
-import { useMemoryStore } from "./stores/memoryStore";
 import { useReaderStore } from "./stores/readerStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import { applyDesktopMode, isTauriRuntime, type DesktopMode } from "./lib/desktopWindow";
@@ -88,7 +84,10 @@ function ConnectedApp() {
   const characterError = useCharacterStore((s) => s.error);
   const selected = registry?.characters.find((role) => role.id === registry.current_id);
   const ready = selected?.status === "RUNNING" && !switching;
-  const status = useSSE(dispatchEvent, ready && selected ? { id: selected.id, generation } : null);
+  const status = useSSE(
+    dispatchEvent, ready && selected ? { id: selected.id, generation } : null,
+    synchronizeAfterReplay,
+  );
   useEffect(() => {
     void useCharacterStore.getState().initialize();
     return () => invalidateScope();
@@ -97,10 +96,6 @@ function ConnectedApp() {
     const timer = setInterval(() => void useCharacterStore.getState().refresh(), 2000);
     return () => clearInterval(timer);
   }, []);
-  const refreshState = useInnerLifeStore((s) => s.refreshState);
-  const refreshActivity = useActivityStore((s) => s.refresh);
-  const refreshDesires = useDesireStore((s) => s.refresh);
-  const refreshMemories = useMemoryStore((s) => s.refresh);
   usePresence(status);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [desktopMode, setDesktopMode] = useState<DesktopMode>(() =>
@@ -110,7 +105,6 @@ function ConnectedApp() {
   const [readerOpen, setReaderOpen] = useState(false);
   const bookId = useReaderStore((s) => s.bookId);
   const messages = useChatStore((s) => s.messages);
-  const loadHistory = useChatStore((s) => s.loadHistory);
   const tint = useSettingsStore((s) => s.tint);
   const image = useSettingsStore((s) => s.image);
   const fontScale = useSettingsStore((s) => s.fontScale);
@@ -138,18 +132,6 @@ function ConnectedApp() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
-
-  // SSE 恢复连接后重拉快照 + 回填聊天历史（断线期间 emotion_update/消息可能丢失；
-  // loadHistory 按 event_id 去重，重复调用不产生重复气泡）。
-  useEffect(() => {
-    if (status === "open" && ready) {
-      refreshState();
-      void refreshActivity();
-      void refreshDesires();
-      void refreshMemories();
-      void loadHistory();
-    }
-  }, [status, generation, ready, refreshState, refreshActivity, refreshDesires, refreshMemories, loadHistory]);
 
   // 背景：有图以图铺底（cover）；无图有色调作纯色；默认羊皮纸（--parchment）。
   const bgStyle: CSSProperties = {};

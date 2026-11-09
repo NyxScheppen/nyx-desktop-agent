@@ -72,6 +72,13 @@ class EventBusClosedError(EventAdmissionError):
     """The event bus is quiescing or already closed."""
 
 
+@dataclass(frozen=True)
+class ReplayComplete:
+    """Per-reader control marker; never persisted as a domain event."""
+
+    event_seq: int
+
+
 class EventBus:
     """Durable event log with independently replayable consumer deliveries."""
 
@@ -184,13 +191,19 @@ class EventBus:
             self._sse_sinks.remove(sink)
 
     async def stream_events(
-        self, after: str | None, queue_size: int
-    ) -> AsyncGenerator[Event | None, None]:
+        self, after: str | None, queue_size: int, *, replay_boundary: bool = False
+    ) -> AsyncGenerator[Event | ReplayComplete | None, None]:
         """Read committed events independently; notifications only wake the reader."""
         queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=queue_size)
         self.add_sse_sink(queue)
         try:
             async with self._db.lock:
+                cursor = await self._db.conn.execute(
+                    "SELECT COALESCE(MAX(event_seq), 0) AS tail FROM event_log"
+                )
+                tail = await cursor.fetchone()
+                assert tail is not None
+                watermark = int(tail["tail"])
                 if after is None:
                     cursor = await self._db.conn.execute(
                         "SELECT event_seq FROM event_log ORDER BY event_seq DESC "
@@ -204,17 +217,25 @@ class EventBus:
                 position = int(row["event_seq"]) if row is not None else 0
                 if after is None and position:
                     position -= 1
+            replaying = True
             while True:
                 async with self._db.lock:
                     cursor = await self._db.conn.execute(
                         "SELECT event_seq, id, timestamp, source, type, content, "
                         "correlation_id FROM event_log WHERE event_seq>? "
-                        "ORDER BY event_seq LIMIT 1000", (position,)
+                        + ("AND event_seq<=? " if replaying else "")
+                        + "ORDER BY event_seq LIMIT 1000",
+                        (position, watermark) if replaying else (position,),
                     )
                     rows = await cursor.fetchall()
                 for row in rows:
                     position = int(row["event_seq"])
                     yield _row_to_event(row)
+                if replaying and (not rows or position >= watermark):
+                    replaying = False
+                    if replay_boundary:
+                        yield ReplayComplete(watermark)
+                    continue
                 if rows:
                     continue
                 try:

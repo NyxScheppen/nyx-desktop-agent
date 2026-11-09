@@ -27,7 +27,7 @@ from nyx.enums import (
 )
 from nyx.eval.evaluator import Evaluator
 from nyx.eval.store import EvalStore
-from nyx.events.bus import EventAdmissionError, EventBus
+from nyx.events.bus import EventAdmissionError, EventBus, ReplayComplete
 from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
@@ -81,6 +81,7 @@ def _mem() -> Memory:
         summary="摘要",
         freshness=1.0,
         type=MemoryType.SHORT_TERM,
+        embedding=[0.1, 0.2],
     )
 
 
@@ -107,13 +108,15 @@ class _FakeBus:
         self.sinks.remove(sink)
 
     async def stream_events(
-        self, after: str | None, queue_size: int
-    ) -> AsyncGenerator[Event | None, None]:
+        self, after: str | None, queue_size: int, *, replay_boundary: bool = False
+    ) -> AsyncGenerator[Event | ReplayComplete | None, None]:
         queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=queue_size)
         self.add_sse_sink(queue)
         try:
             for event in self.published:
                 yield event
+            if replay_boundary:
+                yield ReplayComplete(len(self.published))
             while True:
                 yield await queue.get()
         finally:
@@ -136,7 +139,8 @@ class _FakeMemory:
         self.recent_facts_calls: list[tuple[int, str | None]] = []
 
     async def list_memories(
-        self, kind: MemoryKind | None = None, type: MemoryType | None = None
+        self, kind: MemoryKind | None = None, type: MemoryType | None = None,
+        *, include_embedding: bool = True,
     ) -> list[Memory]:
         self.list_calls.append((kind, type))
         return [_mem()]
@@ -493,6 +497,7 @@ async def test_memories_endpoint() -> None:
             params={"kind": "user_profile", "type": "long_term"},
         )
     assert resp.status_code == 200
+    assert "embedding" not in resp.json()[0]
     assert [m["type"] for m in resp.json()] == ["short_term"]
     assert memory.list_calls == [(MemoryKind.USER_PROFILE, MemoryType.LONG_TERM)]
 
@@ -504,6 +509,7 @@ async def test_memory_search_endpoint() -> None:
             "/api/memories/search", params={"q": "猫", "kind": "reading"}
         )
     assert resp.status_code == 200
+    assert "embedding" not in resp.json()[0]
     assert [m["type"] for m in resp.json()] == ["short_term"]
     assert memory.search_calls == [("猫", MemoryKind.READING)]
 
@@ -681,10 +687,13 @@ async def test_sse_frame_uses_backend_event_timestamp() -> None:
     await bus.publish(event)
     iterator = cast(AsyncGenerator[str, None], response.body_iterator)
     chunk = await iterator.__anext__()
+    boundary = await iterator.__anext__()
     await iterator.aclose()
     data_line = next(line for line in chunk.splitlines() if line.startswith("data: "))
 
     assert json.loads(data_line.removeprefix("data: "))["timestamp"] == 1234.5
+    assert boundary.startswith("event: replay_complete\n")
+    assert "id:" not in boundary
 
 
 async def test_observe_away_to_online_records_return_duration(

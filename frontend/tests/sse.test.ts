@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bindScope } from "../src/api/characterScope";
-import { dispatchEvent } from "../src/api/dispatch";
+import { dispatchEvent, synchronizeAfterReplay } from "../src/api/dispatch";
 import { useSSE } from "../src/hooks/useSSE";
 import { useActivityStore } from "../src/stores/activityStore";
 import { useAnnounceStore } from "../src/stores/announceStore";
@@ -62,6 +62,54 @@ afterEach(() => {
 });
 
 describe("useSSE", () => {
+  it("1000 historical invalidations synchronize once at the boundary, then dispatch live", async () => {
+    const snapshots = [
+      vi.spyOn(useInnerLifeStore.getState(), "refreshState").mockResolvedValue(),
+      vi.spyOn(useMemoryStore.getState(), "refresh").mockResolvedValue(),
+      vi.spyOn(useDesireStore.getState(), "refresh").mockResolvedValue(),
+      vi.spyOn(useActivityStore.getState(), "refresh").mockResolvedValue(),
+      vi.spyOn(useChatStore.getState(), "loadHistory").mockResolvedValue(),
+    ];
+    const announce = vi.spyOn(useAnnounceStore.getState(), "announce");
+    renderHook(() => useSSE(dispatchEvent, undefined, synchronizeAfterReplay));
+    await act(async () => {
+      for (let i = 0; i < 1000; i++) emit("memory_created", {
+        event_id: `old${i}`, correlation_id: "c", timestamp: 1, memory_id: "m",
+      });
+      emit("mutter", { event_id: "old-mutter", correlation_id: "c", timestamp: 1, content: "old" });
+    });
+    for (const snapshot of snapshots) expect(snapshot).not.toHaveBeenCalled();
+    expect(announce).not.toHaveBeenCalled();
+    await act(async () => {
+      emit("replay_complete", { event_seq: 1001 });
+      emit("replay_complete", { event_seq: 1001 });
+    });
+    for (const snapshot of snapshots) expect(snapshot).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      emit("memory_created", { event_id: "new", correlation_id: "c", timestamp: 2, memory_id: "m" });
+    });
+    expect(snapshots[1]).toHaveBeenCalledTimes(2);
+  });
+
+  it("empty replay synchronizes and an old role's boundary cannot synchronize a new role", async () => {
+    const synchronize = vi.fn();
+    bindScope({ id: "a", revision: 1 });
+    const view = renderHook(({ id, generation }) => useSSE(dispatch, { id, generation }, synchronize),
+      { initialProps: { id: "a", generation: 1 } });
+    await act(async () => { emit("replay_complete", { character_id: "a", event_seq: 0 }); });
+    expect(synchronize).toHaveBeenCalledTimes(1);
+    const old = controller;
+    bindScope({ id: "b", revision: 2 });
+    view.rerender({ id: "b", generation: 2 });
+    await act(async () => {
+      // Old reader is cancelled; its queued control frame cannot drive new work.
+      try { old.enqueue(new TextEncoder().encode('event: replay_complete\ndata: {"character_id":"a","event_seq":0}\n\n')); } catch { /* cancelled */ }
+      emit("replay_complete", { character_id: "a", event_seq: 0 });
+      emit("replay_complete", { character_id: "b", event_seq: 0 });
+    });
+    expect(synchronize).toHaveBeenCalledTimes(2);
+  });
+
   it("opens a stream, deduplicates named frames and cancels on unmount", async () => {
     const view = renderHook(() => useSSE(dispatch));
     expect(view.result.current).toBe("connecting");

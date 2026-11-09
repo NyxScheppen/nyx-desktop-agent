@@ -51,18 +51,22 @@ it("each reader reconnects from its own last complete frame and aborts on unmoun
   const fetch = serveStreams();
   const first = vi.fn();
   const second = vi.fn();
-  const a = renderHook(() => useSSE(first));
+  const synchronize = vi.fn();
+  const boundary = 'event: replay_complete\ndata: {"event_seq":1}\n\n';
+  const a = renderHook(() => useSSE(first, undefined, synchronize));
   const b = renderHook(() => useSSE(second));
   await act(async () => {
-    streams[0].enqueue(new TextEncoder().encode(frame("a") + "id: nyx:unfinished\n"));
+    streams[0].enqueue(new TextEncoder().encode(frame("a") + boundary + "id: nyx:unfinished\n"));
     streams[1].enqueue(new TextEncoder().encode(frame("other")));
     streams[0].close();
   });
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
   expect(new Headers(fetch.mock.calls[2][1]?.headers).get("Last-Event-ID")).toBe("nyx:a");
-  await act(async () => { streams[2].enqueue(new TextEncoder().encode(frame("a") + frame("b"))); });
+  await act(async () => { streams[2].enqueue(new TextEncoder().encode(frame("a") + boundary + frame("b"))); });
   expect(first.mock.calls.map(([event]) => event.event_id)).toEqual(["a", "b"]);
   expect(second.mock.calls.map(([event]) => event.event_id)).toEqual(["other"]);
+  expect(synchronize).toHaveBeenCalledTimes(2);
+  expect(first.mock.calls.map(([, replaying]) => replaying)).toEqual([true, false]);
   a.unmount(); b.unmount();
   expect((fetch.mock.calls[2][1]?.signal as AbortSignal).aborted).toBe(true);
 });

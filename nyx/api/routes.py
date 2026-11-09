@@ -29,7 +29,7 @@ from nyx.activity.observe import classify_presence
 from nyx.app_context import _App, _Host
 from nyx.character_cards import MAX_CARD_BYTES, build_package, load_card
 from nyx.enums import ActivityType, BoundaryResult, EventType, MemoryKind, MemoryType
-from nyx.events.bus import EventAdmissionError
+from nyx.events.bus import EventAdmissionError, ReplayComplete
 from nyx.memory.facade import build_source_topic
 from nyx.reading.facade import (
     BookmarkNotFoundError,
@@ -54,7 +54,6 @@ from nyx.types import (
     ExpressionHistory,
     InteractionAttempt,
     LlmMessage,
-    Memory,
     MemoryFact,
     Paragraph,
     ReadingProgress,
@@ -413,14 +412,20 @@ def build_app(
     @fast.get("/api/memories")
     async def api_memories(
         kind: MemoryKind | None = None, type: MemoryType | None = None
-    ) -> list[Memory]:
-        return await app.memory.list_memories(kind, type)
+    ) -> list[dict[str, Any]]:
+        memories = await app.memory.list_memories(kind, type, include_embedding=False)
+        return [
+            {k: v for k, v in vars(m).items() if k != "embedding"} for m in memories
+        ]
 
     @fast.get("/api/memories/search")
     async def api_memory_search(
         q: str, kind: MemoryKind | None = None
-    ) -> list[Memory]:
-        return await app.memory.search(q, kind)
+    ) -> list[dict[str, Any]]:
+        memories = await app.memory.search(q, kind)
+        return [
+            {k: v for k, v in vars(m).items() if k != "embedding"} for m in memories
+        ]
 
     @fast.get("/api/memories/facts")
     async def api_memory_facts(
@@ -754,9 +759,18 @@ def build_app(
                 raise HTTPException(409, "SSE 游标不属于该角色")
             last_event_id = last_event_id[len(prefix) :]
         async def generate() -> AsyncGenerator[str, None]:
-            stream = app.bus.stream_events(last_event_id, sse_queue_size)
+            stream = app.bus.stream_events(
+                last_event_id, sse_queue_size, replay_boundary=True
+            )
             try:
                 async for event in stream:
+                    if isinstance(event, ReplayComplete):
+                        payload = json.dumps({
+                            "character_id": app.character_id,
+                            "event_seq": event.event_seq,
+                        })
+                        yield f"event: replay_complete\ndata: {payload}\n\n"
+                        continue
                     if event is None:
                         yield ": keepalive\n\n"
                         continue

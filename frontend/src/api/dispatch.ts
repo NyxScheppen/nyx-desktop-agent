@@ -7,11 +7,24 @@ import { useInnerLifeStore } from "../stores/innerLifeStore";
 import { useMemoryStore } from "../stores/memoryStore";
 import { useReaderStore } from "../stores/readerStore";
 import type { SseEvent } from "../types/api";
+import { captureScope, isScopeCurrent } from "./characterScope";
+
+export function synchronizeAfterReplay(): void {
+  void useInnerLifeStore.getState().refreshState();
+  void useActivityStore.getState().refresh();
+  void useDesireStore.getState().refresh();
+  void useMemoryStore.getState().refresh();
+  void useChatStore.getState().loadHistory();
+}
 
 // 事件 → store 路由。
 // desire/activity 事件只带 id（{"desire_id"}/{"activity_id"}），
 // 面板收到就 refresh() 重拉快照；clock_tick/observation_state/reflection 不路由。
-export function dispatchEvent(e: SseEvent): void {
+export function dispatchEvent(e: SseEvent, replaying = false): void {
+  // Historical chat still restores coverage/pending state. Snapshot modules are
+  // synchronized once at the boundary; old announcements should not reappear.
+  if (replaying && !["speak", "ask", "think", "initiate_chat", "user_message",
+    "annotation_feedback", "reading_question", "reading_progress"].includes(e.event)) return;
   switch (e.event) {
     case "speak":
       return useChatStore.getState().addSpeak(e);
@@ -52,9 +65,11 @@ export function dispatchEvent(e: SseEvent): void {
       useActivityStore.getState().refresh();
       return;
     case "activity_end": {
+      const scope = captureScope();
       // 完成后主动冒一句：refresh 重拉快照后，按 activity_id 找到刚完成的活动，
       // 有产出就 announce("activity", …)（activityAnnouncement 见 lib/activityResult）。
       void useActivityStore.getState().refresh().then(() => {
+        if (!isScopeCurrent(scope)) return;
         const id = e.activity_id;
         if (typeof id !== "string") return;
         const a = useActivityStore.getState().data?.schedule.find((x) => x.id === id);

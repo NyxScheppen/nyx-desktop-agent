@@ -1,3 +1,4 @@
+import { coalescedRefresh } from "../api/coalescedRefresh";
 import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import { getState } from "../api/client";
@@ -16,7 +17,7 @@ export const useInnerLifeStore = create<InnerLifeState>((set) => {
   return {
     current: null,
     error: null,
-    refreshState: async () => {
+    refreshState: coalescedRefresh(async () => {
       const scope = captureScope();
       const commit = scopedSetter(set);
       const request = ++requestGeneration;
@@ -31,7 +32,7 @@ export const useInnerLifeStore = create<InnerLifeState>((set) => {
           commit({ error: err instanceof Error ? err.message : String(err) });
         }
       }
-    },
+    }),
     updateEmotion: (e) => {
       requestGeneration += 1;
     const { valence, arousal, emotion } = e;

@@ -1,3 +1,4 @@
+import { coalescedRefresh } from "../api/coalescedRefresh";
 import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import { getMemories, getMemorySearch, getRecentFacts, getConversationMemories } from "../api/client";
@@ -61,7 +62,7 @@ export const useMemoryStore = create<MemoryStoreState>((set, get) => {
     factScope: "profile",
     error: null,
     factsError: null,
-    refresh: async () => {
+    refresh: coalescedRefresh(async () => {
       const scope = captureScope();
       const commit = scopedSetter(set);
       const memoryRequestId = ++memoryGeneration;
@@ -90,7 +91,7 @@ export const useMemoryStore = create<MemoryStoreState>((set, get) => {
           commit({ factsError: errorMessage(factsResult.reason) });
         }
       }
-    },
+    }),
     search: async (query: string, kind = get().kind) => {
       const scope = captureScope();
       const commit = scopedSetter(set);

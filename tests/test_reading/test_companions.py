@@ -6,11 +6,12 @@ import pytest
 from nyx.enums import EmotionCategory, EnergyState, EventType, ReadingBehavior
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import internal_event
 from nyx.expression.facade import ExpressionFacade
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
 from nyx.reading.companions import ReadingCompanion
-from nyx.types import CurrentState, Event, LLMOutput, Personality, Values
+from nyx.types import CurrentState, Event, InnerDocument, InnerTopic, LLMOutput
 
 
 class _Llm:
@@ -57,42 +58,50 @@ class _Memory:
 class _Expression:
     def __init__(self) -> None:
         self.turns: list[str] = []
+        self.bus = _Bus()
 
     def record_proactive_turn(self, text: str, **kwargs: object) -> None:
         self.turns.append(text)
 
+    async def commit_reading_question(
+        self,
+        content: str,
+        source_id: str,
+        correlation_id: str,
+        payload: dict[str, object],
+    ) -> str:
+        await self.bus.publish(
+            internal_event(
+                EventType.READING_QUESTION,
+                payload,
+                correlation_id,
+            )
+        )
+        self.record_proactive_turn(content)
+        return "attempt"
+
 
 def _state() -> CurrentState:
-    personality: Personality = {
-        "openness": 5.0,
-        "conscientiousness": 5.0,
-        "extraversion": 5.0,
-        "agreeableness": 5.0,
-        "neuroticism": 5.0,
-    }
-    values: Values = {
-        "attitude_to_human": 5.0,
-        "ai_identity_acceptance": 5.0,
-        "altruism": 5.0,
-        "optimism": 5.0,
-    }
     return CurrentState(
         valence=0.0,
         arousal=0.0,
         emotion=EmotionCategory.NEUTRAL,
-        personality=personality,
-        values=values,
-        aesthetic={"ornate": 5.0, "lyrical": 5.0, "classical": 5.0, "somber": 5.0},
         energy=50.0,
         energy_state=EnergyState.OKAY,
         current_activity=None,
         active_desires=[],
+        inner_document=InnerDocument(
+            [InnerTopic("identity", "self-understanding", "自我理解", "我是尼克斯")],
+            1,
+            1000.0,
+        ),
     )
 
 
 async def test_dispatch_question_publishes_and_records_output() -> None:
     bus = _Bus()
     expression = _Expression()
+    expression.bus = bus
     recorded: list[tuple[str, int, str, str]] = []
 
     async def record(book_id: str, index: int, content: str, source: str) -> None:
@@ -121,10 +130,15 @@ async def test_dispatch_question_publishes_and_records_output() -> None:
     assert expression.turns == ["为什么这句话重要？"]
 
 
-@pytest.mark.parametrize("response", [
-    "为什么？\n不存在的原文", "为什么？\n原文\n额外一行",
-    "为什么？\n尾部", "为什么？\n   ",
-])
+@pytest.mark.parametrize(
+    "response",
+    [
+        "为什么？\n不存在的原文",
+        "为什么？\n原文\n额外一行",
+        "为什么？\n尾部",
+        "为什么？\n   ",
+    ],
+)
 async def test_quote_question_rejects_unverifiable_quote(response: str) -> None:
     bus = _Bus()
     recorded: list[str] = []
@@ -133,13 +147,21 @@ async def test_quote_question_rejects_unverifiable_quote(response: str) -> None:
         recorded.append(content)
 
     companion = ReadingCompanion(
-        cast(LlmClient, _Llm(response)), cast(Evaluator, _Evaluator()),
-        cast(EventBus, bus), cast(MemoryFacade, _Memory()),
-        cast(ExpressionFacade, _Expression()), "canon", record,
+        cast(LlmClient, _Llm(response)),
+        cast(Evaluator, _Evaluator()),
+        cast(EventBus, bus),
+        cast(MemoryFacade, _Memory()),
+        cast(ExpressionFacade, _Expression()),
+        "canon",
+        record,
     )
     await companion.dispatch(
-        "book", 1, "原文" + "a" * 6000 + "尾部",
-        [ReadingBehavior.QUOTE_QUESTION], False, _state(),
+        "book",
+        1,
+        "原文" + "a" * 6000 + "尾部",
+        [ReadingBehavior.QUOTE_QUESTION],
+        False,
+        _state(),
     )
     assert bus.events == []
     assert recorded == []

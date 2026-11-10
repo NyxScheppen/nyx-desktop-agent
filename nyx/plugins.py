@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -25,6 +26,7 @@ from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
 from nyx.events.routing import ROUTE_SPECS, RouteSpec
 from nyx.expression.facade import ExpressionFacade
+from nyx.expression.prompt import _MATERIAL_ITEM_MAX_CHARS
 from nyx.expression.store import ExpressionInteractionStore
 from nyx.harness import PluginContext
 from nyx.harness import build_plugins as _build_plugins
@@ -220,7 +222,6 @@ def route_handlers(app: _App) -> dict[str, Handler]:
 async def _build_eval(ctx: PluginContext) -> Mapping[str, object]:
     return {
         "evaluator": Evaluator(
-            cast(EmbedFn, ctx.get("embed")),
             cast(EvalStore, ctx.get("eval_store")),
             partial(_on_failure, ctx),
         )
@@ -280,14 +281,7 @@ async def _build_behavior(ctx: PluginContext) -> Mapping[str, object]:
     db = cast(Database, ctx.get("db"))
     tools = cast(ToolRegistry, ctx.get("tools"))
     config = cast(Config, ctx.get("config"))
-    # Skill grants are validated after activity/memory tools register in expression.
-    baseline_tools = ToolRegistry()
-    for name in ("memory_recall", "knowledge_search", "deep_research"):
-        baseline_tools.register(Tool(name, name, {}, _unavailable_skill_tool))
     skills = SkillStore(db)
-    await skills.seed(load_skills(
-        cast(Path, ctx.get("prompt_dir")) / "skills", baseline_tools
-    ))
     behavior = BehaviorService(
         BehaviorStore(db), skills, cast(EventBus, ctx.get("bus")),
         cast(LlmClient, ctx.get("llm")), cast(Evaluator, ctx.get("evaluator")),
@@ -300,12 +294,7 @@ async def _build_behavior(ctx: PluginContext) -> Mapping[str, object]:
         config.exploration, cast(str, ctx.get("canon")),
         build_web_fetch_tool().handler if config.exploration.web_enabled else None,
     )
-    await research.recover()
     return {"behavior": behavior, "research": research, "skills": skills}
-
-
-async def _unavailable_skill_tool(**_kwargs: Any) -> None:
-    raise RuntimeError("仅用于 skill 授权校验")
 
 
 async def _apply_behavior_event(app: _App, event: Event) -> None:
@@ -368,15 +357,21 @@ def _memory_tools(ctx: PluginContext) -> list[Tool]:
 
     async def memory_recall(query: str, top_k: int = 8) -> dict[str, Any]:
         segments = await memory.search_conversation_segments(
-            query, max(1, min(top_k, 8))
+            query, max(1, min(top_k, 8)), include_archived=True, max_excerpt_chars=900,
         )
         facts = await memory.search_facts(query, scope="profile")
         facts += await memory.search_facts(query, scope="conversation")
-        return {
+        result = {
             "segments": [
                 {
                     "segment_id": segment.id,
-                    "content": segment.raw_content,
+                    "content": segment.retrieval_excerpt or segment.raw_content,
+                    "chunk_ids": segment.retrieval_chunk_ids,
+                    "source_ranges": segment.retrieval_ranges,
+                    "retrieval_sources": segment.retrieval_sources,
+                    "trace_id": segment.retrieval_trace_id,
+                    "started_at": segment.started_at,
+                    "ended_at": segment.ended_at,
                     "importance": segment.importance,
                     "freshness": segment.freshness,
                 }
@@ -393,6 +388,16 @@ def _memory_tools(ctx: PluginContext) -> list[Tool]:
                 for fact in facts
             ],
         }
+        # Return whole evidence records inside the tool injection budget, rather
+        # than letting the tool graph cut a JSON object halfway through a source.
+        bounded: dict[str, list[dict[str, Any]]] = {"segments": [], "facts": []}
+        budget = _MATERIAL_ITEM_MAX_CHARS - 100
+        for key in ("segments", "facts"):
+            for entry in result[key]:
+                bounded[key].append(entry)
+                if len(json.dumps(bounded, ensure_ascii=False)) > budget:
+                    bounded[key].pop()
+        return bounded
 
     async def knowledge_search(query: str, top_k: int = 5) -> dict[str, Any]:
         return await memory.search_knowledge(query, top_k)
@@ -400,7 +405,7 @@ def _memory_tools(ctx: PluginContext) -> list[Tool]:
     return [
         Tool(
             "memory_recall",
-            "召回相关对话段原文和用户/关系事实；"
+            "检索完整历史归档中的相关对话原文片段和用户/关系事实；"
             "结果带 segment_id 或 source_segment_id 供引用。",
             {
                 "type": "object",
@@ -462,6 +467,8 @@ async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
         runner=cast(ResearchService, ctx.get("research")).deep_research
     ))
     skills = load_skills(cast(Path, ctx.get("prompt_dir")) / "skills", tools)
+    await cast(SkillStore, ctx.get("skills")).seed(skills)
+    await cast(ResearchService, ctx.get("research")).recover()
     await initialize_card(db, cast(CharacterCard, ctx.get("card")).manifest)
     return {
         "expression": ExpressionFacade(

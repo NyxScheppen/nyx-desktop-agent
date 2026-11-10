@@ -2,9 +2,8 @@
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import cast
 
-from nyx.enums import EventType, InteractionKind, ReadingBehavior
+from nyx.enums import EventType, ReadingBehavior
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_event
@@ -174,55 +173,19 @@ class ReadingCompanion:
             if not content or not is_question(content):
                 return False
             correlation_id = f"{book_id}:{paragraph_index}"
-            commit = getattr(self._expression, "commit_reading_question", None)
-            if callable(commit):
-                commit_question = cast(
-                    Callable[[str, str, str, dict[str, object]], Awaitable[str]],
-                    commit,
-                )
-                attempt_id = await commit_question(
-                    content,
-                    f"{book_id}:{paragraph_index}",
-                    correlation_id,
-                    {
-                        "content": content,
-                        "subtype": behavior.value,
-                        "book_id": book_id,
-                        "paragraph_index": paragraph_index,
-                        "selected_text": selected_text,
-                    },
-                )
-                committed = True
-            else:
-                register = getattr(self._expression, "register_question", None)
-                if callable(register):
-                    register_question = cast(
-                        Callable[[str, InteractionKind, str, str], Awaitable[str]],
-                        register,
-                    )
-                    attempt_id = await register_question(
-                        content,
-                        InteractionKind.READING_QUESTION,
-                        f"{book_id}:{paragraph_index}",
-                        correlation_id,
-                    )
-                else:
-                    attempt_id = ""
-                event = internal_event(
-                    EventType.READING_QUESTION,
-                    {
-                        "content": content,
-                        "subtype": behavior.value,
-                        "book_id": book_id,
-                        "paragraph_index": paragraph_index,
-                        "attempt_id": attempt_id,
-                        "selected_text": selected_text,
-                    },
-                    correlation_id,
-                )
-                await self._bus.publish(event)
-                self._expression.record_proactive_turn(content, event=event)
-                committed = True
+            await self._expression.commit_reading_question(
+                content,
+                f"{book_id}:{paragraph_index}",
+                correlation_id,
+                {
+                    "content": content,
+                    "subtype": behavior.value,
+                    "book_id": book_id,
+                    "paragraph_index": paragraph_index,
+                    "selected_text": selected_text,
+                },
+            )
+            committed = True
             await self._record_output(book_id, paragraph_index, content, "question")
             return committed
         except InitiationSkipped:

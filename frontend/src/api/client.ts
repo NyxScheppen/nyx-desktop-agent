@@ -450,9 +450,19 @@ export function importCharacter(file: File): Promise<CharacterRecord> {
   return request(`${BASE_URL}/api/characters`, { method: "POST", body });
 }
 export type CreateCharacterPayload = {
-  id: string; name: string; identity: string;
-  personality: Record<string, number>; values: Record<string, number>; aesthetic: Record<string, number>;
+  id: string; name: string;
+  inner_document: import("../types/api").InnerTopic[];
 };
+export type CharacterCardDetail = CreateCharacterPayload & {
+  schema_version: number;
+  long_term_desires: { type: string; name: string; description: string; strength: number; subtopics: string[] }[];
+  assets: Record<string, string>;
+  canon: string;
+  character_reference: string;
+};
+export function getCharacterCard(id: string, signal: AbortSignal): Promise<CharacterCardDetail> {
+  return request(`${BASE_URL}/api/characters/${encodeURIComponent(id)}/card`, { signal });
+}
 export function createCharacter(payload: CreateCharacterPayload, images: File[]): Promise<CharacterRecord> {
   const body = new FormData();
   body.append("payload", JSON.stringify(payload));

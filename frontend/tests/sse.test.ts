@@ -218,32 +218,14 @@ describe("dispatchEvent", () => {
       valence: 0.1,
       arousal: 0.2,
       emotion: "neutral",
-      personality: {
-        openness: 8,
-        conscientiousness: 8,
-        extraversion: 2,
-        agreeableness: 6,
-        neuroticism: 7,
-      },
-      values: {
-        attitude_to_human: 8,
-        ai_identity_acceptance: 6,
-        altruism: 9,
-        optimism: 5,
-      },
-      aesthetic: {
-        ornate: 7,
-        lyrical: 7,
-        classical: 6,
-        somber: 6,
-      },
+      inner_document: { topics: [{ section: "identity", id: "self-understanding", title: "自我理解", content: "我正在认识自己。" }], revision: 1, updated_at: 1000 },
       energy: 100,
       energy_state: "energetic",
       current_activity: null,
       active_desires: [],
     };
     useInnerLifeStore.setState({ current });
-    // emotion_update 载荷只带情绪，能量/性格/三观不随帧下发；
+    // emotion_update 载荷只带情绪，精力等运行状态不随帧下发；
     // dispatch 现顺带 refreshState() 重拉全量，spy 拦下真实 fetch。
     const refreshSpy = vi
       .spyOn(useInnerLifeStore.getState(), "refreshState")
@@ -383,51 +365,30 @@ describe("dispatchEvent", () => {
     });
   });
 
-  it("reflection_done（story_is_new）→ 欲望 refresh + 气泡", () => {
+  it.each([true, false])("reflection_done（document_changed=%s）→ 刷新文档、欲望和记录，不生成气泡", (changed) => {
     const desireSpy = vi
       .spyOn(useDesireStore.getState(), "refresh")
       .mockResolvedValue(undefined);
     const innerLifeSpy = vi
       .spyOn(useInnerLifeStore.getState(), "refreshState")
       .mockResolvedValue(undefined);
+    const memorySpy = vi
+      .spyOn(useMemoryStore.getState(), "refresh")
+      .mockResolvedValue(undefined);
 
-    dispatchEvent({
-      event: "reflection_done",
+    const event = parseSseEvent("reflection_done", {
       event_id: "e1",
       correlation_id: "c1",
       timestamp: 1,
-      story: "今天对用户了解更多",
-      story_is_new: true,
+      summary: "今天对用户了解更多",
+      document_changed: changed,
     });
+    expect(event).not.toBeNull();
+    dispatchEvent(event!);
 
     expect(desireSpy).toHaveBeenCalledTimes(1);
     expect(innerLifeSpy).toHaveBeenCalledTimes(1);
-    expect(useAnnounceStore.getState().items).toHaveLength(1);
-    expect(useAnnounceStore.getState().items[0]).toMatchObject({
-      kind: "mutter",
-      text: "小狐狸我呀，反思了一下：今天对用户了解更多",
-    });
-  });
-
-  it("reflection_done（story_is_new=false）→ 静默 refresh 不气泡", () => {
-    const desireSpy = vi
-      .spyOn(useDesireStore.getState(), "refresh")
-      .mockResolvedValue(undefined);
-    const innerLifeSpy = vi
-      .spyOn(useInnerLifeStore.getState(), "refreshState")
-      .mockResolvedValue(undefined);
-
-    dispatchEvent({
-      event: "reflection_done",
-      event_id: "e2",
-      correlation_id: "c2",
-      timestamp: 1,
-      story: "初始故事",
-      story_is_new: false,
-    });
-
-    expect(desireSpy).toHaveBeenCalledTimes(1);
-    expect(innerLifeSpy).toHaveBeenCalledTimes(1);
+    expect(memorySpy).toHaveBeenCalledTimes(1);
     expect(useAnnounceStore.getState().items).toHaveLength(0);
   });
 

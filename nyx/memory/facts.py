@@ -336,7 +336,14 @@ def _fact_terms(text: str) -> set[str]:
 
 
 def _query_time(text: str, fallback: float) -> float:
-    """Use an explicit YYYY年M月/M月 query as the historical validity point."""
+    """Use an explicit local date, or the existing month midpoint convention."""
+    date = re.search(r"(\d{4})[-年](\d{1,2})[-月](\d{1,2})(?:日|号)?", text)
+    if date:
+        try:
+            return datetime(*(int(value) for value in date.groups()),
+                            tzinfo=USER_TIMEZONE).timestamp()
+        except (ValueError, OverflowError, OSError):
+            return fallback
     match = _MONTH_QUERY_RE.search(text)
     if match is None:
         return fallback
@@ -345,7 +352,10 @@ def _query_time(text: str, fallback: float) -> float:
     month = int(raw_month) if raw_month.isdigit() else _CHINESE_MONTHS[raw_month]
     if not 1 <= month <= 12:
         return fallback
-    return datetime(year, month, 15, tzinfo=USER_TIMEZONE).timestamp()
+    try:
+        return datetime(year, month, 15, tzinfo=USER_TIMEZONE).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return fallback
 
 
 class MemoryFactStore:

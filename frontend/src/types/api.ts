@@ -56,35 +56,23 @@ export interface ChatRequest {
   annotation?: ReplyAnnotation;
 }
 
-export type Personality = {
-  openness: number;
-  conscientiousness: number;
-  extraversion: number;
-  agreeableness: number;
-  neuroticism: number;
+export type InnerTopic = {
+  section: string;
+  id: string;
+  title: string;
+  content: string;
 };
-
-export type Values = {
-  attitude_to_human: number;
-  ai_identity_acceptance: number;
-  altruism: number;
-  optimism: number;
-};
-
-export type Aesthetic = {
-  ornate: number;
-  lyrical: number;
-  classical: number;
-  somber: number;
+export type InnerDocument = {
+  topics: InnerTopic[];
+  revision: number;
+  updated_at: number;
 };
 
 export type CurrentState = {
   valence: number; // [-1, 1]
   arousal: number; // [0, 1]
   emotion: EmotionCategory;
-  personality: Personality;
-  values: Values;
-  aesthetic: Aesthetic;
+  inner_document: InnerDocument;
   energy: number; // [0, 100]
   energy_state: EnergyState;
   current_activity: string | null; // ActivityType 值；核心先行仅展示，用 string 放宽
@@ -181,11 +169,11 @@ export type EmotionUpdateEvent = SseBase & {
   emotion: EmotionCategory;
 };
 
-/** 反思完成帧：{story, story_is_new}。story_is_new 决定前端是否高亮+气泡。 */
+/** 反思完成帧：摘要与文档变化标志，用于刷新内在状态和反思记录。 */
 export type ReflectionDoneEvent = SseBase & {
   event: "reflection_done";
-  story: string;
-  story_is_new: boolean;
+  summary: string;
+  document_changed: boolean;
 };
 
 // ---- 阅读事件（概览见 docs/facts/reading-system-facts.md）----
@@ -367,8 +355,8 @@ export function parseSseEvent(type: string, data: unknown): SseEvent | null {
       : null;
   }
   if (type === "reflection_done") {
-    return typeof data.story === "string" && typeof data.story_is_new === "boolean"
-      ? ({ ...base, event: type, story: data.story, story_is_new: data.story_is_new } as ReflectionDoneEvent)
+    return typeof data.summary === "string" && typeof data.document_changed === "boolean"
+      ? ({ ...base, event: type, summary: data.summary, document_changed: data.document_changed } as ReflectionDoneEvent)
       : null;
   }
   if (type === "reading_mutter") {
@@ -448,7 +436,6 @@ export type LongTermDesire = {
   strength: number;
   progress: number;
   subtopics: string[];
-  linked_values: string[];
 };
 
 export type DesireValue = {
@@ -708,7 +695,7 @@ export type EvalRecord = {
   model: string;
   correlation_id: string;
   ooc_keyword: number; // 关键词 OOC 分 [0,1]，1=完全贴合
-  ooc_embed: number | null; // embedding OOC 分 [0,1]；非 voice/关闭为 null
+  ooc_embed: number | null; // 历史 embedding OOC 分；新记录恒为 null
   prompt_tokens: number;
   completion_tokens: number;
 };

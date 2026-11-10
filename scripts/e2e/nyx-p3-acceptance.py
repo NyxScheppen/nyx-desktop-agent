@@ -8,7 +8,7 @@ from nyx.config import Config
 from nyx.main import build_app, build_app_context
 from nyx.memory.store import MemoryStore
 from nyx.memory.facade import build_source_topic
-from nyx.research import run_research
+from research_support import run_research
 from nyx.types import LLMOutput
 from nyx.expression.prompt import _tool_outputs_block
 
@@ -62,19 +62,19 @@ async def main():
     with patch('nyx.app_context.LlmClient.from_config',return_value=llm),patch('nyx.app_context.build_embed',return_value=None): app=await build_app_context(config)
     bus=asyncio.create_task(app.bus.run())
     store=MemoryStore(app.database)
-    args=dict(search=search,fetch=fetch,llm=llm,ingest=app.memory.ingest_source,evaluator=app.evaluator)
+    args=dict(search=search,fetch=fetch,llm=llm,memory=app.memory,evaluator=app.evaluator)
     try:
-        result=await run_research('P3Nebula 的研究结论',**args)
+        result=await run_research('P3Nebula 的研究结论',**args,run_id='replay-probe')
         assert result['report'] and len(searches)==2 and fetches==[A,B],result
         chunks=await store.list_knowledge_chunks();assert len(chunks)==2,chunks
         facts=await app.memory.recent_facts(100,scope='knowledge')
         assert {c.id for c in chunks}<={f.source_chunk_id for f in facts},facts
-        replay=await run_research('P3Nebula 的研究结论',**args)
+        replay=await run_research('P3Nebula 的研究结论',**args,run_id='replay-probe')
         assert replay['report'] and len(await store.list_knowledge_chunks())==2
         for section in result['report']:
             for cite in section['citations']: assert cite['quote'] in TEXT[cite['source_url']]
         print('PASS shared adaptive graph, citations, knowledge/fact provenance and replay',flush=True)
-        disabled=await run_research('x',**{**args,'search':None});assert '联网没开' in str(disabled)
+        disabled=await run_research('x',**{**args,'search':None});assert disabled.get('error') and disabled['status']=='failed'
         async def empty(query):return []
         no=await run_research('x',**{**args,'search':empty});assert not no['report'] and '未找到' in no['summary']
         async def fail(url):return {'error':'failure'}

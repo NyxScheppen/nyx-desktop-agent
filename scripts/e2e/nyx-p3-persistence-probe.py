@@ -7,7 +7,7 @@ a=importlib.util.module_from_spec(spec);spec.loader.exec_module(a)
 from nyx.config import Config
 from nyx.main import build_app_context
 from nyx.memory.store import MemoryStore
-from nyx.research import run_research
+from research_support import run_research
 
 async def main(mode):
     if mode == 'all':
@@ -56,7 +56,7 @@ async def main(mode):
             async def search(query):return [{'url':a.A}]
             async def fetch(url):return {'text':a.TEXT[url],'url':url}
             if mode=='timeout':llm.pause='source_digest'
-            result=await run_research('P3Nebula',search=search,fetch=fetch,llm=llm,ingest=app.memory.ingest_source,evaluator=app.evaluator,budget={'seconds':.4} if mode=='timeout' else None)
+            result=await run_research('P3Nebula',search=search,fetch=fetch,llm=llm,memory=app.memory,evaluator=app.evaluator,budget={'seconds':.4} if mode=='timeout' else None)
             if mode=='timeout':
                 chunks=await store.list_knowledge_chunks()
                 print('persisted_chunks=',len(chunks),'receipts=',result['ingested'],flush=True)

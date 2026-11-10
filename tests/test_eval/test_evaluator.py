@@ -38,7 +38,7 @@ def _out(call_id: str = "call-1") -> LLMOutput:
 
 async def test_evaluate_records() -> None:
     store = _FakeStore()
-    ev = Evaluator(embed=None, store=cast(EvalStore, store))
+    ev = Evaluator(store=cast(EvalStore, store))
     await ev.evaluate(_out())
     assert len(store.records) == 1
     r = store.records[0]
@@ -46,20 +46,20 @@ async def test_evaluate_records() -> None:
     assert r.module == "expression"
     assert r.output_type == "speak"
     assert r.ooc_keyword == 1.0
-    assert r.ooc_embed is None                 # embed=None 关 embedding 档
+    assert r.ooc_embed is None                 # 新记录保留空的历史字段
     assert r.prompt_tokens == 7
     assert r.completion_tokens == 3
     assert store.prompt_messages == [{"role": "user", "content": "问题"}]
 
 
 async def test_evaluate_store_none_no_crash() -> None:
-    ev = Evaluator(embed=None, store=None)
+    ev = Evaluator(store=None)
     await ev.evaluate(_out())                    # 无 store 不落库、不抛
 
 
 async def test_evaluate_insert_error_swallowed() -> None:
     store = _FakeStore()
     store.raise_on_insert = True
-    ev = Evaluator(embed=None, store=cast(EvalStore, store))
+    ev = Evaluator(store=cast(EvalStore, store))
     await ev.evaluate(_out())                    # 落库失败 best-effort，不重抛
     assert store.records == []

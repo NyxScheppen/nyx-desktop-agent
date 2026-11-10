@@ -54,7 +54,6 @@ def _lt(type: DesireType) -> LongTermDesire:
         strength=0.8,
         progress=0.3,
         subtopics=["骑士团", "城堡"],
-        linked_values=["curiosity"],
     )
 
 

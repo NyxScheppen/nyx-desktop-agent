@@ -22,7 +22,7 @@ _STD_COLS = (
 _VALUE_COLS = "type, value, expression_weight, suppression_threshold, updated_at"
 _LT_COLS = (
     "id, created_at, type, name, description, strength, progress, "
-    "subtopics, linked_values, name_normalized"
+    "subtopics, name_normalized"
 )
 
 
@@ -303,7 +303,7 @@ class DesireStore:
         async with self._operation() as should_commit:
             await self._db.conn.execute(
                 f"INSERT INTO long_term_desire ({_LT_COLS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _lt_row(desire),
             )
             if should_commit:
@@ -323,7 +323,7 @@ class DesireStore:
                 return False
             cursor = await self._db.conn.execute(
                 f"INSERT OR IGNORE INTO long_term_desire ({_LT_COLS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _lt_row(desire),
             )
             if should_commit:
@@ -398,12 +398,11 @@ class DesireStore:
         async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "UPDATE long_term_desire SET type = ?, name = ?, description = ?, "
-                "strength = ?, progress = ?, subtopics = ?, "
-                "linked_values = ? WHERE id = ?",
+                "strength = ?, progress = ?, subtopics = ? WHERE id = ?",
                 (
                     desire.type.value, desire.name, desire.description,
                     desire.strength, desire.progress, json.dumps(desire.subtopics),
-                    json.dumps(desire.linked_values), desire.id,
+                    desire.id,
                 ),
             )
             if should_commit:
@@ -493,10 +492,10 @@ def _row_to_value(row: aiosqlite.Row) -> DesireValue:
 
 def _lt_row(
     d: LongTermDesire
-) -> tuple[str, float, str, str, str, float, float, str, str, str]:
+) -> tuple[str, float, str, str, str, float, float, str, str]:
     return (
         d.id, d.created_at, d.type.value, d.name, d.description,
-        d.strength, d.progress, json.dumps(d.subtopics), json.dumps(d.linked_values),
+        d.strength, d.progress, json.dumps(d.subtopics),
         normalize_name(d.name),
     )
 
@@ -511,7 +510,6 @@ def _row_to_lt(row: aiosqlite.Row) -> LongTermDesire:
         strength=row["strength"],
         progress=row["progress"],
         subtopics=json.loads(row["subtopics"]),
-        linked_values=json.loads(row["linked_values"]),
     )
 
 

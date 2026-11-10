@@ -39,12 +39,6 @@ class _Store:
     async def get(self, activity_id: str) -> Activity | None:
         return self.activities.get(activity_id)
 
-    async def list_running(self) -> list[Activity]:
-        return [
-            activity for activity in self.activities.values()
-            if activity.status is ActivityStatus.RUNNING
-        ]
-
     async def list_unfinished(self) -> list[Activity]:
         return [
             activity for activity in self.activities.values()

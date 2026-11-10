@@ -17,9 +17,12 @@ from nyx.config import MemoryConfig
 from nyx.enums import EventType, MemoryEdgeKind, MemoryKind, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
-from nyx.events.event import SECONDS_PER_DAY, internal_event
+from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.ann import AnnIndex, Projection, add_sorted_run, discard_sorted_run
+from nyx.memory.conversation_chunks import index_version
+from nyx.memory.conversation_indexing import maintain_indexes
+from nyx.memory.conversation_retrieval import ConversationRetrieval
 from nyx.memory.facts import (
     FactCandidate,
     MemoryFactStore,
@@ -311,12 +314,6 @@ def _parse_source_digest(
     return profile, points
 
 
-def decay_freshness(
-    freshness: float, created_at: float, now: float, rate: float
-) -> float:
-    """新鲜度线性衰减（rate/天），下限 0。纯函数。"""
-    elapsed_days = max(0.0, now - created_at) / SECONDS_PER_DAY
-    return max(0.0, freshness - rate * elapsed_days)
 
 
 def _normalize_topics(topics: Sequence[object]) -> list[str]:
@@ -736,6 +733,8 @@ class MemoryFacade:
         self._logger = logging.getLogger(__name__)
         self._last_observation: tuple[str, str] | None = None  # 「变化才沉淀」快照
         self._segment_lock = asyncio.Lock()
+        self._conversation_retrieval = ConversationRetrieval(store)
+        self._conversation_index_lock = asyncio.Lock()
         self._chunk_lock = asyncio.Lock()
         self._chunk_indexes: _ChunkIndexes | None = None
         self._chunk_version: int | None = None
@@ -901,10 +900,24 @@ class MemoryFacade:
             segment.evidence_event_ids = evidence
         except Exception:
             self._logger.exception("对话段重要度判定失败 segment_id=%s", segment.id)
-        await self._store.update_conversation_segment(segment)
-        if segment.long_term and kind == "user_profile":
-            for item in corroborating[:8]:
-                await self._store.add_segment_evidence(segment.id, item.id)
+        async with self._store.db.transaction():
+            current = await self._store.get_conversation_segment(segment.id)
+            if (current is None or current.raw_content != segment.raw_content
+                    or current.ended_at != segment.ended_at):
+                return current or segment
+            # Preserve recall, freshness and archive changes made during the LLM call.
+            for name in ("importance", "fact_scope", "summary", "topics",
+                         "evaluated_at",
+                         "evaluation_reason", "evidence_event_ids"):
+                setattr(current, name, getattr(segment, name))
+            current.long_term = segment.long_term or (
+                current.recall_count >= self._config.promote_threshold
+            )
+            segment = current
+            await self._store.update_conversation_segment(segment)
+            if segment.long_term and kind == "user_profile":
+                for item in corroborating[:8]:
+                    await self._store.add_segment_evidence(segment.id, item.id)
         await self._extract_segment_facts(segment)
         return segment
 
@@ -1099,18 +1112,6 @@ class MemoryFacade:
             raise
         if behavior_event is not None:
             await self._bus.announce_committed(behavior_event)
-        if correction and self.behavior is None:
-            await self.record_failure_signal(
-                "user_correction", f"user_correction:{correction_topic}",
-                "用户纠正了回复", event.correlation_id,
-                evidence=[{
-                    "source_id": event.id,
-                    "summary": (
-                        f"引用：{event.content['quote']}\n"
-                        f"用户批注：{event.content['comment']}"
-                    ),
-                }],
-            )
 
     async def record_failure_signal(
         self,
@@ -1121,68 +1122,26 @@ class MemoryFacade:
         *,
         evidence: list[dict[str, str]] | None = None,
     ) -> None:
-        """Learn technical failures immediately; require repeated user corrections.
-
-        Learning is a best-effort side path after feedback facts commit. A failed
-        promotion retains its count so the next correction can retry it.
-        """
+        """Submit failures to behavior reflection; learning remains best effort."""
+        if self.behavior is None:
+            self._logger.warning(
+                "行为反思未绑定，跳过失败信号 kind=%s topic=%s", kind, topic,
+            )
+            return
         correlation_id = correlation_id or str(uuid4())
         try:
             if kind == "user_correction":
                 count = await self._store.bump_lesson_signal(topic, kind)
                 if count < _LESSON_PROMOTE_THRESHOLD:
                     return
-            if self.behavior is not None:
-                await self.behavior.record_signal(
-                    kind, topic, summary, correlation_id, evidence
-                )
-                if kind == "user_correction":
-                    await self._store.clear_lesson_signal(topic)
-                return
-            await self._persist_lesson(topic, kind, summary, correlation_id, evidence)
-            if kind != "user_correction":
-                return
-            reflection = internal_event(
-                EventType.REFLECTION,
-                {"reason": "annotation_correction", "evidence": evidence or []},
-                correlation_id,
+            await self.behavior.record_signal(
+                kind, topic, summary, correlation_id, evidence
             )
-            appended_count = 0
-            try:
-                async with self._store.db.transaction():
-                    persisted_before = self._bus.persisted_count
-                    try:
-                        await self._bus.append_in_transaction(reflection)
-                    finally:
-                        appended_count += self._bus.persisted_count - persisted_before
-                    await self._store.clear_lesson_signal(topic)
-            except BaseException as error:
-                try:
-                    committed = await self._bus.is_durable(reflection.id)
-                except Exception:
-                    raise error
-                if not committed:
-                    self._bus.persisted_count -= appended_count
-                raise
-            await self._bus.announce_committed(reflection)
+            if kind == "user_correction":
+                await self._store.clear_lesson_signal(topic)
         except Exception:
             self._logger.exception("失败经验记录失败 kind=%s topic=%s", kind, topic)
 
-    async def _persist_lesson(
-        self, topic: str, kind: str, summary: str, correlation_id: str,
-        evidence: list[dict[str, str]] | None = None,
-    ) -> None:
-        originals = json.dumps(evidence or [], ensure_ascii=False, indent=2)
-        memory = _new_memory(
-            f"教训：{topic} 失败（{kind}）。{summary}\n"
-            f"关联记录：{correlation_id}\n原文证据：\n{originals}", MemoryKind.LESSON,
-            f"经验：{topic} 失败", MemoryType.LONG_TERM, [topic],
-        )
-        # 策略经验不是用户事实，也不因技术失败触发记忆矛盾反思。
-        await self._persist_memory(
-            memory, correlation_id,
-            fact_candidates=[], defer_best_effort=True,
-        )
 
     async def prepare_reflection_record(self, content: str, summary: str) -> Memory:
         """准备完整反思记录；向量计算发生在状态提交事务外。"""
@@ -1262,6 +1221,10 @@ class MemoryFacade:
                 )
                 candidates = parsed.facts
             async with self._store.db.transaction():
+                current = await self._store.get_conversation_segment(segment.id)
+                if (current is None or current.raw_content != segment.raw_content
+                        or current.ended_at != segment.ended_at):
+                    return
                 await self._fact_store.close_segment_facts(
                     segment.id, segment.ended_at
                 )
@@ -1276,8 +1239,8 @@ class MemoryFacade:
                 await self._fact_store.apply(
                     conversation, None, "conversation", source_segment_id=segment.id
                 )
-                segment.facts_extracted_at = time.time()
-                await self._store.update_conversation_segment(segment)
+                current.facts_extracted_at = time.time()
+                await self._store.update_conversation_segment(current)
         except Exception:
             self._logger.exception("对话段事实抽取失败 segment_id=%s", segment.id)
 
@@ -1290,6 +1253,7 @@ class MemoryFacade:
     async def maintain_conversation_segments(self, now: float | None = None) -> None:
         """独立计时器入口：空闲段判定、事实补写及短期衰减淘汰。"""
         current = time.time() if now is None else now
+        await self.maintain_conversation_indexes()
         async with self._segment_lock:
             pending = await self._store.list_pending_conversation_segments(
                 current - 4 * 60 * 60,
@@ -1299,6 +1263,35 @@ class MemoryFacade:
                 await self._evaluate_conversation_segment(segment)
             await self._maintain_segment_capacity(current)
 
+    async def maintain_conversation_indexes(self, *, max_chunks: int = 16) -> None:
+        """Bounded/restartable work, independent of live append's segment lock."""
+        async with self._conversation_index_lock:
+            await maintain_indexes(self._store, self._embed, max_chunks=max_chunks)
+            await self._store.maintain_conversation_index_logs()
+
+    async def conversation_rag_status(self) -> dict[str, object]:
+        return await self._store.conversation_index_status(index_version(self._embed))
+
+    async def rebuild_conversation_indexes(self) -> None:
+        await self._store.rebuild_conversation_indexes()
+
+    async def conversation_retrieval_traces(
+        self, limit: int = 20,
+    ) -> list[dict[str, object]]:
+        return await self._store.conversation_traces(limit)
+
+    async def delete_conversation_segment(self, segment_id: str) -> bool:
+        async with self._segment_lock:
+            return await self._store.delete_conversation_segment(segment_id)
+
+    async def revise_conversation_segment(
+        self, segment_id: str, raw_content: str, expected_hash: str,
+    ) -> ConversationSegment | None:
+        async with self._segment_lock:
+            return await self._store.revise_conversation_segment(
+                segment_id, raw_content, expected_hash,
+            )
+
     async def finalize_conversation_segment(self) -> None:
         """在关闭或长时间空闲时评估当前未结段。"""
         async with self._segment_lock:
@@ -1307,12 +1300,17 @@ class MemoryFacade:
                 await self._evaluate_conversation_segment(latest)
 
     async def search_conversation_segments(
-        self, query: str, limit: int = 20
+        self, query: str, limit: int = 20, *, include_archived: bool = False,
+        max_excerpt_chars: int = 1600,
     ) -> list[ConversationSegment]:
-        return await search_segments(self._store, query, limit, self._embed)
+        return await search_segments(
+            self._store, query, limit, self._embed,
+            include_archived=include_archived, retrieval=self._conversation_retrieval,
+            max_excerpt_chars=max_excerpt_chars,
+        )
 
     async def record_conversation_segment_recall(
-        self, segment_id: str, user_event_id: str
+        self, segment_id: str, user_event_id: str,
     ) -> None:
         """Only a segment actually rendered in the final reply prompt counts."""
         if not user_event_id:
@@ -1321,6 +1319,14 @@ class MemoryFacade:
             await self._store.record_segment_recall(
                 segment_id, user_event_id, self._config.promote_threshold
             )
+
+    async def record_conversation_trace_injection(
+        self, trace_id: str, segment_id: str, user_event_id: str,
+    ) -> None:
+        """Record prompt injection independently from idempotent recall counts."""
+        await self._store.mark_conversation_trace_injected(
+            trace_id, segment_id, user_event_id,
+        )
 
     async def digest_source_block(
         self,
@@ -1483,14 +1489,6 @@ class MemoryFacade:
                 self._logger.exception("记忆 embedding 失败 memory_id=%s", memory.id)
         return memory
 
-    async def _prepare_memory_embedding(self, memory: Memory) -> None:
-        """在进入核心记忆事务前完成可耗时的向量计算。"""
-        if self._embed is None or memory.embedding is not None:
-            return
-        try:
-            memory.embedding = await self._embed(memory.content)
-        except Exception:
-            self._logger.exception("记忆 embedding 失败 memory_id=%s", memory.id)
 
     async def _remember_activity(
         self,
@@ -1777,8 +1775,6 @@ class MemoryFacade:
             source_scope="reading",
         )
 
-    async def record_no_answer(self, question: str, correlation_id: str) -> None:
-        """兼容旧调用；沉默不是用户陈述，不生成记忆或事实。"""
 
     async def _persist_memory(
         self,
@@ -2111,6 +2107,19 @@ class MemoryFacade:
     ) -> list[Memory]:
         return await self._retrieval.search(query, kind=kind)
 
+    async def search_behavior_experiences(
+        self, query: str, target_skill: str,
+    ) -> list[Memory]:
+        """Recall only live experiences with a proven skill owner, before ranking."""
+        if self.behavior is None:
+            return []
+        ids = await self.behavior.store.experience_ids(target_skill)
+        if not ids:
+            return []
+        return await self._retrieval.search(
+            query, kind=MemoryKind.LESSON, allowed_ids=ids,
+        )
+
     async def search_source(
         self, query: str, source_topic: str, limit: int = 5
     ) -> list[Memory]:
@@ -2201,7 +2210,25 @@ class MemoryFacade:
 
     async def count_new(self, kind: MemoryKind | None, since: float) -> int:
         """计数「首次创建晚于 since 的 kind 记忆」（轻量，不物化整行/embedding）。"""
-        return await self._store.count_new(kind, since)
+        correction_ids = (
+            await self.behavior.store.experience_ids(user_corrections_only=True)
+            if kind is None and self.behavior is not None else None
+        )
+        return await self._store.count_new(
+            kind, since, include_lesson_ids=correction_ids,
+        )
+
+    async def inner_reflection_memories(self) -> list[Memory]:
+        """用户主动纠正可供自我理解；自动告警与研究策略不作内在证据。"""
+        correction_ids: set[str] = (
+            await self.behavior.store.experience_ids(user_corrections_only=True)
+            if self.behavior is not None else set()
+        )
+        return [
+            memory for memory in await self._store.list_memories()
+            if memory.kind is not MemoryKind.REFLECTION
+            and (memory.kind is not MemoryKind.LESSON or memory.id in correction_ids)
+        ]
 
     async def record_reading_evidence(
         self, source_topic: str, source_name: str, content: str, block_key: str,
@@ -2373,7 +2400,7 @@ class MemoryFacade:
         } for fact in facts], "chunks": output}
 
     async def pending_reading_evidence(self, limit: int = 3) -> list[ReadingEvidence]:
-        """Read the oldest unconsumed source blocks for aesthetic reflection."""
+        """Read the oldest unconsumed source blocks for inner-document reflection."""
         return await self._store.pending_reading_evidence(limit)
 
     async def consume_reading_evidence(self, ids: list[str]) -> None:

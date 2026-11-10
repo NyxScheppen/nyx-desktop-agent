@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
-// 背景/外观设置：纯前端 UI 状态，无后端契约。
-// tint/image/fontScale 保持内存态（MVP 不持久化）；circleColor/avatarPos 读写 localStorage
+// 外观设置：纯前端 UI 状态，无后端契约。
+// fontScale 保持内存态（MVP 不持久化）；circleColor/avatarPos 读写 localStorage
 // （用户点名「记住位置和底色」，下次启动原位/原色）。localStorage 不可用时静默降级为内存态。
 
 type FontScale = "small" | "medium" | "large";
@@ -72,15 +72,11 @@ function removeLocal(key: string): void {
 }
 
 type SettingsState = {
-  tint: string | null;
-  image: string | null;
   fontScale: FontScale;
   circleColor: string;
   circleSize: CircleSize;
   avatarPos: AvatarPos | null;
   layoutStyle: LayoutStyle;
-  setTint: (tint: string | null) => void;
-  setImage: (image: string | null) => void;
   setFontScale: (fontScale: FontScale) => void;
   setCircleColor: (circleColor: string) => void;
   setCircleSize: (circleSize: CircleSize) => void;
@@ -90,15 +86,11 @@ type SettingsState = {
 };
 
 export const useSettingsStore = create<SettingsState>((set) => ({
-  tint: null,
-  image: null,
   fontScale: "medium",
   circleColor: readLocal(CIRCLE_COLOR_KEY) ?? DEFAULT_CIRCLE_COLOR,
   circleSize: parseCircleSize(readLocal(CIRCLE_SIZE_KEY)),
   avatarPos: parseAvatarPos(readLocal(AVATAR_POS_KEY)),
   layoutStyle: parseLayoutStyle(readLocal(LAYOUT_STYLE_KEY)),
-  setTint: (tint) => set({ tint }),
-  setImage: (image) => set({ image }),
   setFontScale: (fontScale) => set({ fontScale }),
   setCircleColor: (circleColor) => {
     writeLocal(CIRCLE_COLOR_KEY, circleColor);
@@ -122,8 +114,6 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     removeLocal(AVATAR_POS_KEY);
     removeLocal(LAYOUT_STYLE_KEY);
     set({
-      tint: null,
-      image: null,
       fontScale: "medium",
       circleColor: DEFAULT_CIRCLE_COLOR,
       circleSize: DEFAULT_CIRCLE_SIZE,

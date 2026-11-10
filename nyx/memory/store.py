@@ -1,15 +1,22 @@
 import hashlib
 import json
+import math
 import re
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from uuid import uuid4
 
 import aiosqlite
 
 from nyx.db import Database
 from nyx.enums import MemoryEdgeKind, MemoryKind, MemoryType
+from nyx.memory.conversation_chunks import (
+    ConversationChunk,
+    split_conversation,
+    term_frequencies,
+)
 from nyx.types import ConversationSegment, Event, Memory, MemoryEdge, ReadingEvidence
 
 _MEMORY_COLS = (
@@ -28,6 +35,33 @@ class KeywordSearchHit:
     memory_id: str
     summary_tokens: list[str]
     content_tokens: list[str]
+
+
+@dataclass(frozen=True)
+class ConversationIndexJob:
+    segment: ConversationSegment
+    revision: int
+    attempts: int
+
+
+@dataclass(frozen=True)
+class ConversationRetrievalHit:
+    chunk: ConversationChunk
+    bm25: float | None
+    cosine: float | None
+    fusion: float
+    score: float
+    selected: bool
+    ranges: list[tuple[int, int]]
+
+
+def _conversation_chunk_from_row(row: aiosqlite.Row) -> ConversationChunk:
+    return ConversationChunk(
+        str(row["id"]), str(row["segment_id"]),
+        int(row["start_offset"]), int(row["end_offset"]), str(row["content"]),
+        list(json.loads(row["embedding"])) if row["embedding"] else None,
+        str(row["embedding_version"]),
+    )
 
 
 def _segment_from_row(row: aiosqlite.Row) -> ConversationSegment:
@@ -94,6 +128,23 @@ class MemoryStore:
     def db(self) -> Database:
         """Return the shared database for local transaction orchestration."""
         return self._db
+
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncGenerator[None, None]:
+        """Derived index writes may join a caller without publishing partial work."""
+        if not self._db.in_transaction:
+            async with self._db.transaction():
+                yield
+            return
+        savepoint = f"conversation_{uuid4().hex}"
+        await self._db.conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            yield
+        except BaseException:
+            await self._db.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            raise
+        finally:
+            await self._db.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
 
     async def bump_lesson_signal(self, topic: str, kind: str) -> int:
         """Count the current correction without creating a memory yet."""
@@ -244,7 +295,14 @@ class MemoryStore:
             rows = await cursor.fetchall()
         return [_segment_from_row(row) for row in rows]
 
-    async def add_conversation_segment(self, segment: ConversationSegment) -> None:
+    async def add_conversation_segment(
+        self, segment: ConversationSegment, *,
+        chunks: list[ConversationChunk] | None = None,
+    ) -> None:
+        if not self._db.in_transaction:
+            async with self._db.transaction():
+                await self.add_conversation_segment(segment, chunks=chunks)
+            return
         async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "INSERT INTO conversation_segment "
@@ -281,10 +339,18 @@ class MemoryStore:
                     segment.fact_scope,
                 ),
             )
+            await self._sync_conversation_chunks(segment, chunks)
             if should_commit:
                 await self._db.conn.commit()
 
-    async def update_conversation_segment(self, segment: ConversationSegment) -> None:
+    async def update_conversation_segment(
+        self, segment: ConversationSegment, *,
+        chunks: list[ConversationChunk] | None = None,
+    ) -> None:
+        if not self._db.in_transaction:
+            async with self._db.transaction():
+                await self.update_conversation_segment(segment, chunks=chunks)
+            return
         async with self._operation() as should_commit:
             await self._db.conn.execute(
                 "UPDATE conversation_segment SET started_at=?, ended_at=?, "
@@ -320,8 +386,402 @@ class MemoryStore:
                     segment.id,
                 ),
             )
+            await self._sync_conversation_chunks(segment, chunks)
             if should_commit:
                 await self._db.conn.commit()
+
+    async def _sync_conversation_chunks(
+        self, segment: ConversationSegment, chunks: list[ConversationChunk] | None,
+    ) -> None:
+        """Archive and derived postings always share the caller's transaction."""
+        proposed = chunks if chunks is not None else split_conversation(
+            segment.id, segment.raw_content,
+        )
+        cursor = await self._db.conn.execute(
+            "SELECT * FROM conversation_chunk WHERE segment_id=?", (segment.id,),
+        )
+        current = {chunk.id: chunk for chunk in (
+            _conversation_chunk_from_row(row) for row in await cursor.fetchall()
+        )}
+        desired = {chunk.id for chunk in proposed}
+        for identity in current.keys() - desired:
+            await self._db.conn.execute(
+                "DELETE FROM conversation_chunk WHERE id=?", (identity,),
+            )
+        for chunk in proposed:
+            old = current.get(chunk.id)
+            if old is not None:
+                if chunk.embedding is not None and (
+                    chunk.embedding != old.embedding
+                    or chunk.embedding_version != old.embedding_version
+                ):
+                    await self._db.conn.execute(
+                        "UPDATE conversation_chunk SET embedding=?, "
+                        "embedding_version=? WHERE id=?",
+                        (json.dumps(chunk.embedding), chunk.embedding_version,
+                         chunk.id),
+                    )
+                continue
+            frequencies = term_frequencies(chunk.content)
+            await self._db.conn.execute(
+                "INSERT INTO conversation_chunk (id, segment_id, start_offset, "
+                "end_offset, content, embedding, token_count, embedding_version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (chunk.id, chunk.segment_id, chunk.start, chunk.end, chunk.content,
+                 json.dumps(chunk.embedding) if chunk.embedding is not None else None,
+                 sum(frequencies.values()), chunk.embedding_version),
+            )
+            if frequencies:
+                await self._db.conn.executemany(
+                    "INSERT INTO conversation_chunk_term "
+                    "(term, chunk_id, frequency) VALUES (?, ?, ?)",
+                    [(term, chunk.id, count) for term, count in frequencies.items()],
+                )
+
+    async def list_conversation_chunks(
+        self, segment_id: str,
+    ) -> list[ConversationChunk]:
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM conversation_chunk WHERE segment_id=? "
+                "ORDER BY start_offset", (segment_id,),
+            )
+            return [
+                _conversation_chunk_from_row(row) for row in await cursor.fetchall()
+            ]
+
+    async def conversation_chunk_changes(
+        self, after: int | None,
+    ) -> tuple[int, list[ConversationChunk], list[str]]:
+        """Read committed changes, or an isolated transaction-local snapshot."""
+        async with self._operation() as own:
+            if own:
+                await self._db.conn.execute("BEGIN")
+            cursor = await self._db.conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) AS seq, MIN(seq) AS oldest "
+                "FROM conversation_chunk_change"
+            )
+            row = await cursor.fetchone()
+            version = int(row["seq"]) if row is not None else 0
+            reset = after is None or (
+                row is not None and row["oldest"] is not None
+                and after < int(row["oldest"]) - 1
+            )
+            if reset:
+                cursor = await self._db.conn.execute("SELECT * FROM conversation_chunk")
+            else:
+                cursor = await self._db.conn.execute(
+                    "SELECT delta.chunk_id AS changed_id, c.* FROM "
+                    "(SELECT DISTINCT chunk_id FROM conversation_chunk_change "
+                    "WHERE seq>? AND seq<=?) delta LEFT JOIN conversation_chunk c "
+                    "ON c.id=delta.chunk_id", (after, version),
+                )
+            rows = await cursor.fetchall()
+            if own:
+                await self._db.conn.commit()
+        return (
+            version,
+            [_conversation_chunk_from_row(row)
+             for row in rows if row["id"] is not None],
+            (["*"] if reset and after is not None else
+             [str(row["changed_id"]) for row in rows if row["id"] is None]),
+        )
+
+    async def pending_conversation_indexes(
+        self, version: str, now: float, limit: int = 4,
+    ) -> list[ConversationIndexJob]:
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT s.*, j.revision, j.attempts FROM conversation_index_job j "
+                "JOIN conversation_segment s ON s.id=j.segment_id WHERE "
+                "(j.revision<>j.completed_revision OR j.index_version<>?) "
+                "AND (j.retry_at<=? OR j.index_version<>?) "
+                "ORDER BY j.retry_at, s.ended_at, s.id LIMIT ?",
+                (version, now, version, limit),
+            )
+            return [ConversationIndexJob(_segment_from_row(row), int(row["revision"]),
+                                         int(row["attempts"]))
+                    for row in await cursor.fetchall()]
+
+    async def prepare_conversation_index(
+        self, job: ConversationIndexJob, version: str,
+    ) -> bool:
+        async with self._transaction():
+            if not await self._conversation_job_current(job):
+                return False
+            await self._sync_conversation_chunks(job.segment, None)
+            await self._db.conn.execute(
+                "UPDATE conversation_index_job SET completed_revision=CASE "
+                "WHEN index_version<>? THEN 0 ELSE completed_revision END, "
+                "index_version=? "
+                "WHERE segment_id=? AND revision=?",
+                (version, version, job.segment.id, job.revision),
+            )
+            return True
+
+    async def _conversation_job_current(
+        self, job: ConversationIndexJob, version: str | None = None,
+    ) -> bool:
+        cursor = await self._db.conn.execute(
+            "SELECT j.revision, j.index_version, s.raw_content "
+            "FROM conversation_index_job j "
+            "JOIN conversation_segment s ON s.id=j.segment_id WHERE j.segment_id=?",
+            (job.segment.id,),
+        )
+        row = await cursor.fetchone()
+        return (row is not None and int(row["revision"]) == job.revision
+                and row["raw_content"] == job.segment.raw_content
+                and (version is None or row["index_version"] == version))
+
+    async def publish_conversation_vector(
+        self, job: ConversationIndexJob, chunk: ConversationChunk, version: str,
+    ) -> bool:
+        async with self._transaction():
+            if not await self._conversation_job_current(job, version):
+                return False
+            await self._db.conn.execute(
+                "UPDATE conversation_chunk SET embedding=?, embedding_version=? "
+                "WHERE id=? AND segment_id=? AND content=?",
+                (json.dumps(chunk.embedding), chunk.embedding_version,
+                 chunk.id, job.segment.id, chunk.content),
+            )
+            return True
+
+    async def finish_conversation_index(
+        self, job: ConversationIndexJob, version: str, *,
+        complete: bool, error: str = "",
+    ) -> None:
+        async with self._transaction():
+            if not await self._conversation_job_current(
+                job, None if error else version
+            ):
+                return
+            attempts = job.attempts + 1 if error else 0
+            await self._db.conn.execute(
+                "UPDATE conversation_index_job SET completed_revision=?, attempts=?, "
+                "retry_at=?, last_error=?, index_version=? "
+                "WHERE segment_id=? AND revision=?",
+                (job.revision if complete else 0, attempts,
+                 time.time() + min(3600, 15 * 2 ** min(attempts, 8)) if error else 0,
+                 error[:120], version, job.segment.id, job.revision),
+            )
+
+    async def rebuild_conversation_indexes(self) -> None:
+        """Invalidate in-flight work; source text and lexical evidence stay usable."""
+        async with self._transaction():
+            await self._db.conn.execute(
+                "UPDATE conversation_index_job SET revision=revision+1, "
+                "completed_revision=0, attempts=0, retry_at=0, last_error=''"
+            )
+            await self._db.conn.execute(
+                "UPDATE conversation_chunk SET embedding=NULL, embedding_version=''"
+            )
+
+    async def conversation_index_status(self, version: str) -> dict[str, object]:
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN "
+                "revision=completed_revision AND index_version=? THEN 1 ELSE 0 END),0) "
+                "AS ready, COALESCE(SUM(CASE WHEN attempts>0 THEN 1 ELSE 0 END),0) "
+                "AS failed FROM conversation_index_job", (version,),
+            )
+            row = await cursor.fetchone()
+            assert row is not None
+            cursor = await self._db.conn.execute(
+                "SELECT segment_id, revision, completed_revision, index_version, "
+                "attempts, retry_at, last_error FROM conversation_index_job "
+                "WHERE revision<>completed_revision OR index_version<>? "
+                "ORDER BY retry_at, segment_id LIMIT 20", (version,),
+            )
+            return {"index_version": version, "total": int(row["total"]),
+                    "ready": int(row["ready"]),
+                    "pending": int(row["total"]) - int(row["ready"]),
+                    "failed": int(row["failed"]),
+                    "jobs": [dict(item) for item in await cursor.fetchall()]}
+
+    async def delete_conversation_segment(self, segment_id: str) -> bool:
+        async with self._transaction():
+            current = await self.get_conversation_segment(segment_id)
+            if current is None:
+                return False
+            await self._db.conn.execute(
+                "DELETE FROM conversation_segment WHERE id=?", (segment_id,),
+            )
+            return True
+
+    async def revise_conversation_segment(
+        self, segment_id: str, raw_content: str, expected_hash: str,
+    ) -> ConversationSegment | None:
+        """Compare the archived source before applying a user correction."""
+        async with self._transaction():
+            current = await self.get_conversation_segment(segment_id)
+            if current is None:
+                return None
+            current_hash = hashlib.sha256(current.raw_content.encode()).hexdigest()
+            if current_hash != expected_hash:
+                raise ValueError("对话原文已变化，请刷新后重试")
+            if raw_content == current.raw_content:
+                return current
+            # An explicit archive correction retracts facts even when the edited
+            # text happens to have the original as a prefix (unlike a live append).
+            await self._db.conn.execute(
+                "DELETE FROM memory_fact WHERE source_segment_id=?", (segment_id,),
+            )
+            await self._db.conn.execute(
+                "DELETE FROM conversation_retrieval_trace WHERE id IN "
+                "(SELECT trace_id FROM conversation_retrieval_hit WHERE segment_id=?)",
+                (segment_id,),
+            )
+            current.raw_content = raw_content
+            current.summary = raw_content[-2000:]
+            current.topics = []
+            current.embedding = None
+            current.evaluated_at = None
+            current.facts_extracted_at = None
+            current.evaluation_reason = ""
+            current.evidence_event_ids = []
+            current.long_term = False
+            await self.clear_segment_evidence(segment_id)
+            await self.update_conversation_segment(current)
+            return current
+
+    async def save_conversation_trace(
+        self, trace_id: str, query: str, version: str, include_archived: bool,
+        elapsed_ms: float, hits: list[ConversationRetrievalHit],
+    ) -> None:
+        """Store bounded scores/provenance, never duplicate private query or text."""
+        async with self._transaction():
+            await self._db.conn.execute(
+                "INSERT INTO conversation_retrieval_trace VALUES (?, ?, ?, ?, ?, ?)",
+                (trace_id, time.time(), hash_content(query), version,
+                 int(include_archived), elapsed_ms),
+            )
+            for hit in hits[:160]:
+                await self._db.conn.execute(
+                    "INSERT INTO conversation_retrieval_hit "
+                    "(trace_id, chunk_id, segment_id, bm25, cosine, fusion, score, "
+                    "selected, source_ranges) "
+                    "SELECT ?, id, segment_id, ?, ?, ?, ?, ?, ? "
+                    "FROM conversation_chunk WHERE id=? AND content=?",
+                    (trace_id, hit.bm25, hit.cosine, hit.fusion, hit.score,
+                     int(hit.selected), json.dumps(hit.ranges),
+                     hit.chunk.id, hit.chunk.content),
+                )
+            await self._prune_conversation_traces()
+
+    async def _prune_conversation_traces(self) -> None:
+        await self._db.conn.execute(
+            "DELETE FROM conversation_retrieval_trace WHERE created_at<? OR id IN "
+            "(SELECT id FROM conversation_retrieval_trace ORDER BY created_at DESC, "
+            "id DESC LIMIT -1 OFFSET 2000)", (time.time() - 7 * 86400,),
+        )
+
+    async def maintain_conversation_index_logs(self) -> None:
+        async with self._transaction():
+            await self._prune_conversation_traces()
+            await self._db.conn.execute(
+                "DELETE FROM conversation_chunk_change WHERE seq < "
+                "(SELECT COALESCE(MAX(seq), 0)-10000 FROM conversation_chunk_change)"
+            )
+
+    async def mark_conversation_trace_injected(
+        self, trace_id: str, segment_id: str, event_id: str,
+    ) -> None:
+        async with self._transaction():
+            await self._db.conn.execute(
+                "UPDATE conversation_retrieval_hit SET injected_event_id=? "
+                "WHERE trace_id=? AND segment_id=? AND selected=1",
+                (event_id, trace_id, segment_id),
+            )
+
+    async def conversation_traces(self, limit: int = 20) -> list[dict[str, object]]:
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT * FROM conversation_retrieval_trace "
+                "ORDER BY created_at DESC, id DESC LIMIT ?", (max(1, min(100, limit)),),
+            )
+            result: list[dict[str, object]] = []
+            for row in await cursor.fetchall():
+                cursor = await self._db.conn.execute(
+                    "SELECT * FROM conversation_retrieval_hit WHERE trace_id=? "
+                    "ORDER BY score DESC, chunk_id", (row["id"],),
+                )
+                result.append({**dict(row), "hits": [
+                    dict(hit) for hit in await cursor.fetchall()
+                ]})
+            return result
+
+    async def eligible_conversation_chunks(self, include_archived: bool) -> set[str]:
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT c.id FROM conversation_chunk c JOIN conversation_segment s "
+                "ON s.id=c.segment_id"
+                + ("" if include_archived else " WHERE s.active=1")
+            )
+            return {str(row["id"]) for row in await cursor.fetchall()}
+
+    async def search_conversation_chunks(
+        self, terms: list[str], *, include_archived: bool, limit: int = 80,
+    ) -> list[tuple[str, float, int]]:
+        """BM25 over indexed postings; materialize only bounded lexical candidates."""
+        if not terms:
+            return []
+        placeholders = ",".join("?" for _ in terms)
+        eligible = ("SELECT c.id, c.token_count FROM conversation_chunk c "
+                    "JOIN conversation_segment s ON s.id=c.segment_id"
+                    + ("" if include_archived else " WHERE s.active=1"))
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                f"WITH eligible AS ({eligible}) "
+                "SELECT COUNT(*) AS n, COALESCE(AVG(token_count), 1.0) AS avg_len "
+                "FROM eligible"
+            )
+            stats = await cursor.fetchone()
+            if stats is None or not stats["n"]:
+                return []
+            count, avg_len = int(stats["n"]), max(1.0, float(stats["avg_len"]))
+            cursor = await self._db.conn.execute(
+                f"WITH eligible AS ({eligible}) "
+                "SELECT t.term, COUNT(*) AS n FROM conversation_chunk_term t "
+                "JOIN eligible e ON e.id=t.chunk_id "
+                f"WHERE t.term IN ({placeholders}) GROUP BY t.term", terms,
+            )
+            weights = {str(row["term"]): math.log1p(
+                (count - int(row["n"]) + 0.5) / (int(row["n"]) + 0.5)
+            ) for row in await cursor.fetchall()}
+            if not weights:
+                return []
+            cases = " ".join("WHEN ? THEN ?" for _ in weights)
+            params: list[str | float | int] = []
+            for term, weight in weights.items():
+                params.extend((term, weight))
+            params.extend((avg_len, *terms, limit))
+            cursor = await self._db.conn.execute(
+                f"WITH eligible AS ({eligible}) "
+                "SELECT t.chunk_id, COUNT(*) AS matched, SUM("
+                f"(CASE t.term {cases} ELSE 0.0 END) * t.frequency * 2.2 / "
+                "(t.frequency + 1.2 * (0.25 + 0.75 * e.token_count / ?))) AS score "
+                "FROM conversation_chunk_term t JOIN eligible e ON e.id=t.chunk_id "
+                f"WHERE t.term IN ({placeholders}) GROUP BY t.chunk_id "
+                "ORDER BY score DESC, t.chunk_id LIMIT ?", params,
+            )
+            return [(str(row["chunk_id"]), float(row["score"]), int(row["matched"]))
+                    for row in await cursor.fetchall()]
+
+    async def unindexed_conversation_segments(
+        self, include_archived: bool,
+    ) -> list[ConversationSegment]:
+        """Pre-index archives remain available until the separate backfill phase."""
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT s.* FROM conversation_segment s WHERE "
+                + ("" if include_archived else "s.active=1 AND ")
+                + "(NOT EXISTS (SELECT 1 FROM conversation_chunk c "
+                "WHERE c.segment_id=s.id) OR (s.embedding IS NOT NULL AND "
+                "NOT EXISTS (SELECT 1 FROM conversation_chunk c "
+                "WHERE c.segment_id=s.id AND c.embedding IS NOT NULL)))"
+            )
+            return [_segment_from_row(row) for row in await cursor.fetchall()]
 
     async def add_segment_evidence(
         self, segment_id: str, evidence_segment_id: str
@@ -352,7 +812,7 @@ class MemoryStore:
             marker = await self._db.conn.execute(
                 "INSERT OR IGNORE INTO conversation_segment_recall_use "
                 "(user_event_id, segment_id) SELECT ?, id FROM conversation_segment "
-                "WHERE id=? AND active=1",
+                "WHERE id=?",
                 (user_event_id, segment_id),
             )
             if marker.rowcount != 1:
@@ -364,7 +824,7 @@ class MemoryStore:
                 "WHERE id=?", (segment_id,)
             )
             cursor = await self._db.conn.execute(
-                "UPDATE conversation_segment SET long_term=1 WHERE id=? "
+                "UPDATE conversation_segment SET long_term=1, active=1 WHERE id=? "
                 "AND long_term=0 AND recall_count>=?",
                 (segment_id, promote_threshold),
             )
@@ -491,25 +951,6 @@ class MemoryStore:
             rows = await cursor.fetchall()
         return [_row_to_memory(r) for r in rows]
 
-    async def update_many(self, memories: list[Memory]) -> None:
-        """批量更新：循环 UPDATE，单锁单 commit（衰减结算用，避免 N 次 commit）。"""
-        async with self._operation() as should_commit:
-            for m in memories:
-                await self._db.conn.execute(
-                    "UPDATE memory SET content = ?, kind = ?, topics = ?, summary = ?, "
-                    "freshness = ?, type = ?, recall_count = ?, aspect = ?, "
-                    "embedding = ?, content_hash = ? WHERE id = ?",
-                    (
-                        m.content, m.kind.value, json.dumps(m.topics),
-                        m.summary, m.freshness,
-                        m.type.value, m.recall_count, json.dumps(m.aspect),
-                        _embedding_json(m.embedding),
-                        hash_content(m.content),
-                        m.id,
-                    ),
-                )
-            if should_commit:
-                await self._db.conn.commit()
 
     async def delete_many(self, ids: list[str]) -> None:
         """批量删除：循环删 edge/row，单锁单 commit（淘汰溢出，避免 N 次 commit）。"""
@@ -563,17 +1004,23 @@ class MemoryStore:
                 await self._db.conn.commit()
         return promoted
 
-    async def count_new(self, kind: MemoryKind | None, since: float) -> int:
+    async def count_new(
+        self,
+        kind: MemoryKind | None,
+        since: float,
+        *,
+        include_lesson_ids: set[str] | None = None,
+    ) -> int:
         """计数「首次创建晚于 since 的 kind 记忆」，不物化整行/embedding。
 
-        用 first_created_at（INSERT 时定格、strengthen/update_many 不刷新）。
-        kind=None 表示全量计数，供定时反思判断是否有足够新记忆。
+        用 first_created_at（INSERT 时定格、strengthen 不刷新）。
+        kind=None 不含反思记录；经验仅计入调用方确认的用户纠正记录。
         """
         async with self._operation():
             if kind is None:
                 cursor = await self._db.conn.execute(
                     "SELECT COUNT(*) AS count FROM memory WHERE first_created_at > ? "
-                    "AND kind != 'reflection'",
+                    "AND kind NOT IN ('reflection', 'lesson')",
                     (since,),
                 )
             else:
@@ -583,7 +1030,17 @@ class MemoryStore:
                     (kind.value, since),
                 )
             row = await cursor.fetchone()
-        return int(row["count"]) if row is not None else 0
+            count = int(row["count"]) if row is not None else 0
+            if kind is None and include_lesson_ids:
+                cursor = await self._db.conn.execute(
+                    "SELECT id FROM memory WHERE kind = 'lesson' "
+                    "AND first_created_at > ?",
+                    (since,),
+                )
+                count += sum(
+                    row["id"] in include_lesson_ids for row in await cursor.fetchall()
+                )
+        return count
 
     async def strengthen(self, memory_id: str, now: float) -> None:
         """重复写入合并强化：freshness 重置，不冒充慢通道召回。
@@ -767,6 +1224,7 @@ class MemoryStore:
         limit: int,
         required_topic: str | None = None,
         kind: MemoryKind | None = None,
+        allowed_ids: set[str] | None = None,
     ) -> dict[str, KeywordSearchHit]:
         if not tokens or limit <= 0:
             return {}
@@ -802,6 +1260,8 @@ class MemoryStore:
                 rows = await cursor.fetchall()
                 for row in rows:
                     memory_id = row["id"]
+                    if allowed_ids is not None and memory_id not in allowed_ids:
+                        continue
                     hit = hits.setdefault(
                         memory_id,
                         KeywordSearchHit(memory_id, [], []),

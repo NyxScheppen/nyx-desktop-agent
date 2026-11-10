@@ -1,44 +1,34 @@
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import Panel from "../layout/Panel";
-import AestheticChart from "./AestheticChart";
-import BigFiveChart from "./BigFiveChart";
 import EnergyBar from "./EnergyBar";
 import ValenceArousalPlot from "./ValenceArousalPlot";
-import ValuesChart from "./ValuesChart";
+import { INNER_SECTIONS } from "../../lib/innerDocument";
+import FlowPages from "../layout/FlowPages";
 
-// 内在状态面板容器（04 §1）：读 innerLifeStore.current；current===null 时整体占位「等待核心服务连接…」
-// （§6，不渲染子组件防 undefined 崩）；error 非 null 在面板顶部红字一行；各子组件只收它需要的字段。
 export default function InnerStatePanel() {
   const current = useInnerLifeStore((s) => s.current);
   const error = useInnerLifeStore((s) => s.error);
-
   return (
-    <Panel title="内在状态" className="inner-state-panel">
-      {error !== null && <p className="error-text inner-state-panel__error">{error}</p>}
-      {current === null ? (
-        "等待核心服务连接…"
-      ) : (
-        <div className="inner-state-panel__body">
-          <div className="inner-state-panel__top">
-            <ValenceArousalPlot valence={current.valence} arousal={current.arousal} />
-            <div className="inner-state-panel__top-side">
-              <EnergyBar energy={current.energy} energy_state={current.energy_state} />
-              <section className="inner-state-panel__section">
-                <h3 className="panel-section-title">性格</h3>
-                <BigFiveChart personality={current.personality} />
-              </section>
-              <section className="inner-state-panel__section">
-                <h3 className="panel-section-title">审美</h3>
-                <AestheticChart aesthetic={current.aesthetic} />
-              </section>
-              <section className="inner-state-panel__section">
-                <h3 className="panel-section-title">三观</h3>
-                <ValuesChart values={current.values} />
-              </section>
-            </div>
-          </div>
+    <Panel title="内在状态" className="inner-state-panel paged-panel">
+      {error !== null && <p className="error-text" role="alert">{error}</p>}
+      {current === null ? "等待核心服务连接…" : <FlowPages><div className="inner-state-panel__body">
+        <div className="inner-state-panel__top">
+          <ValenceArousalPlot valence={current.valence} arousal={current.arousal} />
+          <EnergyBar energy={current.energy} energy_state={current.energy_state} />
         </div>
-      )}
+        <article aria-label="当前内在文档">
+          {Object.entries(INNER_SECTIONS).map(([section, label]) => {
+            const topics = current.inner_document.topics.filter((t) => t.section === section);
+            return topics.length > 0 && <section key={section} className="inner-state-panel__section">
+              <h3 className="panel-section-title">{label}</h3>
+              {topics.map((topic) => <div key={topic.id}>
+                <h4>{topic.title}</h4>
+                <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{topic.content}</p>
+              </div>)}
+            </section>;
+          })}
+        </article>
+      </div></FlowPages>}
     </Panel>
   );
 }

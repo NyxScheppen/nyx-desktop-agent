@@ -7,7 +7,6 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, cast
 
-from nyx.activity.exploration import should_explore
 from nyx.activity.scheduler import (
     build_schedule,
     desire_to_activity,
@@ -24,6 +23,7 @@ from nyx.enums import (
     DesireType,
 )
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
+from nyx.research.engine import should_explore
 from nyx.timezone import USER_TIMEZONE
 from nyx.types import Activity, Book, CurrentState, ShortTermDesire
 

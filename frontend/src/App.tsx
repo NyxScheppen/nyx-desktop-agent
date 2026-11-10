@@ -4,6 +4,7 @@ import { useConnectionStore } from "./stores/connectionStore";
 import { invalidateScope } from "./api/characterScope";
 import { pairDevice } from "./api/client";
 import CharacterSelect from "./components/layout/CharacterSelect";
+import CharacterCreator from "./components/layout/CharacterCreator";
 import { useEffect, useState, type CSSProperties } from "react";
 import { dispatchEvent, synchronizeAfterReplay } from "./api/dispatch";
 import ChatInput from "./components/chat/ChatInput";
@@ -106,8 +107,6 @@ function ConnectedApp() {
   const [readerOpen, setReaderOpen] = useState(false);
   const bookId = useReaderStore((s) => s.bookId);
   const messages = useChatStore((s) => s.messages);
-  const tint = useSettingsStore((s) => s.tint);
-  const image = useSettingsStore((s) => s.image);
   const fontScale = useSettingsStore((s) => s.fontScale);
   const layoutStyle = useSettingsStore((s) => s.layoutStyle ?? "folio");
   const [now, setNow] = useState(() => new Date());
@@ -134,16 +133,6 @@ function ConnectedApp() {
     };
   }, []);
 
-  // 背景：有图以图铺底（cover）；无图有色调作纯色；默认羊皮纸（--parchment）。
-  const bgStyle: CSSProperties = {};
-  if (image !== null) {
-    bgStyle.backgroundImage = `url(${image})`;
-    bgStyle.backgroundSize = "cover";
-    bgStyle.backgroundPosition = "center";
-  } else if (tint !== null) {
-    bgStyle.background = tint;
-  }
-
   const shellStyle = {
     "--text-scale": FONT_SCALE_VALUE[fontScale],
   } as CSSProperties;
@@ -160,10 +149,7 @@ function ConnectedApp() {
 
   return (
     <div className={`app app--${desktopMode} app--${layoutStyle}`} data-time-phase={timePhase}>
-      <div className="app-bg" aria-hidden="true" style={bgStyle} />
-      {tint !== null && image !== null && (
-        <div className="app-bg-tint" aria-hidden="true" style={{ backgroundColor: tint }} />
-      )}
+      <div className="app-bg" aria-hidden="true" />
       <div className="app-time-overlay" aria-hidden="true" />
       {desktopMode === "full" && (
         <>
@@ -223,7 +209,8 @@ function ConnectedApp() {
                 {view === "eval" && <EvalPanel />}
                 {view === "behavior" && <BehaviorPanel />}
                 {view === "history" && <ExpressionHistoryPanel />}
-                {view === "settings" && <SettingsView />}
+                {view === "settings" && <SettingsView onCreateCharacter={() => setView("character-create")} />}
+                {view === "character-create" && <CharacterCreator onBack={() => setView("settings")} />}
               </section>
             )}
           </main>}

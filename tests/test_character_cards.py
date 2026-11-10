@@ -14,30 +14,15 @@ from nyx.inner_life.store import InnerLifeStore
 
 def package(extra: dict[str, bytes] | None = None) -> bytes:
     manifest: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "id": "alice",
         "name": "Alice",
-        "personality": dict.fromkeys(
-            [
-                "openness",
-                "conscientiousness",
-                "extraversion",
-                "agreeableness",
-                "neuroticism",
-            ],
-            5,
-        ),
-        "values": dict.fromkeys(
-            [
-                "attitude_to_human",
-                "ai_identity_acceptance",
-                "altruism",
-                "optimism",
-            ],
-            5,
-        ),
-        "aesthetic": dict.fromkeys(["ornate", "lyrical", "classical", "somber"], 5),
-        "identity": "Alice",
+        "inner_document": [{
+            "section": "identity",
+            "id": "self-understanding",
+            "title": "自我理解",
+            "content": "Alice",
+        }],
         "long_term_desires": [],
     }
     data = io.BytesIO()
@@ -64,6 +49,16 @@ def test_card_without_images_and_empty_desires_is_valid() -> None:
     assert card.manifest.long_term_desires == []
 
 
+@pytest.mark.parametrize("version", [1, 3])
+def test_card_rejects_unsupported_versions(version: int) -> None:
+    from nyx.character_cards import CardManifest, read_package
+
+    manifest = read_package(package()).manifest.model_dump(mode="json")
+    manifest["schema_version"] = version
+    with pytest.raises(ValueError, match="不支持的角色卡版本"):
+        CardManifest.model_validate(manifest)
+
+
 @pytest.mark.parametrize(
     "path", ["assets/CON.png", "assets/a?b.png", "assets/aux/x.png"]
 )
@@ -81,7 +76,7 @@ def test_card_rejects_file_directory_collision() -> None:
         )
 
 
-async def test_legacy_seed_does_not_resurrect_deleted_desires() -> None:
+async def test_seed_does_not_resurrect_deleted_desires() -> None:
     bootstrap = importlib.import_module("nyx.bootstrap")
     db = await connect(":memory:")
     try:
@@ -106,8 +101,8 @@ async def test_initialized_desires_stay_empty_after_restore() -> None:
             await conn.execute("DELETE FROM long_term_desire")
         await bootstrap.initialize_card(db, card.manifest)
         assert await DesireStore(db).list_long_term() == []
-        personality = await InnerLifeStore(db).get_personality()
-        assert personality is not None and personality["openness"] == 8
+        document = await InnerLifeStore(db).get_document()
+        assert document is not None and document.topics == card.manifest.inner_document
     finally:
         await db.close()
 

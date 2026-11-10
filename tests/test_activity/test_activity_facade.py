@@ -27,6 +27,8 @@ from nyx.activity.facade import (
 )
 from nyx.activity.lifecycle import ActivityLifecycle
 from nyx.activity.store import ActivityStore
+from nyx.behavior.service import BehaviorService
+from nyx.behavior.store import BehaviorStore, SkillStore
 from nyx.config import ActivityConfig, DesireConfig, ExplorationConfig, MemoryConfig
 from nyx.db import Database
 from nyx.desire.facade import DesireFacade
@@ -52,6 +54,7 @@ from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval
 from nyx.memory.store import MemoryStore
+from nyx.research.service import ResearchService
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
@@ -62,40 +65,28 @@ from nyx.types import (
     DesireValue,
     Event,
     Goal,
+    InnerDocument,
+    InnerTopic,
     LLMOutput,
     Memory,
-    Personality,
     ReadingProgress,
     ShortTermDesire,
-    Values,
+    Skill,
 )
-
-_PERSONALITY: Personality = {
-    "openness": 5.0,
-    "conscientiousness": 5.0,
-    "extraversion": 5.0,
-    "agreeableness": 5.0,
-    "neuroticism": 5.0,
-}
-
-_VALUES: Values = {
-    "attitude_to_human": 5.0,
-    "ai_identity_acceptance": 5.0,
-    "altruism": 5.0,
-    "optimism": 5.0,
-}
 
 _READING_JSON = json.dumps({"book": "骑士团历史", "note": "读到了第三章"})
 _CREATION_JSON = json.dumps({"title": "小狐狸的日记", "content": "今天也努力了"})
 _PLAN_JSON = json.dumps({"focus": "骑士团", "done": False})
 _NOTE_JSON = json.dumps({"note": "完整读书笔记"})
-_EXPLORATION_FINALIZE_JSON = json.dumps({
-    "summary": "弄懂了量子退相干的机制",
-    "core_discovery": "退相干来自系统与环境纠缠",
-    "knowledge": [{"topic": "退相干", "content": "环境纠缠会抹去相干性"}],
-    "strong_new_topics": ["量子纠错"],
-    "casual_new_topics": [],
-})
+_EXPLORATION_FINALIZE_JSON = json.dumps(
+    {
+        "summary": "弄懂了量子退相干的机制",
+        "core_discovery": "退相干来自系统与环境纠缠",
+        "knowledge": [{"topic": "退相干", "content": "环境纠缠会抹去相干性"}],
+        "strong_new_topics": ["量子纠错"],
+        "casual_new_topics": [],
+    }
+)
 
 
 def _mk_state(energy: float) -> CurrentState:
@@ -103,15 +94,15 @@ def _mk_state(energy: float) -> CurrentState:
         valence=0.0,
         arousal=0.0,
         emotion=EmotionCategory.NEUTRAL,
-        personality=_PERSONALITY,
-        values=_VALUES,
-        aesthetic={
-            "ornate": 7.0, "lyrical": 7.0, "classical": 6.0, "somber": 6.0,
-        },
         energy=energy,
         energy_state=EnergyState.OKAY,
         current_activity=None,
         active_desires=[],
+        inner_document=InnerDocument(
+            [InnerTopic("identity", "self-understanding", "自我理解", "我是尼克斯")],
+            1,
+            1000.0,
+        ),
     )
 
 
@@ -203,13 +194,24 @@ class _FakeLlm:
         }.get(output_type, "{}")
         if output_type == "exploration_decide":
             data = json.loads(messages[1]["content"])
-            unread = [i for i, hit in enumerate(data["results"])
-                      if (hit.get("url") or hit.get("path"))
-                      not in data["processed_sources"]]
+            unread = [
+                i
+                for i, hit in enumerate(data["results"])
+                if (hit.get("url") or hit.get("path")) not in data["processed_sources"]
+            ]
             content = json.dumps(
-                {"action": "read", "index": unread[0]} if unread else
-                {"action": "search", "query": data["question"]}
-                if data["remaining"]["searches"] == 4 else {"action": "finish"}
+                {"action": "read", "index": unread[0]}
+                if unread
+                else {"action": "search", "query": data["question"]}
+                if data["remaining"]["searches"] == 4
+                else {"action": "finish"}
+            )
+        elif output_type == "exploration_claim_support":
+            content = json.dumps(
+                {
+                    "supported": [True]
+                    * len(json.loads(messages[1]["content"])["report"])
+                }
             )
         elif output_type == "exploration_source_check":
             content = json.dumps({"relevant": True, "usable": True, "reason": "相关"})
@@ -239,7 +241,24 @@ class _ExplorationLlm(_FakeLlm):
                 module=module,
                 type=output_type,
                 model="fake",
-                content=_EXPLORATION_FINALIZE_JSON,
+                content=json.dumps(
+                    {
+                        **json.loads(_EXPLORATION_FINALIZE_JSON),
+                        "report": [
+                            {
+                                "section": "来源",
+                                "claim": source["source_text_raw"][:40],
+                                "citations": [
+                                    {
+                                        "quote": source["source_text_raw"][:40],
+                                        "source_url": source["location"],
+                                    }
+                                ],
+                            }
+                            for source in json.loads(messages[1]["content"])["sources"]
+                        ],
+                    }
+                ),
                 correlation_id=correlation_id,
             )
         return await super().complete(
@@ -392,6 +411,26 @@ class _FakeMemory:
         self.search_queries.append(query)
         return self.knowledge
 
+    async def search_behavior_experiences(
+        self,
+        query: str,
+        target_skill: str,
+    ) -> list[Memory]:
+        return []
+
+    async def remember_research_knowledge(
+        self,
+        receipt_id: str,
+        items: list[dict[str, str]],
+        correlation_id: str,
+        source_chunk_id: str | None,
+    ) -> None:
+        await self.remember_knowledge(
+            items,
+            correlation_id,
+            source_chunk_id=source_chunk_id,
+        )
+
     async def remember_knowledge(
         self, items: list[dict[str, str]], correlation_id: str,
         *, source_chunk_id: str | None = None,
@@ -497,9 +536,7 @@ async def _new_facade(
         Callable[[str, int | None, str], Awaitable[dict[str, Any]]] | None
     ) = None,
     get_reader_book: Callable[[str], Awaitable[Book]] | None = None,
-    get_reader_progress: (
-        Callable[[str], Awaitable[ReadingProgress]] | None
-    ) = None,
+    get_reader_progress: (Callable[[str], Awaitable[ReadingProgress]] | None) = None,
 ) -> tuple[ActivityFacade, ActivityStore, EventBus, Database]:
     database = await db.connect(":memory:")
     store = ActivityStore(database)
@@ -528,6 +565,26 @@ async def _new_facade(
         read_reader_book,
         get_reader_book,
         get_reader_progress,
+    )
+    skills = SkillStore(database)
+    await skills.seed(
+        {
+            "discussion": Skill("discussion", "研究策略", ()),
+            "conversation": Skill("conversation", "对话策略", ()),
+        }
+    )
+    behavior = BehaviorService(BehaviorStore(database), skills, bus, facade._llm)
+    facade.research = ResearchService(
+        behavior.store,
+        skills,
+        behavior,
+        facade._memory,
+        facade._tools,
+        facade._llm,
+        facade._evaluator,
+        exploration_config or ExplorationConfig(),
+        canon,
+        None,
     )
     return facade, store, bus, database
 
@@ -1621,10 +1678,11 @@ async def test_execute_free_exploration_failure_marks_incomplete(
     """探索启动失败并入 fail-fast：启动异常也标 INCOMPLETE + 释放欲望。"""
     facade, store, bus, database = await _new_facade()
     try:
-        async def boom(activity: Activity) -> dict[str, Any]:
+
+        async def boom(activity: Activity, notify: object) -> dict[str, Any]:
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(facade._exploration, "run", boom)
+        monkeypatch.setattr(facade.research, "run_activity", boom)
         a = _activity(
             "a1",
             type_=ActivityType.FREE_EXPLORATION,
@@ -1649,7 +1707,7 @@ async def test_exploration_completion_commit_failure_recovers_paused(
 ) -> None:
     facade, store, bus, database = await _new_facade()
 
-    async def finish(activity: Activity) -> dict[str, Any]:
+    async def finish(activity: Activity, notify: object) -> dict[str, Any]:
         return {"type": "free_exploration", "outcome": "won"}
 
     async def fail_append(event: Event) -> tuple[str, ...]:
@@ -1658,7 +1716,7 @@ async def test_exploration_completion_commit_failure_recovers_paused(
         return ()
 
     try:
-        monkeypatch.setattr(facade._exploration, "run", finish)
+        monkeypatch.setattr(facade.research, "run_activity", finish)
         monkeypatch.setattr(bus, "append_in_transaction", fail_append)
         activity = _activity(
             "a1",
@@ -2594,10 +2652,12 @@ async def test_exploration_appends_parent_subtopics_and_knowledge() -> None:
         async def call(self, name: str, args: dict[str, Any]) -> Any:
             if name == "local_search":
                 self.calls.append((name, args))
-                return [{
-                    "path": "external/astronomy.txt",
-                    "snippet": "Quantum mechanics describes microscopic systems.",
-                }]
+                return [
+                    {
+                        "path": "external/astronomy.txt",
+                        "snippet": "Quantum mechanics describes microscopic systems.",
+                    }
+                ]
             if name == "file_io" and args.get("action") == "read":
                 self.calls.append((name, args))
                 return {"content": "Quantum mechanics describes microscopic systems."}
@@ -2606,7 +2666,9 @@ async def test_exploration_appends_parent_subtopics_and_knowledge() -> None:
     fake_desire = _FakeDesire()
     fake_memory = _FakeMemory()
     facade, _store, _bus, database = await _new_facade(
-        llm=_ExplorationLlm(), desire=fake_desire, memory=fake_memory,
+        llm=_ExplorationLlm(),
+        desire=fake_desire,
+        memory=fake_memory,
         tools=ExternalSourceTools(),
     )
     try:
@@ -2620,7 +2682,9 @@ async def test_exploration_appends_parent_subtopics_and_knowledge() -> None:
                 "parent_long_term_id": "lt1",
             },
         )
-        result = await facade._exploration.run(activity)
+        await _store.insert(activity)
+        await facade._execute(activity)
+        result = activity.progress["result"]
         assert fake_desire.appended_subtopics == [("lt1", ["量子纠错"])]
         assert fake_memory.remembered[-1][0]["source_topic"].startswith("local:")
         assert activity.progress["exploration"]["state"] == "completed"

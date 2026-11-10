@@ -1,6 +1,6 @@
 """阅读系统冲动纯函数层单元测试（无 IO 无 LLM）。
 
-验证关键词密度提取、6 驱动「现算」、复合加权、阈值+冷却判定。
+验证关键词密度提取、5 驱动「现算」、复合加权、阈值+冷却判定。
 冷却判定用显式 `now` 注入，不依赖真实时钟。
 """
 
@@ -29,14 +29,13 @@ def test_extract_rich_scores_higher_than_flat() -> None:
     assert rich.richness_score > flat.richness_score
 
 
-def test_build_drives_energy_and_agreeableness() -> None:
+def test_build_drives_energy_and_text_empathy() -> None:
     flat = extract("今天天气不错。")  # 无情感/角色内容
     drives = build_drives(
-        flat, energy=100.0, agreeableness=10.0,
-        exploration_value=0.5, interaction_value=0.3,
+        flat, energy=100.0, exploration_value=0.5, interaction_value=0.3
     )
     assert drives[ReadingDrive.MOTIVATION] == 1.0
-    assert drives[ReadingDrive.EMPATHY_BIAS] == 0.6  # 0.6×(10/10) + 0
+    assert drives[ReadingDrive.EMPATHY_BIAS] == 0.0  # 没有文本证据，不从人格分数推导
     assert drives[ReadingDrive.CURIOSITY] == 0.5
     assert drives[ReadingDrive.BOREDOM] == 0.3
 
@@ -45,12 +44,10 @@ def test_build_drives_emotional_paragraph_raises_empathy() -> None:
     flat = extract("今天天气不错。")
     emotional = extract("他绝望地哭，她悲伤地流泪，孤独地挣扎。")
     flat_bias = build_drives(
-        flat, energy=80.0, agreeableness=10.0,
-        exploration_value=0.5, interaction_value=0.3,
+        flat, energy=80.0, exploration_value=0.5, interaction_value=0.3
     )[ReadingDrive.EMPATHY_BIAS]
     emo_bias = build_drives(
-        emotional, energy=80.0, agreeableness=10.0,
-        exploration_value=0.5, interaction_value=0.3,
+        emotional, energy=80.0, exploration_value=0.5, interaction_value=0.3
     )[ReadingDrive.EMPATHY_BIAS]
     assert emo_bias > flat_bias
 
@@ -60,7 +57,6 @@ def test_compute_composite_weights_spot_check() -> None:
         ReadingDrive.MOTIVATION: 0.5,
         ReadingDrive.CURIOSITY: 0.6,
         ReadingDrive.BOREDOM: 0.3,
-        ReadingDrive.AESTHETIC_SENSITIVITY: 0.5,
         ReadingDrive.EMPATHY_BIAS: 0.6,
         ReadingDrive.ASSOCIATIVE_DRIVE: 0.4,
     }
@@ -69,6 +65,7 @@ def test_compute_composite_weights_spot_check() -> None:
     assert composite[ReadingBehavior.QUESTION_KNOWLEDGE] == 0.52
     # associate = 0.4×0.6 + 0.6×0.2 + 0.6×0.2 = 0.48
     assert composite[ReadingBehavior.ASSOCIATE] == 0.48
+    assert composite[ReadingBehavior.QUESTION_REFLECTIVE] == 0.6
 
 
 def test_check_triggers_above_threshold_fires() -> None:

@@ -17,26 +17,11 @@ from nyx.enums import (
 from nyx.types import (
     Activity,
     CurrentState,
+    InnerDocument,
+    InnerTopic,
     Memory,
-    Personality,
     ShortTermDesire,
-    Values,
 )
-
-_PERSONALITY: Personality = {
-    "openness": 5.0,
-    "conscientiousness": 5.0,
-    "extraversion": 5.0,
-    "agreeableness": 5.0,
-    "neuroticism": 5.0,
-}
-
-_VALUES: Values = {
-    "attitude_to_human": 5.0,
-    "ai_identity_acceptance": 5.0,
-    "altruism": 5.0,
-    "optimism": 5.0,
-}
 
 
 def _activity() -> Activity:
@@ -59,14 +44,6 @@ def _state() -> CurrentState:
         valence=0.0,
         arousal=0.0,
         emotion=EmotionCategory.NEUTRAL,
-        personality=_PERSONALITY,
-        values=_VALUES,
-        aesthetic={
-            "ornate": 7.0,
-            "lyrical": 7.0,
-            "classical": 6.0,
-            "somber": 6.0,
-        },
         energy=70.0,
         energy_state=EnergyState.OKAY,
         current_activity=None,
@@ -81,6 +58,18 @@ def _state() -> CurrentState:
                 status=DesireStatus.PENDING,
             )
         ],
+        inner_document=InnerDocument(
+            [
+                InnerTopic(
+                    "identity",
+                    "self-understanding",
+                    "自我理解",
+                    "我愿意在文字中留住细微的感受。",
+                )
+            ],
+            1,
+            1000.0,
+        ),
     )
 
 
@@ -130,8 +119,7 @@ def test_build_creation_system_injects_state_and_voice() -> None:
     assert "neutral" in sys
     assert "精力：70/100" in sys
     assert "写点东西" in sys
-    assert "华丽 7" in sys
-    assert "抒情 7" in sys
+    assert "我愿意在文字中留住细微的感受。" in sys
     assert "输出前" in sys
     assert "[创作要求]" in sys
     assert "按 JSON 输出" in sys

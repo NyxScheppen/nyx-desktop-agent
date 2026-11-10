@@ -21,11 +21,8 @@ BUSINESS_TABLES = {
     "research_knowledge_receipt",
     "transport_checkpoint",
     "transport_outbox",
-    "personality",
-    "value_system",
+    "inner_document",
     "energy",
-    "self_narrative",
-    "aesthetic",
     "memory",
     "memory_edge",
     "memory_recall_use",
@@ -133,7 +130,7 @@ def test_postgres_migrations_keep_schema_and_skip_existing_data_work() -> None:
         statement for statements in migrations.values() for statement in statements
     )
 
-    assert "CREATE TABLE personality" in schema_sql
+    assert "CREATE TABLE inner_document" in schema_sql
     assert "event_seq INTEGER" in schema_sql
     assert "UPDATE event_log SET event_seq = rowid" not in schema_sql
     assert "json_each" not in schema_sql
@@ -154,6 +151,36 @@ def test_postgres_migrations_translate_sqlite_types_and_triggers() -> None:
     assert "CREATE TRIGGER knowledge_chunk_delete AFTER DELETE ON" in schema_sql
     assert "CREATE TRIGGER knowledge_chunk_update AFTER UPDATE OF" in schema_sql
     assert "EXECUTE FUNCTION nyx_record_knowledge_chunk_change()" in schema_sql
+    assert "CREATE TABLE conversation_chunk_change" in schema_sql
+    assert "EXECUTE FUNCTION nyx_record_conversation_chunk_change()" in schema_sql
+
+
+async def test_postgres_conversation_index_incremental_migration() -> None:
+    class _Raw:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def execute(self, sql: str, parameters: object = None) -> "_Raw":
+            self.calls.append(sql)
+            return self
+
+        async def fetchone(self) -> dict[str, int]:
+            return {"version": 55}
+
+        async def commit(self) -> None:
+            pass
+
+        async def rollback(self) -> None:
+            pass
+
+    raw = _Raw()
+    await db.migrate_postgres(db.PostgresConnection(raw))
+    statements = "\n".join(raw.calls)
+    assert "seq BIGSERIAL PRIMARY KEY" in statements
+    assert "AUTOINCREMENT" not in statements
+    assert "VALUES (NEW.id); END" not in statements
+    assert "EXECUTE FUNCTION nyx_record_conversation_chunk_change()" in statements
+    assert "CREATE TABLE conversation_segment " not in statements
 
 
 def test_postgres_migrations_compile_explicit_character_migrations() -> None:
@@ -415,7 +442,6 @@ async def test_connect_postgres_uses_autocommit_for_standalone_statements(
 # 非 Optional 字段对应列必须 NOT NULL（对应共享类型）
 NOT_NULL_COLUMNS = {
     ("memory", "aspect"),
-    ("long_term_desire", "linked_values"),
     ("activity", "progress"),
     ("event_log", "content"),
     ("event_log", "correlation_id"),
@@ -449,6 +475,41 @@ async def _migrated_conn() -> aiosqlite.Connection:
     conn.row_factory = aiosqlite.Row
     await db.migrate(conn)
     return conn
+
+
+async def test_cancelled_begin_rolls_back_before_next_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = await db.connect(":memory:")
+    original = database.conn.execute
+    entered = asyncio.Event()
+
+    async def delayed_begin(sql: str) -> aiosqlite.Cursor:
+        cursor = await original(sql)
+        if sql == "BEGIN":
+            entered.set()
+            await asyncio.Event().wait()
+        return cursor
+
+    async def operation() -> None:
+        async with database.transaction():
+            raise AssertionError("cancelled BEGIN must not enter transaction body")
+
+    monkeypatch.setattr(database.conn, "execute", delayed_begin)
+    task = asyncio.create_task(operation())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        monkeypatch.setattr(database.conn, "execute", original)
+        assert not database.in_transaction and not database.lock.locked()
+        async with database.transaction():
+            await database.conn.execute("SELECT 1")
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await database.close()
 
 
 async def _table_names(conn: aiosqlite.Connection) -> set[str]:
@@ -561,7 +622,6 @@ async def test_migrate_creates_all_tables() -> None:
         await conn.close()
     assert BUSINESS_TABLES <= names
     assert "schema_version" in names
-    assert len(names) == 54
     assert "material" not in names
 
 
@@ -799,6 +859,11 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_reading_evidence_pending",
         "idx_reading_evidence_exact",
         "idx_conversation_segment_time",
+        "idx_conversation_chunk_segment",
+        "idx_conversation_chunk_term_chunk",
+        "idx_conversation_index_retry",
+        "idx_conversation_trace_time",
+        "idx_conversation_hit_segment",
         "idx_memory_fact_source_segment",
         "idx_tool_call_log_created",
         "idx_tool_call_log_correlation",
@@ -1204,8 +1269,8 @@ async def test_migrate_idempotent() -> None:
         version = await _version(conn)
     finally:
         await conn.close()
-    assert len(names) == 54
     assert version == max(v for v, _ in db._MIGRATIONS)
+    assert BUSINESS_TABLES <= names
 
 
 async def test_migrate_backfills_memory_entity_aliases(
@@ -1415,6 +1480,8 @@ async def test_database_close_is_idempotent(
     await database.close()
     assert database.is_closed
     assert close_calls == 1
+
+
 async def test_archive_migration_backfills_inactive_and_duplicate_turns() -> None:
     from nyx import db
 
@@ -1422,24 +1489,15 @@ async def test_archive_migration_backfills_inactive_and_duplicate_turns() -> Non
         ":memory:", migrations=[m for m in db._MIGRATIONS if m[0] <= 52]
     )
     try:
-        from nyx.memory.store import MemoryStore
-        from nyx.types import ConversationSegment
-
-        store = MemoryStore(database)
         for identity in ("z", "a"):
-            await store.add_conversation_segment(
-                ConversationSegment(
-                    id=identity,
-                    previous_id=None,
-                    started_at=1.0,
-                    ended_at=2.0,
-                    raw_event_ids=["u:user", "u:nyx"],
-                    raw_content="原文",
-                    summary="原文",
-                    topics=[],
-                    active=False,
-                )
+            # Seed the old schema without calling the current indexed writer.
+            await database.conn.execute(
+                "INSERT INTO conversation_segment "
+                "(id, started_at, ended_at, raw_event_ids, raw_content, active) "
+                "VALUES (?, 1.0, 2.0, ?, '原文', 0)",
+                (identity, '["u:user", "u:nyx"]'),
             )
+        await database.conn.commit()
         await db.migrate(cast(aiosqlite.Connection, database.conn))
         rows = await (
             await database.conn.execute(

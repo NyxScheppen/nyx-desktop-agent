@@ -1,33 +1,23 @@
 """Native character card data and bounded, non-executable package validation."""
 
 import io
-import math
 import re
 import stat
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any
 
 import yaml
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from nyx.enums import DesireType
+from nyx.inner_life.document import validate_topics
+from nyx.types import InnerTopic
 
 MAX_CARD_BYTES = 50 * 1024 * 1024
 BUILTIN_CARD = Path(__file__).parent / "cards" / "nyx"
-_DIMENSIONS = {
-    "personality": {
-        "openness",
-        "conscientiousness",
-        "extraversion",
-        "agreeableness",
-        "neuroticism",
-    },
-    "values": {"attitude_to_human", "ai_identity_acceptance", "altruism", "optimism"},
-    "aesthetic": {"ornate", "lyrical", "classical", "somber"},
-}
 _ASSET_KEYS = frozenset(
     {
         "avatar",
@@ -50,7 +40,6 @@ class InitialDesire(BaseModel):
     description: str = Field(min_length=1, max_length=6000, strict=True)
     strength: float = Field(default=0.5, ge=0, le=1, strict=True, allow_inf_nan=False)
     subtopics: list[str] = Field(default_factory=list)
-    linked_values: list[str] = Field(default_factory=list)
 
     @field_validator("name", "description")
     @classmethod
@@ -59,23 +48,13 @@ class InitialDesire(BaseModel):
             raise ValueError("欲望文本不能为空")
         return value.strip()
 
-    @field_validator("linked_values")
-    @classmethod
-    def valid_links(cls, value: list[str]) -> list[str]:
-        if any(key not in _DIMENSIONS["values"] for key in value):
-            raise ValueError("未知三观关联键")
-        return list(dict.fromkeys(value))
-
 
 class CardManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: int = Field(strict=True)
     id: str = Field(strict=True)
     name: str = Field(min_length=1, max_length=100, strict=True)
-    personality: dict[str, float]
-    values: dict[str, float]
-    aesthetic: dict[str, float]
-    identity: str = Field(min_length=1, max_length=6000, strict=True)
+    inner_document: list[InnerTopic]
     long_term_desires: list[InitialDesire] = Field(
         default_factory=lambda: list[InitialDesire](),
         max_length=5,
@@ -84,8 +63,8 @@ class CardManifest(BaseModel):
 
     @field_validator("schema_version")
     @classmethod
-    def version_one(cls, value: int) -> int:
-        if value != 1:
+    def version_two(cls, value: int) -> int:
+        if value != 2:
             raise ValueError("不支持的角色卡版本")
         return value
 
@@ -100,29 +79,18 @@ class CardManifest(BaseModel):
             raise ValueError("非法角色 ID")
         return value
 
-    @field_validator("name", "identity")
+    @field_validator("name")
     @classmethod
     def nonblank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("角色文本不能为空")
         return value.strip()
 
-    @field_validator("personality", "values", "aesthetic", mode="before")
+    @field_validator("inner_document")
     @classmethod
-    def dimensions(cls, value: Any, info: ValidationInfo) -> dict[str, float]:
-        if not isinstance(value, dict):
-            raise ValueError("人格维度不完整")
-        dimensions = cast(dict[str, Any], value)
-        if set(dimensions) != _DIMENSIONS[info.field_name or ""]:
-            raise ValueError("人格维度不完整")
-        for number in dimensions.values():
-            if (
-                type(number) not in (int, float)
-                or not math.isfinite(number)
-                or not 1 <= number <= 10
-            ):
-                raise ValueError("人格数值必须是有限的 1–10")
-        return dimensions
+    def valid_document(cls, value: list[InnerTopic]) -> list[InnerTopic]:
+        validate_topics(value)
+        return value
 
     @field_validator("long_term_desires")
     @classmethod

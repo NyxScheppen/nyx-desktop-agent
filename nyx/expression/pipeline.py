@@ -4,6 +4,7 @@
 
 节点为闭包，依赖经 ReplyDeps 注入。
 """
+
 import json
 import logging
 import time
@@ -18,7 +19,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from nyx.config import ExpressionConfig
-from nyx.enums import ContextMode, MemoryKind, UserIntent
+from nyx.enums import ContextMode, UserIntent
 from nyx.eval.evaluator import Evaluator
 from nyx.expression.classifier import (
     classify_channel,
@@ -50,6 +51,7 @@ from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.facts import is_fact_query
+from nyx.memory.segments import is_recollection_query
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     ActivityContext,
@@ -63,7 +65,6 @@ from nyx.types import (
     MemoryFact,
     Message,
     ReplyAnnotation,
-    SelfNarrative,
     Skill,
 )
 
@@ -110,7 +111,6 @@ class ReplyState(TypedDict):
     memories: list[Memory]       # 预算筛选后实际进入 prompt 的记忆
     facts: list[MemoryFact]       # 当前有效事实（与原始记忆隔离）
     state: CurrentState          # 当前状态快照
-    narrative: SelfNarrative | None   # 慢通道 assemble 填充，快通道恒 None
     # 累积：每轮 think/speak 追加
     think: list[str]
     speak: list[str]
@@ -136,7 +136,7 @@ class ReplyDeps:
     llm: LlmClient
     evaluator: Evaluator
     memory: MemoryFacade
-    inner_life: InnerLifeFacade          # 慢通道 assemble 时取 narrative
+    inner_life: InnerLifeFacade          # 获取统一当前状态
     canon: str
     ask_guidance: str
     config: ExpressionConfig
@@ -234,8 +234,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             current = "\n\n".join(
                 f"[用户输入{i + 1}；原始时间={format_prompt_time(event.timestamp)}；"
                 f"{'已被明确撤回' if i < state['request_start_index'] else '有效请求'}"
-                "]\n"
-                + event.content["message"]
+                "]\n" + event.content["message"]
                 for i, event in enumerate(state["input_events"])
             )
             current += "\n以上保留原话。以较晚纠正为准；撤回不抹除已执行动作。"
@@ -285,18 +284,24 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         except Exception:
             return []
 
-    async def search_lessons(query: str) -> list[Memory]:
+    async def search_lessons(query: str, state: ReplyState) -> list[Memory]:
         try:
-            return await deps.memory.search(query, kind=MemoryKind.LESSON)
+            return await deps.memory.search_behavior_experiences(
+                query, "discussion" if _discussion(state) else "conversation",
+            )
         except Exception:
             _LOGGER.exception("经验召回失败")
             return []
 
     async def classify(state: ReplyState) -> dict[str, Any]:
         saved = (
-            await deps.checkpointer.aget_tuple({
-                "configurable": {"thread_id": state["correlation_id"]},
-            }) if deps.checkpointer is not None else None
+            await deps.checkpointer.aget_tuple(
+                {
+                    "configurable": {"thread_id": state["correlation_id"]},
+                }
+            )
+            if deps.checkpointer is not None
+            else None
         )
         if saved is not None or _discussion(state):
             mode = ContextMode.SLOW
@@ -325,7 +330,10 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         segment_search = getattr(deps.memory, "search_conversation_segments", None)
         recalled_segments: list[ConversationSegment] = []
-        if not _discussion(state) and callable(segment_search):
+        recall_conversation = (
+            not _discussion(state) or is_recollection_query(state["message"])
+        )
+        if recall_conversation and callable(segment_search):
             segment_fn = cast(
                 Callable[[str, int], Awaitable[list[Any]]], segment_search
             )
@@ -335,31 +343,31 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     f"{'用户' if item.role == 'user' else '尼克斯'}：{item.content}"
                     for item in context
                 )
-                recalled_segments = select_prompt_segments([
-                    segment for segment in segments
-                    if segment.raw_content and segment.raw_content not in context_text
-                ])
+                recalled_segments = select_prompt_segments(
+                    [
+                        segment
+                        for segment in segments
+                        if segment.raw_content
+                        and segment.raw_content not in context_text
+                    ]
+                )
             except Exception:
                 _LOGGER.exception("对话段召回失败")
         # 普通聊天召回连续对话段原文；阅读/网页知识走专门的知识检索。
         memories = (
-            await search_lessons(query) if state["mode"] is ContextMode.SLOW else []
+            await search_lessons(query, state)
+            if state["mode"] is ContextMode.SLOW else []
         )
         facts = (
             await search_facts(query)
-            if not _discussion(state) and is_fact_query(state["message"])
+            if recall_conversation and is_fact_query(state["message"])
             else []
-        )
-        narrative = (
-            await deps.inner_life.get_narrative()
-            if state["mode"] is ContextMode.SLOW else None
         )
         return {
             "context": context,
             "conversation_segments": recalled_segments,
             "memories": memories,
             "facts": facts,
-            "narrative": narrative,
             "retrieval_query": query,
         }
 
@@ -386,7 +394,6 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                         "content": build_system_prompt(
                             deps.canon,
                             state["state"],
-                            state["narrative"],
                             state["memories"],
                             facts=state["facts"],
                             tool_outputs=state["tool_outputs"],
@@ -479,7 +486,6 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             "system": build_system_prompt(
                 deps.canon,
                 state["state"],
-                state["narrative"],
                 state["memories"],
                 facts=state["facts"],
                 ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
@@ -490,8 +496,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 activity_context=state["activity_context"],
             ),
             "user": user_prompt(state),
-            "task": (DISCUSSION_USE_TOOLS_TASK
-                     if skill and skill.name == "discussion" else USE_TOOLS_TASK),
+            "task": (
+                DISCUSSION_USE_TOOLS_TASK
+                if skill and skill.name == "discussion"
+                else USE_TOOLS_TASK
+            ),
             "schemas": schemas,
         }
         if snapshot.values:
@@ -555,12 +564,14 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             return {"needs_refresh": True}
         skill = state.get("skill")
         memories = (
-            await search_lessons(state["retrieval_query"])
+            await search_lessons(state["retrieval_query"], state)
             if state["mode"] is ContextMode.SLOW
             else state["memories"]
         )
         system = build_system_prompt(
-            deps.canon, state["state"], state["narrative"], memories,
+            deps.canon,
+            state["state"],
+            memories,
             facts=state["facts"],
             ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             tool_outputs=state["tool_outputs"],
@@ -578,29 +589,39 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         prior = _rounds_block(state["think"], state["speak"], state["round_times"])
         task = RESPOND_TASK_CONTINUE if state["speak"] else RESPOND_TASK
         user = "\n".join(p for p in (prior, user, task) if p)
-        if not state["speak"]:
-            for segment in state["conversation_segments"]:
-                try:
-                    await deps.memory.record_conversation_segment_recall(
-                        segment.id, state["correlation_id"]
-                    )
-                except Exception:
-                    _LOGGER.exception("对话段召回计数失败")
-        for segment_id, rendered in state["tool_recall_candidates"]:
-            if rendered not in system:
-                continue
-            try:
-                await deps.memory.record_conversation_segment_recall(
-                    segment_id, state["correlation_id"]
-                )
-            except Exception:
-                _LOGGER.exception("对话段召回计数失败")
         think, speak, needs_continuation = "", "我刚才有点卡住了，先让我缓一缓。", False
         fallback = True
         for _attempt in range(2):
             # Input I/O is outside the model failure boundary, including parse retries.
             if await pending(state):
                 return {"needs_refresh": True}
+            if not state["speak"]:
+                for segment in state["conversation_segments"]:
+                    try:
+                        await deps.memory.record_conversation_segment_recall(
+                            segment.id, state["correlation_id"],
+                        )
+                        if segment.retrieval_trace_id:
+                            await deps.memory.record_conversation_trace_injection(
+                                segment.retrieval_trace_id, segment.id,
+                                state["correlation_id"],
+                            )
+                    except Exception:
+                        _LOGGER.exception("对话段召回计数失败")
+            for segment_id, rendered in state["tool_recall_candidates"]:
+                if rendered not in system:
+                    continue
+                try:
+                    await deps.memory.record_conversation_segment_recall(
+                        segment_id, state["correlation_id"],
+                    )
+                    trace_id = json.loads(rendered).get("trace_id")
+                    if trace_id:
+                        await deps.memory.record_conversation_trace_injection(
+                            trace_id, segment_id, state["correlation_id"],
+                        )
+                except Exception:
+                    _LOGGER.exception("对话段召回计数失败")
             try:
                 output = await deps.llm.complete(
                     [

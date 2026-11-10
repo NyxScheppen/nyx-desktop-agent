@@ -36,7 +36,6 @@ from nyx.reading.impulse import (
 from nyx.reading.integration import (
     NYX_BUFFER_MAXLEN,
     ReadingIntegration,
-    parse_reading_note,
 )
 from nyx.reading.store import ReadingStore
 from nyx.types import (
@@ -68,8 +67,6 @@ def _desire_value(values: list[DesireValue], type_: DesireType) -> float:
     return 0.0
 
 
-def _parse_reading_note(raw: str) -> tuple[str, str]:
-    return parse_reading_note(raw)
 
 
 def _selection_matches(
@@ -376,7 +373,6 @@ class ReadingFacade:
         drives = build_drives(
             features,
             energy=state.energy,
-            agreeableness=state.personality["agreeableness"],
             exploration_value=_desire_value(desires.values, DesireType.EXPLORATION),
             interaction_value=_desire_value(desires.values, DesireType.INTERACTION),
         )
@@ -468,29 +464,8 @@ class ReadingFacade:
         if exc is not None:
             self._logger.exception("阅读分派后台任务异常", exc_info=exc)
 
-    async def _mutter_reading(
-        self,
-        book_id: str,
-        paragraph_index: int,
-        text: str,
-        state: CurrentState,
-    ) -> None:
-        await self._companion.mutter(book_id, paragraph_index, text, state)
 
-    async def _question_reading(
-        self,
-        book_id: str,
-        paragraph_index: int,
-        text: str,
-        behavior: ReadingBehavior,
-        state: CurrentState,
-    ) -> None:
-        await self._companion.question(book_id, paragraph_index, text, behavior, state)
 
-    async def _associate_reading(
-        self, book_id: str, paragraph_index: int, text: str
-    ) -> None:
-        await self._companion.associate(book_id, paragraph_index, text)
 
     # ---- 阅读系统：用户笔记 / Nyx 批注 / 章末整合 ----
 

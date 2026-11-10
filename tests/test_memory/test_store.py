@@ -189,79 +189,10 @@ async def test_list_memories_limit() -> None:
         await db.conn.close()
 
 
-async def test_update_fields() -> None:
-    db = await connect(":memory:")
-    store = MemoryStore(db)
-    try:
-        await store.add(_mem("m1", created_at=111.0))
-        await store.update_many(
-            [
-                _mem(
-                    "m1",
-                    created_at=999.0,
-                    kind=MemoryKind.READING,
-                    topics=["new"],
-                    summary="s2",
-                    freshness=0.8,
-                    type=MemoryType.LONG_TERM,
-                    recall_count=5,
-                    aspect=["x"],
-                    embedding=[0.9],
-                )
-            ]
-        )
-        got = await store.get("m1")
-        assert got is not None
-        assert got.id == "m1" and got.created_at == 111.0
-        assert got.kind is MemoryKind.READING and got.summary == "s2"
-        assert got.topics == ["new"]
-        assert got.type is MemoryType.LONG_TERM and got.freshness == 0.8
-        assert got.recall_count == 5 and got.aspect == ["x"]
-        assert got.embedding == [0.9]
-    finally:
-        await db.conn.close()
 
 
-async def test_update_many_keeps_content_hash_in_sync() -> None:
-    db = await connect(":memory:")
-    store = MemoryStore(db)
-    try:
-        await store.add(_mem("m1", content="old content"))
-        await store.update_many([_mem("m1", content="new content")])
-
-        assert await store.find_by_content(
-            "old content", MemoryKind.EPISODE
-        ) is None
-        found = await store.find_by_content("new content", MemoryKind.EPISODE)
-        assert found is not None and found.id == "m1"
-    finally:
-        await db.conn.close()
 
 
-async def test_update_many() -> None:
-    db = await connect(":memory:")
-    store = MemoryStore(db)
-    try:
-        await store.add(_mem("m1", freshness=0.5, embedding=None))
-        await store.add(_mem("m2", freshness=0.6))
-        await store.update_many(
-            [
-                _mem(
-                    "m1", freshness=0.1, kind=MemoryKind.READING,
-                    embedding=[0.5]
-                ),
-                _mem("m2", freshness=0.2, summary="s2"),
-            ]
-        )
-        m1 = await store.get("m1")
-        m2 = await store.get("m2")
-        assert m1 is not None and m1.freshness == 0.1
-        assert m1.kind is MemoryKind.READING
-        assert m1.embedding == [0.5]
-        assert m2 is not None and m2.freshness == 0.2 and m2.summary == "s2"
-        await store.update_many([])  # 空列表 no-op
-    finally:
-        await db.conn.close()
 
 
 async def test_delete_cascades_edges() -> None:

@@ -1,8 +1,10 @@
 # pyright: reportPrivateUsage=false
+import json
 from pathlib import Path
 
 import pytest
 
+from nyx.bootstrap import load_skills
 from nyx.config import Config, ExplorationConfig
 from nyx.db import connect
 from nyx.desire.store import DesireStore
@@ -16,6 +18,31 @@ from nyx.main import (
     _seed_desire,
     _seed_inner_life,
 )
+from nyx.tools.registry import ToolRegistry
+from nyx.types import Tool
+
+
+def test_skill_startup_requires_both_skills_and_validates_actual_tools(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry()
+
+    async def extra_tool() -> str:
+        return "ok"
+
+    registry.register(Tool("extra_tool", "实际装配的工具", {}, extra_tool))
+    (tmp_path / "discussion.json").write_text(json.dumps({
+        "name": "discussion", "system_fragment": "研究策略",
+        "tool_names": ["extra_tool"],
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="缺少 conversation"):
+        load_skills(tmp_path, registry)
+    (tmp_path / "conversation.json").write_text(json.dumps({
+        "name": "conversation", "system_fragment": "对话策略", "tool_names": [],
+    }), encoding="utf-8")
+    assert load_skills(tmp_path, registry)["discussion"].tool_names == ("extra_tool",)
+    with pytest.raises(KeyError, match="extra_tool"):
+        load_skills(tmp_path, ToolRegistry())
 
 # ---- _root_event ----
 
@@ -69,23 +96,12 @@ async def test_seed_inner_life_idempotent() -> None:
     store = InnerLifeStore(database)
     try:
         await _seed_inner_life(store)
-        personality = await store.get_personality()
-        assert personality == {
-            "openness": 8.0, "conscientiousness": 8.0, "extraversion": 2.0,
-            "agreeableness": 6.0, "neuroticism": 7.0,
-        }
-        values = await store.get_values()
-        assert values == {
-            "attitude_to_human": 8.0, "ai_identity_acceptance": 6.0,
-            "altruism": 9.0, "optimism": 5.0,
-        }
         assert await store.get_energy() == (100.0, EnergyState.ENERGETIC)
-        narrative = await store.get_narrative()
-        assert narrative is not None
-        assert narrative.identity == "我是模仿女主人公创造的 AI，希望能成为人类"
+        narrative = await store.get_document()
+        assert narrative is not None and narrative.revision == 1
+        assert any(t.section == "identity" for t in narrative.topics)
         await _seed_inner_life(store)
-        assert await store.get_personality() == personality
-        assert await store.get_values() == values
+        assert await store.get_document() == narrative
     finally:
         await database.conn.close()
 

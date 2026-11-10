@@ -8,6 +8,8 @@ from typing import cast
 import pytest
 
 from nyx import db
+from nyx.behavior.service import BehaviorService
+from nyx.behavior.store import BehaviorStore, SkillStore
 from nyx.config import MemoryConfig
 from nyx.db import Database
 from nyx.enums import EventType, MemoryEdgeKind, MemoryKind, MemoryType, Source
@@ -30,12 +32,11 @@ from nyx.memory.facade import (
     _parse_contradiction,
     _source_topic,
     build_source_topic,
-    decay_freshness,
 )
 from nyx.memory.facts import MemoryFactStore
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval
 from nyx.memory.store import MemoryStore
-from nyx.types import Event, LLMOutput, Memory
+from nyx.types import Event, LLMOutput, Memory, Skill
 
 
 def _mem(
@@ -213,13 +214,6 @@ async def _running(bus: EventBus) -> AsyncGenerator[None]:
 
 
 # ---- 纯函数 ----
-
-
-def test_decay_freshness() -> None:
-    assert decay_freshness(1.0, 100.0, 100.0, 0.01) == 1.0  # 同刻不变
-    assert decay_freshness(1.0, 100.0, 100.0 + 86400.0, 0.01) == pytest.approx(0.99)
-    assert decay_freshness(1.0, 200.0, 100.0, 0.01) == 1.0  # 倒挂不变
-    assert decay_freshness(0.5, 0.0, 100.0 * 86400.0, 0.01) == 0.0  # 夹到 0
 
 
 def test_build_source_topic_is_stable_and_bounded() -> None:
@@ -1323,54 +1317,57 @@ def _activity_event(type_: str, result: dict[str, object]) -> Event:
     )
 
 
-async def test_annotation_explicit_topic_stabilizes_correction_signal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_annotation_explicit_topic_stabilizes_correction_signal() -> None:
     store, bus, database = await _new_stack()
     llm = _FakeLlm(
         {
             "fact_extraction": json.dumps(
                 {
-                    "entities": [],
                     "facts": [],
                     "is_correction": True,
                     "correction_topic": "模型改写的主题",
-                },
-                ensure_ascii=False,
+                }
             )
         }
     )
     facade = _make_facade(store, bus, llm, _FakeEvaluator())
-    captured: list[tuple[str, str]] = []
-
-    async def capture(
-        kind: str,
-        topic: str,
-        summary: str,
-        correlation_id: str | None = None,
-        *,
-        evidence: list[dict[str, str]] | None = None,
-    ) -> None:
-        captured.append((kind, topic))
-
-    monkeypatch.setattr(facade, "record_failure_signal", capture)
-    event = Event(
-        id="annotation-topic-1",
-        timestamp=1000.0,
-        source=Source.INTERNAL,
-        type=EventType.ANNOTATION_FEEDBACK,
-        content={
-            "quote": "旧回复",
-            "comment": "【来源不确定性】请明确区分已证实和推测。",
-        },
-        correlation_id="annotation-corr-1",
+    skills = SkillStore(database)
+    await skills.seed({"conversation": Skill("conversation", "对话策略", ())})
+    facade.behavior = BehaviorService(
+        BehaviorStore(database), skills, bus, cast(LlmClient, llm)
+    )
+    await skills.for_execution("reply-turn", "conversation", "旧问题")
+    reply = Event(
+        "reply",
+        1.0,
+        Source.INTERNAL,
+        EventType.SPEAK,
+        {"content": "旧回复"},
+        "reply-turn",
     )
     try:
-        await bus.publish(event)
-        await facade.apply_annotation_feedback(event, "memory.annotation_feedback")
-        assert captured == [
-            ("user_correction", "user_correction:来源不确定性")
-        ]
+        await bus.publish(reply)
+        for index in range(3):
+            event = Event(
+                f"annotation-{index}",
+                2.0 + index,
+                Source.INTERNAL,
+                EventType.ANNOTATION_FEEDBACK,
+                {
+                    "quote": "旧回复",
+                    "reply_event_id": reply.id,
+                    "comment": "【来源不确定性】请明确区分已证实和推测。",
+                },
+                f"annotation-{index}",
+            )
+            await bus.publish(event)
+            await facade.apply_annotation_feedback(event, "memory.annotation_feedback")
+        records = await facade.behavior.store.list_records("behavior_reflection")
+        assert len(records) == 1
+        assert records[0]["target_skill"] == "conversation"
+        assert "来源不确定性" in records[0]["evidence"]["user_feedback_raw"]
+        assert not await store.list_memories(MemoryKind.LESSON)
+        assert not await bus.list_events(event_type=EventType.REFLECTION)
     finally:
         await database.close()
 
@@ -1982,26 +1979,6 @@ async def test_remember_reading() -> None:
         await database.conn.close()
 
 
-# ---- record_no_answer ----
-
-
-async def test_record_no_answer() -> None:
-    store, bus, database = await _new_stack()
-    llm = _FakeLlm()
-    evaluator = _FakeEvaluator()
-    facade = _make_facade(store, bus, llm, evaluator)
-    events = _subscribe(bus)
-    try:
-        async with _running(bus):
-            await facade.record_no_answer("你还好吗？", "corr-1")
-        memories = await facade.list_memories()
-        assert memories == []
-        assert llm.calls == []
-        assert not [e for e in events if e.type is EventType.MEMORY_CREATED]
-    finally:
-        await database.conn.close()
-
-
 def test_activity_memory_fields_free_exploration_new_shape() -> None:
     result = {"summary": "弄懂了退相干", "core_discovery": "环境纠缠抹去相干性"}
     mapped = _activity_memory_fields("free_exploration", result)
@@ -2176,34 +2153,56 @@ async def test_invalid_segment_fact_output_remains_retryable() -> None:
         await database.close()
 
 
-async def test_failure_lessons_keep_original_outputs_and_distinct_attempts() -> None:
+async def test_failure_signals_keep_original_outputs_before_reflection() -> None:
     store, bus, database = await _new_stack()
-
-    async def same_embedding(text: str) -> list[float]:
-        return [1.0, 0.0]
-
-    facade = _make_facade(
-        store, bus, _FakeLlm(), _FakeEvaluator(), embed=same_embedding
+    llm = _FakeLlm()
+    facade = _make_facade(store, bus, llm, _FakeEvaluator())
+    skills = SkillStore(database)
+    await skills.seed({"conversation": Skill("conversation", "对话策略", ())})
+    behavior = BehaviorService(
+        BehaviorStore(database), skills, bus, cast(LlmClient, llm)
     )
+    facade.behavior = behavior
     evaluator = Evaluator(on_failure=facade.record_failure_signal)
     try:
-        for call_id, original in [("call-a", "作为一个AI，无法回答甲"),
-                                  ("call-b", "作为一个AI，无法回答乙")]:
-            await evaluator.evaluate(LLMOutput(
-                module="expression", type="speak", model="fixture",
-                content=original, correlation_id=call_id, call_id=call_id,
-            ))
-        lessons = await store.list_memories(MemoryKind.LESSON)
-        assert len(lessons) == 2
-        assert any("无法回答甲" in m.content and "call-a" in m.content for m in lessons)
-        assert any("无法回答乙" in m.content and "call-b" in m.content for m in lessons)
+        for call_id, original in [
+            ("call-a", "作为一个AI，无法回答甲"),
+            ("call-b", "作为一个AI，无法回答乙"),
+        ]:
+            await skills.for_execution(call_id, "conversation", "聊天")
+            await evaluator.evaluate(
+                LLMOutput(
+                    module="expression",
+                    type="speak",
+                    model="fixture",
+                    content=original,
+                    correlation_id=call_id,
+                    call_id=call_id,
+                )
+            )
+        await skills.for_execution("tool-call", "conversation", "读取网页")
         await facade.record_failure_signal(
-            "tool_error", "tool_error:web_fetch", "抓取失败", "tool-call",
-            evidence=[{
-                "source_id": "tool-log", "summary": "GET https://example.com 原始错误"
-            }],
+            "tool_error",
+            "tool_error:web_fetch",
+            "抓取失败",
+            "tool-call",
+            evidence=[{"source_id": "tool-log", "summary": "原始错误"}],
         )
-        lessons = await store.list_memories(MemoryKind.LESSON)
-        assert any("原始错误" in m.content and "tool-log" in m.content for m in lessons)
+        records = await behavior.store.list_records("behavior_reflection")
+        assert len(records) == 3
+        originals = json.dumps([r["evidence"] for r in records], ensure_ascii=False)
+        assert all(
+            text in originals
+            for text in [
+                "无法回答甲",
+                "无法回答乙",
+                "call-a",
+                "call-b",
+                "tool-log",
+                "原始错误",
+            ]
+        )
+        assert not await store.list_memories(MemoryKind.LESSON)
+        assert not await bus.list_events(event_type=EventType.REFLECTION)
     finally:
         await database.close()

@@ -1,40 +1,29 @@
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useConnectionStore } from "../../stores/connectionStore";
-import BackgroundPanel from "../panels/BackgroundPanel";
+import CharacterCreator from "./CharacterCreator";
 import CharacterManager from "./CharacterManager";
+import CharacterCardView from "./CharacterCardView";
+import { useCharacterStore } from "../../stores/characterStore";
 import Modal from "./Modal";
 import Panel from "./Panel";
 import { createPairingCode, getDevices, revokeDevice, type DeviceRecord } from "../../api/client";
 import { useEffect, useState } from "react";
 
-// 设置页面（桌宠保留弹层入口）：字体大小 + 背景外观（色调/背景图）+ 圆圈背景（可拖拽头像底色）+ 圆圈大小（三档）。
-// 复用 BackgroundPanel（纯前端 settingsStore）；圆圈底色单独一组预设（名称与色调预设错开，避免测试按名选色歧义）。
+// 完整端使用设置页，桌宠与未就绪状态保留弹层入口。
 const FONT_OPTIONS = [
   ["small", "小"],
   ["medium", "中"],
   ["large", "大"],
 ] as const;
 
-const CIRCLE_SIZE_OPTIONS = [
-  ["small", "小"],
-  ["medium", "中"],
-  ["large", "大"],
-] as const;
-
-const CIRCLE_COLOR_PRESETS: readonly { name: string; hex: string }[] = [
-  { name: "白", hex: "#ffffff" },
-  { name: "浅粉", hex: "#f7e8e0" },
-  { name: "浅蓝", hex: "#dcebf5" },
-  { name: "浅绿", hex: "#e0ead6" },
-  { name: "浅橙", hex: "#f6e3d0" },
-  { name: "淡紫", hex: "#e6ddf0" },
-];
-
 type SettingsViewProps = {
   onClose?: () => void;
+  onCreateCharacter?: () => void;
 };
 
-export default function SettingsView({ onClose }: SettingsViewProps) {
+export default function SettingsView({ onClose, onCreateCharacter }: SettingsViewProps) {
+  const [creating, setCreating] = useState(false);
+  const characterId = useCharacterStore((s) => s.registry?.current_id);
   const token = useConnectionStore((s) => s.token);
   const [devices, setDevices] = useState<DeviceRecord[]>([]);
   const [pairCode, setPairCode] = useState("");
@@ -42,10 +31,6 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
   const [deviceError, setDeviceError] = useState("");
   const fontScale = useSettingsStore((s) => s.fontScale);
   const setFontScale = useSettingsStore((s) => s.setFontScale);
-  const circleColor = useSettingsStore((s) => s.circleColor);
-  const setCircleColor = useSettingsStore((s) => s.setCircleColor);
-  const circleSize = useSettingsStore((s) => s.circleSize);
-  const setCircleSize = useSettingsStore((s) => s.setCircleSize);
   const layoutStyle = useSettingsStore((s) => s.layoutStyle);
   const setLayoutStyle = useSettingsStore((s) => s.setLayoutStyle);
 
@@ -71,8 +56,9 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
       : device));
   }
 
-  const content = (
+  const content = creating ? <CharacterCreator onBack={() => setCreating(false)} /> : (
       <div className="settings-layout">
+      <div className="settings-sidebar">
       <section className="settings-appearance" aria-label="外观">
       <h2>外观</h2>
       {token && <Panel title="连接">
@@ -110,62 +96,17 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
           <button type="button" aria-pressed={layoutStyle === "chronicle"} onClick={() => setLayoutStyle("chronicle")}>编年史</button>
         </div>
       </Panel>
-      <Panel title="圆圈背景">
-        <div className="bg-panel">
-          <div className="bg-panel__row">
-            <span className="bg-panel__label">底色</span>
-            <div className="bg-panel__swatches">
-              {CIRCLE_COLOR_PRESETS.map((p) => (
-                <button
-                  key={p.hex}
-                  type="button"
-                  className={`bg-panel__swatch ${
-                    circleColor === p.hex ? "bg-panel__swatch--active" : ""
-                  }`}
-                  style={{ backgroundColor: p.hex }}
-                  title={p.name}
-                  aria-label={p.name}
-                  aria-pressed={circleColor === p.hex}
-                  onClick={() => setCircleColor(p.hex)}
-                />
-              ))}
-              <input
-                type="color"
-                className="bg-panel__color"
-                value={circleColor}
-                aria-label="自定义圆圈底色"
-                onChange={(e) => setCircleColor(e.target.value)}
-              />
-            </div>
-          </div>
-        </div>
-      </Panel>
-      <Panel title="圆圈大小">
-        <div className="font-scale">
-          {CIRCLE_SIZE_OPTIONS.map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              className={`font-scale__opt${
-                circleSize === key ? " font-scale__opt--active" : ""
-              }`}
-              aria-pressed={circleSize === key}
-              aria-label={`圆圈${label}`}
-              onClick={() => setCircleSize(key)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </Panel>
-      <BackgroundPanel />
       </section>
-      <CharacterManager />
+      <CharacterManager onCreate={onCreateCharacter ?? (() => setCreating(true))} />
+      </div>
+      <Panel title="角色卡" className="settings-card">
+        {characterId ? <CharacterCardView key={characterId} id={characterId} /> : <p className="panel-item__meta">选择角色后查看角色卡。</p>}
+      </Panel>
       </div>
   );
 
   return onClose ? (
-    <Modal title="设置" onClose={onClose}>{content}</Modal>
+    <Modal title={creating ? "新建角色卡" : "设置"} onClose={onClose}>{content}</Modal>
   ) : (
     <section className="settings-page" aria-label="设置">{content}</section>
   );

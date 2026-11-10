@@ -250,7 +250,7 @@ async def check_reflect(
     min_new_memories: int = DEFAULT_REFLECT_MIN_NEW_MEMORIES,
 ) -> None:
     """Run the reflection gate for a reflection check tick."""
-    narrative = await app.inner_life.get_narrative()
+    narrative = await app.inner_life.get_document()
     if time.time() - narrative.updated_at < min_interval:
         return
     new_count = await app.memory.count_new(None, narrative.updated_at)

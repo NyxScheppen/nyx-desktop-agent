@@ -27,6 +27,7 @@ from nyx.enums import (
 )
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.event import internal_event
 from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient, LlmMessage
@@ -40,6 +41,7 @@ from nyx.reading.facade import (
     NoteNotFoundError,
     ReadingFacade,
 )
+from nyx.reading.integration import parse_reading_note
 from nyx.reading.segmenter import Segment
 from nyx.reading.store import ReadingStore
 from nyx.types import (
@@ -48,46 +50,32 @@ from nyx.types import (
     DesireState,
     DesireValue,
     Event,
+    InnerDocument,
+    InnerTopic,
     LLMOutput,
     Memory,
-    Personality,
-    Values,
 )
 
 _RICH_TEXT = (
-    "他绝望地哭，问生命的意义是什么？为什么自由如此虚无！"
-    "她说……命运与灵魂在黑暗中挣扎。"
+    "他绝望地哭，问生命的意义是什么？为什么自由如此虚无！她说……命运与灵魂在黑暗中挣扎。"
 )
 _FLAT_TEXT = "今天天气不错。"
 
 
-def _mk_state(energy: float = 100.0, agreeableness: float = 10.0) -> CurrentState:
-    personality: Personality = {
-        "openness": 5.0,
-        "conscientiousness": 5.0,
-        "extraversion": 5.0,
-        "agreeableness": agreeableness,
-        "neuroticism": 5.0,
-    }
-    values: Values = {
-        "attitude_to_human": 5.0,
-        "ai_identity_acceptance": 5.0,
-        "altruism": 5.0,
-        "optimism": 5.0,
-    }
+def _mk_state(energy: float = 100.0) -> CurrentState:
     return CurrentState(
         valence=0.0,
         arousal=0.0,
         emotion=EmotionCategory.NEUTRAL,
-        personality=personality,
-        values=values,
-        aesthetic={
-            "ornate": 7.0, "lyrical": 7.0, "classical": 6.0, "somber": 6.0,
-        },
         energy=energy,
         energy_state=EnergyState.OKAY,
         current_activity=None,
         active_desires=[],
+        inner_document=InnerDocument(
+            [InnerTopic("identity", "self-understanding", "自我理解", "我是尼克斯")],
+            1,
+            1000.0,
+        ),
     )
 
 
@@ -238,9 +226,20 @@ class _FakeEvaluator:
 class _FakeExpression:
     def __init__(self) -> None:
         self.recorded: list[str] = []
+        self.bus = _FakeBus()
 
     def record_proactive_turn(self, text: str, **kwargs: object) -> None:
         self.recorded.append(text)
+
+    async def commit_reading_question(
+        self, content: str, source_id: str, correlation_id: str,
+        payload: dict[str, object],
+    ) -> str:
+        event = internal_event(EventType.READING_QUESTION, payload, correlation_id)
+        await self.bus.publish(event)
+        self.record_proactive_turn(content)
+        return "attempt"
+
 
 
 class _NoneContentLlm(_FakeLlm):
@@ -329,6 +328,8 @@ def _build_impulse_facade(
     desire: _FakeDesire,
     expression: _FakeExpression | None = None,
 ) -> ReadingFacade:
+    expression = expression or _FakeExpression()
+    expression.bus = bus
     return ReadingFacade(
         ReadingStore(database),
         cast(InnerLifeFacade, inner_life),
@@ -340,7 +341,7 @@ def _build_impulse_facade(
         "canon",
         cast(
             ExpressionFacade,
-            expression if expression is not None else _FakeExpression(),
+            expression,
         ),
     )
 
@@ -554,6 +555,7 @@ async def test_delete_book_cascades_paragraphs(
 
 # ---- 阅读系统：进度 / 书架 / 分页 ----
 
+
 async def test_list_books_lists_imported_book(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -662,6 +664,7 @@ async def test_book_not_found_raises(
 
 
 # ---- 阅读系统：冲动引擎 ----
+
 
 async def test_evaluate_paragraph_forward_dispatches_events(
     monkeypatch: pytest.MonkeyPatch,
@@ -885,8 +888,12 @@ async def test_evaluate_paragraph_quote_question_splits_lines(
     llm = _FakeLlm({"quote_question": "这段为什么重要？\n生命的意义是什么？"})
     facade, database, bus, _, _ = await _impulse_facade(
         monkeypatch,
-        [Segment(text=_RICH_TEXT, is_chapter_start=False)],
-        state=_mk_state(energy=0.0, agreeableness=2.0),
+        [Segment(
+            text="悲伤中的生命的意义是什么？为什么自由和命运总让灵魂选择虚无……"
+                 "时间、真理、信仰，都需要思考。",
+            is_chapter_start=False,
+        )],
+        state=_mk_state(energy=0.0),
         llm=llm,
     )
     try:
@@ -911,8 +918,12 @@ async def test_evaluate_paragraph_quote_question_single_line_is_rejected(
     llm = _FakeLlm({"quote_question": "这段为什么重要？"})
     facade, database, bus, _, _ = await _impulse_facade(
         monkeypatch,
-        [Segment(text=_RICH_TEXT, is_chapter_start=False)],
-        state=_mk_state(energy=0.0, agreeableness=2.0),
+        [Segment(
+            text="悲伤中的生命的意义是什么？为什么自由和命运总让灵魂选择虚无……"
+                 "时间、真理、信仰，都需要思考。",
+            is_chapter_start=False,
+        )],
+        state=_mk_state(energy=0.0),
         llm=llm,
     )
     try:
@@ -938,7 +949,7 @@ async def test_mutter_reading_none_content_skips_without_raise() -> None:
         _FakeInnerLife(_mk_state()), _FakeDesire(_desire_values()),
     )
     try:
-        await facade._mutter_reading("b1", 1, _RICH_TEXT, _mk_state())
+        await facade._companion.mutter("b1", 1, _RICH_TEXT, _mk_state())
     finally:
         await database.conn.close()
     assert bus.published == []
@@ -953,7 +964,7 @@ async def test_associate_reading_none_search_skips_without_raise() -> None:
         _FakeInnerLife(_mk_state()), _FakeDesire(_desire_values()),
     )
     try:
-        await facade._associate_reading("b1", 1, _RICH_TEXT)
+        await facade._companion.associate("b1", 1, _RICH_TEXT)
     finally:
         await database.conn.close()
     assert bus.published == []
@@ -971,7 +982,7 @@ async def test_question_reading_records_proactive_turn() -> None:
         _FakeInnerLife(_mk_state()), _FakeDesire(_desire_values()), expr,
     )
     try:
-        await facade._question_reading(
+        await facade._companion.question(
             "b1", 1, _RICH_TEXT, ReadingBehavior.QUOTE_QUESTION, _mk_state()
         )
     finally:
@@ -992,7 +1003,7 @@ async def test_associate_reading_records_proactive_turn_per_memory() -> None:
         _FakeInnerLife(_mk_state()), _FakeDesire(_desire_values()), expr,
     )
     try:
-        await facade._associate_reading("b1", 1, _RICH_TEXT)
+        await facade._companion.associate("b1", 1, _RICH_TEXT)
     finally:
         await database.conn.close()
     assoc = [e for e in bus.published if e.type is EventType.READING_ASSOCIATION]
@@ -1010,7 +1021,7 @@ async def test_mutter_reading_does_not_record_proactive_turn() -> None:
         _FakeInnerLife(_mk_state()), _FakeDesire(_desire_values()), expr,
     )
     try:
-        await facade._mutter_reading("b1", 1, _RICH_TEXT, _mk_state())
+        await facade._companion.mutter("b1", 1, _RICH_TEXT, _mk_state())
     finally:
         await database.conn.close()
     assert any(e.type is EventType.READING_MUTTER for e in bus.published)
@@ -1018,6 +1029,7 @@ async def test_mutter_reading_does_not_record_proactive_turn() -> None:
 
 
 # ---- 阅读系统：用户笔记 / Nyx 批注 / 章末整合 ----
+
 
 async def _note_facade(
     monkeypatch: pytest.MonkeyPatch,
@@ -1080,7 +1092,7 @@ async def _check_and_drain(
 
 
 def test_parse_reading_note_valid() -> None:
-    content, summary = facade_mod._parse_reading_note(
+    content, summary = parse_reading_note(
         '{"content": "记住了这句话", "summary": "读某章"}'
     )
     assert (content, summary) == ("记住了这句话", "读某章")
@@ -1088,17 +1100,17 @@ def test_parse_reading_note_valid() -> None:
 
 def test_parse_reading_note_non_json_raises() -> None:
     with pytest.raises(ValueError):
-        facade_mod._parse_reading_note("不是 JSON")
+        parse_reading_note("不是 JSON")
 
 
 def test_parse_reading_note_missing_key_raises() -> None:
     with pytest.raises(ValueError):
-        facade_mod._parse_reading_note('{"content": "只有正文"}')
+        parse_reading_note('{"content": "只有正文"}')
 
 
 def test_parse_reading_note_wrong_type_raises() -> None:
     with pytest.raises(ValueError):
-        facade_mod._parse_reading_note('{"content": 123, "summary": "x"}')
+        parse_reading_note('{"content": 123, "summary": "x"}')
 
 
 async def test_add_and_list_user_notes_with_annotations(

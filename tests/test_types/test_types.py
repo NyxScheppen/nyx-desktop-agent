@@ -4,12 +4,7 @@ from nyx.enums import (
     MemoryKind,
     MemoryType,
 )
-from nyx.types import (
-    LongTermDesire,
-    Memory,
-    ShortTermDesire,
-    UserNote,
-)
+from nyx.types import LongTermDesire, Memory, ShortTermDesire, UserNote
 
 
 def test_short_term_desire_default_status() -> None:
@@ -33,8 +28,8 @@ def test_user_note_annotations_default_factory_isolated() -> None:
     assert first.annotations is not second.annotations  # 各自独立，非共享单例
 
 
-def test_long_term_desire_linked_values_default_factory_isolated() -> None:
+def test_long_term_desire_subtopics_are_independent() -> None:
     first = LongTermDesire("", 0.0, DesireType.INTERACTION, "", "", 1.0, 0.0, [])
     second = LongTermDesire("", 0.0, DesireType.INTERACTION, "", "", 1.0, 0.0, [])
-    first.linked_values.append("x")
-    assert second.linked_values == []
+    first.subtopics.append("x")
+    assert second.subtopics == []

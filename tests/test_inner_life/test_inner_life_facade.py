@@ -31,55 +31,28 @@ from nyx.memory.retrieval import MemoryRetrieval
 from nyx.memory.store import MemoryStore
 from nyx.types import (
     Activity,
-    Aesthetic,
     DesireState,
     Event,
+    InnerDocument,
+    InnerTopic,
     LLMOutput,
     LongTermDesire,
-    Personality,
-    SelfNarrative,
     ShortTermDesire,
-    Values,
 )
 
 _REFLECTION_JSON = json.dumps(
-    {
-        "story": "今天对用户了解更多",
-        "becoming": "我更愿意探索了",
-        "self_view": {"自信": "稍强"},
-        "personality_delta": {},
-        "values_delta": {},
-        "long_term_desires": [],
-    }
+    {"summary": "今天对用户了解更多", "patches": [], "long_term_desires": []}
 )
 
-_PERSONALITY: Personality = {
-    "openness": 8.0,
-    "conscientiousness": 8.0,
-    "extraversion": 2.0,
-    "agreeableness": 6.0,
-    "neuroticism": 7.0,
-}
 
-_VALUES: Values = {
-    "attitude_to_human": 8.0,
-    "ai_identity_acceptance": 6.0,
-    "altruism": 9.0,
-    "optimism": 5.0,
-}
-
-_AESTHETIC: Aesthetic = {
-    "ornate": 7.0,
-    "lyrical": 7.0,
-    "classical": 6.0,
-    "somber": 6.0,
-}
-
-_NARRATIVE = SelfNarrative(
-    identity="尼克斯",
-    story=["初始故事"],
-    self_view={"自信": "中等"},
-    becoming=["初始认知"],
+_NARRATIVE = InnerDocument(
+    topics=[
+        InnerTopic("identity", "self-understanding", "自我理解", "尼克斯"),
+        InnerTopic("narrative", "experience-0", "个人经历", "初始故事"),
+        InnerTopic("personality", "self-view-0", "自信", "中等"),
+        InnerTopic("narrative", "understanding-0", "认知变化", "初始认知"),
+    ],
+    revision=1,
     updated_at=1000.0,
 )
 
@@ -151,13 +124,9 @@ class _FakeDesireFacade:
         return None
 
 
-
-
 async def _seed(store: InnerLifeStore) -> None:
-    await store.upsert_personality(_PERSONALITY)
-    await store.upsert_values(_VALUES)
-    await store.upsert_aesthetic(_AESTHETIC)
     await store.upsert_energy(100.0, EnergyState.ENERGETIC)
+    await store.upsert_document(_NARRATIVE)
 
 
 async def _new_facade(
@@ -223,6 +192,7 @@ async def _running(bus: EventBus) -> AsyncGenerator[None]:
 
 
 # ---- apply_event ----
+
 
 async def test_apply_event_desire_satisfied(
     monkeypatch: pytest.MonkeyPatch,
@@ -386,7 +356,7 @@ async def test_apply_event_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
     facade, store, bus, database = await _new_facade(llm, _FakeEvaluator())
     try:
         await _seed(store)
-        await store.upsert_narrative(_NARRATIVE)
+        await store.upsert_document(_NARRATIVE)
         async with _running(bus):
             await facade.apply_event(_event(EventType.DESIRE_SATISFIED, "c0"))
         async with _running(bus):
@@ -408,7 +378,7 @@ async def test_reflection_event_replay_is_idempotent(
     facade, store, bus, database = await _new_facade(llm, _FakeEvaluator())
     try:
         await _seed(store)
-        await store.upsert_narrative(_NARRATIVE)
+        await store.upsert_document(_NARRATIVE)
         root = _event(EventType.REFLECTION, "c1")
         await bus.publish(root)
         await facade.apply_event(root, "inner_life.reflection")
@@ -421,14 +391,12 @@ async def test_reflection_event_replay_is_idempotent(
         assert len(records) == 1
         record = json.loads(records[0].content)
         assert record["output"] and record["input"]["prompt"]
-        assert record["before"]["narrative"]["story"] == ["初始故事"]
-        assert record["after"]["narrative"]["story"] == [
-            "初始故事", "今天对用户了解更多"
-        ]
+        assert record["before"]["document"]["revision"] == 1
+        assert record["after"]["document"]["revision"] == 1
         assert await MemoryStore(database).count_new(None, 0) == 0
-        narrative = await store.get_narrative()
+        narrative = await store.get_document()
         assert narrative is not None
-        assert narrative.story == ["初始故事", "今天对用户了解更多"]
+        assert narrative.topics == _NARRATIVE.topics
     finally:
         await database.close()
 
@@ -441,7 +409,7 @@ async def test_reflection_event_rolls_back_slow_variables_when_event_append_fail
     facade, store, bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
     try:
         await _seed(store)
-        await store.upsert_narrative(_NARRATIVE)
+        await store.upsert_document(_NARRATIVE)
         root = _event(EventType.REFLECTION, "c1")
         await bus.publish(root)
 
@@ -452,7 +420,7 @@ async def test_reflection_event_rolls_back_slow_variables_when_event_append_fail
         with pytest.raises(RuntimeError):
             await facade.apply_event(root, "inner_life.reflection")
 
-        narrative = await store.get_narrative()
+        narrative = await store.get_document()
         assert narrative == _NARRATIVE
         assert await MemoryStore(database).list_memories(MemoryKind.REFLECTION) == []
         async with database.lock:
@@ -479,7 +447,7 @@ async def test_reflection_failure_preserves_event_applied_during_prepare(
     facade, store, bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
     try:
         await _seed(store)
-        await store.upsert_narrative(_NARRATIVE)
+        await store.upsert_document(_NARRATIVE)
         root = _event(EventType.REFLECTION, "reflection")
         await bus.publish(root)
         original_prepare = facade._reflection.prepare
@@ -516,7 +484,7 @@ async def test_stale_periodic_reflection_is_consumed_without_running_llm() -> No
     facade, store, bus, database = await _new_facade(llm, _FakeEvaluator())
     try:
         await _seed(store)
-        await store.upsert_narrative(_NARRATIVE)
+        await store.upsert_document(_NARRATIVE)
         root = _event(EventType.REFLECTION, "c1", {
             "reason": "periodic",
             "narrative_updated_at": 900.0,
@@ -545,7 +513,7 @@ async def test_periodic_reflection_rechecks_memory_threshold_at_consumption(
     facade, store, bus, database = await _new_facade(llm, _FakeEvaluator())
     try:
         await _seed(store)
-        await store.upsert_narrative(_NARRATIVE)
+        await store.upsert_document(_NARRATIVE)
         root = _event(EventType.REFLECTION, "c1", {
             "reason": "periodic",
             "narrative_updated_at": _NARRATIVE.updated_at,
@@ -570,7 +538,7 @@ async def test_reflection_trigger_evidence_reaches_prompt() -> None:
     facade, store, bus, database = await _new_facade(llm, _FakeEvaluator())
     try:
         await _seed(store)
-        await store.upsert_narrative(_NARRATIVE)
+        await store.upsert_document(_NARRATIVE)
         root = _event(EventType.REFLECTION, "c1", {
             "reason": "memory_contradiction",
             "memory_id": "new",
@@ -661,7 +629,7 @@ async def test_get_state_settles_emotion_and_energy(
         await database.conn.close()
 
 
-# ---- get_state / get_narrative / reflect ----
+# ---- get_state / get_document / reflect ----
 
 
 async def test_get_state(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -693,8 +661,7 @@ async def test_get_state(monkeypatch: pytest.MonkeyPatch) -> None:
         state = await facade.get_state()
         assert state.current_activity is ActivityType.READING
         assert state.active_desires == pending
-        assert state.personality == _PERSONALITY
-        assert state.aesthetic == _AESTHETIC
+        assert state.inner_document == _NARRATIVE
         assert state.energy == 100.0
         assert state.energy_state is EnergyState.ENERGETIC
     finally:
@@ -710,13 +677,13 @@ async def test_get_state_unseeded() -> None:
         await database.conn.close()
 
 
-async def test_get_narrative() -> None:
+async def test_get_document() -> None:
     facade, store, _bus, database = await _new_facade(_FakeLlm(), _FakeEvaluator())
     try:
         with pytest.raises(RuntimeError):
-            await facade.get_narrative()
-        await store.upsert_narrative(_NARRATIVE)
-        assert await facade.get_narrative() == _NARRATIVE
+            await facade.get_document()
+        await store.upsert_document(_NARRATIVE)
+        assert await facade.get_document() == _NARRATIVE
     finally:
         await database.conn.close()
 
@@ -726,7 +693,7 @@ async def test_reflect_delegation() -> None:
     facade, store, _bus, database = await _new_facade(llm, _FakeEvaluator())
     try:
         await _seed(store)
-        await store.upsert_narrative(_NARRATIVE)
+        await store.upsert_document(_NARRATIVE)
         await facade.reflect("cid")
         assert llm.calls == ["reflection"]
         assert llm.correlation_ids == ["cid"]
@@ -739,7 +706,7 @@ async def test_reflect_publishes_reflection_done() -> None:
     facade, store, bus, database = await _new_facade(llm, _FakeEvaluator())
     try:
         await _seed(store)
-        await store.upsert_narrative(_NARRATIVE)
+        await store.upsert_document(_NARRATIVE)
         events: list[Event] = []
 
         async def record(event: Event) -> None:
@@ -749,12 +716,12 @@ async def test_reflect_publishes_reflection_done() -> None:
         async with _running(bus):
             outcome = await facade.reflect("cid")
         assert outcome is not None
-        assert outcome.story_is_new is True
+        assert outcome.document_changed is False
         assert len(events) == 1
         assert events[0].type is EventType.REFLECTION_DONE
         assert events[0].content == {
-            "story": "今天对用户了解更多",
-            "story_is_new": True,
+            "summary": "今天对用户了解更多",
+            "document_changed": False,
         }
     finally:
         await database.conn.close()

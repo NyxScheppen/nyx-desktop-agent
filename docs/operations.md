@@ -76,7 +76,7 @@ uv run --no-sync python scripts/smoke_release.py
 
 ## 角色卡
 
-1. 复制 `nyx/cards/nyx/` 为模板，修改 `card.yaml` 的稳定小写 `id`、名称、身份、初始人格及 `canon.md`。完整字段直接参照模板和 `nyx/character_cards.py`。
+1. 复制 `nyx/cards/nyx/` 为模板，修改 `card.yaml` 的稳定小写 `id`、名称、`inner_document` 初始主题及 `canon.md`（仅静态资料与能力边界）。完整字段直接参照模板和 `nyx/character_cards.py`。
 2. 不使用图片时设 `assets: {}` 并移除资产目录；不设置初始长期欲望时用 `long_term_desires: []`。
 3. 把文件直接放在 ZIP 根目录，命名为 `.nyxcard` 或 `.zip`，在设置的角色管理中导入。必需 `card.yaml` 和非空 `canon.md`，其余角色参考、提问方向与图片可选；压缩和解压量各限 50 MiB。
 4. 使用角色选择切换；卸载会保留存档，恢复沿用成长。当前不支持 SillyTavern 卡、原地更新卡或复制存档。

@@ -21,5 +21,6 @@
 
 - `nyx/activity/facade.py`、`starter.py`、`lifecycle.py`：准入、执行、打断与恢复。
 - `nyx/activity/scheduler.py`、`store.py`：排期与持久化。
-- `nyx/activity/exploration.py`、`creation.py`、`browser_survey.py`、`observe.py`：具体活动。
+- `nyx/research/service.py`、`engine.py`：自由探索与对话研究共用的持久化执行管线。
+- `nyx/activity/creation.py`、`browser_survey.py`、`observe.py`：其他具体活动。
 - `nyx/runtime.py`、`nyx/reading/facade.py`：触发与统一书库读取。

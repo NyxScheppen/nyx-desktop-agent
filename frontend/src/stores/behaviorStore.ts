@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { captureScope, isScopeCurrent } from "../api/characterScope";
+import { coalescedRefresh } from "../api/coalescedRefresh";
 import { getBehaviorReflections, getResearchRuns, getSkillVersions } from "../api/client";
 
 export type ResearchRun = {
@@ -34,7 +35,7 @@ type BehaviorState = {
 let generation = 0;
 export const useBehaviorStore = create<BehaviorState>((set) => ({
   runs: [], reflections: [], versions: {}, error: null,
-  refresh: async () => {
+  refresh: coalescedRefresh(async () => {
     const scope = captureScope();
     const current = ++generation;
     try {
@@ -48,5 +49,5 @@ export const useBehaviorStore = create<BehaviorState>((set) => ({
       if (!isScopeCurrent(scope) || current !== generation) return;
       set({ error: error instanceof Error ? error.message : String(error) });
     }
-  },
+  }),
 }));

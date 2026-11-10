@@ -14,12 +14,9 @@ from nyx.enums import DesireType, EnergyState
 from nyx.inner_life.store import InnerLifeStore
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
-    Aesthetic,
+    InnerDocument,
     LongTermDesire,
-    Personality,
-    SelfNarrative,
     Skill,
-    Values,
 )
 
 
@@ -38,27 +35,19 @@ async def initialize_card(db: Database, card: CardManifest) -> None:
             return
         existing = await (
             await conn.execute(
-                "SELECT 1 FROM personality UNION ALL SELECT 1 FROM self_narrative "
+                "SELECT 1 FROM inner_document "
                 "UNION ALL SELECT 1 FROM desire_value UNION ALL SELECT 1 FROM "
                 "event_log "
                 "UNION ALL SELECT 1 FROM long_term_desire LIMIT 1"
             )
         ).fetchone()
-        if await inner.get_personality() is None:
-            await inner.upsert_personality(cast(Personality, card.personality))
-        if await inner.get_values() is None:
-            await inner.upsert_values(cast(Values, card.values))
-        if await inner.get_aesthetic() is None:
-            await inner.upsert_aesthetic(cast(Aesthetic, card.aesthetic))
         if await inner.get_energy() is None:
             await inner.upsert_energy(100.0, EnergyState.ENERGETIC)
-        if await inner.get_narrative() is None:
-            await inner.upsert_narrative(
-                SelfNarrative(
-                    identity=card.identity,
-                    story=[],
-                    self_view={},
-                    becoming=[],
+        if await inner.get_document() is None:
+            await inner.upsert_document(
+                InnerDocument(
+                    topics=card.inner_document,
+                    revision=1,
                     updated_at=now,
                 )
             )
@@ -79,7 +68,6 @@ async def initialize_card(db: Database, card: CardManifest) -> None:
                         strength=seed.strength,
                         progress=0.0,
                         subtopics=seed.subtopics,
-                        linked_values=seed.linked_values,
                     )
                 )
         await conn.execute(
@@ -138,8 +126,9 @@ def load_skills(skills_dir: Path, registry: ToolRegistry) -> dict[str, Skill]:
         tool_names = tuple(cast(list[str], names))
         registry.schema(tool_names)
         skills[name] = Skill(name, fragment, tool_names)
-    if "discussion" not in skills:
-        raise ValueError(f"缺少 discussion skill：{skills_dir}")
+    for required in ("discussion", "conversation"):
+        if required not in skills:
+            raise ValueError(f"缺少 {required} skill：{skills_dir}")
     return skills
 
 

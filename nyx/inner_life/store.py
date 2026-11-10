@@ -1,24 +1,16 @@
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 
-from nyx.db import Database
+from nyx.db import Database, PostgresConnection
 from nyx.enums import EnergyState
-from nyx.types import Aesthetic, Personality, SelfNarrative, Values
-
-_PERSONALITY_COLS = (
-    "openness, conscientiousness, extraversion, agreeableness, neuroticism"
-)
-_VALUES_COLS = "attitude_to_human, ai_identity_acceptance, altruism, optimism"
-_AESTHETIC_COLS = "ornate, lyrical, classical, somber"
+from nyx.inner_life.document import topics_from_data, validate_topics
+from nyx.types import InnerDocument
 
 
 class InnerLifeStore:
-    """personality / value_system / aesthetic / energy / self_narrative 五张单行表
-    （id='self'）的 CRUD。
-
-    db 由组合根注入（同所有 store 共享）。每个方法一个 `async with db.lock` 的 SQL 块。
-    """
+    """Atomic current inner document and operational energy storage."""
 
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -36,102 +28,6 @@ class InnerLifeStore:
             return
         async with self._db.lock:
             yield True
-
-    async def get_personality(self) -> Personality | None:
-        async with self._operation():
-            cursor = await self._db.conn.execute(
-                f"SELECT {_PERSONALITY_COLS} FROM personality WHERE id = 'self'"
-            )
-            row = await cursor.fetchone()
-        if row is None:
-            return None
-        return {
-            "openness": row["openness"],
-            "conscientiousness": row["conscientiousness"],
-            "extraversion": row["extraversion"],
-            "agreeableness": row["agreeableness"],
-            "neuroticism": row["neuroticism"],
-        }
-
-    async def upsert_personality(self, p: Personality) -> None:
-        async with self._operation() as should_commit:
-            await self._db.conn.execute(
-                "INSERT INTO personality (id, openness, conscientiousness, "
-                "extraversion, "
-                "agreeableness, neuroticism) VALUES ('self', ?, ?, ?, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET openness = excluded.openness, "
-                "conscientiousness = excluded.conscientiousness, "
-                "extraversion = excluded.extraversion, "
-                "agreeableness = excluded.agreeableness, "
-                "neuroticism = excluded.neuroticism",
-                (p["openness"], p["conscientiousness"], p["extraversion"],
-                 p["agreeableness"], p["neuroticism"]),
-            )
-            if should_commit:
-                await self._db.conn.commit()
-
-    async def get_values(self) -> Values | None:
-        async with self._operation():
-            cursor = await self._db.conn.execute(
-                f"SELECT {_VALUES_COLS} FROM value_system WHERE id = 'self'"
-            )
-            row = await cursor.fetchone()
-        if row is None:
-            return None
-        return {
-            "attitude_to_human": row["attitude_to_human"],
-            "ai_identity_acceptance": row["ai_identity_acceptance"],
-            "altruism": row["altruism"],
-            "optimism": row["optimism"],
-        }
-
-    async def upsert_values(self, v: Values) -> None:
-        async with self._operation() as should_commit:
-            await self._db.conn.execute(
-                "INSERT INTO value_system (id, attitude_to_human, "
-                "ai_identity_acceptance, "
-                "altruism, optimism) VALUES ('self', ?, ?, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET attitude_to_human = "
-                "excluded.attitude_to_human, "
-                "ai_identity_acceptance = excluded.ai_identity_acceptance, "
-                "altruism = excluded.altruism, optimism = excluded.optimism",
-                (
-                    v["attitude_to_human"],
-                    v["ai_identity_acceptance"],
-                    v["altruism"],
-                    v["optimism"],
-                ),
-            )
-            if should_commit:
-                await self._db.conn.commit()
-
-    async def get_aesthetic(self) -> Aesthetic | None:
-        async with self._operation():
-            cursor = await self._db.conn.execute(
-                f"SELECT {_AESTHETIC_COLS} FROM aesthetic WHERE id = 'self'"
-            )
-            row = await cursor.fetchone()
-        if row is None:
-            return None
-        return {
-            "ornate": row["ornate"],
-            "lyrical": row["lyrical"],
-            "classical": row["classical"],
-            "somber": row["somber"],
-        }
-
-    async def upsert_aesthetic(self, a: Aesthetic) -> None:
-        async with self._operation() as should_commit:
-            await self._db.conn.execute(
-                "INSERT INTO aesthetic (id, ornate, lyrical, classical, somber) "
-                "VALUES ('self', ?, ?, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET ornate = excluded.ornate, "
-                "lyrical = excluded.lyrical, classical = excluded.classical, "
-                "somber = excluded.somber",
-                (a["ornate"], a["lyrical"], a["classical"], a["somber"]),
-            )
-            if should_commit:
-                await self._db.conn.commit()
 
     async def get_energy(self) -> tuple[float, EnergyState] | None:
         async with self._operation():
@@ -154,46 +50,47 @@ class InnerLifeStore:
             if should_commit:
                 await self._db.conn.commit()
 
-    async def get_narrative(self) -> SelfNarrative | None:
+    async def get_document(self) -> InnerDocument | None:
         async with self._operation():
             cursor = await self._db.conn.execute(
-                "SELECT identity, story, self_view, becoming, updated_at "
-                "FROM self_narrative WHERE id = 'self'"
+                "SELECT topics, revision, updated_at FROM inner_document "
+                "WHERE id='self'"
             )
             row = await cursor.fetchone()
         if row is None:
             return None
-        return SelfNarrative(
-            identity=row["identity"],
-            story=json.loads(row["story"]),
-            self_view=json.loads(row["self_view"]),
-            becoming=json.loads(row["becoming"]),
-            updated_at=row["updated_at"],
+        return InnerDocument(
+            topics_from_data(json.loads(row["topics"])),
+            row["revision"],
+            row["updated_at"],
         )
 
-    async def assert_narrative_updated_at(self, expected: float) -> None:
-        """Fail when another reflection changed the slow-variable revision."""
+    async def assert_document_updated_at(self, expected: float) -> None:
         async with self._operation():
-            cursor = await self._db.conn.execute(
-                "SELECT updated_at FROM self_narrative WHERE id = 'self'"
+            lock = (
+                " FOR UPDATE" if isinstance(self._db.conn, PostgresConnection) else ""
             )
-            row = await cursor.fetchone()
-        if row is None:
-            raise RuntimeError("inner_life 单行表未初始化（组合根必须先 seed）")
-        if row["updated_at"] != expected:
-            raise RuntimeError("反思慢变量快照已变化，请重新准备")
+            row = await (
+                await self._db.conn.execute(
+                    "SELECT updated_at FROM inner_document WHERE id='self'" + lock
+                )
+            ).fetchone()
+        if row is None or row["updated_at"] != expected:
+            raise RuntimeError("反思文档快照已变化，请重新准备")
 
-    async def upsert_narrative(self, n: SelfNarrative) -> None:
+    async def upsert_document(self, n: InnerDocument) -> None:
+        validate_topics(n.topics)
         async with self._operation() as should_commit:
             await self._db.conn.execute(
-                "INSERT INTO self_narrative (id, identity, story, self_view, "
-                "becoming, updated_at) "
-                "VALUES ('self', ?, ?, ?, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET identity = excluded.identity, "
-                "story = excluded.story, self_view = excluded.self_view, "
-                "becoming = excluded.becoming, updated_at = excluded.updated_at",
-                (n.identity, json.dumps(n.story), json.dumps(n.self_view),
-                 json.dumps(n.becoming), n.updated_at),
+                "INSERT INTO inner_document (id, topics, revision, updated_at) "
+                "VALUES ('self', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+                "topics=excluded.topics, revision=excluded.revision, "
+                "updated_at=excluded.updated_at",
+                (
+                    json.dumps([asdict(t) for t in n.topics], ensure_ascii=False),
+                    n.revision,
+                    n.updated_at,
+                ),
             )
             if should_commit:
                 await self._db.conn.commit()

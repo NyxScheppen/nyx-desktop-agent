@@ -10,18 +10,22 @@ import pytest
 
 from nyx.behavior.service import BehaviorService
 from nyx.behavior.store import BehaviorStore, SkillStore, skill_snapshot
-from nyx.config import ExplorationConfig, MemoryConfig
+from nyx.config import DesireConfig, ExplorationConfig, MemoryConfig
 from nyx.db import Database, connect
+from nyx.desire.facade import DesireFacade
+from nyx.desire.store import DesireStore
 from nyx.enums import EventType, MemoryKind
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.inner_life.reflection import Reflection
+from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval
 from nyx.memory.store import MemoryStore
 from nyx.research.service import ResearchService
 from nyx.tools.registry import ToolRegistry
-from nyx.types import LLMOutput, Memory, Skill, Tool
+from nyx.types import InnerDocument, InnerTopic, LLMOutput, Memory, Skill, Tool
 
 TEXT = "随机分配可减少混杂偏差，但仍需检查依从性和失访。"
 URL = "https://example.test/causal"
@@ -197,6 +201,154 @@ async def test_rejected_source_never_enters_knowledge(harness: Harness) -> None:
     assert not await h.memory_store.list_memories(kind=MemoryKind.KNOWLEDGE)
     records = await h.behavior.store.list_records("behavior_reflection")
     assert records[0]["evidence"]["source_excerpts_raw"][0]["source_text_raw"] == TEXT
+
+
+async def test_experience_recall_filters_skill_before_ranking(harness: Harness) -> None:
+    h = harness
+    for index in range(25):
+        target = "discussion" if index == 0 else "conversation"
+        lesson = await h.memory.prepare_behavior_experience(
+            str(index),
+            f"因果关系策略 {target} {index}",
+            "因果关系策略",
+        )
+        await h.memory_store.add(lesson)
+        await h.behavior.store.save(
+            "behavior_reflection",
+            {
+                "id": str(index),
+                "status": "completed",
+                "target_skill": target,
+                "experience_id": lesson.id,
+                "experience_content_raw": lesson.content,
+            },
+        )
+    unknown = await h.memory.prepare_behavior_experience(
+        "unknown",
+        "因果关系策略 无法证明归属",
+        "因果关系策略",
+    )
+    await h.memory_store.add(unknown)
+    assert await h.memory_store.count_new(None, 0) == 0
+    assert await h.memory_store.count_new(MemoryKind.LESSON, 0) == 26
+    research_lessons = await h.memory.search_behavior_experiences(
+        "因果关系", "discussion"
+    )
+    assert [item.id for item in research_lessons] == ["experience:0"]
+    conversation = await h.memory.search_behavior_experiences(
+        "因果关系", "conversation"
+    )
+    assert conversation and all("conversation" in item.content for item in conversation)
+    await h.research.run("isolated", "因果关系", "dialogue", "isolated")
+    record = await h.behavior.store.get("research_run", "isolated")
+    assert record
+    assert record["activity"]["progress"]["exploration"]["strategy_lessons"] == [
+        "因果关系策略 discussion 0",
+    ]
+    await h.memory_store.delete_many(["experience:0"])
+    assert not await h.memory.search_behavior_experiences("因果关系", "discussion")
+
+
+async def test_user_ooc_correction_enters_inner_reflection(harness: Harness) -> None:
+    h = harness
+    feedback = "这句太像客服了，OOC；我希望你表达自己的想法。"
+    correction_id = ""
+    excluded: list[str] = []
+    for trigger, text in (
+        ("user_correction", feedback),
+        ("ooc", feedback),
+        ("research", "检索策略"),
+        ("user_correction", ""),
+    ):
+        key = f"feedback-{trigger}-{len(excluded)}"
+        event = await h.behavior.submit(
+            key, "conversation",
+            {
+                "trigger_type": trigger,
+                "user_feedback_raw": text,
+                "assistant_output_raw": "让我来帮你处理您的请求。",
+                "evidence_ids": ["actions"],
+            },
+            key,
+        )
+        assert await h.memory.count_new(None, 0) == int(bool(correction_id))
+        await h.behavior.apply_event(event, h.memory)
+        await h.behavior.apply_event(event, h.memory)
+        record = await h.behavior.store.get(
+            "behavior_reflection", event.content["reflection_id"]
+        )
+        assert record and record.get("experience_id")
+        if trigger == "user_correction" and text:
+            correction_id = record["experience_id"]
+        else:
+            excluded.append(record["experience_id"])
+    eligible = await h.memory.inner_reflection_memories()
+    assert [item.id for item in eligible] == [correction_id]
+    assert feedback in eligible[0].content
+    assert await h.memory.count_new(None, 0) == 1
+    assert await h.memory.count_new(MemoryKind.LESSON, 0) == 4
+
+    class ReflectionModel:
+        prompt = ""
+
+        async def complete(
+            self, messages: list[dict[str, Any]], **kwargs: Any,
+        ) -> LLMOutput:
+            self.prompt = messages[1]["content"]
+            return LLMOutput(
+                "inner_life", "reflection", "fixture",
+                '{"summary":"回看用户纠正", "patches":[], "long_term_desires":[]}',
+                kwargs["correlation_id"],
+            )
+
+    model = ReflectionModel()
+    llm = cast(LlmClient, model)
+    store = InnerLifeStore(h.db)
+    await store.upsert_document(InnerDocument(
+        [InnerTopic("identity", "self", "自我理解", "我是有自己想法的同伴。")], 1, 0,
+    ))
+    evaluator = Evaluator()
+    desire = DesireFacade(
+        DesireStore(h.db), h.bus, llm, evaluator, DesireConfig(),
+        h.memory.list_memories,
+    )
+    reflection = Reflection(store, h.memory, desire, llm, evaluator, DesireConfig())
+    await reflection.prepare("inner-feedback")
+    assert f"[memory:{correction_id}]" in model.prompt and feedback in model.prompt
+    assert all(f"[memory:{item}]" not in model.prompt for item in excluded)
+
+    saved = await h.memory_store.get(correction_id)
+    assert saved is not None
+    await h.memory_store.strengthen(correction_id, saved.created_at + 100)
+    assert await h.memory.count_new(None, saved.created_at + 1) == 0
+    await h.memory_store.delete_many([correction_id])
+    assert not await h.memory.inner_reflection_memories()
+    assert await h.memory.count_new(None, 0) == 0
+
+
+async def test_ooc_keeps_execution_role_reference_across_restart(
+    harness: Harness,
+) -> None:
+    h = harness
+    reference = {"canon": "你是 Alice，表达直接。", "inner_document": {"revision": 3}}
+    await h.skills.for_execution("alice-turn", "conversation", "聊天", reference)
+    await h.skills.for_execution(
+        "alice-turn", "conversation", "重放", {"canon": "新设定"}
+    )
+    evaluator = Evaluator(on_failure=h.memory.record_failure_signal)
+    await evaluator.evaluate(
+        LLMOutput(
+            "expression",
+            "speak",
+            "script",
+            "作为一个AI，无法回答",
+            "alice-turn",
+        )
+    )
+    records = await h.behavior.store.list_records("behavior_reflection")
+    assert len(records) == 1
+    assert records[0]["evidence"]["role_reference_raw"] == reference
+    assert not await h.memory_store.list_memories(kind=MemoryKind.LESSON)
 
 
 async def test_fetch_failure_is_terminal_and_does_not_use_snippets(

@@ -1,21 +1,6 @@
 from nyx.enums import ContextMode, EmotionCategory, EnergyState
 from nyx.expression.classifier import classify_channel, slow_score
-from nyx.types import CurrentState, Personality, Values
-
-_PERSONALITY: Personality = {
-    "openness": 5.0,
-    "conscientiousness": 5.0,
-    "extraversion": 5.0,
-    "agreeableness": 5.0,
-    "neuroticism": 5.0,
-}
-
-_VALUES: Values = {
-    "attitude_to_human": 5.0,
-    "ai_identity_acceptance": 5.0,
-    "altruism": 5.0,
-    "optimism": 5.0,
-}
+from nyx.types import CurrentState, InnerDocument, InnerTopic
 
 
 def _state(*, energy: float, arousal: float) -> CurrentState:
@@ -23,15 +8,15 @@ def _state(*, energy: float, arousal: float) -> CurrentState:
         valence=0.5,
         arousal=arousal,
         emotion=EmotionCategory.NEUTRAL,
-        personality=_PERSONALITY,
-        values=_VALUES,
-        aesthetic={
-            "ornate": 7.0, "lyrical": 7.0, "classical": 6.0, "somber": 6.0,
-        },
         energy=energy,
         energy_state=EnergyState.OKAY,
         current_activity=None,
         active_desires=[],
+        inner_document=InnerDocument(
+            [InnerTopic("identity", "self-understanding", "自我理解", "我是尼克斯")],
+            1,
+            1000.0,
+        ),
     )
 
 

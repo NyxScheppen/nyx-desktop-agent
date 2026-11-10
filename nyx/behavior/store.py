@@ -75,6 +75,34 @@ class BehaviorStore:
             rows = await cursor.fetchall()
         return [cast(dict[str, Any], json.loads(row["data"])) for row in rows]
 
+    async def experience_ids(
+        self,
+        target_skill: str | None = None,
+        *,
+        user_corrections_only: bool = False,
+    ) -> set[str]:
+        """Resolve ownership from durable reflections, including older experiences."""
+        async with nullcontext() if self.db.in_transaction else self.db.lock:
+            cursor = await self.db.conn.execute(
+                "SELECT data FROM behavior_reflection "
+                "WHERE status IN ('persisted', 'completed', 'failed')"
+            )
+            rows = await cursor.fetchall()
+        records = [cast(dict[str, Any], json.loads(row["data"])) for row in rows]
+        if user_corrections_only:
+            records = [
+                record for record in records
+                if record.get("evidence", {}).get("trigger_type") == "user_correction"
+                and isinstance(record["evidence"].get("user_feedback_raw"), str)
+                and record["evidence"]["user_feedback_raw"].strip()
+            ]
+        return {
+            str(record["experience_id"])
+            for record in records
+            if (target_skill is None or record.get("target_skill") == target_skill)
+            and record.get("experience_id")
+        }
+
 
 class SkillStore:
     """Baseline seeding never overwrites evolved text or code-owned grants."""
@@ -127,7 +155,13 @@ class SkillStore:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
-    async def for_execution(self, key: str, name: str, topic: str) -> Skill:
+    async def for_execution(
+        self,
+        key: str,
+        name: str,
+        topic: str,
+        role_reference: dict[str, Any] | None = None,
+    ) -> Skill:
         current = await self.load(name)
         async with self.db.transaction():
             await self.db.conn.execute(
@@ -138,6 +172,7 @@ class SkillStore:
                         {
                             "skill_snapshot_raw": skill_snapshot(current),
                             "topic_raw": topic,
+                            "role_reference_raw": role_reference or {},
                         },
                         ensure_ascii=False,
                     ),

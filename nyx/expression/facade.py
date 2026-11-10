@@ -11,6 +11,7 @@ import random
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import asdict
 from typing import Any, Literal, cast
 from uuid import uuid4
 
@@ -172,7 +173,11 @@ class ExpressionFacade:
             discussion is None and should_load_discussion(message)
         ) else "conversation"
         if self._skill_store is not None:
-            return await self._skill_store.for_execution(correlation_id, name, message)
+            state = await self._inner_life.get_state()
+            return await self._skill_store.for_execution(
+                correlation_id, name, message,
+                {"canon": self._canon, "inner_document": asdict(state.inner_document)},
+            )
         return self._skills.get(name)
 
     async def _pending_reply_inputs(
@@ -1102,7 +1107,6 @@ class ExpressionFacade:
                 "memories": [],
                 "facts": [],
                 "state": state,
-                "narrative": None,
                 "think": [],
                 "speak": [],
                 "needs_continuation": False,
@@ -1122,7 +1126,12 @@ class ExpressionFacade:
                 "fallback": False,
             }
             selected = initial["skill"]
+            execution = (
+                await self._skill_store.execution_context(correlation_id)
+                if self._skill_store is not None else None
+            )
             token = behavior_context.set({
+                **(execution or {}),
                 "scenario": "reply", "correlation_id": correlation_id,
                 "topic_raw": msg,
                 "skill_snapshot_raw": skill_snapshot(selected) if selected else {},

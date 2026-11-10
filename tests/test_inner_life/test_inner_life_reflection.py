@@ -1,5 +1,6 @@
 # pyright: reportPrivateUsage=false
 import json
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -11,84 +12,57 @@ from nyx.desire.store import DesireStore
 from nyx.enums import DesireType, MemoryKind, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
-from nyx.inner_life.reflection import (
-    _LONG_TERM_INIT_STRENGTH,
-    _REFLECTION_SYSTEM,
-    Reflection,
-    _build_reflection_prompt,
-    _describe_long_term_strength,
-    _drift_dim,
-    _is_duplicate_fragment,
-    _parse_reflection,
-    _to_long_term,
-    _validate_candidate,
-    drift_aesthetic,
-    drift_personality,
-    drift_values,
-)
+from nyx.inner_life.reflection import Reflection
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.store import MemoryStore
 from nyx.types import (
-    Aesthetic,
     ConversationSegment,
     DesireState,
+    InnerDocument,
+    InnerTopic,
     LLMOutput,
     LongTermDesire,
     Memory,
-    Personality,
+    MemoryFact,
     ReadingEvidence,
-    SelfNarrative,
-    Values,
 )
 
 _REFLECTION_JSON = json.dumps(
     {
-        "story": "今天对用户了解更多",
-        "becoming": "我更愿意探索了",
-        "self_view": {"自信": "稍强"},
-        "personality_delta": {"openness": 0.1, "neuroticism": -0.2},
-        "values_delta": {"altruism": 0.3},
+        "summary": "今天对用户了解更多",
+        "patches": [
+            {
+                "op": "set",
+                "section": "relationships",
+                "id": "trust",
+                "title": "信任",
+                "content": "我愿意表达自己的不同意见。",
+                "reason": "用户愿意听见我的想法",
+                "evidence": [{"id": "fact:fixture", "quote": "愿意听我表达不同意见"}],
+            }
+        ],
         "long_term_desires": [
             {
                 "type": "exploration",
                 "name": "探索骑士团",
                 "description": "了解骑士团历史",
                 "subtopics": ["骑士团"],
-                "linked_values": ["attitude_to_human", "optimism"],
             }
         ],
     }
 )
 
-_PERSONALITY: Personality = {
-    "openness": 8.0,
-    "conscientiousness": 8.0,
-    "extraversion": 2.0,
-    "agreeableness": 6.0,
-    "neuroticism": 7.0,
-}
 
-_VALUES: Values = {
-    "attitude_to_human": 8.0,
-    "ai_identity_acceptance": 6.0,
-    "altruism": 9.0,
-    "optimism": 5.0,
-}
-
-_AESTHETIC: Aesthetic = {
-    "ornate": 7.0,
-    "lyrical": 7.0,
-    "classical": 6.0,
-    "somber": 6.0,
-}
-
-_NARRATIVE = SelfNarrative(
-    identity="尼克斯",
-    story=["初始故事"],
-    self_view={"自信": "中等"},
-    becoming=["初始认知"],
+_NARRATIVE = InnerDocument(
+    topics=[
+        InnerTopic("identity", "self-understanding", "自我理解", "尼克斯"),
+        InnerTopic("narrative", "experience-0", "个人经历", "初始故事"),
+        InnerTopic("personality", "self-view-0", "自信", "中等"),
+        InnerTopic("narrative", "understanding-0", "认知变化", "初始认知"),
+    ],
+    revision=1,
     updated_at=1000.0,
 )
 
@@ -99,7 +73,6 @@ class _FakeLlm:
         self.calls: list[str] = []
         self.correlation_ids: list[str] = []
         self.user_contents: list[str] = []
-        self.aesthetic_response: str | None = None
 
     async def complete(
         self,
@@ -117,12 +90,7 @@ class _FakeLlm:
             module=module,
             type=output_type,
             model="fake",
-            content=(
-                self.aesthetic_response
-                if output_type == "aesthetic_reflection"
-                and self.aesthetic_response is not None
-                else self._response
-            ),
+            content=self._response,
             correlation_id=correlation_id,
         )
 
@@ -140,6 +108,20 @@ class _FakeMemoryFacade:
         self._memories = memories if memories is not None else []
         self.evidence_store: MemoryStore | None = None
 
+    async def recent_facts(self) -> list[MemoryFact]:
+        return [
+            MemoryFact(
+                "fixture",
+                "用户",
+                "沟通偏好",
+                "愿意听我表达不同意见",
+                1.0,
+                None,
+                None,
+                1.0,
+            )
+        ]
+
     async def browse_conversations(
         self, *, limit: int = 6
     ) -> list[ConversationSegment]:
@@ -147,8 +129,13 @@ class _FakeMemoryFacade:
 
     async def prepare_reflection_record(self, content: str, summary: str) -> Memory:
         return Memory(
-            id="reflection", created_at=1, content=content, summary=summary,
-            kind=MemoryKind.REFLECTION, type=MemoryType.LONG_TERM, freshness=1,
+            id="reflection",
+            created_at=1,
+            content=content,
+            summary=summary,
+            kind=MemoryKind.REFLECTION,
+            type=MemoryType.LONG_TERM,
+            freshness=1,
         )
 
     async def commit_reflection_record(
@@ -182,6 +169,12 @@ class _FakeMemoryFacade:
             for m in self._memories
             if (kind is None or m.kind is kind) and m.created_at > since
         )
+
+    async def inner_reflection_memories(self) -> list[Memory]:
+        return [
+            m for m in self._memories
+            if m.kind not in {MemoryKind.REFLECTION, MemoryKind.LESSON}
+        ]
 
 
 class _FakeDesireFacade:
@@ -240,389 +233,7 @@ def _make_reflection(
 
 
 async def _seed(store: InnerLifeStore) -> None:
-    await store.upsert_personality(_PERSONALITY)
-    await store.upsert_values(_VALUES)
-    await store.upsert_aesthetic(_AESTHETIC)
-    await store.upsert_narrative(_NARRATIVE)
-
-
-# ---- 纯函数 ----
-
-
-def test_drift_dim() -> None:
-    assert _drift_dim(5.0, None) == 5.0
-    assert _drift_dim(5.0, 0.3) == 5.3
-    assert _drift_dim(5.0, 2.0) == 5.5
-    assert _drift_dim(9.8, 0.5) == 10.0
-    assert _drift_dim(1.2, -0.5) == 1.0
-
-
-def test_drift_personality_and_values() -> None:
-    p = drift_personality(_PERSONALITY, {"openness": 0.1, "neuroticism": -0.2})
-    assert p["openness"] == 8.1
-    assert p["neuroticism"] == 6.8
-    assert p["conscientiousness"] == 8.0
-    v = drift_values(_VALUES, {"altruism": 2.0})
-    assert v["altruism"] == 9.5
-    assert v["optimism"] == 5.0
-
-
-def test_drift_aesthetic() -> None:
-    a = drift_aesthetic(_AESTHETIC, {"ornate": 0.3, "somber": -0.3})
-    assert a["ornate"] == pytest.approx(7.3)
-    assert a["somber"] == pytest.approx(5.7)
-    assert a["lyrical"] == 7.0  # 未提供维度原值不动
-    assert a["classical"] == 6.0
-
-
-def test_drift_aesthetic_clamps() -> None:
-    base: Aesthetic = {
-        "ornate": 9.9,
-        "lyrical": 1.1,
-        "classical": 6.0,
-        "somber": 6.0,
-    }
-    a = drift_aesthetic(base, {"ornate": 0.5, "lyrical": -0.5})
-    assert a["ornate"] == 10.0
-    assert a["lyrical"] == 1.0
-
-
-def test_drift_aesthetic_empty_delta_unchanged() -> None:
-    assert drift_aesthetic(_AESTHETIC, {}) == _AESTHETIC
-
-
-def test_build_reflection_prompt() -> None:
-    memories = [
-        Memory(
-            id="m1",
-            created_at=1.0,
-            content="c",
-            kind=MemoryKind.USER_PROFILE,
-            summary="用户喜欢历史",
-            freshness=1.0,
-            type=MemoryType.SHORT_TERM,
-        )
-    ]
-    lt = [
-        LongTermDesire(
-            id="lt1",
-            created_at=1.0,
-            type=DesireType.EXPLORATION,
-            name="探索世界",
-            description="d",
-            strength=0.5,
-            progress=0.0,
-            subtopics=[],
-        )
-    ]
-    prompt = _build_reflection_prompt(
-        memories, _PERSONALITY, _VALUES, _NARRATIVE, lt, _AESTHETIC
-    )
-    assert "用户喜欢历史" in prompt
-    assert "开放性 8.0" in prompt
-    assert "尼克斯" in prompt
-    assert "探索世界" in prompt
-    assert "强度 0.50（希望实现）" in prompt
-    empty = _build_reflection_prompt(
-        [], _PERSONALITY, _VALUES, _NARRATIVE, [], _AESTHETIC
-    )
-    assert "（无）" in empty
-
-
-def test_build_reflection_prompt_describes_zero_strength() -> None:
-    desire = LongTermDesire(
-        id="lt0", created_at=1.0, type=DesireType.EXPLORATION,
-        name="旧愿望", description="d", strength=0.0, progress=0.0,
-        subtopics=[],
-    )
-    prompt = _build_reflection_prompt(
-        [], _PERSONALITY, _VALUES, _NARRATIVE, [desire], _AESTHETIC
-    )
-    assert "强度 0.00（不再提供驱动力）" in prompt
-
-
-@pytest.mark.parametrize(("strength", "description"), [
-    (0.0, "不再提供驱动力"),
-    (0.1, "略有期待"),
-    (0.25, "有些希望实现"),
-    (0.5, "希望实现"),
-    (0.8, "很希望实现"),
-])
-def test_describe_long_term_strength(strength: float, description: str) -> None:
-    assert _describe_long_term_strength(strength) == description
-
-
-def test_build_reflection_prompt_feeds_story() -> None:
-    prompt = _build_reflection_prompt(
-        [], _PERSONALITY, _VALUES, _NARRATIVE, [], _AESTHETIC
-    )
-    assert "初始故事" in prompt  # 已写故事内容被喂进去（而非只喂条数）
-    assert "初始认知" in prompt  # 认知变化内容同样喂进去
-    assert "新的、与之不同" in prompt  # 明确指示写不同的故事片段
-
-
-def test_build_reflection_prompt_aesthetic_anchor() -> None:
-    prompt = _build_reflection_prompt(
-        [], _PERSONALITY, _VALUES, _NARRATIVE, [], _AESTHETIC
-    )
-    assert "当前审美（1-10）" in prompt
-    assert "华丽 7.0" in prompt  # 锚点行给出当前值作参照（与 personality/values 同款）
-
-
-def test_reflection_system_prompt_mentions_json() -> None:
-    # json_mode=True 要求 prompt 含 "json" 字样（OpenAI 兼容 provider 对 json_object
-    # 响应格式的硬性要求）；reflection 是 json_mode 唯一调用点，须常驻此关键词。
-    assert "JSON" in _REFLECTION_SYSTEM
-
-
-def test_reflection_system_prompt_synthesizes_old_memories_into_new_ideas() -> None:
-    assert "旧记忆" in _REFLECTION_SYSTEM
-    assert "归纳" in _REFLECTION_SYSTEM
-    assert "新点子" in _REFLECTION_SYSTEM
-    assert "不要求解决矛盾" in _REFLECTION_SYSTEM
-
-
-def test_parse_reflection_ok() -> None:
-    parsed = _parse_reflection(_REFLECTION_JSON)
-    assert parsed["story"] == "今天对用户了解更多"
-    assert parsed["becoming"] == "我更愿意探索了"
-    assert parsed["self_view"] == {"自信": "稍强"}
-    assert parsed["personality_delta"] == {"openness": 0.1, "neuroticism": -0.2}
-    assert len(parsed["long_term_desires"]) == 1
-
-
-def test_parse_reflection_missing_story() -> None:
-    with pytest.raises(ValueError):
-        _parse_reflection('{"becoming": "x"}')
-
-
-@pytest.mark.parametrize("field", ["story", "becoming"])
-def test_parse_reflection_rejects_blank_core_text(field: str) -> None:
-    payload = {"story": "s", "becoming": "b", field: "   "}
-    with pytest.raises(ValueError):
-        _parse_reflection(json.dumps(payload))
-
-
-@pytest.mark.parametrize("non_finite", ["NaN", "Infinity", "-Infinity"])
-def test_parse_reflection_rejects_non_finite_drift(non_finite: str) -> None:
-    raw = (
-        '{"story":"s","becoming":"b",'
-        f'"personality_delta":{{"openness":{non_finite}}}}}'
-    )
-    with pytest.raises(ValueError, match="有限"):
-        _parse_reflection(raw)
-
-
-def test_parse_reflection_bad_types() -> None:
-    with pytest.raises(ValueError):
-        _parse_reflection('{"story": "s", "becoming": "b", "self_view": {"k": 1}}')
-    with pytest.raises(ValueError):
-        _parse_reflection(
-            '{"story": "s", "becoming": "b", "personality_delta": {"openness": "x"}}'
-        )
-    with pytest.raises(ValueError):
-        _parse_reflection('{"story": "s", "becoming": "b", "long_term_desires": "x"}')
-    with pytest.raises(ValueError):
-        _parse_reflection("[]")
-
-
-def test_parse_reflection_defaults() -> None:
-    parsed = _parse_reflection('{"story": "s", "becoming": "b"}')
-    assert parsed["self_view"] == {}
-    assert parsed["personality_delta"] == {}
-    assert parsed["values_delta"] == {}
-    assert parsed["aesthetic_delta"] == {}
-    assert parsed["long_term_desires"] == []
-
-
-def test_parse_reflection_unknown_drift_key() -> None:
-    # 拼错的大五维度 key 不被静默丢弃，而是报错
-    with pytest.raises(ValueError):
-        _parse_reflection(
-            '{"story": "s", "becoming": "b", "personality_delta": {"openess": 0.4}}'
-        )
-    # 三观维度 key 拼错同样报错
-    with pytest.raises(ValueError):
-        _parse_reflection(
-            '{"story": "s", "becoming": "b", "values_delta": {"extroversion": 0.4}}'
-        )
-
-
-def test_parse_reflection_aesthetic_delta() -> None:
-    parsed = _parse_reflection(
-        '{"story": "s", "becoming": "b", "aesthetic_delta": {"ornate": 0.2}}'
-    )
-    assert parsed["aesthetic_delta"] == {"ornate": 0.2}
-
-
-def test_parse_reflection_aesthetic_unknown_key_raises() -> None:
-    with pytest.raises(ValueError):
-        _parse_reflection(
-            '{"story": "s", "becoming": "b", "aesthetic_delta": {"foo": 0.2}}'
-        )
-
-
-def test_parse_reflection_aesthetic_non_numeric_raises() -> None:
-    with pytest.raises(ValueError):
-        _parse_reflection(
-            '{"story": "s", "becoming": "b", "aesthetic_delta": {"ornate": "x"}}'
-        )
-
-
-def test_parse_reflection_drops_bad_candidate() -> None:
-    raw = json.dumps(
-        {
-            "story": "s",
-            "becoming": "b",
-            "long_term_desires": [
-                {
-                    "type": "exploration",
-                    "name": "n",
-                    "description": "d",
-                    "subtopics": ["骑士团"],
-                    "linked_values": ["optimism"],
-                },
-                # 坏候选：subtopics 是字符串而非数组
-                {
-                    "type": "exploration",
-                    "name": "bad",
-                    "description": "d",
-                    "subtopics": "骑士团",
-                    "linked_values": ["optimism"],
-                },
-            ],
-        }
-    )
-    parsed = _parse_reflection(raw)
-    # 好候选保留，坏候选被跳过，核心字段照常解析
-    assert parsed["story"] == "s"
-    assert len(parsed["long_term_desires"]) == 1
-    assert parsed["long_term_desires"][0]["name"] == "n"
-
-
-def test_validate_candidate() -> None:
-    with pytest.raises(ValueError):
-        _validate_candidate(
-            {
-                "type": "fly", "name": "x", "description": "d",
-                "subtopics": [], "linked_values": [],
-            }
-        )
-    with pytest.raises(ValueError):
-        _validate_candidate(
-            {
-                "type": "exploration", "description": "d", "subtopics": [],
-                "linked_values": [],
-            }
-        )
-    with pytest.raises(ValueError):
-        _validate_candidate(
-            {
-                "type": "exploration", "name": "n", "description": "d",
-                "subtopics": [1], "linked_values": [],
-            }
-        )
-    _validate_candidate(
-        {
-            "type": "exploration", "name": "n", "description": "d",
-            "subtopics": [], "linked_values": [],
-        }
-    )
-
-
-@pytest.mark.parametrize("type_", ["creation", "rest"])
-def test_validate_candidate_rejects_non_reflection_desire_types(type_: str) -> None:
-    with pytest.raises(ValueError, match="exploration/interaction"):
-        _validate_candidate(
-            {
-                "type": type_, "name": "n", "description": "d",
-                "subtopics": [], "linked_values": [],
-            }
-        )
-
-
-@pytest.mark.parametrize(
-    "linked_values",
-    [None, "optimism", [1], ["hope"], ["Optimism"]],
-)
-def test_parse_reflection_drops_candidate_with_bad_linked_values(
-    linked_values: object,
-) -> None:
-    candidate: dict[str, object] = {
-        "type": "exploration",
-        "name": "n",
-        "description": "d",
-        "subtopics": [],
-        "linked_values": linked_values,
-    }
-    parsed = _parse_reflection(json.dumps({
-        "story": "s",
-        "becoming": "b",
-        "long_term_desires": [candidate],
-    }))
-    assert parsed["long_term_desires"] == []
-
-
-def test_parse_reflection_drops_candidate_missing_linked_values() -> None:
-    parsed = _parse_reflection(json.dumps({
-        "story": "s",
-        "becoming": "b",
-        "long_term_desires": [{
-            "type": "exploration",
-            "name": "n",
-            "description": "d",
-            "subtopics": [],
-        }],
-    }))
-    assert parsed["long_term_desires"] == []
-
-
-def test_parse_reflection_deduplicates_linked_values_stably() -> None:
-    parsed = _parse_reflection(json.dumps({
-        "story": "s",
-        "becoming": "b",
-        "long_term_desires": [{
-            "type": "exploration",
-            "name": "n",
-            "description": "d",
-            "subtopics": [],
-            "linked_values": ["optimism", "altruism", "optimism"],
-            "ignored": True,
-        }],
-    }))
-    assert parsed["long_term_desires"][0]["linked_values"] == [
-        "optimism", "altruism",
-    ]
-
-
-def test_to_long_term() -> None:
-    lt = _to_long_term(
-        {
-            "type": "exploration",
-            "name": "n",
-            "description": "d",
-            "subtopics": ["骑士团"],
-            "linked_values": ["altruism", "optimism"],
-        },
-        1234.5,
-    )
-    assert lt.type is DesireType.EXPLORATION
-    assert lt.strength == _LONG_TERM_INIT_STRENGTH
-    assert lt.progress == 0.0
-    assert lt.subtopics == ["骑士团"]
-    assert lt.linked_values == ["altruism", "optimism"]
-    assert lt.created_at == 1234.5
-
-
-def test_is_duplicate_fragment() -> None:
-    # strip 后精确相等 → 重复（含前后空白）
-    assert _is_duplicate_fragment(" 初始故事 ", ["初始故事"]) is True
-    # 高相似度（差一个标点）→ 重复
-    assert _is_duplicate_fragment("我渴望被人类理解。", ["我渴望被人类理解"]) is True
-    # 明显不同 → 不重复
-    assert _is_duplicate_fragment("今天学了新东西", ["初始故事"]) is False
-    # 空列表 → 不重复
-    assert _is_duplicate_fragment("任意片段", []) is False
+    await store.upsert_document(_NARRATIVE)
 
 
 # ---- reflection.run ----
@@ -654,7 +265,10 @@ async def test_prepare_includes_trigger_evidence_and_uses_creation_recency() -> 
         store,
         llm,
         _FakeEvaluator(),
-        _FakeMemoryFacade([old, new]),
+        _FakeMemoryFacade([
+            old, new,
+            replace(new, id="strategy", kind=MemoryKind.LESSON, content="检索方法经验"),
+        ]),
         _FakeDesireFacade(),
     )
     try:
@@ -674,10 +288,8 @@ async def test_prepare_includes_trigger_evidence_and_uses_creation_recency() -> 
         prompt = llm.user_contents[0]
         assert "触发原因：记忆矛盾" in prompt
         assert "低新鲜度新记忆" in prompt
-        recent_section = prompt.split("近期记忆（按首次创建时间从新到旧）：", 1)[1]
-        assert recent_section.index("低新鲜度新记忆") < recent_section.index(
-            "高新鲜度旧记忆"
-        )
+        assert prompt.index("[memory:new]") < prompt.index("[memory:old]")
+        assert "[memory:strategy]" not in prompt and "检索方法经验" not in prompt
     finally:
         await database.conn.close()
 
@@ -697,20 +309,10 @@ async def test_run_writes_back() -> None:
         assert llm.correlation_ids == ["cid"]
         assert [o.type for o in evaluator.evaluated] == ["reflection"]
 
-        p = await store.get_personality()
-        assert p is not None
-        assert p["openness"] == pytest.approx(8.1)
-        assert p["neuroticism"] == pytest.approx(6.8)
-
-        v = await store.get_values()
-        assert v is not None
-        assert v["altruism"] == pytest.approx(9.3)
-
-        n = await store.get_narrative()
-        assert n is not None
-        assert len(n.story) == 2
-        assert len(n.becoming) == 2
-        assert n.self_view == {"自信": "稍强"}
+        n = await store.get_document()
+        assert n is not None and n.revision == 2
+        assert any(t.id == "trust" for t in n.topics)
+        assert all(t in n.topics for t in _NARRATIVE.topics)
 
         assert len(desire.added) == 1
         assert desire.prepared == 1
@@ -734,17 +336,10 @@ async def test_run_pressures_creation() -> None:
         await database.conn.close()
 
 
-async def test_run_dedup_story() -> None:
-    # story 与已有片段实质重复 → 不追加；becoming 不同照常追加
+async def test_run_without_patches_preserves_document() -> None:
+    # 空修订保留正文和版本，只更新最近反思时间
     response = json.dumps(
-        {
-            "story": "初始故事",
-            "becoming": "新认知",
-            "self_view": {"自信": "稍强"},
-            "personality_delta": {"openness": 0.1},
-            "values_delta": {},
-            "long_term_desires": [],
-        }
+        {"summary": "初始故事", "patches": [], "long_term_desires": []}
     )
     database = await db.connect(":memory:")
     store = InnerLifeStore(database)
@@ -756,22 +351,20 @@ async def test_run_dedup_story() -> None:
     try:
         await _seed(store)
         await reflection.run()
-        n = await store.get_narrative()
+        n = await store.get_document()
         assert n is not None
-        assert len(n.story) == 1  # 重复 story 被去重，不追加
-        assert len(n.becoming) == 2  # becoming 不同，照常追加
-        p = await store.get_personality()
-        assert p is not None
-        assert p["openness"] == pytest.approx(8.1)  # 慢变量不受去重影响
+        assert n.topics == _NARRATIVE.topics
+        assert n.revision == 1
+        assert n.updated_at > _NARRATIVE.updated_at
     finally:
         await database.conn.close()
 
 
-async def test_run_returns_outcome_new_story() -> None:
-    # story 真新增 → ReflectionOutcome(story_is_new=True)
+async def test_run_returns_outcome_document_changed() -> None:
+    # 有主题修订时返回文档变化标志
     database = await db.connect(":memory:")
     store = InnerLifeStore(database)
-    llm = _FakeLlm()  # story="今天对用户了解更多" ≠ "初始故事"
+    llm = _FakeLlm()
     reflection = _make_reflection(
         store, llm, _FakeEvaluator(), _FakeMemoryFacade(), _FakeDesireFacade()
     )
@@ -779,23 +372,16 @@ async def test_run_returns_outcome_new_story() -> None:
         await _seed(store)
         outcome = await reflection.run("cid")
         assert outcome is not None
-        assert outcome.story == "今天对用户了解更多"
-        assert outcome.story_is_new is True
+        assert outcome.summary == "今天对用户了解更多"
+        assert outcome.document_changed is True
     finally:
         await database.conn.close()
 
 
-async def test_run_returns_outcome_dedup_story() -> None:
-    # story 与已有片段重复 → 去重跳过，ReflectionOutcome(story_is_new=False)
+async def test_run_returns_outcome_without_document_change() -> None:
+    # 空修订仍返回摘要，但不产生文档变化
     response = json.dumps(
-        {
-            "story": "初始故事",
-            "becoming": "新认知",
-            "self_view": {},
-            "personality_delta": {},
-            "values_delta": {},
-            "long_term_desires": [],
-        }
+        {"summary": "初始故事", "patches": [], "long_term_desires": []}
     )
     database = await db.connect(":memory:")
     store = InnerLifeStore(database)
@@ -807,8 +393,8 @@ async def test_run_returns_outcome_dedup_story() -> None:
         await _seed(store)
         outcome = await reflection.run()
         assert outcome is not None
-        assert outcome.story == "初始故事"
-        assert outcome.story_is_new is False
+        assert outcome.summary == "初始故事"
+        assert outcome.document_changed is False
     finally:
         await database.conn.close()
 
@@ -836,17 +422,25 @@ async def test_run_long_term_capacity() -> None:
             "name": f"n{i}",
             "description": "d",
             "subtopics": [],
-            "linked_values": ["ai_identity_acceptance"],
         }
         for i in range(3)
     ]
     response = json.dumps(
         {
-            "story": "s",
-            "becoming": "b",
-            "self_view": {},
-            "personality_delta": {},
-            "values_delta": {},
+            "summary": "s",
+            "patches": [
+                {
+                    "op": "set",
+                    "section": "relationships",
+                    "id": "trust",
+                    "title": "信任",
+                    "content": "我愿意表达自己的不同意见。",
+                    "reason": "用户愿意听见我的想法",
+                    "evidence": [
+                        {"id": "fact:fixture", "quote": "愿意听我表达不同意见"}
+                    ],
+                }
+            ],
             "long_term_desires": candidates,
         }
     )
@@ -873,22 +467,32 @@ async def test_run_long_term_capacity() -> None:
 async def test_run_survives_bad_candidate() -> None:
     response = json.dumps(
         {
-            "story": "s",
-            "becoming": "b",
-            "self_view": {},
-            "personality_delta": {"openness": 0.1},
-            "values_delta": {},
+            "summary": "s",
+            "patches": [
+                {
+                    "op": "set",
+                    "section": "relationships",
+                    "id": "trust",
+                    "title": "信任",
+                    "content": "我愿意表达自己的不同意见。",
+                    "reason": "用户愿意听见我的想法",
+                    "evidence": [
+                        {"id": "fact:fixture", "quote": "愿意听我表达不同意见"}
+                    ],
+                }
+            ],
             "long_term_desires": [
                 {
                     "type": "exploration",
                     "name": "n",
                     "description": "d",
                     "subtopics": ["x"],
-                    "linked_values": ["altruism"],
                 },
                 {
-                    "type": "fly", "name": "bad", "description": "d",
-                    "subtopics": [], "linked_values": ["altruism"],
+                    "type": "fly",
+                    "name": "bad",
+                    "description": "d",
+                    "subtopics": [],
                 },
             ],
         }
@@ -904,10 +508,8 @@ async def test_run_survives_bad_candidate() -> None:
         await _seed(store)
         await reflection.run()
         # 核心慢变量不受坏候选影响，照常回写
-        n = await store.get_narrative()
-        assert n is not None and len(n.story) == 2
-        p = await store.get_personality()
-        assert p is not None and p["openness"] == pytest.approx(8.1)
+        n = await store.get_document()
+        assert n is not None and n.revision == 2
         # 只有好候选被新增
         assert len(desire.added) == 1
         assert desire.added[0].name == "n"
@@ -952,7 +554,7 @@ async def test_run_real_desire_facade_commits_without_nested_transaction() -> No
         await _seed(store)
         await reflection.run("cid")
         saved = await desire_store.list_long_term()
-        assert saved[0].linked_values == ["attitude_to_human", "optimism"]
+        assert saved[0].name == "探索骑士团"
         assert embed_transaction_states == [False]
     finally:
         await database.conn.close()
@@ -993,7 +595,7 @@ async def test_run_embedding_failure_preserves_all_reflection_state() -> None:
         await _seed(store)
         with pytest.raises(RuntimeError, match="embed down"):
             await reflection.run("cid")
-        assert await store.get_personality() == _PERSONALITY
+        assert await store.get_document() == _NARRATIVE
         assert await desire_store.list_long_term() == []
         assert await desire_store.get_value(DesireType.CREATION) is None
     finally:
@@ -1037,8 +639,7 @@ async def test_run_commit_failure_rolls_back_long_term_and_slow_variables(
         await _seed(store)
         with pytest.raises(RuntimeError, match="pressure write failed"):
             await reflection.run("cid")
-        assert await store.get_personality() == _PERSONALITY
-        assert await store.get_values() == _VALUES
+        assert await store.get_document() == _NARRATIVE
         assert await desire_store.list_long_term() == []
         assert await desire_store.get_value(DesireType.CREATION) is None
     finally:
@@ -1080,7 +681,6 @@ async def test_apply_snapshot_conflict_rolls_back_reflection() -> None:
         strength=0.5,
         progress=0.0,
         subtopics=[],
-        linked_values=[],
     )
     try:
         await _seed(store)
@@ -1089,7 +689,7 @@ async def test_apply_snapshot_conflict_rolls_back_reflection() -> None:
         with pytest.raises(RuntimeError, match="快照"):
             async with database.transaction():
                 await reflection.apply(plan)
-        assert await store.get_personality() == _PERSONALITY
+        assert await store.get_document() == _NARRATIVE
         assert [d.id for d in await desire_store.list_long_term()] == ["external"]
         assert await desire_store.get_value(DesireType.CREATION) is None
     finally:
@@ -1107,22 +707,16 @@ async def test_apply_slow_variable_conflict_rolls_back_reflection() -> None:
     try:
         await _seed(store)
         plan = await reflection.prepare("cid")
-        await store.upsert_narrative(SelfNarrative(
-            identity=_NARRATIVE.identity,
-            story=[*_NARRATIVE.story, "另一轮先提交"],
-            self_view=_NARRATIVE.self_view,
-            becoming=_NARRATIVE.becoming,
-            updated_at=2000.0,
-        ))
+        await store.upsert_document(InnerDocument(_NARRATIVE.topics, 2, 2000.0))
 
-        with pytest.raises(RuntimeError, match="慢变量快照"):
+        with pytest.raises(RuntimeError, match="文档快照"):
             async with database.transaction():
                 await reflection.apply(plan)
 
-        narrative = await store.get_narrative()
+        narrative = await store.get_document()
         assert narrative is not None
-        assert narrative.story == ["初始故事", "另一轮先提交"]
-        assert await store.get_personality() == _PERSONALITY
+        assert narrative.revision == 2
+        assert narrative.updated_at == 2000.0
         assert desire.pressured == []
     finally:
         await database.conn.close()
@@ -1141,10 +735,7 @@ async def test_run_rejects_invalid_json_for_delivery_retry() -> None:
         with pytest.raises(ValueError):
             await reflection.run("cid")
         assert llm.calls == ["reflection"]
-        p = await store.get_personality()
-        assert p == _PERSONALITY
-        n = await store.get_narrative()
-        assert n is not None and len(n.story) == 1
+        assert await store.get_document() == _NARRATIVE
         assert desire.added == []
         assert desire.pressured == []  # 失败路径不触发创造欲加压
     finally:
@@ -1165,152 +756,126 @@ async def test_run_unseeded_raises() -> None:
         await database.conn.close()
 
 
-# ---- 审美维度：独立原文证据与事务消费 ----
-
-def _reading_memory(
-    created_at: float, kind: MemoryKind = MemoryKind.READING
-) -> Memory:
-    return Memory(
-        id=f"r{created_at}",
-        created_at=created_at,
-        content="读书记忆",
-        kind=kind,
-        summary="读了一章",
-        freshness=1.0,
-        type=MemoryType.LONG_TERM,
-    )
-
-
-async def _run_and_get_aesthetic(
-    memories: list[Memory],
-    aesthetic_delta: dict[str, float],
-    blocks: int = 0,
-    reference: str = "valid",
-) -> Aesthetic | None:
-    """跑一轮反思（固定 aesthetic_delta），返回落库后的审美值。"""
-    response = json.dumps(
-        {
-            "story": "s",
-            "becoming": "b",
-            "self_view": {},
-            "personality_delta": {},
-            "values_delta": {},
-            "aesthetic_delta": aesthetic_delta,
-            "long_term_desires": [],
-        }
-    )
-    database = await db.connect(":memory:")
-    store = InnerLifeStore(database)
-    llm = _FakeLlm(response)
-    memory = _FakeMemoryFacade(memories)
-    memory.evidence_store = MemoryStore(database)
-    for i in range(blocks):
-        await memory.evidence_store.record_reading_evidence(
-            "source:book:test", "test", "原" * 5999 + str(i), str(i)
-        )
-    evidence = await memory.pending_reading_evidence()
-    llm.aesthetic_response = json.dumps({
-        "aesthetic_delta": aesthetic_delta,
-        "evidence": [
-            {"id": e.id if reference != "unknown" else "unknown",
-             "quote": "原" if reference != "fake" else "伪造"}
-            for e in evidence
-        ] if reference != "missing" else [],
-    })
-    reflection = _make_reflection(
-        store, llm, _FakeEvaluator(), memory, _FakeDesireFacade()
-    )
-    try:
-        await _seed(store)
-        await reflection.run()
-        return await store.get_aesthetic()
-    finally:
-        await database.conn.close()
-
-
-async def test_run_aesthetic_zero_reading_unchanged() -> None:
-    a = await _run_and_get_aesthetic([], {"ornate": 0.3})
-    assert a == _AESTHETIC  # 无新读章 → 审美不动
-
-
-async def test_run_aesthetic_one_reading_scaled_third() -> None:
-    a = await _run_and_get_aesthetic(
-        [], {"ornate": 0.3, "somber": -0.3}, blocks=1
-    )
-    assert a is not None
-    assert a["ornate"] == pytest.approx(7.1)  # 7 + 0.3/3
-    assert a["somber"] == pytest.approx(5.9)  # 6 - 0.3/3
-    assert a["lyrical"] == 7.0
-    assert a["classical"] == 6.0
-
-
-async def test_run_aesthetic_three_reading_full() -> None:
-    a = await _run_and_get_aesthetic([], {"ornate": 0.3}, blocks=3)
-    assert a is not None
-    assert a["ornate"] == pytest.approx(7.3)  # 7 + 0.3 满额
-
-
-async def test_run_aesthetic_ignores_non_reading() -> None:
-    a = await _run_and_get_aesthetic(
-        [_reading_memory(2000.0, kind=MemoryKind.USER_PROFILE)], {"ornate": 0.3}
-    )
-    assert a == _AESTHETIC  # user_profile 不计入新读章数
-
-
-@pytest.mark.parametrize("reference", ["fake", "unknown", "missing"])
-async def test_aesthetic_invalid_source_reference_preserves_evidence(
-    reference: str,
-) -> None:
-    assert await _run_and_get_aesthetic(
-        [], {"ornate": 0.5}, blocks=1, reference=reference
-    ) == _AESTHETIC
-
-
-async def test_aesthetic_clamps_before_character_scaling() -> None:
-    a = await _run_and_get_aesthetic([], {"ornate": 9.0}, blocks=1)
-    assert a is not None
-    assert a["ornate"] == pytest.approx(7 + 0.5 / 3)
-
-
-async def test_aesthetic_consumption_rolls_back_with_slow_variables(
+@pytest.mark.parametrize("mode", ["change", "no-change", "invalid", "rollback"])
+@pytest.mark.parametrize("section", ["worldview", "aesthetic"])
+async def test_document_and_reading_evidence_commit_together(
+    mode: str,
+    section: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database = await db.connect(":memory:")
     store = InnerLifeStore(database)
+    memory_store = MemoryStore(database)
     memory = _FakeMemoryFacade()
-    memory.evidence_store = MemoryStore(database)
-    llm = _FakeLlm()
+    memory.evidence_store = memory_store
+    desire = _FakeDesireFacade()
     try:
         await _seed(store)
-        await memory.evidence_store.record_reading_evidence(
-            "source:book:test", "test", "原" * 6000, "one"
+        evidence_id = await memory_store.record_reading_evidence(
+            "book:fixture",
+            "小说原文",
+            "她没有说安慰的话，只把灯留在了窗边。",
+            "p1",
         )
-        evidence = await memory.pending_reading_evidence()
-        llm.aesthetic_response = json.dumps({
-            "aesthetic_delta": {"ornate": 0.3},
-            "evidence": [{"id": evidence[0].id, "quote": "原"}],
-        })
+        assert evidence_id is not None
+        patches = [
+            {
+                "op": "set",
+                "section": section,
+                "id": "quiet-care",
+                "title": "细节中的关心",
+                "content": "我开始留意不直说关心的小动作。",
+                "reason": "留灯这个动作承载了感情",
+                "evidence": [
+                    {"id": f"reading:{evidence_id}", "quote": "把灯留在了窗边"}
+                ],
+            }
+        ]
+        consumed: list[str] = []
+        if mode == "no-change":
+            patches = []
+            consumed = [f"reading:{evidence_id}"]
+        elif mode == "invalid":
+            patches[0]["evidence"] = [
+                {"id": f"reading:{evidence_id}", "quote": "原文没有这句话"}
+            ]
+        llm = _FakeLlm(
+            json.dumps(
+                {
+                    "summary": "我想了想这段文字。",
+                    "patches": patches,
+                    "consumed_reading_ids": consumed,
+                }
+            )
+        )
+        reflection = _make_reflection(store, llm, _FakeEvaluator(), memory, desire)
+        if mode == "invalid":
+            with pytest.raises(ValueError, match="引用"):
+                await reflection.run()
+            assert await store.get_document() == _NARRATIVE
+            assert len(await memory_store.pending_reading_evidence()) == 1
+            return
+        plan = await reflection.prepare("reading-test")
+        if mode == "rollback":
+            original = desire.pressure_creation
+
+            async def fail(_delta: float) -> None:
+                raise RuntimeError("commit failed")
+
+            monkeypatch.setattr(desire, "pressure_creation", fail)
+            with pytest.raises(RuntimeError, match="commit failed"):
+                async with database.transaction():
+                    await reflection.apply(plan)
+            assert await store.get_document() == _NARRATIVE
+            assert len(await memory_store.pending_reading_evidence()) == 1
+            monkeypatch.setattr(desire, "pressure_creation", original)
+        async with database.transaction():
+            await reflection.apply(plan)
+        document = await store.get_document()
+        assert document is not None
+        assert document.revision == (1 if mode == "no-change" else 2)
+        assert await memory_store.pending_reading_evidence() == []
+        with pytest.raises(RuntimeError, match="快照"):
+            async with database.transaction():
+                await reflection.apply(plan)
+        assert llm.calls == ["reflection"]
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("section", ["worldview", "aesthetic"])
+async def test_document_topics_can_change_from_conversation(section: str) -> None:
+    conversation = "我喜欢你把不确定的地方也说出来，不用为了好听修饰它。"
+    memory = _FakeMemoryFacade([
+        Memory(
+            id="feedback", created_at=1100, content=conversation,
+            summary="用户希望我保留真实的不确定性", freshness=1.0,
+            kind=MemoryKind.USER_PROFILE, type=MemoryType.SHORT_TERM,
+        )
+    ])
+    llm = _FakeLlm(json.dumps({
+        "summary": "我想保留表达中的真实。",
+        "patches": [{
+            "op": "set", "section": section, "id": "honest-expression",
+            "title": "表达中的真实",
+            "content": "我更愿意保留不确定，也在意朴素的真实。",
+            "reason": "用户的反馈让我重新看待修饰和诚实的关系",
+            "evidence": [{"id": "memory:feedback", "quote": conversation}],
+        }],
+    }))
+    database = await db.connect(":memory:")
+    store = InnerLifeStore(database)
+    try:
+        await _seed(store)
         reflection = _make_reflection(
             store, llm, _FakeEvaluator(), memory, _FakeDesireFacade()
         )
-        plan = await reflection.prepare("trace")
-
-        async def fail_write(value: Personality) -> None:
-            raise RuntimeError("write failed")
-
-        with monkeypatch.context() as patch:
-            patch.setattr(store, "upsert_personality", fail_write)
-            with pytest.raises(RuntimeError, match="write failed"):
-                async with database.transaction():
-                    await reflection.apply(plan)
-        assert await memory.pending_reading_evidence() == evidence
-        assert await store.get_aesthetic() == _AESTHETIC
-        await memory.evidence_store.record_reading_evidence(
-            "source:book:test", "test", "新", "late"
-        )
-        async with database.transaction():
-            await reflection.apply(plan)
-        assert [e.content for e in await memory.pending_reading_evidence()] == ["新"]
-        assert "trace" == llm.correlation_ids[-1]
+        outcome = await reflection.run()
+        document = await store.get_document()
+        assert document is not None and document.revision == 2
+        assert outcome.document_changed
+        assert document.topics[-1].section == section
+        assert document.topics[:-1] == _NARRATIVE.topics
+        assert llm.calls == ["reflection"]
     finally:
-        await database.conn.close()
+        await database.close()

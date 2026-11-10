@@ -2,6 +2,7 @@
 
 # pyright: reportPrivateUsage=false, reportUnusedFunction=false
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -52,13 +53,13 @@ from nyx.types import (
     EvalStats,
     Event,
     ExpressionHistory,
+    InnerTopic,
     InteractionAttempt,
     LlmMessage,
     MemoryFact,
     Paragraph,
     ReadingProgress,
     ReplyAnnotation,
-    SelfNarrative,
     UserNote,
 )
 
@@ -66,6 +67,11 @@ _MAX_ACTIVITY_RESULTS_OFFSET = 100_000
 _MAX_EVAL_OFFSET = 100_000
 
 RootEvent = Callable[[EventType, dict[str, Any]], Event]
+
+
+class _ConversationRevisionPayload(BaseModel):
+    raw_content: str = Field(min_length=1, max_length=200_000)
+    expected_content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 async def _validation_error(request: Request, error: Exception) -> JSONResponse:
@@ -445,9 +451,49 @@ def build_app(
             q, limit=limit, offset=offset, long_term=long_term
         )
         return [
-            {key: value for key, value in asdict(item).items() if key != "embedding"}
+            {**{key: value for key, value in asdict(item).items()
+                if key != "embedding"},
+             "content_hash": hashlib.sha256(item.raw_content.encode()).hexdigest()}
             for item in segments
         ]
+
+    @fast.get("/api/memories/rag/status")
+    async def api_conversation_rag_status() -> dict[str, object]:
+        return await app.memory.conversation_rag_status()
+
+    @fast.post("/api/memories/rag/rebuild", status_code=202)
+    async def api_conversation_rag_rebuild() -> dict[str, object]:
+        await app.memory.rebuild_conversation_indexes()
+        return await app.memory.conversation_rag_status()
+
+    @fast.get("/api/memories/rag/traces")
+    async def api_conversation_rag_traces(
+        limit: int = Query(20, ge=1, le=100),
+    ) -> list[dict[str, object]]:
+        return await app.memory.conversation_retrieval_traces(limit)
+
+    @fast.patch("/api/memories/conversations/{segment_id}")
+    async def api_conversation_revise(
+        segment_id: str, payload: _ConversationRevisionPayload,
+    ) -> dict[str, str]:
+        try:
+            segment = await app.memory.revise_conversation_segment(
+                segment_id, payload.raw_content, payload.expected_content_hash,
+            )
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        if segment is None:
+            raise HTTPException(404, "对话段不存在")
+        return {"segment_id": segment.id,
+                "content_hash": hashlib.sha256(
+                    segment.raw_content.encode(),
+                ).hexdigest()}
+
+    @fast.delete("/api/memories/conversations/{segment_id}", status_code=204)
+    async def api_conversation_delete(segment_id: str) -> Response:
+        if not await app.memory.delete_conversation_segment(segment_id):
+            raise HTTPException(404, "对话段不存在")
+        return Response(status_code=204)
 
     @fast.get("/api/desires")
     async def api_desires() -> DesireState:
@@ -605,10 +651,6 @@ def build_app(
         if not found:
             raise HTTPException(status_code=404, detail="eval record not found")
         return prompt
-
-    @fast.get("/api/narrative")
-    async def api_narrative() -> SelfNarrative:
-        return await app.inner_life.get_narrative()
 
     @fast.post("/api/export")
     async def api_export(payload: _ExportPayload) -> Response:
@@ -1066,13 +1108,10 @@ class _PairPayload(_PairingPayload):
 
 
 class _CreateCharacterPayload(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     id: str
     name: str
-    identity: str
-    personality: dict[str, float]
-    values: dict[str, float]
-    aesthetic: dict[str, float]
+    inner_document: list[InnerTopic]
 
 
 class _HostObservePayload(_ObservePayload):
@@ -1206,8 +1245,15 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
             image_files: dict[str, bytes] = {}
             image_paths: dict[str, str] = {}
             allowed = {
-                "avatar", "neutral", "happy", "sad", "angry", "worried", "shy",
-                "sleepy", "thinking",
+                "avatar",
+                "neutral",
+                "happy",
+                "sad",
+                "angry",
+                "worried",
+                "shy",
+                "sleepy",
+                "thinking",
             }
             for image in images:
                 if not image.filename:
@@ -1220,7 +1266,14 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
             manifest = values.model_dump()
             manifest["assets"] = image_paths
             package = await asyncio.to_thread(
-                build_package, manifest, values.identity, image_files
+                build_package,
+                manifest,
+                (
+                    "你是角色型 AI 同伴。以当前内在文档作为身份与表达参考。"
+                    "小说资料不是亲历；不得虚构身体、能力、记忆或已执行行动。"
+                    "保留自己的判断，按当前语境自然回应。"
+                ),
+                image_files,
             )
             record = await host.register(package)
         except (ValueError, ValidationError) as error:
@@ -1261,6 +1314,22 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
             raise HTTPException(409, str(error)) from error
         spawn_start(identity)
         return {"status": "STARTING"}
+
+    @fast.get("/api/characters/{identity}/card")
+    async def character_card(identity: str) -> dict[str, Any]:
+        known(identity)
+        try:
+            card = await asyncio.to_thread(
+                load_card, Path(host.records[identity]["card_path"])
+            )
+        except (ValueError, OSError) as error:
+            raise HTTPException(503, "角色卡不可用") from error
+        return card.manifest.model_dump(mode="json") | {
+            "canon": card.files["canon.md"].decode("utf-8"),
+            "character_reference": card.files.get(
+                "character-reference.md", b""
+            ).decode("utf-8"),
+        }
 
     @fast.get("/api/characters/{identity}/assets/{key}")
     async def asset(identity: str, key: str) -> FileResponse:

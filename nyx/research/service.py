@@ -13,7 +13,7 @@ from nyx.behavior.service import BehaviorService
 from nyx.behavior.store import BehaviorStore, SkillStore, skill_snapshot
 from nyx.config import ExplorationConfig
 from nyx.db import DATABASE_ERRORS
-from nyx.enums import ActivityStatus, ActivityType, EventType, MemoryKind
+from nyx.enums import ActivityStatus, ActivityType, EventType
 from nyx.eval.evaluator import Evaluator
 from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient
@@ -186,18 +186,13 @@ class ResearchService:
                 if inherited and inherited["name"] == "discussion"
                 else skill_snapshot(await self.skills.load("discussion"))
             )
-            lessons = await self.memory.search(question, kind=MemoryKind.LESSON)
-            recent_reflections = await self.store.list_records("behavior_reflection")
-            strategies = [
-                item["experience_content_raw"].split("【原文证据】", 1)[0][:2000]
-                for item in recent_reflections
-                if item["target_skill"] == "discussion"
-                and item.get("experience_id")
-                and item.get("experience_content_raw")
-            ][:3]
-            strategies.extend(
-                item.content.split("【原文证据】", 1)[0][:2000] for item in lessons[:5]
+            lessons = await self.memory.search_behavior_experiences(
+                question,
+                "discussion",
             )
+            strategies = [
+                item.content.split("【原文证据】", 1)[0][:2000] for item in lessons[:5]
+            ]
             history = await self.store.list_records("research_run", 20)
             initial_progress: dict[str, Any] = (
                 dict(activity.progress) if activity else {"intent": question}
@@ -320,7 +315,6 @@ class ResearchService:
             self.evaluator,
             self.tools,
             _RunCheckpointStore(self, record),
-            None,
             self.memory,
             self.config,
             self.canon,

@@ -10,7 +10,8 @@ export type View =
   | "behavior"
   | "eval"
   | "history"
-  | "settings";
+  | "settings"
+  | "character-create";
 
 type RightDockProps = {
   view: View; // 当前视图，用于高亮激活入口
@@ -53,8 +54,8 @@ export default function RightDock({ view, onSwitch, onOpenSettings, onReturnToPe
       ))}
       <button
         type="button"
-        className={`right-dock__entry right-dock__entry--settings${view === "settings" ? " right-dock__entry--active" : ""}`}
-        aria-pressed={view === "settings"}
+        className={`right-dock__entry right-dock__entry--settings${(view === "settings" || view === "character-create") ? " right-dock__entry--active" : ""}`}
+        aria-pressed={(view === "settings" || view === "character-create")}
         aria-label="设置"
         title="设置"
         onClick={onOpenSettings}

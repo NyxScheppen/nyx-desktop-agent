@@ -531,7 +531,9 @@ async def test_role_switch_preserves_runtime_and_independent_save(
         await host.select("alice")
         assert host.apps["nyx"] is nyx
         assert nyx.database is not alice.database
-        assert (await alice.inner_life.get_state()).personality["openness"] == 5
+        assert (await alice.inner_life.get_state()).inner_document.topics[
+            0
+        ].content == "Alice"
     finally:
         await host.close()
 
@@ -645,14 +647,20 @@ async def test_concurrent_import_limit_and_restore_save(
         await host.start("alice", run=False)
         app = host.apps["alice"]
         assert app.database is not None
-        async with app.database.transaction() as conn:
-            await conn.execute("UPDATE personality SET openness=9 WHERE id='self'")
+        from nyx.inner_life.store import InnerLifeStore
+
+        store = InnerLifeStore(app.database)
+        document = await store.get_document()
+        assert document is not None
+        document.topics[0].content = "我可以更主动地表达自己。"
+        document.revision += 1
+        await store.upsert_document(document)
         await host.unload("alice")
         assert host.records["alice"]["status"] == "ARCHIVED"
         await host.restore("alice", run=False)
-        assert (await host.apps["alice"].inner_life.get_state()).personality[
-            "openness"
-        ] == 9
+        assert (
+            await host.apps["alice"].inner_life.get_state()
+        ).inner_document == document
     finally:
         await host.close()
 
@@ -676,6 +684,7 @@ async def test_root_token_guards_host_role_asset_and_alias(
             for path in (
                 "/api/characters", "/api/characters/nyx/state",
                 "/api/characters/nyx/assets/neutral", "/api/state",
+                "/api/characters/nyx/card",
             ):
                 assert (await client.get(path)).status_code == 401
                 assert (await client.get(path, headers={
@@ -685,6 +694,20 @@ async def test_root_token_guards_host_role_asset_and_alias(
                     "Authorization": "Bearer fixture-root-token",
                     "Origin": "https://localhost:8443",
                 })).status_code == 200
+            detail = (await client.get("/api/characters/nyx/card", headers={
+                "Authorization": "Bearer fixture-root-token",
+                "Origin": "https://localhost:8443",
+            })).json()
+            from nyx.character_cards import BUILTIN_CARD, load_card
+
+            card = load_card(BUILTIN_CARD)
+            assert detail["inner_document"] == card.manifest.model_dump(
+                mode="json"
+            )["inner_document"]
+            assert detail["canon"] == card.files["canon.md"].decode("utf-8")
+            assert detail["character_reference"] == card.files.get(
+                "character-reference.md", b""
+            ).decode("utf-8")
             assert (await client.get("/api/characters/nyx/events")).status_code == 401
             assert (await client.get("/api/characters", headers={
                 "Authorization": "Bearer fixture-root-token",
@@ -801,6 +824,7 @@ async def test_expired_pairing_code_cannot_issue_a_device(
 async def test_scoped_api_rejects_stale_selection_and_keeps_role_results(
     tmp_path: Path,
     resources: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import httpx
 
@@ -808,6 +832,8 @@ async def test_scoped_api_rejects_stale_selection_and_keeps_role_results(
     from nyx.app_context import _Host
     from tests.test_character_cards import package
 
+    monkeypatch.delenv("NYX_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("NYX_PUBLIC_ORIGIN", raising=False)
     host = await _Host.open(Config(), tmp_path)
     try:
         await host.register(package())

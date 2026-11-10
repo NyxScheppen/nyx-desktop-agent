@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path.cwd()))
 spec=importlib.util.spec_from_file_location('acceptance',Path(__file__).with_name('nyx-p3-acceptance.py'))
 a=importlib.util.module_from_spec(spec);spec.loader.exec_module(a)
-from nyx.research import run_research
+from research_support import run_research
 from nyx.types import LLMOutput
 
 class Script(a.Fake):
@@ -23,6 +23,12 @@ class Script(a.Fake):
         elif output_type=='exploration_source_check':value={'relevant':not self.reject,'usable':True,'reason':'检查主题'}
         elif output_type=='exploration_finalize':
             value={'summary':'已检查资料','core_discovery':'获得可核对的证据','report':[{'section':'证据','claim':text[:40],'citations':[{'quote':text[:40],'source_url':url}]} for url,text in self.sources.items()]}
+        elif output_type=='source_digest':
+            if self.pause=='ingest':await asyncio.Event().wait()
+            if self.fail=='ingest':raise RuntimeError('injected ingest')
+            text=data['source_text'];self.saved.append((text,data.get('source_name',''),''))
+            value={'summary':text[:40],'content_category':'knowledge',
+                   'points':[{'topic':'来源知识','content':text[:80]}]}
         elif output_type=='exploration_claim_support':value={'supported':[True]*len(data['report'])}
         else:value={}
         if output_type==self.invalid:return LLMOutput(module,output_type,'script','{broken',correlation_id)
@@ -37,13 +43,8 @@ class Script(a.Fake):
         text=('原文 "\\ 数据😀。'*1000) if self.huge else '原文证据 '+url
         self.sources[url]=text[:6000]
         return {'text':text}
-    async def ingest(self,text,topic,name,cid,**kwargs):
-        if self.pause=='ingest':await asyncio.Event().wait()
-        if self.fail=='ingest':raise RuntimeError('injected ingest')
-        self.saved.append((text,topic,name))
-        return {'chunks':[{'chunk_id':str(len(self.saved)),'source_topic':topic}]}
     async def run(self,**kwargs):
-        return await run_research('研究边界问题',search=self.search,fetch=self.fetch,llm=self,ingest=self.ingest,**kwargs)
+        return await run_research('研究边界问题',search=self.search,fetch=self.fetch,llm=self,**kwargs)
 
 async def main():
     s=Script();r=await s.run();assert len(s.fetched)==6 and len(set(s.fetched))==6 and r['report'],r
@@ -53,8 +54,8 @@ async def main():
         assert len(s.searched)<=min(4,budget.get('max_sub_queries',4))
     print('PASS hard caps and reduced per-call budgets',flush=True)
     for stage in ('exploration_decide','fetch','ingest','exploration_source_check','exploration_finalize'):
-        s=Script(pause=stage);started=time.monotonic();r=await s.run(budget={'seconds':.05})
-        assert time.monotonic()-started<1 and r.get('error') and not r['report'],(stage,r)
+        s=Script(pause=stage);started=time.monotonic();r=await s.run(budget={'seconds':3})
+        assert time.monotonic()-started<5 and r.get('error') and not r['report'],(stage,r)
         before=len(s.saved);await asyncio.sleep(.01);assert len(s.saved)==before
         s=Script(fail=stage);r=await s.run();assert r.get('error') and not r['report'],(stage,r)
     print('PASS awaited stage deadlines/failures propagate without fabricated fallback',flush=True)

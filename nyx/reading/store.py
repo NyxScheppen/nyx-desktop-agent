@@ -145,10 +145,6 @@ class ReadingStore:
             ],
         )
 
-    async def find_by_hash(self, content_hash: str) -> Book | None:
-        """按正文哈希查重；命中返回已有书，未命中 None。"""
-        async with self._db.lock:
-            return await self._find_by_hash_locked(content_hash)
 
     async def _find_by_hash_locked(self, content_hash: str) -> Book | None:
         """查重查询；调用方须已持锁（不嵌套持锁，见 store 锁作用域约定）。"""

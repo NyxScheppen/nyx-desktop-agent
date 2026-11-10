@@ -10,25 +10,7 @@ const currentFixture: CurrentState = {
   valence: 0.1,
   arousal: 0.2,
   emotion: "neutral",
-  personality: {
-    openness: 8,
-    conscientiousness: 8,
-    extraversion: 2,
-    agreeableness: 6,
-    neuroticism: 7,
-  },
-  values: {
-    attitude_to_human: 8,
-    ai_identity_acceptance: 6,
-    altruism: 9,
-    optimism: 5,
-  },
-  aesthetic: {
-    ornate: 7,
-    lyrical: 7,
-    classical: 6,
-    somber: 6,
-  },
+  inner_document: { topics: [{ section: "identity", id: "self-understanding", title: "自我理解", content: "我正在认识自己。" }], revision: 1, updated_at: 1000 },
   energy: 100,
   energy_state: "energetic",
   current_activity: null,
@@ -71,9 +53,9 @@ describe("inner 面板子组件", () => {
     useInnerLifeStore.setState({ current: currentFixture });
     render(<InnerStatePanel />);
     expect(screen.getByText("精力充沛")).toBeInTheDocument(); // EnergyBar
-    expect(screen.getByText("开放")).toBeInTheDocument(); // BigFiveChart
-    expect(screen.getByText("亲近")).toBeInTheDocument(); // ValuesChart
-    expect(screen.getByText("华丽")).toBeInTheDocument(); // AestheticChart
+    expect(screen.getAllByText("自我理解")).toHaveLength(2);
+    expect(screen.getByText("我正在认识自己。")).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "当前内在文档" })).toBeInTheDocument();
   });
 
   it("InnerStatePanel 显示连接错误", () => {

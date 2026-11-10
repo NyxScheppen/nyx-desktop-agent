@@ -33,25 +33,7 @@ const currentFixture: CurrentState = {
   valence: 0.1,
   arousal: 0.2,
   emotion: "neutral",
-  personality: {
-    openness: 8,
-    conscientiousness: 8,
-    extraversion: 2,
-    agreeableness: 6,
-    neuroticism: 7,
-  },
-  values: {
-    attitude_to_human: 8,
-    ai_identity_acceptance: 6,
-    altruism: 9,
-    optimism: 5,
-  },
-  aesthetic: {
-    ornate: 7,
-    lyrical: 7,
-    classical: 6,
-    somber: 6,
-  },
+  inner_document: { topics: [{ section: "identity", id: "self-understanding", title: "自我理解", content: "我正在认识自己。" }], revision: 1, updated_at: 1000 },
   energy: 100,
   energy_state: "energetic",
   current_activity: null,
@@ -632,7 +614,7 @@ describe("innerLifeStore", () => {
     expect(cur?.valence).toBe(0.9);
     expect(cur?.arousal).toBe(0.8);
     expect(cur?.emotion).toBe("happy");
-    expect(cur?.personality).toEqual(currentFixture.personality);
+    expect(cur?.inner_document).toEqual(currentFixture.inner_document);
     expect(cur?.energy).toBe(currentFixture.energy);
   });
 
@@ -1278,14 +1260,6 @@ describe("settingsStore", () => {
     useSettingsStore.getState().reset();
   });
 
-  it("setTint / setImage 独立落 store，可并存", () => {
-    useSettingsStore.getState().setTint("#1f2740");
-    useSettingsStore.getState().setImage("data:image/png;base64,xxx");
-
-    expect(useSettingsStore.getState().tint).toBe("#1f2740");
-    expect(useSettingsStore.getState().image).toBe("data:image/png;base64,xxx");
-  });
-
   it("setCircleColor 写 store 并持久化 localStorage", () => {
     useSettingsStore.getState().setCircleColor("#dcebf5");
 
@@ -1308,16 +1282,12 @@ describe("settingsStore", () => {
   });
 
   it("reset 恢复全部外观默认值并清 localStorage 键", () => {
-    useSettingsStore.getState().setTint("#1f2740");
-    useSettingsStore.getState().setImage("data:image/png;base64,xxx");
     useSettingsStore.getState().setCircleColor("#dcebf5");
     useSettingsStore.getState().setCircleSize("small");
     useSettingsStore.getState().setAvatarPos({ x: 1, y: 2 });
 
     useSettingsStore.getState().reset();
 
-    expect(useSettingsStore.getState().tint).toBeNull();
-    expect(useSettingsStore.getState().image).toBeNull();
     expect(useSettingsStore.getState().circleColor).toBe("#ffffff");
     expect(useSettingsStore.getState().circleSize).toBe("large");
     expect(useSettingsStore.getState().avatarPos).toBeNull();

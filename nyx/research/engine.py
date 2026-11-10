@@ -18,7 +18,6 @@ from langgraph.graph import END, StateGraph
 
 from nyx.config import ExplorationConfig
 from nyx.db import DATABASE_ERRORS
-from nyx.desire.facade import DesireFacade
 from nyx.enums import MemoryKind
 from nyx.eval.evaluator import Evaluator
 from nyx.events.event import SECONDS_PER_HOUR
@@ -87,7 +86,6 @@ class ResearchEngine:
         evaluator: Evaluator,
         tools: ToolRegistry,
         store: CheckpointStore,
-        desire: DesireFacade | None,
         memory: MemoryFacade,
         exploration_config: ExplorationConfig,
         canon: str = "",
@@ -99,7 +97,6 @@ class ResearchEngine:
         self._evaluator = evaluator
         self._tools = tools
         self._store = store
-        self._desire = desire
         self._memory = memory
         self._web_enabled = exploration_config.web_enabled
         self._canon = canon
@@ -348,20 +345,12 @@ class ResearchEngine:
             pending = checkpoint["source_pending"]
             knowledge = pending["knowledge"]
             if knowledge and not pending.get("knowledge_done"):
-                method = getattr(self._memory, "remember_research_knowledge", None)
-                if method is not None:
-                    await method(
-                        f"{activity.id}:{pending['location']}",
-                        knowledge,
-                        _correlation_id(activity),
-                        pending["source_chunk_id"],
-                    )
-                else:
-                    await self._memory.remember_knowledge(
-                        knowledge,
-                        _correlation_id(activity),
-                        source_chunk_id=pending["source_chunk_id"],
-                    )
+                await self._memory.remember_research_knowledge(
+                    f"{activity.id}:{pending['location']}",
+                    knowledge,
+                    _correlation_id(activity),
+                    pending["source_chunk_id"],
+                )
                 pending["knowledge_done"] = True
             checkpoint["knowledge"].extend(knowledge)
             checkpoint["findings"].append(

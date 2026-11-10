@@ -44,38 +44,25 @@ from nyx.types import (
     ConversationSegment,
     CurrentState,
     Event,
+    InnerDocument,
+    InnerTopic,
     InteractionAttempt,
     LLMOutput,
     Memory,
     Message,
-    Personality,
-    SelfNarrative,
     ShortTermDesire,
     Skill,
     Tool,
-    Values,
 )
 
-_PERSONALITY: Personality = {
-    "openness": 5.0,
-    "conscientiousness": 5.0,
-    "extraversion": 5.0,
-    "agreeableness": 5.0,
-    "neuroticism": 5.0,
-}
-
-_VALUES: Values = {
-    "attitude_to_human": 5.0,
-    "ai_identity_acceptance": 5.0,
-    "altruism": 5.0,
-    "optimism": 5.0,
-}
-
-_NARRATIVE = SelfNarrative(
-    identity="我是尼克斯，一个想成为人类的 AI。",
-    story=[],
-    self_view={},
-    becoming=[],
+_NARRATIVE = InnerDocument(
+    topics=[
+        InnerTopic(
+            "identity", "self-understanding", "自我理解",
+            "我是尼克斯，一个想成为人类的 AI。",
+        ),
+    ],
+    revision=1,
     updated_at=0.0,
 )
 
@@ -85,15 +72,11 @@ def _mk_state(energy: float, arousal: float) -> CurrentState:
         valence=0.5,
         arousal=arousal,
         emotion=EmotionCategory.NEUTRAL,
-        personality=_PERSONALITY,
-        values=_VALUES,
-        aesthetic={
-            "ornate": 7.0, "lyrical": 7.0, "classical": 6.0, "somber": 6.0,
-        },
         energy=energy,
         energy_state=EnergyState.OKAY,
         current_activity=None,
         active_desires=[],
+        inner_document=_NARRATIVE,
     )
 
 
@@ -187,6 +170,7 @@ class _FakeMemory:
         self.segment_recalled: list[tuple[str, str]] = []
         self.recent_memories: list[Memory] = []
         self.user_profile: list[Memory] = []
+        self.behavior_experiences: dict[str, list[Memory]] = {}
 
     async def search(
         self, query: str, kind: MemoryKind | None = None
@@ -200,6 +184,11 @@ class _FakeMemory:
     async def search_facts(self, query: str) -> list[object]:
         self.fact_search_calls += 1
         return []
+
+    async def search_behavior_experiences(
+        self, query: str, target_skill: str,
+    ) -> list[Memory]:
+        return self.behavior_experiences.get(target_skill, [])
 
     async def list_memories(
         self,
@@ -245,7 +234,7 @@ class _FakeInnerLife:
     async def get_state(self) -> CurrentState:
         return self.state
 
-    async def get_narrative(self) -> SelfNarrative:
+    async def get_document(self) -> InnerDocument:
         self.narrative_calls += 1
         return _NARRATIVE
 
@@ -733,6 +722,47 @@ async def test_reply_slow_non_question() -> None:
         EventType.THINK,
         EventType.SPEAK,
     ]
+
+
+@pytest.mark.parametrize("discussion", [False, True])
+async def test_reply_only_injects_experiences_for_selected_skill(
+    discussion: bool,
+) -> None:
+    memory = _FakeMemory()
+    for name in ("conversation", "discussion"):
+        memory.behavior_experiences[name] = [
+            Memory(
+                id=name,
+                created_at=0.0,
+                content=f"经验原文_{name}",
+                kind=MemoryKind.LESSON,
+                summary=f"经验摘要_{name}",
+                freshness=1.0,
+                type=MemoryType.LONG_TERM,
+            )
+        ]
+    facade, llm, *_rest = _new_facade(
+        energy=100.0,
+        arousal=0.0,
+        memory=memory,
+        llm=_FakeLlm(needs_continuation=False),
+    )
+    facade._config.slow_threshold = 0.0
+    facade._skills = {
+        name: Skill(name, "当前策略", ())
+        for name in ("conversation", "discussion")
+    }
+    await facade.reply("怎样继续这个问题", "scoped-experiences", discussion=discussion)
+    systems = [
+        messages[0]["content"]
+        for kind, messages, _cid in llm.calls
+        if kind == "reply"
+    ]
+    own, other = (
+        ("discussion", "conversation") if discussion else ("conversation", "discussion")
+    )
+    assert systems and all(f"经验原文_{own}" in system for system in systems)
+    assert all(f"经验原文_{other}" not in system for system in systems)
 
 
 async def test_reply_slow_defaults_to_one_complete_response() -> None:
@@ -2539,6 +2569,8 @@ async def test_check_timeouts_expires_ignored_chat() -> None:
     await facade.check_timeouts(100.0 + ExpressionConfig().chat_ignore_timeout)
     assert desire.expired == ["d1"]
     assert facade._pending_chat_desire_id is None
+
+
 @pytest.mark.parametrize("reason", ["continue", "invalid", "failure"])
 async def test_reasoning_is_bounded_and_bad_analysis_stops(reason: str) -> None:
     llm = _FakeLlm(needs_continuation=False)

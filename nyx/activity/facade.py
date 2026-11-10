@@ -13,7 +13,6 @@ from nyx.activity import creation as _creation
 from nyx.activity import lifecycle as _activity_lifecycle
 from nyx.activity import paths as _activity_paths
 from nyx.activity.browser_survey import run_browser_survey
-from nyx.activity.exploration import Exploration
 from nyx.activity.llm_result import parse_activity_result as _parse_activity_result
 from nyx.activity.observe import build_observation_summary
 from nyx.activity.starter import ActivityStarter, best_book_match, schedule_block_id
@@ -140,18 +139,6 @@ class ActivityFacade:
         self._web_enabled = exploration_config.web_enabled
         self._fetch_source = fetch_source
         self.research: ResearchService | None = None
-        self._exploration = Exploration(
-            llm,
-            evaluator,
-            tools,
-            store,
-            desire,
-            memory,
-            exploration_config,
-            canon,
-            fetch_source=fetch_source,
-            notify_progress=self._publish_progress,
-        )
         self._lifecycle = _activity_lifecycle.ActivityLifecycle(
             store, bus, desire, config
         )
@@ -431,11 +418,10 @@ class ActivityFacade:
             await self._publish_current_task(task_id)
         try:
             if activity.type is ActivityType.FREE_EXPLORATION:
-                result = (
-                    await self.research.run_activity(
-                        activity, self._save_research_progress
-                    )
-                    if self.research else await self._exploration.run(activity)
+                if self.research is None:
+                    raise RuntimeError("研究服务尚未绑定")
+                result = await self.research.run_activity(
+                    activity, self._save_research_progress
                 )
                 if result.get("status") == "cancelled":
                     await self.finish_cancelled_research(result["run_id"])
@@ -449,7 +435,7 @@ class ActivityFacade:
                     raise ValueError(result["error"])
                 parent = activity.progress.get("parent_long_term_id")
                 strong = result.get("strong_new_topics")
-                if self.research and isinstance(parent, str) and strong:
+                if isinstance(parent, str) and strong:
                     await self._desire.add_long_term_subtopics(parent, strong)
             else:
                 result = await self._run_activity(activity)
@@ -671,15 +657,6 @@ class ActivityFacade:
                 activity_id,
             )
 
-    async def _set_task_status(
-        self,
-        task_id: str,
-        status: AssignedTaskStatus,
-        error: str | None = None,
-    ) -> None:
-        task = await self._store.set_task_status(task_id, status, time.time(), error)
-        if task is not None:
-            await self._publish_task_update(task)
 
     async def _publish_current_task(self, task_id: str) -> None:
         task = await self._store.get_task(task_id)

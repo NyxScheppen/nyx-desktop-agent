@@ -33,7 +33,7 @@ from nyx.main import (
 from nyx.memory.facade import MemoryFacade
 from nyx.reading.facade import ReadingFacade
 from nyx.runtime import check_initiate_chat, memory_loop
-from nyx.types import Event, Memory, SelfNarrative
+from nyx.types import Event, InnerDocument, InnerTopic, Memory
 
 
 class _FakeBus:
@@ -379,10 +379,10 @@ async def test_first_tick_starts_activity_not_mutter_or_chat(
 
 
 class _FakeInnerLife:
-    def __init__(self, narrative: SelfNarrative) -> None:
+    def __init__(self, narrative: InnerDocument) -> None:
         self._narrative = narrative
 
-    async def get_narrative(self) -> SelfNarrative:
+    async def get_document(self) -> InnerDocument:
         return self._narrative
 
 
@@ -416,7 +416,7 @@ def _memory(created_at: float) -> Memory:
 
 
 def _reflect_app(
-    narrative: SelfNarrative,
+    narrative: InnerDocument,
     memories: list[Memory],
     count_new_result: int | None = None,
 ) -> tuple[_App, _FakeInnerLife, _FakeBus]:
@@ -443,12 +443,12 @@ async def test_check_reflect_skips_within_cooldown(
 ) -> None:
     now = 1_000_000.0
     monkeypatch.setattr("nyx.main.time.time", lambda: now)
-    narrative = SelfNarrative(
-        identity="尼克斯",
-        story=[],
-        self_view={},
-        becoming=[],
-        updated_at=now - 100.0,  # 距上次反思仅 100s < 冷却
+    narrative = InnerDocument(
+        topics=[
+            InnerTopic("identity", "self-understanding", "自我理解", "尼克斯"),
+        ],
+        revision=1,
+        updated_at=now - 100.0,
     )
     memories = [_memory(now - 50.0) for _ in range(_REFLECT_MIN_NEW_MEMORIES)]
     app, _inner_life, bus = _reflect_app(narrative, memories)
@@ -461,12 +461,12 @@ async def test_check_reflect_skips_below_new_memory_threshold(
 ) -> None:
     now = 1_000_000.0
     monkeypatch.setattr("nyx.main.time.time", lambda: now)
-    narrative = SelfNarrative(
-        identity="尼克斯",
-        story=[],
-        self_view={},
-        becoming=[],
-        updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,  # 已过冷却
+    narrative = InnerDocument(
+        topics=[
+            InnerTopic("identity", "self-understanding", "自我理解", "尼克斯"),
+        ],
+        revision=1,
+        updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,
     )
     memories = [_memory(narrative.updated_at + 100.0) for _ in range(2)]
     app, _inner_life, bus = _reflect_app(narrative, memories)
@@ -477,12 +477,12 @@ async def test_check_reflect_skips_below_new_memory_threshold(
 async def test_check_reflect_triggers(monkeypatch: pytest.MonkeyPatch) -> None:
     now = 1_000_000.0
     monkeypatch.setattr("nyx.main.time.time", lambda: now)
-    narrative = SelfNarrative(
-        identity="尼克斯",
-        story=[],
-        self_view={},
-        becoming=[],
-        updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,  # 已过冷却
+    narrative = InnerDocument(
+        topics=[
+            InnerTopic("identity", "self-understanding", "自我理解", "尼克斯"),
+        ],
+        revision=1,
+        updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,
     )
     memories = [
         _memory(narrative.updated_at + 100.0) for _ in range(_REFLECT_MIN_NEW_MEMORIES)
@@ -506,11 +506,11 @@ async def test_check_reflect_uses_first_creation_count(
 ) -> None:
     now = 1_000_000.0
     monkeypatch.setattr("nyx.main.time.time", lambda: now)
-    narrative = SelfNarrative(
-        identity="尼克斯",
-        story=[],
-        self_view={},
-        becoming=[],
+    narrative = InnerDocument(
+        topics=[
+            InnerTopic("identity", "self-understanding", "自我理解", "尼克斯"),
+        ],
+        revision=1,
         updated_at=now - _REFLECT_MIN_INTERVAL - 1000.0,
     )
     memories = [

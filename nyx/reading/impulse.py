@@ -1,7 +1,7 @@
 """阅读冲动引擎纯函数层（reading-system spec）。
 
 关键词表 / 权重 / 阈值照搬 S06（feature_extractor / composite_engine）。
-6 驱动「现算」、复合加权、阈值+冷却判定；四类提问在 V1 共享冷却并互斥
+5 驱动「现算」、复合加权、阈值+冷却判定；四类提问在 V1 共享冷却并互斥
 选择。全部同步纯函数，无 IO 无 LLM。
 
 密度校准：S06 的原始密度 ~0.01 量级，直接进 richness 加权后阈值 0.5 永不可达
@@ -68,9 +68,8 @@ DEFAULT_COMPOSITE_WEIGHTS: dict[ReadingBehavior, dict[ReadingDrive, float]] = {
         ReadingDrive.CURIOSITY: 0.20,
     },
     ReadingBehavior.QUESTION_REFLECTIVE: {
-        ReadingDrive.EMPATHY_BIAS: 0.40,
-        ReadingDrive.AESTHETIC_SENSITIVITY: 0.40,
-        ReadingDrive.CURIOSITY: 0.20,
+        ReadingDrive.EMPATHY_BIAS: 2 / 3,
+        ReadingDrive.CURIOSITY: 1 / 3,
     },
     ReadingBehavior.QUOTE_QUESTION: {
         ReadingDrive.CURIOSITY: 0.40,
@@ -200,20 +199,16 @@ def build_drives(
     features: ParagraphFeatures,
     *,
     energy: float,
-    agreeableness: float,
     exploration_value: float,
     interaction_value: float,
 ) -> dict[ReadingDrive, float]:
-    """6 驱动「现算」（全部归一到 [0,1]，无累积无衰减）。"""
+    """5 驱动「现算」（全部归一到 [0,1]，无累积无衰减）。"""
     return {
         ReadingDrive.MOTIVATION: energy / 100.0,
         ReadingDrive.CURIOSITY: exploration_value,
         ReadingDrive.BOREDOM: interaction_value,
         ReadingDrive.ASSOCIATIVE_DRIVE: 0.4 + 0.6 * associative_density(features),
-        ReadingDrive.AESTHETIC_SENSITIVITY: features.richness_score,
-        ReadingDrive.EMPATHY_BIAS: (
-            0.6 * (agreeableness / 10.0) + 0.4 * empathy_density(features)
-        ),
+        ReadingDrive.EMPATHY_BIAS: empathy_density(features),
     }
 
 

@@ -20,7 +20,7 @@ class Fake:
         elif output_type=='fact_extraction':data=self.feedback
         elif output_type=='tool':data={}
         elif output_type=='behavior_reflection':data={'observation':'用户多次要求说明不确定性','cause_analysis':'回复缺少限定条件','effective_strategy':'先说明边界','next_strategy':'先说明不确定性再给结论','applicability':'普通对话','evidence_refs':['feedback','reply'],'skill_change_decision':'update','skill_change_reason':'多次纠正支持调整','proposed_skill_text':'保留角色口吻，先说明证据边界和不确定性，再给出具体结论。'}
-        elif output_type=='reflection':data={'story':'我会留意用户反馈','becoming':'先说明不确定性','personality_delta':{},'values_delta':{},'long_term_desires':[]}
+        elif output_type=='reflection':data={'summary':'我会留意用户反馈','patches':[],'long_term_desires':[]}
         else:data={'content':'E2E','summary':'E2E','topics':[],'importance':'normal','entities':[],'facts':[]}
         return LLMOutput(module=module,type=output_type,model='p4-script',content=json.dumps(data,ensure_ascii=False),correlation_id=correlation_id,call_id=str(uuid.uuid4()),prompt_messages=messages,prompt_tokens=11,completion_tokens=7)
 

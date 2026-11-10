@@ -31,46 +31,21 @@ from nyx.expression.prompt import (
     build_user_prompt,
     describe_elapsed,
     describe_local_time,
-    render_personality_instruction,
 )
 from nyx.timezone import USER_TIMEZONE
 from nyx.types import (
     Activity,
     ActivityContext,
-    Aesthetic,
     CurrentState,
+    InnerDocument,
+    InnerTopic,
     Memory,
     MemoryFact,
     Message,
-    Personality,
-    SelfNarrative,
     ShortTermDesire,
-    Values,
 )
 
 _CANON = "我是尼克斯。"
-
-_PERSONALITY: Personality = {
-    "openness": 5.0,
-    "conscientiousness": 5.0,
-    "extraversion": 5.0,
-    "agreeableness": 5.0,
-    "neuroticism": 5.0,
-}
-
-_VALUES: Values = {
-    "attitude_to_human": 5.0,
-    "ai_identity_acceptance": 5.0,
-    "altruism": 5.0,
-    "optimism": 5.0,
-}
-
-_AESTHETIC: Aesthetic = {
-    "ornate": 7.0,
-    "lyrical": 7.0,
-    "classical": 6.0,
-    "somber": 6.0,
-}
 
 
 def _state(
@@ -82,13 +57,15 @@ def _state(
         valence=0.5,
         arousal=0.4,
         emotion=EmotionCategory.HAPPY,
-        personality=_PERSONALITY,
-        values=_VALUES,
-        aesthetic=_AESTHETIC,
         energy=80.0,
         energy_state=EnergyState.ENERGETIC,
         current_activity=current_activity,
         active_desires=active_desires if active_desires is not None else [],
+        inner_document=InnerDocument(
+            [InnerTopic("identity", "self-understanding", "自我理解", "我是尼克斯")],
+            1,
+            1000.0,
+        ),
     )
 
 
@@ -115,12 +92,17 @@ def _memory(summary: str = "", content: str = "原始记忆") -> Memory:
     )
 
 
-def _narrative() -> SelfNarrative:
-    return SelfNarrative(
-        identity="我是想变成人的 AI",
-        story=["story"],
-        self_view={"自我": "温柔"},
-        becoming=["更会关心人"],
+def _narrative() -> InnerDocument:
+    return InnerDocument(
+        topics=[
+            InnerTopic(
+                "identity", "self-understanding", "自我理解", "我是想变成人的 AI"
+            ),
+            InnerTopic("narrative", "experience-0", "个人经历", "story"),
+            InnerTopic("personality", "self-view-0", "自我", "温柔"),
+            InnerTopic("narrative", "understanding-0", "认知变化", "更会关心人"),
+        ],
+        revision=1,
         updated_at=1000.0,
     )
 
@@ -196,14 +178,15 @@ def test_history_activity_fact_is_secondary_to_current_context() -> None:
 
 
 def test_build_system_prompt_optional_blocks() -> None:
+    state = _state()
+    state.inner_document = _narrative()
     result = build_system_prompt(
         _CANON,
-        _state(),
-        narrative=_narrative(),
+        state,
         memories=[_memory(summary="记得你")],
     )
     assert "我是想变成人的 AI" in result
-    assert "近期变化：更会关心人" in result
+    assert "更会关心人" in result
     assert "记得你" in result
 
 
@@ -244,37 +227,6 @@ def test_build_system_prompt_state_fields() -> None:
     assert "表情=happy（开心）" in result
     assert "精力：80/100（energetic）" in result
     assert "当前活动：reading" in result
-
-
-def test_build_system_prompt_personality_values() -> None:
-    result = build_system_prompt(_CANON, _state())
-    assert "[人格与三观倾向]" in result
-    assert "开放性：5/10" in result
-    assert "低于5：偏好熟悉路径" in result
-    assert "等于5：对熟悉和新观点保持平衡" in result
-    assert "高于5：愿意探索陌生观点" in result
-    assert "人格语气参考" not in result
-
-
-def test_build_system_prompt_aesthetic() -> None:
-    result = build_system_prompt(_CANON, _state())
-    assert "审美当前倾向" in result
-    assert "华丽：7/10" in result
-    assert "沉重：6/10" in result
-    assert "高于5：更常使用具体意象" in result
-    assert "词语参考" not in result
-
-
-def test_personality_scale_distinguishes_below_equal_and_above_five() -> None:
-    personality: Personality = {**_PERSONALITY, "openness": 4.0}
-    values: Values = {**_VALUES, "optimism": 6.0}
-
-    result = render_personality_instruction(personality, values)
-
-    assert "开放性：4/10（低于5：" in result
-    assert "开放性：4/10" in result and "当前偏低" in result
-    assert "乐观：6/10（低于5：" in result
-    assert "乐观：6/10" in result and "当前偏高" in result
 
 
 def test_reply_task_keeps_only_output_contract() -> None:

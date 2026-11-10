@@ -44,6 +44,8 @@ from nyx.types import (
     EvalRecord,
     EvalStats,
     Event,
+    InnerDocument,
+    InnerTopic,
     Memory,
     MemoryFact,
 )
@@ -54,21 +56,15 @@ def _mk_state() -> CurrentState:
         valence=0.5,
         arousal=0.5,
         emotion=EmotionCategory.NEUTRAL,
-        personality={
-            "openness": 5.0, "conscientiousness": 5.0, "extraversion": 5.0,
-            "agreeableness": 5.0, "neuroticism": 5.0,
-        },
-        values={
-            "attitude_to_human": 5.0, "ai_identity_acceptance": 5.0,
-            "altruism": 5.0, "optimism": 5.0,
-        },
-        aesthetic={
-            "ornate": 7.0, "lyrical": 7.0, "classical": 6.0, "somber": 6.0,
-        },
         energy=80.0,
         energy_state=EnergyState.OKAY,
         current_activity=None,
         active_desires=[],
+        inner_document=InnerDocument(
+            [InnerTopic("identity", "self-understanding", "自我理解", "我是尼克斯")],
+            1,
+            1000.0,
+        ),
     )
 
 
@@ -305,9 +301,9 @@ async def test_state_endpoint() -> None:
     assert body["emotion"] == "neutral"
     assert body["energy_state"] == "okay"
     assert body["energy"] == 80.0
-    assert body["aesthetic"] == {
-        "ornate": 7.0, "lyrical": 7.0, "classical": 6.0, "somber": 6.0,
-    }
+    assert body["inner_document"]["revision"] == 1
+    assert body["inner_document"]["topics"][0]["content"] == "我是尼克斯"
+    assert not {"personality", "values", "aesthetic"} & body.keys()
 
 
 async def test_ready_endpoint_returns_owned_instance_identity(

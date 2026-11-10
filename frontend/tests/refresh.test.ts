@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { bindScope } from "../src/api/characterScope";
 import { useDesireStore } from "../src/stores/desireStore";
+import { useBehaviorStore } from "../src/stores/behaviorStore";
 
 afterEach(() => { bindScope(null); vi.unstubAllGlobals(); });
 
@@ -48,4 +49,42 @@ it("A→B→A drops old queued refreshes and old finalizers cannot clear new wor
   replies[2](new Response(JSON.stringify({ version: "latest" })));
   await Promise.all([current, trailing]);
   expect(useDesireStore.getState().data).toEqual({ version: "latest" });
+});
+
+it("behavior progress bursts coalesce all four requests and keep the latest snapshot", async () => {
+  bindScope({ id: "a", revision: 1 });
+  const replies: ((value: Response) => void)[] = [];
+  const fetch = vi.fn(() => new Promise<Response>((resolve) => replies.push(resolve)));
+  vi.stubGlobal("fetch", fetch);
+  const first = useBehaviorStore.getState().refresh();
+  await flush();
+  const rest = Array.from({ length: 100 }, () => useBehaviorStore.getState().refresh());
+  expect(fetch).toHaveBeenCalledTimes(4);
+  replies.slice(0, 4).forEach((resolve) => resolve(new Response("[]")));
+  await flush();
+  expect(fetch).toHaveBeenCalledTimes(8);
+  replies.slice(4, 8).forEach((resolve) => resolve(new Response("[]")));
+  await Promise.all([first, ...rest]);
+  expect(fetch).toHaveBeenCalledTimes(8);
+  expect(useBehaviorStore.getState().error).toBeNull();
+});
+
+it("behavior refresh drops the old role's results and queued work", async () => {
+  bindScope({ id: "a", revision: 1 });
+  const replies: ((value: Response) => void)[] = [];
+  const fetch = vi.fn(() => new Promise<Response>((resolve) => replies.push(resolve)));
+  vi.stubGlobal("fetch", fetch);
+  const old = useBehaviorStore.getState().refresh();
+  await flush();
+  void useBehaviorStore.getState().refresh();
+  bindScope({ id: "b", revision: 2 });
+  const current = useBehaviorStore.getState().refresh();
+  await flush();
+  replies.slice(4, 8).forEach((resolve) => resolve(new Response("[]")));
+  await current;
+  replies.slice(0, 4).forEach((resolve) => resolve(new Response('[{"id":"stale"}]')));
+  await old;
+  expect(useBehaviorStore.getState().runs).toEqual([]);
+  expect(useBehaviorStore.getState().reflections).toEqual([]);
+  expect(fetch).toHaveBeenCalledTimes(8);
 });

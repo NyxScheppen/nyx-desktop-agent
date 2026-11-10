@@ -22,28 +22,6 @@ from nyx.enums import (
 )
 
 
-class Personality(TypedDict):  # Big Five，1-10
-    openness: float
-    conscientiousness: float
-    extraversion: float
-    agreeableness: float
-    neuroticism: float
-
-
-class Values(TypedDict):  # 三观，1-10
-    attitude_to_human: float
-    ai_identity_acceptance: float
-    altruism: float
-    optimism: float
-
-
-class Aesthetic(TypedDict):  # 审美维度，1-10，10=第一极
-    ornate: float  # 华丽
-    lyrical: float  # 抒情
-    classical: float  # 古典
-    somber: float  # 沉重
-
-
 class LlmMessage(TypedDict):
     role: Literal["system", "user", "assistant"]
     content: str
@@ -117,6 +95,14 @@ class ConversationSegment:
     active: bool = True
     facts_extracted_at: float | None = None
     fact_scope: str = "conversation"
+    # Retrieval views only; never overwrite the archived raw_content with excerpts.
+    retrieval_excerpt: str | None = None
+    retrieval_chunk_ids: list[str] = field(default_factory=list[str])
+    retrieval_ranges: list[tuple[int, int]] = field(
+        default_factory=list[tuple[int, int]],
+    )
+    retrieval_sources: list[str] = field(default_factory=list[str])
+    retrieval_trace_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -191,7 +177,6 @@ class LongTermDesire:
     strength: float  # 迫切度，消退不归零（具体范围见欲望系统）
     progress: float  # 0-1
     subtopics: list[str]  # 子主题池
-    linked_values: list[str] = field(default_factory=list[str])
 
 
 @dataclass
@@ -262,9 +247,7 @@ class Book:  # 用户陪读的 EPUB 书
     updated_at: float
 
 
-ParagraphBlockKind = Literal[
-    "paragraph", "heading", "blockquote", "list_item", "pre"
-]
+ParagraphBlockKind = Literal["paragraph", "heading", "blockquote", "list_item", "pre"]
 
 
 @dataclass(frozen=True)
@@ -356,9 +339,7 @@ class CurrentState:  # 只读快照
     valence: float  # [-1, 1]
     arousal: float  # [0, 1]
     emotion: EmotionCategory  # 最终表情（8 档之一，含 sleepy/thinking 覆盖）
-    personality: Personality  # Big Five
-    values: Values  # 三观
-    aesthetic: Aesthetic  # 审美维度
+    inner_document: "InnerDocument"
     energy: float  # 0-100
     energy_state: EnergyState
     # 当前活动类型（取 ActivityFacade.get_current() 返回对象的 .type，None=空闲）
@@ -367,22 +348,27 @@ class CurrentState:  # 只读快照
 
 
 @dataclass
-class SelfNarrative:
-    identity: str
-    story: list[str]
-    self_view: dict[str, str]
-    becoming: list[str]
+class InnerTopic:
+    section: str
+    id: str
+    title: str
+    content: str
+
+
+@dataclass
+class InnerDocument:
+    """One current inner document; past revisions belong to reflection records."""
+
+    topics: list[InnerTopic]
+    revision: int
     updated_at: float
 
 
 @dataclass
 class ReflectionOutcome:
-    """一轮反思的产物摘要（Reflection.run 返回值）。
-
-    story 是否真新增（未被去重跳过）决定前端是否高亮叙事条目 + 冒气泡。
-    """
-    story: str
-    story_is_new: bool
+    """本轮反思摘要及文档是否变化；摘要不作为对话输出。"""
+    summary: str
+    document_changed: bool
 
 
 # ---- 表达 ----
@@ -478,8 +464,8 @@ class EvalRecord:
     output_type: str  # 产出类型（think/speak/tool/desire/…）
     model: str  # 本次调用模型名
     correlation_id: str
-    ooc_keyword: float  # 关键词 OOC 分 [0,1]，1=完全贴合
-    ooc_embed: float | None  # embedding OOC 分；非 voice 类型 / embed 关闭为 None
+    ooc_keyword: float  # 关键词信号分 [0,1]，1=未命中；不直接判定角色偏离
+    ooc_embed: float | None  # 历史 embedding OOC 分；新记录恒为 None
     prompt_tokens: int
     completion_tokens: int
 

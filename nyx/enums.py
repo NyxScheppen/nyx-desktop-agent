@@ -16,7 +16,7 @@ class EventType(StrEnum):
     BEHAVIOR_REFLECTION = "behavior_reflection"
     BEHAVIOR_PROGRESS = "behavior_progress"
     RESEARCH_PROGRESS = "research_progress"
-    REFLECTION_DONE = "reflection_done"    # 反思完成（仅广播前端：叙事/欲望刷新+气泡）
+    REFLECTION_DONE = "reflection_done"    # 反思完成（前端刷新文档、欲望与记录）
     MEMORY_CREATED = "memory_created"      # 记忆生成
     MEMORY_PROMOTED = "memory_promoted"    # 记忆升级（短期→长期）
     # 仅保留历史事件日志的反序列化兼容；不再生产或消费。
@@ -140,12 +140,11 @@ class MemoryEdgeKind(StrEnum):
     USER_PROFILE_LINK = "user_profile_link"
 
 
-class ReadingDrive(StrEnum):            # 阅读冲动 6 驱动
+class ReadingDrive(StrEnum):            # 阅读冲动 5 驱动
     MOTIVATION = "motivation"                       # 动力 → 精力
     CURIOSITY = "curiosity"                         # 好奇 → 探索欲
     BOREDOM = "boredom"                             # 无聊 → 互动欲
-    AESTHETIC_SENSITIVITY = "aesthetic_sensitivity"  # 审美敏感 → 段落丰富度
-    EMPATHY_BIAS = "empathy_bias"                   # 共鸣倾向 → 宜人性 + 情感
+    EMPATHY_BIAS = "empathy_bias"                   # 共鸣倾向 → 段落情感与人物
     ASSOCIATIVE_DRIVE = "associative_drive"          # 记忆联想 → 联想密度
 
 

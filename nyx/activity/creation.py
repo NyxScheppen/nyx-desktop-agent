@@ -1,6 +1,7 @@
 import random
 from typing import Any, cast
 
+from nyx.inner_life.document import render_document
 from nyx.types import Activity, CurrentState, Memory
 
 KNOWLEDGE_REF_CHARS = 80  # 创作知识参考单条截断字符数（decision，可推翻）
@@ -50,25 +51,23 @@ def build_creation_context(
 
 
 def build_creation_system(canon: str, state: CurrentState) -> str:
-    """创作 system prompt：canon 人格全文 + 此刻心境 + 创作声音指令。"""
+    """创作 system prompt：原型资料 + 当前内在文档 + 此刻心境 + 创作要求。"""
     desires = "、".join(d.description for d in state.active_desires) or "无"
-    aesthetic = state.aesthetic
     mood = (
         "[此刻心境]\n"
         f"情感：{state.emotion.value}"
         f"（valence={state.valence:.2f}，arousal={state.arousal:.2f}）\n"
         f"精力：{state.energy:.0f}/100\n"
-        "审美："
-        f"华丽 {aesthetic['ornate']:.0f}、抒情 {aesthetic['lyrical']:.0f}、"
-        f"古典 {aesthetic['classical']:.0f}、沉重 {aesthetic['somber']:.0f}\n"
         f"惦记：{desires}"
     )
     voice = (
         "[创作要求]\n"
-        "按角色设定中的说话风格写，"
-        "不要客服腔、不要堆砌华丽词藻，让文字有你的情绪底色。"
+        "依据当前内在文档中的表达倾向与审美理解写，让文字有你的情绪底色。"
         "遵循给定风格与此刻审美，可借鉴参考记忆，但绝不编造不存在的知识；"
         "当前屏幕灵感只作启发，勿照搬。按 JSON 输出 {title, content}。"
         "输出前在内部检查主题一致、事实有据、标题和正文非空，只给出最终 JSON。"
     )
-    return f"{canon}\n\n{mood}\n\n{voice}"
+    return (
+        f"{canon}\n\n[当前内在文档]\n"
+        f"{render_document(state.inner_document)}\n\n{mood}\n\n{voice}"
+    )

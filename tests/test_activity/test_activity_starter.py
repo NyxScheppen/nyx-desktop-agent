@@ -10,8 +10,8 @@ from nyx.types import (
     Book,
     CurrentState,
     DesireState,
-    Personality,
-    Values,
+    InnerDocument,
+    InnerTopic,
 )
 
 
@@ -53,41 +53,19 @@ class _Desire:
 
 
 def _state() -> CurrentState:
-    personality = cast(
-        Personality,
-        {
-            "openness": 5.0,
-            "conscientiousness": 5.0,
-            "extraversion": 5.0,
-            "agreeableness": 5.0,
-            "neuroticism": 5.0,
-        },
-    )
-    values = cast(
-        Values,
-        {
-            "attitude_to_human": 5.0,
-            "ai_identity_acceptance": 5.0,
-            "altruism": 5.0,
-            "optimism": 5.0,
-        },
-    )
     return CurrentState(
         valence=0.0,
         arousal=0.0,
         emotion=EmotionCategory.NEUTRAL,
-        personality=personality,
-        values=values,
-        aesthetic={
-            "ornate": 5.0,
-            "lyrical": 5.0,
-            "classical": 5.0,
-            "somber": 5.0,
-        },
         energy=80.0,
         energy_state=EnergyState.OKAY,
         current_activity=None,
         active_desires=[],
+        inner_document=InnerDocument(
+            [InnerTopic("identity", "self-understanding", "自我理解", "我是尼克斯")],
+            1,
+            1000.0,
+        ),
     )
 
 

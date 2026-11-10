@@ -16,7 +16,6 @@ from nyx.memory.retrieval import (
     build_embed,
     cosine,
     extract_keywords,
-    rank_by_cosine,
 )
 from nyx.memory.store import MemoryStore
 from nyx.types import Memory
@@ -155,16 +154,6 @@ def test_cosine() -> None:
     assert cosine([1.0, 0.0], [1.0, 0.0, 0.0]) == 0.0  # 维度不一致
 
 
-def test_rank_by_cosine() -> None:
-    qv = [1.0, 0.0]
-    candidates = [
-        _mem("m1", embedding=[1.0, 0.0]),    # cos=1
-        _mem("m2", embedding=None),           # 跳过
-        _mem("m3", embedding=[-1.0, 0.0]),   # cos=-1 过滤
-        _mem("m4", embedding=[0.5, 0.5]),    # cos≈0.707
-    ]
-    ranked = rank_by_cosine(qv, candidates)
-    assert [m.id for _, m in ranked] == ["m1", "m4"]
 
 
 def test_extract_keywords_mixed_text() -> None:

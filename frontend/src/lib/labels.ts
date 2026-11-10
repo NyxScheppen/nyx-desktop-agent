@@ -91,31 +91,6 @@ export const OUTPUT_TYPE_LABELS: Record<string, string> = {
   tool: "工具",
 };
 
-// Big Five 五维与三观四维的双端语义：low = 低分端(1) 语义，high = 高分端(10) 语义。
-// 键是类型字段名（snake_case），非枚举，故用 string 键；滑块偏左=偏 low、偏右=偏 high，两端词自解释维度。
-export const PERSONALITY_POLES: Record<string, { low: string; high: string }> = {
-  openness: { low: "保守", high: "开放" },
-  conscientiousness: { low: "随性", high: "自律" },
-  extraversion: { low: "内向", high: "外向" },
-  agreeableness: { low: "较真", high: "随和" },
-  neuroticism: { low: "情绪稳定", high: "敏感" },
-};
-
-export const VALUES_POLES: Record<string, { low: string; high: string }> = {
-  attitude_to_human: { low: "疏离", high: "亲近" },
-  ai_identity_acceptance: { low: "抗拒", high: "认同" },
-  altruism: { low: "自利", high: "利他" },
-  optimism: { low: "悲观", high: "乐观" },
-};
-
-// 审美四轴双端语义：低端词在前（1 端），高端词在后（10 端）。
-export const AESTHETIC_POLES: Record<string, { low: string; high: string }> = {
-  ornate: { low: "朴素", high: "华丽" },
-  lyrical: { low: "平实", high: "抒情" },
-  classical: { low: "现代", high: "古典" },
-  somber: { low: "轻盈", high: "沉重" },
-};
-
 /** 查中文标签，未收录回退原值（string 键，用于自由/宽松字段）。 */
 export function label(map: Record<string, string>, key: string): string {
   return map[key] ?? key;

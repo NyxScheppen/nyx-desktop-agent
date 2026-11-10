@@ -2,7 +2,7 @@
 
 store 是 books/paragraphs 唯一写路径，直接测其契约：`insert_book_with_paragraphs`
 单锁单事务原子落书+段、`content_hash` 去重（唯一索引 + IntegrityError 回退）、
-并发同哈希只出一本书、`find_by_hash` 命中/落空。
+并发同哈希只出一本书。
 """
 
 import asyncio
@@ -143,25 +143,8 @@ async def test_insert_atomic_rolls_back_on_paragraphs_failure(
     assert row is not None and row["n"] == 0  # book 已回滚，无空壳
 
 
-async def test_find_by_hash_hit() -> None:
-    store, database = await _new_store()
-    try:
-        book, _ = await store.insert_book_with_paragraphs(
-            title="t", author="a", filename="f", content_hash="h" * 64,
-            segments=[Segment(text="正文", is_chapter_start=False)],
-        )
-        found = await store.find_by_hash("h" * 64)
-    finally:
-        await database.conn.close()
-    assert found is not None and found.id == book.id
 
 
-async def test_find_by_hash_miss_returns_none() -> None:
-    store, database = await _new_store()
-    try:
-        assert await store.find_by_hash("x" * 64) is None
-    finally:
-        await database.conn.close()
 
 
 # ---- 阅读系统：进度 / 书架 / 分页 ----

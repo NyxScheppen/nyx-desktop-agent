@@ -23,6 +23,8 @@ from psycopg import AsyncConnection
 from psycopg import Error as PostgresError
 from psycopg.rows import dict_row
 
+from nyx.types import InnerTopic
+
 
 def _qmark_to_pyformat(sql: str) -> str:
     """Convert SQLite qmark parameters while leaving quoted text untouched."""
@@ -54,6 +56,9 @@ def _qmark_to_pyformat(sql: str) -> str:
 
 def _sqlite_sql_to_postgres(sql: str) -> str:
     statement = _qmark_to_pyformat(sql)
+    statement = statement.replace(
+        "INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY",
+    )
     statement = re.sub(r"\bLIMIT\s+-1\b", "LIMIT ALL", statement)
     statement = re.sub(r"\bMAX\(\s*(0\.0)\s*,", r"GREATEST(\1,", statement)
     statement = re.sub(r"\bMIN\(\s*(1\.0)\s*,", r"LEAST(\1,", statement)
@@ -80,6 +85,71 @@ def _sqlite_sql_to_postgres(sql: str) -> str:
             flags=re.IGNORECASE,
         ).rstrip().removesuffix(";") + " ON CONFLICT DO NOTHING"
     return statement
+
+
+def _conversation_index_triggers() -> list[str]:
+    return [
+        "CREATE OR REPLACE FUNCTION nyx_record_conversation_chunk_change() "
+        "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO "
+        "conversation_chunk_change(chunk_id) VALUES "
+        "(CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END); "
+        "RETURN NULL; END $$",
+        *(f"CREATE TRIGGER conversation_chunk_{action.lower()} AFTER {action} "
+          "ON conversation_chunk FOR EACH ROW EXECUTE FUNCTION "
+          "nyx_record_conversation_chunk_change()"
+          for action in ("INSERT", "UPDATE", "DELETE")),
+    ]
+
+
+def _conversation_lifecycle_triggers(*, postgres: bool = False) -> list[str]:
+    """Keep source invalidation atomic, including direct SQL maintenance."""
+    cleanup = (
+        "DELETE FROM memory_fact WHERE source_segment_id=OLD.id; "
+        "DELETE FROM conversation_retrieval_trace WHERE id IN "
+        "(SELECT trace_id FROM conversation_retrieval_hit WHERE segment_id=OLD.id); "
+    )
+    # Appending a real turn preserves earlier evidence and temporal fact history.
+    # Replacing source text retracts it. Both still invalidate the indexing job.
+    newline = "chr(10)" if postgres else "char(10)"
+    correction = (
+        "NOT (substr(NEW.raw_content,1,length(OLD.raw_content))=OLD.raw_content "
+        f"AND substr(NEW.raw_content,length(OLD.raw_content)+1,1)={newline})"
+    )
+    retract = (
+        f"DELETE FROM memory_fact WHERE source_segment_id=OLD.id AND {correction}; "
+        "DELETE FROM conversation_retrieval_trace WHERE id IN "
+        "(SELECT trace_id FROM conversation_retrieval_hit "
+        f"WHERE segment_id=OLD.id) AND {correction}; "
+    )
+    actions = [
+        ("insert", "AFTER INSERT", "", "INSERT INTO conversation_index_job "
+         "(segment_id) VALUES (NEW.id); "),
+        ("revise", "AFTER UPDATE OF raw_content", "NEW.raw_content<>OLD.raw_content",
+         retract + "UPDATE conversation_index_job SET revision=revision+1, "
+         "attempts=0, retry_at=0, last_error='' WHERE segment_id=NEW.id; "
+         "UPDATE conversation_segment SET evaluated_at=NULL, facts_extracted_at=NULL "
+         "WHERE id=NEW.id; "),
+        ("delete", "BEFORE DELETE", "", cleanup),
+    ]
+    result: list[str] = []
+    for name, event, condition, body in actions:
+        when = f" WHEN ({condition})" if condition else ""
+        if postgres:
+            function = f"nyx_conversation_{name}"
+            result.extend([
+                f"CREATE OR REPLACE FUNCTION {function}() RETURNS trigger "
+                f"LANGUAGE plpgsql AS $$ BEGIN {body}RETURN "
+                f"{'OLD' if name == 'delete' else 'NEW'}; END $$",
+                f"CREATE TRIGGER conversation_source_{name} {event} ON "
+                f"conversation_segment FOR EACH ROW{when} "
+                f"EXECUTE FUNCTION {function}()",
+            ])
+        else:
+            result.append(
+                f"CREATE TRIGGER conversation_source_{name} {event} ON "
+                f"conversation_segment{when} BEGIN {body}END"
+            )
+    return result
 
 
 def postgres_migrations(
@@ -159,6 +229,8 @@ def postgres_migrations(
             )
         )
     if character_schema:
+        postgres.extend(_conversation_index_triggers())
+        postgres.extend(_conversation_lifecycle_triggers(postgres=True))
         postgres.extend(
             [
                 "CREATE OR REPLACE FUNCTION nyx_record_knowledge_chunk_change() "
@@ -237,6 +309,68 @@ async def _validate_archive_turns(conn: Connection) -> None:
         logging.getLogger(__name__).warning("旧归档重复轮次数量=%d", duplicates)
 
 
+def _legacy_inner_topics(
+    identity: str,
+    *,
+    story: list[str],
+    self_view: Mapping[str, str],
+    becoming: list[str],
+) -> list[InnerTopic]:
+    """Move existing pre-v55 prose into topics without interpreting trait scores."""
+    from nyx.inner_life.document import MAX_TOPIC_CHARS, validate_topics
+
+    topics = [InnerTopic("identity", "self-understanding", "自我理解", identity)]
+    for key, title, texts in (
+        (
+            "legacy-self-view",
+            "已有自画像",
+            [f"{k}：{v}" for k, v in self_view.items()],
+        ),
+        ("legacy-story", "已有个人叙事", story),
+        ("legacy-becoming", "已有认知变化", becoming),
+    ):
+        # Pack short entries and split long ones without losing old growth.
+        chunks: list[str] = []
+        for text in texts:
+            if not text.strip():
+                continue
+            if chunks and len(chunks[-1]) + len(text) + 2 <= MAX_TOPIC_CHARS:
+                chunks[-1] += "\n\n" + text
+            else:
+                chunks.extend(
+                    text[start : start + MAX_TOPIC_CHARS]
+                    for start in range(0, len(text), MAX_TOPIC_CHARS)
+                )
+        for index, chunk in enumerate(chunks):
+            topics.append(InnerTopic("narrative", f"{key}-{index}", title, chunk))
+    validate_topics(topics)
+    return topics
+
+
+async def _migrate_inner_document(conn: Connection) -> None:
+    from dataclasses import asdict
+
+    narrative = await (
+        await conn.execute("SELECT * FROM self_narrative WHERE id='self'")
+    ).fetchone()
+    if narrative is None:
+        return
+    topics = _legacy_inner_topics(
+        narrative["identity"],
+        story=json.loads(narrative["story"]),
+        self_view=json.loads(narrative["self_view"]),
+        becoming=json.loads(narrative["becoming"]),
+    )
+    await conn.execute(
+        "INSERT INTO inner_document (id, topics, revision, updated_at) "
+        "VALUES ('self', ?, 1, ?)",
+        (
+            json.dumps([asdict(t) for t in topics], ensure_ascii=False),
+            narrative["updated_at"],
+        ),
+    )
+
+
 async def connect_postgres(url: str) -> PostgresConnection:
     """Open one PostgreSQL connection with dictionary rows."""
     raw: Any = await AsyncConnection.connect(  # pyright: ignore[reportUnknownMemberType]
@@ -264,9 +398,13 @@ async def migrate_postgres(
     await conn.commit()
 
     compiled = postgres_migrations(migrations)
-    if migrations is None and current >= 52:
-        compiled = [(version, statements) for version, statements in _MIGRATIONS
-                    if version > current]
+    incremental = migrations is None and current >= 52
+    if incremental:
+        compiled = [
+            (version, statements)
+            for version, statements in _MIGRATIONS
+            if version > current
+        ]
     for version, statements in compiled:
         if version <= current:
             continue
@@ -275,7 +413,18 @@ async def migrate_postgres(
             if migrations is None and current == 52 and version == 53:
                 await _validate_archive_turns(conn)
             for statement in statements:
+                if (incremental and version in (56, 57)
+                        and statement.startswith("CREATE TRIGGER")):
+                    continue
+                if version == 55 and statement == "DROP TABLE personality":
+                    await _migrate_inner_document(conn)
                 await conn.execute(statement)
+            if incremental and version == 56:
+                for statement in _conversation_index_triggers():
+                    await conn.execute(statement)
+            if incremental and version == 57:
+                for statement in _conversation_lifecycle_triggers(postgres=True):
+                    await conn.execute(statement)
             await conn.execute("UPDATE schema_version SET version = ?", (version,))
             await conn.commit()
         except BaseException:
@@ -304,7 +453,10 @@ class DatabaseOperationTimeout(TimeoutError):
 
 
 DATABASE_ERRORS = (
-    sqlite3.Error, PostgresError, DatabaseLockTimeout, DatabaseOperationTimeout,
+    sqlite3.Error,
+    PostgresError,
+    DatabaseLockTimeout,
+    DatabaseOperationTimeout,
 )
 
 
@@ -448,12 +600,14 @@ class Database:
         marker = self._transaction_state.set(True)
         try:
             try:
-                await asyncio.wait_for(
-                    self.conn.execute("BEGIN"), timeout=self.operation_timeout
-                )
-            except TimeoutError as error:
-                raise DatabaseOperationTimeout("DB begin timed out") from error
-            try:
+                # BEGIN may have reached the driver when cancellation arrives.
+                # Its cleanup must share the same rollback boundary as the body.
+                try:
+                    await asyncio.wait_for(
+                        self.conn.execute("BEGIN"), timeout=self.operation_timeout
+                    )
+                except TimeoutError as error:
+                    raise DatabaseOperationTimeout("DB begin timed out") from error
                 yield self.conn
                 try:
                     await asyncio.wait_for(
@@ -1332,7 +1486,6 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "json_each(s.raw_event_ids) AS j GROUP BY j.value",
         ],
     ),
-
     (
         54,
         [
@@ -1352,6 +1505,78 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "created_at DOUBLE PRECISION NOT NULL, "
             "updated_at DOUBLE PRECISION NOT NULL)",
             "CREATE INDEX idx_research_correlation ON research_run(correlation_id)",
+        ],
+    ),
+    (
+        55,
+        [
+            "CREATE TABLE inner_document (id TEXT PRIMARY KEY, topics TEXT NOT NULL, "
+            "revision INTEGER NOT NULL, updated_at DOUBLE PRECISION NOT NULL)",
+            "DROP TABLE personality",
+            "DROP TABLE value_system",
+            "DROP TABLE aesthetic",
+            "DROP TABLE self_narrative",
+            "ALTER TABLE long_term_desire DROP COLUMN linked_values",
+        ],
+    ),
+    (
+        56,
+        [
+            "CREATE TABLE conversation_chunk (id TEXT PRIMARY KEY, "
+            "segment_id TEXT NOT NULL REFERENCES conversation_segment(id) "
+            "ON DELETE CASCADE, start_offset INTEGER NOT NULL, "
+            "end_offset INTEGER NOT NULL, content TEXT NOT NULL, embedding TEXT, "
+            "token_count INTEGER NOT NULL, "
+            "CHECK(start_offset>=0 AND end_offset>start_offset))",
+            "CREATE INDEX idx_conversation_chunk_segment "
+            "ON conversation_chunk(segment_id, start_offset)",
+            "CREATE TABLE conversation_chunk_term (term TEXT NOT NULL, "
+            "chunk_id TEXT NOT NULL REFERENCES conversation_chunk(id) "
+            "ON DELETE CASCADE, frequency INTEGER NOT NULL, "
+            "PRIMARY KEY(term, chunk_id))",
+            "CREATE INDEX idx_conversation_chunk_term_chunk "
+            "ON conversation_chunk_term(chunk_id)",
+            "CREATE TABLE conversation_chunk_change "
+            "(seq INTEGER PRIMARY KEY AUTOINCREMENT, chunk_id TEXT NOT NULL)",
+            *(f"CREATE TRIGGER conversation_chunk_{action.lower()} "
+              f"AFTER {action} ON conversation_chunk BEGIN "
+              "INSERT INTO conversation_chunk_change(chunk_id) "
+              f"VALUES ({'OLD' if action == 'DELETE' else 'NEW'}.id); END"
+              for action in ("INSERT", "UPDATE", "DELETE")),
+        ],
+    ),
+    (
+        57,
+        [
+            "ALTER TABLE conversation_chunk ADD COLUMN embedding_version TEXT "
+            "NOT NULL DEFAULT ''",
+            "CREATE TABLE conversation_index_job (segment_id TEXT PRIMARY KEY "
+            "REFERENCES conversation_segment(id) ON DELETE CASCADE, "
+            "revision INTEGER NOT NULL DEFAULT 1, completed_revision INTEGER "
+            "NOT NULL DEFAULT 0, index_version TEXT NOT NULL DEFAULT '', "
+            "attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0, "
+            "last_error TEXT NOT NULL DEFAULT '')",
+            "INSERT INTO conversation_index_job(segment_id) "
+            "SELECT id FROM conversation_segment",
+            "CREATE INDEX idx_conversation_index_retry ON "
+            "conversation_index_job(retry_at, segment_id)",
+            "CREATE TABLE conversation_retrieval_trace (id TEXT PRIMARY KEY, "
+            "created_at REAL NOT NULL, query_hash TEXT NOT NULL, "
+            "index_version TEXT NOT NULL, include_archived INTEGER NOT NULL, "
+            "elapsed_ms REAL NOT NULL)",
+            "CREATE INDEX idx_conversation_trace_time ON "
+            "conversation_retrieval_trace(created_at, id)",
+            "CREATE TABLE conversation_retrieval_hit (trace_id TEXT NOT NULL "
+            "REFERENCES conversation_retrieval_trace(id) ON DELETE CASCADE, "
+            "chunk_id TEXT NOT NULL REFERENCES conversation_chunk(id) "
+            "ON DELETE CASCADE, segment_id TEXT NOT NULL REFERENCES "
+            "conversation_segment(id) ON DELETE CASCADE, "
+            "bm25 REAL, cosine REAL, fusion REAL NOT NULL, score REAL NOT NULL, "
+            "selected INTEGER NOT NULL, source_ranges TEXT NOT NULL, "
+            "injected_event_id TEXT, PRIMARY KEY(trace_id, chunk_id))",
+            "CREATE INDEX idx_conversation_hit_segment ON "
+            "conversation_retrieval_hit(segment_id, trace_id)",
+            *_conversation_lifecycle_triggers(),
         ],
     ),
 ]
@@ -1484,7 +1709,9 @@ async def migrate(
             continue
         if version == 44:
             await conn.create_function(  # pyright: ignore[reportUnknownMemberType]
-                "nyx_raw_sha256", 1, _raw_sha256,
+                "nyx_raw_sha256",
+                1,
+                _raw_sha256,
                 deterministic=True,
             )
         if version == 45:
@@ -1494,7 +1721,9 @@ async def migrate(
                 return source[:200_000]
 
             await conn.create_function(  # pyright: ignore[reportUnknownMemberType]
-                "nyx_task_source_snapshot", 1, task_source_snapshot,
+                "nyx_task_source_snapshot",
+                1,
+                task_source_snapshot,
                 deterministic=True,
             )
         await conn.execute("BEGIN")
@@ -1502,6 +1731,8 @@ async def migrate(
             if version == 53:
                 await _validate_archive_turns(conn)
             for stmt in statements:
+                if version == 55 and stmt == "DROP TABLE personality":
+                    await _migrate_inner_document(conn)
                 await conn.execute(stmt)
             await conn.execute("UPDATE schema_version SET version = ?", (version,))
             await conn.commit()

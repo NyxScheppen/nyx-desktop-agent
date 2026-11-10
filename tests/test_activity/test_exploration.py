@@ -7,15 +7,13 @@ from typing import Any, cast
 
 import pytest
 
-from nyx.activity.exploration import Exploration, should_explore
 from nyx.activity.store import ActivityStore
 from nyx.config import ExplorationConfig
-from nyx.desire.facade import DesireFacade
 from nyx.enums import ActivityStatus, ActivityType, MemoryKind, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
-from nyx.research.engine import ResearchWaiting
+from nyx.research.engine import ResearchEngine, ResearchWaiting, should_explore
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, LLMOutput, Memory
 
@@ -139,6 +137,26 @@ class _FakeMemory:
     async def search(self, query: str) -> list[Memory]:
         return self.knowledge
 
+    async def search_behavior_experiences(
+        self,
+        query: str,
+        target_skill: str,
+    ) -> list[Memory]:
+        return []
+
+    async def remember_research_knowledge(
+        self,
+        receipt_id: str,
+        items: list[dict[str, str]],
+        correlation_id: str,
+        source_chunk_id: str | None,
+    ) -> None:
+        await self.remember_knowledge(
+            items,
+            correlation_id,
+            source_chunk_id=source_chunk_id,
+        )
+
     async def remember_knowledge(
         self, items: list[dict[str, str]], correlation_id: str,
         *, source_chunk_id: str | None = None,
@@ -180,13 +198,12 @@ def _make_exploration(
     store: _FakeStore | None = None,
     desire: _FakeDesire | None = None,
     memory: _FakeMemory | None = None,
-) -> Exploration:
-    return Exploration(
+) -> ResearchEngine:
+    return ResearchEngine(
         cast(LlmClient, llm if llm is not None else _FakeLlm()),
         cast(Evaluator, _FakeEvaluator()),
         cast(ToolRegistry, tools if tools is not None else _FakeTools()),
         cast(ActivityStore, store if store is not None else _FakeStore()),
-        cast(DesireFacade, desire if desire is not None else _FakeDesire()),
         cast(MemoryFacade, memory if memory is not None else _FakeMemory()),
         ExplorationConfig(web_enabled=web_enabled),
     )
@@ -240,7 +257,7 @@ async def test_run_won_when_core_discovery() -> None:
     assert result["knowledge"][0]["topic"] == "来源知识"
     assert result["strong_new_topics"] == ["量子纠错"]
     assert store.progress_updates[-1]["exploration"]["state"] == "completed"
-    assert desire.appended_subtopics == [("lt1", ["量子纠错"])]
+    assert desire.appended_subtopics == []  # Engine has no desire side effects.
     assert memory.remembered[-1][0][0]["topic"] == "来源知识"
     assert len(memory.remembered) == 1  # Finalization does not ingest again.
 
@@ -452,12 +469,11 @@ async def test_resume_sinking_with_sink_done_skips_memory_and_desire() -> None:
 
 async def test_exploration_uses_card_identity() -> None:
     llm = _FakeLlm()
-    exploration = Exploration(
+    exploration = ResearchEngine(
         cast(LlmClient, llm),
         cast(Evaluator, _FakeEvaluator()),
         cast(ToolRegistry, _FakeTools()),
         cast(ActivityStore, _FakeStore()),
-        cast(DesireFacade, _FakeDesire()),
         cast(MemoryFacade, _FakeMemory()),
         ExplorationConfig(),
         canon="你是 Alice，说话直接活泼。",

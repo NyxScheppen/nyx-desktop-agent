@@ -40,7 +40,7 @@ export function dispatchEvent(e: SseEvent, replaying = false): void {
     case "think":
       return useChatStore.getState().addThink(e);
     case "mutter":
-      // 碎碎念改悬浮气泡（08 §3）：与 reading_mutter/reflection_done 统一走 announce("mutter")。
+      // 碎碎念与 reading_mutter 统一走悬浮气泡。
       return useAnnounceStore.getState().announce("mutter", e.content);
     case "initiate_chat":
       return useChatStore.getState().addInitiateChat(e);
@@ -49,9 +49,7 @@ export function dispatchEvent(e: SseEvent, replaying = false): void {
     case "annotation_feedback":
       return useChatStore.getState().addAnnotationFeedback(e);
     case "emotion_update":
-      // 载荷只带 {valence, arousal, emotion}，能量/性格/三观/审美不随帧下发；
-      // 而 emotion_update 恰好在能量(ACTIVITY_END)/性格三观审美(REFLECTION)可能变化的那一刻发出，
-      // 故顺带 refreshState() 重拉全量快照，带新 EnergyBar/BigFiveChart/ValuesChart/AestheticChart。
+      // 情绪帧不包含精力等运行状态，重新读取完整快照。
       useInnerLifeStore.getState().updateEmotion(e);
       void useInnerLifeStore.getState().refreshState();
       return;
@@ -98,18 +96,9 @@ export function dispatchEvent(e: SseEvent, replaying = false): void {
       return useReaderStore.getState().applyProgressEvent(e);
     case "reflection_done": {
       void useMemoryStore.getState().refresh();
-      // 反思完成：慢变量与长期欲望都可能变化，因此刷新两个快照；
-      // story 真新增才冒气泡（去重跳过则静默刷新，不打扰）。
+      // 内在文档与长期欲望可能变化；内部反思摘要只保存在反思记录中。
       void useDesireStore.getState().refresh();
       void useInnerLifeStore.getState().refreshState();
-      if (e.story_is_new) {
-        const preview =
-          e.story.length > 30 ? `${e.story.slice(0, 30)}…` : e.story;
-        useAnnounceStore.getState().announce(
-          "mutter",
-          `小狐狸我呀，反思了一下：${preview}`,
-        );
-      }
       return;
     }
   }

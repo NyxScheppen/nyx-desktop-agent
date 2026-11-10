@@ -55,19 +55,6 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
-def rank_by_cosine(
-    query_vec: list[float], candidates: list[Memory]
-) -> list[tuple[float, Memory]]:
-    """候选余弦打分 + s>0 过滤 + 降序（embedding 缺失跳过）。纯函数。"""
-    scored: list[tuple[float, Memory]] = []
-    for m in candidates:
-        if m.embedding is None:
-            continue
-        s = cosine(query_vec, m.embedding)
-        if s > 0.0:
-            scored.append((s, m))
-    scored.sort(key=lambda t: t[0], reverse=True)
-    return scored
 
 
 def extract_keywords(text: str) -> list[str]:
@@ -103,6 +90,7 @@ class MemoryRetrieval:
         association_limit: int = 10,
         required_topic: str | None = None,
         kind: MemoryKind | None = None,
+        allowed_ids: set[str] | None = None,
     ) -> list[Memory]:
         if not query.strip():
             return []
@@ -110,6 +98,8 @@ class MemoryRetrieval:
             return []
 
         all_memories = await self._store.list_memories(kind=kind)
+        if allowed_ids is not None:
+            all_memories = [m for m in all_memories if m.id in allowed_ids]
         if required_topic is not None:
             all_memories = [
                 memory
@@ -125,6 +115,7 @@ class MemoryRetrieval:
             _RECALL_KEYWORD_CANDIDATE_K,
             required_topic=required_topic,
             kind=kind,
+            allowed_ids=allowed_ids,
         )
         direct_ranked = self._rank_direct(
             by_id, vector_scores, keyword_hits, len(tokens)

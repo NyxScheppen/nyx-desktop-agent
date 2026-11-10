@@ -1,6 +1,7 @@
 """Lazy, bounded CPU embedding inference; export tools stay out of the runtime."""
 
 import asyncio
+import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -115,4 +116,18 @@ def build_embed(model_name: str) -> EmbedFn:
         task.add_done_callback(finished)
         return await asyncio.shield(task)
 
+    # Hash artifacts once at composition, never on retrieval. Same dimensions do
+    # not imply compatible models/tokenizers. Missing exports still fail lazily.
+    digest = hashlib.sha256(model_name.encode())
+    directory = model_directory(model_name)
+    for name in ("embedding.json", "tokenizer.json", "model.onnx"):
+        path = directory / name
+        digest.update(name.encode())
+        if path.is_file():
+            with path.open("rb") as source:
+                while block := source.read(1024 * 1024):
+                    digest.update(block)
+        else:
+            digest.update(b"missing")
+    setattr(embed, "index_version", digest.hexdigest())
     return embed

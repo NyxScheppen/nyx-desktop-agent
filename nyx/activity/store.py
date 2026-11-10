@@ -95,15 +95,6 @@ class ActivityStore:
             row = await cursor.fetchone()
         return _row_to_activity(row) if row is not None else None
 
-    async def list_running(self) -> list[Activity]:
-        """所有 RUNNING 活动，按 started_at 升序（启动恢复清理用）。"""
-        async with self._db.lock:
-            cursor = await self._db.conn.execute(
-                f"SELECT {_COLS} FROM activity WHERE status = 'running' "
-                "ORDER BY started_at ASC"
-            )
-            rows = await cursor.fetchall()
-        return [_row_to_activity(r) for r in rows]
 
     async def list_unfinished(self) -> list[Activity]:
         """Return stale startup candidates in creation order."""

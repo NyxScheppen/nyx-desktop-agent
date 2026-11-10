@@ -7,6 +7,7 @@ import {
 } from "../../lib/activityResult";
 import { useActivityStore } from "../../stores/activityStore";
 import Panel from "../layout/Panel";
+import FlowPages from "../layout/FlowPages";
 
 function dateTimeLabel(timestamp: number): string {
   return formatDateTime(timestamp);
@@ -29,8 +30,9 @@ export default function CreationPanel() {
   const selected = creations?.find((activity) => activity.id === selectedId);
 
   return (
-    <Panel title="创作">
+    <Panel title="创作" className="paged-panel creation-panel">
       {error !== null && <p className="error-text">{error}</p>}
+      <FlowPages key={selected?.id ?? "shelf"} onLoadMore={!selected && hasMore ? () => void loadMore() : undefined} loading={loading}>
       {creations === null ? (
         "等待核心服务连接…"
       ) : creations.length === 0 ? (
@@ -62,16 +64,7 @@ export default function CreationPanel() {
           })}
         </ul>
       )}
-      {hasMore && (
-        <button
-          type="button"
-          className="outputs__more"
-          disabled={loading}
-          onClick={() => void loadMore()}
-        >
-          {loading ? "加载中…" : "加载更多"}
-        </button>
-      )}
+      </FlowPages>
     </Panel>
   );
 }

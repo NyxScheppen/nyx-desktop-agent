@@ -170,14 +170,7 @@ describe("Avatar 桌宠入口", () => {
         emotion: "happy",
         valence: 0.1,
         arousal: 0.2,
-        personality: {
-          openness: 8, conscientiousness: 8, extraversion: 2,
-          agreeableness: 6, neuroticism: 7,
-        },
-        values: {
-          attitude_to_human: 8, ai_identity_acceptance: 6, altruism: 9, optimism: 5,
-        },
-        aesthetic: { ornate: 7, lyrical: 7, classical: 6, somber: 6 },
+        inner_document: { topics: [{ section: "identity", id: "self-understanding", title: "自我理解", content: "我正在认识自己。" }], revision: 1, updated_at: 1000 },
         energy: 80,
         energy_state: "energetic",
         current_activity: null,

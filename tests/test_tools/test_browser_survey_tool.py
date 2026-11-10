@@ -1,6 +1,5 @@
 from nyx.enums import AssignedTaskStatus, AssignedTaskType
 from nyx.tools.activity_tasks import build_activity_task_tools
-from nyx.tools.browser_survey import build_browser_survey_tool
 from nyx.types import AssignedTask
 
 
@@ -14,7 +13,10 @@ async def test_browser_survey_tool_only_queues_task() -> None:
             AssignedTaskStatus.PENDING, url, None, None, {}, None, 1.0, 1.0,
         )
 
-    tool = build_browser_survey_tool(assign)
+    async def book(title: str, paragraph: int) -> AssignedTask:
+        return await assign(title)
+
+    tool = build_activity_task_tools(assign, book, assign, assign)[3]
     result = await tool.handler(url="https://example.com/quiz")
     assert urls == ["https://example.com/quiz"]
     assert result == {

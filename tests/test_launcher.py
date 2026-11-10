@@ -348,12 +348,15 @@ def test_sidecar_build_bundles_only_public_resources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import huggingface_hub
+    import nyx.memory.embedding as embedding
 
     monkeypatch.setattr(dev, "ROOT", tmp_path)
     monkeypatch.setattr(dev.sys, "argv", ["dev.py", "--build-sidecar"])
-    download = MagicMock(return_value=str(tmp_path / "model"))
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", download)
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "embedding.json").write_text("{}", encoding="utf-8")
+    resolve = MagicMock(return_value=model)
+    monkeypatch.setattr(embedding, "model_directory", resolve)
     process = MagicMock(stdout="x86_64-pc-windows-msvc\n")
     with (
         patch.object(dev.subprocess, "run", return_value=process) as run,
@@ -366,7 +369,7 @@ def test_sidecar_build_bundles_only_public_resources(
     ):
         dev.main()
     command = run.call_args_list[-1].args[0]
-    assert download.call_args.kwargs["repo_id"] == "BAAI/bge-small-zh-v1.5"
+    resolve.assert_called_once_with("BAAI/bge-small-zh-v1.5")
     assert command[:3] == [dev.sys.executable, "-m", "PyInstaller"]
     assert [
         command[i + 1] for i, argument in enumerate(command) if argument == "--paths"
@@ -374,6 +377,8 @@ def test_sidecar_build_bundles_only_public_resources(
     assert f"{tmp_path / 'nyx' / 'prompts'};nyx/prompts" in command
     assert f"{tmp_path / 'nyx' / 'cards'};nyx/cards" in command
     assert not any(".env" in argument for argument in command)
+    assert "onnxruntime" in command
+    assert "sentence-transformers" not in command
     assert "x86_64-pc-windows-msvc" in str(copy.call_args.args[1])
 
 

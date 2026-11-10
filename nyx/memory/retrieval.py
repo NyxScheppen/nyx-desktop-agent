@@ -1,18 +1,14 @@
-import asyncio
 import math
 import re
-import threading
-from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import cast
 
 from nyx.enums import MemoryKind, MemoryType, SearchMode
 from nyx.memory.ann import AnnIndex, ann_fingerprint
+from nyx.memory.embedding import EmbedFn as EmbedFn
+from nyx.memory.embedding import build_embed as build_embed
 from nyx.memory.graph import AssociationHit, MemoryGraph
 from nyx.memory.store import KeywordSearchHit, MemoryStore
 from nyx.types import Memory
-
-EmbedFn = Callable[[str], Awaitable[list[float]]]
 
 _RECALL_VECTOR_CANDIDATE_K = 80
 _RECALL_KEYWORD_CANDIDATE_K = 80
@@ -89,40 +85,6 @@ def extract_keywords(text: str) -> list[str]:
                 for index in range(0, len(raw) - size + 1):
                     _append_token(raw[index : index + size], tokens, seen)
     return tokens
-
-
-def build_embed(model_name: str) -> EmbedFn:
-    """用本地 sentence-transformers 建 embed 函数。
-
-    模型在第一次编码时加载，让后端先完成启动和端口监听。
-    """
-    encode: Callable[[str], Iterable[float]] | None = None
-    model_lock = threading.Lock()
-
-    def get_encode() -> Callable[[str], Iterable[float]]:
-        nonlocal encode
-        if encode is not None:
-            return encode
-        with model_lock:
-            if encode is None:
-                from sentence_transformers import SentenceTransformer
-
-                model = SentenceTransformer(model_name)
-                # sentence-transformers 的 encode 返回类型含 Unknown（SingleInput 里
-                # PIL/torchcodec 可选导入兜底 None），getattr + cast 收窄为明确的
-                # Callable，避免 pyright 报 partially-unknown。
-                encode = cast(
-                    Callable[[str], Iterable[float]], getattr(model, "encode")
-                )
-            return encode
-
-    def _encode_sync(text: str) -> list[float]:
-        return [float(x) for x in get_encode()(text)]
-
-    async def embed(text: str) -> list[float]:
-        return await asyncio.to_thread(_encode_sync, text)
-
-    return embed
 
 
 class MemoryRetrieval:

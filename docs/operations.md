@@ -8,6 +8,8 @@
 
 ```powershell
 uv sync --locked --extra dev
+uv run --extra embedding-export python -m scripts.export_embedding
+uv sync --locked --extra dev
 Push-Location frontend
 npm ci
 Pop-Location
@@ -39,9 +41,15 @@ npm run dev
 Pop-Location
 ```
 
+首次安装或更换 embedding 模型时先执行导出：默认模型产物缓存到 Hugging Face 缓存目录，运行时保持离线、FP32 和 512 token。导出依赖只在构建时使用，Linux 导出使用锁定的 CPU 版 PyTorch，之后的 `uv sync` 会移除 PyTorch 等额外依赖。自定义本地模型使用 `--model <来源目录> --output <新目录>` 导出，并将 `embedding.model` 指向导出目录；已有导出目录不会被覆盖。
+
+需要对现有 SQLite 记忆库验证新旧向量兼容性时运行 `uv run --extra embedding-export python -m scripts.evaluate_embedding --database <数据库路径>`。源库只读，召回与语义去重在临时副本中对照；结束后重新执行普通 `uv sync --locked --extra dev` 移除评测依赖。
+
 ## 桌面构建
 
 ```powershell
+uv sync --locked --extra dev --extra desktop-build
+uv run --extra embedding-export python -m scripts.export_embedding
 uv sync --locked --extra dev --extra desktop-build
 uv run --no-sync python dev.py --build-sidecar
 Push-Location frontend

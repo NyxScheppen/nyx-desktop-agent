@@ -13,7 +13,6 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Callable
 from http.client import HTTPConnection, HTTPException
 from pathlib import Path
 from typing import cast
@@ -332,7 +331,7 @@ def _forget_backend(pid: int) -> None:
 
 def main() -> None:
     if "--build-sidecar" in sys.argv[1:]:
-        import huggingface_hub
+        from nyx.memory.embedding import model_directory
 
         target = subprocess.run(
             ["rustc", "--print", "host-tuple"],
@@ -340,13 +339,12 @@ def main() -> None:
             text=True,
             check=True,
         ).stdout.strip()
-        download = cast(
-            Callable[..., str], getattr(huggingface_hub, "snapshot_download")
-        )
-        model = download(
-            repo_id="BAAI/bge-small-zh-v1.5",
-            allow_patterns=["*.json", "*.txt", "model.safetensors"],
-        )
+        model = model_directory("BAAI/bge-small-zh-v1.5")
+        if not (model / "embedding.json").is_file():
+            raise RuntimeError(
+                "Export the embedding model first: uv run --extra embedding-export "
+                "python -m scripts.export_embedding"
+            )
         output = ROOT / "build" / "sidecar"
         separator = ";" if os.name == "nt" else ":"
         command = [
@@ -373,12 +371,8 @@ def main() -> None:
             f"{ROOT / 'nyx' / 'cards'}{separator}nyx/cards",
             "--add-data",
             f"{model}{separator}embedding-model",
-            "--collect-submodules",
-            "sentence_transformers",
-            "--copy-metadata",
-            "sentence-transformers",
-            "--collect-submodules",
-            "transformers.models.bert",
+            "--collect-binaries",
+            "onnxruntime",
             "--collect-all",
             "playwright",
         ]
@@ -388,6 +382,10 @@ def main() -> None:
             "matplotlib",
             "IPython",
             "pytest",
+            "torch",
+            "transformers",
+            "sentence_transformers",
+            "onnx",
             "torchvision",
             "torchaudio",
             "cv2",

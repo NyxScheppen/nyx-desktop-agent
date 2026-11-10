@@ -165,6 +165,11 @@ async def _vision_loop(app: _App) -> None:
 async def main() -> None:
     frozen = bool(getattr(sys, "frozen", False))
     if frozen:
+        # Initialize NumPy's native DLLs before starting the parent-pipe watcher.
+        # In the Windows bundle, first importing them in the inference worker
+        # after that watcher starts can hang in extension-module initialization.
+        __import__("numpy")
+
         resources = Path(str(getattr(sys, "_MEIPASS")))
         os.environ.setdefault("NYX_CANON_DIR", str(resources / "nyx" / "prompts"))
         config = load_config(

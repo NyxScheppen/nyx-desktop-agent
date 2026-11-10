@@ -1,12 +1,11 @@
 # pyright: reportPrivateUsage=false
 import asyncio
 import builtins
-import sys
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+import nyx.memory.embedding as embedding_module
 import nyx.memory.retrieval as retrieval_module
 from nyx.db import connect
 from nyx.enums import MemoryEdgeKind, MemoryKind, MemoryType, SearchMode
@@ -66,14 +65,10 @@ async def test_build_embed_loads_model_lazily_once(
         def __init__(self, model_name: str) -> None:
             constructed.append(model_name)
 
-        def encode(self, text: str) -> list[float]:
+        def __call__(self, text: str) -> list[float]:
             return [float(len(text))]
 
-    monkeypatch.setitem(
-        sys.modules,
-        "sentence_transformers",
-        SimpleNamespace(SentenceTransformer=FakeModel),
-    )
+    monkeypatch.setattr(embedding_module, "OnnxEncoder", FakeModel)
 
     embed = build_embed("local-model")
     assert constructed == []

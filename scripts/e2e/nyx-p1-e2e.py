@@ -7,6 +7,7 @@ import sys
 import time
 import uuid
 from collections import defaultdict
+from dataclasses import replace
 from datetime import datetime
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from nyx.config import Config
 from nyx.enums import InteractionKind, InteractionStatus
 from nyx.expression.store import ExpressionInteractionStore
 from nyx.main import build_app, build_app_context
+from nyx.memory.conversation_chunks import embedding_version, split_conversation
 from nyx.memory.facts import FactCandidate, MemoryFactStore
 from nyx.memory.store import MemoryStore
 from nyx.timezone import USER_TIMEZONE
@@ -41,7 +43,7 @@ class FakeLlm:
             n = self.rounds[correlation_id]
             if self.mode == 'lookup':
                 if n == 1:
-                    calls = [{'name': name, 'args': {'query': 'E2E'}}
+                    calls = [{'name': name, 'args': {'query': 'E2E', 'top_k': 1}}
                              for name in ['memory_recall', 'knowledge_search']]
                 elif n == 2:
                     calls = [{'name': 'deep_research', 'args': {'query': 'E2E'}}]
@@ -77,7 +79,7 @@ class FakeLlm:
                          tool_calls=calls, call_id=str(uuid.uuid4()), prompt_messages=messages)
 
 async def embed(text):
-    return [1.0, 0.0]
+    return [1.0, 0.0] if text.startswith('E2E') or '天文' in text else [0.0, 1.0]
 
 async def main():
     os.environ['NYX_DB'] = ':memory:'
@@ -90,10 +92,15 @@ async def main():
         app = await build_app_context(config)
     store = MemoryStore(app.database)
     now = time.time()
-    await store.add_conversation_segment(ConversationSegment(
+    segment = ConversationSegment(
         id='segment-e2e', previous_id=None, started_at=now - 4000, ended_at=now - 3990,
         raw_event_ids=[], raw_content='用户：E2E 我喜欢研究天文。', summary='E2E',
-        embedding=[1.0, 0.0], evaluated_at=now, facts_extracted_at=now))
+        embedding=[1.0, 0.0], evaluated_at=now, facts_extracted_at=now,
+        topics=['天文'])
+    chunks = [replace(chunk, embedding=await embed(chunk.content),
+                      embedding_version=embedding_version(embed))
+              for chunk in split_conversation(segment.id, segment.raw_content)]
+    await store.add_conversation_segment(segment, chunks=chunks)
     facts = MemoryFactStore(app.database)
     for scope in ['profile', 'conversation', 'knowledge']:
         await facts.apply([FactCandidate(subject='E2E', predicate='记录', object_value=f'{scope}-marker',

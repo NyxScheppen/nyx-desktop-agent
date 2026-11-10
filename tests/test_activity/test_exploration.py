@@ -15,6 +15,7 @@ from nyx.enums import ActivityStatus, ActivityType, MemoryKind, MemoryType
 from nyx.eval.evaluator import Evaluator
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
+from nyx.research.engine import ResearchWaiting
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity, LLMOutput, Memory
 
@@ -684,3 +685,135 @@ async def test_cancelled_tool_resumes_the_pending_action_once(
     assert activity.progress["exploration"]["sources"] == 1
     assert [name for name, _ in tools.calls].count(interrupted_tool) == 2
     assert not any(action.get("status") == "rejected" for action in result["actions"])
+
+
+class _DecisionLlm(_FakeLlm):
+    def __init__(self, decisions: list[str | BaseException]) -> None:
+        super().__init__()
+        self.decisions = iter(decisions)
+
+    async def complete(
+        self, messages: list[LlmMessage], **kwargs: Any,
+    ) -> LLMOutput:
+        output = await super().complete(messages, **kwargs)
+        if kwargs["output_type"] == "exploration_decide":
+            decision = next(self.decisions)
+            if isinstance(decision, BaseException):
+                raise decision
+            output.content = decision
+            output.prompt_tokens = 11
+            output.completion_tokens = 7
+        return output
+
+
+@pytest.mark.parametrize(
+    ("invalid", "error"),
+    [
+        ('{"action":', "无效 JSON"),
+        ('[]', "JSON 对象"),
+        ('{"action":[]}', "available_actions"),
+        ('{"action":"unknown"}', "available_actions"),
+        ('{"action":"ask_user"}', "ask_user.question"),
+        ('{"action":"ask_user","question":null}', "ask_user.question"),
+        ('{"action":"ask_user","question":"  "}', "ask_user.question"),
+        ('{"action":"ask_user","question":123}', "ask_user.question"),
+        ('{"action":"ask_user","question":[]}', "ask_user.question"),
+        ('{"action":"rewrite","question":""}', "rewrite.question"),
+        ('{"action":"follow_up"}', "follow_up.question"),
+        ('{"action":"search","query":""}', "search.query"),
+        ('{"action":"knowledge_search","query":null}', "knowledge_search.query"),
+        ('{"action":"read","index":true}', "read.index"),
+        ('{"action":"read","index":3}', "read.index"),
+        ('{"action":"read","index":"0"}', "read.index"),
+        ('{"action":"finish","unresolved_questions":[1]}', "字符串数组"),
+        ('{"action":"finish","reason":null}', "reason"),
+        ('{"action":"search","query":"词","budget_reserved":true}', "未知字段"),
+    ],
+)
+async def test_invalid_decision_is_corrected_before_any_action(
+    invalid: str, error: str,
+) -> None:
+    llm = _DecisionLlm([
+        invalid, '{"action":"ask_user","question":"  您想了解哪个方面？  "}',
+    ])
+    activity, tools, store = _activity(), _FakeTools(), _FakeStore()
+    activity.progress["exploration"] = {
+        "version": 2,
+        "raw_results": [{"url": "https://example.com/a"}],
+    }
+    exploration = _make_exploration(llm=llm, tools=tools, store=store)
+    with pytest.raises(ResearchWaiting, match="您想了解哪个方面？"):
+        await exploration.run(activity)
+    feedback = json.loads(llm.user_contents[-1])["validation_feedback"]
+    assert feedback == [{"output": invalid, "error": feedback[0]["error"]}]
+    assert error in feedback[0]["error"]
+    checkpoint: dict[str, Any] = activity.progress["exploration"]
+    assert checkpoint["state"] == "waiting_user"
+    assert checkpoint["waiting_question"] == "您想了解哪个方面？"
+    assert checkpoint["steps"] == 1 and checkpoint["tokens"] == 36
+    assert checkpoint["model_calls"][0]["validation_error"] == feedback[0]["error"]
+    assert len(cast(_FakeEvaluator, exploration._evaluator).evaluated) == 2
+    assert tools.calls == []
+    assert all(p["exploration"]["state"] != "failed" for p in store.progress_updates)
+
+
+async def test_decision_can_succeed_on_second_regeneration() -> None:
+    llm = _DecisionLlm([
+        '{"action":"ask_user"}',
+        '{"action":"ask_user","question":null}',
+        '{"action":"ask_user","question":"需要哪种资料？"}',
+    ])
+    activity = _activity()
+    with pytest.raises(ResearchWaiting):
+        await _make_exploration(llm=llm).run(activity)
+    assert len(llm.calls) == 3
+    assert len(json.loads(llm.user_contents[-1])["validation_feedback"]) == 2
+    assert activity.progress["exploration"]["state"] == "waiting_user"
+
+
+async def test_invalid_decision_fails_only_after_two_regenerations() -> None:
+    llm = _DecisionLlm(['{"action":"ask_user"}'] * 4)
+    activity, store, tools = _activity(), _FakeStore(), _FakeTools()
+    exploration = _make_exploration(llm=llm, store=store, tools=tools)
+    with pytest.raises(ValueError, match="2 次重新生成.*ask_user.question"):
+        await exploration.run(activity)
+    assert len(llm.calls) == 3
+    checkpoint = activity.progress["exploration"]
+    assert checkpoint["state"] == "failed" and checkpoint["steps"] == 0
+    assert checkpoint["tokens"] == 54
+    assert "ask_user.question" in checkpoint["failure_reason"]
+    assert tools.calls == []
+    assert all(
+        len(p["exploration"]["decision_errors"]) == 3
+        for p in store.progress_updates if p["exploration"]["state"] == "failed"
+    )
+    with pytest.raises(ValueError):
+        await exploration.run(activity)
+    assert len(llm.calls) == 3
+
+
+async def test_decision_correction_budget_survives_cancellation_and_restart() -> None:
+    llm = _DecisionLlm([
+        '{"action":"ask_user"}', asyncio.CancelledError(),
+        '{"action":"ask_user","question":""}', '{"action":"ask_user"}',
+        '{"action":"ask_user","question":"不该再调用"}',
+    ])
+    activity = _activity()
+    exploration = _make_exploration(llm=llm)
+    with pytest.raises(asyncio.CancelledError):
+        await exploration.run(activity)
+    assert activity.progress["exploration"]["state"] != "failed"
+    activity.progress = json.loads(json.dumps(activity.progress))
+    with pytest.raises(ValueError, match="2 次重新生成"):
+        await exploration.run(activity)
+    assert len(activity.progress["exploration"]["model_calls"]) == 3
+    assert len(llm.calls) == 4  # The cancelled request returned no model output.
+
+
+async def test_model_transport_error_is_not_an_output_correction() -> None:
+    llm = _DecisionLlm([ValueError("provider rejected request")])
+    activity = _activity()
+    with pytest.raises(ValueError, match="provider rejected request"):
+        await _make_exploration(llm=llm).run(activity)
+    assert len(llm.calls) == 1
+    assert activity.progress["exploration"]["decision_errors"] == []

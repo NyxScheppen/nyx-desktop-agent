@@ -40,7 +40,7 @@ class TransportOutbox:
                 ).fetchall()
             )
             for row in rows:
-                if row["type"] not in ("think", "speak", "ask"):
+                if row["type"] not in ("think", "speak", "ask", "initiate_chat"):
                     continue
                 text = json.loads(row["content"]).get("content")
                 if isinstance(text, str) and text.strip():

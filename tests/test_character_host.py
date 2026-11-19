@@ -32,6 +32,8 @@ async def test_onebot_character_lifecycle_and_private_reply(
         text = '{"think":"私聊","speak":"私聊回复","needs_continuation":false}'
         if output_type == "plan":
             text = '{"goal":"回复","steps":[]}'
+        elif output_type == "initiate_chat":
+            text = "主动问候"
         elif output_type != "reply":
             text = "{}"
         return LLMOutput(module=module, type=output_type, model="fixture",
@@ -44,6 +46,7 @@ async def test_onebot_character_lifecycle_and_private_reply(
     config.onebot.self_id, config.onebot.owner_id = 123, 456
     config.onebot.character_id = "alice"
     reply = asyncio.Event()
+    proactive_reply = asyncio.Event()
     text_messages: list[str] = []
 
     async def server(ws: ServerConnection) -> None:
@@ -65,6 +68,8 @@ async def test_onebot_character_lifecycle_and_private_reply(
                     "data": {"message_id": 8}, "echo": request["echo"]}))
                 if text_messages[-1] == "私聊回复":
                     reply.set()
+                if text_messages[-1] == "主动问候":
+                    proactive_reply.set()
 
     async with serve(server, "127.0.0.1", 0) as socket:
         port = list(socket.sockets)[0].getsockname()[1]
@@ -79,7 +84,31 @@ async def test_onebot_character_lifecycle_and_private_reply(
             assert text_messages == ["💭 内心话\n私聊", "私聊回复"]
             events = await app.bus.list_events(event_type=EventType.USER_MESSAGE)
             assert len(events) == 1 and events[0].id == "onebot:123:7"
+            assert app.last_presence == "online"
+            assert await app.bus.list_events(
+                event_type=EventType.OBSERVATION_STATE,
+            ) == []
             assert app.database is not None
+            from nyx.desire.store import DesireStore
+            from nyx.enums import DesireType, EnergyState
+            from nyx.inner_life.store import InnerLifeStore
+            from nyx.runtime import check_initiate_chat
+            from nyx.types import ShortTermDesire
+
+            await DesireStore(app.database).add_desire(ShortTermDesire(
+                id="proactive-qq", created_at=time.time(),
+                type=DesireType.INTERACTION, strength=0.9,
+                description="想聊聊天", goal=None,
+            ))
+            await InnerLifeStore(app.database).upsert_energy(80, EnergyState.OKAY)
+            app.last_presence = "away"
+            app.last_chat_at = 0
+            await check_initiate_chat(app)
+            await asyncio.wait_for(proactive_reply.wait(), 5)
+            assert not host.desktop_connected()
+            assert len(await app.bus.list_events(
+                event_type=EventType.INITIATE_CHAT,
+            )) == 1
             async with asyncio.timeout(5):
                 while True:
                     async with app.database.lock:
@@ -95,7 +124,7 @@ async def test_onebot_character_lifecycle_and_private_reply(
             assert app.database is not None and app.database.is_closed
             await host.restore("alice")
             await asyncio.sleep(0.7)
-            assert text_messages == ["💭 内心话\n私聊", "私聊回复"]
+            assert text_messages == ["💭 内心话\n私聊", "私聊回复", "主动问候"]
         finally:
             await host.close()
 
@@ -939,6 +968,128 @@ async def test_presence_checkpoint_failure_rolls_back_snapshot_and_counter(
         await host.close()
 
 
+async def test_observation_requires_local_desktop_and_expires_after_disconnect(
+    tmp_path: Path, resources: None,
+) -> None:
+    import httpx
+
+    from nyx.api.routes import build_host_app
+    from nyx.app_context import _Host, _read_observation
+    from nyx.enums import ActivityType
+
+    host = await _Host.open(Config(), tmp_path)
+    try:
+        app = host.apps["nyx"]
+        state = await app.inner_life.get_state()
+        assert app.last_presence == "online"
+        assert not app.observation_enabled()
+        assert (
+            app.activity._starter.default_activity(state).type
+            is ActivityType.IDLE_REFLECTION
+        )
+        await host.online_before_chat("nyx", "qq-chat")
+        assert await app.bus.list_events(event_type=EventType.OBSERVATION_STATE) == []
+        api = build_host_app(host, launch_nonce=None)
+        payload = {
+            "sample_id": "desktop", "presence": "away", "idle_seconds": 400,
+            "sampled_at": time.time() - 1, "window_title": "Editor",
+            "character_id": "nyx", "selection_revision": 0,
+        }
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api), base_url="http://127.0.0.1:8000",
+        ) as client:
+            assert (await client.post("/api/observe", json=payload)).status_code == 409
+            preflight = await client.options("/api/observe", headers={
+                "Origin": "http://tauri.localhost",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,x-nyx-client",
+            })
+            assert preflight.status_code == 204
+            assert "X-Nyx-Client" in preflight.headers["access-control-allow-headers"]
+            accepted = await client.post(
+                "/api/observe", json=payload, headers={"X-Nyx-Client": "desktop"},
+            )
+            assert accepted.status_code == 200
+        await host.flush_presence("nyx", force=True)
+        assert app.observation_enabled()
+        assert (
+            app.activity._starter.default_activity(state).type
+            is ActivityType.OBSERVE_USER
+        )
+        assert (await _read_observation(app))["window_title"] == "Editor"
+        host.desktop_seen_at -= 91
+        host.expire_desktop()
+        assert not app.observation_enabled()
+        assert await _read_observation(app) == {
+            "presence": "online", "window_title": "", "screen_summary": "",
+        }
+        assert app.pending_return is None and app.last_window_title == ""
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api, client=("192.0.2.10", 1234)),
+            base_url="http://127.0.0.1:8000",
+        ) as remote:
+            assert (await remote.post(
+                "/api/observe", json=payload, headers={"X-Nyx-Client": "desktop"},
+            )).status_code == 409
+        assert not host.desktop_connected()
+    finally:
+        await host.close()
+    restored = await _Host.open(Config(), tmp_path)
+    try:
+        assert not restored.apps["nyx"].observation_enabled()
+        assert (await _read_observation(restored.apps["nyx"]))["presence"] == "online"
+    finally:
+        await restored.close()
+
+
+async def test_vision_waits_for_desktop_and_discards_old_connection_results(
+    tmp_path: Path, resources: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from nyx.activity.screen import ScreenObserver
+    from nyx.app_context import _Host
+    from nyx.llm.vision import VisionClient
+    from nyx.runtime import host_vision_loop
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    constructed: list[bool] = []
+
+    async def describe(image: bytes) -> str:
+        raise AssertionError("real screen capture is forbidden in this test")
+
+    def client(config: object) -> SimpleNamespace:
+        constructed.append(True)
+        return SimpleNamespace(describe=describe)
+
+    async def sample(observer: ScreenObserver) -> str:
+        entered.set()
+        await release.wait()
+        return "old desktop screen"
+
+    monkeypatch.setattr(VisionClient, "from_config", client)
+    monkeypatch.setattr(ScreenObserver, "sample_once", sample)
+    config = Config()
+    config.vision.enabled = True
+    host = await _Host.open(config, tmp_path)
+    task = asyncio.create_task(host_vision_loop(host))
+    try:
+        await asyncio.sleep(0.02)
+        assert not constructed and not entered.is_set()
+        host.desktop_heartbeat()
+        await asyncio.wait_for(entered.wait(), 2)
+        host.desktop_seen_at -= 91
+        host.expire_desktop()
+        host.desktop_heartbeat()
+        release.set()
+        await asyncio.sleep(0.02)
+        assert host.apps["nyx"].last_screen_summary == ""
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await host.close()
+
+
 async def test_host_presence_does_not_overwrite_newer_chat_evidence(
     tmp_path: Path,
     resources: None,
@@ -947,6 +1098,7 @@ async def test_host_presence_does_not_overwrite_newer_chat_evidence(
 
     host = await _Host.open(Config(), tmp_path)
     try:
+        host.desktop_heartbeat()
         await host.online_before_chat("nyx", "chat")
         await host.observe(
             {

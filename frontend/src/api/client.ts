@@ -145,7 +145,7 @@ export async function postObserve(
 ): Promise<{ event_id: string }> {
   return request<{ event_id: string }>(`${BASE_URL}/api/observe`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Nyx-Client": "desktop" },
     body: JSON.stringify(observation),
     signal,
   });

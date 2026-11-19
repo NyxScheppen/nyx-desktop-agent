@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { postObserve } from "../src/api/client";
 import { classifyPresence, usePresence } from "../src/hooks/usePresence";
+import { isTauriRuntime } from "../src/lib/desktopWindow";
 import type { ConnectionState } from "../src/types/api";
 
 // usePresence 直接消费 postObserve，mock 掉以隔离 hook 的判定/上报节奏（fetch 细节归 api.test.ts）
@@ -12,6 +13,7 @@ vi.mock("../src/api/client", () => ({
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
+vi.mock("../src/lib/desktopWindow", () => ({ isTauriRuntime: vi.fn() }));
 
 describe("classifyPresence", () => {
   it("按 30 秒/5 分钟边界分类，窗口标题不参与", () => {
@@ -25,6 +27,7 @@ describe("classifyPresence", () => {
 
 describe("usePresence", () => {
   beforeEach(() => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
     vi.useFakeTimers({
       toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"],
     });
@@ -77,14 +80,24 @@ describe("usePresence", () => {
     expect(postObserve).toHaveBeenLastCalledWith(expect.objectContaining({ presence: "online", idle_seconds: 0.001 }), expect.any(AbortSignal));
   });
 
-  it("presence 和前台标题不变时不重复上报", async () => {
+  it("presence 和前台标题不变时仍定期上报以维持桌面连接", async () => {
     renderHook(() => usePresence("open"));
     await act(async () => Promise.resolve());
     await act(async () => {
       vi.advanceTimersByTime(30_000);
       await Promise.resolve();
     });
-    expect(postObserve).toHaveBeenCalledTimes(1); // 仅挂载那次 away
+    expect(postObserve).toHaveBeenCalledTimes(2);
+  });
+
+  it("没有桌面端时不采样、不报告浏览器输入状态", async () => {
+    vi.mocked(isTauriRuntime).mockReturnValue(false);
+    renderHook(() => usePresence("open"));
+    fireEvent.focus(window);
+    fireEvent.keyDown(window, { key: "a" });
+    await act(async () => vi.advanceTimersByTimeAsync(300_000));
+    expect(invoke).not.toHaveBeenCalled();
+    expect(postObserve).not.toHaveBeenCalled();
   });
 
   it("系统时钟回拨、presence 不变时也上报新基线", async () => {
@@ -116,7 +129,10 @@ describe("usePresence", () => {
       vi.advanceTimersByTime(30_000);
       await Promise.resolve();
     });
-    expect(postObserve).toHaveBeenCalledTimes(2);
+    expect(postObserve).toHaveBeenCalledTimes(3);
+    const calls = vi.mocked(postObserve).mock.calls;
+    expect(calls[1][0].sample_id).toBe(calls[0][0].sample_id);
+    expect(calls[2][0].sampled_at).toBe(Date.now() / 1000);
   });
 
   it("single-flight 按 FIFO 保留每次状态迁移", async () => {
@@ -251,7 +267,10 @@ describe("usePresence", () => {
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
     expect(signal?.aborted).toBe(true);
     await act(async () => vi.advanceTimersByTimeAsync(20_000));
-    expect(postObserve).toHaveBeenCalledTimes(2);
+    expect(postObserve).toHaveBeenCalledTimes(3);
+    const calls = vi.mocked(postObserve).mock.calls;
+    expect(calls[1][0].sample_id).toBe(calls[0][0].sample_id);
+    expect(calls[2][0].sampled_at).toBe(Date.now() / 1000);
   });
 
   it("卸载取消在途请求，迟到采样不能继续上报", async () => {
@@ -286,9 +305,11 @@ describe("usePresence", () => {
     await act(async () => { fireEvent.focus(window); });
     await act(async () => { failB(new Error("response lost after server committed")); });
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
-    expect(postObserve).toHaveBeenCalledTimes(4);
+    expect(postObserve).toHaveBeenCalledTimes(5);
     const calls = vi.mocked(postObserve).mock.calls;
     expect(calls[2][0].sample_id).toBe(calls[1][0].sample_id);
     expect(calls[3][0].window_title).toBe("A");
+    expect(calls[4][0].window_title).toBe("A");
+    expect(calls[4][0].sampled_at).toBe(Date.now() / 1000);
   });
 });

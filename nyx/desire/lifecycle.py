@@ -36,7 +36,6 @@ from nyx.types import (
     ShortTermDesire,
 )
 
-_OBSERVATION_PRESSURE_DELTA = 0.15  # 观察状态 → 互动欲 +0.15
 _LONG_TERM_PRESSURE_DELTA = 0.1  # 每周期按长期 strength 缩放对应类型压力
 _LONG_TERM_PROGRESS_DELTA = 0.1  # 满足一次长期进度 +0.1
 _DEDUP_SIM_THRESHOLD = 0.9  # 欲望语义重复判定阈值（embedding 余弦）
@@ -179,22 +178,15 @@ class DesireLifecycle:
         self._logger = logging.getLogger(__name__)
         self._eval_lock = asyncio.Lock()
 
-    async def pressure_from_observation(
+    async def acknowledge_observation(
         self, event: Event, consumer_id: str | None = None
     ) -> None:
-        """OBSERVATION_STATE → 互动欲加压（增量固定 +0.15，不解析 event.content）。"""
+        """Acknowledge legacy observation deliveries without changing desire."""
         if consumer_id is not None:
             async with self._store.db.transaction():
-                applied = await self._bus.try_mark_effect_in_transaction(
+                await self._bus.try_mark_effect_in_transaction(
                     event.id, consumer_id
                 )
-                if not applied:
-                    return
-                await self._pressure(
-                    DesireType.INTERACTION, _OBSERVATION_PRESSURE_DELTA
-                )
-            return
-        await self._pressure(DesireType.INTERACTION, _OBSERVATION_PRESSURE_DELTA)
 
     async def _pressure(self, type_: DesireType, delta: float) -> None:
         """某类型欲望压力值 +delta（desire_value 缺省初始化后加压）。"""

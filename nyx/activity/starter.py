@@ -107,6 +107,8 @@ class ActivityStarter:
         now: Callable[[], float],
         start: Callable[[Activity, bool], Awaitable[bool]],
         list_reader_books: Callable[[], Awaitable[list[Book]]] | None = None,
+        *,
+        can_observe: Callable[[], bool] | None = None,
     ) -> None:
         self._store = store
         self._desire = desire
@@ -117,6 +119,7 @@ class ActivityStarter:
         self._now = now
         self._list_reader_books = list_reader_books
         self._start = start
+        self._can_observe = can_observe
         self._lock = asyncio.Lock()
 
     def select_activity(
@@ -163,6 +166,7 @@ class ActivityStarter:
         activity_type = (
             ActivityType.IDLE_REFLECTION
             if state.energy < ENERGY_REST_THRESHOLD
+            or (self._can_observe is not None and not self._can_observe())
             else ActivityType.OBSERVE_USER
         )
         now = self._now()

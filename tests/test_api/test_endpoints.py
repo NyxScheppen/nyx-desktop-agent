@@ -264,7 +264,8 @@ def _app(state: CurrentState, bus: _FakeBus, memory: _FakeMemory) -> _App:
 
 def _client(app: _App) -> AsyncClient:
     return AsyncClient(
-        transport=ASGITransport(app=build_app(app)), base_url="http://127.0.0.1:8000"
+        transport=ASGITransport(app=build_app(app)), base_url="http://127.0.0.1:8000",
+        headers={"X-Nyx-Client": "desktop"},
     )
 
 
@@ -751,7 +752,7 @@ async def test_observe_admission_failure_preserves_presence_snapshot() -> None:
         )
     assert resp.status_code == 503
     assert app.presence_initialized is False
-    assert app.last_presence == "away"
+    assert app.last_presence == "online"
     assert app.pending_return is None
 
 
@@ -1074,7 +1075,7 @@ async def test_observe_invalid_presence_returns_422() -> None:
     async with _client(app) as client:
         resp = await client.post("/api/observe", json={"presence": "Online"})
     assert resp.status_code == 422
-    assert app.last_presence == "away"  # 校验失败不更新状态
+    assert app.last_presence == "online"  # 校验失败不更新状态
 
 
 async def test_materials_endpoint_is_removed() -> None:

@@ -91,6 +91,10 @@ async def _get_observation(ctx: PluginContext) -> dict[str, str]:
     return await reader()
 
 
+def _observation_enabled(ctx: PluginContext) -> bool:
+    return cast(Callable[[], bool], ctx.get("observation_enabled"))()
+
+
 def _claim_return(ctx: PluginContext) -> dict[str, float] | None:
     return cast(Callable[[], dict[str, float] | None], ctx.get("claim_return"))()
 
@@ -328,6 +332,7 @@ async def _build_activity(ctx: PluginContext) -> Mapping[str, object]:
                 if config.exploration.web_enabled
                 else None
             ),
+            can_observe=partial(_observation_enabled, ctx),
         )
     }
     result["activity"].research = cast(ResearchService, ctx.get("research"))
@@ -628,7 +633,7 @@ def default_plugins() -> tuple[_Plugin, ...]:
             _build_activity,
             ("activity", "activity_tools"),
             ("tools", "desire", "memory", "evaluator", "research"),
-            ("state_reader", "observation_reader", "reading"),
+            ("state_reader", "observation_reader", "observation_enabled", "reading"),
             tool_factory=_activity_tools,
             starter=_start_activity,
             stopper=_quiesce_activity,

@@ -58,9 +58,9 @@ class DesireFacade:
     async def add_value(
         self, source: Event, consumer_id: str | None = None
     ) -> None:
-        """事件入口：OBSERVATION_STATE 加压互动欲，ACTIVITY_END 满足回写。"""
+        """消费旧观察投递但不改变欲望；活动结束仍结算满足。"""
         if source.type is EventType.OBSERVATION_STATE:
-            await self._lifecycle.pressure_from_observation(source, consumer_id)
+            await self._lifecycle.acknowledge_observation(source, consumer_id)
         elif source.type is EventType.ACTIVITY_END:
             await self._lifecycle.satisfy_from_activity_end(source, consumer_id)
 

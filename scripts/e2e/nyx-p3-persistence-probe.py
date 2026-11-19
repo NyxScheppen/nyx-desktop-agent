@@ -55,8 +55,14 @@ async def main(mode):
         else:
             async def search(query):return [{'url':a.A}]
             async def fetch(url):return {'text':a.TEXT[url],'url':url}
-            if mode=='timeout':llm.pause='source_digest'
-            result=await run_research('P3Nebula',search=search,fetch=fetch,llm=llm,memory=app.memory,evaluator=app.evaluator,budget={'seconds':.4} if mode=='timeout' else None)
+            if mode=='timeout':
+                complete=llm.complete
+                async def timeout_digest(messages,*,output_type,**kwargs):
+                    # Fail after evidence commits, independently of coverage/CI speed.
+                    if output_type=='source_digest':raise TimeoutError('injected digest timeout')
+                    return await complete(messages,output_type=output_type,**kwargs)
+                llm.complete=timeout_digest
+            result=await run_research('P3Nebula',search=search,fetch=fetch,llm=llm,memory=app.memory,evaluator=app.evaluator)
             if mode=='timeout':
                 chunks=await store.list_knowledge_chunks()
                 print('persisted_chunks=',len(chunks),'receipts=',result['ingested'],flush=True)

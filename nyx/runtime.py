@@ -51,8 +51,7 @@ async def on_user_message(app: Any, event: Event) -> None:
     if any(item.type in (EventType.SPEAK, EventType.ASK) for item in previous):
         await app.expression._archive_user_reply(event.id)
         return
-    if getattr(app, "host", None) is None:
-        await app.record_user_online(event.timestamp)
+    await app.record_user_online(event.timestamp)
     current = await app.activity.get_current()
     interrupted = (
         current
@@ -167,7 +166,7 @@ async def on_reflection_check(app: Any, event: Event) -> None:
 
 
 async def check_initiate_chat(app: Any) -> None:
-    """Start a desire-driven chat when presence and energy permit it."""
+    """Start a desire-driven chat independently of the user's presence."""
     pending_method = cast(
         Callable[[], Awaitable[list[Any]]] | None,
         getattr(app.expression, "pending_questions", None),
@@ -181,8 +180,6 @@ async def check_initiate_chat(app: Any) -> None:
     if interaction is None:
         return
     state = await app.inner_life.get_state()
-    online = app.last_presence in ("online", "busy")
-    busy = app.last_presence == "busy"
     latest_method = cast(
         Callable[[], Awaitable[float | None]] | None,
         getattr(app.expression, "latest_initiate_chat_at", None),
@@ -190,7 +187,7 @@ async def check_initiate_chat(app: Any) -> None:
     latest = await latest_method() if callable(latest_method) else None
     last_chat_at = app.last_chat_at if latest is None else latest
     if not should_initiate_chat(
-        desires, online, busy, state.energy, time.time() - last_chat_at
+        desires, state.energy, time.time() - last_chat_at
     ):
         return
     claim = cast(
@@ -394,14 +391,31 @@ async def supervise_bus(
 
 
 async def vision_loop(app: Any) -> None:
-    """Run the optional screen observer and update the app's latest summary."""
+    """Keep legacy standalone vision dormant until a native desktop connects."""
+    from nyx.activity.screen import ScreenObserver, capture_screen
+    from nyx.llm.vision import VisionClient
 
-    def update(summary: str) -> None:
-        app.last_screen_summary = summary
-
-    observer = app.screen_observer
-    if observer is not None:
-        await observer.run(update)
+    if not app.config.vision.enabled:
+        return
+    while True:
+        if not app.observation_enabled():
+            app.clear_desktop_observation()
+            app.screen_observer = None
+            await asyncio.sleep(1)
+            continue
+        if app.screen_observer is None:
+            vision = VisionClient.from_config(app.config.vision)
+            app.screen_observer = ScreenObserver(
+                capture_screen, vision.describe, app.config.vision.interval_seconds
+            )
+        generation = app.desktop_generation
+        summary = await app.screen_observer.sample_once()
+        if (
+            summary and app.observation_enabled()
+            and generation == app.desktop_generation
+        ):
+            app.last_screen_summary = summary
+        await asyncio.sleep(app.config.vision.interval_seconds)
 
 
 async def run_character(host: "_Host", identity: str) -> None:
@@ -535,6 +549,7 @@ async def stop_character(host: "_Host", identity: str) -> bool:
 async def host_presence_loop(host: "_Host") -> None:
     """Fanout recipients independently and finish interrupted unloads."""
     while True:
+        host.expire_desktop()
         for identity in list(host.apps):
             if host.records[identity]["status"] == "RUNNING":
                 previous = host.presence_tasks.get(identity)
@@ -569,14 +584,25 @@ async def host_vision_loop(host: "_Host") -> None:
     from nyx.activity.screen import ScreenObserver, capture_screen
     from nyx.llm.vision import VisionClient
 
-    vision = VisionClient.from_config(host.config.vision)
-    observer = ScreenObserver(
-        capture_screen, vision.describe, host.config.vision.interval_seconds
-    )
+    observer: ScreenObserver | None = None
     while True:
+        if not host.desktop_connected():
+            observer = None
+            await asyncio.sleep(1)
+            continue
+        if observer is None:
+            vision = VisionClient.from_config(host.config.vision)
+            observer = ScreenObserver(
+                capture_screen, vision.describe, host.config.vision.interval_seconds
+            )
         identity, revision = host.current_id, host.revision
+        generation = host.desktop_generation
         summary = await observer.sample_once()
-        if summary and (identity, revision) == (host.current_id, host.revision):
+        if (
+            summary and host.desktop_connected()
+            and generation == host.desktop_generation
+            and (identity, revision) == (host.current_id, host.revision)
+        ):
             app = host.apps.get(identity)
             if app is not None and app.can_initiate():
                 app.last_screen_summary = summary

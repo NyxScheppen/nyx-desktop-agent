@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from nyx.activity.facade import ActivityFacade
-from nyx.activity.screen import ScreenObserver, capture_screen
+from nyx.activity.screen import ScreenObserver
 from nyx.behavior.service import BehaviorService
 from nyx.bootstrap import (
     load_ask,
@@ -63,6 +63,7 @@ _PRESENCE_FIELDS = (
     "pending_return",
     "claimed_return",
 )
+_DESKTOP_LEASE_SECONDS = 90.0
 
 
 @dataclass
@@ -80,7 +81,7 @@ class _App:
     eval_store: EvalStore
     config: Config
     last_chat_at: float = 0.0
-    last_presence: str = "away"
+    last_presence: str = "online"
     last_window_title: str = ""
     last_screen_summary: str = ""
     presence_initialized: bool = False
@@ -103,6 +104,35 @@ class _App:
     memory_task: asyncio.Task[None] | None = field(default=None, repr=False)
     transport: TransportAdapter | None = field(default=None, repr=False)
     transport_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    desktop_seen_at: float = 0.0
+    desktop_generation: int = 0
+
+    def observation_enabled(self) -> bool:
+        """Only a live native desktop enables observation, never QQ or web chat."""
+        if self.host is not None:
+            return self.host.desktop_connected()
+        return (
+            self.desktop_seen_at > 0.0
+            and time.monotonic() - self.desktop_seen_at < _DESKTOP_LEASE_SECONDS
+        )
+
+    def clear_desktop_observation(self) -> None:
+        """Discard transient desktop context without rewriting accepted history."""
+        self.last_presence = "online"
+        self.last_window_title = self.last_screen_summary = ""
+        self.presence_initialized = False
+        self.presence_changed_at = self.presence_observed_at = 0.0
+        self.presence_received_at = 0.0
+        self.away_started_at = self.last_returned_at = None
+        self.last_away_duration_seconds = None
+        self.pending_return = self.claimed_return = None
+
+    def desktop_heartbeat(self) -> None:
+        """Renew a standalone desktop lease after a sample is accepted."""
+        if not self.observation_enabled():
+            self.desktop_generation += 1
+            self.last_screen_summary = ""
+        self.desktop_seen_at = time.monotonic()
 
     def can_initiate(self) -> bool:
         """Admission uses the selected runtime; admitted work keeps its owner."""
@@ -441,6 +471,7 @@ async def build_app_context(
         )
         capabilities.update({
             "observation_reader": partial(_read_observation, app),
+            "observation_enabled": app.observation_enabled,
             "claim_return": app.claim_return_context,
             "finish_return": app.finish_return_context,
             "release_return": app.release_return_context,
@@ -450,13 +481,6 @@ async def build_app_context(
             app.transport = OneBotAdapter(app)
             await app.transport.outbox.initialize()
         await start_plugins(plugins, capabilities)
-        if config.vision.enabled and host is None:
-            from nyx.llm.vision import VisionClient
-
-            vision = VisionClient.from_config(config.vision)
-            app.screen_observer = ScreenObserver(
-                capture_screen, vision.describe, config.vision.interval_seconds
-            )
         return app
     except BaseException:
         await db.close()
@@ -464,6 +488,8 @@ async def build_app_context(
 
 
 async def _read_observation(app: _App) -> dict[str, str]:
+    if not app.observation_enabled():
+        return {"presence": "online", "window_title": "", "screen_summary": ""}
     return {
         "presence": app.last_presence,
         "window_title": app.last_window_title,
@@ -533,6 +559,30 @@ class _Host:
         self.operations: dict[str, asyncio.Lock] = {}
         self.stopping: dict[str, asyncio.Task[None]] = {}
         self.presence_tasks: dict[str, asyncio.Task[bool]] = {}
+        self.desktop_seen_at = 0.0
+        self.desktop_generation = 0
+
+    def desktop_connected(self) -> bool:
+        """A desktop lease is process-local and is never restored from a save."""
+        return (
+            self.desktop_seen_at > 0.0
+            and time.monotonic() - self.desktop_seen_at < _DESKTOP_LEASE_SECONDS
+        )
+
+    def expire_desktop(self) -> None:
+        if self.desktop_seen_at and not self.desktop_connected():
+            self.desktop_seen_at = 0.0
+            self.desktop_generation += 1
+            for app in self.apps.values():
+                app.clear_desktop_observation()
+
+    def desktop_heartbeat(self) -> None:
+        self.expire_desktop()
+        if not self.desktop_connected():
+            self.desktop_generation += 1
+            for app in self.apps.values():
+                app.clear_desktop_observation()
+        self.desktop_seen_at = time.monotonic()
 
     @classmethod
     async def open(cls, config: Config, root: Path) -> _Host:
@@ -902,7 +952,7 @@ class _Host:
             self.current_id, self.revision = identity, revision
             return revision
 
-    async def observe(self, payload: dict[str, Any]) -> int:
+    async def observe(self, payload: dict[str, Any], *, desktop: bool = False) -> int:
         """Persist one ordered sample and a separate recipient record for each role."""
         async with self.lock:
             payload = dict(payload)
@@ -916,6 +966,8 @@ class _Host:
                     )
                 ).fetchone()
                 if existing:
+                    if desktop:
+                        self.desktop_heartbeat()
                     return existing["sequence"]
                 current = await (
                     await conn.execute(
@@ -959,6 +1011,8 @@ class _Host:
                             "?)",
                             (sequence, identity),
                         )
+            if desktop:
+                self.desktop_heartbeat()
             return sequence
 
     async def flush_presence(
@@ -1033,6 +1087,8 @@ class _Host:
                     return False
 
     async def online_before_chat(self, identity: str, sample_id: str) -> None:
+        if not self.desktop_connected():
+            return
         await self.observe(
             {
                 "sample_id": sample_id,

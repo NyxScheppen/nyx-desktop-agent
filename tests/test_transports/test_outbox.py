@@ -26,6 +26,8 @@ async def test_outbox_skips_history_and_retries_in_commit_order() -> None:
         second.timestamp = 0
         await bus.publish(first)
         await bus.publish(second)
+        proactive = root_event(EventType.INITIATE_CHAT, {"content": "hello"})
+        await bus.publish(proactive)
         await outbox.scan()
         claimed = await outbox.claim()
         assert claimed is not None and claimed.id == first.id
@@ -39,6 +41,9 @@ async def test_outbox_skips_history_and_retries_in_commit_order() -> None:
         claimed = await outbox.claim()
         assert claimed is not None and claimed.id == second.id
         await outbox.sent(second.id)
+        claimed = await outbox.claim()
+        assert claimed is not None and claimed.id == proactive.id
+        await outbox.sent(proactive.id)
         assert await outbox.claim() is None
     finally:
         await db.close()

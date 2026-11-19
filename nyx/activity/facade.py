@@ -120,6 +120,7 @@ class ActivityFacade:
         ) = None,
         *,
         fetch_source: Callable[..., Awaitable[dict[str, Any]]] | None = None,
+        can_observe: Callable[[], bool] | None = None,
     ) -> None:
         self._store = store
         self._bus = bus
@@ -130,6 +131,7 @@ class ActivityFacade:
         self._memory = memory
         self._get_state = get_state
         self._get_observation = get_observation
+        self._can_observe = can_observe
         self._config = config
         self._canon = canon
         self._read_reader_book = read_reader_book
@@ -152,6 +154,7 @@ class ActivityFacade:
             time.time,
             self._lifecycle.start,
             list_reader_books,
+            can_observe=can_observe,
         )
         self._task: asyncio.Task[None] | None = None
         self._quiescing = False
@@ -505,6 +508,8 @@ class ActivityFacade:
         if t is ActivityType.FREE_EXPLORATION:
             raise ValueError("自由探索由 _execute 直接调用 Exploration.run")
         if t is ActivityType.OBSERVE_USER:
+            if self._can_observe is not None and not self._can_observe():
+                return {}
             obs = await self._get_observation()
             presence = obs.get("presence", "")
             window_title = obs.get("window_title", "")

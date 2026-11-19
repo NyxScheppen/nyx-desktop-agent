@@ -114,14 +114,12 @@ def test_activity_subject_exploration_falls_back_to_summary() -> None:
 
 def test_should_initiate_chat_all_true() -> None:
     interaction = [_desire(DesireType.INTERACTION)]
-    assert should_initiate_chat(interaction, True, False, 60.0, 2000.0) is True
+    assert should_initiate_chat(interaction, 60.0, 2000.0) is True
 
 
 def test_should_initiate_chat_each_condition() -> None:
     interaction = [_desire(DesireType.INTERACTION)]
     exploration = [_desire(DesireType.EXPLORATION)]
-    assert should_initiate_chat(exploration, True, False, 60.0, 2000.0) is False
-    assert should_initiate_chat(interaction, False, False, 60.0, 2000.0) is False
-    assert should_initiate_chat(interaction, True, True, 60.0, 2000.0) is False
-    assert should_initiate_chat(interaction, True, False, 49.0, 2000.0) is False
-    assert should_initiate_chat(interaction, True, False, 60.0, 1000.0) is False
+    assert should_initiate_chat(exploration, 60.0, 2000.0) is False
+    assert should_initiate_chat(interaction, 49.0, 2000.0) is False
+    assert should_initiate_chat(interaction, 60.0, 1000.0) is False

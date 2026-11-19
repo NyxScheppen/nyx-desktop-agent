@@ -171,6 +171,16 @@ class _ObservePayload(BaseModel):
         return self
 
 
+def _require_desktop(request: Request) -> None:
+    if (
+        request.headers.get("x-nyx-client") != "desktop"
+        or request.client is None
+        or request.client.host not in ("127.0.0.1", "::1")
+        or request.url.hostname not in ("127.0.0.1", "localhost", "::1")
+    ):
+        raise HTTPException(409, "桌面观察仅由接入的本地桌面端启用")
+
+
 class _ProgressPayload(BaseModel):
     user_position: int = Field(..., ge=1)
     nyx_position: int = Field(..., ge=1)
@@ -828,7 +838,8 @@ def build_app(
         }
 
     @fast.post("/api/observe")
-    async def api_observe(payload: _ObservePayload) -> dict[str, str]:
+    async def api_observe(payload: _ObservePayload, request: Request) -> dict[str, str]:
+        _require_desktop(request)
         event = root_event(
             EventType.OBSERVATION_STATE,
             {
@@ -845,6 +856,7 @@ def build_app(
             raise HTTPException(status_code=503, detail=str(error)) from error
         if not accepted:
             raise HTTPException(status_code=409, detail="stale presence sample")
+        app.desktop_heartbeat()
         return {"event_id": event.id}
 
     @fast.get("/api/events")
@@ -1010,7 +1022,7 @@ def install_local_guard(fast: FastAPI, host: _Host | None = None) -> None:
                 or route is None
                 or headers - {
                     "content-type", "x-nyx-selection-revision",
-                    "authorization", "last-event-id",
+                    "authorization", "last-event-id", "x-nyx-client",
                 }
                 or method not in {"GET", "POST", "PUT", "DELETE"}
             ):
@@ -1030,7 +1042,7 @@ def install_local_guard(fast: FastAPI, host: _Host | None = None) -> None:
                     ),
                     "Access-Control-Allow-Headers": (
                         "Content-Type, X-Nyx-Selection-Revision, "
-                        "Authorization, Last-Event-ID"
+                        "Authorization, Last-Event-ID, X-Nyx-Client"
                     ),
                 },
             )
@@ -1344,11 +1356,12 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
         return FileResponse(directory / card.manifest.assets[key])
 
     @fast.post("/api/observe")
-    async def observe(payload: _HostObservePayload) -> dict[str, Any]:
+    async def observe(payload: _HostObservePayload, request: Request) -> dict[str, Any]:
+        _require_desktop(request)
         if payload.sampled_at > time.time():
             raise HTTPException(422, "sampled_at is in the future")
         try:
-            sequence = await host.observe(payload.model_dump())
+            sequence = await host.observe(payload.model_dump(), desktop=True)
         except Exception as error:
             raise HTTPException(503, "在线状态未受理") from error
         return {"sequence": sequence, "event_id": f"presence:{sequence}"}

@@ -140,20 +140,16 @@ def pick_mutter_template(category: MutterCategory, roll: float) -> str | None:
 
 def should_initiate_chat(
     desires: list[ShortTermDesire],
-    online: bool,
-    busy: bool,
     energy: float,
     since_last_chat: float,
 ) -> bool:
     """搭话触发判定。
 
-    互动欲非空 + 在线 + 不忙 + 精力够 + 距上次 ≥ 间隔。
+    互动欲非空 + 精力够 + 距上次 ≥ 间隔；用户状态只用于表达上下文。
     """
     has_interaction = any(d.type is DesireType.INTERACTION for d in desires)
     return (
         has_interaction
-        and online
-        and not busy
         and energy >= _MIN_ENERGY
         and since_last_chat >= _MIN_INTERVAL
     )

@@ -348,10 +348,10 @@ async def test_completed_exploration_dedup_and_expired_retry(
         await database.conn.close()
 
 
-# ---- pressure_from_observation ----
+# ---- acknowledge_observation ----
 
 
-async def test_pressure_from_observation() -> None:
+async def test_acknowledge_observation() -> None:
     store, bus, database = await _new_stack()
     lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
     try:
@@ -363,16 +363,14 @@ async def test_pressure_from_observation() -> None:
             content={},
             correlation_id="c1",
         )
-        await lifecycle.pressure_from_observation(event)
+        await lifecycle.acknowledge_observation(event)
         dv = await store.get_value(DesireType.INTERACTION)
-        assert dv is not None
-        assert dv.value == pytest.approx(0.15)      # default 0 → +0.15
-        assert dv.updated_at > 0.0
+        assert dv is None
     finally:
         await database.conn.close()
 
 
-async def test_pressure_from_observation_replay_is_idempotent() -> None:
+async def test_acknowledge_observation_replay_is_idempotent() -> None:
     store, bus, database = await _new_stack()
     lifecycle = _make_lifecycle(store, bus, _FakeLlm(), _FakeEvaluator())
     try:
@@ -386,12 +384,12 @@ async def test_pressure_from_observation_replay_is_idempotent() -> None:
         )
         await bus.publish(event)
 
-        await lifecycle.pressure_from_observation(event, "desire.observation_state")
-        await lifecycle.pressure_from_observation(event, "desire.observation_state")
+        await lifecycle.acknowledge_observation(event, "desire.observation_state")
+        await lifecycle.acknowledge_observation(event, "desire.observation_state")
 
         dv = await store.get_value(DesireType.INTERACTION)
-        assert dv is not None
-        assert dv.value == pytest.approx(0.15)
+        assert dv is None
+        assert await bus.has_effect(event.id, "desire.observation_state")
     finally:
         await database.close()
 

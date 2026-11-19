@@ -201,8 +201,7 @@ async def test_add_value_observation() -> None:
         )
         await facade.add_value(event)
         dv = await store.get_value(DesireType.INTERACTION)
-        assert dv is not None
-        assert dv.value == pytest.approx(0.15)      # 互动欲加压
+        assert dv is None
     finally:
         await database.conn.close()
 

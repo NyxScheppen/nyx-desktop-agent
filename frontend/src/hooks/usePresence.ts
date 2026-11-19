@@ -2,6 +2,7 @@ import { captureScope } from "../api/characterScope";
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { postObserve } from "../api/client";
+import { isTauriRuntime } from "../lib/desktopWindow";
 import type { ConnectionState, Presence } from "../types/api";
 
 const OBSERVE_INTERVAL_MS = 30_000;
@@ -25,7 +26,7 @@ export function classifyPresence(idleMs: number): Presence {
 
 function sameSnapshot(a: PresenceSnapshot | null, b: PresenceSnapshot): boolean {
   return a?.characterId === b.characterId && a?.selectionRevision === b.selectionRevision && a?.presence === b.presence && a.windowTitle === b.windowTitle &&
-    b.sampledAt >= a.sampledAt;
+    b.sampledAt >= a.sampledAt && (b.sampledAt - a.sampledAt) * 1000 < OBSERVE_INTERVAL_MS;
 }
 
 export function usePresence(connection: ConnectionState): void {
@@ -34,6 +35,7 @@ export function usePresence(connection: ConnectionState): void {
   useEffect(() => { if (connection === "open") wake.current(); }, [connection]);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     let disposed = false;
     let sending = false;
     const pending: PresenceSnapshot[] = [];

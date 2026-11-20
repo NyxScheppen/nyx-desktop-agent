@@ -3,12 +3,13 @@ import os
 import string
 from pathlib import Path
 
+from nyx.policy import policy
 from nyx.tools.file_io import is_internal
 from nyx.types import Tool
 
-_SEARCH_SUFFIXES = frozenset({".txt", ".md"})
-_MAX_RESULTS = 50
-_MAX_FILE_BYTES = 1 << 20
+_SEARCH_SUFFIXES = policy("tools", "local_search._SEARCH_SUFFIXES", frozenset[str])
+_MAX_RESULTS = policy("tools", "local_search._MAX_RESULTS", int)
+_MAX_FILE_BYTES = policy("tools", "local_search._MAX_FILE_BYTES", int)
 
 
 def full_disk_roots() -> list[Path]:
@@ -56,8 +57,19 @@ def _search_local_sync(
                 idx = text.lower().find(needle)
                 if idx == -1:
                     continue
-                start = max(0, idx - 40)
-                end = min(len(text), idx + len(needle) + 40)
+                start = max(
+                    0, idx - policy("tools", "local_search.snippet_context_chars", int)
+                )
+                end = min(
+                    len(text),
+                    idx
+                    + len(needle)
+                    + policy(
+                        "tools",
+                        "local_search.parameters.search_local_sync_end_budget",
+                        int,
+                    ),
+                )
                 results.append({"path": full, "snippet": text[start:end]})
     return results
 
@@ -87,10 +99,19 @@ def build_local_search_tool(
 
     return Tool(
         name="local_search",
-        description="在本地磁盘的文本文件中按关键词搜索，返回匹配文件路径与片段。",
+        description=policy(
+            "tools", "local_search.copy.build_local_search_tool_text", str
+        ),
         schema={
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "搜索关键词"}},
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": policy(
+                        "tools", "local_search.copy.build_local_search_tool_text_2", str
+                    ),
+                }
+            },
             "required": ["query"],
         },
         handler=handler,

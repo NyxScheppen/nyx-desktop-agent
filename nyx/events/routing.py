@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 
 from nyx.enums import EventType, TickType
+from nyx.policy import policy
 
-_DELIVERY_MAX_ATTEMPTS = 5
+_DELIVERY_MAX_ATTEMPTS = policy("events", "routing._DELIVERY_MAX_ATTEMPTS", int)
 
 
 @dataclass(frozen=True)

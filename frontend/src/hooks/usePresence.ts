@@ -1,3 +1,5 @@
+import activityPolicy from "../../../nyx/settings/activity.json";
+import frontendPolicy from "../../../nyx/settings/frontend.json";
 import { captureScope } from "../api/characterScope";
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -5,8 +7,8 @@ import { postObserve } from "../api/client";
 import { isTauriRuntime } from "../lib/desktopWindow";
 import type { ConnectionState, Presence } from "../types/api";
 
-const OBSERVE_INTERVAL_MS = 30_000;
-const OBSERVE_TIMEOUT_MS = 10_000;
+const OBSERVE_INTERVAL_MS = frontendPolicy.frontend.usePresence.OBSERVE_INTERVAL_MS;
+const OBSERVE_TIMEOUT_MS = frontendPolicy.frontend.usePresence.OBSERVE_TIMEOUT_MS;
 
 type PresenceSnapshot = {
   presence: Presence;
@@ -19,8 +21,8 @@ type PresenceSnapshot = {
 };
 
 export function classifyPresence(idleMs: number): Presence {
-  if (idleMs < 30_000) return "online";
-  if (idleMs < 300_000) return "busy";
+  if (idleMs < activityPolicy.observe.parameters.online_idle_seconds * 1000) return "online";
+  if (idleMs < activityPolicy.observe.parameters.busy_idle_seconds * 1000) return "busy";
   return "away";
 }
 
@@ -81,7 +83,7 @@ export function usePresence(connection: ConnectionState): void {
             }),
           ]);
         } catch (err) {
-          if (!disposed) console.error("presence 上报失败", err);
+          if (!disposed) console.error(frontendPolicy.copy.usePresence.text, err);
           lastSent = null;
           break;
         } finally {

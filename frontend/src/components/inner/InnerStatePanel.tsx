@@ -1,3 +1,4 @@
+import inner_lifePolicy from "../../../../nyx/settings/inner_life.json";
 import { useInnerLifeStore } from "../../stores/innerLifeStore";
 import Panel from "../layout/Panel";
 import EnergyBar from "./EnergyBar";
@@ -9,14 +10,14 @@ export default function InnerStatePanel() {
   const current = useInnerLifeStore((s) => s.current);
   const error = useInnerLifeStore((s) => s.error);
   return (
-    <Panel title="内在状态" className="inner-state-panel paged-panel">
+    <Panel title={inner_lifePolicy.copy.InnerStatePanel.title} className="inner-state-panel paged-panel">
       {error !== null && <p className="error-text" role="alert">{error}</p>}
-      {current === null ? "等待核心服务连接…" : <FlowPages><div className="inner-state-panel__body">
+      {current === null ? inner_lifePolicy.copy.InnerStatePanel.text : <FlowPages><div className="inner-state-panel__body">
         <div className="inner-state-panel__top">
           <ValenceArousalPlot valence={current.valence} arousal={current.arousal} />
           <EnergyBar energy={current.energy} energy_state={current.energy_state} />
         </div>
-        <article aria-label="当前内在文档">
+        <article aria-label={inner_lifePolicy.copy.InnerStatePanel.aria_label}>
           {Object.entries(INNER_SECTIONS).map(([section, label]) => {
             const topics = current.inner_document.topics.filter((t) => t.section === section);
             return topics.length > 0 && <section key={section} className="inner-state-panel__section">

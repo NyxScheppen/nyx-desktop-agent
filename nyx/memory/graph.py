@@ -6,33 +6,14 @@ from dataclasses import dataclass
 import networkx as nx
 
 from nyx.enums import MemoryEdgeKind
+from nyx.policy import policy
 from nyx.types import MemoryEdge
 
-_KIND_WEIGHT = {
-    MemoryEdgeKind.SEMANTIC: 1.0,
-    MemoryEdgeKind.ENTITY: 0.9,
-    MemoryEdgeKind.KEYWORD: 0.75,
-    MemoryEdgeKind.TEMPORAL: 0.35,
-    MemoryEdgeKind.SAME_TOPIC: 1.05,
-    MemoryEdgeKind.ELABORATES: 1.1,
-    MemoryEdgeKind.CONTRASTS: 1.0,
-    MemoryEdgeKind.CAUSES: 1.0,
-    MemoryEdgeKind.UPDATES_PREFERENCE: 1.15,
-    MemoryEdgeKind.USER_PROFILE_LINK: 1.1,
-}
+_KIND_WEIGHT = policy("memory", "graph._KIND_WEIGHT", dict[MemoryEdgeKind, float])
 
-_CLUSTER_KIND_WEIGHT = {
-    MemoryEdgeKind.SEMANTIC: 1.0,
-    MemoryEdgeKind.ENTITY: 0.9,
-    MemoryEdgeKind.KEYWORD: 0.7,
-    MemoryEdgeKind.TEMPORAL: 0.15,
-    MemoryEdgeKind.SAME_TOPIC: 1.0,
-    MemoryEdgeKind.ELABORATES: 1.0,
-    MemoryEdgeKind.CONTRASTS: 1.0,
-    MemoryEdgeKind.CAUSES: 1.0,
-    MemoryEdgeKind.UPDATES_PREFERENCE: 1.0,
-    MemoryEdgeKind.USER_PROFILE_LINK: 1.0,
-}
+_CLUSTER_KIND_WEIGHT = policy(
+    "memory", "graph._CLUSTER_KIND_WEIGHT", dict[MemoryEdgeKind, float]
+)
 
 
 @dataclass(frozen=True)
@@ -97,7 +78,7 @@ class MemoryGraph:
         seeds: dict[str, float],
         *,
         depth: int = 2,
-        limit: int = 10,
+        limit: int = policy("memory", "graph.parameters.associate_limit", int),
         exclude: set[str] | None = None,
     ) -> list[AssociationHit]:
         """从 seeds 沿 typed edges 扩散，返回最佳联想命中。"""
@@ -216,7 +197,7 @@ class MemoryGraph:
     def _depth_decay(hop: int) -> float:
         if hop == 1:
             return 1.0
-        return 0.55
+        return policy("memory", "graph.parameters.depth_decay_result_factor", float)
 
     @staticmethod
     def _keep_best(

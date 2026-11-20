@@ -1,3 +1,5 @@
+import frontendPolicy from "../../../nyx/settings/frontend.json";
+import characterPolicy from "../../../nyx/settings/character.json";
 import { useBehaviorStore } from "./behaviorStore";
 import { create } from "zustand";
 import { changeCharacter, createCharacter, getCharacters, importCharacter, selectCharacter, type CharacterRegistry, type CreateCharacterPayload } from "../api/client";
@@ -11,6 +13,7 @@ import { useInnerLifeStore } from "./innerLifeStore";
 import { useMemoryStore } from "./memoryStore";
 import { useReaderStore } from "./readerStore";
 import { useConnectionStore } from "./connectionStore";
+import { useStudyStore } from "./studyStore";
 
 type CharacterState = {
   registry: CharacterRegistry | null;
@@ -28,7 +31,7 @@ type CharacterState = {
 };
 
 let switchQueue = Promise.resolve();
-const UI_KEY = "nyx.characterUi";
+const UI_KEY = characterPolicy.frontend.characterStore.UI_KEY;
 function readUi(): { drafts: Record<string, string>; lastBooks: Record<string, string> } {
   try {
     const saved = JSON.parse(localStorage.getItem(UI_KEY) ?? "{}");
@@ -57,6 +60,7 @@ async function restoreBook(): Promise<void> {
 }
 
 function resetDisplays(): void {
+  useStudyStore.getState().reset();
   useBehaviorStore.setState(useBehaviorStore.getInitialState());
   useChatStore.getState().reset();
   useReaderStore.getState().closeBook();
@@ -75,6 +79,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => {
     const scope = captureScope();
     const changed = scope?.id !== registry.current_id || scope.revision !== registry.selection_revision;
     if (changed) {
+      useStudyStore.getState().detach();
       invalidateScope();
       resetDisplays();
       bindScope({ id: registry.current_id, revision: registry.selection_revision });
@@ -86,6 +91,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => {
   return {
     registry: null, generation: 0, switching: false, error: null, drafts: savedUi.drafts,
     initialize: async () => {
+      useStudyStore.getState().detach();
       invalidateScope();
       await get().refresh();
     },
@@ -117,6 +123,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => {
         const bookId = useReaderStore.getState().bookId;
         if (previous && bookId) lastBooks[previous.id] = bookId;
         refreshRevision += 1;
+        useStudyStore.getState().detach();
         invalidateScope();
         set((s) => ({ switching: true, generation: s.generation + 1, error: null }));
         resetDisplays();
@@ -154,7 +161,7 @@ export const useCharacterStore = create<CharacterState>((set, get) => {
       try {
         if (operation === "unload" && get().registry?.current_id === id) {
           const candidate = get().registry?.characters.find((role) => role.id !== id && role.status === "RUNNING");
-          if (!candidate) throw new Error("至少保留一个可运行的当前角色");
+          if (!candidate) throw new Error(frontendPolicy.copy.characterStore.text);
           await get().select(candidate.id);
           if (get().registry?.current_id === id) return;
         }

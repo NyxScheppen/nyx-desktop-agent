@@ -17,14 +17,21 @@ from http.client import HTTPConnection, HTTPException
 from pathlib import Path
 from typing import cast
 
+from nyx.policy import policy
+
 ROOT = Path(__file__).resolve().parent
 FRONTEND = ROOT / "frontend"
-_BACKEND_ADDRESS = ("127.0.0.1", 8000)
-_BACKEND_STARTUP_TIMEOUT = 120.0
-_BACKEND_PROBE_TIMEOUT = 0.2
-_BACKEND_IDENTITY_MAX_BYTES = 1 << 12
-_BACKEND_SERVICE = "nyx-agent"
-_LAUNCH_NONCE_ENV = "NYX_LAUNCH_NONCE"
+_BACKEND_ADDRESS = (
+    policy("runtime", "main._LOCAL_HOST", str),
+    policy("runtime", "main._LOCAL_PORT", int),
+)
+_BACKEND_STARTUP_TIMEOUT = policy(
+    "runtime", "desktop.dev_startup_timeout_seconds", float
+)
+_BACKEND_PROBE_TIMEOUT = policy("runtime", "desktop.probe_timeout_ms", int) / 1000
+_BACKEND_IDENTITY_MAX_BYTES = policy("runtime", "desktop.identity_max_bytes", int)
+_BACKEND_SERVICE = policy("runtime", "desktop.service", str)
+_LAUNCH_NONCE_ENV = policy("runtime", "main._LAUNCH_NONCE_ENV", str)
 _BACKEND_PID_FILE = ROOT / ".nyx-backend.pid"
 _LAUNCH_LOCK_FILE = ROOT / ".nyx-launcher.lock"
 
@@ -270,7 +277,7 @@ def _find_listening_backend_pids() -> list[int]:
     if os.name != "nt":
         return []
     query = (
-        "$ids=Get-NetTCPConnection -LocalPort 8000 -State Listen "
+        f"$ids=Get-NetTCPConnection -LocalPort {_BACKEND_ADDRESS[1]} -State Listen "
         "-ErrorAction SilentlyContinue | Select-Object -Expand OwningProcess -Unique; "
         "foreach ($id in $ids) { $p=Get-CimInstance Win32_Process "
         "-Filter ('ProcessId = ' + $id); "
@@ -339,7 +346,7 @@ def main() -> None:
             text=True,
             check=True,
         ).stdout.strip()
-        model = model_directory("BAAI/bge-small-zh-v1.5")
+        model = model_directory(policy("memory", "embedding.model", str))
         if not (model / "embedding.json").is_file():
             raise RuntimeError(
                 "Export the embedding model first: uv run --extra embedding-export "
@@ -369,6 +376,8 @@ def main() -> None:
             f"{ROOT / 'nyx' / 'prompts'}{separator}nyx/prompts",
             "--add-data",
             f"{ROOT / 'nyx' / 'cards'}{separator}nyx/cards",
+            "--add-data",
+            f"{ROOT / 'nyx' / 'settings'}{separator}nyx/settings",
             "--add-data",
             f"{model}{separator}embedding-model",
             "--collect-binaries",

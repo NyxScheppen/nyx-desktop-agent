@@ -1,3 +1,5 @@
+import { formatPolicyText } from "../../lib/policy";
+import frontendPolicy from "../../../../nyx/settings/frontend.json";
 import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import { useCharacterStore } from "../../stores/characterStore";
 import { useChatStore } from "../../stores/chatStore";
@@ -36,30 +38,30 @@ export default function ChatInput() {
   return (
     <div className="chat-input">
       <label className="chat-input__mode">
-        <span>讨论模式</span>
+        <span>{frontendPolicy.copy.ChatInput.span}</span>
         <select
-          aria-label="讨论模式"
+          aria-label={frontendPolicy.copy.ChatInput.span}
           value={discussionMode === true ? "on" : discussionMode === false ? "off" : "auto"}
           onChange={(event) => setDiscussionMode(event.target.value === "on" ? true : event.target.value === "off" ? false : null)}
         >
-          <option value="auto">自动</option>
-          <option value="on">开启</option>
-          <option value="off">关闭</option>
+          <option value="auto">{frontendPolicy.copy.ChatInput.option}</option>
+          <option value="on">{frontendPolicy.copy.ChatInput.option_2}</option>
+          <option value="off">{frontendPolicy.copy.ChatInput.option_3}</option>
         </select>
       </label>
       {annotation && (
         <div className="chat-input__annotation">
           <blockquote>{annotation.quote}</blockquote>
           <textarea
-            aria-label="对回复的批注"
+            aria-label={frontendPolicy.copy.ChatInput.aria_label}
             value={annotation.comment}
             onChange={(event) => updateComment(event.target.value)}
-            placeholder="写下你的看法、偏好或纠正…"
+            placeholder={frontendPolicy.copy.ChatInput.placeholder}
           />
           <small>{Array.from(annotation.comment).length}/2000</small>
-          <button type="button" onClick={cancelAnnotation}>取消批注</button>
+          <button type="button" onClick={cancelAnnotation}>{frontendPolicy.copy.ChatInput.button}</button>
           <button type="button" disabled={isSending || !annotation.comment.trim() || Array.from(annotation.comment).length > 2000}
-            onClick={() => { void sendAnnotation(); }}>发送批注</button>
+            onClick={() => { void sendAnnotation(); }}>{frontendPolicy.copy.ChatInput.button_2}</button>
         </div>
       )}
       <input
@@ -70,7 +72,7 @@ export default function ChatInput() {
           // 中文输入法回车确认候选字也会派发 keydown（isComposing=true），须跳过防误发送
           if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
         }}
-        placeholder={`对 ${name} 说…`}
+        placeholder={formatPolicyText(frontendPolicy.templates.ChatInput.text, { p0: name })}
       />
       <button
         type="button"
@@ -78,11 +80,11 @@ export default function ChatInput() {
         disabled={isSending || !text.trim() || Array.from(text.trim()).length > 12000}
         onClick={submit}
       >
-        {isSending ? "…" : "发送"}
+        {isSending ? "…" : frontendPolicy.copy.ChatInput.text}
       </button>
       {sendError !== null && <p className="error-text chat-input__error">{sendError}</p>}
       {replyNotice !== null && <p className="error-text chat-input__error">{replyNotice}</p>}
-      {isReplying && <small>她正在想，你可以继续说</small>}
+      {isReplying && <small>{frontendPolicy.copy.ChatInput.small}</small>}
     </div>
   );
 }

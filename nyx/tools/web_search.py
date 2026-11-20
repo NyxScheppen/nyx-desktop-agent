@@ -15,19 +15,14 @@ from xml.etree import ElementTree
 import httpx
 from lxml import html
 
+from nyx.policy import policy
 from nyx.types import Tool
 
 _logger = logging.getLogger(__name__)
 
-_BING_URL = "https://cn.bing.com/search"
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120 Safari/537.36"
-    ),
-    "Accept-Language": "zh-CN,zh;q=0.9",
-}
-_MAX_RESULTS = 5
+_BING_URL = policy("tools", "web_search._BING_URL", str)
+_HEADERS = policy("tools", "web_search._HEADERS", dict[str, str])
+_MAX_RESULTS = policy("tools", "web_search._MAX_RESULTS", int)
 
 
 def _parse_bing(html_text: str) -> list[dict[str, str]]:
@@ -55,7 +50,9 @@ def _search_web_sync(query: str) -> list[dict[str, str]]:
             _BING_URL,
             params={"q": query, "setlang": "zh-cn"},
             headers=_HEADERS,
-            timeout=10.0,
+            timeout=policy(
+                "tools", "web_search.parameters.search_web_sync_timeout_factor", float
+            ),
             follow_redirects=True,
         )
         resp.raise_for_status()
@@ -66,7 +63,11 @@ def _search_web_sync(query: str) -> list[dict[str, str]]:
                 _BING_URL,
                 params={"q": query, "format": "rss"},
                 headers={"User-Agent": "Mozilla/5.0"},
-                timeout=10.0,
+                timeout=policy(
+                    "tools",
+                    "web_search.parameters.search_web_sync_timeout_factor_2",
+                    float,
+                ),
                 follow_redirects=True,
             )
             feed.raise_for_status()
@@ -80,11 +81,17 @@ def _search_web_sync(query: str) -> list[dict[str, str]]:
             ]
     except Exception:
         # best-effort：联网失败/超时返回空，不崩回复（use_tools 层另有兜底）
-        _logger.warning("联网搜索请求失败 query=%s", query, exc_info=True)
+        _logger.warning(
+            policy("tools", "web_search.copy.search_web_sync_text_2", str),
+            query,
+            exc_info=True,
+        )
         return []
     results = results[:_MAX_RESULTS]
     if not results:
-        _logger.warning("联网搜索无结果 query=%s", query)
+        _logger.warning(
+            policy("tools", "web_search.copy.search_web_sync_text", str), query
+        )
     return results
 
 
@@ -94,10 +101,17 @@ def build_web_search_tool() -> Tool:
 
     return Tool(
         name="web_search",
-        description="联网搜索（Bing），返回标题 / 链接 / 摘要。",
+        description=policy("tools", "web_search.copy.build_web_search_tool_text", str),
         schema={
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "搜索关键词"}},
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": policy(
+                        "tools", "web_search.copy.build_web_search_tool_text_2", str
+                    ),
+                }
+            },
             "required": ["query"],
         },
         handler=handler,

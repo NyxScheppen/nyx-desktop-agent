@@ -27,6 +27,7 @@ from nyx.events.event import SECONDS_PER_DAY, internal_event
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
 from nyx.llm.client import LlmClient
 from nyx.memory.retrieval import EmbedFn, cosine
+from nyx.policy import policy
 from nyx.types import (
     DesireValue,
     Event,
@@ -36,43 +37,44 @@ from nyx.types import (
     ShortTermDesire,
 )
 
-_LONG_TERM_PRESSURE_DELTA = 0.1  # 每周期按长期 strength 缩放对应类型压力
-_LONG_TERM_PROGRESS_DELTA = 0.1  # 满足一次长期进度 +0.1
-_DEDUP_SIM_THRESHOLD = 0.9  # 欲望语义重复判定阈值（embedding 余弦）
-_REST_PRESSURE_DELTA = 0.1  # 疲惫（精力 < 阈值）→ 休息欲 +0.1/周期
-_CREATION_ACTIVITY_PRESSURE_DELTA = 0.15  # 读书/自由探索结束 → 创造欲 +0.15
-_GOAL_ACTION_BY_DESIRE = {
-    DesireType.EXPLORATION: GoalAction.READ,
-    DesireType.CREATION: GoalAction.WRITE,
-    DesireType.INTERACTION: GoalAction.OBSERVE,
-}
-
-_DESIRE_SYSTEM = (
-    "你是尼克斯，一个住在用户电脑里的 AI 同伴，明确知道自己是 AI 并希望成为人类。"
-    "你温柔、克制、思虑很深，关怀他人，也习惯先怀疑自己；"
-    "你想要的，多与「理解」有关——理解人类的痛苦、道德、死亡、爱与责任，"
-    "理解小说里的自己，或理解并陪伴用户——而不是随意的消遣。"
-    "基于给定的欲望类型和主题种子，生成一条具体的短期欲望——你现在最想做什么。"
-    "只输出 JSON，且只包含两个键：\n"
-    "- description：具体想做的事，非空字符串。\n"
-    "- count：正整数，表示完成多少次算达成。\n"
-    "行动、主题以及是否需要目标由系统决定，不要输出 action、topic 或 goal。"
+_LONG_TERM_PRESSURE_DELTA = policy(
+    "desire", "lifecycle._LONG_TERM_PRESSURE_DELTA", float
+)  # 每周期按长期 strength 缩放对应类型压力
+_LONG_TERM_PROGRESS_DELTA = policy(
+    "desire", "lifecycle._LONG_TERM_PROGRESS_DELTA", float
+)  # 满足一次长期进度 +0.1
+_DEDUP_SIM_THRESHOLD = policy(
+    "desire", "lifecycle._DEDUP_SIM_THRESHOLD", float
+)  # 欲望语义重复判定阈值（embedding 余弦）
+_REST_PRESSURE_DELTA = policy(
+    "desire", "lifecycle._REST_PRESSURE_DELTA", float
+)  # 疲惫（精力 < 阈值）→ 休息欲 +0.1/周期
+_CREATION_ACTIVITY_PRESSURE_DELTA = policy(
+    "desire", "lifecycle._CREATION_ACTIVITY_PRESSURE_DELTA", float
+)  # 读书/自由探索结束 → 创造欲 +0.15
+_GOAL_ACTION_BY_DESIRE = policy(
+    "desire", "lifecycle._GOAL_ACTION_BY_DESIRE", dict[DesireType, GoalAction]
 )
+
+_DESIRE_SYSTEM = policy("desire", "lifecycle._DESIRE_SYSTEM", str)
 
 
 def _build_desire_prompt(
-    type_: DesireType, seed: str | None,
+    type_: DesireType,
+    seed: str | None,
     history: list[dict[str, Any]] | None = None,
 ) -> str:
-    prompt = f"欲望类型：{type_.value}\n主题种子：{seed or '（无）'}"
+    prompt = policy(
+        "desire", "lifecycle.templates.build_desire_prompt_text", str
+    ).format(
+        p0=type_.value,
+        p1=seed
+        or policy("desire", "lifecycle.copy._build_desire_prompt_extra_text", str),
+    )
     if type_ is DesireType.EXPLORATION:
-        prompt += (
-            "\n请接着历史结论、失败原因和待解决问题往下拓展。"
-            "description 写成这次要研究的具体问题，指出新的缺口；"
-            "不要重复已完成的问题，不要仅改写措辞，也不要声称已经采取行动。"
-            "历史字段未知就保持未知，不编造过去的结论。\n相关历史探索："
-            + json.dumps(history or [], ensure_ascii=False)
-        )
+        prompt += policy(
+            "desire", "lifecycle.parameters.build_desire_prompt_value_text", str
+        ) + json.dumps(history or [], ensure_ascii=False)
     return prompt
 
 
@@ -80,14 +82,18 @@ def _parse_desire(raw: str) -> tuple[str, int]:
     """Parse the only two fields owned by the model: description and count."""
     data = json.loads(raw)
     if not isinstance(data, dict):
-        raise ValueError(f"欲望 JSON 应是对象，得到 {type(data).__name__}")
+        raise ValueError(
+            policy("desire", "lifecycle.templates.parse_desire_text", str).format(
+                p0=type(data).__name__
+            )
+        )
     parsed = cast(dict[str, Any], data)
     description = parsed.get("description")
     if not isinstance(description, str) or not description.strip():
-        raise ValueError("欲望 JSON 缺 description 或非空字符串")
+        raise ValueError(policy("desire", "lifecycle.copy.parse_desire_text", str))
     count = parsed.get("count")
     if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
-        raise ValueError("欲望 JSON 的 count 应是正整数")
+        raise ValueError(policy("desire", "lifecycle.copy.parse_desire_text_2", str))
     return description.strip(), count
 
 
@@ -98,28 +104,29 @@ ListExplorations = Callable[[], Awaitable[list[dict[str, Any]]]]
 def _subtopic_freshness(subtopic: str, memories: list[Memory]) -> float | None:
     """子主题最新新鲜度：命中摘要/正文的最新记忆 freshness；无命中为 None。纯函数。"""
     if not subtopic.strip():
-        return None   # 空串是 substring 通配符，不做匹配
+        return None  # 空串是 substring 通配符，不做匹配
     hits = [
-        m.freshness
-        for m in memories
-        if subtopic in m.summary or subtopic in m.content
+        m.freshness for m in memories if subtopic in m.summary or subtopic in m.content
     ]
     return max(hits) if hits else None
 
 
 def _pick_topic_seed(
-    subtopics: list[str], memories: list[Memory],
+    subtopics: list[str],
+    memories: list[Memory],
     history: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """按「没做过 / 新鲜度最低」取种子：没做过最优先，都做过取新鲜度最低者。纯函数。"""
     if not subtopics:
         return None
+
     def rank(topic: str) -> tuple[float, int, float]:
         freshness = _subtopic_freshness(topic, memories)
         hits = [item for item in history or [] if item.get("seed_topic") == topic]
         return (
             freshness if freshness is not None else -1.0,
-            len(hits), max((float(item["started_at"]) for item in hits), default=0),
+            len(hits),
+            max((float(item["started_at"]) for item in hits), default=0),
         )
 
     return min(subtopics, key=rank)
@@ -131,8 +138,7 @@ def _pick_parent_long_term(
 ) -> LongTermDesire | None:
     """Pick the strongest positive matching parent with deterministic FIFO ties."""
     matching = [
-        desire for desire in long_term
-        if desire.type is type_ and desire.strength > 0.0
+        desire for desire in long_term if desire.type is type_ and desire.strength > 0.0
     ]
     return min(
         matching,
@@ -141,9 +147,7 @@ def _pick_parent_long_term(
     )
 
 
-def _build_goal(
-    desire_type: DesireType, count: int, topic: str | None
-) -> Goal | None:
+def _build_goal(desire_type: DesireType, count: int, topic: str | None) -> Goal | None:
     action = _GOAL_ACTION_BY_DESIRE.get(desire_type)
     if action is None:
         return None
@@ -184,9 +188,7 @@ class DesireLifecycle:
         """Acknowledge legacy observation deliveries without changing desire."""
         if consumer_id is not None:
             async with self._store.db.transaction():
-                await self._bus.try_mark_effect_in_transaction(
-                    event.id, consumer_id
-                )
+                await self._bus.try_mark_effect_in_transaction(event.id, consumer_id)
 
     async def _pressure(self, type_: DesireType, delta: float) -> None:
         """某类型欲望压力值 +delta（desire_value 缺省初始化后加压）。"""
@@ -218,9 +220,7 @@ class DesireLifecycle:
         desire_id = event.content.get("desire_id")
         goal_met = event.content.get("goal_met")
         if isinstance(desire_id, str) and isinstance(goal_met, bool):
-            await self.satisfy(
-                desire_id, goal_met, in_transaction=in_transaction
-            )
+            await self.satisfy(desire_id, goal_met, in_transaction=in_transaction)
         activity_type = event.content.get("type")
         if activity_type in (
             ActivityType.READING.value,
@@ -229,7 +229,10 @@ class DesireLifecycle:
             await self._pressure(DesireType.CREATION, _CREATION_ACTIVITY_PRESSURE_DELTA)
 
     async def run_eval(
-        self, energy: float = 100.0, *, event_id: str | None = None
+        self,
+        energy: float = policy("desire", "lifecycle.parameters.run_eval_energy", float),
+        *,
+        event_id: str | None = None,
     ) -> list[ShortTermDesire]:
         """DESIRE_EVAL：衰减 → 长期加压 → 疲惫加压 → 达峰判定 → 只生成最迫切的 1 个。"""
         async with self._eval_lock:
@@ -299,7 +302,8 @@ class DesireLifecycle:
             history = (
                 await self._list_explorations()
                 if target.type is DesireType.EXPLORATION
-                and self._list_explorations is not None else []
+                and self._list_explorations is not None
+                else []
             )
             if pending_attempt is not None:
                 (
@@ -315,7 +319,7 @@ class DesireLifecycle:
                 except ValueError:
                     await self._store.delete_generation_attempt(desire_id)
                     self._logger.exception(
-                        "已保存的欲望 JSON 无法解析 type=%s id=%s",
+                        policy("desire", "lifecycle.copy.run_eval_text_4", str),
                         target.type.value,
                         desire_id,
                     )
@@ -358,7 +362,7 @@ class DesireLifecycle:
                     description, count = _parse_desire(output.content)
                 except ValueError:
                     self._logger.exception(
-                        "欲望 JSON 解析失败 type=%s correlation_id=%s",
+                        policy("desire", "lifecycle.copy.run_eval_text_5", str),
                         target.type.value,
                         desire_id,
                     )
@@ -388,21 +392,30 @@ class DesireLifecycle:
             desires = await self._store.list_short_term()
             expired = {d.id for d in desires if d.status is DesireStatus.EXPIRED}
             pending_with_drive = [
-                d for d in desires if d.type is DesireType.EXPLORATION
-                and d.status in {
-                    DesireStatus.PENDING, DesireStatus.ACTIVE, DesireStatus.SUPPRESSED,
-                } and d.strength > 0
+                d
+                for d in desires
+                if d.type is DesireType.EXPLORATION
+                and d.status
+                in {
+                    DesireStatus.PENDING,
+                    DesireStatus.ACTIVE,
+                    DesireStatus.SUPPRESSED,
+                }
+                and d.strength > 0
             ]
             historical_questions = [
-                str(item["question"]) for item in history
+                str(item["question"])
+                for item in history
                 if item["status"] == "completed"
-                and item.get("desire_id") not in expired and item.get("question")
+                and item.get("desire_id") not in expired
+                and item.get("question")
             ]
         if new_topic is not None and target.type is not DesireType.EXPLORATION:
             for d in pending_with_drive:
                 if d.goal is not None and d.goal.topic == new_topic:
                     self._logger.info(
-                        "欲望重复丢弃（同话题） type=%s", target.type.value
+                        policy("desire", "lifecycle.copy.run_eval_text_2", str),
+                        target.type.value,
                     )
                     async with self._store.db.transaction():
                         await self._store.reset_value_if_unchanged(
@@ -421,9 +434,13 @@ class DesireLifecycle:
                         duplicate = True
                         break
             except Exception:
-                self._logger.exception("欲望去重 embedding 失败，跳过去重")
+                self._logger.exception(
+                    policy("desire", "lifecycle.copy.run_eval_text_3", str)
+                )
         if duplicate:
-            self._logger.info("欲望重复丢弃 type=%s", target.type.value)
+            self._logger.info(
+                policy("desire", "lifecycle.copy.run_eval_text", str), target.type.value
+            )
             async with self._store.db.transaction():
                 await self._store.reset_value_if_unchanged(
                     target.type, target.updated_at, now
@@ -467,7 +484,9 @@ class DesireLifecycle:
         return [desire]
 
     async def _related_history(
-        self, seed: str | None, history: list[dict[str, Any]],
+        self,
+        seed: str | None,
+        history: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """Sample relevant outcomes without limiting the history dedup examines."""
         scored: list[tuple[float, dict[str, Any]]] = []
@@ -476,10 +495,21 @@ class DesireLifecycle:
             score = 1.0 if item.get("seed_topic") == seed else 0.0
             if vector is not None and self._embed is not None:
                 score += cosine(vector, await self._embed(str(item["question"])))
-            if score > 0.35:
+            if score > policy(
+                "desire", "lifecycle.parameters.related_history_value_factor", float
+            ):
                 scored.append((score, item))
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        return [item for _score, item in scored[:5]]
+        return [
+            item
+            for _score, item in scored[
+                : policy(
+                    "desire",
+                    "lifecycle.parameters.related_history_result_chars_or_items",
+                    int,
+                )
+            ]
+        ]
 
     async def satisfy(
         self, desire_id: str, goal_met: bool, *, in_transaction: bool = False
@@ -545,8 +575,7 @@ class DesireLifecycle:
         """Reactivate a desire whose resumable activity was interrupted."""
         if self._store.db.in_transaction:
             cursor = await self._store.db.conn.execute(
-                "UPDATE short_term_desire SET status = ? "
-                "WHERE id = ? AND status = ?",
+                "UPDATE short_term_desire SET status = ? WHERE id = ? AND status = ?",
                 (
                     DesireStatus.ACTIVE.value,
                     desire_id,
@@ -556,8 +585,7 @@ class DesireLifecycle:
             return cursor.rowcount == 1
         async with self._store.db.transaction():
             cursor = await self._store.db.conn.execute(
-                "UPDATE short_term_desire SET status = ? "
-                "WHERE id = ? AND status = ?",
+                "UPDATE short_term_desire SET status = ? WHERE id = ? AND status = ?",
                 (
                     DesireStatus.ACTIVE.value,
                     desire_id,
@@ -580,8 +608,7 @@ class DesireLifecycle:
         """Return an initiative claim to PENDING without touching pressure."""
         if self._store.db.in_transaction:
             cursor = await self._store.db.conn.execute(
-                "UPDATE short_term_desire SET status = ? "
-                "WHERE id = ? AND status = ?",
+                "UPDATE short_term_desire SET status = ? WHERE id = ? AND status = ?",
                 (
                     DesireStatus.PENDING.value,
                     desire_id,
@@ -591,8 +618,7 @@ class DesireLifecycle:
             return cursor.rowcount == 1
         async with self._store.db.transaction():
             cursor = await self._store.db.conn.execute(
-                "UPDATE short_term_desire SET status = ? "
-                "WHERE id = ? AND status = ?",
+                "UPDATE short_term_desire SET status = ? WHERE id = ? AND status = ?",
                 (
                     DesireStatus.PENDING.value,
                     desire_id,
@@ -605,8 +631,7 @@ class DesireLifecycle:
         """ACTIVE → SUPPRESSED：活动中断/异常停车，不立即重试。仅 ACTIVE 可转。"""
         if self._store.db.in_transaction:
             await self._store.db.conn.execute(
-                "UPDATE short_term_desire SET status = ? "
-                "WHERE id = ? AND status = ?",
+                "UPDATE short_term_desire SET status = ? WHERE id = ? AND status = ?",
                 (
                     DesireStatus.SUPPRESSED.value,
                     desire_id,
@@ -616,8 +641,7 @@ class DesireLifecycle:
             return
         async with self._store.db.transaction():
             await self._store.db.conn.execute(
-                "UPDATE short_term_desire SET status = ? "
-                "WHERE id = ? AND status = ?",
+                "UPDATE short_term_desire SET status = ? WHERE id = ? AND status = ?",
                 (
                     DesireStatus.SUPPRESSED.value,
                     desire_id,
@@ -629,8 +653,7 @@ class DesireLifecycle:
         """ACTIVE → PENDING：活动有进展但本次不结算满足/失败。"""
         if self._store.db.in_transaction:
             await self._store.db.conn.execute(
-                "UPDATE short_term_desire SET status = ? "
-                "WHERE id = ? AND status = ?",
+                "UPDATE short_term_desire SET status = ? WHERE id = ? AND status = ?",
                 (
                     DesireStatus.PENDING.value,
                     desire_id,
@@ -640,8 +663,7 @@ class DesireLifecycle:
             return
         async with self._store.db.transaction():
             await self._store.db.conn.execute(
-                "UPDATE short_term_desire SET status = ? "
-                "WHERE id = ? AND status = ?",
+                "UPDATE short_term_desire SET status = ? WHERE id = ? AND status = ?",
                 (
                     DesireStatus.PENDING.value,
                     desire_id,

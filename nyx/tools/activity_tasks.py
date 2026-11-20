@@ -3,6 +3,7 @@
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from nyx.policy import policy
 from nyx.types import AssignedTask, Tool
 
 
@@ -40,7 +41,9 @@ def build_activity_task_tools(
         Tool(
             name="web_task",
             description=(
-                "用户明确要求 Nyx 阅读或了解指定公开网页时，提交后台网页阅读任务。"
+                policy(
+                    "tools", "activity_tasks.copy.build_activity_task_tools_text", str
+                )
             ),
             schema={
                 "type": "object",
@@ -52,7 +55,9 @@ def build_activity_task_tools(
         Tool(
             name="book_task",
             description=(
-                "用户明确要求 Nyx 阅读书库中的某本书到指定段落时，提交读书任务。"
+                policy(
+                    "tools", "activity_tasks.copy.build_activity_task_tools_text_2", str
+                )
             ),
             schema={
                 "type": "object",
@@ -66,7 +71,9 @@ def build_activity_task_tools(
         ),
         Tool(
             name="creation_task",
-            description="用户明确要求 Nyx 创作文字时，提交后台创作任务。",
+            description=policy(
+                "tools", "activity_tasks.copy.build_activity_task_tools_text_3", str
+            ),
             schema={
                 "type": "object",
                 "properties": {"description": {"type": "string"}},
@@ -77,7 +84,9 @@ def build_activity_task_tools(
         Tool(
             name="browser_survey",
             description=(
-                "用户明确要求 Nyx 亲自填写公开网页问卷时，提交后台浏览器问卷任务。"
+                policy(
+                    "tools", "activity_tasks.copy.build_activity_task_tools_text_4", str
+                )
             ),
             schema={
                 "type": "object",

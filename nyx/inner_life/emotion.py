@@ -2,33 +2,35 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 from nyx.enums import ActivityType, EmotionCategory, EnergyState, EventType
+from nyx.policy import policy
 
 # —— 基线（平静）——
-BASELINE_VALENCE = 0.0
-BASELINE_AROUSAL = 0.0
+BASELINE_VALENCE = policy("inner_life", "emotion.BASELINE_VALENCE", float)
+BASELINE_AROUSAL = policy("inner_life", "emotion.BASELINE_AROUSAL", float)
 
 # —— 情感衰减：每天回基线的比例（"随时间衰减回基线"）——
-EMOTION_DECAY_RATE = 0.5
+EMOTION_DECAY_RATE = policy("inner_life", "emotion.EMOTION_DECAY_RATE", float)
 
 # —— 事件 → 情感坐标偏移 (Δvalence, Δarousal)，只读查找表（模块级不可变）——
-_OFFSETS: Mapping[EventType, tuple[float, float]] = MappingProxyType({
-    EventType.OBSERVATION_STATE: (0.0, 0.0),    # 观察不改情感（但仍触发衰减）
-    EventType.DESIRE_SATISFIED: (0.2, 0.1),     # 满足感
-    EventType.ACTIVITY_END: (0.1, -0.1),        # 完成感（唤醒略降）
-    EventType.REFLECTION: (0.0, -0.1),          # 反思平复
-})
+_OFFSETS: Mapping[EventType, tuple[float, float]] = MappingProxyType(
+    policy("inner_life", "emotion._OFFSETS", dict[EventType, tuple[float, float]])
+)
 
 # —— vad_to_category 阈值 ——
-_V_NEAR = 0.2          # |valence| < 0.2 视为"中性带"
-_A_LOW = 0.3           # arousal < 0.3 视为"低唤醒"
-_A_HIGH = 0.6          # arousal >= 0.6 视为"高唤醒"
+_V_NEAR = policy("inner_life", "emotion._V_NEAR", float)  # |valence| < 0.2 视为"中性带"
+_A_LOW = policy("inner_life", "emotion._A_LOW", float)  # arousal < 0.3 视为"低唤醒"
+_A_HIGH = policy("inner_life", "emotion._A_HIGH", float)  # arousal >= 0.6 视为"高唤醒"
 
 # —— 精力休息阈值：TIRED 档下界（energy_to_state 分界，单一来源）——
-ENERGY_REST_THRESHOLD = 40.0   # TIRED 档下界：< 40 落 EXHAUSTED([20,40)) / DRAINED(<20)
+ENERGY_REST_THRESHOLD = policy(
+    "inner_life", "emotion.ENERGY_REST_THRESHOLD", float
+)  # TIRED 档下界：< 40 落 EXHAUSTED([20,40)) / DRAINED(<20)
 
 # —— 覆盖阈值 ——
-_SLEEPY_STATES = (EnergyState.EXHAUSTED, EnergyState.DRAINED)
-_THINKING_ACTIVITIES = (ActivityType.IDLE_REFLECTION, ActivityType.FREE_EXPLORATION)
+_SLEEPY_STATES = policy("inner_life", "emotion._SLEEPY_STATES", tuple[EnergyState, ...])
+_THINKING_ACTIVITIES = policy(
+    "inner_life", "emotion._THINKING_ACTIVITIES", tuple[ActivityType, ...]
+)
 
 
 def clamp_valence(v: float) -> float:

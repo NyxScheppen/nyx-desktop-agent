@@ -1,3 +1,5 @@
+import { formatPolicyText } from "./policy";
+import frontendPolicy from "../../../nyx/settings/frontend.json";
 import type { Activity, ActivityType } from "../types/api";
 
 // 活动产出文案纯函数。
@@ -16,24 +18,24 @@ export function activitySubject(a: Activity): string | null {
 
 /** 活动状态一句话（读当前活动）：「在读《X》/在探索/在创作/在观察你/在静默反思/在休息/空闲」。 */
 export function activityStatusText(a: Activity | null): string {
-  if (a === null) return "空闲";
+  if (a === null) return frontendPolicy.copy.activityResult.text;
   const subject = activitySubject(a);
   switch (a.type) {
     case "reading":
-      return subject !== null ? `在读《${subject}》` : "在读书";
+      return subject !== null ? formatPolicyText(frontendPolicy.templates.activityResult.text, { p0: subject }) : frontendPolicy.copy.activityResult.text_2;
     case "browser_survey":
-      return subject !== null ? `在填写问卷：${subject}` : "在填写问卷";
+      return subject !== null ? formatPolicyText(frontendPolicy.templates.activityResult.text_2, { p0: subject }) : frontendPolicy.copy.activityResult.text_3;
     case "free_exploration":
       if (typeof a.progress.intent === "string" && subject !== null) return subject;
-      return subject !== null ? `在探索「${subject}」` : "在探索";
+      return subject !== null ? formatPolicyText(frontendPolicy.templates.activityResult.text_3, { p0: subject }) : frontendPolicy.copy.activityResult.text_4;
     case "creation":
-      return subject !== null ? `在创作：${subject}` : "在创作";
+      return subject !== null ? formatPolicyText(frontendPolicy.templates.activityResult.text_4, { p0: subject }) : frontendPolicy.copy.activityResult.text_5;
     case "observe_user":
-      return "在观察你";
+      return frontendPolicy.copy.activityResult.text_6;
     case "idle_reflection":
-      return "在静默反思";
+      return frontendPolicy.copy.activityResult.text_7;
     case "rest":
-      return "在休息";
+      return frontendPolicy.copy.activityResult.text_8;
   }
 }
 
@@ -93,7 +95,7 @@ export function formatOutputBody(a: Activity): string | null {
   if (a.type === "free_exploration") {
     const lines: string[] = [];
     if (typeof r.core_discovery === "string" && r.core_discovery.length > 0)
-      lines.push(`核心发现：${r.core_discovery}`);
+      lines.push(formatPolicyText(frontendPolicy.templates.activityResult.text_5, { p0: r.core_discovery }));
     if (Array.isArray(r.knowledge)) {
       for (const k of r.knowledge) {
         if (typeof k !== "object" || k === null) continue;
@@ -115,13 +117,13 @@ export function formatOutputBody(a: Activity): string | null {
 function formatToolCall(name: string, args: Record<string, unknown>): string | null {
   switch (name) {
     case "web_search":
-      return `联网搜索「${typeof args.query === "string" ? args.query : ""}」`;
+      return formatPolicyText(frontendPolicy.templates.activityResult.text_6, { p0: typeof args.query === "string" ? args.query : "" });
     case "local_search":
-      return `本地搜索「${typeof args.query === "string" ? args.query : ""}」`;
+      return formatPolicyText(frontendPolicy.templates.activityResult.text_7, { p0: typeof args.query === "string" ? args.query : "" });
     case "web_fetch":
-      return `抓取网页 ${typeof args.url === "string" ? args.url : ""}`;
+      return formatPolicyText(frontendPolicy.templates.activityResult.text_8, { p0: typeof args.url === "string" ? args.url : "" });
     case "file_io":
-      return `${args.action === "read" ? "读" : "写"}文件 ${typeof args.path === "string" ? args.path : ""}`;
+      return formatPolicyText(frontendPolicy.templates.activityResult.text_9, { p0: args.action === "read" ? frontendPolicy.copy.activityResult.text_9 : frontendPolicy.copy.activityResult.text_10, p1: typeof args.path === "string" ? args.path : "" });
     default:
       return name.length > 0 ? name : null;
   }
@@ -135,9 +137,9 @@ export function formatTools(a: Activity): string | null {
     if (Array.isArray(checkpoint.actions)) {
       const lines: string[] = [];
       const labels: Record<string, string> = {
-        select_topic: "选题", rewrite: "改写问题", follow_up: "追问",
-        source_check: "资料判断", read: "读取资料", search: "搜索",
-        digest_source: "消化入库", finalize: "总结", finish: "结束搜索",
+        select_topic: frontendPolicy.copy.activityResult.select_topic, rewrite: frontendPolicy.copy.activityResult.rewrite, follow_up: frontendPolicy.copy.activityResult.follow_up,
+        source_check: frontendPolicy.copy.activityResult.source_check, read: frontendPolicy.copy.activityResult.read, search: frontendPolicy.copy.activityResult.search,
+        digest_source: frontendPolicy.copy.activityResult.digest_source, finalize: frontendPolicy.copy.activityResult.finalize, finish: frontendPolicy.copy.activityResult.finish,
       };
       for (const raw of checkpoint.actions) {
         if (typeof raw !== "object" || raw === null) continue;
@@ -147,10 +149,10 @@ export function formatTools(a: Activity): string | null {
           ? action.args as Record<string, unknown> : {};
         const label = labels[name] ?? formatToolCall(name, args);
         if (label === null) continue;
-        const state = action.status === "running" ? "进行中"
-          : action.status === "interrupted" ? "已中断"
-          : action.status === "rejected" ? "未采用"
-          : action.ok === false ? "失败" : "完成";
+        const state = action.status === "running" ? frontendPolicy.copy.activityResult.text_11
+          : action.status === "interrupted" ? frontendPolicy.copy.activityResult.text_12
+          : action.status === "rejected" ? frontendPolicy.copy.activityResult.text_13
+          : action.ok === false ? frontendPolicy.copy.activityResult.text_14 : frontendPolicy.copy.activityResult.text_15;
         const parts = [typeof action.text === "string" ? action.text : "",
           typeof action.location === "string" ? action.location : "",
           typeof action.result === "string" ? action.result : "",
@@ -158,10 +160,10 @@ export function formatTools(a: Activity): string | null {
         lines.push(`${label}（${state}）${parts.length ? `：${parts.join(" · ")}` : ""}`);
       }
       const reason = checkpoint.failure_reason || checkpoint.stop_reason;
-      if (typeof reason === "string" && reason) lines.push(`结束原因：${reason}`);
+      if (typeof reason === "string" && reason) lines.push(formatPolicyText(frontendPolicy.templates.activityResult.text_10, { p0: reason }));
       if (Array.isArray(checkpoint.unresolved_questions)) {
         for (const question of checkpoint.unresolved_questions) {
-          if (typeof question === "string" && question) lines.push(`待解决：${question}`);
+          if (typeof question === "string" && question) lines.push(formatPolicyText(frontendPolicy.templates.activityResult.text_11, { p0: question }));
         }
       }
       return lines.length ? lines.join("\n") : null;
@@ -182,18 +184,13 @@ export function formatTools(a: Activity): string | null {
         : {};
     const label = formatToolCall(name, args);
     if (label === null) continue;
-    parts.push(tc.ok === false ? `${label}（失败）` : label);
+    parts.push(tc.ok === false ? formatPolicyText(frontendPolicy.templates.activityResult.text_12, { p0: label }) : label);
   }
   return parts.length > 0 ? parts.join(" → ") : null;
 }
 
 // 完成后「主动冒一句」的前缀：只有会产出 result 的三类活动。
-const ANNOUNCE_PREFIX: Partial<Record<ActivityType, string>> = {
-  reading: "读完啦：",
-  browser_survey: "问卷结果：",
-  creation: "创作完成：",
-  free_exploration: "探索收获：",
-};
+const ANNOUNCE_PREFIX: Partial<Record<ActivityType, string>> = frontendPolicy.frontend.activityResult.ANNOUNCE_PREFIX as Partial<Record<ActivityType, string>>;
 
 /** 活动完成后主动冒一句的文案（前缀 + formatResult）；无产出返回 null。 */
 export function activityAnnouncement(a: Activity): string | null {

@@ -5,11 +5,13 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
-_TURN_START = re.compile(r"(?m)^(?:用户|尼克斯)：")
-_TOKENS = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+")
-_CHUNK_CHARS = 320
-_OVERLAP_CHARS = 64
-_SENTENCES = re.compile(r".+?(?:[。！？!?；;]+|\n+|$)", re.S)
+from nyx.policy import policy
+
+_TURN_START = policy("memory", "conversation_chunks._TURN_START", re.Pattern[str])
+_TOKENS = policy("memory", "conversation_chunks._TOKENS", re.Pattern[str])
+_CHUNK_CHARS = policy("memory", "conversation_chunks._CHUNK_CHARS", int)
+_OVERLAP_CHARS = policy("memory", "conversation_chunks._OVERLAP_CHARS", int)
+_SENTENCES = policy("memory", "conversation_chunks._SENTENCES", re.Pattern[str])
 CHUNKER_VERSION = "conversation-v1"
 
 
@@ -67,7 +69,12 @@ def split_conversation(segment_id: str, raw: str) -> list[ConversationChunk]:
             if previous and (
                 "\n\n" in previous
                 or (
-                    max(len(previous), len(current)) >= 24
+                    max(len(previous), len(current))
+                    >= policy(
+                        "memory",
+                        "conversation_chunks.parameters.split_conversation_value_limit",
+                        int,
+                    )
                     and not set(text_tokens(previous)) & set(text_tokens(current))
                 )
             ):
@@ -111,15 +118,29 @@ def evidence_excerpt(
     raw: str,
     hits: list[ConversationChunk],
     *,
-    max_chars: int = 1600,
+    max_chars: int = policy(
+        "memory", "conversation_chunks.parameters.evidence_excerpt_max_chars", int
+    ),
 ) -> tuple[str, list[tuple[int, int]]]:
     """Expand around ranked hits, merge overlaps and bound material before rendering."""
     ranges: list[tuple[int, int]] = []
     for hit in hits:
         if raw[hit.start : hit.end] != hit.content:
             continue  # A stale index must never become evidence for edited source.
-        start = max(0, hit.start - 160)
-        end = min(len(raw), hit.end + 320)
+        start = max(
+            0,
+            hit.start
+            - policy("memory", "conversation_chunks.excerpt_before_chars", int),
+        )
+        end = min(
+            len(raw),
+            hit.end
+            + policy(
+                "memory",
+                "conversation_chunks.parameters.evidence_excerpt_end_budget",
+                int,
+            ),
+        )
         # Prefer full nearby lines (including the neighbouring answer) when bounded.
         line_start = raw.rfind("\n", start, hit.start)
         if line_start >= 0:
@@ -133,6 +154,11 @@ def evidence_excerpt(
                 proposed[-1] = (proposed[-1][0], max(b, proposed[-1][1]))
             else:
                 proposed.append((a, b))
-        if sum(b - a for a, b in proposed) + 7 * len(proposed) <= max_chars:
+        if (
+            sum(b - a for a, b in proposed)
+            + policy("memory", "conversation_chunks.excerpt_marker_chars", int)
+            * len(proposed)
+            <= max_chars
+        ):
             ranges = proposed
     return "\n[…]\n".join(raw[a:b] for a, b in ranges), ranges

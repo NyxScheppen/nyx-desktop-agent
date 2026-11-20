@@ -9,10 +9,15 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import trafilatura
 
+from nyx.policy import policy
 from nyx.types import Tool
 
-_MAX_DOWNLOAD_CHARS = 200_000  # 单篇下载正文字符上限（decision，可推翻）
-_MAX_REDIRECTS = 5             # 重定向跳数上限（逐跳做 SSRF 校验，防无限循环）
+_MAX_DOWNLOAD_CHARS = policy(
+    "tools", "web_fetch._MAX_DOWNLOAD_CHARS", int
+)  # 单篇下载正文字符上限（decision，可推翻）
+_MAX_REDIRECTS = policy(
+    "tools", "web_fetch._MAX_REDIRECTS", int
+)  # 重定向跳数上限（逐跳做 SSRF 校验，防无限循环）
 
 
 def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -58,7 +63,13 @@ def _fetch_url_sync(url: str) -> str:
         if not _is_safe_url(url):
             return ""
         try:
-            resp = httpx.get(url, timeout=15.0, follow_redirects=False)
+            resp = httpx.get(
+                url,
+                timeout=policy(
+                    "tools", "web_fetch.parameters.fetch_url_sync_timeout_factor", float
+                ),
+                follow_redirects=False,
+            )
         except Exception:
             return ""
         if resp.is_redirect:
@@ -92,7 +103,7 @@ def build_web_fetch_tool(
     async def handler(url: str) -> dict[str, Any]:
         text = await fetch_url(url)
         if not text.strip():
-            return {"error": "正文抓取失败或为空"}
+            return {"error": policy("tools", "web_fetch.copy.handler_text", str)}
         if len(text) > _MAX_DOWNLOAD_CHARS:
             text = text[:_MAX_DOWNLOAD_CHARS]
         result: dict[str, Any] = {"text": text, "url": url}
@@ -100,16 +111,27 @@ def build_web_fetch_tool(
             try:
                 result["ingestion"] = await ingest(text, url)
             except Exception:
-                logging.getLogger(__name__).exception("网页知识摄入失败 url=%s", url)
-                result["ingestion"] = {"errors": ["网页已抓取，知识摄入未完成"]}
+                logging.getLogger(__name__).exception(
+                    policy("tools", "web_fetch.copy.handler_text_2", str), url
+                )
+                result["ingestion"] = {
+                    "errors": policy("tools", "web_fetch.copy.handler_words", list[str])
+                }
         return result
 
     return Tool(
         name="web_fetch",
-        description="抓取网页正文为纯文本（供探索阅读消化）。",
+        description=policy("tools", "web_fetch.copy.build_web_fetch_tool_text", str),
         schema={
             "type": "object",
-            "properties": {"url": {"type": "string", "description": "网页 URL"}},
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": policy(
+                        "tools", "web_fetch.copy.build_web_fetch_tool_text_2", str
+                    ),
+                }
+            },
             "required": ["url"],
         },
         handler=handler,

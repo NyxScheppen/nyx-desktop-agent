@@ -11,6 +11,7 @@ import pytest
 from nyx import db
 from nyx.enums import EventType, Source
 from nyx.events.bus import (
+    EventAdmissionBusyError,
     EventAdmissionError,
     EventBus,
     EventBusClosedError,
@@ -490,6 +491,228 @@ async def test_delivery_failure_is_recovered_after_expired_lease() -> None:
     finally:
         await _close(bus)
 
+
+@pytest.mark.parametrize(
+    ("lock_timeout", "admission_timeout"), [(0.01, 1.0), (1.0, 0.01)]
+)
+async def test_admission_lock_timeout_is_safe_to_retry_without_opening_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+    lock_timeout: float,
+    admission_timeout: float,
+) -> None:
+    monkeypatch.setattr("nyx.events.bus._ADMISSION_TIMEOUT_SECONDS", admission_timeout)
+    bus = await _new_bus()
+    bus._db.lock_timeout = lock_timeout
+    bus._db.failure_threshold = 1
+    event = _make_event()
+    try:
+        async with bus._db.lock:
+            for _ in range(2):
+                with pytest.raises(EventAdmissionBusyError):
+                    await bus.publish(event)
+                assert bus._db.failure_state == "closed"
+        assert await bus.list_events() == []
+        monkeypatch.setattr("nyx.events.bus._ADMISSION_TIMEOUT_SECONDS", 1.0)
+        await bus.publish(event)
+        await bus.publish(event)
+        assert await bus.list_events() == [event]
+        assert bus.persisted_count == 1
+    finally:
+        await _close(bus)
+
+
+async def test_admission_commit_timeout_is_not_retried_as_lock_contention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = await _new_bus()
+    bus._db.failure_threshold = 1
+
+    async def stalled_commit() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("nyx.events.bus._ADMISSION_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(bus._db.conn, "commit", stalled_commit)
+    try:
+        with pytest.raises(EventAdmissionError) as caught:
+            await bus.publish(_make_event())
+        assert not isinstance(caught.value, EventAdmissionBusyError)
+        assert bus._db.failure_state == "open"
+        assert not bus._db.lock.locked()
+        assert await bus.list_events() == []
+    finally:
+        await _close(bus)
+
+
+async def test_recovery_allows_publish_between_pages_and_preserves_delivery_states(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nyx.events.bus._RECOVERY_BATCH_SIZE", 2)
+    bus = await _new_bus()
+    specs = [s for s in ROUTE_SPECS if s.event_type is EventType.ACTIVITY_END][:2]
+
+    async def handler(event: Event) -> None:
+        pass
+
+    bus.subscribe(specs[0], handler)
+    events = [
+        _make_event(id=f"old-{i}", type_=EventType.ACTIVITY_END) for i in range(8)
+    ]
+    await bus.publish_many(events)
+    states = [
+        "succeeded",
+        "dead_letter",
+        "processing",
+        "processing",
+        "retry_wait",
+        "retry_wait",
+        "pending",
+        "pending",
+    ]
+    async with bus._db.transaction():
+        for index, state in enumerate(states):
+            await bus._db.conn.execute(
+                "UPDATE event_delivery SET status=?, attempts=3, started_at=1, "
+                "lease_until=?, available_at=? WHERE event_id=?",
+                (
+                    state,
+                    0.0 if index == 2 else 1e12,
+                    0.0 if index == 4 else 1e12,
+                    events[index].id,
+                ),
+            )
+        await bus._db.conn.execute(
+            "DELETE FROM event_delivery WHERE event_id=?",
+            (events[6].id,),
+        )
+    # Registering a newly deployed route must still backfill its historical rows.
+    bus.subscribe(specs[1], handler)
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    original_execute = bus._execute_locked
+    original_many = bus._db.conn.executemany
+    pages: list[object] = []
+    inserted_pairs: list[tuple[Any, ...]] = []
+    publication: asyncio.Task[None] | None = None
+
+    async def observe(sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+        cursor = await original_execute(sql, parameters)
+        if sql.startswith("SELECT event_seq, id, type, content"):
+            pages.append(parameters[0])
+            if len(pages) == 1:
+                entered.set()
+                await proceed.wait()
+            else:
+                assert publication is not None and publication.done()
+                publication.result()
+        return cursor
+
+    async def record_many(sql: str, parameters: list[tuple[Any, ...]]) -> Any:
+        inserted_pairs.extend(parameters)
+        return await original_many(sql, parameters)
+
+    monkeypatch.setattr(bus, "_execute_locked", observe)
+    monkeypatch.setattr(bus._db.conn, "executemany", record_many)
+    recovery = asyncio.create_task(bus.recover_deliveries())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        publication = asyncio.create_task(bus.publish(_make_event(id="new")))
+        await asyncio.sleep(0)  # Queue the publisher behind the current page lock.
+        proceed.set()
+        await asyncio.wait_for(recovery, timeout=2)
+        await publication
+        assert len(pages) == 4  # The concurrent event lies beyond the watermark.
+        assert len(inserted_pairs) == 9
+        async with bus._db.lock:
+            rows = list(
+                await (
+                    await bus._db.conn.execute(
+                        "SELECT event_id, consumer_id, status, attempts "
+                        "FROM event_delivery"
+                    )
+                ).fetchall()
+            )
+        assert len(rows) == 16
+        old = {
+            r["event_id"]: r for r in rows if r["consumer_id"] == specs[0].consumer_id
+        }
+        assert [old[e.id]["status"] for e in events] == [
+            "succeeded",
+            "dead_letter",
+            "pending",
+            "processing",
+            "pending",
+            "retry_wait",
+            "pending",
+            "pending",
+        ]
+        assert old[events[0].id]["attempts"] == 3
+        await bus.recover_deliveries()
+        assert len(inserted_pairs) == 9  # Existing rows cause no insert round trips.
+    finally:
+        proceed.set()
+        recovery.cancel()
+        if publication is not None:
+            publication.cancel()
+        await asyncio.gather(
+            recovery, *([publication] if publication else []), return_exceptions=True
+        )
+        await _close(bus)
+
+
+async def test_cancelled_recovery_keeps_committed_pages_and_resumes_missing_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nyx.events.bus._RECOVERY_BATCH_SIZE", 1)
+    bus = await _new_bus()
+    spec = next(s for s in ROUTE_SPECS if s.consumer_id == "expression.user_message")
+    for index in range(3):
+        await bus.publish(
+            _make_event(id=f"event-{index}", type_=EventType.USER_MESSAGE)
+        )
+
+    async def handler(event: Event) -> None:
+        pass
+
+    bus.subscribe(spec, handler)
+    entered = asyncio.Event()
+    original_many = bus._db.conn.executemany
+    calls = 0
+
+    async def stall_second(sql: str, parameters: list[tuple[Any, ...]]) -> Any:
+        nonlocal calls
+        cursor = await original_many(sql, parameters)
+        calls += 1
+        if calls == 2:
+            entered.set()
+            await asyncio.Event().wait()
+        return cursor
+
+    monkeypatch.setattr(bus._db.conn, "executemany", stall_second)
+    recovery = asyncio.create_task(bus.recover_deliveries())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        recovery.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await recovery
+        assert not bus._db.lock.locked()
+        async with bus._db.lock:
+            rows = await (
+                await bus._db.conn.execute("SELECT event_id FROM event_delivery")
+            ).fetchall()
+        assert [r["event_id"] for r in rows] == ["event-0"]
+        monkeypatch.setattr(bus._db.conn, "executemany", original_many)
+        await bus.recover_deliveries()
+        async with bus._db.lock:
+            rows = await (
+                await bus._db.conn.execute(
+                    "SELECT event_id FROM event_delivery ORDER BY event_id"
+                )
+            ).fetchall()
+        assert [r["event_id"] for r in rows] == [f"event-{i}" for i in range(3)]
+    finally:
+        recovery.cancel()
+        await asyncio.gather(recovery, return_exceptions=True)
+        await _close(bus)
 
 async def test_effect_marker_skips_duplicate_handler_replay() -> None:
     bus = await _new_bus()

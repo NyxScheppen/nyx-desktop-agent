@@ -19,6 +19,7 @@ from uuid import uuid4
 import aiosqlite
 
 from nyx.db import Database
+from nyx.policy import policy
 from nyx.reading.segmenter import Segment
 from nyx.types import (
     Annotation,
@@ -45,7 +46,7 @@ _NOTE_COLS = (
 _NOTE_SELECT = (
     "n.id, n.book_id, n.paragraph_id, n.content, n.selected_text, "
     "n.selection_start, n.selection_end, n.created_at, n.updated_at, "
-    'p."index" AS paragraph_index'
+    'p."index" AS paragraph_index, n.revision'
 )
 _ANN_COLS = "id, user_note_id, content, created_at"
 _BOOKMARK_SELECT = (
@@ -59,7 +60,11 @@ class ProgressConflictError(Exception):
 
     def __init__(self, book_id: str) -> None:
         self.book_id = book_id
-        super().__init__(f"阅读进度已更新，请基于最新版本重试：{book_id}")
+        super().__init__(
+            policy("reading", "store.templates.__init___extra_text", str).format(
+                p0=book_id
+            )
+        )
 
 
 class ReadingStore:
@@ -72,6 +77,146 @@ class ReadingStore:
     def db(self) -> Database:
         """Return the shared database for source-checkpoint transactions."""
         return self._db
+
+    async def load_study(self, book_id: str) -> tuple[int, dict[str, Any]] | None:
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT revision,data FROM reading_study WHERE book_id=?",
+                (book_id,),
+            )
+            row = await cursor.fetchone()
+        return None if row is None else (row["revision"], json.loads(row["data"]))
+
+    async def study_books(self) -> list[str]:
+        async with self._db.lock:
+            cursor = await self._db.conn.execute("SELECT book_id FROM reading_study")
+            return [row["book_id"] for row in await cursor.fetchall()]
+
+    async def active_study(self) -> tuple[str, str] | None:
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT book_id,id FROM reading_session WHERE status='open'",
+            )
+            row = await cursor.fetchone()
+        return None if row is None else (row["book_id"], row["id"])
+
+    async def open_study(
+        self,
+        book_id: str,
+        initial: dict[str, Any],
+    ) -> tuple[str, str]:
+        """One open session per role; commit identity and initial state together."""
+        async with self._db.transaction():
+            cursor = await self._db.conn.execute(
+                "SELECT id,book_id FROM reading_session WHERE status='open'",
+            )
+            active = await cursor.fetchone()
+            if active is not None:
+                return active["book_id"], active["id"]
+            cursor = await self._db.conn.execute(
+                "SELECT data,revision FROM reading_study WHERE book_id=?",
+                (book_id,),
+            )
+            row = await cursor.fetchone()
+            data = initial if row is None else json.loads(row["data"])
+            identity = str(uuid4())
+            data["sessions"].append(
+                {
+                    "id": identity,
+                    "created_at": time.time(),
+                    "ended_at": None,
+                    "turns": [],
+                    "snapshot": None,
+                    "compressed": "",
+                    "compressed_count": 0,
+                    "presentation": {"scope": "", "start": None, "end": None},
+                    "results": {},
+                }
+            )
+            await self._db.conn.execute(
+                "INSERT INTO reading_session(id,book_id,status) VALUES (?,?,'open')",
+                (identity, book_id),
+            )
+            await self._db.conn.execute(
+                "INSERT INTO reading_study(book_id,revision,data) VALUES (?,1,?) "
+                "ON CONFLICT(book_id) DO UPDATE SET revision=reading_study.revision+1, "
+                "data=excluded.data",
+                (book_id, json.dumps(data, ensure_ascii=False)),
+            )
+        return book_id, identity
+
+    async def save_study(
+        self,
+        book_id: str,
+        revision: int,
+        data: dict[str, Any],
+        *,
+        end_session: str | None = None,
+    ) -> bool:
+        """CAS covers graph, evidence receipts and frozen settlement inputs together.
+
+        Never insert here: a late model response cannot recreate a deleted book.
+        """
+        async with self._db.transaction():
+            cursor = await self._db.conn.execute(
+                "UPDATE reading_study SET data=?,revision=revision+1 "
+                "WHERE book_id=? AND revision=?",
+                (
+                    json.dumps(data, ensure_ascii=False, allow_nan=False),
+                    book_id,
+                    revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            if end_session is not None:
+                await self._db.conn.execute(
+                    "UPDATE reading_session SET status='ended' "
+                    "WHERE id=? AND book_id=?",
+                    (end_session, book_id),
+                )
+        return True
+
+    async def study_note(self, book_id: str) -> dict[str, Any]:
+        """The book document is an ordinary user_note with a stable identity."""
+        identity = f"reading-document:{book_id}"
+        async with self._db.transaction():
+            await self._db.conn.execute(
+                "INSERT INTO user_notes(id,book_id,paragraph_id,content,selected_text,"
+                "created_at,updated_at) SELECT ?,id,NULL,'',NULL,?,? FROM books "
+                "WHERE id=? ON CONFLICT(id) DO NOTHING",
+                (identity, time.time(), time.time(), book_id),
+            )
+            cursor = await self._db.conn.execute(
+                "SELECT id,content,revision FROM user_notes WHERE id=? AND book_id=?",
+                (identity, book_id),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise ValueError(policy("reading", "study.copy.error_deleted", str))
+        return dict(row)
+
+    async def save_study_note(
+        self,
+        book_id: str,
+        revision: int,
+        content: str,
+    ) -> dict[str, Any]:
+        async with self._db.transaction():
+            cursor = await self._db.conn.execute(
+                "UPDATE user_notes SET content=?,revision=revision+1,updated_at=? "
+                "WHERE id=? AND book_id=? AND revision=?",
+                (
+                    content,
+                    time.time(),
+                    f"reading-document:{book_id}",
+                    book_id,
+                    revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ProgressConflictError(book_id)
+        return await self.study_note(book_id)
 
     @asynccontextmanager
     async def _operation(self) -> AsyncGenerator[bool, None]:
@@ -98,17 +243,28 @@ class ReadingStore:
             book_id = str(uuid4())
             now = time.time()
             book = Book(
-                id=book_id, title=title, author=author, filename=filename,
-                content_hash=content_hash, total_paragraphs=len(segments),
-                created_at=now, updated_at=now,
+                id=book_id,
+                title=title,
+                author=author,
+                filename=filename,
+                content_hash=content_hash,
+                total_paragraphs=len(segments),
+                created_at=now,
+                updated_at=now,
             )
             await self._db.conn.execute("BEGIN")
             try:
                 await self._db.conn.execute(
                     f"INSERT INTO books ({_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
-                        book_id, title, author, filename, content_hash,
-                        len(segments), now, now,
+                        book_id,
+                        title,
+                        author,
+                        filename,
+                        content_hash,
+                        len(segments),
+                        now,
+                        now,
                     ),
                 )
                 await self._insert_paragraphs(book_id, segments)
@@ -125,9 +281,7 @@ class ReadingStore:
                 await self._db.conn.commit()
         return book, True
 
-    async def _insert_paragraphs(
-        self, book_id: str, segments: list[Segment]
-    ) -> None:
+    async def _insert_paragraphs(self, book_id: str, segments: list[Segment]) -> None:
         """批量落段（`executemany`，一次往返）；调用方须已持锁 + 在事务内。"""
         await self._db.conn.executemany(
             'INSERT INTO paragraphs (id, book_id, "index", text, '
@@ -145,11 +299,11 @@ class ReadingStore:
             ],
         )
 
-
     async def _find_by_hash_locked(self, content_hash: str) -> Book | None:
         """查重查询；调用方须已持锁（不嵌套持锁，见 store 锁作用域约定）。"""
         cursor = await self._db.conn.execute(
-            f"SELECT {_COLS} FROM books WHERE content_hash = ?", (content_hash,),
+            f"SELECT {_COLS} FROM books WHERE content_hash = ?",
+            (content_hash,),
         )
         row = await cursor.fetchone()
         return _row_to_book(row) if row is not None else None
@@ -160,7 +314,8 @@ class ReadingStore:
         """按 book_id 单行查，供 facade 判书是否存在。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                f"SELECT {_COLS} FROM books WHERE id = ?", (book_id,),
+                f"SELECT {_COLS} FROM books WHERE id = ?",
+                (book_id,),
             )
             row = await cursor.fetchone()
             return _row_to_book(row) if row is not None else None
@@ -204,7 +359,7 @@ class ReadingStore:
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 'SELECT id, book_id, "index", text, is_chapter_start, format_json '
-                "FROM paragraphs WHERE book_id = ? AND \"index\" BETWEEN ? AND ? "
+                'FROM paragraphs WHERE book_id = ? AND "index" BETWEEN ? AND ? '
                 'ORDER BY "index" ASC',
                 (book_id, from_idx, to_idx),
             )
@@ -223,9 +378,7 @@ class ReadingStore:
         value = json.loads(row["memory_state"])
         return cast(dict[str, Any], value) if isinstance(value, dict) else {}
 
-    async def update_memory_state(
-        self, book_id: str, state: dict[str, Any]
-    ) -> None:
+    async def update_memory_state(self, book_id: str, state: dict[str, Any]) -> None:
         """Persist one book's source-memory checkpoint."""
         async with self._operation() as should_commit:
             cursor = await self._db.conn.execute(
@@ -233,7 +386,9 @@ class ReadingStore:
                 (json.dumps(state, ensure_ascii=False), time.time(), book_id),
             )
             if cursor.rowcount != 1:
-                raise RuntimeError("阅读检查点所属书籍已删除")
+                raise RuntimeError(
+                    policy("reading", "store.copy.update_memory_state_extra_text", str)
+                )
             if should_commit:
                 await self._db.conn.commit()
 
@@ -293,7 +448,11 @@ class ReadingStore:
             await self._db.conn.commit()
             progress = await self._get_progress_locked(book_id)
             if progress is None:
-                raise RuntimeError(f"写后回读缺失：{book_id}")
+                raise RuntimeError(
+                    policy(
+                        "reading", "store.templates.upsert_progress_extra_text", str
+                    ).format(p0=book_id)
+                )
             return progress
 
     async def advance_nyx_position(
@@ -321,7 +480,11 @@ class ReadingStore:
             await self._db.conn.commit()
             progress = await self._get_progress_locked(book_id)
             if progress is None:
-                raise RuntimeError(f"写后回读缺失：{book_id}")
+                raise RuntimeError(
+                    policy(
+                        "reading", "store.templates.upsert_progress_extra_text", str
+                    ).format(p0=book_id)
+                )
             return progress
 
     async def increment_read_count(
@@ -348,12 +511,14 @@ class ReadingStore:
             await self._db.conn.commit()
             progress = await self._get_progress_locked(book_id)
             if progress is None:
-                raise RuntimeError(f"写后回读缺失：{book_id}")
+                raise RuntimeError(
+                    policy(
+                        "reading", "store.templates.upsert_progress_extra_text", str
+                    ).format(p0=book_id)
+                )
             return progress
 
-    async def reset_completion_marker(
-        self, book_id: str, nyx_position: int
-    ) -> bool:
+    async def reset_completion_marker(self, book_id: str, nyx_position: int) -> bool:
         """Clear the persisted end marker when rereading moves inside the book."""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
@@ -379,7 +544,11 @@ class ReadingStore:
         if row is None and allow_missing:
             return None
         if row is None:  # 写路径刚 INSERT/UPDATE，行必在；避免 -O 下 assert 被剥离
-            raise RuntimeError(f"写后回读缺失：{book_id}")
+            raise RuntimeError(
+                policy(
+                    "reading", "store.templates.upsert_progress_extra_text", str
+                ).format(p0=book_id)
+            )
         return _row_to_progress(row)
 
     # ---- 阅读系统：用户笔记 / 批注 ----
@@ -425,7 +594,11 @@ class ReadingStore:
             await self._db.conn.commit()
             inserted = await self._get_user_note_locked(note_id)
             if inserted is None:
-                raise RuntimeError(f"写后回读缺失：{note_id}")
+                raise RuntimeError(
+                    policy(
+                        "reading", "store.templates.upsert_progress_extra_text", str
+                    ).format(p0=note_id)
+                )
             return inserted
 
     async def get_user_note(self, note_id: str) -> UserNote | None:
@@ -451,7 +624,12 @@ class ReadingStore:
             rows = await cursor.fetchall()
             return [_row_to_user_note(r) for r in rows]
 
-    async def update_user_note(self, note_id: str, content: str) -> UserNote | None:
+    async def update_user_note(
+        self,
+        note_id: str,
+        content: str,
+        expected_revision: int | None = None,
+    ) -> UserNote | None:
         """改笔记正文（updated_at 推进）；不存在返回 None。
 
         先 SELECT 判存在而非 `rowcount==0`——`rowcount` 依赖驱动/版本语义
@@ -459,11 +637,15 @@ class ReadingStore:
         误判不存在。
         """
         async with self._db.lock:
-            if await self._get_user_note_locked(note_id) is None:
+            current = await self._get_user_note_locked(note_id)
+            if current is None:
                 return None
+            if expected_revision is not None and current.revision != expected_revision:
+                raise ProgressConflictError(current.book_id or note_id)
             now = time.time()
             await self._db.conn.execute(
-                "UPDATE user_notes SET content = ?, updated_at = ? WHERE id = ?",
+                "UPDATE user_notes SET content = ?, updated_at = ?, "
+                "revision=revision+1 WHERE id = ?",
                 (content, now, note_id),
             )
             await self._db.conn.commit()
@@ -473,7 +655,8 @@ class ReadingStore:
         """删笔记（批注随 FK CASCADE 清空）；不存在返回 False。"""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                "DELETE FROM user_notes WHERE id = ?", (note_id,),
+                "DELETE FROM user_notes WHERE id = ?",
+                (note_id,),
             )
             await self._db.conn.commit()
             return cursor.rowcount > 0
@@ -494,12 +677,13 @@ class ReadingStore:
             if cursor.rowcount != 1:
                 return None
             return Annotation(
-                id=ann_id, user_note_id=user_note_id, content=content, created_at=now,
+                id=ann_id,
+                user_note_id=user_note_id,
+                content=content,
+                created_at=now,
             )
 
-    async def list_annotations_for_notes(
-        self, note_ids: list[str]
-    ) -> list[Annotation]:
+    async def list_annotations_for_notes(self, note_ids: list[str]) -> list[Annotation]:
         """多条笔记的批注（一次 IN 查询，避免 N+1），按 created_at 降序。"""
         if not note_ids:
             return []
@@ -526,9 +710,7 @@ class ReadingStore:
 
     # ---- 阅读系统：书签 ----
 
-    async def insert_bookmark(
-        self, book_id: str, paragraph_id: str
-    ) -> Bookmark:
+    async def insert_bookmark(self, book_id: str, paragraph_id: str) -> Bookmark:
         """同书同段幂等新增书签。"""
         async with self._db.lock:
             existing = await self._find_bookmark_locked(book_id, paragraph_id)
@@ -543,7 +725,11 @@ class ReadingStore:
             await self._db.conn.commit()
             inserted = await self._get_bookmark_locked(bookmark_id)
             if inserted is None:
-                raise RuntimeError(f"写后回读缺失：{bookmark_id}")
+                raise RuntimeError(
+                    policy(
+                        "reading", "store.templates.upsert_progress_extra_text", str
+                    ).format(p0=bookmark_id)
+                )
             return inserted
 
     async def list_bookmarks(self, book_id: str) -> list[Bookmark]:
@@ -729,6 +915,7 @@ def _row_to_user_note(row: aiosqlite.Row) -> UserNote:
         paragraph_index=row["paragraph_index"],
         selection_start=row["selection_start"],
         selection_end=row["selection_end"],
+        revision=row["revision"],
     )
 
 

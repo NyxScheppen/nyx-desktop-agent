@@ -23,6 +23,7 @@ from psycopg import AsyncConnection
 from psycopg import Error as PostgresError
 from psycopg.rows import dict_row
 
+from nyx.policy import policy
 from nyx.types import InnerTopic
 
 
@@ -436,12 +437,12 @@ def _raw_sha256(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-DEFAULT_DB_PATH = "data/nyx.db"
-_LEGACY_DB_PATH = "nyx.db"
-DB_LOCK_TIMEOUT = 3.0
-DB_OPERATION_TIMEOUT = 3.0
-DB_FAILURE_THRESHOLD = 5
-DB_COOLDOWN_SECONDS = 5.0
+DEFAULT_DB_PATH = policy("storage", "db.DEFAULT_DB_PATH", str)
+_LEGACY_DB_PATH = policy("storage", "db._LEGACY_DB_PATH", str)
+DB_LOCK_TIMEOUT = policy("storage", "db.DB_LOCK_TIMEOUT", float)
+DB_OPERATION_TIMEOUT = policy("storage", "db.DB_OPERATION_TIMEOUT", float)
+DB_FAILURE_THRESHOLD = policy("storage", "db.DB_FAILURE_THRESHOLD", int)
+DB_COOLDOWN_SECONDS = policy("storage", "db.DB_COOLDOWN_SECONDS", float)
 
 
 class DatabaseLockTimeout(TimeoutError):
@@ -1538,11 +1539,13 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON conversation_chunk_term(chunk_id)",
             "CREATE TABLE conversation_chunk_change "
             "(seq INTEGER PRIMARY KEY AUTOINCREMENT, chunk_id TEXT NOT NULL)",
-            *(f"CREATE TRIGGER conversation_chunk_{action.lower()} "
-              f"AFTER {action} ON conversation_chunk BEGIN "
-              "INSERT INTO conversation_chunk_change(chunk_id) "
-              f"VALUES ({'OLD' if action == 'DELETE' else 'NEW'}.id); END"
-              for action in ("INSERT", "UPDATE", "DELETE")),
+            *(
+                f"CREATE TRIGGER conversation_chunk_{action.lower()} "
+                f"AFTER {action} ON conversation_chunk BEGIN "
+                "INSERT INTO conversation_chunk_change(chunk_id) "
+                f"VALUES ({'OLD' if action == 'DELETE' else 'NEW'}.id); END"
+                for action in ("INSERT", "UPDATE", "DELETE")
+            ),
         ],
     ),
     (
@@ -1577,6 +1580,22 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX idx_conversation_hit_segment ON "
             "conversation_retrieval_hit(segment_id, trace_id)",
             *_conversation_lifecycle_triggers(),
+        ],
+    ),
+    (
+        58,
+        [
+            "CREATE TABLE reading_study (book_id TEXT PRIMARY KEY REFERENCES "
+            "books(id) ON DELETE CASCADE, revision INTEGER NOT NULL, "
+            "data TEXT NOT NULL)",
+            "CREATE TABLE reading_session (id TEXT PRIMARY KEY, book_id TEXT NOT NULL "
+            "REFERENCES books(id) ON DELETE CASCADE, status TEXT NOT NULL)",
+            "CREATE UNIQUE INDEX idx_reading_session_open ON reading_session(status) "
+            "WHERE status='open'",
+            "CREATE TABLE reading_memory_receipt (session_id TEXT PRIMARY KEY "
+            "REFERENCES reading_session(id) ON DELETE CASCADE, "
+            "memory_id TEXT NOT NULL)",
+            "ALTER TABLE user_notes ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
         ],
     ),
 ]

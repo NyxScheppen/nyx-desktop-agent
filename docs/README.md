@@ -12,6 +12,7 @@
 | 路径验证、真实页面与模型行为评测 | [评测方法与历史记录](eval/README.md) |
 | 了解产品目标与架构取舍 | [基本设计思路](design/design.md)（不作为系统事实参考） |
 | 查看内在文档重构范围与修订协议 | [重构 Spec](design/inner-document-spec.md) |
+| 查看书籍理解会话的主功能与复用边界 | [帮助你理解一本书 Spec](design/book-understanding-spec.md)（待实施） |
 | 了解 Nyx 的静态角色设定 | [角色设定](canon.md) |
 | 查未完成事项或可复用教训 | [待办](TODO.md)、[经验教训](LessonsLearned.md) |
 

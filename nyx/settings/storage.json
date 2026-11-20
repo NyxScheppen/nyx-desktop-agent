@@ -1,0 +1,10 @@
+{
+  "db": {
+    "DEFAULT_DB_PATH": "data/nyx.db",
+    "_LEGACY_DB_PATH": "nyx.db",
+    "DB_LOCK_TIMEOUT": 3,
+    "DB_OPERATION_TIMEOUT": 3,
+    "DB_FAILURE_THRESHOLD": 5,
+    "DB_COOLDOWN_SECONDS": 5
+  }
+}

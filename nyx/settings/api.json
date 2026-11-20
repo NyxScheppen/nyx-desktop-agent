@@ -1,0 +1,81 @@
+{
+  "routes": {
+    "_MAX_ACTIVITY_RESULTS_OFFSET": 100000,
+    "_MAX_EVAL_OFFSET": 100000,
+    "parameters": {
+      "api_events_log_limit": 100,
+      "api_chat_pending_truncated_limit": 1000,
+      "api_memory_conversations_max_length": 2000,
+      "create_character_package_text": "你是角色型 AI 同伴。以当前内在文档作为身份与表达参考。小说资料不是亲历；不得虚构身体、能力、记忆或已执行行动。保留自己的判断，按当前语境自然回应。",
+      "dispatch_sse_queue_size": {
+        "$ref": "runtime:main._SSE_QUEUE_SIZE"
+      },
+      "api_chat_pending_items_chars_or_items": 1000,
+      "api_memory_facts_query_default": 64,
+      "api_memory_facts_query_le": 64,
+      "api_memory_conversations_query_default": 100,
+      "api_memory_conversations_query_le": 200,
+      "api_memory_conversations_query_le_2": 100000,
+      "api_conversation_rag_traces_query_default": 20,
+      "api_conversation_rag_traces_query_le": 100,
+      "api_activity_results_query_default": 100,
+      "api_activity_results_query_le": 100,
+      "api_research_runs_query_default": 50,
+      "api_research_runs_query_le": 200,
+      "api_behavior_reflections_query_default": 50,
+      "api_behavior_reflections_query_le": 200,
+      "api_expression_history_query_default": 100,
+      "api_expression_history_query_le": 5000,
+      "api_eval_recent_query_default": 5,
+      "api_eval_recent_query_le": 100
+    },
+    "copy": {
+      "require_desktop_text": "桌面观察仅由接入的本地桌面端启用",
+      "require_source_text": "请提供文本或 URL",
+      "validate_note_or_highlight_text": "空笔记必须包含有效划线",
+      "validate_http_url_text": "只支持 HTTP(S) URL",
+      "api_conversation_revise_text": "对话段不存在",
+      "api_research_run_text": "研究记录不存在",
+      "api_resume_research_text": "研究未初始化",
+      "api_skill_versions_text": "skill 不存在",
+      "register_text": "请上传 .nyxcard 或 .zip 卡包",
+      "known_text": "角色不存在",
+      "asset_text": "角色没有该图片",
+      "api_knowledge_source_text": "联网未开启",
+      "api_pause_question_text": "提问不存在",
+      "api_pause_question_text_2": "提问当前不可暂停",
+      "api_resume_question_text": "提问当前不可恢复",
+      "api_events_log_text": "事件游标不属于该角色",
+      "api_books_text": "仅支持 .epub 文件",
+      "api_books_text_2": "导入 EPUB 失败: %s",
+      "api_book_paragraphs_text": "to 必须 >= from",
+      "api_events_text": "SSE 游标不属于该角色",
+      "character_card_text": "角色卡不可用",
+      "asset_text_2": "角色图片不可用",
+      "observe_text": "在线状态未受理",
+      "api_knowledge_source_text_2": "手动文本",
+      "api_knowledge_source_text_3": "网页正文抓取失败或为空，请检查 URL",
+      "api_chat_text": "批注锚点查询失败",
+      "api_chat_text_2": "被批注的回复不存在",
+      "api_chat_text_3": "批注必须引用所选 SPEAK 的连续原文",
+      "api_chat_text_4": "批注回执查询失败，保持待确认",
+      "api_books_text_3": "文件过大",
+      "api_books_text_4": "EPUB 解析失败",
+      "create_character_text": "图片文件名不能为空",
+      "create_character_text_2": "图片名必须是 avatar 或表情键",
+      "dispatch_text": "角色不可运行",
+      "dispatch_text_2": "观察须通过宿主入口提交",
+      "api_knowledge_source_words": [
+        "联网未开启"
+      ],
+      "register_text_2": "四个",
+      "register_text_3": "已存在",
+      "dispatch_text_3": "角色选择已变化"
+    }
+  },
+  "limits": {
+    "PairingPayload_name_max_length": 80,
+    "PairPayload_code_max_length": 64,
+    "HostObservePayload_sample_id_max_length": 200
+  }
+}

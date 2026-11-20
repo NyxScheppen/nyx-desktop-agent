@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import NamedTuple
 
+from nyx.policy import policy
 from nyx.types import ParagraphBlock, ParagraphBlockKind, TextMark
 
 
@@ -47,13 +48,13 @@ class _Draft:
         return "\n".join(block.text for block in self.blocks)
 
 
-_BLOCK_TAGS = frozenset(
-    {"p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "li", "pre"}
+_BLOCK_TAGS = policy("reading", "segmenter._BLOCK_TAGS", frozenset[str])
+_BOLD_TAGS = policy("reading", "segmenter._BOLD_TAGS", frozenset[str])
+_ITALIC_TAGS = policy("reading", "segmenter._ITALIC_TAGS", frozenset[str])
+_IGNORED_TAGS = policy("reading", "segmenter._IGNORED_TAGS", frozenset[str])
+_SEMANTIC_CONTAINER_TAGS = policy(
+    "reading", "segmenter._SEMANTIC_CONTAINER_TAGS", frozenset[str]
 )
-_BOLD_TAGS = frozenset({"strong", "b"})
-_ITALIC_TAGS = frozenset({"em", "i"})
-_IGNORED_TAGS = frozenset({"script", "style"})
-_SEMANTIC_CONTAINER_TAGS = frozenset({"blockquote", "li", "pre"})
 
 
 class _BlockExtractor(HTMLParser):
@@ -224,7 +225,10 @@ def _merge_consecutive_lists(drafts: list[_Draft]) -> list[_Draft]:
 
 
 def _merge_short_paragraphs(
-    drafts: list[_Draft], short_threshold: int = 100
+    drafts: list[_Draft],
+    short_threshold: int = policy(
+        "reading", "segmenter.parameters.merge_short_paragraphs_short_threshold", int
+    ),
 ) -> list[_Draft]:
     result: list[_Draft] = []
     buffered: list[_Block] = []
@@ -250,7 +254,10 @@ def _merge_short_paragraphs(
 
 
 def _split_long_drafts(
-    drafts: list[_Draft], max_chars: int = 3000
+    drafts: list[_Draft],
+    max_chars: int = policy(
+        "reading", "segmenter.parameters.split_long_drafts_max_chars", int
+    ),
 ) -> list[Segment]:
     result: list[Segment] = []
     for draft in drafts:

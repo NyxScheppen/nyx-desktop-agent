@@ -1,3 +1,4 @@
+import frontendPolicy from "../../nyx/settings/frontend.json";
 import BehaviorPanel from "./components/panels/BehaviorPanel";
 import { useCharacterStore } from "./stores/characterStore";
 import { useConnectionStore } from "./stores/connectionStore";
@@ -21,6 +22,8 @@ import ExpressionHistoryPanel from "./components/panels/ExpressionHistoryPanel";
 import MemoryPanel from "./components/panels/MemoryPanel";
 import BookshelfView from "./components/reading/BookshelfView";
 import ReaderView from "./components/reading/ReaderView";
+import StudyView from "./components/reading/StudyView";
+import readingPolicy from "../../nyx/settings/reading.json";
 import RightDock, { type View } from "./components/shell/RightDock";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
@@ -31,18 +34,14 @@ import { useSettingsStore } from "./stores/settingsStore";
 import { applyDesktopMode, isTauriRuntime, type DesktopMode } from "./lib/desktopWindow";
 
 // 字体大小档 → --text-scale 数值（04 书卷风 §4）。
-const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = {
-  small: 0.9,
-  medium: 1,
-  large: 1.12,
-};
+const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = frontendPolicy.frontend.App.FONT_SCALE_VALUE as Record<"small" | "medium" | "large", number>;
 
 // 装配：左侧图标导航 + 聊天/模块书页 + 设置弹层；useSSE 只挂一次。
 export default function App() {
   const required = useConnectionStore((s) => s.required);
   const [token, setToken] = useState("");
   const [code, setCode] = useState("");
-  const [deviceName, setDeviceName] = useState("手机");
+  const [deviceName, setDeviceName] = useState(frontendPolicy.copy.App.text);
   const [pairing, setPairing] = useState(false);
   const [error, setError] = useState("");
   if (!required) return <ConnectedApp />;
@@ -54,7 +53,7 @@ export default function App() {
         useConnectionStore.getState().setToken(access_token);
         setCode("");
       }).catch((reason: unknown) => {
-        setError(reason instanceof Error ? reason.message : "配对失败");
+        setError(reason instanceof Error ? reason.message : frontendPolicy.copy.App.text_2);
       });
     } else {
       useConnectionStore.getState().setToken(token);
@@ -62,18 +61,18 @@ export default function App() {
     }
   }}>
     <div className="connection-screen__form">
-      <h1>连接 Nyx</h1>
+      <h1>{frontendPolicy.copy.App.h1}</h1>
       {pairing ? <>
-        <label>配对码<input inputMode="text" autoComplete="off" value={code} required
+        <label>{frontendPolicy.copy.App.label}<input inputMode="text" autoComplete="off" value={code} required
           onChange={(event) => setCode(event.target.value)} /></label>
-        <label>设备名称<input autoComplete="off" value={deviceName} required
+        <label>{frontendPolicy.copy.App.label_2}<input autoComplete="off" value={deviceName} required
           onChange={(event) => setDeviceName(event.target.value)} /></label>
-      </> : <label>访问凭证<input type="password" autoComplete="off" value={token} required
+      </> : <label>{frontendPolicy.copy.App.label_3}<input type="password" autoComplete="off" value={token} required
         onChange={(event) => setToken(event.target.value)} /></label>}
       {error && <p role="alert">{error}</p>}
-      <button type="submit">连接</button>
+      <button type="submit">{frontendPolicy.copy.App.button}</button>
       <button type="button" onClick={() => { setPairing(!pairing); setError(""); }}>
-        {pairing ? "使用访问凭证" : "使用配对码"}
+        {pairing ? frontendPolicy.copy.App.text_3 : frontendPolicy.copy.App.text_4}
       </button>
     </div>
   </form>;
@@ -95,7 +94,7 @@ function ConnectedApp() {
     return () => invalidateScope();
   }, []);
   useEffect(() => {
-    const timer = setInterval(() => void useCharacterStore.getState().refresh(), 2000);
+    const timer = setInterval(() => void useCharacterStore.getState().refresh(), frontendPolicy.timers.character_refresh_ms);
     return () => clearInterval(timer);
   }, []);
   usePresence(status);
@@ -105,6 +104,7 @@ function ConnectedApp() {
   );
   const [view, setView] = useState<View>("chat");
   const [readerOpen, setReaderOpen] = useState(false);
+  const [studyOpen, setStudyOpen] = useState(false);
   const bookId = useReaderStore((s) => s.bookId);
   const messages = useChatStore((s) => s.messages);
   const fontScale = useSettingsStore((s) => s.fontScale);
@@ -158,7 +158,7 @@ function ConnectedApp() {
             className={`game-shell game-shell--${view === "chat" ? "chat" : "page"}${readerOpen ? " game-shell--reader-open" : ""}`}
             style={shellStyle}
           >
-            <aside className="app-nav" aria-label="主导航">
+            <aside className="app-nav" aria-label={frontendPolicy.copy.App.aria_label}>
               <RightDock
                 view={view}
                 onSwitch={(nextView) => {
@@ -175,9 +175,10 @@ function ConnectedApp() {
                 } : undefined}
               />
             </aside>
-            {view === "chat" ? (
+            {view === "chat" && studyOpen ? <StudyView onClose={() => setStudyOpen(false)} /> : view === "chat" ? (
               <>
                 <div className="conversation-heading">
+                    <button type="button" className="reader-toggle" onClick={() => { setReaderOpen(false); setStudyOpen(true); }}>{readingPolicy.study.copy.entry}</button>
                     <button
                       type="button"
                       className="reader-toggle"
@@ -187,11 +188,11 @@ function ConnectedApp() {
                       开始阅读
                     </button>
                 </div>
-                <section className="conversation-column" aria-label="对话">
+                <section className="conversation-column" aria-label={frontendPolicy.copy.App.aria_label_2}>
                   <MessageList messages={messages} now={now} />
                   <ChatInput />
                 </section>
-                <section className="reader-drawer" aria-label="阅读区">
+                <section className="reader-drawer" aria-label={frontendPolicy.copy.App.aria_label_3}>
                   <div className="reader-drawer__body">
                     {readerOpen && <span className="reader-opening-turn" aria-hidden="true" />}
                     {readerOpen && (bookId === null ? <BookshelfView /> : <ReaderView />)}
@@ -199,7 +200,7 @@ function ConnectedApp() {
                 </section>
               </>
             ) : (
-              <section className="page-content" aria-label="页面内容">
+              <section className="page-content" aria-label={frontendPolicy.copy.App.aria_label_4}>
                 {view === "inner" && <InnerStatePanel />}
                 {view === "desire" && <DesiresPanel />}
                 {view === "activity" && <ActivityPanel />}
@@ -214,14 +215,14 @@ function ConnectedApp() {
               </section>
             )}
           </main>}
-          {ready && <div className="full-announcements"><AnnounceLayer /></div>}
+          {ready && !(view === "chat" && studyOpen) && <div className="full-announcements"><AnnounceLayer /></div>}
         </>
       )}
 
       {!ready && <div role="status">
         <CharacterSelect />
-        <p>{characterError ?? selected?.error ?? (switching ? "正在切换角色…" : "等待角色启动…")}</p>
-        <button onClick={() => setSettingsOpen(true)}>角色管理与设置</button>
+        <p>{characterError ?? selected?.error ?? (switching ? frontendPolicy.copy.App.text_5 : frontendPolicy.copy.App.text_6)}</p>
+        <button onClick={() => setSettingsOpen(true)}>{frontendPolicy.copy.App.button_2}</button>
       </div>}
       {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
       {ready && desktopMode === "pet" && (

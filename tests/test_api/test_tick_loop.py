@@ -12,11 +12,12 @@ import pytest
 from nyx import main as entry
 from nyx.activity.facade import ActivityFacade
 from nyx.config import Config
+from nyx.db import connect
 from nyx.desire.facade import DesireFacade
 from nyx.enums import EventType, MemoryKind, MemoryType, Source
 from nyx.eval.evaluator import Evaluator
 from nyx.eval.store import EvalStore
-from nyx.events.bus import EventBus
+from nyx.events.bus import EventAdmissionError, EventBus, EventBusClosedError
 from nyx.expression.facade import ExpressionFacade
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.main import (
@@ -32,7 +33,7 @@ from nyx.main import (
 )
 from nyx.memory.facade import MemoryFacade
 from nyx.reading.facade import ReadingFacade
-from nyx.runtime import check_initiate_chat, memory_loop
+from nyx.runtime import check_initiate_chat, memory_loop, tick_loop
 from nyx.types import Event, InnerDocument, InnerTopic, Memory
 
 
@@ -111,6 +112,92 @@ async def test_tick_loop_emits_four_clock_ticks(
     }
     assert all(e.source is Source.INTERNAL for e in bus.published)
 
+
+@pytest.mark.parametrize("cancel_during_retry", [False, True])
+async def test_tick_survives_real_lock_contention_and_can_cancel_during_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_during_retry: bool,
+) -> None:
+    database = await connect(":memory:")
+    database.lock_timeout = 1.0
+    database.failure_threshold = 1
+    bus = EventBus(database)
+    retrying = asyncio.Event()
+    allow_retry = asyncio.Event()
+    completed = asyncio.Event()
+    requests: list[Event] = []
+    delays: list[float] = []
+    original_publish = bus.publish
+
+    async def record_publish(event: Event) -> None:
+        requests.append(event)
+        await original_publish(event)
+
+    async def pause(delay: float) -> None:
+        if delay >= 1:
+            delays.append(delay)
+            retrying.set()
+            await allow_retry.wait()
+        else:
+            completed.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("nyx.events.bus._ADMISSION_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(bus, "publish", record_publish)
+    monkeypatch.setattr("nyx.runtime.asyncio.sleep", pause)
+    await database.lock.acquire()
+    task = asyncio.create_task(
+        tick_loop(
+            _app(bus, grid_minutes=60),
+            tick_interval=0.01,
+            mutter_check_interval=1e12,
+            initiate_chat_interval=1e12,
+            reflect_check_interval=1e12,
+        )
+    )
+    try:
+        await asyncio.wait_for(retrying.wait(), timeout=2)
+        assert not task.done()
+        assert database.failure_state == "closed"
+        if cancel_during_retry:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            database.lock.release()
+            assert await bus.list_events() == []
+            assert len(requests) == 1
+        else:
+            database.lock.release()
+            monkeypatch.setattr("nyx.events.bus._ADMISSION_TIMEOUT_SECONDS", 1.0)
+            allow_retry.set()
+            await asyncio.wait_for(completed.wait(), timeout=2)
+            assert not task.done()
+            assert requests[0] is requests[1]
+            events = await bus.list_events()
+            assert len(events) == 2
+            assert {e.content["tick_type"] for e in events} == {
+                "schedule_block_start",
+                "desire_eval",
+            }
+            assert bus.persisted_count == 2
+        assert delays == [1]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if database.lock.locked():
+            database.lock.release()
+        await database.close()
+
+
+@pytest.mark.parametrize("error_type", [EventAdmissionError, EventBusClosedError])
+async def test_tick_keeps_non_contention_admission_errors_visible(
+    error_type: type[EventAdmissionError],
+) -> None:
+    publish = AsyncMock(side_effect=error_type("not retryable"))
+    bus = SimpleNamespace(publish=publish)
+    with pytest.raises(error_type, match="not retryable"):
+        await _tick_loop(_app(bus))
+    publish.assert_awaited_once()
 
 async def test_memory_loop_uses_its_own_timer(
     monkeypatch: pytest.MonkeyPatch,

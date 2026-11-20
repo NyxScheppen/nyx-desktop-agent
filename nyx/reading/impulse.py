@@ -15,85 +15,52 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from nyx.enums import ReadingBehavior, ReadingDrive
+from nyx.policy import policy
 
 # ---- 关键词集（照搬 S06 feature_extractor.py，逐字复制）----
 
-NEGATIVE_WORDS = {
-    "死", "痛", "哭", "泪", "血", "恨", "绝望", "恐惧", "悲伤", "孤独",
-    "愤怒", "挣扎", "崩溃", "无助", "黑暗", "死亡",
-}
+NEGATIVE_WORDS = policy("reading", "impulse.NEGATIVE_WORDS", set[str])
 
-POSITIVE_WORDS = {
-    "笑", "美", "暖", "希望", "幸福", "快乐", "温柔", "阳光", "善良",
-    "拥抱", "勇气", "平静", "美好", "光芒", "安心",
-}
+POSITIVE_WORDS = policy("reading", "impulse.POSITIVE_WORDS", set[str])
 
-PHILOSOPHICAL_WORDS = {
-    "意义", "存在", "生命", "命运", "真理", "原则", "信仰", "自由", "选择",
-    "时间", "永恒", "虚无", "本质", "灵魂", "道德", "价值", "为什么", "何为",
-}
+PHILOSOPHICAL_WORDS = policy("reading", "impulse.PHILOSOPHICAL_WORDS", set[str])
 
-SENSORY_WORDS = {
-    "颜色", "声音", "气味", "温度", "光", "风", "雨", "冷", "热", "湿",
-    "干", "软", "硬", "响", "静", "暗", "亮",
-}
+SENSORY_WORDS = policy("reading", "impulse.SENSORY_WORDS", set[str])
 
-CHARACTER_MARKERS = {"他", "她", "它", "他们", "她们", "说道", "说", "问", "答道"}
+CHARACTER_MARKERS = policy("reading", "impulse.CHARACTER_MARKERS", set[str])
 
 # ---- 密度校准 / mutter 闸门（模块常量，见阅读系统 spec「关键决策」）----
 
-_DENSITY_CAP = 0.02                  # 「明显存在」密度阈值，饱和到 ~0.5
-MUTTER_RICHNESS_THRESHOLD = 0.5      # richness_score 越过即碎碎念
-MUTTER_COOLDOWN_SEC = 30             # mutter 冷却（替代 S06 的 S12 should_mutter）
+_DENSITY_CAP = policy(
+    "reading", "impulse._DENSITY_CAP", float
+)  # 「明显存在」密度阈值，饱和到 ~0.5
+MUTTER_RICHNESS_THRESHOLD = policy(
+    "reading", "impulse.MUTTER_RICHNESS_THRESHOLD", float
+)  # richness_score 越过即碎碎念
+MUTTER_COOLDOWN_SEC = policy(
+    "reading", "impulse.MUTTER_COOLDOWN_SEC", int
+)  # mutter 冷却（替代 S06 的 S12 should_mutter）
 
 # ---- 复合权重 / 阈值 / 冷却（照搬 S06 composite_engine.py，5 行为无 mutter）----
 
-QUESTION_BEHAVIORS = (
-    ReadingBehavior.QUESTION_KNOWLEDGE,
-    ReadingBehavior.QUESTION_PERSONAL,
-    ReadingBehavior.QUESTION_REFLECTIVE,
-    ReadingBehavior.QUOTE_QUESTION,
+QUESTION_BEHAVIORS = policy(
+    "reading", "impulse.QUESTION_BEHAVIORS", tuple[ReadingBehavior, ...]
 )
-QUESTION_COOLDOWN_SEC = 180
+QUESTION_COOLDOWN_SEC = policy("reading", "impulse.QUESTION_COOLDOWN_SEC", int)
 
-DEFAULT_COMPOSITE_WEIGHTS: dict[ReadingBehavior, dict[ReadingDrive, float]] = {
-    ReadingBehavior.QUESTION_KNOWLEDGE: {
-        ReadingDrive.CURIOSITY: 0.50,
-        ReadingDrive.ASSOCIATIVE_DRIVE: 0.30,
-        ReadingDrive.MOTIVATION: 0.20,
-    },
-    ReadingBehavior.QUESTION_PERSONAL: {
-        ReadingDrive.EMPATHY_BIAS: 0.50,
-        ReadingDrive.MOTIVATION: 0.30,
-        ReadingDrive.CURIOSITY: 0.20,
-    },
-    ReadingBehavior.QUESTION_REFLECTIVE: {
-        ReadingDrive.EMPATHY_BIAS: 2 / 3,
-        ReadingDrive.CURIOSITY: 1 / 3,
-    },
-    ReadingBehavior.QUOTE_QUESTION: {
-        ReadingDrive.CURIOSITY: 0.40,
-        ReadingDrive.EMPATHY_BIAS: 0.40,
-        ReadingDrive.ASSOCIATIVE_DRIVE: 0.20,
-    },
-    ReadingBehavior.ASSOCIATE: {
-        ReadingDrive.ASSOCIATIVE_DRIVE: 0.60,
-        ReadingDrive.CURIOSITY: 0.20,
-        ReadingDrive.EMPATHY_BIAS: 0.20,
-    },
-}
+DEFAULT_COMPOSITE_WEIGHTS: dict[ReadingBehavior, dict[ReadingDrive, float]] = policy(
+    "reading",
+    "impulse.DEFAULT_COMPOSITE_WEIGHTS",
+    dict[ReadingBehavior, dict[ReadingDrive, float]],
+)
 
-DEFAULT_THRESHOLDS: dict[ReadingBehavior, float] = {
-    ReadingBehavior.QUESTION_KNOWLEDGE: 0.55,
-    ReadingBehavior.QUESTION_PERSONAL: 0.60,
-    ReadingBehavior.QUESTION_REFLECTIVE: 0.55,
-    ReadingBehavior.QUOTE_QUESTION: 0.65,
-    ReadingBehavior.ASSOCIATE: 0.50,
-}
+DEFAULT_THRESHOLDS: dict[ReadingBehavior, float] = policy(
+    "reading", "impulse.DEFAULT_THRESHOLDS", dict[ReadingBehavior, float]
+)
 
-DEFAULT_COOLDOWNS_SEC: dict[ReadingBehavior, int] = {
-    ReadingBehavior.ASSOCIATE: 60,
-}
+DEFAULT_COOLDOWNS_SEC: dict[ReadingBehavior, int] = policy(
+    "reading", "impulse.DEFAULT_COOLDOWNS_SEC", dict[ReadingBehavior, int]
+)
 
 
 @dataclass
@@ -122,7 +89,11 @@ def _estimate_uniqueness(text: str) -> float:
         return 0.0
     counts: dict[str, int] = {}
     for ch in text:
-        if "一" <= ch <= "鿿":
+        if (
+            policy("reading", "impulse.copy.estimate_uniqueness_text", str)
+            <= ch
+            <= policy("reading", "impulse.copy.estimate_uniqueness_text_2", str)
+        ):
             counts[ch] = counts.get(ch, 0) + 1
     if not counts:
         return 0.0
@@ -154,12 +125,18 @@ def extract(text: str) -> ParagraphFeatures:
 
     # richness 校准：输入特征先饱和再按 S06 同款权重加权，clamp [0,1]。
     richness = (
-        0.20 * _saturate(philosophical, _DENSITY_CAP)
-        + 0.20 * _saturate(negative + positive, _DENSITY_CAP)
-        + 0.20 * _saturate(dash, _DENSITY_CAP)
-        + 0.15 * _saturate(exclamation, _DENSITY_CAP)
-        + 0.15 * uniqueness
-        + 0.10 * _saturate(quote, _DENSITY_CAP)
+        policy("reading", "impulse.parameters.richness_emotion_weight", float)
+        * _saturate(philosophical, _DENSITY_CAP)
+        + policy("reading", "impulse.parameters.richness_dash_weight", float)
+        * _saturate(negative + positive, _DENSITY_CAP)
+        + policy("reading", "impulse.parameters.richness_philosophical_weight", float)
+        * _saturate(dash, _DENSITY_CAP)
+        + policy("reading", "impulse.parameters.richness_exclamation_weight", float)
+        * _saturate(exclamation, _DENSITY_CAP)
+        + policy("reading", "impulse.parameters.richness_uniqueness_weight", float)
+        * uniqueness
+        + policy("reading", "impulse.parameters.richness_quote_weight", float)
+        * _saturate(quote, _DENSITY_CAP)
     )
 
     return ParagraphFeatures(
@@ -179,9 +156,12 @@ def extract(text: str) -> ParagraphFeatures:
 def associative_density(features: ParagraphFeatures) -> float:
     """记忆联想密度：哲学/感官/情感三源的加权和，饱和到 [0,1]。"""
     raw = (
-        0.5 * features.philosophical
-        + 0.33 * features.sensory
-        + 0.17 * (features.negative_emo + features.positive_emo)
+        policy("reading", "impulse.parameters.association_philosophical_weight", float)
+        * features.philosophical
+        + policy("reading", "impulse.parameters.association_sensory_weight", float)
+        * features.sensory
+        + policy("reading", "impulse.parameters.association_emotion_weight", float)
+        * (features.negative_emo + features.positive_emo)
     )
     return _saturate(raw, _DENSITY_CAP)
 
@@ -189,8 +169,10 @@ def associative_density(features: ParagraphFeatures) -> float:
 def empathy_density(features: ParagraphFeatures) -> float:
     """共鸣密度：情感密度 + 角色提及密度，饱和到 [0,1]。"""
     raw = (
-        0.6 * (features.negative_emo + features.positive_emo)
-        + 0.4 * features.character_mention
+        policy("reading", "impulse.parameters.empathy_emotion_weight", float)
+        * (features.negative_emo + features.positive_emo)
+        + policy("reading", "impulse.parameters.empathy_character_weight", float)
+        * features.character_mention
     )
     return _saturate(raw, _DENSITY_CAP)
 
@@ -204,10 +186,14 @@ def build_drives(
 ) -> dict[ReadingDrive, float]:
     """5 驱动「现算」（全部归一到 [0,1]，无累积无衰减）。"""
     return {
-        ReadingDrive.MOTIVATION: energy / 100.0,
+        ReadingDrive.MOTIVATION: energy / policy("inner_life", "energy.maximum", float),
         ReadingDrive.CURIOSITY: exploration_value,
         ReadingDrive.BOREDOM: interaction_value,
-        ReadingDrive.ASSOCIATIVE_DRIVE: 0.4 + 0.6 * associative_density(features),
+        ReadingDrive.ASSOCIATIVE_DRIVE: policy(
+            "reading", "impulse.parameters.association_baseline", float
+        )
+        + policy("reading", "impulse.parameters.association_density_weight", float)
+        * associative_density(features),
         ReadingDrive.EMPATHY_BIAS: empathy_density(features),
     }
 

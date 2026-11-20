@@ -5,6 +5,7 @@ import time
 
 from nyx.db import Database
 from nyx.enums import EventType, Source
+from nyx.policy import policy
 from nyx.types import Event
 
 
@@ -34,8 +35,11 @@ class TransportOutbox:
                         "SELECT event_seq AS sequence, id, type, content "
                         "FROM event_log WHERE event_seq > "
                         "(SELECT scan_rowid FROM transport_checkpoint "
-                        "WHERE transport=?) ORDER BY event_seq LIMIT 100",
-                        (self._transport,),
+                        "WHERE transport=?) ORDER BY event_seq LIMIT ?",
+                        (
+                            self._transport,
+                            policy("onebot", "delivery.scan_batch_size", int),
+                        ),
                     )
                 ).fetchall()
             )
@@ -77,7 +81,11 @@ class TransportOutbox:
             await conn.execute(
                 "UPDATE transport_outbox SET status='processing', "
                 "attempts=attempts+1, lease_until=? WHERE transport=? AND event_id=?",
-                (now + 60, self._transport, row["id"]),
+                (
+                    now + policy("onebot", "delivery.lease_seconds", int),
+                    self._transport,
+                    row["id"],
+                ),
             )
             return Event(
                 id=row["id"],
@@ -114,7 +122,14 @@ class TransportOutbox:
                 )
             ).fetchone()
             assert row is not None
-            delay = min(2 ** min(max(row["attempts"] - 1, 0), 5), 30)
+            delay = min(
+                2
+                ** min(
+                    max(row["attempts"] - 1, 0),
+                    policy("onebot", "delivery.backoff_exponent_max", int),
+                ),
+                policy("onebot", "delivery.backoff_max_seconds", int),
+            )
             await conn.execute(
                 "UPDATE transport_outbox SET status='pending', lease_until=NULL, "
                 "available_at=?, last_error=? WHERE transport=? AND event_id=?",

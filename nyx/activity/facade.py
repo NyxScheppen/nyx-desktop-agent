@@ -33,6 +33,7 @@ from nyx.events.bus import EventBus
 from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade, build_source_topic
+from nyx.policy import policy
 from nyx.research.service import ResearchService
 from nyx.timezone import USER_TIMEZONE
 from nyx.tools.registry import ToolRegistry
@@ -171,7 +172,8 @@ class ActivityFacade:
             return
         activity = await self._store.get(record["activity"]["id"])
         if activity is None or activity.status in {
-            ActivityStatus.COMPLETED, ActivityStatus.ABANDONED,
+            ActivityStatus.COMPLETED,
+            ActivityStatus.ABANDONED,
         }:
             return
         async with self._store.db.transaction():
@@ -185,24 +187,34 @@ class ActivityFacade:
         await self._publish_progress(activity)
 
     async def resume_research_activity(
-        self, record: dict[str, Any],
+        self,
+        record: dict[str, Any],
     ) -> dict[str, Any]:
         if self._task is not None and not self._task.done():
-            raise ValueError("当前活动仍在执行；补充已保存，稍后可继续")
+            raise ValueError(
+                policy("activity", "facade.copy.resume_research_activity_text", str)
+            )
         activity = await self._store.get(record["activity"]["id"])
         if activity is None or activity.status is not ActivityStatus.PAUSED:
-            raise ValueError("活动当前不可恢复")
+            raise ValueError(
+                policy("activity", "facade.copy.resume_research_activity_text_2", str)
+            )
         activity.progress = record["activity"]["progress"]
         if not await self._lifecycle.start(activity, False):
-            raise ValueError("关联欲望当前不可恢复")
+            raise ValueError(
+                policy("activity", "facade.copy.resume_research_activity_text_3", str)
+            )
         self._task = asyncio.create_task(self._execute(activity))
         await self._task
         if self.research is None:
-            raise RuntimeError("研究执行器未初始化")
+            raise RuntimeError(
+                policy("activity", "facade.copy.resume_research_activity_text_4", str)
+            )
         current = await self.research.store.get("research_run", record["id"])
         assert current is not None
         return current.get("result") or {
-            "run_id": record["id"], "status": current["status"],
+            "run_id": record["id"],
+            "status": current["status"],
         }
 
     # ---- 事件入口 ----
@@ -210,12 +222,18 @@ class ActivityFacade:
     async def _publish_progress(self, activity: Activity) -> None:
         """Notify snapshots after the checkpoint commit, without completion effects."""
         try:
-            await self._bus.publish(internal_event(
-                EventType.ACTIVITY_PROGRESS, {"activity_id": activity.id},
-                _correlation_id(activity),
-            ))
+            await self._bus.publish(
+                internal_event(
+                    EventType.ACTIVITY_PROGRESS,
+                    {"activity_id": activity.id},
+                    _correlation_id(activity),
+                )
+            )
         except Exception:
-            _logger.exception("活动进度广播失败 activity_id=%s", activity.id)
+            _logger.exception(
+                policy("activity", "facade.copy.publish_progress_text", str),
+                activity.id,
+            )
 
     async def on_tick(self, tick_type: TickType) -> None:
         """SCHEDULE_BLOCK_START：日程块开始，有空闲就消费欲望。"""
@@ -283,7 +301,7 @@ class ActivityFacade:
 
     async def get_results(
         self,
-        limit: int = 100,
+        limit: int = policy("activity", "facade.parameters.get_results_limit", int),
         offset: int = 0,
         activity_type: ActivityType | None = None,
     ) -> list[Activity]:
@@ -295,10 +313,14 @@ class ActivityFacade:
 
     async def assign_web_task(self, url: str) -> AssignedTask:
         if not self._web_enabled:
-            raise WebTasksDisabledError("联网探索已关闭")
+            raise WebTasksDisabledError(
+                policy("activity", "facade.copy.assign_web_task_text", str)
+            )
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("只支持 HTTP(S) URL")
+            raise ValueError(
+                policy("activity", "facade.copy.assign_web_task_text_2", str)
+            )
         now = time.time()
         task = await self._store.create_task(
             AssignedTask(
@@ -319,10 +341,14 @@ class ActivityFacade:
     async def assign_browser_survey_task(self, url: str) -> AssignedTask:
         """Queue a public questionnaire for a visible browser session."""
         if not self._web_enabled:
-            raise WebTasksDisabledError("联网探索已关闭")
+            raise WebTasksDisabledError(
+                policy("activity", "facade.copy.assign_web_task_text", str)
+            )
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("只支持 HTTP(S) URL")
+            raise ValueError(
+                policy("activity", "facade.copy.assign_web_task_text_2", str)
+            )
         now = time.time()
         task = await self._store.create_task(
             AssignedTask(
@@ -344,10 +370,14 @@ class ActivityFacade:
         self, book_id: str, target_paragraph: int
     ) -> AssignedTask:
         if self._get_reader_book is None or self._get_reader_progress is None:
-            raise RuntimeError("reading facade 尚未绑定")
+            raise RuntimeError(
+                policy("activity", "facade.copy.assign_book_task_text", str)
+            )
         book = await self._get_reader_book(book_id)
         if target_paragraph < 1 or target_paragraph > book.total_paragraphs:
-            raise ValueError("段落越界")
+            raise ValueError(
+                policy("activity", "facade.copy.assign_book_task_text_2", str)
+            )
         progress = await self._get_reader_progress(book_id)
         now = time.time()
         already_read = (
@@ -377,7 +407,9 @@ class ActivityFacade:
         """Queue a user-requested creation activity."""
         description = description.strip()
         if not description:
-            raise ValueError("创作主题不能为空")
+            raise ValueError(
+                policy("activity", "facade.copy.assign_creation_task_text", str)
+            )
         now = time.time()
         task = await self._store.create_task(
             AssignedTask(
@@ -387,7 +419,15 @@ class ActivityFacade:
                 url=None,
                 book_id=None,
                 target_paragraph=None,
-                checkpoint={"description": description[:500]},
+                checkpoint={
+                    "description": description[
+                        : policy(
+                            "activity",
+                            "facade.parameters.assign_creation_task_description_chars_or_items",
+                            int,
+                        )
+                    ]
+                },
                 error=None,
                 created_at=now,
                 updated_at=now,
@@ -400,10 +440,16 @@ class ActivityFacade:
     ) -> AssignedTask:
         """Resolve a user-facing book title before using the task pipeline."""
         if self._list_reader_books is None:
-            raise RuntimeError("reading facade 尚未绑定")
+            raise RuntimeError(
+                policy("activity", "facade.copy.assign_book_task_text", str)
+            )
         book = best_book_match(title, await self._list_reader_books())
         if book is None:
-            raise ValueError(f"书库中没有匹配的书：{title}")
+            raise ValueError(
+                policy(
+                    "activity", "facade.templates.assign_book_task_by_title_text", str
+                ).format(p0=title)
+            )
         return await self.assign_book_task(book.id, target_paragraph)
 
     # ---- 内部 ----
@@ -422,7 +468,9 @@ class ActivityFacade:
         try:
             if activity.type is ActivityType.FREE_EXPLORATION:
                 if self.research is None:
-                    raise RuntimeError("研究服务尚未绑定")
+                    raise RuntimeError(
+                        policy("activity", "facade.copy.execute_text_2", str)
+                    )
                 result = await self.research.run_activity(
                     activity, self._save_research_progress
                 )
@@ -430,9 +478,9 @@ class ActivityFacade:
                     await self.finish_cancelled_research(result["run_id"])
                     return
                 if result.get("status") in {"waiting_user", "uncertain", "paused"}:
-                    await self._store.update(replace(
-                        activity, status=ActivityStatus.PAUSED
-                    ))
+                    await self._store.update(
+                        replace(activity, status=ActivityStatus.PAUSED)
+                    )
                     return
                 if result.get("error"):
                     raise ValueError(result["error"])
@@ -452,7 +500,7 @@ class ActivityFacade:
             if failed_task_id is not None:
                 await self._publish_current_task(failed_task_id)
             _logger.exception(
-                "活动执行失败 activity_id=%s type=%s",
+                policy("activity", "facade.copy.execute_text", str),
                 activity.id,
                 activity.type.value,
             )
@@ -465,10 +513,14 @@ class ActivityFacade:
         if t is ActivityType.BROWSER_SURVEY:
             task_id = activity.progress.get("task_id")
             if not isinstance(task_id, str):
-                raise ValueError("浏览器问卷活动缺任务 ID")
+                raise ValueError(
+                    policy("activity", "facade.copy.run_activity_text_3", str)
+                )
             task = await self._require_task(task_id)
             if task.type is not AssignedTaskType.BROWSER_SURVEY or task.url is None:
-                raise ValueError("浏览器问卷任务缺 URL")
+                raise ValueError(
+                    policy("activity", "facade.copy.run_activity_text_4", str)
+                )
 
             async def save_progress(steps: int) -> None:
                 task.checkpoint["steps"] = steps
@@ -491,7 +543,9 @@ class ActivityFacade:
             book_id = activity.progress.get("book_id")
             if isinstance(book_id, str):
                 if self._read_reader_book is None:
-                    raise RuntimeError("EPUB activity reader 尚未绑定")
+                    raise RuntimeError(
+                        policy("activity", "facade.copy.run_activity_text_5", str)
+                    )
                 target_raw = activity.progress.get("target_paragraph")
                 target = target_raw if isinstance(target_raw, int) else None
                 result = await self._read_reader_book(
@@ -500,13 +554,13 @@ class ActivityFacade:
                 if target is None and result.get("completed") is False:
                     activity.progress["goal_signal"] = None
                 return result
-            raise ValueError("读书活动缺 book_id：已禁止凭空编造")
+            raise ValueError(policy("activity", "facade.copy.run_activity_text", str))
         if t is ActivityType.CREATION:
             return await self._run_creation(activity)
         if t is ActivityType.IDLE_REFLECTION:
             return {}
         if t is ActivityType.FREE_EXPLORATION:
-            raise ValueError("自由探索由 _execute 直接调用 Exploration.run")
+            raise ValueError(policy("activity", "facade.copy.run_activity_text_2", str))
         if t is ActivityType.OBSERVE_USER:
             if self._can_observe is not None and not self._can_observe():
                 return {}
@@ -524,11 +578,13 @@ class ActivityFacade:
             }
         if t is ActivityType.REST:
             return {}
-        raise ValueError(f"未知活动类型 {t!r}")
+        raise ValueError(
+            policy("activity", "facade.templates.run_activity_text", str).format(p0=t)
+        )
 
     async def _run_web_task(self, task: AssignedTask) -> dict[str, Any]:
         if task.url is None:
-            raise ValueError("网页任务缺 URL")
+            raise ValueError(policy("activity", "facade.copy.run_web_task_text", str))
         checkpoint = deepcopy(task.checkpoint)
 
         async def save() -> None:
@@ -556,16 +612,28 @@ class ActivityFacade:
                         else await self._tools.call("web_fetch", {"url": task.url})
                     )
                     if not isinstance(fetched, dict):
-                        raise ValueError("网页正文抓取失败")
+                        raise ValueError(
+                            policy("activity", "facade.copy.run_web_task_text_3", str)
+                        )
                     text = cast(dict[str, Any], fetched).get("text")
                     if not isinstance(text, str) or not text.strip():
-                        raise ValueError("网页正文抓取失败或为空")
-                    text = text[:200_000]
+                        raise ValueError(
+                            policy("activity", "facade.copy.run_web_task_text_4", str)
+                        )
+                    text = text[
+                        : policy(
+                            "activity",
+                            "facade.parameters.run_web_task_text_chars_or_items",
+                            int,
+                        )
+                    ]
                     async with self._store.db.transaction():
                         text = await self._store.save_task_source(task.id, text)
                 if cursor >= len(text):
                     break
-                block = text[cursor : cursor + 6000]
+                block = text[
+                    cursor : cursor + policy("activity", "source_chunk_chars", int)
+                ]
                 pending: dict[str, Any] = {
                     "cursor": cursor + len(block),
                     "source_text": block,
@@ -578,17 +646,24 @@ class ActivityFacade:
             chunk_id: str | None = None
             if isinstance(source_text, str) and source_text.strip():
                 chunk_id = await self._memory.record_reading_evidence(
-                    build_source_topic("web", task.url), task.url, source_text,
-                    str(pending.get("block_key", "")), location=task.url,
+                    build_source_topic("web", task.url),
+                    task.url,
+                    source_text,
+                    str(pending.get("block_key", "")),
+                    location=task.url,
                 )
                 if "knowledge" not in pending:
                     profile_raw = checkpoint.get("profile")
                     profile = (
                         cast(dict[str, object], profile_raw)
-                        if isinstance(profile_raw, dict) else None
+                        if isinstance(profile_raw, dict)
+                        else None
                     )
                     next_profile, items = await self._memory.digest_source_block(
-                        source_text, task.url, task.id, profile=profile,
+                        source_text,
+                        task.url,
+                        task.id,
+                        profile=profile,
                         source_chunk_id=chunk_id,
                     )
                     for item in items:
@@ -603,9 +678,13 @@ class ActivityFacade:
                     chunk_id = saved_chunk if isinstance(saved_chunk, str) else None
             raw_items = pending.get("knowledge", [])
             items = (
-                [cast(dict[str, str], item) for item in cast(list[object], raw_items)
-                 if isinstance(item, dict)]
-                if isinstance(raw_items, list) else []
+                [
+                    cast(dict[str, str], item)
+                    for item in cast(list[object], raw_items)
+                    if isinstance(item, dict)
+                ]
+                if isinstance(raw_items, list)
+                else []
             )
             if items:
                 await self._memory.remember_knowledge(
@@ -613,7 +692,9 @@ class ActivityFacade:
                 )
             next_cursor = pending.get("cursor")
             if not isinstance(next_cursor, int) or next_cursor <= cursor:
-                raise ValueError("网页 checkpoint cursor 未前进")
+                raise ValueError(
+                    policy("activity", "facade.copy.run_web_task_text_2", str)
+                )
             checkpoint.update(
                 cursor=next_cursor, profile=pending.get("profile"), pending=None
             )
@@ -636,7 +717,11 @@ class ActivityFacade:
     async def _require_task(self, task_id: str) -> AssignedTask:
         task = await self._store.get_task(task_id)
         if task is None:
-            raise ValueError(f"任务不存在：{task_id}")
+            raise ValueError(
+                policy("activity", "facade.templates.require_task_text", str).format(
+                    p0=task_id
+                )
+            )
         return task
 
     async def _finish_assignment(self, task: AssignedTask) -> AssignedTask:
@@ -649,7 +734,9 @@ class ActivityFacade:
             current = await self._store.get_task(task.id)
             return current if current is not None else task
         except Exception:
-            _logger.exception("委派任务已提交，但立即调度失败 task_id=%s", task.id)
+            _logger.exception(
+                policy("activity", "facade.copy.finish_assignment_text", str), task.id
+            )
             return task
 
     async def _recover_after_lifecycle_error(self, activity_id: str) -> None:
@@ -658,10 +745,11 @@ class ActivityFacade:
             await self.recover_stale_running()
         except Exception:
             _logger.exception(
-                "活动收尾失败且即时恢复失败，等待下次准入重试 activity_id=%s",
+                policy(
+                    "activity", "facade.copy.recover_after_lifecycle_error_text", str
+                ),
                 activity_id,
             )
-
 
     async def _publish_current_task(self, task_id: str) -> None:
         task = await self._store.get_task(task_id)
@@ -678,7 +766,9 @@ class ActivityFacade:
                 )
             )
         except Exception:
-            _logger.exception("委派任务状态广播失败 task_id=%s", task.id)
+            _logger.exception(
+                policy("activity", "facade.copy.publish_task_update_text", str), task.id
+            )
 
     async def _run_creation(self, activity: Activity) -> dict[str, Any]:
         checkpoint = _creation_checkpoint(activity)
@@ -696,16 +786,33 @@ class ActivityFacade:
                     memory.kind is MemoryKind.ACTIVITY
                     and ActivityType.CREATION.value in memory.topics
                 )
-            ][:3]
-            if len(references) < 3:
+            ][
+                : policy(
+                    "activity",
+                    "facade.parameters.run_creation_references_chars_or_items",
+                    int,
+                )
+            ]
+            if len(references) < policy(
+                "activity", "facade.parameters.run_creation_value_limit", int
+            ):
                 fresh_knowledge = await self._memory.list_memories(
-                    kind=MemoryKind.KNOWLEDGE, limit=3
+                    kind=MemoryKind.KNOWLEDGE,
+                    limit=policy(
+                        "activity", "facade.parameters.run_creation_limit", int
+                    ),
                 )
                 seen = {memory.id for memory in references}
                 references.extend(
                     memory for memory in fresh_knowledge if memory.id not in seen
                 )
-                references = references[:3]
+                references = references[
+                    : policy(
+                        "activity",
+                        "facade.parameters.run_creation_references_chars_or_items_2",
+                        int,
+                    )
+                ]
             obs = await self._get_observation()
             state = await self._get_state()
             context = _build_creation_context(
@@ -716,7 +823,9 @@ class ActivityFacade:
                 activity,
                 "creation",
                 extra_context=context,
-                context_label="创作参考",
+                context_label=policy(
+                    "activity", "facade.copy.run_creation_text_3", str
+                ),
                 system=system,
             )
             checkpoint["title"] = str(result["title"])
@@ -732,11 +841,15 @@ class ActivityFacade:
                 {"action": "write", "path": write_path, "content": content},
             )
             if not isinstance(written_raw, dict):
-                raise ValueError("file_io.write 应返回对象")
+                raise ValueError(
+                    policy("activity", "facade.copy.run_creation_text", str)
+                )
             written = cast(dict[str, Any], written_raw)
             path_value = written.get("path")
             if not isinstance(path_value, str) or not path_value:
-                raise ValueError("file_io.write 返回缺少非空 path")
+                raise ValueError(
+                    policy("activity", "facade.copy.run_creation_text_2", str)
+                )
             checkpoint["path"] = path_value
             checkpoint["file_written"] = True
             await self._save_creation_checkpoint(activity, checkpoint)
@@ -768,10 +881,14 @@ class ActivityFacade:
         activity: Activity,
         output_type: str,
         extra_context: str | None = None,
-        context_label: str = "读物信息",
+        context_label: str = policy(
+            "activity", "facade.copy._run_llm_activity_extra_text", str
+        ),
         system: str | None = None,
     ) -> dict[str, Any]:
-        user_msg = f"活动类型：{activity.type.value}"
+        user_msg = policy(
+            "activity", "facade.templates.run_llm_activity_text", str
+        ).format(p0=activity.type.value)
         if extra_context:
             user_msg += f"\n{context_label}：\n{extra_context}"
         output = await self._llm.complete(
@@ -791,9 +908,4 @@ class ActivityFacade:
         return _parse_activity_result(output.content, output_type)
 
 
-_ACTIVITY_SYSTEM = (
-    "你正在读书，遵循角色设定。只输出 JSON，键："
-    "book（书名，非空字符串）、note（本次读书笔记，非空字符串）。"
-    "note 自然承接已读片段，不重复概括已读部分、只续写本次新读内容；"
-    "note 正文里不要写「上次读到第 X 字」这类位置字样。"
-)
+_ACTIVITY_SYSTEM = policy("activity", "facade._ACTIVITY_SYSTEM", str)

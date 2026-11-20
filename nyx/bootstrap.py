@@ -12,6 +12,7 @@ from nyx.desire.store import DesireStore
 from nyx.desire.value import default_value
 from nyx.enums import DesireType, EnergyState
 from nyx.inner_life.store import InnerLifeStore
+from nyx.policy import policy
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     InnerDocument,
@@ -42,7 +43,9 @@ async def initialize_card(db: Database, card: CardManifest) -> None:
             )
         ).fetchone()
         if await inner.get_energy() is None:
-            await inner.upsert_energy(100.0, EnergyState.ENERGETIC)
+            await inner.upsert_energy(
+                policy("inner_life", "energy.maximum", float), EnergyState.ENERGETIC
+            )
         if await inner.get_document() is None:
             await inner.upsert_document(
                 InnerDocument(
@@ -79,9 +82,19 @@ def load_prompt_files(canon_dir: Path, names: tuple[str, ...]) -> str:
     """Read and combine prompt files, failing fast when one is missing."""
     parts: list[str] = []
     for name in names:
+        if (
+            canon_dir.resolve() == (Path(__file__).parent / "prompts").resolve()
+            and name == "knowledge-boundary.md"
+        ):
+            parts.append(policy("expression", "knowledge_boundary", str))
+            continue
         path = canon_dir / name
         if not path.is_file():
-            raise FileNotFoundError(f"prompt 文件缺失：{path}")
+            raise FileNotFoundError(
+                policy(
+                    "character", "bootstrap.templates.load_prompt_files_text", str
+                ).format(p0=path)
+            )
         parts.append(path.read_text(encoding="utf-8"))
     return "\n\n".join(parts)
 
@@ -98,21 +111,40 @@ def load_ask(canon_dir: Path, names: tuple[str, ...]) -> str:
 
 def load_skills(skills_dir: Path, registry: ToolRegistry) -> dict[str, Skill]:
     """Load declarative skills and reject invalid tool grants at startup."""
-    if not skills_dir.is_dir():
-        raise FileNotFoundError(f"skill 目录缺失：{skills_dir}")
+    sources: list[tuple[Path, object]]
+    if skills_dir.resolve() == (Path(__file__).parent / "prompts" / "skills").resolve():
+        defaults = policy("behavior", "skills", dict[str, dict[str, str | list[str]]])
+        sources = [(skills_dir / f"{name}.json", raw) for name, raw in defaults.items()]
+    else:
+        if not skills_dir.is_dir():
+            raise FileNotFoundError(
+                policy("character", "bootstrap.templates.load_skills_text", str).format(
+                    p0=skills_dir
+                )
+            )
+        sources = [
+            (path, json.loads(path.read_text(encoding="utf-8")))
+            for path in sorted(skills_dir.glob("*.json"))
+        ]
     skills: dict[str, Skill] = {}
-    for path in sorted(skills_dir.glob("*.json")):
-        raw: object = json.loads(path.read_text(encoding="utf-8"))
+    for path, raw in sources:
         if not isinstance(raw, dict):
-            raise ValueError(f"skill 格式错误：{path}")
+            raise ValueError(
+                policy(
+                    "character", "bootstrap.templates.load_skills_text_2", str
+                ).format(p0=path)
+            )
         data = cast(dict[str, object], raw)
         name = data.get("name")
         fragment = data.get("system_fragment")
         names = data.get("tool_names")
         if (
-            not isinstance(name, str) or not name
-            or not isinstance(fragment, str) or not fragment.strip()
-            or len(fragment) > 1500
+            not isinstance(name, str)
+            or not name
+            or not isinstance(fragment, str)
+            or not fragment.strip()
+            or len(fragment)
+            > policy("character", "bootstrap.parameters.load_skills_value_limit", int)
             or not isinstance(names, list)
             or (not names and name != "conversation")
             or any(
@@ -120,15 +152,27 @@ def load_skills(skills_dir: Path, registry: ToolRegistry) -> dict[str, Skill]:
                 for item in cast(list[object], names)
             )
         ):
-            raise ValueError(f"skill 字段无效：{path}")
+            raise ValueError(
+                policy(
+                    "character", "bootstrap.templates.load_skills_text_3", str
+                ).format(p0=path)
+            )
         if name in skills:
-            raise ValueError(f"skill 名称重复：{name}")
+            raise ValueError(
+                policy(
+                    "character", "bootstrap.templates.load_skills_text_4", str
+                ).format(p0=name)
+            )
         tool_names = tuple(cast(list[str], names))
         registry.schema(tool_names)
         skills[name] = Skill(name, fragment, tool_names)
-    for required in ("discussion", "conversation"):
+    for required in policy("behavior", "required_skills", tuple[str, ...]):
         if required not in skills:
-            raise ValueError(f"缺少 {required} skill：{skills_dir}")
+            raise ValueError(
+                policy(
+                    "character", "bootstrap.templates.load_skills_text_5", str
+                ).format(p0=required, p1=skills_dir)
+            )
     return skills
 
 

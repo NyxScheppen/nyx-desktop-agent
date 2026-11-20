@@ -1,3 +1,5 @@
+import { formatPolicyText } from "../../lib/policy";
+import desirePolicy from "../../../../nyx/settings/desire.json";
 import { useEffect, useState } from "react";
 import { useDesireStore } from "../../stores/desireStore";
 import { DESIRE_TYPE_LABELS, DESIRE_STATUS_LABELS } from "../../lib/labels";
@@ -24,54 +26,54 @@ export default function DesiresPanel() {
     (d) => d.status !== "expired" && d.status !== "satisfied",
   );
   const entries = [
-    ...(data?.long_term ?? []).map((d) => ({ id: d.id, type: d.type, period: "long", title: d.name, body: d.description, meta: `强度 ${d.strength.toFixed(2)} · 进度 ${d.progress.toFixed(2)}` })),
-    ...liveShortTerm.map((d) => ({ id: d.id, type: d.type, period: "short", title: d.description, body: "", meta: `强度 ${d.strength.toFixed(2)} · ${DESIRE_STATUS_LABELS[d.status]}` })),
+    ...(data?.long_term ?? []).map((d) => ({ id: d.id, type: d.type, period: "long", title: d.name, body: d.description, meta: formatPolicyText(desirePolicy.templates.DesiresPanel.meta, { p0: d.strength.toFixed(2), p1: d.progress.toFixed(2) }) })),
+    ...liveShortTerm.map((d) => ({ id: d.id, type: d.type, period: "short", title: d.description, body: "", meta: formatPolicyText(desirePolicy.templates.DesiresPanel.meta_2, { p0: d.strength.toFixed(2), p1: DESIRE_STATUS_LABELS[d.status] }) })),
   ].filter((d) => (period === "all" || d.period === period) && (category === "" || d.type === category) && `${d.title} ${d.body}`.toLowerCase().includes(query.trim().toLowerCase()));
   const pages = Math.max(1, Math.ceil(entries.length / 5));
   const currentPage = Math.min(page, pages - 1);
 
   return (
-    <Panel title="欲望">
+    <Panel title={desirePolicy.copy.DesiresPanel.title}>
       {error !== null && <p className="error-text">{error}</p>}
       {data === null ? (
-        "等待核心服务连接…"
+        desirePolicy.copy.DesiresPanel.text
       ) : (
         <div className="desire-ledger">
-          <h3>压力</h3>
-          <p className="panel-item__meta">压力积累不代表已经准备行动；抑制阈值会随时间恢复。</p>
-          <div className="desire-pressure" aria-label="欲望压力值">
+          <h3>{desirePolicy.copy.DesiresPanel.h3}</h3>
+          <p className="panel-item__meta">{desirePolicy.copy.DesiresPanel.p}</p>
+          <div className="desire-pressure" aria-label={desirePolicy.copy.DesiresPanel.aria_label}>
             {data.values.map((value) => (
               <div className="desire-pressure__item" key={value.type}>
                 <span>{DESIRE_TYPE_LABELS[value.type]}</span>
                 <meter min={0} max={1} value={Math.min(1, Math.max(0, value.value))} />
                 <strong>{value.value.toFixed(2)}</strong>
-                <small>抑制阈值 {value.suppression_threshold.toFixed(2)}</small>
+                <small>{desirePolicy.copy.DesiresPanel.small}{value.suppression_threshold.toFixed(2)}</small>
               </div>
             ))}
           </div>
-          <h3>准备行动</h3>
-          <div aria-label="准备行动的欲望">
+          <h3>{desirePolicy.copy.DesiresPanel.h3_2}</h3>
+          <div aria-label={desirePolicy.copy.DesiresPanel.aria_label_2}>
             {Object.entries(DESIRE_TYPE_LABELS).map(([type, label]) => {
               const ready = liveShortTerm.filter((d) => d.type === type && d.status === "pending").length;
               const active = liveShortTerm.filter((d) => d.type === type && d.status === "active").length;
-              return <p key={type}>{label}：{ready > 0 || active > 0 ? `待执行 ${ready} · 正在执行 ${active}` : "尚未形成待执行欲望"}</p>;
+              return <p key={type}>{label}：{ready > 0 || active > 0 ? formatPolicyText(desirePolicy.templates.DesiresPanel.text, { p0: ready, p1: active }) : desirePolicy.copy.DesiresPanel.text_2}</p>;
             })}
           </div>
-          <p className="panel-item__meta">主动搭话还需满足在线、空闲、精力和冷却时间条件。</p>
-          <h3>欲望记录</h3>
+          <p className="panel-item__meta">{desirePolicy.copy.DesiresPanel.p_2}</p>
+          <h3>{desirePolicy.copy.DesiresPanel.h3_3}</h3>
           <div className="panel-toolbar">
-            <input className="panel-input" aria-label="搜索欲望" placeholder="搜索欲望…" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} />
-            <select className="panel-input" aria-label="欲望类别" value={category} onChange={(event) => { setCategory(event.target.value); setPage(0); }}>
-              <option value="">全部类别</option>
+            <input className="panel-input" aria-label={desirePolicy.copy.DesiresPanel.aria_label_3} placeholder={desirePolicy.copy.DesiresPanel.placeholder} value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} />
+            <select className="panel-input" aria-label={desirePolicy.copy.DesiresPanel.aria_label_4} value={category} onChange={(event) => { setCategory(event.target.value); setPage(0); }}>
+              <option value="">{desirePolicy.copy.DesiresPanel.option}</option>
               {Object.entries(DESIRE_TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
-            <div className="panel-tabs" role="group" aria-label="欲望期限">
-              {([ ["all", "全部"], ["long", "长期"], ["short", "短期"] ] as const).map(([value, label]) => (
+            <div className="panel-tabs" role="group" aria-label={desirePolicy.copy.DesiresPanel.aria_label_5}>
+              {([ ["all", desirePolicy.copy.DesiresPanel.text_3], ["long", desirePolicy.copy.DesiresPanel.text_4], ["short", desirePolicy.copy.DesiresPanel.text_5] ] as const).map(([value, label]) => (
                 <button key={value} type="button" className={period === value ? "panel-tab panel-tab--active" : "panel-tab"} aria-pressed={period === value} onClick={() => { setPeriod(value); setPage(0); }}>{label}</button>
               ))}
             </div>
           </div>
-          {entries.length === 0 ? <p className="panel-item">暂无符合条件的欲望</p> : (
+          {entries.length === 0 ? <p className="panel-item">{desirePolicy.copy.DesiresPanel.p_3}</p> : (
             <ul className="panel-list">
               {entries.slice(currentPage * 5, currentPage * 5 + 5).map((entry) => (
                 <li key={entry.id} className="panel-item">
@@ -83,9 +85,9 @@ export default function DesiresPanel() {
             </ul>
           )}
           <div className="ledger-pagination">
-            <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一页</button>
+            <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>{desirePolicy.copy.DesiresPanel.button}</button>
             <span>{currentPage + 1} / {pages}</span>
-            <button type="button" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>下一页</button>
+            <button type="button" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>{desirePolicy.copy.DesiresPanel.button_2}</button>
           </div>
         </div>
       )}

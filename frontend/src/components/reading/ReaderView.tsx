@@ -1,3 +1,4 @@
+import readingPolicy from "../../../../nyx/settings/reading.json";
 import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import {
   createElement,
@@ -212,7 +213,7 @@ function ParagraphContent({
   );
 }
 
-export default function ReaderView() {
+export default function ReaderView({ onExcerpt }: { onExcerpt?: (text: string) => void } = {}) {
   const bookId = useReaderStore((state) => state.bookId);
   const books = useReaderStore((state) => state.books);
   const totalParagraphs = useReaderStore((state) => state.totalParagraphs);
@@ -397,10 +398,10 @@ export default function ReaderView() {
     (bookmark) => bookmark.paragraph_id === currentParagraph?.id,
   );
   const book = books.find((item) => item.id === bookId);
-  const title = book?.title ?? "阅读中";
+  const title = book?.title ?? readingPolicy.copy.ReaderView.text;
   const author = book?.author ?? "";
   const nyxStatus = nyxStatusOf(bookId, nyxPosition, userPosition);
-  const nyxStatusText = nyxStatus === "reading" ? "她正在追上你" : "她在等你";
+  const nyxStatusText = nyxStatus === "reading" ? readingPolicy.copy.ReaderView.text_2 : readingPolicy.copy.ReaderView.text_3;
 
   let offset = 0;
   for (let index = 0; index < pageIndex; index += 1) {
@@ -415,8 +416,8 @@ export default function ReaderView() {
         <button
           type="button"
           className="reader-tool reader-tool--icon"
-          aria-label="返回书架"
-          title="返回书架"
+          aria-label={readingPolicy.copy.ReaderView.aria_label}
+          title={readingPolicy.copy.ReaderView.aria_label}
           onClick={closeBook}
         >
           ←
@@ -426,13 +427,13 @@ export default function ReaderView() {
           {author !== "" && <span className="reader__author">{author}</span>}
         </div>
         <span className="reader__pos">
-          {nyxStatusText} · 她读到第 {nyxPosition} 段 · 你读到第 {userPosition} / {totalParagraphs} 段
+          {nyxStatusText}{readingPolicy.copy.ReaderView.span}{nyxPosition}{readingPolicy.copy.ReaderView.span_2}{userPosition} / {totalParagraphs} 段
         </span>
         <button
           type="button"
           className="reader-tool reader-tool--icon"
-          aria-label={currentBookmark === undefined ? "添加书签" : "取消书签"}
-          title={currentBookmark === undefined ? "添加书签" : "取消书签"}
+          aria-label={currentBookmark === undefined ? readingPolicy.copy.ReaderView.text_4 : readingPolicy.copy.ReaderView.text_5}
+          title={currentBookmark === undefined ? readingPolicy.copy.ReaderView.text_4 : readingPolicy.copy.ReaderView.text_5}
           disabled={currentParagraph === undefined}
           onClick={() => {
             if (currentParagraph !== undefined) {
@@ -501,6 +502,7 @@ export default function ReaderView() {
               <button type="button" onClick={() => void saveHighlight()}>
                 保存划线
               </button>
+              {onExcerpt && <button type="button" onClick={() => { onExcerpt(selection.text); setSelection(null); }}>{readingPolicy.study.copy.add_note}</button>}
               <button type="button" onClick={() => setSelection(null)}>
                 取消
               </button>
@@ -512,8 +514,8 @@ export default function ReaderView() {
         <button
           type="button"
           className="reader-tool reader-tool--icon"
-          aria-label="上一页"
-          title="上一页"
+          aria-label={readingPolicy.copy.ReaderView.aria_label_2}
+          title={readingPolicy.copy.ReaderView.aria_label_2}
           onClick={() => void syncPosition(userPosition - 1)}
           disabled={userPosition <= 1}
         >
@@ -525,8 +527,8 @@ export default function ReaderView() {
         <button
           type="button"
           className="reader-tool reader-tool--icon"
-          aria-label="下一页"
-          title="下一页"
+          aria-label={readingPolicy.copy.ReaderView.aria_label_3}
+          title={readingPolicy.copy.ReaderView.aria_label_3}
           onClick={() => void syncPosition(userPosition + 1)}
           disabled={userPosition >= totalParagraphs}
         >
@@ -541,29 +543,29 @@ export default function ReaderView() {
             event.currentTarget.querySelector("button")?.focus();
           }
         }}>
-          <button type="button" className="reader-tool reader-tool--icon" aria-label="阅读工具" title="阅读工具" aria-expanded={toolsOpen} onClick={() => setToolsOpen((open) => !open)}>⋮</button>
+          <button type="button" className="reader-tool reader-tool--icon" aria-label={readingPolicy.copy.ReaderView.aria_label_4} title={readingPolicy.copy.ReaderView.aria_label_4} aria-expanded={toolsOpen} onClick={() => setToolsOpen((open) => !open)}>⋮</button>
           {toolsOpen && <div className="reader-tools__menu">
-            <button type="button" onClick={() => { setMarkPanel("highlights"); setToolsOpen(false); }}>划线</button>
-            <button type="button" onClick={() => { setMarkPanel("bookmarks"); setToolsOpen(false); }}>书签</button>
-            {readCount >= 1 && <button type="button" onClick={() => { void reread(); setToolsOpen(false); }}>重读</button>}
-            <button type="button" onClick={() => { setNoteOpen(true); setToolsOpen(false); }}>笔记</button>
+            <button type="button" onClick={() => { setMarkPanel("highlights"); setToolsOpen(false); }}>{readingPolicy.copy.ReaderView.button}</button>
+            <button type="button" onClick={() => { setMarkPanel("bookmarks"); setToolsOpen(false); }}>{readingPolicy.copy.ReaderView.button_2}</button>
+            {readCount >= 1 && <button type="button" onClick={() => { void reread(); setToolsOpen(false); }}>{readingPolicy.copy.ReaderView.button_3}</button>}
+            <button type="button" onClick={() => { setNoteOpen(true); setToolsOpen(false); }}>{readingPolicy.copy.ReaderView.button_4}</button>
           </div>}
         </div>
       </footer>
 
       {noteOpen && <NotePanel onClose={() => setNoteOpen(false)} />}
       {markPanel === "highlights" && (
-        <Modal title="划线" onClose={() => setMarkPanel(null)}>
+        <Modal title={readingPolicy.copy.ReaderView.button} onClose={() => setMarkPanel(null)}>
           <input
             className="reader-search"
             type="search"
-            aria-label="搜索划线"
-            placeholder="搜索划线内容"
+            aria-label={readingPolicy.copy.ReaderView.aria_label_5}
+            placeholder={readingPolicy.copy.ReaderView.placeholder}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
           {searchedHighlights.length === 0 ? (
-            <p className="reader-mark-empty">没有匹配的划线。</p>
+            <p className="reader-mark-empty">{readingPolicy.copy.ReaderView.p}</p>
           ) : (
             <ul className="reader-mark-list">
               {searchedHighlights.map((note) => (
@@ -573,14 +575,14 @@ export default function ReaderView() {
                     className="reader-mark-item__jump"
                     onClick={() => void visitHighlight(note)}
                   >
-                    <span>第 {note.paragraph_index} 段</span>
+                    <span>{readingPolicy.copy.ReaderView.span_3}{note.paragraph_index}{readingPolicy.copy.ReaderView.span_4}</span>
                     <q>{note.selected_text}</q>
                   </button>
                   <button
                     type="button"
                     className="reader-mark-item__delete"
-                    aria-label="删除划线"
-                    title="删除划线"
+                    aria-label={readingPolicy.copy.ReaderView.aria_label_6}
+                    title={readingPolicy.copy.ReaderView.aria_label_6}
                     onClick={() => void deleteNote(note.id)}
                   >
                     ×
@@ -592,9 +594,9 @@ export default function ReaderView() {
         </Modal>
       )}
       {markPanel === "bookmarks" && (
-        <Modal title="书签" onClose={() => setMarkPanel(null)}>
+        <Modal title={readingPolicy.copy.ReaderView.button_2} onClose={() => setMarkPanel(null)}>
           {bookmarks.length === 0 ? (
-            <p className="reader-mark-empty">还没有书签。</p>
+            <p className="reader-mark-empty">{readingPolicy.copy.ReaderView.p_2}</p>
           ) : (
             <ul className="reader-mark-list">
               {bookmarks.map((bookmark) => (
@@ -607,14 +609,14 @@ export default function ReaderView() {
                       void jumpToPosition(bookmark.paragraph_index);
                     }}
                   >
-                    <span>第 {bookmark.paragraph_index} 段</span>
+                    <span>{readingPolicy.copy.ReaderView.span_3}{bookmark.paragraph_index}{readingPolicy.copy.ReaderView.span_4}</span>
                     <q>{bookmark.preview}</q>
                   </button>
                   <button
                     type="button"
                     className="reader-mark-item__delete"
-                    aria-label="删除书签"
-                    title="删除书签"
+                    aria-label={readingPolicy.copy.ReaderView.aria_label_7}
+                    title={readingPolicy.copy.ReaderView.aria_label_7}
                     onClick={() => void toggleBookmark(bookmark.paragraph_id)}
                   >
                     ×

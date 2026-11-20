@@ -1,3 +1,4 @@
+import runtimePolicy from "../nyx/settings/runtime.json";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
@@ -5,13 +6,13 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5173,
+    port: runtimePolicy.desktop.frontend_port,
     strictPort: true,
     // /api 同源转发到后端：前端请求相对路径 /api/*，Vite 转发到 8000，
     // 浏览器视角同源（5173），后端无需 CORS（组合根「不做 CORS（localhost 同源）」）
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8000",
+        target: `http://${runtimePolicy.main._LOCAL_HOST}:${runtimePolicy.main._LOCAL_PORT}`,
         changeOrigin: true,
       },
     },

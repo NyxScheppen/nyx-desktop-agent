@@ -1,54 +1,10 @@
-llm:
-  provider: deepseek          # deepseek | openai | ollama；其它 OpenAI 兼容服务配 base_url
-  model: deepseek-chat
-  api_key_env: DEEPSEEK_API_KEY
-  temperature: 0.8            # 采样温度（0-2）；比 DeepSeek 默认 1.0 略收紧、人格声音更一致
-  # base_url: http://localhost:11434/v1   # 可选：覆盖/自定义 endpoint
-
-embedding:
-  model: BAAI/bge-small-zh-v1.5  # 本地中文 ONNX FP32；首次运行前导出模型
-
-memory:
-  short_term_capacity: 100    # 容量上限
-  promote_threshold: 3        # 想起 3 次升级长期
-  freshness_decay: 0.01       # 新鲜度衰减率
-
+# Only explicit local overrides. Authoritative defaults: nyx/settings/<system>.json
 desire:
-  peak_threshold: 0.8         # 值达峰阈值
-  retry_limit: 3              # 未达成重试上限
-  long_term_capacity: 5       # 长期欲望上限
-  value_decay: 0.02           # 值缓慢衰减率
-
-activity:
-  grid_minutes: 60            # 每小时一块
-  energy_delta:
-    reading: -20
-    creation: -25
-    free_exploration: -30
-    observe_user: -10
-    idle_reflection: 10
-    rest: 30
-
-expression:
-  slow_threshold: 0.5         # 快慢通道阈值：classifier 加权 5 因子→归一化得分(0-1)→比此值
-  max_context_len: 20         # 回溯上下文上限
-  slow_max_rounds: 3          # 慢通道最多轮数
-
+  peak_threshold: 0.8
+  value_decay: 0.02
 exploration:
-  web_enabled: true           # 联网搜索 opt-in（无书可读时自由上网探索依赖此项）
-  rate_limit_hours: 1         # 自由探索频率上限
-
-vision:
-  enabled: false              # 屏幕视觉 opt-in（见 docs/facts/activity-system-facts.md）
-  provider: ollama            # 视觉模型 provider→base_url 映射（复用 llm 映射）
-  model: llava                # 本地视觉模型 tag（换成实际 pull 的，如 qwen2-vl）
-  # base_url: http://localhost:11434/v1   # 可选：覆盖视觉 endpoint
-  interval_seconds: 60        # 抓屏周期（秒）
-
+  web_enabled: true
 onebot:
   enabled: true
-  ws_url: ws://127.0.0.1:3001  # NapCat/LLOneBot 正向 WebSocket
-  access_token_env: ONEBOT_ACCESS_TOKEN
-  self_id: 3976995810                 # 机器人 QQ，启用前填写
-  owner_id: 43686425                # 你的 QQ，仅接受此用户私聊
-  character_id: nyx
+  self_id: 3976995810
+  owner_id: 43686425

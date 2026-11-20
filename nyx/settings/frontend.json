@@ -1,0 +1,433 @@
+{
+  "frontend": {
+    "App": {
+      "FONT_SCALE_VALUE": {
+        "small": 0.9,
+        "medium": 1,
+        "large": 1.12
+      }
+    },
+    "Avatar": {
+      "CIRCLE_SIZES": {
+        "small": 96,
+        "medium": 120,
+        "large": 144
+      },
+      "DRAG_THRESHOLD": 3
+    },
+    "ValenceArousalPlot": {
+      "W": 360,
+      "H": 260,
+      "PAD": 30
+    },
+    "SettingsView": {
+      "FONT_OPTIONS": [
+        [
+          "small",
+          "小"
+        ],
+        [
+          "medium",
+          "中"
+        ],
+        [
+          "large",
+          "大"
+        ]
+      ]
+    },
+    "ExpressionHistoryPanel": {
+      "LABELS": {
+        "user_message": "用户消息",
+        "speak": "回复",
+        "ask": "提问",
+        "think": "思考",
+        "reading_question": "陪读提问",
+        "reading_association": "陪读联想",
+        "mutter": "碎碎念",
+        "reading_mutter": "陪读碎碎念",
+        "initiate_chat": "主动搭话"
+      }
+    },
+    "FactGraph": {
+      "WIDTH": 900,
+      "HEIGHT": 520
+    },
+    "RightDock": {
+      "ENTRIES": [
+        {
+          "label": "聊天",
+          "icon": "✦",
+          "view": "chat"
+        },
+        {
+          "label": "内在状态",
+          "icon": "◌",
+          "view": "inner"
+        },
+        {
+          "label": "欲望",
+          "icon": "◇",
+          "view": "desire"
+        },
+        {
+          "label": "活动",
+          "icon": "◷",
+          "view": "activity"
+        },
+        {
+          "label": "任务",
+          "icon": "▣",
+          "view": "tasks"
+        },
+        {
+          "label": "创作",
+          "icon": "✎",
+          "view": "creation"
+        },
+        {
+          "label": "记忆",
+          "icon": "▤",
+          "view": "memory"
+        },
+        {
+          "label": "研究与行为反思",
+          "icon": "⌘",
+          "view": "behavior"
+        },
+        {
+          "label": "评估",
+          "icon": "⌁",
+          "view": "eval"
+        },
+        {
+          "label": "历史",
+          "icon": "↺",
+          "view": "history"
+        }
+      ]
+    },
+    "usePresence": {
+      "OBSERVE_INTERVAL_MS": 30000,
+      "OBSERVE_TIMEOUT_MS": 10000
+    },
+    "useSSE": {
+      "MAX_SEEN_EVENT_IDS": 4096
+    },
+    "activityResult": {
+      "ANNOUNCE_PREFIX": {
+        "reading": "读完啦：",
+        "browser_survey": "问卷结果：",
+        "creation": "创作完成：",
+        "free_exploration": "探索收获："
+      }
+    },
+    "time": {
+      "night_start_hour": 22,
+      "day_start_hour": 6,
+      "divider_gap_seconds": 1800,
+      "WEEKDAYS": [
+        "日",
+        "一",
+        "二",
+        "三",
+        "四",
+        "五",
+        "六"
+      ]
+    },
+    "activityStore": {
+      "RESULTS_PAGE_SIZE": 12
+    },
+    "announceStore": {
+      "ANNOUNCE_DURATION": {
+        "mutter": 4000,
+        "activity": 7000
+      }
+    },
+    "chatStore": {
+      "HISTORY_LIMIT": 5000,
+      "REPLY_TIMEOUT_MS": 60000
+    },
+    "settingsStore": {
+      "DEFAULT_CIRCLE_COLOR": "#ffffff",
+      "DEFAULT_CIRCLE_SIZE": "large",
+      "CIRCLE_COLOR_KEY": "nyx.circleColor",
+      "AVATAR_POS_KEY": "nyx.avatarPos",
+      "CIRCLE_SIZE_KEY": "nyx.circleSize",
+      "LAYOUT_STYLE_KEY": "nyx.layoutStyle"
+    }
+  },
+  "copy": {
+    "characterScope": {
+      "text": "角色正在切换"
+    },
+    "client": {
+      "text": "待回复快照格式非法"
+    },
+    "App": {
+      "text": "手机",
+      "text_2": "配对失败",
+      "h1": "连接 Nyx",
+      "label": "配对码",
+      "label_2": "设备名称",
+      "label_3": "访问凭证",
+      "button": "连接",
+      "text_3": "使用访问凭证",
+      "text_4": "使用配对码",
+      "aria_label": "主导航",
+      "aria_label_2": "对话",
+      "aria_label_3": "阅读区",
+      "aria_label_4": "页面内容",
+      "text_5": "正在切换角色…",
+      "text_6": "等待角色启动…",
+      "button_2": "角色管理与设置"
+    },
+    "ChatInput": {
+      "span": "讨论模式",
+      "option": "自动",
+      "option_2": "开启",
+      "option_3": "关闭",
+      "aria_label": "对回复的批注",
+      "placeholder": "写下你的看法、偏好或纠正…",
+      "button": "取消批注",
+      "button_2": "发送批注",
+      "text": "发送",
+      "small": "她正在想，你可以继续说"
+    },
+    "MessageBubble": {
+      "span": "欲望搭话",
+      "span_2": "提问",
+      "text": "选择片段或点击全文来批注",
+      "text_2": "反馈已记录",
+      "text_3": "反馈持久化待确认",
+      "p": "原文：「",
+      "text_4": "等待超时确认",
+      "text_5": "（已暂停）",
+      "text_6": "继续计时",
+      "text_7": "暂停计时"
+    },
+    "PetShell": {
+      "button": "发送",
+      "aria_label": "返回上一级",
+      "aria_label_2": "聊天",
+      "text": "今天过得怎么样？",
+      "placeholder": "输入一句话……",
+      "aria_label_3": "选择书目",
+      "p": "选择一本书，",
+      "p_2": " 会陪你一起读。",
+      "p_3": "书架空空如也，请在完整桌面端导入 EPUB。",
+      "text_2": "尚未开始",
+      "aria_label_4": "陪伴读书",
+      "h2": "陪读 · ",
+      "text_3": "阅读中",
+      "aria_label_5": "当前阅读段落",
+      "text_4": "正在读取这一页……",
+      "span": "你读到：第 ",
+      "span_2": " 段",
+      "span_3": " 读到：第 ",
+      "placeholder_2": "聊聊这一段……",
+      "text_5": "等待连接",
+      "aria_label_6": "内心状态",
+      "span_4": "心情",
+      "span_5": "精力",
+      "span_6": "当前活动",
+      "span_7": "感受",
+      "text_6": "未知",
+      "aria_label_7": "当前状态",
+      "div": " · 精力 ",
+      "aria_label_8": "角色功能菜单",
+      "button_2": "读书",
+      "button_3": "内心",
+      "button_4": "设置"
+    },
+    "Avatar": {
+      "aria_label": "小狐狸我有话对你说"
+    },
+    "FlowPages": {
+      "aria_label": "页面翻页",
+      "button": "上一页",
+      "button_2": "下一页",
+      "text": "加载中…",
+      "text_2": "加载更多"
+    },
+    "Modal": {
+      "aria_label": "关闭"
+    },
+    "SettingsView": {
+      "text": "配对码创建失败",
+      "aria_label": "外观",
+      "title": "连接",
+      "button": "清除访问凭证",
+      "label": "新设备名称",
+      "button_2": "生成手机配对码",
+      "p": "配对码：",
+      "aria_label_2": "已配对设备",
+      "text_2": "（已撤销）",
+      "button_3": "撤销",
+      "title_2": "字体大小",
+      "title_3": "窗口风格",
+      "button_4": "双开本",
+      "button_5": "编年史",
+      "title_4": "角色卡",
+      "p_2": "选择角色后查看角色卡。",
+      "text_3": "新建角色卡",
+      "text_4": "设置"
+    },
+    "CreationPanel": {
+      "title": "创作",
+      "text": "等待核心服务连接…",
+      "p": "当前角色还没有完成创作",
+      "button": "← 返回书架",
+      "p_2": "来自创作活动 · ",
+      "p_3": "来源："
+    },
+    "MemoryPanel": {
+      "text": "对话原文",
+      "conversation": "对话",
+      "episode": "经历",
+      "activity": "活动",
+      "lesson": "失败经验",
+      "reflection": "内在反思",
+      "user_profile": "用户画像",
+      "reading": "阅读",
+      "interaction": "互动",
+      "title": "记忆",
+      "aria_label": "记忆范围",
+      "text_2": "知识库内容",
+      "text_3": "普通记忆内容",
+      "button": "知识条目",
+      "button_2": "事实网",
+      "button_3": "投喂知识",
+      "aria_label_2": "记忆类型筛选",
+      "text_4": "全部",
+      "label": "关键词",
+      "text_5": "知识库关键词",
+      "text_6": "记忆关键词",
+      "placeholder": "搜索记忆…",
+      "button_4": "查询",
+      "p": "当前查询：",
+      "p_2": "对话加载失败：",
+      "text_7": "等待核心服务连接…",
+      "p_3": "暂无记忆",
+      "summary": "查看完整原文",
+      "text_8": "加载中…",
+      "text_9": "加载更早对话",
+      "button_5": "上一页",
+      "button_6": "下一页"
+    },
+    "RightDock": {
+      "aria_label": "设置",
+      "aria_label_2": "收回桌宠"
+    },
+    "StatusBar": {
+      "span": "心情：",
+      "span_2": "现在状态："
+    },
+    "usePresence": {
+      "text": "presence 上报失败"
+    },
+    "useSSE": {
+      "text": "SSE 帧 data 非对象，跳过",
+      "text_2": "SSE 帧结构非法，跳过",
+      "text_3": "SSE 帧解析失败，跳过"
+    },
+    "activityResult": {
+      "text": "空闲",
+      "text_2": "在读书",
+      "text_3": "在填写问卷",
+      "text_4": "在探索",
+      "text_5": "在创作",
+      "text_6": "在观察你",
+      "text_7": "在静默反思",
+      "text_8": "在休息",
+      "text_9": "读",
+      "text_10": "写",
+      "select_topic": "选题",
+      "rewrite": "改写问题",
+      "follow_up": "追问",
+      "source_check": "资料判断",
+      "read": "读取资料",
+      "search": "搜索",
+      "digest_source": "消化入库",
+      "finalize": "总结",
+      "finish": "结束搜索",
+      "text_11": "进行中",
+      "text_12": "已中断",
+      "text_13": "未采用",
+      "text_14": "失败",
+      "text_15": "完成"
+    },
+    "time": {
+      "text": "时间未知"
+    },
+    "characterStore": {
+      "text": "至少保留一个可运行的当前角色"
+    },
+    "chatStore": {
+      "text": "消息处理失败",
+      "text_2": "回复超时，仍在等待处理",
+      "text_3": "仍有未显示的待回复消息",
+      "sendError": "有多个待回复的问题，请先选择要回复的那一条",
+      "sendError_2": "回复较长，请选择片段（最多 2000 字符）后批注",
+      "text_4": "暂停提问失败",
+      "text_5": "恢复提问失败",
+      "text_6": "加载待回复消息失败",
+      "text_7": "加载待回答提问失败",
+      "text_8": "加载聊天历史失败",
+      "sendError_3": "请填写有效批注，引用和批注各不超过 2000 字符"
+    },
+    "innerLifeStore": {
+      "text": "SSE emotion_update 帧字段类型错误，丢弃"
+    }
+  },
+  "timers": {
+    "character_refresh_ms": 2000,
+    "sse_retry_ms": 1000,
+    "question_clock_ms": 250,
+    "typewriter_ms": 35
+  },
+  "defaults": {
+    "font_scale": "medium",
+    "layout_style": "folio"
+  },
+  "templates": {
+    "ChatInput": {
+      "text": "对 {p0} 说…"
+    },
+    "MessageBubble": {
+      "text": "剩余 {p0} 秒"
+    },
+    "PetShell": {
+      "text": "读到第 {p0} 段"
+    },
+    "Avatar": {
+      "text": "{p0} 头像"
+    },
+    "activityResult": {
+      "text": "在读《{p0}》",
+      "text_2": "在填写问卷：{p0}",
+      "text_3": "在探索「{p0}」",
+      "text_4": "在创作：{p0}",
+      "text_5": "核心发现：{p0}",
+      "text_6": "联网搜索「{p0}」",
+      "text_7": "本地搜索「{p0}」",
+      "text_8": "抓取网页 {p0}",
+      "text_9": "{p0}文件 {p1}",
+      "text_10": "结束原因：{p0}",
+      "text_11": "待解决：{p0}",
+      "text_12": "{p0}（失败）"
+    },
+    "time": {
+      "text": "{p0}月{p1}日 ",
+      "text_2": "星期{p0} {p1}:{p2}",
+      "text_3": "今天 {p0}",
+      "text_4": "昨天 {p0}",
+      "text_5": "{p0}月{p1}日 周{p2} {p3}"
+    },
+    "chatStore": {
+      "text": "SSE {p0} 帧文本或时间戳非法，丢弃",
+      "text_2": "提交结果未知，服务端可能已受理：{p0}"
+    }
+  }
+}

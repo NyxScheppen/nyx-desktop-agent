@@ -1,0 +1,34 @@
+{
+  "client": {
+    "_PROVIDER_BASE_URLS": {
+      "deepseek": "https://api.deepseek.com",
+      "openai": "https://api.openai.com/v1",
+      "ollama": "http://localhost:11434/v1"
+    },
+    "copy": {
+      "get_model_text": "LLM client 未配置 model factory"
+    },
+    "templates": {
+      "to_lc_text": "未知消息角色 {p0!r}",
+      "from_config_text": "未知 provider={p0!r}：请设置 llm.base_url，或使用内置 provider：{p1}",
+      "from_config_text_2": "环境变量 {p0} 未设置",
+      "complete_text": "期望文本 content，得到 {p0}"
+    }
+  },
+  "defaults": {
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "base_url": null,
+    "timeout": 60,
+    "max_retries": 2,
+    "temperature": 0.8
+  },
+  "vision": {
+    "templates": {
+      "from_config_text": "未知 provider={p0!r}：请设置 vision.base_url",
+      "describe_text": "期望文本 content，得到 {p0}",
+      "from_config_text_2": "环境变量 {p0} 未设置"
+    }
+  }
+}

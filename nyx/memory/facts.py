@@ -12,41 +12,21 @@ import aiosqlite
 
 from nyx.db import Database
 from nyx.enums import MemoryKind
+from nyx.policy import policy
 from nyx.timezone import USER_TIMEZONE
 from nyx.types import Memory, MemoryFact
 
-_MAX_TEXT = 80
-_FACT_RECALL_LIMIT = 64
-_QUERY_FILLER_RE = re.compile(
-    r"早上好[呀啊]?|晚上好[呀啊]?|中午好[呀啊]?|你好[呀啊]?|晚安|"
-    r"你还记得|你记得|还记得|记得|告诉我|什么|哪些|哪个|哪里|哪儿|"
-    r"现在|今天|之前|以前|最近|一下|(?:尼克斯|nyx)[，,、。.!！?？~～\s]+|"
-    r"[，,、。.!！?？~～\s]+(?:尼克斯|nyx)$",
-    re.IGNORECASE,
+_MAX_TEXT = policy("memory", "facts._MAX_TEXT", int)
+_FACT_RECALL_LIMIT = policy("memory", "facts._FACT_RECALL_LIMIT", int)
+_QUERY_FILLER_RE = policy("memory", "facts._QUERY_FILLER_RE", re.Pattern[str])
+_PREDICATE_QUERIES = policy(
+    "memory",
+    "facts._PREDICATE_QUERIES",
+    tuple[tuple[re.Pattern[str], tuple[str, ...]], ...],
 )
-_PREDICATE_QUERIES = (
-    (re.compile(r"城市|哪[里儿]|在哪|所在地|居住|住哪"), ("所在地", "居住地", "位置")),
-    (re.compile(r"喜欢|讨厌|偏好|爱吃"), ("喜欢", "讨厌", "偏好", "爱吃")),
-    (re.compile(r"工作|求职|入职|上班|职业|就业"), ("就业", "职业", "工作", "公司")),
-)
-_FACT_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}")
-_MONTH_QUERY_RE = re.compile(
-    r"(?:(20\d{2})年)?(1[0-2]|[1-9]|十一|十二|十|[一二三四五六七八九])月"
-)
-_CHINESE_MONTHS = {
-    "一": 1,
-    "二": 2,
-    "三": 3,
-    "四": 4,
-    "五": 5,
-    "六": 6,
-    "七": 7,
-    "八": 8,
-    "九": 9,
-    "十": 10,
-    "十一": 11,
-    "十二": 12,
-}
+_FACT_TOKEN_RE = policy("memory", "facts._FACT_TOKEN_RE", re.Pattern[str])
+_MONTH_QUERY_RE = policy("memory", "facts._MONTH_QUERY_RE", re.Pattern[str])
+_CHINESE_MONTHS = policy("memory", "facts._CHINESE_MONTHS", dict[str, int])
 
 
 @dataclass
@@ -83,29 +63,30 @@ def strip_recall_fillers(query: str) -> str:
 def format_source_time(timestamp: float | None) -> str:
     """Format an evidence clock; missing or invalid time stays explicitly unknown."""
     if timestamp is None or isinstance(timestamp, bool):
-        return "未知"
+        return policy("memory", "facts.copy.format_source_time_text", str)
     try:
         return datetime.fromtimestamp(timestamp, USER_TIMEZONE).isoformat(
             timespec="seconds"
         )
     except (OverflowError, OSError, ValueError):
-        return "未知"
+        return policy("memory", "facts.copy.format_source_time_text", str)
 
 
 def is_knowledge_query(query: str) -> bool:
     """仅明确要求检索资料时开放知识事实，普通提及不算授权。"""
-    source = re.search(r"书|作者|人物|资料|读过|小说|文章|网页|知识库", query)
-    request = re.search(r"什么|哪些|是谁|讲了|介绍|总结|查|告诉我|想知道|\?|？", query)
+    source = re.search(
+        policy("memory", "facts.copy.is_knowledge_query_text", str), query
+    )
+    request = re.search(
+        policy("memory", "facts.copy.is_knowledge_query_text_2", str), query
+    )
     return source is not None and request is not None
 
 
-_FACT_MEMORY_KINDS = {
-    MemoryKind.EPISODE,
-    MemoryKind.USER_PROFILE,
-}
+_FACT_MEMORY_KINDS = policy("memory", "facts._FACT_MEMORY_KINDS", set[MemoryKind])
 
-_FUNCTIONAL_PREDICATES = frozenset(
-    {"就业状态", "当前职业", "居住地", "当前公司", "当前所在地", "婚姻状态"}
+_FUNCTIONAL_PREDICATES = policy(
+    "memory", "facts._FUNCTIONAL_PREDICATES", frozenset[str]
 )
 
 
@@ -130,7 +111,13 @@ def parse_fact_extraction(
     entity_info: dict[str, tuple[str, tuple[str, ...]]] = {}
     alias_to_name: dict[str, str] = {}
     if isinstance(raw_entities, list):
-        for raw_item in cast(list[Any], raw_entities)[:32]:
+        for raw_item in cast(list[Any], raw_entities)[
+            : policy(
+                "memory",
+                "facts.parameters.parse_fact_extraction_value_chars_or_items",
+                int,
+            )
+        ]:
             if not isinstance(raw_item, dict):
                 continue
             item = cast(dict[str, Any], raw_item)
@@ -149,23 +136,50 @@ def parse_fact_extraction(
             )
             aliases = tuple(
                 _normalize_entity_name(alias)
-                for alias in alias_values[:8]
+                for alias in alias_values[
+                    : policy(
+                        "memory",
+                        "facts.parameters.parse_fact_extraction_aliases_chars_or_items",
+                        int,
+                    )
+                ]
                 if isinstance(alias, str) and _normalize_entity_name(alias)
             )
             names.add(canonical)
             entities.append(
                 {
                     "name": canonical,
-                    "type": entity_type.strip()[:32],
+                    "type": entity_type.strip()[
+                        : policy(
+                            "memory",
+                            "facts.parameters.parse_fact_extraction_type_chars_or_items",
+                            int,
+                        )
+                    ],
                     "aliases": aliases,
                 }
             )
-            entity_info[canonical] = (entity_type.strip()[:32], aliases)
+            entity_info[canonical] = (
+                entity_type.strip()[
+                    : policy(
+                        "memory",
+                        "facts.parameters.parse_fact_extraction_entity_info_canonical_chars_or_items",
+                        int,
+                    )
+                ],
+                aliases,
+            )
             for alias in aliases:
                 alias_to_name[alias] = canonical
     facts: list[FactCandidate] = []
     if isinstance(raw_facts, list):
-        for raw_item in cast(list[Any], raw_facts)[:32]:
+        for raw_item in cast(list[Any], raw_facts)[
+            : policy(
+                "memory",
+                "facts.parameters.parse_fact_extraction_value_chars_or_items_2",
+                int,
+            )
+        ]:
             if not isinstance(raw_item, dict):
                 continue
             item = cast(dict[str, Any], raw_item)
@@ -185,14 +199,31 @@ def parse_fact_extraction(
                 _normalize_entity_name(object_value),
                 _normalize_entity_name(object_value),
             )
-            predicate_name = " ".join(predicate.strip().split())[:48]
+            predicate_name = " ".join(predicate.strip().split())[
+                : policy(
+                    "memory",
+                    "facts.parameters.parse_fact_extraction_predicate_name_chars_or_items",
+                    int,
+                )
+            ]
             if not subject_name or not object_name or not predicate_name:
                 continue
             # The source scope is the caller's explicit attribution guard.  The
             # model must resolve a subject; never invent one for an opaque scope.
-            if subject_name in {"他", "她", "他们", "它", "这本书", "该书", "someone"}:
+            if subject_name in policy(
+                "memory", "facts.copy.parse_fact_extraction_words", set[str]
+            ):
                 continue
-            polarity = -1 if item.get("polarity") in {-1, "negative", "否定"} else 1
+            polarity = (
+                -1
+                if item.get("polarity")
+                in {
+                    -1,
+                    "negative",
+                    policy("memory", "facts.copy.parse_fact_extraction_text", str),
+                }
+                else 1
+            )
             mode = item.get("mode")
             if mode == "functional":
                 multi = False
@@ -212,17 +243,38 @@ def parse_fact_extraction(
                     str(
                         item.get("subject_type")
                         or entity_info.get(subject_name, ("concept", ()))[0]
-                    )[:32],
+                    )[
+                        : policy(
+                            "memory",
+                            "facts.parameters.parse_fact_extraction_value_chars_or_items_3",
+                            int,
+                        )
+                    ],
                     str(
                         item.get("object_type")
                         or entity_info.get(object_name, ("concept", ()))[0]
-                    )[:32],
+                    )[
+                        : policy(
+                            "memory",
+                            "facts.parameters.parse_fact_extraction_value_chars_or_items_4",
+                            int,
+                        )
+                    ],
                     entity_info.get(subject_name, ("concept", ()))[1],
                     polarity,
                     multi,
                 )
             )
-    return FactExtraction(entities, facts[:32])
+    return FactExtraction(
+        entities,
+        facts[
+            : policy(
+                "memory",
+                "facts.parameters.parse_fact_extraction_result_chars_or_items",
+                int,
+            )
+        ],
+    )
 
 
 def _optional_float(value: object) -> float | None:
@@ -234,7 +286,13 @@ def _optional_float(value: object) -> float | None:
 
 
 def _normalize_entity_name(value: str) -> str:
-    return " ".join(value.strip().split())[:120]
+    return " ".join(value.strip().split())[
+        : policy(
+            "memory",
+            "facts.parameters.normalize_entity_name_result_chars_or_items",
+            int,
+        )
+    ]
 
 
 def extract_fact_candidates(
@@ -255,8 +313,8 @@ def extract_fact_candidates(
     text = f"{memory.summary}\n{memory.content}"
     result_with_positions: list[tuple[int, FactCandidate]] = []
     status_patterns = (
-        (r"投简历|找工作|求职|正在.*找工作", "就业状态", "正在求职"),
-        (r"已经在工作|已入职|已经入职|开始上班|在工作了", "就业状态", "已工作"),
+        policy("memory", "facts.copy.extract_fact_candidates_words", tuple[str, ...]),
+        policy("memory", "facts.copy.extract_fact_candidates_words_2", tuple[str, ...]),
     )
     for pattern, predicate, object_value in status_patterns:
         for match in re.finditer(pattern, text):
@@ -266,12 +324,16 @@ def extract_fact_candidates(
                 (
                     match.start(),
                     FactCandidate(
-                        "用户", predicate, object_value, memory.created_at, None
+                        policy("memory", "facts.copy.has_user_anchor_text", str),
+                        predicate,
+                        object_value,
+                        memory.created_at,
+                        None,
                     ),
                 )
             )
     for preference in re.finditer(
-        r"(不喜欢|讨厌|喜欢)([^，。！？\n]{1,24})",
+        policy("memory", "facts.copy.extract_fact_candidates_text", str),
         text,
     ):
         if not _has_user_anchor(text, preference.start()):
@@ -280,12 +342,17 @@ def extract_fact_candidates(
             (
                 preference.start(),
                 FactCandidate(
-                    "用户",
-                    "偏好",
+                    policy("memory", "facts.copy.has_user_anchor_text", str),
+                    policy("memory", "facts.copy.extract_fact_candidates_text_2", str),
                     f"{preference.group(1)}{preference.group(2).strip()}",
                     memory.created_at,
                     None,
-                    polarity=-1 if preference.group(1) in {"不喜欢", "讨厌"} else 1,
+                    polarity=-1
+                    if preference.group(1)
+                    in policy(
+                        "memory", "facts.copy.extract_fact_candidates_words_3", set[str]
+                    )
+                    else 1,
                 ),
             )
         )
@@ -300,7 +367,13 @@ def extract_fact_candidates(
             result.append(candidate)
         else:
             result[existing_index] = candidate
-    return result[:4]
+    return result[
+        : policy(
+            "memory",
+            "facts.parameters.extract_fact_candidates_result_chars_or_items",
+            int,
+        )
+    ]
 
 
 def _has_user_anchor(text: str, position: int) -> bool:
@@ -315,7 +388,7 @@ def _has_user_anchor(text: str, position: int) -> bool:
         + 1
     )
     prefix = text[clause_start:position]
-    return "用户" in prefix
+    return policy("memory", "facts.copy.has_user_anchor_text", str) in prefix
 
 
 def _fact_terms(text: str) -> set[str]:
@@ -325,23 +398,27 @@ def _fact_terms(text: str) -> set[str]:
         if token.isascii():
             terms.add(token)
         else:
-            terms.update(token[i:i + size] for size in (2, 3)
-                         for i in range(len(token) - size + 1))
+            terms.update(
+                token[i : i + size]
+                for size in policy("memory", "retrieval.ngram_sizes", tuple[int, ...])
+                for i in range(len(token) - size + 1)
+            )
     for pattern, predicates in _PREDICATE_QUERIES:
         if pattern.search(text):
             terms.update(predicates)
     if len(terms) > 1:
-        terms.discard("用户")
+        terms.discard(policy("memory", "facts.copy.has_user_anchor_text", str))
     return terms
 
 
 def _query_time(text: str, fallback: float) -> float:
     """Use an explicit local date, or the existing month midpoint convention."""
-    date = re.search(r"(\d{4})[-年](\d{1,2})[-月](\d{1,2})(?:日|号)?", text)
+    date = re.search(policy("memory", "facts.copy.query_time_text", str), text)
     if date:
         try:
-            return datetime(*(int(value) for value in date.groups()),
-                            tzinfo=USER_TIMEZONE).timestamp()
+            return datetime(
+                *(int(value) for value in date.groups()), tzinfo=USER_TIMEZONE
+            ).timestamp()
         except (ValueError, OverflowError, OSError):
             return fallback
     match = _MONTH_QUERY_RE.search(text)
@@ -353,7 +430,12 @@ def _query_time(text: str, fallback: float) -> float:
     if not 1 <= month <= 12:
         return fallback
     try:
-        return datetime(year, month, 15, tzinfo=USER_TIMEZONE).timestamp()
+        return datetime(
+            year,
+            month,
+            policy("memory", "facts.parameters.month_fallback_day", int),
+            tzinfo=USER_TIMEZONE,
+        ).timestamp()
     except (ValueError, OverflowError, OSError):
         return fallback
 
@@ -500,7 +582,11 @@ class MemoryFactStore:
             return []
         patterns = [
             f"%{_escape_like(term)}%"
-            for term in sorted(terms, key=lambda term: (-len(term), term))[:64]
+            for term in sorted(terms, key=lambda term: (-len(term), term))[
+                : policy(
+                    "memory", "facts.parameters.search_patterns_chars_or_items", int
+                )
+            ]
         ]
         knowledge_query = is_knowledge_query(query)
         allowed_scopes = (
@@ -526,11 +612,13 @@ class MemoryFactStore:
         direct_params = [value for pattern in patterns for value in (pattern,) * 5]
         subject_where = ""
         subject_params: list[str] = []
-        if scope != "knowledge" and not knowledge_query and re.search(
-            r"(?:^|[，,。！!？?\s])我|记得我|知道我|用户", query
+        if (
+            scope != "knowledge"
+            and not knowledge_query
+            and re.search(policy("memory", "facts.copy.search_text", str), query)
         ):
             subject_where = " AND s.canonical_name = ?"
-            subject_params = ["用户"]
+            subject_params = policy("memory", "facts.copy.search_words", list[str])
         async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT f.id, s.canonical_name AS subject, f.predicate, "
@@ -547,16 +635,30 @@ class MemoryFactStore:
                 "AND f.valid_from <= ? AND "
                 "(f.valid_until IS NULL OR f.valid_until > ?) AND ("
                 + direct_where
-                + ")" + subject_where + " ORDER BY (" + score + ") DESC, "
+                + ")"
+                + subject_where
+                + " ORDER BY ("
+                + score
+                + ") DESC, "
                 "f.valid_from DESC, f.created_at DESC, f.id LIMIT ?",
-                (*allowed_scopes, at, at, *direct_params, *subject_params,
-                 *direct_params, _FACT_RECALL_LIMIT),
+                (
+                    *allowed_scopes,
+                    at,
+                    at,
+                    *direct_params,
+                    *subject_params,
+                    *direct_params,
+                    _FACT_RECALL_LIMIT,
+                ),
             )
             selected = await cursor.fetchall()
         return [_row_to_fact(row) for row in selected]
 
     async def recent(
-        self, limit: int = 32, now: float | None = None, scope: str | None = None
+        self,
+        limit: int = policy("memory", "facts.parameters.recent_limit", int),
+        now: float | None = None,
+        scope: str | None = None,
     ) -> list[MemoryFact]:
         """Return a bounded snapshot of currently valid facts for reflection."""
         at = time.time() if now is None else now
@@ -587,14 +689,29 @@ class MemoryFactStore:
         self, name: str, entity_type: str = "concept", aliases: tuple[str, ...] = ()
     ) -> str:
         normalized = _normalize_entity_name(name)
-        type_name = entity_type.strip()[:32] or "concept"
+        type_name = (
+            entity_type.strip()[
+                : policy(
+                    "memory",
+                    "facts.parameters.ensure_entity_type_name_chars_or_items",
+                    int,
+                )
+            ]
+            or "concept"
+        )
         normalized_aliases = tuple(
             dict.fromkeys(
                 alias
                 for alias in (_normalize_entity_name(value) for value in aliases)
                 if alias
             )
-        )[:8]
+        )[
+            : policy(
+                "memory",
+                "facts.parameters.ensure_entity_normalized_aliases_chars_or_items",
+                int,
+            )
+        ]
         cursor = await self._db.conn.execute(
             "SELECT id, aliases FROM memory_entity "
             "WHERE canonical_name = ? AND entity_type = ?",
@@ -612,7 +729,13 @@ class MemoryFactStore:
             row = await cursor.fetchone()
         if row is not None:
             current = json.loads(row["aliases"] or "[]")
-            merged = list(dict.fromkeys([*current, *normalized_aliases]))[:8]
+            merged = list(dict.fromkeys([*current, *normalized_aliases]))[
+                : policy(
+                    "memory",
+                    "facts.parameters.ensure_entity_merged_chars_or_items",
+                    int,
+                )
+            ]
             if merged != current:
                 await self._db.conn.execute(
                     "UPDATE memory_entity SET aliases = ?, updated_at = ? WHERE id = ?",
@@ -662,8 +785,13 @@ class MemoryFactStore:
             "AND object_entity_id = ? AND object_value = ? AND valid_from = ? "
             "AND polarity = ? AND scope = ? LIMIT 1",
             (
-                subject_id, predicate, object_id, object_value,
-                valid_from, polarity, scope,
+                subject_id,
+                predicate,
+                object_id,
+                object_value,
+                valid_from,
+                polarity,
+                scope,
             ),
         )
         return await cursor.fetchone() is not None

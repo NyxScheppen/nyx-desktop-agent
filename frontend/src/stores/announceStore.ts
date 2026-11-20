@@ -1,3 +1,4 @@
+import frontendPolicy from "../../../nyx/settings/frontend.json";
 import { create } from "zustand";
 
 // 头像旁临时气泡（几秒后淡出）：碎碎念（mutter）+ 活动完成后冒一句（activity）。
@@ -12,10 +13,7 @@ export type Announcement = {
 };
 
 // 淡出时长（ms）：碎碎念短、活动产出长。AnnounceLayer 用它设 animation-duration，与 dismiss 同步。
-export const ANNOUNCE_DURATION: Record<AnnounceKind, number> = {
-  mutter: 4000,
-  activity: 7000,
-};
+export const ANNOUNCE_DURATION: Record<AnnounceKind, number> = frontendPolicy.frontend.announceStore.ANNOUNCE_DURATION as Record<AnnounceKind, number>;
 
 type AnnounceState = {
   items: Announcement[];

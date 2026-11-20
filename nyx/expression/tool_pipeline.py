@@ -26,6 +26,7 @@ from nyx.expression.prompt import (
     bound_material_block,
     format_prompt_time,
 )
+from nyx.policy import policy
 from nyx.tools.registry import is_read_only_call
 from nyx.types import Plan, PlanStep
 
@@ -33,9 +34,9 @@ if TYPE_CHECKING:
     from nyx.expression.pipeline import ReplyDeps
 
 _LOGGER = logging.getLogger(__name__)
-_MAX_TOOL_ROUNDS = 4
-_MAX_REPLANS = 1
-_MAX_TOOL_ATTEMPTS = 3
+_MAX_TOOL_ROUNDS = policy("expression", "tool_pipeline._MAX_TOOL_ROUNDS", int)
+_MAX_REPLANS = policy("expression", "tool_pipeline._MAX_REPLANS", int)
+_MAX_TOOL_ATTEMPTS = policy("expression", "tool_pipeline._MAX_TOOL_ATTEMPTS", int)
 
 
 class ToolState(TypedDict):
@@ -87,10 +88,13 @@ def _parse_plan(raw: str) -> Plan | None:
             return None
         step = cast(dict[str, Any], item)
         text, tool, condition = (
-            step.get("text"), step.get("expected_tool"), step.get("done_condition")
+            step.get("text"),
+            step.get("expected_tool"),
+            step.get("done_condition"),
         )
         if (
-            not isinstance(text, str) or not isinstance(condition, str)
+            not isinstance(text, str)
+            or not isinstance(condition, str)
             or (tool is not None and not isinstance(tool, str))
         ):
             return None
@@ -101,33 +105,70 @@ def _parse_plan(raw: str) -> Plan | None:
 def execution_feedback(state: ToolState) -> str:
     """Keep actual call status separate from natural-language plan completion."""
     records = [
-        {**{key: record[key] for key in (
-            "step", "name", "status", "attempts", "errors", "args",
-        )}, "尝试开始时间": format_prompt_time(record.get("started_at")),
-         "结果接收时间": format_prompt_time(record.get("received_at"))}
+        {
+            **{
+                key: record[key]
+                for key in (
+                    "step",
+                    "name",
+                    "status",
+                    "attempts",
+                    "errors",
+                    "args",
+                )
+            },
+            policy(
+                "expression", "tool_pipeline.copy.execution_feedback_extra_text", str
+            ): format_prompt_time(record.get("started_at")),
+            policy(
+                "expression", "tool_pipeline.copy.execution_feedback_extra_text_2", str
+            ): format_prompt_time(record.get("received_at")),
+        }
         for record in reversed(list(state["records"].values()))
     ]
-    text = "\n".join(state["notices"][-5:])
+    text = "\n".join(
+        state["notices"][
+            -policy(
+                "expression",
+                "tool_pipeline.parameters.execution_feedback_text_chars_or_items",
+                int,
+            ) :
+        ]
+    )
     if state["replans"]:
-        text += "\n[规划状态]\n" + json.dumps({
-            "replans": state["replans"],
-            "remaining_replans": _MAX_REPLANS - state["replans"],
-        }, ensure_ascii=False)
+        text += policy(
+            "expression", "tool_pipeline.copy.execution_feedback_text", str
+        ) + json.dumps(
+            {
+                "replans": state["replans"],
+                "remaining_replans": _MAX_REPLANS - state["replans"],
+            },
+            ensure_ascii=False,
+        )
         if state["replan_reason"] is not None:
-            text += "\n已受理重规划，正在生成新计划。"
+            text += policy(
+                "expression", "tool_pipeline.copy.execution_feedback_text_2", str
+            )
         elif state["plan"] is not None:
-            text += "\n已完成重规划，当前计划已替代旧计划；之前的 replan 决策已处理。"
+            text += policy(
+                "expression", "tool_pipeline.copy.execution_feedback_text_4", str
+            )
         else:
-            text += "\n重规划未取得合法计划，已降级无计划执行。"
+            text += policy(
+                "expression", "tool_pipeline.copy.execution_feedback_text_5", str
+            )
     if records:
-        text += "\n[实际调用步骤状态]\n" + json.dumps(records, ensure_ascii=False)
+        text += policy(
+            "expression", "tool_pipeline.copy.execution_feedback_text_3", str
+        ) + json.dumps(records, ensure_ascii=False)
     return bound_material_block(text.strip(), _TOOL_BLOCK_MAX_CHARS // 2)
 
 
 def _needs_plan_review(state: ToolState) -> bool:
     latest = next(reversed(state["records"].values()), None)
     return (
-        state["plan"] is not None and latest is not None
+        state["plan"] is not None
+        and latest is not None
         and latest["status"] == "exhausted"
         and state.get("plan_review", {}).get("step") != latest["step"]
         and state["replan_reason"] is None
@@ -164,14 +205,16 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
                 elif not is_read_only_call(pending["name"], pending["args"]):
                     pending.update(
                         status="uncertain",
-                        text="旧副作用结果未确认，禁止重放；请先查证。",
+                        text=policy(
+                            "expression", "tool_pipeline.copy.execute_text_3", str
+                        ),
                     )
                 else:
                     pending = receive_result(
                         pending,
                         None,
                         (receipt["error"] if receipt else None)
-                        or "旧请求未取得可靠结果，等待新版决策。",
+                        or policy("expression", "tool_pipeline.copy.enter_text", str),
                     )
             if pending["status"] == "retry_wait":
                 changes["records"] = {**state["records"], pending["key"]: pending}
@@ -205,21 +248,31 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
     async def plan(state: ToolState) -> dict[str, Any]:
         system = state["system"]
         user = state["user"] + "\n" + PLAN_TASK
-        user += "\n授权工具：" + json.dumps(state["schemas"], ensure_ascii=False)
+        user += policy("expression", "tool_pipeline.copy.plan_text", str) + json.dumps(
+            state["schemas"], ensure_ascii=False
+        )
         if state["replan_reason"] is not None or state["records"]:
             try:
                 lessons = await deps.memory.search(
-                    state["query"], kind=MemoryKind.LESSON,
+                    state["query"],
+                    kind=MemoryKind.LESSON,
                 )
                 if lessons:
                     system += "\n\n" + _memory_block(lessons)
             except Exception:
-                _LOGGER.exception("重规划经验召回失败")
+                _LOGGER.exception(
+                    policy("expression", "tool_pipeline.copy.plan_text_3", str)
+                )
             user += (
-                f"\n[计划生成时间={format_prompt_time(state.get('plan_at'))}]\n上次计划："
+                policy("expression", "tool_pipeline.templates.plan_text", str).format(
+                    p0=format_prompt_time(state.get("plan_at"))
+                )
                 + json.dumps(state["plan"], ensure_ascii=False)
-                + "\n重规划原因："
-                + (state["replan_reason"] or "用户输入更新；保留已执行事实和剩余预算。")
+                + policy("expression", "tool_pipeline.copy.plan_text_4", str)
+                + (
+                    state["replan_reason"]
+                    or policy("expression", "tool_pipeline.copy.plan_text_5", str)
+                )
                 + "\n"
                 + _tool_outputs_block(
                     state["outputs"],
@@ -229,15 +282,22 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         parsed = None
         try:
             output = await deps.llm.complete(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}],
-                module="expression", output_type="plan", json_mode=True,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                module="expression",
+                output_type="plan",
+                json_mode=True,
                 correlation_id=state["correlation_id"],
             )
             await deps.evaluator.evaluate(output)
             parsed = _parse_plan(output.content)
         except Exception:
-            _LOGGER.exception("规划失败 correlation_id=%s", state["correlation_id"])
+            _LOGGER.exception(
+                policy("expression", "tool_pipeline.copy.plan_text_2", str),
+                state["correlation_id"],
+            )
         return {
             "system": system,
             "plan": asdict(parsed) if parsed else None,
@@ -252,28 +312,49 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             return {"calls": []}
         user = state["user"] + "\n" + state["task"]
         if state["plan"] is not None:
-            user += f"\n[计划生成时间={format_prompt_time(state.get('plan_at'))}]"
-            user += "\n[当前计划]\n" + json.dumps(state["plan"], ensure_ascii=False)
+            user += policy(
+                "expression", "tool_pipeline.templates.decide_text", str
+            ).format(p0=format_prompt_time(state.get("plan_at")))
+            user += policy(
+                "expression", "tool_pipeline.copy.decide_text", str
+            ) + json.dumps(state["plan"], ensure_ascii=False)
         user += "\n" + _tool_outputs_block(state["outputs"], execution_feedback(state))
-        schemas = [*state["schemas"], {
-            "type": "function", "function": {
-                "name": "replan",
-                "description": "原计划整体失效且没有备用步骤时重规划（最多一次）",
-                "parameters": {"type": "object", "properties": {
-                    "reason": {"type": "string"},
-                }, "required": ["reason"]},
+        schemas = [
+            *state["schemas"],
+            {
+                "type": "function",
+                "function": {
+                    "name": "replan",
+                    "description": policy(
+                        "expression", "tool_pipeline.copy.decide_text_3", str
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["reason"],
+                    },
+                },
             },
-        }]
+        ]
         try:
             output = await deps.llm.complete(
-                [{"role": "system", "content": state["system"]},
-                 {"role": "user", "content": user}],
-                module="expression", output_type="tool", tools=schemas,
+                [
+                    {"role": "system", "content": state["system"]},
+                    {"role": "user", "content": user},
+                ],
+                module="expression",
+                output_type="tool",
+                tools=schemas,
                 correlation_id=state["correlation_id"],
             )
             await deps.evaluator.evaluate(output)
         except Exception:
-            _LOGGER.exception("工具判断失败 correlation_id=%s", state["correlation_id"])
+            _LOGGER.exception(
+                policy("expression", "tool_pipeline.copy.decide_text_4", str),
+                state["correlation_id"],
+            )
             return {
                 "calls": [],
                 "rounds": state["rounds"] + 1,
@@ -281,73 +362,120 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             }
         notices = list(state["notices"])
         if len(output.tool_calls) > _TOOL_OUTPUT_MAX_ITEMS:
-            notices.append("跳过本轮第6项及后续调用：超过单轮调用数量上限。")
+            notices.append(
+                policy("expression", "tool_pipeline.copy.decide_text_2", str)
+            )
         return {
-            "calls": output.tool_calls[:_TOOL_OUTPUT_MAX_ITEMS], "cursor": 0,
-            "call_id": output.call_id, "rounds": state["rounds"] + 1,
-            "replan_reason": None, "notices": notices,
+            "calls": output.tool_calls[:_TOOL_OUTPUT_MAX_ITEMS],
+            "cursor": 0,
+            "call_id": output.call_id,
+            "rounds": state["rounds"] + 1,
+            "replan_reason": None,
+            "notices": notices,
         }
 
     async def review_plan(state: ToolState) -> dict[str, Any]:
         current = cast(dict[str, Any], state["plan"])
         latest = next(reversed(state["records"].values()))
         user = (
-            state["user"] + "\n" + PLAN_REVIEW_TASK
-            + f"\n[计划生成时间={format_prompt_time(state.get('plan_at'))}]"
-            + "\n[当前计划]\n" + json.dumps(current, ensure_ascii=False)
-            + "\n" + _tool_outputs_block(state["outputs"], execution_feedback(state))
-            + f"\n剩余预算：工具判断{_MAX_TOOL_ROUNDS - state['rounds']}轮，"
-            + f"结果{_TOOL_OUTPUT_MAX_ITEMS - len(state['outputs'])}项，"
-            + f"重规划{_MAX_REPLANS - state['replans']}次。"
+            state["user"]
+            + "\n"
+            + PLAN_REVIEW_TASK
+            + policy(
+                "expression", "tool_pipeline.templates.review_plan_text_4", str
+            ).format(p0=format_prompt_time(state.get("plan_at")))
+            + policy("expression", "tool_pipeline.copy.decide_text", str)
+            + json.dumps(current, ensure_ascii=False)
+            + "\n"
+            + _tool_outputs_block(state["outputs"], execution_feedback(state))
+            + policy(
+                "expression", "tool_pipeline.templates.review_plan_text_3", str
+            ).format(p0=_MAX_TOOL_ROUNDS - state["rounds"])
+            + policy(
+                "expression", "tool_pipeline.templates.review_plan_text_2", str
+            ).format(p0=_TOOL_OUTPUT_MAX_ITEMS - len(state["outputs"]))
+            + policy(
+                "expression", "tool_pipeline.templates.review_plan_text", str
+            ).format(p0=_MAX_REPLANS - state["replans"])
         )
         review: dict[str, Any] = {
-            "step": latest["step"], "action": "stop", "next_step": None,
-            "reason": "计划决策失败，停止新工具调用；已有结果仍可使用。",
+            "step": latest["step"],
+            "action": "stop",
+            "next_step": None,
+            "reason": policy("expression", "tool_pipeline.copy.review_plan_text", str),
         }
         try:
             output = await deps.llm.complete(
-                [{"role": "system", "content": state["system"]},
-                 {"role": "user", "content": user}],
-                module="expression", output_type="tool", json_mode=True,
+                [
+                    {"role": "system", "content": state["system"]},
+                    {"role": "user", "content": user},
+                ],
+                module="expression",
+                output_type="tool",
+                json_mode=True,
                 correlation_id=state["correlation_id"],
             )
             await deps.evaluator.evaluate(output)
             data: Any = json.loads(output.content)
             if not isinstance(data, dict):
-                raise ValueError("计划决策必须是 JSON 对象")
+                raise ValueError(
+                    policy("expression", "tool_pipeline.copy.review_plan_text_2", str)
+                )
             decision = cast(dict[str, Any], data)
             action, reason, step = (
-                decision.get("action"), decision.get("reason"),
+                decision.get("action"),
+                decision.get("reason"),
                 decision.get("next_step"),
             )
             if (
                 action not in ("continue", "replan", "stop")
-                or not isinstance(reason, str) or not reason.strip()
-                or (action == "continue" and (
-                    type(step) is not int or not 1 <= step <= len(current["steps"])
-                ))
+                or not isinstance(reason, str)
+                or not reason.strip()
+                or (
+                    action == "continue"
+                    and (
+                        type(step) is not int or not 1 <= step <= len(current["steps"])
+                    )
+                )
             ):
-                raise ValueError("计划决策动作、原因或步骤无效")
+                raise ValueError(
+                    policy("expression", "tool_pipeline.copy.review_plan_text_3", str)
+                )
             review.update(
-                action=action, reason=reason.strip()[:1000],
+                action=action,
+                reason=reason.strip()[
+                    : policy(
+                        "expression",
+                        "tool_pipeline.parameters.review_plan_reason_chars_or_items",
+                        int,
+                    )
+                ],
                 next_step=step if action == "continue" else None,
             )
         except Exception:
-            _LOGGER.exception("计划决策失败 correlation_id=%s", state["correlation_id"])
+            _LOGGER.exception(
+                policy("expression", "tool_pipeline.copy.review_plan_text_4", str),
+                state["correlation_id"],
+            )
         return {
-            "plan_review": review, "calls": [], "cursor": 0,
+            "plan_review": review,
+            "calls": [],
+            "cursor": 0,
             "replan_reason": review["reason"] if review["action"] == "replan" else None,
-            "notices": [*state["notices"],
-                        "[计划决策] " + json.dumps(review, ensure_ascii=False)],
+            "notices": [
+                *state["notices"],
+                policy("expression", "tool_pipeline.copy.review_plan_text_5", str)
+                + json.dumps(review, ensure_ascii=False),
+            ],
         }
 
     def select_call(state: ToolState) -> dict[str, Any]:
         if _needs_plan_review(state):
             notices = list(state["notices"])
-            remaining = state["calls"][state["cursor"]:]
+            remaining = state["calls"][state["cursor"] :]
             if remaining:
                 notices.append(
-                    "以下调用未执行：耗尽后必须先完成计划决策。"
+                    policy("expression", "tool_pipeline.copy.select_call_text_3", str)
                     + json.dumps(remaining, ensure_ascii=False)
                 )
             return {"pending": None, "calls": [], "cursor": 0, "notices": notices}
@@ -363,10 +491,21 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             cursor += 1
             name, args = tc.get("name", ""), tc.get("args", {})
             if name == "replan":
-                reason = str(args.get("reason", "计划走不通"))
+                reason = str(
+                    args.get(
+                        "reason",
+                        policy(
+                            "expression", "tool_pipeline.copy.select_call_text_4", str
+                        ),
+                    )
+                )
                 continue
             if name not in allowed:
-                notices.append(f"跳过 {name}：当前未授权该工具。")
+                notices.append(
+                    policy(
+                        "expression", "tool_pipeline.templates.select_call_text_3", str
+                    ).format(p0=name)
+                )
                 continue
             key = name + ":" + json.dumps(args, ensure_ascii=False, sort_keys=True)
             if key in state["records"]:
@@ -378,37 +517,58 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
                     pending = dict(prior)
                     break
                 why = (
-                    "结果未确认，禁止重复副作用" if prior["status"] == "uncertain"
-                    else "重试次数已耗尽" if prior["status"] == "exhausted"
-                    else "已经执行"
+                    policy("expression", "tool_pipeline.copy.select_call_text_2", str)
+                    if prior["status"] == "uncertain"
+                    else policy(
+                        "expression", "tool_pipeline.copy.select_call_text_5", str
+                    )
+                    if prior["status"] == "exhausted"
+                    else policy(
+                        "expression", "tool_pipeline.copy.select_call_text_6", str
+                    )
                 )
                 notices.append(
-                    f"跳过 {name}（步骤{prior['step']}）：同名同参数{why}，"
-                    "请换参数、执行备用步骤或 replan。"
+                    policy(
+                        "expression", "tool_pipeline.templates.select_call_text", str
+                    ).format(p0=name, p1=prior["step"], p2=why)
                 )
                 continue
             if len(state["outputs"]) >= _TOOL_OUTPUT_MAX_ITEMS:
-                notices.append(f"跳过 {name} 及后续调用：工具结果数量预算已用尽。")
+                notices.append(
+                    policy(
+                        "expression", "tool_pipeline.templates.select_call_text_2", str
+                    ).format(p0=name)
+                )
                 cursor = len(state["calls"])
                 break
             pending = {
-                "step": len(state["records"]) + 1, "key": key,
-                "name": name, "args": args, "status": "pending",
-                "attempts": 0, "errors": [], "retry_at": 0.0,
+                "step": len(state["records"]) + 1,
+                "key": key,
+                "name": name,
+                "args": args,
+                "status": "pending",
+                "attempts": 0,
+                "errors": [],
+                "retry_at": 0.0,
                 "call_id": state["call_id"],
             }
             break
         if pending is None and reason is None and state["rounds"] >= _MAX_TOOL_ROUNDS:
-            notices.append("停止工具调用：当前计划的4轮工具判断预算已用尽。")
+            notices.append(
+                policy("expression", "tool_pipeline.copy.select_call_text", str)
+            )
         return {
-            "cursor": cursor, "pending": pending, "notices": notices,
+            "cursor": cursor,
+            "pending": pending,
+            "notices": notices,
             "replan_reason": reason,
         }
 
     async def begin_attempt(state: ToolState) -> dict[str, Any]:
         pending = dict(state["pending"] or {})
         if (
-            pending["attempts"] > 0 and not pending.get("receipt_required")
+            pending["attempts"] > 0
+            and not pending.get("receipt_required")
             and not is_read_only_call(pending["name"], pending["args"])
         ):
             return {"pending": pending}
@@ -417,7 +577,9 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         if await input_pending(state):
             return {"exit_reason": "input_pending"}
         pending.update(
-            attempts=pending["attempts"] + 1, status="running", log_id=str(uuid4()),
+            attempts=pending["attempts"] + 1,
+            status="running",
+            log_id=str(uuid4()),
             receipt_required=True,
             started_at=time.time(),
         )
@@ -437,19 +599,22 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
                 }
             if not read_only:
                 pending.update(
-                    status="uncertain", text="旧副作用结果未确认，禁止重放；请先查证。"
+                    status="uncertain",
+                    text=policy("expression", "tool_pipeline.copy.execute_text_3", str),
                 )
                 return {"pending": pending}
             return {
                 "pending": receive_result(
-                    pending, None, "输入已更新，旧请求等待新版决策。"
+                    pending,
+                    None,
+                    policy("expression", "tool_pipeline.copy.execute_text", str),
                 ),
                 "exit_reason": "input_pending",
             }
         if not pending.get("receipt_required") and not read_only:
             pending.update(
                 status="uncertain",
-                text="旧 checkpoint 的副作用结果未确认，禁止重放；请先查证。",
+                text=policy("expression", "tool_pipeline.copy.execute_text_2", str),
             )
             return {"pending": pending}
         result: Any = None
@@ -457,16 +622,18 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         # Receipt I/O is outside capability error handling: never retry on a
         # persistence failure after the handler may already have produced effects.
         receipt = await deps.tools.start_execution(
-            pending["log_id"], state["correlation_id"],
+            pending["log_id"],
+            state["correlation_id"],
         )
         if receipt is not None and receipt["status"] == "success":
             result = json.loads(receipt["result_json"])
         elif receipt is not None and not read_only and name != "deep_research":
             pending.update(
                 status="uncertain",
-                errors=[*pending["errors"], receipt["error"]] if receipt["error"]
+                errors=[*pending["errors"], receipt["error"]]
+                if receipt["error"]
                 else pending["errors"],
-                text="副作用执行结果未确认，禁止重放；请先查证实际结果。"
+                text=policy("expression", "tool_pipeline.copy.execute_text_4", str)
                 + (receipt["error"] or ""),
             )
             return {"pending": pending}
@@ -478,15 +645,27 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             allowed = {schema["function"]["name"] for schema in deps.tools.schema()}
             allowed &= {schema["function"]["name"] for schema in state["schemas"]}
             if name not in allowed:
-                pending.update(status="skipped", text="跳过：恢复后该工具已不再授权。")
+                pending.update(
+                    status="skipped",
+                    text=policy("expression", "tool_pipeline.copy.execute_text_5", str),
+                )
                 return {"pending": pending}
             try:
                 result = await deps.tools.call(
-                    name, args, correlation_id=state["correlation_id"],
-                    call_id=pending["call_id"], log_id=pending["log_id"],
+                    name,
+                    args,
+                    correlation_id=state["correlation_id"],
+                    call_id=pending["call_id"],
+                    log_id=pending["log_id"],
                 )
             except Exception as exc:  # 取消继续传播，running 回执保留。
-                error = f"{type(exc).__name__}: {exc}"[:1000]
+                error = f"{type(exc).__name__}: {exc}"[
+                    : policy(
+                        "expression",
+                        "tool_pipeline.parameters.execute_error_chars_or_items",
+                        int,
+                    )
+                ]
             await deps.tools.finish_execution(pending["log_id"], result, error)
         return {"pending": receive_result(pending, result, error)}
 
@@ -499,32 +678,48 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         read_only = is_read_only_call(name, pending["args"])
         if error is None:
             if isinstance(result, dict) and result.get("error"):
-                error = str(cast(dict[str, Any], result)["error"])[:1000]
+                error = str(cast(dict[str, Any], result)["error"])[
+                    : policy(
+                        "expression",
+                        "tool_pipeline.parameters.receive_result_error_chars_or_items",
+                        int,
+                    )
+                ]
         if error is not None:
             known_research_failure = (
-                name == "deep_research" and isinstance(result, dict)
+                name == "deep_research"
+                and isinstance(result, dict)
                 and bool(cast(dict[str, Any], result).get("run_id"))
                 and cast(dict[str, Any], result).get("status")
                 in {"failed", "cancelled"}
             )
             pending.update(
-                status="failed" if known_research_failure else
-                "uncertain" if not read_only
-                else "retry_wait" if pending["attempts"] < _MAX_TOOL_ATTEMPTS
+                status="failed"
+                if known_research_failure
+                else "uncertain"
+                if not read_only
+                else "retry_wait"
+                if pending["attempts"] < _MAX_TOOL_ATTEMPTS
                 else "exhausted",
                 errors=[*pending["errors"], error],
                 retry_at=time.time() + pending["attempts"],
                 text=(
-                    f"工具 {name} 执行失败：{error}"
-                    if read_only or known_research_failure else
-                    f"工具 {name} 副作用结果未确认，禁止重试，请先查证：{error}"
+                    policy(
+                        "expression",
+                        "tool_pipeline.templates.receive_result_text_2",
+                        str,
+                    ).format(p0=name, p1=error)
+                    if read_only or known_research_failure
+                    else policy(
+                        "expression", "tool_pipeline.templates.receive_result_text", str
+                    ).format(p0=name, p1=error)
                 ),
             )
         else:
             empty = result is None or result == [] or result == {} or result == ""
             text = json.dumps(result, ensure_ascii=False)
             if len(text) > _MATERIAL_ITEM_MAX_CHARS:
-                text = text[:_MATERIAL_ITEM_MAX_CHARS - 1] + "…"
+                text = text[: _MATERIAL_ITEM_MAX_CHARS - 1] + "…"
             pending.update(status="empty" if empty else "success", text=text)
             if name == "memory_recall" and isinstance(result, dict):
                 segments = cast(dict[str, Any], result).get("segments", [])
@@ -543,9 +738,16 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         if status in ("exhausted", "empty"):
             kind = "tool_error" if status == "exhausted" else "tool_empty"
             await deps.memory.record_failure_signal(
-                kind, f"{kind}:{name}", pending["text"], state["correlation_id"],
-                evidence=[{"source_id": str(pending["log_id"]), "summary":
-                    json.dumps(pending, ensure_ascii=False, default=str)}],
+                kind,
+                f"{kind}:{name}",
+                pending["text"],
+                state["correlation_id"],
+                evidence=[
+                    {
+                        "source_id": str(pending["log_id"]),
+                        "summary": json.dumps(pending, ensure_ascii=False, default=str),
+                    }
+                ],
             )
         records = {**state["records"], pending["key"]: pending}
         outputs = list(state["outputs"])
@@ -562,20 +764,26 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             candidates.update(pending.get("recall_candidates", {}))
         else:
             notices.append(
-                f"跳过 {name} 的结果回注：工具文本预算不足；不能声称已使用该结果。"
+                policy("expression", "tool_pipeline.templates.accept_text", str).format(
+                    p0=name
+                )
             )
         calls, cursor = state["calls"], state["cursor"]
         if status in ("exhausted", "uncertain", "failed"):
             if cursor < len(calls):
                 notices.append(
-                    "以下调用未执行：前一步重试耗尽或副作用结果未确认，先交模型重新决策。"
+                    policy("expression", "tool_pipeline.copy.accept_text", str)
                     + json.dumps(calls[cursor:], ensure_ascii=False)
                 )
             calls, cursor = [], 0
         return {
-            "records": records, "outputs": outputs, "notices": notices,
-            "recall_candidates": candidates, "pending": None,
-            "calls": calls, "cursor": cursor,
+            "records": records,
+            "outputs": outputs,
+            "notices": notices,
+            "recall_candidates": candidates,
+            "pending": None,
+            "calls": calls,
+            "cursor": cursor,
         }
 
     async def after_batch(state: ToolState) -> str:
@@ -593,7 +801,10 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         if state["replans"] >= _MAX_REPLANS:
             return {
                 "replan_reason": None,
-                "notices": [*state["notices"], "跳过 replan：已达到一次重规划上限。"],
+                "notices": [
+                    *state["notices"],
+                    policy("expression", "tool_pipeline.copy.replan_text", str),
+                ],
             }
         return {"replans": state["replans"] + 1}
 
@@ -630,15 +841,17 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
     def complete(state: ToolState) -> dict[str, Any]:
         limit = ""
         if not state["schemas"]:
-            limit = "当前没有获授权的可用工具。"
+            limit = policy("expression", "tool_pipeline.copy.complete_text", str)
         elif state["rounds"] >= _MAX_TOOL_ROUNDS:
-            limit = "工具判断预算已用尽，使用已有结果回答。"
+            limit = policy("expression", "tool_pipeline.copy.complete_text_2", str)
         elif len(state["outputs"]) >= _TOOL_OUTPUT_MAX_ITEMS:
-            limit = "工具结果数量预算已用尽。"
+            limit = policy("expression", "tool_pipeline.copy.complete_text_3", str)
         elif any(r["status"] == "uncertain" for r in state["records"].values()):
-            limit = "已有副作用结果未确认，不再启动新动作。"
-        return {"exit_reason": "complete",
-                "notices": [*state["notices"], limit] if limit else state["notices"]}
+            limit = policy("expression", "tool_pipeline.copy.complete_text_4", str)
+        return {
+            "exit_reason": "complete",
+            "notices": [*state["notices"], limit] if limit else state["notices"],
+        }
 
     def after_begin(state: ToolState) -> str:
         return (

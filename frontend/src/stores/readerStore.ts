@@ -1,3 +1,4 @@
+import readingPolicy from "../../../nyx/settings/reading.json";
 import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import {
@@ -29,12 +30,12 @@ import type {
 
 export type NyxStatus = "idle" | "reading" | "waiting"; // 派生态，不落 store
 
-export const WINDOW_SIZE = 50; // 每窗段数（§5 决策）
-const MIN_CATCHUP_SEC = 1; // 段落未加载 / 过短时的保底节奏
-const MAX_CATCHUP_SEC = 30; // 单段追赶耗时上界
-const MIN_READING_SPEED = 10; // 字/秒，后端校验下界 [10, 200]（reading-system spec）
-const CATCHUP_REFRESH_FRACTION = 0.8; // 窗口 80% 边界触发重拉
-export const GAP_PX = 12; // 段间距（px），对齐 CSS .reader-text__pages 的 gap: 0.75rem（08 §5.1）
+export const WINDOW_SIZE = readingPolicy.reader.window_size; // 每窗段数（§5 决策）
+const MIN_CATCHUP_SEC = readingPolicy.frontend.readerStore.MIN_CATCHUP_SEC; // 段落未加载 / 过短时的保底节奏
+const MAX_CATCHUP_SEC = readingPolicy.frontend.readerStore.MAX_CATCHUP_SEC; // 单段追赶耗时上界
+const MIN_READING_SPEED = readingPolicy.reader.min_speed; // 字/秒，后端校验下界 [10, 200]（reading-system spec）
+const CATCHUP_REFRESH_FRACTION = readingPolicy.frontend.readerStore.CATCHUP_REFRESH_FRACTION; // 窗口 80% 边界触发重拉
+export const GAP_PX = readingPolicy.frontend.readerStore.GAP_PX; // 段间距（px），对齐 CSS .reader-text__pages 的 gap: 0.75rem（08 §5.1）
 
 type ReaderState = {
   books: BookListItem[]; // 书架快照
@@ -317,7 +318,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     windowFrom: 0,
     userPosition: 1,
     nyxPosition: 1,
-    readingSpeed: 50,
+    readingSpeed: readingPolicy.reader.default_speed,
     readCount: 0,
     progressRevision: 0,
     notes: [],
@@ -641,7 +642,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const commit = scopedSetter(set);
         if (!isCurrent(session, bookId)) return false;
         try {
-          const note = await updateUserNote(id, content);
+          const note = await updateUserNote(id, content, get().notes.find((n) => n.id === id)?.revision);
       if (!isScopeCurrent(scope)) return false;
           if (!isCurrent(session, bookId)) return false;
           commit({

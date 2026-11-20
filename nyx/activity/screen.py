@@ -5,6 +5,8 @@ from io import BytesIO
 
 from PIL import ImageGrab
 
+from nyx.policy import policy
+
 _logger = logging.getLogger(__name__)
 
 
@@ -39,7 +41,7 @@ class ScreenObserver:
             image = await asyncio.to_thread(self._capture)
             return await self._describe(image)
         except Exception:
-            _logger.exception("屏幕视觉采样失败")
+            _logger.exception(policy("activity", "screen.copy.sample_once_text", str))
             return None
 
     async def run(self, on_summary: Callable[[str], None]) -> None:

@@ -12,7 +12,7 @@ import uuid
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -32,12 +32,14 @@ from nyx.character_cards import MAX_CARD_BYTES, build_package, load_card
 from nyx.enums import ActivityType, BoundaryResult, EventType, MemoryKind, MemoryType
 from nyx.events.bus import EventAdmissionError, ReplayComplete
 from nyx.memory.facade import build_source_topic
+from nyx.policy import policy
 from nyx.reading.facade import (
     BookmarkNotFoundError,
     BookNotFoundError,
     DuplicateBookError,
     NoteNotFoundError,
 )
+from nyx.reading.sessions import StudyConflictError
 from nyx.reading.store import ProgressConflictError
 from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.types import (
@@ -63,14 +65,19 @@ from nyx.types import (
     UserNote,
 )
 
-_MAX_ACTIVITY_RESULTS_OFFSET = 100_000
-_MAX_EVAL_OFFSET = 100_000
+_MAX_ACTIVITY_RESULTS_OFFSET = policy("api", "routes._MAX_ACTIVITY_RESULTS_OFFSET", int)
+_MAX_EVAL_OFFSET = policy("api", "routes._MAX_EVAL_OFFSET", int)
 
 RootEvent = Callable[[EventType, dict[str, Any]], Event]
 
 
 class _ConversationRevisionPayload(BaseModel):
-    raw_content: str = Field(min_length=1, max_length=200_000)
+    raw_content: str = Field(
+        min_length=1,
+        max_length=policy(
+            "memory", "limits.ConversationRevisionPayload_raw_content_max_length", int
+        ),
+    )
     expected_content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
@@ -105,9 +112,30 @@ def _question_payload(
 
 
 class _AnnotationPayload(BaseModel):
-    reply_event_id: str = Field(..., min_length=1, max_length=128, strict=True)
-    quote: str = Field(..., min_length=1, max_length=2000, strict=True)
-    comment: str = Field(..., min_length=1, max_length=2000, strict=True)
+    reply_event_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=policy(
+            "expression", "limits.AnnotationPayload_reply_event_id_max_length", int
+        ),
+        strict=True,
+    )
+    quote: str = Field(
+        ...,
+        min_length=1,
+        max_length=policy(
+            "expression", "limits.AnnotationPayload_quote_max_length", int
+        ),
+        strict=True,
+    )
+    comment: str = Field(
+        ...,
+        min_length=1,
+        max_length=policy(
+            "expression", "limits.AnnotationPayload_comment_max_length", int
+        ),
+        strict=True,
+    )
 
     @field_validator("reply_event_id", "quote", "comment")
     @classmethod
@@ -118,7 +146,12 @@ class _AnnotationPayload(BaseModel):
 
 
 class _ChatPayload(BaseModel):
-    message: str = Field(..., min_length=1, max_length=12000, strict=True)
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=policy("expression", "limits.ChatPayload_message_max_length", int),
+        strict=True,
+    )
     reply_to: str | None = Field(default=None, min_length=1, strict=True)
     discussion: bool | None = Field(default=None, strict=True)
     annotation: _AnnotationPayload | None = None
@@ -142,24 +175,50 @@ class _ExportPayload(BaseModel):
 
 
 class _KnowledgeSourcePayload(BaseModel):
-    text: str | None = Field(default=None, max_length=200_000, strict=True)
-    url: str | None = Field(default=None, max_length=2048, strict=True)
+    text: str | None = Field(
+        default=None,
+        max_length=policy(
+            "memory", "limits.KnowledgeSourcePayload_text_max_length", int
+        ),
+        strict=True,
+    )
+    url: str | None = Field(
+        default=None,
+        max_length=policy(
+            "memory", "limits.KnowledgeSourcePayload_url_max_length", int
+        ),
+        strict=True,
+    )
 
     @model_validator(mode="after")
     def require_source(self) -> "_KnowledgeSourcePayload":
         if not ((self.text and self.text.strip()) or (self.url and self.url.strip())):
-            raise ValueError("请提供文本或 URL")
+            raise ValueError(policy("api", "routes.copy.require_source_text", str))
         return self
 
 
 class _ObservePayload(BaseModel):
     presence: Literal["online", "away", "busy"]
-    window_title: str = Field(default="", max_length=512, strict=True)
+    window_title: str = Field(
+        default="",
+        max_length=policy(
+            "activity", "limits.ObservePayload_window_title_max_length", int
+        ),
+        strict=True,
+    )
     idle_seconds: float = Field(
-        ..., ge=0, le=253402300799, strict=True, allow_inf_nan=False
+        ...,
+        ge=0,
+        le=policy("activity", "limits.ObservePayload_idle_seconds_le", int),
+        strict=True,
+        allow_inf_nan=False,
     )
     sampled_at: float = Field(
-        ..., ge=0, le=253402300799, strict=True, allow_inf_nan=False
+        ...,
+        ge=0,
+        le=policy("activity", "limits.ObservePayload_sampled_at_le", int),
+        strict=True,
+        allow_inf_nan=False,
     )
 
     @model_validator(mode="after")
@@ -178,13 +237,17 @@ def _require_desktop(request: Request) -> None:
         or request.client.host not in ("127.0.0.1", "::1")
         or request.url.hostname not in ("127.0.0.1", "localhost", "::1")
     ):
-        raise HTTPException(409, "桌面观察仅由接入的本地桌面端启用")
+        raise HTTPException(409, policy("api", "routes.copy.require_desktop_text", str))
 
 
 class _ProgressPayload(BaseModel):
     user_position: int = Field(..., ge=1)
     nyx_position: int = Field(..., ge=1)
-    reading_speed: int = Field(..., ge=10, le=200)
+    reading_speed: int = Field(
+        ...,
+        ge=policy("reading", "limits.ProgressPayload_reading_speed_ge", int),
+        le=policy("reading", "reader.max_speed", int),
+    )
     expected_revision: int = Field(..., ge=0)
 
 
@@ -197,8 +260,16 @@ class _ImpulsePayload(BaseModel):
 class _UserNotePayload(BaseModel):
     book_id: str
     paragraph_id: str | None = None
-    content: str = Field(..., max_length=4000)
-    selected_text: str | None = Field(default=None, max_length=4000)
+    content: str = Field(
+        ...,
+        max_length=policy("reading", "limits.UserNotePayload_content_max_length", int),
+    )
+    selected_text: str | None = Field(
+        default=None,
+        max_length=policy(
+            "reading", "limits.UserNotePayload_selected_text_max_length", int
+        ),
+    )
     selection_start: int | None = Field(default=None, ge=0)
     selection_end: int | None = Field(default=None, ge=1)
 
@@ -212,12 +283,73 @@ class _UserNotePayload(BaseModel):
             or self.selection_start is None
             or self.selection_end is None
         ):
-            raise ValueError("空笔记必须包含有效划线")
+            raise ValueError(
+                policy("api", "routes.copy.validate_note_or_highlight_text", str)
+            )
         return self
 
 
 class _UpdateNotePayload(BaseModel):
-    content: str = Field(..., min_length=1, max_length=4000)
+    expected_revision: int | None = Field(default=None, ge=0)
+    content: str = Field(
+        ...,
+        min_length=1,
+        max_length=policy(
+            "reading", "limits.UpdateNotePayload_content_max_length", int
+        ),
+    )
+
+
+class _StudyConnection(BaseModel):
+    connection: uuid.UUID
+
+
+class _StudyEnter(_StudyConnection):
+    book_id: str
+
+
+class _StudyAnnotation(BaseModel):
+    reply_event_id: str
+    quote: str = Field(
+        min_length=1,
+        max_length=policy("reading", "limits.UserNotePayload_content_max_length", int),
+    )
+    comment: str = Field(
+        min_length=1,
+        max_length=policy("reading", "limits.UserNotePayload_content_max_length", int),
+    )
+
+
+class _StudyInput(_StudyConnection):
+    input_id: uuid.UUID
+    message: str = Field(
+        max_length=policy("reading", "limits.UserNotePayload_content_max_length", int)
+    )
+    notes: list[
+        Annotated[
+            str,
+            Field(
+                max_length=policy(
+                    "reading", "limits.UserNotePayload_content_max_length", int
+                )
+            ),
+        ]
+    ] = Field(
+        default_factory=list,
+        max_length=policy("reading", "study.parameters.search_limit", int),
+    )
+    annotation: _StudyAnnotation | None = None
+    presentation: str = Field(
+        default="",
+        max_length=policy("reading", "limits.UserNotePayload_content_max_length", int),
+    )
+
+
+class _StudyNote(BaseModel):
+    revision: int = Field(ge=0)
+    content: str = Field(
+        max_length=policy("reading", "limits.UserNotePayload_content_max_length", int)
+    )
 
 
 class _BoundaryPayload(BaseModel):
@@ -231,13 +363,17 @@ class _BookmarkPayload(BaseModel):
 
 
 class _WebTaskPayload(BaseModel):
-    url: str = Field(..., min_length=1, max_length=2048)
+    url: str = Field(
+        ...,
+        min_length=1,
+        max_length=policy("activity", "limits.WebTaskPayload_url_max_length", int),
+    )
 
     @model_validator(mode="after")
     def validate_http_url(self) -> "_WebTaskPayload":
         parsed = urlsplit(self.url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("只支持 HTTP(S) URL")
+            raise ValueError(policy("api", "routes.copy.validate_http_url_text", str))
         return self
 
 
@@ -288,7 +424,10 @@ def build_app(
 
     @fast.get("/api/ready")
     async def api_ready() -> dict[str, str | None]:
-        return {"service": "nyx-agent", "launch_nonce": launch_nonce}
+        return {
+            "service": policy("runtime", "desktop.service", str),
+            "launch_nonce": launch_nonce,
+        }
 
     @fast.post("/api/knowledge/sources")
     async def api_knowledge_source(payload: _KnowledgeSourcePayload) -> dict[str, Any]:
@@ -298,13 +437,19 @@ def build_app(
         errors: list[str] = []
         ingestions: list[dict[str, Any]] = []
         if payload.text and payload.text.strip():
-            ingestions.append(await app.memory.ingest_source(
-                payload.text, build_source_topic("local", payload.text),
-                "手动文本", str(uuid.uuid4()),
-            ))
+            ingestions.append(
+                await app.memory.ingest_source(
+                    payload.text,
+                    build_source_topic("local", payload.text),
+                    policy("api", "routes.copy.api_knowledge_source_text_2", str),
+                    str(uuid.uuid4()),
+                )
+            )
         if payload.url and payload.url.strip():
             if not app.config.exploration.web_enabled:
-                errors.append("联网未开启")
+                errors.append(
+                    policy("api", "routes.copy.api_knowledge_source_text", str)
+                )
             else:
                 url = payload.url.strip()
                 fetched = await build_web_fetch_tool().handler(url=url)
@@ -315,7 +460,9 @@ def build_app(
                         str(uuid.uuid4()), location=url,
                     ))
                 else:
-                    errors.append("网页正文抓取失败或为空，请检查 URL")
+                    errors.append(
+                        policy("api", "routes.copy.api_knowledge_source_text_3", str)
+                    )
         for ingestion in ingestions:
             for key in ("created_memories", "created_facts"):
                 result[key] += ingestion.get(key, 0)
@@ -324,7 +471,12 @@ def build_app(
         if errors:
             if not result["chunks"]:
                 raise HTTPException(
-                    status_code=409 if errors == ["联网未开启"] else 400,
+                    status_code=409
+                    if errors
+                    == policy(
+                        "api", "routes.copy.api_knowledge_source_words", list[str]
+                    )
+                    else 400,
                     detail="；".join(errors),
                 )
             result["errors"] = errors
@@ -343,17 +495,24 @@ def build_app(
             try:
                 anchor = await app.bus.get_event(annotation["reply_event_id"])
             except Exception as error:
-                logging.getLogger(__name__).exception("批注锚点查询失败")
+                logging.getLogger(__name__).exception(
+                    policy("api", "routes.copy.api_chat_text", str)
+                )
                 raise HTTPException(
-                    status_code=503, detail="批注锚点查询失败"
+                    status_code=503,
+                    detail=policy("api", "routes.copy.api_chat_text", str),
                 ) from error
             if anchor is None:
-                raise HTTPException(status_code=404, detail="被批注的回复不存在")
+                raise HTTPException(
+                    status_code=404,
+                    detail=policy("api", "routes.copy.api_chat_text_2", str),
+                )
             if anchor.type is not EventType.SPEAK or not isinstance(
                 anchor.content.get("content"), str
             ) or annotation["quote"] not in anchor.content["content"]:
                 raise HTTPException(
-                    status_code=422, detail="批注必须引用所选 SPEAK 的连续原文"
+                    status_code=422,
+                    detail=policy("api", "routes.copy.api_chat_text_3", str),
                 )
             content["annotation"] = annotation
         event = root_event(EventType.USER_MESSAGE, content)
@@ -371,7 +530,9 @@ def build_app(
                     payload.annotation.reply_event_id, payload.annotation.comment
                 )
             except Exception:
-                logging.getLogger(__name__).exception("批注回执查询失败，保持待确认")
+                logging.getLogger(__name__).exception(
+                    policy("api", "routes.copy.api_chat_text_4", str)
+                )
             result["annotation_persistence"] = "recorded" if recorded else "pending"
         return result
 
@@ -395,8 +556,18 @@ def build_app(
             rows = list(await cursor.fetchall())
         return {
             "server_now": time.time(),
-            "items": [dict(row) for row in rows[:1000]],
-            "truncated": len(rows) > 1000,
+            "items": [
+                dict(row)
+                for row in rows[
+                    : policy(
+                        "api",
+                        "routes.parameters.api_chat_pending_items_chars_or_items",
+                        int,
+                    )
+                ]
+            ],
+            "truncated": len(rows)
+            > policy("api", "routes.parameters.api_chat_pending_truncated_limit", int),
         }
 
     @fast.get("/api/questions/pending")
@@ -411,18 +582,30 @@ def build_app(
     async def api_pause_question(attempt_id: str) -> dict[str, Any]:
         attempt = await app.expression.pause_question(attempt_id)
         if attempt is None:
-            raise HTTPException(status_code=404, detail="提问不存在")
+            raise HTTPException(
+                status_code=404,
+                detail=policy("api", "routes.copy.api_pause_question_text", str),
+            )
         if attempt.status.value != "waiting" or attempt.paused_at is None:
-            raise HTTPException(status_code=409, detail="提问当前不可暂停")
+            raise HTTPException(
+                status_code=409,
+                detail=policy("api", "routes.copy.api_pause_question_text_2", str),
+            )
         return _question_payload(attempt)
 
     @fast.post("/api/questions/{attempt_id}/resume")
     async def api_resume_question(attempt_id: str) -> dict[str, Any]:
         attempt = await app.expression.resume_question(attempt_id)
         if attempt is None:
-            raise HTTPException(status_code=404, detail="提问不存在")
+            raise HTTPException(
+                status_code=404,
+                detail=policy("api", "routes.copy.api_pause_question_text", str),
+            )
         if attempt.status.value != "waiting" or attempt.paused_at is not None:
-            raise HTTPException(status_code=409, detail="提问当前不可恢复")
+            raise HTTPException(
+                status_code=409,
+                detail=policy("api", "routes.copy.api_resume_question_text", str),
+            )
         return _question_payload(attempt)
 
     @fast.get("/api/memories")
@@ -445,16 +628,39 @@ def build_app(
 
     @fast.get("/api/memories/facts")
     async def api_memory_facts(
-        limit: int = Query(64, ge=0, le=64),
+        limit: int = Query(
+            policy("api", "routes.parameters.api_memory_facts_query_default", int),
+            ge=0,
+            le=policy("api", "routes.parameters.api_memory_facts_query_le", int),
+        ),
         scope: Literal["profile", "conversation", "knowledge"] | None = None,
     ) -> list[MemoryFact]:
         return await app.memory.recent_facts(limit, scope)
 
     @fast.get("/api/memories/conversations")
     async def api_memory_conversations(
-        q: str = Query("", max_length=2000),
-        limit: int = Query(100, ge=1, le=200),
-        offset: int = Query(0, ge=0, le=100_000),
+        q: str = Query(
+            "",
+            max_length=policy(
+                "api", "routes.parameters.api_memory_conversations_max_length", int
+            ),
+        ),
+        limit: int = Query(
+            policy(
+                "api", "routes.parameters.api_memory_conversations_query_default", int
+            ),
+            ge=1,
+            le=policy(
+                "api", "routes.parameters.api_memory_conversations_query_le", int
+            ),
+        ),
+        offset: int = Query(
+            0,
+            ge=0,
+            le=policy(
+                "api", "routes.parameters.api_memory_conversations_query_le_2", int
+            ),
+        ),
         long_term: bool | None = None,
     ) -> list[dict[str, Any]]:
         segments = await app.memory.browse_conversations(
@@ -478,7 +684,17 @@ def build_app(
 
     @fast.get("/api/memories/rag/traces")
     async def api_conversation_rag_traces(
-        limit: int = Query(20, ge=1, le=100),
+        limit: int = Query(
+            policy(
+                "api",
+                "routes.parameters.api_conversation_rag_traces_query_default",
+                int,
+            ),
+            ge=1,
+            le=policy(
+                "api", "routes.parameters.api_conversation_rag_traces_query_le", int
+            ),
+        ),
     ) -> list[dict[str, object]]:
         return await app.memory.conversation_retrieval_traces(limit)
 
@@ -493,7 +709,9 @@ def build_app(
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
         if segment is None:
-            raise HTTPException(404, "对话段不存在")
+            raise HTTPException(
+                404, policy("api", "routes.copy.api_conversation_revise_text", str)
+            )
         return {"segment_id": segment.id,
                 "content_hash": hashlib.sha256(
                     segment.raw_content.encode(),
@@ -502,7 +720,9 @@ def build_app(
     @fast.delete("/api/memories/conversations/{segment_id}", status_code=204)
     async def api_conversation_delete(segment_id: str) -> Response:
         if not await app.memory.delete_conversation_segment(segment_id):
-            raise HTTPException(404, "对话段不存在")
+            raise HTTPException(
+                404, policy("api", "routes.copy.api_conversation_revise_text", str)
+            )
         return Response(status_code=204)
 
     @fast.get("/api/desires")
@@ -518,7 +738,11 @@ def build_app(
 
     @fast.get("/api/activity/results")
     async def api_activity_results(
-        limit: int = Query(100, ge=1, le=100),
+        limit: int = Query(
+            policy("api", "routes.parameters.api_activity_results_query_default", int),
+            ge=1,
+            le=policy("api", "routes.parameters.api_activity_results_query_le", int),
+        ),
         offset: int = Query(0, ge=0, le=_MAX_ACTIVITY_RESULTS_OFFSET),
         activity_type: Literal["creation"] | None = None,
     ) -> list[Activity]:
@@ -560,7 +784,7 @@ def build_app(
 
     @fast.get("/api/events/log")
     async def api_events_log(
-        limit: int = 100,
+        limit: int = policy("api", "routes.parameters.api_events_log_limit", int),
         event_type: EventType | None = None,
         correlation_id: str | None = None,
         after: str | None = None,
@@ -568,13 +792,19 @@ def build_app(
         if app.host is not None and after is not None:
             prefix = app.character_id + ":"
             if not after.startswith(prefix):
-                raise HTTPException(409, "事件游标不属于该角色")
+                raise HTTPException(
+                    409, policy("api", "routes.copy.api_events_log_text", str)
+                )
             after = after[len(prefix) :]
         return await app.bus.list_events(limit, event_type, correlation_id, after)
 
     @fast.get("/api/research/runs")
     async def api_research_runs(
-        limit: int = Query(50, ge=1, le=200),
+        limit: int = Query(
+            policy("api", "routes.parameters.api_research_runs_query_default", int),
+            ge=1,
+            le=policy("api", "routes.parameters.api_research_runs_query_le", int),
+        ),
         correlation_id: str | None = None,
     ) -> list[dict[str, Any]]:
         if app.research is None:
@@ -589,12 +819,22 @@ def build_app(
             "research_run", run_id
         ) if app.research else None
         if record is None:
-            raise HTTPException(404, "研究记录不存在")
+            raise HTTPException(
+                404, policy("api", "routes.copy.api_research_run_text", str)
+            )
         return record
 
     @fast.get("/api/behavior/reflections")
     async def api_behavior_reflections(
-        limit: int = Query(50, ge=1, le=200),
+        limit: int = Query(
+            policy(
+                "api", "routes.parameters.api_behavior_reflections_query_default", int
+            ),
+            ge=1,
+            le=policy(
+                "api", "routes.parameters.api_behavior_reflections_query_le", int
+            ),
+        ),
     ) -> list[dict[str, Any]]:
         if app.behavior is None:
             return []
@@ -605,7 +845,9 @@ def build_app(
         run_id: str, answer: str | None = None,
     ) -> dict[str, Any]:
         if app.research is None:
-            raise HTTPException(404, "研究未初始化")
+            raise HTTPException(
+                404, policy("api", "routes.copy.api_resume_research_text", str)
+            )
         try:
             return await app.research.resume(run_id, answer)
         except ValueError as error:
@@ -614,13 +856,17 @@ def build_app(
     @fast.get("/api/skills/{name}/versions")
     async def api_skill_versions(name: str) -> list[dict[str, Any]]:
         if app.behavior is None or name not in {"conversation", "discussion"}:
-            raise HTTPException(404, "skill 不存在")
+            raise HTTPException(
+                404, policy("api", "routes.copy.api_skill_versions_text", str)
+            )
         return await app.behavior.skills.history(name)
 
     @fast.post("/api/research/runs/{run_id}/cancel")
     async def api_cancel_research(run_id: str) -> dict[str, Any]:
         if app.research is None:
-            raise HTTPException(404, "研究未初始化")
+            raise HTTPException(
+                404, policy("api", "routes.copy.api_resume_research_text", str)
+            )
         try:
             result = await app.research.cancel(run_id)
             if result.get("status") == "cancelled":
@@ -631,13 +877,23 @@ def build_app(
 
     @fast.get("/api/expression/history")
     async def api_expression_history(
-        limit: int = Query(100, ge=1, le=5000),
+        limit: int = Query(
+            policy(
+                "api", "routes.parameters.api_expression_history_query_default", int
+            ),
+            ge=1,
+            le=policy("api", "routes.parameters.api_expression_history_query_le", int),
+        ),
     ) -> ExpressionHistory:
         return await app.expression.expression_history(limit)
 
     @fast.get("/api/eval/recent")
     async def api_eval_recent(
-        limit: int = Query(5, ge=1, le=100),
+        limit: int = Query(
+            policy("api", "routes.parameters.api_eval_recent_query_default", int),
+            ge=1,
+            le=policy("api", "routes.parameters.api_eval_recent_query_le", int),
+        ),
         offset: int = Query(0, ge=0, le=_MAX_EVAL_OFFSET),
     ) -> list[EvalRecord]:
         return await app.eval_store.list_recent(limit, offset)
@@ -668,17 +924,113 @@ def build_app(
         media_type = "application/json" if payload.format == "json" else "text/markdown"
         return Response(content=content, media_type=media_type)
 
+    @fast.exception_handler(StudyConflictError)
+    async def study_conflict(
+        request: Request, error: StudyConflictError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(error)})
+
+    @fast.post("/api/reading/sessions")
+    async def api_study_enter(payload: _StudyEnter) -> dict[str, Any]:
+        try:
+            return await app.reading.study.enter(
+                payload.book_id, str(payload.connection)
+            )
+        except BookNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+
+    @fast.get("/api/reading/sessions")
+    async def api_study_active() -> dict[str, Any] | None:
+        active = await app.reading._store.active_study()
+        return None if active is None else await app.reading.study.snapshot(*active)
+
+    @fast.get("/api/books/{book_id}/study")
+    async def api_study(book_id: str, session_id: str | None = None) -> dict[str, Any]:
+        return await app.reading.study.snapshot(book_id, session_id)
+
+    @fast.post("/api/books/{book_id}/study/{session_id}/heartbeat")
+    async def api_study_heartbeat(
+        book_id: str, session_id: str, payload: _StudyConnection
+    ) -> dict[str, bool]:
+        await app.reading.study.heartbeat(book_id, session_id, str(payload.connection))
+        return {"ok": True}
+
+    @fast.post("/api/books/{book_id}/study/{session_id}/detach")
+    async def api_study_detach(
+        book_id: str, session_id: str, payload: _StudyConnection
+    ) -> dict[str, bool]:
+        await app.reading.study.detach(book_id, session_id, str(payload.connection))
+        return {"ok": True}
+
+    @fast.post("/api/books/{book_id}/study/{session_id}/turns")
+    async def api_study_input(
+        book_id: str, session_id: str, payload: _StudyInput
+    ) -> dict[str, Any]:
+        try:
+            return await app.reading.study.accept(
+                book_id,
+                session_id,
+                str(payload.connection),
+                str(payload.input_id),
+                payload.message,
+                payload.notes,
+                payload.annotation.model_dump() if payload.annotation else None,
+                payload.presentation,
+            )
+        except ValueError as error:
+            if isinstance(error, StudyConflictError):
+                raise
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @fast.post("/api/books/{book_id}/study/{session_id}/turns/{input_id}/retry")
+    async def api_study_retry_turn(
+        book_id: str, session_id: str, input_id: str, payload: _StudyConnection
+    ) -> dict[str, bool]:
+        await app.reading.study.retry_turn(
+            book_id, session_id, input_id, str(payload.connection)
+        )
+        return {"ok": True}
+
+    @fast.post("/api/books/{book_id}/study/{session_id}/leave")
+    async def api_study_leave(book_id: str, session_id: str) -> dict[str, Any]:
+        return await app.reading.study.leave(book_id, session_id)
+
+    @fast.post("/api/books/{book_id}/study/retry")
+    async def api_study_retry(book_id: str) -> dict[str, bool]:
+        await app.reading.study.retry(book_id)
+        return {"ok": True}
+
+    @fast.get("/api/books/{book_id}/study-note")
+    async def api_study_note(book_id: str) -> dict[str, Any]:
+        return await app.reading._store.study_note(book_id)
+
+    @fast.put("/api/books/{book_id}/study-note")
+    async def api_study_note_save(book_id: str, payload: _StudyNote) -> dict[str, Any]:
+        try:
+            return await app.reading._store.save_study_note(
+                book_id, payload.revision, payload.content
+            )
+        except ProgressConflictError as error:
+            raise HTTPException(
+                status_code=409, detail=policy("reading", "study.copy.conflict", str)
+            ) from error
+
     @fast.post("/api/books", status_code=201)
     async def api_books(file: UploadFile = File(...)) -> Book:
         filename = sanitize_filename(file.filename or "book.epub")
         if Path(filename).suffix.lower() != ".epub":
-            raise HTTPException(status_code=400, detail="仅支持 .epub 文件")
+            raise HTTPException(
+                status_code=400, detail=policy("api", "routes.copy.api_books_text", str)
+            )
         data = bytearray()
         total = 0
         while chunk := await file.read(1 << 20):
             total += len(chunk)
             if total > max_epub_bytes:
-                raise HTTPException(status_code=400, detail="文件过大")
+                raise HTTPException(
+                    status_code=400,
+                    detail=policy("api", "routes.copy.api_books_text_3", str),
+                )
             data += chunk
         try:
             return await app.reading.import_book(filename, bytes(data))
@@ -693,8 +1045,13 @@ def build_app(
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         except Exception:
-            logging.getLogger(__name__).exception("导入 EPUB 失败: %s", filename)
-            raise HTTPException(status_code=500, detail="EPUB 解析失败") from None
+            logging.getLogger(__name__).exception(
+                policy("api", "routes.copy.api_books_text_2", str), filename
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=policy("api", "routes.copy.api_books_text_4", str),
+            ) from None
 
     @fast.get("/api/books")
     async def api_books_list() -> list[BookListItem]:
@@ -707,7 +1064,10 @@ def build_app(
         to: int = Query(..., ge=1),
     ) -> list[Paragraph]:
         if to < from_:
-            raise HTTPException(status_code=422, detail="to 必须 >= from")
+            raise HTTPException(
+                status_code=422,
+                detail=policy("api", "routes.copy.api_book_paragraphs_text", str),
+            )
         try:
             return await app.reading.list_paragraphs(book_id, from_, to)
         except BookNotFoundError as error:
@@ -779,7 +1139,15 @@ def build_app(
         note_id: str, payload: _UpdateNotePayload
     ) -> UserNote:
         try:
-            return await app.reading.update_user_note(note_id, payload.content)
+            if payload.expected_revision is None:
+                return await app.reading.update_user_note(note_id, payload.content)
+            return await app.reading.update_user_note(
+                note_id, payload.content, payload.expected_revision
+            )
+        except ProgressConflictError as error:
+            raise HTTPException(
+                status_code=409, detail=policy("reading", "study.copy.conflict", str)
+            ) from error
         except NoteNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except ValueError as error:
@@ -867,7 +1235,9 @@ def build_app(
         if app.host is not None and last_event_id:
             prefix = app.character_id + ":"
             if not last_event_id.startswith(prefix):
-                raise HTTPException(409, "SSE 游标不属于该角色")
+                raise HTTPException(
+                    409, policy("api", "routes.copy.api_events_text", str)
+                )
             last_event_id = last_event_id[len(prefix) :]
         async def generate() -> AsyncGenerator[str, None]:
             stream = app.bus.stream_events(
@@ -930,7 +1300,7 @@ def install_local_guard(fast: FastAPI, host: _Host | None = None) -> None:
         public_port = parsed_origin.port if parsed_origin.port is not None else 443
     trusted_origins = frozenset(
         (
-            "http://localhost:5173",
+            f"http://localhost:{policy('runtime', 'desktop.frontend_port', int)}",
             "http://tauri.localhost",
             "tauri://localhost",
             *([public_origin] if public_origin else []),
@@ -973,7 +1343,7 @@ def install_local_guard(fast: FastAPI, host: _Host | None = None) -> None:
             )
             valid_host = (
                 request_host.hostname in ("localhost", "127.0.0.1", "::1")
-                and request_host.port == 8000
+                and request_host.port == policy("runtime", "main._LOCAL_PORT", int)
                 and not request_host.username
                 and not request_host.password
                 and not request_host.path
@@ -1104,7 +1474,12 @@ class _SelectionPayload(BaseModel):
 
 
 class _PairingPayload(BaseModel):
-    name: str = Field(..., min_length=1, max_length=80, strict=True)
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=policy("api", "limits.PairingPayload_name_max_length", int),
+        strict=True,
+    )
 
     @field_validator("name")
     @classmethod
@@ -1116,7 +1491,12 @@ class _PairingPayload(BaseModel):
 
 
 class _PairPayload(_PairingPayload):
-    code: str = Field(..., min_length=1, max_length=64, strict=True)
+    code: str = Field(
+        ...,
+        min_length=1,
+        max_length=policy("api", "limits.PairPayload_code_max_length", int),
+        strict=True,
+    )
 
 
 class _CreateCharacterPayload(BaseModel):
@@ -1127,7 +1507,11 @@ class _CreateCharacterPayload(BaseModel):
 
 
 class _HostObservePayload(_ObservePayload):
-    sample_id: str = Field(min_length=1, max_length=200, strict=True)
+    sample_id: str = Field(
+        min_length=1,
+        max_length=policy("api", "limits.HostObservePayload_sample_id_max_length", int),
+        strict=True,
+    )
     character_id: str | None = None
     selection_revision: int | None = Field(default=None, ge=0)
 
@@ -1140,7 +1524,10 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
 
     @fast.get("/api/ready")
     async def ready() -> dict[str, str | None]:
-        return {"service": "nyx-agent", "launch_nonce": launch_nonce}
+        return {
+            "service": policy("runtime", "desktop.service", str),
+            "launch_nonce": launch_nonce,
+        }
 
     @fast.post("/api/devices/pairing")
     async def create_pairing(
@@ -1211,7 +1598,7 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
             "characters": result,
             "current_id": host.current_id,
             "selection_revision": host.revision,
-            "limit": 4,
+            "limit": policy("character", "host.maximum_characters", int),
         }
 
     @fast.put("/api/characters/current")
@@ -1219,7 +1606,9 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
         try:
             revision = await host.select(payload.character_id)
         except KeyError as error:
-            raise HTTPException(404, "角色不存在") from error
+            raise HTTPException(
+                404, policy("api", "routes.copy.known_text", str)
+            ) from error
         except ValueError as error:
             raise HTTPException(503, str(error)) from error
         return {"current_id": host.current_id, "selection_revision": revision}
@@ -1235,12 +1624,15 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
             ".nyxcard",
             ".zip",
         ):
-            raise HTTPException(422, "请上传 .nyxcard 或 .zip 卡包")
+            raise HTTPException(422, policy("api", "routes.copy.register_text", str))
         try:
             record = await host.register(await file.read(MAX_CARD_BYTES + 1))
         except ValueError as error:
             raise HTTPException(
-                409 if "四个" in str(error) or "已存在" in str(error) else 422,
+                409
+                if policy("api", "routes.copy.register_text_2", str) in str(error)
+                or policy("api", "routes.copy.register_text_3", str) in str(error)
+                else 422,
                 str(error),
             ) from error
         if record["status"] == "STARTING":
@@ -1269,10 +1661,14 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
             }
             for image in images:
                 if not image.filename:
-                    raise ValueError("图片文件名不能为空")
+                    raise ValueError(
+                        policy("api", "routes.copy.create_character_text", str)
+                    )
                 key, dot, suffix = image.filename.rpartition(".")
                 if not dot or key not in allowed or not suffix:
-                    raise ValueError("图片名必须是 avatar 或表情键")
+                    raise ValueError(
+                        policy("api", "routes.copy.create_character_text_2", str)
+                    )
                 image_files[f"{key}.{suffix}"] = await image.read(MAX_CARD_BYTES + 1)
                 image_paths[key] = f"assets/{key}.{suffix}"
             manifest = values.model_dump()
@@ -1280,11 +1676,7 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
             package = await asyncio.to_thread(
                 build_package,
                 manifest,
-                (
-                    "你是角色型 AI 同伴。以当前内在文档作为身份与表达参考。"
-                    "小说资料不是亲历；不得虚构身体、能力、记忆或已执行行动。"
-                    "保留自己的判断，按当前语境自然回应。"
-                ),
+                (policy("api", "routes.parameters.create_character_package_text", str)),
                 image_files,
             )
             record = await host.register(package)
@@ -1296,7 +1688,7 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
 
     def known(identity: str) -> None:
         if identity not in host.records:
-            raise HTTPException(404, "角色不存在")
+            raise HTTPException(404, policy("api", "routes.copy.known_text", str))
 
     @fast.delete("/api/characters/{identity}", status_code=202)
     async def unload(identity: str) -> dict[str, str]:
@@ -1335,7 +1727,9 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
                 load_card, Path(host.records[identity]["card_path"])
             )
         except (ValueError, OSError) as error:
-            raise HTTPException(503, "角色卡不可用") from error
+            raise HTTPException(
+                503, policy("api", "routes.copy.character_card_text", str)
+            ) from error
         return card.manifest.model_dump(mode="json") | {
             "canon": card.files["canon.md"].decode("utf-8"),
             "character_reference": card.files.get(
@@ -1350,9 +1744,11 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
         try:
             card = load_card(directory)
         except (ValueError, OSError) as error:
-            raise HTTPException(503, "角色图片不可用") from error
+            raise HTTPException(
+                503, policy("api", "routes.copy.asset_text_2", str)
+            ) from error
         if key not in card.manifest.assets:
-            raise HTTPException(404, "角色没有该图片")
+            raise HTTPException(404, policy("api", "routes.copy.asset_text", str))
         return FileResponse(directory / card.manifest.assets[key])
 
     @fast.post("/api/observe")
@@ -1363,7 +1759,9 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
         try:
             sequence = await host.observe(payload.model_dump(), desktop=True)
         except Exception as error:
-            raise HTTPException(503, "在线状态未受理") from error
+            raise HTTPException(
+                503, policy("api", "routes.copy.observe_text", str)
+            ) from error
         return {"sequence": sequence, "event_id": f"presence:{sequence}"}
 
     async def dispatch(scope: Scope, receive: Receive, send: Send) -> None:
@@ -1375,17 +1773,24 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
         else:
             identity, relative = "nyx", path
         if relative == "/api/observe":
-            await JSONResponse({"detail": "观察须通过宿主入口提交"}, status_code=404)(
-                scope, receive, send
-            )
+            await JSONResponse(
+                {"detail": policy("api", "routes.copy.dispatch_text_2", str)},
+                status_code=404,
+            )(scope, receive, send)
             return
         record = host.records.get(identity)
         app = host.apps.get(identity)
         response: Response | None = None
         if record is None:
-            response = JSONResponse({"detail": "角色不存在"}, status_code=404)
+            response = JSONResponse(
+                {"detail": policy("api", "routes.copy.known_text", str)},
+                status_code=404,
+            )
         elif record["status"] != "RUNNING" or app is None:
-            response = JSONResponse({"detail": "角色不可运行"}, status_code=503)
+            response = JSONResponse(
+                {"detail": policy("api", "routes.copy.dispatch_text", str)},
+                status_code=503,
+            )
         elif scope["method"] in ("POST", "PUT", "DELETE"):
             headers = dict(scope["headers"])
             expected = str(host.revision).encode()
@@ -1395,7 +1800,10 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
                 and headers.get(b"x-nyx-selection-revision") != expected
             )
             if stale:
-                response = JSONResponse({"detail": "角色选择已变化"}, status_code=409)
+                response = JSONResponse(
+                    {"detail": policy("api", "routes.copy.dispatch_text_3", str)},
+                    status_code=409,
+                )
         if response is not None:
             await response(scope, receive, send)
             return
@@ -1408,8 +1816,10 @@ def build_host_app(host: _Host, *, launch_nonce: str | None) -> FastAPI:
                 build_app(
                     app,
                     root_event=root_event,
-                    max_epub_bytes=50 * 1024 * 1024,
-                    sse_queue_size=100,
+                    max_epub_bytes=policy("runtime", "main._MAX_EPUB_BYTES", int),
+                    sse_queue_size=policy(
+                        "api", "routes.parameters.dispatch_sse_queue_size", int
+                    ),
                     launch_nonce=launch_nonce,
                 ),
             )

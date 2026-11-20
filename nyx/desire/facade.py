@@ -11,9 +11,12 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.llm.client import LlmClient
 from nyx.memory.retrieval import EmbedFn, cosine
+from nyx.policy import policy
 from nyx.types import DesireState, Event, LongTermDesire, ShortTermDesire
 
-_LT_DEDUP_SIM_THRESHOLD = 0.9  # 长期欲望语义重复判定阈值（embedding 余弦）
+_LT_DEDUP_SIM_THRESHOLD = policy(
+    "desire", "facade._LT_DEDUP_SIM_THRESHOLD", float
+)  # 长期欲望语义重复判定阈值（embedding 余弦）
 LongTermSnapshot = tuple[tuple[str, str, str], ...]
 
 
@@ -65,7 +68,9 @@ class DesireFacade:
             await self._lifecycle.satisfy_from_activity_end(source, consumer_id)
 
     async def evaluate(
-        self, energy: float = 100.0, event_id: str | None = None
+        self,
+        energy: float = policy("desire", "facade.parameters.evaluate_energy", float),
+        event_id: str | None = None,
     ) -> list[ShortTermDesire]:
         return await self._lifecycle.run_eval(energy, event_id=event_id)
 
@@ -146,7 +151,9 @@ class DesireFacade:
     ) -> tuple[tuple[LongTermDesire, ...], LongTermSnapshot]:
         """Preflight a batch outside the database transaction."""
         if self._store.db.in_transaction:
-            raise RuntimeError("长期欲望预检必须在数据库事务外执行")
+            raise RuntimeError(
+                policy("desire", "facade.copy.prepare_long_term_candidates_text", str)
+            )
         async with self._long_term_lock:
             existing = await self._store.list_long_term()
             return await self._prepare_long_term_candidates(desires, existing)
@@ -168,9 +175,18 @@ class DesireFacade:
         for desire in desires:
             name = normalize_name(desire.name)
             if not name:
-                raise ValueError("长期欲望 name 不能为空")
+                raise ValueError(
+                    policy(
+                        "desire", "facade.copy.prepare_long_term_candidates_text_2", str
+                    )
+                )
             if name in known_names:
-                self._logger.info("长期欲望重复丢弃（同名） name=%s", name)
+                self._logger.info(
+                    policy(
+                        "desire", "facade.copy.prepare_long_term_candidates_text_3", str
+                    ),
+                    name,
+                )
                 continue
             if len(accepted) >= remaining:
                 break
@@ -188,7 +204,12 @@ class DesireFacade:
                     for other in [*existing_vectors, *accepted_vectors]
                 ):
                     self._logger.info(
-                        "长期欲望重复丢弃（语义） name=%s", name
+                        policy(
+                            "desire",
+                            "facade.copy.prepare_long_term_candidates_text_4",
+                            str,
+                        ),
+                        name,
                     )
                     continue
 
@@ -205,12 +226,24 @@ class DesireFacade:
     ) -> None:
         """Commit preflighted candidates inside the caller's transaction."""
         if not self._store.db.in_transaction:
-            raise RuntimeError("长期欲望计划提交必须在数据库事务内执行")
+            raise RuntimeError(
+                policy(
+                    "desire",
+                    "facade.copy.add_prepared_long_terms_in_transaction_text",
+                    str,
+                )
+            )
         if not desires:
             return
         current = await self._store.list_long_term()
         if _long_term_snapshot(current) != snapshot:
-            raise RuntimeError("长期欲望快照已变化，请重试反思")
+            raise RuntimeError(
+                policy(
+                    "desire",
+                    "facade.copy.add_prepared_long_terms_in_transaction_text_2",
+                    str,
+                )
+            )
         for desire in desires:
             await self._store.insert_long_term_if_available(
                 desire, self._config.long_term_capacity

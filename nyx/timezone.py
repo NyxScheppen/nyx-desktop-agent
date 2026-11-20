@@ -2,4 +2,9 @@
 
 from datetime import timedelta, timezone
 
-USER_TIMEZONE = timezone(timedelta(hours=8), "Asia/Shanghai")
+from nyx.policy import policy
+
+USER_TIMEZONE = timezone(
+    timedelta(hours=policy("runtime", "timezone.offset_hours", int)),
+    policy("runtime", "timezone.name", str),
+)

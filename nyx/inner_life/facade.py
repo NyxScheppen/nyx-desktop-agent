@@ -12,7 +12,6 @@ from nyx.inner_life.emotion import (
     BASELINE_AROUSAL,
     BASELINE_VALENCE,
     EMOTION_DECAY_RATE,
-    ENERGY_REST_THRESHOLD,
     apply_offset,
     decay_emotion,
     event_offset,
@@ -23,15 +22,15 @@ from nyx.inner_life.reflection import Reflection, ReflectionPlan
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
+from nyx.policy import policy
 from nyx.types import CurrentState, Event, InnerDocument, ReflectionOutcome
 
-_ENERGY_RECOVERY_PER_HOUR = 5.0  # 闲置每小时恢复（"夜间自动恢复"简化为恒定闲置恢复）
+_ENERGY_RECOVERY_PER_HOUR = policy(
+    "inner_life", "facade._ENERGY_RECOVERY_PER_HOUR", float
+)  # 闲置每小时恢复（"夜间自动恢复"简化为恒定闲置恢复）
 
-_ENERGY_TIERS = (
-    (80.0, EnergyState.ENERGETIC),
-    (60.0, EnergyState.OKAY),
-    (ENERGY_REST_THRESHOLD, EnergyState.TIRED),
-    (20.0, EnergyState.EXHAUSTED),
+_ENERGY_TIERS = policy(
+    "inner_life", "energy.tiers", tuple[tuple[float, EnergyState], ...]
 )
 
 
@@ -164,7 +163,11 @@ class InnerLifeFacade:
             "reading_revisit",
             "idle_activity",
         }:
-            raise ValueError(f"未知反思触发原因：{reason!r}")
+            raise ValueError(
+                policy(
+                    "inner_life", "facade.templates.should_process_reflection_text", str
+                ).format(p0=reason)
+            )
         narrative = await self.get_document()
         if event.timestamp <= narrative.updated_at:
             return False
@@ -177,19 +180,29 @@ class InnerLifeFacade:
         if not isinstance(admitted_revision, (int, float)) or isinstance(
             admitted_revision, bool
         ):
-            raise ValueError("周期反思缺 narrative_updated_at")
+            raise ValueError(
+                policy("inner_life", "facade.copy.should_process_reflection_text", str)
+            )
         if (
             not isinstance(min_interval, (int, float))
             or isinstance(min_interval, bool)
             or min_interval < 0
         ):
-            raise ValueError("周期反思 min_interval 非法")
+            raise ValueError(
+                policy(
+                    "inner_life", "facade.copy.should_process_reflection_text_2", str
+                )
+            )
         if (
             not isinstance(min_new_memories, int)
             or isinstance(min_new_memories, bool)
             or min_new_memories < 0
         ):
-            raise ValueError("周期反思 min_new_memories 非法")
+            raise ValueError(
+                policy(
+                    "inner_life", "facade.copy.should_process_reflection_text_3", str
+                )
+            )
         if narrative.updated_at != float(admitted_revision):
             return False
         if time.time() - narrative.updated_at < float(min_interval):
@@ -302,20 +315,24 @@ class InnerLifeFacade:
     async def get_document(self) -> InnerDocument:
         narrative = await self._store.get_document()
         if narrative is None:
-            raise RuntimeError("inner_document 未初始化（组合根必须先 seed）")
+            raise RuntimeError(
+                policy("inner_life", "facade.copy.get_document_text", str)
+            )
         return narrative
 
     async def _apply_energy(self, event: Event, now: float) -> None:
         energy = await self._store.get_energy()
         if energy is None:
-            raise RuntimeError("energy 未初始化（组合根必须先 seed）")
+            raise RuntimeError(
+                policy("inner_life", "facade.copy.apply_energy_text", str)
+            )
         value, _ = energy
         elapsed_hours = max(0.0, now - self._energy_updated_at) / SECONDS_PER_HOUR
         value += _ENERGY_RECOVERY_PER_HOUR * elapsed_hours
         delta = event.content.get("energy_delta")
         if isinstance(delta, (int, float)) and not isinstance(delta, bool):
             value += float(delta)
-        value = max(0.0, min(100.0, value))
+        value = max(0.0, min(policy("inner_life", "energy.maximum", float), value))
         await self._store.upsert_energy(value, energy_to_state(value))
         self._energy_updated_at = now
 
@@ -331,13 +348,18 @@ class InnerLifeFacade:
         """结算截至 now 的闲置恢复，并把最新精力快照落库。"""
         energy = await self._store.get_energy()
         if energy is None:
-            raise RuntimeError("energy 未初始化（组合根必须先 seed）")
+            raise RuntimeError(
+                policy("inner_life", "facade.copy.apply_energy_text", str)
+            )
         value, _ = energy
         elapsed_hours = max(0.0, now - self._energy_updated_at) / SECONDS_PER_HOUR
         if elapsed_hours > 0.0:
             value = max(
                 0.0,
-                min(100.0, value + _ENERGY_RECOVERY_PER_HOUR * elapsed_hours),
+                min(
+                    policy("inner_life", "energy.maximum", float),
+                    value + _ENERGY_RECOVERY_PER_HOUR * elapsed_hours,
+                ),
             )
             state = energy_to_state(value)
             await self._store.upsert_energy(value, state)
@@ -365,7 +387,9 @@ class InnerLifeFacade:
     ) -> Event:
         energy = await self._store.get_energy()
         if energy is None:
-            raise RuntimeError("energy 未初始化（组合根必须先 seed）")
+            raise RuntimeError(
+                policy("inner_life", "facade.copy.apply_energy_text", str)
+            )
         emotion = self._resolve_emotion(energy[1], await self._current_activity_type())
         event = internal_event(
             EventType.EMOTION_UPDATE,

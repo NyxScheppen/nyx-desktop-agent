@@ -1,24 +1,33 @@
 from nyx.enums import DesireType
+from nyx.policy import policy
 from nyx.types import DesireValue
 
 # —— 压力值 value 范围 ——
-_VALUE_MIN = 0.0
-_VALUE_MAX = 1.0
+_VALUE_MIN = policy("desire", "value._VALUE_MIN", float)
+_VALUE_MAX = policy("desire", "value._VALUE_MAX", float)
 
 # —— 表达权重 expression_weight ——
-_WEIGHT_MIN = 0.0
-_WEIGHT_MAX = 1.0
-_WEIGHT_INIT = 0.7  # 初始表达权重（四类型统一，中性偏高）
-WEIGHT_REINFORCE_DELTA = 0.05  # 满足一次 +0.05（正强化）
+_WEIGHT_MIN = policy("desire", "value._WEIGHT_MIN", float)
+_WEIGHT_MAX = policy("desire", "value._WEIGHT_MAX", float)
+_WEIGHT_INIT = policy(
+    "desire", "value._WEIGHT_INIT", float
+)  # 初始表达权重（四类型统一，中性偏高）
+WEIGHT_REINFORCE_DELTA = policy(
+    "desire", "value.WEIGHT_REINFORCE_DELTA", float
+)  # 满足一次 +0.05（正强化）
 
 # —— 抑制阈值 suppression_threshold ——
-_SUPPRESSION_MIN = 0.0
-_SUPPRESSION_MAX = 1.0
-_SUPPRESSION_INIT = 0.5  # 初始抑制阈值（< peak=0.9，初始不压抑）
-SUPPRESSION_RAISE_DELTA = 0.1  # 失败/抑制一次 +0.1（习得性抑制）
+_SUPPRESSION_MIN = policy("desire", "value._SUPPRESSION_MIN", float)
+_SUPPRESSION_MAX = policy("desire", "value._SUPPRESSION_MAX", float)
+_SUPPRESSION_INIT = policy(
+    "desire", "value._SUPPRESSION_INIT", float
+)  # 初始抑制阈值（< peak=0.9，初始不压抑）
+SUPPRESSION_RAISE_DELTA = policy(
+    "desire", "value.SUPPRESSION_RAISE_DELTA", float
+)  # 失败/抑制一次 +0.1（习得性抑制）
 
 # —— 回增（放弃/淘汰压力回灌）——
-REFUND_DELTA = 0.3
+REFUND_DELTA = policy("desire", "value.REFUND_DELTA", float)
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -78,4 +87,10 @@ def recover_suppression(threshold: float, elapsed_seconds: float) -> float:
     """每天恢复 0.1，回到初始基线；所有更新时间的路径都先结算。"""
     if threshold <= _SUPPRESSION_INIT:
         return threshold
-    return max(_SUPPRESSION_INIT, threshold - 0.1 * max(0.0, elapsed_seconds) / 86400)
+    return max(
+        _SUPPRESSION_INIT,
+        threshold
+        - policy("desire", "value.parameters.recover_suppression_result_factor", float)
+        * max(0.0, elapsed_seconds)
+        / 86400,
+    )

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.store import ActivityStore
+from nyx.behavior.context import behavior_context
 from nyx.behavior.service import BehaviorService
 from nyx.behavior.store import BehaviorStore, SkillStore
 from nyx.bootstrap import initialize_card, load_skills
@@ -39,6 +40,7 @@ from nyx.memory.facade import MemoryFacade, build_source_topic
 from nyx.memory.facts import MemoryFactStore
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval
 from nyx.memory.store import MemoryStore
+from nyx.policy import policy
 from nyx.reading.facade import ReadingFacade
 from nyx.reading.store import ReadingStore
 from nyx.research import build_deep_research_tool
@@ -54,7 +56,7 @@ from nyx.runtime import (
 from nyx.tools.activity_tasks import build_activity_task_tools
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_fetch import build_web_fetch_tool
-from nyx.types import Book, CurrentState, Event, ReadingProgress, Tool
+from nyx.types import Book, CurrentState, Event, ReadingProgress, Skill, Tool
 
 if TYPE_CHECKING:
     from nyx.app_context import _App
@@ -303,7 +305,9 @@ async def _build_behavior(ctx: PluginContext) -> Mapping[str, object]:
 
 async def _apply_behavior_event(app: _App, event: Event) -> None:
     if app.behavior is None:
-        raise RuntimeError("行为反思未初始化")
+        raise RuntimeError(
+            policy("runtime", "plugins.copy.apply_behavior_event_text", str)
+        )
     await app.behavior.apply_event(event, app.memory)
 
 
@@ -360,9 +364,23 @@ def _activity_tools(ctx: PluginContext) -> list[Tool]:
 def _memory_tools(ctx: PluginContext) -> list[Tool]:
     memory = cast(MemoryFacade, ctx.get("memory"))
 
-    async def memory_recall(query: str, top_k: int = 8) -> dict[str, Any]:
+    async def memory_recall(
+        query: str,
+        top_k: int = policy("runtime", "plugins.parameters.memory_recall_top_k", int),
+    ) -> dict[str, Any]:
         segments = await memory.search_conversation_segments(
-            query, max(1, min(top_k, 8)), include_archived=True, max_excerpt_chars=900,
+            query,
+            max(
+                1,
+                min(
+                    top_k,
+                    policy("runtime", "plugins.parameters.memory_recall_top_k", int),
+                ),
+            ),
+            include_archived=True,
+            max_excerpt_chars=policy(
+                "runtime", "plugins.parameters.memory_recall_max_excerpt_chars", int
+            ),
         )
         facts = await memory.search_facts(query, scope="profile")
         facts += await memory.search_facts(query, scope="conversation")
@@ -396,7 +414,9 @@ def _memory_tools(ctx: PluginContext) -> list[Tool]:
         # Return whole evidence records inside the tool injection budget, rather
         # than letting the tool graph cut a JSON object halfway through a source.
         bounded: dict[str, list[dict[str, Any]]] = {"segments": [], "facts": []}
-        budget = _MATERIAL_ITEM_MAX_CHARS - 100
+        budget = _MATERIAL_ITEM_MAX_CHARS - policy(
+            "runtime", "plugins.parameters.memory_recall_budget_budget", int
+        )
         for key in ("segments", "facts"):
             for entry in result[key]:
                 bounded[key].append(entry)
@@ -404,22 +424,35 @@ def _memory_tools(ctx: PluginContext) -> list[Tool]:
                     bounded[key].pop()
         return bounded
 
-    async def knowledge_search(query: str, top_k: int = 5) -> dict[str, Any]:
+    async def knowledge_search(
+        query: str,
+        top_k: int = policy(
+            "runtime", "plugins.parameters.knowledge_search_top_k", int
+        ),
+    ) -> dict[str, Any]:
         return await memory.search_knowledge(query, top_k)
 
     return [
         Tool(
             "memory_recall",
-            "检索完整历史归档中的相关对话原文片段和用户/关系事实；"
-            "结果带 segment_id 或 source_segment_id 供引用。",
+            policy("runtime", "plugins.parameters.memory_tools_result_text", str),
             {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "要回忆的主题或问题"},
+                    "query": {
+                        "type": "string",
+                        "description": policy(
+                            "runtime", "plugins.copy.memory_tools_text_2", str
+                        ),
+                    },
                     "top_k": {
                         "type": "integer",
-                        "description": "返回对话段条数上限",
-                        "default": 8,
+                        "description": policy(
+                            "runtime", "plugins.copy.memory_tools_text_3", str
+                        ),
+                        "default": policy(
+                            "runtime", "plugins.parameters.memory_recall_top_k", int
+                        ),
                     },
                 },
                 "required": ["query"],
@@ -428,15 +461,24 @@ def _memory_tools(ctx: PluginContext) -> list[Tool]:
         ),
         Tool(
             "knowledge_search",
-            "检索知识事实与证据块原文，返回 source_chunk_id 溯源供逐条引用。",
+            policy("runtime", "plugins.copy.memory_tools_text", str),
             {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "要检索的知识主题"},
+                    "query": {
+                        "type": "string",
+                        "description": policy(
+                            "runtime", "plugins.copy.memory_tools_text_4", str
+                        ),
+                    },
                     "top_k": {
                         "type": "integer",
-                        "description": "返回事实条数上限",
-                        "default": 5,
+                        "description": policy(
+                            "runtime", "plugins.copy.memory_tools_text_5", str
+                        ),
+                        "default": policy(
+                            "runtime", "plugins.parameters.knowledge_search_top_k", int
+                        ),
                     },
                 },
                 "required": ["query"],
@@ -468,9 +510,57 @@ async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
         *cast(list[Tool], ctx.get("memory_tools")),
     ):
         tools.register(tool)
-    tools.register(build_deep_research_tool(
-        runner=cast(ResearchService, ctx.get("research")).deep_research
-    ))
+    tools.register(
+        build_deep_research_tool(
+            runner=cast(ResearchService, ctx.get("research")).deep_research
+        )
+    )
+
+    async def book_search(query: str) -> list[dict[str, Any]]:
+        scope = behavior_context.get()
+        if scope is None or scope.get("scope") != "reading" or "book_id" not in scope:
+            raise ValueError(policy("reading", "study.copy.error_scope", str))
+        return await cast(ReadingFacade, ctx.get("reading")).study.search(
+            scope["book_id"], query
+        )
+
+    async def book_excerpt(start: int, end: int) -> list[dict[str, Any]]:
+        scope = behavior_context.get()
+        if scope is None or scope.get("scope") != "reading" or "book_id" not in scope:
+            raise ValueError(policy("reading", "study.copy.error_scope", str))
+        return await cast(ReadingFacade, ctx.get("reading")).study.excerpt(
+            scope["book_id"], start, end
+        )
+
+    tools.register(
+        Tool(
+            "book_search",
+            policy("reading", "study.prompts.tool_search", str),
+            {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            book_search,
+        )
+    )
+    tools.register(
+        Tool(
+            "book_excerpt",
+            policy("reading", "study.prompts.tool_excerpt", str),
+            {
+                "type": "object",
+                "properties": {
+                    "start": {"type": "integer", "minimum": 1},
+                    "end": {"type": "integer", "minimum": 1},
+                },
+                "required": ["start", "end"],
+                "additionalProperties": False,
+            },
+            book_excerpt,
+        )
+    )
     skills = load_skills(cast(Path, ctx.get("prompt_dir")) / "skills", tools)
     await cast(SkillStore, ctx.get("skills")).seed(skills)
     await cast(ResearchService, ctx.get("research")).recover()
@@ -503,6 +593,16 @@ async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
 
 
 async def _build_reading(ctx: PluginContext) -> Mapping[str, object]:
+    # Seed only if absent; user cards and revised skills keep their existing body.
+    await cast(SkillStore, ctx.get("skills")).seed(
+        {
+            "reading": Skill(
+                "reading",
+                policy("behavior", "reading_skill.system_fragment", str),
+                policy("behavior", "reading_skill.tool_names", tuple[str, ...]),
+            )
+        }
+    )
     reading = ReadingFacade(
         ReadingStore(cast(Database, ctx.get("db"))),
         cast(InnerLifeFacade, ctx.get("inner_life")),
@@ -581,12 +681,21 @@ def default_plugins() -> tuple[_Plugin, ...]:
         ),
         _Plugin("tools", _build_tools, ("tools",), ("memory",)),
         _Plugin(
-            "behavior", _build_behavior, ("behavior", "research", "skills"),
+            "behavior",
+            _build_behavior,
+            ("behavior", "research", "skills"),
             ("memory", "tools", "evaluator"),
-            route_bindings=((
-                RouteSpec(EventType.BEHAVIOR_REFLECTION, "behavior.reflect",
-                          "behavior", "reflect"), _apply_behavior_event,
-            ),),
+            route_bindings=(
+                (
+                    RouteSpec(
+                        EventType.BEHAVIOR_REFLECTION,
+                        "behavior.reflect",
+                        "behavior",
+                        "reflect",
+                    ),
+                    _apply_behavior_event,
+                ),
+            ),
         ),
         _Plugin(
             "desire",
@@ -723,6 +832,7 @@ def default_plugins() -> tuple[_Plugin, ...]:
                 "finish_return",
                 "release_return",
                 "reading_context",
+                "reading",
             ),
             starter=_start_expression,
             route_bindings=(
@@ -761,6 +871,6 @@ def default_plugins() -> tuple[_Plugin, ...]:
             "reading",
             _build_reading,
             ("reading", "reading_context"),
-            ("inner_life", "desire", "memory", "expression", "evaluator"),
+            ("inner_life", "desire", "memory", "expression", "evaluator", "skills"),
         ),
     )

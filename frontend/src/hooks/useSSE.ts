@@ -1,3 +1,4 @@
+import frontendPolicy from "../../../nyx/settings/frontend.json";
 import { captureScope, isScopeCurrent } from "../api/characterScope";
 import { useEffect, useState } from "react";
 import { BASE_URL } from "../api/client";
@@ -40,7 +41,7 @@ const EVENT_TYPES = [
   "reading_progress",
 ];
 
-const MAX_SEEN_EVENT_IDS = 4096;
+const MAX_SEEN_EVENT_IDS = frontendPolicy.frontend.useSSE.MAX_SEEN_EVENT_IDS;
 
 export function useSSE(
   dispatch: (e: SseEvent, replaying?: boolean) => void,
@@ -70,7 +71,7 @@ export function useSSE(
       try {
         const data: unknown = JSON.parse(text);
         if (typeof data !== "object" || data === null) {
-          console.error("SSE 帧 data 非对象，跳过", text);
+          console.error(frontendPolicy.copy.useSSE.text, text);
           return;
         }
         if (selection && (data as Record<string, unknown>).character_id !== selection.id) return;
@@ -85,7 +86,7 @@ export function useSSE(
         }
         const parsed = parseSseEvent(type, data);
         if (parsed === null) {
-          console.error("SSE 帧结构非法，跳过", text);
+          console.error(frontendPolicy.copy.useSSE.text_2, text);
           return;
         }
         if (seenEventIds.has(parsed.event_id)) return;
@@ -96,7 +97,7 @@ export function useSSE(
         }
         dispatch(parsed, replaying);
       } catch (err) {
-        console.error("SSE 帧解析失败，跳过", text, err);
+        console.error(frontendPolicy.copy.useSSE.text_3, text, err);
       }
     };
 
@@ -163,7 +164,7 @@ export function useSSE(
         setStatus("connecting");
         await new Promise<void>((resolve) => {
           stopWaiting = resolve;
-          timer = setTimeout(resolve, 1000);
+          timer = setTimeout(resolve, frontendPolicy.timers.sse_retry_ms);
         });
       }
     };

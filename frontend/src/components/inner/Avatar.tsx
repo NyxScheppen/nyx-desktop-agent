@@ -1,3 +1,5 @@
+import { formatPolicyText } from "../../lib/policy";
+import frontendPolicy from "../../../../nyx/settings/frontend.json";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import AnnounceLayer from "../AnnounceLayer";
@@ -18,11 +20,7 @@ type AvatarProps = {
 };
 
 // 头像圆圈三档直径（px）：小/中/大。供 clampAvatarPos 边界夹取 + 内联 width/height。
-export const CIRCLE_SIZES: Record<CircleSize, number> = {
-  small: 96,
-  medium: 120,
-  large: 144,
-};
+export const CIRCLE_SIZES: Record<CircleSize, number> = frontendPolicy.frontend.Avatar.CIRCLE_SIZES as Record<CircleSize, number>;
 
 /** 纯函数：把拖拽坐标夹回视口内（0..viewport-size），越界回弹；视口小于圆圈时钉到 0。 */
 export function clampAvatarPos(
@@ -37,7 +35,7 @@ export function clampAvatarPos(
   };
 }
 
-const DRAG_THRESHOLD = 3; // 指针位移超过 3px 判定为拖拽（否则算戳）
+const DRAG_THRESHOLD = frontendPolicy.frontend.Avatar.DRAG_THRESHOLD; // 指针位移超过 3px 判定为拖拽（否则算戳）
 
 // 可拖拽头像圆圈（视觉改造 §4）：白底/可换底色圆形，内放方形表情头像（expressions/）；浏览器里可拖到窗口任意处（position:fixed），
 // 位置/底色/尺寸存 localStorage（settingsStore）；Tauri 桌宠里拖拽的是整个原生窗口，圆球不再在窗口内单独定位；
@@ -163,7 +161,7 @@ export default function Avatar({
     <div
       className="avatar-circle"
       style={style}
-      title={`${name} 头像`}
+      title={formatPolicyText(frontendPolicy.templates.Avatar.text, { p0: name })}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={(e) => finishDrag(e.clientX, e.clientY)}
@@ -180,7 +178,7 @@ export default function Avatar({
         <button
           type="button"
           className="avatar-notice"
-          aria-label="小狐狸我有话对你说"
+          aria-label={frontendPolicy.copy.Avatar.aria_label}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();

@@ -31,6 +31,7 @@ from nyx.config import Config, load_config
 from nyx.desire.store import DesireStore
 from nyx.enums import EventType, Source
 from nyx.inner_life.store import InnerLifeStore
+from nyx.policy import policy
 from nyx.runtime import (
     check_reflect,
     host_presence_loop,
@@ -44,23 +45,23 @@ from nyx.subscriptions import subscribe
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Event
 
-_LOCAL_HOST = "127.0.0.1"
-_LOCAL_PORT = 8000
-_TICK_INTERVAL = 60.0
-_MUTTER_CHECK_INTERVAL = 150.0
-_INITIATE_CHAT_INTERVAL = 300.0
-_REFLECT_CHECK_INTERVAL = 3600.0
-_REFLECT_MIN_INTERVAL = 21600.0
-_REFLECT_MIN_NEW_MEMORIES = 3
-_BUS_BACKOFF_BASE = 1.0
-_BUS_BACKOFF_MAX = 30.0
-_BUS_MAX_FAILURES = 8
-_BUS_RECOVERY_STREAK = 3
-_SSE_QUEUE_SIZE = 100
-_CANON_FILES = ("canon.md", "character-reference.md")
-_ASK_FILES = ("ask.md",)
-_MAX_EPUB_BYTES = 50 * 1024 * 1024
-_LAUNCH_NONCE_ENV = "NYX_LAUNCH_NONCE"
+_LOCAL_HOST = policy("runtime", "main._LOCAL_HOST", str)
+_LOCAL_PORT = policy("runtime", "main._LOCAL_PORT", int)
+_TICK_INTERVAL = policy("runtime", "main._TICK_INTERVAL", float)
+_MUTTER_CHECK_INTERVAL = policy("runtime", "main._MUTTER_CHECK_INTERVAL", float)
+_INITIATE_CHAT_INTERVAL = policy("runtime", "main._INITIATE_CHAT_INTERVAL", float)
+_REFLECT_CHECK_INTERVAL = policy("runtime", "main._REFLECT_CHECK_INTERVAL", float)
+_REFLECT_MIN_INTERVAL = policy("runtime", "main._REFLECT_MIN_INTERVAL", float)
+_REFLECT_MIN_NEW_MEMORIES = policy("runtime", "main._REFLECT_MIN_NEW_MEMORIES", int)
+_BUS_BACKOFF_BASE = policy("runtime", "main._BUS_BACKOFF_BASE", float)
+_BUS_BACKOFF_MAX = policy("runtime", "main._BUS_BACKOFF_MAX", float)
+_BUS_MAX_FAILURES = policy("runtime", "main._BUS_MAX_FAILURES", int)
+_BUS_RECOVERY_STREAK = policy("runtime", "main._BUS_RECOVERY_STREAK", int)
+_SSE_QUEUE_SIZE = policy("runtime", "main._SSE_QUEUE_SIZE", int)
+_CANON_FILES = policy("runtime", "main._CANON_FILES", tuple[str, str])
+_ASK_FILES = policy("runtime", "main._ASK_FILES", tuple[str, ...])
+_MAX_EPUB_BYTES = policy("runtime", "main._MAX_EPUB_BYTES", int)
+_LAUNCH_NONCE_ENV = policy("runtime", "main._LAUNCH_NONCE_ENV", str)
 _TIME_MODULE = time  # compatibility patch target for existing runtime tests
 
 

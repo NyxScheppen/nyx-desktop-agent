@@ -2,10 +2,11 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from nyx.policy import policy
 from nyx.types import Tool
 
-DEFAULT_WRITE_ROOT = Path("workspace")
-_COMPARE_CHUNK_SIZE = 64 * 1024
+DEFAULT_WRITE_ROOT = policy("tools", "file_io.DEFAULT_WRITE_ROOT", Path)
+_COMPARE_CHUNK_SIZE = policy("tools", "file_io._COMPARE_CHUNK_SIZE", int)
 
 
 def is_internal(path: Path, blocked: list[Path] | tuple[Path, ...]) -> bool:
@@ -23,9 +24,17 @@ def _resolve_write(root: Path, path: str) -> Path:
     p = Path(path)
     resolved = p.resolve() if p.is_absolute() else (root_resolved / p).resolve()
     if not resolved.is_relative_to(root_resolved):
-        raise ValueError(f"写入路径越界：{path!r}（仅允许 {root_resolved} 内）")
+        raise ValueError(
+            policy("tools", "file_io.templates.resolve_write_text", str).format(
+                p0=path, p1=root_resolved
+            )
+        )
     if resolved == root_resolved:
-        raise ValueError(f"写入路径无效：{path!r} 指向 write_root 本身")
+        raise ValueError(
+            policy("tools", "file_io.templates.resolve_write_text_2", str).format(
+                p0=path
+            )
+        )
     return resolved
 
 
@@ -55,7 +64,7 @@ async def file_io(
     对外服务隔离。write 仍受 write_root 越界校验约束；同路径同内容不重复写盘。
     """
     if action in ("read", "list") and is_internal(Path(path), blocked):
-        raise ValueError("不能读取其他角色或宿主的内部数据")
+        raise ValueError(policy("tools", "file_io.copy.file_io_text", str))
     if action == "read":
         text = await asyncio.to_thread(
             Path(path).read_text, encoding="utf-8", errors="replace"
@@ -92,7 +101,9 @@ async def file_io(
             "path": path,
             "entries": await asyncio.to_thread(_list_entries, path, blocked),
         }
-    raise ValueError(f"未知 file_io 动作：{action!r}（应为 read/write/list）")
+    raise ValueError(
+        policy("tools", "file_io.templates.file_io_text", str).format(p0=action)
+    )
 
 
 def _list_entries(path: str, blocked: list[Path] | tuple[Path, ...] = ()) -> list[str]:
@@ -111,13 +122,23 @@ def build_file_io_tool(
 
     return Tool(
         name="file_io",
-        description="读写本地文件：read 全盘读文本、write 写进工作目录、list 列目录。",
+        description=policy("tools", "file_io.copy.build_file_io_tool_text", str),
         schema={
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["read", "write", "list"]},
-                "path": {"type": "string", "description": "文件或目录路径"},
-                "content": {"type": "string", "description": "write 时写入的文本"},
+                "path": {
+                    "type": "string",
+                    "description": policy(
+                        "tools", "file_io.copy.build_file_io_tool_text_2", str
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": policy(
+                        "tools", "file_io.copy.build_file_io_tool_text_3", str
+                    ),
+                },
             },
             "required": ["action", "path"],
         },

@@ -1,0 +1,53 @@
+{
+  "rules": {
+    "_OOC_STEP": 0.5,
+    "_BLACKLIST": [
+      "As an AI",
+      "your request",
+      "作为AI助手",
+      "作为一个AI",
+      "作为语言模型",
+      "我是一个人工智能",
+      "无法回答",
+      "让我来帮你"
+    ]
+  },
+  "frontend": {
+    "evalStore": {
+      "EVAL_PAGE_SIZE": 20
+    }
+  },
+  "evaluator": {
+    "templates": {
+      "evaluate_text": "表达偏离人设\n调用：{p0} · {p1}\n评分：keyword={p2}, embed={p3}\n具体原文：\n{p4}"
+    },
+    "copy": {
+      "evaluate_text": "OOC 关键词命中 module=%s type=%s score=%.2f",
+      "record_text": "eval 落库失败 module=%s type=%s",
+      "evaluate_text_2": "OOC 失败信号记录失败 module=%s"
+    }
+  },
+  "copy": {
+    "EvalPanel": {
+      "p": "正在加载 prompt…",
+      "p_2": "该记录未保存 prompt",
+      "p_3": "prompt 为空",
+      "title": "LLM 调用 / token",
+      "span": "总 token",
+      "aria_label": "搜索调用记录",
+      "placeholder": "搜索调用…",
+      "aria_label_2": "调用类型",
+      "option": "全部类型",
+      "text": "等待核心服务连接…",
+      "p_4": "还没有 LLM 调用记录",
+      "p_5": "没有匹配的调用记录",
+      "button": "上一页",
+      "button_2": "下一页"
+    }
+  },
+  "store": {
+    "defaults": {
+      "list_recent_limit": 5
+    }
+  }
+}

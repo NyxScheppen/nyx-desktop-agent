@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """陪读输出缓冲与章末记忆整合。"""
 
 import asyncio
@@ -12,18 +13,18 @@ from nyx.events.bus import EventBus
 from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade, build_source_topic
+from nyx.policy import policy
 from nyx.reading.store import ReadingStore
 from nyx.types import Paragraph
 
-NYX_BUFFER_MAXLEN = 100
-_INTEGRATION_PROMPT_MAX_CHARS = 12000
-_SOURCE_BLOCK_CHARS = 6000
+NYX_BUFFER_MAXLEN = policy("reading", "integration.NYX_BUFFER_MAXLEN", int)
+_INTEGRATION_PROMPT_MAX_CHARS = policy(
+    "reading", "integration._INTEGRATION_PROMPT_MAX_CHARS", int
+)
+_SOURCE_BLOCK_CHARS = policy("reading", "integration._SOURCE_BLOCK_CHARS", int)
 
 _READING_NOTE_SYSTEM = (
-    "遵循角色设定，把下面这些你陪读时冒出的碎碎念和提问，"
-    "整理成一条第一人称读书记忆：你读到了什么、心里留下了什么、"
-    "哪里让你停了一下，而不是复述原文或罗列要点。"
-    "只输出 JSON，键：content（正文）、summary（一句话总结），两者都是非空字符串。"
+    policy("reading", "integration._READING_NOTE_SYSTEM", str)
 )
 
 
@@ -40,14 +41,22 @@ def parse_reading_note(raw: str) -> tuple[str, str]:
     """Parse a structured reading-memory response."""
     data = json.loads(raw)
     if not isinstance(data, dict):
-        raise ValueError(f"读书记忆 JSON 应是对象，得到 {type(data).__name__}")
+        raise ValueError(
+            policy(
+                "reading", "integration.templates.parse_reading_note_text", str
+            ).format(p0=type(data).__name__)
+        )
     parsed = cast(dict[str, Any], data)
     content = parsed.get("content")
     summary = parsed.get("summary")
     if not isinstance(content, str) or not content:
-        raise ValueError("读书记忆 JSON 缺 content 或非空字符串")
+        raise ValueError(
+            policy("reading", "integration.copy.parse_reading_note_text", str)
+        )
     if not isinstance(summary, str) or not summary:
-        raise ValueError("读书记忆 JSON 缺 summary 或非空字符串")
+        raise ValueError(
+            policy("reading", "integration.copy.parse_reading_note_text_2", str)
+        )
     return content, summary
 
 
@@ -235,6 +244,44 @@ class ReadingIntegration:
         async with lock:
             await self._integrate(book_id, result, pre_read_count)
 
+    async def integrate_session(
+        self,
+        book_id: str,
+        session_id: str,
+        output: dict[str, Any],
+    ) -> None:
+        """Commit persistent session input through the original reading-memory path."""
+        assert self._store is not None
+        book = await self._store.find_book(book_id)
+        if book is None:
+            raise ValueError(policy("reading", "study.copy.error_deleted", str))
+        if not isinstance(output["content"], str) or not isinstance(
+            output["summary"], str
+        ):
+            raise ValueError(policy("reading", "study.copy.error_material", str))
+        async with self._store.db.transaction():
+            cursor = await self._store.db.conn.execute(
+                "SELECT memory_id FROM reading_memory_receipt WHERE session_id=?",
+                (session_id,),
+            )
+            if await cursor.fetchone() is not None:
+                return
+            memory = await self._memory.remember_reading(
+                output["content"],
+                output["summary"],
+                f"reading-settlement:{session_id}",
+                source_name=book.title,
+                source_topic=build_source_topic("book", book_id),
+                in_transaction=True,
+            )
+            await self._store.db.conn.execute(
+                "INSERT INTO reading_memory_receipt(session_id,memory_id) VALUES (?,?)",
+                (session_id, memory.id),
+            )
+        await self._memory._run_best_effort_tail(
+            memory, [], f"reading-settlement:{session_id}"
+        )
+
     async def _integrate(
         self, book_id: str, result: BoundaryResult, pre_read_count: int
     ) -> None:
@@ -246,7 +293,9 @@ class ReadingIntegration:
             consumed: list[tuple[NyxBufferEntry, int]] = []
             remaining = _INTEGRATION_PROMPT_MAX_CHARS
             for entry in entries:
-                prefix = f"[{entry.source}] 第{entry.paragraph_index}段："
+                prefix = policy(
+                    "reading", "integration.templates.integrate_text", str
+                ).format(p0=entry.source, p1=entry.paragraph_index)
                 available = remaining - len(prefix) - (1 if lines else 0)
                 if available <= 0:
                     break
@@ -257,9 +306,9 @@ class ReadingIntegration:
                 if len(fragment) < len(entry.content):
                     break
             user = (
-                "这是你陪读这一章/本书时冒出的碎碎念和提问：\n\n"
+                policy("reading", "integration.copy.integrate_text_2", str)
                 + "\n".join(lines)
-                + "\n\n整理成一条第一人称的读书记忆。"
+                + policy("reading", "integration.copy.integrate_text", str)
             )
             output = await self._llm.complete(
                 [
@@ -308,7 +357,9 @@ class ReadingIntegration:
                             break
         except Exception:
             self._logger.exception(
-                "读书记忆整合失败 book_id=%s result=%s", book_id, result.value
+                policy("reading", "integration.copy.integrate_text_3", str),
+                book_id,
+                result.value,
             )
 
 

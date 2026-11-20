@@ -23,11 +23,12 @@ from nyx.enums import (
     DesireType,
 )
 from nyx.inner_life.emotion import ENERGY_REST_THRESHOLD
+from nyx.policy import policy
 from nyx.research.engine import should_explore
 from nyx.timezone import USER_TIMEZONE
 from nyx.types import Activity, Book, CurrentState, ShortTermDesire
 
-_READING_MATCH_THRESHOLD = 0.6
+_READING_MATCH_THRESHOLD = policy("activity", "starter._READING_MATCH_THRESHOLD", float)
 _logger = logging.getLogger(__name__)
 
 
@@ -44,7 +45,11 @@ def _reading_match_score(topic: str, candidate: str) -> float:
     if query == name:
         return 1.0
     if query in name or name in query:
-        return 0.9 + 0.09 * min(len(query), len(name)) / max(len(query), len(name))
+        return policy(
+            "activity", "starter.parameters.reading_match_score_result_factor", float
+        ) + policy(
+            "activity", "starter.parameters.reading_match_score_result_factor_2", float
+        ) * min(len(query), len(name)) / max(len(query), len(name))
     return SequenceMatcher(None, query, name).ratio()
 
 
@@ -88,7 +93,7 @@ def _harvest_task_exception(task: asyncio.Task[None]) -> None:
     error = task.exception()
     if error is not None:
         _logger.error(
-            "活动后台任务失败",
+            policy("activity", "starter.copy.harvest_task_exception_text", str),
             exc_info=(type(error), error, error.__traceback__),
         )
 

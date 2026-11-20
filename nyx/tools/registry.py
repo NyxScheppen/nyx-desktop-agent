@@ -6,22 +6,26 @@ from typing import Any
 from uuid import uuid4
 
 from nyx.behavior.context import tool_execution_id
+from nyx.policy import policy
 from nyx.tools.tool_call_store import ToolCallStore
 from nyx.types import Tool
 
 _LOGGER = logging.getLogger(__name__)
-_ARGS_MAX_CHARS = 2000
-_RESULT_MAX_CHARS = 2000
-_ERROR_MAX_CHARS = 1000
+_ARGS_MAX_CHARS = policy("tools", "registry._ARGS_MAX_CHARS", int)
+_RESULT_MAX_CHARS = policy("tools", "registry._RESULT_MAX_CHARS", int)
+_ERROR_MAX_CHARS = policy("tools", "registry._ERROR_MAX_CHARS", int)
 
 
 def is_read_only_call(name: str, args: dict[str, Any]) -> bool:
     """Only known reads may repeat after an unconfirmed attempt."""
     return name in (
-        "local_search", "web_search", "memory_recall", "knowledge_search",
-    ) or (
-        name == "file_io" and args.get("action") in ("read", "list")
-    )
+        "local_search",
+        "web_search",
+        "memory_recall",
+        "knowledge_search",
+        "book_search",
+        "book_excerpt",
+    ) or (name == "file_io" and args.get("action") in ("read", "list"))
 
 
 class ToolRegistry:
@@ -79,8 +83,16 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
-            raise ValueError(f"工具名重复注册：{tool.name!r}")
+            raise ValueError(
+                policy("tools", "registry.templates.register_text", str).format(
+                    p0=tool.name
+                )
+            )
         self._tools[tool.name] = tool
+
+    def get(self, name: str) -> Tool:
+        """Reuse an existing grant in a restricted reading registry."""
+        return self._tools[name]
 
     async def call(
         self,
@@ -94,7 +106,9 @@ class ToolRegistry:
         """Keep the handler result/exception intact; observation is best-effort."""
         tool = self._tools.get(name)
         if tool is None:
-            raise KeyError(f"未注册工具：{name!r}")
+            raise KeyError(
+                policy("tools", "registry.templates.call_text", str).format(p0=name)
+            )
         if self._store is None:
             return await self._invoke(tool, args, log_id)
         created_at = time.time()
@@ -130,7 +144,7 @@ class ToolRegistry:
                     "error": error,
                 })
             except Exception:
-                _LOGGER.exception("工具观测落库失败 tool=%s", name)
+                _LOGGER.exception(policy("tools", "registry.copy.call_text", str), name)
 
     async def _invoke(
         self, tool: Tool, args: dict[str, Any], log_id: str | None,
@@ -147,7 +161,9 @@ class ToolRegistry:
             try:
                 await self._store.mark_adopted(log_id)
             except Exception:
-                _LOGGER.exception("工具采纳标记失败 log_id=%s", log_id)
+                _LOGGER.exception(
+                    policy("tools", "registry.copy.mark_adopted_text", str), log_id
+                )
 
     def schema(self, names: Iterable[str] | None = None) -> list[dict[str, Any]]:
         # OpenAI 兼容 function calling 格式：{"type":"function","function":{…}}。

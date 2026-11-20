@@ -1,3 +1,4 @@
+import evalPolicy from "../../../../nyx/settings/eval.json";
 import { useEffect, useState } from "react";
 import { label, OUTPUT_TYPE_LABELS } from "../../lib/labels";
 import { useEvalStore } from "../../stores/evalStore";
@@ -34,7 +35,7 @@ function EvalRecordItem({ record }: { record: EvalRecord }) {
         </summary>
         <div className="eval-prompt" aria-live="polite">
           {loading ? (
-            <p className="eval-prompt__status">正在加载 prompt…</p>
+            <p className="eval-prompt__status">{evalPolicy.copy.EvalPanel.p}</p>
           ) : promptError !== undefined ? (
             <div className="eval-prompt__status error-text">
               <span>{promptError}</span>
@@ -43,9 +44,9 @@ function EvalRecordItem({ record }: { record: EvalRecord }) {
               </button>
             </div>
           ) : loaded && prompt === null ? (
-            <p className="eval-prompt__status">该记录未保存 prompt</p>
+            <p className="eval-prompt__status">{evalPolicy.copy.EvalPanel.p_2}</p>
           ) : loaded && prompt?.length === 0 ? (
-            <p className="eval-prompt__status">prompt 为空</p>
+            <p className="eval-prompt__status">{evalPolicy.copy.EvalPanel.p_3}</p>
           ) : prompt !== undefined && prompt !== null ? (
             prompt.map((message, index) => (
               <section className="eval-prompt__message" key={`${index}-${message.role}`}>
@@ -82,11 +83,11 @@ export default function EvalPanel() {
   }, [refresh]);
 
   return (
-    <Panel title="LLM 调用 / token">
+    <Panel title={evalPolicy.copy.EvalPanel.title}>
       {error !== null && <p className="error-text">{error}</p>}
       {stats !== null && (
         <p className="panel-item">
-          <span className="panel-item__main">总 token</span>
+          <span className="panel-item__main">{evalPolicy.copy.EvalPanel.span}</span>
           <span className="panel-item__meta">
             {stats.total_tokens}（prompt {stats.prompt_tokens} / completion{" "}
             {stats.completion_tokens}）
@@ -94,18 +95,18 @@ export default function EvalPanel() {
         </p>
       )}
       <div className="panel-toolbar">
-        <input className="panel-input" type="search" aria-label="搜索调用记录" placeholder="搜索调用…" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} />
-        <select className="panel-input" aria-label="调用类型" value={type} onChange={(event) => { setType(event.target.value); setPage(0); }}>
-          <option value="">全部类型</option>
+        <input className="panel-input" type="search" aria-label={evalPolicy.copy.EvalPanel.aria_label} placeholder={evalPolicy.copy.EvalPanel.placeholder} value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} />
+        <select className="panel-input" aria-label={evalPolicy.copy.EvalPanel.aria_label_2} value={type} onChange={(event) => { setType(event.target.value); setPage(0); }}>
+          <option value="">{evalPolicy.copy.EvalPanel.option}</option>
           {Object.entries(OUTPUT_TYPE_LABELS).map(([value, name]) => <option key={value} value={value}>{name}</option>)}
         </select>
       </div>
       {records === null ? (
-        "等待核心服务连接…"
+        evalPolicy.copy.EvalPanel.text
       ) : records.length === 0 ? (
-        <p className="panel-item">还没有 LLM 调用记录</p>
+        <p className="panel-item">{evalPolicy.copy.EvalPanel.p_4}</p>
       ) : filtered.length === 0 ? (
-        <p className="panel-item">没有匹配的调用记录</p>
+        <p className="panel-item">{evalPolicy.copy.EvalPanel.p_5}</p>
       ) : (
         <ul className="panel-list">
           {filtered.slice(currentPage * 5, currentPage * 5 + 5).map((r) => (
@@ -114,9 +115,9 @@ export default function EvalPanel() {
         </ul>
       )}
       {records !== null && filtered.length > 0 && <div className="ledger-pagination">
-        <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一页</button>
+        <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>{evalPolicy.copy.EvalPanel.button}</button>
         <span>{currentPage + 1} / {pages}</span>
-        <button type="button" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>下一页</button>
+        <button type="button" disabled={currentPage + 1 >= pages} onClick={() => setPage(currentPage + 1)}>{evalPolicy.copy.EvalPanel.button_2}</button>
       </div>}
     </Panel>
   );

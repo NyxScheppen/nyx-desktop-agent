@@ -4,7 +4,7 @@
 
 ## 配置与存储
 
-- `config.yaml` 提供公开运行配置，`nyx/config.py` 负责加载；环境变量承载密钥和部署覆盖项，不把凭证写入前端构建变量。
+- `nyx/settings/<系统>.json` 是各系统默认参数、规则与内置提示词的唯一来源，见 [策略配置](../../nyx/settings/README.md)。`config.yaml` 只表达公开运行字段的显式覆盖，`nyx/config.py` 负责加载；环境变量承载密钥和部署覆盖项，不把凭证写入前端构建变量。
 - `NYX_DATABASE_URL` 为空时使用 SQLite，非空时使用 PostgreSQL；宿主与角色数据隔离，checkpoint 使用对应后端的 saver。
 - 数据库迁移与事务集中在 `nyx/db.py`。角色卡和工作区文件与数据库一起构成恢复所需数据，迁移和备份不能只考虑数据库。
 

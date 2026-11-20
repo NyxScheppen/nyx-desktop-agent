@@ -1,3 +1,4 @@
+import frontendPolicy from "../../../nyx/settings/frontend.json";
 import { coalescedRefresh } from "../api/coalescedRefresh";
 import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
@@ -41,7 +42,7 @@ export const useInnerLifeStore = create<InnerLifeState>((set) => {
       typeof arousal !== "number" ||
       !isEmotionCategory(emotion)
     ) {
-      console.error("SSE emotion_update 帧字段类型错误，丢弃", e);
+      console.error(frontendPolicy.copy.innerLifeStore.text, e);
       return;
     }
     set((s) => {

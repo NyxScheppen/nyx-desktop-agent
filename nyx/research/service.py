@@ -18,6 +18,7 @@ from nyx.eval.evaluator import Evaluator
 from nyx.events.event import internal_event
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
+from nyx.policy import policy
 from nyx.research.engine import ResearchEngine, ResearchWaiting
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Activity
@@ -102,10 +103,22 @@ class ResearchService:
         compact: dict[str, Any] = {
             "run_id": run_id,
             "status": result.get("status", result.get("outcome")),
-            "summary": str(result.get("summary", ""))[:300],
+            "summary": str(result.get("summary", ""))[
+                : policy(
+                    "research",
+                    "service.parameters.deep_research_summary_chars_or_items",
+                    int,
+                )
+            ],
         }
         if result.get("error"):
-            compact["error"] = str(result["error"])[:500]
+            compact["error"] = str(result["error"])[
+                : policy(
+                    "research",
+                    "service.parameters.deep_research_compact_error_chars_or_items",
+                    int,
+                )
+            ]
         if result.get("question"):
             compact["question"] = result["question"]
         compact["report"] = result.get("report", [])
@@ -164,7 +177,7 @@ class ResearchService:
                     "run_id": run_id,
                     "status": "uncertain",
                     "error": str(error),
-                    "summary": "研究写入尚未确认，恢复时将核对持久回执。",
+                    "summary": policy("research", "service.copy.run_text_6", str),
                 }
             finally:
                 self._tasks.pop(run_id, None)
@@ -191,9 +204,26 @@ class ResearchService:
                 "discussion",
             )
             strategies = [
-                item.content.split("【原文证据】", 1)[0][:2000] for item in lessons[:5]
+                item.content.split(
+                    policy("research", "service.copy.run_text_9", str), 1
+                )[0][
+                    : policy(
+                        "research",
+                        "service.parameters.run_strategies_chars_or_items",
+                        int,
+                    )
+                ]
+                for item in lessons[
+                    : policy(
+                        "research",
+                        "service.parameters.run_strategies_chars_or_items_2",
+                        int,
+                    )
+                ]
             ]
-            history = await self.store.list_records("research_run", 20)
+            history = await self.store.list_records(
+                "research_run", policy("research", "service.history_limit", int)
+            )
             initial_progress: dict[str, Any] = (
                 dict(activity.progress) if activity else {"intent": question}
             )
@@ -201,7 +231,13 @@ class ResearchService:
             checkpoint.update(
                 skill_fragment=snapshot["system_fragment"],
                 require_citations=True,
-                strategy_lessons=list(dict.fromkeys(strategies))[:5],
+                strategy_lessons=list(dict.fromkeys(strategies))[
+                    : policy(
+                        "research",
+                        "service.parameters.run_strategy_lessons_chars_or_items",
+                        int,
+                    )
+                ],
                 previous_research=[
                     {
                         "question": item["question"],
@@ -216,7 +252,13 @@ class ResearchService:
                         .get("exploration", {})
                         .get("unresolved_questions", []),
                     }
-                    for item in history[:5]
+                    for item in history[
+                        : policy(
+                            "research",
+                            "service.parameters.run_previous_research_chars_or_items",
+                            int,
+                        )
+                    ]
                     if item["status"] in {"completed", "failed"}
                 ],
             )
@@ -245,7 +287,9 @@ class ResearchService:
                 "activity": asdict(activity),
             }
             await self.store.save("research_run", record, insert_only=True)
-            _LOGGER.info("研究已受理 run=%s origin=%s", run_id, origin)
+            _LOGGER.info(
+                policy("research", "service.copy.run_text", str), run_id, origin
+            )
         saved_activity = cast(dict[str, Any], record["activity"])
         if activity is None:
             activity = Activity(
@@ -283,7 +327,9 @@ class ResearchService:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                _LOGGER.exception("研究通知失败 run_id=%s", run_id)
+                _LOGGER.exception(
+                    policy("research", "service.copy.progress_text", str), run_id
+                )
 
         if record.get("cancel_requested"):
             record["status"] = "cancelled"
@@ -291,9 +337,9 @@ class ResearchService:
                 record,
                 activity,
                 {
-                    "error": "研究已取消",
+                    "error": policy("research", "service.copy.run_text_3", str),
                     "outcome": "cancelled",
-                    "summary": "用户取消了研究，保留此前已确认结果。",
+                    "summary": policy("research", "service.copy.run_text_4", str),
                 },
             )
 
@@ -304,8 +350,8 @@ class ResearchService:
                 activity,
                 {
                     "outcome": "failed",
-                    "error": "联网没开，无法执行深度研究",
-                    "summary": "联网没开，研究未执行。",
+                    "error": policy("research", "service.copy.run_text_7", str),
+                    "summary": policy("research", "service.copy.run_text_8", str),
                     "report": [],
                 },
             )
@@ -332,7 +378,7 @@ class ResearchService:
                 "run_id": run_id,
                 "status": "waiting_user",
                 "question": str(waiting),
-                "notice": "研究等待用户补充信息，尚未完成。",
+                "notice": policy("research", "service.copy.run_text_2", str),
             }
         except asyncio.CancelledError:
             if run_id not in self._cancel_requested:
@@ -341,9 +387,9 @@ class ResearchService:
                 raise
             record["status"] = "cancelled"
             result = {
-                "error": "研究已取消",
+                "error": policy("research", "service.copy.run_text_3", str),
                 "outcome": "cancelled",
-                "summary": "用户取消了研究，保留此前已确认结果。",
+                "summary": policy("research", "service.copy.run_text_4", str),
             }
         except DATABASE_ERRORS:
             raise
@@ -352,7 +398,7 @@ class ResearchService:
             result = {
                 "error": str(error) or type(error).__name__,
                 "outcome": "failed",
-                "summary": "研究失败，已保留此前提交的有效知识。",
+                "summary": policy("research", "service.copy.run_text_5", str),
                 "actions": activity.progress.get("exploration", {}).get("actions", []),
             }
         result = await self._settle(record, activity, result)
@@ -396,22 +442,28 @@ class ResearchService:
             record["settled"] = True
             await self.store.save("research_run", record)
         await self.behavior.bus.announce_committed(event)
-        _LOGGER.info("研究已结算 run=%s status=%s", record["id"], record["status"])
+        _LOGGER.info(
+            policy("research", "service.copy.settle_text", str),
+            record["id"],
+            record["status"],
+        )
         return cast(dict[str, Any], record["result"])
 
     async def resume(self, run_id: str, answer: str | None = None) -> dict[str, Any]:
         if run_id in self._tasks:
-            raise ValueError("研究仍在执行，请等待当前步骤结束")
+            raise ValueError(policy("research", "service.copy.resume_text", str))
         lock = self._locks.setdefault(run_id, asyncio.Lock())
         async with lock:
             record = await self.store.get("research_run", run_id)
             if record is None:
-                raise ValueError("研究记录不存在")
+                raise ValueError(policy("research", "service.copy.resume_text_2", str))
             if record.get("settled"):
                 return cast(dict[str, Any], record["result"])
             if record["status"] == "waiting_user":
                 if not answer or not answer.strip():
-                    raise ValueError("需要回答研究中的待澄清问题")
+                    raise ValueError(
+                        policy("research", "service.copy.resume_text_4", str)
+                    )
                 checkpoint = record["activity"]["progress"]["exploration"]
                 checkpoint["actions"].append(
                     {
@@ -424,7 +476,9 @@ class ResearchService:
                     }
                 )
                 checkpoint["state"] = "deciding"
-                checkpoint["question"] += "\n用户补充：" + answer
+                checkpoint["question"] += (
+                    policy("research", "service.copy.resume_text_3", str) + answer
+                )
                 record["status"] = "deciding"
                 await self.store.save("research_run", record)
         if record["origin"] == "desire" and self.resume_activity is not None:
@@ -437,7 +491,7 @@ class ResearchService:
         async with self.store.db.transaction():
             record = await self.store.get("research_run", run_id)
             if record is None:
-                raise ValueError("研究记录不存在")
+                raise ValueError(policy("research", "service.copy.resume_text_2", str))
             if record.get("settled"):
                 return cast(dict[str, Any], record["result"])
             self._cancel_requested.add(run_id)
@@ -446,7 +500,10 @@ class ResearchService:
         task = self._tasks.get(run_id)
         if task is not None and not task.done():
             task.cancel()
-            done, _ = await asyncio.wait({task}, timeout=10)
+            done, _ = await asyncio.wait(
+                {task},
+                timeout=policy("research", "service.parameters.cancel_timeout", int),
+            )
             if not done:
                 return {"run_id": run_id, "status": "cancel_requested"}
             # Retrieve exceptions; the owning caller still receives its own result.

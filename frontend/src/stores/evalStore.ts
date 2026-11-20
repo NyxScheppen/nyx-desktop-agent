@@ -1,9 +1,10 @@
+import evalPolicy from "../../../nyx/settings/eval.json";
 import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import { getEvalPrompt, getEvalRecent, getEvalTotalTokens } from "../api/client";
 import type { EvalRecord, EvalStats, LlmPromptMessage } from "../types/api";
 
-const EVAL_PAGE_SIZE = 20;
+const EVAL_PAGE_SIZE = evalPolicy.frontend.evalStore.EVAL_PAGE_SIZE;
 
 // eval 记账页面：所有历史 LLM 调用分页加载 + 总 token。
 // 页面 mount 触发 refresh，拉 REST 快照；无 SSE 事件驱动（低频面板）。

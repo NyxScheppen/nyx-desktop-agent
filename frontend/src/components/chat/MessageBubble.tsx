@@ -1,3 +1,5 @@
+import { formatPolicyText } from "../../lib/policy";
+import frontendPolicy from "../../../../nyx/settings/frontend.json";
 import { useEffect, useRef, useState } from "react";
 import { useTypewriter } from "../../hooks/useTypewriter";
 import { useChatStore, type ChatMessage } from "../../stores/chatStore";
@@ -50,7 +52,7 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
 
   useEffect(() => {
     if (!isTimedInteraction || message.paused_at !== null && message.paused_at !== undefined) return;
-    const timer = window.setInterval(() => setNow(Date.now() / 1000), 250);
+    const timer = window.setInterval(() => setNow(Date.now() / 1000), frontendPolicy.timers.question_clock_ms);
     return () => window.clearInterval(timer);
   }, [isTimedInteraction, message.paused_at]);
 
@@ -78,12 +80,12 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
       className={`message-bubble message-bubble--${role} message-bubble--${kind}`}
       onClick={canSelectInteraction ? () => selectQuestion(message.attempt_id ?? null) : undefined}
     >
-      {kind === "initiate_chat" && <span className="message-bubble__badge">欲望搭话</span>}
-      {kind === "reading_question" && <span className="message-bubble__badge">提问</span>}
+      {kind === "initiate_chat" && <span className="message-bubble__badge">{frontendPolicy.copy.MessageBubble.span}</span>}
+      {kind === "reading_question" && <span className="message-bubble__badge">{frontendPolicy.copy.MessageBubble.span_2}</span>}
       <span
         ref={contentRef}
         className="message-bubble__content"
-        title={kind === "speak" ? "选择片段或点击全文来批注" : undefined}
+        title={kind === "speak" ? frontendPolicy.copy.MessageBubble.text : undefined}
         onClick={kind === "speak" && ready && (!typewrite || done) ? () => {
           const selection = window.getSelection();
           if (selection && !selection.isCollapsed) {
@@ -103,16 +105,16 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
       {message.annotation && (
         <div className="message-bubble__annotation">
           <blockquote>{message.annotation.quote}</blockquote>
-          <small>{annotationStatus === "recorded" ? "反馈已记录" : "反馈持久化待确认"}</small>
+          <small>{annotationStatus === "recorded" ? frontendPolicy.copy.MessageBubble.text_2 : frontendPolicy.copy.MessageBubble.text_3}</small>
         </div>
       )}
       {kind === "reading_question" && message.selectedText && (
-        <p className="message-bubble__quote">原文：「{message.selectedText}」</p>
+        <p className="message-bubble__quote">{frontendPolicy.copy.MessageBubble.p}{message.selectedText}」</p>
       )}
       {isTimedInteraction && remaining !== null && (
         <span className="message-bubble__timer">
-          {remaining > 0 ? `剩余 ${Math.ceil(remaining)} 秒` : "等待超时确认"}
-          {message.paused_at !== null && message.paused_at !== undefined && "（已暂停）"}
+          {remaining > 0 ? formatPolicyText(frontendPolicy.templates.MessageBubble.text, { p0: Math.ceil(remaining) }) : frontendPolicy.copy.MessageBubble.text_4}
+          {message.paused_at !== null && message.paused_at !== undefined && frontendPolicy.copy.MessageBubble.text_5}
         </span>
       )}
       {isQuestion && message.attempt_id !== undefined && (
@@ -127,7 +129,7 @@ export default function MessageBubble({ message, ready, onTyped }: MessageBubble
               : pauseQuestion(message.attempt_id as string));
           }}
         >
-          {message.paused_at !== null && message.paused_at !== undefined ? "继续计时" : "暂停计时"}
+          {message.paused_at !== null && message.paused_at !== undefined ? frontendPolicy.copy.MessageBubble.text_6 : frontendPolicy.copy.MessageBubble.text_7}
         </button>
       )}
     </div>

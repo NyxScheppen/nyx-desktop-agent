@@ -1,0 +1,89 @@
+{
+  "file_io": {
+    "DEFAULT_WRITE_ROOT": "workspace",
+    "_COMPARE_CHUNK_SIZE": 65536,
+    "copy": {
+      "file_io_text": "不能读取其他角色或宿主的内部数据",
+      "build_file_io_tool_text": "读写本地文件：read 全盘读文本、write 写进工作目录、list 列目录。",
+      "build_file_io_tool_text_2": "文件或目录路径",
+      "build_file_io_tool_text_3": "write 时写入的文本"
+    },
+    "templates": {
+      "file_io_text": "未知 file_io 动作：{p0!r}（应为 read/write/list）",
+      "resolve_write_text": "写入路径越界：{p0!r}（仅允许 {p1} 内）",
+      "resolve_write_text_2": "写入路径无效：{p0!r} 指向 write_root 本身"
+    }
+  },
+  "local_search": {
+    "_SEARCH_SUFFIXES": [
+      ".md",
+      ".txt"
+    ],
+    "_MAX_RESULTS": 50,
+    "_MAX_FILE_BYTES": 1048576,
+    "parameters": {
+      "search_local_sync_end_budget": 40
+    },
+    "copy": {
+      "build_local_search_tool_text": "在本地磁盘的文本文件中按关键词搜索，返回匹配文件路径与片段。",
+      "build_local_search_tool_text_2": "搜索关键词"
+    },
+    "snippet_context_chars": 40
+  },
+  "registry": {
+    "_ARGS_MAX_CHARS": 2000,
+    "_RESULT_MAX_CHARS": 2000,
+    "_ERROR_MAX_CHARS": 1000,
+    "copy": {
+      "call_text": "工具观测落库失败 tool=%s",
+      "mark_adopted_text": "工具采纳标记失败 log_id=%s"
+    },
+    "templates": {
+      "register_text": "工具名重复注册：{p0!r}",
+      "call_text": "未注册工具：{p0!r}"
+    }
+  },
+  "web_fetch": {
+    "_MAX_DOWNLOAD_CHARS": 200000,
+    "_MAX_REDIRECTS": 5,
+    "parameters": {
+      "fetch_url_sync_timeout_factor": 15
+    },
+    "copy": {
+      "build_web_fetch_tool_text": "抓取网页正文为纯文本（供探索阅读消化）。",
+      "handler_text": "正文抓取失败或为空",
+      "handler_text_2": "网页知识摄入失败 url=%s",
+      "handler_words": [
+        "网页已抓取，知识摄入未完成"
+      ],
+      "build_web_fetch_tool_text_2": "网页 URL"
+    }
+  },
+  "web_search": {
+    "_BING_URL": "https://cn.bing.com/search",
+    "_HEADERS": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+      "Accept-Language": "zh-CN,zh;q=0.9"
+    },
+    "_MAX_RESULTS": 5,
+    "parameters": {
+      "search_web_sync_timeout_factor": 10,
+      "search_web_sync_timeout_factor_2": 10
+    },
+    "copy": {
+      "search_web_sync_text": "联网搜索无结果 query=%s",
+      "build_web_search_tool_text": "联网搜索（Bing），返回标题 / 链接 / 摘要。",
+      "search_web_sync_text_2": "联网搜索请求失败 query=%s",
+      "build_web_search_tool_text_2": "搜索关键词"
+    }
+  },
+  "activity_tasks": {
+    "copy": {
+      "build_activity_task_tools_text": "用户明确要求 Nyx 阅读或了解指定公开网页时，提交后台网页阅读任务。",
+      "build_activity_task_tools_text_2": "用户明确要求 Nyx 阅读书库中的某本书到指定段落时，提交读书任务。",
+      "build_activity_task_tools_text_3": "用户明确要求 Nyx 创作文字时，提交后台创作任务。",
+      "build_activity_task_tools_text_4": "用户明确要求 Nyx 亲自填写公开网页问卷时，提交后台浏览器问卷任务。"
+    }
+  },
+  "tool_call_store": {}
+}

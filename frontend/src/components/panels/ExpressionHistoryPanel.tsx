@@ -1,3 +1,5 @@
+import expressionPolicy from "../../../../nyx/settings/expression.json";
+import frontendPolicy from "../../../../nyx/settings/frontend.json";
 import { formatDateTime } from "../../lib/time";
 import { useEffect, useState } from "react";
 import { useExpressionHistoryStore } from "../../stores/expressionHistoryStore";
@@ -5,19 +7,15 @@ import Panel from "../layout/Panel";
 import type { BackendEvent } from "../../types/api";
 import FlowPages from "../layout/FlowPages";
 
-const LABELS: Record<string, string> = {
-  user_message: "用户消息", speak: "回复", ask: "提问", think: "思考",
-  reading_question: "陪读提问", reading_association: "陪读联想",
-  mutter: "碎碎念", reading_mutter: "陪读碎碎念", initiate_chat: "主动搭话",
-};
+const LABELS: Record<string, string> = frontendPolicy.frontend.ExpressionHistoryPanel.LABELS as Record<string, string>;
 
 function content(event: BackendEvent): string {
   const value = event.content.content ?? event.content.message ?? event.content.snippet;
-  return typeof value === "string" ? value : "（无文本内容）";
+  return typeof value === "string" ? value : expressionPolicy.copy.ExpressionHistoryPanel.text;
 }
 
 function EventList({ events }: { events: BackendEvent[] }) {
-  if (events.length === 0) return <p className="panel-item">暂无记录</p>;
+  if (events.length === 0) return <p className="panel-item">{expressionPolicy.copy.ExpressionHistoryPanel.p}</p>;
   return <ul className="panel-list">{events.map((event) => (
     <li className="panel-item" key={event.id}>
       <span className="panel-item__main">{content(event)}</span>
@@ -41,22 +39,22 @@ export default function ExpressionHistoryPanel() {
   );
   useEffect(() => { void refresh(); }, [refresh]);
   return (
-    <Panel title="表达历史" className="paged-panel history-panel">
-      <div className="panel-tabs" role="tablist" aria-label="表达历史类型">
+    <Panel title={expressionPolicy.copy.ExpressionHistoryPanel.title} className="paged-panel history-panel">
+      <div className="panel-tabs" role="tablist" aria-label={expressionPolicy.copy.ExpressionHistoryPanel.aria_label}>
         {(["all", "mutter", "initiate_chat"] as const).map((key) => (
           <button key={key} type="button" role="tab" aria-selected={tab === key}
             className={tab === key ? "panel-tab panel-tab--active" : "panel-tab"}
             onClick={() => setTab(key)}>
-            {key === "all" ? "全部历史" : key === "mutter" ? "碎碎念" : "主动搭话"}
+            {key === "all" ? expressionPolicy.copy.ExpressionHistoryPanel.text_2 : key === "mutter" ? expressionPolicy.copy.ExpressionHistoryPanel.text_3 : expressionPolicy.copy.ExpressionHistoryPanel.text_4}
           </button>
         ))}
       </div>
       <div className="panel-toolbar">
-        <input className="panel-input" aria-label="搜索表达历史" placeholder="搜索历史…" value={query} onChange={(event) => setQuery(event.target.value)} />
-        <label className="history-conversation-filter"><input type="checkbox" checked={conversationOnly} onChange={(event) => setConversationOnly(event.target.checked)} />仅对话</label>
+        <input className="panel-input" aria-label={expressionPolicy.copy.ExpressionHistoryPanel.aria_label_2} placeholder={expressionPolicy.copy.ExpressionHistoryPanel.placeholder} value={query} onChange={(event) => setQuery(event.target.value)} />
+        <label className="history-conversation-filter"><input type="checkbox" checked={conversationOnly} onChange={(event) => setConversationOnly(event.target.checked)} />{expressionPolicy.copy.ExpressionHistoryPanel.label}</label>
       </div>
       {error !== null && <p className="error-text">{error}</p>}
-      {data === null ? "等待核心服务连接…" : <FlowPages key={`${tab}:${conversationOnly}:${query}`}><EventList events={events} /></FlowPages>}
+      {data === null ? expressionPolicy.copy.ExpressionHistoryPanel.text_5 : <FlowPages key={`${tab}:${conversationOnly}:${query}`}><EventList events={events} /></FlowPages>}
     </Panel>
   );
 }

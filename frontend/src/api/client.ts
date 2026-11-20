@@ -1,3 +1,5 @@
+import frontendPolicy from "../../../nyx/settings/frontend.json";
+import runtimePolicy from "../../../nyx/settings/runtime.json";
 import { scopedRequest } from "./characterScope";
 import { isTauriRuntime } from "../lib/desktopWindow";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -35,9 +37,10 @@ import type {
   ChatPendingSnapshot,
 } from "../types/api";
 import { parseChatPending } from "../types/api";
+import type { StudyInput, StudyNote, StudySnapshot, StudyTurn, StudySession } from "../types/readingStudy";
 
 // Development uses Vite proxy; packaged REST and SSE share the loopback endpoint.
-export const BASE_URL = import.meta.env.DEV || !isTauriRuntime() ? "" : "http://127.0.0.1:8000";
+export const BASE_URL = import.meta.env.DEV || !isTauriRuntime() ? "" : `http://${runtimePolicy.main._LOCAL_HOST}:${runtimePolicy.main._LOCAL_PORT}`;
 
 // 统一错误处理：成功返回数据、失败 throw，不包裹 {ok, data}。
 // fetch 网络错误（TypeError）自然上抛不吞；非 2xx 读 body.detail ?? body.error ?? JSON.stringify(body)，
@@ -83,6 +86,48 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+export function enterStudy(bookId: string, connection: string): Promise<StudySnapshot> {
+  return request(`${BASE_URL}/api/reading/sessions`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ book_id: bookId, connection }),
+  });
+}
+export function getOpenStudy(): Promise<StudySnapshot | null> {
+  return request(`${BASE_URL}/api/reading/sessions`);
+}
+export function getStudy(bookId: string, sessionId?: string): Promise<StudySnapshot> {
+  return request(`${BASE_URL}/api/books/${encodeURIComponent(bookId)}/study${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`);
+}
+export function studyConnection(bookId: string, sessionId: string, connection: string, action: "heartbeat" | "detach"): Promise<{ ok: boolean }> {
+  return request(`${BASE_URL}/api/books/${encodeURIComponent(bookId)}/study/${encodeURIComponent(sessionId)}/${action}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ connection }), keepalive: action === "detach",
+  });
+}
+export function sendStudyInput(bookId: string, sessionId: string, connection: string, input: StudyInput): Promise<StudyTurn> {
+  return request(`${BASE_URL}/api/books/${encodeURIComponent(bookId)}/study/${encodeURIComponent(sessionId)}/turns`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...input, connection }),
+  });
+}
+export function retryStudyTurn(bookId: string, sessionId: string, inputId: string, connection: string): Promise<{ ok: boolean }> {
+  return request(`${BASE_URL}/api/books/${encodeURIComponent(bookId)}/study/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(inputId)}/retry`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ connection }),
+  });
+}
+export function leaveStudy(bookId: string, sessionId: string): Promise<StudySession> {
+  return request(`${BASE_URL}/api/books/${encodeURIComponent(bookId)}/study/${encodeURIComponent(sessionId)}/leave`, { method: "POST" });
+}
+export function retryStudy(bookId: string): Promise<{ ok: boolean }> {
+  return request(`${BASE_URL}/api/books/${encodeURIComponent(bookId)}/study/retry`, { method: "POST" });
+}
+export function getStudyNote(bookId: string): Promise<StudyNote> {
+  return request(`${BASE_URL}/api/books/${encodeURIComponent(bookId)}/study-note`);
+}
+export function saveStudyNote(bookId: string, content: string, revision: number): Promise<StudyNote> {
+  return request(`${BASE_URL}/api/books/${encodeURIComponent(bookId)}/study-note`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content, revision }),
+  });
+}
+
 export async function postChat(
   message: string,
   replyTo?: string,
@@ -119,7 +164,7 @@ export async function getPendingQuestions(): Promise<{
 
 export async function getChatPending(): Promise<ChatPendingSnapshot> {
   const result = parseChatPending(await request<unknown>(`${BASE_URL}/api/chat/pending`));
-  if (result === null) throw new Error("待回复快照格式非法");
+  if (result === null) throw new Error(frontendPolicy.copy.client.text);
   return result;
 }
 
@@ -335,11 +380,11 @@ export async function createUserNote(p: {
   });
 }
 
-export async function updateUserNote(id: string, content: string): Promise<UserNote> {
+export async function updateUserNote(id: string, content: string, expected_revision?: number): Promise<UserNote> {
   return request<UserNote>(`${BASE_URL}/api/notes/user/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, expected_revision }),
   });
 }
 

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from langchain_core.messages import AIMessage, BaseMessage
 
 from nyx.config import ConfigError, LlmConfig
+from nyx.policy import policy
 from nyx.types import LlmMessage, LLMOutput
 
 
@@ -49,15 +50,13 @@ def _to_lc(m: LlmMessage) -> BaseMessage:
         return HumanMessage(content=m["content"])
     if role == "assistant":
         return AIMessage(content=m["content"])
-    raise ValueError(f"未知消息角色 {role!r}")  # 静态 Literal 已挡，此为运行期防御
+    raise ValueError(
+        policy("llm", "client.templates.to_lc_text", str).format(p0=role)
+    )  # 静态 Literal 已挡，此为运行期防御
 
 
 # 内置 provider → OpenAI 兼容 base_url；不在表内者配 llm.base_url 覆盖
-_PROVIDER_BASE_URLS = {
-    "deepseek": "https://api.deepseek.com",
-    "openai": "https://api.openai.com/v1",
-    "ollama": "http://localhost:11434/v1",
-}
+_PROVIDER_BASE_URLS = policy("llm", "client._PROVIDER_BASE_URLS", dict[str, str])
 
 
 def resolve_base_url(provider: str, base_url: str | None) -> str | None:
@@ -100,12 +99,17 @@ class LlmClient:
         base_url = resolve_base_url(config.provider, config.base_url)
         if base_url is None:
             raise ConfigError(
-                f"未知 provider={config.provider!r}：请设置 llm.base_url，"
-                f"或使用内置 provider：{sorted(_PROVIDER_BASE_URLS)}"
+                policy("llm", "client.templates.from_config_text", str).format(
+                    p0=config.provider, p1=sorted(_PROVIDER_BASE_URLS)
+                )
             )
         api_key = os.environ.get(config.api_key_env)
         if not api_key:
-            raise ConfigError(f"环境变量 {config.api_key_env} 未设置")
+            raise ConfigError(
+                policy("llm", "client.templates.from_config_text_2", str).format(
+                    p0=config.api_key_env
+                )
+            )
 
         def create_model() -> BaseChatModel:
             from pydantic import SecretStr
@@ -128,7 +132,7 @@ class LlmClient:
         with self._model_lock:
             if self._model is None:
                 if self._model_factory is None:
-                    raise RuntimeError("LLM client 未配置 model factory")
+                    raise RuntimeError(policy("llm", "client.copy.get_model_text", str))
                 self._model = self._model_factory()
             return self._model
 
@@ -177,7 +181,11 @@ class LlmClient:
             )
         content = response.content
         if not isinstance(content, str):
-            raise RuntimeError(f"期望文本 content，得到 {type(content).__name__}")
+            raise RuntimeError(
+                policy("llm", "client.templates.complete_text", str).format(
+                    p0=type(content).__name__
+                )
+            )
         tool_calls: list[dict[str, Any]] = []
         raw_calls = getattr(response, "tool_calls", None)
         if raw_calls:

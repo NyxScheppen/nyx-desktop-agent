@@ -1,3 +1,5 @@
+import { formatPolicyText } from "../../lib/policy";
+import memoryPolicy from "../../../../nyx/settings/memory.json";
 import { useState, type FormEvent } from "react";
 import { postKnowledgeSource } from "../../api/client";
 import { captureScope, isScopeCurrent } from "../../api/characterScope";
@@ -22,14 +24,14 @@ export function KnowledgeFeed({ embedded = false }: { embedded?: boolean }) {
       const result = await postKnowledgeSource({ text: text || undefined, url: url.trim() || undefined });
       if (!isScopeCurrent(scope)) return;
       if (result.errors?.length) {
-        setError(`已保存 ${result.chunks.length} 块原文，部分摄入未完成：${result.errors.join("；")}`);
+        setError(formatPolicyText(memoryPolicy.templates.KnowledgeFeed.text, { p0: result.chunks.length, p1: result.errors.join("；") }));
       } else {
-        setMessage(`已进知识库 · 新增 ${result.created_memories} 条知识、${result.created_facts} 条事实`);
+        setMessage(formatPolicyText(memoryPolicy.templates.KnowledgeFeed.text_2, { p0: result.created_memories, p1: result.created_facts }));
         setText("");
         setUrl("");
       }
     } catch (cause) {
-      if (isScopeCurrent(scope)) setError(cause instanceof Error ? cause.message : "摄入失败，请重试");
+      if (isScopeCurrent(scope)) setError(cause instanceof Error ? cause.message : memoryPolicy.copy.KnowledgeFeed.text);
     } finally {
       if (isScopeCurrent(scope)) setSubmitting(false);
     }
@@ -38,12 +40,12 @@ export function KnowledgeFeed({ embedded = false }: { embedded?: boolean }) {
   const content = (
       <div className="knowledge-feed">
       <form onSubmit={(event) => void submit(event)}>
-        <label>文本<textarea aria-label="知识文本" maxLength={200000} value={text}
+        <label>{memoryPolicy.copy.KnowledgeFeed.label}<textarea aria-label={memoryPolicy.copy.KnowledgeFeed.aria_label} maxLength={memoryPolicy.limits.KnowledgeSourcePayload_text_max_length} value={text}
           onChange={(event) => setText(event.target.value)} disabled={submitting} /></label>
-        <label>网页 URL<input aria-label="知识网页 URL" type="url" maxLength={2048} value={url}
+        <label>{memoryPolicy.copy.KnowledgeFeed.label_2}<input aria-label={memoryPolicy.copy.KnowledgeFeed.aria_label_2} type="url" maxLength={memoryPolicy.limits.KnowledgeSourcePayload_url_max_length} value={url}
           onChange={(event) => setUrl(event.target.value)} disabled={submitting} /></label>
         <button type="submit" disabled={submitting || (!text.trim() && !url.trim())}>
-          {submitting ? "正在摄入…" : "进知识库"}
+          {submitting ? memoryPolicy.copy.KnowledgeFeed.text_2 : memoryPolicy.copy.KnowledgeFeed.text_3}
         </button>
         {message && <p role="status">{message}</p>}
         {error && <p role="alert">{error}</p>}
@@ -52,7 +54,7 @@ export function KnowledgeFeed({ embedded = false }: { embedded?: boolean }) {
   );
   if (embedded) return content;
   return (
-    <Panel title="投喂知识" className="knowledge-feed-panel">
+    <Panel title={memoryPolicy.copy.KnowledgeFeed.title} className="knowledge-feed-panel">
       {content}
     </Panel>
   );

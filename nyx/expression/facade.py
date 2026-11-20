@@ -60,6 +60,7 @@ from nyx.expression.store import ExpressionInteractionStore
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import InitiationSkipped, LlmClient
 from nyx.memory.facade import MemoryFacade
+from nyx.policy import policy
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
@@ -135,6 +136,7 @@ class ExpressionFacade:
         self._checkpointer = checkpointer or InMemorySaver()
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._history_restored = False
+        self.reading_handoff: Callable[[], Awaitable[str]] | None = None
         self._last_slow_at = 0.0
         # 待用户回应状态：问句（wait_user）与搭话（被忽略回灌）各一组。
         self._waiting_user = False
@@ -144,7 +146,9 @@ class ExpressionFacade:
         self._pending_chat_desire_id: str | None = None
         self._chat_at = 0.0
         # 近期说过的碎碎念（去重：同一句不连发）
-        self._mutter_seen: deque[str] = deque(maxlen=8)
+        self._mutter_seen: deque[str] = deque(
+            maxlen=policy("expression", "facade.parameters.init___maxlen", int)
+        )
         # 图拓扑恒定（仅 history 跨 reply 变化），建一次复用（对齐 Exploration）
         self._graph = build_reply_graph(
             ReplyDeps(
@@ -189,20 +193,28 @@ class ExpressionFacade:
         size = sum(len(item.content["message"]) for item in inputs)
         if (
             root.content.get("annotation") is not None
-            or len(inputs) >= 32
-            or size >= 24000
+            or len(inputs)
+            >= policy(
+                "expression", "facade.parameters.pending_reply_inputs_value_limit", int
+            )
+            or size
+            >= policy(
+                "expression", "facade.parameters.pending_reply_inputs_size_limit", int
+            )
         ):
             return [], True
         pending = await self._bus.list_pending_after(
             "expression.user_message",
             inputs[-1].id,
-            limit=33 - len(inputs),
+            limit=policy("expression", "input.max_events", int) + 1 - len(inputs),
         )
         accepted: list[Event] = []
         for event in pending:
             text = event.content.get("message")
             if event.type is not EventType.USER_MESSAGE or not isinstance(text, str):
-                raise ValueError("补充消息缺少真实用户原文")
+                raise ValueError(
+                    policy("expression", "facade.copy.pending_reply_inputs_text", str)
+                )
             if (
                 event.content.get("annotation") is not None
                 or event.content.get("discussion") != root.content.get("discussion")
@@ -210,13 +222,27 @@ class ExpressionFacade:
                     event.content.get("reply_to") is not None
                     and event.content["reply_to"] != answered_attempt_id
                 )
-                or len(inputs) + len(accepted) >= 32
-                or size + len(text) > 24000
+                or len(inputs) + len(accepted)
+                >= policy(
+                    "expression",
+                    "facade.parameters.pending_reply_inputs_value_limit_2",
+                    int,
+                )
+                or size + len(text)
+                > policy(
+                    "expression",
+                    "facade.parameters.pending_reply_inputs_value_limit_3",
+                    int,
+                )
             ):
                 return accepted, True
             accepted.append(event)
             size += len(text)
-        return accepted, len(inputs) + len(accepted) >= 32 or size >= 24000
+        return accepted, len(inputs) + len(accepted) >= policy(
+            "expression", "facade.parameters.pending_reply_inputs_result_limit", int
+        ) or size >= policy(
+            "expression", "facade.parameters.pending_reply_inputs_size_limit_2", int
+        )
 
     async def _has_pending_reply_inputs(
         self,
@@ -229,7 +255,11 @@ class ExpressionFacade:
         for identity in input_event_ids:
             event = await self._bus.get_event(identity)
             if event is None or event.type is not EventType.USER_MESSAGE:
-                raise ValueError("回复输入证据已丢失")
+                raise ValueError(
+                    policy(
+                        "expression", "facade.copy.has_pending_reply_inputs_text", str
+                    )
+                )
             inputs.append(event)
         accepted, _ = await self._pending_reply_inputs(inputs, answered_attempt_id)
         return bool(accepted)
@@ -330,12 +360,18 @@ class ExpressionFacade:
         elif (
             complete is not True
             or not isinstance(ids, list)
-            or not 1 <= len(cast(list[Any], ids)) <= 32
+            or not 1
+            <= len(cast(list[Any], ids))
+            <= policy(
+                "expression", "facade.parameters.covered_reply_inputs_value_limit", int
+            )
             or any(not isinstance(i, str) or not i for i in cast(list[Any], ids))
             or len(set(cast(list[Any], ids))) != len(cast(list[Any], ids))
             or ids[0] != terminal.correlation_id
         ):
-            raise ValueError("终局覆盖协议非法")
+            raise ValueError(
+                policy("expression", "facade.copy.covered_reply_inputs_text", str)
+            )
         inputs: list[Event] = []
         for identity in cast(list[str], ids):
             event = await self._bus.get_event(identity)
@@ -344,7 +380,9 @@ class ExpressionFacade:
                 or event.type is not EventType.USER_MESSAGE
                 or not isinstance(event.content.get("message"), str)
             ):
-                raise ValueError("终局覆盖的原始输入缺失或类型非法")
+                raise ValueError(
+                    policy("expression", "facade.copy.covered_reply_inputs_text_2", str)
+                )
             inputs.append(event)
         database = getattr(self._bus, "_db", None)
         if database is not None:
@@ -356,7 +394,11 @@ class ExpressionFacade:
                     cast(list[str], ids),
                 )
                 if [row["id"] for row in await cursor.fetchall()] != ids:
-                    raise ValueError("终局覆盖顺序非法")
+                    raise ValueError(
+                        policy(
+                            "expression", "facade.copy.covered_reply_inputs_text_3", str
+                        )
+                    )
         return inputs
 
     async def _finalize_user_reply(
@@ -365,7 +407,9 @@ class ExpressionFacade:
     ) -> Literal["committed", "refresh", "replayed"]:
         body = "\n".join(state["speak"])
         if not body:
-            raise ValueError("回复终局正文不能为空")
+            raise ValueError(
+                policy("expression", "facade.copy.finalize_user_reply_text", str)
+            )
         correlation = state["correlation_id"]
         attempt: InteractionAttempt | None = None
         if state["ask"] is not None and not state["fallback"]:
@@ -424,10 +468,22 @@ class ExpressionFacade:
                         state["draft_revision"] != state["input_revision"]
                         or state["draft_event_ids"] != ids
                     ):
-                        raise ValueError("终局草稿输入版本不一致")
+                        raise ValueError(
+                            policy(
+                                "expression",
+                                "facade.copy.finalize_user_reply_text_2",
+                                str,
+                            )
+                        )
                     for original in state["input_events"]:
                         if await self._bus.get_event(original.id) != original:
-                            raise ValueError("终局原始输入不一致")
+                            raise ValueError(
+                                policy(
+                                    "expression",
+                                    "facade.copy.finalize_user_reply_text_3",
+                                    str,
+                                )
+                            )
                     if not state["input_closed"]:
                         answered = state["answered_attempt"]
                         accepted, closed = await self._pending_reply_inputs(
@@ -448,7 +504,13 @@ class ExpressionFacade:
                             answered.answer_event_id or "",
                         )
                     ):
-                        raise RuntimeError("被回答的 interaction attempt 无法完成")
+                        raise RuntimeError(
+                            policy(
+                                "expression",
+                                "facade.copy.commit_attempt_events_text",
+                                str,
+                            )
+                        )
                 for event in events:
                     before = self._bus.persisted_count
                     try:
@@ -515,10 +577,14 @@ class ExpressionFacade:
             state["committed_reply"] if state else None
         ) or await self._terminal_user_reply(root_event_id)
         if terminal is None:
-            raise ValueError("归档缺少已提交终局")
+            raise ValueError(
+                policy("expression", "facade.copy.archive_user_reply_text", str)
+            )
         if root is None:
             if state is None or state["input_mode"] != "direct":
-                raise ValueError("direct 归档缺少原话 state")
+                raise ValueError(
+                    policy("expression", "facade.copy.archive_user_reply_text_3", str)
+                )
             users = [
                 Message(
                     role="user",
@@ -541,7 +607,9 @@ class ExpressionFacade:
             keys = [f"{e.id}:user" for e in inputs]
         body = await self._delivered_reply_text(terminal)
         if not body:
-            raise ValueError("归档终局缺少正文")
+            raise ValueError(
+                policy("expression", "facade.copy.archive_user_reply_text_2", str)
+            )
         reply = Message(
             role="nyx",
             content=body,
@@ -572,7 +640,9 @@ class ExpressionFacade:
             await self._checkpointer.adelete_thread(root_event_id)
             await self._tools.clear_executions(root_event_id)
         except Exception:
-            _LOGGER.exception("回复归档后的工具 checkpoint 清理失败")
+            _LOGGER.exception(
+                policy("expression", "facade.copy.archive_user_reply_text_4", str)
+            )
 
     async def register_question(
         self,
@@ -624,6 +694,12 @@ class ExpressionFacade:
         answered_attempt: InteractionAttempt | None = None,
     ) -> None:
         """Commit one interaction attempt and all durable events atomically."""
+        if attempt.kind in (
+            InteractionKind.INITIATE_CHAT,
+            InteractionKind.READING_QUESTION,
+        ):
+            if not self._llm.can_initiate():
+                raise InitiationSkipped
         if self._interaction_store is None:
             try:
                 await self._bus.publish_many(events)
@@ -641,6 +717,12 @@ class ExpressionFacade:
         appended_count = 0
         try:
             async with self._interaction_store.db.transaction():
+                if attempt.kind in (
+                    InteractionKind.INITIATE_CHAT,
+                    InteractionKind.READING_QUESTION,
+                ):
+                    if not self._llm.can_initiate():
+                        raise InitiationSkipped
                 await self._interaction_store.create(attempt)
                 if answered_attempt is not None and not (
                     await self._interaction_store.finish_answer(
@@ -648,7 +730,11 @@ class ExpressionFacade:
                         answered_attempt.answer_event_id or "",
                     )
                 ):
-                    raise RuntimeError("被回答的 interaction attempt 无法完成")
+                    raise RuntimeError(
+                        policy(
+                            "expression", "facade.copy.commit_attempt_events_text", str
+                        )
+                    )
                 for event in events:
                     persisted_before = self._bus.persisted_count
                     try:
@@ -677,7 +763,9 @@ class ExpressionFacade:
     ) -> None:
         """Atomically finish an answered attempt and admit one reply batch."""
         if not events:
-            raise ValueError("回复终局批次不能为空")
+            raise ValueError(
+                policy("expression", "facade.copy.commit_reply_events_text", str)
+            )
         terminal = next(
             (
                 event
@@ -709,7 +797,11 @@ class ExpressionFacade:
                         answered_attempt.answer_event_id or "",
                     )
                 ):
-                    raise RuntimeError("被回答的 interaction attempt 无法完成")
+                    raise RuntimeError(
+                        policy(
+                            "expression", "facade.copy.commit_attempt_events_text", str
+                        )
+                    )
                 for event in events:
                     persisted_before = self._bus.persisted_count
                     try:
@@ -863,7 +955,9 @@ class ExpressionFacade:
             restored.sort(key=lambda message: message.timestamp)
             await self._merge_reply_history(restored)
         except Exception:
-            _LOGGER.exception("恢复表达历史失败，将使用空历史继续启动")
+            _LOGGER.exception(
+                policy("expression", "facade.copy.restore_history_text", str)
+            )
 
     async def pause_question(
         self, attempt_id: str, now: float | None = None
@@ -893,7 +987,12 @@ class ExpressionFacade:
             InteractionKind.INITIATE_CHAT
         )
 
-    async def expression_history(self, limit: int = 100) -> ExpressionHistory:
+    async def expression_history(
+        self,
+        limit: int = policy(
+            "expression", "facade.parameters.expression_history_limit", int
+        ),
+    ) -> ExpressionHistory:
         """Return durable expression events grouped for the history panel."""
         all_types = (
             EventType.USER_MESSAGE,
@@ -951,8 +1050,18 @@ class ExpressionFacade:
     ) -> tuple[Message, Message] | None:
         """Return the latest durable user turn with a terminal Nyx response."""
         terminals = [
-            *await self._bus.list_events(limit=20, event_type=EventType.SPEAK),
-            *await self._bus.list_events(limit=20, event_type=EventType.ASK),
+            *await self._bus.list_events(
+                limit=policy(
+                    "expression", "facade.parameters.last_dialogue_anchor_limit", int
+                ),
+                event_type=EventType.SPEAK,
+            ),
+            *await self._bus.list_events(
+                limit=policy(
+                    "expression", "facade.parameters.last_dialogue_anchor_limit_2", int
+                ),
+                event_type=EventType.ASK,
+            ),
         ]
         terminals.sort(key=lambda event: event.timestamp, reverse=True)
         for terminal in terminals:
@@ -1037,7 +1146,7 @@ class ExpressionFacade:
         try:
             user_event = await self._bus.get_event(correlation_id)
             if user_event is not None and user_event.type is not EventType.USER_MESSAGE:
-                raise ValueError("回复根事件不是 USER_MESSAGE")
+                raise ValueError(policy("expression", "facade.copy.reply_text", str))
             if user_event is not None:
                 msg = user_event.content["message"]
                 discussion = user_event.content.get("discussion")
@@ -1073,6 +1182,8 @@ class ExpressionFacade:
             temporal_context = await self._temporal_context(
                 now, correlation_id, claimed_return
             )
+            if self.reading_handoff is not None:
+                temporal_context += "\n" + await self.reading_handoff()
             initial = {
                 "input_mode": "durable" if user_event is not None else "direct",
                 "input_events": [user_event] if user_event is not None else [],
@@ -1139,8 +1250,11 @@ class ExpressionFacade:
             try:
                 result = await self._graph.ainvoke(
                     initial,
-                    {"recursion_limit": 32 * (12 + 2 * self._config.slow_max_rounds)
-                     + 30},
+                    {
+                        "recursion_limit": policy("expression", "input.max_events", int)
+                        * (12 + 2 * self._config.slow_max_rounds)
+                        + policy("expression", "pipeline.recursion_margin", int)
+                    },
                 )
             finally:
                 behavior_context.reset(token)
@@ -1166,6 +1280,122 @@ class ExpressionFacade:
             if not committed:
                 self._release_return_claim(claimed_return)
             raise
+
+    async def reply_in_reading(
+        self,
+        message: str,
+        correlation_id: str,
+        history: list[Message],
+        reading_context: str,
+        tools: ToolRegistry,
+        collect: Callable[[ReplyState], Awaitable[dict[str, Any]]],
+        commit: Callable[[ReplyState], Awaitable[str]],
+        has_pending: Callable[[list[str], str | None], Awaitable[bool]],
+    ) -> None:
+        """Reuse reply/tool nodes with reading-owned history and commit callbacks."""
+        if self._skill_store is None:
+            raise RuntimeError(policy("reading", "study.copy.failure", str))
+        state = await self._inner_life.get_state()
+        skill = await self._skill_store.for_execution(
+            correlation_id,
+            "reading",
+            message,
+            {
+                "canon": self._canon,
+                "inner_document": asdict(state.inner_document),
+                "scope": "reading",
+            },
+        )
+
+        async def archive(key: str, current: ReplyState | None) -> None:
+            return
+
+        graph = build_reply_graph(
+            ReplyDeps(
+                llm=self._llm,
+                evaluator=self._evaluator,
+                memory=self._memory,
+                inner_life=self._inner_life,
+                canon=self._canon,
+                ask_guidance="",
+                config=self._config,
+                history=deque(history),
+                tools=tools,
+                knowledge_boundary=self._knowledge_boundary,
+                collect_reply_inputs=collect,
+                finalize_user_reply=commit,
+                archive_user_reply=archive,
+                has_pending_reply_inputs=has_pending,
+                checkpointer=self._checkpointer,
+                reading_session=True,
+            )
+        )
+        now = time.time()
+        initial: ReplyState = {
+            "input_mode": "direct",
+            "input_events": [],
+            "input_revision": 0,
+            "input_closed": False,
+            "request_start_index": 0,
+            "retrieval_query": "",
+            "reasoning_steps": [],
+            "reasoning_step_count": 0,
+            "next_action": "answer",
+            "draft_revision": -1,
+            "draft_event_ids": [],
+            "needs_refresh": False,
+            "tool_exit_reason": "complete",
+            "committed_reply": None,
+            "message": message,
+            "message_at": now,
+            "sampled_at": now,
+            "annotation_at": None,
+            "round_times": [],
+            "annotation": None,
+            "skill": skill,
+            "mode": ContextMode.SLOW,
+            "context": history,
+            "conversation_segments": [],
+            "memories": [],
+            "facts": [],
+            "state": state,
+            "think": [],
+            "speak": [],
+            "needs_continuation": False,
+            "ask": None,
+            "round": 0,
+            "correlation_id": correlation_id,
+            "last_slow_at": 0,
+            "tool_outputs": [],
+            "tool_feedback": "",
+            "tool_recall_candidates": [],
+            "intent": classify_user_intent(message),
+            "temporal_context": "",
+            "reading_context": reading_context,
+            "activity_context": ActivityContext(None, None, now),
+            "answered_attempt": None,
+            "claimed_return": None,
+            "fallback": False,
+        }
+        token = behavior_context.set(
+            {
+                "scope": "reading",
+                "scenario": "reply",
+                "correlation_id": correlation_id,
+                "skill_snapshot_raw": skill_snapshot(skill),
+            }
+        )
+        try:
+            await graph.ainvoke(
+                initial,
+                {
+                    "recursion_limit": policy("expression", "input.max_events", int)
+                    * (12 + 2 * self._config.slow_max_rounds)
+                    + policy("expression", "pipeline.recursion_margin", int)
+                },
+            )
+        finally:
+            behavior_context.reset(token)
 
     async def initiate_chat(self, desire: ShortTermDesire, state: CurrentState) -> bool:
         """搭话：快通道生成一句开场白。
@@ -1194,10 +1424,11 @@ class ExpressionFacade:
                 activity_context=activity_context,
                 discussion_fragment=skill.system_fragment if skill else None,
             )
-            user = (
-                f"[欲望创建时间={format_prompt_time(desire.created_at)}]\n"
-                + build_initiate_chat_prompt(desire.description)
-            )
+            user = policy(
+                "expression", "facade.templates.initiate_chat_text", str
+            ).format(
+                p0=format_prompt_time(desire.created_at)
+            ) + build_initiate_chat_prompt(desire.description)
             output = await self._llm.complete(
                 [
                     {"role": "system", "content": system},
@@ -1282,7 +1513,6 @@ class ExpressionFacade:
         if random.random() >= _MUTTER_RATE:
             return
         claimed_return: dict[str, float] | None = None
-        generated = False
         try:
             activity_context = await self._activity_context()
             if random.random() < _LLM_MUTTER_RATE:
@@ -1293,7 +1523,6 @@ class ExpressionFacade:
                 text = await self._mutter_wander(
                     state, correlation_id, temporal_context, activity_context
                 )
-                generated = True
                 if text is None:
                     self._release_return_claim(claimed_return)
                     claimed_return = None
@@ -1307,7 +1536,7 @@ class ExpressionFacade:
             if text is None or text in self._mutter_seen:
                 self._release_return_claim(claimed_return)
                 return
-            if not generated and not self._llm.can_initiate():
+            if not self._llm.can_initiate():
                 return
             event = internal_text_event(EventType.MUTTER, text, correlation_id)
             try:

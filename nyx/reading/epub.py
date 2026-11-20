@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from ebooklib import ITEM_DOCUMENT, epub
 
+from nyx.policy import policy
 from nyx.reading.segmenter import Segment, segment_html
 
 
@@ -25,7 +26,9 @@ class EpubResult:
     content_hash: str
 
 
-_MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024  # decision：解压后总大小上限（防 zip 炸弹）
+_MAX_UNCOMPRESSED_BYTES = policy(
+    "reading", "epub._MAX_UNCOMPRESSED_BYTES", int
+)  # decision：解压后总大小上限（防 zip 炸弹）
 
 
 def _check_uncompressed_size(data: bytes) -> None:
@@ -33,7 +36,11 @@ def _check_uncompressed_size(data: bytes) -> None:
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         total = sum(info.file_size for info in zf.infolist())
     if total > _MAX_UNCOMPRESSED_BYTES:
-        raise ValueError(f"EPUB 解压后过大（{total} > {_MAX_UNCOMPRESSED_BYTES} 字节）")
+        raise ValueError(
+            policy(
+                "reading", "epub.templates.check_uncompressed_size_text", str
+            ).format(p0=total, p1=_MAX_UNCOMPRESSED_BYTES)
+        )
 
 
 def parse_epub(data: bytes) -> EpubResult:
@@ -47,7 +54,7 @@ def parse_epub(data: bytes) -> EpubResult:
         _check_uncompressed_size(data)
         book = epub.read_epub(io.BytesIO(data))
     except (zipfile.BadZipFile, KeyError) as e:
-        raise ValueError("无效的 EPUB 文件") from e
+        raise ValueError(policy("reading", "epub.copy.parse_epub_text", str)) from e
     title = _extract_meta(book, "title")
     author = _extract_meta(book, "creator")
 

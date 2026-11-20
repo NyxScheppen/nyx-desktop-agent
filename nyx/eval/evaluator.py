@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from nyx.behavior.context import behavior_context
 from nyx.eval.rules import ooc_score
 from nyx.eval.store import EvalStore
+from nyx.policy import policy
 from nyx.types import EvalRecord, LLMOutput
 
 _logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class Evaluator:
         keyword = ooc_score(output.content) if voice else 1.0
         if keyword < 1.0:
             _logger.warning(
-                "OOC 关键词命中 module=%s type=%s score=%.2f",
+                policy("eval", "evaluator.copy.evaluate_text", str),
                 output.module,
                 output.type,
                 keyword,
@@ -67,13 +68,19 @@ class Evaluator:
                 await self._on_failure(
                     "ooc",
                     f"ooc:{output.module}",
-                    f"表达偏离人设\n调用：{output.call_id} · {output.type}\n"
-                    f"评分：keyword={keyword}, embed={embed_s}\n"
-                    f"具体原文：\n{output.content}",
+                    policy("eval", "evaluator.templates.evaluate_text", str).format(
+                        p0=output.call_id,
+                        p1=output.type,
+                        p2=keyword,
+                        p3=embed_s,
+                        p4=output.content,
+                    ),
                     output.correlation_id,
                 )
             except Exception:
-                _logger.exception("OOC 失败信号记录失败 module=%s", output.module)
+                _logger.exception(
+                    policy("eval", "evaluator.copy.evaluate_text_2", str), output.module
+                )
             finally:
                 behavior_context.reset(token)
 
@@ -104,7 +111,7 @@ class Evaluator:
             )
         except Exception:
             _logger.exception(
-                "eval 落库失败 module=%s type=%s",
+                policy("eval", "evaluator.copy.record_text", str),
                 output.module,
                 output.type,
             )

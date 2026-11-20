@@ -1,3 +1,4 @@
+import frontendPolicy from "../../../nyx/settings/frontend.json";
 import { create } from "zustand";
 
 // 外观设置：纯前端 UI 状态，无后端契约。
@@ -14,15 +15,15 @@ export type CircleSize = "small" | "medium" | "large";
 /** 头像圆圈拖拽后的视口坐标（px）；null = 未拖拽，用默认右下角。 */
 export type AvatarPos = { x: number; y: number };
 
-const DEFAULT_CIRCLE_COLOR = "#ffffff";
-const DEFAULT_CIRCLE_SIZE: CircleSize = "large";
-const CIRCLE_COLOR_KEY = "nyx.circleColor";
-const AVATAR_POS_KEY = "nyx.avatarPos";
-const CIRCLE_SIZE_KEY = "nyx.circleSize";
-const LAYOUT_STYLE_KEY = "nyx.layoutStyle";
+const DEFAULT_CIRCLE_COLOR = frontendPolicy.frontend.settingsStore.DEFAULT_CIRCLE_COLOR;
+const DEFAULT_CIRCLE_SIZE: CircleSize = frontendPolicy.frontend.settingsStore.DEFAULT_CIRCLE_SIZE as CircleSize;
+const CIRCLE_COLOR_KEY = frontendPolicy.frontend.settingsStore.CIRCLE_COLOR_KEY;
+const AVATAR_POS_KEY = frontendPolicy.frontend.settingsStore.AVATAR_POS_KEY;
+const CIRCLE_SIZE_KEY = frontendPolicy.frontend.settingsStore.CIRCLE_SIZE_KEY;
+const LAYOUT_STYLE_KEY = frontendPolicy.frontend.settingsStore.LAYOUT_STYLE_KEY;
 
 function parseLayoutStyle(raw: string | null): LayoutStyle {
-  return raw === "chronicle" ? "chronicle" : "folio";
+  return raw === "chronicle" ? "chronicle" : frontendPolicy.defaults.layout_style as LayoutStyle;
 }
 
 /** 纯函数：localStorage 原始串 → AvatarPos；坏 JSON / 缺 x/y / 非有限数 → null。 */
@@ -86,7 +87,7 @@ type SettingsState = {
 };
 
 export const useSettingsStore = create<SettingsState>((set) => ({
-  fontScale: "medium",
+  fontScale: frontendPolicy.defaults.font_scale as FontScale,
   circleColor: readLocal(CIRCLE_COLOR_KEY) ?? DEFAULT_CIRCLE_COLOR,
   circleSize: parseCircleSize(readLocal(CIRCLE_SIZE_KEY)),
   avatarPos: parseAvatarPos(readLocal(AVATAR_POS_KEY)),
@@ -114,11 +115,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     removeLocal(AVATAR_POS_KEY);
     removeLocal(LAYOUT_STYLE_KEY);
     set({
-      fontScale: "medium",
+      fontScale: frontendPolicy.defaults.font_scale as FontScale,
       circleColor: DEFAULT_CIRCLE_COLOR,
       circleSize: DEFAULT_CIRCLE_SIZE,
       avatarPos: null,
-      layoutStyle: "folio",
+      layoutStyle: frontendPolicy.defaults.layout_style as LayoutStyle,
     });
   },
 }));

@@ -331,6 +331,7 @@ class UserNote:  # 用户手写笔记
     selection_end: int | None = None
     # 派生，非落库列：list_user_notes 拼装每条笔记的批注列表
     annotations: list[Annotation] = field(default_factory=list[Annotation])
+    revision: int = 0
 
 
 # ---- 内在生命 ----

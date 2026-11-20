@@ -14,9 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from nyx.enums import DesireType
 from nyx.inner_life.document import validate_topics
+from nyx.policy import policy
 from nyx.types import InnerTopic
 
-MAX_CARD_BYTES = 50 * 1024 * 1024
+MAX_CARD_BYTES = policy("character", "character_cards.MAX_CARD_BYTES", int)
 BUILTIN_CARD = Path(__file__).parent / "cards" / "nyx"
 _ASSET_KEYS = frozenset(
     {
@@ -36,16 +37,34 @@ _ASSET_KEYS = frozenset(
 class InitialDesire(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: DesireType
-    name: str = Field(min_length=1, max_length=200, strict=True)
-    description: str = Field(min_length=1, max_length=6000, strict=True)
-    strength: float = Field(default=0.5, ge=0, le=1, strict=True, allow_inf_nan=False)
+    name: str = Field(
+        min_length=1,
+        max_length=policy("character", "limits.InitialDesire_name_max_length", int),
+        strict=True,
+    )
+    description: str = Field(
+        min_length=1,
+        max_length=policy(
+            "character", "limits.InitialDesire_description_max_length", int
+        ),
+        strict=True,
+    )
+    strength: float = Field(
+        default=policy("character", "character_cards.default_desire_strength", float),
+        ge=0,
+        le=1,
+        strict=True,
+        allow_inf_nan=False,
+    )
     subtopics: list[str] = Field(default_factory=list)
 
     @field_validator("name", "description")
     @classmethod
     def nonblank(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError("欲望文本不能为空")
+            raise ValueError(
+                policy("character", "character_cards.copy.nonblank_text", str)
+            )
         return value.strip()
 
 
@@ -53,11 +72,17 @@ class CardManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: int = Field(strict=True)
     id: str = Field(strict=True)
-    name: str = Field(min_length=1, max_length=100, strict=True)
+    name: str = Field(
+        min_length=1,
+        max_length=policy("character", "limits.CardManifest_name_max_length", int),
+        strict=True,
+    )
     inner_document: list[InnerTopic]
     long_term_desires: list[InitialDesire] = Field(
         default_factory=lambda: list[InitialDesire](),
-        max_length=5,
+        max_length=policy(
+            "character", "limits.CardManifest_long_term_desires_max_length", int
+        ),
     )
     assets: dict[str, str] = Field(default_factory=dict)
 
@@ -65,7 +90,9 @@ class CardManifest(BaseModel):
     @classmethod
     def version_two(cls, value: int) -> int:
         if value != 2:
-            raise ValueError("不支持的角色卡版本")
+            raise ValueError(
+                policy("character", "character_cards.copy.version_two_text", str)
+            )
         return value
 
     @field_validator("id")
@@ -76,14 +103,18 @@ class CardManifest(BaseModel):
             f"{prefix}{n}" for prefix in ("com", "lpt") for n in range(1, 10)
         )
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value) or value in reserved:
-            raise ValueError("非法角色 ID")
+            raise ValueError(
+                policy("character", "character_cards.copy.safe_id_text", str)
+            )
         return value
 
     @field_validator("name")
     @classmethod
     def nonblank(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError("角色文本不能为空")
+            raise ValueError(
+                policy("character", "character_cards.copy.nonblank_text_2", str)
+            )
         return value.strip()
 
     @field_validator("inner_document")
@@ -97,7 +128,9 @@ class CardManifest(BaseModel):
     def unique_desires(cls, value: list[InitialDesire]) -> list[InitialDesire]:
         names = [" ".join(item.name.casefold().split()) for item in value]
         if len(set(names)) != len(names):
-            raise ValueError("重复长期欲望")
+            raise ValueError(
+                policy("character", "character_cards.copy.unique_desires_text", str)
+            )
         return value
 
     @field_validator("assets")
@@ -105,7 +138,9 @@ class CardManifest(BaseModel):
     def asset_paths(cls, value: dict[str, str]) -> dict[str, str]:
         for key, path in value.items():
             if key not in _ASSET_KEYS or not safe_path(path).startswith("assets/"):
-                raise ValueError("非法图片路径或表情键")
+                raise ValueError(
+                    policy("character", "character_cards.copy.asset_paths_text", str)
+                )
         return value
 
 
@@ -124,9 +159,13 @@ def safe_path(name: str) -> str:
         or any(char in '<>"|?*' or ord(char) < 32 for char in name)
         or any(part.split(".")[0].casefold() in reserved for part in path.parts)
     ):
-        raise ValueError("卡包路径非法")
+        raise ValueError(
+            policy("character", "character_cards.copy.safe_path_text", str)
+        )
     if str(path) != name:
-        raise ValueError("卡包路径不规范")
+        raise ValueError(
+            policy("character", "character_cards.copy.safe_path_text_2", str)
+        )
     return name
 
 
@@ -150,14 +189,16 @@ class CharacterCard:
 
 def _validate(files: dict[str, bytes]) -> CharacterCard:
     if "card.yaml" not in files or not files.get("canon.md", b"").strip():
-        raise ValueError("缺少 card.yaml 或非空 canon.md")
+        raise ValueError(policy("character", "character_cards.copy.validate_text", str))
     try:
         manifest = CardManifest.model_validate(yaml.safe_load(files["card.yaml"]))
         card = CharacterCard(manifest, files)
         _ = card.canon, card.ask
         for path in manifest.assets.values():
             if path not in files:
-                raise ValueError("图片文件缺失")
+                raise ValueError(
+                    policy("character", "character_cards.copy.validate_text_3", str)
+                )
             with Image.open(io.BytesIO(files[path])) as picture:
                 picture.verify()
             with Image.open(io.BytesIO(files[path])) as picture:
@@ -168,14 +209,18 @@ def _validate(files: dict[str, bytes]) -> CharacterCard:
         OSError,
         Image.DecompressionBombError,
     ) as error:
-        raise ValueError("角色卡内容无效") from error
+        raise ValueError(
+            policy("character", "character_cards.copy.validate_text_2", str)
+        ) from error
     return card
 
 
 def read_package(data: bytes) -> CharacterCard:
     """Read and validate an archive entirely before reserving a role slot."""
     if len(data) > MAX_CARD_BYTES:
-        raise ValueError("卡包超过 50 MiB")
+        raise ValueError(
+            policy("character", "character_cards.copy.read_package_text", str)
+        )
     files: dict[str, bytes] = {}
     seen: set[str] = set()
     regular: set[str] = set()
@@ -187,20 +232,34 @@ def read_package(data: bytes) -> CharacterCard:
                     entry.filename.rstrip("/") if entry.is_dir() else entry.filename
                 )
                 if name.casefold() in seen:
-                    raise ValueError("重复卡包路径")
+                    raise ValueError(
+                        policy(
+                            "character", "character_cards.copy.read_package_text_3", str
+                        )
+                    )
                 normalized = name.casefold()
                 if any(
                     parent.as_posix() in regular
                     for parent in PurePosixPath(normalized).parents
                 ):
-                    raise ValueError("卡包文件与目录路径冲突")
+                    raise ValueError(
+                        policy(
+                            "character", "character_cards.copy.read_package_text_4", str
+                        )
+                    )
                 if not entry.is_dir() and any(
                     p.startswith(normalized + "/") for p in seen
                 ):
-                    raise ValueError("卡包文件与目录路径冲突")
+                    raise ValueError(
+                        policy(
+                            "character", "character_cards.copy.read_package_text_4", str
+                        )
+                    )
                 seen.add(normalized)
                 if stat.S_ISLNK(entry.external_attr >> 16):
-                    raise ValueError("卡包路径不能是链接")
+                    raise ValueError(
+                        policy("character", "character_cards.copy.load_card_text", str)
+                    )
                 if entry.is_dir():
                     continue
                 regular.add(normalized)
@@ -210,17 +269,31 @@ def read_package(data: bytes) -> CharacterCard:
                     "character-reference.md",
                     "ask.md",
                 } and not name.startswith("assets/"):
-                    raise ValueError("未知卡包文件")
+                    raise ValueError(
+                        policy(
+                            "character", "character_cards.copy.load_card_text_2", str
+                        )
+                    )
                 if entry.file_size > MAX_CARD_BYTES - total:
-                    raise ValueError("解压数据超过 50 MiB")
+                    raise ValueError(
+                        policy(
+                            "character", "character_cards.copy.read_package_text_5", str
+                        )
+                    )
                 with archive.open(entry) as stream:
                     payload = stream.read(MAX_CARD_BYTES - total + 1)
                 total += len(payload)
                 if total > MAX_CARD_BYTES:
-                    raise ValueError("解压数据超过 50 MiB")
+                    raise ValueError(
+                        policy(
+                            "character", "character_cards.copy.read_package_text_5", str
+                        )
+                    )
                 files[name] = payload
     except (zipfile.BadZipFile, RuntimeError, EOFError) as error:
-        raise ValueError("无效角色卡压缩包") from error
+        raise ValueError(
+            policy("character", "character_cards.copy.read_package_text_2", str)
+        ) from error
     return _validate(files)
 
 
@@ -252,7 +325,9 @@ def load_card(directory: Path) -> CharacterCard:
         name = safe_path(path.relative_to(directory).as_posix())
         attributes = getattr(path.lstat(), "st_file_attributes", 0)
         if path.is_symlink() or attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-            raise ValueError("卡包路径不能是链接")
+            raise ValueError(
+                policy("character", "character_cards.copy.load_card_text", str)
+            )
         if path.is_dir():
             continue
         if name not in {
@@ -261,11 +336,15 @@ def load_card(directory: Path) -> CharacterCard:
             "character-reference.md",
             "ask.md",
         } and not name.startswith("assets/"):
-            raise ValueError("未知卡包文件")
+            raise ValueError(
+                policy("character", "character_cards.copy.load_card_text_2", str)
+            )
         with path.open("rb") as stream:
             payload = stream.read(MAX_CARD_BYTES - total + 1)
         total += len(payload)
         if total > MAX_CARD_BYTES:
-            raise ValueError("卡包超过 50 MiB")
+            raise ValueError(
+                policy("character", "character_cards.copy.read_package_text", str)
+            )
         files[name] = payload
     return _validate(files)

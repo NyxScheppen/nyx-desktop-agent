@@ -39,6 +39,7 @@ from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import build_embed
 from nyx.plugins import build_plugins, default_plugins, start_plugins
+from nyx.policy import policy
 from nyx.reading.facade import ReadingFacade
 from nyx.research.service import ResearchService
 from nyx.tools.file_io import build_file_io_tool
@@ -63,7 +64,7 @@ _PRESENCE_FIELDS = (
     "pending_return",
     "claimed_return",
 )
-_DESKTOP_LEASE_SECONDS = 90.0
+_DESKTOP_LEASE_SECONDS = policy("runtime", "app_context._DESKTOP_LEASE_SECONDS", float)
 
 
 @dataclass
@@ -136,12 +137,18 @@ class _App:
 
     def can_initiate(self) -> bool:
         """Admission uses the selected runtime; admitted work keeps its owner."""
-        return self.host is None or (
-            (self.host.current_id == self.character_id or (
-                self.config.onebot.enabled
-                and self.config.onebot.character_id == self.character_id
-            ))
-            and self.host.records[self.character_id]["status"] == "RUNNING"
+        return not self.reading.study.occupied() and (
+            self.host is None
+            or (
+                (
+                    self.host.current_id == self.character_id
+                    or (
+                        self.config.onebot.enabled
+                        and self.config.onebot.character_id == self.character_id
+                    )
+                )
+                and self.host.records[self.character_id]["status"] == "RUNNING"
+            )
         )
 
     async def apply_presence(self, sequence: int, payload: dict[str, Any]) -> None:
@@ -170,7 +177,9 @@ class _App:
         presence = event.content.get("presence")
         window_title = event.content.get("window_title")
         if not isinstance(presence, str) or not isinstance(window_title, str):
-            raise ValueError("observation payload 非法")
+            raise ValueError(
+                policy("runtime", "app_context.copy.publish_observation_text", str)
+            )
         sampled_at = float(event.content.get("sampled_at", event.timestamp))
         async with self.presence_lock:
             if sequence and self.database is not None:
@@ -667,7 +676,11 @@ class _Host:
     async def create_pairing_code(self, name: str) -> tuple[str, float]:
         """Create a short-lived pairing code without storing its plaintext."""
         now = time.time()
-        expires_at = now + 600.0
+        expires_at = now + policy(
+            "runtime",
+            "app_context.parameters.create_pairing_code_expires_at_factor",
+            float,
+        )
         code = secrets.token_urlsafe(16)
         async with self.database.transaction() as conn:
             await conn.execute("DELETE FROM pairing_code WHERE expires_at <= ?", (now,))
@@ -762,9 +775,15 @@ class _Host:
         identity = card.manifest.id
         async with self.lock:
             if identity in self.records:
-                raise ValueError("角色 ID 已存在；请恢复已有存档")
-            if sum(r["status"] != "ARCHIVED" for r in self.records.values()) >= 4:
-                raise ValueError("最多注册四个角色")
+                raise ValueError(
+                    policy("runtime", "app_context.copy.register_text", str)
+                )
+            if sum(r["status"] != "ARCHIVED" for r in self.records.values()) >= policy(
+                "character", "host.maximum_characters", int
+            ):
+                raise ValueError(
+                    policy("runtime", "app_context.copy.register_text_2", str)
+                )
             base = self.root / "data/characters" / identity
             record = {
                 "id": identity,
@@ -800,7 +819,10 @@ class _Host:
                             raise
                 if cancelled:
                     record.update(
-                        status="FAILED", error="卡片安装请求已取消；可重试启动或卸载"
+                        status="FAILED",
+                        error=policy(
+                            "runtime", "app_context.copy.register_text_3", str
+                        ),
                     )
                     await self.save_record(record)
                     raise asyncio.CancelledError
@@ -817,11 +839,13 @@ class _Host:
         async with self.operations.setdefault(identity, asyncio.Lock()):
             record = dict(self.records[identity])
             if record["status"] in ("STOPPING", "ARCHIVED"):
-                raise ValueError("角色尚未准备挂载")
+                raise ValueError(policy("runtime", "app_context.copy.start_text", str))
             if identity in self.apps or (
                 identity in self.lifecycle and not self.lifecycle[identity].done()
             ):
-                raise ValueError("旧角色实例尚未结束")
+                raise ValueError(
+                    policy("runtime", "app_context.copy.start_text_2", str)
+                )
             record.update(status="STARTING", error=None)
             await self.save_record(record)
             app: _App | None = None
@@ -920,7 +944,7 @@ class _Host:
                 record.update(status="FAILED", error=str(error))
                 await self.save_record(record)
                 logging.getLogger(__name__).exception(
-                    "角色启动失败 character_id=%s", identity
+                    policy("runtime", "app_context.copy.start_text_3", str), identity
                 )
                 if not isinstance(error, Exception):
                     raise
@@ -940,7 +964,7 @@ class _Host:
             if identity not in self.records:
                 raise KeyError(identity)
             if self.records[identity]["status"] != "RUNNING":
-                raise ValueError("角色不可运行")
+                raise ValueError(policy("runtime", "app_context.copy.select_text", str))
             revision = self.revision + 1
             async with self.database.transaction() as conn:
                 await conn.execute(
@@ -1064,7 +1088,21 @@ class _Host:
                         )
                 except Exception as error:
                     attempts = int(row["attempts"]) + 1
-                    delay = (1, 2, 4, 8, 30)[min(attempts - 1, 4)]
+                    delay = policy(
+                        "events", "bus._DELIVERY_RETRY_DELAYS", tuple[float, ...]
+                    )[
+                        min(
+                            attempts - 1,
+                            len(
+                                policy(
+                                    "events",
+                                    "bus._DELIVERY_RETRY_DELAYS",
+                                    tuple[float, ...],
+                                )
+                            )
+                            - 1,
+                        )
+                    ]
                     async with self.database.transaction() as conn:
                         await conn.execute(
                             "UPDATE presence_delivery SET attempts=?, retry_at=?, "
@@ -1079,7 +1117,7 @@ class _Host:
                             ),
                         )
                     logging.getLogger(__name__).warning(
-                        "在线状态补投失败 character_id=%s attempt=%s: %s",
+                        policy("runtime", "app_context.copy.flush_presence_text", str),
                         identity,
                         attempts,
                         error,
@@ -1098,7 +1136,9 @@ class _Host:
             }
         )
         if not await self.flush_presence(identity, force=True):
-            raise RuntimeError("角色在线状态尚未同步，聊天未受理")
+            raise RuntimeError(
+                policy("runtime", "app_context.copy.online_before_chat_text", str)
+            )
 
     async def cancel_presence(self, identity: str) -> None:
         async with self.database.transaction() as conn:
@@ -1116,7 +1156,9 @@ class _Host:
     async def _unload(self, identity: str) -> None:
         async with self.lock:
             if identity == self.current_id and not self.closing:
-                raise ValueError("不能卸载当前角色")
+                raise ValueError(
+                    policy("runtime", "app_context.copy.unload_text_2", str)
+                )
             record = dict(self.records[identity])
             if record["status"] == "ARCHIVED":
                 return
@@ -1128,25 +1170,36 @@ class _Host:
             from nyx.runtime import stop_character
 
             if not await stop_character(self, identity):
-                record["error"] = "停止超时，等待已受理工作结束"
+                record["error"] = policy("runtime", "app_context.copy.unload_text", str)
                 await self.save_record(record)
                 return
             presence_lock = self.presence_locks[identity]
             try:
-                await asyncio.wait_for(presence_lock.acquire(), timeout=5)
+                await asyncio.wait_for(
+                    presence_lock.acquire(),
+                    timeout=policy(
+                        "runtime", "app_context.parameters.unload_timeout", int
+                    ),
+                )
             except asyncio.TimeoutError:
-                record["error"] = "停止超时，等待在线状态补投结束"
+                record["error"] = policy(
+                    "runtime", "app_context.copy.unload_text_3", str
+                )
                 await self.save_record(record)
                 return
             try:
                 await app.bus.stop()
                 try:
                     await asyncio.wait_for(
-                        app.memory.finalize_conversation_segment(), timeout=5
+                        app.memory.finalize_conversation_segment(),
+                        timeout=policy(
+                            "runtime", "app_context.parameters.unload_timeout_2", int
+                        ),
                     )
                 except Exception:
                     logging.getLogger(__name__).exception(
-                        "角色卸载时对话段收尾失败 character_id=%s", identity
+                        policy("runtime", "app_context.copy.unload_text_4", str),
+                        identity,
                     )
                 assert app.database is not None
                 await app.database.close()
@@ -1164,9 +1217,15 @@ class _Host:
         async with self.lock:
             record = dict(self.records[identity])
             if record["status"] != "ARCHIVED":
-                raise ValueError("角色尚未卸载完成")
-            if sum(r["status"] != "ARCHIVED" for r in self.records.values()) >= 4:
-                raise ValueError("最多注册四个角色")
+                raise ValueError(
+                    policy("runtime", "app_context.copy.restore_text", str)
+                )
+            if sum(r["status"] != "ARCHIVED" for r in self.records.values()) >= policy(
+                "character", "host.maximum_characters", int
+            ):
+                raise ValueError(
+                    policy("runtime", "app_context.copy.register_text_2", str)
+                )
             async with self.database.lock:
                 latest = await (
                     await self.database.conn.execute(
@@ -1193,13 +1252,17 @@ class _Host:
         async with self.operations.setdefault(identity, asyncio.Lock()):
             record = dict(self.records[identity])
             if record["status"] != "FAILED":
-                raise ValueError("只可重试失败角色")
+                raise ValueError(
+                    policy("runtime", "app_context.copy.retry_start_text", str)
+                )
             app = self.apps.get(identity)
             if app is not None:
                 from nyx.runtime import stop_character
 
                 if not await stop_character(self, identity):
-                    raise ValueError("旧角色实例尚未结束")
+                    raise ValueError(
+                        policy("runtime", "app_context.copy.start_text_2", str)
+                    )
                 async with self.presence_locks[identity]:
                     assert app.database is not None
                     await app.database.close()
@@ -1218,10 +1281,13 @@ class _Host:
         for task in background:
             task.cancel()
         if background:
-            _, pending = await asyncio.wait(background, timeout=5)
+            _, pending = await asyncio.wait(
+                background,
+                timeout=policy("runtime", "app_context.parameters.close_timeout", int),
+            )
             if pending:
                 logging.getLogger(__name__).error(
-                    "宿主停止超时，保留仍被后台工作使用的数据库"
+                    policy("runtime", "app_context.copy.close_text", str)
                 )
             await asyncio.gather(*background, return_exceptions=True)
         while self.apps:
@@ -1230,5 +1296,9 @@ class _Host:
             )
             if self.apps:
                 # Keep the event loop alive until every SQLite writer has settled.
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(
+                    policy(
+                        "runtime", "app_context.parameters.close_value_factor", float
+                    )
+                )
         await self.database.close()

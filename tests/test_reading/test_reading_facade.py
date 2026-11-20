@@ -183,6 +183,9 @@ class _FakeBus:
 
 
 class _FakeLlm:
+    def can_initiate(self) -> bool:
+        return True
+
     def __init__(
         self, contents: dict[str, str] | None = None,
         default: str = "为什么这段重要？",

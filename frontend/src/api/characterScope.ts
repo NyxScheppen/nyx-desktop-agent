@@ -1,3 +1,4 @@
+import frontendPolicy from "../../../nyx/settings/frontend.json";
 import type { StoreApi } from "zustand";
 
 export type CharacterScope = { id: string; revision: number; generation: number };
@@ -27,7 +28,7 @@ export function scopedRequest(url: string, init?: RequestInit): {
 } {
   const business = /\/api\/(?!characters(?:\/|$)|observe(?:\?|$)|ready(?:\?|$))/.test(url);
   if (!business) return { url, init: init ?? {}, release: () => {} };
-  if (switching) throw new Error("角色正在切换");
+  if (switching) throw new Error(frontendPolicy.copy.characterScope.text);
   const selected = scope;
   if (selected === null) return { url, init: init ?? {}, release: () => {} };
   const headers = new Headers(init?.headers);

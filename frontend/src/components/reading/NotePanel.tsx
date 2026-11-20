@@ -1,3 +1,4 @@
+import readingPolicy from "../../../../nyx/settings/reading.json";
 import { useEffect, useState } from "react";
 import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import { useCharacterStore } from "../../stores/characterStore";
@@ -7,7 +8,7 @@ import Modal from "../layout/Modal";
 // 笔记面板（07 §3）：覆盖层打开，NoteComposer（新建）+ NoteList（列表）。
 // 只展示用户笔记 + 「给尼克斯看」批注；Nyx 章末整合笔记落 memory 不上屏。
 export default function NotePanel({ onClose }: { onClose: () => void }) {
-  const name = useCharacterStore((s) => s.registry?.characters.find((r) => r.id === s.registry?.current_id)?.name ?? "尼克斯");
+  const name = useCharacterStore((s) => s.registry?.characters.find((r) => r.id === s.registry?.current_id)?.name ?? readingPolicy.copy.NotePanel.text);
   const bookId = useReaderStore((s) => s.bookId);
   const notes = useReaderStore((s) => s.notes);
   const notesError = useReaderStore((s) => s.notesError);
@@ -60,11 +61,11 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Modal title="笔记" onClose={onClose}>
+    <Modal title={readingPolicy.copy.NotePanel.title} onClose={onClose}>
       <div className="note-composer">
         <textarea
           className="note-composer__input"
-          placeholder="记点什么…"
+          placeholder={readingPolicy.copy.NotePanel.placeholder}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
         />
@@ -79,7 +80,7 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
       </div>
       {notesError !== null && <p className="error-text">{notesError}</p>}
       {visibleNotes.length === 0 ? (
-        <p className="panel-item">还没有笔记，随手记一条吧。</p>
+        <p className="panel-item">{readingPolicy.copy.NotePanel.p}</p>
       ) : (
         <ul className="note-list">
           {visibleNotes.map((n) => (
@@ -90,7 +91,7 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
               {editingId === n.id ? (
                 <textarea
                   className="note-composer__input"
-                  aria-label="编辑笔记"
+                  aria-label={readingPolicy.copy.NotePanel.aria_label}
                   value={editDraft}
                   onChange={(e) => setEditDraft(e.target.value)}
                 />

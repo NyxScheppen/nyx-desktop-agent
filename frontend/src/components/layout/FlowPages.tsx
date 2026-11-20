@@ -1,3 +1,4 @@
+import frontendPolicy from "../../../../nyx/settings/frontend.json";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 // Let the browser paginate actual text and cards at the available page height.
@@ -65,14 +66,14 @@ export default function FlowPages({ children, onLoadMore, loading = false }: {
     <div className="flow-pages__viewport" ref={viewport}>
       <div className="flow-pages__content" ref={content}>{children}</div>
     </div>
-    <nav className="ledger-pagination" aria-label="页面翻页">
-      <button type="button" disabled={page === 0} onClick={() => setPage(page - 1)}>上一页</button>
+    <nav className="ledger-pagination" aria-label={frontendPolicy.copy.FlowPages.aria_label}>
+      <button type="button" disabled={page === 0} onClick={() => setPage(page - 1)}>{frontendPolicy.copy.FlowPages.button}</button>
       <span aria-live="polite">{page + 1} / {pages}</span>
       {page + 1 < pages
-        ? <button type="button" onClick={() => setPage(page + 1)}>下一页</button>
+        ? <button type="button" onClick={() => setPage(page + 1)}>{frontendPolicy.copy.FlowPages.button_2}</button>
         : onLoadMore
-          ? <button type="button" disabled={loading} onClick={onLoadMore}>{loading ? "加载中…" : "加载更多"}</button>
-          : <button type="button" disabled>下一页</button>}
+          ? <button type="button" disabled={loading} onClick={onLoadMore}>{loading ? frontendPolicy.copy.FlowPages.text : frontendPolicy.copy.FlowPages.text_2}</button>
+          : <button type="button" disabled>{frontendPolicy.copy.FlowPages.button_2}</button>}
     </nav>
   </div>;
 }

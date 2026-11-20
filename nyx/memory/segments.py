@@ -17,18 +17,15 @@ from nyx.memory.conversation_chunks import (
 from nyx.memory.conversation_retrieval import ConversationRetrieval
 from nyx.memory.facts import strip_recall_fillers
 from nyx.memory.store import MemoryStore
+from nyx.policy import policy
 from nyx.types import ConversationSegment
 
 EmbedFn = Callable[[str], Awaitable[list[float]]]
 _LOGGER = logging.getLogger(__name__)
-_MAX_GAP_SECONDS = 4 * 60 * 60
-_BREAK_MARKERS = ("换个话题", "另外", "对了", "说到别的", "不聊这个了")
-_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}")
-_EXPLICIT_RECALL = re.compile(
-    r"记得|回忆|以前|之前|上次|曾经|当时|历史|那次|那天|还记|约好|"
-    r"说过|提过|告诉过|聊过|remember|recall",
-    re.I,
-)
+_MAX_GAP_SECONDS = policy("memory", "segments._MAX_GAP_SECONDS", int)
+_BREAK_MARKERS = policy("memory", "segments._BREAK_MARKERS", tuple[str, ...])
+_TOKEN_RE = policy("memory", "segments._TOKEN_RE", re.Pattern[str])
+_EXPLICIT_RECALL = policy("memory", "segments._EXPLICIT_RECALL", re.Pattern[str])
 
 
 def is_recollection_query(query: str) -> bool:
@@ -48,7 +45,9 @@ def _terms(text: str) -> set[str]:
 
 def should_continue(segment: ConversationSegment, content: str, now: float) -> bool:
     """宽松续接：时间和相似度都是弱信号，明确转题才强制断开。"""
-    if content.strip() in {"嗯", "嗯嗯", "好", "好的", "对", "不是", "可以"}:
+    if content.strip() in policy(
+        "memory", "segments.copy.should_continue_words", set[str]
+    ):
         return True
     if now - segment.ended_at > _MAX_GAP_SECONDS:
         return bool(_terms(content) & set(segment.topics))
@@ -64,15 +63,21 @@ async def append_turn(
     content: str,
     timestamp: float | None = None,
     embed: EmbedFn | None = None,
-    promote_threshold: int = 3,
+    promote_threshold: int = policy(
+        "memory", "segments.parameters.append_turn_promote_threshold", int
+    ),
 ) -> ConversationSegment:
     if not event_id:
-        raise ValueError("轮次 ID 不能为空")
+        raise ValueError(policy("memory", "segments.copy.append_turn_text_3", str))
     archived = await store.archived_conversation_turn(event_id)
     if archived is not None:
         return archived
     now = time.time() if timestamp is None else timestamp
-    speaker = "尼克斯" if event_id.endswith(":nyx") else "用户"
+    speaker = (
+        policy("memory", "segments.copy.append_turn_text", str)
+        if event_id.endswith(":nyx")
+        else policy("memory", "segments.copy.append_turn_text_2", str)
+    )
     raw_line = f"{speaker}：{content}"
     latest = await store.latest_conversation_segment()
     snapshot = asdict(latest) if latest is not None else None
@@ -92,11 +97,27 @@ async def append_turn(
         latest.ended_at = max(latest.ended_at, now)
         latest.raw_event_ids.append(event_id)
         latest.raw_content += "\n" + raw_line
-        latest.summary = latest.raw_content[-2000:]
-        latest.topics = sorted(set(latest.topics) | _terms(content))[:32]
+        latest.summary = latest.raw_content[
+            -policy(
+                "memory",
+                "segments.parameters.append_turn_latest_summary_chars_or_items",
+                int,
+            ) :
+        ]
+        latest.topics = sorted(set(latest.topics) | _terms(content))[
+            : policy(
+                "memory",
+                "segments.parameters.append_turn_latest_topics_chars_or_items",
+                int,
+            )
+        ]
         segment = latest
     else:
-        summary = content[-2000:]
+        summary = content[
+            -policy(
+                "memory", "segments.parameters.append_turn_summary_chars_or_items", int
+            ) :
+        ]
         segment = ConversationSegment(
             id=f"segment-{uuid.uuid4().hex}",
             previous_id=latest.id if latest is not None else None,
@@ -105,7 +126,13 @@ async def append_turn(
             raw_event_ids=[event_id],
             raw_content=raw_line,
             summary=summary,
-            topics=sorted(_terms(content))[:32],
+            topics=sorted(_terms(content))[
+                : policy(
+                    "memory",
+                    "segments.parameters.append_turn_topics_chars_or_items",
+                    int,
+                )
+            ],
         )
     current_chunks = {
         chunk.id: chunk
@@ -127,7 +154,7 @@ async def append_turn(
                 )
             except Exception:
                 _LOGGER.exception(
-                    "对话分块向量失败，保留原文及全文索引 chunk_id=%s",
+                    policy("memory", "segments.copy.append_turn_text_5", str),
                     chunk.id,
                 )
     # Legacy readers retain a bounded vector; new recall searches every chunk.
@@ -144,7 +171,9 @@ async def append_turn(
             if {k: v for k, v in (snapshot or {}).items() if k not in compared} != {
                 k: v for k, v in (current_snapshot or {}).items() if k not in compared
             }:
-                raise RuntimeError("对话段准备快照已变化")
+                raise RuntimeError(
+                    policy("memory", "segments.copy.append_turn_text_4", str)
+                )
             if current is not None and segment.id == current.id:
                 segment.recall_count = current.recall_count
                 segment.long_term = current.recall_count >= promote_threshold
@@ -168,16 +197,21 @@ async def append_turn(
 async def search_segments(
     store: MemoryStore,
     query: str,
-    limit: int = 20,
+    limit: int = policy("memory", "segments.parameters.search_segments_limit", int),
     embed: EmbedFn | None = None,
     *,
     include_archived: bool = False,
     retrieval: ConversationRetrieval | None = None,
-    max_excerpt_chars: int = 1600,
+    max_excerpt_chars: int = policy(
+        "memory", "segments.parameters.search_segments_max_excerpt_chars", int
+    ),
 ) -> list[ConversationSegment]:
     """Retrieve conversation evidence; explicit recollection can reach cold archives."""
     query_terms = _terms(query)
-    limit = max(0, min(limit, 20))
+    limit = max(
+        0,
+        min(limit, policy("memory", "segments.parameters.search_segments_limit", int)),
+    )
     if not query_terms or not limit:
         return []
     query_embedding = None
@@ -185,9 +219,17 @@ async def search_segments(
         try:
             query_embedding = await embed(query)
         except Exception:
-            _LOGGER.exception("对话段查询向量失败，保留关键词召回")
+            _LOGGER.exception(
+                policy("memory", "segments.copy.search_segments_text", str)
+            )
     include_archived = include_archived or is_recollection_query(query)
-    ordered_terms = list(dict.fromkeys(text_tokens(strip_recall_fillers(query))))[:64]
+    ordered_terms = list(dict.fromkeys(text_tokens(strip_recall_fillers(query))))[
+        : policy(
+            "memory",
+            "segments.parameters.search_segments_ordered_terms_chars_or_items",
+            int,
+        )
+    ]
     indexed = await (retrieval or ConversationRetrieval(store)).search(
         query,
         ordered_terms,
@@ -220,20 +262,47 @@ async def search_segments(
                         sum(x * y for x, y in zip(query_embedding, segment.embedding))
                         / denominator
                     )
-        lexical_match = overlap >= min(2, len(query_terms)) and lexical >= 0.25
-        if not lexical_match and cosine < 0.45:
+        lexical_match = overlap >= min(2, len(query_terms)) and lexical >= policy(
+            "memory", "segments.parameters.search_segments_lexical_match_factor", float
+        )
+        if not lexical_match and cosine < policy(
+            "memory", "segments.parameters.search_segments_value_factor_4", float
+        ):
             continue
         score = max(lexical if lexical_match else 0.0, cosine)
-        score += 0.2 if segment.long_term else 0.0
-        score += 0.07 * segment.freshness
-        score += min(0.1, segment.ended_at / 1e12)
+        score += (
+            policy("memory", "segments.parameters.search_segments_value_factor", float)
+            if segment.long_term
+            else 0.0
+        )
+        score += (
+            policy(
+                "memory", "segments.parameters.search_segments_value_factor_2", float
+            )
+            * segment.freshness
+        )
+        score += min(
+            policy(
+                "memory", "segments.parameters.search_segments_value_factor_3", float
+            ),
+            segment.ended_at
+            / policy(
+                "memory", "segments.parameters.search_segments_value_factor_5", float
+            ),
+        )
         chunks = split_conversation(segment.id, segment.raw_content)
         chunks.sort(
             key=lambda chunk: -len(query_terms & _terms(chunk.content)),
         )
         excerpt, ranges = evidence_excerpt(
             segment.raw_content,
-            chunks[:3],
+            chunks[
+                : policy(
+                    "memory",
+                    "segments.parameters.search_segments_excerpt_ranges_chars_or_items",
+                    int,
+                )
+            ],
             max_chars=max_excerpt_chars,
         )
         segment = replace(

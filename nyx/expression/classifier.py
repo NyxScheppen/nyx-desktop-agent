@@ -4,63 +4,41 @@ import re
 from collections.abc import Sequence
 
 from nyx.enums import ContextMode, UserIntent
+from nyx.policy import policy
 from nyx.types import CurrentState
 
 # 消息长度归一化：≥50 字符视为长消息（可推翻）
-_LONG_MSG_LEN = 50.0
+_LONG_MSG_LEN = policy("expression", "classifier._LONG_MSG_LEN", float)
 # 距上次慢通道归一化：≥3600 秒（1 小时）视为满（可推翻）
-_RECENCY_WINDOW = 3600.0
-QUESTION_MARKS = ("?", "？", "吗", "呢", "怎么", "为什么", "什么", "如何", "哪")
-_QUESTION_WORDS = (
-    "怎么", "怎么样", "为什么", "什么", "如何", "哪", "是否", "能否", "可否",
+_RECENCY_WINDOW = policy("expression", "classifier._RECENCY_WINDOW", float)
+QUESTION_MARKS = policy("expression", "classifier.QUESTION_MARKS", tuple[str, ...])
+_QUESTION_WORDS = policy("expression", "classifier._QUESTION_WORDS", tuple[str, ...])
+_REQUEST_WORDS = policy("expression", "classifier._REQUEST_WORDS", tuple[str, ...])
+_DISCUSSION_TERMS = policy(
+    "expression", "classifier._DISCUSSION_TERMS", tuple[str, ...]
 )
-_REQUEST_WORDS = ("请", "帮我", "告诉我", "解释", "推荐", "写一份", "怎么做")
-_DISCUSSION_TERMS = (
-    "为什么", "如何", "怎么", "背景", "辨析", "比较", "观点", "历史",
-    "原理", "定义", "什么", "哪",
+_DISCUSSION_REQUEST_RE = policy(
+    "expression", "classifier._DISCUSSION_REQUEST_RE", re.Pattern[str]
 )
-_DISCUSSION_REQUEST_RE = re.compile(
-    r"^(?:请|帮我|给我|解释|说明|分析|比较|辨析|介绍|讲讲|谈谈|说说|"
-    r"告诉我|梳理|评价|解读|阐述)"
+_DISCUSSION_OPEN_RE = policy(
+    "expression", "classifier._DISCUSSION_OPEN_RE", re.Pattern[str]
 )
-_DISCUSSION_OPEN_RE = re.compile(
-    r"(?:讨论|聊聊)(?:一下|下)?[\s：:，,]*"
+_DISCUSSION_NEGATION_RE = policy(
+    "expression", "classifier._DISCUSSION_NEGATION_RE", re.Pattern[str]
 )
-_DISCUSSION_NEGATION_RE = re.compile(
-    r"(?:不(?:(?:太|怎么|是很)?(?:需要|打算|准备|愿意|想|要|用|必|希望))?"
-    r"(?:再)?(?:讨论|聊聊)"
-    r"|无需(?:再)?(?:讨论|聊聊)|没必要(?:再)?(?:讨论|聊聊)"
-    r"|别(?:再)?(?:讨论|聊聊)|(?:禁止|拒绝)(?:再)?(?:讨论|聊聊))"
+_CASUAL_QUESTION_RE = policy(
+    "expression", "classifier._CASUAL_QUESTION_RE", re.Pattern[str]
 )
-_CASUAL_QUESTION_RE = re.compile(
-    r"(?:怎么样|怎么了|怎么啦|咋样|咋了|好吗|还好吗)[？?！!。]*$"
-)
-_EMOTIONAL_WORDS = (
-    "难过", "伤心", "生气", "愤怒", "开心", "高兴", "焦虑", "担心",
-    "害怕", "委屈", "烦躁", "疲惫", "孤独", "崩溃", "压力",
-)
-_GREETING_RE = re.compile(
-    r"^(你好|嗨|hi|hello|早上好|晚上好|晚安|在吗)[！!。.,， ]*$",
-    re.I,
-)
-_EMOTION_WORDS = (
-    "难过", "伤心", "生气", "愤怒", "开心", "高兴", "焦虑", "担心",
-    "害怕", "委屈", "烦躁", "疲惫", "孤独",
-)
+_EMOTIONAL_WORDS = policy("expression", "classifier._EMOTIONAL_WORDS", tuple[str, ...])
+_GREETING_RE = policy("expression", "classifier._GREETING_RE", re.Pattern[str])
+_EMOTION_WORDS = policy("expression", "classifier._EMOTION_WORDS", tuple[str, ...])
 
 
 def derive_request_text(messages: Sequence[str]) -> tuple[int, str]:
     """Only an exact first control clause replaces the whole request."""
-    controls = {
-        "取消整个任务",
-        "撤回整个任务",
-        "替换整个任务",
-        "取消刚才的任务",
-        "撤回刚才的任务",
-        "取消前面的请求",
-        "撤回前面的请求",
-        "换个话题",
-    }
+    controls = policy(
+        "expression", "classifier.copy.derive_request_text_words", set[str]
+    )
     start = 0
     for index, message in enumerate(messages):
         first = next(
@@ -84,15 +62,21 @@ def is_question(text: str) -> bool:
         clause = part.strip()
         if not clause:
             continue
-        if clause.endswith(("吗", "呢", "吧", "是否", "能否", "可否")):
+        if clause.endswith(
+            policy("expression", "classifier.copy.is_question_words", tuple[str, ...])
+        ):
             return True
         if clause.startswith(_QUESTION_WORDS):
             return True
-        if clause.endswith(("怎么样", "如何", "什么", "哪里", "哪儿")):
+        if clause.endswith(
+            policy("expression", "classifier.copy.is_question_words_2", tuple[str, ...])
+        ):
             return True
         if any(
             clause.startswith(prefix)
-            for prefix in ("你觉得", "你认为", "有没有", "是不是", "可不可以")
+            for prefix in policy(
+                "expression", "classifier.copy.is_question_words_3", tuple[str, ...]
+            )
         ):
             return True
     return False
@@ -130,11 +114,16 @@ def should_load_discussion(message: str) -> bool:
             continue
         opening = _DISCUSSION_OPEN_RE.search(clause)
         if opening and clause[opening.end():].strip(
-            " \t\r\n：:，,、。！？!?；;吗呢吧呀哦嘛啊啦好行可以不"
+            policy("expression", "classifier.copy.should_load_discussion_text", str)
         ):
             return True
         if _CASUAL_QUESTION_RE.search(clause) and not any(
-            term in clause for term in _DISCUSSION_TERMS if term != "怎么"
+            term in clause
+            for term in _DISCUSSION_TERMS
+            if term
+            != policy(
+                "expression", "classifier.copy.should_load_discussion_text_2", str
+            )
         ):
             continue
         if not any(term in clause for term in _DISCUSSION_TERMS):
@@ -164,12 +153,20 @@ def slow_score(
     question = 1.0 if is_question(message) else 0.0
     emotion = 1.0 if any(w in message for w in _EMOTION_WORDS) else 0.0
     # 不夹：energy/arousal 已在上游 clamp 到 [0,100]/[0,1]
-    vigor = 0.5 * (state.energy / 100.0) + 0.5 * (1.0 - state.arousal)
+    vigor = policy("expression", "classifier.parameters.energy_vigor_weight", float) * (
+        state.energy / policy("inner_life", "energy.maximum", float)
+    ) + policy("expression", "classifier.parameters.arousal_vigor_weight", float) * (
+        1.0 - state.arousal
+    )
     # 上下限都夹：last_slow_at>now（时钟回拨）也不为负
     recency = max(0.0, min(1.0, (now - last_slow_at) / _RECENCY_WINDOW))
     return (
-        0.25 * length + 0.25 * question + 0.20 * emotion
-        + 0.15 * vigor + 0.15 * recency
+        policy("expression", "classifier.parameters.length_weight", float) * length
+        + policy("expression", "classifier.parameters.question_weight", float)
+        * question
+        + policy("expression", "classifier.parameters.emotion_weight", float) * emotion
+        + policy("expression", "classifier.parameters.vigor_weight", float) * vigor
+        + policy("expression", "classifier.parameters.recency_weight", float) * recency
     )
 
 
@@ -182,13 +179,26 @@ def classify_channel(
 ) -> ContextMode:
     """判定快/慢通道：slow_score ≥ threshold → 慢，否则快。"""
     explicit_task = any(
-        word in message for word in ("网页", "网站", "问卷", "测试题", "答题")
+        word in message
+        for word in policy(
+            "expression", "classifier.copy.classify_channel_words", tuple[str, ...]
+        )
     ) and (
         bool(re.search(r"https?://\S+", message))
-        or any(word in message for word in ("做", "看", "打开", "填写"))
+        or any(
+            word in message
+            for word in policy(
+                "expression",
+                "classifier.copy.classify_channel_words_3",
+                tuple[str, ...],
+            )
+        )
     )
     explicit_task = explicit_task or any(
-        word in message for word in ("读书", "阅读", "读到第", "写一篇", "创作", "写点")
+        word in message
+        for word in policy(
+            "expression", "classifier.copy.classify_channel_words_2", tuple[str, ...]
+        )
     )
     if explicit_task:
         return ContextMode.SLOW

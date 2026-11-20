@@ -1,3 +1,5 @@
+import { formatPolicyText } from "../../lib/policy";
+import activityPolicy from "../../../../nyx/settings/activity.json";
 import { formatClock, formatDate, formatDateTime } from "../../lib/time";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent } from "react";
 import { captureScope, isScopeCurrent } from "../../api/characterScope";
@@ -24,21 +26,21 @@ function ExplorationTrace({ activity, onOpen }: { activity: Activity; onOpen: ()
   return <>
     {subject && <span className="panel-item__meta">{subject}</span>}
     {typeof activity.progress.error === "string" && <span role="status">{activity.progress.error}</span>}
-    {trace && <button type="button" onClick={onOpen}>探索过程</button>}
+    {trace && <button type="button" onClick={onOpen}>{activityPolicy.copy.ActivityPanel.button}</button>}
   </>;
 }
 
 function taskTarget(task: AssignedTask, books: BookListItem[]): string {
-  if (task.type === "web") return task.url ?? "网页";
+  if (task.type === "web") return task.url ?? activityPolicy.copy.ActivityPanel.text;
   if (task.type === "browser_survey") {
-    return `网页问卷 · ${task.url ?? "未知地址"}`;
+    return formatPolicyText(activityPolicy.templates.ActivityPanel.text, { p0: task.url ?? activityPolicy.copy.ActivityPanel.text_2 });
   }
-  if (task.type === "creation") return "创作任务";
+  if (task.type === "creation") return activityPolicy.copy.ActivityPanel.text_3;
   const book = books.find((item) => item.id === task.book_id);
-  const name = book?.title ?? task.book_id ?? "已删除书籍";
+  const name = book?.title ?? task.book_id ?? activityPolicy.copy.ActivityPanel.text_4;
   return task.target_paragraph === null
     ? name
-    : `${name} · 第 ${task.target_paragraph} 段`;
+    : formatPolicyText(activityPolicy.templates.ActivityPanel.text_2, { p0: name, p1: task.target_paragraph });
 }
 
 export default function ActivityPanel({ view = "activity" }: { view?: "activity" | "tasks" | "task-compose" | "task-list" }) {
@@ -140,7 +142,7 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
     if (taskMode === "web" || taskMode === "browser_survey") {
       const value = (taskMode === "web" ? webUrl : surveyUrl).trim();
       if (value.length === 0) {
-        setFormError("请输入网页地址");
+        setFormError(activityPolicy.copy.ActivityPanel.text_5);
         return;
       }
       const created = taskMode === "web"
@@ -153,7 +155,7 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
       return;
     }
     if (selectedBook === null || !targetIsValid) {
-      setFormError("请选择有效的目标段落");
+      setFormError(activityPolicy.copy.ActivityPanel.text_6);
       return;
     }
     await assignBookTask(selectedBook.id, targetParagraph);
@@ -185,34 +187,34 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
   };
 
   return (
-    <Panel title={showTaskPage ? "任务" : "活动"} className={showTaskPage ? "task-page" : "activity-page"}>
-      {showTaskPage && <div className="task-page-tabs" role="tablist" aria-label="任务视图">
-        <button type="button" role="tab" aria-selected={showTaskList} className={showTaskList ? "panel-tab panel-tab--active" : "panel-tab"} onClick={() => setTaskPageView("records")}>任务记录</button>
-        <button type="button" role="tab" aria-selected={showComposer} className={showComposer ? "panel-tab panel-tab--active" : "panel-tab"} onClick={() => setTaskPageView("compose")}>安排任务</button>
+    <Panel title={showTaskPage ? activityPolicy.copy.ActivityPanel.text_7 : activityPolicy.copy.ActivityPanel.text_8} className={showTaskPage ? "task-page" : "activity-page"}>
+      {showTaskPage && <div className="task-page-tabs" role="tablist" aria-label={activityPolicy.copy.ActivityPanel.aria_label}>
+        <button type="button" role="tab" aria-selected={showTaskList} className={showTaskList ? "panel-tab panel-tab--active" : "panel-tab"} onClick={() => setTaskPageView("records")}>{activityPolicy.copy.ActivityPanel.button_2}</button>
+        <button type="button" role="tab" aria-selected={showComposer} className={showComposer ? "panel-tab panel-tab--active" : "panel-tab"} onClick={() => setTaskPageView("compose")}>{activityPolicy.copy.ActivityPanel.button_3}</button>
       </div>}
 
       {showComposer && <section className="task-composer">
-        <div className="task-composer__header"><h3>安排任务</h3></div>
+        <div className="task-composer__header"><h3>{activityPolicy.copy.ActivityPanel.button_3}</h3></div>
         <div className="task-form-grid">
           <form className="task-form" onSubmit={(event) => void submitTask(event, "web")}>
-            <h4>网页</h4>
-            <label className="task-field"><span>网页地址</span><input type="url" value={webUrl} placeholder="https://" onChange={(event) => setWebUrl(event.target.value)} /></label>
-            <button type="submit" className="task-submit" disabled={creatingTask}>{creatingTask ? "安排中…" : "安排网页"}</button>
+            <h4>{activityPolicy.copy.ActivityPanel.text}</h4>
+            <label className="task-field"><span>{activityPolicy.copy.ActivityPanel.span}</span><input type="url" value={webUrl} placeholder="https://" onChange={(event) => setWebUrl(event.target.value)} /></label>
+            <button type="submit" className="task-submit" disabled={creatingTask}>{creatingTask ? activityPolicy.copy.ActivityPanel.text_9 : activityPolicy.copy.ActivityPanel.text_10}</button>
           </form>
           <form className="task-form" onSubmit={(event) => void submitTask(event, "book")}>
-            <h4>书籍</h4>
+            <h4>{activityPolicy.copy.ActivityPanel.h4}</h4>
             <div className="task-form__row">
-              <label className="task-field"><span>书籍</span><select value={bookId} disabled={books.length === 0} onChange={(event) => changeBook(event.target.value)}>{books.length === 0 && <option value="">暂无 EPUB</option>}{books.map((book) => <option key={book.id} value={book.id}>{book.title}</option>)}</select></label>
-              <label className="task-field task-field--target"><span>目标段落</span><input type="number" min={1} max={selectedBook?.total_paragraphs ?? 1} value={target} onChange={(event) => setTarget(event.target.value)} /></label>
+              <label className="task-field"><span>{activityPolicy.copy.ActivityPanel.h4}</span><select value={bookId} disabled={books.length === 0} onChange={(event) => changeBook(event.target.value)}>{books.length === 0 && <option value="">{activityPolicy.copy.ActivityPanel.option}</option>}{books.map((book) => <option key={book.id} value={book.id}>{book.title}</option>)}</select></label>
+              <label className="task-field task-field--target"><span>{activityPolicy.copy.ActivityPanel.span_2}</span><input type="number" min={1} max={selectedBook?.total_paragraphs ?? 1} value={target} onChange={(event) => setTarget(event.target.value)} /></label>
             </div>
-            {preview.length > 0 && <ol className="task-preview" aria-label="目标段落预览">{preview.map((paragraph) => <li key={paragraph.id} className={paragraph.index === targetParagraph ? "task-preview__item task-preview__item--target" : "task-preview__item"}><span>第 {paragraph.index} 段</span><p>{paragraph.text}</p></li>)}</ol>}
+            {preview.length > 0 && <ol className="task-preview" aria-label={activityPolicy.copy.ActivityPanel.aria_label_2}>{preview.map((paragraph) => <li key={paragraph.id} className={paragraph.index === targetParagraph ? "task-preview__item task-preview__item--target" : "task-preview__item"}><span>{activityPolicy.copy.ActivityPanel.span_3}{paragraph.index}{activityPolicy.copy.ActivityPanel.span_4}</span><p>{paragraph.text}</p></li>)}</ol>}
             {previewError !== null && <p className="error-text">{previewError}</p>}
-            <button type="submit" className="task-submit" disabled={creatingTask || !targetIsValid}>{creatingTask ? "安排中…" : "安排阅读"}</button>
+            <button type="submit" className="task-submit" disabled={creatingTask || !targetIsValid}>{creatingTask ? activityPolicy.copy.ActivityPanel.text_9 : activityPolicy.copy.ActivityPanel.text_11}</button>
           </form>
           <form className="task-form" onSubmit={(event) => void submitTask(event, "browser_survey")}>
-            <h4>网页问卷</h4>
-            <label className="task-field"><span>网页地址</span><input type="url" value={surveyUrl} placeholder="https://" onChange={(event) => setSurveyUrl(event.target.value)} /></label>
-            <button type="submit" className="task-submit" disabled={creatingTask}>{creatingTask ? "安排中…" : "安排问卷"}</button>
+            <h4>{activityPolicy.copy.ActivityPanel.h4_2}</h4>
+            <label className="task-field"><span>{activityPolicy.copy.ActivityPanel.span}</span><input type="url" value={surveyUrl} placeholder="https://" onChange={(event) => setSurveyUrl(event.target.value)} /></label>
+            <button type="submit" className="task-submit" disabled={creatingTask}>{creatingTask ? activityPolicy.copy.ActivityPanel.text_9 : activityPolicy.copy.ActivityPanel.text_12}</button>
           </form>
         </div>
         {(formError ?? taskError ?? booksError) !== null && <p className="error-text">{formError ?? taskError ?? booksError}</p>}
@@ -220,14 +222,14 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
 
       {showTaskList && <>
         <section className="task-list">
-          <h3>任务</h3>
-          <input className="panel-input" type="search" aria-label="搜索任务" placeholder="搜索任务…" value={taskQuery} onChange={(event) => { setTaskQuery(event.target.value); setTaskPage(0); }} />
-          {tasks === null && <p>正在加载任务…</p>}
-          {tasks !== null && tasks.length === 0 && <p>还没有安排任务</p>}
+          <h3>{activityPolicy.copy.ActivityPanel.text_7}</h3>
+          <input className="panel-input" type="search" aria-label={activityPolicy.copy.ActivityPanel.aria_label_3} placeholder={activityPolicy.copy.ActivityPanel.placeholder} value={taskQuery} onChange={(event) => { setTaskQuery(event.target.value); setTaskPage(0); }} />
+          {tasks === null && <p>{activityPolicy.copy.ActivityPanel.p}</p>}
+          {tasks !== null && tasks.length === 0 && <p>{activityPolicy.copy.ActivityPanel.p_2}</p>}
           <ul>
             {filteredTasks.slice(currentTaskPage * 5, currentTaskPage * 5 + 5).map((task) => (
               <li key={task.id} className="task-list__item">
-                <button type="button" className="task-list__select" aria-label={`查看任务 ${taskTarget(task, books)}`} onClick={() => setSelectedTaskId(task.id)}>
+                <button type="button" className="task-list__select" aria-label={formatPolicyText(activityPolicy.templates.ActivityPanel.text_3, { p0: taskTarget(task, books) })} onClick={() => setSelectedTaskId(task.id)}>
                 <div>
                   <span className="task-list__target">
                     {taskTarget(task, books)}
@@ -246,18 +248,18 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
               </li>
             ))}
           </ul>
-          {tasks !== null && tasks.length > 0 && filteredTasks.length === 0 && <p>没有匹配的任务</p>}
+          {tasks !== null && tasks.length > 0 && filteredTasks.length === 0 && <p>{activityPolicy.copy.ActivityPanel.p_3}</p>}
           {filteredTasks.length > 0 && <div className="ledger-pagination">
-            <button type="button" disabled={currentTaskPage === 0} onClick={() => setTaskPage(currentTaskPage - 1)}>上一页</button>
+            <button type="button" disabled={currentTaskPage === 0} onClick={() => setTaskPage(currentTaskPage - 1)}>{activityPolicy.copy.ActivityPanel.button_4}</button>
             <span>{currentTaskPage + 1} / {taskPages}</span>
-            <button type="button" disabled={currentTaskPage + 1 >= taskPages} onClick={() => setTaskPage(currentTaskPage + 1)}>下一页</button>
+            <button type="button" disabled={currentTaskPage + 1 >= taskPages} onClick={() => setTaskPage(currentTaskPage + 1)}>{activityPolicy.copy.ActivityPanel.button_5}</button>
           </div>}
         </section>
-      {selectedTask !== undefined && <aside className="task-detail" aria-label="任务详情">
-        <button type="button" className="task-detail__close" onClick={() => setSelectedTaskId(null)} aria-label="关闭任务详情">×</button>
+      {selectedTask !== undefined && <aside className="task-detail" aria-label={activityPolicy.copy.ActivityPanel.aria_label_4}>
+        <button type="button" className="task-detail__close" onClick={() => setSelectedTaskId(null)} aria-label={activityPolicy.copy.ActivityPanel.aria_label_5}>×</button>
         <h3>{taskTarget(selectedTask, books)}</h3>
         <p>{ASSIGNED_TASK_STATUS_LABELS[selectedTask.status]}</p>
-        <p>创建：{formatDateTime(selectedTask.created_at)}</p>
+        <p>{activityPolicy.copy.ActivityPanel.p_4}{formatDateTime(selectedTask.created_at)}</p>
         {selectedTask.error !== null && <p className="error-text">{selectedTask.error}</p>}
         {typeof (selectedTask.checkpoint.result as Record<string, unknown> | undefined)?.summary === "string" && <p>{String((selectedTask.checkpoint.result as Record<string, unknown>).summary)}</p>}
       </aside>}
@@ -265,7 +267,7 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
 
       {view === "activity" && <>
       <div className="activity-day">
-        <div className="activity-day__date"><strong>今天</strong><time>{formatDate(Date.now() / 1000)}</time></div>
+        <div className="activity-day__date"><strong>{activityPolicy.copy.ActivityPanel.strong}</strong><time>{formatDate(Date.now() / 1000)}</time></div>
         <button
           type="button"
           className="panel-refresh activity-history-toggle"
@@ -280,17 +282,17 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
           }}
           disabled={historyLoading}
         >
-          {historyLoading ? "正在读取历史…" : showHistory ? "收起历史活动" : "查看历史活动"}
+          {historyLoading ? activityPolicy.copy.ActivityPanel.text_13 : showHistory ? activityPolicy.copy.ActivityPanel.text_14 : activityPolicy.copy.ActivityPanel.text_15}
         </button>
       </div>
       {error !== null && <p className="error-text">{error}</p>}
       {formError !== null && <p className="error-text">{formError}</p>}
       {data === null ? (
-        "等待核心服务连接…"
+        activityPolicy.copy.ActivityPanel.text_16
       ) : timeline.length === 0 ? (
-        <p className="panel-item">今天还没有活动记录</p>
+        <p className="panel-item">{activityPolicy.copy.ActivityPanel.p_5}</p>
       ) : (
-        <ul className="timeline" ref={timelineRef} tabIndex={0} aria-label="今天的活动时间线"
+        <ul className="timeline" ref={timelineRef} tabIndex={0} aria-label={activityPolicy.copy.ActivityPanel.aria_label_6}
           onKeyDown={(event) => { if (event.key === "ArrowRight" || event.key === "ArrowLeft") { event.preventDefault(); event.currentTarget.scrollBy({ left: event.key === "ArrowRight" ? 180 : -180, behavior: "smooth" }); } }}
           onPointerDown={(event) => { if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button, details, a, input"))) return; dragOrigin.current = { x: event.clientX, scroll: event.currentTarget.scrollLeft }; event.currentTarget.setPointerCapture(event.pointerId); }}
           onPointerMove={dragTimeline}
@@ -314,7 +316,7 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
                       {ACTIVITY_STATUS_LABELS[activity.status]}
                     </span>
                     {isCurrent && (
-                      <span className="timeline__now">◀ 现在</span>
+                      <span className="timeline__now">{activityPolicy.copy.ActivityPanel.span_5}</span>
                     )}
                   </span>
                   <span className="panel-item__meta">
@@ -330,14 +332,14 @@ export default function ActivityPanel({ view = "activity" }: { view?: "activity"
           })}
         </ul>
       )}
-      {selectedExploration && <section className="activity-history" aria-label="探索过程">
-        <button type="button" className="panel-refresh" onClick={() => setSelectedExplorationId(null)}>关闭探索过程</button>
-        <h3>探索过程</h3>
+      {selectedExploration && <section className="activity-history" aria-label={activityPolicy.copy.ActivityPanel.button}>
+        <button type="button" className="panel-refresh" onClick={() => setSelectedExplorationId(null)}>{activityPolicy.copy.ActivityPanel.button_6}</button>
+        <h3>{activityPolicy.copy.ActivityPanel.button}</h3>
         <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", font: "inherit" }}>{formatTools(selectedExploration)}</pre>
       </section>}
-      {showHistory && history !== null && <section className="activity-history" aria-label="历史活动记录">
-        <h3>历史活动记录</h3>
-        {history.length === 0 ? <p className="panel-item">暂无历史活动</p> : <ul className="panel-list">
+      {showHistory && history !== null && <section className="activity-history" aria-label={activityPolicy.copy.ActivityPanel.aria_label_7}>
+        <h3>{activityPolicy.copy.ActivityPanel.aria_label_7}</h3>
+        {history.length === 0 ? <p className="panel-item">{activityPolicy.copy.ActivityPanel.p_6}</p> : <ul className="panel-list">
           {history.map((activity) => <li key={activity.id} className="panel-item">
             <span className="panel-item__main">{ACTIVITY_TYPE_LABELS[activity.type]} <span className="panel-badge">{ACTIVITY_STATUS_LABELS[activity.status]}</span></span>
             <span className="panel-item__meta">{formatDateTime(activity.started_at)}</span>

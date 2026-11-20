@@ -15,10 +15,11 @@ from nyx.memory.conversation_chunks import (
     evidence_excerpt,
 )
 from nyx.memory.store import ConversationRetrievalHit, MemoryStore
+from nyx.policy import policy
 from nyx.types import ConversationSegment, Memory
 
 _LOGGER = logging.getLogger(__name__)
-_CANDIDATES = 80
+_CANDIDATES = policy("memory", "conversation_retrieval._CANDIDATES", int)
 
 
 @dataclass
@@ -91,7 +92,9 @@ class ConversationRetrieval:
         *,
         limit: int,
         include_archived: bool,
-        max_excerpt_chars: int = 1600,
+        max_excerpt_chars: int = policy(
+            "memory", "conversation_retrieval.parameters.search_max_excerpt_chars", int
+        ),
         embedding_model: str = "",
     ) -> list[ConversationSegment]:
         # A caller holding the DB transaction must not wait for an index reader
@@ -143,7 +146,13 @@ class ConversationRetrieval:
         lexical = [
             (identity, score, matched)
             for identity, score, matched in lexical
-            if matched >= min(2, len(terms)) and matched / len(terms) >= 0.25
+            if matched >= min(2, len(terms))
+            and matched / len(terms)
+            >= policy(
+                "memory",
+                "conversation_retrieval.parameters.min_lexical_coverage",
+                float,
+            )
         ]
         vector_hits = (
             indexes.vectors[(embedding_model, len(vector))].query(
@@ -155,7 +164,10 @@ class ConversationRetrieval:
             else []
         )
         semantic = {
-            hit.memory_id: hit.cosine for hit in vector_hits if hit.cosine >= 0.45
+            hit.memory_id: hit.cosine
+            for hit in vector_hits
+            if hit.cosine
+            >= policy("memory", "conversation_retrieval.parameters.min_cosine", float)
         }
         coverage = {identity: matched / len(terms) for identity, _, matched in lexical}
         fused: dict[str, float] = defaultdict(float)
@@ -165,7 +177,10 @@ class ConversationRetrieval:
             ("vector", list(semantic)),
         ):
             for rank, identity in enumerate(identities, 1):
-                fused[identity] += 1.0 / (60 + rank)
+                fused[identity] += 1.0 / (
+                    policy("memory", "conversation_retrieval.rrf_rank_offset", int)
+                    + rank
+                )
                 sources[identity].append(source)
         ranked: list[tuple[float, ConversationChunk]] = []
         for identity, fusion in fused.items():
@@ -177,10 +192,25 @@ class ConversationRetrieval:
             # RRF avoids comparing incompatible BM25/cosine scales. A second,
             # content-based pass favours coverage and exact evidence over metadata.
             relevance = (
-                0.5 * fusion * 30.5
-                + 0.3 * max(lexical_coverage, semantic.get(identity, 0.0))
-                + 0.15 * lexical_coverage
-                + 0.05 * exact
+                policy(
+                    "memory", "conversation_retrieval.parameters.fusion_weight", float
+                )
+                * fusion
+                * policy(
+                    "memory", "conversation_retrieval.parameters.fusion_scale", float
+                )
+                + policy(
+                    "memory", "conversation_retrieval.parameters.coverage_weight", float
+                )
+                * max(lexical_coverage, semantic.get(identity, 0.0))
+                + policy(
+                    "memory", "conversation_retrieval.parameters.lexical_weight", float
+                )
+                * lexical_coverage
+                + policy(
+                    "memory", "conversation_retrieval.parameters.exact_weight", float
+                )
+                * exact
             )
             ranked.append((relevance, chunk))
         ranked.sort(key=lambda item: (-item[0], item[1].id))
@@ -201,14 +231,29 @@ class ConversationRetrieval:
                 continue
             excerpt, ranges = evidence_excerpt(
                 segment.raw_content,
-                [chunk for _, chunk in valid[:3]],
+                [
+                    chunk
+                    for _, chunk in valid[
+                        : policy(
+                            "memory",
+                            "conversation_retrieval.parameters.search_excerpt_ranges_chars_or_items",
+                            int,
+                        )
+                    ]
+                ],
                 max_chars=max_excerpt_chars,
             )
             if not excerpt:
                 continue
             used = [
                 chunk
-                for _, chunk in valid[:3]
+                for _, chunk in valid[
+                    : policy(
+                        "memory",
+                        "conversation_retrieval.parameters.search_used_chars_or_items",
+                        int,
+                    )
+                ]
                 if any(a <= chunk.start and chunk.end <= b for a, b in ranges)
             ]
             segment = replace(

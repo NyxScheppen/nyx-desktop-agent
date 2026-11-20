@@ -1,3 +1,5 @@
+import { formatPolicyText } from "../lib/policy";
+import frontendPolicy from "../../../nyx/settings/frontend.json";
 import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
 import {
@@ -93,7 +95,7 @@ const HISTORY_TYPES = [
   "reading_question",
   "annotation_feedback",
 ] as const;
-const HISTORY_LIMIT = 5000; // 每类型拉取上限（大上限折中：覆盖长会话、后端不动）
+const HISTORY_LIMIT = frontendPolicy.frontend.chatStore.HISTORY_LIMIT; // 每类型拉取上限（大上限折中：覆盖长会话、后端不动）
 
 function compareMessages(a: ChatMessage, b: ChatMessage): number {
   const rank = (kind: ChatMessage["kind"]) => kind === "message" ? 0 : kind === "think" ? 1 : 2;
@@ -187,7 +189,7 @@ function toChatMessage(e: BackendEvent): ChatMessage | null {
   return msg;
 }
 
-const REPLY_TIMEOUT_MS = 60_000;
+const REPLY_TIMEOUT_MS = frontendPolicy.frontend.chatStore.REPLY_TIMEOUT_MS;
 
 export const useChatStore = create<ChatState>((set, get) => {
   let generation = 0;
@@ -201,9 +203,9 @@ export const useChatStore = create<ChatState>((set, get) => {
   const refreshWaiting = () => {
     const items = Object.values(get().pendingReplies);
     set({ isReplying: items.some((item) => item.status === "waiting"),
-      replyNotice: items.some((item) => item.status === "dead_letter") ? "消息处理失败"
-        : items.some((item) => item.status === "timed_out") ? "回复超时，仍在等待处理"
-        : get().pendingTruncated ? "仍有未显示的待回复消息" : null });
+      replyNotice: items.some((item) => item.status === "dead_letter") ? frontendPolicy.copy.chatStore.text
+        : items.some((item) => item.status === "timed_out") ? frontendPolicy.copy.chatStore.text_2
+        : get().pendingTruncated ? frontendPolicy.copy.chatStore.text_3 : null });
   };
   const removePending = (id: string) => {
     clearTimeout(timers.get(id));
@@ -258,7 +260,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   ) => {
     const text = e.event === "user_message" ? e.message : e.content;
     if (typeof text !== "string" || !isValidTimestamp(e.timestamp)) {
-      console.error(`SSE ${e.event} 帧文本或时间戳非法，丢弃`, e);
+      console.error(formatPolicyText(frontendPolicy.templates.chatStore.text, { p0: e.event }), e);
       return false;
     }
     const msg: ChatMessage = {
@@ -303,7 +305,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     const selected = get().replyTargetId;
     const discussion = get().discussionMode;
     if (!annotation && !hasPending && candidates.length > 1 && selected === null) {
-      commit({ sendError: "有多个待回复的问题，请先选择要回复的那一条" });
+      commit({ sendError: frontendPolicy.copy.chatStore.sendError });
       return false;
     }
     const replyTo = annotation ? undefined : selected ?? (
@@ -347,7 +349,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       commit({ isSending: false });
       earlyLegacy.clear();
       commit({ sendError: err instanceof TypeError
-        ? `提交结果未知，服务端可能已受理：${err.message}`
+        ? formatPolicyText(frontendPolicy.templates.chatStore.text_2, { p0: err.message })
         : err instanceof Error ? err.message : String(err) });
       return false;
     }
@@ -371,7 +373,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     serverTimeOffset: 0,
     beginAnnotation: (eventId, quote) => {
       if (!eventId.trim() || !quote.trim() || Array.from(quote).length > 2000) {
-        set({ sendError: "回复较长，请选择片段（最多 2000 字符）后批注" });
+        set({ sendError: frontendPolicy.copy.chatStore.sendError_2 });
         return;
       }
       set({ annotationDraft: { reply_event_id: eventId, quote, comment: "" }, sendError: null });
@@ -431,7 +433,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         return true;
       } catch (err) {
       if (!isScopeCurrent(scope)) return false;
-        console.error("暂停提问失败", err);
+        console.error(frontendPolicy.copy.chatStore.text_4, err);
         return false;
       }
     },
@@ -448,7 +450,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         return true;
       } catch (err) {
       if (!isScopeCurrent(scope)) return false;
-        console.error("恢复提问失败", err);
+        console.error(frontendPolicy.copy.chatStore.text_5, err);
         return false;
       }
     },
@@ -520,7 +522,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           refreshWaiting();
         } catch (err) {
           if (!current()) return;
-          console.error("加载待回复消息失败", err);
+          console.error(frontendPolicy.copy.chatStore.text_6, err);
         }
         try {
           const pending = await getPendingQuestions();
@@ -538,18 +540,18 @@ export const useChatStore = create<ChatState>((set, get) => {
           }));
         } catch (err) {
           if (!current()) return;
-          console.error("加载待回答提问失败", err);
+          console.error(frontendPolicy.copy.chatStore.text_7, err);
         }
       } catch (err) {
         if (!current()) return;
-        console.error("加载聊天历史失败", err);
+        console.error(frontendPolicy.copy.chatStore.text_8, err);
       }
     },
     sendMessage: (text) => send(text),
     sendAnnotation: async () => {
       const annotation = get().annotationDraft;
       if (!isReplyAnnotation(annotation)) {
-        set({ sendError: "请填写有效批注，引用和批注各不超过 2000 字符" });
+        set({ sendError: frontendPolicy.copy.chatStore.sendError_3 });
         return false;
       }
       return send(annotation.comment, annotation);

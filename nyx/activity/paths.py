@@ -1,6 +1,8 @@
 import hashlib
 
-_SAFE_FILENAME_MAX_CHARS = 96
+from nyx.policy import policy
+
+_SAFE_FILENAME_MAX_CHARS = policy("activity", "paths._SAFE_FILENAME_MAX_CHARS", int)
 
 
 def sanitize_filename(name: str) -> str:
@@ -13,7 +15,11 @@ def sanitize_filename(name: str) -> str:
 
 def path_hash_suffix(path: str) -> str:
     """任意稳定标识 → 8 位短哈希，避免同名产物互相覆盖。"""
-    return hashlib.md5(path.encode("utf-8")).hexdigest()[:8]
+    return hashlib.md5(path.encode("utf-8")).hexdigest()[
+        : policy(
+            "activity", "paths.parameters.path_hash_suffix_result_chars_or_items", int
+        )
+    ]
 
 
 def creation_output_path(title: str, activity_id: str) -> str:

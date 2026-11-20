@@ -6,6 +6,7 @@ from dataclasses import asdict
 from nyx.db import Database, PostgresConnection
 from nyx.enums import EnergyState
 from nyx.inner_life.document import topics_from_data, validate_topics
+from nyx.policy import policy
 from nyx.types import InnerDocument
 
 
@@ -76,7 +77,13 @@ class InnerLifeStore:
                 )
             ).fetchone()
         if row is None or row["updated_at"] != expected:
-            raise RuntimeError("反思文档快照已变化，请重新准备")
+            raise RuntimeError(
+                policy(
+                    "inner_life",
+                    "store.copy.assert_document_updated_at_extra_text",
+                    str,
+                )
+            )
 
     async def upsert_document(self, n: InnerDocument) -> None:
         validate_topics(n.topics)

@@ -1,3 +1,5 @@
+import { formatPolicyText } from "../../lib/policy";
+import frontendPolicy from "../../../../nyx/settings/frontend.json";
 import CharacterSelect from "../layout/CharacterSelect";
 import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import { useCharacterStore } from "../../stores/characterStore";
@@ -45,14 +47,14 @@ function FloatingInput({ placeholder }: { placeholder: string }) {
         onChange={(event) => setText(event.target.value)}
         aria-label={placeholder}
       />
-      <button type="submit" disabled={isReplying}>发送</button>
+      <button type="submit" disabled={isReplying}>{frontendPolicy.copy.PetShell.button}</button>
     </form>
   );
 }
 
 function PanelBack({ onBack }: { onBack: () => void }) {
   return (
-    <button type="button" className="pet-panel__back" aria-label="返回上一级" onClick={onBack}>
+    <button type="button" className="pet-panel__back" aria-label={frontendPolicy.copy.PetShell.aria_label} onClick={onBack}>
       →
     </button>
   );
@@ -66,13 +68,13 @@ function ChatPanel({ onBack }: { onBack: () => void }) {
   const messages = useChatStore((s) => s.messages);
   const lastNyx = [...messages].reverse().find((message) => message.role === "nyx");
   return (
-    <section className="pet-panel pet-panel--chat" aria-label="聊天">
+    <section className="pet-panel pet-panel--chat" aria-label={frontendPolicy.copy.PetShell.aria_label_2}>
       <PanelBack onBack={onBack} />
       <div className="pet-dialogue">
         <span className="pet-dialogue__name"><CurrentName /></span>
-        {lastNyx?.content ?? "今天过得怎么样？"}
+        {lastNyx?.content ?? frontendPolicy.copy.PetShell.text}
       </div>
-      <FloatingInput placeholder="输入一句话……" />
+      <FloatingInput placeholder={frontendPolicy.copy.PetShell.placeholder} />
     </section>
   );
 }
@@ -83,19 +85,19 @@ function BooksPanel({ books, onBack, onSelect }: {
   onSelect: (bookId: string) => void;
 }) {
   return (
-    <section className="pet-panel pet-panel--books" aria-label="选择书目">
+    <section className="pet-panel pet-panel--books" aria-label={frontendPolicy.copy.PetShell.aria_label_3}>
       <PanelBack onBack={onBack} />
       <PanelCard>
-        <h2 className="pet-panel__title">选择书目</h2>
-        <p className="pet-panel__text">选择一本书，<CurrentName /> 会陪你一起读。</p>
+        <h2 className="pet-panel__title">{frontendPolicy.copy.PetShell.aria_label_3}</h2>
+        <p className="pet-panel__text">{frontendPolicy.copy.PetShell.p}<CurrentName />{frontendPolicy.copy.PetShell.p_2}</p>
         {books.length === 0 ? (
-          <p className="pet-panel__muted">书架空空如也，请在完整桌面端导入 EPUB。</p>
+          <p className="pet-panel__muted">{frontendPolicy.copy.PetShell.p_3}</p>
         ) : (
           <div className="pet-book-list">
             {books.map((book) => (
               <button key={book.id} type="button" onClick={() => onSelect(book.id)}>
                 <span>{book.title}</span>
-                <small>{book.user_position > 0 ? `读到第 ${book.user_position} 段` : "尚未开始"}</small>
+                <small>{book.user_position > 0 ? formatPolicyText(frontendPolicy.templates.PetShell.text, { p0: book.user_position }) : frontendPolicy.copy.PetShell.text_2}</small>
               </button>
             ))}
           </div>
@@ -121,19 +123,19 @@ function ReadingPanel({ onBack }: { onBack: () => void }) {
   };
 
   return (
-    <section className="pet-panel pet-panel--reading" aria-label="陪伴读书">
+    <section className="pet-panel pet-panel--reading" aria-label={frontendPolicy.copy.PetShell.aria_label_4}>
       <PanelBack onBack={onBack} />
       {latestAnnouncement !== undefined && (
         <div className="pet-reading-bubble" aria-live="polite">{latestAnnouncement.text}</div>
       )}
       <div className="pet-reading-card">
-        <h2 className="pet-panel__title">陪读 · {book?.title ?? "阅读中"}</h2>
-        <div className="pet-reading-content" role="region" aria-label="当前阅读段落" tabIndex={0}>
-          {paragraph?.text ?? "正在读取这一页……"}
+        <h2 className="pet-panel__title">{frontendPolicy.copy.PetShell.h2}{book?.title ?? frontendPolicy.copy.PetShell.text_3}</h2>
+        <div className="pet-reading-content" role="region" aria-label={frontendPolicy.copy.PetShell.aria_label_5} tabIndex={0}>
+          {paragraph?.text ?? frontendPolicy.copy.PetShell.text_4}
         </div>
         <div className="pet-reading-progress">
-          <span>你读到：第 {userPosition} 段</span>
-          <span><CurrentName /> 读到：第 {nyxPosition} 段</span>
+          <span>{frontendPolicy.copy.PetShell.span}{userPosition}{frontendPolicy.copy.PetShell.span_2}</span>
+          <span><CurrentName />{frontendPolicy.copy.PetShell.span_3}{nyxPosition}{frontendPolicy.copy.PetShell.span_2}</span>
         </div>
         <div className="pet-reading-actions">
           <button
@@ -154,7 +156,7 @@ function ReadingPanel({ onBack }: { onBack: () => void }) {
           </button>
         </div>
       </div>
-      <FloatingInput placeholder="聊聊这一段……" />
+      <FloatingInput placeholder={frontendPolicy.copy.PetShell.placeholder_2} />
     </section>
   );
 }
@@ -162,22 +164,22 @@ function ReadingPanel({ onBack }: { onBack: () => void }) {
 function InnerPanel({ onBack }: { onBack: () => void }) {
   const current = useInnerLifeStore((s) => s.current);
   const activity = useActivityStore((s) => s.data);
-  const mood = current === null ? "等待连接" : EMOTION_LABELS[current.emotion];
+  const mood = current === null ? frontendPolicy.copy.PetShell.text_5 : EMOTION_LABELS[current.emotion];
   const energy = current === null ? "—" : `${Math.round(current.energy)}%`;
   const status = activityStatusText(activity?.current ?? null);
 
   return (
-    <section className="pet-panel pet-panel--inner" aria-label="内心状态">
+    <section className="pet-panel pet-panel--inner" aria-label={frontendPolicy.copy.PetShell.aria_label_6}>
       <PanelBack onBack={onBack} />
       <PanelCard>
-        <h2 className="pet-panel__title">内心状态</h2>
+        <h2 className="pet-panel__title">{frontendPolicy.copy.PetShell.aria_label_6}</h2>
         <div className="pet-inner-state">
-          <div><span>心情</span><strong>{mood}</strong></div>
-          <div><span>精力</span><strong>{energy}</strong></div>
-          <div><span>当前活动</span><strong>{status}</strong></div>
+          <div><span>{frontendPolicy.copy.PetShell.span_4}</span><strong>{mood}</strong></div>
+          <div><span>{frontendPolicy.copy.PetShell.span_5}</span><strong>{energy}</strong></div>
+          <div><span>{frontendPolicy.copy.PetShell.span_6}</span><strong>{status}</strong></div>
           {current !== null && (
             <div>
-              <span>感受</span>
+              <span>{frontendPolicy.copy.PetShell.span_7}</span>
               <strong>{current.valence.toFixed(2)} / {current.arousal.toFixed(2)}</strong>
             </div>
           )}
@@ -210,7 +212,7 @@ export default function PetShell({ night, onExpand, onOpenSettings }: PetShellPr
     await openBook(id);
     if (isScopeCurrent(scope)) setPanel("reading");
   };
-  const mood = current === null ? "未知" : EMOTION_LABELS[current.emotion];
+  const mood = current === null ? frontendPolicy.copy.PetShell.text_6 : EMOTION_LABELS[current.emotion];
   const status = activityStatusText(activity?.current ?? null);
   const energy = current === null ? "—" : `${Math.round(current.energy)}%`;
 
@@ -232,17 +234,17 @@ export default function PetShell({ night, onExpand, onOpenSettings }: PetShellPr
         onClick={(event) => event.stopPropagation()}
         onDoubleClick={(event) => event.stopPropagation()}
       >
-        <div className="pet-status-bubble" role="status" aria-label="当前状态" aria-live="polite">
-          {mood} · 精力 {energy} · {status}
+        <div className="pet-status-bubble" role="status" aria-label={frontendPolicy.copy.PetShell.aria_label_7} aria-live="polite">
+          {mood}{frontendPolicy.copy.PetShell.div}{energy} · {status}
         </div>
 
         {panel === "fan" && (
-          <nav className="pet-fan-menu" aria-label="角色功能菜单">
+          <nav className="pet-fan-menu" aria-label={frontendPolicy.copy.PetShell.aria_label_8}>
             <CharacterSelect />
-            <button type="button" className="pet-fan-menu__item pet-fan-menu__item--chat" onClick={() => setPanel("chat")}>聊天</button>
-            <button type="button" className="pet-fan-menu__item pet-fan-menu__item--reading" onClick={() => setPanel("books")}>读书</button>
-            <button type="button" className="pet-fan-menu__item pet-fan-menu__item--inner" onClick={() => setPanel("inner")}>内心</button>
-            <button type="button" className="pet-fan-menu__item pet-fan-menu__item--settings" onClick={() => onOpenSettings?.()}>设置</button>
+            <button type="button" className="pet-fan-menu__item pet-fan-menu__item--chat" onClick={() => setPanel("chat")}>{frontendPolicy.copy.PetShell.aria_label_2}</button>
+            <button type="button" className="pet-fan-menu__item pet-fan-menu__item--reading" onClick={() => setPanel("books")}>{frontendPolicy.copy.PetShell.button_2}</button>
+            <button type="button" className="pet-fan-menu__item pet-fan-menu__item--inner" onClick={() => setPanel("inner")}>{frontendPolicy.copy.PetShell.button_3}</button>
+            <button type="button" className="pet-fan-menu__item pet-fan-menu__item--settings" onClick={() => onOpenSettings?.()}>{frontendPolicy.copy.PetShell.button_4}</button>
           </nav>
         )}
 

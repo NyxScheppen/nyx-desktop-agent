@@ -1,0 +1,126 @@
+{
+  "character_cards": {
+    "MAX_CARD_BYTES": 52428800,
+    "copy": {
+      "safe_path_text": "卡包路径非法",
+      "safe_path_text_2": "卡包路径不规范",
+      "validate_text": "缺少 card.yaml 或非空 canon.md",
+      "read_package_text": "卡包超过 50 MiB",
+      "nonblank_text": "欲望文本不能为空",
+      "version_two_text": "不支持的角色卡版本",
+      "safe_id_text": "非法角色 ID",
+      "nonblank_text_2": "角色文本不能为空",
+      "unique_desires_text": "重复长期欲望",
+      "validate_text_2": "角色卡内容无效",
+      "read_package_text_2": "无效角色卡压缩包",
+      "load_card_text": "卡包路径不能是链接",
+      "load_card_text_2": "未知卡包文件",
+      "asset_paths_text": "非法图片路径或表情键",
+      "validate_text_3": "图片文件缺失",
+      "read_package_text_3": "重复卡包路径",
+      "read_package_text_4": "卡包文件与目录路径冲突",
+      "read_package_text_5": "解压数据超过 50 MiB"
+    },
+    "default_desire_strength": 0.5
+  },
+  "bootstrap": {
+    "parameters": {
+      "load_skills_value_limit": {
+        "$ref": "behavior:service.parameters.validate_value_limit"
+      }
+    },
+    "templates": {
+      "load_prompt_files_text": "prompt 文件缺失：{p0}",
+      "load_skills_text": "skill 目录缺失：{p0}",
+      "load_skills_text_2": "skill 格式错误：{p0}",
+      "load_skills_text_3": "skill 字段无效：{p0}",
+      "load_skills_text_4": "skill 名称重复：{p0}",
+      "load_skills_text_5": "缺少 {p0} skill：{p1}"
+    }
+  },
+  "frontend": {
+    "CharacterCreator": {
+      "IMAGE_LABELS": {
+        "avatar": "头像",
+        "neutral": "平静",
+        "happy": "开心",
+        "sad": "悲伤",
+        "angry": "生气",
+        "worried": "担忧",
+        "shy": "害羞",
+        "sleepy": "困倦",
+        "thinking": "思考"
+      }
+    },
+    "characterStore": {
+      "UI_KEY": "nyx.characterUi"
+    }
+  },
+  "limits": {
+    "InitialDesire_name_max_length": 200,
+    "InitialDesire_description_max_length": 6000,
+    "CardManifest_name_max_length": 100,
+    "CardManifest_long_term_desires_max_length": 5
+  },
+  "copy": {
+    "CharacterCardView": {
+      "button": "重新读取角色卡",
+      "p": "正在读取角色卡…",
+      "p_2": "初始角色设定；相处中形成的变化可在「内在状态」查看。",
+      "aria_label": "角色卡分页",
+      "text": "初始设定",
+      "text_2": "身份与表达约定",
+      "text_3": "角色参考资料",
+      "h3": "初始长期欲望",
+      "h3_2": "头像与表情",
+      "text_4": "头像",
+      "p_3": "此角色卡未附参考资料。"
+    },
+    "CharacterCreator": {
+      "title": "自我理解",
+      "text": "名称、主题标题和正文不能为空",
+      "text_2": "主题 ID 不能重复",
+      "text_3": "内在文档总长度不能超过 24000 字",
+      "title_2": "新建角色卡",
+      "button": "← 返回角色管理",
+      "p": "按主题填写初始内在文档；角色会在相处中继续成长。",
+      "legend": "基本信息",
+      "label": "角色 ID",
+      "label_2": "角色名称",
+      "legend_2": "初始内在文档",
+      "legend_3": "主题 ",
+      "label_3": "所属部分",
+      "label_4": "主题 ID",
+      "label_5": "主题标题",
+      "label_6": "主题正文",
+      "placeholder": "这个角色如何理解自己、世界或他人……",
+      "button_2": "删除主题 ",
+      "button_3": "添加主题",
+      "legend_4": "头像与表情（可选）",
+      "text_4": "正在创建…",
+      "text_5": "创建角色"
+    },
+    "CharacterManager": {
+      "button": "导入角色卡",
+      "button_2": "新建角色",
+      "button_3": "刷新角色状态",
+      "button_4": "恢复",
+      "button_5": "重试启动",
+      "button_6": "卸载并保留存档"
+    },
+    "CharacterSelect": {
+      "aria_label": "当前角色"
+    }
+  },
+  "host": {
+    "maximum_characters": 4
+  },
+  "templates": {
+    "CharacterCardView": {
+      "text": "{p0} 的初始角色卡"
+    },
+    "CharacterManager": {
+      "text": "角色管理（{p0}/4）"
+    }
+  }
+}

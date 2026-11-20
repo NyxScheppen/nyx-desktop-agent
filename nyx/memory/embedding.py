@@ -7,7 +7,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 
-_MAX_PENDING = 32
+from nyx.policy import policy
+
+_MAX_PENDING = policy("memory", "embedding._MAX_PENDING", int)
 EmbedFn = Callable[[str], Awaitable[list[float]]]
 
 
@@ -36,14 +38,18 @@ class OnnxEncoder:
                 f'--model "{model_name}" first, or configure an exported directory.'
             )
         metadata = json.loads((directory / "embedding.json").read_text("utf-8"))
-        if metadata["precision"] != "float32" or metadata["max_length"] != 512:
+        if metadata["precision"] != "float32" or metadata["max_length"] != policy(
+            "memory", "embedding.parameters.init_metadata_max_length__limit", int
+        ):
             raise ValueError("Embedding artifact must use FP32 and 512 tokens")
         self._dimension = int(metadata["dimension"])
         tokenizer_type = cast(Any, Tokenizer)
         self._tokenizer: Any = tokenizer_type.from_file(
             str(directory / "tokenizer.json")
         )
-        self._tokenizer.enable_truncation(max_length=512)
+        self._tokenizer.enable_truncation(
+            max_length=policy("memory", "embedding.parameters.init___max_length", int)
+        )
         runtime = cast(Any, ort)  # C extension does not ship complete type stubs.
         options = runtime.SessionOptions()
         options.intra_op_num_threads = 2

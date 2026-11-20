@@ -12,6 +12,7 @@ from nyx.enums import (
     AssignedTaskStatus,
     AssignedTaskType,
 )
+from nyx.policy import policy
 from nyx.types import Activity, AssignedTask
 
 _COLS = "id, type, schedule_block_id, status, progress, started_at, ended_at"
@@ -80,7 +81,8 @@ class ActivityStore:
     async def get(self, activity_id: str) -> Activity | None:
         async with self._db.lock:
             cursor = await self._db.conn.execute(
-                f"SELECT {_COLS} FROM activity WHERE id = ?", (activity_id,),
+                f"SELECT {_COLS} FROM activity WHERE id = ?",
+                (activity_id,),
             )
             row = await cursor.fetchone()
         return _row_to_activity(row) if row is not None else None
@@ -94,7 +96,6 @@ class ActivityStore:
             )
             row = await cursor.fetchone()
         return _row_to_activity(row) if row is not None else None
-
 
     async def list_unfinished(self) -> list[Activity]:
         """Return stale startup candidates in creation order."""
@@ -152,27 +153,43 @@ class ActivityStore:
             exploration = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
             raw_result = progress.get("result", exploration.get("judged", {}))
             result = (
-                cast(dict[str, Any], raw_result)
-                if isinstance(raw_result, dict) else {}
+                cast(dict[str, Any], raw_result) if isinstance(raw_result, dict) else {}
             )
             raw_goal = progress.get("goal", {})
             goal = cast(dict[str, Any], raw_goal) if isinstance(raw_goal, dict) else {}
-            history.append({
-                "activity_id": activity.id,
-                "desire_id": progress.get("desire_id"),
-                "status": activity.status.value,
-                "started_at": activity.started_at,
-                "seed_topic": goal.get("topic", exploration.get("topic", "")),
-                "question": exploration.get("initial_question")
-                or progress.get("intent") or progress.get("description")
-                or exploration.get("topic", ""),
-                "summary": str(result.get("summary", ""))[:1500],
-                "core_discovery": str(result.get("core_discovery", ""))[:1500],
-                "failure_reason": exploration.get("failure_reason")
-                or result.get("failure_reason") or progress.get("error") or "未知",
-                "unresolved_questions": result.get("unresolved_questions")
-                or exploration.get("unresolved_questions", []),
-            })
+            history.append(
+                {
+                    "activity_id": activity.id,
+                    "desire_id": progress.get("desire_id"),
+                    "status": activity.status.value,
+                    "started_at": activity.started_at,
+                    "seed_topic": goal.get("topic", exploration.get("topic", "")),
+                    "question": exploration.get("initial_question")
+                    or progress.get("intent")
+                    or progress.get("description")
+                    or exploration.get("topic", ""),
+                    "summary": str(result.get("summary", ""))[
+                        : policy(
+                            "activity", "store.parameters.result_summary_max_chars", int
+                        )
+                    ],
+                    "core_discovery": str(result.get("core_discovery", ""))[
+                        : policy(
+                            "activity", "store.parameters.result_summary_max_chars", int
+                        )
+                    ],
+                    "failure_reason": exploration.get("failure_reason")
+                    or result.get("failure_reason")
+                    or progress.get("error")
+                    or policy(
+                        "activity",
+                        "store.copy.list_exploration_history_extra_text",
+                        str,
+                    ),
+                    "unresolved_questions": result.get("unresolved_questions")
+                    or exploration.get("unresolved_questions", []),
+                }
+            )
         return history
 
     async def list_schedule(self, start: float) -> list[Activity]:
@@ -272,10 +289,9 @@ class ActivityStore:
                 )
                 for row in await cursor.fetchall():
                     existing_task = _row_to_task(row)
-                    if (
-                        existing_task.checkpoint.get("description")
-                        == task.checkpoint.get("description")
-                    ):
+                    if existing_task.checkpoint.get(
+                        "description"
+                    ) == task.checkpoint.get("description"):
                         return existing_task
                 cursor = None
             existing = await cursor.fetchone() if cursor is not None else None
@@ -309,7 +325,9 @@ class ActivityStore:
             row = await cursor.fetchone()
         return _row_to_task(row) if row is not None else None
 
-    async def list_tasks(self, limit: int = 100) -> list[AssignedTask]:
+    async def list_tasks(
+        self, limit: int = policy("activity", "store.defaults.list_tasks_limit", int)
+    ) -> list[AssignedTask]:
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 f"SELECT {_TASK_COLS} FROM assigned_task "
@@ -349,8 +367,12 @@ class ActivityStore:
 
     async def save_task_source(self, task_id: str, content: str) -> str:
         """Keep the first committed source so replay cannot change its evidence."""
-        if len(content) > 200_000:
-            raise ValueError("网页正文快照超出 200000 字符")
+        if len(content) > policy(
+            "activity", "facade.parameters.run_web_task_text_chars_or_items", int
+        ):
+            raise ValueError(
+                policy("activity", "store.copy.save_task_source_extra_text", str)
+            )
         async with self._operation() as should_commit:
             try:
                 await self._db.conn.execute(

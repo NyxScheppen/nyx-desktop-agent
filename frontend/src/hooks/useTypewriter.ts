@@ -1,3 +1,4 @@
+import frontendPolicy from "../../../nyx/settings/frontend.json";
 import { useEffect, useState } from "react";
 
 // 打字机：text 逐字显示，返回可见文本 + 是否打完。
@@ -7,7 +8,7 @@ import { useEffect, useState } from "react";
 // 期间 displayed="" 且 done=false（无光标）；ready 转 true 才从 0 开始逐字。
 export function useTypewriter(
   text: string,
-  speed = 35,
+  speed = frontendPolicy.timers.typewriter_ms,
   ready = true,
 ): { displayed: string; done: boolean } {
   const [count, setCount] = useState(0);

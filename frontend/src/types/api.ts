@@ -645,6 +645,7 @@ export type Annotation = {
 };
 
 export type UserNote = {
+  revision?: number;
   id: string;
   book_id: string | null; // 书删后 SET NULL
   paragraph_id: string | null; // 段删后 SET NULL；自由记无段也为 None

@@ -17,6 +17,7 @@ from nyx.memory.conversation_chunks import (
     split_conversation,
     term_frequencies,
 )
+from nyx.policy import policy
 from nyx.types import ConversationSegment, Event, Memory, MemoryEdge, ReadingEvidence
 
 _MEMORY_COLS = (
@@ -57,8 +58,11 @@ class ConversationRetrievalHit:
 
 def _conversation_chunk_from_row(row: aiosqlite.Row) -> ConversationChunk:
     return ConversationChunk(
-        str(row["id"]), str(row["segment_id"]),
-        int(row["start_offset"]), int(row["end_offset"]), str(row["content"]),
+        str(row["id"]),
+        str(row["segment_id"]),
+        int(row["start_offset"]),
+        int(row["end_offset"]),
+        str(row["content"]),
         list(json.loads(row["embedding"])) if row["embedding"] else None,
         str(row["embedding_version"]),
     )
@@ -79,9 +83,7 @@ def _segment_from_row(row: aiosqlite.Row) -> ConversationSegment:
         importance=row["importance"],
         long_term=bool(row["long_term"]),
         evaluated_at=(
-            float(row["evaluated_at"])
-            if row["evaluated_at"] is not None
-            else None
+            float(row["evaluated_at"]) if row["evaluated_at"] is not None else None
         ),
         evaluation_reason=str(row["evaluation_reason"] or ""),
         evidence_event_ids=list(json.loads(row["evidence_event_ids"] or "[]")),
@@ -91,7 +93,8 @@ def _segment_from_row(row: aiosqlite.Row) -> ConversationSegment:
         active=bool(row["active"]),
         facts_extracted_at=(
             float(row["facts_extracted_at"])
-            if row["facts_extracted_at"] is not None else None
+            if row["facts_extracted_at"] is not None
+            else None
         ),
         fact_scope=str(row["fact_scope"]),
     )
@@ -106,9 +109,12 @@ def hash_content(content: str) -> str:
 
 def _chunk_from_row(row: aiosqlite.Row) -> ReadingEvidence:
     return ReadingEvidence(
-        id=row["id"], source_topic=row["source_topic"],
-        source_name=row["source_name"], content=row["content"],
-        created_at=row["created_at"], location=row["location"],
+        id=row["id"],
+        source_topic=row["source_topic"],
+        source_name=row["source_name"],
+        content=row["content"],
+        created_at=row["created_at"],
+        location=row["location"],
         embedding=json.loads(row["embedding"]) if row["embedding"] else None,
     )
 
@@ -187,13 +193,23 @@ class MemoryStore:
     async def record_annotation_feedback(self, event: Event) -> bool:
         """Join the caller's transaction so row, event and effect commit together."""
         if not self._db.in_transaction:
-            raise RuntimeError("批注记录必须加入外层事务")
+            raise RuntimeError(
+                policy(
+                    "memory", "store.copy.record_annotation_feedback_extra_text", str
+                )
+            )
         cursor = await self._db.conn.execute(
             "INSERT OR IGNORE INTO annotation_feedback "
             "(event_id, reply_event_id, quote, comment, user_event_id, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (event.id, event.content["reply_event_id"], event.content["quote"],
-             event.content["comment"], event.content["user_event_id"], event.timestamp),
+            (
+                event.id,
+                event.content["reply_event_id"],
+                event.content["quote"],
+                event.content["comment"],
+                event.content["user_event_id"],
+                event.timestamp,
+            ),
         )
         return cursor.rowcount == 1
 
@@ -231,7 +247,12 @@ class MemoryStore:
         return _segment_from_row(row) if row is not None else None
 
     async def list_conversation_segments(
-        self, limit: int | None = 200, *, active_only: bool = False
+        self,
+        limit: int | None = policy(
+            "memory", "store.defaults.list_conversation_segments_limit", int
+        ),
+        *,
+        active_only: bool = False,
     ) -> list[ConversationSegment]:
         async with self._operation():
             cursor = await self._db.conn.execute(
@@ -239,7 +260,17 @@ class MemoryStore:
                 + ("WHERE active = 1 " if active_only else "")
                 + "ORDER BY ended_at DESC, id DESC "
                 + ("LIMIT ?" if limit is not None else ""),
-                (max(1, min(limit, 200)),) if limit is not None else (),
+                (
+                    max(
+                        1,
+                        min(
+                            limit,
+                            policy("memory", "store.parameters.segment_list_max", int),
+                        ),
+                    ),
+                )
+                if limit is not None
+                else (),
             )
             rows = await cursor.fetchall()
         return [_segment_from_row(row) for row in rows]
@@ -248,7 +279,7 @@ class MemoryStore:
         self,
         query: str = "",
         *,
-        limit: int = 100,
+        limit: int = policy("memory", "store.defaults.browse_conversations_limit", int),
         offset: int = 0,
         long_term: bool | None = None,
     ) -> list[ConversationSegment]:
@@ -268,7 +299,18 @@ class MemoryStore:
         if long_term is not None:
             clauses.append("long_term = ?")
             params.append(int(long_term))
-        params.extend([max(1, min(limit, 200)), max(0, offset)])
+        params.extend(
+            [
+                max(
+                    1,
+                    min(
+                        limit,
+                        policy("memory", "store.parameters.segment_list_max", int),
+                    ),
+                ),
+                max(0, offset),
+            ]
+        )
         async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT * FROM conversation_segment WHERE "
@@ -280,14 +322,21 @@ class MemoryStore:
         return [_segment_from_row(row) for row in rows]
 
     async def list_pending_conversation_segments(
-        self, before: float, limit: int = 20, *, include_facts: bool = True
+        self,
+        before: float,
+        limit: int = policy(
+            "memory", "store.defaults.list_pending_conversation_segments_limit", int
+        ),
+        *,
+        include_facts: bool = True,
     ) -> list[ConversationSegment]:
         async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT * FROM conversation_segment WHERE ended_at<=? "
                 + (
                     "AND (evaluated_at IS NULL OR facts_extracted_at IS NULL) "
-                    if include_facts else "AND evaluated_at IS NULL "
+                    if include_facts
+                    else "AND evaluated_at IS NULL "
                 )
                 + "ORDER BY ended_at ASC, id ASC LIMIT ?",
                 (before, limit),
@@ -296,7 +345,9 @@ class MemoryStore:
         return [_segment_from_row(row) for row in rows]
 
     async def add_conversation_segment(
-        self, segment: ConversationSegment, *,
+        self,
+        segment: ConversationSegment,
+        *,
         chunks: list[ConversationChunk] | None = None,
     ) -> None:
         if not self._db.in_transaction:
@@ -344,7 +395,9 @@ class MemoryStore:
                 await self._db.conn.commit()
 
     async def update_conversation_segment(
-        self, segment: ConversationSegment, *,
+        self,
+        segment: ConversationSegment,
+        *,
         chunks: list[ConversationChunk] | None = None,
     ) -> None:
         if not self._db.in_transaction:
@@ -391,22 +444,34 @@ class MemoryStore:
                 await self._db.conn.commit()
 
     async def _sync_conversation_chunks(
-        self, segment: ConversationSegment, chunks: list[ConversationChunk] | None,
+        self,
+        segment: ConversationSegment,
+        chunks: list[ConversationChunk] | None,
     ) -> None:
         """Archive and derived postings always share the caller's transaction."""
-        proposed = chunks if chunks is not None else split_conversation(
-            segment.id, segment.raw_content,
+        proposed = (
+            chunks
+            if chunks is not None
+            else split_conversation(
+                segment.id,
+                segment.raw_content,
+            )
         )
         cursor = await self._db.conn.execute(
-            "SELECT * FROM conversation_chunk WHERE segment_id=?", (segment.id,),
+            "SELECT * FROM conversation_chunk WHERE segment_id=?",
+            (segment.id,),
         )
-        current = {chunk.id: chunk for chunk in (
-            _conversation_chunk_from_row(row) for row in await cursor.fetchall()
-        )}
+        current = {
+            chunk.id: chunk
+            for chunk in (
+                _conversation_chunk_from_row(row) for row in await cursor.fetchall()
+            )
+        }
         desired = {chunk.id for chunk in proposed}
         for identity in current.keys() - desired:
             await self._db.conn.execute(
-                "DELETE FROM conversation_chunk WHERE id=?", (identity,),
+                "DELETE FROM conversation_chunk WHERE id=?",
+                (identity,),
             )
         for chunk in proposed:
             old = current.get(chunk.id)
@@ -418,8 +483,11 @@ class MemoryStore:
                     await self._db.conn.execute(
                         "UPDATE conversation_chunk SET embedding=?, "
                         "embedding_version=? WHERE id=?",
-                        (json.dumps(chunk.embedding), chunk.embedding_version,
-                         chunk.id),
+                        (
+                            json.dumps(chunk.embedding),
+                            chunk.embedding_version,
+                            chunk.id,
+                        ),
                     )
                 continue
             frequencies = term_frequencies(chunk.content)
@@ -427,9 +495,18 @@ class MemoryStore:
                 "INSERT INTO conversation_chunk (id, segment_id, start_offset, "
                 "end_offset, content, embedding, token_count, embedding_version) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (chunk.id, chunk.segment_id, chunk.start, chunk.end, chunk.content,
-                 json.dumps(chunk.embedding) if chunk.embedding is not None else None,
-                 sum(frequencies.values()), chunk.embedding_version),
+                (
+                    chunk.id,
+                    chunk.segment_id,
+                    chunk.start,
+                    chunk.end,
+                    chunk.content,
+                    json.dumps(chunk.embedding)
+                    if chunk.embedding is not None
+                    else None,
+                    sum(frequencies.values()),
+                    chunk.embedding_version,
+                ),
             )
             if frequencies:
                 await self._db.conn.executemany(
@@ -439,19 +516,22 @@ class MemoryStore:
                 )
 
     async def list_conversation_chunks(
-        self, segment_id: str,
+        self,
+        segment_id: str,
     ) -> list[ConversationChunk]:
         async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT * FROM conversation_chunk WHERE segment_id=? "
-                "ORDER BY start_offset", (segment_id,),
+                "ORDER BY start_offset",
+                (segment_id,),
             )
             return [
                 _conversation_chunk_from_row(row) for row in await cursor.fetchall()
             ]
 
     async def conversation_chunk_changes(
-        self, after: int | None,
+        self,
+        after: int | None,
     ) -> tuple[int, list[ConversationChunk], list[str]]:
         """Read committed changes, or an isolated transaction-local snapshot."""
         async with self._operation() as own:
@@ -464,7 +544,8 @@ class MemoryStore:
             row = await cursor.fetchone()
             version = int(row["seq"]) if row is not None else 0
             reset = after is None or (
-                row is not None and row["oldest"] is not None
+                row is not None
+                and row["oldest"] is not None
                 and after < int(row["oldest"]) - 1
             )
             if reset:
@@ -474,21 +555,33 @@ class MemoryStore:
                     "SELECT delta.chunk_id AS changed_id, c.* FROM "
                     "(SELECT DISTINCT chunk_id FROM conversation_chunk_change "
                     "WHERE seq>? AND seq<=?) delta LEFT JOIN conversation_chunk c "
-                    "ON c.id=delta.chunk_id", (after, version),
+                    "ON c.id=delta.chunk_id",
+                    (after, version),
                 )
             rows = await cursor.fetchall()
             if own:
                 await self._db.conn.commit()
         return (
             version,
-            [_conversation_chunk_from_row(row)
-             for row in rows if row["id"] is not None],
-            (["*"] if reset and after is not None else
-             [str(row["changed_id"]) for row in rows if row["id"] is None]),
+            [
+                _conversation_chunk_from_row(row)
+                for row in rows
+                if row["id"] is not None
+            ],
+            (
+                ["*"]
+                if reset and after is not None
+                else [str(row["changed_id"]) for row in rows if row["id"] is None]
+            ),
         )
 
     async def pending_conversation_indexes(
-        self, version: str, now: float, limit: int = 4,
+        self,
+        version: str,
+        now: float,
+        limit: int = policy(
+            "memory", "store.defaults.pending_conversation_indexes_limit", int
+        ),
     ) -> list[ConversationIndexJob]:
         async with self._operation():
             cursor = await self._db.conn.execute(
@@ -499,12 +592,17 @@ class MemoryStore:
                 "ORDER BY j.retry_at, s.ended_at, s.id LIMIT ?",
                 (version, now, version, limit),
             )
-            return [ConversationIndexJob(_segment_from_row(row), int(row["revision"]),
-                                         int(row["attempts"]))
-                    for row in await cursor.fetchall()]
+            return [
+                ConversationIndexJob(
+                    _segment_from_row(row), int(row["revision"]), int(row["attempts"])
+                )
+                for row in await cursor.fetchall()
+            ]
 
     async def prepare_conversation_index(
-        self, job: ConversationIndexJob, version: str,
+        self,
+        job: ConversationIndexJob,
+        version: str,
     ) -> bool:
         async with self._transaction():
             if not await self._conversation_job_current(job):
@@ -520,7 +618,9 @@ class MemoryStore:
             return True
 
     async def _conversation_job_current(
-        self, job: ConversationIndexJob, version: str | None = None,
+        self,
+        job: ConversationIndexJob,
+        version: str | None = None,
     ) -> bool:
         cursor = await self._db.conn.execute(
             "SELECT j.revision, j.index_version, s.raw_content "
@@ -529,12 +629,18 @@ class MemoryStore:
             (job.segment.id,),
         )
         row = await cursor.fetchone()
-        return (row is not None and int(row["revision"]) == job.revision
-                and row["raw_content"] == job.segment.raw_content
-                and (version is None or row["index_version"] == version))
+        return (
+            row is not None
+            and int(row["revision"]) == job.revision
+            and row["raw_content"] == job.segment.raw_content
+            and (version is None or row["index_version"] == version)
+        )
 
     async def publish_conversation_vector(
-        self, job: ConversationIndexJob, chunk: ConversationChunk, version: str,
+        self,
+        job: ConversationIndexJob,
+        chunk: ConversationChunk,
+        version: str,
     ) -> bool:
         async with self._transaction():
             if not await self._conversation_job_current(job, version):
@@ -542,14 +648,23 @@ class MemoryStore:
             await self._db.conn.execute(
                 "UPDATE conversation_chunk SET embedding=?, embedding_version=? "
                 "WHERE id=? AND segment_id=? AND content=?",
-                (json.dumps(chunk.embedding), chunk.embedding_version,
-                 chunk.id, job.segment.id, chunk.content),
+                (
+                    json.dumps(chunk.embedding),
+                    chunk.embedding_version,
+                    chunk.id,
+                    job.segment.id,
+                    chunk.content,
+                ),
             )
             return True
 
     async def finish_conversation_index(
-        self, job: ConversationIndexJob, version: str, *,
-        complete: bool, error: str = "",
+        self,
+        job: ConversationIndexJob,
+        version: str,
+        *,
+        complete: bool,
+        error: str = "",
     ) -> None:
         async with self._transaction():
             if not await self._conversation_job_current(
@@ -561,9 +676,40 @@ class MemoryStore:
                 "UPDATE conversation_index_job SET completed_revision=?, attempts=?, "
                 "retry_at=?, last_error=?, index_version=? "
                 "WHERE segment_id=? AND revision=?",
-                (job.revision if complete else 0, attempts,
-                 time.time() + min(3600, 15 * 2 ** min(attempts, 8)) if error else 0,
-                 error[:120], version, job.segment.id, job.revision),
+                (
+                    job.revision if complete else 0,
+                    attempts,
+                    time.time()
+                    + min(
+                        policy(
+                            "memory", "store.parameters.index_retry_max_seconds", int
+                        ),
+                        policy(
+                            "memory", "store.parameters.index_retry_base_seconds", int
+                        )
+                        * policy(
+                            "memory", "store.parameters.index_retry_multiplier", int
+                        )
+                        ** min(
+                            attempts,
+                            policy(
+                                "memory",
+                                "store.parameters.index_retry_exponent_max",
+                                int,
+                            ),
+                        ),
+                    )
+                    if error
+                    else 0,
+                    error[
+                        : policy(
+                            "memory", "store.parameters.index_error_max_chars", int
+                        )
+                    ],
+                    version,
+                    job.segment.id,
+                    job.revision,
+                ),
             )
 
     async def rebuild_conversation_indexes(self) -> None:
@@ -583,7 +729,8 @@ class MemoryStore:
                 "SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN "
                 "revision=completed_revision AND index_version=? THEN 1 ELSE 0 END),0) "
                 "AS ready, COALESCE(SUM(CASE WHEN attempts>0 THEN 1 ELSE 0 END),0) "
-                "AS failed FROM conversation_index_job", (version,),
+                "AS failed FROM conversation_index_job",
+                (version,),
             )
             row = await cursor.fetchone()
             assert row is not None
@@ -591,13 +738,17 @@ class MemoryStore:
                 "SELECT segment_id, revision, completed_revision, index_version, "
                 "attempts, retry_at, last_error FROM conversation_index_job "
                 "WHERE revision<>completed_revision OR index_version<>? "
-                "ORDER BY retry_at, segment_id LIMIT 20", (version,),
+                "ORDER BY retry_at, segment_id LIMIT 20",
+                (version,),
             )
-            return {"index_version": version, "total": int(row["total"]),
-                    "ready": int(row["ready"]),
-                    "pending": int(row["total"]) - int(row["ready"]),
-                    "failed": int(row["failed"]),
-                    "jobs": [dict(item) for item in await cursor.fetchall()]}
+            return {
+                "index_version": version,
+                "total": int(row["total"]),
+                "ready": int(row["ready"]),
+                "pending": int(row["total"]) - int(row["ready"]),
+                "failed": int(row["failed"]),
+                "jobs": [dict(item) for item in await cursor.fetchall()],
+            }
 
     async def delete_conversation_segment(self, segment_id: str) -> bool:
         async with self._transaction():
@@ -605,12 +756,16 @@ class MemoryStore:
             if current is None:
                 return False
             await self._db.conn.execute(
-                "DELETE FROM conversation_segment WHERE id=?", (segment_id,),
+                "DELETE FROM conversation_segment WHERE id=?",
+                (segment_id,),
             )
             return True
 
     async def revise_conversation_segment(
-        self, segment_id: str, raw_content: str, expected_hash: str,
+        self,
+        segment_id: str,
+        raw_content: str,
+        expected_hash: str,
     ) -> ConversationSegment | None:
         """Compare the archived source before applying a user correction."""
         async with self._transaction():
@@ -619,13 +774,20 @@ class MemoryStore:
                 return None
             current_hash = hashlib.sha256(current.raw_content.encode()).hexdigest()
             if current_hash != expected_hash:
-                raise ValueError("对话原文已变化，请刷新后重试")
+                raise ValueError(
+                    policy(
+                        "memory",
+                        "store.copy.revise_conversation_segment_extra_text",
+                        str,
+                    )
+                )
             if raw_content == current.raw_content:
                 return current
             # An explicit archive correction retracts facts even when the edited
             # text happens to have the original as a prefix (unlike a live append).
             await self._db.conn.execute(
-                "DELETE FROM memory_fact WHERE source_segment_id=?", (segment_id,),
+                "DELETE FROM memory_fact WHERE source_segment_id=?",
+                (segment_id,),
             )
             await self._db.conn.execute(
                 "DELETE FROM conversation_retrieval_trace WHERE id IN "
@@ -633,7 +795,13 @@ class MemoryStore:
                 (segment_id,),
             )
             current.raw_content = raw_content
-            current.summary = raw_content[-2000:]
+            current.summary = raw_content[
+                -policy(
+                    "memory",
+                    "segments.parameters.append_turn_summary_chars_or_items",
+                    int,
+                ) :
+            ]
             current.topics = []
             current.embedding = None
             current.evaluated_at = None
@@ -646,26 +814,47 @@ class MemoryStore:
             return current
 
     async def save_conversation_trace(
-        self, trace_id: str, query: str, version: str, include_archived: bool,
-        elapsed_ms: float, hits: list[ConversationRetrievalHit],
+        self,
+        trace_id: str,
+        query: str,
+        version: str,
+        include_archived: bool,
+        elapsed_ms: float,
+        hits: list[ConversationRetrievalHit],
     ) -> None:
         """Store bounded scores/provenance, never duplicate private query or text."""
         async with self._transaction():
             await self._db.conn.execute(
                 "INSERT INTO conversation_retrieval_trace VALUES (?, ?, ?, ?, ?, ?)",
-                (trace_id, time.time(), hash_content(query), version,
-                 int(include_archived), elapsed_ms),
+                (
+                    trace_id,
+                    time.time(),
+                    hash_content(query),
+                    version,
+                    int(include_archived),
+                    elapsed_ms,
+                ),
             )
-            for hit in hits[:160]:
+            for hit in hits[
+                : policy("memory", "store.parameters.retrieval_trace_hits_max", int)
+            ]:
                 await self._db.conn.execute(
                     "INSERT INTO conversation_retrieval_hit "
                     "(trace_id, chunk_id, segment_id, bm25, cosine, fusion, score, "
                     "selected, source_ranges) "
                     "SELECT ?, id, segment_id, ?, ?, ?, ?, ?, ? "
                     "FROM conversation_chunk WHERE id=? AND content=?",
-                    (trace_id, hit.bm25, hit.cosine, hit.fusion, hit.score,
-                     int(hit.selected), json.dumps(hit.ranges),
-                     hit.chunk.id, hit.chunk.content),
+                    (
+                        trace_id,
+                        hit.bm25,
+                        hit.cosine,
+                        hit.fusion,
+                        hit.score,
+                        int(hit.selected),
+                        json.dumps(hit.ranges),
+                        hit.chunk.id,
+                        hit.chunk.content,
+                    ),
                 )
             await self._prune_conversation_traces()
 
@@ -673,7 +862,15 @@ class MemoryStore:
         await self._db.conn.execute(
             "DELETE FROM conversation_retrieval_trace WHERE created_at<? OR id IN "
             "(SELECT id FROM conversation_retrieval_trace ORDER BY created_at DESC, "
-            "id DESC LIMIT -1 OFFSET 2000)", (time.time() - 7 * 86400,),
+            "id DESC LIMIT -1 OFFSET ?)",
+            (
+                time.time()
+                - policy(
+                    "memory", "store.parameters.retrieval_trace_retention_days", int
+                )
+                * 86400,
+                policy("memory", "store.parameters.retrieval_trace_max", int),
+            ),
         )
 
     async def maintain_conversation_index_logs(self) -> None:
@@ -685,7 +882,10 @@ class MemoryStore:
             )
 
     async def mark_conversation_trace_injected(
-        self, trace_id: str, segment_id: str, event_id: str,
+        self,
+        trace_id: str,
+        segment_id: str,
+        event_id: str,
     ) -> None:
         async with self._transaction():
             await self._db.conn.execute(
@@ -694,21 +894,41 @@ class MemoryStore:
                 (event_id, trace_id, segment_id),
             )
 
-    async def conversation_traces(self, limit: int = 20) -> list[dict[str, object]]:
+    async def conversation_traces(
+        self,
+        limit: int = policy("memory", "store.defaults.conversation_traces_limit", int),
+    ) -> list[dict[str, object]]:
         async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT * FROM conversation_retrieval_trace "
-                "ORDER BY created_at DESC, id DESC LIMIT ?", (max(1, min(100, limit)),),
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (
+                    max(
+                        1,
+                        min(
+                            policy(
+                                "memory",
+                                "store.parameters.retrieval_trace_list_max",
+                                int,
+                            ),
+                            limit,
+                        ),
+                    ),
+                ),
             )
             result: list[dict[str, object]] = []
             for row in await cursor.fetchall():
                 cursor = await self._db.conn.execute(
                     "SELECT * FROM conversation_retrieval_hit WHERE trace_id=? "
-                    "ORDER BY score DESC, chunk_id", (row["id"],),
+                    "ORDER BY score DESC, chunk_id",
+                    (row["id"],),
                 )
-                result.append({**dict(row), "hits": [
-                    dict(hit) for hit in await cursor.fetchall()
-                ]})
+                result.append(
+                    {
+                        **dict(row),
+                        "hits": [dict(hit) for hit in await cursor.fetchall()],
+                    }
+                )
             return result
 
     async def eligible_conversation_chunks(self, include_archived: bool) -> set[str]:
@@ -721,15 +941,23 @@ class MemoryStore:
             return {str(row["id"]) for row in await cursor.fetchall()}
 
     async def search_conversation_chunks(
-        self, terms: list[str], *, include_archived: bool, limit: int = 80,
+        self,
+        terms: list[str],
+        *,
+        include_archived: bool,
+        limit: int = policy(
+            "memory", "store.defaults.search_conversation_chunks_limit", int
+        ),
     ) -> list[tuple[str, float, int]]:
         """BM25 over indexed postings; materialize only bounded lexical candidates."""
         if not terms:
             return []
         placeholders = ",".join("?" for _ in terms)
-        eligible = ("SELECT c.id, c.token_count FROM conversation_chunk c "
-                    "JOIN conversation_segment s ON s.id=c.segment_id"
-                    + ("" if include_archived else " WHERE s.active=1"))
+        eligible = (
+            "SELECT c.id, c.token_count FROM conversation_chunk c "
+            "JOIN conversation_segment s ON s.id=c.segment_id"
+            + ("" if include_archived else " WHERE s.active=1")
+        )
         async with self._operation():
             cursor = await self._db.conn.execute(
                 f"WITH eligible AS ({eligible}) "
@@ -744,11 +972,23 @@ class MemoryStore:
                 f"WITH eligible AS ({eligible}) "
                 "SELECT t.term, COUNT(*) AS n FROM conversation_chunk_term t "
                 "JOIN eligible e ON e.id=t.chunk_id "
-                f"WHERE t.term IN ({placeholders}) GROUP BY t.term", terms,
+                f"WHERE t.term IN ({placeholders}) GROUP BY t.term",
+                terms,
             )
-            weights = {str(row["term"]): math.log1p(
-                (count - int(row["n"]) + 0.5) / (int(row["n"]) + 0.5)
-            ) for row in await cursor.fetchall()}
+            weights = {
+                str(row["term"]): math.log1p(
+                    (
+                        count
+                        - int(row["n"])
+                        + policy("memory", "store.parameters.bm25_idf_smoothing", float)
+                    )
+                    / (
+                        int(row["n"])
+                        + policy("memory", "store.parameters.bm25_idf_smoothing", float)
+                    )
+                )
+                for row in await cursor.fetchall()
+            }
             if not weights:
                 return []
             cases = " ".join("WHEN ? THEN ?" for _ in weights)
@@ -763,13 +1003,17 @@ class MemoryStore:
                 "(t.frequency + 1.2 * (0.25 + 0.75 * e.token_count / ?))) AS score "
                 "FROM conversation_chunk_term t JOIN eligible e ON e.id=t.chunk_id "
                 f"WHERE t.term IN ({placeholders}) GROUP BY t.chunk_id "
-                "ORDER BY score DESC, t.chunk_id LIMIT ?", params,
+                "ORDER BY score DESC, t.chunk_id LIMIT ?",
+                params,
             )
-            return [(str(row["chunk_id"]), float(row["score"]), int(row["matched"]))
-                    for row in await cursor.fetchall()]
+            return [
+                (str(row["chunk_id"]), float(row["score"]), int(row["matched"]))
+                for row in await cursor.fetchall()
+            ]
 
     async def unindexed_conversation_segments(
-        self, include_archived: bool,
+        self,
+        include_archived: bool,
     ) -> list[ConversationSegment]:
         """Pre-index archives remain available until the separate backfill phase."""
         async with self._operation():
@@ -821,7 +1065,8 @@ class MemoryStore:
                 return False
             await self._db.conn.execute(
                 "UPDATE conversation_segment SET recall_count=recall_count+1 "
-                "WHERE id=?", (segment_id,)
+                "WHERE id=?",
+                (segment_id,),
             )
             cursor = await self._db.conn.execute(
                 "UPDATE conversation_segment SET long_term=1, active=1 WHERE id=? "
@@ -873,8 +1118,12 @@ class MemoryStore:
             await self._db.conn.execute(
                 f"INSERT INTO memory ({_MEMORY_INSERT_COLS}) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (*_memory_row(memory), hash_content(memory.content),
-                 memory.created_at, memory.created_at),
+                (
+                    *_memory_row(memory),
+                    hash_content(memory.content),
+                    memory.created_at,
+                    memory.created_at,
+                ),
             )
             if should_commit:
                 await self._db.conn.commit()
@@ -882,7 +1131,8 @@ class MemoryStore:
     async def get(self, memory_id: str) -> Memory | None:
         async with self._operation():
             cursor = await self._db.conn.execute(
-                f"SELECT {_MEMORY_COLS} FROM memory WHERE id = ?", (memory_id,),
+                f"SELECT {_MEMORY_COLS} FROM memory WHERE id = ?",
+                (memory_id,),
             )
             row = await cursor.fetchone()
         return _row_to_memory(row) if row is not None else None
@@ -926,7 +1176,8 @@ class MemoryStore:
         kind: MemoryKind | None = None,
         type: MemoryType | None = None,
         limit: int | None = None,
-        *, include_embedding: bool = True,
+        *,
+        include_embedding: bool = True,
     ) -> list[Memory]:
         clauses: list[str] = []
         params: list[str] = []
@@ -937,8 +1188,10 @@ class MemoryStore:
             clauses.append("type = ?")
             params.append(type.value)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        columns = _MEMORY_COLS if include_embedding else _MEMORY_COLS.replace(
-            ", embedding", ", NULL AS embedding"
+        columns = (
+            _MEMORY_COLS
+            if include_embedding
+            else _MEMORY_COLS.replace(", embedding", ", NULL AS embedding")
         )
         sql = (
             f"SELECT {columns} FROM memory{where} "
@@ -950,7 +1203,6 @@ class MemoryStore:
             cursor = await self._db.conn.execute(sql, params)
             rows = await cursor.fetchall()
         return [_row_to_memory(r) for r in rows]
-
 
     async def delete_many(self, ids: list[str]) -> None:
         """批量删除：循环删 edge/row，单锁单 commit（淘汰溢出，避免 N 次 commit）。"""
@@ -1071,16 +1323,23 @@ class MemoryStore:
         """Persist exact source exposure once, including pending replay."""
         if not content.strip():
             return None
-        if not source_topic or len(content) > 6000:
-            raise ValueError("阅读证据需要来源且正文不能超过 6000 字符")
+        if not source_topic or len(content) > policy(
+            "reading", "integration._SOURCE_BLOCK_CHARS", int
+        ):
+            raise ValueError(
+                policy("memory", "store.copy.record_reading_evidence_extra_text", str)
+            )
         key = json.dumps([source_topic, block_key, content], ensure_ascii=False)
         evidence_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
         async with self._operation() as should_commit:
             cursor = await self._db.conn.execute(
                 "SELECT id FROM reading_evidence WHERE source_topic=? "
                 "AND content_hash=? AND content=? ORDER BY created_at, id LIMIT 1",
-                (source_topic, hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                 content),
+                (
+                    source_topic,
+                    hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    content,
+                ),
             )
             existing = await cursor.fetchone()
             if existing is not None:
@@ -1090,9 +1349,17 @@ class MemoryStore:
                 "(id, source_topic, source_name, content, created_at, book_id, "
                 "location, embedding, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(id) DO NOTHING",
-                (evidence_id, source_topic, source_name, content, time.time(), book_id,
-                 location, json.dumps(embedding) if embedding is not None else None,
-                 hashlib.sha256(content.encode("utf-8")).hexdigest()),
+                (
+                    evidence_id,
+                    source_topic,
+                    source_name,
+                    content,
+                    time.time(),
+                    book_id,
+                    location,
+                    json.dumps(embedding) if embedding is not None else None,
+                    hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                ),
             )
             if should_commit:
                 await self._db.conn.commit()
@@ -1101,21 +1368,27 @@ class MemoryStore:
         return evidence_id
 
     async def find_knowledge_chunk(
-        self, source_topic: str, content: str,
+        self,
+        source_topic: str,
+        content: str,
     ) -> str | None:
         """Find the earliest exact raw-text match through its source/hash index."""
         async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT id FROM reading_evidence WHERE source_topic=? "
                 "AND content_hash=? AND content=? ORDER BY created_at, id LIMIT 1",
-                (source_topic, hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                 content),
+                (
+                    source_topic,
+                    hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    content,
+                ),
             )
             row = await cursor.fetchone()
         return str(row["id"]) if row is not None else None
 
     async def knowledge_chunk_changes(
-        self, after: int | None,
+        self,
+        after: int | None,
     ) -> tuple[int, list[ReadingEvidence], list[str]]:
         """Read a cold snapshot or changed current rows and deleted IDs atomically."""
         async with self._operation() as should_commit:
@@ -1149,7 +1422,10 @@ class MemoryStore:
         )
 
     async def list_knowledge_chunks(
-        self, *, source_topic: str | None = None, ids: list[str] | None = None,
+        self,
+        *,
+        source_topic: str | None = None,
+        ids: list[str] | None = None,
     ) -> list[ReadingEvidence]:
         if ids == []:
             return []
@@ -1165,35 +1441,55 @@ class MemoryStore:
             cursor = await self._db.conn.execute(
                 "SELECT * FROM reading_evidence"
                 + (" WHERE " + " AND ".join(clauses) if clauses else "")
-                + " ORDER BY created_at, id", params,
+                + " ORDER BY created_at, id",
+                params,
             )
             rows = await cursor.fetchall()
         return [_chunk_from_row(row) for row in rows]
 
-    async def pending_reading_evidence(self, limit: int = 3) -> list[ReadingEvidence]:
+    async def pending_reading_evidence(
+        self,
+        limit: int = policy(
+            "memory", "store.defaults.pending_reading_evidence_limit", int
+        ),
+    ) -> list[ReadingEvidence]:
         """Return bounded oldest unconsumed source snapshots."""
-        if not 1 <= limit <= 3:
-            raise ValueError("阅读证据 limit 必须在 [1, 3]")
+        if (
+            not 1
+            <= limit
+            <= policy("memory", "store.defaults.pending_reading_evidence_limit", int)
+        ):
+            raise ValueError(
+                policy("memory", "store.copy.pending_reading_evidence_extra_text", str)
+            )
         async with self._operation():
             cursor = await self._db.conn.execute(
                 "SELECT id, source_topic, source_name, content, created_at, "
                 "location, embedding "
                 "FROM reading_evidence WHERE consumed_at IS NULL "
-                "ORDER BY created_at, id LIMIT ?", (limit,),
+                "ORDER BY created_at, id LIMIT ?",
+                (limit,),
             )
             rows = await cursor.fetchall()
-        return [ReadingEvidence(
-            id=row["id"], source_topic=row["source_topic"],
-            source_name=row["source_name"], content=row["content"],
-            created_at=row["created_at"],
-            location=row["location"],
-            embedding=json.loads(row["embedding"]) if row["embedding"] else None,
-        ) for row in rows]
+        return [
+            ReadingEvidence(
+                id=row["id"],
+                source_topic=row["source_topic"],
+                source_name=row["source_name"],
+                content=row["content"],
+                created_at=row["created_at"],
+                location=row["location"],
+                embedding=json.loads(row["embedding"]) if row["embedding"] else None,
+            )
+            for row in rows
+        ]
 
     async def consume_reading_evidence(self, ids: list[str]) -> None:
         """Consume a prepared snapshot inside the caller's reflection transaction."""
         if not self._db.in_transaction:
-            raise RuntimeError("阅读证据消费必须处于反思事务内")
+            raise RuntimeError(
+                policy("memory", "store.copy.consume_reading_evidence_extra_text", str)
+            )
         unique_ids = list(dict.fromkeys(ids))
         if not unique_ids:
             return
@@ -1204,7 +1500,11 @@ class MemoryStore:
             (time.time(), *unique_ids),
         )
         if cursor.rowcount != len(unique_ids):
-            raise RuntimeError("阅读证据已删除或已消费，需要重新准备反思")
+            raise RuntimeError(
+                policy(
+                    "memory", "store.copy.consume_reading_evidence_extra_text_2", str
+                )
+            )
 
     async def settle_freshness(self, now: float, rate: float) -> None:
         """Apply only elapsed freshness decay since the prior settlement."""
@@ -1363,8 +1663,16 @@ def _memory_row(
     m: Memory,
 ) -> tuple[str, float, str, str, str, str, float, str, int, str, str | None]:
     return (
-        m.id, m.created_at, m.content, m.kind.value, json.dumps(m.topics), m.summary,
-        m.freshness, m.type.value, m.recall_count, json.dumps(m.aspect),
+        m.id,
+        m.created_at,
+        m.content,
+        m.kind.value,
+        json.dumps(m.topics),
+        m.summary,
+        m.freshness,
+        m.type.value,
+        m.recall_count,
+        json.dumps(m.aspect),
         _embedding_json(m.embedding),
     )
 

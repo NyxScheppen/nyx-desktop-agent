@@ -1,3 +1,6 @@
+import { formatPolicyText } from "../../lib/policy";
+import memoryPolicy from "../../../../nyx/settings/memory.json";
+import frontendPolicy from "../../../../nyx/settings/frontend.json";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { formatDate } from "../../lib/time";
@@ -6,8 +9,8 @@ import type { MemoryFact } from "../../types/api";
 type Point = { x: number; y: number };
 type GraphNode = Point & { key: string; name: string; type: string };
 type FactGraphProps = { facts: MemoryFact[] | null; error: string | null };
-const WIDTH = 900;
-const HEIGHT = 520;
+const WIDTH = frontendPolicy.frontend.FactGraph.WIDTH;
+const HEIGHT = frontendPolicy.frontend.FactGraph.HEIGHT;
 const nodeKey = (type: string, name: string): string => `${type}:${name}`;
 const displayName = (name: string): string => name.length > 16 ? `${name.slice(0, 16)}…` : name;
 
@@ -117,20 +120,20 @@ export default function FactGraph({ facts, error }: FactGraphProps) {
     else setPositions((p) => ({ ...p, [gesture.key!]: { x: gesture.origin.x + dx / view.scale, y: gesture.origin.y + dy / view.scale } }));
   };
   if (error !== null) return <p className="error-text">{error}</p>;
-  if (facts === null) return <p className="panel-item">等待事实层连接…</p>;
-  if (facts.length === 0) return <p className="panel-item">暂无当前有效事实</p>;
+  if (facts === null) return <p className="panel-item">{memoryPolicy.copy.FactGraph.p}</p>;
+  if (facts.length === 0) return <p className="panel-item">{memoryPolicy.copy.FactGraph.p_2}</p>;
   const selectedFacts = facts.filter((f) => nodeKey(f.subject_type, f.subject) === selected || nodeKey(f.object_type, f.object_value) === selected);
   return <div className="fact-graph">
     <div className="panel-toolbar">
-      <span className="panel-item__meta">当前有效事实 · {facts.length} 条</span>
-      <button type="button" aria-label="放大事实网" onClick={() => setView((v) => ({ ...v, scale: Math.min(4, v.scale * 1.25) }))}>＋</button>
-      <button type="button" aria-label="缩小事实网" onClick={() => setView((v) => ({ ...v, scale: Math.max(0.3, v.scale / 1.25) }))}>－</button>
-      <button type="button" onClick={reset}>重置视图</button>
+      <span className="panel-item__meta">{memoryPolicy.copy.FactGraph.span}{facts.length}{memoryPolicy.copy.FactGraph.span_2}</span>
+      <button type="button" aria-label={memoryPolicy.copy.FactGraph.aria_label} onClick={() => setView((v) => ({ ...v, scale: Math.min(4, v.scale * 1.25) }))}>＋</button>
+      <button type="button" aria-label={memoryPolicy.copy.FactGraph.aria_label_2} onClick={() => setView((v) => ({ ...v, scale: Math.max(0.3, v.scale / 1.25) }))}>－</button>
+      <button type="button" onClick={reset}>{memoryPolicy.copy.FactGraph.button}</button>
       <span>{Math.round(view.scale * 100)}%</span>
     </div>
     <div className="fact-graph__canvas">
       <svg ref={svg} width="100%" height={HEIGHT} viewBox={`0 0 ${viewportWidth} ${HEIGHT}`}
-        role="img" aria-label={`事实关系图，共 ${facts.length} 条事实`}
+        role="img" aria-label={formatPolicyText(memoryPolicy.templates.FactGraph.text, { p0: facts.length })}
         onPointerDown={(e) => begin(e)} onPointerMove={move}
         onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }}>
         <defs><marker id={arrowId} markerHeight="6" markerWidth="6" orient="auto" refX="5" refY="3" viewBox="0 0 6 6"><path d="M0,0 L6,3 L0,6 Z" className="fact-graph__arrow" /></marker></defs>
@@ -142,11 +145,11 @@ export default function FactGraph({ facts, error }: FactGraphProps) {
               {a === b ? <path d={`M${a.x - 8},${a.y - 10} C${a.x - 65},${a.y - 90} ${a.x + 65},${a.y - 90} ${a.x + 8},${a.y - 10}`} markerEnd={`url(#${arrowId})`} fill="none" />
                 : <line x1={a.x} y1={a.y} x2={b.x - (b.x - a.x) / distance * 17} y2={b.y - (b.y - a.y) / distance * 17} markerEnd={`url(#${arrowId})`} />}
               <text x={(a.x + b.x) / 2} y={a === b ? a.y - 65 : (a.y + b.y) / 2 - 6} textAnchor="middle">{fact.predicate}</text>
-              <title>{`${fact.subject} ${fact.predicate} ${fact.object_value} · ${formatDate(fact.valid_from)} 至 ${fact.valid_until === null ? "至今" : formatDate(fact.valid_until)}`}</title>
+              <title>{formatPolicyText(memoryPolicy.templates.FactGraph.text_2, { p0: fact.subject, p1: fact.predicate, p2: fact.object_value, p3: formatDate(fact.valid_from), p4: fact.valid_until === null ? memoryPolicy.copy.FactGraph.text : formatDate(fact.valid_until) })}</title>
             </g>;
           })}
           {nodes.map((node) => <g key={node.key} className={`fact-graph__node${selected === node.key ? " fact-graph__node--selected" : ""}`}
-            transform={`translate(${node.x} ${node.y})`} role="button" tabIndex={0} aria-label={`实体：${node.name}`} aria-pressed={selected === node.key}
+            transform={`translate(${node.x} ${node.y})`} role="button" tabIndex={0} aria-label={formatPolicyText(memoryPolicy.templates.FactGraph.text_3, { p0: node.name })} aria-pressed={selected === node.key}
             onPointerDown={(e) => begin(e, node)} onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelected(node.key); }
               const delta: Record<string, Point> = { ArrowLeft: { x: -15, y: 0 }, ArrowRight: { x: 15, y: 0 }, ArrowUp: { x: 0, y: -15 }, ArrowDown: { x: 0, y: 15 } };
@@ -158,10 +161,10 @@ export default function FactGraph({ facts, error }: FactGraphProps) {
         </g>
       </svg>
     </div>
-    <p className="panel-item__meta">拖动节点调整位置，拖动画布平移，滚轮缩放。选中节点可查看事实来源；方向键可移动节点。红色虚线表示否定关系。</p>
+    <p className="panel-item__meta">{memoryPolicy.copy.FactGraph.p_3}</p>
     {selectedFacts.length > 0 && <ul className="panel-list">{selectedFacts.map((fact) => <li key={fact.id} className="panel-item">
-      <span>{fact.subject} {fact.polarity < 0 ? "不" : ""}{fact.predicate} {fact.object_value}</span>
-      <span className="panel-item__meta">{formatDate(fact.valid_from)} 至 {fact.valid_until === null ? "至今" : formatDate(fact.valid_until)} · 来源 {fact.source_memory_id ?? fact.source_segment_id ?? fact.source_chunk_id ?? "未记录"}</span>
+      <span>{fact.subject} {fact.polarity < 0 ? memoryPolicy.copy.FactGraph.text_2 : ""}{fact.predicate} {fact.object_value}</span>
+      <span className="panel-item__meta">{formatDate(fact.valid_from)}{memoryPolicy.copy.FactGraph.span_3}{fact.valid_until === null ? memoryPolicy.copy.FactGraph.text : formatDate(fact.valid_until)}{memoryPolicy.copy.FactGraph.span_4}{fact.source_memory_id ?? fact.source_segment_id ?? fact.source_chunk_id ?? memoryPolicy.copy.FactGraph.text_3}</span>
     </li>)}</ul>}
   </div>;
 }

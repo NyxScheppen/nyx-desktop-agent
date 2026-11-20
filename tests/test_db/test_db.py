@@ -870,6 +870,7 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_tool_call_log_call",
         "idx_tool_execution_correlation",
         "idx_transport_outbox_order",
+        "idx_reading_session_open",
     }
 
 

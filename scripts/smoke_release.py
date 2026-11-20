@@ -15,11 +15,17 @@ from typing import cast
 from urllib.error import URLError
 from urllib.request import urlopen
 
-_BASE_URL = "http://127.0.0.1:8000"
+from nyx.policy import policy
+
+_BACKEND_ADDRESS = (
+    policy("runtime", "main._LOCAL_HOST", str),
+    policy("runtime", "main._LOCAL_PORT", int),
+)
+_BASE_URL = f"http://{_BACKEND_ADDRESS[0]}:{_BACKEND_ADDRESS[1]}"
 _MAX_RESPONSE_BYTES = 1 << 20
-_MAX_IDENTITY_BYTES = 1 << 12
+_MAX_IDENTITY_BYTES = policy("runtime", "desktop.identity_max_bytes", int)
 _REQUEST_TIMEOUT = 5.0
-_LAUNCH_NONCE_ENV = "NYX_LAUNCH_NONCE"
+_LAUNCH_NONCE_ENV = policy("runtime", "main._LAUNCH_NONCE_ENV", str)
 
 
 class SmokeError(RuntimeError):
@@ -53,7 +59,7 @@ def check_json_endpoint(url: str, expected_type: type[object]) -> None:
 def check_backend_identity(launch_nonce: str) -> None:
     """Require the ready endpoint to identify this exact sidecar instance."""
     url = f"{_BASE_URL}/api/ready"
-    connection = HTTPConnection("127.0.0.1", 8000, timeout=_REQUEST_TIMEOUT)
+    connection = HTTPConnection(*_BACKEND_ADDRESS, timeout=_REQUEST_TIMEOUT)
     try:
         connection.request("GET", "/api/ready")
         response = connection.getresponse()
@@ -71,7 +77,7 @@ def check_backend_identity(launch_nonce: str) -> None:
     if not isinstance(raw_payload, dict):
         raise SmokeError(f"{url} identity mismatch")
     payload = cast(dict[str, object], raw_payload)
-    if payload.get("service") != "nyx-agent":
+    if payload.get("service") != policy("runtime", "desktop.service", str):
         raise SmokeError(f"{url} identity mismatch")
     if payload.get("launch_nonce") != launch_nonce:
         raise SmokeError(f"{url} identity mismatch")
@@ -86,7 +92,9 @@ def check_sse_endpoint(url: str) -> None:
 
 
 def stop_with_stdin_eof(
-    process: subprocess.Popen[bytes], *, timeout: float = 35.0
+    process: subprocess.Popen[bytes],
+    *,
+    timeout: float = policy("runtime", "desktop.shutdown_timeout_seconds", float),
 ) -> int:
     """Request the frozen backend's normal shutdown, killing only on timeout."""
     if process.stdin is not None and not process.stdin.closed:
@@ -101,7 +109,7 @@ def stop_with_stdin_eof(
 
 def _port_is_open() -> bool:
     try:
-        with socket.create_connection(("127.0.0.1", 8000), timeout=0.2):
+        with socket.create_connection(_BACKEND_ADDRESS, timeout=0.2):
             return True
     except OSError:
         return False
@@ -187,7 +195,11 @@ def main() -> int:
         type=Path,
         default=root / "frontend/src-tauri/target/release",
     )
-    parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=policy("runtime", "desktop.dev_startup_timeout_seconds", float),
+    )
     args = parser.parse_args()
     try:
         run_smoke(args.release_dir.resolve(), args.timeout)

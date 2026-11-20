@@ -1,11 +1,14 @@
+import { formatPolicyText } from "../../lib/policy";
+import readingPolicy from "../../../../nyx/settings/reading.json";
 import { useEffect, useRef, useState } from "react";
 import { importBook } from "../../api/client";
 import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import { useReaderStore } from "../../stores/readerStore";
 import Panel from "../layout/Panel";
+import BookStudyResults from "./StudyResults";
 
 // 书架：列出已导入书 + 「导入 EPUB」按钮；点书 openBook 进阅读页（06 §1）。
-export default function BookshelfView() {
+export default function BookshelfView({ onChoose }: { onChoose?: (bookId: string) => void } = {}) {
   const books = useReaderStore((s) => s.books);
   const booksError = useReaderStore((s) => s.booksError);
   const loadBooks = useReaderStore((s) => s.loadBooks);
@@ -35,7 +38,7 @@ export default function BookshelfView() {
   };
 
   return (
-    <Panel title="读书">
+    <Panel title={readingPolicy.copy.BookshelfView.title}>
       <div className="bookshelf__toolbar">
         <input
           ref={fileRef}
@@ -54,13 +57,13 @@ export default function BookshelfView() {
           onClick={() => fileRef.current?.click()}
           disabled={importing}
         >
-          {importing ? "导入中…" : "导入 EPUB"}
+          {importing ? readingPolicy.copy.BookshelfView.text : readingPolicy.copy.BookshelfView.text_2}
         </button>
         {importError !== null && <span className="error-text">{importError}</span>}
       </div>
       {booksError !== null && <p className="error-text">{booksError}</p>}
       {books.length === 0 ? (
-        <p className="panel-item">书架空空如也，导入一本 EPUB 开始陪读吧。</p>
+        <p className="panel-item">{readingPolicy.copy.BookshelfView.p}</p>
       ) : (
         <ul className="panel-list">
           {books.map((b) => (
@@ -68,14 +71,15 @@ export default function BookshelfView() {
               <button
                 type="button"
                 className="bookshelf__item"
-                onClick={() => void openBook(b.id)}
+                onClick={() => onChoose ? onChoose(b.id) : void openBook(b.id)}
               >
                 <span className="panel-item__main">{b.title}</span>
                 <span className="panel-item__meta">
                   {b.author} · {b.total_paragraphs} 段
-                  {b.user_position > 0 ? ` · 读到第 ${b.user_position} 段` : " · 未读"}
+                  {b.user_position > 0 ? formatPolicyText(readingPolicy.templates.BookshelfView.text, { p0: b.user_position }) : readingPolicy.copy.BookshelfView.text_3}
                 </span>
               </button>
+              <BookStudyResults bookId={b.id} />
             </li>
           ))}
         </ul>

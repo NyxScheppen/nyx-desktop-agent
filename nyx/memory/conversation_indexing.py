@@ -9,12 +9,18 @@ from dataclasses import replace
 from nyx.memory.conversation_chunks import embedding_version, index_version
 from nyx.memory.embedding import EmbedFn
 from nyx.memory.store import MemoryStore
+from nyx.policy import policy
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def maintain_indexes(
-    store: MemoryStore, embed: EmbedFn | None, *, max_chunks: int = 16,
+    store: MemoryStore,
+    embed: EmbedFn | None,
+    *,
+    max_chunks: int = policy(
+        "memory", "conversation_indexing.parameters.maintain_indexes_max_chunks", int
+    ),
 ) -> None:
     """Publish bounded progress after each vector, never hold DB locks in inference.
 
@@ -23,7 +29,11 @@ async def maintain_indexes(
     """
     version = index_version(embed)
     remaining = max_chunks
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + policy(
+        "memory",
+        "conversation_indexing.parameters.maintain_indexes_deadline_budget",
+        int,
+    )
     for job in await store.pending_conversation_indexes(version, time.time()):
         if remaining <= 0 or time.monotonic() >= deadline:
             break
@@ -40,7 +50,14 @@ async def maintain_indexes(
                 if remaining <= 0 or time.monotonic() >= deadline:
                     break
                 assert embed is not None
-                vector = await asyncio.wait_for(embed(chunk.content), timeout=30)
+                vector = await asyncio.wait_for(
+                    embed(chunk.content),
+                    timeout=policy(
+                        "memory",
+                        "conversation_indexing.parameters.maintain_indexes_timeout",
+                        int,
+                    ),
+                )
                 if not vector or not all(math.isfinite(value) for value in vector):
                     raise ValueError("Invalid conversation embedding")
                 remaining -= 1

@@ -10,22 +10,26 @@ from typing import Any, cast
 
 import aiosqlite
 
-from nyx.db import Database
+from nyx.db import Database, DatabaseLockTimeout
 from nyx.enums import EventType, Source, TickType
 from nyx.events.routing import ROUTE_SPECS, RouteSpec, routes_for_event
+from nyx.policy import policy
 from nyx.types import Event
 
 Handler = Callable[[Event], Awaitable[None]]
 
-_DELIVERY_MAX_ATTEMPTS = 5
-_PERSIST_MAX_ATTEMPTS = _DELIVERY_MAX_ATTEMPTS
-_DELIVERY_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0, 30.0)
-_DELIVERY_LEASE_SECONDS = 300.0
-_DRAIN_TIMEOUT_SECONDS = 15.0
-_ADMISSION_TIMEOUT_SECONDS = 3.0
-_WAKE_QUEUE_SIZE = 1024
-_SCAN_INTERVAL_SECONDS = 0.1
+_DELIVERY_MAX_ATTEMPTS = policy("events", "bus._DELIVERY_MAX_ATTEMPTS", int)
+_PERSIST_MAX_ATTEMPTS = policy("events", "bus._PERSIST_MAX_ATTEMPTS", int)
+_DELIVERY_RETRY_DELAYS = policy(
+    "events", "bus._DELIVERY_RETRY_DELAYS", tuple[float, ...]
+)
+_DELIVERY_LEASE_SECONDS = policy("events", "bus._DELIVERY_LEASE_SECONDS", float)
+_DRAIN_TIMEOUT_SECONDS = policy("events", "bus._DRAIN_TIMEOUT_SECONDS", float)
+_ADMISSION_TIMEOUT_SECONDS = policy("events", "bus._ADMISSION_TIMEOUT_SECONDS", float)
+_WAKE_QUEUE_SIZE = policy("events", "bus._WAKE_QUEUE_SIZE", int)
+_SCAN_INTERVAL_SECONDS = policy("events", "bus._SCAN_INTERVAL_SECONDS", float)
 _TERMINAL_DELIVERY_STATES = ("succeeded", "dead_letter")
+_RECOVERY_BATCH_SIZE = policy("events", "bus._RECOVERY_BATCH_SIZE", int)
 
 
 class _CompatibilityQueue:
@@ -66,6 +70,10 @@ class SubscriptionToken:
 
 class EventAdmissionError(RuntimeError):
     """The event could not be durably accepted."""
+
+
+class EventAdmissionBusyError(EventAdmissionError):
+    """Lock acquisition timed out before any write; the same event can retry."""
 
 
 class EventBusClosedError(EventAdmissionError):
@@ -120,8 +128,9 @@ class EventBus:
         }
         if expected != registered:
             raise RuntimeError(
-                f"事件路由注册不一致: expected={sorted(expected)}, "
-                f"registered={sorted(registered)}"
+                policy("events", "bus.templates.validate_routes_text", str).format(
+                    p0=sorted(expected), p1=sorted(registered)
+                )
             )
 
     def subscribe(
@@ -239,7 +248,14 @@ class EventBus:
                 if rows:
                     continue
                 try:
-                    await asyncio.wait_for(queue.get(), timeout=15.0)
+                    await asyncio.wait_for(
+                        queue.get(),
+                        timeout=policy(
+                            "events",
+                            "bus.parameters.stream_events_timeout_factor",
+                            float,
+                        ),
+                    )
                 except TimeoutError:
                     yield None
         finally:
@@ -248,21 +264,26 @@ class EventBus:
     async def publish(self, event: Event) -> None:
         """Durably admit an event before returning to the caller."""
         if self._closed or self._db.is_closed:
-            raise EventBusClosedError("事件总线不接受新事件")
+            raise EventBusClosedError(policy("events", "bus.copy.publish_text", str))
         if not self._accepting and event.source is not Source.INTERNAL:
-            raise EventBusClosedError("事件总线不接受新事件")
+            raise EventBusClosedError(policy("events", "bus.copy.publish_text", str))
         if self._db.failure_state == "open":
-            raise EventAdmissionError("数据库熔断中，事件未受理")
+            raise EventAdmissionError(policy("events", "bus.copy.publish_text_2", str))
 
         try:
-            inserted, consumer_ids = await asyncio.wait_for(
-                self._admit(event), timeout=_ADMISSION_TIMEOUT_SECONDS
-            )
+            inserted, consumer_ids = await self._admit(event)
         except asyncio.CancelledError:
             raise
+        except DatabaseLockTimeout as error:
+            # Local contention is not evidence that the database is unhealthy.
+            raise EventAdmissionBusyError(
+                policy("events", "bus.copy.publish_text_3", str)
+            ) from error
         except Exception as error:
             self._db.record_failure()
-            raise EventAdmissionError("事件持久化失败，事件未受理") from error
+            raise EventAdmissionError(
+                policy("events", "bus.copy.publish_text_4", str)
+            ) from error
         else:
             self._db.record_success()
 
@@ -281,13 +302,13 @@ class EventBus:
         if not batch:
             return
         if self._closed or self._db.is_closed:
-            raise EventBusClosedError("事件总线不接受新事件")
+            raise EventBusClosedError(policy("events", "bus.copy.publish_text", str))
         if not self._accepting and any(
             event.source is not Source.INTERNAL for event in batch
         ):
-            raise EventBusClosedError("事件总线不接受新事件")
+            raise EventBusClosedError(policy("events", "bus.copy.publish_text", str))
         if self._db.failure_state == "open":
-            raise EventAdmissionError("数据库熔断中，事件未受理")
+            raise EventAdmissionError(policy("events", "bus.copy.publish_text_2", str))
 
         admitted: list[tuple[Event, bool, tuple[str, ...]]] = []
         try:
@@ -302,7 +323,9 @@ class EventBus:
         except Exception as error:
             self.persisted_count -= sum(inserted for _, inserted, _ in admitted)
             self._db.record_failure()
-            raise EventAdmissionError("事件批量持久化失败，事件未受理") from error
+            raise EventAdmissionError(
+                policy("events", "bus.copy.publish_many_text", str)
+            ) from error
         else:
             self._db.record_success()
 
@@ -340,7 +363,9 @@ class EventBus:
                     for task in done:
                         if task is dispatcher or task in self._workers.values():
                             task.result()
-                            raise RuntimeError("事件消费者意外退出")
+                            raise RuntimeError(
+                                policy("events", "bus.copy.run_text", str)
+                            )
         finally:
             auxiliary: list[asyncio.Task[Any]] = [
                 task for task in (dispatcher, stopped) if task is not None
@@ -363,7 +388,7 @@ class EventBus:
         try:
             await asyncio.wait_for(self._wait_until_idle(), timeout=timeout)
         except asyncio.TimeoutError:
-            self._logger.warning("事件总线 drain 超时，未完成 delivery 保留待恢复")
+            self._logger.warning(policy("events", "bus.copy.drain_text", str))
             return False
         self._stop_event.set()
         return True
@@ -388,48 +413,71 @@ class EventBus:
         await self._db.close()
 
     async def recover_deliveries(self) -> None:
-        """Recover expired leases and fill deliveries missing after a crash."""
+        """Recover leases and missing deliveries without locking the full history."""
         now = time.time()
-        async with self._db.lock:
-            try:
-                await asyncio.wait_for(
-                    self._db.conn.execute(
-                        """UPDATE event_delivery
-                        SET status = 'pending', started_at = NULL, lease_until = NULL
-                        WHERE status = 'processing' AND lease_until IS NOT NULL
-                          AND lease_until < ?""",
-                        (now,),
-                    ),
-                    timeout=self._db.operation_timeout,
+        async with self._db.transaction():
+            await self._execute_locked(
+                """UPDATE event_delivery
+                SET status = 'pending', started_at = NULL, lease_until = NULL
+                WHERE status = 'processing' AND lease_until IS NOT NULL
+                  AND lease_until < ?""",
+                (now,),
+            )
+            await self._execute_locked(
+                """UPDATE event_delivery SET status = 'pending'
+                WHERE status = 'retry_wait' AND available_at <= ?""",
+                (now,),
+            )
+            cursor = await self._execute_locked(
+                "SELECT COALESCE(MAX(event_seq), 0) AS tail FROM event_log"
+            )
+            tail = await cursor.fetchone()
+            assert tail is not None
+            watermark = int(tail["tail"])
+
+        position = 0
+        while position < watermark:
+            async with self._db.transaction():
+                cursor = await self._execute_locked(
+                    "SELECT event_seq, id, type, content FROM event_log "
+                    "WHERE event_seq > ? AND event_seq <= ? "
+                    "ORDER BY event_seq LIMIT ?",
+                    (position, watermark, _RECOVERY_BATCH_SIZE),
                 )
-                await asyncio.wait_for(
-                    self._db.conn.execute(
-                        """UPDATE event_delivery
-                        SET status = 'pending'
-                        WHERE status = 'retry_wait' AND available_at <= ?""",
-                        (now,),
-                    ),
-                    timeout=self._db.operation_timeout,
+                rows = list(await cursor.fetchall())
+                if not rows:
+                    break
+                placeholders = ",".join("?" for _ in rows)
+                cursor = await self._execute_locked(
+                    "SELECT event_id, consumer_id FROM event_delivery "
+                    f"WHERE event_id IN ({placeholders})",
+                    tuple(str(row["id"]) for row in rows),
                 )
-                cursor = await asyncio.wait_for(
-                    self._db.conn.execute(
-                        "SELECT id, timestamp, type, content FROM event_log"
-                    ),
-                    timeout=self._db.operation_timeout,
-                )
-                rows = await cursor.fetchall()
+                existing = {
+                    (str(row["event_id"]), str(row["consumer_id"]))
+                    for row in await cursor.fetchall()
+                }
+                missing: list[tuple[str, str]] = []
                 for row in rows:
                     event_type = EventType(row["type"])
                     tick_type = _tick_type(row["content"], event_type)
                     for spec in routes_for_event(event_type, tick_type):
-                        if spec.consumer_id in self._handlers:
-                            await self._insert_delivery_locked(
-                                str(row["id"]), spec.consumer_id
-                            )
-                await self._db.conn.commit()
-            except BaseException:
-                await self._db.conn.rollback()
-                raise
+                        pair = (str(row["id"]), spec.consumer_id)
+                        if spec.consumer_id in self._handlers and pair not in existing:
+                            missing.append(pair)
+                if missing:
+                    await asyncio.wait_for(
+                        self._db.conn.executemany(
+                            "INSERT OR IGNORE INTO event_delivery "
+                            "(event_id, consumer_id, status, attempts, available_at) "
+                            "VALUES (?, ?, 'pending', 0, 0)",
+                            missing,
+                        ),
+                        timeout=self._db.operation_timeout,
+                    )
+            # New events already carry deliveries; a fixed watermark also lets
+            # recovery finish while callers continue publishing between pages.
+            position = int(rows[-1]["event_seq"])
 
     async def get_event(self, event_id: str) -> Event | None:
         """Read an exact anchor from this character's durable event log."""
@@ -442,7 +490,11 @@ class EventBus:
         return _row_to_event(row) if row is not None else None
 
     async def list_pending_after(
-        self, consumer_id: str, event_id: str, *, limit: int = 33
+        self,
+        consumer_id: str,
+        event_id: str,
+        *,
+        limit: int = policy("events", "bus.parameters.list_pending_after_limit", int),
     ) -> list[Event]:
         """Read the bounded, unfinished suffix after an exact consumer cursor."""
         async with nullcontext() if self._db.in_transaction else self._db.lock:
@@ -453,7 +505,9 @@ class EventBus:
             )
             anchor = await cursor.fetchone()
             if anchor is None:
-                raise ValueError("pending 游标不属于该 consumer")
+                raise ValueError(
+                    policy("events", "bus.copy.list_pending_after_text", str)
+                )
             cursor = await self._db.conn.execute(
                 "SELECT e.id, e.timestamp, e.source, e.type, e.content, "
                 "e.correlation_id FROM event_log e JOIN event_delivery d "
@@ -462,13 +516,19 @@ class EventBus:
                 "AND NOT EXISTS (SELECT 1 FROM event_effect f WHERE "
                 "f.event_id=e.id AND f.consumer_id=d.consumer_id) "
                 "ORDER BY e.event_seq LIMIT ?",
-                (consumer_id, anchor["event_seq"], max(1, min(limit, 33))),
+                (
+                    consumer_id,
+                    anchor["event_seq"],
+                    max(
+                        1, min(limit, policy("expression", "input.max_events", int) + 1)
+                    ),
+                ),
             )
             return [_row_to_event(row) for row in await cursor.fetchall()]
 
     async def list_events(
         self,
-        limit: int = 100,
+        limit: int = policy("events", "bus.parameters.list_events_limit", int),
         event_type: EventType | None = None,
         correlation_id: str | None = None,
         after: str | None = None,
@@ -513,60 +573,72 @@ class EventBus:
         )
         specs = self._matching_specs(event)
         consumer_ids = tuple(spec.consumer_id for spec in specs)
-        lock_acquired = False
+        deadline = asyncio.get_running_loop().time() + _ADMISSION_TIMEOUT_SECONDS
         try:
-            await asyncio.wait_for(
-                self._db.lock.acquire(), timeout=self._db.lock_timeout
-            )
-            lock_acquired = True
-            sequence_cursor = await self._execute_locked(
-                "SELECT COALESCE(MAX(event_seq), 0) + 1 AS event_seq FROM event_log"
-            )
-            sequence_row = await sequence_cursor.fetchone()
-            assert sequence_row is not None
-            insert_cursor = await self._execute_locked(
-                """INSERT OR IGNORE INTO event_log
-                (event_seq, id, timestamp, source, type, content, correlation_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    sequence_row["event_seq"],
-                    event.id,
-                    event.timestamp,
-                    event.source.value,
-                    event.type.value,
-                    event_content,
-                    event.correlation_id,
-                ),
-            )
-            cursor = await self._execute_locked(
-                "SELECT content, source, type, correlation_id "
-                "FROM event_log WHERE id = ?",
-                (event.id,),
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                raise RuntimeError(f"event_log 未写入 event_id={event.id}")
-            if (
-                row["content"] != event_content
-                or row["source"] != event.source.value
-                or row["type"] != event.type.value
-                or row["correlation_id"] != event.correlation_id
+            async with asyncio.timeout(
+                min(self._db.lock_timeout, _ADMISSION_TIMEOUT_SECONDS)
             ):
-                raise ValueError(f"event_id 已存在但内容不一致: {event.id}")
-            for spec in specs:
-                await self._insert_delivery_locked(event.id, spec.consumer_id)
-            await asyncio.wait_for(
-                self._db.conn.commit(), timeout=self._db.operation_timeout
-            )
-            inserted = insert_cursor.rowcount == 1
-            return inserted, consumer_ids
+                await self._db.lock.acquire()
+        except TimeoutError as error:
+            raise DatabaseLockTimeout(
+                "Event admission lock acquisition timed out"
+            ) from error
+        try:
+            async with asyncio.timeout_at(deadline):
+                sequence_cursor = await self._execute_locked(
+                    "SELECT COALESCE(MAX(event_seq), 0) + 1 AS event_seq FROM event_log"
+                )
+                sequence_row = await sequence_cursor.fetchone()
+                assert sequence_row is not None
+                insert_cursor = await self._execute_locked(
+                    """INSERT OR IGNORE INTO event_log
+                    (event_seq, id, timestamp, source, type, content, correlation_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        sequence_row["event_seq"],
+                        event.id,
+                        event.timestamp,
+                        event.source.value,
+                        event.type.value,
+                        event_content,
+                        event.correlation_id,
+                    ),
+                )
+                cursor = await self._execute_locked(
+                    "SELECT content, source, type, correlation_id "
+                    "FROM event_log WHERE id = ?",
+                    (event.id,),
+                )
+                row = await cursor.fetchone()
+                if row is None:
+                    raise RuntimeError(
+                        policy("events", "bus.templates.admit_text", str).format(
+                            p0=event.id
+                        )
+                    )
+                if (
+                    row["content"] != event_content
+                    or row["source"] != event.source.value
+                    or row["type"] != event.type.value
+                    or row["correlation_id"] != event.correlation_id
+                ):
+                    raise ValueError(
+                        policy("events", "bus.templates.admit_text_2", str).format(
+                            p0=event.id
+                        )
+                    )
+                for spec in specs:
+                    await self._insert_delivery_locked(event.id, spec.consumer_id)
+                await asyncio.wait_for(
+                    self._db.conn.commit(), timeout=self._db.operation_timeout
+                )
+                inserted = insert_cursor.rowcount == 1
+                return inserted, consumer_ids
         except BaseException:
-            if lock_acquired:
-                await self._db.conn.rollback()
+            await self._db.conn.rollback()
             raise
         finally:
-            if lock_acquired:
-                self._db.lock.release()
+            self._db.lock.release()
 
     async def append_in_transaction(self, event: Event) -> tuple[str, ...]:
         """Append an event while the caller owns the shared DB transaction.
@@ -605,14 +677,22 @@ class EventBus:
         )
         row = await existing.fetchone()
         if row is None:
-            raise RuntimeError(f"event_log 未写入 event_id={event.id}")
+            raise RuntimeError(
+                policy(
+                    "events", "bus.templates.append_in_transaction_text", str
+                ).format(p0=event.id)
+            )
         if (
             row["content"] != event_content
             or row["source"] != event.source.value
             or row["type"] != event.type.value
             or row["correlation_id"] != event.correlation_id
         ):
-            raise ValueError(f"event_id 已存在但内容不一致: {event.id}")
+            raise ValueError(
+                policy(
+                    "events", "bus.templates.append_in_transaction_text_2", str
+                ).format(p0=event.id)
+            )
         for spec in specs:
             await self._insert_delivery_locked(event.id, spec.consumer_id)
         if cursor.rowcount == 1:
@@ -640,7 +720,11 @@ class EventBus:
             )
             row = await cursor.fetchone()
         if row is None:
-            raise ValueError(f"event_id 尚未提交: {event.id}")
+            raise ValueError(
+                policy("events", "bus.templates.announce_committed_text", str).format(
+                    p0=event.id
+                )
+            )
         consumer_ids = tuple(spec.consumer_id for spec in self._matching_specs(event))
         self._queue.track(len(consumer_ids))
         if consumer_ids:
@@ -722,7 +806,7 @@ class EventBus:
                 raise
             except Exception:
                 self._logger.exception(
-                    "读取 delivery 失败，worker 退避 consumer_id=%s", consumer_id
+                    policy("events", "bus.copy.consumer_worker_text", str), consumer_id
                 )
                 try:
                     await asyncio.wait_for(
@@ -744,7 +828,9 @@ class EventBus:
                 except Exception as error:
                     await self._mark_failure(consumer_id, event.id, attempts, error)
                     self._logger.exception(
-                        "handler 处理失败 event_id=%s consumer_id=%s attempts=%d",
+                        policy(
+                            "events", "bus.parameters.consumer_worker_value_text", str
+                        ),
                         event.id,
                         consumer_id,
                         attempts,
@@ -845,8 +931,7 @@ class EventBus:
                 except Exception:
                     await self._db.conn.rollback()
                     self._logger.exception(
-                        "delivery 成功状态写入失败，等待重试 "
-                        "event_id=%s consumer_id=%s",
+                        policy("events", "bus.parameters.mark_success_value_text", str),
                         event_id,
                         consumer_id,
                     )
@@ -883,7 +968,13 @@ class EventBus:
                         (
                             status,
                             available_at,
-                            f"{type(error).__name__}: {error}"[:2000],
+                            f"{type(error).__name__}: {error}"[
+                                : policy(
+                                    "events",
+                                    "bus.parameters.mark_failure_value_chars_or_items",
+                                    int,
+                                )
+                            ],
                             event_id,
                             consumer_id,
                         ),
@@ -895,8 +986,7 @@ class EventBus:
                 except Exception:
                     await self._db.conn.rollback()
                     self._logger.exception(
-                        "delivery 失败状态写入失败，等待重试 "
-                        "event_id=%s consumer_id=%s",
+                        policy("events", "bus.parameters.mark_failure_value_text", str),
                         event_id,
                         consumer_id,
                     )
@@ -956,7 +1046,7 @@ class EventBus:
             self._wake_queue.put_nowait(consumer_id)
         except asyncio.QueueFull:
             self._logger.warning(
-                "事件总线唤醒队列已满，依赖周期扫描 consumer_id=%s", consumer_id
+                policy("events", "bus.copy.wake_text", str), consumer_id
             )
 
     def _compat_delivery_done(self, event_id: str) -> None:

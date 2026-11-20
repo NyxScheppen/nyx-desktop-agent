@@ -34,6 +34,7 @@
 
 ```powershell
 uv sync --locked --extra dev
+uv run --no-sync python -m scripts.check_policy
 uv run --no-sync python -m ruff check nyx/ tests/ scripts/
 uv run --no-sync python -m pyright nyx/ tests/ scripts/
 ```

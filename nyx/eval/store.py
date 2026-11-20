@@ -8,6 +8,7 @@ from typing import cast
 import aiosqlite
 
 from nyx.db import Database
+from nyx.policy import policy
 from nyx.types import EvalRecord, EvalStats, LlmMessage
 
 _COLS = (
@@ -50,7 +51,9 @@ class EvalStore:
             )
 
     async def list_recent(
-        self, limit: int = 5, offset: int = 0,
+        self,
+        limit: int = policy("eval", "store.defaults.list_recent_limit", int),
+        offset: int = 0,
     ) -> list[EvalRecord]:
         async with self._db.lock:
             cursor = await self._db.conn.execute(

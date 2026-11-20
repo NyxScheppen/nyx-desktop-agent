@@ -2,10 +2,13 @@ import random
 from typing import Any, cast
 
 from nyx.inner_life.document import render_document
+from nyx.policy import policy
 from nyx.types import Activity, CurrentState, Memory
 
-KNOWLEDGE_REF_CHARS = 80  # 创作知识参考单条截断字符数（decision，可推翻）
-CREATION_STYLES = ("日记体", "随笔", "微型小说", "散文诗", "书信体", "观察笔记")
+KNOWLEDGE_REF_CHARS = policy(
+    "activity", "creation.KNOWLEDGE_REF_CHARS", int
+)  # 创作知识参考单条截断字符数（decision，可推翻）
+CREATION_STYLES = policy("activity", "creation.CREATION_STYLES", tuple[str, ...])
 
 
 def pick_creation_style() -> str:
@@ -34,40 +37,62 @@ def build_creation_context(
 ) -> str:
     """创作参考上下文：风格 + 主题 + 知识库参考 + 当前屏幕灵感。"""
     topic = creation_subject(activity)
-    parts = [f"风格：{style}"]
+    parts = [
+        policy(
+            "activity", "creation.templates.build_creation_context_text_2", str
+        ).format(p0=style)
+    ]
     if topic:
-        parts.append(f"主题：{topic}")
+        parts.append(
+            policy(
+                "activity", "creation.templates.build_creation_context_text_3", str
+            ).format(p0=topic)
+        )
     if references:
         refs = "\n".join(
-            f"- {m.summary}：{m.content[:KNOWLEDGE_REF_CHARS]}" for m in references[:3]
+            f"- {m.summary}：{m.content[:KNOWLEDGE_REF_CHARS]}"
+            for m in references[
+                : policy(
+                    "activity",
+                    "creation.parameters.build_creation_context_refs_chars_or_items",
+                    int,
+                )
+            ]
         )
-        parts.append(f"参考记忆（知识或旧作，可借鉴，勿编造）：\n{refs}")
+        parts.append(
+            policy(
+                "activity", "creation.templates.build_creation_context_text", str
+            ).format(p0=refs)
+        )
     window = observation.get("window_title", "").strip()
     screen = observation.get("screen_summary", "").strip()
     if window or screen:
         insp = "；".join(x for x in (window, screen) if x)
-        parts.append(f"当前屏幕灵感：{insp}")
+        parts.append(
+            policy(
+                "activity", "creation.templates.build_creation_context_text_4", str
+            ).format(p0=insp)
+        )
     return "\n\n".join(parts)
 
 
 def build_creation_system(canon: str, state: CurrentState) -> str:
     """创作 system prompt：原型资料 + 当前内在文档 + 此刻心境 + 创作要求。"""
-    desires = "、".join(d.description for d in state.active_desires) or "无"
-    mood = (
-        "[此刻心境]\n"
-        f"情感：{state.emotion.value}"
-        f"（valence={state.valence:.2f}，arousal={state.arousal:.2f}）\n"
-        f"精力：{state.energy:.0f}/100\n"
-        f"惦记：{desires}"
+    desires = "、".join(d.description for d in state.active_desires) or policy(
+        "activity", "creation.copy.build_creation_system_text", str
+    )
+    mood = policy(
+        "activity", "creation.templates.build_creation_system_text", str
+    ).format(
+        p0=state.emotion.value,
+        p1=state.valence,
+        p2=state.arousal,
+        p3=state.energy,
+        p4=desires,
     )
     voice = (
-        "[创作要求]\n"
-        "依据当前内在文档中的表达倾向与审美理解写，让文字有你的情绪底色。"
-        "遵循给定风格与此刻审美，可借鉴参考记忆，但绝不编造不存在的知识；"
-        "当前屏幕灵感只作启发，勿照搬。按 JSON 输出 {title, content}。"
-        "输出前在内部检查主题一致、事实有据、标题和正文非空，只给出最终 JSON。"
+        policy("activity", "creation.parameters.build_creation_system_voice_text", str)
     )
-    return (
-        f"{canon}\n\n[当前内在文档]\n"
-        f"{render_document(state.inner_document)}\n\n{mood}\n\n{voice}"
-    )
+    return policy(
+        "activity", "creation.templates.build_creation_system_text_2", str
+    ).format(p0=canon, p1=render_document(state.inner_document), p2=mood, p3=voice)

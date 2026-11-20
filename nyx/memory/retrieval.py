@@ -8,30 +8,23 @@ from nyx.memory.embedding import EmbedFn as EmbedFn
 from nyx.memory.embedding import build_embed as build_embed
 from nyx.memory.graph import AssociationHit, MemoryGraph
 from nyx.memory.store import KeywordSearchHit, MemoryStore
+from nyx.policy import policy
 from nyx.types import Memory
 
-_RECALL_VECTOR_CANDIDATE_K = 80
-_RECALL_KEYWORD_CANDIDATE_K = 80
-_TOPIC_BUCKET_LIMIT = 8
-_TOPIC_ASSOCIATION_LIMIT = 5
-_MIN_RECALL_COSINE = 0.45
-_MIN_RECALL_KEYWORD_SCORE = 0.45
-_STOP_WORDS = {
-    "这个",
-    "那个",
-    "什么",
-    "怎么",
-    "为什么",
-    "然后",
-    "就是",
-    "一下",
-    "可以",
-    "还是",
-    "一个",
-    "我们",
-    "你们",
-}
-_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+")
+_RECALL_VECTOR_CANDIDATE_K = policy(
+    "memory", "retrieval._RECALL_VECTOR_CANDIDATE_K", int
+)
+_RECALL_KEYWORD_CANDIDATE_K = policy(
+    "memory", "retrieval._RECALL_KEYWORD_CANDIDATE_K", int
+)
+_TOPIC_BUCKET_LIMIT = policy("memory", "retrieval._TOPIC_BUCKET_LIMIT", int)
+_TOPIC_ASSOCIATION_LIMIT = policy("memory", "retrieval._TOPIC_ASSOCIATION_LIMIT", int)
+_MIN_RECALL_COSINE = policy("memory", "retrieval._MIN_RECALL_COSINE", float)
+_MIN_RECALL_KEYWORD_SCORE = policy(
+    "memory", "retrieval._MIN_RECALL_KEYWORD_SCORE", float
+)
+_STOP_WORDS = policy("memory", "retrieval._STOP_WORDS", set[str])
+_TOKEN_RE = policy("memory", "retrieval._TOKEN_RE", re.Pattern[str])
 
 
 @dataclass
@@ -55,8 +48,6 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
-
-
 def extract_keywords(text: str) -> list[str]:
     """Extract stable LIKE tokens from mixed English/CJK text."""
     tokens: list[str] = []
@@ -65,10 +56,16 @@ def extract_keywords(text: str) -> list[str]:
         raw = match.group(0)
         if raw.isascii():
             _append_token(raw.lower(), tokens, seen)
-        elif 2 <= len(raw) <= 8:
+        elif (
+            2
+            <= len(raw)
+            <= policy(
+                "memory", "retrieval.parameters.extract_keywords_value_limit", int
+            )
+        ):
             _append_token(raw, tokens, seen)
         else:
-            for size in (2, 3):
+            for size in policy("memory", "retrieval.ngram_sizes", tuple[int, ...]):
                 for index in range(0, len(raw) - size + 1):
                     _append_token(raw[index : index + size], tokens, seen)
     return tokens
@@ -79,15 +76,19 @@ class MemoryRetrieval:
 
     def __init__(self, store: MemoryStore, embed: EmbedFn | None = None) -> None:
         self._store = store
-        self._embed = embed          # None = 向量层禁用
+        self._embed = embed  # None = 向量层禁用
         self._ann: AnnIndex | None = None
         self._ann_fingerprint: tuple[tuple[str, float, int], ...] | None = None
 
     async def search(
         self,
         query: str,
-        direct_limit: int = 20,
-        association_limit: int = 10,
+        direct_limit: int = policy(
+            "memory", "retrieval.parameters.search_direct_limit", int
+        ),
+        association_limit: int = policy(
+            "memory", "retrieval.parameters.search_association_limit", int
+        ),
         required_topic: str | None = None,
         kind: MemoryKind | None = None,
         allowed_ids: set[str] | None = None,
@@ -102,9 +103,7 @@ class MemoryRetrieval:
             all_memories = [m for m in all_memories if m.id in allowed_ids]
         if required_topic is not None:
             all_memories = [
-                memory
-                for memory in all_memories
-                if required_topic in memory.topics
+                memory for memory in all_memories if required_topic in memory.topics
             ]
         by_id = {m.id: m for m in all_memories}
         query_vec = await self._embed_query(query)
@@ -130,8 +129,7 @@ class MemoryRetrieval:
         edges = await self._store.list_edges()
         if kind is not None:
             edges = [
-                edge for edge in edges
-                if edge.from_id in by_id and edge.to_id in by_id
+                edge for edge in edges if edge.from_id in by_id and edge.to_id in by_id
             ]
         association_hits = MemoryGraph(edges).associate(
             seeds,
@@ -184,13 +182,24 @@ class MemoryRetrieval:
                     ranked_buckets[topic] = sorted(
                         (memory for memory in full_bucket if memory.id not in exclude),
                         key=lambda memory: (
-                            -memory.freshness, -memory.created_at, memory.id
+                            -memory.freshness,
+                            -memory.created_at,
+                            memory.id,
                         ),
                     )[:_TOPIC_BUCKET_LIMIT]
                 scale = 1.0 / math.log2(2.0 + len(full_bucket))
                 for candidate in ranked_buckets[topic]:
                     overlap = len(set(seed.memory.topics) & set(candidate.topics))
-                    score = seed.score * max(1, overlap) * 0.20 * scale
+                    score = (
+                        seed.score
+                        * max(1, overlap)
+                        * policy(
+                            "memory",
+                            "retrieval.parameters.topic_association_weight",
+                            float,
+                        )
+                        * scale
+                    )
                     scores[candidate.id] = max(scores.get(candidate.id, 0.0), score)
         return [
             _TopicHit(memory_id, score)
@@ -250,12 +259,22 @@ class MemoryRetrieval:
             keyword_match = keyword_score >= _MIN_RECALL_KEYWORD_SCORE
             if not vector_match and not keyword_match:
                 continue
-            type_boost = 1.0 if memory.type is MemoryType.LONG_TERM else 0.5
+            type_boost = (
+                1.0
+                if memory.type is MemoryType.LONG_TERM
+                else policy(
+                    "memory", "retrieval.parameters.short_term_type_boost", float
+                )
+            )
             score = (
-                0.65 * vector_score
-                + 0.25 * keyword_score
-                + 0.07 * memory.freshness
-                + 0.03 * type_boost
+                policy("memory", "retrieval.parameters.rank_vector_weight", float)
+                * vector_score
+                + policy("memory", "retrieval.parameters.rank_keyword_weight", float)
+                * keyword_score
+                + policy("memory", "retrieval.parameters.rank_freshness_weight", float)
+                * memory.freshness
+                + policy("memory", "retrieval.parameters.rank_type_weight", float)
+                * type_boost
             )
             sources: list[SearchMode] = []
             if vector_match:
@@ -300,8 +319,20 @@ def _keyword_score(hit: KeywordSearchHit | None, query_token_count: int) -> floa
     coverage = len(matched_tokens) / query_token_count
     summary_hit_ratio = len(summary_tokens) / query_token_count
     content_hit_ratio = len(content_tokens) / query_token_count
-    field_score = min(1.0, 0.7 * summary_hit_ratio + 0.3 * content_hit_ratio)
-    return min(1.0, 0.7 * coverage + 0.3 * field_score)
+    field_score = min(
+        1.0,
+        policy("memory", "retrieval.parameters.keyword_summary_weight", float)
+        * summary_hit_ratio
+        + policy("memory", "retrieval.parameters.keyword_content_weight", float)
+        * content_hit_ratio,
+    )
+    return min(
+        1.0,
+        policy("memory", "retrieval.parameters.keyword_coverage_weight", float)
+        * coverage
+        + policy("memory", "retrieval.parameters.keyword_field_weight", float)
+        * field_score,
+    )
 
 
 @dataclass

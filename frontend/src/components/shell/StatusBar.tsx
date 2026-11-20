@@ -1,3 +1,4 @@
+import frontendPolicy from "../../../../nyx/settings/frontend.json";
 import { EMOTION_LABELS } from "../../lib/labels";
 import { activityStatusText } from "../../lib/activityResult";
 import { useActivityStore } from "../../stores/activityStore";
@@ -15,11 +16,11 @@ export default function StatusBar() {
   return (
     <div className="status-bar">
       <div className="status-bar__info">
-        <span className="status-bar__mood">心情：{mood}</span>
+        <span className="status-bar__mood">{frontendPolicy.copy.StatusBar.span}{mood}</span>
         {current !== null && (
           <EnergyBar energy={current.energy} energy_state={current.energy_state} />
         )}
-        <span className="status-bar__activity">现在状态：{statusText}</span>
+        <span className="status-bar__activity">{frontendPolicy.copy.StatusBar.span_2}{statusText}</span>
       </div>
     </div>
   );

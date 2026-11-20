@@ -1,0 +1,170 @@
+{
+  "app_context": {
+    "_DESKTOP_LEASE_SECONDS": 90,
+    "parameters": {
+      "create_pairing_code_expires_at_factor": 600,
+      "close_timeout": 5,
+      "close_value_factor": 0.5,
+      "unload_timeout": 5,
+      "unload_timeout_2": 5
+    },
+    "copy": {
+      "publish_observation_text": "observation payload 非法",
+      "online_before_chat_text": "角色在线状态尚未同步，聊天未受理",
+      "unload_text": "停止超时，等待已受理工作结束",
+      "register_text": "角色 ID 已存在；请恢复已有存档",
+      "register_text_2": "最多注册四个角色",
+      "start_text": "角色尚未准备挂载",
+      "start_text_2": "旧角色实例尚未结束",
+      "select_text": "角色不可运行",
+      "unload_text_2": "不能卸载当前角色",
+      "unload_text_3": "停止超时，等待在线状态补投结束",
+      "restore_text": "角色尚未卸载完成",
+      "retry_start_text": "只可重试失败角色",
+      "close_text": "宿主停止超时，保留仍被后台工作使用的数据库",
+      "start_text_3": "角色启动失败 character_id=%s",
+      "register_text_3": "卡片安装请求已取消；可重试启动或卸载",
+      "flush_presence_text": "在线状态补投失败 character_id=%s attempt=%s: %s",
+      "unload_text_4": "角色卸载时对话段收尾失败 character_id=%s"
+    }
+  },
+  "main": {
+    "_LOCAL_HOST": "127.0.0.1",
+    "_LOCAL_PORT": 8000,
+    "_TICK_INTERVAL": 60,
+    "_MUTTER_CHECK_INTERVAL": 150,
+    "_INITIATE_CHAT_INTERVAL": 300,
+    "_REFLECT_CHECK_INTERVAL": 3600,
+    "_REFLECT_MIN_INTERVAL": 21600,
+    "_REFLECT_MIN_NEW_MEMORIES": 3,
+    "_BUS_BACKOFF_BASE": 1,
+    "_BUS_BACKOFF_MAX": 30,
+    "_BUS_MAX_FAILURES": 8,
+    "_BUS_RECOVERY_STREAK": 3,
+    "_SSE_QUEUE_SIZE": 100,
+    "_CANON_FILES": [
+      "canon.md",
+      "character-reference.md"
+    ],
+    "_ASK_FILES": [
+      "ask.md"
+    ],
+    "_MAX_EPUB_BYTES": 52428800,
+    "_LAUNCH_NONCE_ENV": "NYX_LAUNCH_NONCE"
+  },
+  "runtime": {
+    "DEFAULT_REFLECT_MIN_INTERVAL": {
+      "$ref": "runtime:main._REFLECT_MIN_INTERVAL"
+    },
+    "DEFAULT_REFLECT_MIN_NEW_MEMORIES": {
+      "$ref": "runtime:main._REFLECT_MIN_NEW_MEMORIES"
+    },
+    "parameters": {
+      "memory_loop_interval": 60,
+      "host_presence_loop_value_factor": 0.5,
+      "run_character_backoff_max": {
+        "$ref": "runtime:main._BUS_BACKOFF_MAX"
+      },
+      "run_character_max_failures": {
+        "$ref": "runtime:main._BUS_MAX_FAILURES"
+      },
+      "run_character_recovery_streak": {
+        "$ref": "runtime:main._BUS_RECOVERY_STREAK"
+      },
+      "run_character_tick_interval": {
+        "$ref": "runtime:main._TICK_INTERVAL"
+      },
+      "run_character_mutter_check_interval": {
+        "$ref": "runtime:main._MUTTER_CHECK_INTERVAL"
+      },
+      "run_character_initiate_chat_interval": {
+        "$ref": "runtime:main._INITIATE_CHAT_INTERVAL"
+      },
+      "run_character_reflect_check_interval": {
+        "$ref": "runtime:main._REFLECT_CHECK_INTERVAL"
+      },
+      "stop_character_timeout": 5,
+      "stop_character_timeout_2": 5,
+      "stop_character_timeout_3": 5,
+      "stop_character_timeout_4": 10,
+      "stop_character_timeout_5": 5,
+      "stop_character_timeout_6": 5,
+      "stop_character_timeout_7": 5,
+      "stop_character_timeout_8": 15
+    },
+    "templates": {
+      "check_reflect_text": "距上次反思已满 {p0:g} 秒，期间新增 {p1} 条记忆"
+    },
+    "copy": {
+      "run_character_text": "角色运行失败 character_id=%s",
+      "on_user_message_text": "用户消息打断活动失败，表达上下文不得声称已暂停 activity_id=%s",
+      "check_initiate_chat_text": "主动搭话已提交但活动打断失败，等待后续补偿 desire_id=%s",
+      "memory_loop_text": "对话记忆定时维护失败",
+      "supervise_bus_text": "总线 run() 异常终止，%.1fs 后重启（第 %d/%d 次）",
+      "run_character_text_2": "角色后台循环意外结束",
+      "supervise_bus_text_2": "角色总线连续 %d 次异常，停止该运行时",
+      "host_presence_loop_text": "在线补投任务失败 character_id=%s",
+      "host_presence_loop_text_2": "角色停止任务失败 character_id=%s"
+    },
+    "idle_poll_seconds": 1,
+    "admission_backoff_base": 2,
+    "admission_backoff_exponent_max": 5,
+    "admission_backoff_max_seconds": 30
+  },
+  "plugins": {
+    "parameters": {
+      "memory_recall_top_k": 8,
+      "knowledge_search_top_k": 5,
+      "memory_tools_result_text": "检索完整历史归档中的相关对话原文片段和用户/关系事实；结果带 segment_id 或 source_segment_id 供引用。",
+      "memory_recall_max_excerpt_chars": 900,
+      "memory_recall_budget_budget": 100
+    },
+    "copy": {
+      "apply_behavior_event_text": "行为反思未初始化",
+      "memory_tools_text": "检索知识事实与证据块原文，返回 source_chunk_id 溯源供逐条引用。",
+      "memory_tools_text_2": "要回忆的主题或问题",
+      "memory_tools_text_3": "返回对话段条数上限",
+      "memory_tools_text_4": "要检索的知识主题",
+      "memory_tools_text_5": "返回事实条数上限"
+    }
+  },
+  "desktop": {
+    "startup_timeout_seconds": 90,
+    "shutdown_timeout_seconds": 35,
+    "probe_timeout_ms": 200,
+    "poll_interval_ms": 100,
+    "identity_max_bytes": 4096,
+    "service": "nyx-agent",
+    "dev_startup_timeout_seconds": 120,
+    "frontend_port": 5173,
+    "copy": {
+      "missing_application_directory": "Missing application directory",
+      "backend_port_occupied": "Backend port {port} is already occupied",
+      "backend_failed": "Packaged backend failed; see backend.log",
+      "backend_exited_after_readiness": "Packaged backend exited after readiness check; see backend.log",
+      "backend_startup_timeout": "Packaged backend startup timed out; see backend.log",
+      "presence_unavailable": "无法读取系统最后输入时间",
+      "presence_unsupported": "此平台不支持原生输入采样",
+      "application_failed": "error while running tauri application"
+    }
+  },
+  "timezone": {
+    "name": "Asia/Shanghai",
+    "offset_hours": 8
+  },
+  "harness": {},
+  "subscriptions": {},
+  "config": {
+    "templates": {
+      "_build_extra_text": "{p0} 必须是映射",
+      "_build_extra_text_2": "未知配置键 {p0} in {p1}",
+      "_build_extra_text_3": "{p0}.{p1} 必须是映射，得到 {p2}",
+      "load_config_extra_text": "配置加载失败 {p0}: {p1}",
+      "_nonempty_extra_text": "{p0} 非法: {p1!r}"
+    },
+    "copy": {
+      "validate_config_extra_text": "onebot.owner_id 不能是机器人自己",
+      "validate_config_extra_text_2": "onebot.ws_url 必须是本机 WebSocket 地址且不含凭证"
+    }
+  }
+}

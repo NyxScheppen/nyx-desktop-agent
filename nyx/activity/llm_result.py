@@ -1,6 +1,8 @@
 import json
 from typing import Any, cast
 
+from nyx.policy import policy
+
 
 def parse_activity_result(raw: str, output_type: str) -> dict[str, Any]:
     """解析 LLM 活动结果并做最小结构校验。
@@ -10,18 +12,34 @@ def parse_activity_result(raw: str, output_type: str) -> dict[str, Any]:
     """
     data: Any = json.loads(raw)
     if not isinstance(data, dict):
-        raise ValueError(f"活动结果 JSON 应是对象，得到 {type(data).__name__}")
+        raise ValueError(
+            policy(
+                "activity", "llm_result.templates.parse_activity_result_text_2", str
+            ).format(p0=type(data).__name__)
+        )
     parsed = cast(dict[str, Any], data)
     if output_type == "reading":
         required = ("book", "note")
     elif output_type == "creation":
         required = ("title", "content")
     else:
-        raise ValueError(f"未知活动输出类型：{output_type!r}")
+        raise ValueError(
+            policy(
+                "activity", "llm_result.templates.parse_activity_result_text_4", str
+            ).format(p0=output_type)
+        )
     if not all(k in parsed for k in required):
-        raise ValueError(f"活动结果 JSON 缺键：{required}")
+        raise ValueError(
+            policy(
+                "activity", "llm_result.templates.parse_activity_result_text_3", str
+            ).format(p0=required)
+        )
     for key in required:
         value = parsed[key]
         if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"活动结果 JSON 的 {key} 应为非空字符串")
+            raise ValueError(
+                policy(
+                    "activity", "llm_result.templates.parse_activity_result_text", str
+                ).format(p0=key)
+            )
     return parsed

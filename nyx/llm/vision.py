@@ -9,11 +9,10 @@ from pydantic import SecretStr
 
 from nyx.config import ConfigError, VisionConfig
 from nyx.llm.client import resolve_base_url
+from nyx.policy import policy
 
 _DESCRIBE_PROMPT = (
-    "你是屏幕观察助手。用一句简短的中文描述截图里用户正在做什么"
-    "（应用/网页/内容主题），不超过 30 字；"
-    "无法判断就只回「无法判断」这四个字，不要解释。"
+    policy("vision", "prompt._DESCRIBE_PROMPT", str)
 )
 
 
@@ -33,12 +32,18 @@ class VisionClient:
         base_url = resolve_base_url(config.provider, config.base_url)
         if base_url is None:
             raise ConfigError(
-                f"未知 provider={config.provider!r}：请设置 vision.base_url"
+                policy("llm", "vision.templates.from_config_text", str).format(
+                    p0=config.provider
+                )
             )
         api_key = os.environ.get(config.api_key_env)
         if not api_key:
             if config.provider != "ollama":
-                raise ConfigError(f"环境变量 {config.api_key_env} 未设置")
+                raise ConfigError(
+                    policy("llm", "vision.templates.from_config_text_2", str).format(
+                        p0=config.api_key_env
+                    )
+                )
             api_key = "ollama"  # Ollama 免 key，ChatOpenAI 要求非空，占位（服务端忽略）
         return cls(
             ChatOpenAI(
@@ -62,6 +67,8 @@ class VisionClient:
         response = await self._model.ainvoke([HumanMessage(content=content)])
         if not isinstance(response.content, str):
             raise RuntimeError(
-                f"期望文本 content，得到 {type(response.content).__name__}"
+                policy("llm", "vision.templates.describe_text", str).format(
+                    p0=type(response.content).__name__
+                )
             )
         return response.content

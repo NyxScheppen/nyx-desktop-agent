@@ -18,6 +18,7 @@ from websockets.exceptions import WebSocketException
 from nyx.config import ConfigError
 from nyx.db import DatabaseLockTimeout
 from nyx.enums import EventType, Source
+from nyx.policy import policy
 from nyx.transports.outbox import TransportOutbox
 from nyx.types import Event
 
@@ -40,7 +41,11 @@ class OneBotAdapter:
         self._config = app.config.onebot
         token = os.environ.get(self._config.access_token_env)
         if not token:
-            raise ConfigError(f"OneBot 环境变量 {self._config.access_token_env} 未设置")
+            raise ConfigError(
+                policy("onebot", "onebot.templates.init_text", str).format(
+                    p0=self._config.access_token_env
+                )
+            )
         self._token = token
         self.name = f"onebot:{self._config.self_id}:{self._config.owner_id}"
         assert app.database is not None
@@ -120,7 +125,7 @@ class OneBotAdapter:
     async def _call(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         connection = self._connection
         if connection is None:
-            raise OneBotError("OneBot 尚未连接")
+            raise OneBotError(policy("onebot", "onebot.copy.call_text", str))
         echo = str(uuid.uuid4())
         future: asyncio.Future[dict[str, Any]] = (
             asyncio.get_running_loop().create_future()
@@ -137,9 +142,11 @@ class OneBotAdapter:
                     ensure_ascii=False,
                 )
             )
-            response = await asyncio.wait_for(future, timeout=15)
+            response = await asyncio.wait_for(
+                future, timeout=policy("onebot", "onebot.parameters.call_timeout", int)
+            )
             if response.get("status") != "ok" or response.get("retcode") != 0:
-                raise OneBotError("OneBot API 拒绝请求")
+                raise OneBotError(policy("onebot", "onebot.copy.call_text_2", str))
             return response
         except (OSError, TimeoutError, WebSocketException) as error:
             raise OneBotError(type(error).__name__) from None
@@ -150,7 +157,7 @@ class OneBotAdapter:
         """Send text literally; only a matching successful echo confirms it."""
         text = event.content["content"]
         if event.type is EventType.THINK:
-            text = f"💭 内心话\n{text}"
+            text = policy("onebot", "onebot.templates.emit_text", str).format(p0=text)
         await self._call(
             "send_private_msg",
             {
@@ -171,7 +178,7 @@ class OneBotAdapter:
             try:
                 payload = json.loads(raw)
             except (json.JSONDecodeError, UnicodeDecodeError):
-                _LOGGER.warning("OneBot 忽略非法 JSON")
+                _LOGGER.warning(policy("onebot", "onebot.copy.receive_text", str))
                 continue
             if not isinstance(payload, dict):
                 continue
@@ -191,7 +198,13 @@ class OneBotAdapter:
             try:
                 return await operation()
             except DatabaseLockTimeout:
-                delay = min(2 ** min(attempt, 5), 30)
+                delay = min(
+                    2
+                    ** min(
+                        attempt, policy("onebot", "delivery.backoff_exponent_max", int)
+                    ),
+                    policy("onebot", "delivery.backoff_max_seconds", int),
+                )
                 attempt += 1
                 _LOGGER.warning(
                     "OneBot DB lock retry: phase=%s attempt=%d wait=%ds",
@@ -219,9 +232,23 @@ class OneBotAdapter:
             await self._retry_lock("scan", self.outbox.scan)
             event = await self._retry_lock("claim", self.outbox.claim)
             if event is None:
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(
+                    policy("onebot", "onebot.parameters.send_value_factor", float)
+                )
                 continue
             try:
+                if event.type in (
+                    EventType.INITIATE_CHAT,
+                    EventType.MUTTER,
+                    EventType.READING_QUESTION,
+                    EventType.READING_ASSOCIATION,
+                    EventType.READING_MUTTER,
+                ):
+                    if self._app.reading.study.occupied():
+                        await self._retry_lock(
+                            "suppressed", partial(self.outbox.sent, event.id)
+                        )
+                        continue
                 await self.emit(event)
             except OneBotError as error:
                 await self._retry_lock(
@@ -241,7 +268,9 @@ class OneBotAdapter:
                 not isinstance(data, dict)
                 or cast(dict[str, Any], data).get("user_id") != self._config.self_id
             ):
-                raise OneBotError("OneBot 登录身份不匹配")
+                raise OneBotError(
+                    policy("onebot", "onebot.copy.send_after_login_text", str)
+                )
             await self._send()
 
         sender = asyncio.create_task(send_after_login())
@@ -277,8 +306,12 @@ class OneBotAdapter:
                         additional_headers={
                             "Authorization": f"Bearer {self._token}",
                         },
-                        open_timeout=5,
-                        close_timeout=1,
+                        open_timeout=policy(
+                            "onebot", "onebot.parameters.run_open_timeout", int
+                        ),
+                        close_timeout=policy(
+                            "onebot", "delivery.close_timeout_seconds", int
+                        ),
                         proxy=None,
                     )
                 except (
@@ -286,18 +319,25 @@ class OneBotAdapter:
                     TimeoutError,
                     WebSocketException,
                 ) as error:
-                    _LOGGER.warning("OneBot 连接重试：%s", type(error).__name__)
+                    _LOGGER.warning(
+                        policy("onebot", "onebot.copy.run_text", str),
+                        type(error).__name__,
+                    )
                 else:
                     self._connection = connection
                     try:
                         await self._session()
                     except OneBotError as error:
-                        _LOGGER.warning("OneBot 会话重试：%s", error)
+                        _LOGGER.warning(
+                            policy("onebot", "onebot.copy.run_text_2", str), error
+                        )
                     finally:
                         self._connection = None
                         await connection.close()
                 await asyncio.sleep(delay)
-                delay = min(delay * 2, 30)
+                delay = min(
+                    delay * 2, policy("onebot", "delivery.backoff_max_seconds", int)
+                )
         finally:
             self._accepting = False
             if self._confirmed_event_id is not None:

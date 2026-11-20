@@ -119,6 +119,22 @@ SQLite、本地 `BAAI/bge-small-zh-v1.5` ONNX，数据集 `nyx-conversation-rag-
 
 以下是当时结果，不证明当前版本已经复测；临时轨迹按当时约定清理，不据此补造证据。
 
+### 主动搭话与桌面观察发布（2026-11-19）
+
+- 已提交并推送 `659fb5e6033d60dc3145cbed903eed8369b8eb2e`；后端部署 `68d2e049-77a0-4269-aaa8-e613838c3969` 与前端上传部署 `c7cdf39c-e123-4aef-b010-4dbfe0aef927` 均为 SUCCESS，实例 RUNNING。后端保留 `/app/data`，未改数据库或应用卷内容。
+- 发布检查：依赖按锁文件同步；Ruff、Pyright、前端 412 项测试及构建通过；后端全量含 20 个成功 E2E 驱动，1518 passed、1 skipped，覆盖率 90.91%。首轮旧持久化探针的 0.4 秒时限在 coverage 下提前触发，改为证据落盘后的 digest 定点注入 TimeoutError，再完整复跑通过；未修改生产研究超时逻辑。
+- 线上首页、JS/CSS 均 200，资源字节与本地构建一致；匿名角色 API 401，授权角色列表、状态与 SSE 验收通过，SSE 为 200/text-event-stream 且收到帧；非桌面观察请求返回 409。浏览器只验证登录页，授权业务使用既有服务凭证直接检查，没有发送测试聊天或 QQ。
+- 新后端首次启动时出现共享数据库锁争用，tick 事件受理超时令 Nyx 角色 FAILED；通过现有 retry-start 接口恢复 RUNNING 后，状态与 SSE 均恢复。此问题与此前运行时故障同类，未把恢复视为根治，后续见统一待办。
+- 发布前发现 NapCat 恢复部署因旧 Docker Hub 镜像拉取失败而无实例；复用原成功制品恢复为部署 `d8537be7-aaa9-4591-afb5-adbfc9d93ddb`（SUCCESS/RUNNING），保留 `/app/.config/QQ` 卷及既有配置，但启动日志要求扫码登录，尚未验证真实 QQ 收发。
+- 本条和原有未提交评测记录仅本地保留，避免文档推送额外触发应用重建。
+
+### Railway 真实回答评测记录同步（2026-11-12）
+
+- 后端原已运行与本地一致的 `00f7bcd`；本次只提交真实回答评测记录为 `86bf2f86736f562e73c0a42f91a8b4facb667edb`，GitHub main 推送触发部署 `b28dd9d3-664c-48aa-a5bd-67cf2d86fe54`，已为 SUCCESS/RUNNING。前端源码与现有制品一致，沿用 `1a14340d-d1b8-40a4-867a-b1ca2846083b`，未重复上传。
+- 纯文档差异与相对文件链接检查通过，未重跑完整代码发布测试。部署后 HTTPS 首页 200、匿名角色 API 401；授权角色列表、Nyx 状态、RAG 状态均 200，SSE 为 200/text-event-stream 并收到帧。新部署启动日志采样 6 行未匹配错误模式；此前旧实例日志存在错误模式，未将旧日志说成无错误。本条留证仅本地保留，避免再次触发文档重建。
+- 后端仍挂载 `/app/data`；未改 NapCat/Postgres、生产数据、运行时代码或发送生产聊天/QQ。ANN 漏召回及 15/16 真实回答结果仍沿用上方已测限制，本次同步不表示质量问题修复。
+- 用户已明确授权清理，但两个中断评测残留目录的原生 PowerShell 删除命令仍被自动审批以 `blocked by policy` 拒绝，未清理成功：`C:\Users\I\AppData\Local\Temp\tmpakhuor.tmp`、`C:\Users\I\AppData\Local\Temp\nyx-rag-eval-7qk1toaw`。未改用其他接口绕过拒绝；正常完整评测的临时数据此前已自动清理。
+
 ### 规划、失败经验与装配（2026-10-29—2026-10-30）
 
 - 使用真实 `deepseek-chat`、HTTP/SSE 与 SQLite，资料和工具为临时合成输入。多步规划、简单问题降级、空结果经验、纠错与失败处理通过。

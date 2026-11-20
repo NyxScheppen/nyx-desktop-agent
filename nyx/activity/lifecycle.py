@@ -9,14 +9,15 @@ from nyx.desire.facade import DesireFacade
 from nyx.enums import ActivityStatus, ActivityType, AssignedTaskStatus, EventType
 from nyx.events.bus import EventBus
 from nyx.events.event import internal_event
+from nyx.policy import policy
 from nyx.types import Activity, Event
 
-_RESUMABLE_TYPES = (
-    ActivityType.READING,
-    ActivityType.CREATION,
-    ActivityType.FREE_EXPLORATION,
+_RESUMABLE_TYPES = policy(
+    "activity", "lifecycle._RESUMABLE_TYPES", tuple[ActivityType, ...]
 )
-_RUNNER_CANCEL_TIMEOUT_SECONDS = 5.0
+_RUNNER_CANCEL_TIMEOUT_SECONDS = policy(
+    "activity", "lifecycle._RUNNER_CANCEL_TIMEOUT_SECONDS", float
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -62,14 +63,18 @@ async def cancel_activity_runner(task: asyncio.Task[None] | None) -> bool:
         {task}, timeout=_RUNNER_CANCEL_TIMEOUT_SECONDS
     )
     if task not in done:
-        _logger.error("活动 runner 取消超时，保留 RUNNING 状态等待恢复")
+        _logger.error(
+            policy("activity", "lifecycle.copy.cancel_activity_runner_text", str)
+        )
         return False
     try:
         task.result()
     except asyncio.CancelledError:
         pass
     except Exception:
-        _logger.exception("活动 runner 取消清理失败，继续恢复持久状态")
+        _logger.exception(
+            policy("activity", "lifecycle.copy.cancel_activity_runner_text_2", str)
+        )
     return True
 
 
@@ -172,7 +177,7 @@ class ActivityLifecycle:
                     "reason": "idle_activity",
                     "activity_id": activity.id,
                     "evidence": (
-                        "低精力闲置活动完成，适合回看已有记忆并归纳新想法"
+                        policy("activity", "lifecycle.copy.complete_text", str)
                     ),
                 },
                 correlation_id(activity),
@@ -201,7 +206,14 @@ class ActivityLifecycle:
         previous_status = activity.status
         previous_ended_at = activity.ended_at
         previous_progress = activity.progress
-        activity.progress = {**activity.progress, "error": error[:1000]}
+        activity.progress = {
+            **activity.progress,
+            "error": error[
+                : policy(
+                    "activity", "lifecycle.parameters.fail_error_chars_or_items", int
+                )
+            ],
+        }
         activity.status = ActivityStatus.INCOMPLETE
         activity.ended_at = time.time()
         desire_id = activity.progress.get("desire_id")
@@ -220,7 +232,13 @@ class ActivityLifecycle:
                         task_id,
                         AssignedTaskStatus.FAILED,
                         activity.ended_at,
-                        error[:500],
+                        error[
+                            : policy(
+                                "activity",
+                                "lifecycle.parameters.fail_value_chars_or_items",
+                                int,
+                            )
+                        ],
                     )
                 await self._bus.append_in_transaction(event)
         except BaseException:
@@ -262,7 +280,11 @@ class ActivityLifecycle:
                         ),
                         recovered_at,
                         (
-                            "浏览器会话已中断，问卷未自动重做"
+                            policy(
+                                "activity",
+                                "lifecycle.copy.recover_stale_running_text",
+                                str,
+                            )
                             if activity.type is ActivityType.BROWSER_SURVEY
                             else None
                         ),
@@ -280,7 +302,7 @@ class ActivityLifecycle:
                     status = AssignedTaskStatus.PENDING
                 await self._store.set_task_status(
                     task.id, status, recovered_at,
-                    "浏览器会话已中断，问卷未自动重做"
+                    policy("activity", "lifecycle.copy.recover_stale_running_text", str)
                     if (
                         task.type.value == "browser_survey"
                         and status is AssignedTaskStatus.FAILED
@@ -331,7 +353,9 @@ class ActivityLifecycle:
                     ),
                     activity.ended_at,
                     (
-                        "浏览器会话已中断，问卷未自动重做"
+                        policy(
+                            "activity", "lifecycle.copy.recover_stale_running_text", str
+                        )
                         if activity.type is ActivityType.BROWSER_SURVEY
                         else None
                     ),
@@ -345,7 +369,7 @@ class ActivityLifecycle:
             await self._bus.announce_committed(event)
         except Exception:
             _logger.exception(
-                "活动事件提交后广播失败 event_id=%s type=%s",
+                policy("activity", "lifecycle.copy.announce_text", str),
                 event.id,
                 event.type.value,
             )

@@ -1,3 +1,4 @@
+import frontendPolicy from "../../../../nyx/settings/frontend.json";
 import type { ReactNode } from "react";
 
 type ModalProps = {
@@ -22,7 +23,7 @@ export default function Modal({ title, onClose, children }: ModalProps) {
           <button
             type="button"
             className="modal__close"
-            aria-label="关闭"
+            aria-label={frontendPolicy.copy.Modal.aria_label}
             onClick={onClose}
           >
             ✕

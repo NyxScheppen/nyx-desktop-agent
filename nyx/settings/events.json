@@ -1,0 +1,56 @@
+{
+  "bus": {
+    "_DELIVERY_MAX_ATTEMPTS": 5,
+    "_PERSIST_MAX_ATTEMPTS": {
+      "$ref": "events:bus._DELIVERY_MAX_ATTEMPTS"
+    },
+    "_DELIVERY_RETRY_DELAYS": [
+      1,
+      2,
+      4,
+      8,
+      30
+    ],
+    "_DELIVERY_LEASE_SECONDS": 300,
+    "_DRAIN_TIMEOUT_SECONDS": 15,
+    "_ADMISSION_TIMEOUT_SECONDS": 3,
+    "_WAKE_QUEUE_SIZE": 1024,
+    "_SCAN_INTERVAL_SECONDS": 0.1,
+    "parameters": {
+      "list_pending_after_limit": 33,
+      "list_events_limit": 100,
+      "consumer_worker_value_text": "handler 处理失败 event_id=%s consumer_id=%s attempts=%d",
+      "mark_success_value_text": "delivery 成功状态写入失败，等待重试 event_id=%s consumer_id=%s",
+      "mark_failure_value_text": "delivery 失败状态写入失败，等待重试 event_id=%s consumer_id=%s",
+      "stream_events_timeout_factor": 15,
+      "mark_failure_value_chars_or_items": 2000
+    },
+    "_RECOVERY_BATCH_SIZE": 100,
+    "copy": {
+      "publish_text": "事件总线不接受新事件",
+      "publish_text_2": "数据库熔断中，事件未受理",
+      "publish_text_3": "数据库锁繁忙，事件未受理",
+      "publish_text_4": "事件持久化失败，事件未受理",
+      "publish_many_text": "事件批量持久化失败，事件未受理",
+      "drain_text": "事件总线 drain 超时，未完成 delivery 保留待恢复",
+      "list_pending_after_text": "pending 游标不属于该 consumer",
+      "wake_text": "事件总线唤醒队列已满，依赖周期扫描 consumer_id=%s",
+      "consumer_worker_text": "读取 delivery 失败，worker 退避 consumer_id=%s",
+      "run_text": "事件消费者意外退出"
+    },
+    "templates": {
+      "validate_routes_text": "事件路由注册不一致: expected={p0}, registered={p1}",
+      "append_in_transaction_text": "event_log 未写入 event_id={p0}",
+      "append_in_transaction_text_2": "event_id 已存在但内容不一致: {p0}",
+      "announce_committed_text": "event_id 尚未提交: {p0}",
+      "admit_text": "event_log 未写入 event_id={p0}",
+      "admit_text_2": "event_id 已存在但内容不一致: {p0}"
+    }
+  },
+  "routing": {
+    "_DELIVERY_MAX_ATTEMPTS": {
+      "$ref": "events:bus._DELIVERY_MAX_ATTEMPTS"
+    }
+  },
+  "event": {}
+}

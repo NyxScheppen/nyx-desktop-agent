@@ -17,15 +17,21 @@ from nyx.enums import (
     Source,
     TickType,
 )
+from nyx.events.bus import EventAdmissionBusyError
 from nyx.events.event import internal_event
 from nyx.expression.mutter import should_initiate_chat
+from nyx.policy import policy
 from nyx.types import ActivityContext, Event
 
 if TYPE_CHECKING:
     from nyx.app_context import _Host
 
-DEFAULT_REFLECT_MIN_INTERVAL = 21600.0
-DEFAULT_REFLECT_MIN_NEW_MEMORIES = 3
+DEFAULT_REFLECT_MIN_INTERVAL = policy(
+    "runtime", "runtime.DEFAULT_REFLECT_MIN_INTERVAL", float
+)
+DEFAULT_REFLECT_MIN_NEW_MEMORIES = policy(
+    "runtime", "runtime.DEFAULT_REFLECT_MIN_NEW_MEMORIES", int
+)
 
 
 def root_event(
@@ -67,7 +73,7 @@ async def on_user_message(app: Any, event: Event) -> None:
             await app.activity.interrupt(interrupted.id, EventType.USER_MESSAGE)
         except Exception:
             logging.getLogger(__name__).exception(
-                "用户消息打断活动失败，表达上下文不得声称已暂停 activity_id=%s",
+                policy("runtime", "runtime.copy.on_user_message_text", str),
                 interrupted.id,
             )
     after_interrupt = await app.activity.get_current()
@@ -233,7 +239,7 @@ async def check_initiate_chat(app: Any) -> None:
             await app.activity.interrupt(current.id, EventType.INITIATE_CHAT)
         except Exception:
             logging.getLogger(__name__).exception(
-                "主动搭话已提交但活动打断失败，等待后续补偿 desire_id=%s",
+                policy("runtime", "runtime.copy.check_initiate_chat_text", str),
                 interaction.id,
             )
     app.last_chat_at = time.time()
@@ -262,8 +268,9 @@ async def check_reflect(
                     "min_new_memories": min_new_memories,
                     "new_memory_count": new_count,
                     "evidence": (
-                        f"距上次反思已满 {min_interval:g} 秒，期间新增 "
-                        f"{new_count} 条记忆"
+                        policy(
+                            "runtime", "runtime.templates.check_reflect_text", str
+                        ).format(p0=min_interval, p1=new_count)
                     ),
                 },
                 correlation_id,
@@ -287,59 +294,65 @@ async def tick_loop(
     root_event_factory: Callable[..., Event] = root_event,
 ) -> None:
     """Publish clock ticks and run expression timeout maintenance."""
+
+    async def publish_tick(tick_type: TickType) -> None:
+        event = root_event_factory(
+            EventType.CLOCK_TICK, {"tick_type": tick_type.value}, Source.INTERNAL
+        )
+        attempt = 0
+        while True:
+            try:
+                await app.bus.publish(event)
+                return
+            except EventAdmissionBusyError:
+                delay = min(
+                    policy("runtime", "runtime.admission_backoff_base", int)
+                    ** min(
+                        attempt,
+                        policy(
+                            "runtime", "runtime.admission_backoff_exponent_max", int
+                        ),
+                    ),
+                    policy("runtime", "runtime.admission_backoff_max_seconds", int),
+                )
+                attempt += 1
+                logging.getLogger(__name__).warning(
+                    "Tick admission lock retry: tick=%s attempt=%d wait=%ds",
+                    tick_type.value,
+                    attempt,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+
     grid = app.config.activity.grid_minutes * 60.0
     last_block = 0.0
     last_mutter = last_chat = last_reflect = time.time()
     while True:
         now = time.time()
         if now - last_block >= grid:
-            await app.bus.publish(
-                root_event_factory(
-                    EventType.CLOCK_TICK,
-                    {"tick_type": TickType.SCHEDULE_BLOCK_START.value},
-                    Source.INTERNAL,
-                )
-            )
-            await app.bus.publish(
-                root_event_factory(
-                    EventType.CLOCK_TICK,
-                    {"tick_type": TickType.DESIRE_EVAL.value},
-                    Source.INTERNAL,
-                )
-            )
+            await publish_tick(TickType.SCHEDULE_BLOCK_START)
+            await publish_tick(TickType.DESIRE_EVAL)
             last_block = now
         if now - last_mutter >= mutter_check_interval:
-            await app.bus.publish(
-                root_event_factory(
-                    EventType.CLOCK_TICK,
-                    {"tick_type": TickType.MUTTER_CHECK.value},
-                    Source.INTERNAL,
-                )
-            )
+            await publish_tick(TickType.MUTTER_CHECK)
             last_mutter = now
         if now - last_chat >= initiate_chat_interval:
-            await app.bus.publish(
-                root_event_factory(
-                    EventType.CLOCK_TICK,
-                    {"tick_type": TickType.INITIATE_CHAT_CHECK.value},
-                    Source.INTERNAL,
-                )
-            )
+            await publish_tick(TickType.INITIATE_CHAT_CHECK)
             last_chat = now
         if now - last_reflect >= reflect_check_interval:
-            await app.bus.publish(
-                root_event_factory(
-                    EventType.CLOCK_TICK,
-                    {"tick_type": TickType.REFLECTION_CHECK.value},
-                    Source.INTERNAL,
-                )
-            )
+            await publish_tick(TickType.REFLECTION_CHECK)
             last_reflect = now
         await app.expression.check_timeouts(now)
         await asyncio.sleep(tick_interval)
 
 
-async def memory_loop(app: Any, *, interval: float = 60.0) -> None:
+async def memory_loop(
+    app: Any,
+    *,
+    interval: float = policy(
+        "runtime", "runtime.parameters.memory_loop_interval", float
+    ),
+) -> None:
     """Settle conversation memory independently of chat and clock ticks."""
     while True:
         await asyncio.sleep(interval)
@@ -348,7 +361,9 @@ async def memory_loop(app: Any, *, interval: float = 60.0) -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logging.getLogger(__name__).exception("对话记忆定时维护失败")
+            logging.getLogger(__name__).exception(
+                policy("runtime", "runtime.copy.memory_loop_text", str)
+            )
 
 
 async def supervise_bus(
@@ -377,11 +392,12 @@ async def supervise_bus(
             failures += 1
             if failures >= max_failures:
                 logging.getLogger(__name__).critical(
-                    "角色总线连续 %d 次异常，停止该运行时", failures
+                    policy("runtime", "runtime.copy.supervise_bus_text_2", str),
+                    failures,
                 )
                 raise
             logging.getLogger(__name__).exception(
-                "总线 run() 异常终止，%.1fs 后重启（第 %d/%d 次）",
+                policy("runtime", "runtime.copy.supervise_bus_text", str),
                 delay,
                 failures,
                 max_failures,
@@ -401,7 +417,7 @@ async def vision_loop(app: Any) -> None:
         if not app.observation_enabled():
             app.clear_desktop_observation()
             app.screen_observer = None
-            await asyncio.sleep(1)
+            await asyncio.sleep(policy("runtime", "runtime.idle_poll_seconds", int))
             continue
         if app.screen_observer is None:
             vision = VisionClient.from_config(app.config.vision)
@@ -426,21 +442,42 @@ async def run_character(host: "_Host", identity: str) -> None:
             supervise_bus(
                 app,
                 backoff_base=1,
-                backoff_max=30,
-                max_failures=8,
-                recovery_streak=3,
+                backoff_max=policy(
+                    "runtime", "runtime.parameters.run_character_backoff_max", int
+                ),
+                max_failures=policy(
+                    "runtime", "runtime.parameters.run_character_max_failures", int
+                ),
+                recovery_streak=policy(
+                    "runtime", "runtime.parameters.run_character_recovery_streak", int
+                ),
             )
         ),
         asyncio.create_task(
             tick_loop(
                 app,
-                tick_interval=60,
-                mutter_check_interval=150,
-                initiate_chat_interval=300,
-                reflect_check_interval=3600,
+                tick_interval=policy(
+                    "runtime", "runtime.parameters.run_character_tick_interval", int
+                ),
+                mutter_check_interval=policy(
+                    "runtime",
+                    "runtime.parameters.run_character_mutter_check_interval",
+                    int,
+                ),
+                initiate_chat_interval=policy(
+                    "runtime",
+                    "runtime.parameters.run_character_initiate_chat_interval",
+                    int,
+                ),
+                reflect_check_interval=policy(
+                    "runtime",
+                    "runtime.parameters.run_character_reflect_check_interval",
+                    int,
+                ),
             )
         ),
         asyncio.create_task(memory_loop(app)),
+        asyncio.create_task(app.reading.study.run()),
     ]
     app.tick_task = tasks[1]
     app.memory_task = tasks[2]
@@ -458,7 +495,9 @@ async def run_character(host: "_Host", identity: str) -> None:
             # Stopping the clock must leave accepted deliveries alive for drain.
             await tasks[0]
         elif host.records[identity]["status"] == "RUNNING":
-            raise RuntimeError("角色后台循环意外结束")
+            raise RuntimeError(
+                policy("runtime", "runtime.copy.run_character_text_2", str)
+            )
     except asyncio.CancelledError:
         raise
     except Exception as error:
@@ -468,7 +507,9 @@ async def run_character(host: "_Host", identity: str) -> None:
             await host.save_record(record)
         await app.reading.quiesce()
         await app.activity.quiesce()
-        logging.getLogger(__name__).exception("角色运行失败 character_id=%s", identity)
+        logging.getLogger(__name__).exception(
+            policy("runtime", "runtime.copy.run_character_text", str), identity
+        )
     finally:
         for task in tasks:
             task.cancel()
@@ -482,17 +523,30 @@ async def stop_character(host: "_Host", identity: str) -> bool:
         await app.transport.quiesce()
     if app.transport_task is not None:
         app.transport_task.cancel()
-        _, pending = await asyncio.wait([app.transport_task], timeout=5)
+        _, pending = await asyncio.wait(
+            [app.transport_task],
+            timeout=policy("runtime", "runtime.parameters.stop_character_timeout", int),
+        )
         if pending:
             return False
     if app.tick_task is not None:
         app.tick_task.cancel()
-        _, pending = await asyncio.wait([app.tick_task], timeout=5)
+        _, pending = await asyncio.wait(
+            [app.tick_task],
+            timeout=policy(
+                "runtime", "runtime.parameters.stop_character_timeout_2", int
+            ),
+        )
         if pending:
             return False
     if app.memory_task is not None:
         app.memory_task.cancel()
-        _, pending = await asyncio.wait([app.memory_task], timeout=5)
+        _, pending = await asyncio.wait(
+            [app.memory_task],
+            timeout=policy(
+                "runtime", "runtime.parameters.stop_character_timeout_3", int
+            ),
+        )
         if pending:
             return False
     await app.reading.quiesce()
@@ -502,20 +556,37 @@ async def stop_character(host: "_Host", identity: str) -> bool:
         live.add(app.activity._task)
     live = {task for task in live if not task.done()}
     if live:
-        _, pending = await asyncio.wait(live, timeout=10)
+        _, pending = await asyncio.wait(
+            live,
+            timeout=policy(
+                "runtime", "runtime.parameters.stop_character_timeout_4", int
+            ),
+        )
         for task in pending:
             task.cancel()
         if pending:
-            _, pending = await asyncio.wait(pending, timeout=5)
+            _, pending = await asyncio.wait(
+                pending,
+                timeout=policy(
+                    "runtime", "runtime.parameters.stop_character_timeout_7", int
+                ),
+            )
             if pending:
                 return False
     await app.bus.quiesce()
-    if app.bus._running and not await app.bus.drain(timeout=15):
+    if app.bus._running and not await app.bus.drain(
+        timeout=policy("runtime", "runtime.parameters.stop_character_timeout_8", int)
+    ):
         return False
     lifecycle = host.lifecycle.get(identity)
     if lifecycle is not None and not lifecycle.done():
         lifecycle.cancel()
-        _, pending = await asyncio.wait([lifecycle], timeout=5)
+        _, pending = await asyncio.wait(
+            [lifecycle],
+            timeout=policy(
+                "runtime", "runtime.parameters.stop_character_timeout_5", int
+            ),
+        )
         if pending:
             return False
     # A cancelled consumer can still have a handler unwinding.
@@ -532,7 +603,12 @@ async def stop_character(host: "_Host", identity: str) -> bool:
     for task in children:
         task.cancel()
     if children:
-        _, pending = await asyncio.wait(children, timeout=5)
+        _, pending = await asyncio.wait(
+            children,
+            timeout=policy(
+                "runtime", "runtime.parameters.stop_character_timeout_6", int
+            ),
+        )
         if pending:
             return False
     # This instance has no remaining writers. Unlike a process crash, its old
@@ -559,7 +635,12 @@ async def host_presence_loop(host: "_Host") -> None:
                             previous.result()
                         except Exception:
                             logging.getLogger(__name__).exception(
-                                "在线补投任务失败 character_id=%s", identity
+                                policy(
+                                    "runtime",
+                                    "runtime.copy.host_presence_loop_text",
+                                    str,
+                                ),
+                                identity,
                             )
                     host.presence_tasks[identity] = asyncio.create_task(
                         host.flush_presence(identity)
@@ -573,10 +654,19 @@ async def host_presence_loop(host: "_Host") -> None:
                             previous.result()
                         except Exception:
                             logging.getLogger(__name__).exception(
-                                "角色停止任务失败 character_id=%s", identity
+                                policy(
+                                    "runtime",
+                                    "runtime.copy.host_presence_loop_text_2",
+                                    str,
+                                ),
+                                identity,
                             )
                     host.stopping[identity] = asyncio.create_task(host.unload(identity))
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(
+            policy(
+                "runtime", "runtime.parameters.host_presence_loop_value_factor", float
+            )
+        )
 
 
 async def host_vision_loop(host: "_Host") -> None:
@@ -588,7 +678,7 @@ async def host_vision_loop(host: "_Host") -> None:
     while True:
         if not host.desktop_connected():
             observer = None
-            await asyncio.sleep(1)
+            await asyncio.sleep(policy("runtime", "runtime.idle_poll_seconds", int))
             continue
         if observer is None:
             vision = VisionClient.from_config(host.config.vision)

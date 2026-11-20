@@ -1,3 +1,4 @@
+import frontendPolicy from "../../../../nyx/settings/frontend.json";
 export type View =
   | "chat"
   | "inner"
@@ -20,18 +21,7 @@ type RightDockProps = {
   onReturnToPet?: () => void;
 };
 
-const ENTRIES: readonly { label: string; icon: string; view: View }[] = [
-  { label: "聊天", icon: "✦", view: "chat" },
-  { label: "内在状态", icon: "◌", view: "inner" },
-  { label: "欲望", icon: "◇", view: "desire" },
-  { label: "活动", icon: "◷", view: "activity" },
-  { label: "任务", icon: "▣", view: "tasks" },
-  { label: "创作", icon: "✎", view: "creation" },
-  { label: "记忆", icon: "▤", view: "memory" },
-  { label: "研究与行为反思", icon: "⌘", view: "behavior" },
-  { label: "评估", icon: "⌁", view: "eval" },
-  { label: "历史", icon: "↺", view: "history" },
-];
+const ENTRIES: readonly { label: string; icon: string; view: View }[] = frontendPolicy.frontend.RightDock.ENTRIES as readonly { label: string; icon: string; view: View }[];
 
 export default function RightDock({ view, onSwitch, onOpenSettings, onReturnToPet }: RightDockProps) {
   return (
@@ -56,14 +46,14 @@ export default function RightDock({ view, onSwitch, onOpenSettings, onReturnToPe
         type="button"
         className={`right-dock__entry right-dock__entry--settings${(view === "settings" || view === "character-create") ? " right-dock__entry--active" : ""}`}
         aria-pressed={(view === "settings" || view === "character-create")}
-        aria-label="设置"
-        title="设置"
+        aria-label={frontendPolicy.copy.RightDock.aria_label}
+        title={frontendPolicy.copy.RightDock.aria_label}
         onClick={onOpenSettings}
       >
         <span aria-hidden="true">⚙</span>
       </button>
       {onReturnToPet ? (
-        <button type="button" className="right-dock__seal" aria-label="收回桌宠" title="收回桌宠" onClick={onReturnToPet}>✣</button>
+        <button type="button" className="right-dock__seal" aria-label={frontendPolicy.copy.RightDock.aria_label_2} title={frontendPolicy.copy.RightDock.aria_label_2} onClick={onReturnToPet}>✣</button>
       ) : <div className="right-dock__seal" aria-hidden="true">✣</div>}
     </div>
   );

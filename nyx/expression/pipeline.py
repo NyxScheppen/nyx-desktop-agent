@@ -52,6 +52,7 @@ from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.facts import is_fact_query
 from nyx.memory.segments import is_recollection_query
+from nyx.policy import policy
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     ActivityContext,
@@ -68,8 +69,8 @@ from nyx.types import (
     Skill,
 )
 
-_DISCUSSION_TOOL_NAMES = frozenset(
-    ("memory_recall", "knowledge_search", "deep_research")
+_DISCUSSION_TOOL_NAMES = policy(
+    "behavior", "skills.discussion.tool_names", frozenset[str]
 )
 
 
@@ -106,21 +107,21 @@ class ReplyState(TypedDict):
     annotation: ReplyAnnotation | None
     skill: Skill | None
     mode: ContextMode
-    context: list[Message]       # 回溯上下文（facade 入口填，快慢一致；不含当前消息）
+    context: list[Message]  # 回溯上下文（facade 入口填，快慢一致；不含当前消息）
     conversation_segments: list[ConversationSegment]  # 保留来源时间，不伪装成 Message
-    memories: list[Memory]       # 预算筛选后实际进入 prompt 的记忆
-    facts: list[MemoryFact]       # 当前有效事实（与原始记忆隔离）
-    state: CurrentState          # 当前状态快照
+    memories: list[Memory]  # 预算筛选后实际进入 prompt 的记忆
+    facts: list[MemoryFact]  # 当前有效事实（与原始记忆隔离）
+    state: CurrentState  # 当前状态快照
     # 累积：每轮 think/speak 追加
     think: list[str]
     speak: list[str]
     needs_continuation: bool
     ask: str | None
-    round: int                   # 已完成 think/speak 的轮数（≤ slow_max_rounds）
-    correlation_id: str          # 本次 reply 溯源
-    last_slow_at: float          # 上次慢通道时间（facade 维护，每 reply 入 state）
+    round: int  # 已完成 think/speak 的轮数（≤ slow_max_rounds）
+    correlation_id: str  # 本次 reply 溯源
+    last_slow_at: float  # 上次慢通道时间（facade 维护，每 reply 入 state）
     tool_feedback: str
-    tool_outputs: list[str]      # use_tools 查到的工具结果（慢通道专属）
+    tool_outputs: list[str]  # use_tools 查到的工具结果（慢通道专属）
     tool_recall_candidates: list[tuple[str, str]]
     intent: UserIntent
     temporal_context: str
@@ -136,18 +137,19 @@ class ReplyDeps:
     llm: LlmClient
     evaluator: Evaluator
     memory: MemoryFacade
-    inner_life: InnerLifeFacade          # 获取统一当前状态
+    inner_life: InnerLifeFacade  # 获取统一当前状态
     canon: str
     ask_guidance: str
     config: ExpressionConfig
-    history: deque[Message]              # facade 持有的会话历史（跨 reply）
-    tools: ToolRegistry                  # use_tools 节点查资料（慢通道）
+    history: deque[Message]  # facade 持有的会话历史（跨 reply）
+    tools: ToolRegistry  # use_tools 节点查资料（慢通道）
     knowledge_boundary: str | None
     collect_reply_inputs: Callable[[ReplyState], Awaitable[dict[str, Any]]]
     finalize_user_reply: Callable[[ReplyState], Awaitable[str]]
     archive_user_reply: Callable[[str, ReplyState | None], Awaitable[None]]
     has_pending_reply_inputs: Callable[[list[str], str | None], Awaitable[bool]]
     checkpointer: BaseCheckpointSaver[str] | None = None
+    reading_session: bool = False
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -167,12 +169,24 @@ def _rounds_block(
     """
     if not think:
         return ""
-    lines = ["[本回合前面的思考]"]
+    lines = policy("expression", "pipeline.copy.rounds_block_words", list[str])
     for i, (t, s) in enumerate(zip(think, speak), start=1):
         at = timestamps[i - 1] if timestamps and i <= len(timestamps) else None
-        lines.append(f"[生成时间={format_prompt_time(at)}]")
-        lines.append(f"第{i}轮内心：{t}")
-        lines.append(f"第{i}轮对外：{s}")
+        lines.append(
+            policy("expression", "pipeline.templates.rounds_block_text", str).format(
+                p0=format_prompt_time(at)
+            )
+        )
+        lines.append(
+            policy("expression", "pipeline.templates.rounds_block_text_2", str).format(
+                p0=i, p1=t
+            )
+        )
+        lines.append(
+            policy("expression", "pipeline.templates.rounds_block_text_3", str).format(
+                p0=i, p1=s
+            )
+        )
     return "\n".join(lines)
 
 
@@ -183,12 +197,16 @@ def _parse_reply(raw: str) -> tuple[str, str, bool]:
     """
     data = json.loads(raw)
     if not isinstance(data, dict):
-        raise ValueError(f"respond JSON 应是对象，得到 {type(data).__name__}")
+        raise ValueError(
+            policy("expression", "pipeline.templates.parse_reply_text", str).format(
+                p0=type(data).__name__
+            )
+        )
     parsed = cast(dict[str, Any], data)
     think = parsed.get("think")
     speak = parsed.get("speak")
     if not isinstance(speak, str) or not speak.strip():
-        raise ValueError("respond JSON 缺 speak 或非空字符串")
+        raise ValueError(policy("expression", "pipeline.copy.parse_reply_text", str))
     if not isinstance(think, str):
         think = ""
     continuation = parsed.get("needs_continuation", False)
@@ -232,21 +250,33 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     def user_prompt(state: ReplyState) -> str:
         if state["input_events"]:
             current = "\n\n".join(
-                f"[用户输入{i + 1}；原始时间={format_prompt_time(event.timestamp)}；"
-                f"{'已被明确撤回' if i < state['request_start_index'] else '有效请求'}"
-                "]\n" + event.content["message"]
+                policy(
+                    "expression", "pipeline.templates.user_prompt_text_2", str
+                ).format(
+                    p0=i + 1,
+                    p1=format_prompt_time(event.timestamp),
+                    p2=policy("expression", "pipeline.copy.user_prompt_extra_text", str)
+                    if i < state["request_start_index"]
+                    else policy(
+                        "expression", "pipeline.copy.user_prompt_extra_text_2", str
+                    ),
+                )
+                + event.content["message"]
                 for i, event in enumerate(state["input_events"])
             )
-            current += "\n以上保留原话。以较晚纠正为准；撤回不抹除已执行动作。"
+            current += policy("expression", "pipeline.copy.user_prompt_text", str)
         else:
             current = state["message"]
         summaries = "\n".join(
-            f"[步骤{step['id']}；输入版本{step['input_revision']}；"
-            f"生成时间={format_prompt_time(step['created_at'])}；"
+            policy("expression", "pipeline.templates.user_prompt_text_3", str).format(
+                p0=step["id"],
+                p1=step["input_revision"],
+                p2=format_prompt_time(step["created_at"]),
+            )
             + (
-                "当前判断]\n"
+                policy("expression", "pipeline.copy.user_prompt_text_2", str)
                 if step["input_revision"] == state["input_revision"]
-                else "旧输入、需复核]\n"
+                else policy("expression", "pipeline.copy.user_prompt_text_3", str)
             )
             + step["summary"]
             for step in state["reasoning_steps"]
@@ -254,10 +284,16 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         return "\n\n".join(
             part
             for part in (
-                bound_material_block(
-                    f"[阅读资料原始时间=未知；本轮取用时间={format_prompt_time(state['sampled_at'])}]\n"
-                    + state["reading_context"],
-                    _READING_BLOCK_MAX_CHARS,
+                (
+                    state["reading_context"]
+                    if deps.reading_session
+                    else bound_material_block(
+                        policy(
+                            "expression", "pipeline.templates.user_prompt_text", str
+                        ).format(p0=format_prompt_time(state["sampled_at"]))
+                        + state["reading_context"],
+                        _READING_BLOCK_MAX_CHARS,
+                    )
                 )
                 if state["reading_context"]
                 else "",
@@ -269,7 +305,10 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     message_at=state["message_at"],
                     annotation_at=state["annotation_at"],
                 ),
-                "[工作摘要，仅为判断，不是执行事实]\n" + summaries if summaries else "",
+                policy("expression", "pipeline.copy.user_prompt_text_4", str)
+                + summaries
+                if summaries
+                else "",
             )
             if part
         )
@@ -287,10 +326,17 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     async def search_lessons(query: str, state: ReplyState) -> list[Memory]:
         try:
             return await deps.memory.search_behavior_experiences(
-                query, "discussion" if _discussion(state) else "conversation",
+                query,
+                "reading"
+                if deps.reading_session
+                else "discussion"
+                if _discussion(state)
+                else "conversation",
             )
         except Exception:
-            _LOGGER.exception("经验召回失败")
+            _LOGGER.exception(
+                policy("expression", "pipeline.copy.search_lessons_text", str)
+            )
             return []
 
     async def classify(state: ReplyState) -> dict[str, Any]:
@@ -303,7 +349,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             if deps.checkpointer is not None
             else None
         )
-        if saved is not None or _discussion(state):
+        if saved is not None or _discussion(state) or deps.reading_session:
             mode = ContextMode.SLOW
         else:
             mode = classify_channel(
@@ -326,11 +372,20 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         texts = [e.content["message"] for e in state["input_events"]]
         query = build_reply_query(
             texts[state["request_start_index"] :] if texts else [state["message"]],
-            [m.content for m in backtrack[-3:]],
+            [
+                m.content
+                for m in backtrack[
+                    -policy(
+                        "expression",
+                        "pipeline.parameters.assemble_query_chars_or_items",
+                        int,
+                    ) :
+                ]
+            ],
         )
         segment_search = getattr(deps.memory, "search_conversation_segments", None)
         recalled_segments: list[ConversationSegment] = []
-        recall_conversation = (
+        recall_conversation = not deps.reading_session and (
             not _discussion(state) or is_recollection_query(state["message"])
         )
         if recall_conversation and callable(segment_search):
@@ -338,9 +393,17 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 Callable[[str, int], Awaitable[list[Any]]], segment_search
             )
             try:
-                segments = await segment_fn(query, 20)
+                segments = await segment_fn(
+                    query, policy("expression", "pipeline.segment_recall_limit", int)
+                )
                 context_text = "\n".join(
-                    f"{'用户' if item.role == 'user' else '尼克斯'}：{item.content}"
+                    (
+                        policy("expression", "pipeline.copy.embedded_text", str)
+                        if item.role == "user"
+                        else policy("expression", "pipeline.copy.embedded_text_2", str)
+                    )
+                    + "："
+                    + item.content
                     for item in context
                 )
                 recalled_segments = select_prompt_segments(
@@ -352,11 +415,14 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     ]
                 )
             except Exception:
-                _LOGGER.exception("对话段召回失败")
+                _LOGGER.exception(
+                    policy("expression", "pipeline.copy.assemble_text", str)
+                )
         # 普通聊天召回连续对话段原文；阅读/网页知识走专门的知识检索。
         memories = (
             await search_lessons(query, state)
-            if state["mode"] is ContextMode.SLOW else []
+            if state["mode"] is ContextMode.SLOW
+            else []
         )
         facts = (
             await search_facts(query)
@@ -415,10 +481,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     {
                         "role": "user",
                         "content": user_prompt(state)
-                        + '\n只输出 JSON：{"summary":"当前理解、约束与下一步摘要",'
-                        '"next_action":"continue/tools/answer"}。'
-                        "summary 非空且不超过1000字符。"
-                        "不要输出详尽推理链；工具只能由后续工具子图执行。",
+                        + policy(
+                            "expression",
+                            "pipeline.parameters.reason_step_content_text",
+                            str,
+                        ),
                     },
                 ],
                 module="expression",
@@ -429,14 +496,22 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             await deps.evaluator.evaluate(output)
             parsed: Any = json.loads(output.content)
             if not isinstance(parsed, dict):
-                raise ValueError("分析输出不是 JSON 对象")
+                raise ValueError(
+                    policy("expression", "pipeline.copy.reason_step_text", str)
+                )
             data = cast(dict[str, Any], parsed)
             if (
                 not isinstance(data.get("summary"), str)
-                or not 1 <= len(data["summary"].strip()) <= 1000
+                or not 1
+                <= len(data["summary"].strip())
+                <= policy(
+                    "expression", "pipeline.parameters.reason_step_value_limit", int
+                )
                 or data.get("next_action") not in ("continue", "tools", "answer")
             ):
-                raise ValueError("分析摘要或动作非法")
+                raise ValueError(
+                    policy("expression", "pipeline.copy.reason_step_text_2", str)
+                )
             steps.append(
                 {
                     "id": count,
@@ -447,10 +522,16 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             )
             action = data["next_action"]
         except Exception:
-            _LOGGER.exception("分步分析失败，使用原始输入和已确认结果回答")
+            _LOGGER.exception(
+                policy("expression", "pipeline.copy.reason_step_text_3", str)
+            )
         # Durable input/checkpoint failures must never become model fallback.
         refresh = await pending(state)
-        if count >= 3 and action == "continue":
+        if (
+            count
+            >= policy("expression", "pipeline.parameters.reason_step_count_limit", int)
+            and action == "continue"
+        ):
             action = "answer"
         return {
             "reasoning_step_count": count,
@@ -463,16 +544,23 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         skill = state.get("skill")
         config: RunnableConfig = {
             "configurable": {"thread_id": state["correlation_id"]},
-            "recursion_limit": 200,
+            "recursion_limit": policy(
+                "expression", "pipeline.graph_recursion_limit", int
+            ),
         }
         snapshot = await tool_graph.aget_state(config)
         schemas = (
-            deps.tools.schema(skill.tool_names)
-            if skill and skill.name == "discussion"
+            [
+                schema
+                for schema in deps.tools.schema()
+                if schema["function"]["name"] in skill.tool_names
+            ]
+            if skill and (skill.name == "discussion" or deps.reading_session)
             else [
                 schema
                 for schema in deps.tools.schema()
                 if schema["function"]["name"] not in _DISCUSSION_TOOL_NAMES
+                and schema["function"]["name"] not in ("book_search", "book_excerpt")
             ]
         )
         answered = state["answered_attempt"]
@@ -589,7 +677,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         prior = _rounds_block(state["think"], state["speak"], state["round_times"])
         task = RESPOND_TASK_CONTINUE if state["speak"] else RESPOND_TASK
         user = "\n".join(p for p in (prior, user, task) if p)
-        think, speak, needs_continuation = "", "我刚才有点卡住了，先让我缓一缓。", False
+        think, speak, needs_continuation = (
+            "",
+            policy("expression", "pipeline.copy.respond_text", str),
+            False,
+        )
         fallback = True
         for _attempt in range(2):
             # Input I/O is outside the model failure boundary, including parse retries.
@@ -599,29 +691,38 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 for segment in state["conversation_segments"]:
                     try:
                         await deps.memory.record_conversation_segment_recall(
-                            segment.id, state["correlation_id"],
+                            segment.id,
+                            state["correlation_id"],
                         )
                         if segment.retrieval_trace_id:
                             await deps.memory.record_conversation_trace_injection(
-                                segment.retrieval_trace_id, segment.id,
+                                segment.retrieval_trace_id,
+                                segment.id,
                                 state["correlation_id"],
                             )
                     except Exception:
-                        _LOGGER.exception("对话段召回计数失败")
+                        _LOGGER.exception(
+                            policy("expression", "pipeline.copy.respond_text_2", str)
+                        )
             for segment_id, rendered in state["tool_recall_candidates"]:
                 if rendered not in system:
                     continue
                 try:
                     await deps.memory.record_conversation_segment_recall(
-                        segment_id, state["correlation_id"],
+                        segment_id,
+                        state["correlation_id"],
                     )
                     trace_id = json.loads(rendered).get("trace_id")
                     if trace_id:
                         await deps.memory.record_conversation_trace_injection(
-                            trace_id, segment_id, state["correlation_id"],
+                            trace_id,
+                            segment_id,
+                            state["correlation_id"],
                         )
                 except Exception:
-                    _LOGGER.exception("对话段召回计数失败")
+                    _LOGGER.exception(
+                        policy("expression", "pipeline.copy.respond_text_2", str)
+                    )
             try:
                 output = await deps.llm.complete(
                     [
@@ -640,9 +741,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             except ValueError:
                 # Invalid model output still contributes usage records.
                 await deps.evaluator.evaluate(output)
-                user += (
-                    "\n上一次输出无法解析。只输出合法 JSON 对象，"
-                    "必须包含非空字符串 speak；不要输出 Markdown 或代码围栏。"
+                user += policy(
+                    "expression", "pipeline.parameters.respond_value_text", str
                 )
                 continue
             try:
@@ -696,7 +796,12 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         return (
             "reason_step"
             if (
-                state["reasoning_step_count"] < 3
+                state["reasoning_step_count"]
+                < policy(
+                    "expression",
+                    "pipeline.parameters.route_after_assemble_state_reasoning_step_count__limit",
+                    int,
+                )
                 and state["reasoning_step_count"] == len(state["reasoning_steps"])
             )
             else "use_tools"

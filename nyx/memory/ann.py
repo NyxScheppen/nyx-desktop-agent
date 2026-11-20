@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from itertools import combinations
 from typing import TypeVar
 
+from nyx.policy import policy
 from nyx.types import Memory
 
 
@@ -56,8 +57,8 @@ class AnnIndex:
     def __init__(
         self,
         *,
-        planes: int = 16,
-        tables: int = 4,
+        planes: int = policy("memory", "ann.parameters.init___planes", int),
+        tables: int = policy("memory", "ann.parameters.init___tables", int),
         seed: int = 0,
         projection_cache: dict[int, Projection] | None = None,
     ) -> None:
@@ -76,8 +77,8 @@ class AnnIndex:
         cls,
         memories: list[Memory],
         *,
-        planes: int = 16,
-        tables: int = 4,
+        planes: int = policy("memory", "ann.parameters.build_planes", int),
+        tables: int = policy("memory", "ann.parameters.build_tables", int),
         seed: int = 0,
         projection_cache: dict[int, Projection] | None = None,
     ) -> AnnIndex:

@@ -7,6 +7,7 @@ from dataclasses import asdict
 from typing import Any, Literal, cast
 
 from nyx.db import Database
+from nyx.policy import policy
 from nyx.types import Skill
 
 RecordTable = Literal["research_run", "behavior_reflection"]
@@ -61,7 +62,7 @@ class BehaviorStore:
     async def list_records(
         self,
         table: RecordTable,
-        limit: int = 50,
+        limit: int = policy("behavior", "store.defaults.list_records_limit", int),
         correlation_id: str | None = None,
     ) -> list[dict[str, Any]]:
         where, params = "", []
@@ -70,10 +71,22 @@ class BehaviorStore:
         async with nullcontext() if self.db.in_transaction else self.db.lock:
             cursor = await self.db.conn.execute(
                 f"SELECT data FROM {table}{where} ORDER BY created_at DESC LIMIT ?",
-                [*params, max(1, min(limit, 200))],
+                [
+                    *params,
+                    max(
+                        1,
+                        min(
+                            limit,
+                            policy(
+                                "behavior", "store.parameters.list_records_max", int
+                            ),
+                        ),
+                    ),
+                ],
             )
             rows = await cursor.fetchall()
-        return [cast(dict[str, Any], json.loads(row["data"])) for row in rows]
+        records = [cast(dict[str, Any], json.loads(row["data"])) for row in rows]
+        return [record for record in records if record.get("target_skill") != "reading"]
 
     async def experience_ids(
         self,
@@ -91,7 +104,8 @@ class BehaviorStore:
         records = [cast(dict[str, Any], json.loads(row["data"])) for row in rows]
         if user_corrections_only:
             records = [
-                record for record in records
+                record
+                for record in records
                 if record.get("evidence", {}).get("trigger_type") == "user_correction"
                 and isinstance(record["evidence"].get("user_feedback_raw"), str)
                 and record["evidence"]["user_feedback_raw"].strip()
@@ -136,7 +150,11 @@ class SkillStore:
             )
             row = await cursor.fetchone()
         if row is None:
-            raise ValueError(f"skill 尚未初始化：{name}")
+            raise ValueError(
+                policy("behavior", "store.templates.load_extra_text", str).format(
+                    p0=name
+                )
+            )
         baseline = self.baselines.get(name)
         grants = (
             baseline.tool_names
@@ -210,14 +228,14 @@ class SkillStore:
     ) -> Skill:
         """Must run in B5's transaction, after B4 durably recorded its evidence."""
         if not self.db.in_transaction:
-            raise RuntimeError("skill 更新需要行为反思提交事务")
+            raise RuntimeError(policy("behavior", "store.copy.apply_extra_text", str))
         cursor = await self.db.conn.execute(
             "SELECT status,data FROM behavior_reflection WHERE id=?",
             (reflection_id,),
         )
         row = await cursor.fetchone()
         if row is None or row["status"] != "persisted":
-            raise ValueError("skill 修改必须位于已持久化行为反思下游")
+            raise ValueError(policy("behavior", "store.copy.apply_extra_text_2", str))
         record = cast(dict[str, Any], json.loads(row["data"]))
         proposal = record["reflection"]
         if (
@@ -226,9 +244,11 @@ class SkillStore:
             or proposal["proposed_skill_text"] != body
             or record["base_skill_version"] != expected_version
         ):
-            raise ValueError("skill 修改与已持久化行为反思不一致")
-        if not body.strip() or len(body) > 1500:
-            raise ValueError("skill 正文必须为 1–1500 字符")
+            raise ValueError(policy("behavior", "store.copy.apply_extra_text_3", str))
+        if not body.strip() or len(body) > policy(
+            "behavior", "service.parameters.validate_value_limit", int
+        ):
+            raise ValueError(policy("behavior", "store.copy.apply_extra_text_4", str))
         current = await self.load(name)
         if current.version != expected_version:
             raise ValueError("skill_version_conflict")

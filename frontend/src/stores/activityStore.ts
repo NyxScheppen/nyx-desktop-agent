@@ -1,3 +1,4 @@
+import frontendPolicy from "../../../nyx/settings/frontend.json";
 import { coalescedRefresh } from "../api/coalescedRefresh";
 import { captureScope, isScopeCurrent, scopedSetter } from "../api/characterScope";
 import { create } from "zustand";
@@ -13,7 +14,7 @@ import type { Activity, ActivitySnapshot, AssignedTask } from "../types/api";
 
 // 活动时间线面板：REST 快照 + SSE activity_* 事件触发 refresh。
 // 「产出」与「创作」页数据同源：results 只保存按结束时间倒序的创作活动。
-const RESULTS_PAGE_SIZE = 12;
+const RESULTS_PAGE_SIZE = frontendPolicy.frontend.activityStore.RESULTS_PAGE_SIZE;
 let resultsGeneration = 0;
 
 type ActivityStoreState = {

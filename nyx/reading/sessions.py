@@ -14,6 +14,8 @@ import json
 import logging
 import re
 import time
+from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
@@ -22,6 +24,8 @@ from nyx.behavior.context import behavior_context
 from nyx.behavior.store import skill_snapshot
 from nyx.expression.pipeline import ReplyState
 from nyx.policy import policy
+from nyx.reading.outputs import SummaryTooLong, complete
+from nyx.tools.execution import read_tool
 from nyx.tools.registry import ToolRegistry
 from nyx.types import Book, Message, Paragraph, Tool
 
@@ -64,6 +68,108 @@ def _selection_text(text: str) -> str:
         text,
     )
     return " ".join(text.split())
+
+
+def _terms(query: str) -> set[str]:
+    words = re.findall(r"[\w]+", query.casefold())
+    terms = set(words)
+    for word in words:
+        if any("\u4e00" <= char <= "\u9fff" for char in word):
+            terms.update(word[i : i + 2] for i in range(len(word) - 1))
+    return terms
+
+
+def _lookup(items: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    terms = _terms(query)
+    ranked = sorted(
+        (
+            (
+                sum(
+                    json.dumps(item, ensure_ascii=False).casefold().count(term)
+                    for term in terms
+                ),
+                item,
+            )
+            for item in items
+        ),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    return [item for score, item in ranked if score][: _PARAMS["search_limit"]]
+
+
+def _ranges(units: list[dict[str, Any]]) -> list[list[int]]:
+    result: list[list[int]] = []
+    for unit in sorted(units, key=lambda m: m["start"]):
+        if result and unit["start"] <= result[-1][1] + 1:
+            result[-1][1] = max(result[-1][1], unit["end"])
+        else:
+            result.append([unit["start"], unit["end"]])
+    return result
+
+
+def _frontier(data: dict[str, Any]) -> list[dict[str, Any]]:
+    ready = {m["id"]: m for m in data["materials"] if m["state"] == "completed"}
+    covered: set[str] = set()
+    selected: list[dict[str, Any]] = []
+    for unit in sorted(data["overviews"], key=lambda m: m["level"], reverse=True):
+        leaves = set(unit.get("material_ids", []))
+        if (
+            unit["state"] == "completed"
+            and leaves
+            and leaves <= ready.keys()
+            and not leaves & covered
+        ):
+            selected.append(unit)
+            covered.update(leaves)
+    selected.extend(m for key, m in ready.items() if key not in covered)
+    return sorted(selected, key=lambda m: m["start"])
+
+
+def _material_pack(
+    data: dict[str, Any],
+    units: list[dict[str, Any]],
+) -> dict[str, Any]:
+    ready = [m for m in data["materials"] if m["state"] == "completed"]
+    ids = {
+        identity
+        for unit in units
+        for identity in unit.get("material_ids", [unit["id"]])
+    }
+    provided = [m for m in ready if m["id"] in ids]
+    return {
+        "materials": [
+            {k: m[k] for k in ("id", "start", "end", "summary")} for m in units
+        ],
+        "coverage": {
+            "complete": len(provided) == len(data["materials"]),
+            "prepared": len(ready),
+            "provided": len(provided),
+            "total": len(data["materials"]),
+            "prepared_ranges": _ranges(ready),
+            "provided_ranges": _ranges(provided),
+            "gaps": [
+                {k: m[k] for k in ("start", "end", "state")}
+                for m in data["materials"]
+                if m["state"] != "completed"
+            ],
+        },
+    }
+
+
+def _packed_chars(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False))
+
+
+def _model_reply(turn: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "body": turn.get("reply_body", _COPY["legacy_reply"]),
+            "sources": turn.get("reply_sources", []),
+            "reply_id": turn.get("reply_id", turn["id"]),
+        },
+        ensure_ascii=False,
+    )
 
 
 class ReadingSessions:
@@ -197,7 +303,10 @@ class ReadingSessions:
             "history": history,
             "materials": data["materials"],
             "graph_work": data["graph_work"],
-            "pending_evidence": data["evidence_seq"] > data["consumed_seq"],
+            "pending_evidence": (
+                data["evidence_seq"] > data["consumed_seq"]
+                or bool(data.get("graph_deferred"))
+            ),
             "sessions": [
                 {
                     "id": s["id"],
@@ -369,15 +478,26 @@ class ReadingSessions:
                 self._wake.set()
                 return
 
-    async def search(self, book_id: str, query: str) -> list[dict[str, Any]]:
+    async def search(
+        self,
+        book_id: str,
+        query: str,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> list[dict[str, Any]]:
         book = await self.reader.get_book(book_id)
-        paragraphs = await self.store.list_paragraphs(book_id, 1, book.total_paragraphs)
+        if (start is None) != (end is None) or (
+            start is not None
+            and not (1 <= start <= cast(int, end) <= book.total_paragraphs)
+        ):
+            raise ValueError("search range must belong to the current book")
+        paragraphs = await self.store.list_paragraphs(
+            book_id,
+            start or 1,
+            end or book.total_paragraphs,
+        )
         # Candidates already belong to this book, including its final paragraphs.
-        words = re.findall(r"[\w]+", query.casefold())
-        terms = set(words)
-        for word in words:
-            if any("\u4e00" <= char <= "\u9fff" for char in word):
-                terms.update(word[i : i + 2] for i in range(len(word) - 1))
+        terms = _terms(query)
         ranked = sorted(
             paragraphs,
             key=lambda p: sum(p.text.casefold().count(term) for term in terms),
@@ -392,6 +512,12 @@ class ReadingSessions:
             "paragraph_id": paragraph.id,
             "index": paragraph.index,
             "text": paragraph.text[: _PARAMS["excerpt_chars"]],
+            "section": asdict(paragraph.section) if paragraph.section else None,
+            "promotion": bool(
+                re.search(
+                    policy("reading", "study.promotion_pattern", str), paragraph.text
+                )
+            ),
         }
 
     async def excerpt(self, book_id: str, start: int, end: int) -> list[dict[str, Any]]:
@@ -399,12 +525,16 @@ class ReadingSessions:
         return [self._source(p) for p in paragraphs[: _PARAMS["search_limit"]]]
 
     async def _complete(
-        self, kind: str, payload: Any, correlation: str
+        self,
+        kind: str,
+        payload: Any,
+        correlation: str,
+        validate: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         system = _PROMPTS[kind].replace(
             "{summary_chars}",
             str(
-                _PARAMS["overview_chars"]
+                payload.get("summary_chars", _PARAMS["overview_chars"])
                 if kind == "overview"
                 else _PARAMS["summary_chars"]
             ),
@@ -413,26 +543,17 @@ class ReadingSessions:
             system = _PROMPTS["material_boundary"] + system
         token = behavior_context.set({"scope": "reading", "scenario": kind})
         try:
-            output = await self.reader._llm.complete(
-                [
-                    {"role": "system", "content": system},
-                    {
-                        "role": "user",
-                        "content": json.dumps(payload, ensure_ascii=False),
-                    },
-                ],
-                module="reading",
-                output_type=f"study_{kind}",
-                correlation_id=correlation,
-                json_mode=True,
+            return await complete(
+                self.reader._llm,
+                self.reader._evaluator,
+                kind,
+                system,
+                payload,
+                correlation,
+                validate,
             )
-            await self.reader._evaluator.evaluate(output)
         finally:
             behavior_context.reset(token)
-        value: Any = json.loads(output.content)
-        if not isinstance(value, dict):
-            raise ValueError(_COPY["error_material"])
-        return cast(dict[str, Any], value)
 
     async def _sources(self, book_id: str, nodes: list[dict[str, Any]]) -> None:
         book = await self.reader.get_book(book_id)
@@ -458,10 +579,31 @@ class ReadingSessions:
         correlation: str,
     ) -> dict[str, Any]:
         structure = await self.store.list_paragraphs(book.id, 1, book.total_paragraphs)
-        presentation = await self._complete(
+
+        async def validate(value: dict[str, Any]) -> None:
+            if value["scope"] or value["start"] is not None:
+                if (
+                    not value["user_requirement"]
+                    or value["user_requirement"] not in message
+                ):
+                    raise ValueError("scope requires verbatim current user wording")
+            elif value["user_requirement"]:
+                raise ValueError("unrestricted scope has no user_requirement")
+            if value["start"] is not None and not (
+                isinstance(value["start"], int)
+                and isinstance(value["end"], int)
+                and 1 <= value["start"] <= value["end"] <= book.total_paragraphs
+            ):
+                raise ValueError(_COPY["error_material"])
+            if (value["start"] is None) != (value["end"] is None):
+                raise ValueError(_COPY["error_material"])
+            if not isinstance(value["feedback"], bool):
+                raise ValueError(_COPY["error_material"])
+
+        return await self._complete(
             "scope",
             {
-                "prior": prior,
+                "prior": prior if prior.get("user_requirement") else None,
                 "message": message,
                 "structure": [
                     {"index": p.index, "heading": p.text}
@@ -471,21 +613,8 @@ class ReadingSessions:
                 "total_paragraphs": book.total_paragraphs,
             },
             correlation,
+            validate,
         )
-        if presentation["start"] is not None and not (
-            isinstance(presentation["start"], int)
-            and isinstance(presentation["end"], int)
-            and 1
-            <= presentation["start"]
-            <= presentation["end"]
-            <= book.total_paragraphs
-        ):
-            raise ValueError(_COPY["error_material"])
-        if (presentation["start"] is None) != (presentation["end"] is None):
-            raise ValueError(_COPY["error_material"])
-        if not isinstance(presentation["feedback"], bool):
-            raise ValueError(_COPY["error_material"])
-        return presentation
 
     async def _reply(self, book_id: str, identity: str, input_id: str) -> None:
         execution = str(uuid4())
@@ -529,13 +658,7 @@ class ReadingSessions:
                 current_session["presentation"] = presentation
                 if await self.store.save_study(book_id, scope_revision, scope_data):
                     break
-            raw = payload["message"]
-            if payload["notes"]:
-                raw += "\n" + json.dumps(
-                    {"sent_notes": payload["notes"]}, ensure_ascii=False
-                )
-            if payload["annotation"]:
-                raw += "\n" + json.dumps(payload["annotation"], ensure_ascii=False)
+            raw = json.dumps([{"input_id": input_id, **payload}], ensure_ascii=False)
             history = [
                 Message(
                     role=cast(Literal["user", "nyx"], role),
@@ -546,85 +669,59 @@ class ReadingSessions:
                 for t in session["turns"]
                 if t["status"] == "committed"
                 for role, text in (
-                    ("user", json.dumps(t["input"], ensure_ascii=False)),
-                    ("nyx", t["reply"]),
+                    (
+                        "user",
+                        json.dumps(
+                            {"input_id": t["id"], **t["input"]}, ensure_ascii=False
+                        ),
+                    ),
+                    ("nyx", _model_reply(t)),
                 )
-            ]
-            # Compress only this session; a frozen settlement still reads all turns.
-            if sum(len(m.content) for m in history) > _PARAMS["history_chars"]:
-                compact = await self._complete(
-                    "compress",
-                    {
-                        "prior": session["compressed"],
-                        "turns": [
-                            t
-                            for t in session["turns"][session["compressed_count"] :]
-                            if t["status"] == "committed"
-                        ],
-                    },
-                    f"reading:{identity}:{input_id}",
-                )
-                session["compressed"] = compact["summary"]
-                history = [
-                    Message(
-                        role="nyx",
-                        content=compact["summary"],
-                        timestamp=session["created_at"],
-                    )
-                ]
-            available = data["materials"]
-            if data["overviews"]:
-                top_level = max(unit["level"] for unit in data["overviews"])
-                top = [unit for unit in data["overviews"] if unit["level"] == top_level]
-                if all(unit["state"] == "completed" for unit in top):
-                    available = top
-            materials = [
+            ][-_PARAMS["recent_turns"] * 2 :]
+            while True:
+                overview_revision, overview_data = await self._load(book_id)
+                pack = _material_pack(overview_data, _frontier(overview_data))
+                if _packed_chars(pack) <= _PARAMS["context_chars"]:
+                    break
+                await self._overview(book_id, overview_revision, overview_data)
+                _, latest = await self._load(book_id)
+                if _packed_chars(
+                    _material_pack(latest, _frontier(latest))
+                ) >= _packed_chars(pack):
+                    if any(m["state"] == "queued" for m in latest["overviews"]):
+                        await asyncio.sleep(_PARAMS["worker_ms"] / 1000)
+                    elif any(m["state"] == "failed" for m in latest["overviews"]):
+                        raise ValueError(_COPY["error_material"])
+            structure = await self.store.list_paragraphs(
+                book_id,
+                1,
+                book.total_paragraphs,
+            )
+            chapter_index = [
                 {
-                    "id": m["id"],
-                    "start": m["start"],
-                    "end": m["end"],
-                    "summary": m["summary"],
+                    "start": p.index,
+                    "end": next(
+                        (
+                            q.index - 1
+                            for q in structure
+                            if q.is_chapter_start and q.index > p.index
+                        ),
+                        book.total_paragraphs,
+                    ),
+                    "title": p.section.title if p.section else p.text.splitlines()[0],
                 }
-                for m in available
-                if m["state"] == "completed"
+                for p in structure
+                if p.is_chapter_start
             ]
-            packed = json.dumps(materials, ensure_ascii=False)
-            complete = (
-                all(m["state"] == "completed" for m in data["materials"])
-                and all(m["state"] == "completed" for m in available)
-                and len(packed) <= _PARAMS["context_chars"]
-            )
-            if len(packed) > _PARAMS["context_chars"]:
-                materials = materials[
-                    : max(1, len(materials) * _PARAMS["context_chars"] // len(packed))
-                ]
-            pending_evidence = [
-                t
-                for s in data["sessions"]
-                for t in s["turns"]
-                if t["status"] == "committed"
-                and t["evidence_seq"] > data["consumed_seq"]
-            ]
-            context = (
-                _PROMPTS["context"]
-                + _PROMPTS["material_boundary"]
-                + json.dumps(
-                    {
-                        "book": asdict(await self.reader.get_book(book_id)),
-                        "coverage": {
-                            "complete": complete,
-                            "prepared": len(materials),
-                            "total": len(data["materials"]),
-                        },
-                        "materials": materials,
-                        "passages": await self.search(book_id, raw),
-                        "understanding": data["graph"],
-                        "pending_evidence": pending_evidence,
-                        "presentation": presentation,
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            context_data = {
+                "book": asdict(book),
+                **pack,
+                "chapter_index": chapter_index,
+                "presentation": presentation,
+                # Missing only in documents written before staged replies existed.
+                "active_requirements": session.get("requirements", []),
+            }
+            context = json.dumps(context_data, ensure_ascii=False)
 
             async def collect(state: ReplyState) -> dict[str, Any]:
                 nonlocal presentation
@@ -671,16 +768,20 @@ class ReadingSessions:
                     active["presentation"] = presentation
                     if await self.store.save_study(book_id, scope_revision, latest):
                         break
-                message = "\n".join(
-                    json.dumps(t["input"], ensure_ascii=False)
-                    for t in current_session["turns"]
-                    if t["id"] in claimed
+                message = json.dumps(
+                    [
+                        {"input_id": t["id"], **t["input"]}
+                        for t in current_session["turns"]
+                        if t["id"] in claimed
+                    ],
+                    ensure_ascii=False,
                 )
                 return {
                     "message": message,
-                    "reading_context": context
-                    + "\n"
-                    + json.dumps({"presentation": presentation}, ensure_ascii=False),
+                    "reading_context": json.dumps(
+                        {**context_data, "presentation": presentation},
+                        ensure_ascii=False,
+                    ),
                     "input_revision": state["input_revision"] + 1,
                     "think": [],
                     "speak": [],
@@ -705,6 +806,15 @@ class ReadingSessions:
                 if state["fallback"]:
                     raise ValueError(_COPY["error_empty"])
                 reply = "\n".join(state["speak"])
+                body = reply
+                selections = {
+                    s["index"]: s["text"]
+                    for s in json.loads(state["reading_context"]).get(
+                        "quote_selections", []
+                    )
+                }
+                quote_blocks: list[str] = []
+                sources: list[dict[str, Any]] = []
                 indices = dict.fromkeys(
                     int(index) for index in re.findall(r"nyx-book:(\d+)", reply)
                 )
@@ -714,13 +824,18 @@ class ReadingSessions:
                     paragraph = (
                         await self.reader.list_paragraphs(book_id, index, index)
                     )[0]
-                    quote = "\n".join(
-                        "> " + line for line in paragraph.text.split("\n")
-                    )
-                    label = _COPY["source_full_label"].format(
-                        title=book.title, index=index
-                    )
-                    reply += f"\n\n{quote}\n>\n> [{label}](nyx-book:{index})"
+                    selected = selections.get(index, paragraph.text)
+                    if not selected or selected not in paragraph.text:
+                        raise ValueError("quote selection must be exact original text")
+                    quote = "\n".join("> " + line for line in selected.split("\n"))
+                    label = _COPY[
+                        "source_selection_label"
+                        if index in selections
+                        else "source_full_label"
+                    ].format(title=book.title, index=index)
+                    quote_blocks.append(f"{quote}\n>\n> [{label}](nyx-book:{index})")
+                    sources.append({"paragraph_id": paragraph.id, "index": index})
+                reply = "\n\n".join([body, *quote_blocks])
                 while True:
                     if await pending([], None):
                         return "refresh"
@@ -752,26 +867,56 @@ class ReadingSessions:
                         item.update(
                             status="committed",
                             reply=reply if item is owned[-1] else "",
+                            reply_body=body if item is owned[-1] else "",
+                            reply_sources=sources if item is owned[-1] else [],
+                            reply_quotes=quote_blocks if item is owned[-1] else [],
+                            reply_selections=selections if item is owned[-1] else {},
+                            answer_status=json.loads(state["reading_context"])[
+                                "answer_status"
+                            ],
                             reply_id=owned[-1]["id"],
                             evidence_seq=current["evidence_seq"],
                             committed_at=time.time(),
                             token=None,
                         )
-                    current_session["compressed"] = session["compressed"]
+                    current_session["requirements"] = json.loads(
+                        state["reading_context"]
+                    )["active_requirements"]
                     for item in owned:
                         if item["input"]["annotation"] or item["id"] in feedback_ids:
                             assert state["skill"] is not None
                             item["feedback"] = _job()
                             item["skill_snapshot"] = skill_snapshot(state["skill"])
-                    if session["compressed"]:
-                        current_session["compressed_count"] = len(session["turns"]) - 1
                     current["graph_work"].update(_job())
                     if await self.store.save_study(book_id, current_revision, current):
                         self._wake.set()
                         return "committed"
 
-            async def search_book(query: str) -> list[dict[str, Any]]:
-                return await self.search(book_id, query)
+            async def search_book(
+                query: str,
+                start: int | None = None,
+                end: int | None = None,
+            ) -> list[dict[str, Any]]:
+                return await self.search(book_id, query, start, end)
+
+            async def locate_book(query: str) -> list[dict[str, Any]]:
+                _, latest = await self._load(book_id)
+                chapters = [
+                    {
+                        **chapter,
+                        "summary": "\n".join(
+                            m["summary"]
+                            for m in latest["materials"]
+                            if m["state"] == "completed"
+                            and chapter["start"] <= m["start"] <= chapter["end"]
+                        ),
+                    }
+                    for chapter in chapter_index
+                ]
+                return [
+                    {k: c[k] for k in ("title", "start", "end")}
+                    for c in _lookup(chapters, query)
+                ]
 
             async def excerpt_book(start: int, end: int) -> list[dict[str, Any]]:
                 return await self.excerpt(book_id, start, end)
@@ -783,7 +928,11 @@ class ReadingSessions:
                     _PROMPTS["tool_search"],
                     {
                         "type": "object",
-                        "properties": {"query": {"type": "string"}},
+                        "properties": {
+                            "query": {"type": "string"},
+                            "start": {"type": ["integer", "null"]},
+                            "end": {"type": ["integer", "null"]},
+                        },
                         "required": ["query"],
                         "additionalProperties": False,
                     },
@@ -806,10 +955,45 @@ class ReadingSessions:
                     excerpt_book,
                 )
             )
-            for schema in self.expression._tools.schema():
-                name = schema["function"]["name"]
-                if name in ("web_search", "web_fetch"):
-                    tools.register(self.expression._tools.get(name))
+
+            async def history_book(query: str) -> list[dict[str, Any]]:
+                _, latest = await self._load(book_id)
+                items = [
+                    {
+                        "id": t["id"],
+                        "input": t["input"],
+                        "reply": t.get("reply_body", t["reply"]),
+                        "sources": t.get("reply_sources", []),
+                    }
+                    for t in _session(latest, identity)["turns"]
+                    if t["status"] == "committed"
+                ]
+                return _lookup(items, query)
+
+            async def understanding_book(query: str) -> list[dict[str, Any]]:
+                _, latest = await self._load(book_id)
+                return _lookup(latest["graph"]["nodes"], query)
+
+            for name, handler in (
+                ("book_locate", locate_book),
+                ("book_history", history_book),
+                ("book_understanding", understanding_book),
+            ):
+                tools.register(
+                    Tool(
+                        name,
+                        _PROMPTS["tool_locate"]
+                        if name == "book_locate"
+                        else _PROMPTS[name],
+                        {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                            "required": ["query"],
+                            "additionalProperties": False,
+                        },
+                        handler,
+                    )
+                )
             await self.expression.reply_in_reading(
                 raw,
                 f"reading:{identity}:{input_id}",
@@ -867,13 +1051,30 @@ class ReadingSessions:
         passages = await self.store.list_paragraphs(
             book_id, material["start"], material["end"]
         )
+        allowed = {p.id for p in passages}
+
+        async def validate(value: dict[str, Any]) -> None:
+            invalid = [
+                s["paragraph_id"]
+                for n in value["nodes"]
+                for s in n["sources"]
+                if s["paragraph_id"] not in allowed
+            ]
+            if invalid:
+                raise ValueError(
+                    "sources.paragraph_id unknown: "
+                    + json.dumps(invalid)
+                    + "; use exact IDs: "
+                    + json.dumps(sorted(allowed))
+                )
+            if len(value["summary"]) > _PARAMS["summary_chars"]:
+                raise ValueError(f"summary exceeds {_PARAMS['summary_chars']} chars")
+
         output = await self._complete(
             "material",
-            [
-                {"paragraph_id": p.id, "index": p.index, "text": p.text}
-                for p in passages
-            ],
+            [self._source(p) | {"text": p.text} for p in passages],
             material["id"],
+            validate,
         )
         nodes = cast(list[dict[str, Any]], output["nodes"])
         if not isinstance(output["summary"], str) or not output["summary"].strip():
@@ -922,65 +1123,125 @@ class ReadingSessions:
         await self.store.save_study(book_id, revision, data)
 
     async def _overview(
-        self, book_id: str, revision: int, data: dict[str, Any]
+        self,
+        book_id: str,
+        revision: int,
+        data: dict[str, Any],
     ) -> None:
-        if not all(m["state"] == "completed" for m in data["materials"]):
+        units = _frontier(data)
+        pack = _material_pack(data, units)
+        if _packed_chars(pack) <= _PARAMS["context_chars"]:
             return
-        units = data["materials"]
-        level = 0
-        if data["overviews"]:
-            level = max(unit["level"] for unit in data["overviews"])
-            units = [unit for unit in data["overviews"] if unit["level"] == level]
-            pending = next((unit for unit in units if self._due(unit)), None)
-            if pending:
-                children = [
-                    unit
-                    for unit in [*data["materials"], *data["overviews"]]
-                    if unit["id"] in pending["children"]
-                ]
-                try:
-                    output = await self._complete(
-                        "overview",
-                        [
-                            {"id": child["id"], "summary": child["summary"]}
-                            for child in children
-                        ],
-                        pending["id"],
-                    )
-                    if (
-                        set(output["unit_ids"]) != set(pending["children"])
-                        or not isinstance(output["summary"], str)
-                        or not output["summary"].strip()
-                    ):
-                        raise ValueError(_COPY["error_material"])
-                    pending.update(
-                        summary=output["summary"], state="completed", error=""
-                    )
-                    await self.store.save_study(book_id, revision, data)
-                except Exception as error:
+        by_id = {m["id"]: m for m in [*data["materials"], *data["overviews"]]}
+        blocked = [
+            m
+            for m in data["overviews"]
+            if m["state"] == "queued"
+            and any(by_id[key]["state"] == "failed" for key in m["children"])
+        ]
+        if blocked:
+            for unit in blocked:
+                unit.update(state="failed", error=_COPY["error_material"])
+            await self.store.save_study(book_id, revision, data)
+            return
+        pending = next(
+            (
+                m
+                for m in sorted(data["overviews"], key=lambda m: m["attempts"])
+                if self._due(m)
+                and all(by_id[key]["state"] == "completed" for key in m["children"])
+            ),
+            None,
+        )
+        if pending is not None:
+            children = [by_id[key] for key in pending["children"]]
+            target = pending.get("summary_chars", _PARAMS["overview_chars"])
+
+            async def validate(value: dict[str, Any]) -> None:
+                if set(value["unit_ids"]) != set(pending["children"]):
+                    raise ValueError("unit_ids must cover every child material")
+                if len(value["summary"]) > target:
+                    raise SummaryTooLong(len(value["summary"]), target)
+
+            try:
+                output = await self._complete(
+                    "overview",
+                    {**_material_pack(data, children), "summary_chars": target},
+                    pending["id"],
+                    validate,
+                )
+                pending.update(
+                    summary=output["summary"],
+                    state="completed",
+                    error="",
+                    level=max(m.get("level", 0) for m in children) + 1,
+                )
+                await self.store.save_study(book_id, revision, data)
+            except SummaryTooLong as error:
+                if len(children) == 1:
                     await self._failure(book_id, "overview", pending["id"], error)
-                return
-            if not all(unit["state"] == "completed" for unit in units):
-                return
-        if sum(len(unit["summary"]) for unit in units) <= _PARAMS["context_chars"]:
+                    return
+                split_ids: list[str] = []
+                midpoint = len(children) // 2
+                for group in (children[:midpoint], children[midpoint:]):
+                    key = str(uuid4())
+                    split_ids.append(key)
+                    data["overviews"].append(
+                        {
+                            "id": key,
+                            "level": max(m.get("level", 0) for m in group) + 1,
+                            "children": [m["id"] for m in group],
+                            "material_ids": [
+                                identity
+                                for m in group
+                                for identity in m.get("material_ids", [m["id"]])
+                            ],
+                            "start": group[0]["start"],
+                            "end": group[-1]["end"],
+                            "summary": "",
+                            "summary_chars": target // 2,
+                            **_job(),
+                        }
+                    )
+                pending.update(
+                    children=split_ids,
+                    attempts=pending["attempts"] + 1,
+                    error=str(error),
+                )
+                await self.store.save_study(book_id, revision, data)
+            except Exception as error:
+                await self._failure(book_id, "overview", pending["id"], error)
             return
-        # Summarize bounded groups, retaining the exact child coverage at every level.
-        level += 1
+        # A split parent waits for its children; cooling jobs must not create
+        # overlapping replacement groups or starve other runnable groups.
+        if any(m["state"] == "queued" for m in data["overviews"]):
+            return
         groups: list[list[dict[str, Any]]] = []
         for unit in units:
-            if (
-                not groups
-                or sum(len(u["summary"]) for u in groups[-1]) + len(unit["summary"])
-                > _PARAMS["context_chars"]
-            ):
+            if not groups or _packed_chars(
+                _material_pack(
+                    data,
+                    [*groups[-1], unit],
+                )
+            ) > min(_PARAMS["context_chars"], _PARAMS["overview_group_chars"]):
                 groups.append([])
             groups[-1].append(unit)
+        level = max((m["level"] for m in data["overviews"]), default=0) + 1
+        existing = {tuple(m["children"]) for m in data["overviews"]}
         for group in groups:
+            children = [m["id"] for m in group]
+            if tuple(children) in existing:
+                continue
             data["overviews"].append(
                 {
                     "id": f"overview:{level}:{group[0]['start']}",
                     "level": level,
-                    "children": [unit["id"] for unit in group],
+                    "children": children,
+                    "material_ids": [
+                        identity
+                        for m in group
+                        for identity in m.get("material_ids", [m["id"]])
+                    ],
                     "start": group[0]["start"],
                     "end": group[-1]["end"],
                     "summary": "",
@@ -992,80 +1253,381 @@ class ReadingSessions:
     async def _update_graph(
         self, book_id: str, revision: int, data: dict[str, Any]
     ) -> None:
-        evidence = [
-            t
+        evidence = {
+            t["id"]: t
             for s in data["sessions"]
             for t in s["turns"]
             if t["status"] == "committed"
-        ]
-        pending = [t for t in evidence if t["evidence_seq"] > data["consumed_seq"]]
+        }
+        pending = sorted(
+            (
+                t
+                for t in evidence.values()
+                if t["evidence_seq"] > data["consumed_seq"]
+                or t["id"] in data.get("graph_deferred", [])
+            ),
+            key=lambda t: (
+                t["id"] in data.get("graph_deferred", []),
+                t["evidence_seq"],
+            ),
+        )[: _PARAMS["graph_pending"]]
         if not pending:
             return
-        evidence.sort(key=lambda t: t["evidence_seq"])
         candidate_id = str(uuid4())
-        result = await self._complete(
-            "graph",
-            {
-                "graph": data["graph"],
-                "pending": pending,
-                "evidence": evidence,
-                "materials": data["materials"],
-                "passages": await self.search(
-                    book_id, "\n".join(t["input"]["message"] for t in pending)
-                ),
-            },
-            f"reading-graph:{candidate_id}",
-        )
-        operations = result["operations"]
-        if len({op["id"] for op in operations}) != len(operations):
-            raise ValueError(_COPY["error_graph"])
-        if not isinstance(result["reason"], str) or not result["reason"].strip():
-            raise ValueError(_COPY["error_graph"])
-        allowed = {t["id"] for t in evidence}
-        graph = data["graph"]
-        by_id = {n["id"]: n for n in graph["nodes"]}
-        upserts = [op for op in operations if op["op"] == "upsert"]
-        await self._sources(book_id, upserts)
-        for operation in operations:
-            node_id = operation["id"]
-            if operation["op"] == "delete":
-                if node_id not in by_id:
-                    raise ValueError(_COPY["error_graph"])
-                del by_id[node_id]
-                graph["deleted"].append(node_id)
-            elif operation["op"] == "upsert":
-                if (
-                    node_id in graph["deleted"]
-                    or operation["state"] not in _STATES
-                    or not set(operation["evidence"]) <= allowed
-                    or not set(operation.get("corrects", [])) <= allowed
-                    or (
-                        operation["state"] != "unassessed" and not operation["evidence"]
+        correlation = f"reading-graph:{candidate_id}"
+        all_nodes = {n["id"]: n for n in data["graph"]["nodes"]}
+        query = "\n".join(t["input"]["message"] for t in pending)
+        selected = {
+            n["id"]: n
+            for n in _lookup(
+                list(all_nodes.values()),
+                query,
+            )[: _PARAMS["graph_nodes"]]
+        }
+
+        def user_source(turn: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "id": turn["id"],
+                "input": turn["input"],
+                "book_sources": turn.get("reply_sources", []),
+            }
+
+        user_evidence = {t["id"]: user_source(t) for t in pending}
+        source_indices = {
+            source["paragraph_id"]: source["index"]
+            for t in evidence.values()
+            for source in t.get("reply_sources", [])
+        }
+        passages = {p["paragraph_id"]: p for p in await self.search(book_id, query)}
+        seed_passages = dict(passages)
+        graph: dict[str, Any] = {}
+        deferred: set[str] = set()
+        tool_feedback: list[dict[str, Any]] = []
+        tools = ToolRegistry(self.expression._tools._store)
+
+        async def read(
+            node_ids: list[str], evidence_ids: list[str], paragraph_ids: list[str]
+        ) -> dict[str, Any]:
+            if (
+                not set(node_ids) <= all_nodes.keys()
+                or not set(evidence_ids) <= evidence.keys()
+                or not set(paragraph_ids) <= source_indices.keys()
+            ):
+                raise ValueError(
+                    "read requires existing book node/evidence IDs; "
+                    f"valid nodes={sorted(all_nodes)[: _PARAMS['graph_nodes']]}, "
+                    f"valid evidence={sorted(evidence)[: _PARAMS['graph_evidence']]}"
+                )
+            if (
+                len(selected.keys() | set(node_ids)) > _PARAMS["graph_nodes"]
+                or len(user_evidence.keys() | set(evidence_ids))
+                > _PARAMS["graph_evidence"]
+            ):
+                raise ValueError("local graph read budget exceeded; narrow the change")
+            old_selected, old_evidence = dict(selected), dict(user_evidence)
+            old_passages = dict(seed_passages)
+            for key in paragraph_ids:
+                paragraph = (
+                    await self.store.list_paragraphs(
+                        book_id, source_indices[key], source_indices[key]
                     )
-                ):
-                    raise ValueError(_COPY["error_graph"])
-                previous = by_id.get(node_id)
-                by_id[node_id] = {
-                    **operation,
+                )[0]
+                if paragraph.id != key:
+                    raise StudyConflictError(_COPY["superseded"])
+                seed_passages[key] = self._source(paragraph)
+            selected.update({key: all_nodes[key] for key in node_ids})
+            user_evidence.update(
+                {key: user_source(evidence[key]) for key in evidence_ids}
+            )
+            if _packed_chars(await graph_payload()) > _PARAMS["graph_chars"]:
+                selected.clear()
+                selected.update(old_selected)
+                user_evidence.clear()
+                user_evidence.update(old_evidence)
+                seed_passages.clear()
+                seed_passages.update(old_passages)
+                raise ValueError("graph read exceeds request budget; request fewer IDs")
+            local = await local_graph()
+            return {
+                "node_ids": node_ids,
+                "evidence_ids": evidence_ids,
+                "paragraph_ids": paragraph_ids,
+                "passages": [passages[key] for key in paragraph_ids],
+                "nodes": [n for n in local["nodes"] if n["id"] in node_ids],
+                "evidence": [user_evidence[key] for key in evidence_ids],
+            }
+
+        tools.register(
+            Tool(
+                "book_graph_read",
+                _PROMPTS["tool_graph_read"],
+                {
+                    "type": "object",
+                    "properties": {
+                        "node_ids": {"type": "array", "items": {"type": "string"}},
+                        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                        "paragraph_ids": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["node_ids", "evidence_ids", "paragraph_ids"],
+                },
+                read,
+            )
+        )
+
+        async def check_current() -> None:
+            found = await self.store.load_study(book_id)
+            if found is None:
+                raise asyncio.CancelledError
+            if found[1]["graph"]["version"] != data["graph"]["version"]:
+                raise StudyConflictError(_COPY["superseded"])
+
+        async def local_graph() -> dict[str, Any]:
+            passages.clear()
+            passages.update(seed_passages)
+            for node in selected.values():
+                for source in node["sources"]:
+                    if source["paragraph_id"] not in passages:
+                        paragraph = (
+                            await self.store.list_paragraphs(
+                                book_id,
+                                source["index"],
+                                source["index"],
+                            )
+                        )[0]
+                        passages[paragraph.id] = self._source(paragraph)
+            return {
+                "version": data["graph"]["version"],
+                "nodes": [
+                    {
+                        k: n[k]
+                        for k in (
+                            "id",
+                            "version",
+                            "title",
+                            "content",
+                            "state",
+                            "evidence",
+                            "corrects",
+                        )
+                    }
+                    | {
+                        "sources": [
+                            {"paragraph_id": s["paragraph_id"], "index": s["index"]}
+                            for s in n["sources"]
+                        ]
+                    }
+                    for n in selected.values()
+                ],
+                "edges": [
+                    e
+                    for e in data["graph"]["edges"]
+                    if e["from"] in selected and e["to"] in selected
+                ],
+            }
+
+        async def graph_payload() -> dict[str, Any]:
+            return {
+                "graph": await local_graph(),
+                "pending": [user_evidence[t["id"]] for t in pending],
+                "evidence": list(user_evidence.values()),
+                "passages": list(passages.values()),
+                "tool_feedback": tool_feedback,
+            }
+
+        while _packed_chars(await graph_payload()) > _PARAMS["graph_chars"]:
+            if not selected:
+                raise ValueError("new user evidence exceeds graph request budget")
+            selected.pop(next(reversed(selected)))
+
+        async def validate(result: dict[str, Any]) -> None:
+            nonlocal graph, deferred
+            if result["action"] == "read":
+                return
+            if not set(result["deferred_evidence"]) <= {t["id"] for t in pending}:
+                raise ValueError("deferred_evidence must reference pending user turns")
+            deferred = set(result["deferred_evidence"])
+            operations = result["operations"]
+            if len({op["id"] for op in operations}) != len(operations):
+                raise ValueError("operations contain duplicate node IDs")
+            graph = deepcopy(data["graph"])
+            by_id = {n["id"]: n for n in graph["nodes"]}
+            for op in operations:
+                key = op["id"]
+                if key in all_nodes and key not in selected:
+                    raise ValueError(f"read existing node before editing: {key}")
+                if key in graph["deleted"]:
+                    raise ValueError(f"deleted node identity cannot be revived: {key}")
+                if op["op"] == "delete":
+                    if key not in by_id:
+                        raise ValueError(f"unknown node: {key}")
+                    del by_id[key]
+                    graph["deleted"].append(key)
+                    continue
+                if not set(op["evidence"] + op["corrects"]) <= user_evidence.keys():
+                    raise ValueError("read referenced old evidence IDs before patching")
+                if op["state"] != "unassessed" and not op["evidence"]:
+                    raise ValueError("understanding state requires user evidence")
+                if any(s["paragraph_id"] not in passages for s in op["sources"]):
+                    raise ValueError(
+                        "sources must use provided paragraph_id (not index): "
+                        + json.dumps(list(passages), ensure_ascii=False)
+                    )
+                await self._sources(book_id, [op])
+                previous = by_id.get(key)
+                by_id[key] = {
+                    **op,
                     "version": previous["version"] + 1 if previous else 1,
                     "origin": {"kind": "turns", "ids": [t["id"] for t in pending]},
                 }
-            else:
-                raise ValueError(_COPY["error_graph"])
-        edges = result["edges"]
-        if len({(e["from"], e["to"], e["label"]) for e in edges}) != len(edges):
-            raise ValueError(_COPY["error_graph"])
-        if any(e["from"] not in by_id or e["to"] not in by_id for e in edges):
-            raise ValueError(_COPY["error_graph"])
-        for operation in operations:
-            if operation["op"] == "delete" and operation.get("replacement") is not None:
-                if operation["replacement"] not in by_id:
-                    raise ValueError(_COPY["error_graph"])
-        graph.update(
-            nodes=list(by_id.values()), edges=edges, version=graph["version"] + 1
+            for op in operations:
+                if op["op"] == "delete" and op["replacement"] is not None:
+                    if op["replacement"] not in by_id:
+                        raise ValueError("replacement node is absent")
+
+            def edge_key(e: dict[str, Any]) -> tuple[str, str, str]:
+                return e["from"], e["to"], e["label"]
+
+            touched = selected.keys() | {op["id"] for op in operations}
+            if any(
+                e["from"] not in touched or e["to"] not in touched
+                for e in [*result["edges"], *result["remove_edges"]]
+            ):
+                raise ValueError(
+                    "read edge endpoints before editing their relationship"
+                )
+            removed = {edge_key(e) for e in result["remove_edges"]}
+            existing = {edge_key(e): e for e in graph["edges"]}
+            if not removed <= existing.keys():
+                raise ValueError("remove_edges contains an absent relationship")
+            edges = {
+                key: e
+                for key, e in existing.items()
+                if key not in removed and e["from"] in by_id and e["to"] in by_id
+            }
+            for edge in result["edges"]:
+                if edge["from"] not in by_id or edge["to"] not in by_id:
+                    raise ValueError("edge endpoint absent from full graph")
+                edges[edge_key(edge)] = edge
+            graph.update(
+                nodes=list(by_id.values()),
+                edges=list(edges.values()),
+                version=graph["version"] + 1,
+            )
+            review = await self._complete(
+                "graph_review",
+                {
+                    "graph": await local_graph(),
+                    "candidate": result,
+                    "user_evidence": list(user_evidence.values()),
+                    "passages": list(passages.values()),
+                },
+                correlation,
+            )
+            if not review["valid"]:
+                raise ValueError(json.dumps(review["issues"], ensure_ascii=False))
+            upserts = {op["id"]: op for op in operations if op["op"] == "upsert"}
+            if {c["id"] for c in review["checks"]} != upserts.keys():
+                raise ValueError("graph review checks must cover each upsert ID")
+            rejected = {
+                c["id"]
+                for c in review["checks"]
+                if not c["user_supported"] or not c["source_supported"]
+            }
+            for key in rejected:
+                deferred.update(upserts[key]["evidence"])
+                if key in all_nodes:
+                    by_id[key] = all_nodes[key]
+                else:
+                    del by_id[key]
+            result["operations"] = [op for op in operations if op["id"] not in rejected]
+            for field in ("edges", "remove_edges"):
+                result[field] = [
+                    e
+                    for e in result[field]
+                    if e["from"] not in rejected and e["to"] not in rejected
+                ]
+            if rejected:
+                edges = {
+                    key: e
+                    for key, e in edges.items()
+                    if e["from"] not in rejected and e["to"] not in rejected
+                }
+                edges.update(
+                    {
+                        edge_key(e): e
+                        for e in data["graph"]["edges"]
+                        if (e["from"] in rejected or e["to"] in rejected)
+                        and e["from"] in by_id
+                        and e["to"] in by_id
+                    }
+                )
+                graph.update(nodes=list(by_id.values()), edges=list(edges.values()))
+            result["deferred_evidence"] = sorted(deferred)
+
+        must_patch = False
+        for _ in range(_PARAMS["graph_steps"]):
+            result = await self._complete(
+                "graph",
+                await graph_payload(),
+                correlation,
+                validate,
+            )
+            if result["action"] == "patch":
+                break
+            if must_patch:
+                raise ValueError(_COPY["graph_no_progress"])
+            new_nodes = set(result["node_ids"]) - selected.keys()
+            new_evidence = set(result["evidence_ids"]) - user_evidence.keys()
+            new_passages = set(result["paragraph_ids"]) - passages.keys()
+            if not new_nodes and not new_evidence and not new_passages:
+                must_patch = True
+                tool_feedback.append(
+                    {
+                        "name": "book_graph_read",
+                        "status": "already_provided",
+                        "node_ids": result["node_ids"],
+                        "evidence_ids": result["evidence_ids"],
+                        "paragraph_ids": result["paragraph_ids"],
+                        "message": _PROMPTS["graph_already_provided"],
+                    }
+                )
+                continue
+            outcome, receipt = await read_tool(
+                tools,
+                "book_graph_read",
+                {
+                    "node_ids": sorted(new_nodes),
+                    "evidence_ids": sorted(new_evidence),
+                    "paragraph_ids": sorted(new_passages),
+                },
+                correlation,
+                check_current,
+            )
+            tool_feedback.append(
+                {
+                    **{k: receipt[k] for k in ("name", "args", "status", "errors")},
+                    "log_id": receipt["log_id"],
+                    "result": outcome,
+                }
+            )
+        else:
+            raise ValueError("local graph read budget exhausted")
+        operations, edges = result["operations"], result["edges"]
+        data["graph"] = graph
+        data["consumed_seq"] = max(
+            data["consumed_seq"], *(t["evidence_seq"] for t in pending)
         )
-        data["consumed_seq"] = data["evidence_seq"]
-        data["graph_work"].update(state="completed", error="")
+        data["graph_deferred"] = sorted(
+            (set(data.get("graph_deferred", [])) - {t["id"] for t in pending})
+            | deferred
+        )
+        data["graph_work"].update(
+            state="completed"
+            if data["consumed_seq"] == data["evidence_seq"]
+            and not data["graph_deferred"]
+            else "queued",
+            error="",
+        )
         data["history"].append(
             {
                 "id": candidate_id,
@@ -1249,10 +1811,23 @@ class ReadingSessions:
                                 if unit["id"] in pending["children"]
                             ],
                         }
+
+                    async def validate(value: dict[str, Any]) -> None:
+                        if set(value["turn_ids"]) != ids:
+                            raise ValueError(
+                                "turn_ids must include exactly "
+                                + json.dumps(sorted(ids))
+                            )
+                        if len(value["summary"]) > _PARAMS["summary_chars"]:
+                            raise ValueError(
+                                f"summary exceeds {_PARAMS['summary_chars']} chars"
+                            )
+
                     output = await self._complete(
                         "summary",
                         {"snapshot": payload},
                         f"reading-settlement:{identity}:{pending['id']}",
+                        validate,
                     )
                     if (
                         set(output["turn_ids"]) != ids
@@ -1461,9 +2036,10 @@ class ReadingSessions:
                         revision, data = await self._load(book_id)
                         await self._overview(book_id, revision, data)
                         revision, data = await self._load(book_id)
-                        if data["evidence_seq"] > data["consumed_seq"] and self._due(
-                            data["graph_work"]
-                        ):
+                        if (
+                            data["evidence_seq"] > data["consumed_seq"]
+                            or bool(data.get("graph_deferred"))
+                        ) and self._due(data["graph_work"]):
                             try:
                                 await self._update_graph(book_id, revision, data)
                             except Exception as error:

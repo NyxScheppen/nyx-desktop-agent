@@ -18,15 +18,15 @@ _CONTAINER_XML = (
 _CHAPTER1 = (
     '<?xml version="1.0" encoding="utf-8"?>'
     '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
-    '<h2>第一章</h2><p>第一段正文。</p>'
-    '</body></html>'
+    "<h2>第一章</h2><p>第一段正文。</p>"
+    "</body></html>"
 )
 
 _CHAPTER2 = (
     '<?xml version="1.0" encoding="utf-8"?>'
     '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
-    '<h2>第二章</h2><p>第二段正文。</p>'
-    '</body></html>'
+    "<h2>第二章</h2><p>第二段正文。</p>"
+    "</body></html>"
 )
 
 
@@ -48,13 +48,13 @@ def _build_epub_bytes(
         '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
         '<dc:identifier id="id">nyx-test-001</dc:identifier>'
         f"{title_xml}{author_xml}<dc:language>zh</dc:language></metadata>"
-        '<manifest>'
+        "<manifest>"
         '<item href="chapter1.xhtml" id="chapter1" '
         'media-type="application/xhtml+xml"/>'
         '<item href="chapter2.xhtml" id="chapter2" '
         'media-type="application/xhtml+xml"/>'
         '<item href="images/cover.jpg" id="cover-image" media-type="image/jpeg"/>'
-        '</manifest>'
+        "</manifest>"
         '<spine><itemref idref="chapter1"/><itemref idref="chapter2"/>'
         f"{cover_itemref}</spine></package>"
     )
@@ -77,8 +77,10 @@ def test_parse_epub_extracts_title_author_and_segments() -> None:
     assert result.title == "测试书名"
     assert result.author == "测试作者"
     assert [(s.text, s.is_chapter_start) for s in result.segments] == [
-        ("第一章\n第一段正文。", True),
-        ("第二章\n第二段正文。", True),
+        ("第一章", True),
+        ("第一段正文。", False),
+        ("第二章", True),
+        ("第二段正文。", False),
     ]
     assert result.segments[0].blocks[0].kind == "heading"
 
@@ -98,7 +100,7 @@ def test_parse_epub_missing_metadata_falls_back_to_empty() -> None:
 def test_parse_epub_skips_non_document_spine_items() -> None:
     # 封面图进 spine：parse_epub 只读 ITEM_DOCUMENT，段数不受图片影响
     result = parse_epub(_build_epub_bytes(image_in_spine=True))
-    assert len(result.segments) == 2
+    assert len(result.segments) == 4
 
 
 def test_parse_epub_non_zip_raises_value_error() -> None:
@@ -120,3 +122,37 @@ def test_parse_epub_rejects_oversized_uncompressed(
     monkeypatch.setattr(epub_mod, "_MAX_UNCOMPRESSED_BYTES", 100)
     with pytest.raises(ValueError):
         parse_epub(_build_epub_bytes())
+
+
+def test_toc_anchors_keep_prefaces_separate_without_heading_keywords() -> None:
+    from ebooklib import epub
+
+    book = epub.EpubBook()
+    book.set_identifier("toc-prefaces")
+    book.set_title("结构来源")
+    book.set_language("zh")
+    chapter = epub.EpubHtml(title="文档标题", file_name="prefaces.xhtml", lang="zh")
+    chapter.content = (
+        '<p>未归属的内容</p><p id="translator">译者开场</p><p>我们重新翻译。</p>'
+        '<p id="author">作者开场</p><p>我们研究旧形式。</p>'
+    ).encode()
+    book.add_item(chapter)
+    book.add_item(epub.EpubNcx())
+    book.spine = [chapter]
+    book.toc = [
+        epub.Link("prefaces.xhtml#translator", "英译者序", "translator"),
+        epub.Link("prefaces.xhtml#author", "作者序", "author"),
+    ]
+    output = io.BytesIO()
+    epub.write_epub(output, book)
+    result = parse_epub(output.getvalue())
+    starts = [s for s in result.segments if s.is_chapter_start]
+    assert [
+        s.section.title for s in starts if s.section and s.section.evidence == "toc"
+    ] == ["英译者序", "作者序"]
+    assert all(
+        "重新翻译" not in s.text
+        for s in result.segments
+        if s.section and s.section.title == "作者序"
+    )
+    assert all(s.section and s.section.document == "prefaces.xhtml" for s in starts)

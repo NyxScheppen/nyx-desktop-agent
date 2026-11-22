@@ -15,7 +15,6 @@ from langgraph.graph.state import CompiledStateGraph
 
 from nyx.enums import MemoryKind
 from nyx.expression.prompt import (
-    _MATERIAL_ITEM_MAX_CHARS,
     _TOOL_BLOCK_MAX_CHARS,
     _TOOL_OUTPUT_MAX_ITEMS,
     PLAN_REVIEW_TASK,
@@ -27,6 +26,7 @@ from nyx.expression.prompt import (
     format_prompt_time,
 )
 from nyx.policy import policy
+from nyx.tools.execution import execute_attempt, receive_result
 from nyx.tools.registry import is_read_only_call
 from nyx.types import Plan, PlanStep
 
@@ -617,120 +617,10 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
                 text=policy("expression", "tool_pipeline.copy.execute_text_2", str),
             )
             return {"pending": pending}
-        result: Any = None
-        error = None
-        # Receipt I/O is outside capability error handling: never retry on a
-        # persistence failure after the handler may already have produced effects.
-        receipt = await deps.tools.start_execution(
-            pending["log_id"],
-            state["correlation_id"],
+        pending, _ = await execute_attempt(
+            deps.tools, pending, state["correlation_id"], state["schemas"],
         )
-        if receipt is not None and receipt["status"] == "success":
-            result = json.loads(receipt["result_json"])
-        elif receipt is not None and not read_only and name != "deep_research":
-            pending.update(
-                status="uncertain",
-                errors=[*pending["errors"], receipt["error"]]
-                if receipt["error"]
-                else pending["errors"],
-                text=policy("expression", "tool_pipeline.copy.execute_text_4", str)
-                + (receipt["error"] or ""),
-            )
-            return {"pending": pending}
-        elif receipt is not None and receipt["status"] == "error":
-            error = receipt["error"]
-        else:
-            # Disabling a tool forbids new execution, not reuse of an outcome
-            # already committed before the restart.
-            allowed = {schema["function"]["name"] for schema in deps.tools.schema()}
-            allowed &= {schema["function"]["name"] for schema in state["schemas"]}
-            if name not in allowed:
-                pending.update(
-                    status="skipped",
-                    text=policy("expression", "tool_pipeline.copy.execute_text_5", str),
-                )
-                return {"pending": pending}
-            try:
-                result = await deps.tools.call(
-                    name,
-                    args,
-                    correlation_id=state["correlation_id"],
-                    call_id=pending["call_id"],
-                    log_id=pending["log_id"],
-                )
-            except Exception as exc:  # 取消继续传播，running 回执保留。
-                error = f"{type(exc).__name__}: {exc}"[
-                    : policy(
-                        "expression",
-                        "tool_pipeline.parameters.execute_error_chars_or_items",
-                        int,
-                    )
-                ]
-            await deps.tools.finish_execution(pending["log_id"], result, error)
-        return {"pending": receive_result(pending, result, error)}
-
-    def receive_result(
-        pending: dict[str, Any],
-        result: Any,
-        error: str | None,
-    ) -> dict[str, Any]:
-        name = pending["name"]
-        read_only = is_read_only_call(name, pending["args"])
-        if error is None:
-            if isinstance(result, dict) and result.get("error"):
-                error = str(cast(dict[str, Any], result)["error"])[
-                    : policy(
-                        "expression",
-                        "tool_pipeline.parameters.receive_result_error_chars_or_items",
-                        int,
-                    )
-                ]
-        if error is not None:
-            known_research_failure = (
-                name == "deep_research"
-                and isinstance(result, dict)
-                and bool(cast(dict[str, Any], result).get("run_id"))
-                and cast(dict[str, Any], result).get("status")
-                in {"failed", "cancelled"}
-            )
-            pending.update(
-                status="failed"
-                if known_research_failure
-                else "uncertain"
-                if not read_only
-                else "retry_wait"
-                if pending["attempts"] < _MAX_TOOL_ATTEMPTS
-                else "exhausted",
-                errors=[*pending["errors"], error],
-                retry_at=time.time() + pending["attempts"],
-                text=(
-                    policy(
-                        "expression",
-                        "tool_pipeline.templates.receive_result_text_2",
-                        str,
-                    ).format(p0=name, p1=error)
-                    if read_only or known_research_failure
-                    else policy(
-                        "expression", "tool_pipeline.templates.receive_result_text", str
-                    ).format(p0=name, p1=error)
-                ),
-            )
-        else:
-            empty = result is None or result == [] or result == {} or result == ""
-            text = json.dumps(result, ensure_ascii=False)
-            if len(text) > _MATERIAL_ITEM_MAX_CHARS:
-                text = text[: _MATERIAL_ITEM_MAX_CHARS - 1] + "…"
-            pending.update(status="empty" if empty else "success", text=text)
-            if name == "memory_recall" and isinstance(result, dict):
-                segments = cast(dict[str, Any], result).get("segments", [])
-                pending["recall_candidates"] = {
-                    entry["segment_id"]: json.dumps(entry, ensure_ascii=False)
-                    for entry in cast(list[Any], segments)
-                    if isinstance(entry, dict)
-                    and isinstance(entry.get("segment_id"), str)
-                }
-        pending["received_at"] = time.time()
-        return pending
+        return {"pending": pending}
 
     async def accept(state: ToolState) -> dict[str, Any]:
         pending = dict(state["pending"] or {})

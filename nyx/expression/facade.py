@@ -61,6 +61,7 @@ from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import InitiationSkipped, LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.policy import policy
+from nyx.reading.dialogue import reply as reply_in_reading
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
@@ -1292,7 +1293,7 @@ class ExpressionFacade:
         commit: Callable[[ReplyState], Awaitable[str]],
         has_pending: Callable[[list[str], str | None], Awaitable[bool]],
     ) -> None:
-        """Reuse reply/tool nodes with reading-owned history and commit callbacks."""
+        """Run reading stages with role voice and reading-owned commit callbacks."""
         if self._skill_store is None:
             raise RuntimeError(policy("reading", "study.copy.failure", str))
         state = await self._inner_life.get_state()
@@ -1307,29 +1308,6 @@ class ExpressionFacade:
             },
         )
 
-        async def archive(key: str, current: ReplyState | None) -> None:
-            return
-
-        graph = build_reply_graph(
-            ReplyDeps(
-                llm=self._llm,
-                evaluator=self._evaluator,
-                memory=self._memory,
-                inner_life=self._inner_life,
-                canon=self._canon,
-                ask_guidance="",
-                config=self._config,
-                history=deque(history),
-                tools=tools,
-                knowledge_boundary=self._knowledge_boundary,
-                collect_reply_inputs=collect,
-                finalize_user_reply=commit,
-                archive_user_reply=archive,
-                has_pending_reply_inputs=has_pending,
-                checkpointer=self._checkpointer,
-                reading_session=True,
-            )
-        )
         now = time.time()
         initial: ReplyState = {
             "input_mode": "direct",
@@ -1386,13 +1364,20 @@ class ExpressionFacade:
             }
         )
         try:
-            await graph.ainvoke(
+            await reply_in_reading(
                 initial,
-                {
-                    "recursion_limit": policy("expression", "input.max_events", int)
-                    * (12 + 2 * self._config.slow_max_rounds)
-                    + policy("expression", "pipeline.recursion_margin", int)
-                },
+                self._llm,
+                self._evaluator,
+                build_system_prompt(
+                    self._canon,
+                    state,
+                    knowledge_boundary=self._knowledge_boundary,
+                    discussion_fragment=skill.system_fragment,
+                ),
+                tools,
+                collect,
+                commit,
+                has_pending,
             )
         finally:
             behavior_context.reset(token)

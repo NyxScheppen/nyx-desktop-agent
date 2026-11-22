@@ -9,7 +9,7 @@ from html.parser import HTMLParser
 from typing import NamedTuple
 
 from nyx.policy import policy
-from nyx.types import ParagraphBlock, ParagraphBlockKind, TextMark
+from nyx.types import BookSection, ParagraphBlock, ParagraphBlockKind, TextMark
 
 
 class Segment(NamedTuple):
@@ -19,6 +19,7 @@ class Segment(NamedTuple):
     is_chapter_start: bool
     blocks: tuple[ParagraphBlock, ...] = ()
     marks: tuple[TextMark, ...] = ()
+    section: BookSection | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class _Block:
     tag: str
     semantic_tag: str
     runs: tuple[_Run, ...]
+    section: BookSection | None = None
 
     @property
     def text(self) -> str:
@@ -60,8 +62,17 @@ _SEMANTIC_CONTAINER_TAGS = policy(
 class _BlockExtractor(HTMLParser):
     """按文档序提取块和行内标记，嵌套块只保留直接文本。"""
 
-    def __init__(self) -> None:
+    def __init__(self, sections: dict[str, str], document: str, title: str) -> None:
         super().__init__(convert_charrefs=True)
+        self.sections, self.document = sections, document
+        self.section = (
+            BookSection(sections[""], document, "", "toc")
+            if "" in sections
+            else BookSection(title, document, "", "document_title")
+            if title
+            else None
+        )
+        self._heading_count = 0
         self.blocks: list[_Block] = []
         self._stack: list[tuple[str, str, list[_Run]]] = []
         self.root_runs: list[_Run] = []
@@ -84,15 +95,28 @@ class _BlockExtractor(HTMLParser):
         tag, semantic_tag, runs = frame
         trimmed = _trim_runs(runs)
         if trimmed:
-            self.blocks.append(_Block(tag, semantic_tag, trimmed))
+            if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+                self._heading_count += 1
+                if self.section is None or self.section.evidence != "toc":
+                    self.section = BookSection(
+                        "".join(run.text for run in trimmed),
+                        self.document,
+                        f"heading:{self._heading_count}",
+                        "heading",
+                    )
+            self.blocks.append(_Block(tag, semantic_tag, trimmed, self.section))
         runs.clear()
 
-    def handle_starttag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
-        del attrs
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if self._ignored_tag is not None:
             return
+        anchor = dict(attrs).get("id") or dict(attrs).get("name")
+        if anchor in self.sections:
+            if self._stack:
+                self._flush_direct(self._stack[-1])
+            self.section = BookSection(
+                self.sections[anchor], self.document, anchor, "toc"
+            )
         if tag in _IGNORED_TAGS:
             self._ignored_tag = tag
         elif tag in _BLOCK_TAGS:
@@ -136,9 +160,14 @@ class _BlockExtractor(HTMLParser):
         self._append(data)
 
 
-def segment_html(html: str) -> list[Segment]:
+def segment_html(
+    html: str,
+    sections: dict[str, str] | None = None,
+    document: str = "",
+    title: str = "",
+) -> list[Segment]:
     """HTML → 阅读段落；无块级元素时回退为一个普通正文块。"""
-    extractor = _BlockExtractor()
+    extractor = _BlockExtractor(sections or {}, document, title)
     extractor.feed(html)
     extractor.close()
 
@@ -146,12 +175,27 @@ def segment_html(html: str) -> list[Segment]:
         runs = _trim_runs(extractor.root_runs)
         if not runs:
             return []
-        return _split_long_drafts([_Draft((_Block("p", "p", runs),))])
+        return _split_long_drafts(
+            [_Draft((_Block("p", "p", runs, extractor.section),))]
+        )
 
-    drafts = _merge_heading_and_paragraph(extractor.blocks)
+    drafts = [_Draft((block,)) for block in extractor.blocks]
     drafts = _merge_consecutive_lists(drafts)
-    drafts = _merge_short_paragraphs(drafts)
-    return _split_long_drafts(drafts)
+    result = _split_long_drafts(drafts)
+    previous: BookSection | None = None
+    for index, segment in enumerate(result):
+        result[index] = segment._replace(
+            is_chapter_start=segment.section != previous
+            and (
+                segment.is_chapter_start
+                or (
+                    segment.section is not None
+                    and segment.section.evidence in ("toc", "document_title")
+                )
+            )
+        )
+        previous = segment.section
+    return result
 
 
 def _append_run(runs: list[_Run], run: _Run) -> None:
@@ -180,7 +224,7 @@ def _slice_runs(runs: list[_Run], start: int, end: int) -> tuple[_Run, ...]:
             _append_run(
                 result,
                 _Run(
-                    run.text[left - cursor:right - cursor],
+                    run.text[left - cursor : right - cursor],
                     run.bold,
                     run.italic,
                 ),
@@ -189,29 +233,13 @@ def _slice_runs(runs: list[_Run], start: int, end: int) -> tuple[_Run, ...]:
     return tuple(result)
 
 
-def _merge_heading_and_paragraph(blocks: list[_Block]) -> list[_Draft]:
-    """标题与紧邻正文仍共用一个阅读进度段，但保留两个块。"""
-    result: list[_Draft] = []
-    index = 0
-    while index < len(blocks):
-        block = blocks[index]
-        if (
-            block.tag.startswith("h")
-            and index + 1 < len(blocks)
-            and blocks[index + 1].tag == "p"
-        ):
-            result.append(_Draft((block, blocks[index + 1])))
-            index += 2
-        else:
-            result.append(_Draft((block,)))
-            index += 1
-    return result
-
-
 def _merge_consecutive_lists(drafts: list[_Draft]) -> list[_Draft]:
     result: list[_Draft] = []
     buffered: list[_Block] = []
     for draft in drafts:
+        if buffered and buffered[-1].section != draft.blocks[0].section:
+            result.append(_Draft(tuple(buffered)))
+            buffered.clear()
         if len(draft.blocks) == 1 and draft.blocks[0].tag == "li":
             buffered.extend(draft.blocks)
             continue
@@ -221,35 +249,6 @@ def _merge_consecutive_lists(drafts: list[_Draft]) -> list[_Draft]:
         result.append(draft)
     if buffered:
         result.append(_Draft(tuple(buffered)))
-    return result
-
-
-def _merge_short_paragraphs(
-    drafts: list[_Draft],
-    short_threshold: int = policy(
-        "reading", "segmenter.parameters.merge_short_paragraphs_short_threshold", int
-    ),
-) -> list[_Draft]:
-    result: list[_Draft] = []
-    buffered: list[_Block] = []
-
-    def flush() -> None:
-        if buffered:
-            result.append(_Draft(tuple(buffered)))
-            buffered.clear()
-
-    for draft in drafts:
-        accumulated = sum(len(block.text) for block in buffered) + len(draft.text)
-        if (
-            len(draft.blocks) == 1
-            and draft.blocks[0].tag == "p"
-            and accumulated < short_threshold
-        ):
-            buffered.extend(draft.blocks)
-        else:
-            flush()
-            result.append(draft)
-    flush()
     return result
 
 
@@ -304,6 +303,7 @@ def _draft_to_segment(draft: _Draft) -> Segment:
         is_chapter_start=first_tag in {"h1", "h2"},
         blocks=tuple(blocks),
         marks=tuple(marks),
+        section=draft.blocks[0].section,
     )
 
 
@@ -325,12 +325,12 @@ def _split_segment(segment: Segment, max_chars: int) -> list[Segment]:
     result: list[Segment] = []
     cursor = 0
     while len(segment.text) - cursor > max_chars:
-        window = segment.text[cursor:cursor + max_chars]
+        window = segment.text[cursor : cursor + max_chars]
         split_at = window.rfind("。")
         if split_at == -1:
             split_at = window.rfind(".")
         split_at = max_chars if split_at == -1 else split_at + 1
-        raw = segment.text[cursor:cursor + split_at]
+        raw = segment.text[cursor : cursor + split_at]
         leading = len(raw) - len(raw.lstrip())
         trailing = len(raw.rstrip())
         if leading < trailing:
@@ -367,9 +367,10 @@ def _slice_segment(segment: Segment, start: int, end: int) -> Segment:
     )
     return Segment(
         text=segment.text[start:end],
-        is_chapter_start=segment.is_chapter_start,
+        is_chapter_start=segment.is_chapter_start and start == 0,
         blocks=blocks,
         marks=marks,
+        section=segment.section,
     )
 
 

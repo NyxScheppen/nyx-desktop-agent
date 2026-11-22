@@ -49,6 +49,7 @@ from nyx.expression.tool_pipeline import (
 from nyx.expression.tool_pipeline import _parse_plan as _parse_plan
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
+from nyx.llm.validation import validated
 from nyx.memory.facade import MemoryFacade
 from nyx.memory.facts import is_fact_query
 from nyx.memory.segments import is_recollection_query
@@ -683,10 +684,14 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             False,
         )
         fallback = True
-        for _attempt in range(2):
+
+        async def produce(error: str | None) -> tuple[str, str, bool] | None:
+            nonlocal user, fallback
+            if error is not None:
+                user += "\n" + error
             # Input I/O is outside the model failure boundary, including parse retries.
             if await pending(state):
-                return {"needs_refresh": True}
+                return None
             if not state["speak"]:
                 for segment in state["conversation_segments"]:
                     try:
@@ -735,28 +740,27 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     json_mode=True,
                 )
             except Exception:
-                break
+                return think, speak, needs_continuation
             try:
-                parsed_reply = _parse_reply(output.content)
+                parsed = _parse_reply(output.content)
             except ValueError:
-                # Invalid model output still contributes usage records.
                 await deps.evaluator.evaluate(output)
-                user += policy(
-                    "expression", "pipeline.parameters.respond_value_text", str
-                )
-                continue
+                raise
             try:
-                await deps.evaluator.evaluate(
-                    _voice_output(output, "think", parsed_reply[0])
-                )
-                await deps.evaluator.evaluate(
-                    _voice_output(output, "speak", parsed_reply[1])
-                )
+                await deps.evaluator.evaluate(_voice_output(output, "think", parsed[0]))
+                await deps.evaluator.evaluate(_voice_output(output, "speak", parsed[1]))
             except Exception:
-                break
-            think, speak, needs_continuation = parsed_reply
+                return think, speak, needs_continuation
             fallback = False
-            break
+            return parsed
+
+        try:
+            parsed_reply = await validated(produce)
+            if parsed_reply is None:
+                return {"needs_refresh": True}
+            think, speak, needs_continuation = parsed_reply
+        except ValueError:
+            pass  # Invalid output exhausted the shared validation budget.
         return {
             "think": [] if fallback else [*state["think"], think],
             "speak": [speak] if fallback else [*state["speak"], speak],

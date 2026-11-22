@@ -26,6 +26,7 @@ from nyx.types import (
     Book,
     BookListItem,
     Bookmark,
+    BookSection,
     Paragraph,
     ParagraphBlock,
     ParagraphBlockKind,
@@ -861,12 +862,23 @@ def _row_to_paragraph(row: aiosqlite.Row) -> Paragraph:
         is_chapter_start=bool(row["is_chapter_start"]),
         blocks=blocks,
         marks=marks,
+        section=BookSection(**content_format["section"])
+        if content_format.get("section") is not None
+        else None,
     )
 
 
 def _segment_format_json(segment: Segment) -> str:
     return json.dumps(
         {
+            "section": {
+                "title": segment.section.title,
+                "document": segment.section.document,
+                "anchor": segment.section.anchor,
+                "evidence": segment.section.evidence,
+            }
+            if segment.section is not None
+            else None,
             "blocks": [
                 {
                     "kind": block.kind,

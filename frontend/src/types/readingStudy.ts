@@ -24,6 +24,10 @@ export type StudyTurn = {
   created_at: number;
   status: "queued" | "running" | "committed" | "failed" | "incomplete";
   reply: string;
+  reply_body?: string;
+  reply_sources?: { paragraph_id: string; index: number }[];
+  reply_quotes?: string[];
+  answer_status?: "complete" | "partial";
   error: string;
 };
 export type StudySource = {

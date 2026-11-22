@@ -266,15 +266,26 @@ class TextMark:  # 受控行内样式；offset 为 UTF-16 code unit
     italic: bool
 
 
+@dataclass(frozen=True)
+class BookSection:
+    """EPUB structural source; title identifies a part, not every quoted speaker."""
+
+    title: str
+    document: str
+    anchor: str
+    evidence: Literal["toc", "heading", "document_title"]
+
+
 @dataclass
 class Paragraph:  # 书的正文段落（index 从 1 起、per book 连续）
     id: str
     book_id: str
     index: int
     text: str
-    is_chapter_start: bool  # 以 h1/h2 开头（阅读章末检测用）
+    is_chapter_start: bool  # EPUB 目录或 HTML 标题标识的部分起点
     blocks: list[ParagraphBlock] = field(default_factory=list[ParagraphBlock])
     marks: list[TextMark] = field(default_factory=list[TextMark])
+    section: BookSection | None = None
 
 
 @dataclass
@@ -368,6 +379,7 @@ class InnerDocument:
 @dataclass
 class ReflectionOutcome:
     """本轮反思摘要及文档是否变化；摘要不作为对话输出。"""
+
     summary: str
     document_changed: bool
 
@@ -458,6 +470,7 @@ class EvalRecord:
 
     不存 content 原文（数据最小化）。
     """
+
     id: str
     created_at: float
     call_id: str  # 一次 complete() 唯一 id；think/speak 共享
@@ -474,6 +487,7 @@ class EvalRecord:
 @dataclass
 class EvalStats:
     """累计 token（按 call_id 去重求和，think/speak 只计一次）。"""
+
     total_tokens: int
     prompt_tokens: int
     completion_tokens: int

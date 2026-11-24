@@ -477,7 +477,6 @@ async def run_character(host: "_Host", identity: str) -> None:
             )
         ),
         asyncio.create_task(memory_loop(app)),
-        asyncio.create_task(app.reading.study.run()),
     ]
     app.tick_task = tasks[1]
     app.memory_task = tasks[2]

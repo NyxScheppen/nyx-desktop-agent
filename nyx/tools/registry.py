@@ -23,12 +23,6 @@ def is_read_only_call(name: str, args: dict[str, Any]) -> bool:
         "web_search",
         "memory_recall",
         "knowledge_search",
-        "book_search",
-        "book_excerpt",
-        "book_locate",
-        "book_history",
-        "book_understanding",
-        "book_graph_read",
     ) or (name == "file_io" and args.get("action") in ("read", "list"))
 
 

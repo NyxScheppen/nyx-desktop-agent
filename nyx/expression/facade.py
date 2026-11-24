@@ -61,7 +61,6 @@ from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import InitiationSkipped, LlmClient
 from nyx.memory.facade import MemoryFacade
 from nyx.policy import policy
-from nyx.reading.dialogue import reply as reply_in_reading
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
     Activity,
@@ -137,7 +136,6 @@ class ExpressionFacade:
         self._checkpointer = checkpointer or InMemorySaver()
         self._history: deque[Message] = deque(maxlen=config.max_context_len)
         self._history_restored = False
-        self.reading_handoff: Callable[[], Awaitable[str]] | None = None
         self._last_slow_at = 0.0
         # 待用户回应状态：问句（wait_user）与搭话（被忽略回灌）各一组。
         self._waiting_user = False
@@ -1183,8 +1181,6 @@ class ExpressionFacade:
             temporal_context = await self._temporal_context(
                 now, correlation_id, claimed_return
             )
-            if self.reading_handoff is not None:
-                temporal_context += "\n" + await self.reading_handoff()
             initial = {
                 "input_mode": "durable" if user_event is not None else "direct",
                 "input_events": [user_event] if user_event is not None else [],
@@ -1281,106 +1277,6 @@ class ExpressionFacade:
             if not committed:
                 self._release_return_claim(claimed_return)
             raise
-
-    async def reply_in_reading(
-        self,
-        message: str,
-        correlation_id: str,
-        history: list[Message],
-        reading_context: str,
-        tools: ToolRegistry,
-        collect: Callable[[ReplyState], Awaitable[dict[str, Any]]],
-        commit: Callable[[ReplyState], Awaitable[str]],
-        has_pending: Callable[[list[str], str | None], Awaitable[bool]],
-    ) -> None:
-        """Run reading stages with role voice and reading-owned commit callbacks."""
-        if self._skill_store is None:
-            raise RuntimeError(policy("reading", "study.copy.failure", str))
-        state = await self._inner_life.get_state()
-        skill = await self._skill_store.for_execution(
-            correlation_id,
-            "reading",
-            message,
-            {
-                "canon": self._canon,
-                "inner_document": asdict(state.inner_document),
-                "scope": "reading",
-            },
-        )
-
-        now = time.time()
-        initial: ReplyState = {
-            "input_mode": "direct",
-            "input_events": [],
-            "input_revision": 0,
-            "input_closed": False,
-            "request_start_index": 0,
-            "retrieval_query": "",
-            "reasoning_steps": [],
-            "reasoning_step_count": 0,
-            "next_action": "answer",
-            "draft_revision": -1,
-            "draft_event_ids": [],
-            "needs_refresh": False,
-            "tool_exit_reason": "complete",
-            "committed_reply": None,
-            "message": message,
-            "message_at": now,
-            "sampled_at": now,
-            "annotation_at": None,
-            "round_times": [],
-            "annotation": None,
-            "skill": skill,
-            "mode": ContextMode.SLOW,
-            "context": history,
-            "conversation_segments": [],
-            "memories": [],
-            "facts": [],
-            "state": state,
-            "think": [],
-            "speak": [],
-            "needs_continuation": False,
-            "ask": None,
-            "round": 0,
-            "correlation_id": correlation_id,
-            "last_slow_at": 0,
-            "tool_outputs": [],
-            "tool_feedback": "",
-            "tool_recall_candidates": [],
-            "intent": classify_user_intent(message),
-            "temporal_context": "",
-            "reading_context": reading_context,
-            "activity_context": ActivityContext(None, None, now),
-            "answered_attempt": None,
-            "claimed_return": None,
-            "fallback": False,
-        }
-        token = behavior_context.set(
-            {
-                "scope": "reading",
-                "scenario": "reply",
-                "correlation_id": correlation_id,
-                "skill_snapshot_raw": skill_snapshot(skill),
-            }
-        )
-        try:
-            await reply_in_reading(
-                initial,
-                self._llm,
-                self._evaluator,
-                build_system_prompt(
-                    self._canon,
-                    state,
-                    knowledge_boundary=self._knowledge_boundary,
-                    discussion_fragment=skill.system_fragment,
-                ),
-                tools,
-                collect,
-                commit,
-                has_pending,
-            )
-        finally:
-            behavior_context.reset(token)
 
     async def initiate_chat(self, desire: ShortTermDesire, state: CurrentState) -> bool:
         """搭话：快通道生成一句开场白。

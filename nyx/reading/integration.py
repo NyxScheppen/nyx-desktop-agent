@@ -244,44 +244,6 @@ class ReadingIntegration:
         async with lock:
             await self._integrate(book_id, result, pre_read_count)
 
-    async def integrate_session(
-        self,
-        book_id: str,
-        session_id: str,
-        output: dict[str, Any],
-    ) -> None:
-        """Commit persistent session input through the original reading-memory path."""
-        assert self._store is not None
-        book = await self._store.find_book(book_id)
-        if book is None:
-            raise ValueError(policy("reading", "study.copy.error_deleted", str))
-        if not isinstance(output["content"], str) or not isinstance(
-            output["summary"], str
-        ):
-            raise ValueError(policy("reading", "study.copy.error_material", str))
-        async with self._store.db.transaction():
-            cursor = await self._store.db.conn.execute(
-                "SELECT memory_id FROM reading_memory_receipt WHERE session_id=?",
-                (session_id,),
-            )
-            if await cursor.fetchone() is not None:
-                return
-            memory = await self._memory.remember_reading(
-                output["content"],
-                output["summary"],
-                f"reading-settlement:{session_id}",
-                source_name=book.title,
-                source_topic=build_source_topic("book", book_id),
-                in_transaction=True,
-            )
-            await self._store.db.conn.execute(
-                "INSERT INTO reading_memory_receipt(session_id,memory_id) VALUES (?,?)",
-                (session_id, memory.id),
-            )
-        await self._memory._run_best_effort_tail(
-            memory, [], f"reading-settlement:{session_id}"
-        )
-
     async def _integrate(
         self, book_id: str, result: BoundaryResult, pre_read_count: int
     ) -> None:

@@ -213,7 +213,7 @@ function ParagraphContent({
   );
 }
 
-export default function ReaderView({ onExcerpt }: { onExcerpt?: (text: string) => void } = {}) {
+export default function ReaderView() {
   const bookId = useReaderStore((state) => state.bookId);
   const books = useReaderStore((state) => state.books);
   const totalParagraphs = useReaderStore((state) => state.totalParagraphs);
@@ -502,7 +502,6 @@ export default function ReaderView({ onExcerpt }: { onExcerpt?: (text: string) =
               <button type="button" onClick={() => void saveHighlight()}>
                 保存划线
               </button>
-              {onExcerpt && <button type="button" onClick={() => { onExcerpt(selection.text); setSelection(null); }}>{readingPolicy.study.copy.add_note}</button>}
               <button type="button" onClick={() => setSelection(null)}>
                 取消
               </button>

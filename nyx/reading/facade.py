@@ -38,7 +38,6 @@ from nyx.reading.integration import (
     NYX_BUFFER_MAXLEN,
     ReadingIntegration,
 )
-from nyx.reading.sessions import ReadingSessions
 from nyx.reading.store import ReadingStore
 from nyx.types import (
     Annotation,
@@ -182,8 +181,6 @@ class ReadingFacade:
         self._impulse_semaphores: dict[str, asyncio.Semaphore] = {}
         self._impulse_inflight: dict[tuple[str, int], asyncio.Task[None]] = {}
         self._integration_tasks: dict[str, asyncio.Task[None]] = {}
-        self.study = ReadingSessions(self, expression)
-        expression.reading_handoff = self.study.handoff
 
     async def import_book(self, filename: str, data: bytes) -> Book:
         """解析 EPUB → 去重 → 插入 books + paragraphs → 返回 Book。

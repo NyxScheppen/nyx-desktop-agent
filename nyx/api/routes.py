@@ -12,7 +12,7 @@ import uuid
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated, Any, Literal, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -39,7 +39,6 @@ from nyx.reading.facade import (
     DuplicateBookError,
     NoteNotFoundError,
 )
-from nyx.reading.sessions import StudyConflictError
 from nyx.reading.store import ProgressConflictError
 from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.types import (
@@ -297,58 +296,6 @@ class _UpdateNotePayload(BaseModel):
         max_length=policy(
             "reading", "limits.UpdateNotePayload_content_max_length", int
         ),
-    )
-
-
-class _StudyConnection(BaseModel):
-    connection: uuid.UUID
-
-
-class _StudyEnter(_StudyConnection):
-    book_id: str
-
-
-class _StudyAnnotation(BaseModel):
-    reply_event_id: str
-    quote: str = Field(
-        min_length=1,
-        max_length=policy("reading", "limits.UserNotePayload_content_max_length", int),
-    )
-    comment: str = Field(
-        min_length=1,
-        max_length=policy("reading", "limits.UserNotePayload_content_max_length", int),
-    )
-
-
-class _StudyInput(_StudyConnection):
-    input_id: uuid.UUID
-    message: str = Field(
-        max_length=policy("reading", "limits.UserNotePayload_content_max_length", int)
-    )
-    notes: list[
-        Annotated[
-            str,
-            Field(
-                max_length=policy(
-                    "reading", "limits.UserNotePayload_content_max_length", int
-                )
-            ),
-        ]
-    ] = Field(
-        default_factory=list,
-        max_length=policy("reading", "study.parameters.search_limit", int),
-    )
-    annotation: _StudyAnnotation | None = None
-    presentation: str = Field(
-        default="",
-        max_length=policy("reading", "limits.UserNotePayload_content_max_length", int),
-    )
-
-
-class _StudyNote(BaseModel):
-    revision: int = Field(ge=0)
-    content: str = Field(
-        max_length=policy("reading", "limits.UserNotePayload_content_max_length", int)
     )
 
 
@@ -924,97 +871,6 @@ def build_app(
         media_type = "application/json" if payload.format == "json" else "text/markdown"
         return Response(content=content, media_type=media_type)
 
-    @fast.exception_handler(StudyConflictError)
-    async def study_conflict(
-        request: Request, error: StudyConflictError
-    ) -> JSONResponse:
-        return JSONResponse(status_code=409, content={"detail": str(error)})
-
-    @fast.post("/api/reading/sessions")
-    async def api_study_enter(payload: _StudyEnter) -> dict[str, Any]:
-        try:
-            return await app.reading.study.enter(
-                payload.book_id, str(payload.connection)
-            )
-        except BookNotFoundError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
-
-    @fast.get("/api/reading/sessions")
-    async def api_study_active() -> dict[str, Any] | None:
-        active = await app.reading._store.active_study()
-        return None if active is None else await app.reading.study.snapshot(*active)
-
-    @fast.get("/api/books/{book_id}/study")
-    async def api_study(book_id: str, session_id: str | None = None) -> dict[str, Any]:
-        return await app.reading.study.snapshot(book_id, session_id)
-
-    @fast.post("/api/books/{book_id}/study/{session_id}/heartbeat")
-    async def api_study_heartbeat(
-        book_id: str, session_id: str, payload: _StudyConnection
-    ) -> dict[str, bool]:
-        await app.reading.study.heartbeat(book_id, session_id, str(payload.connection))
-        return {"ok": True}
-
-    @fast.post("/api/books/{book_id}/study/{session_id}/detach")
-    async def api_study_detach(
-        book_id: str, session_id: str, payload: _StudyConnection
-    ) -> dict[str, bool]:
-        await app.reading.study.detach(book_id, session_id, str(payload.connection))
-        return {"ok": True}
-
-    @fast.post("/api/books/{book_id}/study/{session_id}/turns")
-    async def api_study_input(
-        book_id: str, session_id: str, payload: _StudyInput
-    ) -> dict[str, Any]:
-        try:
-            return await app.reading.study.accept(
-                book_id,
-                session_id,
-                str(payload.connection),
-                str(payload.input_id),
-                payload.message,
-                payload.notes,
-                payload.annotation.model_dump() if payload.annotation else None,
-                payload.presentation,
-            )
-        except ValueError as error:
-            if isinstance(error, StudyConflictError):
-                raise
-            raise HTTPException(status_code=422, detail=str(error)) from error
-
-    @fast.post("/api/books/{book_id}/study/{session_id}/turns/{input_id}/retry")
-    async def api_study_retry_turn(
-        book_id: str, session_id: str, input_id: str, payload: _StudyConnection
-    ) -> dict[str, bool]:
-        await app.reading.study.retry_turn(
-            book_id, session_id, input_id, str(payload.connection)
-        )
-        return {"ok": True}
-
-    @fast.post("/api/books/{book_id}/study/{session_id}/leave")
-    async def api_study_leave(book_id: str, session_id: str) -> dict[str, Any]:
-        return await app.reading.study.leave(book_id, session_id)
-
-    @fast.post("/api/books/{book_id}/study/retry")
-    async def api_study_retry(book_id: str) -> dict[str, bool]:
-        await app.reading.study.retry(book_id)
-        return {"ok": True}
-
-    @fast.get("/api/books/{book_id}/study-note")
-    async def api_study_note(book_id: str) -> dict[str, Any]:
-        return await app.reading._store.study_note(book_id)
-
-    @fast.put("/api/books/{book_id}/study-note")
-    async def api_study_note_save(book_id: str, payload: _StudyNote) -> dict[str, Any]:
-        try:
-            return await app.reading._store.save_study_note(
-                book_id, payload.revision, payload.content
-            )
-        except ProgressConflictError as error:
-            raise HTTPException(
-                status_code=409, detail=policy("reading", "study.copy.conflict", str)
-            ) from error
-
     @fast.post("/api/books", status_code=201)
     async def api_books(file: UploadFile = File(...)) -> Book:
         filename = sanitize_filename(file.filename or "book.epub")
@@ -1146,7 +1002,8 @@ def build_app(
             )
         except ProgressConflictError as error:
             raise HTTPException(
-                status_code=409, detail=policy("reading", "study.copy.conflict", str)
+                status_code=409,
+                detail=policy("reading", "facade.copy.update_user_note_conflict", str),
             ) from error
         except NoteNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error

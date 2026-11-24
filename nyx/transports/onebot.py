@@ -237,18 +237,6 @@ class OneBotAdapter:
                 )
                 continue
             try:
-                if event.type in (
-                    EventType.INITIATE_CHAT,
-                    EventType.MUTTER,
-                    EventType.READING_QUESTION,
-                    EventType.READING_ASSOCIATION,
-                    EventType.READING_MUTTER,
-                ):
-                    if self._app.reading.study.occupied():
-                        await self._retry_lock(
-                            "suppressed", partial(self.outbox.sent, event.id)
-                        )
-                        continue
                 await self.emit(event)
             except OneBotError as error:
                 await self._retry_lock(

@@ -150,7 +150,6 @@ class ReplyDeps:
     archive_user_reply: Callable[[str, ReplyState | None], Awaitable[None]]
     has_pending_reply_inputs: Callable[[list[str], str | None], Awaitable[bool]]
     checkpointer: BaseCheckpointSaver[str] | None = None
-    reading_session: bool = False
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -285,16 +284,12 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         return "\n\n".join(
             part
             for part in (
-                (
-                    state["reading_context"]
-                    if deps.reading_session
-                    else bound_material_block(
-                        policy(
-                            "expression", "pipeline.templates.user_prompt_text", str
-                        ).format(p0=format_prompt_time(state["sampled_at"]))
-                        + state["reading_context"],
-                        _READING_BLOCK_MAX_CHARS,
-                    )
+                bound_material_block(
+                    policy(
+                        "expression", "pipeline.templates.user_prompt_text", str
+                    ).format(p0=format_prompt_time(state["sampled_at"]))
+                    + state["reading_context"],
+                    _READING_BLOCK_MAX_CHARS,
                 )
                 if state["reading_context"]
                 else "",
@@ -328,11 +323,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         try:
             return await deps.memory.search_behavior_experiences(
                 query,
-                "reading"
-                if deps.reading_session
-                else "discussion"
-                if _discussion(state)
-                else "conversation",
+                "discussion" if _discussion(state) else "conversation",
             )
         except Exception:
             _LOGGER.exception(
@@ -350,7 +341,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             if deps.checkpointer is not None
             else None
         )
-        if saved is not None or _discussion(state) or deps.reading_session:
+        if saved is not None or _discussion(state):
             mode = ContextMode.SLOW
         else:
             mode = classify_channel(
@@ -386,8 +377,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         segment_search = getattr(deps.memory, "search_conversation_segments", None)
         recalled_segments: list[ConversationSegment] = []
-        recall_conversation = not deps.reading_session and (
-            not _discussion(state) or is_recollection_query(state["message"])
+        recall_conversation = not _discussion(state) or is_recollection_query(
+            state["message"]
         )
         if recall_conversation and callable(segment_search):
             segment_fn = cast(
@@ -556,12 +547,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 for schema in deps.tools.schema()
                 if schema["function"]["name"] in skill.tool_names
             ]
-            if skill and (skill.name == "discussion" or deps.reading_session)
+            if skill and skill.name == "discussion"
             else [
                 schema
                 for schema in deps.tools.schema()
                 if schema["function"]["name"] not in _DISCUSSION_TOOL_NAMES
-                and schema["function"]["name"] not in ("book_search", "book_excerpt")
             ]
         )
         answered = state["answered_attempt"]

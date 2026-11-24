@@ -5,10 +5,9 @@ import { importBook } from "../../api/client";
 import { captureScope, isScopeCurrent } from "../../api/characterScope";
 import { useReaderStore } from "../../stores/readerStore";
 import Panel from "../layout/Panel";
-import BookStudyResults from "./StudyResults";
 
 // 书架：列出已导入书 + 「导入 EPUB」按钮；点书 openBook 进阅读页（06 §1）。
-export default function BookshelfView({ onChoose }: { onChoose?: (bookId: string) => void } = {}) {
+export default function BookshelfView() {
   const books = useReaderStore((s) => s.books);
   const booksError = useReaderStore((s) => s.booksError);
   const loadBooks = useReaderStore((s) => s.loadBooks);
@@ -71,7 +70,7 @@ export default function BookshelfView({ onChoose }: { onChoose?: (bookId: string
               <button
                 type="button"
                 className="bookshelf__item"
-                onClick={() => onChoose ? onChoose(b.id) : void openBook(b.id)}
+                onClick={() => void openBook(b.id)}
               >
                 <span className="panel-item__main">{b.title}</span>
                 <span className="panel-item__meta">
@@ -79,7 +78,6 @@ export default function BookshelfView({ onChoose }: { onChoose?: (bookId: string
                   {b.user_position > 0 ? formatPolicyText(readingPolicy.templates.BookshelfView.text, { p0: b.user_position }) : readingPolicy.copy.BookshelfView.text_3}
                 </span>
               </button>
-              <BookStudyResults bookId={b.id} />
             </li>
           ))}
         </ul>

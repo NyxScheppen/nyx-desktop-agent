@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from nyx.activity.facade import ActivityFacade
 from nyx.activity.store import ActivityStore
-from nyx.behavior.context import behavior_context
 from nyx.behavior.service import BehaviorService
 from nyx.behavior.store import BehaviorStore, SkillStore
 from nyx.bootstrap import initialize_card, load_skills
@@ -56,7 +55,7 @@ from nyx.runtime import (
 from nyx.tools.activity_tasks import build_activity_task_tools
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_fetch import build_web_fetch_tool
-from nyx.types import Book, CurrentState, Event, ReadingProgress, Skill, Tool
+from nyx.types import Book, CurrentState, Event, ReadingProgress, Tool
 
 if TYPE_CHECKING:
     from nyx.app_context import _App
@@ -516,51 +515,6 @@ async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
         )
     )
 
-    async def book_search(query: str) -> list[dict[str, Any]]:
-        scope = behavior_context.get()
-        if scope is None or scope.get("scope") != "reading" or "book_id" not in scope:
-            raise ValueError(policy("reading", "study.copy.error_scope", str))
-        return await cast(ReadingFacade, ctx.get("reading")).study.search(
-            scope["book_id"], query
-        )
-
-    async def book_excerpt(start: int, end: int) -> list[dict[str, Any]]:
-        scope = behavior_context.get()
-        if scope is None or scope.get("scope") != "reading" or "book_id" not in scope:
-            raise ValueError(policy("reading", "study.copy.error_scope", str))
-        return await cast(ReadingFacade, ctx.get("reading")).study.excerpt(
-            scope["book_id"], start, end
-        )
-
-    tools.register(
-        Tool(
-            "book_search",
-            policy("reading", "study.prompts.tool_search", str),
-            {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-            book_search,
-        )
-    )
-    tools.register(
-        Tool(
-            "book_excerpt",
-            policy("reading", "study.prompts.tool_excerpt", str),
-            {
-                "type": "object",
-                "properties": {
-                    "start": {"type": "integer", "minimum": 1},
-                    "end": {"type": "integer", "minimum": 1},
-                },
-                "required": ["start", "end"],
-                "additionalProperties": False,
-            },
-            book_excerpt,
-        )
-    )
     skills = load_skills(cast(Path, ctx.get("prompt_dir")) / "skills", tools)
     await cast(SkillStore, ctx.get("skills")).seed(skills)
     await cast(ResearchService, ctx.get("research")).recover()
@@ -593,16 +547,6 @@ async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
 
 
 async def _build_reading(ctx: PluginContext) -> Mapping[str, object]:
-    # Seed only if absent; user cards and revised skills keep their existing body.
-    await cast(SkillStore, ctx.get("skills")).seed(
-        {
-            "reading": Skill(
-                "reading",
-                policy("behavior", "reading_skill.system_fragment", str),
-                policy("behavior", "reading_skill.tool_names", tuple[str, ...]),
-            )
-        }
-    )
     reading = ReadingFacade(
         ReadingStore(cast(Database, ctx.get("db"))),
         cast(InnerLifeFacade, ctx.get("inner_life")),
@@ -871,6 +815,6 @@ def default_plugins() -> tuple[_Plugin, ...]:
             "reading",
             _build_reading,
             ("reading", "reading_context"),
-            ("inner_life", "desire", "memory", "expression", "evaluator", "skills"),
+            ("inner_life", "desire", "memory", "expression", "evaluator"),
         ),
     )

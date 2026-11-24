@@ -22,8 +22,6 @@ import ExpressionHistoryPanel from "./components/panels/ExpressionHistoryPanel";
 import MemoryPanel from "./components/panels/MemoryPanel";
 import BookshelfView from "./components/reading/BookshelfView";
 import ReaderView from "./components/reading/ReaderView";
-import StudyView from "./components/reading/StudyView";
-import readingPolicy from "../../nyx/settings/reading.json";
 import RightDock, { type View } from "./components/shell/RightDock";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
@@ -104,7 +102,6 @@ function ConnectedApp() {
   );
   const [view, setView] = useState<View>("chat");
   const [readerOpen, setReaderOpen] = useState(false);
-  const [studyOpen, setStudyOpen] = useState(false);
   const bookId = useReaderStore((s) => s.bookId);
   const messages = useChatStore((s) => s.messages);
   const fontScale = useSettingsStore((s) => s.fontScale);
@@ -175,10 +172,9 @@ function ConnectedApp() {
                 } : undefined}
               />
             </aside>
-            {view === "chat" && studyOpen ? <StudyView onClose={() => setStudyOpen(false)} /> : view === "chat" ? (
+            {view === "chat" ? (
               <>
                 <div className="conversation-heading">
-                    <button type="button" className="reader-toggle" onClick={() => { setReaderOpen(false); setStudyOpen(true); }}>{readingPolicy.study.copy.entry}</button>
                     <button
                       type="button"
                       className="reader-toggle"
@@ -215,7 +211,7 @@ function ConnectedApp() {
               </section>
             )}
           </main>}
-          {ready && !(view === "chat" && studyOpen) && <div className="full-announcements"><AnnounceLayer /></div>}
+          {ready && <div className="full-announcements"><AnnounceLayer /></div>}
         </>
       )}
 

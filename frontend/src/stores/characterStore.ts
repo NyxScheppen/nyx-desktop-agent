@@ -13,7 +13,6 @@ import { useInnerLifeStore } from "./innerLifeStore";
 import { useMemoryStore } from "./memoryStore";
 import { useReaderStore } from "./readerStore";
 import { useConnectionStore } from "./connectionStore";
-import { useStudyStore } from "./studyStore";
 
 type CharacterState = {
   registry: CharacterRegistry | null;
@@ -60,7 +59,6 @@ async function restoreBook(): Promise<void> {
 }
 
 function resetDisplays(): void {
-  useStudyStore.getState().reset();
   useBehaviorStore.setState(useBehaviorStore.getInitialState());
   useChatStore.getState().reset();
   useReaderStore.getState().closeBook();
@@ -79,7 +77,6 @@ export const useCharacterStore = create<CharacterState>((set, get) => {
     const scope = captureScope();
     const changed = scope?.id !== registry.current_id || scope.revision !== registry.selection_revision;
     if (changed) {
-      useStudyStore.getState().detach();
       invalidateScope();
       resetDisplays();
       bindScope({ id: registry.current_id, revision: registry.selection_revision });
@@ -91,7 +88,6 @@ export const useCharacterStore = create<CharacterState>((set, get) => {
   return {
     registry: null, generation: 0, switching: false, error: null, drafts: savedUi.drafts,
     initialize: async () => {
-      useStudyStore.getState().detach();
       invalidateScope();
       await get().refresh();
     },
@@ -123,7 +119,6 @@ export const useCharacterStore = create<CharacterState>((set, get) => {
         const bookId = useReaderStore.getState().bookId;
         if (previous && bookId) lastBooks[previous.id] = bookId;
         refreshRevision += 1;
-        useStudyStore.getState().detach();
         invalidateScope();
         set((s) => ({ switching: true, generation: s.generation + 1, error: null }));
         resetDisplays();

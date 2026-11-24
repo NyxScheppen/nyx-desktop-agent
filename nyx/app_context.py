@@ -137,18 +137,15 @@ class _App:
 
     def can_initiate(self) -> bool:
         """Admission uses the selected runtime; admitted work keeps its owner."""
-        return not self.reading.study.occupied() and (
-            self.host is None
-            or (
-                (
-                    self.host.current_id == self.character_id
-                    or (
-                        self.config.onebot.enabled
-                        and self.config.onebot.character_id == self.character_id
-                    )
+        return self.host is None or (
+            (
+                self.host.current_id == self.character_id
+                or (
+                    self.config.onebot.enabled
+                    and self.config.onebot.character_id == self.character_id
                 )
-                and self.host.records[self.character_id]["status"] == "RUNNING"
             )
+            and self.host.records[self.character_id]["status"] == "RUNNING"
         )
 
     async def apply_presence(self, sequence: int, payload: dict[str, Any]) -> None:

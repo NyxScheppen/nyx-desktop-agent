@@ -334,7 +334,8 @@ async def test_packaged_entry_resolves_resources_without_launch_directory(
     monkeypatch.setattr(entry.sys, "frozen", True, raising=False)
     monkeypatch.setattr(entry.sys, "_MEIPASS", str(tmp_path), raising=False)
     monkeypatch.delenv("NYX_CONFIG", raising=False)
-    monkeypatch.delenv("NYX_CANON_DIR", raising=False)
+    monkeypatch.setenv("NYX_CANON_DIR", "")
+    monkeypatch.delenv("NYX_CANON_DIR")
     build = AsyncMock(side_effect=RuntimeError("stop before runtime"))
     monkeypatch.setattr(entry._Host, "open", build)
     with pytest.raises(RuntimeError, match="stop before runtime"):

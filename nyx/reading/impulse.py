@@ -67,16 +67,16 @@ DEFAULT_COOLDOWNS_SEC: dict[ReadingBehavior, int] = policy(
 class ParagraphFeatures:
     """段落特征向量（照搬 S06，砍掉 char_count/sentence_count 等 4 个未消费字段）。"""
 
-    exclamation_ratio: float     # 感叹号密度（！/! / 字符数）
-    quote_ratio: float           # 引号/对话标记密度（"/「 / 字符数）
-    dash_ratio: float            # 破折号/省略号密度（——/…/... / 字符数）
-    negative_emo: float          # 负面情绪关键词密度
-    positive_emo: float          # 正面情绪关键词密度
-    philosophical: float         # 哲学关键词密度
-    sensory: float               # 感官关键词密度
-    character_mention: float     # 角色/人称密度
-    uniqueness: float            # 字频倒数均值（0-1，出现 1 次的 CJK 字占比）
-    richness_score: float        # 0-1 综合「丰富度」加权和
+    exclamation_ratio: float  # 感叹号密度（！/! / 字符数）
+    quote_ratio: float  # 引号/对话标记密度（"/「 / 字符数）
+    dash_ratio: float  # 破折号/省略号密度（——/…/... / 字符数）
+    negative_emo: float  # 负面情绪关键词密度
+    positive_emo: float  # 正面情绪关键词密度
+    philosophical: float  # 哲学关键词密度
+    sensory: float  # 感官关键词密度
+    character_mention: float  # 角色/人称密度
+    uniqueness: float  # 字频倒数均值（0-1，出现 1 次的 CJK 字占比）
+    richness_score: float  # 0-1 综合「丰富度」加权和
 
 
 def _count_keywords(text: str, keywords: set[str]) -> int:
@@ -232,8 +232,7 @@ def check_triggers(
         if composite.get(behavior, 0.0) >= DEFAULT_THRESHOLDS[behavior]
     ]
     question_in_cooldown = question_pending or (
-        question_cooldown_at > 0
-        and now < question_cooldown_at + QUESTION_COOLDOWN_SEC
+        question_cooldown_at > 0 and now < question_cooldown_at + QUESTION_COOLDOWN_SEC
     )
     if question_candidates and not question_in_cooldown:
         triggered.append(

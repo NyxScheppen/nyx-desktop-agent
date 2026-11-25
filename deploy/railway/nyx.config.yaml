@@ -1,3 +1,8 @@
+llm:
+  base_url: https://sub.anzhiyu.com/v1
+  model: deepseek-v4-pro
+  api_key_env: ANZHIYU_API_KEY
+
 onebot:
   enabled: true
   self_id: 3976995810

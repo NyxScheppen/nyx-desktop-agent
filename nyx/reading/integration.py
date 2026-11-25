@@ -23,9 +23,7 @@ _INTEGRATION_PROMPT_MAX_CHARS = policy(
 )
 _SOURCE_BLOCK_CHARS = policy("reading", "integration._SOURCE_BLOCK_CHARS", int)
 
-_READING_NOTE_SYSTEM = (
-    policy("reading", "integration._READING_NOTE_SYSTEM", str)
-)
+_READING_NOTE_SYSTEM = policy("reading", "integration._READING_NOTE_SYSTEM", str)
 
 
 @dataclass
@@ -138,18 +136,24 @@ class ReadingIntegration:
         source_name = str(pending.get("source_name", book_id))
         if isinstance(source_text, str) and source_text.strip():
             chunk_id = await self._memory.record_reading_evidence(
-                build_source_topic("book", book_id), source_name, source_text,
-                str(pending.get("block_key", "")), book_id=book_id,
+                build_source_topic("book", book_id),
+                source_name,
+                source_text,
+                str(pending.get("block_key", "")),
+                book_id=book_id,
                 location=f"{source_name} {pending.get('block_key', '')}",
             )
             if "knowledge" not in pending:
                 raw_profile = state.get("profile")
                 profile, knowledge = await self._memory.digest_source_block(
-                    source_text, source_name, correlation_id,
+                    source_text,
+                    source_name,
+                    correlation_id,
                     author=str(pending.get("author", "")),
                     source_chunk_id=chunk_id,
                     profile=cast(dict[str, object], raw_profile)
-                    if isinstance(raw_profile, dict) else None,
+                    if isinstance(raw_profile, dict)
+                    else None,
                 )
                 for item in knowledge:
                     item["source_topic"] = build_source_topic("book", book_id)

@@ -162,6 +162,7 @@ class LlmClient:
         async with self._call_lock:
             proactive = output_type in {
                 "initiate_chat",
+                "initiate_chat_match",
                 "mutter_wander",
                 "reading_mutter",
                 "question_knowledge",

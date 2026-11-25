@@ -12,6 +12,7 @@ from nyx.config import Config
 from nyx.db import DatabaseLockTimeout, connect
 from nyx.enums import EventType
 from nyx.events.bus import EventBus
+from nyx.events.event import internal_text_event
 from nyx.runtime import root_event
 
 
@@ -98,6 +99,104 @@ async def test_onebot_admits_replayed_message_once(
         assert len(await app.bus.list_events()) == 1
     finally:
         await db.close()
+
+
+async def test_onebot_quote_uses_sent_qq_id_and_keeps_unknown_quotes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nyx.transports.onebot import OneBotAdapter
+
+    database = await connect(":memory:")
+    try:
+        bus = EventBus(database)
+        monkeypatch.setenv("ONEBOT_ACCESS_TOKEN", "fixture-token")
+        adapter = OneBotAdapter(_minimal_app(bus, Config()))
+        await adapter.outbox.initialize()
+        question = internal_text_event(EventType.INITIATE_CHAT, "旧问题", "opening")
+        question.content["attempt_id"] = "old-attempt"
+        await bus.publish(question)
+        await adapter.outbox.scan()
+        await adapter.outbox.sent(question.id, "-345")
+        adapter = OneBotAdapter(_minimal_app(bus, Config()))
+
+        await adapter.on_external(message(message=[
+            {"type": "reply", "data": {"id": "-345"}},
+            {"type": "text", "data": {"text": "隔天想起答案了"}},
+        ]))
+        await adapter.on_external(message(
+            message_id=8, message="[CQ:reply,id=23]另外一条",
+        ))
+        late = await bus.get_event("onebot:123:-7")
+        unmatched = await bus.get_event("onebot:123:8")
+        assert late is not None and late.content["reply_to"] == "old-attempt"
+        assert late.content["message"] == "隔天想起答案了"
+        assert unmatched is not None and unmatched.content["message"] == "另外一条"
+        assert unmatched.content["quote_message_id"] == "23"
+        assert "reply_to" not in unmatched.content
+    finally:
+        await database.close()
+
+
+async def test_onebot_quote_resolves_a_legacy_message_through_get_msg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nyx.transports.onebot import OneBotAdapter
+
+    database = await connect(":memory:")
+    bus = EventBus(database)
+    monkeypatch.setenv("ONEBOT_ACCESS_TOKEN", "fixture-token")
+    config = Config()
+    adapter = OneBotAdapter(_minimal_app(bus, config))
+    await adapter.outbox.initialize()
+    opening = internal_text_event(EventType.INITIATE_CHAT, "你喜欢哪本书？", "older")
+    opening.content["attempt_id"] = "older-attempt"
+    await bus.publish(opening)
+    await adapter.outbox.scan()
+    await adapter.outbox.sent(opening.id)
+    observed = asyncio.Event()
+    publish = bus.publish
+
+    async def publish_reply(event: Any) -> None:
+        await publish(event)
+        observed.set()
+
+    async def server(ws: ServerConnection) -> None:
+        login = json.loads(await ws.recv())
+        assert login["action"] == "get_login_info"
+        await ws.send(json.dumps({
+            "echo": login["echo"], "status": "ok", "retcode": 0,
+            "data": {"user_id": 123},
+        }))
+        await ws.send(json.dumps(message(message="[CQ:reply,id=-45]《小王子》。")))
+        request = json.loads(await ws.recv())
+        assert request["action"] == "get_msg"
+        assert request["params"] == {"message_id": -45}
+        await ws.send(json.dumps({
+            "echo": request["echo"], "status": "ok", "retcode": 0,
+            "data": {
+                "message_id": -45, "message_type": "private", "target_id": 456,
+                "sender": {"user_id": 123}, "time": int(opening.timestamp),
+                "message": opening.content["content"],
+            },
+        }))
+        await ws.wait_closed()
+
+    monkeypatch.setattr(bus, "publish", publish_reply)
+    try:
+        async with serve(server, "127.0.0.1", 0) as websocket:
+            config.onebot.ws_url = f"ws://127.0.0.1:{websocket.sockets[0].getsockname()[1]}"
+            task = asyncio.create_task(adapter.run())
+            try:
+                await asyncio.wait_for(observed.wait(), timeout=5)
+                reply = await bus.get_event("onebot:123:-7")
+                assert reply is not None
+                assert reply.content["reply_to"] == "older-attempt"
+                assert reply.content["message"] == "《小王子》。"
+            finally:
+                await adapter.quiesce()
+                await asyncio.gather(task, return_exceptions=True)
+    finally:
+        await database.close()
 
 
 async def test_onebot_database_timeout_is_not_a_network_retry(
@@ -293,7 +392,7 @@ async def test_onebot_concurrent_network_failure_keeps_database_error(
     async def login(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return {"data": {"user_id": 123}}
 
-    async def disconnected() -> None:
+    async def disconnected(_inbox: asyncio.Queue[dict[str, Any]]) -> None:
         raise OneBotError("disconnected")
 
     async def database_error() -> None:

@@ -26,6 +26,11 @@
       "init_text": "OneBot 环境变量 {p0} 未设置"
     }
   },
+  "quote": {
+    "receive_queue_size": 64,
+    "queue_full": "OneBot 入站队列已满",
+    "lookup_error": "OneBot 旧引用消息查询失败：%s"
+  },
   "delivery": {
     "backoff_exponent_max": 5,
     "backoff_max_seconds": 30,

@@ -542,6 +542,7 @@ async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
             release_return=partial(_release_return, ctx),
             reading_context_reader=partial(_read_reading_context, ctx),
             checkpointer=db.checkpointer,
+            initiative_embed=cast(EmbedFn, ctx.get("embed")),
         )
     }
 

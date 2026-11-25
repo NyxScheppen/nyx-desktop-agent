@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, cast
 
-from nyx.enums import EmotionCategory, UserIntent
+from nyx.enums import EmotionCategory, EventType, InteractionStatus, UserIntent
 from nyx.inner_life.document import render_document
 from nyx.memory.facts import format_source_time as format_prompt_time
 from nyx.memory.facts import strip_recall_fillers
@@ -21,6 +21,7 @@ from nyx.types import (
     ActivityContext,
     ConversationSegment,
     CurrentState,
+    Event,
     InnerDocument,
     Memory,
     MemoryFact,
@@ -122,6 +123,37 @@ def build_initiate_chat_prompt(desire_description: str) -> str:
     return policy(
         "expression", "prompt.templates.build_initiate_chat_prompt_text", str
     ).format(p0=desire_description)
+
+
+def build_initiative_record(
+    text: str,
+    created_at: float,
+    status: InteractionStatus | None,
+    answer: Event | None = None,
+    *,
+    quoted: bool = False,
+) -> str:
+    limit = policy("expression", "initiative_history.quote_characters", int)
+    time = format_prompt_time(created_at)
+    if quoted:
+        return policy("expression", "initiative_history.quoted", str).format(
+            time=time, text=text[:limit],
+        )
+    if status is InteractionStatus.WAITING:
+        response = policy("expression", "initiative_history.waiting", str)
+    elif status is InteractionStatus.EXPIRED:
+        response = policy("expression", "initiative_history.no_reply", str)
+    else:
+        response = policy("expression", "initiative_history.unconfirmed", str)
+    if status is InteractionStatus.ANSWERED and answer is not None:
+        answer_text = answer.content.get("message")
+        if answer.type is EventType.USER_MESSAGE and isinstance(answer_text, str):
+            response = policy("expression", "initiative_history.answered", str).format(
+                time=format_prompt_time(answer.timestamp), text=answer_text[:limit],
+            )
+    return policy("expression", "initiative_history.entry", str).format(
+        time=time, text=text[:limit], response=response,
+    )
 
 
 MUTTER_WANDER_TASK = (

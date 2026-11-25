@@ -96,13 +96,15 @@ class TransportOutbox:
                 correlation_id=row["correlation_id"],
             )
 
-    async def sent(self, event_id: str) -> None:
+    async def sent(self, event_id: str, message_id: str | None = None) -> None:
         """Confirm sending and its cursor in the same transaction."""
         async with self._db.transaction() as conn:
             await conn.execute(
                 "UPDATE transport_outbox SET status='sent', lease_until=NULL, "
-                "last_error=NULL WHERE transport=? AND event_id=?",
-                (self._transport, event_id),
+                "last_error=NULL, "
+                "transport_message_id=COALESCE(?, transport_message_id) "
+                "WHERE transport=? AND event_id=?",
+                (message_id, self._transport, event_id),
             )
             await conn.execute(
                 "UPDATE transport_checkpoint SET sent_rowid=(SELECT event_rowid "
@@ -110,6 +112,46 @@ class TransportOutbox:
                 "WHERE transport=?",
                 (self._transport, event_id, self._transport),
             )
+
+    async def quoted_initiative(
+        self, message_id: str, *, legacy_text: str | None = None,
+        sent_before: float | None = None,
+    ) -> str | None:
+        """Resolve a quote for this recipient from its ID or unique legacy evidence."""
+        condition = "o.transport_message_id=?"
+        params: tuple[object, ...] = (
+            self._transport, message_id,
+        )
+        if legacy_text is not None and sent_before is not None:
+            condition += " OR e.timestamp<?"
+            params += (sent_before,)
+        async with self._db.lock:
+            cursor = await self._db.conn.execute(
+                "SELECT e.type, e.content, o.transport_message_id "
+                "FROM transport_outbox o "
+                "JOIN event_log e ON e.id=o.event_id "
+                "WHERE o.transport=? AND o.status='sent' AND "
+                f"({condition})",
+                params,
+            )
+            rows = await cursor.fetchall()
+        matches: list[str | None] = []
+        for row in rows:
+            content = json.loads(row["content"])
+            attempt_id = content.get("attempt_id")
+            initiative = (
+                attempt_id if row["type"] == EventType.INITIATE_CHAT.value
+                and isinstance(attempt_id, str) else None
+            )
+            if row["transport_message_id"] == message_id:
+                matches.append(initiative)
+            elif (
+                row["transport_message_id"] is None
+                and legacy_text is not None
+                and content.get("content") == legacy_text
+            ):
+                matches.append(initiative)
+        return matches[0] if len(matches) == 1 else None
 
     async def retry(self, event_id: str, error: str) -> None:
         """Keep the failed head queued with capped exponential backoff."""

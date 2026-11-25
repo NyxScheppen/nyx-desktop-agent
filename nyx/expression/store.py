@@ -1,12 +1,23 @@
+import json
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 import aiosqlite
 
 from nyx.db import Database
-from nyx.enums import InteractionKind, InteractionStatus
+from nyx.enums import EventType, InteractionKind, InteractionStatus
 from nyx.types import InteractionAttempt
+
+
+@dataclass(frozen=True)
+class InitiativeRecord:
+    id: str
+    text: str
+    created_at: float
+    status: InteractionStatus | None
+    answer_event_id: str | None
 
 
 class ExpressionInteractionStore:
@@ -207,6 +218,53 @@ class ExpressionInteractionStore:
             if should_commit:
                 await self._db.conn.commit()
         return cursor.rowcount == 1
+
+    async def record_late_answer(
+        self, attempt_id: str, reply_event_id: str, reply_at: float
+    ) -> InteractionAttempt | None:
+        """Attach an admitted explicit reply without reopening the wait."""
+        async with self._operation() as should_commit:
+            cursor = await self._db.conn.execute(
+                "UPDATE expression_interaction_attempt SET status=?, "
+                "answered_at=?, answer_event_id=? WHERE id=? AND kind=? "
+                "AND (status=? OR (status=? AND answer_event_id IS NULL))",
+                (InteractionStatus.ANSWERED.value, reply_at, reply_event_id, attempt_id,
+                 InteractionKind.INITIATE_CHAT.value, InteractionStatus.EXPIRED.value,
+                 InteractionStatus.CLAIMED.value),
+            )
+            changed = cursor.rowcount == 1
+            if changed and should_commit:
+                await self._db.conn.commit()
+        return await self.get(attempt_id) if changed else None
+
+    async def list_initiatives(self) -> list[InitiativeRecord]:
+        """Read all openings, including legacy events without an attempt row."""
+        async with self._operation():
+            cursor = await self._db.conn.execute(
+                "SELECT id, text, created_at, status, answer_event_id, "
+                "NULL AS legacy_content FROM expression_interaction_attempt "
+                "WHERE kind=? AND status!=? "
+                "UNION ALL SELECT e.id, NULL, e.timestamp, NULL, NULL, e.content "
+                "FROM event_log e WHERE e.type=? AND NOT EXISTS ("
+                "SELECT 1 FROM expression_interaction_attempt a "
+                "WHERE a.kind=? AND a.correlation_id=e.correlation_id) "
+                "ORDER BY created_at DESC, id DESC",
+                (InteractionKind.INITIATE_CHAT.value, InteractionStatus.FAILED.value,
+                 EventType.INITIATE_CHAT.value, InteractionKind.INITIATE_CHAT.value),
+            )
+            rows = await cursor.fetchall()
+        records: list[InitiativeRecord] = []
+        for row in rows:
+            text = row["text"]
+            if row["legacy_content"] is not None:
+                text = json.loads(row["legacy_content"]).get("content")
+            if isinstance(text, str) and text.strip():
+                records.append(InitiativeRecord(
+                    id=row["id"], text=text, created_at=row["created_at"],
+                    status=InteractionStatus(row["status"]) if row["status"] else None,
+                    answer_event_id=row["answer_event_id"],
+                ))
+        return records
 
     async def list_waiting(self) -> list[InteractionAttempt]:
         async with self._operation():

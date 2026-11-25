@@ -1598,6 +1598,17 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE user_notes ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
         ],
     ),
+    (
+        59,
+        [
+            "ALTER TABLE transport_outbox ADD COLUMN transport_message_id TEXT",
+            "CREATE INDEX idx_transport_message_id "
+            "ON transport_outbox(transport, transport_message_id) "
+            "WHERE transport_message_id IS NOT NULL",
+            "CREATE INDEX idx_expression_attempt_kind_created "
+            "ON expression_interaction_attempt(kind, created_at, id)",
+        ],
+    ),
 ]
 
 

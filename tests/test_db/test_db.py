@@ -849,6 +849,7 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_expression_attempt_waiting_paused",
         "idx_expression_attempt_status_created",
         "idx_expression_attempt_correlation",
+        "idx_expression_attempt_kind_created",
         "idx_memory_fact_subject",
         "idx_memory_fact_object",
         "idx_memory_fact_validity",
@@ -870,6 +871,7 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_tool_call_log_call",
         "idx_tool_execution_correlation",
         "idx_transport_outbox_order",
+        "idx_transport_message_id",
         "idx_reading_session_open",
     }
 

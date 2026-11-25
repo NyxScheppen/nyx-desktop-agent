@@ -31,6 +31,7 @@ from nyx.enums import (
 )
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
+from nyx.events.routing import ROUTE_SPECS
 from nyx.expression.facade import ExpressionFacade
 from nyx.expression.mutter import _MUTTER_SKELETONS, MutterCategory
 from nyx.expression.store import ExpressionInteractionStore
@@ -2167,6 +2168,105 @@ async def test_initiate_chat_labels_desire_creation_time() -> None:
     desire.created_at = 1000.0
     await facade.initiate_chat(desire, _mk_state(80.0, 0.0))
     assert "欲望创建时间=1970-01-01T08:16:40+08:00" in llm.calls[0][1][-1]["content"]
+
+
+async def test_initiative_history_links_late_replies_and_keeps_unanswered() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = ExpressionInteractionStore(database)
+        bus = EventBus(database)
+        route = next(
+            spec for spec in ROUTE_SPECS
+            if spec.consumer_id == "expression.user_message"
+        )
+
+        async def handler(event: Event) -> None:
+            pass
+
+        bus.subscribe(route, handler)
+        facade, llm, *_ = _new_facade(interaction_store=store)
+        facade._bus = bus
+        for attempt_id, opening in (
+            ("old", "你最喜欢哪本书？"),
+            ("unanswered", "你今天散步了吗？"),
+        ):
+            await store.create(InteractionAttempt(
+                id=attempt_id, kind=InteractionKind.INITIATE_CHAT,
+                source_id="d1", correlation_id=attempt_id, text=opening,
+                created_at=10.0, expires_at=20.0, status=InteractionStatus.EXPIRED,
+            ))
+        await bus.publish(_event(
+            "qq-reply", 90000.0, EventType.USER_MESSAGE,
+            {"message": "我最喜欢《小王子》。", "reply_to": "old"}, "qq-reply",
+        ))
+        await facade.reply("我最喜欢《小王子》。", "qq-reply", "old", discussion=False)
+        assert await bus.get_event("qq-reply") is not None
+        assert "你最喜欢哪本书？" in llm.calls[-1][1][0]["content"]
+        answered = await store.get("old")
+        assert answered is not None and answered.status is InteractionStatus.ANSWERED
+        assert answered.answer_event_id == "qq-reply"
+        assert await facade.initiate_chat(_desire(), _mk_state(80.0, 0.0))
+        system = llm.calls[-1][1][0]["content"]
+        assert "你最喜欢哪本书？" in system and "我最喜欢《小王子》。" in system
+        assert "你今天散步了吗？｜等待期间没有关联回复" in system
+        assert "1970-01-01T08:00:10+08:00" in system
+    finally:
+        await database.close()
+
+
+async def test_initiative_revisits_same_question_outside_prompt_budget() -> None:
+    database = await db.connect(":memory:")
+    try:
+        store = ExpressionInteractionStore(database)
+        facade, llm, *_ = _new_facade(
+            llm=_FakeLlm(chat_content="你最喜欢哪一本书？"), interaction_store=store,
+        )
+        bus = EventBus(database)
+        facade._bus = bus
+        for index in range(80):
+            await store.create(InteractionAttempt(
+                id=f"recent-{index}", kind=InteractionKind.INITIATE_CHAT,
+                source_id="d1", correlation_id=f"recent-{index}",
+                text=f"第 {index} 条聊散步的开场 " + "散步" * 100,
+                created_at=100.0 + index, expires_at=1000.0,
+                status=InteractionStatus.EXPIRED,
+            ))
+        await store.create(InteractionAttempt(
+            id="old", kind=InteractionKind.INITIATE_CHAT,
+            source_id="d1", correlation_id="old", text="有哪本书是你最喜欢的？",
+            created_at=10.0, expires_at=20.0, status=InteractionStatus.EXPIRED,
+        ))
+
+        async def embed(text: str) -> list[float]:
+            return [1.0, 0.0] if "书" in text else [0.0, 1.0]
+
+        facade._initiative_embed = embed
+        original = llm.complete
+
+        async def complete(messages: list[LlmMessage], **kwargs: Any) -> LLMOutput:
+            output = await original(messages, **kwargs)
+            if output.type == "initiate_chat_match":
+                output.content = '{"same_question_ids":["old"]}'
+            elif len(messages) > 2:
+                output.content = "上回问过你最喜欢哪本书，今天还是有点好奇。"
+            return output
+
+        llm.complete = complete  # type: ignore[method-assign]
+        assert await facade.initiate_chat(_desire(), _mk_state(80.0, 0.0))
+        assert [item[0] for item in llm.calls] == [
+            "initiate_chat", "initiate_chat_match", "initiate_chat",
+        ]
+        assert "有哪本书是你最喜欢的？" not in llm.calls[0][1][0]["content"]
+        assert "1970-01-01T08:00:10+08:00" in llm.calls[-1][1][-1]["content"]
+        assert "有哪本书是你最喜欢的？｜等待期间没有关联回复" in (
+            llm.calls[-1][1][-1]["content"]
+        )
+        events = await bus.list_events(event_type=EventType.INITIATE_CHAT)
+        assert [event.content["content"] for event in events] == [
+            "上回问过你最喜欢哪本书，今天还是有点好奇。",
+        ]
+    finally:
+        await database.close()
 
 
 async def test_initiate_chat_pins_conversation_skill_for_feedback() -> None:

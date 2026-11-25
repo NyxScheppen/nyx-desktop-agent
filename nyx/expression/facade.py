@@ -6,10 +6,11 @@
 """
 
 import asyncio
+import json
 import logging
 import random
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from typing import Any, Literal, cast
@@ -52,14 +53,16 @@ from nyx.expression.prompt import (
     MUTTER_WANDER_TASK,
     activity_summary,
     build_initiate_chat_prompt,
+    build_initiative_record,
     build_system_prompt,
     build_temporal_block,
     format_prompt_time,
 )
-from nyx.expression.store import ExpressionInteractionStore
+from nyx.expression.store import ExpressionInteractionStore, InitiativeRecord
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import InitiationSkipped, LlmClient
 from nyx.memory.facade import MemoryFacade
+from nyx.memory.retrieval import EmbedFn, cosine
 from nyx.policy import policy
 from nyx.tools.registry import ToolRegistry
 from nyx.types import (
@@ -69,6 +72,7 @@ from nyx.types import (
     Event,
     ExpressionHistory,
     InteractionAttempt,
+    LLMOutput,
     Message,
     ReplyAnnotation,
     ShortTermDesire,
@@ -112,6 +116,7 @@ class ExpressionFacade:
         skills: Mapping[str, Skill] | None = None,
         skill_store: SkillStore | None = None,
         checkpointer: BaseCheckpointSaver[str] | None = None,
+        initiative_embed: EmbedFn | None = None,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -125,6 +130,8 @@ class ExpressionFacade:
         self._ask_guidance = ask_guidance
         self._config = config
         self._interaction_store = interaction_store
+        self._initiative_embed = initiative_embed
+        self._initiative_vectors: OrderedDict[str, list[float]] = OrderedDict()
         self._knowledge_boundary = knowledge_boundary
         self._observation_reader = observation_reader
         self._claim_return = claim_return
@@ -870,6 +877,20 @@ class ExpressionFacade:
         if self._interaction_store is None:
             return None
         attempt = await self._interaction_store.claim_reply(reply_event_id, reply_to)
+        if attempt is None and reply_to is not None:
+            event = await self._bus.get_event(reply_event_id)
+            if event is not None and event.type is EventType.USER_MESSAGE:
+                closing = await self._interaction_store.get(reply_to)
+                if (
+                    closing is not None
+                    and closing.kind is InteractionKind.INITIATE_CHAT
+                    and closing.status is InteractionStatus.CLAIMED
+                    and closing.answer_event_id is None
+                ):
+                    await self._desire.expire(closing.source_id)
+                return await self._interaction_store.record_late_answer(
+                    reply_to, reply_event_id, event.timestamp
+                )
         if attempt is None:
             return None
         try:
@@ -1159,8 +1180,17 @@ class ExpressionFacade:
                 if annotation is not None else None
             )
             # 用户说话 = 回应了之前的问句/搭话；清等待状态（不判断是否真在答）。
-            if annotation is None:
+            if annotation is None and (
+                reply_to is not None
+                or user_event is None
+                or "quote_message_id" not in user_event.content
+            ):
                 answered = await self.answer_waiting(correlation_id, reply_to)
+            quoted_initiative = None
+            if reply_to is not None and self._interaction_store is not None:
+                quoted_initiative = answered or await self._interaction_store.get(
+                    reply_to
+                )
             reading_context = ""
             if (
                 answered is not None
@@ -1181,6 +1211,15 @@ class ExpressionFacade:
             temporal_context = await self._temporal_context(
                 now, correlation_id, claimed_return
             )
+            if (
+                quoted_initiative is not None
+                and quoted_initiative.kind is InteractionKind.INITIATE_CHAT
+            ):
+                # Supply the actual quoted prompt even if it fell out of local history.
+                temporal_context += "\n\n" + build_initiative_record(
+                    quoted_initiative.text, quoted_initiative.created_at,
+                    quoted_initiative.status, quoted=True,
+                )
             initial = {
                 "input_mode": "durable" if user_event is not None else "direct",
                 "input_events": [user_event] if user_event is not None else [],
@@ -1278,6 +1317,130 @@ class ExpressionFacade:
                 self._release_return_claim(claimed_return)
             raise
 
+    async def _initiative_line(self, record: InitiativeRecord) -> str:
+        answer = (
+            await self._bus.get_event(record.answer_event_id)
+            if record.status is InteractionStatus.ANSWERED and record.answer_event_id
+            else None
+        )
+        return build_initiative_record(
+            record.text, record.created_at, record.status, answer
+        )
+
+    async def _initiative_candidates(
+        self, query: str, records: list[InitiativeRecord]
+    ) -> list[InitiativeRecord]:
+        normalized = "".join(char for char in query.casefold() if char.isalnum())
+        if not normalized or not records:
+            return []
+        exact = [
+            record for record in records
+            if "".join(char for char in record.text.casefold() if char.isalnum())
+            == normalized
+        ]
+        limit = policy("expression", "initiative_history.related_candidates", int)
+        if self._initiative_embed is None or len(exact) >= limit:
+            return exact[:limit]
+        exact_ids = {record.id for record in exact}
+        minimum = policy("expression", "initiative_history.similarity_threshold", float)
+        cache_size = policy(
+            "expression", "initiative_history.embedding_cache_size", int
+        )
+        candidates: list[tuple[float, InitiativeRecord]] = []
+        try:
+            query_vector = await self._initiative_embed(query)
+            for record in records:
+                vector = self._initiative_vectors.get(record.text)
+                if vector is None:
+                    vector = await self._initiative_embed(record.text)
+                    self._initiative_vectors[record.text] = vector
+                self._initiative_vectors.move_to_end(record.text)
+                if len(self._initiative_vectors) > cache_size:
+                    self._initiative_vectors.popitem(last=False)
+                score = cosine(query_vector, vector)
+                if score >= minimum and record.id not in exact_ids:
+                    candidates.append((score, record))
+        except Exception:
+            _LOGGER.exception(
+                policy("expression", "initiative_history.embedding_error", str)
+            )
+        candidates.sort(key=lambda hit: hit[0], reverse=True)
+        return [*exact, *(record for _, record in candidates)][:limit]
+
+    async def _initiative_prompt(
+        self, records: list[InitiativeRecord], priority: list[InitiativeRecord]
+    ) -> tuple[str, set[str]]:
+        heading = policy("expression", "initiative_history.heading", str)
+        budget = policy("expression", "initiative_history.character_budget", int)
+        remaining = budget - len(heading)
+        recent = policy("expression", "initiative_history.recent_priority", int)
+        lines: dict[str, str] = {}
+        for record in [*records[:recent], *priority, *records[recent:]]:
+            if record.id in lines:
+                continue
+            line = await self._initiative_line(record)
+            if len(line) + 1 > remaining:
+                break
+            lines[record.id] = line
+            remaining -= len(line) + 1
+        if not lines:
+            return "", set()
+        newest_first = [lines[row.id] for row in records if row.id in lines]
+        return "\n".join([heading, *newest_first]), set(lines)
+
+    async def _revisit_older_question(
+        self,
+        draft: LLMOutput,
+        records: list[InitiativeRecord],
+        included: set[str],
+        system: str,
+        user: str,
+        correlation_id: str,
+    ) -> LLMOutput:
+        candidates = await self._initiative_candidates(draft.content, records)
+        if not any(record.id not in included for record in candidates):
+            return draft
+        try:
+            comparison = await self._llm.complete(
+                [{"role": "system", "content": policy(
+                    "expression", "initiative_history.match_system", str,
+                )}, {"role": "user", "content": json.dumps({
+                    "draft": draft.content,
+                    "previous": [{"id": record.id, "text": record.text}
+                                 for record in candidates],
+                }, ensure_ascii=False)}],
+                module="expression", output_type="initiate_chat_match",
+                correlation_id=correlation_id, json_mode=True,
+            )
+            match = json.loads(comparison.content)["same_question_ids"]
+            if not isinstance(match, list):
+                raise TypeError
+            matching_ids = {item for item in cast(list[object], match)
+                            if isinstance(item, str)}
+        except InitiationSkipped:
+            raise
+        except Exception:
+            _LOGGER.exception(
+                policy("expression", "initiative_history.match_error", str)
+            )
+            return draft
+        matched = {record.id for record in candidates} & matching_ids
+        latest = next((record for record in records if record.id in matched), None)
+        if latest is None or latest.id in included:
+            return draft
+        guidance = policy("expression", "initiative_history.rewrite", str)
+        previous = await self._initiative_line(latest)
+        return await self._llm.complete(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+                {"role": "assistant", "content": draft.content},
+                {"role": "user", "content": guidance + "\n" + previous},
+            ],
+            module="expression", output_type="initiate_chat",
+            correlation_id=correlation_id,
+        )
+
     async def initiate_chat(self, desire: ShortTermDesire, state: CurrentState) -> bool:
         """搭话：快通道生成一句开场白。
 
@@ -1310,6 +1473,16 @@ class ExpressionFacade:
             ).format(
                 p0=format_prompt_time(desire.created_at)
             ) + build_initiate_chat_prompt(desire.description)
+            records = (
+                await self._interaction_store.list_initiatives()
+                if self._interaction_store is not None else []
+            )
+            history, included = await self._initiative_prompt(records, [])
+            if len(included) < len(records):
+                related = await self._initiative_candidates(desire.description, records)
+                history, included = await self._initiative_prompt(records, related)
+            if history:
+                system += "\n\n" + history
             output = await self._llm.complete(
                 [
                     {"role": "system", "content": system},
@@ -1319,6 +1492,10 @@ class ExpressionFacade:
                 output_type="initiate_chat",
                 correlation_id=correlation_id,
             )
+            if output.content.strip() and len(included) < len(records):
+                output = await self._revisit_older_question(
+                    output, records, included, system, user, correlation_id
+                )
             await self._evaluator.evaluate(output)
             if not output.content.strip():
                 self._release_return_claim(claimed_return)

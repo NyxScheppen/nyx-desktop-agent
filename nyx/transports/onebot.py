@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from functools import partial
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from nyx.app_context import _App
 
 _LOGGER = logging.getLogger(__name__)
+_CQ_REPLY = re.compile(r"^\[CQ:reply,id=(-?[0-9]+)\]")
 _T = TypeVar("_T")
 
 
@@ -55,9 +57,87 @@ class OneBotAdapter:
         self._task: asyncio.Task[None] | None = None
         self._accepting = True
         self._confirmed_event_id: str | None = None
+        self._confirmed_message_id: str | None = None
+        self._confirmed_attempt_id: str | None = None
+
+    @staticmethod
+    def _message_id(value: object) -> str | None:
+        if type(value) is int:
+            return str(value)
+        if isinstance(value, str) and re.fullmatch(r"-?[0-9]+", value):
+            return value
+        return None
+
+    @classmethod
+    def _text_message(cls, message: object) -> tuple[str, str | None] | None:
+        quote_id = None
+        if isinstance(message, str):
+            quoted = _CQ_REPLY.match(message)
+            if quoted is not None:
+                quote_id = quoted[1]
+                message = message[quoted.end():]
+            if "[CQ:" in message:
+                return None
+            text = message.replace("&#91;", "[").replace("&#93;", "]")
+            return text.replace("&amp;", "&"), quote_id
+        if not isinstance(message, list):
+            return None
+        parts: list[str] = []
+        for index, segment in enumerate(cast(list[object], message)):
+            if not isinstance(segment, dict):
+                return None
+            values = cast(dict[str, Any], segment)
+            data = values.get("data")
+            if not isinstance(data, dict):
+                return None
+            fields = cast(dict[str, Any], data)
+            if index == 0 and values.get("type") == "reply":
+                quote_id = cls._message_id(fields.get("id"))
+                if quote_id is None:
+                    return None
+            elif values.get("type") == "text" and isinstance(fields.get("text"), str):
+                parts.append(fields["text"])
+            else:
+                return None
+        return "".join(parts), quote_id
+
+    async def _quoted_attempt(self, quote_id: str) -> str | None:
+        if quote_id == self._confirmed_message_id:
+            return self._confirmed_attempt_id
+        attempt = await self.outbox.quoted_initiative(quote_id)
+        if attempt is not None or self._connection is None:
+            return attempt
+        try:
+            response = await self._call("get_msg", {"message_id": int(quote_id)})
+        except OneBotError as error:
+            _LOGGER.info(policy("onebot", "quote.lookup_error", str), error)
+            return None
+        data = response.get("data")
+        if not isinstance(data, dict):
+            return None
+        data = cast(dict[str, Any], data)
+        sender = data.get("sender")
+        if (
+            data.get("message_type") != "private"
+            or self._message_id(data.get("message_id")) != quote_id
+            or self._message_id(data.get("target_id", self._config.owner_id))
+            != str(self._config.owner_id)
+            or not isinstance(sender, dict)
+            or self._message_id(cast(dict[str, Any], sender).get("user_id"))
+            != str(self._config.self_id)
+            or type(data.get("time")) is not int
+        ):
+            return None
+        parsed = self._text_message(data.get("message"))
+        if parsed is None or parsed[1] is not None:
+            return None
+        # OneBot timestamps have second precision, local events have fractions.
+        return await self.outbox.quoted_initiative(
+            quote_id, legacy_text=parsed[0], sent_before=float(data["time"]) + 1
+        )
 
     async def on_external(self, payload: dict[str, Any]) -> None:
-        """Admit only the configured user's private plain text, with stable IDs."""
+        """Admit private text and resolve a leading QQ reply segment."""
         if not self._accepting or (
             self._app.host is not None
             and (
@@ -73,30 +153,10 @@ class OneBotAdapter:
             or payload.get("user_id") != self._config.owner_id
         ):
             return
-        message = payload.get("message")
-        if isinstance(message, str):
-            if "[CQ:" in message:
-                return
-            text = message.replace("&#91;", "[").replace("&#93;", "]")
-            text = text.replace("&amp;", "&")
-        elif isinstance(message, list):
-            parts: list[str] = []
-            for segment in cast(list[Any], message):
-                if not isinstance(segment, dict):
-                    return
-                segment = cast(dict[str, Any], segment)
-                if segment.get("type") != "text":
-                    return
-                data: Any = segment.get("data")
-                if not isinstance(data, dict):
-                    return
-                text_part = cast(dict[str, Any], data).get("text")
-                if not isinstance(text_part, str):
-                    return
-                parts.append(text_part)
-            text = "".join(parts)
-        else:
+        parsed = self._text_message(payload.get("message"))
+        if parsed is None:
             return
+        text, quote_id = parsed
         message_id, timestamp = payload.get("message_id"), payload.get("time")
         if (
             not text.strip()
@@ -105,6 +165,12 @@ class OneBotAdapter:
         ):
             return
         identity = f"onebot:{self._config.self_id}:{message_id}"
+        quote: dict[str, str] = {}
+        if quote_id is not None:
+            quote["quote_message_id"] = quote_id
+            attempt_id = await self._quoted_attempt(quote_id)
+            if attempt_id is not None:
+                quote["reply_to"] = attempt_id
         await self._app.bus.publish(
             Event(
                 id=identity,
@@ -118,6 +184,7 @@ class OneBotAdapter:
                     "self_id": self._config.self_id,
                     "user_id": self._config.owner_id,
                     "message_id": message_id,
+                    **quote,
                 },
             )
         )
@@ -153,12 +220,12 @@ class OneBotAdapter:
         finally:
             self._pending.pop(echo, None)
 
-    async def emit(self, event: Event) -> None:
+    async def emit(self, event: Event) -> str | None:
         """Send text literally; only a matching successful echo confirms it."""
         text = event.content["content"]
         if event.type is EventType.THINK:
             text = policy("onebot", "onebot.templates.emit_text", str).format(p0=text)
-        await self._call(
+        response = await self._call(
             "send_private_msg",
             {
                 "user_id": self._config.owner_id,
@@ -167,8 +234,12 @@ class OneBotAdapter:
                 ],
             },
         )
+        data = response.get("data")
+        if isinstance(data, dict):
+            return self._message_id(cast(dict[str, Any], data).get("message_id"))
+        return None
 
-    async def _receive(self) -> None:
+    async def _receive(self, inbox: asyncio.Queue[dict[str, Any]]) -> None:
         assert self._connection is not None
         while True:
             try:
@@ -188,7 +259,17 @@ class OneBotAdapter:
             if future is not None and not future.done():
                 future.set_result(payload)
             elif "post_type" in payload:
-                await self.on_external(payload)
+                if payload.get("post_type") == "message":
+                    try:
+                        inbox.put_nowait(payload)
+                    except asyncio.QueueFull:
+                        raise OneBotError(
+                            policy("onebot", "quote.queue_full", str)
+                        ) from None
+
+    async def _admit_inbox(self, inbox: asyncio.Queue[dict[str, Any]]) -> None:
+        while True:
+            await self.on_external(await inbox.get())
 
     async def _retry_lock(
         self, phase: str, operation: Callable[[], Awaitable[_T]]
@@ -215,8 +296,16 @@ class OneBotAdapter:
     async def _confirm_sent(self) -> None:
         event_id = self._confirmed_event_id
         if event_id is not None:
-            await self._retry_lock("sent", lambda: self.outbox.sent(event_id))
+            message_id = self._confirmed_message_id
+            if message_id is None:
+                await self._retry_lock("sent", partial(self.outbox.sent, event_id))
+            else:
+                await self._retry_lock(
+                    "sent", partial(self.outbox.sent, event_id, message_id)
+                )
             self._confirmed_event_id = None
+            self._confirmed_message_id = None
+            self._confirmed_attempt_id = None
 
     async def _release(self) -> None:
         # Shutdown must be bounded. An unreleased row recovers through its lease.
@@ -237,17 +326,24 @@ class OneBotAdapter:
                 )
                 continue
             try:
-                await self.emit(event)
+                self._confirmed_message_id = await self.emit(event)
             except OneBotError as error:
                 await self._retry_lock(
                     "retry", partial(self.outbox.retry, event.id, type(error).__name__)
                 )
                 raise
             self._confirmed_event_id = event.id
+            attempt_id = event.content.get("attempt_id")
+            if event.type is EventType.INITIATE_CHAT and isinstance(attempt_id, str):
+                self._confirmed_attempt_id = attempt_id
             await self._confirm_sent()
 
     async def _session(self) -> None:
-        receiver = asyncio.create_task(self._receive())
+        inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
+            maxsize=policy("onebot", "quote.receive_queue_size", int)
+        )
+        receiver = asyncio.create_task(self._receive(inbox))
+        admitter = asyncio.create_task(self._admit_inbox(inbox))
 
         async def send_after_login() -> None:
             response = await self._call("get_login_info", {})
@@ -262,15 +358,16 @@ class OneBotAdapter:
             await self._send()
 
         sender = asyncio.create_task(send_after_login())
+        tasks = (receiver, sender, admitter)
         try:
             await asyncio.wait(
-                (receiver, sender),
+                tasks,
                 return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
-            receiver.cancel()
-            sender.cancel()
-            results = await asyncio.gather(receiver, sender, return_exceptions=True)
+            for task in tasks:
+                task.cancel()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
             for future in self._pending.values():
                 future.cancel()
             self._pending.clear()
@@ -330,8 +427,12 @@ class OneBotAdapter:
             self._accepting = False
             if self._confirmed_event_id is not None:
                 try:
-                    await self.outbox.sent(self._confirmed_event_id)
+                    await self.outbox.sent(
+                        self._confirmed_event_id, self._confirmed_message_id
+                    )
                     self._confirmed_event_id = None
+                    self._confirmed_message_id = None
+                    self._confirmed_attempt_id = None
                 except DatabaseLockTimeout:
                     _LOGGER.warning(
                         "OneBot sent confirmation deferred: DB lock timeout"

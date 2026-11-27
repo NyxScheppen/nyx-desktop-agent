@@ -50,15 +50,19 @@ def validate_topics(topics: list[InnerTopic]) -> None:
         )
 
 
-def render_document(document: InnerDocument, section: str | None = None) -> str:
-    """Render stable anchors with prose; the document cannot grant capabilities."""
+def render_document(
+    document: InnerDocument, section: str | None = None, *, include_anchors: bool = True
+) -> str:
+    """Render the document with optional anchors for callers that edit it."""
     parts: list[str] = []
     for key, label in SECTIONS.items():
         selected = [t for t in document.topics if t.section == key]
         if (section is not None and section != key) or not selected:
             continue
-        parts.append(f"## {label} [{key}]")
-        parts.extend(f"### {t.title} [{t.id}]\n{t.content}" for t in selected)
+        parts.append(f"## {label}" + (f" [{key}]" if include_anchors else ""))
+        for topic in selected:
+            anchor = f" [{topic.id}]" if include_anchors else ""
+            parts.append(f"### {topic.title}{anchor}\n{topic.content}")
     return "\n\n".join(parts)
 
 

@@ -41,7 +41,7 @@ from nyx.memory.facts import MemoryFactStore
 from nyx.memory.retrieval import EmbedFn, MemoryRetrieval
 from nyx.memory.store import MemoryStore
 from nyx.policy import policy
-from nyx.reading.facade import ReadingFacade
+from nyx.reading.facade import BookNotFoundError, ReadingFacade
 from nyx.reading.store import ReadingStore
 from nyx.research import build_deep_research_tool
 from nyx.research.service import ResearchService
@@ -138,6 +138,13 @@ async def _read_reader_book(
 
 async def _get_reader_book(ctx: PluginContext, book_id: str) -> Book:
     return await cast(ReadingFacade, ctx.get("reading")).get_book(book_id)
+
+
+async def _tool_book_title(ctx: PluginContext, book_id: str) -> str | None:
+    try:
+        return (await _get_reader_book(ctx, book_id)).title
+    except BookNotFoundError:
+        return None
 
 
 async def _get_reader_progress(ctx: PluginContext, book_id: str) -> ReadingProgress:
@@ -557,6 +564,7 @@ async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
             checkpointer=db.checkpointer,
             initiative_embed=cast(EmbedFn, ctx.get("embed")),
             initiative=initiative,
+            book_title=partial(_tool_book_title, ctx),
         ),
     }
 

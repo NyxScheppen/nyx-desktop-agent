@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 from uuid import uuid4
@@ -15,19 +16,29 @@ from langgraph.graph.state import CompiledStateGraph
 
 from nyx.enums import MemoryKind
 from nyx.expression.prompt import (
+    _MATERIAL_ITEM_MAX_CHARS,
     _TOOL_BLOCK_MAX_CHARS,
     _TOOL_OUTPUT_MAX_ITEMS,
     PLAN_REVIEW_TASK,
     PLAN_TASK,
     TOOL_DECISION_FAILED,
+    _bounded_text,
     _memory_block,
     _tool_outputs_block,
     bound_material_block,
+    format_dialogue_time,
     format_prompt_time,
+    tool_reply_material_budget,
+)
+from nyx.expression.tool_facts import (
+    is_schedule_tool,
+    schedule_facts,
+    schedule_failure,
+    source_facts,
 )
 from nyx.policy import policy
 from nyx.tools.execution import execute_attempt, receive_result
-from nyx.tools.registry import is_read_only_call
+from nyx.tools.registry import ToolRegistry, is_read_only_call
 from nyx.types import Plan, PlanStep
 
 if TYPE_CHECKING:
@@ -37,6 +48,12 @@ _LOGGER = logging.getLogger(__name__)
 _MAX_TOOL_ROUNDS = policy("expression", "tool_pipeline._MAX_TOOL_ROUNDS", int)
 _MAX_REPLANS = policy("expression", "tool_pipeline._MAX_REPLANS", int)
 _MAX_TOOL_ATTEMPTS = policy("expression", "tool_pipeline._MAX_TOOL_ATTEMPTS", int)
+_RECALL_FIELDS = policy(
+    "expression", "tool_pipeline.reply.recall_trace_fields", set[str]
+)
+_RECALL_TIMES = policy(
+    "expression", "tool_pipeline.reply.recall_time_labels", dict[str, str]
+)
 
 
 class ToolState(TypedDict):
@@ -164,6 +181,206 @@ def execution_feedback(state: ToolState) -> str:
     return bound_material_block(text.strip(), _TOOL_BLOCK_MAX_CHARS // 2)
 
 
+def reply_execution_feedback(state: ToolState) -> str:
+    """Render observed call statuses and original arguments for the reply."""
+    labels = policy("expression", "tool_pipeline.reply.status", dict[str, str])
+    receipt = policy("expression", "prompt.templates.reply_receipt", str)
+    argument = policy("expression", "prompt.templates.reply_argument", str)
+    lines: list[str] = []
+    if state["records"]:
+        heading = policy(
+            "expression", "tool_pipeline.copy.execution_feedback_text_3", str
+        )
+        lines.append(heading.strip())
+    for record in reversed(list(state["records"].values())):
+        lines.append(
+            receipt.format(
+                step=record["step"], name=record["name"],
+                status=labels[record["status"]], attempts=record["attempts"],
+            )
+        )
+        for key, value in record["args"].items():
+            lines.append(argument.format(key=key, value=_render_tool_data(value)))
+    plan_review = policy("expression", "tool_pipeline.copy.review_plan_text_5", str)
+    review_error = policy("expression", "tool_pipeline.copy.review_plan_text", str)
+    skipped = (
+        policy("expression", "tool_pipeline.copy.select_call_text_3", str),
+        policy("expression", "tool_pipeline.copy.accept_text", str),
+    )
+    limit = policy(
+        "expression",
+        "tool_pipeline.parameters.execution_feedback_text_chars_or_items",
+        int,
+    )
+    for notice in state["notices"][-limit:]:
+        if notice.startswith(plan_review):
+            if review_error in notice:
+                lines.append(review_error)
+        else:
+            lines.append(next(
+                (prefix for prefix in skipped if notice.startswith(prefix)), notice
+            ))
+    return bound_material_block("\n".join(lines), _TOOL_BLOCK_MAX_CHARS // 2)
+
+
+def _render_tool_data(value: object, *, recall: bool = False) -> str:
+    if isinstance(value, dict):
+        fields: list[str] = []
+        for key, item in cast(dict[str, object], value).items():
+            if item is None or (recall and key in _RECALL_FIELDS):
+                continue
+            if recall and key in _RECALL_TIMES and isinstance(item, (int, float)):
+                fields.append(f"{_RECALL_TIMES[key]}：{format_dialogue_time(item)}")
+            else:
+                rendered = _render_tool_data(item, recall=recall)
+                if rendered:
+                    delimiter = "\n" if isinstance(item, (dict, list)) else ""
+                    fields.append(f"{key}：{delimiter}{rendered}")
+        return "\n".join(fields)
+    if isinstance(value, list):
+        return "\n\n".join(
+            _render_tool_data(item, recall=recall) for item in cast(list[object], value)
+        )
+    return str(value) if value is not None else ""
+
+
+def render_recalled_tool_segment(segment: dict[str, object]) -> str:
+    """Translate recall evidence without exposing its retrieval bookkeeping."""
+    return _render_tool_data(segment, recall=True)
+
+
+async def project_tool_outputs(
+    state: ToolState,
+    registry: ToolRegistry,
+    *,
+    recall_only: bool = False,
+    book_title: Callable[[str], Awaitable[str | None]] | None = None,
+    feedback: str = "",
+) -> list[str]:
+    """Project the accepted outputs without changing the saved tool receipts."""
+    records = {
+        f"{record['name']}: {record.get('text', '')}": record
+        for record in state["records"].values()
+    }
+    if not recall_only:
+        return await _project_reply_facts(
+            state, registry, records, book_title, feedback
+        )
+    labels = policy("expression", "tool_pipeline.reply.status", dict[str, str])
+    outputs: list[str] = []
+    for output in state["outputs"]:
+        record = records.get(output)
+        if record is None or record["name"] != "memory_recall":
+            outputs.append(output)
+            continue
+        if record["status"] == "empty":
+            outputs.append(f"{record['name']}: {labels['empty']}")
+            continue
+        if record["status"] != "success":
+            outputs.append(output)
+            continue
+        try:
+            result: object = json.loads(record["text"])
+        except json.JSONDecodeError:
+            # Older and current tool state may store only a prefix of a large receipt.
+            receipt = await registry.get_execution(record["log_id"])
+            if receipt is None or receipt["status"] != "success":
+                missing = policy(
+                    "expression", "tool_pipeline.reply.missing_result", str
+                )
+                outputs.append(f"{record['name']}: {missing}")
+                continue
+            result = json.loads(receipt["result_json"])
+        rendered = _render_tool_data(result, recall=record["name"] == "memory_recall")
+        outputs.append(f"{record['name']}: {rendered}")
+    return outputs
+
+
+async def _project_reply_facts(
+    state: ToolState,
+    registry: ToolRegistry,
+    records: dict[str, dict[str, Any]],
+    book_title: Callable[[str], Awaitable[str | None]] | None,
+    feedback: str,
+) -> list[str]:
+    partial_note = policy("expression", "tool_pipeline.reply.partial", str)
+    remaining = tool_reply_material_budget(feedback) - len(partial_note) - len("\n")
+    groups: list[list[str]] = []
+    budget_notice = policy("expression", "tool_pipeline.templates.accept_text", str)
+    budget_notice = budget_notice.partition("{p0}")[2]
+    partial = any(budget_notice in notice for notice in state["notices"])
+    # Reserve budget for later receipts first so earlier material cannot crowd
+    # out a confirmed change. Keep the displayed groups in execution order.
+    for output in reversed(state["outputs"]):
+        if record := records.get(output):
+            header, items = await _facts_for_record(record, registry, book_title)
+        else:
+            # Stored checkpoints can have older outputs without a matching record.
+            header, items = "", [output]
+        if header:
+            header += "\n"
+        group: list[str] = []
+        for item in items:
+            entry = header + "- " + item
+            size = len(entry) + len("\n")
+            if size > remaining or len(item) > _MATERIAL_ITEM_MAX_CHARS:
+                partial = True
+                break
+            group.append(entry)
+            remaining -= size
+            header = ""
+        groups.append(group)
+    facts = [entry for group in reversed(groups) for entry in group]
+    if partial:
+        facts.append(partial_note)
+    return facts
+
+
+async def _facts_for_record(
+    record: dict[str, Any],
+    registry: ToolRegistry,
+    book_title: Callable[[str], Awaitable[str | None]] | None,
+) -> tuple[str, list[str]]:
+    name: str = record["name"]
+    status: str = record["status"]
+    scheduled = is_schedule_tool(name)
+    titles = policy("expression", "tool_pipeline.reply.titles", dict[str, str])
+    unknown_title = policy("expression", "tool_pipeline.reply.tool_name", str)
+    tool = titles.get(name, unknown_title.format(name=name))
+    missing = policy("expression", "tool_pipeline.reply.missing_result", str)
+    if scheduled and status != "success":
+        if failure := schedule_failure(record, tool):
+            return "", [failure]
+    if status == "empty":
+        empty = policy("expression", "tool_pipeline.reply.empty_result", str)
+        return "", [empty.format(tool=tool)]
+    if status != "success":
+        return "", [str(record["text"])]
+    try:
+        result: object = json.loads(record["text"])
+    except json.JSONDecodeError:
+        saved = await registry.get_execution(record["log_id"])
+        if saved is None or saved["status"] != "success":
+            return "", [missing]
+        result = json.loads(saved["result_json"])
+    if scheduled:
+        header, facts = await schedule_facts(name, record["args"], result, book_title)
+        return header, facts or [missing]
+    if (facts := source_facts(name, result, _MATERIAL_ITEM_MAX_CHARS)) is not None:
+        return "", facts or [missing]
+    prefix = policy("expression", "tool_pipeline.reply.result_text", str).format(
+        tool=tool
+    )
+    rendered = _render_tool_data(result)
+    if name == "deep_research" and rendered.strip():
+        # Keep the report and its citations together in the prompt budget.
+        return "", [prefix + rendered]
+    return "", [
+        prefix + _bounded_text(rendered, _MATERIAL_ITEM_MAX_CHARS - len(prefix))
+        if rendered.strip() else missing
+    ]
+
+
 def _needs_plan_review(state: ToolState) -> bool:
     latest = next(reversed(state["records"].values()), None)
     return (
@@ -275,7 +492,7 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
                 )
                 + "\n"
                 + _tool_outputs_block(
-                    state["outputs"],
+                    await project_tool_outputs(state, deps.tools, recall_only=True),
                     execution_feedback(state),
                 )
             )
@@ -318,7 +535,10 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             user += policy(
                 "expression", "tool_pipeline.copy.decide_text", str
             ) + json.dumps(state["plan"], ensure_ascii=False)
-        user += "\n" + _tool_outputs_block(state["outputs"], execution_feedback(state))
+        user += "\n" + _tool_outputs_block(
+            await project_tool_outputs(state, deps.tools, recall_only=True),
+            execution_feedback(state),
+        )
         schemas = [
             *state["schemas"],
             {
@@ -387,7 +607,10 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
             + policy("expression", "tool_pipeline.copy.decide_text", str)
             + json.dumps(current, ensure_ascii=False)
             + "\n"
-            + _tool_outputs_block(state["outputs"], execution_feedback(state))
+            + _tool_outputs_block(
+                await project_tool_outputs(state, deps.tools, recall_only=True),
+                execution_feedback(state),
+            )
             + policy(
                 "expression", "tool_pipeline.templates.review_plan_text_3", str
             ).format(p0=_MAX_TOOL_ROUNDS - state["rounds"])
@@ -647,7 +870,8 @@ def build_tool_graph(deps: "ReplyDeps") -> CompiledStateGraph[ToolState]:
         feedback = execution_feedback({**state, "records": records})
         before = _tool_outputs_block(outputs, feedback)
         after = _tool_outputs_block([*outputs, rendered], feedback)
-        if after != before:
+        # The final reply budgets schedule facts separately from planner text.
+        if after != before or is_schedule_tool(name):
             outputs.append(rendered)
             if status != "skipped":
                 await deps.tools.mark_adopted(pending["log_id"])

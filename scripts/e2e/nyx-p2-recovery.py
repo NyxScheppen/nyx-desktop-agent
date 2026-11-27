@@ -65,7 +65,7 @@ async def main():
                 def final(args): return args[0].checkpoint.get('pending') is None and args[0].checkpoint.get('cursor',0)>0
             chunk_id=await memory.record_reading_evidence(topic,'original',original,'preseed')
             fake.fail_digest=True
-            with patch('nyx.tools.web_fetch.fetch_url',return_value=incoming) as fetched:
+            with patch('nyx.tools.web_fetch.fetch_url',return_value={'text':incoming}) as fetched:
                 await fails(run)
                 first=await state();pending_key='source_pending' if kind=='exploration' else 'pending'
                 assert first[pending_key]['source_text']==incoming and first.get('cursor',0) in (0,{'paragraph_index':1,'char_offset':0}),first
@@ -84,7 +84,7 @@ async def main():
                 third=await state();assert third[pending_key]['source_chunk_id']==chunk_id
                 facts=await memory.search_facts('Source'+cid,scope='knowledge')
                 assert any(f.source_chunk_id==chunk_id for f in facts),(kind,facts,cid)
-                with patch('nyx.tools.web_fetch.fetch_url',return_value='CHANGED REMOTE SOURCE'):
+                with patch('nyx.tools.web_fetch.fetch_url',return_value={'text':'CHANGED REMOTE SOURCE'}):
                     await run()
                 last=await state();assert last[pending_key] is None,last
                 assert sum(t=='source_digest' for t,m in fake.calls)==n,(kind,n)
@@ -109,7 +109,7 @@ async def main():
         chunk_id=await memory.record_reading_evidence(topic,'original',original,'preseed')
         activity=Activity(str(uuid.uuid4()),ActivityType.FREE_EXPLORATION,'',ActivityStatus.RUNNING,{'intent':'P2Nebula','exploration':{'raw_results':[{'title':'P2Page','url':url}]}},1)
         fake.cancel_digest=True
-        with patch('nyx.tools.web_fetch.fetch_url',return_value=incoming) as fetched:
+        with patch('nyx.tools.web_fetch.fetch_url',return_value={'text':incoming}) as fetched:
             try:await app.research.run_activity(activity,lambda activity: asyncio.sleep(0))
             except asyncio.CancelledError:pass
             else:raise AssertionError('cancellation swallowed')
@@ -123,7 +123,7 @@ async def main():
                 result=await app.research.run_activity(activity,lambda activity: asyncio.sleep(0))
             assert result['status']=='uncertain',result
             before=len(await store.list_memories())
-            with patch('nyx.tools.web_fetch.fetch_url',return_value='CHANGED REMOTE SOURCE'):
+            with patch('nyx.tools.web_fetch.fetch_url',return_value={'text':'CHANGED REMOTE SOURCE'}):
                 result=await app.research.run_activity(activity,lambda activity: asyncio.sleep(0))
             assert result['status']=='completed',result
             assert len(await store.list_memories())==before

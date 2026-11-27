@@ -45,8 +45,10 @@ class Fake:
             self.rounds[correlation_id]+=1
             return LLMOutput(module=module,type=output_type,model='p3-script',content='{}',correlation_id=correlation_id,tool_calls=[{'name':'deep_research','args':{'query':'P3Nebula 的研究结论'}}] if self.rounds[correlation_id]==1 else [],call_id=str(uuid.uuid4()),prompt_messages=messages,prompt_tokens=11,completion_tokens=7)
         elif output_type=='reply':
-            material=messages[0]['content']; assert 'deep_research:' in material and '校准' in material and A in material and B in material,material
-            line=next(x for x in material.splitlines() if x.startswith('- deep_research: ')); report=json.loads(line.split(': ',1)[1]);assert report['report']
+            material=messages[0]['content'].split('[本轮查到的资料]',1)[1]
+            assert 'deep_research执行成功' in material and '校准' in material
+            for url in (A,B):
+                assert url in material and TEXT[url].split('。')[0]+'。' in material
             content={'think':'根据有引文的报告回答','speak':f'两组研究仍有分歧，来源：{A} 和 {B}。','needs_continuation':False}
         else: content={'content':'E2E','summary':'E2E','topics':[],'importance':'normal','entities':[],'facts':[]}
         return LLMOutput(module=module,type=output_type,model='p3-script',content=json.dumps(content,ensure_ascii=False),correlation_id=correlation_id,call_id=str(uuid.uuid4()),prompt_messages=messages,prompt_tokens=11,completion_tokens=7)
@@ -109,7 +111,7 @@ async def main():
                             if line.startswith('event: '):kind=line[7:]
                             elif line.startswith('data: '):await events.put((kind,json.loads(line[6:])))
                     reader=asyncio.create_task(consume())
-                    with patch('nyx.tools.web_search._search_web_sync',side_effect=lambda q:[{'url': B if '校准争议' in q else A}]),patch('nyx.tools.web_fetch.fetch_url',side_effect=lambda u:TEXT[u]):
+                    with patch('nyx.tools.web_search._search_web_sync',side_effect=lambda q:[{'url': B if '校准争议' in q else A}]),patch('nyx.tools.web_fetch.fetch_url',side_effect=lambda u:{'text':TEXT[u]}):
                         response=await client.post('/api/chat',json={'message':'P3Nebula 的研究结论','discussion':True});assert response.status_code==200,response.text
                         cid=response.json()['event_id']
                         async def speak():

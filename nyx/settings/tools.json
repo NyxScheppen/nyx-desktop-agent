@@ -52,6 +52,7 @@
     "copy": {
       "build_web_fetch_tool_text": "抓取网页正文为纯文本（供探索阅读消化）。",
       "handler_text": "正文抓取失败或为空",
+      "metadata_failed": "网页标题提取失败 url=%s",
       "handler_text_2": "网页知识摄入失败 url=%s",
       "handler_words": [
         "网页已抓取，知识摄入未完成"

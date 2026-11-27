@@ -154,9 +154,9 @@ async def main():
                 invalid = await client.post('/api/knowledge/sources',json={'text':source,'url':bad_url})
                 assert invalid.status_code==200 and invalid.json()['chunks'] and invalid.json()['errors'],invalid.text
             assert (await client.post('/api/knowledge/sources',json={'url':'http://127.0.0.1/private'})).status_code==400
-            with patch('nyx.tools.web_fetch.fetch_url',return_value=''):
+            with patch('nyx.tools.web_fetch.fetch_url',return_value=None):
                 assert (await client.post('/api/knowledge/sources',json={'url':'https://empty.example'})).status_code==400
-            with patch('nyx.tools.web_fetch.fetch_url',return_value='P2Nebula webpage full original 25 years'):
+            with patch('nyx.tools.web_fetch.fetch_url',return_value={'text':'P2Nebula webpage full original 25 years'}):
                 n=sum(t=='source_digest' for t,m in fake.calls)
                 both=await client.post('/api/knowledge/sources',json={'text':source,'url':'https://page.example/article'})
                 assert both.status_code==200 and len(both.json()['chunks'])==2,both.text

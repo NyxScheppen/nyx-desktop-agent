@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, cast
 
-from nyx.enums import EmotionCategory, EventType, InteractionStatus, UserIntent
+from nyx.enums import EventType, InteractionStatus, UserIntent
 from nyx.inner_life.document import render_document
 from nyx.memory.facts import format_source_time as format_prompt_time
 from nyx.memory.facts import strip_recall_fillers
@@ -38,6 +38,12 @@ _MEMORY_BLOCK_HEADER = policy("expression", "prompt._MEMORY_BLOCK_HEADER", str)
 _FACT_BLOCK_MAX_CHARS = policy("expression", "prompt._FACT_BLOCK_MAX_CHARS", int)
 _HISTORY_BLOCK_MAX_CHARS = policy("expression", "prompt._HISTORY_BLOCK_MAX_CHARS", int)
 _HISTORY_BLOCK_HEADER = policy("expression", "prompt._HISTORY_BLOCK_HEADER", str)
+_ACTIVITY_TYPES = policy(
+    "activity", "frontend.labels.ACTIVITY_TYPE_LABELS", dict[str, str]
+)
+_ACTIVITY_STATES = policy(
+    "activity", "frontend.labels.ACTIVITY_STATUS_LABELS", dict[str, str]
+)
 _READING_BLOCK_MAX_CHARS = policy("expression", "prompt._READING_BLOCK_MAX_CHARS", int)
 _TOOL_BLOCK_MAX_CHARS = policy("expression", "prompt._TOOL_BLOCK_MAX_CHARS", int)
 _TOOL_OUTPUT_MAX_ITEMS = policy("expression", "prompt._TOOL_OUTPUT_MAX_ITEMS", int)
@@ -175,6 +181,7 @@ def build_system_prompt(
     activity_context: ActivityContext | None = None,
     allow_wander: bool = False,
     tool_feedback: str = "",
+    reply_tool_facts: bool = False,
 ) -> str:
     """拼 system prompt：角色设定 + 状态 + 欲望 + 自我认知 + 记忆 + 工具结果。
 
@@ -184,17 +191,29 @@ def build_system_prompt(
     tool_outputs 为 use_tools 节点查到的工具结果（慢通道专属），空则跳过。
     """
     parts: list[str] = [
-        canon,
+        policy("expression", "prompt.copy.role_heading", str) + "\n" + canon,
         _inner_document_block(state.inner_document),
         _state_block(state),
     ]
-    if activity_context is not None:
-        parts.append(_activity_context_block(activity_context))
-    if allow_wander:
-        parts.append(_WANDER_GUIDANCE)
+    if state.active_desires:
+        parts.append(_desires_block(state.active_desires))
     if temporal_context is not None:
         parts.append(temporal_context)
-    parts.append(_desires_block(state.active_desires))
+    if activity_context is not None:
+        parts.append(_activity_context_block(activity_context))
+    else:
+        activity = (
+            _ACTIVITY_TYPES[state.current_activity.value]
+            if state.current_activity is not None
+            else policy("expression", "prompt.copy.state_block_text", str)
+        )
+        parts.append(
+            policy("expression", "prompt.templates.current_activity_text", str).format(
+                p0=activity
+            )
+        )
+    if allow_wander:
+        parts.append(_WANDER_GUIDANCE)
     if ask_guidance is not None:
         parts.append(ask_guidance)
     if knowledge_boundary is not None:
@@ -221,7 +240,9 @@ def build_system_prompt(
     if facts:
         parts.append(_fact_block(facts))
     if tool_outputs or tool_feedback:
-        parts.append(_tool_outputs_block(tool_outputs or [], tool_feedback))
+        parts.append(_tool_outputs_block(
+            tool_outputs or [], tool_feedback, reply_facts=reply_tool_facts,
+        ))
     return "\n\n".join(parts)
 
 
@@ -298,17 +319,9 @@ def build_temporal_block(
 ) -> str:
     """Build deterministic local-time and reunion facts for expression prompts."""
     current = describe_local_time(now)
-    phase = (
-        policy("expression", "prompt.copy.build_temporal_block_text", str)
-        if current["phase"] == "night"
-        else policy("expression", "prompt.copy.build_temporal_block_text_2", str)
-    )
     lines = [
         policy("expression", "prompt.copy.build_temporal_block_text_3", str),
         policy("expression", "prompt.copy.build_temporal_block_text_4", str),
-        policy("expression", "prompt.templates.build_temporal_block_text", str).format(
-            p0=format_prompt_time(now)
-        ),
         (
             policy(
                 "expression", "prompt.templates.build_temporal_block_text_3", str
@@ -317,7 +330,6 @@ def build_temporal_block(
                 p1=current["weekday"],
                 p2=current["period"],
                 p3=current["time"],
-                p4=phase,
             )
         ),
     ]
@@ -430,33 +442,37 @@ def _bounded_quote(content: str) -> str:
     return content[:_QUOTE_MAX_CHARS] + "…"
 
 
+def dialogue_local_time(timestamp: float | None) -> datetime | None:
+    if timestamp is None or isinstance(timestamp, bool):
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, USER_TIMEZONE)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def format_dialogue_time(timestamp: float | None) -> str:
+    local = dialogue_local_time(timestamp)
+    return local.strftime("%Y-%m-%d %H:%M") if local else format_prompt_time(None)
+
+
 def build_user_prompt(
     message: str, context: list[Message], annotation: ReplyAnnotation | None = None,
     *, message_at: float | None = None, annotation_at: float | None = None,
+    include_message_time: bool = True,
 ) -> str:
     """拼 user prompt：对话历史（按时间升序的回溯上下文）+ 本次用户消息。
 
     不含 think/speak 任务指令——那是 表达节点的活
     （think 说「内心思考」、speak 说「说给用户」）。
     """
-    if annotation is not None:
-        message = policy(
-            "expression", "prompt.templates.build_user_prompt_text", str
-        ).format(
-            p0=format_prompt_time(annotation_at),
-            p1=annotation["quote"],
-            p2=format_prompt_time(message_at),
-            p3=annotation["comment"],
-            p4=message,
-        )
-    current = policy(
-        "expression", "prompt.templates.build_user_prompt_text_2", str
-    ).format(p0=message, p1=format_prompt_time(message_at))
-    if not context:
-        return current
     newest_first: list[str] = []
     used = len(_HISTORY_BLOCK_HEADER)
+    group: str | None = None
+    latest_group: str | None = None
     for m in reversed(context):
+        local = dialogue_local_time(m.timestamp)
+        day = local.date().isoformat() if local else format_prompt_time(None)
         speaker = (
             policy("expression", "prompt.copy.build_user_prompt_text", str)
             if m.role == "user"
@@ -469,48 +485,72 @@ def build_user_prompt(
             if m.activity_summary
             else ""
         )
-        entry = _bounded_text(
-            policy(
-                "expression", "prompt.templates.build_user_prompt_text_4", str
-            ).format(
-                p0=format_prompt_time(m.timestamp),
-                p1=speaker,
-                p2=m.content,
-                p3=history_activity,
-            )
+        entry = policy(
+            "expression", "prompt.templates.build_user_prompt_text_4", str
+        ).format(
+            p0=local.strftime("%H:%M") if local else "",
+            p1=speaker,
+            p2=m.content,
+            p3=history_activity,
+        ).lstrip()
+        new_group = group != day
+        remaining = _HISTORY_BLOCK_MAX_CHARS - used - 1 - (
+            len(day) + 1 if new_group else 0
         )
-        remaining = _HISTORY_BLOCK_MAX_CHARS - used - 1
         if remaining <= 0:
             break
+        if new_group:
+            if group is not None:
+                newest_first.append(group)
+            group = day
+            latest_group = latest_group or day
+            used += len(day) + 1
         rendered = _bounded_text(entry, min(_MATERIAL_ITEM_MAX_CHARS, remaining))
         newest_first.append(rendered)
         used += len(rendered) + 1
-    history = "\n".join([_HISTORY_BLOCK_HEADER, *reversed(newest_first)])
-    lines = [history, current]
-    return "\n".join(lines)
+    parts: list[str] = []
+    if group is not None:
+        parts.append(
+            "\n".join([_HISTORY_BLOCK_HEADER, group, *reversed(newest_first)])
+        )
+    local = dialogue_local_time(message_at)
+    current_time = (
+        local.strftime("%H:%M")
+        if local and local.date().isoformat() == latest_group
+        else format_dialogue_time(message_at)
+    )
+    current = policy(
+        "expression", "prompt.templates.build_user_prompt_text_2", str
+    ).format(p0=f"{current_time} {message}" if include_message_time else message)
+    if annotation is not None:
+        current = policy(
+            "expression", "prompt.templates.build_user_prompt_text", str
+        ).format(
+            p0=format_dialogue_time(annotation_at),
+            p1=annotation["quote"],
+            p2=format_dialogue_time(message_at),
+            p3=annotation["comment"],
+            p4=current,
+        )
+    return "\n\n".join([*parts, current])
 
 
-def _segment_entry(segment: ConversationSegment | str, index: int) -> str:
+def _segment_entry(segment: ConversationSegment | str) -> str:
     if isinstance(segment, str):
         raw, start, end = segment, None, None
     else:
         raw = segment.retrieval_excerpt or segment.raw_content
         start, end = segment.started_at, segment.ended_at
-    provenance = (
-        policy("expression", "prompt.templates.segment_entry_text_2", str).format(
-            p0=segment.id,
-            p1=",".join(segment.retrieval_chunk_ids),
-            p2=segment.retrieval_ranges,
-        )
-        if isinstance(segment, ConversationSegment) and segment.retrieval_ranges
-        else ""
-    )
-    return (
-        policy("expression", "prompt.templates.segment_entry_text", str).format(
-            p0=index, p1=format_prompt_time(start), p2=format_prompt_time(end)
-        )
-        + provenance
-        + _bounded_text(raw, _MATERIAL_ITEM_MAX_CHARS)
+    start_time, end_time = format_dialogue_time(start), format_dialogue_time(end)
+    if start_time != end_time:
+        start_local, end_local = dialogue_local_time(start), dialogue_local_time(end)
+        if start_local and end_local and start_local.date() == end_local.date():
+            end_time = end_local.strftime("%H:%M")
+        start_time = policy(
+            "expression", "prompt.templates.segment_time_range", str
+        ).format(p0=start_time, p1=end_time)
+    return policy("expression", "prompt.templates.segment_entry_text", str).format(
+        p0=start_time, p1=_bounded_text(raw, _MATERIAL_ITEM_MAX_CHARS)
     )
 
 
@@ -523,7 +563,7 @@ def select_prompt_segments(
         policy("expression", "prompt.copy.build_conversation_segments_prompt_text", str)
     )
     for segment in segments:
-        size = len(_segment_entry(segment, len(selected) + 1)) + 1
+        size = len(_segment_entry(segment)) + len("\n\n")
         if used + size > _HISTORY_BLOCK_MAX_CHARS:
             break
         selected.append(segment)
@@ -542,17 +582,14 @@ def build_conversation_segments_prompt(
     )
     parts = [header]
     used = len(header)
-    for index, segment in enumerate(segments, start=1):
-        block = _segment_entry(segment, index)
-        if used + len(block) + 1 > policy(
-            "expression",
-            "prompt.parameters.build_conversation_segments_prompt_value_limit",
-            int,
-        ):
+    for segment in segments:
+        block = _segment_entry(segment)
+        size = len(block) + len("\n\n")
+        if used + size > _HISTORY_BLOCK_MAX_CHARS:
             break
         parts.append(block)
-        used += len(block) + 1
-    return "\n".join(parts)
+        used += size
+    return "\n\n".join(parts)
 
 
 def build_backtrack_context(
@@ -619,47 +656,12 @@ def _topic_terms(text: str) -> set[str]:
 
 
 def _state_block(state: CurrentState) -> str:
-    """Render current emotion, energy, activity, and inner document."""
-    activity = (
-        state.current_activity.value
-        if state.current_activity is not None
-        else policy("expression", "prompt.copy.state_block_text", str)
-    )
-
-    emotion_label = {
-        EmotionCategory.NEUTRAL: policy(
-            "expression", "prompt.copy.state_block_text_2", str
-        ),
-        EmotionCategory.HAPPY: policy(
-            "expression", "prompt.copy.state_block_text_3", str
-        ),
-        EmotionCategory.SAD: policy(
-            "expression", "prompt.copy.state_block_text_4", str
-        ),
-        EmotionCategory.ANGRY: policy(
-            "expression", "prompt.copy.state_block_text_5", str
-        ),
-        EmotionCategory.WORRIED: policy(
-            "expression", "prompt.copy.state_block_text_6", str
-        ),
-        EmotionCategory.SHY: policy(
-            "expression", "prompt.copy.state_block_text_7", str
-        ),
-        EmotionCategory.SLEEPY: policy(
-            "expression", "prompt.copy.state_block_text_8", str
-        ),
-        EmotionCategory.THINKING: policy(
-            "expression", "prompt.copy.state_block_text_9", str
-        ),
-    }[state.emotion]
+    """Give expression the already classified mood and energy."""
+    emotions = policy("inner_life", "frontend.labels.EMOTION_LABELS", dict[str, str])
+    energy = policy("inner_life", "frontend.labels.ENERGY_LABELS", dict[str, str])
     return policy("expression", "prompt.templates.state_block_text", str).format(
-        p0=state.valence,
-        p1=state.arousal,
-        p2=state.emotion.value,
-        p3=emotion_label,
-        p4=state.energy,
-        p5=state.energy_state.value,
-        p6=activity,
+        p0=emotions[state.emotion.value],
+        p1=energy[state.energy_state.value],
     )
 
 
@@ -672,10 +674,10 @@ def _activity_detail(activity: Activity) -> str:
     progress: dict[str, Any] = activity.progress
     fields = [
         policy("expression", "prompt.templates.activity_detail_text", str).format(
-            p0=activity.type.value
+            p0=_ACTIVITY_TYPES[activity.type.value]
         ),
         policy("expression", "prompt.templates.activity_detail_text_2", str).format(
-            p0=activity.status.value
+            p0=_ACTIVITY_STATES[activity.status.value]
         ),
     ]
     description = progress.get("description")
@@ -764,7 +766,7 @@ def _activity_context_block(context: ActivityContext) -> str:
                         "expression",
                         "prompt.templates.activity_context_block_text",
                         str,
-                    ).format(p0=current.status.value)
+                    ).format(p0=_ACTIVITY_STATES[current.status.value])
                 )
         elif interrupted is not None:
             lines.append(
@@ -781,7 +783,7 @@ def _desires_block(desires: list[ShortTermDesire]) -> str:
         return "\n".join(lines)
     lines += [
         policy("expression", "prompt.templates.desires_block_text", str).format(
-            p0=d.description, p1=d.type.value, p2=d.strength
+            p0=d.description
         )
         for d in desires
     ]
@@ -789,10 +791,11 @@ def _desires_block(desires: list[ShortTermDesire]) -> str:
 
 
 def _inner_document_block(narrative: InnerDocument) -> str:
-    return (
-        policy("expression", "prompt.parameters.inner_document_block_result_text", str)
-        + render_document(narrative)
+    header = policy(
+        "expression", "prompt.parameters.inner_document_block_result_text", str
     )
+    body = render_document(narrative, include_anchors=False)
+    return "\n\n".join(part for part in (header, body) if part)
 
 
 def select_prompt_memories(memories: list[Memory]) -> list[Memory]:
@@ -832,12 +835,8 @@ def _memory_entry(memory: Memory) -> str:
         memory.kind.value, policy("expression", "prompt.copy.memory_entry_text_9", str)
     )
     suffix = f"｜{topic}" if topic else ""
-    created = format_prompt_time(memory.created_at)
-    retrieval = "、".join(source.value for source in memory.sources) or policy(
-        "expression", "prompt.copy.memory_entry_text_10", str
-    )
     metadata = policy("expression", "prompt.templates.memory_entry_text", str).format(
-        p0=created, p1=retrieval
+        p0=format_dialogue_time(memory.created_at)
     )
     metadata_suffix = f"（{metadata}）"
     entry = _bounded_text(
@@ -869,19 +868,19 @@ def _fact_block(facts: list[MemoryFact]) -> str:
             )
         )
         until = (
-            format_prompt_time(fact.valid_until)
+            format_dialogue_time(fact.valid_until)
             if fact.valid_until is not None
             else policy("expression", "prompt.copy.fact_block_text", str)
         )
         entries.append(
             _bounded_text(
                 policy("expression", "prompt.templates.fact_block_text_2", str).format(
-                    p0=format_prompt_time(fact.valid_from),
-                    p1=until,
-                    p2=format_prompt_time(fact.created_at),
-                    p3=fact.subject,
-                    p4=predicate,
-                    p5=fact.object_value,
+                    p0=fact.subject,
+                    p1=predicate,
+                    p2=fact.object_value,
+                    p3=format_dialogue_time(fact.valid_from),
+                    p4=until,
+                    p5=format_dialogue_time(fact.created_at),
                 )
             )
         )
@@ -892,11 +891,28 @@ def _fact_block(facts: list[MemoryFact]) -> str:
     )
 
 
-def _tool_outputs_block(outputs: list[str], feedback: str = "") -> str:
-    """工具查询结果段：use_tools 节点查到的结果（慢通道专属）。"""
+def _tool_output_headers(feedback: str, *, reply_facts: bool) -> list[str]:
     lines = policy("expression", "prompt.copy.tool_outputs_block_words", list[str])
+    if reply_facts:
+        lines[0] = policy("expression", "tool_pipeline.reply.materials_heading", str)
     if feedback:
         lines.append(bound_material_block(feedback, _TOOL_BLOCK_MAX_CHARS // 2))
+    return lines
+
+
+def tool_reply_material_budget(feedback: str) -> int:
+    return _TOOL_BLOCK_MAX_CHARS - len("\n".join(
+        _tool_output_headers(feedback, reply_facts=True)
+    ))
+
+
+def _tool_outputs_block(
+    outputs: list[str], feedback: str = "", *, reply_facts: bool = False
+) -> str:
+    """工具查询结果段：use_tools 节点查到的结果（慢通道专属）。"""
+    lines = _tool_output_headers(feedback, reply_facts=reply_facts)
+    if reply_facts:
+        return "\n".join([*lines, *outputs])
     for output in outputs[:_TOOL_OUTPUT_MAX_ITEMS]:
         remaining = _TOOL_BLOCK_MAX_CHARS - len("\n".join(lines)) - 1
         entry = f"- {output}"

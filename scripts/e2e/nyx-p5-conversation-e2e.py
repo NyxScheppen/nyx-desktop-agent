@@ -550,7 +550,7 @@ async def crash_restart(folder, point, postgres):
                 else:
                     assert (folder / "effects.txt").read_text(encoding="utf-8").splitlines() == ["1"]
                     prompts = "\n".join(str(messages) for kind, _, messages in model.calls if kind == "reply")
-                    assert ("T1" if point == "receipt" else "uncertain") in prompts, prompts
+                    assert ("T1" if point == "receipt" else "结果未确认") in prompts, prompts
                 assert (await client.get("/api/characters/nyx/chat/pending")).json()["items"] == []
                 report("E08" if point == "archive" else "E05-" + point, ids, tools=int(point != "archive"), killed_at=point, terminal=output.id)
         finally:

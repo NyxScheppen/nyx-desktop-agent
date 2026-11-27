@@ -210,7 +210,8 @@ async def main():
                         assert '工具 memory_recall 执行失败' in system
                         assert (await store.get_conversation_segment('segment-e2e')).recall_count == before
                     if mode == 'duplicate':
-                        assert system.rsplit('[工具查询结果]', 1)[-1].count('memory_recall:') == 1
+                        materials = system.split('[本轮查到的资料]', 1)[1]
+                        assert materials.count('· memory_recall · 成功') == 1
                         assert (await store.get_conversation_segment('segment-e2e')).recall_count == before + 1
                     if mode == 'item_limit':
                         runs=await app.research.store.list_records('research_run')
@@ -231,7 +232,13 @@ async def main():
                     await app.memory.finalize_conversation_segment()
                     original = await app.bus.get_event(source_reply['cid'])
                     original_at = datetime.fromtimestamp(original.timestamp, USER_TIMEZONE).isoformat(timespec='seconds')
-                    assert original_at in source_reply['messages'][1]['content']
+                    original_minute = original_at[:16].replace('T', ' ')
+                    source_current = source_reply['messages'][1]['content'].split(
+                        '[本次消息]\n', 1
+                    )[1]
+                    assert source_current.startswith((
+                        f'{original_minute} ', f'{original_minute[11:]} ',
+                    ))
                     facts = await app.memory.search_facts('我在哪个城市')
                     assert [(f.predicate, f.object_value) for f in facts] == [('当前所在地', '北京')]
                     source_segment = await store.get_conversation_segment(facts[0].source_segment_id)
@@ -250,12 +257,16 @@ async def main():
                             full = '\n'.join(m['content'] for m in recalled['messages'])
                             assert marker in full
                             if '生日' in question:
-                                assert '[相关对话段' in user
-                                assert original_at in user and '逐句时间=未知' in user
+                                assert '[相关旧对话]' in user
+                                assert original_minute in user
                             cid = recalled['cid']
                             current = await app.bus.get_event(cid)
-                            current_at = datetime.fromtimestamp(current.timestamp, USER_TIMEZONE).isoformat(timespec='seconds')
-                            assert f'消息时间={current_at}' in user
+                            current_at = datetime.fromtimestamp(current.timestamp, USER_TIMEZONE)
+                            current_block = user.split('[本次消息]\n', 1)[1]
+                            assert current_block.startswith((
+                                current_at.strftime('%H:%M '),
+                                current_at.strftime('%Y-%m-%d %H:%M '),
+                            ))
                             saved = await store.get_conversation_segment(source_segment.id)
                             admitted = source_segment.raw_content[:50] in user
                             assert saved.recall_count == before + int(admitted)
@@ -264,7 +275,7 @@ async def main():
                                 assert (await store.get_conversation_segment(saved.id)).recall_count == saved.recall_count
                     app.expression._history.clear()
                     _, greeting = await send('memory_greeting', '早上好呀，尼克斯', False)
-                    assert '[相关对话段' not in greeting['messages'][1]['content']
+                    assert '[相关旧对话]' not in greeting['messages'][1]['content']
                     assert '[相关事实]' not in greeting['messages'][0]['content']
                     await asyncio.wait_for(app.bus._wait_until_idle(), 10)
                     attempt_id = await app.expression.register_question(

@@ -19,7 +19,7 @@ def test_fetch_url_sync_returns_empty_on_http_error(
 
     monkeypatch.setattr(web_fetch.httpx, "get", _raise)
     monkeypatch.setattr(web_fetch, "_is_safe_url", _always_safe)
-    assert web_fetch._fetch_url_sync("https://example.com/a") == ""
+    assert web_fetch._fetch_url_sync("https://example.com/a") is None
 
 
 def test_is_public_ip_rejects_internal_ranges() -> None:
@@ -88,14 +88,14 @@ def test_fetch_url_sync_rejects_redirect_to_private(
 
     monkeypatch.setattr(web_fetch.socket, "getaddrinfo", _fake_getaddrinfo)
     monkeypatch.setattr(web_fetch.httpx, "get", _fake_get)
-    assert web_fetch._fetch_url_sync("https://example.com/a") == ""
+    assert web_fetch._fetch_url_sync("https://example.com/a") is None
 
 
 async def test_build_web_fetch_tool_returns_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _fake_fetch(url: str) -> str:
-        return "正文内容"
+    async def _fake_fetch(url: str) -> dict[str, str]:
+        return {"text": "正文内容", "title": "文章标题", "source_url": url}
 
     monkeypatch.setattr(web_fetch, "fetch_url", _fake_fetch)
 
@@ -104,13 +104,14 @@ async def test_build_web_fetch_tool_returns_text(
 
     assert result["text"] == "正文内容"
     assert result["url"] == "https://example.com/article"
+    assert result["title"] == "文章标题"
 
 
 async def test_build_web_fetch_tool_returns_error_when_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _fake_fetch(url: str) -> str:
-        return ""
+    async def _fake_fetch(url: str) -> None:
+        return None
 
     monkeypatch.setattr(web_fetch, "fetch_url", _fake_fetch)
 

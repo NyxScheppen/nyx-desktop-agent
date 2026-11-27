@@ -11,7 +11,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -38,13 +38,17 @@ from nyx.expression.prompt import (
     build_reply_query,
     build_system_prompt,
     build_user_prompt,
+    format_dialogue_time,
     format_prompt_time,
     select_prompt_segments,
 )
+from nyx.expression.tool_facts import reply_recall_segment
 from nyx.expression.tool_pipeline import (
     ToolState,
     build_tool_graph,
-    execution_feedback,
+    project_tool_outputs,
+    render_recalled_tool_segment,
+    reply_execution_feedback,
 )
 from nyx.expression.tool_pipeline import _parse_plan as _parse_plan
 from nyx.inner_life.facade import InnerLifeFacade
@@ -122,6 +126,7 @@ class ReplyState(TypedDict):
     correlation_id: str  # 本次 reply 溯源
     last_slow_at: float  # 上次慢通道时间（facade 维护，每 reply 入 state）
     tool_feedback: str
+    reply_tool_facts: NotRequired[bool]
     tool_outputs: list[str]  # use_tools 查到的工具结果（慢通道专属）
     tool_recall_candidates: list[tuple[str, str]]
     intent: UserIntent
@@ -150,6 +155,7 @@ class ReplyDeps:
     archive_user_reply: Callable[[str, ReplyState | None], Awaitable[None]]
     has_pending_reply_inputs: Callable[[list[str], str | None], Awaitable[bool]]
     checkpointer: BaseCheckpointSaver[str] | None = None
+    book_title: Callable[[str], Awaitable[str | None]] | None = None
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -247,39 +253,40 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
     correlation_id/last_slow_at 走 state（图可复用，见 facade.__init__）。
     """
 
-    def user_prompt(state: ReplyState) -> str:
-        if state["input_events"]:
-            current = "\n\n".join(
-                policy(
+    def user_prompt(state: ReplyState, *, include_work: bool = True) -> str:
+        batch = len(state["input_events"]) > 1 or state["request_start_index"] > 0
+        if batch:
+            lines: list[str] = []
+            previous_day = ""
+            for index, event in enumerate(state["input_events"]):
+                time_label = format_dialogue_time(event.timestamp)
+                day, _, clock = time_label.partition(" ")
+                entry = policy(
                     "expression", "pipeline.templates.user_prompt_text_2", str
                 ).format(
-                    p0=i + 1,
-                    p1=format_prompt_time(event.timestamp),
-                    p2=policy("expression", "pipeline.copy.user_prompt_extra_text", str)
-                    if i < state["request_start_index"]
+                    p0=clock if clock and day == previous_day else time_label,
+                    p1=policy("expression", "pipeline.copy.user_prompt_extra_text", str)
+                    if index < state["request_start_index"]
                     else policy(
                         "expression", "pipeline.copy.user_prompt_extra_text_2", str
                     ),
                 )
-                + event.content["message"]
-                for i, event in enumerate(state["input_events"])
+                lines.append(entry + event.content["message"])
+                previous_day = day
+            current = "\n\n".join(lines) + policy(
+                "expression", "pipeline.copy.user_prompt_text", str
             )
-            current += policy("expression", "pipeline.copy.user_prompt_text", str)
         else:
             current = state["message"]
         summaries = "\n".join(
             policy("expression", "pipeline.templates.user_prompt_text_3", str).format(
-                p0=step["id"],
-                p1=step["input_revision"],
-                p2=format_prompt_time(step["created_at"]),
-            )
-            + (
-                policy("expression", "pipeline.copy.user_prompt_text_2", str)
+                p0=policy("expression", "pipeline.copy.user_prompt_text_2", str)
                 if step["input_revision"] == state["input_revision"]
-                else policy("expression", "pipeline.copy.user_prompt_text_3", str)
+                else policy("expression", "pipeline.copy.user_prompt_text_3", str),
+                p1=step["summary"],
             )
-            + step["summary"]
             for step in state["reasoning_steps"]
+            if include_work
         )
         return "\n\n".join(
             part
@@ -293,6 +300,10 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 )
                 if state["reading_context"]
                 else "",
+                policy("expression", "pipeline.copy.user_prompt_text_4", str)
+                + summaries
+                if summaries
+                else "",
                 build_conversation_segments_prompt(state["conversation_segments"]),
                 build_user_prompt(
                     current,
@@ -300,11 +311,8 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                     state.get("annotation"),
                     message_at=state["message_at"],
                     annotation_at=state["annotation_at"],
+                    include_message_time=not batch,
                 ),
-                policy("expression", "pipeline.copy.user_prompt_text_4", str)
-                + summaries
-                if summaries
-                else "",
             )
             if part
         )
@@ -359,8 +367,9 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             state["message"],
             list(deps.history),
             deps.config.max_context_len,
+            now=state["sampled_at"],
         )
-        context = backtrack if state["mode"] is ContextMode.SLOW else state["context"]
+        context = state["context"]
         texts = [e.content["message"] for e in state["input_events"]]
         query = build_reply_query(
             texts[state["request_start_index"] :] if texts else [state["message"]],
@@ -422,7 +431,6 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             else []
         )
         return {
-            "context": context,
             "conversation_segments": recalled_segments,
             "memories": memories,
             "facts": facts,
@@ -456,6 +464,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                             facts=state["facts"],
                             tool_outputs=state["tool_outputs"],
                             tool_feedback=state["tool_feedback"],
+                            reply_tool_facts=state.get("reply_tool_facts", False),
                             ask_guidance=_ask_guidance_for(
                                 state["mode"], deps.ask_guidance
                             ),
@@ -637,9 +646,13 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             )
             result = await tool_graph.ainvoke(initial, config, durability="sync")
         saved = cast(ToolState, result)
+        feedback = reply_execution_feedback(saved)
         return {
-            "tool_outputs": saved["outputs"],
-            "tool_feedback": execution_feedback(saved),
+            "tool_outputs": await project_tool_outputs(
+                saved, deps.tools, book_title=deps.book_title, feedback=feedback,
+            ),
+            "tool_feedback": feedback,
+            "reply_tool_facts": True,
             "tool_recall_candidates": list(saved["recall_candidates"].items()),
             "tool_exit_reason": saved.get("exit_reason", "complete"),
             "next_action": "after_tools" if update["allow_new_actions"] else "answer",
@@ -662,6 +675,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
             ask_guidance=_ask_guidance_for(state["mode"], deps.ask_guidance),
             tool_outputs=state["tool_outputs"],
             tool_feedback=state.get("tool_feedback", ""),
+            reply_tool_facts=state.get("reply_tool_facts", False),
             knowledge_boundary=deps.knowledge_boundary,
             intent=state["intent"],
             discussion_fragment=skill.system_fragment if skill else None,
@@ -670,7 +684,7 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
         )
         if state["tool_outputs"] or state.get("tool_feedback"):
             system += "\n\n" + TOOL_REPLY_GUIDANCE
-        user = user_prompt(state)
+        user = user_prompt(state, include_work=state["input_revision"] > 0)
         # 前几轮 think/speak（等长）
         prior = _rounds_block(state["think"], state["speak"], state["round_times"])
         task = RESPOND_TASK_CONTINUE if state["speak"] else RESPOND_TASK
@@ -707,14 +721,22 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                             policy("expression", "pipeline.copy.respond_text_2", str)
                         )
             for segment_id, rendered in state["tool_recall_candidates"]:
-                if rendered not in system:
-                    continue
                 try:
+                    evidence = json.loads(rendered)
+                    excerpt = (
+                        reply_recall_segment(evidence)
+                        if state.get("reply_tool_facts")
+                        else render_recalled_tool_segment(evidence)
+                    )
+                    if not excerpt or (
+                        excerpt not in system and rendered not in system
+                    ):
+                        continue
                     await deps.memory.record_conversation_segment_recall(
                         segment_id,
                         state["correlation_id"],
                     )
-                    trace_id = json.loads(rendered).get("trace_id")
+                    trace_id = evidence.get("trace_id")
                     if trace_id:
                         await deps.memory.record_conversation_trace_injection(
                             trace_id,

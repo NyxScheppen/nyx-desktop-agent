@@ -54,14 +54,14 @@ def _is_safe_url(url: str) -> bool:
     return True
 
 
-def _fetch_url_sync(url: str) -> str:
-    """同步抓正文（httpx GET + trafilatura 抽正文）。失败/无正文返回 ""。
+def _fetch_url_sync(url: str) -> dict[str, str] | None:
+    """同步抓正文以及同一响应中的标题。失败或无正文返回 None。
 
     SSRF 防护：不自动跟随重定向，逐跳用 _is_safe_url 校验目标（公网 http(s) 才放行）。
     """
     for _ in range(_MAX_REDIRECTS + 1):
         if not _is_safe_url(url):
-            return ""
+            return None
         try:
             resp = httpx.get(
                 url,
@@ -71,26 +71,38 @@ def _fetch_url_sync(url: str) -> str:
                 follow_redirects=False,
             )
         except Exception:
-            return ""
+            return None
         if resp.is_redirect:
             location = resp.headers.get("location")
             if not location:
-                return ""
+                return None
             try:
                 url = urljoin(url, location)
             except ValueError:
-                return ""
+                return None
             continue
         try:
             resp.raise_for_status()
             text = trafilatura.extract(resp.text)
         except Exception:
-            return ""
-        return text or ""
-    return ""
+            return None
+        if not text:
+            return None
+        page = {"text": text, "source_url": url}
+        try:
+            metadata = trafilatura.extract_metadata(resp.text, default_url=url)
+            if metadata.title:
+                page["title"] = metadata.title
+        except Exception:
+            logging.getLogger(__name__).debug(
+                policy("tools", "web_fetch.copy.metadata_failed", str), url,
+                exc_info=True,
+            )
+        return page
+    return None
 
 
-async def fetch_url(url: str) -> str:
+async def fetch_url(url: str) -> dict[str, str] | None:
     """异步抓正文，I/O 走线程池。"""
     return await asyncio.to_thread(_fetch_url_sync, url)
 
@@ -101,12 +113,13 @@ def build_web_fetch_tool(
     """抓取正文；注册工具注入摄入回调，checkpoint 阅读器使用原始 handler。"""
 
     async def handler(url: str) -> dict[str, Any]:
-        text = await fetch_url(url)
-        if not text.strip():
+        page = await fetch_url(url)
+        if page is None or not page["text"].strip():
             return {"error": policy("tools", "web_fetch.copy.handler_text", str)}
-        if len(text) > _MAX_DOWNLOAD_CHARS:
-            text = text[:_MAX_DOWNLOAD_CHARS]
-        result: dict[str, Any] = {"text": text, "url": url}
+        text = page["text"][:_MAX_DOWNLOAD_CHARS]
+        result: dict[str, Any] = {**page, "text": text, "url": url}
+        if len(page["text"]) > len(text):
+            result["truncated"] = True
         if ingest is not None:
             try:
                 result["ingestion"] = await ingest(text, url)

@@ -3,7 +3,8 @@ import asyncio
 import json
 import sqlite3
 import time
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -35,9 +36,11 @@ from nyx.events.routing import ROUTE_SPECS
 from nyx.expression.facade import ExpressionFacade
 from nyx.expression.mutter import _MUTTER_SKELETONS, MutterCategory
 from nyx.expression.store import ExpressionInteractionStore
+from nyx.initiative import ScheduledInteraction, Topic
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient, LlmMessage
 from nyx.memory.facade import MemoryFacade
+from nyx.timezone import USER_TIMEZONE
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.tool_call_store import ToolCallStore
 from nyx.types import (
@@ -382,13 +385,14 @@ def _new_facade(
     arousal: float = 0.0,
     llm: _FakeLlm | None = None,
     desire: _FakeDesire | None = None,
-    tools: _FakeTools | None = None,
+    tools: _FakeTools | ToolRegistry | None = None,
     memory: _FakeMemory | None = None,
     activity: _FakeActivity | None = None,
     interaction_store: ExpressionInteractionStore | None = None,
     return_state: _ReturnState | None = None,
     reading_context_reader: Any = None,
     checkpointer: BaseCheckpointSaver[str] | None = None,
+    book_title: Callable[[str], Awaitable[str | None]] | None = None,
 ) -> tuple[
     ExpressionFacade,
     _FakeLlm,
@@ -428,6 +432,7 @@ def _new_facade(
         release_return=(return_state.release if return_state is not None else None),
         reading_context_reader=reading_context_reader,
         checkpointer=checkpointer,
+        book_title=book_title,
     )
     return facade, fake_llm, evaluator, memory, inner_life, bus
 
@@ -617,7 +622,7 @@ async def test_reply_recalls_ordinary_episode_with_source_time(
     prompt = next(messages[-1]["content"] for kind, messages, _ in llm.calls
                   if kind == "reply")
     assert "生日那天你陪我走过了低谷" in prompt
-    assert "1970-01-01T08:01:40+08:00" in prompt
+    assert "1970-01-01 08:01 至 08:03" in prompt
     assert memory.segment_recalled == [("birthday", "episode-recall")]
 
 
@@ -942,7 +947,7 @@ async def test_reply_slow_question() -> None:
 
 async def test_reply_slow_tool_executes_and_flows_into_prompt() -> None:
     tools = _FakeTools()
-    tools.results["local_search"] = [{"title": "骑士小说"}]
+    tools.results["local_search"] = [{"path": "notes.txt", "snippet": "骑士小说"}]
     facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
         energy=100.0,
         arousal=0.0,
@@ -956,13 +961,74 @@ async def test_reply_slow_tool_executes_and_flows_into_prompt() -> None:
     think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]
     time_blocks = [
         messages[0]["content"].split("[时间与重逢上下文]", 1)[1].split(
-            "[当前欲望]", 1
+            "[本轮活动事实]", 1
         )[0]
         for _type, messages, _cid in llm.calls
     ]
     assert "[时间与重逢上下文]" in tool_system and len(set(time_blocks)) == 1
-    assert "[工具查询结果]" in think_system
-    assert "local_search" in think_system
+    assert "[本轮查到的资料]" in think_system
+    assert "本地文件 · notes.txt" in think_system and "骑士小说" in think_system
+
+
+async def test_reply_preserves_status_and_dates_from_full_schedule_receipt() -> None:
+    due = datetime.fromisoformat("2026-11-28T20:00+08:00").timestamp()
+    agreement = ScheduledInteraction(
+        id="schedule-1",
+        origin="user",
+        action="reading",
+        note="",
+        topic=Topic(book_id="in-library"),
+        source_event_id="schedule-request",
+        timezone=USER_TIMEZONE.tzname(None),
+        due_at=due,
+        recurrence="once",
+        skip_if_read=False,
+        status="active",
+        version=1,
+        claim_id=None,
+    )
+    paused = replace(
+        agreement, id="schedule-2", due_at=due + 86400, status="paused",
+        recurrence="weekly", note="补充说明" * 370,
+    )
+    missing_book = replace(
+        agreement, id="schedule-3", due_at=due + 172800, recurrence="workdays",
+        topic=Topic(book_id="removed-book"),
+    )
+    rows = [item.result() for item in (agreement, paused, missing_book)]
+
+    async def list_interactions() -> list[dict[str, object]]:
+        return rows
+
+    resolved_books: list[str] = []
+
+    async def book_title(book_id: str) -> str | None:
+        resolved_books.append(book_id)
+        return "局外人" if book_id == "in-library" else None
+
+    tools = ToolRegistry()
+    tools.register(
+        Tool("list_interactions", "List", {"type": "object"}, list_interactions)
+    )
+    facade, llm, *_ = _new_facade(
+        energy=100.0, tools=tools, book_title=book_title,
+        llm=_FakeLlm(tool_calls=[{"name": "list_interactions", "args": {}}]),
+    )
+    await facade.reply("请查一下我们有哪几条共读约定？", "schedule-receipt")
+    system = next(
+        messages[0]["content"] for kind, messages, _ in llm.calls if kind == "reply"
+    )
+    assert set(resolved_books) == {"in-library", "removed-book"}
+    materials = system.split("[本轮查到的资料]", 1)[1]
+    assert "查到 3 条约定" in materials
+    assert materials.count("一起读《局外人》") == 2
+    assert "当前安排是 2026 年 11 月 28 日（星期六）20:00，北京时间" in materials
+    assert "原定时间是 2026 年 11 月 29 日（星期日）20:00，北京时间" in materials
+    assert "每周重复。约定已暂停。" in materials
+    assert "共读（书名待核实）。" in materials
+    assert "下一次是 2026 年 11 月 30 日（星期一）20:00，北京时间" in materials
+    assert "工作日重复。约定有效。" in materials
+    assert "in-library" not in materials and "removed-book" not in materials
 
 
 @pytest.mark.parametrize("retry_json", [False, True])
@@ -997,7 +1063,8 @@ async def test_tool_reply_grounds_execution_claims_in_current_call_records(
     assert len(replies) >= 2 and "必要的补充" in replies[-1][-1]["content"]
     for messages in replies:
         system = messages[0]["content"]
-        assert all(f'"query": "{query}"' in system for query in queries)
+        assert all(f"query：{query}" in system for query in queries)
+        assert '"query":' not in system
         assert all(rule in system for rule in (
             "本轮[实际调用步骤状态]", "未执行的策略只能作为建议",
             "不得把本轮调用说成上次",
@@ -1207,7 +1274,7 @@ async def test_side_effect_receipt_recovers_without_reexecuting(
             for message in messages
         )
         assert effects.read_text(encoding="utf-8") == "original\n"
-        assert ("original-task" if completed else '"status": "uncertain"') in decision
+        assert ("original-task" if completed else "结果未确认") in decision
         rows = await (await database.conn.execute(
             "SELECT * FROM tool_execution"
         )).fetchall()
@@ -1647,7 +1714,7 @@ async def test_tool_replan_keeps_results_and_explains_second_replan_limit() -> N
             return await super().complete(messages, **kwargs)
 
     tools = _FakeTools()
-    tools.results["local_search"] = ["saved result"]
+    tools.results["local_search"] = [{"path": "notes.txt", "snippet": "saved result"}]
     facade, llm, *_ = _new_facade(
         energy=100.0, tools=tools, llm=_ReplanningLlm(),
     )
@@ -1661,13 +1728,16 @@ async def test_tool_replan_keeps_results_and_explains_second_replan_limit() -> N
 
 async def test_reply_slow_tool_output_truncated() -> None:
     # 大工具结果注入 prompt 时被截断：尾部 sentinel 被裁掉、带「…」省略号
-    tools = _FakeTools()
-    tools.results["file_io"] = "x" * 5000 + "TAIL_SENTINEL"
+    async def read() -> dict[str, str]:
+        return {"path": "notes.txt", "content": "x" * 5000 + "TAIL_SENTINEL"}
+
+    tools = ToolRegistry()
+    tools.register(Tool("file_io", "read", {"type": "object"}, read))
     facade, llm, _evaluator, _memory, _inner_life, _bus = _new_facade(
         energy=100.0,
         arousal=0.0,
         llm=_FakeLlm(tool_calls=[{"name": "file_io", "args": {}}]),
-        tools=tools,
+        tools=cast(_FakeTools, tools),
     )
     await facade.reply("在吗", "corr-trunc")
     think_system = [m[0]["content"] for t, m, _c in llm.calls if t == "reply"][0]

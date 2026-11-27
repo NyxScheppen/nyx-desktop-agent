@@ -32,7 +32,7 @@ async def main():
         llm=Script(stage)
         async with context(llm) as (app,store):
             assert app.research and app.behavior
-            with patch('nyx.tools.web_search._search_web_sync',side_effect=lambda q:[{'url':a.B if '校准争议' in q else a.A}]),patch('nyx.tools.web_fetch.fetch_url',side_effect=lambda url:a.TEXT[url]):
+            with patch('nyx.tools.web_search._search_web_sync',side_effect=lambda q:[{'url':a.B if '校准争议' in q else a.A}]),patch('nyx.tools.web_fetch.fetch_url',side_effect=lambda url:{'text':a.TEXT[url]}):
                 task=asyncio.create_task(app.research.run('resume','P3Nebula','dialogue','resume'))
                 await asyncio.wait_for(llm.reached.wait(),10);task.cancel()
                 try:await task;raise AssertionError('cancel swallowed')
@@ -65,7 +65,7 @@ async def main():
     llm=Script()
     async with context(llm) as (app,store):
         assert app.research
-        with patch('nyx.tools.web_search._search_web_sync',side_effect=lambda q:[{'url':a.B if '校准争议' in q else a.A}]),patch('nyx.tools.web_fetch.fetch_url',side_effect=lambda url:a.TEXT[url]),patch.object(app.eval_store,'insert',new=AsyncMock(side_effect=RuntimeError('eval failure'))):
+        with patch('nyx.tools.web_search._search_web_sync',side_effect=lambda q:[{'url':a.B if '校准争议' in q else a.A}]),patch('nyx.tools.web_fetch.fetch_url',side_effect=lambda url:{'text':a.TEXT[url]}),patch.object(app.eval_store,'insert',new=AsyncMock(side_effect=RuntimeError('eval failure'))):
             result=await app.research.run('eval','P3Nebula','dialogue','eval')
         assert result['status']=='completed' and result['report'],result
     print('PASS invalid raw output is logged; accounting failure cannot corrupt valid research',flush=True)

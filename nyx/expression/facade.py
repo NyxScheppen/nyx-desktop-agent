@@ -125,6 +125,7 @@ class ExpressionFacade:
         checkpointer: BaseCheckpointSaver[str] | None = None,
         initiative_embed: EmbedFn | None = None,
         initiative: Initiative | None = None,
+        book_title: Callable[[str], Awaitable[str | None]] | None = None,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -182,6 +183,7 @@ class ExpressionFacade:
                 archive_user_reply=self._archive_user_reply,
                 has_pending_reply_inputs=self._has_pending_reply_inputs,
                 checkpointer=self._checkpointer,
+                book_title=book_title,
             )
         )
 

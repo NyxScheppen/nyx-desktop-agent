@@ -354,7 +354,9 @@ async def host_path(folder, real_model, postgres=False):
         await app.expression.reply(paraphrase, "rag-reply")
         prompt = next(messages[-1]["content"] for kind, cid, messages in model.calls if kind == "reply" and cid == "rag-reply")
         assert "白鹭书店" in prompt and "蓝风铃" in prompt, prompt
-        assert "segment_id=" in prompt and "原文字符范围=" in prompt
+        assert "[相关旧对话]" in prompt
+        assert "segment_id=" not in prompt and "原文字符范围=" not in prompt
+        assert all(chunk_id not in prompt for chunk_id in semantic[0].retrieval_chunk_ids)
         used = await store.get_conversation_segment(source.id)
         assert used.recall_count == 1
         traces = await store.conversation_traces(20)

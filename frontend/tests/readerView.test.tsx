@@ -28,23 +28,16 @@ function selectRange(
   range.setStart(startNode, startOffset);
   range.setEnd(endNode, endOffset);
   Object.defineProperty(range, "getBoundingClientRect", {
-    value: () => ({ left: 12, top: 48 }) as DOMRect,
+    value: () => ({ left: 12, bottom: 48 }) as DOMRect,
   });
   selection.removeAllRanges();
   selection.addRange(range);
 }
 
-describe("ReaderView 位置高亮（真分页）", () => {
+describe("ReaderView 连续滚动与位置高亮", () => {
+  const originalStore = useReaderStore.getInitialState();
+
   beforeEach(() => {
-    // jsdom 无 ResizeObserver：stub 空实现（viewportHeight 保持 0，分页返回空页，不影响类名断言）
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        observe() {}
-        disconnect() {}
-        unobserve() {}
-      },
-    );
     useReaderStore.setState({
       books: [],
       bookId: "b1",
@@ -68,7 +61,8 @@ describe("ReaderView 位置高亮（真分页）", () => {
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    useReaderStore.setState(originalStore);
   });
 
   it("当前段加 --current、Nyx 段加 --nyx，其余段无", () => {
@@ -84,29 +78,32 @@ describe("ReaderView 位置高亮（真分页）", () => {
     expect(byText("二")?.className).not.toContain("reader-text__para--nyx");
   });
 
-  it("阅读抽屉仅改变宽度时重新测量分页", () => {
-    let resize = () => {};
-    let width = 400;
-    vi.stubGlobal("ResizeObserver", class {
-      constructor(callback: () => void) { resize = callback; }
-      observe() {}
-      disconnect() {}
+  it("续读定位到保存段落，滑动跨段后保持偏移，换窗口时保住锚点", () => {
+    const syncPosition = vi.fn(async (userPosition: number) => useReaderStore.setState({ userPosition }));
+    useReaderStore.setState({ syncPosition });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const viewport = this.closest<HTMLElement>(".reader-text");
+      const index = this.parentElement ? [...this.parentElement.children].indexOf(this) : 0;
+      return { top: this.dataset.paragraphId ? index * 100 - (viewport?.scrollTop ?? 0) : 0 } as DOMRect;
     });
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(250);
-    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => width);
-    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(() => width === 400 ? 80 : 160);
-    const { container } = render(<ReaderView />);
-    expect(container.querySelector(".reader__page-number")).toHaveTextContent("2 / 3");
-    act(() => { width = 240; resize(); });
-    expect(container.querySelector(".reader__page-number")).toHaveTextContent("3 / 6");
-    vi.restoreAllMocks();
+    render(<ReaderView />);
+    const viewport = screen.getByLabelText("阅读正文");
+    expect(viewport.scrollTop).toBe(200);
+    viewport.scrollTop = 325;
+    fireEvent.scroll(viewport);
+    expect(syncPosition).toHaveBeenCalledWith(4);
+    expect(viewport.scrollTop).toBe(325);
+    act(() => useReaderStore.setState((state) => ({ paragraphs: state.paragraphs.slice(1) })));
+    expect(viewport.scrollTop).toBe(225);
+    fireEvent.scroll(viewport);
+    expect(syncPosition).toHaveBeenCalledTimes(1);
   });
 
   it("阅读工具在 footer 纵向展开，header 显示双方进度", () => {
     render(<ReaderView />);
     expect(document.querySelector(".reader-sidebar")).toBeNull(); // 侧栏已拆
-    expect(screen.getByRole("button", { name: "上一页" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "下一页" })).toBeInTheDocument();
+    expect(screen.getByLabelText("阅读正文")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "下一页" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "笔记" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "阅读工具" }));
     expect(screen.getByRole("button", { name: "笔记" })).toBeInTheDocument();

@@ -33,6 +33,8 @@ export type ChatMessage = {
     | "reading_question";
   content: string;
   annotation?: ReplyAnnotation;
+  bookId?: string;
+  scheduled?: boolean;
   correlation_id: string;
   timestamp: number;
   preloaded?: boolean; // 历史回填消息：渲染时不逐字
@@ -68,10 +70,10 @@ type ChatState = {
   replyTargetId: string | null;
   serverTimeOffset: number;
   addUserMessage: (e: UserMessageEvent) => void;
-  addSpeak: (e: TextEvent<"speak">) => void;
-  addAsk: (e: TextEvent<"ask">) => void;
-  addThink: (e: TextEvent<"think">) => void;
-  addInitiateChat: (e: TextEvent<"initiate_chat">) => void;
+  addSpeak: (e: TextEvent<"speak">, preloaded?: boolean) => void;
+  addAsk: (e: TextEvent<"ask">, preloaded?: boolean) => void;
+  addThink: (e: TextEvent<"think">, preloaded?: boolean) => void;
+  addInitiateChat: (e: TextEvent<"initiate_chat">, preloaded?: boolean) => void;
   addReadingTurn: (e: ReadingQuestionEvent) => void;
   setDiscussionMode: (mode: boolean | null) => void;
   selectQuestion: (attemptId: string | null) => void;
@@ -81,7 +83,7 @@ type ChatState = {
   markTyped: (id: string) => void;
   markSeen: (id: string) => void;
   loadHistory: () => Promise<void>; // 挂载时回填 GET /api/events/log 的历史消息（preloaded，不逐字）
-  sendMessage: (text: string) => Promise<boolean>; // 成功才清输入框
+  sendMessage: (text: string, replyTo?: string | null) => Promise<boolean>; // 成功才清输入框
   reset: () => void;
 };
 
@@ -177,7 +179,12 @@ function toChatMessage(e: BackendEvent): ChatMessage | null {
     preloaded: true,
   };
   if (isUser && isReplyAnnotation(e.content.annotation)) msg.annotation = e.content.annotation;
+  if (e.type === "initiate_chat") {
+    if (typeof e.content.book_id === "string") msg.bookId = e.content.book_id;
+    msg.scheduled = typeof e.content.schedule_id === "string";
+  }
   if (isQuestion) {
+    if (typeof e.content.book_id === "string") msg.bookId = e.content.book_id;
     msg.subtype = e.content.subtype as QuestionSubtype;
     msg.selectedText = e.content.selected_text as string | null;
   }
@@ -257,6 +264,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     e: TextEvent<TextEventType> | UserMessageEvent,
     role: ChatMessage["role"],
     kind: ChatMessage["kind"],
+    preloaded = false,
   ) => {
     const text = e.event === "user_message" ? e.message : e.content;
     if (typeof text !== "string" || !isValidTimestamp(e.timestamp)) {
@@ -270,8 +278,13 @@ export const useChatStore = create<ChatState>((set, get) => {
       content: text,
       correlation_id: e.correlation_id,
       timestamp: e.timestamp,
+      ...(preloaded ? { preloaded: true } : {}),
     };
     if (e.event === "user_message" && e.annotation) msg.annotation = e.annotation;
+    if (e.event === "initiate_chat") {
+      msg.bookId = e.book_id;
+      msg.scheduled = e.schedule_id !== undefined;
+    }
     if ("attempt_id" in e && typeof e.attempt_id === "string") {
       msg.attempt_id = e.attempt_id;
       msg.question_status = "waiting";
@@ -286,13 +299,13 @@ export const useChatStore = create<ChatState>((set, get) => {
     return true;
   };
 
-  const finishReply = (e: TextEvent<"speak"> | TextEvent<"ask">) => {
+  const finishReply = (e: TextEvent<"speak"> | TextEvent<"ask">, preloaded?: boolean) => {
     if (typeof e.content !== "string" || !isValidTimestamp(e.timestamp)) return;
     if (!coverReply(e)) return;
-    append(e, "nyx", e.event);
+    append(e, "nyx", e.event, preloaded);
   };
 
-  const send = async (text: string, annotation?: ReplyAnnotation): Promise<boolean> => {
+  const send = async (text: string, annotation?: ReplyAnnotation, explicitReplyTo?: string | null): Promise<boolean> => {
     const scope = captureScope();
     const version = generation;
     const current = () => isScopeCurrent(scope) && version === generation;
@@ -304,11 +317,15 @@ export const useChatStore = create<ChatState>((set, get) => {
     const hasPending = Object.values(get().pendingReplies).some((item) => item.status !== "dead_letter");
     const selected = get().replyTargetId;
     const discussion = get().discussionMode;
-    if (!annotation && !hasPending && candidates.length > 1 && selected === null) {
+    if (typeof explicitReplyTo === "string" && !candidates.some((message) => message.attempt_id === explicitReplyTo)) {
+      commit({ sendError: frontendPolicy.copy.Mobile.question_changed });
+      return false;
+    }
+    if (explicitReplyTo === undefined && !annotation && !hasPending && candidates.length > 1 && selected === null) {
       commit({ sendError: frontendPolicy.copy.chatStore.sendError });
       return false;
     }
-    const replyTo = annotation ? undefined : selected ?? (
+    const replyTo = annotation || explicitReplyTo === null ? undefined : explicitReplyTo ?? selected ?? (
       !hasPending && candidates.length === 1 ? candidates[0].attempt_id : undefined
     );
     if (annotation) {
@@ -389,11 +406,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       append(e, "user", "message");
       addPending(e.event_id);
     },
-    addSpeak: (e) => finishReply(e),
-    addAsk: (e) => finishReply(e),
-    addThink: (e) => append(e, "nyx", "think"),
-    addInitiateChat: (e) => {
-      if (append(e, "nyx", "initiate_chat")) set({ unreadProactive: true });
+    addSpeak: finishReply,
+    addAsk: finishReply,
+    addThink: (e, preloaded) => append(e, "nyx", "think", preloaded),
+    addInitiateChat: (e, preloaded) => {
+      if (append(e, "nyx", "initiate_chat", preloaded)) set({ unreadProactive: true });
     },
     // 读书提问并进对话（08 §2.2）：保留后端事件的原始 correlation_id，
     // 不过滤当前书（永久聊天消息，关书后仍留转录）；文本字段非 string 丢弃（复用 append 收窄）。
@@ -403,6 +420,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         id: e.event_id,
         role: "nyx",
         kind: "reading_question",
+        bookId: e.book_id,
         content: e.content,
         correlation_id: e.correlation_id,
         timestamp: e.timestamp,
@@ -547,7 +565,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         console.error(frontendPolicy.copy.chatStore.text_8, err);
       }
     },
-    sendMessage: (text) => send(text),
+    sendMessage: (text, replyTo) => send(text, undefined, replyTo),
     sendAnnotation: async () => {
       const annotation = get().annotationDraft;
       if (!isReplyAnnotation(annotation)) {

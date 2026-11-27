@@ -7,7 +7,7 @@ import { useReaderStore } from "../../stores/readerStore";
 import Panel from "../layout/Panel";
 
 // 书架：列出已导入书 + 「导入 EPUB」按钮；点书 openBook 进阅读页（06 §1）。
-export default function BookshelfView() {
+export default function BookshelfView({ onOpenBook }: { onOpenBook?: (id: string) => void }) {
   const books = useReaderStore((s) => s.books);
   const booksError = useReaderStore((s) => s.booksError);
   const loadBooks = useReaderStore((s) => s.loadBooks);
@@ -15,6 +15,7 @@ export default function BookshelfView() {
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const resume = books.find((book) => book.user_position > 0);
 
   useEffect(() => {
     void loadBooks();
@@ -37,8 +38,16 @@ export default function BookshelfView() {
   };
 
   return (
-    <Panel title={readingPolicy.copy.BookshelfView.title}>
-      <div className="bookshelf__toolbar">
+    <Panel title={onOpenBook ? undefined : readingPolicy.copy.BookshelfView.title}>
+      {onOpenBook && resume && <section className="nyx-mobile__resume">
+        <div>
+          <small>{readingPolicy.copy.BookshelfView.mobile_reading}</small>
+          <h2>{resume.title}</h2>
+          <p>{formatPolicyText(readingPolicy.templates.reader_progress, { p0: resume.user_position, p1: resume.total_paragraphs })}</p>
+        </div>
+        <button type="button" onClick={() => onOpenBook(resume.id)}>{readingPolicy.copy.BookshelfView.mobile_resume}</button>
+      </section>}
+      {!onOpenBook && <div className="bookshelf__toolbar">
         <input
           ref={fileRef}
           type="file"
@@ -59,10 +68,10 @@ export default function BookshelfView() {
           {importing ? readingPolicy.copy.BookshelfView.text : readingPolicy.copy.BookshelfView.text_2}
         </button>
         {importError !== null && <span className="error-text">{importError}</span>}
-      </div>
+      </div>}
       {booksError !== null && <p className="error-text">{booksError}</p>}
       {books.length === 0 ? (
-        <p className="panel-item">{readingPolicy.copy.BookshelfView.p}</p>
+        <p className="panel-item">{onOpenBook ? readingPolicy.copy.BookshelfView.mobile_empty : readingPolicy.copy.BookshelfView.p}</p>
       ) : (
         <ul className="panel-list">
           {books.map((b) => (
@@ -70,7 +79,7 @@ export default function BookshelfView() {
               <button
                 type="button"
                 className="bookshelf__item"
-                onClick={() => void openBook(b.id)}
+                onClick={() => onOpenBook ? onOpenBook(b.id) : void openBook(b.id)}
               >
                 <span className="panel-item__main">{b.title}</span>
                 <span className="panel-item__meta">

@@ -85,6 +85,19 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+export function getInitiativeSettings(signal: AbortSignal): Promise<{ cooldown_minutes: number }> {
+  return request(`${BASE_URL}/api/initiative/settings`, { signal });
+}
+
+export function saveInitiativeSettings(cooldownMinutes: number, signal: AbortSignal): Promise<{ cooldown_minutes: number }> {
+  return request(`${BASE_URL}/api/initiative/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cooldown_minutes: cooldownMinutes }),
+    signal,
+  });
+}
+
 export async function postChat(
   message: string,
   replyTo?: string,
@@ -248,6 +261,34 @@ export async function getExpressionHistory(limit = 100): Promise<ExpressionHisto
 }
 
 // ---- 阅读（概览见 docs/facts/reading-system-facts.md）----
+
+export type ScheduledItem = {
+  id: string;
+  version: number;
+  origin: string;
+  action: string;
+  note: string;
+  status: string;
+  recurrence: "once" | "daily" | "weekly" | "workdays";
+  next_local_time: string | null;
+};
+
+export function getSchedules(signal?: AbortSignal): Promise<ScheduledItem[]> {
+  return request(`${BASE_URL}/api/initiative/schedules`, { signal });
+}
+
+export function changeSchedule(
+  id: string,
+  version: number,
+  operation: "pause" | "resume" | "skip" | "reschedule" | "cancel",
+  localTime?: string,
+): Promise<ScheduledItem> {
+  return request(`${BASE_URL}/api/initiative/schedules/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ version, operation, local_time: localTime }),
+  });
+}
 
 export async function getBooks(): Promise<BookListItem[]> {
   return request<BookListItem[]>(`${BASE_URL}/api/books`);
@@ -419,6 +460,7 @@ export function pairDevice(code: string, name: string): Promise<{
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code, name }),
   }).then(async (res) => {
+    if (res.status === 401) throw new Error(frontendPolicy.copy.App.pairing_invalid);
     await assertOk(res);
     return res.json() as Promise<{ device_id: string; access_token: string }>;
   });

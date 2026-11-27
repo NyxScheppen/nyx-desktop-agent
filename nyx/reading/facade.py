@@ -246,6 +246,8 @@ class ReadingFacade:
         nyx_position: int,
         reading_speed: int,
         expected_revision: int,
+        *,
+        user_read: bool = False,
     ) -> ReadingProgress:
         """按 revision 条件写进度；位置必须落在本书段落范围内。"""
         book = await self._store.find_book(book_id)
@@ -259,7 +261,8 @@ class ReadingFacade:
         ):
             raise ValueError(policy("reading", "facade.copy.list_paragraphs_text", str))
         progress = await self._store.upsert_progress(
-            book_id, user_position, nyx_position, reading_speed, expected_revision
+            book_id, user_position, nyx_position, reading_speed, expected_revision,
+            user_read=user_read,
         )
         await self._publish_progress(progress, correlation_id=book_id)
         return progress
@@ -308,6 +311,7 @@ class ReadingFacade:
         else:
             await self._publish_progress(advanced, correlation_id=correlation_id)
         return {
+            "book_id": book.id,
             "book": book.title,
             "target_paragraph": advanced.nyx_position,
             "completed": target_paragraph >= book.total_paragraphs,

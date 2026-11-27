@@ -32,10 +32,14 @@ class TransportOutbox:
             rows = list(
                 await (
                     await conn.execute(
-                        "SELECT event_seq AS sequence, id, type, content "
-                        "FROM event_log WHERE event_seq > "
+                        "SELECT e.event_seq AS sequence, e.id, e.type, e.content, "
+                        "input.content AS input_content FROM event_log e "
+                        "LEFT JOIN event_log input ON input.id=e.correlation_id "
+                        "AND input.type='user_message' "
+                        "AND e.type IN ('think', 'speak', 'ask') "
+                        "WHERE e.event_seq > "
                         "(SELECT scan_rowid FROM transport_checkpoint "
-                        "WHERE transport=?) ORDER BY event_seq LIMIT ?",
+                        "WHERE transport=?) ORDER BY e.event_seq LIMIT ?",
                         (
                             self._transport,
                             policy("onebot", "delivery.scan_batch_size", int),
@@ -45,6 +49,10 @@ class TransportOutbox:
             )
             for row in rows:
                 if row["type"] not in ("think", "speak", "ask", "initiate_chat"):
+                    continue
+                if row["input_content"] is not None and (
+                    json.loads(row["input_content"]).get("transport") == "paired_device"
+                ):
                     continue
                 text = json.loads(row["content"]).get("content")
                 if isinstance(text, str) and text.strip():

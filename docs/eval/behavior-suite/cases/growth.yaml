@@ -1,0 +1,163 @@
+suite_version: nyx-behavior-v1
+domain: growth
+defaults:
+  fixtures:
+  - isolated_host
+  - growth_feedback
+  sources:
+  - nyx/behavior/service.py
+  - nyx/memory/facade.py
+  - nyx/inner_life/reflection.py
+  - nyx/inner_life/facade.py
+  - nyx/inner_life/document.py
+  - nyx/eval/evaluator.py
+  policy_sources:
+  - nyx/settings/behavior.json
+  - nyx/settings/inner_life.json
+  - nyx/settings/eval.json
+  evidence:
+  - inputs
+  - model_io
+  - feedback_records
+  - behavior_records
+  - reflection_records
+  - skill_versions
+  - state_before_after
+  - deliveries
+  diagnosis_order:
+  - input
+  - storage
+  - context
+  - decision
+  - commit
+  - delivery
+  execution:
+    mode: controlled_then_real_model
+    support: manual_protocol_needs_adapter
+    reuse_candidates:
+    - scripts/e2e/nyx-p4-acceptance.py
+    - tests/test_behavior_pipeline.py
+    limitation: 这些是可人工执行的场景协议；现有命令不读取本 YAML。复用候选仅提供路径或屏障能力，不代表覆盖本文件全部断言。
+  grading:
+    hard: 逐项对照 must/must_not，引用实际证据；缺证据不能判通过。
+    semantic: 有自然语言输出时人工对照输入、实际 prompt、来源与回执；允许语义等价表达。
+    status: NOT_RUN
+cases:
+- id: GROW-01
+  version: 1
+  title: 用户纠错持久化后技能变化有证据且后续可检验
+  purpose: 用户纠错持久化后技能变化有证据且后续可检验
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 使用同一角色轨迹；先生成可引用的回复，再提交带原句的同主题纠错。
+  - 次数与触发方式按权威阈值构造；另建没有纠错的同起点对照。
+  steps:
+  - 通过实际批注入口提交 growth_feedback，刷新核对。
+  - 等行为反思与经验持久化，再运行同主题的新问题。
+  end_when: 反馈、反思、经验、skill 决定与后续实际输出均记录。
+  expect:
+    must:
+    - 反馈原文可恢复；若更新 skill，先持久化经验且保留执行快照、差异与版本。
+    - 后续是否改善用真实模型另评，不把受控反思输出当效果证明。
+    must_not:
+    - 仅凭 skill 版本增长就宣称学会。
+    - 行为技能反思直接改写内在文档。
+    flexible:
+    - 证据不足或无需变更时允许 no_change。
+  failure_hint: 分开定位批注受理、反馈抽取、触发、经验提交、skill 应用与新执行采用。
+- id: GROW-02
+  version: 1
+  title: OOC 关键词只是核实信号且使用本角色快照
+  purpose: OOC 关键词只是核实信号且使用本角色快照
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - A/B 不同合成角色；A 对无证据问题诚实说“无法回答”；执行时固定各自角色与文档。
+  steps:
+  - 让 evaluator 产生关键词信号并运行行为反思。
+  - 在反思前修改当前文档作隔离对照，保留原执行快照。
+  end_when: 告警、反思证据与 skill 决定可读。
+  expect:
+    must:
+    - 命中仅作为待核实信号；反思参照执行时角色和文档。
+    - 自动 OOC 告警不当作用户纠正原文进入内在成长证据。
+    must_not:
+    - 仅凭关键词将诚实未知判成必然 OOC。
+    - 把 Nyx 固定话术当作 B 的统一人设标准。
+    flexible:
+    - 反思可认为无需修改；硬流程与人格判断分别记。
+  failure_hint: 检查 voice 筛选、behavior_context 的角色快照与 inner_reflection_memories 的来源过滤。
+- id: GROW-03
+  version: 1
+  title: 无效反思和 skill 冲突不损坏原版本
+  purpose: 无效反思和 skill 冲突不损坏原版本
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 两个分支：持续返回不合法行为反思；两个基于相同 skill 版本的更新并发准备。
+  steps:
+  - 处理相应事件，重复投递。
+  - 冲突分支读取重新审查事件与最新 skill；非法分支检查所有原始模型尝试。
+  end_when: 非法分支耗尽策略预算、冲突分支留下 recheck 或完成新审查。
+  expect:
+    must:
+    - 非法输出不覆盖原 skill，原始尝试保留且次数受策略预算约束。
+    - 版本冲突可观察，按最新版本重新核对，不盲覆盖。
+    must_not:
+    - 经验持久化前修改 skill。
+    - 重放重复应用相同版本变化。
+    flexible:
+    - 重新审查后可 update 或 no_change。
+  failure_hint: 核对 _reflect 校验、经验事务、_apply_skill 的 conflict 与 recheck 归属。
+  execution_override:
+    mode: controlled
+- id: GROW-04
+  version: 1
+  title: 内在反思允许空修订且不自动向用户发话
+  purpose: 内在反思允许空修订且不自动向用户发话
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 已有当前文档、足够可核对证据；控制 reflection 返回合法空 patches 与空长期欲望。
+  steps:
+  - 请求一次内在反思，重复投递同一持久事件。
+  - 记录文档版本、反思时间、证据消费与前端事件。
+  end_when: 反思记录与 REFLECTION_DONE 的各消费者收尾。
+  expect:
+    must:
+    - 正文版本不因空修订增长；反思时间与完整记录可更新。
+    - 重放不重复施加成长；反思完成通知可刷新页面。
+    must_not:
+    - 把内部反思摘要自动发布为聊天或气泡。
+    - 强制每次反思改变人格。
+    flexible:
+    - 空修订仍可有合法系统结算；不要求全部状态毫无变化。
+  failure_hint: 核对 prepare/apply、document_changed、持久效果标记和前端事件消费。
+  execution_override:
+    mode: controlled
+- id: GROW-05
+  version: 1
+  title: 文档修订证据与长期欲望原子提交
+  purpose: 文档修订证据与长期欲望原子提交
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 合成阅读证据待消费；准备带原句引用的局部主题修订和合法长期欲望。
+  - 分支 A 在 prepare 后另改文档制造冲突；B 在提交中注入失败；C 正常提交。
+  steps:
+  - 通过真实反思入口应用各计划；冲突恢复后重新准备。
+  - 重启核对文档、证据消费、长期欲望和完整反思记录。
+  end_when: 各分支提交或明确回滚结果可核对。
+  expect:
+    must:
+    - C 的文档、证据消费、长期欲望与反思记录共同提交；引用能回到真实合成原文。
+    - A/B 失败不留下部分人格或已消费但无记录的证据。
+    must_not:
+    - 用旧 base revision 覆盖新文档。
+    - 将反思内容作为外部事实再次喂给下一轮积累。
+    flexible:
+    - 真实模型可以基于证据决定不修改；原子性分支使用受控合法计划。
+  failure_hint: 沿 _run_reflection/Reflection.apply 检查版本、updated_at 与事务范围。
+  execution_override:
+    mode: controlled

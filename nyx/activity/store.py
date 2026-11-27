@@ -111,16 +111,33 @@ class ActivityStore:
     async def get_paused_in_block(
         self, schedule_block_id: str, day_start: float, day_end: float
     ) -> Activity | None:
-        """当前日程块内最新一条 PAUSED 记录（供恢复）；无则 None。"""
+        """Find resumable work, including a creation paused in an earlier block."""
         async with self._db.lock:
             cursor = await self._db.conn.execute(
                 f"SELECT {_COLS} FROM activity WHERE status = 'paused' "
-                "AND schedule_block_id = ? AND started_at >= ? AND started_at < ? "
-                "ORDER BY started_at DESC LIMIT 1",
+                "AND ((schedule_block_id = ? AND started_at >= ? AND started_at < ?) "
+                "OR type = 'creation') ORDER BY started_at DESC",
                 (schedule_block_id, day_start, day_end),
             )
-            row = await cursor.fetchone()
-        return _row_to_activity(row) if row is not None else None
+            rows = await cursor.fetchall()
+        for row in rows:
+            activity = _row_to_activity(row)
+            same_block = (
+                activity.schedule_block_id == schedule_block_id
+                and day_start <= activity.started_at < day_end
+            )
+            desire_id = activity.progress.get("desire_id")
+            if not same_block and not isinstance(desire_id, str):
+                continue
+            checkpoint = cast(
+                dict[str, Any], activity.progress.get("exploration") or {}
+            )
+            if (
+                checkpoint.get("state") != "waiting_user"
+                and checkpoint.get("pause_reason") != "provider"
+            ):
+                return activity
+        return None
 
     async def get_last_exploration(self) -> float:
         """最近一次自由探索活动的 started_at；从未探索返回 0.0（供频率上限判定）。"""
@@ -162,6 +179,7 @@ class ActivityStore:
                     "activity_id": activity.id,
                     "desire_id": progress.get("desire_id"),
                     "status": activity.status.value,
+                    "outcome": result.get("outcome"),
                     "started_at": activity.started_at,
                     "seed_topic": goal.get("topic", exploration.get("topic", "")),
                     "question": exploration.get("initial_question")

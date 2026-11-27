@@ -31,6 +31,7 @@ from nyx.app_context import _App, _Host
 from nyx.character_cards import MAX_CARD_BYTES, build_package, load_card
 from nyx.enums import ActivityType, BoundaryResult, EventType, MemoryKind, MemoryType
 from nyx.events.bus import EventAdmissionError, ReplayComplete
+from nyx.initiative import MAX_COOLDOWN, MIN_COOLDOWN
 from nyx.memory.facade import build_source_topic
 from nyx.policy import policy
 from nyx.reading.facade import (
@@ -169,6 +170,16 @@ class _ChatPayload(BaseModel):
         return value
 
 
+class _InitiativeSettingsPayload(BaseModel):
+    cooldown_minutes: int = Field(strict=True, ge=MIN_COOLDOWN, le=MAX_COOLDOWN)
+
+
+class _ScheduledChangePayload(BaseModel):
+    version: int = Field(strict=True, ge=1)
+    operation: Literal["pause", "resume", "reschedule", "cancel", "skip"]
+    local_time: str | None = None
+
+
 class _ExportPayload(BaseModel):
     format: str
 
@@ -248,6 +259,7 @@ class _ProgressPayload(BaseModel):
         le=policy("reading", "reader.max_speed", int),
     )
     expected_revision: int = Field(..., ge=0)
+    user_read: bool = False
 
 
 class _ImpulsePayload(BaseModel):
@@ -430,11 +442,13 @@ def build_app(
         return result
 
     @fast.post("/api/chat")
-    async def api_chat(payload: _ChatPayload) -> dict[str, str]:
+    async def api_chat(payload: _ChatPayload, request: Request) -> dict[str, str]:
         content: dict[str, Any] = {
             "message": payload.message,
             "discussion": payload.discussion,
         }
+        if request.state.nyx_auth == "device":
+            content["transport"] = "paired_device"
         if payload.reply_to is not None:
             content["reply_to"] = payload.reply_to
         if payload.annotation is not None:
@@ -516,6 +530,40 @@ def build_app(
             "truncated": len(rows)
             > policy("api", "routes.parameters.api_chat_pending_truncated_limit", int),
         }
+
+    @fast.get("/api/initiative/settings")
+    async def api_initiative_settings() -> dict[str, int]:
+        assert app.initiative is not None
+        return {"cooldown_minutes": await app.initiative.cooldown()}
+
+    @fast.put("/api/initiative/settings")
+    async def api_update_initiative_settings(
+        payload: _InitiativeSettingsPayload,
+    ) -> dict[str, int]:
+        assert app.initiative is not None
+        return {
+            "cooldown_minutes": await app.initiative.set_cooldown(
+                payload.cooldown_minutes
+            )
+        }
+
+    @fast.get("/api/initiative/schedules")
+    async def api_schedules() -> list[dict[str, object]]:
+        assert app.initiative is not None
+        return await app.initiative.list_items()
+
+    @fast.put("/api/initiative/schedules/{identifier}")
+    async def api_change_schedule(
+        identifier: str, payload: _ScheduledChangePayload,
+    ) -> dict[str, object]:
+        assert app.initiative is not None
+        try:
+            item = await app.initiative.modify(
+                identifier, payload.version, payload.operation, payload.local_time,
+            )
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        return item.result()
 
     @fast.get("/api/questions/pending")
     async def api_pending_questions() -> dict[str, Any]:
@@ -949,6 +997,7 @@ def build_app(
                 payload.nyx_position,
                 payload.reading_speed,
                 payload.expected_revision,
+                **({"user_read": True} if payload.user_read else {}),
             )
         except BookNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error

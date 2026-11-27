@@ -103,6 +103,87 @@ def test_parse_epub_skips_non_document_spine_items() -> None:
     assert len(result.segments) == 4
 
 
+def _epub_with_promotional_front_matter(*, include_ads: bool) -> bytes:
+    from ebooklib import epub
+
+    book = epub.EpubBook()
+    book.set_identifier("front-matter-filter")
+    book.set_title("正文筛选")
+    book.set_language("zh")
+    front = epub.EpubHtml(title="出版信息", file_name="title.xhtml", lang="zh")
+    front.content = "<p>版权所有。</p>".encode()
+    book.add_item(front)
+    book.spine = [front]
+    if include_ads:
+        ad = epub.EpubHtml(title="广告", file_name="ad.xhtml", lang="zh")
+        ad.content = "<p>某出版社近期新书。</p>".encode()
+        book.add_item(ad)
+        book.spine.append(ad)
+
+    preface = epub.EpubHtml(title="序言", file_name="preface.xhtml", lang="zh")
+    promotion = "<p>关注公众号获取更多内容</p>" if include_ads else ""
+    preface.content = (
+        f"<h2>序言</h2>{promotion}<p>读者当时通过扫码取得了调查问卷。</p>"
+    ).encode()
+    chapter = epub.EpubHtml(title="第一章", file_name="chapter.xhtml", lang="zh")
+    chapter.content = (
+        "<h2>第一章</h2><p><em>正文</em>开始。</p><p>请扫码！</p>"
+    ).encode()
+    book.add_item(preface)
+    book.add_item(chapter)
+    book.add_item(epub.EpubNcx())
+    book.spine.extend([preface, chapter])
+    book.toc = [
+        epub.Link("preface.xhtml", "序言", "preface"),
+        epub.Link("chapter.xhtml", "第一章", "chapter"),
+    ]
+    output = io.BytesIO()
+    epub.write_epub(output, book)
+    return output.getvalue()
+
+
+def test_parse_epub_skips_promotions_before_opening_chapter() -> None:
+    result = parse_epub(_epub_with_promotional_front_matter(include_ads=True))
+    clean = parse_epub(_epub_with_promotional_front_matter(include_ads=False))
+    assert [segment.text for segment in result.segments] == [
+        "版权所有。",
+        "序言",
+        "读者当时通过扫码取得了调查问卷。",
+        "第一章",
+        "正文开始。",
+        "请扫码！",
+    ]
+    assert result.segments == clean.segments
+    assert result.content_hash == clean.content_hash
+    assert result.segments[3].is_chapter_start
+    assert result.segments[4].marks[0].italic
+
+
+def test_parse_epub_without_opening_chapter_stops_at_unclassified_text() -> None:
+    from ebooklib import epub
+
+    book = epub.EpubBook()
+    book.set_identifier("unmarked-opening")
+    book.set_title("短篇集")
+    book.set_language("zh")
+    story = epub.EpubHtml(title="短篇集", file_name="story.xhtml", lang="zh")
+    story.content = (
+        "<p>请扫码！</p><p>雨下了一整夜。</p><p>请扫码！</p>"
+    ).encode()
+    book.add_item(story)
+    book.add_item(epub.EpubNcx())
+    book.spine = [story]
+    output = io.BytesIO()
+    epub.write_epub(output, book)
+
+    result = parse_epub(output.getvalue())
+    assert [segment.text for segment in result.segments] == [
+        "雨下了一整夜。",
+        "请扫码！",
+    ]
+    assert result.segments[0].is_chapter_start
+
+
 def test_parse_epub_non_zip_raises_value_error() -> None:
     with pytest.raises(ValueError):
         parse_epub(b"not a zip file")

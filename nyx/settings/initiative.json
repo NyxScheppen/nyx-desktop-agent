@@ -1,0 +1,62 @@
+{
+  "defaults": {
+    "cooldown_minutes": 5,
+    "autonomous_enabled": true,
+    "recurring_reading_skip_if_read_today": true
+  },
+  "cooldown_min_minutes": 1,
+  "cooldown_max_minutes": 1440,
+  "scheduler": {
+    "working_days": [0, 1, 2, 3, 4],
+    "autonomous_window_minutes": 30,
+    "user_window_minutes": 60,
+    "claim_seconds": 180
+  },
+  "topic": {
+    "idle_hours": 12,
+    "start_hour": 19,
+    "end_hour": 22,
+    "peak_reduction": 0.1,
+    "send_interval_hours": 24,
+    "max_age_hours": 72,
+    "candidate_limit": 12,
+    "evidence_chars": 1200
+  },
+  "copy": {
+    "invalid_time": "请提供未来的北京时间，精确到分钟。",
+    "invalid_item": "这个定时事项的动作、重复规则或条件不适用。",
+    "no_occurrence_today": "这条约定今天没有待跳过的安排。",
+    "missing_request": "当前消息中找不到明确的提醒托付。",
+    "missing_source": "找不到可核对的来源或书段。",
+    "no_item": "找不到可操作的定时事项。",
+    "autonomous_busy": "同一角色已有待执行的自主跟进。",
+    "autonomous_disabled": "自主跟进已关闭。",
+    "invalid_cooldown": "主动搭话间隔超出允许范围。",
+    "reading_notice": "到约好的读书时间了。有空就一起接着读吧。",
+    "chat_notice": "到约好的时间了，记得接着聊我们上次的话题。",
+    "reminder": "到你约好的提醒时间了。",
+    "topic_candidate_log": "主动搭话候选 type=%s reference=%s",
+    "admission_log": "主动互动 stage=%s reference=%s",
+    "schedule_error": "定时事项处理失败 id=%s",
+    "activity_schedule_error": "阅读活动收尾未能安排自主跟进"
+  },
+  "prompts": {
+    "grounding": "以下是本次搭话的真实话题依据。直接用一句或两句简短的话聊其中一个具体细节，留给用户自然回应的空间。不要逐段照抄原文、加入舞台动作、透露用户还没读到的情节或编造经历。",
+    "scheduled": "按事项和来源写一句自然的提醒或跟进。你正在履行约定，请直接输出聊天消息。",
+    "activity": "读书活动刚结束。根据提供的真实书段和用户位置，判断是否值得主动约用户下次续读。只有确有下文时才建议一个未来北京时间（YYYY-MM-DDTHH:MM）。只返回 JSON 对象，字段 local_time，放弃时为 null。",
+    "reason": "若用户要安排、查看、改期、暂停、恢复或取消将来的互动，选择 next_action=tools。若讨论确有具体下文，用户希望晚些时候继续，也可进入工具步骤评估安排一次自主跟进。",
+    "tools": "用户明确给了时间并要求创建提醒时，直接调用 schedule_interaction，origin 填 user。共读的 action 填 reading，用户说了书名就把原书名传给 book，工具会在共享书架里核对。工作日填 workdays。创建新约定前无需查已有约定、搜索本地文件或上网，工具返回已保存的约定后直接按实际时间确认。查看、改期、暂停、恢复、取消已有约定时，才先用 list_interactions 找事项和版本。用当前北京时间解释相对日期，完全没有时间依据时才询问。若用户只是想改天继续聊而没有委托提醒，可以用 autonomous 来源安排一次，仍需具体时间和真实来源。自主跟进已经明确哪天晚上时，你可以自行选一个具体时间，用户常用时段为北京时间 {start}:00–{end}:00。可以用原对话作为续聊来源，不能编造书或段落。"
+  },
+  "tools": {
+    "schedule": "创建一次或重复的约定，或者自主跟进一次。用户明确委托提醒时用 origin=user，共读用 action=reading，工作日重复用 recurrence=workdays。local_time 用北京时间 YYYY-MM-DDTHH:MM。book 直接填书名或书架 ID，工具会在共享书架中核对。当天读过就跳过用 skip_if_read_today。到达具体段落才跳过用 skip_if_read，须同时提供从 1 开始的 paragraph。没有精确段落的读书提醒可以绑定书，也可以是通用提醒。",
+    "list": "查看当前角色的定时事项，返回 ID、版本、状态和下次北京时间。可查看最近一次执行结果。",
+    "modify": "按 ID 和版本改期、暂停、恢复或跳过事项。改期传新的北京时间 YYYY-MM-DDTHH:MM。用户只说今晚或今天算了且能确认是哪条共读约定时用 skip_today。只有用户明确要求跳过下次时才用 skip。",
+    "cancel": "按 ID 和版本取消定时事项。"
+  },
+  "patterns": {
+    "book_label": "《([^》]+)》",
+    "tool_intent": "提醒|叫我|约定|改期|暂停.*(?:提醒|跟进)|恢复.*(?:提醒|跟进)|取消.*(?:提醒|跟进)|定时|(?:今晚|今天).*(?:算了|跳过|不读|不看)|(?:明[晚天]|后天|下[周次]|晚点|一会儿).*(?:聊|读|看)",
+    "followup": "(?:再|接着|继续)(?:聊|读|看)|下次|明晚|晚点|以后再",
+    "explicit": "提醒|叫我|喊我|通知我|别忘了叫|到点叫|定时"
+  }
+}

@@ -224,6 +224,31 @@ class ResearchService:
             history = await self.store.list_records(
                 "research_run", policy("research", "service.history_limit", int)
             )
+            scope = activity.progress.get("research_scope") if activity else None
+            seen_questions = {question}
+            previous_research: list[dict[str, str]] = []
+            history_chars = policy("research", "engine.context.history_chars", int)
+            history_limit = policy(
+                "research", "service.parameters.run_previous_research_chars_or_items",
+                int,
+            )
+            for item in history:
+                prior_result = cast(dict[str, Any], item.get("result") or {})
+                prior_question = item["question"]
+                prior_scope = item["activity"]["progress"].get("research_scope")
+                if (
+                    prior_question in seen_questions
+                    or prior_scope != scope
+                    or not prior_result.get("core_discovery")
+                ):
+                    continue
+                seen_questions.add(prior_question)
+                previous_research.append({
+                    "question": prior_question[:history_chars],
+                    "conclusion": prior_result["core_discovery"][:history_chars],
+                })
+                if len(previous_research) >= history_limit:
+                    break
             initial_progress: dict[str, Any] = (
                 dict(activity.progress) if activity else {"intent": question}
             )
@@ -238,29 +263,7 @@ class ResearchService:
                         int,
                     )
                 ],
-                previous_research=[
-                    {
-                        "question": item["question"],
-                        "status": item["status"],
-                        "conclusion": cast(
-                            dict[str, Any], item.get("result") or {}
-                        ).get("summary", ""),
-                        "failure_reason": cast(
-                            dict[str, Any], item.get("result") or {}
-                        ).get("error", ""),
-                        "unresolved_questions": item["activity"]["progress"]
-                        .get("exploration", {})
-                        .get("unresolved_questions", []),
-                    }
-                    for item in history[
-                        : policy(
-                            "research",
-                            "service.parameters.run_previous_research_chars_or_items",
-                            int,
-                        )
-                    ]
-                    if item["status"] in {"completed", "failed"}
-                ],
+                previous_research=previous_research,
             )
             initial_progress.update(
                 exploration=checkpoint, correlation_id=correlation_id
@@ -367,6 +370,9 @@ class ResearchService:
             fetch_source=self.fetch_source,
             notify_progress=progress,
         )
+        paused_checkpoint = activity.progress.get("exploration", {})
+        if paused_checkpoint.pop("pause_reason", None) == "provider":
+            record.pop("last_error", None)
         try:
             result = await engine.run(activity)
             record["status"] = "completed"
@@ -394,6 +400,15 @@ class ResearchService:
         except DATABASE_ERRORS:
             raise
         except Exception as error:
+            checkpoint = activity.progress["exploration"]
+            if checkpoint.get("pause_reason") == "provider":
+                record.update(
+                    status="paused",
+                    last_error=policy("research", "engine.copy.provider_paused", str),
+                )
+                await self.store.save("research_run", record)
+                await progress(activity)
+                return {"run_id": run_id, "status": "paused"}
             record["status"] = "failed"
             result = {
                 "error": str(error) or type(error).__name__,

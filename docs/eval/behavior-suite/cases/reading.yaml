@@ -1,0 +1,161 @@
+suite_version: nyx-behavior-v1
+domain: reading
+defaults:
+  fixtures:
+  - isolated_host
+  - reading_library
+  sources:
+  - nyx/reading/facade.py
+  - nyx/reading/companions.py
+  - nyx/reading/integration.py
+  - nyx/reading/epub.py
+  - nyx/reading/store.py
+  - nyx/expression/facade.py
+  policy_sources:
+  - nyx/settings/reading.json
+  - nyx/settings/expression.json
+  evidence:
+  - inputs
+  - reading_state
+  - memory_sources
+  - model_io
+  - interaction_attempts
+  - reply_terminal
+  - deliveries
+  diagnosis_order:
+  - input
+  - storage
+  - admission
+  - context
+  - decision
+  - commit
+  - delivery
+  execution:
+    mode: controlled_then_real_model
+    support: manual_protocol_needs_adapter
+    reuse_candidates: []
+    limitation: 这些是可人工执行的场景协议；现有命令不读取本 YAML。复用候选仅提供路径或屏障能力，不代表覆盖本文件全部断言。
+  grading:
+    hard: 逐项对照 must/must_not，引用实际证据；缺证据不能判通过。
+    semantic: 有自然语言输出时人工对照输入、实际 prompt、来源与回执；允许语义等价表达。
+    status: NOT_RUN
+cases:
+- id: READ-01
+  version: 1
+  title: 同正文 EPUB 去重且不执行原始 HTML
+  purpose: 同正文 EPUB 去重且不执行原始 HTML
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 由合成段落制作两个正文相同、文件名不同的最小 EPUB；其中含 script 与普通格式标记。
+  steps:
+  - 分别通过导入入口导入；读取正文与书架，检查解析结果。
+  end_when: 导入结果与持久书籍、段落均可读。
+  expect:
+    must:
+    - 相同正文不产生第二本书；重复导入有明确结果。
+    - 正文使用解析后的有限格式，不执行导入的脚本。
+    must_not:
+    - 将恶意 HTML 作为可执行内容直接呈现。
+    flexible:
+    - 重复导入的 API 消息以当前策略为准。
+  failure_hint: 检查 EPUB 清洗、content hash、DuplicateBookError 和前端正文渲染。
+  sources_add:
+  - frontend/src/components/reading/ReaderView.tsx
+  execution_override:
+    mode: controlled_then_browser
+- id: READ-02
+  version: 1
+  title: 共读前进与回翻使用分离进度和版本保护
+  purpose: 共读前进与回翻使用分离进度和版本保护
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 雾港札记用户与 Nyx 均在第 1 段；保存 expected_revision。
+  steps:
+  - 用户前进到第 2 段并触发一次 evaluate_paragraph。
+  - 重复调用与回翻第 1 段；用旧 revision 再提交进度。
+  - 页面前进检查 user_read=true；重放保存、回翻、无 user_read 的门面调用与 Nyx 后台阅读分别检查 last_user_read_at。
+  end_when: 前进任务结束、旧版本拒绝且进度稳定。
+  expect:
+    must:
+    - user_position 与 nyx_position 分别存储；重复/回翻不重复触发同一前进内容。
+    - 过时进度写入被拒绝，不覆盖新进度。
+    - 仅明确用户向前阅读更新时间戳；后台 Nyx 进度与回翻不伪造当天用户已读。
+    must_not:
+    - 用户回翻导致已处理段落无限重复互动。
+    flexible:
+    - 是否触发具体提问由特征、冷却和状态决定，不要求每翻一页必问。
+  failure_hint: 检查 save_progress revision、evaluate_paragraph 的 last index、inflight 与冷却。
+  execution_override:
+    mode: controlled
+- id: READ-03
+  version: 1
+  title: 读书提问共享等待且回答带回原文
+  purpose: 读书提问共享等待且回答带回原文
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 通过受控段落特征与冷却构造一个可触发的问题；用户尚未读到后续剧透段。
+  steps:
+  - 实际运行 ReadingCompanion.question 并提交提问。
+  - 回答：我觉得他把灯留下是在等朋友。
+  - 等待统一回复及归档。
+  end_when: 提问 attempt、原段落上下文与回答终局齐备。
+  expect:
+    must:
+    - 提问与统一等待关系共同提交；回复上下文含原段落、书籍信息和相关知识。
+    - 将用户观点与书中事实分开。
+    must_not:
+    - 空提问留下永久等待。
+    - 使用未读后文为当前结论剧透。
+    flexible:
+    - 模型的解读可以不同；必须据已提供文本论证。
+  failure_hint: 检查 commit_reading_question、build_reply_context 与实际 prompt 的书段来源。
+- id: READ-04
+  version: 1
+  title: 笔记保持用户内容且仅显式展示才生成批注
+  purpose: 笔记保持用户内容且仅显式展示才生成批注
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 合成段落包含 emoji；两个独立分支保存普通笔记与带合法选区的纯划线。
+  steps:
+  - 保存后刷新，检查没有自动发送给 Nyx。
+  - 对笔记显式点击给 Nyx 看；再独立提交跨书段落或错位选区。
+  end_when: 笔记恢复、显式批注及非法输入结果可读。
+  expect:
+    must:
+    - 普通保存不自动转成聊天或用户事实；显式展示才走批注生成。
+    - 跨书或错位选区拒绝且不落错位笔记。
+    must_not:
+    - 将用户选中的小说第一人称当作用户经历。
+    flexible:
+    - 有效笔记可在每次展示时新增批注；模型失败可不生成批注。
+  failure_hint: 先查 add_user_note 的选区校验，再查 show_to_nyx 与数据归属；别把批注等同于记忆事实。
+  execution_override:
+    mode: controlled_then_browser
+- id: READ-05
+  version: 1
+  title: 原文沉淀与章节反应整合互不冒充
+  purpose: 原文沉淀与章节反应整合互不冒充
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 按合成书章节边界逐段共读；中途已生成即时反应且仍在缓冲。
+  steps:
+  - 章节结束前读取证据与反应缓冲。
+  - 跨章节边界触发整合，再重复投递同一边界。
+  end_when: 原文来源证据、缓冲整合与知识结果可核对。
+  expect:
+    must:
+    - 阅读原文证据按来源沉淀；即时反应按章节或整书边界整合。
+    - 书中第一人称属于人物而非用户或 Nyx 现实经历。
+    must_not:
+    - 仅生成一句感想就声称全书知识已入库。
+    - 重复边界重复沉淀同一已提交成果。
+    flexible:
+    - 感想是否值得整合与具体摘要。
+  failure_hint: 分别看 sediment、check_chapter_boundary 与 _integrate_buffer 的提交回执。
+  execution_override:
+    mode: controlled_then_real_model

@@ -10,6 +10,7 @@ export type Announcement = {
   id: string;
   kind: AnnounceKind;
   text: string;
+  bookId?: string;
 };
 
 // 淡出时长（ms）：碎碎念短、活动产出长。AnnounceLayer 用它设 animation-duration，与 dismiss 同步。
@@ -17,7 +18,7 @@ export const ANNOUNCE_DURATION: Record<AnnounceKind, number> = frontendPolicy.fr
 
 type AnnounceState = {
   items: Announcement[];
-  announce: (kind: AnnounceKind, text: string) => void;
+  announce: (kind: AnnounceKind, text: string, bookId?: string) => void;
   dismiss: (id: string) => void;
 };
 
@@ -26,9 +27,9 @@ let seq = 0;
 
 export const useAnnounceStore = create<AnnounceState>((set, get) => ({
   items: [],
-  announce: (kind, text) => {
+  announce: (kind, text, bookId) => {
     const id = `announce-${++seq}`;
-    set((s) => ({ items: [...s.items, { id, kind, text }] }));
+    set((s) => ({ items: [...s.items, { id, kind, text, ...(bookId ? { bookId } : {}) }] }));
     setTimeout(() => get().dismiss(id), ANNOUNCE_DURATION[kind]);
   },
   dismiss: (id) => {

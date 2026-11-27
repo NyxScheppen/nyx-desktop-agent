@@ -1609,6 +1609,50 @@ _MIGRATIONS: list[tuple[int, list[str]]] = [
             "ON expression_interaction_attempt(kind, created_at, id)",
         ],
     ),
+    (
+        60,
+        [
+            "CREATE TABLE initiative_preferences (id INTEGER PRIMARY KEY CHECK(id=1), "
+            "cooldown_minutes INTEGER NOT NULL)",
+            "CREATE TABLE scheduled_interaction (id TEXT PRIMARY KEY, "
+            "origin TEXT NOT NULL, action TEXT NOT NULL, note TEXT NOT NULL, "
+            "reference TEXT NOT NULL, source_event_id TEXT NOT NULL, timezone TEXT "
+            "NOT NULL, due_at DOUBLE PRECISION NOT NULL, recurrence TEXT NOT NULL, "
+            "skip_if_read INTEGER NOT NULL, status TEXT NOT NULL, version INTEGER "
+            "NOT NULL, created_at DOUBLE PRECISION NOT NULL, claim_id TEXT, "
+            "claim_until DOUBLE PRECISION)",
+            "CREATE UNIQUE INDEX idx_scheduled_autonomous ON scheduled_interaction "
+            "(origin) WHERE origin='autonomous' AND status IN ('active', 'paused')",
+            "CREATE INDEX idx_scheduled_due ON scheduled_interaction(status, due_at)",
+            "CREATE INDEX idx_scheduled_source "
+            "ON scheduled_interaction(source_event_id)",
+            "CREATE TABLE scheduled_occurrence (item_id TEXT NOT NULL REFERENCES "
+            "scheduled_interaction(id) ON DELETE CASCADE, due_at DOUBLE PRECISION "
+            "NOT NULL, outcome TEXT NOT NULL, event_id TEXT REFERENCES event_log(id), "
+            "PRIMARY KEY (item_id, due_at))",
+            "CREATE TABLE initiative_topic_sent (topic_key TEXT PRIMARY KEY, "
+            "event_id TEXT NOT NULL REFERENCES event_log(id), "
+            "enhanced_at DOUBLE PRECISION)",
+            "CREATE INDEX idx_initiative_topic_enhanced ON initiative_topic_sent "
+            "(enhanced_at)",
+            "ALTER TABLE desire_generation_attempt ADD COLUMN initiative_ref TEXT",
+            "ALTER TABLE short_term_desire ADD COLUMN initiative_ref TEXT",
+            "ALTER TABLE reading_progress ADD COLUMN user_position_recorded "
+            "INTEGER NOT NULL DEFAULT 0",
+            "UPDATE reading_progress SET user_position_recorded=1 "
+            "WHERE user_position>1",
+            "CREATE INDEX idx_event_type_time ON event_log(type, timestamp, id)",
+        ],
+    ),
+    (
+        61,
+        [
+            "ALTER TABLE reading_progress ADD COLUMN "
+            "last_user_read_at DOUBLE PRECISION",
+            "ALTER TABLE scheduled_interaction ADD COLUMN "
+            "skip_if_read_today INTEGER NOT NULL DEFAULT 0",
+        ],
+    ),
 ]
 
 

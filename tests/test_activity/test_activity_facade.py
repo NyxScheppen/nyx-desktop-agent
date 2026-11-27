@@ -355,6 +355,7 @@ class _FakeDesire:
         self._values = values if values is not None else []
         self.mark_active_calls: list[str] = []
         self.mark_suppressed_calls: list[str] = []
+        self.finished_attempts: list[str] = []
         self.release_active_calls: list[str] = []
         self.appended_subtopics: list[tuple[str, list[str]]] = []
 
@@ -373,12 +374,17 @@ class _FakeDesire:
         self.mark_active_calls.append(desire_id)
         return True
 
-    async def resume_for_activity_in_transaction(self, desire_id: str) -> bool:
+    async def resume_for_activity_in_transaction(
+        self, desire_id: str, *, already_claimed: bool = False
+    ) -> bool:
         self.mark_active_calls.append(desire_id)
         return True
 
     async def mark_suppressed(self, desire_id: str) -> None:
         self.mark_suppressed_calls.append(desire_id)
+
+    async def finish_attempt_in_transaction(self, desire_id: str) -> None:
+        self.finished_attempts.append(desire_id)
 
     async def release_active(self, desire_id: str) -> None:
         self.release_active_calls.append(desire_id)
@@ -1653,8 +1659,8 @@ async def test_execute_marks_active_desire() -> None:
         await database.conn.close()
 
 
-async def test_execute_failure_marks_suppressed() -> None:
-    """活动异常：标 ACTIVE 后非满足退出，desire 释放到 SUPPRESSED。"""
+async def test_execute_creation_failure_finishes_attempt() -> None:
+    """创作执行失败后，结算这条欲望的一次机会。"""
     facade, store, bus, database = await _new_facade(
         pending=[_desire("d1", DesireType.CREATION)], energy=80.0, llm=_RaisingLlm()
     )
@@ -1665,7 +1671,7 @@ async def test_execute_failure_marks_suppressed() -> None:
                 await _await_task(facade)
         desire = cast(_FakeDesire, facade._desire)
         assert desire.mark_active_calls == ["d1"]
-        assert desire.mark_suppressed_calls == ["d1"]
+        assert desire.finished_attempts == ["d1"]
         acts = await store.list_schedule(0.0)
         assert acts[0].status is ActivityStatus.INCOMPLETE
     finally:
@@ -1697,7 +1703,7 @@ async def test_execute_free_exploration_failure_marks_incomplete(
         assert got.status is ActivityStatus.INCOMPLETE
         assert got.ended_at is not None
         desire = cast(_FakeDesire, facade._desire)
-        assert desire.mark_suppressed_calls == ["d1"]
+        assert desire.finished_attempts == ["d1"]
     finally:
         await database.conn.close()
 

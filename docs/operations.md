@@ -83,6 +83,14 @@ uv run --no-sync python scripts/smoke_release.py
 
 本地新角色在 `data/characters/<id>/`，宿主索引在 `data/characters/host.db`；默认 Nyx 沿用原数据库与工作区。不要手动覆盖运行中的角色文件。
 
+## 安卓手机端
+
+- 手机浏览器使用同一个 HTTPS 入口的 `/mobile`。第一次连接在桌面设置生成配对码，手机输入配对码和设备名。手机从现有角色书库续读，EPUB 仍从桌面导入。
+- APK 由仓库的 `mobile/` 构建。先在该目录运行 `npm ci` 和 `npm run check`，再登录 EAS，使用 `eas build --platform android --profile private` 生成内部分发 APK。后续覆盖安装使用同一个包名和签名。
+- 安卓 App 完成首次配对后将设备凭证保存在 SecureStore，重新打开会恢复登录。清除访问凭证、清除 App 数据或在电脑端撤销设备后，需要重新配对。
+- 构建可通过 `NYX_MOBILE_ORIGIN` 指定私有 HTTPS 入口。APK 使用与网页相同的设备配对、聊天和书库。
+- 给绑定的尼克斯角色安排共读后，已启用的 OneBot 会把到期邀请发到配置的本人 QQ 私聊。打开安卓 App 的「对话」，用同一条邀请续读，或从「书架」继续共享进度。锁屏提醒由 QQ 的通知设置控制。
+
 ## OneBot 私聊
 
 Windows 本地 NapCat 的安装包和运行文件统一放在 `runtime/napcat/`，该目录不提交 Git，也不进入 Docker 构建上下文。已有 Shell 包在 `runtime/napcat/NapCat.52230.Shell/` 中，进入该目录运行 `napcat.bat` 启动。

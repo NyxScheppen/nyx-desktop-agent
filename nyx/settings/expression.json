@@ -174,7 +174,6 @@
     "_MUTTER_RATE": 0.5,
     "_LLM_MUTTER_RATE": 0.2,
     "_MIN_ENERGY": 50,
-    "_MIN_INTERVAL": 1800,
     "_PRESENCE_ZH": {
       "online": "你在电脑前",
       "away": "你走开了",

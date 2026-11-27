@@ -17,7 +17,7 @@ from nyx.types import DesireValue, Goal, LongTermDesire, ShortTermDesire
 
 _STD_COLS = (
     "id, created_at, type, strength, description, goal, retry_count, "
-    "status, goal_progress, parent_long_term_id"
+    "status, goal_progress, parent_long_term_id, initiative_ref"
 )
 _VALUE_COLS = "type, value, expression_weight, suppression_threshold, updated_at"
 _LT_COLS = (
@@ -57,7 +57,7 @@ class DesireStore:
         async with self._operation() as should_commit:
             await self._db.conn.execute(
                 f"INSERT INTO short_term_desire ({_STD_COLS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _std_row(desire),
             )
             if should_commit:
@@ -339,16 +339,23 @@ class DesireStore:
         seed: str | None,
         parent_long_term_id: str | None,
         output_content: str,
+        initiative_ref: str | None = None,
     ) -> None:
         async with self._operation() as should_commit:
             await self._db.conn.execute(
                 """INSERT INTO desire_generation_attempt
                 (id, type, created_at, peak_value, seed, parent_long_term_id,
-                 output_content)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                 output_content, initiative_ref)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    attempt_id, type_.value, created_at, peak_value, seed,
-                    parent_long_term_id, output_content,
+                    attempt_id,
+                    type_.value,
+                    created_at,
+                    peak_value,
+                    seed,
+                    parent_long_term_id,
+                    output_content,
+                    initiative_ref,
                 ),
             )
             if should_commit:
@@ -356,11 +363,11 @@ class DesireStore:
 
     async def get_generation_attempt(
         self, type_: DesireType
-    ) -> tuple[str, float, float, str | None, str | None, str] | None:
+    ) -> tuple[str, float, float, str | None, str | None, str, str | None] | None:
         async with self._operation():
             cursor = await self._db.conn.execute(
                 """SELECT id, created_at, peak_value, seed, parent_long_term_id,
-                output_content
+                output_content, initiative_ref
                 FROM desire_generation_attempt
                 WHERE type = ? ORDER BY created_at ASC, id ASC LIMIT 1""",
                 (type_.value,),
@@ -375,6 +382,7 @@ class DesireStore:
             row["seed"],
             row["parent_long_term_id"],
             str(row["output_content"]),
+            row["initiative_ref"],
         )
 
     async def delete_generation_attempt(self, attempt_id: str) -> None:
@@ -439,12 +447,22 @@ class DesireStore:
 
 
 def _std_row(
-    d: ShortTermDesire
-) -> tuple[str, float, str, float, str, str | None, int, str, int, str | None]:
+    d: ShortTermDesire,
+) -> tuple[
+    str, float, str, float, str, str | None, int, str, int, str | None, str | None
+]:
     return (
-        d.id, d.created_at, d.type.value, d.strength, d.description,
-        _goal_json(d.goal), d.retry_count, d.status.value, d.goal_progress,
+        d.id,
+        d.created_at,
+        d.type.value,
+        d.strength,
+        d.description,
+        _goal_json(d.goal),
+        d.retry_count,
+        d.status.value,
+        d.goal_progress,
         d.parent_long_term_id,
+        d.initiative_ref,
     )
 
 
@@ -466,6 +484,7 @@ def _row_to_std(row: aiosqlite.Row) -> ShortTermDesire:
         status=DesireStatus(row["status"]),
         goal_progress=row["goal_progress"],
         parent_long_term_id=row["parent_long_term_id"],
+        initiative_ref=row["initiative_ref"],
     )
 
 

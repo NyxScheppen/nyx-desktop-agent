@@ -61,10 +61,14 @@
         "rejected": "拒绝",
         "waiting": "等待",
         "wait_user": "等待用户回答",
+        "exhausted": "未解决",
+        "pruned": "偏题已剪除",
+        "won": "已取得发现",
         "cancel_requested": "正在取消"
       },
       "NODES": {
         "select_topic": "选题",
+        "scope_check": "核对选题",
         "decide": "选择步骤",
         "rewrite": "改写问题",
         "follow_up": "提出追问",
@@ -81,7 +85,8 @@
         "finish": "结束研究",
         "ask_user": "询问用户",
         "user_answer": "用户补充",
-        "wait_user": "等待用户回答"
+        "wait_user": "等待用户回答",
+        "prune": "剪除偏题"
       }
     }
   },
@@ -160,6 +165,7 @@
   },
   "templates": {
     "BehaviorPanel": {
+      "research_attempt_count": "{p0} 次尝试",
       "text": " → 新版本 {p0}"
     }
   }

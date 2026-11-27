@@ -163,6 +163,7 @@ class LlmClient:
             proactive = output_type in {
                 "initiate_chat",
                 "initiate_chat_match",
+                "reading_followup",
                 "mutter_wander",
                 "reading_mutter",
                 "question_knowledge",

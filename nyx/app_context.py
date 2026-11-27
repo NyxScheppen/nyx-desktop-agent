@@ -34,6 +34,7 @@ from nyx.eval.evaluator import Evaluator
 from nyx.eval.store import EvalStore
 from nyx.events.bus import EventBus
 from nyx.expression.facade import ExpressionFacade
+from nyx.initiative import Initiative
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import LlmClient
 from nyx.memory.facade import MemoryFacade
@@ -81,6 +82,7 @@ class _App:
     evaluator: Evaluator
     eval_store: EvalStore
     config: Config
+    initiative: Initiative | None = None
     last_chat_at: float = 0.0
     last_presence: str = "online"
     last_window_title: str = ""
@@ -470,6 +472,7 @@ async def build_app_context(
             eval_store,
             config,
             database=db,
+            initiative=cast(Initiative, capabilities["initiative"]),
             behavior=cast(BehaviorService, capabilities["behavior"]),
             research=cast(ResearchService, capabilities["research"]),
             host=host,

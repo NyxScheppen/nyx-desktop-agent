@@ -2,19 +2,34 @@
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from nyx.activity.facade import ActivityFacade
+from nyx.activity.store import ActivityStore
 from nyx.behavior.service import BehaviorService
 from nyx.behavior.store import BehaviorStore, SkillStore, skill_snapshot
-from nyx.config import DesireConfig, ExplorationConfig, MemoryConfig
+from nyx.config import ActivityConfig, DesireConfig, ExplorationConfig, MemoryConfig
 from nyx.db import Database, connect
 from nyx.desire.facade import DesireFacade
 from nyx.desire.store import DesireStore
-from nyx.enums import EventType, MemoryKind
+from nyx.enums import (
+    ActivityStatus,
+    ActivityType,
+    DesireStatus,
+    DesireType,
+    EmotionCategory,
+    EnergyState,
+    EventType,
+    GoalAction,
+    MemoryKind,
+    TickType,
+)
 from nyx.eval.evaluator import Evaluator
 from nyx.events.bus import EventBus
 from nyx.inner_life.reflection import Reflection
@@ -24,8 +39,21 @@ from nyx.memory.facade import MemoryFacade
 from nyx.memory.retrieval import MemoryRetrieval
 from nyx.memory.store import MemoryStore
 from nyx.research.service import ResearchService
+from nyx.tools.file_io import build_file_io_tool
 from nyx.tools.registry import ToolRegistry
-from nyx.types import InnerDocument, InnerTopic, LLMOutput, Memory, Skill, Tool
+from nyx.types import (
+    CurrentState,
+    DesireValue,
+    Goal,
+    InnerDocument,
+    InnerTopic,
+    LLMOutput,
+    LongTermDesire,
+    Memory,
+    ShortTermDesire,
+    Skill,
+    Tool,
+)
 
 TEXT = "随机分配可减少混杂偏差，但仍需检查依从性和失访。"
 URL = "https://example.test/causal"
@@ -201,6 +229,165 @@ async def test_rejected_source_never_enters_knowledge(harness: Harness) -> None:
     assert not await h.memory_store.list_memories(kind=MemoryKind.KNOWLEDGE)
     records = await h.behavior.store.list_records("behavior_reflection")
     assert records[0]["evidence"]["source_excerpts_raw"][0]["source_text_raw"] == TEXT
+    actions = records[0]["evidence"]["actions_raw"]
+    assert [action["name"] for action in actions].count("prune") == 1
+
+
+@pytest.mark.parametrize(
+    "scenario", ["wrong_topic", "wrong_branch", "provider", "creation"]
+)
+async def test_autonomous_activity_replay_from_clean_database(
+    harness: Harness, scenario: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h = harness
+    original = h.script.complete
+    desire_store = DesireStore(h.db)
+    activities = ActivityStore(h.db)
+    now = time.time()
+    topic = "莱恩哈特" if scenario.startswith("wrong") else "瘟疫"
+    question = (
+        "追查同名足球球员" if scenario == "wrong_topic" else f"核实小说里的{topic}"
+    )
+    config = ExplorationConfig(web_enabled=True, rate_limit_hours=0)
+    llm = cast(LlmClient, h.script)
+    desire = DesireFacade(
+        desire_store, h.bus, llm, Evaluator(), DesireConfig(), h.memory.list_memories,
+        list_explorations=activities.list_exploration_history,
+        canon="尼克斯在《诺斯艾兰》中经历瘟疫，莱恩哈特是待确认的小说人物。",
+    )
+
+    async def get_state() -> CurrentState:
+        return CurrentState(
+            0, 0, EmotionCategory.NEUTRAL, InnerDocument([], 1, now),
+            80, EnergyState.OKAY, None, [],
+        )
+
+    async def get_observation() -> dict[str, str]:
+        return {}
+
+    facade = ActivityFacade(
+        activities, h.bus, llm, Evaluator(), h.research.tools, desire, h.memory,
+        get_state, get_observation, ActivityConfig(), config, "角色",
+        can_observe=lambda: False,
+    )
+    facade.research = h.research
+    h.research.resume_activity = facade.resume_research_activity
+    provider_recovered = False
+    branch_queries: list[str] = []
+
+    class BalanceError(RuntimeError):
+        status_code = 402
+
+    async def scripted(messages: list[dict[str, Any]], **kwargs: Any) -> LLMOutput:
+        output_type = kwargs["output_type"]
+        if (
+            scenario == "provider" and output_type == "exploration_decide"
+            and not provider_recovered and json.loads(messages[1]["content"])["results"]
+        ):
+            raise BalanceError("Insufficient Balance")
+        fixtures: dict[str, dict[str, Any]] = {
+            "exploration_scope": {
+                "decision": "prune" if scenario == "wrong_topic" else "aligned",
+                "reason": (
+                    "同名球员无法说明小说人物" if scenario == "wrong_topic"
+                    else "小说内证据"
+                ),
+            },
+            "desire": {"description": "同一份词典里写三则条目", "count": 3},
+            "creation": {"title": "私人词典", "content": "一.等待\n二.沉默\n三.道别"},
+        }
+        if scenario == "wrong_branch" and output_type == "exploration_decide":
+            data = json.loads(messages[1]["content"])
+            branch_queries.append(data["question"])
+            steps = [
+                {"action": "follow_up", "question": "查同名足球球员"},
+                {"action": "search", "query": "莱恩哈特 足球"},
+                {"action": "prune", "index": 0, "reason": "同名球员与小说无关"},
+                {"action": "finish", "reason": "缺少小说原文"},
+            ]
+            fixtures[output_type] = steps[len(branch_queries) - 1]
+        if output_type not in fixtures:
+            return await original(messages, **kwargs)
+        return LLMOutput(
+            kwargs["module"], output_type, "script",
+            json.dumps(fixtures[output_type], ensure_ascii=False),
+            kwargs["correlation_id"],
+        )
+
+    monkeypatch.setattr(h.script, "complete", scripted)
+    if scenario == "creation":
+        h.research.tools.register(build_file_io_tool(tmp_path))
+        await desire_store.upsert_value(
+            DesireValue(DesireType.CREATION, 1, 1, 0.5, now)
+        )
+        generated, = await desire.evaluate()
+        assert generated.goal is not None and generated.goal.count == 1
+        generated.goal.count = 3  # Simulate a persisted goal from the old policy.
+        await desire_store.update_desire(generated)
+        desire_id = generated.id
+    else:
+        await desire_store.insert_long_term(LongTermDesire(
+            "lore", now, DesireType.EXPLORATION, "理解小说里的自己", "理解小说里的自己",
+            0.5, 0, [topic],
+        ))
+        desire_id = scenario
+        await desire_store.add_desire(ShortTermDesire(
+            desire_id, now, DesireType.EXPLORATION, 1, question,
+            Goal(GoalAction.READ, 1, topic), parent_long_term_id="lore",
+        ))
+
+    async def tick() -> None:
+        await facade.on_tick(TickType.SCHEDULE_BLOCK_START)
+        task = cast(asyncio.Task[None] | None, getattr(facade, "_task"))
+        if task is not None:
+            await task
+
+    await tick()
+    if scenario == "provider":
+        records = await h.behavior.store.list_records("research_run")
+        assert len(records) == 1 and records[0]["status"] == "paused"
+        run_id = records[0]["id"]
+        assert not await h.behavior.store.list_records("behavior_reflection")
+        saved = await activities.get(records[0]["activity"]["id"])
+        assert saved is not None and saved.status is ActivityStatus.PAUSED
+        await tick()
+        assert len(await h.behavior.store.list_records("research_run")) == 1
+        provider_recovered = True
+        result = await h.research.resume(run_id)
+        assert result["outcome"] == "won" and result["run_id"] == run_id
+        assert sum(action["name"] == "web_search" for action in result["actions"]) == 1
+        assert h.fetches == [URL]
+
+    ends = await h.bus.list_events(event_type=EventType.ACTIVITY_END)
+    for event in ends:
+        await desire.add_value(event, "test.activity_end")
+        await desire.add_value(event, "test.activity_end")
+    settled = await desire_store.get_desire(desire_id)
+    assert settled is not None
+    assert settled.status is (
+        DesireStatus.SATISFIED if scenario in {"provider", "creation"}
+        else DesireStatus.EXPIRED
+    )
+    await tick()
+    records = await h.behavior.store.list_records("research_run")
+    reflections = await h.behavior.store.list_records("behavior_reflection")
+    if scenario == "creation":
+        files = list((tmp_path / "creations").glob("*.md"))
+        assert len(files) == 1 and "三.道别" in files[0].read_text(encoding="utf-8")
+        assert settled.goal is not None
+        assert settled.goal.count == settled.goal_progress == 1
+        results = await activities.list_results(10, activity_type=ActivityType.CREATION)
+        assert len(results) == 1
+    else:
+        assert len(records) == len(reflections) == 1
+    if scenario.startswith("wrong"):
+        assert not h.fetches
+        actions = reflections[0]["evidence"]["actions_raw"]
+        assert any(action["name"] == "prune" for action in actions)
+        if scenario == "wrong_branch":
+            assert branch_queries == [
+                question, "查同名足球球员", "查同名足球球员", question
+            ]
 
 
 async def test_experience_recall_filters_skill_before_ranking(harness: Harness) -> None:
@@ -480,9 +667,7 @@ async def test_wait_answer_and_explicit_cancel_are_durable(
 
     async def ask(messages: list[dict[str, Any]], **kwargs: Any) -> LLMOutput:
         data = json.loads(messages[-1]["content"])
-        if kwargs["output_type"] == "exploration_decide" and not any(
-            a["name"] == "user_answer" for a in data["actions"]
-        ):
+        if kwargs["output_type"] == "exploration_decide" and not data["user_answers"]:
             return LLMOutput(
                 "activity",
                 kwargs["output_type"],

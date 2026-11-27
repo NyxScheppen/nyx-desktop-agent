@@ -165,6 +165,7 @@ class ShortTermDesire:
     status: DesireStatus = DesireStatus.PENDING
     goal_progress: int = 0  # goal 已完成单位数（读完整本/写出整篇=1 单位）
     parent_long_term_id: str | None = None
+    initiative_ref: str | None = None
 
 
 @dataclass

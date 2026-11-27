@@ -17,9 +17,7 @@ _LLM_MUTTER_RATE = policy(
 _MIN_ENERGY = policy(
     "expression", "mutter._MIN_ENERGY", float
 )  # 搭话精力阈值（可推翻）
-_MIN_INTERVAL = policy(
-    "expression", "mutter._MIN_INTERVAL", float
-)  # 距上次搭话最小间隔，秒（30 分钟，可推翻）
+_MIN_INTERVAL = policy("initiative", "defaults.cooldown_minutes", int) * 60
 
 # 观察摘要里「用户（presence）」的原始枚举 → 自然中文（润色，raw 枚举不进句子）
 _PRESENCE_ZH: dict[str, str] = policy(
@@ -127,14 +125,11 @@ def should_initiate_chat(
     desires: list[ShortTermDesire],
     energy: float,
     since_last_chat: float,
+    min_interval: float = _MIN_INTERVAL,
 ) -> bool:
     """搭话触发判定。
 
     互动欲非空 + 精力够 + 距上次 ≥ 间隔；用户状态只用于表达上下文。
     """
     has_interaction = any(d.type is DesireType.INTERACTION for d in desires)
-    return (
-        has_interaction
-        and energy >= _MIN_ENERGY
-        and since_last_chat >= _MIN_INTERVAL
-    )
+    return has_interaction and energy >= _MIN_ENERGY and since_last_chat >= min_interval

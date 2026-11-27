@@ -30,12 +30,11 @@ import type {
 
 export type NyxStatus = "idle" | "reading" | "waiting"; // 派生态，不落 store
 
-export const WINDOW_SIZE = readingPolicy.reader.window_size; // 每窗段数（§5 决策）
+export const WINDOW_SIZE = readingPolicy.reader.window_size;
 const MIN_CATCHUP_SEC = readingPolicy.frontend.readerStore.MIN_CATCHUP_SEC; // 段落未加载 / 过短时的保底节奏
 const MAX_CATCHUP_SEC = readingPolicy.frontend.readerStore.MAX_CATCHUP_SEC; // 单段追赶耗时上界
 const MIN_READING_SPEED = readingPolicy.reader.min_speed; // 字/秒，后端校验下界 [10, 200]（reading-system spec）
-const CATCHUP_REFRESH_FRACTION = readingPolicy.frontend.readerStore.CATCHUP_REFRESH_FRACTION; // 窗口 80% 边界触发重拉
-export const GAP_PX = readingPolicy.frontend.readerStore.GAP_PX; // 段间距（px），对齐 CSS .reader-text__pages 的 gap: 0.75rem（08 §5.1）
+const CATCHUP_REFRESH_FRACTION = readingPolicy.frontend.readerStore.CATCHUP_REFRESH_FRACTION;
 
 type ReaderState = {
   books: BookListItem[]; // 书架快照
@@ -56,13 +55,14 @@ type ReaderState = {
   loadBooks: () => Promise<void>;
   openBook: (bookId: string) => Promise<void>;
   closeBook: () => void;
+  refreshProgress: () => Promise<void>;
   syncPosition: (next: number) => Promise<void>;
   jumpToPosition: (next: number) => Promise<void>;
   setReadingSpeed: (speed: number) => Promise<void>;
   startCatchup: () => void;
   stopCatchup: () => void;
   advanceNyx: () => void;
-  applyProgressEvent: (e: ReadingProgressEvent) => void;
+  applyProgressEvent: (e: ReadingProgressEvent, followUser?: boolean) => void;
   reread: () => Promise<void>;
   loadNotes: () => Promise<void>;
   addNote: (p: {
@@ -119,6 +119,7 @@ function enqueueProgress(
   payload: {
     user_position: number;
     nyx_position: number;
+    user_read?: boolean;
     reading_speed: number;
   },
   get: () => ReaderState,
@@ -217,53 +218,29 @@ export function catchupDurationMs(textLength: number, readingSpeed: number): num
   return sec * 1000;
 }
 
-// 窗口计算：clamp 到 [1, total]（阅读后端对越界 from/to 返回 422，前端必须先 clamp）。
-// centered=false：窗口从 userPosition 起（当前段在窗口顶）；true：以 userPosition 为中心。
+// 尽量把当前位置放在窗口中央，书首和书末仍保留完整的可读窗口。
 export function computeWindow(
   userPosition: number,
   totalParagraphs: number,
-  centered: boolean,
 ): { from: number; to: number } {
   const total = Math.max(1, totalParagraphs);
-  let from = centered ? userPosition - Math.floor(WINDOW_SIZE / 2) : userPosition;
-  from = Math.max(1, Math.min(from, total));
+  const center = userPosition - Math.floor(WINDOW_SIZE / 2);
+  const from = Math.max(1, Math.min(center, total - WINDOW_SIZE + 1));
   const to = Math.min(total, from + WINDOW_SIZE - 1);
   return { from, to };
 }
 
-// 真分页（08 §5.1）：对当前窗口段落贪心填满。measureHeight(i) 返回第 i 段（全局 1-based）
-// 渲染高度 + 段间距；累计将溢出 viewportHeight 则封页、下一段开新页。空/<=0 返回 []。
-export function paginate(
-  paragraphs: Paragraph[],
-  measureHeight: (index: number) => number,
-  viewportHeight: number,
-): number[][] {
-  if (paragraphs.length === 0 || viewportHeight <= 0) return [];
-  const pages: number[][] = [];
-  let current: number[] = [];
-  let used = 0;
-  for (const p of paragraphs) {
-    const h = measureHeight(p.index);
-    if (current.length > 0 && used + h > viewportHeight) {
-      pages.push(current);
-      current = [];
-      used = 0;
-    }
-    current.push(p.index);
-    used += h;
-  }
-  if (current.length > 0) pages.push(current);
-  return pages;
-}
-
-// 是否需要重拉窗口：userPosition 越过窗口 80% 边界或跌出窗口起点。
-function needsWindowRefresh(userPosition: number, windowFrom: number): boolean {
-  const threshold = windowFrom + Math.floor(WINDOW_SIZE * CATCHUP_REFRESH_FRACTION);
-  return userPosition < windowFrom || userPosition >= threshold;
+function needsWindowRefresh(position: number, from: number, total: number): boolean {
+  const forward = Math.floor(WINDOW_SIZE * CATCHUP_REFRESH_FRACTION);
+  const backward = WINDOW_SIZE - forward;
+  return from === 0 || position < from || position >= from + WINDOW_SIZE
+    || (from > 1 && position < from + backward)
+    || (from + WINDOW_SIZE <= total && position >= from + forward);
 }
 
 export const useReaderStore = create<ReaderState>((set, get) => {
   let sessionGeneration = 0;
+  let windowRequest: { session: number; from: number; promise: Promise<void> } | undefined;
   let notesRequestRevision = 0;
   let bookmarksRequestRevision = 0;
   const noteQueues = new Map<string, Promise<unknown>>();
@@ -294,19 +271,31 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     bookId: string,
     userPosition: number,
     total: number,
-    centered: boolean,
   ): Promise<void> => {
-      const scope = captureScope();
-      const commit = scopedSetter(set);
+    const commit = scopedSetter(set);
     if (!isCurrent(session, bookId)) return;
     if (total <= 0) {
       commit({ paragraphs: [], windowFrom: 0 });
       return;
     }
-    const { from, to } = computeWindow(userPosition, total, centered);
-    const paragraphs = await getBookParagraphs(bookId, from, to);
-      if (!isScopeCurrent(scope)) return;
-    if (isCurrent(session, bookId)) commit({ paragraphs, windowFrom: from });
+    if (!needsWindowRefresh(userPosition, get().windowFrom, total)) return;
+    const { from, to } = computeWindow(userPosition, total);
+    if (get().windowFrom === from) return;
+    if (windowRequest?.session === session &&
+      (windowRequest.from === from || !needsWindowRefresh(userPosition, windowRequest.from, total))) {
+      return windowRequest.promise;
+    }
+    const promise = getBookParagraphs(bookId, from, to).then((paragraphs) => {
+      const current = get();
+      if (windowRequest?.promise === promise && isCurrent(session, bookId)
+        && current.userPosition >= from && current.userPosition <= to) {
+        commit({ paragraphs, windowFrom: from });
+      }
+    }).finally(() => {
+      if (windowRequest?.promise === promise) windowRequest = undefined;
+    });
+    windowRequest = { session, from, promise };
+    await promise;
   };
 
   return {
@@ -378,7 +367,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
           readCount: progress.read_count,
           progressRevision: progress.revision ?? 0,
         });
-        await fetchWindow(session, bookId, userPosition, total, false);
+        await fetchWindow(session, bookId, userPosition, total);
       if (!isScopeCurrent(scope)) return;
         if (isCurrent(session, bookId) && nyxPosition < userPosition) {
           get().startCatchup();
@@ -410,6 +399,30 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       });
     },
 
+    refreshProgress: async () => {
+      const scope = captureScope();
+      const session = sessionGeneration;
+      const { bookId, totalParagraphs } = get();
+      if (bookId === null) return;
+      try {
+        const progress = await getProgress(bookId);
+        if (!isScopeCurrent(scope) || !isCurrent(session, bookId)) return;
+        const current = get();
+        if (progress.revision >= current.progressRevision &&
+            !progressQueues.has(session + ":" + bookId)) {
+          set({
+            userPosition: progress.user_position, nyxPosition: progress.nyx_position,
+            readingSpeed: progress.reading_speed, readCount: progress.read_count,
+            progressRevision: progress.revision,
+          });
+          await fetchWindow(session, bookId, progress.user_position, totalParagraphs);
+        }
+        if (isScopeCurrent(scope) && isCurrent(session, bookId)) get().startCatchup();
+      } catch {
+        // 断线时保留当前正文。
+      }
+    },
+
     syncPosition: async (next) => {
       const scope = captureScope();
       const commit = scopedSetter(set);
@@ -417,33 +430,38 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const { bookId, totalParagraphs, userPosition } = get();
       if (bookId === null || totalParagraphs <= 0) return;
       const clamped = Math.min(totalParagraphs, Math.max(1, next));
-      if (clamped === userPosition) return;
+      if (clamped === userPosition) {
+        if (get().windowFrom > 0) {
+          await fetchWindow(session, bookId, clamped, totalParagraphs).catch(() => {});
+        }
+        return;
+      }
       commit({ userPosition: clamped });
       const { nyxPosition, readingSpeed } = get();
       if (!isCurrent(session, bookId)) return;
-      // 进度持久化后写：fire-and-forget，失败静默、下次翻页重写覆盖。
-      await enqueueProgress(session, bookId, {
+      // 进度持久化失败时由下一次阅读位置更新重新提交。
+      const progress = enqueueProgress(session, bookId, {
         user_position: clamped,
         nyx_position: nyxPosition,
         reading_speed: readingSpeed,
+        ...(clamped > userPosition ? { user_read: true } : {}),
       }, get, set, () => isCurrent(session, bookId));
+      const window = get().windowFrom > 0
+        ? fetchWindow(session, bookId, clamped, totalParagraphs).catch(() => {})
+        : undefined;
+      await progress;
       if (!isScopeCurrent(scope)) return;
       if (!isCurrent(session, bookId)) return;
-      // 前翻逐段补发冲动（整屏翻一次跨 N 段，逐段 evaluate 保住每段都有机会触发；
-      // 后翻不评估，双保险；正文后端自取，不传 text）。
+      // 向前滑过多段时逐段评估；向后滑动仅保存位置。
       if (clamped > userPosition) {
         const impulseTasks: Promise<void>[] = [];
         for (let i = userPosition + 1; i <= clamped; i += 1) {
           impulseTasks.push(enqueueImpulse(session, bookId, i, i - 1));
         }
-        await Promise.all(impulseTasks);
-      if (!isScopeCurrent(scope)) return;
+        await Promise.allSettled(impulseTasks);
       }
-      if (!isCurrent(session, bookId)) return;
-      if (needsWindowRefresh(clamped, get().windowFrom)) {
-        await fetchWindow(session, bookId, clamped, totalParagraphs, false);
+      await window;
       if (!isScopeCurrent(scope)) return;
-      }
       if (isCurrent(session, bookId)) get().startCatchup();
     },
 
@@ -454,7 +472,10 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       const { bookId, totalParagraphs, userPosition } = get();
       if (bookId === null || totalParagraphs <= 0) return;
       const clamped = Math.min(totalParagraphs, Math.max(1, next));
-      if (clamped === userPosition) return;
+      if (clamped === userPosition) {
+        await fetchWindow(session, bookId, clamped, totalParagraphs).catch(() => {});
+        return;
+      }
       commit({ userPosition: clamped });
       const { nyxPosition, readingSpeed } = get();
       if (!isCurrent(session, bookId)) return;
@@ -464,11 +485,10 @@ export const useReaderStore = create<ReaderState>((set, get) => {
         reading_speed: readingSpeed,
       }, get, set, () => isCurrent(session, bookId));
       if (!isScopeCurrent(scope)) return;
-      if (!isCurrent(session, bookId)) return;
-      if (needsWindowRefresh(clamped, get().windowFrom)) {
-        await fetchWindow(session, bookId, clamped, totalParagraphs, false);
-      if (!isScopeCurrent(scope)) return;
+      if (isCurrent(session, bookId) && get().userPosition === clamped) {
+        await fetchWindow(session, bookId, clamped, totalParagraphs).catch(() => {});
       }
+      if (!isScopeCurrent(scope)) return;
       if (isCurrent(session, bookId)) get().startCatchup();
     },
 
@@ -490,7 +510,7 @@ export const useReaderStore = create<ReaderState>((set, get) => {
     startCatchup: () => {
       clearCatchupTimer();
       const { bookId, nyxPosition, userPosition, paragraphs, readingSpeed } = get();
-      if (bookId === null || nyxPosition >= userPosition) return;
+      if (document.hidden || bookId === null || nyxPosition >= userPosition) return;
       const para = paragraphs.find((p) => p.index === nyxPosition);
       const len = para?.text.length ?? 0;
       const durMs = len > 0 ? catchupDurationMs(len, readingSpeed) : MIN_CATCHUP_SEC * 1000;
@@ -529,21 +549,28 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       }
     },
 
-    applyProgressEvent: (e) => {
+    applyProgressEvent: (e, followUser = false) => {
       const current = get();
       if (
         current.bookId !== e.book_id ||
         e.revision <= current.progressRevision ||
-        e.nyx_position < current.nyxPosition
+        (!followUser && e.nyx_position < current.nyxPosition)
       ) {
         return;
       }
+      const session = sessionGeneration;
+      const followPosition = followUser && !progressQueues.has(session + ":" + e.book_id);
+      const position = followPosition ? e.user_position : current.userPosition;
       set({
+        ...(followPosition ? { userPosition: position, readingSpeed: e.reading_speed } : {}),
         nyxPosition: e.nyx_position,
         readCount: e.read_count,
         progressRevision: e.revision,
       });
-      if (e.nyx_position < current.userPosition) {
+      if (followPosition) {
+        void fetchWindow(session, e.book_id, position, current.totalParagraphs).catch(() => {});
+      }
+      if (e.nyx_position < position) {
         get().startCatchup();
       } else {
         get().stopCatchup();
@@ -566,7 +593,9 @@ export const useReaderStore = create<ReaderState>((set, get) => {
       }, get, set, () => isCurrent(session, bookId), true);
       if (!isScopeCurrent(scope)) return;
       if (!isCurrent(session, bookId)) return;
-      await fetchWindow(session, bookId, 1, totalParagraphs, false);
+      if (get().userPosition === 1) {
+        await fetchWindow(session, bookId, 1, totalParagraphs).catch(() => {});
+      }
       if (!isScopeCurrent(scope)) return;
     },
 

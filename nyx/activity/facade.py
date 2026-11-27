@@ -200,7 +200,7 @@ class ActivityFacade:
                 policy("activity", "facade.copy.resume_research_activity_text_2", str)
             )
         activity.progress = record["activity"]["progress"]
-        if not await self._lifecycle.start(activity, False):
+        if not await self._lifecycle.start(activity, False, already_claimed=True):
             raise ValueError(
                 policy("activity", "facade.copy.resume_research_activity_text_3", str)
             )

@@ -9,16 +9,18 @@ pyright 豁免）。title/author 缺失回退空串——title 的 filename 回�
 import hashlib
 import io
 import posixpath
+import re
 import zipfile
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote, urldefrag
-from xml.etree import ElementTree
 
 from ebooklib import ITEM_DOCUMENT, epub
+from ebooklib.utils import parse_html_string
 
 from nyx.policy import policy
 from nyx.reading.segmenter import Segment, segment_html
+from nyx.types import BookSection
 
 
 @dataclass
@@ -34,6 +36,18 @@ class EpubResult:
 _MAX_UNCOMPRESSED_BYTES = policy(
     "reading", "epub._MAX_UNCOMPRESSED_BYTES", int
 )  # decision：解压后总大小上限（防 zip 炸弹）
+_OPENING_CHAPTER_PATTERN = policy(
+    "reading", "epub.front_matter.opening_chapter_pattern", re.Pattern[str]
+)
+_PROMOTIONAL_SECTION_PATTERN = policy(
+    "reading", "epub.front_matter.promotional_section_pattern", re.Pattern[str]
+)
+_SKIP_TEXT_PATTERNS = policy(
+    "reading", "epub.front_matter.skip_text_patterns", list[re.Pattern[str]]
+)
+_PREFACE_PATTERN = policy(
+    "reading", "epub.front_matter.preface_pattern", re.Pattern[str]
+)
 
 
 def _check_uncompressed_size(data: bytes) -> None:
@@ -98,20 +112,73 @@ def parse_epub(data: bytes) -> EpubResult:
             else content
         )
         document = posixpath.normpath(item.get_name())
-        tree = ElementTree.fromstring(text)
-        document_title = "".join(
-            tree.findtext(".//{*}head/{*}title", default="")
-        ).strip()
+        # EbookLib rebuilds the head in get_content() and drops the source title.
+        tree = parse_html_string(item.content)
+        document_title: str = tree.findtext("head/title", default="").strip()
         segments.extend(
             segment_html(text, sections.get(document), document, document_title)
         )
 
+    segments = _skip_leading_front_matter(segments)
     content_hash = hashlib.sha256(
         "\n".join(s.text for s in segments).encode("utf-8")
     ).hexdigest()
     return EpubResult(
         title=title, author=author, segments=segments, content_hash=content_hash
     )
+
+
+def _section_title(section: BookSection | None) -> str:
+    return section.title.rpartition(" / ")[2] if section is not None else ""
+
+
+def _starts_body(segment: Segment) -> bool:
+    if (
+        segment.blocks
+        and segment.blocks[0].kind == "heading"
+        and _OPENING_CHAPTER_PATTERN.fullmatch(segment.text)
+    ):
+        return True
+    return (
+        segment.is_chapter_start
+        and segment.section is not None
+        and segment.section.evidence == "toc"
+        and _OPENING_CHAPTER_PATTERN.fullmatch(_section_title(segment.section))
+        is not None
+    )
+
+
+def _skip_leading_front_matter(segments: list[Segment]) -> list[Segment]:
+    """Ignore clear promotion up to the opening chapter, or an unclassified block."""
+    body_start = next(
+        (index for index, segment in enumerate(segments) if _starts_body(segment)),
+        None,
+    )
+    result: list[Segment] = []
+    skipped_section_start: BookSection | None = None
+    for index, segment in enumerate(segments):
+        if index == body_start:
+            result.extend(segments[index:])
+            break
+        section_title = _section_title(segment.section)
+        if _PROMOTIONAL_SECTION_PATTERN.fullmatch(section_title) or any(
+            pattern.fullmatch(segment.text) for pattern in _SKIP_TEXT_PATTERNS
+        ):
+            if segment.is_chapter_start:
+                skipped_section_start = segment.section
+            continue
+
+        if (
+            skipped_section_start is not None
+            and skipped_section_start == segment.section
+        ):
+            segment = segment._replace(is_chapter_start=True)
+        skipped_section_start = None
+        result.append(segment)
+        if body_start is None and not _PREFACE_PATTERN.fullmatch(section_title):
+            result.extend(segments[index + 1 :])
+            break
+    return result
 
 
 def _extract_meta(book: epub.EpubBook, key: str) -> str:

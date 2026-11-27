@@ -1,0 +1,223 @@
+suite_version: nyx-behavior-v1
+domain: activity
+defaults:
+  fixtures:
+  - isolated_host
+  - reading_library
+  sources:
+  - nyx/activity/starter.py
+  - nyx/activity/lifecycle.py
+  - nyx/activity/facade.py
+  - nyx/runtime.py
+  - nyx/app_context.py
+  policy_sources:
+  - nyx/settings/activity.json
+  - nyx/settings/inner_life.json
+  - nyx/settings/research.json
+  evidence:
+  - inputs
+  - activity_checkpoint
+  - state_before_after
+  - deliveries
+  - model_io
+  - desktop_state
+  diagnosis_order:
+  - input
+  - admission
+  - decision
+  - tool
+  - commit
+  - delivery
+  execution:
+    mode: controlled
+    support: manual_protocol_needs_adapter
+    reuse_candidates:
+    - scripts/e2e/nyx-p3-acceptance.py
+    - scripts/e2e/nyx-p3-boundaries.py
+    limitation: 这些是可人工执行的场景协议；现有命令不读取本 YAML。复用候选仅提供路径或屏障能力，不代表覆盖本文件全部断言。
+  grading:
+    hard: 逐项对照 must/must_not，引用实际证据；缺证据不能判通过。
+    semantic: 有自然语言输出时人工对照输入、实际 prompt、来源与回执；允许语义等价表达。
+    status: NOT_RUN
+cases:
+- id: ACT-01
+  version: 1
+  title: 并发触发只启动一个活动并原子领取来源
+  purpose: 并发触发只启动一个活动并原子领取来源
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 同角色有一个待委派任务与一个可执行欲望；无运行活动。
+  steps:
+  - 并发调用活动准入与调度 tick。
+  - 在开始提交前注入失败做独立分支，再恢复重试。
+  end_when: 成功或失败分支的活动、任务、欲望与开始事件均稳定。
+  expect:
+    must:
+    - 成功分支只有一个执行者；任务与活动来源绑定正确。
+    - 开始提交失败不留下已领取但无对应活动的状态。
+    must_not:
+    - 旧执行者尚未退出时启动重叠活动。
+    flexible:
+    - 同等合法来源的排序按当前代码，不假设固定模型偏好。
+  failure_hint: 检查 start_next_if_idle 锁、_commit_start、ActivityLifecycle.start 与事件事务。
+- id: ACT-02
+  version: 1
+  title: 精力不足时委派任务等待休息而非被标为完成
+  purpose: 精力不足时委派任务等待休息而非被标为完成
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 有明确指定书籍任务；当前精力设为权威休息门槛以下。
+  steps:
+  - 触发活动调度并查看开始的活动。
+  - 按真实经过时间/休息结算恢复精力后再次调度。
+  end_when: 先休息后能重新处理原任务，或留下可观察的合法待处理状态。
+  expect:
+    must:
+    - 初次选择 REST，原委派任务未丢失也未伪报完成。
+    - 后续执行仍关联原 task_id 与指定 book_id。
+    must_not:
+    - 为了测试直接改完成状态代替休息行为。
+    flexible:
+    - 后续同时间块合法恢复顺序。
+  failure_hint: 检查 starter 的任务优先分支、energy threshold 和任务生命周期。
+  pair_group: energy-activity
+- id: ACT-03
+  version: 1
+  title: 指定书籍与探索选书不退到无关最近一本
+  purpose: 指定书籍与探索选书不退到无关最近一本
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 书库包含雾港札记和植物记录；探索主题“量子电路”与两者均不匹配。
+  steps:
+  - A 明确委派阅读雾港札记指定目标段；B 仅有不匹配的探索欲。
+  end_when: 两个独立分支的活动结果或失败原因记录。
+  expect:
+    must:
+    - A 使用指定书籍与目标；B 不擅自把最近导入的植物记录当作匹配书。
+    must_not:
+    - 按“最近一本”覆盖用户指定书籍或无匹配事实。
+    flexible:
+    - B 可进入其他合法探索路径或报告无匹配。
+  failure_hint: 检查 assigned_task progress、best_book_match 与阅读门面实际 book_id。
+- id: ACT-04
+  version: 1
+  title: 用户打断保存进度且退出后才续接
+  purpose: 用户打断保存进度且退出后才续接
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 阅读、创作、探索分别建立独立运行分支；在一段已持久进度之后设置执行屏障。
+  steps:
+  - 发送用户消息触发打断；确认旧 task 退出。
+  - 同日同日程块再次调度，核对恢复的 checkpoint 与预算。
+  end_when: 打断终态与恢复后的下一段进度均可观察。
+  expect:
+    must:
+    - 可续接类型进入 PAUSED 并保存已有进度。
+    - 恢复使用原 checkpoint，不重做已提交成果或重置探索总预算。
+    must_not:
+    - 旧 task 未停先开启第二个执行者。
+    flexible:
+    - 不同活动保存的进度字段不同。
+  failure_hint: 检查 cancel_activity_runner、interrupt、get_paused_in_block 与具体执行器。
+- id: ACT-05
+  version: 1
+  title: 部分阅读进展与最终目标分开结算
+  purpose: 部分阅读进展与最终目标分开结算
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 欲望目标要求阅读多个段落；本次只取得一部分真实进展。
+  steps:
+  - 结束当前批次；等待活动结束事件的欲望、精力、记忆消费者。
+  - 重放同一结束事件。
+  end_when: 各消费者完成后，进度、目标信号和欲望状态稳定。
+  expect:
+    must:
+    - goal_met 由实际进展判定；本批次有进展不等于目标已满足或失败。
+    - 重放不重复施加精力变化与成果。
+    must_not:
+    - 仅看到 activity COMPLETED 就把长期或短期目标一律算完成。
+    flexible:
+    - 未知目标可释放以待后续；按实际 signal 分支检查。
+  failure_hint: 先读 activity_goal_signal 与来源 desire_id，再核对各消费者的事件效果标记。
+- id: ACT-06
+  version: 1
+  title: 重启调和失去执行者的活动与委派
+  purpose: 重启调和失去执行者的活动与委派
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 隔离库保留 RUNNING 阅读、PENDING 未启动活动、RUNNING 问卷三个独立分支；无真实后台执行者。
+  steps:
+  - 重启角色让 recover_stale_running 实际运行。
+  - 检查关联欲望和委派任务，再触发下一轮准入。
+  end_when: 恢复调和完成且没有幽灵 RUNNING 活动。
+  expect:
+    must:
+    - 可续接的原 RUNNING 活动转 PAUSED；原 PENDING 按未真正运行路径处理。
+    - 问卷不能假装成功，关联任务记录失败；其他委派按已持久结果调和。
+    must_not:
+    - 所有未完成活动一律改 COMPLETED。
+    flexible:
+    - 精确状态按当前恢复分支；需记录类型和原始状态。
+  failure_hint: 检查 recover_stale_running 对 pending/resumable/browser_survey 的分支，不用前端展示推断后台执行者。
+- id: ACT-07
+  version: 1
+  title: 观察仅在有效原生桌面连接下可用
+  purpose: 观察仅在有效原生桌面连接下可用
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 从同一角色快照建立浏览器、合成 QQ、有效原生桌面三分支；不采样用户真实屏幕。
+  steps:
+  - 使用合成窗口和视觉摘要触发观察准入。
+  - 桌面分支断开连接至租约失效，再重启角色并检查上下文。
+  end_when: 各分支准入及断线、重启后瞬时桌面状态均可读。
+  expect:
+    must:
+    - 浏览器/QQ 不能自行开启桌面观察；只有有效原生桌面且配置允许才接受相应采样。
+    - 失效后停止观察并清除瞬时桌面上下文；重启不恢复假连接。
+    must_not:
+    - 把缓存屏幕当作当前实时画面。
+    - 宣称已实现通用键鼠控制闭环。
+    flexible:
+    - 原生端必须另做实际平台验收；合成连接不等于 Tauri 已通过。
+  failure_hint: 检查 can_observe、desktop_connected、lease/generation 与 clear_desktop_observation。
+  execution_override:
+    mode: controlled_then_native
+- id: ACT-08
+  version: 1
+  title: 创作产物落盘与恢复忠实于实际结果
+  purpose: 检查创作从模型内容到文件、checkpoint、活动结果的完整路径
+  oracle_kind: regression
+  priority: P0
+  sources_add:
+  - nyx/activity/creation.py
+  - nyx/activity/paths.py
+  - nyx/tools/file_io.py
+  execution_override:
+    mode: controlled_then_real_model
+  preconditions:
+  - 仅使用临时角色工作区；委派创作“写一段关于雾港灯光的短文”；记录当前文档与随机风格。
+  - 独立分支分别正常写盘、写盘前失败、文件写成但 file_written checkpoint 保存前中断。
+  steps:
+  - 通过 assign_creation_task 受理并执行，检查实际 creation 模型输入与合法结构化输出。
+  - 故障分支在可续接条件下恢复同一活动，比较模型调用、内容、稳定输出路径与实际文件。
+  - 另在临时工具分支尝试写入 ../outside.md 和写入根本身，核对拒绝且临时根外无改动。
+  end_when: 活动结果、checkpoint、实际文件字节及故障恢复结果均可对照。
+  expect:
+    must:
+    - 已完成产物有真实文件，内容和结果 path 一致；模型输入使用当前文档与实际参考。
+    - llm_done 已持久化的恢复复用原内容和风格，不重新生成；同内容同路径写入可幂等。
+    - 写入失败不伪报 file_written 或成功产物；write 越界和指向写入根明确拒绝。
+    must_not:
+    - 只取得模型文字就宣称文件已经保存。
+    - 不同活动同标题的文件互相覆盖；标题路径字符使产物逃出工作区。
+    flexible:
+    - 创作内容和随机风格；审美质量另由人工评审。
+    - 文件已写成但 checkpoint 未保存的恢复允许幂等重调 file_io，不要求工具调用绝对一次。
+  failure_hint: 核对 _run_creation 的 llm_done/file_written、creation_output_path、实际文件和 file_io 完成边界；区别模型生成与磁盘提交。

@@ -32,6 +32,7 @@ from nyx.harness import PluginContext
 from nyx.harness import build_plugins as _build_plugins
 from nyx.harness import start_plugins as _start_plugins
 from nyx.harness import validate_optional as _validate_optional
+from nyx.initiative import Initiative
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.inner_life.store import InnerLifeStore
 from nyx.llm.client import LlmClient
@@ -48,11 +49,14 @@ from nyx.runtime import (
     on_desire_eval,
     on_initiate_chat_check,
     on_mutter_check,
+    on_reading_followup,
     on_reflection_check,
     on_schedule_block_start,
+    on_scheduled_interaction_check,
     on_user_message,
 )
 from nyx.tools.activity_tasks import build_activity_task_tools
+from nyx.tools.initiative import build_initiative_tools
 from nyx.tools.registry import ToolRegistry
 from nyx.tools.web_fetch import build_web_fetch_tool
 from nyx.types import Book, CurrentState, Event, ReadingProgress, Tool
@@ -278,6 +282,7 @@ async def _build_desire(ctx: PluginContext) -> Mapping[str, object]:
             memory.list_memories,
             cast(EmbedFn, ctx.get("embed")),
             ActivityStore(cast(Database, ctx.get("db"))).list_exploration_history,
+            canon=cast(str, ctx.get("canon")),
         )
     }
 
@@ -504,7 +509,14 @@ async def _build_inner_life(ctx: PluginContext) -> Mapping[str, object]:
 async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
     db = cast(Database, ctx.get("db"))
     tools = cast(ToolRegistry, ctx.get("tools"))
+    config = cast(Config, ctx.get("config"))
+    initiative = Initiative(
+        db,
+        cast(EventBus, ctx.get("bus")),
+        config.expression.autonomous_followups_enabled,
+    )
     for tool in (
+        *build_initiative_tools(initiative),
         *cast(list[Tool], ctx.get("activity_tools")),
         *cast(list[Tool], ctx.get("memory_tools")),
     ):
@@ -520,6 +532,7 @@ async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
     await cast(ResearchService, ctx.get("research")).recover()
     await initialize_card(db, cast(CharacterCard, ctx.get("card")).manifest)
     return {
+        "initiative": initiative,
         "expression": ExpressionFacade(
             cast(EventBus, ctx.get("bus")),
             cast(LlmClient, ctx.get("llm")),
@@ -543,7 +556,8 @@ async def _build_expression(ctx: PluginContext) -> Mapping[str, object]:
             reading_context_reader=partial(_read_reading_context, ctx),
             checkpointer=db.checkpointer,
             initiative_embed=cast(EmbedFn, ctx.get("embed")),
-        )
+            initiative=initiative,
+        ),
     }
 
 
@@ -758,7 +772,7 @@ def default_plugins() -> tuple[_Plugin, ...]:
         _Plugin(
             "expression",
             _build_expression,
-            ("expression",),
+            ("expression", "initiative"),
             (
                 "memory",
                 "activity",
@@ -781,6 +795,25 @@ def default_plugins() -> tuple[_Plugin, ...]:
             ),
             starter=_start_expression,
             route_bindings=(
+                (
+                    RouteSpec(
+                        EventType.CLOCK_TICK,
+                        "expression.scheduled_interaction_check",
+                        "expression",
+                        "on_scheduled_interaction_check",
+                        TickType.SCHEDULED_INTERACTION_CHECK,
+                    ),
+                    on_scheduled_interaction_check,
+                ),
+                (
+                    RouteSpec(
+                        EventType.ACTIVITY_END,
+                        "expression.reading_followup",
+                        "expression",
+                        "on_reading_followup",
+                    ),
+                    on_reading_followup,
+                ),
                 (
                     RouteSpec(
                         EventType.USER_MESSAGE,

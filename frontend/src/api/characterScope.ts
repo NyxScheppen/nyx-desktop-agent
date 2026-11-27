@@ -26,7 +26,7 @@ export function bindScope(next: { id: string; revision: number } | null): void {
 export function scopedRequest(url: string, init?: RequestInit): {
   url: string; init: RequestInit; release: () => void;
 } {
-  const business = /\/api\/(?!characters(?:\/|$)|observe(?:\?|$)|ready(?:\?|$))/.test(url);
+  const business = /\/api\/(?!(?:characters|devices)(?:\/|$)|observe(?:\?|$)|ready(?:\?|$))/.test(url);
   if (!business) return { url, init: init ?? {}, release: () => {} };
   if (switching) throw new Error(frontendPolicy.copy.characterScope.text);
   const selected = scope;

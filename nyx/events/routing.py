@@ -22,7 +22,10 @@ class RouteSpec:
 # are derived compatibility views used by docs, diagnostics, and existing callers.
 ROUTE_SPECS: tuple[RouteSpec, ...] = (
     RouteSpec(
-        EventType.BEHAVIOR_REFLECTION, "behavior.reflect", "behavior", "reflect",
+        EventType.BEHAVIOR_REFLECTION,
+        "behavior.reflect",
+        "behavior",
+        "reflect",
     ),
     RouteSpec(
         EventType.ANNOTATION_FEEDBACK,
@@ -117,6 +120,19 @@ ROUTE_SPECS: tuple[RouteSpec, ...] = (
         "expression",
         "on_initiate_chat_check",
         TickType.INITIATE_CHAT_CHECK,
+    ),
+    RouteSpec(
+        EventType.CLOCK_TICK,
+        "expression.scheduled_interaction_check",
+        "expression",
+        "on_scheduled_interaction_check",
+        TickType.SCHEDULED_INTERACTION_CHECK,
+    ),
+    RouteSpec(
+        EventType.ACTIVITY_END,
+        "expression.reading_followup",
+        "expression",
+        "on_reading_followup",
     ),
     RouteSpec(
         EventType.CLOCK_TICK,

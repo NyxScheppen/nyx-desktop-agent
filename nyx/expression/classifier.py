@@ -200,7 +200,9 @@ def classify_channel(
             "expression", "classifier.copy.classify_channel_words_2", tuple[str, ...]
         )
     )
-    if explicit_task:
+    if explicit_task or policy(
+        "initiative", "patterns.tool_intent", re.Pattern[str]
+    ).search(message):
         return ContextMode.SLOW
     return (
         ContextMode.SLOW

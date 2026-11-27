@@ -873,6 +873,11 @@ async def test_migrate_creates_expected_indexes() -> None:
         "idx_transport_outbox_order",
         "idx_transport_message_id",
         "idx_reading_session_open",
+        "idx_scheduled_autonomous",
+        "idx_scheduled_due",
+        "idx_scheduled_source",
+        "idx_initiative_topic_enhanced",
+        "idx_event_type_time",
     }
 
 

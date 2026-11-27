@@ -109,11 +109,14 @@ it("redeems a pairing code and stores only the returned device token in the sess
   vi.stubGlobal("fetch", fetch);
   render(<App />);
   fireEvent.click(screen.getByRole("button", { name: "使用配对码" }));
-  fireEvent.change(screen.getByLabelText("配对码"), { target: { value: "123-code" } });
+  const field = screen.getByLabelText("配对码");
+  expect(field).toHaveAttribute("autocapitalize", "none");
+  expect(field).toHaveAttribute("spellcheck", "false");
+  fireEvent.change(field, { target: { value: "  aBc_123-DeF  " } });
   fireEvent.click(screen.getByRole("button", { name: "连接" }));
   await waitFor(() => expect(sessionStorage.getItem("nyx.authToken")).toBe("device-token"));
   const init = (fetch.mock.calls[0] as unknown as [RequestInfo, RequestInit])[1];
   expect(JSON.parse(init.body as string)).toEqual({
-    code: "123-code", name: "手机",
+    code: "aBc_123-DeF", name: "手机",
   });
 });

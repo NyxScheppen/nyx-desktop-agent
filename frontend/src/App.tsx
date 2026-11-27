@@ -23,6 +23,8 @@ import MemoryPanel from "./components/panels/MemoryPanel";
 import BookshelfView from "./components/reading/BookshelfView";
 import ReaderView from "./components/reading/ReaderView";
 import RightDock, { type View } from "./components/shell/RightDock";
+import MobileShell from "./components/shell/MobileShell";
+import { connectAndroid, postToAndroid } from "./lib/mobileBridge";
 import { usePresence } from "./hooks/usePresence";
 import { useSSE } from "./hooks/useSSE";
 import { timePhaseAt } from "./lib/time";
@@ -36,23 +38,31 @@ const FONT_SCALE_VALUE: Record<"small" | "medium" | "large", number> = frontendP
 
 // 装配：左侧图标导航 + 聊天/模块书页 + 设置弹层；useSSE 只挂一次。
 export default function App() {
+  const mobile = !isTauriRuntime() && window.location.pathname.replace(/\/$/, "") === "/mobile";
   const required = useConnectionStore((s) => s.required);
   const [token, setToken] = useState("");
   const [code, setCode] = useState("");
   const [deviceName, setDeviceName] = useState(frontendPolicy.copy.App.text);
-  const [pairing, setPairing] = useState(false);
+  const [pairing, setPairing] = useState(mobile);
+  const [redeeming, setRedeeming] = useState(false);
   const [error, setError] = useState("");
-  if (!required) return <ConnectedApp />;
+  useEffect(() => {
+    if (mobile) return connectAndroid();
+  }, [mobile]);
+  if (!required) return <ConnectedApp mobile={mobile} />;
   return <form className="connection-screen" onSubmit={(event) => {
     event.preventDefault();
     setError("");
     if (pairing) {
+      if (redeeming) return;
+      setRedeeming(true);
       void pairDevice(code.trim(), deviceName.trim()).then(({ access_token }) => {
         useConnectionStore.getState().setToken(access_token);
+        if (mobile) postToAndroid("paired", { token: access_token });
         setCode("");
       }).catch((reason: unknown) => {
         setError(reason instanceof Error ? reason.message : frontendPolicy.copy.App.text_2);
-      });
+      }).finally(() => setRedeeming(false));
     } else {
       useConnectionStore.getState().setToken(token);
       setToken("");
@@ -61,22 +71,24 @@ export default function App() {
     <div className="connection-screen__form">
       <h1>{frontendPolicy.copy.App.h1}</h1>
       {pairing ? <>
-        <label>{frontendPolicy.copy.App.label}<input inputMode="text" autoComplete="off" value={code} required
+        <label>{frontendPolicy.copy.App.label}<input inputMode="text" autoComplete="off" autoCapitalize="none"
+          autoCorrect="off" spellCheck={false} aria-describedby="nyx-pairing-help" value={code} required
           onChange={(event) => setCode(event.target.value)} /></label>
+        <p id="nyx-pairing-help">{frontendPolicy.copy.App.pairing_help}</p>
         <label>{frontendPolicy.copy.App.label_2}<input autoComplete="off" value={deviceName} required
           onChange={(event) => setDeviceName(event.target.value)} /></label>
       </> : <label>{frontendPolicy.copy.App.label_3}<input type="password" autoComplete="off" value={token} required
         onChange={(event) => setToken(event.target.value)} /></label>}
       {error && <p role="alert">{error}</p>}
-      <button type="submit">{frontendPolicy.copy.App.button}</button>
-      <button type="button" onClick={() => { setPairing(!pairing); setError(""); }}>
+      <button type="submit" disabled={redeeming}>{frontendPolicy.copy.App.button}</button>
+      {!mobile && <button type="button" disabled={redeeming} onClick={() => { setPairing(!pairing); setError(""); }}>
         {pairing ? frontendPolicy.copy.App.text_3 : frontendPolicy.copy.App.text_4}
-      </button>
+      </button>}
     </div>
   </form>;
 }
 
-function ConnectedApp() {
+function ConnectedApp({ mobile }: { mobile: boolean }) {
   const registry = useCharacterStore((s) => s.registry);
   const generation = useCharacterStore((s) => s.generation);
   const switching = useCharacterStore((s) => s.switching);
@@ -144,11 +156,26 @@ function ConnectedApp() {
     setDesktopMode("full");
   };
 
+  function renderPanel(panel: View) {
+    if (panel === "inner") return <InnerStatePanel />;
+    if (panel === "desire") return <DesiresPanel />;
+    if (panel === "activity") return <ActivityPanel />;
+    if (panel === "task-compose" || panel === "tasks") return <ActivityPanel view="tasks" />;
+    if (panel === "creation") return <CreationPanel />;
+    if (panel === "memory") return <MemoryPanel />;
+    if (panel === "eval") return <EvalPanel />;
+    if (panel === "behavior") return <BehaviorPanel />;
+    if (panel === "history") return <ExpressionHistoryPanel />;
+    if (panel === "settings") return <SettingsView deviceOnly={mobile} onCreateCharacter={mobile ? undefined : () => setView("character-create")} />;
+    if (panel === "character-create") return <CharacterCreator onBack={() => setView("settings")} />;
+  }
+
   return (
     <div className={`app app--${desktopMode} app--${layoutStyle}`} data-time-phase={timePhase}>
       <div className="app-bg" aria-hidden="true" />
       <div className="app-time-overlay" aria-hidden="true" />
-      {desktopMode === "full" && (
+      {mobile && ready && <MobileShell key={generation} style={shellStyle} messages={messages} now={now} renderPanel={renderPanel} />}
+      {!mobile && desktopMode === "full" && (
         <>
           {ready && <main
             key={generation}
@@ -185,29 +212,21 @@ function ConnectedApp() {
                     </button>
                 </div>
                 <section className="conversation-column" aria-label={frontendPolicy.copy.App.aria_label_2}>
-                  <MessageList messages={messages} now={now} />
+                  <MessageList messages={messages} now={now} onOpenBook={(id) => {
+                    setReaderOpen(true);
+                    void useReaderStore.getState().openBook(id);
+                  }} />
                   <ChatInput />
                 </section>
                 <section className="reader-drawer" aria-label={frontendPolicy.copy.App.aria_label_3}>
                   <div className="reader-drawer__body">
-                    {readerOpen && <span className="reader-opening-turn" aria-hidden="true" />}
                     {readerOpen && (bookId === null ? <BookshelfView /> : <ReaderView />)}
                   </div>
                 </section>
               </>
             ) : (
               <section className="page-content" aria-label={frontendPolicy.copy.App.aria_label_4}>
-                {view === "inner" && <InnerStatePanel />}
-                {view === "desire" && <DesiresPanel />}
-                {view === "activity" && <ActivityPanel />}
-                {(view === "task-compose" || view === "tasks") && <ActivityPanel view="tasks" />}
-                {view === "creation" && <CreationPanel />}
-                {view === "memory" && <MemoryPanel />}
-                {view === "eval" && <EvalPanel />}
-                {view === "behavior" && <BehaviorPanel />}
-                {view === "history" && <ExpressionHistoryPanel />}
-                {view === "settings" && <SettingsView onCreateCharacter={() => setView("character-create")} />}
-                {view === "character-create" && <CharacterCreator onBack={() => setView("settings")} />}
+                {renderPanel(view)}
               </section>
             )}
           </main>}
@@ -220,7 +239,7 @@ function ConnectedApp() {
         <p>{characterError ?? selected?.error ?? (switching ? frontendPolicy.copy.App.text_5 : frontendPolicy.copy.App.text_6)}</p>
         <button onClick={() => setSettingsOpen(true)}>{frontendPolicy.copy.App.button_2}</button>
       </div>}
-      {settingsOpen && <SettingsView onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsView deviceOnly={mobile} onClose={() => setSettingsOpen(false)} />}
       {ready && desktopMode === "pet" && (
         <PetShell key={generation}
           night={timePhase === "night"}

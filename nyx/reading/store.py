@@ -272,41 +272,49 @@ class ReadingStore:
         nyx_position: int,
         reading_speed: int,
         expected_revision: int,
+        *,
+        user_read: bool = False,
     ) -> ReadingProgress:
         """按 revision 条件写进度。
 
         不碰 read_count（重读计数只由阅读系统 ++）。
         """
-        async with self._db.lock:
+        async with self._db.transaction() as conn:
             now = time.time()
             current = await self._get_progress_locked(book_id, allow_missing=True)
             if current is None:
                 if expected_revision != 0:
                     raise ProgressConflictError(book_id)
-                await self._db.conn.execute(
+                await conn.execute(
                     "INSERT INTO reading_progress "
                     "(book_id, user_position, nyx_position, reading_speed, "
-                    "updated_at, revision) VALUES (?, ?, ?, ?, ?, 1)",
-                    (book_id, user_position, nyx_position, reading_speed, now),
+                    "updated_at, revision, user_position_recorded, last_user_read_at) "
+                    "VALUES (?, ?, ?, ?, ?, 1, 1, ?)",
+                    (book_id, user_position, nyx_position, reading_speed, now,
+                     now if user_read and user_position > 1 else None),
                 )
             else:
-                cursor = await self._db.conn.execute(
+                cursor = await conn.execute(
                     "UPDATE reading_progress SET "
                     "user_position = ?, nyx_position = ?, reading_speed = ?, "
-                    "updated_at = ?, revision = revision + 1 "
+                    "updated_at = ?, revision = revision + 1, "
+                    "user_position_recorded = 1, "
+                    "last_user_read_at = COALESCE(?, last_user_read_at) "
                     "WHERE book_id = ? AND revision = ?",
                     (
                         user_position,
                         nyx_position,
                         reading_speed,
                         now,
+                        now
+                        if user_read and user_position > current.user_position
+                        else None,
                         book_id,
                         expected_revision,
                     ),
                 )
                 if cursor.rowcount != 1:
                     raise ProgressConflictError(book_id)
-            await self._db.conn.commit()
             progress = await self._get_progress_locked(book_id)
             if progress is None:
                 raise RuntimeError(

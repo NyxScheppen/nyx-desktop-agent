@@ -45,6 +45,7 @@ class TickType(StrEnum):
     DESIRE_EVAL = "desire_eval"            # 欲望评估
     MUTTER_CHECK = "mutter_check"          # 碎碎念检查
     INITIATE_CHAT_CHECK = "initiate_chat_check"  # 搭话检查
+    SCHEDULED_INTERACTION_CHECK = "scheduled_interaction_check"
     REFLECTION_CHECK = "reflection_check"        # 反思检查（定时+积累门槛）
 
 
@@ -57,6 +58,7 @@ class InteractionKind(StrEnum):
     CHAT_ASK = "chat_ask"
     READING_QUESTION = "reading_question"
     INITIATE_CHAT = "initiate_chat"
+    SCHEDULED = "scheduled"
 
 
 class InteractionStatus(StrEnum):

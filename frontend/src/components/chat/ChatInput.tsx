@@ -5,7 +5,7 @@ import { useCharacterStore } from "../../stores/characterStore";
 import { useChatStore } from "../../stores/chatStore";
 
 // 提交期间防连击；等待回复期间可以继续补充。
-export default function ChatInput() {
+export default function ChatInput({ showReplyHint = true }: { showReplyHint?: boolean } = {}) {
   const text = useCharacterStore((s) => s.drafts[s.registry?.current_id ?? "nyx"] ?? "");
   const setText = useCharacterStore((s) => s.setDraft);
   const name = useCharacterStore((s) => s.registry?.characters.find((role) => role.id === s.registry?.current_id)?.name ?? "Nyx");
@@ -84,7 +84,7 @@ export default function ChatInput() {
       </button>
       {sendError !== null && <p className="error-text chat-input__error">{sendError}</p>}
       {replyNotice !== null && <p className="error-text chat-input__error">{replyNotice}</p>}
-      {isReplying && <small>{frontendPolicy.copy.ChatInput.small}</small>}
+      {showReplyHint && isReplying && <small>{frontendPolicy.copy.ChatInput.small}</small>}
     </div>
   );
 }

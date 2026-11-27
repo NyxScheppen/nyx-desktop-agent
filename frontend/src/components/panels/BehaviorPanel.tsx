@@ -13,17 +13,32 @@ function at(value: unknown): string {
 }
 function raw(value: unknown): string { return JSON.stringify(value, null, 2); }
 
-export function ResearchTrace({ run }: { run: ResearchRun }) {
+function researchStatus(run: ResearchRun): string {
+  const outcome = run.result?.outcome;
+  const key = run.status === "completed" && typeof outcome === "string" ? outcome : run.status;
+  return STATUS[key] ?? key;
+}
+
+export function ResearchTrace({ run, showQuestion = true }: {
+  run: ResearchRun;
+  showQuestion?: boolean;
+}) {
   const [answer, setAnswer] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const checkpoint = run.activity.progress.exploration;
+  const result = run.result && Object.fromEntries(
+    Object.entries(run.result).filter(([key, value]) =>
+      key !== "question"
+      && (!(key === "actions" || key === "tools") || !checkpoint.actions?.length)
+      && (key !== "stop_reason" || value !== run.result?.failure_reason)),
+  );
   return <details className="panel-item">
-    <summary>{run.question} · {STATUS[run.status] ?? run.status}</summary>
+    <summary>{showQuestion ? run.question : at(run.created_at)} · {researchStatus(run)}</summary>
     <p>{run.origin === "dialogue" ? behaviorPolicy.copy.BehaviorPanel.text : behaviorPolicy.copy.BehaviorPanel.text_2}{behaviorPolicy.copy.BehaviorPanel.p}{at(run.created_at)}</p>
     {run.last_error && <p role="alert">{run.last_error}</p>}
-    {run.result && <details><summary>{behaviorPolicy.copy.BehaviorPanel.summary}</summary>
-      <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "28rem", overflow: "auto" }}>{raw(run.result)}</pre></details>}
+    {result && <details><summary>{behaviorPolicy.copy.BehaviorPanel.summary}</summary>
+      <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "28rem", overflow: "auto" }}>{raw(result)}</pre></details>}
     <ol>{(checkpoint.node_trace ?? []).map((node, index) => <li key={index}>
       {NODES[String(node.node)] ?? String(node.node)} · {STATUS[String(node.status)] ?? String(node.status)}
       <small> {at(node.started_at)} → {at(node.completed_at)}</small>
@@ -55,11 +70,25 @@ export function ResearchTrace({ run }: { run: ResearchRun }) {
 export default function BehaviorPanel() {
   const { runs, reflections, versions, error, refresh } = useBehaviorStore();
   useEffect(() => { void refresh(); }, [refresh]);
+  const attempts = new Map<string, ResearchRun[]>();
+  for (const run of runs) {
+    const key = run.origin === "desire" ? run.correlation_id || run.id : run.id;
+    const group = attempts.get(key);
+    if (group) group.push(run);
+    else attempts.set(key, [run]);
+  }
   return <Panel title={behaviorPolicy.copy.BehaviorPanel.title}>
     <button onClick={() => void refresh()}>{behaviorPolicy.copy.BehaviorPanel.button_2}</button>
     {error && <p role="alert">{error}</p>}
     <h3>{behaviorPolicy.copy.BehaviorPanel.h3}</h3>
-    {runs.length ? runs.map((run) => <ResearchTrace key={run.id} run={run} />) : <p>{behaviorPolicy.copy.BehaviorPanel.p_2}</p>}
+    {runs.length ? Array.from(attempts, ([key, group]) => <details key={key} className="panel-item">
+      <summary>{group[0].question} · {researchStatus(group[0])}
+        {group.length > 1 && <> · {formatPolicyText(
+          behaviorPolicy.templates.BehaviorPanel.research_attempt_count, { p0: group.length },
+        )}</>}
+      </summary>
+      {group.map((run) => <ResearchTrace key={run.id} run={run} showQuestion={false} />)}
+    </details>) : <p>{behaviorPolicy.copy.BehaviorPanel.p_2}</p>}
     <h3>{behaviorPolicy.copy.BehaviorPanel.h3_2}</h3>
     {reflections.map((record) => <details key={record.id} className="panel-item">
       <summary>{record.target_skill === "discussion" ? behaviorPolicy.copy.BehaviorPanel.text_5 : behaviorPolicy.copy.BehaviorPanel.text_6}

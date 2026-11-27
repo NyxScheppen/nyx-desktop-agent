@@ -69,6 +69,9 @@ class ActivityConfig:
 
 @dataclass
 class ExpressionConfig:
+    autonomous_followups_enabled: bool = policy(
+        "initiative", "defaults.autonomous_enabled", bool
+    )
     slow_threshold: float = policy("expression", "defaults.slow_threshold", float)
     max_context_len: int = policy("expression", "defaults.max_context_len", int)
     slow_max_rounds: int = policy("expression", "defaults.slow_max_rounds", int)
@@ -292,6 +295,10 @@ def validate_config(cfg: Config) -> None:
     _temperature(cfg.llm.temperature, "llm.temperature")  # 数 ∈ [0, 2]
     _pos_num(cfg.expression.ask_timeout, "expression.ask_timeout")
     _pos_num(cfg.expression.chat_ignore_timeout, "expression.chat_ignore_timeout")
+    _flag(
+        cfg.expression.autonomous_followups_enabled,
+        "expression.autonomous_followups_enabled",
+    )
     _flag(cfg.exploration.web_enabled, "exploration.web_enabled")  # bool
     _flag(cfg.vision.enabled, "vision.enabled")
     _flag(cfg.onebot.enabled, "onebot.enabled")

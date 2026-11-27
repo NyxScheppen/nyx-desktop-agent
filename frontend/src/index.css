@@ -1958,22 +1958,27 @@ input:disabled::file-selector-button { opacity: .5; cursor: not-allowed; }
   padding: clamp(1.25rem, 4vh, 2.5rem) clamp(1rem, 6vw, 4rem) 1rem;
 }
 
-.reader-text {
+.reader__viewport {
   flex: 1;
   width: min(100%, 46rem);
   margin: 0 auto;
   min-width: 0;
-  overflow: hidden; /* 真分页：无滚动条、无滚轮（08 §5） */
   position: relative;
+}
+
+.reader-text {
+  height: 100%;
+  container-type: size;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  overflow-anchor: none;
   user-select: text;
 }
 
-.reader-text__pages {
+.reader-text__content {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem; /* = GAP_PX（12px） */
-  transition: transform 0.3s ease;
-  will-change: transform;
+  gap: 0.75rem;
 }
 
 .reader-text__para {
@@ -1982,8 +1987,12 @@ input:disabled::file-selector-button { opacity: .5; cursor: not-allowed; }
   font-size: 1rem;
   line-height: 2;
   color: var(--ink);
-  overflow-y: auto;
-  scrollbar-width: none;
+  overflow-wrap: anywhere;
+}
+
+/* 末段也能滚到视口顶端，进度与书签可定位到它。 */
+.reader-text__para:last-child {
+  min-block-size: 100cqb;
 }
 
 .reader-text__para--chapter {
@@ -2111,13 +2120,6 @@ h6.reader-block--heading {
   width: 2rem;
   padding: 0;
   font-size: 1.05rem;
-}
-
-.reader__page-number {
-  min-width: 3.5rem;
-  text-align: center;
-  font-size: 0.72rem;
-  color: var(--ink-soft);
 }
 
 .reader__footer-spacer {
@@ -2732,11 +2734,7 @@ h6.reader-block--heading {
 .reader-tools__menu { position: absolute; right: 0; bottom: calc(100% + 0.4rem); z-index: 8; display: flex; flex-direction: column; min-width: 7rem; padding: 0.3rem; background: var(--parchment); border: 2px double var(--gold); box-shadow: 3px 3px 0 #5b463622; }
 .reader-tools__menu button { border: 0; background: transparent; color: var(--ink); padding: 0.55rem 0.7rem; text-align: left; font: inherit; cursor: pointer; }
 .reader-tools__menu button:hover { background: var(--parchment-deep); }
-.reader-page-turn { position: absolute; inset: 0; z-index: 1; pointer-events: none; background: linear-gradient(90deg,transparent 55%,#7d5e4026 75%,var(--parchment) 100%); transform-origin: right center; animation: reader-page-turn 360ms ease-out both; }
-@keyframes reader-page-turn { 0% { opacity: 0.85; transform: perspective(850px) rotateY(0); } 100% { opacity: 0; transform: perspective(850px) rotateY(-82deg); } }
-.reader-opening-turn { position: absolute; inset: 0; z-index: 5; pointer-events: none; transform-origin: left center; background: linear-gradient(90deg, var(--parchment-deep), transparent 72%); animation: reader-opening-turn 520ms cubic-bezier(.2,.7,.2,1) both; }
-@keyframes reader-opening-turn { 0% { opacity: 0.9; transform: perspective(1100px) rotateY(-88deg); } 55% { opacity: 0.48; transform: perspective(1100px) rotateY(-22deg); } 100% { opacity: 0; transform: perspective(1100px) rotateY(0); } }
-@media (prefers-reduced-motion: reduce) { .reader-page-turn, .reader-opening-turn { animation: none; display: none; } .app--full .page-content > .panel { animation: none; } .reader-text__pages,.reader-drawer { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .app--full .page-content > .panel { animation: none; } .reader-drawer { transition: none; } }
 @media (max-width: 768px) { .app--full .task-page .panel-body { display: block; } .task-form-grid { grid-template-columns: 1fr; } .task-detail { width: min(90%,440px); } .app--full .activity-page .timeline { grid-auto-columns: minmax(180px,70%); } .app--full .inner-state-panel__top-side { grid-template-columns: 1fr; } }
 
 /* ===== 原型页外壳复刻：顶格书脊导航 ===== */

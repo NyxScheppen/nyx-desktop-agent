@@ -1,0 +1,105 @@
+.nyx-mobile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100dvh;
+  min-height: 0;
+  font-size: calc(1rem * var(--text-scale));
+  color: var(--ink);
+  background: var(--paper-texture), var(--parchment);
+}
+
+.nyx-mobile__header {
+  display: grid;
+  grid-template-columns: 4rem minmax(0, 1fr) 4rem;
+  align-items: center;
+  padding: max(.25rem, env(safe-area-inset-top)) .5rem .25rem;
+  border-bottom: 2px solid var(--gold);
+  background: var(--nav);
+  color: var(--navink);
+}
+.nyx-mobile__header h1 {
+  overflow: hidden;
+  margin: 0;
+  font-size: 1.15em;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nyx-mobile button { min-height: 44px; }
+.nyx-mobile :is(input, select, textarea) { font-size: 1rem; }
+.nyx-mobile__header button,
+.nyx-mobile__drawer button {
+  border-color: transparent;
+  background: transparent;
+  color: inherit;
+}
+.nyx-mobile__body { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.nyx-mobile__page, .nyx-mobile__error { overflow: auto; padding: .75rem; }
+.nyx-mobile__chat { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.nyx-mobile__chat .message-list { flex: 1; min-height: 0; }
+.nyx-mobile .chat-input { flex-shrink: 0; flex-wrap: wrap; padding-bottom: max(.5rem, env(safe-area-inset-bottom)); }
+.nyx-mobile .chat-input__field { min-width: 10rem; }
+.nyx-mobile__chat .chat-input__mode { flex-basis: 100%; }
+.nyx-mobile .settings-layout { display: flex; flex-direction: column; }
+.nyx-mobile .settings-card { min-width: 0; }
+.nyx-mobile__schedule { padding: .65rem 0; border-bottom: 1px solid var(--rule); }
+.nyx-mobile__schedule div { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .4rem; }
+.nyx-mobile__resume { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .75rem; padding: .85rem; border: 1px solid var(--gold); background: var(--nav); color: var(--navink); }
+.nyx-mobile__resume :is(h2, p) { margin: .15rem 0 0; }
+.nyx-mobile__resume button { background: transparent; color: inherit; }
+.nyx-mobile__drawer {
+  inset: 0 auto 0 0;
+  width: min(20rem, 82%);
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  border: 0;
+  border-right: 2px solid var(--gold);
+  background: var(--nav);
+  color: var(--navink);
+}
+.nyx-mobile__drawer[open] { animation: nyx-drawer-in 170ms ease-out; }
+.nyx-mobile__drawer::backdrop { background: rgb(32 24 24 / 48%); }
+@keyframes nyx-drawer-in { from { transform: translateX(-100%); } }
+@media (prefers-reduced-motion: reduce) { .nyx-mobile__drawer[open] { animation: none; } }
+.nyx-mobile__drawer-content { padding: max(.75rem, env(safe-area-inset-top)) .75rem 1rem; }
+.nyx-mobile__drawer header { display: flex; align-items: center; gap: .65rem; padding-bottom: .8rem; border-bottom: 1px solid var(--gold); }
+.nyx-mobile__drawer header button { margin-inline-start: auto; }
+.nyx-mobile__drawer .emotion-sprite { width: 48px; height: 48px; }
+.nyx-mobile__drawer nav button { display: flex; align-items: center; gap: .75rem; width: 100%; text-align: start; }
+.nyx-mobile__drawer nav button[aria-current="page"] { border-color: var(--gold); background: color-mix(in srgb, var(--navink) 15%, transparent); }
+.nyx-mobile__drawer h2 { margin: .8rem .6rem .15rem; font-size: .8em; }
+.nyx-mobile__announcements { pointer-events: none; }
+.nyx-mobile__reader { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.nyx-mobile__reader .reader { flex: 1; min-height: 0; }
+.nyx-mobile__reader .reader[hidden] { display: none; }
+.nyx-mobile__reader .reader__body { flex: 1; min-height: 0; }
+.nyx-mobile__reader .reader__header { flex-wrap: wrap; }
+.nyx-mobile__reader .reader__footer { justify-content: space-between; }
+.nyx-mobile__reader .reader-text__para--nyx::before { content: none; }
+.nyx-mobile__reader .reader__nyx-marker { display: block; color: var(--accent); font-size: .76em; font-weight: 700; }
+.nyx-mobile__reader .reader-text__para--nyx { border-inline-start: 2px solid var(--accent); }
+.nyx-mobile__reader .reader-text__para { padding-inline: 1rem; }
+.nyx-mobile__reader .reader__nyx-position { align-self: center; }
+.nyx-mobile__reader .reader__footer button { flex-shrink: 0; }
+.nyx-mobile__tool-page { display: flex; flex: 1; flex-direction: column; min-height: 0; padding: .75rem; overflow: auto; }
+.nyx-mobile__tool-page > header { display: flex; align-items: center; gap: 1rem; margin-bottom: .75rem; }
+.nyx-mobile__tool-page h2 { margin: 0; font-size: 1.15em; }
+.nyx-mobile__contents { display: grid; justify-items: stretch; align-content: start; gap: .4rem; }
+.nyx-mobile__contents button { text-align: start; }
+.nyx-mobile__companion { flex: 0 0 auto; padding: .4rem .75rem max(.4rem, env(safe-area-inset-bottom)); border-top: 1px solid var(--rule); background: var(--parchment-deep); }
+.nyx-mobile__companion-toggle { display: flex; align-items: center; width: 100%; gap: .75rem; text-align: start; }
+.nyx-mobile__companion-toggle .emotion-sprite { width: 48px; height: 48px; flex: 0 0 48px; border: 1px solid var(--gold); border-radius: 50%; }
+.nyx-mobile__companion-copy { display: grid; flex: 1; min-width: 0; }
+.nyx-mobile__companion-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nyx-mobile__unread { display: inline-block; width: .55em; height: .55em; margin-inline-start: .5em; border-radius: 50%; background: var(--accent); }
+.nyx-mobile__companion-log { display: grid; gap: .45rem; max-height: min(9rem, 22dvh); overflow: auto; }
+.nyx-mobile__companion-log > p { margin: .35rem 0; padding-inline-start: .65rem; border-inline-start: 2px solid var(--accent); overflow-wrap: anywhere; }
+.nyx-mobile__companion-form { display: flex; flex-wrap: wrap; gap: .4rem; padding-top: .4rem; }
+.nyx-mobile__companion-form input { flex: 1; min-width: 0; }
+.nyx-mobile__companion-form > p, .nyx-mobile__companion-form > label { flex-basis: 100%; margin: 0; }
+.nyx-mobile__companion-form select { display: block; width: 100%; }

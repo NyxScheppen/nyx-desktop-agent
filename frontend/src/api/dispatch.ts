@@ -10,6 +10,11 @@ import { useReaderStore } from "../stores/readerStore";
 import type { SseEvent } from "../types/api";
 import { captureScope, isScopeCurrent } from "./characterScope";
 
+function mobileReaderActive(): boolean {
+  return window.location.pathname.replace(/\/$/, "") === "/mobile" &&
+    window.location.hash.startsWith("#reader/");
+}
+
 export function synchronizeAfterReplay(): void {
   void useBehaviorStore.getState().refresh();
   void useInnerLifeStore.getState().refreshState();
@@ -17,6 +22,7 @@ export function synchronizeAfterReplay(): void {
   void useDesireStore.getState().refresh();
   void useMemoryStore.getState().refresh();
   void useChatStore.getState().loadHistory();
+  if (mobileReaderActive()) void useReaderStore.getState().refreshProgress();
 }
 
 // 事件 → store 路由。
@@ -34,16 +40,16 @@ export function dispatchEvent(e: SseEvent, replaying = false): void {
       void useBehaviorStore.getState().refresh();
       return;
     case "speak":
-      return useChatStore.getState().addSpeak(e);
+      return useChatStore.getState().addSpeak(e, replaying);
     case "ask":
-      return useChatStore.getState().addAsk(e);
+      return useChatStore.getState().addAsk(e, replaying);
     case "think":
-      return useChatStore.getState().addThink(e);
+      return useChatStore.getState().addThink(e, replaying);
     case "mutter":
       // 碎碎念与 reading_mutter 统一走悬浮气泡。
       return useAnnounceStore.getState().announce("mutter", e.content);
     case "initiate_chat":
-      return useChatStore.getState().addInitiateChat(e);
+      return useChatStore.getState().addInitiateChat(e, replaying);
     case "user_message":
       return useChatStore.getState().addUserMessage(e);
     case "annotation_feedback":
@@ -85,7 +91,7 @@ export function dispatchEvent(e: SseEvent, replaying = false): void {
     }
     case "reading_mutter":
       // 读书碎碎念归入悬浮气泡（08 §2.3/§3），与全局 mutter 同一渲染路径。
-      return useAnnounceStore.getState().announce("mutter", e.content);
+      return useAnnounceStore.getState().announce("mutter", e.content, e.book_id);
     case "reading_question":
       // 读书提问并进对话（08 §2.3）：并进对话转录，不再走 readerStore 气泡流。
       return useChatStore.getState().addReadingTurn(e);
@@ -93,6 +99,9 @@ export function dispatchEvent(e: SseEvent, replaying = false): void {
       // 联想不进对话（对话框只放对话+提问）：后端仍产生，前端静默丢弃。
       return;
     case "reading_progress":
+      if (mobileReaderActive() && !replaying) {
+        return useReaderStore.getState().applyProgressEvent(e, true);
+      }
       return useReaderStore.getState().applyProgressEvent(e);
     case "reflection_done": {
       void useMemoryStore.getState().refresh();

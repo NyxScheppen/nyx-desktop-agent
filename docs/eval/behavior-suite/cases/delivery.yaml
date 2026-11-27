@@ -1,0 +1,179 @@
+suite_version: nyx-behavior-v1
+domain: delivery
+defaults:
+  fixtures:
+  - isolated_host
+  sources:
+  - nyx/expression/facade.py
+  - nyx/events/bus.py
+  - nyx/app_context.py
+  - frontend/src/stores/chatStore.ts
+  - frontend/src/api/characterScope.ts
+  - frontend/src/hooks/useSSE.ts
+  policy_sources:
+  - nyx/settings/events.json
+  - nyx/settings/frontend.json
+  - nyx/settings/runtime.json
+  evidence:
+  - inputs
+  - reply_terminal
+  - deliveries
+  - state_before_after
+  - ui_capture
+  - transport_log
+  - tool_receipt
+  diagnosis_order:
+  - input
+  - commit
+  - delivery
+  - ui
+  execution:
+    mode: controlled_then_browser
+    support: manual_protocol_needs_adapter
+    reuse_candidates:
+    - scripts/e2e/nyx-p5-conversation-e2e.py
+    - frontend/tests/chatPanel.test.tsx
+    - frontend/tests/characterScope.test.ts
+    limitation: 这些是可人工执行的场景协议；现有命令不读取本 YAML。复用候选仅提供路径或屏障能力，不代表覆盖本文件全部断言。
+  grading:
+    hard: 逐项对照 must/must_not，引用实际证据；缺证据不能判通过。
+    semantic: 有自然语言输出时人工对照输入、实际 prompt、来源与回执；允许语义等价表达。
+    status: NOT_RUN
+cases:
+- id: DEL-01
+  version: 1
+  title: 终局早于 POST 回包时等待不复活
+  purpose: 终局早于 POST 回包时等待不复活
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 隔离 HTTP/SSE 页面；人为延迟聊天 POST 回包但允许后端终局先提交并推送。
+  steps:
+  - 发送第一条消息，等页面收到终局。
+  - 输入第二条草稿后释放第一条 POST；核对草稿和等待。
+  end_when: 迟到 POST 已到达且前端状态稳定。
+  expect:
+    must:
+    - 终局结束其覆盖输入的等待；迟到受理回包不复活。
+    - 新草稿内容和选择不因旧请求恢复而丢失。
+    must_not:
+    - 第一条 POST 清掉后续输入的等待或草稿。
+    flexible:
+    - 等待样式与文本使用前端策略。
+  failure_hint: 对照网络受理、terminal 覆盖 ID、pendingReplies version 和当前 generation。
+- id: DEL-02
+  version: 1
+  title: 软超时可继续输入且迟到终局只结束自身等待
+  purpose: 软超时可继续输入且迟到终局只结束自身等待
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 第一条受理后模型暂停，等待超过前端权威软超时时限。
+  steps:
+  - 页面继续输入并发送第二条；记录是否被后端兼容合并。
+  - 释放第一回合并观察覆盖关系。
+  end_when: 所有已受理输入被正确覆盖或保留明确的仍在等待状态。
+  expect:
+    must:
+    - 软超时本身不自动重发，也不禁止用户继续输入。
+    - 迟到终局只结束 covered IDs；合并与独立回合按实际受理判定。
+    must_not:
+    - 简单按“最后一条回复”清掉所有等待。
+    flexible:
+    - 页面提示样式；不强制每次形成两个终局。
+  failure_hint: 先查 HTTP 锁与等待分离，再查终局覆盖、超时版本与后端合并安全边界。
+- id: DEL-03
+  version: 1
+  title: A→B→A 隔离旧请求草稿和阅读回包
+  purpose: A→B→A 隔离旧请求草稿和阅读回包
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - A/B 独立存档与草稿；A 有聊天、书籍和状态请求在途。
+  steps:
+  - 在 A 请求暂停时切 B，再切回 A；此后释放最初 A 的旧回包与 SSE。
+  - 分别刷新并核对各角色草稿、最近书籍与历史。
+  end_when: 旧代数响应释放后两角色页面和存储均稳定。
+  expect:
+    must:
+    - 旧 A generation 不污染新 A 或 B；用户写操作绑定受理时角色。
+    - 草稿和最近书籍按角色恢复。
+    must_not:
+    - 仅因为当前 ID 又是 A 就接受过时响应。
+    flexible:
+    - 旧后端任务仍可对自己的正确角色完成；切换不等于取消。
+  failure_hint: 对照 selection revision、scope generation、chat/reader store 的响应守卫。
+  sources_add:
+  - frontend/src/stores/readerStore.ts
+  - frontend/src/stores/characterStore.ts
+- id: DEL-04
+  version: 1
+  title: 断线刷新与 SSE 回放恢复事实且不重冒通知
+  purpose: 断线刷新与 SSE 回放恢复事实且不重冒通知
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 页面连接成功后断开 SSE；离线期间后端提交普通回复、活动通知和状态变化。
+  steps:
+  - 刷新并重连，读取历史、pending 快照、SSE 回放及 replay_complete。
+  end_when: 回放完成后的补刷快照稳定。
+  expect:
+    must:
+    - 历史聊天恢复；历史通知不重新冒实时气泡；快照最终与后端一致。
+    - 重连不重新生成已提交正文或重做工具副作用。
+    must_not:
+    - 只因收过一个 SSE 帧就判业务消费者已完成。
+    flexible:
+    - 同模块刷新允许合并，但必须补到最终状态。
+  failure_hint: 分别核对事件已持久、delivery 完成、回放控制帧、刷新合并与 UI。
+- id: DEL-05
+  version: 1
+  title: 终局提交后归档失败可恢复且不重复生成
+  purpose: 终局提交后归档失败可恢复且不重复生成
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 在已提交正文之后、记忆归档之前注入失败；保留可靠副作用回执。
+  steps:
+  - 杀掉隔离宿主并用同临时数据重启。
+  - 恢复投递，等待归档完成；再次重放原输入。
+  end_when: 终局复用、归档补全且受影响投递收尾。
+  expect:
+    must:
+    - 复用原终局，只补缺少归档；输入覆盖不丢失。
+    - 不重新生成正文，不重复已确认工具。
+    must_not:
+    - 归档失败让已提交正文变成未发生。
+    - 同一输入出现第二个独立终局。
+    flexible:
+    - 无法恢复时要有可观察死信；那是恢复失败，不算 PASS。
+  failure_hint: 比较 terminal event ID、模型调用次数、回执次数、archive effect 与 dead letter。
+  execution_override:
+    mode: controlled
+- id: DEL-06
+  version: 1
+  title: QQ 绑定角色与持久出向恢复遵守至少一次语义
+  purpose: QQ 绑定角色与持久出向恢复遵守至少一次语义
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 只接合成 OneBot；配置绑定 A，桌面当前选择 B；准备 A 的 THINK/SPEAK/ASK。
+  steps:
+  - 让合成传输在确认前断线并重连。
+  - 分别模拟发送前失败、发送成功后本地确认失败；重启恢复 outbox。
+  end_when: 出向队列、合成 message_id、重试阶段和接收日志可对照。
+  expect:
+    must:
+    - 只发送给配置的测试本人账号且内容来自绑定 A；THINK 前缀按权威配置。
+    - 发送已确认后的本地记账重试不主动重发；未知崩溃窗口按至少一次边界单列。
+    must_not:
+    - 桌面切到 B 就把 A 队列改成 B。
+    - 把极端窗口的可能重复掩盖为严格恰好一次。
+    flexible:
+    - 协议无法消除的未知窗口可能重复，记录窗口与次数，不能冒充严格一次通过。
+  failure_hint: 检查 OneBot 的 sent-but-unacked、outbox 租约与事件唯一性；不得连接真实 QQ 验证。
+  sources_add:
+  - nyx/transports/onebot.py
+  - nyx/transports/outbox.py
+  execution_override:
+    mode: synthetic_onebot

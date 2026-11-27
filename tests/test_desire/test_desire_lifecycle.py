@@ -324,6 +324,7 @@ async def test_completed_exploration_dedup_and_expired_retry(
         "activity_id": "a-old", "desire_id": old.id, "status": "completed",
         "seed_topic": "骑士团", "question": old.description, "started_at": 1.0,
         "summary": "已了解骑士团的宗教起源", "failure_reason": "缺少城市史资料",
+        "core_discovery": "已有一手来源说明骑士团的宗教起源",
         "unresolved_questions": ["如何参与城市治理"],
     }]
     llm = _FakeLlm(json.dumps({"description": description, "count": 1}))
@@ -342,7 +343,7 @@ async def test_completed_exploration_dedup_and_expired_retry(
         assert bool(result) is accepted
         prompt = llm.user_contents[0]
         assert "宗教起源" in prompt and "缺少城市史资料" in prompt
-        assert "如何参与城市治理" in prompt and "接着" in prompt
+        assert "如何参与城市治理" in prompt and "related_research" in prompt
         assert _pick_topic_seed(["骑士团", "死亡"], [], history) == "死亡"
     finally:
         await database.conn.close()
@@ -830,7 +831,7 @@ async def test_run_eval_topic_seed(monkeypatch: pytest.MonkeyPatch) -> None:
         async with _running(bus):
             result = await lifecycle.run_eval()
         assert "大学朋友" in llm.user_contents[0]   # 骑士团有记忆（做过）→ 取没做过的
-        assert "骑士团" not in llm.user_contents[0]
+        assert "主题种子：骑士团" not in llm.user_contents[0]
         # action/topic/goal 由系统构造，LLM 只提供 description/count。
         assert result[0].goal is not None and result[0].goal.topic == "大学朋友"
         assert result[0].parent_long_term_id == "lt1"

@@ -63,6 +63,10 @@ def _build_desire_prompt(
     type_: DesireType,
     seed: str | None,
     history: list[dict[str, Any]] | None = None,
+    *,
+    parent: LongTermDesire | None = None,
+    canon: str = "",
+    memories: list[str] | None = None,
 ) -> str:
     prompt = policy(
         "desire", "lifecycle.templates.build_desire_prompt_text", str
@@ -74,7 +78,14 @@ def _build_desire_prompt(
     if type_ is DesireType.EXPLORATION:
         prompt += policy(
             "desire", "lifecycle.parameters.build_desire_prompt_value_text", str
-        ) + json.dumps(history or [], ensure_ascii=False)
+        ) + json.dumps({
+            "long_term_interest": parent.description if parent is not None else None,
+            "character_reference": canon,
+            "related_memories": memories or [],
+            "related_research": history or [],
+        }, ensure_ascii=False)
+    if type_ is DesireType.CREATION:
+        prompt += policy("desire", "lifecycle.parameters.creation_instruction", str)
     return prompt
 
 
@@ -151,6 +162,8 @@ def _build_goal(desire_type: DesireType, count: int, topic: str | None) -> Goal 
     action = _GOAL_ACTION_BY_DESIRE.get(desire_type)
     if action is None:
         return None
+    if desire_type is DesireType.CREATION:
+        count = policy("desire", "lifecycle.parameters.creation_goal_count", int)
     return Goal(action=action, count=count, topic=topic)
 
 
@@ -170,6 +183,8 @@ class DesireLifecycle:
         list_memories: ListMemories,
         embed: EmbedFn | None = None,
         list_explorations: ListExplorations | None = None,
+        *,
+        canon: str = "",
     ) -> None:
         self._store = store
         self._bus = bus
@@ -179,6 +194,7 @@ class DesireLifecycle:
         self._list_memories = list_memories
         self._embed = embed
         self._list_explorations = list_explorations
+        self._canon = canon
         self._logger = logging.getLogger(__name__)
         self._eval_lock = asyncio.Lock()
 
@@ -220,11 +236,14 @@ class DesireLifecycle:
         desire_id = event.content.get("desire_id")
         goal_met = event.content.get("goal_met")
         if isinstance(desire_id, str) and isinstance(goal_met, bool):
-            await self.satisfy(desire_id, goal_met, in_transaction=in_transaction)
+            if event.content.get("stop_desire") is True:
+                await self.finish_attempt(desire_id, in_transaction=in_transaction)
+            else:
+                await self.satisfy(desire_id, goal_met, in_transaction=in_transaction)
         activity_type = event.content.get("type")
-        if activity_type in (
-            ActivityType.READING.value,
-            ActivityType.FREE_EXPLORATION.value,
+        if activity_type == ActivityType.READING.value or (
+            activity_type == ActivityType.FREE_EXPLORATION.value
+            and event.content.get("stop_desire") is not True
         ):
             await self._pressure(DesireType.CREATION, _CREATION_ACTIVITY_PRESSURE_DELTA)
 
@@ -233,6 +252,7 @@ class DesireLifecycle:
         energy: float = policy("desire", "lifecycle.parameters.run_eval_energy", float),
         *,
         event_id: str | None = None,
+        initiative_ref: str | None = None,
     ) -> list[ShortTermDesire]:
         """DESIRE_EVAL：衰减 → 长期加压 → 疲惫加压 → 达峰判定 → 只生成最迫切的 1 个。"""
         async with self._eval_lock:
@@ -284,10 +304,19 @@ class DesireLifecycle:
             attempts = {
                 t: await self._store.get_generation_attempt(t) for t in DesireType
             }
+            baseline = self._config.peak_threshold
+            interaction_peak = (
+                max(0.0, baseline - policy("initiative", "topic.peak_reduction", float))
+                if initiative_ref is not None
+                else baseline
+            )
             expressible = [
                 values[t]
                 for t in DesireType
-                if at_peak(values[t].value, self._config.peak_threshold)
+                if at_peak(
+                    values[t].value,
+                    interaction_peak if t is DesireType.INTERACTION else baseline,
+                )
                 and is_expressible(values[t].value, values[t].suppression_threshold)
             ]
             pending_types = [t for t in DesireType if attempts[t] is not None]
@@ -313,6 +342,7 @@ class DesireLifecycle:
                     seed,
                     parent_long_term_id,
                     raw_content,
+                    initiative_ref,
                 ) = pending_attempt
                 try:
                     description, count = _parse_desire(raw_content)
@@ -326,6 +356,8 @@ class DesireLifecycle:
                     return []
             else:
                 peak_value = target.value
+                if target.type is not DesireType.INTERACTION:
+                    initiative_ref = None
                 parent = _pick_parent_long_term(target.type, long_term)
                 parent_long_term_id = parent.id if parent is not None else None
                 subtopics = (
@@ -333,22 +365,41 @@ class DesireLifecycle:
                     if parent is not None
                     else []
                 )
+                memories = (
+                    await self._list_memories()
+                    if subtopics or target.type is DesireType.EXPLORATION else []
+                )
                 seed = (
-                    _pick_topic_seed(subtopics, await self._list_memories(), history)
+                    _pick_topic_seed(subtopics, memories, history)
                     if subtopics
                     else parent.name.strip()
                     if parent is not None
                     else None
                 )
                 desire_id = str(uuid4())
-                related_history = await self._related_history(seed, history)
+                related_history = await self._related_history(
+                    seed, [item for item in history if item.get("core_discovery")]
+                )
+                related_memories = []
+                if target.type is DesireType.EXPLORATION and seed:
+                    limit = policy(
+                        "desire", "lifecycle.parameters.topic_memory_limit", int
+                    )
+                    chars = policy(
+                        "desire", "lifecycle.parameters.topic_memory_chars", int
+                    )
+                    related_memories = [
+                        m.content[:chars] for m in memories
+                        if seed in m.summary or seed in m.content
+                    ][:limit]
                 output = await self._llm.complete(
                     [
                         {"role": "system", "content": _DESIRE_SYSTEM},
                         {
                             "role": "user",
                             "content": _build_desire_prompt(
-                                target.type, seed, related_history
+                                target.type, seed, related_history, parent=parent,
+                                canon=self._canon, memories=related_memories,
                             ),
                         },
                     ],
@@ -375,6 +426,7 @@ class DesireLifecycle:
                     seed,
                     parent_long_term_id,
                     output.content,
+                    initiative_ref,
                 )
                 created_at = now
 
@@ -406,8 +458,13 @@ class DesireLifecycle:
             historical_questions = [
                 str(item["question"])
                 for item in history
-                if item["status"] == "completed"
-                and item.get("desire_id") not in expired
+                if (
+                    (
+                        item["status"] == "completed"
+                        and item.get("desire_id") not in expired
+                    )
+                    or item.get("outcome") in {"pruned", "exhausted"}
+                )
                 and item.get("question")
             ]
         if new_topic is not None and target.type is not DesireType.EXPLORATION:
@@ -459,6 +516,7 @@ class DesireLifecycle:
             retry_count=0,
             status=DesireStatus.PENDING,
             parent_long_term_id=parent_long_term_id,
+            initiative_ref=initiative_ref,
         )
 
         event = internal_event(
@@ -538,7 +596,13 @@ class DesireLifecycle:
         if desire.status is DesireStatus.ACTIVE:
             desire.status = DesireStatus.PENDING
         if goal_met and desire.goal is not None:
-            desire.goal_progress += 1
+            if desire.type is DesireType.CREATION:
+                desire.goal.count = policy(
+                    "desire", "lifecycle.parameters.creation_goal_count", int
+                )
+                desire.goal_progress = desire.goal.count
+            else:
+                desire.goal_progress += 1
             if desire.goal_progress < desire.goal.count:
                 await self._store.update_desire(desire)
                 return None
@@ -550,6 +614,27 @@ class DesireLifecycle:
             return await self._expire(desire, in_transaction=in_transaction)
         await self._store.update_desire(desire)
         return None
+
+    async def finish_attempt(
+        self, desire_id: str, *, in_transaction: bool = False
+    ) -> None:
+        """Finish a terminal activity failure and preserve the terminal event."""
+        if in_transaction:
+            await self._finish_attempt(desire_id)
+            return
+        async with self._store.db.transaction():
+            event = await self._finish_attempt(desire_id)
+        if event is not None:
+            await self._bus.announce_committed(event)
+
+    async def _finish_attempt(self, desire_id: str) -> Event | None:
+        desire = await self._store.get_desire(desire_id)
+        if desire is None or desire.status in (
+            DesireStatus.SATISFIED, DesireStatus.EXPIRED
+        ):
+            return None
+        desire.retry_count += 1
+        return await self._expire(desire, in_transaction=True)
 
     async def expire(self, desire_id: str) -> None:
         """淘汰：出队 + 值回增 + 抑制阈值上浮。终态幂等：重复投递 no-op。"""
@@ -571,8 +656,14 @@ class DesireLifecycle:
         """PENDING → ACTIVE：活动开始消费。仅 PENDING 可转，其余幂等 no-op。"""
         await self._store.claim_for_activity(desire_id)
 
-    async def resume_for_activity(self, desire_id: str) -> bool:
+    async def resume_for_activity(
+        self, desire_id: str, *, already_claimed: bool = False
+    ) -> bool:
         """Reactivate a desire whose resumable activity was interrupted."""
+        if already_claimed:
+            desire = await self._store.get_desire(desire_id)
+            if desire is not None and desire.status is DesireStatus.ACTIVE:
+                return True
         if self._store.db.in_transaction:
             cursor = await self._store.db.conn.execute(
                 "UPDATE short_term_desire SET status = ? WHERE id = ? AND status = ?",

@@ -98,7 +98,9 @@ export type TextEventType =
 export type TextEvent<T extends TextEventType> = SseBase & {
   event: T;
   content: string;
-  kind?: "chat_ask" | "reading_question" | "initiate_chat";
+  kind?: "chat_ask" | "reading_question" | "initiate_chat" | "scheduled";
+  book_id?: string;
+  schedule_id?: string;
   attempt_id?: string;
   expires_at?: number;
   reply_complete?: true;
@@ -140,7 +142,7 @@ export type QuestionStatus = "waiting" | "claimed" | "answered" | "expired" | "f
 
 export type PendingQuestion = {
   attempt_id: string;
-  kind: "chat_ask" | "reading_question" | "initiate_chat";
+  kind: "chat_ask" | "reading_question" | "initiate_chat" | "scheduled";
   text: string;
   created_at: number;
   expires_at: number;
@@ -325,6 +327,8 @@ export function parseSseEvent(type: string, data: unknown): SseEvent | null {
           ...base,
           event: type,
           content: data.content,
+          ...(typeof data.book_id === "string" ? { book_id: data.book_id } : {}),
+          ...(typeof data.schedule_id === "string" ? { schedule_id: data.schedule_id } : {}),
           ...(typeof data.attempt_id === "string" ? { attempt_id: data.attempt_id } : {}),
           ...(isFiniteNumber(data.expires_at) ? { expires_at: data.expires_at } : {}),
           ...(data.reply_complete === true ? {

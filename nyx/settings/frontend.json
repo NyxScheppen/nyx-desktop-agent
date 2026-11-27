@@ -1,4 +1,11 @@
 {
+  "mobileAndroid": {
+    "app_name": "尼克斯",
+    "origin": "https://nyx-frontend-production.up.railway.app",
+    "loading": "正在连接尼克斯…",
+    "load_error": "连接失败，请检查网络后重试。",
+    "retry": "重试"
+  },
   "frontend": {
     "App": {
       "FONT_SCALE_VALUE": {
@@ -158,7 +165,47 @@
       "LAYOUT_STYLE_KEY": "nyx.layoutStyle"
     }
   },
+  "initiative": {
+    "title": "主动互动",
+    "scheduled": "定时跟进",
+    "open_book": "打开书页",
+    "cooldown": "两次主动搭话之间至少间隔（分钟）",
+    "save": "保存",
+    "saved": "已保存",
+    "error": "无法保存或读取主动搭话设置"
+  },
   "copy": {
+    "MobileSchedules": {
+      "title": "共读约定",
+      "empty": "你可以在对话里和尼克斯约定共读时间。",
+      "unavailable": "暂时无法读取共读约定。",
+      "conflict": "未能更新约定，请查看最新状态。",
+      "active": "生效中",
+      "paused": "已暂停",
+      "pause": "暂停",
+      "resume": "恢复",
+      "skip": "跳过下次",
+      "reschedule": "改期",
+      "cancel": "取消约定",
+      "confirm_cancel": "取消这条共读约定？",
+      "save": "保存",
+      "time": "新的北京时间",
+      "recurrence": { "once": "单次", "daily": "每日", "weekly": "每周", "workdays": "工作日" }
+    },
+    "Mobile": {
+      "menu": "打开侧栏",
+      "close_menu": "收起侧栏",
+      "back": "返回",
+      "daily": "日常",
+      "character": "尼克斯",
+      "management": "管理",
+      "chat": "对话",
+      "library": "书架",
+      "device": "此设备",
+      "retry": "重试",
+      "question": "回复哪条提问",
+      "question_changed": "这条共读提问已更新，请查看最新状态后再发送。"
+    },
     "characterScope": {
       "text": "角色正在切换"
     },
@@ -168,6 +215,8 @@
     "App": {
       "text": "手机",
       "text_2": "配对失败",
+      "pairing_help": "输入电脑网页版「设置」里生成的手机配对码，区分大小写。",
+      "pairing_invalid": "配对码有误、已过期或已使用。请在电脑网页版生成新码后粘贴到这里。",
       "h1": "连接 Nyx",
       "label": "配对码",
       "label_2": "设备名称",
@@ -262,6 +311,9 @@
       "label": "新设备名称",
       "button_2": "生成手机配对码",
       "p": "配对码：",
+      "copy_pairing_code": "复制配对码",
+      "pairing_code_copied": "已复制",
+      "copy_pairing_code_failed": "复制失败，请选中上方配对码手动复制。",
       "aria_label_2": "已配对设备",
       "text_2": "（已撤销）",
       "button_3": "撤销",

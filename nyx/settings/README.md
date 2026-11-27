@@ -9,6 +9,7 @@
 | `inner_life.json` | 情绪、精力、内在文档与反思 |
 | `activity.json` | 活动选择、执行、创作、观察与问卷 |
 | `reading.json` | 阅读、分段、陪读冲动、进度与阅读界面 |
+| `initiative.json` | 主动互动话题、搭话冷却、定时事项与工具文案 |
 | `expression.json` | 表达分类、上下文、工具流程与执行提示词 |
 | `research.json` | 探索预算、研究决策与研究记录 |
 | `behavior.json` | 行为反思、内置 skill 默认策略与工具授权 |

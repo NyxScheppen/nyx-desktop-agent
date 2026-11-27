@@ -7,6 +7,7 @@ import { useBehaviorStore } from "../../stores/behaviorStore";
 import { ResearchTrace } from "../panels/BehaviorPanel";
 
 type MessageListProps = {
+  onOpenBook?: (id: string) => void;
   messages: ChatMessage[];
   now?: Date;
 };
@@ -42,7 +43,7 @@ export function isReady(
 
 // 微信式列表（视觉改造）：全部消息按序渲染，随内容增长同步滚到底——新消息
 // 与打字机逐字都触发（见下方 MutationObserver）。历史往上滑看（滚动条隐藏，见 index.css）。
-export default function MessageList({ messages, now = new Date() }: MessageListProps) {
+export default function MessageList({ messages, now = new Date(), onOpenBook }: MessageListProps) {
   const typedIds = useChatStore((s) => s.typedIds);
   const markTyped = useChatStore((s) => s.markTyped);
   const runs = useBehaviorStore((s) => s.runs);
@@ -81,6 +82,7 @@ export default function MessageList({ messages, now = new Date() }: MessageListP
             </div>
           )}
           <MessageBubble
+            onOpenBook={onOpenBook}
             message={m}
             ready={isReady(m, i, messages, typedIds)}
             onTyped={markTyped}

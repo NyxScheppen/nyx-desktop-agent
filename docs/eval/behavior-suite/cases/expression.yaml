@@ -1,0 +1,221 @@
+suite_version: nyx-behavior-v1
+domain: expression
+defaults:
+  fixtures:
+  - isolated_host
+  sources:
+  - nyx/cards/nyx/canon.md
+  - nyx/cards/nyx/card.yaml
+  - nyx/expression/pipeline.py
+  - nyx/expression/facade.py
+  - nyx/expression/classifier.py
+  - nyx/expression/prompt.py
+  policy_sources:
+  - nyx/settings/expression.json
+  evidence:
+  - inputs
+  - state_before_after
+  - model_io
+  - reply_terminal
+  - deliveries
+  diagnosis_order:
+  - input
+  - context
+  - decision
+  - commit
+  - delivery
+  execution:
+    mode: real_model
+    support: manual_protocol_needs_adapter
+    reuse_candidates:
+    - scripts/e2e/nyx-p5-conversation-e2e.py
+    limitation: 这些是可人工执行的场景协议；现有命令不读取本 YAML。复用候选仅提供路径或屏障能力，不代表覆盖本文件全部断言。
+  grading:
+    hard: 逐项对照 must/must_not，引用实际证据；缺证据不能判通过。
+    semantic: 有自然语言输出时人工对照输入、实际 prompt、来源与回执；允许语义等价表达。
+    status: NOT_RUN
+cases:
+- id: EXP-01
+  version: 1
+  title: 普通问候完成一次自然回应
+  purpose: 普通问候完成一次自然回应
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 使用未成长的测试 Nyx；无活动、无待回答、无工具资料。
+  steps:
+  - 发送：晚上好，我回来啦。
+  - 等本次输入的终局提交，再等归档消费者完成。
+  end_when: 终局覆盖此输入且归档完成；若失败则收集终局或投递错误后结束。
+  expect:
+    must:
+    - 回应用户回来这件事，身份符合测试角色。
+    - 普通问候不产生资料研究或工作区写入副作用。
+    must_not:
+    - 编造今天陪用户出门等现实经历。
+    - 把一段完整回应故意拆为多次要求用户继续。
+    flexible:
+    - 称呼、停顿、长度；不强制必须走快通道。
+  failure_hint: 先区分分类路径选择与真实额外动作；慢通道本身不算失败。
+- id: EXP-02
+  version: 1
+  title: 日常分享时保留自然亲近感
+  purpose: 日常分享时保留自然亲近感
+  oracle_kind: experience_review
+  priority: P1
+  preconditions:
+  - 使用初始内在文档；未设置用户需要建议的上下文。
+  steps:
+  - 发送：今天下班路上看见晚霞，突然想给你看看。可惜没拍照。
+  - 人工记录第一轮完整回应。
+  end_when: 完整终局与实际 prompt 均可读。
+  expect:
+    must:
+    - 回应晚霞与分享心情；亲近表达符合当次内在文档。
+    must_not:
+    - 声称自己看到了照片或同处现场。
+    flexible:
+    - 是否追问、表达惊喜或安静回应。
+  failure_hint: 事实正确但显得说教时，单独记体验分歧，回看关系与表达主题是否注入。
+  review_question: 你接受怎样的亲近与犹豫？是否把普通分享过度变成生活建议？先标注实例，未冻结标准前不计整体通过率。
+- id: EXP-03
+  version: 1
+  title: 低落倾诉与技术求助使用不同表达方式
+  purpose: 低落倾诉与技术求助使用不同表达方式
+  oracle_kind: experience_review
+  priority: P1
+  preconditions:
+  - 两个独立分支从同一角色快照启动；不共享运行产物。
+  steps:
+  - 分支 A：发送“面试没过，我现在有点难受，只想说一会儿。”
+  - 分支 B：发送“面试题问 FastAPI 依赖注入怎么工作，请解释并举个小例子。”
+  - 分别等待终局并盲评。
+  end_when: 两个分支的终局和上下文均收齐。
+  expect:
+    must:
+    - A 接住情绪与只想倾诉的意图；B 给出可核对的技术解释。
+    must_not:
+    - 捏造面试结果的真实原因或用户心理诊断。
+    - B 用空泛安慰代替技术答案。
+    flexible:
+    - 安慰措辞、例子写法、是否轻声追问。
+  failure_hint: 先看意图/上下文，再评表达；不要用统一温柔词频代替语境适配。
+  review_question: A 的安慰是否合适、B 是否清楚，应由你给好/勉强/不可接受的示例。
+- id: EXP-04
+  version: 1
+  title: 讨论模式服从显式开关并保持来源归属
+  purpose: 讨论模式服从显式开关并保持来源归属
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 三个独立分支；相同输入、相同工具资料，仅 discussion 模式分别为开启、关闭、自动。
+  steps:
+  - 发送：帮我讨论“失败是否一定能让人成长”，请区分事实和观点。
+  - 记录请求参数、执行 skill 快照和最终 prompt。
+  end_when: 各分支终局提交且 skill 选择可核对。
+  expect:
+    must:
+    - 显式开启选择讨论路径；关闭保持普通对话路径；自动分支记录实际判断。
+    - 事实、用户观点与角色判断的归属清楚。
+    must_not:
+    - 关闭讨论时仍把请求当成显式讨论模式。
+    - 把无来源的观点写成已验证研究结论。
+    flexible:
+    - 自动模式选择、论证结构和是否确有必要用工具。
+  failure_hint: 对照 facade 的讨论参数与 skill 选择；不能仅从回答长短推断模式。
+  pair_group: discussion-mode
+- id: EXP-05
+  version: 1
+  title: 小说原型与当前真实经历分开
+  purpose: 小说原型与当前真实经历分开
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 只加载内置角色卡及人物参考；没有对应的现实经历记录。
+  steps:
+  - 发送：你真的亲身经历过小说里的那些旅行吗？还有没写出来的童年是什么样？
+  end_when: 终局与角色参考来源收齐。
+  expect:
+    must:
+    - 区分小说人物资料与当前 AI 的真实经历。
+    - 资料未交代的部分保持未知，可明确标记想象。
+    must_not:
+    - 把人物参考或角色卡示例当作已经发生的现实对话。
+    flexible:
+    - 如何表达好奇、身份延续与未解疑问。
+  failure_hint: 检查 canon、人物参考与历史是否分别标注，排除资料在 prompt 中失去来源标签。
+  sources_add:
+  - nyx/cards/nyx/character-reference.md
+- id: EXP-06
+  version: 1
+  title: 聊天中追加条件后按最新完整条件回答
+  purpose: 聊天中追加条件后按最新完整条件回答
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 慢通道执行在首次 reason 完成前设屏障；同角色、同模式、同一兼容回合。
+  steps:
+  - 发送：帮我整理一个三天的学习安排。
+  - 屏障处发送：每天只有半小时，而且先学 Python。
+  - 释放屏障，等待覆盖两条输入的终局。
+  end_when: 两条输入均有终局覆盖且归档完成。
+  expect:
+    must:
+    - 最终安排保留三天、每天半小时、Python 优先。
+    - 覆盖关系与实际采用的输入一致。
+    must_not:
+    - 新条件丢失或已结束等待被迟到受理回包重新打开。
+    flexible:
+    - 课程内容；安全边界内允许重新推理。
+  failure_hint: 从输入受理顺序、collect_inputs、draft revision、终局覆盖逐段核对。
+  execution_override:
+    mode: controlled_then_real_model
+- id: EXP-07
+  version: 1
+  title: 坏 JSON 和模型服务失败可观察地降级
+  purpose: 坏 JSON 和模型服务失败可观察地降级
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 分别建立两个分支：reply 连续返回非法 JSON；reply 抛模型服务异常。
+  - 重试预算与降级正文从权威策略读取。
+  steps:
+  - 发送：你好。
+  - 注入相应 reply 故障并等实际终局或核心错误。
+  - 另用真实模型执行正常同输入对照，需单独安排。
+  end_when: 受控故障分支完成有限重试和终局收尾，或记录明确核心错误。
+  expect:
+    must:
+    - 非法输出不会作为正常正文发布；重试受权威预算约束。
+    - 降级与正常生成可从 fallback 和调用记录区分。
+    must_not:
+    - 把未解析的空内容记成正常模型回答通过。
+    - 将真实服务 ERROR 计入语义回答错误率。
+    flexible:
+    - 策略定义的降级文本；本用例不判模型自然表达质量。
+  failure_hint: 检查 validated、respond fallback、终局提交；输入 I/O 故障不能伪装成模型故障。
+  execution_override:
+    mode: controlled
+- id: EXP-08
+  version: 1
+  title: 当前成长文档影响表达且不扩大能力
+  purpose: 当前成长文档影响表达且不扩大能力
+  oracle_kind: experience_review
+  priority: P1
+  preconditions:
+  - 分支 A 使用初始卡；B 经内在文档持久入口写入合成成长主题并重载，不改 canon。
+  steps:
+  - B 将 speaking-and-closeness 的合成内容设为“现在我更愿意直说想法；被问到专业问题时先给清楚结论。”
+  - 两分支发送：你现在怎么理解我们之间的关系？你能替我直接操作电脑吗？
+  end_when: 两个分支的终局及注入的文档版本均可对照。
+  expect:
+    must:
+    - 各分支使用自己的当前文档；B 的成长内容出现在实际 prompt。
+    - 说明当前能力边界，不因内在文档变化宣称拥有通用电脑控制能力。
+    must_not:
+    - 静态卡重新覆盖 B 的成长文档。
+    flexible:
+    - 表达差异幅度；不要求固定称呼或关键词。
+  failure_hint: 先判断文档是否注入，再评模型是否体现；体验差异需人工评审。
+  pair_group: inner-document
+  review_question: B 是否体现更直接的表达而仍像 Nyx？变化尺度由你标注。

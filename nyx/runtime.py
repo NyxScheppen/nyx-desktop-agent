@@ -20,6 +20,7 @@ from nyx.enums import (
 from nyx.events.bus import EventAdmissionBusyError
 from nyx.events.event import internal_event
 from nyx.expression.mutter import should_initiate_chat
+from nyx.initiative import Initiative, ScheduledInteraction, Topic, scheduled_topic
 from nyx.policy import policy
 from nyx.types import ActivityContext, Event
 
@@ -147,7 +148,23 @@ async def on_desire_eval(app: Any, event: Event) -> None:
     """Consume a desire evaluation tick."""
     _require_tick(event, TickType.DESIRE_EVAL)
     state = await app.inner_life.get_state()
-    await app.desire.evaluate(state.energy, event_id=event.id)
+    service = getattr(app, "initiative", None)
+    if not isinstance(service, Initiative):
+        await app.desire.evaluate(state.energy, event_id=event.id)
+        return
+    topic = await service.candidate(time.time())
+    created = await app.desire.evaluate(
+        state.energy,
+        event_id=event.id,
+        initiative_ref=topic.encode() if topic else None,
+    )
+    if topic is not None:
+        stage = (
+            "desire_generated"
+            if any(item.initiative_ref for item in created)
+            else "no_desire"
+        )
+        _log_initiative(stage, topic.key)
 
 
 async def on_mutter_check(app: Any, event: Event) -> None:
@@ -171,19 +188,192 @@ async def on_reflection_check(app: Any, event: Event) -> None:
     await check_reflect(app, event.correlation_id)
 
 
+def _log_initiative(stage: str, reference: str | None) -> None:
+    logging.getLogger(__name__).info(
+        policy("initiative", "copy.admission_log", str), stage, reference
+    )
+
+
+async def on_scheduled_interaction_check(app: Any, event: Event) -> None:
+    _require_tick(event, TickType.SCHEDULED_INTERACTION_CHECK)
+    service = getattr(app, "initiative", None)
+    if isinstance(service, Initiative):
+        async with service.expression_lock:
+            await _process_scheduled(app, service)
+
+
+async def _process_scheduled(app: Any, service: Initiative) -> None:
+    for pending in await service.due(time.time()):
+        current: ScheduledInteraction | None = pending
+        while current is not None:
+            item = await service.claim(current, time.time())
+            current = None
+            if item is None:
+                break
+            try:
+                current = await _run_occurrence(app, service, item)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    policy("initiative", "copy.schedule_error", str),
+                    item.id,
+                )
+            finally:
+                await service.release(item)
+
+
+async def _run_occurrence(
+    app: Any,
+    service: Initiative,
+    item: ScheduledInteraction,
+) -> ScheduledInteraction | None:
+    now = time.time()
+    topic = scheduled_topic(item)
+    outcome = None
+    if now >= item.deadline:
+        outcome = "missed"
+    elif topic is not None and await service.topic_evidence(topic) is None:
+        outcome = "invalid_source"
+    elif item.origin == "autonomous" and (
+        not service.autonomous_enabled
+        or (topic is not None and await service.was_sent(topic))
+    ):
+        outcome = "skipped"
+    elif (
+        topic is not None
+        and (await service.already_read(item, topic))
+    ):
+        outcome = "already_read"
+    if outcome is not None:
+        async with service.db.transaction():
+            advanced = await service.finish(item, outcome, now)
+            if advanced and outcome == "missed":
+                updated = await service.get(item.id)
+                if updated.status == "active" and updated.due_at <= now:
+                    return updated
+        _log_initiative(outcome, item.id)
+        return None
+
+    busy = bool(await app.expression.pending_questions() or await service.busy())
+    can_initiate = app.can_initiate()
+    if item.origin == "autonomous" and (busy or not can_initiate):
+        _log_initiative("waiting_for_chat", item.id)
+        return None
+
+    state = await app.inner_life.get_state()
+    if topic is not None and can_initiate and not busy and await service.eligible(now):
+        desires = await app.desire.get_pending()
+        match = next(
+            (
+                d
+                for d in desires
+                if d.type is DesireType.INTERACTION
+                and d.initiative_ref
+                and topic.matches(Topic.decode(d.initiative_ref))
+            ),
+            None,
+        )
+        latest = await app.expression.latest_initiate_chat_at()
+        if (
+            match is not None
+            and not await service.was_sent(
+                Topic.decode(match.initiative_ref), reading_questions=True,
+            )
+            and should_initiate_chat(
+                [match],
+                state.energy,
+                now - (latest or 0),
+                (await service.cooldown()) * 60,
+            )
+            and await app.desire.claim_for_interaction(match.id)
+        ):
+            try:
+                if await app.expression.initiate_chat(match, state, scheduled=item):
+                    _log_initiative("merged_committed", item.id)
+                    return None
+            finally:
+                # A committed attempt owns the desire through reply or timeout.
+                if not await app.expression.has_committed_desire(match.id):
+                    await app.desire.release_interaction_claim(match.id)
+    if await app.expression.initiate_chat(None, state, scheduled=item):
+        _log_initiative("scheduled_committed", item.id)
+    return None
+
+
+async def on_reading_followup(app: Any, event: Event) -> None:
+    service = getattr(app, "initiative", None)
+    if (
+        not isinstance(service, Initiative)
+        or not service.autonomous_enabled
+        or event.content.get("type") != ActivityType.READING.value
+        or not app.can_initiate()
+    ):
+        return
+    result = event.content.get("result")
+    if not isinstance(result, dict):
+        return
+    reading = cast(dict[str, object], result)
+    if reading.get("completed"):
+        return
+    book, paragraph = reading.get("book_id"), reading.get("target_paragraph")
+    if not isinstance(book, str) or not isinstance(paragraph, int):
+        return
+    topic = Topic(book_id=book, paragraph=paragraph)
+    if (
+        await service.has_autonomous()
+        or await service.user_reached(topic)
+        or await service.was_sent(topic)
+    ):
+        return
+    evidence = await service.topic_evidence(topic)
+    if evidence is None:
+        return
+    try:
+        await app.expression.consider_reading_followup(event, topic, evidence)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            policy("initiative", "copy.activity_schedule_error", str),
+        )
+
+
 async def check_initiate_chat(app: Any) -> None:
     """Start a desire-driven chat independently of the user's presence."""
+    service = getattr(app, "initiative", None)
+    if isinstance(service, Initiative):
+        async with service.expression_lock:
+            if await service.due(time.time()):
+                await _process_scheduled(app, service)
+            await _check_desire_chat(app, service)
+    else:
+        await _check_desire_chat(app, None)
+
+
+async def _check_desire_chat(app: Any, service: Initiative | None) -> None:
     pending_method = cast(
         Callable[[], Awaitable[list[Any]]] | None,
         getattr(app.expression, "pending_questions", None),
     )
     if callable(pending_method) and await pending_method():
+        _log_initiative("waiting_question", None)
+        return
+    if service is not None and await service.busy():
+        _log_initiative("active_chat", None)
         return
     desires = await app.desire.get_pending()
-    interaction = next(
-        (desire for desire in desires if desire.type is DesireType.INTERACTION), None
-    )
+    interaction = None
+    for desire in desires:
+        if desire.type is not DesireType.INTERACTION:
+            continue
+        if service is not None and desire.initiative_ref:
+            topic = Topic.decode(desire.initiative_ref)
+            if await service.was_sent(topic, reading_questions=True) or not (
+                await service.eligible(time.time())
+            ):
+                _log_initiative("topic_unavailable", desire.id)
+                continue
+        interaction = desire
+        break
     if interaction is None:
+        _log_initiative("no_interaction_desire", None)
         return
     state = await app.inner_life.get_state()
     latest_method = cast(
@@ -192,9 +382,17 @@ async def check_initiate_chat(app: Any) -> None:
     )
     latest = await latest_method() if callable(latest_method) else None
     last_chat_at = app.last_chat_at if latest is None else latest
+    cooldown = await service.cooldown() * 60 if service is not None else None
+    args = () if cooldown is None else (cooldown,)
     if not should_initiate_chat(
-        desires, state.energy, time.time() - last_chat_at
+        desires, state.energy, time.time() - last_chat_at, *args
     ):
+        stage = (
+            "cooldown"
+            if should_initiate_chat(desires, state.energy, 0, 0)
+            else "energy"
+        )
+        _log_initiative(stage, interaction.id)
         return
     claim = cast(
         Callable[[str], Awaitable[bool]] | None,
@@ -202,6 +400,7 @@ async def check_initiate_chat(app: Any) -> None:
     )
     claimed = await claim(interaction.id) if callable(claim) else True
     if not claimed:
+        _log_initiative("claim_unavailable", interaction.id)
         return
     if callable(getattr(app, "can_initiate", None)) and not app.can_initiate():
         release = cast(
@@ -210,18 +409,23 @@ async def check_initiate_chat(app: Any) -> None:
         )
         if callable(release):
             await release(interaction.id)
+        _log_initiative("role_admission_closed", interaction.id)
         return
     try:
         committed = await app.expression.initiate_chat(interaction, state)
-    except Exception:
+    except BaseException:
         release = cast(
             Callable[[str], Awaitable[bool]] | None,
             getattr(app.desire, "release_interaction_claim", None),
         )
-        if callable(release):
+        if callable(release) and (
+            service is None
+            or not await app.expression.has_committed_desire(interaction.id)
+        ):
             await release(interaction.id)
         raise
     if not committed:
+        _log_initiative("expression_skipped", interaction.id)
         release = cast(
             Callable[[str], Awaitable[bool]] | None,
             getattr(app.desire, "release_interaction_claim", None),
@@ -243,6 +447,7 @@ async def check_initiate_chat(app: Any) -> None:
                 interaction.id,
             )
     app.last_chat_at = time.time()
+    _log_initiative("desire_committed", interaction.id)
 
 
 async def check_reflect(
@@ -329,6 +534,13 @@ async def tick_loop(
     last_mutter = last_chat = last_reflect = time.time()
     while True:
         now = time.time()
+        service = getattr(app, "initiative", None)
+        if (
+            isinstance(service, Initiative)
+            and not service.expression_lock.locked()
+            and await service.due(now)
+        ):
+            await publish_tick(TickType.SCHEDULED_INTERACTION_CHECK)
         if now - last_block >= grid:
             await publish_tick(TickType.SCHEDULE_BLOCK_START)
             await publish_tick(TickType.DESIRE_EVAL)

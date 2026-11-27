@@ -200,9 +200,8 @@ class ActivityStarter:
             resumed = await self._store.get_paused_in_block(
                 block_id, day_start, day_end
             )
-            if resumed is not None:
-                if await self._commit_start(resumed, is_new=False):
-                    return self._create_task(resumed)
+            if resumed is not None and await self._commit_start(resumed, is_new=False):
+                return self._create_task(resumed)
 
             task = await self._store.get_next_task()
             state = await self._get_state()
@@ -264,8 +263,10 @@ class ActivityStarter:
                 return self._create_task(activity)
 
             desires = await self._desire.get_pending()
-            values = (await self._desire.get_all()).values
-            activity = self.select_activity(rank_desires(desires, values), state)
+            snapshot = await self._desire.get_all()
+            activity = self.select_activity(
+                rank_desires(desires, snapshot.values), state
+            )
             if activity is None:
                 activity = self.default_activity(state)
             if activity.type is ActivityType.READING:
@@ -299,6 +300,17 @@ class ActivityStarter:
                         )
                     ):
                         activity.type = ActivityType.FREE_EXPLORATION
+                        parent_id = activity.progress.get("parent_long_term_id")
+                        parent = next(
+                            (item for item in snapshot.long_term
+                             if item.id == parent_id),
+                            None,
+                        )
+                        if parent is not None:
+                            activity.progress["research_scope"] = {
+                                "interest": parent.description,
+                                "topic": topic,
+                            }
                     else:
                         activity = self.default_activity(state)
             if not await self._commit_start(activity, is_new=True):

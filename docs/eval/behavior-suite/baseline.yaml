@@ -1,0 +1,75 @@
+suite_version: nyx-behavior-v1
+authored_on: '2026-11-27'
+timezone: Asia/Shanghai
+basis: 当前工作区文件，包括已有未提交修改；不是仅按 HEAD 推断，也未验证行为通过。
+head: a6fbe720591edf63b0b6774e565fa783982fccc3
+source_sha256:
+  frontend/src/api/characterScope.ts: c72eeb6dfe8d118daf02165dd1b436f078827302f5b909bfb395db36c7617500
+  frontend/src/components/reading/ReaderView.tsx: 0a2d987b626cd2a783ae424a47a86be57540042f3b83309075092d20d1f73f25
+  frontend/src/hooks/useSSE.ts: 70861703018116d6a3670a6728ce5714b7369bc55a4bea6a47ce1d629639d475
+  frontend/src/stores/characterStore.ts: 9db41f35eb432b70bfb6af82c63f3488e48784b7cde277cf75bcbeb4dcc28687
+  frontend/src/stores/chatStore.ts: e3555efdfc1eecb3a0df4999e3e69e89b65135784cd7c8e12564b89d81d002dc
+  frontend/src/stores/readerStore.ts: 545fd3ef6cb2fe533c1831c25464773ff76713802c07f0fb4ec6f18bf37525d3
+  nyx/activity/creation.py: dad52eebf4db1ea71c6ea763c64bbf5bda255e37a077614afee6b908c51dcac9
+  nyx/activity/facade.py: 22870493954b54c5667fe888cbc625f74c5a437f2c77e1693c2fe2ccb036a1ba
+  nyx/activity/lifecycle.py: e5ff14a01ce05153ef9968401a806c2f3c91bfcb78242303ad1dba06b1613e5a
+  nyx/activity/paths.py: 7238a77d6b233111acb4ef3b41586f0af514bde7ddbb2d7154275bf68f8c16e2
+  nyx/activity/starter.py: 0f177500ac61cdc33e8d67c1ec33f2ae19cc40d4ebf26d0cd68a7c5131597bbd
+  nyx/app_context.py: 73a95f5ff4e8cd7eb54cdec159167b5b87fa7f02aba0201ece96afbb82fa4b5d
+  nyx/behavior/service.py: 076ca8fa961517216358af35350d9856a0c46a6e66401f5852723e7b6f8987b2
+  nyx/cards/nyx/canon.md: 02d02e022e4436ccb58fce08125f29099f2b97ffbef213d5233133ff08b7af15
+  nyx/cards/nyx/card.yaml: 98841427573f000747df7070b27c576c714be8f687b64fc10ac89e30ee08f1be
+  nyx/cards/nyx/character-reference.md: a4e7f3fdbbc35783fa3702c041a11004477922c679c91736bc9f4508ab5fdc89
+  nyx/desire/lifecycle.py: 5fe48efef270a4d33101ad223a6124c6e5ee28a3964383d32a343090b81a853a
+  nyx/eval/evaluator.py: 9818a64360ea020026e9af97d077fe128a67d12e13a65c129935d0ed3f1663d5
+  nyx/events/bus.py: d501ae342c97bcd772c0b0ad0e8aee0a3868da4c3cc349d8813830b0dde92eef
+  nyx/expression/classifier.py: f0356bbbb9ee169511879cd948deab7814e3837d4efa73177098716bd2cf5999
+  nyx/expression/facade.py: 98ea3aea01d217e96334fdebdc60349e21450b1517b68e8e2a01743293f24022
+  nyx/expression/mutter.py: 83277cb1d7f9b6d3b384f9c00c9d648d44eef071122ba571720c93d82b6fe09c
+  nyx/expression/pipeline.py: d8fb3ab97a828913aebe0a5452412fc366575d753a506dbf136f0acc4f06bd59
+  nyx/expression/prompt.py: 377744458495ef30dff673867c4c891fce9fb660d515ac459fef5ab28a0c9505
+  nyx/expression/store.py: ab3f4c8ece210521de26b0ffe0cb35507ad0ffa448af62c57bdeccd05155e353
+  nyx/expression/tool_pipeline.py: cc86cce160f784980938413c9f359c95ca5d1ac8e631eed264c535bf7845c0e9
+  nyx/initiative.py: 72bf249a19e2036138a768473ed594b8c8e967569d59891d6f546cb859f0e4e0
+  nyx/inner_life/document.py: f09d8abc4457bc976d6f1d89accca3087f6211b69d602fa505a33b4e5bbc6e14
+  nyx/inner_life/facade.py: 7c7288f08b3c8573d80323028347fc45b77de55b3d98d9ded8b3e3b57cecc5e3
+  nyx/inner_life/reflection.py: fc5edc67ecd8d183f3a35cd40a5a5a2e09e8b6834a3b4cc55a0dbe36ac426d31
+  nyx/memory/conversation_indexing.py: cd41d6755109fcc9439e51f5e8e81702562a86c4b00e3dbffa93a8066f010725
+  nyx/memory/conversation_retrieval.py: 2ec8017e9324ea13b6621779e8f7c947fb596b91f9f73d5399c222d4a7619d9d
+  nyx/memory/facade.py: 61aea427ab4ed32abd956806df39ff9160cc9dfe1c4427a39b9fc76501db57b3
+  nyx/memory/facts.py: 0c795cce73db71ed250dc1a5ba5154ebc39414f79f8f116d69d514fd1aa41ea4
+  nyx/reading/companions.py: 87ce79d23638251f2a43dff4a6761bdf889ae6fbdd7ba7885b9ea06488703322
+  nyx/reading/epub.py: 417c69423a9aa986ba6b3cea3ad5b768db91cbaf706ac0195edff9d1c91fe533
+  nyx/reading/facade.py: 247005e51257e447ce72787bfd533806f8e001fe551d8b98f9cc1f107b5382af
+  nyx/reading/integration.py: f1474a758b5c1347903396a72c06830bea22d34148d884f27db5b43e72f7f281
+  nyx/reading/store.py: 0b35ce2a9a115cceb8b21cdb17af5ffc1b74294be94ffd32844cf503291a211f
+  nyx/research/engine.py: 233c56aa57764ea7cbff91b594596ecd0a3641be8f3ef629ef82e02ac3bcdf4a
+  nyx/runtime.py: d60a56e18028008e993d2e263ad0f7b10b04d4318f9a734398bdc3945ed52c93
+  nyx/settings/activity.json: 08985eace88d712677570acc888ade3c48281f66ee6039fddada779eee9632d1
+  nyx/settings/behavior.json: 7ea3f523b18fce28e20e3c8bc2a38a5ca6a01f7dac56dfb841744efc5eb610ce
+  nyx/settings/desire.json: 0630437571582574ab7bdd2ab52deb460682842b33bebc51110a49d9b1be5d30
+  nyx/settings/eval.json: d09f706157e1d595ee22d28659c767ea33f4c782540b0dd2a3727f22fef43056
+  nyx/settings/events.json: 6b06c3dc73f0714cc6592624a05e904fce194635602438aa0e497441d455e5e7
+  nyx/settings/expression.json: 85da770ad7741aadc4dfeb9ff75f9bfafd1097c38a6c2ef823765351bce4c944
+  nyx/settings/frontend.json: f3e683e32a1d10028161589fa365530f484d9e9b14bb897a9f0aa4feb26c9532
+  nyx/settings/initiative.json: 7e03f37f1d1840fae0841a670e4b873e5f051654d26776921a6d7e2adf95e416
+  nyx/settings/inner_life.json: e5a0538e3769e8f35421c0e8b3f8ab86bf0ca00b5c824a8aeca204290e4a36af
+  nyx/settings/memory.json: eaabe50fc2bb629db7094f0c12381eb932f6d16189a3cc383c195363ac37a122
+  nyx/settings/reading.json: 245cb29aa7f4e9a85fa672c9c6f68d5b363fb8b54132be8a0eac6f4296d2da3c
+  nyx/settings/research.json: a6aa6ab5ca1cafef5914b0967a326c35a05519937f10d6d62a591579159cce91
+  nyx/settings/runtime.json: 4411e5f37203686b5090f439869ff6aeaa6a213ce651141cb8fcd92e10ea2f3d
+  nyx/settings/tools.json: fc8159a70786fafbccf7715cfc37afdfb30d25fd69832c868646967fdd46b96b
+  nyx/tools/file_io.py: 76f6cd1fcceac7429350686f8a4bf642268f573c11e94bea55a3ae4592b9f6e6
+  nyx/tools/initiative.py: 60e211ae655e705a3980ae6633bc95600de381cc829c171bae075f6820b20a58
+  nyx/tools/registry.py: c7c779e4fe07ec99b8cab15fc7cc336a1a858d445ba99c18689ce76563efc9a8
+  nyx/transports/onebot.py: 5a72317c06fbc23b45b1b52a798f106242264aa5b5fc7e1ef0a64333ba442806
+  nyx/transports/outbox.py: 7c4f9332ae69a839134b4110744b9650ae2c97ab60b83ef6ccfccf2fec659c3e
+not_run:
+- 真实模型
+- 行为驱动
+- 真实页面
+- 真实桌面
+- PostgreSQL
+- 真实 QQ
+reaudit_note: 编写期间相关文件变化后重新核对工作日、只跳过下次、当天已读、默认用户进度及遗留 QQ 引用的当前实现，并更新对应场景；不表示行为实测通过。 最后核对新增移动端展示文案；它不改变本套既有语义断言，原生通知仍属未覆盖范围。
+snapshot_scope: 仅指纹所列源码/策略，非完整可恢复 checkout；角色与运行状态在每次执行时另存。

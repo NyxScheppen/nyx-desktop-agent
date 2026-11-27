@@ -783,6 +783,25 @@ async def test_device_pairing_is_one_time_and_revocable(
             assert (await client.get(
                 "/api/state", headers={"Authorization": f"Bearer {device}"}
             )).status_code == 200
+            from nyx.events.event import internal_event
+            from nyx.transports.outbox import TransportOutbox
+
+            app = host.apps["nyx"]
+            assert app.database is not None
+            outbox = TransportOutbox(app.database, "onebot:fixture")
+            await outbox.initialize()
+            sent = await client.post(
+                "/api/chat", json={"message": "手机里的对话"},
+                headers={"Authorization": f"Bearer {device}"},
+            )
+            assert sent.status_code == 200
+            correlation_id = sent.json()["event_id"]
+            for event_type in (EventType.THINK, EventType.ASK, EventType.SPEAK):
+                await app.bus.publish(internal_event(
+                    event_type, {"content": "App 内回复"}, correlation_id,
+                ))
+            await outbox.scan()
+            assert await outbox.claim() is None
             assert (await client.post(
                 "/api/devices/pair", json={"code": code, "name": "再次"}
             )).status_code == 401
@@ -799,6 +818,351 @@ async def test_device_pairing_is_one_time_and_revocable(
             assert (await client.get(
                 "/api/devices", headers={"Authorization": f"Bearer {device}"}
             )).status_code == 401
+    finally:
+        await host.close()
+
+
+async def test_mobile_workday_reading_invitation_is_sent_to_qq_once(
+    tmp_path: Path, resources: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime
+
+    import httpx
+
+    from nyx import initiative, runtime
+    from nyx.api.routes import build_host_app
+    from nyx.app_context import _Host
+    from nyx.behavior.context import tool_execution_id
+    from nyx.enums import TickType
+    from nyx.events.event import internal_event
+    from nyx.reading.segmenter import Segment
+    from nyx.reading.store import ReadingStore
+    from nyx.runtime import on_scheduled_interaction_check, root_event
+    from nyx.tools.initiative import build_initiative_tools
+    from nyx.transports.onebot import OneBotAdapter
+
+    class TestClock:
+        now = datetime(2033, 1, 7, 20, tzinfo=initiative.USER_TIMEZONE).timestamp()
+
+        @classmethod
+        def time(cls) -> float:
+            return cls.now
+
+    monkeypatch.setattr(initiative, "time", TestClock)
+    monkeypatch.setattr(runtime, "time", TestClock)
+    monkeypatch.delenv("NYX_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("NYX_PUBLIC_ORIGIN", raising=False)
+    host = await _Host.open(Config(), tmp_path)
+    app = host.apps["nyx"]
+    assert app.database is not None and app.initiative is not None
+    database = app.database
+    service = app.initiative
+    try:
+        monkeypatch.setenv("ONEBOT_ACCESS_TOKEN", "fixture-token")
+        app.config.onebot.self_id, app.config.onebot.owner_id = 123, 456
+        adapter = OneBotAdapter(app)
+        await adapter.outbox.initialize()
+        delivered: list[tuple[str, dict[str, Any]]] = []
+
+        async def call(action: str, params: dict[str, Any]) -> dict[str, Any]:
+            delivered.append((action, params))
+            return {"data": {"message_id": 7}}
+
+        monkeypatch.setattr(adapter, "_call", call)
+        monkeypatch.setattr(app.expression._llm, "can_initiate", lambda: False)
+        book, _ = await ReadingStore(database).insert_book_with_paragraphs(
+            "北岸灯塔", "示例", "test.epub", "fixture-reading",
+            [Segment("第一个段落", True), Segment("第二个段落", False)],
+        )
+        source = root_event(
+            EventType.USER_MESSAGE, {"message": "工作日晚上提醒我读北岸灯塔"},
+        )
+        await app.bus.publish(source)
+        async with database.transaction() as connection:
+            await connection.execute(
+                "INSERT INTO tool_execution VALUES (?, ?, 'running', NULL, NULL)",
+                ("tool", source.id),
+            )
+        tools = {tool.name: tool.handler for tool in build_initiative_tools(service)}
+        token = tool_execution_id.set("tool")
+        try:
+            item = await tools["schedule_interaction"](
+                "user", "reading", "2033-01-07T21:00", "workdays", "", "《北岸灯塔》",
+                skip_if_read=True,
+            )
+        finally:
+            tool_execution_id.reset(token)
+        assert item["skip_if_read_today"] is True and item["skip_if_read"] is False
+        first = await service.get(item["id"])
+        await app.reading.save_progress(book.id, 2, 1, 30, 0, user_read=True)
+
+        async def tick() -> None:
+            await on_scheduled_interaction_check(app, internal_event(
+                EventType.CLOCK_TICK,
+                {"tick_type": TickType.SCHEDULED_INTERACTION_CHECK},
+                "mobile-test",
+            ))
+
+        # Move only the scheduler clock for the skip. Use current timestamps for
+        # the event bus and database leases.
+        async with database.transaction() as connection:
+            await connection.execute(
+                "UPDATE reading_progress SET last_user_read_at=? WHERE book_id=?",
+                (first.due_at - 300, book.id),
+            )
+        TestClock.now = first.due_at
+        await tick()
+        after_skip = await service.get(first.id)
+        assert initiative.local_time(after_skip.due_at).startswith("2033-01-10T21:00")
+        assert not await app.bus.list_events(event_type=EventType.INITIATE_CHAT)
+        assert (await service.list_items())[0]["last_outcome"] == "already_read"
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=build_host_app(host, launch_nonce=None)),
+            base_url="http://127.0.0.1:8000",
+        ) as client:
+            base = "/api/characters/nyx"
+            headers = {"X-Nyx-Selection-Revision": str(host.revision)}
+            settings = base + "/initiative/settings"
+            response = await client.get(settings)
+            assert response.json()["cooldown_minutes"] == initiative.DEFAULT_COOLDOWN
+            desired_cooldown = initiative.MAX_COOLDOWN
+            response = await client.put(
+                settings, headers=headers, json={"cooldown_minutes": desired_cooldown},
+            )
+            assert response.json()["cooldown_minutes"] == desired_cooldown
+            response = await client.get(settings)
+            assert response.json()["cooldown_minutes"] == desired_cooldown
+            schedules = await client.get(base + "/initiative/schedules")
+            assert schedules.json()[0]["id"] == first.id
+            address = base + "/initiative/schedules/" + first.id
+            paused = await client.put(address, headers=headers, json={
+                "operation": "pause", "version": after_skip.version,
+            })
+            assert paused.json()["status"] == "paused"
+            stale = await client.put(address, headers=headers, json={
+                "operation": "cancel", "version": after_skip.version,
+            })
+            assert stale.status_code == 409
+            resumed = await client.put(address, headers=headers, json={
+                "operation": "resume", "version": paused.json()["version"],
+            })
+            assert resumed.json()["status"] == "active"
+            TestClock.now = after_skip.due_at
+            await tick()
+            events = await app.bus.list_events(event_type=EventType.INITIATE_CHAT)
+            assert len(events) == 1 and events[0].content["book_id"] == book.id
+            next_item = await service.get(first.id)
+            declined = await tools["modify_interaction"](
+                first.id, next_item.version, "skip_today",
+            )
+            assert declined["next_local_time"] == initiative.local_time(
+                next_item.due_at
+            )
+            assert (await service.list_items())[0]["last_outcome"] == "declined"
+            await tick()
+            repeated = await app.bus.list_events(event_type=EventType.INITIATE_CHAT)
+            assert len(repeated) == 1
+            TestClock.now = next_item.due_at - 300
+            skipped = await tools["modify_interaction"](
+                first.id, next_item.version, "skip_today",
+            )
+            postponed = await service.get(first.id)
+            next_time = initiative.local_time(postponed.due_at)
+            assert next_time.startswith("2033-01-12T21:00")
+            assert skipped["next_local_time"] == next_time
+            assert (await service.list_items())[0]["last_outcome"] == "skipped"
+            TestClock.now = next_item.due_at
+            await tick()
+            invitations = await app.bus.list_events(event_type=EventType.INITIATE_CHAT)
+            assert len(invitations) == 1
+            await adapter.outbox.scan()
+            claimed = await adapter.outbox.claim()
+            assert claimed is not None and claimed.id == events[0].id
+            await adapter.outbox.sent(claimed.id, await adapter.emit(claimed))
+            await adapter.outbox.scan()
+            assert await adapter.outbox.claim() is None
+            assert delivered == [("send_private_msg", {
+                "user_id": 456,
+                "message": [{
+                    "type": "text", "data": {"text": claimed.content["content"]},
+                }],
+            })]
+    finally:
+        await host.close()
+
+
+async def test_reading_schedule_recovers_after_missed_workdays(
+    tmp_path: Path, resources: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime
+
+    from nyx import initiative, runtime
+    from nyx.app_context import _Host
+    from nyx.reading.segmenter import Segment
+    from nyx.reading.store import ReadingStore
+    from nyx.tools.initiative import build_initiative_tools
+
+    class Clock:
+        now = datetime.fromisoformat("2033-01-07T20:00+08:00").timestamp()
+
+        @classmethod
+        def time(cls) -> float:
+            return cls.now
+
+    monkeypatch.setattr(initiative, "time", Clock)
+    monkeypatch.setattr(runtime, "time", Clock)
+    host = await _Host.open(Config(), tmp_path)
+    try:
+        app = host.apps["nyx"]
+        assert app.database is not None and app.initiative is not None
+        book, _ = await ReadingStore(app.database).insert_book_with_paragraphs(
+            "重启测试", "示例", "test.epub", "fixture-restart", [Segment("正文", True)],
+        )
+        source = runtime.root_event(
+            EventType.USER_MESSAGE, {"message": "工作日提醒我读书"},
+        )
+        await app.bus.publish(source)
+        topic = initiative.Topic(book_id=book.id)
+        reminder = await app.initiative.create(
+            "user", "reading", "2033-01-07T21:00", "workdays", "续读", topic,
+            source, False,
+        )
+        tools = {
+            tool.name: tool.handler for tool in build_initiative_tools(app.initiative)
+        }
+        moved = await tools["modify_interaction"](
+            reminder.id, reminder.version, "reschedule", "2033-01-07T21:30",
+        )
+        cancelled = await app.initiative.create(
+            "user", "reading", "2033-01-07T21:00", "once", "", topic, source, False,
+        )
+        result = await tools["cancel_interaction"](cancelled.id, cancelled.version)
+        assert result["status"] == "cancelled"
+        current = await app.initiative.get(reminder.id)
+        assert current.version == moved["version"]
+        Clock.now = current.due_at
+        assert await app.initiative.claim(current, Clock.now) is not None
+        assert await app.initiative.claim(current, Clock.now) is None
+    finally:
+        await host.close()
+
+    host = await _Host.open(Config(), tmp_path)
+    try:
+        app = host.apps["nyx"]
+        assert app.database is not None and app.initiative is not None
+        monkeypatch.setattr(app.expression._llm, "can_initiate", lambda: False)
+        Clock.now = datetime.fromisoformat("2033-01-12T21:35+08:00").timestamp()
+        await runtime._process_scheduled(app, app.initiative)
+        await runtime._process_scheduled(app, app.initiative)
+        events = await app.bus.list_events(event_type=EventType.INITIATE_CHAT)
+        assert len(events) == 1
+        assert events[0].content["schedule_id"] == reminder.id
+        assert events[0].content["book_id"] == book.id
+        current = await app.initiative.get(reminder.id)
+        assert initiative.local_time(current.due_at).startswith("2033-01-13T21:30")
+        async with app.database.lock:
+            rows = await (await app.database.conn.execute(
+                "SELECT due_at, outcome FROM scheduled_occurrence "
+                "WHERE item_id=? ORDER BY due_at",
+                (reminder.id,),
+            )).fetchall()
+        outcomes = [
+            (initiative.local_time(row["due_at"])[:10], row["outcome"]) for row in rows
+        ]
+        assert outcomes == [
+            ("2033-01-07", "missed"), ("2033-01-10", "missed"),
+            ("2033-01-11", "missed"), ("2033-01-12", "sent"),
+        ]
+    finally:
+        await host.close()
+
+
+async def test_autonomous_reading_followup_applies_only_to_unread_paragraphs(
+    tmp_path: Path, resources: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime
+
+    from nyx import initiative, runtime
+    from nyx.app_context import _Host
+    from nyx.enums import ActivityType
+    from nyx.expression import facade
+    from nyx.reading.segmenter import Segment
+    from nyx.reading.store import ReadingStore
+    from nyx.types import LLMOutput
+
+    class Clock:
+        now = datetime.fromisoformat("2033-01-07T20:00+08:00").timestamp()
+
+        @classmethod
+        def time(cls) -> float:
+            return cls.now
+
+    for module in (initiative, runtime, facade):
+        monkeypatch.setattr(module, "time", Clock)
+
+    host = await _Host.open(Config(), tmp_path)
+    try:
+        app = host.apps["nyx"]
+        assert app.database is not None and app.initiative is not None
+        book, _ = await ReadingStore(app.database).insert_book_with_paragraphs(
+            "湖岸", "示例", "test.epub", "fixture-followup",
+            [Segment("岸边", True), Segment("松树", False), Segment("远处", False)],
+        )
+        calls: list[str] = []
+
+        async def complete(
+            messages: list[dict[str, str]], *, module: str, output_type: str,
+            correlation_id: str, **_options: Any,
+        ) -> LLMOutput:
+            calls.append(output_type)
+            if output_type == "reading_followup":
+                assert book.title in messages[-1]["content"]
+                minute = "00" if calls.count("reading_followup") == 1 else "30"
+                content = json.dumps({"local_time": f"2033-01-07T21:{minute}"})
+            else:
+                assert output_type == "scheduled_interaction"
+                content = "有空的话，我们接着读《湖岸》？"
+            return LLMOutput(module, output_type, "fixture", content, correlation_id)
+
+        monkeypatch.setattr(app.expression._llm, "can_initiate", lambda: True)
+        monkeypatch.setattr(app.expression._llm, "complete", complete)
+        source = runtime.root_event(EventType.ACTIVITY_END, {
+            "type": ActivityType.READING.value,
+            "result": {"book_id": book.id, "target_paragraph": 2, "completed": False},
+        })
+        await app.bus.publish(source)
+        await runtime.on_reading_followup(app, source)
+        await runtime.on_reading_followup(app, source)
+        schedules = await app.initiative.list_items()
+        assert len(schedules) == 1 and schedules[0]["origin"] == "autonomous"
+        scheduled = await app.initiative.get(str(schedules[0]["id"]))
+        await app.reading.save_progress(book.id, 2, 1, 30, 0, user_read=True)
+        Clock.now = scheduled.due_at
+        await runtime._process_scheduled(app, app.initiative)
+        assert (await app.initiative.list_items())[0]["last_outcome"] == "already_read"
+        assert await app.bus.list_events(event_type=EventType.INITIATE_CHAT) == []
+        assert calls == ["reading_followup"]
+
+        continuation = runtime.root_event(EventType.ACTIVITY_END, {
+            "type": ActivityType.READING.value,
+            "result": {"book_id": book.id, "target_paragraph": 3, "completed": False},
+        })
+        await app.bus.publish(continuation)
+        await runtime.on_reading_followup(app, continuation)
+        [active, _completed] = await app.initiative.list_items()
+        assert active["status"] == "active"
+        next_read = await app.initiative.get(str(active["id"]))
+        Clock.now = next_read.due_at
+        await runtime._process_scheduled(app, app.initiative)
+        await runtime._process_scheduled(app, app.initiative)
+        [event] = await app.bus.list_events(event_type=EventType.INITIATE_CHAT)
+        assert event.content["book_id"] == book.id
+        assert event.content["paragraph_index"] == 3
+        assert event.content["initiative_origin"] == "autonomous"
+        assert calls == [
+            "reading_followup", "reading_followup", "scheduled_interaction",
+        ]
     finally:
         await host.close()
 

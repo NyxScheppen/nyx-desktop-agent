@@ -11,9 +11,7 @@ import { parseAvatarPos, parseCircleSize, useSettingsStore } from "../src/stores
 import {
   catchupDurationMs,
   computeWindow,
-  GAP_PX,
   nyxStatusOf,
-  paginate,
   useReaderStore,
 } from "../src/stores/readerStore";
 import type {
@@ -1453,10 +1451,10 @@ describe("readerStore", () => {
   });
 
   it("computeWindow：书首/书尾 clamp 到 [1, total] 不越界", () => {
-    expect(computeWindow(1, 120, false)).toEqual({ from: 1, to: 50 });
-    expect(computeWindow(120, 120, false)).toEqual({ from: 120, to: 120 });
-    expect(computeWindow(120, 120, true)).toEqual({ from: 95, to: 120 });
-    expect(computeWindow(1, 120, true)).toEqual({ from: 1, to: 50 });
+    expect(computeWindow(1, 120)).toEqual({ from: 1, to: 50 });
+    expect(computeWindow(60, 120)).toEqual({ from: 35, to: 84 });
+    expect(computeWindow(120, 120)).toEqual({ from: 71, to: 120 });
+    expect(computeWindow(6, 6)).toEqual({ from: 1, to: 6 });
   });
 
   it("catchupDurationMs：clamp 到 [1s, 30s]", () => {
@@ -1470,30 +1468,6 @@ describe("readerStore", () => {
     // 100 字/1 = 100s 被 clamp 到 30s 顶格；应回退后端下界 10 字/秒 → 10s。
     expect(catchupDurationMs(100, 0)).toBe(10000);
     expect(catchupDurationMs(100, -5)).toBe(10000);
-  });
-
-  // ---- 真分页纯函数（08 §5.1） ----
-  it("paginate：长段独占一页、短段一页多段、溢出封页", () => {
-    const paras = [para(1, "一"), para(2, "二"), para(3, "三"), para(4, "四")];
-    const H = 50; // 每段 offsetHeight 50
-    const measure = () => H + GAP_PX; // measureHeight 含段间距 GAP_PX=12 → 62/段
-    expect(paginate(paras, measure, 62)).toEqual([[1], [2], [3], [4]]); // 62 装不下第二段 → 每页一段
-    expect(paginate(paras, measure, 124)).toEqual([[1, 2], [3, 4]]); // 62*2=124 恰好两段一页
-    expect(paginate(paras, measure, 125)).toEqual([[1, 2], [3, 4]]); // 第三段 62 溢出 → 封页
-    expect(paginate(paras, measure, 130)).toEqual([[1, 2], [3, 4]]); // 124+62=186>130 仍装不下第三段
-  });
-
-  it("paginate：空 paragraphs / viewportHeight<=0 返回 []", () => {
-    expect(paginate([], () => 50, 100)).toEqual([]);
-    expect(paginate([para(1, "一")], () => 50, 0)).toEqual([]);
-    expect(paginate([para(1, "一")], () => 50, -1)).toEqual([]);
-  });
-
-  it("paginate：measureHeight 含 GAP_PX 后页界正确（间距计入分页）", () => {
-    const paras = [para(1, "一"), para(2, "二")];
-    const H = 50;
-    // 不含 GAP_PX 时 50+50=100 <= 110 会挤进同一页；含 GAP_PX 后 62+62=124 > 110 → 分两页
-    expect(paginate(paras, () => H + GAP_PX, 110)).toEqual([[1], [2]]);
   });
 
   // ---- loadBooks ----
@@ -1539,7 +1513,7 @@ describe("readerStore", () => {
     expect(s.totalParagraphs).toBe(120); // 从 books 列表项取
     expect(s.userPosition).toBe(3);
     expect(s.nyxPosition).toBe(1);
-    expect(fetchMock.mock.calls[1][0]).toBe("/api/books/b1/paragraphs?from=3&to=52");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/books/b1/paragraphs?from=1&to=50");
     expect(vi.getTimerCount()).toBeGreaterThan(0); // startCatchup 已排 timer
   });
 
@@ -1561,7 +1535,7 @@ describe("readerStore", () => {
 
     await useReaderStore.getState().openBook("b1");
 
-    expect(fetchMock.mock.calls[1][0]).toBe("/api/books/b1/paragraphs?from=120&to=120");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/books/b1/paragraphs?from=71&to=120");
   });
 
   it("openBook：书架缓存缺失时先刷新书架再打开", async () => {
@@ -1622,6 +1596,7 @@ describe("readerStore", () => {
         user_position: 6,
         nyx_position: 3,
         reading_speed: 50,
+        user_read: true,
         expected_revision: 0,
       }),
     });
@@ -1716,7 +1691,7 @@ describe("readerStore", () => {
     expect(useReaderStore.getState().userPosition).toBe(80);
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "/api/progress/b1",
-      "/api/books/b1/paragraphs?from=80&to=120",
+      "/api/books/b1/paragraphs?from=55&to=104",
     ]);
   });
 

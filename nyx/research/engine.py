@@ -144,6 +144,12 @@ class ResearchEngine:
             # The service reloads the durable checkpoint and verifies receipts.
             raise
         except Exception as error:
+            if getattr(error, "status_code", None) == policy(
+                "research", "engine.provider_pause_code", int
+            ):
+                checkpoint["pause_reason"] = "provider"
+                await self._save_checkpoint(activity, checkpoint)
+                raise
             reason = str(error) or (
                 policy("research", "engine.copy.run_text_2", str)
                 if isinstance(error, TimeoutError)
@@ -189,6 +195,33 @@ class ResearchEngine:
                 )
             return await saved()
 
+        async def scope_check(_state: ResearchState) -> ResearchState:
+            assessment = await self._ask(
+                activity, checkpoint, "scope", _SCOPE_SYSTEM,
+                {
+                    "scope": checkpoint["scope"],
+                    "question": checkpoint["initial_question"],
+                },
+            )
+            decision = assessment.get("decision")
+            reason = assessment.get("reason")
+            question = assessment.get("question")
+            if (
+                decision not in ("aligned", "prune", "ask_user")
+                or not isinstance(reason, str) or not reason.strip()
+                or (decision == "ask_user" and
+                    (not isinstance(question, str) or not question.strip()))
+            ):
+                raise ValueError(policy("research", "engine.copy.scope_invalid", str))
+            checkpoint["scope_checked"] = True
+            if decision == "prune":
+                checkpoint["next_action"] = {"action": "prune", "reason": reason}
+            elif decision == "ask_user":
+                checkpoint["next_action"] = {
+                    "action": "ask_user", "question": question, "reason": reason
+                }
+            return await saved()
+
         def route(_state: ResearchState) -> str:
             if checkpoint["state"] == "waiting_user":
                 return "wait_user"
@@ -210,45 +243,72 @@ class ResearchEngine:
                 )
                 checkpoint["unresolved_questions"] = [checkpoint["question"]]
                 return "summarize"
+            if checkpoint.get("scope") and not checkpoint.get("scope_checked"):
+                return "scope_check"
             return "decide"
 
         async def decide(_state: ResearchState) -> ResearchState:
+            context = policy("research", "engine.context", dict[str, int])
+            results = [
+                {
+                    "title": item.get("title"),
+                    "url": item.get("url"),
+                    "path": item.get("path"),
+                    "snippet": str(item.get("snippet", ""))[:context["snippet_chars"]],
+                    "query": item.get("query"),
+                }
+                for item in checkpoint["raw_results"]
+            ]
+            can_read = checkpoint["sources"] < self._max_sources and any(
+                (item["url"] or item["path"]) not in checkpoint["processed_sources"]
+                for item in results
+            )
+            available = ["finish", "ask_user", "prune"]
+            if can_read:
+                available.append("read")
+            if not (checkpoint.get("scope") and can_read):
+                available.extend(("rewrite", "follow_up", "knowledge_search"))
+                if checkpoint["searches"] < self._max_searches:
+                    available.append("search")
+            recent_findings = checkpoint["findings"][-context["finding_limit"]:]
+            actions = checkpoint["actions"]
+            recent_index = max(0, len(actions) - context["action_limit"])
+            action_context = [
+                {"name": action["name"]} for action in actions[:recent_index]
+                if "name" in action
+            ]
+            action_context.extend(
+                {key: str(action[key])[:context["reason_chars"]]
+                 for key in ("name", "text", "args", "status", "reason")
+                 if key in action}
+                for action in actions[recent_index:]
+            )
             decision = await self._ask(
                 activity,
                 checkpoint,
                 "decide",
-                _DECIDE_SYSTEM,
+                _DECIDE_SYSTEM + policy(
+                    "research", "engine.decision_scope_instruction", str
+                ),
                 {
                     "initial_question": checkpoint["initial_question"],
                     "question": checkpoint["question"],
-                    "findings": checkpoint["findings"],
+                    "scope": checkpoint.get("scope"),
+                    "user_answers": [
+                        action["text"] for action in checkpoint["actions"]
+                        if action.get("name") == "user_answer"
+                    ],
+                    "findings": [
+                        finding[:context["finding_chars"]]
+                        for finding in recent_findings
+                    ],
                     "previous_research": checkpoint.get("previous_research", []),
                     "strategy_lessons": checkpoint.get("strategy_lessons", []),
-                    "actions": checkpoint["actions"],
-                    "results": checkpoint["raw_results"],
+                    "actions": action_context,
+                    "results": results,
                     "processed_sources": checkpoint["processed_sources"],
-                    "available_actions": [
-                        "rewrite",
-                        "follow_up",
-                        "knowledge_search",
-                        "finish",
-                        "ask_user",
-                    ]
-                    + (
-                        ["search"]
-                        if checkpoint["searches"] < self._max_searches
-                        else []
-                    )
-                    + (
-                        ["read"]
-                        if checkpoint["sources"] < self._max_sources
-                        and any(
-                            (item.get("url") or item.get("path"))
-                            not in checkpoint["processed_sources"]
-                            for item in checkpoint["raw_results"]
-                        )
-                        else []
-                    ),
+                    "searched_queries": checkpoint["searched_queries"],
+                    "available_actions": available,
                     "unresolved_questions": checkpoint["unresolved_questions"],
                     "remaining": {
                         "steps": self._max_steps - checkpoint["steps"],
@@ -385,9 +445,18 @@ class ResearchEngine:
             return await release(_state)
 
         async def release(_state: ResearchState) -> ResearchState:
-            checkpoint["processed_sources"].append(
-                checkpoint["source_pending"]["location"]
-            )
+            source = checkpoint["source_pending"]
+            checkpoint["processed_sources"].append(source["location"])
+            assessment = source["assessment"]
+            if assessment.get("relevant") is False:
+                question = str(source.get("question") or checkpoint["question"])
+                reason = str(assessment.get("reason") or policy(
+                    "research", "engine.copy.scope_pruned", str
+                ))
+                self._record_prune(
+                    checkpoint, question, reason, location=source["location"]
+                )
+                self._rewind_rejected_branch(checkpoint, question, reason)
             checkpoint["source_pending"] = None
             checkpoint["next_action"] = None
             return await saved()
@@ -492,9 +561,11 @@ class ResearchEngine:
             "read",
             "finish",
             "ask_user",
+            "prune",
         }
         graph = StateGraph(ResearchState)
         graph.add_node("select_topic", observed("select_topic", select_topic))
+        graph.add_node("scope_check", observed("scope_check", scope_check))
         graph.add_node("decide", observed("decide", decide))
         for name in actions - {"finish", "ask_user"}:
             graph.add_node(name, observed(name, act))
@@ -513,6 +584,7 @@ class ResearchEngine:
         graph.set_entry_point("select_topic")
         for name in (
             "select_topic",
+            "scope_check",
             "decide",
             "invalid_action",
             "ask_user",
@@ -546,6 +618,33 @@ class ResearchEngine:
         decision: dict[str, Any],
     ) -> None:
         action = decision.get("action")
+        if action == "prune":
+            question = checkpoint["question"]
+            reason = decision["reason"]
+            index = decision.get("index")
+            if index is not None:
+                result = checkpoint["raw_results"][index]
+                question = result.get("question") or question
+                location = result.get("url") or result.get("path")
+                if location not in checkpoint["processed_sources"]:
+                    checkpoint["processed_sources"].append(location)
+                    self._record_prune(checkpoint, question, reason, location=location)
+                    self._rewind_rejected_branch(checkpoint, question, reason)
+                return
+            self._record_prune(checkpoint, question, reason)
+            if question != checkpoint["initial_question"]:
+                for item in checkpoint["raw_results"]:
+                    location = item.get("url") or item.get("path")
+                    if (
+                        item.get("question") == question
+                        and location not in checkpoint["processed_sources"]
+                    ):
+                        checkpoint["processed_sources"].append(location)
+                checkpoint["question"] = checkpoint["initial_question"]
+                checkpoint["unresolved_questions"] = [checkpoint["question"]]
+            else:
+                checkpoint.update(state="summarizing", pruned=True, stop_reason=reason)
+            return
         if action in {"rewrite", "follow_up"}:
             question = str(decision.get("question", "")).strip()[
                 : policy(
@@ -554,6 +653,16 @@ class ResearchEngine:
             ]
             if not question:
                 raise ValueError(policy("research", "engine.copy.act_text", str))
+            if any(
+                item.get("name") == "prune" and item.get("location") is None
+                and item.get("text") == question
+                for item in checkpoint["actions"]
+            ):
+                self._reject(
+                    checkpoint, action,
+                    policy("research", "engine.copy.branch_already_pruned", str),
+                )
+                return
             checkpoint["question"] = question
             checkpoint["unresolved_questions"] = [question]
             checkpoint["actions"].append(
@@ -653,6 +762,7 @@ class ResearchEngine:
                                     )
                                 ],
                                 "query": query,
+                                "question": checkpoint["question"],
                             }
                         )
             added = len(checkpoint["raw_results"]) - previous_count
@@ -727,6 +837,35 @@ class ResearchEngine:
         raise ValueError(
             policy("research", "engine.templates.act_text_2", str).format(p0=action)
         )
+
+    @staticmethod
+    def _record_prune(
+        checkpoint: dict[str, Any], question: str, reason: str, *,
+        location: str | None = None,
+    ) -> None:
+        checkpoint["actions"].append({
+            "name": "prune", "text": question, "status": "rejected", "ok": False,
+            "reason": reason, "location": location,
+        })
+
+    def _rewind_rejected_branch(
+        self, checkpoint: dict[str, Any], question: str, reason: str
+    ) -> None:
+        if (
+            question != checkpoint["question"]
+            or question == checkpoint["initial_question"]
+        ):
+            return
+        processed_sources = checkpoint["processed_sources"]
+        if any(
+            hit.get("question") == question
+            and (hit.get("url") or hit.get("path")) not in processed_sources
+            for hit in checkpoint["raw_results"]
+        ):
+            return
+        self._record_prune(checkpoint, question, reason)
+        checkpoint["question"] = checkpoint["initial_question"]
+        checkpoint["unresolved_questions"] = [checkpoint["question"]]
 
     @staticmethod
     def _reject(checkpoint: dict[str, Any], action: str, reason: str) -> None:
@@ -930,14 +1069,17 @@ class ResearchEngine:
         instruction: str,
         data: dict[str, Any],
     ) -> dict[str, Any]:
+        include_canon = stage in {"scope", "finalize"} or (
+            stage == "decide" and not checkpoint.get("model_calls")
+        )
+        canon = self._canon + "\n\n" if include_canon else ""
+        skill_chars = policy("behavior", "service.parameters.validate_value_limit", int)
+        skill = str(checkpoint.get("skill_fragment", ""))[:skill_chars]
         output = await self._llm.complete(
             [
                 {
                     "role": "system",
-                    "content": self._canon
-                    + "\n\n"
-                    + str(checkpoint.get("skill_fragment", ""))
-                    + "\n\n"
+                    "content": canon + skill + "\n\n"
                     + instruction
                     + policy("research", "engine.copy.ask_once_text_2", str),
                 },
@@ -1166,6 +1308,7 @@ def _exploration_checkpoint(activity: Activity) -> dict[str, Any]:
         "state": checkpoint.get("state", "deciding"),
         "topic": str(topic) if isinstance(topic, str) and topic else _topic(activity),
         "initial_question": checkpoint.get("initial_question") or _topic(activity),
+        "scope": activity.progress.get("research_scope") or checkpoint.get("scope"),
         "question": checkpoint.get("question") or _topic(activity),
         "raw_results": _dict_list(checkpoint.get("raw_results")),
         "cursor": int(checkpoint.get("cursor", 0)),
@@ -1312,7 +1455,9 @@ def _result_from_checkpoint(checkpoint: dict[str, Any]) -> dict[str, Any]:
     return {
         "report": judged.get("report", []),
         "type": "free_exploration",
-        "outcome": "won" if core_discovery else "exhausted",
+        "outcome": "won" if core_discovery else (
+            "pruned" if checkpoint.get("pruned") else "exhausted"
+        ),
         "summary": str(judged.get("summary") or topic),
         "core_discovery": core_discovery,
         "knowledge": (
@@ -1360,6 +1505,7 @@ def _validate_decision(decision: dict[str, Any], data: dict[str, Any]) -> None:
         "knowledge_search": "query",
         "read": "index",
         "finish": "unresolved_questions",
+        "prune": "index",
     }
     field = fields[action]
     unexpected = set(decision) - {"action", "reason", field}
@@ -1375,6 +1521,10 @@ def _validate_decision(decision: dict[str, Any], data: dict[str, Any]) -> None:
                 p0=action
             )
         )
+    if action == "prune" and not str(decision.get("reason", "")).strip():
+        raise _InvalidResearchOutput(
+            policy("research", "engine.copy.scope_invalid", str)
+        )
     value = decision.get(field)
     if field in {"question", "query"}:
         if not isinstance(value, str) or not value.strip():
@@ -1384,7 +1534,7 @@ def _validate_decision(decision: dict[str, Any], data: dict[str, Any]) -> None:
                 ).format(p0=action, p1=field)
             )
         decision[field] = value.strip()
-    elif action == "read":
+    elif action in {"read", "prune"} and (action == "read" or field in decision):
         if (
             not isinstance(value, int)
             or isinstance(value, bool)
@@ -1407,6 +1557,8 @@ def _validate_decision(decision: dict[str, Any], data: dict[str, Any]) -> None:
 _DECIDE_SYSTEM = (
     policy("research", "engine._DECIDE_SYSTEM", str)
 )
+
+_SCOPE_SYSTEM = policy("research", "engine._SCOPE_SYSTEM", str)
 
 _SOURCE_CHECK_SYSTEM = (
     policy("research", "engine._SOURCE_CHECK_SYSTEM", str)

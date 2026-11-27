@@ -270,12 +270,19 @@ async def test_upsert_progress_rejects_stale_revision() -> None:
         first = await store.upsert_progress(book_id, 2, 2, 50, 0)
         with pytest.raises(ProgressConflictError):
             await store.upsert_progress(book_id, 3, 3, 50, first.revision - 1)
-        current = await store.get_progress(book_id)
+        async with database.transaction() as connection:
+            row = await (await connection.execute(
+                "SELECT user_position, revision FROM reading_progress WHERE book_id=?",
+                (book_id,),
+            )).fetchone()
+        retried = await store.upsert_progress(book_id, 3, 3, 50, first.revision)
     finally:
         await database.conn.close()
-    assert current is not None
-    assert current.user_position == 2
-    assert current.revision == first.revision
+    assert row is not None
+    assert row["user_position"] == 2
+    assert row["revision"] == first.revision
+    assert retried.user_position == 3
+    assert retried.revision == first.revision + 1
 
 
 async def test_advance_nyx_position_is_monotonic_and_preserves_user_state() -> None:

@@ -111,8 +111,9 @@ describe("角色管理 API", () => {
 });
 
 describe("设备配对 API", () => {
-  afterEach(() => vi.unstubAllGlobals());
-  it("用一次性配对码兑换设备凭证，并允许根凭证管理设备", async () => {
+  afterEach(() => { bindScope(null); vi.unstubAllGlobals(); });
+  it("已选择角色时仍使用宿主设备端点", async () => {
+    bindScope({ id: "alice", revision: 7 });
     const fetch = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ device_id: "d1", access_token: "device-secret" }))
       .mockResolvedValueOnce(jsonResponse({ code: "pair-code", expires_at: 100 }))
@@ -126,8 +127,12 @@ describe("设备配对 API", () => {
     expect(await createPairingCode("手机")).toEqual({ code: "pair-code", expires_at: 100 });
     expect(await getDevices()).toHaveLength(1);
     await revokeDevice("d1");
-    expect(fetch.mock.calls[3][0]).toBe("/api/devices/d1");
-    expect(fetch.mock.calls[3][1].method).toBe("DELETE");
+    expect(fetch.mock.calls.map(([url, init]) => [url, init.method ?? "GET"])).toEqual([
+      ["/api/devices/pair", "POST"],
+      ["/api/devices/pairing", "POST"],
+      ["/api/devices", "GET"],
+      ["/api/devices/d1", "DELETE"],
+    ]);
   });
 });
 

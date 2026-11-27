@@ -64,6 +64,21 @@ class ExpressionInteractionStore:
             if should_commit:
                 await self._db.conn.commit()
 
+    async def has_desire_attempt(self, desire_id: str) -> bool:
+        async with self._operation():
+            row = await (
+                await self._db.conn.execute(
+                    "SELECT 1 FROM expression_interaction_attempt WHERE kind=? "
+                    "AND source_id=? AND status<>? LIMIT 1",
+                    (
+                        InteractionKind.INITIATE_CHAT.value,
+                        desire_id,
+                        InteractionStatus.FAILED.value,
+                    ),
+                )
+            ).fetchone()
+        return row is not None
+
     async def get(self, attempt_id: str) -> InteractionAttempt | None:
         async with self._operation():
             cursor = await self._db.conn.execute(
@@ -226,11 +241,18 @@ class ExpressionInteractionStore:
         async with self._operation() as should_commit:
             cursor = await self._db.conn.execute(
                 "UPDATE expression_interaction_attempt SET status=?, "
-                "answered_at=?, answer_event_id=? WHERE id=? AND kind=? "
+                "answered_at=?, answer_event_id=? WHERE id=? AND kind IN (?, ?) "
                 "AND (status=? OR (status=? AND answer_event_id IS NULL))",
-                (InteractionStatus.ANSWERED.value, reply_at, reply_event_id, attempt_id,
-                 InteractionKind.INITIATE_CHAT.value, InteractionStatus.EXPIRED.value,
-                 InteractionStatus.CLAIMED.value),
+                (
+                    InteractionStatus.ANSWERED.value,
+                    reply_at,
+                    reply_event_id,
+                    attempt_id,
+                    InteractionKind.INITIATE_CHAT.value,
+                    InteractionKind.SCHEDULED.value,
+                    InteractionStatus.EXPIRED.value,
+                    InteractionStatus.CLAIMED.value,
+                ),
             )
             changed = cursor.rowcount == 1
             if changed and should_commit:

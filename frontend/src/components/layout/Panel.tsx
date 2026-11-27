@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 type PanelProps = {
-  title: string;
+  title?: string;
   children?: ReactNode;
   className?: string;
 };
@@ -10,9 +10,9 @@ type PanelProps = {
 export default function Panel({ title, children, className }: PanelProps) {
   return (
     <section className={className === undefined ? "panel" : `panel ${className}`}>
-      <header className="panel-header">
+      {title !== undefined && <header className="panel-header">
         <h2>{title}</h2>
-      </header>
+      </header>}
       <div className="panel-body">{children}</div>
     </section>
   );

@@ -93,7 +93,9 @@ class ActivityLifecycle:
         self._desire = desire
         self._config = config
 
-    async def start(self, activity: Activity, is_new: bool) -> bool:
+    async def start(
+        self, activity: Activity, is_new: bool, *, already_claimed: bool = False
+    ) -> bool:
         """Atomically claim the source, persist RUNNING, and append start event."""
         previous_status = activity.status
         previous_ended_at = activity.ended_at
@@ -122,10 +124,17 @@ class ActivityLifecycle:
                         started = await self._desire.claim_for_activity_in_transaction(
                             desire_id
                         )
+                    elif already_claimed:
+                        started = await self._desire.resume_for_activity_in_transaction(
+                            desire_id, already_claimed=True
+                        )
                     else:
                         started = await self._desire.resume_for_activity_in_transaction(
                             desire_id
                         )
+                        if not started and activity.type is ActivityType.CREATION:
+                            claim = self._desire.claim_for_activity_in_transaction
+                            started = await claim(desire_id)
                 if started:
                     if is_new:
                         await self._store.insert(activity)
@@ -151,6 +160,10 @@ class ActivityLifecycle:
         activity.ended_at = time.time()
         result = activity.progress.get("result", {})
         signal = activity_goal_signal(activity)
+        stop_desire = (
+            activity.type is ActivityType.FREE_EXPLORATION
+            and result.get("outcome") in {"pruned", "exhausted"}
+        )
         desire_id = activity.progress.get("desire_id")
         task_id = activity.progress.get("task_id")
         event = internal_event(
@@ -160,6 +173,7 @@ class ActivityLifecycle:
                 "type": activity.type.value,
                 "desire_id": desire_id,
                 "goal_met": signal,
+                "stop_desire": stop_desire,
                 "energy_delta": (
                     0
                     if activity.type is ActivityType.BROWSER_SURVEY
@@ -202,7 +216,7 @@ class ActivityLifecycle:
         return task_id if isinstance(task_id, str) else None
 
     async def fail(self, activity: Activity, error: str) -> str | None:
-        """进入 INCOMPLETE，并把消费中的欲望改为 SUPPRESSED。"""
+        """Persist execution failure and settle the linked desire or task."""
         previous_status = activity.status
         previous_ended_at = activity.ended_at
         previous_progress = activity.progress
@@ -226,7 +240,12 @@ class ActivityLifecycle:
             async with self._store.db.transaction():
                 await self._store.update(activity)
                 if isinstance(desire_id, str):
-                    await self._desire.mark_suppressed(desire_id)
+                    if activity.type in {
+                        ActivityType.CREATION, ActivityType.FREE_EXPLORATION
+                    }:
+                        await self._desire.finish_attempt_in_transaction(desire_id)
+                    else:
+                        await self._desire.mark_suppressed(desire_id)
                 if isinstance(task_id, str):
                     await self._store.set_task_status(
                         task_id,

@@ -59,6 +59,13 @@ from nyx.expression.prompt import (
     format_prompt_time,
 )
 from nyx.expression.store import ExpressionInteractionStore, InitiativeRecord
+from nyx.initiative import (
+    Initiative,
+    ScheduledInteraction,
+    Topic,
+    local_time,
+    scheduled_topic,
+)
 from nyx.inner_life.facade import InnerLifeFacade
 from nyx.llm.client import InitiationSkipped, LlmClient
 from nyx.memory.facade import MemoryFacade
@@ -117,6 +124,7 @@ class ExpressionFacade:
         skill_store: SkillStore | None = None,
         checkpointer: BaseCheckpointSaver[str] | None = None,
         initiative_embed: EmbedFn | None = None,
+        initiative: Initiative | None = None,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -130,6 +138,7 @@ class ExpressionFacade:
         self._ask_guidance = ask_guidance
         self._config = config
         self._interaction_store = interaction_store
+        self._initiative = initiative
         self._initiative_embed = initiative_embed
         self._initiative_vectors: OrderedDict[str, list[float]] = OrderedDict()
         self._knowledge_boundary = knowledge_boundary
@@ -694,18 +703,29 @@ class ExpressionFacade:
 
     async def _commit_attempt_events(
         self,
-        attempt: InteractionAttempt,
+        attempt: InteractionAttempt | None,
         events: list[Event],
         claimed_return: dict[str, float] | None = None,
         answered_attempt: InteractionAttempt | None = None,
+        *,
+        scheduled: ScheduledInteraction | None = None,
+        topic: Topic | None = None,
+        enhanced: bool = False,
     ) -> None:
         """Commit one interaction attempt and all durable events atomically."""
-        if attempt.kind in (
-            InteractionKind.INITIATE_CHAT,
-            InteractionKind.READING_QUESTION,
+        requires_initiative = scheduled is None or scheduled.origin == "autonomous"
+        if (
+            requires_initiative
+            and attempt is not None
+            and attempt.kind
+            in (
+                InteractionKind.INITIATE_CHAT,
+                InteractionKind.READING_QUESTION,
+                InteractionKind.SCHEDULED,
+            )
+            and not self._llm.can_initiate()
         ):
-            if not self._llm.can_initiate():
-                raise InitiationSkipped
+            raise InitiationSkipped
         if self._interaction_store is None:
             try:
                 await self._bus.publish_many(events)
@@ -723,13 +743,25 @@ class ExpressionFacade:
         appended_count = 0
         try:
             async with self._interaction_store.db.transaction():
-                if attempt.kind in (
-                    InteractionKind.INITIATE_CHAT,
-                    InteractionKind.READING_QUESTION,
+                if (
+                    requires_initiative
+                    and attempt is not None
+                    and attempt.kind
+                    in (
+                        InteractionKind.INITIATE_CHAT,
+                        InteractionKind.READING_QUESTION,
+                        InteractionKind.SCHEDULED,
+                    )
+                    and not self._llm.can_initiate()
                 ):
-                    if not self._llm.can_initiate():
-                        raise InitiationSkipped
-                await self._interaction_store.create(attempt)
+                    raise InitiationSkipped
+                service = self._initiative
+                if service is not None and "initiative_origin" in events[0].content:
+                    await self._check_initiative_commit(
+                        service, attempt, scheduled, topic, enhanced
+                    )
+                if attempt is not None:
+                    await self._interaction_store.create(attempt)
                 if answered_attempt is not None and not (
                     await self._interaction_store.finish_answer(
                         answered_attempt.id,
@@ -747,6 +779,13 @@ class ExpressionFacade:
                         await self._bus.append_in_transaction(event)
                     finally:
                         appended_count += self._bus.persisted_count - persisted_before
+                if service is not None:
+                    if scheduled is not None and not await service.finish(
+                        scheduled, "sent", time.time(), events[0].id
+                    ):
+                        raise InitiationSkipped
+                    if topic is not None:
+                        await service.record_topic(topic, events[0], enhanced)
         except BaseException as error:
             try:
                 committed = await self._bus.is_durable(events[0].id)
@@ -760,6 +799,44 @@ class ExpressionFacade:
         self._finish_return_claim(claimed_return)
         for event in events:
             await self._bus.announce_committed(event)
+
+    async def _check_initiative_commit(
+        self,
+        service: Initiative,
+        attempt: InteractionAttempt | None,
+        scheduled: ScheduledInteraction | None,
+        topic: Topic | None,
+        enhanced: bool,
+    ) -> None:
+        now = time.time()
+        if scheduled is None or scheduled.origin == "autonomous":
+            if any(
+                item.origin == "user" and now < item.deadline
+                for item in await service.due(now)
+            ):
+                raise InitiationSkipped
+        if enhanced and (
+            topic is None
+            or await service.was_sent(topic, reading_questions=True)
+            or not await service.eligible(now)
+        ):
+            raise InitiationSkipped
+        if scheduled is not None:
+            source_topic = scheduled_topic(scheduled)
+            if now >= scheduled.deadline or (
+                source_topic is not None
+                and await service.topic_evidence(source_topic) is None
+            ):
+                raise InitiationSkipped
+            if (
+                source_topic is not None
+                and await service.already_read(scheduled, source_topic)
+            ):
+                raise InitiationSkipped
+        if attempt is not None and (
+            await service.busy() or await self.pending_questions()
+        ):
+            raise InitiationSkipped
 
     async def _commit_reply_events(
         self,
@@ -1192,6 +1269,8 @@ class ExpressionFacade:
                     reply_to
                 )
             reading_context = ""
+            if quoted_initiative is None and answered is not None:
+                quoted_initiative = answered
             if (
                 answered is not None
                 and answered.kind is InteractionKind.READING_QUESTION
@@ -1206,14 +1285,39 @@ class ExpressionFacade:
                 if self._pending_chat_desire_id is not None:
                     await self._desire.satisfy(self._pending_chat_desire_id, True)
                 self._pending_chat_desire_id = None
+            if (
+                self._initiative is not None
+                and quoted_initiative is not None
+                and (
+                    quoted_initiative.kind
+                    in (InteractionKind.INITIATE_CHAT, InteractionKind.SCHEDULED)
+                )
+            ):
+                events = await self._bus.list_events(
+                    correlation_id=quoted_initiative.correlation_id,
+                    event_type=EventType.INITIATE_CHAT,
+                )
+                if events:
+                    ref = events[0].content
+                    book, paragraph, anchor = (
+                        ref.get("book_id"),
+                        ref.get("paragraph_index"),
+                        ref.get("topic_event_id"),
+                    )
+                    topic = Topic(
+                        book_id=book if isinstance(book, str) else None,
+                        paragraph=paragraph if isinstance(paragraph, int) else None,
+                        event_id=anchor if isinstance(anchor, str) else None,
+                    )
+                    reading_context = await self._initiative.topic_evidence(topic) or ""
             state = await self._inner_life.get_state()
             activity_context = await self._activity_context(activity_context)
             temporal_context = await self._temporal_context(
                 now, correlation_id, claimed_return
             )
-            if (
-                quoted_initiative is not None
-                and quoted_initiative.kind is InteractionKind.INITIATE_CHAT
+            if quoted_initiative is not None and quoted_initiative.kind in (
+                InteractionKind.INITIATE_CHAT,
+                InteractionKind.SCHEDULED,
             ):
                 # Supply the actual quoted prompt even if it fell out of local history.
                 temporal_context += "\n\n" + build_initiative_record(
@@ -1316,6 +1420,44 @@ class ExpressionFacade:
             if not committed:
                 self._release_return_claim(claimed_return)
             raise
+
+    async def has_committed_desire(self, desire_id: str) -> bool:
+        return self._interaction_store is not None and (
+            await self._interaction_store.has_desire_attempt(desire_id)
+        )
+
+    async def consider_reading_followup(
+        self, source: Event, topic: Topic, evidence: str
+    ) -> None:
+        if self._initiative is None:
+            return
+        output = await self._llm.complete(
+            [
+                {
+                    "role": "system",
+                    "content": policy("initiative", "prompts.activity", str),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "now": local_time(time.time()),
+                            "reading": evidence,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            module="expression",
+            output_type="reading_followup",
+            correlation_id=source.correlation_id,
+            json_mode=True,
+        )
+        proposed: object = json.loads(output.content)["local_time"]
+        if isinstance(proposed, str) and self._llm.can_initiate():
+            await self._initiative.create(
+                "autonomous", "reading", proposed, "once", "", topic, source, True
+            )
 
     async def _initiative_line(self, record: InitiativeRecord) -> str:
         answer = (
@@ -1441,19 +1583,50 @@ class ExpressionFacade:
             correlation_id=correlation_id,
         )
 
-    async def initiate_chat(self, desire: ShortTermDesire, state: CurrentState) -> bool:
+    async def initiate_chat(
+        self,
+        desire: ShortTermDesire | None,
+        state: CurrentState,
+        *,
+        scheduled: ScheduledInteraction | None = None,
+    ) -> bool:
         """搭话：快通道生成一句开场白。
 
         无话则发 False（组合根 据此不更新 last_chat_at）。
         """
-        claimed_return = self._claim_pending_return()
+        if desire is None and scheduled is None:
+            raise ValueError(
+                "An initiative requires a desire or a scheduled occurrence"
+            )
+        service = self._initiative
+        topic = (
+            Topic.decode(desire.initiative_ref)
+            if desire and desire.initiative_ref
+            else None
+        )
+        enhanced = topic is not None
+        if topic is None and scheduled is not None:
+            topic = scheduled_topic(scheduled)
+        evidence = await service.topic_evidence(topic) if service and topic else None
+        if topic is not None and evidence is None:
+            return False
+        claimed_return = self._claim_pending_return() if scheduled is None else None
         started_at = time.time()
         correlation_id = (
-            str(uuid4()) if self._interaction_store is not None else desire.id
+            str(uuid4())
+            if desire is None or self._interaction_store is not None
+            else desire.id
+        )
+        description = (
+            desire.description
+            if desire is not None
+            else (scheduled.note if scheduled else "")
         )
         try:
             skill = await self._execution_skill(
-                correlation_id, desire.description, False,
+                correlation_id,
+                description,
+                False,
             )
             activity_context = await self._activity_context()
             temporal_context = await self._temporal_context(
@@ -1471,57 +1644,127 @@ class ExpressionFacade:
             user = policy(
                 "expression", "facade.templates.initiate_chat_text", str
             ).format(
-                p0=format_prompt_time(desire.created_at)
-            ) + build_initiate_chat_prompt(desire.description)
+                p0=format_prompt_time(desire.created_at if desire else started_at)
+            ) + build_initiate_chat_prompt(description)
+            if evidence:
+                user += (
+                    "\n"
+                    + policy("initiative", "prompts.grounding", str)
+                    + "\n"
+                    + evidence
+                )
+            if scheduled:
+                user += "\n" + policy("initiative", "prompts.scheduled", str) + "\n"
+                user += json.dumps(scheduled.result(), ensure_ascii=False)
             records = (
                 await self._interaction_store.list_initiatives()
                 if self._interaction_store is not None else []
             )
             history, included = await self._initiative_prompt(records, [])
-            if len(included) < len(records):
-                related = await self._initiative_candidates(desire.description, records)
+            if scheduled is None and len(included) < len(records):
+                related = await self._initiative_candidates(description, records)
                 history, included = await self._initiative_prompt(records, related)
             if history:
                 system += "\n\n" + history
-            output = await self._llm.complete(
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                module="expression",
-                output_type="initiate_chat",
-                correlation_id=correlation_id,
-            )
-            if output.content.strip() and len(included) < len(records):
-                output = await self._revisit_older_question(
-                    output, records, included, system, user, correlation_id
+            simple = bool(
+                scheduled
+                and scheduled.origin == "user"
+                and service
+                and (
+                    await service.busy()
+                    or await self.pending_questions()
+                    or not self._llm.can_initiate()
                 )
-            await self._evaluator.evaluate(output)
-            if not output.content.strip():
+            )
+            if simple and scheduled is not None:
+                if scheduled.action == "reading":
+                    body = policy("initiative", "copy.reading_notice", str)
+                elif scheduled.action == "continue_chat":
+                    body = policy("initiative", "copy.chat_notice", str)
+                else:
+                    body = policy("initiative", "copy.reminder", str)
+                if scheduled.note:
+                    body += " " + scheduled.note
+            else:
+                output = await self._llm.complete(
+                    [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    module="expression",
+                    output_type="scheduled_interaction"
+                    if scheduled
+                    else "initiate_chat",
+                    correlation_id=correlation_id,
+                )
+                if (
+                    scheduled is None
+                    and output.content.strip()
+                    and len(included) < len(records)
+                ):
+                    output = await self._revisit_older_question(
+                        output, records, included, system, user, correlation_id
+                    )
+                await self._evaluator.evaluate(output)
+                body = output.content.strip()
+            if not body:
                 self._release_return_claim(claimed_return)
                 return False
             attempt_id = str(uuid4())
             now = time.time()
-            attempt = InteractionAttempt(
-                id=attempt_id,
-                kind=InteractionKind.INITIATE_CHAT,
-                source_id=desire.id,
-                correlation_id=correlation_id,
-                text=output.content,
-                created_at=now,
-                expires_at=now + self._config.chat_ignore_timeout,
+            if simple and desire is not None:
+                return False
+            attempt: InteractionAttempt | None = None
+            if desire is not None or (
+                scheduled is not None and scheduled.origin == "autonomous"
+            ):
+                attempt = InteractionAttempt(
+                    id=attempt_id,
+                    kind=InteractionKind.INITIATE_CHAT
+                    if desire
+                    else InteractionKind.SCHEDULED,
+                    source_id=desire.id
+                    if desire
+                    else scheduled.id
+                    if scheduled
+                    else correlation_id,
+                    correlation_id=correlation_id,
+                    text=body,
+                    created_at=now,
+                    expires_at=now + self._config.chat_ignore_timeout,
+                )
+            event = internal_text_event(EventType.INITIATE_CHAT, body, correlation_id)
+            if attempt is not None:
+                event.content.update(
+                    attempt_id=attempt.id, expires_at=attempt.expires_at
+                )
+            if desire is not None:
+                event.content["desire_id"] = desire.id
+            if scheduled is not None:
+                event.content.update(
+                    schedule_id=scheduled.id, scheduled_due_at=scheduled.due_at
+                )
+            event.content["initiative_origin"] = (
+                scheduled.origin if scheduled else "desire"
             )
-            event = internal_text_event(
-                EventType.INITIATE_CHAT, output.content, correlation_id
+            if topic is not None:
+                event.content.update(
+                    book_id=topic.book_id,
+                    paragraph_index=topic.paragraph,
+                    topic_event_id=topic.event_id,
+                )
+            await self._commit_attempt_events(
+                attempt,
+                [event],
+                claimed_return,
+                scheduled=scheduled,
+                topic=topic,
+                enhanced=enhanced,
             )
-            event.content["attempt_id"] = attempt_id
-            event.content["expires_at"] = attempt.expires_at
-            event.content["desire_id"] = desire.id
-            await self._commit_attempt_event(attempt, event, claimed_return)
             self._history.append(
                 Message(
                     role="nyx",
-                    content=output.content,
+                    content=body,
                     timestamp=event.timestamp,
                     event_id=event.id,
                     activity_id=(
@@ -1541,7 +1784,7 @@ class ExpressionFacade:
                     ),
                 )
             )
-            if self._interaction_store is None:
+            if self._interaction_store is None and desire is not None:
                 self._pending_chat_desire_id = desire.id
                 self._chat_at = time.time()
             return True

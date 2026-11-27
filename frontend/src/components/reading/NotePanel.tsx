@@ -7,9 +7,12 @@ import Modal from "../layout/Modal";
 
 // 笔记面板（07 §3）：覆盖层打开，NoteComposer（新建）+ NoteList（列表）。
 // 只展示用户笔记 + 「给尼克斯看」批注；Nyx 章末整合笔记落 memory 不上屏。
-export default function NotePanel({ onClose }: { onClose: () => void }) {
+export default function NotePanel({ onClose, page, writeOnly, onWrite }: {
+  onClose: () => void; page?: boolean; writeOnly?: boolean; onWrite?: () => void;
+}) {
   const name = useCharacterStore((s) => s.registry?.characters.find((r) => r.id === s.registry?.current_id)?.name ?? readingPolicy.copy.NotePanel.text);
   const bookId = useReaderStore((s) => s.bookId);
+  const paragraph = useReaderStore((s) => s.paragraphs.find((item) => item.index === s.userPosition));
   const notes = useReaderStore((s) => s.notes);
   const notesError = useReaderStore((s) => s.notesError);
   const loadNotes = useReaderStore((s) => s.loadNotes);
@@ -32,8 +35,11 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
     const rawDraft = draft;
     const content = rawDraft.trim();
     if (content === "" || bookId === null) return;
-    const saved = await addNote({ book_id: bookId, content });
-    if (saved && isScopeCurrent(scope) && draft === rawDraft) setDraft("");
+    const saved = await addNote({ book_id: bookId, content, ...(writeOnly && paragraph ? { paragraph_id: paragraph.id } : {}) });
+    if (saved && isScopeCurrent(scope) && draft === rawDraft) {
+      setDraft("");
+      if (writeOnly) onClose();
+    }
   };
 
   const startEdit = (id: string, content: string) => {
@@ -61,8 +67,8 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Modal title={readingPolicy.copy.NotePanel.title} onClose={onClose}>
-      <div className="note-composer">
+    <Modal title={writeOnly ? readingPolicy.copy.NotePanel.mobile_write : readingPolicy.copy.NotePanel.title} onClose={onClose} page={page}>
+      {onWrite ? <button type="button" className="reading-btn" onClick={onWrite}>{readingPolicy.copy.NotePanel.mobile_write}</button> : <div className="note-composer">
         <textarea
           className="note-composer__input"
           placeholder={readingPolicy.copy.NotePanel.placeholder}
@@ -75,11 +81,11 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
           onClick={submit}
           disabled={draft.trim() === ""}
         >
-          记笔记
+          {writeOnly ? readingPolicy.copy.NotePanel.mobile_save : "记笔记"}
         </button>
-      </div>
+      </div>}
       {notesError !== null && <p className="error-text">{notesError}</p>}
-      {visibleNotes.length === 0 ? (
+      {!writeOnly && (visibleNotes.length === 0 ? (
         <p className="panel-item">{readingPolicy.copy.NotePanel.p}</p>
       ) : (
         <ul className="note-list">
@@ -155,7 +161,7 @@ export default function NotePanel({ onClose }: { onClose: () => void }) {
             </li>
           ))}
         </ul>
-      )}
+      ))}
     </Modal>
   );
 }

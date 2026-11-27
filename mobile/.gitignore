@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+android/
+dist/
+.local-build/
+*.jks
+*.keystore
+firebase-debug.log*
+.env
+.env.local

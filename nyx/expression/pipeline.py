@@ -477,7 +477,9 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                             "expression",
                             "pipeline.parameters.reason_step_content_text",
                             str,
-                        ),
+                        )
+                        + "\n"
+                        + policy("initiative", "prompts.reason", str),
                     },
                 ],
                 module="expression",
@@ -579,6 +581,11 @@ def build_reply_graph(deps: ReplyDeps) -> CompiledStateGraph[ReplyState]:
                 DISCUSSION_USE_TOOLS_TASK
                 if skill and skill.name == "discussion"
                 else USE_TOOLS_TASK
+                + "\n"
+                + policy("initiative", "prompts.tools", str).format(
+                    start=policy("initiative", "topic.start_hour", int),
+                    end=policy("initiative", "topic.end_hour", int),
+                )
             ),
             "schemas": schemas,
         }

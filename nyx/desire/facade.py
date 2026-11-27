@@ -43,6 +43,8 @@ class DesireFacade:
         list_memories: ListMemories,
         embed: EmbedFn | None = None,
         list_explorations: ListExplorations | None = None,
+        *,
+        canon: str = "",
     ) -> None:
         self._store = store
         self._config = config
@@ -50,7 +52,8 @@ class DesireFacade:
         self._logger = logging.getLogger(__name__)
         self._long_term_lock = asyncio.Lock()
         self._lifecycle = DesireLifecycle(
-            store, bus, llm, evaluator, config, list_memories, embed, list_explorations
+            store, bus, llm, evaluator, config, list_memories, embed,
+            list_explorations, canon=canon,
         )
 
     @property
@@ -71,8 +74,12 @@ class DesireFacade:
         self,
         energy: float = policy("desire", "facade.parameters.evaluate_energy", float),
         event_id: str | None = None,
+        *,
+        initiative_ref: str | None = None,
     ) -> list[ShortTermDesire]:
-        return await self._lifecycle.run_eval(energy, event_id=event_id)
+        return await self._lifecycle.run_eval(
+            energy, event_id=event_id, initiative_ref=initiative_ref
+        )
 
     async def pressure_creation(self, delta: float) -> None:
         """创造欲加压入口（反思/活动结束触发，delta 由调用方决定）。"""
@@ -118,6 +125,9 @@ class DesireFacade:
     async def expire(self, desire_id: str) -> None:
         await self._lifecycle.expire(desire_id)
 
+    async def finish_attempt_in_transaction(self, desire_id: str) -> None:
+        await self._lifecycle.finish_attempt(desire_id, in_transaction=True)
+
     async def mark_active(self, desire_id: str) -> None:
         await self._lifecycle.mark_active(desire_id)
 
@@ -129,8 +139,12 @@ class DesireFacade:
             desire_id, in_transaction=True
         )
 
-    async def resume_for_activity_in_transaction(self, desire_id: str) -> bool:
-        return await self._lifecycle.resume_for_activity(desire_id)
+    async def resume_for_activity_in_transaction(
+        self, desire_id: str, *, already_claimed: bool = False
+    ) -> bool:
+        return await self._lifecycle.resume_for_activity(
+            desire_id, already_claimed=already_claimed
+        )
 
     async def claim_for_interaction(self, desire_id: str) -> bool:
         """Atomically claim a pending interaction desire for initiative."""

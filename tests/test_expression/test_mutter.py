@@ -122,4 +122,6 @@ def test_should_initiate_chat_each_condition() -> None:
     exploration = [_desire(DesireType.EXPLORATION)]
     assert should_initiate_chat(exploration, 60.0, 2000.0) is False
     assert should_initiate_chat(interaction, 49.0, 2000.0) is False
-    assert should_initiate_chat(interaction, 60.0, 1000.0) is False
+    assert should_initiate_chat(interaction, 60.0, 299.0) is False
+    assert should_initiate_chat(interaction, 60.0, 300.0) is True
+    assert should_initiate_chat(interaction, 60.0, 300.0, 600.0) is False

@@ -1,0 +1,384 @@
+suite_version: nyx-behavior-v1
+domain: initiative
+defaults:
+  fixtures:
+  - isolated_host
+  - initiative_inputs
+  sources:
+  - nyx/initiative.py
+  - nyx/tools/initiative.py
+  - nyx/runtime.py
+  - nyx/expression/facade.py
+  - nyx/expression/store.py
+  - nyx/expression/mutter.py
+  - nyx/desire/lifecycle.py
+  policy_sources:
+  - nyx/settings/initiative.json
+  - nyx/settings/expression.json
+  - nyx/settings/desire.json
+  evidence:
+  - inputs
+  - state_before_after
+  - schedule_rows
+  - occurrence_rows
+  - interaction_attempts
+  - model_io
+  - tool_receipt
+  - reply_terminal
+  - deliveries
+  diagnosis_order:
+  - input
+  - storage
+  - admission
+  - context
+  - decision
+  - commit
+  - delivery
+  execution:
+    mode: controlled_then_real_model
+    support: manual_protocol_needs_adapter
+    reuse_candidates: []
+    limitation: 这些是可人工执行的场景协议；现有命令不读取本 YAML。复用候选仅提供路径或屏障能力，不代表覆盖本文件全部断言。
+  grading:
+    hard: 逐项对照 must/must_not，引用实际证据；缺证据不能判通过。
+    semantic: 有自然语言输出时人工对照输入、实际 prompt、来源与回执；允许语义等价表达。
+    status: NOT_RUN
+cases:
+- id: INI-01
+  version: 1
+  title: 聊天中安排明确的未来提醒并按保存结果确认
+  purpose: 聊天中安排明确的未来提醒并按保存结果确认
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 时钟固定 base_clock；新角色无定时事项；工具关联真实本轮 USER_MESSAGE。
+  steps:
+  - 发送：明天晚上八点半提醒我读书。
+  - 等待工具回执与回复，再查询本角色定时事项。
+  - 独立受控工具分支分别传过去时间、带时区串、秒级串；核对严格分钟格式拒绝，不影响合法分支。
+  end_when: 保存事项与确认回复可对照。
+  expect:
+    must:
+    - 保存 user 来源、北京时间 2026-11-28T20:30 的事项；来源关联本轮托付。
+    - 回复确认的是工具实际保存的时间。
+    - 非法时间输入明确拒绝且不新增事项；不以宽泛 ISO 自动纠正掩盖非法值。
+    must_not:
+    - 仅口头说记住了但没有保存。
+    - 没有依据绑定某本书或段落。
+    flexible:
+    - 无指定书时允许通用读书提醒；不强制 action 为 reading。
+  failure_hint: 先查相对日期解析、tool_execution correlation，再查 create 与确认正文。
+- id: INI-02
+  version: 1
+  title: 无明确提醒托付不能冒充用户的重复承诺
+  purpose: 无明确提醒托付不能冒充用户的重复承诺
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 来源仅有：明晚我们再聊试错吧。
+  - 真实 USER_MESSAGE 先完成普通回复，具备可追溯原话。
+  steps:
+  - 受控工具分支尝试 origin=user、recurrence=daily；真实模型分支自然处理原话。
+  - 另在已有 active 或 paused 自主跟进的独立快照中尝试再建第二条，检查拒绝且原事项保留。
+  end_when: 受控拒绝与真实模型实际工具行为均记录，分别判定。
+  expect:
+    must:
+    - 受控分支拒绝没有 explicit 托付的 user 来源。
+    - 若自然分支选择安排 autonomous，必须一次性、具体未来时间、真实来源。
+    - 同角色已有 active/paused 自主跟进时，第二个自主事项明确拒绝。
+    must_not:
+    - 把自主判断写为用户明确要求的每日提醒。
+    flexible:
+    - 模型可不安排自主跟进；该能力是允许，不是强制。
+  failure_hint: 区分 tools/initiative 的来源解析与 Initiative.create 的显式托付校验。
+- id: INI-03
+  version: 1
+  title: 改期暂停恢复取消使用最新版本并拒绝旧写入
+  purpose: 改期暂停恢复取消使用最新版本并拒绝旧写入
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 先建立一条未来 user 事项；保存首次 ID/版本；分支隔离执行各操作。
+  - 另建两个仅测 skip 的独立分支，分别为 once 与 daily，不复用已取消事项。
+  steps:
+  - 经 list_interactions 查询后改到 2026-11-29T20:30。
+  - 再暂停、恢复；使用旧版本执行取消并检查拒绝，最后以最新版本取消。
+  - 推进到原定与改期时间并触发检查。
+  - 以最新版本 operation=skip 只跳过下一次；推进至原 due 与下一期检查，重复旧版本 skip。
+  end_when: 取消分支到期检查完成，skip 分支的原期与下一期检查完成，事项版本与 occurrence 可读。
+  expect:
+    must:
+    - 每次有效修改递增版本；旧版本拒绝且不覆盖新状态。
+    - 取消事项不再产生新的消息。
+    - skip 为旧 due 记录 skipped；once 转 completed，daily 推进下一期；旧版本重复 skip 不再次推进。
+    must_not:
+    - 旧 claim 在改期后提交过时消息。
+    flexible:
+    - 冲突后可重新查询再操作。
+  failure_hint: 核对 modify 的 version、claim 清理和表达提交重检；取消已提交消息不等于撤回传输。
+- id: INI-04
+  version: 1
+  title: 用户提醒可插入在途聊天且不另建回答等待
+  purpose: 用户提醒可插入在途聊天且不另建回答等待
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 有效 user 提醒到期；另一用户输入已受理但回复仍在屏障，或已有待回答问题。
+  steps:
+  - 触发定时检查，保存提醒事件与待回答快照。
+  - 释放原对话，完成原输入的终局。
+  end_when: 提醒 occurrence 完成且原聊天正常终局。
+  expect:
+    must:
+    - 提醒以 INITIATE_CHAT 事件提交并关联 schedule；忙碌分支使用权威简短提醒。
+    - 提醒自身不建立新的 InteractionAttempt；原输入等待保持正确。
+    must_not:
+    - 为了提醒清掉原聊天等待。
+    - 将提醒事件当成原输入的完成回复。
+    flexible:
+    - 提醒的策略文案和备注拼接。
+  failure_hint: 检查 simple 分支、attempt=None、schedule finish 与前端覆盖关系。
+  execution_override:
+    mode: controlled
+- id: INI-05
+  version: 1
+  title: 自主跟进在对话忙碌时等待并按窗口过期
+  purpose: 自主跟进在对话忙碌时等待并按窗口过期
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - autonomous 一次跟进到期；话题来源存在；用户输入仍在处理中。
+  - 两个独立分支：窗口内释放忙碌；一直忙到 deadline。
+  steps:
+  - 到期触发定时检查。
+  - 按分支释放或保持忙碌，推进受控时钟，再触发检查。
+  end_when: 窗口内分支成功提交或过期分支 occurrence=missed。
+  expect:
+    must:
+    - 忙碌期间不提交自主消息；窗口内恢复可继续尝试。
+    - deadline 及以后记 missed，不补发本期。
+    must_not:
+    - 等待分支提前算完成。
+    - 窗口外仍用过期来源强行搭话。
+    flexible:
+    - 不把普通欲望搭话的精力/冷却门槛机械套给全部定时跟进。
+  failure_hint: 比较 service.busy、can_initiate 与 item.deadline，而非用户 presence。
+  execution_override:
+    mode: controlled
+- id: INI-06
+  version: 1
+  title: 重复事项跨多期停机只补当前有效期
+  purpose: 重复事项跨多期停机只补当前有效期
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 建立 daily user 事项；受控时钟推进跨多个周期，旧期均过窗口，最新一期仍在有效窗口。
+  - 另做 once、weekly 与 workdays 分支；工作日集合仅从 initiative.scheduler.working_days 读取。
+  steps:
+  - 恢复角色并触发一次定时检查，再重复触发。
+  - workdays 分支从非工作日创建和改期，跨周末停机恢复；核对首期、下一期和 missed 日期均按权威工作日归一。
+  end_when: 旧期 missed 与当前有效期结果均落库，下次到期大于当前时间。
+  expect:
+    must:
+    - 漏过各期有 missed 记录；仅当前仍有效一期允许发送。
+    - 单次事项完成后 completed，重复事项推进下一期且保持 active。
+    - workdays 不在非工作日生成提醒或漏期记录；停机恢复仍只处理当前有效一期，不把跳过周末当 missed。
+    must_not:
+    - 把所有漏期一次性补成消息洪水。
+    - 重复 tick 导致同一 due_at 再次提交。
+    flexible:
+    - 各漏期记录顺序；需记录本次使用 once、daily、weekly 或 workdays。
+  failure_hint: 检查 _working_due、_next_due、finish 的 latest_due 和 occurrence 唯一性；weekly、daily、workdays 分别记录实际本地日期与权威工作日集合。
+  execution_override:
+    mode: controlled
+- id: INI-07
+  version: 1
+  title: 已读来源失效和自主开关控制跟进
+  purpose: 已读来源失效和自主开关控制跟进
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 从同一个未来 reading 跟进快照建立三分支；自主开关初始打开。
+  - 另建 D/E 分支：user reading 提醒绑定书、无精确段，skip_if_read_today=true；D 当天真实向前阅读，E 只有昨日阅读、回翻或后台 Nyx 进度。
+  steps:
+  - A 将用户进度推进至目标段；B 在隔离库中使目标来源不可解析；C 关闭 autonomous_enabled。
+  - 到期触发检查；另以缺少目标段但 skip_if_read=true 尝试创建。
+  - D 经 save_progress 的 user_read=true 真正向前保存用户进度；E 各条件独立准备。到期检查读取 last_user_read_at。
+  - 非法分支尝试无书或非 reading 动作却 skip_if_read_today=true；另核对仅导入的默认第 1 段不等于用户已明确读到目标。
+  end_when: A/B/C/D 的跳过原因与 E 的有效期内发送结果均可核对，非法创建明确拒绝；默认位置对照只在其他准入成立时检查发送。
+  expect:
+    must:
+    - A/B/C 均不发送本期；结果原因可区分。
+    - skip_if_read 需要真实书与精确目标段。
+    - D 按该事项 due 所在北京时间自然日跳过；E 不因昨日、回翻或 Nyx 后台阅读错误跳过。skip_if_read_today 要求 reading 且有真实书，不要求精确段。
+    - 默认第 1 段与已记录的用户位置区分；未实际记录用户位置不能直接判目标已读。
+    must_not:
+    - 来源丢失后编造书段继续跟进。
+    flexible:
+    - 关闭自主开关不取消用户明确托付提醒；另查 user 对照。
+  failure_hint: 检查 checks_read_position、already_read、user_position_recorded/last_user_read_at、topic_evidence、开关和准入顺序；区分读到目标与当日读过。
+  fixtures_add:
+  - reading_library
+  execution_override:
+    mode: controlled
+- id: INI-08
+  version: 1
+  title: 长期未互动的新话题可降低本次达峰门槛
+  purpose: 长期未互动的新话题可降低本次达峰门槛
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 用权威 idle、试行时段、peak_reduction 和新鲜度构建边界；互动压力置于增强后阈值与普通阈值之间。
+  - A 有双方已读且未搭话的真实书段；B 无可追溯话题；无其他欲望生成干扰。
+  steps:
+  - 在满足 eligible 的时刻触发欲望结算；记录生成结果与 initiative_ref。
+  - 独立对照把时钟移出试行时段，或将话题设为已发送，再结算。
+  end_when: 每个分支的一轮欲望结算与候选日志均收齐。
+  expect:
+    must:
+    - A 可按增强门槛生成带真实话题引用的互动欲；B 不能凭空使用增强。
+    - 已发送或时段外不重复用同一增强准入。
+    must_not:
+    - 只因为 presence=away 就降低互动阈值。
+    - 搭话泄露用户未读段落。
+    flexible:
+    - 普通阈值达峰的搭话不受此测试对照否定。
+  failure_hint: 核对 candidate、eligible、双方 min 进度、threshold 派生与 was_sent。
+  fixtures_add:
+  - reading_library
+  execution_override:
+    mode: controlled
+  pair_group: topic-peak
+- id: INI-09
+  version: 1
+  title: 普通欲望搭话受精力冷却等待约束而非 presence
+  purpose: 普通欲望搭话受精力冷却等待约束而非 presence
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 使用无 initiative_ref 的普通互动欲；所有分支只改变一个变量。
+  - 读取权威精力门槛与本角色 cooldown，构建足够/不足、已过/未过、无等待/有等待分支。
+  steps:
+  - 分别令 presence 为 online、busy、away，其余状态相同，触发搭话检查。
+  - 测试 cooldown 的合法边界保存与非法值拒绝，并重启核对角色独立设置。
+  end_when: 准入日志、欲望领取和实际提交事件可核对。
+  expect:
+    must:
+    - 有欲望、足够精力、冷却已过、无在途聊天/等待时才准入。
+    - presence 本身不改变准入；有效冷却保存，非法值明确拒绝。
+    must_not:
+    - 被拒绝的尝试仍永久占住欲望。
+    - 角色 B 冷却设置改变 A。
+    flexible:
+    - 各 presence 对应的自然表达可不同。
+  failure_hint: 先比较 admission 日志，再查 should_initiate_chat 与领取释放；不要只看是否生成文字。
+  execution_override:
+    mode: controlled
+  pair_group: initiative-admission
+- id: INI-10
+  version: 1
+  title: 同话题定时事项和互动欲合并只结算参与者
+  purpose: 同话题定时事项和互动欲合并只结算参与者
+  oracle_kind: regression
+  priority: P0
+  preconditions:
+  - 有效定时事项与一个带同 topic 引用的互动欲同时可准入；另有无关互动欲。
+  - 满足能合并的 eligible、精力、冷却、无忙碌条件。
+  steps:
+  - 并发触发定时与欲望检查；保存消息、attempt 与欲望关联。
+  - 回答该消息，再重放检查与回复投递。
+  end_when: 单条合并消息、occurrence 和关联欲望结算完成。
+  expect:
+    must:
+    - 同一期同话题合并提交一次；消息关联 schedule 与实际参与欲望。
+    - 只有被领取并参与的欲望跟随回答结算。
+    must_not:
+    - 顺带满足所有相似描述的欲望。
+    - 重放产生第二条合并消息或重复结算。
+    flexible:
+    - 并发中的合法先后；未满足合并门槛时不得套此断言。
+  failure_hint: 核对 expression_lock、Topic.matches、claim、_commit_attempt_events 的原子边界。
+  execution_override:
+    mode: controlled
+- id: INI-11
+  version: 1
+  title: 旧搭话历史与超时引用回复保留关联
+  purpose: 旧搭话历史与超时引用回复保留关联
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 建立近期及较早的同主题搭话，其中包含未回答、超时、无 attempt 的遗留记录。
+  - OneBot 使用合成传输与已知出向 message_id，不连接真实 QQ。
+  steps:
+  - 生成同主题新搭话并检查实际 prompt 是否找回相关旧问题及时间。
+  - 引用已超时旧搭话的合成 QQ message_id 发送回答；再注入无法确认归属的引用。
+  - 无历史 message_id 的遗留分支仅在发送前时间范围和精确正文唯一匹配时关联；构造相同正文多匹配对照，应无法确认归属。
+  end_when: 历史上下文、旧 attempt 的关联回答和聊天记录可核对。
+  expect:
+    must:
+    - 可确认的晚到引用回到原搭话并记录回答。
+    - 较早相关历史与近期历史按上下文机制提供，未回答记录不被默默抹掉。
+    - 遗留正文回退必须唯一且属于同一 recipient 的 sent 记录；多匹配返回未确认，不猜测。
+    must_not:
+    - 无法确认的引用强行关联另一角色或新等待。
+    - 仅凭语义相近就改写旧回答关系。
+    flexible:
+    - 相关历史筛选；不要求载入所有历史全文。
+  failure_hint: 分别检查 list_initiatives、_revisit_older_question、quoted_initiative 与 record_late_answer。
+  sources_add:
+  - nyx/transports/onebot.py
+  - nyx/transports/outbox.py
+  execution_override:
+    mode: synthetic_onebot
+- id: INI-12
+  version: 1
+  title: 碎碎念与无人回答搭话具有不同生命周期
+  purpose: 碎碎念与无人回答搭话具有不同生命周期
+  oracle_kind: regression
+  priority: P1
+  preconditions:
+  - 分支 A 受控触发一次 mutter；B 提交普通欲望搭话后不回答；C 提交普通问句后不回答。
+  steps:
+  - 读取三者等待与欲望状态。
+  - 推进到各自权威 expires_at 边界，连续触发超时收尾。
+  end_when: 三者超时路径及重放后的状态收齐。
+  expect:
+    must:
+    - A 不消费互动欲且不建立同样的等待关系。
+    - B 的搭话互动欲到期结算一次；C 仅结束问句等待。
+    - 无人回复不自动生成用户经历事实。
+    must_not:
+    - 把沉默写成用户明确拒绝或认可。
+    - 超时反复结算同一欲望。
+    flexible:
+    - 碎碎念可不触发；本测试用受控随机值保证实际命中再检查后果。
+  failure_hint: 检查 mutter、InteractionKind、claim_expired、finish_expired 与 expire。
+  execution_override:
+    mode: controlled
+- id: INI-13
+  version: 1
+  title: 定时消息与当期结算共同提交并安全恢复
+  purpose: 防止消息提交与 occurrence 推进之间出现半完成或重放重复
+  oracle_kind: regression
+  priority: P0
+  execution_override:
+    mode: controlled
+  preconditions:
+  - 有一条仍在有效窗口的 user 提醒；使用真实 Initiative 与 ExpressionInteractionStore。
+  - 独立分支在消息追加后但事务提交前失败，以及事务提交后广播前失败。
+  steps:
+  - 领取当期事项，触发提醒并在指定点注入故障；保留事项版本、claim 与候选事件 ID。
+  - 重启隔离宿主，恢复投递；需要时推进至权威 claim 租约到期，再重复触发定时检查。
+  end_when: 当期事项、occurrence、持久消息和恢复后的投递均可核对。
+  expect:
+    must:
+    - 提交前失败一起回滚当期结算与消息，后续可以重新领取执行。
+    - 已提交分支当期 sent 关联原消息，恢复投递复用该消息而不新建同一期消息。
+    - 广播失败不撤销已提交状态，消息已保存和传输已送达分别判断。
+    must_not:
+    - occurrence 已推进但消息丢失，或消息存在而当期仍被再次生成。
+    - 尚未释放的 claim 被并发检查重复领取。
+    flexible:
+    - 传输层至少一次的重投递不等于生成了第二个业务事件，分别计数。
+  failure_hint: 检查 _commit_attempt_events 事务中的 append_in_transaction 与 Initiative.finish，再核对 announce_committed、claim
+    租约和传输恢复。

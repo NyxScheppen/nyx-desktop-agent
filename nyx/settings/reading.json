@@ -24,6 +24,15 @@
   },
   "epub": {
     "_MAX_UNCOMPRESSED_BYTES": 104857600,
+    "front_matter": {
+      "opening_chapter_pattern": "(?i)(?:(?:序章|楔子|第\\s*[一壹1１]\\s*章).*|(?:prologue|chapter\\s+(?:1|one|i))(?:[\\s：:、.．—-].*)?)",
+      "promotional_section_pattern": "(?i)(?:广告|图书广告|推广|宣传广告|图书推荐|编辑推荐|advertisements?|adverts?|promotions?)",
+      "skip_text_patterns": [
+        "(?:请|欢迎)?(?:扫码|扫描(?:下方)?二维码)(?:[，,\\s]*(?:关注(?:微信公众号|公众号)|加入(?:书友|读者)群|购买本书))?(?:[，,\\s]*(?:获取|领取|阅读|查看更多|了解更多)[^。！？!?\\n]*)?[。！!]?",
+        "(?:请|欢迎)?(?:关注\\s*(?:微信公众号|公众号|微信)|添加微信|加入\\s*(?:书友|读者)群)(?:[：:\\s]*[“「『][^”」』\\n]+[”」』])?(?:[，,\\s]*(?:获取|领取|阅读更多|查看更多|了解更多)[^。！？!?\\n]*)?[。！!]?"
+      ],
+      "preface_pattern": "(?i)(?:前言|序言|序|\\S*译者序|作者序|导言|引言|前记|preface|foreword|introduction)"
+    },
     "copy": {
       "parse_epub_text": "无效的 EPUB 文件"
     },
@@ -291,8 +300,7 @@
     "readerStore": {
       "MIN_CATCHUP_SEC": 1,
       "MAX_CATCHUP_SEC": 30,
-      "CATCHUP_REFRESH_FRACTION": 0.8,
-      "GAP_PX": 12
+      "CATCHUP_REFRESH_FRACTION": 0.8
     }
   },
   "limits": {
@@ -312,12 +320,17 @@
   "copy": {
     "BookshelfView": {
       "title": "读书",
+      "mobile_empty": "书架还没有读物。",
+      "mobile_reading": "正在读",
+      "mobile_resume": "继续共读",
       "text": "导入中…",
       "text_2": "导入 EPUB",
       "p": "书架空空如也，导入一本 EPUB 开始陪读吧。",
       "text_3": " · 未读"
     },
     "NotePanel": {
+      "mobile_write": "写笔记",
+      "mobile_save": "保存笔记",
       "text": "尼克斯",
       "title": "笔记",
       "placeholder": "记点什么…",
@@ -325,6 +338,11 @@
       "aria_label": "编辑笔记"
     },
     "ReaderView": {
+      "mobile_contents": "目录",
+      "mobile_position": "尼克斯读到这里",
+      "mobile_name": "尼克斯",
+      "mobile_loading": "正在加载目录…",
+      "mobile_new_message": "有新的共读消息",
       "text": "阅读中",
       "text_2": "她正在追上你",
       "text_3": "她在等你",
@@ -333,8 +351,7 @@
       "span_2": " 段 · 你读到第 ",
       "text_4": "添加书签",
       "text_5": "取消书签",
-      "aria_label_2": "上一页",
-      "aria_label_3": "下一页",
+      "aria_label_text": "阅读正文",
       "aria_label_4": "阅读工具",
       "button": "划线",
       "button_2": "书签",
@@ -342,6 +359,8 @@
       "button_4": "笔记",
       "aria_label_5": "搜索划线",
       "placeholder": "搜索划线内容",
+      "save_highlight": "保存划线",
+      "cancel_highlight": "取消",
       "p": "没有匹配的划线。",
       "span_3": "第 ",
       "span_4": " 段",
@@ -351,6 +370,13 @@
     }
   },
   "templates": {
+    "Mobile": {
+      "position": "{p0}读到第 {p1} 段",
+      "position_here": "{p0}读到这里",
+      "companion_empty": "和{p0}聊聊刚读到的内容",
+      "companion_reply": "回复{p0}…"
+    },
+    "reader_progress": "第 {p0} / {p1} 段",
     "BookshelfView": {
       "text": " · 读到第 {p0} 段"
     }
